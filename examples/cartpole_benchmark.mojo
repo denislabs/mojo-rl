@@ -6,18 +6,24 @@ Compares:
 """
 
 from time import perf_counter_ns
-from envs.gymnasium_cartpole import CartPoleEnv, discretize_obs, get_num_states
+from envs.gymnasium import (
+    CartPoleEnv,
+    discretize_cart_pole,
+    get_cart_pole_num_states,
+)
 from envs.cartpole_native import CartPoleNative, discretize_obs_native
 from agents.qlearning import QLearningAgent
 from random import seed
 
 
-fn benchmark_gymnasium(num_episodes: Int, num_bins: Int) raises -> Tuple[Float64, Float64, Int]:
+fn benchmark_gymnasium(
+    num_episodes: Int, num_bins: Int
+) raises -> Tuple[Float64, Float64, Int]:
     """Benchmark Gymnasium CartPole.
 
     Returns: (total_time_seconds, avg_eval_reward, total_steps)
     """
-    var num_states = get_num_states(num_bins)
+    var num_states = get_cart_pole_num_states(num_bins)
     var max_steps = 500
 
     var env = CartPoleEnv()
@@ -37,7 +43,7 @@ fn benchmark_gymnasium(num_episodes: Int, num_bins: Int) raises -> Tuple[Float64
     # Training
     for episode in range(num_episodes):
         var obs = env.reset()
-        var state = discretize_obs(obs, num_bins)
+        var state = discretize_cart_pole(obs, num_bins)
 
         for _ in range(max_steps):
             var action = agent.select_action(state)
@@ -46,7 +52,7 @@ fn benchmark_gymnasium(num_episodes: Int, num_bins: Int) raises -> Tuple[Float64
             var reward = result[1]
             var done = result[2]
 
-            var next_state = discretize_obs(next_obs, num_bins)
+            var next_state = discretize_cart_pole(next_obs, num_bins)
             agent.update(state, action, reward, next_state, done)
 
             state = next_state
@@ -68,7 +74,7 @@ fn benchmark_gymnasium(num_episodes: Int, num_bins: Int) raises -> Tuple[Float64
 
     for _ in range(10):
         var obs = eval_env.reset()
-        var state = discretize_obs(obs, num_bins)
+        var state = discretize_cart_pole(obs, num_bins)
         var ep_reward: Float64 = 0.0
 
         for _ in range(max_steps):
@@ -79,7 +85,7 @@ fn benchmark_gymnasium(num_episodes: Int, num_bins: Int) raises -> Tuple[Float64
             var done = result[2]
 
             ep_reward += reward
-            state = discretize_obs(next_obs, num_bins)
+            state = discretize_cart_pole(next_obs, num_bins)
 
             if done:
                 break
@@ -91,7 +97,9 @@ fn benchmark_gymnasium(num_episodes: Int, num_bins: Int) raises -> Tuple[Float64
     return (total_time, eval_total / 10.0, total_steps)
 
 
-fn benchmark_native(num_episodes: Int, num_bins: Int) -> Tuple[Float64, Float64, Int]:
+fn benchmark_native(
+    num_episodes: Int, num_bins: Int
+) -> Tuple[Float64, Float64, Int]:
     """Benchmark Native Mojo CartPole.
 
     Returns: (total_time_seconds, avg_eval_reward, total_steps)
@@ -179,7 +187,9 @@ fn main() raises:
 
     print("Configuration:")
     print("  Episodes:", num_episodes)
-    print("  State bins:", num_bins, "per dimension ->", num_bins**4, "states")
+    print(
+        "  State bins:", num_bins, "per dimension ->", num_bins**4, "states"
+    )
     print("  Max steps per episode: 500")
     print()
 

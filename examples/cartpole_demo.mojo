@@ -4,7 +4,11 @@ This demonstrates using Gymnasium's CartPole environment with tabular Q-Learning
 by discretizing the continuous observation space.
 """
 
-from envs.gymnasium_cartpole import CartPoleEnv, discretize_obs, get_num_states
+from envs.gymnasium import (
+    CartPoleEnv,
+    discretize_cart_pole,
+    get_cart_pole_num_states,
+)
 from agents.qlearning import QLearningAgent
 from random import seed, random_float64
 
@@ -20,7 +24,7 @@ fn train_cartpole() raises:
     var num_episodes = 1000
     var max_steps = 500
 
-    var num_states = get_num_states(num_bins)
+    var num_states = get_cart_pole_num_states(num_bins)
     var num_actions = 2
 
     print("State space:", num_states, "discretized states")
@@ -50,7 +54,7 @@ fn train_cartpole() raises:
 
     for episode in range(num_episodes):
         var obs = env.reset()
-        var state = discretize_obs(obs, num_bins)
+        var state = discretize_cart_pole(obs, num_bins)
         var episode_reward: Float64 = 0.0
         var steps = 0
 
@@ -64,7 +68,7 @@ fn train_cartpole() raises:
             var reward = result[1]
             var done = result[2]
 
-            var next_state = discretize_obs(next_obs, num_bins)
+            var next_state = discretize_cart_pole(next_obs, num_bins)
 
             # Q-Learning update
             agent.update(state, action, reward, next_state, done)
@@ -104,11 +108,16 @@ fn train_cartpole() raises:
             avg_length /= Float64(count)
 
             print(
-                "Episode", episode + 1,
-                "| Avg Reward (100):", Int(avg_reward),
-                "| Avg Length:", Int(avg_length),
-                "| Epsilon:", agent.get_epsilon(),
-                "| Best:", Int(best_reward),
+                "Episode",
+                episode + 1,
+                "| Avg Reward (100):",
+                Int(avg_reward),
+                "| Avg Length:",
+                Int(avg_length),
+                "| Epsilon:",
+                agent.get_epsilon(),
+                "| Best:",
+                Int(best_reward),
             )
 
     env.close()
@@ -127,7 +136,7 @@ fn train_cartpole() raises:
 
     for _ in range(10):
         var obs = eval_env.reset()
-        var state = discretize_obs(obs, num_bins)
+        var state = discretize_cart_pole(obs, num_bins)
         var ep_reward: Float64 = 0.0
 
         for _ in range(max_steps):
@@ -138,7 +147,7 @@ fn train_cartpole() raises:
             var done = result[2]
 
             ep_reward += reward
-            state = discretize_obs(next_obs, num_bins)
+            state = discretize_cart_pole(next_obs, num_bins)
 
             if done:
                 break
@@ -174,7 +183,7 @@ fn train_cartpole() raises:
 
     for ep in range(3):
         var obs = render_env.reset()
-        var state = discretize_obs(obs, num_bins)
+        var state = discretize_cart_pole(obs, num_bins)
         var ep_reward: Float64 = 0.0
 
         for _ in range(max_steps):
@@ -186,7 +195,7 @@ fn train_cartpole() raises:
             var done = result[2]
 
             ep_reward += reward
-            state = discretize_obs(next_obs, num_bins)
+            state = discretize_cart_pole(next_obs, num_bins)
 
             if done:
                 break

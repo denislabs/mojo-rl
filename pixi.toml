@@ -1,0 +1,62 @@
+[workspace]
+authors = ["Denis Laboureyras"]
+channels = ["https://conda.modular.com/max-nightly", "conda-forge"]
+name = "mojo-rl"
+platforms = ["linux-64", "osx-arm64"]
+version = "1.0.0"
+
+[feature.nvidia]
+system-requirements = { cuda = "12" }
+channels = ["nvidia"]
+
+[feature.nvidia.target.linux-64.dependencies]
+cuda-toolkit = "12.*" # for compute-sanitizer etc.
+cuda-gdb = "12.*"     # for GPU kernel debugging
+nsight-compute = "*"  # interactive kernel profiling
+
+[feature.nvidia.target.linux-64.pypi-dependencies]
+torch = { version = "==2.7.1", index = "https://download.pytorch.org/whl/cu128" }
+nvidia-ml-py = "*"
+
+[feature.amd]
+system-requirements = {}
+
+[feature.amd.target.linux-64.pypi-dependencies]
+torch = { version = "==2.7.1", index = "https://download.pytorch.org/whl/rocm6.3" }
+pytorch-triton-rocm = { version = "*", index = "https://download.pytorch.org/whl/rocm6.3" }
+
+[feature.apple]
+system-requirements = { macos = "15.0" }
+
+[dependencies]
+mojo = "*"
+gymnasium = "*"
+pygame = "*"
+python = ">=3.13.11,<3.14"
+swig = ">=4.4.1,<5"
+box2d-py = "*"  # for gymnasium Box2D envs (LunarLander, BipedalWalker, CarRacing)
+mujoco = "*"    # for gymnasium MuJoCo envs (HalfCheetah, Ant, Humanoid, etc.)
+
+[activation]
+env = { MOJO_PYTHON_LIBRARY = "$PIXI_PROJECT_ROOT/.pixi/envs/default/lib/libpython3.13.dylib" }
+
+[environments]
+nvidia = { features = ["nvidia"], solve-group = "nvidia" }
+amd = { features = ["amd"], solve-group = "amd" }
+apple = { features = ["apple"], solve-group = "apple" }
+default = { features = ["nvidia"] }
+
+[tasks]
+install-pre-commit = "pre-commit install"
+format = { cmd = "mojo format problems solutions", depends-on = [
+    "install-pre-commit",
+] }
+format-check = { cmd = "bash -c 'mojo format problems solutions && git diff --exit-code problems solutions || (echo \"Error: Code is not formatted. Run \\\"pixi run format\\\" to fix.\" && exit 1)'", description = "Check if code is formatted without modifying files" }
+# NVIDIA GPU information and profiling utilities
+gpu-info = { cmd = "nvidia-smi --query-gpu=name,compute_cap,memory.total,driver_version --format=csv", description = "Get basic GPU information" }
+
+# GPU specs
+gpu-specs = { cmd = "python3 scripts/gpu_specs.py", description = "Get complete GPU architectural specifications (NVIDIA/AMD/Apple Silicon)" }
+
+# macOS
+check-macos = { cmd = "sw_vers -productVersion | awk -F. '{if($1<15) {print \"Error: macOS 15+ required, found \" $0; exit 1}}'", description = "Ensure macOS 15+" }
