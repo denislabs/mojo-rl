@@ -1,4 +1,4 @@
-"""Native Mojo implementation of CartPole environment.
+"""Native Mojo implementation of CartPole environment with integrated SDL2 rendering.
 
 Physics based on OpenAI Gym / Gymnasium CartPole-v1:
 https://gymnasium.farama.org/environments/classic_control/cart_pole/
@@ -7,14 +7,19 @@ A pole is attached by an un-actuated joint to a cart, which moves along a
 frictionless track. The pendulum is placed upright on the cart and the goal
 is to balance the pole by applying forces in the left and right direction
 on the cart.
+
+Rendering uses native SDL2 bindings (no Python/pygame dependency).
+Requires SDL2 and SDL2_ttf: brew install sdl2 sdl2_ttf
 """
 
 from math import cos, sin
 from random import random_float64
+from core.sdl2 import SDL_Color, SDL_Point
+from .native_renderer_base import NativeRendererBase
 
 
 struct CartPoleNative:
-    """Native Mojo CartPole environment.
+    """Native Mojo CartPole environment with integrated SDL2 rendering.
 
     State: [cart_position, cart_velocity, pole_angle, pole_angular_velocity]
     Actions: 0 (push left), 1 (push right)
@@ -49,8 +54,27 @@ struct CartPoleNative:
     var steps: Int
     var max_steps: Int
     var done: Bool
+    var total_reward: Float64
 
-    fn __init__(out self):
+    # Renderer (lazy initialized)
+    var renderer: NativeRendererBase
+    var render_initialized: Bool
+
+    # Renderer settings
+    var world_width: Float64
+    var scale: Float64
+    var cart_y: Int
+    var cart_color: SDL_Color
+    var pole_color: SDL_Color
+    var axle_color: SDL_Color
+    var track_color: SDL_Color
+    var cart_width: Int
+    var cart_height: Int
+    var pole_width: Int
+    var pole_len_pixels: Int
+    var axle_radius: Int
+
+    fn __init__(out self) raises:
         """Initialize CartPole with default physics parameters."""
         # Physics constants from Gymnasium
         self.gravity = 9.8
@@ -76,6 +100,30 @@ struct CartPoleNative:
         self.steps = 0
         self.max_steps = 500
         self.done = False
+        self.total_reward = 0.0
+
+        # Initialize renderer (but don't open window yet)
+        self.renderer = NativeRendererBase(
+            width=600,
+            height=400,
+            fps=50,  # Match physics tau=0.02
+            title="CartPole - Native Mojo (SDL2)",
+        )
+        self.render_initialized = False
+
+        # Renderer settings
+        self.world_width = 4.8  # x_threshold * 2
+        self.scale = 600.0 / self.world_width
+        self.cart_y = 300
+        self.cart_color = SDL_Color(31, 119, 180, 255)  # Blue
+        self.pole_color = SDL_Color(204, 153, 102, 255)  # Tan/brown
+        self.axle_color = SDL_Color(127, 127, 204, 255)  # Purple-ish
+        self.track_color = SDL_Color(0, 0, 0, 255)  # Black
+        self.cart_width = 50
+        self.cart_height = 30
+        self.pole_width = 10
+        self.pole_len_pixels = Int(self.scale * 0.5 * 2)  # length * 2 (full pole)
+        self.axle_radius = 5
 
     fn reset(mut self) -> SIMD[DType.float64, 4]:
         """Reset environment to random initial state.
@@ -90,6 +138,7 @@ struct CartPoleNative:
 
         self.steps = 0
         self.done = False
+        self.total_reward = 0.0
 
         return self._get_obs()
 
@@ -144,6 +193,7 @@ struct CartPoleNative:
 
         # Reward: +1 for every step the pole stays upright
         var reward: Float64 = 1.0 if not terminated else 0.0
+        self.total_reward += reward
 
         return (self._get_obs(), reward, self.done)
 
@@ -160,6 +210,98 @@ struct CartPoleNative:
         """Return current state (alias for _get_obs)."""
         return self._get_obs()
 
+    fn render(mut self):
+        """Render the current state using SDL2.
+
+        Lazily initializes the display on first call.
+        """
+        if not self.render_initialized:
+            if not self.renderer.init_display():
+                print("Failed to initialize display")
+                return
+            self.render_initialized = True
+            # Update scale based on actual screen width
+            self.scale = Float64(self.renderer.screen_width) / self.world_width
+            self.pole_len_pixels = Int(self.scale * 0.5 * 2)
+
+        # Handle events
+        if not self.renderer.handle_events():
+            self.close()
+            return
+
+        # Clear screen
+        self.renderer.clear()
+
+        # Calculate cart position in pixels
+        var cart_x = Int(self.x * self.scale + Float64(self.renderer.screen_width) / 2.0)
+
+        # Draw track
+        var track_y = self.cart_y + self.cart_height // 2
+        self.renderer.draw_line(
+            0, track_y, self.renderer.screen_width, track_y, self.track_color, 2
+        )
+
+        # Draw cart
+        var cart_left = cart_x - self.cart_width // 2
+        var cart_top = self.cart_y - self.cart_height // 2
+        self.renderer.draw_rect(
+            cart_left,
+            cart_top,
+            self.cart_width,
+            self.cart_height,
+            self.cart_color,
+        )
+
+        # Draw pole
+        var pole_start_x = cart_x
+        var pole_start_y = self.cart_y - self.cart_height // 2
+
+        # theta=0 means upright, positive theta is clockwise
+        var pole_end_x = pole_start_x + Int(
+            Float64(self.pole_len_pixels) * sin(self.theta)
+        )
+        var pole_end_y = pole_start_y - Int(
+            Float64(self.pole_len_pixels) * cos(self.theta)
+        )
+
+        self.renderer.draw_line(
+            pole_start_x,
+            pole_start_y,
+            pole_end_x,
+            pole_end_y,
+            self.pole_color,
+            self.pole_width,
+        )
+
+        # Draw axle (pivot point)
+        self.renderer.draw_circle(
+            pole_start_x, pole_start_y, self.axle_radius, self.axle_color
+        )
+
+        # Draw wheels
+        var wheel_radius = 5
+        var wheel_y = self.cart_y + self.cart_height // 2
+        var black = SDL_Color(0, 0, 0, 255)
+        self.renderer.draw_circle(cart_left + 10, wheel_y, wheel_radius, black)
+        self.renderer.draw_circle(
+            cart_left + self.cart_width - 10, wheel_y, wheel_radius, black
+        )
+
+        # Draw info text
+        var info_lines = List[String]()
+        info_lines.append("Step: " + String(self.steps))
+        info_lines.append("Reward: " + String(Int(self.total_reward)))
+        self.renderer.draw_info_box(info_lines)
+
+        # Update display
+        self.renderer.flip()
+
+    fn close(mut self):
+        """Clean up renderer resources."""
+        if self.render_initialized:
+            self.renderer.close()
+            self.render_initialized = False
+
     fn is_done(self) -> Bool:
         """Check if episode is done."""
         return self.done
@@ -171,10 +313,6 @@ struct CartPoleNative:
     fn obs_dim(self) -> Int:
         """Return observation dimension (4)."""
         return 4
-
-    fn close(self):
-        """No-op for native env (no resources to clean up)."""
-        pass
 
 
 fn discretize_obs_native(obs: SIMD[DType.float64, 4], num_bins: Int = 10) -> Int:

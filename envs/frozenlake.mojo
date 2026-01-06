@@ -162,7 +162,7 @@ struct FrozenLake(DiscreteEnv):
         """Return current state."""
         return self.state
 
-    fn render(self):
+    fn render(mut self):
         """Print the grid."""
         for row in range(self.size):
             var line = String("")

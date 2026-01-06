@@ -243,7 +243,7 @@ struct Taxi(DiscreteEnv):
         """Return current state."""
         return self.state
 
-    fn render(self):
+    fn render(mut self):
         """Print the taxi grid."""
         var loc_chars = List[String]()
         loc_chars.append("R")

@@ -7,6 +7,7 @@ A reinforcement learning framework written in Mojo, featuring trait-based design
 - **Trait-based architecture**: Generic interfaces for environments, agents, states, and actions
 - **13 RL algorithms**: TD methods, multi-step, eligibility traces, model-based planning, function approximation
 - **6 native environments**: GridWorld, FrozenLake, CliffWalking, Taxi, CartPole, MountainCar
+- **Integrated SDL2 rendering**: Native visualization for CartPole and MountainCar
 - **20+ Gymnasium wrappers**: Classic Control, Box2D, Toy Text, MuJoCo environments
 - **Experience replay**: Uniform and prioritized replay buffers
 - **Generic training utilities**: Works with any compatible environment/agent combination
@@ -22,6 +23,21 @@ mojo run benchmark.mojo
 
 # Build a binary
 mojo build main.mojo
+
+# Run native renderer demo (requires SDL2)
+mojo run examples/native_renderer_demo.mojo
+```
+
+### SDL2 Requirements (for visualization)
+
+To use the integrated SDL2 rendering for CartPole and MountainCar:
+
+```bash
+# macOS
+brew install sdl2 sdl2_ttf
+
+# Ubuntu/Debian
+sudo apt-get install libsdl2-dev libsdl2-ttf-dev
 ```
 
 ## Algorithms
@@ -68,8 +84,8 @@ mojo build main.mojo
 | **FrozenLake** | 16 (4x4) | 4 | Avoid holes on slippery ice |
 | **CliffWalking** | 48 (4x12) | 4 | Avoid cliff, -100 penalty |
 | **Taxi** | 500 | 6 | Pickup/dropoff passenger |
-| **CartPole** | Continuous | 2 | Balance pole on cart (145x faster than Gymnasium) |
-| **MountainCar** | Continuous | 3 | Drive car up mountain using momentum |
+| **CartPole** | Continuous | 2 | Balance pole on cart (145x faster than Gymnasium), integrated SDL2 rendering |
+| **MountainCar** | Continuous | 3 | Drive car up mountain using momentum, integrated SDL2 rendering |
 
 ### Gymnasium Wrappers (`envs/gymnasium/`)
 Wrap any Gymnasium environment with Python interop:
@@ -111,10 +127,9 @@ mojo-rl/
     ├── frozenlake.mojo
     ├── cliffwalking.mojo
     ├── taxi.mojo
-    ├── cartpole_native.mojo      # Native CartPole (145x faster)
-    ├── cartpole_renderer.mojo    # Pygame visualization for CartPole
-    ├── mountain_car_native.mojo  # Native MountainCar
-    ├── mountain_car_renderer.mojo # Pygame visualization for MountainCar
+    ├── cartpole_native.mojo      # Native CartPole with integrated SDL2 rendering
+    ├── mountain_car_native.mojo  # Native MountainCar with integrated SDL2 rendering
+    ├── native_renderer_base.mojo # SDL2 rendering infrastructure
     └── gymnasium/                # Gymnasium wrappers
         ├── gymnasium_wrapper.mojo
         ├── gymnasium_classic_control.mojo

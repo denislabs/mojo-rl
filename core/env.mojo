@@ -27,7 +27,7 @@ trait Env:
         """Return current state representation."""
         ...
 
-    fn render(self):
+    fn render(mut self):
         """Render the environment (optional)."""
         ...
 

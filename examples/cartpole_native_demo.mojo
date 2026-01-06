@@ -1,11 +1,10 @@
-"""Native CartPole Demo with Pygame Rendering.
+"""Native CartPole Demo with integrated SDL2 Rendering.
 
 Trains a Q-Learning agent on the native Mojo CartPole (fast!)
-then visualizes the trained agent using pygame.
+then visualizes the trained agent using the integrated SDL2 renderer.
 """
 
 from envs.cartpole_native import CartPoleNative, discretize_obs_native
-from envs.cartpole_renderer import CartPoleRenderer
 from agents.qlearning import QLearningAgent
 from random import seed
 
@@ -18,7 +17,7 @@ fn main() raises:
     seed()
 
     print("=" * 60)
-    print("Native Mojo CartPole with Pygame Rendering")
+    print("Native Mojo CartPole with Integrated SDL2 Rendering")
     print("=" * 60)
     print()
 
@@ -112,15 +111,13 @@ fn main() raises:
     print("  Average evaluation reward:", Int(eval_total / 10.0))
     print()
 
-    # Visual demo with pygame
+    # Visual demo with integrated SDL2 renderer
     print("=" * 60)
     print("Visual Demo - Watch the trained agent!")
     print("=" * 60)
-    print("Opening pygame window for 3 episodes...")
+    print("Rendering 3 episodes with integrated SDL2...")
     print("(Close window to exit)")
     print()
-
-    var renderer = CartPoleRenderer()
 
     for ep in range(3):
         var obs = env.reset()
@@ -129,7 +126,7 @@ fn main() raises:
         var step_count = 0
 
         # Initial render
-        renderer.render(env.x, env.theta, step_count, ep_reward)
+        env.render()
 
         for _ in range(max_steps):
             var action = agent.get_best_action(state)
@@ -142,14 +139,14 @@ fn main() raises:
             state = discretize_obs_native(next_obs, num_bins)
             step_count += 1
 
-            # Render current state
-            renderer.render(env.x, env.theta, step_count, ep_reward)
+            # Render current state using integrated render() method
+            env.render()
 
             if done:
                 break
 
         print("Episode", ep + 1, "| Reward:", Int(ep_reward), "| Steps:", step_count)
 
-    renderer.close()
+    env.close()
     print()
     print("Demo complete!")

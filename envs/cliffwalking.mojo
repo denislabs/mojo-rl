@@ -140,7 +140,7 @@ struct CliffWalking(DiscreteEnv):
         """Return current state."""
         return self.state
 
-    fn render(self):
+    fn render(mut self):
         """Print the grid with agent position."""
         for y in range(self.height - 1, -1, -1):
             var row = String("")

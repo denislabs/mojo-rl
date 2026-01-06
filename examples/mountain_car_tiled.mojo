@@ -12,11 +12,7 @@ Key challenges:
 
 from core.tile_coding import TileCoding
 from agents.tiled_qlearning import TiledQLearningAgent, TiledSARSALambdaAgent
-from envs.mountain_car_native import (
-    MountainCarNative,
-    make_mountain_car_tile_coding,
-)
-from envs.mountain_car_renderer import MountainCarRenderer
+from envs.mountain_car_native import MountainCarNative, make_mountain_car_tile_coding
 
 
 fn train_mountain_car_tiled(
@@ -27,7 +23,7 @@ fn train_mountain_car_tiled(
     learning_rate: Float64 = 0.5,
     epsilon_decay: Float64 = 0.99,
     verbose: Bool = True,
-) -> List[Float64]:
+) raises -> List[Float64]:
     """Train Q-learning agent with tile coding on MountainCar.
 
     Args:
@@ -141,7 +137,7 @@ fn train_mountain_car_sarsa_lambda(
     lambda_: Float64 = 0.9,
     epsilon_decay: Float64 = 0.99,
     verbose: Bool = True,
-) -> List[Float64]:
+) raises -> List[Float64]:
     """Train SARSA(lambda) agent with tile coding on MountainCar.
 
     SARSA(lambda) with eligibility traces often performs well on MountainCar
@@ -329,12 +325,9 @@ fn main() raises:
     print("=" * 60)
     print("")
 
-    # Visualization phase - show trained agent
-    var renderer = MountainCarRenderer()
-
+    # Visualization phase - show trained agent using integrated render()
     for demo_episode in range(5):
         var obs = env.reset()
-        var total_reward: Float64 = 0.0
 
         print("Demo episode", demo_episode + 1)
 
@@ -344,13 +337,10 @@ fn main() raises:
 
             var result = env.step(action)
             var next_obs = result[0]
-            var reward = result[1]
             var done = result[2]
 
-            total_reward += reward
-
-            # Render
-            renderer.render(next_obs[0], next_obs[1], step + 1, total_reward)
+            # Render using integrated render() method
+            env.render()
 
             obs = next_obs
 
@@ -361,6 +351,6 @@ fn main() raises:
                     print("  Timeout after", step + 1, "steps")
                 break
 
-    renderer.close()
+    env.close()
     print("")
     print("Demo complete!")
