@@ -21,7 +21,9 @@ trait DiscreteEnv(Env):
         ...
 
 
-fn train_tabular[E: DiscreteEnv, A: TabularAgent](
+fn train_tabular[
+    E: DiscreteEnv, A: TabularAgent
+](
     mut env: E,
     mut agent: A,
     num_episodes: Int,
@@ -86,7 +88,9 @@ fn train_tabular[E: DiscreteEnv, A: TabularAgent](
     return episode_rewards^
 
 
-fn evaluate_tabular[E: DiscreteEnv, A: TabularAgent](
+fn evaluate_tabular[
+    E: DiscreteEnv, A: TabularAgent
+](
     mut env: E,
     agent: A,
     num_episodes: Int = 10,
@@ -113,7 +117,7 @@ fn evaluate_tabular[E: DiscreteEnv, A: TabularAgent](
             print("=== Evaluation Episode", episode + 1, "===")
             env.render()
 
-        for step in range(100):
+        for _ in range(100):
             var state_idx = env.state_to_index(state)
             var action_idx = agent.get_best_action(state_idx)
             var action = env.action_from_index(action_idx)
@@ -140,7 +144,9 @@ fn evaluate_tabular[E: DiscreteEnv, A: TabularAgent](
     return total_reward / Float64(num_episodes)
 
 
-fn train_tabular_with_metrics[E: DiscreteEnv, A: TabularAgent](
+fn train_tabular_with_metrics[
+    E: DiscreteEnv, A: TabularAgent
+](
     mut env: E,
     mut agent: A,
     num_episodes: Int,

@@ -47,6 +47,28 @@
   - `agents/tiled_qlearning.mojo` - TiledQLearningAgent, TiledSARSAAgent, TiledSARSALambdaAgent
   - `examples/cartpole_tiled.mojo` - CartPole training with tile coding
 
+### Policy Gradient Methods
+- [x] REINFORCE - Monte Carlo policy gradient with softmax policy
+  - `agents/reinforce.mojo` - REINFORCEAgent, REINFORCEWithEntropyAgent
+  - Supports optional learned baseline for variance reduction
+  - Entropy regularization variant for improved exploration
+- [x] Actor-Critic - Combine policy and value learning
+  - `agents/actor_critic.mojo` - ActorCriticAgent, ActorCriticLambdaAgent, A2CAgent
+  - One-step TD Actor-Critic with online updates
+  - Actor-Critic(λ) with eligibility traces for both actor and critic
+  - A2C with n-step returns and entropy bonus
+- [x] Examples - `examples/cartpole_policy_gradient.mojo`
+- [x] GAE (Generalized Advantage Estimation)
+  - `agents/ppo.mojo` - `compute_gae()` function
+  - Computes advantages using exponentially-weighted TD residuals
+  - Parameterized by λ (0=TD, 1=MC, typically 0.95)
+- [x] PPO (Proximal Policy Optimization)
+  - `agents/ppo.mojo` - PPOAgent, PPOAgentWithMinibatch
+  - Clipped surrogate objective for stable policy updates
+  - Multiple optimization epochs per rollout
+  - Entropy bonus for exploration
+  - `examples/cartpole_ppo.mojo` - CartPole training with PPO
+
 ## In Progress / Next Steps
 
 ### Function Approximation (continued)
@@ -56,11 +78,6 @@
 - [ ] DQN - Deep Q-Network with target network
 - [ ] Double DQN - DQN with double Q-learning
 - [ ] Dueling DQN - Separate value and advantage streams
-
-### Policy Gradient Methods
-- [ ] REINFORCE - Monte Carlo policy gradient
-- [ ] Actor-Critic - Combine policy and value learning
-- [ ] A2C/A3C - Advantage Actor-Critic
 
 ### Infrastructure
 - [x] Logging/Metrics - Export learning curves for visualization
@@ -89,3 +106,10 @@
 | Tiled Q-Learning | Function Approx | Tile coding for continuous states |
 | Tiled SARSA | Function Approx | On-policy with tile coding |
 | Tiled SARSA(λ) | Function Approx | Eligibility traces + tile coding |
+| REINFORCE | Policy Gradient | Monte Carlo policy gradient |
+| REINFORCE + Baseline | Policy Gradient | Variance reduction with value baseline |
+| Actor-Critic | Policy Gradient | Online TD-based policy gradient |
+| Actor-Critic(λ) | Policy Gradient | Eligibility traces for actor and critic |
+| A2C | Policy Gradient | N-step returns + entropy bonus |
+| PPO | Policy Gradient | Clipped surrogate objective, stable updates |
+| GAE | Advantage Est. | Exponentially-weighted TD residuals |

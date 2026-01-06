@@ -1,15 +1,16 @@
 # mojo-rl
 
-A reinforcement learning framework written in Mojo, featuring trait-based design for extensibility and comprehensive tabular RL algorithms.
+A reinforcement learning framework written in Mojo, featuring trait-based design for extensibility, comprehensive tabular RL algorithms, and policy gradient methods.
 
 ## Features
 
 - **Trait-based architecture**: Generic interfaces for environments, agents, states, and actions
-- **13 RL algorithms**: TD methods, multi-step, eligibility traces, model-based planning, function approximation
+- **18 RL algorithms**: TD methods, multi-step, eligibility traces, model-based planning, function approximation, policy gradients
 - **6 native environments**: GridWorld, FrozenLake, CliffWalking, Taxi, CartPole, MountainCar
 - **Integrated SDL2 rendering**: Native visualization for CartPole and MountainCar
 - **20+ Gymnasium wrappers**: Classic Control, Box2D, Toy Text, MuJoCo environments
 - **Experience replay**: Uniform and prioritized replay buffers
+- **Policy gradient methods**: REINFORCE, Actor-Critic, A2C with tile coding
 - **Generic training utilities**: Works with any compatible environment/agent combination
 
 ## Quick Start
@@ -75,6 +76,15 @@ sudo apt-get install libsdl2-dev libsdl2-ttf-dev
 | **Tiled SARSA** | On-policy SARSA with tile coding |
 | **Tiled SARSA(λ)** | Eligibility traces + tile coding |
 
+### Policy Gradient Methods
+| Algorithm | Description |
+|-----------|-------------|
+| **REINFORCE** | Monte Carlo policy gradient with softmax policy |
+| **REINFORCE + Baseline** | Variance reduction using learned value baseline |
+| **Actor-Critic** | One-step TD policy gradient with online updates |
+| **Actor-Critic(λ)** | Actor-Critic with eligibility traces for actor and critic |
+| **A2C** | Advantage Actor-Critic with n-step returns and entropy bonus |
+
 ## Environments
 
 ### Native Mojo Environments
@@ -121,7 +131,9 @@ mojo-rl/
 │   ├── dyna_q.mojo
 │   ├── priority_sweeping.mojo
 │   ├── qlearning_replay.mojo
-│   └── tiled_qlearning.mojo   # Tile coding agents
+│   ├── tiled_qlearning.mojo   # Tile coding agents
+│   ├── reinforce.mojo         # REINFORCE policy gradient
+│   └── actor_critic.mojo      # Actor-Critic family
 └── envs/                  # Environment implementations
     ├── gridworld.mojo
     ├── frozenlake.mojo
@@ -224,9 +236,47 @@ struct MyAgent(TabularAgent):
     fn get_epsilon(self) -> Float64: ...
 ```
 
+### Policy Gradient on CartPole
+
+```mojo
+from core.tile_coding import make_cartpole_tile_coding
+from agents import REINFORCEAgent, ActorCriticAgent
+from envs import CartPoleNative
+
+fn main() raises:
+    # Create tile coding for continuous state space
+    var tc = make_cartpole_tile_coding(num_tilings=8, tiles_per_dim=8)
+
+    # REINFORCE agent with baseline
+    var agent = REINFORCEAgent(
+        tile_coding=tc,
+        num_actions=2,
+        learning_rate=0.001,
+        use_baseline=True,
+    )
+
+    var env = CartPoleNative()
+
+    for episode in range(1000):
+        var obs = env.reset()
+        agent.reset()
+
+        for step in range(500):
+            var tiles = tc.get_tiles_simd4(obs)
+            var action = agent.select_action(tiles)
+            var result = env.step(action)
+            agent.store_transition(tiles, action, result[1])
+            obs = result[0]
+            if result[2]:
+                break
+
+        # Update at end of episode
+        agent.update_from_episode()
+```
+
 ## Roadmap
 
 See [ROADMAP.md](ROADMAP.md) for planned features including:
-- Function approximation (tile coding)
 - Deep RL (DQN, when Mojo tensor ops mature)
-- Policy gradient methods (REINFORCE, Actor-Critic)
+- PPO (Proximal Policy Optimization)
+- GAE (Generalized Advantage Estimation)

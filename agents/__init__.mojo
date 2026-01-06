@@ -9,3 +9,6 @@ from .dyna_q import DynaQAgent
 from .priority_sweeping import PrioritySweepingAgent
 from .qlearning_replay import QLearningReplayAgent
 from .tiled_qlearning import TiledQLearningAgent, TiledSARSAAgent, TiledSARSALambdaAgent
+from .reinforce import REINFORCEAgent, REINFORCEWithEntropyAgent
+from .actor_critic import ActorCriticAgent, ActorCriticLambdaAgent, A2CAgent
+from .ppo import PPOAgent, PPOAgentWithMinibatch, compute_gae

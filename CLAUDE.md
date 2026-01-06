@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-mojo-rl is a reinforcement learning framework written in Mojo, featuring trait-based design for extensibility, 13 RL algorithms (including tile-coded function approximation), 6 native environments (CartPole, MountainCar, GridWorld, FrozenLake, CliffWalking, Taxi) with integrated SDL2 rendering for continuous-state environments, 20+ Gymnasium wrappers, and experience replay infrastructure.
+mojo-rl is a reinforcement learning framework written in Mojo, featuring trait-based design for extensibility, 20 RL algorithms (including tile-coded function approximation, policy gradient methods, and PPO with GAE), 6 native environments (CartPole, MountainCar, GridWorld, FrozenLake, CliffWalking, Taxi) with integrated SDL2 rendering for continuous-state environments, 20+ Gymnasium wrappers, and experience replay infrastructure.
 
 ## Build and Run Commands
 
@@ -93,6 +93,19 @@ All agents implement `TabularAgent` trait and use a shared `QTable` structure:
   - `TiledSARSAAgent`: On-policy SARSA with tile coding
   - `TiledSARSALambdaAgent`: SARSA(λ) with eligibility traces and tile coding
 
+**Policy Gradient Methods:**
+- **`reinforce.mojo`** - Monte Carlo policy gradient agents:
+  - `REINFORCEAgent`: Basic REINFORCE with optional baseline
+  - `REINFORCEWithEntropyAgent`: REINFORCE with entropy regularization
+- **`actor_critic.mojo`** - Actor-Critic family of algorithms:
+  - `ActorCriticAgent`: One-step TD Actor-Critic (online updates)
+  - `ActorCriticLambdaAgent`: Actor-Critic with eligibility traces
+  - `A2CAgent`: Advantage Actor-Critic with n-step returns
+- **`ppo.mojo`** - PPO with Generalized Advantage Estimation:
+  - `compute_gae()`: Function to compute GAE advantages
+  - `PPOAgent`: PPO with clipped surrogate objective
+  - `PPOAgentWithMinibatch`: PPO with minibatch sampling for larger rollouts
+
 ### Environments (`envs/`)
 
 **Native Mojo Environments:**
@@ -165,3 +178,8 @@ All agents use epsilon-greedy with decay: `ε *= ε_decay` each episode (default
 | Dyna-Q | Above + `n_planning` (planning steps per real step) |
 | Priority Sweeping | Above + `priority_threshold` |
 | Q-Learning + Replay | Above + `buffer_size`, `batch_size`, `min_buffer_size` |
+| REINFORCE | `learning_rate`, `discount_factor`, `use_baseline`, `baseline_lr` |
+| Actor-Critic | `actor_lr`, `critic_lr`, `discount_factor`, `entropy_coef` |
+| Actor-Critic(λ) | Above + `lambda_` (trace decay) |
+| A2C | Above + `n_steps` (for n-step returns) |
+| PPO | `actor_lr`, `critic_lr`, `clip_epsilon`, `gae_lambda`, `num_epochs`, `entropy_coef` |
