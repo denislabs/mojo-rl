@@ -69,10 +69,13 @@
   - Entropy bonus for exploration
   - `examples/cartpole_ppo.mojo` - CartPole training with PPO
 
-## In Progress / Next Steps
+### Linear Function Approximation
+- [x] Linear Q-Learning - Q-Learning with arbitrary feature vectors
+  - `core/linear_fa.mojo` - LinearWeights, PolynomialFeatures, RBFFeatures
+  - `agents/linear_qlearning.mojo` - LinearQLearningAgent, LinearSARSAAgent, LinearSARSALambdaAgent
+  - `examples/mountain_car_linear.mojo` - MountainCar training with polynomial and RBF features
 
-### Function Approximation (continued)
-- [ ] Linear Q-Learning - Q-Learning with arbitrary feature vectors
+## In Progress / Next Steps
 
 ### Deep RL (depends on Mojo tensor support)
 - [ ] DQN - Deep Q-Network with target network
@@ -106,6 +109,9 @@
 | Tiled Q-Learning | Function Approx | Tile coding for continuous states |
 | Tiled SARSA | Function Approx | On-policy with tile coding |
 | Tiled SARSA(λ) | Function Approx | Eligibility traces + tile coding |
+| Linear Q-Learning | Function Approx | Arbitrary feature vectors (poly, RBF) |
+| Linear SARSA | Function Approx | On-policy with arbitrary features |
+| Linear SARSA(λ) | Function Approx | Eligibility traces + arbitrary features |
 | REINFORCE | Policy Gradient | Monte Carlo policy gradient |
 | REINFORCE + Baseline | Policy Gradient | Variance reduction with value baseline |
 | Actor-Critic | Policy Gradient | Online TD-based policy gradient |

@@ -61,6 +61,11 @@ The codebase follows a trait-based design for RL components with clear separatio
   - `TileCoding`: Multi-dimensional tile coding with asymmetric offsets
   - `TiledWeights`: Weight storage for linear value function
   - `make_cartpole_tile_coding()`: Factory for CartPole configuration
+- **`linear_fa.mojo`** - Linear function approximation with arbitrary features
+  - `LinearWeights`: Weight storage for dense feature vectors
+  - `PolynomialFeatures`: Polynomial feature extractor (x, y, x², xy, etc.)
+  - `RBFFeatures`: Radial Basis Function features
+  - `make_grid_rbf_centers()`: Create RBF center grid
 - **`sdl2.mojo`** - SDL2 FFI bindings for native rendering
   - `SDL2Renderer`: Low-level SDL2 wrapper with FFI calls
   - Functions: `init()`, `quit()`, `create_window()`, `set_color()`, `fill_rect()`, `draw_line()`, etc.
@@ -92,6 +97,12 @@ All agents implement `TabularAgent` trait and use a shared `QTable` structure:
   - `TiledQLearningAgent`: Q-Learning with tile coding
   - `TiledSARSAAgent`: On-policy SARSA with tile coding
   - `TiledSARSALambdaAgent`: SARSA(λ) with eligibility traces and tile coding
+
+**Function Approximation (Linear with Arbitrary Features):**
+- **`linear_qlearning.mojo`** - Linear agents with arbitrary feature vectors:
+  - `LinearQLearningAgent`: Q-Learning with polynomial, RBF, or custom features
+  - `LinearSARSAAgent`: On-policy SARSA with arbitrary features
+  - `LinearSARSALambdaAgent`: SARSA(λ) with eligibility traces and arbitrary features
 
 **Policy Gradient Methods:**
 - **`reinforce.mojo`** - Monte Carlo policy gradient agents:

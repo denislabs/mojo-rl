@@ -117,7 +117,7 @@ fn evaluate_tabular[
             print("=== Evaluation Episode", episode + 1, "===")
             env.render()
 
-        for _ in range(100):
+        for step in range(100):
             var state_idx = env.state_to_index(state)
             var action_idx = agent.get_best_action(state_idx)
             var action = env.action_from_index(action_idx)
