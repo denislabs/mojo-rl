@@ -11,7 +11,7 @@ This is much more efficient than naive discretization because:
 
 from core.tile_coding import TileCoding, make_cartpole_tile_coding
 from agents.tiled_qlearning import TiledQLearningAgent, TiledSARSALambdaAgent
-from envs.cartpole_native import CartPoleNative
+from envs import CartPoleNative
 
 
 fn train_cartpole_tiled(
@@ -21,7 +21,7 @@ fn train_cartpole_tiled(
     tiles_per_dim: Int = 8,
     learning_rate: Float64 = 0.1,
     verbose: Bool = True,
-) -> List[Float64]:
+) raises -> List[Float64]:
     """Train Q-learning agent with tile coding on CartPole.
 
     Args:
@@ -68,7 +68,7 @@ fn train_cartpole_tiled(
         print("")
 
     for episode in range(num_episodes):
-        var obs = env.reset()
+        var obs = env.reset_obs()
         var tiles = tc.get_tiles_simd4(obs)
         var episode_reward: Float64 = 0.0
 
@@ -77,7 +77,7 @@ fn train_cartpole_tiled(
             var action = agent.select_action(tiles)
 
             # Take action
-            var result = env.step(action)
+            var result = env.step_raw(action)
             var next_obs = result[0]
             var reward = result[1]
             var done = result[2]
@@ -131,7 +131,7 @@ fn train_cartpole_sarsa_lambda(
     learning_rate: Float64 = 0.1,
     lambda_: Float64 = 0.9,
     verbose: Bool = True,
-) -> List[Float64]:
+) raises -> List[Float64]:
     """Train SARSA(λ) agent with tile coding on CartPole.
 
     SARSA(λ) often learns faster than Q-learning on CartPole due to
@@ -184,7 +184,7 @@ fn train_cartpole_sarsa_lambda(
 
     for episode in range(num_episodes):
         # Reset environment and traces
-        var obs = env.reset()
+        var obs = env.reset_obs()
         agent.reset()  # Reset eligibility traces
 
         var tiles = tc.get_tiles_simd4(obs)
@@ -193,7 +193,7 @@ fn train_cartpole_sarsa_lambda(
 
         for step in range(max_steps):
             # Take action
-            var result = env.step(action)
+            var result = env.step_raw(action)
             var next_obs = result[0]
             var reward = result[1]
             var done = result[2]
@@ -245,7 +245,7 @@ fn evaluate_agent(
     agent: TiledQLearningAgent,
     tc: TileCoding,
     num_episodes: Int = 100,
-) -> Float64:
+) raises -> Float64:
     """Evaluate trained agent (greedy policy, no exploration).
 
     Args:
@@ -260,14 +260,14 @@ fn evaluate_agent(
     var total_reward: Float64 = 0.0
 
     for _ in range(num_episodes):
-        var obs = env.reset()
+        var obs = env.reset_obs()
         var episode_reward: Float64 = 0.0
 
         for _ in range(500):
             var tiles = tc.get_tiles_simd4(obs)
             var action = agent.get_best_action(tiles)  # Greedy
 
-            var result = env.step(action)
+            var result = env.step_raw(action)
             var next_obs = result[0]
             var reward = result[1]
             var done = result[2]
@@ -283,7 +283,7 @@ fn evaluate_agent(
     return total_reward / Float64(num_episodes)
 
 
-fn main():
+fn main() raises:
     """Run CartPole tile coding example."""
     print("=" * 60)
     print("CartPole with Tile Coding - Function Approximation")

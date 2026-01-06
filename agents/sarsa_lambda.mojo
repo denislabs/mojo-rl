@@ -1,9 +1,9 @@
 from random import random_si64, random_float64
 from .qlearning import QTable
-from core import TabularAgent
+from core import TabularAgent, DiscreteEnv, train_tabular_with_metrics, TrainingMetrics
 
 
-struct SARSALambdaAgent(TabularAgent):
+struct SARSALambdaAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable):
     """SARSA(λ) agent with eligibility traces.
 
     Eligibility traces unify TD and Monte Carlo methods by maintaining
@@ -42,6 +42,30 @@ struct SARSALambdaAgent(TabularAgent):
     var epsilon_min: Float64
     var num_actions: Int
     var num_states: Int
+
+    fn __copyinit__(out self, existing: Self):
+        self.q_table = existing.q_table
+        self.eligibility = existing.eligibility
+        self.learning_rate = existing.learning_rate
+        self.discount_factor = existing.discount_factor
+        self.lambda_ = existing.lambda_
+        self.epsilon = existing.epsilon
+        self.epsilon_decay = existing.epsilon_decay
+        self.epsilon_min = existing.epsilon_min
+        self.num_actions = existing.num_actions
+        self.num_states = existing.num_states
+
+    fn __moveinit__(out self, deinit existing: Self):
+        self.q_table = existing.q_table^
+        self.eligibility = existing.eligibility^
+        self.learning_rate = existing.learning_rate
+        self.discount_factor = existing.discount_factor
+        self.lambda_ = existing.lambda_
+        self.epsilon = existing.epsilon
+        self.epsilon_decay = existing.epsilon_decay
+        self.epsilon_min = existing.epsilon_min
+        self.num_actions = existing.num_actions
+        self.num_states = existing.num_states
 
     fn __init__(
         out self,
@@ -134,3 +158,63 @@ struct SARSALambdaAgent(TabularAgent):
     fn get_best_action(self, state_idx: Int) -> Int:
         """Return the greedy action for a state."""
         return self.q_table.get_best_action(state_idx)
+
+    # ========================================================================
+    # Static training method
+    # ========================================================================
+
+    @staticmethod
+    fn train[E: DiscreteEnv](
+        mut env: E,
+        num_episodes: Int,
+        max_steps_per_episode: Int = 100,
+        lambda_: Float64 = 0.9,
+        learning_rate: Float64 = 0.1,
+        discount_factor: Float64 = 0.99,
+        epsilon: Float64 = 1.0,
+        epsilon_decay: Float64 = 0.995,
+        epsilon_min: Float64 = 0.01,
+        verbose: Bool = False,
+        print_every: Int = 100,
+        environment_name: String = "Environment",
+    ) -> Tuple[SARSALambdaAgent, TrainingMetrics]:
+        """Train a SARSA(λ) agent on the given environment.
+
+        Args:
+            env: The discrete environment to train on.
+            num_episodes: Number of episodes to train.
+            max_steps_per_episode: Maximum steps per episode.
+            lambda_: Eligibility trace decay parameter.
+            learning_rate: Learning rate (alpha).
+            discount_factor: Discount factor (gamma).
+            epsilon: Initial exploration rate.
+            epsilon_decay: Exploration decay rate per episode.
+            epsilon_min: Minimum exploration rate.
+            verbose: Whether to print progress.
+            print_every: Print progress every N episodes (if verbose).
+            environment_name: Name of environment for metrics labeling.
+
+        Returns:
+            Tuple of (trained_agent, training_metrics).
+        """
+        var agent = SARSALambdaAgent(
+            env.num_states(),
+            env.num_actions(),
+            lambda_,
+            learning_rate,
+            discount_factor,
+            epsilon,
+            epsilon_decay,
+            epsilon_min,
+        )
+        var metrics = train_tabular_with_metrics(
+            env,
+            agent,
+            num_episodes,
+            max_steps_per_episode,
+            verbose,
+            print_every,
+            algorithm_name="SARSA(λ)",
+            environment_name=environment_name,
+        )
+        return (agent^, metrics^)

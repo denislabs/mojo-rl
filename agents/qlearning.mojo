@@ -1,16 +1,57 @@
-from core import TabularAgent
+from core import (
+    TabularAgent,
+    DiscreteEnv,
+    evaluate_tabular,
+    train_tabular,
+    train_tabular_with_metrics,
+    TrainingMetrics,
+)
 from random import random_si64, random_float64
 
 
 @fieldwise_init
-struct QTable:
+struct QTable(Copyable, ImplicitlyCopyable, Movable):
     """Q-table for tabular Q-learning."""
 
     var data: List[List[Float64]]
     var num_states: Int
     var num_actions: Int
 
-    fn __init__(out self, num_states: Int, num_actions: Int, initial_value: Float64 = 0.0):
+    fn copy(self) -> Self:
+        """Explicit copy method."""
+        var new_data = List[List[Float64]]()
+        for i in range(self.num_states):
+            var row = List[Float64]()
+            for j in range(self.num_actions):
+                row.append(self.data[i][j])
+            new_data.append(row^)
+        return Self(
+            data=new_data^,
+            num_states=self.num_states,
+            num_actions=self.num_actions,
+        )
+
+    fn __copyinit__(out self, existing: Self):
+        self.num_states = existing.num_states
+        self.num_actions = existing.num_actions
+        self.data = List[List[Float64]]()
+        for i in range(existing.num_states):
+            var row = List[Float64]()
+            for j in range(existing.num_actions):
+                row.append(existing.data[i][j])
+            self.data.append(row^)
+
+    fn __moveinit__(out self, deinit existing: Self):
+        self.data = existing.data^
+        self.num_states = existing.num_states
+        self.num_actions = existing.num_actions
+
+    fn __init__(
+        out self,
+        num_states: Int,
+        num_actions: Int,
+        initial_value: Float64 = 0.0,
+    ):
         self.num_states = num_states
         self.num_actions = num_actions
         self.data = List[List[Float64]]()
@@ -43,7 +84,7 @@ struct QTable:
         return best_action
 
 
-struct QLearningAgent(TabularAgent):
+struct QLearningAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
     """Tabular Q-Learning agent with epsilon-greedy exploration."""
 
     var q_table: QTable
@@ -53,6 +94,24 @@ struct QLearningAgent(TabularAgent):
     var epsilon_decay: Float64
     var epsilon_min: Float64
     var num_actions: Int
+
+    fn __copyinit__(out self, existing: Self):
+        self.q_table = existing.q_table
+        self.learning_rate = existing.learning_rate
+        self.discount_factor = existing.discount_factor
+        self.epsilon = existing.epsilon
+        self.epsilon_decay = existing.epsilon_decay
+        self.epsilon_min = existing.epsilon_min
+        self.num_actions = existing.num_actions
+
+    fn __moveinit__(out self, deinit existing: Self):
+        self.q_table = existing.q_table^
+        self.learning_rate = existing.learning_rate
+        self.discount_factor = existing.discount_factor
+        self.epsilon = existing.epsilon
+        self.epsilon_decay = existing.epsilon_decay
+        self.epsilon_min = existing.epsilon_min
+        self.num_actions = existing.num_actions
 
     fn __init__(
         out self,
@@ -95,7 +154,9 @@ struct QLearningAgent(TabularAgent):
         if done:
             target = reward
         else:
-            target = reward + self.discount_factor * self.q_table.get_max_value(next_state_idx)
+            target = reward + self.discount_factor * self.q_table.get_max_value(
+                next_state_idx
+            )
         var new_q = current_q + self.learning_rate * (target - current_q)
         self.q_table.set(state_idx, action, new_q)
 
@@ -107,3 +168,59 @@ struct QLearningAgent(TabularAgent):
 
     fn get_best_action(self, state_idx: Int) -> Int:
         return self.q_table.get_best_action(state_idx)
+
+    fn train[
+        E: DiscreteEnv
+    ](
+        mut self,
+        mut env: E,
+        num_episodes: Int,
+        max_steps_per_episode: Int = 100,
+        verbose: Bool = False,
+        print_every: Int = 100,
+        environment_name: String = "Environment",
+    ) -> TrainingMetrics:
+        """Train a Q-Learning agent on the given environment.
+
+        This static method creates an agent, trains it, and returns both
+        the trained agent and training metrics.
+
+        Args:
+            env: The discrete environment to train on.
+            num_episodes: Number of episodes to train.
+            max_steps_per_episode: Maximum steps per episode.
+            verbose: Whether to print progress.
+            print_every: Print progress every N episodes (if verbose).
+            environment_name: Name of environment for metrics labeling.
+
+        Returns:
+            training_metrics: TrainingMetrics object.
+            Use metrics.get_rewards() for episode rewards list.
+
+        Example:
+            var metrics = agent.train(env, num_episodes=1000)
+            var rewards = metrics.get_rewards()
+            metrics.print_summary().
+        """
+
+        var metrics = train_tabular_with_metrics(
+            env,
+            self,
+            num_episodes,
+            max_steps_per_episode,
+            verbose,
+            print_every,
+            algorithm_name="Q-Learning",
+            environment_name=environment_name,
+        )
+        return metrics^
+
+    fn evaluate[
+        E: DiscreteEnv
+    ](
+        self,
+        mut env: E,
+        num_episodes: Int = 10,
+        render: Bool = False,
+    ) -> Float64:
+        return evaluate_tabular(env, self, num_episodes, render)

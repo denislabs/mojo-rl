@@ -78,6 +78,14 @@ struct GridWorld(DiscreteEnv):
         """Create a GridAction from an index."""
         return GridAction(direction=action_idx)
 
+    fn num_states(self) -> Int:
+        """Return total number of states (width * height)."""
+        return self.width * self.height
+
+    fn num_actions(self) -> Int:
+        """Return number of actions (4 directions)."""
+        return 4
+
     fn step(mut self, action: GridAction) -> Tuple[GridState, Float64, Bool]:
         """Take an action and return (next_state, reward, done)."""
         var new_x = self.state.x

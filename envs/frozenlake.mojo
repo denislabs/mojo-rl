@@ -102,6 +102,14 @@ struct FrozenLake(DiscreteEnv):
         """Create a FrozenAction from an index."""
         return FrozenAction(direction=action_idx)
 
+    fn num_states(self) -> Int:
+        """Return total number of states (size * size)."""
+        return self.size * self.size
+
+    fn num_actions(self) -> Int:
+        """Return number of actions (4 directions)."""
+        return 4
+
     fn _is_hole(self, position: Int) -> Bool:
         """Check if position is a hole."""
         for i in range(len(self.holes)):

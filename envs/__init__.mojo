@@ -2,7 +2,7 @@ from .gridworld import GridWorld, GridState, GridAction
 from .frozenlake import FrozenLake, FrozenState, FrozenAction
 from .cliffwalking import CliffWalking, CliffState, CliffAction
 from .taxi import Taxi, TaxiState, TaxiAction
-from .cartpole_native import CartPoleNative, discretize_obs_native
+from .cartpole_native import CartPoleNative, CartPoleState, CartPoleAction
 from .mountain_car_native import (
     MountainCarNative,
     discretize_obs_mountain_car,

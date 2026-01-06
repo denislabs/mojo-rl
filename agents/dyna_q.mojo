@@ -1,9 +1,14 @@
 from random import random_si64, random_float64
 from .qlearning import QTable
-from core import TabularAgent
+from core import (
+    TabularAgent,
+    DiscreteEnv,
+    train_tabular_with_metrics,
+    TrainingMetrics,
+)
 
 
-struct DynaQAgent(TabularAgent):
+struct DynaQAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
     """Dyna-Q agent: model-based RL with planning.
 
     Dyna-Q combines:
@@ -39,6 +44,36 @@ struct DynaQAgent(TabularAgent):
     # Track visited (state, action) pairs as a list of pair indices
     var visited_pairs: List[Int]
     var num_visited: Int
+
+    fn __copyinit__(out self, existing: Self):
+        self.q_table = existing.q_table
+        self.learning_rate = existing.learning_rate
+        self.discount_factor = existing.discount_factor
+        self.epsilon = existing.epsilon
+        self.epsilon_decay = existing.epsilon_decay
+        self.epsilon_min = existing.epsilon_min
+        self.num_actions = existing.num_actions
+        self.num_states = existing.num_states
+        self.n_planning = existing.n_planning
+        self.model_next_state = existing.model_next_state.copy()
+        self.model_reward = existing.model_reward.copy()
+        self.visited_pairs = existing.visited_pairs.copy()
+        self.num_visited = existing.num_visited
+
+    fn __moveinit__(out self, deinit existing: Self):
+        self.q_table = existing.q_table^
+        self.learning_rate = existing.learning_rate
+        self.discount_factor = existing.discount_factor
+        self.epsilon = existing.epsilon
+        self.epsilon_decay = existing.epsilon_decay
+        self.epsilon_min = existing.epsilon_min
+        self.num_actions = existing.num_actions
+        self.num_states = existing.num_states
+        self.n_planning = existing.n_planning
+        self.model_next_state = existing.model_next_state^
+        self.model_reward = existing.model_reward^
+        self.visited_pairs = existing.visited_pairs^
+        self.num_visited = existing.num_visited
 
     fn __init__(
         out self,
@@ -117,7 +152,9 @@ struct DynaQAgent(TabularAgent):
         if done:
             target = reward
         else:
-            target = reward + self.discount_factor * self.q_table.get_max_value(next_state_idx)
+            target = reward + self.discount_factor * self.q_table.get_max_value(
+                next_state_idx
+            )
         var new_q = current_q + self.learning_rate * (target - current_q)
         self.q_table.set(state_idx, action, new_q)
 
@@ -160,3 +197,65 @@ struct DynaQAgent(TabularAgent):
     fn get_best_action(self, state_idx: Int) -> Int:
         """Return the greedy action for a state."""
         return self.q_table.get_best_action(state_idx)
+
+    # ========================================================================
+    # Static training method
+    # ========================================================================
+
+    @staticmethod
+    fn train[
+        E: DiscreteEnv
+    ](
+        mut env: E,
+        num_episodes: Int,
+        max_steps_per_episode: Int = 100,
+        n_planning: Int = 5,
+        learning_rate: Float64 = 0.1,
+        discount_factor: Float64 = 0.99,
+        epsilon: Float64 = 1.0,
+        epsilon_decay: Float64 = 0.995,
+        epsilon_min: Float64 = 0.01,
+        verbose: Bool = False,
+        print_every: Int = 100,
+        environment_name: String = "Environment",
+    ) -> Tuple[DynaQAgent, TrainingMetrics]:
+        """Train a Dyna-Q agent on the given environment.
+
+        Args:
+            env: The discrete environment to train on.
+            num_episodes: Number of episodes to train.
+            max_steps_per_episode: Maximum steps per episode.
+            n_planning: Number of planning steps per real step.
+            learning_rate: Learning rate (alpha).
+            discount_factor: Discount factor (gamma).
+            epsilon: Initial exploration rate.
+            epsilon_decay: Exploration decay rate per episode.
+            epsilon_min: Minimum exploration rate.
+            verbose: Whether to print progress.
+            print_every: Print progress every N episodes (if verbose).
+            environment_name: Name of environment for metrics labeling.
+
+        Returns:
+            Tuple of (trained_agent, training_metrics).
+        """
+        var agent = DynaQAgent(
+            env.num_states(),
+            env.num_actions(),
+            n_planning,
+            learning_rate,
+            discount_factor,
+            epsilon,
+            epsilon_decay,
+            epsilon_min,
+        )
+        var metrics = train_tabular_with_metrics(
+            env,
+            agent,
+            num_episodes,
+            max_steps_per_episode,
+            verbose,
+            print_every,
+            algorithm_name="Dyna-Q",
+            environment_name=environment_name,
+        )
+        return (agent^, metrics^)

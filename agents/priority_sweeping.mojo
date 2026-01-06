@@ -1,9 +1,9 @@
 from random import random_si64, random_float64
 from .qlearning import QTable
-from core import TabularAgent
+from core import TabularAgent, DiscreteEnv, train_tabular_with_metrics, TrainingMetrics
 
 
-struct PrioritySweepingAgent(TabularAgent):
+struct PrioritySweepingAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable):
     """Priority Sweeping agent: efficient model-based planning.
 
     Like Dyna-Q but prioritizes updates by their expected impact:
@@ -51,6 +51,42 @@ struct PrioritySweepingAgent(TabularAgent):
     # Predecessor tracking: for each state, track (prev_state, action) pairs that lead to it
     # predecessors[state] contains list of (prev_state * num_actions + action)
     var predecessors: List[List[Int]]
+
+    fn __copyinit__(out self, existing: Self):
+        self.q_table = existing.q_table
+        self.learning_rate = existing.learning_rate
+        self.discount_factor = existing.discount_factor
+        self.epsilon = existing.epsilon
+        self.epsilon_decay = existing.epsilon_decay
+        self.epsilon_min = existing.epsilon_min
+        self.num_actions = existing.num_actions
+        self.num_states = existing.num_states
+        self.n_planning = existing.n_planning
+        self.priority_threshold = existing.priority_threshold
+        self.model_next_state = existing.model_next_state
+        self.model_reward = existing.model_reward
+        self.pq_priorities = existing.pq_priorities
+        self.pq_pairs = existing.pq_pairs
+        self.pq_size = existing.pq_size
+        self.predecessors = existing.predecessors
+
+    fn __moveinit__(out self, deinit existing: Self):
+        self.q_table = existing.q_table^
+        self.learning_rate = existing.learning_rate
+        self.discount_factor = existing.discount_factor
+        self.epsilon = existing.epsilon
+        self.epsilon_decay = existing.epsilon_decay
+        self.epsilon_min = existing.epsilon_min
+        self.num_actions = existing.num_actions
+        self.num_states = existing.num_states
+        self.n_planning = existing.n_planning
+        self.priority_threshold = existing.priority_threshold
+        self.model_next_state = existing.model_next_state^
+        self.model_reward = existing.model_reward^
+        self.pq_priorities = existing.pq_priorities^
+        self.pq_pairs = existing.pq_pairs^
+        self.pq_size = existing.pq_size
+        self.predecessors = existing.predecessors^
 
     fn __init__(
         out self,
@@ -245,3 +281,66 @@ struct PrioritySweepingAgent(TabularAgent):
 
     fn get_best_action(self, state_idx: Int) -> Int:
         return self.q_table.get_best_action(state_idx)
+
+    # ========================================================================
+    # Static training method
+    # ========================================================================
+
+    @staticmethod
+    fn train[E: DiscreteEnv](
+        mut env: E,
+        num_episodes: Int,
+        max_steps_per_episode: Int = 100,
+        n_planning: Int = 5,
+        priority_threshold: Float64 = 0.0001,
+        learning_rate: Float64 = 0.1,
+        discount_factor: Float64 = 0.99,
+        epsilon: Float64 = 1.0,
+        epsilon_decay: Float64 = 0.995,
+        epsilon_min: Float64 = 0.01,
+        verbose: Bool = False,
+        print_every: Int = 100,
+        environment_name: String = "Environment",
+    ) -> Tuple[PrioritySweepingAgent, TrainingMetrics]:
+        """Train a Priority Sweeping agent on the given environment.
+
+        Args:
+            env: The discrete environment to train on.
+            num_episodes: Number of episodes to train.
+            max_steps_per_episode: Maximum steps per episode.
+            n_planning: Number of planning steps per real step.
+            priority_threshold: Minimum TD error to add to queue.
+            learning_rate: Learning rate (alpha).
+            discount_factor: Discount factor (gamma).
+            epsilon: Initial exploration rate.
+            epsilon_decay: Exploration decay rate per episode.
+            epsilon_min: Minimum exploration rate.
+            verbose: Whether to print progress.
+            print_every: Print progress every N episodes (if verbose).
+            environment_name: Name of environment for metrics labeling.
+
+        Returns:
+            Tuple of (trained_agent, training_metrics).
+        """
+        var agent = PrioritySweepingAgent(
+            env.num_states(),
+            env.num_actions(),
+            n_planning,
+            priority_threshold,
+            learning_rate,
+            discount_factor,
+            epsilon,
+            epsilon_decay,
+            epsilon_min,
+        )
+        var metrics = train_tabular_with_metrics(
+            env,
+            agent,
+            num_episodes,
+            max_steps_per_episode,
+            verbose,
+            print_every,
+            algorithm_name="Priority Sweeping",
+            environment_name=environment_name,
+        )
+        return (agent^, metrics^)

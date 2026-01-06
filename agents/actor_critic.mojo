@@ -49,7 +49,7 @@ from random import random_float64
 from core.tile_coding import TileCoding
 
 
-struct ActorCriticAgent:
+struct ActorCriticAgent(Copyable, Movable, ImplicitlyCopyable):
     """One-step Actor-Critic with tile coding function approximation.
 
     Performs online TD(0) updates - no need to wait for episode completion.
@@ -113,6 +113,35 @@ struct ActorCriticAgent:
         self.critic_weights = List[Float64]()
         for _ in range(self.num_tiles):
             self.critic_weights.append(init_value)
+
+    fn __copyinit__(out self, existing: Self):
+        self.num_actions = existing.num_actions
+        self.num_tiles = existing.num_tiles
+        self.num_tilings = existing.num_tilings
+        self.actor_lr = existing.actor_lr
+        self.critic_lr = existing.critic_lr
+        self.discount_factor = existing.discount_factor
+        self.entropy_coef = existing.entropy_coef
+        self.theta = List[List[Float64]]()
+        for a in range(existing.num_actions):
+            var action_params = List[Float64]()
+            for t in range(existing.num_tiles):
+                action_params.append(existing.theta[a][t])
+            self.theta.append(action_params^)
+        self.critic_weights = List[Float64]()
+        for t in range(existing.num_tiles):
+            self.critic_weights.append(existing.critic_weights[t])
+
+    fn __moveinit__(out self, deinit existing: Self):
+        self.num_actions = existing.num_actions
+        self.num_tiles = existing.num_tiles
+        self.num_tilings = existing.num_tilings
+        self.actor_lr = existing.actor_lr
+        self.critic_lr = existing.critic_lr
+        self.discount_factor = existing.discount_factor
+        self.entropy_coef = existing.entropy_coef
+        self.theta = existing.theta^
+        self.critic_weights = existing.critic_weights^
 
     fn _get_action_preferences(self, tiles: List[Int]) -> List[Float64]:
         """Compute action preferences (logits).
@@ -286,7 +315,7 @@ struct ActorCriticAgent:
         return entropy
 
 
-struct ActorCriticLambdaAgent:
+struct ActorCriticLambdaAgent(Copyable, Movable, ImplicitlyCopyable):
     """Actor-Critic with eligibility traces for both actor and critic.
 
     Uses eligibility traces for more efficient credit assignment:
@@ -363,6 +392,45 @@ struct ActorCriticLambdaAgent:
         for _ in range(self.num_tiles):
             self.critic_weights.append(init_value)
             self.critic_traces.append(0.0)
+
+    fn __copyinit__(out self, existing: Self):
+        self.num_actions = existing.num_actions
+        self.num_tiles = existing.num_tiles
+        self.num_tilings = existing.num_tilings
+        self.actor_lr = existing.actor_lr
+        self.critic_lr = existing.critic_lr
+        self.discount_factor = existing.discount_factor
+        self.lambda_ = existing.lambda_
+        self.entropy_coef = existing.entropy_coef
+        self.theta = List[List[Float64]]()
+        self.actor_traces = List[List[Float64]]()
+        for a in range(existing.num_actions):
+            var action_params = List[Float64]()
+            var action_traces = List[Float64]()
+            for t in range(existing.num_tiles):
+                action_params.append(existing.theta[a][t])
+                action_traces.append(0.0)
+            self.theta.append(action_params^)
+            self.actor_traces.append(action_traces^)
+        self.critic_weights = List[Float64]()
+        self.critic_traces = List[Float64]()
+        for t in range(existing.num_tiles):
+            self.critic_weights.append(existing.critic_weights[t])
+            self.critic_traces.append(0.0)
+
+    fn __moveinit__(out self, deinit existing: Self):
+        self.num_actions = existing.num_actions
+        self.num_tiles = existing.num_tiles
+        self.num_tilings = existing.num_tilings
+        self.actor_lr = existing.actor_lr
+        self.critic_lr = existing.critic_lr
+        self.discount_factor = existing.discount_factor
+        self.lambda_ = existing.lambda_
+        self.entropy_coef = existing.entropy_coef
+        self.theta = existing.theta^
+        self.actor_traces = existing.actor_traces^
+        self.critic_weights = existing.critic_weights^
+        self.critic_traces = existing.critic_traces^
 
     fn _get_action_preferences(self, tiles: List[Int]) -> List[Float64]:
         """Compute action preferences."""
@@ -531,7 +599,7 @@ struct ActorCriticLambdaAgent:
         return entropy
 
 
-struct A2CAgent:
+struct A2CAgent(Copyable, Movable, ImplicitlyCopyable):
     """Advantage Actor-Critic (A2C) with n-step returns.
 
     Accumulates transitions over n steps before updating, using
@@ -609,6 +677,43 @@ struct A2CAgent:
         self.buffer_tiles = List[List[Int]]()
         self.buffer_actions = List[Int]()
         self.buffer_rewards = List[Float64]()
+
+    fn __copyinit__(out self, existing: Self):
+        self.num_actions = existing.num_actions
+        self.num_tiles = existing.num_tiles
+        self.num_tilings = existing.num_tilings
+        self.actor_lr = existing.actor_lr
+        self.critic_lr = existing.critic_lr
+        self.discount_factor = existing.discount_factor
+        self.n_steps = existing.n_steps
+        self.entropy_coef = existing.entropy_coef
+        self.theta = List[List[Float64]]()
+        for a in range(existing.num_actions):
+            var action_params = List[Float64]()
+            for t in range(existing.num_tiles):
+                action_params.append(existing.theta[a][t])
+            self.theta.append(action_params^)
+        self.critic_weights = List[Float64]()
+        for t in range(existing.num_tiles):
+            self.critic_weights.append(existing.critic_weights[t])
+        self.buffer_tiles = List[List[Int]]()
+        self.buffer_actions = List[Int]()
+        self.buffer_rewards = List[Float64]()
+
+    fn __moveinit__(out self, deinit existing: Self):
+        self.num_actions = existing.num_actions
+        self.num_tiles = existing.num_tiles
+        self.num_tilings = existing.num_tilings
+        self.actor_lr = existing.actor_lr
+        self.critic_lr = existing.critic_lr
+        self.discount_factor = existing.discount_factor
+        self.n_steps = existing.n_steps
+        self.entropy_coef = existing.entropy_coef
+        self.theta = existing.theta^
+        self.critic_weights = existing.critic_weights^
+        self.buffer_tiles = existing.buffer_tiles^
+        self.buffer_actions = existing.buffer_actions^
+        self.buffer_rewards = existing.buffer_rewards^
 
     fn _get_action_preferences(self, tiles: List[Int]) -> List[Float64]:
         """Compute action preferences."""

@@ -47,7 +47,7 @@ from random import random_float64
 from core.tile_coding import TileCoding
 
 
-struct REINFORCEAgent:
+struct REINFORCEAgent(Copyable, Movable, ImplicitlyCopyable):
     """REINFORCE agent with tile coding function approximation.
 
     Uses softmax policy over tile-coded features.
@@ -119,6 +119,41 @@ struct REINFORCEAgent:
         self.episode_tiles = List[List[Int]]()
         self.episode_actions = List[Int]()
         self.episode_rewards = List[Float64]()
+
+    fn __copyinit__(out self, existing: Self):
+        self.num_actions = existing.num_actions
+        self.num_tiles = existing.num_tiles
+        self.num_tilings = existing.num_tilings
+        self.learning_rate = existing.learning_rate
+        self.discount_factor = existing.discount_factor
+        self.use_baseline = existing.use_baseline
+        self.baseline_lr = existing.baseline_lr
+        self.theta = List[List[Float64]]()
+        for a in range(existing.num_actions):
+            var action_params = List[Float64]()
+            for t in range(existing.num_tiles):
+                action_params.append(existing.theta[a][t])
+            self.theta.append(action_params^)
+        self.baseline_weights = List[Float64]()
+        for t in range(existing.num_tiles):
+            self.baseline_weights.append(existing.baseline_weights[t])
+        self.episode_tiles = List[List[Int]]()
+        self.episode_actions = List[Int]()
+        self.episode_rewards = List[Float64]()
+
+    fn __moveinit__(out self, deinit existing: Self):
+        self.num_actions = existing.num_actions
+        self.num_tiles = existing.num_tiles
+        self.num_tilings = existing.num_tilings
+        self.learning_rate = existing.learning_rate
+        self.discount_factor = existing.discount_factor
+        self.use_baseline = existing.use_baseline
+        self.baseline_lr = existing.baseline_lr
+        self.theta = existing.theta^
+        self.baseline_weights = existing.baseline_weights^
+        self.episode_tiles = existing.episode_tiles^
+        self.episode_actions = existing.episode_actions^
+        self.episode_rewards = existing.episode_rewards^
 
     fn _get_action_preferences(self, tiles: List[Int]) -> List[Float64]:
         """Compute action preferences (logits) for given state.
@@ -373,8 +408,7 @@ struct REINFORCEAgent:
                 entropy -= probs[a] * log(probs[a])
         return entropy
 
-
-struct REINFORCEWithEntropyAgent:
+struct REINFORCEWithEntropyAgent(Copyable, Movable, ImplicitlyCopyable):
     """REINFORCE with entropy regularization for better exploration.
 
     Adds entropy bonus to encourage exploration:
@@ -445,6 +479,43 @@ struct REINFORCEWithEntropyAgent:
         self.episode_tiles = List[List[Int]]()
         self.episode_actions = List[Int]()
         self.episode_rewards = List[Float64]()
+
+    fn __copyinit__(out self, existing: Self):
+        self.num_actions = existing.num_actions
+        self.num_tiles = existing.num_tiles
+        self.num_tilings = existing.num_tilings
+        self.learning_rate = existing.learning_rate
+        self.discount_factor = existing.discount_factor
+        self.entropy_coef = existing.entropy_coef
+        self.use_baseline = existing.use_baseline
+        self.baseline_lr = existing.baseline_lr
+        self.theta = List[List[Float64]]()
+        for a in range(existing.num_actions):
+            var action_params = List[Float64]()
+            for t in range(existing.num_tiles):
+                action_params.append(existing.theta[a][t])
+            self.theta.append(action_params^)
+        self.baseline_weights = List[Float64]()
+        for t in range(existing.num_tiles):
+            self.baseline_weights.append(existing.baseline_weights[t])
+        self.episode_tiles = List[List[Int]]()
+        self.episode_actions = List[Int]()
+        self.episode_rewards = List[Float64]()
+
+    fn __moveinit__(out self, deinit existing: Self):
+        self.num_actions = existing.num_actions
+        self.num_tiles = existing.num_tiles
+        self.num_tilings = existing.num_tilings
+        self.learning_rate = existing.learning_rate
+        self.discount_factor = existing.discount_factor
+        self.entropy_coef = existing.entropy_coef
+        self.use_baseline = existing.use_baseline
+        self.baseline_lr = existing.baseline_lr
+        self.theta = existing.theta^
+        self.baseline_weights = existing.baseline_weights^
+        self.episode_tiles = existing.episode_tiles^
+        self.episode_actions = existing.episode_actions^
+        self.episode_rewards = existing.episode_rewards^
 
     fn _get_action_preferences(self, tiles: List[Int]) -> List[Float64]:
         """Compute action preferences."""

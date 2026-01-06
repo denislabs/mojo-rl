@@ -14,11 +14,58 @@ Requires SDL2 and SDL2_ttf: brew install sdl2 sdl2_ttf
 
 from math import cos, sin
 from random import random_float64
+from core import State, Action, DiscreteEnv
 from core.sdl2 import SDL_Color, SDL_Point
 from .native_renderer_base import NativeRendererBase
 
 
-struct CartPoleNative:
+# ============================================================================
+# CartPole State and Action types for trait conformance
+# ============================================================================
+
+
+@fieldwise_init
+struct CartPoleState(State, Copyable, Movable, ImplicitlyCopyable):
+    """State for CartPole: discretized state index.
+
+    The continuous observation [x, x_dot, theta, theta_dot] is discretized
+    into bins to create a single integer state index for tabular methods.
+    """
+
+    var index: Int
+
+    fn __copyinit__(out self, existing: Self):
+        self.index = existing.index
+
+    fn __moveinit__(out self, deinit existing: Self):
+        self.index = existing.index
+
+    fn __eq__(self, other: Self) -> Bool:
+        return self.index == other.index
+
+
+@fieldwise_init
+struct CartPoleAction(Action, Copyable, Movable, ImplicitlyCopyable):
+    """Action for CartPole: 0 (push left), 1 (push right)."""
+
+    var direction: Int
+
+    fn __copyinit__(out self, existing: Self):
+        self.direction = existing.direction
+
+    fn __moveinit__(out self, deinit existing: Self):
+        self.direction = existing.direction
+
+    @staticmethod
+    fn left() -> Self:
+        return Self(direction=0)
+
+    @staticmethod
+    fn right() -> Self:
+        return Self(direction=1)
+
+
+struct CartPoleNative(DiscreteEnv):
     """Native Mojo CartPole environment with integrated SDL2 rendering.
 
     State: [cart_position, cart_velocity, pole_angle, pole_angular_velocity]
@@ -28,7 +75,13 @@ struct CartPoleNative:
     - Pole angle > ±12° (±0.2095 rad)
     - Cart position > ±2.4
     - Episode length > 500 steps
+
+    Implements DiscreteEnv trait for use with generic training functions.
     """
+
+    # Type aliases for trait conformance
+    comptime StateType = CartPoleState
+    comptime ActionType = CartPoleAction
 
     # Physical constants (same as Gymnasium)
     var gravity: Float64
@@ -74,7 +127,10 @@ struct CartPoleNative:
     var pole_len_pixels: Int
     var axle_radius: Int
 
-    fn __init__(out self) raises:
+    # Discretization settings (for DiscreteEnv)
+    var num_bins: Int
+
+    fn __init__(out self, num_bins: Int = 10) raises:
         """Initialize CartPole with default physics parameters."""
         # Physics constants from Gymnasium
         self.gravity = 9.8
@@ -125,10 +181,17 @@ struct CartPoleNative:
         self.pole_len_pixels = Int(self.scale * 0.5 * 2)  # length * 2 (full pole)
         self.axle_radius = 5
 
-    fn reset(mut self) -> SIMD[DType.float64, 4]:
+        # Discretization settings
+        self.num_bins = num_bins
+
+    # ========================================================================
+    # DiscreteEnv trait methods
+    # ========================================================================
+
+    fn reset(mut self) -> CartPoleState:
         """Reset environment to random initial state.
 
-        Returns observation: [x, x_dot, theta, theta_dot]
+        Returns CartPoleState with discretized state index.
         """
         # Random initial state in [-0.05, 0.05] for each component
         self.x = (random_float64() - 0.5) * 0.1
@@ -140,18 +203,18 @@ struct CartPoleNative:
         self.done = False
         self.total_reward = 0.0
 
-        return self._get_obs()
+        return CartPoleState(index=self._discretize_obs())
 
-    fn step(mut self, action: Int) -> Tuple[SIMD[DType.float64, 4], Float64, Bool]:
-        """Take action and return (observation, reward, done).
+    fn step(mut self, action: CartPoleAction) -> Tuple[CartPoleState, Float64, Bool]:
+        """Take action and return (state, reward, done).
 
         Args:
-            action: 0 for left force, 1 for right force
+            action: CartPoleAction (direction 0=left, 1=right)
 
         Physics uses Euler integration (same as Gymnasium).
         """
         # Determine force direction
-        var force = self.force_mag if action == 1 else -self.force_mag
+        var force = self.force_mag if action.direction == 1 else -self.force_mag
 
         # Physics calculations
         var costheta = cos(self.theta)
@@ -195,10 +258,26 @@ struct CartPoleNative:
         var reward: Float64 = 1.0 if not terminated else 0.0
         self.total_reward += reward
 
-        return (self._get_obs(), reward, self.done)
+        return (CartPoleState(index=self._discretize_obs()), reward, self.done)
+
+    fn get_state(self) -> CartPoleState:
+        """Return current discretized state."""
+        return CartPoleState(index=self._discretize_obs())
+
+    fn state_to_index(self, state: CartPoleState) -> Int:
+        """Convert a CartPoleState to an index for tabular methods."""
+        return state.index
+
+    fn action_from_index(self, action_idx: Int) -> CartPoleAction:
+        """Create a CartPoleAction from an index."""
+        return CartPoleAction(direction=action_idx)
+
+    # ========================================================================
+    # Internal helpers
+    # ========================================================================
 
     fn _get_obs(self) -> SIMD[DType.float64, 4]:
-        """Return current observation."""
+        """Return current continuous observation."""
         var obs = SIMD[DType.float64, 4]()
         obs[0] = self.x
         obs[1] = self.x_dot
@@ -206,9 +285,66 @@ struct CartPoleNative:
         obs[3] = self.theta_dot
         return obs
 
-    fn get_state(self) -> SIMD[DType.float64, 4]:
-        """Return current state (alias for _get_obs)."""
+    fn _discretize_obs(self) -> Int:
+        """Discretize current continuous observation into a single state index."""
+        var cart_pos_low: Float64 = -2.4
+        var cart_pos_high: Float64 = 2.4
+        var cart_vel_low: Float64 = -3.0
+        var cart_vel_high: Float64 = 3.0
+        var pole_angle_low: Float64 = -0.21
+        var pole_angle_high: Float64 = 0.21
+        var pole_vel_low: Float64 = -3.0
+        var pole_vel_high: Float64 = 3.0
+
+        fn bin_value(value: Float64, low: Float64, high: Float64, bins: Int) -> Int:
+            var normalized = (value - low) / (high - low)
+            if normalized < 0.0:
+                normalized = 0.0
+            elif normalized > 1.0:
+                normalized = 1.0
+            return Int(normalized * Float64(bins - 1))
+
+        var b0 = bin_value(self.x, cart_pos_low, cart_pos_high, self.num_bins)
+        var b1 = bin_value(self.x_dot, cart_vel_low, cart_vel_high, self.num_bins)
+        var b2 = bin_value(self.theta, pole_angle_low, pole_angle_high, self.num_bins)
+        var b3 = bin_value(self.theta_dot, pole_vel_low, pole_vel_high, self.num_bins)
+
+        return ((b0 * self.num_bins + b1) * self.num_bins + b2) * self.num_bins + b3
+
+    fn get_obs(self) -> SIMD[DType.float64, 4]:
+        """Return current continuous observation (for rendering/debugging)."""
         return self._get_obs()
+
+    # ========================================================================
+    # Raw observation API (for function approximation methods)
+    # ========================================================================
+
+    fn reset_obs(mut self) -> SIMD[DType.float64, 4]:
+        """Reset environment and return raw continuous observation.
+
+        Use this for function approximation methods (tile coding, linear FA)
+        that need the continuous observation vector.
+
+        Returns:
+            Continuous observation [x, x_dot, theta, theta_dot].
+        """
+        _ = self.reset()  # Reset internal state
+        return self._get_obs()
+
+    fn step_raw(mut self, action: Int) -> Tuple[SIMD[DType.float64, 4], Float64, Bool]:
+        """Take action and return raw continuous observation.
+
+        Use this for function approximation methods that need the continuous
+        observation vector rather than discretized state.
+
+        Args:
+            action: 0 for left force, 1 for right force.
+
+        Returns:
+            Tuple of (observation, reward, done).
+        """
+        var result = self.step(CartPoleAction(direction=action))
+        return (self._get_obs(), result[1], result[2])
 
     fn render(mut self):
         """Render the current state using SDL2.
@@ -314,32 +450,50 @@ struct CartPoleNative:
         """Return observation dimension (4)."""
         return 4
 
+    fn num_states(self) -> Int:
+        """Return total number of discrete states."""
+        return self.num_bins * self.num_bins * self.num_bins * self.num_bins
 
-fn discretize_obs_native(obs: SIMD[DType.float64, 4], num_bins: Int = 10) -> Int:
-    """Discretize continuous observation into a single state index.
+    # ========================================================================
+    # Static methods for discretization
+    # ========================================================================
 
-    Uses same binning as gymnasium_cartpole for fair comparison.
-    """
-    var cart_pos_low: Float64 = -2.4
-    var cart_pos_high: Float64 = 2.4
-    var cart_vel_low: Float64 = -3.0
-    var cart_vel_high: Float64 = 3.0
-    var pole_angle_low: Float64 = -0.21
-    var pole_angle_high: Float64 = 0.21
-    var pole_vel_low: Float64 = -3.0
-    var pole_vel_high: Float64 = 3.0
+    @staticmethod
+    fn get_num_states(num_bins: Int = 10) -> Int:
+        """Get the number of discrete states for CartPole with given bins."""
+        return num_bins * num_bins * num_bins * num_bins
 
-    fn bin_value(value: Float64, low: Float64, high: Float64, bins: Int) -> Int:
-        var normalized = (value - low) / (high - low)
-        if normalized < 0.0:
-            normalized = 0.0
-        elif normalized > 1.0:
-            normalized = 1.0
-        return Int(normalized * Float64(bins - 1))
+    @staticmethod
+    fn discretize_obs(obs: SIMD[DType.float64, 4], num_bins: Int = 10) -> Int:
+        """Discretize continuous observation into a single state index.
 
-    var b0 = bin_value(obs[0], cart_pos_low, cart_pos_high, num_bins)
-    var b1 = bin_value(obs[1], cart_vel_low, cart_vel_high, num_bins)
-    var b2 = bin_value(obs[2], pole_angle_low, pole_angle_high, num_bins)
-    var b3 = bin_value(obs[3], pole_vel_low, pole_vel_high, num_bins)
+        Args:
+            obs: Continuous observation [x, x_dot, theta, theta_dot].
+            num_bins: Number of bins per dimension.
 
-    return ((b0 * num_bins + b1) * num_bins + b2) * num_bins + b3
+        Returns:
+            Single integer state index.
+        """
+        var cart_pos_low: Float64 = -2.4
+        var cart_pos_high: Float64 = 2.4
+        var cart_vel_low: Float64 = -3.0
+        var cart_vel_high: Float64 = 3.0
+        var pole_angle_low: Float64 = -0.21
+        var pole_angle_high: Float64 = 0.21
+        var pole_vel_low: Float64 = -3.0
+        var pole_vel_high: Float64 = 3.0
+
+        fn bin_value(value: Float64, low: Float64, high: Float64, bins: Int) -> Int:
+            var normalized = (value - low) / (high - low)
+            if normalized < 0.0:
+                normalized = 0.0
+            elif normalized > 1.0:
+                normalized = 1.0
+            return Int(normalized * Float64(bins - 1))
+
+        var b0 = bin_value(obs[0], cart_pos_low, cart_pos_high, num_bins)
+        var b1 = bin_value(obs[1], cart_vel_low, cart_vel_high, num_bins)
+        var b2 = bin_value(obs[2], pole_angle_low, pole_angle_high, num_bins)
+        var b3 = bin_value(obs[3], pole_vel_low, pole_vel_high, num_bins)
+
+        return ((b0 * num_bins + b1) * num_bins + b2) * num_bins + b3

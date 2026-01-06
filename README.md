@@ -15,18 +15,35 @@ A reinforcement learning framework written in Mojo, featuring trait-based design
 
 ## Quick Start
 
+This project uses **pixi** for dependency management and to ensure the latest Mojo version is used.
+
+### Installing pixi
+
 ```bash
+# macOS/Linux
+curl -fsSL https://pixi.sh/install.sh | bash
+
+# Or with Homebrew
+brew install pixi
+```
+
+### Install dependencies and run
+
+```bash
+# Install all dependencies (Mojo, Python packages, etc.)
+pixi install
+
 # Run the main example (Q-Learning on GridWorld)
-mojo run main.mojo
+pixi run mojo run main.mojo
 
 # Run benchmarks comparing algorithms
-mojo run benchmark.mojo
+pixi run mojo run benchmark.mojo
 
 # Build a binary
-mojo build main.mojo
+pixi run mojo build main.mojo
 
 # Run native renderer demo (requires SDL2)
-mojo run examples/native_renderer_demo.mojo
+pixi run mojo run examples/native_renderer_demo.mojo
 ```
 
 ### SDL2 Requirements (for visualization)
@@ -176,36 +193,28 @@ fn main():
 ### CartPole with SDL2 Visualization
 
 ```mojo
-from envs import CartPoleNative, discretize_obs_native
+from envs import CartPoleNative, CartPoleAction
 from agents import QLearningAgent
+from core import train_tabular
 
 fn main() raises:
-    var env = CartPoleNative()
-    var agent = QLearningAgent(num_states=10000, num_actions=2)
+    var num_bins = 10
+    var env = CartPoleNative(num_bins=num_bins)
+    var agent = QLearningAgent(
+        num_states=CartPoleNative.get_num_states(num_bins),
+        num_actions=2,
+    )
 
-    # Training loop
-    for episode in range(1000):
-        var obs = env.reset()
-        var state = discretize_obs_native(obs, 10)
-
-        for step in range(500):
-            var action = agent.select_action(state)
-            var result = env.step(action)
-            var next_state = discretize_obs_native(result[0], 10)
-            agent.update(state, action, result[1], next_state, result[2])
-            state = next_state
-            if result[2]:
-                break
-        agent.decay_epsilon()
+    # Train using generic training function
+    _ = train_tabular(env, agent, num_episodes=1000, max_steps_per_episode=500)
 
     # Visualize trained agent
-    var obs = env.reset()
+    var state = env.reset()
     for _ in range(500):
-        var state = discretize_obs_native(obs, 10)
-        var action = agent.get_best_action(state)
-        var result = env.step(action)
+        var action_idx = agent.get_best_action(state.index)
+        var result = env.step(CartPoleAction(direction=action_idx))
         env.render()  # Opens SDL2 window
-        obs = result[0]
+        state = result[0]
         if result[2]:
             break
     env.close()

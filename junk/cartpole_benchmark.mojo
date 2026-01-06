@@ -11,7 +11,7 @@ from envs.gymnasium import (
     discretize_cart_pole,
     get_cart_pole_num_states,
 )
-from envs.cartpole_native import CartPoleNative, discretize_obs_native
+from envs import CartPoleNative, CartPoleAction
 from agents.qlearning import QLearningAgent
 from random import seed
 
@@ -99,15 +99,15 @@ fn benchmark_gymnasium(
 
 fn benchmark_native(
     num_episodes: Int, num_bins: Int
-) -> Tuple[Float64, Float64, Int]:
+) raises -> Tuple[Float64, Float64, Int]:
     """Benchmark Native Mojo CartPole.
 
     Returns: (total_time_seconds, avg_eval_reward, total_steps)
     """
-    var num_states = num_bins * num_bins * num_bins * num_bins
+    var num_states = CartPoleNative.get_num_states(num_bins)
     var max_steps = 500
 
-    var env = CartPoleNative()
+    var env = CartPoleNative(num_bins=num_bins)
     var agent = QLearningAgent(
         num_states=num_states,
         num_actions=2,
@@ -123,18 +123,17 @@ fn benchmark_native(
 
     # Training
     for episode in range(num_episodes):
-        var obs = env.reset()
-        var state = discretize_obs_native(obs, num_bins)
+        var state = env.reset()
 
         for _ in range(max_steps):
-            var action = agent.select_action(state)
+            var action_idx = agent.select_action(state.index)
+            var action = CartPoleAction(direction=action_idx)
             var result = env.step(action)
-            var next_obs = result[0]
+            var next_state = result[0]
             var reward = result[1]
             var done = result[2]
 
-            var next_state = discretize_obs_native(next_obs, num_bins)
-            agent.update(state, action, reward, next_state, done)
+            agent.update(state.index, action_idx, reward, next_state.index, done)
 
             state = next_state
             total_steps += 1
@@ -148,23 +147,23 @@ fn benchmark_native(
     var total_time = Float64(end_time - start_time) / 1_000_000_000.0
 
     # Evaluation
-    var eval_env = CartPoleNative()
+    var eval_env = CartPoleNative(num_bins=num_bins)
     var eval_total: Float64 = 0.0
 
     for _ in range(10):
-        var obs = eval_env.reset()
-        var state = discretize_obs_native(obs, num_bins)
+        var state = eval_env.reset()
         var ep_reward: Float64 = 0.0
 
         for _ in range(max_steps):
-            var action = agent.get_best_action(state)
+            var action_idx = agent.get_best_action(state.index)
+            var action = CartPoleAction(direction=action_idx)
             var result = eval_env.step(action)
-            var next_obs = result[0]
+            var next_state = result[0]
             var reward = result[1]
             var done = result[2]
 
             ep_reward += reward
-            state = discretize_obs_native(next_obs, num_bins)
+            state = next_state
 
             if done:
                 break

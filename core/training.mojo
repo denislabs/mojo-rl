@@ -1,24 +1,8 @@
 """Generic training functions for tabular RL agents."""
 
-from .env import Env
-from .state import State
+from .env_traits import DiscreteEnv
 from .tabular_agent import TabularAgent
 from .metrics import TrainingMetrics
-
-
-trait DiscreteEnv(Env):
-    """Environment with discrete states that can be indexed.
-
-    This extends Env with a state_to_index method for tabular methods.
-    """
-
-    fn state_to_index(self, state: Self.StateType) -> Int:
-        """Convert a state to an index for tabular methods."""
-        ...
-
-    fn action_from_index(self, action_idx: Int) -> Self.ActionType:
-        """Create an action from an index."""
-        ...
 
 
 fn train_tabular[

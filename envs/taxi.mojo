@@ -181,6 +181,14 @@ struct Taxi(DiscreteEnv):
         """Create a TaxiAction from an index."""
         return TaxiAction(action=action_idx)
 
+    fn num_states(self) -> Int:
+        """Return total number of states (5 * 5 * 5 * 4 = 500)."""
+        return 500
+
+    fn num_actions(self) -> Int:
+        """Return number of actions (6: south, north, east, west, pickup, dropoff)."""
+        return 6
+
     fn step(mut self, action: TaxiAction) -> Tuple[TaxiState, Float64, Bool]:
         """Take an action and return (next_state, reward, done)."""
         var new_row = self.state.taxi_row

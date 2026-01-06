@@ -94,6 +94,14 @@ struct CliffWalking(DiscreteEnv):
         """Create a CliffAction from an index."""
         return CliffAction(direction=action_idx)
 
+    fn num_states(self) -> Int:
+        """Return total number of states (width * height)."""
+        return self.width * self.height
+
+    fn num_actions(self) -> Int:
+        """Return number of actions (4 directions)."""
+        return 4
+
     fn _is_cliff(self, x: Int, y: Int) -> Bool:
         """Check if position is on the cliff (bottom row, excluding start and goal)."""
         return y == 0 and x > 0 and x < self.width - 1

@@ -8,20 +8,38 @@ mojo-rl is a reinforcement learning framework written in Mojo, featuring trait-b
 
 ## Build and Run Commands
 
+This project uses **pixi** for dependency management and to ensure the latest Mojo version is used. All Mojo commands should be run through pixi:
+
 ```bash
 # Run the main entry point (Q-Learning on GridWorld)
-mojo run main.mojo
+pixi run mojo run main.mojo
 
 # Run benchmarks comparing algorithms
-mojo run benchmark.mojo
+pixi run mojo run benchmark.mojo
 
 # Build a binary
-mojo build main.mojo
+pixi run mojo build main.mojo
 
 # Run native renderer demos (requires SDL2)
-mojo run examples/native_renderer_demo.mojo
-mojo run examples/cartpole_native_demo.mojo
-mojo run examples/mountain_car_tiled.mojo
+pixi run mojo run examples/native_renderer_demo.mojo
+pixi run mojo run examples/cartpole_native_demo.mojo
+pixi run mojo run examples/mountain_car_tiled.mojo
+```
+
+### Installing pixi
+
+If you don't have pixi installed:
+```bash
+# macOS/Linux
+curl -fsSL https://pixi.sh/install.sh | bash
+
+# Or with Homebrew
+brew install pixi
+```
+
+Then install dependencies:
+```bash
+pixi install
 ```
 
 ### SDL2 Requirements (for visualization)
@@ -161,7 +179,7 @@ Environments convert states to 1D indices for tabular storage:
 - FrozenLake: `index = position`
 - CliffWalking: `index = y * width + x`
 - Taxi: `index = ((row * 5 + col) * 5 + passenger_loc) * 4 + destination`
-- CartPoleNative: Uses `discretize_obs_native()` to bin continuous state into 10^4 discrete bins
+- CartPoleNative: Uses `CartPoleNative.discretize_obs()` to bin continuous state into 10^4 discrete bins (or use trait-based API where state is already discretized)
 - MountainCarNative: Uses `discretize_obs_mountain_car()` for 2D state (20^2 = 400 bins default)
 
 ### Epsilon-Greedy Exploration

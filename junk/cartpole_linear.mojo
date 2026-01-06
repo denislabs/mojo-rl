@@ -12,7 +12,7 @@ when the environment's value function can be approximated by the features.
 
 from core.linear_fa import PolynomialFeatures, make_cartpole_poly_features
 from agents.linear_qlearning import LinearQLearningAgent, LinearSARSAAgent
-from envs.cartpole_native import CartPoleNative
+from envs import CartPoleNative
 
 
 fn train_cartpole_linear(
@@ -66,7 +66,7 @@ fn train_cartpole_linear(
     var solved_count = 0
 
     for episode in range(num_episodes):
-        var obs = env.reset()
+        var obs = env.reset_obs()
         var phi = features.get_features_simd4(obs)
         var episode_reward: Float64 = 0.0
 
@@ -75,7 +75,7 @@ fn train_cartpole_linear(
             var action = agent.select_action(phi)
 
             # Take action
-            var result = env.step(action)
+            var result = env.step_raw(action)
             var next_obs = result[0]
             var reward = result[1]
             var done = result[2]

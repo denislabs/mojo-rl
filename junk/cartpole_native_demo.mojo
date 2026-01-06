@@ -1,16 +1,13 @@
 """Native CartPole Demo with integrated SDL2 Rendering.
 
-Trains a Q-Learning agent on the native Mojo CartPole (fast!)
-then visualizes the trained agent using the integrated SDL2 renderer.
+Trains a Q-Learning agent on the native Mojo CartPole using the
+generic train_tabular function, then visualizes the trained agent.
 """
 
-from envs.cartpole_native import CartPoleNative, discretize_obs_native
+from envs import CartPoleNative, CartPoleAction
 from agents.qlearning import QLearningAgent
+from core import train_tabular
 from random import seed
-
-
-fn get_num_states(num_bins: Int) -> Int:
-    return num_bins * num_bins * num_bins * num_bins
 
 
 fn main() raises:
@@ -26,7 +23,7 @@ fn main() raises:
     var num_episodes = 2000  # More episodes for better policy
     var max_steps = 500
 
-    var num_states = get_num_states(num_bins)
+    var num_states = CartPoleNative.get_num_states(num_bins)
     var num_actions = 2
 
     print("Configuration:")
@@ -35,7 +32,7 @@ fn main() raises:
     print()
 
     # Initialize environment and agent
-    var env = CartPoleNative()
+    var env = CartPoleNative(num_bins=num_bins)
     var agent = QLearningAgent(
         num_states=num_states,
         num_actions=num_actions,
@@ -46,39 +43,21 @@ fn main() raises:
         epsilon_min=0.01,
     )
 
-    # Training (no rendering - pure speed!)
+    # Training using generic train_tabular function
     print("Training (pure Mojo, no rendering)...")
+    var rewards = train_tabular(
+        env,
+        agent,
+        num_episodes=num_episodes,
+        max_steps_per_episode=max_steps,
+        verbose=True,
+    )
 
+    # Find best reward
     var best_reward: Float64 = 0.0
-
-    for episode in range(num_episodes):
-        var obs = env.reset()
-        var state = discretize_obs_native(obs, num_bins)
-        var episode_reward: Float64 = 0.0
-
-        for _ in range(max_steps):
-            var action = agent.select_action(state)
-            var result = env.step(action)
-            var next_obs = result[0]
-            var reward = result[1]
-            var done = result[2]
-
-            var next_state = discretize_obs_native(next_obs, num_bins)
-            agent.update(state, action, reward, next_state, done)
-
-            episode_reward += reward
-            state = next_state
-
-            if done:
-                break
-
-        agent.decay_epsilon()
-
-        if episode_reward > best_reward:
-            best_reward = episode_reward
-
-        if (episode + 1) % 500 == 0:
-            print("  Episode", episode + 1, "| Best:", Int(best_reward), "| Epsilon:", agent.get_epsilon())
+    for i in range(len(rewards)):
+        if rewards[i] > best_reward:
+            best_reward = rewards[i]
 
     print()
     print("Training complete! Best reward:", Int(best_reward))
@@ -89,19 +68,19 @@ fn main() raises:
     var eval_total: Float64 = 0.0
 
     for _ in range(10):
-        var obs = env.reset()
-        var state = discretize_obs_native(obs, num_bins)
+        var state = env.reset()
         var ep_reward: Float64 = 0.0
 
         for _ in range(max_steps):
-            var action = agent.get_best_action(state)
+            var action_idx = agent.get_best_action(state.index)
+            var action = CartPoleAction(direction=action_idx)
             var result = env.step(action)
-            var next_obs = result[0]
+            var next_state = result[0]
             var reward = result[1]
             var done = result[2]
 
             ep_reward += reward
-            state = discretize_obs_native(next_obs, num_bins)
+            state = next_state
 
             if done:
                 break
@@ -120,8 +99,7 @@ fn main() raises:
     print()
 
     for ep in range(3):
-        var obs = env.reset()
-        var state = discretize_obs_native(obs, num_bins)
+        var state = env.reset()
         var ep_reward: Float64 = 0.0
         var step_count = 0
 
@@ -129,14 +107,15 @@ fn main() raises:
         env.render()
 
         for _ in range(max_steps):
-            var action = agent.get_best_action(state)
+            var action_idx = agent.get_best_action(state.index)
+            var action = CartPoleAction(direction=action_idx)
             var result = env.step(action)
-            var next_obs = result[0]
+            var next_state = result[0]
             var reward = result[1]
             var done = result[2]
 
             ep_reward += reward
-            state = discretize_obs_native(next_obs, num_bins)
+            state = next_state
             step_count += 1
 
             # Render current state using integrated render() method

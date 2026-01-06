@@ -35,7 +35,7 @@ struct EpisodeMetrics(Copyable, Movable, ImplicitlyCopyable):
         self.epsilon = existing.epsilon
 
 
-struct TrainingMetrics(Movable):
+struct TrainingMetrics(Copyable, Movable, ImplicitlyCopyable):
     """Collects and manages training metrics across episodes.
 
     This struct accumulates episode-level metrics during training and provides
@@ -63,6 +63,13 @@ struct TrainingMetrics(Movable):
         self.episodes = List[EpisodeMetrics]()
         self.algorithm_name = algorithm_name
         self.environment_name = environment_name
+
+    fn __copyinit__(out self, existing: Self):
+        self.episodes = List[EpisodeMetrics]()
+        for i in range(len(existing.episodes)):
+            self.episodes.append(existing.episodes[i])
+        self.algorithm_name = existing.algorithm_name
+        self.environment_name = existing.environment_name
 
     fn __moveinit__(out self, deinit existing: Self):
         self.episodes = existing.episodes^
