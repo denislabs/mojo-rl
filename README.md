@@ -5,7 +5,7 @@ A reinforcement learning framework written in Mojo, featuring trait-based design
 ## Features
 
 - **Trait-based architecture**: Generic interfaces for environments, agents, states, and actions
-- **10 RL algorithms**: TD methods, multi-step, eligibility traces, model-based planning
+- **13 RL algorithms**: TD methods, multi-step, eligibility traces, model-based planning, function approximation
 - **5 native environments**: GridWorld, FrozenLake, CliffWalking, Taxi, CartPole (145x faster than Python)
 - **20+ Gymnasium wrappers**: Classic Control, Box2D, Toy Text, MuJoCo environments
 - **Experience replay**: Uniform and prioritized replay buffers
@@ -52,6 +52,13 @@ mojo build main.mojo
 |-----------|-------------|
 | **Q-Learning + Replay** | Off-policy learning with replay buffer |
 
+### Function Approximation (Tile Coding)
+| Algorithm | Description |
+|-----------|-------------|
+| **Tiled Q-Learning** | Q-Learning with tile coding for continuous states |
+| **Tiled SARSA** | On-policy SARSA with tile coding |
+| **Tiled SARSA(λ)** | Eligibility traces + tile coding |
+
 ## Environments
 
 ### Native Mojo Environments
@@ -84,7 +91,8 @@ mojo-rl/
 │   ├── tabular_agent.mojo # TabularAgent trait
 │   ├── training.mojo      # Training/evaluation functions
 │   ├── replay_buffer.mojo # Experience replay buffers
-│   └── space.mojo         # Space abstractions
+│   ├── space.mojo         # Space abstractions
+│   └── tile_coding.mojo   # Tile coding for function approximation
 ├── agents/                # Algorithm implementations
 │   ├── qlearning.mojo
 │   ├── sarsa.mojo
@@ -95,7 +103,8 @@ mojo-rl/
 │   ├── double_qlearning.mojo
 │   ├── dyna_q.mojo
 │   ├── priority_sweeping.mojo
-│   └── qlearning_replay.mojo
+│   ├── qlearning_replay.mojo
+│   └── tiled_qlearning.mojo   # Tile coding agents
 └── envs/                  # Environment implementations
     ├── gridworld.mojo
     ├── frozenlake.mojo

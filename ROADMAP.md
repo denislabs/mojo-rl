@@ -38,11 +38,16 @@
 - [x] Prioritized Replay Buffer - Samples by TD error priority
 - [x] Q-Learning with Replay - Off-policy learning with replay buffer
 
+### Function Approximation
+- [x] Tile Coding - Linear function approximation for continuous state spaces
+  - `core/tile_coding.mojo` - TileCoding and TiledWeights structs
+  - `agents/tiled_qlearning.mojo` - TiledQLearningAgent, TiledSARSAAgent, TiledSARSALambdaAgent
+  - `examples/cartpole_tiled.mojo` - CartPole training with tile coding
+
 ## In Progress / Next Steps
 
-### Function Approximation
-- [ ] Tile Coding - Linear function approximation for larger state spaces
-- [ ] Linear Q-Learning - Q-Learning with feature vectors
+### Function Approximation (continued)
+- [ ] Linear Q-Learning - Q-Learning with arbitrary feature vectors
 
 ### Deep RL (depends on Mojo tensor support)
 - [ ] DQN - Deep Q-Network with target network
@@ -78,3 +83,6 @@
 | Dyna-Q | Model-based | Planning with learned model |
 | Priority Sweeping | Model-based | Prioritized planning updates |
 | Q-Learning + Replay | Replay | Experience replay buffer |
+| Tiled Q-Learning | Function Approx | Tile coding for continuous states |
+| Tiled SARSA | Function Approx | On-policy with tile coding |
+| Tiled SARSA(λ) | Function Approx | Eligibility traces + tile coding |

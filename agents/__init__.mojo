@@ -8,3 +8,4 @@ from .double_qlearning import DoubleQLearningAgent
 from .dyna_q import DynaQAgent
 from .priority_sweeping import PrioritySweepingAgent
 from .qlearning_replay import QLearningReplayAgent
+from .tiled_qlearning import TiledQLearningAgent, TiledSARSAAgent, TiledSARSALambdaAgent
