@@ -161,6 +161,44 @@ fn main():
     _ = train_tabular(cliff_env, sarsa_agent, num_episodes=500)
 ```
 
+### CartPole with SDL2 Visualization
+
+```mojo
+from envs import CartPoleNative, discretize_obs_native
+from agents import QLearningAgent
+
+fn main() raises:
+    var env = CartPoleNative()
+    var agent = QLearningAgent(num_states=10000, num_actions=2)
+
+    # Training loop
+    for episode in range(1000):
+        var obs = env.reset()
+        var state = discretize_obs_native(obs, 10)
+
+        for step in range(500):
+            var action = agent.select_action(state)
+            var result = env.step(action)
+            var next_state = discretize_obs_native(result[0], 10)
+            agent.update(state, action, result[1], next_state, result[2])
+            state = next_state
+            if result[2]:
+                break
+        agent.decay_epsilon()
+
+    # Visualize trained agent
+    var obs = env.reset()
+    for _ in range(500):
+        var state = discretize_obs_native(obs, 10)
+        var action = agent.get_best_action(state)
+        var result = env.step(action)
+        env.render()  # Opens SDL2 window
+        obs = result[0]
+        if result[2]:
+            break
+    env.close()
+```
+
 ## Extending the Framework
 
 ### Adding a New Environment

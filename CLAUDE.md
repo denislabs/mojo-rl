@@ -88,16 +88,18 @@ All agents implement `TabularAgent` trait and use a shared `QTable` structure:
   - Reward: +20 dropoff, -10 illegal action, -1 per step
 - **`cartpole_native.mojo`** - `CartPoleNative`: Pure Mojo CartPole (145x faster than Gymnasium)
   - Physics matching Gymnasium CartPole-v1
-  - State: [cart_position, cart_velocity, pole_angle, pole_angular_velocity]
+  - State: SIMD[DType.float64, 4] = [cart_position, cart_velocity, pole_angle, pole_angular_velocity]
   - Actions: 0 (left), 1 (right)
-- **`cartpole_renderer.mojo`** - `CartPoleRenderer`: Pygame visualization for CartPoleNative
+  - Integrated SDL2 rendering via `render()` method
 - **`mountain_car_native.mojo`** - `MountainCarNative`: Pure Mojo MountainCar
   - Physics matching Gymnasium MountainCar-v0
-  - State: [position, velocity]
+  - State: SIMD[DType.float64, 2] = [position, velocity]
   - Actions: 0 (left), 1 (no push), 2 (right)
   - `make_mountain_car_tile_coding()`: Factory for tile coding config
-- **`mountain_car_renderer.mojo`** - `MountainCarRenderer`: Pygame visualization
-  - Renders sinusoidal mountain terrain with car and goal flag
+  - Integrated SDL2 rendering via `render()` method
+- **`native_renderer_base.mojo`** - `NativeRendererBase`: SDL2 rendering infrastructure
+  - Used internally by CartPoleNative and MountainCarNative
+  - Provides: `init_display()`, `clear()`, `present()`, `set_color()`, `fill_rect()`, `draw_line()`, etc.
 
 **Gymnasium Wrappers (`envs/gymnasium/`):**
 - **`gymnasium_wrapper.mojo`** - Generic wrapper for any Gymnasium environment
