@@ -11,14 +11,15 @@ Run with: mojo run gymnasium_demo.mojo
 
 from python import Python
 from envs.gymnasium import (
-    MountainCarEnv,
-    PendulumEnv,
-    AcrobotEnv,
-    LunarLanderEnv,
-    BipedalWalkerEnv,
+    GymMountainCarEnv,
+    GymPendulumEnv,
+    GymAcrobotEnv,
+    GymLunarLanderEnv,
+    GymBipedalWalkerEnv,
+    GymCarRacingEnv,
     GymFrozenLakeEnv,
     GymTaxiEnv,
-    BlackjackEnv,
+    GymBlackjackEnv,
     GymCliffWalkingEnv,
     GymnasiumEnv,
 )
@@ -33,7 +34,7 @@ fn demo_mountain_car() raises:
     print("Actions: 0=left, 1=none, 2=right")
     print("")
 
-    var env = MountainCarEnv()
+    var env = GymMountainCarEnv()
     var obs = env.reset()
 
     print("Initial state: pos=" + String(obs[0]) + ", vel=" + String(obs[1]))
@@ -70,7 +71,7 @@ fn demo_pendulum() raises:
     print("Action: Continuous torque in [-2, 2]")
     print("")
 
-    var env = PendulumEnv()
+    var env = GymPendulumEnv()
     var obs = env.reset()
 
     print(
@@ -115,7 +116,7 @@ fn demo_acrobot() raises:
     print("Actions: 0=-1 torque, 1=0 torque, 2=+1 torque")
     print("")
 
-    var env = AcrobotEnv()
+    var env = GymAcrobotEnv()
     var obs = env.reset()
 
     print("Observation dim: " + String(env.obs_dim()))
@@ -149,7 +150,7 @@ fn demo_lunar_lander() raises:
     print("Actions: 0=nothing, 1=left, 2=main, 3=right")
     print("")
 
-    var env = LunarLanderEnv()
+    var env = GymLunarLanderEnv()
     var obs = env.reset()
 
     print(
@@ -291,7 +292,7 @@ fn demo_blackjack() raises:
     print("Actions: 0=stick, 1=hit")
     print("")
 
-    var env = BlackjackEnv()
+    var env = GymBlackjackEnv()
     var obs = env.reset()
     var player_sum = obs[0]
     var dealer_card = obs[1]

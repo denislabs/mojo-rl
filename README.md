@@ -170,24 +170,23 @@ mojo-rl/
 ## Usage Example
 
 ```mojo
-from core import train_tabular, evaluate_tabular
 from agents import QLearningAgent, SARSALambdaAgent, DynaQAgent
-from envs import GridWorld, CliffWalking
+from envs import GridWorldEnv, CliffWalkingEnv
 
 fn main():
     # Train Q-Learning on GridWorld
-    var env = GridWorld(width=5, height=5)
+    var env = GridWorldEnv(width=5, height=5)
     var agent = QLearningAgent(num_states=25, num_actions=4)
-    _ = train_tabular(env, agent, num_episodes=500, verbose=True)
-    var reward = evaluate_tabular(env, agent, num_episodes=10)
+    _ = agent.train(env, num_episodes=500, verbose=True)
+    var reward = agent.evaluate(env, num_episodes=10)
     print("Q-Learning reward:", reward)
 
     # Train SARSA(λ) on CliffWalking
-    var cliff_env = CliffWalking(width=12, height=4)
+    var cliff_env = CliffWalkingEnv(width=12, height=4)
     var sarsa_agent = SARSALambdaAgent(
         num_states=48, num_actions=4, lambda_=0.9
     )
-    _ = train_tabular(cliff_env, sarsa_agent, num_episodes=500)
+    _ = sarsa_agent.train(cliff_env, num_episodes=500)
 ```
 
 ### CartPole with SDL2 Visualization
@@ -195,18 +194,17 @@ fn main():
 ```mojo
 from envs import CartPoleNative, CartPoleAction
 from agents import QLearningAgent
-from core import train_tabular
 
 fn main() raises:
     var num_bins = 10
-    var env = CartPoleNative(num_bins=num_bins)
+    var env = CartPoleEnv(num_bins=num_bins)
     var agent = QLearningAgent(
-        num_states=CartPoleNative.get_num_states(num_bins),
+        num_states=CartPoleEnv.get_num_states(num_bins),
         num_actions=2,
     )
 
     # Train using generic training function
-    _ = train_tabular(env, agent, num_episodes=1000, max_steps_per_episode=500)
+    _ = agent.train(env, num_episodes=1000, max_steps_per_episode=500)
 
     # Visualize trained agent
     var state = env.reset()

@@ -43,7 +43,9 @@ struct GymnasiumEnv:
         self.env_name = env_name
 
         if render_mode == "human":
-            self.env = self.gym.make(env_name, render_mode=PythonObject("human"))
+            self.env = self.gym.make(
+                env_name, render_mode=PythonObject("human")
+            )
         else:
             self.env = self.gym.make(env_name)
 
@@ -54,7 +56,11 @@ struct GymnasiumEnv:
 
         # Check if discrete observation space
         var space_type = Python.import_module("gymnasium.spaces")
-        if Python.import_module("builtins").isinstance(obs_space, space_type.Discrete).__bool__():
+        if (
+            Python.import_module("builtins")
+            .isinstance(obs_space, space_type.Discrete)
+            .__bool__()
+        ):
             self.is_discrete_obs = True
             self.obs_dim = 1
             self.obs_shape.append(Int(obs_space.n))
@@ -69,13 +75,22 @@ struct GymnasiumEnv:
 
         # Analyze action space
         var act_space = self.env.action_space
-        if Python.import_module("builtins").isinstance(act_space, space_type.Discrete).__bool__():
+        if (
+            Python.import_module("builtins")
+            .isinstance(act_space, space_type.Discrete)
+            .__bool__()
+        ):
             self.is_discrete_action = True
             self.action_dim = Int(act_space.n)
         else:
             self.is_discrete_action = False
             var act_shape = act_space.shape
-            self.action_dim = Int(act_shape[0]) if Int(Python.import_module("builtins").len(act_shape)) > 0 else 1
+            self.action_dim = (
+                Int(act_shape[0]) if Int(
+                    Python.import_module("builtins").len(act_shape)
+                )
+                > 0 else 1
+            )
 
         self.done = False
         self.episode_reward = 0.0
@@ -92,7 +107,9 @@ struct GymnasiumEnv:
 
         return obs
 
-    fn step(mut self, action: PythonObject) raises -> Tuple[PythonObject, Float64, Bool]:
+    fn step(
+        mut self, action: PythonObject
+    ) raises -> Tuple[PythonObject, Float64, Bool]:
         """Take action and return (observation, reward, done).
 
         Args:
@@ -110,7 +127,9 @@ struct GymnasiumEnv:
 
         return (obs, reward, self.done)
 
-    fn step_discrete(mut self, action: Int) raises -> Tuple[PythonObject, Float64, Bool]:
+    fn step_discrete(
+        mut self, action: Int
+    ) raises -> Tuple[PythonObject, Float64, Bool]:
         """Take discrete action (convenience method)."""
         return self.step(PythonObject(action))
 
@@ -137,8 +156,12 @@ struct GymnasiumEnv:
     fn get_info(self) -> String:
         """Return environment info string."""
         return (
-            "Env: " + self.env_name +
-            " | Obs dim: " + String(self.obs_dim) +
-            " | Action dim: " + String(self.action_dim) +
-            " | Discrete action: " + String(self.is_discrete_action)
+            "Env: "
+            + self.env_name
+            + " | Obs dim: "
+            + String(self.obs_dim)
+            + " | Action dim: "
+            + String(self.action_dim)
+            + " | Discrete action: "
+            + String(self.is_discrete_action)
         )

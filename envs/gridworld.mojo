@@ -2,7 +2,7 @@ from core import State, Action, Env, DiscreteEnv
 
 
 @fieldwise_init
-struct GridState(State, Copyable, Movable, ImplicitlyCopyable):
+struct GridState(Copyable, ImplicitlyCopyable, Movable, State):
     """State representing a position in a 2D grid."""
 
     var x: Int
@@ -21,7 +21,7 @@ struct GridState(State, Copyable, Movable, ImplicitlyCopyable):
 
 
 @fieldwise_init
-struct GridAction(Action, Copyable, Movable, ImplicitlyCopyable):
+struct GridAction(Action, Copyable, ImplicitlyCopyable, Movable):
     """Action for grid movement: 0=up, 1=right, 2=down, 3=left."""
 
     var direction: Int
@@ -49,7 +49,7 @@ struct GridAction(Action, Copyable, Movable, ImplicitlyCopyable):
         return Self(direction=3)
 
 
-struct GridWorld(DiscreteEnv):
+struct GridWorldEnv(DiscreteEnv):
     """A simple grid world environment.
 
     Agent starts at (0, 0) and must reach the goal at (width-1, height-1).

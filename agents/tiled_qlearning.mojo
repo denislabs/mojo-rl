@@ -30,6 +30,7 @@ Example usage:
 
 from random import random_float64, random_si64
 from core.tile_coding import TileCoding, TiledWeights
+from core import ClassicControlEnv, TrainingMetrics
 
 
 struct TiledQLearningAgent:
@@ -180,6 +181,115 @@ struct TiledQLearningAgent:
         """Reset for new episode (no-op, kept for interface compatibility)."""
         pass
 
+    fn train[E: ClassicControlEnv](
+        mut self,
+        mut env: E,
+        tile_coding: TileCoding,
+        num_episodes: Int,
+        max_steps_per_episode: Int = 500,
+        verbose: Bool = False,
+        print_every: Int = 100,
+        environment_name: String = "Environment",
+    ) -> TrainingMetrics:
+        """Train the agent on a continuous-state environment.
+
+        Args:
+            env: The classic control environment to train on.
+            tile_coding: TileCoding instance for feature extraction.
+            num_episodes: Number of episodes to train.
+            max_steps_per_episode: Maximum steps per episode.
+            verbose: Whether to print progress.
+            print_every: Print progress every N episodes (if verbose).
+            environment_name: Name of environment for metrics labeling.
+
+        Returns:
+            TrainingMetrics object with episode rewards and statistics.
+        """
+        var metrics = TrainingMetrics(
+            algorithm_name="Tiled Q-Learning",
+            environment_name=environment_name,
+        )
+
+        for episode in range(num_episodes):
+            var obs = env.reset_obs()
+            var total_reward: Float64 = 0.0
+            var steps = 0
+
+            for _ in range(max_steps_per_episode):
+                var tiles = tile_coding.get_tiles_simd4(obs)
+                var action = self.select_action(tiles)
+
+                var result = env.step_raw(action)
+                var next_obs = result[0]
+                var reward = result[1]
+                var done = result[2]
+
+                var next_tiles = tile_coding.get_tiles_simd4(next_obs)
+                self.update(tiles, action, reward, next_tiles, done)
+
+                total_reward += reward
+                steps += 1
+                obs = next_obs
+
+                if done:
+                    break
+
+            self.decay_epsilon()
+            metrics.log_episode(episode, total_reward, steps, self.epsilon)
+
+            if verbose and (episode + 1) % print_every == 0:
+                metrics.print_progress(episode, window=100)
+
+        return metrics^
+
+    fn evaluate[E: ClassicControlEnv](
+        self,
+        mut env: E,
+        tile_coding: TileCoding,
+        num_episodes: Int = 10,
+        max_steps: Int = 500,
+        render: Bool = False,
+    ) -> Float64:
+        """Evaluate the agent on the environment.
+
+        Args:
+            env: The classic control environment to evaluate on.
+            tile_coding: TileCoding instance for feature extraction.
+            num_episodes: Number of evaluation episodes.
+            max_steps: Maximum steps per episode.
+            render: Whether to render the environment.
+
+        Returns:
+            Average reward across episodes.
+        """
+        var total_reward: Float64 = 0.0
+
+        for _ in range(num_episodes):
+            var obs = env.reset_obs()
+            var episode_reward: Float64 = 0.0
+
+            for _ in range(max_steps):
+                if render:
+                    env.render()
+
+                var tiles = tile_coding.get_tiles_simd4(obs)
+                var action = self.get_best_action(tiles)
+
+                var result = env.step_raw(action)
+                var next_obs = result[0]
+                var reward = result[1]
+                var done = result[2]
+
+                episode_reward += reward
+                obs = next_obs
+
+                if done:
+                    break
+
+            total_reward += episode_reward
+
+        return total_reward / Float64(num_episodes)
+
 
 struct TiledSARSAAgent:
     """SARSA agent with tile coding function approximation.
@@ -275,6 +385,117 @@ struct TiledSARSAAgent:
     fn reset(mut self):
         """Reset for new episode."""
         pass
+
+    fn train[E: ClassicControlEnv](
+        mut self,
+        mut env: E,
+        tile_coding: TileCoding,
+        num_episodes: Int,
+        max_steps_per_episode: Int = 500,
+        verbose: Bool = False,
+        print_every: Int = 100,
+        environment_name: String = "Environment",
+    ) -> TrainingMetrics:
+        """Train the agent on a continuous-state environment using SARSA.
+
+        Args:
+            env: The classic control environment to train on.
+            tile_coding: TileCoding instance for feature extraction.
+            num_episodes: Number of episodes to train.
+            max_steps_per_episode: Maximum steps per episode.
+            verbose: Whether to print progress.
+            print_every: Print progress every N episodes (if verbose).
+            environment_name: Name of environment for metrics labeling.
+
+        Returns:
+            TrainingMetrics object with episode rewards and statistics.
+        """
+        var metrics = TrainingMetrics(
+            algorithm_name="Tiled SARSA",
+            environment_name=environment_name,
+        )
+
+        for episode in range(num_episodes):
+            var obs = env.reset_obs()
+            var action = self.select_action(tile_coding.get_tiles_simd4(obs))
+            var total_reward: Float64 = 0.0
+            var steps = 0
+
+            for _ in range(max_steps_per_episode):
+                var tiles = tile_coding.get_tiles_simd4(obs)
+                var result = env.step_raw(action)
+                var next_obs = result[0]
+                var reward = result[1]
+                var done = result[2]
+
+                var next_tiles = tile_coding.get_tiles_simd4(next_obs)
+                var next_action = self.select_action(next_tiles)
+
+                self.update(tiles, action, reward, next_tiles, next_action, done)
+
+                total_reward += reward
+                steps += 1
+                action = next_action
+                obs = next_obs
+
+                if done:
+                    break
+
+            self.decay_epsilon()
+            metrics.log_episode(episode, total_reward, steps, self.epsilon)
+
+            if verbose and (episode + 1) % print_every == 0:
+                metrics.print_progress(episode, window=100)
+
+        return metrics^
+
+    fn evaluate[E: ClassicControlEnv](
+        self,
+        mut env: E,
+        tile_coding: TileCoding,
+        num_episodes: Int = 10,
+        max_steps: Int = 500,
+        render: Bool = False,
+    ) -> Float64:
+        """Evaluate the agent on the environment.
+
+        Args:
+            env: The classic control environment to evaluate on.
+            tile_coding: TileCoding instance for feature extraction.
+            num_episodes: Number of evaluation episodes.
+            max_steps: Maximum steps per episode.
+            render: Whether to render the environment.
+
+        Returns:
+            Average reward across episodes.
+        """
+        var total_reward: Float64 = 0.0
+
+        for _ in range(num_episodes):
+            var obs = env.reset_obs()
+            var episode_reward: Float64 = 0.0
+
+            for _ in range(max_steps):
+                if render:
+                    env.render()
+
+                var tiles = tile_coding.get_tiles_simd4(obs)
+                var action = self.get_best_action(tiles)
+
+                var result = env.step_raw(action)
+                var next_obs = result[0]
+                var reward = result[1]
+                var done = result[2]
+
+                episode_reward += reward
+                obs = next_obs
+
+                if done:
+                    break
+
+            total_reward += episode_reward
+
+        return total_reward / Float64(num_episodes)
 
 
 struct TiledSARSALambdaAgent:
@@ -415,3 +636,115 @@ struct TiledSARSALambdaAgent:
         for a in range(self.num_actions):
             for t in range(self.num_tiles):
                 self.traces[a][t] = 0.0
+
+    fn train[E: ClassicControlEnv](
+        mut self,
+        mut env: E,
+        tile_coding: TileCoding,
+        num_episodes: Int,
+        max_steps_per_episode: Int = 500,
+        verbose: Bool = False,
+        print_every: Int = 100,
+        environment_name: String = "Environment",
+    ) -> TrainingMetrics:
+        """Train the agent on a continuous-state environment using SARSA(λ).
+
+        Args:
+            env: The classic control environment to train on.
+            tile_coding: TileCoding instance for feature extraction.
+            num_episodes: Number of episodes to train.
+            max_steps_per_episode: Maximum steps per episode.
+            verbose: Whether to print progress.
+            print_every: Print progress every N episodes (if verbose).
+            environment_name: Name of environment for metrics labeling.
+
+        Returns:
+            TrainingMetrics object with episode rewards and statistics.
+        """
+        var metrics = TrainingMetrics(
+            algorithm_name="Tiled SARSA(λ)",
+            environment_name=environment_name,
+        )
+
+        for episode in range(num_episodes):
+            self.reset()  # Reset eligibility traces
+            var obs = env.reset_obs()
+            var action = self.select_action(tile_coding.get_tiles_simd4(obs))
+            var total_reward: Float64 = 0.0
+            var steps = 0
+
+            for _ in range(max_steps_per_episode):
+                var tiles = tile_coding.get_tiles_simd4(obs)
+                var result = env.step_raw(action)
+                var next_obs = result[0]
+                var reward = result[1]
+                var done = result[2]
+
+                var next_tiles = tile_coding.get_tiles_simd4(next_obs)
+                var next_action = self.select_action(next_tiles)
+
+                self.update(tiles, action, reward, next_tiles, next_action, done)
+
+                total_reward += reward
+                steps += 1
+                action = next_action
+                obs = next_obs
+
+                if done:
+                    break
+
+            self.decay_epsilon()
+            metrics.log_episode(episode, total_reward, steps, self.epsilon)
+
+            if verbose and (episode + 1) % print_every == 0:
+                metrics.print_progress(episode, window=100)
+
+        return metrics^
+
+    fn evaluate[E: ClassicControlEnv](
+        self,
+        mut env: E,
+        tile_coding: TileCoding,
+        num_episodes: Int = 10,
+        max_steps: Int = 500,
+        render: Bool = False,
+    ) -> Float64:
+        """Evaluate the agent on the environment.
+
+        Args:
+            env: The classic control environment to evaluate on.
+            tile_coding: TileCoding instance for feature extraction.
+            num_episodes: Number of evaluation episodes.
+            max_steps: Maximum steps per episode.
+            render: Whether to render the environment.
+
+        Returns:
+            Average reward across episodes.
+        """
+        var total_reward: Float64 = 0.0
+
+        for _ in range(num_episodes):
+            var obs = env.reset_obs()
+            var episode_reward: Float64 = 0.0
+
+            for _ in range(max_steps):
+                if render:
+                    env.render()
+
+                var tiles = tile_coding.get_tiles_simd4(obs)
+                var action = self.get_best_action(tiles)
+
+                var result = env.step_raw(action)
+                var next_obs = result[0]
+                var reward = result[1]
+                var done = result[2]
+
+                episode_reward += reward
+                obs = next_obs
+
+                if done:
+                    break
+
+            total_reward += episode_reward
+
+        return total_reward / Float64(num_episodes)

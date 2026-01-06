@@ -5,7 +5,7 @@ by discretizing the continuous observation space.
 """
 
 from envs.gymnasium import (
-    CartPoleEnv,
+    GymCartPoleEnv,
     discretize_cart_pole,
     get_cart_pole_num_states,
 )
@@ -32,7 +32,7 @@ fn train_cartpole() raises:
     print()
 
     # Initialize environment (no rendering during training for speed)
-    var env = CartPoleEnv()
+    var env = GymCartPoleEnv()
     var agent = QLearningAgent(
         num_states=num_states,
         num_actions=num_actions,
@@ -131,7 +131,7 @@ fn train_cartpole() raises:
     print()
     print("Evaluating with greedy policy (10 episodes, no render)...")
 
-    var eval_env = CartPoleEnv()
+    var eval_env = GymCartPoleEnv()
     var eval_rewards = List[Float64]()
 
     for _ in range(10):
@@ -179,7 +179,7 @@ fn train_cartpole() raises:
     print()
 
     # Create environment with human rendering
-    var render_env = CartPoleEnv(render_mode="human")
+    var render_env = GymCartPoleEnv(render_mode="human")
 
     for ep in range(3):
         var obs = render_env.reset()

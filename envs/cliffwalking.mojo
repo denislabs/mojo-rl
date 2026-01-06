@@ -2,7 +2,7 @@ from core import State, Action, Env, DiscreteEnv
 
 
 @fieldwise_init
-struct CliffState(State, Copyable, Movable, ImplicitlyCopyable):
+struct CliffState(Copyable, ImplicitlyCopyable, Movable, State):
     """State representing a position on the cliff grid."""
 
     var x: Int
@@ -21,7 +21,7 @@ struct CliffState(State, Copyable, Movable, ImplicitlyCopyable):
 
 
 @fieldwise_init
-struct CliffAction(Action, Copyable, Movable, ImplicitlyCopyable):
+struct CliffAction(Action, Copyable, ImplicitlyCopyable, Movable):
     """Action for cliff walking: 0=up, 1=right, 2=down, 3=left."""
 
     var direction: Int
@@ -49,7 +49,7 @@ struct CliffAction(Action, Copyable, Movable, ImplicitlyCopyable):
         return Self(direction=3)
 
 
-struct CliffWalking(DiscreteEnv):
+struct CliffWalkingEnv(DiscreteEnv):
     """CliffWalking environment.
 
     The agent must navigate from the start to the goal along the bottom edge
@@ -103,7 +103,8 @@ struct CliffWalking(DiscreteEnv):
         return 4
 
     fn _is_cliff(self, x: Int, y: Int) -> Bool:
-        """Check if position is on the cliff (bottom row, excluding start and goal)."""
+        """Check if position is on the cliff (bottom row, excluding start and goal).
+        """
         return y == 0 and x > 0 and x < self.width - 1
 
     fn step(mut self, action: CliffAction) -> Tuple[CliffState, Float64, Bool]:

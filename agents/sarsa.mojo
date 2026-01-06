@@ -1,14 +1,12 @@
 from random import random_si64, random_float64
 from .qlearning import QTable
-from core import TabularAgent, DiscreteEnv, train_tabular_with_metrics, TrainingMetrics
+from core import TabularAgent, DiscreteEnv, TrainingMetrics
 
 
 struct SARSAAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable):
     """Tabular SARSA agent with epsilon-greedy exploration.
 
     SARSA is on-policy: uses Q(s',a') instead of max Q(s',a').
-    For generic training, update() uses Q-learning style (max).
-    Use update_sarsa() for true SARSA with next_action.
     """
 
     var q_table: QTable
@@ -58,7 +56,6 @@ struct SARSAAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable):
     fn select_action(self, state_idx: Int) -> Int:
         var rand = random_float64()
         if rand < self.epsilon:
-            # random_si64 is inclusive on both ends, so use num_actions - 1
             return Int(random_si64(0, self.num_actions - 1))
         else:
             return self.q_table.get_best_action(state_idx)
@@ -109,120 +106,37 @@ struct SARSAAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable):
     fn get_best_action(self, state_idx: Int) -> Int:
         return self.q_table.get_best_action(state_idx)
 
-    # ========================================================================
-    # Static training methods
-    # ========================================================================
-
-    @staticmethod
     fn train[E: DiscreteEnv](
+        mut self,
         mut env: E,
         num_episodes: Int,
         max_steps_per_episode: Int = 100,
-        learning_rate: Float64 = 0.1,
-        discount_factor: Float64 = 0.99,
-        epsilon: Float64 = 1.0,
-        epsilon_decay: Float64 = 0.995,
-        epsilon_min: Float64 = 0.01,
         verbose: Bool = False,
         print_every: Int = 100,
         environment_name: String = "Environment",
-    ) -> Tuple[SARSAAgent, TrainingMetrics]:
-        """Train a SARSA agent using the generic training loop.
-
-        Note: This uses Q-learning style updates (max Q(s',a')) for compatibility
-        with the generic training interface. Use train_sarsa() for true on-policy
-        SARSA with Q(s',a') updates.
+    ) -> TrainingMetrics:
+        """Train the agent using true on-policy SARSA updates.
 
         Args:
             env: The discrete environment to train on.
             num_episodes: Number of episodes to train.
             max_steps_per_episode: Maximum steps per episode.
-            learning_rate: Learning rate (alpha).
-            discount_factor: Discount factor (gamma).
-            epsilon: Initial exploration rate.
-            epsilon_decay: Exploration decay rate per episode.
-            epsilon_min: Minimum exploration rate.
             verbose: Whether to print progress.
             print_every: Print progress every N episodes (if verbose).
             environment_name: Name of environment for metrics labeling.
 
         Returns:
-            Tuple of (trained_agent, training_metrics).
+            TrainingMetrics object with episode rewards and statistics.
         """
-        var agent = SARSAAgent(
-            env.num_states(),
-            env.num_actions(),
-            learning_rate,
-            discount_factor,
-            epsilon,
-            epsilon_decay,
-            epsilon_min,
-        )
-        var metrics = train_tabular_with_metrics(
-            env,
-            agent,
-            num_episodes,
-            max_steps_per_episode,
-            verbose,
-            print_every,
-            algorithm_name="SARSA",
-            environment_name=environment_name,
-        )
-        return (agent^, metrics^)
-
-    @staticmethod
-    fn train_sarsa[E: DiscreteEnv](
-        mut env: E,
-        num_episodes: Int,
-        max_steps_per_episode: Int = 100,
-        learning_rate: Float64 = 0.1,
-        discount_factor: Float64 = 0.99,
-        epsilon: Float64 = 1.0,
-        epsilon_decay: Float64 = 0.995,
-        epsilon_min: Float64 = 0.01,
-        verbose: Bool = False,
-        print_every: Int = 100,
-        environment_name: String = "Environment",
-    ) -> Tuple[SARSAAgent, TrainingMetrics]:
-        """Train a SARSA agent with true on-policy updates.
-
-        This uses the proper SARSA update: Q(s,a) += α * (r + γ*Q(s',a') - Q(s,a))
-        where a' is the action actually selected (not the max).
-
-        Args:
-            env: The discrete environment to train on.
-            num_episodes: Number of episodes to train.
-            max_steps_per_episode: Maximum steps per episode.
-            learning_rate: Learning rate (alpha).
-            discount_factor: Discount factor (gamma).
-            epsilon: Initial exploration rate.
-            epsilon_decay: Exploration decay rate per episode.
-            epsilon_min: Minimum exploration rate.
-            verbose: Whether to print progress.
-            print_every: Print progress every N episodes (if verbose).
-            environment_name: Name of environment for metrics labeling.
-
-        Returns:
-            Tuple of (trained_agent, training_metrics).
-        """
-        var agent = SARSAAgent(
-            env.num_states(),
-            env.num_actions(),
-            learning_rate,
-            discount_factor,
-            epsilon,
-            epsilon_decay,
-            epsilon_min,
-        )
         var metrics = TrainingMetrics(
-            algorithm_name="SARSA (on-policy)",
+            algorithm_name="SARSA",
             environment_name=environment_name,
         )
 
         for episode in range(num_episodes):
             var state = env.reset()
             var state_idx = env.state_to_index(state)
-            var action_idx = agent.select_action(state_idx)
+            var action_idx = self.select_action(state_idx)
             var total_reward: Float64 = 0.0
             var steps = 0
 
@@ -234,10 +148,10 @@ struct SARSAAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable):
                 var done = result[2]
 
                 var next_state_idx = env.state_to_index(next_state)
-                var next_action_idx = agent.select_action(next_state_idx)
+                var next_action_idx = self.select_action(next_state_idx)
 
                 # True SARSA update with next action
-                agent.update_sarsa(state_idx, action_idx, reward, next_state_idx, next_action_idx, done)
+                self.update_sarsa(state_idx, action_idx, reward, next_state_idx, next_action_idx, done)
 
                 total_reward += reward
                 steps += 1
@@ -247,10 +161,55 @@ struct SARSAAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable):
                 if done:
                     break
 
-            agent.decay_epsilon()
-            metrics.log_episode(episode, total_reward, steps, agent.get_epsilon())
+            self.decay_epsilon()
+            metrics.log_episode(episode, total_reward, steps, self.epsilon)
 
             if verbose and (episode + 1) % print_every == 0:
                 metrics.print_progress(episode, window=100)
 
-        return (agent^, metrics^)
+        return metrics^
+
+    fn evaluate[E: DiscreteEnv](
+        self,
+        mut env: E,
+        num_episodes: Int = 10,
+        render: Bool = False,
+    ) -> Float64:
+        """Evaluate the agent on the environment.
+
+        Args:
+            env: The discrete environment to evaluate on.
+            num_episodes: Number of evaluation episodes.
+            render: Whether to render the environment.
+
+        Returns:
+            Average reward across episodes.
+        """
+        var total_reward: Float64 = 0.0
+
+        for _ in range(num_episodes):
+            var state = env.reset()
+            var episode_reward: Float64 = 0.0
+
+            for _ in range(1000):
+                if render:
+                    env.render()
+
+                var state_idx = env.state_to_index(state)
+                var action_idx = self.get_best_action(state_idx)
+                var action = env.action_from_index(action_idx)
+
+                var result = env.step(action)
+                var next_state = result[0]
+                var reward = result[1]
+                var done = result[2]
+
+                episode_reward += reward
+                state = next_state
+
+                if done:
+                    break
+
+            total_reward += episode_reward
+
+        return total_reward / Float64(num_episodes)

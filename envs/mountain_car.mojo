@@ -14,12 +14,62 @@ Requires SDL2 and SDL2_ttf: brew install sdl2 sdl2_ttf
 
 from math import cos, sin
 from random import random_float64
+from core import State, Action, DiscreteEnv, TileCoding, ClassicControlEnv
 from core.sdl2 import SDL_Color, SDL_Point
-from core.tile_coding import TileCoding
-from .native_renderer_base import NativeRendererBase
+from .renderer_base import RendererBase
 
 
-struct MountainCarNative:
+# ============================================================================
+# MountainCar State and Action types for trait conformance
+# ============================================================================
+
+
+@fieldwise_init
+struct MountainCarState(Copyable, ImplicitlyCopyable, Movable, State):
+    """State for MountainCar: discretized state index.
+
+    The continuous observation [position, velocity] is discretized
+    into bins to create a single integer state index for tabular methods.
+    """
+
+    var index: Int
+
+    fn __copyinit__(out self, existing: Self):
+        self.index = existing.index
+
+    fn __moveinit__(out self, deinit existing: Self):
+        self.index = existing.index
+
+    fn __eq__(self, other: Self) -> Bool:
+        return self.index == other.index
+
+
+@fieldwise_init
+struct MountainCarAction(Action, Copyable, ImplicitlyCopyable, Movable):
+    """Action for MountainCar: 0 (push left), 1 (no push), 2 (push right)."""
+
+    var direction: Int
+
+    fn __copyinit__(out self, existing: Self):
+        self.direction = existing.direction
+
+    fn __moveinit__(out self, deinit existing: Self):
+        self.direction = existing.direction
+
+    @staticmethod
+    fn left() -> Self:
+        return Self(direction=0)
+
+    @staticmethod
+    fn no_push() -> Self:
+        return Self(direction=1)
+
+    @staticmethod
+    fn right() -> Self:
+        return Self(direction=2)
+
+
+struct MountainCarEnv(ClassicControlEnv & DiscreteEnv):
     """Native Mojo MountainCar environment with integrated SDL2 rendering.
 
     State: [position, velocity]
@@ -28,7 +78,15 @@ struct MountainCarNative:
     Episode terminates when:
     - Position >= 0.5 (goal reached)
     - Episode length >= 200 steps (timeout)
+
+    Implements DiscreteEnv trait for use with generic training functions.
+    Note: Does not implement ClassicControlEnv since that trait expects 4D
+    observations, while MountainCar has 2D observations.
     """
+
+    # Type aliases for trait conformance
+    comptime StateType = MountainCarState
+    comptime ActionType = MountainCarAction
 
     # Physical constants (same as Gymnasium)
     var min_position: Float64
@@ -50,7 +108,7 @@ struct MountainCarNative:
     var total_reward: Float64
 
     # Renderer (lazy initialized)
-    var renderer: NativeRendererBase
+    var renderer: RendererBase
     var render_initialized: Bool
 
     # Renderer settings
@@ -68,7 +126,10 @@ struct MountainCarNative:
     var wheel_radius: Int
     var flag_height: Int
 
-    fn __init__(out self) raises:
+    # Discretization settings (for DiscreteEnv)
+    var num_bins: Int
+
+    fn __init__(out self, num_bins: Int = 20) raises:
         """Initialize MountainCar with default physics parameters."""
         # Physics constants from Gymnasium
         self.min_position = -1.2
@@ -90,7 +151,7 @@ struct MountainCarNative:
         self.total_reward = 0.0
 
         # Initialize renderer (but don't open window yet)
-        self.renderer = NativeRendererBase(
+        self.renderer = RendererBase(
             width=600,
             height=400,
             fps=30,
@@ -113,13 +174,20 @@ struct MountainCarNative:
         self.wheel_radius = 6
         self.flag_height = 50
 
-    fn reset(mut self) -> SIMD[DType.float64, 2]:
+        # Discretization settings
+        self.num_bins = num_bins
+
+    # ========================================================================
+    # DiscreteEnv trait methods
+    # ========================================================================
+
+    fn reset(mut self) -> MountainCarState:
         """Reset environment to random initial state.
 
         Initial position is uniformly random in [-0.6, -0.4].
         Initial velocity is 0.
 
-        Returns observation: [position, velocity].
+        Returns MountainCarState with discretized state index.
         """
         # Random initial position in [-0.6, -0.4]
         self.position = -0.6 + random_float64() * 0.2
@@ -129,13 +197,15 @@ struct MountainCarNative:
         self.done = False
         self.total_reward = 0.0
 
-        return self._get_obs()
+        return MountainCarState(index=self._discretize_obs())
 
-    fn step(mut self, action: Int) -> Tuple[SIMD[DType.float64, 2], Float64, Bool]:
-        """Take action and return (observation, reward, done).
+    fn step(
+        mut self, action: MountainCarAction
+    ) -> Tuple[MountainCarState, Float64, Bool]:
+        """Take action and return (state, reward, done).
 
         Args:
-            action: 0 (push left), 1 (no push), 2 (push right)
+            action: MountainCarAction (direction 0=left, 1=no push, 2=right)
 
         Physics:
             velocity(t+1) = velocity(t) + (action - 1) * force - cos(3 * position(t)) * gravity
@@ -145,10 +215,14 @@ struct MountainCarNative:
         Collisions at boundaries are inelastic (velocity set to 0).
         """
         # Convert action to force direction: 0->-1, 1->0, 2->+1
-        var force_direction = Float64(action - 1)
+        var force_direction = Float64(action.direction - 1)
 
         # Update velocity
-        self.velocity = self.velocity + force_direction * self.force - cos(3.0 * self.position) * self.gravity
+        self.velocity = (
+            self.velocity
+            + force_direction * self.force
+            - cos(3.0 * self.position) * self.gravity
+        )
 
         # Clip velocity
         if self.velocity < -self.max_speed:
@@ -179,18 +253,96 @@ struct MountainCarNative:
         var reward: Float64 = -1.0
         self.total_reward += reward
 
-        return (self._get_obs(), reward, self.done)
+        return (
+            MountainCarState(index=self._discretize_obs()),
+            reward,
+            self.done,
+        )
 
-    fn _get_obs(self) -> SIMD[DType.float64, 2]:
+    fn _get_obs(self) -> SIMD[DType.float64, 4]:
         """Return current observation."""
-        var obs = SIMD[DType.float64, 2]()
+        var obs = SIMD[DType.float64, 4]()
         obs[0] = self.position
         obs[1] = self.velocity
+        obs[2] = 0.0
+        obs[3] = 0.0
         return obs
 
-    fn get_state(self) -> SIMD[DType.float64, 2]:
-        """Return current state (alias for _get_obs)."""
+    fn _discretize_obs(self) -> Int:
+        """Discretize current continuous observation into a single state index.
+        """
+        var pos_low: Float64 = -1.2
+        var pos_high: Float64 = 0.6
+        var vel_low: Float64 = -0.07
+        var vel_high: Float64 = 0.07
+
+        fn bin_value(
+            value: Float64, low: Float64, high: Float64, bins: Int
+        ) -> Int:
+            var normalized = (value - low) / (high - low)
+            if normalized < 0.0:
+                normalized = 0.0
+            elif normalized > 1.0:
+                normalized = 1.0
+            return Int(normalized * Float64(bins - 1))
+
+        var b0 = bin_value(self.position, pos_low, pos_high, self.num_bins)
+        var b1 = bin_value(self.velocity, vel_low, vel_high, self.num_bins)
+
+        return b0 * self.num_bins + b1
+
+    fn get_obs(self) -> SIMD[DType.float64, 4]:
+        """Return current continuous observation (for rendering/debugging)."""
         return self._get_obs()
+
+    fn get_state(self) -> MountainCarState:
+        """Return current discretized state."""
+        return MountainCarState(index=self._discretize_obs())
+
+    fn state_to_index(self, state: MountainCarState) -> Int:
+        """Convert a MountainCarState to an index for tabular methods."""
+        return state.index
+
+    fn action_from_index(self, action_idx: Int) -> MountainCarAction:
+        """Create a MountainCarAction from an index."""
+        return MountainCarAction(direction=action_idx)
+
+    # ========================================================================
+    # Raw observation API (for function approximation methods)
+    # ========================================================================
+
+    fn reset_obs(mut self) -> SIMD[DType.float64, 4]:
+        """Reset environment and return raw continuous observation.
+
+        Use this for function approximation methods (tile coding, linear FA)
+        that need the continuous observation vector.
+
+        Returns:
+            Continuous observation [position, velocity].
+        """
+        _ = self.reset()  # Reset internal state
+        return self._get_obs()
+
+    fn step_raw(
+        mut self, action: Int
+    ) -> Tuple[SIMD[DType.float64, 4], Float64, Bool]:
+        """Take action and return raw continuous observation.
+
+        Use this for function approximation methods that need the continuous
+        observation vector rather than discretized state.
+
+        Args:
+            action: 0 for left, 1 for no push, 2 for right.
+
+        Returns:
+            Tuple of (observation, reward, done).
+        """
+        var result = self.step(MountainCarAction(direction=action))
+        return (self._get_obs(), result[1], result[2])
+
+    # ========================================================================
+    # Internal helpers
+    # ========================================================================
 
     fn _height(self, position: Float64) -> Float64:
         """Get terrain height at a given position."""
@@ -215,7 +367,9 @@ struct MountainCarNative:
                 return
             self.render_initialized = True
             # Update scale based on actual screen width
-            self.scale_x = Float64(self.renderer.screen_width) / (self.max_position - self.min_position)
+            self.scale_x = Float64(self.renderer.screen_width) / (
+                self.max_position - self.min_position
+            )
 
         # Handle events
         if not self.renderer.handle_events():
@@ -229,7 +383,9 @@ struct MountainCarNative:
         var terrain_points = List[SDL_Point]()
 
         # Start from bottom-left
-        terrain_points.append(self.renderer.make_point(0, self.renderer.screen_height))
+        terrain_points.append(
+            self.renderer.make_point(0, self.renderer.screen_height)
+        )
 
         # Add terrain points
         var num_points = 100
@@ -250,7 +406,9 @@ struct MountainCarNative:
         )
 
         # Draw filled mountain
-        self.renderer.draw_polygon(terrain_points, self.mountain_color, filled=True)
+        self.renderer.draw_polygon(
+            terrain_points, self.mountain_color, filled=True
+        )
 
         # Draw mountain outline
         var outline_points = List[SDL_Point]()
@@ -291,7 +449,9 @@ struct MountainCarNative:
             )
         )
         flag_points.append(
-            self.renderer.make_point(flag_x, flag_base_y - self.flag_height + 20)
+            self.renderer.make_point(
+                flag_x, flag_base_y - self.flag_height + 20
+            )
         )
         self.renderer.draw_polygon(flag_points, self.flag_color, filled=True)
 
@@ -372,6 +532,10 @@ struct MountainCarNative:
         """Return observation dimension (2)."""
         return 2
 
+    fn num_states(self) -> Int:
+        """Return total number of discrete states."""
+        return self.num_bins * self.num_bins
+
     fn get_height(self, position: Float64) -> Float64:
         """Get the height of the car at a given position.
 
@@ -379,72 +543,78 @@ struct MountainCarNative:
         """
         return sin(3.0 * position) * 0.45 + 0.55
 
+    # ========================================================================
+    # Static methods for discretization
+    # ========================================================================
 
-fn discretize_obs_mountain_car(obs: SIMD[DType.float64, 2], num_bins: Int = 20) -> Int:
-    """Discretize continuous observation into a single state index.
+    @staticmethod
+    fn get_num_states(num_bins: Int = 20) -> Int:
+        """Get the number of discrete states for MountainCar with given bins."""
+        return num_bins * num_bins
 
-    Args:
-        obs: [position, velocity]
-        num_bins: Number of bins per dimension (default 20 -> 400 states).
+    @staticmethod
+    fn discretize_obs(obs: SIMD[DType.float64, 2], num_bins: Int = 20) -> Int:
+        """Discretize continuous observation into a single state index.
 
-    Returns:
-        Single integer state index in [0, num_bins^2).
-    """
-    var pos_low: Float64 = -1.2
-    var pos_high: Float64 = 0.6
-    var vel_low: Float64 = -0.07
-    var vel_high: Float64 = 0.07
+        Args:
+            obs: Continuous observation [position, velocity].
+            num_bins: Number of bins per dimension.
 
-    fn bin_value(value: Float64, low: Float64, high: Float64, bins: Int) -> Int:
-        var normalized = (value - low) / (high - low)
-        if normalized < 0.0:
-            normalized = 0.0
-        elif normalized > 1.0:
-            normalized = 1.0
-        return Int(normalized * Float64(bins - 1))
+        Returns:
+            Single integer state index.
+        """
+        var pos_low: Float64 = -1.2
+        var pos_high: Float64 = 0.6
+        var vel_low: Float64 = -0.07
+        var vel_high: Float64 = 0.07
 
-    var b0 = bin_value(obs[0], pos_low, pos_high, num_bins)
-    var b1 = bin_value(obs[1], vel_low, vel_high, num_bins)
+        fn bin_value(
+            value: Float64, low: Float64, high: Float64, bins: Int
+        ) -> Int:
+            var normalized = (value - low) / (high - low)
+            if normalized < 0.0:
+                normalized = 0.0
+            elif normalized > 1.0:
+                normalized = 1.0
+            return Int(normalized * Float64(bins - 1))
 
-    return b0 * num_bins + b1
+        var b0 = bin_value(obs[0], pos_low, pos_high, num_bins)
+        var b1 = bin_value(obs[1], vel_low, vel_high, num_bins)
 
+        return b0 * num_bins + b1
 
-fn get_num_states_mountain_car(num_bins: Int = 20) -> Int:
-    """Return total number of discretized states."""
-    return num_bins * num_bins
+    @staticmethod
+    fn make_tile_coding(
+        num_tilings: Int = 8,
+        tiles_per_dim: Int = 8,
+    ) -> TileCoding:
+        """Create tile coding configured for MountainCar environment.
 
+        MountainCar state: [position, velocity]
 
-fn make_mountain_car_tile_coding(
-    num_tilings: Int = 8,
-    tiles_per_dim: Int = 8,
-) -> TileCoding:
-    """Create tile coding configured for MountainCar environment.
+        Args:
+            num_tilings: Number of tilings (default 8).
+            tiles_per_dim: Tiles per dimension (default 8).
 
-    MountainCar state: [position, velocity]
+        Returns:
+            TileCoding configured for MountainCar state space.
+        """
+        var tiles = List[Int]()
+        tiles.append(tiles_per_dim)
+        tiles.append(tiles_per_dim)
 
-    Args:
-        num_tilings: Number of tilings (default 8).
-        tiles_per_dim: Tiles per dimension (default 8).
+        # MountainCar state bounds (slightly expanded for safety)
+        var state_low = List[Float64]()
+        state_low.append(-1.2)  # position min
+        state_low.append(-0.07)  # velocity min
 
-    Returns:
-        TileCoding configured for MountainCar state space.
-    """
-    var tiles = List[Int]()
-    tiles.append(tiles_per_dim)
-    tiles.append(tiles_per_dim)
+        var state_high = List[Float64]()
+        state_high.append(0.6)  # position max
+        state_high.append(0.07)  # velocity max
 
-    # MountainCar state bounds (slightly expanded for safety)
-    var state_low = List[Float64]()
-    state_low.append(-1.2)   # position min
-    state_low.append(-0.07)  # velocity min
-
-    var state_high = List[Float64]()
-    state_high.append(0.6)   # position max
-    state_high.append(0.07)  # velocity max
-
-    return TileCoding(
-        num_tilings=num_tilings,
-        tiles_per_dim=tiles^,
-        state_low=state_low^,
-        state_high=state_high^,
-    )
+        return TileCoding(
+            num_tilings=num_tilings,
+            tiles_per_dim=tiles^,
+            state_low=state_low^,
+            state_high=state_high^,
+        )

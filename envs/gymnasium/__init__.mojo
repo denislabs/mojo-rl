@@ -3,10 +3,10 @@ from .gymnasium_wrapper import GymnasiumEnv
 
 # Classic Control environments
 from .gymnasium_classic_control import (
-    CartPoleEnv,
-    MountainCarEnv,
-    PendulumEnv,
-    AcrobotEnv,
+    GymCartPoleEnv,
+    GymMountainCarEnv,
+    GymPendulumEnv,
+    GymAcrobotEnv,
     discretize_mountain_car,
     discretize_acrobot,
     discretize_cart_pole,
@@ -17,9 +17,9 @@ from .gymnasium_classic_control import (
 
 # Box2D environments
 from .gymnasium_box2d import (
-    LunarLanderEnv,
-    BipedalWalkerEnv,
-    CarRacingEnv,
+    GymLunarLanderEnv,
+    GymBipedalWalkerEnv,
+    GymCarRacingEnv,
     discretize_lunar_lander,
 )
 
@@ -27,13 +27,13 @@ from .gymnasium_box2d import (
 from .gymnasium_toy_text import (
     GymFrozenLakeEnv,
     GymTaxiEnv,
-    BlackjackEnv,
+    GymBlackjackEnv,
     GymCliffWalkingEnv,
 )
 
 # MuJoCo environments
 from .gymnasium_mujoco import (
-    MuJoCoEnv,
+    GymMuJoCoEnv,
     make_half_cheetah,
     make_ant,
     make_humanoid,

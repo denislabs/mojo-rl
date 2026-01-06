@@ -26,6 +26,7 @@ Usage:
 """
 
 from agents.ppo import PPOAgent, PPOAgentWithMinibatch
+from envs import CartPoleNative
 
 
 fn main() raises:
@@ -39,16 +40,27 @@ fn main() raises:
     print("-" * 60)
     print("Training PPO Agent")
     print("-" * 60)
-    var agent, metrics = PPOAgent.train(
-        num_episodes=500,
-        max_steps=500,
-        rollout_length=128,
+    var env = CartPoleNative()
+    var tile_coding = CartPoleNative.make_tile_coding(
+        num_tilings=8, tiles_per_dim=8
+    )
+    var agent = PPOAgent(
+        tile_coding=tile_coding,
+        num_actions=env.num_actions(),
         actor_lr=0.0003,
         critic_lr=0.001,
         clip_epsilon=0.2,
         gae_lambda=0.95,
         num_epochs=4,
         entropy_coef=0.01,
+    )
+
+    var metrics = agent.train(
+        env,
+        tile_coding,
+        num_episodes=500,
+        max_steps_per_episode=500,
+        rollout_length=128,
         verbose=True,
     )
 
@@ -66,5 +78,8 @@ fn main() raises:
     if metrics.mean_reward() >= 475:
         print("SUCCESS: CartPole solved!")
     else:
-        print("Training complete. Consider increasing episodes or tuning hyperparameters.")
+        print(
+            "Training complete. Consider increasing episodes or tuning"
+            " hyperparameters."
+        )
     print("=" * 60)

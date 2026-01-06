@@ -1,6 +1,6 @@
 from random import random_si64, random_float64
 from .qlearning import QTable
-from core import TabularAgent, DiscreteEnv, train_tabular_with_metrics, TrainingMetrics
+from core import TabularAgent, DiscreteEnv, TrainingMetrics
 
 
 struct ExpectedSARSAAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable):
@@ -15,11 +15,6 @@ struct ExpectedSARSAAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable):
 
     For epsilon-greedy:
     E[Q(s',a')] = (1-epsilon) * max_a Q(s',a) + (epsilon/|A|) * sum_a Q(s',a)
-
-    Benefits over SARSA:
-    - Lower variance (doesn't depend on which action was actually sampled)
-    - Often converges faster and to better policies
-    - Interpolates between SARSA (epsilon=1) and Q-learning (epsilon=0)
     """
 
     var q_table: QTable
@@ -70,16 +65,12 @@ struct ExpectedSARSAAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable):
         """Select action using epsilon-greedy policy."""
         var rand = random_float64()
         if rand < self.epsilon:
-            # random_si64 is inclusive on both ends, so use num_actions - 1
             return Int(random_si64(0, self.num_actions - 1))
         else:
             return self.q_table.get_best_action(state_idx)
 
     fn _get_expected_value(self, state_idx: Int) -> Float64:
-        """Compute expected Q-value under epsilon-greedy policy.
-
-        E[Q(s,a)] = (1-epsilon) * max_a Q(s,a) + (epsilon/|A|) * sum_a Q(s,a)
-        """
+        """Compute expected Q-value under epsilon-greedy policy."""
         var max_q = self.q_table.get_max_value(state_idx)
         var sum_q: Float64 = 0.0
 
@@ -89,13 +80,6 @@ struct ExpectedSARSAAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable):
         var greedy_prob = 1.0 - self.epsilon
         var explore_prob = self.epsilon / Float64(self.num_actions)
 
-        # Expected value = greedy_prob * max_q + explore_prob * sum_q
-        # But we need to be careful: the greedy action is counted in both terms
-        # Correct formula:
-        # E[Q] = sum over a of pi(a|s) * Q(s,a)
-        # pi(a|s) = epsilon/|A| for non-greedy, (1-epsilon) + epsilon/|A| for greedy
-        #
-        # Simplified: E[Q] = (1-epsilon)*max_q + (epsilon/|A|)*sum_q
         return greedy_prob * max_q + explore_prob * sum_q
 
     fn update(
@@ -106,10 +90,7 @@ struct ExpectedSARSAAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable):
         next_state_idx: Int,
         done: Bool,
     ):
-        """Update Q-value using Expected SARSA.
-
-        Q(s,a) += alpha * (r + gamma * E[Q(s',a')] - Q(s,a))
-        """
+        """Update Q-value using Expected SARSA."""
         var current_q = self.q_table.get(state_idx, action)
         var target: Float64
 
@@ -123,70 +104,115 @@ struct ExpectedSARSAAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable):
         self.q_table.set(state_idx, action, new_q)
 
     fn decay_epsilon(mut self):
-        """Decay epsilon after each episode."""
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
     fn get_epsilon(self) -> Float64:
-        """Return current epsilon value."""
         return self.epsilon
 
     fn get_best_action(self, state_idx: Int) -> Int:
-        """Return the greedy action for a state."""
         return self.q_table.get_best_action(state_idx)
 
-    # ========================================================================
-    # Static training method
-    # ========================================================================
-
-    @staticmethod
     fn train[E: DiscreteEnv](
+        mut self,
         mut env: E,
         num_episodes: Int,
         max_steps_per_episode: Int = 100,
-        learning_rate: Float64 = 0.1,
-        discount_factor: Float64 = 0.99,
-        epsilon: Float64 = 1.0,
-        epsilon_decay: Float64 = 0.995,
-        epsilon_min: Float64 = 0.01,
         verbose: Bool = False,
         print_every: Int = 100,
         environment_name: String = "Environment",
-    ) -> Tuple[ExpectedSARSAAgent, TrainingMetrics]:
-        """Train an Expected SARSA agent on the given environment.
+    ) -> TrainingMetrics:
+        """Train the agent on the given environment.
 
         Args:
             env: The discrete environment to train on.
             num_episodes: Number of episodes to train.
             max_steps_per_episode: Maximum steps per episode.
-            learning_rate: Learning rate (alpha).
-            discount_factor: Discount factor (gamma).
-            epsilon: Initial exploration rate.
-            epsilon_decay: Exploration decay rate per episode.
-            epsilon_min: Minimum exploration rate.
             verbose: Whether to print progress.
             print_every: Print progress every N episodes (if verbose).
             environment_name: Name of environment for metrics labeling.
 
         Returns:
-            Tuple of (trained_agent, training_metrics).
+            TrainingMetrics object with episode rewards and statistics.
         """
-        var agent = ExpectedSARSAAgent(
-            env.num_states(),
-            env.num_actions(),
-            learning_rate,
-            discount_factor,
-            epsilon,
-            epsilon_decay,
-            epsilon_min,
-        )
-        var metrics = train_tabular_with_metrics(
-            env,
-            agent,
-            num_episodes,
-            max_steps_per_episode,
-            verbose,
-            print_every,
+        var metrics = TrainingMetrics(
             algorithm_name="Expected SARSA",
             environment_name=environment_name,
         )
-        return (agent^, metrics^)
+
+        for episode in range(num_episodes):
+            var state = env.reset()
+            var total_reward: Float64 = 0.0
+            var steps = 0
+
+            for _ in range(max_steps_per_episode):
+                var state_idx = env.state_to_index(state)
+                var action_idx = self.select_action(state_idx)
+                var action = env.action_from_index(action_idx)
+
+                var result = env.step(action)
+                var next_state = result[0]
+                var reward = result[1]
+                var done = result[2]
+
+                var next_state_idx = env.state_to_index(next_state)
+                self.update(state_idx, action_idx, reward, next_state_idx, done)
+
+                total_reward += reward
+                steps += 1
+                state = next_state
+
+                if done:
+                    break
+
+            self.decay_epsilon()
+            metrics.log_episode(episode, total_reward, steps, self.epsilon)
+
+            if verbose and (episode + 1) % print_every == 0:
+                metrics.print_progress(episode, window=100)
+
+        return metrics^
+
+    fn evaluate[E: DiscreteEnv](
+        self,
+        mut env: E,
+        num_episodes: Int = 10,
+        render: Bool = False,
+    ) -> Float64:
+        """Evaluate the agent on the environment.
+
+        Args:
+            env: The discrete environment to evaluate on.
+            num_episodes: Number of evaluation episodes.
+            render: Whether to render the environment.
+
+        Returns:
+            Average reward across episodes.
+        """
+        var total_reward: Float64 = 0.0
+
+        for _ in range(num_episodes):
+            var state = env.reset()
+            var episode_reward: Float64 = 0.0
+
+            for _ in range(1000):
+                if render:
+                    env.render()
+
+                var state_idx = env.state_to_index(state)
+                var action_idx = self.get_best_action(state_idx)
+                var action = env.action_from_index(action_idx)
+
+                var result = env.step(action)
+                var next_state = result[0]
+                var reward = result[1]
+                var done = result[2]
+
+                episode_reward += reward
+                state = next_state
+
+                if done:
+                    break
+
+            total_reward += episode_reward
+
+        return total_reward / Float64(num_episodes)

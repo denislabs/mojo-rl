@@ -1,6 +1,6 @@
 from random import random_si64, random_float64
 from .qlearning import QTable
-from core import TabularAgent, ReplayBuffer, DiscreteEnv, train_tabular_with_metrics, TrainingMetrics
+from core import TabularAgent, ReplayBuffer, DiscreteEnv, TrainingMetrics
 
 
 struct QLearningReplayAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable):
@@ -152,68 +152,107 @@ struct QLearningReplayAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable)
         """Return the greedy action for a state."""
         return self.q_table.get_best_action(state_idx)
 
-    # ========================================================================
-    # Static training method
-    # ========================================================================
-
-    @staticmethod
     fn train[E: DiscreteEnv](
+        mut self,
         mut env: E,
         num_episodes: Int,
         max_steps_per_episode: Int = 100,
-        buffer_size: Int = 1000,
-        batch_size: Int = 32,
-        min_buffer_size: Int = 100,
-        learning_rate: Float64 = 0.1,
-        discount_factor: Float64 = 0.99,
-        epsilon: Float64 = 1.0,
-        epsilon_decay: Float64 = 0.995,
-        epsilon_min: Float64 = 0.01,
         verbose: Bool = False,
         print_every: Int = 100,
         environment_name: String = "Environment",
-    ) -> Tuple[QLearningReplayAgent, TrainingMetrics]:
-        """Train a Q-Learning with Replay agent on the given environment.
+    ) -> TrainingMetrics:
+        """Train the agent on the given environment.
 
         Args:
             env: The discrete environment to train on.
             num_episodes: Number of episodes to train.
             max_steps_per_episode: Maximum steps per episode.
-            buffer_size: Maximum replay buffer size.
-            batch_size: Mini-batch size for updates.
-            min_buffer_size: Minimum buffer size before learning.
-            learning_rate: Learning rate (alpha).
-            discount_factor: Discount factor (gamma).
-            epsilon: Initial exploration rate.
-            epsilon_decay: Exploration decay rate per episode.
-            epsilon_min: Minimum exploration rate.
             verbose: Whether to print progress.
             print_every: Print progress every N episodes (if verbose).
             environment_name: Name of environment for metrics labeling.
 
         Returns:
-            Tuple of (trained_agent, training_metrics).
+            TrainingMetrics object with episode rewards and statistics.
         """
-        var agent = QLearningReplayAgent(
-            env.num_states(),
-            env.num_actions(),
-            buffer_size,
-            batch_size,
-            min_buffer_size,
-            learning_rate,
-            discount_factor,
-            epsilon,
-            epsilon_decay,
-            epsilon_min,
-        )
-        var metrics = train_tabular_with_metrics(
-            env,
-            agent,
-            num_episodes,
-            max_steps_per_episode,
-            verbose,
-            print_every,
+        var metrics = TrainingMetrics(
             algorithm_name="Q-Learning + Replay",
             environment_name=environment_name,
         )
-        return (agent^, metrics^)
+
+        for episode in range(num_episodes):
+            var state = env.reset()
+            var total_reward: Float64 = 0.0
+            var steps = 0
+
+            for _ in range(max_steps_per_episode):
+                var state_idx = env.state_to_index(state)
+                var action_idx = self.select_action(state_idx)
+                var action = env.action_from_index(action_idx)
+
+                var result = env.step(action)
+                var next_state = result[0]
+                var reward = result[1]
+                var done = result[2]
+
+                var next_state_idx = env.state_to_index(next_state)
+                self.update(state_idx, action_idx, reward, next_state_idx, done)
+
+                total_reward += reward
+                steps += 1
+                state = next_state
+
+                if done:
+                    break
+
+            self.decay_epsilon()
+            metrics.log_episode(episode, total_reward, steps, self.epsilon)
+
+            if verbose and (episode + 1) % print_every == 0:
+                metrics.print_progress(episode, window=100)
+
+        return metrics^
+
+    fn evaluate[E: DiscreteEnv](
+        self,
+        mut env: E,
+        num_episodes: Int = 10,
+        render: Bool = False,
+    ) -> Float64:
+        """Evaluate the agent on the environment.
+
+        Args:
+            env: The discrete environment to evaluate on.
+            num_episodes: Number of evaluation episodes.
+            render: Whether to render the environment.
+
+        Returns:
+            Average reward across episodes.
+        """
+        var total_reward: Float64 = 0.0
+
+        for _ in range(num_episodes):
+            var state = env.reset()
+            var episode_reward: Float64 = 0.0
+
+            for _ in range(1000):
+                if render:
+                    env.render()
+
+                var state_idx = env.state_to_index(state)
+                var action_idx = self.get_best_action(state_idx)
+                var action = env.action_from_index(action_idx)
+
+                var result = env.step(action)
+                var next_state = result[0]
+                var reward = result[1]
+                var done = result[2]
+
+                episode_reward += reward
+                state = next_state
+
+                if done:
+                    break
+
+            total_reward += episode_reward
+
+        return total_reward / Float64(num_episodes)

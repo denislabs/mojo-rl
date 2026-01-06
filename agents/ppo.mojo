@@ -48,6 +48,7 @@ Example usage:
 from math import exp, log
 from random import random_float64
 from core.tile_coding import TileCoding
+from core import ClassicControlEnv, TrainingMetrics
 
 
 fn compute_gae(
@@ -608,6 +609,116 @@ struct PPOAgent(Copyable, Movable, ImplicitlyCopyable):
                 entropy -= probs[a] * log(probs[a])
         return entropy
 
+    fn train[E: ClassicControlEnv](
+        mut self,
+        mut env: E,
+        tile_coding: TileCoding,
+        num_episodes: Int,
+        max_steps_per_episode: Int = 500,
+        rollout_length: Int = 2048,
+        verbose: Bool = False,
+        print_every: Int = 100,
+        environment_name: String = "Environment",
+    ) -> TrainingMetrics:
+        """Train the PPO agent on a continuous-state environment.
+
+        Args:
+            env: Environment implementing ClassicControlEnv trait.
+            tile_coding: TileCoding instance for feature extraction.
+            num_episodes: Number of episodes to train.
+            max_steps_per_episode: Maximum steps per episode.
+            rollout_length: Steps to collect before each PPO update.
+            verbose: Whether to print progress.
+            print_every: Print frequency when verbose.
+            environment_name: Name for logging.
+
+        Returns:
+            Training metrics.
+        """
+        var metrics = TrainingMetrics(
+            algorithm_name="PPO",
+            environment_name=environment_name,
+        )
+
+        var total_steps = 0
+        for episode in range(num_episodes):
+            var obs = env.reset_obs()
+            var total_reward: Float64 = 0.0
+            var steps = 0
+
+            for _ in range(max_steps_per_episode):
+                var tiles = tile_coding.get_tiles_simd4(obs)
+                var action = self.select_action(tiles)
+                var log_prob = self.get_log_prob(tiles, action)
+                var value = self.get_value(tiles)
+
+                var result = env.step_raw(action)
+                var next_obs = result[0]
+                var reward = result[1]
+                var done = result[2]
+
+                self.store_transition(tiles, action, reward, log_prob, value)
+                total_reward += reward
+                steps += 1
+                total_steps += 1
+
+                # Update at rollout boundary or episode end
+                if total_steps % rollout_length == 0 or done:
+                    var next_tiles = tile_coding.get_tiles_simd4(next_obs)
+                    self.update(next_tiles, done)
+
+                obs = next_obs
+                if done:
+                    break
+
+            metrics.log_episode(episode, total_reward, steps, 0.0)
+            if verbose and (episode + 1) % print_every == 0:
+                metrics.print_progress(episode, window=100)
+
+        return metrics^
+
+    fn evaluate[E: ClassicControlEnv](
+        self,
+        mut env: E,
+        tile_coding: TileCoding,
+        num_episodes: Int = 100,
+        max_steps_per_episode: Int = 500,
+    ) -> Float64:
+        """Evaluate the PPO agent using greedy policy.
+
+        Args:
+            env: Environment implementing ClassicControlEnv trait.
+            tile_coding: TileCoding instance for feature extraction.
+            num_episodes: Number of evaluation episodes.
+            max_steps_per_episode: Maximum steps per episode.
+
+        Returns:
+            Average reward over evaluation episodes.
+        """
+        var total_reward: Float64 = 0.0
+
+        for _ in range(num_episodes):
+            var obs = env.reset_obs()
+            var episode_reward: Float64 = 0.0
+
+            for _ in range(max_steps_per_episode):
+                var tiles = tile_coding.get_tiles_simd4(obs)
+                var action = self.get_best_action(tiles)
+
+                var result = env.step_raw(action)
+                var next_obs = result[0]
+                var reward = result[1]
+                var done = result[2]
+
+                episode_reward += reward
+                obs = next_obs
+                if done:
+                    break
+
+            total_reward += episode_reward
+
+        return total_reward / Float64(num_episodes)
+
 
 struct PPOAgentWithMinibatch(Copyable, Movable, ImplicitlyCopyable):
     """PPO Agent with minibatch updates for larger rollouts.
@@ -1028,3 +1139,113 @@ struct PPOAgentWithMinibatch(Copyable, Movable, ImplicitlyCopyable):
             if probs[a] > 1e-10:
                 entropy -= probs[a] * log(probs[a])
         return entropy
+
+    fn train[E: ClassicControlEnv](
+        mut self,
+        mut env: E,
+        tile_coding: TileCoding,
+        num_episodes: Int,
+        max_steps_per_episode: Int = 500,
+        rollout_length: Int = 2048,
+        verbose: Bool = False,
+        print_every: Int = 100,
+        environment_name: String = "Environment",
+    ) -> TrainingMetrics:
+        """Train the PPO agent with minibatch updates.
+
+        Args:
+            env: Environment implementing ClassicControlEnv trait.
+            tile_coding: TileCoding instance for feature extraction.
+            num_episodes: Number of episodes to train.
+            max_steps_per_episode: Maximum steps per episode.
+            rollout_length: Steps to collect before each PPO update.
+            verbose: Whether to print progress.
+            print_every: Print frequency when verbose.
+            environment_name: Name for logging.
+
+        Returns:
+            Training metrics.
+        """
+        var metrics = TrainingMetrics(
+            algorithm_name="PPO (Minibatch)",
+            environment_name=environment_name,
+        )
+
+        var total_steps = 0
+        for episode in range(num_episodes):
+            var obs = env.reset_obs()
+            var total_reward: Float64 = 0.0
+            var steps = 0
+
+            for _ in range(max_steps_per_episode):
+                var tiles = tile_coding.get_tiles_simd4(obs)
+                var action = self.select_action(tiles)
+                var log_prob = self.get_log_prob(tiles, action)
+                var value = self.get_value(tiles)
+
+                var result = env.step_raw(action)
+                var next_obs = result[0]
+                var reward = result[1]
+                var done = result[2]
+
+                self.store_transition(tiles, action, reward, log_prob, value)
+                total_reward += reward
+                steps += 1
+                total_steps += 1
+
+                # Update at rollout boundary or episode end
+                if total_steps % rollout_length == 0 or done:
+                    var next_tiles = tile_coding.get_tiles_simd4(next_obs)
+                    self.update(next_tiles, done)
+
+                obs = next_obs
+                if done:
+                    break
+
+            metrics.log_episode(episode, total_reward, steps, 0.0)
+            if verbose and (episode + 1) % print_every == 0:
+                metrics.print_progress(episode, window=100)
+
+        return metrics^
+
+    fn evaluate[E: ClassicControlEnv](
+        self,
+        mut env: E,
+        tile_coding: TileCoding,
+        num_episodes: Int = 100,
+        max_steps_per_episode: Int = 500,
+    ) -> Float64:
+        """Evaluate the PPO agent using greedy policy.
+
+        Args:
+            env: Environment implementing ClassicControlEnv trait.
+            tile_coding: TileCoding instance for feature extraction.
+            num_episodes: Number of evaluation episodes.
+            max_steps_per_episode: Maximum steps per episode.
+
+        Returns:
+            Average reward over evaluation episodes.
+        """
+        var total_reward: Float64 = 0.0
+
+        for _ in range(num_episodes):
+            var obs = env.reset_obs()
+            var episode_reward: Float64 = 0.0
+
+            for _ in range(max_steps_per_episode):
+                var tiles = tile_coding.get_tiles_simd4(obs)
+                var action = self.get_best_action(tiles)
+
+                var result = env.step_raw(action)
+                var next_obs = result[0]
+                var reward = result[1]
+                var done = result[2]
+
+                episode_reward += reward
+                obs = next_obs
+                if done:
+                    break
+
+            total_reward += episode_reward
+
+        return total_reward / Float64(num_episodes)

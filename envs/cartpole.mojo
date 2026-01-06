@@ -14,9 +14,16 @@ Requires SDL2 and SDL2_ttf: brew install sdl2 sdl2_ttf
 
 from math import cos, sin
 from random import random_float64
-from core import State, Action, DiscreteEnv
+from core import (
+    State,
+    Action,
+    DiscreteEnv,
+    TileCoding,
+    ClassicControlEnv,
+    PolynomialFeatures,
+)
 from core.sdl2 import SDL_Color, SDL_Point
-from .native_renderer_base import NativeRendererBase
+from .renderer_base import RendererBase
 
 
 # ============================================================================
@@ -25,7 +32,7 @@ from .native_renderer_base import NativeRendererBase
 
 
 @fieldwise_init
-struct CartPoleState(State, Copyable, Movable, ImplicitlyCopyable):
+struct CartPoleState(Copyable, ImplicitlyCopyable, Movable, State):
     """State for CartPole: discretized state index.
 
     The continuous observation [x, x_dot, theta, theta_dot] is discretized
@@ -45,7 +52,7 @@ struct CartPoleState(State, Copyable, Movable, ImplicitlyCopyable):
 
 
 @fieldwise_init
-struct CartPoleAction(Action, Copyable, Movable, ImplicitlyCopyable):
+struct CartPoleAction(Action, Copyable, ImplicitlyCopyable, Movable):
     """Action for CartPole: 0 (push left), 1 (push right)."""
 
     var direction: Int
@@ -65,7 +72,7 @@ struct CartPoleAction(Action, Copyable, Movable, ImplicitlyCopyable):
         return Self(direction=1)
 
 
-struct CartPoleNative(DiscreteEnv):
+struct CartPoleEnv(ClassicControlEnv & DiscreteEnv):
     """Native Mojo CartPole environment with integrated SDL2 rendering.
 
     State: [cart_position, cart_velocity, pole_angle, pole_angular_velocity]
@@ -98,10 +105,10 @@ struct CartPoleNative(DiscreteEnv):
     var x_threshold: Float64
 
     # Current state
-    var x: Float64           # Cart position
-    var x_dot: Float64       # Cart velocity
-    var theta: Float64       # Pole angle (radians, 0 = upright)
-    var theta_dot: Float64   # Pole angular velocity
+    var x: Float64  # Cart position
+    var x_dot: Float64  # Cart velocity
+    var theta: Float64  # Pole angle (radians, 0 = upright)
+    var theta_dot: Float64  # Pole angular velocity
 
     # Episode tracking
     var steps: Int
@@ -110,7 +117,7 @@ struct CartPoleNative(DiscreteEnv):
     var total_reward: Float64
 
     # Renderer (lazy initialized)
-    var renderer: NativeRendererBase
+    var renderer: RendererBase
     var render_initialized: Bool
 
     # Renderer settings
@@ -143,7 +150,9 @@ struct CartPoleNative(DiscreteEnv):
         self.tau = 0.02  # 50 Hz updates
 
         # Termination thresholds
-        self.theta_threshold_radians = 12.0 * 3.141592653589793 / 180.0  # 12 degrees
+        self.theta_threshold_radians = (
+            12.0 * 3.141592653589793 / 180.0
+        )  # 12 degrees
         self.x_threshold = 2.4
 
         # State
@@ -159,7 +168,7 @@ struct CartPoleNative(DiscreteEnv):
         self.total_reward = 0.0
 
         # Initialize renderer (but don't open window yet)
-        self.renderer = NativeRendererBase(
+        self.renderer = RendererBase(
             width=600,
             height=400,
             fps=50,  # Match physics tau=0.02
@@ -178,7 +187,9 @@ struct CartPoleNative(DiscreteEnv):
         self.cart_width = 50
         self.cart_height = 30
         self.pole_width = 10
-        self.pole_len_pixels = Int(self.scale * 0.5 * 2)  # length * 2 (full pole)
+        self.pole_len_pixels = Int(
+            self.scale * 0.5 * 2
+        )  # length * 2 (full pole)
         self.axle_radius = 5
 
         # Discretization settings
@@ -205,7 +216,9 @@ struct CartPoleNative(DiscreteEnv):
 
         return CartPoleState(index=self._discretize_obs())
 
-    fn step(mut self, action: CartPoleAction) -> Tuple[CartPoleState, Float64, Bool]:
+    fn step(
+        mut self, action: CartPoleAction
+    ) -> Tuple[CartPoleState, Float64, Bool]:
         """Take action and return (state, reward, done).
 
         Args:
@@ -222,12 +235,16 @@ struct CartPoleNative(DiscreteEnv):
 
         # Equations of motion (derived from Lagrangian mechanics)
         var temp = (
-            force + self.polemass_length * self.theta_dot * self.theta_dot * sintheta
+            force
+            + self.polemass_length * self.theta_dot * self.theta_dot * sintheta
         ) / self.total_mass
 
         var thetaacc = (self.gravity * sintheta - costheta * temp) / (
             self.length
-            * (4.0 / 3.0 - self.masspole * costheta * costheta / self.total_mass)
+            * (
+                4.0 / 3.0
+                - self.masspole * costheta * costheta / self.total_mass
+            )
         )
 
         var xacc = (
@@ -286,7 +303,8 @@ struct CartPoleNative(DiscreteEnv):
         return obs
 
     fn _discretize_obs(self) -> Int:
-        """Discretize current continuous observation into a single state index."""
+        """Discretize current continuous observation into a single state index.
+        """
         var cart_pos_low: Float64 = -2.4
         var cart_pos_high: Float64 = 2.4
         var cart_vel_low: Float64 = -3.0
@@ -296,7 +314,9 @@ struct CartPoleNative(DiscreteEnv):
         var pole_vel_low: Float64 = -3.0
         var pole_vel_high: Float64 = 3.0
 
-        fn bin_value(value: Float64, low: Float64, high: Float64, bins: Int) -> Int:
+        fn bin_value(
+            value: Float64, low: Float64, high: Float64, bins: Int
+        ) -> Int:
             var normalized = (value - low) / (high - low)
             if normalized < 0.0:
                 normalized = 0.0
@@ -305,11 +325,19 @@ struct CartPoleNative(DiscreteEnv):
             return Int(normalized * Float64(bins - 1))
 
         var b0 = bin_value(self.x, cart_pos_low, cart_pos_high, self.num_bins)
-        var b1 = bin_value(self.x_dot, cart_vel_low, cart_vel_high, self.num_bins)
-        var b2 = bin_value(self.theta, pole_angle_low, pole_angle_high, self.num_bins)
-        var b3 = bin_value(self.theta_dot, pole_vel_low, pole_vel_high, self.num_bins)
+        var b1 = bin_value(
+            self.x_dot, cart_vel_low, cart_vel_high, self.num_bins
+        )
+        var b2 = bin_value(
+            self.theta, pole_angle_low, pole_angle_high, self.num_bins
+        )
+        var b3 = bin_value(
+            self.theta_dot, pole_vel_low, pole_vel_high, self.num_bins
+        )
 
-        return ((b0 * self.num_bins + b1) * self.num_bins + b2) * self.num_bins + b3
+        return (
+            (b0 * self.num_bins + b1) * self.num_bins + b2
+        ) * self.num_bins + b3
 
     fn get_obs(self) -> SIMD[DType.float64, 4]:
         """Return current continuous observation (for rendering/debugging)."""
@@ -331,7 +359,9 @@ struct CartPoleNative(DiscreteEnv):
         _ = self.reset()  # Reset internal state
         return self._get_obs()
 
-    fn step_raw(mut self, action: Int) -> Tuple[SIMD[DType.float64, 4], Float64, Bool]:
+    fn step_raw(
+        mut self, action: Int
+    ) -> Tuple[SIMD[DType.float64, 4], Float64, Bool]:
         """Take action and return raw continuous observation.
 
         Use this for function approximation methods that need the continuous
@@ -369,7 +399,9 @@ struct CartPoleNative(DiscreteEnv):
         self.renderer.clear()
 
         # Calculate cart position in pixels
-        var cart_x = Int(self.x * self.scale + Float64(self.renderer.screen_width) / 2.0)
+        var cart_x = Int(
+            self.x * self.scale + Float64(self.renderer.screen_width) / 2.0
+        )
 
         # Draw track
         var track_y = self.cart_y + self.cart_height // 2
@@ -483,7 +515,9 @@ struct CartPoleNative(DiscreteEnv):
         var pole_vel_low: Float64 = -3.0
         var pole_vel_high: Float64 = 3.0
 
-        fn bin_value(value: Float64, low: Float64, high: Float64, bins: Int) -> Int:
+        fn bin_value(
+            value: Float64, low: Float64, high: Float64, bins: Int
+        ) -> Int:
             var normalized = (value - low) / (high - low)
             if normalized < 0.0:
                 normalized = 0.0
@@ -497,3 +531,77 @@ struct CartPoleNative(DiscreteEnv):
         var b3 = bin_value(obs[3], pole_vel_low, pole_vel_high, num_bins)
 
         return ((b0 * num_bins + b1) * num_bins + b2) * num_bins + b3
+
+    @staticmethod
+    fn make_tile_coding(
+        num_tilings: Int = 8,
+        tiles_per_dim: Int = 8,
+    ) -> TileCoding:
+        """Create tile coding configured for CartPole environment.
+
+        CartPole state: [cart_position, cart_velocity, pole_angle, pole_angular_velocity]
+
+        Args:
+            num_tilings: Number of tilings (default 8)
+            tiles_per_dim: Tiles per dimension (default 8)
+
+        Returns:
+            TileCoding configured for CartPole state space
+        """
+        var tiles = List[Int]()
+        tiles.append(tiles_per_dim)
+        tiles.append(tiles_per_dim)
+        tiles.append(tiles_per_dim)
+        tiles.append(tiles_per_dim)
+
+        # CartPole state bounds (slightly expanded for safety)
+        var state_low = List[Float64]()
+        state_low.append(-2.5)  # cart position
+        state_low.append(-3.5)  # cart velocity
+        state_low.append(-0.25)  # pole angle (radians)
+        state_low.append(-3.5)  # pole angular velocity
+
+        var state_high = List[Float64]()
+        state_high.append(2.5)
+        state_high.append(3.5)
+        state_high.append(0.25)
+        state_high.append(3.5)
+
+        return TileCoding(
+            num_tilings=num_tilings,
+            tiles_per_dim=tiles^,
+            state_low=state_low^,
+            state_high=state_high^,
+        )
+
+    @staticmethod
+    fn make_poly_features(degree: Int = 2) -> PolynomialFeatures:
+        """Create polynomial features for CartPole (4D state) with normalization.
+
+        CartPole state: [cart_position, cart_velocity, pole_angle, pole_angular_velocity]
+
+        Args:
+            degree: Maximum polynomial degree (keep low for 4D to avoid explosion)
+
+        Returns:
+            PolynomialFeatures extractor configured for CartPole with normalization
+        """
+        var state_low = List[Float64]()
+        state_low.append(-2.4)  # cart position
+        state_low.append(-3.0)  # cart velocity
+        state_low.append(-0.21)  # pole angle (radians)
+        state_low.append(-3.0)  # pole angular velocity
+
+        var state_high = List[Float64]()
+        state_high.append(2.4)
+        state_high.append(3.0)
+        state_high.append(0.21)
+        state_high.append(3.0)
+
+        return PolynomialFeatures(
+            state_dim=4,
+            degree=degree,
+            include_bias=True,
+            state_low=state_low^,
+            state_high=state_high^,
+        )

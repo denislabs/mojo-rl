@@ -18,9 +18,13 @@ Advantages over value-based methods:
 Usage:
     pixi run mojo run examples/cartpole_policy_gradient.mojo
 """
-
+from envs import CartPoleEnv
 from agents.reinforce import REINFORCEAgent
-from agents.actor_critic import ActorCriticAgent, ActorCriticLambdaAgent, A2CAgent
+from agents.actor_critic import (
+    ActorCriticAgent,
+    ActorCriticLambdaAgent,
+    A2CAgent,
+)
 
 
 fn main() raises:
@@ -30,14 +34,28 @@ fn main() raises:
     print("=" * 60)
     print("")
 
+    var env = CartPoleEnv()
+    var tc = CartPoleEnv.make_tile_coding(
+        num_tilings=8,
+        tiles_per_dim=8,
+    )
+
     # Train REINFORCE
     print("-" * 60)
     print("1. REINFORCE (Monte Carlo Policy Gradient)")
     print("-" * 60)
-    var reinforce_agent, reinforce_metrics = REINFORCEAgent.train(
-        num_episodes=500,
+    var reinforce_agent = REINFORCEAgent(
+        tile_coding=tc,
+        num_actions=env.num_actions(),
         learning_rate=0.001,
         use_baseline=True,
+    )
+
+    var reinforce_metrics = reinforce_agent.train(
+        env,
+        tc,
+        num_episodes=500,
+        max_steps_per_episode=500,
         verbose=True,
     )
 
@@ -47,10 +65,17 @@ fn main() raises:
     print("-" * 60)
     print("2. Actor-Critic (Online TD-based)")
     print("-" * 60)
-    var ac_agent, ac_metrics = ActorCriticAgent.train(
-        num_episodes=500,
+    var ac_agent = ActorCriticAgent(
+        tile_coding=tc,
+        num_actions=env.num_actions(),
         actor_lr=0.001,
         critic_lr=0.01,
+    )
+    var ac_metrics = ac_agent.train(
+        env,
+        tc,
+        num_episodes=500,
+        max_steps_per_episode=500,
         verbose=True,
     )
 
@@ -60,11 +85,18 @@ fn main() raises:
     print("-" * 60)
     print("3. Actor-Critic(lambda) (Eligibility Traces)")
     print("-" * 60)
-    var ac_lambda_agent, ac_lambda_metrics = ActorCriticLambdaAgent.train(
-        num_episodes=500,
+    var ac_lambda_agent = ActorCriticLambdaAgent(
+        tile_coding=tc,
+        num_actions=env.num_actions(),
         actor_lr=0.001,
         critic_lr=0.01,
         lambda_=0.9,
+    )
+    var ac_lambda_metrics = ac_lambda_agent.train(
+        env,
+        tc,
+        num_episodes=500,
+        max_steps_per_episode=500,
         verbose=True,
     )
 
@@ -74,11 +106,18 @@ fn main() raises:
     print("-" * 60)
     print("4. A2C (N-step Returns)")
     print("-" * 60)
-    var a2c_agent, a2c_metrics = A2CAgent.train(
-        num_episodes=500,
+    var a2c_agent = A2CAgent(
+        tile_coding=tc,
+        num_actions=env.num_actions(),
         actor_lr=0.001,
         critic_lr=0.01,
         n_steps=5,
+    )
+    var a2c_metrics = a2c_agent.train(
+        env,
+        tc,
+        num_episodes=500,
+        max_steps_per_episode=500,
         verbose=True,
     )
 

@@ -31,6 +31,19 @@ References:
 from math import sqrt
 
 
+trait FeatureExtractor:
+    """Trait for feature extractors that convert continuous states to feature vectors.
+    """
+
+    fn get_features_simd4(self, state: SIMD[DType.float64, 4]) -> List[Float64]:
+        """Extract features from 4D SIMD state (e.g., CartPole)."""
+        ...
+
+    fn get_num_features(self) -> Int:
+        """Return the number of features."""
+        ...
+
+
 struct LinearWeights:
     """Weight storage for linear function approximation.
 
@@ -237,7 +250,9 @@ struct PolynomialFeatures:
         self.include_bias = include_bias
 
         # Check if normalization bounds are provided
-        self.normalize = len(state_low) == state_dim and len(state_high) == state_dim
+        self.normalize = (
+            len(state_low) == state_dim and len(state_high) == state_dim
+        )
         self.state_low = state_low^
         self.state_high = state_high^
 
@@ -274,7 +289,9 @@ struct PolynomialFeatures:
                 var range_size = self.state_high[i] - self.state_low[i]
                 if range_size > 0:
                     # Map to [0, 1] then to [-1, 1]
-                    var norm_val = 2.0 * (state[i] - self.state_low[i]) / range_size - 1.0
+                    var norm_val = (
+                        2.0 * (state[i] - self.state_low[i]) / range_size - 1.0
+                    )
                     # Clamp to [-1, 1]
                     if norm_val < -1.0:
                         norm_val = -1.0
@@ -335,7 +352,11 @@ struct PolynomialFeatures:
                 for x_deg in range(total_deg, -1, -1):
                     for y_deg in range(total_deg - x_deg, -1, -1):
                         var z_deg = total_deg - x_deg - y_deg
-                        var term = self._power(x, x_deg) * self._power(y, y_deg) * self._power(z, z_deg)
+                        var term = (
+                            self._power(x, x_deg)
+                            * self._power(y, y_deg)
+                            * self._power(z, z_deg)
+                        )
                         features.append(term)
 
         elif self.state_dim == 4:
@@ -350,7 +371,12 @@ struct PolynomialFeatures:
                     for d1 in range(total_deg - d0, -1, -1):
                         for d2 in range(total_deg - d0 - d1, -1, -1):
                             var d3 = total_deg - d0 - d1 - d2
-                            var term = self._power(x0, d0) * self._power(x1, d1) * self._power(x2, d2) * self._power(x3, d3)
+                            var term = (
+                                self._power(x0, d0)
+                                * self._power(x1, d1)
+                                * self._power(x2, d2)
+                                * self._power(x3, d3)
+                            )
                             features.append(term)
         else:
             # Fallback: just linear features
@@ -476,6 +502,7 @@ struct RBFFeatures:
         # exp(x) ≈ 1 + x + x²/2 + x³/6 + x⁴/24 + x⁵/120
         # But for better accuracy, we'll use the math module
         from math import exp
+
         return exp(x)
 
 
@@ -500,7 +527,11 @@ fn make_grid_rbf_centers(
     if state_dim == 1:
         for i in range(num_centers_per_dim):
             var c = List[Float64]()
-            var t = Float64(i) / Float64(num_centers_per_dim - 1) if num_centers_per_dim > 1 else 0.5
+            var t = (
+                Float64(i)
+                / Float64(num_centers_per_dim - 1) if num_centers_per_dim
+                > 1 else 0.5
+            )
             c.append(state_low[0] + t * (state_high[0] - state_low[0]))
             centers.append(c^)
 
@@ -508,8 +539,16 @@ fn make_grid_rbf_centers(
         for i in range(num_centers_per_dim):
             for j in range(num_centers_per_dim):
                 var c = List[Float64]()
-                var ti = Float64(i) / Float64(num_centers_per_dim - 1) if num_centers_per_dim > 1 else 0.5
-                var tj = Float64(j) / Float64(num_centers_per_dim - 1) if num_centers_per_dim > 1 else 0.5
+                var ti = (
+                    Float64(i)
+                    / Float64(num_centers_per_dim - 1) if num_centers_per_dim
+                    > 1 else 0.5
+                )
+                var tj = (
+                    Float64(j)
+                    / Float64(num_centers_per_dim - 1) if num_centers_per_dim
+                    > 1 else 0.5
+                )
                 c.append(state_low[0] + ti * (state_high[0] - state_low[0]))
                 c.append(state_low[1] + tj * (state_high[1] - state_low[1]))
                 centers.append(c^)
@@ -519,9 +558,27 @@ fn make_grid_rbf_centers(
             for j in range(num_centers_per_dim):
                 for k in range(num_centers_per_dim):
                     var c = List[Float64]()
-                    var ti = Float64(i) / Float64(num_centers_per_dim - 1) if num_centers_per_dim > 1 else 0.5
-                    var tj = Float64(j) / Float64(num_centers_per_dim - 1) if num_centers_per_dim > 1 else 0.5
-                    var tk = Float64(k) / Float64(num_centers_per_dim - 1) if num_centers_per_dim > 1 else 0.5
+                    var ti = (
+                        Float64(i)
+                        / Float64(
+                            num_centers_per_dim - 1
+                        ) if num_centers_per_dim
+                        > 1 else 0.5
+                    )
+                    var tj = (
+                        Float64(j)
+                        / Float64(
+                            num_centers_per_dim - 1
+                        ) if num_centers_per_dim
+                        > 1 else 0.5
+                    )
+                    var tk = (
+                        Float64(k)
+                        / Float64(
+                            num_centers_per_dim - 1
+                        ) if num_centers_per_dim
+                        > 1 else 0.5
+                    )
                     c.append(state_low[0] + ti * (state_high[0] - state_low[0]))
                     c.append(state_low[1] + tj * (state_high[1] - state_low[1]))
                     c.append(state_low[2] + tk * (state_high[2] - state_low[2]))
@@ -539,10 +596,18 @@ fn make_grid_rbf_centers(
                         var tj = Float64(j) / Float64(n - 1) if n > 1 else 0.5
                         var tk = Float64(k) / Float64(n - 1) if n > 1 else 0.5
                         var tl = Float64(l) / Float64(n - 1) if n > 1 else 0.5
-                        c.append(state_low[0] + ti * (state_high[0] - state_low[0]))
-                        c.append(state_low[1] + tj * (state_high[1] - state_low[1]))
-                        c.append(state_low[2] + tk * (state_high[2] - state_low[2]))
-                        c.append(state_low[3] + tl * (state_high[3] - state_low[3]))
+                        c.append(
+                            state_low[0] + ti * (state_high[0] - state_low[0])
+                        )
+                        c.append(
+                            state_low[1] + tj * (state_high[1] - state_low[1])
+                        )
+                        c.append(
+                            state_low[2] + tk * (state_high[2] - state_low[2])
+                        )
+                        c.append(
+                            state_low[3] + tl * (state_high[3] - state_low[3])
+                        )
                         centers.append(c^)
 
     return centers^
@@ -571,38 +636,6 @@ fn make_mountain_car_poly_features(degree: Int = 3) -> PolynomialFeatures:
 
     return PolynomialFeatures(
         state_dim=2,
-        degree=degree,
-        include_bias=True,
-        state_low=state_low^,
-        state_high=state_high^,
-    )
-
-
-fn make_cartpole_poly_features(degree: Int = 2) -> PolynomialFeatures:
-    """Create polynomial features for CartPole (4D state) with normalization.
-
-    CartPole state: [cart_position, cart_velocity, pole_angle, pole_angular_velocity]
-
-    Args:
-        degree: Maximum polynomial degree (keep low for 4D to avoid explosion)
-
-    Returns:
-        PolynomialFeatures extractor configured for CartPole with normalization
-    """
-    var state_low = List[Float64]()
-    state_low.append(-2.4)   # cart position
-    state_low.append(-3.0)   # cart velocity
-    state_low.append(-0.21)  # pole angle (radians)
-    state_low.append(-3.0)   # pole angular velocity
-
-    var state_high = List[Float64]()
-    state_high.append(2.4)
-    state_high.append(3.0)
-    state_high.append(0.21)
-    state_high.append(3.0)
-
-    return PolynomialFeatures(
-        state_dim=4,
         degree=degree,
         include_bias=True,
         state_low=state_low^,

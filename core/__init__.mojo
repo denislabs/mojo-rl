@@ -14,9 +14,20 @@ from .env_traits import (
 from .space import Space, DiscreteSpace, BoxSpace
 from .agent import Agent
 from .tabular_agent import TabularAgent
-from .training import train_tabular, evaluate_tabular, train_tabular_with_metrics
 from .replay_buffer import Transition, ReplayBuffer, PrioritizedReplayBuffer
-from .metrics import EpisodeMetrics, TrainingMetrics, compute_success_rate, compute_convergence_episode
-from .tile_coding import TileCoding, TiledWeights, make_cartpole_tile_coding
-from .linear_fa import LinearWeights, PolynomialFeatures, RBFFeatures, make_grid_rbf_centers, make_mountain_car_poly_features, make_cartpole_poly_features
+from .metrics import (
+    EpisodeMetrics,
+    TrainingMetrics,
+    compute_success_rate,
+    compute_convergence_episode,
+)
+from .tile_coding import TileCoding, TiledWeights
+from .linear_fa import (
+    LinearWeights,
+    PolynomialFeatures,
+    RBFFeatures,
+    make_grid_rbf_centers,
+    make_mountain_car_poly_features,
+    FeatureExtractor,
+)
 from .sdl2 import SDL2, SDL_Event, SDL_Point, SDL_Rect, SDL_Color

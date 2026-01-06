@@ -7,11 +7,11 @@ Compares:
 
 from time import perf_counter_ns
 from envs.gymnasium import (
-    CartPoleEnv,
+    GymCartPoleEnv,
     discretize_cart_pole,
     get_cart_pole_num_states,
 )
-from envs import CartPoleNative, CartPoleAction
+from envs import CartPoleEnv, CartPoleAction
 from agents.qlearning import QLearningAgent
 from random import seed
 
@@ -26,7 +26,7 @@ fn benchmark_gymnasium(
     var num_states = get_cart_pole_num_states(num_bins)
     var max_steps = 500
 
-    var env = CartPoleEnv()
+    var env = GymCartPoleEnv()
     var agent = QLearningAgent(
         num_states=num_states,
         num_actions=2,
@@ -104,10 +104,10 @@ fn benchmark_native(
 
     Returns: (total_time_seconds, avg_eval_reward, total_steps)
     """
-    var num_states = CartPoleNative.get_num_states(num_bins)
+    var num_states = get_cart_pole_num_states(num_bins)
     var max_steps = 500
 
-    var env = CartPoleNative(num_bins=num_bins)
+    var env = CartPoleEnv(num_bins=num_bins)
     var agent = QLearningAgent(
         num_states=num_states,
         num_actions=2,
@@ -133,7 +133,9 @@ fn benchmark_native(
             var reward = result[1]
             var done = result[2]
 
-            agent.update(state.index, action_idx, reward, next_state.index, done)
+            agent.update(
+                state.index, action_idx, reward, next_state.index, done
+            )
 
             state = next_state
             total_steps += 1
@@ -147,7 +149,7 @@ fn benchmark_native(
     var total_time = Float64(end_time - start_time) / 1_000_000_000.0
 
     # Evaluation
-    var eval_env = CartPoleNative(num_bins=num_bins)
+    var eval_env = CartPoleEnv(num_bins=num_bins)
     var eval_total: Float64 = 0.0
 
     for _ in range(10):

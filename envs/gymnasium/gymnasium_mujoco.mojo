@@ -23,7 +23,7 @@ Note: These require pip install "gymnasium[mujoco]" or mujoco-py
 from python import Python, PythonObject
 
 
-struct MuJoCoEnv:
+struct GymMuJoCoEnv:
     """Generic wrapper for MuJoCo environments.
 
     Since MuJoCo envs have varying observation/action dimensions,
@@ -57,7 +57,9 @@ struct MuJoCoEnv:
         self.env_name = env_name
 
         if render_mode == "human":
-            self.env = self.gym.make(env_name, render_mode=PythonObject("human"))
+            self.env = self.gym.make(
+                env_name, render_mode=PythonObject("human")
+            )
         else:
             self.env = self.gym.make(env_name)
 
@@ -95,7 +97,9 @@ struct MuJoCoEnv:
 
         return self.current_obs
 
-    fn step(mut self, action: List[Float64]) raises -> Tuple[List[Float64], Float64, Bool]:
+    fn step(
+        mut self, action: List[Float64]
+    ) raises -> Tuple[List[Float64], Float64, Bool]:
         """Take continuous action.
 
         Args:
@@ -136,13 +140,17 @@ struct MuJoCoEnv:
 
     fn get_info(self) -> String:
         return (
-            "MuJoCo Env: " + self.env_name +
-            " | Obs dim: " + String(self.obs_dim) +
-            " | Action dim: " + String(self.action_dim)
+            "MuJoCo Env: "
+            + self.env_name
+            + " | Obs dim: "
+            + String(self.obs_dim)
+            + " | Action dim: "
+            + String(self.action_dim)
         )
 
 
 # Convenience functions for common MuJoCo environments
+
 
 fn make_half_cheetah(render_mode: String = "") raises -> MuJoCoEnv:
     """HalfCheetah-v5: 2D cheetah running task.

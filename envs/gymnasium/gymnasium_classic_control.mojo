@@ -13,7 +13,7 @@ All use physics simulations with continuous observation spaces.
 from python import Python, PythonObject
 
 
-struct CartPoleEnv:
+struct GymCartPoleEnv:
     """CartPole-v1 environment via Gymnasium Python bindings.
 
     Observation space: Box(4,) - [cart_pos, cart_vel, pole_angle, pole_angular_vel]
@@ -167,7 +167,7 @@ fn get_cart_pole_num_states(num_bins: Int = 10) -> Int:
     return num_bins * num_bins * num_bins * num_bins
 
 
-struct MountainCarEnv:
+struct GymMountainCarEnv:
     """MountainCar-v0: Drive an underpowered car up a steep mountain.
 
     Observation: [position, velocity] - Box(2,)

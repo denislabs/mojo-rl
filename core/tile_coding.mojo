@@ -66,7 +66,9 @@ struct TileCoding:
         # Calculate tile widths for each dimension
         self.tile_widths = List[Float64]()
         for i in range(self.num_dims):
-            var width = (state_high[i] - state_low[i]) / Float64(tiles_per_dim[i])
+            var width = (state_high[i] - state_low[i]) / Float64(
+                tiles_per_dim[i]
+            )
             self.tile_widths.append(width)
 
         # Calculate tiles per tiling (product of tiles_per_dim)
@@ -87,7 +89,9 @@ struct TileCoding:
             var tiling_offsets = List[Float64]()
             for d in range(self.num_dims):
                 # Offset pattern: t * (2*d + 1) / num_tilings gives asymmetric offsets
-                var offset_fraction = Float64(t) * Float64(2 * d + 1) / Float64(num_tilings)
+                var offset_fraction = (
+                    Float64(t) * Float64(2 * d + 1) / Float64(num_tilings)
+                )
                 # Wrap to [0, 1) and scale by tile width
                 offset_fraction = offset_fraction - floor(offset_fraction)
                 var offset = offset_fraction * self.tile_widths[d]
@@ -127,7 +131,9 @@ struct TileCoding:
 
         for d in range(self.num_dims):
             # Apply offset for this tiling
-            var adjusted_value = state[d] - self.state_low[d] + self.offsets[tiling][d]
+            var adjusted_value = (
+                state[d] - self.state_low[d] + self.offsets[tiling][d]
+            )
 
             # Calculate bin index
             var bin_idx = Int(floor(adjusted_value / self.tile_widths[d]))
@@ -193,7 +199,9 @@ struct TiledWeights:
     var num_actions: Int
     var num_tiles: Int
 
-    fn __init__(out self, num_tiles: Int, num_actions: Int, init_value: Float64 = 0.0):
+    fn __init__(
+        out self, num_tiles: Int, num_actions: Int, init_value: Float64 = 0.0
+    ):
         """Initialize weights.
 
         Args:
@@ -310,45 +318,3 @@ struct TiledWeights:
         for a in range(self.num_actions):
             for t in range(self.num_tiles):
                 self.weights[a][t] += learning_rate * td_error * traces[a][t]
-
-
-fn make_cartpole_tile_coding(
-    num_tilings: Int = 8,
-    tiles_per_dim: Int = 8,
-) -> TileCoding:
-    """Create tile coding configured for CartPole environment.
-
-    CartPole state: [cart_position, cart_velocity, pole_angle, pole_angular_velocity]
-
-    Args:
-        num_tilings: Number of tilings (default 8)
-        tiles_per_dim: Tiles per dimension (default 8)
-
-    Returns:
-        TileCoding configured for CartPole state space
-    """
-    var tiles = List[Int]()
-    tiles.append(tiles_per_dim)
-    tiles.append(tiles_per_dim)
-    tiles.append(tiles_per_dim)
-    tiles.append(tiles_per_dim)
-
-    # CartPole state bounds (slightly expanded for safety)
-    var state_low = List[Float64]()
-    state_low.append(-2.5)   # cart position
-    state_low.append(-3.5)   # cart velocity
-    state_low.append(-0.25)  # pole angle (radians)
-    state_low.append(-3.5)   # pole angular velocity
-
-    var state_high = List[Float64]()
-    state_high.append(2.5)
-    state_high.append(3.5)
-    state_high.append(0.25)
-    state_high.append(3.5)
-
-    return TileCoding(
-        num_tilings=num_tilings,
-        tiles_per_dim=tiles^,
-        state_low=state_low^,
-        state_high=state_high^,
-    )

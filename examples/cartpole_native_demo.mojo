@@ -1,12 +1,11 @@
 """Native CartPole Demo with integrated SDL2 Rendering.
 
 Trains a Q-Learning agent on the native Mojo CartPole using the
-generic train_tabular function, then visualizes the trained agent.
+training function, then visualizes the trained agent.
 """
 
-from envs import CartPoleNative, CartPoleAction
+from envs import CartPoleEnv, CartPoleAction
 from agents.qlearning import QLearningAgent
-from core import train_tabular
 from random import seed
 
 
@@ -23,7 +22,7 @@ fn main() raises:
     var num_episodes = 2000  # More episodes for better policy
     var max_steps = 500
 
-    var num_states = CartPoleNative.get_num_states(num_bins)
+    var num_states = CartPoleEnv.get_num_states(num_bins)
     var num_actions = 2
 
     print("Configuration:")
@@ -32,7 +31,7 @@ fn main() raises:
     print()
 
     # Initialize environment and agent
-    var env = CartPoleNative(num_bins=num_bins)
+    var env = CartPoleEnv(num_bins=num_bins)
     var agent = QLearningAgent(
         num_states=num_states,
         num_actions=num_actions,
@@ -43,51 +42,22 @@ fn main() raises:
         epsilon_min=0.01,
     )
 
-    # Training using generic train_tabular function
     print("Training (pure Mojo, no rendering)...")
-    var rewards = train_tabular(
+    var metrics = agent.train(
         env,
-        agent,
         num_episodes=num_episodes,
         max_steps_per_episode=max_steps,
         verbose=True,
     )
 
-    # Find best reward
-    var best_reward: Float64 = 0.0
-    for i in range(len(rewards)):
-        if rewards[i] > best_reward:
-            best_reward = rewards[i]
-
     print()
-    print("Training complete! Best reward:", Int(best_reward))
+    print("Training complete! Best reward:", Int(metrics.max_reward()))
     print()
 
     # Evaluation without rendering
     print("Evaluating (10 episodes, no render)...")
-    var eval_total: Float64 = 0.0
-
-    for _ in range(10):
-        var state = env.reset()
-        var ep_reward: Float64 = 0.0
-
-        for _ in range(max_steps):
-            var action_idx = agent.get_best_action(state.index)
-            var action = CartPoleAction(direction=action_idx)
-            var result = env.step(action)
-            var next_state = result[0]
-            var reward = result[1]
-            var done = result[2]
-
-            ep_reward += reward
-            state = next_state
-
-            if done:
-                break
-
-        eval_total += ep_reward
-
-    print("  Average evaluation reward:", Int(eval_total / 10.0))
+    var eval_reward = agent.evaluate(env, num_episodes=10)
+    print("  Average evaluation reward:", Int(eval_reward))
     print()
 
     # Visual demo with integrated SDL2 renderer
@@ -98,33 +68,7 @@ fn main() raises:
     print("(Close window to exit)")
     print()
 
-    for ep in range(3):
-        var state = env.reset()
-        var ep_reward: Float64 = 0.0
-        var step_count = 0
-
-        # Initial render
-        env.render()
-
-        for _ in range(max_steps):
-            var action_idx = agent.get_best_action(state.index)
-            var action = CartPoleAction(direction=action_idx)
-            var result = env.step(action)
-            var next_state = result[0]
-            var reward = result[1]
-            var done = result[2]
-
-            ep_reward += reward
-            state = next_state
-            step_count += 1
-
-            # Render current state using integrated render() method
-            env.render()
-
-            if done:
-                break
-
-        print("Episode", ep + 1, "| Reward:", Int(ep_reward), "| Steps:", step_count)
+    var _ = agent.evaluate(env, num_episodes=3, render=True)
 
     env.close()
     print()

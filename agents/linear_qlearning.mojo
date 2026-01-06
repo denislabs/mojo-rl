@@ -40,6 +40,7 @@ References:
 
 from random import random_float64, random_si64
 from core.linear_fa import LinearWeights
+from core import ClassicControlEnv, TrainingMetrics, FeatureExtractor
 
 
 struct LinearQLearningAgent:
@@ -189,6 +190,107 @@ struct LinearQLearningAgent:
         """Reset for new episode (no-op for Q-learning)."""
         pass
 
+    fn train[E: ClassicControlEnv, F: FeatureExtractor](
+        mut self,
+        mut env: E,
+        features: F,
+        num_episodes: Int,
+        max_steps_per_episode: Int = 500,
+        verbose: Bool = False,
+        print_every: Int = 100,
+        environment_name: String = "Environment",
+    ) -> TrainingMetrics:
+        """Train the linear Q-learning agent on a continuous-state environment.
+
+        Args:
+            env: Environment implementing ClassicControlEnv trait.
+            features: Feature extractor implementing FeatureExtractor trait.
+            num_episodes: Number of episodes to train.
+            max_steps_per_episode: Maximum steps per episode.
+            verbose: Whether to print progress.
+            print_every: Print frequency when verbose.
+            environment_name: Name for logging.
+
+        Returns:
+            Training metrics.
+        """
+        var metrics = TrainingMetrics(
+            algorithm_name="Linear Q-Learning",
+            environment_name=environment_name,
+        )
+
+        for episode in range(num_episodes):
+            var obs = env.reset_obs()
+            var total_reward: Float64 = 0.0
+            var steps = 0
+
+            for _ in range(max_steps_per_episode):
+                var phi = features.get_features_simd4(obs)
+                var action = self.select_action(phi)
+
+                var result = env.step_raw(action)
+                var next_obs = result[0]
+                var reward = result[1]
+                var done = result[2]
+
+                var phi_next = features.get_features_simd4(next_obs)
+                self.update(phi, action, reward, phi_next, done)
+
+                total_reward += reward
+                steps += 1
+                obs = next_obs
+                if done:
+                    break
+
+            self.decay_epsilon()
+            metrics.log_episode(episode, total_reward, steps, self.epsilon)
+            if verbose and (episode + 1) % print_every == 0:
+                metrics.print_progress(episode, window=100)
+
+        return metrics^
+
+    fn evaluate[E: ClassicControlEnv, F: FeatureExtractor](
+        self,
+        mut env: E,
+        features: F,
+        num_episodes: Int = 100,
+        max_steps_per_episode: Int = 500,
+    ) -> Float64:
+        """Evaluate the linear Q-learning agent using greedy policy.
+
+        Args:
+            env: Environment implementing ClassicControlEnv trait.
+            features: Feature extractor implementing FeatureExtractor trait.
+            num_episodes: Number of evaluation episodes.
+            max_steps_per_episode: Maximum steps per episode.
+
+        Returns:
+            Average reward over evaluation episodes.
+        """
+        var total_reward: Float64 = 0.0
+
+        for _ in range(num_episodes):
+            var obs = env.reset_obs()
+            var episode_reward: Float64 = 0.0
+
+            for _ in range(max_steps_per_episode):
+                var phi = features.get_features_simd4(obs)
+                var action = self.get_best_action(phi)
+
+                var result = env.step_raw(action)
+                var next_obs = result[0]
+                var reward = result[1]
+                var done = result[2]
+
+                episode_reward += reward
+                obs = next_obs
+                if done:
+                    break
+
+            total_reward += episode_reward
+
+        return total_reward / Float64(num_episodes)
+
 
 struct LinearSARSAAgent:
     """SARSA agent with linear function approximation.
@@ -284,6 +386,110 @@ struct LinearSARSAAgent:
     fn reset(mut self):
         """Reset for new episode."""
         pass
+
+    fn train[E: ClassicControlEnv, F: FeatureExtractor](
+        mut self,
+        mut env: E,
+        features: F,
+        num_episodes: Int,
+        max_steps_per_episode: Int = 500,
+        verbose: Bool = False,
+        print_every: Int = 100,
+        environment_name: String = "Environment",
+    ) -> TrainingMetrics:
+        """Train the linear SARSA agent on a continuous-state environment.
+
+        Args:
+            env: Environment implementing ClassicControlEnv trait.
+            features: Feature extractor implementing FeatureExtractor trait.
+            num_episodes: Number of episodes to train.
+            max_steps_per_episode: Maximum steps per episode.
+            verbose: Whether to print progress.
+            print_every: Print frequency when verbose.
+            environment_name: Name for logging.
+
+        Returns:
+            Training metrics.
+        """
+        var metrics = TrainingMetrics(
+            algorithm_name="Linear SARSA",
+            environment_name=environment_name,
+        )
+
+        for episode in range(num_episodes):
+            var obs = env.reset_obs()
+            var action = self.select_action(features.get_features_simd4(obs))
+            var total_reward: Float64 = 0.0
+            var steps = 0
+
+            for _ in range(max_steps_per_episode):
+                var phi = features.get_features_simd4(obs)
+
+                var result = env.step_raw(action)
+                var next_obs = result[0]
+                var reward = result[1]
+                var done = result[2]
+
+                var phi_next = features.get_features_simd4(next_obs)
+                var next_action = self.select_action(phi_next)
+
+                self.update(phi, action, reward, phi_next, next_action, done)
+
+                total_reward += reward
+                steps += 1
+                obs = next_obs
+                action = next_action
+                if done:
+                    break
+
+            self.decay_epsilon()
+            metrics.log_episode(episode, total_reward, steps, self.epsilon)
+            if verbose and (episode + 1) % print_every == 0:
+                metrics.print_progress(episode, window=100)
+
+        return metrics^
+
+    fn evaluate[E: ClassicControlEnv, F: FeatureExtractor](
+        self,
+        mut env: E,
+        features: F,
+        num_episodes: Int = 100,
+        max_steps_per_episode: Int = 500,
+    ) -> Float64:
+        """Evaluate the linear SARSA agent using greedy policy.
+
+        Args:
+            env: Environment implementing ClassicControlEnv trait.
+            features: Feature extractor implementing FeatureExtractor trait.
+            num_episodes: Number of evaluation episodes.
+            max_steps_per_episode: Maximum steps per episode.
+
+        Returns:
+            Average reward over evaluation episodes.
+        """
+        var total_reward: Float64 = 0.0
+
+        for _ in range(num_episodes):
+            var obs = env.reset_obs()
+            var episode_reward: Float64 = 0.0
+
+            for _ in range(max_steps_per_episode):
+                var phi = features.get_features_simd4(obs)
+                var action = self.get_best_action(phi)
+
+                var result = env.step_raw(action)
+                var next_obs = result[0]
+                var reward = result[1]
+                var done = result[2]
+
+                episode_reward += reward
+                obs = next_obs
+                if done:
+                    break
+
+            total_reward += episode_reward
+
+        return total_reward / Float64(num_episodes)
 
 
 struct LinearSARSALambdaAgent:
@@ -423,3 +629,108 @@ struct LinearSARSALambdaAgent:
         for a in range(self.num_actions):
             for i in range(self.num_features):
                 self.traces[a][i] = 0.0
+
+    fn train[E: ClassicControlEnv, F: FeatureExtractor](
+        mut self,
+        mut env: E,
+        features: F,
+        num_episodes: Int,
+        max_steps_per_episode: Int = 500,
+        verbose: Bool = False,
+        print_every: Int = 100,
+        environment_name: String = "Environment",
+    ) -> TrainingMetrics:
+        """Train the linear SARSA(λ) agent on a continuous-state environment.
+
+        Args:
+            env: Environment implementing ClassicControlEnv trait.
+            features: Feature extractor implementing FeatureExtractor trait.
+            num_episodes: Number of episodes to train.
+            max_steps_per_episode: Maximum steps per episode.
+            verbose: Whether to print progress.
+            print_every: Print frequency when verbose.
+            environment_name: Name for logging.
+
+        Returns:
+            Training metrics.
+        """
+        var metrics = TrainingMetrics(
+            algorithm_name="Linear SARSA(λ)",
+            environment_name=environment_name,
+        )
+
+        for episode in range(num_episodes):
+            self.reset()  # Reset eligibility traces
+            var obs = env.reset_obs()
+            var action = self.select_action(features.get_features_simd4(obs))
+            var total_reward: Float64 = 0.0
+            var steps = 0
+
+            for _ in range(max_steps_per_episode):
+                var phi = features.get_features_simd4(obs)
+
+                var result = env.step_raw(action)
+                var next_obs = result[0]
+                var reward = result[1]
+                var done = result[2]
+
+                var phi_next = features.get_features_simd4(next_obs)
+                var next_action = self.select_action(phi_next)
+
+                self.update(phi, action, reward, phi_next, next_action, done)
+
+                total_reward += reward
+                steps += 1
+                obs = next_obs
+                action = next_action
+                if done:
+                    break
+
+            self.decay_epsilon()
+            metrics.log_episode(episode, total_reward, steps, self.epsilon)
+            if verbose and (episode + 1) % print_every == 0:
+                metrics.print_progress(episode, window=100)
+
+        return metrics^
+
+    fn evaluate[E: ClassicControlEnv, F: FeatureExtractor](
+        self,
+        mut env: E,
+        features: F,
+        num_episodes: Int = 100,
+        max_steps_per_episode: Int = 500,
+    ) -> Float64:
+        """Evaluate the linear SARSA(λ) agent using greedy policy.
+
+        Args:
+            env: Environment implementing ClassicControlEnv trait.
+            features: Feature extractor implementing FeatureExtractor trait.
+            num_episodes: Number of evaluation episodes.
+            max_steps_per_episode: Maximum steps per episode.
+
+        Returns:
+            Average reward over evaluation episodes.
+        """
+        var total_reward: Float64 = 0.0
+
+        for _ in range(num_episodes):
+            var obs = env.reset_obs()
+            var episode_reward: Float64 = 0.0
+
+            for _ in range(max_steps_per_episode):
+                var phi = features.get_features_simd4(obs)
+                var action = self.get_best_action(phi)
+
+                var result = env.step_raw(action)
+                var next_obs = result[0]
+                var reward = result[1]
+                var done = result[2]
+
+                episode_reward += reward
+                obs = next_obs
+                if done:
+                    break
+
+            total_reward += episode_reward
+
+        return total_reward / Float64(num_episodes)

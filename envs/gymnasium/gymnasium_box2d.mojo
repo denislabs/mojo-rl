@@ -11,7 +11,7 @@ These use the Box2D physics engine for 2D rigid body simulation.
 from python import Python, PythonObject
 
 
-struct LunarLanderEnv:
+struct GymLunarLanderEnv:
     """LunarLander-v3: Land a spacecraft on the moon.
 
     Observation: Box(8,)
@@ -43,7 +43,9 @@ struct LunarLanderEnv:
     var episode_length: Int
     var is_continuous: Bool
 
-    fn __init__(out self, continuous: Bool = False, render_mode: String = "") raises:
+    fn __init__(
+        out self, continuous: Bool = False, render_mode: String = ""
+    ) raises:
         """Initialize LunarLander.
 
         Args:
@@ -57,12 +59,20 @@ struct LunarLanderEnv:
         var env_name = "LunarLander-v3"
         if render_mode == "human":
             if continuous:
-                self.env = self.gym.make(env_name, continuous=PythonObject(True), render_mode=PythonObject("human"))
+                self.env = self.gym.make(
+                    env_name,
+                    continuous=PythonObject(True),
+                    render_mode=PythonObject("human"),
+                )
             else:
-                self.env = self.gym.make(env_name, render_mode=PythonObject("human"))
+                self.env = self.gym.make(
+                    env_name, render_mode=PythonObject("human")
+                )
         else:
             if continuous:
-                self.env = self.gym.make(env_name, continuous=PythonObject(True))
+                self.env = self.gym.make(
+                    env_name, continuous=PythonObject(True)
+                )
             else:
                 self.env = self.gym.make(env_name)
 
@@ -81,7 +91,9 @@ struct LunarLanderEnv:
         self.episode_length = 0
         return self.current_obs
 
-    fn step_discrete(mut self, action: Int) raises -> Tuple[SIMD[DType.float64, 8], Float64, Bool]:
+    fn step_discrete(
+        mut self, action: Int
+    ) raises -> Tuple[SIMD[DType.float64, 8], Float64, Bool]:
         """Take discrete action (0-3)."""
         var result = self.env.step(action)
         var obs = result[0]
@@ -97,7 +109,9 @@ struct LunarLanderEnv:
 
         return (self.current_obs, reward, self.done)
 
-    fn step_continuous(mut self, main_throttle: Float64, lateral_throttle: Float64) raises -> Tuple[SIMD[DType.float64, 8], Float64, Bool]:
+    fn step_continuous(
+        mut self, main_throttle: Float64, lateral_throttle: Float64
+    ) raises -> Tuple[SIMD[DType.float64, 8], Float64, Bool]:
         """Take continuous action [main_engine, lateral_engine]."""
         var action = self.np.array([main_throttle, lateral_throttle])
         var result = self.env.step(action)
@@ -124,7 +138,7 @@ struct LunarLanderEnv:
         return 8
 
 
-struct BipedalWalkerEnv:
+struct GymBipedalWalkerEnv:
     """BipedalWalker-v3: Walk with a 2D biped robot.
 
     Observation: Box(24,)
@@ -151,7 +165,9 @@ struct BipedalWalkerEnv:
     var episode_length: Int
     var hardcore: Bool
 
-    fn __init__(out self, hardcore: Bool = False, render_mode: String = "") raises:
+    fn __init__(
+        out self, hardcore: Bool = False, render_mode: String = ""
+    ) raises:
         """Initialize BipedalWalker.
 
         Args:
@@ -162,9 +178,13 @@ struct BipedalWalkerEnv:
         self.np = Python.import_module("numpy")
         self.hardcore = hardcore
 
-        var env_name = "BipedalWalkerHardcore-v3" if hardcore else "BipedalWalker-v3"
+        var env_name = (
+            "BipedalWalkerHardcore-v3" if hardcore else "BipedalWalker-v3"
+        )
         if render_mode == "human":
-            self.env = self.gym.make(env_name, render_mode=PythonObject("human"))
+            self.env = self.gym.make(
+                env_name, render_mode=PythonObject("human")
+            )
         else:
             self.env = self.gym.make(env_name)
 
@@ -185,7 +205,9 @@ struct BipedalWalkerEnv:
         self.episode_length = 0
         return self.current_obs
 
-    fn step(mut self, hip1: Float64, knee1: Float64, hip2: Float64, knee2: Float64) raises -> Tuple[List[Float64], Float64, Bool]:
+    fn step(
+        mut self, hip1: Float64, knee1: Float64, hip2: Float64, knee2: Float64
+    ) raises -> Tuple[List[Float64], Float64, Bool]:
         """Take continuous action [hip1, knee1, hip2, knee2]."""
         var action = self.np.array([hip1, knee1, hip2, knee2])
         var result = self.env.step(action)
@@ -212,7 +234,7 @@ struct BipedalWalkerEnv:
         return 4
 
 
-struct CarRacingEnv:
+struct GymCarRacingEnv:
     """CarRacing-v3: Drive a car around a randomly generated track.
 
     Observation: Box(96, 96, 3) - RGB image from top-down view
@@ -238,7 +260,9 @@ struct CarRacingEnv:
     var episode_length: Int
     var is_continuous: Bool
 
-    fn __init__(out self, continuous: Bool = True, render_mode: String = "") raises:
+    fn __init__(
+        out self, continuous: Bool = True, render_mode: String = ""
+    ) raises:
         """Initialize CarRacing.
 
         Args:
@@ -251,14 +275,26 @@ struct CarRacingEnv:
 
         if render_mode == "human":
             if continuous:
-                self.env = self.gym.make("CarRacing-v3", continuous=PythonObject(True), render_mode=PythonObject("human"))
+                self.env = self.gym.make(
+                    "CarRacing-v3",
+                    continuous=PythonObject(True),
+                    render_mode=PythonObject("human"),
+                )
             else:
-                self.env = self.gym.make("CarRacing-v3", continuous=PythonObject(False), render_mode=PythonObject("human"))
+                self.env = self.gym.make(
+                    "CarRacing-v3",
+                    continuous=PythonObject(False),
+                    render_mode=PythonObject("human"),
+                )
         else:
             if continuous:
-                self.env = self.gym.make("CarRacing-v3", continuous=PythonObject(True))
+                self.env = self.gym.make(
+                    "CarRacing-v3", continuous=PythonObject(True)
+                )
             else:
-                self.env = self.gym.make("CarRacing-v3", continuous=PythonObject(False))
+                self.env = self.gym.make(
+                    "CarRacing-v3", continuous=PythonObject(False)
+                )
 
         self.done = False
         self.episode_reward = 0.0
@@ -272,7 +308,9 @@ struct CarRacingEnv:
         self.episode_length = 0
         return result[0]
 
-    fn step_discrete(mut self, action: Int) raises -> Tuple[PythonObject, Float64, Bool]:
+    fn step_discrete(
+        mut self, action: Int
+    ) raises -> Tuple[PythonObject, Float64, Bool]:
         """Take discrete action (0-4)."""
         var result = self.env.step(action)
         var obs = result[0]
@@ -286,7 +324,9 @@ struct CarRacingEnv:
 
         return (obs, reward, self.done)
 
-    fn step_continuous(mut self, steering: Float64, gas: Float64, brake: Float64) raises -> Tuple[PythonObject, Float64, Bool]:
+    fn step_continuous(
+        mut self, steering: Float64, gas: Float64, brake: Float64
+    ) raises -> Tuple[PythonObject, Float64, Bool]:
         """Take continuous action [steering, gas, brake]."""
         var action = self.np.array([steering, gas, brake])
         var result = self.env.step(action)
@@ -315,15 +355,21 @@ struct CarRacingEnv:
 
 
 # Discretization helper for LunarLander
-fn discretize_lunar_lander(obs: SIMD[DType.float64, 8], num_bins: Int = 10) -> Int:
+fn discretize_lunar_lander(
+    obs: SIMD[DType.float64, 8], num_bins: Int = 10
+) -> Int:
     """Discretize LunarLander observation into state index.
 
     Note: With 8 dimensions and 10 bins, this creates 10^8 = 100M states.
     Use fewer bins for tabular methods.
     """
     # Approximate bounds for each dimension
-    var bounds_low = SIMD[DType.float64, 8](-1.5, -1.5, -5.0, -5.0, -3.14, -5.0, 0.0, 0.0)
-    var bounds_high = SIMD[DType.float64, 8](1.5, 1.5, 5.0, 5.0, 3.14, 5.0, 1.0, 1.0)
+    var bounds_low = SIMD[DType.float64, 8](
+        -1.5, -1.5, -5.0, -5.0, -3.14, -5.0, 0.0, 0.0
+    )
+    var bounds_high = SIMD[DType.float64, 8](
+        1.5, 1.5, 5.0, 5.0, 3.14, 5.0, 1.0, 1.0
+    )
 
     fn bin_value(value: Float64, low: Float64, high: Float64, bins: Int) -> Int:
         var normalized = (value - low) / (high - low)

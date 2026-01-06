@@ -2,7 +2,7 @@ from core import State, Action, Env, DiscreteEnv
 
 
 @fieldwise_init
-struct TaxiState(State, Copyable, Movable, ImplicitlyCopyable):
+struct TaxiState(Copyable, ImplicitlyCopyable, Movable, State):
     """State for Taxi environment.
 
     Encodes: taxi position (row, col), passenger location, destination.
@@ -35,8 +35,9 @@ struct TaxiState(State, Copyable, Movable, ImplicitlyCopyable):
 
 
 @fieldwise_init
-struct TaxiAction(Action, Copyable, Movable, ImplicitlyCopyable):
-    """Action for Taxi: 0=south, 1=north, 2=east, 3=west, 4=pickup, 5=dropoff."""
+struct TaxiAction(Action, Copyable, ImplicitlyCopyable, Movable):
+    """Action for Taxi: 0=south, 1=north, 2=east, 3=west, 4=pickup, 5=dropoff.
+    """
 
     var action: Int
 
@@ -71,7 +72,7 @@ struct TaxiAction(Action, Copyable, Movable, ImplicitlyCopyable):
         return Self(action=5)
 
 
-struct Taxi(DiscreteEnv):
+struct TaxiEnv(DiscreteEnv):
     """Taxi environment.
 
     A 5x5 grid with 4 designated locations (R, G, Y, B).
@@ -161,7 +162,8 @@ struct Taxi(DiscreteEnv):
         return False
 
     fn _get_location_at(self, row: Int, col: Int) -> Int:
-        """Return location index (0-3) if taxi is at a designated location, else -1."""
+        """Return location index (0-3) if taxi is at a designated location, else -1.
+        """
         for i in range(4):
             if self.loc_rows[i] == row and self.loc_cols[i] == col:
                 return i
@@ -186,7 +188,8 @@ struct Taxi(DiscreteEnv):
         return 500
 
     fn num_actions(self) -> Int:
-        """Return number of actions (6: south, north, east, west, pickup, dropoff)."""
+        """Return number of actions (6: south, north, east, west, pickup, dropoff).
+        """
         return 6
 
     fn step(mut self, action: TaxiAction) -> Tuple[TaxiState, Float64, Bool]:
@@ -296,7 +299,12 @@ struct Taxi(DiscreteEnv):
             pass_str = "In Taxi"
         else:
             pass_str = loc_chars[self.state.passenger_loc]
-        print("Passenger:", pass_str, "| Destination:", loc_chars[self.state.destination])
+        print(
+            "Passenger:",
+            pass_str,
+            "| Destination:",
+            loc_chars[self.state.destination],
+        )
         print("")
 
     fn close(mut self):

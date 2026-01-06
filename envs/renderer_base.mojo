@@ -17,7 +17,7 @@ from core.sdl2 import (
 )
 
 
-struct NativeRendererBase:
+struct RendererBase:
     """Native SDL2 renderer with common functionality.
 
     Provides the same interface as RendererBase but without Python/pygame.

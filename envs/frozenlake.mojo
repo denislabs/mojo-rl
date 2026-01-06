@@ -3,7 +3,7 @@ from random import random_float64
 
 
 @fieldwise_init
-struct FrozenState(State, Copyable, Movable, ImplicitlyCopyable):
+struct FrozenState(Copyable, ImplicitlyCopyable, Movable, State):
     """State representing a position on the frozen lake grid."""
 
     var position: Int  # Flat index (0 to size*size - 1)
@@ -19,7 +19,7 @@ struct FrozenState(State, Copyable, Movable, ImplicitlyCopyable):
 
 
 @fieldwise_init
-struct FrozenAction(Action, Copyable, Movable, ImplicitlyCopyable):
+struct FrozenAction(Action, Copyable, ImplicitlyCopyable, Movable):
     """Action for frozen lake: 0=left, 1=down, 2=right, 3=up."""
 
     var direction: Int
@@ -47,7 +47,7 @@ struct FrozenAction(Action, Copyable, Movable, ImplicitlyCopyable):
         return Self(direction=3)
 
 
-struct FrozenLake(DiscreteEnv):
+struct FrozenLakeEnv(DiscreteEnv):
     """FrozenLake environment.
 
     The agent navigates a frozen lake grid to reach a goal while avoiding holes.
@@ -133,7 +133,9 @@ struct FrozenLake(DiscreteEnv):
 
         return row * self.size + col
 
-    fn step(mut self, action: FrozenAction) -> Tuple[FrozenState, Float64, Bool]:
+    fn step(
+        mut self, action: FrozenAction
+    ) -> Tuple[FrozenState, Float64, Bool]:
         """Take an action and return (next_state, reward, done).
 
         If slippery, there's a 1/3 chance of moving in each of the 3 directions

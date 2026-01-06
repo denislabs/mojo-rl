@@ -68,9 +68,6 @@ The codebase follows a trait-based design for RL components with clear separatio
 - **`tabular_agent.mojo`** - `TabularAgent` trait: Specialized for discrete state/action spaces
   - Works with state/action indices (Int) for Q-table lookup
   - Methods: `select_action()`, `update()`, `get_best_action()`, `decay_epsilon()`, `get_epsilon()`
-- **`training.mojo`** - `DiscreteEnv` trait + generic training functions
-  - `train_tabular()`: Generic training loop for any DiscreteEnv + TabularAgent
-  - `evaluate_tabular()`: Evaluation with greedy policy
 - **`replay_buffer.mojo`** - Experience replay infrastructure
   - `Transition`: Struct for (s, a, r, s', done) tuples
   - `ReplayBuffer`: Fixed-size circular buffer
