@@ -10,6 +10,9 @@
 - [x] CartPole (Native) - Pure Mojo implementation with 145x performance boost over Python
   - `cartpole_native.mojo` - Physics engine matching Gymnasium CartPole-v1
   - `cartpole_renderer.mojo` - Pygame-based visualization (optional)
+- [x] MountainCar (Native) - Pure Mojo implementation
+  - `mountain_car_native.mojo` - Physics matching Gymnasium MountainCar-v0
+  - Includes tile coding factory function
 
 ### Environments - Gymnasium Wrappers (`envs/gymnasium/`)
 - [x] Generic Gymnasium wrapper - Works with any Gymnasium environment
@@ -65,8 +68,8 @@
 - [ ] Parallel Training - Multiple environments
 
 ### Environments - Native Ports (Next)
-- [ ] MountainCar (Native) - Port continuous state space env to pure Mojo
 - [ ] LunarLander (Native) - Port Box2D physics to pure Mojo
+- [ ] Pendulum (Native) - Port continuous action environment
 - [ ] Custom environment builder
 
 ## Algorithm Summary

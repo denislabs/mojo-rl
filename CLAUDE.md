@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-mojo-rl is a reinforcement learning framework written in Mojo, featuring trait-based design for extensibility, 13 RL algorithms (including tile-coded function approximation), 5 native environments (including CartPole with 145x speedup over Python), 20+ Gymnasium wrappers, and experience replay infrastructure.
+mojo-rl is a reinforcement learning framework written in Mojo, featuring trait-based design for extensibility, 13 RL algorithms (including tile-coded function approximation), 6 native environments (CartPole, MountainCar, GridWorld, FrozenLake, CliffWalking, Taxi), 20+ Gymnasium wrappers, and experience replay infrastructure.
 
 ## Build and Run Commands
 
@@ -91,6 +91,13 @@ All agents implement `TabularAgent` trait and use a shared `QTable` structure:
   - State: [cart_position, cart_velocity, pole_angle, pole_angular_velocity]
   - Actions: 0 (left), 1 (right)
 - **`cartpole_renderer.mojo`** - `CartPoleRenderer`: Pygame visualization for CartPoleNative
+- **`mountain_car_native.mojo`** - `MountainCarNative`: Pure Mojo MountainCar
+  - Physics matching Gymnasium MountainCar-v0
+  - State: [position, velocity]
+  - Actions: 0 (left), 1 (no push), 2 (right)
+  - `make_mountain_car_tile_coding()`: Factory for tile coding config
+- **`mountain_car_renderer.mojo`** - `MountainCarRenderer`: Pygame visualization
+  - Renders sinusoidal mountain terrain with car and goal flag
 
 **Gymnasium Wrappers (`envs/gymnasium/`):**
 - **`gymnasium_wrapper.mojo`** - Generic wrapper for any Gymnasium environment
@@ -111,6 +118,7 @@ Environments convert states to 1D indices for tabular storage:
 - CliffWalking: `index = y * width + x`
 - Taxi: `index = ((row * 5 + col) * 5 + passenger_loc) * 4 + destination`
 - CartPoleNative: Uses `discretize_obs_native()` to bin continuous state into 10^4 discrete bins
+- MountainCarNative: Uses `discretize_obs_mountain_car()` for 2D state (20^2 = 400 bins default)
 
 ### Epsilon-Greedy Exploration
 All agents use epsilon-greedy with decay: `ε *= ε_decay` each episode (default decay: 0.995, min: 0.01).

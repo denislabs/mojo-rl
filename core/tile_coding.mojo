@@ -147,16 +147,30 @@ struct TileCoding:
         """Get active tile indices for a 4D SIMD state (optimized for CartPole).
 
         Args:
-            state: 4D continuous state as SIMD vector
+            state: 4D continuous state as SIMD vector.
 
         Returns:
-            List of num_tilings active tile indices
+            List of num_tilings active tile indices.
         """
         var state_list = List[Float64]()
         state_list.append(state[0])
         state_list.append(state[1])
         state_list.append(state[2])
         state_list.append(state[3])
+        return self.get_tiles(state_list^)
+
+    fn get_tiles_simd2(self, state: SIMD[DType.float64, 2]) -> List[Int]:
+        """Get active tile indices for a 2D SIMD state (optimized for MountainCar).
+
+        Args:
+            state: 2D continuous state as SIMD vector.
+
+        Returns:
+            List of num_tilings active tile indices.
+        """
+        var state_list = List[Float64]()
+        state_list.append(state[0])
+        state_list.append(state[1])
         return self.get_tiles(state_list^)
 
     fn get_num_tiles(self) -> Int:
