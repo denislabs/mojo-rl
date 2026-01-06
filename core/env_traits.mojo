@@ -176,4 +176,15 @@ trait ContinuousControlEnv(ContinuousStateEnv, ContinuousActionEnv):
     Examples: Pendulum, HalfCheetah, Ant, Humanoid
     """
 
-    pass
+    fn step_continuous(
+        mut self, action: Float64
+    ) -> Tuple[SIMD[DType.float64, 4], Float64, Bool]:
+        """Take continuous action and return (continuous_obs, reward, done).
+
+        Convenience method for continuous control algorithms that
+        work with raw observations and continuous actions.
+
+        Note: For multi-dimensional action spaces, environments should
+        provide additional methods accepting action vectors.
+        """
+        ...

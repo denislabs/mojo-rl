@@ -13,6 +13,10 @@
 - [x] MountainCar (Native) - Pure Mojo implementation
   - `mountain_car_native.mojo` - Physics matching Gymnasium MountainCar-v0
   - Includes tile coding factory function
+- [x] Pendulum (Native) - Pure Mojo implementation with continuous actions
+  - `pendulum.mojo` - Physics matching Gymnasium Pendulum-v1
+  - Supports both discrete (tabular) and continuous (DDPG) action interfaces
+  - SDL2 rendering with pivot, rod, and bob visualization
 
 ### Environments - Gymnasium Wrappers (`envs/gymnasium/`)
 - [x] Generic Gymnasium wrapper - Works with any Gymnasium environment
@@ -40,6 +44,8 @@
 - [x] Replay Buffer - Circular buffer for experience replay
 - [x] Prioritized Replay Buffer - Samples by TD error priority
 - [x] Q-Learning with Replay - Off-policy learning with replay buffer
+- [x] Continuous Replay Buffer - For continuous state/action algorithms (DDPG, TD3, SAC)
+  - `core/continuous_replay_buffer.mojo` - ContinuousTransition, ContinuousReplayBuffer
 
 ### Function Approximation
 - [x] Tile Coding - Linear function approximation for continuous state spaces
@@ -75,6 +81,14 @@
   - `agents/linear_qlearning.mojo` - LinearQLearningAgent, LinearSARSAAgent, LinearSARSALambdaAgent
   - `examples/mountain_car_linear.mojo` - MountainCar training with polynomial and RBF features
 
+### Continuous Control (Deterministic Policy Gradient)
+- [x] DDPG - Deep Deterministic Policy Gradient with linear function approximation
+  - `agents/ddpg.mojo` - DDPGAgent with deterministic actor and Q-function critic
+  - Target networks with soft updates for stability
+  - Gaussian exploration noise
+  - Works with polynomial features for continuous state/action spaces
+  - `examples/pendulum_ddpg.mojo` - Pendulum swing-up with DDPG
+
 ## In Progress / Next Steps
 
 ### Deep RL (depends on Mojo tensor support)
@@ -89,7 +103,7 @@
 
 ### Environments - Native Ports (Next)
 - [ ] LunarLander (Native) - Port Box2D physics to pure Mojo
-- [ ] Pendulum (Native) - Port continuous action environment
+- [x] Pendulum (Native) - Port continuous action environment (COMPLETED - see above)
 - [ ] Custom environment builder
 
 ## Algorithm Summary
@@ -119,3 +133,4 @@
 | A2C | Policy Gradient | N-step returns + entropy bonus |
 | PPO | Policy Gradient | Clipped surrogate objective, stable updates |
 | GAE | Advantage Est. | Exponentially-weighted TD residuals |
+| DDPG | Continuous Control | Deterministic policy + Q-function critic |

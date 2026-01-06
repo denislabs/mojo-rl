@@ -21,3 +21,4 @@ from .linear_qlearning import (
 from .reinforce import REINFORCEAgent, REINFORCEWithEntropyAgent
 from .actor_critic import ActorCriticAgent, ActorCriticLambdaAgent, A2CAgent
 from .ppo import PPOAgent, PPOAgentWithMinibatch, compute_gae
+from .ddpg import DDPGAgent

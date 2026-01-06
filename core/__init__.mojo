@@ -15,6 +15,7 @@ from .space import Space, DiscreteSpace, BoxSpace
 from .agent import Agent
 from .tabular_agent import TabularAgent
 from .replay_buffer import Transition, ReplayBuffer, PrioritizedReplayBuffer
+from .continuous_replay_buffer import ContinuousTransition, ContinuousReplayBuffer
 from .metrics import (
     EpisodeMetrics,
     TrainingMetrics,
