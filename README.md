@@ -6,7 +6,8 @@ A reinforcement learning framework written in Mojo, featuring trait-based design
 
 - **Trait-based architecture**: Generic interfaces for environments, agents, states, and actions
 - **10 RL algorithms**: TD methods, multi-step, eligibility traces, model-based planning
-- **4 environments**: GridWorld, FrozenLake, CliffWalking, Taxi
+- **5 native environments**: GridWorld, FrozenLake, CliffWalking, Taxi, CartPole (145x faster than Python)
+- **20+ Gymnasium wrappers**: Classic Control, Box2D, Toy Text, MuJoCo environments
 - **Experience replay**: Uniform and prioritized replay buffers
 - **Generic training utilities**: Works with any compatible environment/agent combination
 
@@ -53,12 +54,21 @@ mojo build main.mojo
 
 ## Environments
 
+### Native Mojo Environments
 | Environment | States | Actions | Description |
 |-------------|--------|---------|-------------|
 | **GridWorld** | 25 (5x5) | 4 | Navigate to goal, -1/step, +10 goal |
 | **FrozenLake** | 16 (4x4) | 4 | Avoid holes on slippery ice |
 | **CliffWalking** | 48 (4x12) | 4 | Avoid cliff, -100 penalty |
 | **Taxi** | 500 | 6 | Pickup/dropoff passenger |
+| **CartPole** | Continuous | 2 | Balance pole on cart (145x faster than Gymnasium) |
+
+### Gymnasium Wrappers (`envs/gymnasium/`)
+Wrap any Gymnasium environment with Python interop:
+- **Classic Control**: CartPole, MountainCar, Pendulum, Acrobot
+- **Box2D**: LunarLander, BipedalWalker, CarRacing
+- **Toy Text**: FrozenLake, Taxi, Blackjack, CliffWalking
+- **MuJoCo**: HalfCheetah, Ant, Humanoid, Walker2d, Hopper, Swimmer, and more
 
 ## Project Structure
 
@@ -90,7 +100,15 @@ mojo-rl/
     ├── gridworld.mojo
     ├── frozenlake.mojo
     ├── cliffwalking.mojo
-    └── taxi.mojo
+    ├── taxi.mojo
+    ├── cartpole_native.mojo   # Native CartPole (145x faster)
+    ├── cartpole_renderer.mojo # Pygame visualization
+    └── gymnasium/             # Gymnasium wrappers
+        ├── gymnasium_wrapper.mojo
+        ├── gymnasium_classic_control.mojo
+        ├── gymnasium_box2d.mojo
+        ├── gymnasium_toy_text.mojo
+        └── gymnasium_mujoco.mojo
 ```
 
 ## Usage Example

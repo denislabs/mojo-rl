@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-mojo-rl is a reinforcement learning framework written in Mojo, featuring trait-based design for extensibility, 10 tabular RL algorithms, 4 environments, and experience replay infrastructure.
+mojo-rl is a reinforcement learning framework written in Mojo, featuring trait-based design for extensibility, 10 tabular RL algorithms, 5 native environments (including CartPole with 145x speedup over Python), 20+ Gymnasium wrappers, and experience replay infrastructure.
 
 ## Build and Run Commands
 
@@ -67,6 +67,7 @@ All agents implement `TabularAgent` trait and use a shared `QTable` structure:
 
 ### Environments (`envs/`)
 
+**Native Mojo Environments:**
 - **`gridworld.mojo`** - `GridWorld`: 2D navigation (5x5 default)
   - Reward: -1 per step, +10 for goal
 - **`frozenlake.mojo`** - `FrozenLake`: Slippery grid with holes (4x4)
@@ -75,6 +76,18 @@ All agents implement `TabularAgent` trait and use a shared `QTable` structure:
   - Reward: -1 per step, -100 for falling off cliff
 - **`taxi.mojo`** - `Taxi`: Pickup/dropoff with 500 states
   - Reward: +20 dropoff, -10 illegal action, -1 per step
+- **`cartpole_native.mojo`** - `CartPoleNative`: Pure Mojo CartPole (145x faster than Gymnasium)
+  - Physics matching Gymnasium CartPole-v1
+  - State: [cart_position, cart_velocity, pole_angle, pole_angular_velocity]
+  - Actions: 0 (left), 1 (right)
+- **`cartpole_renderer.mojo`** - `CartPoleRenderer`: Pygame visualization for CartPoleNative
+
+**Gymnasium Wrappers (`envs/gymnasium/`):**
+- **`gymnasium_wrapper.mojo`** - Generic wrapper for any Gymnasium environment
+- **`gymnasium_classic_control.mojo`** - CartPole, MountainCar, Pendulum, Acrobot
+- **`gymnasium_box2d.mojo`** - LunarLander, BipedalWalker, CarRacing
+- **`gymnasium_toy_text.mojo`** - FrozenLake, Taxi, Blackjack, CliffWalking
+- **`gymnasium_mujoco.mojo`** - HalfCheetah, Ant, Humanoid, Walker2d, Hopper, Swimmer, etc.
 
 ## Key Design Patterns
 
@@ -87,6 +100,7 @@ Environments convert states to 1D indices for tabular storage:
 - FrozenLake: `index = position`
 - CliffWalking: `index = y * width + x`
 - Taxi: `index = ((row * 5 + col) * 5 + passenger_loc) * 4 + destination`
+- CartPoleNative: Uses `discretize_obs_native()` to bin continuous state into 10^4 discrete bins
 
 ### Epsilon-Greedy Exploration
 All agents use epsilon-greedy with decay: `ε *= ε_decay` each episode (default decay: 0.995, min: 0.01).

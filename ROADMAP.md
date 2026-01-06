@@ -2,11 +2,21 @@
 
 ## Completed
 
-### Environments
+### Environments - Native Mojo
 - [x] GridWorld - 2D navigation (5x5 default)
 - [x] FrozenLake - Slippery grid with holes (4x4)
 - [x] CliffWalking - Cliff avoidance task (4x12)
 - [x] Taxi - Pickup/dropoff with 500 states
+- [x] CartPole (Native) - Pure Mojo implementation with 145x performance boost over Python
+  - `cartpole_native.mojo` - Physics engine matching Gymnasium CartPole-v1
+  - `cartpole_renderer.mojo` - Pygame-based visualization (optional)
+
+### Environments - Gymnasium Wrappers (`envs/gymnasium/`)
+- [x] Generic Gymnasium wrapper - Works with any Gymnasium environment
+- [x] **Classic Control**: CartPole, MountainCar, Pendulum, Acrobot
+- [x] **Box2D**: LunarLander, BipedalWalker, CarRacing
+- [x] **Toy Text**: FrozenLake, Taxi, Blackjack, CliffWalking
+- [x] **MuJoCo**: HalfCheetah, Ant, Humanoid, Walker2d, Hopper, Swimmer, InvertedPendulum, InvertedDoublePendulum, Reacher, Pusher
 
 ### Algorithms - TD Methods
 - [x] Q-Learning - Off-policy TD learning
@@ -49,9 +59,9 @@
 - [ ] Hyperparameter Search - Grid search / random search
 - [ ] Parallel Training - Multiple environments
 
-### Environments
-- [ ] CartPole - Classic control benchmark
-- [ ] MountainCar - Continuous state space
+### Environments - Native Ports (Next)
+- [ ] MountainCar (Native) - Port continuous state space env to pure Mojo
+- [ ] LunarLander (Native) - Port Box2D physics to pure Mojo
 - [ ] Custom environment builder
 
 ## Algorithm Summary
