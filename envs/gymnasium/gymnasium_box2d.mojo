@@ -1,4 +1,4 @@
-"""Gymnasium Box2D environments wrapper.
+"""Gymnasium Box2D environments wrapper with trait conformance.
 
 Box2D environments (require `pip install gymnasium[box2d]`):
 - LunarLander-v3: Land a spacecraft (discrete or continuous)
@@ -6,12 +6,145 @@ Box2D environments (require `pip install gymnasium[box2d]`):
 - CarRacing-v3: Drive a car around a track (continuous)
 
 These use the Box2D physics engine for 2D rigid body simulation.
+All implement appropriate environment traits for generic training.
 """
 
 from python import Python, PythonObject
+from core import (
+    State,
+    Action,
+    ClassicControlEnv,
+    ContinuousControlEnv,
+    DiscreteEnv,
+)
 
 
-struct GymLunarLanderEnv:
+# ============================================================================
+# LunarLander State and Action types
+# ============================================================================
+
+
+@fieldwise_init
+struct GymLunarLanderState(Copyable, ImplicitlyCopyable, Movable, State):
+    """State for LunarLander: discretized state index."""
+
+    var index: Int
+
+    fn __copyinit__(out self, existing: Self):
+        self.index = existing.index
+
+    fn __moveinit__(out self, deinit existing: Self):
+        self.index = existing.index
+
+    fn __eq__(self, other: Self) -> Bool:
+        return self.index == other.index
+
+
+@fieldwise_init
+struct GymLunarLanderAction(Action, Copyable, ImplicitlyCopyable, Movable):
+    """Action for LunarLander: 0=nothing, 1=left, 2=main, 3=right."""
+
+    var action: Int
+
+    fn __copyinit__(out self, existing: Self):
+        self.action = existing.action
+
+    fn __moveinit__(out self, deinit existing: Self):
+        self.action = existing.action
+
+    @staticmethod
+    fn nothing() -> Self:
+        return Self(action=0)
+
+    @staticmethod
+    fn fire_left() -> Self:
+        return Self(action=1)
+
+    @staticmethod
+    fn fire_main() -> Self:
+        return Self(action=2)
+
+    @staticmethod
+    fn fire_right() -> Self:
+        return Self(action=3)
+
+
+# ============================================================================
+# BipedalWalker State and Action types
+# ============================================================================
+
+
+@fieldwise_init
+struct GymBipedalWalkerState(Copyable, ImplicitlyCopyable, Movable, State):
+    """State for BipedalWalker: discretized state index (for tabular fallback).
+    """
+
+    var index: Int
+
+    fn __copyinit__(out self, existing: Self):
+        self.index = existing.index
+
+    fn __moveinit__(out self, deinit existing: Self):
+        self.index = existing.index
+
+    fn __eq__(self, other: Self) -> Bool:
+        return self.index == other.index
+
+
+@fieldwise_init
+struct GymBipedalWalkerAction(Action, Copyable, ImplicitlyCopyable, Movable):
+    """Action for BipedalWalker: 4 continuous torques (stored as index for trait).
+    """
+
+    var index: Int  # Placeholder for trait conformance
+
+    fn __copyinit__(out self, existing: Self):
+        self.index = existing.index
+
+    fn __moveinit__(out self, deinit existing: Self):
+        self.index = existing.index
+
+
+# ============================================================================
+# CarRacing State and Action types
+# ============================================================================
+
+
+@fieldwise_init
+struct GymCarRacingState(Copyable, ImplicitlyCopyable, Movable, State):
+    """State for CarRacing: discretized state index (for tabular fallback)."""
+
+    var index: Int
+
+    fn __copyinit__(out self, existing: Self):
+        self.index = existing.index
+
+    fn __moveinit__(out self, deinit existing: Self):
+        self.index = existing.index
+
+    fn __eq__(self, other: Self) -> Bool:
+        return self.index == other.index
+
+
+@fieldwise_init
+struct GymCarRacingAction(Action, Copyable, ImplicitlyCopyable, Movable):
+    """Action for CarRacing: steering/gas/brake (stored as index for trait)."""
+
+    var index: Int  # Placeholder for trait conformance
+
+    fn __copyinit__(out self, existing: Self):
+        self.index = existing.index
+
+    fn __moveinit__(out self, deinit existing: Self):
+        self.index = existing.index
+
+
+# ============================================================================
+# GymLunarLanderEnv - implements ClassicControlEnv & DiscreteEnv
+# ============================================================================
+
+
+struct GymLunarLanderEnv(ClassicControlEnv & DiscreteEnv):
     """LunarLander-v3: Land a spacecraft on the moon.
 
     Observation: Box(8,)
@@ -32,113 +165,217 @@ struct GymLunarLanderEnv:
         - Fuel usage: small negative
 
     Episode ends: Landed, crashed, or 1000 steps
+
+    Implements ClassicControlEnv & DiscreteEnv traits for generic training.
     """
+
+    # Type aliases for trait conformance
+    comptime StateType = GymLunarLanderState
+    comptime ActionType = GymLunarLanderAction
 
     var env: PythonObject
     var gym: PythonObject
     var np: PythonObject
     var current_obs: SIMD[DType.float64, 8]
+    var current_obs_4d: SIMD[DType.float64, 4]  # For trait conformance
     var done: Bool
     var episode_reward: Float64
     var episode_length: Int
-    var is_continuous: Bool
 
-    fn __init__(
-        out self, continuous: Bool = False, render_mode: String = ""
-    ) raises:
+    # Discretization settings
+    var num_bins: Int
+
+    fn __init__(out self, num_bins: Int = 10, render_mode: String = "") raises:
         """Initialize LunarLander.
 
         Args:
-            continuous: If True, use continuous action space
-            render_mode: "human" for visual rendering
+            num_bins: Number of bins per dimension for state discretization.
+            render_mode: "human" for visual rendering.
         """
         self.gym = Python.import_module("gymnasium")
         self.np = Python.import_module("numpy")
-        self.is_continuous = continuous
 
-        var env_name = "LunarLander-v3"
         if render_mode == "human":
-            if continuous:
-                self.env = self.gym.make(
-                    env_name,
-                    continuous=PythonObject(True),
-                    render_mode=PythonObject("human"),
-                )
-            else:
-                self.env = self.gym.make(
-                    env_name, render_mode=PythonObject("human")
-                )
+            self.env = self.gym.make(
+                "LunarLander-v3", render_mode=PythonObject("human")
+            )
         else:
-            if continuous:
-                self.env = self.gym.make(
-                    env_name, continuous=PythonObject(True)
-                )
-            else:
-                self.env = self.gym.make(env_name)
+            self.env = self.gym.make("LunarLander-v3")
 
         self.current_obs = SIMD[DType.float64, 8](0.0)
+        self.current_obs_4d = SIMD[DType.float64, 4](0.0)
         self.done = False
         self.episode_reward = 0.0
         self.episode_length = 0
+        self.num_bins = num_bins
 
-    fn reset(mut self) raises -> SIMD[DType.float64, 8]:
-        var result = self.env.reset()
-        var obs = result[0]
-        for i in range(8):
-            self.current_obs[i] = Float64(obs[i])
+    # ========================================================================
+    # DiscreteEnv trait methods
+    # ========================================================================
+
+    fn reset(mut self) -> GymLunarLanderState:
+        """Reset environment and return discretized initial state."""
+        try:
+            var result = self.env.reset()
+            var obs = result[0]
+            for i in range(8):
+                self.current_obs[i] = Float64(obs[i])
+            for i in range(4):
+                self.current_obs_4d[i] = self.current_obs[i]
+        except:
+            self.current_obs = SIMD[DType.float64, 8](0.0)
+            self.current_obs_4d = SIMD[DType.float64, 4](0.0)
+
         self.done = False
         self.episode_reward = 0.0
         self.episode_length = 0
-        return self.current_obs
+        return GymLunarLanderState(index=self._discretize_obs())
 
-    fn step_discrete(
-        mut self, action: Int
-    ) raises -> Tuple[SIMD[DType.float64, 8], Float64, Bool]:
-        """Take discrete action (0-3)."""
-        var result = self.env.step(action)
-        var obs = result[0]
-        var reward = Float64(result[1])
-        var terminated = result[2].__bool__()
-        var truncated = result[3].__bool__()
+    fn step(
+        mut self, action: GymLunarLanderAction
+    ) -> Tuple[GymLunarLanderState, Float64, Bool]:
+        """Take action and return (state, reward, done)."""
+        var reward: Float64 = 0.0
+        try:
+            var result = self.env.step(action.action)
+            var obs = result[0]
+            reward = Float64(result[1])
+            var terminated = result[2].__bool__()
+            var truncated = result[3].__bool__()
 
-        for i in range(8):
-            self.current_obs[i] = Float64(obs[i])
-        self.done = terminated or truncated
+            for i in range(8):
+                self.current_obs[i] = Float64(obs[i])
+            for i in range(4):
+                self.current_obs_4d[i] = self.current_obs[i]
+
+            self.done = terminated or truncated
+        except:
+            self.done = True
+
         self.episode_reward += reward
         self.episode_length += 1
 
-        return (self.current_obs, reward, self.done)
+        return (
+            GymLunarLanderState(index=self._discretize_obs()),
+            reward,
+            self.done,
+        )
 
-    fn step_continuous(
-        mut self, main_throttle: Float64, lateral_throttle: Float64
-    ) raises -> Tuple[SIMD[DType.float64, 8], Float64, Bool]:
-        """Take continuous action [main_engine, lateral_engine]."""
-        var action = self.np.array([main_throttle, lateral_throttle])
-        var result = self.env.step(action)
-        var obs = result[0]
-        var reward = Float64(result[1])
-        var terminated = result[2].__bool__()
-        var truncated = result[3].__bool__()
+    fn get_state(self) -> GymLunarLanderState:
+        """Return current discretized state."""
+        return GymLunarLanderState(index=self._discretize_obs())
 
-        for i in range(8):
-            self.current_obs[i] = Float64(obs[i])
-        self.done = terminated or truncated
-        self.episode_reward += reward
-        self.episode_length += 1
+    fn state_to_index(self, state: GymLunarLanderState) -> Int:
+        """Convert state to index for tabular methods."""
+        return state.index
 
-        return (self.current_obs, reward, self.done)
+    fn action_from_index(self, action_idx: Int) -> GymLunarLanderAction:
+        """Create action from index."""
+        return GymLunarLanderAction(action=action_idx)
 
-    fn close(mut self) raises:
-        _ = self.env.close()
+    fn num_states(self) -> Int:
+        """Return total number of discrete states."""
+        # Using only first 6 dimensions for discretization (not leg contacts)
+        var total = 1
+        for _ in range(6):
+            total *= self.num_bins
+        return total
 
     fn num_actions(self) -> Int:
-        return 4 if not self.is_continuous else 2
+        """Return number of actions (4)."""
+        return 4
+
+    # ========================================================================
+    # ClassicControlEnv (ContinuousStateEnv) trait methods
+    # ========================================================================
+
+    fn get_obs(self) -> SIMD[DType.float64, 4]:
+        """Return first 4 dims of observation for trait conformance."""
+        return self.current_obs_4d
+
+    fn reset_obs(mut self) -> SIMD[DType.float64, 4]:
+        """Reset environment and return continuous observation."""
+        _ = self.reset()
+        return self.current_obs_4d
 
     fn obs_dim(self) -> Int:
+        """Return observation dimension (8)."""
         return 8
 
+    fn step_raw(
+        mut self, action: Int
+    ) -> Tuple[SIMD[DType.float64, 4], Float64, Bool]:
+        """Take action and return (continuous_obs, reward, done)."""
+        var result = self.step(GymLunarLanderAction(action=action))
+        return (self.current_obs_4d, result[1], result[2])
 
-struct GymBipedalWalkerEnv:
+    # ========================================================================
+    # Additional methods - full observation access
+    # ========================================================================
+
+    fn get_full_obs(self) -> SIMD[DType.float64, 8]:
+        """Return full 8D observation."""
+        return self.current_obs
+
+    fn render(mut self):
+        """Render the environment."""
+        try:
+            _ = self.env.render()
+        except:
+            pass
+
+    fn close(mut self):
+        """Close the environment."""
+        try:
+            _ = self.env.close()
+        except:
+            pass
+
+    fn is_done(self) -> Bool:
+        """Check if episode is done."""
+        return self.done
+
+    fn _discretize_obs(self) -> Int:
+        """Discretize current observation into a state index."""
+        # Approximate bounds for each dimension (using first 6)
+        var bounds_low = SIMD[DType.float64, 8](
+            -1.5, -1.5, -5.0, -5.0, -3.14, -5.0, 0.0, 0.0
+        )
+        var bounds_high = SIMD[DType.float64, 8](
+            1.5, 1.5, 5.0, 5.0, 3.14, 5.0, 1.0, 1.0
+        )
+
+        fn bin_value(
+            value: Float64, low: Float64, high: Float64, bins: Int
+        ) -> Int:
+            var normalized = (value - low) / (high - low)
+            if normalized < 0.0:
+                normalized = 0.0
+            elif normalized > 1.0:
+                normalized = 1.0
+            return Int(normalized * Float64(bins - 1))
+
+        var index = 0
+        var multiplier = 1
+        for i in range(6):  # Only first 6 dims
+            var b = bin_value(
+                self.current_obs[i],
+                bounds_low[i],
+                bounds_high[i],
+                self.num_bins,
+            )
+            index += b * multiplier
+            multiplier *= self.num_bins
+
+        return index
+
+
+# ============================================================================
+# GymBipedalWalkerEnv - implements ContinuousControlEnv
+# ============================================================================
+
+
+struct GymBipedalWalkerEnv(ContinuousControlEnv):
     """BipedalWalker-v3: Walk with a 2D biped robot.
 
     Observation: Box(24,)
@@ -154,12 +391,19 @@ struct GymBipedalWalkerEnv:
         - Standing still: small negative
 
     Episode ends: Body touches ground or reaches end of terrain
+
+    Implements ContinuousControlEnv trait for continuous action algorithms.
     """
+
+    # Type aliases for trait conformance
+    comptime StateType = GymBipedalWalkerState
+    comptime ActionType = GymBipedalWalkerAction
 
     var env: PythonObject
     var gym: PythonObject
     var np: PythonObject
     var current_obs: List[Float64]
+    var current_obs_4d: SIMD[DType.float64, 4]  # For trait conformance
     var done: Bool
     var episode_reward: Float64
     var episode_length: Int
@@ -171,8 +415,8 @@ struct GymBipedalWalkerEnv:
         """Initialize BipedalWalker.
 
         Args:
-            hardcore: If True, use hardcore mode with obstacles
-            render_mode: "human" for visual rendering
+            hardcore: If True, use hardcore mode with obstacles.
+            render_mode: "human" for visual rendering.
         """
         self.gym = Python.import_module("gymnasium")
         self.np = Python.import_module("numpy")
@@ -191,50 +435,147 @@ struct GymBipedalWalkerEnv:
         self.current_obs = List[Float64]()
         for _ in range(24):
             self.current_obs.append(0.0)
+        self.current_obs_4d = SIMD[DType.float64, 4](0.0)
         self.done = False
         self.episode_reward = 0.0
         self.episode_length = 0
 
-    fn reset(mut self) raises -> List[Float64]:
-        var result = self.env.reset()
-        var obs = result[0]
-        for i in range(24):
-            self.current_obs[i] = Float64(obs[i])
+    # ========================================================================
+    # Env base trait methods
+    # ========================================================================
+
+    fn reset(mut self) -> GymBipedalWalkerState:
+        """Reset environment and return state."""
+        try:
+            var result = self.env.reset()
+            var obs = result[0]
+            for i in range(24):
+                self.current_obs[i] = Float64(obs[i])
+            for i in range(4):
+                self.current_obs_4d[i] = self.current_obs[i]
+        except:
+            for i in range(24):
+                self.current_obs[i] = 0.0
+            self.current_obs_4d = SIMD[DType.float64, 4](0.0)
+
         self.done = False
         self.episode_reward = 0.0
         self.episode_length = 0
-        return self.current_obs
+        return GymBipedalWalkerState(index=0)
 
     fn step(
-        mut self, hip1: Float64, knee1: Float64, hip2: Float64, knee2: Float64
-    ) raises -> Tuple[List[Float64], Float64, Bool]:
-        """Take continuous action [hip1, knee1, hip2, knee2]."""
-        var action = self.np.array([hip1, knee1, hip2, knee2])
-        var result = self.env.step(action)
-        var obs = result[0]
-        var reward = Float64(result[1])
-        var terminated = result[2].__bool__()
-        var truncated = result[3].__bool__()
+        mut self, action: GymBipedalWalkerAction
+    ) -> Tuple[GymBipedalWalkerState, Float64, Bool]:
+        """Take action (placeholder - use step_continuous for actual control).
+        """
+        # This is a placeholder - real usage should use step_continuous
+        return (GymBipedalWalkerState(index=0), 0.0, self.done)
 
-        for i in range(24):
-            self.current_obs[i] = Float64(obs[i])
-        self.done = terminated or truncated
+    fn get_state(self) -> GymBipedalWalkerState:
+        """Return current state."""
+        return GymBipedalWalkerState(index=0)
+
+    # ========================================================================
+    # ContinuousStateEnv trait methods
+    # ========================================================================
+
+    fn get_obs(self) -> SIMD[DType.float64, 4]:
+        """Return first 4 dims of observation for trait conformance."""
+        return self.current_obs_4d
+
+    fn reset_obs(mut self) -> SIMD[DType.float64, 4]:
+        """Reset environment and return continuous observation."""
+        _ = self.reset()
+        return self.current_obs_4d
+
+    fn obs_dim(self) -> Int:
+        """Return observation dimension (24)."""
+        return 24
+
+    # ========================================================================
+    # ContinuousActionEnv trait methods
+    # ========================================================================
+
+    fn action_dim(self) -> Int:
+        """Return action dimension (4)."""
+        return 4
+
+    fn action_low(self) -> Float64:
+        """Return action lower bound."""
+        return -1.0
+
+    fn action_high(self) -> Float64:
+        """Return action upper bound."""
+        return 1.0
+
+    # ========================================================================
+    # Additional methods - continuous control
+    # ========================================================================
+
+    fn step_continuous(
+        mut self, hip1: Float64, knee1: Float64, hip2: Float64, knee2: Float64
+    ) -> Tuple[SIMD[DType.float64, 4], Float64, Bool]:
+        """Take continuous action [hip1, knee1, hip2, knee2]."""
+        var reward: Float64 = 0.0
+        try:
+            var builtins = Python.import_module("builtins")
+            var py_list = builtins.list()
+            _ = py_list.append(hip1)
+            _ = py_list.append(knee1)
+            _ = py_list.append(hip2)
+            _ = py_list.append(knee2)
+            var action = self.np.array(py_list)
+            var result = self.env.step(action)
+            var obs = result[0]
+            reward = Float64(result[1])
+            var terminated = result[2].__bool__()
+            var truncated = result[3].__bool__()
+
+            for i in range(24):
+                self.current_obs[i] = Float64(obs[i])
+            for i in range(4):
+                self.current_obs_4d[i] = self.current_obs[i]
+
+            self.done = terminated or truncated
+        except:
+            self.done = True
+
         self.episode_reward += reward
         self.episode_length += 1
 
-        return (self.current_obs, reward, self.done)
+        return (self.current_obs_4d, reward, self.done)
 
-    fn close(mut self) raises:
-        _ = self.env.close()
+    fn get_full_obs(self, out obs: List[Float64]):
+        """Copy full 24D observation into output list."""
+        obs = List[Float64]()
+        for i in range(24):
+            obs.append(self.current_obs[i])
 
-    fn obs_dim(self) -> Int:
-        return 24
+    fn render(mut self):
+        """Render the environment."""
+        try:
+            _ = self.env.render()
+        except:
+            pass
 
-    fn action_dim(self) -> Int:
-        return 4
+    fn close(mut self):
+        """Close the environment."""
+        try:
+            _ = self.env.close()
+        except:
+            pass
+
+    fn is_done(self) -> Bool:
+        """Check if episode is done."""
+        return self.done
 
 
-struct GymCarRacingEnv:
+# ============================================================================
+# GymCarRacingEnv - implements ContinuousControlEnv
+# ============================================================================
+
+
+struct GymCarRacingEnv(ContinuousControlEnv):
     """CarRacing-v3: Drive a car around a randomly generated track.
 
     Observation: Box(96, 96, 3) - RGB image from top-down view
@@ -250,11 +591,20 @@ struct GymCarRacingEnv:
     Episode ends: All tiles visited or 1000 frames
 
     Note: This env returns image observations, needs CNN for deep RL.
+
+    Implements ContinuousControlEnv trait (uses continuous actions by default).
     """
+
+    # Type aliases for trait conformance
+    comptime StateType = GymCarRacingState
+    comptime ActionType = GymCarRacingAction
 
     var env: PythonObject
     var gym: PythonObject
     var np: PythonObject
+    var current_obs_4d: SIMD[
+        DType.float64, 4
+    ]  # For trait conformance (placeholder)
     var done: Bool
     var episode_reward: Float64
     var episode_length: Int
@@ -266,8 +616,8 @@ struct GymCarRacingEnv:
         """Initialize CarRacing.
 
         Args:
-            continuous: If True, use continuous action space
-            render_mode: "human" for visual rendering
+            continuous: If True, use continuous action space.
+            render_mode: "human" for visual rendering.
         """
         self.gym = Python.import_module("gymnasium")
         self.np = Python.import_module("numpy")
@@ -296,94 +646,159 @@ struct GymCarRacingEnv:
                     "CarRacing-v3", continuous=PythonObject(False)
                 )
 
+        self.current_obs_4d = SIMD[DType.float64, 4](0.0)
         self.done = False
         self.episode_reward = 0.0
         self.episode_length = 0
 
-    fn reset(mut self) raises -> PythonObject:
-        """Reset and return image observation (96x96x3 numpy array)."""
-        var result = self.env.reset()
+    # ========================================================================
+    # Env base trait methods
+    # ========================================================================
+
+    fn reset(mut self) -> GymCarRacingState:
+        """Reset environment and return state."""
+        try:
+            _ = self.env.reset()
+        except:
+            pass
+
         self.done = False
         self.episode_reward = 0.0
         self.episode_length = 0
-        return result[0]
+        return GymCarRacingState(index=0)
 
-    fn step_discrete(
-        mut self, action: Int
-    ) raises -> Tuple[PythonObject, Float64, Bool]:
-        """Take discrete action (0-4)."""
-        var result = self.env.step(action)
-        var obs = result[0]
-        var reward = Float64(result[1])
-        var terminated = result[2].__bool__()
-        var truncated = result[3].__bool__()
+    fn step(
+        mut self, action: GymCarRacingAction
+    ) -> Tuple[GymCarRacingState, Float64, Bool]:
+        """Take action (placeholder - use step_continuous for actual control).
+        """
+        return (GymCarRacingState(index=0), 0.0, self.done)
 
-        self.done = terminated or truncated
-        self.episode_reward += reward
-        self.episode_length += 1
+    fn get_state(self) -> GymCarRacingState:
+        """Return current state."""
+        return GymCarRacingState(index=0)
 
-        return (obs, reward, self.done)
+    # ========================================================================
+    # ContinuousStateEnv trait methods
+    # ========================================================================
+
+    fn get_obs(self) -> SIMD[DType.float64, 4]:
+        """Return placeholder observation (CarRacing uses images)."""
+        return self.current_obs_4d
+
+    fn reset_obs(mut self) -> SIMD[DType.float64, 4]:
+        """Reset environment and return placeholder observation."""
+        _ = self.reset()
+        return self.current_obs_4d
+
+    fn obs_dim(self) -> Int:
+        """Return observation dimension (96*96*3 = 27648 for images)."""
+        return 96 * 96 * 3
+
+    # ========================================================================
+    # ContinuousActionEnv trait methods
+    # ========================================================================
+
+    fn action_dim(self) -> Int:
+        """Return action dimension (3)."""
+        return 3
+
+    fn action_low(self) -> Float64:
+        """Return action lower bound."""
+        return -1.0
+
+    fn action_high(self) -> Float64:
+        """Return action upper bound."""
+        return 1.0
+
+    # ========================================================================
+    # Additional methods - continuous control
+    # ========================================================================
 
     fn step_continuous(
         mut self, steering: Float64, gas: Float64, brake: Float64
-    ) raises -> Tuple[PythonObject, Float64, Bool]:
+    ) -> Tuple[PythonObject, Float64, Bool]:
         """Take continuous action [steering, gas, brake]."""
-        var action = self.np.array([steering, gas, brake])
-        var result = self.env.step(action)
-        var obs = result[0]
-        var reward = Float64(result[1])
-        var terminated = result[2].__bool__()
-        var truncated = result[3].__bool__()
+        var reward: Float64 = 0.0
+        var obs: PythonObject = PythonObject()
+        try:
+            var builtins = Python.import_module("builtins")
+            var py_list = builtins.list()
+            _ = py_list.append(steering)
+            _ = py_list.append(gas)
+            _ = py_list.append(brake)
+            var action = self.np.array(py_list)
+            var result = self.env.step(action)
+            obs = result[0]
+            reward = Float64(result[1])
+            var terminated = result[2].__bool__()
+            var truncated = result[3].__bool__()
+            self.done = terminated or truncated
+        except:
+            self.done = True
 
-        self.done = terminated or truncated
         self.episode_reward += reward
         self.episode_length += 1
 
         return (obs, reward, self.done)
 
-    fn close(mut self) raises:
-        _ = self.env.close()
+    fn step_discrete(
+        mut self, action: Int
+    ) -> Tuple[PythonObject, Float64, Bool]:
+        """Take discrete action (0-4)."""
+        var reward: Float64 = 0.0
+        var obs: PythonObject = PythonObject()
+        try:
+            var result = self.env.step(action)
+            obs = result[0]
+            reward = Float64(result[1])
+            var terminated = result[2].__bool__()
+            var truncated = result[3].__bool__()
+            self.done = terminated or truncated
+        except:
+            self.done = True
+
+        self.episode_reward += reward
+        self.episode_length += 1
+
+        return (obs, reward, self.done)
+
+    fn reset_image(mut self) -> PythonObject:
+        """Reset and return image observation (96x96x3 numpy array)."""
+        var obs: PythonObject = PythonObject()
+        try:
+            var result = self.env.reset()
+            obs = result[0]
+        except:
+            pass
+
+        self.done = False
+        self.episode_reward = 0.0
+        self.episode_length = 0
+        return obs
+
+    fn render(mut self):
+        """Render the environment."""
+        try:
+            _ = self.env.render()
+        except:
+            pass
+
+    fn close(mut self):
+        """Close the environment."""
+        try:
+            _ = self.env.close()
+        except:
+            pass
+
+    fn is_done(self) -> Bool:
+        """Check if episode is done."""
+        return self.done
 
     fn obs_shape(self) -> Tuple[Int, Int, Int]:
+        """Return image observation shape."""
         return (96, 96, 3)
 
     fn num_discrete_actions(self) -> Int:
+        """Return number of discrete actions (5)."""
         return 5
-
-    fn action_dim(self) -> Int:
-        return 3
-
-
-# Discretization helper for LunarLander
-fn discretize_lunar_lander(
-    obs: SIMD[DType.float64, 8], num_bins: Int = 10
-) -> Int:
-    """Discretize LunarLander observation into state index.
-
-    Note: With 8 dimensions and 10 bins, this creates 10^8 = 100M states.
-    Use fewer bins for tabular methods.
-    """
-    # Approximate bounds for each dimension
-    var bounds_low = SIMD[DType.float64, 8](
-        -1.5, -1.5, -5.0, -5.0, -3.14, -5.0, 0.0, 0.0
-    )
-    var bounds_high = SIMD[DType.float64, 8](
-        1.5, 1.5, 5.0, 5.0, 3.14, 5.0, 1.0, 1.0
-    )
-
-    fn bin_value(value: Float64, low: Float64, high: Float64, bins: Int) -> Int:
-        var normalized = (value - low) / (high - low)
-        if normalized < 0.0:
-            normalized = 0.0
-        elif normalized > 1.0:
-            normalized = 1.0
-        return Int(normalized * Float64(bins - 1))
-
-    var index = 0
-    var multiplier = 1
-    for i in range(8):
-        var b = bin_value(obs[i], bounds_low[i], bounds_high[i], num_bins)
-        index += b * multiplier
-        multiplier *= num_bins
-
-    return index

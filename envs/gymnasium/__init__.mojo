@@ -1,39 +1,65 @@
 # Generic Gymnasium wrapper
 from .gymnasium_wrapper import GymnasiumEnv
 
-# Classic Control environments
+# Classic Control environments and types
 from .gymnasium_classic_control import (
+    # State types
+    GymCartPoleState,
+    GymCartPoleAction,
+    GymMountainCarState,
+    GymMountainCarAction,
+    GymAcrobotState,
+    GymAcrobotAction,
+    GymPendulumState,
+    GymPendulumAction,
+    # Environments
     GymCartPoleEnv,
     GymMountainCarEnv,
-    GymPendulumEnv,
     GymAcrobotEnv,
-    discretize_mountain_car,
-    discretize_acrobot,
-    discretize_cart_pole,
-    get_cart_pole_num_states,
-    get_mountain_car_num_states,
-    get_acrobot_num_states,
+    GymPendulumEnv,
 )
 
-# Box2D environments
+# Box2D environments and types
 from .gymnasium_box2d import (
+    # State types
+    GymLunarLanderState,
+    GymLunarLanderAction,
+    GymBipedalWalkerState,
+    GymBipedalWalkerAction,
+    GymCarRacingState,
+    GymCarRacingAction,
+    # Environments
     GymLunarLanderEnv,
     GymBipedalWalkerEnv,
     GymCarRacingEnv,
-    discretize_lunar_lander,
 )
 
-# Toy Text environments (Gymnasium wrappers)
+# Toy Text environments and types
 from .gymnasium_toy_text import (
+    # State types
+    GymFrozenLakeState,
+    GymFrozenLakeAction,
+    GymTaxiState,
+    GymTaxiAction,
+    GymBlackjackState,
+    GymBlackjackAction,
+    GymCliffWalkingState,
+    GymCliffWalkingAction,
+    # Environments
     GymFrozenLakeEnv,
     GymTaxiEnv,
     GymBlackjackEnv,
     GymCliffWalkingEnv,
 )
 
-# MuJoCo environments
+# MuJoCo environments and types
 from .gymnasium_mujoco import (
+    # State types
+    GymMuJoCoState,
+    GymMuJoCoAction,
+    # Environments
     GymMuJoCoEnv,
+    # Factory functions
     make_half_cheetah,
     make_ant,
     make_humanoid,

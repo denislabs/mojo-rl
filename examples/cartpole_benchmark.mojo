@@ -6,14 +6,18 @@ Compares:
 """
 
 from time import perf_counter_ns
-from envs.gymnasium import (
-    GymCartPoleEnv,
-    discretize_cart_pole,
-    get_cart_pole_num_states,
-)
-from envs import CartPoleEnv, CartPoleAction
+from envs.gymnasium import GymCartPoleEnv
+from envs import CartPoleEnv
 from agents.qlearning import QLearningAgent
 from random import seed
+
+
+fn compute_total_steps(steps: List[Int]) -> Int:
+    """Sum all episode steps to get total training steps."""
+    var total = 0
+    for i in range(len(steps)):
+        total += steps[i]
+    return total
 
 
 fn benchmark_gymnasium(
@@ -23,13 +27,12 @@ fn benchmark_gymnasium(
 
     Returns: (total_time_seconds, avg_eval_reward, total_steps)
     """
-    var num_states = get_cart_pole_num_states(num_bins)
     var max_steps = 500
 
-    var env = GymCartPoleEnv()
+    var env = GymCartPoleEnv(num_bins=num_bins)
     var agent = QLearningAgent(
-        num_states=num_states,
-        num_actions=2,
+        num_states=env.num_states(),
+        num_actions=env.num_actions(),
         learning_rate=0.1,
         discount_factor=0.99,
         epsilon=1.0,
@@ -37,64 +40,29 @@ fn benchmark_gymnasium(
         epsilon_min=0.01,
     )
 
-    var total_steps = 0
     var start_time = perf_counter_ns()
 
-    # Training
-    for episode in range(num_episodes):
-        var obs = env.reset()
-        var state = discretize_cart_pole(obs, num_bins)
-
-        for _ in range(max_steps):
-            var action = agent.select_action(state)
-            var result = env.step(action)
-            var next_obs = result[0]
-            var reward = result[1]
-            var done = result[2]
-
-            var next_state = discretize_cart_pole(next_obs, num_bins)
-            agent.update(state, action, reward, next_state, done)
-
-            state = next_state
-            total_steps += 1
-
-            if done:
-                break
-
-        agent.decay_epsilon()
+    # Training using agent.train()
+    var metrics = agent.train(
+        env,
+        num_episodes=num_episodes,
+        max_steps_per_episode=max_steps,
+        verbose=False,
+    )
 
     var end_time = perf_counter_ns()
     var total_time = Float64(end_time - start_time) / 1_000_000_000.0
 
+    var total_steps = compute_total_steps(metrics.get_steps())
+
     env.close()
 
-    # Evaluation
-    var eval_env = CartPoleEnv()
-    var eval_total: Float64 = 0.0
-
-    for _ in range(10):
-        var obs = eval_env.reset()
-        var state = discretize_cart_pole(obs, num_bins)
-        var ep_reward: Float64 = 0.0
-
-        for _ in range(max_steps):
-            var action = agent.get_best_action(state)
-            var result = eval_env.step(action)
-            var next_obs = result[0]
-            var reward = result[1]
-            var done = result[2]
-
-            ep_reward += reward
-            state = discretize_cart_pole(next_obs, num_bins)
-
-            if done:
-                break
-
-        eval_total += ep_reward
-
+    # Evaluation using agent.evaluate()
+    var eval_env = GymCartPoleEnv(num_bins=num_bins)
+    var avg_eval_reward = agent.evaluate(eval_env, num_episodes=10)
     eval_env.close()
 
-    return (total_time, eval_total / 10.0, total_steps)
+    return (total_time, avg_eval_reward, total_steps)
 
 
 fn benchmark_native(
@@ -104,12 +72,11 @@ fn benchmark_native(
 
     Returns: (total_time_seconds, avg_eval_reward, total_steps)
     """
-    var num_states = get_cart_pole_num_states(num_bins)
     var max_steps = 500
 
     var env = CartPoleEnv(num_bins=num_bins)
     var agent = QLearningAgent(
-        num_states=num_states,
+        num_states=CartPoleEnv.get_num_states(num_bins),
         num_actions=2,
         learning_rate=0.1,
         discount_factor=0.99,
@@ -118,61 +85,25 @@ fn benchmark_native(
         epsilon_min=0.01,
     )
 
-    var total_steps = 0
     var start_time = perf_counter_ns()
 
-    # Training
-    for episode in range(num_episodes):
-        var state = env.reset()
-
-        for _ in range(max_steps):
-            var action_idx = agent.select_action(state.index)
-            var action = CartPoleAction(direction=action_idx)
-            var result = env.step(action)
-            var next_state = result[0]
-            var reward = result[1]
-            var done = result[2]
-
-            agent.update(
-                state.index, action_idx, reward, next_state.index, done
-            )
-
-            state = next_state
-            total_steps += 1
-
-            if done:
-                break
-
-        agent.decay_epsilon()
+    # Training using agent.train()
+    var metrics = agent.train(
+        env,
+        num_episodes=num_episodes,
+        max_steps_per_episode=max_steps,
+        verbose=False,
+    )
 
     var end_time = perf_counter_ns()
     var total_time = Float64(end_time - start_time) / 1_000_000_000.0
 
-    # Evaluation
-    var eval_env = CartPoleEnv(num_bins=num_bins)
-    var eval_total: Float64 = 0.0
+    var total_steps = compute_total_steps(metrics.get_steps())
 
-    for _ in range(10):
-        var state = eval_env.reset()
-        var ep_reward: Float64 = 0.0
+    # Evaluation using agent.evaluate()
+    var avg_eval_reward = agent.evaluate(env, num_episodes=10)
 
-        for _ in range(max_steps):
-            var action_idx = agent.get_best_action(state.index)
-            var action = CartPoleAction(direction=action_idx)
-            var result = eval_env.step(action)
-            var next_state = result[0]
-            var reward = result[1]
-            var done = result[2]
-
-            ep_reward += reward
-            state = next_state
-
-            if done:
-                break
-
-        eval_total += ep_reward
-
-    return (total_time, eval_total / 10.0, total_steps)
+    return (total_time, avg_eval_reward, total_steps)
 
 
 fn main() raises:

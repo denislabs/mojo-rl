@@ -1,15 +1,20 @@
-"""Demo script for all Gymnasium environment wrappers.
+"""Demo script for Gymnasium environment wrappers with built-in training agents.
 
-This demonstrates:
-- Classic Control: MountainCar, Pendulum, Acrobot
-- Box2D: LunarLander, BipedalWalker (CarRacing requires image processing)
-- Toy Text: FrozenLake, Taxi, Blackjack, CliffWalking
-- MuJoCo: HalfCheetah (requires mujoco installation)
+This demonstrates training RL agents on Gymnasium environments:
+- Classic Control: MountainCar, Acrobot (using TiledQLearningAgent)
+- Box2D: LunarLander (using TiledQLearningAgent)
+- Toy Text: FrozenLake, Taxi, CliffWalking (using QLearningAgent)
 
-Run with: mojo run gymnasium_demo.mojo
+Continuous action environments (Pendulum, BipedalWalker, MuJoCo) are shown
+with simple heuristic policies since they require policy gradient methods.
+
+Run with: pixi run mojo run examples/gymnasium_demo.mojo
 """
 
 from python import Python
+from core.tile_coding import TileCoding
+from agents.tiled_qlearning import TiledQLearningAgent
+from agents.qlearning import QLearningAgent
 from envs.gymnasium import (
     GymMountainCarEnv,
     GymPendulumEnv,
@@ -20,59 +25,155 @@ from envs.gymnasium import (
     GymFrozenLakeEnv,
     GymTaxiEnv,
     GymBlackjackEnv,
+    GymBlackjackAction,
     GymCliffWalkingEnv,
     GymnasiumEnv,
 )
 
 
-fn demo_mountain_car() raises:
-    """Demo MountainCar-v0: Drive up a mountain."""
-    print("\n" + "=" * 50)
-    print("MountainCar-v0 Demo")
-    print("=" * 50)
+fn train_mountain_car() raises:
+    """Train Q-learning agent on MountainCar-v0."""
+    print("\n" + "=" * 60)
+    print("MountainCar-v0 Training (TiledQLearning)")
+    print("=" * 60)
     print("Goal: Drive the underpowered car to reach the flag")
     print("Actions: 0=left, 1=none, 2=right")
     print("")
 
+    # Create environment
     var env = GymMountainCarEnv()
-    var obs = env.reset()
 
-    print("Initial state: pos=" + String(obs[0]) + ", vel=" + String(obs[1]))
+    # Create tile coding for 2D continuous state
+    var tc = GymMountainCarEnv.make_tile_coding(
+        num_tilings=8,
+        tiles_per_dim=8,
+    )
 
-    var total_reward: Float64 = 0.0
-    var steps = 0
+    # Create tiled Q-learning agent
+    var agent = TiledQLearningAgent(
+        tile_coding=tc,
+        num_actions=3,  # left, none, right
+        learning_rate=0.2,
+        discount_factor=0.99,
+        epsilon=1.0,
+        epsilon_decay=0.995,
+        epsilon_min=0.01,
+    )
 
-    # Simple policy: accelerate in direction of velocity
-    while not env.done and steps < 200:
-        var action: Int
-        if obs[1] > 0:
-            action = 2  # Push right
-        else:
-            action = 0  # Push left
+    # Train the agent
+    var metrics = agent.train(
+        env,
+        tc,
+        num_episodes=500,
+        max_steps_per_episode=200,
+        verbose=True,
+        print_every=100,
+        environment_name="MountainCar-v0",
+    )
 
-        var result = env.step(action)
-        obs = result[0]
-        var reward = result[1]
-        total_reward += reward
-        steps += 1
+    print("")
+    print("Training Complete!")
+    print("Mean reward:", metrics.mean_reward())
+    print("Max reward:", metrics.max_reward())
 
-    print("Episode finished in " + String(steps) + " steps")
-    print("Total reward: " + String(total_reward))
-    print("Final position: " + String(obs[0]) + " (goal: >= 0.5)")
+    # Evaluate
+    var eval_reward = agent.evaluate(env, tc, num_episodes=5)
+    print("Evaluation avg reward:", Int(eval_reward))
+
+    if eval_reward > -200:
+        print("SUCCESS: MountainCar solved!")
+    else:
+        print("Training complete. MountainCar is challenging - consider more episodes.")
+
+    env.close()
+
+
+fn train_acrobot() raises:
+    """Train Q-learning agent on Acrobot-v1."""
+    print("\n" + "=" * 60)
+    print("Acrobot-v1 Training (TiledQLearning)")
+    print("=" * 60)
+    print("Goal: Swing the tip of the double pendulum above the base")
+    print("Actions: 0=-1 torque, 1=0 torque, 2=+1 torque")
+    print("")
+
+    # Create environment
+    var env = GymAcrobotEnv()
+
+    # Create tile coding for 4D continuous state (first 4 dims of 6D state)
+    # Acrobot state: (cos1, sin1, cos2, sin2, vel1, vel2), using first 4
+    var state_low = List[Float64]()
+    state_low.append(-1.0)  # cos1
+    state_low.append(-1.0)  # sin1
+    state_low.append(-1.0)  # cos2
+    state_low.append(-1.0)  # sin2
+
+    var state_high = List[Float64]()
+    state_high.append(1.0)
+    state_high.append(1.0)
+    state_high.append(1.0)
+    state_high.append(1.0)
+
+    var tiles_per_dim = List[Int]()
+    tiles_per_dim.append(6)
+    tiles_per_dim.append(6)
+    tiles_per_dim.append(6)
+    tiles_per_dim.append(6)
+
+    var tc = TileCoding(
+        num_tilings=8,
+        tiles_per_dim=tiles_per_dim^,
+        state_low=state_low^,
+        state_high=state_high^,
+    )
+
+    # Create tiled Q-learning agent
+    var agent = TiledQLearningAgent(
+        tile_coding=tc,
+        num_actions=3,
+        learning_rate=0.2,
+        discount_factor=0.99,
+        epsilon=1.0,
+        epsilon_decay=0.995,
+        epsilon_min=0.01,
+    )
+
+    # Train the agent
+    var metrics = agent.train(
+        env,
+        tc,
+        num_episodes=500,
+        max_steps_per_episode=500,
+        verbose=True,
+        print_every=100,
+        environment_name="Acrobot-v1",
+    )
+
+    print("")
+    print("Training Complete!")
+    print("Mean reward:", metrics.mean_reward())
+    print("Max reward:", metrics.max_reward())
+
+    # Evaluate
+    var eval_reward = agent.evaluate(env, tc, num_episodes=5)
+    print("Evaluation avg reward:", Int(eval_reward))
+
     env.close()
 
 
 fn demo_pendulum() raises:
-    """Demo Pendulum-v1: Swing up and balance."""
-    print("\n" + "=" * 50)
-    print("Pendulum-v1 Demo")
-    print("=" * 50)
+    """Demo Pendulum-v1 with heuristic policy (continuous action space)."""
+    print("\n" + "=" * 60)
+    print("Pendulum-v1 Demo (Heuristic Controller)")
+    print("=" * 60)
     print("Goal: Swing up the pendulum and balance it upright")
     print("Action: Continuous torque in [-2, 2]")
+    print("Note: Requires policy gradient methods for proper training")
     print("")
 
     var env = GymPendulumEnv()
-    var obs = env.reset()
+    _ = env.reset()
+    var obs = env.get_obs()  # SIMD[DType.float64, 4]
 
     print(
         "Initial state: cos="
@@ -88,7 +189,6 @@ fn demo_pendulum() raises:
 
     # Simple proportional controller
     while not env.done and steps < 200:
-        # Simple control: apply torque proportional to angle
         var angle = obs[2]  # Angular velocity
         var torque = -2.0 * obs[1] - 0.5 * angle  # Simple P controller
         if torque > 2.0:
@@ -96,7 +196,7 @@ fn demo_pendulum() raises:
         elif torque < -2.0:
             torque = -2.0
 
-        var result = env.step(torque)
+        var result = env.step_continuous(torque)
         obs = result[0]
         var reward = result[1]
         total_reward += reward
@@ -107,349 +207,327 @@ fn demo_pendulum() raises:
     env.close()
 
 
-fn demo_acrobot() raises:
-    """Demo Acrobot-v1: Swing up a double pendulum."""
-    print("\n" + "=" * 50)
-    print("Acrobot-v1 Demo")
-    print("=" * 50)
-    print("Goal: Swing the tip of the double pendulum above the base")
-    print("Actions: 0=-1 torque, 1=0 torque, 2=+1 torque")
-    print("")
-
-    var env = GymAcrobotEnv()
-    var obs = env.reset()
-
-    print("Observation dim: " + String(env.obs_dim()))
-
-    var total_reward: Float64 = 0.0
-    var steps = 0
-
-    # Random policy (Acrobot is hard without learning)
-    from random import random_si64
-
-    while not env.done and steps < 500:
-        var action = Int(random_si64(0, 2))
-
-        var result = env.step(action)
-        obs = result[0]
-        var reward = result[1]
-        total_reward += reward
-        steps += 1
-
-    print("Episode finished in " + String(steps) + " steps")
-    print("Total reward: " + String(total_reward))
-    env.close()
-
-
-fn demo_lunar_lander() raises:
-    """Demo LunarLander-v3: Land a spacecraft."""
-    print("\n" + "=" * 50)
-    print("LunarLander-v3 Demo")
-    print("=" * 50)
+fn train_lunar_lander() raises:
+    """Train Q-learning agent on LunarLander-v3."""
+    print("\n" + "=" * 60)
+    print("LunarLander-v3 Training (TiledQLearning)")
+    print("=" * 60)
     print("Goal: Land the spacecraft safely on the landing pad")
     print("Actions: 0=nothing, 1=left, 2=main, 3=right")
     print("")
 
+    # Create environment
     var env = GymLunarLanderEnv()
-    var obs = env.reset()
 
-    print(
-        "Observation: [x, y, vx, vy, angle, angular_vel, left_leg, right_leg]"
+    # Create tile coding for 8D continuous state
+    # Using 4D subset: [x, y, vx, vy] for trait conformance
+    var state_low = List[Float64]()
+    state_low.append(-1.5)  # x
+    state_low.append(-1.5)  # y
+    state_low.append(-5.0)  # vx
+    state_low.append(-5.0)  # vy
+
+    var state_high = List[Float64]()
+    state_high.append(1.5)
+    state_high.append(1.5)
+    state_high.append(5.0)
+    state_high.append(5.0)
+
+    var tiles_per_dim = List[Int]()
+    tiles_per_dim.append(8)
+    tiles_per_dim.append(8)
+    tiles_per_dim.append(8)
+    tiles_per_dim.append(8)
+
+    var tc = TileCoding(
+        num_tilings=8,
+        tiles_per_dim=tiles_per_dim^,
+        state_low=state_low^,
+        state_high=state_high^,
     )
-    print("Initial y-position: " + String(obs[1]))
 
-    var total_reward: Float64 = 0.0
-    var steps = 0
+    # Create tiled Q-learning agent
+    var agent = TiledQLearningAgent(
+        tile_coding=tc,
+        num_actions=4,
+        learning_rate=0.15,
+        discount_factor=0.99,
+        epsilon=1.0,
+        epsilon_decay=0.995,
+        epsilon_min=0.01,
+    )
 
-    # Simple heuristic policy
-    while not env.done and steps < 1000:
-        var action: Int = 0
-        var x = obs[0]
-        var y = obs[1]
-        var vx = obs[2]
-        var vy = obs[3]
-        var angle = obs[4]
+    # Train the agent
+    var metrics = agent.train(
+        env,
+        tc,
+        num_episodes=500,
+        max_steps_per_episode=1000,
+        verbose=True,
+        print_every=100,
+        environment_name="LunarLander-v3",
+    )
 
-        # Fire main engine if falling too fast
-        if vy < -0.1:
-            action = 2
-        # Fire side thrusters to stay centered
-        elif x > 0.1 or angle > 0.1:
-            action = 1
-        elif x < -0.1 or angle < -0.1:
-            action = 3
+    print("")
+    print("Training Complete!")
+    print("Mean reward:", metrics.mean_reward())
+    print("Max reward:", metrics.max_reward())
 
-        var result = env.step_discrete(action)
-        obs = result[0]
-        var reward = result[1]
-        total_reward += reward
-        steps += 1
+    # Evaluate
+    var eval_reward = agent.evaluate(env, tc, num_episodes=5)
+    print("Evaluation avg reward:", Int(eval_reward))
 
-    print("Episode finished in " + String(steps) + " steps")
-    print("Total reward: " + String(total_reward))
-    print("Final y-position: " + String(obs[1]))
+    if eval_reward >= 200:
+        print("SUCCESS: LunarLander solved!")
+    else:
+        print("Training complete. Consider more episodes for better performance.")
+
     env.close()
 
 
-fn demo_frozenlake() raises:
-    """Demo FrozenLake-v1 (Gymnasium wrapper)."""
-    print("\n" + "=" * 50)
-    print("FrozenLake-v1 Demo (Gymnasium)")
-    print("=" * 50)
+fn train_frozenlake() raises:
+    """Train Q-learning agent on FrozenLake-v1."""
+    print("\n" + "=" * 60)
+    print("FrozenLake-v1 Training (Q-Learning)")
+    print("=" * 60)
     print("Goal: Navigate from S to G without falling in holes")
     print("Actions: 0=left, 1=down, 2=right, 3=up")
     print("")
 
+    # Create environment (non-slippery for easier learning)
     var env = GymFrozenLakeEnv(map_name="4x4", is_slippery=False)
-    var state = env.reset()
 
-    print("Initial state: " + String(state))
     print("Num states: " + String(env.num_states()))
+    print("Num actions: " + String(env.num_actions()))
 
-    var total_reward: Float64 = 0.0
-    var steps = 0
+    # Create Q-learning agent
+    var agent = QLearningAgent(
+        num_states=env.num_states(),
+        num_actions=env.num_actions(),
+        learning_rate=0.8,
+        discount_factor=0.95,
+        epsilon=1.0,
+        epsilon_decay=0.99,
+        epsilon_min=0.01,
+    )
 
-    # Fixed sequence to reach goal (without slippery ice)
-    var actions = List[Int]()
-    actions.append(2)  # right
-    actions.append(2)  # right
-    actions.append(1)  # down
-    actions.append(1)  # down
-    actions.append(1)  # down
-    actions.append(2)  # right
+    # Train the agent
+    var metrics = agent.train(
+        env,
+        num_episodes=1000,
+        max_steps_per_episode=100,
+        verbose=True,
+        print_every=200,
+        environment_name="FrozenLake-v1",
+    )
 
-    var idx = 0
-    while not env.done and steps < 20:
-        var action: Int
-        if idx < len(actions):
-            action = actions[idx]
-            idx += 1
-        else:
-            action = 1  # down
+    print("")
+    print("Training Complete!")
+    print("Mean reward:", metrics.mean_reward())
+    print("Max reward:", metrics.max_reward())
 
-        var result = env.step(action)
-        state = result[0]
-        var reward = result[1]
-        total_reward += reward
-        steps += 1
-        print(
-            "Step "
-            + String(steps)
-            + ": action="
-            + String(action)
-            + ", state="
-            + String(state)
-            + ", reward="
-            + String(reward)
-        )
+    # Evaluate
+    var eval_reward = agent.evaluate(env, num_episodes=10)
+    print("Evaluation avg reward:", eval_reward)
 
-    print("Episode finished in " + String(steps) + " steps")
-    print("Total reward: " + String(total_reward))
+    if eval_reward >= 0.8:
+        print("SUCCESS: FrozenLake solved!")
+    else:
+        print("Training complete.")
+
     env.close()
 
 
-fn demo_taxi() raises:
-    """Demo Taxi-v3 (Gymnasium wrapper)."""
-    print("\n" + "=" * 50)
-    print("Taxi-v3 Demo (Gymnasium)")
-    print("=" * 50)
+fn train_taxi() raises:
+    """Train Q-learning agent on Taxi-v3."""
+    print("\n" + "=" * 60)
+    print("Taxi-v3 Training (Q-Learning)")
+    print("=" * 60)
     print("Goal: Pick up passenger and drop off at destination")
     print("Actions: 0=south, 1=north, 2=east, 3=west, 4=pickup, 5=dropoff")
     print("")
 
+    # Create environment
     var env = GymTaxiEnv()
-    var state = env.reset()
 
-    print("Initial state index: " + String(state))
     print("Num states: " + String(env.num_states()))
+    print("Num actions: " + String(env.num_actions()))
 
-    var total_reward: Float64 = 0.0
-    var steps = 0
+    # Create Q-learning agent
+    var agent = QLearningAgent(
+        num_states=env.num_states(),
+        num_actions=env.num_actions(),
+        learning_rate=0.1,
+        discount_factor=0.99,
+        epsilon=1.0,
+        epsilon_decay=0.995,
+        epsilon_min=0.01,
+    )
 
-    # Random exploration
-    from random import random_si64
+    # Train the agent
+    var metrics = agent.train(
+        env,
+        num_episodes=2000,
+        max_steps_per_episode=200,
+        verbose=True,
+        print_every=400,
+        environment_name="Taxi-v3",
+    )
 
-    while not env.done and steps < 50:
-        var action = Int(random_si64(0, 5))
+    print("")
+    print("Training Complete!")
+    print("Mean reward:", metrics.mean_reward())
+    print("Max reward:", metrics.max_reward())
 
-        var result = env.step(action)
-        state = result[0]
-        var reward = result[1]
-        total_reward += reward
-        steps += 1
+    # Evaluate
+    var eval_reward = agent.evaluate(env, num_episodes=10)
+    print("Evaluation avg reward:", eval_reward)
 
-    print("Episode finished in " + String(steps) + " steps")
-    print("Total reward: " + String(total_reward))
+    if eval_reward >= 8:
+        print("SUCCESS: Taxi solved!")
+    else:
+        print("Training complete.")
+
     env.close()
 
 
 fn demo_blackjack() raises:
-    """Demo Blackjack-v1."""
-    print("\n" + "=" * 50)
-    print("Blackjack-v1 Demo")
-    print("=" * 50)
+    """Demo Blackjack-v1 with simple strategy."""
+    print("\n" + "=" * 60)
+    print("Blackjack-v1 Demo (Simple Strategy)")
+    print("=" * 60)
     print("Goal: Beat the dealer without going over 21")
     print("Actions: 0=stick, 1=hit")
+    print("Note: Has special 3D discrete state - using heuristic policy")
     print("")
 
     var env = GymBlackjackEnv()
-    var obs = env.reset()
-    var player_sum = obs[0]
-    var dealer_card = obs[1]
-    var usable_ace = obs[2]
+    var wins = 0
+    var losses = 0
+    var draws = 0
 
-    print("Player sum: " + String(player_sum))
-    print("Dealer showing: " + String(dealer_card))
-    print("Usable ace: " + String(usable_ace))
+    for game in range(10):
+        _ = env.reset()
+        var player_sum = env.player_sum
+        var total_reward: Float64 = 0.0
 
-    var total_reward: Float64 = 0.0
+        # Simple strategy: hit until 17
+        while not env.done:
+            var action: GymBlackjackAction
+            if player_sum < 17:
+                action = GymBlackjackAction(action=1)  # hit
+            else:
+                action = GymBlackjackAction(action=0)  # stick
 
-    # Simple strategy: hit until 17
-    while not env.done:
-        var action: Int
-        if player_sum < 17:
-            action = 1  # hit
-            print("Action: Hit")
+            var result = env.step(action)
+            player_sum = env.player_sum
+            var reward = result[1]
+            total_reward += reward
+
+        if total_reward > 0:
+            wins += 1
+        elif total_reward < 0:
+            losses += 1
         else:
-            action = 0  # stick
-            print("Action: Stick")
+            draws += 1
 
-        var result = env.step(action)
-        player_sum = result[0]
-        dealer_card = result[1]
-        usable_ace = result[2]
-        var reward = result[3]
-        total_reward += reward
-
-        if not env.done:
-            print("Player sum: " + String(player_sum))
-
-    print("Game over! Reward: " + String(total_reward))
-    if total_reward > 0:
-        print("You won!")
-    elif total_reward < 0:
-        print("You lost.")
-    else:
-        print("It's a draw.")
+    print("Results over 10 games:")
+    print("  Wins: " + String(wins))
+    print("  Losses: " + String(losses))
+    print("  Draws: " + String(draws))
     env.close()
 
 
-fn demo_cliffwalking() raises:
-    """Demo CliffWalking-v0 (Gymnasium wrapper)."""
-    print("\n" + "=" * 50)
-    print("CliffWalking-v0 Demo (Gymnasium)")
-    print("=" * 50)
+fn train_cliffwalking() raises:
+    """Train Q-learning agent on CliffWalking-v0."""
+    print("\n" + "=" * 60)
+    print("CliffWalking-v0 Training (Q-Learning)")
+    print("=" * 60)
     print("Goal: Navigate to goal without falling off cliff")
     print("Actions: 0=up, 1=right, 2=down, 3=left")
     print("")
 
+    # Create environment
     var env = GymCliffWalkingEnv()
-    var state = env.reset()
 
-    print("Initial state: " + String(state))
     print("Num states: " + String(env.num_states()))
+    print("Num actions: " + String(env.num_actions()))
 
-    var total_reward: Float64 = 0.0
-    var steps = 0
-
-    # Safe path: go up, then right, then down
-    var actions = List[Int]()
-    # Go up 3 times
-    for _ in range(3):
-        actions.append(0)
-    # Go right 11 times
-    for _ in range(11):
-        actions.append(1)
-    # Go down 3 times
-    for _ in range(3):
-        actions.append(2)
-
-    for i in range(len(actions)):
-        if env.done:
-            break
-        var action = actions[i]
-        var result = env.step(action)
-        state = result[0]
-        var reward = result[1]
-        total_reward += reward
-        steps += 1
-
-    print("Episode finished in " + String(steps) + " steps")
-    print("Total reward: " + String(total_reward))
-    env.close()
-
-
-fn demo_generic_wrapper() raises:
-    """Demo the generic GymnasiumEnv wrapper."""
-    print("\n" + "=" * 50)
-    print("Generic Gymnasium Wrapper Demo")
-    print("=" * 50)
-    print("Using CartPole-v1 via generic wrapper")
-    print("")
-
-    var env = GymnasiumEnv("CartPole-v1")
-    print(env.get_info())
-
-    var obs = env.reset()
-    var obs_list = env.get_obs_as_list(obs)
-
-    print(
-        "Initial observation: "
-        + String(obs_list[0])
-        + ", "
-        + String(obs_list[1])
-        + ", "
-        + String(obs_list[2])
-        + ", "
-        + String(obs_list[3])
+    # Create Q-learning agent
+    var agent = QLearningAgent(
+        num_states=env.num_states(),
+        num_actions=env.num_actions(),
+        learning_rate=0.5,
+        discount_factor=0.99,
+        epsilon=1.0,
+        epsilon_decay=0.99,
+        epsilon_min=0.01,
     )
 
-    var steps = 0
-    while not env.done and steps < 100:
-        var result = env.step_discrete(0 if obs_list[2] < 0 else 1)
-        obs = result[0]
-        obs_list = env.get_obs_as_list(obs)
-        steps += 1
+    # Train the agent
+    var metrics = agent.train(
+        env,
+        num_episodes=500,
+        max_steps_per_episode=100,
+        verbose=True,
+        print_every=100,
+        environment_name="CliffWalking-v0",
+    )
 
-    print("Episode finished in " + String(steps) + " steps")
-    print("Total reward: " + String(env.episode_reward))
+    print("")
+    print("Training Complete!")
+    print("Mean reward:", metrics.mean_reward())
+    print("Max reward:", metrics.max_reward())
+
+    # Evaluate
+    var eval_reward = agent.evaluate(env, num_episodes=10)
+    print("Evaluation avg reward:", eval_reward)
+
+    # Optimal path gives -13 reward (13 steps)
+    if eval_reward >= -15:
+        print("SUCCESS: CliffWalking near-optimal!")
+    else:
+        print("Training complete.")
+
     env.close()
 
 
 fn main() raises:
-    print("=" * 50)
-    print("Gymnasium Environment Wrappers Demo")
-    print("=" * 50)
+    print("=" * 60)
+    print("Gymnasium Environment Training Demo")
+    print("=" * 60)
     print("")
-    print("This demo shows all available Gymnasium wrappers.")
-    print("Note: Box2D and MuJoCo envs require additional packages:")
-    print("  - Box2D: pip install gymnasium[box2d]")
-    print("  - MuJoCo: pip install gymnasium[mujoco]")
+    print("This demo trains RL agents on various Gymnasium environments.")
+    print("Note: Box2D envs require: pip install gymnasium[box2d]")
     print("")
 
-    # Classic Control
-    demo_mountain_car()
-    demo_pendulum()
-    demo_acrobot()
+    # Classic Control - Continuous state spaces
+    print("\n" + "=" * 60)
+    print("CLASSIC CONTROL (TiledQLearning)")
+    print("=" * 60)
+    train_mountain_car()
+    train_acrobot()
+    demo_pendulum()  # Continuous action - heuristic only
 
-    # Toy Text
-    demo_frozenlake()
-    demo_taxi()
-    demo_blackjack()
-    demo_cliffwalking()
+    # Toy Text - Discrete state spaces
+    print("\n" + "=" * 60)
+    print("TOY TEXT (Tabular Q-Learning)")
+    print("=" * 60)
+    train_frozenlake()
+    train_taxi()
+    demo_blackjack()  # Special state structure - heuristic
+    train_cliffwalking()
 
-    # Generic wrapper
-    demo_generic_wrapper()
-
-    # Box2D (may fail if box2d not installed)
-    print("\n" + "=" * 50)
-    print("Box2D Environments (requires gymnasium[box2d])")
-    print("=" * 50)
+    # Box2D - Requires additional installation
+    print("\n" + "=" * 60)
+    print("BOX2D (requires gymnasium[box2d])")
+    print("=" * 60)
     try:
-        demo_lunar_lander()
+        train_lunar_lander()
     except e:
         print("LunarLander not available: " + String(e))
+        print("Install with: pip install gymnasium[box2d]")
 
-    print("\n" + "=" * 50)
+    print("\n" + "=" * 60)
     print("All demos completed!")
-    print("=" * 50)
+    print("=" * 60)

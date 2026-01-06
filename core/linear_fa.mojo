@@ -206,7 +206,7 @@ struct LinearWeights:
                 self.weights[a][i] += learning_rate * td_error * traces[a][i]
 
 
-struct PolynomialFeatures:
+struct PolynomialFeatures(FeatureExtractor):
     """Polynomial feature extractor for continuous state spaces.
 
     Generates polynomial features up to a specified degree with state normalization.
@@ -416,7 +416,7 @@ struct PolynomialFeatures:
         return result
 
 
-struct RBFFeatures:
+struct RBFFeatures(FeatureExtractor):
     """Radial Basis Function (RBF) feature extractor.
 
     Creates features based on distance to fixed centers:
