@@ -22,3 +22,5 @@ from .reinforce import REINFORCEAgent, REINFORCEWithEntropyAgent
 from .actor_critic import ActorCriticAgent, ActorCriticLambdaAgent, A2CAgent
 from .ppo import PPOAgent, PPOAgentWithMinibatch, compute_gae
 from .ddpg import DDPGAgent
+from .td3 import TD3Agent
+from .sac import SACAgent

@@ -132,6 +132,17 @@ All agents implement `TabularAgent` trait and use a shared `QTable` structure:
   - `PPOAgent`: PPO with clipped surrogate objective
   - `PPOAgentWithMinibatch`: PPO with minibatch sampling for larger rollouts
 
+**Continuous Control (Deterministic Policy Gradient):**
+- **`ddpg.mojo`** - Deep Deterministic Policy Gradient with linear function approximation:
+  - `DDPGAgent`: Deterministic actor + Q-function critic with target networks
+  - Gaussian exploration noise, soft target updates
+- **`td3.mojo`** - Twin Delayed DDPG with linear function approximation:
+  - `TD3Agent`: Improved DDPG with twin Q-networks
+  - Key improvements: min(Q1, Q2) targets, delayed policy updates, target smoothing
+- **`sac.mojo`** - Soft Actor-Critic with linear function approximation:
+  - `SACAgent`: Maximum entropy RL with stochastic Gaussian policy
+  - Key features: entropy bonus, twin critics, automatic α tuning
+
 ### Environments (`envs/`)
 
 **Native Mojo Environments:**
@@ -209,3 +220,6 @@ All agents use epsilon-greedy with decay: `ε *= ε_decay` each episode (default
 | Actor-Critic(λ) | Above + `lambda_` (trace decay) |
 | A2C | Above + `n_steps` (for n-step returns) |
 | PPO | `actor_lr`, `critic_lr`, `clip_epsilon`, `gae_lambda`, `num_epochs`, `entropy_coef` |
+| DDPG | `actor_lr`, `critic_lr`, `discount_factor`, `tau`, `noise_std`, `action_scale` |
+| TD3 | Above + `policy_delay`, `target_noise_std`, `target_noise_clip` |
+| SAC | `actor_lr`, `critic_lr`, `discount_factor`, `tau`, `alpha`, `auto_alpha`, `target_entropy` |

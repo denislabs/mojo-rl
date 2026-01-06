@@ -88,6 +88,19 @@
   - Gaussian exploration noise
   - Works with polynomial features for continuous state/action spaces
   - `examples/pendulum_ddpg.mojo` - Pendulum swing-up with DDPG
+- [x] TD3 - Twin Delayed DDPG with linear function approximation
+  - `agents/td3.mojo` - TD3Agent with twin Q-networks
+  - Twin critics to reduce overestimation bias (uses min(Q1, Q2))
+  - Delayed policy updates (actor updates every N critic updates)
+  - Target policy smoothing (clipped noise added to target actions)
+  - `examples/pendulum_td3.mojo` - Pendulum swing-up with TD3
+- [x] SAC - Soft Actor-Critic with linear function approximation
+  - `agents/sac.mojo` - SACAgent with stochastic Gaussian policy
+  - Maximum entropy RL: maximizes reward + α * entropy
+  - Stochastic policy for better exploration
+  - Twin Q-networks (like TD3)
+  - Automatic entropy temperature (α) tuning
+  - `examples/pendulum_sac.mojo` - Pendulum swing-up with SAC
 
 ## In Progress / Next Steps
 
@@ -134,3 +147,5 @@
 | PPO | Policy Gradient | Clipped surrogate objective, stable updates |
 | GAE | Advantage Est. | Exponentially-weighted TD residuals |
 | DDPG | Continuous Control | Deterministic policy + Q-function critic |
+| TD3 | Continuous Control | Twin critics + delayed updates + target smoothing |
+| SAC | Continuous Control | Stochastic policy + entropy regularization + auto α |
