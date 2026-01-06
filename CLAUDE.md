@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-mojo-rl is a reinforcement learning framework written in Mojo, featuring trait-based design for extensibility, 13 RL algorithms (including tile-coded function approximation), 6 native environments (CartPole, MountainCar, GridWorld, FrozenLake, CliffWalking, Taxi), 20+ Gymnasium wrappers, and experience replay infrastructure.
+mojo-rl is a reinforcement learning framework written in Mojo, featuring trait-based design for extensibility, 13 RL algorithms (including tile-coded function approximation), 6 native environments (CartPole, MountainCar, GridWorld, FrozenLake, CliffWalking, Taxi) with integrated SDL2 rendering for continuous-state environments, 20+ Gymnasium wrappers, and experience replay infrastructure.
 
 ## Build and Run Commands
 
@@ -17,6 +17,21 @@ mojo run benchmark.mojo
 
 # Build a binary
 mojo build main.mojo
+
+# Run native renderer demos (requires SDL2)
+mojo run examples/native_renderer_demo.mojo
+mojo run examples/cartpole_native_demo.mojo
+mojo run examples/mountain_car_tiled.mojo
+```
+
+### SDL2 Requirements (for visualization)
+
+```bash
+# macOS
+brew install sdl2 sdl2_ttf
+
+# Ubuntu/Debian
+sudo apt-get install libsdl2-dev libsdl2-ttf-dev
 ```
 
 ## Architecture
@@ -46,6 +61,9 @@ The codebase follows a trait-based design for RL components with clear separatio
   - `TileCoding`: Multi-dimensional tile coding with asymmetric offsets
   - `TiledWeights`: Weight storage for linear value function
   - `make_cartpole_tile_coding()`: Factory for CartPole configuration
+- **`sdl2.mojo`** - SDL2 FFI bindings for native rendering
+  - `SDL2Renderer`: Low-level SDL2 wrapper with FFI calls
+  - Functions: `init()`, `quit()`, `create_window()`, `set_color()`, `fill_rect()`, `draw_line()`, etc.
 
 ### Agents (`agents/`)
 
