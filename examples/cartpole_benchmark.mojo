@@ -27,7 +27,7 @@ fn benchmark_gymnasium(
 
     Returns: (total_time_seconds, avg_eval_reward, total_steps)
     """
-    var max_steps = 500
+    var max_steps = 1000
 
     var env = GymCartPoleEnv(num_bins=num_bins)
     var agent = QLearningAgent(
@@ -72,7 +72,7 @@ fn benchmark_native(
 
     Returns: (total_time_seconds, avg_eval_reward, total_steps)
     """
-    var max_steps = 500
+    var max_steps = 1000
 
     var env = CartPoleEnv(num_bins=num_bins)
     var agent = QLearningAgent(
@@ -114,7 +114,7 @@ fn main() raises:
     print("=" * 70)
     print()
 
-    var num_episodes = 1000
+    var num_episodes = 10_000
     var num_bins = 10
 
     print("Configuration:")
@@ -122,7 +122,7 @@ fn main() raises:
     print(
         "  State bins:", num_bins, "per dimension ->", num_bins**4, "states"
     )
-    print("  Max steps per episode: 500")
+    print("  Max steps per episode: 1000")
     print()
 
     # Benchmark Native Mojo

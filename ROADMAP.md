@@ -109,10 +109,25 @@
 - [ ] Double DQN - DQN with double Q-learning
 - [ ] Dueling DQN - Separate value and advantage streams
 
+### Vectorized Environments
+- [x] VecCartPoleEnv - Vectorized CartPole running N environments in parallel
+  - `core/vec_env.mojo` - VecStepResult struct and SIMD helper functions
+  - `envs/vec_cartpole.mojo` - VecCartPoleEnv[num_envs] with SIMD state storage
+  - `examples/vec_cartpole_demo.mojo` - Demo and performance benchmark
+  - Uses Structure of Arrays (SoA) layout for SIMD-friendly memory access
+  - Auto-reset: done environments automatically reset (with early-exit optimization)
+  - **Performance**: Uses native SIMD methods (.eq(), .lt(), .gt()), @always_inline,
+    and @parameter for compile-time loop unrolling. Achieves ~14-16M steps/sec.
+  - **Note on SIMD efficiency**: For simple environments like CartPole, scalar code
+    is faster (~34M steps/sec) because the physics is too simple to benefit from
+    SIMD parallelism - the overhead exceeds the gains. Vectorized environments
+    shine for: (1) batched data collection for neural network training (PPO, A2C),
+    (2) more complex environments with heavier physics, (3) future GPU support.
+
 ### Infrastructure
 - [x] Logging/Metrics - Export learning curves for visualization
 - [ ] Hyperparameter Search - Grid search / random search
-- [ ] Parallel Training - Multiple environments
+- [ ] Parallel Training - Multiple environments (vectorized envs provide foundation)
 
 ### Environments - Native Ports (Next)
 - [ ] LunarLander (Native) - Port Box2D physics to pure Mojo

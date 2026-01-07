@@ -2,37 +2,30 @@ from core import TabularAgent, DiscreteEnv, TrainingMetrics
 from random import random_si64, random_float64
 
 
-@fieldwise_init
 struct QTable(Copyable, ImplicitlyCopyable, Movable):
-    """Q-table for tabular Q-learning."""
+    """Q-table for tabular Q-learning.
 
-    var data: List[List[Float64]]
+    Uses flat array storage for better cache locality and performance.
+    Layout: data[state * num_actions + action]
+    """
+
+    var data: List[Float64]
     var num_states: Int
     var num_actions: Int
 
     fn copy(self) -> Self:
         """Explicit copy method."""
-        var new_data = List[List[Float64]]()
-        for i in range(self.num_states):
-            var row = List[Float64]()
-            for j in range(self.num_actions):
-                row.append(self.data[i][j])
-            new_data.append(row^)
-        return Self(
-            data=new_data^,
-            num_states=self.num_states,
-            num_actions=self.num_actions,
-        )
+        var new_table = Self(self.num_states, self.num_actions)
+        for i in range(len(self.data)):
+            new_table.data[i] = self.data[i]
+        return new_table^
 
     fn __copyinit__(out self, existing: Self):
         self.num_states = existing.num_states
         self.num_actions = existing.num_actions
-        self.data = List[List[Float64]]()
-        for i in range(existing.num_states):
-            var row = List[Float64]()
-            for j in range(existing.num_actions):
-                row.append(existing.data[i][j])
-            self.data.append(row^)
+        self.data = List[Float64](capacity=len(existing.data))
+        for i in range(len(existing.data)):
+            self.data.append(existing.data[i])
 
     fn __moveinit__(out self, deinit existing: Self):
         self.data = existing.data^
@@ -47,32 +40,43 @@ struct QTable(Copyable, ImplicitlyCopyable, Movable):
     ):
         self.num_states = num_states
         self.num_actions = num_actions
-        self.data = List[List[Float64]]()
-        for _ in range(num_states):
-            var row = List[Float64]()
-            for _ in range(num_actions):
-                row.append(initial_value)
-            self.data.append(row^)
+        var total_size = num_states * num_actions
+        self.data = List[Float64](capacity=total_size)
+        for _ in range(total_size):
+            self.data.append(initial_value)
 
+    @always_inline
+    fn _index(self, state: Int, action: Int) -> Int:
+        """Compute flat index from state and action."""
+        return state * self.num_actions + action
+
+    @always_inline
     fn get(self, state: Int, action: Int) -> Float64:
-        return self.data[state][action]
+        return self.data[self._index(state, action)]
 
+    @always_inline
     fn set(mut self, state: Int, action: Int, value: Float64):
-        self.data[state][action] = value
+        self.data[self._index(state, action)] = value
 
+    @always_inline
     fn get_max_value(self, state: Int) -> Float64:
-        var max_val = self.data[state][0]
+        var base_idx = state * self.num_actions
+        var max_val = self.data[base_idx]
         for i in range(1, self.num_actions):
-            if self.data[state][i] > max_val:
-                max_val = self.data[state][i]
+            var val = self.data[base_idx + i]
+            if val > max_val:
+                max_val = val
         return max_val
 
+    @always_inline
     fn get_best_action(self, state: Int) -> Int:
+        var base_idx = state * self.num_actions
         var best_action = 0
-        var best_value = self.data[state][0]
+        var best_value = self.data[base_idx]
         for i in range(1, self.num_actions):
-            if self.data[state][i] > best_value:
-                best_value = self.data[state][i]
+            var val = self.data[base_idx + i]
+            if val > best_value:
+                best_value = val
                 best_action = i
         return best_action
 
@@ -124,6 +128,7 @@ struct QLearningAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
         self.epsilon_min = epsilon_min
         self.num_actions = num_actions
 
+    @always_inline
     fn select_action(self, state_idx: Int) -> Int:
         """Select action using epsilon-greedy policy."""
         var rand = random_float64()
@@ -133,6 +138,7 @@ struct QLearningAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
         else:
             return self.q_table.get_best_action(state_idx)
 
+    @always_inline
     fn update(
         mut self,
         state_idx: Int,
@@ -141,7 +147,7 @@ struct QLearningAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
         next_state_idx: Int,
         done: Bool,
     ):
-        """Q(s,a) += alpha * (r + gamma * max Q(s',a') - Q(s,a))"""
+        """Q(s,a) += alpha * (r + gamma * max Q(s',a') - Q(s,a))."""
         var current_q = self.q_table.get(state_idx, action)
         var target: Float64
         if done:
@@ -153,16 +159,21 @@ struct QLearningAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
         var new_q = current_q + self.learning_rate * (target - current_q)
         self.q_table.set(state_idx, action, new_q)
 
+    @always_inline
     fn decay_epsilon(mut self):
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
+    @always_inline
     fn get_epsilon(self) -> Float64:
         return self.epsilon
 
+    @always_inline
     fn get_best_action(self, state_idx: Int) -> Int:
         return self.q_table.get_best_action(state_idx)
 
-    fn train[E: DiscreteEnv](
+    fn train[
+        E: DiscreteEnv
+    ](
         mut self,
         mut env: E,
         num_episodes: Int,
@@ -222,7 +233,9 @@ struct QLearningAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
 
         return metrics^
 
-    fn evaluate[E: DiscreteEnv](
+    fn evaluate[
+        E: DiscreteEnv
+    ](
         self,
         mut env: E,
         num_episodes: Int = 10,

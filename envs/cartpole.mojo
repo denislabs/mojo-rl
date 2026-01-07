@@ -293,6 +293,7 @@ struct CartPoleEnv(ClassicControlEnv & DiscreteEnv):
     # Internal helpers
     # ========================================================================
 
+    @always_inline
     fn _get_obs(self) -> SIMD[DType.float64, 4]:
         """Return current continuous observation."""
         var obs = SIMD[DType.float64, 4]()
@@ -302,43 +303,46 @@ struct CartPoleEnv(ClassicControlEnv & DiscreteEnv):
         obs[3] = self.theta_dot
         return obs
 
+    @always_inline
     fn _discretize_obs(self) -> Int:
         """Discretize current continuous observation into a single state index.
         """
-        var cart_pos_low: Float64 = -2.4
-        var cart_pos_high: Float64 = 2.4
-        var cart_vel_low: Float64 = -3.0
-        var cart_vel_high: Float64 = 3.0
-        var pole_angle_low: Float64 = -0.21
-        var pole_angle_high: Float64 = 0.21
-        var pole_vel_low: Float64 = -3.0
-        var pole_vel_high: Float64 = 3.0
+        # Inline bin calculation for each dimension
+        # Cart position: [-2.4, 2.4]
+        var n0 = (self.x + 2.4) / 4.8
+        if n0 < 0.0:
+            n0 = 0.0
+        elif n0 > 1.0:
+            n0 = 1.0
+        var b0 = Int(n0 * Float64(self.num_bins - 1))
 
-        fn bin_value(
-            value: Float64, low: Float64, high: Float64, bins: Int
-        ) -> Int:
-            var normalized = (value - low) / (high - low)
-            if normalized < 0.0:
-                normalized = 0.0
-            elif normalized > 1.0:
-                normalized = 1.0
-            return Int(normalized * Float64(bins - 1))
+        # Cart velocity: [-3.0, 3.0]
+        var n1 = (self.x_dot + 3.0) / 6.0
+        if n1 < 0.0:
+            n1 = 0.0
+        elif n1 > 1.0:
+            n1 = 1.0
+        var b1 = Int(n1 * Float64(self.num_bins - 1))
 
-        var b0 = bin_value(self.x, cart_pos_low, cart_pos_high, self.num_bins)
-        var b1 = bin_value(
-            self.x_dot, cart_vel_low, cart_vel_high, self.num_bins
-        )
-        var b2 = bin_value(
-            self.theta, pole_angle_low, pole_angle_high, self.num_bins
-        )
-        var b3 = bin_value(
-            self.theta_dot, pole_vel_low, pole_vel_high, self.num_bins
-        )
+        # Pole angle: [-0.21, 0.21]
+        var n2 = (self.theta + 0.21) / 0.42
+        if n2 < 0.0:
+            n2 = 0.0
+        elif n2 > 1.0:
+            n2 = 1.0
+        var b2 = Int(n2 * Float64(self.num_bins - 1))
 
-        return (
-            (b0 * self.num_bins + b1) * self.num_bins + b2
-        ) * self.num_bins + b3
+        # Pole angular velocity: [-3.0, 3.0]
+        var n3 = (self.theta_dot + 3.0) / 6.0
+        if n3 < 0.0:
+            n3 = 0.0
+        elif n3 > 1.0:
+            n3 = 1.0
+        var b3 = Int(n3 * Float64(self.num_bins - 1))
 
+        return ((b0 * self.num_bins + b1) * self.num_bins + b2) * self.num_bins + b3
+
+    @always_inline
     fn get_obs(self) -> SIMD[DType.float64, 4]:
         """Return current continuous observation (for rendering/debugging)."""
         return self._get_obs()
@@ -359,6 +363,7 @@ struct CartPoleEnv(ClassicControlEnv & DiscreteEnv):
         _ = self.reset()  # Reset internal state
         return self._get_obs()
 
+    @always_inline
     fn step_raw(
         mut self, action: Int
     ) -> Tuple[SIMD[DType.float64, 4], Float64, Bool]:
@@ -373,8 +378,45 @@ struct CartPoleEnv(ClassicControlEnv & DiscreteEnv):
         Returns:
             Tuple of (observation, reward, done).
         """
-        var result = self.step(CartPoleAction(direction=action))
-        return (self._get_obs(), result[1], result[2])
+        # Inline physics for maximum performance (avoid step() call overhead)
+        var force = self.force_mag if action == 1 else -self.force_mag
+
+        var costheta = cos(self.theta)
+        var sintheta = sin(self.theta)
+
+        var temp = (
+            force + self.polemass_length * self.theta_dot * self.theta_dot * sintheta
+        ) / self.total_mass
+
+        var thetaacc = (self.gravity * sintheta - costheta * temp) / (
+            self.length
+            * (4.0 / 3.0 - self.masspole * costheta * costheta / self.total_mass)
+        )
+
+        var xacc = temp - self.polemass_length * thetaacc * costheta / self.total_mass
+
+        # Euler integration
+        self.x = self.x + self.tau * self.x_dot
+        self.x_dot = self.x_dot + self.tau * xacc
+        self.theta = self.theta + self.tau * self.theta_dot
+        self.theta_dot = self.theta_dot + self.tau * thetaacc
+
+        self.steps += 1
+
+        # Check termination
+        var terminated = (
+            self.x < -self.x_threshold
+            or self.x > self.x_threshold
+            or self.theta < -self.theta_threshold_radians
+            or self.theta > self.theta_threshold_radians
+        )
+        var truncated = self.steps >= self.max_steps
+        self.done = terminated or truncated
+
+        var reward: Float64 = 1.0 if not terminated else 0.0
+        self.total_reward += reward
+
+        return (self._get_obs(), reward, self.done)
 
     fn render(mut self):
         """Render the current state using SDL2.
@@ -470,18 +512,22 @@ struct CartPoleEnv(ClassicControlEnv & DiscreteEnv):
             self.renderer.close()
             self.render_initialized = False
 
+    @always_inline
     fn is_done(self) -> Bool:
         """Check if episode is done."""
         return self.done
 
+    @always_inline
     fn num_actions(self) -> Int:
         """Return number of actions (2)."""
         return 2
 
+    @always_inline
     fn obs_dim(self) -> Int:
         """Return observation dimension (4)."""
         return 4
 
+    @always_inline
     fn num_states(self) -> Int:
         """Return total number of discrete states."""
         return self.num_bins * self.num_bins * self.num_bins * self.num_bins
