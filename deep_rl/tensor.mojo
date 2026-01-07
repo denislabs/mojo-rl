@@ -4,6 +4,7 @@ Uses compile-time dimensions for maximum performance:
 - InlineArray for stack-allocated storage
 - LayoutTensor for structured access
 - All shapes known at compile time
+- @always_inline for hot path functions
 """
 
 from layout import Layout, LayoutTensor
@@ -16,6 +17,7 @@ from math import sqrt, exp, tanh as math_tanh
 # =============================================================================
 
 
+@always_inline
 fn matmul[
     M: Int, K: Int, N: Int, dtype: DType = DType.float64
 ](
@@ -32,6 +34,7 @@ fn matmul[
     for i in range(M):
         for j in range(N):
             var sum: Scalar[dtype] = 0
+
             for k in range(K):
                 sum += A[i * K + k] * B[k * N + j]
             C[i * N + j] = sum
@@ -39,6 +42,7 @@ fn matmul[
     return C^
 
 
+@always_inline
 fn matmul_add_bias[
     M: Int, K: Int, N: Int, dtype: DType = DType.float64
 ](
@@ -55,6 +59,7 @@ fn matmul_add_bias[
     for i in range(M):
         for j in range(N):
             var sum: Scalar[dtype] = bias[j]
+
             for k in range(K):
                 sum += A[i * K + k] * B[k * N + j]
             C[i * N + j] = sum
@@ -62,9 +67,12 @@ fn matmul_add_bias[
     return C^
 
 
+@always_inline
 fn transpose[
     rows: Int, cols: Int, dtype: DType = DType.float64
-](A: InlineArray[Scalar[dtype], rows * cols]) -> InlineArray[Scalar[dtype], cols * rows]:
+](A: InlineArray[Scalar[dtype], rows * cols]) -> InlineArray[
+    Scalar[dtype], cols * rows
+]:
     """Transpose matrix: (rows, cols) -> (cols, rows)."""
     var result = InlineArray[Scalar[dtype], cols * rows](fill=0)
 
@@ -80,31 +88,40 @@ fn transpose[
 # =============================================================================
 
 
-fn relu[size: Int, dtype: DType = DType.float64](
-    x: InlineArray[Scalar[dtype], size]
-) -> InlineArray[Scalar[dtype], size]:
+@always_inline
+fn relu[
+    size: Int, dtype: DType = DType.float64
+](x: InlineArray[Scalar[dtype], size]) -> InlineArray[Scalar[dtype], size]:
     """ReLU activation: max(0, x)."""
     var result = InlineArray[Scalar[dtype], size](fill=0)
+
     for i in range(size):
-        result[i] = x[i] if x[i] > 0 else 0
+        if x[i] > 0:
+            result[i] = x[i]
+        else:
+            result[i] = 0
     return result^
 
 
-fn tanh_activation[size: Int, dtype: DType = DType.float64](
-    x: InlineArray[Scalar[dtype], size]
-) -> InlineArray[Scalar[dtype], size]:
+@always_inline
+fn tanh_activation[
+    size: Int, dtype: DType = DType.float64
+](x: InlineArray[Scalar[dtype], size]) -> InlineArray[Scalar[dtype], size]:
     """Tanh activation."""
     var result = InlineArray[Scalar[dtype], size](fill=0)
+
     for i in range(size):
         result[i] = math_tanh(x[i])
     return result^
 
 
-fn sigmoid[size: Int, dtype: DType = DType.float64](
-    x: InlineArray[Scalar[dtype], size]
-) -> InlineArray[Scalar[dtype], size]:
+@always_inline
+fn sigmoid[
+    size: Int, dtype: DType = DType.float64
+](x: InlineArray[Scalar[dtype], size]) -> InlineArray[Scalar[dtype], size]:
     """Sigmoid activation: 1 / (1 + exp(-x))."""
     var result = InlineArray[Scalar[dtype], size](fill=0)
+
     for i in range(size):
         var val = x[i]
         if val > 20:
@@ -121,11 +138,13 @@ fn sigmoid[size: Int, dtype: DType = DType.float64](
 # =============================================================================
 
 
-fn relu_grad[size: Int, dtype: DType = DType.float64](
-    x: InlineArray[Scalar[dtype], size]
-) -> InlineArray[Scalar[dtype], size]:
+@always_inline
+fn relu_grad[
+    size: Int, dtype: DType = DType.float64
+](x: InlineArray[Scalar[dtype], size]) -> InlineArray[Scalar[dtype], size]:
     """Gradient of ReLU: 1 if x > 0, else 0."""
     var result = InlineArray[Scalar[dtype], size](fill=0)
+
     for i in range(size):
         if x[i] > 0:
             result[i] = 1.0
@@ -134,28 +153,36 @@ fn relu_grad[size: Int, dtype: DType = DType.float64](
     return result^
 
 
-fn tanh_grad[size: Int, dtype: DType = DType.float64](
-    activated: InlineArray[Scalar[dtype], size]
-) -> InlineArray[Scalar[dtype], size]:
+@always_inline
+fn tanh_grad[
+    size: Int, dtype: DType = DType.float64
+](activated: InlineArray[Scalar[dtype], size]) -> InlineArray[
+    Scalar[dtype], size
+]:
     """Gradient of tanh given the OUTPUT (not input).
 
     If y = tanh(x), then dy/dx = 1 - y^2.
     """
     var result = InlineArray[Scalar[dtype], size](fill=0)
+
     for i in range(size):
         var y = activated[i]
         result[i] = 1.0 - y * y
     return result^
 
 
-fn sigmoid_grad[size: Int, dtype: DType = DType.float64](
-    activated: InlineArray[Scalar[dtype], size]
-) -> InlineArray[Scalar[dtype], size]:
+@always_inline
+fn sigmoid_grad[
+    size: Int, dtype: DType = DType.float64
+](activated: InlineArray[Scalar[dtype], size]) -> InlineArray[
+    Scalar[dtype], size
+]:
     """Gradient of sigmoid given the OUTPUT (not input).
 
     If y = sigmoid(x), then dy/dx = y * (1 - y).
     """
     var result = InlineArray[Scalar[dtype], size](fill=0)
+
     for i in range(size):
         var y = activated[i]
         result[i] = y * (1.0 - y)
@@ -167,34 +194,48 @@ fn sigmoid_grad[size: Int, dtype: DType = DType.float64](
 # =============================================================================
 
 
-fn elementwise_mul[size: Int, dtype: DType = DType.float64](
+@always_inline
+fn elementwise_mul[
+    size: Int, dtype: DType = DType.float64
+](
     a: InlineArray[Scalar[dtype], size],
     b: InlineArray[Scalar[dtype], size],
 ) -> InlineArray[Scalar[dtype], size]:
     """Element-wise multiplication (Hadamard product)."""
     var result = InlineArray[Scalar[dtype], size](fill=0)
+
     for i in range(size):
         result[i] = a[i] * b[i]
     return result^
 
 
-fn elementwise_sub[size: Int, dtype: DType = DType.float64](
+@always_inline
+fn elementwise_sub[
+    size: Int, dtype: DType = DType.float64
+](
     a: InlineArray[Scalar[dtype], size],
     b: InlineArray[Scalar[dtype], size],
 ) -> InlineArray[Scalar[dtype], size]:
     """Element-wise subtraction: a - b."""
     var result = InlineArray[Scalar[dtype], size](fill=0)
+
     for i in range(size):
         result[i] = a[i] - b[i]
     return result^
 
 
-fn scale[size: Int, dtype: DType = DType.float64](
+@always_inline
+fn scale[
+    size: Int, dtype: DType = DType.float64
+](
     x: InlineArray[Scalar[dtype], size],
     scalar: Scalar[dtype],
-) -> InlineArray[Scalar[dtype], size]:
+) -> InlineArray[
+    Scalar[dtype], size
+]:
     """Scale all elements by a scalar."""
     var result = InlineArray[Scalar[dtype], size](fill=0)
+
     for i in range(size):
         result[i] = x[i] * scalar
     return result^
@@ -205,12 +246,16 @@ fn scale[size: Int, dtype: DType = DType.float64](
 # =============================================================================
 
 
-fn zeros[size: Int, dtype: DType = DType.float64]() -> InlineArray[Scalar[dtype], size]:
+fn zeros[
+    size: Int, dtype: DType = DType.float64
+]() -> InlineArray[Scalar[dtype], size]:
     """Create zero-initialized array."""
     return InlineArray[Scalar[dtype], size](fill=0)
 
 
-fn xavier_init[size: Int, fan_in: Int, fan_out: Int, dtype: DType = DType.float64]() -> InlineArray[Scalar[dtype], size]:
+fn xavier_init[
+    size: Int, fan_in: Int, fan_out: Int, dtype: DType = DType.float64
+]() -> InlineArray[Scalar[dtype], size]:
     """Xavier/Glorot uniform initialization."""
     var result = InlineArray[Scalar[dtype], size](fill=0)
     var limit = sqrt(6.0 / Float64(fan_in + fan_out))
@@ -220,9 +265,11 @@ fn xavier_init[size: Int, fan_in: Int, fan_out: Int, dtype: DType = DType.float6
     return result^
 
 
-fn random_uniform[size: Int, dtype: DType = DType.float64](
-    low: Scalar[dtype] = 0.0, high: Scalar[dtype] = 1.0
-) -> InlineArray[Scalar[dtype], size]:
+fn random_uniform[
+    size: Int, dtype: DType = DType.float64
+](low: Scalar[dtype] = 0.0, high: Scalar[dtype] = 1.0) -> InlineArray[
+    Scalar[dtype], size
+]:
     """Uniform random initialization."""
     var result = InlineArray[Scalar[dtype], size](fill=0)
     var range_size = high - low
@@ -236,9 +283,9 @@ fn random_uniform[size: Int, dtype: DType = DType.float64](
 # =============================================================================
 
 
-fn sum_all[size: Int, dtype: DType = DType.float64](
-    x: InlineArray[Scalar[dtype], size]
-) -> Scalar[dtype]:
+fn sum_all[
+    size: Int, dtype: DType = DType.float64
+](x: InlineArray[Scalar[dtype], size]) -> Scalar[dtype]:
     """Sum all elements."""
     var result: Scalar[dtype] = 0
     for i in range(size):
@@ -246,16 +293,18 @@ fn sum_all[size: Int, dtype: DType = DType.float64](
     return result
 
 
-fn mean_all[size: Int, dtype: DType = DType.float64](
-    x: InlineArray[Scalar[dtype], size]
-) -> Scalar[dtype]:
+fn mean_all[
+    size: Int, dtype: DType = DType.float64
+](x: InlineArray[Scalar[dtype], size]) -> Scalar[dtype]:
     """Mean of all elements."""
     return sum_all[size, dtype](x) / size
 
 
-fn sum_axis0[rows: Int, cols: Int, dtype: DType = DType.float64](
-    x: InlineArray[Scalar[dtype], rows * cols]
-) -> InlineArray[Scalar[dtype], cols]:
+fn sum_axis0[
+    rows: Int, cols: Int, dtype: DType = DType.float64
+](x: InlineArray[Scalar[dtype], rows * cols]) -> InlineArray[
+    Scalar[dtype], cols
+]:
     """Sum along axis 0 (rows), result shape: (cols,)."""
     var result = InlineArray[Scalar[dtype], cols](fill=0)
     for j in range(cols):
@@ -269,10 +318,9 @@ fn sum_axis0[rows: Int, cols: Int, dtype: DType = DType.float64](
 # =============================================================================
 
 
-fn print_matrix[rows: Int, cols: Int, dtype: DType = DType.float64](
-    x: InlineArray[Scalar[dtype], rows * cols],
-    name: String = "Matrix",
-):
+fn print_matrix[
+    rows: Int, cols: Int, dtype: DType = DType.float64
+](x: InlineArray[Scalar[dtype], rows * cols], name: String = "Matrix",):
     """Print matrix for debugging."""
     print(name + " [" + String(rows) + " x " + String(cols) + "]:")
     for i in range(rows):
@@ -285,9 +333,9 @@ fn print_matrix[rows: Int, cols: Int, dtype: DType = DType.float64](
         print(row_str)
 
 
-fn copy_array[size: Int, dtype: DType = DType.float64](
-    src: InlineArray[Scalar[dtype], size]
-) -> InlineArray[Scalar[dtype], size]:
+fn copy_array[
+    size: Int, dtype: DType = DType.float64
+](src: InlineArray[Scalar[dtype], size]) -> InlineArray[Scalar[dtype], size]:
     """Create a copy of an array."""
     var result = InlineArray[Scalar[dtype], size](fill=0)
     for i in range(size):

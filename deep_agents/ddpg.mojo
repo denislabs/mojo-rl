@@ -30,9 +30,14 @@ Example usage:
 from random import random_float64
 from math import sqrt, log
 
-from .actor_critic import Actor, Critic
-from .replay_buffer import ReplayBuffer
-from .tensor import scale, elementwise_sub, elementwise_mul
+from deep_rl import (
+    Actor,
+    Critic,
+    ReplayBuffer,
+    scale,
+    elementwise_sub,
+    elementwise_mul,
+)
 from core import TrainingMetrics, BoxContinuousActionEnv
 
 
@@ -77,13 +82,39 @@ struct DeepDDPGAgent[
     """
 
     # Networks
-    var actor: Actor[Self.obs_dim, Self.action_dim, Self.hidden_dim, Self.hidden_dim, Self.dtype]
-    var actor_target: Actor[Self.obs_dim, Self.action_dim, Self.hidden_dim, Self.hidden_dim, Self.dtype]
-    var critic: Critic[Self.obs_dim, Self.action_dim, Self.hidden_dim, Self.hidden_dim, Self.dtype]
-    var critic_target: Critic[Self.obs_dim, Self.action_dim, Self.hidden_dim, Self.hidden_dim, Self.dtype]
+    var actor: Actor[
+        Self.obs_dim,
+        Self.action_dim,
+        Self.hidden_dim,
+        Self.hidden_dim,
+        Self.dtype,
+    ]
+    var actor_target: Actor[
+        Self.obs_dim,
+        Self.action_dim,
+        Self.hidden_dim,
+        Self.hidden_dim,
+        Self.dtype,
+    ]
+    var critic: Critic[
+        Self.obs_dim,
+        Self.action_dim,
+        Self.hidden_dim,
+        Self.hidden_dim,
+        Self.dtype,
+    ]
+    var critic_target: Critic[
+        Self.obs_dim,
+        Self.action_dim,
+        Self.hidden_dim,
+        Self.hidden_dim,
+        Self.dtype,
+    ]
 
     # Replay buffer
-    var buffer: ReplayBuffer[Self.buffer_capacity, Self.obs_dim, Self.action_dim, Self.dtype]
+    var buffer: ReplayBuffer[
+        Self.buffer_capacity, Self.obs_dim, Self.action_dim, Self.dtype
+    ]
 
     # Hyperparameters
     var gamma: Scalar[Self.dtype]  # Discount factor
@@ -122,22 +153,48 @@ struct DeepDDPGAgent[
             noise_decay: Noise decay rate per episode.
             action_scale: Maximum action magnitude.
         """
-        self.actor = Actor[Self.obs_dim, Self.action_dim, Self.hidden_dim, Self.hidden_dim, Self.dtype](
+        self.actor = Actor[
+            Self.obs_dim,
+            Self.action_dim,
+            Self.hidden_dim,
+            Self.hidden_dim,
+            Self.dtype,
+        ](
             action_scale=action_scale,
             action_bias=0.0,
         )
-        self.actor_target = Actor[Self.obs_dim, Self.action_dim, Self.hidden_dim, Self.hidden_dim, Self.dtype](
+        self.actor_target = Actor[
+            Self.obs_dim,
+            Self.action_dim,
+            Self.hidden_dim,
+            Self.hidden_dim,
+            Self.dtype,
+        ](
             action_scale=action_scale,
             action_bias=0.0,
         )
-        self.critic = Critic[Self.obs_dim, Self.action_dim, Self.hidden_dim, Self.hidden_dim, Self.dtype]()
-        self.critic_target = Critic[Self.obs_dim, Self.action_dim, Self.hidden_dim, Self.hidden_dim, Self.dtype]()
+        self.critic = Critic[
+            Self.obs_dim,
+            Self.action_dim,
+            Self.hidden_dim,
+            Self.hidden_dim,
+            Self.dtype,
+        ]()
+        self.critic_target = Critic[
+            Self.obs_dim,
+            Self.action_dim,
+            Self.hidden_dim,
+            Self.hidden_dim,
+            Self.dtype,
+        ]()
 
         # Initialize target networks with same weights
         self.actor_target.copy_from(self.actor)
         self.critic_target.copy_from(self.critic)
 
-        self.buffer = ReplayBuffer[Self.buffer_capacity, Self.obs_dim, Self.action_dim, Self.dtype]()
+        self.buffer = ReplayBuffer[
+            Self.buffer_capacity, Self.obs_dim, Self.action_dim, Self.dtype
+        ]()
 
         self.gamma = gamma
         self.tau = tau
@@ -198,11 +255,21 @@ struct DeepDDPGAgent[
             return 0.0
 
         # Sample batch
-        var batch_obs = InlineArray[Scalar[Self.dtype], Self.batch_size * Self.obs_dim](fill=0)
-        var batch_actions = InlineArray[Scalar[Self.dtype], Self.batch_size * Self.action_dim](fill=0)
-        var batch_rewards = InlineArray[Scalar[Self.dtype], Self.batch_size](fill=0)
-        var batch_next_obs = InlineArray[Scalar[Self.dtype], Self.batch_size * Self.obs_dim](fill=0)
-        var batch_dones = InlineArray[Scalar[Self.dtype], Self.batch_size](fill=0)
+        var batch_obs = InlineArray[
+            Scalar[Self.dtype], Self.batch_size * Self.obs_dim
+        ](fill=0)
+        var batch_actions = InlineArray[
+            Scalar[Self.dtype], Self.batch_size * Self.action_dim
+        ](fill=0)
+        var batch_rewards = InlineArray[Scalar[Self.dtype], Self.batch_size](
+            fill=0
+        )
+        var batch_next_obs = InlineArray[
+            Scalar[Self.dtype], Self.batch_size * Self.obs_dim
+        ](fill=0)
+        var batch_dones = InlineArray[Scalar[Self.dtype], Self.batch_size](
+            fill=0
+        )
 
         self.buffer.sample[Self.batch_size](
             batch_obs, batch_actions, batch_rewards, batch_next_obs, batch_dones
@@ -213,17 +280,33 @@ struct DeepDDPGAgent[
         # ========================================
 
         # Compute target Q-values: y = r + gamma * (1 - done) * Q_target(s', pi_target(s'))
-        var next_actions = self.actor_target.forward[Self.batch_size](batch_next_obs)
-        var target_q = self.critic_target.forward[Self.batch_size](batch_next_obs, next_actions)
+        var next_actions = self.actor_target.forward[Self.batch_size](
+            batch_next_obs
+        )
+        var target_q = self.critic_target.forward[Self.batch_size](
+            batch_next_obs, next_actions
+        )
 
-        var target_values = InlineArray[Scalar[Self.dtype], Self.batch_size](fill=0)
+        var target_values = InlineArray[Scalar[Self.dtype], Self.batch_size](
+            fill=0
+        )
         for i in range(Self.batch_size):
-            target_values[i] = batch_rewards[i] + self.gamma * (1.0 - batch_dones[i]) * target_q[i]
+            target_values[i] = (
+                batch_rewards[i]
+                + self.gamma * (1.0 - batch_dones[i]) * target_q[i]
+            )
 
         # Current Q-values with caching for backward
-        var x_cache = InlineArray[Scalar[Self.dtype], Self.batch_size * (Self.obs_dim + Self.action_dim)](fill=0)
-        var h1_cache = InlineArray[Scalar[Self.dtype], Self.batch_size * Self.hidden_dim](fill=0)
-        var h2_cache = InlineArray[Scalar[Self.dtype], Self.batch_size * Self.hidden_dim](fill=0)
+        var x_cache = InlineArray[
+            Scalar[Self.dtype],
+            Self.batch_size * (Self.obs_dim + Self.action_dim),
+        ](fill=0)
+        var h1_cache = InlineArray[
+            Scalar[Self.dtype], Self.batch_size * Self.hidden_dim
+        ](fill=0)
+        var h2_cache = InlineArray[
+            Scalar[Self.dtype], Self.batch_size * Self.hidden_dim
+        ](fill=0)
 
         var current_q = self.critic.forward_with_cache[Self.batch_size](
             batch_obs, batch_actions, x_cache, h1_cache, h2_cache
@@ -242,7 +325,9 @@ struct DeepDDPGAgent[
 
         # Critic backward and update
         self.critic.zero_grad()
-        _ = self.critic.backward[Self.batch_size](dq, x_cache, h1_cache, h2_cache)
+        _ = self.critic.backward[Self.batch_size](
+            dq, x_cache, h1_cache, h2_cache
+        )
         self.critic.update_adam(self.critic_lr)
 
         # ========================================
@@ -250,18 +335,31 @@ struct DeepDDPGAgent[
         # ========================================
 
         # Get actions from current actor with caching
-        var h1_actor = InlineArray[Scalar[Self.dtype], Self.batch_size * Self.hidden_dim](fill=0)
-        var h2_actor = InlineArray[Scalar[Self.dtype], Self.batch_size * Self.hidden_dim](fill=0)
-        var out_tanh = InlineArray[Scalar[Self.dtype], Self.batch_size * Self.action_dim](fill=0)
+        var h1_actor = InlineArray[
+            Scalar[Self.dtype], Self.batch_size * Self.hidden_dim
+        ](fill=0)
+        var h2_actor = InlineArray[
+            Scalar[Self.dtype], Self.batch_size * Self.hidden_dim
+        ](fill=0)
+        var out_tanh = InlineArray[
+            Scalar[Self.dtype], Self.batch_size * Self.action_dim
+        ](fill=0)
 
         var actor_actions = self.actor.forward_with_cache[Self.batch_size](
             batch_obs, h1_actor, h2_actor, out_tanh
         )
 
         # Get Q-values for actor's actions with caching
-        var x_cache2 = InlineArray[Scalar[Self.dtype], Self.batch_size * (Self.obs_dim + Self.action_dim)](fill=0)
-        var h1_cache2 = InlineArray[Scalar[Self.dtype], Self.batch_size * Self.hidden_dim](fill=0)
-        var h2_cache2 = InlineArray[Scalar[Self.dtype], Self.batch_size * Self.hidden_dim](fill=0)
+        var x_cache2 = InlineArray[
+            Scalar[Self.dtype],
+            Self.batch_size * (Self.obs_dim + Self.action_dim),
+        ](fill=0)
+        var h1_cache2 = InlineArray[
+            Scalar[Self.dtype], Self.batch_size * Self.hidden_dim
+        ](fill=0)
+        var h2_cache2 = InlineArray[
+            Scalar[Self.dtype], Self.batch_size * Self.hidden_dim
+        ](fill=0)
 
         _ = self.critic.forward_with_cache[Self.batch_size](
             batch_obs, actor_actions, x_cache2, h1_cache2, h2_cache2
@@ -274,11 +372,15 @@ struct DeepDDPGAgent[
             dq_actor[i] = neg_one_over_batch  # Negative for gradient ascent
 
         # Get gradient w.r.t. actions from critic
-        var dactions = self.critic.backward[Self.batch_size](dq_actor, x_cache2, h1_cache2, h2_cache2)
+        var dactions = self.critic.backward[Self.batch_size](
+            dq_actor, x_cache2, h1_cache2, h2_cache2
+        )
 
         # Backward through actor
         self.actor.zero_grad()
-        self.actor.backward[Self.batch_size](dactions, batch_obs, h1_actor, h2_actor, out_tanh)
+        self.actor.backward[Self.batch_size](
+            dactions, batch_obs, h1_actor, h2_actor, out_tanh
+        )
         self.actor.update_adam(self.actor_lr)
 
         # ========================================
@@ -359,7 +461,11 @@ struct DeepDDPGAgent[
 
         # Warmup phase: collect random experiences
         if verbose:
-            print("Warmup: collecting " + String(warmup_steps) + " random steps...")
+            print(
+                "Warmup: collecting "
+                + String(warmup_steps)
+                + " random steps..."
+            )
 
         var warmup_done = 0
         while warmup_done < warmup_steps:
@@ -368,9 +474,13 @@ struct DeepDDPGAgent[
 
             while not done and warmup_done < warmup_steps:
                 # Random action
-                var random_action = InlineArray[Scalar[Self.dtype], Self.action_dim](fill=0)
+                var random_action = InlineArray[
+                    Scalar[Self.dtype], Self.action_dim
+                ](fill=0)
                 for i in range(Self.action_dim):
-                    var rand_val = Scalar[Self.dtype](random_float64() * 2.0 - 1.0)
+                    var rand_val = Scalar[Self.dtype](
+                        random_float64() * 2.0 - 1.0
+                    )
                     random_action[i] = rand_val * self.action_scale
 
                 # Step environment
@@ -381,10 +491,18 @@ struct DeepDDPGAgent[
                 # Convert observations
                 var obs = _list_to_inline[Self.obs_dim, Self.dtype](obs_list)
                 var next_obs_list = env.get_obs_list()
-                var next_obs = _list_to_inline[Self.obs_dim, Self.dtype](next_obs_list)
+                var next_obs = _list_to_inline[Self.obs_dim, Self.dtype](
+                    next_obs_list
+                )
 
                 # Store transition
-                self.store_transition(obs, random_action, Scalar[Self.dtype](reward), next_obs, done)
+                self.store_transition(
+                    obs,
+                    random_action,
+                    Scalar[Self.dtype](reward),
+                    next_obs,
+                    done,
+                )
 
                 obs_list = env.get_obs_list()
                 warmup_done += 1
@@ -414,10 +532,14 @@ struct DeepDDPGAgent[
 
                 # Get next observation
                 var next_obs_list = env.get_obs_list()
-                var next_obs = _list_to_inline[Self.obs_dim, Self.dtype](next_obs_list)
+                var next_obs = _list_to_inline[Self.obs_dim, Self.dtype](
+                    next_obs_list
+                )
 
                 # Store transition
-                self.store_transition(obs, action, Scalar[Self.dtype](reward), next_obs, done)
+                self.store_transition(
+                    obs, action, Scalar[Self.dtype](reward), next_obs, done
+                )
 
                 # Train agent
                 if steps % train_every == 0:
@@ -428,7 +550,9 @@ struct DeepDDPGAgent[
                 steps += 1
 
             # Log episode metrics
-            metrics.log_episode(episode, episode_reward, steps, Float64(self.noise_std))
+            metrics.log_episode(
+                episode, episode_reward, steps, Float64(self.noise_std)
+            )
             self.total_episodes += 1
 
             # Decay exploration noise
@@ -441,12 +565,18 @@ struct DeepDDPGAgent[
                 var sum_reward: Float64 = 0.0
                 for j in range(start_idx, len(metrics.episodes)):
                     sum_reward += metrics.episodes[j].total_reward
-                var avg_reward = sum_reward / Float64(len(metrics.episodes) - start_idx)
+                var avg_reward = sum_reward / Float64(
+                    len(metrics.episodes) - start_idx
+                )
                 print(
-                    "Episode " + String(episode + 1) +
-                    " | Avg Reward: " + String(avg_reward)[:8] +
-                    " | Steps: " + String(steps) +
-                    " | Noise: " + String(self.noise_std)[:5]
+                    "Episode "
+                    + String(episode + 1)
+                    + " | Avg Reward: "
+                    + String(avg_reward)[:8]
+                    + " | Steps: "
+                    + String(steps)
+                    + " | Noise: "
+                    + String(self.noise_std)[:5]
                 )
 
         if verbose:
@@ -457,7 +587,9 @@ struct DeepDDPGAgent[
             var sum_reward: Float64 = 0.0
             for j in range(start_idx, len(metrics.episodes)):
                 sum_reward += metrics.episodes[j].total_reward
-            var final_avg = sum_reward / Float64(len(metrics.episodes) - start_idx)
+            var final_avg = sum_reward / Float64(
+                len(metrics.episodes) - start_idx
+            )
             print("Final avg reward (last 100): " + String(final_avg)[:8])
 
         return metrics^
@@ -507,7 +639,12 @@ struct DeepDDPGAgent[
             total_reward += episode_reward
 
             if verbose:
-                print("  Eval episode " + String(ep + 1) + ": " + String(episode_reward)[:10])
+                print(
+                    "  Eval episode "
+                    + String(ep + 1)
+                    + ": "
+                    + String(episode_reward)[:10]
+                )
 
         return total_reward / Float64(num_episodes)
 

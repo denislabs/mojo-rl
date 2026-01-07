@@ -7,7 +7,7 @@ Run with:
     pixi run mojo run examples/deep_ddpg_pendulum.mojo
 """
 
-from deeprl import DeepDDPGAgent
+from deep_agents import DeepDDPGAgent
 from envs.pendulum import PendulumEnv
 
 
@@ -40,7 +40,7 @@ fn main() raises:
     )
 
     # Train the agent
-    var metrics = agent.train(
+    _ = agent.train(
         env,
         num_episodes=100,
         max_steps_per_episode=200,

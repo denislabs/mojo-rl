@@ -10,6 +10,8 @@ Update rule:
     m_hat = m / (1 - beta1^t)
     v_hat = v / (1 - beta2^t)
     param = param - lr * m_hat / (sqrt(v_hat) + eps)
+
+Optimized with @always_inline and  for compile-time loop unrolling.
 """
 
 from math import sqrt
@@ -22,7 +24,9 @@ struct AdamState[size: Int, dtype: DType = DType.float64]:
     """
 
     var m: InlineArray[Scalar[Self.dtype], Self.size]  # First moment (mean)
-    var v: InlineArray[Scalar[Self.dtype], Self.size]  # Second moment (variance)
+    var v: InlineArray[
+        Scalar[Self.dtype], Self.size
+    ]  # Second moment (variance)
     var t: Int  # Timestep
 
     fn __init__(out self):
@@ -31,6 +35,7 @@ struct AdamState[size: Int, dtype: DType = DType.float64]:
         self.v = InlineArray[Scalar[Self.dtype], Self.size](fill=0)
         self.t = 0
 
+    @always_inline
     fn step(
         mut self,
         mut params: InlineArray[Scalar[Self.dtype], Self.size],
@@ -52,16 +57,19 @@ struct AdamState[size: Int, dtype: DType = DType.float64]:
         """
         self.t += 1
 
-        # Bias correction factors
-        var bias_correction1 = 1.0 - (beta1 ** self.t)
-        var bias_correction2 = 1.0 - (beta2 ** self.t)
+        # Bias correction factors (precompute once)
+        var bias_correction1 = 1.0 - (beta1**self.t)
+        var bias_correction2 = 1.0 - (beta2**self.t)
+        var one_minus_beta1 = 1.0 - beta1
+        var one_minus_beta2 = 1.0 - beta2
 
         for i in range(Self.size):
+            var g = grads[i]
             # Update biased first moment estimate
-            self.m[i] = beta1 * self.m[i] + (1.0 - beta1) * grads[i]
+            self.m[i] = beta1 * self.m[i] + one_minus_beta1 * g
 
             # Update biased second moment estimate
-            self.v[i] = beta2 * self.v[i] + (1.0 - beta2) * grads[i] * grads[i]
+            self.v[i] = beta2 * self.v[i] + one_minus_beta2 * g * g
 
             # Compute bias-corrected estimates
             var m_hat = self.m[i] / bias_correction1
@@ -71,7 +79,9 @@ struct AdamState[size: Int, dtype: DType = DType.float64]:
             params[i] -= lr * m_hat / (sqrt(v_hat) + eps)
 
 
-struct LinearAdam[in_features: Int, out_features: Int, dtype: DType = DType.float64]:
+struct LinearAdam[
+    in_features: Int, out_features: Int, dtype: DType = DType.float64
+]:
     """Linear layer with built-in Adam optimizer.
 
     Combines Linear layer with Adam state for each parameter.
@@ -82,7 +92,9 @@ struct LinearAdam[in_features: Int, out_features: Int, dtype: DType = DType.floa
     var b: InlineArray[Scalar[Self.dtype], Self.out_features]
 
     # Gradients
-    var dW: InlineArray[Scalar[Self.dtype], Self.in_features * Self.out_features]
+    var dW: InlineArray[
+        Scalar[Self.dtype], Self.in_features * Self.out_features
+    ]
     var db: InlineArray[Scalar[Self.dtype], Self.out_features]
 
     # Adam state
@@ -93,67 +105,104 @@ struct LinearAdam[in_features: Int, out_features: Int, dtype: DType = DType.floa
         """Initialize with Xavier initialization and Adam state."""
         from .tensor import xavier_init, zeros
 
-        self.W = xavier_init[Self.in_features * Self.out_features, Self.in_features, Self.out_features, Self.dtype]()
+        self.W = xavier_init[
+            Self.in_features * Self.out_features,
+            Self.in_features,
+            Self.out_features,
+            Self.dtype,
+        ]()
         self.b = zeros[Self.out_features, Self.dtype]()
         self.dW = zeros[Self.in_features * Self.out_features, Self.dtype]()
         self.db = zeros[Self.out_features, Self.dtype]()
-        self.adam_W = AdamState[Self.in_features * Self.out_features, Self.dtype]()
+        self.adam_W = AdamState[
+            Self.in_features * Self.out_features, Self.dtype
+        ]()
         self.adam_b = AdamState[Self.out_features, Self.dtype]()
 
-    fn forward[batch_size: Int](
+    @always_inline
+    fn forward[
+        batch_size: Int
+    ](
         mut self,
         x: InlineArray[Scalar[Self.dtype], batch_size * Self.in_features],
     ) -> InlineArray[Scalar[Self.dtype], batch_size * Self.out_features]:
-        """Forward pass: y = x @ W + b."""
-        var result = InlineArray[Scalar[Self.dtype], batch_size * Self.out_features](fill=0)
+        """Forward pass: y = x @ W + b. Optimized with ."""
+        var result = InlineArray[
+            Scalar[Self.dtype], batch_size * Self.out_features
+        ](fill=0)
 
         for i in range(batch_size):
             for j in range(Self.out_features):
                 var sum: Scalar[Self.dtype] = self.b[j]
+
                 for k in range(Self.in_features):
-                    sum += x[i * Self.in_features + k] * self.W[k * Self.out_features + j]
+                    sum += (
+                        x[i * Self.in_features + k]
+                        * self.W[k * Self.out_features + j]
+                    )
                 result[i * Self.out_features + j] = sum
 
         return result^
 
-    fn backward[batch_size: Int](
+    @always_inline
+    fn backward[
+        batch_size: Int
+    ](
         mut self,
         dy: InlineArray[Scalar[Self.dtype], batch_size * Self.out_features],
         x: InlineArray[Scalar[Self.dtype], batch_size * Self.in_features],
     ) -> InlineArray[Scalar[Self.dtype], batch_size * Self.in_features]:
-        """Backward pass: compute gradients."""
+        """Backward pass: compute gradients. Optimized with ."""
+
         # Zero gradients
+
         for i in range(Self.in_features * Self.out_features):
             self.dW[i] = 0
+
         for i in range(Self.out_features):
             self.db[i] = 0
 
         # dW = x.T @ dy
+
         for j in range(Self.in_features):
             for k in range(Self.out_features):
                 var sum: Scalar[Self.dtype] = 0
+
                 for i in range(batch_size):
-                    sum += x[i * Self.in_features + j] * dy[i * Self.out_features + k]
+                    sum += (
+                        x[i * Self.in_features + j]
+                        * dy[i * Self.out_features + k]
+                    )
                 self.dW[j * Self.out_features + k] = sum
 
         # db = sum(dy, axis=0)
+
         for j in range(Self.out_features):
             var sum: Scalar[Self.dtype] = 0
+
             for i in range(batch_size):
                 sum += dy[i * Self.out_features + j]
             self.db[j] = sum
 
         # dx = dy @ W.T
-        var dx = InlineArray[Scalar[Self.dtype], batch_size * Self.in_features](fill=0)
+        var dx = InlineArray[Scalar[Self.dtype], batch_size * Self.in_features](
+            fill=0
+        )
+
         for i in range(batch_size):
             for j in range(Self.in_features):
                 var sum: Scalar[Self.dtype] = 0
+
                 for k in range(Self.out_features):
-                    sum += dy[i * Self.out_features + k] * self.W[j * Self.out_features + k]
+                    sum += (
+                        dy[i * Self.out_features + k]
+                        * self.W[j * Self.out_features + k]
+                    )
                 dx[i * Self.in_features + j] = sum
 
         return dx^
 
+    @always_inline
     fn update_adam(
         mut self,
         lr: Scalar[Self.dtype] = 0.001,
@@ -165,13 +214,17 @@ struct LinearAdam[in_features: Int, out_features: Int, dtype: DType = DType.floa
         self.adam_W.step(self.W, self.dW, lr, beta1, beta2, eps)
         self.adam_b.step(self.b, self.db, lr, beta1, beta2, eps)
 
+    @always_inline
     fn zero_grad(mut self):
         """Reset gradients to zero."""
+
         for i in range(Self.in_features * Self.out_features):
             self.dW[i] = 0
+
         for i in range(Self.out_features):
             self.db[i] = 0
 
+    @always_inline
     fn soft_update_from(
         mut self,
         source: Self,
@@ -189,10 +242,13 @@ struct LinearAdam[in_features: Int, out_features: Int, dtype: DType = DType.floa
         for i in range(Self.out_features):
             self.b[i] = tau * source.b[i] + one_minus_tau * self.b[i]
 
+    @always_inline
     fn copy_from(mut self, source: Self):
         """Hard copy parameters from source."""
+
         for i in range(Self.in_features * Self.out_features):
             self.W[i] = source.W[i]
+
         for i in range(Self.out_features):
             self.b[i] = source.b[i]
 

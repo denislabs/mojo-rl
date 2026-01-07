@@ -50,5 +50,3 @@ from .adam import AdamState, LinearAdam
 from .actor_critic import Actor, Critic
 
 from .replay_buffer import ReplayBuffer
-
-from .ddpg import DeepDDPGAgent
