@@ -68,14 +68,14 @@ struct TiledQLearningAgent:
         """Initialize tiled Q-learning agent.
 
         Args:
-            tile_coding: TileCoding instance defining the feature representation
-            num_actions: Number of discrete actions
-            learning_rate: Learning rate α (default 0.1)
-            discount_factor: Discount factor γ (default 0.99)
-            epsilon: Initial exploration rate (default 1.0)
-            epsilon_decay: Epsilon decay per episode (default 0.995)
-            epsilon_min: Minimum epsilon (default 0.01)
-            init_value: Initial weight value (0.0 or optimistic for exploration)
+            tile_coding: TileCoding instance defining the feature representation.
+            num_actions: Number of discrete actions.
+            learning_rate: Learning rate α (default 0.1).
+            discount_factor: Discount factor γ (default 0.99).
+            epsilon: Initial exploration rate (default 1.0).
+            epsilon_decay: Epsilon decay per episode (default 0.995).
+            epsilon_min: Minimum epsilon (default 0.01).
+            init_value: Initial weight value (0.0 or optimistic for exploration).
         """
         self.num_actions = num_actions
         self.num_tilings = tile_coding.get_num_tilings()
@@ -94,10 +94,10 @@ struct TiledQLearningAgent:
         """Select action using epsilon-greedy policy.
 
         Args:
-            tiles: Active tile indices from TileCoding.get_tiles()
+            tiles: Active tile indices from TileCoding.get_tiles().
 
         Returns:
-            Selected action index
+            Selected action index.
         """
         if random_float64() < self.epsilon:
             # Explore: random action (random_si64 is inclusive on both ends)
@@ -165,7 +165,9 @@ struct TiledQLearningAgent:
         if done:
             target = reward
         else:
-            target = reward + self.discount_factor * self.get_max_value(next_tiles)
+            target = reward + self.discount_factor * self.get_max_value(
+                next_tiles
+            )
 
         self.weights.update(tiles, action, target, self.learning_rate)
 
@@ -181,7 +183,9 @@ struct TiledQLearningAgent:
         """Reset for new episode (no-op, kept for interface compatibility)."""
         pass
 
-    fn train[E: BoxDiscreteActionEnv](
+    fn train[
+        E: BoxDiscreteActionEnv
+    ](
         mut self,
         mut env: E,
         tile_coding: TileCoding,
@@ -211,25 +215,25 @@ struct TiledQLearningAgent:
         )
 
         for episode in range(num_episodes):
-            var obs = env.reset_obs()
+            var obs = env.reset_obs_list()
             var total_reward: Float64 = 0.0
             var steps = 0
 
             for _ in range(max_steps_per_episode):
-                var tiles = tile_coding.get_tiles_simd4(obs)
+                var tiles = tile_coding.get_tiles(obs)
                 var action = self.select_action(tiles)
 
-                var result = env.step_raw(action)
-                var next_obs = result[0]
+                var result = env.step_obs(action)
+                var next_obs = result[0].copy()
                 var reward = result[1]
                 var done = result[2]
 
-                var next_tiles = tile_coding.get_tiles_simd4(next_obs)
+                var next_tiles = tile_coding.get_tiles(next_obs)
                 self.update(tiles, action, reward, next_tiles, done)
 
                 total_reward += reward
                 steps += 1
-                obs = next_obs
+                obs = next_obs^
 
                 if done:
                     break
@@ -242,7 +246,9 @@ struct TiledQLearningAgent:
 
         return metrics^
 
-    fn evaluate[E: BoxDiscreteActionEnv](
+    fn evaluate[
+        E: BoxDiscreteActionEnv
+    ](
         self,
         mut env: E,
         tile_coding: TileCoding,
@@ -265,23 +271,23 @@ struct TiledQLearningAgent:
         var total_reward: Float64 = 0.0
 
         for _ in range(num_episodes):
-            var obs = env.reset_obs()
+            var obs = env.reset_obs_list()
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps):
                 if render:
                     env.render()
 
-                var tiles = tile_coding.get_tiles_simd4(obs)
+                var tiles = tile_coding.get_tiles(obs)
                 var action = self.get_best_action(tiles)
 
-                var result = env.step_raw(action)
-                var next_obs = result[0]
+                var result = env.step_obs(action)
+                var next_obs = result[0].copy()
                 var reward = result[1]
                 var done = result[2]
 
                 episode_reward += reward
-                obs = next_obs
+                obs = next_obs^
 
                 if done:
                     break
@@ -359,18 +365,20 @@ struct TiledSARSAAgent:
         """Update weights using SARSA (on-policy).
 
         Args:
-            tiles: Active tiles for current state
-            action: Action taken
-            reward: Reward received
-            next_tiles: Active tiles for next state
-            next_action: Actual action selected for next state
-            done: Whether episode terminated
+            tiles: Active tiles for current state.
+            action: Action taken.
+            reward: Reward received.
+            next_tiles: Active tiles for next state.
+            next_action: Actual action selected for next state.
+            done: Whether episode terminated.
         """
         var target: Float64
         if done:
             target = reward
         else:
-            target = reward + self.discount_factor * self.get_value(next_tiles, next_action)
+            target = reward + self.discount_factor * self.get_value(
+                next_tiles, next_action
+            )
 
         self.weights.update(tiles, action, target, self.learning_rate)
 
@@ -386,7 +394,9 @@ struct TiledSARSAAgent:
         """Reset for new episode."""
         pass
 
-    fn train[E: BoxDiscreteActionEnv](
+    fn train[
+        E: BoxDiscreteActionEnv
+    ](
         mut self,
         mut env: E,
         tile_coding: TileCoding,
@@ -416,27 +426,29 @@ struct TiledSARSAAgent:
         )
 
         for episode in range(num_episodes):
-            var obs = env.reset_obs()
-            var action = self.select_action(tile_coding.get_tiles_simd4(obs))
+            var obs = env.reset_obs_list()
+            var action = self.select_action(tile_coding.get_tiles(obs))
             var total_reward: Float64 = 0.0
             var steps = 0
 
             for _ in range(max_steps_per_episode):
-                var tiles = tile_coding.get_tiles_simd4(obs)
-                var result = env.step_raw(action)
-                var next_obs = result[0]
+                var tiles = tile_coding.get_tiles(obs)
+                var result = env.step_obs(action)
+                var next_obs = result[0].copy()
                 var reward = result[1]
                 var done = result[2]
 
-                var next_tiles = tile_coding.get_tiles_simd4(next_obs)
+                var next_tiles = tile_coding.get_tiles(next_obs)
                 var next_action = self.select_action(next_tiles)
 
-                self.update(tiles, action, reward, next_tiles, next_action, done)
+                self.update(
+                    tiles, action, reward, next_tiles, next_action, done
+                )
 
                 total_reward += reward
                 steps += 1
                 action = next_action
-                obs = next_obs
+                obs = next_obs^
 
                 if done:
                     break
@@ -449,7 +461,9 @@ struct TiledSARSAAgent:
 
         return metrics^
 
-    fn evaluate[E: BoxDiscreteActionEnv](
+    fn evaluate[
+        E: BoxDiscreteActionEnv
+    ](
         self,
         mut env: E,
         tile_coding: TileCoding,
@@ -472,23 +486,23 @@ struct TiledSARSAAgent:
         var total_reward: Float64 = 0.0
 
         for _ in range(num_episodes):
-            var obs = env.reset_obs()
+            var obs = env.reset_obs_list()
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps):
                 if render:
                     env.render()
 
-                var tiles = tile_coding.get_tiles_simd4(obs)
+                var tiles = tile_coding.get_tiles(obs)
                 var action = self.get_best_action(tiles)
 
-                var result = env.step_raw(action)
-                var next_obs = result[0]
+                var result = env.step_obs(action)
+                var next_obs = result[0].copy()
                 var reward = result[1]
                 var done = result[2]
 
                 episode_reward += reward
-                obs = next_obs
+                obs = next_obs^
 
                 if done:
                     break
@@ -602,7 +616,9 @@ struct TiledSARSALambdaAgent:
         var next_value: Float64 = 0.0
         if not done:
             next_value = self.weights.get_value(next_tiles, next_action)
-        var td_error = reward + self.discount_factor * next_value - current_value
+        var td_error = (
+            reward + self.discount_factor * next_value - current_value
+        )
 
         # Set traces for current state-action (replacing traces)
         # First, set all traces for this action's active tiles to 1
@@ -615,7 +631,9 @@ struct TiledSARSALambdaAgent:
         for a in range(self.num_actions):
             for t in range(self.num_tiles):
                 if self.traces[a][t] > 0.0:
-                    self.weights.weights[a][t] += step_size * td_error * self.traces[a][t]
+                    self.weights.weights[a][t] += (
+                        step_size * td_error * self.traces[a][t]
+                    )
 
         # Decay traces
         var decay = self.discount_factor * self.lambda_
@@ -637,7 +655,9 @@ struct TiledSARSALambdaAgent:
             for t in range(self.num_tiles):
                 self.traces[a][t] = 0.0
 
-    fn train[E: BoxDiscreteActionEnv](
+    fn train[
+        E: BoxDiscreteActionEnv
+    ](
         mut self,
         mut env: E,
         tile_coding: TileCoding,
@@ -668,27 +688,29 @@ struct TiledSARSALambdaAgent:
 
         for episode in range(num_episodes):
             self.reset()  # Reset eligibility traces
-            var obs = env.reset_obs()
-            var action = self.select_action(tile_coding.get_tiles_simd4(obs))
+            var obs = env.reset_obs_list()
+            var action = self.select_action(tile_coding.get_tiles(obs))
             var total_reward: Float64 = 0.0
             var steps = 0
 
             for _ in range(max_steps_per_episode):
-                var tiles = tile_coding.get_tiles_simd4(obs)
-                var result = env.step_raw(action)
-                var next_obs = result[0]
+                var tiles = tile_coding.get_tiles(obs)
+                var result = env.step_obs(action)
+                var next_obs = result[0].copy()
                 var reward = result[1]
                 var done = result[2]
 
-                var next_tiles = tile_coding.get_tiles_simd4(next_obs)
+                var next_tiles = tile_coding.get_tiles(next_obs)
                 var next_action = self.select_action(next_tiles)
 
-                self.update(tiles, action, reward, next_tiles, next_action, done)
+                self.update(
+                    tiles, action, reward, next_tiles, next_action, done
+                )
 
                 total_reward += reward
                 steps += 1
                 action = next_action
-                obs = next_obs
+                obs = next_obs^
 
                 if done:
                     break
@@ -701,7 +723,9 @@ struct TiledSARSALambdaAgent:
 
         return metrics^
 
-    fn evaluate[E: BoxDiscreteActionEnv](
+    fn evaluate[
+        E: BoxDiscreteActionEnv
+    ](
         self,
         mut env: E,
         tile_coding: TileCoding,
@@ -724,23 +748,23 @@ struct TiledSARSALambdaAgent:
         var total_reward: Float64 = 0.0
 
         for _ in range(num_episodes):
-            var obs = env.reset_obs()
+            var obs = env.reset_obs_list()
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps):
                 if render:
                     env.render()
 
-                var tiles = tile_coding.get_tiles_simd4(obs)
+                var tiles = tile_coding.get_tiles(obs)
                 var action = self.get_best_action(tiles)
 
-                var result = env.step_raw(action)
-                var next_obs = result[0]
+                var result = env.step_obs(action)
+                var next_obs = result[0].copy()
                 var reward = result[1]
                 var done = result[2]
 
                 episode_reward += reward
-                obs = next_obs
+                obs = next_obs^
 
                 if done:
                     break

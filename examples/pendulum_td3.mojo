@@ -102,24 +102,13 @@ fn main() raises:
     print("Watch the pendulum swing up and balance!")
 
     # Run a few episodes with rendering
-    for demo_ep in range(3):
-        var obs = env.reset_obs()
-        var demo_reward: Float64 = 0.0
-
-        for step in range(200):
-            var state_features = features.get_features_simd4(obs)
-            var action = agent.select_action(state_features)
-
-            var result = env.step_continuous(action)
-            obs = result[0]
-            demo_reward += result[1]
-
-            env.render()
-
-            if result[2]:
-                break
-
-        print("Demo episode", demo_ep + 1, "reward:", String(demo_reward)[:8])
+    var _ = agent.evaluate(
+        env,
+        features,
+        num_episodes=3,
+        max_steps_per_episode=200,
+        render=True,
+    )
 
     env.close()
     print("\nDemo complete!")

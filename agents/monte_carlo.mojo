@@ -3,7 +3,7 @@ from .qlearning import QTable
 from core import TabularAgent, DiscreteEnv, TrainingMetrics
 
 
-struct MonteCarloAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable):
+struct MonteCarloAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
     """First-visit Monte Carlo agent.
 
     Learns from complete episodes. update() stores transitions;
@@ -141,7 +141,9 @@ struct MonteCarloAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable):
     fn get_best_action(self, state_idx: Int) -> Int:
         return self.q_table.get_best_action(state_idx)
 
-    fn train[E: DiscreteEnv](
+    fn train[
+        E: DiscreteEnv
+    ](
         mut self,
         mut env: E,
         num_episodes: Int,
@@ -201,7 +203,9 @@ struct MonteCarloAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable):
 
         return metrics^
 
-    fn evaluate[E: DiscreteEnv](
+    fn evaluate[
+        E: DiscreteEnv
+    ](
         self,
         mut env: E,
         num_episodes: Int = 10,

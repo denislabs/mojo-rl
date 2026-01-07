@@ -50,7 +50,7 @@ from core.tile_coding import TileCoding
 from core import BoxDiscreteActionEnv, TrainingMetrics
 
 
-struct ActorCriticAgent(Copyable, Movable, ImplicitlyCopyable):
+struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
     """One-step Actor-Critic with tile coding function approximation.
 
     Performs online TD(0) updates - no need to wait for episode completion.
@@ -265,7 +265,9 @@ struct ActorCriticAgent(Copyable, Movable, ImplicitlyCopyable):
         var next_value: Float64 = 0.0
         if not done:
             next_value = self.get_value(next_tiles)
-        var td_error = reward + self.discount_factor * next_value - current_value
+        var td_error = (
+            reward + self.discount_factor * next_value - current_value
+        )
 
         # Update critic (value function)
         var critic_step = self.critic_lr / Float64(self.num_tilings)
@@ -288,7 +290,12 @@ struct ActorCriticAgent(Copyable, Movable, ImplicitlyCopyable):
             var entropy_grad: Float64 = 0.0
             if self.entropy_coef > 0.0 and probs[a] > 1e-10:
                 # Gradient of entropy w.r.t. θ_a
-                entropy_grad = -probs[a] * (1.0 + log(probs[a])) * probs[a] * (1.0 - probs[a])
+                entropy_grad = (
+                    -probs[a]
+                    * (1.0 + log(probs[a]))
+                    * probs[a]
+                    * (1.0 - probs[a])
+                )
 
             var total_grad = td_error * grad + self.entropy_coef * entropy_grad
 
@@ -315,7 +322,9 @@ struct ActorCriticAgent(Copyable, Movable, ImplicitlyCopyable):
                 entropy -= probs[a] * log(probs[a])
         return entropy
 
-    fn train[E: BoxDiscreteActionEnv](
+    fn train[
+        E: BoxDiscreteActionEnv
+    ](
         mut self,
         mut env: E,
         tile_coding: TileCoding,
@@ -355,7 +364,7 @@ struct ActorCriticAgent(Copyable, Movable, ImplicitlyCopyable):
                 var action = self.select_action(tiles)
 
                 var result = env.step_obs(action)
-                var next_obs_list = result[0]
+                var next_obs_list = result[0].copy()
                 var next_obs = _list_to_simd4(next_obs_list)
                 var reward = result[1]
                 var done = result[2]
@@ -377,7 +386,9 @@ struct ActorCriticAgent(Copyable, Movable, ImplicitlyCopyable):
 
         return metrics^
 
-    fn evaluate[E: BoxDiscreteActionEnv](
+    fn evaluate[
+        E: BoxDiscreteActionEnv
+    ](
         self,
         mut env: E,
         tile_coding: TileCoding,
@@ -412,7 +423,7 @@ struct ActorCriticAgent(Copyable, Movable, ImplicitlyCopyable):
                 var action = self.get_best_action(tiles)
 
                 var result = env.step_obs(action)
-                var next_obs_list = result[0]
+                var next_obs_list = result[0].copy()
                 var next_obs = _list_to_simd4(next_obs_list)
                 var reward = result[1]
                 var done = result[2]
@@ -428,7 +439,7 @@ struct ActorCriticAgent(Copyable, Movable, ImplicitlyCopyable):
         return total_reward / Float64(num_episodes)
 
 
-struct ActorCriticLambdaAgent(Copyable, Movable, ImplicitlyCopyable):
+struct ActorCriticLambdaAgent(Copyable, ImplicitlyCopyable, Movable):
     """Actor-Critic with eligibility traces for both actor and critic.
 
     Uses eligibility traces for more efficient credit assignment:
@@ -636,7 +647,9 @@ struct ActorCriticLambdaAgent(Copyable, Movable, ImplicitlyCopyable):
         var next_value: Float64 = 0.0
         if not done:
             next_value = self.get_value(next_tiles)
-        var td_error = reward + self.discount_factor * next_value - current_value
+        var td_error = (
+            reward + self.discount_factor * next_value - current_value
+        )
 
         var probs = self.get_action_probs(tiles)
 
@@ -671,7 +684,9 @@ struct ActorCriticLambdaAgent(Copyable, Movable, ImplicitlyCopyable):
         # Update critic
         for t in range(self.num_tiles):
             if self.critic_traces[t] != 0.0:
-                self.critic_weights[t] += critic_step * td_error * self.critic_traces[t]
+                self.critic_weights[t] += (
+                    critic_step * td_error * self.critic_traces[t]
+                )
 
         # Update actor
         for a in range(self.num_actions):
@@ -681,7 +696,12 @@ struct ActorCriticLambdaAgent(Copyable, Movable, ImplicitlyCopyable):
 
                     # Optional entropy bonus
                     if self.entropy_coef > 0.0 and probs[a] > 1e-10:
-                        var entropy_grad = -probs[a] * (1.0 + log(probs[a])) * probs[a] * (1.0 - probs[a])
+                        var entropy_grad = (
+                            -probs[a]
+                            * (1.0 + log(probs[a]))
+                            * probs[a]
+                            * (1.0 - probs[a])
+                        )
                         update += actor_step * self.entropy_coef * entropy_grad
 
                     self.theta[a][t] += update
@@ -711,7 +731,9 @@ struct ActorCriticLambdaAgent(Copyable, Movable, ImplicitlyCopyable):
                 entropy -= probs[a] * log(probs[a])
         return entropy
 
-    fn train[E: BoxDiscreteActionEnv](
+    fn train[
+        E: BoxDiscreteActionEnv
+    ](
         mut self,
         mut env: E,
         tile_coding: TileCoding,
@@ -752,7 +774,7 @@ struct ActorCriticLambdaAgent(Copyable, Movable, ImplicitlyCopyable):
                 var action = self.select_action(tiles)
 
                 var result = env.step_obs(action)
-                var next_obs_list = result[0]
+                var next_obs_list = result[0].copy()
                 var next_obs = _list_to_simd4(next_obs_list)
                 var reward = result[1]
                 var done = result[2]
@@ -774,7 +796,9 @@ struct ActorCriticLambdaAgent(Copyable, Movable, ImplicitlyCopyable):
 
         return metrics^
 
-    fn evaluate[E: BoxDiscreteActionEnv](
+    fn evaluate[
+        E: BoxDiscreteActionEnv
+    ](
         self,
         mut env: E,
         tile_coding: TileCoding,
@@ -809,7 +833,7 @@ struct ActorCriticLambdaAgent(Copyable, Movable, ImplicitlyCopyable):
                 var action = self.get_best_action(tiles)
 
                 var result = env.step_obs(action)
-                var next_obs_list = result[0]
+                var next_obs_list = result[0].copy()
                 var next_obs = _list_to_simd4(next_obs_list)
                 var reward = result[1]
                 var done = result[2]
@@ -825,7 +849,7 @@ struct ActorCriticLambdaAgent(Copyable, Movable, ImplicitlyCopyable):
         return total_reward / Float64(num_episodes)
 
 
-struct A2CAgent(Copyable, Movable, ImplicitlyCopyable):
+struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
     """Advantage Actor-Critic (A2C) with n-step returns.
 
     Accumulates transitions over n steps before updating, using
@@ -1111,9 +1135,16 @@ struct A2CAgent(Copyable, Movable, ImplicitlyCopyable):
                 # Entropy bonus
                 var entropy_grad: Float64 = 0.0
                 if self.entropy_coef > 0.0 and probs[a] > 1e-10:
-                    entropy_grad = -probs[a] * (1.0 + log(probs[a])) * probs[a] * (1.0 - probs[a])
+                    entropy_grad = (
+                        -probs[a]
+                        * (1.0 + log(probs[a]))
+                        * probs[a]
+                        * (1.0 - probs[a])
+                    )
 
-                var total_grad = advantage * grad + self.entropy_coef * entropy_grad
+                var total_grad = (
+                    advantage * grad + self.entropy_coef * entropy_grad
+                )
 
                 for i in range(num_tiles_t):
                     var tile_idx = self.buffer_tiles[t][i]
@@ -1139,7 +1170,9 @@ struct A2CAgent(Copyable, Movable, ImplicitlyCopyable):
                 entropy -= probs[a] * log(probs[a])
         return entropy
 
-    fn train[E: BoxDiscreteActionEnv](
+    fn train[
+        E: BoxDiscreteActionEnv
+    ](
         mut self,
         mut env: E,
         tile_coding: TileCoding,
@@ -1180,7 +1213,7 @@ struct A2CAgent(Copyable, Movable, ImplicitlyCopyable):
                 var action = self.select_action(tiles)
 
                 var result = env.step_obs(action)
-                var next_obs_list = result[0]
+                var next_obs_list = result[0].copy()
                 var next_obs = _list_to_simd4(next_obs_list)
                 var reward = result[1]
                 var done = result[2]
@@ -1204,7 +1237,9 @@ struct A2CAgent(Copyable, Movable, ImplicitlyCopyable):
 
         return metrics^
 
-    fn evaluate[E: BoxDiscreteActionEnv](
+    fn evaluate[
+        E: BoxDiscreteActionEnv
+    ](
         self,
         mut env: E,
         tile_coding: TileCoding,
@@ -1239,7 +1274,7 @@ struct A2CAgent(Copyable, Movable, ImplicitlyCopyable):
                 var action = self.get_best_action(tiles)
 
                 var result = env.step_obs(action)
-                var next_obs_list = result[0]
+                var next_obs_list = result[0].copy()
                 var next_obs = _list_to_simd4(next_obs_list)
                 var reward = result[1]
                 var done = result[2]

@@ -39,6 +39,10 @@ trait FeatureExtractor:
         """Extract features from 4D SIMD state (e.g., CartPole)."""
         ...
 
+    fn get_features(self, state: List[Float64]) -> List[Float64]:
+        """Extract features from state."""
+        ...
+
     fn get_num_features(self) -> Int:
         """Return the number of features."""
         ...

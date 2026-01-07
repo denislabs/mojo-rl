@@ -174,7 +174,9 @@ struct LinearQLearningAgent:
         if done:
             target = reward
         else:
-            target = reward + self.discount_factor * self.get_max_value(next_features)
+            target = reward + self.discount_factor * self.get_max_value(
+                next_features
+            )
 
         self.weights.update(features, action, target, self.learning_rate)
 
@@ -190,7 +192,9 @@ struct LinearQLearningAgent:
         """Reset for new episode (no-op for Q-learning)."""
         pass
 
-    fn train[E: BoxDiscreteActionEnv, F: FeatureExtractor](
+    fn train[
+        E: BoxDiscreteActionEnv, F: FeatureExtractor
+    ](
         mut self,
         mut env: E,
         features: F,
@@ -220,25 +224,25 @@ struct LinearQLearningAgent:
         )
 
         for episode in range(num_episodes):
-            var obs = env.reset_obs()
+            var obs = env.reset_obs_list()
             var total_reward: Float64 = 0.0
             var steps = 0
 
             for _ in range(max_steps_per_episode):
-                var phi = features.get_features_simd4(obs)
+                var phi = features.get_features(obs)
                 var action = self.select_action(phi)
 
-                var result = env.step_raw(action)
-                var next_obs = result[0]
+                var result = env.step_obs(action)
+                var next_obs = result[0].copy()
                 var reward = result[1]
                 var done = result[2]
 
-                var phi_next = features.get_features_simd4(next_obs)
+                var phi_next = features.get_features(next_obs)
                 self.update(phi, action, reward, phi_next, done)
 
                 total_reward += reward
                 steps += 1
-                obs = next_obs
+                obs = next_obs^
                 if done:
                     break
 
@@ -249,7 +253,9 @@ struct LinearQLearningAgent:
 
         return metrics^
 
-    fn evaluate[E: BoxDiscreteActionEnv, F: FeatureExtractor](
+    fn evaluate[
+        E: BoxDiscreteActionEnv, F: FeatureExtractor
+    ](
         self,
         mut env: E,
         features: F,
@@ -270,20 +276,20 @@ struct LinearQLearningAgent:
         var total_reward: Float64 = 0.0
 
         for _ in range(num_episodes):
-            var obs = env.reset_obs()
+            var obs = env.reset_obs_list()
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps_per_episode):
-                var phi = features.get_features_simd4(obs)
+                var phi = features.get_features(obs)
                 var action = self.get_best_action(phi)
 
-                var result = env.step_raw(action)
-                var next_obs = result[0]
+                var result = env.step_obs(action)
+                var next_obs = result[0].copy()
                 var reward = result[1]
                 var done = result[2]
 
                 episode_reward += reward
-                obs = next_obs
+                obs = next_obs^
                 if done:
                     break
 
@@ -371,7 +377,9 @@ struct LinearSARSAAgent:
         if done:
             target = reward
         else:
-            target = reward + self.discount_factor * self.get_value(next_features, next_action)
+            target = reward + self.discount_factor * self.get_value(
+                next_features, next_action
+            )
 
         self.weights.update(features, action, target, self.learning_rate)
 
@@ -387,7 +395,9 @@ struct LinearSARSAAgent:
         """Reset for new episode."""
         pass
 
-    fn train[E: BoxDiscreteActionEnv, F: FeatureExtractor](
+    fn train[
+        E: BoxDiscreteActionEnv, F: FeatureExtractor
+    ](
         mut self,
         mut env: E,
         features: F,
@@ -417,27 +427,27 @@ struct LinearSARSAAgent:
         )
 
         for episode in range(num_episodes):
-            var obs = env.reset_obs()
-            var action = self.select_action(features.get_features_simd4(obs))
+            var obs = env.reset_obs_list()
+            var action = self.select_action(features.get_features(obs))
             var total_reward: Float64 = 0.0
             var steps = 0
 
             for _ in range(max_steps_per_episode):
-                var phi = features.get_features_simd4(obs)
+                var phi = features.get_features(obs)
 
-                var result = env.step_raw(action)
-                var next_obs = result[0]
+                var result = env.step_obs(action)
+                var next_obs = result[0].copy()
                 var reward = result[1]
                 var done = result[2]
 
-                var phi_next = features.get_features_simd4(next_obs)
+                var phi_next = features.get_features(next_obs)
                 var next_action = self.select_action(phi_next)
 
                 self.update(phi, action, reward, phi_next, next_action, done)
 
                 total_reward += reward
                 steps += 1
-                obs = next_obs
+                obs = next_obs^
                 action = next_action
                 if done:
                     break
@@ -449,7 +459,9 @@ struct LinearSARSAAgent:
 
         return metrics^
 
-    fn evaluate[E: BoxDiscreteActionEnv, F: FeatureExtractor](
+    fn evaluate[
+        E: BoxDiscreteActionEnv, F: FeatureExtractor
+    ](
         self,
         mut env: E,
         features: F,
@@ -470,20 +482,20 @@ struct LinearSARSAAgent:
         var total_reward: Float64 = 0.0
 
         for _ in range(num_episodes):
-            var obs = env.reset_obs()
+            var obs = env.reset_obs_list()
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps_per_episode):
-                var phi = features.get_features_simd4(obs)
+                var phi = features.get_features(obs)
                 var action = self.get_best_action(phi)
 
-                var result = env.step_raw(action)
-                var next_obs = result[0]
+                var result = env.step_obs(action)
+                var next_obs = result[0].copy()
                 var reward = result[1]
                 var done = result[2]
 
                 episode_reward += reward
-                obs = next_obs
+                obs = next_obs^
                 if done:
                     break
 
@@ -599,7 +611,9 @@ struct LinearSARSALambdaAgent:
         var next_value: Float64 = 0.0
         if not done:
             next_value = self.weights.get_value(next_features, next_action)
-        var td_error = reward + self.discount_factor * next_value - current_value
+        var td_error = (
+            reward + self.discount_factor * next_value - current_value
+        )
 
         # Accumulate traces for current state-action
         for i in range(self.num_features):
@@ -608,7 +622,9 @@ struct LinearSARSALambdaAgent:
         # Update weights using traces
         for a in range(self.num_actions):
             for i in range(self.num_features):
-                self.weights.weights[a][i] += self.learning_rate * td_error * self.traces[a][i]
+                self.weights.weights[a][i] += (
+                    self.learning_rate * td_error * self.traces[a][i]
+                )
 
         # Decay traces
         var decay = self.discount_factor * self.lambda_
@@ -630,7 +646,9 @@ struct LinearSARSALambdaAgent:
             for i in range(self.num_features):
                 self.traces[a][i] = 0.0
 
-    fn train[E: BoxDiscreteActionEnv, F: FeatureExtractor](
+    fn train[
+        E: BoxDiscreteActionEnv, F: FeatureExtractor
+    ](
         mut self,
         mut env: E,
         features: F,
@@ -661,27 +679,27 @@ struct LinearSARSALambdaAgent:
 
         for episode in range(num_episodes):
             self.reset()  # Reset eligibility traces
-            var obs = env.reset_obs()
-            var action = self.select_action(features.get_features_simd4(obs))
+            var obs = env.reset_obs_list()
+            var action = self.select_action(features.get_features(obs))
             var total_reward: Float64 = 0.0
             var steps = 0
 
             for _ in range(max_steps_per_episode):
-                var phi = features.get_features_simd4(obs)
+                var phi = features.get_features(obs)
 
-                var result = env.step_raw(action)
-                var next_obs = result[0]
+                var result = env.step_obs(action)
+                var next_obs = result[0].copy()
                 var reward = result[1]
                 var done = result[2]
 
-                var phi_next = features.get_features_simd4(next_obs)
+                var phi_next = features.get_features(next_obs)
                 var next_action = self.select_action(phi_next)
 
                 self.update(phi, action, reward, phi_next, next_action, done)
 
                 total_reward += reward
                 steps += 1
-                obs = next_obs
+                obs = next_obs^
                 action = next_action
                 if done:
                     break
@@ -693,7 +711,9 @@ struct LinearSARSALambdaAgent:
 
         return metrics^
 
-    fn evaluate[E: BoxDiscreteActionEnv, F: FeatureExtractor](
+    fn evaluate[
+        E: BoxDiscreteActionEnv, F: FeatureExtractor
+    ](
         self,
         mut env: E,
         features: F,
@@ -714,20 +734,20 @@ struct LinearSARSALambdaAgent:
         var total_reward: Float64 = 0.0
 
         for _ in range(num_episodes):
-            var obs = env.reset_obs()
+            var obs = env.reset_obs_list()
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps_per_episode):
-                var phi = features.get_features_simd4(obs)
+                var phi = features.get_features(obs)
                 var action = self.get_best_action(phi)
 
-                var result = env.step_raw(action)
-                var next_obs = result[0]
+                var result = env.step_obs(action)
+                var next_obs = result[0].copy()
                 var reward = result[1]
                 var done = result[2]
 
                 episode_reward += reward
-                obs = next_obs
+                obs = next_obs^
                 if done:
                     break
 

@@ -3,7 +3,7 @@
 from random import random_si64
 
 
-struct Transition(Copyable, Movable, ImplicitlyCopyable):
+struct Transition(Copyable, ImplicitlyCopyable, Movable):
     """Single transition tuple (s, a, r, s', done)."""
 
     var state: Int
@@ -41,7 +41,7 @@ struct Transition(Copyable, Movable, ImplicitlyCopyable):
         self.done = existing.done
 
 
-struct ReplayBuffer:
+struct ReplayBuffer(Copyable, ImplicitlyCopyable, Movable):
     """Fixed-size circular buffer for experience replay.
 
     Experience replay breaks temporal correlations in training data
@@ -88,6 +88,39 @@ struct ReplayBuffer:
             self.rewards.append(0.0)
             self.next_states.append(0)
             self.dones.append(False)
+
+    fn copy(self) -> Self:
+        """Explicit copy method."""
+        var new_buffer = Self(self.capacity)
+        for i in range(self.size):
+            new_buffer.push(
+                self.states[i],
+                self.actions[i],
+                self.rewards[i],
+                self.next_states[i],
+                self.dones[i],
+            )
+        return new_buffer^
+
+    fn __copyinit__(out self, existing: Self):
+        self.states = existing.states.copy()
+        self.actions = existing.actions.copy()
+        self.rewards = existing.rewards.copy()
+        self.next_states = existing.next_states.copy()
+        self.dones = existing.dones.copy()
+        self.capacity = existing.capacity
+        self.size = existing.size
+        self.position = existing.position
+
+    fn __moveinit__(out self, deinit existing: Self):
+        self.states = existing.states^
+        self.actions = existing.actions^
+        self.rewards = existing.rewards^
+        self.next_states = existing.next_states^
+        self.dones = existing.dones^
+        self.capacity = existing.capacity
+        self.size = existing.size
+        self.position = existing.position
 
     fn push(
         mut self,
@@ -204,7 +237,9 @@ struct PrioritizedReplayBuffer:
     var alpha: Float64  # Priority exponent (0 = uniform, 1 = full prioritization)
     var epsilon: Float64  # Small constant for non-zero priority
 
-    fn __init__(out self, capacity: Int, alpha: Float64 = 0.6, epsilon: Float64 = 0.0001):
+    fn __init__(
+        out self, capacity: Int, alpha: Float64 = 0.6, epsilon: Float64 = 0.0001
+    ):
         """Initialize prioritized buffer."""
         self.capacity = capacity
         self.size = 0

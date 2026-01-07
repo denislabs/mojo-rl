@@ -126,7 +126,15 @@
 
 ### Infrastructure
 - [x] Logging/Metrics - Export learning curves for visualization
-- [ ] Hyperparameter Search - Grid search / random search
+- [x] Hyperparameter Search - Grid search / random search
+  - `core/hyperparam/` - Hyperparameter optimization module
+  - `param_space.mojo` - Parameter spaces for all agent types (Tabular, N-step, Lambda, Model-based, Replay, PolicyGradient, PPO, Continuous)
+  - `search_result.mojo` - TrialResult and SearchResults with CSV export
+  - `grid_search.mojo` - Grid search utilities
+  - `random_search.mojo` - Random search utilities
+  - `agent_factories.mojo` - Factory functions for all tabular agents
+  - `examples/hyperparam_search_demo.mojo` - Demo with Q-Learning on GridWorld
+  - Supports multiple metrics: mean/max/final reward, convergence speed
 - [ ] Parallel Training - Multiple environments (vectorized envs provide foundation)
 
 ### Environments - Native Ports (Next)

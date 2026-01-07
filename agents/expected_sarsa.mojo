@@ -3,7 +3,7 @@ from .qlearning import QTable
 from core import TabularAgent, DiscreteEnv, TrainingMetrics
 
 
-struct ExpectedSARSAAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable):
+struct ExpectedSARSAAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
     """Tabular Expected SARSA agent with epsilon-greedy exploration.
 
     Expected SARSA uses the expected value over all possible next actions,
@@ -112,7 +112,9 @@ struct ExpectedSARSAAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable):
     fn get_best_action(self, state_idx: Int) -> Int:
         return self.q_table.get_best_action(state_idx)
 
-    fn train[E: DiscreteEnv](
+    fn train[
+        E: DiscreteEnv
+    ](
         mut self,
         mut env: E,
         num_episodes: Int,
@@ -172,7 +174,9 @@ struct ExpectedSARSAAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable):
 
         return metrics^
 
-    fn evaluate[E: DiscreteEnv](
+    fn evaluate[
+        E: DiscreteEnv
+    ](
         self,
         mut env: E,
         num_episodes: Int = 10,

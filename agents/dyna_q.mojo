@@ -193,7 +193,9 @@ struct DynaQAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
         """Return the greedy action for a state."""
         return self.q_table.get_best_action(state_idx)
 
-    fn train[E: DiscreteEnv](
+    fn train[
+        E: DiscreteEnv
+    ](
         mut self,
         mut env: E,
         num_episodes: Int,
@@ -253,7 +255,9 @@ struct DynaQAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
 
         return metrics^
 
-    fn evaluate[E: DiscreteEnv](
+    fn evaluate[
+        E: DiscreteEnv
+    ](
         self,
         mut env: E,
         num_episodes: Int = 10,

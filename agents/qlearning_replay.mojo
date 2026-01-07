@@ -3,7 +3,9 @@ from .qlearning import QTable
 from core import TabularAgent, ReplayBuffer, DiscreteEnv, TrainingMetrics
 
 
-struct QLearningReplayAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable):
+struct QLearningReplayAgent(
+    Copyable, ImplicitlyCopyable, Movable, TabularAgent
+):
     """Q-Learning agent with Experience Replay.
 
     Combines Q-Learning with experience replay buffer for more stable
@@ -21,8 +23,8 @@ struct QLearningReplayAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable)
     - Precursor to DQN-style algorithms
 
     Parameters:
-        buffer_size: Maximum number of transitions to store
-        batch_size: Number of transitions to sample per update
+        buffer_size: Maximum number of transitions to store.
+        batch_size: Number of transitions to sample per update.
         min_buffer_size: Minimum buffer size before learning starts
     """
 
@@ -48,7 +50,7 @@ struct QLearningReplayAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable)
         self.epsilon_min = existing.epsilon_min
         self.num_actions = existing.num_actions
         self.num_states = existing.num_states
-        self.buffer = existing.buffer
+        self.buffer = existing.buffer.copy()
         self.batch_size = existing.batch_size
         self.min_buffer_size = existing.min_buffer_size
 
@@ -114,7 +116,9 @@ struct QLearningReplayAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable)
         if done:
             target = reward
         else:
-            target = reward + self.discount_factor * self.q_table.get_max_value(next_state)
+            target = reward + self.discount_factor * self.q_table.get_max_value(
+                next_state
+            )
         var new_q = current_q + self.learning_rate * (target - current_q)
         self.q_table.set(state, action, new_q)
 
@@ -152,7 +156,9 @@ struct QLearningReplayAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable)
         """Return the greedy action for a state."""
         return self.q_table.get_best_action(state_idx)
 
-    fn train[E: DiscreteEnv](
+    fn train[
+        E: DiscreteEnv
+    ](
         mut self,
         mut env: E,
         num_episodes: Int,
@@ -212,7 +218,9 @@ struct QLearningReplayAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable)
 
         return metrics^
 
-    fn evaluate[E: DiscreteEnv](
+    fn evaluate[
+        E: DiscreteEnv
+    ](
         self,
         mut env: E,
         num_episodes: Int = 10,

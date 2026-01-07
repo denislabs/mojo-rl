@@ -45,7 +45,10 @@ Example usage:
 
 from math import exp, tanh, sqrt, log
 from random import random_float64
-from core.continuous_replay_buffer import ContinuousTransition, ContinuousReplayBuffer
+from core.continuous_replay_buffer import (
+    ContinuousTransition,
+    ContinuousReplayBuffer,
+)
 from core import PolynomialFeatures, TrainingMetrics, BoxContinuousActionEnv
 
 
@@ -151,7 +154,9 @@ struct SACAgent(Copyable, Movable):
         # Initialize actor log_std weights (start with small values for moderate exploration)
         self.actor_logstd_weights = List[Float64]()
         for _ in range(num_state_features):
-            var w = (random_float64() - 0.5) * 2.0 * init_std - 1.0  # Bias toward lower variance
+            var w = (
+                random_float64() - 0.5
+            ) * 2.0 * init_std - 1.0  # Bias toward lower variance
             self.actor_logstd_weights.append(w)
 
         # Initialize twin critic weights
@@ -195,9 +200,13 @@ struct SACAgent(Copyable, Movable):
         self.target_critic2_weights = List[Float64]()
         for i in range(existing.num_critic_features):
             self.critic1_weights.append(existing.critic1_weights[i])
-            self.target_critic1_weights.append(existing.target_critic1_weights[i])
+            self.target_critic1_weights.append(
+                existing.target_critic1_weights[i]
+            )
             self.critic2_weights.append(existing.critic2_weights[i])
-            self.target_critic2_weights.append(existing.target_critic2_weights[i])
+            self.target_critic2_weights.append(
+                existing.target_critic2_weights[i]
+            )
 
     fn __moveinit__(out self, deinit existing: Self):
         self.num_state_features = existing.num_state_features
@@ -317,7 +326,9 @@ struct SACAgent(Copyable, Movable):
 
         # Compute log prob of Gaussian
         # log N(u; μ, σ²) = -0.5 * ((u - μ)/σ)² - log(σ) - 0.5 * log(2π)
-        var log_prob = -0.5 * noise * noise - log_std - 0.5 * 0.9189385332  # 0.5 * log(2π)
+        var log_prob = (
+            -0.5 * noise * noise - log_std - 0.5 * 0.9189385332
+        )  # 0.5 * log(2π)
 
         # Apply tanh squashing
         var tanh_action = tanh(raw_action)
@@ -354,43 +365,61 @@ struct SACAgent(Copyable, Movable):
 
         return critic_features^
 
-    fn get_q1_value(self, state_features: List[Float64], action: Float64) -> Float64:
+    fn get_q1_value(
+        self, state_features: List[Float64], action: Float64
+    ) -> Float64:
         """Compute Q-value using first critic."""
-        var critic_features = self._build_critic_features(state_features, action)
+        var critic_features = self._build_critic_features(
+            state_features, action
+        )
         var q_value: Float64 = 0.0
         var n = min(len(critic_features), len(self.critic1_weights))
         for i in range(n):
             q_value += self.critic1_weights[i] * critic_features[i]
         return q_value
 
-    fn get_q2_value(self, state_features: List[Float64], action: Float64) -> Float64:
+    fn get_q2_value(
+        self, state_features: List[Float64], action: Float64
+    ) -> Float64:
         """Compute Q-value using second critic."""
-        var critic_features = self._build_critic_features(state_features, action)
+        var critic_features = self._build_critic_features(
+            state_features, action
+        )
         var q_value: Float64 = 0.0
         var n = min(len(critic_features), len(self.critic2_weights))
         for i in range(n):
             q_value += self.critic2_weights[i] * critic_features[i]
         return q_value
 
-    fn _get_q1_value_target(self, state_features: List[Float64], action: Float64) -> Float64:
+    fn _get_q1_value_target(
+        self, state_features: List[Float64], action: Float64
+    ) -> Float64:
         """Compute Q-value using first target critic."""
-        var critic_features = self._build_critic_features(state_features, action)
+        var critic_features = self._build_critic_features(
+            state_features, action
+        )
         var q_value: Float64 = 0.0
         var n = min(len(critic_features), len(self.target_critic1_weights))
         for i in range(n):
             q_value += self.target_critic1_weights[i] * critic_features[i]
         return q_value
 
-    fn _get_q2_value_target(self, state_features: List[Float64], action: Float64) -> Float64:
+    fn _get_q2_value_target(
+        self, state_features: List[Float64], action: Float64
+    ) -> Float64:
         """Compute Q-value using second target critic."""
-        var critic_features = self._build_critic_features(state_features, action)
+        var critic_features = self._build_critic_features(
+            state_features, action
+        )
         var q_value: Float64 = 0.0
         var n = min(len(critic_features), len(self.target_critic2_weights))
         for i in range(n):
             q_value += self.target_critic2_weights[i] * critic_features[i]
         return q_value
 
-    fn get_min_q_value(self, state_features: List[Float64], action: Float64) -> Float64:
+    fn get_min_q_value(
+        self, state_features: List[Float64], action: Float64
+    ) -> Float64:
         """Get minimum Q-value from twin critics."""
         var q1 = self.get_q1_value(state_features, action)
         var q2 = self.get_q2_value(state_features, action)
@@ -448,36 +477,54 @@ struct SACAgent(Copyable, Movable):
                 target = transition.reward
             else:
                 # Sample next action from current policy
-                var next_action_logprob = self._sample_action_with_log_prob(transition.next_state)
+                var next_action_logprob = self._sample_action_with_log_prob(
+                    transition.next_state
+                )
                 var next_action = next_action_logprob[0]
                 var next_log_prob = next_action_logprob[1]
 
                 # Min of target Q-values
-                var next_q1 = self._get_q1_value_target(transition.next_state, next_action)
-                var next_q2 = self._get_q2_value_target(transition.next_state, next_action)
+                var next_q1 = self._get_q1_value_target(
+                    transition.next_state, next_action
+                )
+                var next_q2 = self._get_q2_value_target(
+                    transition.next_state, next_action
+                )
                 var next_q = next_q1
                 if next_q2 < next_q1:
                     next_q = next_q2
 
                 # Soft Bellman target with entropy
-                target = transition.reward + self.discount_factor * (next_q - self.alpha * next_log_prob)
+                target = transition.reward + self.discount_factor * (
+                    next_q - self.alpha * next_log_prob
+                )
 
             # Build critic features
-            var critic_features = self._build_critic_features(transition.state, transition.action)
+            var critic_features = self._build_critic_features(
+                transition.state, transition.action
+            )
 
             # Update critic 1
-            var current_q1 = self.get_q1_value(transition.state, transition.action)
+            var current_q1 = self.get_q1_value(
+                transition.state, transition.action
+            )
             var td_error1 = target - current_q1
             for j in range(len(critic_features)):
                 if j < len(self.critic1_weights):
-                    self.critic1_weights[j] += step_size * td_error1 * critic_features[j]
+                    self.critic1_weights[j] += (
+                        step_size * td_error1 * critic_features[j]
+                    )
 
             # Update critic 2
-            var current_q2 = self.get_q2_value(transition.state, transition.action)
+            var current_q2 = self.get_q2_value(
+                transition.state, transition.action
+            )
             var td_error2 = target - current_q2
             for j in range(len(critic_features)):
                 if j < len(self.critic2_weights):
-                    self.critic2_weights[j] += step_size * td_error2 * critic_features[j]
+                    self.critic2_weights[j] += (
+                        step_size * td_error2 * critic_features[j]
+                    )
 
     fn _update_actor(mut self, batch: List[ContinuousTransition]):
         """Update actor to maximize expected Q-value minus entropy.
@@ -517,9 +564,17 @@ struct SACAgent(Copyable, Movable):
             var a_norm = action / self.action_scale
             var grad_a_q: Float64 = 0.0
             if self.num_state_features < len(self.critic1_weights):
-                grad_a_q = self.critic1_weights[self.num_state_features] / self.action_scale
+                grad_a_q = (
+                    self.critic1_weights[self.num_state_features]
+                    / self.action_scale
+                )
             if self.num_state_features + 1 < len(self.critic1_weights):
-                grad_a_q += 2.0 * self.critic1_weights[self.num_state_features + 1] * a_norm / self.action_scale
+                grad_a_q += (
+                    2.0
+                    * self.critic1_weights[self.num_state_features + 1]
+                    * a_norm
+                    / self.action_scale
+                )
 
             # Gradient of action w.r.t. mean (through tanh)
             # a = tanh(mean + std * noise) * scale
@@ -541,19 +596,30 @@ struct SACAgent(Copyable, Movable):
             # ∇_θ (Q - α * log_prob) = ∇_a Q * ∂a/∂mean * ∂mean/∂θ - α * ∂log_prob/∂mean * ∂mean/∂θ
             for j in range(len(transition.state)):
                 if j < len(self.actor_mean_weights):
-                    var grad_mean = grad_a_q * grad_a_mean - self.alpha * grad_logprob_mean
-                    self.actor_mean_weights[j] += step_size * grad_mean * transition.state[j]
+                    var grad_mean = (
+                        grad_a_q * grad_a_mean - self.alpha * grad_logprob_mean
+                    )
+                    self.actor_mean_weights[j] += (
+                        step_size * grad_mean * transition.state[j]
+                    )
 
             # Update log_std weights
             # Gradient for log_std: maximize entropy means minimize -log_prob
             # But we also want actions that maximize Q
             # Gradient through action: ∂a/∂log_std = scale * (1 - tanh²) * noise * std
-            var grad_a_logstd = self.action_scale * (1.0 - tanh_sq) * noise * std
+            var grad_a_logstd = (
+                self.action_scale * (1.0 - tanh_sq) * noise * std
+            )
 
             for j in range(len(transition.state)):
                 if j < len(self.actor_logstd_weights):
-                    var grad_logstd = grad_a_q * grad_a_logstd - self.alpha * grad_logprob_logstd
-                    self.actor_logstd_weights[j] += step_size * grad_logstd * transition.state[j]
+                    var grad_logstd = (
+                        grad_a_q * grad_a_logstd
+                        - self.alpha * grad_logprob_logstd
+                    )
+                    self.actor_logstd_weights[j] += (
+                        step_size * grad_logstd * transition.state[j]
+                    )
 
     fn _update_alpha(mut self, batch: List[ContinuousTransition]):
         """Update entropy coefficient α to maintain target entropy.
@@ -568,7 +634,9 @@ struct SACAgent(Copyable, Movable):
 
         for i in range(batch_size):
             var transition = batch[i]
-            var action_logprob = self._sample_action_with_log_prob(transition.state)
+            var action_logprob = self._sample_action_with_log_prob(
+                transition.state
+            )
             avg_log_prob += action_logprob[1]
 
         avg_log_prob /= Float64(batch_size)
@@ -613,7 +681,9 @@ struct SACAgent(Copyable, Movable):
     # Training and Evaluation
     # ========================================================================
 
-    fn train[E: BoxContinuousActionEnv](
+    fn train[
+        E: BoxContinuousActionEnv
+    ](
         mut self,
         mut env: E,
         features: PolynomialFeatures,
@@ -659,7 +729,12 @@ struct SACAgent(Copyable, Movable):
             print("Action scale:", self.action_scale)
             print("Actor LR:", self.actor_lr, "Critic LR:", self.critic_lr)
             print("Tau:", self.tau, "Initial alpha:", self.alpha)
-            print("Auto alpha:", self.auto_alpha, "Target entropy:", self.target_entropy)
+            print(
+                "Auto alpha:",
+                self.auto_alpha,
+                "Target entropy:",
+                self.target_entropy,
+            )
             print("Warmup episodes:", warmup_episodes)
             print("Batch size:", batch_size)
             print("-" * 60)
@@ -684,7 +759,7 @@ struct SACAgent(Copyable, Movable):
 
                 # Take action
                 var result = env.step_continuous(action)
-                var next_obs_list = result[0]
+                var next_obs_list = result[0].copy()
                 var next_obs = _list_to_simd4(next_obs_list)
                 var reward = result[1]
                 var done = result[2]
@@ -693,7 +768,10 @@ struct SACAgent(Copyable, Movable):
                 buffer.push(state_features, action, reward, next_features, done)
 
                 # Update if enough samples
-                if buffer.len() >= min_buffer_size and episode >= warmup_episodes:
+                if (
+                    buffer.len() >= min_buffer_size
+                    and episode >= warmup_episodes
+                ):
                     var batch = buffer.sample(batch_size)
                     self.update(batch)
 
@@ -712,7 +790,9 @@ struct SACAgent(Copyable, Movable):
                 var sum_reward: Float64 = 0.0
                 for j in range(start_idx, len(metrics.episodes)):
                     sum_reward += metrics.episodes[j].total_reward
-                var avg_reward = sum_reward / Float64(len(metrics.episodes) - start_idx)
+                var avg_reward = sum_reward / Float64(
+                    len(metrics.episodes) - start_idx
+                )
                 print(
                     "Episode",
                     episode + 1,
@@ -731,18 +811,23 @@ struct SACAgent(Copyable, Movable):
             var sum_reward: Float64 = 0.0
             for j in range(start_idx, len(metrics.episodes)):
                 sum_reward += metrics.episodes[j].total_reward
-            var final_avg = sum_reward / Float64(len(metrics.episodes) - start_idx)
+            var final_avg = sum_reward / Float64(
+                len(metrics.episodes) - start_idx
+            )
             print("Final avg reward:", String(final_avg)[:8])
             print("Final alpha:", String(self.alpha)[:6])
 
         return metrics^
 
-    fn evaluate[E: BoxContinuousActionEnv](
+    fn evaluate[
+        E: BoxContinuousActionEnv
+    ](
         self,
         mut env: E,
         features: PolynomialFeatures,
         num_episodes: Int = 10,
         max_steps_per_episode: Int = 200,
+        render: Bool = False,
     ) -> Float64:
         """Evaluate the trained SAC agent using deterministic policy.
 
@@ -763,11 +848,14 @@ struct SACAgent(Copyable, Movable):
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps_per_episode):
+                if render:
+                    env.render()
+
                 var state_features = features.get_features_simd4(obs)
                 var action = self.select_action_deterministic(state_features)
 
                 var result = env.step_continuous(action)
-                var next_obs_list = result[0]
+                var next_obs_list = result[0].copy()
                 var next_obs = _list_to_simd4(next_obs_list)
                 var reward = result[1]
                 var done = result[2]
@@ -800,6 +888,7 @@ fn _gaussian_noise() -> Float64:
 fn _cos(x: Float64) -> Float64:
     """Cosine function."""
     from math import cos
+
     return cos(x)
 
 

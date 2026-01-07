@@ -19,7 +19,7 @@ Usage:
 from random import random_si64
 
 
-struct ContinuousTransition(Copyable, Movable, ImplicitlyCopyable):
+struct ContinuousTransition(Copyable, ImplicitlyCopyable, Movable):
     """Single transition tuple with continuous state features and action.
 
     Stores:
@@ -51,14 +51,10 @@ struct ContinuousTransition(Copyable, Movable, ImplicitlyCopyable):
         self.done = done
 
     fn __copyinit__(out self, existing: Self):
-        self.state = List[Float64]()
-        for i in range(len(existing.state)):
-            self.state.append(existing.state[i])
+        self.state = existing.state.copy()
         self.action = existing.action
         self.reward = existing.reward
-        self.next_state = List[Float64]()
-        for i in range(len(existing.next_state)):
-            self.next_state.append(existing.next_state[i])
+        self.next_state = existing.next_state.copy()
         self.done = existing.done
 
     fn __moveinit__(out self, deinit existing: Self):

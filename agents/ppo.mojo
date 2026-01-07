@@ -136,7 +136,7 @@ fn compute_returns_from_advantages(
     return returns^
 
 
-struct PPOAgent(Copyable, Movable, ImplicitlyCopyable):
+struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
     """Proximal Policy Optimization agent with tile coding.
 
     Uses clipped surrogate objective for stable policy updates and
@@ -167,7 +167,7 @@ struct PPOAgent(Copyable, Movable, ImplicitlyCopyable):
     var buffer_actions: List[Int]
     var buffer_rewards: List[Float64]
     var buffer_log_probs: List[Float64]  # Old log probabilities
-    var buffer_values: List[Float64]      # Old value estimates
+    var buffer_values: List[Float64]  # Old value estimates
 
     fn __init__(
         out self,
@@ -480,7 +480,9 @@ struct PPOAgent(Copyable, Movable, ImplicitlyCopyable):
         )
 
         # Compute returns for value function
-        var returns = compute_returns_from_advantages(advantages, self.buffer_values)
+        var returns = compute_returns_from_advantages(
+            advantages, self.buffer_values
+        )
 
         # Normalize advantages (optional but recommended)
         if self.normalize_advantages and buffer_len > 1:
@@ -546,13 +548,17 @@ struct PPOAgent(Copyable, Movable, ImplicitlyCopyable):
                 var value_grad = 2.0 * (current_value - return_t)
                 for i in range(num_tiles_t):
                     var tile_idx = self.buffer_tiles[t][i]
-                    self.critic_weights[tile_idx] -= critic_step * self.value_loss_coef * value_grad
+                    self.critic_weights[tile_idx] -= (
+                        critic_step * self.value_loss_coef * value_grad
+                    )
 
                 # Update actor (minimize policy loss - entropy bonus)
                 # Gradient of clipped objective is:
                 # - If not clipped: advantage * ∇log π(a|s)
                 # - If clipped: 0 (no gradient)
-                var clipped = (ratio < 1.0 - self.clip_epsilon) or (ratio > 1.0 + self.clip_epsilon)
+                var clipped = (ratio < 1.0 - self.clip_epsilon) or (
+                    ratio > 1.0 + self.clip_epsilon
+                )
 
                 if not clipped:
                     for a in range(self.num_actions):
@@ -567,12 +573,20 @@ struct PPOAgent(Copyable, Movable, ImplicitlyCopyable):
                         var entropy_grad: Float64 = 0.0
                         if probs[a] > 1e-10:
                             # ∂H/∂θ_a for softmax
-                            entropy_grad = -probs[a] * (1.0 + log(probs[a])) * probs[a] * (1.0 - probs[a])
+                            entropy_grad = (
+                                -probs[a]
+                                * (1.0 + log(probs[a]))
+                                * probs[a]
+                                * (1.0 - probs[a])
+                            )
 
                         # Combined gradient (advantage * policy grad - entropy_coef * entropy grad)
                         # We maximize: advantage * log_prob + entropy_coef * entropy
                         # So gradient is: advantage * policy_grad + entropy_coef * entropy_grad
-                        var total_grad = advantage * policy_grad + self.entropy_coef * entropy_grad
+                        var total_grad = (
+                            advantage * policy_grad
+                            + self.entropy_coef * entropy_grad
+                        )
 
                         for i in range(num_tiles_t):
                             var tile_idx = self.buffer_tiles[t][i]
@@ -609,7 +623,9 @@ struct PPOAgent(Copyable, Movable, ImplicitlyCopyable):
                 entropy -= probs[a] * log(probs[a])
         return entropy
 
-    fn train[E: BoxDiscreteActionEnv](
+    fn train[
+        E: BoxDiscreteActionEnv
+    ](
         mut self,
         mut env: E,
         tile_coding: TileCoding,
@@ -642,18 +658,18 @@ struct PPOAgent(Copyable, Movable, ImplicitlyCopyable):
 
         var total_steps = 0
         for episode in range(num_episodes):
-            var obs = env.reset_obs()
+            var obs = env.reset_obs_list()
             var total_reward: Float64 = 0.0
             var steps = 0
 
             for _ in range(max_steps_per_episode):
-                var tiles = tile_coding.get_tiles_simd4(obs)
+                var tiles = tile_coding.get_tiles(obs)
                 var action = self.select_action(tiles)
                 var log_prob = self.get_log_prob(tiles, action)
                 var value = self.get_value(tiles)
 
-                var result = env.step_raw(action)
-                var next_obs = result[0]
+                var result = env.step_obs(action)
+                var next_obs = result[0].copy()
                 var reward = result[1]
                 var done = result[2]
 
@@ -664,10 +680,10 @@ struct PPOAgent(Copyable, Movable, ImplicitlyCopyable):
 
                 # Update at rollout boundary or episode end
                 if total_steps % rollout_length == 0 or done:
-                    var next_tiles = tile_coding.get_tiles_simd4(next_obs)
+                    var next_tiles = tile_coding.get_tiles(next_obs)
                     self.update(next_tiles, done)
 
-                obs = next_obs
+                obs = next_obs^
                 if done:
                     break
 
@@ -677,7 +693,9 @@ struct PPOAgent(Copyable, Movable, ImplicitlyCopyable):
 
         return metrics^
 
-    fn evaluate[E: BoxDiscreteActionEnv](
+    fn evaluate[
+        E: BoxDiscreteActionEnv
+    ](
         self,
         mut env: E,
         tile_coding: TileCoding,
@@ -698,20 +716,20 @@ struct PPOAgent(Copyable, Movable, ImplicitlyCopyable):
         var total_reward: Float64 = 0.0
 
         for _ in range(num_episodes):
-            var obs = env.reset_obs()
+            var obs = env.reset_obs_list()
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps_per_episode):
-                var tiles = tile_coding.get_tiles_simd4(obs)
+                var tiles = tile_coding.get_tiles(obs)
                 var action = self.get_best_action(tiles)
 
-                var result = env.step_raw(action)
-                var next_obs = result[0]
+                var result = env.step_obs(action)
+                var next_obs = result[0].copy()
                 var reward = result[1]
                 var done = result[2]
 
                 episode_reward += reward
-                obs = next_obs
+                obs = next_obs^
                 if done:
                     break
 
@@ -720,7 +738,7 @@ struct PPOAgent(Copyable, Movable, ImplicitlyCopyable):
         return total_reward / Float64(num_episodes)
 
 
-struct PPOAgentWithMinibatch(Copyable, Movable, ImplicitlyCopyable):
+struct PPOAgentWithMinibatch(Copyable, ImplicitlyCopyable, Movable):
     """PPO Agent with minibatch updates for larger rollouts.
 
     Extends PPOAgent with minibatch sampling during updates,
@@ -1038,7 +1056,9 @@ struct PPOAgentWithMinibatch(Copyable, Movable, ImplicitlyCopyable):
         )
 
         # Compute returns
-        var returns = compute_returns_from_advantages(advantages, self.buffer_values)
+        var returns = compute_returns_from_advantages(
+            advantages, self.buffer_values
+        )
 
         # Normalize advantages
         if self.normalize_advantages and buffer_len > 1:
@@ -1066,7 +1086,9 @@ struct PPOAgentWithMinibatch(Copyable, Movable, ImplicitlyCopyable):
 
             var batch_start = 0
             while batch_start < buffer_len:
-                var batch_end = min(batch_start + self.minibatch_size, buffer_len)
+                var batch_end = min(
+                    batch_start + self.minibatch_size, buffer_len
+                )
 
                 # Process minibatch
                 for b in range(batch_start, batch_end):
@@ -1084,14 +1106,18 @@ struct PPOAgentWithMinibatch(Copyable, Movable, ImplicitlyCopyable):
                     var ratio = exp(new_log_prob - old_log_prob)
 
                     # Clipping
-                    var clipped = (ratio < 1.0 - self.clip_epsilon) or (ratio > 1.0 + self.clip_epsilon)
+                    var clipped = (ratio < 1.0 - self.clip_epsilon) or (
+                        ratio > 1.0 + self.clip_epsilon
+                    )
 
                     # Update critic
                     var current_value = self._get_value_idx(t)
                     var value_grad = 2.0 * (current_value - return_t)
                     for i in range(num_tiles_t):
                         var tile_idx = self.buffer_tiles[t][i]
-                        self.critic_weights[tile_idx] -= critic_step * self.value_loss_coef * value_grad
+                        self.critic_weights[tile_idx] -= (
+                            critic_step * self.value_loss_coef * value_grad
+                        )
 
                     # Update actor if not clipped
                     if not clipped:
@@ -1106,13 +1132,23 @@ struct PPOAgentWithMinibatch(Copyable, Movable, ImplicitlyCopyable):
 
                             var entropy_grad: Float64 = 0.0
                             if probs[a] > 1e-10:
-                                entropy_grad = -probs[a] * (1.0 + log(probs[a])) * probs[a] * (1.0 - probs[a])
+                                entropy_grad = (
+                                    -probs[a]
+                                    * (1.0 + log(probs[a]))
+                                    * probs[a]
+                                    * (1.0 - probs[a])
+                                )
 
-                            var total_grad = advantage * policy_grad + self.entropy_coef * entropy_grad
+                            var total_grad = (
+                                advantage * policy_grad
+                                + self.entropy_coef * entropy_grad
+                            )
 
                             for i in range(num_tiles_t):
                                 var tile_idx = self.buffer_tiles[t][i]
-                                self.theta[a][tile_idx] += actor_step * total_grad
+                                self.theta[a][tile_idx] += (
+                                    actor_step * total_grad
+                                )
 
                 batch_start = batch_end
 
@@ -1140,7 +1176,9 @@ struct PPOAgentWithMinibatch(Copyable, Movable, ImplicitlyCopyable):
                 entropy -= probs[a] * log(probs[a])
         return entropy
 
-    fn train[E: BoxDiscreteActionEnv](
+    fn train[
+        E: BoxDiscreteActionEnv
+    ](
         mut self,
         mut env: E,
         tile_coding: TileCoding,
@@ -1173,18 +1211,18 @@ struct PPOAgentWithMinibatch(Copyable, Movable, ImplicitlyCopyable):
 
         var total_steps = 0
         for episode in range(num_episodes):
-            var obs = env.reset_obs()
+            var obs = env.reset_obs_list()
             var total_reward: Float64 = 0.0
             var steps = 0
 
             for _ in range(max_steps_per_episode):
-                var tiles = tile_coding.get_tiles_simd4(obs)
+                var tiles = tile_coding.get_tiles(obs)
                 var action = self.select_action(tiles)
                 var log_prob = self.get_log_prob(tiles, action)
                 var value = self.get_value(tiles)
 
-                var result = env.step_raw(action)
-                var next_obs = result[0]
+                var result = env.step_obs(action)
+                var next_obs = result[0].copy()
                 var reward = result[1]
                 var done = result[2]
 
@@ -1195,10 +1233,10 @@ struct PPOAgentWithMinibatch(Copyable, Movable, ImplicitlyCopyable):
 
                 # Update at rollout boundary or episode end
                 if total_steps % rollout_length == 0 or done:
-                    var next_tiles = tile_coding.get_tiles_simd4(next_obs)
+                    var next_tiles = tile_coding.get_tiles(next_obs)
                     self.update(next_tiles, done)
 
-                obs = next_obs
+                obs = next_obs^
                 if done:
                     break
 
@@ -1208,7 +1246,9 @@ struct PPOAgentWithMinibatch(Copyable, Movable, ImplicitlyCopyable):
 
         return metrics^
 
-    fn evaluate[E: BoxDiscreteActionEnv](
+    fn evaluate[
+        E: BoxDiscreteActionEnv
+    ](
         self,
         mut env: E,
         tile_coding: TileCoding,
@@ -1229,20 +1269,20 @@ struct PPOAgentWithMinibatch(Copyable, Movable, ImplicitlyCopyable):
         var total_reward: Float64 = 0.0
 
         for _ in range(num_episodes):
-            var obs = env.reset_obs()
+            var obs = env.reset_obs_list()
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps_per_episode):
-                var tiles = tile_coding.get_tiles_simd4(obs)
+                var tiles = tile_coding.get_tiles(obs)
                 var action = self.get_best_action(tiles)
 
-                var result = env.step_raw(action)
-                var next_obs = result[0]
+                var result = env.step_obs(action)
+                var next_obs = result[0].copy()
                 var reward = result[1]
                 var done = result[2]
 
                 episode_reward += reward
-                obs = next_obs
+                obs = next_obs^
                 if done:
                     break
 

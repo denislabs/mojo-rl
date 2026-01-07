@@ -49,7 +49,10 @@ Example usage:
 
 from math import exp, tanh, sqrt
 from random import random_float64
-from core.continuous_replay_buffer import ContinuousTransition, ContinuousReplayBuffer
+from core.continuous_replay_buffer import (
+    ContinuousTransition,
+    ContinuousReplayBuffer,
+)
 from core import PolynomialFeatures, TrainingMetrics, BoxContinuousActionEnv
 
 
@@ -81,29 +84,44 @@ struct DDPGAgent(Copyable, Movable):
     var discount_factor: Float64
     var tau: Float64  # Soft update rate for target networks
     var noise_std: Float64  # Gaussian exploration noise standard deviation
+    var noise_std_min: Float64  # Minimum noise after decay
+    var noise_decay: Float64  # Noise decay rate per episode
     var action_scale: Float64  # Maximum action magnitude
+    var reward_scale: Float64  # Reward scaling factor
+    var updates_per_step: Int  # Number of gradient updates per env step
+
+    # Pre-allocated storage for performance
+    var _critic_features: List[Float64]
 
     fn __init__(
         out self,
         num_state_features: Int,
         action_scale: Float64 = 2.0,
-        actor_lr: Float64 = 0.001,
+        actor_lr: Float64 = 0.0003,
         critic_lr: Float64 = 0.001,
         discount_factor: Float64 = 0.99,
         tau: Float64 = 0.005,
-        noise_std: Float64 = 0.1,
-        init_std: Float64 = 0.01,
+        noise_std: Float64 = 0.2,
+        noise_std_min: Float64 = 0.05,
+        noise_decay: Float64 = 0.995,
+        reward_scale: Float64 = 0.1,
+        updates_per_step: Int = 1,
+        init_std: Float64 = 0.1,
     ):
         """Initialize DDPG agent.
 
         Args:
             num_state_features: Dimensionality of state feature vectors
             action_scale: Maximum action magnitude (output clipped to [-action_scale, action_scale])
-            actor_lr: Actor learning rate
+            actor_lr: Actor learning rate (lower is more stable)
             critic_lr: Critic learning rate
             discount_factor: Discount factor γ
             tau: Soft update rate for target networks (typical: 0.001-0.01)
-            noise_std: Standard deviation of Gaussian exploration noise (scaled by action_scale)
+            noise_std: Initial standard deviation of Gaussian exploration noise
+            noise_std_min: Minimum noise after decay
+            noise_decay: Noise decay rate per episode (1.0 = no decay)
+            reward_scale: Scale factor for rewards (helps with large reward ranges)
+            updates_per_step: Number of gradient updates per environment step
             init_std: Standard deviation for weight initialization
         """
         self.num_state_features = num_state_features
@@ -113,7 +131,16 @@ struct DDPGAgent(Copyable, Movable):
         self.discount_factor = discount_factor
         self.tau = tau
         self.noise_std = noise_std
+        self.noise_std_min = noise_std_min
+        self.noise_decay = noise_decay
         self.action_scale = action_scale
+        self.reward_scale = reward_scale
+        self.updates_per_step = updates_per_step
+
+        # Pre-allocate critic features storage
+        self._critic_features = List[Float64](capacity=self.num_critic_features)
+        for _ in range(self.num_critic_features):
+            self._critic_features.append(0.0)
 
         # Initialize actor weights with small random values
         self.actor_weights = List[Float64]()
@@ -139,7 +166,11 @@ struct DDPGAgent(Copyable, Movable):
         self.discount_factor = existing.discount_factor
         self.tau = existing.tau
         self.noise_std = existing.noise_std
+        self.noise_std_min = existing.noise_std_min
+        self.noise_decay = existing.noise_decay
         self.action_scale = existing.action_scale
+        self.reward_scale = existing.reward_scale
+        self.updates_per_step = existing.updates_per_step
 
         self.actor_weights = List[Float64]()
         self.target_actor_weights = List[Float64]()
@@ -153,6 +184,11 @@ struct DDPGAgent(Copyable, Movable):
             self.critic_weights.append(existing.critic_weights[i])
             self.target_critic_weights.append(existing.target_critic_weights[i])
 
+        # Pre-allocate critic features storage
+        self._critic_features = List[Float64](capacity=self.num_critic_features)
+        for _ in range(self.num_critic_features):
+            self._critic_features.append(0.0)
+
     fn __moveinit__(out self, deinit existing: Self):
         self.num_state_features = existing.num_state_features
         self.num_critic_features = existing.num_critic_features
@@ -161,17 +197,24 @@ struct DDPGAgent(Copyable, Movable):
         self.discount_factor = existing.discount_factor
         self.tau = existing.tau
         self.noise_std = existing.noise_std
+        self.noise_std_min = existing.noise_std_min
+        self.noise_decay = existing.noise_decay
         self.action_scale = existing.action_scale
+        self.reward_scale = existing.reward_scale
+        self.updates_per_step = existing.updates_per_step
         self.actor_weights = existing.actor_weights^
         self.target_actor_weights = existing.target_actor_weights^
         self.critic_weights = existing.critic_weights^
         self.target_critic_weights = existing.target_critic_weights^
+        self._critic_features = existing._critic_features^
 
     # ========================================================================
     # Actor (Policy) Methods
     # ========================================================================
 
-    fn _compute_actor_output(self, features: List[Float64], weights: List[Float64]) -> Float64:
+    fn _compute_actor_output(
+        self, features: List[Float64], weights: List[Float64]
+    ) -> Float64:
         """Compute raw actor output (before tanh and scaling).
 
         Args:
@@ -198,7 +241,9 @@ struct DDPGAgent(Copyable, Movable):
         Returns:
             Deterministic action in [-action_scale, action_scale]
         """
-        var raw_output = self._compute_actor_output(features, self.actor_weights)
+        var raw_output = self._compute_actor_output(
+            features, self.actor_weights
+        )
         return tanh(raw_output) * self.action_scale
 
     fn select_action_with_noise(self, features: List[Float64]) -> Float64:
@@ -235,14 +280,18 @@ struct DDPGAgent(Copyable, Movable):
 
     fn _select_action_target(self, features: List[Float64]) -> Float64:
         """Select action using target actor (for TD target computation)."""
-        var raw_output = self._compute_actor_output(features, self.target_actor_weights)
+        var raw_output = self._compute_actor_output(
+            features, self.target_actor_weights
+        )
         return tanh(raw_output) * self.action_scale
 
     # ========================================================================
     # Critic (Q-function) Methods
     # ========================================================================
 
-    fn _build_critic_features(self, state_features: List[Float64], action: Float64) -> List[Float64]:
+    fn _build_critic_features(
+        self, state_features: List[Float64], action: Float64
+    ) -> List[Float64]:
         """Build critic input features by concatenating state features with action features.
 
         Critic features = [φ(s); a; a²]
@@ -254,7 +303,7 @@ struct DDPGAgent(Copyable, Movable):
         Returns:
             Concatenated feature vector for critic
         """
-        var critic_features = List[Float64]()
+        var critic_features = List[Float64](capacity=self.num_critic_features)
 
         # Add state features
         for i in range(len(state_features)):
@@ -267,7 +316,34 @@ struct DDPGAgent(Copyable, Movable):
 
         return critic_features^
 
-    fn get_q_value(self, state_features: List[Float64], action: Float64) -> Float64:
+    fn _fill_critic_features(
+        mut self, state_features: List[Float64], action: Float64
+    ):
+        """Fill pre-allocated critic features (faster, no allocation).
+
+        Args:
+            state_features: State feature vector φ(s)
+            action: Action value
+        """
+        # Copy state features
+        var n = len(state_features)
+        for i in range(n):
+            self._critic_features[i] = state_features[i]
+
+        # Add action features: [a, a²]
+        var a_normalized = action / self.action_scale  # Normalize to [-1, 1]
+        self._critic_features[n] = a_normalized
+        self._critic_features[n + 1] = a_normalized * a_normalized
+
+    fn decay_noise(mut self):
+        """Decay exploration noise (call once per episode)."""
+        self.noise_std *= self.noise_decay
+        if self.noise_std < self.noise_std_min:
+            self.noise_std = self.noise_std_min
+
+    fn get_q_value(
+        self, state_features: List[Float64], action: Float64
+    ) -> Float64:
         """Compute Q-value using online critic.
 
         Q(s, a) = w · [φ(s); a; a²]
@@ -279,16 +355,22 @@ struct DDPGAgent(Copyable, Movable):
         Returns:
             Q-value estimate
         """
-        var critic_features = self._build_critic_features(state_features, action)
+        var critic_features = self._build_critic_features(
+            state_features, action
+        )
         var q_value: Float64 = 0.0
         var n = min(len(critic_features), len(self.critic_weights))
         for i in range(n):
             q_value += self.critic_weights[i] * critic_features[i]
         return q_value
 
-    fn _get_q_value_target(self, state_features: List[Float64], action: Float64) -> Float64:
+    fn _get_q_value_target(
+        self, state_features: List[Float64], action: Float64
+    ) -> Float64:
         """Compute Q-value using target critic."""
-        var critic_features = self._build_critic_features(state_features, action)
+        var critic_features = self._build_critic_features(
+            state_features, action
+        )
         var q_value: Float64 = 0.0
         var n = min(len(critic_features), len(self.target_critic_weights))
         for i in range(n):
@@ -341,13 +423,21 @@ struct DDPGAgent(Copyable, Movable):
             if transition.done:
                 target = transition.reward
             else:
-                var next_action = self._select_action_target(transition.next_state)
-                var next_q = self._get_q_value_target(transition.next_state, next_action)
+                var next_action = self._select_action_target(
+                    transition.next_state
+                )
+                var next_q = self._get_q_value_target(
+                    transition.next_state, next_action
+                )
                 target = transition.reward + self.discount_factor * next_q
 
             # Current Q-value and features
-            var critic_features = self._build_critic_features(transition.state, transition.action)
-            var current_q = self.get_q_value(transition.state, transition.action)
+            var critic_features = self._build_critic_features(
+                transition.state, transition.action
+            )
+            var current_q = self.get_q_value(
+                transition.state, transition.action
+            )
 
             # TD error
             var td_error = target - current_q
@@ -355,7 +445,9 @@ struct DDPGAgent(Copyable, Movable):
             # Update critic weights: w += α * δ * φ
             for j in range(len(critic_features)):
                 if j < len(self.critic_weights):
-                    self.critic_weights[j] += step_size * td_error * critic_features[j]
+                    self.critic_weights[j] += (
+                        step_size * td_error * critic_features[j]
+                    )
 
     fn _update_actor(mut self, batch: List[ContinuousTransition]):
         """Update actor using deterministic policy gradient.
@@ -376,7 +468,9 @@ struct DDPGAgent(Copyable, Movable):
             var transition = batch[i]
 
             # Compute current action from actor
-            var raw_output = self._compute_actor_output(transition.state, self.actor_weights)
+            var raw_output = self._compute_actor_output(
+                transition.state, self.actor_weights
+            )
             var action = tanh(raw_output) * self.action_scale
 
             # Compute ∇_a Q(s, a)
@@ -386,9 +480,17 @@ struct DDPGAgent(Copyable, Movable):
             var a_norm = action / self.action_scale
             var grad_a_q: Float64 = 0.0
             if self.num_state_features < len(self.critic_weights):
-                grad_a_q = self.critic_weights[self.num_state_features] / self.action_scale
+                grad_a_q = (
+                    self.critic_weights[self.num_state_features]
+                    / self.action_scale
+                )
             if self.num_state_features + 1 < len(self.critic_weights):
-                grad_a_q += 2.0 * self.critic_weights[self.num_state_features + 1] * a_norm / self.action_scale
+                grad_a_q += (
+                    2.0
+                    * self.critic_weights[self.num_state_features + 1]
+                    * a_norm
+                    / self.action_scale
+                )
 
             # Compute ∇_θ μ(s)
             # μ(s) = tanh(h) * scale, where h = w_actor · φ(s)
@@ -399,7 +501,9 @@ struct DDPGAgent(Copyable, Movable):
             # Update actor weights using chain rule: ∇_θ J = ∇_a Q * ∇_θ μ
             for j in range(len(transition.state)):
                 if j < len(self.actor_weights):
-                    var grad_theta = grad_a_q * grad_mu_scale * transition.state[j]
+                    var grad_theta = (
+                        grad_a_q * grad_mu_scale * transition.state[j]
+                    )
                     self.actor_weights[j] += step_size * grad_theta
 
     fn _soft_update_targets(mut self):
@@ -429,7 +533,9 @@ struct DDPGAgent(Copyable, Movable):
     # Training and Evaluation
     # ========================================================================
 
-    fn train[E: BoxContinuousActionEnv](
+    fn train[
+        E: BoxContinuousActionEnv
+    ](
         mut self,
         mut env: E,
         features: PolynomialFeatures,
@@ -501,7 +607,7 @@ struct DDPGAgent(Copyable, Movable):
 
                 # Take action in environment
                 var result = env.step_continuous(action)
-                var next_obs_list = result[0]
+                var next_obs_list = result[0].copy()
                 var next_obs = _list_to_simd4(next_obs_list)
                 var reward = result[1]
                 var done = result[2]
@@ -509,13 +615,19 @@ struct DDPGAgent(Copyable, Movable):
                 # Extract next state features
                 var next_features = features.get_features_simd4(next_obs)
 
-                # Store transition in replay buffer
-                buffer.push(state_features, action, reward, next_features, done)
+                # Store transition in replay buffer with scaled reward
+                var scaled_reward = reward * self.reward_scale
+                buffer.push(state_features, action, scaled_reward, next_features, done)
 
                 # Update agent if we have enough samples
-                if buffer.len() >= min_buffer_size and episode >= warmup_episodes:
-                    var batch = buffer.sample(batch_size)
-                    self.update(batch)
+                if (
+                    buffer.len() >= min_buffer_size
+                    and episode >= warmup_episodes
+                ):
+                    # Multiple updates per step for faster learning
+                    for _ in range(self.updates_per_step):
+                        var batch = buffer.sample(batch_size)
+                        self.update(batch)
 
                 episode_reward += reward
                 steps += 1
@@ -528,6 +640,10 @@ struct DDPGAgent(Copyable, Movable):
             # Log episode metrics
             metrics.log_episode(episode, episode_reward, steps, self.noise_std)
 
+            # Decay exploration noise after warmup
+            if episode >= warmup_episodes:
+                self.decay_noise()
+
             # Print progress
             if verbose and (episode + 1) % print_every == 0:
                 # Compute recent average reward
@@ -535,7 +651,9 @@ struct DDPGAgent(Copyable, Movable):
                 var sum_reward: Float64 = 0.0
                 for j in range(start_idx, len(metrics.episodes)):
                     sum_reward += metrics.episodes[j].total_reward
-                var avg_reward = sum_reward / Float64(len(metrics.episodes) - start_idx)
+                var avg_reward = sum_reward / Float64(
+                    len(metrics.episodes) - start_idx
+                )
                 print(
                     "Episode",
                     episode + 1,
@@ -555,12 +673,16 @@ struct DDPGAgent(Copyable, Movable):
             var sum_reward: Float64 = 0.0
             for j in range(start_idx, len(metrics.episodes)):
                 sum_reward += metrics.episodes[j].total_reward
-            var final_avg = sum_reward / Float64(len(metrics.episodes) - start_idx)
+            var final_avg = sum_reward / Float64(
+                len(metrics.episodes) - start_idx
+            )
             print("Final avg reward:", String(final_avg)[:8])
 
         return metrics^
 
-    fn evaluate[E: BoxContinuousActionEnv](
+    fn evaluate[
+        E: BoxContinuousActionEnv
+    ](
         self,
         mut env: E,
         features: PolynomialFeatures,
@@ -592,7 +714,7 @@ struct DDPGAgent(Copyable, Movable):
                 var action = self.select_action(state_features)
 
                 var result = env.step_continuous(action)
-                var next_obs_list = result[0]
+                var next_obs_list = result[0].copy()
                 var next_obs = _list_to_simd4(next_obs_list)
                 var reward = result[1]
                 var done = result[2]
@@ -616,12 +738,14 @@ struct DDPGAgent(Copyable, Movable):
 fn _log(x: Float64) -> Float64:
     """Natural logarithm."""
     from math import log
+
     return log(x)
 
 
 fn _cos(x: Float64) -> Float64:
     """Cosine function."""
     from math import cos
+
     return cos(x)
 
 

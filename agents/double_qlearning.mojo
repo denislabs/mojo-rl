@@ -3,7 +3,9 @@ from .qlearning import QTable
 from core import TabularAgent, DiscreteEnv, TrainingMetrics
 
 
-struct DoubleQLearningAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable):
+struct DoubleQLearningAgent(
+    Copyable, ImplicitlyCopyable, Movable, TabularAgent
+):
     """Double Q-Learning agent.
 
     Uses two Q-tables to reduce overestimation bias.
@@ -63,9 +65,13 @@ struct DoubleQLearningAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable)
             return Int(random_si64(0, self.num_actions - 1))
         else:
             var best_action = 0
-            var best_value = self.q_table1.get(state_idx, 0) + self.q_table2.get(state_idx, 0)
+            var best_value = self.q_table1.get(
+                state_idx, 0
+            ) + self.q_table2.get(state_idx, 0)
             for i in range(1, self.num_actions):
-                var value = self.q_table1.get(state_idx, i) + self.q_table2.get(state_idx, i)
+                var value = self.q_table1.get(state_idx, i) + self.q_table2.get(
+                    state_idx, i
+                )
                 if value > best_value:
                     best_value = value
                     best_action = i
@@ -87,7 +93,9 @@ struct DoubleQLearningAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable)
                 target = reward
             else:
                 var best_action = self.q_table1.get_best_action(next_state_idx)
-                target = reward + self.discount_factor * self.q_table2.get(next_state_idx, best_action)
+                target = reward + self.discount_factor * self.q_table2.get(
+                    next_state_idx, best_action
+                )
             var new_q = current_q + self.learning_rate * (target - current_q)
             self.q_table1.set(state_idx, action, new_q)
         else:
@@ -97,7 +105,9 @@ struct DoubleQLearningAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable)
                 target = reward
             else:
                 var best_action = self.q_table2.get_best_action(next_state_idx)
-                target = reward + self.discount_factor * self.q_table1.get(next_state_idx, best_action)
+                target = reward + self.discount_factor * self.q_table1.get(
+                    next_state_idx, best_action
+                )
             var new_q = current_q + self.learning_rate * (target - current_q)
             self.q_table2.set(state_idx, action, new_q)
 
@@ -109,15 +119,21 @@ struct DoubleQLearningAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable)
 
     fn get_best_action(self, state_idx: Int) -> Int:
         var best_action = 0
-        var best_value = self.q_table1.get(state_idx, 0) + self.q_table2.get(state_idx, 0)
+        var best_value = self.q_table1.get(state_idx, 0) + self.q_table2.get(
+            state_idx, 0
+        )
         for i in range(1, self.num_actions):
-            var value = self.q_table1.get(state_idx, i) + self.q_table2.get(state_idx, i)
+            var value = self.q_table1.get(state_idx, i) + self.q_table2.get(
+                state_idx, i
+            )
             if value > best_value:
                 best_value = value
                 best_action = i
         return best_action
 
-    fn train[E: DiscreteEnv](
+    fn train[
+        E: DiscreteEnv
+    ](
         mut self,
         mut env: E,
         num_episodes: Int,
@@ -177,7 +193,9 @@ struct DoubleQLearningAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable)
 
         return metrics^
 
-    fn evaluate[E: DiscreteEnv](
+    fn evaluate[
+        E: DiscreteEnv
+    ](
         self,
         mut env: E,
         num_episodes: Int = 10,

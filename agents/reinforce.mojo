@@ -48,7 +48,7 @@ from core.tile_coding import TileCoding
 from core import BoxDiscreteActionEnv, TrainingMetrics
 
 
-struct REINFORCEAgent(Copyable, Movable, ImplicitlyCopyable):
+struct REINFORCEAgent(Copyable, ImplicitlyCopyable, Movable):
     """REINFORCE agent with tile coding function approximation.
 
     Uses softmax policy over tile-coded features.
@@ -357,7 +357,9 @@ struct REINFORCEAgent(Copyable, Movable, ImplicitlyCopyable):
                 var baseline_error = g_t - baseline
                 for i in range(num_tiles_t):
                     var tile_idx = self.episode_tiles[t][i]
-                    self.baseline_weights[tile_idx] += baseline_step * baseline_error
+                    self.baseline_weights[tile_idx] += (
+                        baseline_step * baseline_error
+                    )
 
             # Compute action probabilities
             var probs = self._get_action_probs_idx(t)
@@ -409,7 +411,9 @@ struct REINFORCEAgent(Copyable, Movable, ImplicitlyCopyable):
                 entropy -= probs[a] * log(probs[a])
         return entropy
 
-    fn train[E: BoxDiscreteActionEnv](
+    fn train[
+        E: BoxDiscreteActionEnv
+    ](
         mut self,
         mut env: E,
         tile_coding: TileCoding,
@@ -440,16 +444,16 @@ struct REINFORCEAgent(Copyable, Movable, ImplicitlyCopyable):
 
         for episode in range(num_episodes):
             self.reset()  # Clear episode storage
-            var obs = env.reset_obs()
+            var obs = env.reset_obs_list()
             var total_reward: Float64 = 0.0
             var steps = 0
 
             for _ in range(max_steps_per_episode):
-                var tiles = tile_coding.get_tiles_simd4(obs)
+                var tiles = tile_coding.get_tiles(obs)
                 var action = self.select_action(tiles)
 
-                var result = env.step_raw(action)
-                var next_obs = result[0]
+                var result = env.step_obs(action)
+                var next_obs = result[0].copy()
                 var reward = result[1]
                 var done = result[2]
 
@@ -457,7 +461,7 @@ struct REINFORCEAgent(Copyable, Movable, ImplicitlyCopyable):
 
                 total_reward += reward
                 steps += 1
-                obs = next_obs
+                obs = next_obs^
 
                 if done:
                     break
@@ -471,7 +475,9 @@ struct REINFORCEAgent(Copyable, Movable, ImplicitlyCopyable):
 
         return metrics^
 
-    fn evaluate[E: BoxDiscreteActionEnv](
+    fn evaluate[
+        E: BoxDiscreteActionEnv
+    ](
         self,
         mut env: E,
         tile_coding: TileCoding,
@@ -494,23 +500,23 @@ struct REINFORCEAgent(Copyable, Movable, ImplicitlyCopyable):
         var total_reward: Float64 = 0.0
 
         for _ in range(num_episodes):
-            var obs = env.reset_obs()
+            var obs = env.reset_obs_list()
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps):
                 if render:
                     env.render()
 
-                var tiles = tile_coding.get_tiles_simd4(obs)
+                var tiles = tile_coding.get_tiles(obs)
                 var action = self.get_best_action(tiles)
 
-                var result = env.step_raw(action)
-                var next_obs = result[0]
+                var result = env.step_obs(action)
+                var next_obs = result[0].copy()
                 var reward = result[1]
                 var done = result[2]
 
                 episode_reward += reward
-                obs = next_obs
+                obs = next_obs^
 
                 if done:
                     break
@@ -520,7 +526,7 @@ struct REINFORCEAgent(Copyable, Movable, ImplicitlyCopyable):
         return total_reward / Float64(num_episodes)
 
 
-struct REINFORCEWithEntropyAgent(Copyable, Movable, ImplicitlyCopyable):
+struct REINFORCEWithEntropyAgent(Copyable, ImplicitlyCopyable, Movable):
     """REINFORCE with entropy regularization for better exploration.
 
     Adds entropy bonus to encourage exploration:
@@ -757,7 +763,9 @@ struct REINFORCEWithEntropyAgent(Copyable, Movable, ImplicitlyCopyable):
                 var baseline_error = g_t - baseline
                 for i in range(num_tiles_t):
                     var tile_idx = self.episode_tiles[t][i]
-                    self.baseline_weights[tile_idx] += baseline_step * baseline_error
+                    self.baseline_weights[tile_idx] += (
+                        baseline_step * baseline_error
+                    )
 
             var probs = self._get_action_probs_idx(t)
 
@@ -776,9 +784,16 @@ struct REINFORCEWithEntropyAgent(Copyable, Movable, ImplicitlyCopyable):
                 # Simplified: encourages uniform distribution
                 var entropy_grad: Float64 = 0.0
                 if probs[a] > 1e-10:
-                    entropy_grad = -probs[a] * (1.0 + log(probs[a])) * probs[a] * (1.0 - probs[a])
+                    entropy_grad = (
+                        -probs[a]
+                        * (1.0 + log(probs[a]))
+                        * probs[a]
+                        * (1.0 - probs[a])
+                    )
 
-                var total_grad = advantage * policy_grad + self.entropy_coef * entropy_grad
+                var total_grad = (
+                    advantage * policy_grad + self.entropy_coef * entropy_grad
+                )
 
                 for i in range(num_tiles_t):
                     var tile_idx = self.episode_tiles[t][i]
@@ -803,7 +818,9 @@ struct REINFORCEWithEntropyAgent(Copyable, Movable, ImplicitlyCopyable):
                 entropy -= probs[a] * log(probs[a])
         return entropy
 
-    fn train[E: BoxDiscreteActionEnv](
+    fn train[
+        E: BoxDiscreteActionEnv
+    ](
         mut self,
         mut env: E,
         tile_coding: TileCoding,
@@ -834,16 +851,16 @@ struct REINFORCEWithEntropyAgent(Copyable, Movable, ImplicitlyCopyable):
 
         for episode in range(num_episodes):
             self.reset()  # Clear episode storage
-            var obs = env.reset_obs()
+            var obs = env.reset_obs_list()
             var total_reward: Float64 = 0.0
             var steps = 0
 
             for _ in range(max_steps_per_episode):
-                var tiles = tile_coding.get_tiles_simd4(obs)
+                var tiles = tile_coding.get_tiles(obs)
                 var action = self.select_action(tiles)
 
-                var result = env.step_raw(action)
-                var next_obs = result[0]
+                var result = env.step_obs(action)
+                var next_obs = result[0].copy()
                 var reward = result[1]
                 var done = result[2]
 
@@ -851,7 +868,7 @@ struct REINFORCEWithEntropyAgent(Copyable, Movable, ImplicitlyCopyable):
 
                 total_reward += reward
                 steps += 1
-                obs = next_obs
+                obs = next_obs^
 
                 if done:
                     break
@@ -865,7 +882,9 @@ struct REINFORCEWithEntropyAgent(Copyable, Movable, ImplicitlyCopyable):
 
         return metrics^
 
-    fn evaluate[E: BoxDiscreteActionEnv](
+    fn evaluate[
+        E: BoxDiscreteActionEnv
+    ](
         self,
         mut env: E,
         tile_coding: TileCoding,
@@ -888,23 +907,23 @@ struct REINFORCEWithEntropyAgent(Copyable, Movable, ImplicitlyCopyable):
         var total_reward: Float64 = 0.0
 
         for _ in range(num_episodes):
-            var obs = env.reset_obs()
+            var obs = env.reset_obs_list()
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps):
                 if render:
                     env.render()
 
-                var tiles = tile_coding.get_tiles_simd4(obs)
+                var tiles = tile_coding.get_tiles(obs)
                 var action = self.get_best_action(tiles)
 
-                var result = env.step_raw(action)
-                var next_obs = result[0]
+                var result = env.step_obs(action)
+                var next_obs = result[0].copy()
                 var reward = result[1]
                 var done = result[2]
 
                 episode_reward += reward
-                obs = next_obs
+                obs = next_obs^
 
                 if done:
                     break
