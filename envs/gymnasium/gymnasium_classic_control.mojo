@@ -16,8 +16,8 @@ from core import (
     State,
     Action,
     DiscreteEnv,
-    ClassicControlEnv,
-    ContinuousControlEnv,
+    BoxDiscreteActionEnv,
+    BoxContinuousActionEnv,
     TileCoding,
     PolynomialFeatures,
 )
@@ -146,11 +146,11 @@ struct GymAcrobotAction(Action, Copyable, ImplicitlyCopyable, Movable):
 
 
 # ============================================================================
-# GymCartPoleEnv - implements ClassicControlEnv & DiscreteEnv
+# GymCartPoleEnv - implements BoxDiscreteActionEnv & DiscreteEnv
 # ============================================================================
 
 
-struct GymCartPoleEnv(ClassicControlEnv & DiscreteEnv):
+struct GymCartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv):
     """CartPole-v1 environment via Gymnasium Python bindings.
 
     Observation space: Box(4,) - [cart_pos, cart_vel, pole_angle, pole_angular_vel]
@@ -161,7 +161,7 @@ struct GymCartPoleEnv(ClassicControlEnv & DiscreteEnv):
     - Cart position > ±2.4
     - Episode length > 500 steps
 
-    Implements DiscreteEnv and ClassicControlEnv traits for generic training.
+    Implements DiscreteEnv and BoxDiscreteActionEnv traits for generic training.
     """
 
     # Type aliases for trait conformance
@@ -272,26 +272,46 @@ struct GymCartPoleEnv(ClassicControlEnv & DiscreteEnv):
         return 2
 
     # ========================================================================
-    # ClassicControlEnv (ContinuousStateEnv) trait methods
+    # BoxDiscreteActionEnv (ContinuousStateEnv) trait methods
     # ========================================================================
 
-    fn get_obs(self) -> SIMD[DType.float64, 4]:
-        """Return current continuous observation."""
-        return self.current_obs
+    fn get_obs_list(self) -> List[Float64]:
+        """Return current observation as List for trait conformance."""
+        var obs = List[Float64](capacity=4)
+        for i in range(4):
+            obs.append(self.current_obs[i])
+        return obs^
 
-    fn reset_obs(mut self) -> SIMD[DType.float64, 4]:
-        """Reset environment and return continuous observation."""
+    fn reset_obs_list(mut self) -> List[Float64]:
+        """Reset environment and return continuous observation as List."""
         _ = self.reset()
-        return self.current_obs
+        return self.get_obs_list()
 
     fn obs_dim(self) -> Int:
         """Return observation dimension (4)."""
         return 4
 
+    fn step_obs(
+        mut self, action: Int
+    ) -> Tuple[List[Float64], Float64, Bool]:
+        """Take action and return (continuous_obs, reward, done)."""
+        var result = self.step(GymCartPoleAction(direction=action))
+        return (self.get_obs_list(), result[1], result[2])
+
+    # SIMD convenience methods (not required by trait)
+    fn get_obs(self) -> SIMD[DType.float64, 4]:
+        """Return current continuous observation as SIMD."""
+        return self.current_obs
+
+    fn reset_obs(mut self) -> SIMD[DType.float64, 4]:
+        """Reset environment and return SIMD observation."""
+        _ = self.reset()
+        return self.current_obs
+
     fn step_raw(
         mut self, action: Int
     ) -> Tuple[SIMD[DType.float64, 4], Float64, Bool]:
-        """Take action and return (continuous_obs, reward, done)."""
+        """Take action and return (SIMD_obs, reward, done)."""
         var result = self.step(GymCartPoleAction(direction=action))
         return (self.current_obs, result[1], result[2])
 
@@ -413,11 +433,11 @@ struct GymCartPoleEnv(ClassicControlEnv & DiscreteEnv):
 
 
 # ============================================================================
-# GymMountainCarEnv - implements ClassicControlEnv & DiscreteEnv
+# GymMountainCarEnv - implements BoxDiscreteActionEnv & DiscreteEnv
 # ============================================================================
 
 
-struct GymMountainCarEnv(ClassicControlEnv & DiscreteEnv):
+struct GymMountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
     """MountainCar-v0: Drive an underpowered car up a steep mountain.
 
     Observation: [position, velocity] - Box(2,)
@@ -434,7 +454,7 @@ struct GymMountainCarEnv(ClassicControlEnv & DiscreteEnv):
 
     Episode ends: Position >= 0.5 or 200 steps
 
-    Implements DiscreteEnv and ClassicControlEnv traits for generic training.
+    Implements DiscreteEnv and BoxDiscreteActionEnv traits for generic training.
     """
 
     # Type aliases for trait conformance
@@ -543,7 +563,7 @@ struct GymMountainCarEnv(ClassicControlEnv & DiscreteEnv):
         return 3
 
     # ========================================================================
-    # ClassicControlEnv (ContinuousStateEnv) trait methods
+    # BoxDiscreteActionEnv (ContinuousStateEnv) trait methods
     # ========================================================================
 
     fn get_obs(self) -> SIMD[DType.float64, 4]:
@@ -661,11 +681,11 @@ struct GymMountainCarEnv(ClassicControlEnv & DiscreteEnv):
 
 
 # ============================================================================
-# GymAcrobotEnv - implements ClassicControlEnv & DiscreteEnv
+# GymAcrobotEnv - implements BoxDiscreteActionEnv & DiscreteEnv
 # ============================================================================
 
 
-struct GymAcrobotEnv(ClassicControlEnv & DiscreteEnv):
+struct GymAcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
     """Acrobot-v1: Swing up a two-link robot arm.
 
     Observation: [cos(θ1), sin(θ1), cos(θ2), sin(θ2), θ1_dot, θ2_dot] - Box(6,)
@@ -680,7 +700,7 @@ struct GymAcrobotEnv(ClassicControlEnv & DiscreteEnv):
 
     Episode ends: Tip above threshold or 500 steps
 
-    Implements DiscreteEnv and ClassicControlEnv traits for generic training.
+    Implements DiscreteEnv and BoxDiscreteActionEnv traits for generic training.
     """
 
     # Type aliases for trait conformance
@@ -800,7 +820,7 @@ struct GymAcrobotEnv(ClassicControlEnv & DiscreteEnv):
         return 3
 
     # ========================================================================
-    # ClassicControlEnv (ContinuousStateEnv) trait methods
+    # BoxDiscreteActionEnv (ContinuousStateEnv) trait methods
     # ========================================================================
 
     fn get_obs(self) -> SIMD[DType.float64, 4]:
@@ -884,7 +904,7 @@ struct GymAcrobotEnv(ClassicControlEnv & DiscreteEnv):
 
 
 # ============================================================================
-# GymPendulumEnv - implements ContinuousControlEnv (continuous actions)
+# GymPendulumEnv - implements BoxContinuousActionEnv (continuous actions)
 # ============================================================================
 
 
@@ -917,7 +937,7 @@ struct GymPendulumAction(Action, Copyable, ImplicitlyCopyable, Movable):
         self.torque = existing.torque
 
 
-struct GymPendulumEnv(ContinuousControlEnv):
+struct GymPendulumEnv(BoxContinuousActionEnv):
     """Pendulum-v1: Swing up and balance an inverted pendulum.
 
     Observation: [cos(theta), sin(theta), theta_dot] - Box(3,)
@@ -929,7 +949,7 @@ struct GymPendulumEnv(ContinuousControlEnv):
 
     Episode ends: After 200 steps (no early termination)
 
-    Implements ContinuousControlEnv trait for continuous action algorithms.
+    Implements BoxContinuousActionEnv trait for continuous action algorithms.
     """
 
     # Type aliases for trait conformance

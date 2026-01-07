@@ -13,8 +13,8 @@ from python import Python, PythonObject
 from core import (
     State,
     Action,
-    ClassicControlEnv,
-    ContinuousControlEnv,
+    BoxDiscreteActionEnv,
+    BoxContinuousActionEnv,
     DiscreteEnv,
 )
 
@@ -140,11 +140,11 @@ struct GymCarRacingAction(Action, Copyable, ImplicitlyCopyable, Movable):
 
 
 # ============================================================================
-# GymLunarLanderEnv - implements ClassicControlEnv & DiscreteEnv
+# GymLunarLanderEnv - implements BoxDiscreteActionEnv & DiscreteEnv
 # ============================================================================
 
 
-struct GymLunarLanderEnv(ClassicControlEnv & DiscreteEnv):
+struct GymLunarLanderEnv(BoxDiscreteActionEnv & DiscreteEnv):
     """LunarLander-v3: Land a spacecraft on the moon.
 
     Observation: Box(8,)
@@ -166,7 +166,7 @@ struct GymLunarLanderEnv(ClassicControlEnv & DiscreteEnv):
 
     Episode ends: Landed, crashed, or 1000 steps
 
-    Implements ClassicControlEnv & DiscreteEnv traits for generic training.
+    Implements BoxDiscreteActionEnv & DiscreteEnv traits for generic training.
     """
 
     # Type aliases for trait conformance
@@ -286,26 +286,46 @@ struct GymLunarLanderEnv(ClassicControlEnv & DiscreteEnv):
         return 4
 
     # ========================================================================
-    # ClassicControlEnv (ContinuousStateEnv) trait methods
+    # BoxDiscreteActionEnv (ContinuousStateEnv) trait methods
     # ========================================================================
 
-    fn get_obs(self) -> SIMD[DType.float64, 4]:
-        """Return first 4 dims of observation for trait conformance."""
-        return self.current_obs_4d
+    fn get_obs_list(self) -> List[Float64]:
+        """Return current observation as List for trait conformance."""
+        var obs = List[Float64](capacity=8)
+        for i in range(8):
+            obs.append(self.current_obs[i])
+        return obs^
 
-    fn reset_obs(mut self) -> SIMD[DType.float64, 4]:
-        """Reset environment and return continuous observation."""
+    fn reset_obs_list(mut self) -> List[Float64]:
+        """Reset environment and return continuous observation as List."""
         _ = self.reset()
-        return self.current_obs_4d
+        return self.get_obs_list()
 
     fn obs_dim(self) -> Int:
         """Return observation dimension (8)."""
         return 8
 
+    fn step_obs(
+        mut self, action: Int
+    ) -> Tuple[List[Float64], Float64, Bool]:
+        """Take action and return (continuous_obs, reward, done)."""
+        var result = self.step(GymLunarLanderAction(action=action))
+        return (self.get_obs_list(), result[1], result[2])
+
+    # SIMD convenience methods (not required by trait)
+    fn get_obs(self) -> SIMD[DType.float64, 4]:
+        """Return first 4 dims of observation as SIMD."""
+        return self.current_obs_4d
+
+    fn reset_obs(mut self) -> SIMD[DType.float64, 4]:
+        """Reset environment and return SIMD observation."""
+        _ = self.reset()
+        return self.current_obs_4d
+
     fn step_raw(
         mut self, action: Int
     ) -> Tuple[SIMD[DType.float64, 4], Float64, Bool]:
-        """Take action and return (continuous_obs, reward, done)."""
+        """Take action and return (SIMD_obs, reward, done)."""
         var result = self.step(GymLunarLanderAction(action=action))
         return (self.current_obs_4d, result[1], result[2])
 
@@ -371,11 +391,11 @@ struct GymLunarLanderEnv(ClassicControlEnv & DiscreteEnv):
 
 
 # ============================================================================
-# GymBipedalWalkerEnv - implements ContinuousControlEnv
+# GymBipedalWalkerEnv - implements BoxContinuousActionEnv
 # ============================================================================
 
 
-struct GymBipedalWalkerEnv(ContinuousControlEnv):
+struct GymBipedalWalkerEnv(BoxContinuousActionEnv):
     """BipedalWalker-v3: Walk with a 2D biped robot.
 
     Observation: Box(24,)
@@ -392,7 +412,7 @@ struct GymBipedalWalkerEnv(ContinuousControlEnv):
 
     Episode ends: Body touches ground or reaches end of terrain
 
-    Implements ContinuousControlEnv trait for continuous action algorithms.
+    Implements BoxContinuousActionEnv trait for continuous action algorithms.
     """
 
     # Type aliases for trait conformance
@@ -479,14 +499,17 @@ struct GymBipedalWalkerEnv(ContinuousControlEnv):
     # ContinuousStateEnv trait methods
     # ========================================================================
 
-    fn get_obs(self) -> SIMD[DType.float64, 4]:
-        """Return first 4 dims of observation for trait conformance."""
-        return self.current_obs_4d
+    fn get_obs_list(self) -> List[Float64]:
+        """Return current observation as List for trait conformance."""
+        var obs = List[Float64](capacity=24)
+        for i in range(24):
+            obs.append(self.current_obs[i])
+        return obs^
 
-    fn reset_obs(mut self) -> SIMD[DType.float64, 4]:
-        """Reset environment and return continuous observation."""
+    fn reset_obs_list(mut self) -> List[Float64]:
+        """Reset environment and return continuous observation as List."""
         _ = self.reset()
-        return self.current_obs_4d
+        return self.get_obs_list()
 
     fn obs_dim(self) -> Int:
         """Return observation dimension (24)."""
@@ -509,13 +532,41 @@ struct GymBipedalWalkerEnv(ContinuousControlEnv):
         return 1.0
 
     # ========================================================================
-    # Additional methods - continuous control
+    # BoxContinuousActionEnv trait method
     # ========================================================================
 
     fn step_continuous(
+        mut self, action: Float64
+    ) -> Tuple[List[Float64], Float64, Bool]:
+        """Take 1D continuous action (trait method).
+
+        Note: BipedalWalker has 4D actions. This trait method only controls
+        the first joint. Use step_continuous_4d for full control.
+        """
+        var result = self.step_continuous_4d(action, 0.0, 0.0, 0.0)
+        return (self.get_obs_list(), result[1], result[2])
+
+    # ========================================================================
+    # SIMD convenience methods (not required by trait)
+    # ========================================================================
+
+    fn get_obs(self) -> SIMD[DType.float64, 4]:
+        """Return first 4 dims of observation as SIMD."""
+        return self.current_obs_4d
+
+    fn reset_obs(mut self) -> SIMD[DType.float64, 4]:
+        """Reset environment and return SIMD observation."""
+        _ = self.reset()
+        return self.current_obs_4d
+
+    # ========================================================================
+    # Additional methods - full 4D continuous control
+    # ========================================================================
+
+    fn step_continuous_4d(
         mut self, hip1: Float64, knee1: Float64, hip2: Float64, knee2: Float64
     ) -> Tuple[SIMD[DType.float64, 4], Float64, Bool]:
-        """Take continuous action [hip1, knee1, hip2, knee2]."""
+        """Take 4D continuous action [hip1, knee1, hip2, knee2]."""
         var reward: Float64 = 0.0
         try:
             var builtins = Python.import_module("builtins")
@@ -571,11 +622,11 @@ struct GymBipedalWalkerEnv(ContinuousControlEnv):
 
 
 # ============================================================================
-# GymCarRacingEnv - implements ContinuousControlEnv
+# GymCarRacingEnv - implements BoxContinuousActionEnv
 # ============================================================================
 
 
-struct GymCarRacingEnv(ContinuousControlEnv):
+struct GymCarRacingEnv(BoxContinuousActionEnv):
     """CarRacing-v3: Drive a car around a randomly generated track.
 
     Observation: Box(96, 96, 3) - RGB image from top-down view
@@ -592,7 +643,7 @@ struct GymCarRacingEnv(ContinuousControlEnv):
 
     Note: This env returns image observations, needs CNN for deep RL.
 
-    Implements ContinuousControlEnv trait (uses continuous actions by default).
+    Implements BoxContinuousActionEnv trait (uses continuous actions by default).
     """
 
     # Type aliases for trait conformance
@@ -682,14 +733,21 @@ struct GymCarRacingEnv(ContinuousControlEnv):
     # ContinuousStateEnv trait methods
     # ========================================================================
 
-    fn get_obs(self) -> SIMD[DType.float64, 4]:
-        """Return placeholder observation (CarRacing uses images)."""
-        return self.current_obs_4d
+    fn get_obs_list(self) -> List[Float64]:
+        """Return placeholder observation (CarRacing uses images).
 
-    fn reset_obs(mut self) -> SIMD[DType.float64, 4]:
+        Note: CarRacing uses 96x96x3 RGB images. This returns a 4D placeholder.
+        Use get_image_obs() for actual image observations.
+        """
+        var obs = List[Float64](capacity=4)
+        for i in range(4):
+            obs.append(self.current_obs_4d[i])
+        return obs^
+
+    fn reset_obs_list(mut self) -> List[Float64]:
         """Reset environment and return placeholder observation."""
         _ = self.reset()
-        return self.current_obs_4d
+        return self.get_obs_list()
 
     fn obs_dim(self) -> Int:
         """Return observation dimension (96*96*3 = 27648 for images)."""
@@ -712,13 +770,41 @@ struct GymCarRacingEnv(ContinuousControlEnv):
         return 1.0
 
     # ========================================================================
-    # Additional methods - continuous control
+    # BoxContinuousActionEnv trait method
     # ========================================================================
 
     fn step_continuous(
+        mut self, action: Float64
+    ) -> Tuple[List[Float64], Float64, Bool]:
+        """Take 1D continuous action (trait method).
+
+        Note: CarRacing has 3D actions [steering, gas, brake].
+        This trait method only controls steering. Use step_continuous_3d for full control.
+        """
+        var result = self.step_continuous_3d(action, 0.0, 0.0)
+        return (self.get_obs_list(), result[1], result[2])
+
+    # ========================================================================
+    # SIMD convenience methods (not required by trait)
+    # ========================================================================
+
+    fn get_obs(self) -> SIMD[DType.float64, 4]:
+        """Return placeholder observation as SIMD."""
+        return self.current_obs_4d
+
+    fn reset_obs(mut self) -> SIMD[DType.float64, 4]:
+        """Reset environment and return SIMD observation."""
+        _ = self.reset()
+        return self.current_obs_4d
+
+    # ========================================================================
+    # Additional methods - full 3D continuous control
+    # ========================================================================
+
+    fn step_continuous_3d(
         mut self, steering: Float64, gas: Float64, brake: Float64
     ) -> Tuple[PythonObject, Float64, Bool]:
-        """Take continuous action [steering, gas, brake]."""
+        """Take 3D continuous action [steering, gas, brake]."""
         var reward: Float64 = 0.0
         var obs: PythonObject = PythonObject()
         try:

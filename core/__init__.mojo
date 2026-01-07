@@ -8,8 +8,8 @@ from .env_traits import (
     ContinuousActionEnv,
     DiscreteEnv,
     TabularEnv,
-    ClassicControlEnv,
-    ContinuousControlEnv,
+    BoxDiscreteActionEnv,
+    BoxContinuousActionEnv,
 )
 from .space import Space, DiscreteSpace, BoxSpace
 from .agent import Agent

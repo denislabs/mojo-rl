@@ -40,7 +40,7 @@ References:
 
 from random import random_float64, random_si64
 from core.linear_fa import LinearWeights
-from core import ClassicControlEnv, TrainingMetrics, FeatureExtractor
+from core import BoxDiscreteActionEnv, TrainingMetrics, FeatureExtractor
 
 
 struct LinearQLearningAgent:
@@ -190,7 +190,7 @@ struct LinearQLearningAgent:
         """Reset for new episode (no-op for Q-learning)."""
         pass
 
-    fn train[E: ClassicControlEnv, F: FeatureExtractor](
+    fn train[E: BoxDiscreteActionEnv, F: FeatureExtractor](
         mut self,
         mut env: E,
         features: F,
@@ -203,7 +203,7 @@ struct LinearQLearningAgent:
         """Train the linear Q-learning agent on a continuous-state environment.
 
         Args:
-            env: Environment implementing ClassicControlEnv trait.
+            env: Environment implementing BoxDiscreteActionEnv trait.
             features: Feature extractor implementing FeatureExtractor trait.
             num_episodes: Number of episodes to train.
             max_steps_per_episode: Maximum steps per episode.
@@ -249,7 +249,7 @@ struct LinearQLearningAgent:
 
         return metrics^
 
-    fn evaluate[E: ClassicControlEnv, F: FeatureExtractor](
+    fn evaluate[E: BoxDiscreteActionEnv, F: FeatureExtractor](
         self,
         mut env: E,
         features: F,
@@ -259,7 +259,7 @@ struct LinearQLearningAgent:
         """Evaluate the linear Q-learning agent using greedy policy.
 
         Args:
-            env: Environment implementing ClassicControlEnv trait.
+            env: Environment implementing BoxDiscreteActionEnv trait.
             features: Feature extractor implementing FeatureExtractor trait.
             num_episodes: Number of evaluation episodes.
             max_steps_per_episode: Maximum steps per episode.
@@ -387,7 +387,7 @@ struct LinearSARSAAgent:
         """Reset for new episode."""
         pass
 
-    fn train[E: ClassicControlEnv, F: FeatureExtractor](
+    fn train[E: BoxDiscreteActionEnv, F: FeatureExtractor](
         mut self,
         mut env: E,
         features: F,
@@ -400,7 +400,7 @@ struct LinearSARSAAgent:
         """Train the linear SARSA agent on a continuous-state environment.
 
         Args:
-            env: Environment implementing ClassicControlEnv trait.
+            env: Environment implementing BoxDiscreteActionEnv trait.
             features: Feature extractor implementing FeatureExtractor trait.
             num_episodes: Number of episodes to train.
             max_steps_per_episode: Maximum steps per episode.
@@ -449,7 +449,7 @@ struct LinearSARSAAgent:
 
         return metrics^
 
-    fn evaluate[E: ClassicControlEnv, F: FeatureExtractor](
+    fn evaluate[E: BoxDiscreteActionEnv, F: FeatureExtractor](
         self,
         mut env: E,
         features: F,
@@ -459,7 +459,7 @@ struct LinearSARSAAgent:
         """Evaluate the linear SARSA agent using greedy policy.
 
         Args:
-            env: Environment implementing ClassicControlEnv trait.
+            env: Environment implementing BoxDiscreteActionEnv trait.
             features: Feature extractor implementing FeatureExtractor trait.
             num_episodes: Number of evaluation episodes.
             max_steps_per_episode: Maximum steps per episode.
@@ -630,7 +630,7 @@ struct LinearSARSALambdaAgent:
             for i in range(self.num_features):
                 self.traces[a][i] = 0.0
 
-    fn train[E: ClassicControlEnv, F: FeatureExtractor](
+    fn train[E: BoxDiscreteActionEnv, F: FeatureExtractor](
         mut self,
         mut env: E,
         features: F,
@@ -643,7 +643,7 @@ struct LinearSARSALambdaAgent:
         """Train the linear SARSA(λ) agent on a continuous-state environment.
 
         Args:
-            env: Environment implementing ClassicControlEnv trait.
+            env: Environment implementing BoxDiscreteActionEnv trait.
             features: Feature extractor implementing FeatureExtractor trait.
             num_episodes: Number of episodes to train.
             max_steps_per_episode: Maximum steps per episode.
@@ -693,7 +693,7 @@ struct LinearSARSALambdaAgent:
 
         return metrics^
 
-    fn evaluate[E: ClassicControlEnv, F: FeatureExtractor](
+    fn evaluate[E: BoxDiscreteActionEnv, F: FeatureExtractor](
         self,
         mut env: E,
         features: F,
@@ -703,7 +703,7 @@ struct LinearSARSALambdaAgent:
         """Evaluate the linear SARSA(λ) agent using greedy policy.
 
         Args:
-            env: Environment implementing ClassicControlEnv trait.
+            env: Environment implementing BoxDiscreteActionEnv trait.
             features: Feature extractor implementing FeatureExtractor trait.
             num_episodes: Number of evaluation episodes.
             max_steps_per_episode: Maximum steps per episode.

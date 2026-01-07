@@ -14,7 +14,7 @@ Requires SDL2 and SDL2_ttf: brew install sdl2 sdl2_ttf
 
 from math import cos, sin
 from random import random_float64
-from core import State, Action, DiscreteEnv, TileCoding, ClassicControlEnv
+from core import State, Action, DiscreteEnv, TileCoding, BoxDiscreteActionEnv
 from core.sdl2 import SDL_Color, SDL_Point
 from .renderer_base import RendererBase
 
@@ -69,19 +69,18 @@ struct MountainCarAction(Action, Copyable, ImplicitlyCopyable, Movable):
         return Self(direction=2)
 
 
-struct MountainCarEnv(ClassicControlEnv & DiscreteEnv):
+struct MountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
     """Native Mojo MountainCar environment with integrated SDL2 rendering.
 
-    State: [position, velocity]
-    Actions: 0 (push left), 1 (no push), 2 (push right)
+    State: [position, velocity] (2D).
+    Actions: 0 (push left), 1 (no push), 2 (push right).
 
     Episode terminates when:
-    - Position >= 0.5 (goal reached)
-    - Episode length >= 200 steps (timeout)
+    - Position >= 0.5 (goal reached).
+    - Episode length >= 200 steps (timeout).
 
-    Implements DiscreteEnv trait for use with generic training functions.
-    Note: Does not implement ClassicControlEnv since that trait expects 4D
-    observations, while MountainCar has 2D observations.
+    Implements DiscreteEnv for tabular methods and BoxDiscreteActionEnv for
+    function approximation with continuous observations.
     """
 
     # Type aliases for trait conformance
@@ -292,8 +291,40 @@ struct MountainCarEnv(ClassicControlEnv & DiscreteEnv):
         return b0 * self.num_bins + b1
 
     fn get_obs(self) -> SIMD[DType.float64, 4]:
-        """Return current continuous observation (for rendering/debugging)."""
+        """Return current continuous observation as SIMD (optimized, padded to 4D)."""
         return self._get_obs()
+
+    # ========================================================================
+    # ContinuousStateEnv / BoxDiscreteActionEnv trait methods
+    # ========================================================================
+
+    fn get_obs_list(self) -> List[Float64]:
+        """Return current continuous observation as a flexible list (trait method).
+
+        Returns true 2D observation without padding.
+        """
+        var obs = List[Float64](capacity=2)
+        obs.append(self.position)
+        obs.append(self.velocity)
+        return obs^
+
+    fn reset_obs_list(mut self) -> List[Float64]:
+        """Reset environment and return initial observation as list (trait method)."""
+        _ = self.reset()
+        return self.get_obs_list()
+
+    fn step_obs(mut self, action: Int) -> Tuple[List[Float64], Float64, Bool]:
+        """Take action and return (obs_list, reward, done) - trait method.
+
+        This is the BoxDiscreteActionEnv trait method using List[Float64].
+        For performance-critical code, use step_raw() which returns SIMD.
+        """
+        var result = self.step(MountainCarAction(direction=action))
+        return (self.get_obs_list(), result[1], result[2])
+
+    # ========================================================================
+    # DiscreteEnv trait methods
+    # ========================================================================
 
     fn get_state(self) -> MountainCarState:
         """Return current discretized state."""

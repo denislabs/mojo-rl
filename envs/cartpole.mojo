@@ -19,7 +19,7 @@ from core import (
     Action,
     DiscreteEnv,
     TileCoding,
-    ClassicControlEnv,
+    BoxDiscreteActionEnv,
     PolynomialFeatures,
 )
 from core.sdl2 import SDL_Color, SDL_Point
@@ -72,18 +72,19 @@ struct CartPoleAction(Action, Copyable, ImplicitlyCopyable, Movable):
         return Self(direction=1)
 
 
-struct CartPoleEnv(ClassicControlEnv & DiscreteEnv):
+struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv):
     """Native Mojo CartPole environment with integrated SDL2 rendering.
 
-    State: [cart_position, cart_velocity, pole_angle, pole_angular_velocity]
-    Actions: 0 (push left), 1 (push right)
+    State: [cart_position, cart_velocity, pole_angle, pole_angular_velocity] (4D).
+    Actions: 0 (push left), 1 (push right).
 
     Episode terminates when:
-    - Pole angle > ±12° (±0.2095 rad)
-    - Cart position > ±2.4
-    - Episode length > 500 steps
+    - Pole angle > ±12° (±0.2095 rad).
+    - Cart position > ±2.4.
+    - Episode length > 500 steps.
 
-    Implements DiscreteEnv trait for use with generic training functions.
+    Implements DiscreteEnv for tabular methods and BoxDiscreteActionEnv for
+    function approximation with continuous observations.
     """
 
     # Type aliases for trait conformance
@@ -344,11 +345,38 @@ struct CartPoleEnv(ClassicControlEnv & DiscreteEnv):
 
     @always_inline
     fn get_obs(self) -> SIMD[DType.float64, 4]:
-        """Return current continuous observation (for rendering/debugging)."""
+        """Return current continuous observation as SIMD (optimized)."""
         return self._get_obs()
 
     # ========================================================================
-    # Raw observation API (for function approximation methods)
+    # ContinuousStateEnv / BoxDiscreteActionEnv trait methods
+    # ========================================================================
+
+    fn get_obs_list(self) -> List[Float64]:
+        """Return current continuous observation as a flexible list (trait method)."""
+        var obs = List[Float64](capacity=4)
+        obs.append(self.x)
+        obs.append(self.x_dot)
+        obs.append(self.theta)
+        obs.append(self.theta_dot)
+        return obs^
+
+    fn reset_obs_list(mut self) -> List[Float64]:
+        """Reset environment and return initial observation as list (trait method)."""
+        _ = self.reset()
+        return self.get_obs_list()
+
+    fn step_obs(mut self, action: Int) -> Tuple[List[Float64], Float64, Bool]:
+        """Take action and return (obs_list, reward, done) - trait method.
+
+        This is the BoxDiscreteActionEnv trait method using List[Float64].
+        For performance-critical code, use step_raw() which returns SIMD.
+        """
+        var result = self.step_raw(action)
+        return (self.get_obs_list(), result[1], result[2])
+
+    # ========================================================================
+    # SIMD-optimized observation API (for performance)
     # ========================================================================
 
     fn reset_obs(mut self) -> SIMD[DType.float64, 4]:

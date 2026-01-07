@@ -47,7 +47,7 @@ Example usage:
 from math import exp, log
 from random import random_float64
 from core.tile_coding import TileCoding
-from core import ClassicControlEnv, TrainingMetrics
+from core import BoxDiscreteActionEnv, TrainingMetrics
 
 
 struct ActorCriticAgent(Copyable, Movable, ImplicitlyCopyable):
@@ -315,7 +315,7 @@ struct ActorCriticAgent(Copyable, Movable, ImplicitlyCopyable):
                 entropy -= probs[a] * log(probs[a])
         return entropy
 
-    fn train[E: ClassicControlEnv](
+    fn train[E: BoxDiscreteActionEnv](
         mut self,
         mut env: E,
         tile_coding: TileCoding,
@@ -345,7 +345,8 @@ struct ActorCriticAgent(Copyable, Movable, ImplicitlyCopyable):
         )
 
         for episode in range(num_episodes):
-            var obs = env.reset_obs()
+            var obs_list = env.reset_obs_list()
+            var obs = _list_to_simd4(obs_list)
             var total_reward: Float64 = 0.0
             var steps = 0
 
@@ -353,8 +354,9 @@ struct ActorCriticAgent(Copyable, Movable, ImplicitlyCopyable):
                 var tiles = tile_coding.get_tiles_simd4(obs)
                 var action = self.select_action(tiles)
 
-                var result = env.step_raw(action)
-                var next_obs = result[0]
+                var result = env.step_obs(action)
+                var next_obs_list = result[0]
+                var next_obs = _list_to_simd4(next_obs_list)
                 var reward = result[1]
                 var done = result[2]
 
@@ -375,7 +377,7 @@ struct ActorCriticAgent(Copyable, Movable, ImplicitlyCopyable):
 
         return metrics^
 
-    fn evaluate[E: ClassicControlEnv](
+    fn evaluate[E: BoxDiscreteActionEnv](
         self,
         mut env: E,
         tile_coding: TileCoding,
@@ -398,7 +400,8 @@ struct ActorCriticAgent(Copyable, Movable, ImplicitlyCopyable):
         var total_reward: Float64 = 0.0
 
         for _ in range(num_episodes):
-            var obs = env.reset_obs()
+            var obs_list = env.reset_obs_list()
+            var obs = _list_to_simd4(obs_list)
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps):
@@ -408,8 +411,9 @@ struct ActorCriticAgent(Copyable, Movable, ImplicitlyCopyable):
                 var tiles = tile_coding.get_tiles_simd4(obs)
                 var action = self.get_best_action(tiles)
 
-                var result = env.step_raw(action)
-                var next_obs = result[0]
+                var result = env.step_obs(action)
+                var next_obs_list = result[0]
+                var next_obs = _list_to_simd4(next_obs_list)
                 var reward = result[1]
                 var done = result[2]
 
@@ -707,7 +711,7 @@ struct ActorCriticLambdaAgent(Copyable, Movable, ImplicitlyCopyable):
                 entropy -= probs[a] * log(probs[a])
         return entropy
 
-    fn train[E: ClassicControlEnv](
+    fn train[E: BoxDiscreteActionEnv](
         mut self,
         mut env: E,
         tile_coding: TileCoding,
@@ -738,7 +742,8 @@ struct ActorCriticLambdaAgent(Copyable, Movable, ImplicitlyCopyable):
 
         for episode in range(num_episodes):
             self.reset()  # Reset eligibility traces
-            var obs = env.reset_obs()
+            var obs_list = env.reset_obs_list()
+            var obs = _list_to_simd4(obs_list)
             var total_reward: Float64 = 0.0
             var steps = 0
 
@@ -746,8 +751,9 @@ struct ActorCriticLambdaAgent(Copyable, Movable, ImplicitlyCopyable):
                 var tiles = tile_coding.get_tiles_simd4(obs)
                 var action = self.select_action(tiles)
 
-                var result = env.step_raw(action)
-                var next_obs = result[0]
+                var result = env.step_obs(action)
+                var next_obs_list = result[0]
+                var next_obs = _list_to_simd4(next_obs_list)
                 var reward = result[1]
                 var done = result[2]
 
@@ -768,7 +774,7 @@ struct ActorCriticLambdaAgent(Copyable, Movable, ImplicitlyCopyable):
 
         return metrics^
 
-    fn evaluate[E: ClassicControlEnv](
+    fn evaluate[E: BoxDiscreteActionEnv](
         self,
         mut env: E,
         tile_coding: TileCoding,
@@ -791,7 +797,8 @@ struct ActorCriticLambdaAgent(Copyable, Movable, ImplicitlyCopyable):
         var total_reward: Float64 = 0.0
 
         for _ in range(num_episodes):
-            var obs = env.reset_obs()
+            var obs_list = env.reset_obs_list()
+            var obs = _list_to_simd4(obs_list)
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps):
@@ -801,8 +808,9 @@ struct ActorCriticLambdaAgent(Copyable, Movable, ImplicitlyCopyable):
                 var tiles = tile_coding.get_tiles_simd4(obs)
                 var action = self.get_best_action(tiles)
 
-                var result = env.step_raw(action)
-                var next_obs = result[0]
+                var result = env.step_obs(action)
+                var next_obs_list = result[0]
+                var next_obs = _list_to_simd4(next_obs_list)
                 var reward = result[1]
                 var done = result[2]
 
@@ -1131,7 +1139,7 @@ struct A2CAgent(Copyable, Movable, ImplicitlyCopyable):
                 entropy -= probs[a] * log(probs[a])
         return entropy
 
-    fn train[E: ClassicControlEnv](
+    fn train[E: BoxDiscreteActionEnv](
         mut self,
         mut env: E,
         tile_coding: TileCoding,
@@ -1162,7 +1170,8 @@ struct A2CAgent(Copyable, Movable, ImplicitlyCopyable):
 
         for episode in range(num_episodes):
             self.reset()  # Clear buffer
-            var obs = env.reset_obs()
+            var obs_list = env.reset_obs_list()
+            var obs = _list_to_simd4(obs_list)
             var total_reward: Float64 = 0.0
             var steps = 0
 
@@ -1170,8 +1179,9 @@ struct A2CAgent(Copyable, Movable, ImplicitlyCopyable):
                 var tiles = tile_coding.get_tiles_simd4(obs)
                 var action = self.select_action(tiles)
 
-                var result = env.step_raw(action)
-                var next_obs = result[0]
+                var result = env.step_obs(action)
+                var next_obs_list = result[0]
+                var next_obs = _list_to_simd4(next_obs_list)
                 var reward = result[1]
                 var done = result[2]
 
@@ -1194,7 +1204,7 @@ struct A2CAgent(Copyable, Movable, ImplicitlyCopyable):
 
         return metrics^
 
-    fn evaluate[E: ClassicControlEnv](
+    fn evaluate[E: BoxDiscreteActionEnv](
         self,
         mut env: E,
         tile_coding: TileCoding,
@@ -1217,7 +1227,8 @@ struct A2CAgent(Copyable, Movable, ImplicitlyCopyable):
         var total_reward: Float64 = 0.0
 
         for _ in range(num_episodes):
-            var obs = env.reset_obs()
+            var obs_list = env.reset_obs_list()
+            var obs = _list_to_simd4(obs_list)
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps):
@@ -1227,8 +1238,9 @@ struct A2CAgent(Copyable, Movable, ImplicitlyCopyable):
                 var tiles = tile_coding.get_tiles_simd4(obs)
                 var action = self.get_best_action(tiles)
 
-                var result = env.step_raw(action)
-                var next_obs = result[0]
+                var result = env.step_obs(action)
+                var next_obs_list = result[0]
+                var next_obs = _list_to_simd4(next_obs_list)
                 var reward = result[1]
                 var done = result[2]
 
@@ -1241,3 +1253,20 @@ struct A2CAgent(Copyable, Movable, ImplicitlyCopyable):
             total_reward += episode_reward
 
         return total_reward / Float64(num_episodes)
+
+
+# ============================================================================
+# Helper Functions
+# ============================================================================
+
+
+fn _list_to_simd4(obs: List[Float64]) -> SIMD[DType.float64, 4]:
+    """Convert a List[Float64] to SIMD[DType.float64, 4].
+
+    Pads with zeros if the list has fewer than 4 elements.
+    """
+    var result = SIMD[DType.float64, 4](0.0)
+    var n = min(len(obs), 4)
+    for i in range(n):
+        result[i] = obs[i]
+    return result

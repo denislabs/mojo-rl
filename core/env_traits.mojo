@@ -5,20 +5,28 @@ space types, enabling compile-time checking of algorithm-environment compatibili
 
 Trait Hierarchy:
     Env (base)
-    ├── DiscreteStateEnv  - States can be converted to integer indices
-    ├── ContinuousStateEnv - States are continuous observation vectors
+    ├── DiscreteStateEnv   - States can be converted to integer indices
+    ├── ContinuousStateEnv - States are continuous observation vectors (List[Float64])
     ├── DiscreteActionEnv  - Actions are discrete integers
     └── ContinuousActionEnv - Actions are continuous vectors
 
+Combined Traits:
+    DiscreteEnv           = DiscreteStateEnv & DiscreteActionEnv
+    BoxDiscreteActionEnv  = ContinuousStateEnv & DiscreteActionEnv
+    BoxContinuousActionEnv = ContinuousStateEnv & ContinuousActionEnv
+
 Environments implement combinations:
-    GridWorld: DiscreteStateEnv & DiscreteActionEnv
-    CartPole:  ContinuousStateEnv & DiscreteActionEnv
-    Pendulum:  ContinuousStateEnv & ContinuousActionEnv
+    GridWorld:   DiscreteEnv (tabular)
+    CartPole:    DiscreteEnv + BoxDiscreteActionEnv (4D obs)
+    MountainCar: DiscreteEnv + BoxDiscreteActionEnv (2D obs)
+    Acrobot:     DiscreteEnv + BoxDiscreteActionEnv (6D obs)
+    Pendulum:    DiscreteEnv + BoxContinuousActionEnv (3D obs, 1D action)
 
 Algorithms specify requirements:
-    Q-Learning: DiscreteStateEnv & DiscreteActionEnv
-    PPO:        ContinuousStateEnv & DiscreteActionEnv (or ContinuousActionEnv)
-    SAC:        ContinuousStateEnv & ContinuousActionEnv
+    Q-Learning (tabular): DiscreteEnv
+    Tile-coded Q-Learning: BoxDiscreteActionEnv
+    PPO:                   BoxDiscreteActionEnv (or BoxContinuousActionEnv)
+    SAC/DDPG/TD3:          BoxContinuousActionEnv
 """
 
 from .env import Env
@@ -53,18 +61,18 @@ trait ContinuousStateEnv(Env):
     Use this for function approximation methods (tile coding, neural networks)
     where states are represented as continuous vectors.
 
-    Examples: CartPole, MountainCar, Pendulum, MuJoCo environments
+    Observations are returned as List[Float64] for flexibility with any
+    observation dimension. Environments may also provide SIMD-optimized
+    methods internally for performance.
+
+    Examples: CartPole (4D), MountainCar (2D), Acrobot (6D), MuJoCo environments.
     """
 
-    fn get_obs(self) -> SIMD[DType.float64, 4]:
-        """Return current continuous observation vector.
-
-        Note: Returns SIMD[4] for common 4D observations. Environments with
-        different observation dimensions should provide additional methods.
-        """
+    fn get_obs_list(self) -> List[Float64]:
+        """Return current continuous observation as a flexible list."""
         ...
 
-    fn reset_obs(mut self) -> SIMD[DType.float64, 4]:
+    fn reset_obs_list(mut self) -> List[Float64]:
         """Reset environment and return initial continuous observation."""
         ...
 
@@ -146,19 +154,20 @@ trait DiscreteEnv(DiscreteStateEnv, DiscreteActionEnv):
 comptime TabularEnv = DiscreteEnv
 
 
-trait ClassicControlEnv(ContinuousStateEnv, DiscreteActionEnv):
-    """Environment with continuous observations and discrete actions.
+trait BoxDiscreteActionEnv(ContinuousStateEnv, DiscreteActionEnv):
+    """Environment with continuous observations (Box space) and discrete actions.
 
-    Common for classic control tasks. Use with:
+    Use with function approximation algorithms that handle continuous observations
+    but discrete action selection:
     - Tile coding / Linear function approximation
     - Policy gradient methods (REINFORCE, Actor-Critic, PPO)
     - DQN
 
-    Examples: CartPole, MountainCar, Acrobot, LunarLander
+    Examples: CartPole (4D), MountainCar (2D), Acrobot (6D), LunarLander.
     """
 
-    fn step_raw(mut self, action: Int) -> Tuple[SIMD[DType.float64, 4], Float64, Bool]:
-        """Take action (as int) and return (continuous_obs, reward, done).
+    fn step_obs(mut self, action: Int) -> Tuple[List[Float64], Float64, Bool]:
+        """Take discrete action and return (continuous_obs, reward, done).
 
         Convenience method for function approximation algorithms that
         work with raw observations and integer actions.
@@ -166,19 +175,19 @@ trait ClassicControlEnv(ContinuousStateEnv, DiscreteActionEnv):
         ...
 
 
-trait ContinuousControlEnv(ContinuousStateEnv, ContinuousActionEnv):
+trait BoxContinuousActionEnv(ContinuousStateEnv, ContinuousActionEnv):
     """Environment with continuous observations and continuous actions.
 
     Use with continuous control algorithms:
     - Policy gradient with Gaussian policies
     - DDPG, TD3, SAC
 
-    Examples: Pendulum, HalfCheetah, Ant, Humanoid
+    Examples: Pendulum (3D obs, 1D action), HalfCheetah, Ant, Humanoid.
     """
 
     fn step_continuous(
         mut self, action: Float64
-    ) -> Tuple[SIMD[DType.float64, 4], Float64, Bool]:
+    ) -> Tuple[List[Float64], Float64, Bool]:
         """Take continuous action and return (continuous_obs, reward, done).
 
         Convenience method for continuous control algorithms that

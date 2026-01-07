@@ -17,12 +17,12 @@ All MuJoCo environments have:
 - Continuous action spaces
 - Physics-based dynamics
 
-These wrappers implement ContinuousControlEnv trait for use with continuous action algorithms.
+These wrappers implement BoxContinuousActionEnv trait for use with continuous action algorithms.
 Note: These require pip install "gymnasium[mujoco]" or mujoco-py
 """
 
 from python import Python, PythonObject
-from core import State, Action, ContinuousControlEnv
+from core import State, Action, BoxContinuousActionEnv
 
 
 # ============================================================================
@@ -60,17 +60,17 @@ struct GymMuJoCoAction(Action, Copyable, ImplicitlyCopyable, Movable):
 
 
 # ============================================================================
-# GymMuJoCoEnv - implements ContinuousControlEnv
+# GymMuJoCoEnv - implements BoxContinuousActionEnv
 # ============================================================================
 
 
-struct GymMuJoCoEnv(ContinuousControlEnv):
+struct GymMuJoCoEnv(BoxContinuousActionEnv):
     """Generic wrapper for MuJoCo environments.
 
     Since MuJoCo envs have varying observation/action dimensions,
     this uses dynamic Lists instead of fixed SIMD types.
 
-    Implements ContinuousControlEnv trait for continuous action algorithms.
+    Implements BoxContinuousActionEnv trait for continuous action algorithms.
     """
 
     # Type aliases for trait conformance

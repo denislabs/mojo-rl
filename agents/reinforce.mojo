@@ -45,7 +45,7 @@ Example usage:
 from math import exp, log
 from random import random_float64
 from core.tile_coding import TileCoding
-from core import ClassicControlEnv, TrainingMetrics
+from core import BoxDiscreteActionEnv, TrainingMetrics
 
 
 struct REINFORCEAgent(Copyable, Movable, ImplicitlyCopyable):
@@ -409,7 +409,7 @@ struct REINFORCEAgent(Copyable, Movable, ImplicitlyCopyable):
                 entropy -= probs[a] * log(probs[a])
         return entropy
 
-    fn train[E: ClassicControlEnv](
+    fn train[E: BoxDiscreteActionEnv](
         mut self,
         mut env: E,
         tile_coding: TileCoding,
@@ -471,7 +471,7 @@ struct REINFORCEAgent(Copyable, Movable, ImplicitlyCopyable):
 
         return metrics^
 
-    fn evaluate[E: ClassicControlEnv](
+    fn evaluate[E: BoxDiscreteActionEnv](
         self,
         mut env: E,
         tile_coding: TileCoding,
@@ -803,7 +803,7 @@ struct REINFORCEWithEntropyAgent(Copyable, Movable, ImplicitlyCopyable):
                 entropy -= probs[a] * log(probs[a])
         return entropy
 
-    fn train[E: ClassicControlEnv](
+    fn train[E: BoxDiscreteActionEnv](
         mut self,
         mut env: E,
         tile_coding: TileCoding,
@@ -865,7 +865,7 @@ struct REINFORCEWithEntropyAgent(Copyable, Movable, ImplicitlyCopyable):
 
         return metrics^
 
-    fn evaluate[E: ClassicControlEnv](
+    fn evaluate[E: BoxDiscreteActionEnv](
         self,
         mut env: E,
         tile_coding: TileCoding,

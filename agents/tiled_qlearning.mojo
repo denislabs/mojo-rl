@@ -30,7 +30,7 @@ Example usage:
 
 from random import random_float64, random_si64
 from core.tile_coding import TileCoding, TiledWeights
-from core import ClassicControlEnv, TrainingMetrics
+from core import BoxDiscreteActionEnv, TrainingMetrics
 
 
 struct TiledQLearningAgent:
@@ -181,7 +181,7 @@ struct TiledQLearningAgent:
         """Reset for new episode (no-op, kept for interface compatibility)."""
         pass
 
-    fn train[E: ClassicControlEnv](
+    fn train[E: BoxDiscreteActionEnv](
         mut self,
         mut env: E,
         tile_coding: TileCoding,
@@ -242,7 +242,7 @@ struct TiledQLearningAgent:
 
         return metrics^
 
-    fn evaluate[E: ClassicControlEnv](
+    fn evaluate[E: BoxDiscreteActionEnv](
         self,
         mut env: E,
         tile_coding: TileCoding,
@@ -386,7 +386,7 @@ struct TiledSARSAAgent:
         """Reset for new episode."""
         pass
 
-    fn train[E: ClassicControlEnv](
+    fn train[E: BoxDiscreteActionEnv](
         mut self,
         mut env: E,
         tile_coding: TileCoding,
@@ -449,7 +449,7 @@ struct TiledSARSAAgent:
 
         return metrics^
 
-    fn evaluate[E: ClassicControlEnv](
+    fn evaluate[E: BoxDiscreteActionEnv](
         self,
         mut env: E,
         tile_coding: TileCoding,
@@ -637,7 +637,7 @@ struct TiledSARSALambdaAgent:
             for t in range(self.num_tiles):
                 self.traces[a][t] = 0.0
 
-    fn train[E: ClassicControlEnv](
+    fn train[E: BoxDiscreteActionEnv](
         mut self,
         mut env: E,
         tile_coding: TileCoding,
@@ -701,7 +701,7 @@ struct TiledSARSALambdaAgent:
 
         return metrics^
 
-    fn evaluate[E: ClassicControlEnv](
+    fn evaluate[E: BoxDiscreteActionEnv](
         self,
         mut env: E,
         tile_coding: TileCoding,

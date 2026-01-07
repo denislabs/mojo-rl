@@ -13,7 +13,7 @@ Requires SDL2 and SDL2_ttf: brew install sdl2 sdl2_ttf
 
 from math import cos, sin, pi
 from random import random_float64
-from core import State, Action, DiscreteEnv, TileCoding, ClassicControlEnv, ContinuousControlEnv, PolynomialFeatures
+from core import State, Action, DiscreteEnv, TileCoding, BoxDiscreteActionEnv, BoxContinuousActionEnv, PolynomialFeatures
 from core.sdl2 import SDL_Color, SDL_Point
 from .renderer_base import RendererBase
 
@@ -80,14 +80,14 @@ struct PendulumAction(Action, Copyable, ImplicitlyCopyable, Movable):
         return Float64(self.direction - 1) * 2.0
 
 
-struct PendulumEnv(ClassicControlEnv & DiscreteEnv & ContinuousControlEnv):
+struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
     """Native Mojo Pendulum environment with integrated SDL2 rendering.
 
-    State observation: [cos(θ), sin(θ), θ_dot] (3D)
-    Internal state: θ (angle), θ_dot (angular velocity)
+    State observation: [cos(θ), sin(θ), θ_dot] (3D).
+    Internal state: θ (angle), θ_dot (angular velocity).
 
-    Actions (discrete): 0 (left torque), 1 (no torque), 2 (right torque)
-    Actions (continuous): torque in [-2.0, 2.0]
+    Actions (discrete): 0 (left torque), 1 (no torque), 2 (right torque).
+    Actions (continuous): torque in [-2.0, 2.0].
 
     Episode never terminates naturally (always runs for max_steps).
 
@@ -303,19 +303,37 @@ struct PendulumEnv(ClassicControlEnv & DiscreteEnv & ContinuousControlEnv):
 
     fn step_continuous(
         mut self, torque: Float64
-    ) -> Tuple[SIMD[DType.float64, 4], Float64, Bool]:
-        """Take continuous action and return (obs, reward, done).
+    ) -> Tuple[List[Float64], Float64, Bool]:
+        """Take continuous action and return (obs_list, reward, done) - trait method.
 
-        This is the primary interface for continuous control algorithms like DDPG.
+        This is the BoxContinuousActionEnv trait method for continuous control
+        algorithms like DDPG.
 
         Args:
             torque: Continuous torque in [-2.0, 2.0].
 
         Returns:
-            Tuple of (observation, reward, done).
+            Tuple of (observation as List, reward, done).
         """
         var result = self._step_with_torque(torque)
-        var reward = result[1]  # Get the step reward from the result
+        var reward = result[1]
+        return (self.get_obs_list(), reward, self.done)
+
+    fn step_continuous_simd(
+        mut self, torque: Float64
+    ) -> Tuple[SIMD[DType.float64, 4], Float64, Bool]:
+        """Take continuous action and return SIMD observation (optimized).
+
+        This is the SIMD-optimized version for performance-critical code.
+
+        Args:
+            torque: Continuous torque in [-2.0, 2.0].
+
+        Returns:
+            Tuple of (observation as SIMD[4], reward, done).
+        """
+        var result = self._step_with_torque(torque)
+        var reward = result[1]
         return (self._get_obs(), reward, self.done)
 
     # ========================================================================
@@ -369,11 +387,40 @@ struct PendulumEnv(ClassicControlEnv & DiscreteEnv & ContinuousControlEnv):
         return b_angle * self.num_bins_velocity + b_vel
 
     fn get_obs(self) -> SIMD[DType.float64, 4]:
-        """Return current continuous observation (for rendering/debugging)."""
+        """Return current continuous observation as SIMD (optimized, padded to 4D)."""
         return self._get_obs()
 
     # ========================================================================
-    # Raw observation API (for function approximation methods)
+    # ContinuousStateEnv / BoxDiscreteActionEnv / BoxContinuousActionEnv trait methods
+    # ========================================================================
+
+    fn get_obs_list(self) -> List[Float64]:
+        """Return current continuous observation as a flexible list (trait method).
+
+        Returns true 3D observation without padding.
+        """
+        var obs = List[Float64](capacity=3)
+        obs.append(cos(self.theta))
+        obs.append(sin(self.theta))
+        obs.append(self.theta_dot)
+        return obs^
+
+    fn reset_obs_list(mut self) -> List[Float64]:
+        """Reset environment and return initial observation as list (trait method)."""
+        _ = self.reset()
+        return self.get_obs_list()
+
+    fn step_obs(mut self, action: Int) -> Tuple[List[Float64], Float64, Bool]:
+        """Take discrete action and return (obs_list, reward, done) - trait method.
+
+        This is the BoxDiscreteActionEnv trait method using List[Float64].
+        For performance-critical code, use step_raw() which returns SIMD.
+        """
+        var result = self.step(PendulumAction(direction=action))
+        return (self.get_obs_list(), result[1], result[2])
+
+    # ========================================================================
+    # SIMD-optimized observation API (for performance)
     # ========================================================================
 
     fn reset_obs(mut self) -> SIMD[DType.float64, 4]:

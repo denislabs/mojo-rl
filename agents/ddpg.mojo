@@ -50,7 +50,7 @@ Example usage:
 from math import exp, tanh, sqrt
 from random import random_float64
 from core.continuous_replay_buffer import ContinuousTransition, ContinuousReplayBuffer
-from core import PolynomialFeatures, TrainingMetrics, ContinuousControlEnv
+from core import PolynomialFeatures, TrainingMetrics, BoxContinuousActionEnv
 
 
 struct DDPGAgent(Copyable, Movable):
@@ -429,7 +429,7 @@ struct DDPGAgent(Copyable, Movable):
     # Training and Evaluation
     # ========================================================================
 
-    fn train[E: ContinuousControlEnv](
+    fn train[E: BoxContinuousActionEnv](
         mut self,
         mut env: E,
         features: PolynomialFeatures,
@@ -482,7 +482,8 @@ struct DDPGAgent(Copyable, Movable):
         var total_steps = 0
 
         for episode in range(num_episodes):
-            var obs = env.reset_obs()
+            var obs_list = env.reset_obs_list()
+            var obs = _list_to_simd4(obs_list)
             var episode_reward: Float64 = 0.0
             var steps = 0
 
@@ -500,7 +501,8 @@ struct DDPGAgent(Copyable, Movable):
 
                 # Take action in environment
                 var result = env.step_continuous(action)
-                var next_obs = result[0]
+                var next_obs_list = result[0]
+                var next_obs = _list_to_simd4(next_obs_list)
                 var reward = result[1]
                 var done = result[2]
 
@@ -558,7 +560,7 @@ struct DDPGAgent(Copyable, Movable):
 
         return metrics^
 
-    fn evaluate[E: ContinuousControlEnv](
+    fn evaluate[E: BoxContinuousActionEnv](
         self,
         mut env: E,
         features: PolynomialFeatures,
@@ -579,7 +581,8 @@ struct DDPGAgent(Copyable, Movable):
         var total_reward: Float64 = 0.0
 
         for _ in range(num_episodes):
-            var obs = env.reset_obs()
+            var obs_list = env.reset_obs_list()
+            var obs = _list_to_simd4(obs_list)
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps_per_episode):
@@ -589,7 +592,8 @@ struct DDPGAgent(Copyable, Movable):
                 var action = self.select_action(state_features)
 
                 var result = env.step_continuous(action)
-                var next_obs = result[0]
+                var next_obs_list = result[0]
+                var next_obs = _list_to_simd4(next_obs_list)
                 var reward = result[1]
                 var done = result[2]
 
@@ -628,3 +632,15 @@ fn _gaussian_noise() -> Float64:
     if u1 < 1e-10:
         u1 = 1e-10
     return sqrt(-2.0 * _log(u1)) * _cos(2.0 * 3.141592653589793 * u2)
+
+
+fn _list_to_simd4(obs: List[Float64]) -> SIMD[DType.float64, 4]:
+    """Convert a List[Float64] to SIMD[DType.float64, 4].
+
+    Pads with zeros if the list has fewer than 4 elements.
+    """
+    var result = SIMD[DType.float64, 4](0.0)
+    var n = min(len(obs), 4)
+    for i in range(n):
+        result[i] = obs[i]
+    return result

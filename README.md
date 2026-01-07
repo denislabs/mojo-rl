@@ -1,17 +1,22 @@
 # mojo-rl
 
-A reinforcement learning framework written in Mojo, featuring trait-based design for extensibility, comprehensive tabular RL algorithms, and policy gradient methods.
+A reinforcement learning framework written in Mojo, featuring trait-based design for extensibility, comprehensive tabular RL algorithms, policy gradient methods, and continuous control.
 
 ## Features
 
 - **Trait-based architecture**: Generic interfaces for environments, agents, states, and actions
-- **18 RL algorithms**: TD methods, multi-step, eligibility traces, model-based planning, function approximation, policy gradients
-- **6 native environments**: GridWorld, FrozenLake, CliffWalking, Taxi, CartPole, MountainCar
-- **Integrated SDL2 rendering**: Native visualization for CartPole and MountainCar
+- **26+ RL algorithms**: TD methods, multi-step, eligibility traces, model-based planning, function approximation, policy gradients, PPO, and continuous control (DDPG, TD3, SAC)
+- **8 native environments**: GridWorld, FrozenLake, CliffWalking, Taxi, CartPole, MountainCar, Acrobot, Pendulum
+- **Integrated SDL2 rendering**: Native visualization for continuous-state environments (CartPole, MountainCar, Acrobot, Pendulum)
 - **20+ Gymnasium wrappers**: Classic Control, Box2D, Toy Text, MuJoCo environments
-- **Experience replay**: Uniform and prioritized replay buffers
-- **Policy gradient methods**: REINFORCE, Actor-Critic, A2C with tile coding
+- **Experience replay**: Uniform and prioritized replay buffers for both discrete and continuous actions
+- **Policy gradient methods**: REINFORCE, Actor-Critic, A2C, PPO with GAE
+- **Continuous control**: DDPG, TD3, SAC with linear function approximation
 - **Generic training utilities**: Works with any compatible environment/agent combination
+
+## Acknowledgments
+
+This project uses [Gymnasium](https://github.com/Farama-Foundation/Gymnasium) as a reference implementation for environment physics and reward structures. The native Mojo environments (CartPole, MountainCar, Acrobot, Pendulum) are faithful ports of their Gymnasium counterparts, ensuring compatibility and correctness.
 
 ## Quick Start
 
@@ -93,6 +98,13 @@ sudo apt-get install libsdl2-dev libsdl2-ttf-dev
 | **Tiled SARSA** | On-policy SARSA with tile coding |
 | **Tiled SARSA(λ)** | Eligibility traces + tile coding |
 
+### Function Approximation (Linear with Arbitrary Features)
+| Algorithm | Description |
+|-----------|-------------|
+| **Linear Q-Learning** | Q-Learning with polynomial, RBF, or custom features |
+| **Linear SARSA** | On-policy SARSA with arbitrary feature vectors |
+| **Linear SARSA(λ)** | Eligibility traces with linear function approximation |
+
 ### Policy Gradient Methods
 | Algorithm | Description |
 |-----------|-------------|
@@ -101,6 +113,15 @@ sudo apt-get install libsdl2-dev libsdl2-ttf-dev
 | **Actor-Critic** | One-step TD policy gradient with online updates |
 | **Actor-Critic(λ)** | Actor-Critic with eligibility traces for actor and critic |
 | **A2C** | Advantage Actor-Critic with n-step returns and entropy bonus |
+| **PPO** | Proximal Policy Optimization with clipped surrogate objective |
+| **PPO + Minibatch** | PPO with minibatch sampling for larger rollouts |
+
+### Continuous Control (Deterministic Policy Gradient)
+| Algorithm | Description |
+|-----------|-------------|
+| **DDPG** | Deep Deterministic Policy Gradient with linear function approximation |
+| **TD3** | Twin Delayed DDPG with twin Q-networks, delayed policy updates, target smoothing |
+| **SAC** | Soft Actor-Critic with maximum entropy RL and automatic temperature tuning |
 
 ## Environments
 
@@ -113,6 +134,8 @@ sudo apt-get install libsdl2-dev libsdl2-ttf-dev
 | **Taxi** | 500 | 6 | Pickup/dropoff passenger |
 | **CartPole** | Continuous | 2 | Balance pole on cart (145x faster than Gymnasium), integrated SDL2 rendering |
 | **MountainCar** | Continuous | 3 | Drive car up mountain using momentum, integrated SDL2 rendering |
+| **Acrobot** | Continuous | 3 | Swing two-link pendulum above threshold, integrated SDL2 rendering |
+| **Pendulum** | Continuous | Continuous | Swing up and balance inverted pendulum, integrated SDL2 rendering |
 
 ### Gymnasium Wrappers (`envs/gymnasium/`)
 Wrap any Gymnasium environment with Python interop:
@@ -131,12 +154,17 @@ mojo-rl/
 │   ├── state.mojo         # State trait
 │   ├── action.mojo        # Action trait
 │   ├── env.mojo           # Environment trait
+│   ├── env_traits.mojo    # Environment trait hierarchy (DiscreteEnv, BoxDiscreteActionEnv, etc.)
 │   ├── agent.mojo         # Agent trait
 │   ├── tabular_agent.mojo # TabularAgent trait
-│   ├── training.mojo      # Training/evaluation functions
-│   ├── replay_buffer.mojo # Experience replay buffers
-│   ├── space.mojo         # Space abstractions
-│   └── tile_coding.mojo   # Tile coding for function approximation
+│   ├── replay_buffer.mojo # Experience replay buffers (discrete actions)
+│   ├── continuous_replay_buffer.mojo # Replay buffer for continuous actions
+│   ├── space.mojo         # Space abstractions (DiscreteSpace, BoxSpace)
+│   ├── tile_coding.mojo   # Tile coding for function approximation
+│   ├── linear_fa.mojo     # Linear function approximation (polynomial, RBF features)
+│   ├── vec_env.mojo       # Vectorized environment support
+│   ├── metrics.mojo       # Training metrics and logging
+│   └── sdl2.mojo          # SDL2 FFI bindings for rendering
 ├── agents/                # Algorithm implementations
 │   ├── qlearning.mojo
 │   ├── sarsa.mojo
@@ -149,17 +177,25 @@ mojo-rl/
 │   ├── priority_sweeping.mojo
 │   ├── qlearning_replay.mojo
 │   ├── tiled_qlearning.mojo   # Tile coding agents
+│   ├── linear_qlearning.mojo  # Linear function approximation agents
 │   ├── reinforce.mojo         # REINFORCE policy gradient
-│   └── actor_critic.mojo      # Actor-Critic family
+│   ├── actor_critic.mojo      # Actor-Critic, Actor-Critic(λ), A2C
+│   ├── ppo.mojo               # PPO with GAE
+│   ├── ddpg.mojo              # Deep Deterministic Policy Gradient
+│   ├── td3.mojo               # Twin Delayed DDPG
+│   └── sac.mojo               # Soft Actor-Critic
 └── envs/                  # Environment implementations
     ├── gridworld.mojo
     ├── frozenlake.mojo
     ├── cliffwalking.mojo
     ├── taxi.mojo
-    ├── cartpole_native.mojo      # Native CartPole with integrated SDL2 rendering
-    ├── mountain_car_native.mojo  # Native MountainCar with integrated SDL2 rendering
-    ├── native_renderer_base.mojo # SDL2 rendering infrastructure
-    └── gymnasium/                # Gymnasium wrappers
+    ├── cartpole.mojo          # Native CartPole with integrated SDL2 rendering
+    ├── mountain_car.mojo      # Native MountainCar with integrated SDL2 rendering
+    ├── acrobot.mojo           # Native Acrobot with integrated SDL2 rendering
+    ├── pendulum.mojo          # Native Pendulum with integrated SDL2 rendering
+    ├── vec_cartpole.mojo      # Vectorized CartPole for parallel training
+    ├── renderer_base.mojo     # SDL2 rendering infrastructure
+    └── gymnasium/             # Gymnasium wrappers
         ├── gymnasium_wrapper.mojo
         ├── gymnasium_classic_control.mojo
         ├── gymnasium_box2d.mojo
@@ -281,9 +317,27 @@ fn main() raises:
         agent.update_from_episode()
 ```
 
+## Algorithm Parameters
+
+| Algorithm | Key Parameters |
+|-----------|---------------|
+| Q-Learning | `learning_rate`, `discount_factor`, `epsilon`, `epsilon_decay` |
+| N-step SARSA | Above + `n` (number of steps) |
+| SARSA(λ) | Above + `lambda_` (trace decay) |
+| Dyna-Q | Above + `n_planning` (planning steps per real step) |
+| Priority Sweeping | Above + `priority_threshold` |
+| Q-Learning + Replay | Above + `buffer_size`, `batch_size`, `min_buffer_size` |
+| REINFORCE | `learning_rate`, `discount_factor`, `use_baseline`, `baseline_lr` |
+| Actor-Critic | `actor_lr`, `critic_lr`, `discount_factor`, `entropy_coef` |
+| Actor-Critic(λ) | Above + `lambda_` (trace decay) |
+| A2C | Above + `n_steps` (for n-step returns) |
+| PPO | `actor_lr`, `critic_lr`, `clip_epsilon`, `gae_lambda`, `num_epochs`, `entropy_coef` |
+| DDPG | `actor_lr`, `critic_lr`, `discount_factor`, `tau`, `noise_std`, `action_scale` |
+| TD3 | Above + `policy_delay`, `target_noise_std`, `target_noise_clip` |
+| SAC | `actor_lr`, `critic_lr`, `discount_factor`, `tau`, `alpha`, `auto_alpha`, `target_entropy` |
+
 ## Roadmap
 
 See [ROADMAP.md](ROADMAP.md) for planned features including:
 - Deep RL (DQN, when Mojo tensor ops mature)
-- PPO (Proximal Policy Optimization)
-- GAE (Generalized Advantage Estimation)
+- Neural network function approximation

@@ -48,7 +48,7 @@ Example usage:
 from math import exp, log
 from random import random_float64
 from core.tile_coding import TileCoding
-from core import ClassicControlEnv, TrainingMetrics
+from core import BoxDiscreteActionEnv, TrainingMetrics
 
 
 fn compute_gae(
@@ -609,7 +609,7 @@ struct PPOAgent(Copyable, Movable, ImplicitlyCopyable):
                 entropy -= probs[a] * log(probs[a])
         return entropy
 
-    fn train[E: ClassicControlEnv](
+    fn train[E: BoxDiscreteActionEnv](
         mut self,
         mut env: E,
         tile_coding: TileCoding,
@@ -623,7 +623,7 @@ struct PPOAgent(Copyable, Movable, ImplicitlyCopyable):
         """Train the PPO agent on a continuous-state environment.
 
         Args:
-            env: Environment implementing ClassicControlEnv trait.
+            env: Environment implementing BoxDiscreteActionEnv trait.
             tile_coding: TileCoding instance for feature extraction.
             num_episodes: Number of episodes to train.
             max_steps_per_episode: Maximum steps per episode.
@@ -677,7 +677,7 @@ struct PPOAgent(Copyable, Movable, ImplicitlyCopyable):
 
         return metrics^
 
-    fn evaluate[E: ClassicControlEnv](
+    fn evaluate[E: BoxDiscreteActionEnv](
         self,
         mut env: E,
         tile_coding: TileCoding,
@@ -687,7 +687,7 @@ struct PPOAgent(Copyable, Movable, ImplicitlyCopyable):
         """Evaluate the PPO agent using greedy policy.
 
         Args:
-            env: Environment implementing ClassicControlEnv trait.
+            env: Environment implementing BoxDiscreteActionEnv trait.
             tile_coding: TileCoding instance for feature extraction.
             num_episodes: Number of evaluation episodes.
             max_steps_per_episode: Maximum steps per episode.
@@ -1140,7 +1140,7 @@ struct PPOAgentWithMinibatch(Copyable, Movable, ImplicitlyCopyable):
                 entropy -= probs[a] * log(probs[a])
         return entropy
 
-    fn train[E: ClassicControlEnv](
+    fn train[E: BoxDiscreteActionEnv](
         mut self,
         mut env: E,
         tile_coding: TileCoding,
@@ -1154,7 +1154,7 @@ struct PPOAgentWithMinibatch(Copyable, Movable, ImplicitlyCopyable):
         """Train the PPO agent with minibatch updates.
 
         Args:
-            env: Environment implementing ClassicControlEnv trait.
+            env: Environment implementing BoxDiscreteActionEnv trait.
             tile_coding: TileCoding instance for feature extraction.
             num_episodes: Number of episodes to train.
             max_steps_per_episode: Maximum steps per episode.
@@ -1208,7 +1208,7 @@ struct PPOAgentWithMinibatch(Copyable, Movable, ImplicitlyCopyable):
 
         return metrics^
 
-    fn evaluate[E: ClassicControlEnv](
+    fn evaluate[E: BoxDiscreteActionEnv](
         self,
         mut env: E,
         tile_coding: TileCoding,
@@ -1218,7 +1218,7 @@ struct PPOAgentWithMinibatch(Copyable, Movable, ImplicitlyCopyable):
         """Evaluate the PPO agent using greedy policy.
 
         Args:
-            env: Environment implementing ClassicControlEnv trait.
+            env: Environment implementing BoxDiscreteActionEnv trait.
             tile_coding: TileCoding instance for feature extraction.
             num_episodes: Number of evaluation episodes.
             max_steps_per_episode: Maximum steps per episode.
