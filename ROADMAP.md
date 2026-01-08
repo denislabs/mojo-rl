@@ -102,12 +102,54 @@
   - Automatic entropy temperature (α) tuning
   - `examples/pendulum_sac.mojo` - Pendulum swing-up with SAC
 
+### Deep RL Infrastructure (`deep_rl/`) - CPU with SIMD
+- [x] Tensor operations - SIMD-optimized tensor ops with compile-time dimensions
+  - `deep_rl/tensor.mojo` - matmul, transpose, relu, tanh, sigmoid, gradients
+  - FMA (fused multiply-add) and register blocking for performance
+  - Xavier initialization, element-wise ops, reductions
+  - **Note**: Currently CPU-only; GPU support planned (see In Progress section)
+- [x] Linear layer - Fully connected layer with forward/backward
+  - `deep_rl/linear.mojo` - Linear layer with compile-time dimensions
+  - Gradient computation for backpropagation
+- [x] Adam optimizer - Adaptive moment estimation optimizer
+  - `deep_rl/adam.mojo` - AdamState, LinearAdam with SIMD optimization
+  - Soft update support for target networks
+- [x] MLP networks - Multi-layer perceptrons
+  - `deep_rl/mlp.mojo` - MLP2 (2-layer), MLP3 (3-layer) networks
+  - Forward/backward with activation caching
+- [x] Actor-Critic networks - Networks for continuous control
+  - `deep_rl/actor_critic.mojo` - Actor and Critic with ReLU hidden, tanh output
+  - Built-in Adam optimizer and soft update methods
+- [x] Replay buffer - Experience replay for deep RL
+  - `deep_rl/replay_buffer.mojo` - Fixed-capacity buffer with compile-time dimensions
+
+### Deep RL Agents (`deep_agents/`)
+- [x] Deep DDPG - DDPG with neural network function approximation
+  - `deep_agents/ddpg.mojo` - DeepDDPGAgent
+  - 2-layer MLP actor (obs -> 256 -> 256 -> action with tanh)
+  - 2-layer MLP critic (obs+action -> 256 -> 256 -> Q-value)
+  - Target networks with soft updates
+  - Gaussian exploration noise with decay
+  - `train()` and `evaluate()` methods for BoxContinuousActionEnv
+- [x] Deep TD3 - TD3 with neural network function approximation
+  - `deep_agents/td3.mojo` - DeepTD3Agent
+  - Twin critics (Q1, Q2) to reduce overestimation bias
+  - Delayed policy updates (actor updates every N critic updates)
+  - Target policy smoothing (clipped noise on target actions)
+  - All three key TD3 improvements over DDPG
+
 ## In Progress / Next Steps
 
-### Deep RL (depends on Mojo tensor support)
-- [ ] DQN - Deep Q-Network with target network
-- [ ] Double DQN - DQN with double Q-learning
-- [ ] Dueling DQN - Separate value and advantage streams
+### Deep RL Agents (Neural Networks)
+- [ ] Deep DQN - Deep Q-Network with target network
+- [ ] Deep Double DQN - DQN with double Q-learning
+- [ ] Deep Dueling DQN - Separate value and advantage streams
+- [ ] Deep SAC - Soft Actor-Critic with neural networks (stochastic policy + entropy)
+
+### GPU Support
+- [ ] GPU tensor operations - Port tensor.mojo ops to GPU (when Mojo GPU support matures)
+- [ ] GPU-accelerated training - Batch processing on GPU for deep RL agents
+- [ ] Mixed CPU/GPU pipeline - Environment stepping on CPU, network forward/backward on GPU
 
 ### Vectorized Environments
 - [x] VecCartPoleEnv - Vectorized CartPole running N environments in parallel
@@ -172,3 +214,5 @@
 | DDPG | Continuous Control | Deterministic policy + Q-function critic |
 | TD3 | Continuous Control | Twin critics + delayed updates + target smoothing |
 | SAC | Continuous Control | Stochastic policy + entropy regularization + auto α |
+| Deep DDPG | Deep RL | Neural network actor/critic with Adam optimizer |
+| Deep TD3 | Deep RL | Twin critics + delayed updates + target smoothing (neural networks) |

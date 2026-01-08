@@ -1,25 +1,25 @@
-"""Deep Deterministic Policy Gradient (DDPG) Agent with Neural Networks.
+"""Twin Delayed Deep Deterministic Policy Gradient (TD3) with Neural Networks.
 
-DDPG is an off-policy actor-critic algorithm for continuous control.
-It uses:
-- Deterministic actor: obs -> action (2-layer MLP with tanh output)
-- Q-function critic: (obs, action) -> Q-value (2-layer MLP)
-- Target networks with soft updates
-- Experience replay
-- Gaussian exploration noise
+TD3 is an improved version of DDPG that addresses function approximation error
+through three key innovations:
+
+1. Twin Q-networks: Use two Q-functions and take the minimum to reduce overestimation
+2. Delayed policy updates: Update the policy less frequently than the Q-functions
+3. Target policy smoothing: Add noise to target actions to smooth the Q-function
 
 This is the DEEP version using neural networks with compile-time dimensions.
-For linear function approximation, see agents/ddpg.mojo (DDPGAgent).
+For linear function approximation, see agents/td3.mojo (TD3Agent).
 
-Reference: Lillicrap et al. "Continuous control with deep reinforcement learning"
+Reference: Fujimoto et al. "Addressing Function Approximation Error in Actor-Critic Methods"
 
 Example usage:
-    from deeprl import DeepDDPGAgent
+    from deep_agents import DeepTD3Agent
     from envs import PendulumEnv
 
     var env = PendulumEnv()
-    var agent = DeepDDPGAgent[obs_dim=3, action_dim=1, hidden_dim=128](
+    var agent = DeepTD3Agent[obs_dim=3, action_dim=1, hidden_dim=256](
         action_scale=2.0,  # Pendulum actions in [-2, 2]
+        policy_delay=2,    # Update actor every 2 critic updates
     )
 
     # Simple training
@@ -42,18 +42,18 @@ from core import TrainingMetrics, BoxContinuousActionEnv
 
 
 @always_inline
-fn gaussian_noise() -> Float64:
+fn _gaussian_noise_td3() -> Float64:
     """Generate Gaussian noise using Box-Muller transform."""
     var u1 = random_float64()
     var u2 = random_float64()
     # Avoid log(0)
     if u1 < 1e-10:
         u1 = 1e-10
-    return sqrt(-2.0 * log(u1)) * cos(2.0 * 3.14159265359 * u2)
+    return sqrt(-2.0 * log(u1)) * _cos_td3(2.0 * 3.14159265359 * u2)
 
 
 @always_inline
-fn cos(x: Float64) -> Float64:
+fn _cos_td3(x: Float64) -> Float64:
     """Cosine approximation using Taylor series."""
     var x2 = x * x
     var x4 = x2 * x2
@@ -61,7 +61,7 @@ fn cos(x: Float64) -> Float64:
     return 1.0 - x2 / 2.0 + x4 / 24.0 - x6 / 720.0
 
 
-struct DeepDDPGAgent[
+struct DeepTD3Agent[
     obs_dim: Int,
     action_dim: Int,
     hidden_dim: Int = 256,
@@ -69,10 +69,15 @@ struct DeepDDPGAgent[
     batch_size: Int = 64,
     dtype: DType = DType.float64,
 ]:
-    """Deep DDPG Agent for continuous control using neural networks.
+    """Deep TD3 Agent for continuous control using neural networks.
 
-    This agent uses 2-layer MLPs for both actor and critic networks,
+    This agent uses 2-layer MLPs for actor and twin critic networks,
     with compile-time dimensions for maximum performance.
+
+    Key improvements over DDPG:
+    1. Twin Q-networks to reduce overestimation bias (uses min(Q1, Q2))
+    2. Delayed policy updates (actor updates every N critic updates)
+    3. Target policy smoothing (clipped noise added to target actions)
 
     Parameters:
         obs_dim: Observation dimension.
@@ -83,7 +88,7 @@ struct DeepDDPGAgent[
         dtype: Data type for computations.
     """
 
-    # Networks
+    # Actor networks
     var actor: Actor[
         Self.obs_dim,
         Self.action_dim,
@@ -98,14 +103,30 @@ struct DeepDDPGAgent[
         Self.hidden_dim,
         Self.dtype,
     ]
-    var critic: Critic[
+
+    # Twin Critic networks (TD3 innovation #1)
+    var critic1: Critic[
         Self.obs_dim,
         Self.action_dim,
         Self.hidden_dim,
         Self.hidden_dim,
         Self.dtype,
     ]
-    var critic_target: Critic[
+    var critic1_target: Critic[
+        Self.obs_dim,
+        Self.action_dim,
+        Self.hidden_dim,
+        Self.hidden_dim,
+        Self.dtype,
+    ]
+    var critic2: Critic[
+        Self.obs_dim,
+        Self.action_dim,
+        Self.hidden_dim,
+        Self.hidden_dim,
+        Self.dtype,
+    ]
+    var critic2_target: Critic[
         Self.obs_dim,
         Self.action_dim,
         Self.hidden_dim,
@@ -128,9 +149,15 @@ struct DeepDDPGAgent[
     var noise_decay: Scalar[Self.dtype]  # Noise decay rate per episode
     var action_scale: Scalar[Self.dtype]  # Action scaling
 
+    # TD3-specific hyperparameters
+    var policy_delay: Int  # Update actor every policy_delay critic updates
+    var target_noise_std: Scalar[Self.dtype]  # Noise added to target action
+    var target_noise_clip: Scalar[Self.dtype]  # Clip range for target noise
+
     # Training state
     var total_steps: Int
     var total_episodes: Int
+    var update_count: Int  # Track number of updates for delayed policy
 
     fn __init__(
         out self,
@@ -142,19 +169,26 @@ struct DeepDDPGAgent[
         noise_std_min: Scalar[Self.dtype] = 0.01,
         noise_decay: Scalar[Self.dtype] = 0.995,
         action_scale: Scalar[Self.dtype] = 1.0,
+        policy_delay: Int = 2,
+        target_noise_std: Scalar[Self.dtype] = 0.2,
+        target_noise_clip: Scalar[Self.dtype] = 0.5,
     ):
-        """Initialize Deep DDPG agent.
+        """Initialize Deep TD3 agent.
 
         Args:
             gamma: Discount factor for future rewards.
             tau: Soft update coefficient for target networks.
             actor_lr: Learning rate for actor network.
-            critic_lr: Learning rate for critic network.
+            critic_lr: Learning rate for critic networks.
             noise_std: Initial standard deviation of exploration noise.
             noise_std_min: Minimum noise after decay.
             noise_decay: Noise decay rate per episode.
             action_scale: Maximum action magnitude.
+            policy_delay: Update actor every N critic updates (default: 2).
+            target_noise_std: Standard deviation of target policy smoothing noise.
+            target_noise_clip: Clip range for target noise.
         """
+        # Initialize actor and target
         self.actor = Actor[
             Self.obs_dim,
             Self.action_dim,
@@ -175,14 +209,30 @@ struct DeepDDPGAgent[
             action_scale=action_scale,
             action_bias=0.0,
         )
-        self.critic = Critic[
+
+        # Initialize twin critics and targets
+        self.critic1 = Critic[
             Self.obs_dim,
             Self.action_dim,
             Self.hidden_dim,
             Self.hidden_dim,
             Self.dtype,
         ]()
-        self.critic_target = Critic[
+        self.critic1_target = Critic[
+            Self.obs_dim,
+            Self.action_dim,
+            Self.hidden_dim,
+            Self.hidden_dim,
+            Self.dtype,
+        ]()
+        self.critic2 = Critic[
+            Self.obs_dim,
+            Self.action_dim,
+            Self.hidden_dim,
+            Self.hidden_dim,
+            Self.dtype,
+        ]()
+        self.critic2_target = Critic[
             Self.obs_dim,
             Self.action_dim,
             Self.hidden_dim,
@@ -192,7 +242,8 @@ struct DeepDDPGAgent[
 
         # Initialize target networks with same weights
         self.actor_target.copy_from(self.actor)
-        self.critic_target.copy_from(self.critic)
+        self.critic1_target.copy_from(self.critic1)
+        self.critic2_target.copy_from(self.critic2)
 
         self.buffer = ReplayBuffer[
             Self.buffer_capacity, Self.obs_dim, Self.action_dim, Self.dtype
@@ -206,8 +257,12 @@ struct DeepDDPGAgent[
         self.noise_std_min = noise_std_min
         self.noise_decay = noise_decay
         self.action_scale = action_scale
+        self.policy_delay = policy_delay
+        self.target_noise_std = target_noise_std
+        self.target_noise_clip = target_noise_clip
         self.total_steps = 0
         self.total_episodes = 0
+        self.update_count = 0
 
     fn select_action(
         mut self,
@@ -228,7 +283,7 @@ struct DeepDDPGAgent[
         for i in range(Self.action_dim):
             var a = action_batch[i]
             if add_noise:
-                var noise = Scalar[Self.dtype](gaussian_noise())
+                var noise = Scalar[Self.dtype](_gaussian_noise_td3())
                 a += self.noise_std * noise
             # Clip to action bounds
             if a > self.action_scale:
@@ -252,9 +307,18 @@ struct DeepDDPGAgent[
         self.total_steps += 1
 
     fn train_step(mut self) -> Scalar[Self.dtype]:
-        """Perform one training step. Returns critic loss."""
+        """Perform one training step. Returns critic loss.
+
+        TD3 update procedure:
+        1. Always update both critics using TD error with min target Q
+        2. Every policy_delay updates:
+           - Update actor using policy gradient from Q1
+           - Soft update all target networks
+        """
         if not self.buffer.is_ready[Self.batch_size]():
             return 0.0
+
+        self.update_count += 1
 
         # Sample batch
         var batch_obs = InlineArray[
@@ -278,80 +342,81 @@ struct DeepDDPGAgent[
         )
 
         # ========================================
-        # Critic update
+        # Critic update (always done)
         # ========================================
 
-        # Compute target Q-values: y = r + gamma * (1 - done) * Q_target(s', pi_target(s'))
+        # Get target actions with smoothing noise (TD3 innovation #3)
         var next_actions = self.actor_target.forward[Self.batch_size](
             batch_next_obs
         )
-        var target_q = self.critic_target.forward[Self.batch_size](
+
+        # Add clipped noise to target actions
+        for i in range(Self.batch_size * Self.action_dim):
+            var noise = Scalar[Self.dtype](_gaussian_noise_td3()) * self.target_noise_std
+            # Clip noise
+            if noise > self.target_noise_clip:
+                noise = self.target_noise_clip
+            elif noise < -self.target_noise_clip:
+                noise = -self.target_noise_clip
+            next_actions[i] += noise
+            # Clip action to bounds
+            if next_actions[i] > self.action_scale:
+                next_actions[i] = self.action_scale
+            elif next_actions[i] < -self.action_scale:
+                next_actions[i] = -self.action_scale
+
+        # Get Q-values from both target critics
+        var target_q1 = self.critic1_target.forward[Self.batch_size](
+            batch_next_obs, next_actions
+        )
+        var target_q2 = self.critic2_target.forward[Self.batch_size](
             batch_next_obs, next_actions
         )
 
+        # Compute target values using min of Q1, Q2 (TD3 innovation #1)
         var target_values = InlineArray[Scalar[Self.dtype], Self.batch_size](
             fill=0
         )
         for i in range(Self.batch_size):
+            var min_q = target_q1[i]
+            if target_q2[i] < min_q:
+                min_q = target_q2[i]
             target_values[i] = (
                 batch_rewards[i]
-                + self.gamma * (1.0 - batch_dones[i]) * target_q[i]
+                + self.gamma * (1.0 - batch_dones[i]) * min_q
             )
 
-        # Current Q-values with caching for backward
-        var x_cache = InlineArray[
+        # Update critic 1
+        var x_cache1 = InlineArray[
             Scalar[Self.dtype],
             Self.batch_size * (Self.obs_dim + Self.action_dim),
         ](fill=0)
-        var h1_cache = InlineArray[
+        var h1_cache1 = InlineArray[
             Scalar[Self.dtype], Self.batch_size * Self.hidden_dim
         ](fill=0)
-        var h2_cache = InlineArray[
+        var h2_cache1 = InlineArray[
             Scalar[Self.dtype], Self.batch_size * Self.hidden_dim
         ](fill=0)
 
-        var current_q = self.critic.forward_with_cache[Self.batch_size](
-            batch_obs, batch_actions, x_cache, h1_cache, h2_cache
+        var current_q1 = self.critic1.forward_with_cache[Self.batch_size](
+            batch_obs, batch_actions, x_cache1, h1_cache1, h2_cache1
         )
 
-        # Critic loss: MSE = mean((Q - target)^2)
-        var critic_loss: Scalar[Self.dtype] = 0.0
-        var dq = InlineArray[Scalar[Self.dtype], Self.batch_size](fill=0)
+        var critic1_loss: Scalar[Self.dtype] = 0.0
+        var dq1 = InlineArray[Scalar[Self.dtype], Self.batch_size](fill=0)
         var batch_size_scalar = Scalar[Self.dtype](Self.batch_size)
         for i in range(Self.batch_size):
-            var td_error = current_q[i] - target_values[i]
-            critic_loss += td_error * td_error
-            dq[i] = 2.0 * td_error / batch_size_scalar  # Gradient of MSE
+            var td_error = current_q1[i] - target_values[i]
+            critic1_loss += td_error * td_error
+            dq1[i] = 2.0 * td_error / batch_size_scalar
 
-        critic_loss /= batch_size_scalar
-
-        # Critic backward and update
-        self.critic.zero_grad()
-        _ = self.critic.backward[Self.batch_size](
-            dq, x_cache, h1_cache, h2_cache
+        self.critic1.zero_grad()
+        _ = self.critic1.backward[Self.batch_size](
+            dq1, x_cache1, h1_cache1, h2_cache1
         )
-        self.critic.update_adam(self.critic_lr)
+        self.critic1.update_adam(self.critic_lr)
 
-        # ========================================
-        # Actor update
-        # ========================================
-
-        # Get actions from current actor with caching
-        var h1_actor = InlineArray[
-            Scalar[Self.dtype], Self.batch_size * Self.hidden_dim
-        ](fill=0)
-        var h2_actor = InlineArray[
-            Scalar[Self.dtype], Self.batch_size * Self.hidden_dim
-        ](fill=0)
-        var out_tanh = InlineArray[
-            Scalar[Self.dtype], Self.batch_size * Self.action_dim
-        ](fill=0)
-
-        var actor_actions = self.actor.forward_with_cache[Self.batch_size](
-            batch_obs, h1_actor, h2_actor, out_tanh
-        )
-
-        # Get Q-values for actor's actions with caching
+        # Update critic 2
         var x_cache2 = InlineArray[
             Scalar[Self.dtype],
             Self.batch_size * (Self.obs_dim + Self.action_dim),
@@ -363,40 +428,89 @@ struct DeepDDPGAgent[
             Scalar[Self.dtype], Self.batch_size * Self.hidden_dim
         ](fill=0)
 
-        _ = self.critic.forward_with_cache[Self.batch_size](
-            batch_obs, actor_actions, x_cache2, h1_cache2, h2_cache2
+        var current_q2 = self.critic2.forward_with_cache[Self.batch_size](
+            batch_obs, batch_actions, x_cache2, h1_cache2, h2_cache2
         )
 
-        # Actor gradient: maximize Q -> dQ/daction = -1 (gradient ascent)
-        var dq_actor = InlineArray[Scalar[Self.dtype], Self.batch_size](fill=0)
-        var neg_one_over_batch = Scalar[Self.dtype](-1.0) / batch_size_scalar
+        var critic2_loss: Scalar[Self.dtype] = 0.0
+        var dq2 = InlineArray[Scalar[Self.dtype], Self.batch_size](fill=0)
         for i in range(Self.batch_size):
-            dq_actor[i] = neg_one_over_batch  # Negative for gradient ascent
+            var td_error = current_q2[i] - target_values[i]
+            critic2_loss += td_error * td_error
+            dq2[i] = 2.0 * td_error / batch_size_scalar
 
-        # Get gradient w.r.t. actions from critic
-        var dactions = self.critic.backward[Self.batch_size](
-            dq_actor, x_cache2, h1_cache2, h2_cache2
+        self.critic2.zero_grad()
+        _ = self.critic2.backward[Self.batch_size](
+            dq2, x_cache2, h1_cache2, h2_cache2
         )
+        self.critic2.update_adam(self.critic_lr)
 
-        # Backward through actor
-        self.actor.zero_grad()
-        self.actor.backward[Self.batch_size](
-            dactions, batch_obs, h1_actor, h2_actor, out_tanh
-        )
-        self.actor.update_adam(self.actor_lr)
+        var total_critic_loss = (critic1_loss + critic2_loss) / (2.0 * batch_size_scalar)
 
         # ========================================
-        # Soft update target networks
+        # Delayed Actor update (TD3 innovation #2)
         # ========================================
 
-        self.actor_target.soft_update_from(self.actor, self.tau)
-        self.critic_target.soft_update_from(self.critic, self.tau)
+        if self.update_count % self.policy_delay == 0:
+            # Get actions from current actor with caching
+            var h1_actor = InlineArray[
+                Scalar[Self.dtype], Self.batch_size * Self.hidden_dim
+            ](fill=0)
+            var h2_actor = InlineArray[
+                Scalar[Self.dtype], Self.batch_size * Self.hidden_dim
+            ](fill=0)
+            var out_tanh = InlineArray[
+                Scalar[Self.dtype], Self.batch_size * Self.action_dim
+            ](fill=0)
 
-        return critic_loss
+            var actor_actions = self.actor.forward_with_cache[Self.batch_size](
+                batch_obs, h1_actor, h2_actor, out_tanh
+            )
+
+            # Get Q-values for actor's actions from critic1 only (TD3 uses Q1)
+            var x_cache_actor = InlineArray[
+                Scalar[Self.dtype],
+                Self.batch_size * (Self.obs_dim + Self.action_dim),
+            ](fill=0)
+            var h1_cache_actor = InlineArray[
+                Scalar[Self.dtype], Self.batch_size * Self.hidden_dim
+            ](fill=0)
+            var h2_cache_actor = InlineArray[
+                Scalar[Self.dtype], Self.batch_size * Self.hidden_dim
+            ](fill=0)
+
+            _ = self.critic1.forward_with_cache[Self.batch_size](
+                batch_obs, actor_actions, x_cache_actor, h1_cache_actor, h2_cache_actor
+            )
+
+            # Actor gradient: maximize Q -> dQ/daction = -1 (gradient ascent)
+            var dq_actor = InlineArray[Scalar[Self.dtype], Self.batch_size](fill=0)
+            var neg_one_over_batch = Scalar[Self.dtype](-1.0) / batch_size_scalar
+            for i in range(Self.batch_size):
+                dq_actor[i] = neg_one_over_batch
+
+            # Get gradient w.r.t. actions from critic1
+            var dactions = self.critic1.backward[Self.batch_size](
+                dq_actor, x_cache_actor, h1_cache_actor, h2_cache_actor
+            )
+
+            # Backward through actor
+            self.actor.zero_grad()
+            self.actor.backward[Self.batch_size](
+                dactions, batch_obs, h1_actor, h2_actor, out_tanh
+            )
+            self.actor.update_adam(self.actor_lr)
+
+            # Soft update all target networks
+            self.actor_target.soft_update_from(self.actor, self.tau)
+            self.critic1_target.soft_update_from(self.critic1, self.tau)
+            self.critic2_target.soft_update_from(self.critic2, self.tau)
+
+        return total_critic_loss
 
     fn print_info(self):
         """Print agent information."""
-        print("Deep DDPG Agent:")
+        print("Deep TD3 Agent:")
         print("  Obs dim: " + String(Self.obs_dim))
         print("  Action dim: " + String(Self.action_dim))
         print("  Hidden dim: " + String(Self.hidden_dim))
@@ -408,8 +522,12 @@ struct DeepDDPGAgent[
         print("  Critic LR: " + String(self.critic_lr)[:8])
         print("  Noise std: " + String(self.noise_std)[:6])
         print("  Noise decay: " + String(self.noise_decay)[:6])
+        print("  Policy delay: " + String(self.policy_delay))
+        print("  Target noise std: " + String(self.target_noise_std)[:6])
+        print("  Target noise clip: " + String(self.target_noise_clip)[:6])
         self.actor.print_info("  Actor")
-        self.critic.print_info("  Critic")
+        self.critic1.print_info("  Critic1")
+        self.critic2.print_info("  Critic2")
 
     fn decay_noise(mut self):
         """Decay exploration noise (call once per episode)."""
@@ -434,7 +552,7 @@ struct DeepDDPGAgent[
         print_every: Int = 10,
         environment_name: String = "Environment",
     ) -> TrainingMetrics:
-        """Train the Deep DDPG agent on a continuous control environment.
+        """Train the Deep TD3 agent on a continuous control environment.
 
         Args:
             env: Environment implementing BoxContinuousActionEnv trait.
@@ -450,13 +568,13 @@ struct DeepDDPGAgent[
             TrainingMetrics object with episode history.
         """
         var metrics = TrainingMetrics(
-            algorithm_name="Deep DDPG",
+            algorithm_name="Deep TD3",
             environment_name=environment_name,
         )
 
         if verbose:
             print("=" * 60)
-            print("Deep DDPG Training on " + environment_name)
+            print("Deep TD3 Training on " + environment_name)
             print("=" * 60)
             self.print_info()
             print("-" * 60)
@@ -491,9 +609,9 @@ struct DeepDDPGAgent[
                 done = step_result[2]
 
                 # Convert observations
-                var obs = _list_to_inline[Self.obs_dim, Self.dtype](obs_list)
+                var obs = _list_to_inline_td3[Self.obs_dim, Self.dtype](obs_list)
                 var next_obs_list = env.get_obs_list()
-                var next_obs = _list_to_inline[Self.obs_dim, Self.dtype](
+                var next_obs = _list_to_inline_td3[Self.obs_dim, Self.dtype](
                     next_obs_list
                 )
 
@@ -522,7 +640,7 @@ struct DeepDDPGAgent[
 
             while not done and steps < max_steps_per_episode:
                 # Convert observation
-                var obs = _list_to_inline[Self.obs_dim, Self.dtype](obs_list)
+                var obs = _list_to_inline_td3[Self.obs_dim, Self.dtype](obs_list)
 
                 # Select action with exploration noise
                 var action = self.select_action(obs, add_noise=True)
@@ -534,7 +652,7 @@ struct DeepDDPGAgent[
 
                 # Get next observation
                 var next_obs_list = env.get_obs_list()
-                var next_obs = _list_to_inline[Self.obs_dim, Self.dtype](
+                var next_obs = _list_to_inline_td3[Self.obs_dim, Self.dtype](
                     next_obs_list
                 )
 
@@ -613,6 +731,7 @@ struct DeepDDPGAgent[
             num_episodes: Number of evaluation episodes.
             max_steps_per_episode: Maximum steps per episode.
             verbose: Whether to print per-episode results.
+            render: Whether to render the environment.
 
         Returns:
             Average reward over evaluation episodes.
@@ -628,7 +747,7 @@ struct DeepDDPGAgent[
             while not done and steps < max_steps_per_episode:
                 if render:
                     env.render()
-                var obs = _list_to_inline[Self.obs_dim, Self.dtype](obs_list)
+                var obs = _list_to_inline_td3[Self.obs_dim, Self.dtype](obs_list)
 
                 # Use deterministic action (no noise)
                 var action = self.select_action(obs, add_noise=False)
@@ -659,7 +778,7 @@ struct DeepDDPGAgent[
 # ============================================================================
 
 
-fn _list_to_inline[
+fn _list_to_inline_td3[
     size: Int, dtype: DType = DType.float64
 ](obs_list: List[Float64]) -> InlineArray[Scalar[dtype], size]:
     """Convert List[Float64] to InlineArray."""

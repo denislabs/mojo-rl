@@ -6,6 +6,7 @@ A reinforcement learning framework written in Mojo, featuring trait-based design
 
 - **Trait-based architecture**: Generic interfaces for environments, agents, states, and actions
 - **26+ RL algorithms**: TD methods, multi-step, eligibility traces, model-based planning, function approximation, policy gradients, PPO, and continuous control (DDPG, TD3, SAC)
+- **Deep RL infrastructure**: Native tensor operations, MLP networks, Adam optimizer, Actor-Critic networks with SIMD optimization
 - **8 native environments**: GridWorld, FrozenLake, CliffWalking, Taxi, CartPole, MountainCar, Acrobot, Pendulum
 - **Integrated SDL2 rendering**: Native visualization for continuous-state environments (CartPole, MountainCar, Acrobot, Pendulum)
 - **20+ Gymnasium wrappers**: Classic Control, Box2D, Toy Text, MuJoCo environments
@@ -123,6 +124,12 @@ sudo apt-get install libsdl2-dev libsdl2-ttf-dev
 | **TD3** | Twin Delayed DDPG with twin Q-networks, delayed policy updates, target smoothing |
 | **SAC** | Soft Actor-Critic with maximum entropy RL and automatic temperature tuning |
 
+### Deep RL (Neural Networks)
+| Algorithm | Description |
+|-----------|-------------|
+| **Deep DDPG** | DDPG with 2-layer MLP actor/critic networks, Adam optimizer, SIMD-optimized tensor ops |
+| **Deep TD3** | TD3 with twin critics, delayed policy updates, target policy smoothing |
+
 ## Environments
 
 ### Native Mojo Environments
@@ -165,7 +172,7 @@ mojo-rl/
 │   ├── vec_env.mojo       # Vectorized environment support
 │   ├── metrics.mojo       # Training metrics and logging
 │   └── sdl2.mojo          # SDL2 FFI bindings for rendering
-├── agents/                # Algorithm implementations
+├── agents/                # Algorithm implementations (tabular & linear)
 │   ├── qlearning.mojo
 │   ├── sarsa.mojo
 │   ├── expected_sarsa.mojo
@@ -181,9 +188,19 @@ mojo-rl/
 │   ├── reinforce.mojo         # REINFORCE policy gradient
 │   ├── actor_critic.mojo      # Actor-Critic, Actor-Critic(λ), A2C
 │   ├── ppo.mojo               # PPO with GAE
-│   ├── ddpg.mojo              # Deep Deterministic Policy Gradient
-│   ├── td3.mojo               # Twin Delayed DDPG
-│   └── sac.mojo               # Soft Actor-Critic
+│   ├── ddpg.mojo              # Deep Deterministic Policy Gradient (linear)
+│   ├── td3.mojo               # Twin Delayed DDPG (linear)
+│   └── sac.mojo               # Soft Actor-Critic (linear)
+├── deep_rl/               # Deep RL infrastructure (neural networks)
+│   ├── tensor.mojo        # SIMD-optimized tensor ops (matmul, activations)
+│   ├── linear.mojo        # Linear layer with compile-time dimensions
+│   ├── adam.mojo          # Adam optimizer with LinearAdam layer
+│   ├── mlp.mojo           # MLP2, MLP3 networks with tanh activation
+│   ├── actor_critic.mojo  # Actor and Critic networks for continuous control
+│   └── replay_buffer.mojo # Replay buffer for deep RL
+├── deep_agents/           # Deep RL agents (neural networks)
+│   ├── ddpg.mojo          # DeepDDPGAgent with MLP networks
+│   └── td3.mojo           # DeepTD3Agent with twin critics
 └── envs/                  # Environment implementations
     ├── gridworld.mojo
     ├── frozenlake.mojo
@@ -335,9 +352,12 @@ fn main() raises:
 | DDPG | `actor_lr`, `critic_lr`, `discount_factor`, `tau`, `noise_std`, `action_scale` |
 | TD3 | Above + `policy_delay`, `target_noise_std`, `target_noise_clip` |
 | SAC | `actor_lr`, `critic_lr`, `discount_factor`, `tau`, `alpha`, `auto_alpha`, `target_entropy` |
+| Deep DDPG | `actor_lr`, `critic_lr`, `gamma`, `tau`, `noise_std`, `noise_decay`, `action_scale`, `hidden_dim`, `batch_size` |
+| Deep TD3 | Above + `policy_delay`, `target_noise_std`, `target_noise_clip` |
 
 ## Roadmap
 
 See [ROADMAP.md](ROADMAP.md) for planned features including:
-- Deep RL (DQN, when Mojo tensor ops mature)
-- Neural network function approximation
+- Deep RL algorithms (DQN, Double DQN, Dueling DQN)
+- Deep SAC with neural networks
+- GPU support for deep RL
