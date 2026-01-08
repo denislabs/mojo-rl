@@ -41,6 +41,7 @@ from deep_rl import (
 from core import TrainingMetrics, BoxContinuousActionEnv
 
 
+@always_inline
 fn gaussian_noise() -> Float64:
     """Generate Gaussian noise using Box-Muller transform."""
     var u1 = random_float64()
@@ -51,6 +52,7 @@ fn gaussian_noise() -> Float64:
     return sqrt(-2.0 * log(u1)) * cos(2.0 * 3.14159265359 * u2)
 
 
+@always_inline
 fn cos(x: Float64) -> Float64:
     """Cosine approximation using Taylor series."""
     var x2 = x * x

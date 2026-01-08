@@ -68,10 +68,7 @@ struct ReplayBuffer[
             self.next_obs[self.ptr * Self.obs_dim + i] = next_obs[i]
 
         # Store done flag
-        if done:
-            self.dones[self.ptr] = 1.0
-        else:
-            self.dones[self.ptr] = 0.0
+        self.dones[self.ptr] = Scalar[Self.dtype](1.0) if done else Scalar[Self.dtype](0.0)
 
         # Update pointer and size
         self.ptr = (self.ptr + 1) % Self.capacity

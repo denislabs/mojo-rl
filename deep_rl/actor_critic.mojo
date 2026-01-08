@@ -71,11 +71,11 @@ struct Actor[
 
         Returns actions bounded to [-action_scale + action_bias, action_scale + action_bias].
         """
-        # Layer 1: linear + relu
+        # Layer 1: linear + relu (SIMD-optimized relu)
         var h1_pre = self.layer1.forward[batch_size](obs)
         var h1 = relu[batch_size * Self.hidden1_dim, Self.dtype](h1_pre)
 
-        # Layer 2: linear + relu
+        # Layer 2: linear + relu (SIMD-optimized relu)
         var h2_pre = self.layer2.forward[batch_size](h1)
         var h2 = relu[batch_size * Self.hidden2_dim, Self.dtype](h2_pre)
 
@@ -327,18 +327,14 @@ struct Critic[
         Args:
             dq: Gradient w.r.t. Q-values (from TD error).
             x: Cached concatenated input.
-            h1, h2: Cached hidden activations.
+            h1: Cached first hidden layer activations.
+            h2: Cached second hidden layer activations.
 
         Returns:
             Gradient w.r.t. actions (for actor update).
         """
-        # Reshape dq for layer3
-        var dq_reshaped = InlineArray[Scalar[Self.dtype], batch_size](fill=0)
-        for i in range(batch_size):
-            dq_reshaped[i] = dq[i]
-
-        # Backward through layer3
-        var dh2 = self.layer3.backward[batch_size](dq_reshaped, h2)
+        # Backward through layer3 (dq already has correct shape)
+        var dh2 = self.layer3.backward[batch_size](dq, h2)
 
         # Backprop through relu2
         var relu_g2 = relu_grad[batch_size * Self.hidden2_dim, Self.dtype](h2)

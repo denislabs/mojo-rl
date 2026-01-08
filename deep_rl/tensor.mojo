@@ -10,6 +10,7 @@ Uses compile-time dimensions for maximum performance:
 from layout import Layout, LayoutTensor
 from random import random_float64
 from math import sqrt, exp, tanh as math_tanh
+from sys import simd_width_of
 
 
 # =============================================================================
@@ -24,20 +25,49 @@ fn matmul[
     A: InlineArray[Scalar[dtype], M * K],
     B: InlineArray[Scalar[dtype], K * N],
 ) -> InlineArray[Scalar[dtype], M * N]:
-    """Matrix multiplication: A @ B.
+    """Matrix multiplication: A @ B - SIMD optimized with tiling.
 
     A: (M, K), B: (K, N) -> C: (M, N).
     Row-major layout.
+
+    Optimizations:
+    - SIMD vectorization along N dimension (contiguous B access)
+    - Loop tiling for cache efficiency
+    - Accumulation in SIMD registers
     """
+    comptime width = simd_width_of[dtype]()
     var C = InlineArray[Scalar[dtype], M * N](fill=0)
 
+    # Process each row of A
     for i in range(M):
-        for j in range(N):
-            var sum: Scalar[dtype] = 0
+        # For each row, compute dot products with all columns of B
+        # Vectorize along N (columns of B and C) for contiguous access
 
+        # SIMD loop: process `width` columns at a time
+        var j = 0
+        while j + width <= N:
+            # Accumulate in SIMD register
+            var acc = SIMD[dtype, width](0)
+
+            # Dot product: sum over K
+            for k in range(K):
+                var a_val = SIMD[dtype, width](A[i * K + k])  # broadcast scalar
+                # Load `width` elements from row k of B
+                var b_vec = B.unsafe_ptr().offset(k * N + j).load[width=width]()
+                # FMA: acc += a_val * b_vec
+                acc = a_val.fma(b_vec, acc)
+
+            # Store result
+            C.unsafe_ptr().offset(i * N + j).store(acc)
+            j += width
+
+        # Scalar remainder for columns
+        while j < N:
+            var sum: Scalar[dtype] = 0
             for k in range(K):
                 sum += A[i * K + k] * B[k * N + j]
             C[i * N + j] = sum
+            j += 1
 
     return C^
 
@@ -50,19 +80,37 @@ fn matmul_add_bias[
     B: InlineArray[Scalar[dtype], K * N],
     bias: InlineArray[Scalar[dtype], N],
 ) -> InlineArray[Scalar[dtype], M * N]:
-    """Matrix multiplication with bias: A @ B + bias (broadcast).
+    """Matrix multiplication with bias: A @ B + bias (broadcast) - SIMD optimized.
 
     A: (M, K), B: (K, N), bias: (N,) -> C: (M, N).
     """
+    comptime width = simd_width_of[dtype]()
     var C = InlineArray[Scalar[dtype], M * N](fill=0)
 
     for i in range(M):
-        for j in range(N):
-            var sum: Scalar[dtype] = bias[j]
+        # SIMD loop: process `width` columns at a time
+        var j = 0
+        while j + width <= N:
+            # Start with bias (vectorized load)
+            var acc = bias.unsafe_ptr().offset(j).load[width=width]()
 
+            # Dot product: sum over K
+            for k in range(K):
+                var a_val = SIMD[dtype, width](A[i * K + k])  # broadcast scalar
+                var b_vec = B.unsafe_ptr().offset(k * N + j).load[width=width]()
+                acc = a_val.fma(b_vec, acc)
+
+            # Store result
+            C.unsafe_ptr().offset(i * N + j).store(acc)
+            j += width
+
+        # Scalar remainder
+        while j < N:
+            var sum: Scalar[dtype] = bias[j]
             for k in range(K):
                 sum += A[i * K + k] * B[k * N + j]
             C[i * N + j] = sum
+            j += 1
 
     return C^
 
@@ -92,14 +140,26 @@ fn transpose[
 fn relu[
     size: Int, dtype: DType = DType.float64
 ](x: InlineArray[Scalar[dtype], size]) -> InlineArray[Scalar[dtype], size]:
-    """ReLU activation: max(0, x)."""
+    """ReLU activation: max(0, x) - SIMD optimized."""
+    comptime width = simd_width_of[dtype]()
     var result = InlineArray[Scalar[dtype], size](fill=0)
+    var zero_vec = SIMD[dtype, width](0)
 
-    for i in range(size):
-        if x[i] > 0:
-            result[i] = x[i]
-        else:
-            result[i] = 0
+    # Vectorized loop
+    var i = 0
+    while i + width <= size:
+        var vec = x.unsafe_ptr().offset(i).load[width=width]()
+        # SIMD max(0, x): select positive values, else 0
+        var mask = vec.gt(zero_vec)
+        var result_vec = mask.select(vec, zero_vec)
+        result.unsafe_ptr().offset(i).store(result_vec)
+        i += width
+
+    # Scalar remainder
+    while i < size:
+        result[i] = x[i] if x[i] > 0 else 0
+        i += 1
+
     return result^
 
 
@@ -142,14 +202,26 @@ fn sigmoid[
 fn relu_grad[
     size: Int, dtype: DType = DType.float64
 ](x: InlineArray[Scalar[dtype], size]) -> InlineArray[Scalar[dtype], size]:
-    """Gradient of ReLU: 1 if x > 0, else 0."""
+    """Gradient of ReLU: 1 if x > 0, else 0 - SIMD optimized."""
+    comptime width = simd_width_of[dtype]()
     var result = InlineArray[Scalar[dtype], size](fill=0)
+    var zero_vec = SIMD[dtype, width](0)
+    var one_vec = SIMD[dtype, width](1)
 
-    for i in range(size):
-        if x[i] > 0:
-            result[i] = 1.0
-        else:
-            result[i] = 0.0
+    # Vectorized loop
+    var i = 0
+    while i + width <= size:
+        var vec = x.unsafe_ptr().offset(i).load[width=width]()
+        var mask = vec.gt(zero_vec)
+        var result_vec = mask.select(one_vec, zero_vec)
+        result.unsafe_ptr().offset(i).store(result_vec)
+        i += width
+
+    # Scalar remainder
+    while i < size:
+        result[i] = Scalar[dtype](1.0) if x[i] > 0 else Scalar[dtype](0.0)
+        i += 1
+
     return result^
 
 
@@ -159,15 +231,28 @@ fn tanh_grad[
 ](activated: InlineArray[Scalar[dtype], size]) -> InlineArray[
     Scalar[dtype], size
 ]:
-    """Gradient of tanh given the OUTPUT (not input).
+    """Gradient of tanh given the OUTPUT (not input) - SIMD optimized.
 
     If y = tanh(x), then dy/dx = 1 - y^2.
     """
+    comptime width = simd_width_of[dtype]()
     var result = InlineArray[Scalar[dtype], size](fill=0)
+    var one_vec = SIMD[dtype, width](1)
 
-    for i in range(size):
+    # Vectorized loop
+    var i = 0
+    while i + width <= size:
+        var y = activated.unsafe_ptr().offset(i).load[width=width]()
+        var grad = one_vec - y * y
+        result.unsafe_ptr().offset(i).store(grad)
+        i += width
+
+    # Scalar remainder
+    while i < size:
         var y = activated[i]
         result[i] = 1.0 - y * y
+        i += 1
+
     return result^
 
 
@@ -177,15 +262,28 @@ fn sigmoid_grad[
 ](activated: InlineArray[Scalar[dtype], size]) -> InlineArray[
     Scalar[dtype], size
 ]:
-    """Gradient of sigmoid given the OUTPUT (not input).
+    """Gradient of sigmoid given the OUTPUT (not input) - SIMD optimized.
 
     If y = sigmoid(x), then dy/dx = y * (1 - y).
     """
+    comptime width = simd_width_of[dtype]()
     var result = InlineArray[Scalar[dtype], size](fill=0)
+    var one_vec = SIMD[dtype, width](1)
 
-    for i in range(size):
+    # Vectorized loop
+    var i = 0
+    while i + width <= size:
+        var y = activated.unsafe_ptr().offset(i).load[width=width]()
+        var grad = y * (one_vec - y)
+        result.unsafe_ptr().offset(i).store(grad)
+        i += width
+
+    # Scalar remainder
+    while i < size:
         var y = activated[i]
         result[i] = y * (1.0 - y)
+        i += 1
+
     return result^
 
 
@@ -201,11 +299,23 @@ fn elementwise_mul[
     a: InlineArray[Scalar[dtype], size],
     b: InlineArray[Scalar[dtype], size],
 ) -> InlineArray[Scalar[dtype], size]:
-    """Element-wise multiplication (Hadamard product)."""
+    """Element-wise multiplication (Hadamard product) - SIMD optimized."""
+    comptime width = simd_width_of[dtype]()
     var result = InlineArray[Scalar[dtype], size](fill=0)
 
-    for i in range(size):
+    # Vectorized loop
+    var i = 0
+    while i + width <= size:
+        var vec_a = a.unsafe_ptr().offset(i).load[width=width]()
+        var vec_b = b.unsafe_ptr().offset(i).load[width=width]()
+        result.unsafe_ptr().offset(i).store(vec_a * vec_b)
+        i += width
+
+    # Scalar remainder
+    while i < size:
         result[i] = a[i] * b[i]
+        i += 1
+
     return result^
 
 
@@ -216,11 +326,23 @@ fn elementwise_sub[
     a: InlineArray[Scalar[dtype], size],
     b: InlineArray[Scalar[dtype], size],
 ) -> InlineArray[Scalar[dtype], size]:
-    """Element-wise subtraction: a - b."""
+    """Element-wise subtraction: a - b (SIMD optimized)."""
+    comptime width = simd_width_of[dtype]()
     var result = InlineArray[Scalar[dtype], size](fill=0)
 
-    for i in range(size):
+    # Vectorized loop
+    var i = 0
+    while i + width <= size:
+        var vec_a = a.unsafe_ptr().offset(i).load[width=width]()
+        var vec_b = b.unsafe_ptr().offset(i).load[width=width]()
+        result.unsafe_ptr().offset(i).store(vec_a - vec_b)
+        i += width
+
+    # Scalar remainder
+    while i < size:
         result[i] = a[i] - b[i]
+        i += 1
+
     return result^
 
 
@@ -233,11 +355,23 @@ fn scale[
 ) -> InlineArray[
     Scalar[dtype], size
 ]:
-    """Scale all elements by a scalar."""
+    """Scale all elements by a scalar (SIMD optimized)."""
+    comptime width = simd_width_of[dtype]()
     var result = InlineArray[Scalar[dtype], size](fill=0)
+    var scalar_vec = SIMD[dtype, width](scalar)
 
-    for i in range(size):
+    # Vectorized loop
+    var i = 0
+    while i + width <= size:
+        var vec = x.unsafe_ptr().offset(i).load[width=width]()
+        result.unsafe_ptr().offset(i).store(vec * scalar_vec)
+        i += width
+
+    # Scalar remainder
+    while i < size:
         result[i] = x[i] * scalar
+        i += 1
+
     return result^
 
 
@@ -274,7 +408,7 @@ fn random_uniform[
     var result = InlineArray[Scalar[dtype], size](fill=0)
     var range_size = high - low
     for i in range(size):
-        result[i] = low + random_float64() * range_size
+        result[i] = low + Scalar[dtype](random_float64()) * range_size
     return result^
 
 

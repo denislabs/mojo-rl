@@ -11,10 +11,11 @@ Update rule:
     v_hat = v / (1 - beta2^t)
     param = param - lr * m_hat / (sqrt(v_hat) + eps)
 
-Optimized with @always_inline and  for compile-time loop unrolling.
+Optimized with @always_inline and SIMD vectorization.
 """
 
 from math import sqrt
+from sys import simd_width_of
 
 
 struct AdamState[size: Int, dtype: DType = DType.float64]:
@@ -126,7 +127,75 @@ struct LinearAdam[
         mut self,
         x: InlineArray[Scalar[Self.dtype], batch_size * Self.in_features],
     ) -> InlineArray[Scalar[Self.dtype], batch_size * Self.out_features]:
-        """Forward pass: y = x @ W + b. Optimized with ."""
+        """Forward pass: y = x @ W + b - SIMD optimized with register blocking.
+
+        Vectorizes along out_features dimension for contiguous W access.
+        Uses 4 accumulators to hide memory latency and improve ILP.
+        """
+        comptime width = simd_width_of[Self.dtype]()
+        comptime NUM_ACCUM = 4  # Number of parallel accumulators
+        var result = InlineArray[
+            Scalar[Self.dtype], batch_size * Self.out_features
+        ](fill=0)
+
+        for i in range(batch_size):
+            # Process 4 SIMD vectors at once using register blocking
+            var j = 0
+            while j + NUM_ACCUM * width <= Self.out_features:
+                # Initialize 4 accumulators with bias
+                var acc0 = self.b.unsafe_ptr().offset(j).load[width=width]()
+                var acc1 = self.b.unsafe_ptr().offset(j + width).load[width=width]()
+                var acc2 = self.b.unsafe_ptr().offset(j + 2 * width).load[width=width]()
+                var acc3 = self.b.unsafe_ptr().offset(j + 3 * width).load[width=width]()
+
+                # Dot product over in_features using 4 accumulators
+                for k in range(Self.in_features):
+                    var x_val = SIMD[Self.dtype, width](x[i * Self.in_features + k])
+                    var w_ptr = self.W.unsafe_ptr().offset(k * Self.out_features + j)
+                    acc0 = x_val.fma(w_ptr.load[width=width](), acc0)
+                    acc1 = x_val.fma(w_ptr.offset(width).load[width=width](), acc1)
+                    acc2 = x_val.fma(w_ptr.offset(2 * width).load[width=width](), acc2)
+                    acc3 = x_val.fma(w_ptr.offset(3 * width).load[width=width](), acc3)
+
+                # Store all 4 results
+                var r_ptr = result.unsafe_ptr().offset(i * Self.out_features + j)
+                r_ptr.store(acc0)
+                r_ptr.offset(width).store(acc1)
+                r_ptr.offset(2 * width).store(acc2)
+                r_ptr.offset(3 * width).store(acc3)
+                j += NUM_ACCUM * width
+
+            # Handle remaining SIMD vectors (1-3)
+            while j + width <= Self.out_features:
+                var acc = self.b.unsafe_ptr().offset(j).load[width=width]()
+                for k in range(Self.in_features):
+                    var x_val = SIMD[Self.dtype, width](x[i * Self.in_features + k])
+                    var w_vec = self.W.unsafe_ptr().offset(k * Self.out_features + j).load[width=width]()
+                    acc = x_val.fma(w_vec, acc)
+                result.unsafe_ptr().offset(i * Self.out_features + j).store(acc)
+                j += width
+
+            # Scalar remainder
+            while j < Self.out_features:
+                var sum: Scalar[Self.dtype] = self.b[j]
+                for k in range(Self.in_features):
+                    sum += x[i * Self.in_features + k] * self.W[k * Self.out_features + j]
+                result[i * Self.out_features + j] = sum
+                j += 1
+
+        return result^
+
+    @always_inline
+    fn forward_relu[
+        batch_size: Int
+    ](
+        mut self,
+        x: InlineArray[Scalar[Self.dtype], batch_size * Self.in_features],
+    ) -> InlineArray[Scalar[Self.dtype], batch_size * Self.out_features]:
+        """Fused forward pass with ReLU: y = max(0, x @ W + b).
+
+        Avoids intermediate allocation by applying ReLU inline.
+        """
         var result = InlineArray[
             Scalar[Self.dtype], batch_size * Self.out_features
         ](fill=0)
@@ -140,7 +209,8 @@ struct LinearAdam[
                         x[i * Self.in_features + k]
                         * self.W[k * Self.out_features + j]
                     )
-                result[i * Self.out_features + j] = sum
+                # Fused ReLU: max(0, sum)
+                result[i * Self.out_features + j] = sum if sum > 0 else 0
 
         return result^
 
@@ -152,53 +222,138 @@ struct LinearAdam[
         dy: InlineArray[Scalar[Self.dtype], batch_size * Self.out_features],
         x: InlineArray[Scalar[Self.dtype], batch_size * Self.in_features],
     ) -> InlineArray[Scalar[Self.dtype], batch_size * Self.in_features]:
-        """Backward pass: compute gradients. Optimized with ."""
+        """Backward pass: compute gradients - SIMD optimized with register blocking."""
+        comptime width = simd_width_of[Self.dtype]()
+        comptime NUM_ACCUM = 4  # Number of parallel accumulators
 
         # Zero gradients
-
         for i in range(Self.in_features * Self.out_features):
             self.dW[i] = 0
-
         for i in range(Self.out_features):
             self.db[i] = 0
 
-        # dW = x.T @ dy
-
+        # dW = x.T @ dy (SIMD over out_features with register blocking)
         for j in range(Self.in_features):
-            for k in range(Self.out_features):
-                var sum: Scalar[Self.dtype] = 0
+            var k = 0
+            # Process 4 SIMD vectors at once
+            while k + NUM_ACCUM * width <= Self.out_features:
+                var acc0 = SIMD[Self.dtype, width](0)
+                var acc1 = SIMD[Self.dtype, width](0)
+                var acc2 = SIMD[Self.dtype, width](0)
+                var acc3 = SIMD[Self.dtype, width](0)
 
                 for i in range(batch_size):
-                    sum += (
-                        x[i * Self.in_features + j]
-                        * dy[i * Self.out_features + k]
-                    )
+                    var x_val = SIMD[Self.dtype, width](x[i * Self.in_features + j])
+                    var dy_ptr = dy.unsafe_ptr().offset(i * Self.out_features + k)
+                    acc0 = x_val.fma(dy_ptr.load[width=width](), acc0)
+                    acc1 = x_val.fma(dy_ptr.offset(width).load[width=width](), acc1)
+                    acc2 = x_val.fma(dy_ptr.offset(2 * width).load[width=width](), acc2)
+                    acc3 = x_val.fma(dy_ptr.offset(3 * width).load[width=width](), acc3)
+
+                var dw_ptr = self.dW.unsafe_ptr().offset(j * Self.out_features + k)
+                dw_ptr.store(acc0)
+                dw_ptr.offset(width).store(acc1)
+                dw_ptr.offset(2 * width).store(acc2)
+                dw_ptr.offset(3 * width).store(acc3)
+                k += NUM_ACCUM * width
+
+            # Remaining SIMD vectors
+            while k + width <= Self.out_features:
+                var acc = SIMD[Self.dtype, width](0)
+                for i in range(batch_size):
+                    var x_val = SIMD[Self.dtype, width](x[i * Self.in_features + j])
+                    var dy_vec = dy.unsafe_ptr().offset(i * Self.out_features + k).load[width=width]()
+                    acc = x_val.fma(dy_vec, acc)
+                self.dW.unsafe_ptr().offset(j * Self.out_features + k).store(acc)
+                k += width
+
+            # Scalar remainder
+            while k < Self.out_features:
+                var sum: Scalar[Self.dtype] = 0
+                for i in range(batch_size):
+                    sum += x[i * Self.in_features + j] * dy[i * Self.out_features + k]
                 self.dW[j * Self.out_features + k] = sum
+                k += 1
 
-        # db = sum(dy, axis=0)
+        # db = sum(dy, axis=0) - SIMD over out_features with register blocking
+        var j = 0
+        while j + NUM_ACCUM * width <= Self.out_features:
+            var acc0 = SIMD[Self.dtype, width](0)
+            var acc1 = SIMD[Self.dtype, width](0)
+            var acc2 = SIMD[Self.dtype, width](0)
+            var acc3 = SIMD[Self.dtype, width](0)
 
-        for j in range(Self.out_features):
+            for i in range(batch_size):
+                var dy_ptr = dy.unsafe_ptr().offset(i * Self.out_features + j)
+                acc0 += dy_ptr.load[width=width]()
+                acc1 += dy_ptr.offset(width).load[width=width]()
+                acc2 += dy_ptr.offset(2 * width).load[width=width]()
+                acc3 += dy_ptr.offset(3 * width).load[width=width]()
+
+            var db_ptr = self.db.unsafe_ptr().offset(j)
+            db_ptr.store(acc0)
+            db_ptr.offset(width).store(acc1)
+            db_ptr.offset(2 * width).store(acc2)
+            db_ptr.offset(3 * width).store(acc3)
+            j += NUM_ACCUM * width
+
+        while j + width <= Self.out_features:
+            var acc = SIMD[Self.dtype, width](0)
+            for i in range(batch_size):
+                var dy_vec = dy.unsafe_ptr().offset(i * Self.out_features + j).load[width=width]()
+                acc += dy_vec
+            self.db.unsafe_ptr().offset(j).store(acc)
+            j += width
+
+        while j < Self.out_features:
             var sum: Scalar[Self.dtype] = 0
-
             for i in range(batch_size):
                 sum += dy[i * Self.out_features + j]
             self.db[j] = sum
+            j += 1
 
-        # dx = dy @ W.T
+        # dx = dy @ W.T - SIMD over out_features with register blocking
         var dx = InlineArray[Scalar[Self.dtype], batch_size * Self.in_features](
             fill=0
         )
 
         for i in range(batch_size):
-            for j in range(Self.in_features):
-                var sum: Scalar[Self.dtype] = 0
+            for jj in range(Self.in_features):
+                # Use 4 accumulators for dot product
+                var acc0 = SIMD[Self.dtype, width](0)
+                var acc1 = SIMD[Self.dtype, width](0)
+                var acc2 = SIMD[Self.dtype, width](0)
+                var acc3 = SIMD[Self.dtype, width](0)
 
-                for k in range(Self.out_features):
-                    sum += (
-                        dy[i * Self.out_features + k]
-                        * self.W[j * Self.out_features + k]
-                    )
-                dx[i * Self.in_features + j] = sum
+                var k = 0
+                while k + NUM_ACCUM * width <= Self.out_features:
+                    var dy_ptr = dy.unsafe_ptr().offset(i * Self.out_features + k)
+                    var w_ptr = self.W.unsafe_ptr().offset(jj * Self.out_features + k)
+                    acc0 = dy_ptr.load[width=width]().fma(w_ptr.load[width=width](), acc0)
+                    acc1 = dy_ptr.offset(width).load[width=width]().fma(w_ptr.offset(width).load[width=width](), acc1)
+                    acc2 = dy_ptr.offset(2 * width).load[width=width]().fma(w_ptr.offset(2 * width).load[width=width](), acc2)
+                    acc3 = dy_ptr.offset(3 * width).load[width=width]().fma(w_ptr.offset(3 * width).load[width=width](), acc3)
+                    k += NUM_ACCUM * width
+
+                # Combine accumulators
+                var acc = acc0 + acc1 + acc2 + acc3
+
+                # Remainder SIMD iterations
+                while k + width <= Self.out_features:
+                    var dy_vec = dy.unsafe_ptr().offset(i * Self.out_features + k).load[width=width]()
+                    var w_vec = self.W.unsafe_ptr().offset(jj * Self.out_features + k).load[width=width]()
+                    acc = dy_vec.fma(w_vec, acc)
+                    k += width
+
+                # Reduce SIMD vector to scalar
+                var sum: Scalar[Self.dtype] = acc.reduce_add()
+
+                # Scalar remainder
+                while k < Self.out_features:
+                    sum += dy[i * Self.out_features + k] * self.W[jj * Self.out_features + k]
+                    k += 1
+
+                dx[i * Self.in_features + jj] = sum
 
         return dx^
 
@@ -216,13 +371,28 @@ struct LinearAdam[
 
     @always_inline
     fn zero_grad(mut self):
-        """Reset gradients to zero."""
+        """Reset gradients to zero - SIMD optimized."""
+        comptime width = simd_width_of[Self.dtype]()
+        comptime W_size = Self.in_features * Self.out_features
+        var zero_vec = SIMD[Self.dtype, width](0)
 
-        for i in range(Self.in_features * Self.out_features):
+        # Zero dW with SIMD
+        var i = 0
+        while i + width <= W_size:
+            self.dW.unsafe_ptr().offset(i).store(zero_vec)
+            i += width
+        while i < W_size:
             self.dW[i] = 0
+            i += 1
 
-        for i in range(Self.out_features):
-            self.db[i] = 0
+        # Zero db with SIMD
+        var j = 0
+        while j + width <= Self.out_features:
+            self.db.unsafe_ptr().offset(j).store(zero_vec)
+            j += width
+        while j < Self.out_features:
+            self.db[j] = 0
+            j += 1
 
     @always_inline
     fn soft_update_from(
@@ -230,22 +400,42 @@ struct LinearAdam[
         source: Self,
         tau: Scalar[Self.dtype],
     ):
-        """Soft update: self = tau * source + (1 - tau) * self.
+        """Soft update: self = tau * source + (1 - tau) * self - SIMD optimized.
 
         Used for target network updates in DDPG/TD3.
         """
-        var one_minus_tau = 1.0 - tau
+        comptime width = simd_width_of[Self.dtype]()
+        comptime W_size = Self.in_features * Self.out_features
+        var tau_vec = SIMD[Self.dtype, width](tau)
+        var one_minus_tau_vec = SIMD[Self.dtype, width](1.0 - tau)
 
-        for i in range(Self.in_features * Self.out_features):
-            self.W[i] = tau * source.W[i] + one_minus_tau * self.W[i]
+        # Update W with SIMD
+        var i = 0
+        while i + width <= W_size:
+            var src_vec = source.W.unsafe_ptr().offset(i).load[width=width]()
+            var self_vec = self.W.unsafe_ptr().offset(i).load[width=width]()
+            var result = tau_vec * src_vec + one_minus_tau_vec * self_vec
+            self.W.unsafe_ptr().offset(i).store(result)
+            i += width
+        while i < W_size:
+            self.W[i] = tau * source.W[i] + (1.0 - tau) * self.W[i]
+            i += 1
 
-        for i in range(Self.out_features):
-            self.b[i] = tau * source.b[i] + one_minus_tau * self.b[i]
+        # Update b with SIMD
+        var j = 0
+        while j + width <= Self.out_features:
+            var src_vec = source.b.unsafe_ptr().offset(j).load[width=width]()
+            var self_vec = self.b.unsafe_ptr().offset(j).load[width=width]()
+            var result = tau_vec * src_vec + one_minus_tau_vec * self_vec
+            self.b.unsafe_ptr().offset(j).store(result)
+            j += width
+        while j < Self.out_features:
+            self.b[j] = tau * source.b[j] + (1.0 - tau) * self.b[j]
+            j += 1
 
     @always_inline
     fn copy_from(mut self, source: Self):
         """Hard copy parameters from source."""
-
         for i in range(Self.in_features * Self.out_features):
             self.W[i] = source.W[i]
 
