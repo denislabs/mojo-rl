@@ -17,6 +17,13 @@
   - `pendulum.mojo` - Physics matching Gymnasium Pendulum-v1
   - Supports both discrete (tabular) and continuous (DDPG) action interfaces
   - SDL2 rendering with pivot, rod, and bob visualization
+- [x] LunarLander (Native) - Pure Mojo implementation with custom 2D physics engine
+  - `lunar_lander.mojo` - Physics matching Gymnasium LunarLander-v3
+  - Custom minimal Box2D-style physics (rigid bodies, joints, collision detection)
+  - Both discrete (4 actions) and continuous (2D throttle) action spaces
+  - Wind and turbulence effects
+  - SDL2 rendering with terrain, lander, legs, helipad, flags, and flame particles
+  - Implements `BoxDiscreteActionEnv` trait for RL agent compatibility
 
 ### Environments - Gymnasium Wrappers (`envs/gymnasium/`)
 - [x] Generic Gymnasium wrapper - Works with any Gymnasium environment
@@ -137,14 +144,23 @@
   - Delayed policy updates (actor updates every N critic updates)
   - Target policy smoothing (clipped noise on target actions)
   - All three key TD3 improvements over DDPG
+- [x] Deep DQN / Double DQN - Deep Q-Network for discrete action spaces
+  - `deep_agents/dqn.mojo` - DeepDQNAgent, QNetwork
+  - 2-layer MLP Q-network (obs -> hidden -> hidden -> Q-values for all actions)
+  - Target network with soft updates for stability
+  - Experience replay buffer
+  - Epsilon-greedy exploration with decay
+  - **Double DQN** (enabled by default): Uses online network to select actions,
+    target network to evaluate - reduces overestimation bias
+  - `train()` and `evaluate()` methods for BoxDiscreteActionEnv
+  - `examples/lunar_lander_dqn.mojo` - LunarLander training with Double DQN
 
 ## In Progress / Next Steps
 
 ### Deep RL Agents (Neural Networks)
-- [ ] Deep DQN - Deep Q-Network with target network
-- [ ] Deep Double DQN - DQN with double Q-learning
 - [ ] Deep Dueling DQN - Separate value and advantage streams
 - [ ] Deep SAC - Soft Actor-Critic with neural networks (stochastic policy + entropy)
+- [ ] Prioritized Experience Replay - Sample transitions by TD error priority
 
 ### GPU Support
 - [ ] GPU tensor operations - Port tensor.mojo ops to GPU (when Mojo GPU support matures)
@@ -180,8 +196,9 @@
 - [ ] Parallel Training - Multiple environments (vectorized envs provide foundation)
 
 ### Environments - Native Ports (Next)
-- [ ] LunarLander (Native) - Port Box2D physics to pure Mojo
+- [x] LunarLander (Native) - Port Box2D physics to pure Mojo (COMPLETED - see above)
 - [x] Pendulum (Native) - Port continuous action environment (COMPLETED - see above)
+- [ ] BipedalWalker (Native) - Port Box2D walker physics to pure Mojo
 - [ ] Custom environment builder
 
 ## Algorithm Summary
@@ -216,3 +233,5 @@
 | SAC | Continuous Control | Stochastic policy + entropy regularization + auto α |
 | Deep DDPG | Deep RL | Neural network actor/critic with Adam optimizer |
 | Deep TD3 | Deep RL | Twin critics + delayed updates + target smoothing (neural networks) |
+| Deep DQN | Deep RL | Neural network Q-function with target network + replay |
+| Deep Double DQN | Deep RL | DQN with reduced overestimation (online selects, target evaluates) |

@@ -5,10 +5,10 @@ A reinforcement learning framework written in Mojo, featuring trait-based design
 ## Features
 
 - **Trait-based architecture**: Generic interfaces for environments, agents, states, and actions
-- **26+ RL algorithms**: TD methods, multi-step, eligibility traces, model-based planning, function approximation, policy gradients, PPO, and continuous control (DDPG, TD3, SAC)
+- **28+ RL algorithms**: TD methods, multi-step, eligibility traces, model-based planning, function approximation, policy gradients, PPO, continuous control (DDPG, TD3, SAC), and deep RL (DQN, Double DQN)
 - **Deep RL infrastructure**: Native tensor operations, MLP networks, Adam optimizer, Actor-Critic networks with SIMD optimization
-- **8 native environments**: GridWorld, FrozenLake, CliffWalking, Taxi, CartPole, MountainCar, Acrobot, Pendulum
-- **Integrated SDL2 rendering**: Native visualization for continuous-state environments (CartPole, MountainCar, Acrobot, Pendulum)
+- **9 native environments**: GridWorld, FrozenLake, CliffWalking, Taxi, CartPole, MountainCar, Acrobot, Pendulum, LunarLander
+- **Integrated SDL2 rendering**: Native visualization for continuous-state environments (CartPole, MountainCar, Acrobot, Pendulum, LunarLander)
 - **20+ Gymnasium wrappers**: Classic Control, Box2D, Toy Text, MuJoCo environments
 - **Experience replay**: Uniform and prioritized replay buffers for both discrete and continuous actions
 - **Policy gradient methods**: REINFORCE, Actor-Critic, A2C, PPO with GAE
@@ -129,6 +129,8 @@ sudo apt-get install libsdl2-dev libsdl2-ttf-dev
 |-----------|-------------|
 | **Deep DDPG** | DDPG with 2-layer MLP actor/critic networks, Adam optimizer, SIMD-optimized tensor ops |
 | **Deep TD3** | TD3 with twin critics, delayed policy updates, target policy smoothing |
+| **Deep DQN** | Deep Q-Network with target network, experience replay, epsilon-greedy exploration |
+| **Deep Double DQN** | DQN with reduced overestimation: online network selects actions, target evaluates |
 
 ## Environments
 
@@ -143,6 +145,7 @@ sudo apt-get install libsdl2-dev libsdl2-ttf-dev
 | **MountainCar** | Continuous | 3 | Drive car up mountain using momentum, integrated SDL2 rendering |
 | **Acrobot** | Continuous | 3 | Swing two-link pendulum above threshold, integrated SDL2 rendering |
 | **Pendulum** | Continuous | Continuous | Swing up and balance inverted pendulum, integrated SDL2 rendering |
+| **LunarLander** | Continuous (8D) | 4 (discrete) | Land spacecraft on helipad, custom 2D physics engine, flame particles, SDL2 rendering |
 
 ### Gymnasium Wrappers (`envs/gymnasium/`)
 Wrap any Gymnasium environment with Python interop:
@@ -200,7 +203,16 @@ mojo-rl/
 │   └── replay_buffer.mojo # Replay buffer for deep RL
 ├── deep_agents/           # Deep RL agents (neural networks)
 │   ├── ddpg.mojo          # DeepDDPGAgent with MLP networks
-│   └── td3.mojo           # DeepTD3Agent with twin critics
+│   ├── td3.mojo           # DeepTD3Agent with twin critics
+│   └── dqn.mojo           # DeepDQNAgent with Double DQN support
+├── physics/               # 2D physics engine for LunarLander
+│   ├── vec2.mojo          # 2D vector math
+│   ├── body.mojo          # Rigid body dynamics
+│   ├── shape.mojo         # Polygon, circle, edge shapes
+│   ├── fixture.mojo       # Shape-body attachment + collision filtering
+│   ├── collision.mojo     # Edge-polygon collision detection
+│   ├── joint.mojo         # Revolute joint with motor/limits
+│   └── world.mojo         # Physics world simulation
 └── envs/                  # Environment implementations
     ├── gridworld.mojo
     ├── frozenlake.mojo
@@ -210,6 +222,7 @@ mojo-rl/
     ├── mountain_car.mojo      # Native MountainCar with integrated SDL2 rendering
     ├── acrobot.mojo           # Native Acrobot with integrated SDL2 rendering
     ├── pendulum.mojo          # Native Pendulum with integrated SDL2 rendering
+    ├── lunar_lander.mojo      # Native LunarLander with custom physics + SDL2 rendering
     ├── vec_cartpole.mojo      # Vectorized CartPole for parallel training
     ├── renderer_base.mojo     # SDL2 rendering infrastructure
     └── gymnasium/             # Gymnasium wrappers
@@ -354,10 +367,13 @@ fn main() raises:
 | SAC | `actor_lr`, `critic_lr`, `discount_factor`, `tau`, `alpha`, `auto_alpha`, `target_entropy` |
 | Deep DDPG | `actor_lr`, `critic_lr`, `gamma`, `tau`, `noise_std`, `noise_decay`, `action_scale`, `hidden_dim`, `batch_size` |
 | Deep TD3 | Above + `policy_delay`, `target_noise_std`, `target_noise_clip` |
+| Deep DQN | `lr`, `gamma`, `tau`, `epsilon`, `epsilon_min`, `epsilon_decay`, `hidden_dim`, `batch_size`, `buffer_capacity` |
+| Deep Double DQN | Same as Deep DQN (enabled by default via `double_dqn=True` compile-time parameter) |
 
 ## Roadmap
 
 See [ROADMAP.md](ROADMAP.md) for planned features including:
-- Deep RL algorithms (DQN, Double DQN, Dueling DQN)
-- Deep SAC with neural networks
+- Deep RL algorithms (Dueling DQN, Deep SAC)
+- Prioritized Experience Replay
 - GPU support for deep RL
+- More native environment ports (BipedalWalker)
