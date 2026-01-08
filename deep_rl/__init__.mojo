@@ -49,4 +49,4 @@ from .adam import AdamState, LinearAdam
 
 from .actor_critic import Actor, Critic, StochasticActor
 
-from .replay_buffer import ReplayBuffer
+from .replay_buffer import ReplayBuffer, PrioritizedReplayBuffer
