@@ -7,7 +7,7 @@ Run with:
 """
 
 from time import perf_counter_ns
-from deep_agents import DeepDDPGAgent
+from deep_agents.cpu import DeepDDPGAgent
 from envs.pendulum import PendulumEnv
 
 
@@ -24,7 +24,9 @@ fn benchmark_train_step() raises:
     comptime buffer_capacity = 10000
     comptime batch_size = 64
 
-    var agent = DeepDDPGAgent[obs_dim, action_dim, hidden_dim, buffer_capacity, batch_size](
+    var agent = DeepDDPGAgent[
+        obs_dim, action_dim, hidden_dim, buffer_capacity, batch_size
+    ](
         gamma=0.99,
         tau=0.005,
         actor_lr=0.001,
@@ -36,8 +38,22 @@ fn benchmark_train_step() raises:
     print("Agent config:")
     print("  Hidden dim: " + String(hidden_dim))
     print("  Batch size: " + String(batch_size))
-    print("  Actor params: " + String(agent.actor.layer1.num_parameters() + agent.actor.layer2.num_parameters() + agent.actor.layer3.num_parameters()))
-    print("  Critic params: " + String(agent.critic.layer1.num_parameters() + agent.critic.layer2.num_parameters() + agent.critic.layer3.num_parameters()))
+    print(
+        "  Actor params: "
+        + String(
+            agent.actor.layer1.num_parameters()
+            + agent.actor.layer2.num_parameters()
+            + agent.actor.layer3.num_parameters()
+        )
+    )
+    print(
+        "  Critic params: "
+        + String(
+            agent.critic.layer1.num_parameters()
+            + agent.critic.layer2.num_parameters()
+            + agent.critic.layer3.num_parameters()
+        )
+    )
 
     # Fill buffer with random data
     print("\nFilling buffer with random transitions...")
@@ -99,7 +115,9 @@ fn benchmark_episode() raises:
     comptime buffer_capacity = 10000
     comptime batch_size = 64
 
-    var agent = DeepDDPGAgent[obs_dim, action_dim, hidden_dim, buffer_capacity, batch_size](
+    var agent = DeepDDPGAgent[
+        obs_dim, action_dim, hidden_dim, buffer_capacity, batch_size
+    ](
         action_scale=2.0,
     )
 
@@ -123,7 +141,13 @@ fn benchmark_episode() raises:
     var num_episodes = 5
     var max_steps = 200
 
-    print("\nBenchmarking " + String(num_episodes) + " episodes (" + String(max_steps) + " steps each)...")
+    print(
+        "\nBenchmarking "
+        + String(num_episodes)
+        + " episodes ("
+        + String(max_steps)
+        + " steps each)..."
+    )
 
     var total_time_ns: UInt = 0
     var total_steps = 0
@@ -165,7 +189,7 @@ fn benchmark_episode() raises:
             steps += 1
 
         var ep_end = perf_counter_ns()
-        total_time_ns += (ep_end - ep_start)
+        total_time_ns += ep_end - ep_start
         total_steps += steps
 
     var total_ms = Float64(total_time_ns) / 1_000_000.0

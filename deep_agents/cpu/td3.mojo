@@ -13,7 +13,7 @@ For linear function approximation, see agents/td3.mojo (TD3Agent).
 Reference: Fujimoto et al. "Addressing Function Approximation Error in Actor-Critic Methods"
 
 Example usage:
-    from deep_agents import DeepTD3Agent
+    from deep_agents.cpu import DeepTD3Agent
     from envs import PendulumEnv
 
     var env = PendulumEnv()
@@ -30,7 +30,7 @@ Example usage:
 from random import random_float64
 from math import sqrt, log
 
-from deep_rl import (
+from deep_rl.cpu import (
     Actor,
     Critic,
     ReplayBuffer,
@@ -352,7 +352,10 @@ struct DeepTD3Agent[
 
         # Add clipped noise to target actions
         for i in range(Self.batch_size * Self.action_dim):
-            var noise = Scalar[Self.dtype](_gaussian_noise_td3()) * self.target_noise_std
+            var noise = (
+                Scalar[Self.dtype](_gaussian_noise_td3())
+                * self.target_noise_std
+            )
             # Clip noise
             if noise > self.target_noise_clip:
                 noise = self.target_noise_clip
@@ -382,8 +385,7 @@ struct DeepTD3Agent[
             if target_q2[i] < min_q:
                 min_q = target_q2[i]
             target_values[i] = (
-                batch_rewards[i]
-                + self.gamma * (1.0 - batch_dones[i]) * min_q
+                batch_rewards[i] + self.gamma * (1.0 - batch_dones[i]) * min_q
             )
 
         # Update critic 1
@@ -445,7 +447,9 @@ struct DeepTD3Agent[
         )
         self.critic2.update_adam(self.critic_lr)
 
-        var total_critic_loss = (critic1_loss + critic2_loss) / (2.0 * batch_size_scalar)
+        var total_critic_loss = (critic1_loss + critic2_loss) / (
+            2.0 * batch_size_scalar
+        )
 
         # ========================================
         # Delayed Actor update (TD3 innovation #2)
@@ -480,12 +484,20 @@ struct DeepTD3Agent[
             ](fill=0)
 
             _ = self.critic1.forward_with_cache[Self.batch_size](
-                batch_obs, actor_actions, x_cache_actor, h1_cache_actor, h2_cache_actor
+                batch_obs,
+                actor_actions,
+                x_cache_actor,
+                h1_cache_actor,
+                h2_cache_actor,
             )
 
             # Actor gradient: maximize Q -> dQ/daction = -1 (gradient ascent)
-            var dq_actor = InlineArray[Scalar[Self.dtype], Self.batch_size](fill=0)
-            var neg_one_over_batch = Scalar[Self.dtype](-1.0) / batch_size_scalar
+            var dq_actor = InlineArray[Scalar[Self.dtype], Self.batch_size](
+                fill=0
+            )
+            var neg_one_over_batch = (
+                Scalar[Self.dtype](-1.0) / batch_size_scalar
+            )
             for i in range(Self.batch_size):
                 dq_actor[i] = neg_one_over_batch
 
@@ -609,7 +621,9 @@ struct DeepTD3Agent[
                 done = step_result[2]
 
                 # Convert observations
-                var obs = _list_to_inline_td3[Self.obs_dim, Self.dtype](obs_list)
+                var obs = _list_to_inline_td3[Self.obs_dim, Self.dtype](
+                    obs_list
+                )
                 var next_obs_list = env.get_obs_list()
                 var next_obs = _list_to_inline_td3[Self.obs_dim, Self.dtype](
                     next_obs_list
@@ -640,7 +654,9 @@ struct DeepTD3Agent[
 
             while not done and steps < max_steps_per_episode:
                 # Convert observation
-                var obs = _list_to_inline_td3[Self.obs_dim, Self.dtype](obs_list)
+                var obs = _list_to_inline_td3[Self.obs_dim, Self.dtype](
+                    obs_list
+                )
 
                 # Select action with exploration noise
                 var action = self.select_action(obs, add_noise=True)
@@ -747,7 +763,9 @@ struct DeepTD3Agent[
             while not done and steps < max_steps_per_episode:
                 if render:
                     env.render()
-                var obs = _list_to_inline_td3[Self.obs_dim, Self.dtype](obs_list)
+                var obs = _list_to_inline_td3[Self.obs_dim, Self.dtype](
+                    obs_list
+                )
 
                 # Use deterministic action (no noise)
                 var action = self.select_action(obs, add_noise=False)

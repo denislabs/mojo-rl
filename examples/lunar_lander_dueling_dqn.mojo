@@ -28,7 +28,7 @@ LunarLander is solved when average reward > 200 over 100 episodes.
 from random import seed
 
 from envs.lunar_lander import LunarLanderEnv
-from deep_agents.dueling_dqn import DeepDuelingDQNAgent
+from deep_agents.cpu import DeepDuelingDQNAgent
 
 
 fn main() raises:
@@ -56,26 +56,26 @@ fn main() raises:
     var agent = DeepDuelingDQNAgent[
         obs_dim=8,
         num_actions=4,
-        hidden_dim=128,          # Shared feature layers
-        stream_hidden_dim=64,    # Value/Advantage stream hidden
+        hidden_dim=128,  # Shared feature layers
+        stream_hidden_dim=64,  # Value/Advantage stream hidden
         buffer_capacity=20000,
         batch_size=64,
     ](
-        gamma=0.99,         # Standard discount
-        tau=0.005,          # Standard target update
-        lr=0.0005,          # Stable learning rate (5e-4)
-        epsilon=1.0,        # Start with full exploration
-        epsilon_min=0.01,   # Low minimum
-        epsilon_decay=0.997, # Slow decay for exploration
+        gamma=0.99,  # Standard discount
+        tau=0.005,  # Standard target update
+        lr=0.0005,  # Stable learning rate (5e-4)
+        epsilon=1.0,  # Start with full exploration
+        epsilon_min=0.01,  # Low minimum
+        epsilon_decay=0.997,  # Slow decay for exploration
     )
 
     # Train
     _ = agent.train(
         env,
-        num_episodes=600,    # Sufficient for convergence
+        num_episodes=600,  # Sufficient for convergence
         max_steps_per_episode=1000,
-        warmup_steps=5000,   # Warmup for diverse experiences
-        train_every=4,       # Standard DQN training frequency
+        warmup_steps=5000,  # Warmup for diverse experiences
+        train_every=4,  # Standard DQN training frequency
         verbose=True,
         print_every=25,
         environment_name="LunarLander",

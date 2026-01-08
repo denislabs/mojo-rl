@@ -15,7 +15,7 @@ Expected results:
 """
 
 from envs import LunarLanderEnv
-from deep_agents import DeepDQNAgent, DeepDQNPERAgent
+from deep_agents.cpu import DeepDQNAgent, DeepDQNPERAgent
 
 
 fn main() raises:
@@ -164,7 +164,7 @@ fn main() raises:
     print()
 
     if per_early_reward > dqn_early_reward:
-        var improvement = (per_early_reward - dqn_early_reward)
+        var improvement = per_early_reward - dqn_early_reward
         print("PER improved early learning by", improvement, "reward!")
     else:
         print("Standard DQN performed better early (unusual).")

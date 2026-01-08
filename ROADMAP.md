@@ -173,7 +173,7 @@
   - Automatic entropy temperature (α) tuning
   - No target actor (uses current policy for next-state actions)
   - `examples/deep_sac_demo.mojo` - Pendulum training with Deep SAC
-- [ ] Prioritized Experience Replay - Sample transitions by TD error priority
+- [x] Prioritized Experience Replay - Sample transitions by TD error priority
 
 ### GPU Support
 - [ ] GPU tensor operations - Port tensor.mojo ops to GPU (when Mojo GPU support matures)

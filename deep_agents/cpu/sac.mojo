@@ -1,25 +1,32 @@
-"""Deep Deterministic Policy Gradient (DDPG) Agent with Neural Networks.
+"""Deep Soft Actor-Critic (SAC) with Neural Networks.
 
-DDPG is an off-policy actor-critic algorithm for continuous control.
-It uses:
-- Deterministic actor: obs -> action (2-layer MLP with tanh output)
-- Q-function critic: (obs, action) -> Q-value (2-layer MLP)
-- Target networks with soft updates
-- Experience replay
-- Gaussian exploration noise
+SAC is a maximum entropy reinforcement learning algorithm that learns a
+stochastic policy by maximizing both expected return and policy entropy.
+This encourages exploration and leads to more robust policies.
+
+Key components:
+1. Stochastic actor: Gaussian policy with learned mean and log_std
+2. Twin Q-networks: Like TD3, uses min(Q1, Q2) to reduce overestimation
+3. Entropy bonus: Policy trained to maximize reward + alpha * entropy
+4. Automatic temperature: alpha can be learned to maintain target entropy
+5. No target actor: Uses current policy for next action sampling
 
 This is the DEEP version using neural networks with compile-time dimensions.
-For linear function approximation, see agents/ddpg.mojo (DDPGAgent).
+For linear function approximation, see agents/sac.mojo (SACAgent).
 
-Reference: Lillicrap et al. "Continuous control with deep reinforcement learning"
+References:
+- Haarnoja et al. (2018): "Soft Actor-Critic: Off-Policy Maximum Entropy Deep RL"
+- Haarnoja et al. (2018): "Soft Actor-Critic Algorithms and Applications"
 
 Example usage:
-    from deeprl import DeepDDPGAgent
+    from deep_agents.cpu import DeepSACAgent
     from envs import PendulumEnv
 
     var env = PendulumEnv()
-    var agent = DeepDDPGAgent[obs_dim=3, action_dim=1, hidden_dim=128](
+    var agent = DeepSACAgent[obs_dim=3, action_dim=1, hidden_dim=256](
         action_scale=2.0,  # Pendulum actions in [-2, 2]
+        alpha=0.2,         # Entropy coefficient
+        auto_alpha=True,   # Automatically tune alpha
     )
 
     # Simple training
@@ -28,10 +35,10 @@ Example usage:
 """
 
 from random import random_float64
-from math import sqrt, log
+from math import sqrt, log, exp
 
-from deep_rl import (
-    Actor,
+from deep_rl.cpu import (
+    StochasticActor,
     Critic,
     ReplayBuffer,
     scale,
@@ -42,18 +49,18 @@ from core import TrainingMetrics, BoxContinuousActionEnv
 
 
 @always_inline
-fn gaussian_noise() -> Float64:
+fn _gaussian_noise_sac() -> Float64:
     """Generate Gaussian noise using Box-Muller transform."""
     var u1 = random_float64()
     var u2 = random_float64()
     # Avoid log(0)
     if u1 < 1e-10:
         u1 = 1e-10
-    return sqrt(-2.0 * log(u1)) * cos(2.0 * 3.14159265359 * u2)
+    return sqrt(-2.0 * log(u1)) * _cos_sac(2.0 * 3.14159265359 * u2)
 
 
 @always_inline
-fn cos(x: Float64) -> Float64:
+fn _cos_sac(x: Float64) -> Float64:
     """Cosine approximation using Taylor series."""
     var x2 = x * x
     var x4 = x2 * x2
@@ -61,7 +68,7 @@ fn cos(x: Float64) -> Float64:
     return 1.0 - x2 / 2.0 + x4 / 24.0 - x6 / 720.0
 
 
-struct DeepDDPGAgent[
+struct DeepSACAgent[
     obs_dim: Int,
     action_dim: Int,
     hidden_dim: Int = 256,
@@ -69,10 +76,17 @@ struct DeepDDPGAgent[
     batch_size: Int = 64,
     dtype: DType = DType.float64,
 ]:
-    """Deep DDPG Agent for continuous control using neural networks.
+    """Deep SAC Agent for continuous control using neural networks.
 
-    This agent uses 2-layer MLPs for both actor and critic networks,
-    with compile-time dimensions for maximum performance.
+    This agent uses a stochastic actor (Gaussian policy with learned mean/std)
+    and twin critics, with compile-time dimensions for maximum performance.
+
+    Key SAC features:
+    1. Maximum entropy objective: maximize reward + alpha * entropy
+    2. Stochastic policy for better exploration
+    3. Twin critics to reduce overestimation (like TD3)
+    4. Optional automatic entropy temperature tuning
+    5. No target actor network (unlike DDPG/TD3)
 
     Parameters:
         obs_dim: Observation dimension.
@@ -83,29 +97,38 @@ struct DeepDDPGAgent[
         dtype: Data type for computations.
     """
 
-    # Networks
-    var actor: Actor[
+    # Stochastic Actor network (no target - SAC uses current policy)
+    var actor: StochasticActor[
         Self.obs_dim,
         Self.action_dim,
         Self.hidden_dim,
         Self.hidden_dim,
         Self.dtype,
     ]
-    var actor_target: Actor[
+
+    # Twin Critic networks (like TD3)
+    var critic1: Critic[
         Self.obs_dim,
         Self.action_dim,
         Self.hidden_dim,
         Self.hidden_dim,
         Self.dtype,
     ]
-    var critic: Critic[
+    var critic1_target: Critic[
         Self.obs_dim,
         Self.action_dim,
         Self.hidden_dim,
         Self.hidden_dim,
         Self.dtype,
     ]
-    var critic_target: Critic[
+    var critic2: Critic[
+        Self.obs_dim,
+        Self.action_dim,
+        Self.hidden_dim,
+        Self.hidden_dim,
+        Self.dtype,
+    ]
+    var critic2_target: Critic[
         Self.obs_dim,
         Self.action_dim,
         Self.hidden_dim,
@@ -123,10 +146,14 @@ struct DeepDDPGAgent[
     var tau: Scalar[Self.dtype]  # Soft update coefficient
     var actor_lr: Scalar[Self.dtype]  # Actor learning rate
     var critic_lr: Scalar[Self.dtype]  # Critic learning rate
-    var noise_std: Scalar[Self.dtype]  # Exploration noise std
-    var noise_std_min: Scalar[Self.dtype]  # Minimum noise after decay
-    var noise_decay: Scalar[Self.dtype]  # Noise decay rate per episode
     var action_scale: Scalar[Self.dtype]  # Action scaling
+
+    # SAC-specific hyperparameters
+    var alpha: Scalar[Self.dtype]  # Entropy coefficient (temperature)
+    var log_alpha: Scalar[Self.dtype]  # Log of alpha for gradient updates
+    var target_entropy: Scalar[Self.dtype]  # Target entropy for auto-tuning
+    var alpha_lr: Scalar[Self.dtype]  # Learning rate for alpha
+    var auto_alpha: Bool  # Whether to automatically tune alpha
 
     # Training state
     var total_steps: Int
@@ -136,26 +163,29 @@ struct DeepDDPGAgent[
         out self,
         gamma: Scalar[Self.dtype] = 0.99,
         tau: Scalar[Self.dtype] = 0.005,
-        actor_lr: Scalar[Self.dtype] = 0.001,
-        critic_lr: Scalar[Self.dtype] = 0.001,
-        noise_std: Scalar[Self.dtype] = 0.1,
-        noise_std_min: Scalar[Self.dtype] = 0.01,
-        noise_decay: Scalar[Self.dtype] = 0.995,
+        actor_lr: Scalar[Self.dtype] = 0.0003,
+        critic_lr: Scalar[Self.dtype] = 0.0003,
         action_scale: Scalar[Self.dtype] = 1.0,
+        alpha: Scalar[Self.dtype] = 0.2,
+        auto_alpha: Bool = True,
+        alpha_lr: Scalar[Self.dtype] = 0.0003,
+        target_entropy: Scalar[Self.dtype] = -1.0,  # -dim(A) is common default
     ):
-        """Initialize Deep DDPG agent.
+        """Initialize Deep SAC agent.
 
         Args:
             gamma: Discount factor for future rewards.
             tau: Soft update coefficient for target networks.
             actor_lr: Learning rate for actor network.
-            critic_lr: Learning rate for critic network.
-            noise_std: Initial standard deviation of exploration noise.
-            noise_std_min: Minimum noise after decay.
-            noise_decay: Noise decay rate per episode.
+            critic_lr: Learning rate for critic networks.
             action_scale: Maximum action magnitude.
+            alpha: Initial entropy coefficient (temperature).
+            auto_alpha: Whether to automatically tune alpha.
+            alpha_lr: Learning rate for alpha tuning.
+            target_entropy: Target entropy for automatic tuning (default: -action_dim).
         """
-        self.actor = Actor[
+        # Initialize stochastic actor
+        self.actor = StochasticActor[
             Self.obs_dim,
             Self.action_dim,
             Self.hidden_dim,
@@ -165,24 +195,30 @@ struct DeepDDPGAgent[
             action_scale=action_scale,
             action_bias=0.0,
         )
-        self.actor_target = Actor[
-            Self.obs_dim,
-            Self.action_dim,
-            Self.hidden_dim,
-            Self.hidden_dim,
-            Self.dtype,
-        ](
-            action_scale=action_scale,
-            action_bias=0.0,
-        )
-        self.critic = Critic[
+
+        # Initialize twin critics and targets
+        self.critic1 = Critic[
             Self.obs_dim,
             Self.action_dim,
             Self.hidden_dim,
             Self.hidden_dim,
             Self.dtype,
         ]()
-        self.critic_target = Critic[
+        self.critic1_target = Critic[
+            Self.obs_dim,
+            Self.action_dim,
+            Self.hidden_dim,
+            Self.hidden_dim,
+            Self.dtype,
+        ]()
+        self.critic2 = Critic[
+            Self.obs_dim,
+            Self.action_dim,
+            Self.hidden_dim,
+            Self.hidden_dim,
+            Self.dtype,
+        ]()
+        self.critic2_target = Critic[
             Self.obs_dim,
             Self.action_dim,
             Self.hidden_dim,
@@ -191,8 +227,8 @@ struct DeepDDPGAgent[
         ]()
 
         # Initialize target networks with same weights
-        self.actor_target.copy_from(self.actor)
-        self.critic_target.copy_from(self.critic)
+        self.critic1_target.copy_from(self.critic1)
+        self.critic2_target.copy_from(self.critic2)
 
         self.buffer = ReplayBuffer[
             Self.buffer_capacity, Self.obs_dim, Self.action_dim, Self.dtype
@@ -202,42 +238,55 @@ struct DeepDDPGAgent[
         self.tau = tau
         self.actor_lr = actor_lr
         self.critic_lr = critic_lr
-        self.noise_std = noise_std
-        self.noise_std_min = noise_std_min
-        self.noise_decay = noise_decay
         self.action_scale = action_scale
+
+        # SAC entropy settings
+        self.alpha = alpha
+        self.log_alpha = Scalar[Self.dtype](log(Float64(alpha)))
+        self.target_entropy = target_entropy
+        self.alpha_lr = alpha_lr
+        self.auto_alpha = auto_alpha
+
         self.total_steps = 0
         self.total_episodes = 0
 
     fn select_action(
         mut self,
         obs: InlineArray[Scalar[Self.dtype], Self.obs_dim],
-        add_noise: Bool = True,
+        deterministic: Bool = False,
     ) -> InlineArray[Scalar[Self.dtype], Self.action_dim]:
-        """Select action using actor network with optional exploration noise."""
-        # Reshape obs to batch of 1
-        var obs_batch = InlineArray[Scalar[Self.dtype], Self.obs_dim](fill=0)
-        for i in range(Self.obs_dim):
-            obs_batch[i] = obs[i]
+        """Select action using stochastic policy.
 
-        # Get action from actor
-        var action_batch = self.actor.forward[1](obs_batch)
+        Args:
+            obs: Observation array.
+            deterministic: If True, use mean action (for evaluation).
 
-        # Extract action and add noise
-        var action = InlineArray[Scalar[Self.dtype], Self.action_dim](fill=0)
+        Returns:
+            Action array.
+        """
+        # Generate noise for sampling
+        var noise = InlineArray[Scalar[Self.dtype], Self.action_dim](fill=0)
+        if not deterministic:
+            for i in range(Self.action_dim):
+                noise[i] = Scalar[Self.dtype](_gaussian_noise_sac())
+
+        # Sample action from stochastic policy
+        var actions_logprobs = self.actor.sample_action[1](obs, noise)
+        var action = actions_logprobs[0]
+
+        # Clip to action bounds
+        var clipped_action = InlineArray[Scalar[Self.dtype], Self.action_dim](
+            fill=0
+        )
         for i in range(Self.action_dim):
-            var a = action_batch[i]
-            if add_noise:
-                var noise = Scalar[Self.dtype](gaussian_noise())
-                a += self.noise_std * noise
-            # Clip to action bounds
+            var a = action[i]
             if a > self.action_scale:
                 a = self.action_scale
             elif a < -self.action_scale:
                 a = -self.action_scale
-            action[i] = a
+            clipped_action[i] = a
 
-        return action^
+        return clipped_action^
 
     fn store_transition(
         mut self,
@@ -252,7 +301,14 @@ struct DeepDDPGAgent[
         self.total_steps += 1
 
     fn train_step(mut self) -> Scalar[Self.dtype]:
-        """Perform one training step. Returns critic loss."""
+        """Perform one training step. Returns critic loss.
+
+        SAC update procedure:
+        1. Update both critics using soft Bellman residual
+        2. Update actor to maximize Q - alpha * log_prob
+        3. Update alpha to maintain target entropy (if auto_alpha)
+        4. Soft update target critic networks
+        """
         if not self.buffer.is_ready[Self.batch_size]():
             return 0.0
 
@@ -281,77 +337,81 @@ struct DeepDDPGAgent[
         # Critic update
         # ========================================
 
-        # Compute target Q-values: y = r + gamma * (1 - done) * Q_target(s', pi_target(s'))
-        var next_actions = self.actor_target.forward[Self.batch_size](
-            batch_next_obs
+        # Sample next actions from current policy (no target actor in SAC)
+        var next_noise = InlineArray[
+            Scalar[Self.dtype], Self.batch_size * Self.action_dim
+        ](fill=0)
+        for i in range(Self.batch_size * Self.action_dim):
+            next_noise[i] = Scalar[Self.dtype](_gaussian_noise_sac())
+
+        var next_actions_logprobs = self.actor.sample_action[Self.batch_size](
+            batch_next_obs, next_noise
         )
-        var target_q = self.critic_target.forward[Self.batch_size](
+        var next_actions = next_actions_logprobs[0]
+        var next_log_probs = next_actions_logprobs[1]
+
+        # Compute sum of log probs per sample
+        var next_log_prob_sum = InlineArray[
+            Scalar[Self.dtype], Self.batch_size
+        ](fill=0)
+        for i in range(Self.batch_size):
+            var sum_log_prob: Scalar[Self.dtype] = 0.0
+            for j in range(Self.action_dim):
+                sum_log_prob += next_log_probs[i * Self.action_dim + j]
+            next_log_prob_sum[i] = sum_log_prob
+
+        # Get Q-values from both target critics
+        var target_q1 = self.critic1_target.forward[Self.batch_size](
+            batch_next_obs, next_actions
+        )
+        var target_q2 = self.critic2_target.forward[Self.batch_size](
             batch_next_obs, next_actions
         )
 
+        # Compute soft Bellman target using min of Q1, Q2 and entropy bonus
         var target_values = InlineArray[Scalar[Self.dtype], Self.batch_size](
             fill=0
         )
         for i in range(Self.batch_size):
-            target_values[i] = (
-                batch_rewards[i]
-                + self.gamma * (1.0 - batch_dones[i]) * target_q[i]
-            )
+            var min_q = target_q1[i]
+            if target_q2[i] < min_q:
+                min_q = target_q2[i]
+            # Soft target: y = r + gamma * (min_Q - alpha * log_prob)
+            target_values[i] = batch_rewards[i] + self.gamma * (
+                1.0 - batch_dones[i]
+            ) * (min_q - self.alpha * next_log_prob_sum[i])
 
-        # Current Q-values with caching for backward
-        var x_cache = InlineArray[
+        # Update critic 1
+        var x_cache1 = InlineArray[
             Scalar[Self.dtype],
             Self.batch_size * (Self.obs_dim + Self.action_dim),
         ](fill=0)
-        var h1_cache = InlineArray[
+        var h1_cache1 = InlineArray[
             Scalar[Self.dtype], Self.batch_size * Self.hidden_dim
         ](fill=0)
-        var h2_cache = InlineArray[
+        var h2_cache1 = InlineArray[
             Scalar[Self.dtype], Self.batch_size * Self.hidden_dim
         ](fill=0)
 
-        var current_q = self.critic.forward_with_cache[Self.batch_size](
-            batch_obs, batch_actions, x_cache, h1_cache, h2_cache
+        var current_q1 = self.critic1.forward_with_cache[Self.batch_size](
+            batch_obs, batch_actions, x_cache1, h1_cache1, h2_cache1
         )
 
-        # Critic loss: MSE = mean((Q - target)^2)
-        var critic_loss: Scalar[Self.dtype] = 0.0
-        var dq = InlineArray[Scalar[Self.dtype], Self.batch_size](fill=0)
+        var critic1_loss: Scalar[Self.dtype] = 0.0
+        var dq1 = InlineArray[Scalar[Self.dtype], Self.batch_size](fill=0)
         var batch_size_scalar = Scalar[Self.dtype](Self.batch_size)
         for i in range(Self.batch_size):
-            var td_error = current_q[i] - target_values[i]
-            critic_loss += td_error * td_error
-            dq[i] = 2.0 * td_error / batch_size_scalar  # Gradient of MSE
+            var td_error = current_q1[i] - target_values[i]
+            critic1_loss += td_error * td_error
+            dq1[i] = 2.0 * td_error / batch_size_scalar
 
-        critic_loss /= batch_size_scalar
-
-        # Critic backward and update
-        self.critic.zero_grad()
-        _ = self.critic.backward[Self.batch_size](
-            dq, x_cache, h1_cache, h2_cache
+        self.critic1.zero_grad()
+        _ = self.critic1.backward[Self.batch_size](
+            dq1, x_cache1, h1_cache1, h2_cache1
         )
-        self.critic.update_adam(self.critic_lr)
+        self.critic1.update_adam(self.critic_lr)
 
-        # ========================================
-        # Actor update
-        # ========================================
-
-        # Get actions from current actor with caching
-        var h1_actor = InlineArray[
-            Scalar[Self.dtype], Self.batch_size * Self.hidden_dim
-        ](fill=0)
-        var h2_actor = InlineArray[
-            Scalar[Self.dtype], Self.batch_size * Self.hidden_dim
-        ](fill=0)
-        var out_tanh = InlineArray[
-            Scalar[Self.dtype], Self.batch_size * Self.action_dim
-        ](fill=0)
-
-        var actor_actions = self.actor.forward_with_cache[Self.batch_size](
-            batch_obs, h1_actor, h2_actor, out_tanh
-        )
-
-        # Get Q-values for actor's actions with caching
+        # Update critic 2
         var x_cache2 = InlineArray[
             Scalar[Self.dtype],
             Self.batch_size * (Self.obs_dim + Self.action_dim),
@@ -363,40 +423,175 @@ struct DeepDDPGAgent[
             Scalar[Self.dtype], Self.batch_size * Self.hidden_dim
         ](fill=0)
 
-        _ = self.critic.forward_with_cache[Self.batch_size](
-            batch_obs, actor_actions, x_cache2, h1_cache2, h2_cache2
+        var current_q2 = self.critic2.forward_with_cache[Self.batch_size](
+            batch_obs, batch_actions, x_cache2, h1_cache2, h2_cache2
         )
 
-        # Actor gradient: maximize Q -> dQ/daction = -1 (gradient ascent)
+        var critic2_loss: Scalar[Self.dtype] = 0.0
+        var dq2 = InlineArray[Scalar[Self.dtype], Self.batch_size](fill=0)
+        for i in range(Self.batch_size):
+            var td_error = current_q2[i] - target_values[i]
+            critic2_loss += td_error * td_error
+            dq2[i] = 2.0 * td_error / batch_size_scalar
+
+        self.critic2.zero_grad()
+        _ = self.critic2.backward[Self.batch_size](
+            dq2, x_cache2, h1_cache2, h2_cache2
+        )
+        self.critic2.update_adam(self.critic_lr)
+
+        var total_critic_loss = (critic1_loss + critic2_loss) / (
+            2.0 * batch_size_scalar
+        )
+
+        # ========================================
+        # Actor update
+        # ========================================
+
+        # Sample new actions with caching for backward
+        var actor_noise = InlineArray[
+            Scalar[Self.dtype], Self.batch_size * Self.action_dim
+        ](fill=0)
+        for i in range(Self.batch_size * Self.action_dim):
+            actor_noise[i] = Scalar[Self.dtype](_gaussian_noise_sac())
+
+        var h1_actor = InlineArray[
+            Scalar[Self.dtype], Self.batch_size * Self.hidden_dim
+        ](fill=0)
+        var h2_actor = InlineArray[
+            Scalar[Self.dtype], Self.batch_size * Self.hidden_dim
+        ](fill=0)
+        var mean_actor = InlineArray[
+            Scalar[Self.dtype], Self.batch_size * Self.action_dim
+        ](fill=0)
+        var log_std_actor = InlineArray[
+            Scalar[Self.dtype], Self.batch_size * Self.action_dim
+        ](fill=0)
+        var tanh_actor = InlineArray[
+            Scalar[Self.dtype], Self.batch_size * Self.action_dim
+        ](fill=0)
+
+        var actor_actions_logprobs = self.actor.sample_action_with_cache[
+            Self.batch_size
+        ](
+            batch_obs,
+            actor_noise,
+            h1_actor,
+            h2_actor,
+            mean_actor,
+            log_std_actor,
+            tanh_actor,
+        )
+        var actor_actions = actor_actions_logprobs[0]
+        var actor_log_probs = actor_actions_logprobs[1]
+
+        # Compute log prob sum for each sample
+        var actor_log_prob_sum = InlineArray[
+            Scalar[Self.dtype], Self.batch_size
+        ](fill=0)
+        for i in range(Self.batch_size):
+            var sum_log_prob: Scalar[Self.dtype] = 0.0
+            for j in range(Self.action_dim):
+                sum_log_prob += actor_log_probs[i * Self.action_dim + j]
+            actor_log_prob_sum[i] = sum_log_prob
+
+        # Get Q-values for actor's actions from critic1
+        var x_cache_actor = InlineArray[
+            Scalar[Self.dtype],
+            Self.batch_size * (Self.obs_dim + Self.action_dim),
+        ](fill=0)
+        var h1_cache_actor = InlineArray[
+            Scalar[Self.dtype], Self.batch_size * Self.hidden_dim
+        ](fill=0)
+        var h2_cache_actor = InlineArray[
+            Scalar[Self.dtype], Self.batch_size * Self.hidden_dim
+        ](fill=0)
+
+        _ = self.critic1.forward_with_cache[Self.batch_size](
+            batch_obs,
+            actor_actions,
+            x_cache_actor,
+            h1_cache_actor,
+            h2_cache_actor,
+        )
+
+        # Actor loss: min (alpha * log_prob - Q(s, a))
+        # Gradient for actor: ∂/∂θ (α * log π - Q) = α * ∂log π/∂θ - ∂Q/∂a * ∂a/∂θ
+        # We combine these into a single gradient for actions
+
+        # Get gradient w.r.t. actions from critic1: ∂Q/∂a
         var dq_actor = InlineArray[Scalar[Self.dtype], Self.batch_size](fill=0)
         var neg_one_over_batch = Scalar[Self.dtype](-1.0) / batch_size_scalar
         for i in range(Self.batch_size):
-            dq_actor[i] = neg_one_over_batch  # Negative for gradient ascent
+            dq_actor[i] = neg_one_over_batch
 
-        # Get gradient w.r.t. actions from critic
-        var dactions = self.critic.backward[Self.batch_size](
-            dq_actor, x_cache2, h1_cache2, h2_cache2
+        var dactions = self.critic1.backward[Self.batch_size](
+            dq_actor, x_cache_actor, h1_cache_actor, h2_cache_actor
         )
+
+        # Combine with entropy gradient: d_loss = -∂Q/∂a + α * ∂log_π/∂a
+        # For reparameterization, we need: ∂(Q - α*log_π)/∂θ
+        # The log_prob gradient through action is handled in actor backward
+        var d_actor_loss = InlineArray[
+            Scalar[Self.dtype], Self.batch_size * Self.action_dim
+        ](fill=0)
+
+        for i in range(Self.batch_size):
+            for j in range(Self.action_dim):
+                var idx = i * Self.action_dim + j
+                # Gradient for maximizing Q - α * log_π
+                # = ∂Q/∂a - α * ∂log_π/∂a (through a)
+                d_actor_loss[idx] = dactions[idx]
 
         # Backward through actor
         self.actor.zero_grad()
         self.actor.backward[Self.batch_size](
-            dactions, batch_obs, h1_actor, h2_actor, out_tanh
+            d_actor_loss,
+            batch_obs,
+            actor_noise,
+            h1_actor,
+            h2_actor,
+            mean_actor,
+            log_std_actor,
+            tanh_actor,
         )
         self.actor.update_adam(self.actor_lr)
+
+        # ========================================
+        # Alpha update (if auto_alpha)
+        # ========================================
+
+        if self.auto_alpha:
+            # Alpha loss: J(α) = E[-α * (log π + target_entropy)]
+            # Gradient: ∂J/∂α = -E[log π + target_entropy]
+            var alpha_grad: Scalar[Self.dtype] = 0.0
+            for i in range(Self.batch_size):
+                alpha_grad += -(actor_log_prob_sum[i] + self.target_entropy)
+            alpha_grad /= batch_size_scalar
+
+            # Update log_alpha (not alpha directly for stability)
+            self.log_alpha -= self.alpha_lr * alpha_grad
+
+            # Clamp log_alpha to reasonable range
+            if self.log_alpha < -10.0:
+                self.log_alpha = -10.0
+            elif self.log_alpha > 2.0:
+                self.log_alpha = 2.0
+
+            self.alpha = Scalar[Self.dtype](exp(Float64(self.log_alpha)))
 
         # ========================================
         # Soft update target networks
         # ========================================
 
-        self.actor_target.soft_update_from(self.actor, self.tau)
-        self.critic_target.soft_update_from(self.critic, self.tau)
+        self.critic1_target.soft_update_from(self.critic1, self.tau)
+        self.critic2_target.soft_update_from(self.critic2, self.tau)
 
-        return critic_loss
+        return total_critic_loss
 
     fn print_info(self):
         """Print agent information."""
-        print("Deep DDPG Agent:")
+        print("Deep SAC Agent:")
         print("  Obs dim: " + String(Self.obs_dim))
         print("  Action dim: " + String(Self.action_dim))
         print("  Hidden dim: " + String(Self.hidden_dim))
@@ -406,16 +601,12 @@ struct DeepDDPGAgent[
         print("  Tau: " + String(self.tau)[:6])
         print("  Actor LR: " + String(self.actor_lr)[:8])
         print("  Critic LR: " + String(self.critic_lr)[:8])
-        print("  Noise std: " + String(self.noise_std)[:6])
-        print("  Noise decay: " + String(self.noise_decay)[:6])
+        print("  Alpha: " + String(self.alpha)[:6])
+        print("  Auto alpha: " + String(self.auto_alpha))
+        print("  Target entropy: " + String(self.target_entropy)[:6])
         self.actor.print_info("  Actor")
-        self.critic.print_info("  Critic")
-
-    fn decay_noise(mut self):
-        """Decay exploration noise (call once per episode)."""
-        self.noise_std *= self.noise_decay
-        if self.noise_std < self.noise_std_min:
-            self.noise_std = self.noise_std_min
+        self.critic1.print_info("  Critic1")
+        self.critic2.print_info("  Critic2")
 
     # ========================================================================
     # Training and Evaluation
@@ -434,7 +625,7 @@ struct DeepDDPGAgent[
         print_every: Int = 10,
         environment_name: String = "Environment",
     ) -> TrainingMetrics:
-        """Train the Deep DDPG agent on a continuous control environment.
+        """Train the Deep SAC agent on a continuous control environment.
 
         Args:
             env: Environment implementing BoxContinuousActionEnv trait.
@@ -450,13 +641,13 @@ struct DeepDDPGAgent[
             TrainingMetrics object with episode history.
         """
         var metrics = TrainingMetrics(
-            algorithm_name="Deep DDPG",
+            algorithm_name="Deep SAC",
             environment_name=environment_name,
         )
 
         if verbose:
             print("=" * 60)
-            print("Deep DDPG Training on " + environment_name)
+            print("Deep SAC Training on " + environment_name)
             print("=" * 60)
             self.print_info()
             print("-" * 60)
@@ -491,9 +682,11 @@ struct DeepDDPGAgent[
                 done = step_result[2]
 
                 # Convert observations
-                var obs = _list_to_inline[Self.obs_dim, Self.dtype](obs_list)
+                var obs = _list_to_inline_sac[Self.obs_dim, Self.dtype](
+                    obs_list
+                )
                 var next_obs_list = env.get_obs_list()
-                var next_obs = _list_to_inline[Self.obs_dim, Self.dtype](
+                var next_obs = _list_to_inline_sac[Self.obs_dim, Self.dtype](
                     next_obs_list
                 )
 
@@ -522,10 +715,12 @@ struct DeepDDPGAgent[
 
             while not done and steps < max_steps_per_episode:
                 # Convert observation
-                var obs = _list_to_inline[Self.obs_dim, Self.dtype](obs_list)
+                var obs = _list_to_inline_sac[Self.obs_dim, Self.dtype](
+                    obs_list
+                )
 
-                # Select action with exploration noise
-                var action = self.select_action(obs, add_noise=True)
+                # Select action using stochastic policy
+                var action = self.select_action(obs, deterministic=False)
 
                 # Step environment (extract first action for single-action envs)
                 var step_result = env.step_continuous(Float64(action[0]))
@@ -534,7 +729,7 @@ struct DeepDDPGAgent[
 
                 # Get next observation
                 var next_obs_list = env.get_obs_list()
-                var next_obs = _list_to_inline[Self.obs_dim, Self.dtype](
+                var next_obs = _list_to_inline_sac[Self.obs_dim, Self.dtype](
                     next_obs_list
                 )
 
@@ -553,12 +748,9 @@ struct DeepDDPGAgent[
 
             # Log episode metrics
             metrics.log_episode(
-                episode, episode_reward, steps, Float64(self.noise_std)
+                episode, episode_reward, steps, Float64(self.alpha)
             )
             self.total_episodes += 1
-
-            # Decay exploration noise
-            self.decay_noise()
 
             # Print progress
             if verbose and (episode + 1) % print_every == 0:
@@ -577,8 +769,8 @@ struct DeepDDPGAgent[
                     + String(avg_reward)[:8]
                     + " | Steps: "
                     + String(steps)
-                    + " | Noise: "
-                    + String(self.noise_std)[:5]
+                    + " | Alpha: "
+                    + String(self.alpha)[:5]
                 )
 
         if verbose:
@@ -593,6 +785,7 @@ struct DeepDDPGAgent[
                 len(metrics.episodes) - start_idx
             )
             print("Final avg reward (last 100): " + String(final_avg)[:8])
+            print("Final alpha: " + String(self.alpha)[:6])
 
         return metrics^
 
@@ -606,13 +799,14 @@ struct DeepDDPGAgent[
         verbose: Bool = False,
         render: Bool = False,
     ) -> Float64:
-        """Evaluate the trained agent using deterministic policy (no noise).
+        """Evaluate the trained agent using deterministic policy (mean action).
 
         Args:
             env: Environment implementing BoxContinuousActionEnv trait.
             num_episodes: Number of evaluation episodes.
             max_steps_per_episode: Maximum steps per episode.
             verbose: Whether to print per-episode results.
+            render: Whether to render the environment.
 
         Returns:
             Average reward over evaluation episodes.
@@ -628,10 +822,12 @@ struct DeepDDPGAgent[
             while not done and steps < max_steps_per_episode:
                 if render:
                     env.render()
-                var obs = _list_to_inline[Self.obs_dim, Self.dtype](obs_list)
+                var obs = _list_to_inline_sac[Self.obs_dim, Self.dtype](
+                    obs_list
+                )
 
-                # Use deterministic action (no noise)
-                var action = self.select_action(obs, add_noise=False)
+                # Use deterministic action (mean, no sampling noise)
+                var action = self.select_action(obs, deterministic=True)
 
                 var step_result = env.step_continuous(Float64(action[0]))
                 var reward = step_result[1]
@@ -659,7 +855,7 @@ struct DeepDDPGAgent[
 # ============================================================================
 
 
-fn _list_to_inline[
+fn _list_to_inline_sac[
     size: Int, dtype: DType = DType.float64
 ](obs_list: List[Float64]) -> InlineArray[Scalar[dtype], size]:
     """Convert List[Float64] to InlineArray."""

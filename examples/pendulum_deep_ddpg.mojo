@@ -7,7 +7,7 @@ Run with:
     pixi run mojo run examples/deep_ddpg_pendulum.mojo
 """
 
-from deep_agents import DeepDDPGAgent
+from deep_agents.cpu import DeepDDPGAgent
 from envs.pendulum import PendulumEnv
 
 

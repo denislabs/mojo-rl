@@ -2,7 +2,7 @@
 
 from core.replay_buffer import PrioritizedReplayBuffer, PrioritizedTransition
 from core.sum_tree import SumTree
-from deep_rl.replay_buffer import PrioritizedReplayBuffer as DeepPER
+from deep_rl.cpu.replay_buffer import PrioritizedReplayBuffer as DeepPER
 
 
 fn test_sum_tree():
@@ -103,7 +103,7 @@ fn test_deep_per():
         var action = InlineArray[Float64, action_dim](fill=Float64(i % 2))
         var reward = Float64(i) * 0.1
         var next_obs = InlineArray[Float64, obs_dim](fill=Float64(i + 1))
-        var done = (i == 49)
+        var done = i == 49
 
         buffer.add(obs, action, reward, next_obs, done)
 

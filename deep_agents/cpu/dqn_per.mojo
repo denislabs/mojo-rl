@@ -13,7 +13,7 @@ Reference:
 - Mnih et al., "Human-level control through deep RL" (2015)
 
 Example usage:
-    from deep_agents import DeepDQNPERAgent
+    from deep_agents.cpu import DeepDQNPERAgent
     from envs import LunarLanderEnv
 
     var env = LunarLanderEnv()
@@ -23,7 +23,7 @@ Example usage:
 
 from random import random_float64
 
-from deep_rl import (
+from deep_rl.cpu import (
     LinearAdam,
     PrioritizedReplayBuffer,
     relu,
@@ -79,7 +79,9 @@ struct DeepDQNPERAgent[
     ]
 
     # Prioritized Replay Buffer
-    var buffer: PrioritizedReplayBuffer[Self.buffer_capacity, Self.obs_dim, 1, Self.dtype]
+    var buffer: PrioritizedReplayBuffer[
+        Self.buffer_capacity, Self.obs_dim, 1, Self.dtype
+    ]
 
     # Hyperparameters
     var gamma: Scalar[Self.dtype]
@@ -164,7 +166,10 @@ struct DeepDQNPERAgent[
     ) -> Int:
         """Select action using epsilon-greedy policy."""
         if training and random_float64() < Float64(self.epsilon):
-            return Int(random_float64() * Float64(Self.num_actions)) % Self.num_actions
+            return (
+                Int(random_float64() * Float64(Self.num_actions))
+                % Self.num_actions
+            )
 
         var q_values = self.q_network.forward[1](obs)
         var best_action = 0
@@ -183,7 +188,8 @@ struct DeepDQNPERAgent[
         next_obs: InlineArray[Scalar[Self.dtype], Self.obs_dim],
         done: Bool,
     ):
-        """Store transition with max priority (will be updated after training)."""
+        """Store transition with max priority (will be updated after training).
+        """
         var action_arr = InlineArray[Scalar[Self.dtype], 1](fill=0)
         action_arr[0] = Scalar[Self.dtype](action)
         self.buffer.add(obs, action_arr, reward, next_obs, done)
@@ -205,13 +211,21 @@ struct DeepDQNPERAgent[
         var batch_obs = InlineArray[
             Scalar[Self.dtype], Self.batch_size * Self.obs_dim
         ](fill=0)
-        var batch_actions_arr = InlineArray[Scalar[Self.dtype], Self.batch_size](fill=0)
-        var batch_rewards = InlineArray[Scalar[Self.dtype], Self.batch_size](fill=0)
+        var batch_actions_arr = InlineArray[
+            Scalar[Self.dtype], Self.batch_size
+        ](fill=0)
+        var batch_rewards = InlineArray[Scalar[Self.dtype], Self.batch_size](
+            fill=0
+        )
         var batch_next_obs = InlineArray[
             Scalar[Self.dtype], Self.batch_size * Self.obs_dim
         ](fill=0)
-        var batch_dones = InlineArray[Scalar[Self.dtype], Self.batch_size](fill=0)
-        var batch_weights = InlineArray[Scalar[Self.dtype], Self.batch_size](fill=0)
+        var batch_dones = InlineArray[Scalar[Self.dtype], Self.batch_size](
+            fill=0
+        )
+        var batch_weights = InlineArray[Scalar[Self.dtype], Self.batch_size](
+            fill=0
+        )
         var batch_indices = InlineArray[Int, Self.batch_size](fill=0)
 
         self.buffer.sample[Self.batch_size](
@@ -225,12 +239,18 @@ struct DeepDQNPERAgent[
         )
 
         # Compute target Q-values
-        var max_next_q = InlineArray[Scalar[Self.dtype], Self.batch_size](fill=0)
+        var max_next_q = InlineArray[Scalar[Self.dtype], Self.batch_size](
+            fill=0
+        )
 
         @parameter
         if Self.double_dqn:
-            var online_next_q = self.q_network.forward[Self.batch_size](batch_next_obs)
-            var target_next_q = self.target_network.forward[Self.batch_size](batch_next_obs)
+            var online_next_q = self.q_network.forward[Self.batch_size](
+                batch_next_obs
+            )
+            var target_next_q = self.target_network.forward[Self.batch_size](
+                batch_next_obs
+            )
 
             for i in range(Self.batch_size):
                 var best_action = 0
@@ -240,9 +260,13 @@ struct DeepDQNPERAgent[
                     if q > best_online_q:
                         best_online_q = q
                         best_action = a
-                max_next_q[i] = target_next_q[i * Self.num_actions + best_action]
+                max_next_q[i] = target_next_q[
+                    i * Self.num_actions + best_action
+                ]
         else:
-            var next_q = self.target_network.forward[Self.batch_size](batch_next_obs)
+            var next_q = self.target_network.forward[Self.batch_size](
+                batch_next_obs
+            )
             for i in range(Self.batch_size):
                 var max_q = next_q[i * Self.num_actions]
                 for a in range(1, Self.num_actions):
@@ -252,7 +276,9 @@ struct DeepDQNPERAgent[
                 max_next_q[i] = max_q
 
         # Target values
-        var target_values = InlineArray[Scalar[Self.dtype], Self.batch_size](fill=0)
+        var target_values = InlineArray[Scalar[Self.dtype], Self.batch_size](
+            fill=0
+        )
         for i in range(Self.batch_size):
             target_values[i] = (
                 batch_rewards[i]
@@ -273,9 +299,9 @@ struct DeepDQNPERAgent[
 
         # Compute TD errors and weighted loss
         var loss: Scalar[Self.dtype] = 0.0
-        var dq = InlineArray[Scalar[Self.dtype], Self.batch_size * Self.num_actions](
-            fill=0
-        )
+        var dq = InlineArray[
+            Scalar[Self.dtype], Self.batch_size * Self.num_actions
+        ](fill=0)
         var td_errors = InlineArray[Scalar[Self.dtype], Self.batch_size](fill=0)
 
         for i in range(Self.batch_size):
@@ -291,15 +317,17 @@ struct DeepDQNPERAgent[
             loss += weighted_td * weighted_td
 
             # Gradient: d(loss)/d(q) = -2 * weight * td_error
-            dq[i * Self.num_actions + action] = -2.0 * weighted_td / Scalar[Self.dtype](
-                Self.batch_size
+            dq[i * Self.num_actions + action] = (
+                -2.0 * weighted_td / Scalar[Self.dtype](Self.batch_size)
             )
 
         loss = loss / Scalar[Self.dtype](Self.batch_size)
 
         # Backward pass
         self.q_network.zero_grad()
-        self.q_network.backward[Self.batch_size](dq, batch_obs, h1_cache, h2_cache)
+        self.q_network.backward[Self.batch_size](
+            dq, batch_obs, h1_cache, h2_cache
+        )
         self.q_network.update_adam(self.lr)
 
         # Update priorities based on TD errors
@@ -317,7 +345,9 @@ struct DeepDQNPERAgent[
             self.epsilon = self.epsilon_min
         self.total_episodes += 1
 
-    fn train[E: BoxDiscreteActionEnv](
+    fn train[
+        E: BoxDiscreteActionEnv
+    ](
         mut self,
         mut env: E,
         num_episodes: Int,
@@ -369,15 +399,22 @@ struct DeepDQNPERAgent[
             var done = False
 
             while not done and warmup_done < warmup_steps:
-                var action = Int(random_float64() * Float64(Self.num_actions)) % Self.num_actions
+                var action = (
+                    Int(random_float64() * Float64(Self.num_actions))
+                    % Self.num_actions
+                )
                 var step_result = env.step_obs(action)
                 var reward = step_result[1]
                 done = step_result[2]
 
                 var obs = _list_to_inline[Self.obs_dim, Self.dtype](obs_list)
-                var next_obs = _list_to_inline[Self.obs_dim, Self.dtype](step_result[0])
+                var next_obs = _list_to_inline[Self.obs_dim, Self.dtype](
+                    step_result[0]
+                )
 
-                self.store_transition(obs, action, Scalar[Self.dtype](reward), next_obs, done)
+                self.store_transition(
+                    obs, action, Scalar[Self.dtype](reward), next_obs, done
+                )
                 obs_list = env.get_obs_list()
                 warmup_done += 1
 
@@ -399,8 +436,12 @@ struct DeepDQNPERAgent[
                 var reward = step_result[1]
                 done = step_result[2]
 
-                var next_obs = _list_to_inline[Self.obs_dim, Self.dtype](step_result[0])
-                self.store_transition(obs, action, Scalar[Self.dtype](reward), next_obs, done)
+                var next_obs = _list_to_inline[Self.obs_dim, Self.dtype](
+                    step_result[0]
+                )
+                self.store_transition(
+                    obs, action, Scalar[Self.dtype](reward), next_obs, done
+                )
 
                 if steps % train_every == 0:
                     _ = self.train_step()
@@ -409,7 +450,9 @@ struct DeepDQNPERAgent[
                 obs_list = env.get_obs_list()
                 steps += 1
 
-            metrics.log_episode(episode, episode_reward, steps, Float64(self.epsilon))
+            metrics.log_episode(
+                episode, episode_reward, steps, Float64(self.epsilon)
+            )
             self.decay_epsilon()
 
             if verbose and (episode + 1) % print_every == 0:
@@ -417,7 +460,9 @@ struct DeepDQNPERAgent[
                 var sum_reward: Float64 = 0.0
                 for j in range(start_idx, len(metrics.episodes)):
                     sum_reward += metrics.episodes[j].total_reward
-                var avg_reward = sum_reward / Float64(len(metrics.episodes) - start_idx)
+                var avg_reward = sum_reward / Float64(
+                    len(metrics.episodes) - start_idx
+                )
                 print(
                     "Episode "
                     + String(episode + 1)
@@ -438,12 +483,16 @@ struct DeepDQNPERAgent[
             var sum_reward: Float64 = 0.0
             for j in range(start_idx, len(metrics.episodes)):
                 sum_reward += metrics.episodes[j].total_reward
-            var final_avg = sum_reward / Float64(len(metrics.episodes) - start_idx)
+            var final_avg = sum_reward / Float64(
+                len(metrics.episodes) - start_idx
+            )
             print("Final avg reward (last 100): " + String(final_avg)[:8])
 
         return metrics^
 
-    fn evaluate[E: BoxDiscreteActionEnv](
+    fn evaluate[
+        E: BoxDiscreteActionEnv
+    ](
         mut self,
         mut env: E,
         num_episodes: Int = 10,
@@ -491,6 +540,7 @@ struct DeepDQNPERAgent[
 
     fn print_info(self):
         """Print agent configuration."""
+
         @parameter
         if Self.double_dqn:
             print("Deep Double DQN + PER Agent:")
