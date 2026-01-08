@@ -64,6 +64,18 @@ brew install sdl2 sdl2_ttf
 sudo apt-get install libsdl2-dev libsdl2-ttf-dev
 ```
 
+### GPU Support
+
+GPU-accelerated code requires specifying the target environment with the `-e` flag:
+
+```bash
+# Apple Silicon (Metal)
+pixi run -e apple mojo run examples/lunar_lander_gpu_dqn.mojo
+
+# NVIDIA GPUs (CUDA)
+pixi run -e nvidia mojo run examples/lunar_lander_gpu_dqn.mojo
+```
+
 ## Algorithms
 
 ### TD Methods
@@ -131,6 +143,7 @@ sudo apt-get install libsdl2-dev libsdl2-ttf-dev
 | **Deep TD3** | TD3 with twin critics, delayed policy updates, target policy smoothing |
 | **Deep DQN** | Deep Q-Network with target network, experience replay, epsilon-greedy exploration |
 | **Deep Double DQN** | DQN with reduced overestimation: online network selects actions, target evaluates |
+| **GPU Deep DQN** | GPU-accelerated DQN with tiled matmul kernels (Metal/CUDA), Double DQN support |
 
 ## Environments
 
@@ -202,9 +215,12 @@ mojo-rl/
 │   ├── actor_critic.mojo  # Actor and Critic networks for continuous control
 │   └── replay_buffer.mojo # Replay buffer for deep RL
 ├── deep_agents/           # Deep RL agents (neural networks)
-│   ├── ddpg.mojo          # DeepDDPGAgent with MLP networks
-│   ├── td3.mojo           # DeepTD3Agent with twin critics
-│   └── dqn.mojo           # DeepDQNAgent with Double DQN support
+│   ├── cpu/               # CPU-based deep RL agents
+│   │   ├── ddpg.mojo      # DeepDDPGAgent with MLP networks
+│   │   ├── td3.mojo       # DeepTD3Agent with twin critics
+│   │   └── dqn.mojo       # DeepDQNAgent with Double DQN support
+│   └── gpu/               # GPU-accelerated deep RL agents
+│       └── dqn.mojo       # GPUDeepDQNAgent with Metal/CUDA kernels
 ├── physics/               # 2D physics engine for LunarLander
 │   ├── vec2.mojo          # 2D vector math
 │   ├── body.mojo          # Rigid body dynamics
@@ -369,11 +385,12 @@ fn main() raises:
 | Deep TD3 | Above + `policy_delay`, `target_noise_std`, `target_noise_clip` |
 | Deep DQN | `lr`, `gamma`, `tau`, `epsilon`, `epsilon_min`, `epsilon_decay`, `hidden_dim`, `batch_size`, `buffer_capacity` |
 | Deep Double DQN | Same as Deep DQN (enabled by default via `double_dqn=True` compile-time parameter) |
+| GPU Deep DQN | Same as Deep DQN, GPU-accelerated forward pass with tiled matmul kernels |
 
 ## Roadmap
 
 See [ROADMAP.md](ROADMAP.md) for planned features including:
 - Deep RL algorithms (Dueling DQN, Deep SAC)
 - Prioritized Experience Replay
-- GPU support for deep RL
+- ~~GPU support for deep RL~~ ✅ GPU DQN now available (Metal/CUDA)
 - More native environment ports (BipedalWalker)

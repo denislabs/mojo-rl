@@ -1,7 +1,14 @@
-from .ddpg import DeepDDPGAgent
-from .td3 import DeepTD3Agent
-from .sac import DeepSACAgent
-from .dqn import DeepDQNAgent, QNetwork
-from .dqn_per import DeepDQNPERAgent
-from .dueling_dqn import DeepDuelingDQNAgent, DuelingQNetwork
-from .gpu_dqn import GPUDeepDQNAgent, CPUQNetwork, gpu_available, print_gpu_status
+# CPU Deep RL Agents
+from .cpu import (
+    DeepDDPGAgent,
+    DeepTD3Agent,
+    DeepSACAgent,
+    DeepDQNAgent,
+    QNetwork,
+    DeepDQNPERAgent,
+    DeepDuelingDQNAgent,
+    DuelingQNetwork,
+)
+
+# GPU Deep RL Agents
+from .gpu import GPUDeepDQNAgent, GPUQNetwork

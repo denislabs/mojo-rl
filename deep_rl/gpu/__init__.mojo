@@ -68,3 +68,53 @@ Run tests with:
 - Linear: Fused tiled matmul + bias add, block.sum for db gradient
 - MLP: Chained linear layers with tanh activations
 """
+
+
+from .elementwise import (
+    gpu_add,
+    gpu_mul,
+    gpu_scale,
+    gpu_relu,
+    gpu_tanh,
+    gpu_sigmoid,
+)
+from .reduction import (
+    gpu_sum_kernel,
+    gpu_max_kernel,
+    gpu_mean_kernel,
+    gpu_normalize_kernel,
+)
+from .matmul import (
+    naive_matmul_kernel,
+    tiled_matmul_kernel,
+    gpu_matmul_naive,
+    gpu_matmul_tiled,
+)
+from .linear import (
+    linear_forward_kernel,
+    linear_forward_relu_kernel,
+    linear_backward_dW_kernel,
+    linear_backward_db_kernel,
+    linear_backward_dx_kernel,
+    adam_update_kernel,
+    soft_update_kernel,
+)
+from .mlp import (
+    linear_forward_tanh_kernel,
+    tanh_grad_kernel,
+    elementwise_mul_kernel,
+)
+from .actor_critic import (
+    relu_grad_kernel,
+    relu_grad_mul_kernel,
+    tanh_grad_mul_kernel,
+    scale_action_kernel,
+    concat_obs_action_kernel,
+    split_grad_kernel,
+    split_mean_log_std_kernel,
+    clamp_log_std_kernel,
+    sample_gaussian_kernel,
+    compute_log_prob_kernel,
+    squash_action_kernel,
+    squash_log_prob_correction_kernel,
+)
