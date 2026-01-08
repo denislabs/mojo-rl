@@ -47,6 +47,6 @@ from .mlp import MLP2, MLP3
 
 from .adam import AdamState, LinearAdam
 
-from .actor_critic import Actor, Critic
+from .actor_critic import Actor, Critic, StochasticActor
 
 from .replay_buffer import ReplayBuffer

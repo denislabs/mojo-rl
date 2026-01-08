@@ -158,8 +158,21 @@
 ## In Progress / Next Steps
 
 ### Deep RL Agents (Neural Networks)
-- [ ] Deep Dueling DQN - Separate value and advantage streams
-- [ ] Deep SAC - Soft Actor-Critic with neural networks (stochastic policy + entropy)
+- [x] Deep Dueling DQN - Separate value and advantage streams
+  - `deep_agents/dueling_dqn.mojo` - DuelingQNetwork, DeepDuelingDQNAgent
+  - Separates Q-network into Value V(s) and Advantage A(s,a) streams
+  - Q(s,a) = V(s) + (A(s,a) - mean(A)) for identifiability
+  - Supports Double DQN (default) for reduced overestimation
+  - `examples/lunar_lander_dueling_dqn.mojo` - LunarLander training
+- [x] Deep SAC - Soft Actor-Critic with neural networks
+  - `deep_agents/sac.mojo` - DeepSACAgent with StochasticActor
+  - `deep_rl/actor_critic.mojo` - StochasticActor for Gaussian policy
+  - Stochastic policy with learned mean and log_std
+  - Maximum entropy RL: maximizes reward + α * entropy
+  - Twin Q-networks (like TD3) to reduce overestimation
+  - Automatic entropy temperature (α) tuning
+  - No target actor (uses current policy for next-state actions)
+  - `examples/deep_sac_demo.mojo` - Pendulum training with Deep SAC
 - [ ] Prioritized Experience Replay - Sample transitions by TD error priority
 
 ### GPU Support
@@ -235,3 +248,5 @@
 | Deep TD3 | Deep RL | Twin critics + delayed updates + target smoothing (neural networks) |
 | Deep DQN | Deep RL | Neural network Q-function with target network + replay |
 | Deep Double DQN | Deep RL | DQN with reduced overestimation (online selects, target evaluates) |
+| Deep Dueling DQN | Deep RL | Separate V(s) and A(s,a) streams for better value decomposition |
+| Deep SAC | Deep RL | Stochastic neural network policy + entropy maximization + auto α |
