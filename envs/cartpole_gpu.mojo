@@ -289,65 +289,49 @@ fn reset_where_done_kernel(
 # =============================================================================
 
 
-struct GPUCartPole:
+trait GPUDiscreteEnv:
+    """Trait for GPU-compatible discrete action environments.
+
+    Environments must define compile-time constants and inline methods
+    for use in fused GPU kernels.
+    """
+    # Compile-time constants for environment dimensions
+    comptime STATE_SIZE: Int
+    comptime OBS_DIM: Int
+    comptime NUM_ACTIONS: Int
+
+    @staticmethod
+    fn step_inline[size: Int](
+        mut state: InlineArray[Scalar[dtype], size],
+        action: Int,
+    ) -> Tuple[Scalar[dtype], Bool]:
+        """Perform one environment step. Returns (reward, done)."""
+        ...
+
+    @staticmethod
+    fn reset_inline[size: Int](
+        mut state: InlineArray[Scalar[dtype], size],
+        mut rng: Scalar[DType.uint32],
+    ):
+        """Reset state to random initial values."""
+        ...
+
+
+struct GPUCartPole(GPUDiscreteEnv):
     """GPU-compatible vectorized CartPole environment.
 
     Manages NUM_ENVS environments in parallel. All operations are batched:
     - step() advances all environments by one timestep
     - reset() initializes all environments
     - reset_where_done() selectively resets terminated environments
-
-    Usage:
-        from gpu.host import DeviceContext
-
-        with DeviceContext() as ctx:
-            # Allocate buffers
-            states_buf = ctx.enqueue_create_buffer[dtype](NUM_ENVS * STATE_SIZE)
-            actions_buf = ctx.enqueue_create_buffer[DType.int32](NUM_ENVS)
-            rewards_buf = ctx.enqueue_create_buffer[dtype](NUM_ENVS)
-            dones_buf = ctx.enqueue_create_buffer[DType.int32](NUM_ENVS)
-            rng_buf = ctx.enqueue_create_buffer[DType.uint32](NUM_ENVS)
-
-            # Initialize RNG (each env gets unique seed)
-            with rng_buf.map_to_host() as rng_host:
-                for i in range(NUM_ENVS):
-                    rng_host[i] = UInt32(i + 1)  # Seeds 1, 2, 3, ...
-
-            # Create tensors
-            states = LayoutTensor[dtype, state_layout, MutAnyOrigin](states_buf)
-            actions = LayoutTensor[DType.int32, action_layout, MutAnyOrigin](actions_buf)
-            rewards = LayoutTensor[dtype, reward_layout, MutAnyOrigin](rewards_buf)
-            dones = LayoutTensor[DType.int32, done_layout, MutAnyOrigin](dones_buf)
-            rng_states = LayoutTensor[DType.uint32, rng_layout, MutAnyOrigin](rng_buf)
-
-            # Reset all environments
-            ctx.enqueue_function[reset_kernel](
-                states, rng_states,
-                grid_dim=(BLOCKS_PER_GRID,),
-                block_dim=(THREADS_PER_BLOCK,),
-            )
-
-            # Training loop
-            for step in range(num_steps):
-                # Set actions (from policy)
-                # ...
-
-                # Step all environments
-                ctx.enqueue_function[step_kernel](
-                    states, actions, rewards, dones,
-                    grid_dim=(BLOCKS_PER_GRID,),
-                    block_dim=(THREADS_PER_BLOCK,),
-                )
-
-                # Reset terminated environments
-                ctx.enqueue_function[reset_where_done_kernel](
-                    states, dones, rng_states,
-                    grid_dim=(BLOCKS_PER_GRID,),
-                    block_dim=(THREADS_PER_BLOCK,),
-                )
-
-            ctx.synchronize()
     """
+
+    # Implement GPUDiscreteEnv trait constants
+    comptime STATE_SIZE: Int = 4  # [x, x_dot, theta, theta_dot]
+    comptime OBS_DIM: Int = 4     # Same as state for CartPole
+    comptime NUM_ACTIONS: Int = 2  # Left (0) or Right (1)
+
+    # Usage example - see A2CAgent.train[GPUCartPole]() for full integration
 
     @staticmethod
     fn get_grid_dim() -> Int:
@@ -373,3 +357,88 @@ struct GPUCartPole:
     fn get_num_actions() -> Int:
         """Return the number of discrete actions (2 for CartPole)."""
         return NUM_ACTIONS
+
+    # =========================================================================
+    # Inline methods for fused kernels (composability with A2C, PPO, etc.)
+    # =========================================================================
+
+    @staticmethod
+    @always_inline
+    fn step_inline[size: Int](
+        mut state: InlineArray[Scalar[dtype], size],
+        action: Int,
+    ) -> Tuple[Scalar[dtype], Bool]:
+        """Inline step for use in fused kernels. Returns (reward, done).
+
+        State layout: [x, x_dot, theta, theta_dot]
+        - x: cart position
+        - x_dot: cart velocity
+        - theta: pole angle
+        - theta_dot: pole angular velocity
+        """
+        # Compute force based on action
+        var force = FORCE_MAG if action == 1 else -FORCE_MAG
+
+        # Physics calculations (Euler integration matching Gymnasium)
+        var cos_theta = cos(state[2])
+        var sin_theta = sin(state[2])
+
+        var temp = (force + POLE_MASS_LENGTH * state[3] * state[3] * sin_theta) / TOTAL_MASS
+
+        var theta_acc = (GRAVITY * sin_theta - cos_theta * temp) / (
+            POLE_HALF_LENGTH
+            * (
+                Scalar[dtype](4.0 / 3.0)
+                - POLE_MASS * cos_theta * cos_theta / TOTAL_MASS
+            )
+        )
+
+        var x_acc = temp - POLE_MASS_LENGTH * theta_acc * cos_theta / TOTAL_MASS
+
+        # Euler integration - update state in-place
+        state[0] = state[0] + TAU * state[1]
+        state[1] = state[1] + TAU * x_acc
+        state[2] = state[2] + TAU * state[3]
+        state[3] = state[3] + TAU * theta_acc
+
+        # Check termination conditions
+        var done = (
+            (state[0] < -X_THRESHOLD)
+            or (state[0] > X_THRESHOLD)
+            or (state[2] < -THETA_THRESHOLD)
+            or (state[2] > THETA_THRESHOLD)
+        )
+
+        # Reward: +1 for staying alive, 0 if done
+        var reward = Scalar[dtype](0.0) if done else Scalar[dtype](1.0)
+
+        return (reward, done)
+
+    @staticmethod
+    @always_inline
+    fn reset_inline[size: Int](
+        mut state: InlineArray[Scalar[dtype], size],
+        mut rng: Scalar[DType.uint32],
+    ):
+        """Inline reset for use in fused kernels.
+
+        Resets state to random initial values and updates RNG state.
+        """
+        var low = Scalar[dtype](-INIT_RANGE)
+        var high = Scalar[dtype](INIT_RANGE)
+
+        var r0 = random_range(rng, low, high)
+        state[0] = r0[0]
+        rng = r0[1]
+
+        var r1 = random_range(rng, low, high)
+        state[1] = r1[0]
+        rng = r1[1]
+
+        var r2 = random_range(rng, low, high)
+        state[2] = r2[0]
+        rng = r2[1]
+
+        var r3 = random_range(rng, low, high)
+        state[3] = r3[0]
+        rng = r3[1]

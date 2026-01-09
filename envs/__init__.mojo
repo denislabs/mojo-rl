@@ -15,4 +15,4 @@ from .vec_cartpole import VecCartPoleEnv, VecCartPole8, VecCartPole16
 from .renderer_base import RendererBase
 
 # GPU environments
-from .cartpole_gpu import GPUCartPole
+from .cartpole_gpu import GPUCartPole, GPUDiscreteEnv
