@@ -13,3 +13,6 @@ from .vec_cartpole import VecCartPoleEnv, VecCartPole8, VecCartPole16
 
 # Native SDL2 renderer base (shared infrastructure)
 from .renderer_base import RendererBase
+
+# GPU environments
+from .cartpole_gpu import GPUCartPole

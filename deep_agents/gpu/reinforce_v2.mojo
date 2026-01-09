@@ -30,7 +30,7 @@ from gpu import thread_idx, block_idx, block_dim
 from gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from ..env_trait import xorshift32, gpu_random_uniform
+from deep_rl.gpu import xorshift32, random_uniform
 
 
 # =============================================================================
@@ -133,13 +133,9 @@ fn reinforce_kernel_v2[
         return
 
     # Load environment state into register-based InlineArray
-    var state = InlineArray[Scalar[dtype], STATE_SIZE](
-        fill=Scalar[dtype](0)
-    )
+    var state = InlineArray[Scalar[dtype], STATE_SIZE](fill=Scalar[dtype](0))
     for i in range(STATE_SIZE):
-        state[i] = rebind[Scalar[dtype]](
-            env_state[env_idx * STATE_SIZE + i]
-        )
+        state[i] = rebind[Scalar[dtype]](env_state[env_idx * STATE_SIZE + i])
 
     var rng = rebind[Scalar[DType.uint32]](rng_state[env_idx])
     var ep_length = Int(episode_lengths[env_idx])
@@ -153,9 +149,7 @@ fn reinforce_kernel_v2[
     var w2 = InlineArray[Scalar[dtype], HIDDEN_DIM * NUM_ACTIONS](
         fill=Scalar[dtype](0)
     )
-    var bias2 = InlineArray[Scalar[dtype], NUM_ACTIONS](
-        fill=Scalar[dtype](0)
-    )
+    var bias2 = InlineArray[Scalar[dtype], NUM_ACTIONS](fill=Scalar[dtype](0))
 
     for i in range(OBS_DIM * HIDDEN_DIM):
         w1[i] = rebind[Scalar[dtype]](W1[i])
@@ -235,7 +229,7 @@ fn reinforce_kernel_v2[
         # Sample action from policy
         # =============================================================
 
-        var u_result = gpu_random_uniform[dtype](rng)
+        var u_result = random_uniform[dtype](rng)
         var u = u_result[0]
         rng = u_result[1]
 
@@ -296,9 +290,9 @@ fn reinforce_kernel_v2[
     var local_grad_b1 = InlineArray[Scalar[dtype], HIDDEN_DIM](
         fill=Scalar[dtype](0)
     )
-    var local_grad_W2 = InlineArray[
-        Scalar[dtype], HIDDEN_DIM * NUM_ACTIONS
-    ](fill=Scalar[dtype](0))
+    var local_grad_W2 = InlineArray[Scalar[dtype], HIDDEN_DIM * NUM_ACTIONS](
+        fill=Scalar[dtype](0)
+    )
     var local_grad_b2 = InlineArray[Scalar[dtype], NUM_ACTIONS](
         fill=Scalar[dtype](0)
     )

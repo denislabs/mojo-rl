@@ -17,7 +17,7 @@ fn xorshift32(state: Scalar[DType.uint32]) -> Scalar[DType.uint32]:
 
 
 @always_inline
-fn gpu_random_uniform[
+fn random_uniform[
     dtype: DType
 ](rng: Scalar[DType.uint32]) -> Tuple[Scalar[dtype], Scalar[DType.uint32]]:
     """Generate uniform random number in [0, 1) and return (value, new_rng_state).
@@ -28,13 +28,13 @@ fn gpu_random_uniform[
 
 
 @always_inline
-fn gpu_random_range[
+fn random_range[
     dtype: DType
 ](rng: Scalar[DType.uint32], low: Scalar[dtype], high: Scalar[dtype]) -> Tuple[
     Scalar[dtype], Scalar[DType.uint32]
 ]:
     """Generate uniform random number in [low, high) and return (value, new_rng_state).
     """
-    var result = gpu_random_uniform[dtype](rng)
+    var result = random_uniform[dtype](rng)
     var value = low + result[0] * (high - low)
     return (value, result[1])

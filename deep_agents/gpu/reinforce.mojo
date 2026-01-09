@@ -27,7 +27,7 @@ from gpu import thread_idx, block_idx, block_dim
 from gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from deep_rl.gpu import xorshift32, gpu_random_uniform
+from deep_rl.gpu import xorshift32, random_uniform
 from core import GPUEnvDims
 
 
@@ -202,7 +202,7 @@ fn reinforce_kernel[
         # Sample action from policy
         # =============================================================
 
-        var u_result = gpu_random_uniform[dtype](rng)
+        var u_result = random_uniform[dtype](rng)
         var u = u_result[0]
         rng = u_result[1]
 

@@ -1,6 +1,6 @@
 """Test composable GPU RL framework."""
 
-from deep_rl.gpu.env_trait import GPUEnv, gpu_random_range
+from deep_rl.gpu.env_trait import GPUEnv, random_range
 from deep_rl.gpu.envs.cartpole import GPUCartPole
 
 

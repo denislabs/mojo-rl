@@ -60,7 +60,7 @@ fn xorshift32(state: Scalar[DType.uint32]) -> Scalar[DType.uint32]:
 
 
 @always_inline
-fn gpu_random_uniform[
+fn random_uniform[
     dtype: DType
 ](rng: Scalar[DType.uint32]) -> Tuple[Scalar[dtype], Scalar[DType.uint32]]:
     var new_rng = xorshift32(rng)
@@ -69,12 +69,12 @@ fn gpu_random_uniform[
 
 
 @always_inline
-fn gpu_random_range[
+fn random_range[
     dtype: DType
 ](rng: Scalar[DType.uint32], low: Scalar[dtype], high: Scalar[dtype]) -> Tuple[
     Scalar[dtype], Scalar[DType.uint32]
 ]:
-    var result = gpu_random_uniform[dtype](rng)
+    var result = random_uniform[dtype](rng)
     var value = low + result[0] * (high - low)
     return (value, result[1])
 
@@ -153,19 +153,19 @@ fn env_reset[
     var high = Scalar[dtype](INIT_RANGE)
     var current_rng = rng
 
-    var r0 = gpu_random_range[dtype](current_rng, low, high)
+    var r0 = random_range[dtype](current_rng, low, high)
     state[0] = r0[0]
     current_rng = r0[1]
 
-    var r1 = gpu_random_range[dtype](current_rng, low, high)
+    var r1 = random_range[dtype](current_rng, low, high)
     state[1] = r1[0]
     current_rng = r1[1]
 
-    var r2 = gpu_random_range[dtype](current_rng, low, high)
+    var r2 = random_range[dtype](current_rng, low, high)
     state[2] = r2[0]
     current_rng = r2[1]
 
-    var r3 = gpu_random_range[dtype](current_rng, low, high)
+    var r3 = random_range[dtype](current_rng, low, high)
     state[3] = r3[0]
     current_rng = r3[1]
 
@@ -177,7 +177,9 @@ fn env_get_obs[
     dtype: DType
 ](
     state: InlineArray[Scalar[dtype], ENV_STATE_SIZE],
-) -> InlineArray[Scalar[dtype], ENV_OBS_DIM]:
+) -> InlineArray[
+    Scalar[dtype], ENV_OBS_DIM
+]:
     """Get observation (identity for CartPole)."""
     var obs = InlineArray[Scalar[dtype], ENV_OBS_DIM](fill=Scalar[dtype](0))
     obs[0] = state[0]
@@ -246,9 +248,13 @@ fn reinforce_kernel[
         return
 
     # Load environment state
-    var state = InlineArray[Scalar[dtype], ENV_STATE_SIZE](fill=Scalar[dtype](0))
+    var state = InlineArray[Scalar[dtype], ENV_STATE_SIZE](
+        fill=Scalar[dtype](0)
+    )
     for i in range(ENV_STATE_SIZE):
-        state[i] = rebind[Scalar[dtype]](env_state[env_idx * ENV_STATE_SIZE + i])
+        state[i] = rebind[Scalar[dtype]](
+            env_state[env_idx * ENV_STATE_SIZE + i]
+        )
 
     var rng = rebind[Scalar[DType.uint32]](rng_state[env_idx])
     var ep_length = Int(episode_lengths[env_idx])
@@ -262,7 +268,9 @@ fn reinforce_kernel[
     var w2 = InlineArray[Scalar[dtype], HIDDEN_DIM * ENV_NUM_ACTIONS](
         fill=Scalar[dtype](0)
     )
-    var bias2 = InlineArray[Scalar[dtype], ENV_NUM_ACTIONS](fill=Scalar[dtype](0))
+    var bias2 = InlineArray[Scalar[dtype], ENV_NUM_ACTIONS](
+        fill=Scalar[dtype](0)
+    )
 
     for i in range(ENV_OBS_DIM * HIDDEN_DIM):
         w1[i] = rebind[Scalar[dtype]](W1[i])
@@ -330,7 +338,7 @@ fn reinforce_kernel[
             probs[j] = exp_logits[j] / sum_exp
 
         # Sample action
-        var u_result = gpu_random_uniform[dtype](rng)
+        var u_result = random_uniform[dtype](rng)
         var u = u_result[0]
         rng = u_result[1]
 
@@ -381,9 +389,9 @@ fn reinforce_kernel[
     var local_grad_b1 = InlineArray[Scalar[dtype], HIDDEN_DIM](
         fill=Scalar[dtype](0)
     )
-    var local_grad_W2 = InlineArray[Scalar[dtype], HIDDEN_DIM * ENV_NUM_ACTIONS](
-        fill=Scalar[dtype](0)
-    )
+    var local_grad_W2 = InlineArray[
+        Scalar[dtype], HIDDEN_DIM * ENV_NUM_ACTIONS
+    ](fill=Scalar[dtype](0))
     var local_grad_b2 = InlineArray[Scalar[dtype], ENV_NUM_ACTIONS](
         fill=Scalar[dtype](0)
     )
@@ -533,7 +541,9 @@ def main():
     print("=" * 70)
     print()
     print("This demonstrates the COMPOSABLE pattern:")
-    print("  - Section 1: Environment definition (constants + inline functions)")
+    print(
+        "  - Section 1: Environment definition (constants + inline functions)"
+    )
     print("  - Section 2: Generic REINFORCE algorithm (uses ENV_* constants)")
     print("  - Section 3: Training loop (environment-agnostic)")
     print()
@@ -562,20 +572,32 @@ def main():
         print("Allocating GPU buffers...")
 
         # Allocate buffers
-        var env_state = ctx.enqueue_create_buffer[dtype](NUM_ENVS * ENV_STATE_SIZE)
+        var env_state = ctx.enqueue_create_buffer[dtype](
+            NUM_ENVS * ENV_STATE_SIZE
+        )
         var rng_state = ctx.enqueue_create_buffer[DType.uint32](NUM_ENVS)
         var episode_lengths = ctx.enqueue_create_buffer[DType.int32](NUM_ENVS)
-        var total_episodes_buf = ctx.enqueue_create_buffer[DType.int32](NUM_ENVS)
+        var total_episodes_buf = ctx.enqueue_create_buffer[DType.int32](
+            NUM_ENVS
+        )
 
         var W1 = ctx.enqueue_create_buffer[dtype](W1_SIZE)
         var b1 = ctx.enqueue_create_buffer[dtype](HIDDEN_DIM)
         var W2 = ctx.enqueue_create_buffer[dtype](W2_SIZE)
         var b2 = ctx.enqueue_create_buffer[dtype](ENV_NUM_ACTIONS)
 
-        var grad_W1_per_env = ctx.enqueue_create_buffer[dtype](NUM_ENVS * W1_SIZE)
-        var grad_b1_per_env = ctx.enqueue_create_buffer[dtype](NUM_ENVS * HIDDEN_DIM)
-        var grad_W2_per_env = ctx.enqueue_create_buffer[dtype](NUM_ENVS * W2_SIZE)
-        var grad_b2_per_env = ctx.enqueue_create_buffer[dtype](NUM_ENVS * ENV_NUM_ACTIONS)
+        var grad_W1_per_env = ctx.enqueue_create_buffer[dtype](
+            NUM_ENVS * W1_SIZE
+        )
+        var grad_b1_per_env = ctx.enqueue_create_buffer[dtype](
+            NUM_ENVS * HIDDEN_DIM
+        )
+        var grad_W2_per_env = ctx.enqueue_create_buffer[dtype](
+            NUM_ENVS * W2_SIZE
+        )
+        var grad_b2_per_env = ctx.enqueue_create_buffer[dtype](
+            NUM_ENVS * ENV_NUM_ACTIONS
+        )
 
         var grad_W1 = ctx.enqueue_create_buffer[dtype](W1_SIZE)
         var grad_b1 = ctx.enqueue_create_buffer[dtype](HIDDEN_DIM)
@@ -622,10 +644,18 @@ def main():
             DType.int32, Layout.row_major(NUM_ENVS), MutAnyOrigin
         ](total_episodes_buf)
 
-        var W1_t = LayoutTensor[dtype, Layout.row_major(W1_SIZE), ImmutAnyOrigin](W1)
-        var b1_t = LayoutTensor[dtype, Layout.row_major(HIDDEN_DIM), ImmutAnyOrigin](b1)
-        var W2_t = LayoutTensor[dtype, Layout.row_major(W2_SIZE), ImmutAnyOrigin](W2)
-        var b2_t = LayoutTensor[dtype, Layout.row_major(ENV_NUM_ACTIONS), ImmutAnyOrigin](b2)
+        var W1_t = LayoutTensor[
+            dtype, Layout.row_major(W1_SIZE), ImmutAnyOrigin
+        ](W1)
+        var b1_t = LayoutTensor[
+            dtype, Layout.row_major(HIDDEN_DIM), ImmutAnyOrigin
+        ](b1)
+        var W2_t = LayoutTensor[
+            dtype, Layout.row_major(W2_SIZE), ImmutAnyOrigin
+        ](W2)
+        var b2_t = LayoutTensor[
+            dtype, Layout.row_major(ENV_NUM_ACTIONS), ImmutAnyOrigin
+        ](b2)
 
         var gW1_env_t = LayoutTensor[
             dtype, Layout.row_major(NUM_ENVS * W1_SIZE), MutAnyOrigin
@@ -640,22 +670,42 @@ def main():
             dtype, Layout.row_major(NUM_ENVS * ENV_NUM_ACTIONS), MutAnyOrigin
         ](grad_b2_per_env)
 
-        var gW1_t = LayoutTensor[dtype, Layout.row_major(W1_SIZE), MutAnyOrigin](grad_W1)
-        var gb1_t = LayoutTensor[dtype, Layout.row_major(HIDDEN_DIM), MutAnyOrigin](grad_b1)
-        var gW2_t = LayoutTensor[dtype, Layout.row_major(W2_SIZE), MutAnyOrigin](grad_W2)
-        var gb2_t = LayoutTensor[dtype, Layout.row_major(ENV_NUM_ACTIONS), MutAnyOrigin](grad_b2)
+        var gW1_t = LayoutTensor[
+            dtype, Layout.row_major(W1_SIZE), MutAnyOrigin
+        ](grad_W1)
+        var gb1_t = LayoutTensor[
+            dtype, Layout.row_major(HIDDEN_DIM), MutAnyOrigin
+        ](grad_b1)
+        var gW2_t = LayoutTensor[
+            dtype, Layout.row_major(W2_SIZE), MutAnyOrigin
+        ](grad_W2)
+        var gb2_t = LayoutTensor[
+            dtype, Layout.row_major(ENV_NUM_ACTIONS), MutAnyOrigin
+        ](grad_b2)
 
-        var W1_mut = LayoutTensor[dtype, Layout.row_major(W1_SIZE), MutAnyOrigin](W1)
-        var b1_mut = LayoutTensor[dtype, Layout.row_major(HIDDEN_DIM), MutAnyOrigin](b1)
-        var W2_mut = LayoutTensor[dtype, Layout.row_major(W2_SIZE), MutAnyOrigin](W2)
-        var b2_mut = LayoutTensor[dtype, Layout.row_major(ENV_NUM_ACTIONS), MutAnyOrigin](b2)
+        var W1_mut = LayoutTensor[
+            dtype, Layout.row_major(W1_SIZE), MutAnyOrigin
+        ](W1)
+        var b1_mut = LayoutTensor[
+            dtype, Layout.row_major(HIDDEN_DIM), MutAnyOrigin
+        ](b1)
+        var W2_mut = LayoutTensor[
+            dtype, Layout.row_major(W2_SIZE), MutAnyOrigin
+        ](W2)
+        var b2_mut = LayoutTensor[
+            dtype, Layout.row_major(ENV_NUM_ACTIONS), MutAnyOrigin
+        ](b2)
 
         var gamma_s = Scalar[dtype](gamma)
         var lr_s = Scalar[dtype](lr)
 
         comptime num_blocks = (NUM_ENVS + TPB - 1) // TPB
         comptime main_kernel = reinforce_kernel[
-            dtype, HIDDEN_DIM, NUM_ENVS, STEPS_PER_KERNEL, TPB,
+            dtype,
+            HIDDEN_DIM,
+            NUM_ENVS,
+            STEPS_PER_KERNEL,
+            TPB,
         ]
 
         comptime blocks_W1 = (W1_SIZE + TPB - 1) // TPB
@@ -680,11 +730,21 @@ def main():
             grad_b2_per_env.enqueue_fill(0)
 
             ctx.enqueue_function_checked[main_kernel, main_kernel](
-                env_t, rng_t, ep_len_t, tot_ep_t,
-                W1_t, b1_t, W2_t, b2_t,
-                gW1_env_t, gb1_env_t, gW2_env_t, gb2_env_t,
+                env_t,
+                rng_t,
+                ep_len_t,
+                tot_ep_t,
+                W1_t,
+                b1_t,
+                W2_t,
+                b2_t,
+                gW1_env_t,
+                gb1_env_t,
+                gW2_env_t,
+                gb2_env_t,
                 gamma_s,
-                grid_dim=(num_blocks,), block_dim=(TPB,),
+                grid_dim=(num_blocks,),
+                block_dim=(TPB,),
             )
 
             # Reduce gradients
@@ -698,13 +758,23 @@ def main():
                 dtype, Layout.row_major(NUM_ENVS * W2_SIZE), ImmutAnyOrigin
             ](grad_W2_per_env)
             var gb2_env_immut = LayoutTensor[
-                dtype, Layout.row_major(NUM_ENVS * ENV_NUM_ACTIONS), ImmutAnyOrigin
+                dtype,
+                Layout.row_major(NUM_ENVS * ENV_NUM_ACTIONS),
+                ImmutAnyOrigin,
             ](grad_b2_per_env)
 
-            comptime reduce_W1 = reduce_gradients_kernel[dtype, NUM_ENVS, W1_SIZE, TPB]
-            comptime reduce_b1 = reduce_gradients_kernel[dtype, NUM_ENVS, HIDDEN_DIM, TPB]
-            comptime reduce_W2 = reduce_gradients_kernel[dtype, NUM_ENVS, W2_SIZE, TPB]
-            comptime reduce_b2 = reduce_gradients_kernel[dtype, NUM_ENVS, ENV_NUM_ACTIONS, TPB]
+            comptime reduce_W1 = reduce_gradients_kernel[
+                dtype, NUM_ENVS, W1_SIZE, TPB
+            ]
+            comptime reduce_b1 = reduce_gradients_kernel[
+                dtype, NUM_ENVS, HIDDEN_DIM, TPB
+            ]
+            comptime reduce_W2 = reduce_gradients_kernel[
+                dtype, NUM_ENVS, W2_SIZE, TPB
+            ]
+            comptime reduce_b2 = reduce_gradients_kernel[
+                dtype, NUM_ENVS, ENV_NUM_ACTIONS, TPB
+            ]
 
             ctx.enqueue_function_checked[reduce_W1, reduce_W1](
                 gW1_t, gW1_env_immut, grid_dim=(blocks_W1,), block_dim=(TPB,)
@@ -720,10 +790,18 @@ def main():
             )
 
             # SGD update
-            var gW1_immut = LayoutTensor[dtype, Layout.row_major(W1_SIZE), ImmutAnyOrigin](grad_W1)
-            var gb1_immut = LayoutTensor[dtype, Layout.row_major(HIDDEN_DIM), ImmutAnyOrigin](grad_b1)
-            var gW2_immut = LayoutTensor[dtype, Layout.row_major(W2_SIZE), ImmutAnyOrigin](grad_W2)
-            var gb2_immut = LayoutTensor[dtype, Layout.row_major(ENV_NUM_ACTIONS), ImmutAnyOrigin](grad_b2)
+            var gW1_immut = LayoutTensor[
+                dtype, Layout.row_major(W1_SIZE), ImmutAnyOrigin
+            ](grad_W1)
+            var gb1_immut = LayoutTensor[
+                dtype, Layout.row_major(HIDDEN_DIM), ImmutAnyOrigin
+            ](grad_b1)
+            var gW2_immut = LayoutTensor[
+                dtype, Layout.row_major(W2_SIZE), ImmutAnyOrigin
+            ](grad_W2)
+            var gb2_immut = LayoutTensor[
+                dtype, Layout.row_major(ENV_NUM_ACTIONS), ImmutAnyOrigin
+            ](grad_b2)
 
             comptime sgd_W1 = sgd_update_kernel[dtype, W1_SIZE, TPB]
             comptime sgd_b1 = sgd_update_kernel[dtype, HIDDEN_DIM, TPB]
@@ -751,12 +829,16 @@ def main():
                         total_eps += host[i]
                 var steps_so_far = (update + 1) * NUM_ENVS * STEPS_PER_KERNEL
                 var avg_ep_len = (
-                    Float64(steps_so_far) / Float64(total_eps) if total_eps > 0 else 0.0
+                    Float64(steps_so_far) / Float64(total_eps) if total_eps
+                    > 0 else 0.0
                 )
                 print(
-                    "Update " + String(update + 1)
-                    + " | Episodes: " + String(total_eps)
-                    + " | Avg ep len: " + String(avg_ep_len)[:5]
+                    "Update "
+                    + String(update + 1)
+                    + " | Episodes: "
+                    + String(total_eps)
+                    + " | Avg ep len: "
+                    + String(avg_ep_len)[:5]
                 )
 
         ctx.synchronize()
@@ -782,7 +864,10 @@ def main():
         print()
         print("COMPOSABLE DESIGN SUMMARY:")
         print("  This file is structured in 3 sections:")
-        print("  1. ENVIRONMENT: ENV_* constants + env_step/reset/get_obs functions")
+        print(
+            "  1. ENVIRONMENT: ENV_* constants + env_step/reset/get_obs"
+            " functions"
+        )
         print("  2. ALGORITHM: Generic REINFORCE kernel using ENV_* constants")
         print("  3. TRAINING: Training loop (environment-agnostic)")
         print()

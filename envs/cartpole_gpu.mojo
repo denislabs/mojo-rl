@@ -1,190 +1,375 @@
-"""GPU CartPole Environment.
+"""GPU CartPole Environment - Vectorized for Multiple Environments.
 
-Implements the GPUEnv trait for CartPole-v1 physics.
-All methods are static and GPU-safe (no heap allocation).
+Implements a fully vectorized CartPole environment where a single kernel
+call simulates NUM_ENVS environments in parallel.
 
-State: [x, x_dot, theta, theta_dot]
-Obs: Same as state (4D)
-Actions: 0 (left), 1 (right)
+State layout: [NUM_ENVS, STATE_SIZE] where STATE_SIZE = 4
+  - state[env_idx, 0] = x (cart position)
+  - state[env_idx, 1] = x_dot (cart velocity)
+  - state[env_idx, 2] = theta (pole angle, radians, 0 = upright)
+  - state[env_idx, 3] = theta_dot (pole angular velocity)
+
+Actions layout: [NUM_ENVS, 1]
+  - actions[env_idx, 0] = 0 (left) or 1 (right)
+
+Step output layout: [NUM_ENVS, 6] = [state (4), reward (1), done (1)]
 
 Physics matches Gymnasium CartPole-v1.
 """
 
+from gpu import thread_idx, block_idx, block_dim
+from layout import Layout, LayoutTensor
 from math import cos, sin
+from deep_rl.gpu import xorshift32, random_uniform, random_range
 
-from deep_rl.gpu import gpu_random_range, xorshift32
-from core import GPUEnvDims
+# =============================================================================
+# Environment Dimensions (compile-time constants)
+# =============================================================================
+
+comptime OBS_DIM: Int = 4
+comptime NUM_ACTIONS: Int = 2
+comptime STATE_SIZE: Int = 4
+comptime NUM_ENVS: Int = 1024
+comptime THREADS_PER_BLOCK: Int = 256
+
+# Compute grid dimensions
+comptime BLOCKS_PER_GRID: Int = (
+    NUM_ENVS + THREADS_PER_BLOCK - 1
+) // THREADS_PER_BLOCK
+
+comptime dtype = DType.float32
+
+# Layout definitions
+comptime state_layout = Layout.row_major(NUM_ENVS, STATE_SIZE)
+comptime action_layout = Layout.row_major(NUM_ENVS, 1)
+comptime rng_layout = Layout.row_major(NUM_ENVS, 1)
+comptime reward_layout = Layout.row_major(NUM_ENVS, 1)
+comptime done_layout = Layout.row_major(NUM_ENVS, 1)
 
 # =============================================================================
 # Physics Constants
 # =============================================================================
 
-# These are module-level constants that get inlined at compile time
-comptime GRAVITY: Float64 = 9.8
-comptime CART_MASS: Float64 = 1.0
-comptime POLE_MASS: Float64 = 0.1
-comptime TOTAL_MASS: Float64 = CART_MASS + POLE_MASS
-comptime POLE_HALF_LENGTH: Float64 = 0.5
-comptime POLE_MASS_LENGTH: Float64 = POLE_MASS * POLE_HALF_LENGTH
-comptime FORCE_MAG: Float64 = 10.0
-comptime TAU: Float64 = 0.02  # Time step
+comptime GRAVITY: Float32 = 9.8
+comptime CART_MASS: Float32 = 1.0
+comptime POLE_MASS: Float32 = 0.1
+comptime TOTAL_MASS: Float32 = CART_MASS + POLE_MASS
+comptime POLE_HALF_LENGTH: Float32 = 0.5
+comptime POLE_MASS_LENGTH: Float32 = POLE_MASS * POLE_HALF_LENGTH
+comptime FORCE_MAG: Float32 = 10.0
+comptime TAU: Float32 = 0.02  # Time step
 
 # Termination thresholds
-comptime X_THRESHOLD: Float64 = 2.4
-comptime THETA_THRESHOLD: Float64 = 0.2095  # ~12 degrees
+comptime X_THRESHOLD: Float32 = 2.4
+comptime THETA_THRESHOLD: Float32 = 0.2095  # ~12 degrees
 
 # Initial state randomization range
-comptime INIT_RANGE: Float64 = 0.05
+comptime INIT_RANGE: Float32 = 0.05
+
+
+# # =============================================================================
+# # GPU Random Number Generator
+# # =============================================================================
+
+
+# @always_inline
+# fn xorshift32(state: Scalar[DType.uint32]) -> Scalar[DType.uint32]:
+#     """Simple xorshift PRNG - fast and GPU-friendly."""
+#     var x = state
+#     x ^= x << 13
+#     x ^= x >> 17
+#     x ^= x << 5
+#     return x
+
+
+# @always_inline
+# fn random_uniform(
+#     rng: Scalar[DType.uint32],
+# ) -> Tuple[Scalar[dtype], Scalar[DType.uint32]]:
+#     """Generate uniform random number in [0, 1) and return (value, new_rng)."""
+#     new_rng = xorshift32(rng)
+#     value = Scalar[dtype](new_rng) / Scalar[dtype](Scalar[DType.uint32].MAX)
+#     return (value, new_rng)
+
+
+# @always_inline
+# fn random_range(
+#     rng: Scalar[DType.uint32], low: Scalar[dtype], high: Scalar[dtype]
+# ) -> Tuple[Scalar[dtype], Scalar[DType.uint32]]:
+#     """Generate uniform random number in [low, high) and return (value, new_rng).
+#     """
+#     result = random_uniform(rng)
+#     value = low + result[0] * (high - low)
+#     return (value, result[1])
 
 
 # =============================================================================
-# GPUCartPole
+# GPU Kernels
 # =============================================================================
 
 
-struct GPUCartPole(GPUEnvDims):
-    """GPU-compatible CartPole environment implementing GPUEnv trait.
+fn step_kernel(
+    states: LayoutTensor[dtype, state_layout, MutAnyOrigin],
+    actions: LayoutTensor[DType.int32, action_layout, MutAnyOrigin],
+    rewards: LayoutTensor[dtype, reward_layout, MutAnyOrigin],
+    dones: LayoutTensor[DType.int32, done_layout, MutAnyOrigin],
+):
+    """Vectorized step kernel - each thread processes one environment.
 
-    State representation: [x, x_dot, theta, theta_dot]
-    - x: Cart position
-    - x_dot: Cart velocity
-    - theta: Pole angle (radians, 0 = upright)
-    - theta_dot: Pole angular velocity
+    Args:
+        states: [NUM_ENVS, STATE_SIZE] - states are updated in-place
+        actions: [NUM_ENVS, 1] - action per environment (0=left, 1=right)
+        rewards: [NUM_ENVS, 1] - output rewards
+        dones: [NUM_ENVS, 1] - output done flags (1=done, 0=not done)
+    """
+    # Compute which environment this thread handles
+    var env_idx = Int(block_dim.x * block_idx.x + thread_idx.x)
 
-    Actions:
-    - 0: Push cart left (-FORCE_MAG)
-    - 1: Push cart right (+FORCE_MAG)
+    # Bounds check
+    if env_idx >= NUM_ENVS:
+        return
 
-    Reward: +1 for each step the pole stays upright
-    Done: When pole angle > 12° or cart position > 2.4
+    # Read current state for this environment (rebind for type safety)
+    var x = rebind[Scalar[dtype]](states[env_idx, 0])
+    var x_dot = rebind[Scalar[dtype]](states[env_idx, 1])
+    var theta = rebind[Scalar[dtype]](states[env_idx, 2])
+    var theta_dot = rebind[Scalar[dtype]](states[env_idx, 3])
+
+    # Read action for this environment
+    var action = Int(actions[env_idx, 0])
+
+    # Compute force based on action
+    var force = FORCE_MAG if action == 1 else -FORCE_MAG
+
+    # Physics calculations (Euler integration matching Gymnasium)
+    var cos_theta = cos(theta)
+    var sin_theta = sin(theta)
+
+    var temp = (
+        force + POLE_MASS_LENGTH * theta_dot * theta_dot * sin_theta
+    ) / TOTAL_MASS
+
+    var theta_acc = (GRAVITY * sin_theta - cos_theta * temp) / (
+        POLE_HALF_LENGTH
+        * (
+            Scalar[dtype](4.0 / 3.0)
+            - POLE_MASS * cos_theta * cos_theta / TOTAL_MASS
+        )
+    )
+
+    var x_acc = temp - POLE_MASS_LENGTH * theta_acc * cos_theta / TOTAL_MASS
+
+    # Euler integration
+    var new_x = x + TAU * x_dot
+    var new_x_dot = x_dot + TAU * x_acc
+    var new_theta = theta + TAU * theta_dot
+    var new_theta_dot = theta_dot + TAU * theta_acc
+
+    # Write updated state back
+    states[env_idx, 0] = new_x
+    states[env_idx, 1] = new_x_dot
+    states[env_idx, 2] = new_theta
+    states[env_idx, 3] = new_theta_dot
+
+    # Check termination conditions
+    var done = (
+        (new_x < -X_THRESHOLD)
+        or (new_x > X_THRESHOLD)
+        or (new_theta < -THETA_THRESHOLD)
+        or (new_theta > THETA_THRESHOLD)
+    )
+
+    # Reward: +1 for staying alive, 0 if done
+    var reward = Scalar[dtype](0.0) if done else Scalar[dtype](1.0)
+
+    # Write outputs
+    rewards[env_idx, 0] = reward
+    dones[env_idx, 0] = 1 if done else 0
+
+
+fn reset_kernel(
+    states: LayoutTensor[dtype, state_layout, MutAnyOrigin],
+    rng_states: LayoutTensor[DType.uint32, rng_layout, MutAnyOrigin],
+):
+    """Vectorized reset kernel - each thread resets one environment.
+
+    Args:
+        states: [NUM_ENVS, STATE_SIZE] - states to reset
+        rng_states: [NUM_ENVS, 1] - per-environment RNG states (updated in-place)
+    """
+    # Compute which environment this thread handles
+    var env_idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+
+    # Bounds check
+    if env_idx >= NUM_ENVS:
+        return
+
+    # Get RNG state for this environment (rebind to scalar)
+    var rng = rebind[Scalar[DType.uint32]](rng_states[env_idx, 0])
+
+    # Generate random initial state values in [-INIT_RANGE, INIT_RANGE]
+    var low = Scalar[dtype](-INIT_RANGE)
+    var high = Scalar[dtype](INIT_RANGE)
+
+    var r0 = random_range(rng, low, high)
+    states[env_idx, 0] = r0[0]  # x
+    rng = r0[1]
+
+    var r1 = random_range(rng, low, high)
+    states[env_idx, 1] = r1[0]  # x_dot
+    rng = r1[1]
+
+    var r2 = random_range(rng, low, high)
+    states[env_idx, 2] = r2[0]  # theta
+    rng = r2[1]
+
+    var r3 = random_range(rng, low, high)
+    states[env_idx, 3] = r3[0]  # theta_dot
+    rng = r3[1]
+
+    # Update RNG state
+    rng_states[env_idx, 0] = rng
+
+
+fn reset_where_done_kernel(
+    states: LayoutTensor[dtype, state_layout, MutAnyOrigin],
+    dones: LayoutTensor[DType.int32, done_layout, MutAnyOrigin],
+    rng_states: LayoutTensor[DType.uint32, rng_layout, MutAnyOrigin],
+):
+    """Vectorized conditional reset - only reset environments where done=1.
+
+    Args:
+        states: [NUM_ENVS, STATE_SIZE] - states to conditionally reset
+        dones: [NUM_ENVS, 1] - done flags (1=reset this env, 0=skip)
+        rng_states: [NUM_ENVS, 1] - per-environment RNG states
+    """
+    # Compute which environment this thread handles
+    var env_idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+
+    # Bounds check
+    if env_idx >= NUM_ENVS:
+        return
+
+    # Only reset if this environment is done
+    if dones[env_idx, 0] == 0:
+        return
+
+    # Get RNG state for this environment (rebind to scalar)
+    var rng = rebind[Scalar[DType.uint32]](rng_states[env_idx, 0])
+
+    # Generate random initial state values
+    var low = Scalar[dtype](-INIT_RANGE)
+    var high = Scalar[dtype](INIT_RANGE)
+
+    var r0 = random_range(rng, low, high)
+    states[env_idx, 0] = r0[0]
+    rng = r0[1]
+
+    var r1 = random_range(rng, low, high)
+    states[env_idx, 1] = r1[0]
+    rng = r1[1]
+
+    var r2 = random_range(rng, low, high)
+    states[env_idx, 2] = r2[0]
+    rng = r2[1]
+
+    var r3 = random_range(rng, low, high)
+    states[env_idx, 3] = r3[0]
+    rng = r3[1]
+
+    # Update RNG state
+    rng_states[env_idx, 0] = rng
+
+    # Clear done flag after reset
+    dones[env_idx, 0] = 0
+
+
+# =============================================================================
+# GPUCartPole Struct - Host-side interface
+# =============================================================================
+
+
+struct GPUCartPole:
+    """GPU-compatible vectorized CartPole environment.
+
+    Manages NUM_ENVS environments in parallel. All operations are batched:
+    - step() advances all environments by one timestep
+    - reset() initializes all environments
+    - reset_where_done() selectively resets terminated environments
+
+    Usage:
+        from gpu.host import DeviceContext
+
+        with DeviceContext() as ctx:
+            # Allocate buffers
+            states_buf = ctx.enqueue_create_buffer[dtype](NUM_ENVS * STATE_SIZE)
+            actions_buf = ctx.enqueue_create_buffer[DType.int32](NUM_ENVS)
+            rewards_buf = ctx.enqueue_create_buffer[dtype](NUM_ENVS)
+            dones_buf = ctx.enqueue_create_buffer[DType.int32](NUM_ENVS)
+            rng_buf = ctx.enqueue_create_buffer[DType.uint32](NUM_ENVS)
+
+            # Initialize RNG (each env gets unique seed)
+            with rng_buf.map_to_host() as rng_host:
+                for i in range(NUM_ENVS):
+                    rng_host[i] = UInt32(i + 1)  # Seeds 1, 2, 3, ...
+
+            # Create tensors
+            states = LayoutTensor[dtype, state_layout, MutAnyOrigin](states_buf)
+            actions = LayoutTensor[DType.int32, action_layout, MutAnyOrigin](actions_buf)
+            rewards = LayoutTensor[dtype, reward_layout, MutAnyOrigin](rewards_buf)
+            dones = LayoutTensor[DType.int32, done_layout, MutAnyOrigin](dones_buf)
+            rng_states = LayoutTensor[DType.uint32, rng_layout, MutAnyOrigin](rng_buf)
+
+            # Reset all environments
+            ctx.enqueue_function[reset_kernel](
+                states, rng_states,
+                grid_dim=(BLOCKS_PER_GRID,),
+                block_dim=(THREADS_PER_BLOCK,),
+            )
+
+            # Training loop
+            for step in range(num_steps):
+                # Set actions (from policy)
+                # ...
+
+                # Step all environments
+                ctx.enqueue_function[step_kernel](
+                    states, actions, rewards, dones,
+                    grid_dim=(BLOCKS_PER_GRID,),
+                    block_dim=(THREADS_PER_BLOCK,),
+                )
+
+                # Reset terminated environments
+                ctx.enqueue_function[reset_where_done_kernel](
+                    states, dones, rng_states,
+                    grid_dim=(BLOCKS_PER_GRID,),
+                    block_dim=(THREADS_PER_BLOCK,),
+                )
+
+            ctx.synchronize()
     """
 
-    # Use alias inside struct (required for trait conformance)
-    comptime OBS_DIM = 4
-    comptime NUM_ACTIONS = 2
-    comptime STATE_SIZE = 4
+    @staticmethod
+    fn get_grid_dim() -> Int:
+        """Return the number of blocks needed for NUM_ENVS."""
+        return BLOCKS_PER_GRID
 
     @staticmethod
-    fn step[
-        dtype: DType
-    ](
-        mut state: InlineArray[Scalar[dtype], Self.STATE_SIZE],
-        action: Int,
-        rng: Scalar[DType.uint32],
-    ) -> Tuple[Scalar[dtype], Bool, Scalar[DType.uint32]]:
-        """Execute one CartPole physics step.
-
-        Uses Euler integration matching Gymnasium CartPole-v1.
-
-        Returns: (reward, done, rng) - rng is unchanged as step doesn't need randomness
-        """
-        # Unpack state
-        var x = state[0]
-        var x_dot = state[1]
-        var theta = state[2]
-        var theta_dot = state[3]
-
-        # Cast physics constants to dtype
-        var force_mag = Scalar[dtype](FORCE_MAG)
-        var gravity = Scalar[dtype](GRAVITY)
-        var pole_mass = Scalar[dtype](POLE_MASS)
-        var total_mass = Scalar[dtype](TOTAL_MASS)
-        var pole_half_length = Scalar[dtype](POLE_HALF_LENGTH)
-        var pole_mass_length = Scalar[dtype](POLE_MASS_LENGTH)
-        var tau = Scalar[dtype](TAU)
-        var x_threshold = Scalar[dtype](X_THRESHOLD)
-        var theta_threshold = Scalar[dtype](THETA_THRESHOLD)
-
-        # Compute force
-        var force = force_mag if action == 1 else -force_mag
-
-        # Physics calculations
-        var cos_theta = cos(theta)
-        var sin_theta = sin(theta)
-
-        var temp = (
-            force + pole_mass_length * theta_dot * theta_dot * sin_theta
-        ) / total_mass
-        var theta_acc = (gravity * sin_theta - cos_theta * temp) / (
-            pole_half_length
-            * (
-                Scalar[dtype](4.0 / 3.0)
-                - pole_mass * cos_theta * cos_theta / total_mass
-            )
-        )
-        var x_acc = temp - pole_mass_length * theta_acc * cos_theta / total_mass
-
-        # Euler integration
-        x = x + tau * x_dot
-        x_dot = x_dot + tau * x_acc
-        theta = theta + tau * theta_dot
-        theta_dot = theta_dot + tau * theta_acc
-
-        # Update state
-        state[0] = x
-        state[1] = x_dot
-        state[2] = theta
-        state[3] = theta_dot
-
-        # Check termination
-        var done = (
-            (x < -x_threshold)
-            or (x > x_threshold)
-            or (theta < -theta_threshold)
-            or (theta > theta_threshold)
-        )
-
-        # Reward: +1 for staying alive
-        var reward = Scalar[dtype](1.0) if not done else Scalar[dtype](0.0)
-
-        return (reward, done, rng)
+    fn get_block_dim() -> Int:
+        """Return threads per block."""
+        return THREADS_PER_BLOCK
 
     @staticmethod
-    fn reset[
-        dtype: DType
-    ](
-        mut state: InlineArray[Scalar[dtype], Self.STATE_SIZE],
-        rng: Scalar[DType.uint32],
-    ) -> Scalar[DType.uint32]:
-        """Reset CartPole to initial state with small random perturbation.
-
-        Returns: new RNG state
-        """
-        var low = Scalar[dtype](-INIT_RANGE)
-        var high = Scalar[dtype](INIT_RANGE)
-
-        var current_rng = rng
-
-        var r0 = gpu_random_range[dtype](current_rng, low, high)
-        state[0] = r0[0]  # x
-        current_rng = r0[1]
-
-        var r1 = gpu_random_range[dtype](current_rng, low, high)
-        state[1] = r1[0]  # x_dot
-        current_rng = r1[1]
-
-        var r2 = gpu_random_range[dtype](current_rng, low, high)
-        state[2] = r2[0]  # theta
-        current_rng = r2[1]
-
-        var r3 = gpu_random_range[dtype](current_rng, low, high)
-        state[3] = r3[0]  # theta_dot
-        current_rng = r3[1]
-
-        return current_rng
+    fn get_num_envs() -> Int:
+        """Return the number of parallel environments."""
+        return NUM_ENVS
 
     @staticmethod
-    fn get_obs[
-        dtype: DType
-    ](
-        state: InlineArray[Scalar[dtype], Self.STATE_SIZE],
-    ) -> InlineArray[
-        Scalar[dtype], Self.STATE_SIZE
-    ]:
-        """Get observation from state (identity for CartPole)."""
-        var obs = InlineArray[Scalar[dtype], 4](fill=Scalar[dtype](0))
-        obs[0] = state[0]
-        obs[1] = state[1]
-        obs[2] = state[2]
-        obs[3] = state[3]
-        return obs
+    fn get_state_size() -> Int:
+        """Return the state dimension (4 for CartPole)."""
+        return STATE_SIZE
+
+    @staticmethod
+    fn get_num_actions() -> Int:
+        """Return the number of discrete actions (2 for CartPole)."""
+        return NUM_ACTIONS
