@@ -1,10 +1,10 @@
 """GPU A2C (Advantage Actor-Critic) with Shared Network.
 
-Clean, composable implementation for vectorized GPU environments.
-Uses module-level constants to avoid parameterization overhead.
+Fully composable implementation for any GPU environment implementing GPUDiscreteEnv.
+All dimensions (NUM_ENVS, HIDDEN_DIM, ROLLOUT_LEN) are compile-time parameters.
 
 Run with:
-    pixi run -e apple mojo run deep_agents/gpu/a2c.mojo
+    pixi run -e apple mojo run examples/test_a2c_gpu.mojo
 """
 
 from time import perf_counter_ns
@@ -16,31 +16,53 @@ from gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from deep_rl.gpu import xorshift32, random_uniform, random_range
-from envs.cartpole_gpu import (
-    step_kernel,
-    reset_kernel,
-    reset_where_done_kernel,
-    BLOCKS_PER_GRID,
-    THREADS_PER_BLOCK,
-    state_layout,
-    action_layout,
-    rng_layout,
-    reward_layout,
-    done_layout,
-    GPUCartPole,
-    GPUDiscreteEnv,
-)
+from core import GPUDiscreteEnv
 
 
 # =============================================================================
-# Constants (module-level, no parameterization)
+# Constants (module-level)
 # =============================================================================
 
 comptime dtype = DType.float32
-comptime NUM_ENVS: Int = 1024
-comptime HIDDEN_DIM: Int = 64
-comptime ROLLOUT_LEN: Int = 128  # Balanced for training quality and throughput
-comptime TPB: Int = 256
+comptime TPB: Int = 256  # Threads per block for GPU kernels
+
+
+# =============================================================================
+# Reset All Kernel - uses EnvType.reset_inline for composability
+# =============================================================================
+
+
+fn reset_all_kernel[
+    EnvType: GPUDiscreteEnv,
+    NUM_ENVS: Int,
+](
+    states: LayoutTensor[
+        dtype, Layout.row_major(NUM_ENVS, EnvType.STATE_SIZE), MutAnyOrigin
+    ],
+    rng_states: LayoutTensor[
+        DType.uint32, Layout.row_major(NUM_ENVS, 1), MutAnyOrigin
+    ],
+):
+    """Reset all environments using EnvType.reset_inline for composability."""
+    var env_idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if env_idx >= NUM_ENVS:
+        return
+
+    # Get RNG state
+    var rng = rebind[Scalar[DType.uint32]](rng_states[env_idx, 0])
+
+    # Load state into InlineArray
+    var state = InlineArray[Scalar[dtype], EnvType.STATE_SIZE](
+        fill=Scalar[dtype](0)
+    )
+
+    # Reset using environment's reset_inline
+    EnvType.reset_inline[EnvType.STATE_SIZE](state, rng)
+
+    # Write state back
+    for i in range(EnvType.STATE_SIZE):
+        states[env_idx, i] = state[i]
+    rng_states[env_idx, 0] = rng
 
 
 # =============================================================================
@@ -50,7 +72,10 @@ comptime TPB: Int = 256
 
 
 fn fused_rollout_kernel[
-    EnvType: GPUDiscreteEnv
+    EnvType: GPUDiscreteEnv,
+    NUM_ENVS: Int,
+    HIDDEN_DIM: Int,
+    ROLLOUT_LEN: Int,
 ](
     # Environment state (no env instance needed - methods are static)
     states: LayoutTensor[
@@ -187,7 +212,9 @@ fn fused_rollout_kernel[
 # =============================================================================
 
 
-fn compute_gae_kernel(
+fn compute_gae_kernel[
+    NUM_ENVS: Int, ROLLOUT_LEN: Int
+](
     gamma: Scalar[dtype],
     gae_lambda: Scalar[dtype],
     rollout_rewards: LayoutTensor[
@@ -237,7 +264,9 @@ fn compute_gae_kernel(
 
 
 fn get_values_kernel[
-    EnvType: GPUDiscreteEnv
+    EnvType: GPUDiscreteEnv,
+    NUM_ENVS: Int,
+    HIDDEN_DIM: Int,
 ](
     obs: LayoutTensor[
         dtype, Layout.row_major(NUM_ENVS, EnvType.OBS_DIM), ImmutAnyOrigin
@@ -281,7 +310,10 @@ fn get_values_kernel[
 
 
 fn policy_gradient_kernel[
-    EnvType: GPUDiscreteEnv
+    EnvType: GPUDiscreteEnv,
+    NUM_ENVS: Int,
+    HIDDEN_DIM: Int,
+    ROLLOUT_LEN: Int,
 ](
     rollout_obs: LayoutTensor[
         dtype,
@@ -461,29 +493,21 @@ fn policy_gradient_kernel[
 
 
 # =============================================================================
-# Reduce and SGD Kernels
+# Reduce and SGD Kernels - Parameterized for composability
 # =============================================================================
 
-# Parameter sizes
-comptime OBS_DIM: Int = 4
-comptime NUM_ACTIONS: Int = 2
-comptime W1_SIZE: Int = OBS_DIM * HIDDEN_DIM  # 4 * 64 = 256
-comptime B1_SIZE: Int = HIDDEN_DIM  # 64
-comptime W_ACTOR_SIZE: Int = HIDDEN_DIM * NUM_ACTIONS  # 64 * 2 = 128
-comptime B_ACTOR_SIZE: Int = NUM_ACTIONS  # 2
-comptime W_CRITIC_SIZE: Int = HIDDEN_DIM  # 64
-comptime B_CRITIC_SIZE: Int = 1  # 1
 
-
-fn reduce_W1_kernel(
-    reduced: LayoutTensor[dtype, Layout.row_major(W1_SIZE), MutAnyOrigin],
+fn reduce_kernel[
+    SIZE: Int, NUM_ENVS: Int
+](
+    reduced: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
     per_env: LayoutTensor[
-        dtype, Layout.row_major(NUM_ENVS, W1_SIZE), ImmutAnyOrigin
+        dtype, Layout.row_major(NUM_ENVS, SIZE), ImmutAnyOrigin
     ],
 ):
-    """Reduce W1 gradients."""
+    """Generic reduce kernel - averages gradients across environments."""
     var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if idx >= W1_SIZE:
+    if idx >= SIZE:
         return
     var sum_val: Scalar[dtype] = 0
     for env in range(NUM_ENVS):
@@ -491,164 +515,16 @@ fn reduce_W1_kernel(
     reduced[idx] = sum_val / Scalar[dtype](NUM_ENVS)
 
 
-fn reduce_b1_kernel(
-    reduced: LayoutTensor[dtype, Layout.row_major(B1_SIZE), MutAnyOrigin],
-    per_env: LayoutTensor[
-        dtype, Layout.row_major(NUM_ENVS, B1_SIZE), ImmutAnyOrigin
-    ],
-):
-    """Reduce b1 gradients."""
-    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if idx >= B1_SIZE:
-        return
-    var sum_val: Scalar[dtype] = 0
-    for env in range(NUM_ENVS):
-        sum_val += rebind[Scalar[dtype]](per_env[env, idx])
-    reduced[idx] = sum_val / Scalar[dtype](NUM_ENVS)
-
-
-fn reduce_W_actor_kernel(
-    reduced: LayoutTensor[dtype, Layout.row_major(W_ACTOR_SIZE), MutAnyOrigin],
-    per_env: LayoutTensor[
-        dtype, Layout.row_major(NUM_ENVS, W_ACTOR_SIZE), ImmutAnyOrigin
-    ],
-):
-    """Reduce W_actor gradients."""
-    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if idx >= W_ACTOR_SIZE:
-        return
-    var sum_val: Scalar[dtype] = 0
-    for env in range(NUM_ENVS):
-        sum_val += rebind[Scalar[dtype]](per_env[env, idx])
-    reduced[idx] = sum_val / Scalar[dtype](NUM_ENVS)
-
-
-fn reduce_b_actor_kernel(
-    reduced: LayoutTensor[dtype, Layout.row_major(B_ACTOR_SIZE), MutAnyOrigin],
-    per_env: LayoutTensor[
-        dtype, Layout.row_major(NUM_ENVS, B_ACTOR_SIZE), ImmutAnyOrigin
-    ],
-):
-    """Reduce b_actor gradients."""
-    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if idx >= B_ACTOR_SIZE:
-        return
-    var sum_val: Scalar[dtype] = 0
-    for env in range(NUM_ENVS):
-        sum_val += rebind[Scalar[dtype]](per_env[env, idx])
-    reduced[idx] = sum_val / Scalar[dtype](NUM_ENVS)
-
-
-fn reduce_W_critic_kernel(
-    reduced: LayoutTensor[dtype, Layout.row_major(W_CRITIC_SIZE), MutAnyOrigin],
-    per_env: LayoutTensor[
-        dtype, Layout.row_major(NUM_ENVS, W_CRITIC_SIZE), ImmutAnyOrigin
-    ],
-):
-    """Reduce W_critic gradients."""
-    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if idx >= W_CRITIC_SIZE:
-        return
-    var sum_val: Scalar[dtype] = 0
-    for env in range(NUM_ENVS):
-        sum_val += rebind[Scalar[dtype]](per_env[env, idx])
-    reduced[idx] = sum_val / Scalar[dtype](NUM_ENVS)
-
-
-fn reduce_b_critic_kernel(
-    reduced: LayoutTensor[dtype, Layout.row_major(B_CRITIC_SIZE), MutAnyOrigin],
-    per_env: LayoutTensor[
-        dtype, Layout.row_major(NUM_ENVS, B_CRITIC_SIZE), ImmutAnyOrigin
-    ],
-):
-    """Reduce b_critic gradients."""
-    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if idx >= B_CRITIC_SIZE:
-        return
-    var sum_val: Scalar[dtype] = 0
-    for env in range(NUM_ENVS):
-        sum_val += rebind[Scalar[dtype]](per_env[env, idx])
-    reduced[idx] = sum_val / Scalar[dtype](NUM_ENVS)
-
-
-fn sgd_W1_kernel(
-    weights: LayoutTensor[dtype, Layout.row_major(W1_SIZE), MutAnyOrigin],
-    grads: LayoutTensor[dtype, Layout.row_major(W1_SIZE), ImmutAnyOrigin],
+fn sgd_kernel[
+    SIZE: Int
+](
+    weights: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
+    grads: LayoutTensor[dtype, Layout.row_major(SIZE), ImmutAnyOrigin],
     lr: Scalar[dtype],
 ):
-    """SGD for W1."""
+    """Generic SGD kernel - updates weights with gradients."""
     var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if idx >= W1_SIZE:
-        return
-    weights[idx] = rebind[Scalar[dtype]](weights[idx]) - lr * rebind[
-        Scalar[dtype]
-    ](grads[idx])
-
-
-fn sgd_b1_kernel(
-    weights: LayoutTensor[dtype, Layout.row_major(B1_SIZE), MutAnyOrigin],
-    grads: LayoutTensor[dtype, Layout.row_major(B1_SIZE), ImmutAnyOrigin],
-    lr: Scalar[dtype],
-):
-    """SGD for b1."""
-    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if idx >= B1_SIZE:
-        return
-    weights[idx] = rebind[Scalar[dtype]](weights[idx]) - lr * rebind[
-        Scalar[dtype]
-    ](grads[idx])
-
-
-fn sgd_W_actor_kernel(
-    weights: LayoutTensor[dtype, Layout.row_major(W_ACTOR_SIZE), MutAnyOrigin],
-    grads: LayoutTensor[dtype, Layout.row_major(W_ACTOR_SIZE), ImmutAnyOrigin],
-    lr: Scalar[dtype],
-):
-    """SGD for W_actor."""
-    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if idx >= W_ACTOR_SIZE:
-        return
-    weights[idx] = rebind[Scalar[dtype]](weights[idx]) - lr * rebind[
-        Scalar[dtype]
-    ](grads[idx])
-
-
-fn sgd_b_actor_kernel(
-    weights: LayoutTensor[dtype, Layout.row_major(B_ACTOR_SIZE), MutAnyOrigin],
-    grads: LayoutTensor[dtype, Layout.row_major(B_ACTOR_SIZE), ImmutAnyOrigin],
-    lr: Scalar[dtype],
-):
-    """SGD for b_actor."""
-    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if idx >= B_ACTOR_SIZE:
-        return
-    weights[idx] = rebind[Scalar[dtype]](weights[idx]) - lr * rebind[
-        Scalar[dtype]
-    ](grads[idx])
-
-
-fn sgd_W_critic_kernel(
-    weights: LayoutTensor[dtype, Layout.row_major(W_CRITIC_SIZE), MutAnyOrigin],
-    grads: LayoutTensor[dtype, Layout.row_major(W_CRITIC_SIZE), ImmutAnyOrigin],
-    lr: Scalar[dtype],
-):
-    """SGD for W_critic."""
-    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if idx >= W_CRITIC_SIZE:
-        return
-    weights[idx] = rebind[Scalar[dtype]](weights[idx]) - lr * rebind[
-        Scalar[dtype]
-    ](grads[idx])
-
-
-fn sgd_b_critic_kernel(
-    weights: LayoutTensor[dtype, Layout.row_major(B_CRITIC_SIZE), MutAnyOrigin],
-    grads: LayoutTensor[dtype, Layout.row_major(B_CRITIC_SIZE), ImmutAnyOrigin],
-    lr: Scalar[dtype],
-):
-    """SGD for b_critic."""
-    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if idx >= B_CRITIC_SIZE:
+    if idx >= SIZE:
         return
     weights[idx] = rebind[Scalar[dtype]](weights[idx]) - lr * rebind[
         Scalar[dtype]
@@ -663,7 +539,10 @@ fn sgd_b_critic_kernel(
 struct A2CAgent:
     @staticmethod
     fn train[
-        EnvType: GPUDiscreteEnv
+        EnvType: GPUDiscreteEnv,
+        NUM_ENVS: Int = 1024,
+        HIDDEN_DIM: Int = 64,
+        ROLLOUT_LEN: Int = 128,
     ](
         ctx: DeviceContext,
         num_updates: Int,
@@ -677,7 +556,18 @@ struct A2CAgent:
         """Train A2C with composable GPU environment.
 
         EnvType must implement GPUDiscreteEnv trait with step_inline/reset_inline.
+        NUM_ENVS: Number of parallel environments (default: 1024)
+        HIDDEN_DIM: Hidden layer size (default: 64)
+        ROLLOUT_LEN: Steps per rollout before update (default: 128)
         """
+
+        # Parameter sizes derived from EnvType and training hyperparams
+        comptime W1_SIZE = EnvType.OBS_DIM * HIDDEN_DIM
+        comptime B1_SIZE = HIDDEN_DIM
+        comptime W_ACTOR_SIZE = HIDDEN_DIM * EnvType.NUM_ACTIONS
+        comptime B_ACTOR_SIZE = EnvType.NUM_ACTIONS
+        comptime W_CRITIC_SIZE = HIDDEN_DIM
+        comptime B_CRITIC_SIZE = 1
 
         # Allocate buffers using EnvType constants for composability
         var states_buf = ctx.enqueue_create_buffer[dtype](
@@ -783,20 +673,22 @@ struct A2CAgent:
                 )
         b_critic_buf.enqueue_fill(0)
 
-        # Create tensors
-        var states = LayoutTensor[dtype, state_layout, MutAnyOrigin](states_buf)
-        var actions = LayoutTensor[DType.int32, action_layout, MutAnyOrigin](
-            actions_buf
-        )
-        var rewards = LayoutTensor[dtype, reward_layout, MutAnyOrigin](
-            rewards_buf
-        )
-        var dones = LayoutTensor[DType.int32, done_layout, MutAnyOrigin](
-            dones_buf
-        )
-        var rng_states = LayoutTensor[DType.uint32, rng_layout, MutAnyOrigin](
-            rng_buf
-        )
+        # Create tensors with parameterized layouts (fully composable)
+        var states = LayoutTensor[
+            dtype, Layout.row_major(NUM_ENVS, EnvType.STATE_SIZE), MutAnyOrigin
+        ](states_buf)
+        var actions = LayoutTensor[
+            DType.int32, Layout.row_major(NUM_ENVS, 1), MutAnyOrigin
+        ](actions_buf)
+        var rewards = LayoutTensor[
+            dtype, Layout.row_major(NUM_ENVS, 1), MutAnyOrigin
+        ](rewards_buf)
+        var dones = LayoutTensor[
+            DType.int32, Layout.row_major(NUM_ENVS, 1), MutAnyOrigin
+        ](dones_buf)
+        var rng_states = LayoutTensor[
+            DType.uint32, Layout.row_major(NUM_ENVS, 1), MutAnyOrigin
+        ](rng_buf)
 
         var W1 = LayoutTensor[
             dtype, Layout.row_major(EnvType.OBS_DIM, HIDDEN_DIM), ImmutAnyOrigin
@@ -927,11 +819,15 @@ struct A2CAgent:
         var value_coef_s = Scalar[dtype](value_coef)
         var lr_s = Scalar[dtype](lr)
 
-        comptime env_blocks = BLOCKS_PER_GRID
-        comptime env_threads = THREADS_PER_BLOCK
+        # Grid dimensions computed from parameterized NUM_ENVS
+        comptime env_blocks = (NUM_ENVS + TPB - 1) // TPB
+        comptime env_threads = TPB
 
-        # Reset environments
-        ctx.enqueue_function_checked[reset_kernel, reset_kernel](
+        # Reset environments using composable reset_all_kernel
+        ctx.enqueue_function_checked[
+            reset_all_kernel[EnvType, NUM_ENVS],
+            reset_all_kernel[EnvType, NUM_ENVS],
+        ](
             states,
             rng_states,
             grid_dim=(env_blocks,),
@@ -941,7 +837,7 @@ struct A2CAgent:
 
         if verbose:
             print("=" * 60)
-            print("A2C Training on GPU CartPole")
+            print("A2C Training on GPU Environment")
             print("=" * 60)
             print("  Environments:", NUM_ENVS)
             print("  Rollout length:", ROLLOUT_LEN)
@@ -956,8 +852,12 @@ struct A2CAgent:
         for update in range(num_updates):
             # Phase 1: Collect rollout (FUSED - single kernel for all steps)
             ctx.enqueue_function_checked[
-                fused_rollout_kernel[EnvType],
-                fused_rollout_kernel[EnvType],
+                fused_rollout_kernel[
+                    EnvType, NUM_ENVS, HIDDEN_DIM, ROLLOUT_LEN
+                ],
+                fused_rollout_kernel[
+                    EnvType, NUM_ENVS, HIDDEN_DIM, ROLLOUT_LEN
+                ],
             ](
                 states,
                 rng_states,
@@ -979,7 +879,8 @@ struct A2CAgent:
 
             # Phase 2: Compute GAE
             ctx.enqueue_function_checked[
-                get_values_kernel[EnvType], get_values_kernel[EnvType]
+                get_values_kernel[EnvType, NUM_ENVS, HIDDEN_DIM],
+                get_values_kernel[EnvType, NUM_ENVS, HIDDEN_DIM],
             ](
                 obs,
                 W1,
@@ -1007,7 +908,8 @@ struct A2CAgent:
             ](bootstrap_values_buf)
 
             ctx.enqueue_function_checked[
-                compute_gae_kernel, compute_gae_kernel
+                compute_gae_kernel[NUM_ENVS, ROLLOUT_LEN],
+                compute_gae_kernel[NUM_ENVS, ROLLOUT_LEN],
             ](
                 gamma_s,
                 gae_lambda_s,
@@ -1040,7 +942,12 @@ struct A2CAgent:
             ](rollout_returns_buf)
 
             ctx.enqueue_function_checked[
-                policy_gradient_kernel[EnvType], policy_gradient_kernel[EnvType]
+                policy_gradient_kernel[
+                    EnvType, NUM_ENVS, HIDDEN_DIM, ROLLOUT_LEN
+                ],
+                policy_gradient_kernel[
+                    EnvType, NUM_ENVS, HIDDEN_DIM, ROLLOUT_LEN
+                ],
             ](
                 rollout_obs_i,
                 rollout_actions_i,
@@ -1111,21 +1018,28 @@ struct A2CAgent:
             comptime blocks_W_critic = (W_CRITIC_SIZE + TPB - 1) // TPB
             comptime blocks_b_critic = (B_CRITIC_SIZE + TPB - 1) // TPB
 
-            # Reduce all gradients (unrolled sequential reduction)
-            ctx.enqueue_function_checked[reduce_W1_kernel, reduce_W1_kernel](
+            # Reduce all gradients using parameterized kernel
+            ctx.enqueue_function_checked[
+                reduce_kernel[W1_SIZE, NUM_ENVS],
+                reduce_kernel[W1_SIZE, NUM_ENVS],
+            ](
                 reduced_W1,
                 grad_W1_i,
                 grid_dim=(blocks_W1,),
                 block_dim=(TPB,),
             )
-            ctx.enqueue_function_checked[reduce_b1_kernel, reduce_b1_kernel](
+            ctx.enqueue_function_checked[
+                reduce_kernel[B1_SIZE, NUM_ENVS],
+                reduce_kernel[B1_SIZE, NUM_ENVS],
+            ](
                 reduced_b1,
                 grad_b1_i,
                 grid_dim=(blocks_b1,),
                 block_dim=(TPB,),
             )
             ctx.enqueue_function_checked[
-                reduce_W_actor_kernel, reduce_W_actor_kernel
+                reduce_kernel[W_ACTOR_SIZE, NUM_ENVS],
+                reduce_kernel[W_ACTOR_SIZE, NUM_ENVS],
             ](
                 reduced_W_actor,
                 grad_W_actor_i,
@@ -1133,7 +1047,8 @@ struct A2CAgent:
                 block_dim=(TPB,),
             )
             ctx.enqueue_function_checked[
-                reduce_b_actor_kernel, reduce_b_actor_kernel
+                reduce_kernel[B_ACTOR_SIZE, NUM_ENVS],
+                reduce_kernel[B_ACTOR_SIZE, NUM_ENVS],
             ](
                 reduced_b_actor,
                 grad_b_actor_i,
@@ -1141,7 +1056,8 @@ struct A2CAgent:
                 block_dim=(TPB,),
             )
             ctx.enqueue_function_checked[
-                reduce_W_critic_kernel, reduce_W_critic_kernel
+                reduce_kernel[W_CRITIC_SIZE, NUM_ENVS],
+                reduce_kernel[W_CRITIC_SIZE, NUM_ENVS],
             ](
                 reduced_W_critic,
                 grad_W_critic_i,
@@ -1149,7 +1065,8 @@ struct A2CAgent:
                 block_dim=(TPB,),
             )
             ctx.enqueue_function_checked[
-                reduce_b_critic_kernel, reduce_b_critic_kernel
+                reduce_kernel[B_CRITIC_SIZE, NUM_ENVS],
+                reduce_kernel[B_CRITIC_SIZE, NUM_ENVS],
             ](
                 reduced_b_critic,
                 grad_b_critic_i,
@@ -1157,15 +1074,19 @@ struct A2CAgent:
                 block_dim=(TPB,),
             )
 
-            # SGD update all parameters
-            ctx.enqueue_function_checked[sgd_W1_kernel, sgd_W1_kernel](
+            # SGD update all parameters using parameterized kernel
+            ctx.enqueue_function_checked[
+                sgd_kernel[W1_SIZE], sgd_kernel[W1_SIZE]
+            ](
                 W1_mut,
                 reduced_W1_i,
                 lr_s,
                 grid_dim=(blocks_W1,),
                 block_dim=(TPB,),
             )
-            ctx.enqueue_function_checked[sgd_b1_kernel, sgd_b1_kernel](
+            ctx.enqueue_function_checked[
+                sgd_kernel[B1_SIZE], sgd_kernel[B1_SIZE]
+            ](
                 b1_mut,
                 reduced_b1_i,
                 lr_s,
@@ -1173,7 +1094,7 @@ struct A2CAgent:
                 block_dim=(TPB,),
             )
             ctx.enqueue_function_checked[
-                sgd_W_actor_kernel, sgd_W_actor_kernel
+                sgd_kernel[W_ACTOR_SIZE], sgd_kernel[W_ACTOR_SIZE]
             ](
                 W_actor_mut,
                 reduced_W_actor_i,
@@ -1182,7 +1103,7 @@ struct A2CAgent:
                 block_dim=(TPB,),
             )
             ctx.enqueue_function_checked[
-                sgd_b_actor_kernel, sgd_b_actor_kernel
+                sgd_kernel[B_ACTOR_SIZE], sgd_kernel[B_ACTOR_SIZE]
             ](
                 b_actor_mut,
                 reduced_b_actor_i,
@@ -1191,7 +1112,7 @@ struct A2CAgent:
                 block_dim=(TPB,),
             )
             ctx.enqueue_function_checked[
-                sgd_W_critic_kernel, sgd_W_critic_kernel
+                sgd_kernel[W_CRITIC_SIZE], sgd_kernel[W_CRITIC_SIZE]
             ](
                 W_critic_mut,
                 reduced_W_critic_i,
@@ -1200,7 +1121,7 @@ struct A2CAgent:
                 block_dim=(TPB,),
             )
             ctx.enqueue_function_checked[
-                sgd_b_critic_kernel, sgd_b_critic_kernel
+                sgd_kernel[B_CRITIC_SIZE], sgd_kernel[B_CRITIC_SIZE]
             ](
                 b_critic_mut,
                 reduced_b_critic_i,

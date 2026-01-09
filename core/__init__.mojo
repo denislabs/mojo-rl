@@ -9,7 +9,7 @@ from .env_traits import (
     DiscreteEnv,
     BoxDiscreteActionEnv,
     BoxContinuousActionEnv,
-    GPUEnvDims,
+    GPUDiscreteEnv,
 )
 from .space import Space, DiscreteSpace, BoxSpace
 from .agent import Agent

@@ -8,6 +8,10 @@ frictionless track. The pendulum is placed upright on the cart and the goal
 is to balance the pole by applying forces in the left and right direction
 on the cart.
 
+Supports both CPU (instance methods) and GPU (static inline methods) usage:
+- CPU: Use reset(), step(), render() for interactive training
+- GPU: Use step_inline(), reset_inline() in fused GPU kernels
+
 Rendering uses native SDL2 bindings (no Python/pygame dependency).
 Requires SDL2 and SDL2_ttf: brew install sdl2 sdl2_ttf
 """
@@ -21,9 +25,37 @@ from core import (
     TileCoding,
     BoxDiscreteActionEnv,
     PolynomialFeatures,
+    GPUDiscreteEnv,
 )
 from core.sdl2 import SDL_Color, SDL_Point
 from .renderer_base import RendererBase
+from deep_rl.gpu import random_range
+
+# =============================================================================
+# Physics Constants (shared by CPU and GPU)
+# =============================================================================
+
+comptime gpu_dtype = DType.float32
+
+# Physics parameters (same as Gymnasium CartPole-v1)
+comptime GRAVITY: Float64 = 9.8
+comptime CART_MASS: Float64 = 1.0
+comptime POLE_MASS: Float64 = 0.1
+comptime TOTAL_MASS: Float64 = CART_MASS + POLE_MASS
+comptime POLE_HALF_LENGTH: Float64 = 0.5  # Half the pole's length
+comptime POLE_MASS_LENGTH: Float64 = POLE_MASS * POLE_HALF_LENGTH
+comptime FORCE_MAG: Float64 = 10.0
+comptime TAU: Float64 = 0.02  # Time step (seconds)
+
+# Termination thresholds
+comptime X_THRESHOLD: Float64 = 2.4
+comptime THETA_THRESHOLD: Float64 = 0.2095  # ~12 degrees
+
+# Initial state randomization range
+comptime INIT_RANGE: Float64 = 0.05
+
+# Max episode length
+comptime MAX_STEPS: Int = 500
 
 
 # ============================================================================
@@ -72,7 +104,7 @@ struct CartPoleAction(Action, Copyable, ImplicitlyCopyable, Movable):
         return Self(direction=1)
 
 
-struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv):
+struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
     """Native Mojo CartPole environment with integrated SDL2 rendering.
 
     State: [cart_position, cart_velocity, pole_angle, pole_angular_velocity] (4D).
@@ -83,27 +115,29 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv):
     - Cart position > ±2.4.
     - Episode length > 500 steps.
 
-    Implements DiscreteEnv for tabular methods and BoxDiscreteActionEnv for
-    function approximation with continuous observations.
+    Implements:
+    - DiscreteEnv: for tabular methods
+    - BoxDiscreteActionEnv: for function approximation with continuous observations
+    - GPUDiscreteEnv: for fused GPU kernels (A2C, PPO, etc.)
+
+    CPU usage:
+        env = CartPoleEnv()
+        obs = env.reset()
+        obs, reward, done = env.step(action)
+
+    GPU usage:
+        from deep_agents.gpu import A2CAgent
+        A2CAgent.train[CartPoleEnv](ctx, num_updates=100)
     """
 
-    # Type aliases for trait conformance
+    # Type aliases for CPU trait conformance
     comptime StateType = CartPoleState
     comptime ActionType = CartPoleAction
 
-    # Physical constants (same as Gymnasium)
-    var gravity: Float64
-    var masscart: Float64
-    var masspole: Float64
-    var total_mass: Float64
-    var length: Float64  # Half the pole's length
-    var polemass_length: Float64
-    var force_mag: Float64
-    var tau: Float64  # Time step (seconds)
-
-    # Thresholds for episode termination
-    var theta_threshold_radians: Float64
-    var x_threshold: Float64
+    # GPUDiscreteEnv trait constants
+    comptime STATE_SIZE: Int = 4  # [x, x_dot, theta, theta_dot]
+    comptime OBS_DIM: Int = 4  # Same as state for CartPole
+    comptime NUM_ACTIONS: Int = 2  # Left (0) or Right (1)
 
     # Current state
     var x: Float64  # Cart position
@@ -113,7 +147,6 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv):
 
     # Episode tracking
     var steps: Int
-    var max_steps: Int
     var done: Bool
     var total_reward: Float64
 
@@ -139,23 +172,7 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv):
     var num_bins: Int
 
     fn __init__(out self, num_bins: Int = 10) raises:
-        """Initialize CartPole with default physics parameters."""
-        # Physics constants from Gymnasium
-        self.gravity = 9.8
-        self.masscart = 1.0
-        self.masspole = 0.1
-        self.total_mass = self.masscart + self.masspole
-        self.length = 0.5  # Half pole length
-        self.polemass_length = self.masspole * self.length
-        self.force_mag = 10.0
-        self.tau = 0.02  # 50 Hz updates
-
-        # Termination thresholds
-        self.theta_threshold_radians = (
-            12.0 * 3.141592653589793 / 180.0
-        )  # 12 degrees
-        self.x_threshold = 2.4
-
+        """Initialize CartPole environment."""
         # State
         self.x = 0.0
         self.x_dot = 0.0
@@ -164,7 +181,6 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv):
 
         # Episode
         self.steps = 0
-        self.max_steps = 500
         self.done = False
         self.total_reward = 0.0
 
@@ -223,12 +239,12 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv):
         """Take action and return (state, reward, done).
 
         Args:
-            action: CartPoleAction (direction 0=left, 1=right)
+            action: CartPoleAction (direction 0=left, 1=right).
 
         Physics uses Euler integration (same as Gymnasium).
         """
         # Determine force direction
-        var force = self.force_mag if action.direction == 1 else -self.force_mag
+        var force = FORCE_MAG if action.direction == 1 else -FORCE_MAG
 
         # Physics calculations
         var costheta = cos(self.theta)
@@ -236,39 +252,33 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv):
 
         # Equations of motion (derived from Lagrangian mechanics)
         var temp = (
-            force
-            + self.polemass_length * self.theta_dot * self.theta_dot * sintheta
-        ) / self.total_mass
+            force + POLE_MASS_LENGTH * self.theta_dot * self.theta_dot * sintheta
+        ) / TOTAL_MASS
 
-        var thetaacc = (self.gravity * sintheta - costheta * temp) / (
-            self.length
-            * (
-                4.0 / 3.0
-                - self.masspole * costheta * costheta / self.total_mass
-            )
+        var thetaacc = (GRAVITY * sintheta - costheta * temp) / (
+            POLE_HALF_LENGTH
+            * (4.0 / 3.0 - POLE_MASS * costheta * costheta / TOTAL_MASS)
         )
 
-        var xacc = (
-            temp - self.polemass_length * thetaacc * costheta / self.total_mass
-        )
+        var xacc = temp - POLE_MASS_LENGTH * thetaacc * costheta / TOTAL_MASS
 
         # Euler integration
-        self.x = self.x + self.tau * self.x_dot
-        self.x_dot = self.x_dot + self.tau * xacc
-        self.theta = self.theta + self.tau * self.theta_dot
-        self.theta_dot = self.theta_dot + self.tau * thetaacc
+        self.x = self.x + TAU * self.x_dot
+        self.x_dot = self.x_dot + TAU * xacc
+        self.theta = self.theta + TAU * self.theta_dot
+        self.theta_dot = self.theta_dot + TAU * thetaacc
 
         self.steps += 1
 
         # Check termination conditions
         var terminated = (
-            self.x < -self.x_threshold
-            or self.x > self.x_threshold
-            or self.theta < -self.theta_threshold_radians
-            or self.theta > self.theta_threshold_radians
+            self.x < -X_THRESHOLD
+            or self.x > X_THRESHOLD
+            or self.theta < -THETA_THRESHOLD
+            or self.theta > THETA_THRESHOLD
         )
 
-        var truncated = self.steps >= self.max_steps
+        var truncated = self.steps >= MAX_STEPS
 
         self.done = terminated or truncated
 
@@ -407,38 +417,38 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv):
             Tuple of (observation, reward, done).
         """
         # Inline physics for maximum performance (avoid step() call overhead)
-        var force = self.force_mag if action == 1 else -self.force_mag
+        var force = FORCE_MAG if action == 1 else -FORCE_MAG
 
         var costheta = cos(self.theta)
         var sintheta = sin(self.theta)
 
         var temp = (
-            force + self.polemass_length * self.theta_dot * self.theta_dot * sintheta
-        ) / self.total_mass
+            force + POLE_MASS_LENGTH * self.theta_dot * self.theta_dot * sintheta
+        ) / TOTAL_MASS
 
-        var thetaacc = (self.gravity * sintheta - costheta * temp) / (
-            self.length
-            * (4.0 / 3.0 - self.masspole * costheta * costheta / self.total_mass)
+        var thetaacc = (GRAVITY * sintheta - costheta * temp) / (
+            POLE_HALF_LENGTH
+            * (4.0 / 3.0 - POLE_MASS * costheta * costheta / TOTAL_MASS)
         )
 
-        var xacc = temp - self.polemass_length * thetaacc * costheta / self.total_mass
+        var xacc = temp - POLE_MASS_LENGTH * thetaacc * costheta / TOTAL_MASS
 
         # Euler integration
-        self.x = self.x + self.tau * self.x_dot
-        self.x_dot = self.x_dot + self.tau * xacc
-        self.theta = self.theta + self.tau * self.theta_dot
-        self.theta_dot = self.theta_dot + self.tau * thetaacc
+        self.x = self.x + TAU * self.x_dot
+        self.x_dot = self.x_dot + TAU * xacc
+        self.theta = self.theta + TAU * self.theta_dot
+        self.theta_dot = self.theta_dot + TAU * thetaacc
 
         self.steps += 1
 
         # Check termination
         var terminated = (
-            self.x < -self.x_threshold
-            or self.x > self.x_threshold
-            or self.theta < -self.theta_threshold_radians
-            or self.theta > self.theta_threshold_radians
+            self.x < -X_THRESHOLD
+            or self.x > X_THRESHOLD
+            or self.theta < -THETA_THRESHOLD
+            or self.theta > THETA_THRESHOLD
         )
-        var truncated = self.steps >= self.max_steps
+        var truncated = self.steps >= MAX_STEPS
         self.done = terminated or truncated
 
         var reward: Float64 = 1.0 if not terminated else 0.0
@@ -679,3 +689,101 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv):
             state_low=state_low^,
             state_high=state_high^,
         )
+
+    # ========================================================================
+    # GPUDiscreteEnv trait methods (for fused GPU kernels)
+    # ========================================================================
+
+    @staticmethod
+    @always_inline
+    fn step_inline[
+        size: Int
+    ](
+        mut state: InlineArray[Scalar[gpu_dtype], size],
+        action: Int,
+    ) -> Tuple[Scalar[gpu_dtype], Bool]:
+        """Inline step for fused GPU kernels. Returns (reward, done)."""
+        # Compute force based on action (cast to Float32 for GPU)
+        var force = Scalar[gpu_dtype](FORCE_MAG) if action == 1 else Scalar[
+            gpu_dtype
+        ](-FORCE_MAG)
+
+        # Physics calculations (Euler integration matching Gymnasium)
+        var cos_theta = cos(state[2])
+        var sin_theta = sin(state[2])
+
+        var temp = (
+            force
+            + Scalar[gpu_dtype](POLE_MASS_LENGTH)
+            * state[3]
+            * state[3]
+            * sin_theta
+        ) / Scalar[gpu_dtype](TOTAL_MASS)
+
+        var theta_acc = (
+            Scalar[gpu_dtype](GRAVITY) * sin_theta - cos_theta * temp
+        ) / (
+            Scalar[gpu_dtype](POLE_HALF_LENGTH)
+            * (
+                Scalar[gpu_dtype](4.0 / 3.0)
+                - Scalar[gpu_dtype](POLE_MASS)
+                * cos_theta
+                * cos_theta
+                / Scalar[gpu_dtype](TOTAL_MASS)
+            )
+        )
+
+        var x_acc = (
+            temp
+            - Scalar[gpu_dtype](POLE_MASS_LENGTH)
+            * theta_acc
+            * cos_theta
+            / Scalar[gpu_dtype](TOTAL_MASS)
+        )
+
+        # Euler integration - update state in-place
+        state[0] = state[0] + Scalar[gpu_dtype](TAU) * state[1]
+        state[1] = state[1] + Scalar[gpu_dtype](TAU) * x_acc
+        state[2] = state[2] + Scalar[gpu_dtype](TAU) * state[3]
+        state[3] = state[3] + Scalar[gpu_dtype](TAU) * theta_acc
+
+        # Check termination conditions
+        var done = (
+            (state[0] < Scalar[gpu_dtype](-X_THRESHOLD))
+            or (state[0] > Scalar[gpu_dtype](X_THRESHOLD))
+            or (state[2] < Scalar[gpu_dtype](-THETA_THRESHOLD))
+            or (state[2] > Scalar[gpu_dtype](THETA_THRESHOLD))
+        )
+
+        # Reward: +1 for staying alive, 0 if done
+        var reward = Scalar[gpu_dtype](0.0) if done else Scalar[gpu_dtype](1.0)
+
+        return (reward, done)
+
+    @staticmethod
+    @always_inline
+    fn reset_inline[
+        size: Int
+    ](
+        mut state: InlineArray[Scalar[gpu_dtype], size],
+        mut rng: Scalar[DType.uint32],
+    ):
+        """Inline reset for fused GPU kernels. Updates state and RNG in-place."""
+        var low = Scalar[gpu_dtype](-INIT_RANGE)
+        var high = Scalar[gpu_dtype](INIT_RANGE)
+
+        var r0 = random_range(rng, low, high)
+        state[0] = r0[0]
+        rng = r0[1]
+
+        var r1 = random_range(rng, low, high)
+        state[1] = r1[0]
+        rng = r1[1]
+
+        var r2 = random_range(rng, low, high)
+        state[2] = r2[0]
+        rng = r2[1]
+
+        var r3 = random_range(rng, low, high)
+        state[3] = r3[0]
+        rng = r3[1]

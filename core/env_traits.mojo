@@ -199,53 +199,39 @@ trait BoxContinuousActionEnv(ContinuousActionEnv, ContinuousStateEnv):
 # GPU Environment Trait for Composable GPU RL. (Experimental)
 # ============================================================================
 
+comptime dtype = DType.float32
 
-trait GPUEnvDims:
-    """Trait for GPU-compatible environment dimensions.
 
-    This trait defines only the compile-time constants. The actual
-    step/reset/get_obs methods are accessed via structural typing
-    since their signatures depend on these dimensions.
+trait GPUDiscreteEnv:
+    """Trait for GPU-compatible discrete action environments.
 
-    Implementing structs must provide:
-    - Compile-time constants: OBS_DIM, NUM_ACTIONS, STATE_SIZE
-    - Static methods (not part of trait): step, reset, get_obs
+    Environments must define compile-time constants and inline methods
+    for use in fused GPU kernels.
     """
 
-    # Compile-time constants that parameterize the kernel
+    # Compile-time constants for environment dimensions
+    comptime STATE_SIZE: Int
     comptime OBS_DIM: Int
     comptime NUM_ACTIONS: Int
-    comptime STATE_SIZE: Int
 
     @staticmethod
-    fn step[
-        dtype: DType
+    fn step_inline[
+        size: Int
     ](
-        mut state: InlineArray[Scalar[dtype], Self.STATE_SIZE],
+        mut state: InlineArray[Scalar[dtype], size],
         action: Int,
-        rng: Scalar[DType.uint32],
-    ) -> Tuple[Scalar[dtype], Bool, Scalar[DType.uint32]]:
-        """Execute one step of the environment."""
-        ...
-
-    @staticmethod
-    fn reset[
-        dtype: DType
-    ](
-        mut state: InlineArray[Scalar[dtype], Self.STATE_SIZE],
-        rng: Scalar[DType.uint32],
-    ) -> Scalar[DType.uint32]:
-        """Reset the environment to initial state with small random perturbation.
-        """
-        ...
-
-    @staticmethod
-    fn get_obs[
-        dtype: DType
-    ](
-        state: InlineArray[Scalar[dtype], Self.STATE_SIZE],
-    ) -> InlineArray[
-        Scalar[dtype], Self.STATE_SIZE
+    ) -> Tuple[
+        Scalar[dtype], Bool
     ]:
-        """Get observation from state (identity for envs where state == obs)."""
+        """Perform one environment step. Returns (reward, done)."""
+        ...
+
+    @staticmethod
+    fn reset_inline[
+        size: Int
+    ](
+        mut state: InlineArray[Scalar[dtype], size],
+        mut rng: Scalar[DType.uint32],
+    ):
+        """Reset state to random initial values."""
         ...
