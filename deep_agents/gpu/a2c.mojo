@@ -20,7 +20,19 @@ from gpu import thread_idx, block_idx, block_dim
 from gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from deep_rl.gpu import xorshift32, random_uniform, random_range
+from deep_rl.gpu import (
+    xorshift32,
+    random_uniform,
+    random_range,
+    reduce_kernel,
+    adam_kernel,
+    compute_gae_kernel,
+    track_episodes_kernel,
+    relu_inline,
+    softmax2_inline,
+    sample_from_probs2,
+    relu_grad_inline,
+)
 from core import GPUDiscreteEnv, TrainingMetrics, BoxDiscreteActionEnv
 
 
@@ -162,7 +174,7 @@ fn fused_rollout_kernel[
             var sum_val = rebind[Scalar[dtype]](b1[j])
             for i in range(EnvType.OBS_DIM):
                 sum_val += state[i] * rebind[Scalar[dtype]](W1[i, j])
-            h[j] = sum_val if sum_val > Scalar[dtype](0) else Scalar[dtype](0)
+            h[j] = relu_inline(sum_val)
 
         # Actor: logits
         var logit0 = rebind[Scalar[dtype]](b_actor[0])
@@ -176,21 +188,12 @@ fn fused_rollout_kernel[
         for k in range(HIDDEN_DIM):
             value += h[k] * rebind[Scalar[dtype]](W_critic[k, 0])
 
-        # Softmax
-        var max_logit = logit0 if logit0 > logit1 else logit1
-        var exp0 = exp(logit0 - max_logit)
-        var exp1 = exp(logit1 - max_logit)
-        var sum_exp = exp0 + exp1
-        var prob0 = exp0 / sum_exp
-
-        # Sample action
+        # Softmax and sample action
+        var probs = softmax2_inline(logit0, logit1)
         var u_result = random_uniform[dtype](rng)
         rng = u_result[1]
-        var action = 0 if u_result[0] < prob0 else 1
-        var log_prob = log(
-            (prob0 if action == 0 else (Scalar[dtype](1) - prob0))
-            + Scalar[dtype](1e-8)
-        )
+        var action = sample_from_probs2(probs[0], u_result[0])
+        var log_prob = log(probs[action] + Scalar[dtype](1e-8))
 
         # Store action, log_prob, value
         rollout_actions[env_idx, step] = Int32(action)
@@ -214,57 +217,6 @@ fn fused_rollout_kernel[
     for i in range(EnvType.STATE_SIZE):
         states[env_idx, i] = state[i]
     rng_states[env_idx, 0] = rng
-
-
-# =============================================================================
-# Compute GAE Kernel
-# =============================================================================
-
-
-fn compute_gae_kernel[
-    NUM_ENVS: Int, ROLLOUT_LEN: Int
-](
-    gamma: Scalar[dtype],
-    gae_lambda: Scalar[dtype],
-    rollout_rewards: LayoutTensor[
-        dtype, Layout.row_major(NUM_ENVS, ROLLOUT_LEN), ImmutAnyOrigin
-    ],
-    rollout_dones: LayoutTensor[
-        DType.int32, Layout.row_major(NUM_ENVS, ROLLOUT_LEN), ImmutAnyOrigin
-    ],
-    rollout_values: LayoutTensor[
-        dtype, Layout.row_major(NUM_ENVS, ROLLOUT_LEN), ImmutAnyOrigin
-    ],
-    bootstrap_values: LayoutTensor[
-        dtype, Layout.row_major(NUM_ENVS, 1), ImmutAnyOrigin
-    ],
-    rollout_advantages: LayoutTensor[
-        dtype, Layout.row_major(NUM_ENVS, ROLLOUT_LEN), MutAnyOrigin
-    ],
-    rollout_returns: LayoutTensor[
-        dtype, Layout.row_major(NUM_ENVS, ROLLOUT_LEN), MutAnyOrigin
-    ],
-):
-    """Compute GAE advantages."""
-    var env_idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if env_idx >= NUM_ENVS:
-        return
-
-    var gae: Scalar[dtype] = 0
-    var next_value = rebind[Scalar[dtype]](bootstrap_values[env_idx, 0])
-
-    for t in range(ROLLOUT_LEN - 1, -1, -1):
-        var reward = rebind[Scalar[dtype]](rollout_rewards[env_idx, t])
-        var done = rollout_dones[env_idx, t]
-        var value = rebind[Scalar[dtype]](rollout_values[env_idx, t])
-
-        var not_done = Scalar[dtype](1.0) if done == 0 else Scalar[dtype](0.0)
-        var delta = reward + gamma * next_value * not_done - value
-        gae = delta + gamma * gae_lambda * not_done * gae
-
-        rollout_advantages[env_idx, t] = gae
-        rollout_returns[env_idx, t] = gae + value
-        next_value = value
 
 
 # =============================================================================
@@ -306,7 +258,7 @@ fn get_values_kernel[
         var sum_val = rebind[Scalar[dtype]](b1[j])
         for i in range(EnvType.OBS_DIM):
             sum_val += o[i] * rebind[Scalar[dtype]](W1[i, j])
-        h[j] = sum_val if sum_val > Scalar[dtype](0) else Scalar[dtype](0)
+        h[j] = relu_inline(sum_val)
 
     var value: Scalar[dtype] = rebind[Scalar[dtype]](b_critic[0])
     for k in range(HIDDEN_DIM):
@@ -418,7 +370,7 @@ fn policy_gradient_kernel[
         for i in range(EnvType.OBS_DIM):
             o[i] = rebind[Scalar[dtype]](rollout_obs[env_idx, t, i])
 
-        # Forward: hidden
+        # Forward: hidden (store pre-activation for backprop)
         var h = InlineArray[Scalar[dtype], HIDDEN_DIM](fill=Scalar[dtype](0))
         var h_pre = InlineArray[Scalar[dtype], HIDDEN_DIM](
             fill=Scalar[dtype](0)
@@ -428,7 +380,7 @@ fn policy_gradient_kernel[
             for i in range(EnvType.OBS_DIM):
                 sum_val += o[i] * rebind[Scalar[dtype]](W1[i, j])
             h_pre[j] = sum_val
-            h[j] = sum_val if sum_val > Scalar[dtype](0) else Scalar[dtype](0)
+            h[j] = relu_inline(sum_val)
 
         # Forward: logits
         var logits = InlineArray[Scalar[dtype], EnvType.NUM_ACTIONS](
@@ -445,17 +397,10 @@ fn policy_gradient_kernel[
         for k in range(HIDDEN_DIM):
             value += h[k] * rebind[Scalar[dtype]](W_critic[k, 0])
 
-        # Softmax
-        var max_logit = logits[0]
-        if logits[1] > max_logit:
-            max_logit = logits[1]
-        var exp0 = exp(logits[0] - max_logit)
-        var exp1 = exp(logits[1] - max_logit)
-        var sum_exp = exp0 + exp1
-        var prob0 = exp0 / sum_exp
-        var prob1 = exp1 / sum_exp
-
-        # Compute log probabilities and entropy for regularization
+        # Softmax and log probabilities for entropy
+        var probs = softmax2_inline(logits[0], logits[1])
+        var prob0 = probs[0]
+        var prob1 = probs[1]
         var eps = Scalar[dtype](1e-8)
         var log_prob0 = log(prob0 + eps)
         var log_prob1 = log(prob1 + eps)
@@ -494,9 +439,7 @@ fn policy_gradient_kernel[
             dh[k] += d_value * rebind[Scalar[dtype]](W_critic[k, 0])
 
         for k in range(HIDDEN_DIM):
-            var dh_pre = dh[k] if h_pre[k] > Scalar[dtype](0) else Scalar[
-                dtype
-            ](0)
+            var dh_pre = dh[k] * relu_grad_inline(h_pre[k])
             for i in range(EnvType.OBS_DIM):
                 local_grad_W1[i * HIDDEN_DIM + k] += o[i] * dh_pre
             local_grad_b1[k] += dh_pre
@@ -516,151 +459,11 @@ fn policy_gradient_kernel[
 
 
 # =============================================================================
-# Reduce and SGD Kernels - Parameterized for composability
-# =============================================================================
-
-
-fn reduce_kernel[
-    SIZE: Int, NUM_ENVS: Int
-](
-    reduced: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
-    per_env: LayoutTensor[
-        dtype, Layout.row_major(NUM_ENVS, SIZE), ImmutAnyOrigin
-    ],
-):
-    """Generic reduce kernel - averages gradients across environments."""
-    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if idx >= SIZE:
-        return
-    var sum_val: Scalar[dtype] = 0
-    for env in range(NUM_ENVS):
-        sum_val += rebind[Scalar[dtype]](per_env[env, idx])
-    reduced[idx] = sum_val / Scalar[dtype](NUM_ENVS)
-
-
-fn sgd_kernel[
-    SIZE: Int
-](
-    weights: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
-    grads: LayoutTensor[dtype, Layout.row_major(SIZE), ImmutAnyOrigin],
-    lr: Scalar[dtype],
-):
-    """Generic SGD kernel - updates weights with gradients."""
-    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if idx >= SIZE:
-        return
-    weights[idx] = rebind[Scalar[dtype]](weights[idx]) - lr * rebind[
-        Scalar[dtype]
-    ](grads[idx])
-
-
-fn adam_kernel[
-    SIZE: Int
-](
-    weights: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
-    grads: LayoutTensor[dtype, Layout.row_major(SIZE), ImmutAnyOrigin],
-    m: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
-    v: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
-    lr: Scalar[dtype],
-    beta1: Scalar[dtype],
-    beta2: Scalar[dtype],
-    eps: Scalar[dtype],
-    bias_correction1: Scalar[dtype],
-    bias_correction2: Scalar[dtype],
-):
-    """Adam optimizer kernel.
-
-    m = beta1 * m + (1 - beta1) * grad
-    v = beta2 * v + (1 - beta2) * grad^2
-    weights -= lr * (m / bias_correction1) / (sqrt(v / bias_correction2) + eps)
-    """
-    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if idx >= SIZE:
-        return
-
-    var g = rebind[Scalar[dtype]](grads[idx])
-    var m_val = rebind[Scalar[dtype]](m[idx])
-    var v_val = rebind[Scalar[dtype]](v[idx])
-
-    # Update moments
-    var m_new = beta1 * m_val + (Scalar[dtype](1) - beta1) * g
-    var v_new = beta2 * v_val + (Scalar[dtype](1) - beta2) * g * g
-
-    # Bias-corrected estimates
-    var m_hat = m_new / bias_correction1
-    var v_hat = v_new / bias_correction2
-
-    # Update weights
-    weights[idx] = rebind[Scalar[dtype]](weights[idx]) - lr * m_hat / (sqrt(v_hat) + eps)
-
-    # Store updated moments
-    m[idx] = m_new
-    v[idx] = v_new
-
-
-# =============================================================================
-# Episode Tracking Kernel (for metrics collection)
-# =============================================================================
-
-
-fn track_episodes_kernel[
-    NUM_ENVS: Int, ROLLOUT_LEN: Int
-](
-    rollout_rewards: LayoutTensor[
-        dtype, Layout.row_major(NUM_ENVS, ROLLOUT_LEN), ImmutAnyOrigin
-    ],
-    rollout_dones: LayoutTensor[
-        DType.int32, Layout.row_major(NUM_ENVS, ROLLOUT_LEN), ImmutAnyOrigin
-    ],
-    episode_rewards: LayoutTensor[
-        dtype, Layout.row_major(NUM_ENVS, 1), MutAnyOrigin
-    ],
-    completed_episodes: LayoutTensor[
-        DType.int32, Layout.row_major(NUM_ENVS, 1), MutAnyOrigin
-    ],
-    completed_rewards: LayoutTensor[
-        dtype, Layout.row_major(NUM_ENVS, ROLLOUT_LEN), MutAnyOrigin
-    ],
-):
-    """Track episode completions and accumulate rewards.
-
-    Each thread processes one environment across the rollout.
-    - episode_rewards: Running reward accumulator per env
-    - completed_episodes: Count of completed episodes per env this rollout
-    - completed_rewards: Store reward at each completion for logging
-    """
-    var env_idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if env_idx >= NUM_ENVS:
-        return
-
-    var running_reward = rebind[Scalar[dtype]](episode_rewards[env_idx, 0])
-    var num_completed: Int32 = 0
-
-    for t in range(ROLLOUT_LEN):
-        var reward = rebind[Scalar[dtype]](rollout_rewards[env_idx, t])
-        var done = rollout_dones[env_idx, t]
-
-        running_reward += reward
-
-        if done != 0:
-            # Episode completed - store the total reward
-            completed_rewards[env_idx, Int(num_completed)] = running_reward
-            num_completed += 1
-            running_reward = Scalar[dtype](0)  # Reset for next episode
-
-    # Write back
-    episode_rewards[env_idx, 0] = running_reward
-    completed_episodes[env_idx, 0] = num_completed
-
-
-# =============================================================================
 # Training
 # =============================================================================
 
 
 struct A2CAgent[
-    OBS_DIM: Int,
-    NUM_ACTIONS: Int,
     HIDDEN_DIM: Int = 64,
 ]:
     """GPU A2C Agent with shared actor-critic network.
@@ -670,13 +473,11 @@ struct A2CAgent[
     - evaluate(): Evaluate on CPU with BoxDiscreteActionEnv environments
 
     Parameters:
-        OBS_DIM: Observation dimension.
-        NUM_ACTIONS: Number of discrete actions.
         HIDDEN_DIM: Hidden layer size (default: 64).
 
     Example:
-        var agent = A2CAgent[OBS_DIM=4, NUM_ACTIONS=2]()
-        var metrics = agent.train[CartPoleEnv](ctx, num_updates=100)
+        var agent = A2CAgent[HIDDEN_DIM=64]()
+        var metrics = agent.train[CartPoleEnv](num_updates=100)
         var eval_reward = agent.evaluate(env, num_episodes=10)
     """
 
@@ -688,46 +489,26 @@ struct A2CAgent[
     var W_critic: List[Float32]
     var b_critic: List[Float32]
 
+    # Dimensions (set during training)
+    var obs_dim: Int
+    var num_actions: Int
+
     # Training state
     var trained: Bool
     var total_episodes: Int
     var total_steps: Int
 
     fn __init__(out self):
-        """Initialize A2C agent with random weights."""
-        comptime W1_SIZE = Self.OBS_DIM * Self.HIDDEN_DIM
-        comptime W_ACTOR_SIZE = Self.HIDDEN_DIM * Self.NUM_ACTIONS
+        """Initialize A2C agent with empty weights (initialized at training)."""
+        self.W1 = List[Float32]()
+        self.b1 = List[Float32]()
+        self.W_actor = List[Float32]()
+        self.b_actor = List[Float32]()
+        self.W_critic = List[Float32]()
+        self.b_critic = List[Float32]()
 
-        # Initialize weight lists
-        self.W1 = List[Float32](capacity=W1_SIZE)
-        self.b1 = List[Float32](capacity=Self.HIDDEN_DIM)
-        self.W_actor = List[Float32](capacity=W_ACTOR_SIZE)
-        self.b_actor = List[Float32](capacity=Self.NUM_ACTIONS)
-        self.W_critic = List[Float32](capacity=Self.HIDDEN_DIM)
-        self.b_critic = List[Float32](capacity=1)
-
-        # Xavier initialization
-        var std1 = sqrt(2.0 / Float64(Self.OBS_DIM + Self.HIDDEN_DIM))
-        for _ in range(W1_SIZE):
-            self.W1.append(Float32((random_float64() - 0.5) * 2 * std1))
-        for _ in range(Self.HIDDEN_DIM):
-            self.b1.append(Float32(0))
-
-        var std_actor = sqrt(2.0 / Float64(Self.HIDDEN_DIM + Self.NUM_ACTIONS))
-        for _ in range(W_ACTOR_SIZE):
-            self.W_actor.append(
-                Float32((random_float64() - 0.5) * 2 * std_actor)
-            )
-        for _ in range(Self.NUM_ACTIONS):
-            self.b_actor.append(Float32(0))
-
-        var std_critic = sqrt(2.0 / Float64(Self.HIDDEN_DIM + 1))
-        for _ in range(Self.HIDDEN_DIM):
-            self.W_critic.append(
-                Float32((random_float64() - 0.5) * 2 * std_critic)
-            )
-        self.b_critic.append(Float32(0))
-
+        self.obs_dim = 0
+        self.num_actions = 0
         self.trained = False
         self.total_episodes = 0
         self.total_steps = 0
@@ -745,23 +526,23 @@ struct A2CAgent[
         var h = List[Float32](capacity=Self.HIDDEN_DIM)
         for j in range(Self.HIDDEN_DIM):
             var sum_val = self.b1[j]
-            for i in range(Self.OBS_DIM):
+            for i in range(self.obs_dim):
                 sum_val += Float32(obs[i]) * self.W1[i * Self.HIDDEN_DIM + j]
             # ReLU
             h.append(sum_val if sum_val > Float32(0) else Float32(0))
 
         # Actor output: logits
-        var logits = List[Float32](capacity=Self.NUM_ACTIONS)
-        for j in range(Self.NUM_ACTIONS):
+        var logits = List[Float32](capacity=self.num_actions)
+        for j in range(self.num_actions):
             var sum_val = self.b_actor[j]
             for k in range(Self.HIDDEN_DIM):
-                sum_val += h[k] * self.W_actor[k * Self.NUM_ACTIONS + j]
+                sum_val += h[k] * self.W_actor[k * self.num_actions + j]
             logits.append(sum_val)
 
         # Argmax for deterministic action
         var best_action = 0
         var best_logit = logits[0]
-        for j in range(1, Self.NUM_ACTIONS):
+        for j in range(1, self.num_actions):
             if logits[j] > best_logit:
                 best_logit = logits[j]
                 best_action = j
@@ -815,7 +596,6 @@ struct A2CAgent[
         )
 
         with DeviceContext() as ctx:
-
             # Parameter sizes derived from EnvType and training hyperparams
             comptime W1_SIZE = EnvType.OBS_DIM * Self.HIDDEN_DIM
             comptime B1_SIZE = Self.HIDDEN_DIM
@@ -823,7 +603,7 @@ struct A2CAgent[
             comptime B_ACTOR_SIZE = EnvType.NUM_ACTIONS
             comptime W_CRITIC_SIZE = Self.HIDDEN_DIM
             comptime B_CRITIC_SIZE = 1
-    
+
             # Allocate buffers using EnvType constants for composability
             var states_buf = ctx.enqueue_create_buffer[dtype](
                 NUM_ENVS * EnvType.STATE_SIZE
@@ -832,7 +612,7 @@ struct A2CAgent[
             var rewards_buf = ctx.enqueue_create_buffer[dtype](NUM_ENVS)
             var dones_buf = ctx.enqueue_create_buffer[DType.int32](NUM_ENVS)
             var rng_buf = ctx.enqueue_create_buffer[DType.uint32](NUM_ENVS)
-    
+
             var W1_buf = ctx.enqueue_create_buffer[dtype](
                 EnvType.OBS_DIM * Self.HIDDEN_DIM
             )
@@ -840,14 +620,18 @@ struct A2CAgent[
             var W_actor_buf = ctx.enqueue_create_buffer[dtype](
                 Self.HIDDEN_DIM * EnvType.NUM_ACTIONS
             )
-            var b_actor_buf = ctx.enqueue_create_buffer[dtype](EnvType.NUM_ACTIONS)
+            var b_actor_buf = ctx.enqueue_create_buffer[dtype](
+                EnvType.NUM_ACTIONS
+            )
             var W_critic_buf = ctx.enqueue_create_buffer[dtype](Self.HIDDEN_DIM)
             var b_critic_buf = ctx.enqueue_create_buffer[dtype](1)
-    
+
             var log_probs_buf = ctx.enqueue_create_buffer[dtype](NUM_ENVS)
             var values_buf = ctx.enqueue_create_buffer[dtype](NUM_ENVS)
-            var bootstrap_values_buf = ctx.enqueue_create_buffer[dtype](NUM_ENVS)
-    
+            var bootstrap_values_buf = ctx.enqueue_create_buffer[dtype](
+                NUM_ENVS
+            )
+
             var rollout_obs_buf = ctx.enqueue_create_buffer[dtype](
                 NUM_ENVS * ROLLOUT_LEN * EnvType.OBS_DIM
             )
@@ -872,7 +656,7 @@ struct A2CAgent[
             var rollout_returns_buf = ctx.enqueue_create_buffer[dtype](
                 NUM_ENVS * ROLLOUT_LEN
             )
-    
+
             # Episode tracking buffers
             var episode_rewards_buf = ctx.enqueue_create_buffer[dtype](NUM_ENVS)
             var completed_episodes_buf = ctx.enqueue_create_buffer[DType.int32](
@@ -881,7 +665,7 @@ struct A2CAgent[
             var completed_rewards_buf = ctx.enqueue_create_buffer[dtype](
                 NUM_ENVS * ROLLOUT_LEN
             )
-    
+
             var grad_W1_buf = ctx.enqueue_create_buffer[dtype](
                 NUM_ENVS * EnvType.OBS_DIM * Self.HIDDEN_DIM
             )
@@ -898,11 +682,15 @@ struct A2CAgent[
                 NUM_ENVS * Self.HIDDEN_DIM
             )
             var grad_b_critic_buf = ctx.enqueue_create_buffer[dtype](NUM_ENVS)
-    
+
             var reduced_W1_buf = ctx.enqueue_create_buffer[dtype](W1_SIZE)
             var reduced_b1_buf = ctx.enqueue_create_buffer[dtype](B1_SIZE)
-            var reduced_W_actor_buf = ctx.enqueue_create_buffer[dtype](W_ACTOR_SIZE)
-            var reduced_b_actor_buf = ctx.enqueue_create_buffer[dtype](B_ACTOR_SIZE)
+            var reduced_W_actor_buf = ctx.enqueue_create_buffer[dtype](
+                W_ACTOR_SIZE
+            )
+            var reduced_b_actor_buf = ctx.enqueue_create_buffer[dtype](
+                B_ACTOR_SIZE
+            )
             var reduced_W_critic_buf = ctx.enqueue_create_buffer[dtype](
                 W_CRITIC_SIZE
             )
@@ -942,33 +730,70 @@ struct A2CAgent[
             with rng_buf.map_to_host() as host:
                 for i in range(NUM_ENVS):
                     host[i] = UInt32(i + 12345)
-    
-            # Copy weights to GPU (from stored weights)
+
+            # Store dimensions for later use (select_action, print_info)
+            self.obs_dim = EnvType.OBS_DIM
+            self.num_actions = EnvType.NUM_ACTIONS
+
+            # Xavier initialization of weights
+            self.W1 = List[Float32](capacity=W1_SIZE)
+            self.b1 = List[Float32](capacity=B1_SIZE)
+            self.W_actor = List[Float32](capacity=W_ACTOR_SIZE)
+            self.b_actor = List[Float32](capacity=B_ACTOR_SIZE)
+            self.W_critic = List[Float32](capacity=W_CRITIC_SIZE)
+            self.b_critic = List[Float32](capacity=B_CRITIC_SIZE)
+
+            var std1 = sqrt(2.0 / Float64(EnvType.OBS_DIM + Self.HIDDEN_DIM))
+            for _ in range(W1_SIZE):
+                self.W1.append(Float32((random_float64() - 0.5) * 2 * std1))
+            for _ in range(B1_SIZE):
+                self.b1.append(Float32(0))
+
+            var std_actor = sqrt(
+                2.0 / Float64(Self.HIDDEN_DIM + EnvType.NUM_ACTIONS)
+            )
+            for _ in range(W_ACTOR_SIZE):
+                self.W_actor.append(
+                    Float32((random_float64() - 0.5) * 2 * std_actor)
+                )
+            for _ in range(B_ACTOR_SIZE):
+                self.b_actor.append(Float32(0))
+
+            var std_critic = sqrt(2.0 / Float64(Self.HIDDEN_DIM + 1))
+            for _ in range(W_CRITIC_SIZE):
+                self.W_critic.append(
+                    Float32((random_float64() - 0.5) * 2 * std_critic)
+                )
+            self.b_critic.append(Float32(0))
+
+            # Copy weights to GPU
             with W1_buf.map_to_host() as host:
-                for i in range(EnvType.OBS_DIM * Self.HIDDEN_DIM):
+                for i in range(W1_SIZE):
                     host[i] = Scalar[dtype](self.W1[i])
             with b1_buf.map_to_host() as host:
-                for i in range(Self.HIDDEN_DIM):
+                for i in range(B1_SIZE):
                     host[i] = Scalar[dtype](self.b1[i])
             with W_actor_buf.map_to_host() as host:
-                for i in range(Self.HIDDEN_DIM * EnvType.NUM_ACTIONS):
+                for i in range(W_ACTOR_SIZE):
                     host[i] = Scalar[dtype](self.W_actor[i])
             with b_actor_buf.map_to_host() as host:
-                for i in range(EnvType.NUM_ACTIONS):
+                for i in range(B_ACTOR_SIZE):
                     host[i] = Scalar[dtype](self.b_actor[i])
             with W_critic_buf.map_to_host() as host:
-                for i in range(Self.HIDDEN_DIM):
+                for i in range(W_CRITIC_SIZE):
                     host[i] = Scalar[dtype](self.W_critic[i])
             with b_critic_buf.map_to_host() as host:
                 host[0] = Scalar[dtype](self.b_critic[0])
-    
+
             # Initialize episode tracking buffers
             episode_rewards_buf.enqueue_fill(0)
             completed_episodes_buf.enqueue_fill(0)
-    
+
             # Create tensors with parameterized layouts (fully composable)
             var states = LayoutTensor[
-                dtype, Layout.row_major(NUM_ENVS, EnvType.STATE_SIZE), MutAnyOrigin
+                dtype,
+                Layout.row_major(NUM_ENVS, EnvType.STATE_SIZE),
+                MutAnyOrigin,
             ](states_buf)
             var actions = LayoutTensor[
                 DType.int32, Layout.row_major(NUM_ENVS, 1), MutAnyOrigin
@@ -982,7 +807,7 @@ struct A2CAgent[
             var rng_states = LayoutTensor[
                 DType.uint32, Layout.row_major(NUM_ENVS, 1), MutAnyOrigin
             ](rng_buf)
-    
+
             var W1 = LayoutTensor[
                 dtype,
                 Layout.row_major(EnvType.OBS_DIM, Self.HIDDEN_DIM),
@@ -1002,12 +827,14 @@ struct A2CAgent[
             var W_critic = LayoutTensor[
                 dtype, Layout.row_major(Self.HIDDEN_DIM, 1), ImmutAnyOrigin
             ](W_critic_buf)
-            var b_critic = LayoutTensor[dtype, Layout.row_major(1), ImmutAnyOrigin](
-                b_critic_buf
-            )
-    
+            var b_critic = LayoutTensor[
+                dtype, Layout.row_major(1), ImmutAnyOrigin
+            ](b_critic_buf)
+
             var obs = LayoutTensor[
-                dtype, Layout.row_major(NUM_ENVS, EnvType.OBS_DIM), ImmutAnyOrigin
+                dtype,
+                Layout.row_major(NUM_ENVS, EnvType.OBS_DIM),
+                ImmutAnyOrigin,
             ](states_buf)
             var log_probs = LayoutTensor[
                 dtype, Layout.row_major(NUM_ENVS, 1), MutAnyOrigin
@@ -1018,20 +845,24 @@ struct A2CAgent[
             var bootstrap_values = LayoutTensor[
                 dtype, Layout.row_major(NUM_ENVS, 1), MutAnyOrigin
             ](bootstrap_values_buf)
-    
+
             var rollout_obs = LayoutTensor[
                 dtype,
                 Layout.row_major(NUM_ENVS, ROLLOUT_LEN, EnvType.OBS_DIM),
                 MutAnyOrigin,
             ](rollout_obs_buf)
             var rollout_actions = LayoutTensor[
-                DType.int32, Layout.row_major(NUM_ENVS, ROLLOUT_LEN), MutAnyOrigin
+                DType.int32,
+                Layout.row_major(NUM_ENVS, ROLLOUT_LEN),
+                MutAnyOrigin,
             ](rollout_actions_buf)
             var rollout_rewards = LayoutTensor[
                 dtype, Layout.row_major(NUM_ENVS, ROLLOUT_LEN), MutAnyOrigin
             ](rollout_rewards_buf)
             var rollout_dones = LayoutTensor[
-                DType.int32, Layout.row_major(NUM_ENVS, ROLLOUT_LEN), MutAnyOrigin
+                DType.int32,
+                Layout.row_major(NUM_ENVS, ROLLOUT_LEN),
+                MutAnyOrigin,
             ](rollout_dones_buf)
             var rollout_log_probs = LayoutTensor[
                 dtype, Layout.row_major(NUM_ENVS, ROLLOUT_LEN), MutAnyOrigin
@@ -1045,7 +876,7 @@ struct A2CAgent[
             var rollout_returns = LayoutTensor[
                 dtype, Layout.row_major(NUM_ENVS, ROLLOUT_LEN), MutAnyOrigin
             ](rollout_returns_buf)
-    
+
             var episode_rewards = LayoutTensor[
                 dtype, Layout.row_major(NUM_ENVS, 1), MutAnyOrigin
             ](episode_rewards_buf)
@@ -1055,7 +886,7 @@ struct A2CAgent[
             var completed_rewards = LayoutTensor[
                 dtype, Layout.row_major(NUM_ENVS, ROLLOUT_LEN), MutAnyOrigin
             ](completed_rewards_buf)
-    
+
             var grad_W1 = LayoutTensor[
                 dtype,
                 Layout.row_major(NUM_ENVS, EnvType.OBS_DIM * Self.HIDDEN_DIM),
@@ -1066,11 +897,15 @@ struct A2CAgent[
             ](grad_b1_buf)
             var grad_W_actor = LayoutTensor[
                 dtype,
-                Layout.row_major(NUM_ENVS, Self.HIDDEN_DIM * EnvType.NUM_ACTIONS),
+                Layout.row_major(
+                    NUM_ENVS, Self.HIDDEN_DIM * EnvType.NUM_ACTIONS
+                ),
                 MutAnyOrigin,
             ](grad_W_actor_buf)
             var grad_b_actor = LayoutTensor[
-                dtype, Layout.row_major(NUM_ENVS, EnvType.NUM_ACTIONS), MutAnyOrigin
+                dtype,
+                Layout.row_major(NUM_ENVS, EnvType.NUM_ACTIONS),
+                MutAnyOrigin,
             ](grad_b_actor_buf)
             var grad_W_critic = LayoutTensor[
                 dtype, Layout.row_major(NUM_ENVS, Self.HIDDEN_DIM), MutAnyOrigin
@@ -1078,7 +913,7 @@ struct A2CAgent[
             var grad_b_critic = LayoutTensor[
                 dtype, Layout.row_major(NUM_ENVS, 1), MutAnyOrigin
             ](grad_b_critic_buf)
-    
+
             var reduced_W1 = LayoutTensor[
                 dtype, Layout.row_major(W1_SIZE), MutAnyOrigin
             ](reduced_W1_buf)
@@ -1097,7 +932,7 @@ struct A2CAgent[
             var reduced_b_critic = LayoutTensor[
                 dtype, Layout.row_major(B_CRITIC_SIZE), MutAnyOrigin
             ](reduced_b_critic_buf)
-    
+
             var W1_mut = LayoutTensor[
                 dtype, Layout.row_major(W1_SIZE), MutAnyOrigin
             ](W1_buf)
@@ -1116,7 +951,7 @@ struct A2CAgent[
             var b_critic_mut = LayoutTensor[
                 dtype, Layout.row_major(B_CRITIC_SIZE), MutAnyOrigin
             ](b_critic_buf)
-    
+
             # Scalars
             var gamma_s = Scalar[dtype](gamma)
             var gae_lambda_s = Scalar[dtype](gae_lambda)
@@ -1170,7 +1005,7 @@ struct A2CAgent[
             # Grid dimensions computed from parameterized NUM_ENVS
             comptime env_blocks = (NUM_ENVS + TPB - 1) // TPB
             comptime env_threads = TPB
-    
+
             # Reset environments using composable reset_all_kernel
             ctx.enqueue_function_checked[
                 reset_all_kernel[EnvType, NUM_ENVS],
@@ -1182,7 +1017,7 @@ struct A2CAgent[
                 block_dim=(env_threads,),
             )
             ctx.synchronize()
-    
+
             if verbose:
                 print("=" * 60)
                 print("A2C Training on GPU Environment (Adam Optimizer)")
@@ -1196,11 +1031,11 @@ struct A2CAgent[
                 print("  Adam epsilon:", adam_eps)
                 print("  Entropy coef:", entropy_coef)
                 print()
-    
+
             var start_time = perf_counter_ns()
             var total_episodes_count: Int = 0
             var episode_counter: Int = 0
-    
+
             # Training loop
             for update in range(num_updates):
                 # Phase 1: Collect rollout (FUSED - single kernel for all steps)
@@ -1229,17 +1064,19 @@ struct A2CAgent[
                     grid_dim=(env_blocks,),
                     block_dim=(env_threads,),
                 )
-    
+
                 # Track episodes for metrics
                 var rollout_rewards_i = LayoutTensor[
-                    dtype, Layout.row_major(NUM_ENVS, ROLLOUT_LEN), ImmutAnyOrigin
+                    dtype,
+                    Layout.row_major(NUM_ENVS, ROLLOUT_LEN),
+                    ImmutAnyOrigin,
                 ](rollout_rewards_buf)
                 var rollout_dones_i = LayoutTensor[
                     DType.int32,
                     Layout.row_major(NUM_ENVS, ROLLOUT_LEN),
                     ImmutAnyOrigin,
                 ](rollout_dones_buf)
-    
+
                 ctx.enqueue_function_checked[
                     track_episodes_kernel[NUM_ENVS, ROLLOUT_LEN],
                     track_episodes_kernel[NUM_ENVS, ROLLOUT_LEN],
@@ -1252,7 +1089,7 @@ struct A2CAgent[
                     grid_dim=(env_blocks,),
                     block_dim=(env_threads,),
                 )
-    
+
                 # Phase 2: Compute GAE
                 ctx.enqueue_function_checked[
                     get_values_kernel[EnvType, NUM_ENVS, Self.HIDDEN_DIM],
@@ -1267,14 +1104,16 @@ struct A2CAgent[
                     grid_dim=(env_blocks,),
                     block_dim=(env_threads,),
                 )
-    
+
                 var rollout_values_i = LayoutTensor[
-                    dtype, Layout.row_major(NUM_ENVS, ROLLOUT_LEN), ImmutAnyOrigin
+                    dtype,
+                    Layout.row_major(NUM_ENVS, ROLLOUT_LEN),
+                    ImmutAnyOrigin,
                 ](rollout_values_buf)
                 var bootstrap_values_i = LayoutTensor[
                     dtype, Layout.row_major(NUM_ENVS, 1), ImmutAnyOrigin
                 ](bootstrap_values_buf)
-    
+
                 ctx.enqueue_function_checked[
                     compute_gae_kernel[NUM_ENVS, ROLLOUT_LEN],
                     compute_gae_kernel[NUM_ENVS, ROLLOUT_LEN],
@@ -1290,7 +1129,7 @@ struct A2CAgent[
                     grid_dim=(env_blocks,),
                     block_dim=(env_threads,),
                 )
-    
+
                 # Phase 3: Policy gradients
                 var rollout_obs_i = LayoutTensor[
                     dtype,
@@ -1303,12 +1142,16 @@ struct A2CAgent[
                     ImmutAnyOrigin,
                 ](rollout_actions_buf)
                 var rollout_advantages_i = LayoutTensor[
-                    dtype, Layout.row_major(NUM_ENVS, ROLLOUT_LEN), ImmutAnyOrigin
+                    dtype,
+                    Layout.row_major(NUM_ENVS, ROLLOUT_LEN),
+                    ImmutAnyOrigin,
                 ](rollout_advantages_buf)
                 var rollout_returns_i = LayoutTensor[
-                    dtype, Layout.row_major(NUM_ENVS, ROLLOUT_LEN), ImmutAnyOrigin
+                    dtype,
+                    Layout.row_major(NUM_ENVS, ROLLOUT_LEN),
+                    ImmutAnyOrigin,
                 ](rollout_returns_buf)
-    
+
                 ctx.enqueue_function_checked[
                     policy_gradient_kernel[
                         EnvType, NUM_ENVS, Self.HIDDEN_DIM, ROLLOUT_LEN
@@ -1338,7 +1181,7 @@ struct A2CAgent[
                     grid_dim=(env_blocks,),
                     block_dim=(env_threads,),
                 )
-    
+
                 # Phase 4: Reduce and update ALL parameters
                 var grad_W1_i = LayoutTensor[
                     dtype, Layout.row_major(NUM_ENVS, W1_SIZE), ImmutAnyOrigin
@@ -1347,18 +1190,26 @@ struct A2CAgent[
                     dtype, Layout.row_major(NUM_ENVS, B1_SIZE), ImmutAnyOrigin
                 ](grad_b1_buf)
                 var grad_W_actor_i = LayoutTensor[
-                    dtype, Layout.row_major(NUM_ENVS, W_ACTOR_SIZE), ImmutAnyOrigin
+                    dtype,
+                    Layout.row_major(NUM_ENVS, W_ACTOR_SIZE),
+                    ImmutAnyOrigin,
                 ](grad_W_actor_buf)
                 var grad_b_actor_i = LayoutTensor[
-                    dtype, Layout.row_major(NUM_ENVS, B_ACTOR_SIZE), ImmutAnyOrigin
+                    dtype,
+                    Layout.row_major(NUM_ENVS, B_ACTOR_SIZE),
+                    ImmutAnyOrigin,
                 ](grad_b_actor_buf)
                 var grad_W_critic_i = LayoutTensor[
-                    dtype, Layout.row_major(NUM_ENVS, W_CRITIC_SIZE), ImmutAnyOrigin
+                    dtype,
+                    Layout.row_major(NUM_ENVS, W_CRITIC_SIZE),
+                    ImmutAnyOrigin,
                 ](grad_W_critic_buf)
                 var grad_b_critic_i = LayoutTensor[
-                    dtype, Layout.row_major(NUM_ENVS, B_CRITIC_SIZE), ImmutAnyOrigin
+                    dtype,
+                    Layout.row_major(NUM_ENVS, B_CRITIC_SIZE),
+                    ImmutAnyOrigin,
                 ](grad_b_critic_buf)
-    
+
                 var reduced_W1_i = LayoutTensor[
                     dtype, Layout.row_major(W1_SIZE), ImmutAnyOrigin
                 ](reduced_W1_buf)
@@ -1377,7 +1228,7 @@ struct A2CAgent[
                 var reduced_b_critic_i = LayoutTensor[
                     dtype, Layout.row_major(B_CRITIC_SIZE), ImmutAnyOrigin
                 ](reduced_b_critic_buf)
-    
+
                 # Block counts for each parameter size (one thread per element)
                 comptime blocks_W1 = (W1_SIZE + TPB - 1) // TPB
                 comptime blocks_b1 = (B1_SIZE + TPB - 1) // TPB
@@ -1385,7 +1236,7 @@ struct A2CAgent[
                 comptime blocks_b_actor = (B_ACTOR_SIZE + TPB - 1) // TPB
                 comptime blocks_W_critic = (W_CRITIC_SIZE + TPB - 1) // TPB
                 comptime blocks_b_critic = (B_CRITIC_SIZE + TPB - 1) // TPB
-    
+
                 # Reduce all gradients using parameterized kernel
                 ctx.enqueue_function_checked[
                     reduce_kernel[W1_SIZE, NUM_ENVS],
@@ -1441,7 +1292,7 @@ struct A2CAgent[
                     grid_dim=(blocks_b_critic,),
                     block_dim=(TPB,),
                 )
-    
+
                 # Compute Adam bias corrections (t = update + 1, 1-indexed)
                 var t = update + 1
                 var beta1_t = beta1_s
@@ -1549,11 +1400,11 @@ struct A2CAgent[
                     grid_dim=(blocks_b_critic,),
                     block_dim=(TPB,),
                 )
-    
+
                 # Collect metrics every update (or periodically for efficiency)
                 if (update + 1) % 10 == 0 or update == num_updates - 1:
                     ctx.synchronize()
-    
+
                     # Collect completed episode rewards
                     with completed_episodes_buf.map_to_host() as ep_counts:
                         with completed_rewards_buf.map_to_host() as ep_rewards:
@@ -1561,17 +1412,19 @@ struct A2CAgent[
                                 var num_completed = Int(ep_counts[env_idx])
                                 for ep_idx in range(num_completed):
                                     var reward = Float64(
-                                        ep_rewards[env_idx * ROLLOUT_LEN + ep_idx]
+                                        ep_rewards[
+                                            env_idx * ROLLOUT_LEN + ep_idx
+                                        ]
                                     )
                                     metrics.log_episode(
                                         episode_counter, reward, 0, 0.0
                                     )
                                     episode_counter += 1
                                     total_episodes_count += 1
-    
+
                     # Reset episode tracking buffers for next batch
                     completed_episodes_buf.enqueue_fill(0)
-    
+
                 # Logging - reduced frequency to minimize GPU sync overhead
                 if verbose and (update + 1) % 25 == 0:
                     var steps = (update + 1) * NUM_ENVS * ROLLOUT_LEN
@@ -1580,7 +1433,7 @@ struct A2CAgent[
                         / Float64(total_episodes_count) if total_episodes_count
                         > 0 else 0.0
                     )
-    
+
                     # Get recent average reward
                     var recent_avg: Float64 = 0.0
                     var recent_count = min(100, len(metrics.episodes))
@@ -1589,7 +1442,7 @@ struct A2CAgent[
                         for j in range(start_idx, len(metrics.episodes)):
                             recent_avg += metrics.episodes[j].total_reward
                         recent_avg /= Float64(recent_count)
-    
+
                     print(
                         "Update",
                         update + 1,
@@ -1602,38 +1455,38 @@ struct A2CAgent[
                         "| Avg len:",
                         Int(avg_len),
                     )
-    
+
             ctx.synchronize()
-    
+
             # Copy trained weights back to host
             with W1_buf.map_to_host() as host:
-                for i in range(EnvType.OBS_DIM * Self.HIDDEN_DIM):
+                for i in range(W1_SIZE):
                     self.W1[i] = Float32(host[i])
             with b1_buf.map_to_host() as host:
-                for i in range(Self.HIDDEN_DIM):
+                for i in range(B1_SIZE):
                     self.b1[i] = Float32(host[i])
             with W_actor_buf.map_to_host() as host:
-                for i in range(Self.HIDDEN_DIM * EnvType.NUM_ACTIONS):
+                for i in range(W_ACTOR_SIZE):
                     self.W_actor[i] = Float32(host[i])
             with b_actor_buf.map_to_host() as host:
-                for i in range(EnvType.NUM_ACTIONS):
+                for i in range(B_ACTOR_SIZE):
                     self.b_actor[i] = Float32(host[i])
             with W_critic_buf.map_to_host() as host:
-                for i in range(Self.HIDDEN_DIM):
+                for i in range(W_CRITIC_SIZE):
                     self.W_critic[i] = Float32(host[i])
             with b_critic_buf.map_to_host() as host:
                 self.b_critic[0] = Float32(host[0])
-    
+
             var end_time = perf_counter_ns()
-    
+
             var total_steps_count = num_updates * NUM_ENVS * ROLLOUT_LEN
             var elapsed = Float64(end_time - start_time) / 1e9
             var throughput = Float64(total_steps_count) / elapsed
-    
+
             self.trained = True
             self.total_episodes = total_episodes_count
             self.total_steps = total_steps_count
-    
+
             if verbose:
                 print()
                 print("Training complete!")
@@ -1641,7 +1494,7 @@ struct A2CAgent[
                 print("  Total episodes:", total_episodes_count)
                 print("  Time:", elapsed, "seconds")
                 print("  Throughput:", Int(throughput), "steps/sec")
-    
+
         return metrics^
 
     fn evaluate[
@@ -1709,8 +1562,8 @@ struct A2CAgent[
     fn print_info(self):
         """Print agent information."""
         print("GPU A2C Agent:")
-        print("  Obs dim:", Self.OBS_DIM)
-        print("  Num actions:", Self.NUM_ACTIONS)
+        print("  Obs dim:", self.obs_dim)
+        print("  Num actions:", self.num_actions)
         print("  Hidden dim:", Self.HIDDEN_DIM)
         print("  Trained:", self.trained)
         print("  Total episodes:", self.total_episodes)

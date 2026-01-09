@@ -120,3 +120,23 @@ from .actor_critic import (
 )
 
 from .random import xorshift32, random_uniform, random_range
+from .optimizer import reduce_kernel, sgd_kernel, adam_kernel
+from .gae import compute_gae_kernel
+from .metrics import track_episodes_kernel
+from .nn_inline import (
+    relu_inline,
+    relu_inline_generic,
+    leaky_relu_inline,
+    tanh_inline,
+    sigmoid_inline,
+    softmax2_inline,
+    softmax3_inline,
+    softmax_inline,
+    log_softmax2_inline,
+    log_softmax_inline,
+    sample_from_probs2,
+    sample_from_probs,
+    relu_grad_inline,
+    tanh_grad_inline,
+    sigmoid_grad_inline,
+)

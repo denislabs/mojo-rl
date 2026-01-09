@@ -9,10 +9,10 @@ fn main() raises:
     print()
 
     # Create agent with CartPole dimensions (OBS_DIM=4, NUM_ACTIONS=2)
-    var agent = A2CAgent[OBS_DIM=4, NUM_ACTIONS=2, HIDDEN_DIM=64]()
+    var agent = A2CAgent[HIDDEN_DIM=256]()
 
     # Train on GPU - returns TrainingMetrics (DeviceContext created internally)
-    var metrics = agent.train[CartPoleEnv](
+    var metrics = agent.train[CartPoleEnv, NUM_ENVS=1024](
         num_updates=200,
         verbose=True,
         environment_name="CartPole",
@@ -34,3 +34,11 @@ fn main() raises:
     )
     print()
     print("Mean evaluation reward:", eval_reward)
+
+    var _ = agent.evaluate(
+        env,
+        num_episodes=1,
+        max_steps_per_episode=500,
+        verbose=True,
+        render=True,
+    )
