@@ -1,10 +1,11 @@
 """GPU-Accelerated Deep Q-Network (DQN) Agent for discrete action spaces.
 
 This is the GPU-accelerated version of DQN, using Metal/CUDA for neural network
-computations while keeping the replay buffer on CPU (for random sampling).
-
-Key GPU operations:
-- Forward pass: Tiled matmul with fused bias + ReLU activation
+computations. Key optimizations:
+- Persistent GPU buffers allocated once at training start
+- Only batch data transferred CPU<->GPU per step (not weights)
+- Adam optimizer runs entirely on GPU
+- Target network soft updates on GPU
 
 Architecture: obs_dim -> hidden (relu) -> hidden (relu) -> num_actions (linear)
 
@@ -30,7 +31,7 @@ from layout import Layout, LayoutTensor
 from deep_rl.cpu import ReplayBuffer
 from core import TrainingMetrics, BoxDiscreteActionEnv
 
-# Import GPU kernels from deep_rl.gpu (avoid duplication)
+# Import GPU kernels from deep_rl.gpu
 from deep_rl.gpu import (
     linear_forward_kernel,
     linear_forward_relu_kernel,
@@ -44,7 +45,7 @@ from deep_rl.gpu import (
 
 
 # =============================================================================
-# GPU Q-Network for DQN (CPU weights, GPU forward pass)
+# GPU Q-Network for DQN (CPU weights for init/export, GPU for training)
 # =============================================================================
 
 
@@ -60,7 +61,7 @@ struct GPUQNetwork[
 
     Architecture: obs_dim -> hidden1 (relu) -> hidden2 (relu) -> num_actions (linear).
 
-    Weights are stored on CPU. GPU buffers are created on-demand for forward pass.
+    Weights stored on CPU for initialization. During training, weights live on GPU.
     """
 
     # Sizes
@@ -79,7 +80,7 @@ struct GPUQNetwork[
     comptime TILE: Int = 16
     comptime TPB: Int = 64
 
-    # CPU storage for weights
+    # CPU storage for weights (used for init and export)
     var W1: List[Scalar[Self.dtype]]
     var b1: List[Scalar[Self.dtype]]
     var W2: List[Scalar[Self.dtype]]
@@ -87,26 +88,8 @@ struct GPUQNetwork[
     var W3: List[Scalar[Self.dtype]]
     var b3: List[Scalar[Self.dtype]]
 
-    # Adam optimizer state (CPU)
-    var m_W1: List[Scalar[Self.dtype]]
-    var v_W1: List[Scalar[Self.dtype]]
-    var m_b1: List[Scalar[Self.dtype]]
-    var v_b1: List[Scalar[Self.dtype]]
-    var m_W2: List[Scalar[Self.dtype]]
-    var v_W2: List[Scalar[Self.dtype]]
-    var m_b2: List[Scalar[Self.dtype]]
-    var v_b2: List[Scalar[Self.dtype]]
-    var m_W3: List[Scalar[Self.dtype]]
-    var v_W3: List[Scalar[Self.dtype]]
-    var m_b3: List[Scalar[Self.dtype]]
-    var v_b3: List[Scalar[Self.dtype]]
-
-    var adam_t: Int
-
     fn __init__(out self):
         """Initialize Q-Network with Xavier initialization."""
-        self.adam_t = 0
-
         # Initialize weights with Xavier
         var std1 = sqrt(2.0 / Float64(Self.obs_dim + Self.hidden1_dim))
         var std2 = sqrt(2.0 / Float64(Self.hidden1_dim + Self.hidden2_dim))
@@ -143,220 +126,6 @@ struct GPUQNetwork[
         for i in range(Self.B3_SIZE):
             self.b3.append(Scalar[Self.dtype](0))
 
-        # Initialize Adam state to zero
-        self.m_W1 = List[Scalar[Self.dtype]](capacity=Self.W1_SIZE)
-        self.v_W1 = List[Scalar[Self.dtype]](capacity=Self.W1_SIZE)
-        for i in range(Self.W1_SIZE):
-            self.m_W1.append(Scalar[Self.dtype](0))
-            self.v_W1.append(Scalar[Self.dtype](0))
-
-        self.m_b1 = List[Scalar[Self.dtype]](capacity=Self.B1_SIZE)
-        self.v_b1 = List[Scalar[Self.dtype]](capacity=Self.B1_SIZE)
-        for i in range(Self.B1_SIZE):
-            self.m_b1.append(Scalar[Self.dtype](0))
-            self.v_b1.append(Scalar[Self.dtype](0))
-
-        self.m_W2 = List[Scalar[Self.dtype]](capacity=Self.W2_SIZE)
-        self.v_W2 = List[Scalar[Self.dtype]](capacity=Self.W2_SIZE)
-        for i in range(Self.W2_SIZE):
-            self.m_W2.append(Scalar[Self.dtype](0))
-            self.v_W2.append(Scalar[Self.dtype](0))
-
-        self.m_b2 = List[Scalar[Self.dtype]](capacity=Self.B2_SIZE)
-        self.v_b2 = List[Scalar[Self.dtype]](capacity=Self.B2_SIZE)
-        for i in range(Self.B2_SIZE):
-            self.m_b2.append(Scalar[Self.dtype](0))
-            self.v_b2.append(Scalar[Self.dtype](0))
-
-        self.m_W3 = List[Scalar[Self.dtype]](capacity=Self.W3_SIZE)
-        self.v_W3 = List[Scalar[Self.dtype]](capacity=Self.W3_SIZE)
-        for i in range(Self.W3_SIZE):
-            self.m_W3.append(Scalar[Self.dtype](0))
-            self.v_W3.append(Scalar[Self.dtype](0))
-
-        self.m_b3 = List[Scalar[Self.dtype]](capacity=Self.B3_SIZE)
-        self.v_b3 = List[Scalar[Self.dtype]](capacity=Self.B3_SIZE)
-        for i in range(Self.B3_SIZE):
-            self.m_b3.append(Scalar[Self.dtype](0))
-            self.v_b3.append(Scalar[Self.dtype](0))
-
-    fn forward_gpu(
-        self,
-        ctx: DeviceContext,
-        obs: List[Scalar[Self.dtype]],
-    ) raises -> List[Scalar[Self.dtype]]:
-        """Forward pass on GPU: obs -> Q-values for all actions.
-
-        Creates GPU buffers on-demand and copies weights from CPU.
-        """
-        var result = self.forward_gpu_with_cache(ctx, obs)
-        return result[0].copy()
-
-    fn forward_gpu_with_cache(
-        self,
-        ctx: DeviceContext,
-        obs: List[Scalar[Self.dtype]],
-    ) raises -> Tuple[
-        List[Scalar[Self.dtype]],
-        List[Scalar[Self.dtype]],
-        List[Scalar[Self.dtype]],
-    ]:
-        """Forward pass on GPU returning Q-values and cached activations (h1, h2).
-
-        Creates GPU buffers on-demand and copies weights from CPU.
-        Returns: (q_values, h1, h2)
-        """
-        comptime BATCH = Self.batch_size
-        comptime OBS = Self.obs_dim
-        comptime H1 = Self.hidden1_dim
-        comptime H2 = Self.hidden2_dim
-        comptime OUT = Self.num_actions
-
-        # Create GPU buffers
-        var obs_gpu = ctx.enqueue_create_buffer[Self.dtype](BATCH * OBS)
-        var W1_gpu = ctx.enqueue_create_buffer[Self.dtype](OBS * H1)
-        var b1_gpu = ctx.enqueue_create_buffer[Self.dtype](H1)
-        var h1_gpu = ctx.enqueue_create_buffer[Self.dtype](BATCH * H1)
-        var W2_gpu = ctx.enqueue_create_buffer[Self.dtype](H1 * H2)
-        var b2_gpu = ctx.enqueue_create_buffer[Self.dtype](H2)
-        var h2_gpu = ctx.enqueue_create_buffer[Self.dtype](BATCH * H2)
-        var W3_gpu = ctx.enqueue_create_buffer[Self.dtype](H2 * OUT)
-        var b3_gpu = ctx.enqueue_create_buffer[Self.dtype](OUT)
-        var out_gpu = ctx.enqueue_create_buffer[Self.dtype](BATCH * OUT)
-
-        # Copy data to GPU
-        with obs_gpu.map_to_host() as host:
-            for i in range(len(obs)):
-                host[i] = obs[i]
-        with W1_gpu.map_to_host() as host:
-            for i in range(Self.W1_SIZE):
-                host[i] = self.W1[i]
-        with b1_gpu.map_to_host() as host:
-            for i in range(Self.B1_SIZE):
-                host[i] = self.b1[i]
-        with W2_gpu.map_to_host() as host:
-            for i in range(Self.W2_SIZE):
-                host[i] = self.W2[i]
-        with b2_gpu.map_to_host() as host:
-            for i in range(Self.B2_SIZE):
-                host[i] = self.b2[i]
-        with W3_gpu.map_to_host() as host:
-            for i in range(Self.W3_SIZE):
-                host[i] = self.W3[i]
-        with b3_gpu.map_to_host() as host:
-            for i in range(Self.B3_SIZE):
-                host[i] = self.b3[i]
-
-        # Initialize output buffers
-        h1_gpu.enqueue_fill(0)
-        h2_gpu.enqueue_fill(0)
-        out_gpu.enqueue_fill(0)
-
-        # Create layout tensors
-        var obs_t = LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH, OBS), ImmutAnyOrigin
-        ](obs_gpu)
-        var h1_t = LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH, H1), MutAnyOrigin
-        ](h1_gpu)
-        var h2_t = LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH, H2), MutAnyOrigin
-        ](h2_gpu)
-        var out_t = LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH, OUT), MutAnyOrigin
-        ](out_gpu)
-        var W1_t = LayoutTensor[
-            Self.dtype, Layout.row_major(OBS, H1), ImmutAnyOrigin
-        ](W1_gpu)
-        var b1_t = LayoutTensor[
-            Self.dtype, Layout.row_major(H1), ImmutAnyOrigin
-        ](b1_gpu)
-        var W2_t = LayoutTensor[
-            Self.dtype, Layout.row_major(H1, H2), ImmutAnyOrigin
-        ](W2_gpu)
-        var b2_t = LayoutTensor[
-            Self.dtype, Layout.row_major(H2), ImmutAnyOrigin
-        ](b2_gpu)
-        var W3_t = LayoutTensor[
-            Self.dtype, Layout.row_major(H2, OUT), ImmutAnyOrigin
-        ](W3_gpu)
-        var b3_t = LayoutTensor[
-            Self.dtype, Layout.row_major(OUT), ImmutAnyOrigin
-        ](b3_gpu)
-
-        # Grid dimensions
-        comptime blocks_y1 = (BATCH + Self.TILE - 1) // Self.TILE
-        comptime blocks_x1 = (H1 + Self.TILE - 1) // Self.TILE
-        comptime blocks_y2 = (BATCH + Self.TILE - 1) // Self.TILE
-        comptime blocks_x2 = (H2 + Self.TILE - 1) // Self.TILE
-        comptime blocks_y3 = (BATCH + Self.TILE - 1) // Self.TILE
-        comptime blocks_x3 = (OUT + Self.TILE - 1) // Self.TILE
-
-        # Layer 1: ReLU(obs @ W1 + b1)
-        comptime kernel1 = linear_forward_relu_kernel[
-            Self.dtype, BATCH, OBS, H1, Self.TILE
-        ]
-        ctx.enqueue_function_checked[kernel1, kernel1](
-            h1_t,
-            obs_t,
-            W1_t,
-            b1_t,
-            grid_dim=(blocks_x1, blocks_y1),
-            block_dim=(Self.TILE, Self.TILE),
-        )
-
-        # Layer 2: ReLU(h1 @ W2 + b2)
-        var h1_immut = LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH, H1), ImmutAnyOrigin
-        ](h1_gpu)
-        comptime kernel2 = linear_forward_relu_kernel[
-            Self.dtype, BATCH, H1, H2, Self.TILE
-        ]
-        ctx.enqueue_function_checked[kernel2, kernel2](
-            h2_t,
-            h1_immut,
-            W2_t,
-            b2_t,
-            grid_dim=(blocks_x2, blocks_y2),
-            block_dim=(Self.TILE, Self.TILE),
-        )
-
-        # Layer 3: h2 @ W3 + b3 (no activation)
-        var h2_immut = LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH, H2), ImmutAnyOrigin
-        ](h2_gpu)
-        comptime kernel3 = linear_forward_kernel[
-            Self.dtype, BATCH, H2, OUT, Self.TILE
-        ]
-        ctx.enqueue_function_checked[kernel3, kernel3](
-            out_t,
-            h2_immut,
-            W3_t,
-            b3_t,
-            grid_dim=(blocks_x3, blocks_y3),
-            block_dim=(Self.TILE, Self.TILE),
-        )
-
-        ctx.synchronize()
-
-        # Copy Q-values and activations back to CPU
-        var q_values = List[Scalar[Self.dtype]](capacity=BATCH * OUT)
-        with out_gpu.map_to_host() as host:
-            for i in range(BATCH * OUT):
-                q_values.append(host[i])
-
-        var h1_out = List[Scalar[Self.dtype]](capacity=BATCH * H1)
-        with h1_gpu.map_to_host() as host:
-            for i in range(BATCH * H1):
-                h1_out.append(host[i])
-
-        var h2_out = List[Scalar[Self.dtype]](capacity=BATCH * H2)
-        with h2_gpu.map_to_host() as host:
-            for i in range(BATCH * H2):
-                h2_out.append(host[i])
-
-        return (q_values^, h1_out^, h2_out^)
-
     fn forward_cpu(
         self,
         obs: InlineArray[Scalar[Self.dtype], Self.obs_dim],
@@ -387,395 +156,6 @@ struct GPUQNetwork[
             q[j] = sum_val
 
         return q^
-
-    fn backward_gpu(
-        mut self,
-        ctx: DeviceContext,
-        obs: List[Scalar[Self.dtype]],
-        h1: List[Scalar[Self.dtype]],
-        h2: List[Scalar[Self.dtype]],
-        dq: List[Scalar[Self.dtype]],
-    ) raises -> Tuple[
-        List[Scalar[Self.dtype]],
-        List[Scalar[Self.dtype]],
-        List[Scalar[Self.dtype]],
-        List[Scalar[Self.dtype]],
-        List[Scalar[Self.dtype]],
-        List[Scalar[Self.dtype]],
-    ]:
-        """GPU backward pass. Returns gradients for all weights."""
-        comptime BATCH = Self.batch_size
-        comptime OBS = Self.obs_dim
-        comptime H1 = Self.hidden1_dim
-        comptime H2 = Self.hidden2_dim
-        comptime OUT = Self.num_actions
-
-        # Create GPU buffers
-        var obs_gpu = ctx.enqueue_create_buffer[Self.dtype](BATCH * OBS)
-        var h1_gpu = ctx.enqueue_create_buffer[Self.dtype](BATCH * H1)
-        var h2_gpu = ctx.enqueue_create_buffer[Self.dtype](BATCH * H2)
-        var dout_gpu = ctx.enqueue_create_buffer[Self.dtype](BATCH * OUT)
-        var W2_gpu = ctx.enqueue_create_buffer[Self.dtype](H1 * H2)
-        var W3_gpu = ctx.enqueue_create_buffer[Self.dtype](H2 * OUT)
-
-        var dW1_gpu = ctx.enqueue_create_buffer[Self.dtype](OBS * H1)
-        var db1_gpu = ctx.enqueue_create_buffer[Self.dtype](H1)
-        var dW2_gpu = ctx.enqueue_create_buffer[Self.dtype](H1 * H2)
-        var db2_gpu = ctx.enqueue_create_buffer[Self.dtype](H2)
-        var dW3_gpu = ctx.enqueue_create_buffer[Self.dtype](H2 * OUT)
-        var db3_gpu = ctx.enqueue_create_buffer[Self.dtype](OUT)
-        var dh1_gpu = ctx.enqueue_create_buffer[Self.dtype](BATCH * H1)
-        var dh2_gpu = ctx.enqueue_create_buffer[Self.dtype](BATCH * H2)
-
-        # Copy inputs to GPU
-        with obs_gpu.map_to_host() as host:
-            for i in range(len(obs)):
-                host[i] = obs[i]
-        with h1_gpu.map_to_host() as host:
-            for i in range(len(h1)):
-                host[i] = h1[i]
-        with h2_gpu.map_to_host() as host:
-            for i in range(len(h2)):
-                host[i] = h2[i]
-        with dout_gpu.map_to_host() as host:
-            for i in range(len(dq)):
-                host[i] = dq[i]
-        with W2_gpu.map_to_host() as host:
-            for i in range(Self.W2_SIZE):
-                host[i] = self.W2[i]
-        with W3_gpu.map_to_host() as host:
-            for i in range(Self.W3_SIZE):
-                host[i] = self.W3[i]
-
-        # Initialize gradient buffers to 0
-        dW1_gpu.enqueue_fill(0)
-        db1_gpu.enqueue_fill(0)
-        dW2_gpu.enqueue_fill(0)
-        db2_gpu.enqueue_fill(0)
-        dW3_gpu.enqueue_fill(0)
-        db3_gpu.enqueue_fill(0)
-        dh1_gpu.enqueue_fill(0)
-        dh2_gpu.enqueue_fill(0)
-
-        # Create layout tensors
-        var obs_t = LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH, OBS), ImmutAnyOrigin
-        ](obs_gpu)
-        var h1_t = LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH, H1), ImmutAnyOrigin
-        ](h1_gpu)
-        var h2_t = LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH, H2), ImmutAnyOrigin
-        ](h2_gpu)
-        var dout_t = LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH, OUT), ImmutAnyOrigin
-        ](dout_gpu)
-        var W2_t = LayoutTensor[
-            Self.dtype, Layout.row_major(H1, H2), ImmutAnyOrigin
-        ](W2_gpu)
-        var W3_t = LayoutTensor[
-            Self.dtype, Layout.row_major(H2, OUT), ImmutAnyOrigin
-        ](W3_gpu)
-
-        var dW1_t = LayoutTensor[
-            Self.dtype, Layout.row_major(OBS, H1), MutAnyOrigin
-        ](dW1_gpu)
-        var db1_t = LayoutTensor[
-            Self.dtype, Layout.row_major(H1), MutAnyOrigin
-        ](db1_gpu)
-        var dW2_t = LayoutTensor[
-            Self.dtype, Layout.row_major(H1, H2), MutAnyOrigin
-        ](dW2_gpu)
-        var db2_t = LayoutTensor[
-            Self.dtype, Layout.row_major(H2), MutAnyOrigin
-        ](db2_gpu)
-        var dW3_t = LayoutTensor[
-            Self.dtype, Layout.row_major(H2, OUT), MutAnyOrigin
-        ](dW3_gpu)
-        var db3_t = LayoutTensor[
-            Self.dtype, Layout.row_major(OUT), MutAnyOrigin
-        ](db3_gpu)
-        var dh1_t = LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH, H1), MutAnyOrigin
-        ](dh1_gpu)
-        var dh2_t = LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH, H2), MutAnyOrigin
-        ](dh2_gpu)
-
-        # Grid dimensions
-        comptime blocks_dW3_y = (H2 + Self.TILE - 1) // Self.TILE
-        comptime blocks_dW3_x = (OUT + Self.TILE - 1) // Self.TILE
-        comptime blocks_dh2_y = (BATCH + Self.TILE - 1) // Self.TILE
-        comptime blocks_dh2_x = (H2 + Self.TILE - 1) // Self.TILE
-        comptime blocks_dW2_y = (H1 + Self.TILE - 1) // Self.TILE
-        comptime blocks_dW2_x = (H2 + Self.TILE - 1) // Self.TILE
-        comptime blocks_dh1_y = (BATCH + Self.TILE - 1) // Self.TILE
-        comptime blocks_dh1_x = (H1 + Self.TILE - 1) // Self.TILE
-        comptime blocks_dW1_y = (OBS + Self.TILE - 1) // Self.TILE
-        comptime blocks_dW1_x = (H1 + Self.TILE - 1) // Self.TILE
-
-        # Layer 3 backward: dW3 = h2.T @ dq
-        comptime kernel_dW3 = linear_backward_dW_kernel[
-            Self.dtype, BATCH, H2, OUT, Self.TILE
-        ]
-        ctx.enqueue_function_checked[kernel_dW3, kernel_dW3](
-            dW3_t,
-            h2_t,
-            dout_t,
-            grid_dim=(blocks_dW3_x, blocks_dW3_y),
-            block_dim=(Self.TILE, Self.TILE),
-        )
-
-        # db3 = sum(dq, axis=0)
-        comptime kernel_db3 = linear_backward_db_kernel[
-            Self.dtype, BATCH, OUT, Self.TPB
-        ]
-        ctx.enqueue_function_checked[kernel_db3, kernel_db3](
-            db3_t,
-            dout_t,
-            grid_dim=(OUT,),
-            block_dim=(Self.TPB,),
-        )
-
-        # dh2_pre = dq @ W3.T
-        comptime kernel_dx3 = linear_backward_dx_kernel[
-            Self.dtype, BATCH, H2, OUT, Self.TILE
-        ]
-        ctx.enqueue_function_checked[kernel_dx3, kernel_dx3](
-            dh2_t,
-            dout_t,
-            W3_t,
-            grid_dim=(blocks_dh2_x, blocks_dh2_y),
-            block_dim=(Self.TILE, Self.TILE),
-        )
-
-        # Apply ReLU gradient: dh2 = dh2_pre * (h2 > 0)
-        comptime blocks_relu2 = (BATCH * H2 + Self.TPB - 1) // Self.TPB
-        var dh2_flat = LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH * H2), MutAnyOrigin
-        ](dh2_gpu)
-        var dh2_in_flat = LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH * H2), ImmutAnyOrigin
-        ](dh2_gpu)
-        var h2_flat = LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH * H2), ImmutAnyOrigin
-        ](h2_gpu)
-        comptime kernel_relu2 = relu_grad_mul_kernel[
-            Self.dtype, BATCH * H2, Self.TPB
-        ]
-        ctx.enqueue_function_checked[kernel_relu2, kernel_relu2](
-            dh2_flat,
-            dh2_in_flat,
-            h2_flat,
-            grid_dim=(blocks_relu2,),
-            block_dim=(Self.TPB,),
-        )
-
-        # Layer 2 backward: dW2 = h1.T @ dh2
-        var dh2_immut = LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH, H2), ImmutAnyOrigin
-        ](dh2_gpu)
-        comptime kernel_dW2 = linear_backward_dW_kernel[
-            Self.dtype, BATCH, H1, H2, Self.TILE
-        ]
-        ctx.enqueue_function_checked[kernel_dW2, kernel_dW2](
-            dW2_t,
-            h1_t,
-            dh2_immut,
-            grid_dim=(blocks_dW2_x, blocks_dW2_y),
-            block_dim=(Self.TILE, Self.TILE),
-        )
-
-        # db2 = sum(dh2, axis=0)
-        comptime kernel_db2 = linear_backward_db_kernel[
-            Self.dtype, BATCH, H2, Self.TPB
-        ]
-        ctx.enqueue_function_checked[kernel_db2, kernel_db2](
-            db2_t,
-            dh2_immut,
-            grid_dim=(H2,),
-            block_dim=(Self.TPB,),
-        )
-
-        # dh1_pre = dh2 @ W2.T
-        comptime kernel_dx2 = linear_backward_dx_kernel[
-            Self.dtype, BATCH, H1, H2, Self.TILE
-        ]
-        ctx.enqueue_function_checked[kernel_dx2, kernel_dx2](
-            dh1_t,
-            dh2_immut,
-            W2_t,
-            grid_dim=(blocks_dh1_x, blocks_dh1_y),
-            block_dim=(Self.TILE, Self.TILE),
-        )
-
-        # Apply ReLU gradient: dh1 = dh1_pre * (h1 > 0)
-        comptime blocks_relu1 = (BATCH * H1 + Self.TPB - 1) // Self.TPB
-        var dh1_flat = LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH * H1), MutAnyOrigin
-        ](dh1_gpu)
-        var dh1_in_flat = LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH * H1), ImmutAnyOrigin
-        ](dh1_gpu)
-        var h1_flat = LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH * H1), ImmutAnyOrigin
-        ](h1_gpu)
-        comptime kernel_relu1 = relu_grad_mul_kernel[
-            Self.dtype, BATCH * H1, Self.TPB
-        ]
-        ctx.enqueue_function_checked[kernel_relu1, kernel_relu1](
-            dh1_flat,
-            dh1_in_flat,
-            h1_flat,
-            grid_dim=(blocks_relu1,),
-            block_dim=(Self.TPB,),
-        )
-
-        # Layer 1 backward: dW1 = obs.T @ dh1
-        var dh1_immut = LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH, H1), ImmutAnyOrigin
-        ](dh1_gpu)
-        comptime kernel_dW1 = linear_backward_dW_kernel[
-            Self.dtype, BATCH, OBS, H1, Self.TILE
-        ]
-        ctx.enqueue_function_checked[kernel_dW1, kernel_dW1](
-            dW1_t,
-            obs_t,
-            dh1_immut,
-            grid_dim=(blocks_dW1_x, blocks_dW1_y),
-            block_dim=(Self.TILE, Self.TILE),
-        )
-
-        # db1 = sum(dh1, axis=0)
-        comptime kernel_db1 = linear_backward_db_kernel[
-            Self.dtype, BATCH, H1, Self.TPB
-        ]
-        ctx.enqueue_function_checked[kernel_db1, kernel_db1](
-            db1_t,
-            dh1_immut,
-            grid_dim=(H1,),
-            block_dim=(Self.TPB,),
-        )
-
-        ctx.synchronize()
-
-        # Copy gradients back to CPU
-        var dW1 = List[Scalar[Self.dtype]](capacity=Self.W1_SIZE)
-        var db1 = List[Scalar[Self.dtype]](capacity=Self.B1_SIZE)
-        var dW2 = List[Scalar[Self.dtype]](capacity=Self.W2_SIZE)
-        var db2 = List[Scalar[Self.dtype]](capacity=Self.B2_SIZE)
-        var dW3 = List[Scalar[Self.dtype]](capacity=Self.W3_SIZE)
-        var db3 = List[Scalar[Self.dtype]](capacity=Self.B3_SIZE)
-
-        with dW1_gpu.map_to_host() as host:
-            for i in range(Self.W1_SIZE):
-                dW1.append(host[i])
-        with db1_gpu.map_to_host() as host:
-            for i in range(Self.B1_SIZE):
-                db1.append(host[i])
-        with dW2_gpu.map_to_host() as host:
-            for i in range(Self.W2_SIZE):
-                dW2.append(host[i])
-        with db2_gpu.map_to_host() as host:
-            for i in range(Self.B2_SIZE):
-                db2.append(host[i])
-        with dW3_gpu.map_to_host() as host:
-            for i in range(Self.W3_SIZE):
-                dW3.append(host[i])
-        with db3_gpu.map_to_host() as host:
-            for i in range(Self.B3_SIZE):
-                db3.append(host[i])
-
-        return (dW1^, db1^, dW2^, db2^, dW3^, db3^)
-
-    fn update_adam(
-        mut self,
-        dW1: List[Scalar[Self.dtype]],
-        db1: List[Scalar[Self.dtype]],
-        dW2: List[Scalar[Self.dtype]],
-        db2: List[Scalar[Self.dtype]],
-        dW3: List[Scalar[Self.dtype]],
-        db3: List[Scalar[Self.dtype]],
-        lr: Scalar[Self.dtype] = 0.001,
-        beta1: Scalar[Self.dtype] = 0.9,
-        beta2: Scalar[Self.dtype] = 0.999,
-        eps: Scalar[Self.dtype] = 1e-8,
-    ):
-        """Adam optimizer update on CPU."""
-        self.adam_t += 1
-        var bias_correction1 = Scalar[Self.dtype](
-            1.0 - (Float64(beta1) ** self.adam_t)
-        )
-        var bias_correction2 = Scalar[Self.dtype](
-            1.0 - (Float64(beta2) ** self.adam_t)
-        )
-
-        # Update W1
-        for i in range(Self.W1_SIZE):
-            self.m_W1[i] = beta1 * self.m_W1[i] + (1 - beta1) * dW1[i]
-            self.v_W1[i] = beta2 * self.v_W1[i] + (1 - beta2) * dW1[i] * dW1[i]
-            var m_hat = self.m_W1[i] / bias_correction1
-            var v_hat = self.v_W1[i] / bias_correction2
-            self.W1[i] -= lr * m_hat / Scalar[Self.dtype](sqrt(Float64(v_hat)) + Float64(eps))
-
-        # Update b1
-        for i in range(Self.B1_SIZE):
-            self.m_b1[i] = beta1 * self.m_b1[i] + (1 - beta1) * db1[i]
-            self.v_b1[i] = beta2 * self.v_b1[i] + (1 - beta2) * db1[i] * db1[i]
-            var m_hat = self.m_b1[i] / bias_correction1
-            var v_hat = self.v_b1[i] / bias_correction2
-            self.b1[i] -= lr * m_hat / Scalar[Self.dtype](sqrt(Float64(v_hat)) + Float64(eps))
-
-        # Update W2
-        for i in range(Self.W2_SIZE):
-            self.m_W2[i] = beta1 * self.m_W2[i] + (1 - beta1) * dW2[i]
-            self.v_W2[i] = beta2 * self.v_W2[i] + (1 - beta2) * dW2[i] * dW2[i]
-            var m_hat = self.m_W2[i] / bias_correction1
-            var v_hat = self.v_W2[i] / bias_correction2
-            self.W2[i] -= lr * m_hat / Scalar[Self.dtype](sqrt(Float64(v_hat)) + Float64(eps))
-
-        # Update b2
-        for i in range(Self.B2_SIZE):
-            self.m_b2[i] = beta1 * self.m_b2[i] + (1 - beta1) * db2[i]
-            self.v_b2[i] = beta2 * self.v_b2[i] + (1 - beta2) * db2[i] * db2[i]
-            var m_hat = self.m_b2[i] / bias_correction1
-            var v_hat = self.v_b2[i] / bias_correction2
-            self.b2[i] -= lr * m_hat / Scalar[Self.dtype](sqrt(Float64(v_hat)) + Float64(eps))
-
-        # Update W3
-        for i in range(Self.W3_SIZE):
-            self.m_W3[i] = beta1 * self.m_W3[i] + (1 - beta1) * dW3[i]
-            self.v_W3[i] = beta2 * self.v_W3[i] + (1 - beta2) * dW3[i] * dW3[i]
-            var m_hat = self.m_W3[i] / bias_correction1
-            var v_hat = self.v_W3[i] / bias_correction2
-            self.W3[i] -= lr * m_hat / Scalar[Self.dtype](sqrt(Float64(v_hat)) + Float64(eps))
-
-        # Update b3
-        for i in range(Self.B3_SIZE):
-            self.m_b3[i] = beta1 * self.m_b3[i] + (1 - beta1) * db3[i]
-            self.v_b3[i] = beta2 * self.v_b3[i] + (1 - beta2) * db3[i] * db3[i]
-            var m_hat = self.m_b3[i] / bias_correction1
-            var v_hat = self.v_b3[i] / bias_correction2
-            self.b3[i] -= lr * m_hat / Scalar[Self.dtype](sqrt(Float64(v_hat)) + Float64(eps))
-
-    fn soft_update_from(mut self, source: Self, tau: Scalar[Self.dtype]):
-        """Soft update from source network: theta = tau * source + (1-tau) * theta."""
-        for i in range(Self.W1_SIZE):
-            self.W1[i] = tau * source.W1[i] + (1 - tau) * self.W1[i]
-        for i in range(Self.B1_SIZE):
-            self.b1[i] = tau * source.b1[i] + (1 - tau) * self.b1[i]
-        for i in range(Self.W2_SIZE):
-            self.W2[i] = tau * source.W2[i] + (1 - tau) * self.W2[i]
-        for i in range(Self.B2_SIZE):
-            self.b2[i] = tau * source.b2[i] + (1 - tau) * self.b2[i]
-        for i in range(Self.W3_SIZE):
-            self.W3[i] = tau * source.W3[i] + (1 - tau) * self.W3[i]
-        for i in range(Self.B3_SIZE):
-            self.b3[i] = tau * source.b3[i] + (1 - tau) * self.b3[i]
-
-    fn copy_from(mut self, source: Self):
-        """Hard copy weights from source network."""
-        self.soft_update_from(source, Scalar[Self.dtype](1.0))
 
     fn num_parameters(self) -> Int:
         """Total number of parameters."""
@@ -832,6 +212,16 @@ struct GPUDeepDQNAgent[
         double_dqn: If True, use Double DQN (recommended).
     """
 
+    # Sizes for GPU buffers
+    comptime W1_SIZE = Self.obs_dim * Self.hidden_dim
+    comptime B1_SIZE = Self.hidden_dim
+    comptime W2_SIZE = Self.hidden_dim * Self.hidden_dim
+    comptime B2_SIZE = Self.hidden_dim
+    comptime W3_SIZE = Self.hidden_dim * Self.num_actions
+    comptime B3_SIZE = Self.num_actions
+    comptime TILE: Int = 16
+    comptime TPB: Int = 64
+
     var q_network: GPUQNetwork[
         Self.obs_dim,
         Self.num_actions,
@@ -862,6 +252,7 @@ struct GPUDeepDQNAgent[
 
     var total_steps: Int
     var total_episodes: Int
+    var adam_t: Int
 
     fn __init__(
         out self,
@@ -891,8 +282,19 @@ struct GPUDeepDQNAgent[
             Self.dtype,
         ]()
 
-        # Copy Q-network weights to target network
-        self.target_network.copy_from(self.q_network)
+        # Copy Q-network weights to target network (CPU)
+        for i in range(Self.W1_SIZE):
+            self.target_network.W1[i] = self.q_network.W1[i]
+        for i in range(Self.B1_SIZE):
+            self.target_network.b1[i] = self.q_network.b1[i]
+        for i in range(Self.W2_SIZE):
+            self.target_network.W2[i] = self.q_network.W2[i]
+        for i in range(Self.B2_SIZE):
+            self.target_network.b2[i] = self.q_network.b2[i]
+        for i in range(Self.W3_SIZE):
+            self.target_network.W3[i] = self.q_network.W3[i]
+        for i in range(Self.B3_SIZE):
+            self.target_network.b3[i] = self.q_network.b3[i]
 
         self.buffer = ReplayBuffer[
             Self.buffer_capacity, Self.obs_dim, 1, DType.float64
@@ -906,6 +308,7 @@ struct GPUDeepDQNAgent[
         self.epsilon_decay = epsilon_decay
         self.total_steps = 0
         self.total_episodes = 0
+        self.adam_t = 0
 
     fn select_action(
         self,
@@ -943,138 +346,6 @@ struct GPUDeepDQNAgent[
         action_arr[0] = Scalar[DType.float64](action)
         self.buffer.add(obs, action_arr, reward, next_obs, done)
         self.total_steps += 1
-
-    fn train_step(mut self, ctx: DeviceContext) raises -> Scalar[Self.dtype]:
-        """Perform one training step."""
-        if not self.buffer.is_ready[Self.batch_size]():
-            return 0.0
-
-        # Sample batch from CPU buffer
-        var batch_obs = InlineArray[
-            Scalar[DType.float64], Self.batch_size * Self.obs_dim
-        ](fill=0)
-        var batch_actions = InlineArray[Scalar[DType.float64], Self.batch_size](
-            fill=0
-        )
-        var batch_rewards = InlineArray[Scalar[DType.float64], Self.batch_size](
-            fill=0
-        )
-        var batch_next_obs = InlineArray[
-            Scalar[DType.float64], Self.batch_size * Self.obs_dim
-        ](fill=0)
-        var batch_dones = InlineArray[Scalar[DType.float64], Self.batch_size](
-            fill=0
-        )
-
-        var batch_actions_arr = InlineArray[
-            Scalar[DType.float64], Self.batch_size
-        ](fill=0)
-        self.buffer.sample[Self.batch_size](
-            batch_obs,
-            batch_actions_arr,
-            batch_rewards,
-            batch_next_obs,
-            batch_dones,
-        )
-        for i in range(Self.batch_size):
-            batch_actions[i] = batch_actions_arr[i]
-
-        # Convert to dtype
-        var obs_list = List[Scalar[Self.dtype]](
-            capacity=Self.batch_size * Self.obs_dim
-        )
-        for i in range(Self.batch_size * Self.obs_dim):
-            obs_list.append(Scalar[Self.dtype](batch_obs[i]))
-
-        var next_obs_list = List[Scalar[Self.dtype]](
-            capacity=Self.batch_size * Self.obs_dim
-        )
-        for i in range(Self.batch_size * Self.obs_dim):
-            next_obs_list.append(Scalar[Self.dtype](batch_next_obs[i]))
-
-        # Forward pass for current Q-values (on GPU) with cached activations
-        var fwd_result = self.q_network.forward_gpu_with_cache(ctx, obs_list)
-        var current_q = fwd_result[0].copy()
-        var h1_cache = fwd_result[1].copy()
-        var h2_cache = fwd_result[2].copy()
-
-        # Forward pass for target Q-values (on GPU)
-        var target_q = self.target_network.forward_gpu(ctx, next_obs_list)
-
-        var online_next_q = List[Scalar[Self.dtype]]()
-
-        @parameter
-        if Self.double_dqn:
-            online_next_q = self.q_network.forward_gpu(ctx, next_obs_list)
-
-        # Compute max next Q-values
-        var max_next_q = InlineArray[Scalar[Self.dtype], Self.batch_size](
-            fill=0
-        )
-
-        @parameter
-        if Self.double_dqn:
-            for i in range(Self.batch_size):
-                var best_action = 0
-                var best_online_q = online_next_q[i * Self.num_actions]
-                for a in range(1, Self.num_actions):
-                    var q = online_next_q[i * Self.num_actions + a]
-                    if q > best_online_q:
-                        best_online_q = q
-                        best_action = a
-                max_next_q[i] = target_q[i * Self.num_actions + best_action]
-        else:
-            for i in range(Self.batch_size):
-                var max_q = target_q[i * Self.num_actions]
-                for a in range(1, Self.num_actions):
-                    var q = target_q[i * Self.num_actions + a]
-                    if q > max_q:
-                        max_q = q
-                max_next_q[i] = max_q
-
-        # Compute targets
-        var target_values = InlineArray[Scalar[Self.dtype], Self.batch_size](
-            fill=0
-        )
-        for i in range(Self.batch_size):
-            target_values[i] = (
-                Scalar[Self.dtype](batch_rewards[i])
-                + self.gamma
-                * (1.0 - Scalar[Self.dtype](batch_dones[i]))
-                * max_next_q[i]
-            )
-
-        # Compute loss and gradients
-        var loss: Scalar[Self.dtype] = 0.0
-        var dq = List[Scalar[Self.dtype]](
-            capacity=Self.batch_size * Self.num_actions
-        )
-        for i in range(Self.batch_size * Self.num_actions):
-            dq.append(Scalar[Self.dtype](0))
-
-        var batch_size_scalar = Scalar[Self.dtype](Self.batch_size)
-
-        for i in range(Self.batch_size):
-            var action_idx = Int(batch_actions[i])
-            var q_idx = i * Self.num_actions + action_idx
-            var td_error = current_q[q_idx] - target_values[i]
-            loss += td_error * td_error
-            dq[q_idx] = 2.0 * td_error / batch_size_scalar
-
-        loss /= batch_size_scalar
-
-        # Backward pass on GPU
-        var grads = self.q_network.backward_gpu(ctx, obs_list, h1_cache, h2_cache, dq)
-
-        # Update parameters on CPU
-        self.q_network.update_adam(
-            grads[0], grads[1], grads[2], grads[3], grads[4], grads[5], self.lr
-        )
-
-        # Soft update target network
-        self.target_network.soft_update_from(self.q_network, self.tau)
-
-        return loss
 
     fn decay_epsilon(mut self):
         """Decay exploration rate."""
@@ -1116,7 +387,11 @@ struct GPUDeepDQNAgent[
         print_every: Int = 10,
         environment_name: String = "Environment",
     ) raises -> TrainingMetrics:
-        """Train the GPU Deep DQN agent on a discrete action environment."""
+        """Train the GPU Deep DQN agent on a discrete action environment.
+
+        Key optimization: All GPU buffers are allocated ONCE here and reused
+        throughout training. Only batch data is transferred per step.
+        """
         var metrics = TrainingMetrics(
             algorithm_name="GPU Deep DQN",
             environment_name=environment_name,
@@ -1129,7 +404,142 @@ struct GPUDeepDQNAgent[
             self.print_info()
             print("-" * 60)
 
-        # Warmup phase
+        # =====================================================================
+        # ALLOCATE ALL GPU BUFFERS ONCE (this is the key optimization!)
+        # =====================================================================
+
+        comptime BATCH = Self.batch_size
+        comptime OBS = Self.obs_dim
+        comptime H1 = Self.hidden_dim
+        comptime H2 = Self.hidden_dim
+        comptime OUT = Self.num_actions
+
+        # Q-Network weights on GPU
+        var qnet_W1_gpu = ctx.enqueue_create_buffer[Self.dtype](Self.W1_SIZE)
+        var qnet_b1_gpu = ctx.enqueue_create_buffer[Self.dtype](Self.B1_SIZE)
+        var qnet_W2_gpu = ctx.enqueue_create_buffer[Self.dtype](Self.W2_SIZE)
+        var qnet_b2_gpu = ctx.enqueue_create_buffer[Self.dtype](Self.B2_SIZE)
+        var qnet_W3_gpu = ctx.enqueue_create_buffer[Self.dtype](Self.W3_SIZE)
+        var qnet_b3_gpu = ctx.enqueue_create_buffer[Self.dtype](Self.B3_SIZE)
+
+        # Target network weights on GPU
+        var target_W1_gpu = ctx.enqueue_create_buffer[Self.dtype](Self.W1_SIZE)
+        var target_b1_gpu = ctx.enqueue_create_buffer[Self.dtype](Self.B1_SIZE)
+        var target_W2_gpu = ctx.enqueue_create_buffer[Self.dtype](Self.W2_SIZE)
+        var target_b2_gpu = ctx.enqueue_create_buffer[Self.dtype](Self.B2_SIZE)
+        var target_W3_gpu = ctx.enqueue_create_buffer[Self.dtype](Self.W3_SIZE)
+        var target_b3_gpu = ctx.enqueue_create_buffer[Self.dtype](Self.B3_SIZE)
+
+        # Adam optimizer state on GPU (momentum and velocity for each weight)
+        var m_W1_gpu = ctx.enqueue_create_buffer[Self.dtype](Self.W1_SIZE)
+        var v_W1_gpu = ctx.enqueue_create_buffer[Self.dtype](Self.W1_SIZE)
+        var m_b1_gpu = ctx.enqueue_create_buffer[Self.dtype](Self.B1_SIZE)
+        var v_b1_gpu = ctx.enqueue_create_buffer[Self.dtype](Self.B1_SIZE)
+        var m_W2_gpu = ctx.enqueue_create_buffer[Self.dtype](Self.W2_SIZE)
+        var v_W2_gpu = ctx.enqueue_create_buffer[Self.dtype](Self.W2_SIZE)
+        var m_b2_gpu = ctx.enqueue_create_buffer[Self.dtype](Self.B2_SIZE)
+        var v_b2_gpu = ctx.enqueue_create_buffer[Self.dtype](Self.B2_SIZE)
+        var m_W3_gpu = ctx.enqueue_create_buffer[Self.dtype](Self.W3_SIZE)
+        var v_W3_gpu = ctx.enqueue_create_buffer[Self.dtype](Self.W3_SIZE)
+        var m_b3_gpu = ctx.enqueue_create_buffer[Self.dtype](Self.B3_SIZE)
+        var v_b3_gpu = ctx.enqueue_create_buffer[Self.dtype](Self.B3_SIZE)
+
+        # Batch data buffers (reused every training step)
+        var batch_obs_gpu = ctx.enqueue_create_buffer[Self.dtype](BATCH * OBS)
+        var batch_next_obs_gpu = ctx.enqueue_create_buffer[Self.dtype](BATCH * OBS)
+
+        # Activation caches (reused every training step)
+        var h1_gpu = ctx.enqueue_create_buffer[Self.dtype](BATCH * H1)
+        var h2_gpu = ctx.enqueue_create_buffer[Self.dtype](BATCH * H2)
+        var q_values_gpu = ctx.enqueue_create_buffer[Self.dtype](BATCH * OUT)
+
+        # Target network forward pass buffers
+        var target_h1_gpu = ctx.enqueue_create_buffer[Self.dtype](BATCH * H1)
+        var target_h2_gpu = ctx.enqueue_create_buffer[Self.dtype](BATCH * H2)
+        var target_q_gpu = ctx.enqueue_create_buffer[Self.dtype](BATCH * OUT)
+
+        # For Double DQN: online network next state Q-values
+        var online_next_h1_gpu = ctx.enqueue_create_buffer[Self.dtype](BATCH * H1)
+        var online_next_h2_gpu = ctx.enqueue_create_buffer[Self.dtype](BATCH * H2)
+        var online_next_q_gpu = ctx.enqueue_create_buffer[Self.dtype](BATCH * OUT)
+
+        # Gradient buffers (reused every training step)
+        var dW1_gpu = ctx.enqueue_create_buffer[Self.dtype](Self.W1_SIZE)
+        var db1_gpu = ctx.enqueue_create_buffer[Self.dtype](Self.B1_SIZE)
+        var dW2_gpu = ctx.enqueue_create_buffer[Self.dtype](Self.W2_SIZE)
+        var db2_gpu = ctx.enqueue_create_buffer[Self.dtype](Self.B2_SIZE)
+        var dW3_gpu = ctx.enqueue_create_buffer[Self.dtype](Self.W3_SIZE)
+        var db3_gpu = ctx.enqueue_create_buffer[Self.dtype](Self.B3_SIZE)
+        var dh1_gpu = ctx.enqueue_create_buffer[Self.dtype](BATCH * H1)
+        var dh2_gpu = ctx.enqueue_create_buffer[Self.dtype](BATCH * H2)
+        var dq_gpu = ctx.enqueue_create_buffer[Self.dtype](BATCH * OUT)
+
+        # =====================================================================
+        # COPY INITIAL WEIGHTS TO GPU (once!)
+        # =====================================================================
+
+        with qnet_W1_gpu.map_to_host() as host:
+            for i in range(Self.W1_SIZE):
+                host[i] = self.q_network.W1[i]
+        with qnet_b1_gpu.map_to_host() as host:
+            for i in range(Self.B1_SIZE):
+                host[i] = self.q_network.b1[i]
+        with qnet_W2_gpu.map_to_host() as host:
+            for i in range(Self.W2_SIZE):
+                host[i] = self.q_network.W2[i]
+        with qnet_b2_gpu.map_to_host() as host:
+            for i in range(Self.B2_SIZE):
+                host[i] = self.q_network.b2[i]
+        with qnet_W3_gpu.map_to_host() as host:
+            for i in range(Self.W3_SIZE):
+                host[i] = self.q_network.W3[i]
+        with qnet_b3_gpu.map_to_host() as host:
+            for i in range(Self.B3_SIZE):
+                host[i] = self.q_network.b3[i]
+
+        # Copy to target network (same initial weights)
+        with target_W1_gpu.map_to_host() as host:
+            for i in range(Self.W1_SIZE):
+                host[i] = self.q_network.W1[i]
+        with target_b1_gpu.map_to_host() as host:
+            for i in range(Self.B1_SIZE):
+                host[i] = self.q_network.b1[i]
+        with target_W2_gpu.map_to_host() as host:
+            for i in range(Self.W2_SIZE):
+                host[i] = self.q_network.W2[i]
+        with target_b2_gpu.map_to_host() as host:
+            for i in range(Self.B2_SIZE):
+                host[i] = self.q_network.b2[i]
+        with target_W3_gpu.map_to_host() as host:
+            for i in range(Self.W3_SIZE):
+                host[i] = self.q_network.W3[i]
+        with target_b3_gpu.map_to_host() as host:
+            for i in range(Self.B3_SIZE):
+                host[i] = self.q_network.b3[i]
+
+        # Initialize Adam state to zero
+        m_W1_gpu.enqueue_fill(0)
+        v_W1_gpu.enqueue_fill(0)
+        m_b1_gpu.enqueue_fill(0)
+        v_b1_gpu.enqueue_fill(0)
+        m_W2_gpu.enqueue_fill(0)
+        v_W2_gpu.enqueue_fill(0)
+        m_b2_gpu.enqueue_fill(0)
+        v_b2_gpu.enqueue_fill(0)
+        m_W3_gpu.enqueue_fill(0)
+        v_W3_gpu.enqueue_fill(0)
+        m_b3_gpu.enqueue_fill(0)
+        v_b3_gpu.enqueue_fill(0)
+
+        ctx.synchronize()
+
+        if verbose:
+            print("GPU buffers allocated and initialized")
+
+        # =====================================================================
+        # WARMUP PHASE
+        # =====================================================================
+
         if verbose:
             print(
                 "Warmup: collecting "
@@ -1166,7 +576,65 @@ struct GPUDeepDQNAgent[
             print("Warmup complete. Buffer size: " + String(self.buffer.len()))
             print("-" * 60)
 
-        # Training loop
+        # =====================================================================
+        # TRAINING LOOP
+        # =====================================================================
+
+        # Grid dimensions for kernels (computed once)
+        comptime blocks_y1 = (BATCH + Self.TILE - 1) // Self.TILE
+        comptime blocks_x1 = (H1 + Self.TILE - 1) // Self.TILE
+        comptime blocks_y2 = (BATCH + Self.TILE - 1) // Self.TILE
+        comptime blocks_x2 = (H2 + Self.TILE - 1) // Self.TILE
+        comptime blocks_y3 = (BATCH + Self.TILE - 1) // Self.TILE
+        comptime blocks_x3 = (OUT + Self.TILE - 1) // Self.TILE
+
+        # Backward pass grid dimensions
+        comptime blocks_dW3_y = (H2 + Self.TILE - 1) // Self.TILE
+        comptime blocks_dW3_x = (OUT + Self.TILE - 1) // Self.TILE
+        comptime blocks_dh2_y = (BATCH + Self.TILE - 1) // Self.TILE
+        comptime blocks_dh2_x = (H2 + Self.TILE - 1) // Self.TILE
+        comptime blocks_dW2_y = (H1 + Self.TILE - 1) // Self.TILE
+        comptime blocks_dW2_x = (H2 + Self.TILE - 1) // Self.TILE
+        comptime blocks_dh1_y = (BATCH + Self.TILE - 1) // Self.TILE
+        comptime blocks_dh1_x = (H1 + Self.TILE - 1) // Self.TILE
+        comptime blocks_dW1_y = (OBS + Self.TILE - 1) // Self.TILE
+        comptime blocks_dW1_x = (H1 + Self.TILE - 1) // Self.TILE
+
+        # Adam/soft update grid dimensions
+        comptime blocks_W1 = (Self.W1_SIZE + Self.TPB - 1) // Self.TPB
+        comptime blocks_b1 = (Self.B1_SIZE + Self.TPB - 1) // Self.TPB
+        comptime blocks_W2 = (Self.W2_SIZE + Self.TPB - 1) // Self.TPB
+        comptime blocks_b2 = (Self.B2_SIZE + Self.TPB - 1) // Self.TPB
+        comptime blocks_W3 = (Self.W3_SIZE + Self.TPB - 1) // Self.TPB
+        comptime blocks_b3 = (Self.B3_SIZE + Self.TPB - 1) // Self.TPB
+        comptime blocks_relu1 = (BATCH * H1 + Self.TPB - 1) // Self.TPB
+        comptime blocks_relu2 = (BATCH * H2 + Self.TPB - 1) // Self.TPB
+
+        # CPU buffers for batch sampling
+        var batch_obs_cpu = InlineArray[
+            Scalar[DType.float64], Self.batch_size * Self.obs_dim
+        ](fill=0)
+        var batch_actions_cpu = InlineArray[Scalar[DType.float64], Self.batch_size](
+            fill=0
+        )
+        var batch_rewards_cpu = InlineArray[Scalar[DType.float64], Self.batch_size](
+            fill=0
+        )
+        var batch_next_obs_cpu = InlineArray[
+            Scalar[DType.float64], Self.batch_size * Self.obs_dim
+        ](fill=0)
+        var batch_dones_cpu = InlineArray[Scalar[DType.float64], Self.batch_size](
+            fill=0
+        )
+        var batch_actions_arr = InlineArray[
+            Scalar[DType.float64], Self.batch_size
+        ](fill=0)
+
+        # CPU buffers for reading back Q-values
+        var current_q_cpu = List[Scalar[Self.dtype]](capacity=BATCH * OUT)
+        var target_q_cpu = List[Scalar[Self.dtype]](capacity=BATCH * OUT)
+        var online_next_q_cpu = List[Scalar[Self.dtype]](capacity=BATCH * OUT)
+
         for episode in range(num_episodes):
             var obs_list = env.reset_obs_list()
             var episode_reward: Float64 = 0.0
@@ -1190,12 +658,700 @@ struct GPUDeepDQNAgent[
                     obs, action, Scalar[DType.float64](reward), next_obs, done
                 )
 
-                if steps % train_every == 0:
-                    _ = self.train_step(ctx)
+                # Training step
+                if steps % train_every == 0 and self.buffer.is_ready[Self.batch_size]():
+                    # =========================================================
+                    # SAMPLE BATCH (CPU)
+                    # =========================================================
+                    self.buffer.sample[Self.batch_size](
+                        batch_obs_cpu,
+                        batch_actions_arr,
+                        batch_rewards_cpu,
+                        batch_next_obs_cpu,
+                        batch_dones_cpu,
+                    )
+                    for i in range(Self.batch_size):
+                        batch_actions_cpu[i] = batch_actions_arr[i]
+
+                    # =========================================================
+                    # COPY BATCH DATA TO GPU (only batch data, not weights!)
+                    # =========================================================
+                    with batch_obs_gpu.map_to_host() as host:
+                        for i in range(BATCH * OBS):
+                            host[i] = Scalar[Self.dtype](batch_obs_cpu[i])
+                    with batch_next_obs_gpu.map_to_host() as host:
+                        for i in range(BATCH * OBS):
+                            host[i] = Scalar[Self.dtype](batch_next_obs_cpu[i])
+
+                    # Initialize activation buffers to 0
+                    h1_gpu.enqueue_fill(0)
+                    h2_gpu.enqueue_fill(0)
+                    q_values_gpu.enqueue_fill(0)
+                    target_h1_gpu.enqueue_fill(0)
+                    target_h2_gpu.enqueue_fill(0)
+                    target_q_gpu.enqueue_fill(0)
+
+                    @parameter
+                    if Self.double_dqn:
+                        online_next_h1_gpu.enqueue_fill(0)
+                        online_next_h2_gpu.enqueue_fill(0)
+                        online_next_q_gpu.enqueue_fill(0)
+
+                    # =========================================================
+                    # GPU FORWARD PASS: Q-NETWORK ON CURRENT OBS
+                    # =========================================================
+                    var obs_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(BATCH, OBS), ImmutAnyOrigin
+                    ](batch_obs_gpu)
+                    var h1_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(BATCH, H1), MutAnyOrigin
+                    ](h1_gpu)
+                    var h2_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(BATCH, H2), MutAnyOrigin
+                    ](h2_gpu)
+                    var q_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(BATCH, OUT), MutAnyOrigin
+                    ](q_values_gpu)
+                    var qnet_W1_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(OBS, H1), ImmutAnyOrigin
+                    ](qnet_W1_gpu)
+                    var qnet_b1_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(H1), ImmutAnyOrigin
+                    ](qnet_b1_gpu)
+                    var qnet_W2_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(H1, H2), ImmutAnyOrigin
+                    ](qnet_W2_gpu)
+                    var qnet_b2_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(H2), ImmutAnyOrigin
+                    ](qnet_b2_gpu)
+                    var qnet_W3_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(H2, OUT), ImmutAnyOrigin
+                    ](qnet_W3_gpu)
+                    var qnet_b3_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(OUT), ImmutAnyOrigin
+                    ](qnet_b3_gpu)
+
+                    # Layer 1
+                    comptime fwd_kernel1 = linear_forward_relu_kernel[
+                        Self.dtype, BATCH, OBS, H1, Self.TILE
+                    ]
+                    ctx.enqueue_function_checked[fwd_kernel1, fwd_kernel1](
+                        h1_t, obs_t, qnet_W1_t, qnet_b1_t,
+                        grid_dim=(blocks_x1, blocks_y1),
+                        block_dim=(Self.TILE, Self.TILE),
+                    )
+
+                    # Layer 2
+                    var h1_immut = LayoutTensor[
+                        Self.dtype, Layout.row_major(BATCH, H1), ImmutAnyOrigin
+                    ](h1_gpu)
+                    comptime fwd_kernel2 = linear_forward_relu_kernel[
+                        Self.dtype, BATCH, H1, H2, Self.TILE
+                    ]
+                    ctx.enqueue_function_checked[fwd_kernel2, fwd_kernel2](
+                        h2_t, h1_immut, qnet_W2_t, qnet_b2_t,
+                        grid_dim=(blocks_x2, blocks_y2),
+                        block_dim=(Self.TILE, Self.TILE),
+                    )
+
+                    # Layer 3
+                    var h2_immut = LayoutTensor[
+                        Self.dtype, Layout.row_major(BATCH, H2), ImmutAnyOrigin
+                    ](h2_gpu)
+                    comptime fwd_kernel3 = linear_forward_kernel[
+                        Self.dtype, BATCH, H2, OUT, Self.TILE
+                    ]
+                    ctx.enqueue_function_checked[fwd_kernel3, fwd_kernel3](
+                        q_t, h2_immut, qnet_W3_t, qnet_b3_t,
+                        grid_dim=(blocks_x3, blocks_y3),
+                        block_dim=(Self.TILE, Self.TILE),
+                    )
+
+                    # =========================================================
+                    # GPU FORWARD PASS: TARGET NETWORK ON NEXT OBS
+                    # =========================================================
+                    var next_obs_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(BATCH, OBS), ImmutAnyOrigin
+                    ](batch_next_obs_gpu)
+                    var target_h1_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(BATCH, H1), MutAnyOrigin
+                    ](target_h1_gpu)
+                    var target_h2_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(BATCH, H2), MutAnyOrigin
+                    ](target_h2_gpu)
+                    var target_q_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(BATCH, OUT), MutAnyOrigin
+                    ](target_q_gpu)
+                    var target_W1_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(OBS, H1), ImmutAnyOrigin
+                    ](target_W1_gpu)
+                    var target_b1_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(H1), ImmutAnyOrigin
+                    ](target_b1_gpu)
+                    var target_W2_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(H1, H2), ImmutAnyOrigin
+                    ](target_W2_gpu)
+                    var target_b2_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(H2), ImmutAnyOrigin
+                    ](target_b2_gpu)
+                    var target_W3_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(H2, OUT), ImmutAnyOrigin
+                    ](target_W3_gpu)
+                    var target_b3_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(OUT), ImmutAnyOrigin
+                    ](target_b3_gpu)
+
+                    ctx.enqueue_function_checked[fwd_kernel1, fwd_kernel1](
+                        target_h1_t, next_obs_t, target_W1_t, target_b1_t,
+                        grid_dim=(blocks_x1, blocks_y1),
+                        block_dim=(Self.TILE, Self.TILE),
+                    )
+                    var target_h1_immut = LayoutTensor[
+                        Self.dtype, Layout.row_major(BATCH, H1), ImmutAnyOrigin
+                    ](target_h1_gpu)
+                    ctx.enqueue_function_checked[fwd_kernel2, fwd_kernel2](
+                        target_h2_t, target_h1_immut, target_W2_t, target_b2_t,
+                        grid_dim=(blocks_x2, blocks_y2),
+                        block_dim=(Self.TILE, Self.TILE),
+                    )
+                    var target_h2_immut = LayoutTensor[
+                        Self.dtype, Layout.row_major(BATCH, H2), ImmutAnyOrigin
+                    ](target_h2_gpu)
+                    ctx.enqueue_function_checked[fwd_kernel3, fwd_kernel3](
+                        target_q_t, target_h2_immut, target_W3_t, target_b3_t,
+                        grid_dim=(blocks_x3, blocks_y3),
+                        block_dim=(Self.TILE, Self.TILE),
+                    )
+
+                    # =========================================================
+                    # GPU FORWARD PASS: ONLINE NETWORK ON NEXT OBS (Double DQN)
+                    # =========================================================
+                    @parameter
+                    if Self.double_dqn:
+                        var online_next_h1_t = LayoutTensor[
+                            Self.dtype, Layout.row_major(BATCH, H1), MutAnyOrigin
+                        ](online_next_h1_gpu)
+                        var online_next_h2_t = LayoutTensor[
+                            Self.dtype, Layout.row_major(BATCH, H2), MutAnyOrigin
+                        ](online_next_h2_gpu)
+                        var online_next_q_t = LayoutTensor[
+                            Self.dtype, Layout.row_major(BATCH, OUT), MutAnyOrigin
+                        ](online_next_q_gpu)
+
+                        ctx.enqueue_function_checked[fwd_kernel1, fwd_kernel1](
+                            online_next_h1_t, next_obs_t, qnet_W1_t, qnet_b1_t,
+                            grid_dim=(blocks_x1, blocks_y1),
+                            block_dim=(Self.TILE, Self.TILE),
+                        )
+                        var online_next_h1_immut = LayoutTensor[
+                            Self.dtype, Layout.row_major(BATCH, H1), ImmutAnyOrigin
+                        ](online_next_h1_gpu)
+                        ctx.enqueue_function_checked[fwd_kernel2, fwd_kernel2](
+                            online_next_h2_t, online_next_h1_immut, qnet_W2_t, qnet_b2_t,
+                            grid_dim=(blocks_x2, blocks_y2),
+                            block_dim=(Self.TILE, Self.TILE),
+                        )
+                        var online_next_h2_immut = LayoutTensor[
+                            Self.dtype, Layout.row_major(BATCH, H2), ImmutAnyOrigin
+                        ](online_next_h2_gpu)
+                        ctx.enqueue_function_checked[fwd_kernel3, fwd_kernel3](
+                            online_next_q_t, online_next_h2_immut, qnet_W3_t, qnet_b3_t,
+                            grid_dim=(blocks_x3, blocks_y3),
+                            block_dim=(Self.TILE, Self.TILE),
+                        )
+
+                    ctx.synchronize()
+
+                    # =========================================================
+                    # READ Q-VALUES BACK TO CPU FOR LOSS COMPUTATION
+                    # =========================================================
+                    current_q_cpu.clear()
+                    with q_values_gpu.map_to_host() as host:
+                        for i in range(BATCH * OUT):
+                            current_q_cpu.append(host[i])
+
+                    target_q_cpu.clear()
+                    with target_q_gpu.map_to_host() as host:
+                        for i in range(BATCH * OUT):
+                            target_q_cpu.append(host[i])
+
+                    @parameter
+                    if Self.double_dqn:
+                        online_next_q_cpu.clear()
+                        with online_next_q_gpu.map_to_host() as host:
+                            for i in range(BATCH * OUT):
+                                online_next_q_cpu.append(host[i])
+
+                    # =========================================================
+                    # COMPUTE TARGETS AND GRADIENTS (CPU)
+                    # =========================================================
+                    var max_next_q = InlineArray[Scalar[Self.dtype], Self.batch_size](fill=0)
+
+                    @parameter
+                    if Self.double_dqn:
+                        for i in range(Self.batch_size):
+                            var best_action = 0
+                            var best_online_q = online_next_q_cpu[i * Self.num_actions]
+                            for a in range(1, Self.num_actions):
+                                var q = online_next_q_cpu[i * Self.num_actions + a]
+                                if q > best_online_q:
+                                    best_online_q = q
+                                    best_action = a
+                            max_next_q[i] = target_q_cpu[i * Self.num_actions + best_action]
+                    else:
+                        for i in range(Self.batch_size):
+                            var max_q = target_q_cpu[i * Self.num_actions]
+                            for a in range(1, Self.num_actions):
+                                var q = target_q_cpu[i * Self.num_actions + a]
+                                if q > max_q:
+                                    max_q = q
+                            max_next_q[i] = max_q
+
+                    # Compute target values
+                    var target_values = InlineArray[Scalar[Self.dtype], Self.batch_size](fill=0)
+                    for i in range(Self.batch_size):
+                        target_values[i] = (
+                            Scalar[Self.dtype](batch_rewards_cpu[i])
+                            + self.gamma
+                            * (1.0 - Scalar[Self.dtype](batch_dones_cpu[i]))
+                            * max_next_q[i]
+                        )
+
+                    # Compute loss gradients
+                    var dq_cpu = List[Scalar[Self.dtype]](capacity=BATCH * OUT)
+                    for i in range(BATCH * OUT):
+                        dq_cpu.append(Scalar[Self.dtype](0))
+
+                    var batch_size_scalar = Scalar[Self.dtype](Self.batch_size)
+                    for i in range(Self.batch_size):
+                        var action_idx = Int(batch_actions_cpu[i])
+                        var q_idx = i * Self.num_actions + action_idx
+                        var td_error = current_q_cpu[q_idx] - target_values[i]
+                        dq_cpu[q_idx] = 2.0 * td_error / batch_size_scalar
+
+                    # =========================================================
+                    # COPY GRADIENTS TO GPU
+                    # =========================================================
+                    with dq_gpu.map_to_host() as host:
+                        for i in range(BATCH * OUT):
+                            host[i] = dq_cpu[i]
+
+                    dW1_gpu.enqueue_fill(0)
+                    db1_gpu.enqueue_fill(0)
+                    dW2_gpu.enqueue_fill(0)
+                    db2_gpu.enqueue_fill(0)
+                    dW3_gpu.enqueue_fill(0)
+                    db3_gpu.enqueue_fill(0)
+                    dh1_gpu.enqueue_fill(0)
+                    dh2_gpu.enqueue_fill(0)
+
+                    # =========================================================
+                    # GPU BACKWARD PASS
+                    # =========================================================
+                    var dq_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(BATCH, OUT), ImmutAnyOrigin
+                    ](dq_gpu)
+                    var dW3_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(H2, OUT), MutAnyOrigin
+                    ](dW3_gpu)
+                    var db3_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(OUT), MutAnyOrigin
+                    ](db3_gpu)
+                    var dW2_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(H1, H2), MutAnyOrigin
+                    ](dW2_gpu)
+                    var db2_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(H2), MutAnyOrigin
+                    ](db2_gpu)
+                    var dW1_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(OBS, H1), MutAnyOrigin
+                    ](dW1_gpu)
+                    var db1_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(H1), MutAnyOrigin
+                    ](db1_gpu)
+                    var dh1_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(BATCH, H1), MutAnyOrigin
+                    ](dh1_gpu)
+                    var dh2_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(BATCH, H2), MutAnyOrigin
+                    ](dh2_gpu)
+
+                    # Layer 3 backward: dW3 = h2.T @ dq
+                    comptime kernel_dW3 = linear_backward_dW_kernel[
+                        Self.dtype, BATCH, H2, OUT, Self.TILE
+                    ]
+                    ctx.enqueue_function_checked[kernel_dW3, kernel_dW3](
+                        dW3_t, h2_immut, dq_t,
+                        grid_dim=(blocks_dW3_x, blocks_dW3_y),
+                        block_dim=(Self.TILE, Self.TILE),
+                    )
+
+                    # db3 = sum(dq, axis=0)
+                    comptime kernel_db3 = linear_backward_db_kernel[
+                        Self.dtype, BATCH, OUT, Self.TPB
+                    ]
+                    ctx.enqueue_function_checked[kernel_db3, kernel_db3](
+                        db3_t, dq_t,
+                        grid_dim=(OUT,),
+                        block_dim=(Self.TPB,),
+                    )
+
+                    # dh2_pre = dq @ W3.T
+                    comptime kernel_dx3 = linear_backward_dx_kernel[
+                        Self.dtype, BATCH, H2, OUT, Self.TILE
+                    ]
+                    ctx.enqueue_function_checked[kernel_dx3, kernel_dx3](
+                        dh2_t, dq_t, qnet_W3_t,
+                        grid_dim=(blocks_dh2_x, blocks_dh2_y),
+                        block_dim=(Self.TILE, Self.TILE),
+                    )
+
+                    # Apply ReLU gradient: dh2 = dh2_pre * (h2 > 0)
+                    var dh2_flat = LayoutTensor[
+                        Self.dtype, Layout.row_major(BATCH * H2), MutAnyOrigin
+                    ](dh2_gpu)
+                    var dh2_in_flat = LayoutTensor[
+                        Self.dtype, Layout.row_major(BATCH * H2), ImmutAnyOrigin
+                    ](dh2_gpu)
+                    var h2_flat = LayoutTensor[
+                        Self.dtype, Layout.row_major(BATCH * H2), ImmutAnyOrigin
+                    ](h2_gpu)
+                    comptime kernel_relu2 = relu_grad_mul_kernel[
+                        Self.dtype, BATCH * H2, Self.TPB
+                    ]
+                    ctx.enqueue_function_checked[kernel_relu2, kernel_relu2](
+                        dh2_flat, dh2_in_flat, h2_flat,
+                        grid_dim=(blocks_relu2,),
+                        block_dim=(Self.TPB,),
+                    )
+
+                    # Layer 2 backward: dW2 = h1.T @ dh2
+                    var dh2_immut = LayoutTensor[
+                        Self.dtype, Layout.row_major(BATCH, H2), ImmutAnyOrigin
+                    ](dh2_gpu)
+                    comptime kernel_dW2 = linear_backward_dW_kernel[
+                        Self.dtype, BATCH, H1, H2, Self.TILE
+                    ]
+                    ctx.enqueue_function_checked[kernel_dW2, kernel_dW2](
+                        dW2_t, h1_immut, dh2_immut,
+                        grid_dim=(blocks_dW2_x, blocks_dW2_y),
+                        block_dim=(Self.TILE, Self.TILE),
+                    )
+
+                    # db2 = sum(dh2, axis=0)
+                    comptime kernel_db2 = linear_backward_db_kernel[
+                        Self.dtype, BATCH, H2, Self.TPB
+                    ]
+                    ctx.enqueue_function_checked[kernel_db2, kernel_db2](
+                        db2_t, dh2_immut,
+                        grid_dim=(H2,),
+                        block_dim=(Self.TPB,),
+                    )
+
+                    # dh1_pre = dh2 @ W2.T
+                    comptime kernel_dx2 = linear_backward_dx_kernel[
+                        Self.dtype, BATCH, H1, H2, Self.TILE
+                    ]
+                    ctx.enqueue_function_checked[kernel_dx2, kernel_dx2](
+                        dh1_t, dh2_immut, qnet_W2_t,
+                        grid_dim=(blocks_dh1_x, blocks_dh1_y),
+                        block_dim=(Self.TILE, Self.TILE),
+                    )
+
+                    # Apply ReLU gradient: dh1 = dh1_pre * (h1 > 0)
+                    var dh1_flat = LayoutTensor[
+                        Self.dtype, Layout.row_major(BATCH * H1), MutAnyOrigin
+                    ](dh1_gpu)
+                    var dh1_in_flat = LayoutTensor[
+                        Self.dtype, Layout.row_major(BATCH * H1), ImmutAnyOrigin
+                    ](dh1_gpu)
+                    var h1_flat = LayoutTensor[
+                        Self.dtype, Layout.row_major(BATCH * H1), ImmutAnyOrigin
+                    ](h1_gpu)
+                    comptime kernel_relu1 = relu_grad_mul_kernel[
+                        Self.dtype, BATCH * H1, Self.TPB
+                    ]
+                    ctx.enqueue_function_checked[kernel_relu1, kernel_relu1](
+                        dh1_flat, dh1_in_flat, h1_flat,
+                        grid_dim=(blocks_relu1,),
+                        block_dim=(Self.TPB,),
+                    )
+
+                    # Layer 1 backward: dW1 = obs.T @ dh1
+                    var dh1_immut = LayoutTensor[
+                        Self.dtype, Layout.row_major(BATCH, H1), ImmutAnyOrigin
+                    ](dh1_gpu)
+                    comptime kernel_dW1 = linear_backward_dW_kernel[
+                        Self.dtype, BATCH, OBS, H1, Self.TILE
+                    ]
+                    ctx.enqueue_function_checked[kernel_dW1, kernel_dW1](
+                        dW1_t, obs_t, dh1_immut,
+                        grid_dim=(blocks_dW1_x, blocks_dW1_y),
+                        block_dim=(Self.TILE, Self.TILE),
+                    )
+
+                    # db1 = sum(dh1, axis=0)
+                    comptime kernel_db1 = linear_backward_db_kernel[
+                        Self.dtype, BATCH, H1, Self.TPB
+                    ]
+                    ctx.enqueue_function_checked[kernel_db1, kernel_db1](
+                        db1_t, dh1_immut,
+                        grid_dim=(H1,),
+                        block_dim=(Self.TPB,),
+                    )
+
+                    # =========================================================
+                    # GPU ADAM UPDATE
+                    # =========================================================
+                    self.adam_t += 1
+                    var bias_correction1 = Scalar[Self.dtype](
+                        1.0 - (Float64(0.9) ** self.adam_t)
+                    )
+                    var bias_correction2 = Scalar[Self.dtype](
+                        1.0 - (Float64(0.999) ** self.adam_t)
+                    )
+                    var beta1 = Scalar[Self.dtype](0.9)
+                    var beta2 = Scalar[Self.dtype](0.999)
+                    var eps = Scalar[Self.dtype](1e-8)
+
+                    # Create mutable weight tensors for Adam update
+                    var qnet_W1_mut = LayoutTensor[
+                        Self.dtype, Layout.row_major(Self.W1_SIZE), MutAnyOrigin
+                    ](qnet_W1_gpu)
+                    var qnet_b1_mut = LayoutTensor[
+                        Self.dtype, Layout.row_major(Self.B1_SIZE), MutAnyOrigin
+                    ](qnet_b1_gpu)
+                    var qnet_W2_mut = LayoutTensor[
+                        Self.dtype, Layout.row_major(Self.W2_SIZE), MutAnyOrigin
+                    ](qnet_W2_gpu)
+                    var qnet_b2_mut = LayoutTensor[
+                        Self.dtype, Layout.row_major(Self.B2_SIZE), MutAnyOrigin
+                    ](qnet_b2_gpu)
+                    var qnet_W3_mut = LayoutTensor[
+                        Self.dtype, Layout.row_major(Self.W3_SIZE), MutAnyOrigin
+                    ](qnet_W3_gpu)
+                    var qnet_b3_mut = LayoutTensor[
+                        Self.dtype, Layout.row_major(Self.B3_SIZE), MutAnyOrigin
+                    ](qnet_b3_gpu)
+
+                    var dW1_immut = LayoutTensor[
+                        Self.dtype, Layout.row_major(Self.W1_SIZE), ImmutAnyOrigin
+                    ](dW1_gpu)
+                    var db1_immut = LayoutTensor[
+                        Self.dtype, Layout.row_major(Self.B1_SIZE), ImmutAnyOrigin
+                    ](db1_gpu)
+                    var dW2_immut = LayoutTensor[
+                        Self.dtype, Layout.row_major(Self.W2_SIZE), ImmutAnyOrigin
+                    ](dW2_gpu)
+                    var db2_immut = LayoutTensor[
+                        Self.dtype, Layout.row_major(Self.B2_SIZE), ImmutAnyOrigin
+                    ](db2_gpu)
+                    var dW3_immut = LayoutTensor[
+                        Self.dtype, Layout.row_major(Self.W3_SIZE), ImmutAnyOrigin
+                    ](dW3_gpu)
+                    var db3_immut = LayoutTensor[
+                        Self.dtype, Layout.row_major(Self.B3_SIZE), ImmutAnyOrigin
+                    ](db3_gpu)
+
+                    var m_W1_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(Self.W1_SIZE), MutAnyOrigin
+                    ](m_W1_gpu)
+                    var v_W1_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(Self.W1_SIZE), MutAnyOrigin
+                    ](v_W1_gpu)
+                    var m_b1_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(Self.B1_SIZE), MutAnyOrigin
+                    ](m_b1_gpu)
+                    var v_b1_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(Self.B1_SIZE), MutAnyOrigin
+                    ](v_b1_gpu)
+                    var m_W2_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(Self.W2_SIZE), MutAnyOrigin
+                    ](m_W2_gpu)
+                    var v_W2_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(Self.W2_SIZE), MutAnyOrigin
+                    ](v_W2_gpu)
+                    var m_b2_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(Self.B2_SIZE), MutAnyOrigin
+                    ](m_b2_gpu)
+                    var v_b2_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(Self.B2_SIZE), MutAnyOrigin
+                    ](v_b2_gpu)
+                    var m_W3_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(Self.W3_SIZE), MutAnyOrigin
+                    ](m_W3_gpu)
+                    var v_W3_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(Self.W3_SIZE), MutAnyOrigin
+                    ](v_W3_gpu)
+                    var m_b3_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(Self.B3_SIZE), MutAnyOrigin
+                    ](m_b3_gpu)
+                    var v_b3_t = LayoutTensor[
+                        Self.dtype, Layout.row_major(Self.B3_SIZE), MutAnyOrigin
+                    ](v_b3_gpu)
+
+                    # Adam update W1
+                    comptime adam_W1 = adam_update_kernel[Self.dtype, Self.W1_SIZE, Self.TPB]
+                    ctx.enqueue_function_checked[adam_W1, adam_W1](
+                        qnet_W1_mut, dW1_immut, m_W1_t, v_W1_t,
+                        self.lr, beta1, beta2, eps, bias_correction1, bias_correction2,
+                        grid_dim=(blocks_W1,),
+                        block_dim=(Self.TPB,),
+                    )
+
+                    # Adam update b1
+                    comptime adam_b1 = adam_update_kernel[Self.dtype, Self.B1_SIZE, Self.TPB]
+                    ctx.enqueue_function_checked[adam_b1, adam_b1](
+                        qnet_b1_mut, db1_immut, m_b1_t, v_b1_t,
+                        self.lr, beta1, beta2, eps, bias_correction1, bias_correction2,
+                        grid_dim=(blocks_b1,),
+                        block_dim=(Self.TPB,),
+                    )
+
+                    # Adam update W2
+                    comptime adam_W2 = adam_update_kernel[Self.dtype, Self.W2_SIZE, Self.TPB]
+                    ctx.enqueue_function_checked[adam_W2, adam_W2](
+                        qnet_W2_mut, dW2_immut, m_W2_t, v_W2_t,
+                        self.lr, beta1, beta2, eps, bias_correction1, bias_correction2,
+                        grid_dim=(blocks_W2,),
+                        block_dim=(Self.TPB,),
+                    )
+
+                    # Adam update b2
+                    comptime adam_b2 = adam_update_kernel[Self.dtype, Self.B2_SIZE, Self.TPB]
+                    ctx.enqueue_function_checked[adam_b2, adam_b2](
+                        qnet_b2_mut, db2_immut, m_b2_t, v_b2_t,
+                        self.lr, beta1, beta2, eps, bias_correction1, bias_correction2,
+                        grid_dim=(blocks_b2,),
+                        block_dim=(Self.TPB,),
+                    )
+
+                    # Adam update W3
+                    comptime adam_W3 = adam_update_kernel[Self.dtype, Self.W3_SIZE, Self.TPB]
+                    ctx.enqueue_function_checked[adam_W3, adam_W3](
+                        qnet_W3_mut, dW3_immut, m_W3_t, v_W3_t,
+                        self.lr, beta1, beta2, eps, bias_correction1, bias_correction2,
+                        grid_dim=(blocks_W3,),
+                        block_dim=(Self.TPB,),
+                    )
+
+                    # Adam update b3
+                    comptime adam_b3 = adam_update_kernel[Self.dtype, Self.B3_SIZE, Self.TPB]
+                    ctx.enqueue_function_checked[adam_b3, adam_b3](
+                        qnet_b3_mut, db3_immut, m_b3_t, v_b3_t,
+                        self.lr, beta1, beta2, eps, bias_correction1, bias_correction2,
+                        grid_dim=(blocks_b3,),
+                        block_dim=(Self.TPB,),
+                    )
+
+                    # =========================================================
+                    # GPU SOFT UPDATE TARGET NETWORK
+                    # =========================================================
+                    var qnet_W1_src = LayoutTensor[
+                        Self.dtype, Layout.row_major(Self.W1_SIZE), ImmutAnyOrigin
+                    ](qnet_W1_gpu)
+                    var qnet_b1_src = LayoutTensor[
+                        Self.dtype, Layout.row_major(Self.B1_SIZE), ImmutAnyOrigin
+                    ](qnet_b1_gpu)
+                    var qnet_W2_src = LayoutTensor[
+                        Self.dtype, Layout.row_major(Self.W2_SIZE), ImmutAnyOrigin
+                    ](qnet_W2_gpu)
+                    var qnet_b2_src = LayoutTensor[
+                        Self.dtype, Layout.row_major(Self.B2_SIZE), ImmutAnyOrigin
+                    ](qnet_b2_gpu)
+                    var qnet_W3_src = LayoutTensor[
+                        Self.dtype, Layout.row_major(Self.W3_SIZE), ImmutAnyOrigin
+                    ](qnet_W3_gpu)
+                    var qnet_b3_src = LayoutTensor[
+                        Self.dtype, Layout.row_major(Self.B3_SIZE), ImmutAnyOrigin
+                    ](qnet_b3_gpu)
+
+                    var target_W1_mut = LayoutTensor[
+                        Self.dtype, Layout.row_major(Self.W1_SIZE), MutAnyOrigin
+                    ](target_W1_gpu)
+                    var target_b1_mut = LayoutTensor[
+                        Self.dtype, Layout.row_major(Self.B1_SIZE), MutAnyOrigin
+                    ](target_b1_gpu)
+                    var target_W2_mut = LayoutTensor[
+                        Self.dtype, Layout.row_major(Self.W2_SIZE), MutAnyOrigin
+                    ](target_W2_gpu)
+                    var target_b2_mut = LayoutTensor[
+                        Self.dtype, Layout.row_major(Self.B2_SIZE), MutAnyOrigin
+                    ](target_b2_gpu)
+                    var target_W3_mut = LayoutTensor[
+                        Self.dtype, Layout.row_major(Self.W3_SIZE), MutAnyOrigin
+                    ](target_W3_gpu)
+                    var target_b3_mut = LayoutTensor[
+                        Self.dtype, Layout.row_major(Self.B3_SIZE), MutAnyOrigin
+                    ](target_b3_gpu)
+
+                    comptime soft_W1 = soft_update_kernel[Self.dtype, Self.W1_SIZE, Self.TPB]
+                    ctx.enqueue_function_checked[soft_W1, soft_W1](
+                        target_W1_mut, qnet_W1_src, self.tau,
+                        grid_dim=(blocks_W1,),
+                        block_dim=(Self.TPB,),
+                    )
+
+                    comptime soft_b1 = soft_update_kernel[Self.dtype, Self.B1_SIZE, Self.TPB]
+                    ctx.enqueue_function_checked[soft_b1, soft_b1](
+                        target_b1_mut, qnet_b1_src, self.tau,
+                        grid_dim=(blocks_b1,),
+                        block_dim=(Self.TPB,),
+                    )
+
+                    comptime soft_W2 = soft_update_kernel[Self.dtype, Self.W2_SIZE, Self.TPB]
+                    ctx.enqueue_function_checked[soft_W2, soft_W2](
+                        target_W2_mut, qnet_W2_src, self.tau,
+                        grid_dim=(blocks_W2,),
+                        block_dim=(Self.TPB,),
+                    )
+
+                    comptime soft_b2 = soft_update_kernel[Self.dtype, Self.B2_SIZE, Self.TPB]
+                    ctx.enqueue_function_checked[soft_b2, soft_b2](
+                        target_b2_mut, qnet_b2_src, self.tau,
+                        grid_dim=(blocks_b2,),
+                        block_dim=(Self.TPB,),
+                    )
+
+                    comptime soft_W3 = soft_update_kernel[Self.dtype, Self.W3_SIZE, Self.TPB]
+                    ctx.enqueue_function_checked[soft_W3, soft_W3](
+                        target_W3_mut, qnet_W3_src, self.tau,
+                        grid_dim=(blocks_W3,),
+                        block_dim=(Self.TPB,),
+                    )
+
+                    comptime soft_b3 = soft_update_kernel[Self.dtype, Self.B3_SIZE, Self.TPB]
+                    ctx.enqueue_function_checked[soft_b3, soft_b3](
+                        target_b3_mut, qnet_b3_src, self.tau,
+                        grid_dim=(blocks_b3,),
+                        block_dim=(Self.TPB,),
+                    )
 
                 episode_reward += reward
                 obs_list = env.get_obs_list()
                 steps += 1
+
+                # Periodically sync weights back to CPU for action selection
+                if steps % 100 == 0:
+                    ctx.synchronize()
+                    with qnet_W1_gpu.map_to_host() as host:
+                        for i in range(Self.W1_SIZE):
+                            self.q_network.W1[i] = host[i]
+                    with qnet_b1_gpu.map_to_host() as host:
+                        for i in range(Self.B1_SIZE):
+                            self.q_network.b1[i] = host[i]
+                    with qnet_W2_gpu.map_to_host() as host:
+                        for i in range(Self.W2_SIZE):
+                            self.q_network.W2[i] = host[i]
+                    with qnet_b2_gpu.map_to_host() as host:
+                        for i in range(Self.B2_SIZE):
+                            self.q_network.b2[i] = host[i]
+                    with qnet_W3_gpu.map_to_host() as host:
+                        for i in range(Self.W3_SIZE):
+                            self.q_network.W3[i] = host[i]
+                    with qnet_b3_gpu.map_to_host() as host:
+                        for i in range(Self.B3_SIZE):
+                            self.q_network.b3[i] = host[i]
 
             metrics.log_episode(
                 episode, episode_reward, steps, Float64(self.epsilon)
@@ -1221,6 +1377,29 @@ struct GPUDeepDQNAgent[
                     + " | Epsilon: "
                     + String(self.epsilon)[:5]
                 )
+
+        # =====================================================================
+        # COPY FINAL WEIGHTS BACK TO CPU
+        # =====================================================================
+        ctx.synchronize()
+        with qnet_W1_gpu.map_to_host() as host:
+            for i in range(Self.W1_SIZE):
+                self.q_network.W1[i] = host[i]
+        with qnet_b1_gpu.map_to_host() as host:
+            for i in range(Self.B1_SIZE):
+                self.q_network.b1[i] = host[i]
+        with qnet_W2_gpu.map_to_host() as host:
+            for i in range(Self.W2_SIZE):
+                self.q_network.W2[i] = host[i]
+        with qnet_b2_gpu.map_to_host() as host:
+            for i in range(Self.B2_SIZE):
+                self.q_network.b2[i] = host[i]
+        with qnet_W3_gpu.map_to_host() as host:
+            for i in range(Self.W3_SIZE):
+                self.q_network.W3[i] = host[i]
+        with qnet_b3_gpu.map_to_host() as host:
+            for i in range(Self.B3_SIZE):
+                self.q_network.b3[i] = host[i]
 
         if verbose:
             print("-" * 60)

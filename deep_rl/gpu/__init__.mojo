@@ -118,3 +118,5 @@ from .actor_critic import (
     squash_action_kernel,
     squash_log_prob_correction_kernel,
 )
+
+from .random import xorshift32, gpu_random_uniform, gpu_random_range

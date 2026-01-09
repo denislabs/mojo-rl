@@ -135,7 +135,7 @@ trait ContinuousActionEnv(Env):
 # ============================================================================
 
 
-trait DiscreteEnv(DiscreteStateEnv, DiscreteActionEnv):
+trait DiscreteEnv(DiscreteActionEnv, DiscreteStateEnv):
     """Environment with discrete states and actions suitable for tabular RL.
 
     Combines discrete state and discrete action spaces.
@@ -148,10 +148,6 @@ trait DiscreteEnv(DiscreteStateEnv, DiscreteActionEnv):
     """
 
     pass
-
-
-# Alias for backward compatibility / alternative naming
-comptime TabularEnv = DiscreteEnv
 
 
 trait BoxDiscreteActionEnv(ContinuousStateEnv, DiscreteActionEnv):
@@ -175,7 +171,7 @@ trait BoxDiscreteActionEnv(ContinuousStateEnv, DiscreteActionEnv):
         ...
 
 
-trait BoxContinuousActionEnv(ContinuousStateEnv, ContinuousActionEnv):
+trait BoxContinuousActionEnv(ContinuousActionEnv, ContinuousStateEnv):
     """Environment with continuous observations and continuous actions.
 
     Use with continuous control algorithms:
@@ -196,4 +192,60 @@ trait BoxContinuousActionEnv(ContinuousStateEnv, ContinuousActionEnv):
         Note: For multi-dimensional action spaces, environments should
         provide additional methods accepting action vectors.
         """
+        ...
+
+
+# ============================================================================
+# GPU Environment Trait for Composable GPU RL. (Experimental)
+# ============================================================================
+
+
+trait GPUEnvDims:
+    """Trait for GPU-compatible environment dimensions.
+
+    This trait defines only the compile-time constants. The actual
+    step/reset/get_obs methods are accessed via structural typing
+    since their signatures depend on these dimensions.
+
+    Implementing structs must provide:
+    - Compile-time constants: OBS_DIM, NUM_ACTIONS, STATE_SIZE
+    - Static methods (not part of trait): step, reset, get_obs
+    """
+
+    # Compile-time constants that parameterize the kernel
+    comptime OBS_DIM: Int
+    comptime NUM_ACTIONS: Int
+    comptime STATE_SIZE: Int
+
+    @staticmethod
+    fn step[
+        dtype: DType
+    ](
+        mut state: InlineArray[Scalar[dtype], Self.STATE_SIZE],
+        action: Int,
+        rng: Scalar[DType.uint32],
+    ) -> Tuple[Scalar[dtype], Bool, Scalar[DType.uint32]]:
+        """Execute one step of the environment."""
+        ...
+
+    @staticmethod
+    fn reset[
+        dtype: DType
+    ](
+        mut state: InlineArray[Scalar[dtype], Self.STATE_SIZE],
+        rng: Scalar[DType.uint32],
+    ) -> Scalar[DType.uint32]:
+        """Reset the environment to initial state with small random perturbation.
+        """
+        ...
+
+    @staticmethod
+    fn get_obs[
+        dtype: DType
+    ](
+        state: InlineArray[Scalar[dtype], Self.STATE_SIZE],
+    ) -> InlineArray[
+        Scalar[dtype], Self.STATE_SIZE
+    ]:
+        """Get observation from state (identity for envs where state == obs)."""
         ...

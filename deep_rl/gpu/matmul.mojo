@@ -107,7 +107,7 @@ fn tiled_matmul_kernel[
         # Compute partial product for this tile
         @parameter
         for k in range(TILE):
-            acc += a_shared[local_row, k] * b_shared[k, local_col]
+            acc += rebind[Scalar[dtype]](a_shared[local_row, k]) * rebind[Scalar[dtype]](b_shared[k, local_col])
 
         barrier()
 
