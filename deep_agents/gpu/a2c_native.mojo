@@ -3037,7 +3037,7 @@ fn train_cartpole_native() raises:
     var gae_lambda = Scalar[dtype](0.95)
     var entropy_coef = Scalar[dtype](0.01)
     var value_coef = Scalar[dtype](0.5)
-    var max_updates = 500
+    var max_updates = 50  # Reduced for faster testing (was 500)
     var max_steps_per_env = 500
 
     print("  NUM_ENVS:", NUM_ENVS)
@@ -3146,6 +3146,11 @@ fn train_cartpole_native() raises:
         var d_W_critic_buf = ctx.enqueue_create_buffer[dtype](HIDDEN_DIM * 1)
         var d_b_critic_buf = ctx.enqueue_create_buffer[dtype](1)
 
+        # Per-step buffers (reused across training steps)
+        var actions_step_buf = ctx.enqueue_create_buffer[DType.int32](NUM_ENVS)
+        var advantages_step_buf = ctx.enqueue_create_buffer[dtype](NUM_ENVS)
+        var returns_step_buf = ctx.enqueue_create_buffer[dtype](NUM_ENVS)
+
         # =====================================================================
         # Initialize weights (Xavier-like)
         # =====================================================================
@@ -3246,6 +3251,91 @@ fn train_cartpole_native() raises:
         var values_immut = LayoutTensor[
             dtype, Layout.row_major(NUM_ENVS, 1), ImmutAnyOrigin
         ](values_buf)
+
+        # Gradient tensors (created once, reused each training step)
+        var d_logits = LayoutTensor[
+            dtype, Layout.row_major(NUM_ENVS, NUM_ACTIONS), MutAnyOrigin
+        ](d_logits_buf)
+        var d_logits_immut = LayoutTensor[
+            dtype, Layout.row_major(NUM_ENVS, NUM_ACTIONS), ImmutAnyOrigin
+        ](d_logits_buf)
+        var d_values = LayoutTensor[
+            dtype, Layout.row_major(NUM_ENVS, 1), MutAnyOrigin
+        ](d_values_buf)
+        var d_values_immut = LayoutTensor[
+            dtype, Layout.row_major(NUM_ENVS, 1), ImmutAnyOrigin
+        ](d_values_buf)
+        var d_hidden_actor = LayoutTensor[
+            dtype, Layout.row_major(NUM_ENVS, HIDDEN_DIM), MutAnyOrigin
+        ](d_hidden_actor_buf)
+        var d_hidden_actor_immut = LayoutTensor[
+            dtype, Layout.row_major(NUM_ENVS, HIDDEN_DIM), ImmutAnyOrigin
+        ](d_hidden_actor_buf)
+        var d_hidden_critic = LayoutTensor[
+            dtype, Layout.row_major(NUM_ENVS, HIDDEN_DIM), MutAnyOrigin
+        ](d_hidden_critic_buf)
+        var d_hidden_critic_immut = LayoutTensor[
+            dtype, Layout.row_major(NUM_ENVS, HIDDEN_DIM), ImmutAnyOrigin
+        ](d_hidden_critic_buf)
+        var d_hidden = LayoutTensor[
+            dtype, Layout.row_major(NUM_ENVS, HIDDEN_DIM), MutAnyOrigin
+        ](d_hidden_buf)
+        var d_hidden_immut = LayoutTensor[
+            dtype, Layout.row_major(NUM_ENVS, HIDDEN_DIM), ImmutAnyOrigin
+        ](d_hidden_buf)
+        var d_pre_relu = LayoutTensor[
+            dtype, Layout.row_major(NUM_ENVS, HIDDEN_DIM), MutAnyOrigin
+        ](d_pre_relu_buf)
+        var d_pre_relu_immut = LayoutTensor[
+            dtype, Layout.row_major(NUM_ENVS, HIDDEN_DIM), ImmutAnyOrigin
+        ](d_pre_relu_buf)
+        var d_W1 = LayoutTensor[
+            dtype, Layout.row_major(OBS_DIM, HIDDEN_DIM), MutAnyOrigin
+        ](d_W1_buf)
+        var d_W1_immut = LayoutTensor[
+            dtype, Layout.row_major(OBS_DIM, HIDDEN_DIM), ImmutAnyOrigin
+        ](d_W1_buf)
+        var d_b1 = LayoutTensor[
+            dtype, Layout.row_major(HIDDEN_DIM), MutAnyOrigin
+        ](d_b1_buf)
+        var d_b1_immut = LayoutTensor[
+            dtype, Layout.row_major(HIDDEN_DIM), ImmutAnyOrigin
+        ](d_b1_buf)
+        var d_W_actor = LayoutTensor[
+            dtype, Layout.row_major(HIDDEN_DIM, NUM_ACTIONS), MutAnyOrigin
+        ](d_W_actor_buf)
+        var d_W_actor_immut = LayoutTensor[
+            dtype, Layout.row_major(HIDDEN_DIM, NUM_ACTIONS), ImmutAnyOrigin
+        ](d_W_actor_buf)
+        var d_b_actor = LayoutTensor[
+            dtype, Layout.row_major(NUM_ACTIONS), MutAnyOrigin
+        ](d_b_actor_buf)
+        var d_b_actor_immut = LayoutTensor[
+            dtype, Layout.row_major(NUM_ACTIONS), ImmutAnyOrigin
+        ](d_b_actor_buf)
+        var d_W_critic = LayoutTensor[
+            dtype, Layout.row_major(HIDDEN_DIM, 1), MutAnyOrigin
+        ](d_W_critic_buf)
+        var d_W_critic_immut = LayoutTensor[
+            dtype, Layout.row_major(HIDDEN_DIM, 1), ImmutAnyOrigin
+        ](d_W_critic_buf)
+        var d_b_critic = LayoutTensor[
+            dtype, Layout.row_major(1), MutAnyOrigin
+        ](d_b_critic_buf)
+        var d_b_critic_immut = LayoutTensor[
+            dtype, Layout.row_major(1), ImmutAnyOrigin
+        ](d_b_critic_buf)
+
+        # Per-step tensors (created once, reused each training step)
+        var actions_t = LayoutTensor[
+            DType.int32, Layout.row_major(NUM_ENVS), ImmutAnyOrigin
+        ](actions_step_buf)
+        var advantages_t = LayoutTensor[
+            dtype, Layout.row_major(NUM_ENVS), ImmutAnyOrigin
+        ](advantages_step_buf)
+        var returns_t = LayoutTensor[
+            dtype, Layout.row_major(NUM_ENVS), ImmutAnyOrigin
+        ](returns_step_buf)
 
         # Grid dimensions
         comptime grid_h_x = (HIDDEN_DIM + TILE - 1) // TILE
@@ -3548,17 +3638,7 @@ fn train_cartpole_native() raises:
 
                 ctx.synchronize()
 
-                # Create tensors for this step's data
-                var actions_step_buf = ctx.enqueue_create_buffer[DType.int32](
-                    NUM_ENVS
-                )
-                var advantages_step_buf = ctx.enqueue_create_buffer[dtype](
-                    NUM_ENVS
-                )
-                var returns_step_buf = ctx.enqueue_create_buffer[dtype](
-                    NUM_ENVS
-                )
-
+                # Copy step data to pre-allocated buffers (no allocation here)
                 with actions_step_buf.map_to_host() as a_host, advantages_step_buf.map_to_host() as adv_host, returns_step_buf.map_to_host() as ret_host, rollout_actions_buf.map_to_host() as ra_host, rollout_advantages_buf.map_to_host() as radv_host, rollout_returns_buf.map_to_host() as rret_host:
                     for i in range(NUM_ENVS):
                         var idx = i * ROLLOUT_LEN + step
@@ -3566,17 +3646,7 @@ fn train_cartpole_native() raises:
                         adv_host[i] = radv_host[idx]
                         ret_host[i] = rret_host[idx]
 
-                var actions_t = LayoutTensor[
-                    DType.int32, Layout.row_major(NUM_ENVS), ImmutAnyOrigin
-                ](actions_step_buf)
-                var advantages_t = LayoutTensor[
-                    dtype, Layout.row_major(NUM_ENVS), ImmutAnyOrigin
-                ](advantages_step_buf)
-                var returns_t = LayoutTensor[
-                    dtype, Layout.row_major(NUM_ENVS), ImmutAnyOrigin
-                ](returns_step_buf)
-
-                # Backward pass
+                # Reset gradient buffers (tensors already created outside loop)
                 d_logits_buf.enqueue_fill(0)
                 d_values_buf.enqueue_fill(0)
                 d_hidden_actor_buf.enqueue_fill(0)
@@ -3589,93 +3659,6 @@ fn train_cartpole_native() raises:
                 d_b_actor_buf.enqueue_fill(0)
                 d_W_critic_buf.enqueue_fill(0)
                 d_b_critic_buf.enqueue_fill(0)
-
-                var d_logits = LayoutTensor[
-                    dtype, Layout.row_major(NUM_ENVS, NUM_ACTIONS), MutAnyOrigin
-                ](d_logits_buf)
-                var d_logits_immut = LayoutTensor[
-                    dtype,
-                    Layout.row_major(NUM_ENVS, NUM_ACTIONS),
-                    ImmutAnyOrigin,
-                ](d_logits_buf)
-                var d_values = LayoutTensor[
-                    dtype, Layout.row_major(NUM_ENVS, 1), MutAnyOrigin
-                ](d_values_buf)
-                var d_values_immut = LayoutTensor[
-                    dtype, Layout.row_major(NUM_ENVS, 1), ImmutAnyOrigin
-                ](d_values_buf)
-                var d_hidden_actor = LayoutTensor[
-                    dtype, Layout.row_major(NUM_ENVS, HIDDEN_DIM), MutAnyOrigin
-                ](d_hidden_actor_buf)
-                var d_hidden_actor_immut = LayoutTensor[
-                    dtype,
-                    Layout.row_major(NUM_ENVS, HIDDEN_DIM),
-                    ImmutAnyOrigin,
-                ](d_hidden_actor_buf)
-                var d_hidden_critic = LayoutTensor[
-                    dtype, Layout.row_major(NUM_ENVS, HIDDEN_DIM), MutAnyOrigin
-                ](d_hidden_critic_buf)
-                var d_hidden_critic_immut = LayoutTensor[
-                    dtype,
-                    Layout.row_major(NUM_ENVS, HIDDEN_DIM),
-                    ImmutAnyOrigin,
-                ](d_hidden_critic_buf)
-                var d_hidden = LayoutTensor[
-                    dtype, Layout.row_major(NUM_ENVS, HIDDEN_DIM), MutAnyOrigin
-                ](d_hidden_buf)
-                var d_hidden_immut = LayoutTensor[
-                    dtype,
-                    Layout.row_major(NUM_ENVS, HIDDEN_DIM),
-                    ImmutAnyOrigin,
-                ](d_hidden_buf)
-                var d_pre_relu = LayoutTensor[
-                    dtype, Layout.row_major(NUM_ENVS, HIDDEN_DIM), MutAnyOrigin
-                ](d_pre_relu_buf)
-                var d_pre_relu_immut = LayoutTensor[
-                    dtype,
-                    Layout.row_major(NUM_ENVS, HIDDEN_DIM),
-                    ImmutAnyOrigin,
-                ](d_pre_relu_buf)
-                var d_W1 = LayoutTensor[
-                    dtype, Layout.row_major(OBS_DIM, HIDDEN_DIM), MutAnyOrigin
-                ](d_W1_buf)
-                var d_W1_immut = LayoutTensor[
-                    dtype, Layout.row_major(OBS_DIM, HIDDEN_DIM), ImmutAnyOrigin
-                ](d_W1_buf)
-                var d_b1 = LayoutTensor[
-                    dtype, Layout.row_major(HIDDEN_DIM), MutAnyOrigin
-                ](d_b1_buf)
-                var d_b1_immut = LayoutTensor[
-                    dtype, Layout.row_major(HIDDEN_DIM), ImmutAnyOrigin
-                ](d_b1_buf)
-                var d_W_actor = LayoutTensor[
-                    dtype,
-                    Layout.row_major(HIDDEN_DIM, NUM_ACTIONS),
-                    MutAnyOrigin,
-                ](d_W_actor_buf)
-                var d_W_actor_immut = LayoutTensor[
-                    dtype,
-                    Layout.row_major(HIDDEN_DIM, NUM_ACTIONS),
-                    ImmutAnyOrigin,
-                ](d_W_actor_buf)
-                var d_b_actor = LayoutTensor[
-                    dtype, Layout.row_major(NUM_ACTIONS), MutAnyOrigin
-                ](d_b_actor_buf)
-                var d_b_actor_immut = LayoutTensor[
-                    dtype, Layout.row_major(NUM_ACTIONS), ImmutAnyOrigin
-                ](d_b_actor_buf)
-                var d_W_critic = LayoutTensor[
-                    dtype, Layout.row_major(HIDDEN_DIM, 1), MutAnyOrigin
-                ](d_W_critic_buf)
-                var d_W_critic_immut = LayoutTensor[
-                    dtype, Layout.row_major(HIDDEN_DIM, 1), ImmutAnyOrigin
-                ](d_W_critic_buf)
-                var d_b_critic = LayoutTensor[
-                    dtype, Layout.row_major(1), MutAnyOrigin
-                ](d_b_critic_buf)
-                var d_b_critic_immut = LayoutTensor[
-                    dtype, Layout.row_major(1), ImmutAnyOrigin
-                ](d_b_critic_buf)
 
                 # Policy gradient
                 ctx.enqueue_function_checked[
@@ -3919,8 +3902,8 @@ fn train_cartpole_native() raises:
         print("  Total episodes:", completed_episodes)
         var final_avg: Float64 = 0.0
         if len(recent_rewards) > 0:
-            for i in range(len(recent_rewards)):
-                final_avg += recent_rewards[i]
+            for r in recent_rewards:
+                final_avg += r
             final_avg /= len(recent_rewards)
         print("  Final avg reward (last 100):", final_avg)
 
@@ -3931,33 +3914,3 @@ fn train_cartpole_native() raises:
         else:
             print("  Training needs more iterations or tuning")
         print()
-
-
-fn main() raises:
-    print()
-    print("GPU-Native A2C - Phase 5: CartPole Training")
-    print()
-
-    # Test 1: Square matmul (baseline)
-    test_square_matmul()
-
-    # Test 2: Rectangular matmul (RL dimensions)
-    test_rectangular_matmul()
-
-    # Test 3: Matmul + bias + ReLU (forward pass hidden layer)
-    test_matmul_bias_relu()
-
-    # Test 4: Parallel softmax (action probabilities)
-    test_parallel_softmax()
-
-    # Test 5: Complete batched forward pass
-    test_batched_forward_pass()
-
-    # Test 6: Backward pass kernels
-    test_backward_pass_kernels()
-
-    # Test 7: Complete training step
-    test_complete_training_step()
-
-    print("All tests completed!")
-    print()
