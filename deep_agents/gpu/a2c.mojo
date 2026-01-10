@@ -16,8 +16,9 @@ from time import perf_counter_ns
 from math import exp, log, sqrt, cos, sin
 from random import random_float64, seed
 
-from gpu import thread_idx, block_idx, block_dim
+from gpu import thread_idx, block_idx, block_dim, barrier
 from gpu.host import DeviceContext
+from gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 
 from deep_rl.gpu import (
@@ -217,6 +218,633 @@ fn fused_rollout_kernel[
     for i in range(EnvType.STATE_SIZE):
         states[env_idx, i] = state[i]
     rng_states[env_idx, 0] = rng
+
+
+# =============================================================================
+# Optimized 2D Fused Rollout Kernel with Shared Memory Reductions
+# =============================================================================
+
+# Shared memory limit: 32KB on Apple Silicon
+# Formula: ENVS_PER_BLOCK * HIDDEN_DIM * 4 bytes < 32KB
+# For HIDDEN_DIM=512: ENVS_PER_BLOCK <= 16
+# For HIDDEN_DIM=1024: ENVS_PER_BLOCK <= 8, but need ENVS_PER_BLOCK >= 1
+
+
+fn fused_rollout_kernel_2d[
+    EnvType: GPUDiscreteEnv,
+    NUM_ENVS: Int,
+    HIDDEN_DIM: Int,
+    ROLLOUT_LEN: Int,
+    ENVS_PER_BLOCK: Int,
+](
+    # Environment state
+    states: LayoutTensor[
+        dtype, Layout.row_major(NUM_ENVS, EnvType.STATE_SIZE), MutAnyOrigin
+    ],
+    rng_states: LayoutTensor[
+        DType.uint32, Layout.row_major(NUM_ENVS, 1), MutAnyOrigin
+    ],
+    # Network weights
+    W1: LayoutTensor[
+        dtype,
+        Layout.row_major(EnvType.OBS_DIM, HIDDEN_DIM),
+        ImmutAnyOrigin,
+    ],
+    b1: LayoutTensor[dtype, Layout.row_major(HIDDEN_DIM), ImmutAnyOrigin],
+    W_actor: LayoutTensor[
+        dtype,
+        Layout.row_major(HIDDEN_DIM, EnvType.NUM_ACTIONS),
+        ImmutAnyOrigin,
+    ],
+    b_actor: LayoutTensor[
+        dtype, Layout.row_major(EnvType.NUM_ACTIONS), ImmutAnyOrigin
+    ],
+    W_critic: LayoutTensor[
+        dtype, Layout.row_major(HIDDEN_DIM, 1), ImmutAnyOrigin
+    ],
+    b_critic: LayoutTensor[dtype, Layout.row_major(1), ImmutAnyOrigin],
+    # Rollout storage
+    rollout_obs: LayoutTensor[
+        dtype,
+        Layout.row_major(NUM_ENVS, ROLLOUT_LEN, EnvType.OBS_DIM),
+        MutAnyOrigin,
+    ],
+    rollout_actions: LayoutTensor[
+        DType.int32, Layout.row_major(NUM_ENVS, ROLLOUT_LEN), MutAnyOrigin
+    ],
+    rollout_rewards: LayoutTensor[
+        dtype, Layout.row_major(NUM_ENVS, ROLLOUT_LEN), MutAnyOrigin
+    ],
+    rollout_dones: LayoutTensor[
+        DType.int32, Layout.row_major(NUM_ENVS, ROLLOUT_LEN), MutAnyOrigin
+    ],
+    rollout_log_probs: LayoutTensor[
+        dtype, Layout.row_major(NUM_ENVS, ROLLOUT_LEN), MutAnyOrigin
+    ],
+    rollout_values: LayoutTensor[
+        dtype, Layout.row_major(NUM_ENVS, ROLLOUT_LEN), MutAnyOrigin
+    ],
+):
+    """Optimized 2D fused rollout with shared memory and parallel reductions.
+
+    Uses 2D thread blocks: x = hidden_idx, y = env_idx within block.
+    Parallelizes hidden layer computation and uses stride-based reductions.
+
+    Shared memory constraint: ENVS_PER_BLOCK * HIDDEN_DIM * 4 < 32768 bytes
+    - HIDDEN_DIM=256: ENVS_PER_BLOCK <= 32
+    - HIDDEN_DIM=512: ENVS_PER_BLOCK <= 16
+    - HIDDEN_DIM=1024: ENVS_PER_BLOCK <= 8
+    """
+    # 2D thread indexing
+    var local_env_idx = Int(thread_idx.y)
+    var hidden_idx = Int(thread_idx.x)
+    var global_env_idx = Int(block_dim.y * block_idx.y + thread_idx.y)
+    var global_hidden_idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    var is_valid = global_env_idx < NUM_ENVS and global_hidden_idx < HIDDEN_DIM
+
+    # Shared memory allocations
+    # Note: shared_hidden is reused as reduction buffer to save shared memory
+    var shared_obs = LayoutTensor[
+        dtype,
+        Layout.row_major(ENVS_PER_BLOCK, EnvType.OBS_DIM),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ].stack_allocation()
+
+    # This buffer serves dual purpose: hidden activations AND reduction scratch
+    var shared_hidden = LayoutTensor[
+        dtype,
+        Layout.row_major(ENVS_PER_BLOCK, HIDDEN_DIM),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ].stack_allocation()
+
+    var shared_logits = LayoutTensor[
+        dtype,
+        Layout.row_major(ENVS_PER_BLOCK, EnvType.NUM_ACTIONS),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ].stack_allocation()
+
+    var shared_rng = LayoutTensor[
+        DType.uint32,
+        Layout.row_major(ENVS_PER_BLOCK),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ].stack_allocation()
+
+    # Local register to preserve hidden activation during reductions
+    var local_h: Scalar[dtype] = 0
+
+    # Load initial state into shared memory (first thread per env, first hidden block)
+    if is_valid and hidden_idx == 0:
+        for d in range(EnvType.OBS_DIM):
+            shared_obs[local_env_idx, d] = rebind[Scalar[dtype]](
+                states[global_env_idx, d]
+            )
+        shared_rng[local_env_idx] = rebind[Scalar[DType.uint32]](
+            rng_states[global_env_idx, 0]
+        )
+
+    barrier()
+
+    # Process all rollout steps
+    for step in range(ROLLOUT_LEN):
+        # Store observation
+        if is_valid and hidden_idx < EnvType.OBS_DIM:
+            rollout_obs[global_env_idx, step, hidden_idx] = rebind[
+                Scalar[dtype]
+            ](shared_obs[local_env_idx, hidden_idx])
+
+        barrier()
+
+        # === Forward pass: Hidden layer (parallel across hidden units) ===
+        if is_valid:
+            var acc = rebind[Scalar[dtype]](b1[hidden_idx])
+            for d in range(EnvType.OBS_DIM):
+                acc += rebind[Scalar[dtype]](
+                    shared_obs[local_env_idx, d]
+                ) * rebind[Scalar[dtype]](W1[d, hidden_idx])
+            local_h = relu_inline(acc)  # Save to local register
+            shared_hidden[local_env_idx, hidden_idx] = local_h
+
+        barrier()
+
+        # === Actor logits with parallel reduction ===
+        # Note: We reuse shared_hidden as reduction buffer, using local_h for h value
+        for action in range(EnvType.NUM_ACTIONS):
+            # Each thread computes partial contribution using local_h
+            if is_valid:
+                var partial = local_h * rebind[Scalar[dtype]](
+                    W_actor[hidden_idx, action]
+                )
+                shared_hidden[local_env_idx, hidden_idx] = partial
+
+            barrier()
+
+            # Parallel reduction with stride (reusing shared_hidden)
+            var stride = HIDDEN_DIM // 2
+            while stride > 0:
+                if is_valid and hidden_idx < stride:
+                    shared_hidden[local_env_idx, hidden_idx] = rebind[
+                        Scalar[dtype]
+                    ](shared_hidden[local_env_idx, hidden_idx]) + rebind[
+                        Scalar[dtype]
+                    ](
+                        shared_hidden[local_env_idx, hidden_idx + stride]
+                    )
+                barrier()
+                stride = stride // 2
+
+            if is_valid and hidden_idx == 0:
+                shared_logits[local_env_idx, action] = rebind[Scalar[dtype]](
+                    shared_hidden[local_env_idx, 0]
+                ) + rebind[Scalar[dtype]](b_actor[action])
+
+            barrier()
+
+        # === Critic value with parallel reduction ===
+        if is_valid:
+            var partial_v = local_h * rebind[Scalar[dtype]](
+                W_critic[hidden_idx, 0]
+            )
+            shared_hidden[local_env_idx, hidden_idx] = partial_v
+
+        barrier()
+
+        var stride_v = HIDDEN_DIM // 2
+        while stride_v > 0:
+            if is_valid and hidden_idx < stride_v:
+                shared_hidden[local_env_idx, hidden_idx] = rebind[
+                    Scalar[dtype]
+                ](shared_hidden[local_env_idx, hidden_idx]) + rebind[
+                    Scalar[dtype]
+                ](
+                    shared_hidden[local_env_idx, hidden_idx + stride_v]
+                )
+            barrier()
+            stride_v = stride_v // 2
+
+        # Store value
+        var value: Scalar[dtype] = 0
+        if is_valid and hidden_idx == 0:
+            value = rebind[Scalar[dtype]](
+                shared_hidden[local_env_idx, 0]
+            ) + rebind[Scalar[dtype]](b_critic[0])
+            rollout_values[global_env_idx, step] = value
+
+        barrier()
+
+        # === Softmax and action sampling (single thread per env) ===
+        var selected_action: Int = 0
+        var log_prob: Scalar[dtype] = 0
+
+        if is_valid and hidden_idx == 0:
+            var logit0 = rebind[Scalar[dtype]](shared_logits[local_env_idx, 0])
+            var logit1 = rebind[Scalar[dtype]](shared_logits[local_env_idx, 1])
+
+            # Softmax
+            var probs = softmax2_inline(logit0, logit1)
+
+            # Sample action
+            var rng = rebind[UInt32](shared_rng[local_env_idx])
+            var u_result = random_uniform[dtype](rng)
+            rng = u_result[1]
+            shared_rng[local_env_idx] = rebind[Scalar[DType.uint32]](rng)
+
+            selected_action = sample_from_probs2(probs[0], u_result[0])
+            log_prob = log(probs[selected_action] + Scalar[dtype](1e-8))
+
+            rollout_actions[global_env_idx, step] = Int32(selected_action)
+            rollout_log_probs[global_env_idx, step] = log_prob
+
+        barrier()
+
+        # Read selected action for env step
+        if is_valid:
+            selected_action = Int(rollout_actions[global_env_idx, step])
+
+        # === Environment step (single thread per env) ===
+        if is_valid and hidden_idx == 0:
+            # Load state into InlineArray
+            var state = InlineArray[Scalar[dtype], EnvType.STATE_SIZE](
+                fill=Scalar[dtype](0)
+            )
+            for i in range(EnvType.STATE_SIZE):
+                state[i] = rebind[Scalar[dtype]](shared_obs[local_env_idx, i])
+
+            # Step environment
+            var step_result = EnvType.step_inline[EnvType.STATE_SIZE](
+                state, selected_action
+            )
+            var reward = step_result[0]
+            var done = step_result[1]
+
+            rollout_rewards[global_env_idx, step] = reward
+            rollout_dones[global_env_idx, step] = 1 if done else 0
+
+            # Reset if done
+            if done:
+                var rng = rebind[UInt32](shared_rng[local_env_idx])
+                EnvType.reset_inline[EnvType.STATE_SIZE](state, rng)
+                shared_rng[local_env_idx] = rebind[Scalar[DType.uint32]](rng)
+
+            # Update shared obs
+            for i in range(EnvType.OBS_DIM):
+                shared_obs[local_env_idx, i] = state[i]
+
+        barrier()
+
+    # Write final state back
+    if is_valid and hidden_idx == 0:
+        for i in range(EnvType.STATE_SIZE):
+            states[global_env_idx, i] = rebind[Scalar[dtype]](
+                shared_obs[local_env_idx, i]
+            )
+        rng_states[global_env_idx, 0] = rebind[Scalar[DType.uint32]](
+            shared_rng[local_env_idx]
+        )
+
+
+# =============================================================================
+# Tiled 2D Fused Rollout Kernel - Supports arbitrarily large HIDDEN_DIM
+# =============================================================================
+
+# This kernel uses loop-based tiling to support HIDDEN_DIM > HIDDEN_PER_BLOCK.
+# Each thread processes multiple hidden units by looping over tiles.
+# Shared memory is sized for HIDDEN_PER_BLOCK, not HIDDEN_DIM.
+
+
+fn fused_rollout_kernel_2d_tiled[
+    EnvType: GPUDiscreteEnv,
+    NUM_ENVS: Int,
+    HIDDEN_DIM: Int,
+    ROLLOUT_LEN: Int,
+    ENVS_PER_BLOCK: Int,
+    HIDDEN_PER_BLOCK: Int,
+](
+    # Environment state
+    states: LayoutTensor[
+        dtype, Layout.row_major(NUM_ENVS, EnvType.STATE_SIZE), MutAnyOrigin
+    ],
+    rng_states: LayoutTensor[
+        DType.uint32, Layout.row_major(NUM_ENVS, 1), MutAnyOrigin
+    ],
+    # Network weights
+    W1: LayoutTensor[
+        dtype,
+        Layout.row_major(EnvType.OBS_DIM, HIDDEN_DIM),
+        ImmutAnyOrigin,
+    ],
+    b1: LayoutTensor[dtype, Layout.row_major(HIDDEN_DIM), ImmutAnyOrigin],
+    W_actor: LayoutTensor[
+        dtype,
+        Layout.row_major(HIDDEN_DIM, EnvType.NUM_ACTIONS),
+        ImmutAnyOrigin,
+    ],
+    b_actor: LayoutTensor[
+        dtype, Layout.row_major(EnvType.NUM_ACTIONS), ImmutAnyOrigin
+    ],
+    W_critic: LayoutTensor[
+        dtype, Layout.row_major(HIDDEN_DIM, 1), ImmutAnyOrigin
+    ],
+    b_critic: LayoutTensor[dtype, Layout.row_major(1), ImmutAnyOrigin],
+    # Rollout storage
+    rollout_obs: LayoutTensor[
+        dtype,
+        Layout.row_major(NUM_ENVS, ROLLOUT_LEN, EnvType.OBS_DIM),
+        MutAnyOrigin,
+    ],
+    rollout_actions: LayoutTensor[
+        DType.int32, Layout.row_major(NUM_ENVS, ROLLOUT_LEN), MutAnyOrigin
+    ],
+    rollout_rewards: LayoutTensor[
+        dtype, Layout.row_major(NUM_ENVS, ROLLOUT_LEN), MutAnyOrigin
+    ],
+    rollout_dones: LayoutTensor[
+        DType.int32, Layout.row_major(NUM_ENVS, ROLLOUT_LEN), MutAnyOrigin
+    ],
+    rollout_log_probs: LayoutTensor[
+        dtype, Layout.row_major(NUM_ENVS, ROLLOUT_LEN), MutAnyOrigin
+    ],
+    rollout_values: LayoutTensor[
+        dtype, Layout.row_major(NUM_ENVS, ROLLOUT_LEN), MutAnyOrigin
+    ],
+    # Hidden activations storage (needed for backprop with tiling)
+    hidden_activations: LayoutTensor[
+        dtype, Layout.row_major(NUM_ENVS, HIDDEN_DIM), MutAnyOrigin
+    ],
+):
+    """Tiled 2D fused rollout kernel supporting arbitrarily large HIDDEN_DIM.
+
+    Uses loop-based tiling: each thread processes multiple hidden units
+    by looping over tiles of size HIDDEN_PER_BLOCK.
+
+    Block dimensions: (HIDDEN_PER_BLOCK, ENVS_PER_BLOCK)
+    Each tile processes HIDDEN_PER_BLOCK hidden units.
+
+    Shared memory constraint: ENVS_PER_BLOCK * HIDDEN_PER_BLOCK * 4 < 32768 bytes
+    Example: HIDDEN_PER_BLOCK=256, ENVS_PER_BLOCK=8 => 8KB (safe)
+    """
+    # Number of tiles to cover HIDDEN_DIM
+    comptime NUM_TILES = (HIDDEN_DIM + HIDDEN_PER_BLOCK - 1) // HIDDEN_PER_BLOCK
+
+    # 2D thread indexing
+    var local_env_idx = Int(thread_idx.y)
+    var local_hidden_idx = Int(thread_idx.x)  # Within tile
+    var global_env_idx = Int(block_dim.y * block_idx.y + thread_idx.y)
+    var is_env_valid = global_env_idx < NUM_ENVS
+
+    # Shared memory (sized for HIDDEN_PER_BLOCK, not HIDDEN_DIM)
+    var shared_obs = LayoutTensor[
+        dtype,
+        Layout.row_major(ENVS_PER_BLOCK, EnvType.OBS_DIM),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ].stack_allocation()
+
+    var shared_tile = LayoutTensor[
+        dtype,
+        Layout.row_major(ENVS_PER_BLOCK, HIDDEN_PER_BLOCK),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ].stack_allocation()
+
+    var shared_logits = LayoutTensor[
+        dtype,
+        Layout.row_major(ENVS_PER_BLOCK, EnvType.NUM_ACTIONS),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ].stack_allocation()
+
+    var shared_rng = LayoutTensor[
+        DType.uint32,
+        Layout.row_major(ENVS_PER_BLOCK),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ].stack_allocation()
+
+    # Load initial state into shared memory
+    if is_env_valid and local_hidden_idx == 0:
+
+        @parameter
+        for d in range(EnvType.OBS_DIM):
+            shared_obs[local_env_idx, d] = rebind[Scalar[dtype]](
+                states[global_env_idx, d]
+            )
+        shared_rng[local_env_idx] = rebind[Scalar[DType.uint32]](
+            rng_states[global_env_idx, 0]
+        )
+
+    barrier()
+
+    # Process all rollout steps
+    for step in range(ROLLOUT_LEN):
+        # Store observation
+        if is_env_valid and local_hidden_idx < EnvType.OBS_DIM:
+            rollout_obs[global_env_idx, step, local_hidden_idx] = rebind[
+                Scalar[dtype]
+            ](shared_obs[local_env_idx, local_hidden_idx])
+
+        barrier()
+
+        # === Forward pass: Hidden layer (tiled) ===
+        # Each thread computes one hidden unit per tile
+        for tile in range(NUM_TILES):
+            var global_hidden_idx = tile * HIDDEN_PER_BLOCK + local_hidden_idx
+            var is_hidden_valid = global_hidden_idx < HIDDEN_DIM
+
+            if is_env_valid and is_hidden_valid:
+                var acc = rebind[Scalar[dtype]](b1[global_hidden_idx])
+                for d in range(EnvType.OBS_DIM):
+                    acc += rebind[Scalar[dtype]](
+                        shared_obs[local_env_idx, d]
+                    ) * rebind[Scalar[dtype]](W1[d, global_hidden_idx])
+                var h = relu_inline(acc)
+                # Store to global memory for backprop
+                hidden_activations[global_env_idx, global_hidden_idx] = h
+
+        barrier()
+
+        # === Actor logits with tiled reduction ===
+        for action in range(EnvType.NUM_ACTIONS):
+            # Accumulate across tiles
+            var total_logit: Scalar[dtype] = 0
+
+            for tile in range(NUM_TILES):
+                var global_hidden_idx = (
+                    tile * HIDDEN_PER_BLOCK + local_hidden_idx
+                )
+                var is_hidden_valid = global_hidden_idx < HIDDEN_DIM
+
+                # Compute partial contribution for this tile
+                if is_env_valid and is_hidden_valid:
+                    var h = rebind[Scalar[dtype]](
+                        hidden_activations[global_env_idx, global_hidden_idx]
+                    )
+                    var partial = h * rebind[Scalar[dtype]](
+                        W_actor[global_hidden_idx, action]
+                    )
+                    shared_tile[local_env_idx, local_hidden_idx] = partial
+                elif is_env_valid:
+                    shared_tile[local_env_idx, local_hidden_idx] = Scalar[
+                        dtype
+                    ](0)
+
+                barrier()
+
+                # Reduce within tile using stride-based reduction
+                var stride = HIDDEN_PER_BLOCK // 2
+                while stride > 0:
+                    if is_env_valid and local_hidden_idx < stride:
+                        shared_tile[local_env_idx, local_hidden_idx] = rebind[
+                            Scalar[dtype]
+                        ](
+                            shared_tile[local_env_idx, local_hidden_idx]
+                        ) + rebind[
+                            Scalar[dtype]
+                        ](
+                            shared_tile[
+                                local_env_idx, local_hidden_idx + stride
+                            ]
+                        )
+                    barrier()
+                    stride = stride // 2
+
+                # Thread 0 accumulates tile result
+                if is_env_valid and local_hidden_idx == 0:
+                    total_logit += rebind[Scalar[dtype]](
+                        shared_tile[local_env_idx, 0]
+                    )
+
+                barrier()
+
+            # Final logit with bias
+            if is_env_valid and local_hidden_idx == 0:
+                shared_logits[local_env_idx, action] = total_logit + rebind[
+                    Scalar[dtype]
+                ](b_actor[action])
+
+            barrier()
+
+        # === Critic value with tiled reduction ===
+        var total_value: Scalar[dtype] = 0
+
+        for tile in range(NUM_TILES):
+            var global_hidden_idx = tile * HIDDEN_PER_BLOCK + local_hidden_idx
+            var is_hidden_valid = global_hidden_idx < HIDDEN_DIM
+
+            if is_env_valid and is_hidden_valid:
+                var h = rebind[Scalar[dtype]](
+                    hidden_activations[global_env_idx, global_hidden_idx]
+                )
+                var partial = h * rebind[Scalar[dtype]](
+                    W_critic[global_hidden_idx, 0]
+                )
+                shared_tile[local_env_idx, local_hidden_idx] = partial
+            elif is_env_valid:
+                shared_tile[local_env_idx, local_hidden_idx] = Scalar[dtype](0)
+
+            barrier()
+
+            # Reduce within tile using stride-based reduction
+            var stride_v = HIDDEN_PER_BLOCK // 2
+            while stride_v > 0:
+                if is_env_valid and local_hidden_idx < stride_v:
+                    shared_tile[local_env_idx, local_hidden_idx] = rebind[
+                        Scalar[dtype]
+                    ](shared_tile[local_env_idx, local_hidden_idx]) + rebind[
+                        Scalar[dtype]
+                    ](
+                        shared_tile[local_env_idx, local_hidden_idx + stride_v]
+                    )
+                barrier()
+                stride_v = stride_v // 2
+
+            # Thread 0 accumulates tile result
+            if is_env_valid and local_hidden_idx == 0:
+                total_value += rebind[Scalar[dtype]](
+                    shared_tile[local_env_idx, 0]
+                )
+
+            barrier()
+
+        # Store value
+        if is_env_valid and local_hidden_idx == 0:
+            var value = total_value + rebind[Scalar[dtype]](b_critic[0])
+            rollout_values[global_env_idx, step] = value
+
+        barrier()
+
+        # === Softmax and action sampling (single thread per env) ===
+        var selected_action: Int = 0
+        var log_prob: Scalar[dtype] = 0
+
+        if is_env_valid and local_hidden_idx == 0:
+            var logit0 = rebind[Scalar[dtype]](shared_logits[local_env_idx, 0])
+            var logit1 = rebind[Scalar[dtype]](shared_logits[local_env_idx, 1])
+
+            # Softmax
+            var probs = softmax2_inline(logit0, logit1)
+
+            # Sample action
+            var rng = rebind[UInt32](shared_rng[local_env_idx])
+            var u_result = random_uniform[dtype](rng)
+            rng = u_result[1]
+            shared_rng[local_env_idx] = rebind[Scalar[DType.uint32]](rng)
+
+            selected_action = sample_from_probs2(probs[0], u_result[0])
+            log_prob = log(probs[selected_action] + Scalar[dtype](1e-8))
+
+            rollout_actions[global_env_idx, step] = Int32(selected_action)
+            rollout_log_probs[global_env_idx, step] = log_prob
+
+        barrier()
+
+        # Read selected action for env step
+        if is_env_valid:
+            selected_action = Int(rollout_actions[global_env_idx, step])
+
+        # === Environment step (single thread per env) ===
+        if is_env_valid and local_hidden_idx == 0:
+            # Load state into InlineArray
+            var state = InlineArray[Scalar[dtype], EnvType.STATE_SIZE](
+                fill=Scalar[dtype](0)
+            )
+            for i in range(EnvType.STATE_SIZE):
+                state[i] = rebind[Scalar[dtype]](shared_obs[local_env_idx, i])
+
+            # Step environment
+            var step_result = EnvType.step_inline[EnvType.STATE_SIZE](
+                state, selected_action
+            )
+            var reward = step_result[0]
+            var done = step_result[1]
+
+            rollout_rewards[global_env_idx, step] = reward
+            rollout_dones[global_env_idx, step] = 1 if done else 0
+
+            # Reset if done
+            if done:
+                var rng = rebind[UInt32](shared_rng[local_env_idx])
+                EnvType.reset_inline[EnvType.STATE_SIZE](state, rng)
+                shared_rng[local_env_idx] = rebind[Scalar[DType.uint32]](rng)
+
+            # Update shared obs
+            for i in range(EnvType.OBS_DIM):
+                shared_obs[local_env_idx, i] = state[i]
+
+        barrier()
+
+    # Write final state back
+    if is_env_valid and local_hidden_idx == 0:
+        for i in range(EnvType.STATE_SIZE):
+            states[global_env_idx, i] = rebind[Scalar[dtype]](
+                shared_obs[local_env_idx, i]
+            )
+        rng_states[global_env_idx, 0] = rebind[Scalar[DType.uint32]](
+            shared_rng[local_env_idx]
+        )
 
 
 # =============================================================================
@@ -459,6 +1087,686 @@ fn policy_gradient_kernel[
 
 
 # =============================================================================
+# Optimized 2D Policy Gradient Kernel with Shared Memory
+# =============================================================================
+
+
+fn policy_gradient_kernel_2d[
+    EnvType: GPUDiscreteEnv,
+    NUM_ENVS: Int,
+    HIDDEN_DIM: Int,
+    ROLLOUT_LEN: Int,
+    ENVS_PER_BLOCK: Int,
+](
+    rollout_obs: LayoutTensor[
+        dtype,
+        Layout.row_major(NUM_ENVS, ROLLOUT_LEN, EnvType.OBS_DIM),
+        ImmutAnyOrigin,
+    ],
+    rollout_actions: LayoutTensor[
+        DType.int32, Layout.row_major(NUM_ENVS, ROLLOUT_LEN), ImmutAnyOrigin
+    ],
+    rollout_advantages: LayoutTensor[
+        dtype, Layout.row_major(NUM_ENVS, ROLLOUT_LEN), ImmutAnyOrigin
+    ],
+    rollout_returns: LayoutTensor[
+        dtype, Layout.row_major(NUM_ENVS, ROLLOUT_LEN), ImmutAnyOrigin
+    ],
+    W1: LayoutTensor[
+        dtype,
+        Layout.row_major(EnvType.OBS_DIM, HIDDEN_DIM),
+        ImmutAnyOrigin,
+    ],
+    b1: LayoutTensor[dtype, Layout.row_major(HIDDEN_DIM), ImmutAnyOrigin],
+    W_actor: LayoutTensor[
+        dtype,
+        Layout.row_major(HIDDEN_DIM, EnvType.NUM_ACTIONS),
+        ImmutAnyOrigin,
+    ],
+    b_actor: LayoutTensor[
+        dtype, Layout.row_major(EnvType.NUM_ACTIONS), ImmutAnyOrigin
+    ],
+    W_critic: LayoutTensor[
+        dtype, Layout.row_major(HIDDEN_DIM, 1), ImmutAnyOrigin
+    ],
+    b_critic: LayoutTensor[dtype, Layout.row_major(1), ImmutAnyOrigin],
+    grad_W1: LayoutTensor[
+        dtype,
+        Layout.row_major(NUM_ENVS, EnvType.OBS_DIM * HIDDEN_DIM),
+        MutAnyOrigin,
+    ],
+    grad_b1: LayoutTensor[
+        dtype, Layout.row_major(NUM_ENVS, HIDDEN_DIM), MutAnyOrigin
+    ],
+    grad_W_actor: LayoutTensor[
+        dtype,
+        Layout.row_major(NUM_ENVS, HIDDEN_DIM * EnvType.NUM_ACTIONS),
+        MutAnyOrigin,
+    ],
+    grad_b_actor: LayoutTensor[
+        dtype, Layout.row_major(NUM_ENVS, EnvType.NUM_ACTIONS), MutAnyOrigin
+    ],
+    grad_W_critic: LayoutTensor[
+        dtype, Layout.row_major(NUM_ENVS, HIDDEN_DIM), MutAnyOrigin
+    ],
+    grad_b_critic: LayoutTensor[
+        dtype, Layout.row_major(NUM_ENVS, 1), MutAnyOrigin
+    ],
+    entropy_coef: Scalar[dtype],
+    value_coef: Scalar[dtype],
+):
+    """Optimized 2D policy gradient kernel with parallel forward pass.
+
+    Uses 2D thread blocks for parallel hidden layer computation.
+    x-dimension: hidden units, y-dimension: environments per block.
+    """
+    # 2D thread indexing
+    var local_env_idx = Int(thread_idx.y)
+    var hidden_idx = Int(thread_idx.x)
+    var global_env_idx = Int(block_dim.y * block_idx.y + thread_idx.y)
+    var global_hidden_idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    var is_valid = global_env_idx < NUM_ENVS and global_hidden_idx < HIDDEN_DIM
+
+    # Shared memory for parallel computation (optimized to fit 32KB limit)
+    # We reuse shared_hidden for reductions to save memory
+    var shared_obs = LayoutTensor[
+        dtype,
+        Layout.row_major(ENVS_PER_BLOCK, EnvType.OBS_DIM),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ].stack_allocation()
+
+    # Reused as reduction buffer after hidden computation
+    var shared_hidden = LayoutTensor[
+        dtype,
+        Layout.row_major(ENVS_PER_BLOCK, HIDDEN_DIM),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ].stack_allocation()
+
+    var shared_logits = LayoutTensor[
+        dtype,
+        Layout.row_major(ENVS_PER_BLOCK, EnvType.NUM_ACTIONS),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ].stack_allocation()
+
+    var shared_value = LayoutTensor[
+        dtype,
+        Layout.row_major(ENVS_PER_BLOCK),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ].stack_allocation()
+
+    # Local registers to preserve values during reductions
+    var local_h: Scalar[dtype] = 0
+    var local_h_pre: Scalar[dtype] = 0
+
+    # Local gradient accumulators (per thread for its hidden_idx)
+    var local_grad_W1 = InlineArray[Scalar[dtype], EnvType.OBS_DIM](
+        fill=Scalar[dtype](0)
+    )
+    var local_grad_b1: Scalar[dtype] = 0
+    var local_grad_W_actor = InlineArray[Scalar[dtype], EnvType.NUM_ACTIONS](
+        fill=Scalar[dtype](0)
+    )
+    var local_grad_W_critic: Scalar[dtype] = 0
+
+    # Also need accumulators for bias terms (only thread 0 per env updates these)
+    var local_grad_b_actor = InlineArray[Scalar[dtype], EnvType.NUM_ACTIONS](
+        fill=Scalar[dtype](0)
+    )
+    var local_grad_b_critic: Scalar[dtype] = 0
+
+    for t in range(ROLLOUT_LEN):
+        # Load observation into shared memory
+        if is_valid and hidden_idx < EnvType.OBS_DIM:
+            shared_obs[local_env_idx, hidden_idx] = rebind[Scalar[dtype]](
+                rollout_obs[global_env_idx, t, hidden_idx]
+            )
+
+        barrier()
+
+        # === Parallel forward pass: Hidden layer ===
+        if is_valid:
+            var acc = rebind[Scalar[dtype]](b1[hidden_idx])
+            for d in range(EnvType.OBS_DIM):
+                acc += rebind[Scalar[dtype]](
+                    shared_obs[local_env_idx, d]
+                ) * rebind[Scalar[dtype]](W1[d, hidden_idx])
+            local_h_pre = acc  # Store pre-activation in local register
+            local_h = relu_inline(acc)  # Store activation in local register
+            shared_hidden[local_env_idx, hidden_idx] = local_h
+
+        barrier()
+
+        # === Parallel reduction for actor logits (reuse shared_hidden) ===
+        for action in range(EnvType.NUM_ACTIONS):
+            if is_valid:
+                var partial = local_h * rebind[Scalar[dtype]](
+                    W_actor[hidden_idx, action]
+                )
+                shared_hidden[local_env_idx, hidden_idx] = partial
+
+            barrier()
+
+            var stride = HIDDEN_DIM // 2
+            while stride > 0:
+                if is_valid and hidden_idx < stride:
+                    shared_hidden[local_env_idx, hidden_idx] = rebind[
+                        Scalar[dtype]
+                    ](shared_hidden[local_env_idx, hidden_idx]) + rebind[
+                        Scalar[dtype]
+                    ](
+                        shared_hidden[local_env_idx, hidden_idx + stride]
+                    )
+                barrier()
+                stride = stride // 2
+
+            if is_valid and hidden_idx == 0:
+                shared_logits[local_env_idx, action] = rebind[Scalar[dtype]](
+                    shared_hidden[local_env_idx, 0]
+                ) + rebind[Scalar[dtype]](b_actor[action])
+
+            barrier()
+
+        # === Parallel reduction for critic value (reuse shared_hidden) ===
+        if is_valid:
+            var partial_v = local_h * rebind[Scalar[dtype]](
+                W_critic[hidden_idx, 0]
+            )
+            shared_hidden[local_env_idx, hidden_idx] = partial_v
+
+        barrier()
+
+        var stride_v = HIDDEN_DIM // 2
+        while stride_v > 0:
+            if is_valid and hidden_idx < stride_v:
+                shared_hidden[local_env_idx, hidden_idx] = rebind[
+                    Scalar[dtype]
+                ](shared_hidden[local_env_idx, hidden_idx]) + rebind[
+                    Scalar[dtype]
+                ](
+                    shared_hidden[local_env_idx, hidden_idx + stride_v]
+                )
+            barrier()
+            stride_v = stride_v // 2
+
+        if is_valid and hidden_idx == 0:
+            shared_value[local_env_idx] = rebind[Scalar[dtype]](
+                shared_hidden[local_env_idx, 0]
+            ) + rebind[Scalar[dtype]](b_critic[0])
+
+        barrier()
+
+        # === Compute gradients (thread 0 per env computes d_logits, d_value) ===
+        var d_logit0: Scalar[dtype] = 0
+        var d_logit1: Scalar[dtype] = 0
+        var d_value: Scalar[dtype] = 0
+
+        if is_valid and hidden_idx == 0:
+            var advantage = rebind[Scalar[dtype]](
+                rollout_advantages[global_env_idx, t]
+            )
+            var ret = rebind[Scalar[dtype]](rollout_returns[global_env_idx, t])
+            var action = Int(rollout_actions[global_env_idx, t])
+            var value = rebind[Scalar[dtype]](shared_value[local_env_idx])
+
+            # Softmax
+            var logit0 = rebind[Scalar[dtype]](shared_logits[local_env_idx, 0])
+            var logit1 = rebind[Scalar[dtype]](shared_logits[local_env_idx, 1])
+            var probs = softmax2_inline(logit0, logit1)
+            var prob0 = probs[0]
+            var prob1 = probs[1]
+            var eps = Scalar[dtype](1e-8)
+            var log_prob0 = log(prob0 + eps)
+            var log_prob1 = log(prob1 + eps)
+            var entropy = -(prob0 * log_prob0 + prob1 * log_prob1)
+
+            # Policy gradient
+            d_logit0 = (
+                prob0 - (Scalar[dtype](1) if action == 0 else Scalar[dtype](0))
+            ) * advantage + entropy_coef * prob0 * (entropy + log_prob0)
+            d_logit1 = (
+                prob1 - (Scalar[dtype](1) if action == 1 else Scalar[dtype](0))
+            ) * advantage + entropy_coef * prob1 * (entropy + log_prob1)
+
+            # Value gradient
+            d_value = value_coef * (value - ret)
+
+            # Store in shared memory for all threads to use
+            shared_logits[local_env_idx, 0] = d_logit0
+            shared_logits[local_env_idx, 1] = d_logit1
+            shared_value[local_env_idx] = d_value
+
+            # Update bias gradients (only thread 0)
+            local_grad_b_actor[0] += d_logit0
+            local_grad_b_actor[1] += d_logit1
+            local_grad_b_critic += d_value
+
+        barrier()
+
+        # Read gradients from shared memory
+        if is_valid:
+            d_logit0 = rebind[Scalar[dtype]](shared_logits[local_env_idx, 0])
+            d_logit1 = rebind[Scalar[dtype]](shared_logits[local_env_idx, 1])
+            d_value = rebind[Scalar[dtype]](shared_value[local_env_idx])
+
+            # === Backprop actor and critic weights (parallel per hidden unit) ===
+            # Use local_h which we preserved in register
+            local_grad_W_actor[0] += local_h * d_logit0
+            local_grad_W_actor[1] += local_h * d_logit1
+            local_grad_W_critic += local_h * d_value
+
+            # Compute dh for backprop through hidden layer
+            var dh = d_logit0 * rebind[Scalar[dtype]](W_actor[hidden_idx, 0])
+            dh += d_logit1 * rebind[Scalar[dtype]](W_actor[hidden_idx, 1])
+            dh += d_value * rebind[Scalar[dtype]](W_critic[hidden_idx, 0])
+
+            # Use local_h_pre which we preserved in register
+            var dh_pre = dh * relu_grad_inline(local_h_pre)
+
+            # Backprop to W1 and b1
+            for i in range(EnvType.OBS_DIM):
+                local_grad_W1[i] += (
+                    rebind[Scalar[dtype]](shared_obs[local_env_idx, i]) * dh_pre
+                )
+            local_grad_b1 += dh_pre
+
+        barrier()
+
+    # === Write gradients (each thread writes its portion) ===
+    if is_valid:
+        # W1 gradients: each thread writes HIDDEN_DIM entries for its hidden_idx
+        for i in range(EnvType.OBS_DIM):
+            grad_W1[
+                global_env_idx, i * HIDDEN_DIM + hidden_idx
+            ] = local_grad_W1[i]
+
+        # b1 gradient
+        grad_b1[global_env_idx, hidden_idx] = local_grad_b1
+
+        # W_actor gradients
+        for a in range(EnvType.NUM_ACTIONS):
+            grad_W_actor[
+                global_env_idx, hidden_idx * EnvType.NUM_ACTIONS + a
+            ] = local_grad_W_actor[a]
+
+        # W_critic gradient
+        grad_W_critic[global_env_idx, hidden_idx] = local_grad_W_critic
+
+        # Bias gradients (only thread 0 writes)
+        if hidden_idx == 0:
+            for a in range(EnvType.NUM_ACTIONS):
+                grad_b_actor[global_env_idx, a] = local_grad_b_actor[a]
+            grad_b_critic[global_env_idx, 0] = local_grad_b_critic
+
+
+# =============================================================================
+# Tiled 2D Policy Gradient Kernel - Supports arbitrarily large HIDDEN_DIM
+# =============================================================================
+
+
+fn policy_gradient_kernel_2d_tiled[
+    EnvType: GPUDiscreteEnv,
+    NUM_ENVS: Int,
+    HIDDEN_DIM: Int,
+    ROLLOUT_LEN: Int,
+    ENVS_PER_BLOCK: Int,
+    HIDDEN_PER_BLOCK: Int,
+](
+    rollout_obs: LayoutTensor[
+        dtype,
+        Layout.row_major(NUM_ENVS, ROLLOUT_LEN, EnvType.OBS_DIM),
+        ImmutAnyOrigin,
+    ],
+    rollout_actions: LayoutTensor[
+        DType.int32, Layout.row_major(NUM_ENVS, ROLLOUT_LEN), ImmutAnyOrigin
+    ],
+    rollout_advantages: LayoutTensor[
+        dtype, Layout.row_major(NUM_ENVS, ROLLOUT_LEN), ImmutAnyOrigin
+    ],
+    rollout_returns: LayoutTensor[
+        dtype, Layout.row_major(NUM_ENVS, ROLLOUT_LEN), ImmutAnyOrigin
+    ],
+    W1: LayoutTensor[
+        dtype,
+        Layout.row_major(EnvType.OBS_DIM, HIDDEN_DIM),
+        ImmutAnyOrigin,
+    ],
+    b1: LayoutTensor[dtype, Layout.row_major(HIDDEN_DIM), ImmutAnyOrigin],
+    W_actor: LayoutTensor[
+        dtype,
+        Layout.row_major(HIDDEN_DIM, EnvType.NUM_ACTIONS),
+        ImmutAnyOrigin,
+    ],
+    b_actor: LayoutTensor[
+        dtype, Layout.row_major(EnvType.NUM_ACTIONS), ImmutAnyOrigin
+    ],
+    W_critic: LayoutTensor[
+        dtype, Layout.row_major(HIDDEN_DIM, 1), ImmutAnyOrigin
+    ],
+    b_critic: LayoutTensor[dtype, Layout.row_major(1), ImmutAnyOrigin],
+    grad_W1: LayoutTensor[
+        dtype,
+        Layout.row_major(NUM_ENVS, EnvType.OBS_DIM * HIDDEN_DIM),
+        MutAnyOrigin,
+    ],
+    grad_b1: LayoutTensor[
+        dtype, Layout.row_major(NUM_ENVS, HIDDEN_DIM), MutAnyOrigin
+    ],
+    grad_W_actor: LayoutTensor[
+        dtype,
+        Layout.row_major(NUM_ENVS, HIDDEN_DIM * EnvType.NUM_ACTIONS),
+        MutAnyOrigin,
+    ],
+    grad_b_actor: LayoutTensor[
+        dtype, Layout.row_major(NUM_ENVS, EnvType.NUM_ACTIONS), MutAnyOrigin
+    ],
+    grad_W_critic: LayoutTensor[
+        dtype, Layout.row_major(NUM_ENVS, HIDDEN_DIM), MutAnyOrigin
+    ],
+    grad_b_critic: LayoutTensor[
+        dtype, Layout.row_major(NUM_ENVS, 1), MutAnyOrigin
+    ],
+    # Hidden activations from forward pass (stored by rollout kernel)
+    hidden_activations: LayoutTensor[
+        dtype, Layout.row_major(NUM_ENVS, HIDDEN_DIM), ImmutAnyOrigin
+    ],
+    entropy_coef: Scalar[dtype],
+    value_coef: Scalar[dtype],
+):
+    """Tiled 2D policy gradient kernel supporting arbitrarily large HIDDEN_DIM.
+
+    Uses loop-based tiling: each thread processes multiple hidden units
+    by looping over tiles of size HIDDEN_PER_BLOCK.
+
+    Block dimensions: (HIDDEN_PER_BLOCK, ENVS_PER_BLOCK)
+    """
+    comptime NUM_TILES = (HIDDEN_DIM + HIDDEN_PER_BLOCK - 1) // HIDDEN_PER_BLOCK
+
+    # 2D thread indexing
+    var local_env_idx = Int(thread_idx.y)
+    var local_hidden_idx = Int(thread_idx.x)  # Within tile
+    var global_env_idx = Int(block_dim.y * block_idx.y + thread_idx.y)
+    var is_env_valid = global_env_idx < NUM_ENVS
+
+    # Shared memory (sized for HIDDEN_PER_BLOCK, not HIDDEN_DIM)
+    var shared_obs = LayoutTensor[
+        dtype,
+        Layout.row_major(ENVS_PER_BLOCK, EnvType.OBS_DIM),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ].stack_allocation()
+
+    var shared_tile = LayoutTensor[
+        dtype,
+        Layout.row_major(ENVS_PER_BLOCK, HIDDEN_PER_BLOCK),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ].stack_allocation()
+
+    var shared_logits = LayoutTensor[
+        dtype,
+        Layout.row_major(ENVS_PER_BLOCK, EnvType.NUM_ACTIONS),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ].stack_allocation()
+
+    var shared_value = LayoutTensor[
+        dtype,
+        Layout.row_major(ENVS_PER_BLOCK),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ].stack_allocation()
+
+    var shared_grads = LayoutTensor[
+        dtype,
+        Layout.row_major(ENVS_PER_BLOCK, EnvType.NUM_ACTIONS + 1),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ].stack_allocation()  # d_logit0, d_logit1, d_value
+
+    # Local gradient accumulators - accumulate across all tiles
+    # We'll store gradients for each tile's hidden units separately
+    var local_grad_b_actor = InlineArray[Scalar[dtype], EnvType.NUM_ACTIONS](
+        fill=Scalar[dtype](0)
+    )
+    var local_grad_b_critic: Scalar[dtype] = 0
+
+    for t in range(ROLLOUT_LEN):
+        # Load observation into shared memory
+        if is_env_valid and local_hidden_idx < EnvType.OBS_DIM:
+            shared_obs[local_env_idx, local_hidden_idx] = rebind[Scalar[dtype]](
+                rollout_obs[global_env_idx, t, local_hidden_idx]
+            )
+
+        barrier()
+
+        # === Forward pass: Compute hidden activations and store pre-activations ===
+        # We recompute hidden layer for backprop (to get pre-activation)
+        # Store h and h_pre for each hidden unit this thread handles
+
+        # === Actor logits with tiled reduction ===
+        for action in range(EnvType.NUM_ACTIONS):
+            var total_logit: Scalar[dtype] = 0
+
+            for tile in range(NUM_TILES):
+                var global_hidden_idx = (
+                    tile * HIDDEN_PER_BLOCK + local_hidden_idx
+                )
+                var is_hidden_valid = global_hidden_idx < HIDDEN_DIM
+
+                # Compute partial contribution for this tile
+                if is_env_valid and is_hidden_valid:
+                    # Recompute hidden activation
+                    var acc = rebind[Scalar[dtype]](b1[global_hidden_idx])
+                    for d in range(EnvType.OBS_DIM):
+                        acc += rebind[Scalar[dtype]](
+                            shared_obs[local_env_idx, d]
+                        ) * rebind[Scalar[dtype]](W1[d, global_hidden_idx])
+                    var h = relu_inline(acc)
+                    var partial = h * rebind[Scalar[dtype]](
+                        W_actor[global_hidden_idx, action]
+                    )
+                    shared_tile[local_env_idx, local_hidden_idx] = partial
+                elif is_env_valid:
+                    shared_tile[local_env_idx, local_hidden_idx] = Scalar[
+                        dtype
+                    ](0)
+
+                barrier()
+
+                # Reduce within tile using stride-based reduction
+                var stride = HIDDEN_PER_BLOCK // 2
+                while stride > 0:
+                    if is_env_valid and local_hidden_idx < stride:
+                        shared_tile[local_env_idx, local_hidden_idx] = rebind[
+                            Scalar[dtype]
+                        ](
+                            shared_tile[local_env_idx, local_hidden_idx]
+                        ) + rebind[
+                            Scalar[dtype]
+                        ](
+                            shared_tile[
+                                local_env_idx, local_hidden_idx + stride
+                            ]
+                        )
+                    barrier()
+                    stride = stride // 2
+
+                # Thread 0 accumulates tile result
+                if is_env_valid and local_hidden_idx == 0:
+                    total_logit += rebind[Scalar[dtype]](
+                        shared_tile[local_env_idx, 0]
+                    )
+
+                barrier()
+
+            # Final logit with bias
+            if is_env_valid and local_hidden_idx == 0:
+                shared_logits[local_env_idx, action] = total_logit + rebind[
+                    Scalar[dtype]
+                ](b_actor[action])
+
+            barrier()
+
+        # === Critic value with tiled reduction ===
+        var total_value: Scalar[dtype] = 0
+
+        for tile in range(NUM_TILES):
+            var global_hidden_idx = tile * HIDDEN_PER_BLOCK + local_hidden_idx
+            var is_hidden_valid = global_hidden_idx < HIDDEN_DIM
+
+            if is_env_valid and is_hidden_valid:
+                var acc = rebind[Scalar[dtype]](b1[global_hidden_idx])
+                for d in range(EnvType.OBS_DIM):
+                    acc += rebind[Scalar[dtype]](
+                        shared_obs[local_env_idx, d]
+                    ) * rebind[Scalar[dtype]](W1[d, global_hidden_idx])
+                var h = relu_inline(acc)
+                var partial = h * rebind[Scalar[dtype]](
+                    W_critic[global_hidden_idx, 0]
+                )
+                shared_tile[local_env_idx, local_hidden_idx] = partial
+            elif is_env_valid:
+                shared_tile[local_env_idx, local_hidden_idx] = Scalar[dtype](0)
+
+            barrier()
+
+            # Reduce within tile using stride-based reduction
+            var stride_v = HIDDEN_PER_BLOCK // 2
+            while stride_v > 0:
+                if is_env_valid and local_hidden_idx < stride_v:
+                    shared_tile[local_env_idx, local_hidden_idx] = rebind[
+                        Scalar[dtype]
+                    ](shared_tile[local_env_idx, local_hidden_idx]) + rebind[
+                        Scalar[dtype]
+                    ](
+                        shared_tile[local_env_idx, local_hidden_idx + stride_v]
+                    )
+                barrier()
+                stride_v = stride_v // 2
+
+            if is_env_valid and local_hidden_idx == 0:
+                total_value += rebind[Scalar[dtype]](
+                    shared_tile[local_env_idx, 0]
+                )
+
+            barrier()
+
+        if is_env_valid and local_hidden_idx == 0:
+            shared_value[local_env_idx] = total_value + rebind[Scalar[dtype]](
+                b_critic[0]
+            )
+
+        barrier()
+
+        # === Compute gradients (thread 0 per env) ===
+        if is_env_valid and local_hidden_idx == 0:
+            var advantage = rebind[Scalar[dtype]](
+                rollout_advantages[global_env_idx, t]
+            )
+            var ret = rebind[Scalar[dtype]](rollout_returns[global_env_idx, t])
+            var action = Int(rollout_actions[global_env_idx, t])
+            var value = rebind[Scalar[dtype]](shared_value[local_env_idx])
+
+            # Softmax
+            var logit0 = rebind[Scalar[dtype]](shared_logits[local_env_idx, 0])
+            var logit1 = rebind[Scalar[dtype]](shared_logits[local_env_idx, 1])
+            var probs = softmax2_inline(logit0, logit1)
+            var prob0 = probs[0]
+            var prob1 = probs[1]
+            var eps = Scalar[dtype](1e-8)
+            var log_prob0 = log(prob0 + eps)
+            var log_prob1 = log(prob1 + eps)
+            var entropy = -(prob0 * log_prob0 + prob1 * log_prob1)
+
+            # Policy gradient
+            var d_logit0 = (
+                prob0 - (Scalar[dtype](1) if action == 0 else Scalar[dtype](0))
+            ) * advantage + entropy_coef * prob0 * (entropy + log_prob0)
+            var d_logit1 = (
+                prob1 - (Scalar[dtype](1) if action == 1 else Scalar[dtype](0))
+            ) * advantage + entropy_coef * prob1 * (entropy + log_prob1)
+
+            var d_value = value_coef * (value - ret)
+
+            # Store for all threads to use
+            shared_grads[local_env_idx, 0] = d_logit0
+            shared_grads[local_env_idx, 1] = d_logit1
+            shared_grads[local_env_idx, 2] = d_value
+
+            # Update bias gradients
+            local_grad_b_actor[0] += d_logit0
+            local_grad_b_actor[1] += d_logit1
+            local_grad_b_critic += d_value
+
+        barrier()
+
+        # === Backprop through each tile ===
+        var d_logit0 = rebind[Scalar[dtype]](shared_grads[local_env_idx, 0])
+        var d_logit1 = rebind[Scalar[dtype]](shared_grads[local_env_idx, 1])
+        var d_value = rebind[Scalar[dtype]](shared_grads[local_env_idx, 2])
+
+        for tile in range(NUM_TILES):
+            var global_hidden_idx = tile * HIDDEN_PER_BLOCK + local_hidden_idx
+            var is_hidden_valid = global_hidden_idx < HIDDEN_DIM
+
+            if is_env_valid and is_hidden_valid:
+                # Recompute hidden activations
+                var acc = rebind[Scalar[dtype]](b1[global_hidden_idx])
+                for d in range(EnvType.OBS_DIM):
+                    acc += rebind[Scalar[dtype]](
+                        shared_obs[local_env_idx, d]
+                    ) * rebind[Scalar[dtype]](W1[d, global_hidden_idx])
+                var h_pre = acc
+                var h = relu_inline(acc)
+
+                # Backprop actor and critic weights
+                grad_W_actor[
+                    global_env_idx, global_hidden_idx * EnvType.NUM_ACTIONS + 0
+                ] += (h * d_logit0)
+                grad_W_actor[
+                    global_env_idx, global_hidden_idx * EnvType.NUM_ACTIONS + 1
+                ] += (h * d_logit1)
+                grad_W_critic[global_env_idx, global_hidden_idx] += h * d_value
+
+                # Compute dh for backprop through hidden layer
+                var dh = d_logit0 * rebind[Scalar[dtype]](
+                    W_actor[global_hidden_idx, 0]
+                )
+                dh += d_logit1 * rebind[Scalar[dtype]](
+                    W_actor[global_hidden_idx, 1]
+                )
+                dh += d_value * rebind[Scalar[dtype]](
+                    W_critic[global_hidden_idx, 0]
+                )
+
+                var dh_pre = dh * relu_grad_inline(h_pre)
+
+                # Backprop to W1 and b1
+                for i in range(EnvType.OBS_DIM):
+                    grad_W1[
+                        global_env_idx, i * HIDDEN_DIM + global_hidden_idx
+                    ] += (
+                        rebind[Scalar[dtype]](shared_obs[local_env_idx, i])
+                        * dh_pre
+                    )
+                grad_b1[global_env_idx, global_hidden_idx] += dh_pre
+
+        barrier()
+
+    # === Write bias gradients (only thread 0 writes) ===
+    if is_env_valid and local_hidden_idx == 0:
+
+        @parameter
+        for a in range(EnvType.NUM_ACTIONS):
+            grad_b_actor[global_env_idx, a] = local_grad_b_actor[a]
+        grad_b_critic[global_env_idx, 0] = local_grad_b_critic
+
+
+# =============================================================================
 # Training
 # =============================================================================
 
@@ -553,6 +1861,10 @@ struct A2CAgent[
         EnvType: GPUDiscreteEnv,
         NUM_ENVS: Int = 1024,
         ROLLOUT_LEN: Int = 128,
+        ENVS_PER_BLOCK: Int = 8,
+        HIDDEN_PER_BLOCK: Int = 256,
+        USE_2D_KERNELS: Bool = False,
+        USE_TILED_KERNELS: Bool = False,
     ](
         mut self,
         num_updates: Int,
@@ -571,6 +1883,20 @@ struct A2CAgent[
 
         EnvType must implement GPUDiscreteEnv trait with step_inline/reset_inline.
         Creates GPU DeviceContext internally.
+
+        Three kernel modes available:
+        1. USE_2D_KERNELS=False: Original 1D kernels (one thread per environment).
+        2. USE_2D_KERNELS=True: 2D kernels with block_dim=(HIDDEN_DIM, ENVS_PER_BLOCK).
+           Fast for HIDDEN_DIM <= ~900 with ENVS_PER_BLOCK=8.
+        3. USE_TILED_KERNELS=True: Tiled 2D kernels supporting arbitrarily large HIDDEN_DIM.
+           Uses block_dim=(HIDDEN_PER_BLOCK, ENVS_PER_BLOCK) and loops over tiles.
+
+        Parameters:
+            ENVS_PER_BLOCK: Environments per block for 2D/tiled kernels.
+            HIDDEN_PER_BLOCK: Hidden units per block for tiled kernels (default: 256).
+                Must satisfy: ENVS_PER_BLOCK * HIDDEN_PER_BLOCK * 4 < 32768 bytes.
+            USE_2D_KERNELS: Use 2D kernels (requires HIDDEN_DIM to fit in block).
+            USE_TILED_KERNELS: Use tiled kernels for large HIDDEN_DIM (1024+).
 
         Args:
             num_updates: Number of policy updates.
@@ -655,6 +1981,11 @@ struct A2CAgent[
             )
             var rollout_returns_buf = ctx.enqueue_create_buffer[dtype](
                 NUM_ENVS * ROLLOUT_LEN
+            )
+
+            # Hidden activations buffer (for tiled kernels to store activations across tiles)
+            var hidden_activations_buf = ctx.enqueue_create_buffer[dtype](
+                NUM_ENVS * Self.HIDDEN_DIM
             )
 
             # Episode tracking buffers
@@ -877,6 +2208,10 @@ struct A2CAgent[
                 dtype, Layout.row_major(NUM_ENVS, ROLLOUT_LEN), MutAnyOrigin
             ](rollout_returns_buf)
 
+            var hidden_activations = LayoutTensor[
+                dtype, Layout.row_major(NUM_ENVS, Self.HIDDEN_DIM), MutAnyOrigin
+            ](hidden_activations_buf)
+
             var episode_rewards = LayoutTensor[
                 dtype, Layout.row_major(NUM_ENVS, 1), MutAnyOrigin
             ](episode_rewards_buf)
@@ -1018,13 +2353,50 @@ struct A2CAgent[
             )
             ctx.synchronize()
 
+            # 2D kernel grid dimensions
+            comptime env_blocks_2d = (
+                NUM_ENVS + ENVS_PER_BLOCK - 1
+            ) // ENVS_PER_BLOCK
+
             if verbose:
                 print("=" * 60)
-                print("A2C Training on GPU Environment (Adam Optimizer)")
+
+                @parameter
+                if USE_TILED_KERNELS:
+                    print("A2C Training (Tiled 2D Kernels + Adam)")
+                elif USE_2D_KERNELS:
+                    print("A2C Training (2D Optimized Kernels + Adam)")
+                else:
+                    print("A2C Training on GPU Environment (Adam Optimizer)")
                 print("=" * 60)
                 print("  Environments:", NUM_ENVS)
                 print("  Rollout length:", ROLLOUT_LEN)
                 print("  Hidden dim:", Self.HIDDEN_DIM)
+
+                @parameter
+                if USE_TILED_KERNELS:
+                    print("  Envs per block:", ENVS_PER_BLOCK)
+                    print("  Hidden per block:", HIDDEN_PER_BLOCK)
+                    print(
+                        "  Block dims: (",
+                        HIDDEN_PER_BLOCK,
+                        ",",
+                        ENVS_PER_BLOCK,
+                        ")",
+                    )
+                    comptime num_tiles = (
+                        Self.HIDDEN_DIM + HIDDEN_PER_BLOCK - 1
+                    ) // HIDDEN_PER_BLOCK
+                    print("  Num tiles:", num_tiles)
+                elif USE_2D_KERNELS:
+                    print("  Envs per block:", ENVS_PER_BLOCK)
+                    print(
+                        "  Block dims: (",
+                        Self.HIDDEN_DIM,
+                        ",",
+                        ENVS_PER_BLOCK,
+                        ")",
+                    )
                 print("  Learning rate:", lr)
                 print("  Adam beta1:", beta1)
                 print("  Adam beta2:", beta2)
@@ -1039,31 +2411,107 @@ struct A2CAgent[
             # Training loop
             for update in range(num_updates):
                 # Phase 1: Collect rollout (FUSED - single kernel for all steps)
-                ctx.enqueue_function_checked[
-                    fused_rollout_kernel[
-                        EnvType, NUM_ENVS, Self.HIDDEN_DIM, ROLLOUT_LEN
-                    ],
-                    fused_rollout_kernel[
-                        EnvType, NUM_ENVS, Self.HIDDEN_DIM, ROLLOUT_LEN
-                    ],
-                ](
-                    states,
-                    rng_states,
-                    W1,
-                    b1,
-                    W_actor,
-                    b_actor,
-                    W_critic,
-                    b_critic,
-                    rollout_obs,
-                    rollout_actions,
-                    rollout_rewards,
-                    rollout_dones,
-                    rollout_log_probs,
-                    rollout_values,
-                    grid_dim=(env_blocks,),
-                    block_dim=(env_threads,),
-                )
+                @parameter
+                if USE_TILED_KERNELS:
+                    # Use tiled 2D kernel for large HIDDEN_DIM
+                    ctx.enqueue_function_checked[
+                        fused_rollout_kernel_2d_tiled[
+                            EnvType,
+                            NUM_ENVS,
+                            Self.HIDDEN_DIM,
+                            ROLLOUT_LEN,
+                            ENVS_PER_BLOCK,
+                            HIDDEN_PER_BLOCK,
+                        ],
+                        fused_rollout_kernel_2d_tiled[
+                            EnvType,
+                            NUM_ENVS,
+                            Self.HIDDEN_DIM,
+                            ROLLOUT_LEN,
+                            ENVS_PER_BLOCK,
+                            HIDDEN_PER_BLOCK,
+                        ],
+                    ](
+                        states,
+                        rng_states,
+                        W1,
+                        b1,
+                        W_actor,
+                        b_actor,
+                        W_critic,
+                        b_critic,
+                        rollout_obs,
+                        rollout_actions,
+                        rollout_rewards,
+                        rollout_dones,
+                        rollout_log_probs,
+                        rollout_values,
+                        hidden_activations,
+                        grid_dim=(1, env_blocks_2d),
+                        block_dim=(HIDDEN_PER_BLOCK, ENVS_PER_BLOCK),
+                    )
+                elif USE_2D_KERNELS:
+                    # Use optimized 2D kernel with shared memory reductions
+                    ctx.enqueue_function_checked[
+                        fused_rollout_kernel_2d[
+                            EnvType,
+                            NUM_ENVS,
+                            Self.HIDDEN_DIM,
+                            ROLLOUT_LEN,
+                            ENVS_PER_BLOCK,
+                        ],
+                        fused_rollout_kernel_2d[
+                            EnvType,
+                            NUM_ENVS,
+                            Self.HIDDEN_DIM,
+                            ROLLOUT_LEN,
+                            ENVS_PER_BLOCK,
+                        ],
+                    ](
+                        states,
+                        rng_states,
+                        W1,
+                        b1,
+                        W_actor,
+                        b_actor,
+                        W_critic,
+                        b_critic,
+                        rollout_obs,
+                        rollout_actions,
+                        rollout_rewards,
+                        rollout_dones,
+                        rollout_log_probs,
+                        rollout_values,
+                        grid_dim=(1, env_blocks_2d),
+                        block_dim=(Self.HIDDEN_DIM, ENVS_PER_BLOCK),
+                    )
+                else:
+                    # Use original 1D kernel
+                    ctx.enqueue_function_checked[
+                        fused_rollout_kernel[
+                            EnvType, NUM_ENVS, Self.HIDDEN_DIM, ROLLOUT_LEN
+                        ],
+                        fused_rollout_kernel[
+                            EnvType, NUM_ENVS, Self.HIDDEN_DIM, ROLLOUT_LEN
+                        ],
+                    ](
+                        states,
+                        rng_states,
+                        W1,
+                        b1,
+                        W_actor,
+                        b_actor,
+                        W_critic,
+                        b_critic,
+                        rollout_obs,
+                        rollout_actions,
+                        rollout_rewards,
+                        rollout_dones,
+                        rollout_log_probs,
+                        rollout_values,
+                        grid_dim=(env_blocks,),
+                        block_dim=(env_threads,),
+                    )
 
                 # Track episodes for metrics
                 var rollout_rewards_i = LayoutTensor[
@@ -1152,35 +2600,126 @@ struct A2CAgent[
                     ImmutAnyOrigin,
                 ](rollout_returns_buf)
 
-                ctx.enqueue_function_checked[
-                    policy_gradient_kernel[
-                        EnvType, NUM_ENVS, Self.HIDDEN_DIM, ROLLOUT_LEN
-                    ],
-                    policy_gradient_kernel[
-                        EnvType, NUM_ENVS, Self.HIDDEN_DIM, ROLLOUT_LEN
-                    ],
-                ](
-                    rollout_obs_i,
-                    rollout_actions_i,
-                    rollout_advantages_i,
-                    rollout_returns_i,
-                    W1,
-                    b1,
-                    W_actor,
-                    b_actor,
-                    W_critic,
-                    b_critic,
-                    grad_W1,
-                    grad_b1,
-                    grad_W_actor,
-                    grad_b_actor,
-                    grad_W_critic,
-                    grad_b_critic,
-                    entropy_coef_s,
-                    value_coef_s,
-                    grid_dim=(env_blocks,),
-                    block_dim=(env_threads,),
-                )
+                # Create immutable tensor view for hidden activations
+                var hidden_activations_i = LayoutTensor[
+                    dtype,
+                    Layout.row_major(NUM_ENVS, Self.HIDDEN_DIM),
+                    ImmutAnyOrigin,
+                ](hidden_activations_buf)
+
+                @parameter
+                if USE_TILED_KERNELS:
+                    # Use tiled 2D kernel for large HIDDEN_DIM
+                    ctx.enqueue_function_checked[
+                        policy_gradient_kernel_2d_tiled[
+                            EnvType,
+                            NUM_ENVS,
+                            Self.HIDDEN_DIM,
+                            ROLLOUT_LEN,
+                            ENVS_PER_BLOCK,
+                            HIDDEN_PER_BLOCK,
+                        ],
+                        policy_gradient_kernel_2d_tiled[
+                            EnvType,
+                            NUM_ENVS,
+                            Self.HIDDEN_DIM,
+                            ROLLOUT_LEN,
+                            ENVS_PER_BLOCK,
+                            HIDDEN_PER_BLOCK,
+                        ],
+                    ](
+                        rollout_obs_i,
+                        rollout_actions_i,
+                        rollout_advantages_i,
+                        rollout_returns_i,
+                        W1,
+                        b1,
+                        W_actor,
+                        b_actor,
+                        W_critic,
+                        b_critic,
+                        grad_W1,
+                        grad_b1,
+                        grad_W_actor,
+                        grad_b_actor,
+                        grad_W_critic,
+                        grad_b_critic,
+                        hidden_activations_i,
+                        entropy_coef_s,
+                        value_coef_s,
+                        grid_dim=(1, env_blocks_2d),
+                        block_dim=(HIDDEN_PER_BLOCK, ENVS_PER_BLOCK),
+                    )
+                elif USE_2D_KERNELS:
+                    # Use optimized 2D kernel with shared memory
+                    ctx.enqueue_function_checked[
+                        policy_gradient_kernel_2d[
+                            EnvType,
+                            NUM_ENVS,
+                            Self.HIDDEN_DIM,
+                            ROLLOUT_LEN,
+                            ENVS_PER_BLOCK,
+                        ],
+                        policy_gradient_kernel_2d[
+                            EnvType,
+                            NUM_ENVS,
+                            Self.HIDDEN_DIM,
+                            ROLLOUT_LEN,
+                            ENVS_PER_BLOCK,
+                        ],
+                    ](
+                        rollout_obs_i,
+                        rollout_actions_i,
+                        rollout_advantages_i,
+                        rollout_returns_i,
+                        W1,
+                        b1,
+                        W_actor,
+                        b_actor,
+                        W_critic,
+                        b_critic,
+                        grad_W1,
+                        grad_b1,
+                        grad_W_actor,
+                        grad_b_actor,
+                        grad_W_critic,
+                        grad_b_critic,
+                        entropy_coef_s,
+                        value_coef_s,
+                        grid_dim=(1, env_blocks_2d),
+                        block_dim=(Self.HIDDEN_DIM, ENVS_PER_BLOCK),
+                    )
+                else:
+                    # Use original 1D kernel
+                    ctx.enqueue_function_checked[
+                        policy_gradient_kernel[
+                            EnvType, NUM_ENVS, Self.HIDDEN_DIM, ROLLOUT_LEN
+                        ],
+                        policy_gradient_kernel[
+                            EnvType, NUM_ENVS, Self.HIDDEN_DIM, ROLLOUT_LEN
+                        ],
+                    ](
+                        rollout_obs_i,
+                        rollout_actions_i,
+                        rollout_advantages_i,
+                        rollout_returns_i,
+                        W1,
+                        b1,
+                        W_actor,
+                        b_actor,
+                        W_critic,
+                        b_critic,
+                        grad_W1,
+                        grad_b1,
+                        grad_W_actor,
+                        grad_b_actor,
+                        grad_W_critic,
+                        grad_b_critic,
+                        entropy_coef_s,
+                        value_coef_s,
+                        grid_dim=(env_blocks,),
+                        block_dim=(env_threads,),
+                    )
 
                 # Phase 4: Reduce and update ALL parameters
                 var grad_W1_i = LayoutTensor[

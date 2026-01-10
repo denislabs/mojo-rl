@@ -26,12 +26,13 @@ from math import sqrt
 # Forward Pass: y = x @ W + b
 # ============================================================================
 
+
 fn linear_forward_kernel[
     dtype: DType,
-    BATCH: Int,      # Batch size (M)
-    IN_DIM: Int,     # Input features (K)
-    OUT_DIM: Int,    # Output features (N)
-    TILE: Int,       # Tile size
+    BATCH: Int,  # Batch size (M)
+    IN_DIM: Int,  # Input features (K)
+    OUT_DIM: Int,  # Output features (N)
+    TILE: Int,  # Tile size
 ](
     output: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
     x: LayoutTensor[dtype, Layout.row_major(BATCH, IN_DIM), ImmutAnyOrigin],
@@ -49,19 +50,23 @@ fn linear_forward_kernel[
 
     # Shared memory for tiles
     x_shared = LayoutTensor[
-        dtype, Layout.row_major(TILE, TILE), MutAnyOrigin,
+        dtype,
+        Layout.row_major(TILE, TILE),
+        MutAnyOrigin,
         address_space = AddressSpace.SHARED,
     ].stack_allocation()
 
     W_shared = LayoutTensor[
-        dtype, Layout.row_major(TILE, TILE), MutAnyOrigin,
+        dtype,
+        Layout.row_major(TILE, TILE),
+        MutAnyOrigin,
         address_space = AddressSpace.SHARED,
     ].stack_allocation()
 
     # Start with bias
-    var acc: Scalar[dtype] = 0
+    var acc: output.element_type = 0
     if global_col < OUT_DIM:
-        acc = rebind[Scalar[dtype]](b[global_col])
+        acc = b[global_col]
 
     comptime num_tiles = (IN_DIM + TILE - 1) // TILE
 
@@ -86,7 +91,7 @@ fn linear_forward_kernel[
         # Compute partial dot product
         @parameter
         for k in range(TILE):
-            acc += rebind[Scalar[dtype]](x_shared[local_row, k]) * rebind[Scalar[dtype]](W_shared[k, local_col])
+            acc += x_shared[local_row, k] * W_shared[k, local_col]
 
         barrier()
 
@@ -114,18 +119,22 @@ fn linear_forward_relu_kernel[
     global_col = Int(block_idx.x) * TILE + local_col
 
     x_shared = LayoutTensor[
-        dtype, Layout.row_major(TILE, TILE), MutAnyOrigin,
+        dtype,
+        Layout.row_major(TILE, TILE),
+        MutAnyOrigin,
         address_space = AddressSpace.SHARED,
     ].stack_allocation()
 
     W_shared = LayoutTensor[
-        dtype, Layout.row_major(TILE, TILE), MutAnyOrigin,
+        dtype,
+        Layout.row_major(TILE, TILE),
+        MutAnyOrigin,
         address_space = AddressSpace.SHARED,
     ].stack_allocation()
 
-    var acc: Scalar[dtype] = 0
+    var acc: output.element_type = 0
     if global_col < OUT_DIM:
-        acc = rebind[Scalar[dtype]](b[global_col])
+        acc = b[global_col]
 
     comptime num_tiles = (IN_DIM + TILE - 1) // TILE
 
@@ -147,24 +156,25 @@ fn linear_forward_relu_kernel[
 
         @parameter
         for k in range(TILE):
-            acc += rebind[Scalar[dtype]](x_shared[local_row, k]) * rebind[Scalar[dtype]](W_shared[k, local_col])
+            acc += x_shared[local_row, k] * W_shared[k, local_col]
 
         barrier()
 
     # Write result with ReLU
     if global_row < BATCH and global_col < OUT_DIM:
-        output[global_row, global_col] = acc if acc > 0 else 0
+        output[global_row, global_col] = max(acc, 0)
 
 
 # ============================================================================
 # Backward Pass: Compute gradients
 # ============================================================================
 
+
 fn linear_backward_dW_kernel[
     dtype: DType,
-    BATCH: Int,      # M
-    IN_DIM: Int,     # K (rows of dW)
-    OUT_DIM: Int,    # N (cols of dW)
+    BATCH: Int,  # M
+    IN_DIM: Int,  # K (rows of dW)
+    OUT_DIM: Int,  # N (cols of dW)
     TILE: Int,
 ](
     dW: LayoutTensor[dtype, Layout.row_major(IN_DIM, OUT_DIM), MutAnyOrigin],
@@ -184,16 +194,20 @@ fn linear_backward_dW_kernel[
     # Shared memory for tiles
     # x_T_shared stores a tile of x.T, which is column-major access of x
     x_T_shared = LayoutTensor[
-        dtype, Layout.row_major(TILE, TILE), MutAnyOrigin,
+        dtype,
+        Layout.row_major(TILE, TILE),
+        MutAnyOrigin,
         address_space = AddressSpace.SHARED,
     ].stack_allocation()
 
     dy_shared = LayoutTensor[
-        dtype, Layout.row_major(TILE, TILE), MutAnyOrigin,
+        dtype,
+        Layout.row_major(TILE, TILE),
+        MutAnyOrigin,
         address_space = AddressSpace.SHARED,
     ].stack_allocation()
 
-    var acc: Scalar[dtype] = 0
+    var acc: dW.element_type = 0
     comptime num_tiles = (BATCH + TILE - 1) // TILE
 
     @parameter
@@ -216,7 +230,7 @@ fn linear_backward_dW_kernel[
 
         @parameter
         for k in range(TILE):
-            acc += rebind[Scalar[dtype]](x_T_shared[local_row, k]) * rebind[Scalar[dtype]](dy_shared[k, local_col])
+            acc += x_T_shared[local_row, k] * dy_shared[k, local_col]
 
         barrier()
 
@@ -245,15 +259,13 @@ fn linear_backward_db_kernel[
         return
 
     # Each thread loads one element from its batch position
-    var my_value: Scalar[dtype] = 0
+    var my_value: dy.element_type = 0
     batch_idx = Int(local_i)
     if batch_idx < BATCH:
-        my_value = rebind[Scalar[dtype]](dy[batch_idx, col])
+        my_value = dy[batch_idx, col]
 
     # Sum across threads using block.sum
-    total = block.sum[block_size=TPB, broadcast=False](
-        val=SIMD[dtype, 1](my_value)
-    )
+    total = block.sum[block_size=TPB, broadcast=False](val=my_value)
 
     if local_i == 0:
         db[col] = total[0]
@@ -281,16 +293,20 @@ fn linear_backward_dx_kernel[
     global_col = Int(block_idx.x) * TILE + local_col  # IN_DIM dimension
 
     dy_shared = LayoutTensor[
-        dtype, Layout.row_major(TILE, TILE), MutAnyOrigin,
+        dtype,
+        Layout.row_major(TILE, TILE),
+        MutAnyOrigin,
         address_space = AddressSpace.SHARED,
     ].stack_allocation()
 
     W_T_shared = LayoutTensor[
-        dtype, Layout.row_major(TILE, TILE), MutAnyOrigin,
+        dtype,
+        Layout.row_major(TILE, TILE),
+        MutAnyOrigin,
         address_space = AddressSpace.SHARED,
     ].stack_allocation()
 
-    var acc: Scalar[dtype] = 0
+    var acc: dx.element_type = 0
     comptime num_tiles = (OUT_DIM + TILE - 1) // TILE
 
     @parameter
@@ -313,7 +329,7 @@ fn linear_backward_dx_kernel[
 
         @parameter
         for k in range(TILE):
-            acc += rebind[Scalar[dtype]](dy_shared[local_row, k]) * rebind[Scalar[dtype]](W_T_shared[k, local_col])
+            acc += dy_shared[local_row, k] * W_T_shared[k, local_col]
 
         barrier()
 
@@ -324,6 +340,7 @@ fn linear_backward_dx_kernel[
 # ============================================================================
 # Adam Update Kernel
 # ============================================================================
+
 
 fn adam_update_kernel[
     dtype: DType,
@@ -350,9 +367,9 @@ fn adam_update_kernel[
     global_i = Int(block_dim.x * block_idx.x + thread_idx.x)
 
     if global_i < SIZE:
-        g = rebind[Scalar[dtype]](grads[global_i])
-        m_val = rebind[Scalar[dtype]](m[global_i])
-        v_val = rebind[Scalar[dtype]](v[global_i])
+        g = grads[global_i]
+        m_val = m[global_i]
+        v_val = v[global_i]
 
         # Update moments
         m_new = beta1 * m_val + (1 - beta1) * g
@@ -363,7 +380,7 @@ fn adam_update_kernel[
         v_hat = v_new / bias_correction2
 
         # Update parameters
-        params[global_i] = rebind[Scalar[dtype]](params[global_i]) - lr * m_hat / (sqrt(v_hat) + eps)
+        params[global_i] = params[global_i] - lr * m_hat / (sqrt(v_hat) + eps)
 
         # Store updated moments
         m[global_i] = m_new
@@ -373,6 +390,7 @@ fn adam_update_kernel[
 # ============================================================================
 # Soft Update Kernel (for target networks)
 # ============================================================================
+
 
 fn soft_update_kernel[
     dtype: DType,
@@ -387,6 +405,6 @@ fn soft_update_kernel[
     global_i = Int(block_dim.x * block_idx.x + thread_idx.x)
 
     if global_i < SIZE:
-        src_val = rebind[Scalar[dtype]](source[global_i])
-        tgt_val = rebind[Scalar[dtype]](target[global_i])
+        src_val = source[global_i]
+        tgt_val = target[global_i]
         target[global_i] = tau * src_val + (1 - tau) * tgt_val
