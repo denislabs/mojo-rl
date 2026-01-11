@@ -10,6 +10,51 @@ This demonstrates:
 
 We train a 2-layer MLP on a simple regression task: y = x1*x2 (XOR-like)
 
+All Optimizations Applied:
+  Optimization: 1. Loop Unrolling
+  Technique: 4x unrolled inner k-loop in all matmul kernels
+  Impact: Better ILP
+  ────────────────────────────────────────
+  Optimization: 2. Triple-Fused Kernel
+  Technique: linear_backward_mse_dW_db_kernel combines MSE gradient + dW + db
+  Impact: Reduced backward 36ms → 24ms
+  ────────────────────────────────────────
+  Optimization: 3. Conditional Loss Compute
+  Technique: Only compute mse_loss when logging
+  Impact: Saved ~8ms per non-logging epoch
+  ────────────────────────────────────────
+  Optimization: 4. Stride-Based Reduction
+  Technique: Generic tree reduction loop (your suggestion)
+  Impact: Cleaner, works for any TILE size
+  ────────────────────────────────────────
+  Optimization: 5. Conditional Sync
+  Technique: Only sync for timing when logging
+  Impact: Reduced sync overhead
+  Performance Progression:
+  ┌──────────────────────────────┬────────────────┬─────────────────────┬─────────┐
+  │           Version            │   Total Time   │     Throughput      │ Speedup │
+  ├──────────────────────────────┼────────────────┼─────────────────────┼─────────┤
+  │ Original (from summary)      │ 179.4 ms/epoch │ ~5,700 samples/sec  │ 1.0x    │
+  ├──────────────────────────────┼────────────────┼─────────────────────┼─────────┤
+  │ After fused dW+db            │ 147.0 ms/epoch │ ~6,960 samples/sec  │ 1.2x    │
+  ├──────────────────────────────┼────────────────┼─────────────────────┼─────────┤
+  │ After fused Adam             │ 82.0 ms/epoch  │ ~12,480 samples/sec │ 2.2x    │
+  ├──────────────────────────────┼────────────────┼─────────────────────┼─────────┤
+  │ After fused dx+ReLU          │ 72.0 ms/epoch  │ ~14,200 samples/sec │ 2.5x    │
+  ├──────────────────────────────┼────────────────┼─────────────────────┼─────────┤
+  │ After triple-fused MSE+dW+db │ 60.0 ms/epoch  │ ~17,080 samples/sec │ 3.0x    │
+  ├──────────────────────────────┼────────────────┼─────────────────────┼─────────┤
+  │ After conditional loss       │ 48.1 ms/epoch  │ ~21,290 samples/sec │ 3.7x    │
+  ├──────────────────────────────┼────────────────┼─────────────────────┼─────────┤
+  │ After reduced sync           │ 46.9 ms/epoch  │ 21,839 samples/sec  │ 3.8x    │
+  └──────────────────────────────┴────────────────┴─────────────────────┴─────────┘
+  Final Timing Breakdown (logged epochs):
+
+  - Forward: 15.8 ms (29%)
+  - Backward: 23.7 ms (43%)
+  - Adam: 7.8 ms (14%)
+  - Loss: 8.0 ms (14%) - only on logging epochs
+
 Run with:
     pixi run -e apple mojo run test_mlp.mojo
 """
@@ -39,6 +84,149 @@ comptime OUTPUT_DIM = 1
 
 # Training parameters
 comptime NUM_EPOCHS = 1000
+
+
+# =============================================================================
+# Generic Tiled Matmul - Parametric for all use cases
+# =============================================================================
+#
+# This generic kernel handles:
+# - Forward:     C = A @ B + bias  (TRANSPOSE_A=False, TRANSPOSE_B=False)
+# - Backward dW: C = A.T @ B       (TRANSPOSE_A=True,  TRANSPOSE_B=False)
+# - Backward dx: C = A @ B.T       (TRANSPOSE_A=False, TRANSPOSE_B=True)
+#
+# Activations: "none", "relu", "dual_relu" (outputs both pre and post ReLU)
+# =============================================================================
+
+
+fn generic_matmul_kernel[
+    dtype: DType,
+    M: Int,  # Output rows (batch for forward, in_dim for dW, batch for dx)
+    K: Int,  # Inner dimension (in_dim for forward, batch for dW, out_dim for dx)
+    N: Int,  # Output cols (out_dim for forward/dW, in_dim for dx)
+    TILE: Int,
+    TRANSPOSE_A: Bool,  # A is (K, M) and we access A.T
+    TRANSPOSE_B: Bool,  # B is (N, K) and we access B.T
+    HAS_BIAS: Bool,
+    ACTIVATION: StringLiteral,  # "none", "relu", "dual_relu"
+](
+    output: LayoutTensor[dtype, Layout.row_major(M, N), MutAnyOrigin],
+    output2: LayoutTensor[
+        dtype, Layout.row_major(M, N), MutAnyOrigin
+    ],  # For dual_relu
+    A: LayoutTensor[
+        dtype,
+        Layout.row_major(M, K) if not TRANSPOSE_A else Layout.row_major(K, M),
+        ImmutAnyOrigin,
+    ],
+    B: LayoutTensor[
+        dtype,
+        Layout.row_major(K, N) if not TRANSPOSE_B else Layout.row_major(N, K),
+        ImmutAnyOrigin,
+    ],
+    bias: LayoutTensor[dtype, Layout.row_major(N), ImmutAnyOrigin],
+):
+    """Generic tiled matmul with compile-time options."""
+    var local_row = Int(thread_idx.y)
+    var local_col = Int(thread_idx.x)
+    var global_row = Int(block_idx.y) * TILE + local_row
+    var global_col = Int(block_idx.x) * TILE + local_col
+
+    var A_shared = LayoutTensor[
+        dtype,
+        Layout.row_major(TILE, TILE),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ].stack_allocation()
+
+    var B_shared = LayoutTensor[
+        dtype,
+        Layout.row_major(TILE, TILE),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ].stack_allocation()
+
+    # Initialize accumulator (with bias if applicable)
+    var acc: output.element_type = 0
+
+    @parameter
+    if HAS_BIAS:
+        if global_col < N:
+            acc = bias[global_col]
+
+    comptime num_tiles = (K + TILE - 1) // TILE
+
+    for tile_idx in range(num_tiles):
+        # Load A tile (handle transpose)
+        @parameter
+        if TRANSPOSE_A:
+            # A is (K, M), we want A.T[global_row, tile_k] = A[tile_k, global_row]
+            var k_idx = tile_idx * TILE + local_col
+            if global_row < M and k_idx < K:
+                A_shared[local_row, local_col] = A[k_idx, global_row]
+            else:
+                A_shared[local_row, local_col] = 0
+        else:
+            # A is (M, K), access normally
+            var k_idx = tile_idx * TILE + local_col
+            if global_row < M and k_idx < K:
+                A_shared[local_row, local_col] = A[global_row, k_idx]
+            else:
+                A_shared[local_row, local_col] = 0
+
+        # Load B tile (handle transpose)
+        @parameter
+        if TRANSPOSE_B:
+            # B is (N, K), we want B.T[tile_k, global_col] = B[global_col, tile_k]
+            var k_idx = tile_idx * TILE + local_row
+            if k_idx < K and global_col < N:
+                B_shared[local_row, local_col] = B[global_col, k_idx]
+            else:
+                B_shared[local_row, local_col] = 0
+        else:
+            # B is (K, N), access normally
+            var k_idx = tile_idx * TILE + local_row
+            if k_idx < K and global_col < N:
+                B_shared[local_row, local_col] = B[k_idx, global_col]
+            else:
+                B_shared[local_row, local_col] = 0
+
+        barrier()
+
+        # Compute partial dot product - UNROLLED by 4 for better ILP
+        # TILE=16, so 16/4 = 4 iterations of 4 MACs each
+        @parameter
+        for k_base in range(0, TILE, 4):
+            acc += (
+                A_shared[local_row, k_base + 0]
+                * B_shared[k_base + 0, local_col]
+            )
+            acc += (
+                A_shared[local_row, k_base + 1]
+                * B_shared[k_base + 1, local_col]
+            )
+            acc += (
+                A_shared[local_row, k_base + 2]
+                * B_shared[k_base + 2, local_col]
+            )
+            acc += (
+                A_shared[local_row, k_base + 3]
+                * B_shared[k_base + 3, local_col]
+            )
+
+        barrier()
+
+    # Write output with activation
+    if global_row < M and global_col < N:
+
+        @parameter
+        if ACTIVATION == "relu":
+            output[global_row, global_col] = max(acc, 0)
+        elif ACTIVATION == "dual_relu":
+            output[global_row, global_col] = acc  # pre-ReLU
+            output2[global_row, global_col] = max(acc, 0)  # post-ReLU
+        else:  # "none"
+            output[global_row, global_col] = acc
 
 
 # =============================================================================
@@ -139,54 +327,53 @@ fn linear_forward_relu_kernel[
     W: LayoutTensor[dtype, Layout.row_major(IN_DIM, OUT_DIM), ImmutAnyOrigin],
     b: LayoutTensor[dtype, Layout.row_major(OUT_DIM), ImmutAnyOrigin],
 ):
-    """Fused forward pass with ReLU: y = max(0, x @ W + b)."""
-    var local_row = Int(thread_idx.y)
-    var local_col = Int(thread_idx.x)
-    var global_row = Int(block_idx.y) * TILE + local_row
-    var global_col = Int(block_idx.x) * TILE + local_col
+    """Fused forward pass with ReLU: y = max(0, x @ W + b).
 
-    var x_shared = LayoutTensor[
+    Delegates to generic_matmul_kernel with ACTIVATION="relu".
+    """
+    generic_matmul_kernel[
         dtype,
-        Layout.row_major(TILE, TILE),
-        MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
-    ].stack_allocation()
+        BATCH,
+        IN_DIM,
+        OUT_DIM,
+        TILE,
+        TRANSPOSE_A=False,
+        TRANSPOSE_B=False,
+        HAS_BIAS=True,
+        ACTIVATION="relu",
+    ](output, output, x, W, b)
 
-    var W_shared = LayoutTensor[
+
+fn linear_forward_relu_dual_kernel[
+    BATCH: Int,
+    IN_DIM: Int,
+    OUT_DIM: Int,
+](
+    output_pre: LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+    ],
+    output_relu: LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+    ],
+    x: LayoutTensor[dtype, Layout.row_major(BATCH, IN_DIM), ImmutAnyOrigin],
+    W: LayoutTensor[dtype, Layout.row_major(IN_DIM, OUT_DIM), ImmutAnyOrigin],
+    b: LayoutTensor[dtype, Layout.row_major(OUT_DIM), ImmutAnyOrigin],
+):
+    """Fused forward: outputs both pre-ReLU and post-ReLU in ONE matmul.
+
+    Delegates to generic_matmul_kernel with ACTIVATION="dual_relu".
+    """
+    generic_matmul_kernel[
         dtype,
-        Layout.row_major(TILE, TILE),
-        MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
-    ].stack_allocation()
-
-    var acc: output.element_type = 0
-    if global_col < OUT_DIM:
-        acc = b[global_col]
-
-    comptime num_tiles = (IN_DIM + TILE - 1) // TILE
-
-    for tile_idx in range(num_tiles):
-        var x_col = tile_idx * TILE + local_col
-        if global_row < BATCH and x_col < IN_DIM:
-            x_shared[local_row, local_col] = x[global_row, x_col]
-        else:
-            x_shared[local_row, local_col] = 0
-
-        var W_row = tile_idx * TILE + local_row
-        if W_row < IN_DIM and global_col < OUT_DIM:
-            W_shared[local_row, local_col] = W[W_row, global_col]
-        else:
-            W_shared[local_row, local_col] = 0
-
-        barrier()
-
-        for k in range(TILE):
-            acc += x_shared[local_row, k] * W_shared[k, local_col]
-
-        barrier()
-
-    if global_row < BATCH and global_col < OUT_DIM:
-        output[global_row, global_col] = max(acc, 0)
+        BATCH,
+        IN_DIM,
+        OUT_DIM,
+        TILE,
+        TRANSPOSE_A=False,
+        TRANSPOSE_B=False,
+        HAS_BIAS=True,
+        ACTIVATION="dual_relu",
+    ](output_pre, output_relu, x, W, b)
 
 
 fn linear_forward_kernel[
@@ -199,54 +386,21 @@ fn linear_forward_kernel[
     W: LayoutTensor[dtype, Layout.row_major(IN_DIM, OUT_DIM), ImmutAnyOrigin],
     b: LayoutTensor[dtype, Layout.row_major(OUT_DIM), ImmutAnyOrigin],
 ):
-    """Forward pass without activation: y = x @ W + b."""
-    var local_row = Int(thread_idx.y)
-    var local_col = Int(thread_idx.x)
-    var global_row = Int(block_idx.y) * TILE + local_row
-    var global_col = Int(block_idx.x) * TILE + local_col
+    """Forward pass without activation: y = x @ W + b.
 
-    var x_shared = LayoutTensor[
+    Delegates to generic_matmul_kernel with ACTIVATION="none".
+    """
+    generic_matmul_kernel[
         dtype,
-        Layout.row_major(TILE, TILE),
-        MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
-    ].stack_allocation()
-
-    var W_shared = LayoutTensor[
-        dtype,
-        Layout.row_major(TILE, TILE),
-        MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
-    ].stack_allocation()
-
-    var acc: output.element_type = 0
-    if global_col < OUT_DIM:
-        acc = b[global_col]
-
-    comptime num_tiles = (IN_DIM + TILE - 1) // TILE
-
-    for tile_idx in range(num_tiles):
-        var x_col = tile_idx * TILE + local_col
-        if global_row < BATCH and x_col < IN_DIM:
-            x_shared[local_row, local_col] = x[global_row, x_col]
-        else:
-            x_shared[local_row, local_col] = 0
-
-        var W_row = tile_idx * TILE + local_row
-        if W_row < IN_DIM and global_col < OUT_DIM:
-            W_shared[local_row, local_col] = W[W_row, global_col]
-        else:
-            W_shared[local_row, local_col] = 0
-
-        barrier()
-
-        for k in range(TILE):
-            acc += x_shared[local_row, k] * W_shared[k, local_col]
-
-        barrier()
-
-    if global_row < BATCH and global_col < OUT_DIM:
-        output[global_row, global_col] = acc
+        BATCH,
+        IN_DIM,
+        OUT_DIM,
+        TILE,
+        TRANSPOSE_A=False,
+        TRANSPOSE_B=False,
+        HAS_BIAS=True,
+        ACTIVATION="none",
+    ](output, output, x, W, b)
 
 
 # =============================================================================
@@ -418,6 +572,260 @@ fn linear_backward_db_kernel[
         db[col] = total[0]
 
 
+# =============================================================================
+# Fused MSE backward + dW + db Kernel
+# =============================================================================
+
+
+fn linear_backward_mse_dW_db_kernel[
+    BATCH: Int,
+    IN_DIM: Int,
+    OUT_DIM: Int,
+](
+    dW: LayoutTensor[dtype, Layout.row_major(IN_DIM, OUT_DIM), MutAnyOrigin],
+    db: LayoutTensor[dtype, Layout.row_major(OUT_DIM), MutAnyOrigin],
+    d_output: LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+    ],  # Also outputs d_y_pred
+    x: LayoutTensor[dtype, Layout.row_major(BATCH, IN_DIM), ImmutAnyOrigin],
+    predictions: LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_DIM), ImmutAnyOrigin
+    ],
+    targets: LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_DIM), ImmutAnyOrigin
+    ],
+):
+    """Triple-fused backward: computes MSE gradient + dW + db in one kernel.
+
+    - d_output = 2 * (predictions - targets) / (BATCH * OUT_DIM)
+    - dW = x.T @ d_output
+    - db = sum(d_output, axis=0)
+
+    Grid: (OUT_DIM/TILE, IN_DIM/TILE) - each block computes TILE×TILE of dW.
+    Blocks in first row (block_idx.y == 0) also compute db and d_output.
+
+    Optimized with loop unrolling (4x) for better ILP.
+    """
+    var local_row = Int(thread_idx.y)
+    var local_col = Int(thread_idx.x)
+    var global_row = Int(block_idx.y) * TILE + local_row  # IN_DIM dimension
+    var global_col = Int(block_idx.x) * TILE + local_col  # OUT_DIM dimension
+
+    var x_T_shared = LayoutTensor[
+        dtype,
+        Layout.row_major(TILE, TILE),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ].stack_allocation()
+
+    var dy_shared = LayoutTensor[
+        dtype,
+        Layout.row_major(TILE, TILE),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ].stack_allocation()
+
+    var dW_acc: dW.element_type = 0
+    var db_acc: dW.element_type = 0
+
+    comptime num_tiles = (BATCH + TILE - 1) // TILE
+    var compute_db = block_idx.y == 0  # First row of blocks computes db
+
+    # MSE gradient scale: 2 / (BATCH * OUT_DIM)
+    var mse_scale = Scalar[dtype](2.0) / Scalar[dtype](BATCH * OUT_DIM)
+
+    for tile_idx in range(num_tiles):
+        # Load x.T tile: x_T[global_row, k] = x[k, global_row]
+        var batch_idx = tile_idx * TILE + local_col
+        if global_row < IN_DIM and batch_idx < BATCH:
+            x_T_shared[local_row, local_col] = x[batch_idx, global_row]
+        else:
+            x_T_shared[local_row, local_col] = 0
+
+        # Compute MSE gradient inline, load into dy_shared, and accumulate for db
+        var dy_row = tile_idx * TILE + local_row
+        var dy_val: dy_shared.element_type = 0
+        if dy_row < BATCH and global_col < OUT_DIM:
+            # Compute MSE gradient: 2 * (pred - target) / (batch * out_dim)
+            var pred = predictions[dy_row, global_col]
+            var target = targets[dy_row, global_col]
+            dy_val = mse_scale * (pred - target)
+            dy_shared[local_row, local_col] = dy_val
+
+            # Also write d_output if this is the first row of blocks
+            # (only need to write once per (batch, out) element)
+            if compute_db:
+                d_output[dy_row, global_col] = dy_val
+                db_acc += dy_val
+        else:
+            dy_shared[local_row, local_col] = 0
+
+        barrier()
+
+        # Compute dW partial dot product - UNROLLED by 4 for ILP
+        @parameter
+        for k_base in range(0, TILE, 4):
+            dW_acc += (
+                x_T_shared[local_row, k_base + 0]
+                * dy_shared[k_base + 0, local_col]
+            )
+            dW_acc += (
+                x_T_shared[local_row, k_base + 1]
+                * dy_shared[k_base + 1, local_col]
+            )
+            dW_acc += (
+                x_T_shared[local_row, k_base + 2]
+                * dy_shared[k_base + 2, local_col]
+            )
+            dW_acc += (
+                x_T_shared[local_row, k_base + 3]
+                * dy_shared[k_base + 3, local_col]
+            )
+
+        barrier()
+
+    # Write dW
+    if global_row < IN_DIM and global_col < OUT_DIM:
+        dW[global_row, global_col] = dW_acc
+
+    # Reduce and write db (only blocks in first row)
+    if compute_db:
+        # Reuse dy_shared for reduction across local_row
+        dy_shared[local_row, local_col] = db_acc
+        barrier()
+
+        # Tree reduction with stride (works for any TILE size)
+        var stride = TILE // 2
+        while stride > 0:
+            if local_row < stride:
+                dy_shared[local_row, local_col] += dy_shared[
+                    local_row + stride, local_col
+                ]
+            barrier()
+            stride //= 2
+
+        # Thread 0 of each column writes the result
+        if local_row == 0 and global_col < OUT_DIM:
+            db[global_col] = dy_shared[0, local_col]
+
+
+# =============================================================================
+# Fused dW + db Kernel (for layer 1 without MSE)
+# =============================================================================
+
+
+fn linear_backward_dW_db_kernel[
+    BATCH: Int,
+    IN_DIM: Int,
+    OUT_DIM: Int,
+](
+    dW: LayoutTensor[dtype, Layout.row_major(IN_DIM, OUT_DIM), MutAnyOrigin],
+    db: LayoutTensor[dtype, Layout.row_major(OUT_DIM), MutAnyOrigin],
+    x: LayoutTensor[dtype, Layout.row_major(BATCH, IN_DIM), ImmutAnyOrigin],
+    dy: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), ImmutAnyOrigin],
+):
+    """Fused backward: dW = x.T @ dy, db = sum(dy, axis=0).
+
+    Grid: (OUT_DIM/TILE, IN_DIM/TILE) - each block computes TILE×TILE of dW.
+    Blocks in first row (block_idx.y == 0) also compute db for their columns.
+
+    Optimized with loop unrolling (4x) for better ILP.
+    """
+    var local_row = Int(thread_idx.y)
+    var local_col = Int(thread_idx.x)
+    var global_row = Int(block_idx.y) * TILE + local_row  # IN_DIM dimension
+    var global_col = Int(block_idx.x) * TILE + local_col  # OUT_DIM dimension
+
+    var x_T_shared = LayoutTensor[
+        dtype,
+        Layout.row_major(TILE, TILE),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ].stack_allocation()
+
+    var dy_shared = LayoutTensor[
+        dtype,
+        Layout.row_major(TILE, TILE),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ].stack_allocation()
+
+    var dW_acc: dW.element_type = 0
+    var db_acc: dW.element_type = 0
+
+    comptime num_tiles = (BATCH + TILE - 1) // TILE
+    var compute_db = block_idx.y == 0  # First row of blocks computes db
+
+    for tile_idx in range(num_tiles):
+        # Load x.T tile: x_T[global_row, k] = x[k, global_row]
+        var batch_idx = tile_idx * TILE + local_col
+        if global_row < IN_DIM and batch_idx < BATCH:
+            x_T_shared[local_row, local_col] = x[batch_idx, global_row]
+        else:
+            x_T_shared[local_row, local_col] = 0
+
+        # Load dy tile and accumulate for db
+        var dy_row = tile_idx * TILE + local_row
+        var dy_val: dy_shared.element_type = 0
+        if dy_row < BATCH and global_col < OUT_DIM:
+            dy_val = dy[dy_row, global_col]
+            dy_shared[local_row, local_col] = dy_val
+            # Accumulate for db: each thread handles rows local_row, local_row+TILE, ...
+            if compute_db:
+                db_acc += dy_val
+        else:
+            dy_shared[local_row, local_col] = 0
+
+        barrier()
+
+        # Compute dW partial dot product - UNROLLED by 4 for ILP
+        # TILE=16, so 16/4 = 4 iterations of 4 MACs each
+        @parameter
+        for k_base in range(0, TILE, 4):
+            dW_acc += (
+                x_T_shared[local_row, k_base + 0]
+                * dy_shared[k_base + 0, local_col]
+            )
+            dW_acc += (
+                x_T_shared[local_row, k_base + 1]
+                * dy_shared[k_base + 1, local_col]
+            )
+            dW_acc += (
+                x_T_shared[local_row, k_base + 2]
+                * dy_shared[k_base + 2, local_col]
+            )
+            dW_acc += (
+                x_T_shared[local_row, k_base + 3]
+                * dy_shared[k_base + 3, local_col]
+            )
+
+        barrier()
+
+    # Write dW
+    if global_row < IN_DIM and global_col < OUT_DIM:
+        dW[global_row, global_col] = dW_acc
+
+    # Reduce and write db (only blocks in first row)
+    if compute_db:
+        # Reuse dy_shared for reduction across local_row
+        dy_shared[local_row, local_col] = db_acc
+        barrier()
+
+        # Tree reduction with stride (works for any TILE size)
+        var stride = TILE // 2
+        while stride > 0:
+            if local_row < stride:
+                dy_shared[local_row, local_col] += dy_shared[
+                    local_row + stride, local_col
+                ]
+            barrier()
+            stride //= 2
+
+        # Thread 0 of each column writes the result
+        if local_row == 0 and global_col < OUT_DIM:
+            db[global_col] = dy_shared[0, local_col]
+
+
 fn relu_backward_kernel[
     BATCH: Int,
     DIM: Int,
@@ -439,7 +847,102 @@ fn relu_backward_kernel[
 
 
 # =============================================================================
-# Adam Optimizer Kernel
+# Fused dx + ReLU backward Kernel
+# =============================================================================
+
+
+fn linear_backward_dx_relu_kernel[
+    BATCH: Int,
+    IN_DIM: Int,
+    OUT_DIM: Int,
+](
+    dx: LayoutTensor[dtype, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
+    dy: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), ImmutAnyOrigin],
+    W: LayoutTensor[dtype, Layout.row_major(IN_DIM, OUT_DIM), ImmutAnyOrigin],
+    pre_activation: LayoutTensor[
+        dtype, Layout.row_major(BATCH, IN_DIM), ImmutAnyOrigin
+    ],
+):
+    """Fused: dx = (dy @ W.T) * (pre_activation > 0).
+
+    Combines linear backward (dx = dy @ W.T) with ReLU backward.
+    Eliminates intermediate d_h1 tensor from memory.
+
+    Optimized with loop unrolling (4x) for better ILP.
+    """
+    var local_row = Int(thread_idx.y)
+    var local_col = Int(thread_idx.x)
+    var global_row = Int(block_idx.y) * TILE + local_row
+    var global_col = Int(block_idx.x) * TILE + local_col
+
+    var dy_shared = LayoutTensor[
+        dtype,
+        Layout.row_major(TILE, TILE),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ].stack_allocation()
+
+    var W_T_shared = LayoutTensor[
+        dtype,
+        Layout.row_major(TILE, TILE),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ].stack_allocation()
+
+    var acc: dx.element_type = 0
+    comptime num_tiles = (OUT_DIM + TILE - 1) // TILE
+
+    for tile_idx in range(num_tiles):
+        var dy_col = tile_idx * TILE + local_col
+        if global_row < BATCH and dy_col < OUT_DIM:
+            dy_shared[local_row, local_col] = dy[global_row, dy_col]
+        else:
+            dy_shared[local_row, local_col] = 0
+
+        var W_col = tile_idx * TILE + local_row
+        if W_col < OUT_DIM and global_col < IN_DIM:
+            W_T_shared[local_row, local_col] = W[global_col, W_col]
+        else:
+            W_T_shared[local_row, local_col] = 0
+
+        barrier()
+
+        # UNROLLED by 4 for better ILP
+        # TILE=16, so 16/4 = 4 iterations of 4 MACs each
+        @parameter
+        for k_base in range(0, TILE, 4):
+            acc += (
+                dy_shared[local_row, k_base + 0]
+                * W_T_shared[k_base + 0, local_col]
+            )
+            acc += (
+                dy_shared[local_row, k_base + 1]
+                * W_T_shared[k_base + 1, local_col]
+            )
+            acc += (
+                dy_shared[local_row, k_base + 2]
+                * W_T_shared[k_base + 2, local_col]
+            )
+            acc += (
+                dy_shared[local_row, k_base + 3]
+                * W_T_shared[k_base + 3, local_col]
+            )
+
+        barrier()
+
+    # Fused: apply ReLU mask before writing
+    if global_row < BATCH and global_col < IN_DIM:
+        var pre_act = pre_activation[global_row, global_col]
+        dx[global_row, global_col] = acc if pre_act > 0 else 0
+
+
+# =============================================================================
+# Adam Optimizer - Modular Design
+# =============================================================================
+#
+# Design pattern for composable GPU code:
+# 1. Single-param kernel - simple, reusable (adam_kernel)
+# 2. Multi-param kernel - fused version for reduced launch overhead
 # =============================================================================
 
 
@@ -457,7 +960,7 @@ fn adam_kernel[
     bias_correction1: Scalar[dtype],
     bias_correction2: Scalar[dtype],
 ):
-    """Adam optimizer update."""
+    """Single-parameter Adam kernel."""
     var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
     if idx >= SIZE:
         return
@@ -476,6 +979,115 @@ fn adam_kernel[
 
     m[idx] = m_new
     v[idx] = v_new
+
+
+fn adam_multi_kernel[
+    SIZE1: Int,  # W1 size
+    SIZE2: Int,  # b1 size
+    SIZE3: Int,  # W2 size
+    SIZE4: Int,  # b2 size
+](
+    # Parameter group 1: W1
+    w1: LayoutTensor[dtype, Layout.row_major(SIZE1), MutAnyOrigin],
+    dw1: LayoutTensor[dtype, Layout.row_major(SIZE1), ImmutAnyOrigin],
+    m_w1: LayoutTensor[dtype, Layout.row_major(SIZE1), MutAnyOrigin],
+    v_w1: LayoutTensor[dtype, Layout.row_major(SIZE1), MutAnyOrigin],
+    # Parameter group 2: b1
+    b1: LayoutTensor[dtype, Layout.row_major(SIZE2), MutAnyOrigin],
+    db1: LayoutTensor[dtype, Layout.row_major(SIZE2), ImmutAnyOrigin],
+    m_b1: LayoutTensor[dtype, Layout.row_major(SIZE2), MutAnyOrigin],
+    v_b1: LayoutTensor[dtype, Layout.row_major(SIZE2), MutAnyOrigin],
+    # Parameter group 3: W2
+    w2: LayoutTensor[dtype, Layout.row_major(SIZE3), MutAnyOrigin],
+    dw2: LayoutTensor[dtype, Layout.row_major(SIZE3), ImmutAnyOrigin],
+    m_w2: LayoutTensor[dtype, Layout.row_major(SIZE3), MutAnyOrigin],
+    v_w2: LayoutTensor[dtype, Layout.row_major(SIZE3), MutAnyOrigin],
+    # Parameter group 4: b2
+    b2: LayoutTensor[dtype, Layout.row_major(SIZE4), MutAnyOrigin],
+    db2: LayoutTensor[dtype, Layout.row_major(SIZE4), ImmutAnyOrigin],
+    m_b2: LayoutTensor[dtype, Layout.row_major(SIZE4), MutAnyOrigin],
+    v_b2: LayoutTensor[dtype, Layout.row_major(SIZE4), MutAnyOrigin],
+    # Shared hyperparameters
+    lr: Scalar[dtype],
+    beta1: Scalar[dtype],
+    beta2: Scalar[dtype],
+    eps: Scalar[dtype],
+    bc1: Scalar[dtype],
+    bc2: Scalar[dtype],
+):
+    """Fused Adam kernel for 4 parameter groups (2-layer MLP).
+
+    Grid layout: threads are assigned to parameter groups based on global_idx
+    - Threads 0 to SIZE1-1: handle W1
+    - Threads SIZE1 to SIZE1+SIZE2-1: handle b1
+    - etc.
+
+    This reduces kernel launch overhead from 4 launches to 1.
+    """
+    var global_idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+
+    # Compute boundaries for each parameter group
+    comptime TOTAL_SIZE = SIZE1 + SIZE2 + SIZE3 + SIZE4
+
+    if global_idx >= TOTAL_SIZE:
+        return
+
+    # Dispatch to appropriate parameter group
+    if global_idx < SIZE1:
+        # Group 1: W1
+        var idx = global_idx
+        var g = dw1[idx]
+        var m_val = m_w1[idx]
+        var v_val = v_w1[idx]
+        var m_new = beta1 * m_val + (1 - beta1) * g
+        var v_new = beta2 * v_val + (1 - beta2) * g * g
+        var m_hat = m_new / bc1
+        var v_hat = v_new / bc2
+        w1[idx] = w1[idx] - lr * m_hat / (sqrt(v_hat) + eps)
+        m_w1[idx] = m_new
+        v_w1[idx] = v_new
+
+    elif global_idx < SIZE1 + SIZE2:
+        # Group 2: b1
+        var idx = global_idx - SIZE1
+        var g = db1[idx]
+        var m_val = m_b1[idx]
+        var v_val = v_b1[idx]
+        var m_new = beta1 * m_val + (1 - beta1) * g
+        var v_new = beta2 * v_val + (1 - beta2) * g * g
+        var m_hat = m_new / bc1
+        var v_hat = v_new / bc2
+        b1[idx] = b1[idx] - lr * m_hat / (sqrt(v_hat) + eps)
+        m_b1[idx] = m_new
+        v_b1[idx] = v_new
+
+    elif global_idx < SIZE1 + SIZE2 + SIZE3:
+        # Group 3: W2
+        var idx = global_idx - SIZE1 - SIZE2
+        var g = dw2[idx]
+        var m_val = m_w2[idx]
+        var v_val = v_w2[idx]
+        var m_new = beta1 * m_val + (1 - beta1) * g
+        var v_new = beta2 * v_val + (1 - beta2) * g * g
+        var m_hat = m_new / bc1
+        var v_hat = v_new / bc2
+        w2[idx] = w2[idx] - lr * m_hat / (sqrt(v_hat) + eps)
+        m_w2[idx] = m_new
+        v_w2[idx] = v_new
+
+    else:
+        # Group 4: b2
+        var idx = global_idx - SIZE1 - SIZE2 - SIZE3
+        var g = db2[idx]
+        var m_val = m_b2[idx]
+        var v_val = v_b2[idx]
+        var m_new = beta1 * m_val + (1 - beta1) * g
+        var v_new = beta2 * v_val + (1 - beta2) * g * g
+        var m_hat = m_new / bc1
+        var v_hat = v_new / bc2
+        b2[idx] = b2[idx] - lr * m_hat / (sqrt(v_hat) + eps)
+        m_b2[idx] = m_new
+        v_b2[idx] = v_new
 
 
 # =============================================================================
@@ -524,7 +1136,6 @@ struct TimingStats:
     var loss_ns: Int
     var backward_ns: Int
     var adam_ns: Int
-    var sync_ns: Int
     var count: Int
 
     fn __init__(out self):
@@ -533,7 +1144,6 @@ struct TimingStats:
         self.loss_ns = 0
         self.backward_ns = 0
         self.adam_ns = 0
-        self.sync_ns = 0
         self.count = 0
 
     fn print_stats(self):
@@ -543,9 +1153,8 @@ struct TimingStats:
             + self.loss_ns
             + self.backward_ns
             + self.adam_ns
-            + self.sync_ns
         )
-        print("\nTiming breakdown (average per epoch):")
+        print("\nTiming breakdown (average per epoch, with GPU sync):")
         print(
             "  Data select:  "
             + String(
@@ -575,11 +1184,6 @@ struct TimingStats:
         print(
             "  Adam update:  "
             + String(Float64(self.adam_ns) / Float64(self.count) / 1000.0)[:8]
-            + " us"
-        )
-        print(
-            "  Sync/logging: "
-            + String(Float64(self.sync_ns) / Float64(self.count) / 1000.0)[:8]
             + " us"
         )
         print(
@@ -815,28 +1419,34 @@ def main():
         var beta2 = Scalar[dtype](0.999)
         var eps = Scalar[dtype](1e-8)
 
-        var print_every = 100
+        var print_every = 50  # More frequent to see timing trend
 
         # Grid/block dimensions
+        # Convention: global_row = block_idx.y * TILE, global_col = block_idx.x * TILE
+        # So grid = (cols/TILE, rows/TILE) = (N/TILE, M/TILE) for output shape (M, N)
+
+        # Forward pass: output is (BATCH, OUT_DIM) for each layer
         comptime grid_h1 = (
-            (BATCH_SIZE + TILE - 1) // TILE,
-            (HIDDEN_DIM + TILE - 1) // TILE,
+            (HIDDEN_DIM + TILE - 1) // TILE,  # cols (N = HIDDEN_DIM)
+            (BATCH_SIZE + TILE - 1) // TILE,  # rows (M = BATCH_SIZE)
         )
         comptime grid_out = (
-            (BATCH_SIZE + TILE - 1) // TILE,
-            (OUTPUT_DIM + TILE - 1) // TILE,
+            (OUTPUT_DIM + TILE - 1) // TILE,  # cols (N = OUTPUT_DIM)
+            (BATCH_SIZE + TILE - 1) // TILE,  # rows (M = BATCH_SIZE)
         )
+        # Backward dW: output is (IN_DIM, OUT_DIM)
         comptime grid_dW1 = (
-            (INPUT_DIM + TILE - 1) // TILE,
-            (HIDDEN_DIM + TILE - 1) // TILE,
+            (HIDDEN_DIM + TILE - 1) // TILE,  # cols (N = OUT_DIM = HIDDEN_DIM)
+            (INPUT_DIM + TILE - 1) // TILE,  # rows (M = IN_DIM = INPUT_DIM)
         )
         comptime grid_dW2 = (
-            (HIDDEN_DIM + TILE - 1) // TILE,
-            (OUTPUT_DIM + TILE - 1) // TILE,
+            (OUTPUT_DIM + TILE - 1) // TILE,  # cols (N = OUT_DIM = OUTPUT_DIM)
+            (HIDDEN_DIM + TILE - 1) // TILE,  # rows (M = IN_DIM = HIDDEN_DIM)
         )
+        # Backward dx: output is (BATCH, IN_DIM)
         comptime grid_dx_h1 = (
-            (BATCH_SIZE + TILE - 1) // TILE,
-            (HIDDEN_DIM + TILE - 1) // TILE,
+            (HIDDEN_DIM + TILE - 1) // TILE,  # cols (N = IN_DIM = HIDDEN_DIM)
+            (BATCH_SIZE + TILE - 1) // TILE,  # rows (M = BATCH_SIZE)
         )
         comptime block_2d = (TILE, TILE)
 
@@ -847,13 +1457,10 @@ def main():
         print()
         print("Compiling kernels...")
 
-        var linear_forward_layer1 = ctx.compile_function_checked[
-            linear_forward_kernel[BATCH_SIZE, INPUT_DIM, HIDDEN_DIM],
-            linear_forward_kernel[BATCH_SIZE, INPUT_DIM, HIDDEN_DIM],
-        ]()
-        var linear_forward_relu_layer1 = ctx.compile_function_checked[
-            linear_forward_relu_kernel[BATCH_SIZE, INPUT_DIM, HIDDEN_DIM],
-            linear_forward_relu_kernel[BATCH_SIZE, INPUT_DIM, HIDDEN_DIM],
+        # Fused forward for layer1: outputs both pre-ReLU and post-ReLU
+        var linear_forward_dual_layer1 = ctx.compile_function_checked[
+            linear_forward_relu_dual_kernel[BATCH_SIZE, INPUT_DIM, HIDDEN_DIM],
+            linear_forward_relu_dual_kernel[BATCH_SIZE, INPUT_DIM, HIDDEN_DIM],
         ]()
         var linear_forward_layer2 = ctx.compile_function_checked[
             linear_forward_kernel[BATCH_SIZE, HIDDEN_DIM, OUTPUT_DIM],
@@ -863,45 +1470,28 @@ def main():
             mse_loss_kernel[BATCH_SIZE, OUTPUT_DIM],
             mse_loss_kernel[BATCH_SIZE, OUTPUT_DIM],
         ]()
-        var mse_loss_backward_fn = ctx.compile_function_checked[
-            mse_loss_backward_kernel[BATCH_SIZE, OUTPUT_DIM],
-            mse_loss_backward_kernel[BATCH_SIZE, OUTPUT_DIM],
+        # Triple-fused: MSE backward + dW2 + db2 in one kernel
+        var backward_mse_dW_db2_fn = ctx.compile_function_checked[
+            linear_backward_mse_dW_db_kernel[
+                BATCH_SIZE, HIDDEN_DIM, OUTPUT_DIM
+            ],
+            linear_backward_mse_dW_db_kernel[
+                BATCH_SIZE, HIDDEN_DIM, OUTPUT_DIM
+            ],
         ]()
-        var backward_dW2_fn = ctx.compile_function_checked[
-            linear_backward_dW_kernel[BATCH_SIZE, HIDDEN_DIM, OUTPUT_DIM],
-            linear_backward_dW_kernel[BATCH_SIZE, HIDDEN_DIM, OUTPUT_DIM],
+        # Fused dx + ReLU backward (eliminates d_h1 intermediate tensor)
+        var backward_dx_relu_fn = ctx.compile_function_checked[
+            linear_backward_dx_relu_kernel[BATCH_SIZE, HIDDEN_DIM, OUTPUT_DIM],
+            linear_backward_dx_relu_kernel[BATCH_SIZE, HIDDEN_DIM, OUTPUT_DIM],
         ]()
-        var backward_db2_fn = ctx.compile_function_checked[
-            linear_backward_db_kernel[BATCH_SIZE, OUTPUT_DIM],
-            linear_backward_db_kernel[BATCH_SIZE, OUTPUT_DIM],
+        var backward_dW_db1_fn = ctx.compile_function_checked[
+            linear_backward_dW_db_kernel[BATCH_SIZE, INPUT_DIM, HIDDEN_DIM],
+            linear_backward_dW_db_kernel[BATCH_SIZE, INPUT_DIM, HIDDEN_DIM],
         ]()
-        var backward_dx_h1_fn = ctx.compile_function_checked[
-            linear_backward_dx_kernel[BATCH_SIZE, HIDDEN_DIM, OUTPUT_DIM],
-            linear_backward_dx_kernel[BATCH_SIZE, HIDDEN_DIM, OUTPUT_DIM],
-        ]()
-        var relu_backward_fn = ctx.compile_function_checked[
-            relu_backward_kernel[BATCH_SIZE, HIDDEN_DIM],
-            relu_backward_kernel[BATCH_SIZE, HIDDEN_DIM],
-        ]()
-        var backward_dW1_fn = ctx.compile_function_checked[
-            linear_backward_dW_kernel[BATCH_SIZE, INPUT_DIM, HIDDEN_DIM],
-            linear_backward_dW_kernel[BATCH_SIZE, INPUT_DIM, HIDDEN_DIM],
-        ]()
-        var backward_db1_fn = ctx.compile_function_checked[
-            linear_backward_db_kernel[BATCH_SIZE, HIDDEN_DIM],
-            linear_backward_db_kernel[BATCH_SIZE, HIDDEN_DIM],
-        ]()
-        var adam_W1_fn = ctx.compile_function_checked[
-            adam_kernel[W1_SIZE], adam_kernel[W1_SIZE]
-        ]()
-        var adam_b1_fn = ctx.compile_function_checked[
-            adam_kernel[B1_SIZE], adam_kernel[B1_SIZE]
-        ]()
-        var adam_W2_fn = ctx.compile_function_checked[
-            adam_kernel[W2_SIZE], adam_kernel[W2_SIZE]
-        ]()
-        var adam_b2_fn = ctx.compile_function_checked[
-            adam_kernel[B2_SIZE], adam_kernel[B2_SIZE]
+        # Fused Adam kernel for all 4 parameter groups (reduces 4 launches to 1)
+        var adam_all_fn = ctx.compile_function_checked[
+            adam_multi_kernel[W1_SIZE, B1_SIZE, W2_SIZE, B2_SIZE],
+            adam_multi_kernel[W1_SIZE, B1_SIZE, W2_SIZE, B2_SIZE],
         ]()
 
         print("Kernels compiled!")
@@ -939,21 +1529,13 @@ def main():
             stats.data_select_ns += Int(t1 - t0)
 
             # =================================================================
-            # Forward pass
+            # Forward pass (fused layer1 - one matmul instead of two!)
             # =================================================================
 
             ctx.enqueue_function_checked(
-                linear_forward_layer1,
-                h1_pre_t,
-                x_t,
-                W1_t,
-                b1_t,
-                grid_dim=grid_h1,
-                block_dim=block_2d,
-            )
-            ctx.enqueue_function_checked(
-                linear_forward_relu_layer1,
-                h1_t,
+                linear_forward_dual_layer1,
+                h1_pre_t,  # pre-ReLU output (for backward)
+                h1_t,  # post-ReLU output (for layer 2)
                 x_t,
                 W1_t,
                 b1_t,
@@ -969,252 +1551,166 @@ def main():
                 grid_dim=grid_out,
                 block_dim=block_2d,
             )
+            var should_log = (epoch + 1) % print_every == 0 or epoch == 0
+
+            # Only sync for timing when logging
+            if should_log:
+                ctx.synchronize()
 
             var t2 = perf_counter_ns()
-            stats.forward_ns += Int(t2 - t1)
+            if should_log:
+                stats.forward_ns += Int(t2 - t1)
 
             # =================================================================
-            # Compute loss
+            # Compute loss (ONLY when logging - saves ~8ms per non-logging epoch)
             # =================================================================
 
-            ctx.enqueue_function_checked(
-                mse_loss_fn,
-                loss_t,
-                y_pred_t,
-                y_t,
-                grid_dim=(1,),
-                block_dim=(TPB,),
-            )
+            if should_log:
+                ctx.enqueue_function_checked(
+                    mse_loss_fn,
+                    loss_t,
+                    y_pred_t,
+                    y_t,
+                    grid_dim=(1,),
+                    block_dim=(TPB,),
+                )
+                ctx.synchronize()
 
             var t3 = perf_counter_ns()
-            stats.loss_ns += Int(t3 - t2)
+            if should_log:
+                stats.loss_ns += Int(t3 - t2)
 
             # =================================================================
             # Backward pass
             # =================================================================
 
-            comptime loss_grad_blocks = (
-                BATCH_SIZE * OUTPUT_DIM + TPB - 1
-            ) // TPB
+            # Triple-fused: MSE backward + dW2 + db2 in ONE kernel
+            # Also outputs d_y_pred for subsequent backward_dx_relu
             ctx.enqueue_function_checked(
-                mse_loss_backward_fn,
-                d_y_pred_t,
+                backward_mse_dW_db2_fn,
+                dW2_t,
+                db2_t,
+                d_y_pred_t,  # Output: d_y_pred for next kernel
+                h1_t,
                 y_pred_t,
                 y_t,
-                grid_dim=(loss_grad_blocks,),
-                block_dim=(TPB,),
-            )
-
-            ctx.enqueue_function_checked(
-                backward_dW2_fn,
-                dW2_t,
-                h1_t,
-                d_y_pred_t,
                 grid_dim=grid_dW2,
                 block_dim=block_2d,
             )
+
+            # Fused: dx_h1 + relu_backward (eliminates d_h1 intermediate)
+            # Computes d_h1_pre = (d_y_pred @ W2.T) * (h1_pre > 0) directly
             ctx.enqueue_function_checked(
-                backward_db2_fn,
-                db2_t,
-                d_y_pred_t,
-                grid_dim=(OUTPUT_DIM,),
-                block_dim=(TPB,),
-            )
-            ctx.enqueue_function_checked(
-                backward_dx_h1_fn,
-                d_h1_t,
+                backward_dx_relu_fn,
+                d_h1_pre_t,  # Output: d_h1_pre directly (skips d_h1)
                 d_y_pred_t,
                 W2_t,
+                h1_pre_t,  # Pre-activation for ReLU mask
                 grid_dim=grid_dx_h1,
                 block_dim=block_2d,
             )
 
-            comptime relu_grad_blocks = (
-                BATCH_SIZE * HIDDEN_DIM + TPB - 1
-            ) // TPB
+            # Layer 1 backward: fused dW1 + db1
             ctx.enqueue_function_checked(
-                relu_backward_fn,
-                d_h1_pre_t,
-                d_h1_t,
-                h1_pre_t,
-                grid_dim=(relu_grad_blocks,),
-                block_dim=(TPB,),
-            )
-
-            ctx.enqueue_function_checked(
-                backward_dW1_fn,
+                backward_dW_db1_fn,
                 dW1_t,
+                db1_t,
                 x_t,
                 d_h1_pre_t,
                 grid_dim=grid_dW1,
                 block_dim=block_2d,
             )
-            ctx.enqueue_function_checked(
-                backward_db1_fn,
-                db1_t,
-                d_h1_pre_t,
-                grid_dim=(HIDDEN_DIM,),
-                block_dim=(TPB,),
-            )
+
+            # Only sync for timing when logging
+            if should_log:
+                ctx.synchronize()
 
             var t4 = perf_counter_ns()
-            stats.backward_ns += Int(t4 - t3)
+            if should_log:
+                stats.backward_ns += Int(t4 - t3)
 
             # =================================================================
-            # Debug: Check gradients on first epoch
-            # =================================================================
-
-            # Save weights before update on first epoch
-            var w1_before: Float32 = 0
-            var w2_before: Float32 = 0
-            if epoch == 0:
-                ctx.synchronize()
-                print("\n=== DEBUG: Gradient check ===")
-                with d_y_pred_buf.map_to_host() as host:
-                    var sum_abs: Float32 = 0
-                    for i in range(min(BATCH_SIZE * OUTPUT_DIM, 10)):
-                        sum_abs += abs(Float32(host[i]))
-                    print("d_y_pred (first 10 sum): " + String(sum_abs))
-                with dW2_buf.map_to_host() as host:
-                    var sum_abs: Float32 = 0
-                    for i in range(min(W2_SIZE, 10)):
-                        sum_abs += abs(Float32(host[i]))
-                    print("dW2 (first 10 sum): " + String(sum_abs))
-                with dW1_buf.map_to_host() as host:
-                    var sum_abs: Float32 = 0
-                    for i in range(min(W1_SIZE, 10)):
-                        sum_abs += abs(Float32(host[i]))
-                    print("dW1 (first 10 sum): " + String(sum_abs))
-                # Save W1[0] before update
-                with W1_buf.map_to_host() as host:
-                    w1_before = Float32(host[0])
-                    print("W1[0] BEFORE update: " + String(w1_before))
-                with W2_buf.map_to_host() as host:
-                    w2_before = Float32(host[0])
-                    print("W2[0] BEFORE update: " + String(w2_before))
-
-            # =================================================================
-            # Adam updates
+            # Adam updates - Fused (single kernel for all 4 parameter groups)
             # =================================================================
 
             var t = Scalar[dtype](epoch + 1)
             var bc1 = Scalar[dtype](1) - beta1**t
             var bc2 = Scalar[dtype](1) - beta2**t
 
-            comptime W1_blocks = (W1_SIZE + TPB - 1) // TPB
-            var dW1_flat = LayoutTensor[
-                dtype, Layout.row_major(W1_SIZE), ImmutAnyOrigin
-            ](dW1_buf)
+            # Flat views for Adam
             var W1_flat = LayoutTensor[
                 dtype, Layout.row_major(W1_SIZE), MutAnyOrigin
             ](W1_buf)
+            var dW1_flat = LayoutTensor[
+                dtype, Layout.row_major(W1_SIZE), ImmutAnyOrigin
+            ](dW1_buf)
+            var b1_flat = LayoutTensor[
+                dtype, Layout.row_major(B1_SIZE), MutAnyOrigin
+            ](b1_buf)
+            var db1_flat = LayoutTensor[
+                dtype, Layout.row_major(B1_SIZE), ImmutAnyOrigin
+            ](db1_buf)
+            var W2_flat = LayoutTensor[
+                dtype, Layout.row_major(W2_SIZE), MutAnyOrigin
+            ](W2_buf)
+            var dW2_flat = LayoutTensor[
+                dtype, Layout.row_major(W2_SIZE), ImmutAnyOrigin
+            ](dW2_buf)
+            var b2_flat = LayoutTensor[
+                dtype, Layout.row_major(B2_SIZE), MutAnyOrigin
+            ](b2_buf)
+            var db2_flat = LayoutTensor[
+                dtype, Layout.row_major(B2_SIZE), ImmutAnyOrigin
+            ](db2_buf)
+
+            comptime TOTAL_PARAMS = W1_SIZE + B1_SIZE + W2_SIZE + B2_SIZE
+            comptime adam_blocks = (TOTAL_PARAMS + TPB - 1) // TPB
+
             ctx.enqueue_function_checked(
-                adam_W1_fn,
+                adam_all_fn,
+                # W1 group
                 W1_flat,
                 dW1_flat,
                 m_W1_t,
                 v_W1_t,
-                lr,
-                beta1,
-                beta2,
-                eps,
-                bc1,
-                bc2,
-                grid_dim=(W1_blocks,),
-                block_dim=(TPB,),
-            )
-
-            comptime b1_blocks = (B1_SIZE + TPB - 1) // TPB
-            var db1_flat = LayoutTensor[
-                dtype, Layout.row_major(B1_SIZE), ImmutAnyOrigin
-            ](db1_buf)
-            var b1_flat = LayoutTensor[
-                dtype, Layout.row_major(B1_SIZE), MutAnyOrigin
-            ](b1_buf)
-            ctx.enqueue_function_checked(
-                adam_b1_fn,
+                # b1 group
                 b1_flat,
                 db1_flat,
                 m_b1_t,
                 v_b1_t,
-                lr,
-                beta1,
-                beta2,
-                eps,
-                bc1,
-                bc2,
-                grid_dim=(b1_blocks,),
-                block_dim=(TPB,),
-            )
-
-            comptime W2_blocks = (W2_SIZE + TPB - 1) // TPB
-            var dW2_flat = LayoutTensor[
-                dtype, Layout.row_major(W2_SIZE), ImmutAnyOrigin
-            ](dW2_buf)
-            var W2_flat = LayoutTensor[
-                dtype, Layout.row_major(W2_SIZE), MutAnyOrigin
-            ](W2_buf)
-            ctx.enqueue_function_checked(
-                adam_W2_fn,
+                # W2 group
                 W2_flat,
                 dW2_flat,
                 m_W2_t,
                 v_W2_t,
-                lr,
-                beta1,
-                beta2,
-                eps,
-                bc1,
-                bc2,
-                grid_dim=(W2_blocks,),
-                block_dim=(TPB,),
-            )
-
-            comptime b2_blocks = (B2_SIZE + TPB - 1) // TPB
-            var db2_flat = LayoutTensor[
-                dtype, Layout.row_major(B2_SIZE), ImmutAnyOrigin
-            ](db2_buf)
-            var b2_flat = LayoutTensor[
-                dtype, Layout.row_major(B2_SIZE), MutAnyOrigin
-            ](b2_buf)
-            ctx.enqueue_function_checked(
-                adam_b2_fn,
+                # b2 group
                 b2_flat,
                 db2_flat,
                 m_b2_t,
                 v_b2_t,
+                # Hyperparameters
                 lr,
                 beta1,
                 beta2,
                 eps,
                 bc1,
                 bc2,
-                grid_dim=(b2_blocks,),
+                grid_dim=(adam_blocks,),
                 block_dim=(TPB,),
             )
 
+            # Only sync for timing when logging
+            if should_log:
+                ctx.synchronize()
+
             var t5 = perf_counter_ns()
-            stats.adam_ns += Int(t5 - t4)
+            if should_log:
+                stats.adam_ns += Int(t5 - t4)
+                stats.count += 1
 
-            # Check weights after update on first epoch
-            if epoch == 0:
-                ctx.synchronize()
-                with W1_buf.map_to_host() as host:
-                    var w1_after = Float32(host[0])
-                    print("W1[0] AFTER update: " + String(w1_after))
-                    print("W1[0] CHANGE: " + String(w1_after - w1_before))
-                with W2_buf.map_to_host() as host:
-                    var w2_after = Float32(host[0])
-                    print("W2[0] AFTER update: " + String(w2_after))
-                    print("W2[0] CHANGE: " + String(w2_after - w2_before))
-                print("=== END DEBUG ===\n")
-
-            # =================================================================
-            # Print progress (with sync)
-            # =================================================================
-
-            if (epoch + 1) % print_every == 0 or epoch == 0:
-                ctx.synchronize()
+            # Print progress (loss was computed above only when should_log)
+            if should_log:
+                var epoch_time_ms = Float64(t5 - t0) / 1e6
                 with loss_buf.map_to_host() as host:
                     var loss_val = Float32(host[0])
                     print(
@@ -1224,11 +1720,10 @@ def main():
                         + String(NUM_EPOCHS)
                         + " - Loss: "
                         + String(loss_val)
+                        + " - Time: "
+                        + String(epoch_time_ms)[:6]
+                        + " ms"
                     )
-
-            var t6 = perf_counter_ns()
-            stats.sync_ns += Int(t6 - t5)
-            stats.count += 1
 
         var end_time = perf_counter_ns()
         var elapsed_ms = Float64(end_time - start_time) / 1e6
@@ -1277,7 +1772,8 @@ def main():
         )
 
         ctx.enqueue_function_checked(
-            linear_forward_relu_layer1,
+            linear_forward_dual_layer1,
+            h1_pre_t,  # not used in eval, but kernel outputs both
             h1_t,
             x_t,
             W1_t,
