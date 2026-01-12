@@ -1,5 +1,5 @@
 # =============================================================================
-# Adam Optimizer (Trait-based)
+# Adam Optimizer (Stateless)
 # =============================================================================
 
 from ..constants import dtype
@@ -9,7 +9,7 @@ from math import sqrt
 from gpu import thread_idx
 
 
-struct Adam[param_size: Int](Optimizer):
+struct Adam(Optimizer):
     """Adam optimizer with adaptive learning rates.
 
     Update rule:
@@ -18,18 +18,21 @@ struct Adam[param_size: Int](Optimizer):
         m_hat = m / (1 - beta1^t)
         v_hat = v / (1 - beta2^t)
         param = param - lr * m_hat / (sqrt(v_hat) + eps)
+
+    STATE_PER_PARAM = 2:
+        - state[i, 0] = m (first moment)
+        - state[i, 1] = v (second moment)
+
+    State is managed externally by the trainer and passed to step().
     """
 
-    comptime PARAM_SIZE: Int = Self.param_size
-    comptime GRAD_SIZE: Int = 3
+    comptime STATE_PER_PARAM: Int = 2
 
     var lr: Float64
     var beta1: Float64
     var beta2: Float64
     var eps: Float64
-    var t: Int
-    var m: InlineArray[Scalar[dtype], Self.param_size]  # First moment
-    var v: InlineArray[Scalar[dtype], Self.param_size]  # Second moment
+    var t: Int  # Timestep (not per-parameter, stays in struct)
 
     fn __init__(
         out self,
@@ -44,84 +47,91 @@ struct Adam[param_size: Int](Optimizer):
         self.beta2 = beta2
         self.eps = eps
         self.t = 0
-        self.m = InlineArray[Scalar[dtype], Self.param_size](uninitialized=True)
-        self.v = InlineArray[Scalar[dtype], Self.param_size](uninitialized=True)
 
-        # Zero initialize moments
-        for i in range(Self.param_size):
-            self.m[i] = 0
-            self.v[i] = 0
-
-    fn step(
+    fn step[
+        PARAM_SIZE: Int
+    ](
         mut self,
-        mut params: InlineArray[Scalar[dtype], Self.PARAM_SIZE],
-        grads: InlineArray[Scalar[dtype], Self.PARAM_SIZE],
+        mut params: LayoutTensor[
+            dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
+        ],
+        grads: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(PARAM_SIZE, Self.STATE_PER_PARAM), MutAnyOrigin
+        ],
     ):
-        """Adam update step."""
+        """Adam update step.
+
+        Args:
+            params: Parameters to update.
+            grads: Gradients.
+            state: Optimizer state with layout `(PARAM_SIZE, 2)`.
+        """
         self.t += 1
 
         # Bias correction factors
-        var bias_correction1 = 1.0 - (self.beta1**self.t)
-        var bias_correction2 = 1.0 - (self.beta2**self.t)
-        var one_minus_beta1 = 1.0 - self.beta1
-        var one_minus_beta2 = 1.0 - self.beta2
+        var bias_correction1 = Scalar[dtype](1.0 - (self.beta1**self.t))
+        var bias_correction2 = Scalar[dtype](1.0 - (self.beta2**self.t))
+        var one_minus_beta1 = Scalar[dtype](1.0 - self.beta1)
+        var one_minus_beta2 = Scalar[dtype](1.0 - self.beta2)
+        var beta1 = Scalar[dtype](self.beta1)
+        var beta2 = Scalar[dtype](self.beta2)
+        var lr = Scalar[dtype](self.lr)
+        var eps = Scalar[dtype](self.eps)
 
-        for i in range(Self.PARAM_SIZE):
-            var g = Float64(grads[i])
+        for i in range(PARAM_SIZE):
+            var g = grads[i]
+
+            # Read current moments from state
+            var m = state[i, 0]
+            var v = state[i, 1]
 
             # Update moments
-            self.m[i] = Scalar[dtype](
-                self.beta1 * Float64(self.m[i]) + one_minus_beta1 * g
-            )
-            self.v[i] = Scalar[dtype](
-                self.beta2 * Float64(self.v[i]) + one_minus_beta2 * g * g
-            )
+            var m_new = beta1 * m + one_minus_beta1 * g
+            var v_new = beta2 * v + one_minus_beta2 * g * g
+
+            # Write updated moments back to state
+            state[i, 0] = m_new
+            state[i, 1] = v_new
 
             # Bias-corrected estimates
-            var m_hat = Float64(self.m[i]) / bias_correction1
-            var v_hat = Float64(self.v[i]) / bias_correction2
+            var m_hat = m_new / bias_correction1
+            var v_hat = v_new / bias_correction2
 
             # Update parameters
-            params[i] = Scalar[dtype](
-                Float64(params[i]) - self.lr * m_hat / (sqrt(v_hat) + self.eps)
-            )
+            params[i] -= lr * m_hat / (sqrt(v_hat) + eps)
 
     # @always_inline
-    # fn step_kernel(
+    # fn step_kernel[
+    #     PARAM_SIZE: Int
+    # ](
     #     self,
     #     mut params: LayoutTensor[
-    #         dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+    #         dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
     #     ],
-    #     mut grads: LayoutTensor[
-    #         dtype,
-    #         Layout.row_major(Self.PARAM_SIZE, Self.GRAD_SIZE),
-    #         ImmutAnyOrigin,
+    #     grads: LayoutTensor[
+    #         dtype, Layout.row_major(PARAM_SIZE), ImmutAnyOrigin
+    #     ],
+    #     mut state: LayoutTensor[
+    #         dtype, Layout.row_major(PARAM_SIZE, Self.STATE_PER_PARAM), MutAnyOrigin
     #     ],
     # ):
-    #     """Adam optimizer update kernel."""
+    #     """Adam optimizer update kernel for GPU."""
     #     var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-    #     if idx >= Self.PARAM_SIZE:
+    #     if idx >= PARAM_SIZE:
     #         return
-
-    #     var g = grads[idx, 0]
-    #     var m_val = grads[idx, 1]
-    #     var v_val = grads[idx, 2]
-
-    #     var m_new: grads.element_type = (
-    #         Scalar[dtype](self.beta1) * m_val
-    #         + (1 - Scalar[dtype](self.beta1)) * g
-    #     )
-    #     var v_new: grads.element_type = (
-    #         Scalar[dtype](self.beta2) * v_val
-    #         + (1 - Scalar[dtype](self.beta2)) * g * g
-    #     )
-
+    #
+    #     var g = grads[idx]
+    #     var m = state[idx, 0]
+    #     var v = state[idx, 1]
+    #
+    #     var m_new = Scalar[dtype](self.beta1) * m + (1 - Scalar[dtype](self.beta1)) * g
+    #     var v_new = Scalar[dtype](self.beta2) * v + (1 - Scalar[dtype](self.beta2)) * g * g
+    #
+    #     state[idx, 0] = m_new
+    #     state[idx, 1] = v_new
+    #
     #     var m_hat = m_new / Scalar[dtype](1.0 - (self.beta1**self.t))
     #     var v_hat = v_new / Scalar[dtype](1.0 - (self.beta2**self.t))
-
-    #     params[idx] = params[idx] - Scalar[dtype](self.lr) * m_hat / (
-    #         sqrt(v_hat) + Scalar[dtype](self.eps)
-    #     )
-
-    #     grads[idx, 1] = m_new
-    #     grads[idx, 2] = v_new
+    #
+    #     params[idx] -= Scalar[dtype](self.lr) * m_hat / (sqrt(v_hat) + Scalar[dtype](self.eps))

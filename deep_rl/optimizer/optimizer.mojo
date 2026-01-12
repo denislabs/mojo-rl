@@ -3,28 +3,41 @@
 # =============================================================================
 
 from ..constants import dtype
+from layout import Layout, LayoutTensor
 
 
 trait Optimizer(Movable & ImplicitlyCopyable):
     """Base trait for optimizers.
 
-    Optimizers update parameters using gradients. They only need to know
-    the total parameter size to operate on flattened parameter arrays.
+    Optimizers update parameters using gradients. State (e.g., moments for Adam)
+    is passed externally by the trainer, making optimizers stateless with respect
+    to parameter-sized buffers.
+
+    STATE_PER_PARAM defines how many state values are needed per parameter:
+    - SGD: 1 (unused, but minimum for valid tensor dimensions)
+    - Adam: 2 (m = first moment, v = second moment)
     """
 
-    comptime PARAM_SIZE: Int
-    comptime GRAD_SIZE: Int
+    comptime STATE_PER_PARAM: Int
 
-    fn step(
+    fn step[
+        PARAM_SIZE: Int
+    ](
         mut self,
-        mut params: InlineArray[Scalar[dtype], Self.PARAM_SIZE],
-        grads: InlineArray[Scalar[dtype], Self.PARAM_SIZE],
+        mut params: LayoutTensor[
+            dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
+        ],
+        grads: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(PARAM_SIZE, Self.STATE_PER_PARAM), MutAnyOrigin
+        ],
     ):
         """Perform one optimization step.
 
         Args:
             params: Flattened parameters to update (modified in place).
             grads: Flattened gradients.
+            state: Optimizer state (e.g., moments). Layout: (PARAM_SIZE, STATE_PER_PARAM).
         """
         ...
 

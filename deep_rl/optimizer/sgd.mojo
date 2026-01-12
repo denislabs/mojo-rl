@@ -8,14 +8,15 @@ from layout import LayoutTensor, Layout
 from gpu import thread_idx
 
 
-struct SGD[param_size: Int](Optimizer):
+struct SGD(Optimizer):
     """Stochastic Gradient Descent optimizer.
 
     Update rule: param -= lr * grad
+
+    STATE_PER_PARAM = 1 (unused, but required for valid tensor dimensions).
     """
 
-    comptime PARAM_SIZE: Int = Self.param_size
-    comptime GRAD_SIZE: Int = 1
+    comptime STATE_PER_PARAM: Int = 1
 
     var lr: Float64
 
@@ -23,28 +24,35 @@ struct SGD[param_size: Int](Optimizer):
         """Initialize SGD with learning rate."""
         self.lr = lr
 
-    fn step(
+    fn step[
+        PARAM_SIZE: Int
+    ](
         mut self,
-        mut params: InlineArray[Scalar[dtype], Self.PARAM_SIZE],
-        grads: InlineArray[Scalar[dtype], Self.PARAM_SIZE],
+        mut params: LayoutTensor[
+            dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
+        ],
+        grads: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(PARAM_SIZE, Self.STATE_PER_PARAM), MutAnyOrigin
+        ],
     ):
-        """SGD update: param -= lr * grad."""
-        for i in range(Self.PARAM_SIZE):
-            params[i] = Scalar[dtype](
-                Float64(params[i]) - self.lr * Float64(grads[i])
-            )
+        """SGD update: param -= lr * grad. State is unused."""
+        for i in range(PARAM_SIZE):
+            params[i] -= Scalar[dtype](self.lr) * grads[i]
 
     @always_inline
-    fn step_kernel(
+    fn step_kernel[
+        PARAM_SIZE: Int
+    ](
         self,
         mut params: LayoutTensor[
-            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+            dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
         ],
         grads: LayoutTensor[
-            dtype, Layout.row_major(Self.PARAM_SIZE, 1), ImmutAnyOrigin
+            dtype, Layout.row_major(PARAM_SIZE, 1), ImmutAnyOrigin
         ],
     ):
         """SGD update on GPU: param -= lr * grad."""
         var idx = thread_idx.x
-        if idx < UInt(Self.PARAM_SIZE):
+        if idx < UInt(PARAM_SIZE):
             params[idx] -= Scalar[dtype](self.lr) * grads[idx, 0]

@@ -258,7 +258,7 @@ fn main():
         Linear[TRAIN_HIDDEN, TRAIN_OUT](),
     )
 
-    var optimizer = Adam[TRAIN_PARAM_SIZE](lr=0.1)
+    var optimizer = Adam(lr=0.1)
 
     var loss_function = MSELoss()
 
@@ -328,13 +328,13 @@ fn main():
         Linear[TRAIN_HIDDEN, TRAIN_OUT](),
     )
 
-    var optimizer2 = Adam[TRAIN_PARAM_SIZE](lr=0.1)
+    var optimizer2 = Adam(lr=0.1)
 
     print("Using Kaiming initialization for ReLU network...")
 
     # Use Kaiming initializer (better for ReLU networks)
     comptime TrainModel2Type = type_of(train_model2)
-    var trainer2 = Trainer[TrainModel2Type, Adam[TRAIN_PARAM_SIZE], MSELoss, Kaiming](
+    var trainer2 = Trainer[TrainModel2Type, Adam, MSELoss, Kaiming](
         model=train_model2,
         optimizer=optimizer2,
         loss_function=loss_function,

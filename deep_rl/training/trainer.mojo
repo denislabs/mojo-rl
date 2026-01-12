@@ -55,6 +55,9 @@ struct Trainer[
     var initializer: Self.INITIALIZER
     var params: InlineArray[Scalar[dtype], Self.MODEL.PARAM_SIZE]
     var grads: InlineArray[Scalar[dtype], Self.MODEL.PARAM_SIZE]
+    var optimizer_state: InlineArray[
+        Scalar[dtype], Self.MODEL.PARAM_SIZE * Self.OPTIMIZER.STATE_PER_PARAM
+    ]
 
     fn __init__(
         out self,
@@ -94,6 +97,13 @@ struct Trainer[
         for i in range(Self.MODEL.PARAM_SIZE):
             self.grads[i] = 0
 
+        # Initialize optimizer state to zero (moments for Adam, unused for SGD)
+        self.optimizer_state = InlineArray[
+            Scalar[dtype], Self.MODEL.PARAM_SIZE * Self.OPTIMIZER.STATE_PER_PARAM
+        ](uninitialized=True)
+        for i in range(Self.MODEL.PARAM_SIZE * Self.OPTIMIZER.STATE_PER_PARAM):
+            self.optimizer_state[i] = 0
+
     fn train[
         BATCH: Int
     ](
@@ -107,15 +117,15 @@ struct Trainer[
             TrainResult with final loss and epochs trained.
         """
         # Allocate storage and create LayoutTensor views
-        var output_storage = InlineArray[Scalar[dtype], BATCH * Self.MODEL.OUT_DIM](
-            uninitialized=True
-        )
+        var output_storage = InlineArray[
+            Scalar[dtype], BATCH * Self.MODEL.OUT_DIM
+        ](uninitialized=True)
         var grad_output_storage = InlineArray[
             Scalar[dtype], BATCH * Self.MODEL.OUT_DIM
         ](uninitialized=True)
-        var grad_input_storage = InlineArray[Scalar[dtype], BATCH * Self.MODEL.IN_DIM](
-            uninitialized=True
-        )
+        var grad_input_storage = InlineArray[
+            Scalar[dtype], BATCH * Self.MODEL.IN_DIM
+        ](uninitialized=True)
         var cache_storage = InlineArray[
             Scalar[dtype], BATCH * Self.MODEL.CACHE_SIZE
         ](uninitialized=True)
@@ -142,6 +152,11 @@ struct Trainer[
         var grad_input_tensor = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
         ](grad_input_storage.unsafe_ptr())
+        var optimizer_state_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.MODEL.PARAM_SIZE, Self.OPTIMIZER.STATE_PER_PARAM),
+            MutAnyOrigin,
+        ](self.optimizer_state.unsafe_ptr())
 
         var final_loss: Float64 = 0.0
 
@@ -173,18 +188,9 @@ struct Trainer[
             )
 
             # Update parameters using optimizer
-            # Rebind to unify types if OPTIMIZER.PARAM_SIZE differs
-            var params_cast = rebind[
-                InlineArray[Scalar[dtype], Self.OPTIMIZER.PARAM_SIZE]
-            ](self.params)
-            var grads_cast = rebind[
-                InlineArray[Scalar[dtype], Self.OPTIMIZER.PARAM_SIZE]
-            ](self.grads)
-            self.optimizer.step(params_cast, grads_cast)
-            # Copy updated params back (rebind creates a copy)
-            self.params = rebind[
-                InlineArray[Scalar[dtype], Self.MODEL.PARAM_SIZE]
-            ](params_cast)
+            self.optimizer.step[Self.MODEL.PARAM_SIZE](
+                params_tensor, grads_tensor, optimizer_state_tensor
+            )
 
             final_loss = loss
 
@@ -202,9 +208,9 @@ struct Trainer[
     ) -> Float64:
         """Evaluate the model on the given input and target (no cache allocation).
         """
-        var output_storage = InlineArray[Scalar[dtype], BATCH * Self.MODEL.OUT_DIM](
-            uninitialized=True
-        )
+        var output_storage = InlineArray[
+            Scalar[dtype], BATCH * Self.MODEL.OUT_DIM
+        ](uninitialized=True)
 
         # Create LayoutTensor views using unsafe_ptr()
         var input_tensor = LayoutTensor[
@@ -228,7 +234,9 @@ struct Trainer[
                     + ", "
                     + String(j)
                     + "]: "
-                    + String(Float64(output_storage[i * Self.MODEL.OUT_DIM + j]))
+                    + String(
+                        Float64(output_storage[i * Self.MODEL.OUT_DIM + j])
+                    )
                 )
                 print(
                     "Target["
