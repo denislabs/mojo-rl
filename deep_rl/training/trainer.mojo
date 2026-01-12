@@ -5,6 +5,7 @@ from ..constants import dtype
 from ..initializer import Initializer, Xavier
 
 from layout import Layout, LayoutTensor
+from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 
 struct TrainResult:
@@ -99,7 +100,8 @@ struct Trainer[
 
         # Initialize optimizer state to zero (moments for Adam, unused for SGD)
         self.optimizer_state = InlineArray[
-            Scalar[dtype], Self.MODEL.PARAM_SIZE * Self.OPTIMIZER.STATE_PER_PARAM
+            Scalar[dtype],
+            Self.MODEL.PARAM_SIZE * Self.OPTIMIZER.STATE_PER_PARAM,
         ](uninitialized=True)
         for i in range(Self.MODEL.PARAM_SIZE * Self.OPTIMIZER.STATE_PER_PARAM):
             self.optimizer_state[i] = 0
@@ -154,7 +156,9 @@ struct Trainer[
         ](grad_input_storage.unsafe_ptr())
         var optimizer_state_tensor = LayoutTensor[
             dtype,
-            Layout.row_major(Self.MODEL.PARAM_SIZE, Self.OPTIMIZER.STATE_PER_PARAM),
+            Layout.row_major(
+                Self.MODEL.PARAM_SIZE, Self.OPTIMIZER.STATE_PER_PARAM
+            ),
             MutAnyOrigin,
         ](self.optimizer_state.unsafe_ptr())
 
@@ -226,27 +230,137 @@ struct Trainer[
         # Use forward - no cache needed for evaluation
         self.model.forward[BATCH](input_tensor, output_tensor, params_tensor)
 
-        for i in range(BATCH):
-            for j in range(Self.MODEL.OUT_DIM):
-                print(
-                    "Output["
-                    + String(i)
-                    + ", "
-                    + String(j)
-                    + "]: "
-                    + String(
-                        Float64(output_storage[i * Self.MODEL.OUT_DIM + j])
-                    )
-                )
-                print(
-                    "Target["
-                    + String(i)
-                    + ", "
-                    + String(j)
-                    + "]: "
-                    + String(Float64(target[i * Self.MODEL.OUT_DIM + j]))
-                )
-
         return self.loss_function.forward[BATCH * Self.MODEL.OUT_DIM](
             output_storage, target
         )
+
+    fn train_gpu[
+        BATCH: Int
+    ](
+        mut self,
+        ctx: DeviceContext,
+        input: InlineArray[Scalar[dtype], BATCH * Self.MODEL.IN_DIM],
+        target: InlineArray[Scalar[dtype], BATCH * Self.MODEL.OUT_DIM],
+    ) raises -> TrainResult:
+        """Train the model on GPU for the configured number of epochs.
+
+        Args:
+            ctx: GPU device context.
+            input: Input data [BATCH * IN_DIM].
+            target: Target data [BATCH * OUT_DIM].
+
+        Returns:
+            TrainResult with final loss and epochs trained.
+        """
+        # Dimension constants
+        comptime IN_SIZE = BATCH * Self.MODEL.IN_DIM
+        comptime OUT_SIZE = BATCH * Self.MODEL.OUT_DIM
+        comptime PARAM_SIZE = Self.MODEL.PARAM_SIZE
+        comptime CACHE_SIZE = BATCH * Self.MODEL.CACHE_SIZE
+        comptime STATE_SIZE = PARAM_SIZE * Self.OPTIMIZER.STATE_PER_PARAM
+
+        # Create host buffers for input/target and copy data
+        var input_host = ctx.enqueue_create_host_buffer[dtype](IN_SIZE)
+        var target_host = ctx.enqueue_create_host_buffer[dtype](OUT_SIZE)
+        for i in range(IN_SIZE):
+            input_host[i] = input[i]
+        for i in range(OUT_SIZE):
+            target_host[i] = target[i]
+
+        # Create host buffer for params and copy current params
+        var params_host = ctx.enqueue_create_host_buffer[dtype](PARAM_SIZE)
+        for i in range(PARAM_SIZE):
+            params_host[i] = self.params[i]
+
+        # Create host buffer for optimizer state and copy
+        var state_host = ctx.enqueue_create_host_buffer[dtype](STATE_SIZE)
+        for i in range(STATE_SIZE):
+            state_host[i] = self.optimizer_state[i]
+
+        # Create device buffers
+        var input_buf = ctx.enqueue_create_buffer[dtype](IN_SIZE)
+        var target_buf = ctx.enqueue_create_buffer[dtype](OUT_SIZE)
+        var output_buf = ctx.enqueue_create_buffer[dtype](OUT_SIZE)
+        var params_buf = ctx.enqueue_create_buffer[dtype](PARAM_SIZE)
+        var grads_buf = ctx.enqueue_create_buffer[dtype](PARAM_SIZE)
+        var cache_buf = ctx.enqueue_create_buffer[dtype](CACHE_SIZE)
+        var grad_output_buf = ctx.enqueue_create_buffer[dtype](OUT_SIZE)
+        var grad_input_buf = ctx.enqueue_create_buffer[dtype](IN_SIZE)
+        var state_buf = ctx.enqueue_create_buffer[dtype](STATE_SIZE)
+        var loss_buf = ctx.enqueue_create_buffer[dtype](1)
+
+        # Copy input, target, params, and state to device
+        ctx.enqueue_copy(input_buf, input_host)
+        ctx.enqueue_copy(target_buf, target_host)
+        ctx.enqueue_copy(params_buf, params_host)
+        ctx.enqueue_copy(state_buf, state_host)
+
+        # Host buffer for reading loss back
+        var loss_host = ctx.enqueue_create_host_buffer[dtype](1)
+
+        var final_loss: Float64 = 0.0
+
+        for epoch in range(self.epochs):
+            # Zero gradients on GPU
+            ctx.enqueue_memset(grads_buf, 0)
+
+            # Forward pass
+            Self.MODEL.forward_gpu[BATCH](
+                ctx, output_buf, input_buf, params_buf, cache_buf
+            )
+
+            # Compute loss gradient (backward of loss function)
+            Self.LOSS_FUNCTION.backward_gpu[BATCH, Self.MODEL.OUT_DIM](
+                ctx, grad_output_buf, output_buf, target_buf
+            )
+
+            # Backward pass through model
+            Self.MODEL.backward_gpu[BATCH](
+                ctx,
+                grad_input_buf,
+                grad_output_buf,
+                params_buf,
+                cache_buf,
+                grads_buf,
+            )
+
+            # Optimizer step
+            self.optimizer.step_gpu[PARAM_SIZE](
+                ctx, params_buf, grads_buf, state_buf
+            )
+
+            # Optionally compute and print loss
+            if self.print_every > 0 and epoch % self.print_every == 0:
+                # Compute loss value
+                Self.LOSS_FUNCTION.forward_gpu[BATCH, Self.MODEL.OUT_DIM](
+                    ctx, loss_buf, output_buf, target_buf
+                )
+                # Copy loss back to host
+                ctx.enqueue_copy(loss_host, loss_buf)
+                ctx.synchronize()
+                final_loss = Float64(loss_host[0])
+                print(
+                    "Epoch " + String(epoch) + " - Loss: " + String(final_loss)
+                )
+
+        # Compute final loss if not already computed
+        if self.print_every == 0 or (self.epochs - 1) % self.print_every != 0:
+            Self.LOSS_FUNCTION.forward_gpu[BATCH, Self.MODEL.OUT_DIM](
+                ctx, loss_buf, output_buf, target_buf
+            )
+            ctx.enqueue_copy(loss_host, loss_buf)
+            ctx.synchronize()
+            final_loss = Float64(loss_host[0])
+
+        # Copy updated params and state back to host
+        ctx.enqueue_copy(params_host, params_buf)
+        ctx.enqueue_copy(state_host, state_buf)
+        ctx.synchronize()
+
+        # Update trainer's params and optimizer state
+        for i in range(PARAM_SIZE):
+            self.params[i] = params_host[i]
+        for i in range(STATE_SIZE):
+            self.optimizer_state[i] = state_host[i]
+
+        return TrainResult(final_loss, self.epochs)

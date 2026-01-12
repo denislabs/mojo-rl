@@ -2,11 +2,12 @@
 # Adam Optimizer (Stateless)
 # =============================================================================
 
-from ..constants import dtype
+from ..constants import dtype, TPB
 from .optimizer import Optimizer
 from layout import LayoutTensor, Layout
 from math import sqrt
-from gpu import thread_idx
+from gpu import thread_idx, block_idx, block_dim
+from gpu.host import DeviceContext, DeviceBuffer
 
 
 struct Adam(Optimizer):
@@ -57,7 +58,9 @@ struct Adam(Optimizer):
         ],
         grads: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
         mut state: LayoutTensor[
-            dtype, Layout.row_major(PARAM_SIZE, Self.STATE_PER_PARAM), MutAnyOrigin
+            dtype,
+            Layout.row_major(PARAM_SIZE, Self.STATE_PER_PARAM),
+            MutAnyOrigin,
         ],
     ):
         """Adam update step.
@@ -101,37 +104,140 @@ struct Adam(Optimizer):
             # Update parameters
             params[i] -= lr * m_hat / (sqrt(v_hat) + eps)
 
-    # @always_inline
-    # fn step_kernel[
-    #     PARAM_SIZE: Int
-    # ](
-    #     self,
-    #     mut params: LayoutTensor[
-    #         dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
-    #     ],
-    #     grads: LayoutTensor[
-    #         dtype, Layout.row_major(PARAM_SIZE), ImmutAnyOrigin
-    #     ],
-    #     mut state: LayoutTensor[
-    #         dtype, Layout.row_major(PARAM_SIZE, Self.STATE_PER_PARAM), MutAnyOrigin
-    #     ],
-    # ):
-    #     """Adam optimizer update kernel for GPU."""
-    #     var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-    #     if idx >= PARAM_SIZE:
-    #         return
-    #
-    #     var g = grads[idx]
-    #     var m = state[idx, 0]
-    #     var v = state[idx, 1]
-    #
-    #     var m_new = Scalar[dtype](self.beta1) * m + (1 - Scalar[dtype](self.beta1)) * g
-    #     var v_new = Scalar[dtype](self.beta2) * v + (1 - Scalar[dtype](self.beta2)) * g * g
-    #
-    #     state[idx, 0] = m_new
-    #     state[idx, 1] = v_new
-    #
-    #     var m_hat = m_new / Scalar[dtype](1.0 - (self.beta1**self.t))
-    #     var v_hat = v_new / Scalar[dtype](1.0 - (self.beta2**self.t))
-    #
-    #     params[idx] -= Scalar[dtype](self.lr) * m_hat / (sqrt(v_hat) + Scalar[dtype](self.eps))
+    # =========================================================================
+    # GPU kernel implementation (inlinable for fusion)
+    # =========================================================================
+
+    @always_inline
+    @staticmethod
+    fn step_kernel_impl[
+        PARAM_SIZE: Int
+    ](
+        params: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+        grads: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+        state: LayoutTensor[
+            dtype, Layout.row_major(PARAM_SIZE, 2), MutAnyOrigin
+        ],
+        lr: Scalar[dtype],
+        beta1: Scalar[dtype],
+        beta2: Scalar[dtype],
+        eps: Scalar[dtype],
+        bias_correction1: Scalar[dtype],
+        bias_correction2: Scalar[dtype],
+    ):
+        """Adam optimizer kernel.
+
+        state layout: (PARAM_SIZE, 2) where state[i, 0] = m, state[i, 1] = v.
+        """
+        var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+        if idx >= PARAM_SIZE:
+            return
+
+        var g = rebind[Scalar[dtype]](grads[idx])
+        var m_val = rebind[Scalar[dtype]](state[idx, 0])
+        var v_val = rebind[Scalar[dtype]](state[idx, 1])
+
+        # Update moments
+        var one = Scalar[dtype](1.0)
+        var m_new = beta1 * m_val + (one - beta1) * g
+        var v_new = beta2 * v_val + (one - beta2) * g * g
+
+        # Write updated moments back to state
+        state[idx, 0] = m_new
+        state[idx, 1] = v_new
+
+        # Bias-corrected estimates
+        var m_hat = m_new / bias_correction1
+        var v_hat = v_new / bias_correction2
+
+        # Update weights
+        params[idx] = rebind[Scalar[dtype]](params[idx]) - lr * m_hat / (
+            sqrt(v_hat) + eps
+        )
+
+    # =========================================================================
+    # GPU launcher
+    # =========================================================================
+
+    fn step_gpu[
+        PARAM_SIZE: Int
+    ](
+        mut self,
+        ctx: DeviceContext,
+        params_buf: DeviceBuffer[dtype],
+        grads_buf: DeviceBuffer[dtype],
+        state_buf: DeviceBuffer[dtype],
+    ) raises:
+        """Launch Adam optimization step on GPU.
+
+        Args:
+            ctx: GPU device context.
+            params_buf: Parameters buffer [PARAM_SIZE] (modified in place).
+            grads_buf: Gradients buffer [PARAM_SIZE].
+            state_buf: State buffer [PARAM_SIZE * 2] (m and v moments).
+        """
+        # Increment timestep
+        self.t += 1
+
+        # Compute bias corrections on CPU (small computation)
+        var bias_correction1 = Scalar[dtype](1.0 - (self.beta1**self.t))
+        var bias_correction2 = Scalar[dtype](1.0 - (self.beta2**self.t))
+        var lr = Scalar[dtype](self.lr)
+        var beta1 = Scalar[dtype](self.beta1)
+        var beta2 = Scalar[dtype](self.beta2)
+        var eps = Scalar[dtype](self.eps)
+
+        # Create LayoutTensor views
+        var params = LayoutTensor[
+            dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
+        ](params_buf.unsafe_ptr())
+        var grads = LayoutTensor[
+            dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
+        ](grads_buf.unsafe_ptr())
+        var state = LayoutTensor[
+            dtype, Layout.row_major(PARAM_SIZE, 2), MutAnyOrigin
+        ](state_buf.unsafe_ptr())
+
+        # Kernel wrapper with explicit parameters
+        @always_inline
+        fn kernel_wrapper(
+            params: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+            grads: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+            state: LayoutTensor[
+                dtype, Layout.row_major(PARAM_SIZE, 2), MutAnyOrigin
+            ],
+            lr: Scalar[dtype],
+            beta1: Scalar[dtype],
+            beta2: Scalar[dtype],
+            eps: Scalar[dtype],
+            bias_correction1: Scalar[dtype],
+            bias_correction2: Scalar[dtype],
+        ):
+            Self.step_kernel_impl[PARAM_SIZE](
+                params,
+                grads,
+                state,
+                lr,
+                beta1,
+                beta2,
+                eps,
+                bias_correction1,
+                bias_correction2,
+            )
+
+        # Launch
+        comptime grid_size = (PARAM_SIZE + TPB - 1) // TPB
+
+        ctx.enqueue_function_checked[kernel_wrapper, kernel_wrapper](
+            params,
+            grads,
+            state,
+            lr,
+            beta1,
+            beta2,
+            eps,
+            bias_correction1,
+            bias_correction2,
+            grid_dim=(grid_size,),
+            block_dim=(TPB,),
+        )

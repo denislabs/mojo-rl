@@ -2,6 +2,7 @@ from ..constants import dtype
 from .model import Model
 from layout import LayoutTensor, Layout
 from gpu import thread_idx, block_idx, block_dim
+from gpu.host import DeviceContext, DeviceBuffer
 
 # =============================================================================
 # Sequential Containers
@@ -74,11 +75,15 @@ struct Seq2[L0: Model, L1: Model](Model):
         BATCH: Int
     ](
         self,
-        input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
         mut output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
         ],
-        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
@@ -89,9 +94,9 @@ struct Seq2[L0: Model, L1: Model](Model):
         Params layout: [L0's params | L1's params]
         """
         # Intermediate buffer for L0 output / L1 input
-        var buffer0_storage = InlineArray[Scalar[dtype], BATCH * Self.L0.OUT_DIM](
-            uninitialized=True
-        )
+        var buffer0_storage = InlineArray[
+            Scalar[dtype], BATCH * Self.L0.OUT_DIM
+        ](uninitialized=True)
         var buffer0 = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.L0.OUT_DIM), MutAnyOrigin
         ](buffer0_storage)
@@ -127,17 +132,21 @@ struct Seq2[L0: Model, L1: Model](Model):
         BATCH: Int
     ](
         self,
-        input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
         mut output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
         ],
-        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
     ):
         """Forward pass without caching (for inference)."""
         # Intermediate buffer for L0 output / L1 input
-        var buffer0_storage = InlineArray[Scalar[dtype], BATCH * Self.L0.OUT_DIM](
-            uninitialized=True
-        )
+        var buffer0_storage = InlineArray[
+            Scalar[dtype], BATCH * Self.L0.OUT_DIM
+        ](uninitialized=True)
         var buffer0 = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.L0.OUT_DIM), MutAnyOrigin
         ](buffer0_storage)
@@ -170,11 +179,15 @@ struct Seq2[L0: Model, L1: Model](Model):
         mut grad_input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ],
-        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
-        mut grads: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        mut grads: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
     ):
         """Backward pass in reverse order (all zero-copy views).
 
@@ -208,9 +221,9 @@ struct Seq2[L0: Model, L1: Model](Model):
         ](cache_ptr.offset(BATCH * Self.L0.CACHE_SIZE))
 
         # Intermediate buffer for gradient at buffer0
-        var grad_buffer0_storage = InlineArray[Scalar[dtype], BATCH * Self.L0.OUT_DIM](
-            uninitialized=True
-        )
+        var grad_buffer0_storage = InlineArray[
+            Scalar[dtype], BATCH * Self.L0.OUT_DIM
+        ](uninitialized=True)
         var grad_buffer0 = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.L0.OUT_DIM), MutAnyOrigin
         ](grad_buffer0_storage)
@@ -233,91 +246,217 @@ struct Seq2[L0: Model, L1: Model](Model):
         )
         # No copy-back needed - grads views modify the original in-place
 
-    @always_inline
+    # =========================================================================
+    # GPU Launchers (with DeviceContext)
+    # =========================================================================
+    #
+    # Sequential orchestrates GPU calls for its child layers.
+    # It allocates intermediate buffers on GPU and calls child _gpu methods.
+    #
+    # Buffer layouts:
+    # - params_buf: [L0's params | L1's params]
+    # - cache_buf: [L0's cache | L1's cache]
+    # - grads_buf: [L0's grads | L1's grads]
+    # =========================================================================
+
     @staticmethod
-    fn forward_kernel[
-        BATCH: Int
+    fn forward_gpu[
+        BATCH: Int,
     ](
-        output: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
-        ],
-        x: LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, Self.IN_DIM),
-            ImmutAnyOrigin,
-        ],
-        W: LayoutTensor[
-            dtype,
-            Layout.row_major(Self.IN_DIM, Self.OUT_DIM),
-            ImmutAnyOrigin,
-        ],
-        b: LayoutTensor[
-            dtype,
-            Layout.row_major(Self.OUT_DIM),
-            ImmutAnyOrigin,
-        ],
-    ):
-        """Forward pass on GPU - Seq2 requires separate kernel calls for each layer.
+        ctx: DeviceContext,
+        output_buf: DeviceBuffer[dtype],
+        input_buf: DeviceBuffer[dtype],
+        params_buf: DeviceBuffer[dtype],
+        cache_buf: DeviceBuffer[dtype],
+    ) raises:
+        """Launch forward pass on GPU with caching.
 
-        Note: Seq2 composes layers with different weight structures.
-        For GPU execution, call L0.forward_kernel and L1.forward_kernel separately
-        from host code with appropriate intermediate buffers.
-        This kernel signature exists only to satisfy the Model trait.
+        Orchestrates GPU calls for child layers:
+        1. Create intermediate buffer for L0 output / L1 input
+        2. L0: input -> intermediate
+        3. L1: intermediate -> output
+
+        Args:
+            ctx: GPU device context.
+            output_buf: Output buffer [BATCH * OUT_DIM].
+            input_buf: Input buffer [BATCH * IN_DIM].
+            params_buf: Parameters buffer [PARAM_SIZE] = [L0 params | L1 params].
+            cache_buf: Cache buffer [BATCH * CACHE_SIZE] = [L0 cache | L1 cache].
         """
-        pass
+        # Allocate intermediate buffer on GPU for L0 output / L1 input
+        var inter_buf = ctx.enqueue_create_buffer[dtype](BATCH * Self.L0.OUT_DIM)
 
-    @always_inline
+        # Create views into params_buf for each layer (owning=False for non-owning views)
+        # L0 params: offset 0, size L0.PARAM_SIZE
+        # L1 params: offset L0.PARAM_SIZE, size L1.PARAM_SIZE
+        var l0_params_buf = DeviceBuffer[dtype](
+            ctx,
+            params_buf.unsafe_ptr(),
+            Self.L0.PARAM_SIZE,
+            owning=False,
+        )
+        var l1_params_buf = DeviceBuffer[dtype](
+            ctx,
+            params_buf.unsafe_ptr().offset(Self.L0.PARAM_SIZE),
+            Self.L1.PARAM_SIZE,
+            owning=False,
+        )
+
+        # Create views into cache_buf for each layer
+        # L0 cache: offset 0, size BATCH * L0.CACHE_SIZE
+        # L1 cache: offset BATCH * L0.CACHE_SIZE, size BATCH * L1.CACHE_SIZE
+        var l0_cache_buf = DeviceBuffer[dtype](
+            ctx,
+            cache_buf.unsafe_ptr(),
+            BATCH * Self.L0.CACHE_SIZE,
+            owning=False,
+        )
+        var l1_cache_buf = DeviceBuffer[dtype](
+            ctx,
+            cache_buf.unsafe_ptr().offset(BATCH * Self.L0.CACHE_SIZE),
+            BATCH * Self.L1.CACHE_SIZE,
+            owning=False,
+        )
+
+        # L0: input -> inter_buf
+        Self.L0.forward_gpu[BATCH](
+            ctx, inter_buf, input_buf, l0_params_buf, l0_cache_buf
+        )
+
+        # L1: inter_buf -> output
+        Self.L1.forward_gpu[BATCH](
+            ctx, output_buf, inter_buf, l1_params_buf, l1_cache_buf
+        )
+
     @staticmethod
-    fn backward_dx_kernel[
-        BATCH: Int
+    fn forward_gpu_no_cache[
+        BATCH: Int,
     ](
-        dx: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
-        ],
-        dy: LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, Self.OUT_DIM),
-            ImmutAnyOrigin,
-        ],
-        W: LayoutTensor[
-            dtype,
-            Layout.row_major(Self.IN_DIM, Self.OUT_DIM),
-            ImmutAnyOrigin,
-        ],
-    ):
-        """Backward pass for input gradient on GPU - Seq2 requires separate kernel calls.
+        ctx: DeviceContext,
+        output_buf: DeviceBuffer[dtype],
+        input_buf: DeviceBuffer[dtype],
+        params_buf: DeviceBuffer[dtype],
+    ) raises:
+        """Launch forward pass on GPU without caching (for inference).
 
-        Note: For GPU execution, call L1.backward_dx_kernel then L0.backward_dx_kernel
-        separately from host code with appropriate intermediate buffers.
+        Args:
+            ctx: GPU device context.
+            output_buf: Output buffer [BATCH * OUT_DIM].
+            input_buf: Input buffer [BATCH * IN_DIM].
+            params_buf: Parameters buffer [PARAM_SIZE] = [L0 params | L1 params].
         """
-        pass
+        # Allocate intermediate buffer on GPU
+        var inter_buf = ctx.enqueue_create_buffer[dtype](BATCH * Self.L0.OUT_DIM)
 
-    @always_inline
+        # Create views into params_buf (owning=False for non-owning views)
+        var l0_params_buf = DeviceBuffer[dtype](
+            ctx,
+            params_buf.unsafe_ptr(),
+            Self.L0.PARAM_SIZE,
+            owning=False,
+        )
+        var l1_params_buf = DeviceBuffer[dtype](
+            ctx,
+            params_buf.unsafe_ptr().offset(Self.L0.PARAM_SIZE),
+            Self.L1.PARAM_SIZE,
+            owning=False,
+        )
+
+        # L0: input -> inter_buf
+        Self.L0.forward_gpu_no_cache[BATCH](ctx, inter_buf, input_buf, l0_params_buf)
+
+        # L1: inter_buf -> output
+        Self.L1.forward_gpu_no_cache[BATCH](ctx, output_buf, inter_buf, l1_params_buf)
+
     @staticmethod
-    fn backward_dW_db_kernel[
-        BATCH: Int
+    fn backward_gpu[
+        BATCH: Int,
     ](
-        dW: LayoutTensor[
-            dtype, Layout.row_major(Self.IN_DIM, Self.OUT_DIM), MutAnyOrigin
-        ],
-        db: LayoutTensor[dtype, Layout.row_major(Self.OUT_DIM), MutAnyOrigin],
-        x: LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, Self.IN_DIM),
-            ImmutAnyOrigin,
-        ],
-        dy: LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, Self.OUT_DIM),
-            ImmutAnyOrigin,
-        ],
-    ):
-        """Backward pass for weight/bias gradients on GPU - Seq2 requires separate kernel calls.
+        ctx: DeviceContext,
+        grad_input_buf: DeviceBuffer[dtype],
+        grad_output_buf: DeviceBuffer[dtype],
+        params_buf: DeviceBuffer[dtype],
+        cache_buf: DeviceBuffer[dtype],
+        grads_buf: DeviceBuffer[dtype],
+    ) raises:
+        """Launch backward pass on GPU.
 
-        Note: For GPU execution, call L0.backward_dW_db_kernel and L1.backward_dW_db_kernel
-        separately from host code with appropriate buffers for each layer's parameters.
+        Orchestrates GPU calls for child layers in reverse order:
+        1. L1: grad_output -> grad_inter
+        2. L0: grad_inter -> grad_input
+
+        Args:
+            ctx: GPU device context.
+            grad_input_buf: Gradient w.r.t. input [BATCH * IN_DIM] (written).
+            grad_output_buf: Gradient w.r.t. output [BATCH * OUT_DIM].
+            params_buf: Parameters buffer [PARAM_SIZE] = [L0 params | L1 params].
+            cache_buf: Cache buffer [BATCH * CACHE_SIZE] = [L0 cache | L1 cache].
+            grads_buf: Parameter gradients [PARAM_SIZE] = [L0 grads | L1 grads] (written).
         """
-        pass
+        # Allocate intermediate gradient buffer on GPU
+        var grad_inter_buf = ctx.enqueue_create_buffer[dtype](BATCH * Self.L0.OUT_DIM)
+
+        # Create views into params_buf (owning=False for non-owning views)
+        var l0_params_buf = DeviceBuffer[dtype](
+            ctx,
+            params_buf.unsafe_ptr(),
+            Self.L0.PARAM_SIZE,
+            owning=False,
+        )
+        var l1_params_buf = DeviceBuffer[dtype](
+            ctx,
+            params_buf.unsafe_ptr().offset(Self.L0.PARAM_SIZE),
+            Self.L1.PARAM_SIZE,
+            owning=False,
+        )
+
+        # Create views into cache_buf
+        var l0_cache_buf = DeviceBuffer[dtype](
+            ctx,
+            cache_buf.unsafe_ptr(),
+            BATCH * Self.L0.CACHE_SIZE,
+            owning=False,
+        )
+        var l1_cache_buf = DeviceBuffer[dtype](
+            ctx,
+            cache_buf.unsafe_ptr().offset(BATCH * Self.L0.CACHE_SIZE),
+            BATCH * Self.L1.CACHE_SIZE,
+            owning=False,
+        )
+
+        # Create views into grads_buf
+        var l0_grads_buf = DeviceBuffer[dtype](
+            ctx,
+            grads_buf.unsafe_ptr(),
+            Self.L0.PARAM_SIZE,
+            owning=False,
+        )
+        var l1_grads_buf = DeviceBuffer[dtype](
+            ctx,
+            grads_buf.unsafe_ptr().offset(Self.L0.PARAM_SIZE),
+            Self.L1.PARAM_SIZE,
+            owning=False,
+        )
+
+        # L1 backward: grad_output -> grad_inter
+        Self.L1.backward_gpu[BATCH](
+            ctx,
+            grad_inter_buf,
+            grad_output_buf,
+            l1_params_buf,
+            l1_cache_buf,
+            l1_grads_buf,
+        )
+
+        # L0 backward: grad_inter -> grad_input
+        Self.L0.backward_gpu[BATCH](
+            ctx,
+            grad_input_buf,
+            grad_inter_buf,
+            l0_params_buf,
+            l0_cache_buf,
+            l0_grads_buf,
+        )
 
 
 # =============================================================================

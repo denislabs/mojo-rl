@@ -4,6 +4,7 @@
 
 from ..constants import dtype
 from layout import Layout, LayoutTensor
+from gpu.host import DeviceContext, DeviceBuffer
 
 
 trait Optimizer(Movable & ImplicitlyCopyable):
@@ -29,7 +30,9 @@ trait Optimizer(Movable & ImplicitlyCopyable):
         ],
         grads: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
         mut state: LayoutTensor[
-            dtype, Layout.row_major(PARAM_SIZE, Self.STATE_PER_PARAM), MutAnyOrigin
+            dtype,
+            Layout.row_major(PARAM_SIZE, Self.STATE_PER_PARAM),
+            MutAnyOrigin,
         ],
     ):
         """Perform one optimization step.
@@ -41,21 +44,25 @@ trait Optimizer(Movable & ImplicitlyCopyable):
         """
         ...
 
-    # @always_inline
-    # fn step_kernel(
-    #     self,
-    #     mut params: LayoutTensor[
-    #         dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
-    #     ],
-    #     grads: LayoutTensor[
-    #         dtype,
-    #         Layout.row_major(Self.PARAM_SIZE, Self.GRAD_SIZE),
-    #         ImmutAnyOrigin,
-    #     ],
-    # ):
-    #     """Perform one optimization step on GPU.
+    # =========================================================================
+    # GPU methods
+    # =========================================================================
 
-    #     Note: SGD just needs params and grads.
-    #     Adam needs additional moment buffers - use Adam.step_kernel directly.
-    #     """
-    #     ...
+    fn step_gpu[
+        PARAM_SIZE: Int
+    ](
+        mut self,
+        ctx: DeviceContext,
+        params_buf: DeviceBuffer[dtype],
+        grads_buf: DeviceBuffer[dtype],
+        state_buf: DeviceBuffer[dtype],
+    ) raises:
+        """Perform one optimization step on GPU.
+
+        Args:
+            ctx: GPU device context.
+            params_buf: Parameters buffer [PARAM_SIZE] (modified in place).
+            grads_buf: Gradients buffer [PARAM_SIZE].
+            state_buf: Optimizer state buffer [PARAM_SIZE * STATE_PER_PARAM].
+        """
+        ...

@@ -1,5 +1,6 @@
 from ..constants import dtype
 from layout import LayoutTensor, Layout
+from gpu.host import DeviceContext, DeviceBuffer
 
 
 trait Model(Movable & ImplicitlyCopyable):
@@ -34,11 +35,15 @@ trait Model(Movable & ImplicitlyCopyable):
         BATCH: Int
     ](
         self,
-        input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
         mut output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
         ],
-        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
@@ -57,11 +62,15 @@ trait Model(Movable & ImplicitlyCopyable):
         BATCH: Int
     ](
         self,
-        input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
         mut output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
         ],
-        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
     ):
         """Forward pass without caching (for inference).
 
@@ -86,11 +95,15 @@ trait Model(Movable & ImplicitlyCopyable):
         mut grad_input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ],
-        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
-        mut grads: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        mut grads: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
     ):
         """Backward pass: compute grad_input and accumulate parameter gradients.
 
@@ -104,78 +117,72 @@ trait Model(Movable & ImplicitlyCopyable):
         ...
 
     # =========================================================================
-    # GPU kernels (static methods)
+    # GPU forward passes
     # =========================================================================
 
-    @always_inline
     @staticmethod
-    fn forward_kernel[
+    fn forward_gpu[
         BATCH: Int
     ](
-        output: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
-        ],
-        x: LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, Self.IN_DIM),
-            ImmutAnyOrigin,
-        ],
-        W: LayoutTensor[
-            dtype,
-            Layout.row_major(Self.IN_DIM, Self.OUT_DIM),
-            ImmutAnyOrigin,
-        ],
-        b: LayoutTensor[
-            dtype,
-            Layout.row_major(Self.OUT_DIM),
-            ImmutAnyOrigin,
-        ],
-    ):
-        """Forward pass on GPU."""
+        ctx: DeviceContext,
+        output_buf: DeviceBuffer[dtype],
+        input_buf: DeviceBuffer[dtype],
+        params_buf: DeviceBuffer[dtype],
+        cache_buf: DeviceBuffer[dtype],
+    ) raises:
+        """GPU forward pass with caching (for training).
+
+        Args:
+            ctx: GPU device context.
+            output_buf: Output buffer [BATCH * OUT_DIM].
+            input_buf: Input buffer [BATCH * IN_DIM].
+            params_buf: Parameters buffer [PARAM_SIZE].
+            cache_buf: Cache buffer [BATCH * CACHE_SIZE].
+        """
         ...
 
-    @always_inline
     @staticmethod
-    fn backward_dx_kernel[
+    fn forward_gpu_no_cache[
         BATCH: Int
     ](
-        dx: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
-        ],
-        dy: LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, Self.OUT_DIM),
-            ImmutAnyOrigin,
-        ],
-        W: LayoutTensor[
-            dtype,
-            Layout.row_major(Self.IN_DIM, Self.OUT_DIM),
-            ImmutAnyOrigin,
-        ],
-    ):
-        """Backward pass for input gradient on GPU: dx = dy @ W.T."""
+        ctx: DeviceContext,
+        output_buf: DeviceBuffer[dtype],
+        input_buf: DeviceBuffer[dtype],
+        params_buf: DeviceBuffer[dtype],
+    ) raises:
+        """GPU forward pass without caching (for inference).
+
+        Args:
+            ctx: GPU device context.
+            output_buf: Output buffer [BATCH * OUT_DIM].
+            input_buf: Input buffer [BATCH * IN_DIM].
+            params_buf: Parameters buffer [PARAM_SIZE].
+        """
         ...
 
-    @always_inline
+    # =========================================================================
+    # GPU backward pass
+    # =========================================================================
+
     @staticmethod
-    fn backward_dW_db_kernel[
+    fn backward_gpu[
         BATCH: Int
     ](
-        dW: LayoutTensor[
-            dtype, Layout.row_major(Self.IN_DIM, Self.OUT_DIM), MutAnyOrigin
-        ],
-        db: LayoutTensor[dtype, Layout.row_major(Self.OUT_DIM), MutAnyOrigin],
-        x: LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, Self.IN_DIM),
-            ImmutAnyOrigin,
-        ],
-        dy: LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, Self.OUT_DIM),
-            ImmutAnyOrigin,
-        ],
-    ):
-        """Backward pass for weight/bias gradients on GPU: dW = x.T @ dy, db = sum(dy).
+        ctx: DeviceContext,
+        grad_input_buf: DeviceBuffer[dtype],
+        grad_output_buf: DeviceBuffer[dtype],
+        params_buf: DeviceBuffer[dtype],
+        cache_buf: DeviceBuffer[dtype],
+        grads_buf: DeviceBuffer[dtype],
+    ) raises:
+        """GPU backward pass: compute grad_input and accumulate parameter gradients.
+
+        Args:
+            ctx: GPU device context.
+            grad_input_buf: Gradient of loss w.r.t. input [BATCH * IN_DIM] (written).
+            grad_output_buf: Gradient of loss w.r.t. output [BATCH * OUT_DIM].
+            params_buf: Parameters buffer [PARAM_SIZE].
+            cache_buf: Cache from forward pass [BATCH * CACHE_SIZE].
+            grads_buf: Parameter gradients [PARAM_SIZE] (accumulated).
         """
         ...
