@@ -4,7 +4,6 @@ from layout import LayoutTensor, Layout
 from gpu import thread_idx, block_idx, block_dim
 from gpu.host import DeviceContext, DeviceBuffer
 from math import exp
-from ..nn_gpu import tanh_forward_kernel, tanh_backward_kernel
 
 # GPU constant
 comptime TPB = 256  # Threads per block for elementwise ops
@@ -36,11 +35,15 @@ struct Tanh[dim: Int](Model):
         BATCH: Int
     ](
         self,
-        input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
         mut output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
         ],
-        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
@@ -70,11 +73,15 @@ struct Tanh[dim: Int](Model):
         BATCH: Int
     ](
         self,
-        input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
         mut output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
         ],
-        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
     ):
         """Forward pass without caching (for inference).
 
@@ -103,11 +110,15 @@ struct Tanh[dim: Int](Model):
         mut grad_input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ],
-        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
-        mut grads: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        mut grads: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
     ):
         """Backward: dx = dy * (1 - tanh(x)^2).
 
@@ -118,138 +129,6 @@ struct Tanh[dim: Int](Model):
             for i in range(Self.dim):
                 var t = cache[batch, i]  # tanh(x) cached
                 grad_input[batch, i] = grad_output[batch, i] * (1 - t * t)
-
-    @always_inline
-    @staticmethod
-    fn forward_kernel[
-        BATCH: Int
-    ](
-        output: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
-        ],
-        x: LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, Self.IN_DIM),
-            ImmutAnyOrigin,
-        ],
-        W: LayoutTensor[
-            dtype,
-            Layout.row_major(Self.IN_DIM, Self.OUT_DIM),
-            ImmutAnyOrigin,
-        ],
-        b: LayoutTensor[
-            dtype,
-            Layout.row_major(Self.OUT_DIM),
-            ImmutAnyOrigin,
-        ],
-    ):
-        """Forward pass on GPU: y = tanh(x). W and b are unused (no params)."""
-        # Tanh has no weights - forward just applies activation
-        # Note: This doesn't cache for backward - use with separate cache buffer
-        from math import exp
-
-        var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-        if idx >= BATCH * Self.dim:
-            return
-        var row = idx // Self.dim
-        var col = idx % Self.dim
-        var val = x[row, col]
-        var val_f32 = rebind[Scalar[DType.float32]](val)
-        var exp_val = exp(val_f32)
-        var exp_neg_val = exp(-val_f32)
-        var tanh_val = (exp_val - exp_neg_val) / (exp_val + exp_neg_val)
-        output[row, col] = rebind[output.element_type](tanh_val)
-
-    @always_inline
-    @staticmethod
-    fn forward_with_cache_kernel[
-        BATCH: Int
-    ](
-        output: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
-        ],
-        x: LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, Self.dim),
-            ImmutAnyOrigin,
-        ],
-        cache: LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, Self.dim),
-            MutAnyOrigin,
-        ],
-    ):
-        """Forward pass on GPU with caching for backward."""
-        tanh_forward_kernel[BATCH, Self.dim](output, x, cache)
-
-    @always_inline
-    @staticmethod
-    fn backward_dx_kernel[
-        BATCH: Int
-    ](
-        dx: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
-        ],
-        dy: LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, Self.OUT_DIM),
-            ImmutAnyOrigin,
-        ],
-        W: LayoutTensor[
-            dtype,
-            Layout.row_major(Self.IN_DIM, Self.OUT_DIM),
-            ImmutAnyOrigin,
-        ],
-    ):
-        """Backward pass for input gradient on GPU. W is unused (no params)."""
-        # Tanh backward needs cache - this is a placeholder that won't work alone
-        # Use backward_with_cache_kernel instead
-        pass
-
-    @always_inline
-    @staticmethod
-    fn backward_with_cache_kernel[
-        BATCH: Int
-    ](
-        dx: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
-        ],
-        dy: LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, Self.dim),
-            ImmutAnyOrigin,
-        ],
-        cache: LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, Self.dim),
-            ImmutAnyOrigin,
-        ],
-    ):
-        """Backward pass on GPU: dx = dy * (1 - tanh(x)^2)."""
-        tanh_backward_kernel[BATCH, Self.dim](dx, dy, cache)
-
-    @always_inline
-    @staticmethod
-    fn backward_dW_db_kernel[
-        BATCH: Int
-    ](
-        dW: LayoutTensor[
-            dtype, Layout.row_major(Self.IN_DIM, Self.OUT_DIM), MutAnyOrigin
-        ],
-        db: LayoutTensor[dtype, Layout.row_major(Self.OUT_DIM), MutAnyOrigin],
-        x: LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, Self.IN_DIM),
-            ImmutAnyOrigin,
-        ],
-        dy: LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, Self.OUT_DIM),
-            ImmutAnyOrigin,
-        ],
-    ):
-        """Tanh has no weight gradients - no-op."""
-        pass
 
     # =========================================================================
     # GPU Kernel Implementations (@always_inline for fusion)

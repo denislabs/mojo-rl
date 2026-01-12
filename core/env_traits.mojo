@@ -30,7 +30,9 @@ Algorithms specify requirements:
 """
 
 from .env import Env
-
+from layout import LayoutTensor, Layout
+from deep_rl import dtype
+from gpu import DeviceContext, DeviceBuffer
 
 # ============================================================================
 # State Space Traits
@@ -199,8 +201,6 @@ trait BoxContinuousActionEnv(ContinuousActionEnv, ContinuousStateEnv):
 # GPU Environment Trait for Composable GPU RL. (Experimental)
 # ============================================================================
 
-comptime dtype = DType.float32
-
 
 trait GPUDiscreteEnv:
     """Trait for GPU-compatible discrete action environments.
@@ -215,23 +215,79 @@ trait GPUDiscreteEnv:
     comptime NUM_ACTIONS: Int
 
     @staticmethod
-    fn step_inline[
-        size: Int
+    fn step_kernel[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
     ](
-        mut state: InlineArray[Scalar[dtype], size],
-        action: Int,
-    ) -> Tuple[
-        Scalar[dtype], Bool
-    ]:
+        states: LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ],
+        actions: LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE), ImmutAnyOrigin
+        ],
+        rewards: LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ],
+        dones: LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ],
+    ):
+        """Perform one environment step. Returns (reward, done).
+
+        Note: MutAnyOrigin allows mutation without `mut` keyword.
+        Actions use ImmutAnyOrigin since they are read-only.
+        Actions should be 0.0, 1.0, 2.0, etc. (cast to Int inside kernel).
+        Dones should be 0.0 (false) or 1.0 (true).
+        """
+        ...
+
+    @staticmethod
+    fn reset_kernel[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+    ](
+        states: LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ],
+    ):
+        """Reset state to random initial values."""
+        ...
+
+    @staticmethod
+    fn step_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+    ](
+        ctx: DeviceContext,
+        mut states: DeviceBuffer[dtype],
+        actions: DeviceBuffer[dtype],
+        mut rewards: DeviceBuffer[dtype],
+        mut dones: DeviceBuffer[dtype],
+    ) raises:
         """Perform one environment step. Returns (reward, done)."""
         ...
 
     @staticmethod
-    fn reset_inline[
-        size: Int
-    ](
-        mut state: InlineArray[Scalar[dtype], size],
-        mut rng: Scalar[DType.uint32],
-    ):
+    fn reset_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+    ](ctx: DeviceContext, mut states: DeviceBuffer[dtype],) raises:
         """Reset state to random initial values."""
+        ...
+
+    @staticmethod
+    fn selective_reset_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+    ](
+        ctx: DeviceContext,
+        mut states: DeviceBuffer[dtype],
+        mut dones: DeviceBuffer[dtype],
+        rng_seed: UInt32,
+    ) raises:
+        """Reset only done environments to random initial values.
+
+        This enables efficient vectorized training where only completed
+        episodes are reset while others continue running.
+        """
         ...

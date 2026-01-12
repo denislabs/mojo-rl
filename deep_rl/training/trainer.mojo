@@ -343,6 +343,8 @@ struct Trainer[
                     "Epoch " + String(epoch) + " - Loss: " + String(final_loss)
                 )
 
+            ctx.synchronize()
+
         # Compute final loss if not already computed
         if self.print_every == 0 or (self.epochs - 1) % self.print_every != 0:
             Self.LOSS_FUNCTION.forward_gpu[BATCH, Self.MODEL.OUT_DIM](

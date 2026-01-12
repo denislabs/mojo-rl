@@ -1,14 +1,17 @@
-# CPU Deep RL Agents
+# CPU Deep RL Agents (old architecture)
 from .cpu import (
     DeepDDPGAgent,
     DeepTD3Agent,
     DeepSACAgent,
-    DeepDQNAgent,
+    DeepDQNAgent as DeepDQNAgentCPU,
     QNetwork,
     DeepDQNPERAgent,
     DeepDuelingDQNAgent,
     DuelingQNetwork,
 )
 
-# GPU Deep RL Agents
-from .gpu import GPUDeepDQNAgent, GPUQNetwork
+# GPU Deep RL Agents (old architecture)
+from .gpu import A2CAgent as GPUA2CAgent
+
+# New architecture agents (use Network wrapper, support both CPU and GPU)
+from .dqn import DQNAgent

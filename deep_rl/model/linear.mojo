@@ -5,16 +5,6 @@ from gpu import thread_idx, block_idx, block_dim, barrier
 from gpu.host import DeviceContext, DeviceBuffer
 from gpu.memory import AddressSpace
 
-from ..nn_gpu import (
-    generic_matmul_kernel,
-    linear_forward_kernel,
-    linear_forward_relu_kernel,
-    linear_backward_dx_kernel,
-    linear_backward_dx_relu_kernel,
-    linear_backward_dW_kernel,
-    linear_backward_db_kernel,
-    linear_backward_dW_db_kernel,
-)
 
 # =============================================================================
 # GPU Constants
@@ -134,81 +124,6 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
                 for i in range(Self.in_dim):
                     acc += input[batch, i] * W[i, j]
                 output[batch, j] = acc
-
-    @always_inline
-    @staticmethod
-    fn forward_kernel[
-        BATCH: Int
-    ](
-        output: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
-        ],
-        x: LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, Self.IN_DIM),
-            ImmutAnyOrigin,
-        ],
-        W: LayoutTensor[
-            dtype,
-            Layout.row_major(Self.IN_DIM, Self.OUT_DIM),
-            ImmutAnyOrigin,
-        ],
-        b: LayoutTensor[
-            dtype,
-            Layout.row_major(Self.OUT_DIM),
-            ImmutAnyOrigin,
-        ],
-    ):
-        """Forward pass: y = x @ W + b (no activation)."""
-        linear_forward_kernel[BATCH, Self.IN_DIM, Self.OUT_DIM](output, x, W, b)
-
-    @always_inline
-    @staticmethod
-    fn backward_dx_kernel[
-        BATCH: Int
-    ](
-        dx: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
-        ],
-        dy: LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, Self.OUT_DIM),
-            ImmutAnyOrigin,
-        ],
-        W: LayoutTensor[
-            dtype,
-            Layout.row_major(Self.IN_DIM, Self.OUT_DIM),
-            ImmutAnyOrigin,
-        ],
-    ):
-        """Backward pass for input gradient on GPU: dx = dy @ W.T."""
-        linear_backward_dx_kernel[BATCH, Self.IN_DIM, Self.OUT_DIM](dx, dy, W)
-
-    @always_inline
-    @staticmethod
-    fn backward_dW_db_kernel[
-        BATCH: Int
-    ](
-        dW: LayoutTensor[
-            dtype, Layout.row_major(Self.IN_DIM, Self.OUT_DIM), MutAnyOrigin
-        ],
-        db: LayoutTensor[dtype, Layout.row_major(Self.OUT_DIM), MutAnyOrigin],
-        x: LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, Self.IN_DIM),
-            ImmutAnyOrigin,
-        ],
-        dy: LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, Self.OUT_DIM),
-            ImmutAnyOrigin,
-        ],
-    ):
-        """Backward pass for weight/bias gradients on GPU: dW = x.T @ dy, db = sum(dy).
-        """
-        linear_backward_dW_db_kernel[BATCH, Self.IN_DIM, Self.OUT_DIM](
-            dW, db, x, dy
-        )
 
     # =========================================================================
     # GPU Kernel Implementations (@always_inline for fusion)
@@ -429,7 +344,9 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
             # Load dy tile
             var dy_col = tile_idx * TILE + local_col
             if global_row < BATCH and dy_col < Self.OUT_DIM:
-                dy_shared[local_row, local_col] = grad_output[global_row, dy_col]
+                dy_shared[local_row, local_col] = grad_output[
+                    global_row, dy_col
+                ]
             else:
                 dy_shared[local_row, local_col] = 0
 
@@ -476,7 +393,9 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
         var local_row = Int(thread_idx.y)
         var local_col = Int(thread_idx.x)
         var global_row = Int(block_idx.y) * TILE + local_row  # IN_DIM dimension
-        var global_col = Int(block_idx.x) * TILE + local_col  # OUT_DIM dimension
+        var global_col = (
+            Int(block_idx.x) * TILE + local_col
+        )  # OUT_DIM dimension
 
         var x_T_shared = LayoutTensor[
             dtype,
@@ -506,7 +425,9 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
             # Load dy tile
             var dy_row = tile_idx * TILE + local_row
             if dy_row < BATCH and global_col < Self.OUT_DIM:
-                dy_shared[local_row, local_col] = grad_output[dy_row, global_col]
+                dy_shared[local_row, local_col] = grad_output[
+                    dy_row, global_col
+                ]
             else:
                 dy_shared[local_row, local_col] = 0
 
@@ -617,9 +538,13 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
                 dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
             ],
             W: LayoutTensor[
-                dtype, Layout.row_major(Self.IN_DIM, Self.OUT_DIM), ImmutAnyOrigin
+                dtype,
+                Layout.row_major(Self.IN_DIM, Self.OUT_DIM),
+                ImmutAnyOrigin,
             ],
-            b: LayoutTensor[dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin],
+            b: LayoutTensor[
+                dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
+            ],
             cache: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
             ],
@@ -678,9 +603,13 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
                 dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
             ],
             W: LayoutTensor[
-                dtype, Layout.row_major(Self.IN_DIM, Self.OUT_DIM), ImmutAnyOrigin
+                dtype,
+                Layout.row_major(Self.IN_DIM, Self.OUT_DIM),
+                ImmutAnyOrigin,
             ],
-            b: LayoutTensor[dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin],
+            b: LayoutTensor[
+                dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
+            ],
         ):
             Self.forward_kernel_impl_no_cache[BATCH](output, input, W, b)
 
@@ -755,7 +684,9 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
                 dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
             ],
             W: LayoutTensor[
-                dtype, Layout.row_major(Self.IN_DIM, Self.OUT_DIM), ImmutAnyOrigin
+                dtype,
+                Layout.row_major(Self.IN_DIM, Self.OUT_DIM),
+                ImmutAnyOrigin,
             ],
         ):
             Self.backward_dx_kernel_impl[BATCH](grad_input, grad_output, W)
@@ -797,7 +728,9 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
         # Kernel 3: db = sum(dy, axis=0)
         @always_inline
         fn db_kernel_wrapper(
-            db: LayoutTensor[dtype, Layout.row_major(Self.OUT_DIM), MutAnyOrigin],
+            db: LayoutTensor[
+                dtype, Layout.row_major(Self.OUT_DIM), MutAnyOrigin
+            ],
             grad_output: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
             ],

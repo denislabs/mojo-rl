@@ -6,7 +6,7 @@ A reinforcement learning framework written in Mojo, featuring trait-based design
 
 - **Trait-based architecture**: Generic interfaces for environments, agents, states, and actions
 - **28+ RL algorithms**: TD methods, multi-step, eligibility traces, model-based planning, function approximation, policy gradients, PPO, continuous control (DDPG, TD3, SAC), and deep RL (DQN, Double DQN)
-- **Deep RL infrastructure**: Native tensor operations, MLP networks, Adam optimizer, Actor-Critic networks with SIMD optimization
+- **Deep RL infrastructure**: Trait-based neural network framework with Model, Optimizer, LossFunction, and Initializer traits; Linear/ReLU/Tanh layers; SGD/Adam optimizers; Sequential composition via `seq()`; GPU kernels with tiled matmul
 - **9 native environments**: GridWorld, FrozenLake, CliffWalking, Taxi, CartPole, MountainCar, Acrobot, Pendulum, LunarLander
 - **Integrated SDL2 rendering**: Native visualization for continuous-state environments (CartPole, MountainCar, Acrobot, Pendulum, LunarLander)
 - **20+ Gymnasium wrappers**: Classic Control, Box2D, Toy Text, MuJoCo environments
@@ -207,13 +207,27 @@ mojo-rl/
 │   ├── ddpg.mojo              # Deep Deterministic Policy Gradient (linear)
 │   ├── td3.mojo               # Twin Delayed DDPG (linear)
 │   └── sac.mojo               # Soft Actor-Critic (linear)
-├── deep_rl/               # Deep RL infrastructure (neural networks)
-│   ├── tensor.mojo        # SIMD-optimized tensor ops (matmul, activations)
-│   ├── linear.mojo        # Linear layer with compile-time dimensions
-│   ├── adam.mojo          # Adam optimizer with LinearAdam layer
-│   ├── mlp.mojo           # MLP2, MLP3 networks with tanh activation
-│   ├── actor_critic.mojo  # Actor and Critic networks for continuous control
-│   └── replay_buffer.mojo # Replay buffer for deep RL
+├── deep_rl/               # Deep RL infrastructure (trait-based neural networks)
+│   ├── constants.mojo     # Global constants (dtype=float32, TILE=16, TPB=256)
+│   ├── model/             # Neural network layers (Model trait)
+│   │   ├── model.mojo     # Model trait: stateless forward/backward with LayoutTensor
+│   │   ├── linear.mojo    # Linear[in_dim, out_dim]: y = x @ W + b with GPU kernels
+│   │   ├── relu.mojo      # ReLU[dim]: y = max(0, x) activation
+│   │   ├── tanh.mojo      # Tanh[dim]: y = tanh(x) activation
+│   │   └── sequential.mojo # Seq2[L0, L1] + seq() helpers for composing layers
+│   ├── optimizer/         # Optimizers (Optimizer trait)
+│   │   ├── optimizer.mojo # Optimizer trait: step() with external state
+│   │   ├── sgd.mojo       # SGD: param -= lr * grad
+│   │   └── adam.mojo      # Adam: adaptive learning with momentum
+│   ├── loss/              # Loss functions (LossFunction trait)
+│   │   ├── loss.mojo      # LossFunction trait: forward/backward
+│   │   └── mse.mojo       # MSELoss: mean squared error
+│   ├── initializer/       # Weight initializers (Initializer trait)
+│   │   └── initializers.mojo # Xavier, Kaiming, LeCun, Zeros, Ones, Constant, Uniform, Normal
+│   ├── training/          # Training utilities
+│   │   └── trainer.mojo   # Trainer[MODEL, OPT, LOSS, INIT]: CPU/GPU training loop
+│   ├── cpu/               # Legacy CPU implementations (deprecated)
+│   └── gpu/               # Legacy GPU implementations (deprecated)
 ├── deep_agents/           # Deep RL agents (neural networks)
 │   ├── cpu/               # CPU-based deep RL agents
 │   │   ├── ddpg.mojo      # DeepDDPGAgent with MLP networks
@@ -361,6 +375,64 @@ fn main() raises:
 
         # Update at end of episode
         agent.update_from_episode()
+```
+
+### Deep Learning with Trainer
+
+```mojo
+from deep_rl import (
+    Model, seq, Linear, ReLU, Tanh,
+    Optimizer, SGD, Adam,
+    LossFunction, MSELoss,
+    Initializer, Xavier, Kaiming,
+    Trainer, TrainResult,
+)
+
+fn main() raises:
+    # Build a 2-layer MLP: 2 -> 16 (ReLU) -> 1
+    var model = seq(
+        Linear[2, 16](),
+        ReLU[16](),
+        Linear[16, 1](),
+    )
+
+    # Create trainer with Adam optimizer and MSE loss
+    var trainer = Trainer[
+        typeof(model),  # Model type
+        Adam,           # Optimizer type
+        MSELoss,        # Loss function type
+        Kaiming,        # Initializer type (good for ReLU)
+    ](
+        model,
+        Adam(lr=0.001),
+        MSELoss(),
+        Kaiming(),
+        epochs=1000,
+        print_every=100,
+    )
+
+    # Prepare training data (XOR problem)
+    var input = InlineArray[Scalar[DType.float32], 8](
+        0, 0,  # Sample 1
+        0, 1,  # Sample 2
+        1, 0,  # Sample 3
+        1, 1,  # Sample 4
+    )
+    var target = InlineArray[Scalar[DType.float32], 4](
+        0,  # 0 XOR 0 = 0
+        1,  # 0 XOR 1 = 1
+        1,  # 1 XOR 0 = 1
+        0,  # 1 XOR 1 = 0
+    )
+
+    # Train on CPU
+    var result = trainer.train[4](input, target)
+    print("Final loss:", result.final_loss)
+
+    # Or train on GPU (Metal/CUDA)
+    from gpu.host import DeviceContext
+    var ctx = DeviceContext()
+    var gpu_result = trainer.train_gpu[4](ctx, input, target)
 ```
 
 ## Algorithm Parameters

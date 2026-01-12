@@ -154,6 +154,24 @@ struct TrainingMetrics(Copyable, Movable, ImplicitlyCopyable):
                 min_r = self.episodes[i].total_reward
         return min_r
 
+    fn mean_reward_last_n(self, n: Int) -> Float64:
+        """Compute mean reward over the last n episodes.
+
+        Args:
+            n: Number of recent episodes to average over.
+
+        Returns:
+            Mean reward of the last n episodes (or all if fewer than n).
+        """
+        if len(self.episodes) == 0:
+            return 0.0
+        var count = min(n, len(self.episodes))
+        var start_idx = len(self.episodes) - count
+        var total: Float64 = 0.0
+        for i in range(start_idx, len(self.episodes)):
+            total += self.episodes[i].total_reward
+        return total / Float64(count)
+
     fn moving_average(self, window: Int = 100) -> List[Float64]:
         """Compute moving average of rewards.
 

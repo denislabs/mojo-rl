@@ -10,7 +10,7 @@ on the cart.
 
 Supports both CPU (instance methods) and GPU (static inline methods) usage:
 - CPU: Use reset(), step(), render() for interactive training
-- GPU: Use step_inline(), reset_inline() in fused GPU kernels
+- GPU: Use step_kernel(), reset_kernel() in fused GPU kernels
 
 Rendering uses native SDL2 bindings (no Python/pygame dependency).
 Requires SDL2 and SDL2_ttf: brew install sdl2 sdl2_ttf
@@ -29,7 +29,10 @@ from core import (
 )
 from core.sdl2 import SDL_Color, SDL_Point
 from .renderer_base import RendererBase
-from deep_rl.gpu import random_range
+from deep_rl.gpu import random_range, xorshift32
+from layout import LayoutTensor, Layout
+from gpu import block_dim, block_idx, thread_idx
+from gpu.host import DeviceContext, DeviceBuffer
 
 # =============================================================================
 # Physics Constants (shared by CPU and GPU)
@@ -252,7 +255,8 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
 
         # Equations of motion (derived from Lagrangian mechanics)
         var temp = (
-            force + POLE_MASS_LENGTH * self.theta_dot * self.theta_dot * sintheta
+            force
+            + POLE_MASS_LENGTH * self.theta_dot * self.theta_dot * sintheta
         ) / TOTAL_MASS
 
         var thetaacc = (GRAVITY * sintheta - costheta * temp) / (
@@ -351,7 +355,9 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
             n3 = 1.0
         var b3 = Int(n3 * Float64(self.num_bins - 1))
 
-        return ((b0 * self.num_bins + b1) * self.num_bins + b2) * self.num_bins + b3
+        return (
+            (b0 * self.num_bins + b1) * self.num_bins + b2
+        ) * self.num_bins + b3
 
     @always_inline
     fn get_obs(self) -> SIMD[DType.float64, 4]:
@@ -363,7 +369,8 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
     # ========================================================================
 
     fn get_obs_list(self) -> List[Float64]:
-        """Return current continuous observation as a flexible list (trait method)."""
+        """Return current continuous observation as a flexible list (trait method).
+        """
         var obs = List[Float64](capacity=4)
         obs.append(self.x)
         obs.append(self.x_dot)
@@ -372,7 +379,8 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
         return obs^
 
     fn reset_obs_list(mut self) -> List[Float64]:
-        """Reset environment and return initial observation as list (trait method)."""
+        """Reset environment and return initial observation as list (trait method).
+        """
         _ = self.reset()
         return self.get_obs_list()
 
@@ -423,7 +431,8 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
         var sintheta = sin(self.theta)
 
         var temp = (
-            force + POLE_MASS_LENGTH * self.theta_dot * self.theta_dot * sintheta
+            force
+            + POLE_MASS_LENGTH * self.theta_dot * self.theta_dot * sintheta
         ) / TOTAL_MASS
 
         var thetaacc = (GRAVITY * sintheta - costheta * temp) / (
@@ -696,27 +705,42 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
 
     @staticmethod
     @always_inline
-    fn step_inline[
-        size: Int
+    fn step_kernel[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
     ](
-        mut state: InlineArray[Scalar[gpu_dtype], size],
-        action: Int,
-    ) -> Tuple[Scalar[gpu_dtype], Bool]:
-        """Inline step for fused GPU kernels. Returns (reward, done)."""
-        # Compute force based on action (cast to Float32 for GPU)
-        var force = Scalar[gpu_dtype](FORCE_MAG) if action == 1 else Scalar[
+        states: LayoutTensor[
+            gpu_dtype,
+            Layout.row_major(BATCH_SIZE, STATE_SIZE),
+            MutAnyOrigin,
+        ],
+        actions: LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE), ImmutAnyOrigin
+        ],
+        rewards: LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ],
+        dones: LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ],
+    ):
+        var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+        if i >= BATCH_SIZE:
+            return
+
+        var force = Scalar[gpu_dtype](FORCE_MAG) if actions[i] == 1 else Scalar[
             gpu_dtype
         ](-FORCE_MAG)
 
         # Physics calculations (Euler integration matching Gymnasium)
-        var cos_theta = cos(state[2])
-        var sin_theta = sin(state[2])
+        var cos_theta = cos(states[i, 2])
+        var sin_theta = sin(states[i, 2])
 
         var temp = (
             force
             + Scalar[gpu_dtype](POLE_MASS_LENGTH)
-            * state[3]
-            * state[3]
+            * states[i, 3]
+            * states[i, 3]
             * sin_theta
         ) / Scalar[gpu_dtype](TOTAL_MASS)
 
@@ -733,57 +757,311 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
             )
         )
 
-        var x_acc = (
-            temp
-            - Scalar[gpu_dtype](POLE_MASS_LENGTH)
-            * theta_acc
-            * cos_theta
-            / Scalar[gpu_dtype](TOTAL_MASS)
-        )
+        var x_acc = temp - Scalar[gpu_dtype](
+            POLE_MASS_LENGTH
+        ) * theta_acc * cos_theta / Scalar[gpu_dtype](TOTAL_MASS)
 
         # Euler integration - update state in-place
-        state[0] = state[0] + Scalar[gpu_dtype](TAU) * state[1]
-        state[1] = state[1] + Scalar[gpu_dtype](TAU) * x_acc
-        state[2] = state[2] + Scalar[gpu_dtype](TAU) * state[3]
-        state[3] = state[3] + Scalar[gpu_dtype](TAU) * theta_acc
+        states[i, 0] += Scalar[gpu_dtype](TAU) * states[i, 1]
+        states[i, 1] += Scalar[gpu_dtype](TAU) * x_acc
+        states[i, 2] += Scalar[gpu_dtype](TAU) * states[i, 3]
+        states[i, 3] += Scalar[gpu_dtype](TAU) * theta_acc
 
         # Check termination conditions
         var done = (
-            (state[0] < Scalar[gpu_dtype](-X_THRESHOLD))
-            or (state[0] > Scalar[gpu_dtype](X_THRESHOLD))
-            or (state[2] < Scalar[gpu_dtype](-THETA_THRESHOLD))
-            or (state[2] > Scalar[gpu_dtype](THETA_THRESHOLD))
+            (states[i, 0] < Scalar[gpu_dtype](-X_THRESHOLD))
+            or (states[i, 0] > Scalar[gpu_dtype](X_THRESHOLD))
+            or (states[i, 2] < Scalar[gpu_dtype](-THETA_THRESHOLD))
+            or (states[i, 2] > Scalar[gpu_dtype](THETA_THRESHOLD))
         )
 
         # Reward: +1 for staying alive, 0 if done
         var reward = Scalar[gpu_dtype](0.0) if done else Scalar[gpu_dtype](1.0)
 
-        return (reward, done)
+        rewards[i] = reward
+        dones[i] = Scalar[gpu_dtype](done)
 
     @staticmethod
     @always_inline
-    fn reset_inline[
-        size: Int
+    fn reset_kernel[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
     ](
-        mut state: InlineArray[Scalar[gpu_dtype], size],
-        mut rng: Scalar[DType.uint32],
+        state: LayoutTensor[
+            gpu_dtype,
+            Layout.row_major(BATCH_SIZE, STATE_SIZE),
+            MutAnyOrigin,
+        ],
     ):
-        """Inline reset for fused GPU kernels. Updates state and RNG in-place."""
-        var low = Scalar[gpu_dtype](-INIT_RANGE)
-        var high = Scalar[gpu_dtype](INIT_RANGE)
+        """Reset state to random initial values using GPU-compatible xorshift RNG.
 
-        var r0 = random_range(rng, low, high)
-        state[0] = r0[0]
-        rng = r0[1]
+        Each thread gets a unique seed based on its index, ensuring different
+        initial states across the batch while being fully GPU-compatible.
+        """
+        var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+        if i >= BATCH_SIZE:
+            return
 
-        var r1 = random_range(rng, low, high)
-        state[1] = r1[0]
-        rng = r1[1]
+        # GPU-compatible random: seed based on thread index
+        # Using prime multiplier for better distribution across threads
+        var rng = xorshift32(Scalar[DType.uint32](i * 2654435761 + 12345))
 
-        var r2 = random_range(rng, low, high)
-        state[2] = r2[0]
-        rng = r2[1]
+        # Generate 4 random values in [-0.05, 0.05] for initial state
+        var result_x = random_range[gpu_dtype](
+            rng, Scalar[gpu_dtype](-0.05), Scalar[gpu_dtype](0.05)
+        )
+        var x = result_x[0]
+        rng = result_x[1]
 
-        var r3 = random_range(rng, low, high)
-        state[3] = r3[0]
-        rng = r3[1]
+        var result_x_dot = random_range[gpu_dtype](
+            rng, Scalar[gpu_dtype](-0.05), Scalar[gpu_dtype](0.05)
+        )
+        var x_dot = result_x_dot[0]
+        rng = result_x_dot[1]
+
+        var result_theta = random_range[gpu_dtype](
+            rng, Scalar[gpu_dtype](-0.05), Scalar[gpu_dtype](0.05)
+        )
+        var theta = result_theta[0]
+        rng = result_theta[1]
+
+        var result_theta_dot = random_range[gpu_dtype](
+            rng, Scalar[gpu_dtype](-0.05), Scalar[gpu_dtype](0.05)
+        )
+        var theta_dot = result_theta_dot[0]
+
+        state[i, 0] = x
+        state[i, 1] = x_dot
+        state[i, 2] = theta
+        state[i, 3] = theta_dot
+
+    @staticmethod
+    @always_inline
+    fn selective_reset_kernel[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+    ](
+        state: LayoutTensor[
+            gpu_dtype,
+            Layout.row_major(BATCH_SIZE, STATE_SIZE),
+            MutAnyOrigin,
+        ],
+        dones: LayoutTensor[
+            gpu_dtype,
+            Layout.row_major(BATCH_SIZE),
+            MutAnyOrigin,
+        ],
+        rng_seed: Scalar[DType.uint32],
+    ):
+        """Reset state only for done environments using GPU-compatible xorshift RNG.
+
+        This kernel checks dones[i] and only resets environments where done > 0.5.
+        It also clears dones[i] = 0 after reset to prepare for next episode.
+
+        Args:
+            state: Environment states [BATCH_SIZE, STATE_SIZE].
+            dones: Done flags [BATCH_SIZE]. Will be cleared for reset envs.
+            rng_seed: Base seed for random number generation (varies per call).
+        """
+        var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+        if i >= BATCH_SIZE:
+            return
+
+        # Only reset done environments
+        if dones[i] < Scalar[gpu_dtype](0.5):
+            return
+
+        # GPU-compatible random: seed based on thread index + external seed
+        var rng = xorshift32(Scalar[DType.uint32](i * 2654435761 + rng_seed))
+
+        # Generate 4 random values in [-0.05, 0.05] for initial state
+        var result_x = random_range[gpu_dtype](
+            rng, Scalar[gpu_dtype](-0.05), Scalar[gpu_dtype](0.05)
+        )
+        var x = result_x[0]
+        rng = result_x[1]
+
+        var result_x_dot = random_range[gpu_dtype](
+            rng, Scalar[gpu_dtype](-0.05), Scalar[gpu_dtype](0.05)
+        )
+        var x_dot = result_x_dot[0]
+        rng = result_x_dot[1]
+
+        var result_theta = random_range[gpu_dtype](
+            rng, Scalar[gpu_dtype](-0.05), Scalar[gpu_dtype](0.05)
+        )
+        var theta = result_theta[0]
+        rng = result_theta[1]
+
+        var result_theta_dot = random_range[gpu_dtype](
+            rng, Scalar[gpu_dtype](-0.05), Scalar[gpu_dtype](0.05)
+        )
+        var theta_dot = result_theta_dot[0]
+
+        state[i, 0] = x
+        state[i, 1] = x_dot
+        state[i, 2] = theta
+        state[i, 3] = theta_dot
+
+        # Clear done flag for next episode
+        dones[i] = Scalar[gpu_dtype](0.0)
+
+    # ========================================================================
+    # GPU Launcher Methods (host-side, call the kernels)
+    # ========================================================================
+
+    comptime TPB = 256  # Threads per block
+
+    @staticmethod
+    fn step_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+    ](
+        ctx: DeviceContext,
+        mut states_buf: DeviceBuffer[gpu_dtype],
+        actions_buf: DeviceBuffer[gpu_dtype],
+        mut rewards_buf: DeviceBuffer[gpu_dtype],
+        mut dones_buf: DeviceBuffer[gpu_dtype],
+    ) raises:
+        """Launch step kernel on GPU.
+
+        Args:
+            ctx: GPU device context.
+            states_buf: States buffer [BATCH_SIZE * STATE_SIZE].
+            actions_buf: Actions buffer [BATCH_SIZE].
+            rewards_buf: Rewards buffer [BATCH_SIZE] (written).
+            dones_buf: Dones buffer [BATCH_SIZE] (written).
+        """
+        # Create tensor views from buffers
+        var states = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ](states_buf.unsafe_ptr())
+        var actions = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE), ImmutAnyOrigin
+        ](actions_buf.unsafe_ptr())
+        var rewards = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ](rewards_buf.unsafe_ptr())
+        var dones = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ](dones_buf.unsafe_ptr())
+
+        # Configure grid
+        comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
+
+        # Define kernel wrapper that calls the impl
+        # Note: MutAnyOrigin allows mutation, no `mut` keyword needed on wrapper params
+        @always_inline
+        fn step_wrapper(
+            states: LayoutTensor[
+                gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+            ],
+            actions: LayoutTensor[
+                gpu_dtype, Layout.row_major(BATCH_SIZE), ImmutAnyOrigin
+            ],
+            rewards: LayoutTensor[
+                gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
+            dones: LayoutTensor[
+                gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
+        ):
+            Self.step_kernel[BATCH_SIZE, STATE_SIZE](states, actions, rewards, dones)
+
+        ctx.enqueue_function_checked[step_wrapper, step_wrapper](
+            states,
+            actions,
+            rewards,
+            dones,
+            grid_dim=(BLOCKS,),
+            block_dim=(Self.TPB,),
+        )
+
+    @staticmethod
+    fn reset_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+    ](
+        ctx: DeviceContext,
+        mut states_buf: DeviceBuffer[gpu_dtype],
+    ) raises:
+        """Launch reset kernel on GPU.
+
+        Args:
+            ctx: GPU device context.
+            states_buf: States buffer [BATCH_SIZE * STATE_SIZE] (written).
+        """
+        # Create tensor view from buffer
+        var states = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ](states_buf.unsafe_ptr())
+
+        # Configure grid
+        comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
+
+        # Define kernel wrapper
+        # Note: MutAnyOrigin allows mutation, no `mut` keyword needed on wrapper params
+        @always_inline
+        fn reset_wrapper(
+            states: LayoutTensor[
+                gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+            ],
+        ):
+            Self.reset_kernel[BATCH_SIZE, STATE_SIZE](states)
+
+        ctx.enqueue_function_checked[reset_wrapper, reset_wrapper](
+            states,
+            grid_dim=(BLOCKS,),
+            block_dim=(Self.TPB,),
+        )
+
+    @staticmethod
+    fn selective_reset_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+    ](
+        ctx: DeviceContext,
+        mut states_buf: DeviceBuffer[gpu_dtype],
+        mut dones_buf: DeviceBuffer[gpu_dtype],
+        rng_seed: UInt32,
+    ) raises:
+        """Launch selective reset kernel on GPU - only resets done environments.
+
+        Args:
+            ctx: GPU device context.
+            states_buf: States buffer [BATCH_SIZE * STATE_SIZE] (written for done envs).
+            dones_buf: Dones buffer [BATCH_SIZE] (read to check, cleared for done envs).
+            rng_seed: Seed for random number generation (should vary between calls).
+        """
+        # Create tensor views from buffers
+        var states = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ](states_buf.unsafe_ptr())
+        var dones = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ](dones_buf.unsafe_ptr())
+
+        # Configure grid
+        comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
+        var seed = Scalar[DType.uint32](rng_seed)
+
+        # Define kernel wrapper
+        @always_inline
+        fn selective_reset_wrapper(
+            states: LayoutTensor[
+                gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+            ],
+            dones: LayoutTensor[
+                gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
+            rng_seed: Scalar[DType.uint32],
+        ):
+            Self.selective_reset_kernel[BATCH_SIZE, STATE_SIZE](states, dones, rng_seed)
+
+        ctx.enqueue_function_checked[selective_reset_wrapper, selective_reset_wrapper](
+            states,
+            dones,
+            seed,
+            grid_dim=(BLOCKS,),
+            block_dim=(Self.TPB,),
+        )

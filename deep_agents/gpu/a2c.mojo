@@ -66,16 +66,13 @@ fn reset_all_kernel[
     if env_idx >= NUM_ENVS:
         return
 
-    # Get RNG state
-    var rng = rebind[Scalar[DType.uint32]](rng_states[env_idx, 0])
-
     # Load state into InlineArray
     var state = InlineArray[Scalar[dtype], EnvType.STATE_SIZE](
         fill=Scalar[dtype](0)
     )
 
     # Reset using environment's reset_inline
-    EnvType.reset_inline[EnvType.STATE_SIZE](state, rng)
+    EnvType.reset_inline[EnvType.STATE_SIZE](state)
 
     # Write state back
     for i in range(EnvType.STATE_SIZE):
