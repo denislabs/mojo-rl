@@ -30,83 +30,71 @@ struct ReLU[dim: Int](Model):
     fn forward[
         BATCH: Int
     ](
-        mut self,
-        input: InlineArray[Scalar[dtype], BATCH * Self.dim],
-        mut output: InlineArray[Scalar[dtype], BATCH * Self.dim],
-        mut cache: InlineArray[Scalar[dtype], BATCH * Self.CACHE_SIZE],
+        self,
+        input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        mut cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
     ):
         """Forward: y = max(0, x).
 
         Caches pre-activation values for backward pass.
+        Note: params is unused (ReLU has no parameters).
         """
-        var x = LayoutTensor[dtype, Layout.row_major(BATCH, Self.dim)](input)
-        var y = LayoutTensor[dtype, Layout.row_major(BATCH, Self.dim)](output)
-        var c = LayoutTensor[dtype, Layout.row_major(BATCH, Self.dim)](cache)
-
         for batch in range(BATCH):
             for i in range(Self.dim):
-                var val = x[batch, i]
-                c[batch, i] = val  # Cache for backward
-                y[batch, i] = val if val > 0 else 0
+                var val = input[batch, i]
+                cache[batch, i] = val  # Cache for backward
+                output[batch, i] = val if val > 0 else 0
 
     fn forward[
         BATCH: Int
     ](
         self,
-        input: InlineArray[Scalar[dtype], BATCH * Self.dim],
-        mut output: InlineArray[Scalar[dtype], BATCH * Self.dim],
+        input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
     ):
-        """Forward pass without caching (for inference)."""
-        var x = LayoutTensor[dtype, Layout.row_major(BATCH, Self.dim)](input)
-        var y = LayoutTensor[dtype, Layout.row_major(BATCH, Self.dim)](output)
+        """Forward pass without caching (for inference).
 
+        Note: params is unused (ReLU has no parameters).
+        """
         for batch in range(BATCH):
             for i in range(Self.dim):
-                var val = x[batch, i]
-                y[batch, i] = val if val > 0 else 0
+                var val = input[batch, i]
+                output[batch, i] = val if val > 0 else 0
 
     fn backward[
         BATCH: Int
     ](
-        mut self,
-        grad_output: InlineArray[Scalar[dtype], BATCH * Self.dim],
-        mut grad_input: InlineArray[Scalar[dtype], BATCH * Self.dim],
-        cache: InlineArray[Scalar[dtype], BATCH * Self.CACHE_SIZE],
+        self,
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        mut grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        mut grads: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
     ):
         """Backward: dx = dy * (x > 0).
 
         Uses cached pre-activation values from forward pass.
+        Note: params and grads are unused (ReLU has no parameters).
         """
-        var dy = LayoutTensor[dtype, Layout.row_major(BATCH, Self.dim)](
-            grad_output
-        )
-        var dx = LayoutTensor[dtype, Layout.row_major(BATCH, Self.dim)](
-            grad_input
-        )
-        var c = LayoutTensor[dtype, Layout.row_major(BATCH, Self.dim)](cache)
-
         for batch in range(BATCH):
             for i in range(Self.dim):
-                var pre = c[batch, i]
-                dx[batch, i] = dy[batch, i] if pre > 0 else 0
-
-    fn zero_grad(mut self):
-        """No gradients to zero."""
-        pass
-
-    fn get_params(self) -> InlineArray[Scalar[dtype], Self.PARAM_SIZE]:
-        """ReLU has no parameters."""
-        return InlineArray[Scalar[dtype], 0](uninitialized=True)
-
-    fn set_params(
-        mut self, params: InlineArray[Scalar[dtype], Self.PARAM_SIZE]
-    ):
-        """ReLU has no parameters to set."""
-        pass
-
-    fn get_grads(self) -> InlineArray[Scalar[dtype], Self.PARAM_SIZE]:
-        """ReLU has no gradients."""
-        return InlineArray[Scalar[dtype], 0](uninitialized=True)
+                var pre = cache[batch, i]
+                grad_input[batch, i] = grad_output[batch, i] if pre > 0 else 0
 
     @always_inline
     @staticmethod

@@ -73,162 +73,165 @@ struct Seq2[L0: Model, L1: Model](Model):
     fn forward[
         BATCH: Int
     ](
-        mut self,
-        input: InlineArray[Scalar[dtype], BATCH * Self.IN_DIM],
-        mut output: InlineArray[Scalar[dtype], BATCH * Self.OUT_DIM],
-        mut cache: InlineArray[Scalar[dtype], BATCH * Self.CACHE_SIZE],
+        self,
+        input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        mut cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
     ):
-        """Forward pass through all layers.
+        """Forward pass through all layers (all zero-copy views).
 
-        Cache layout: [L0's cache (BATCH * L0.CACHE_SIZE) | L1's cache (BATCH * L1.CACHE_SIZE)]
+        Cache layout (blocked): [L0's cache | L1's cache]
+        Params layout: [L0's params | L1's params]
         """
         # Intermediate buffer for L0 output / L1 input
-        var buffer0 = InlineArray[Scalar[dtype], BATCH * Self.L0.OUT_DIM](
+        var buffer0_storage = InlineArray[Scalar[dtype], BATCH * Self.L0.OUT_DIM](
             uninitialized=True
         )
+        var buffer0 = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.L0.OUT_DIM), MutAnyOrigin
+        ](buffer0_storage)
 
-        # Split cache for each layer
-        var l0_cache = InlineArray[Scalar[dtype], BATCH * Self.L0.CACHE_SIZE](
-            uninitialized=True
-        )
-        var l1_cache = InlineArray[Scalar[dtype], BATCH * Self.L1.CACHE_SIZE](
-            uninitialized=True
-        )
+        # Create zero-copy views using pointer offsets
+        var params_ptr = params.ptr
+        var l0_params = LayoutTensor[
+            dtype, Layout.row_major(Self.L0.PARAM_SIZE), MutAnyOrigin
+        ](params_ptr)
+        var l1_params = LayoutTensor[
+            dtype, Layout.row_major(Self.L1.PARAM_SIZE), MutAnyOrigin
+        ](params_ptr.offset(Self.L0.PARAM_SIZE))
+
+        var cache_ptr = cache.ptr
+        var l0_cache = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.L0.CACHE_SIZE), MutAnyOrigin
+        ](cache_ptr)
+        var l1_cache = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.L1.CACHE_SIZE), MutAnyOrigin
+        ](cache_ptr.offset(BATCH * Self.L0.CACHE_SIZE))
 
         # L0: input -> buffer0
-        self.layer0.forward[BATCH](input, buffer0, l0_cache)
+        self.layer0.forward[BATCH](input, buffer0, l0_params, l0_cache)
 
-        # L1: buffer0 -> output (rebind buffer0 to L1's input type)
-        self.layer1.forward[BATCH](
-            rebind[InlineArray[Scalar[dtype], BATCH * Self.L1.IN_DIM]](buffer0),
-            output,
-            l1_cache,
-        )
-
-        # Copy caches back to combined cache
-        for i in range(BATCH * Self.L0.CACHE_SIZE):
-            cache[i] = l0_cache[i]
-        for i in range(BATCH * Self.L1.CACHE_SIZE):
-            cache[BATCH * Self.L0.CACHE_SIZE + i] = l1_cache[i]
+        # L1: buffer0 -> output
+        # Rebind buffer0 to L1's input type (dimensions match since L0.OUT_DIM == L1.IN_DIM)
+        var l1_input = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.L1.IN_DIM), MutAnyOrigin
+        ](buffer0.ptr)
+        self.layer1.forward[BATCH](l1_input, output, l1_params, l1_cache)
 
     fn forward[
         BATCH: Int
     ](
         self,
-        input: InlineArray[Scalar[dtype], BATCH * Self.IN_DIM],
-        mut output: InlineArray[Scalar[dtype], BATCH * Self.OUT_DIM],
+        input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
     ):
         """Forward pass without caching (for inference)."""
         # Intermediate buffer for L0 output / L1 input
-        var buffer0 = InlineArray[Scalar[dtype], BATCH * Self.L0.OUT_DIM](
+        var buffer0_storage = InlineArray[Scalar[dtype], BATCH * Self.L0.OUT_DIM](
             uninitialized=True
         )
+        var buffer0 = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.L0.OUT_DIM), MutAnyOrigin
+        ](buffer0_storage)
+
+        # Create zero-copy views using pointer offsets
+        var params_ptr = params.ptr
+        var l0_params = LayoutTensor[
+            dtype, Layout.row_major(Self.L0.PARAM_SIZE), MutAnyOrigin
+        ](params_ptr)
+        var l1_params = LayoutTensor[
+            dtype, Layout.row_major(Self.L1.PARAM_SIZE), MutAnyOrigin
+        ](params_ptr.offset(Self.L0.PARAM_SIZE))
 
         # L0: input -> buffer0
-        self.layer0.forward[BATCH](input, buffer0)
+        self.layer0.forward[BATCH](input, buffer0, l0_params)
 
         # L1: buffer0 -> output
-        self.layer1.forward[BATCH](
-            rebind[InlineArray[Scalar[dtype], BATCH * Self.L1.IN_DIM]](buffer0),
-            output,
-        )
+        var l1_input = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.L1.IN_DIM), MutAnyOrigin
+        ](buffer0.ptr)
+        self.layer1.forward[BATCH](l1_input, output, l1_params)
 
     fn backward[
         BATCH: Int
     ](
-        mut self,
-        grad_output: InlineArray[Scalar[dtype], BATCH * Self.OUT_DIM],
-        mut grad_input: InlineArray[Scalar[dtype], BATCH * Self.IN_DIM],
-        cache: InlineArray[Scalar[dtype], BATCH * Self.CACHE_SIZE],
+        self,
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        mut grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        mut grads: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
     ):
-        """Backward pass in reverse order.
+        """Backward pass in reverse order (all zero-copy views).
 
-        Cache layout: [L0's cache (BATCH * L0.CACHE_SIZE) | L1's cache (BATCH * L1.CACHE_SIZE)]
+        Cache layout (blocked): [L0's cache | L1's cache]
+        Params layout: [L0's params | L1's params]
+        Grads layout: [L0's grads | L1's grads]
         """
-        # Extract caches for each layer
-        var l0_cache = InlineArray[Scalar[dtype], BATCH * Self.L0.CACHE_SIZE](
-            uninitialized=True
-        )
-        var l1_cache = InlineArray[Scalar[dtype], BATCH * Self.L1.CACHE_SIZE](
-            uninitialized=True
-        )
-        for i in range(BATCH * Self.L0.CACHE_SIZE):
-            l0_cache[i] = cache[i]
-        for i in range(BATCH * Self.L1.CACHE_SIZE):
-            l1_cache[i] = cache[BATCH * Self.L0.CACHE_SIZE + i]
+        # Create zero-copy views using pointer offsets
+        var params_ptr = params.ptr
+        var l0_params = LayoutTensor[
+            dtype, Layout.row_major(Self.L0.PARAM_SIZE), MutAnyOrigin
+        ](params_ptr)
+        var l1_params = LayoutTensor[
+            dtype, Layout.row_major(Self.L1.PARAM_SIZE), MutAnyOrigin
+        ](params_ptr.offset(Self.L0.PARAM_SIZE))
 
-        # Temp buffer for grad at buffer0
-        var grad_buffer0 = InlineArray[Scalar[dtype], BATCH * Self.L0.OUT_DIM](
+        var grads_ptr = grads.ptr
+        var l0_grads = LayoutTensor[
+            dtype, Layout.row_major(Self.L0.PARAM_SIZE), MutAnyOrigin
+        ](grads_ptr)
+        var l1_grads = LayoutTensor[
+            dtype, Layout.row_major(Self.L1.PARAM_SIZE), MutAnyOrigin
+        ](grads_ptr.offset(Self.L0.PARAM_SIZE))
+
+        var cache_ptr = cache.ptr
+        var l0_cache = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.L0.CACHE_SIZE), MutAnyOrigin
+        ](cache_ptr)
+        var l1_cache = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.L1.CACHE_SIZE), MutAnyOrigin
+        ](cache_ptr.offset(BATCH * Self.L0.CACHE_SIZE))
+
+        # Intermediate buffer for gradient at buffer0
+        var grad_buffer0_storage = InlineArray[Scalar[dtype], BATCH * Self.L0.OUT_DIM](
             uninitialized=True
         )
+        var grad_buffer0 = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.L0.OUT_DIM), MutAnyOrigin
+        ](grad_buffer0_storage)
 
         # L1 backward: grad_output -> grad_buffer0
+        # Rebind grad_output to L1's output type
+        var l1_grad_output = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.L1.OUT_DIM), MutAnyOrigin
+        ](grad_output.ptr)
+        var l1_grad_input = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.L1.IN_DIM), MutAnyOrigin
+        ](grad_buffer0.ptr)
         self.layer1.backward[BATCH](
-            rebind[InlineArray[Scalar[dtype], BATCH * Self.L1.OUT_DIM]](
-                grad_output
-            ),
-            rebind[InlineArray[Scalar[dtype], BATCH * Self.L1.IN_DIM]](
-                grad_buffer0
-            ),
-            l1_cache,
+            l1_grad_output, l1_grad_input, l1_params, l1_cache, l1_grads
         )
 
         # L0 backward: grad_buffer0 -> grad_input
-        self.layer0.backward[BATCH](grad_buffer0, grad_input, l0_cache)
-
-    fn zero_grad(mut self):
-        """Zero gradients of all layers."""
-        self.layer0.zero_grad()
-        self.layer1.zero_grad()
-
-    fn get_params(self) -> InlineArray[Scalar[dtype], Self.PARAM_SIZE]:
-        """Get concatenated parameters from all layers."""
-        var params = InlineArray[Scalar[dtype], Self.PARAM_SIZE](
-            uninitialized=True
+        self.layer0.backward[BATCH](
+            grad_buffer0, grad_input, l0_params, l0_cache, l0_grads
         )
-        var p0 = self.layer0.get_params()
-        var p1 = self.layer1.get_params()
-
-        for i in range(Self.L0.PARAM_SIZE):
-            params[i] = p0[i]
-        for i in range(Self.L1.PARAM_SIZE):
-            params[Self.L0.PARAM_SIZE + i] = p1[i]
-
-        return params^
-
-    fn set_params(
-        mut self, params: InlineArray[Scalar[dtype], Self.PARAM_SIZE]
-    ):
-        """Set parameters to all layers."""
-        var p0 = InlineArray[Scalar[dtype], Self.L0.PARAM_SIZE](
-            uninitialized=True
-        )
-        var p1 = InlineArray[Scalar[dtype], Self.L1.PARAM_SIZE](
-            uninitialized=True
-        )
-
-        for i in range(Self.L0.PARAM_SIZE):
-            p0[i] = params[i]
-        for i in range(Self.L1.PARAM_SIZE):
-            p1[i] = params[Self.L0.PARAM_SIZE + i]
-
-        self.layer0.set_params(p0)
-        self.layer1.set_params(p1)
-
-    fn get_grads(self) -> InlineArray[Scalar[dtype], Self.PARAM_SIZE]:
-        """Get concatenated gradients from all layers."""
-        var grads = InlineArray[Scalar[dtype], Self.PARAM_SIZE](
-            uninitialized=True
-        )
-        var g0 = self.layer0.get_grads()
-        var g1 = self.layer1.get_grads()
-
-        for i in range(Self.L0.PARAM_SIZE):
-            grads[i] = g0[i]
-        for i in range(Self.L1.PARAM_SIZE):
-            grads[Self.L0.PARAM_SIZE + i] = g1[i]
-
-        return grads^
+        # No copy-back needed - grads views modify the original in-place
 
     @always_inline
     @staticmethod

@@ -30,25 +30,27 @@ struct Tanh[dim: Int](Model):
     fn forward[
         BATCH: Int
     ](
-        mut self,
-        input: InlineArray[Scalar[dtype], BATCH * Self.dim],
-        mut output: InlineArray[Scalar[dtype], BATCH * Self.dim],
-        mut cache: InlineArray[Scalar[dtype], BATCH * Self.CACHE_SIZE],
+        self,
+        input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        mut cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
     ):
         """Forward: y = tanh(x).
 
         Caches tanh output for backward pass (needed for derivative).
+        Note: params is unused (Tanh has no parameters).
         """
         from math import exp
-
-        var x = LayoutTensor[dtype, Layout.row_major(BATCH, Self.dim)](input)
-        var y = LayoutTensor[dtype, Layout.row_major(BATCH, Self.dim)](output)
-        var c = LayoutTensor[dtype, Layout.row_major(BATCH, Self.dim)](cache)
 
         for batch in range(BATCH):
             for i in range(Self.dim):
                 var val_scalar: Scalar[dtype] = rebind[Scalar[dtype]](
-                    x[batch, i]
+                    input[batch, i]
                 )
                 var val = Float64(val_scalar)
                 # Compute tanh manually: (e^x - e^-x) / (e^x + e^-x)
@@ -56,75 +58,61 @@ struct Tanh[dim: Int](Model):
                 var exp_neg_val = exp(-val)
                 var tanh_val = (exp_val - exp_neg_val) / (exp_val + exp_neg_val)
                 var t = Scalar[dtype](tanh_val[0])  # Extract scalar from SIMD
-                c[batch, i] = t  # Cache tanh output for backward
-                y[batch, i] = t
+                cache[batch, i] = t  # Cache tanh output for backward
+                output[batch, i] = t
 
     fn forward[
         BATCH: Int
     ](
         self,
-        input: InlineArray[Scalar[dtype], BATCH * Self.dim],
-        mut output: InlineArray[Scalar[dtype], BATCH * Self.dim],
+        input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
     ):
-        """Forward pass without caching (for inference)."""
-        from math import exp
+        """Forward pass without caching (for inference).
 
-        var x = LayoutTensor[dtype, Layout.row_major(BATCH, Self.dim)](input)
-        var y = LayoutTensor[dtype, Layout.row_major(BATCH, Self.dim)](output)
+        Note: params is unused (Tanh has no parameters).
+        """
+        from math import exp
 
         for batch in range(BATCH):
             for i in range(Self.dim):
                 var val_scalar: Scalar[dtype] = rebind[Scalar[dtype]](
-                    x[batch, i]
+                    input[batch, i]
                 )
                 var val = Float64(val_scalar)
                 var exp_val = exp(val)
                 var exp_neg_val = exp(-val)
                 var tanh_val = (exp_val - exp_neg_val) / (exp_val + exp_neg_val)
-                y[batch, i] = Scalar[dtype](tanh_val[0])
+                output[batch, i] = Scalar[dtype](tanh_val[0])
 
     fn backward[
         BATCH: Int
     ](
-        mut self,
-        grad_output: InlineArray[Scalar[dtype], BATCH * Self.dim],
-        mut grad_input: InlineArray[Scalar[dtype], BATCH * Self.dim],
-        cache: InlineArray[Scalar[dtype], BATCH * Self.CACHE_SIZE],
+        self,
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        mut grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        mut grads: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
     ):
         """Backward: dx = dy * (1 - tanh(x)^2).
 
         Uses cached tanh output from forward pass.
+        Note: params and grads are unused (Tanh has no parameters).
         """
-        var dy = LayoutTensor[dtype, Layout.row_major(BATCH, Self.dim)](
-            grad_output
-        )
-        var dx = LayoutTensor[dtype, Layout.row_major(BATCH, Self.dim)](
-            grad_input
-        )
-        var c = LayoutTensor[dtype, Layout.row_major(BATCH, Self.dim)](cache)
-
         for batch in range(BATCH):
             for i in range(Self.dim):
-                var t = c[batch, i]  # tanh(x) cached
-                dx[batch, i] = dy[batch, i] * (1 - t * t)
-
-    fn zero_grad(mut self):
-        """No gradients to zero."""
-        pass
-
-    fn get_params(self) -> InlineArray[Scalar[dtype], Self.PARAM_SIZE]:
-        """Tanh has no parameters."""
-        return InlineArray[Scalar[dtype], 0](uninitialized=True)
-
-    fn set_params(
-        mut self, params: InlineArray[Scalar[dtype], Self.PARAM_SIZE]
-    ):
-        """Tanh has no parameters to set."""
-        pass
-
-    fn get_grads(self) -> InlineArray[Scalar[dtype], Self.PARAM_SIZE]:
-        """Tanh has no gradients."""
-        return InlineArray[Scalar[dtype], 0](uninitialized=True)
+                var t = cache[batch, i]  # tanh(x) cached
+                grad_input[batch, i] = grad_output[batch, i] * (1 - t * t)
 
     @always_inline
     @staticmethod

@@ -2,8 +2,6 @@ from ..constants import dtype
 from .model import Model
 from layout import LayoutTensor, Layout
 from gpu import thread_idx
-from math import sqrt
-from random import random_float64
 
 from ..nn_gpu import (
     generic_matmul_kernel,
@@ -18,11 +16,12 @@ from ..nn_gpu import (
 
 
 struct Linear[in_dim: Int, out_dim: Int](Model):
-    """Linear layer: y = x @ W + b.
+    """Linear layer: y = x @ W + b (stateless).
 
-    Parameters stored as LayoutTensor backed by InlineArray:
-    - W: [in_dim, out_dim] weight matrix
-    - b: [out_dim] bias vector
+    This is a stateless layer - all parameters and gradients are managed externally.
+    The caller allocates and passes:
+    - params: [W_flat (in_dim * out_dim) | b (out_dim)]
+    - grads: [dW_flat (in_dim * out_dim) | db (out_dim)]
 
     PARAM_SIZE = in_dim * out_dim + out_dim (W flattened + b)
     CACHE_SIZE = in_dim (caches input for weight gradient computation)
@@ -33,133 +32,99 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
     comptime PARAM_SIZE: Int = Self.IN_DIM * Self.OUT_DIM + Self.OUT_DIM
     comptime CACHE_SIZE: Int = Self.IN_DIM  # Cache input for dW computation
 
-    # Storage (InlineArray - stack allocated)
-    var W_storage: InlineArray[Scalar[dtype], Self.in_dim * Self.out_dim]
-    var b_storage: InlineArray[Scalar[dtype], Self.out_dim]
-    var dW_storage: InlineArray[Scalar[dtype], Self.in_dim * Self.out_dim]
-    var db_storage: InlineArray[Scalar[dtype], Self.out_dim]
-
     fn __init__(out self):
-        """Initialize with Xavier initialization."""
-        # Initialize storage
-        self.W_storage = InlineArray[Scalar[dtype], Self.in_dim * Self.out_dim](
-            uninitialized=True
-        )
-        self.b_storage = InlineArray[Scalar[dtype], Self.out_dim](
-            uninitialized=True
-        )
-        self.dW_storage = InlineArray[
-            Scalar[dtype], Self.in_dim * Self.out_dim
-        ](uninitialized=True)
-        self.db_storage = InlineArray[Scalar[dtype], Self.out_dim](
-            uninitialized=True
-        )
-
-        # Create LayoutTensor views for initialization
-        var W = LayoutTensor[
-            dtype, Layout.row_major(Self.in_dim, Self.out_dim)
-        ](self.W_storage)
-        var b = LayoutTensor[dtype, Layout.row_major(Self.out_dim)](
-            self.b_storage
-        )
-        var dW = LayoutTensor[
-            dtype, Layout.row_major(Self.in_dim, Self.out_dim)
-        ](self.dW_storage)
-        var db = LayoutTensor[dtype, Layout.row_major(Self.out_dim)](
-            self.db_storage
-        )
-
-        # Xavier initialization for weights
-        var std = sqrt(2.0 / Float64(Self.in_dim + Self.out_dim))
-        for i in range(Self.in_dim):
-            for j in range(Self.out_dim):
-                W[i, j] = Scalar[dtype]((random_float64() * 2.0 - 1.0) * std)
-                dW[i, j] = 0
-
-        # Zero bias
-        for j in range(Self.out_dim):
-            b[j] = 0
-            db[j] = 0
+        """Initialize stateless Linear layer."""
+        pass
 
     fn __moveinit__(out self, deinit other: Self):
         """Move constructor for Sequential composition."""
-        self.W_storage = other.W_storage^
-        self.b_storage = other.b_storage^
-        self.dW_storage = other.dW_storage^
-        self.db_storage = other.db_storage^
+        pass
 
     fn __copyinit__(out self, other: Self):
         """Copy constructor for Copyable trait."""
-        self.W_storage = other.W_storage
-        self.b_storage = other.b_storage
-        self.dW_storage = other.dW_storage
-        self.db_storage = other.db_storage
-
-    fn forward[
-        BATCH: Int
-    ](
-        mut self,
-        input: InlineArray[Scalar[dtype], BATCH * Self.IN_DIM],
-        mut output: InlineArray[Scalar[dtype], BATCH * Self.OUT_DIM],
-        mut cache: InlineArray[Scalar[dtype], BATCH * Self.CACHE_SIZE],
-    ):
-        """Forward pass: output = input @ W + b.
-
-        Caches the input for backward pass (needed for weight gradients).
-        """
-        # Create LayoutTensor views for readable indexing
-        var x = LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM)](input)
-        var y = LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM)](
-            output
-        )
-        var W = LayoutTensor[
-            dtype, Layout.row_major(Self.in_dim, Self.out_dim)
-        ](self.W_storage)
-        var b = LayoutTensor[dtype, Layout.row_major(Self.out_dim)](
-            self.b_storage
-        )
-        var c = LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM)](cache)
-
-        # Cache input for backward
-        for batch in range(BATCH):
-            for i in range(Self.in_dim):
-                c[batch, i] = x[batch, i]
-
-        # Compute y = x @ W + b
-        for batch in range(BATCH):
-            for j in range(Self.out_dim):
-                var acc = b[j]
-                for i in range(Self.in_dim):
-                    acc += x[batch, i] * W[i, j]
-
-                y[batch, j] = acc
+        pass
 
     fn forward[
         BATCH: Int
     ](
         self,
-        input: InlineArray[Scalar[dtype], BATCH * Self.IN_DIM],
-        mut output: InlineArray[Scalar[dtype], BATCH * Self.OUT_DIM],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
     ):
-        """Forward pass without caching (for inference)."""
-        var x = LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM)](input)
-        var y = LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM)](
-            output
-        )
+        """Forward pass: output = input @ W + b.
+
+        Caches the input for backward pass (needed for weight gradients).
+
+        Args:
+            input: Input tensor [BATCH, IN_DIM].
+            output: Output tensor [BATCH, OUT_DIM] (written).
+            params: Model parameters [W_flat | b].
+            cache: Cache buffer [BATCH, IN_DIM] for backward pass (written).
+        """
+        # Create 2D view of W from params (first in_dim * out_dim elements)
         var W = LayoutTensor[
-            dtype, Layout.row_major(Self.in_dim, Self.out_dim)
-        ](self.W_storage)
-        var b = LayoutTensor[dtype, Layout.row_major(Self.out_dim)](
-            self.b_storage
-        )
+            dtype, Layout.row_major(Self.in_dim, Self.out_dim), MutAnyOrigin
+        ](params.ptr)
+        # b starts after W in params
+        var b_offset = Self.in_dim * Self.out_dim
+
+        # Cache input for backward
+        for batch in range(BATCH):
+            for i in range(Self.in_dim):
+                cache[batch, i] = input[batch, i]
+
+        # Compute y = x @ W + b
+        for batch in range(BATCH):
+            for j in range(Self.out_dim):
+                var acc = params[b_offset + j]  # bias
+                for i in range(Self.in_dim):
+                    acc += input[batch, i] * W[i, j]
+                output[batch, j] = acc
+
+    fn forward[
+        BATCH: Int
+    ](
+        self,
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+    ):
+        """Forward pass without caching (for inference).
+
+        Args:
+            input: Input tensor [BATCH, IN_DIM].
+            output: Output tensor [BATCH, OUT_DIM] (written).
+            params: Model parameters [W_flat | b].
+        """
+        # Create 2D view of W from params
+        var W = LayoutTensor[
+            dtype, Layout.row_major(Self.in_dim, Self.out_dim), MutAnyOrigin
+        ](params.ptr)
+        var b_offset = Self.in_dim * Self.out_dim
 
         # Compute y = x @ W + b (no caching)
         for batch in range(BATCH):
             for j in range(Self.out_dim):
-                var acc = b[j]
+                var acc = params[b_offset + j]  # bias
                 for i in range(Self.in_dim):
-                    acc += x[batch, i] * W[i, j]
-                y[batch, j] = acc
+                    acc += input[batch, i] * W[i, j]
+                output[batch, j] = acc
 
     @always_inline
     @staticmethod
@@ -239,107 +204,60 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
     fn backward[
         BATCH: Int
     ](
-        mut self,
-        grad_output: InlineArray[Scalar[dtype], BATCH * Self.OUT_DIM],
-        mut grad_input: InlineArray[Scalar[dtype], BATCH * Self.IN_DIM],
-        cache: InlineArray[Scalar[dtype], BATCH * Self.CACHE_SIZE],
+        self,
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        mut grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        mut grads: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
     ):
         """Backward pass: compute grad_input and accumulate dW, db.
 
         Uses cached input from forward pass to compute weight gradients.
+
+        Args:
+            grad_output: Gradient of loss w.r.t. output [BATCH, OUT_DIM].
+            grad_input: Gradient of loss w.r.t. input [BATCH, IN_DIM] (written).
+            params: Model parameters [W_flat | b].
+            cache: Cached input from forward pass [BATCH, IN_DIM].
+            grads: Parameter gradients [dW_flat | db] (accumulated, not overwritten).
         """
-        # Create LayoutTensor views
-        var dy = LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM)](
-            grad_output
-        )
-        var dx = LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM)](
-            grad_input
-        )
+        # Create 2D views of W and dW from 1D params/grads
         var W = LayoutTensor[
-            dtype, Layout.row_major(Self.in_dim, Self.out_dim)
-        ](self.W_storage)
+            dtype, Layout.row_major(Self.in_dim, Self.out_dim), MutAnyOrigin
+        ](params.ptr)
         var dW = LayoutTensor[
-            dtype, Layout.row_major(Self.in_dim, Self.out_dim)
-        ](self.dW_storage)
-        var db = LayoutTensor[dtype, Layout.row_major(Self.out_dim)](
-            self.db_storage
-        )
-        var x_cached = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.IN_DIM)
-        ](cache)
+            dtype, Layout.row_major(Self.in_dim, Self.out_dim), MutAnyOrigin
+        ](grads.ptr)
+        var db_offset = Self.in_dim * Self.out_dim
 
         for batch in range(BATCH):
             # dx = dy @ W.T
             for i in range(Self.in_dim):
-                var acc: dx.element_type = 0
+                var acc: grad_input.element_type = 0
                 for j in range(Self.out_dim):
-                    acc += dy[batch, j] * W[i, j]
-                dx[batch, i] = acc
+                    acc += grad_output[batch, j] * W[i, j]
+                grad_input[batch, i] = acc
 
             # dW += x.T @ dy (accumulated)
             for i in range(Self.in_dim):
                 for j in range(Self.out_dim):
-                    dW[i, j] = dW[i, j] + x_cached[batch, i] * dy[batch, j]
+                    dW[i, j] = (
+                        dW[i, j] + cache[batch, i] * grad_output[batch, j]
+                    )
 
             # db += sum(dy, axis=0)
             for j in range(Self.out_dim):
-                db[j] = db[j] + dy[batch, j]
-
-    fn zero_grad(mut self):
-        """Reset gradients to zero."""
-        var dW = LayoutTensor[
-            dtype, Layout.row_major(Self.in_dim, Self.out_dim)
-        ](self.dW_storage)
-        var db = LayoutTensor[dtype, Layout.row_major(Self.out_dim)](
-            self.db_storage
-        )
-
-        for i in range(Self.in_dim):
-            for j in range(Self.out_dim):
-                dW[i, j] = 0
-        for j in range(Self.out_dim):
-            db[j] = 0
-
-    fn get_params(self) -> InlineArray[Scalar[dtype], Self.PARAM_SIZE]:
-        """Get flattened parameters [W_flat, b]."""
-        var params = InlineArray[Scalar[dtype], Self.PARAM_SIZE](
-            uninitialized=True
-        )
-
-        # Copy W (flattened)
-        for i in range(Self.in_dim * Self.out_dim):
-            params[i] = self.W_storage[i]
-
-        # Copy b
-        for i in range(Self.out_dim):
-            params[Self.in_dim * Self.out_dim + i] = self.b_storage[i]
-
-        return params^
-
-    fn set_params(
-        mut self, params: InlineArray[Scalar[dtype], Self.PARAM_SIZE]
-    ):
-        """Set parameters from flattened array [W_flat, b]."""
-        # Copy W
-        for i in range(Self.in_dim * Self.out_dim):
-            self.W_storage[i] = params[i]
-
-        # Copy b
-        for i in range(Self.out_dim):
-            self.b_storage[i] = params[Self.in_dim * Self.out_dim + i]
-
-    fn get_grads(self) -> InlineArray[Scalar[dtype], Self.PARAM_SIZE]:
-        """Get flattened gradients [dW_flat, db]."""
-        var grads = InlineArray[Scalar[dtype], Self.PARAM_SIZE](
-            uninitialized=True
-        )
-
-        # Copy dW (flattened)
-        for i in range(Self.in_dim * Self.out_dim):
-            grads[i] = self.dW_storage[i]
-
-        # Copy db
-        for i in range(Self.out_dim):
-            grads[Self.in_dim * Self.out_dim + i] = self.db_storage[i]
-
-        return grads^
+                grads[db_offset + j] = (
+                    grads[db_offset + j] + grad_output[batch, j]
+                )

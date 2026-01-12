@@ -3,19 +3,22 @@ from layout import LayoutTensor, Layout
 
 
 trait Model(Movable & ImplicitlyCopyable):
-    """Base trait for neural network modules.
+    """Base trait for neural network modules (stateless).
 
-    Modules have:
-    - Compile-time dimensions (IN_DIM, OUT_DIM, PARAM_SIZE, CACHE_SIZE)
-    - forward() for inference with external cache buffer
-    - backward() for gradient computation using cached values
-    - zero_grad() to reset gradients
-    - get_params/set_params/get_grads for optimizer integration
-    - Movable for composition in Sequential containers
+    Models are stateless - they describe the computation graph but don't store
+    weights or gradients. All state (params, grads, cache) is managed externally
+    as LayoutTensor views for zero-copy composition.
 
-    CACHE_SIZE represents the number of elements cached per sample during forward
-    pass, needed for backward computation. The caller allocates BATCH * CACHE_SIZE
-    elements and passes them to forward/backward.
+    Compile-time constants:
+    - IN_DIM: Input dimension per sample
+    - OUT_DIM: Output dimension per sample
+    - PARAM_SIZE: Total number of parameters (e.g., W + b for Linear)
+    - CACHE_SIZE: Elements cached per sample during forward (for backward pass)
+
+    All tensors use LayoutTensor for consistent zero-copy views:
+    - input/output: [BATCH, DIM] layout
+    - params/grads: [PARAM_SIZE] layout (1D)
+    - cache: [BATCH, CACHE_SIZE] layout
     """
 
     comptime IN_DIM: Int
@@ -23,24 +26,30 @@ trait Model(Movable & ImplicitlyCopyable):
     comptime PARAM_SIZE: Int
     comptime CACHE_SIZE: Int
 
-    fn zero_grad(mut self):
-        """Reset all gradients to zero."""
-        ...
+    # =========================================================================
+    # Forward passes
+    # =========================================================================
 
     fn forward[
         BATCH: Int
     ](
-        mut self,
-        input: InlineArray[Scalar[dtype], BATCH * Self.IN_DIM],
-        mut output: InlineArray[Scalar[dtype], BATCH * Self.OUT_DIM],
-        mut cache: InlineArray[Scalar[dtype], BATCH * Self.CACHE_SIZE],
+        self,
+        input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        mut cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
     ):
-        """Forward pass with external cache buffer (for training).
+        """Forward pass with caching (for training).
 
         Args:
             input: Input tensor [BATCH, IN_DIM].
-            output: Output tensor [BATCH, OUT_DIM] (written by this function).
-            cache: Cache buffer [BATCH, CACHE_SIZE] for backward pass.
+            output: Output tensor [BATCH, OUT_DIM] (written).
+            params: Model parameters [PARAM_SIZE].
+            cache: Cache buffer [BATCH, CACHE_SIZE] for backward pass (written).
         """
         ...
 
@@ -48,33 +57,55 @@ trait Model(Movable & ImplicitlyCopyable):
         BATCH: Int
     ](
         self,
-        input: InlineArray[Scalar[dtype], BATCH * Self.IN_DIM],
-        mut output: InlineArray[Scalar[dtype], BATCH * Self.OUT_DIM],
+        input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
     ):
-        """Forward pass without caching (for inference/evaluation).
+        """Forward pass without caching (for inference).
 
         Args:
             input: Input tensor [BATCH, IN_DIM].
-            output: Output tensor [BATCH, OUT_DIM] (written by this function).
+            output: Output tensor [BATCH, OUT_DIM] (written).
+            params: Model parameters [PARAM_SIZE].
         """
         ...
+
+    # =========================================================================
+    # Backward pass
+    # =========================================================================
 
     fn backward[
         BATCH: Int
     ](
-        mut self,
-        grad_output: InlineArray[Scalar[dtype], BATCH * Self.OUT_DIM],
-        mut grad_input: InlineArray[Scalar[dtype], BATCH * Self.IN_DIM],
-        cache: InlineArray[Scalar[dtype], BATCH * Self.CACHE_SIZE],
+        self,
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        mut grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        mut grads: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
     ):
-        """Backward pass: compute grad_input and accumulate gradients.
+        """Backward pass: compute grad_input and accumulate parameter gradients.
 
         Args:
             grad_output: Gradient of loss w.r.t. output [BATCH, OUT_DIM].
             grad_input: Gradient of loss w.r.t. input [BATCH, IN_DIM] (written).
+            params: Model parameters [PARAM_SIZE].
             cache: Cache from forward pass [BATCH, CACHE_SIZE].
+            grads: Parameter gradients [PARAM_SIZE] (accumulated, not overwritten).
         """
         ...
+
+    # =========================================================================
+    # GPU kernels (static methods)
+    # =========================================================================
 
     @always_inline
     @staticmethod
@@ -147,18 +178,4 @@ trait Model(Movable & ImplicitlyCopyable):
     ):
         """Backward pass for weight/bias gradients on GPU: dW = x.T @ dy, db = sum(dy).
         """
-        ...
-
-    fn get_params(self) -> InlineArray[Scalar[dtype], Self.PARAM_SIZE]:
-        """Get flattened parameters for optimizer."""
-        ...
-
-    fn set_params(
-        mut self, params: InlineArray[Scalar[dtype], Self.PARAM_SIZE]
-    ):
-        """Set parameters from flattened array."""
-        ...
-
-    fn get_grads(self) -> InlineArray[Scalar[dtype], Self.PARAM_SIZE]:
-        """Get flattened gradients for optimizer."""
         ...

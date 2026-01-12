@@ -10,7 +10,10 @@ from deep_rl import (
     MSELoss,
     dtype,
     Trainer,
+    Xavier,
+    Kaiming,
 )
+from layout import Layout, LayoutTensor
 
 
 fn main():
@@ -51,11 +54,29 @@ fn main():
     var output_storage = InlineArray[Scalar[dtype], BATCH * OUT](
         uninitialized=True
     )
-    var cache = InlineArray[Scalar[dtype], BATCH * linear.CACHE_SIZE](
+    var cache_storage = InlineArray[Scalar[dtype], BATCH * linear.CACHE_SIZE](
         uninitialized=True
     )
 
-    linear.forward[BATCH](input_storage, output_storage, cache)
+    # Initialize params for linear layer
+    var xavier = Xavier()
+    var params = xavier.init[linear.PARAM_SIZE, IN, OUT]()
+
+    # Create LayoutTensor views
+    var input_tensor = LayoutTensor[
+        dtype, Layout.row_major(BATCH, IN), MutAnyOrigin
+    ](input_storage.unsafe_ptr())
+    var output_tensor = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT), MutAnyOrigin
+    ](output_storage.unsafe_ptr())
+    var params_tensor = LayoutTensor[
+        dtype, Layout.row_major(linear.PARAM_SIZE), MutAnyOrigin
+    ](params.unsafe_ptr())
+    var cache = LayoutTensor[
+        dtype, Layout.row_major(BATCH, linear.CACHE_SIZE), MutAnyOrigin
+    ](cache_storage.unsafe_ptr())
+
+    linear.forward[BATCH](input_tensor, output_tensor, params_tensor, cache)
 
     print("Input shape: [4, 2]")
     print("Output shape: [4, 3]")
@@ -81,10 +102,28 @@ fn main():
     print("PARAM_SIZE:", model2.PARAM_SIZE)  # Should be 2*3 + 3 = 9
 
     var out2 = InlineArray[Scalar[dtype], BATCH * OUT](uninitialized=True)
-    var cache2 = InlineArray[Scalar[dtype], BATCH * model2.CACHE_SIZE](
+    var cache2_storage = InlineArray[Scalar[dtype], BATCH * model2.CACHE_SIZE](
         uninitialized=True
     )
-    model2.forward[BATCH](input_storage, out2, cache2)
+
+    # Initialize params for model2
+    var params2 = xavier.init[model2.PARAM_SIZE, IN, OUT]()
+
+    # Create LayoutTensor views
+    var input2_tensor = LayoutTensor[
+        dtype, Layout.row_major(BATCH, IN), MutAnyOrigin
+    ](input_storage.unsafe_ptr())
+    var out2_tensor = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT), MutAnyOrigin
+    ](out2.unsafe_ptr())
+    var params2_tensor = LayoutTensor[
+        dtype, Layout.row_major(model2.PARAM_SIZE), MutAnyOrigin
+    ](params2.unsafe_ptr())
+    var cache2 = LayoutTensor[
+        dtype, Layout.row_major(BATCH, model2.CACHE_SIZE), MutAnyOrigin
+    ](cache2_storage.unsafe_ptr())
+
+    model2.forward[BATCH](input2_tensor, out2_tensor, params2_tensor, cache2)
 
     print("After ReLU, all negative values should be 0")
     print(
@@ -115,10 +154,28 @@ fn main():
     )  # (2*4 + 4) + 0 + (4*1 + 1) = 12 + 5 = 17
 
     var out3 = InlineArray[Scalar[dtype], BATCH * OUT_FINAL](uninitialized=True)
-    var cache3 = InlineArray[Scalar[dtype], BATCH * model3.CACHE_SIZE](
+    var cache3_storage = InlineArray[Scalar[dtype], BATCH * model3.CACHE_SIZE](
         uninitialized=True
     )
-    model3.forward[BATCH](input_storage, out3, cache3)
+
+    # Initialize params for model3
+    var params3 = xavier.init[model3.PARAM_SIZE, IN, OUT_FINAL]()
+
+    # Create LayoutTensor views
+    var input3_tensor = LayoutTensor[
+        dtype, Layout.row_major(BATCH, IN), MutAnyOrigin
+    ](input_storage.unsafe_ptr())
+    var out3_tensor = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_FINAL), MutAnyOrigin
+    ](out3.unsafe_ptr())
+    var params3_tensor = LayoutTensor[
+        dtype, Layout.row_major(model3.PARAM_SIZE), MutAnyOrigin
+    ](params3.unsafe_ptr())
+    var cache3 = LayoutTensor[
+        dtype, Layout.row_major(BATCH, model3.CACHE_SIZE), MutAnyOrigin
+    ](cache3_storage.unsafe_ptr())
+
+    model3.forward[BATCH](input3_tensor, out3_tensor, params3_tensor, cache3)
 
     print(
         "Outputs:",
@@ -147,10 +204,28 @@ fn main():
     print("PARAM_SIZE:", model4.PARAM_SIZE)  # 12 + 0 + 5 + 0 = 17
 
     var out4 = InlineArray[Scalar[dtype], BATCH * OUT_FINAL](uninitialized=True)
-    var cache4 = InlineArray[Scalar[dtype], BATCH * model4.CACHE_SIZE](
+    var cache4_storage = InlineArray[Scalar[dtype], BATCH * model4.CACHE_SIZE](
         uninitialized=True
     )
-    model4.forward[BATCH](input_storage, out4, cache4)
+
+    # Initialize params for model4
+    var params4 = xavier.init[model4.PARAM_SIZE, IN, OUT_FINAL]()
+
+    # Create LayoutTensor views
+    var input4_tensor = LayoutTensor[
+        dtype, Layout.row_major(BATCH, IN), MutAnyOrigin
+    ](input_storage.unsafe_ptr())
+    var out4_tensor = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_FINAL), MutAnyOrigin
+    ](out4.unsafe_ptr())
+    var params4_tensor = LayoutTensor[
+        dtype, Layout.row_major(model4.PARAM_SIZE), MutAnyOrigin
+    ](params4.unsafe_ptr())
+    var cache4 = LayoutTensor[
+        dtype, Layout.row_major(BATCH, model4.CACHE_SIZE), MutAnyOrigin
+    ](cache4_storage.unsafe_ptr())
+
+    model4.forward[BATCH](input4_tensor, out4_tensor, params4_tensor, cache4)
 
     print(
         "Outputs:",
@@ -215,6 +290,7 @@ fn main():
         model=train_model,
         optimizer=optimizer,
         loss_function=loss_function,
+        initializer=Xavier(),
         epochs=100,
         print_every=10,
     )
@@ -238,6 +314,38 @@ fn main():
     print("Final loss:", final_loss)
 
     print("Training test passed!")
+    print()
+
+    # ==========================================================================
+    # Test 6: Training with Kaiming initialization (better for ReLU networks)
+    # ==========================================================================
+    print("Test 6: Training with Kaiming initialization")
+    print("-" * 40)
+
+    var train_model2 = seq(
+        Linear[TRAIN_IN, TRAIN_HIDDEN](),
+        ReLU[TRAIN_HIDDEN](),
+        Linear[TRAIN_HIDDEN, TRAIN_OUT](),
+    )
+
+    var optimizer2 = Adam[TRAIN_PARAM_SIZE](lr=0.1)
+
+    print("Using Kaiming initialization for ReLU network...")
+
+    # Use Kaiming initializer (better for ReLU networks)
+    comptime TrainModel2Type = type_of(train_model2)
+    var trainer2 = Trainer[TrainModel2Type, Adam[TRAIN_PARAM_SIZE], MSELoss, Kaiming](
+        model=train_model2,
+        optimizer=optimizer2,
+        loss_function=loss_function,
+        initializer=Kaiming(),
+        epochs=100,
+        print_every=20,
+    )
+    var result2 = trainer2.train[TRAIN_BATCH](train_input, train_target)
+    print("Final loss with Kaiming init:", result2.final_loss)
+
+    print("Kaiming initialization test passed!")
     print()
 
     # ==========================================================================
