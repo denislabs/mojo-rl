@@ -174,10 +174,22 @@ struct GymMuJoCoEnv(BoxContinuousActionEnv):
         """Return first 4 dims of observation for trait conformance."""
         return self.current_obs_4d
 
+    fn get_obs_list(self) -> List[Float64]:
+        """Return current continuous observation as List (trait method)."""
+        var obs = List[Float64](capacity=self._obs_dim)
+        for i in range(self._obs_dim):
+            obs.append(self.current_obs[i])
+        return obs^
+
     fn reset_obs(mut self) -> SIMD[DType.float64, 4]:
         """Reset environment and return continuous observation."""
         _ = self.reset()
         return self.current_obs_4d
+
+    fn reset_obs_list(mut self) -> List[Float64]:
+        """Reset environment and return continuous observation as List (trait method)."""
+        _ = self.reset()
+        return self.get_obs_list()
 
     fn obs_dim(self) -> Int:
         """Return observation dimension."""
@@ -198,6 +210,38 @@ struct GymMuJoCoEnv(BoxContinuousActionEnv):
     fn action_high(self) -> Float64:
         """Return action upper bound."""
         return self._action_high
+
+    # ========================================================================
+    # BoxContinuousActionEnv trait methods
+    # ========================================================================
+
+    fn step_continuous(
+        mut self, action: Float64
+    ) -> Tuple[List[Float64], Float64, Bool]:
+        """Take 1D continuous action (trait method).
+
+        Note: MuJoCo envs have multi-dimensional actions.
+        This only uses the first action. Use step_continuous_vec for full control.
+        """
+        var action_list = List[Float64]()
+        action_list.append(action)
+        for _ in range(1, self._action_dim):
+            action_list.append(0.0)
+        return self.step_continuous_vec(action_list^)
+
+    fn step_continuous_vec(
+        mut self, action: List[Float64]
+    ) -> Tuple[List[Float64], Float64, Bool]:
+        """Take multi-dimensional continuous action (trait method).
+
+        Args:
+            action: List of action values (length = action_dim).
+
+        Returns:
+            Tuple of (observation_list, reward, done).
+        """
+        var result = self.step_with_list(action)
+        return (self.get_obs_list(), result[1], result[2])
 
     # ========================================================================
     # Additional methods - continuous control

@@ -304,10 +304,7 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
     fn step_continuous(
         mut self, torque: Float64
     ) -> Tuple[List[Float64], Float64, Bool]:
-        """Take continuous action and return (obs_list, reward, done) - trait method.
-
-        This is the BoxContinuousActionEnv trait method for continuous control
-        algorithms like DDPG.
+        """Take 1D continuous action and return (obs_list, reward, done).
 
         Args:
             torque: Continuous torque in [-2.0, 2.0].
@@ -318,6 +315,22 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
         var result = self._step_with_torque(torque)
         var reward = result[1]
         return (self.get_obs_list(), reward, self.done)
+
+    fn step_continuous_vec(
+        mut self, action: List[Float64]
+    ) -> Tuple[List[Float64], Float64, Bool]:
+        """Take multi-dimensional continuous action (trait method).
+
+        For Pendulum, only the first element is used as torque.
+
+        Args:
+            action: List with at least one element (torque in [-2.0, 2.0]).
+
+        Returns:
+            Tuple of (observation as List, reward, done).
+        """
+        var torque = action[0] if len(action) > 0 else 0.0
+        return self.step_continuous(torque)
 
     fn step_continuous_simd(
         mut self, torque: Float64

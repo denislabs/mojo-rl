@@ -49,91 +49,10 @@ from math import exp, log
 from random import random_float64
 from core.tile_coding import TileCoding
 from core import BoxDiscreteActionEnv, TrainingMetrics
-
-
-fn compute_gae(
-    rewards: List[Float64],
-    values: List[Float64],
-    next_value: Float64,
-    done: Bool,
-    discount_factor: Float64,
-    gae_lambda: Float64,
-) -> List[Float64]:
-    """Compute Generalized Advantage Estimation.
-
-    GAE provides a family of advantage estimators parameterized by λ:
-    - λ=0: One-step TD advantage (low variance, high bias)
-    - λ=1: Monte Carlo advantage (high variance, low bias)
-    - 0<λ<1: Exponentially-weighted average of n-step advantages
-
-    A^GAE_t = Σ_{l=0}^{∞} (γλ)^l δ_{t+l}
-
-    where δ_t = r_t + γV(s_{t+1}) - V(s_t)
-
-    Args:
-        rewards: List of rewards [r_0, r_1, ..., r_{T-1}]
-        values: List of value estimates [V(s_0), V(s_1), ..., V(s_{T-1})]
-        next_value: Bootstrap value V(s_T) (0 if terminal)
-        done: Whether episode terminated
-        discount_factor: Discount factor γ
-        gae_lambda: GAE parameter λ
-
-    Returns:
-        List of advantages [A_0, A_1, ..., A_{T-1}]
-    """
-    var num_steps = len(rewards)
-    var advantages = List[Float64]()
-
-    # Initialize advantages list
-    for _ in range(num_steps):
-        advantages.append(0.0)
-
-    # Bootstrap value for last step
-    var last_value = next_value
-    if done:
-        last_value = 0.0
-
-    # Compute GAE backwards
-    var gae: Float64 = 0.0
-    var gae_decay = discount_factor * gae_lambda
-
-    for t in range(num_steps - 1, -1, -1):
-        # Get next value
-        var next_val: Float64
-        if t == num_steps - 1:
-            next_val = last_value
-        else:
-            next_val = values[t + 1]
-
-        # TD residual: δ_t = r_t + γV(s_{t+1}) - V(s_t)
-        var delta = rewards[t] + discount_factor * next_val - values[t]
-
-        # GAE: A_t = δ_t + γλA_{t+1}
-        gae = delta + gae_decay * gae
-        advantages[t] = gae
-
-    return advantages^
-
-
-fn compute_returns_from_advantages(
-    advantages: List[Float64],
-    values: List[Float64],
-) -> List[Float64]:
-    """Compute returns from advantages and values.
-
-    Returns = Advantages + Values
-
-    Args:
-        advantages: GAE advantages
-        values: Value estimates
-
-    Returns:
-        Returns for value function training
-    """
-    var returns = List[Float64]()
-    for t in range(len(advantages)):
-        returns.append(advantages[t] + values[t])
-    return returns^
+from core.utils.gae import compute_gae, compute_returns_from_advantages
+from core.utils.softmax import softmax, sample_from_probs, argmax_probs
+from core.utils.normalization import normalize
+from core.utils.shuffle import shuffle_indices
 
 
 struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
@@ -295,25 +214,6 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
             preferences.append(pref)
         return preferences^
 
-    fn _softmax(self, preferences: List[Float64]) -> List[Float64]:
-        """Compute softmax probabilities (numerically stable)."""
-        var max_pref = preferences[0]
-        for i in range(1, len(preferences)):
-            if preferences[i] > max_pref:
-                max_pref = preferences[i]
-
-        var exp_prefs = List[Float64]()
-        var sum_exp: Float64 = 0.0
-        for i in range(len(preferences)):
-            var e = exp(preferences[i] - max_pref)
-            exp_prefs.append(e)
-            sum_exp += e
-
-        var probs = List[Float64]()
-        for i in range(len(exp_prefs)):
-            probs.append(exp_prefs[i] / sum_exp)
-        return probs^
-
     fn get_action_probs(self, tiles: List[Int]) -> List[Float64]:
         """Get action probabilities π(·|s).
 
@@ -324,7 +224,7 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
             Probability distribution over actions
         """
         var prefs = self._get_action_preferences(tiles)
-        return self._softmax(prefs^)
+        return softmax(prefs^)
 
     fn get_value(self, tiles: List[Int]) -> Float64:
         """Get state value estimate V(s).
@@ -365,14 +265,7 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
             Sampled action index
         """
         var probs = self.get_action_probs(tiles)
-
-        var rand = random_float64()
-        var cumsum: Float64 = 0.0
-        for a in range(self.num_actions):
-            cumsum += probs[a]
-            if rand < cumsum:
-                return a
-        return self.num_actions - 1
+        return sample_from_probs(probs)
 
     fn get_best_action(self, tiles: List[Int]) -> Int:
         """Get greedy action (highest probability).
@@ -384,13 +277,7 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
             Action with highest probability
         """
         var probs = self.get_action_probs(tiles)
-        var best_action = 0
-        var best_prob = probs[0]
-        for a in range(1, self.num_actions):
-            if probs[a] > best_prob:
-                best_prob = probs[a]
-                best_action = a
-        return best_action
+        return argmax_probs(probs)
 
     fn store_transition(
         mut self,
@@ -438,7 +325,7 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
                 var tile_idx = self.buffer_tiles[buffer_idx][i]
                 pref += self.theta[a][tile_idx]
             preferences.append(pref)
-        return self._softmax(preferences^)
+        return softmax(preferences^)
 
     fn _get_log_prob_idx(self, buffer_idx: Int, action: Int) -> Float64:
         """Get current log probability for buffer step."""
@@ -486,20 +373,7 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
 
         # Normalize advantages (optional but recommended)
         if self.normalize_advantages and buffer_len > 1:
-            var mean: Float64 = 0.0
-            for t in range(buffer_len):
-                mean += advantages[t]
-            mean /= Float64(buffer_len)
-
-            var variance: Float64 = 0.0
-            for t in range(buffer_len):
-                var diff = advantages[t] - mean
-                variance += diff * diff
-            variance /= Float64(buffer_len)
-            var std = (variance + 1e-8) ** 0.5
-
-            for t in range(buffer_len):
-                advantages[t] = (advantages[t] - mean) / std
+            normalize(advantages)
 
         # Multiple epochs of optimization
         var actor_step = self.actor_lr / Float64(self.num_tilings)
@@ -900,29 +774,10 @@ struct PPOAgentWithMinibatch(Copyable, ImplicitlyCopyable, Movable):
             preferences.append(pref)
         return preferences^
 
-    fn _softmax(self, preferences: List[Float64]) -> List[Float64]:
-        """Compute softmax probabilities."""
-        var max_pref = preferences[0]
-        for i in range(1, len(preferences)):
-            if preferences[i] > max_pref:
-                max_pref = preferences[i]
-
-        var exp_prefs = List[Float64]()
-        var sum_exp: Float64 = 0.0
-        for i in range(len(preferences)):
-            var e = exp(preferences[i] - max_pref)
-            exp_prefs.append(e)
-            sum_exp += e
-
-        var probs = List[Float64]()
-        for i in range(len(exp_prefs)):
-            probs.append(exp_prefs[i] / sum_exp)
-        return probs^
-
     fn get_action_probs(self, tiles: List[Int]) -> List[Float64]:
         """Get action probabilities."""
         var prefs = self._get_action_preferences(tiles)
-        return self._softmax(prefs^)
+        return softmax(prefs^)
 
     fn get_value(self, tiles: List[Int]) -> Float64:
         """Get state value estimate."""
@@ -941,24 +796,12 @@ struct PPOAgentWithMinibatch(Copyable, ImplicitlyCopyable, Movable):
     fn select_action(self, tiles: List[Int]) -> Int:
         """Sample action from policy."""
         var probs = self.get_action_probs(tiles)
-        var rand = random_float64()
-        var cumsum: Float64 = 0.0
-        for a in range(self.num_actions):
-            cumsum += probs[a]
-            if rand < cumsum:
-                return a
-        return self.num_actions - 1
+        return sample_from_probs(probs)
 
     fn get_best_action(self, tiles: List[Int]) -> Int:
         """Get greedy action."""
         var probs = self.get_action_probs(tiles)
-        var best_action = 0
-        var best_prob = probs[0]
-        for a in range(1, self.num_actions):
-            if probs[a] > best_prob:
-                best_prob = probs[a]
-                best_action = a
-        return best_action
+        return argmax_probs(probs)
 
     fn store_transition(
         mut self,
@@ -998,7 +841,7 @@ struct PPOAgentWithMinibatch(Copyable, ImplicitlyCopyable, Movable):
                 var tile_idx = self.buffer_tiles[buffer_idx][i]
                 pref += self.theta[a][tile_idx]
             preferences.append(pref)
-        return self._softmax(preferences^)
+        return softmax(preferences^)
 
     fn _get_log_prob_idx(self, buffer_idx: Int, action: Int) -> Float64:
         """Get current log probability for buffer step."""
@@ -1006,24 +849,6 @@ struct PPOAgentWithMinibatch(Copyable, ImplicitlyCopyable, Movable):
         if probs[action] > 1e-10:
             return log(probs[action])
         return -23.0
-
-    fn _generate_random_indices(self, n: Int) -> List[Int]:
-        """Generate shuffled indices for minibatch sampling."""
-        var indices = List[Int]()
-        for i in range(n):
-            indices.append(i)
-
-        # Fisher-Yates shuffle
-        for i in range(n - 1, 0, -1):
-            var j = Int(random_float64() * Float64(i + 1))
-            if j > i:
-                j = i
-            # Swap
-            var temp = indices[i]
-            indices[i] = indices[j]
-            indices[j] = temp
-
-        return indices^
 
     fn update(
         mut self,
@@ -1062,27 +887,15 @@ struct PPOAgentWithMinibatch(Copyable, ImplicitlyCopyable, Movable):
 
         # Normalize advantages
         if self.normalize_advantages and buffer_len > 1:
-            var mean: Float64 = 0.0
-            for t in range(buffer_len):
-                mean += advantages[t]
-            mean /= Float64(buffer_len)
-
-            var variance: Float64 = 0.0
-            for t in range(buffer_len):
-                var diff = advantages[t] - mean
-                variance += diff * diff
-            variance /= Float64(buffer_len)
-            var std = (variance + 1e-8) ** 0.5
-
-            for t in range(buffer_len):
-                advantages[t] = (advantages[t] - mean) / std
+            normalize(advantages)
 
         var actor_step = self.actor_lr / Float64(self.num_tilings)
         var critic_step = self.critic_lr / Float64(self.num_tilings)
 
         # Multiple epochs with minibatch updates
         for _ in range(self.num_epochs):
-            var indices = self._generate_random_indices(buffer_len)
+            var indices = List[Int]()
+            shuffle_indices(buffer_len, indices)
 
             var batch_start = 0
             while batch_start < buffer_len:

@@ -40,64 +40,10 @@ from deep_rl.optimizer import Adam
 from deep_rl.initializer import Xavier
 from deep_rl.training import Network
 from core import TrainingMetrics, BoxDiscreteActionEnv
-
-
-# =============================================================================
-# Helper: Compute GAE
-# =============================================================================
-
-
-fn compute_gae_ppo[
-    rollout_len: Int
-](
-    rewards: InlineArray[Scalar[dtype], rollout_len],
-    values: InlineArray[Scalar[dtype], rollout_len],
-    next_value: Scalar[dtype],
-    dones: InlineArray[Bool, rollout_len],
-    gamma: Float64,
-    gae_lambda: Float64,
-    buffer_len: Int,
-    mut advantages: InlineArray[Scalar[dtype], rollout_len],
-    mut returns: InlineArray[Scalar[dtype], rollout_len],
-):
-    """Compute GAE advantages and returns.
-
-    Args:
-        rewards: Rewards collected during rollout.
-        values: Value estimates for each state.
-        next_value: Bootstrap value V(s_T).
-        dones: Done flags for each step.
-        gamma: Discount factor.
-        gae_lambda: GAE lambda parameter.
-        buffer_len: Actual number of steps in buffer.
-        advantages: Output buffer for advantages.
-        returns: Output buffer for returns.
-    """
-    var gae = Scalar[dtype](0.0)
-    var gae_decay = Scalar[dtype](gamma * gae_lambda)
-
-    # Compute GAE backwards
-    for t in range(buffer_len - 1, -1, -1):
-        # Get next value
-        var next_val: Scalar[dtype]
-        if t == buffer_len - 1:
-            next_val = next_value
-        else:
-            next_val = values[t + 1]
-
-        # Zero out next value if done
-        if dones[t]:
-            next_val = Scalar[dtype](0.0)
-            gae = Scalar[dtype](0.0)
-
-        # TD residual: δ_t = r_t + γV(s_{t+1}) - V(s_t)
-        var delta = rewards[t] + Scalar[dtype](gamma) * next_val - values[t]
-
-        # GAE: A_t = δ_t + γλA_{t+1}
-        gae = delta + gae_decay * gae
-
-        advantages[t] = gae
-        returns[t] = gae + values[t]
+from core.utils.gae import compute_gae_inline
+from core.utils.softmax import softmax_inline, sample_from_probs_inline, argmax_probs_inline
+from core.utils.normalization import normalize_inline
+from core.utils.shuffle import shuffle_indices_inline
 
 
 # =============================================================================
@@ -402,7 +348,7 @@ struct DeepPPOAgent[
         var advantages = InlineArray[Scalar[dtype], Self.ROLLOUT](fill=0)
         var returns = InlineArray[Scalar[dtype], Self.ROLLOUT](fill=0)
 
-        compute_gae_ppo[Self.ROLLOUT](
+        compute_gae_inline[dtype, Self.ROLLOUT](
             self.buffer_rewards,
             self.buffer_values,
             next_value,

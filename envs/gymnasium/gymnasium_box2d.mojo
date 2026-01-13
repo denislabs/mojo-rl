@@ -532,7 +532,7 @@ struct GymBipedalWalkerEnv(BoxContinuousActionEnv):
         return 1.0
 
     # ========================================================================
-    # BoxContinuousActionEnv trait method
+    # BoxContinuousActionEnv trait methods
     # ========================================================================
 
     fn step_continuous(
@@ -540,10 +540,28 @@ struct GymBipedalWalkerEnv(BoxContinuousActionEnv):
     ) -> Tuple[List[Float64], Float64, Bool]:
         """Take 1D continuous action (trait method).
 
-        Note: BipedalWalker has 4D actions. This trait method only controls
-        the first joint. Use step_continuous_4d for full control.
+        Note: BipedalWalker has 4D actions. This only controls the first joint.
+        Use step_continuous_vec for full 4D control.
         """
         var result = self.step_continuous_4d(action, 0.0, 0.0, 0.0)
+        return (self.get_obs_list(), result[1], result[2])
+
+    fn step_continuous_vec(
+        mut self, action: List[Float64]
+    ) -> Tuple[List[Float64], Float64, Bool]:
+        """Take multi-dimensional continuous action (trait method).
+
+        Args:
+            action: List of 4 action values [hip1, knee1, hip2, knee2].
+
+        Returns:
+            Tuple of (observation_list, reward, done).
+        """
+        var hip1 = action[0] if len(action) > 0 else 0.0
+        var knee1 = action[1] if len(action) > 1 else 0.0
+        var hip2 = action[2] if len(action) > 2 else 0.0
+        var knee2 = action[3] if len(action) > 3 else 0.0
+        var result = self.step_continuous_4d(hip1, knee1, hip2, knee2)
         return (self.get_obs_list(), result[1], result[2])
 
     # ========================================================================
@@ -770,7 +788,7 @@ struct GymCarRacingEnv(BoxContinuousActionEnv):
         return 1.0
 
     # ========================================================================
-    # BoxContinuousActionEnv trait method
+    # BoxContinuousActionEnv trait methods
     # ========================================================================
 
     fn step_continuous(
@@ -778,10 +796,27 @@ struct GymCarRacingEnv(BoxContinuousActionEnv):
     ) -> Tuple[List[Float64], Float64, Bool]:
         """Take 1D continuous action (trait method).
 
-        Note: CarRacing has 3D actions [steering, gas, brake].
-        This trait method only controls steering. Use step_continuous_3d for full control.
+        Note: CarRacing has 3D actions. This only controls steering.
+        Use step_continuous_vec for full 3D control.
         """
         var result = self.step_continuous_3d(action, 0.0, 0.0)
+        return (self.get_obs_list(), result[1], result[2])
+
+    fn step_continuous_vec(
+        mut self, action: List[Float64]
+    ) -> Tuple[List[Float64], Float64, Bool]:
+        """Take multi-dimensional continuous action (trait method).
+
+        Args:
+            action: List of 3 action values [steering, gas, brake].
+
+        Returns:
+            Tuple of (observation_list, reward, done).
+        """
+        var steering = action[0] if len(action) > 0 else 0.0
+        var gas = action[1] if len(action) > 1 else 0.0
+        var brake = action[2] if len(action) > 2 else 0.0
+        var result = self.step_continuous_3d(steering, gas, brake)
         return (self.get_obs_list(), result[1], result[2])
 
     # ========================================================================

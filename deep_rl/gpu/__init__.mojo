@@ -17,6 +17,10 @@ This module provides common GPU operations used across deep RL algorithms.
 - xorshift32: Fast GPU-friendly PRNG
 - random_uniform: Uniform random in [0, 1)
 - random_range: Uniform random in [low, high)
+- gaussian_noise: Standard Gaussian noise (CPU, uses stdlib random)
+- gaussian_noise_pair: Two independent Gaussian samples (CPU)
+- gaussian_noise_gpu: Standard Gaussian noise (GPU, maintains RNG state)
+- gaussian_noise_pair_gpu: Two independent Gaussian samples (GPU)
 """
 
 
@@ -32,4 +36,12 @@ from .matmul import (
     tiled_matmul_kernel,
 )
 
-from .random import xorshift32, random_uniform, random_range
+from .random import (
+    xorshift32,
+    random_uniform,
+    random_range,
+    gaussian_noise,
+    gaussian_noise_pair,
+    gaussian_noise_gpu,
+    gaussian_noise_pair_gpu,
+)

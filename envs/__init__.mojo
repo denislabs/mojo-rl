@@ -7,6 +7,7 @@ from .mountain_car import MountainCarEnv, MountainCarState, MountainCarAction
 from .pendulum import PendulumEnv, PendulumState, PendulumAction
 from .acrobot import AcrobotEnv, AcrobotState, AcrobotAction
 from .lunar_lander import LunarLanderEnv, LunarLanderState, LunarLanderAction
+from .bipedal_walker import BipedalWalkerEnv, BipedalWalkerState, BipedalWalkerAction
 
 # Vectorized environments (SIMD-based parallel execution)
 from .vec_cartpole import VecCartPoleEnv, VecCartPole8, VecCartPole16

@@ -50,3 +50,10 @@ from .vec_env import (
     simd_all,
     simd_count_true,
 )
+
+# Shared RL utilities (import from submodules to avoid naming conflicts)
+# Usage: from core.utils.softmax import softmax
+#        from core.utils.gae import compute_gae
+#        from core.utils.normalization import normalize
+#        from core.utils.shuffle import shuffle_indices
+from . import utils

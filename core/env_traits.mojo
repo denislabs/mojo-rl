@@ -180,19 +180,32 @@ trait BoxContinuousActionEnv(ContinuousActionEnv, ContinuousStateEnv):
     - Policy gradient with Gaussian policies
     - DDPG, TD3, SAC
 
-    Examples: Pendulum (3D obs, 1D action), HalfCheetah, Ant, Humanoid.
+    Examples: Pendulum (3D obs, 1D action), BipedalWalker (24D obs, 4D action).
     """
 
     fn step_continuous(
         mut self, action: Float64
     ) -> Tuple[List[Float64], Float64, Bool]:
-        """Take continuous action and return (continuous_obs, reward, done).
+        """Take 1D continuous action and return (continuous_obs, reward, done).
 
-        Convenience method for continuous control algorithms that
-        work with raw observations and continuous actions.
+        Convenience method for environments with single-dimensional actions.
+        For multi-dimensional actions, use step_continuous_vec instead.
+        """
+        ...
 
-        Note: For multi-dimensional action spaces, environments should
-        provide additional methods accepting action vectors.
+    fn step_continuous_vec(
+        mut self, action: List[Float64]
+    ) -> Tuple[List[Float64], Float64, Bool]:
+        """Take multi-dimensional continuous action and return (obs, reward, done).
+
+        This is the primary method for continuous control algorithms (SAC, DDPG, TD3)
+        that work with multi-dimensional action spaces.
+
+        Args:
+            action: List of action values, length should match action_dim().
+
+        Returns:
+            Tuple of (observation_list, reward, done).
         """
         ...
 

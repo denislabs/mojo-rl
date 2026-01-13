@@ -54,6 +54,7 @@ from core.continuous_replay_buffer import (
     ContinuousReplayBuffer,
 )
 from core import PolynomialFeatures, TrainingMetrics, BoxContinuousActionEnv
+from deep_rl.gpu.random import gaussian_noise
 
 
 struct DDPGAgent(Copyable, Movable):
@@ -742,20 +743,6 @@ fn _log(x: Float64) -> Float64:
     return log(x)
 
 
-fn _cos(x: Float64) -> Float64:
-    """Cosine function."""
-    from math import cos
-
-    return cos(x)
-
-
-fn _gaussian_noise() -> Float64:
-    """Generate Gaussian noise using Box-Muller transform."""
-    var u1 = random_float64()
-    var u2 = random_float64()
-    if u1 < 1e-10:
-        u1 = 1e-10
-    return sqrt(-2.0 * _log(u1)) * _cos(2.0 * 3.141592653589793 * u2)
 
 
 fn _list_to_simd4(obs: List[Float64]) -> SIMD[DType.float64, 4]:

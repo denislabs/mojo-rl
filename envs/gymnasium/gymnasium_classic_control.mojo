@@ -1047,13 +1047,26 @@ struct GymPendulumEnv(BoxContinuousActionEnv):
     # ========================================================================
 
     fn get_obs(self) -> SIMD[DType.float64, 4]:
-        """Return current continuous observation."""
+        """Return current continuous observation as SIMD."""
         return self.current_obs
 
+    fn get_obs_list(self) -> List[Float64]:
+        """Return current continuous observation as List (trait method)."""
+        var obs = List[Float64](capacity=3)
+        obs.append(self.current_obs[0])
+        obs.append(self.current_obs[1])
+        obs.append(self.current_obs[2])
+        return obs^
+
     fn reset_obs(mut self) -> SIMD[DType.float64, 4]:
-        """Reset environment and return continuous observation."""
+        """Reset environment and return continuous observation as SIMD."""
         _ = self.reset()
         return self.current_obs
+
+    fn reset_obs_list(mut self) -> List[Float64]:
+        """Reset environment and return continuous observation as List (trait method)."""
+        _ = self.reset()
+        return self.get_obs_list()
 
     fn obs_dim(self) -> Int:
         """Return observation dimension (3)."""
@@ -1076,13 +1089,31 @@ struct GymPendulumEnv(BoxContinuousActionEnv):
         return 2.0
 
     # ========================================================================
-    # Additional methods
+    # BoxContinuousActionEnv trait methods
     # ========================================================================
 
     fn step_continuous(
         mut self, torque: Float64
+    ) -> Tuple[List[Float64], Float64, Bool]:
+        """Take 1D continuous action and return (obs_list, reward, done)."""
+        var result = self.step(GymPendulumAction(torque=torque))
+        return (self.get_obs_list(), result[1], result[2])
+
+    fn step_continuous_vec(
+        mut self, action: List[Float64]
+    ) -> Tuple[List[Float64], Float64, Bool]:
+        """Take multi-dimensional continuous action (trait method)."""
+        var torque = action[0] if len(action) > 0 else 0.0
+        return self.step_continuous(torque)
+
+    # ========================================================================
+    # Additional SIMD methods (for performance)
+    # ========================================================================
+
+    fn step_continuous_simd(
+        mut self, torque: Float64
     ) -> Tuple[SIMD[DType.float64, 4], Float64, Bool]:
-        """Convenience method for continuous action step."""
+        """Convenience method for continuous action step returning SIMD."""
         var result = self.step(GymPendulumAction(torque=torque))
         return (self.current_obs, result[1], result[2])
 

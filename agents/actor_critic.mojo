@@ -48,6 +48,7 @@ from math import exp, log
 from random import random_float64
 from core.tile_coding import TileCoding
 from core import BoxDiscreteActionEnv, TrainingMetrics
+from core.utils.softmax import softmax, sample_from_probs, argmax_probs
 
 
 struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
@@ -157,25 +158,6 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
             preferences.append(pref)
         return preferences^
 
-    fn _softmax(self, preferences: List[Float64]) -> List[Float64]:
-        """Compute softmax probabilities (numerically stable)."""
-        var max_pref = preferences[0]
-        for i in range(1, len(preferences)):
-            if preferences[i] > max_pref:
-                max_pref = preferences[i]
-
-        var exp_prefs = List[Float64]()
-        var sum_exp: Float64 = 0.0
-        for i in range(len(preferences)):
-            var e = exp(preferences[i] - max_pref)
-            exp_prefs.append(e)
-            sum_exp += e
-
-        var probs = List[Float64]()
-        for i in range(len(exp_prefs)):
-            probs.append(exp_prefs[i] / sum_exp)
-        return probs^
-
     fn get_action_probs(self, tiles: List[Int]) -> List[Float64]:
         """Get action probabilities π(·|s).
 
@@ -186,7 +168,7 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
             Probability distribution over actions
         """
         var prefs = self._get_action_preferences(tiles)
-        return self._softmax(prefs^)
+        return softmax(prefs^)
 
     fn get_value(self, tiles: List[Int]) -> Float64:
         """Get state value estimate V(s).
@@ -212,14 +194,7 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
             Sampled action index
         """
         var probs = self.get_action_probs(tiles)
-
-        var rand = random_float64()
-        var cumsum: Float64 = 0.0
-        for a in range(self.num_actions):
-            cumsum += probs[a]
-            if rand < cumsum:
-                return a
-        return self.num_actions - 1
+        return sample_from_probs(probs)
 
     fn get_best_action(self, tiles: List[Int]) -> Int:
         """Get greedy action (highest probability).
@@ -231,13 +206,7 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
             Action with highest probability
         """
         var probs = self.get_action_probs(tiles)
-        var best_action = 0
-        var best_prob = probs[0]
-        for a in range(1, self.num_actions):
-            if probs[a] > best_prob:
-                best_prob = probs[a]
-                best_action = a
-        return best_action
+        return argmax_probs(probs)
 
     fn update(
         mut self,
@@ -588,7 +557,7 @@ struct ActorCriticLambdaAgent(Copyable, ImplicitlyCopyable, Movable):
     fn get_action_probs(self, tiles: List[Int]) -> List[Float64]:
         """Get action probabilities."""
         var prefs = self._get_action_preferences(tiles)
-        return self._softmax(prefs^)
+        return softmax(prefs^)
 
     fn get_value(self, tiles: List[Int]) -> Float64:
         """Get state value estimate."""
@@ -997,7 +966,7 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
     fn get_action_probs(self, tiles: List[Int]) -> List[Float64]:
         """Get action probabilities."""
         var prefs = self._get_action_preferences(tiles)
-        return self._softmax(prefs^)
+        return softmax(prefs^)
 
     fn get_value(self, tiles: List[Int]) -> Float64:
         """Get state value estimate."""

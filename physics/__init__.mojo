@@ -51,6 +51,8 @@ from physics.collision import (
     Contact,
     collide_edge_polygon,
     collide_edge_circle,
+    collide_polygon_polygon,
 )
 from physics.joint import RevoluteJoint
 from physics.world import World, ContactListener
+from physics.raycast import RaycastResult, raycast_edge, raycast_polygon

@@ -244,6 +244,130 @@ fn collide_edge_circle(
     return manifold^
 
 
+fn collide_polygon_polygon(
+    poly_a: PolygonShape,
+    xf_a: Transform,
+    poly_b: PolygonShape,
+    xf_b: Transform,
+) -> ContactManifold:
+    """Detect collision between two convex polygons.
+
+    Uses Separating Axis Theorem (SAT): test all face normals from both polygons.
+    Returns manifold with contact points if collision found.
+    """
+    var manifold = ContactManifold()
+
+    if poly_a.count < 3 or poly_b.count < 3:
+        return manifold^
+
+    # Transform polygon vertices to world space
+    var verts_a = InlineArray[Vec2, 8](Vec2.zero())
+    var verts_b = InlineArray[Vec2, 8](Vec2.zero())
+
+    for i in range(poly_a.count):
+        verts_a[i] = xf_a.apply(poly_a.vertices[i])
+
+    for i in range(poly_b.count):
+        verts_b[i] = xf_b.apply(poly_b.vertices[i])
+
+    # Find separating axis on poly_a faces
+    var sep_a: Float64 = -1e10
+    var best_idx_a = 0
+
+    for i in range(poly_a.count):
+        var normal = xf_a.apply_rotation(poly_a.normals[i])
+        var min_sep: Float64 = 1e10
+
+        # Find min separation along this normal
+        for j in range(poly_b.count):
+            var sep = (verts_b[j] - verts_a[i]).dot(normal)
+            if sep < min_sep:
+                min_sep = sep
+
+        if min_sep > sep_a:
+            sep_a = min_sep
+            best_idx_a = i
+
+        # Early out: separation found
+        if min_sep > 0.0:
+            return manifold^
+
+    # Find separating axis on poly_b faces
+    var sep_b: Float64 = -1e10
+    var best_idx_b = 0
+
+    for i in range(poly_b.count):
+        var normal = xf_b.apply_rotation(poly_b.normals[i])
+        var min_sep: Float64 = 1e10
+
+        # Find min separation along this normal
+        for j in range(poly_a.count):
+            var sep = (verts_a[j] - verts_b[i]).dot(normal)
+            if sep < min_sep:
+                min_sep = sep
+
+        if min_sep > sep_b:
+            sep_b = min_sep
+            best_idx_b = i
+
+        # Early out: separation found
+        if min_sep > 0.0:
+            return manifold^
+
+    # No separation found - collision!
+    # Use the axis with smallest penetration as contact normal
+    var contact_normal: Vec2
+    var ref_verts: InlineArray[Vec2, 8]
+    var ref_count: Int
+    var inc_verts: InlineArray[Vec2, 8]
+    var inc_count: Int
+    var flip: Bool
+
+    # Determine reference and incident edges
+    comptime RELATIVE_TOL: Float64 = 0.98
+    comptime ABSOLUTE_TOL: Float64 = 0.001
+
+    if sep_a > sep_b * RELATIVE_TOL + ABSOLUTE_TOL:
+        # Use poly_a face as reference
+        contact_normal = xf_a.apply_rotation(poly_a.normals[best_idx_a])
+        ref_verts = verts_a
+        ref_count = poly_a.count
+        inc_verts = verts_b
+        inc_count = poly_b.count
+        flip = False
+    else:
+        # Use poly_b face as reference
+        contact_normal = xf_b.apply_rotation(poly_b.normals[best_idx_b])
+        ref_verts = verts_b
+        ref_count = poly_b.count
+        inc_verts = verts_a
+        inc_count = poly_a.count
+        flip = True
+
+    # Find incident edge vertices that are on the collision side
+    for i in range(inc_count):
+        var vertex = inc_verts[i]
+
+        # Find penetration depth
+        var min_dist: Float64 = 1e10
+        for j in range(ref_count):
+            var dist = (vertex - ref_verts[j]).dot(contact_normal)
+            if dist < min_dist:
+                min_dist = dist
+
+        if min_dist < 0.0:
+            # This vertex is penetrating
+            var final_normal = contact_normal
+            if flip:
+                final_normal = Vec2(-contact_normal.x, -contact_normal.y)
+
+            manifold.add_point(vertex, final_normal, min_dist)
+            if manifold.count >= MAX_MANIFOLD_POINTS:
+                break
+
+    return manifold^
+
+
 # ===== Helper Functions =====
 
 

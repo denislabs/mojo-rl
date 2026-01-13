@@ -45,7 +45,7 @@ from deep_rl.model.stochastic_actor import (
 from deep_rl.optimizer import Adam
 from deep_rl.initializer import Kaiming
 from deep_rl.training import Network
-from deep_rl.replay import ReplayBuffer
+from deep_rl.replay import ReplayBuffer, HeapReplayBuffer, ReplayBufferTrait
 from core import TrainingMetrics, BoxContinuousActionEnv
 
 
@@ -84,6 +84,9 @@ struct DeepSACAgent[
     hidden_dim: Int = 256,
     buffer_capacity: Int = 100000,
     batch_size: Int = 64,
+    replay_buffer: ReplayBufferTrait = ReplayBuffer[
+        buffer_capacity, obs_dim, action_dim, dtype
+    ],
 ]:
     """Deep Soft Actor-Critic agent using the new trait-based architecture.
 
@@ -104,6 +107,12 @@ struct DeepSACAgent[
         hidden_dim: Hidden layer size (default: 256).
         buffer_capacity: Replay buffer capacity (default: 100000).
         batch_size: Training batch size (default: 64).
+        replay_buffer: Replay buffer type implementing ReplayBufferTrait
+            (default: ReplayBuffer). Use HeapReplayBuffer for large obs spaces.
+
+    Note:
+        For large observation spaces (24D+), use DeepSACAgentHeap which uses
+        heap-allocated buffers to avoid stack overflow.
     """
 
     # Convenience aliases
@@ -201,10 +210,8 @@ struct DeepSACAgent[
         Kaiming,
     ]
 
-    # Replay buffer
-    var buffer: ReplayBuffer[
-        Self.buffer_capacity, Self.obs_dim, Self.action_dim, dtype
-    ]
+    # Replay buffer (stack-allocated, use DeepSACAgentHeap for large obs spaces)
+    var buffer: Self.replay_buffer
 
     # Hyperparameters
     var gamma: Float64  # Discount factor
@@ -284,9 +291,7 @@ struct DeepSACAgent[
         self.critic2_target.copy_params_from(self.critic2)
 
         # Initialize replay buffer
-        self.buffer = ReplayBuffer[
-            Self.buffer_capacity, Self.obs_dim, Self.action_dim, dtype
-        ]()
+        self.buffer = Self.replay_buffer()
 
         # Store hyperparameters
         self.gamma = gamma
@@ -429,25 +434,34 @@ struct DeepSACAgent[
             next_obs: Next observation.
             done: Whether episode ended.
         """
-        var obs_arr = InlineArray[Scalar[dtype], Self.obs_dim](
-            uninitialized=True
-        )
-        var next_obs_arr = InlineArray[Scalar[dtype], Self.obs_dim](
-            uninitialized=True
-        )
-        for i in range(Self.obs_dim):
-            obs_arr[i] = Scalar[dtype](obs[i])
-            next_obs_arr[i] = Scalar[dtype](next_obs[i])
+        # Use replay buffer's types for compatibility with the trait
+        comptime BUFFER_DTYPE = Self.replay_buffer.DTYPE
+        comptime BUFFER_OBS_DIM = Self.replay_buffer.OBS_DIM
+        comptime BUFFER_ACTION_DIM = Self.replay_buffer.ACTION_DIM
 
-        var action_arr = InlineArray[Scalar[dtype], Self.action_dim](
+        var obs_arr = InlineArray[Scalar[BUFFER_DTYPE], BUFFER_OBS_DIM](
             uninitialized=True
         )
-        for i in range(Self.action_dim):
+        var next_obs_arr = InlineArray[Scalar[BUFFER_DTYPE], BUFFER_OBS_DIM](
+            uninitialized=True
+        )
+        for i in range(BUFFER_OBS_DIM):
+            obs_arr[i] = Scalar[BUFFER_DTYPE](obs[i])
+            next_obs_arr[i] = Scalar[BUFFER_DTYPE](next_obs[i])
+
+        var action_arr = InlineArray[Scalar[BUFFER_DTYPE], BUFFER_ACTION_DIM](
+            uninitialized=True
+        )
+        for i in range(BUFFER_ACTION_DIM):
             # Store unscaled action (divide by action_scale)
-            action_arr[i] = Scalar[dtype](action[i] / self.action_scale)
+            action_arr[i] = Scalar[BUFFER_DTYPE](action[i] / self.action_scale)
 
         self.buffer.add(
-            obs_arr, action_arr, Scalar[dtype](reward), next_obs_arr, done
+            obs_arr,
+            action_arr,
+            Scalar[BUFFER_DTYPE](reward),
+            next_obs_arr,
+            done,
         )
         self.total_steps += 1
 
@@ -463,9 +477,39 @@ struct DeepSACAgent[
         if not self.buffer.is_ready[Self.batch_size]():
             return 0.0
 
+        # Use replay buffer's types for compatibility with the trait
+        comptime BUFFER_DTYPE = Self.replay_buffer.DTYPE
+        comptime BUFFER_OBS_DIM = Self.replay_buffer.OBS_DIM
+        comptime BUFFER_ACTION_DIM = Self.replay_buffer.ACTION_DIM
+
         # =====================================================================
         # Sample batch from buffer
         # =====================================================================
+        var batch_obs_buf = InlineArray[
+            Scalar[BUFFER_DTYPE], Self.batch_size * BUFFER_OBS_DIM
+        ](uninitialized=True)
+        var batch_actions_buf = InlineArray[
+            Scalar[BUFFER_DTYPE], Self.batch_size * BUFFER_ACTION_DIM
+        ](uninitialized=True)
+        var batch_rewards_buf = InlineArray[Scalar[BUFFER_DTYPE], Self.batch_size](
+            uninitialized=True
+        )
+        var batch_next_obs_buf = InlineArray[
+            Scalar[BUFFER_DTYPE], Self.batch_size * BUFFER_OBS_DIM
+        ](uninitialized=True)
+        var batch_dones_buf = InlineArray[Scalar[BUFFER_DTYPE], Self.batch_size](
+            uninitialized=True
+        )
+
+        self.buffer.sample[Self.batch_size](
+            batch_obs_buf,
+            batch_actions_buf,
+            batch_rewards_buf,
+            batch_next_obs_buf,
+            batch_dones_buf,
+        )
+
+        # Convert to the dtype used by neural networks
         var batch_obs = InlineArray[Scalar[dtype], Self.BATCH * Self.OBS](
             uninitialized=True
         )
@@ -482,9 +526,14 @@ struct DeepSACAgent[
             uninitialized=True
         )
 
-        self.buffer.sample[Self.batch_size](
-            batch_obs, batch_actions, batch_rewards, batch_next_obs, batch_dones
-        )
+        for i in range(Self.BATCH * Self.OBS):
+            batch_obs[i] = Scalar[dtype](batch_obs_buf[i])
+            batch_next_obs[i] = Scalar[dtype](batch_next_obs_buf[i])
+        for i in range(Self.BATCH * Self.ACTIONS):
+            batch_actions[i] = Scalar[dtype](batch_actions_buf[i])
+        for i in range(Self.BATCH):
+            batch_rewards[i] = Scalar[dtype](batch_rewards_buf[i])
+            batch_dones[i] = Scalar[dtype](batch_dones_buf[i])
 
         # =====================================================================
         # Phase 1: Compute TD targets (with entropy bonus)
@@ -852,7 +901,9 @@ struct DeepSACAgent[
         # So grad_Q = -1 (we want to maximize Q)
         var grad_q = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
         for b in range(Self.BATCH):
-            grad_q[b] = Scalar[dtype](-1.0 / Float64(Self.BATCH))  # Average over batch
+            grad_q[b] = Scalar[dtype](
+                -1.0 / Float64(Self.BATCH)
+            )  # Average over batch
 
         # Backward through critic1 to get gradient w.r.t. its input (obs, action)
         var grad_critic_input = self.critic1.backward_input[Self.BATCH](
@@ -861,9 +912,9 @@ struct DeepSACAgent[
 
         # Extract grad_action from grad_critic_input (last ACTIONS elements per sample)
         # critic_input layout: [obs (OBS) | action (ACTIONS)]
-        var grad_action = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.ACTIONS
-        ](uninitialized=True)
+        var grad_action = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
+            uninitialized=True
+        )
         for b in range(Self.BATCH):
             for a in range(Self.ACTIONS):
                 grad_action[b * Self.ACTIONS + a] = grad_critic_input[
@@ -880,9 +931,9 @@ struct DeepSACAgent[
             grad_log_prob[b] = Scalar[dtype](self.alpha / Float64(Self.BATCH))
 
         # Step 7: Backward through reparameterization trick
-        var grad_mean = InlineArray[
-            Scalar[dtype], Self.BATCH * Self.ACTIONS
-        ](uninitialized=True)
+        var grad_mean = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
+            uninitialized=True
+        )
         var grad_log_std = InlineArray[
             Scalar[dtype], Self.BATCH * Self.ACTIONS
         ](uninitialized=True)
@@ -923,9 +974,9 @@ struct DeepSACAgent[
                     b * Self.ACTIONS + a
                 ]
                 # Log_std gradient
-                actor_grad[b * Self.ACTOR_OUT + Self.ACTIONS + a] = grad_log_std[
-                    b * Self.ACTIONS + a
-                ]
+                actor_grad[
+                    b * Self.ACTOR_OUT + Self.ACTIONS + a
+                ] = grad_log_std[b * Self.ACTIONS + a]
 
         # Step 9: Backward pass through actor network
         var actor_grad_input = InlineArray[
@@ -1032,12 +1083,13 @@ struct DeepSACAgent[
             var action = InlineArray[Float64, Self.action_dim](
                 uninitialized=True
             )
+            var action_list = List[Float64](capacity=Self.action_dim)
             for i in range(Self.action_dim):
                 action[i] = (random_float64() * 2.0 - 1.0) * self.action_scale
+                action_list.append(action[i])
 
-            # Step environment (use first action dimension for 1D environments)
-            var step_action = action[0]
-            var result = env.step_continuous(step_action)
+            # Step environment with full action vector
+            var result = env.step_continuous_vec(action_list^)
             # result is Tuple[List[Float64], Float64, Bool] = (obs_list, reward, done)
             var reward = result[1]
             var done = result[2]
@@ -1068,9 +1120,13 @@ struct DeepSACAgent[
                 # Select action using stochastic policy
                 var action = self.select_action(obs, deterministic=False)
 
-                # Step environment
-                var step_action = action[0]
-                var result = env.step_continuous(step_action)
+                # Convert action to List for step_continuous_vec
+                var action_list = List[Float64](capacity=Self.action_dim)
+                for i in range(Self.action_dim):
+                    action_list.append(action[i])
+
+                # Step environment with full action vector
+                var result = env.step_continuous_vec(action_list^)
                 # result is Tuple[List[Float64], Float64, Bool] = (obs_list, reward, done)
                 var reward = result[1]
                 var done = result[2]
@@ -1143,9 +1199,13 @@ struct DeepSACAgent[
                 # Deterministic action
                 var action = self.select_action(obs, deterministic=True)
 
-                # Step environment
-                var step_action = action[0]
-                var result = env.step_continuous(step_action)
+                # Convert action to List for step_continuous_vec
+                var action_list = List[Float64](capacity=Self.action_dim)
+                for i in range(Self.action_dim):
+                    action_list.append(action[i])
+
+                # Step environment with full action vector
+                var result = env.step_continuous_vec(action_list^)
                 # result is Tuple[List[Float64], Float64, Bool] = (obs_list, reward, done)
                 var reward = result[1]
                 var done = result[2]

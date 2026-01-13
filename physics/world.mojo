@@ -28,10 +28,12 @@ from physics.collision import (
     ContactManifold,
     collide_edge_polygon,
     collide_edge_circle,
+    collide_polygon_polygon,
     solve_contact_velocity,
     solve_contact_position,
 )
 from physics.joint import RevoluteJoint
+from physics.raycast import RaycastResult, raycast_edge, raycast_polygon
 
 
 # Default simulation parameters
@@ -441,6 +443,12 @@ struct World:
             actual_fix_a_idx = fix_b_idx
             actual_fix_b_idx = fix_a_idx
 
+        # Polygon-Polygon
+        elif fix_a.shape_type == SHAPE_POLYGON and fix_b.shape_type == SHAPE_POLYGON:
+            manifold = collide_polygon_polygon(
+                fix_a.polygon, body_a.transform, fix_b.polygon, body_b.transform
+            )
+
         # If collision found, create or update contact
         if manifold.count > 0:
             # Set fixture indices
@@ -585,7 +593,106 @@ struct World:
                 result.append(self.contacts[i].manifold.fixture_a_idx)
         return result^
 
+    # ===== Raycast Methods =====
+
+    fn raycast(
+        self,
+        ray_start: Vec2,
+        ray_end: Vec2,
+        filter_mask: UInt16 = 0xFFFF,
+    ) -> RaycastResult:
+        """Cast ray against all fixtures and return closest hit.
+
+        Args:
+            ray_start: Ray origin in world space
+            ray_end: Ray end point in world space
+            filter_mask: Only test fixtures whose category matches this mask
+
+        Returns:
+            RaycastResult with closest hit info
+        """
+        var best_result = RaycastResult.no_hit()
+
+        for i in range(len(self.fixtures)):
+            var fix = self.fixtures[i].copy()
+
+            # Skip invalid fixtures
+            if fix.body_idx < 0 or fix.body_idx >= len(self.bodies):
+                continue
+
+            # Check filter - fixture category must match our mask
+            if (fix.filter.category_bits & filter_mask) == 0:
+                continue
+
+            var body = self.bodies[fix.body_idx].copy()
+            var result: RaycastResult
+
+            if fix.shape_type == SHAPE_EDGE:
+                result = raycast_edge(ray_start, ray_end, fix.edge, body.transform)
+            elif fix.shape_type == SHAPE_POLYGON:
+                result = raycast_polygon(ray_start, ray_end, fix.polygon, body.transform)
+            else:
+                # Skip circles for now (lidar doesn't need them)
+                continue
+
+            if result.hit and result.fraction < best_result.fraction:
+                best_result = result
+                best_result.fixture_idx = i
+
+        return best_result^
+
+    fn raycast_fixture_range(
+        self,
+        ray_start: Vec2,
+        ray_end: Vec2,
+        fixture_start: Int,
+        fixture_count: Int,
+    ) -> RaycastResult:
+        """Cast ray against a specific range of fixtures.
+
+        Useful for testing against terrain only (for lidar).
+
+        Args:
+            ray_start: Ray origin in world space
+            ray_end: Ray end point in world space
+            fixture_start: First fixture index to test
+            fixture_count: Number of fixtures to test
+
+        Returns:
+            RaycastResult with closest hit info
+        """
+        var best_result = RaycastResult.no_hit()
+
+        var end_idx = min_i64(fixture_start + fixture_count, len(self.fixtures))
+        for i in range(fixture_start, end_idx):
+            var fix = self.fixtures[i].copy()
+
+            # Skip invalid fixtures
+            if fix.body_idx < 0 or fix.body_idx >= len(self.bodies):
+                continue
+
+            var body = self.bodies[fix.body_idx].copy()
+            var result: RaycastResult
+
+            if fix.shape_type == SHAPE_EDGE:
+                result = raycast_edge(ray_start, ray_end, fix.edge, body.transform)
+            elif fix.shape_type == SHAPE_POLYGON:
+                result = raycast_polygon(ray_start, ray_end, fix.polygon, body.transform)
+            else:
+                continue
+
+            if result.hit and result.fraction < best_result.fraction:
+                best_result = result
+                best_result.fixture_idx = i
+
+        return best_result^
+
 
 fn max_f64(a: Float64, b: Float64) -> Float64:
     """Maximum of two floats."""
     return a if a > b else b
+
+
+fn min_i64(a: Int, b: Int) -> Int:
+    """Minimum of two integers."""
+    return a if a < b else b
