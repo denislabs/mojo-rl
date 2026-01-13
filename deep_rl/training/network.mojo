@@ -229,6 +229,58 @@ struct Network[
             grads_tensor,
         )
 
+    fn backward_input[
+        BATCH: Int
+    ](
+        mut self,
+        grad_output: InlineArray[Scalar[dtype], BATCH * Self.MODEL.OUT_DIM],
+        cache: InlineArray[Scalar[dtype], BATCH * Self.MODEL.CACHE_SIZE],
+    ) -> InlineArray[Scalar[dtype], BATCH * Self.MODEL.IN_DIM]:
+        """Backward pass that returns input gradients (for critic→actor chain).
+
+        Use this when you need to chain gradients from one network's output
+        to another network's input, such as in SAC/DDPG/TD3 actor updates
+        where we need dQ/da from the critic to update the actor.
+
+        Call zero_grads() before this if you want fresh gradients.
+
+        Args:
+            grad_output: Gradient of loss w.r.t. output [BATCH * OUT_DIM].
+            cache: Cache from forward_with_cache [BATCH * CACHE_SIZE].
+
+        Returns:
+            Gradient of loss w.r.t. input [BATCH * IN_DIM].
+        """
+        var grad_input = InlineArray[Scalar[dtype], BATCH * Self.MODEL.IN_DIM](
+            uninitialized=True
+        )
+
+        var grad_output_tensor = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+        ](grad_output.unsafe_ptr())
+        var grad_input_tensor = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
+        ](grad_input.unsafe_ptr())
+        var params_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
+        ](self.params.unsafe_ptr())
+        var cache_tensor = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE), MutAnyOrigin
+        ](cache.unsafe_ptr())
+        var grads_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
+        ](self.grads.unsafe_ptr())
+
+        self.model.backward[BATCH](
+            grad_output_tensor,
+            grad_input_tensor,
+            params_tensor,
+            cache_tensor,
+            grads_tensor,
+        )
+
+        return grad_input
+
     # =========================================================================
     # CPU Optimizer Step
     # =========================================================================
@@ -363,6 +415,48 @@ struct Network[
             cache_buf,
             grads_buf,
         )
+
+    fn backward_input_gpu[
+        BATCH: Int
+    ](
+        self,
+        ctx: DeviceContext,
+        grad_output_buf: DeviceBuffer[dtype],
+        params_buf: DeviceBuffer[dtype],
+        cache_buf: DeviceBuffer[dtype],
+        mut grads_buf: DeviceBuffer[dtype],
+    ) raises -> DeviceBuffer[dtype]:
+        """GPU backward pass that returns input gradients (for critic→actor chain).
+
+        Use this when you need to chain gradients from one network's output
+        to another network's input, such as in SAC/DDPG/TD3 actor updates
+        where we need dQ/da from the critic to update the actor.
+
+        Args:
+            ctx: GPU device context.
+            grad_output_buf: Gradient w.r.t. output [BATCH * OUT_DIM].
+            params_buf: Parameters buffer [PARAM_SIZE].
+            cache_buf: Cache from forward [BATCH * CACHE_SIZE].
+            grads_buf: Parameter gradients [PARAM_SIZE] (accumulated).
+
+        Returns:
+            DeviceBuffer containing gradient w.r.t. input [BATCH * IN_DIM].
+        """
+        # Allocate buffer for input gradients
+        var grad_input_buf = ctx.enqueue_create_buffer[dtype](
+            BATCH * Self.MODEL.IN_DIM
+        )
+
+        Self.MODEL.backward_gpu[BATCH](
+            ctx,
+            grad_input_buf,
+            grad_output_buf,
+            params_buf,
+            cache_buf,
+            grads_buf,
+        )
+
+        return grad_input_buf
 
     # =========================================================================
     # GPU Optimizer Step

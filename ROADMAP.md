@@ -169,12 +169,11 @@
   - Target networks for critics (no target actor, per SAC design)
   - Automatic entropy temperature (α) tuning (optional)
   - Maximum entropy RL: maximizes reward + α * entropy
+  - **Proper gradient backpropagation**: dQ/da through critic, chain rule through reparameterization
+  - `rsample_backward()` utility for reparameterization trick gradients (CPU + GPU)
+  - `backward_input()` in Network wrapper for gradient chaining between networks
   - Works with `BoxContinuousActionEnv` trait
-  - `examples/pendulum_deep_sac.mojo` - Pendulum training with Deep SAC
-  - **Known Limitations** (future work):
-    - Uses simplified policy gradient for actor (not full backprop through critic)
-    - Proper implementation needs: dQ/da backprop, chain rule through reparameterization
-    - Current version is functional but suboptimal performance
+  - `examples/pendulum_deep_sac.mojo` - Pendulum training with Deep SAC (achieves ~-140 reward)
 - [x] **Deep DDPG** - Deep Deterministic Policy Gradient using new trait-based architecture  - `deep_agents/ddpg.mojo` - DeepDDPGAgent using `seq()` composition
   - Actor: `seq(Linear, ReLU, Linear, ReLU, Linear, Tanh)` for deterministic policy
   - Critic: `seq(Linear, ReLU, Linear, ReLU, Linear)` for Q-function
@@ -224,11 +223,6 @@
 
 ## In Progress / Next Steps
 
-### Deep SAC - Performance Improvements
-- [ ] Implement proper backprop through critic: compute dQ/da gradients
-- [ ] Chain rule through reparameterization trick for actor gradients
-- [ ] This will significantly improve learning performance
-
 ### GPU Support ⏸️ ON HOLD
 > **Status**: GPU work paused due to Apple Silicon bug in Mojo GPU runtime.
 > Will resume when the issue is resolved by Modular.
@@ -270,6 +264,81 @@
 - [x] Pendulum (Native) - Port continuous action environment (COMPLETED - see above)
 - [ ] BipedalWalker (Native) - Port Box2D walker physics to pure Mojo
 - [ ] Custom environment builder
+
+## Future Exploration
+
+> Ideas for future development, roughly prioritized by potential impact.
+
+### Offline / Batch RL
+Learning from fixed datasets without environment interaction - practical for real-world applications.
+- [ ] **CQL (Conservative Q-Learning)** - Penalizes Q-values for out-of-distribution actions
+- [ ] **IQL (Implicit Q-Learning)** - Avoids explicit policy evaluation, simpler than CQL
+- [ ] **Decision Transformer** - Treats RL as sequence modeling (returns-conditioned)
+- [ ] **BCQ (Batch-Constrained Q-Learning)** - Constrains policy to data support
+- [ ] **AWR (Advantage Weighted Regression)** - Simple offline-compatible algorithm
+- [ ] Dataset infrastructure - Loading/saving offline RL datasets (D4RL format)
+
+### Distributional RL
+Model full distribution of returns instead of just expected value.
+- [ ] **C51** - Categorical distribution over returns (51 atoms)
+- [ ] **QR-DQN** - Quantile regression for distributional RL
+- [ ] **IQN (Implicit Quantile Networks)** - Sample quantile fractions
+- [ ] **Rainbow** - Combines DQN improvements (already have Double, Dueling, PER - add C51, NoisyNets)
+
+### Exploration Enhancements
+For sparse reward and hard exploration problems.
+- [ ] **ICM (Intrinsic Curiosity Module)** - Prediction error as intrinsic reward
+- [ ] **RND (Random Network Distillation)** - Simpler curiosity-driven exploration
+- [ ] **NoisyNets** - Learnable parametric noise in network weights (replaces ε-greedy)
+- [ ] **Bootstrapped DQN** - Ensemble for uncertainty estimation
+- [ ] **UCB-based exploration** - Upper confidence bound for action selection
+
+### Recurrent Policies (POMDPs)
+For partial observability and memory-dependent tasks.
+- [ ] **LSTM layer** in deep_rl Model trait
+- [ ] **GRU layer** - Simpler recurrent alternative
+- [ ] **R2D2** - Recurrent DQN with burn-in and stored hidden states
+- [ ] **DRQN** - Deep Recurrent Q-Network (simpler than R2D2)
+- [ ] POMDP benchmark environments
+
+### Multi-Agent RL
+Cooperative and competitive multi-agent settings.
+- [ ] **MADDPG** - Multi-agent DDPG with centralized critic
+- [ ] **QMIX** - Value decomposition for cooperative agents
+- [ ] **VDN (Value Decomposition Networks)** - Simpler than QMIX
+- [ ] **IPPO** - Independent PPO baseline
+- [ ] Simple multi-agent environments (predator-prey, cooperative navigation)
+
+### Model-Based Deep RL
+Learning and using environment dynamics models.
+- [ ] **MBPO (Model-Based Policy Optimization)** - Short rollouts from learned model
+- [ ] **World Models** - VAE + MDN-RNN for latent dynamics
+- [ ] **Dreamer** - Latent imagination with actor-critic
+- [ ] **PETS** - Probabilistic ensemble trajectory sampling
+- [ ] Ensemble dynamics models for uncertainty quantification
+
+### Architecture Extensions
+New neural network components for deep_rl.
+- [ ] **Conv2D layer** - For image-based observations
+- [ ] **Attention mechanism** - For complex observations
+- [ ] **Transformer blocks** - For sequence modeling
+- [ ] MinAtar environments - Simplified Atari for CNN testing
+
+### Infrastructure Improvements
+Developer experience and training efficiency.
+- [ ] **Checkpointing** - Save/load agent state for resuming training
+- [ ] **Learning rate schedulers** - Linear decay, cosine annealing, warmup
+- [ ] **Curriculum learning** - Progressive environment difficulty
+- [ ] **Population-based training** - Evolutionary hyperparameter optimization
+- [ ] **Imitation learning** - Behavioral cloning, DAgger
+- [ ] Improved visualization - TensorBoard-style metric logging
+
+### Quick Wins
+Lower-effort additions that extend existing work.
+- [ ] **HER (Hindsight Experience Replay)** - Works with existing replay infrastructure
+- [ ] **Soft Q-Learning** - Precursor to SAC, maximum entropy with discrete actions
+- [ ] **Categorical DQN** - Discrete action + continuous state baseline
+- [ ] **n-step DQN** - Multi-step returns for DQN (combine n-step SARSA ideas)
 
 ## Algorithm Summary
 

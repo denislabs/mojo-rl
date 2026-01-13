@@ -37,6 +37,8 @@ from deep_rl.constants import dtype, TILE, TPB
 from deep_rl.model import Linear, ReLU, seq, StochasticActor
 from deep_rl.model.stochastic_actor import (
     rsample,
+    rsample_with_cache,
+    rsample_backward,
     sample_action,
     get_deterministic_action,
 )
@@ -713,10 +715,22 @@ struct DeepSACAgent[
         self.critic2.update()
 
         # =====================================================================
-        # Phase 3: Update Actor
+        # Phase 3: Update Actor (with proper backpropagation through critic)
+        # =====================================================================
+        #
+        # SAC Actor Loss: J_π = E[α * log_π(a|s) - Q(s, a)]
+        # We want to minimize this (maximize Q and entropy).
+        #
+        # Proper gradient computation requires:
+        # 1. Forward actor → mean, log_std
+        # 2. rsample (reparameterization) → action, log_prob
+        # 3. Forward critic with (obs, action) → Q
+        # 4. Backward through critic → dQ/da (grad w.r.t. action)
+        # 5. rsample_backward → grad_mean, grad_log_std
+        # 6. Backward through actor network
         # =====================================================================
 
-        # Forward actor with cache to get new actions
+        # Step 1: Forward actor with cache to get mean and log_std
         var actor_output = InlineArray[
             Scalar[dtype], Self.BATCH * Self.ACTOR_OUT
         ](uninitialized=True)
@@ -759,7 +773,7 @@ struct DeepSACAgent[
                 curr_mean[b * Self.ACTIONS + a] = Scalar[dtype](mean_val)
                 curr_log_std[b * Self.ACTIONS + a] = Scalar[dtype](log_std_val)
 
-        # Sample actions with log_prob
+        # Step 2: Sample actions with rsample_with_cache (caches z for backward)
         var curr_noise = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
             uninitialized=True
         )
@@ -770,6 +784,9 @@ struct DeepSACAgent[
             Scalar[dtype], Self.BATCH * Self.ACTIONS
         ](uninitialized=True)
         var curr_log_probs = InlineArray[Scalar[dtype], Self.BATCH](
+            uninitialized=True
+        )
+        var z_cache = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
             uninitialized=True
         )
 
@@ -788,13 +805,17 @@ struct DeepSACAgent[
         var curr_log_prob_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
         ](curr_log_probs.unsafe_ptr())
+        var z_cache_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
+        ](z_cache.unsafe_ptr())
 
-        rsample[Self.BATCH, Self.ACTIONS](
+        rsample_with_cache[Self.BATCH, Self.ACTIONS](
             curr_mean_tensor,
             curr_log_std_tensor,
             curr_noise_tensor,
             curr_action_tensor,
             curr_log_prob_tensor,
+            z_cache_tensor,
         )
 
         # Guard against NaN/inf in log_probs
@@ -803,7 +824,7 @@ struct DeepSACAgent[
             if lp != lp or lp > 100.0 or lp < -100.0:
                 curr_log_probs[b] = Scalar[dtype](-1.0)
 
-        # Build critic input with new actions: (obs, new_action)
+        # Step 3: Build critic input with new actions: (obs, new_action)
         var new_critic_input = InlineArray[
             Scalar[dtype], Self.BATCH * Self.CRITIC_IN
         ](uninitialized=True)
@@ -817,90 +838,96 @@ struct DeepSACAgent[
                     b * Self.CRITIC_IN + Self.OBS + i
                 ] = curr_sampled_actions[b * Self.ACTIONS + i]
 
-        # Forward critic1 to get Q-values for actor update
+        # Step 4: Forward critic1 WITH CACHE for backward pass
         var q1_new = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
-        self.critic1.forward[Self.BATCH](new_critic_input, q1_new)
+        var actor_critic_cache = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.CRITIC_CACHE_SIZE
+        ](uninitialized=True)
+        self.critic1.forward_with_cache[Self.BATCH](
+            new_critic_input, q1_new, actor_critic_cache
+        )
 
-        # Actor loss: J_π = E[α * log_π(a|s) - Q(s, a)]
-        # We want to minimize this (maximize Q, maximize entropy)
-        #
-        # Using a simplified policy gradient approach:
-        # - Gradient for mean: proportional to (α - Q) * direction_to_improve
-        # - Gradient for log_std: encourage exploration when Q is low
-        #
-        # This is an approximation that avoids complex backprop through critic.
+        # Step 5: Backward through critic to get dQ/da
+        # Actor loss: J = E[-Q(s,a) + α * log_π(a|s)]
+        # So grad_Q = -1 (we want to maximize Q)
+        var grad_q = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
+        for b in range(Self.BATCH):
+            grad_q[b] = Scalar[dtype](-1.0 / Float64(Self.BATCH))  # Average over batch
 
+        # Backward through critic1 to get gradient w.r.t. its input (obs, action)
+        var grad_critic_input = self.critic1.backward_input[Self.BATCH](
+            grad_q, actor_critic_cache
+        )
+
+        # Extract grad_action from grad_critic_input (last ACTIONS elements per sample)
+        # critic_input layout: [obs (OBS) | action (ACTIONS)]
+        var grad_action = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.ACTIONS
+        ](uninitialized=True)
+        for b in range(Self.BATCH):
+            for a in range(Self.ACTIONS):
+                grad_action[b * Self.ACTIONS + a] = grad_critic_input[
+                    b * Self.CRITIC_IN + Self.OBS + a
+                ]
+
+        # Step 6: Compute grad_log_prob for entropy term
+        # Entropy contribution: α * log_π(a|s)
+        # We want to minimize this, so grad_log_prob = α / BATCH
+        var grad_log_prob = InlineArray[Scalar[dtype], Self.BATCH](
+            uninitialized=True
+        )
+        for b in range(Self.BATCH):
+            grad_log_prob[b] = Scalar[dtype](self.alpha / Float64(Self.BATCH))
+
+        # Step 7: Backward through reparameterization trick
+        var grad_mean = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.ACTIONS
+        ](uninitialized=True)
+        var grad_log_std = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.ACTIONS
+        ](uninitialized=True)
+
+        var grad_action_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
+        ](grad_action.unsafe_ptr())
+        var grad_log_prob_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
+        ](grad_log_prob.unsafe_ptr())
+        var grad_mean_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
+        ](grad_mean.unsafe_ptr())
+        var grad_log_std_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
+        ](grad_log_std.unsafe_ptr())
+
+        rsample_backward[Self.BATCH, Self.ACTIONS](
+            grad_action_tensor,
+            grad_log_prob_tensor,
+            curr_action_tensor,
+            curr_log_std_tensor,
+            curr_noise_tensor,
+            grad_mean_tensor,
+            grad_log_std_tensor,
+        )
+
+        # Step 8: Build actor gradient from grad_mean and grad_log_std
+        # Actor output layout: [mean (ACTIONS) | log_std (ACTIONS)]
         var actor_grad = InlineArray[
             Scalar[dtype], Self.BATCH * Self.ACTOR_OUT
         ](uninitialized=True)
 
-        # Initialize to zero
-        for i in range(Self.BATCH * Self.ACTOR_OUT):
-            actor_grad[i] = Scalar[dtype](0.0)
-
-        # Compute mean Q and log_prob for normalization
-        var mean_q: Float64 = 0.0
-        var mean_log_prob: Float64 = 0.0
         for b in range(Self.BATCH):
-            mean_q += Float64(q1_new[b])
-            mean_log_prob += Float64(curr_log_probs[b])
-        mean_q /= Float64(Self.BATCH)
-        mean_log_prob /= Float64(Self.BATCH)
-
-        # For each sample, compute gradient contribution
-        for b in range(Self.BATCH):
-            var log_prob = Float64(curr_log_probs[b])
-            var q_val = Float64(q1_new[b])
-
-            # Advantage: how much better is this Q than average?
-            var advantage = q_val - mean_q
-
-            # Normalize advantage for stability
-            var adv_scale = 1.0 / (abs(advantage) + 1.0)
-
             for a in range(Self.ACTIONS):
-                var action_val = Float64(
-                    curr_sampled_actions[b * Self.ACTIONS + a]
-                )
-                var mean_val = Float64(curr_mean[b * Self.ACTIONS + a])
-                var log_std_val = Float64(curr_log_std[b * Self.ACTIONS + a])
-                var std = exp(log_std_val)
+                # Mean gradient
+                actor_grad[b * Self.ACTOR_OUT + a] = grad_mean[
+                    b * Self.ACTIONS + a
+                ]
+                # Log_std gradient
+                actor_grad[b * Self.ACTOR_OUT + Self.ACTIONS + a] = grad_log_std[
+                    b * Self.ACTIONS + a
+                ]
 
-                # Mean gradient: move mean towards actions with high Q
-                # Using policy gradient: gradient = advantage * (action - mean) / std^2
-                var mean_grad = (
-                    advantage
-                    * adv_scale
-                    * (action_val - mean_val)
-                    / (std * std + 0.01)
-                )
-
-                # Add entropy gradient: encourage higher entropy when alpha is high
-                # d(log_prob)/d(mean) ≈ -(action - mean) / std^2
-                var entropy_grad = (
-                    -self.alpha * (action_val - mean_val) / (std * std + 0.01)
-                )
-
-                # Combined: we want to maximize Q and maximize entropy
-                # So we DESCEND on: -Q_grad + alpha * entropy_loss_grad
-                actor_grad[b * Self.ACTOR_OUT + a] = Scalar[dtype](
-                    (-mean_grad + entropy_grad * 0.1) / Float64(Self.BATCH)
-                )
-
-                # Log_std gradient:
-                # - Higher log_std = higher entropy (good for exploration)
-                # - d(entropy)/d(log_std) = 1 (approximately, for Gaussian)
-                # - But we need to balance with Q-value
-                var log_std_grad = -self.alpha * 0.1  # Encourage exploration
-                if advantage < 0:
-                    # If this action was bad, increase exploration
-                    log_std_grad += 0.01
-
-                actor_grad[b * Self.ACTOR_OUT + Self.ACTIONS + a] = Scalar[
-                    dtype
-                ](log_std_grad / Float64(Self.BATCH))
-
-        # Backward pass for actor
+        # Step 9: Backward pass through actor network
         var actor_grad_input = InlineArray[
             Scalar[dtype], Self.BATCH * Self.OBS
         ](uninitialized=True)
