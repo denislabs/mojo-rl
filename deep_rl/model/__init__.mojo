@@ -7,3 +7,10 @@ from .sigmoid import Sigmoid
 from .softmax import Softmax
 from .layer_norm import LayerNorm
 from .dropout import Dropout
+from .stochastic_actor import (
+    StochasticActor,
+    rsample,
+    sample_action,
+    compute_log_prob,
+    get_deterministic_action,
+)

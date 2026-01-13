@@ -121,28 +121,28 @@ struct LayerNorm[dim: Int](Model):
 
         for batch in range(BATCH):
             # Compute mean
-            var mean = rebind[Scalar[dtype]](input[batch, 0])
+            var mean = input[batch, 0]
             for i in range(1, Self.dim):
-                mean = mean + rebind[Scalar[dtype]](input[batch, i])
+                mean = mean + input[batch, i]
             mean = mean / n
 
             # Compute variance
-            var diff0 = rebind[Scalar[dtype]](input[batch, 0]) - mean
+            var diff0 = input[batch, 0] - mean
             var var_ = diff0 * diff0
             for i in range(1, Self.dim):
-                var diff = rebind[Scalar[dtype]](input[batch, i]) - mean
+                var diff = input[batch, i] - mean
                 var_ = var_ + diff * diff
             var_ = var_ / n
 
             # Compute inv_std
-            var inv_std = Scalar[dtype](1.0 / sqrt(Float64(var_ + eps)))
+            var inv_std: output.element_type = 1.0 / sqrt(var_ + eps)
 
             # Normalize and apply affine transform
             for i in range(Self.dim):
-                var x_val = rebind[Scalar[dtype]](input[batch, i])
+                var x_val = input[batch, i]
                 var normalized = (x_val - mean) * inv_std
-                var gamma = rebind[Scalar[dtype]](params[i])
-                var beta = rebind[Scalar[dtype]](params[Self.dim + i])
+                var gamma = params[i]
+                var beta = params[Self.dim + i]
                 output[batch, i] = gamma * normalized + beta
 
     fn backward[
@@ -177,39 +177,41 @@ struct LayerNorm[dim: Int](Model):
         # First, accumulate parameter gradients across batch
         for batch in range(BATCH):
             for i in range(Self.dim):
-                var normalized = rebind[Scalar[dtype]](cache[batch, i])
-                var dy = rebind[Scalar[dtype]](grad_output[batch, i])
+                var normalized = cache[batch, i]
+                var dy = grad_output[batch, i]
 
                 # dgamma += dy * normalized
-                var old_dgamma = rebind[Scalar[dtype]](grads[i])
+                var old_dgamma = grads[i]
                 grads[i] = old_dgamma + dy * normalized
                 # dbeta += dy
-                var old_dbeta = rebind[Scalar[dtype]](grads[Self.dim + i])
+                var old_dbeta = grads[Self.dim + i]
                 grads[Self.dim + i] = old_dbeta + dy
 
         # Then compute input gradients
         for batch in range(BATCH):
-            var inv_std = rebind[Scalar[dtype]](cache[batch, Self.dim])
+            var inv_std = cache[batch, Self.dim]
 
             # Compute intermediate values for this sample
-            var sum_dy_gamma: Scalar[dtype] = 0.0
-            var sum_dy_gamma_norm: Scalar[dtype] = 0.0
+            var sum_dy_gamma: grad_output.element_type = 0.0
+            var sum_dy_gamma_norm: grad_output.element_type = 0.0
 
             for i in range(Self.dim):
-                var gamma = rebind[Scalar[dtype]](params[i])
-                var dy = rebind[Scalar[dtype]](grad_output[batch, i])
-                var normalized = rebind[Scalar[dtype]](cache[batch, i])
+                var gamma = params[i]
+                var dy = grad_output[batch, i]
+                var normalized = cache[batch, i]
                 sum_dy_gamma = sum_dy_gamma + dy * gamma
                 sum_dy_gamma_norm = sum_dy_gamma_norm + dy * gamma * normalized
 
             # Compute input gradients
             for i in range(Self.dim):
-                var gamma = rebind[Scalar[dtype]](params[i])
-                var dy = rebind[Scalar[dtype]](grad_output[batch, i])
-                var normalized = rebind[Scalar[dtype]](cache[batch, i])
+                var gamma = params[i]
+                var dy = grad_output[batch, i]
+                var normalized = cache[batch, i]
 
                 var dx = inv_std * (
-                    dy * gamma - sum_dy_gamma / n - normalized * sum_dy_gamma_norm / n
+                    dy * gamma
+                    - sum_dy_gamma / n
+                    - normalized * sum_dy_gamma_norm / n
                 )
                 grad_input[batch, i] = dx
 
@@ -232,7 +234,9 @@ struct LayerNorm[dim: Int](Model):
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
         ],
-        params: LayoutTensor[dtype, Layout.row_major(2 * Self.dim), ImmutAnyOrigin],
+        params: LayoutTensor[
+            dtype, Layout.row_major(2 * Self.dim), ImmutAnyOrigin
+        ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim + 2), MutAnyOrigin
         ],
@@ -253,30 +257,30 @@ struct LayerNorm[dim: Int](Model):
         var n = Scalar[dtype](Self.dim)
 
         # Compute mean
-        var mean: Scalar[dtype] = 0.0
+        var mean: output.element_type = 0.0
         for i in range(Self.dim):
-            var val = rebind[Scalar[dtype]](input[batch_idx, i])
+            var val = input[batch_idx, i]
             mean = mean + val
         mean = mean / n
 
         # Compute variance
-        var var_: Scalar[dtype] = 0.0
+        var var_: output.element_type = 0.0
         for i in range(Self.dim):
-            var val = rebind[Scalar[dtype]](input[batch_idx, i])
+            var val = input[batch_idx, i]
             var diff = val - mean
             var_ = var_ + diff * diff
         var_ = var_ / n
 
         # Compute inv_std
-        var inv_std = Scalar[dtype](1.0 / sqrt(Float64(var_ + eps)))
+        var inv_std: output.element_type = 1.0 / sqrt(var_ + eps)
 
         # Normalize and apply affine transform
         for i in range(Self.dim):
-            var val = rebind[Scalar[dtype]](input[batch_idx, i])
+            var val = input[batch_idx, i]
             var normalized = (val - mean) * inv_std
             cache[batch_idx, i] = normalized
-            var gamma = rebind[Scalar[dtype]](params[i])
-            var beta = rebind[Scalar[dtype]](params[Self.dim + i])
+            var gamma = params[i]
+            var beta = params[Self.dim + i]
             output[batch_idx, i] = gamma * normalized + beta
 
         cache[batch_idx, Self.dim] = inv_std
@@ -293,7 +297,9 @@ struct LayerNorm[dim: Int](Model):
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
         ],
-        params: LayoutTensor[dtype, Layout.row_major(2 * Self.dim), ImmutAnyOrigin],
+        params: LayoutTensor[
+            dtype, Layout.row_major(2 * Self.dim), ImmutAnyOrigin
+        ],
         eps: Scalar[dtype],
     ):
         """Forward pass kernel without caching.
@@ -311,29 +317,29 @@ struct LayerNorm[dim: Int](Model):
         var n = Scalar[dtype](Self.dim)
 
         # Compute mean
-        var mean: Scalar[dtype] = 0.0
+        var mean: output.element_type = 0.0
         for i in range(Self.dim):
-            var val = rebind[Scalar[dtype]](input[batch_idx, i])
+            var val = input[batch_idx, i]
             mean = mean + val
         mean = mean / n
 
         # Compute variance
-        var var_: Scalar[dtype] = 0.0
+        var var_: output.element_type = 0.0
         for i in range(Self.dim):
-            var val = rebind[Scalar[dtype]](input[batch_idx, i])
+            var val = input[batch_idx, i]
             var diff = val - mean
             var_ = var_ + diff * diff
         var_ = var_ / n
 
         # Compute inv_std
-        var inv_std = Scalar[dtype](1.0 / sqrt(Float64(var_ + eps)))
+        var inv_std: output.element_type = 1.0 / sqrt(var_ + eps)
 
         # Normalize and apply affine transform
         for i in range(Self.dim):
-            var val = rebind[Scalar[dtype]](input[batch_idx, i])
+            var val = input[batch_idx, i]
             var normalized = (val - mean) * inv_std
-            var gamma = rebind[Scalar[dtype]](params[i])
-            var beta = rebind[Scalar[dtype]](params[Self.dim + i])
+            var gamma = params[i]
+            var beta = params[Self.dim + i]
             output[batch_idx, i] = gamma * normalized + beta
 
     @always_inline
@@ -347,11 +353,15 @@ struct LayerNorm[dim: Int](Model):
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
         ],
-        params: LayoutTensor[dtype, Layout.row_major(2 * Self.dim), ImmutAnyOrigin],
+        params: LayoutTensor[
+            dtype, Layout.row_major(2 * Self.dim), ImmutAnyOrigin
+        ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim + 2), ImmutAnyOrigin
         ],
-        grads: LayoutTensor[dtype, Layout.row_major(2 * Self.dim), MutAnyOrigin],
+        grads: LayoutTensor[
+            dtype, Layout.row_major(2 * Self.dim), MutAnyOrigin
+        ],
     ):
         """Backward pass kernel.
 
@@ -368,28 +378,30 @@ struct LayerNorm[dim: Int](Model):
         if thread_idx.x != 0:
             return
 
-        var inv_std = rebind[Scalar[dtype]](cache[batch_idx, Self.dim])
+        var inv_std = cache[batch_idx, Self.dim]
         var n = Scalar[dtype](Self.dim)
 
         # Compute intermediate sums
-        var sum_dy_gamma: Scalar[dtype] = 0.0
-        var sum_dy_gamma_norm: Scalar[dtype] = 0.0
+        var sum_dy_gamma: grad_output.element_type = 0.0
+        var sum_dy_gamma_norm: grad_output.element_type = 0.0
 
         for i in range(Self.dim):
-            var gamma = rebind[Scalar[dtype]](params[i])
-            var dy = rebind[Scalar[dtype]](grad_output[batch_idx, i])
-            var normalized = rebind[Scalar[dtype]](cache[batch_idx, i])
+            var gamma = params[i]
+            var dy = grad_output[batch_idx, i]
+            var normalized = cache[batch_idx, i]
             sum_dy_gamma = sum_dy_gamma + dy * gamma
             sum_dy_gamma_norm = sum_dy_gamma_norm + dy * gamma * normalized
 
         # Compute input gradients
         for i in range(Self.dim):
-            var gamma = rebind[Scalar[dtype]](params[i])
-            var dy = rebind[Scalar[dtype]](grad_output[batch_idx, i])
-            var normalized = rebind[Scalar[dtype]](cache[batch_idx, i])
+            var gamma = params[i]
+            var dy = grad_output[batch_idx, i]
+            var normalized = cache[batch_idx, i]
 
             var dx = inv_std * (
-                dy * gamma - sum_dy_gamma / n - normalized * sum_dy_gamma_norm / n
+                dy * gamma
+                - sum_dy_gamma / n
+                - normalized * sum_dy_gamma_norm / n
             )
             grad_input[batch_idx, i] = dx
 
@@ -408,7 +420,9 @@ struct LayerNorm[dim: Int](Model):
         cache_buf: DeviceBuffer[dtype],
     ) raises:
         """Launch forward pass on GPU with caching (trait-compatible)."""
-        Self._forward_gpu_impl[BATCH](ctx, output_buf, input_buf, params_buf, cache_buf, 1e-5)
+        Self._forward_gpu_impl[BATCH](
+            ctx, output_buf, input_buf, params_buf, cache_buf, 1e-5
+        )
 
     @staticmethod
     fn _forward_gpu_impl[
@@ -474,7 +488,9 @@ struct LayerNorm[dim: Int](Model):
         params_buf: DeviceBuffer[dtype],
     ) raises:
         """Launch forward pass on GPU without caching (trait-compatible)."""
-        Self._forward_gpu_no_cache_impl[BATCH](ctx, output_buf, input_buf, params_buf, 1e-5)
+        Self._forward_gpu_no_cache_impl[BATCH](
+            ctx, output_buf, input_buf, params_buf, 1e-5
+        )
 
     @staticmethod
     fn _forward_gpu_no_cache_impl[

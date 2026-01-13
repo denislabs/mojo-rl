@@ -9,6 +9,11 @@ from .model import (
     Softmax,
     LayerNorm,
     Dropout,
+    StochasticActor,
+    rsample,
+    sample_action,
+    compute_log_prob,
+    get_deterministic_action,
 )
 from .loss import LossFunction, MSELoss, HuberLoss, CrossEntropyLoss
 from .optimizer import Optimizer, SGD, Adam, RMSprop, AdamW

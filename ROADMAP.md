@@ -118,16 +118,33 @@
   - `deep_rl/model/linear.mojo` - `Linear[in_dim, out_dim]` with tiled matmul GPU kernels
   - `deep_rl/model/relu.mojo` - `ReLU[dim]` activation layer
   - `deep_rl/model/tanh.mojo` - `Tanh[dim]` activation layer
+  - `deep_rl/model/sigmoid.mojo` - `Sigmoid[dim]` activation layer
+  - `deep_rl/model/softmax.mojo` - `Softmax[dim]` activation layer (for policy networks)
+  - `deep_rl/model/layer_norm.mojo` - `LayerNorm[dim]` layer normalization
+  - `deep_rl/model/dropout.mojo` - `Dropout[dim, p, training]` regularization (compile-time training flag)
   - `deep_rl/model/sequential.mojo` - `Seq2[L0, L1]` composition + `seq()` helpers (up to 8 layers)
 - [x] **Optimizer Trait** - Pluggable parameter update rules
   - `deep_rl/optimizer/optimizer.mojo` - Base `Optimizer` trait with `step()`, `step_gpu()`
   - `deep_rl/optimizer/sgd.mojo` - `SGD` optimizer
   - `deep_rl/optimizer/adam.mojo` - `Adam` optimizer with bias correction
+  - `deep_rl/optimizer/rmsprop.mojo` - `RMSprop` optimizer with adaptive learning rates
+  - `deep_rl/optimizer/adamw.mojo` - `AdamW` optimizer with decoupled weight decay
 - [x] **Loss Function Trait** - Pluggable loss computation
   - `deep_rl/loss/loss.mojo` - Base `LossFunction` trait
   - `deep_rl/loss/mse.mojo` - `MSELoss` with block reduction for GPU
+  - `deep_rl/loss/huber.mojo` - `HuberLoss` (Smooth L1) for DQN variants
+  - `deep_rl/loss/cross_entropy.mojo` - `CrossEntropyLoss` for classification/policy gradients
 - [x] **Initializer Trait** - Pluggable weight initialization
   - `deep_rl/initializer/initializers.mojo` - Xavier, Kaiming, LeCun, Zeros, Ones, Uniform, Normal
+- [x] **Stochastic Actor** - Gaussian policy network for SAC/PPO
+  - `deep_rl/model/stochastic_actor.mojo` - `StochasticActor[in_dim, action_dim]` with learned mean and log_std
+  - Two linear heads: mean_head and log_std_head with shared input
+  - log_std clamping to [-20, 2] for numerical stability
+  - Utility functions: `rsample()`, `sample_action()`, `compute_log_prob()`, `get_deterministic_action()`
+  - Reparameterization trick: action = tanh(mean + exp(log_std) * noise)
+  - Log probability with tanh squashing correction
+  - GPU kernels with tiled matmul for both heads
+  - Compatible with `seq()` composition for backbone networks
 - [x] **Training Utilities** - High-level training management
   - `deep_rl/training/trainer.mojo` - `Trainer[MODEL, OPTIMIZER, LOSS, INITIALIZER]`
   - Manages params, grads, optimizer state externally
@@ -170,22 +187,6 @@
 
 ## In Progress / Next Steps
 
-### Deep RL Architecture - Enhancements
-- [ ] **Additional Layers** - Extend the Model trait ecosystem
-  - [ ] `Sigmoid[dim]` - Sigmoid activation layer
-  - [ ] `Softmax[dim]` - Softmax activation layer (for policy networks)
-  - [ ] `LayerNorm[dim]` - Layer normalization
-  - [ ] `Dropout[dim]` - Dropout regularization (training mode flag)
-- [ ] **Additional Optimizers**
-  - [ ] `RMSprop` - RMSprop optimizer
-  - [ ] `AdamW` - Adam with weight decay
-- [ ] **Additional Loss Functions**
-  - [ ] `HuberLoss` - Smooth L1 loss (for DQN variants)
-  - [ ] `CrossEntropyLoss` - For classification/policy gradients
-- [ ] **Stochastic Actor** - Gaussian policy network for SAC/PPO
-  - [ ] `StochasticActor` using seq() with learned mean and log_std
-  - [ ] Reparameterization trick for backprop through sampling
-
 ### Deep RL Agents - Migration to New Architecture
 > **Goal**: Port all legacy agents from `deep_agents/cpu/` to use the new trait-based architecture like `dqn.mojo`.
 - [ ] **Deep DDPG** - Migrate to new architecture
@@ -199,7 +200,7 @@
 - [ ] **Deep SAC** - Migrate to new architecture
   - Port `deep_agents/cpu/sac.mojo` to use `seq()`, `Adam`, `Kaiming`
   - Move to `deep_agents/sac.mojo` (root level)
-  - Requires StochasticActor implementation first
+  - StochasticActor now available in `deep_rl/model/stochastic_actor.mojo`
 - [ ] **Deep Dueling DQN** - Migrate to new architecture
   - Port `deep_agents/cpu/dueling_dqn.mojo` to use `seq()`, `Adam`, `Kaiming`
   - Move to `deep_agents/dueling_dqn.mojo` (root level)
@@ -298,9 +299,9 @@
 The new architecture follows a **stateless, trait-based design** similar to PyTorch:
 
 ```
-Model Trait          → Linear, ReLU, Tanh, Sequential (seq())
-Optimizer Trait      → SGD, Adam
-LossFunction Trait   → MSELoss
+Model Trait          → Linear, ReLU, Tanh, Sigmoid, Softmax, LayerNorm, Dropout, StochasticActor, Sequential (seq())
+Optimizer Trait      → SGD, Adam, RMSprop, AdamW
+LossFunction Trait   → MSELoss, HuberLoss, CrossEntropyLoss
 Initializer Trait    → Xavier, Kaiming, LeCun, etc.
 ```
 
