@@ -15,3 +15,4 @@ from .gpu import A2CAgent as GPUA2CAgent
 
 # New architecture agents (use Network wrapper, support both CPU and GPU)
 from .dqn import DQNAgent
+from .ddpg import DeepDDPGAgent

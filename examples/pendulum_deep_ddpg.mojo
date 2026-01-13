@@ -3,11 +3,16 @@
 This demonstrates using the DeepDDPGAgent's train() and evaluate()
 functions for easy training on continuous control environments.
 
+Uses the new trait-based architecture with:
+- seq() composition for network building
+- Network wrapper for parameter management
+- Tanh-bounded deterministic policy
+
 Run with:
-    pixi run mojo run examples/deep_ddpg_pendulum.mojo
+    pixi run mojo run examples/pendulum_deep_ddpg.mojo
 """
 
-from deep_agents.cpu import DeepDDPGAgent
+from deep_agents.ddpg import DeepDDPGAgent
 from envs.pendulum import PendulumEnv
 
 
