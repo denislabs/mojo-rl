@@ -2339,7 +2339,7 @@ struct A2CAgent[
             comptime env_threads = TPB
 
             # Reset environments using composable reset_all_kernel
-            ctx.enqueue_function_checked[
+            ctx.enqueue_function[
                 reset_all_kernel[EnvType, NUM_ENVS],
                 reset_all_kernel[EnvType, NUM_ENVS],
             ](
@@ -2411,7 +2411,7 @@ struct A2CAgent[
                 @parameter
                 if USE_TILED_KERNELS:
                     # Use tiled 2D kernel for large HIDDEN_DIM
-                    ctx.enqueue_function_checked[
+                    ctx.enqueue_function[
                         fused_rollout_kernel_2d_tiled[
                             EnvType,
                             NUM_ENVS,
@@ -2449,7 +2449,7 @@ struct A2CAgent[
                     )
                 elif USE_2D_KERNELS:
                     # Use optimized 2D kernel with shared memory reductions
-                    ctx.enqueue_function_checked[
+                    ctx.enqueue_function[
                         fused_rollout_kernel_2d[
                             EnvType,
                             NUM_ENVS,
@@ -2484,7 +2484,7 @@ struct A2CAgent[
                     )
                 else:
                     # Use original 1D kernel
-                    ctx.enqueue_function_checked[
+                    ctx.enqueue_function[
                         fused_rollout_kernel[
                             EnvType, NUM_ENVS, Self.HIDDEN_DIM, ROLLOUT_LEN
                         ],
@@ -2522,7 +2522,7 @@ struct A2CAgent[
                     ImmutAnyOrigin,
                 ](rollout_dones_buf)
 
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     track_episodes_kernel[NUM_ENVS, ROLLOUT_LEN],
                     track_episodes_kernel[NUM_ENVS, ROLLOUT_LEN],
                 ](
@@ -2536,7 +2536,7 @@ struct A2CAgent[
                 )
 
                 # Phase 2: Compute GAE
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     get_values_kernel[EnvType, NUM_ENVS, Self.HIDDEN_DIM],
                     get_values_kernel[EnvType, NUM_ENVS, Self.HIDDEN_DIM],
                 ](
@@ -2559,7 +2559,7 @@ struct A2CAgent[
                     dtype, Layout.row_major(NUM_ENVS, 1), ImmutAnyOrigin
                 ](bootstrap_values_buf)
 
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     compute_gae_kernel[NUM_ENVS, ROLLOUT_LEN],
                     compute_gae_kernel[NUM_ENVS, ROLLOUT_LEN],
                 ](
@@ -2607,7 +2607,7 @@ struct A2CAgent[
                 @parameter
                 if USE_TILED_KERNELS:
                     # Use tiled 2D kernel for large HIDDEN_DIM
-                    ctx.enqueue_function_checked[
+                    ctx.enqueue_function[
                         policy_gradient_kernel_2d_tiled[
                             EnvType,
                             NUM_ENVS,
@@ -2649,7 +2649,7 @@ struct A2CAgent[
                     )
                 elif USE_2D_KERNELS:
                     # Use optimized 2D kernel with shared memory
-                    ctx.enqueue_function_checked[
+                    ctx.enqueue_function[
                         policy_gradient_kernel_2d[
                             EnvType,
                             NUM_ENVS,
@@ -2688,7 +2688,7 @@ struct A2CAgent[
                     )
                 else:
                     # Use original 1D kernel
-                    ctx.enqueue_function_checked[
+                    ctx.enqueue_function[
                         policy_gradient_kernel[
                             EnvType, NUM_ENVS, Self.HIDDEN_DIM, ROLLOUT_LEN
                         ],
@@ -2774,7 +2774,7 @@ struct A2CAgent[
                 comptime blocks_b_critic = (B_CRITIC_SIZE + TPB - 1) // TPB
 
                 # Reduce all gradients using parameterized kernel
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     reduce_kernel[W1_SIZE, NUM_ENVS],
                     reduce_kernel[W1_SIZE, NUM_ENVS],
                 ](
@@ -2783,7 +2783,7 @@ struct A2CAgent[
                     grid_dim=(blocks_W1,),
                     block_dim=(TPB,),
                 )
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     reduce_kernel[B1_SIZE, NUM_ENVS],
                     reduce_kernel[B1_SIZE, NUM_ENVS],
                 ](
@@ -2792,7 +2792,7 @@ struct A2CAgent[
                     grid_dim=(blocks_b1,),
                     block_dim=(TPB,),
                 )
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     reduce_kernel[W_ACTOR_SIZE, NUM_ENVS],
                     reduce_kernel[W_ACTOR_SIZE, NUM_ENVS],
                 ](
@@ -2801,7 +2801,7 @@ struct A2CAgent[
                     grid_dim=(blocks_W_actor,),
                     block_dim=(TPB,),
                 )
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     reduce_kernel[B_ACTOR_SIZE, NUM_ENVS],
                     reduce_kernel[B_ACTOR_SIZE, NUM_ENVS],
                 ](
@@ -2810,7 +2810,7 @@ struct A2CAgent[
                     grid_dim=(blocks_b_actor,),
                     block_dim=(TPB,),
                 )
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     reduce_kernel[W_CRITIC_SIZE, NUM_ENVS],
                     reduce_kernel[W_CRITIC_SIZE, NUM_ENVS],
                 ](
@@ -2819,7 +2819,7 @@ struct A2CAgent[
                     grid_dim=(blocks_W_critic,),
                     block_dim=(TPB,),
                 )
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     reduce_kernel[B_CRITIC_SIZE, NUM_ENVS],
                     reduce_kernel[B_CRITIC_SIZE, NUM_ENVS],
                 ](
@@ -2840,7 +2840,7 @@ struct A2CAgent[
                 var bias_correction2 = Scalar[dtype](1) - beta2_t
 
                 # Adam update all parameters using parameterized kernel
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     adam_kernel[W1_SIZE], adam_kernel[W1_SIZE]
                 ](
                     W1_mut,
@@ -2856,7 +2856,7 @@ struct A2CAgent[
                     grid_dim=(blocks_W1,),
                     block_dim=(TPB,),
                 )
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     adam_kernel[B1_SIZE], adam_kernel[B1_SIZE]
                 ](
                     b1_mut,
@@ -2872,7 +2872,7 @@ struct A2CAgent[
                     grid_dim=(blocks_b1,),
                     block_dim=(TPB,),
                 )
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     adam_kernel[W_ACTOR_SIZE], adam_kernel[W_ACTOR_SIZE]
                 ](
                     W_actor_mut,
@@ -2888,7 +2888,7 @@ struct A2CAgent[
                     grid_dim=(blocks_W_actor,),
                     block_dim=(TPB,),
                 )
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     adam_kernel[B_ACTOR_SIZE], adam_kernel[B_ACTOR_SIZE]
                 ](
                     b_actor_mut,
@@ -2904,7 +2904,7 @@ struct A2CAgent[
                     grid_dim=(blocks_b_actor,),
                     block_dim=(TPB,),
                 )
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     adam_kernel[W_CRITIC_SIZE], adam_kernel[W_CRITIC_SIZE]
                 ](
                     W_critic_mut,
@@ -2920,7 +2920,7 @@ struct A2CAgent[
                     grid_dim=(blocks_W_critic,),
                     block_dim=(TPB,),
                 )
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     adam_kernel[B_CRITIC_SIZE], adam_kernel[B_CRITIC_SIZE]
                 ](
                     b_critic_mut,

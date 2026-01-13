@@ -46,7 +46,9 @@ fn xorshift32(state: Scalar[DType.uint32]) -> Scalar[DType.uint32]:
 
 fn random_uniform(state: Scalar[DType.uint32]) -> Scalar[DType.float32]:
     """Convert random uint32 to uniform [0, 1) float."""
-    return Scalar[DType.float32](state) / Scalar[DType.float32](Scalar[DType.uint32].MAX)
+    return Scalar[DType.float32](state) / Scalar[DType.float32](
+        Scalar[DType.uint32].MAX
+    )
 
 
 # =============================================================================
@@ -56,17 +58,25 @@ fn random_uniform(state: Scalar[DType.uint32]) -> Scalar[DType.float32]:
 
 fn bandit_multistep_kernel[
     dtype: DType,
-    NUM_BANDITS: Int,    # Number of parallel bandit instances
-    NUM_ARMS: Int,       # K in K-armed bandit
+    NUM_BANDITS: Int,  # Number of parallel bandit instances
+    NUM_ARMS: Int,  # K in K-armed bandit
     STEPS_PER_KERNEL: Int,  # Number of steps to run per kernel launch
-    TPB: Int,            # Threads per block
+    TPB: Int,  # Threads per block
 ](
     # Bandit state (mutable)
-    preferences: LayoutTensor[dtype, Layout.row_major(NUM_BANDITS * NUM_ARMS), MutAnyOrigin],
+    preferences: LayoutTensor[
+        dtype, Layout.row_major(NUM_BANDITS * NUM_ARMS), MutAnyOrigin
+    ],
     baseline: LayoutTensor[dtype, Layout.row_major(NUM_BANDITS), MutAnyOrigin],
-    total_reward: LayoutTensor[dtype, Layout.row_major(NUM_BANDITS), MutAnyOrigin],
-    rng_state: LayoutTensor[DType.uint32, Layout.row_major(NUM_BANDITS), MutAnyOrigin],
-    step_count: LayoutTensor[DType.int32, Layout.row_major(NUM_BANDITS), MutAnyOrigin],
+    total_reward: LayoutTensor[
+        dtype, Layout.row_major(NUM_BANDITS), MutAnyOrigin
+    ],
+    rng_state: LayoutTensor[
+        DType.uint32, Layout.row_major(NUM_BANDITS), MutAnyOrigin
+    ],
+    step_count: LayoutTensor[
+        DType.int32, Layout.row_major(NUM_BANDITS), MutAnyOrigin
+    ],
     # Arm probabilities (immutable) - the "true" reward probabilities
     arm_probs: LayoutTensor[dtype, Layout.row_major(NUM_ARMS), ImmutAnyOrigin],
     # Hyperparameters
@@ -144,7 +154,9 @@ fn bandit_multistep_kernel[
         rng = xorshift32(rng)
         var reward_sample = random_uniform(rng)
         var arm_prob = rebind[Scalar[dtype]](arm_probs[action])
-        var reward = Scalar[dtype](1.0) if Scalar[dtype](reward_sample) < arm_prob else Scalar[dtype](0.0)
+        var reward = Scalar[dtype](1.0) if Scalar[dtype](
+            reward_sample
+        ) < arm_prob else Scalar[dtype](0.0)
 
         # =================================================================
         # Step 4: Update baseline (incremental mean)
@@ -186,7 +198,9 @@ fn bandit_multistep_kernel[
 # =============================================================================
 
 
-fn cpu_bandit_step[NUM_ARMS: Int](
+fn cpu_bandit_step[
+    NUM_ARMS: Int
+](
     mut preferences: List[Float32],
     mut baseline: Float32,
     mut total_reward: Float32,
@@ -222,7 +236,9 @@ fn cpu_bandit_step[NUM_ARMS: Int](
             cumsum += pi[a]
 
     # Sample reward
-    var reward: Float32 = Float32(1.0) if Float32(random_float64()) < arm_probs[action] else Float32(0.0)
+    var reward: Float32 = Float32(1.0) if Float32(random_float64()) < arm_probs[
+        action
+    ] else Float32(0.0)
 
     # Update baseline
     var n = Float32(step_count + 1)
@@ -245,7 +261,9 @@ fn cpu_bandit_step[NUM_ARMS: Int](
 # =============================================================================
 
 
-fn benchmark_gpu[NUM_BANDITS: Int, NUM_ARMS: Int, STEPS_PER_KERNEL: Int = 100](
+fn benchmark_gpu[
+    NUM_BANDITS: Int, NUM_ARMS: Int, STEPS_PER_KERNEL: Int = 100
+](
     ctx: DeviceContext,
     num_steps: Int,
     arm_probs_cpu: List[Float32],
@@ -285,24 +303,44 @@ fn benchmark_gpu[NUM_BANDITS: Int, NUM_ARMS: Int, STEPS_PER_KERNEL: Int = 100](
     ctx.synchronize()
 
     # Create tensors
-    var pref_t = LayoutTensor[dtype, Layout.row_major(NUM_BANDITS * NUM_ARMS), MutAnyOrigin](preferences)
-    var base_t = LayoutTensor[dtype, Layout.row_major(NUM_BANDITS), MutAnyOrigin](baseline)
-    var reward_t = LayoutTensor[dtype, Layout.row_major(NUM_BANDITS), MutAnyOrigin](total_reward)
-    var rng_t = LayoutTensor[DType.uint32, Layout.row_major(NUM_BANDITS), MutAnyOrigin](rng_state)
-    var step_t = LayoutTensor[DType.int32, Layout.row_major(NUM_BANDITS), MutAnyOrigin](step_count)
-    var probs_t = LayoutTensor[dtype, Layout.row_major(NUM_ARMS), ImmutAnyOrigin](arm_probs)
+    var pref_t = LayoutTensor[
+        dtype, Layout.row_major(NUM_BANDITS * NUM_ARMS), MutAnyOrigin
+    ](preferences)
+    var base_t = LayoutTensor[
+        dtype, Layout.row_major(NUM_BANDITS), MutAnyOrigin
+    ](baseline)
+    var reward_t = LayoutTensor[
+        dtype, Layout.row_major(NUM_BANDITS), MutAnyOrigin
+    ](total_reward)
+    var rng_t = LayoutTensor[
+        DType.uint32, Layout.row_major(NUM_BANDITS), MutAnyOrigin
+    ](rng_state)
+    var step_t = LayoutTensor[
+        DType.int32, Layout.row_major(NUM_BANDITS), MutAnyOrigin
+    ](step_count)
+    var probs_t = LayoutTensor[
+        dtype, Layout.row_major(NUM_ARMS), ImmutAnyOrigin
+    ](arm_probs)
 
     var alpha = Scalar[dtype](0.1)
     comptime num_blocks = (NUM_BANDITS + TPB - 1) // TPB
-    comptime kernel = bandit_multistep_kernel[dtype, NUM_BANDITS, NUM_ARMS, STEPS_PER_KERNEL, TPB]
+    comptime kernel = bandit_multistep_kernel[
+        dtype, NUM_BANDITS, NUM_ARMS, STEPS_PER_KERNEL, TPB
+    ]
 
     # Calculate number of kernel launches needed
     var num_launches = (num_steps + STEPS_PER_KERNEL - 1) // STEPS_PER_KERNEL
 
     # Warm up (10 launches = 10 * STEPS_PER_KERNEL steps)
     for _ in range(10):
-        ctx.enqueue_function_checked[kernel, kernel](
-            pref_t, base_t, reward_t, rng_t, step_t, probs_t, alpha,
+        ctx.enqueue_function[kernel, kernel](
+            pref_t,
+            base_t,
+            reward_t,
+            rng_t,
+            step_t,
+            probs_t,
+            alpha,
             grid_dim=(num_blocks,),
             block_dim=(TPB,),
         )
@@ -318,8 +356,14 @@ fn benchmark_gpu[NUM_BANDITS: Int, NUM_ARMS: Int, STEPS_PER_KERNEL: Int = 100](
     # Benchmark
     var start = perf_counter_ns()
     for _ in range(num_launches):
-        ctx.enqueue_function_checked[kernel, kernel](
-            pref_t, base_t, reward_t, rng_t, step_t, probs_t, alpha,
+        ctx.enqueue_function[kernel, kernel](
+            pref_t,
+            base_t,
+            reward_t,
+            rng_t,
+            step_t,
+            probs_t,
+            alpha,
             grid_dim=(num_blocks,),
             block_dim=(TPB,),
         )
@@ -337,11 +381,15 @@ fn benchmark_gpu[NUM_BANDITS: Int, NUM_ARMS: Int, STEPS_PER_KERNEL: Int = 100](
     return (Float64(end - start), avg_reward)
 
 
-fn benchmark_cpu[NUM_ARMS: Int](
+fn benchmark_cpu[
+    NUM_ARMS: Int
+](
     num_bandits: Int,
     num_steps: Int,
     arm_probs_cpu: List[Float32],
-) -> Tuple[Float64, Float32]:
+) -> Tuple[
+    Float64, Float32
+]:
     """Benchmark CPU bandit."""
     # Initialize bandits
     var all_preferences = List[List[Float32]](capacity=num_bandits)
@@ -360,8 +408,12 @@ fn benchmark_cpu[NUM_ARMS: Int](
     for step in range(100):
         for b in range(num_bandits):
             _ = cpu_bandit_step[NUM_ARMS](
-                all_preferences[b], all_baselines[b], all_rewards[b],
-                arm_probs_cpu, Float32(0.1), step
+                all_preferences[b],
+                all_baselines[b],
+                all_rewards[b],
+                arm_probs_cpu,
+                Float32(0.1),
+                step,
             )
 
     # Reset
@@ -376,8 +428,12 @@ fn benchmark_cpu[NUM_ARMS: Int](
     for step in range(num_steps):
         for b in range(num_bandits):
             _ = cpu_bandit_step[NUM_ARMS](
-                all_preferences[b], all_baselines[b], all_rewards[b],
-                arm_probs_cpu, Float32(0.1), step
+                all_preferences[b],
+                all_baselines[b],
+                all_rewards[b],
+                arm_probs_cpu,
+                Float32(0.1),
+                step,
             )
     var end = perf_counter_ns()
 
@@ -419,7 +475,10 @@ def main():
     arm_probs.append(Float32(0.2))  # Arm 9
 
     print("10-Armed Bandit Problem:")
-    print("  Arm probabilities: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.9, 0.3, 0.2]")
+    print(
+        "  Arm probabilities: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.9, 0.3,"
+        " 0.2]"
+    )
     print("  Best arm: 7 (p=0.9)")
     print("  Algorithm: Gradient Bandit with α=0.1")
     print()
@@ -453,7 +512,9 @@ def main():
     print("-" * 70)
     print("Test 2: GPU vs CPU Performance (Multi-Step Kernel)")
     print("-" * 70)
-    print("GPU uses STEPS_PER_KERNEL=100 (only 10 kernel launches for 1000 steps)")
+    print(
+        "GPU uses STEPS_PER_KERNEL=100 (only 10 kernel launches for 1000 steps)"
+    )
     print()
 
     with DeviceContext() as ctx:
@@ -461,10 +522,16 @@ def main():
         print("  NUM_BANDITS=1000, NUM_STEPS=1000:")
         var cpu_result_1k = benchmark_cpu[NUM_ARMS](1000, 1000, arm_probs)
         var cpu_time_1k = cpu_result_1k[0]
-        var gpu_result_1k = benchmark_gpu[1000, NUM_ARMS, 100](ctx, 1000, arm_probs)
+        var gpu_result_1k = benchmark_gpu[1000, NUM_ARMS, 100](
+            ctx, 1000, arm_probs
+        )
         var gpu_time_1k = gpu_result_1k[0]
         print("    CPU: " + String(cpu_time_1k / 1e6)[:8] + " ms")
-        print("    GPU: " + String(gpu_time_1k / 1e6)[:8] + " ms  (10 kernel launches)")
+        print(
+            "    GPU: "
+            + String(gpu_time_1k / 1e6)[:8]
+            + " ms  (10 kernel launches)"
+        )
         print("    Speedup: " + String(cpu_time_1k / gpu_time_1k)[:5] + "x")
         print()
 
@@ -472,31 +539,57 @@ def main():
         print("  NUM_BANDITS=10000, NUM_STEPS=1000:")
         var cpu_result_10k = benchmark_cpu[NUM_ARMS](10000, 1000, arm_probs)
         var cpu_time_10k = cpu_result_10k[0]
-        var gpu_result_10k = benchmark_gpu[10000, NUM_ARMS, 100](ctx, 1000, arm_probs)
+        var gpu_result_10k = benchmark_gpu[10000, NUM_ARMS, 100](
+            ctx, 1000, arm_probs
+        )
         var gpu_time_10k = gpu_result_10k[0]
         print("    CPU: " + String(cpu_time_10k / 1e6)[:8] + " ms")
-        print("    GPU: " + String(gpu_time_10k / 1e6)[:8] + " ms  (10 kernel launches)")
+        print(
+            "    GPU: "
+            + String(gpu_time_10k / 1e6)[:8]
+            + " ms  (10 kernel launches)"
+        )
         print("    Speedup: " + String(cpu_time_10k / gpu_time_10k)[:5] + "x")
         print()
 
         # Large scale
         print("  NUM_BANDITS=100000, NUM_STEPS=1000:")
-        var gpu_result_100k = benchmark_gpu[100000, NUM_ARMS, 100](ctx, 1000, arm_probs)
+        var gpu_result_100k = benchmark_gpu[100000, NUM_ARMS, 100](
+            ctx, 1000, arm_probs
+        )
         var gpu_time_100k = gpu_result_100k[0]
         var gpu_reward_100k = gpu_result_100k[1]
-        print("    GPU: " + String(gpu_time_100k / 1e6)[:8] + " ms  (10 kernel launches)")
+        print(
+            "    GPU: "
+            + String(gpu_time_100k / 1e6)[:8]
+            + " ms  (10 kernel launches)"
+        )
         print("    GPU avg reward: " + String(gpu_reward_100k)[:6])
-        print("    Throughput: " + String(Int(100000.0 * 1000.0 / (gpu_time_100k / 1e9))) + " bandit-steps/sec")
+        print(
+            "    Throughput: "
+            + String(Int(100000.0 * 1000.0 / (gpu_time_100k / 1e9)))
+            + " bandit-steps/sec"
+        )
         print()
 
         # Very large scale with more steps per kernel
         print("  NUM_BANDITS=100000, NUM_STEPS=10000 (STEPS_PER_KERNEL=1000):")
-        var gpu_result_big = benchmark_gpu[100000, NUM_ARMS, 1000](ctx, 10000, arm_probs)
+        var gpu_result_big = benchmark_gpu[100000, NUM_ARMS, 1000](
+            ctx, 10000, arm_probs
+        )
         var gpu_time_big = gpu_result_big[0]
         var gpu_reward_big = gpu_result_big[1]
-        print("    GPU: " + String(gpu_time_big / 1e6)[:8] + " ms  (10 kernel launches)")
+        print(
+            "    GPU: "
+            + String(gpu_time_big / 1e6)[:8]
+            + " ms  (10 kernel launches)"
+        )
         print("    GPU avg reward: " + String(gpu_reward_big)[:6])
-        print("    Throughput: " + String(Int(100000.0 * 10000.0 / (gpu_time_big / 1e9))) + " bandit-steps/sec")
+        print(
+            "    Throughput: "
+            + String(Int(100000.0 * 10000.0 / (gpu_time_big / 1e9)))
+            + " bandit-steps/sec"
+        )
         print()
 
     # =========================================================================

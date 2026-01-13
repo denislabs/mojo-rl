@@ -108,7 +108,10 @@ def main():
     print()
 
     # Print metrics summary
-    print("Final average reward (last 20 episodes): " + String(metrics.mean_reward_last_n(20))[:7])
+    print(
+        "Final average reward (last 20 episodes): "
+        + String(metrics.mean_reward_last_n(20))[:7]
+    )
     print("Best episode reward: " + String(metrics.max_reward())[:7])
     print()
 
@@ -117,13 +120,20 @@ def main():
     # =========================================================================
 
     print("Evaluating greedy policy (10 episodes)...")
-    var eval_avg = agent.evaluate_greedy(env, num_episodes=10, max_steps=MAX_STEPS)
+    var eval_avg = agent.evaluate_greedy(
+        env, num_episodes=10, max_steps=MAX_STEPS
+    )
     print("Evaluation average: " + String(eval_avg)[:7])
 
     print()
     print("Evaluating with current epsilon (10 episodes)...")
     var eval_eps_avg = agent.evaluate(env, num_episodes=10, max_steps=MAX_STEPS)
-    print("Evaluation average (epsilon=" + String(agent.get_epsilon())[:5] + "): " + String(eval_eps_avg)[:7])
+    print(
+        "Evaluation average (epsilon="
+        + String(agent.get_epsilon())[:5]
+        + "): "
+        + String(eval_eps_avg)[:7]
+    )
 
     print()
     print("=" * 70)

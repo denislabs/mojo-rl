@@ -201,8 +201,12 @@ struct Adam(Optimizer):
         # Kernel wrapper with explicit parameters
         @always_inline
         fn kernel_wrapper(
-            params: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
-            grads: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+            params: LayoutTensor[
+                dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
+            ],
+            grads: LayoutTensor[
+                dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
+            ],
             state: LayoutTensor[
                 dtype, Layout.row_major(PARAM_SIZE, 2), MutAnyOrigin
             ],
@@ -228,7 +232,7 @@ struct Adam(Optimizer):
         # Launch
         comptime grid_size = (PARAM_SIZE + TPB - 1) // TPB
 
-        ctx.enqueue_function_checked[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             params,
             grads,
             state,

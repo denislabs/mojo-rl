@@ -61,7 +61,9 @@ fn xorshift32(state: Scalar[DType.uint32]) -> Scalar[DType.uint32]:
 
 fn random_uniform(state: Scalar[DType.uint32]) -> Scalar[DType.float32]:
     """Random uniform [0, 1)."""
-    return Scalar[DType.float32](state) / Scalar[DType.float32](Scalar[DType.uint32].MAX)
+    return Scalar[DType.float32](state) / Scalar[DType.float32](
+        Scalar[DType.uint32].MAX
+    )
 
 
 # =============================================================================
@@ -71,29 +73,53 @@ fn random_uniform(state: Scalar[DType.uint32]) -> Scalar[DType.float32]:
 
 fn cartpole_reinforce_kernel[
     dtype: DType,
-    NUM_ENVS: Int,           # Number of parallel environments
-    OBS_DIM: Int,            # 4 for CartPole
-    NUM_ACTIONS: Int,        # 2 for CartPole (left/right)
-    HIDDEN_DIM: Int,         # Hidden layer size
-    STEPS_PER_KERNEL: Int,   # Steps to run per kernel launch
-    TPB: Int,                # Threads per block
+    NUM_ENVS: Int,  # Number of parallel environments
+    OBS_DIM: Int,  # 4 for CartPole
+    NUM_ACTIONS: Int,  # 2 for CartPole (left/right)
+    HIDDEN_DIM: Int,  # Hidden layer size
+    STEPS_PER_KERNEL: Int,  # Steps to run per kernel launch
+    TPB: Int,  # Threads per block
 ](
     # Environment state (mutable)
-    env_state: LayoutTensor[dtype, Layout.row_major(NUM_ENVS * OBS_DIM), MutAnyOrigin],
-    rng_state: LayoutTensor[DType.uint32, Layout.row_major(NUM_ENVS), MutAnyOrigin],
-    episode_rewards: LayoutTensor[dtype, Layout.row_major(NUM_ENVS), MutAnyOrigin],
-    episode_lengths: LayoutTensor[DType.int32, Layout.row_major(NUM_ENVS), MutAnyOrigin],
-    total_episodes: LayoutTensor[DType.int32, Layout.row_major(NUM_ENVS), MutAnyOrigin],
+    env_state: LayoutTensor[
+        dtype, Layout.row_major(NUM_ENVS * OBS_DIM), MutAnyOrigin
+    ],
+    rng_state: LayoutTensor[
+        DType.uint32, Layout.row_major(NUM_ENVS), MutAnyOrigin
+    ],
+    episode_rewards: LayoutTensor[
+        dtype, Layout.row_major(NUM_ENVS), MutAnyOrigin
+    ],
+    episode_lengths: LayoutTensor[
+        DType.int32, Layout.row_major(NUM_ENVS), MutAnyOrigin
+    ],
+    total_episodes: LayoutTensor[
+        DType.int32, Layout.row_major(NUM_ENVS), MutAnyOrigin
+    ],
     # Policy network weights (read-only during forward, we accumulate gradients)
-    W1: LayoutTensor[dtype, Layout.row_major(OBS_DIM * HIDDEN_DIM), ImmutAnyOrigin],
+    W1: LayoutTensor[
+        dtype, Layout.row_major(OBS_DIM * HIDDEN_DIM), ImmutAnyOrigin
+    ],
     b1: LayoutTensor[dtype, Layout.row_major(HIDDEN_DIM), ImmutAnyOrigin],
-    W2: LayoutTensor[dtype, Layout.row_major(HIDDEN_DIM * NUM_ACTIONS), ImmutAnyOrigin],
+    W2: LayoutTensor[
+        dtype, Layout.row_major(HIDDEN_DIM * NUM_ACTIONS), ImmutAnyOrigin
+    ],
     b2: LayoutTensor[dtype, Layout.row_major(NUM_ACTIONS), ImmutAnyOrigin],
     # Gradient accumulators (mutable)
-    grad_W1: LayoutTensor[dtype, Layout.row_major(NUM_ENVS * OBS_DIM * HIDDEN_DIM), MutAnyOrigin],
-    grad_b1: LayoutTensor[dtype, Layout.row_major(NUM_ENVS * HIDDEN_DIM), MutAnyOrigin],
-    grad_W2: LayoutTensor[dtype, Layout.row_major(NUM_ENVS * HIDDEN_DIM * NUM_ACTIONS), MutAnyOrigin],
-    grad_b2: LayoutTensor[dtype, Layout.row_major(NUM_ENVS * NUM_ACTIONS), MutAnyOrigin],
+    grad_W1: LayoutTensor[
+        dtype, Layout.row_major(NUM_ENVS * OBS_DIM * HIDDEN_DIM), MutAnyOrigin
+    ],
+    grad_b1: LayoutTensor[
+        dtype, Layout.row_major(NUM_ENVS * HIDDEN_DIM), MutAnyOrigin
+    ],
+    grad_W2: LayoutTensor[
+        dtype,
+        Layout.row_major(NUM_ENVS * HIDDEN_DIM * NUM_ACTIONS),
+        MutAnyOrigin,
+    ],
+    grad_b2: LayoutTensor[
+        dtype, Layout.row_major(NUM_ENVS * NUM_ACTIONS), MutAnyOrigin
+    ],
     # Hyperparameters
     gamma: Scalar[dtype],  # Discount factor
 ):
@@ -122,9 +148,13 @@ fn cartpole_reinforce_kernel[
     var num_episodes = Int(total_episodes[env_idx])
 
     # Load policy weights into local arrays for faster access
-    var w1 = InlineArray[Scalar[dtype], OBS_DIM * HIDDEN_DIM](fill=Scalar[dtype](0))
+    var w1 = InlineArray[Scalar[dtype], OBS_DIM * HIDDEN_DIM](
+        fill=Scalar[dtype](0)
+    )
     var bias1 = InlineArray[Scalar[dtype], HIDDEN_DIM](fill=Scalar[dtype](0))
-    var w2 = InlineArray[Scalar[dtype], HIDDEN_DIM * NUM_ACTIONS](fill=Scalar[dtype](0))
+    var w2 = InlineArray[Scalar[dtype], HIDDEN_DIM * NUM_ACTIONS](
+        fill=Scalar[dtype](0)
+    )
     var bias2 = InlineArray[Scalar[dtype], NUM_ACTIONS](fill=Scalar[dtype](0))
 
     for i in range(OBS_DIM * HIDDEN_DIM):
@@ -138,11 +168,19 @@ fn cartpole_reinforce_kernel[
 
     # Trajectory storage for this kernel's steps
     # Store: obs, action, reward for computing gradients
-    var traj_obs = InlineArray[Scalar[dtype], STEPS_PER_KERNEL * OBS_DIM](fill=Scalar[dtype](0))
-    var traj_hidden = InlineArray[Scalar[dtype], STEPS_PER_KERNEL * HIDDEN_DIM](fill=Scalar[dtype](0))
+    var traj_obs = InlineArray[Scalar[dtype], STEPS_PER_KERNEL * OBS_DIM](
+        fill=Scalar[dtype](0)
+    )
+    var traj_hidden = InlineArray[Scalar[dtype], STEPS_PER_KERNEL * HIDDEN_DIM](
+        fill=Scalar[dtype](0)
+    )
     var traj_actions = InlineArray[Int, STEPS_PER_KERNEL](fill=0)
-    var traj_rewards = InlineArray[Scalar[dtype], STEPS_PER_KERNEL](fill=Scalar[dtype](0))
-    var traj_log_probs = InlineArray[Scalar[dtype], STEPS_PER_KERNEL](fill=Scalar[dtype](0))
+    var traj_rewards = InlineArray[Scalar[dtype], STEPS_PER_KERNEL](
+        fill=Scalar[dtype](0)
+    )
+    var traj_log_probs = InlineArray[Scalar[dtype], STEPS_PER_KERNEL](
+        fill=Scalar[dtype](0)
+    )
     var traj_dones = InlineArray[Bool, STEPS_PER_KERNEL](fill=False)
     var traj_length = 0
 
@@ -166,11 +204,15 @@ fn cartpole_reinforce_kernel[
             sum_val += x_dot * w1[1 * HIDDEN_DIM + j]
             sum_val += theta * w1[2 * HIDDEN_DIM + j]
             sum_val += theta_dot * w1[3 * HIDDEN_DIM + j]
-            h[j] = sum_val if sum_val > Scalar[dtype](0) else Scalar[dtype](0)  # ReLU
+            h[j] = sum_val if sum_val > Scalar[dtype](0) else Scalar[dtype](
+                0
+            )  # ReLU
             traj_hidden[step * HIDDEN_DIM + j] = h[j]
 
         # Output layer: logits = h @ W2 + b2
-        var logits = InlineArray[Scalar[dtype], NUM_ACTIONS](fill=Scalar[dtype](0))
+        var logits = InlineArray[Scalar[dtype], NUM_ACTIONS](
+            fill=Scalar[dtype](0)
+        )
         for j in range(NUM_ACTIONS):
             var sum_val = bias2[j]
             for k in range(HIDDEN_DIM):
@@ -221,9 +263,15 @@ fn cartpole_reinforce_kernel[
         var cos_theta = cos(theta)
         var sin_theta = sin(theta)
 
-        var temp = (force + pole_mass_length * theta_dot * theta_dot * sin_theta) / total_mass
+        var temp = (
+            force + pole_mass_length * theta_dot * theta_dot * sin_theta
+        ) / total_mass
         var theta_acc = (gravity * sin_theta - cos_theta * temp) / (
-            pole_half_length * (Scalar[dtype](4.0/3.0) - pole_mass * cos_theta * cos_theta / total_mass)
+            pole_half_length
+            * (
+                Scalar[dtype](4.0 / 3.0)
+                - pole_mass * cos_theta * cos_theta / total_mass
+            )
         )
         var x_acc = temp - pole_mass_length * theta_acc * cos_theta / total_mass
 
@@ -237,7 +285,12 @@ fn cartpole_reinforce_kernel[
         # Check termination and compute reward
         # =================================================================
 
-        var done = (x < -x_threshold) or (x > x_threshold) or (theta < -theta_threshold) or (theta > theta_threshold)
+        var done = (
+            (x < -x_threshold)
+            or (x > x_threshold)
+            or (theta < -theta_threshold)
+            or (theta > theta_threshold)
+        )
         var reward = Scalar[dtype](1.0) if not done else Scalar[dtype](0.0)
 
         traj_rewards[step] = reward
@@ -257,11 +310,17 @@ fn cartpole_reinforce_kernel[
             rng = xorshift32(rng)
             x = Scalar[dtype](random_uniform(rng) - 0.5) * Scalar[dtype](0.1)
             rng = xorshift32(rng)
-            x_dot = Scalar[dtype](random_uniform(rng) - 0.5) * Scalar[dtype](0.1)
+            x_dot = Scalar[dtype](random_uniform(rng) - 0.5) * Scalar[dtype](
+                0.1
+            )
             rng = xorshift32(rng)
-            theta = Scalar[dtype](random_uniform(rng) - 0.5) * Scalar[dtype](0.1)
+            theta = Scalar[dtype](random_uniform(rng) - 0.5) * Scalar[dtype](
+                0.1
+            )
             rng = xorshift32(rng)
-            theta_dot = Scalar[dtype](random_uniform(rng) - 0.5) * Scalar[dtype](0.1)
+            theta_dot = Scalar[dtype](random_uniform(rng) - 0.5) * Scalar[
+                dtype
+            ](0.1)
 
             ep_reward = Scalar[dtype](0)
             ep_length = 0
@@ -271,7 +330,9 @@ fn cartpole_reinforce_kernel[
     # =================================================================
 
     # Compute discounted returns (backwards)
-    var returns = InlineArray[Scalar[dtype], STEPS_PER_KERNEL](fill=Scalar[dtype](0))
+    var returns = InlineArray[Scalar[dtype], STEPS_PER_KERNEL](
+        fill=Scalar[dtype](0)
+    )
     var G = Scalar[dtype](0)
 
     for step in range(traj_length - 1, -1, -1):
@@ -284,10 +345,18 @@ fn cartpole_reinforce_kernel[
     # We accumulate: dW = sum over steps of (grad_log_pi * return)
 
     # Initialize local gradient accumulators
-    var local_grad_W1 = InlineArray[Scalar[dtype], OBS_DIM * HIDDEN_DIM](fill=Scalar[dtype](0))
-    var local_grad_b1 = InlineArray[Scalar[dtype], HIDDEN_DIM](fill=Scalar[dtype](0))
-    var local_grad_W2 = InlineArray[Scalar[dtype], HIDDEN_DIM * NUM_ACTIONS](fill=Scalar[dtype](0))
-    var local_grad_b2 = InlineArray[Scalar[dtype], NUM_ACTIONS](fill=Scalar[dtype](0))
+    var local_grad_W1 = InlineArray[Scalar[dtype], OBS_DIM * HIDDEN_DIM](
+        fill=Scalar[dtype](0)
+    )
+    var local_grad_b1 = InlineArray[Scalar[dtype], HIDDEN_DIM](
+        fill=Scalar[dtype](0)
+    )
+    var local_grad_W2 = InlineArray[Scalar[dtype], HIDDEN_DIM * NUM_ACTIONS](
+        fill=Scalar[dtype](0)
+    )
+    var local_grad_b2 = InlineArray[Scalar[dtype], NUM_ACTIONS](
+        fill=Scalar[dtype](0)
+    )
 
     for step in range(traj_length):
         var ret = returns[step]
@@ -301,7 +370,9 @@ fn cartpole_reinforce_kernel[
 
         # Recompute forward pass for gradients
         var h = InlineArray[Scalar[dtype], HIDDEN_DIM](fill=Scalar[dtype](0))
-        var h_pre = InlineArray[Scalar[dtype], HIDDEN_DIM](fill=Scalar[dtype](0))
+        var h_pre = InlineArray[Scalar[dtype], HIDDEN_DIM](
+            fill=Scalar[dtype](0)
+        )
         for j in range(HIDDEN_DIM):
             var sum_val = bias1[j]
             sum_val += obs0 * w1[0 * HIDDEN_DIM + j]
@@ -311,7 +382,9 @@ fn cartpole_reinforce_kernel[
             h_pre[j] = sum_val
             h[j] = sum_val if sum_val > Scalar[dtype](0) else Scalar[dtype](0)
 
-        var logits = InlineArray[Scalar[dtype], NUM_ACTIONS](fill=Scalar[dtype](0))
+        var logits = InlineArray[Scalar[dtype], NUM_ACTIONS](
+            fill=Scalar[dtype](0)
+        )
         for j in range(NUM_ACTIONS):
             var sum_val = bias2[j]
             for k in range(HIDDEN_DIM):
@@ -329,8 +402,12 @@ fn cartpole_reinforce_kernel[
 
         # Gradient of log softmax w.r.t. logits:
         # d/d_logit[a] log(softmax[action]) = 1[a == action] - softmax[a]
-        var d_logit0 = (Scalar[dtype](1.0) if action == 0 else Scalar[dtype](0.0)) - prob0
-        var d_logit1 = (Scalar[dtype](1.0) if action == 1 else Scalar[dtype](0.0)) - prob1
+        var d_logit0 = (
+            Scalar[dtype](1.0) if action == 0 else Scalar[dtype](0.0)
+        ) - prob0
+        var d_logit1 = (
+            Scalar[dtype](1.0) if action == 1 else Scalar[dtype](0.0)
+        ) - prob1
 
         # Scale by return (REINFORCE: maximize expected return)
         d_logit0 = d_logit0 * ret
@@ -349,7 +426,10 @@ fn cartpole_reinforce_kernel[
         # dh[k] = d_logit[0] * W2[k,0] + d_logit[1] * W2[k,1]
         # dh_pre[k] = dh[k] * (h_pre[k] > 0)  (ReLU gradient)
         for k in range(HIDDEN_DIM):
-            var dh = d_logit0 * w2[k * NUM_ACTIONS + 0] + d_logit1 * w2[k * NUM_ACTIONS + 1]
+            var dh = (
+                d_logit0 * w2[k * NUM_ACTIONS + 0]
+                + d_logit1 * w2[k * NUM_ACTIONS + 1]
+            )
             var dh_pre = dh if h_pre[k] > Scalar[dtype](0) else Scalar[dtype](0)
 
             # Gradient for W1: dW1[i, k] = obs[i] * dh_pre[k]
@@ -399,7 +479,9 @@ fn reduce_gradients_kernel[
     TPB: Int,
 ](
     reduced: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
-    per_env: LayoutTensor[dtype, Layout.row_major(NUM_ENVS * SIZE), ImmutAnyOrigin],
+    per_env: LayoutTensor[
+        dtype, Layout.row_major(NUM_ENVS * SIZE), ImmutAnyOrigin
+    ],
 ):
     """Reduce per-environment gradients by summing across environments."""
     var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -477,10 +559,18 @@ fn train_cartpole_reinforce(
     var b2 = ctx.enqueue_create_buffer[dtype](NUM_ACTIONS)
 
     # Allocate per-env gradient accumulators
-    var grad_W1_per_env = ctx.enqueue_create_buffer[dtype](NUM_ENVS * OBS_DIM * HIDDEN_DIM)
-    var grad_b1_per_env = ctx.enqueue_create_buffer[dtype](NUM_ENVS * HIDDEN_DIM)
-    var grad_W2_per_env = ctx.enqueue_create_buffer[dtype](NUM_ENVS * HIDDEN_DIM * NUM_ACTIONS)
-    var grad_b2_per_env = ctx.enqueue_create_buffer[dtype](NUM_ENVS * NUM_ACTIONS)
+    var grad_W1_per_env = ctx.enqueue_create_buffer[dtype](
+        NUM_ENVS * OBS_DIM * HIDDEN_DIM
+    )
+    var grad_b1_per_env = ctx.enqueue_create_buffer[dtype](
+        NUM_ENVS * HIDDEN_DIM
+    )
+    var grad_W2_per_env = ctx.enqueue_create_buffer[dtype](
+        NUM_ENVS * HIDDEN_DIM * NUM_ACTIONS
+    )
+    var grad_b2_per_env = ctx.enqueue_create_buffer[dtype](
+        NUM_ENVS * NUM_ACTIONS
+    )
 
     # Allocate reduced gradients
     var grad_W1 = ctx.enqueue_create_buffer[dtype](OBS_DIM * HIDDEN_DIM)
@@ -491,10 +581,18 @@ fn train_cartpole_reinforce(
     # Initialize environment state (small random perturbation from upright)
     with env_state.map_to_host() as host:
         for i in range(NUM_ENVS):
-            host[i * OBS_DIM + 0] = Scalar[dtype]((random_float64() - 0.5) * 0.1)
-            host[i * OBS_DIM + 1] = Scalar[dtype]((random_float64() - 0.5) * 0.1)
-            host[i * OBS_DIM + 2] = Scalar[dtype]((random_float64() - 0.5) * 0.1)
-            host[i * OBS_DIM + 3] = Scalar[dtype]((random_float64() - 0.5) * 0.1)
+            host[i * OBS_DIM + 0] = Scalar[dtype](
+                (random_float64() - 0.5) * 0.1
+            )
+            host[i * OBS_DIM + 1] = Scalar[dtype](
+                (random_float64() - 0.5) * 0.1
+            )
+            host[i * OBS_DIM + 2] = Scalar[dtype](
+                (random_float64() - 0.5) * 0.1
+            )
+            host[i * OBS_DIM + 3] = Scalar[dtype](
+                (random_float64() - 0.5) * 0.1
+            )
 
     with rng_state.map_to_host() as host:
         for i in range(NUM_ENVS):
@@ -520,37 +618,83 @@ fn train_cartpole_reinforce(
     ctx.synchronize()
 
     # Create tensors
-    var env_t = LayoutTensor[dtype, Layout.row_major(NUM_ENVS * OBS_DIM), MutAnyOrigin](env_state)
-    var rng_t = LayoutTensor[DType.uint32, Layout.row_major(NUM_ENVS), MutAnyOrigin](rng_state)
-    var ep_rew_t = LayoutTensor[dtype, Layout.row_major(NUM_ENVS), MutAnyOrigin](episode_rewards)
-    var ep_len_t = LayoutTensor[DType.int32, Layout.row_major(NUM_ENVS), MutAnyOrigin](episode_lengths)
-    var tot_ep_t = LayoutTensor[DType.int32, Layout.row_major(NUM_ENVS), MutAnyOrigin](total_episodes)
+    var env_t = LayoutTensor[
+        dtype, Layout.row_major(NUM_ENVS * OBS_DIM), MutAnyOrigin
+    ](env_state)
+    var rng_t = LayoutTensor[
+        DType.uint32, Layout.row_major(NUM_ENVS), MutAnyOrigin
+    ](rng_state)
+    var ep_rew_t = LayoutTensor[
+        dtype, Layout.row_major(NUM_ENVS), MutAnyOrigin
+    ](episode_rewards)
+    var ep_len_t = LayoutTensor[
+        DType.int32, Layout.row_major(NUM_ENVS), MutAnyOrigin
+    ](episode_lengths)
+    var tot_ep_t = LayoutTensor[
+        DType.int32, Layout.row_major(NUM_ENVS), MutAnyOrigin
+    ](total_episodes)
 
-    var W1_t = LayoutTensor[dtype, Layout.row_major(OBS_DIM * HIDDEN_DIM), ImmutAnyOrigin](W1)
-    var b1_t = LayoutTensor[dtype, Layout.row_major(HIDDEN_DIM), ImmutAnyOrigin](b1)
-    var W2_t = LayoutTensor[dtype, Layout.row_major(HIDDEN_DIM * NUM_ACTIONS), ImmutAnyOrigin](W2)
-    var b2_t = LayoutTensor[dtype, Layout.row_major(NUM_ACTIONS), ImmutAnyOrigin](b2)
+    var W1_t = LayoutTensor[
+        dtype, Layout.row_major(OBS_DIM * HIDDEN_DIM), ImmutAnyOrigin
+    ](W1)
+    var b1_t = LayoutTensor[
+        dtype, Layout.row_major(HIDDEN_DIM), ImmutAnyOrigin
+    ](b1)
+    var W2_t = LayoutTensor[
+        dtype, Layout.row_major(HIDDEN_DIM * NUM_ACTIONS), ImmutAnyOrigin
+    ](W2)
+    var b2_t = LayoutTensor[
+        dtype, Layout.row_major(NUM_ACTIONS), ImmutAnyOrigin
+    ](b2)
 
-    var gW1_env_t = LayoutTensor[dtype, Layout.row_major(NUM_ENVS * OBS_DIM * HIDDEN_DIM), MutAnyOrigin](grad_W1_per_env)
-    var gb1_env_t = LayoutTensor[dtype, Layout.row_major(NUM_ENVS * HIDDEN_DIM), MutAnyOrigin](grad_b1_per_env)
-    var gW2_env_t = LayoutTensor[dtype, Layout.row_major(NUM_ENVS * HIDDEN_DIM * NUM_ACTIONS), MutAnyOrigin](grad_W2_per_env)
-    var gb2_env_t = LayoutTensor[dtype, Layout.row_major(NUM_ENVS * NUM_ACTIONS), MutAnyOrigin](grad_b2_per_env)
+    var gW1_env_t = LayoutTensor[
+        dtype, Layout.row_major(NUM_ENVS * OBS_DIM * HIDDEN_DIM), MutAnyOrigin
+    ](grad_W1_per_env)
+    var gb1_env_t = LayoutTensor[
+        dtype, Layout.row_major(NUM_ENVS * HIDDEN_DIM), MutAnyOrigin
+    ](grad_b1_per_env)
+    var gW2_env_t = LayoutTensor[
+        dtype,
+        Layout.row_major(NUM_ENVS * HIDDEN_DIM * NUM_ACTIONS),
+        MutAnyOrigin,
+    ](grad_W2_per_env)
+    var gb2_env_t = LayoutTensor[
+        dtype, Layout.row_major(NUM_ENVS * NUM_ACTIONS), MutAnyOrigin
+    ](grad_b2_per_env)
 
-    var gW1_t = LayoutTensor[dtype, Layout.row_major(OBS_DIM * HIDDEN_DIM), MutAnyOrigin](grad_W1)
-    var gb1_t = LayoutTensor[dtype, Layout.row_major(HIDDEN_DIM), MutAnyOrigin](grad_b1)
-    var gW2_t = LayoutTensor[dtype, Layout.row_major(HIDDEN_DIM * NUM_ACTIONS), MutAnyOrigin](grad_W2)
-    var gb2_t = LayoutTensor[dtype, Layout.row_major(NUM_ACTIONS), MutAnyOrigin](grad_b2)
+    var gW1_t = LayoutTensor[
+        dtype, Layout.row_major(OBS_DIM * HIDDEN_DIM), MutAnyOrigin
+    ](grad_W1)
+    var gb1_t = LayoutTensor[dtype, Layout.row_major(HIDDEN_DIM), MutAnyOrigin](
+        grad_b1
+    )
+    var gW2_t = LayoutTensor[
+        dtype, Layout.row_major(HIDDEN_DIM * NUM_ACTIONS), MutAnyOrigin
+    ](grad_W2)
+    var gb2_t = LayoutTensor[
+        dtype, Layout.row_major(NUM_ACTIONS), MutAnyOrigin
+    ](grad_b2)
 
-    var W1_mut = LayoutTensor[dtype, Layout.row_major(OBS_DIM * HIDDEN_DIM), MutAnyOrigin](W1)
-    var b1_mut = LayoutTensor[dtype, Layout.row_major(HIDDEN_DIM), MutAnyOrigin](b1)
-    var W2_mut = LayoutTensor[dtype, Layout.row_major(HIDDEN_DIM * NUM_ACTIONS), MutAnyOrigin](W2)
-    var b2_mut = LayoutTensor[dtype, Layout.row_major(NUM_ACTIONS), MutAnyOrigin](b2)
+    var W1_mut = LayoutTensor[
+        dtype, Layout.row_major(OBS_DIM * HIDDEN_DIM), MutAnyOrigin
+    ](W1)
+    var b1_mut = LayoutTensor[
+        dtype, Layout.row_major(HIDDEN_DIM), MutAnyOrigin
+    ](b1)
+    var W2_mut = LayoutTensor[
+        dtype, Layout.row_major(HIDDEN_DIM * NUM_ACTIONS), MutAnyOrigin
+    ](W2)
+    var b2_mut = LayoutTensor[
+        dtype, Layout.row_major(NUM_ACTIONS), MutAnyOrigin
+    ](b2)
 
     var gamma_s = Scalar[dtype](gamma)
     var lr_s = Scalar[dtype](learning_rate)
 
     comptime num_blocks = (NUM_ENVS + TPB - 1) // TPB
-    comptime main_kernel = cartpole_reinforce_kernel[dtype, NUM_ENVS, OBS_DIM, NUM_ACTIONS, HIDDEN_DIM, STEPS_PER_KERNEL, TPB]
+    comptime main_kernel = cartpole_reinforce_kernel[
+        dtype, NUM_ENVS, OBS_DIM, NUM_ACTIONS, HIDDEN_DIM, STEPS_PER_KERNEL, TPB
+    ]
 
     comptime blocks_W1 = (OBS_DIM * HIDDEN_DIM + TPB - 1) // TPB
     comptime blocks_b1 = (HIDDEN_DIM + TPB - 1) // TPB
@@ -576,60 +720,100 @@ fn train_cartpole_reinforce(
         grad_b2_per_env.enqueue_fill(0)
 
         # Run main kernel
-        ctx.enqueue_function_checked[main_kernel, main_kernel](
-            env_t, rng_t, ep_rew_t, ep_len_t, tot_ep_t,
-            W1_t, b1_t, W2_t, b2_t,
-            gW1_env_t, gb1_env_t, gW2_env_t, gb2_env_t,
+        ctx.enqueue_function[main_kernel, main_kernel](
+            env_t,
+            rng_t,
+            ep_rew_t,
+            ep_len_t,
+            tot_ep_t,
+            W1_t,
+            b1_t,
+            W2_t,
+            b2_t,
+            gW1_env_t,
+            gb1_env_t,
+            gW2_env_t,
+            gb2_env_t,
             gamma_s,
             grid_dim=(num_blocks,),
             block_dim=(TPB,),
         )
 
         # Reduce gradients
-        var gW1_env_immut = LayoutTensor[dtype, Layout.row_major(NUM_ENVS * OBS_DIM * HIDDEN_DIM), ImmutAnyOrigin](grad_W1_per_env)
-        var gb1_env_immut = LayoutTensor[dtype, Layout.row_major(NUM_ENVS * HIDDEN_DIM), ImmutAnyOrigin](grad_b1_per_env)
-        var gW2_env_immut = LayoutTensor[dtype, Layout.row_major(NUM_ENVS * HIDDEN_DIM * NUM_ACTIONS), ImmutAnyOrigin](grad_W2_per_env)
-        var gb2_env_immut = LayoutTensor[dtype, Layout.row_major(NUM_ENVS * NUM_ACTIONS), ImmutAnyOrigin](grad_b2_per_env)
+        var gW1_env_immut = LayoutTensor[
+            dtype,
+            Layout.row_major(NUM_ENVS * OBS_DIM * HIDDEN_DIM),
+            ImmutAnyOrigin,
+        ](grad_W1_per_env)
+        var gb1_env_immut = LayoutTensor[
+            dtype, Layout.row_major(NUM_ENVS * HIDDEN_DIM), ImmutAnyOrigin
+        ](grad_b1_per_env)
+        var gW2_env_immut = LayoutTensor[
+            dtype,
+            Layout.row_major(NUM_ENVS * HIDDEN_DIM * NUM_ACTIONS),
+            ImmutAnyOrigin,
+        ](grad_W2_per_env)
+        var gb2_env_immut = LayoutTensor[
+            dtype, Layout.row_major(NUM_ENVS * NUM_ACTIONS), ImmutAnyOrigin
+        ](grad_b2_per_env)
 
-        comptime reduce_W1 = reduce_gradients_kernel[dtype, NUM_ENVS, OBS_DIM * HIDDEN_DIM, TPB]
-        comptime reduce_b1 = reduce_gradients_kernel[dtype, NUM_ENVS, HIDDEN_DIM, TPB]
-        comptime reduce_W2 = reduce_gradients_kernel[dtype, NUM_ENVS, HIDDEN_DIM * NUM_ACTIONS, TPB]
-        comptime reduce_b2 = reduce_gradients_kernel[dtype, NUM_ENVS, NUM_ACTIONS, TPB]
+        comptime reduce_W1 = reduce_gradients_kernel[
+            dtype, NUM_ENVS, OBS_DIM * HIDDEN_DIM, TPB
+        ]
+        comptime reduce_b1 = reduce_gradients_kernel[
+            dtype, NUM_ENVS, HIDDEN_DIM, TPB
+        ]
+        comptime reduce_W2 = reduce_gradients_kernel[
+            dtype, NUM_ENVS, HIDDEN_DIM * NUM_ACTIONS, TPB
+        ]
+        comptime reduce_b2 = reduce_gradients_kernel[
+            dtype, NUM_ENVS, NUM_ACTIONS, TPB
+        ]
 
-        ctx.enqueue_function_checked[reduce_W1, reduce_W1](
+        ctx.enqueue_function[reduce_W1, reduce_W1](
             gW1_t, gW1_env_immut, grid_dim=(blocks_W1,), block_dim=(TPB,)
         )
-        ctx.enqueue_function_checked[reduce_b1, reduce_b1](
+        ctx.enqueue_function[reduce_b1, reduce_b1](
             gb1_t, gb1_env_immut, grid_dim=(blocks_b1,), block_dim=(TPB,)
         )
-        ctx.enqueue_function_checked[reduce_W2, reduce_W2](
+        ctx.enqueue_function[reduce_W2, reduce_W2](
             gW2_t, gW2_env_immut, grid_dim=(blocks_W2,), block_dim=(TPB,)
         )
-        ctx.enqueue_function_checked[reduce_b2, reduce_b2](
+        ctx.enqueue_function[reduce_b2, reduce_b2](
             gb2_t, gb2_env_immut, grid_dim=(blocks_b2,), block_dim=(TPB,)
         )
 
         # SGD update (gradient ascent)
-        var gW1_immut = LayoutTensor[dtype, Layout.row_major(OBS_DIM * HIDDEN_DIM), ImmutAnyOrigin](grad_W1)
-        var gb1_immut = LayoutTensor[dtype, Layout.row_major(HIDDEN_DIM), ImmutAnyOrigin](grad_b1)
-        var gW2_immut = LayoutTensor[dtype, Layout.row_major(HIDDEN_DIM * NUM_ACTIONS), ImmutAnyOrigin](grad_W2)
-        var gb2_immut = LayoutTensor[dtype, Layout.row_major(NUM_ACTIONS), ImmutAnyOrigin](grad_b2)
+        var gW1_immut = LayoutTensor[
+            dtype, Layout.row_major(OBS_DIM * HIDDEN_DIM), ImmutAnyOrigin
+        ](grad_W1)
+        var gb1_immut = LayoutTensor[
+            dtype, Layout.row_major(HIDDEN_DIM), ImmutAnyOrigin
+        ](grad_b1)
+        var gW2_immut = LayoutTensor[
+            dtype, Layout.row_major(HIDDEN_DIM * NUM_ACTIONS), ImmutAnyOrigin
+        ](grad_W2)
+        var gb2_immut = LayoutTensor[
+            dtype, Layout.row_major(NUM_ACTIONS), ImmutAnyOrigin
+        ](grad_b2)
 
         comptime sgd_W1 = sgd_update_kernel[dtype, OBS_DIM * HIDDEN_DIM, TPB]
         comptime sgd_b1 = sgd_update_kernel[dtype, HIDDEN_DIM, TPB]
-        comptime sgd_W2 = sgd_update_kernel[dtype, HIDDEN_DIM * NUM_ACTIONS, TPB]
+        comptime sgd_W2 = sgd_update_kernel[
+            dtype, HIDDEN_DIM * NUM_ACTIONS, TPB
+        ]
         comptime sgd_b2 = sgd_update_kernel[dtype, NUM_ACTIONS, TPB]
 
-        ctx.enqueue_function_checked[sgd_W1, sgd_W1](
+        ctx.enqueue_function[sgd_W1, sgd_W1](
             W1_mut, gW1_immut, lr_s, grid_dim=(blocks_W1,), block_dim=(TPB,)
         )
-        ctx.enqueue_function_checked[sgd_b1, sgd_b1](
+        ctx.enqueue_function[sgd_b1, sgd_b1](
             b1_mut, gb1_immut, lr_s, grid_dim=(blocks_b1,), block_dim=(TPB,)
         )
-        ctx.enqueue_function_checked[sgd_W2, sgd_W2](
+        ctx.enqueue_function[sgd_W2, sgd_W2](
             W2_mut, gW2_immut, lr_s, grid_dim=(blocks_W2,), block_dim=(TPB,)
         )
-        ctx.enqueue_function_checked[sgd_b2, sgd_b2](
+        ctx.enqueue_function[sgd_b2, sgd_b2](
             b2_mut, gb2_immut, lr_s, grid_dim=(blocks_b2,), block_dim=(TPB,)
         )
 
@@ -646,8 +830,18 @@ fn train_cartpole_reinforce(
                     total_reward += Float64(host[i])
             # Calculate average episode length: total_steps / total_episodes
             var steps_so_far = (update + 1) * NUM_ENVS * STEPS_PER_KERNEL
-            var avg_ep_len = Float64(steps_so_far) / Float64(total_eps) if total_eps > 0 else 0.0
-            print("Update " + String(update + 1) + " | Episodes: " + String(total_eps) + " | Avg ep len: " + String(avg_ep_len)[:5])
+            var avg_ep_len = (
+                Float64(steps_so_far) / Float64(total_eps) if total_eps
+                > 0 else 0.0
+            )
+            print(
+                "Update "
+                + String(update + 1)
+                + " | Episodes: "
+                + String(total_eps)
+                + " | Avg ep len: "
+                + String(avg_ep_len)[:5]
+            )
 
     ctx.synchronize()
     var end_time = perf_counter_ns()

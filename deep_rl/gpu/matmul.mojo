@@ -107,7 +107,9 @@ fn tiled_matmul_kernel[
         # Compute partial product for this tile
         @parameter
         for k in range(TILE):
-            acc += rebind[Scalar[dtype]](a_shared[local_row, k]) * rebind[Scalar[dtype]](b_shared[k, local_col])
+            acc += rebind[Scalar[dtype]](a_shared[local_row, k]) * rebind[
+                Scalar[dtype]
+            ](b_shared[k, local_col])
 
         barrier()
 
@@ -139,9 +141,8 @@ fn gpu_matmul_naive[
     comptime blocks_y = (M + TILE - 1) // TILE
     comptime blocks_x = (N + TILE - 1) // TILE
 
-    ctx.enqueue_function_checked[
-        naive_matmul_kernel[dtype, M, N, K],
-        naive_matmul_kernel[dtype, M, N, K]
+    ctx.enqueue_function[
+        naive_matmul_kernel[dtype, M, N, K], naive_matmul_kernel[dtype, M, N, K]
     ](
         output,
         a,
@@ -174,9 +175,9 @@ fn gpu_matmul_tiled[
     comptime blocks_y = (M + TILE - 1) // TILE
     comptime blocks_x = (N + TILE - 1) // TILE
 
-    ctx.enqueue_function_checked[
+    ctx.enqueue_function[
         tiled_matmul_kernel[dtype, M, N, K, TILE],
-        tiled_matmul_kernel[dtype, M, N, K, TILE]
+        tiled_matmul_kernel[dtype, M, N, K, TILE],
     ](
         output,
         a,

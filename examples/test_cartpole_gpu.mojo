@@ -45,14 +45,18 @@ fn main() raises:
 
         # Create LayoutTensors
         states = LayoutTensor[dtype, state_layout, MutAnyOrigin](states_buf)
-        actions = LayoutTensor[DType.int32, action_layout, MutAnyOrigin](actions_buf)
+        actions = LayoutTensor[DType.int32, action_layout, MutAnyOrigin](
+            actions_buf
+        )
         rewards = LayoutTensor[dtype, reward_layout, MutAnyOrigin](rewards_buf)
         dones = LayoutTensor[DType.int32, done_layout, MutAnyOrigin](dones_buf)
-        rng_states = LayoutTensor[DType.uint32, rng_layout, MutAnyOrigin](rng_buf)
+        rng_states = LayoutTensor[DType.uint32, rng_layout, MutAnyOrigin](
+            rng_buf
+        )
 
         # Reset all environments
         print("\n1. Resetting all environments...")
-        ctx.enqueue_function_checked[reset_kernel, reset_kernel](
+        ctx.enqueue_function[reset_kernel, reset_kernel](
             states,
             rng_states,
             grid_dim=(BLOCKS_PER_GRID,),
@@ -94,7 +98,7 @@ fn main() raises:
 
         for step in range(num_steps):
             # Step all environments
-            ctx.enqueue_function_checked[step_kernel, step_kernel](
+            ctx.enqueue_function[step_kernel, step_kernel](
                 states,
                 actions,
                 rewards,
@@ -104,7 +108,9 @@ fn main() raises:
             )
 
             # Reset terminated environments
-            ctx.enqueue_function_checked[reset_where_done_kernel, reset_where_done_kernel](
+            ctx.enqueue_function[
+                reset_where_done_kernel, reset_where_done_kernel
+            ](
                 states,
                 dones,
                 rng_states,
@@ -126,7 +132,10 @@ fn main() raises:
 
         print("Total reward across all envs:", total_reward)
         print("Total episode terminations:", total_dones)
-        print("Average reward per env per step:", total_reward / (num_steps * NUM_ENVS))
+        print(
+            "Average reward per env per step:",
+            total_reward / (num_steps * NUM_ENVS),
+        )
 
         # Check final states
         with states_buf.map_to_host() as states_host:

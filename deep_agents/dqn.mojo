@@ -417,7 +417,9 @@ fn store_transitions_kernel[
     CAPACITY: Int,
 ](
     # Inputs: current transitions from vectorized envs
-    states: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin],
+    states: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+    ],
     actions: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
     rewards: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
     next_states: LayoutTensor[
@@ -425,7 +427,9 @@ fn store_transitions_kernel[
     ],
     dones: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
     # Replay buffer storage (circular buffer)
-    buf_states: LayoutTensor[dtype, Layout.row_major(CAPACITY, OBS_DIM), MutAnyOrigin],
+    buf_states: LayoutTensor[
+        dtype, Layout.row_major(CAPACITY, OBS_DIM), MutAnyOrigin
+    ],
     buf_actions: LayoutTensor[dtype, Layout.row_major(CAPACITY), MutAnyOrigin],
     buf_rewards: LayoutTensor[dtype, Layout.row_major(CAPACITY), MutAnyOrigin],
     buf_next_states: LayoutTensor[
@@ -460,7 +464,9 @@ fn sample_indices_kernel[
     dtype: DType,
     SAMPLE_SIZE: Int,
 ](
-    indices: LayoutTensor[DType.int32, Layout.row_major(SAMPLE_SIZE), MutAnyOrigin],
+    indices: LayoutTensor[
+        DType.int32, Layout.row_major(SAMPLE_SIZE), MutAnyOrigin
+    ],
     buffer_size: Scalar[DType.int32],
     rng_seed: Scalar[DType.uint32],
 ):
@@ -491,14 +497,22 @@ fn gather_batch_kernel[
     batch_states: LayoutTensor[
         dtype, Layout.row_major(SAMPLE_SIZE, OBS_DIM), MutAnyOrigin
     ],
-    batch_actions: LayoutTensor[dtype, Layout.row_major(SAMPLE_SIZE), MutAnyOrigin],
-    batch_rewards: LayoutTensor[dtype, Layout.row_major(SAMPLE_SIZE), MutAnyOrigin],
+    batch_actions: LayoutTensor[
+        dtype, Layout.row_major(SAMPLE_SIZE), MutAnyOrigin
+    ],
+    batch_rewards: LayoutTensor[
+        dtype, Layout.row_major(SAMPLE_SIZE), MutAnyOrigin
+    ],
     batch_next_states: LayoutTensor[
         dtype, Layout.row_major(SAMPLE_SIZE, OBS_DIM), MutAnyOrigin
     ],
-    batch_dones: LayoutTensor[dtype, Layout.row_major(SAMPLE_SIZE), MutAnyOrigin],
+    batch_dones: LayoutTensor[
+        dtype, Layout.row_major(SAMPLE_SIZE), MutAnyOrigin
+    ],
     # Replay buffer storage
-    buf_states: LayoutTensor[dtype, Layout.row_major(CAPACITY, OBS_DIM), MutAnyOrigin],
+    buf_states: LayoutTensor[
+        dtype, Layout.row_major(CAPACITY, OBS_DIM), MutAnyOrigin
+    ],
     buf_actions: LayoutTensor[dtype, Layout.row_major(CAPACITY), MutAnyOrigin],
     buf_rewards: LayoutTensor[dtype, Layout.row_major(CAPACITY), MutAnyOrigin],
     buf_next_states: LayoutTensor[
@@ -506,7 +520,9 @@ fn gather_batch_kernel[
     ],
     buf_dones: LayoutTensor[dtype, Layout.row_major(CAPACITY), MutAnyOrigin],
     # Sampled indices
-    indices: LayoutTensor[DType.int32, Layout.row_major(SAMPLE_SIZE), MutAnyOrigin],
+    indices: LayoutTensor[
+        DType.int32, Layout.row_major(SAMPLE_SIZE), MutAnyOrigin
+    ],
 ):
     """Gather sampled transitions from replay buffer into batch tensors.
 
@@ -1275,7 +1291,10 @@ struct DQNAgent[
             if rand_val < epsilon:
                 # Random action using second random draw
                 var action_result = random_uniform[dtype](rng)
-                acts[b] = action_result[0] * Scalar[dtype](Self.num_actions)
+                # Truncate to int to get valid action (0 or 1)
+                acts[b] = Scalar[dtype](
+                    Int(action_result[0] * Scalar[dtype](Self.num_actions))
+                )
                 return
 
             var best_q = q_vals[b, 0]
@@ -1288,9 +1307,7 @@ struct DQNAgent[
 
             acts[b] = Scalar[dtype](best_action)
 
-        ctx.enqueue_function_checked[
-            argmax_kernel_wrapper, argmax_kernel_wrapper
-        ](
+        ctx.enqueue_function[argmax_kernel_wrapper, argmax_kernel_wrapper](
             Scalar[dtype](self.epsilon),
             q,
             actions,
@@ -1485,7 +1502,7 @@ struct DQNAgent[
                     gamma,
                 )
 
-            ctx.enqueue_function_checked[
+            ctx.enqueue_function[
                 double_td_kernel_wrapper, double_td_kernel_wrapper
             ](
                 targets_tensor,
@@ -1522,7 +1539,7 @@ struct DQNAgent[
                     targets_t, next_q_t, rewards_t, dones_t, gamma
                 )
 
-            ctx.enqueue_function_checked[td_kernel_wrapper, td_kernel_wrapper](
+            ctx.enqueue_function[td_kernel_wrapper, td_kernel_wrapper](
                 targets_tensor,
                 next_q_tensor,
                 rewards_tensor,
@@ -1585,7 +1602,7 @@ struct DQNAgent[
                 else:
                     grad_t[b, a] = Scalar[dtype](0.0)
 
-        ctx.enqueue_function_checked[grad_kernel_wrapper, grad_kernel_wrapper](
+        ctx.enqueue_function[grad_kernel_wrapper, grad_kernel_wrapper](
             grad_tensor,
             q_tensor,
             targets_tensor,
@@ -1609,7 +1626,7 @@ struct DQNAgent[
         ):
             zero_buffer_kernel[dtype, Self.NETWORK_PARAM_SIZE](buf)
 
-        ctx.enqueue_function_checked[zero_kernel_wrapper, zero_kernel_wrapper](
+        ctx.enqueue_function[zero_kernel_wrapper, zero_kernel_wrapper](
             grads_tensor,
             grid_dim=(PARAM_BLOCKS,),
             block_dim=(TPB,),
@@ -1654,7 +1671,7 @@ struct DQNAgent[
                 target_t, source_t, tau
             )
 
-        ctx.enqueue_function_checked[soft_update_wrapper, soft_update_wrapper](
+        ctx.enqueue_function[soft_update_wrapper, soft_update_wrapper](
             target_params_tensor,
             online_params_tensor,
             tau_scalar,
@@ -1665,7 +1682,7 @@ struct DQNAgent[
         self.train_step_count += 1
         return 0.0  # Loss computation would need GPU reduction
 
-    fn train_gpu[
+    fn train_gpu_full[
         EnvType: GPUDiscreteEnv
     ](
         mut self,
@@ -1786,14 +1803,24 @@ struct DQNAgent[
         var rb_dones_buf = ctx.enqueue_create_buffer[dtype](RB_CAPACITY)
 
         # Sample indices buffer (for random sampling)
-        var sample_indices_buf = ctx.enqueue_create_buffer[DType.int32](Self.batch_size)
+        var sample_indices_buf = ctx.enqueue_create_buffer[DType.int32](
+            Self.batch_size
+        )
 
         # Sampled batch buffers (for training from replay buffer)
         var sampled_obs_buf = ctx.enqueue_create_buffer[dtype](BATCH_OBS_SIZE)
-        var sampled_actions_buf = ctx.enqueue_create_buffer[dtype](Self.batch_size)
-        var sampled_rewards_buf = ctx.enqueue_create_buffer[dtype](Self.batch_size)
-        var sampled_next_obs_buf = ctx.enqueue_create_buffer[dtype](BATCH_OBS_SIZE)
-        var sampled_dones_buf = ctx.enqueue_create_buffer[dtype](Self.batch_size)
+        var sampled_actions_buf = ctx.enqueue_create_buffer[dtype](
+            Self.batch_size
+        )
+        var sampled_rewards_buf = ctx.enqueue_create_buffer[dtype](
+            Self.batch_size
+        )
+        var sampled_next_obs_buf = ctx.enqueue_create_buffer[dtype](
+            BATCH_OBS_SIZE
+        )
+        var sampled_dones_buf = ctx.enqueue_create_buffer[dtype](
+            Self.batch_size
+        )
 
         # Replay buffer state (managed on CPU)
         var rb_write_idx: Int = 0
@@ -1863,16 +1890,12 @@ struct DQNAgent[
         ):
             zero_buffer_kernel[dtype, Self.batch_size](buf)
 
-        ctx.enqueue_function_checked[
-            zero_episode_rewards, zero_episode_rewards
-        ](
+        ctx.enqueue_function[zero_episode_rewards, zero_episode_rewards](
             episode_rewards_tensor,
             grid_dim=(BATCH_BLOCKS,),
             block_dim=(TPB,),
         )
-        ctx.enqueue_function_checked[
-            zero_episode_rewards, zero_episode_rewards
-        ](
+        ctx.enqueue_function[zero_episode_rewards, zero_episode_rewards](
             episode_steps_tensor,
             grid_dim=(BATCH_BLOCKS,),
             block_dim=(TPB,),
@@ -2040,7 +2063,9 @@ struct DQNAgent[
         @always_inline
         fn store_transitions_wrapper(
             states: LayoutTensor[
-                dtype, Layout.row_major(Self.batch_size, Self.obs_dim), MutAnyOrigin
+                dtype,
+                Layout.row_major(Self.batch_size, Self.obs_dim),
+                MutAnyOrigin,
             ],
             actions: LayoutTensor[
                 dtype, Layout.row_major(Self.batch_size), MutAnyOrigin
@@ -2049,7 +2074,9 @@ struct DQNAgent[
                 dtype, Layout.row_major(Self.batch_size), MutAnyOrigin
             ],
             next_states: LayoutTensor[
-                dtype, Layout.row_major(Self.batch_size, Self.obs_dim), MutAnyOrigin
+                dtype,
+                Layout.row_major(Self.batch_size, Self.obs_dim),
+                MutAnyOrigin,
             ],
             dones: LayoutTensor[
                 dtype, Layout.row_major(Self.batch_size), MutAnyOrigin
@@ -2074,8 +2101,16 @@ struct DQNAgent[
             store_transitions_kernel[
                 dtype, Self.batch_size, Self.obs_dim, RB_CAPACITY
             ](
-                states, actions, rewards, next_states, dones,
-                buf_states, buf_actions, buf_rewards, buf_next_states, buf_dones,
+                states,
+                actions,
+                rewards,
+                next_states,
+                dones,
+                buf_states,
+                buf_actions,
+                buf_rewards,
+                buf_next_states,
+                buf_dones,
                 write_idx,
             )
 
@@ -2096,7 +2131,9 @@ struct DQNAgent[
         @always_inline
         fn gather_batch_wrapper(
             batch_states: LayoutTensor[
-                dtype, Layout.row_major(Self.batch_size, Self.obs_dim), MutAnyOrigin
+                dtype,
+                Layout.row_major(Self.batch_size, Self.obs_dim),
+                MutAnyOrigin,
             ],
             batch_actions: LayoutTensor[
                 dtype, Layout.row_major(Self.batch_size), MutAnyOrigin
@@ -2105,7 +2142,9 @@ struct DQNAgent[
                 dtype, Layout.row_major(Self.batch_size), MutAnyOrigin
             ],
             batch_next_states: LayoutTensor[
-                dtype, Layout.row_major(Self.batch_size, Self.obs_dim), MutAnyOrigin
+                dtype,
+                Layout.row_major(Self.batch_size, Self.obs_dim),
+                MutAnyOrigin,
             ],
             batch_dones: LayoutTensor[
                 dtype, Layout.row_major(Self.batch_size), MutAnyOrigin
@@ -2132,17 +2171,117 @@ struct DQNAgent[
             gather_batch_kernel[
                 dtype, Self.batch_size, Self.obs_dim, RB_CAPACITY
             ](
-                batch_states, batch_actions, batch_rewards,
-                batch_next_states, batch_dones,
-                buf_states, buf_actions, buf_rewards, buf_next_states, buf_dones,
+                batch_states,
+                batch_actions,
+                batch_rewards,
+                batch_next_states,
+                batch_dones,
+                buf_states,
+                buf_actions,
+                buf_rewards,
+                buf_next_states,
+                buf_dones,
                 indices,
             )
 
+        # =====================================================================
+        # Warmup phase: fill replay buffer with random transitions
+        # =====================================================================
+        if verbose:
+            print(
+                "Warmup: collecting "
+                + String(warmup_steps)
+                + " random transitions..."
+            )
+
+        var saved_epsilon = self.epsilon
+        self.epsilon = 1.0  # Force random actions during warmup
+
+        var warmup_count = 0
+        while warmup_count < warmup_steps:
+            # Copy current obs to prev_obs
+            ctx.enqueue_function[copy_obs_wrapper, copy_obs_wrapper](
+                prev_obs_tensor,
+                obs_flat_tensor,
+                grid_dim=(OBS_BLOCKS,),
+                block_dim=(TPB,),
+            )
+
+            # Select random actions (epsilon=1.0)
+            self.select_actions_gpu(
+                ctx,
+                obs_buf,
+                q_values_buf,
+                actions_buf,
+                online_params_buf,
+            )
+
+            # Step environments
+            EnvType.step_kernel_gpu[Self.batch_size, Self.obs_dim](
+                ctx, obs_buf, actions_buf, rewards_buf, dones_buf
+            )
+
+            # Store transitions to replay buffer
+            ctx.enqueue_function[
+                store_transitions_wrapper, store_transitions_wrapper
+            ](
+                prev_obs_2d_tensor,
+                actions_tensor,
+                rewards_tensor,
+                obs_2d_tensor,
+                dones_tensor,
+                rb_states_tensor,
+                rb_actions_tensor,
+                rb_rewards_tensor,
+                rb_next_states_tensor,
+                rb_dones_tensor,
+                Scalar[DType.int32](rb_write_idx),
+                grid_dim=(BATCH_BLOCKS,),
+                block_dim=(TPB,),
+            )
+
+            # Update replay buffer state
+            rb_write_idx = (rb_write_idx + Self.batch_size) % RB_CAPACITY
+            rb_size = min(rb_size + Self.batch_size, RB_CAPACITY)
+            warmup_count += Self.batch_size
+
+            # Reset done environments
+            var rng_seed = UInt32(warmup_count * 7919 + 42)
+            EnvType.selective_reset_kernel_gpu[Self.batch_size, Self.obs_dim](
+                ctx, obs_buf, dones_buf, rng_seed
+            )
+
+        self.epsilon = saved_epsilon  # Restore epsilon
+
+        # Reset ALL environments after warmup to start fresh episodes
+        # (warmup may leave envs mid-episode, which would give incorrect episode rewards)
+        EnvType.reset_kernel_gpu[Self.batch_size, Self.obs_dim](ctx, obs_buf)
+
+        if verbose:
+            print("Warmup complete. Replay buffer size: " + String(rb_size))
+
+        # =====================================================================
+        # Timing counters (for debugging performance)
+        # =====================================================================
+        from time import perf_counter_ns
+
+        var time_action_select: UInt = 0
+        var time_env_step: UInt = 0
+        var time_store: UInt = 0
+        var time_train: UInt = 0
+        var time_episode_track: UInt = 0
+        var iteration_count = 0
+
+        # =====================================================================
+        # Main Training Loop
+        # =====================================================================
         while completed_episodes < num_episodes:
+            var t0 = perf_counter_ns()
+
             # =================================================================
             # Copy current observations to prev_obs for training
             # =================================================================
-            ctx.enqueue_function_checked[copy_obs_wrapper, copy_obs_wrapper](
+            ctx.enqueue_function[copy_obs_wrapper, copy_obs_wrapper](
                 prev_obs_tensor,
                 obs_flat_tensor,
                 grid_dim=(OBS_BLOCKS,),
@@ -2159,6 +2298,9 @@ struct DQNAgent[
                 actions_buf,
                 online_params_buf,
             )
+            ctx.synchronize()
+            var t1 = perf_counter_ns()
+            time_action_select += t1 - t0
 
             # =================================================================
             # Step all environments on GPU
@@ -2167,21 +2309,20 @@ struct DQNAgent[
             EnvType.step_kernel_gpu[Self.batch_size, Self.obs_dim](
                 ctx, obs_buf, actions_buf, rewards_buf, dones_buf
             )
+            ctx.synchronize()
+            var t2 = perf_counter_ns()
+            time_env_step += t2 - t1
 
             # =================================================================
             # Accumulate rewards and increment steps on GPU
             # =================================================================
-            ctx.enqueue_function_checked[
-                accum_rewards_wrapper, accum_rewards_wrapper
-            ](
+            ctx.enqueue_function[accum_rewards_wrapper, accum_rewards_wrapper](
                 episode_rewards_tensor,
                 rewards_tensor,
                 grid_dim=(BATCH_BLOCKS,),
                 block_dim=(TPB,),
             )
-            ctx.enqueue_function_checked[
-                incr_steps_wrapper, incr_steps_wrapper
-            ](
+            ctx.enqueue_function[incr_steps_wrapper, incr_steps_wrapper](
                 episode_steps_tensor,
                 grid_dim=(BATCH_BLOCKS,),
                 block_dim=(TPB,),
@@ -2195,7 +2336,7 @@ struct DQNAgent[
             # Store transitions to GPU replay buffer
             # prev_obs = state before step, obs = next_state after step
             # =================================================================
-            ctx.enqueue_function_checked[
+            ctx.enqueue_function[
                 store_transitions_wrapper, store_transitions_wrapper
             ](
                 prev_obs_2d_tensor,
@@ -2216,68 +2357,92 @@ struct DQNAgent[
             # Update replay buffer state (CPU-side tracking)
             rb_write_idx = (rb_write_idx + Self.batch_size) % RB_CAPACITY
             rb_size = min(rb_size + Self.batch_size, RB_CAPACITY)
+            ctx.synchronize()
+            var t3 = perf_counter_ns()
+            time_store += t3 - t2
+
+            # Initialize t4 for timing (will be updated after training)
+            var t4 = t3
 
             # =================================================================
-            # Train every N steps when replay buffer has enough samples
+            # Train multiple times per iteration to increase training frequency
+            # GPU processes batch_size transitions per iteration. We train
+            # multiple times per iteration to get more gradient updates.
+            # With train_every=1, we train batch_size times. With train_every=4,
+            # we train batch_size//4 times. Cap at 8 to avoid being too slow.
             # =================================================================
-            var iteration = total_steps // Self.batch_size
-            if iteration % train_every == 0 and rb_size >= Self.batch_size:
-                # Sample random indices from replay buffer
-                var rng_seed = Scalar[DType.uint32](total_steps * 31337 + 12345)
-                ctx.enqueue_function_checked[
-                    sample_indices_wrapper, sample_indices_wrapper
-                ](
-                    sample_indices_tensor,
-                    Scalar[DType.int32](rb_size),
-                    rng_seed,
-                    grid_dim=(BATCH_BLOCKS,),
-                    block_dim=(TPB,),
+            if rb_size >= Self.batch_size:
+                # Number of training steps to do this iteration
+                # Each training step has significant kernel launch overhead (~30ms),
+                # so we balance learning speed vs wall-clock time.
+                # With batch_size=32 and train_every=1, we target batch_size gradient
+                # updates per iteration to match CPU training frequency.
+                var num_train_steps = min(
+                    Self.batch_size, max(1, Self.batch_size // train_every)
                 )
 
-                # Gather sampled transitions into batch tensors
-                ctx.enqueue_function_checked[
-                    gather_batch_wrapper, gather_batch_wrapper
-                ](
-                    sampled_obs_tensor,
-                    sampled_actions_tensor,
-                    sampled_rewards_tensor,
-                    sampled_next_obs_tensor,
-                    sampled_dones_tensor,
-                    rb_states_tensor,
-                    rb_actions_tensor,
-                    rb_rewards_tensor,
-                    rb_next_states_tensor,
-                    rb_dones_tensor,
-                    sample_indices_tensor,
-                    grid_dim=(BATCH_BLOCKS,),
-                    block_dim=(TPB,),
-                )
+                for train_idx in range(num_train_steps):
+                    # Sample random indices from replay buffer
+                    var rng_seed = Scalar[DType.uint32](
+                        total_steps * 31337 + train_idx * 12345 + 67890
+                    )
+                    ctx.enqueue_function[
+                        sample_indices_wrapper, sample_indices_wrapper
+                    ](
+                        sample_indices_tensor,
+                        Scalar[DType.int32](rb_size),
+                        rng_seed,
+                        grid_dim=(BATCH_BLOCKS,),
+                        block_dim=(TPB,),
+                    )
 
-                # Train on sampled batch
-                _ = self.train_step_gpu_online(
-                    ctx,
-                    online_params_buf,
-                    online_grads_buf,
-                    online_state_buf,
-                    target_params_buf,
-                    sampled_obs_buf,       # Sampled observations from replay buffer
-                    sampled_next_obs_buf,  # Sampled next observations
-                    q_values_buf,
-                    next_q_values_buf,
-                    online_next_q_buf,
-                    cache_buf,
-                    grad_output_buf,
-                    grad_input_buf,
-                    targets_buf,
-                    sampled_rewards_buf,   # Sampled rewards
-                    sampled_dones_buf,     # Sampled dones
-                    sampled_actions_buf,   # Sampled actions
-                )
+                    # Gather sampled transitions into batch tensors
+                    ctx.enqueue_function[
+                        gather_batch_wrapper, gather_batch_wrapper
+                    ](
+                        sampled_obs_tensor,
+                        sampled_actions_tensor,
+                        sampled_rewards_tensor,
+                        sampled_next_obs_tensor,
+                        sampled_dones_tensor,
+                        rb_states_tensor,
+                        rb_actions_tensor,
+                        rb_rewards_tensor,
+                        rb_next_states_tensor,
+                        rb_dones_tensor,
+                        sample_indices_tensor,
+                        grid_dim=(BATCH_BLOCKS,),
+                        block_dim=(TPB,),
+                    )
+
+                    # Train on sampled batch
+                    _ = self.train_step_gpu_online(
+                        ctx,
+                        online_params_buf,
+                        online_grads_buf,
+                        online_state_buf,
+                        target_params_buf,
+                        sampled_obs_buf,  # Sampled observations from replay buffer
+                        sampled_next_obs_buf,  # Sampled next observations
+                        q_values_buf,
+                        next_q_values_buf,
+                        online_next_q_buf,
+                        cache_buf,
+                        grad_output_buf,
+                        grad_input_buf,
+                        targets_buf,
+                        sampled_rewards_buf,  # Sampled rewards
+                        sampled_dones_buf,  # Sampled dones
+                        sampled_actions_buf,  # Sampled actions
+                    )
+                ctx.synchronize()
+                t4 = perf_counter_ns()
+                time_train += t4 - t3
 
             # =================================================================
             # Extract completed episodes and reset done environments
             # =================================================================
-            ctx.enqueue_function_checked[
+            ctx.enqueue_function[
                 extract_completed_wrapper, extract_completed_wrapper
             ](
                 dones_tensor,
@@ -2325,6 +2490,12 @@ struct DQNAgent[
                     Self.batch_size, Self.obs_dim
                 ](ctx, obs_buf, dones_buf, rng_seed)
 
+            var t5 = perf_counter_ns()
+            time_episode_track += (
+                t5 - t4
+            )  # Episode tracking time (from after training)
+            iteration_count += 1
+
             # =================================================================
             # Sync GPU params to CPU periodically
             # =================================================================
@@ -2360,6 +2531,652 @@ struct DQNAgent[
                         + " | Steps: "
                         + String(total_steps)
                     )
+
+        # Copy GPU params back to CPU for evaluation
+        self.online_model.copy_params_from_device(ctx, online_params_buf)
+        self.target_model.copy_params_from_device(ctx, target_params_buf)
+
+        # Print timing summary
+        if verbose:
+            var total_time = (
+                time_action_select
+                + time_env_step
+                + time_store
+                + time_train
+                + time_episode_track
+            )
+            print()
+            print("Timing breakdown (ms):")
+            print(
+                "  Action select: "
+                + String(Float64(time_action_select) / 1e6)[:8]
+            )
+            print(
+                "  Env step:      " + String(Float64(time_env_step) / 1e6)[:8]
+            )
+            print("  Store trans:   " + String(Float64(time_store) / 1e6)[:8])
+            print("  Training:      " + String(Float64(time_train) / 1e6)[:8])
+            print(
+                "  Episode track: "
+                + String(Float64(time_episode_track) / 1e6)[:8]
+            )
+            print("  Total:         " + String(Float64(total_time) / 1e6)[:8])
+            print("  Iterations:    " + String(iteration_count))
+            if iteration_count > 0:
+                print(
+                    "  Avg per iter:  "
+                    + String(
+                        Float64(total_time) / Float64(iteration_count) / 1e6
+                    )[:8]
+                    + " ms"
+                )
+
+        return metrics^
+
+    fn train_step_gpu(
+        mut self,
+        ctx: DeviceContext,
+        # Network buffers (pre-allocated)
+        mut online_params_buf: DeviceBuffer[dtype],
+        mut online_grads_buf: DeviceBuffer[dtype],
+        mut online_state_buf: DeviceBuffer[dtype],
+        mut target_params_buf: DeviceBuffer[dtype],
+        # Batch buffers (pre-allocated)
+        mut obs_buf: DeviceBuffer[dtype],
+        mut next_obs_buf: DeviceBuffer[dtype],
+        mut q_values_buf: DeviceBuffer[dtype],
+        mut next_q_values_buf: DeviceBuffer[dtype],
+        mut online_next_q_buf: DeviceBuffer[dtype],  # For Double DQN
+        mut cache_buf: DeviceBuffer[dtype],
+        mut grad_output_buf: DeviceBuffer[dtype],
+        mut grad_input_buf: DeviceBuffer[dtype],
+        mut targets_buf: DeviceBuffer[dtype],
+        mut rewards_buf: DeviceBuffer[dtype],
+        mut dones_buf: DeviceBuffer[dtype],
+        mut actions_buf: DeviceBuffer[dtype],
+        # Host buffers for CPU-GPU transfer (pre-allocated)
+        mut obs_host: HostBuffer[dtype],
+        mut next_obs_host: HostBuffer[dtype],
+        mut rewards_host: HostBuffer[dtype],
+        mut dones_host: HostBuffer[dtype],
+        mut actions_host: HostBuffer[dtype],
+    ) raises -> Float64:
+        """Optimized GPU training step with pre-allocated buffers.
+
+        All buffers are passed in to avoid allocation overhead.
+        All operations run on GPU except replay buffer sampling.
+        """
+        # Check if buffer has enough samples
+        if not self.buffer.is_ready[Self.batch_size]():
+            return 0.0
+
+        # Sample batch from replay buffer (CPU - must be random access)
+        comptime BATCH_OBS_SIZE = Self.batch_size * Self.obs_dim
+        var batch_obs = InlineArray[Scalar[dtype], BATCH_OBS_SIZE](
+            uninitialized=True
+        )
+        var batch_next_obs = InlineArray[Scalar[dtype], BATCH_OBS_SIZE](
+            uninitialized=True
+        )
+        var batch_rewards = InlineArray[Scalar[dtype], Self.batch_size](
+            uninitialized=True
+        )
+        var batch_dones = InlineArray[Scalar[dtype], Self.batch_size](
+            uninitialized=True
+        )
+        var batch_actions_tmp = InlineArray[Scalar[dtype], Self.batch_size](
+            uninitialized=True
+        )
+
+        self.buffer.sample[Self.batch_size](
+            batch_obs,
+            batch_actions_tmp,
+            batch_rewards,
+            batch_next_obs,
+            batch_dones,
+        )
+
+        # Copy batch to pre-allocated host buffers
+        for i in range(BATCH_OBS_SIZE):
+            obs_host[i] = batch_obs[i]
+            next_obs_host[i] = batch_next_obs[i]
+        for i in range(Self.batch_size):
+            rewards_host[i] = batch_rewards[i]
+            dones_host[i] = batch_dones[i]
+            actions_host[i] = batch_actions_tmp[i]
+
+        # Copy to GPU (async)
+        ctx.enqueue_copy(obs_buf, obs_host)
+        ctx.enqueue_copy(next_obs_buf, next_obs_host)
+        ctx.enqueue_copy(rewards_buf, rewards_host)
+        ctx.enqueue_copy(dones_buf, dones_host)
+        ctx.enqueue_copy(actions_buf, actions_host)
+
+        # GPU Forward pass: online network with cache
+        self.online_model.forward_gpu_with_cache[Self.batch_size](
+            ctx, obs_buf, q_values_buf, online_params_buf, cache_buf
+        )
+
+        # GPU Forward pass: target network (no cache)
+        self.target_model.forward_gpu[Self.batch_size](
+            ctx, next_obs_buf, next_q_values_buf, target_params_buf
+        )
+
+        # GPU TD Target computation
+        comptime BATCH_BLOCKS = (Self.batch_size + TPB - 1) // TPB
+        var gamma_scalar = Scalar[dtype](self.gamma)
+
+        # Create LayoutTensor views for kernels
+        var targets_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.batch_size), MutAnyOrigin
+        ](targets_buf.unsafe_ptr())
+        var rewards_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.batch_size), MutAnyOrigin
+        ](rewards_buf.unsafe_ptr())
+        var dones_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.batch_size), MutAnyOrigin
+        ](dones_buf.unsafe_ptr())
+        var next_q_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.batch_size, Self.num_actions),
+            MutAnyOrigin,
+        ](next_q_values_buf.unsafe_ptr())
+
+        @parameter
+        if Self.double_dqn:
+            # For Double DQN: forward online network on next_obs
+            self.online_model.forward_gpu[Self.batch_size](
+                ctx, next_obs_buf, online_next_q_buf, online_params_buf
+            )
+
+            var online_next_tensor = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.batch_size, Self.num_actions),
+                MutAnyOrigin,
+            ](online_next_q_buf.unsafe_ptr())
+
+            # Double DQN TD target kernel
+            @parameter
+            @always_inline
+            fn double_td_kernel_wrapper(
+                targets_t: LayoutTensor[
+                    dtype, Layout.row_major(Self.batch_size), MutAnyOrigin
+                ],
+                online_next_t: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.batch_size, Self.num_actions),
+                    MutAnyOrigin,
+                ],
+                target_next_t: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.batch_size, Self.num_actions),
+                    MutAnyOrigin,
+                ],
+                rewards_t: LayoutTensor[
+                    dtype, Layout.row_major(Self.batch_size), MutAnyOrigin
+                ],
+                dones_t: LayoutTensor[
+                    dtype, Layout.row_major(Self.batch_size), MutAnyOrigin
+                ],
+                gamma: Scalar[dtype],
+            ):
+                dqn_double_td_target_kernel[
+                    dtype, Self.batch_size, Self.num_actions
+                ](
+                    targets_t,
+                    online_next_t,
+                    target_next_t,
+                    rewards_t,
+                    dones_t,
+                    gamma,
+                )
+
+            ctx.enqueue_function[
+                double_td_kernel_wrapper, double_td_kernel_wrapper
+            ](
+                targets_tensor,
+                online_next_tensor,
+                next_q_tensor,
+                rewards_tensor,
+                dones_tensor,
+                gamma_scalar,
+                grid_dim=(BATCH_BLOCKS,),
+                block_dim=(TPB,),
+            )
+        else:
+            # Standard DQN TD target kernel
+            @parameter
+            @always_inline
+            fn td_kernel_wrapper(
+                targets_t: LayoutTensor[
+                    dtype, Layout.row_major(Self.batch_size), MutAnyOrigin
+                ],
+                next_q_t: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.batch_size, Self.num_actions),
+                    MutAnyOrigin,
+                ],
+                rewards_t: LayoutTensor[
+                    dtype, Layout.row_major(Self.batch_size), MutAnyOrigin
+                ],
+                dones_t: LayoutTensor[
+                    dtype, Layout.row_major(Self.batch_size), MutAnyOrigin
+                ],
+                gamma: Scalar[dtype],
+            ):
+                dqn_td_target_kernel[dtype, Self.batch_size, Self.num_actions](
+                    targets_t, next_q_t, rewards_t, dones_t, gamma
+                )
+
+            ctx.enqueue_function[td_kernel_wrapper, td_kernel_wrapper](
+                targets_tensor,
+                next_q_tensor,
+                rewards_tensor,
+                dones_tensor,
+                gamma_scalar,
+                grid_dim=(BATCH_BLOCKS,),
+                block_dim=(TPB,),
+            )
+
+        # GPU Gradient computation
+        var q_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.batch_size, Self.num_actions),
+            MutAnyOrigin,
+        ](q_values_buf.unsafe_ptr())
+        var grad_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.batch_size, Self.num_actions),
+            MutAnyOrigin,
+        ](grad_output_buf.unsafe_ptr())
+        var actions_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.batch_size), MutAnyOrigin
+        ](actions_buf.unsafe_ptr())
+
+        # We don't use loss_out in the kernel for now (would need reduction)
+        @parameter
+        @always_inline
+        fn grad_kernel_wrapper(
+            grad_t: LayoutTensor[
+                dtype,
+                Layout.row_major(Self.batch_size, Self.num_actions),
+                MutAnyOrigin,
+            ],
+            q_t: LayoutTensor[
+                dtype,
+                Layout.row_major(Self.batch_size, Self.num_actions),
+                MutAnyOrigin,
+            ],
+            targets_t: LayoutTensor[
+                dtype, Layout.row_major(Self.batch_size), MutAnyOrigin
+            ],
+            actions_t: LayoutTensor[
+                dtype, Layout.row_major(Self.batch_size), MutAnyOrigin
+            ],
+        ):
+            # Inline the gradient computation
+            var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if b >= Self.batch_size:
+                return
+            var action = Int(actions_t[b])
+            var q_pred = q_t[b, action]
+            var td_error = q_pred - targets_t[b]
+            for a in range(Self.num_actions):
+                if a == action:
+                    grad_t[b, a] = (
+                        Scalar[dtype](2.0)
+                        * td_error
+                        / Scalar[dtype](Self.batch_size)
+                    )
+                else:
+                    grad_t[b, a] = Scalar[dtype](0.0)
+
+        ctx.enqueue_function[grad_kernel_wrapper, grad_kernel_wrapper](
+            grad_tensor,
+            q_tensor,
+            targets_tensor,
+            actions_tensor,
+            grid_dim=(BATCH_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        # GPU Zero gradients
+        comptime PARAM_BLOCKS = (Self.NETWORK_PARAM_SIZE + TPB - 1) // TPB
+        var grads_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.NETWORK_PARAM_SIZE), MutAnyOrigin
+        ](online_grads_buf.unsafe_ptr())
+
+        @parameter
+        @always_inline
+        fn zero_kernel_wrapper(
+            buf: LayoutTensor[
+                dtype, Layout.row_major(Self.NETWORK_PARAM_SIZE), MutAnyOrigin
+            ],
+        ):
+            zero_buffer_kernel[dtype, Self.NETWORK_PARAM_SIZE](buf)
+
+        ctx.enqueue_function[zero_kernel_wrapper, zero_kernel_wrapper](
+            grads_tensor,
+            grid_dim=(PARAM_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        # GPU Backward pass
+        self.online_model.backward_gpu[Self.batch_size](
+            ctx,
+            grad_output_buf,
+            grad_input_buf,
+            online_params_buf,
+            cache_buf,
+            online_grads_buf,
+        )
+
+        # GPU Optimizer update
+        self.online_model.update_gpu(
+            ctx, online_params_buf, online_grads_buf, online_state_buf
+        )
+
+        # GPU Soft update target network
+        var tau_scalar = Scalar[dtype](self.tau)
+        var online_params_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.NETWORK_PARAM_SIZE), MutAnyOrigin
+        ](online_params_buf.unsafe_ptr())
+        var target_params_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.NETWORK_PARAM_SIZE), MutAnyOrigin
+        ](target_params_buf.unsafe_ptr())
+
+        @parameter
+        @always_inline
+        fn soft_update_wrapper(
+            target_t: LayoutTensor[
+                dtype, Layout.row_major(Self.NETWORK_PARAM_SIZE), MutAnyOrigin
+            ],
+            source_t: LayoutTensor[
+                dtype, Layout.row_major(Self.NETWORK_PARAM_SIZE), MutAnyOrigin
+            ],
+            tau: Scalar[dtype],
+        ):
+            soft_update_kernel[dtype, Self.NETWORK_PARAM_SIZE](
+                target_t, source_t, tau
+            )
+
+        ctx.enqueue_function[soft_update_wrapper, soft_update_wrapper](
+            target_params_tensor,
+            online_params_tensor,
+            tau_scalar,
+            grid_dim=(PARAM_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        self.train_step_count += 1
+        return 0.0  # Loss computation would need GPU reduction
+
+    fn select_action_gpu(
+        self,
+        obs: SIMD[DType.float64, Self.obs_dim],
+        ctx: DeviceContext,
+        mut obs_buf: DeviceBuffer[dtype],
+        mut q_buf: DeviceBuffer[dtype],
+        params_buf: DeviceBuffer[dtype],
+        mut obs_host: HostBuffer[dtype],
+        mut q_host: HostBuffer[dtype],
+    ) raises -> Int:
+        """Select action using GPU forward pass (avoids CPU param sync).
+
+        Args:
+            obs: Current observation.
+            ctx: GPU device context.
+            obs_buf: Pre-allocated GPU buffer for observation [obs_dim].
+            q_buf: Pre-allocated GPU buffer for Q-values [num_actions].
+            params_buf: GPU buffer containing current params.
+            obs_host: Pre-allocated host buffer for observation [obs_dim].
+            q_host: Pre-allocated host buffer for Q-values [num_actions].
+
+        Returns:
+            Selected action index.
+        """
+        # Epsilon-greedy exploration
+        if random_float64() < self.epsilon:
+            return Int(random_float64() * Float64(Self.num_actions))
+
+        # Copy obs to host buffer
+        for i in range(Self.obs_dim):
+            obs_host[i] = Scalar[dtype](obs[i])
+
+        # Copy to GPU
+        ctx.enqueue_copy(obs_buf, obs_host)
+
+        # Forward pass on GPU (batch=1)
+        self.online_model.forward_gpu[1](ctx, obs_buf, q_buf, params_buf)
+
+        # Copy Q-values back
+        ctx.enqueue_copy(q_host, q_buf)
+        ctx.synchronize()
+
+        # Find argmax
+        var best_action = 0
+        var best_q = q_host[0]
+        for a in range(1, Self.num_actions):
+            if q_host[a] > best_q:
+                best_q = q_host[a]
+                best_action = a
+
+        return best_action
+
+    fn train_gpu[
+        E: BoxDiscreteActionEnv
+    ](
+        mut self,
+        ctx: DeviceContext,
+        mut env: E,
+        num_episodes: Int,
+        max_steps_per_episode: Int = 500,
+        warmup_steps: Int = 1000,
+        train_every: Int = 4,
+        sync_every: Int = 5,
+        verbose: Bool = False,
+        print_every: Int = 10,
+        environment_name: String = "Environment",
+    ) raises -> TrainingMetrics:
+        """Train the DQN agent on GPU with optimized buffer management.
+
+        All GPU buffers are pre-allocated once at the start of training.
+        Action selection uses GPU forward pass (no CPU param sync needed).
+        Environment interaction happens on CPU, all training operations on GPU.
+
+        Args:
+            ctx: GPU device context.
+            env: The environment to train on (must implement BoxDiscreteActionEnv).
+            num_episodes: Number of episodes to train.
+            max_steps_per_episode: Maximum steps per episode (default: 500).
+            warmup_steps: Number of random steps to fill replay buffer (default: 1000).
+            train_every: Train every N steps (default: 4).
+            sync_every: Sync GPU params to CPU every N episodes for backup (default: 5).
+            verbose: Whether to print progress (default: False).
+            print_every: Print progress every N episodes if verbose (default: 10).
+            environment_name: Name of environment for metrics labeling.
+
+        Returns:
+            TrainingMetrics object with episode rewards and statistics.
+        """
+        var metrics = TrainingMetrics(
+            algorithm_name="DQN (GPU)" if not Self.double_dqn else "Double DQN (GPU)",
+            environment_name=environment_name,
+        )
+
+        # =====================================================================
+        # Pre-allocate ALL GPU buffers (done once!)
+        # =====================================================================
+        comptime PARAM_SIZE = Self.NETWORK_PARAM_SIZE
+        comptime STATE_SIZE = PARAM_SIZE * 2  # Adam has 2 state values per param
+        comptime BATCH_OBS_SIZE = Self.batch_size * Self.obs_dim
+        comptime BATCH_Q_SIZE = Self.batch_size * Self.num_actions
+        comptime BATCH_CACHE_SIZE = Self.batch_size * Self.NETWORK_CACHE_SIZE
+
+        # Network parameter buffers
+        var online_params_buf = ctx.enqueue_create_buffer[dtype](PARAM_SIZE)
+        var online_grads_buf = ctx.enqueue_create_buffer[dtype](PARAM_SIZE)
+        var online_state_buf = ctx.enqueue_create_buffer[dtype](STATE_SIZE)
+        var target_params_buf = ctx.enqueue_create_buffer[dtype](PARAM_SIZE)
+
+        # Batch data buffers (GPU)
+        var obs_buf = ctx.enqueue_create_buffer[dtype](BATCH_OBS_SIZE)
+        var next_obs_buf = ctx.enqueue_create_buffer[dtype](BATCH_OBS_SIZE)
+        var q_values_buf = ctx.enqueue_create_buffer[dtype](BATCH_Q_SIZE)
+        var next_q_values_buf = ctx.enqueue_create_buffer[dtype](BATCH_Q_SIZE)
+        var online_next_q_buf = ctx.enqueue_create_buffer[dtype](
+            BATCH_Q_SIZE
+        )  # Double DQN
+        var cache_buf = ctx.enqueue_create_buffer[dtype](BATCH_CACHE_SIZE)
+        var grad_output_buf = ctx.enqueue_create_buffer[dtype](BATCH_Q_SIZE)
+        var grad_input_buf = ctx.enqueue_create_buffer[dtype](BATCH_OBS_SIZE)
+        var targets_buf = ctx.enqueue_create_buffer[dtype](Self.batch_size)
+        var rewards_buf = ctx.enqueue_create_buffer[dtype](Self.batch_size)
+        var dones_buf = ctx.enqueue_create_buffer[dtype](Self.batch_size)
+        var actions_buf = ctx.enqueue_create_buffer[dtype](Self.batch_size)
+
+        # Host buffers for CPU-GPU transfer
+        var obs_host = ctx.enqueue_create_host_buffer[dtype](BATCH_OBS_SIZE)
+        var next_obs_host = ctx.enqueue_create_host_buffer[dtype](
+            BATCH_OBS_SIZE
+        )
+        var rewards_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.batch_size
+        )
+        var dones_host = ctx.enqueue_create_host_buffer[dtype](Self.batch_size)
+        var actions_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.batch_size
+        )
+
+        # Action selection buffers (batch=1 for single observation)
+        var action_obs_buf = ctx.enqueue_create_buffer[dtype](Self.obs_dim)
+        var action_q_buf = ctx.enqueue_create_buffer[dtype](Self.num_actions)
+        var action_obs_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.obs_dim
+        )
+        var action_q_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.num_actions
+        )
+
+        # Copy CPU params to GPU
+        self.online_model.copy_params_to_device(ctx, online_params_buf)
+        self.online_model.copy_state_to_device(ctx, online_state_buf)
+        self.target_model.copy_params_to_device(ctx, target_params_buf)
+
+        if verbose:
+            print("GPU buffers allocated. Starting training...")
+
+        # =====================================================================
+        # Warmup: fill replay buffer with random actions (CPU)
+        # =====================================================================
+        var warmup_obs = self._list_to_simd(env.reset_obs_list())
+        var warmup_count = 0
+
+        while warmup_count < warmup_steps:
+            var action = Int(random_float64() * Float64(Self.num_actions))
+            var result = env.step_obs(action)
+            var next_obs = self._list_to_simd(result[0])
+            self.store_transition(
+                warmup_obs, action, result[1], next_obs, result[2]
+            )
+            warmup_obs = next_obs
+            warmup_count += 1
+            if result[2]:
+                warmup_obs = self._list_to_simd(env.reset_obs_list())
+
+        # =====================================================================
+        # Training loop
+        # =====================================================================
+        var total_steps = 0
+
+        for episode in range(num_episodes):
+            var obs = self._list_to_simd(env.reset_obs_list())
+            var episode_reward: Float64 = 0.0
+            var episode_steps = 0
+
+            for step in range(max_steps_per_episode):
+                # Select action using GPU forward pass (no CPU param sync needed)
+                var action = self.select_action_gpu(
+                    obs,
+                    ctx,
+                    action_obs_buf,
+                    action_q_buf,
+                    online_params_buf,
+                    action_obs_host,
+                    action_q_host,
+                )
+
+                # Step environment (CPU)
+                var result = env.step_obs(action)
+                var next_obs = self._list_to_simd(result[0])
+                var reward = result[1]
+                var done = result[2]
+
+                # Store transition (CPU)
+                self.store_transition(obs, action, reward, next_obs, done)
+
+                # Train every N steps (GPU - all buffers pre-allocated!)
+                if total_steps % train_every == 0:
+                    _ = self.train_step_gpu(
+                        ctx,
+                        online_params_buf,
+                        online_grads_buf,
+                        online_state_buf,
+                        target_params_buf,
+                        obs_buf,
+                        next_obs_buf,
+                        q_values_buf,
+                        next_q_values_buf,
+                        online_next_q_buf,
+                        cache_buf,
+                        grad_output_buf,
+                        grad_input_buf,
+                        targets_buf,
+                        rewards_buf,
+                        dones_buf,
+                        actions_buf,
+                        obs_host,
+                        next_obs_host,
+                        rewards_host,
+                        dones_host,
+                        actions_host,
+                    )
+
+                episode_reward += reward
+                obs = next_obs
+                total_steps += 1
+                episode_steps += 1
+
+                if done:
+                    break
+
+            # Decay epsilon
+            self.decay_epsilon()
+
+            # Sync GPU params to CPU periodically (for backup, not needed for action selection)
+            if (episode + 1) % sync_every == 0:
+                self.online_model.copy_params_from_device(
+                    ctx, online_params_buf
+                )
+
+            # Log metrics
+            metrics.log_episode(
+                episode, episode_reward, episode_steps, self.epsilon
+            )
+
+            # Print progress
+            if verbose and (episode + 1) % print_every == 0:
+                var avg_reward = metrics.mean_reward_last_n(print_every)
+                print(
+                    "Episode "
+                    + String(episode + 1)
+                    + " | Avg reward: "
+                    + String(avg_reward)[:7]
+                    + " | Epsilon: "
+                    + String(self.epsilon)[:5]
+                    + " | Steps: "
+                    + String(total_steps)
+                )
 
         # Copy GPU params back to CPU for evaluation
         self.online_model.copy_params_from_device(ctx, online_params_buf)

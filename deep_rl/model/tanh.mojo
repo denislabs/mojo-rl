@@ -13,12 +13,14 @@ struct Tanh[dim: Int](Model):
     """Tanh activation: y = tanh(x).
 
     CACHE_SIZE = dim (caches tanh output for backward pass: dx = dy * (1 - tanh(x)^2))
+    WORKSPACE_SIZE_PER_SAMPLE = 0 (leaf layer, no intermediate buffers needed)
     """
 
     comptime IN_DIM: Int = Self.dim
     comptime OUT_DIM: Int = Self.dim
     comptime PARAM_SIZE: Int = 0
     comptime CACHE_SIZE: Int = Self.dim  # Cache tanh output for backward
+    comptime WORKSPACE_SIZE_PER_SAMPLE: Int = 0  # Leaf layer, no workspace needed
 
     fn __init__(out self):
         pass
@@ -303,7 +305,7 @@ struct Tanh[dim: Int](Model):
         ):
             Self.forward_kernel_impl[BATCH](output, input, cache)
 
-        ctx.enqueue_function_checked[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             output,
             input,
             cache,
@@ -349,7 +351,7 @@ struct Tanh[dim: Int](Model):
         ):
             Self.forward_kernel_impl_no_cache[BATCH](output, input)
 
-        ctx.enqueue_function_checked[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             output,
             input,
             grid_dim=(grid_x,),
@@ -406,10 +408,67 @@ struct Tanh[dim: Int](Model):
         ):
             Self.backward_kernel_impl[BATCH](grad_input, grad_output, cache)
 
-        ctx.enqueue_function_checked[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             grad_input,
             grad_output,
             cache,
             grid_dim=(grid_x,),
             block_dim=(TPB,),
+        )
+
+    # =========================================================================
+    # GPU Workspace Methods (for Sequential compatibility)
+    # Tanh is a leaf layer, so workspace is unused - just delegate to regular methods.
+    # =========================================================================
+
+    @staticmethod
+    fn forward_gpu_ws[
+        BATCH: Int,
+    ](
+        ctx: DeviceContext,
+        output_buf: DeviceBuffer[dtype],
+        input_buf: DeviceBuffer[dtype],
+        params_buf: DeviceBuffer[dtype],
+        cache_buf: DeviceBuffer[dtype],
+        workspace_buf: DeviceBuffer[dtype],  # Unused for Tanh
+    ) raises:
+        """GPU forward with workspace (workspace unused for Tanh)."""
+        Self.forward_gpu[BATCH](
+            ctx, output_buf, input_buf, params_buf, cache_buf
+        )
+
+    @staticmethod
+    fn forward_gpu_no_cache_ws[
+        BATCH: Int,
+    ](
+        ctx: DeviceContext,
+        output_buf: DeviceBuffer[dtype],
+        input_buf: DeviceBuffer[dtype],
+        params_buf: DeviceBuffer[dtype],
+        workspace_buf: DeviceBuffer[dtype],  # Unused for Tanh
+    ) raises:
+        """GPU forward without cache, with workspace (workspace unused for Tanh).
+        """
+        Self.forward_gpu_no_cache[BATCH](ctx, output_buf, input_buf, params_buf)
+
+    @staticmethod
+    fn backward_gpu_ws[
+        BATCH: Int,
+    ](
+        ctx: DeviceContext,
+        grad_input_buf: DeviceBuffer[dtype],
+        grad_output_buf: DeviceBuffer[dtype],
+        params_buf: DeviceBuffer[dtype],
+        cache_buf: DeviceBuffer[dtype],
+        grads_buf: DeviceBuffer[dtype],
+        workspace_buf: DeviceBuffer[dtype],  # Unused for Tanh
+    ) raises:
+        """GPU backward with workspace (workspace unused for Tanh)."""
+        Self.backward_gpu[BATCH](
+            ctx,
+            grad_input_buf,
+            grad_output_buf,
+            params_buf,
+            cache_buf,
+            grads_buf,
         )

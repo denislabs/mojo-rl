@@ -728,9 +728,10 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
         if i >= BATCH_SIZE:
             return
 
-        var force = Scalar[gpu_dtype](FORCE_MAG) if actions[i] == 1 else Scalar[
-            gpu_dtype
-        ](-FORCE_MAG)
+        # Cast to int to handle float actions correctly (0.0 -> 0, 1.0 -> 1)
+        var force = Scalar[gpu_dtype](FORCE_MAG) if Int(
+            actions[i]
+        ) == 1 else Scalar[gpu_dtype](-FORCE_MAG)
 
         # Physics calculations (Euler integration matching Gymnasium)
         var cos_theta = cos(states[i, 2])
@@ -954,7 +955,9 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
         @always_inline
         fn step_wrapper(
             states: LayoutTensor[
-                gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                MutAnyOrigin,
             ],
             actions: LayoutTensor[
                 gpu_dtype, Layout.row_major(BATCH_SIZE), ImmutAnyOrigin
@@ -966,9 +969,11 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
                 gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
             ],
         ):
-            Self.step_kernel[BATCH_SIZE, STATE_SIZE](states, actions, rewards, dones)
+            Self.step_kernel[BATCH_SIZE, STATE_SIZE](
+                states, actions, rewards, dones
+            )
 
-        ctx.enqueue_function_checked[step_wrapper, step_wrapper](
+        ctx.enqueue_function[step_wrapper, step_wrapper](
             states,
             actions,
             rewards,
@@ -981,10 +986,7 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
     fn reset_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
-    ](
-        ctx: DeviceContext,
-        mut states_buf: DeviceBuffer[gpu_dtype],
-    ) raises:
+    ](ctx: DeviceContext, mut states_buf: DeviceBuffer[gpu_dtype],) raises:
         """Launch reset kernel on GPU.
 
         Args:
@@ -1004,12 +1006,14 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
         @always_inline
         fn reset_wrapper(
             states: LayoutTensor[
-                gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                MutAnyOrigin,
             ],
         ):
             Self.reset_kernel[BATCH_SIZE, STATE_SIZE](states)
 
-        ctx.enqueue_function_checked[reset_wrapper, reset_wrapper](
+        ctx.enqueue_function[reset_wrapper, reset_wrapper](
             states,
             grid_dim=(BLOCKS,),
             block_dim=(Self.TPB,),
@@ -1049,16 +1053,20 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
         @always_inline
         fn selective_reset_wrapper(
             states: LayoutTensor[
-                gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                MutAnyOrigin,
             ],
             dones: LayoutTensor[
                 gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
             ],
             rng_seed: Scalar[DType.uint32],
         ):
-            Self.selective_reset_kernel[BATCH_SIZE, STATE_SIZE](states, dones, rng_seed)
+            Self.selective_reset_kernel[BATCH_SIZE, STATE_SIZE](
+                states, dones, rng_seed
+            )
 
-        ctx.enqueue_function_checked[selective_reset_wrapper, selective_reset_wrapper](
+        ctx.enqueue_function[selective_reset_wrapper, selective_reset_wrapper](
             states,
             dones,
             seed,

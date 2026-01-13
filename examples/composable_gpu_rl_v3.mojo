@@ -729,7 +729,7 @@ def main():
             grad_W2_per_env.enqueue_fill(0)
             grad_b2_per_env.enqueue_fill(0)
 
-            ctx.enqueue_function_checked[main_kernel, main_kernel](
+            ctx.enqueue_function[main_kernel, main_kernel](
                 env_t,
                 rng_t,
                 ep_len_t,
@@ -776,16 +776,16 @@ def main():
                 dtype, NUM_ENVS, ENV_NUM_ACTIONS, TPB
             ]
 
-            ctx.enqueue_function_checked[reduce_W1, reduce_W1](
+            ctx.enqueue_function[reduce_W1, reduce_W1](
                 gW1_t, gW1_env_immut, grid_dim=(blocks_W1,), block_dim=(TPB,)
             )
-            ctx.enqueue_function_checked[reduce_b1, reduce_b1](
+            ctx.enqueue_function[reduce_b1, reduce_b1](
                 gb1_t, gb1_env_immut, grid_dim=(blocks_b1,), block_dim=(TPB,)
             )
-            ctx.enqueue_function_checked[reduce_W2, reduce_W2](
+            ctx.enqueue_function[reduce_W2, reduce_W2](
                 gW2_t, gW2_env_immut, grid_dim=(blocks_W2,), block_dim=(TPB,)
             )
-            ctx.enqueue_function_checked[reduce_b2, reduce_b2](
+            ctx.enqueue_function[reduce_b2, reduce_b2](
                 gb2_t, gb2_env_immut, grid_dim=(blocks_b2,), block_dim=(TPB,)
             )
 
@@ -808,16 +808,16 @@ def main():
             comptime sgd_W2 = sgd_update_kernel[dtype, W2_SIZE, TPB]
             comptime sgd_b2 = sgd_update_kernel[dtype, ENV_NUM_ACTIONS, TPB]
 
-            ctx.enqueue_function_checked[sgd_W1, sgd_W1](
+            ctx.enqueue_function[sgd_W1, sgd_W1](
                 W1_mut, gW1_immut, lr_s, grid_dim=(blocks_W1,), block_dim=(TPB,)
             )
-            ctx.enqueue_function_checked[sgd_b1, sgd_b1](
+            ctx.enqueue_function[sgd_b1, sgd_b1](
                 b1_mut, gb1_immut, lr_s, grid_dim=(blocks_b1,), block_dim=(TPB,)
             )
-            ctx.enqueue_function_checked[sgd_W2, sgd_W2](
+            ctx.enqueue_function[sgd_W2, sgd_W2](
                 W2_mut, gW2_immut, lr_s, grid_dim=(blocks_W2,), block_dim=(TPB,)
             )
-            ctx.enqueue_function_checked[sgd_b2, sgd_b2](
+            ctx.enqueue_function[sgd_b2, sgd_b2](
                 b2_mut, gb2_immut, lr_s, grid_dim=(blocks_b2,), block_dim=(TPB,)
             )
 

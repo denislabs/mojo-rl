@@ -80,7 +80,9 @@ struct CPUNetwork[obs_dim: Int, hidden_dim: Int, out_dim: Int]:
 
         return out^
 
-    fn forward_batch[batch_size: Int](
+    fn forward_batch[
+        batch_size: Int
+    ](
         self,
         obs: InlineArray[Float32, batch_size * Self.obs_dim],
         mut output: InlineArray[Float32, batch_size * Self.out_dim],
@@ -92,7 +94,10 @@ struct CPUNetwork[obs_dim: Int, hidden_dim: Int, out_dim: Int]:
             for j in range(Self.hidden_dim):
                 var sum_val: Float32 = self.b1[j]
                 for k in range(Self.obs_dim):
-                    sum_val += obs[b * Self.obs_dim + k] * self.W1[k * Self.hidden_dim + j]
+                    sum_val += (
+                        obs[b * Self.obs_dim + k]
+                        * self.W1[k * Self.hidden_dim + j]
+                    )
                 h[j] = sum_val if sum_val > 0 else 0
 
             # Layer 2
@@ -116,11 +121,19 @@ fn forward_kernel_simple[
     out_dim: Int,
     TPB: Int,
 ](
-    output: LayoutTensor[dtype, Layout.row_major(batch_size, out_dim), MutAnyOrigin],
-    obs: LayoutTensor[dtype, Layout.row_major(batch_size, obs_dim), ImmutAnyOrigin],
-    W1: LayoutTensor[dtype, Layout.row_major(obs_dim, hidden_dim), ImmutAnyOrigin],
+    output: LayoutTensor[
+        dtype, Layout.row_major(batch_size, out_dim), MutAnyOrigin
+    ],
+    obs: LayoutTensor[
+        dtype, Layout.row_major(batch_size, obs_dim), ImmutAnyOrigin
+    ],
+    W1: LayoutTensor[
+        dtype, Layout.row_major(obs_dim, hidden_dim), ImmutAnyOrigin
+    ],
     b1: LayoutTensor[dtype, Layout.row_major(hidden_dim), ImmutAnyOrigin],
-    W2: LayoutTensor[dtype, Layout.row_major(hidden_dim, out_dim), ImmutAnyOrigin],
+    W2: LayoutTensor[
+        dtype, Layout.row_major(hidden_dim, out_dim), ImmutAnyOrigin
+    ],
     b2: LayoutTensor[dtype, Layout.row_major(out_dim), ImmutAnyOrigin],
 ):
     """Simple GPU forward pass - one thread per output element."""
@@ -131,7 +144,7 @@ fn forward_kernel_simple[
         return
 
     var b = global_idx // out_dim  # Batch index
-    var j = global_idx % out_dim   # Output index
+    var j = global_idx % out_dim  # Output index
 
     # Compute hidden layer activations for this batch element
     var h = InlineArray[Scalar[dtype], hidden_dim](fill=Scalar[dtype](0))
@@ -139,7 +152,9 @@ fn forward_kernel_simple[
     for hid in range(hidden_dim):
         var sum_val = rebind[Scalar[dtype]](b1[hid])
         for k in range(obs_dim):
-            sum_val += rebind[Scalar[dtype]](obs[b, k]) * rebind[Scalar[dtype]](W1[k, hid])
+            sum_val += rebind[Scalar[dtype]](obs[b, k]) * rebind[Scalar[dtype]](
+                W1[k, hid]
+            )
         h[hid] = sum_val if sum_val > Scalar[dtype](0) else Scalar[dtype](0)
 
     # Compute output for this element
@@ -155,7 +170,9 @@ fn forward_kernel_simple[
 # =============================================================================
 
 
-fn benchmark_cpu_single[obs_dim: Int, hidden_dim: Int, out_dim: Int](num_iters: Int) -> Float64:
+fn benchmark_cpu_single[
+    obs_dim: Int, hidden_dim: Int, out_dim: Int
+](num_iters: Int) -> Float64:
     """Benchmark single-observation CPU forward pass."""
     var net = CPUNetwork[obs_dim, hidden_dim, out_dim]()
 
@@ -177,9 +194,9 @@ fn benchmark_cpu_single[obs_dim: Int, hidden_dim: Int, out_dim: Int](num_iters: 
     return Float64(num_iters) / elapsed_sec
 
 
-fn benchmark_cpu_batch[obs_dim: Int, hidden_dim: Int, out_dim: Int, batch_size: Int](
-    num_iters: Int
-) -> Float64:
+fn benchmark_cpu_batch[
+    obs_dim: Int, hidden_dim: Int, out_dim: Int, batch_size: Int
+](num_iters: Int) -> Float64:
     """Benchmark batched CPU forward pass."""
     var net = CPUNetwork[obs_dim, hidden_dim, out_dim]()
 
@@ -202,9 +219,9 @@ fn benchmark_cpu_batch[obs_dim: Int, hidden_dim: Int, out_dim: Int, batch_size: 
     return Float64(num_iters) / elapsed_sec
 
 
-fn benchmark_gpu_batch[obs_dim: Int, hidden_dim: Int, out_dim: Int, batch_size: Int](
-    ctx: DeviceContext, num_iters: Int
-) raises -> Float64:
+fn benchmark_gpu_batch[
+    obs_dim: Int, hidden_dim: Int, out_dim: Int, batch_size: Int
+](ctx: DeviceContext, num_iters: Int) raises -> Float64:
     """Benchmark GPU forward pass."""
     comptime dtype = DType.float32
     comptime TPB = 64
@@ -237,21 +254,40 @@ fn benchmark_gpu_batch[obs_dim: Int, hidden_dim: Int, out_dim: Int, batch_size: 
     ctx.synchronize()
 
     # Create layout tensors
-    var obs_t = LayoutTensor[dtype, Layout.row_major(batch_size, obs_dim), ImmutAnyOrigin](obs_gpu)
-    var W1_t = LayoutTensor[dtype, Layout.row_major(obs_dim, hidden_dim), ImmutAnyOrigin](W1_gpu)
-    var b1_t = LayoutTensor[dtype, Layout.row_major(hidden_dim), ImmutAnyOrigin](b1_gpu)
-    var W2_t = LayoutTensor[dtype, Layout.row_major(hidden_dim, out_dim), ImmutAnyOrigin](W2_gpu)
-    var b2_t = LayoutTensor[dtype, Layout.row_major(out_dim), ImmutAnyOrigin](b2_gpu)
-    var output_t = LayoutTensor[dtype, Layout.row_major(batch_size, out_dim), MutAnyOrigin](output_gpu)
+    var obs_t = LayoutTensor[
+        dtype, Layout.row_major(batch_size, obs_dim), ImmutAnyOrigin
+    ](obs_gpu)
+    var W1_t = LayoutTensor[
+        dtype, Layout.row_major(obs_dim, hidden_dim), ImmutAnyOrigin
+    ](W1_gpu)
+    var b1_t = LayoutTensor[
+        dtype, Layout.row_major(hidden_dim), ImmutAnyOrigin
+    ](b1_gpu)
+    var W2_t = LayoutTensor[
+        dtype, Layout.row_major(hidden_dim, out_dim), ImmutAnyOrigin
+    ](W2_gpu)
+    var b2_t = LayoutTensor[dtype, Layout.row_major(out_dim), ImmutAnyOrigin](
+        b2_gpu
+    )
+    var output_t = LayoutTensor[
+        dtype, Layout.row_major(batch_size, out_dim), MutAnyOrigin
+    ](output_gpu)
 
     comptime total_outputs = batch_size * out_dim
     comptime num_blocks = (total_outputs + TPB - 1) // TPB
-    comptime kernel = forward_kernel_simple[dtype, batch_size, obs_dim, hidden_dim, out_dim, TPB]
+    comptime kernel = forward_kernel_simple[
+        dtype, batch_size, obs_dim, hidden_dim, out_dim, TPB
+    ]
 
     # Warm up
     for _ in range(100):
-        ctx.enqueue_function_checked[kernel, kernel](
-            output_t, obs_t, W1_t, b1_t, W2_t, b2_t,
+        ctx.enqueue_function[kernel, kernel](
+            output_t,
+            obs_t,
+            W1_t,
+            b1_t,
+            W2_t,
+            b2_t,
             grid_dim=(num_blocks,),
             block_dim=(TPB,),
         )
@@ -260,8 +296,13 @@ fn benchmark_gpu_batch[obs_dim: Int, hidden_dim: Int, out_dim: Int, batch_size: 
     # Benchmark
     var start = perf_counter_ns()
     for _ in range(num_iters):
-        ctx.enqueue_function_checked[kernel, kernel](
-            output_t, obs_t, W1_t, b1_t, W2_t, b2_t,
+        ctx.enqueue_function[kernel, kernel](
+            output_t,
+            obs_t,
+            W1_t,
+            b1_t,
+            W2_t,
+            b2_t,
             grid_dim=(num_blocks,),
             block_dim=(TPB,),
         )
@@ -272,7 +313,9 @@ fn benchmark_gpu_batch[obs_dim: Int, hidden_dim: Int, out_dim: Int, batch_size: 
     return Float64(num_iters) / elapsed_sec
 
 
-fn benchmark_kernel_launch_overhead(ctx: DeviceContext, num_iters: Int) raises -> Float64:
+fn benchmark_kernel_launch_overhead(
+    ctx: DeviceContext, num_iters: Int
+) raises -> Float64:
     """Measure pure kernel launch overhead with a trivial kernel."""
     comptime dtype = DType.float32
     comptime size = 64
@@ -293,7 +336,7 @@ fn benchmark_kernel_launch_overhead(ctx: DeviceContext, num_iters: Int) raises -
 
     # Warm up
     for _ in range(100):
-        ctx.enqueue_function_checked[trivial_kernel, trivial_kernel](
+        ctx.enqueue_function[trivial_kernel, trivial_kernel](
             buf_t, grid_dim=(1,), block_dim=(64,)
         )
     ctx.synchronize()
@@ -301,7 +344,7 @@ fn benchmark_kernel_launch_overhead(ctx: DeviceContext, num_iters: Int) raises -
     # Benchmark
     var start = perf_counter_ns()
     for _ in range(num_iters):
-        ctx.enqueue_function_checked[trivial_kernel, trivial_kernel](
+        ctx.enqueue_function[trivial_kernel, trivial_kernel](
             buf_t, grid_dim=(1,), block_dim=(64,)
         )
     ctx.synchronize()
@@ -330,7 +373,14 @@ def main():
 
     var num_iters = 10000
 
-    print("Network: " + String(obs_dim) + " -> " + String(hidden_dim) + " -> " + String(out_dim))
+    print(
+        "Network: "
+        + String(obs_dim)
+        + " -> "
+        + String(hidden_dim)
+        + " -> "
+        + String(out_dim)
+    )
     print("Iterations: " + String(num_iters))
     print()
 
@@ -338,7 +388,9 @@ def main():
     print("-" * 70)
     print("CPU: Single observation forward pass (action selection)")
     print("-" * 70)
-    var cpu_single = benchmark_cpu_single[obs_dim, hidden_dim, out_dim](num_iters)
+    var cpu_single = benchmark_cpu_single[obs_dim, hidden_dim, out_dim](
+        num_iters
+    )
     print("  " + String(Int(cpu_single)) + " forward passes/sec")
     print("  " + String(1e9 / cpu_single)[:6] + " ns per forward pass")
     print()
@@ -348,11 +400,27 @@ def main():
     print("CPU: Batched forward pass")
     print("-" * 70)
 
-    var cpu_b64 = benchmark_cpu_batch[obs_dim, hidden_dim, out_dim, 64](num_iters)
-    print("  Batch 64:  " + String(Int(cpu_b64)) + " batches/sec (" + String(Int(cpu_b64 * 64)) + " obs/sec)")
+    var cpu_b64 = benchmark_cpu_batch[obs_dim, hidden_dim, out_dim, 64](
+        num_iters
+    )
+    print(
+        "  Batch 64:  "
+        + String(Int(cpu_b64))
+        + " batches/sec ("
+        + String(Int(cpu_b64 * 64))
+        + " obs/sec)"
+    )
 
-    var cpu_b256 = benchmark_cpu_batch[obs_dim, hidden_dim, out_dim, 256](num_iters)
-    print("  Batch 256: " + String(Int(cpu_b256)) + " batches/sec (" + String(Int(cpu_b256 * 256)) + " obs/sec)")
+    var cpu_b256 = benchmark_cpu_batch[obs_dim, hidden_dim, out_dim, 256](
+        num_iters
+    )
+    print(
+        "  Batch 256: "
+        + String(Int(cpu_b256))
+        + " batches/sec ("
+        + String(Int(cpu_b256 * 256))
+        + " obs/sec)"
+    )
 
     print()
 
@@ -361,19 +429,29 @@ def main():
         print("-" * 70)
         print("GPU: Kernel launch overhead (trivial kernel)")
         print("-" * 70)
-        var launch_overhead_ns = benchmark_kernel_launch_overhead(ctx, num_iters)
+        var launch_overhead_ns = benchmark_kernel_launch_overhead(
+            ctx, num_iters
+        )
         print("  " + String(launch_overhead_ns)[:8] + " ns per kernel launch")
-        print("  Max " + String(Int(1e9 / launch_overhead_ns)) + " kernel launches/sec")
+        print(
+            "  Max "
+            + String(Int(1e9 / launch_overhead_ns))
+            + " kernel launches/sec"
+        )
         print()
 
         print("-" * 70)
         print("GPU: Batched forward pass")
         print("-" * 70)
 
-        var gpu_b64 = benchmark_gpu_batch[obs_dim, hidden_dim, out_dim, 64](ctx, num_iters)
+        var gpu_b64 = benchmark_gpu_batch[obs_dim, hidden_dim, out_dim, 64](
+            ctx, num_iters
+        )
         print("  Batch 64:  " + String(Int(gpu_b64)) + " batches/sec")
 
-        var gpu_b256 = benchmark_gpu_batch[obs_dim, hidden_dim, out_dim, 256](ctx, num_iters)
+        var gpu_b256 = benchmark_gpu_batch[obs_dim, hidden_dim, out_dim, 256](
+            ctx, num_iters
+        )
         print("  Batch 256: " + String(Int(gpu_b256)) + " batches/sec")
 
         print()
@@ -381,12 +459,22 @@ def main():
         print("Summary: GPU vs CPU speedup")
         print("-" * 70)
         print("  Batch 64:  GPU is " + String(gpu_b64 / cpu_b64)[:4] + "x CPU")
-        print("  Batch 256: GPU is " + String(gpu_b256 / cpu_b256)[:4] + "x CPU")
+        print(
+            "  Batch 256: GPU is " + String(gpu_b256 / cpu_b256)[:4] + "x CPU"
+        )
 
         print()
         print("=" * 70)
         print("Analysis:")
-        print("  - Single forward pass on CPU: ~" + String(1e6 / cpu_single)[:4] + " microseconds")
-        print("  - Kernel launch overhead: ~" + String(launch_overhead_ns / 1000)[:4] + " microseconds")
+        print(
+            "  - Single forward pass on CPU: ~"
+            + String(1e6 / cpu_single)[:4]
+            + " microseconds"
+        )
+        print(
+            "  - Kernel launch overhead: ~"
+            + String(launch_overhead_ns / 1000)[:4]
+            + " microseconds"
+        )
         print("  - If kernel launch > forward pass time, GPU loses!")
         print("=" * 70)

@@ -1196,7 +1196,7 @@ fn test_square_matmul() raises:
 
         # Run kernel
         print("  Running square naive matmul...")
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             naive_matmul_kernel[SIZE, SIZE, SIZE, TILE],
             naive_matmul_kernel[SIZE, SIZE, SIZE, TILE],
         ](
@@ -1287,7 +1287,7 @@ fn test_rectangular_matmul() raises:
 
         # Test 1: Naive matmul
         print("  Test 1: Naive matmul...")
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             naive_matmul_kernel[M, K, N, TILE],
             naive_matmul_kernel[M, K, N, TILE],
         ](C_naive, A, B, grid_dim=(grid_x, grid_y), block_dim=(TILE, TILE))
@@ -1308,7 +1308,7 @@ fn test_rectangular_matmul() raises:
 
         # Test 2: Tiled matmul with shared memory
         print("  Test 2: Tiled matmul (shared memory)...")
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             tiled_matmul_kernel[M, K, N, TILE],
             tiled_matmul_kernel[M, K, N, TILE],
         ](C_tiled, A, B, grid_dim=(grid_x, grid_y), block_dim=(TILE, TILE))
@@ -1390,7 +1390,7 @@ fn test_matmul_bias_relu() raises:
         comptime grid_y = (M + TILE - 1) // TILE
 
         print("  Running tiled_matmul_bias_relu_kernel...")
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             tiled_matmul_bias_relu_kernel[M, K, N, TILE],
             tiled_matmul_bias_relu_kernel[M, K, N, TILE],
         ](C_gpu, A, B, bias, grid_dim=(grid_x, grid_y), block_dim=(TILE, TILE))
@@ -1467,7 +1467,7 @@ fn test_parallel_softmax() raises:
 
         print("  Block size:", BLOCK_SIZE)
         print("  Running parallel_softmax_kernel...")
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             parallel_softmax_kernel[M, N],
             parallel_softmax_kernel[M, N],
         ](output_t, input_t, grid_dim=(1, M), block_dim=(BLOCK_SIZE, 1))
@@ -1687,7 +1687,7 @@ fn test_batched_forward_pass() raises:
         # Step 1: Hidden layer (obs @ W1 + b1 with ReLU)
         comptime grid_h_x = (HIDDEN_DIM + TILE - 1) // TILE
         comptime grid_h_y = (NUM_ENVS + TILE - 1) // TILE
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             tiled_matmul_bias_relu_kernel[NUM_ENVS, OBS_DIM, HIDDEN_DIM, TILE],
             tiled_matmul_bias_relu_kernel[NUM_ENVS, OBS_DIM, HIDDEN_DIM, TILE],
         ](
@@ -1702,7 +1702,7 @@ fn test_batched_forward_pass() raises:
         # Step 2: Actor logits (hidden @ W_actor + b_actor)
         comptime grid_a_x = (NUM_ACTIONS + TILE - 1) // TILE
         comptime grid_a_y = (NUM_ENVS + TILE - 1) // TILE
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             tiled_matmul_bias_kernel[NUM_ENVS, HIDDEN_DIM, NUM_ACTIONS, TILE],
             tiled_matmul_bias_kernel[NUM_ENVS, HIDDEN_DIM, NUM_ACTIONS, TILE],
         ](
@@ -1716,7 +1716,7 @@ fn test_batched_forward_pass() raises:
 
         # Step 3: Softmax
         comptime SOFTMAX_BLOCK = 1 << log2_ceil(NUM_ACTIONS)
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             parallel_softmax_kernel[NUM_ENVS, NUM_ACTIONS],
             parallel_softmax_kernel[NUM_ENVS, NUM_ACTIONS],
         ](
@@ -1729,7 +1729,7 @@ fn test_batched_forward_pass() raises:
         # Step 4: Critic value (hidden @ W_critic + b_critic)
         comptime grid_v_x = (1 + TILE - 1) // TILE
         comptime grid_v_y = (NUM_ENVS + TILE - 1) // TILE
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             tiled_matmul_bias_kernel[NUM_ENVS, HIDDEN_DIM, 1, TILE],
             tiled_matmul_bias_kernel[NUM_ENVS, HIDDEN_DIM, 1, TILE],
         ](
@@ -1903,7 +1903,7 @@ fn test_backward_pass_kernels() raises:
         comptime grid_pg_x = (NUM_ACTIONS + TILE - 1) // TILE
         comptime grid_pg_y = (NUM_ENVS + TILE - 1) // TILE
 
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             policy_gradient_kernel[NUM_ENVS, NUM_ACTIONS],
             policy_gradient_kernel[NUM_ENVS, NUM_ACTIONS],
         ](
@@ -1980,7 +1980,7 @@ fn test_backward_pass_kernels() raises:
         comptime grid_ta_x = (HIDDEN_DIM + TILE - 1) // TILE
         comptime grid_ta_y = (OBS_DIM + TILE - 1) // TILE
 
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             tiled_matmul_transA_kernel[OBS_DIM, NUM_ENVS, HIDDEN_DIM, TILE],
             tiled_matmul_transA_kernel[OBS_DIM, NUM_ENVS, HIDDEN_DIM, TILE],
         ](
@@ -2052,7 +2052,7 @@ fn test_backward_pass_kernels() raises:
         comptime grid_tb_x = (OBS_DIM + TILE - 1) // TILE
         comptime grid_tb_y = (NUM_ENVS + TILE - 1) // TILE
 
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             tiled_matmul_transB_kernel[NUM_ENVS, HIDDEN_DIM, OBS_DIM, TILE],
             tiled_matmul_transB_kernel[NUM_ENVS, HIDDEN_DIM, OBS_DIM, TILE],
         ](
@@ -2121,7 +2121,7 @@ fn test_backward_pass_kernels() raises:
         comptime grid_relu_x = (HIDDEN_DIM + TILE - 1) // TILE
         comptime grid_relu_y = (NUM_ENVS + TILE - 1) // TILE
 
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             relu_backward_kernel[NUM_ENVS, HIDDEN_DIM, TILE],
             relu_backward_kernel[NUM_ENVS, HIDDEN_DIM, TILE],
         ](
@@ -2181,7 +2181,7 @@ fn test_backward_pass_kernels() raises:
 
         comptime BLOCK_SIZE_BIAS = 1 << log2_ceil(NUM_ENVS)
 
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             bias_gradient_parallel_kernel[NUM_ENVS, HIDDEN_DIM],
             bias_gradient_parallel_kernel[NUM_ENVS, HIDDEN_DIM],
         ](
@@ -2525,7 +2525,7 @@ fn test_complete_training_step() raises:
         # Step 1: Hidden = ReLU(obs @ W1 + b1) - save pre-activation
         comptime grid_h_x = (HIDDEN_DIM + TILE - 1) // TILE
         comptime grid_h_y = (NUM_ENVS + TILE - 1) // TILE
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             tiled_matmul_bias_relu_save_kernel[
                 NUM_ENVS, OBS_DIM, HIDDEN_DIM, TILE
             ],
@@ -2545,7 +2545,7 @@ fn test_complete_training_step() raises:
         # Step 2: Logits = hidden @ W_actor + b_actor
         comptime grid_a_x = (NUM_ACTIONS + TILE - 1) // TILE
         comptime grid_a_y = (NUM_ENVS + TILE - 1) // TILE
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             tiled_matmul_bias_kernel[NUM_ENVS, HIDDEN_DIM, NUM_ACTIONS, TILE],
             tiled_matmul_bias_kernel[NUM_ENVS, HIDDEN_DIM, NUM_ACTIONS, TILE],
         ](
@@ -2559,7 +2559,7 @@ fn test_complete_training_step() raises:
 
         # Step 3: Probs = softmax(logits)
         comptime SOFTMAX_BLOCK = 1 << log2_ceil(NUM_ACTIONS)
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             parallel_softmax_kernel[NUM_ENVS, NUM_ACTIONS],
             parallel_softmax_kernel[NUM_ENVS, NUM_ACTIONS],
         ](
@@ -2572,7 +2572,7 @@ fn test_complete_training_step() raises:
         # Step 4: Values = hidden @ W_critic + b_critic
         comptime grid_v_x = (1 + TILE - 1) // TILE
         comptime grid_v_y = (NUM_ENVS + TILE - 1) // TILE
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             tiled_matmul_bias_kernel[NUM_ENVS, HIDDEN_DIM, 1, TILE],
             tiled_matmul_bias_kernel[NUM_ENVS, HIDDEN_DIM, 1, TILE],
         ](
@@ -2611,7 +2611,7 @@ fn test_complete_training_step() raises:
         print("  Running backward pass...")
 
         # Step 1: Policy gradient - d_logits
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             policy_gradient_kernel[NUM_ENVS, NUM_ACTIONS],
             policy_gradient_kernel[NUM_ENVS, NUM_ACTIONS],
         ](
@@ -2625,7 +2625,7 @@ fn test_complete_training_step() raises:
         )
 
         # Step 2: Value loss gradient - d_values
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             value_loss_gradient_kernel[NUM_ENVS],
             value_loss_gradient_kernel[NUM_ENVS],
         ](
@@ -2638,7 +2638,7 @@ fn test_complete_training_step() raises:
         )
 
         # Step 3: d_W_actor = hidden.T @ d_logits
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             tiled_matmul_transA_kernel[HIDDEN_DIM, NUM_ENVS, NUM_ACTIONS, TILE],
             tiled_matmul_transA_kernel[HIDDEN_DIM, NUM_ENVS, NUM_ACTIONS, TILE],
         ](
@@ -2651,7 +2651,7 @@ fn test_complete_training_step() raises:
 
         # Step 4: d_b_actor = sum(d_logits, axis=0)
         comptime BLOCK_SIZE_BIAS_A = 1 << log2_ceil(NUM_ENVS)
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             bias_gradient_parallel_kernel[NUM_ENVS, NUM_ACTIONS],
             bias_gradient_parallel_kernel[NUM_ENVS, NUM_ACTIONS],
         ](
@@ -2662,7 +2662,7 @@ fn test_complete_training_step() raises:
         )
 
         # Step 5: d_hidden_actor = d_logits @ W_actor.T
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             tiled_matmul_transB_kernel[NUM_ENVS, NUM_ACTIONS, HIDDEN_DIM, TILE],
             tiled_matmul_transB_kernel[NUM_ENVS, NUM_ACTIONS, HIDDEN_DIM, TILE],
         ](
@@ -2674,7 +2674,7 @@ fn test_complete_training_step() raises:
         )
 
         # Step 6: d_W_critic = hidden.T @ d_values
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             tiled_matmul_transA_kernel[HIDDEN_DIM, NUM_ENVS, 1, TILE],
             tiled_matmul_transA_kernel[HIDDEN_DIM, NUM_ENVS, 1, TILE],
         ](
@@ -2686,7 +2686,7 @@ fn test_complete_training_step() raises:
         )
 
         # Step 7: d_b_critic = sum(d_values, axis=0)
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             bias_gradient_parallel_kernel[NUM_ENVS, 1],
             bias_gradient_parallel_kernel[NUM_ENVS, 1],
         ](
@@ -2697,7 +2697,7 @@ fn test_complete_training_step() raises:
         )
 
         # Step 8: d_hidden_critic = d_values @ W_critic.T
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             tiled_matmul_transB_kernel[NUM_ENVS, 1, HIDDEN_DIM, TILE],
             tiled_matmul_transB_kernel[NUM_ENVS, 1, HIDDEN_DIM, TILE],
         ](
@@ -2709,7 +2709,7 @@ fn test_complete_training_step() raises:
         )
 
         # Step 9: d_hidden = d_hidden_actor + d_hidden_critic
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             elementwise_add_kernel[NUM_ENVS, HIDDEN_DIM, TILE],
             elementwise_add_kernel[NUM_ENVS, HIDDEN_DIM, TILE],
         ](
@@ -2721,7 +2721,7 @@ fn test_complete_training_step() raises:
         )
 
         # Step 10: ReLU backward - d_pre_relu = d_hidden * (pre_act1 > 0)
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             relu_backward_kernel[NUM_ENVS, HIDDEN_DIM, TILE],
             relu_backward_kernel[NUM_ENVS, HIDDEN_DIM, TILE],
         ](
@@ -2733,7 +2733,7 @@ fn test_complete_training_step() raises:
         )
 
         # Step 11: d_W1 = obs.T @ d_pre_relu
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             tiled_matmul_transA_kernel[OBS_DIM, NUM_ENVS, HIDDEN_DIM, TILE],
             tiled_matmul_transA_kernel[OBS_DIM, NUM_ENVS, HIDDEN_DIM, TILE],
         ](
@@ -2745,7 +2745,7 @@ fn test_complete_training_step() raises:
         )
 
         # Step 12: d_b1 = sum(d_pre_relu, axis=0)
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             bias_gradient_parallel_kernel[NUM_ENVS, HIDDEN_DIM],
             bias_gradient_parallel_kernel[NUM_ENVS, HIDDEN_DIM],
         ](
@@ -2763,7 +2763,7 @@ fn test_complete_training_step() raises:
         print("  Updating weights (SGD)...")
 
         # Update W1
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             sgd_update_2d_kernel[OBS_DIM, HIDDEN_DIM, TILE],
             sgd_update_2d_kernel[OBS_DIM, HIDDEN_DIM, TILE],
         ](
@@ -2775,13 +2775,13 @@ fn test_complete_training_step() raises:
         )
 
         # Update b1
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             sgd_update_1d_kernel[HIDDEN_DIM],
             sgd_update_1d_kernel[HIDDEN_DIM],
         ](b1, d_b1_immut, lr, grid_dim=(1, 1), block_dim=(HIDDEN_DIM, 1))
 
         # Update W_actor
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             sgd_update_2d_kernel[HIDDEN_DIM, NUM_ACTIONS, TILE],
             sgd_update_2d_kernel[HIDDEN_DIM, NUM_ACTIONS, TILE],
         ](
@@ -2793,7 +2793,7 @@ fn test_complete_training_step() raises:
         )
 
         # Update b_actor
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             sgd_update_1d_kernel[NUM_ACTIONS],
             sgd_update_1d_kernel[NUM_ACTIONS],
         ](
@@ -2805,7 +2805,7 @@ fn test_complete_training_step() raises:
         )
 
         # Update W_critic
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             sgd_update_2d_kernel[HIDDEN_DIM, 1, TILE],
             sgd_update_2d_kernel[HIDDEN_DIM, 1, TILE],
         ](
@@ -2817,7 +2817,7 @@ fn test_complete_training_step() raises:
         )
 
         # Update b_critic
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             sgd_update_1d_kernel[1],
             sgd_update_1d_kernel[1],
         ](b_critic, d_b_critic_immut, lr, grid_dim=(1, 1), block_dim=(1, 1))
@@ -2835,7 +2835,7 @@ fn test_complete_training_step() raises:
         probs_buf.enqueue_fill(0)
         values_buf.enqueue_fill(0)
 
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             tiled_matmul_bias_relu_save_kernel[
                 NUM_ENVS, OBS_DIM, HIDDEN_DIM, TILE
             ],
@@ -2852,7 +2852,7 @@ fn test_complete_training_step() raises:
             block_dim=(TILE, TILE),
         )
 
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             tiled_matmul_bias_kernel[NUM_ENVS, HIDDEN_DIM, NUM_ACTIONS, TILE],
             tiled_matmul_bias_kernel[NUM_ENVS, HIDDEN_DIM, NUM_ACTIONS, TILE],
         ](
@@ -2864,7 +2864,7 @@ fn test_complete_training_step() raises:
             block_dim=(TILE, TILE),
         )
 
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             parallel_softmax_kernel[NUM_ENVS, NUM_ACTIONS],
             parallel_softmax_kernel[NUM_ENVS, NUM_ACTIONS],
         ](
@@ -2874,7 +2874,7 @@ fn test_complete_training_step() raises:
             block_dim=(SOFTMAX_BLOCK, 1),
         )
 
-        ctx.enqueue_function_checked[
+        ctx.enqueue_function[
             tiled_matmul_bias_kernel[NUM_ENVS, HIDDEN_DIM, 1, TILE],
             tiled_matmul_bias_kernel[NUM_ENVS, HIDDEN_DIM, 1, TILE],
         ](
@@ -3319,9 +3319,9 @@ fn train_cartpole_native() raises:
         var d_W_critic_immut = LayoutTensor[
             dtype, Layout.row_major(HIDDEN_DIM, 1), ImmutAnyOrigin
         ](d_W_critic_buf)
-        var d_b_critic = LayoutTensor[
-            dtype, Layout.row_major(1), MutAnyOrigin
-        ](d_b_critic_buf)
+        var d_b_critic = LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin](
+            d_b_critic_buf
+        )
         var d_b_critic_immut = LayoutTensor[
             dtype, Layout.row_major(1), ImmutAnyOrigin
         ](d_b_critic_buf)
@@ -3366,7 +3366,7 @@ fn train_cartpole_native() raises:
                         )
 
                 # Forward pass on GPU
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     tiled_matmul_bias_relu_save_kernel[
                         NUM_ENVS, OBS_DIM, HIDDEN_DIM, TILE
                     ],
@@ -3383,7 +3383,7 @@ fn train_cartpole_native() raises:
                     block_dim=(TILE, TILE),
                 )
 
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     tiled_matmul_bias_kernel[
                         NUM_ENVS, HIDDEN_DIM, NUM_ACTIONS, TILE
                     ],
@@ -3399,7 +3399,7 @@ fn train_cartpole_native() raises:
                     block_dim=(TILE, TILE),
                 )
 
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     parallel_softmax_kernel[NUM_ENVS, NUM_ACTIONS],
                     parallel_softmax_kernel[NUM_ENVS, NUM_ACTIONS],
                 ](
@@ -3409,7 +3409,7 @@ fn train_cartpole_native() raises:
                     block_dim=(SOFTMAX_BLOCK, 1),
                 )
 
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     tiled_matmul_bias_kernel[NUM_ENVS, HIDDEN_DIM, 1, TILE],
                     tiled_matmul_bias_kernel[NUM_ENVS, HIDDEN_DIM, 1, TILE],
                 ](
@@ -3501,7 +3501,7 @@ fn train_cartpole_native() raises:
                     obs_host[i * OBS_DIM + 2] = Scalar[dtype](env_theta[i])
                     obs_host[i * OBS_DIM + 3] = Scalar[dtype](env_theta_dot[i])
 
-            ctx.enqueue_function_checked[
+            ctx.enqueue_function[
                 tiled_matmul_bias_relu_save_kernel[
                     NUM_ENVS, OBS_DIM, HIDDEN_DIM, TILE
                 ],
@@ -3518,7 +3518,7 @@ fn train_cartpole_native() raises:
                 block_dim=(TILE, TILE),
             )
 
-            ctx.enqueue_function_checked[
+            ctx.enqueue_function[
                 tiled_matmul_bias_kernel[NUM_ENVS, HIDDEN_DIM, 1, TILE],
                 tiled_matmul_bias_kernel[NUM_ENVS, HIDDEN_DIM, 1, TILE],
             ](
@@ -3581,7 +3581,7 @@ fn train_cartpole_native() raises:
                 probs_buf.enqueue_fill(0)
                 values_buf.enqueue_fill(0)
 
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     tiled_matmul_bias_relu_save_kernel[
                         NUM_ENVS, OBS_DIM, HIDDEN_DIM, TILE
                     ],
@@ -3598,7 +3598,7 @@ fn train_cartpole_native() raises:
                     block_dim=(TILE, TILE),
                 )
 
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     tiled_matmul_bias_kernel[
                         NUM_ENVS, HIDDEN_DIM, NUM_ACTIONS, TILE
                     ],
@@ -3614,7 +3614,7 @@ fn train_cartpole_native() raises:
                     block_dim=(TILE, TILE),
                 )
 
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     parallel_softmax_kernel[NUM_ENVS, NUM_ACTIONS],
                     parallel_softmax_kernel[NUM_ENVS, NUM_ACTIONS],
                 ](
@@ -3624,7 +3624,7 @@ fn train_cartpole_native() raises:
                     block_dim=(SOFTMAX_BLOCK, 1),
                 )
 
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     tiled_matmul_bias_kernel[NUM_ENVS, HIDDEN_DIM, 1, TILE],
                     tiled_matmul_bias_kernel[NUM_ENVS, HIDDEN_DIM, 1, TILE],
                 ](
@@ -3661,7 +3661,7 @@ fn train_cartpole_native() raises:
                 d_b_critic_buf.enqueue_fill(0)
 
                 # Policy gradient
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     policy_gradient_kernel[NUM_ENVS, NUM_ACTIONS],
                     policy_gradient_kernel[NUM_ENVS, NUM_ACTIONS],
                 ](
@@ -3675,7 +3675,7 @@ fn train_cartpole_native() raises:
                 )
 
                 # Value loss gradient
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     value_loss_gradient_kernel[NUM_ENVS],
                     value_loss_gradient_kernel[NUM_ENVS],
                 ](
@@ -3688,7 +3688,7 @@ fn train_cartpole_native() raises:
                 )
 
                 # Backprop through actor
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     tiled_matmul_transA_kernel[
                         HIDDEN_DIM, NUM_ENVS, NUM_ACTIONS, TILE
                     ],
@@ -3703,7 +3703,7 @@ fn train_cartpole_native() raises:
                     block_dim=(TILE, TILE),
                 )
 
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     bias_gradient_parallel_kernel[NUM_ENVS, NUM_ACTIONS],
                     bias_gradient_parallel_kernel[NUM_ENVS, NUM_ACTIONS],
                 ](
@@ -3713,7 +3713,7 @@ fn train_cartpole_native() raises:
                     block_dim=(BLOCK_SIZE_BIAS, 1),
                 )
 
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     tiled_matmul_transB_kernel[
                         NUM_ENVS, NUM_ACTIONS, HIDDEN_DIM, TILE
                     ],
@@ -3729,7 +3729,7 @@ fn train_cartpole_native() raises:
                 )
 
                 # Backprop through critic
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     tiled_matmul_transA_kernel[HIDDEN_DIM, NUM_ENVS, 1, TILE],
                     tiled_matmul_transA_kernel[HIDDEN_DIM, NUM_ENVS, 1, TILE],
                 ](
@@ -3740,7 +3740,7 @@ fn train_cartpole_native() raises:
                     block_dim=(TILE, TILE),
                 )
 
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     bias_gradient_parallel_kernel[NUM_ENVS, 1],
                     bias_gradient_parallel_kernel[NUM_ENVS, 1],
                 ](
@@ -3750,7 +3750,7 @@ fn train_cartpole_native() raises:
                     block_dim=(BLOCK_SIZE_BIAS, 1),
                 )
 
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     tiled_matmul_transB_kernel[NUM_ENVS, 1, HIDDEN_DIM, TILE],
                     tiled_matmul_transB_kernel[NUM_ENVS, 1, HIDDEN_DIM, TILE],
                 ](
@@ -3762,7 +3762,7 @@ fn train_cartpole_native() raises:
                 )
 
                 # Combine hidden gradients
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     elementwise_add_kernel[NUM_ENVS, HIDDEN_DIM, TILE],
                     elementwise_add_kernel[NUM_ENVS, HIDDEN_DIM, TILE],
                 ](
@@ -3774,7 +3774,7 @@ fn train_cartpole_native() raises:
                 )
 
                 # ReLU backward
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     relu_backward_kernel[NUM_ENVS, HIDDEN_DIM, TILE],
                     relu_backward_kernel[NUM_ENVS, HIDDEN_DIM, TILE],
                 ](
@@ -3786,7 +3786,7 @@ fn train_cartpole_native() raises:
                 )
 
                 # Backprop through first layer
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     tiled_matmul_transA_kernel[
                         OBS_DIM, NUM_ENVS, HIDDEN_DIM, TILE
                     ],
@@ -3801,7 +3801,7 @@ fn train_cartpole_native() raises:
                     block_dim=(TILE, TILE),
                 )
 
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     bias_gradient_parallel_kernel[NUM_ENVS, HIDDEN_DIM],
                     bias_gradient_parallel_kernel[NUM_ENVS, HIDDEN_DIM],
                 ](
@@ -3812,7 +3812,7 @@ fn train_cartpole_native() raises:
                 )
 
                 # SGD update
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     sgd_update_2d_kernel[OBS_DIM, HIDDEN_DIM, TILE],
                     sgd_update_2d_kernel[OBS_DIM, HIDDEN_DIM, TILE],
                 ](
@@ -3823,7 +3823,7 @@ fn train_cartpole_native() raises:
                     block_dim=(TILE, TILE),
                 )
 
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     sgd_update_1d_kernel[HIDDEN_DIM],
                     sgd_update_1d_kernel[HIDDEN_DIM],
                 ](
@@ -3834,7 +3834,7 @@ fn train_cartpole_native() raises:
                     block_dim=(HIDDEN_DIM, 1),
                 )
 
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     sgd_update_2d_kernel[HIDDEN_DIM, NUM_ACTIONS, TILE],
                     sgd_update_2d_kernel[HIDDEN_DIM, NUM_ACTIONS, TILE],
                 ](
@@ -3845,7 +3845,7 @@ fn train_cartpole_native() raises:
                     block_dim=(TILE, TILE),
                 )
 
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     sgd_update_1d_kernel[NUM_ACTIONS],
                     sgd_update_1d_kernel[NUM_ACTIONS],
                 ](
@@ -3856,7 +3856,7 @@ fn train_cartpole_native() raises:
                     block_dim=(NUM_ACTIONS, 1),
                 )
 
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     sgd_update_2d_kernel[HIDDEN_DIM, 1, TILE],
                     sgd_update_2d_kernel[HIDDEN_DIM, 1, TILE],
                 ](
@@ -3867,7 +3867,7 @@ fn train_cartpole_native() raises:
                     block_dim=(TILE, TILE),
                 )
 
-                ctx.enqueue_function_checked[
+                ctx.enqueue_function[
                     sgd_update_1d_kernel[1],
                     sgd_update_1d_kernel[1],
                 ](

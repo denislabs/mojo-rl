@@ -24,12 +24,14 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
 
     PARAM_SIZE = in_dim * out_dim + out_dim (W flattened + b)
     CACHE_SIZE = in_dim (caches input for weight gradient computation)
+    WORKSPACE_SIZE_PER_SAMPLE = 0 (leaf layer, no intermediate buffers needed)
     """
 
     comptime IN_DIM: Int = Self.in_dim
     comptime OUT_DIM: Int = Self.out_dim
     comptime PARAM_SIZE: Int = Self.IN_DIM * Self.OUT_DIM + Self.OUT_DIM
     comptime CACHE_SIZE: Int = Self.IN_DIM  # Cache input for dW computation
+    comptime WORKSPACE_SIZE_PER_SAMPLE: Int = 0  # Leaf layer, no workspace needed
 
     fn __init__(out self):
         """Initialize stateless Linear layer."""
@@ -508,6 +510,8 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
             cache_buf: Cache buffer [BATCH * IN_DIM] for backward pass.
         """
         # Create tensor views from buffers
+        var params_ptr = params_buf.unsafe_ptr()
+        var b_ptr = params_ptr + Self.IN_DIM * Self.OUT_DIM
         var output = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
         ](output_buf.unsafe_ptr())
@@ -519,7 +523,7 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
         ](params_buf.unsafe_ptr())
         var b = LayoutTensor[
             dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
-        ](params_buf.unsafe_ptr().offset(Self.IN_DIM * Self.OUT_DIM))
+        ](b_ptr)
         var cache = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ](cache_buf.unsafe_ptr())
@@ -551,7 +555,7 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
         ):
             Self.forward_kernel_impl[BATCH](output, input, W, b, cache)
 
-        ctx.enqueue_function_checked[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             output,
             input,
             W,
@@ -578,6 +582,8 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
             input_buf: Input buffer [BATCH * IN_DIM].
             params_buf: Parameters buffer [PARAM_SIZE] = [W_flat | b].
         """
+        var params_ptr = params_buf.unsafe_ptr()
+        var b_ptr = params_ptr + Self.IN_DIM * Self.OUT_DIM
         var output = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
         ](output_buf.unsafe_ptr())
@@ -589,7 +595,7 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
         ](params_buf.unsafe_ptr())
         var b = LayoutTensor[
             dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
-        ](params_buf.unsafe_ptr().offset(Self.IN_DIM * Self.OUT_DIM))
+        ](b_ptr)
 
         comptime grid_x = (Self.OUT_DIM + TILE - 1) // TILE
         comptime grid_y = (BATCH + TILE - 1) // TILE
@@ -613,7 +619,7 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
         ):
             Self.forward_kernel_impl_no_cache[BATCH](output, input, W, b)
 
-        ctx.enqueue_function_checked[kernel_wrapper, kernel_wrapper](
+        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             output,
             input,
             W,
@@ -652,6 +658,8 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
             grads_buf: Parameter gradients [PARAM_SIZE] = [dW_flat | db] (written).
         """
         # Create tensor views
+        var params_ptr = params_buf.unsafe_ptr()
+        var b_ptr = params_ptr + Self.IN_DIM * Self.OUT_DIM
         var grad_input = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ](grad_input_buf.unsafe_ptr())
@@ -664,12 +672,14 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
         var cache = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
         ](cache_buf.unsafe_ptr())
+        var grads_ptr = grads_buf.unsafe_ptr()
         var dW = LayoutTensor[
             dtype, Layout.row_major(Self.IN_DIM, Self.OUT_DIM), MutAnyOrigin
-        ](grads_buf.unsafe_ptr())
+        ](grads_ptr)
+        var db_ptr = grads_ptr + Self.IN_DIM * Self.OUT_DIM
         var db = LayoutTensor[
             dtype, Layout.row_major(Self.OUT_DIM), MutAnyOrigin
-        ](grads_buf.unsafe_ptr().offset(Self.IN_DIM * Self.OUT_DIM))
+        ](db_ptr)
 
         # Kernel 1: dx = dy @ W.T
         comptime dx_grid_x = (Self.IN_DIM + TILE - 1) // TILE
@@ -691,7 +701,7 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
         ):
             Self.backward_dx_kernel_impl[BATCH](grad_input, grad_output, W)
 
-        ctx.enqueue_function_checked[dx_kernel_wrapper, dx_kernel_wrapper](
+        ctx.enqueue_function[dx_kernel_wrapper, dx_kernel_wrapper](
             grad_input,
             grad_output,
             W,
@@ -717,7 +727,7 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
         ):
             Self.backward_dW_kernel_impl[BATCH](dW, cache, grad_output)
 
-        ctx.enqueue_function_checked[dW_kernel_wrapper, dW_kernel_wrapper](
+        ctx.enqueue_function[dW_kernel_wrapper, dW_kernel_wrapper](
             dW,
             cache,
             grad_output,
@@ -737,11 +747,68 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
         ):
             Self.backward_db_kernel_impl[BATCH](db, grad_output)
 
-        ctx.enqueue_function_checked[db_kernel_wrapper, db_kernel_wrapper](
+        ctx.enqueue_function[db_kernel_wrapper, db_kernel_wrapper](
             db,
             grad_output,
             grid_dim=(Self.OUT_DIM,),
             block_dim=(TPB,),
+        )
+
+    # =========================================================================
+    # GPU Workspace Methods (for Sequential compatibility)
+    # Linear is a leaf layer, so workspace is unused - just delegate to regular methods.
+    # =========================================================================
+
+    @staticmethod
+    fn forward_gpu_ws[
+        BATCH: Int,
+    ](
+        ctx: DeviceContext,
+        output_buf: DeviceBuffer[dtype],
+        input_buf: DeviceBuffer[dtype],
+        params_buf: DeviceBuffer[dtype],
+        cache_buf: DeviceBuffer[dtype],
+        workspace_buf: DeviceBuffer[dtype],  # Unused for Linear
+    ) raises:
+        """GPU forward with workspace (workspace unused for Linear)."""
+        Self.forward_gpu[BATCH](
+            ctx, output_buf, input_buf, params_buf, cache_buf
+        )
+
+    @staticmethod
+    fn forward_gpu_no_cache_ws[
+        BATCH: Int,
+    ](
+        ctx: DeviceContext,
+        output_buf: DeviceBuffer[dtype],
+        input_buf: DeviceBuffer[dtype],
+        params_buf: DeviceBuffer[dtype],
+        workspace_buf: DeviceBuffer[dtype],  # Unused for Linear
+    ) raises:
+        """GPU forward without cache, with workspace (workspace unused for Linear).
+        """
+        Self.forward_gpu_no_cache[BATCH](ctx, output_buf, input_buf, params_buf)
+
+    @staticmethod
+    fn backward_gpu_ws[
+        BATCH: Int,
+    ](
+        ctx: DeviceContext,
+        grad_input_buf: DeviceBuffer[dtype],
+        grad_output_buf: DeviceBuffer[dtype],
+        params_buf: DeviceBuffer[dtype],
+        cache_buf: DeviceBuffer[dtype],
+        grads_buf: DeviceBuffer[dtype],
+        workspace_buf: DeviceBuffer[dtype],  # Unused for Linear
+    ) raises:
+        """GPU backward with workspace (workspace unused for Linear)."""
+        Self.backward_gpu[BATCH](
+            ctx,
+            grad_input_buf,
+            grad_output_buf,
+            params_buf,
+            cache_buf,
+            grads_buf,
         )
 
     fn backward[

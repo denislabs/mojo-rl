@@ -96,14 +96,25 @@ struct CPUVecCartPole[num_envs: Int]:
             var sintheta = sin(self.theta[i])
 
             var temp = (
-                force + self.polemass_length * self.theta_dot[i] * self.theta_dot[i] * sintheta
+                force
+                + self.polemass_length
+                * self.theta_dot[i]
+                * self.theta_dot[i]
+                * sintheta
             ) / self.total_mass
 
             var thetaacc = (self.gravity * sintheta - costheta * temp) / (
-                self.length * (4.0 / 3.0 - self.masspole * costheta * costheta / self.total_mass)
+                self.length
+                * (
+                    4.0 / 3.0
+                    - self.masspole * costheta * costheta / self.total_mass
+                )
             )
 
-            var xacc = temp - self.polemass_length * thetaacc * costheta / self.total_mass
+            var xacc = (
+                temp
+                - self.polemass_length * thetaacc * costheta / self.total_mass
+            )
 
             # Euler integration
             self.x[i] += self.tau * self.x_dot[i]
@@ -113,8 +124,13 @@ struct CPUVecCartPole[num_envs: Int]:
             self.steps[i] += 1
 
             # Check termination
-            var x_out = self.x[i] < -self.x_threshold or self.x[i] > self.x_threshold
-            var theta_out = self.theta[i] < -self.theta_threshold or self.theta[i] > self.theta_threshold
+            var x_out = (
+                self.x[i] < -self.x_threshold or self.x[i] > self.x_threshold
+            )
+            var theta_out = (
+                self.theta[i] < -self.theta_threshold
+                or self.theta[i] > self.theta_threshold
+            )
             var truncated = self.steps[i] >= self.max_steps
 
             dones[i] = x_out or theta_out or truncated
@@ -146,12 +162,16 @@ fn cartpole_step_kernel[
     theta_dot: LayoutTensor[dtype, Layout.row_major(num_envs), MutAnyOrigin],
     steps: LayoutTensor[DType.int32, Layout.row_major(num_envs), MutAnyOrigin],
     # Actions (in)
-    actions: LayoutTensor[DType.int32, Layout.row_major(num_envs), ImmutAnyOrigin],
+    actions: LayoutTensor[
+        DType.int32, Layout.row_major(num_envs), ImmutAnyOrigin
+    ],
     # Outputs
     rewards: LayoutTensor[dtype, Layout.row_major(num_envs), MutAnyOrigin],
     dones: LayoutTensor[DType.int32, Layout.row_major(num_envs), MutAnyOrigin],
     # Random seeds for reset (in)
-    random_vals: LayoutTensor[dtype, Layout.row_major(num_envs * 4), ImmutAnyOrigin],
+    random_vals: LayoutTensor[
+        dtype, Layout.row_major(num_envs * 4), ImmutAnyOrigin
+    ],
 ):
     """GPU kernel for stepping CartPole environments."""
     var i = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -188,10 +208,16 @@ fn cartpole_step_kernel[
     var costheta_s = Scalar[dtype](costheta)
     var sintheta_s = Scalar[dtype](sintheta)
 
-    var temp = (force + polemass_length * theta_dot_i * theta_dot_i * sintheta_s) / total_mass
+    var temp = (
+        force + polemass_length * theta_dot_i * theta_dot_i * sintheta_s
+    ) / total_mass
 
     var thetaacc = (gravity * sintheta_s - costheta_s * temp) / (
-        length * (Scalar[dtype](4.0 / 3.0) - masspole * costheta_s * costheta_s / total_mass)
+        length
+        * (
+            Scalar[dtype](4.0 / 3.0)
+            - masspole * costheta_s * costheta_s / total_mass
+        )
     )
 
     var xacc = temp - polemass_length * thetaacc * costheta_s / total_mass
@@ -210,14 +236,24 @@ fn cartpole_step_kernel[
     var done = x_out or theta_out or truncated
 
     # Reward
-    var reward: Scalar[dtype] = Scalar[dtype](0.0) if (x_out or theta_out) else Scalar[dtype](1.0)
+    var reward: Scalar[dtype] = Scalar[dtype](0.0) if (
+        x_out or theta_out
+    ) else Scalar[dtype](1.0)
 
     # Auto-reset if done
     if done:
-        x_i = (rebind[Scalar[dtype]](random_vals[i * 4 + 0]) - Scalar[dtype](0.5)) * Scalar[dtype](0.1)
-        x_dot_i = (rebind[Scalar[dtype]](random_vals[i * 4 + 1]) - Scalar[dtype](0.5)) * Scalar[dtype](0.1)
-        theta_i = (rebind[Scalar[dtype]](random_vals[i * 4 + 2]) - Scalar[dtype](0.5)) * Scalar[dtype](0.1)
-        theta_dot_i = (rebind[Scalar[dtype]](random_vals[i * 4 + 3]) - Scalar[dtype](0.5)) * Scalar[dtype](0.1)
+        x_i = (
+            rebind[Scalar[dtype]](random_vals[i * 4 + 0]) - Scalar[dtype](0.5)
+        ) * Scalar[dtype](0.1)
+        x_dot_i = (
+            rebind[Scalar[dtype]](random_vals[i * 4 + 1]) - Scalar[dtype](0.5)
+        ) * Scalar[dtype](0.1)
+        theta_i = (
+            rebind[Scalar[dtype]](random_vals[i * 4 + 2]) - Scalar[dtype](0.5)
+        ) * Scalar[dtype](0.1)
+        theta_dot_i = (
+            rebind[Scalar[dtype]](random_vals[i * 4 + 3]) - Scalar[dtype](0.5)
+        ) * Scalar[dtype](0.1)
         steps_i = 0
 
     # Store results
@@ -263,7 +299,9 @@ fn benchmark_cpu[num_envs: Int](num_steps: Int) -> Float64:
     return Float64(total_env_steps) / elapsed_sec  # Steps per second
 
 
-fn benchmark_gpu[num_envs: Int](ctx: DeviceContext, num_steps: Int) raises -> Float64:
+fn benchmark_gpu[
+    num_envs: Int
+](ctx: DeviceContext, num_steps: Int) raises -> Float64:
     """Benchmark GPU vectorized CartPole."""
     comptime dtype = DType.float32
     comptime TPB = 64
@@ -297,15 +335,33 @@ fn benchmark_gpu[num_envs: Int](ctx: DeviceContext, num_steps: Int) raises -> Fl
     ctx.synchronize()
 
     # Create layout tensors
-    var x_t = LayoutTensor[dtype, Layout.row_major(num_envs), MutAnyOrigin](x_gpu)
-    var x_dot_t = LayoutTensor[dtype, Layout.row_major(num_envs), MutAnyOrigin](x_dot_gpu)
-    var theta_t = LayoutTensor[dtype, Layout.row_major(num_envs), MutAnyOrigin](theta_gpu)
-    var theta_dot_t = LayoutTensor[dtype, Layout.row_major(num_envs), MutAnyOrigin](theta_dot_gpu)
-    var steps_t = LayoutTensor[DType.int32, Layout.row_major(num_envs), MutAnyOrigin](steps_gpu)
-    var actions_t = LayoutTensor[DType.int32, Layout.row_major(num_envs), ImmutAnyOrigin](actions_gpu)
-    var rewards_t = LayoutTensor[dtype, Layout.row_major(num_envs), MutAnyOrigin](rewards_gpu)
-    var dones_t = LayoutTensor[DType.int32, Layout.row_major(num_envs), MutAnyOrigin](dones_gpu)
-    var random_t = LayoutTensor[dtype, Layout.row_major(num_envs * 4), ImmutAnyOrigin](random_gpu)
+    var x_t = LayoutTensor[dtype, Layout.row_major(num_envs), MutAnyOrigin](
+        x_gpu
+    )
+    var x_dot_t = LayoutTensor[dtype, Layout.row_major(num_envs), MutAnyOrigin](
+        x_dot_gpu
+    )
+    var theta_t = LayoutTensor[dtype, Layout.row_major(num_envs), MutAnyOrigin](
+        theta_gpu
+    )
+    var theta_dot_t = LayoutTensor[
+        dtype, Layout.row_major(num_envs), MutAnyOrigin
+    ](theta_dot_gpu)
+    var steps_t = LayoutTensor[
+        DType.int32, Layout.row_major(num_envs), MutAnyOrigin
+    ](steps_gpu)
+    var actions_t = LayoutTensor[
+        DType.int32, Layout.row_major(num_envs), ImmutAnyOrigin
+    ](actions_gpu)
+    var rewards_t = LayoutTensor[
+        dtype, Layout.row_major(num_envs), MutAnyOrigin
+    ](rewards_gpu)
+    var dones_t = LayoutTensor[
+        DType.int32, Layout.row_major(num_envs), MutAnyOrigin
+    ](dones_gpu)
+    var random_t = LayoutTensor[
+        dtype, Layout.row_major(num_envs * 4), ImmutAnyOrigin
+    ](random_gpu)
 
     comptime num_blocks = (num_envs + TPB - 1) // TPB
     comptime kernel = cartpole_step_kernel[dtype, num_envs, TPB]
@@ -320,9 +376,16 @@ fn benchmark_gpu[num_envs: Int](ctx: DeviceContext, num_steps: Int) raises -> Fl
             for i in range(num_envs * 4):
                 host[i] = Scalar[dtype](random_float64())
 
-        ctx.enqueue_function_checked[kernel, kernel](
-            x_t, x_dot_t, theta_t, theta_dot_t, steps_t,
-            actions_t, rewards_t, dones_t, random_t,
+        ctx.enqueue_function[kernel, kernel](
+            x_t,
+            x_dot_t,
+            theta_t,
+            theta_dot_t,
+            steps_t,
+            actions_t,
+            rewards_t,
+            dones_t,
+            random_t,
             grid_dim=(num_blocks,),
             block_dim=(TPB,),
         )
@@ -339,9 +402,16 @@ fn benchmark_gpu[num_envs: Int](ctx: DeviceContext, num_steps: Int) raises -> Fl
             for i in range(num_envs * 4):
                 host[i] = Scalar[dtype](random_float64())
 
-        ctx.enqueue_function_checked[kernel, kernel](
-            x_t, x_dot_t, theta_t, theta_dot_t, steps_t,
-            actions_t, rewards_t, dones_t, random_t,
+        ctx.enqueue_function[kernel, kernel](
+            x_t,
+            x_dot_t,
+            theta_t,
+            theta_dot_t,
+            steps_t,
+            actions_t,
+            rewards_t,
+            dones_t,
+            random_t,
             grid_dim=(num_blocks,),
             block_dim=(TPB,),
         )
@@ -353,7 +423,9 @@ fn benchmark_gpu[num_envs: Int](ctx: DeviceContext, num_steps: Int) raises -> Fl
     return Float64(total_env_steps) / elapsed_sec
 
 
-fn benchmark_gpu_no_transfer[num_envs: Int](ctx: DeviceContext, num_steps: Int) raises -> Float64:
+fn benchmark_gpu_no_transfer[
+    num_envs: Int
+](ctx: DeviceContext, num_steps: Int) raises -> Float64:
     """Benchmark GPU vectorized CartPole WITHOUT per-step CPU-GPU transfers.
 
     This represents the best-case scenario where actions come from GPU (e.g., from
@@ -399,24 +471,49 @@ fn benchmark_gpu_no_transfer[num_envs: Int](ctx: DeviceContext, num_steps: Int) 
     ctx.synchronize()
 
     # Create layout tensors
-    var x_t = LayoutTensor[dtype, Layout.row_major(num_envs), MutAnyOrigin](x_gpu)
-    var x_dot_t = LayoutTensor[dtype, Layout.row_major(num_envs), MutAnyOrigin](x_dot_gpu)
-    var theta_t = LayoutTensor[dtype, Layout.row_major(num_envs), MutAnyOrigin](theta_gpu)
-    var theta_dot_t = LayoutTensor[dtype, Layout.row_major(num_envs), MutAnyOrigin](theta_dot_gpu)
-    var steps_t = LayoutTensor[DType.int32, Layout.row_major(num_envs), MutAnyOrigin](steps_gpu)
-    var actions_t = LayoutTensor[DType.int32, Layout.row_major(num_envs), ImmutAnyOrigin](actions_gpu)
-    var rewards_t = LayoutTensor[dtype, Layout.row_major(num_envs), MutAnyOrigin](rewards_gpu)
-    var dones_t = LayoutTensor[DType.int32, Layout.row_major(num_envs), MutAnyOrigin](dones_gpu)
-    var random_t = LayoutTensor[dtype, Layout.row_major(num_envs * 4), ImmutAnyOrigin](random_gpu)
+    var x_t = LayoutTensor[dtype, Layout.row_major(num_envs), MutAnyOrigin](
+        x_gpu
+    )
+    var x_dot_t = LayoutTensor[dtype, Layout.row_major(num_envs), MutAnyOrigin](
+        x_dot_gpu
+    )
+    var theta_t = LayoutTensor[dtype, Layout.row_major(num_envs), MutAnyOrigin](
+        theta_gpu
+    )
+    var theta_dot_t = LayoutTensor[
+        dtype, Layout.row_major(num_envs), MutAnyOrigin
+    ](theta_dot_gpu)
+    var steps_t = LayoutTensor[
+        DType.int32, Layout.row_major(num_envs), MutAnyOrigin
+    ](steps_gpu)
+    var actions_t = LayoutTensor[
+        DType.int32, Layout.row_major(num_envs), ImmutAnyOrigin
+    ](actions_gpu)
+    var rewards_t = LayoutTensor[
+        dtype, Layout.row_major(num_envs), MutAnyOrigin
+    ](rewards_gpu)
+    var dones_t = LayoutTensor[
+        DType.int32, Layout.row_major(num_envs), MutAnyOrigin
+    ](dones_gpu)
+    var random_t = LayoutTensor[
+        dtype, Layout.row_major(num_envs * 4), ImmutAnyOrigin
+    ](random_gpu)
 
     comptime num_blocks = (num_envs + TPB - 1) // TPB
     comptime kernel = cartpole_step_kernel[dtype, num_envs, TPB]
 
     # Warm up
     for _ in range(100):
-        ctx.enqueue_function_checked[kernel, kernel](
-            x_t, x_dot_t, theta_t, theta_dot_t, steps_t,
-            actions_t, rewards_t, dones_t, random_t,
+        ctx.enqueue_function[kernel, kernel](
+            x_t,
+            x_dot_t,
+            theta_t,
+            theta_dot_t,
+            steps_t,
+            actions_t,
+            rewards_t,
+            dones_t,
+            random_t,
             grid_dim=(num_blocks,),
             block_dim=(TPB,),
         )
@@ -425,9 +522,16 @@ fn benchmark_gpu_no_transfer[num_envs: Int](ctx: DeviceContext, num_steps: Int) 
     # Benchmark - NO CPU-GPU transfers in the loop
     var start = perf_counter_ns()
     for _ in range(num_steps):
-        ctx.enqueue_function_checked[kernel, kernel](
-            x_t, x_dot_t, theta_t, theta_dot_t, steps_t,
-            actions_t, rewards_t, dones_t, random_t,
+        ctx.enqueue_function[kernel, kernel](
+            x_t,
+            x_dot_t,
+            theta_t,
+            theta_dot_t,
+            steps_t,
+            actions_t,
+            rewards_t,
+            dones_t,
+            random_t,
             grid_dim=(num_blocks,),
             block_dim=(TPB,),
         )
@@ -524,11 +628,41 @@ def main():
         print("-" * 70)
         print("Summary: GPU speedup vs CPU")
         print("-" * 70)
-        print("  64 envs:  GPU=" + String(gpu_nt_64 / cpu_64)[:4] + "x (no transfer), " + String(gpu_64 / cpu_64)[:4] + "x (with transfer)")
-        print("  128 envs: GPU=" + String(gpu_nt_128 / cpu_128)[:4] + "x (no transfer), " + String(gpu_128 / cpu_128)[:4] + "x (with transfer)")
-        print("  256 envs: GPU=" + String(gpu_nt_256 / cpu_256)[:4] + "x (no transfer), " + String(gpu_256 / cpu_256)[:4] + "x (with transfer)")
-        print("  512 envs: GPU=" + String(gpu_nt_512 / cpu_512)[:4] + "x (no transfer), " + String(gpu_512 / cpu_512)[:4] + "x (with transfer)")
-        print("  1024 envs: GPU=" + String(gpu_nt_1024 / cpu_1024)[:4] + "x (no transfer), " + String(gpu_1024 / cpu_1024)[:4] + "x (with transfer)")
+        print(
+            "  64 envs:  GPU="
+            + String(gpu_nt_64 / cpu_64)[:4]
+            + "x (no transfer), "
+            + String(gpu_64 / cpu_64)[:4]
+            + "x (with transfer)"
+        )
+        print(
+            "  128 envs: GPU="
+            + String(gpu_nt_128 / cpu_128)[:4]
+            + "x (no transfer), "
+            + String(gpu_128 / cpu_128)[:4]
+            + "x (with transfer)"
+        )
+        print(
+            "  256 envs: GPU="
+            + String(gpu_nt_256 / cpu_256)[:4]
+            + "x (no transfer), "
+            + String(gpu_256 / cpu_256)[:4]
+            + "x (with transfer)"
+        )
+        print(
+            "  512 envs: GPU="
+            + String(gpu_nt_512 / cpu_512)[:4]
+            + "x (no transfer), "
+            + String(gpu_512 / cpu_512)[:4]
+            + "x (with transfer)"
+        )
+        print(
+            "  1024 envs: GPU="
+            + String(gpu_nt_1024 / cpu_1024)[:4]
+            + "x (no transfer), "
+            + String(gpu_1024 / cpu_1024)[:4]
+            + "x (with transfer)"
+        )
 
         print()
         print("=" * 70)

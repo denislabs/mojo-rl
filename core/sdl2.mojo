@@ -60,12 +60,12 @@ comptime SDLK_q: Int32 = 113
 struct SDLHandle(ImplicitlyCopyable, Movable):
     """Generic opaque handle for SDL objects."""
 
-    var ptr: UnsafePointer[UInt8, MutOrigin.external]
+    var ptr: UnsafePointer[UInt8, MutAnyOrigin]
 
     fn __init__(out self):
-        self.ptr = UnsafePointer[UInt8, MutOrigin.external]()
+        self.ptr = UnsafePointer[UInt8, MutAnyOrigin]()
 
-    fn __init__(out self, ptr: UnsafePointer[UInt8, MutOrigin.external]):
+    fn __init__(out self, ptr: UnsafePointer[UInt8, MutAnyOrigin]):
         self.ptr = ptr
 
     fn __bool__(self) -> Bool:
@@ -185,19 +185,19 @@ struct SDL2:
         """
         var create_fn = self.handle.get_function[
             fn (
-                UnsafePointer[UInt8, ImmutOrigin.external],
+                UnsafePointer[UInt8, ImmutAnyOrigin],
                 Int32,
                 Int32,
                 Int32,
                 Int32,
                 UInt32,
-            ) -> UnsafePointer[UInt8, MutOrigin.external]
+            ) -> UnsafePointer[UInt8, MutAnyOrigin]
         ]("SDL_CreateWindow")
 
         var title_ptr = (
             title.unsafe_ptr()
             .bitcast[UInt8]()
-            .unsafe_origin_cast[ImmutOrigin.external]()
+            .unsafe_origin_cast[ImmutAnyOrigin]()
         )
         var ptr = create_fn(
             title_ptr,
@@ -218,8 +218,8 @@ struct SDL2:
         """
         var create_fn = self.handle.get_function[
             fn (
-                UnsafePointer[UInt8, MutOrigin.external], Int32, UInt32
-            ) -> UnsafePointer[UInt8, MutOrigin.external]
+                UnsafePointer[UInt8, MutAnyOrigin], Int32, UInt32
+            ) -> UnsafePointer[UInt8, MutAnyOrigin]
         ]("SDL_CreateRenderer")
 
         var ptr = create_fn(
@@ -241,7 +241,7 @@ struct SDL2:
         """
         var set_fn = self.handle.get_function[
             fn (
-                UnsafePointer[UInt8, MutOrigin.external],
+                UnsafePointer[UInt8, MutAnyOrigin],
                 UInt8,
                 UInt8,
                 UInt8,
@@ -253,14 +253,14 @@ struct SDL2:
     fn clear(self):
         """Clear the renderer with the current draw color."""
         var clear_fn = self.handle.get_function[
-            fn (UnsafePointer[UInt8, MutOrigin.external]) -> Int32
+            fn (UnsafePointer[UInt8, MutAnyOrigin]) -> Int32
         ]("SDL_RenderClear")
         _ = clear_fn(self.renderer.ptr)
 
     fn present(self):
         """Present the rendered content to the screen."""
         var present_fn = self.handle.get_function[
-            fn (UnsafePointer[UInt8, MutOrigin.external]) -> None
+            fn (UnsafePointer[UInt8, MutAnyOrigin]) -> None
         ]("SDL_RenderPresent")
         present_fn(self.renderer.ptr)
 
@@ -281,7 +281,7 @@ struct SDL2:
         """
         var draw_fn = self.handle.get_function[
             fn (
-                UnsafePointer[UInt8, MutOrigin.external],
+                UnsafePointer[UInt8, MutAnyOrigin],
                 Int32,
                 Int32,
                 Int32,
@@ -340,7 +340,7 @@ struct SDL2:
             y: Y coordinate.
         """
         var draw_fn = self.handle.get_function[
-            fn (UnsafePointer[UInt8, MutOrigin.external], Int32, Int32) -> Int32
+            fn (UnsafePointer[UInt8, MutAnyOrigin], Int32, Int32) -> Int32
         ]("SDL_RenderDrawPoint")
         _ = draw_fn(self.renderer.ptr, Int32(x), Int32(y))
 
@@ -493,13 +493,12 @@ struct SDL2:
             True if an event was available.
         """
         var poll_fn = self.handle.get_function[
-            fn (UnsafePointer[UInt8, MutOrigin.external]) -> Int32
+            fn (UnsafePointer[UInt8, MutAnyOrigin]) -> Int32
         ]("SDL_PollEvent")
         var event_ptr = UnsafePointer(to=event)
         return (
             poll_fn(
-                event_ptr.bitcast[UInt8]()
-                .unsafe_origin_cast[MutOrigin.external]()
+                event_ptr.bitcast[UInt8]().unsafe_origin_cast[MutAnyOrigin]()
             )
             != 0
         )
@@ -536,13 +535,13 @@ struct SDL2:
         """
         var open_fn = self.ttf_handle.get_function[
             fn (
-                UnsafePointer[UInt8, ImmutOrigin.external], Int32
-            ) -> UnsafePointer[UInt8, MutOrigin.external]
+                UnsafePointer[UInt8, ImmutAnyOrigin], Int32
+            ) -> UnsafePointer[UInt8, MutAnyOrigin]
         ]("TTF_OpenFont")
         var path_ptr = (
             path.unsafe_ptr()
             .bitcast[UInt8]()
-            .unsafe_origin_cast[ImmutOrigin.external]()
+            .unsafe_origin_cast[ImmutAnyOrigin]()
         )
         var ptr = open_fn(path_ptr, Int32(size))
         self.font = SDLHandle(ptr)
@@ -564,15 +563,15 @@ struct SDL2:
         """
         var render_fn = self.ttf_handle.get_function[
             fn (
-                UnsafePointer[UInt8, MutOrigin.external],
-                UnsafePointer[UInt8, ImmutOrigin.external],
+                UnsafePointer[UInt8, MutAnyOrigin],
+                UnsafePointer[UInt8, ImmutAnyOrigin],
                 SDL_Color,
-            ) -> UnsafePointer[UInt8, MutOrigin.external]
+            ) -> UnsafePointer[UInt8, MutAnyOrigin]
         ]("TTF_RenderText_Solid")
         var text_ptr = (
             text.unsafe_ptr()
             .bitcast[UInt8]()
-            .unsafe_origin_cast[ImmutOrigin.external]()
+            .unsafe_origin_cast[ImmutAnyOrigin]()
         )
         var ptr = render_fn(self.font.ptr, text_ptr, color)
         return SDLHandle(ptr)
@@ -591,9 +590,9 @@ struct SDL2:
         """
         var create_fn = self.handle.get_function[
             fn (
-                UnsafePointer[UInt8, MutOrigin.external],
-                UnsafePointer[UInt8, MutOrigin.external],
-            ) -> UnsafePointer[UInt8, MutOrigin.external]
+                UnsafePointer[UInt8, MutAnyOrigin],
+                UnsafePointer[UInt8, MutAnyOrigin],
+            ) -> UnsafePointer[UInt8, MutAnyOrigin]
         ]("SDL_CreateTextureFromSurface")
         var ptr = create_fn(self.renderer.ptr, surface.ptr)
         return SDLHandle(ptr)
@@ -617,11 +616,11 @@ struct SDL2:
 
         var query_fn = self.handle.get_function[
             fn (
-                UnsafePointer[UInt8, MutOrigin.external],
-                UnsafePointer[UInt8, MutOrigin.external],
-                UnsafePointer[UInt8, MutOrigin.external],
-                UnsafePointer[UInt8, MutOrigin.external],
-                UnsafePointer[UInt8, MutOrigin.external],
+                UnsafePointer[UInt8, MutAnyOrigin],
+                UnsafePointer[UInt8, MutAnyOrigin],
+                UnsafePointer[UInt8, MutAnyOrigin],
+                UnsafePointer[UInt8, MutAnyOrigin],
+                UnsafePointer[UInt8, MutAnyOrigin],
             ) -> Int32
         ]("SDL_QueryTexture")
 
@@ -629,16 +628,16 @@ struct SDL2:
             texture.ptr,
             UnsafePointer(to=format)
             .bitcast[UInt8]()
-            .unsafe_origin_cast[MutOrigin.external](),
+            .unsafe_origin_cast[MutAnyOrigin](),
             UnsafePointer(to=access)
             .bitcast[UInt8]()
-            .unsafe_origin_cast[MutOrigin.external](),
+            .unsafe_origin_cast[MutAnyOrigin](),
             UnsafePointer(to=w)
             .bitcast[UInt8]()
-            .unsafe_origin_cast[MutOrigin.external](),
+            .unsafe_origin_cast[MutAnyOrigin](),
             UnsafePointer(to=h)
             .bitcast[UInt8]()
-            .unsafe_origin_cast[MutOrigin.external](),
+            .unsafe_origin_cast[MutAnyOrigin](),
         )
 
         return (Int(w), Int(h))
@@ -666,10 +665,10 @@ struct SDL2:
 
         var copy_fn = self.handle.get_function[
             fn (
-                UnsafePointer[UInt8, MutOrigin.external],
-                UnsafePointer[UInt8, MutOrigin.external],
-                UnsafePointer[UInt8, MutOrigin.external],
-                UnsafePointer[UInt8, MutOrigin.external],
+                UnsafePointer[UInt8, MutAnyOrigin],
+                UnsafePointer[UInt8, MutAnyOrigin],
+                UnsafePointer[UInt8, MutAnyOrigin],
+                UnsafePointer[UInt8, MutAnyOrigin],
             ) -> Int32
         ]("SDL_RenderCopy")
 
@@ -677,26 +676,26 @@ struct SDL2:
         var dst_rect_ptr = (
             UnsafePointer(to=dst_rect)
             .bitcast[UInt8]()
-            .unsafe_origin_cast[MutOrigin.external]()
+            .unsafe_origin_cast[MutAnyOrigin]()
         )
         _ = copy_fn(
             self.renderer.ptr,
             texture.ptr,
-            UnsafePointer[UInt8, MutOrigin.external](),
+            UnsafePointer[UInt8, MutAnyOrigin](),
             dst_rect_ptr,
         )
 
     fn free_surface(self, surface: SDLHandle):
         """Free a surface."""
         var free_fn = self.handle.get_function[
-            fn (UnsafePointer[UInt8, MutOrigin.external]) -> None
+            fn (UnsafePointer[UInt8, MutAnyOrigin]) -> None
         ]("SDL_FreeSurface")
         free_fn(surface.ptr)
 
     fn destroy_texture(self, texture: SDLHandle):
         """Destroy a texture."""
         var destroy_fn = self.handle.get_function[
-            fn (UnsafePointer[UInt8, MutOrigin.external]) -> None
+            fn (UnsafePointer[UInt8, MutAnyOrigin]) -> None
         ]("SDL_DestroyTexture")
         destroy_fn(texture.ptr)
 
@@ -704,7 +703,7 @@ struct SDL2:
         """Close the stored font."""
         if self.font:
             var close_fn = self.ttf_handle.get_function[
-                fn (UnsafePointer[UInt8, MutOrigin.external]) -> None
+                fn (UnsafePointer[UInt8, MutAnyOrigin]) -> None
             ]("TTF_CloseFont")
             close_fn(self.font.ptr)
             self.font = SDLHandle()
@@ -713,7 +712,7 @@ struct SDL2:
         """Destroy the stored renderer."""
         if self.renderer:
             var destroy_fn = self.handle.get_function[
-                fn (UnsafePointer[UInt8, MutOrigin.external]) -> None
+                fn (UnsafePointer[UInt8, MutAnyOrigin]) -> None
             ]("SDL_DestroyRenderer")
             destroy_fn(self.renderer.ptr)
             self.renderer = SDLHandle()
@@ -722,7 +721,7 @@ struct SDL2:
         """Destroy the stored window."""
         if self.window:
             var destroy_fn = self.handle.get_function[
-                fn (UnsafePointer[UInt8, MutOrigin.external]) -> None
+                fn (UnsafePointer[UInt8, MutAnyOrigin]) -> None
             ]("SDL_DestroyWindow")
             destroy_fn(self.window.ptr)
             self.window = SDLHandle()

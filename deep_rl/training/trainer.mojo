@@ -258,6 +258,7 @@ struct Trainer[
         comptime PARAM_SIZE = Self.MODEL.PARAM_SIZE
         comptime CACHE_SIZE = BATCH * Self.MODEL.CACHE_SIZE
         comptime STATE_SIZE = PARAM_SIZE * Self.OPTIMIZER.STATE_PER_PARAM
+        comptime WORKSPACE_SIZE = BATCH * Self.MODEL.WORKSPACE_SIZE_PER_SAMPLE
 
         # Create host buffers for input/target and copy data
         var input_host = ctx.enqueue_create_host_buffer[dtype](IN_SIZE)
@@ -288,6 +289,10 @@ struct Trainer[
         var grad_input_buf = ctx.enqueue_create_buffer[dtype](IN_SIZE)
         var state_buf = ctx.enqueue_create_buffer[dtype](STATE_SIZE)
         var loss_buf = ctx.enqueue_create_buffer[dtype](1)
+        # Pre-allocate workspace buffer (avoids allocation on every forward/backward)
+        var workspace_buf = ctx.enqueue_create_buffer[dtype](
+            WORKSPACE_SIZE if WORKSPACE_SIZE > 0 else 1
+        )
 
         # Copy input, target, params, and state to device
         ctx.enqueue_copy(input_buf, input_host)
@@ -304,9 +309,9 @@ struct Trainer[
             # Zero gradients on GPU
             ctx.enqueue_memset(grads_buf, 0)
 
-            # Forward pass
-            Self.MODEL.forward_gpu[BATCH](
-                ctx, output_buf, input_buf, params_buf, cache_buf
+            # Forward pass (using workspace to avoid internal allocation)
+            Self.MODEL.forward_gpu_ws[BATCH](
+                ctx, output_buf, input_buf, params_buf, cache_buf, workspace_buf
             )
 
             # Compute loss gradient (backward of loss function)
@@ -314,14 +319,15 @@ struct Trainer[
                 ctx, grad_output_buf, output_buf, target_buf
             )
 
-            # Backward pass through model
-            Self.MODEL.backward_gpu[BATCH](
+            # Backward pass through model (using workspace to avoid internal allocation)
+            Self.MODEL.backward_gpu_ws[BATCH](
                 ctx,
                 grad_input_buf,
                 grad_output_buf,
                 params_buf,
                 cache_buf,
                 grads_buf,
+                workspace_buf,
             )
 
             # Optimizer step
@@ -335,15 +341,15 @@ struct Trainer[
                 Self.LOSS_FUNCTION.forward_gpu[BATCH, Self.MODEL.OUT_DIM](
                     ctx, loss_buf, output_buf, target_buf
                 )
-                # Copy loss back to host
+                # Copy loss back to host (only sync when printing)
                 ctx.enqueue_copy(loss_host, loss_buf)
                 ctx.synchronize()
                 final_loss = Float64(loss_host[0])
                 print(
                     "Epoch " + String(epoch) + " - Loss: " + String(final_loss)
                 )
-
-            ctx.synchronize()
+            # Note: No sync here - GPU ops queue up and execute in order.
+            # We only sync when reading results back (loss printing) or at the end.
 
         # Compute final loss if not already computed
         if self.print_every == 0 or (self.epochs - 1) % self.print_every != 0:

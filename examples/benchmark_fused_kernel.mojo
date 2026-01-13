@@ -52,11 +52,17 @@ fn fused_forward_simple_kernel[
     OUT_DIM: Int,
     TPB: Int,  # Threads per block (1D)
 ](
-    output: LayoutTensor[dtype, Layout.row_major(BATCH * OUT_DIM), MutAnyOrigin],
+    output: LayoutTensor[
+        dtype, Layout.row_major(BATCH * OUT_DIM), MutAnyOrigin
+    ],
     obs: LayoutTensor[dtype, Layout.row_major(BATCH * OBS_DIM), ImmutAnyOrigin],
-    W1: LayoutTensor[dtype, Layout.row_major(OBS_DIM * HIDDEN_DIM), ImmutAnyOrigin],
+    W1: LayoutTensor[
+        dtype, Layout.row_major(OBS_DIM * HIDDEN_DIM), ImmutAnyOrigin
+    ],
     b1: LayoutTensor[dtype, Layout.row_major(HIDDEN_DIM), ImmutAnyOrigin],
-    W2: LayoutTensor[dtype, Layout.row_major(HIDDEN_DIM * OUT_DIM), ImmutAnyOrigin],
+    W2: LayoutTensor[
+        dtype, Layout.row_major(HIDDEN_DIM * OUT_DIM), ImmutAnyOrigin
+    ],
     b2: LayoutTensor[dtype, Layout.row_major(OUT_DIM), ImmutAnyOrigin],
 ):
     """Simpler fused forward: one thread per batch element, computes full forward.
@@ -91,7 +97,9 @@ fn fused_forward_simple_kernel[
         # Compute hidden[hid] = ReLU(sum_k obs[k] * W1[k, hid] + b1[hid])
         var h_val = rebind[Scalar[dtype]](b1[hid])
         for k in range(OBS_DIM):
-            h_val += rebind[Scalar[dtype]](obs[batch_idx * OBS_DIM + k]) * rebind[Scalar[dtype]](W1[k * HIDDEN_DIM + hid])
+            h_val += rebind[Scalar[dtype]](
+                obs[batch_idx * OBS_DIM + k]
+            ) * rebind[Scalar[dtype]](W1[k * HIDDEN_DIM + hid])
         # ReLU
         if h_val < Scalar[dtype](0):
             h_val = Scalar[dtype](0)
@@ -153,32 +161,58 @@ fn benchmark_separate_kernels[
     ctx.synchronize()
 
     # Create tensors
-    var obs_t = LayoutTensor[dtype, Layout.row_major(BATCH, OBS_DIM), ImmutAnyOrigin](obs_gpu)
-    var W1_t = LayoutTensor[dtype, Layout.row_major(OBS_DIM, HIDDEN_DIM), ImmutAnyOrigin](W1_gpu)
-    var b1_t = LayoutTensor[dtype, Layout.row_major(HIDDEN_DIM), ImmutAnyOrigin](b1_gpu)
-    var h_t = LayoutTensor[dtype, Layout.row_major(BATCH, HIDDEN_DIM), MutAnyOrigin](h_gpu)
-    var W2_t = LayoutTensor[dtype, Layout.row_major(HIDDEN_DIM, OUT_DIM), ImmutAnyOrigin](W2_gpu)
-    var b2_t = LayoutTensor[dtype, Layout.row_major(OUT_DIM), ImmutAnyOrigin](b2_gpu)
-    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin](out_gpu)
+    var obs_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OBS_DIM), ImmutAnyOrigin
+    ](obs_gpu)
+    var W1_t = LayoutTensor[
+        dtype, Layout.row_major(OBS_DIM, HIDDEN_DIM), ImmutAnyOrigin
+    ](W1_gpu)
+    var b1_t = LayoutTensor[
+        dtype, Layout.row_major(HIDDEN_DIM), ImmutAnyOrigin
+    ](b1_gpu)
+    var h_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, HIDDEN_DIM), MutAnyOrigin
+    ](h_gpu)
+    var W2_t = LayoutTensor[
+        dtype, Layout.row_major(HIDDEN_DIM, OUT_DIM), ImmutAnyOrigin
+    ](W2_gpu)
+    var b2_t = LayoutTensor[dtype, Layout.row_major(OUT_DIM), ImmutAnyOrigin](
+        b2_gpu
+    )
+    var out_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+    ](out_gpu)
 
     comptime blocks_h_y = (BATCH + TILE - 1) // TILE
     comptime blocks_h_x = (HIDDEN_DIM + TILE - 1) // TILE
     comptime blocks_o_y = (BATCH + TILE - 1) // TILE
     comptime blocks_o_x = (OUT_DIM + TILE - 1) // TILE
 
-    comptime kernel1 = linear_forward_relu_kernel[dtype, BATCH, OBS_DIM, HIDDEN_DIM, TILE]
-    comptime kernel2 = linear_forward_kernel[dtype, BATCH, HIDDEN_DIM, OUT_DIM, TILE]
+    comptime kernel1 = linear_forward_relu_kernel[
+        dtype, BATCH, OBS_DIM, HIDDEN_DIM, TILE
+    ]
+    comptime kernel2 = linear_forward_kernel[
+        dtype, BATCH, HIDDEN_DIM, OUT_DIM, TILE
+    ]
 
     # Warm up
     for _ in range(100):
-        ctx.enqueue_function_checked[kernel1, kernel1](
-            h_t, obs_t, W1_t, b1_t,
+        ctx.enqueue_function[kernel1, kernel1](
+            h_t,
+            obs_t,
+            W1_t,
+            b1_t,
             grid_dim=(blocks_h_x, blocks_h_y),
             block_dim=(TILE, TILE),
         )
-        var h_immut = LayoutTensor[dtype, Layout.row_major(BATCH, HIDDEN_DIM), ImmutAnyOrigin](h_gpu)
-        ctx.enqueue_function_checked[kernel2, kernel2](
-            out_t, h_immut, W2_t, b2_t,
+        var h_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, HIDDEN_DIM), ImmutAnyOrigin
+        ](h_gpu)
+        ctx.enqueue_function[kernel2, kernel2](
+            out_t,
+            h_immut,
+            W2_t,
+            b2_t,
             grid_dim=(blocks_o_x, blocks_o_y),
             block_dim=(TILE, TILE),
         )
@@ -187,14 +221,22 @@ fn benchmark_separate_kernels[
     # Benchmark
     var start = perf_counter_ns()
     for _ in range(num_iters):
-        ctx.enqueue_function_checked[kernel1, kernel1](
-            h_t, obs_t, W1_t, b1_t,
+        ctx.enqueue_function[kernel1, kernel1](
+            h_t,
+            obs_t,
+            W1_t,
+            b1_t,
             grid_dim=(blocks_h_x, blocks_h_y),
             block_dim=(TILE, TILE),
         )
-        var h_immut = LayoutTensor[dtype, Layout.row_major(BATCH, HIDDEN_DIM), ImmutAnyOrigin](h_gpu)
-        ctx.enqueue_function_checked[kernel2, kernel2](
-            out_t, h_immut, W2_t, b2_t,
+        var h_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, HIDDEN_DIM), ImmutAnyOrigin
+        ](h_gpu)
+        ctx.enqueue_function[kernel2, kernel2](
+            out_t,
+            h_immut,
+            W2_t,
+            b2_t,
             grid_dim=(blocks_o_x, blocks_o_y),
             block_dim=(TILE, TILE),
         )
@@ -235,20 +277,39 @@ fn benchmark_fused_simple[
     ctx.synchronize()
 
     # Create tensors (flat layout for simple kernel)
-    var obs_t = LayoutTensor[dtype, Layout.row_major(BATCH * OBS_DIM), ImmutAnyOrigin](obs_gpu)
-    var W1_t = LayoutTensor[dtype, Layout.row_major(OBS_DIM * HIDDEN_DIM), ImmutAnyOrigin](W1_gpu)
-    var b1_t = LayoutTensor[dtype, Layout.row_major(HIDDEN_DIM), ImmutAnyOrigin](b1_gpu)
-    var W2_t = LayoutTensor[dtype, Layout.row_major(HIDDEN_DIM * OUT_DIM), ImmutAnyOrigin](W2_gpu)
-    var b2_t = LayoutTensor[dtype, Layout.row_major(OUT_DIM), ImmutAnyOrigin](b2_gpu)
-    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH * OUT_DIM), MutAnyOrigin](out_gpu)
+    var obs_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH * OBS_DIM), ImmutAnyOrigin
+    ](obs_gpu)
+    var W1_t = LayoutTensor[
+        dtype, Layout.row_major(OBS_DIM * HIDDEN_DIM), ImmutAnyOrigin
+    ](W1_gpu)
+    var b1_t = LayoutTensor[
+        dtype, Layout.row_major(HIDDEN_DIM), ImmutAnyOrigin
+    ](b1_gpu)
+    var W2_t = LayoutTensor[
+        dtype, Layout.row_major(HIDDEN_DIM * OUT_DIM), ImmutAnyOrigin
+    ](W2_gpu)
+    var b2_t = LayoutTensor[dtype, Layout.row_major(OUT_DIM), ImmutAnyOrigin](
+        b2_gpu
+    )
+    var out_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH * OUT_DIM), MutAnyOrigin
+    ](out_gpu)
 
     comptime num_blocks = (BATCH + TPB - 1) // TPB
-    comptime kernel = fused_forward_simple_kernel[dtype, BATCH, OBS_DIM, HIDDEN_DIM, OUT_DIM, TPB]
+    comptime kernel = fused_forward_simple_kernel[
+        dtype, BATCH, OBS_DIM, HIDDEN_DIM, OUT_DIM, TPB
+    ]
 
     # Warm up
     for _ in range(100):
-        ctx.enqueue_function_checked[kernel, kernel](
-            out_t, obs_t, W1_t, b1_t, W2_t, b2_t,
+        ctx.enqueue_function[kernel, kernel](
+            out_t,
+            obs_t,
+            W1_t,
+            b1_t,
+            W2_t,
+            b2_t,
             grid_dim=(num_blocks,),
             block_dim=(TPB,),
         )
@@ -257,8 +318,13 @@ fn benchmark_fused_simple[
     # Benchmark
     var start = perf_counter_ns()
     for _ in range(num_iters):
-        ctx.enqueue_function_checked[kernel, kernel](
-            out_t, obs_t, W1_t, b1_t, W2_t, b2_t,
+        ctx.enqueue_function[kernel, kernel](
+            out_t,
+            obs_t,
+            W1_t,
+            b1_t,
+            W2_t,
+            b2_t,
             grid_dim=(num_blocks,),
             block_dim=(TPB,),
         )
@@ -268,7 +334,9 @@ fn benchmark_fused_simple[
     return Float64(end - start) / Float64(num_iters)
 
 
-fn benchmark_kernel_launch_overhead(ctx: DeviceContext, num_iters: Int) raises -> Float64:
+fn benchmark_kernel_launch_overhead(
+    ctx: DeviceContext, num_iters: Int
+) raises -> Float64:
     """Measure pure kernel launch overhead."""
     comptime dtype = DType.float32
     comptime size = 64
@@ -279,14 +347,16 @@ fn benchmark_kernel_launch_overhead(ctx: DeviceContext, num_iters: Int) raises -
 
     var buf_t = LayoutTensor[dtype, Layout.row_major(size), MutAnyOrigin](buf)
 
-    fn trivial_kernel(buf: LayoutTensor[dtype, Layout.row_major(size), MutAnyOrigin]):
+    fn trivial_kernel(
+        buf: LayoutTensor[dtype, Layout.row_major(size), MutAnyOrigin]
+    ):
         var i = Int(thread_idx.x)
         if i < size:
             buf[i] = rebind[Scalar[dtype]](buf[i]) + Scalar[dtype](1.0)
 
     # Warm up
     for _ in range(100):
-        ctx.enqueue_function_checked[trivial_kernel, trivial_kernel](
+        ctx.enqueue_function[trivial_kernel, trivial_kernel](
             buf_t, grid_dim=(1,), block_dim=(64,)
         )
     ctx.synchronize()
@@ -294,7 +364,7 @@ fn benchmark_kernel_launch_overhead(ctx: DeviceContext, num_iters: Int) raises -
     # Benchmark
     var start = perf_counter_ns()
     for _ in range(num_iters):
-        ctx.enqueue_function_checked[trivial_kernel, trivial_kernel](
+        ctx.enqueue_function[trivial_kernel, trivial_kernel](
             buf_t, grid_dim=(1,), block_dim=(64,)
         )
     ctx.synchronize()
@@ -337,7 +407,9 @@ fn benchmark_cpu_forward[
             for j in range(HIDDEN_DIM):
                 var sum_val: Float32 = 0
                 for k in range(OBS_DIM):
-                    sum_val += obs[batch_idx * OBS_DIM + k] * W1[k * HIDDEN_DIM + j]
+                    sum_val += (
+                        obs[batch_idx * OBS_DIM + k] * W1[k * HIDDEN_DIM + j]
+                    )
                 h[j] = sum_val if sum_val > 0 else 0  # ReLU
 
             # Output layer
@@ -355,7 +427,9 @@ fn benchmark_cpu_forward[
             for j in range(HIDDEN_DIM):
                 var sum_val: Float32 = 0
                 for k in range(OBS_DIM):
-                    sum_val += obs[batch_idx * OBS_DIM + k] * W1[k * HIDDEN_DIM + j]
+                    sum_val += (
+                        obs[batch_idx * OBS_DIM + k] * W1[k * HIDDEN_DIM + j]
+                    )
                 h[j] = sum_val if sum_val > 0 else 0  # ReLU
 
             # Output layer
@@ -396,7 +470,14 @@ def main():
 
     var num_iters = 1000
 
-    print("Network: " + String(OBS_DIM) + " -> " + String(HIDDEN_DIM) + " -> " + String(OUT_DIM))
+    print(
+        "Network: "
+        + String(OBS_DIM)
+        + " -> "
+        + String(HIDDEN_DIM)
+        + " -> "
+        + String(OUT_DIM)
+    )
     print("Batch size: " + String(BATCH))
     print("Iterations: " + String(num_iters))
     print()
@@ -405,7 +486,9 @@ def main():
     print("-" * 70)
     print("CPU Baseline")
     print("-" * 70)
-    var cpu_ns = benchmark_cpu_forward[BATCH, OBS_DIM, HIDDEN_DIM, OUT_DIM](num_iters)
+    var cpu_ns = benchmark_cpu_forward[BATCH, OBS_DIM, HIDDEN_DIM, OUT_DIM](
+        num_iters
+    )
     print("  " + String(cpu_ns / 1000)[:8] + " us per batch forward pass")
     print("  " + String(Int(1e9 / cpu_ns)) + " batches/sec")
     print()
@@ -423,8 +506,12 @@ def main():
         print("-" * 70)
         print("GPU: 2 Separate Kernel Launches (tiled matmul)")
         print("-" * 70)
-        var separate_ns = benchmark_separate_kernels[BATCH, OBS_DIM, HIDDEN_DIM, OUT_DIM](ctx, num_iters)
-        print("  " + String(separate_ns / 1000)[:8] + " us per batch forward pass")
+        var separate_ns = benchmark_separate_kernels[
+            BATCH, OBS_DIM, HIDDEN_DIM, OUT_DIM
+        ](ctx, num_iters)
+        print(
+            "  " + String(separate_ns / 1000)[:8] + " us per batch forward pass"
+        )
         print("  " + String(Int(1e9 / separate_ns)) + " batches/sec")
         print("  (includes 2 kernel launches)")
         print()
@@ -433,7 +520,9 @@ def main():
         print("-" * 70)
         print("GPU: 1 Fused Kernel Launch")
         print("-" * 70)
-        var fused_ns = benchmark_fused_simple[BATCH, OBS_DIM, HIDDEN_DIM, OUT_DIM](ctx, num_iters)
+        var fused_ns = benchmark_fused_simple[
+            BATCH, OBS_DIM, HIDDEN_DIM, OUT_DIM
+        ](ctx, num_iters)
         print("  " + String(fused_ns / 1000)[:8] + " us per batch forward pass")
         print("  " + String(Int(1e9 / fused_ns)) + " batches/sec")
         print("  (single kernel launch)")
@@ -448,7 +537,11 @@ def main():
         print("  GPU fused:      " + String(fused_ns / 1000)[:8] + " us")
         print("  Kernel launch:  " + String(launch_ns / 1000)[:8] + " us")
         print()
-        print("  Fused speedup over separate: " + String(separate_ns / fused_ns)[:4] + "x")
+        print(
+            "  Fused speedup over separate: "
+            + String(separate_ns / fused_ns)[:4]
+            + "x"
+        )
         print("  GPU fused vs CPU: " + String(cpu_ns / fused_ns)[:4] + "x")
         print()
 
