@@ -1,20 +1,21 @@
-"""SDL2 FFI bindings for native 2D rendering.
-
-Provides low-level bindings to SDL2 functions for window management,
-rendering primitives, and event handling. No Python dependency.
-
-Usage:
-    var sdl = SDL2()
-    sdl.init()
-    var window = sdl.create_window("Title", 800, 600)
-    var renderer = sdl.create_renderer(window)
-    # ... render loop ...
-    sdl.quit()
-"""
-
 from sys.ffi import OwnedDLHandle
 from memory import UnsafePointer
 from sys import info
+
+################################################################################
+# SDL2 FFI bindings for native 2D rendering.
+
+# Provides low-level bindings to SDL2 functions for window management,
+# rendering primitives, and event handling. No Python dependency.
+
+# Usage:
+#     var sdl = SDL2()
+#     sdl.init()
+#     var window = sdl.create_window("Title", 800, 600)
+#     var renderer = sdl.create_renderer(window)
+#     # ... render loop ...
+#     sdl.quit()
+################################################################################
 
 
 fn get_sdl_lib_path() -> String:

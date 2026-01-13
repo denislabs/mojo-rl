@@ -109,76 +109,116 @@
   - Automatic entropy temperature (α) tuning
   - `examples/pendulum_sac.mojo` - Pendulum swing-up with SAC
 
-### Deep RL Infrastructure (`deep_rl/`) - CPU with SIMD
-- [x] Tensor operations - SIMD-optimized tensor ops with compile-time dimensions
-  - `deep_rl/tensor.mojo` - matmul, transpose, relu, tanh, sigmoid, gradients
-  - FMA (fused multiply-add) and register blocking for performance
-  - Xavier initialization, element-wise ops, reductions
-  - **Note**: Currently CPU-only; GPU support planned (see In Progress section)
-- [x] Linear layer - Fully connected layer with forward/backward
-  - `deep_rl/linear.mojo` - Linear layer with compile-time dimensions
-  - Gradient computation for backpropagation
-- [x] Adam optimizer - Adaptive moment estimation optimizer
-  - `deep_rl/adam.mojo` - AdamState, LinearAdam with SIMD optimization
-  - Soft update support for target networks
-- [x] MLP networks - Multi-layer perceptrons
-  - `deep_rl/mlp.mojo` - MLP2 (2-layer), MLP3 (3-layer) networks
-  - Forward/backward with activation caching
-- [x] Actor-Critic networks - Networks for continuous control
-  - `deep_rl/actor_critic.mojo` - Actor and Critic with ReLU hidden, tanh output
-  - Built-in Adam optimizer and soft update methods
-- [x] Replay buffer - Experience replay for deep RL
-  - `deep_rl/replay_buffer.mojo` - Fixed-capacity buffer with compile-time dimensions
+### Deep RL Infrastructure (`deep_rl/`) - PyTorch-like Trait-Based Architecture
+- [x] **Model Trait** - Stateless neural network layers with compile-time dimensions
+  - `deep_rl/model/model.mojo` - Base `Model` trait with `forward()`, `backward()`, GPU variants
+  - Parameters managed externally via `LayoutTensor` for zero-copy composition
+  - Compile-time constants: `IN_DIM`, `OUT_DIM`, `PARAM_SIZE`, `CACHE_SIZE`
+- [x] **Layer Implementations** - Pluggable neural network layers
+  - `deep_rl/model/linear.mojo` - `Linear[in_dim, out_dim]` with tiled matmul GPU kernels
+  - `deep_rl/model/relu.mojo` - `ReLU[dim]` activation layer
+  - `deep_rl/model/tanh.mojo` - `Tanh[dim]` activation layer
+  - `deep_rl/model/sequential.mojo` - `Seq2[L0, L1]` composition + `seq()` helpers (up to 8 layers)
+- [x] **Optimizer Trait** - Pluggable parameter update rules
+  - `deep_rl/optimizer/optimizer.mojo` - Base `Optimizer` trait with `step()`, `step_gpu()`
+  - `deep_rl/optimizer/sgd.mojo` - `SGD` optimizer
+  - `deep_rl/optimizer/adam.mojo` - `Adam` optimizer with bias correction
+- [x] **Loss Function Trait** - Pluggable loss computation
+  - `deep_rl/loss/loss.mojo` - Base `LossFunction` trait
+  - `deep_rl/loss/mse.mojo` - `MSELoss` with block reduction for GPU
+- [x] **Initializer Trait** - Pluggable weight initialization
+  - `deep_rl/initializer/initializers.mojo` - Xavier, Kaiming, LeCun, Zeros, Ones, Uniform, Normal
+- [x] **Training Utilities** - High-level training management
+  - `deep_rl/training/trainer.mojo` - `Trainer[MODEL, OPTIMIZER, LOSS, INITIALIZER]`
+  - Manages params, grads, optimizer state externally
+  - `train[BATCH]()` (CPU) and `train_gpu[BATCH]()` (GPU) methods
+- [x] **Constants** - Global configuration
+  - `deep_rl/constants.mojo` - `dtype`, `TILE` (matmul tile size), `TPB` (threads per block)
 
-### Deep RL Agents (`deep_agents/`)
-- [x] Deep DDPG - DDPG with neural network function approximation
-  - `deep_agents/ddpg.mojo` - DeepDDPGAgent
-  - 2-layer MLP actor (obs -> 256 -> 256 -> action with tanh)
-  - 2-layer MLP critic (obs+action -> 256 -> 256 -> Q-value)
-  - Target networks with soft updates
-  - Gaussian exploration noise with decay
-  - `train()` and `evaluate()` methods for BoxContinuousActionEnv
-- [x] Deep TD3 - TD3 with neural network function approximation
-  - `deep_agents/td3.mojo` - DeepTD3Agent
-  - Twin critics (Q1, Q2) to reduce overestimation bias
-  - Delayed policy updates (actor updates every N critic updates)
-  - Target policy smoothing (clipped noise on target actions)
-  - All three key TD3 improvements over DDPG
-- [x] Deep DQN / Double DQN - Deep Q-Network for discrete action spaces
-  - `deep_agents/dqn.mojo` - DeepDQNAgent, QNetwork
-  - 2-layer MLP Q-network (obs -> hidden -> hidden -> Q-values for all actions)
+### Deep RL Infrastructure - Legacy (`deep_rl/cpu/`, `deep_rl/gpu/`) ⚠️ DEPRECATED
+> **Note**: These folders contain the old monolithic implementations kept for backward compatibility.
+> New development should use the trait-based architecture above.
+- [x] ~~Legacy CPU tensor operations~~ - `deep_rl/cpu/tensor.mojo` (use `Model` trait instead)
+- [x] ~~Legacy CPU linear/MLP~~ - `deep_rl/cpu/linear.mojo`, `mlp.mojo` (use `Linear`, `seq()` instead)
+- [x] ~~Legacy CPU Adam~~ - `deep_rl/cpu/adam.mojo` (use `Optimizer` trait instead)
+- [x] ~~Legacy CPU Actor-Critic~~ - `deep_rl/cpu/actor_critic.mojo` (use `seq()` composition instead)
+- [x] ~~Legacy CPU Replay buffer~~ - `deep_rl/cpu/replay_buffer.mojo`
+- [x] ~~Legacy GPU kernels~~ - `deep_rl/gpu/` (elementwise, reduction, matmul, etc.)
+
+### Deep RL Agents (`deep_agents/`) - New Trait-Based Architecture
+- [x] **Deep DQN / Double DQN** - Deep Q-Network using new trait-based architecture ✅ NEW
+  - `deep_agents/dqn.mojo` - DeepDQNAgent using `seq()` composition
+  - Uses `Linear`, `ReLU` layers with `Adam` optimizer and `Kaiming` initializer
+  - Network via `seq(Linear[obs, h1](), ReLU[h1](), Linear[h1, h2](), ReLU[h2](), Linear[h2, actions]())`
+  - GPU kernels for DQN-specific operations (TD targets, soft updates, epsilon-greedy)
   - Target network with soft updates for stability
   - Experience replay buffer
   - Epsilon-greedy exploration with decay
-  - **Double DQN** (enabled by default): Uses online network to select actions,
-    target network to evaluate - reduces overestimation bias
-  - `train()` and `evaluate()` methods for BoxDiscreteActionEnv
+  - **Double DQN** (compile-time flag): Uses online network to select actions, target to evaluate
+  - Works with `BoxDiscreteActionEnv` trait
   - `examples/lunar_lander_dqn.mojo` - LunarLander training with Double DQN
+
+### Deep RL Agents - Legacy (`deep_agents/cpu/`, `deep_agents/gpu/`) ⚠️ DEPRECATED
+> **Note**: These agents use the old monolithic neural network classes (`LinearAdam`, `Actor`, `Critic`).
+> They are functional but should be migrated to the new trait-based architecture.
+- [x] ~~Deep DDPG~~ - `deep_agents/cpu/ddpg.mojo` (needs migration to new architecture)
+- [x] ~~Deep TD3~~ - `deep_agents/cpu/td3.mojo` (needs migration to new architecture)
+- [x] ~~Deep SAC~~ - `deep_agents/cpu/sac.mojo` (needs migration to new architecture)
+- [x] ~~Deep Dueling DQN~~ - `deep_agents/cpu/dueling_dqn.mojo` (needs migration to new architecture)
+- [x] ~~Deep DQN with PER~~ - `deep_agents/cpu/dqn_per.mojo` (needs migration to new architecture)
+- [x] ~~GPU A2C~~ - `deep_agents/gpu/` (needs migration to new architecture)
 
 ## In Progress / Next Steps
 
-### Deep RL Agents (Neural Networks)
-- [x] Deep Dueling DQN - Separate value and advantage streams
-  - `deep_agents/dueling_dqn.mojo` - DuelingQNetwork, DeepDuelingDQNAgent
-  - Separates Q-network into Value V(s) and Advantage A(s,a) streams
-  - Q(s,a) = V(s) + (A(s,a) - mean(A)) for identifiability
-  - Supports Double DQN (default) for reduced overestimation
-  - `examples/lunar_lander_dueling_dqn.mojo` - LunarLander training
-- [x] Deep SAC - Soft Actor-Critic with neural networks
-  - `deep_agents/sac.mojo` - DeepSACAgent with StochasticActor
-  - `deep_rl/actor_critic.mojo` - StochasticActor for Gaussian policy
-  - Stochastic policy with learned mean and log_std
-  - Maximum entropy RL: maximizes reward + α * entropy
-  - Twin Q-networks (like TD3) to reduce overestimation
-  - Automatic entropy temperature (α) tuning
-  - No target actor (uses current policy for next-state actions)
-  - `examples/deep_sac_demo.mojo` - Pendulum training with Deep SAC
-- [x] Prioritized Experience Replay - Sample transitions by TD error priority
+### Deep RL Architecture - Enhancements
+- [ ] **Additional Layers** - Extend the Model trait ecosystem
+  - [ ] `Sigmoid[dim]` - Sigmoid activation layer
+  - [ ] `Softmax[dim]` - Softmax activation layer (for policy networks)
+  - [ ] `LayerNorm[dim]` - Layer normalization
+  - [ ] `Dropout[dim]` - Dropout regularization (training mode flag)
+- [ ] **Additional Optimizers**
+  - [ ] `RMSprop` - RMSprop optimizer
+  - [ ] `AdamW` - Adam with weight decay
+- [ ] **Additional Loss Functions**
+  - [ ] `HuberLoss` - Smooth L1 loss (for DQN variants)
+  - [ ] `CrossEntropyLoss` - For classification/policy gradients
+- [ ] **Stochastic Actor** - Gaussian policy network for SAC/PPO
+  - [ ] `StochasticActor` using seq() with learned mean and log_std
+  - [ ] Reparameterization trick for backprop through sampling
 
-### GPU Support
-- [ ] GPU tensor operations - Port tensor.mojo ops to GPU (when Mojo GPU support matures)
-- [ ] GPU-accelerated training - Batch processing on GPU for deep RL agents
+### Deep RL Agents - Migration to New Architecture
+> **Goal**: Port all legacy agents from `deep_agents/cpu/` to use the new trait-based architecture like `dqn.mojo`.
+- [ ] **Deep DDPG** - Migrate to new architecture
+  - Port `deep_agents/cpu/ddpg.mojo` to use `seq()`, `Adam`, `Kaiming`
+  - Move to `deep_agents/ddpg.mojo` (root level)
+  - Deterministic actor with tanh output scaling
+- [ ] **Deep TD3** - Migrate to new architecture
+  - Port `deep_agents/cpu/td3.mojo` to use `seq()`, `Adam`, `Kaiming`
+  - Move to `deep_agents/td3.mojo` (root level)
+  - Twin critics, delayed policy updates, target smoothing
+- [ ] **Deep SAC** - Migrate to new architecture
+  - Port `deep_agents/cpu/sac.mojo` to use `seq()`, `Adam`, `Kaiming`
+  - Move to `deep_agents/sac.mojo` (root level)
+  - Requires StochasticActor implementation first
+- [ ] **Deep Dueling DQN** - Migrate to new architecture
+  - Port `deep_agents/cpu/dueling_dqn.mojo` to use `seq()`, `Adam`, `Kaiming`
+  - Move to `deep_agents/dueling_dqn.mojo` (root level)
+  - Separate value and advantage streams
+- [ ] **Deep DQN with PER** - Migrate to new architecture
+  - Port `deep_agents/cpu/dqn_per.mojo` to use `seq()`, `Adam`, `Kaiming`
+  - Move to `deep_agents/dqn_per.mojo` (root level)
+  - Prioritized experience replay with importance sampling
+- [ ] **A2C / PPO** - Implement with new architecture
+  - New implementations using `seq()` composition
+  - Actor-Critic networks with shared/separate feature extraction
+
+### GPU Support ⏸️ ON HOLD
+> **Status**: GPU work paused due to Apple Silicon bug in Mojo GPU runtime.
+> Will resume when the issue is resolved by Modular.
+- [ ] GPU tensor operations - Tiled matmul, elementwise ops (partially implemented in Linear, ReLU, Tanh)
+- [ ] GPU-accelerated training - Full batch processing on GPU for deep RL agents
 - [ ] Mixed CPU/GPU pipeline - Environment stepping on CPU, network forward/backward on GPU
+- [ ] GPU replay buffer - Store and sample transitions on GPU to avoid CPU-GPU transfers
 
 ### Vectorized Environments
 - [x] VecCartPoleEnv - Vectorized CartPole running N environments in parallel
@@ -244,9 +284,52 @@
 | DDPG | Continuous Control | Deterministic policy + Q-function critic |
 | TD3 | Continuous Control | Twin critics + delayed updates + target smoothing |
 | SAC | Continuous Control | Stochastic policy + entropy regularization + auto α |
-| Deep DDPG | Deep RL | Neural network actor/critic with Adam optimizer |
-| Deep TD3 | Deep RL | Twin critics + delayed updates + target smoothing (neural networks) |
-| Deep DQN | Deep RL | Neural network Q-function with target network + replay |
-| Deep Double DQN | Deep RL | DQN with reduced overestimation (online selects, target evaluates) |
-| Deep Dueling DQN | Deep RL | Separate V(s) and A(s,a) streams for better value decomposition |
-| Deep SAC | Deep RL | Stochastic neural network policy + entropy maximization + auto α |
+| Deep DQN | Deep RL ✅ | Neural network Q-function with target network + replay (NEW architecture) |
+| Deep Double DQN | Deep RL ✅ | DQN with reduced overestimation (NEW architecture) |
+| Deep DDPG | Deep RL ⚠️ | Neural network actor/critic (LEGACY - needs migration) |
+| Deep TD3 | Deep RL ⚠️ | Twin critics + delayed updates + target smoothing (LEGACY - needs migration) |
+| Deep Dueling DQN | Deep RL ⚠️ | Separate V(s) and A(s,a) streams (LEGACY - needs migration) |
+| Deep SAC | Deep RL ⚠️ | Stochastic policy + entropy maximization (LEGACY - needs migration) |
+
+## Architecture Notes
+
+### New PyTorch-like Deep RL Architecture (`deep_rl/`)
+
+The new architecture follows a **stateless, trait-based design** similar to PyTorch:
+
+```
+Model Trait          → Linear, ReLU, Tanh, Sequential (seq())
+Optimizer Trait      → SGD, Adam
+LossFunction Trait   → MSELoss
+Initializer Trait    → Xavier, Kaiming, LeCun, etc.
+```
+
+**Key Design Principles:**
+1. **Stateless Models** - Models describe computation, not storage. Parameters managed externally.
+2. **Zero-Copy Composition** - `LayoutTensor` views enable efficient layer stacking without data copies.
+3. **Compile-Time Dimensions** - All sizes known at compile-time for maximum performance.
+4. **Pluggable Components** - Mix any Model + Optimizer + Loss + Initializer combination.
+
+**Example Network Construction:**
+```mojo
+from deep_rl import seq, Linear, ReLU, Adam, Kaiming, Trainer
+
+# Build: obs -> 64 (ReLU) -> 64 (ReLU) -> actions
+var model = seq(
+    Linear[obs_dim, 64](), ReLU[64](),
+    Linear[64, 64](), ReLU[64](),
+    Linear[64, action_dim](),
+)
+```
+
+### Migration Status
+
+| Component | Location | Status |
+|-----------|----------|--------|
+| DQN / Double DQN | `deep_agents/dqn.mojo` | ✅ NEW architecture |
+| DDPG | `deep_agents/cpu/ddpg.mojo` | ⚠️ LEGACY - migrate |
+| TD3 | `deep_agents/cpu/td3.mojo` | ⚠️ LEGACY - migrate |
+| SAC | `deep_agents/cpu/sac.mojo` | ⚠️ LEGACY - migrate |
+| Dueling DQN | `deep_agents/cpu/dueling_dqn.mojo` | ⚠️ LEGACY - migrate |
+| DQN + PER | `deep_agents/cpu/dqn_per.mojo` | ⚠️ LEGACY - migrate |
+| A2C | `deep_agents/gpu/` | ⚠️ LEGACY - migrate |
