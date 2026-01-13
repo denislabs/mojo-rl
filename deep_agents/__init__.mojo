@@ -6,7 +6,7 @@ from .cpu import (
     DeepDQNAgent as DeepDQNAgentCPU,
     QNetwork,
     DeepDQNPERAgent,
-    DeepDuelingDQNAgent,
+    DeepDuelingDQNAgent as LegacyDuelingDQNAgent,
     DuelingQNetwork,
 )
 
@@ -15,6 +15,10 @@ from .gpu import A2CAgent as GPUA2CAgent
 
 # New architecture agents (use Network wrapper + traits, recommended)
 from .dqn import DQNAgent
+from .dqn_per import DQNPERAgent
 from .ddpg import DeepDDPGAgent
 from .td3 import DeepTD3Agent
 from .sac import DeepSACAgent
+from .dueling_dqn import DuelingDQNAgent
+from .a2c import DeepA2CAgent
+from .ppo import DeepPPOAgent

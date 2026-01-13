@@ -206,6 +206,39 @@
   - Gaussian exploration noise with decay
   - Works with `BoxContinuousActionEnv` trait
   - `examples/pendulum_deep_td3.mojo` - Pendulum training with Deep TD3
+- [x] **Deep Dueling DQN** - Dueling DQN using new trait-based architecture ✅ NEW
+  - `deep_agents/dueling_dqn.mojo` - DuelingDQNAgent using `seq()` composition
+  - Split architecture: backbone + value_head + advantage_head (3 Network instances)
+  - Backbone: `seq(Linear, ReLU, Linear, ReLU)` for shared features
+  - Value head: `seq(Linear, ReLU, Linear)` → V(s)
+  - Advantage head: `seq(Linear, ReLU, Linear)` → A(s,a)
+  - Q(s,a) = V(s) + (A(s,a) - mean(A)) for value decomposition
+  - Double DQN support via compile-time flag
+  - Works with `BoxDiscreteActionEnv` trait
+  - `examples/lunar_lander_dueling_dqn.mojo` - LunarLander training
+- [x] **Deep DQN with PER** - DQN with Prioritized Experience Replay using new architecture ✅ NEW
+  - `deep_agents/dqn_per.mojo` - DQNPERAgent using `seq()` composition
+  - Q-network: `seq(Linear, ReLU, Linear, ReLU, Linear)` with Kaiming initialization
+  - Prioritized replay buffer with sum-tree for O(log n) priority sampling
+  - Importance sampling weights correct for non-uniform sampling bias
+  - Beta annealing from beta_start to 1.0 over training
+  - Double DQN support via compile-time flag
+  - Works with `BoxDiscreteActionEnv` trait
+  - `examples/lunar_lander_per_demo.mojo` - DQN vs DQN+PER comparison
+- [x] **Deep A2C** - Advantage Actor-Critic using new architecture ✅ NEW
+  - `deep_agents/a2c.mojo` - DeepA2CAgent using `seq()` composition
+  - Actor: `seq(Linear, ReLU, Linear, ReLU, Linear)` → softmax policy
+  - Critic: `seq(Linear, ReLU, Linear, ReLU, Linear)` → value function
+  - GAE (Generalized Advantage Estimation) for variance reduction
+  - Works with `BoxDiscreteActionEnv` trait
+  - `examples/cartpole_deep_a2c_ppo.mojo` - CartPole training demo
+- [x] **Deep PPO** - Proximal Policy Optimization using new architecture ✅ NEW
+  - `deep_agents/ppo.mojo` - DeepPPOAgent using `seq()` composition
+  - Clipped surrogate objective for stable policy updates
+  - Multiple optimization epochs per rollout
+  - GAE for advantage estimation
+  - Works with `BoxDiscreteActionEnv` trait
+  - `examples/cartpole_deep_a2c_ppo.mojo` - CartPole training demo
 
 ### Deep RL Agents - Legacy (`deep_agents/cpu/`, `deep_agents/gpu/`) ⚠️ DEPRECATED
 > **Note**: These agents use the old monolithic neural network classes (`LinearAdam`, `Actor`, `Critic`).
@@ -235,17 +268,27 @@
   - Implement proper backprop through critic: compute dQ/da gradients
   - Chain rule through reparameterization trick for actor gradients
   - This will significantly improve learning performance
-- [ ] **Deep Dueling DQN** - Migrate to new architecture
-  - Port `deep_agents/cpu/dueling_dqn.mojo` to use `seq()`, `Adam`, `Kaiming`
-  - Move to `deep_agents/dueling_dqn.mojo` (root level)
-  - Separate value and advantage streams
-- [ ] **Deep DQN with PER** - Migrate to new architecture
-  - Port `deep_agents/cpu/dqn_per.mojo` to use `seq()`, `Adam`, `Kaiming`
-  - Move to `deep_agents/dqn_per.mojo` (root level)
+- [x] ~~**Deep Dueling DQN** - Migrate to new architecture~~ ✅ COMPLETED
+  - See `deep_agents/dueling_dqn.mojo` (root level)
+  - Split architecture: backbone + value_head + advantage_head
+  - Q(s,a) = V(s) + (A(s,a) - mean(A))
+  - Double DQN support via compile-time flag
+  - `examples/lunar_lander_dueling_dqn.mojo` - LunarLander training
+- [x] ~~**Deep DQN with PER** - Migrate to new architecture~~ ✅ COMPLETED
+  - See `deep_agents/dqn_per.mojo` (root level)
   - Prioritized experience replay with importance sampling
-- [ ] **A2C / PPO** - Implement with new architecture
-  - New implementations using `seq()` composition
-  - Actor-Critic networks with shared/separate feature extraction
+  - Sum-tree for O(log n) priority sampling
+  - Beta annealing for IS correction
+  - Double DQN support via compile-time flag
+  - `examples/lunar_lander_per_demo.mojo` - DQN vs DQN+PER comparison
+- [x] ~~**A2C / PPO** - Implement with new architecture~~ ✅ COMPLETED
+  - See `deep_agents/a2c.mojo` and `deep_agents/ppo.mojo`
+  - Actor and Critic networks using `seq()` composition
+  - GAE (Generalized Advantage Estimation) for variance reduction
+  - PPO: Clipped surrogate objective, multiple epochs per rollout
+  - A2C: Simple advantage actor-critic with n-step returns
+  - `examples/cartpole_deep_a2c_ppo.mojo` - CartPole training demo
+  - **Note**: May need hyperparameter tuning for best performance
 
 ### GPU Support ⏸️ ON HOLD
 > **Status**: GPU work paused due to Apple Silicon bug in Mojo GPU runtime.
@@ -324,7 +367,10 @@
 | Deep SAC | Deep RL ✅ | Stochastic policy + entropy maximization (NEW architecture) |
 | Deep DDPG | Deep RL ✅ | Deterministic policy + Q-critic + target networks (NEW architecture) |
 | Deep TD3 | Deep RL ✅ | Twin critics + delayed updates + target smoothing (NEW architecture) |
-| Deep Dueling DQN | Deep RL ⚠️ | Separate V(s) and A(s,a) streams (LEGACY - needs migration) |
+| Deep Dueling DQN | Deep RL ✅ | Separate V(s) and A(s,a) streams (NEW architecture) |
+| Deep DQN + PER | Deep RL ✅ | Priority sampling by TD error + IS weights (NEW architecture) |
+| Deep A2C | Deep RL ✅ | Advantage Actor-Critic with GAE (NEW architecture) |
+| Deep PPO | Deep RL ✅ | Clipped surrogate + multiple epochs (NEW architecture) |
 
 ## Architecture Notes
 
@@ -365,6 +411,7 @@ var model = seq(
 | SAC | `deep_agents/sac.mojo` | ✅ NEW architecture (simplified actor gradient) |
 | DDPG | `deep_agents/ddpg.mojo` | ✅ NEW architecture |
 | TD3 | `deep_agents/td3.mojo` | ✅ NEW architecture |
-| Dueling DQN | `deep_agents/cpu/dueling_dqn.mojo` | ⚠️ LEGACY - migrate |
-| DQN + PER | `deep_agents/cpu/dqn_per.mojo` | ⚠️ LEGACY - migrate |
-| A2C | `deep_agents/gpu/` | ⚠️ LEGACY - migrate |
+| Dueling DQN | `deep_agents/dueling_dqn.mojo` | ✅ NEW architecture |
+| DQN + PER | `deep_agents/dqn_per.mojo` | ✅ NEW architecture |
+| A2C | `deep_agents/a2c.mojo` | ✅ NEW architecture |
+| PPO | `deep_agents/ppo.mojo` | ✅ NEW architecture |

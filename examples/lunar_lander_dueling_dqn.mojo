@@ -4,6 +4,11 @@ Run with: pixi run mojo run examples/lunar_lander_dueling_dqn.mojo
 
 This trains a Dueling Deep Q-Network on the native Mojo LunarLander environment.
 
+Uses the new trait-based architecture with:
+- seq() composition for network building
+- Network wrapper for parameter management
+- Three separate networks: backbone, value_head, advantage_head
+
 Dueling DQN separates the Q-network into two streams:
 - Value stream V(s): How good is this state?
 - Advantage stream A(s,a): How much better is action a than others?
@@ -28,7 +33,7 @@ LunarLander is solved when average reward > 200 over 100 episodes.
 from random import seed
 
 from envs.lunar_lander import LunarLanderEnv
-from deep_agents.cpu import DeepDuelingDQNAgent
+from deep_agents.dueling_dqn import DuelingDQNAgent
 
 
 fn main() raises:
@@ -46,20 +51,21 @@ fn main() raises:
     # Create Dueling DQN agent with tuned hyperparameters
     # LunarLander: 8D observations, 4 discrete actions
     #
-    # Architecture:
-    # - Shared: 8 -> 128 (relu) -> 128 (relu)
-    # - Value stream: 128 -> 64 (relu) -> 1
-    # - Advantage stream: 128 -> 64 (relu) -> 4
+    # Architecture (new trait-based):
+    # - Backbone: 8 -> 128 (ReLU) -> 128 (ReLU)
+    # - Value head: 128 -> 64 (ReLU) -> 1
+    # - Advantage head: 128 -> 64 (ReLU) -> 4
     # - Q(s,a) = V(s) + (A(s,a) - mean(A))
     #
     # Using Double DQN (default) for reduced overestimation
-    var agent = DeepDuelingDQNAgent[
+    var agent = DuelingDQNAgent[
         obs_dim=8,
         num_actions=4,
-        hidden_dim=128,  # Shared feature layers
+        hidden_dim=128,  # Shared backbone layers
         stream_hidden_dim=64,  # Value/Advantage stream hidden
         buffer_capacity=20000,
         batch_size=64,
+        double_dqn=True,  # Use Double DQN (default)
     ](
         gamma=0.99,  # Standard discount
         tau=0.005,  # Standard target update

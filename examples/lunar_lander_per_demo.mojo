@@ -15,7 +15,8 @@ Expected results:
 """
 
 from envs import LunarLanderEnv
-from deep_agents.cpu import DeepDQNAgent, DeepDQNPERAgent
+from deep_agents.dqn import DQNAgent
+from deep_agents.dqn_per import DQNPERAgent
 
 
 fn main() raises:
@@ -58,11 +59,11 @@ fn main() raises:
 
     var env_dqn = LunarLanderEnv()
 
-    var dqn_agent = DeepDQNAgent[
+    var dqn_agent = DQNAgent[
         obs_dim=8,
         num_actions=4,
         hidden_dim=128,
-        buffer_capacity=100000,
+        buffer_capacity=20000,
         batch_size=64,
     ](
         gamma=gamma,
@@ -97,11 +98,11 @@ fn main() raises:
 
     var env_per = LunarLanderEnv()
 
-    var per_agent = DeepDQNPERAgent[
+    var per_agent = DQNPERAgent[
         obs_dim=8,
         num_actions=4,
         hidden_dim=128,
-        buffer_capacity=100000,
+        buffer_capacity=20000,
         batch_size=64,
     ](
         gamma=gamma,
