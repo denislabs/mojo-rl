@@ -195,6 +195,17 @@
   - Gaussian exploration noise with decay
   - Works with `BoxContinuousActionEnv` trait
   - `examples/pendulum_deep_ddpg.mojo` - Pendulum training with Deep DDPG
+- [x] **Deep TD3** - Twin Delayed DDPG using new trait-based architecture ✅ NEW
+  - `deep_agents/td3.mojo` - DeepTD3Agent using `seq()` composition
+  - Actor: `seq(Linear, ReLU, Linear, ReLU, Linear, Tanh)` for deterministic policy
+  - Twin critics: `seq(Linear, ReLU, Linear, ReLU, Linear)` for Q1 and Q2 functions
+  - Target networks for actor and both critics with soft updates
+  - Twin Q-networks: uses min(Q1, Q2) targets to reduce overestimation
+  - Delayed policy updates: actor updates every N critic updates
+  - Target policy smoothing: adds clipped noise to target actions
+  - Gaussian exploration noise with decay
+  - Works with `BoxContinuousActionEnv` trait
+  - `examples/pendulum_deep_td3.mojo` - Pendulum training with Deep TD3
 
 ### Deep RL Agents - Legacy (`deep_agents/cpu/`, `deep_agents/gpu/`) ⚠️ DEPRECATED
 > **Note**: These agents use the old monolithic neural network classes (`LinearAdam`, `Actor`, `Critic`).
@@ -212,10 +223,12 @@
 > **Goal**: Port all legacy agents from `deep_agents/cpu/` to use the new trait-based architecture like `dqn.mojo`.
 - [x] ~~**Deep DDPG** - Migrate to new architecture~~ ✅ COMPLETED
   - See `deep_agents/ddpg.mojo` (root level)
-- [ ] **Deep TD3** - Migrate to new architecture
-  - Port `deep_agents/cpu/td3.mojo` to use `seq()`, `Adam`, `Kaiming`
-  - Move to `deep_agents/td3.mojo` (root level)
-  - Twin critics, delayed policy updates, target smoothing
+- [x] ~~**Deep TD3** - Migrate to new architecture~~ ✅ COMPLETED
+  - See `deep_agents/td3.mojo` (root level)
+  - Twin critics with min(Q1, Q2) targets
+  - Delayed policy updates (every N critic updates)
+  - Target policy smoothing with clipped noise
+  - `examples/pendulum_deep_td3.mojo` - Pendulum training with Deep TD3
 - [x] ~~**Deep SAC** - Migrate to new architecture~~ ✅ COMPLETED
   - See `deep_agents/sac.mojo` (root level)
 - [ ] **Deep SAC - Performance Improvements** (Future Work)
@@ -310,7 +323,7 @@
 | Deep Double DQN | Deep RL ✅ | DQN with reduced overestimation (NEW architecture) |
 | Deep SAC | Deep RL ✅ | Stochastic policy + entropy maximization (NEW architecture) |
 | Deep DDPG | Deep RL ✅ | Deterministic policy + Q-critic + target networks (NEW architecture) |
-| Deep TD3 | Deep RL ⚠️ | Twin critics + delayed updates + target smoothing (LEGACY - needs migration) |
+| Deep TD3 | Deep RL ✅ | Twin critics + delayed updates + target smoothing (NEW architecture) |
 | Deep Dueling DQN | Deep RL ⚠️ | Separate V(s) and A(s,a) streams (LEGACY - needs migration) |
 
 ## Architecture Notes
@@ -351,7 +364,7 @@ var model = seq(
 | DQN / Double DQN | `deep_agents/dqn.mojo` | ✅ NEW architecture |
 | SAC | `deep_agents/sac.mojo` | ✅ NEW architecture (simplified actor gradient) |
 | DDPG | `deep_agents/ddpg.mojo` | ✅ NEW architecture |
-| TD3 | `deep_agents/cpu/td3.mojo` | ⚠️ LEGACY - migrate |
+| TD3 | `deep_agents/td3.mojo` | ✅ NEW architecture |
 | Dueling DQN | `deep_agents/cpu/dueling_dqn.mojo` | ⚠️ LEGACY - migrate |
 | DQN + PER | `deep_agents/cpu/dqn_per.mojo` | ⚠️ LEGACY - migrate |
 | A2C | `deep_agents/gpu/` | ⚠️ LEGACY - migrate |

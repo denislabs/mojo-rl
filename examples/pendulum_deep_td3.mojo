@@ -3,16 +3,21 @@
 This demonstrates using the DeepTD3Agent's train() and evaluate()
 functions for easy training on continuous control environments.
 
-TD3 improves over DDPG with:
-1. Twin critics (Q1, Q2) - uses min(Q1, Q2) to reduce overestimation
-2. Delayed policy updates - actor updates every N critic updates
-3. Target policy smoothing - adds clipped noise to target actions
+TD3 improves upon DDPG with three key innovations:
+1. Twin Q-networks: Use two critics, take min(Q1, Q2) to reduce overestimation
+2. Delayed policy updates: Update actor every N critic updates
+3. Target policy smoothing: Add clipped noise to target actions
+
+Uses the new trait-based architecture with:
+- seq() composition for network building
+- Network wrapper for parameter management
+- Tanh-bounded deterministic policy
 
 Run with:
     pixi run mojo run examples/pendulum_deep_td3.mojo
 """
 
-from deep_agents.cpu import DeepTD3Agent
+from deep_agents.td3 import DeepTD3Agent
 from envs.pendulum import PendulumEnv
 
 
