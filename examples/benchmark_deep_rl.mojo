@@ -7,7 +7,7 @@ Run with:
 """
 
 from time import perf_counter_ns
-from deep_agents.cpu import DeepDDPGAgent
+from deep_agents import DeepDDPGAgent
 from envs.pendulum import PendulumEnv
 
 

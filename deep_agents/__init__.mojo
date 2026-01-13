@@ -1,19 +1,19 @@
-# CPU Deep RL Agents (old architecture - deprecated)
-from .cpu import (
-    DeepDDPGAgent as LegacyDeepDDPGAgent,
-    DeepTD3Agent as LegacyDeepTD3Agent,
-    DeepSACAgent as LegacyDeepSACAgent,
-    DeepDQNAgent as DeepDQNAgentCPU,
-    QNetwork,
-    DeepDQNPERAgent,
-    DeepDuelingDQNAgent as LegacyDuelingDQNAgent,
-    DuelingQNetwork,
-)
+"""Deep RL agents using the new trait-based architecture.
 
-# GPU Deep RL Agents (old architecture - deprecated)
-from .gpu import A2CAgent as GPUA2CAgent
+All agents use the Network wrapper from deep_rl.training with seq() composition
+for building neural networks.
 
-# New architecture agents (use Network wrapper + traits, recommended)
+Available agents:
+- DQNAgent: Deep Q-Network with Double DQN support
+- DQNPERAgent: DQN with Prioritized Experience Replay
+- DuelingDQNAgent: Dueling DQN with separate V(s) and A(s,a) streams
+- DeepDDPGAgent: Deep Deterministic Policy Gradient
+- DeepTD3Agent: Twin Delayed DDPG
+- DeepSACAgent: Soft Actor-Critic
+- DeepA2CAgent: Advantage Actor-Critic
+- DeepPPOAgent: Proximal Policy Optimization
+"""
+
 from .dqn import DQNAgent
 from .dqn_per import DQNPERAgent
 from .ddpg import DeepDDPGAgent

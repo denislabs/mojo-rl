@@ -4,7 +4,7 @@ This SAC (Soft Actor-Critic) implementation uses:
 - Network wrapper from deep_rl.training for stateless model + params management
 - seq() composition for building actor and critic networks
 - StochasticActor for Gaussian policy with reparameterization trick
-- ReplayBuffer from deep_rl.cpu for experience replay
+- ReplayBuffer from deep_rl.replay for experience replay
 
 Features:
 - Works with any BoxContinuousActionEnv (continuous obs, continuous actions)
@@ -35,11 +35,15 @@ from layout import Layout, LayoutTensor
 
 from deep_rl.constants import dtype, TILE, TPB
 from deep_rl.model import Linear, ReLU, seq, StochasticActor
-from deep_rl.model.stochastic_actor import rsample, sample_action, get_deterministic_action
+from deep_rl.model.stochastic_actor import (
+    rsample,
+    sample_action,
+    get_deterministic_action,
+)
 from deep_rl.optimizer import Adam
 from deep_rl.initializer import Kaiming
 from deep_rl.training import Network
-from deep_rl.cpu.replay_buffer import ReplayBuffer
+from deep_rl.replay import ReplayBuffer
 from core import TrainingMetrics, BoxContinuousActionEnv
 
 
@@ -196,7 +200,9 @@ struct DeepSACAgent[
     ]
 
     # Replay buffer
-    var buffer: ReplayBuffer[Self.buffer_capacity, Self.obs_dim, Self.action_dim, dtype]
+    var buffer: ReplayBuffer[
+        Self.buffer_capacity, Self.obs_dim, Self.action_dim, dtype
+    ]
 
     # Hyperparameters
     var gamma: Float64  # Discount factor
@@ -264,8 +270,12 @@ struct DeepSACAgent[
 
         self.critic1 = Network(critic_model, Adam(lr=critic_lr), Kaiming())
         self.critic2 = Network(critic_model, Adam(lr=critic_lr), Kaiming())
-        self.critic1_target = Network(critic_model, Adam(lr=critic_lr), Kaiming())
-        self.critic2_target = Network(critic_model, Adam(lr=critic_lr), Kaiming())
+        self.critic1_target = Network(
+            critic_model, Adam(lr=critic_lr), Kaiming()
+        )
+        self.critic2_target = Network(
+            critic_model, Adam(lr=critic_lr), Kaiming()
+        )
 
         # Initialize target networks with same weights as online networks
         self.critic1_target.copy_params_from(self.critic1)
@@ -309,17 +319,25 @@ struct DeepSACAgent[
             Action array.
         """
         # Convert obs to input array
-        var obs_input = InlineArray[Scalar[dtype], Self.obs_dim](uninitialized=True)
+        var obs_input = InlineArray[Scalar[dtype], Self.obs_dim](
+            uninitialized=True
+        )
         for i in range(Self.obs_dim):
             obs_input[i] = Scalar[dtype](obs[i])
 
         # Forward pass through actor (batch_size=1)
-        var actor_output = InlineArray[Scalar[dtype], Self.ACTOR_OUT](uninitialized=True)
+        var actor_output = InlineArray[Scalar[dtype], Self.ACTOR_OUT](
+            uninitialized=True
+        )
         self.actor.forward[1](obs_input, actor_output)
 
         # Extract mean and log_std (first ACTIONS elements are mean, next ACTIONS are log_std)
-        var mean_arr = InlineArray[Scalar[dtype], Self.ACTIONS](uninitialized=True)
-        var log_std_arr = InlineArray[Scalar[dtype], Self.ACTIONS](uninitialized=True)
+        var mean_arr = InlineArray[Scalar[dtype], Self.ACTIONS](
+            uninitialized=True
+        )
+        var log_std_arr = InlineArray[Scalar[dtype], Self.ACTIONS](
+            uninitialized=True
+        )
         for i in range(Self.ACTIONS):
             var mean_val = Float64(actor_output[i])
             var log_std_val = Float64(actor_output[Self.ACTIONS + i])
@@ -342,40 +360,50 @@ struct DeepSACAgent[
             mean_arr[i] = Scalar[dtype](mean_val)
             log_std_arr[i] = Scalar[dtype](log_std_val)
 
-        var mean = LayoutTensor[dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin](
-            mean_arr.unsafe_ptr()
-        )
-        var log_std = LayoutTensor[dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin](
-            log_std_arr.unsafe_ptr()
-        )
+        var mean = LayoutTensor[
+            dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
+        ](mean_arr.unsafe_ptr())
+        var log_std = LayoutTensor[
+            dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
+        ](log_std_arr.unsafe_ptr())
 
-        var action_result = InlineArray[Float64, Self.action_dim](uninitialized=True)
+        var action_result = InlineArray[Float64, Self.action_dim](
+            uninitialized=True
+        )
 
         if deterministic:
             # Use mean action (no randomness)
-            var action_tensor = InlineArray[Scalar[dtype], Self.ACTIONS](uninitialized=True)
-            var action_layout = LayoutTensor[dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin](
-                action_tensor.unsafe_ptr()
+            var action_tensor = InlineArray[Scalar[dtype], Self.ACTIONS](
+                uninitialized=True
             )
+            var action_layout = LayoutTensor[
+                dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
+            ](action_tensor.unsafe_ptr())
             get_deterministic_action[1, Self.ACTIONS](mean, action_layout)
 
             for i in range(Self.action_dim):
                 action_result[i] = Float64(action_tensor[i]) * self.action_scale
         else:
             # Sample with reparameterization
-            var noise = InlineArray[Scalar[dtype], Self.ACTIONS](uninitialized=True)
+            var noise = InlineArray[Scalar[dtype], Self.ACTIONS](
+                uninitialized=True
+            )
             for i in range(Self.ACTIONS):
                 noise[i] = Scalar[dtype](_gaussian_noise())
 
-            var noise_tensor = LayoutTensor[dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin](
-                noise.unsafe_ptr()
+            var noise_tensor = LayoutTensor[
+                dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
+            ](noise.unsafe_ptr())
+            var action_tensor = InlineArray[Scalar[dtype], Self.ACTIONS](
+                uninitialized=True
             )
-            var action_tensor = InlineArray[Scalar[dtype], Self.ACTIONS](uninitialized=True)
-            var action_layout = LayoutTensor[dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin](
-                action_tensor.unsafe_ptr()
-            )
+            var action_layout = LayoutTensor[
+                dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
+            ](action_tensor.unsafe_ptr())
 
-            sample_action[1, Self.ACTIONS](mean, log_std, noise_tensor, action_layout)
+            sample_action[1, Self.ACTIONS](
+                mean, log_std, noise_tensor, action_layout
+            )
 
             for i in range(Self.action_dim):
                 action_result[i] = Float64(action_tensor[i]) * self.action_scale
@@ -399,18 +427,26 @@ struct DeepSACAgent[
             next_obs: Next observation.
             done: Whether episode ended.
         """
-        var obs_arr = InlineArray[Scalar[dtype], Self.obs_dim](uninitialized=True)
-        var next_obs_arr = InlineArray[Scalar[dtype], Self.obs_dim](uninitialized=True)
+        var obs_arr = InlineArray[Scalar[dtype], Self.obs_dim](
+            uninitialized=True
+        )
+        var next_obs_arr = InlineArray[Scalar[dtype], Self.obs_dim](
+            uninitialized=True
+        )
         for i in range(Self.obs_dim):
             obs_arr[i] = Scalar[dtype](obs[i])
             next_obs_arr[i] = Scalar[dtype](next_obs[i])
 
-        var action_arr = InlineArray[Scalar[dtype], Self.action_dim](uninitialized=True)
+        var action_arr = InlineArray[Scalar[dtype], Self.action_dim](
+            uninitialized=True
+        )
         for i in range(Self.action_dim):
             # Store unscaled action (divide by action_scale)
             action_arr[i] = Scalar[dtype](action[i] / self.action_scale)
 
-        self.buffer.add(obs_arr, action_arr, Scalar[dtype](reward), next_obs_arr, done)
+        self.buffer.add(
+            obs_arr, action_arr, Scalar[dtype](reward), next_obs_arr, done
+        )
         self.total_steps += 1
 
     fn train_step(mut self) -> Float64:
@@ -428,11 +464,21 @@ struct DeepSACAgent[
         # =====================================================================
         # Sample batch from buffer
         # =====================================================================
-        var batch_obs = InlineArray[Scalar[dtype], Self.BATCH * Self.OBS](uninitialized=True)
-        var batch_actions = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](uninitialized=True)
-        var batch_rewards = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
-        var batch_next_obs = InlineArray[Scalar[dtype], Self.BATCH * Self.OBS](uninitialized=True)
-        var batch_dones = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
+        var batch_obs = InlineArray[Scalar[dtype], Self.BATCH * Self.OBS](
+            uninitialized=True
+        )
+        var batch_actions = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.ACTIONS
+        ](uninitialized=True)
+        var batch_rewards = InlineArray[Scalar[dtype], Self.BATCH](
+            uninitialized=True
+        )
+        var batch_next_obs = InlineArray[Scalar[dtype], Self.BATCH * Self.OBS](
+            uninitialized=True
+        )
+        var batch_dones = InlineArray[Scalar[dtype], Self.BATCH](
+            uninitialized=True
+        )
 
         self.buffer.sample[Self.batch_size](
             batch_obs, batch_actions, batch_rewards, batch_next_obs, batch_dones
@@ -443,16 +489,26 @@ struct DeepSACAgent[
         # =====================================================================
 
         # Forward actor on next_obs to get next actions and log_probs
-        var next_actor_output = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTOR_OUT](uninitialized=True)
+        var next_actor_output = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.ACTOR_OUT
+        ](uninitialized=True)
         self.actor.forward[Self.BATCH](batch_next_obs, next_actor_output)
 
         # Extract mean and log_std for next states (with clamping for stability)
-        var next_mean = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](uninitialized=True)
-        var next_log_std = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](uninitialized=True)
+        var next_mean = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
+            uninitialized=True
+        )
+        var next_log_std = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.ACTIONS
+        ](uninitialized=True)
         for b in range(Self.BATCH):
             for a in range(Self.ACTIONS):
-                var mean_val = Float64(next_actor_output[b * Self.ACTOR_OUT + a])
-                var log_std_val = Float64(next_actor_output[b * Self.ACTOR_OUT + Self.ACTIONS + a])
+                var mean_val = Float64(
+                    next_actor_output[b * Self.ACTOR_OUT + a]
+                )
+                var log_std_val = Float64(
+                    next_actor_output[b * Self.ACTOR_OUT + Self.ACTIONS + a]
+                )
 
                 # Clamp values for numerical stability
                 if mean_val != mean_val:  # NaN check
@@ -473,48 +529,67 @@ struct DeepSACAgent[
                 next_log_std[b * Self.ACTIONS + a] = Scalar[dtype](log_std_val)
 
         # Sample next actions with log_prob using reparameterization
-        var next_noise = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](uninitialized=True)
+        var next_noise = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
+            uninitialized=True
+        )
         for i in range(Self.BATCH * Self.ACTIONS):
             next_noise[i] = Scalar[dtype](_gaussian_noise())
 
-        var next_sampled_actions = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](uninitialized=True)
-        var next_log_probs = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
+        var next_sampled_actions = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.ACTIONS
+        ](uninitialized=True)
+        var next_log_probs = InlineArray[Scalar[dtype], Self.BATCH](
+            uninitialized=True
+        )
 
         # Create layout tensors for rsample
-        var next_mean_tensor = LayoutTensor[dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin](
-            next_mean.unsafe_ptr()
-        )
-        var next_log_std_tensor = LayoutTensor[dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin](
-            next_log_std.unsafe_ptr()
-        )
-        var next_noise_tensor = LayoutTensor[dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin](
-            next_noise.unsafe_ptr()
-        )
-        var next_action_tensor = LayoutTensor[dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin](
-            next_sampled_actions.unsafe_ptr()
-        )
-        var next_log_prob_tensor = LayoutTensor[dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin](
-            next_log_probs.unsafe_ptr()
-        )
+        var next_mean_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
+        ](next_mean.unsafe_ptr())
+        var next_log_std_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
+        ](next_log_std.unsafe_ptr())
+        var next_noise_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
+        ](next_noise.unsafe_ptr())
+        var next_action_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
+        ](next_sampled_actions.unsafe_ptr())
+        var next_log_prob_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
+        ](next_log_probs.unsafe_ptr())
 
         rsample[Self.BATCH, Self.ACTIONS](
-            next_mean_tensor, next_log_std_tensor, next_noise_tensor,
-            next_action_tensor, next_log_prob_tensor
+            next_mean_tensor,
+            next_log_std_tensor,
+            next_noise_tensor,
+            next_action_tensor,
+            next_log_prob_tensor,
         )
 
         # Guard against NaN/inf in log_probs
         for b in range(Self.BATCH):
             var lp = Float64(next_log_probs[b])
-            if lp != lp or lp > 100.0 or lp < -100.0:  # NaN check or extreme values
-                next_log_probs[b] = Scalar[dtype](-1.0)  # Default reasonable value
+            if (
+                lp != lp or lp > 100.0 or lp < -100.0
+            ):  # NaN check or extreme values
+                next_log_probs[b] = Scalar[dtype](
+                    -1.0
+                )  # Default reasonable value
 
         # Build critic input for next state: (next_obs, next_action)
-        var next_critic_input = InlineArray[Scalar[dtype], Self.BATCH * Self.CRITIC_IN](uninitialized=True)
+        var next_critic_input = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.CRITIC_IN
+        ](uninitialized=True)
         for b in range(Self.BATCH):
             for i in range(Self.OBS):
-                next_critic_input[b * Self.CRITIC_IN + i] = batch_next_obs[b * Self.OBS + i]
+                next_critic_input[b * Self.CRITIC_IN + i] = batch_next_obs[
+                    b * Self.OBS + i
+                ]
             for i in range(Self.ACTIONS):
-                next_critic_input[b * Self.CRITIC_IN + Self.OBS + i] = next_sampled_actions[b * Self.ACTIONS + i]
+                next_critic_input[
+                    b * Self.CRITIC_IN + Self.OBS + i
+                ] = next_sampled_actions[b * Self.ACTIONS + i]
 
         # Forward target critics
         var next_q1 = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
@@ -538,7 +613,10 @@ struct DeepSACAgent[
             var log_prob_val = Float64(next_log_probs[b])
             var entropy_bonus = self.alpha * log_prob_val
             var done_mask = 1.0 - Float64(batch_dones[b])
-            var target = Float64(batch_rewards[b]) + self.gamma * (min_q - entropy_bonus) * done_mask
+            var target = (
+                Float64(batch_rewards[b])
+                + self.gamma * (min_q - entropy_bonus) * done_mask
+            )
 
             # Guard against extreme target values
             if target != target:  # NaN
@@ -555,21 +633,39 @@ struct DeepSACAgent[
         # =====================================================================
 
         # Build critic input for current state: (obs, action)
-        var critic_input = InlineArray[Scalar[dtype], Self.BATCH * Self.CRITIC_IN](uninitialized=True)
+        var critic_input = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.CRITIC_IN
+        ](uninitialized=True)
         for b in range(Self.BATCH):
             for i in range(Self.OBS):
-                critic_input[b * Self.CRITIC_IN + i] = batch_obs[b * Self.OBS + i]
+                critic_input[b * Self.CRITIC_IN + i] = batch_obs[
+                    b * Self.OBS + i
+                ]
             for i in range(Self.ACTIONS):
-                critic_input[b * Self.CRITIC_IN + Self.OBS + i] = batch_actions[b * Self.ACTIONS + i]
+                critic_input[b * Self.CRITIC_IN + Self.OBS + i] = batch_actions[
+                    b * Self.ACTIONS + i
+                ]
 
         # Forward critics with cache
-        var q1_values = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
-        var q2_values = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
-        var critic1_cache = InlineArray[Scalar[dtype], Self.BATCH * Self.CRITIC_CACHE_SIZE](uninitialized=True)
-        var critic2_cache = InlineArray[Scalar[dtype], Self.BATCH * Self.CRITIC_CACHE_SIZE](uninitialized=True)
+        var q1_values = InlineArray[Scalar[dtype], Self.BATCH](
+            uninitialized=True
+        )
+        var q2_values = InlineArray[Scalar[dtype], Self.BATCH](
+            uninitialized=True
+        )
+        var critic1_cache = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.CRITIC_CACHE_SIZE
+        ](uninitialized=True)
+        var critic2_cache = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.CRITIC_CACHE_SIZE
+        ](uninitialized=True)
 
-        self.critic1.forward_with_cache[Self.BATCH](critic_input, q1_values, critic1_cache)
-        self.critic2.forward_with_cache[Self.BATCH](critic_input, q2_values, critic2_cache)
+        self.critic1.forward_with_cache[Self.BATCH](
+            critic_input, q1_values, critic1_cache
+        )
+        self.critic2.forward_with_cache[Self.BATCH](
+            critic_input, q2_values, critic2_cache
+        )
 
         # Compute critic loss gradients (MSE)
         var q1_grad = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
@@ -580,24 +676,40 @@ struct DeepSACAgent[
             var td_error1 = q1_values[b] - targets[b]
             var td_error2 = q2_values[b] - targets[b]
 
-            total_critic_loss += Float64(td_error1 * td_error1 + td_error2 * td_error2)
+            total_critic_loss += Float64(
+                td_error1 * td_error1 + td_error2 * td_error2
+            )
 
             # Gradient: d/dQ (Q - target)^2 = 2 * (Q - target) / batch_size
-            q1_grad[b] = Scalar[dtype](2.0) * td_error1 / Scalar[dtype](Self.BATCH)
-            q2_grad[b] = Scalar[dtype](2.0) * td_error2 / Scalar[dtype](Self.BATCH)
+            q1_grad[b] = (
+                Scalar[dtype](2.0) * td_error1 / Scalar[dtype](Self.BATCH)
+            )
+            q2_grad[b] = (
+                Scalar[dtype](2.0) * td_error2 / Scalar[dtype](Self.BATCH)
+            )
 
-        total_critic_loss /= Float64(2 * Self.BATCH)  # Average over both critics
+        total_critic_loss /= Float64(
+            2 * Self.BATCH
+        )  # Average over both critics
 
         # Backward pass for critics
-        var critic1_grad_input = InlineArray[Scalar[dtype], Self.BATCH * Self.CRITIC_IN](uninitialized=True)
-        var critic2_grad_input = InlineArray[Scalar[dtype], Self.BATCH * Self.CRITIC_IN](uninitialized=True)
+        var critic1_grad_input = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.CRITIC_IN
+        ](uninitialized=True)
+        var critic2_grad_input = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.CRITIC_IN
+        ](uninitialized=True)
 
         self.critic1.zero_grads()
-        self.critic1.backward[Self.BATCH](q1_grad, critic1_grad_input, critic1_cache)
+        self.critic1.backward[Self.BATCH](
+            q1_grad, critic1_grad_input, critic1_cache
+        )
         self.critic1.update()
 
         self.critic2.zero_grads()
-        self.critic2.backward[Self.BATCH](q2_grad, critic2_grad_input, critic2_cache)
+        self.critic2.backward[Self.BATCH](
+            q2_grad, critic2_grad_input, critic2_cache
+        )
         self.critic2.update()
 
         # =====================================================================
@@ -605,17 +717,29 @@ struct DeepSACAgent[
         # =====================================================================
 
         # Forward actor with cache to get new actions
-        var actor_output = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTOR_OUT](uninitialized=True)
-        var actor_cache = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTOR_CACHE_SIZE](uninitialized=True)
-        self.actor.forward_with_cache[Self.BATCH](batch_obs, actor_output, actor_cache)
+        var actor_output = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.ACTOR_OUT
+        ](uninitialized=True)
+        var actor_cache = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.ACTOR_CACHE_SIZE
+        ](uninitialized=True)
+        self.actor.forward_with_cache[Self.BATCH](
+            batch_obs, actor_output, actor_cache
+        )
 
         # Extract mean and log_std (with clamping for stability)
-        var curr_mean = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](uninitialized=True)
-        var curr_log_std = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](uninitialized=True)
+        var curr_mean = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
+            uninitialized=True
+        )
+        var curr_log_std = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.ACTIONS
+        ](uninitialized=True)
         for b in range(Self.BATCH):
             for a in range(Self.ACTIONS):
                 var mean_val = Float64(actor_output[b * Self.ACTOR_OUT + a])
-                var log_std_val = Float64(actor_output[b * Self.ACTOR_OUT + Self.ACTIONS + a])
+                var log_std_val = Float64(
+                    actor_output[b * Self.ACTOR_OUT + Self.ACTIONS + a]
+                )
 
                 # Clamp values for numerical stability
                 if mean_val != mean_val:  # NaN check
@@ -636,32 +760,41 @@ struct DeepSACAgent[
                 curr_log_std[b * Self.ACTIONS + a] = Scalar[dtype](log_std_val)
 
         # Sample actions with log_prob
-        var curr_noise = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](uninitialized=True)
+        var curr_noise = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
+            uninitialized=True
+        )
         for i in range(Self.BATCH * Self.ACTIONS):
             curr_noise[i] = Scalar[dtype](_gaussian_noise())
 
-        var curr_sampled_actions = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](uninitialized=True)
-        var curr_log_probs = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
+        var curr_sampled_actions = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.ACTIONS
+        ](uninitialized=True)
+        var curr_log_probs = InlineArray[Scalar[dtype], Self.BATCH](
+            uninitialized=True
+        )
 
-        var curr_mean_tensor = LayoutTensor[dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin](
-            curr_mean.unsafe_ptr()
-        )
-        var curr_log_std_tensor = LayoutTensor[dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin](
-            curr_log_std.unsafe_ptr()
-        )
-        var curr_noise_tensor = LayoutTensor[dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin](
-            curr_noise.unsafe_ptr()
-        )
-        var curr_action_tensor = LayoutTensor[dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin](
-            curr_sampled_actions.unsafe_ptr()
-        )
-        var curr_log_prob_tensor = LayoutTensor[dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin](
-            curr_log_probs.unsafe_ptr()
-        )
+        var curr_mean_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
+        ](curr_mean.unsafe_ptr())
+        var curr_log_std_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
+        ](curr_log_std.unsafe_ptr())
+        var curr_noise_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
+        ](curr_noise.unsafe_ptr())
+        var curr_action_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, Self.ACTIONS), MutAnyOrigin
+        ](curr_sampled_actions.unsafe_ptr())
+        var curr_log_prob_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.BATCH, 1), MutAnyOrigin
+        ](curr_log_probs.unsafe_ptr())
 
         rsample[Self.BATCH, Self.ACTIONS](
-            curr_mean_tensor, curr_log_std_tensor, curr_noise_tensor,
-            curr_action_tensor, curr_log_prob_tensor
+            curr_mean_tensor,
+            curr_log_std_tensor,
+            curr_noise_tensor,
+            curr_action_tensor,
+            curr_log_prob_tensor,
         )
 
         # Guard against NaN/inf in log_probs
@@ -671,12 +804,18 @@ struct DeepSACAgent[
                 curr_log_probs[b] = Scalar[dtype](-1.0)
 
         # Build critic input with new actions: (obs, new_action)
-        var new_critic_input = InlineArray[Scalar[dtype], Self.BATCH * Self.CRITIC_IN](uninitialized=True)
+        var new_critic_input = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.CRITIC_IN
+        ](uninitialized=True)
         for b in range(Self.BATCH):
             for i in range(Self.OBS):
-                new_critic_input[b * Self.CRITIC_IN + i] = batch_obs[b * Self.OBS + i]
+                new_critic_input[b * Self.CRITIC_IN + i] = batch_obs[
+                    b * Self.OBS + i
+                ]
             for i in range(Self.ACTIONS):
-                new_critic_input[b * Self.CRITIC_IN + Self.OBS + i] = curr_sampled_actions[b * Self.ACTIONS + i]
+                new_critic_input[
+                    b * Self.CRITIC_IN + Self.OBS + i
+                ] = curr_sampled_actions[b * Self.ACTIONS + i]
 
         # Forward critic1 to get Q-values for actor update
         var q1_new = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
@@ -691,7 +830,9 @@ struct DeepSACAgent[
         #
         # This is an approximation that avoids complex backprop through critic.
 
-        var actor_grad = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTOR_OUT](uninitialized=True)
+        var actor_grad = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.ACTOR_OUT
+        ](uninitialized=True)
 
         # Initialize to zero
         for i in range(Self.BATCH * Self.ACTOR_OUT):
@@ -712,24 +853,33 @@ struct DeepSACAgent[
             var q_val = Float64(q1_new[b])
 
             # Advantage: how much better is this Q than average?
-            var advantage = (q_val - mean_q)
+            var advantage = q_val - mean_q
 
             # Normalize advantage for stability
             var adv_scale = 1.0 / (abs(advantage) + 1.0)
 
             for a in range(Self.ACTIONS):
-                var action_val = Float64(curr_sampled_actions[b * Self.ACTIONS + a])
+                var action_val = Float64(
+                    curr_sampled_actions[b * Self.ACTIONS + a]
+                )
                 var mean_val = Float64(curr_mean[b * Self.ACTIONS + a])
                 var log_std_val = Float64(curr_log_std[b * Self.ACTIONS + a])
                 var std = exp(log_std_val)
 
                 # Mean gradient: move mean towards actions with high Q
                 # Using policy gradient: gradient = advantage * (action - mean) / std^2
-                var mean_grad = advantage * adv_scale * (action_val - mean_val) / (std * std + 0.01)
+                var mean_grad = (
+                    advantage
+                    * adv_scale
+                    * (action_val - mean_val)
+                    / (std * std + 0.01)
+                )
 
                 # Add entropy gradient: encourage higher entropy when alpha is high
                 # d(log_prob)/d(mean) ≈ -(action - mean) / std^2
-                var entropy_grad = -self.alpha * (action_val - mean_val) / (std * std + 0.01)
+                var entropy_grad = (
+                    -self.alpha * (action_val - mean_val) / (std * std + 0.01)
+                )
 
                 # Combined: we want to maximize Q and maximize entropy
                 # So we DESCEND on: -Q_grad + alpha * entropy_loss_grad
@@ -746,15 +896,19 @@ struct DeepSACAgent[
                     # If this action was bad, increase exploration
                     log_std_grad += 0.01
 
-                actor_grad[b * Self.ACTOR_OUT + Self.ACTIONS + a] = Scalar[dtype](
-                    log_std_grad / Float64(Self.BATCH)
-                )
+                actor_grad[b * Self.ACTOR_OUT + Self.ACTIONS + a] = Scalar[
+                    dtype
+                ](log_std_grad / Float64(Self.BATCH))
 
         # Backward pass for actor
-        var actor_grad_input = InlineArray[Scalar[dtype], Self.BATCH * Self.OBS](uninitialized=True)
+        var actor_grad_input = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.OBS
+        ](uninitialized=True)
 
         self.actor.zero_grads()
-        self.actor.backward[Self.BATCH](actor_grad, actor_grad_input, actor_cache)
+        self.actor.backward[Self.BATCH](
+            actor_grad, actor_grad_input, actor_cache
+        )
         self.actor.update()
 
         # =====================================================================
@@ -795,7 +949,9 @@ struct DeepSACAgent[
 
         return total_critic_loss
 
-    fn _list_to_simd(self, obs_list: List[Float64]) -> SIMD[DType.float64, Self.obs_dim]:
+    fn _list_to_simd(
+        self, obs_list: List[Float64]
+    ) -> SIMD[DType.float64, Self.obs_dim]:
         """Convert List[Float64] to SIMD for internal use."""
         var obs = SIMD[DType.float64, Self.obs_dim]()
         for i in range(Self.obs_dim):
@@ -846,7 +1002,9 @@ struct DeepSACAgent[
 
         while warmup_count < warmup_steps:
             # Random action in [-action_scale, action_scale]
-            var action = InlineArray[Float64, Self.action_dim](uninitialized=True)
+            var action = InlineArray[Float64, Self.action_dim](
+                uninitialized=True
+            )
             for i in range(Self.action_dim):
                 action[i] = (random_float64() * 2.0 - 1.0) * self.action_scale
 
@@ -908,7 +1066,9 @@ struct DeepSACAgent[
                     break
 
             # Log metrics
-            metrics.log_episode(episode, episode_reward, episode_steps, self.alpha)
+            metrics.log_episode(
+                episode, episode_reward, episode_steps, self.alpha
+            )
 
             # Print progress
             if verbose and (episode + 1) % print_every == 0:

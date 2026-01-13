@@ -4,7 +4,7 @@ This DDPG (Deep Deterministic Policy Gradient) implementation uses:
 - Network wrapper from deep_rl.training for stateless model + params management
 - seq() composition for building actor and critic networks
 - Tanh output activation for bounded actions
-- ReplayBuffer from deep_rl.cpu for experience replay
+- ReplayBuffer from deep_rl.replay for experience replay
 
 Features:
 - Works with any BoxContinuousActionEnv (continuous obs, continuous actions)
@@ -35,7 +35,7 @@ from deep_rl.model import Linear, ReLU, Tanh, seq
 from deep_rl.optimizer import Adam
 from deep_rl.initializer import Kaiming, Xavier
 from deep_rl.training import Network
-from deep_rl.cpu.replay_buffer import ReplayBuffer
+from deep_rl.replay import ReplayBuffer
 from core import TrainingMetrics, BoxContinuousActionEnv
 
 
@@ -107,7 +107,12 @@ struct DeepDDPGAgent[
     # Actor: Linear[obs, h] + ReLU[h] + Linear[h, h] + ReLU[h] + Linear[h, action] + Tanh[action]
     # Cache: OBS + HIDDEN + HIDDEN + HIDDEN + HIDDEN + ACTIONS
     comptime ACTOR_CACHE_SIZE: Int = (
-        Self.OBS + Self.HIDDEN + Self.HIDDEN + Self.HIDDEN + Self.HIDDEN + Self.ACTIONS
+        Self.OBS
+        + Self.HIDDEN
+        + Self.HIDDEN
+        + Self.HIDDEN
+        + Self.HIDDEN
+        + Self.ACTIONS
     )
 
     # Critic: Linear[critic_in, h] + ReLU[h] + Linear[h, h] + ReLU[h] + Linear[h, 1]
@@ -180,7 +185,9 @@ struct DeepDDPGAgent[
     ]
 
     # Replay buffer
-    var buffer: ReplayBuffer[Self.buffer_capacity, Self.obs_dim, Self.action_dim, dtype]
+    var buffer: ReplayBuffer[
+        Self.buffer_capacity, Self.obs_dim, Self.action_dim, dtype
+    ]
 
     # Hyperparameters
     var gamma: Float64  # Discount factor
@@ -242,7 +249,9 @@ struct DeepDDPGAgent[
         self.actor = Network(actor_model, Adam(lr=actor_lr), Xavier())
         self.actor_target = Network(actor_model, Adam(lr=actor_lr), Xavier())
         self.critic = Network(critic_model, Adam(lr=critic_lr), Kaiming())
-        self.critic_target = Network(critic_model, Adam(lr=critic_lr), Kaiming())
+        self.critic_target = Network(
+            critic_model, Adam(lr=critic_lr), Kaiming()
+        )
 
         # Initialize target networks with same weights as online networks
         self.actor_target.copy_params_from(self.actor)
@@ -287,11 +296,15 @@ struct DeepDDPGAgent[
             obs_input[i] = Scalar[dtype](obs[i])
 
         # Forward pass through actor (batch_size=1)
-        var actor_output = InlineArray[Scalar[dtype], Self.ACTIONS](uninitialized=True)
+        var actor_output = InlineArray[Scalar[dtype], Self.ACTIONS](
+            uninitialized=True
+        )
         self.actor.forward[1](obs_input, actor_output)
 
         # Extract action and optionally add noise
-        var action_result = InlineArray[Float64, Self.action_dim](uninitialized=True)
+        var action_result = InlineArray[Float64, Self.action_dim](
+            uninitialized=True
+        )
         for i in range(Self.action_dim):
             # Actor output is already tanh-bounded to [-1, 1], scale by action_scale
             var a = Float64(actor_output[i]) * self.action_scale
@@ -322,12 +335,16 @@ struct DeepDDPGAgent[
         Note: Actions are stored unscaled (divided by action_scale) for consistency.
         """
         var obs_arr = InlineArray[Scalar[dtype], Self.OBS](uninitialized=True)
-        var next_obs_arr = InlineArray[Scalar[dtype], Self.OBS](uninitialized=True)
+        var next_obs_arr = InlineArray[Scalar[dtype], Self.OBS](
+            uninitialized=True
+        )
         for i in range(Self.OBS):
             obs_arr[i] = Scalar[dtype](obs[i])
             next_obs_arr[i] = Scalar[dtype](next_obs[i])
 
-        var action_arr = InlineArray[Scalar[dtype], Self.ACTIONS](uninitialized=True)
+        var action_arr = InlineArray[Scalar[dtype], Self.ACTIONS](
+            uninitialized=True
+        )
         for i in range(Self.ACTIONS):
             # Store unscaled action (divide by action_scale)
             action_arr[i] = Scalar[dtype](action[i] / self.action_scale)
@@ -355,14 +372,18 @@ struct DeepDDPGAgent[
         var batch_obs = InlineArray[Scalar[dtype], Self.BATCH * Self.OBS](
             uninitialized=True
         )
-        var batch_actions = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
+        var batch_actions = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.ACTIONS
+        ](uninitialized=True)
+        var batch_rewards = InlineArray[Scalar[dtype], Self.BATCH](
             uninitialized=True
         )
-        var batch_rewards = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
         var batch_next_obs = InlineArray[Scalar[dtype], Self.BATCH * Self.OBS](
             uninitialized=True
         )
-        var batch_dones = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
+        var batch_dones = InlineArray[Scalar[dtype], Self.BATCH](
+            uninitialized=True
+        )
 
         self.buffer.sample[Self.BATCH](
             batch_obs, batch_actions, batch_rewards, batch_next_obs, batch_dones
@@ -374,9 +395,9 @@ struct DeepDDPGAgent[
         # =====================================================================
 
         # Get next actions from target actor
-        var next_actions = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
-            uninitialized=True
-        )
+        var next_actions = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.ACTIONS
+        ](uninitialized=True)
         self.actor_target.forward[Self.BATCH](batch_next_obs, next_actions)
 
         # Build critic input for next state: (next_obs, next_action)
@@ -389,12 +410,14 @@ struct DeepDDPGAgent[
                     b * Self.OBS + i
                 ]
             for i in range(Self.ACTIONS):
-                next_critic_input[b * Self.CRITIC_IN + Self.OBS + i] = next_actions[
-                    b * Self.ACTIONS + i
-                ]
+                next_critic_input[
+                    b * Self.CRITIC_IN + Self.OBS + i
+                ] = next_actions[b * Self.ACTIONS + i]
 
         # Forward target critic to get Q-values for next state
-        var next_q_values = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
+        var next_q_values = InlineArray[Scalar[dtype], Self.BATCH](
+            uninitialized=True
+        )
         self.critic_target.forward[Self.BATCH](next_critic_input, next_q_values)
 
         # Compute TD targets: y = r + gamma * Q_target(s', mu_target(s')) * (1 - done)
@@ -407,7 +430,9 @@ struct DeepDDPGAgent[
                 q_val = 0.0
 
             var done_mask = 1.0 - Float64(batch_dones[b])
-            var target = Float64(batch_rewards[b]) + self.gamma * q_val * done_mask
+            var target = (
+                Float64(batch_rewards[b]) + self.gamma * q_val * done_mask
+            )
 
             # Clamp for numerical stability
             if target != target:
@@ -424,23 +449,29 @@ struct DeepDDPGAgent[
         # =====================================================================
 
         # Build critic input for current state: (obs, action)
-        var critic_input = InlineArray[Scalar[dtype], Self.BATCH * Self.CRITIC_IN](
-            uninitialized=True
-        )
+        var critic_input = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.CRITIC_IN
+        ](uninitialized=True)
         for b in range(Self.BATCH):
             for i in range(Self.OBS):
-                critic_input[b * Self.CRITIC_IN + i] = batch_obs[b * Self.OBS + i]
+                critic_input[b * Self.CRITIC_IN + i] = batch_obs[
+                    b * Self.OBS + i
+                ]
             for i in range(Self.ACTIONS):
                 critic_input[b * Self.CRITIC_IN + Self.OBS + i] = batch_actions[
                     b * Self.ACTIONS + i
                 ]
 
         # Forward critic with cache
-        var q_values = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
+        var q_values = InlineArray[Scalar[dtype], Self.BATCH](
+            uninitialized=True
+        )
         var critic_cache = InlineArray[
             Scalar[dtype], Self.BATCH * Self.CRITIC_CACHE_SIZE
         ](uninitialized=True)
-        self.critic.forward_with_cache[Self.BATCH](critic_input, q_values, critic_cache)
+        self.critic.forward_with_cache[Self.BATCH](
+            critic_input, q_values, critic_cache
+        )
 
         # Compute critic loss (MSE) and gradients
         var q_grad = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
@@ -451,7 +482,9 @@ struct DeepDDPGAgent[
             critic_loss += Float64(td_error * td_error)
 
             # Gradient: d/dQ (Q - target)^2 = 2 * (Q - target) / batch_size
-            q_grad[b] = Scalar[dtype](2.0) * td_error / Scalar[dtype](Self.BATCH)
+            q_grad[b] = (
+                Scalar[dtype](2.0) * td_error / Scalar[dtype](Self.BATCH)
+            )
 
         critic_loss /= Float64(Self.BATCH)
 
@@ -461,7 +494,9 @@ struct DeepDDPGAgent[
         ](uninitialized=True)
 
         self.critic.zero_grads()
-        self.critic.backward[Self.BATCH](q_grad, critic_grad_input, critic_cache)
+        self.critic.backward[Self.BATCH](
+            q_grad, critic_grad_input, critic_cache
+        )
         self.critic.update()
 
         # =====================================================================
@@ -470,13 +505,15 @@ struct DeepDDPGAgent[
         # =====================================================================
 
         # Forward actor with cache to get current policy actions
-        var actor_actions = InlineArray[Scalar[dtype], Self.BATCH * Self.ACTIONS](
-            uninitialized=True
-        )
+        var actor_actions = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.ACTIONS
+        ](uninitialized=True)
         var actor_cache = InlineArray[
             Scalar[dtype], Self.BATCH * Self.ACTOR_CACHE_SIZE
         ](uninitialized=True)
-        self.actor.forward_with_cache[Self.BATCH](batch_obs, actor_actions, actor_cache)
+        self.actor.forward_with_cache[Self.BATCH](
+            batch_obs, actor_actions, actor_cache
+        )
 
         # Build critic input with actor's current actions
         var new_critic_input = InlineArray[
@@ -484,14 +521,18 @@ struct DeepDDPGAgent[
         ](uninitialized=True)
         for b in range(Self.BATCH):
             for i in range(Self.OBS):
-                new_critic_input[b * Self.CRITIC_IN + i] = batch_obs[b * Self.OBS + i]
-            for i in range(Self.ACTIONS):
-                new_critic_input[b * Self.CRITIC_IN + Self.OBS + i] = actor_actions[
-                    b * Self.ACTIONS + i
+                new_critic_input[b * Self.CRITIC_IN + i] = batch_obs[
+                    b * Self.OBS + i
                 ]
+            for i in range(Self.ACTIONS):
+                new_critic_input[
+                    b * Self.CRITIC_IN + Self.OBS + i
+                ] = actor_actions[b * Self.ACTIONS + i]
 
         # Forward critic with cache (need cache for backward through critic to get action gradients)
-        var new_q_values = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
+        var new_q_values = InlineArray[Scalar[dtype], Self.BATCH](
+            uninitialized=True
+        )
         var new_critic_cache = InlineArray[
             Scalar[dtype], Self.BATCH * Self.CRITIC_CACHE_SIZE
         ](uninitialized=True)
@@ -500,19 +541,23 @@ struct DeepDDPGAgent[
         )
 
         # Actor gradient: maximize Q -> dQ/daction = -1/batch_size (gradient ascent)
-        var dq_actor = InlineArray[Scalar[dtype], Self.BATCH](uninitialized=True)
+        var dq_actor = InlineArray[Scalar[dtype], Self.BATCH](
+            uninitialized=True
+        )
         for b in range(Self.BATCH):
             dq_actor[b] = Scalar[dtype](-1.0 / Float64(Self.BATCH))
 
         # Backward through critic to get dQ/daction
         # Note: We don't want to update critic params here, just get action gradients
-        var d_critic_input = InlineArray[Scalar[dtype], Self.BATCH * Self.CRITIC_IN](
-            uninitialized=True
-        )
+        var d_critic_input = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.CRITIC_IN
+        ](uninitialized=True)
 
         # Zero critic grads before backward (we won't update critic, just need gradients)
         self.critic.zero_grads()
-        self.critic.backward[Self.BATCH](dq_actor, d_critic_input, new_critic_cache)
+        self.critic.backward[Self.BATCH](
+            dq_actor, d_critic_input, new_critic_cache
+        )
         # Don't call self.critic.update() - we only want action gradients
 
         # Extract action gradients from d_critic_input (last ACTIONS elements per sample)
@@ -526,12 +571,14 @@ struct DeepDDPGAgent[
                 ]
 
         # Backward through actor with action gradients
-        var actor_grad_input = InlineArray[Scalar[dtype], Self.BATCH * Self.OBS](
-            uninitialized=True
-        )
+        var actor_grad_input = InlineArray[
+            Scalar[dtype], Self.BATCH * Self.OBS
+        ](uninitialized=True)
 
         self.actor.zero_grads()
-        self.actor.backward[Self.BATCH](d_actions, actor_grad_input, actor_cache)
+        self.actor.backward[Self.BATCH](
+            d_actions, actor_grad_input, actor_cache
+        )
         self.actor.update()
 
         # =====================================================================
@@ -612,7 +659,9 @@ struct DeepDDPGAgent[
 
         while warmup_count < warmup_steps:
             # Random action in [-action_scale, action_scale]
-            var action = InlineArray[Float64, Self.action_dim](uninitialized=True)
+            var action = InlineArray[Float64, Self.action_dim](
+                uninitialized=True
+            )
             for i in range(Self.action_dim):
                 action[i] = (random_float64() * 2.0 - 1.0) * self.action_scale
 
@@ -675,7 +724,9 @@ struct DeepDDPGAgent[
             self.decay_noise()
 
             # Log metrics
-            metrics.log_episode(episode, episode_reward, episode_steps, self.noise_std)
+            metrics.log_episode(
+                episode, episode_reward, episode_steps, self.noise_std
+            )
 
             # Print progress
             if verbose and (episode + 1) % print_every == 0:

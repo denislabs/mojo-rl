@@ -3,7 +3,7 @@
 This DQN implementation uses:
 - Network wrapper from deep_rl.training for stateless model + params management
 - seq() composition for building Q-networks
-- ReplayBuffer from deep_rl.cpu for experience replay
+- ReplayBuffer from deep_rl.replay for experience replay
 - Double DQN support via compile-time parameter
 
 Features:
@@ -42,7 +42,7 @@ from deep_rl.model import Linear, ReLU, seq
 from deep_rl.optimizer import Adam
 from deep_rl.initializer import Kaiming
 from deep_rl.training import Network
-from deep_rl.cpu.replay_buffer import ReplayBuffer
+from deep_rl.replay import ReplayBuffer
 from deep_rl.gpu import random_range, xorshift32, random_uniform
 from core import TrainingMetrics, BoxDiscreteActionEnv, GPUDiscreteEnv
 

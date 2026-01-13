@@ -123,14 +123,10 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
     - BoxDiscreteActionEnv: for function approximation with continuous observations
     - GPUDiscreteEnv: for fused GPU kernels (A2C, PPO, etc.)
 
-    CPU usage:
+    Usage:
         env = CartPoleEnv()
         obs = env.reset()
         obs, reward, done = env.step(action)
-
-    GPU usage:
-        from deep_agents.gpu import A2CAgent
-        A2CAgent.train[CartPoleEnv](ctx, num_updates=100)
     """
 
     # Type aliases for CPU trait conformance

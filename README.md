@@ -5,7 +5,7 @@ A reinforcement learning framework written in Mojo, featuring trait-based design
 ## Features
 
 - **Trait-based architecture**: Generic interfaces for environments, agents, states, and actions
-- **28+ RL algorithms**: TD methods, multi-step, eligibility traces, model-based planning, function approximation, policy gradients, PPO, continuous control (DDPG, TD3, SAC), and deep RL (DQN, Double DQN)
+- **30+ RL algorithms**: TD methods, multi-step, eligibility traces, model-based planning, function approximation, policy gradients, PPO, continuous control (DDPG, TD3, SAC), and deep RL (DQN, Double DQN, Dueling DQN, DQN+PER, A2C, PPO)
 - **Deep RL infrastructure**: Trait-based neural network framework with Model, Optimizer, LossFunction, and Initializer traits; Linear/ReLU/Tanh layers; SGD/Adam optimizers; Sequential composition via `seq()`; GPU kernels with tiled matmul
 - **9 native environments**: GridWorld, FrozenLake, CliffWalking, Taxi, CartPole, MountainCar, Acrobot, Pendulum, LunarLander
 - **Integrated SDL2 rendering**: Native visualization for continuous-state environments (CartPole, MountainCar, Acrobot, Pendulum, LunarLander)
@@ -70,11 +70,13 @@ GPU-accelerated code requires specifying the target environment with the `-e` fl
 
 ```bash
 # Apple Silicon (Metal)
-pixi run -e apple mojo run examples/lunar_lander_gpu_dqn.mojo
+pixi run -e apple mojo run examples/lunar_lander_dqn.mojo
 
 # NVIDIA GPUs (CUDA)
-pixi run -e nvidia mojo run examples/lunar_lander_gpu_dqn.mojo
+pixi run -e nvidia mojo run examples/lunar_lander_dqn.mojo
 ```
+
+> **Note**: GPU support is currently on hold due to an Apple Silicon bug in Mojo GPU runtime.
 
 ## Algorithms
 
@@ -139,11 +141,15 @@ pixi run -e nvidia mojo run examples/lunar_lander_gpu_dqn.mojo
 ### Deep RL (Neural Networks)
 | Algorithm | Description |
 |-----------|-------------|
-| **Deep DDPG** | DDPG with 2-layer MLP actor/critic networks, Adam optimizer, SIMD-optimized tensor ops |
-| **Deep TD3** | TD3 with twin critics, delayed policy updates, target policy smoothing |
 | **Deep DQN** | Deep Q-Network with target network, experience replay, epsilon-greedy exploration |
 | **Deep Double DQN** | DQN with reduced overestimation: online network selects actions, target evaluates |
-| **GPU Deep DQN** | GPU-accelerated DQN with tiled matmul kernels (Metal/CUDA), Double DQN support |
+| **Deep Dueling DQN** | Separate V(s) and A(s,a) streams for better value estimation |
+| **Deep DQN + PER** | DQN with Prioritized Experience Replay for efficient learning |
+| **Deep DDPG** | DDPG with 2-layer MLP actor/critic networks for continuous control |
+| **Deep TD3** | TD3 with twin critics, delayed policy updates, target policy smoothing |
+| **Deep SAC** | Soft Actor-Critic with entropy regularization and automatic temperature |
+| **Deep A2C** | Advantage Actor-Critic with GAE for variance reduction |
+| **Deep PPO** | Proximal Policy Optimization with clipped surrogate objective |
 
 ## Environments
 
@@ -226,15 +232,18 @@ mojo-rl/
 │   │   └── initializers.mojo # Xavier, Kaiming, LeCun, Zeros, Ones, Constant, Uniform, Normal
 │   ├── training/          # Training utilities
 │   │   └── trainer.mojo   # Trainer[MODEL, OPT, LOSS, INIT]: CPU/GPU training loop
-│   ├── cpu/               # Legacy CPU implementations (deprecated)
-│   └── gpu/               # Legacy GPU implementations (deprecated)
+│   ├── replay/            # Experience replay buffers
+│   │   └── replay_buffer.mojo # ReplayBuffer, PrioritizedReplayBuffer
+│   └── gpu/               # GPU utilities (elementwise, matmul, random)
 ├── deep_agents/           # Deep RL agents (neural networks)
-│   ├── cpu/               # CPU-based deep RL agents
-│   │   ├── ddpg.mojo      # DeepDDPGAgent with MLP networks
-│   │   ├── td3.mojo       # DeepTD3Agent with twin critics
-│   │   └── dqn.mojo       # DeepDQNAgent with Double DQN support
-│   └── gpu/               # GPU-accelerated deep RL agents
-│       └── dqn.mojo       # GPUDeepDQNAgent with Metal/CUDA kernels
+│   ├── dqn.mojo           # DQNAgent with Double DQN support
+│   ├── dqn_per.mojo       # DQNPERAgent with prioritized replay
+│   ├── dueling_dqn.mojo   # DuelingDQNAgent with V(s) + A(s,a) split
+│   ├── ddpg.mojo          # DeepDDPGAgent for continuous control
+│   ├── td3.mojo           # DeepTD3Agent with twin critics
+│   ├── sac.mojo           # DeepSACAgent with entropy regularization
+│   ├── a2c.mojo           # DeepA2CAgent with GAE
+│   └── ppo.mojo           # DeepPPOAgent with clipped surrogate
 ├── physics/               # 2D physics engine for LunarLander
 │   ├── vec2.mojo          # 2D vector math
 │   ├── body.mojo          # Rigid body dynamics
@@ -453,16 +462,20 @@ fn main() raises:
 | DDPG | `actor_lr`, `critic_lr`, `discount_factor`, `tau`, `noise_std`, `action_scale` |
 | TD3 | Above + `policy_delay`, `target_noise_std`, `target_noise_clip` |
 | SAC | `actor_lr`, `critic_lr`, `discount_factor`, `tau`, `alpha`, `auto_alpha`, `target_entropy` |
+| Deep DQN | `lr`, `gamma`, `tau`, `epsilon`, `epsilon_min`, `epsilon_decay`, `hidden_dim`, `batch_size`, `buffer_capacity` |
+| Deep Double DQN | Same as Deep DQN (enabled by default via compile-time parameter) |
+| Deep Dueling DQN | Same as Deep DQN with V(s) + A(s,a) architecture |
+| Deep DQN + PER | Same as Deep DQN + `alpha`, `beta_start`, priority sampling |
 | Deep DDPG | `actor_lr`, `critic_lr`, `gamma`, `tau`, `noise_std`, `noise_decay`, `action_scale`, `hidden_dim`, `batch_size` |
 | Deep TD3 | Above + `policy_delay`, `target_noise_std`, `target_noise_clip` |
-| Deep DQN | `lr`, `gamma`, `tau`, `epsilon`, `epsilon_min`, `epsilon_decay`, `hidden_dim`, `batch_size`, `buffer_capacity` |
-| Deep Double DQN | Same as Deep DQN (enabled by default via `double_dqn=True` compile-time parameter) |
-| GPU Deep DQN | Same as Deep DQN, GPU-accelerated forward pass with tiled matmul kernels |
+| Deep SAC | `actor_lr`, `critic_lr`, `gamma`, `tau`, `alpha`, `auto_alpha`, `target_entropy`, `hidden_dim`, `batch_size` |
+| Deep A2C | `actor_lr`, `critic_lr`, `gamma`, `gae_lambda`, `entropy_coef`, `hidden_dim` |
+| Deep PPO | `actor_lr`, `critic_lr`, `gamma`, `gae_lambda`, `clip_epsilon`, `num_epochs`, `entropy_coef`, `hidden_dim` |
 
 ## Roadmap
 
 See [ROADMAP.md](ROADMAP.md) for planned features including:
-- Deep RL algorithms (Dueling DQN, Deep SAC)
-- Prioritized Experience Replay
-- ~~GPU support for deep RL~~ ✅ GPU DQN now available (Metal/CUDA)
+- ~~Deep RL algorithms~~ ✅ DQN, Dueling DQN, DQN+PER, DDPG, TD3, SAC, A2C, PPO all implemented
+- ~~Prioritized Experience Replay~~ ✅ Implemented with sum-tree
+- GPU support for deep RL (on hold due to Apple Silicon bug)
 - More native environment ports (BipedalWalker)

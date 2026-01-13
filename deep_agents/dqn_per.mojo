@@ -3,7 +3,7 @@
 This DQN+PER implementation uses:
 - Network wrapper from deep_rl.training for stateless model + params management
 - seq() composition for building Q-networks
-- PrioritizedReplayBuffer from deep_rl.cpu for priority-weighted sampling
+- PrioritizedReplayBuffer from deep_rl.replay for priority-weighted sampling
 
 Key differences from standard DQN:
 - Samples transitions proportionally to TD error magnitude
@@ -39,7 +39,7 @@ from deep_rl.model import Linear, ReLU, seq
 from deep_rl.optimizer import Adam
 from deep_rl.initializer import Kaiming
 from deep_rl.training import Network
-from deep_rl.cpu.replay_buffer import PrioritizedReplayBuffer
+from deep_rl.replay import PrioritizedReplayBuffer
 from core import TrainingMetrics, BoxDiscreteActionEnv
 
 
