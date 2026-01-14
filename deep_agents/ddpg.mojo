@@ -639,12 +639,13 @@ struct DeepDDPGAgent[
             var action = InlineArray[Float64, Self.action_dim](
                 uninitialized=True
             )
+            var action_list = List[Float64](capacity=Self.action_dim)
             for i in range(Self.action_dim):
                 action[i] = (random_float64() * 2.0 - 1.0) * self.action_scale
+                action_list.append(action[i])
 
-            # Step environment
-            var step_action = action[0]
-            var result = env.step_continuous(step_action)
+            # Step environment with full action vector
+            var result = env.step_continuous_vec(action_list^)
             var reward = result[1]
             var done = result[2]
 
@@ -674,9 +675,13 @@ struct DeepDDPGAgent[
                 # Select action with exploration noise
                 var action = self.select_action(obs, add_noise=True)
 
-                # Step environment
-                var step_action = action[0]
-                var result = env.step_continuous(step_action)
+                # Convert action to List for step_continuous_vec
+                var action_list = List[Float64](capacity=Self.action_dim)
+                for i in range(Self.action_dim):
+                    action_list.append(action[i])
+
+                # Step environment with full action vector
+                var result = env.step_continuous_vec(action_list^)
                 var reward = result[1]
                 var done = result[2]
 
@@ -754,9 +759,13 @@ struct DeepDDPGAgent[
                 # Deterministic action (no noise)
                 var action = self.select_action(obs, add_noise=False)
 
-                # Step environment
-                var step_action = action[0]
-                var result = env.step_continuous(step_action)
+                # Convert action to List for step_continuous_vec
+                var action_list = List[Float64](capacity=Self.action_dim)
+                for i in range(Self.action_dim):
+                    action_list.append(action[i])
+
+                # Step environment with full action vector
+                var result = env.step_continuous_vec(action_list^)
                 var reward = result[1]
                 var done = result[2]
 
