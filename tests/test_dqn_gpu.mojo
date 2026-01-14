@@ -82,7 +82,7 @@ fn main() raises:
 
         var start_time = perf_counter_ns()
 
-        var metrics = agent.train_gpu(
+        var metrics = agent.train_gpu_full(
             ctx,
             env,
             num_episodes=NUM_EPISODES,

@@ -22,8 +22,26 @@ from physics.world import World
 from physics.joint import RevoluteJoint
 
 from core import State, Action, BoxContinuousActionEnv, BoxSpace, DiscreteSpace
-from core.sdl2 import SDL_Color, SDL_Point
-from envs.renderer_base import RendererBase
+from render import (
+    RendererBase,
+    SDL_Color,
+    SDL_Point,
+    Camera,
+    Vec2 as RenderVec2,
+    Transform2D,
+    # Colors
+    sky_blue,
+    grass_green,
+    hull_purple,
+    contact_green,
+    inactive_gray,
+    white,
+    rgb,
+    darken,
+    # Shapes
+    make_rect,
+    scale_vertices,
+)
 
 
 # ===== Constants from Gymnasium =====
@@ -70,7 +88,7 @@ comptime TERRAIN_PIT: Int = 3
 # ===== State Struct =====
 
 
-struct BipedalWalkerState(State, Copyable, ImplicitlyCopyable, Movable):
+struct BipedalWalkerState(Copyable, ImplicitlyCopyable, Movable, State):
     """Observation state for BipedalWalker (24D continuous observation)."""
 
     # Hull state (4)
@@ -291,7 +309,9 @@ struct BipedalWalkerEnv(BoxContinuousActionEnv):
         self.terrain_y = List[Float64]()
         self.obstacle_body_indices = List[Int]()
         self.hardcore = hardcore
-        self.renderer = RendererBase(VIEWPORT_W, VIEWPORT_H, FPS, "BipedalWalker")
+        self.renderer = RendererBase(
+            VIEWPORT_W, VIEWPORT_H, FPS, "BipedalWalker"
+        )
         self.render_initialized = False
 
     # ===== Env Trait Methods =====
@@ -300,9 +320,13 @@ struct BipedalWalkerEnv(BoxContinuousActionEnv):
         """Reset the environment and return initial state."""
         return self._reset_internal()
 
-    fn step(mut self, action: Self.ActionType) -> Tuple[Self.StateType, Float64, Bool]:
+    fn step(
+        mut self, action: Self.ActionType
+    ) -> Tuple[Self.StateType, Float64, Bool]:
         """Take action and return (next_state, reward, done)."""
-        return self.step_continuous_4d(action.hip1, action.knee1, action.hip2, action.knee2)
+        return self.step_continuous_4d(
+            action.hip1, action.knee1, action.hip2, action.knee2
+        )
 
     fn get_state(self) -> Self.StateType:
         """Get current state."""
@@ -345,7 +369,9 @@ struct BipedalWalkerEnv(BoxContinuousActionEnv):
         """Action upper bound: 1.0."""
         return 1.0
 
-    fn step_continuous(mut self, action: Float64) -> Tuple[List[Float64], Float64, Bool]:
+    fn step_continuous(
+        mut self, action: Float64
+    ) -> Tuple[List[Float64], Float64, Bool]:
         """Step with single action (applies to all joints)."""
         var result = self.step_continuous_4d(action, action, action, action)
         return (result[0].to_list(), result[1], result[2])
@@ -376,13 +402,21 @@ struct BipedalWalkerEnv(BoxContinuousActionEnv):
         for i in range(2):
             # Hip joint
             var hip_action = clamp(actions[i * 2], -1.0, 1.0)
-            self.world.joints[self.hip_joint_indices[i]].motor_speed = SPEED_HIP * sign(hip_action)
-            self.world.joints[self.hip_joint_indices[i]].max_motor_torque = MOTORS_TORQUE * abs_f64(hip_action)
+            self.world.joints[
+                self.hip_joint_indices[i]
+            ].motor_speed = SPEED_HIP * sign(hip_action)
+            self.world.joints[
+                self.hip_joint_indices[i]
+            ].max_motor_torque = MOTORS_TORQUE * abs_f64(hip_action)
 
             # Knee joint
             var knee_action = clamp(actions[i * 2 + 1], -1.0, 1.0)
-            self.world.joints[self.knee_joint_indices[i]].motor_speed = SPEED_KNEE * sign(knee_action)
-            self.world.joints[self.knee_joint_indices[i]].max_motor_torque = MOTORS_TORQUE * abs_f64(knee_action)
+            self.world.joints[
+                self.knee_joint_indices[i]
+            ].motor_speed = SPEED_KNEE * sign(knee_action)
+            self.world.joints[
+                self.knee_joint_indices[i]
+            ].max_motor_torque = MOTORS_TORQUE * abs_f64(knee_action)
 
         # Step physics (higher iterations for stability like Gymnasium)
         self.world.step(1.0 / Float64(FPS), 6 * 30, 2 * 30)
@@ -415,7 +449,9 @@ struct BipedalWalkerEnv(BoxContinuousActionEnv):
 
         # Energy penalty
         for i in range(4):
-            reward -= 0.00035 * MOTORS_TORQUE * abs_f64(clamp(actions[i], -1.0, 1.0))
+            reward -= (
+                0.00035 * MOTORS_TORQUE * abs_f64(clamp(actions[i], -1.0, 1.0))
+            )
 
         # Check termination
         var terminated = False
@@ -501,7 +537,9 @@ struct BipedalWalkerEnv(BoxContinuousActionEnv):
                 filter=Filter.ground(),
             )
 
-        self.terrain_fixture_count = len(self.world.fixtures) - self.terrain_fixture_start
+        self.terrain_fixture_count = (
+            len(self.world.fixtures) - self.terrain_fixture_start
+        )
 
     fn _generate_terrain_hardcore(mut self):
         """Generate hardcore terrain with obstacles."""
@@ -555,7 +593,9 @@ struct BipedalWalkerEnv(BoxContinuousActionEnv):
                     stump_verts.append(Vec2(x + stump_width, y))
                     stump_verts.append(Vec2(x + stump_width, y + stump_height))
                     stump_verts.append(Vec2(x, y + stump_height))
-                    var stump_body_idx = self.world.create_body(BODY_STATIC, Vec2.zero())
+                    var stump_body_idx = self.world.create_body(
+                        BODY_STATIC, Vec2.zero()
+                    )
                     var stump_poly = PolygonShape(stump_verts^)
                     _ = self.world.create_polygon_fixture(
                         stump_body_idx,
@@ -576,15 +616,22 @@ struct BipedalWalkerEnv(BoxContinuousActionEnv):
                     # Create stair polygons
                     for s in range(stair_steps):
                         var step_x = x + Float64(s * stair_width) * TERRAIN_STEP
-                        var step_y = original_y + Float64(s) * stair_height * TERRAIN_STEP
+                        var step_y = (
+                            original_y
+                            + Float64(s) * stair_height * TERRAIN_STEP
+                        )
                         var step_w = Float64(stair_width) * TERRAIN_STEP
                         var step_h = abs_f64(stair_height) * TERRAIN_STEP
                         var step_verts = List[Vec2]()
                         step_verts.append(Vec2(step_x, step_y))
                         step_verts.append(Vec2(step_x + step_w, step_y))
-                        step_verts.append(Vec2(step_x + step_w, step_y + step_h))
+                        step_verts.append(
+                            Vec2(step_x + step_w, step_y + step_h)
+                        )
                         step_verts.append(Vec2(step_x, step_y + step_h))
-                        var step_body_idx = self.world.create_body(BODY_STATIC, Vec2.zero())
+                        var step_body_idx = self.world.create_body(
+                            BODY_STATIC, Vec2.zero()
+                        )
                         var step_poly = PolygonShape(step_verts^)
                         _ = self.world.create_polygon_fixture(
                             step_body_idx,
@@ -595,16 +642,26 @@ struct BipedalWalkerEnv(BoxContinuousActionEnv):
                         self.obstacle_body_indices.append(step_body_idx)
                     oneshot = False
                 else:
-                    var step_idx = (stair_steps * stair_width - counter) // stair_width
-                    y = original_y + Float64(step_idx) * stair_height * TERRAIN_STEP
+                    var step_idx = (
+                        stair_steps * stair_width - counter
+                    ) // stair_width
+                    y = (
+                        original_y
+                        + Float64(step_idx) * stair_height * TERRAIN_STEP
+                    )
 
             self.terrain_y.append(y)
             counter -= 1
 
             if counter == 0:
-                counter = Int(random_float64() * Float64(TERRAIN_GRASS // 2)) + TERRAIN_GRASS // 2
+                counter = (
+                    Int(random_float64() * Float64(TERRAIN_GRASS // 2))
+                    + TERRAIN_GRASS // 2
+                )
                 if state == TERRAIN_GRASS_TYPE:
-                    state = Int(random_float64() * 3.0) + 1  # STUMP, STAIRS, or PIT
+                    state = (
+                        Int(random_float64() * 3.0) + 1
+                    )  # STUMP, STAIRS, or PIT
                     oneshot = True
                 else:
                     state = TERRAIN_GRASS_TYPE
@@ -622,7 +679,9 @@ struct BipedalWalkerEnv(BoxContinuousActionEnv):
                 filter=Filter.ground(),
             )
 
-        self.terrain_fixture_count = len(self.world.fixtures) - self.terrain_fixture_start
+        self.terrain_fixture_count = (
+            len(self.world.fixtures) - self.terrain_fixture_start
+        )
 
     fn _create_walker(mut self, init_x: Float64, init_y: Float64):
         """Create hull and 4 leg segments with joints."""
@@ -634,7 +693,9 @@ struct BipedalWalkerEnv(BoxContinuousActionEnv):
         hull_verts.append(Vec2(34.0 / SCALE, -8.0 / SCALE))
         hull_verts.append(Vec2(-30.0 / SCALE, -8.0 / SCALE))
 
-        self.hull_idx = self.world.create_body(BODY_DYNAMIC, Vec2(init_x, init_y))
+        self.hull_idx = self.world.create_body(
+            BODY_DYNAMIC, Vec2(init_x, init_y)
+        )
         var hull_poly = PolygonShape(hull_verts^)
         self.hull_fixture_idx = self.world.create_polygon_fixture(
             self.hull_idx,
@@ -659,7 +720,9 @@ struct BipedalWalkerEnv(BoxContinuousActionEnv):
                 BODY_DYNAMIC, Vec2(init_x, upper_y), i * 0.05
             )
             var upper_poly = PolygonShape.from_box(LEG_W / 2.0, LEG_H / 2.0)
-            self.upper_leg_fixture_indices[side] = self.world.create_polygon_fixture(
+            self.upper_leg_fixture_indices[
+                side
+            ] = self.world.create_polygon_fixture(
                 upper_idx,
                 upper_poly^,
                 density=1.0,
@@ -689,8 +752,12 @@ struct BipedalWalkerEnv(BoxContinuousActionEnv):
             var lower_idx = self.world.create_body(
                 BODY_DYNAMIC, Vec2(init_x, lower_y), i * 0.05
             )
-            var lower_poly = PolygonShape.from_box(0.8 * LEG_W / 2.0, LEG_H / 2.0)
-            self.lower_leg_fixture_indices[side] = self.world.create_polygon_fixture(
+            var lower_poly = PolygonShape.from_box(
+                0.8 * LEG_W / 2.0, LEG_H / 2.0
+            )
+            self.lower_leg_fixture_indices[
+                side
+            ] = self.world.create_polygon_fixture(
                 lower_idx,
                 lower_poly^,
                 density=1.0,
@@ -732,19 +799,53 @@ struct BipedalWalkerEnv(BoxContinuousActionEnv):
         # Leg 1 (left) state
         var upper1 = self.world.bodies[self.upper_leg_indices[0]].copy()
         var lower1 = self.world.bodies[self.lower_leg_indices[0]].copy()
-        state.hip1_angle = self.world.joints[self.hip_joint_indices[0]].get_joint_angle(hull, upper1)
-        state.hip1_speed = self.world.joints[self.hip_joint_indices[0]].get_joint_speed(hull, upper1) / SPEED_HIP
-        state.knee1_angle = self.world.joints[self.knee_joint_indices[0]].get_joint_angle(upper1, lower1) + 1.0
-        state.knee1_speed = self.world.joints[self.knee_joint_indices[0]].get_joint_speed(upper1, lower1) / SPEED_KNEE
+        state.hip1_angle = self.world.joints[
+            self.hip_joint_indices[0]
+        ].get_joint_angle(hull, upper1)
+        state.hip1_speed = (
+            self.world.joints[self.hip_joint_indices[0]].get_joint_speed(
+                hull, upper1
+            )
+            / SPEED_HIP
+        )
+        state.knee1_angle = (
+            self.world.joints[self.knee_joint_indices[0]].get_joint_angle(
+                upper1, lower1
+            )
+            + 1.0
+        )
+        state.knee1_speed = (
+            self.world.joints[self.knee_joint_indices[0]].get_joint_speed(
+                upper1, lower1
+            )
+            / SPEED_KNEE
+        )
         state.leg1_contact = 1.0 if self.leg_ground_contact[0] else 0.0
 
         # Leg 2 (right) state
         var upper2 = self.world.bodies[self.upper_leg_indices[1]].copy()
         var lower2 = self.world.bodies[self.lower_leg_indices[1]].copy()
-        state.hip2_angle = self.world.joints[self.hip_joint_indices[1]].get_joint_angle(hull, upper2)
-        state.hip2_speed = self.world.joints[self.hip_joint_indices[1]].get_joint_speed(hull, upper2) / SPEED_HIP
-        state.knee2_angle = self.world.joints[self.knee_joint_indices[1]].get_joint_angle(upper2, lower2) + 1.0
-        state.knee2_speed = self.world.joints[self.knee_joint_indices[1]].get_joint_speed(upper2, lower2) / SPEED_KNEE
+        state.hip2_angle = self.world.joints[
+            self.hip_joint_indices[1]
+        ].get_joint_angle(hull, upper2)
+        state.hip2_speed = (
+            self.world.joints[self.hip_joint_indices[1]].get_joint_speed(
+                hull, upper2
+            )
+            / SPEED_HIP
+        )
+        state.knee2_angle = (
+            self.world.joints[self.knee_joint_indices[1]].get_joint_angle(
+                upper2, lower2
+            )
+            + 1.0
+        )
+        state.knee2_speed = (
+            self.world.joints[self.knee_joint_indices[1]].get_joint_speed(
+                upper2, lower2
+            )
+            / SPEED_KNEE
+        )
         state.leg2_contact = 1.0 if self.leg_ground_contact[1] else 0.0
 
         # Lidar
@@ -782,7 +883,11 @@ struct BipedalWalkerEnv(BoxContinuousActionEnv):
             for i in range(len(contacts)):
                 var other_idx = contacts[i]
                 # Check if contact is with terrain
-                if other_idx >= self.terrain_fixture_start and other_idx < self.terrain_fixture_start + self.terrain_fixture_count:
+                if (
+                    other_idx >= self.terrain_fixture_start
+                    and other_idx
+                    < self.terrain_fixture_start + self.terrain_fixture_count
+                ):
                     self.leg_ground_contact[side] = True
                     break
 
@@ -792,125 +897,113 @@ struct BipedalWalkerEnv(BoxContinuousActionEnv):
 
         for i in range(len(contacts)):
             var other_idx = contacts[i]
-            if other_idx >= self.terrain_fixture_start and other_idx < self.terrain_fixture_start + self.terrain_fixture_count:
+            if (
+                other_idx >= self.terrain_fixture_start
+                and other_idx
+                < self.terrain_fixture_start + self.terrain_fixture_count
+            ):
                 self.game_over = True
                 return
 
     # ===== Rendering =====
 
     fn _render_internal(mut self):
-        """Render the environment with scrolling viewport."""
+        """Render the environment with scrolling Camera."""
         if not self.render_initialized:
             if not self.renderer.init_display():
                 return
             self.render_initialized = True
 
-        self.renderer.clear()
-
-        if not self.renderer.handle_events():
+        # Begin frame with sky background
+        if not self.renderer.begin_frame_with_color(sky_blue()):
             self.close()
             return
 
-        # Draw sky background
-        self._draw_sky()
+        # Create scrolling camera that follows the walker
+        # Camera X = scroll position, Y centered vertically
+        var cam_y = Float64(VIEWPORT_H) / SCALE / 2.0
+        var camera = Camera(
+            self.scroll + Float64(VIEWPORT_W) / SCALE / 2.0,  # Follow scroll
+            cam_y,
+            SCALE,
+            VIEWPORT_W,
+            VIEWPORT_H,
+            flip_y=True,
+        )
 
         # Draw terrain
-        self._draw_terrain()
+        self._draw_terrain(camera)
 
         # Draw walker
-        self._draw_hull()
-        self._draw_legs()
+        self._draw_hull(camera)
+        self._draw_legs(camera)
 
-        # Draw info
+        # Draw info text
         var hull = self.world.bodies[self.hull_idx].copy()
         var info_text = String("x: ") + String(Int(hull.position.x * 10) / 10)
-        self.renderer.draw_text(info_text, 10, 10, SDL_Color(255, 255, 255, 255))
+        self.renderer.draw_text(info_text, 10, 10, white())
 
         self.renderer.flip()
 
-    fn _draw_sky(mut self):
-        """Draw sky background."""
-        self.renderer.clear_with_color(SDL_Color(135, 206, 235, 255))
-
-    fn _draw_terrain(mut self):
-        """Draw terrain polygons with scroll offset."""
-        var terrain_color = SDL_Color(102, 153, 76, 255)
+    fn _draw_terrain(mut self, camera: Camera):
+        """Draw terrain polygons using Camera world coordinates."""
+        var terrain_color = grass_green()
 
         for i in range(len(self.terrain_x) - 1):
             var x1 = self.terrain_x[i]
             var x2 = self.terrain_x[i + 1]
 
-            # Skip if off-screen
-            if x2 < self.scroll:
-                continue
-            if x1 > self.scroll + Float64(VIEWPORT_W) / SCALE:
-                continue
+            # Skip if off-screen (using camera visibility check)
+            if not camera.is_visible(RenderVec2(x1, self.terrain_y[i]), margin=TERRAIN_STEP * 2):
+                if not camera.is_visible(RenderVec2(x2, self.terrain_y[i + 1]), margin=TERRAIN_STEP * 2):
+                    continue
 
-            # Screen coordinates with scroll
-            var screen_x1 = Int((x1 - self.scroll) * SCALE)
-            var screen_y1 = Int(Float64(VIEWPORT_H) - self.terrain_y[i] * SCALE)
-            var screen_x2 = Int((x2 - self.scroll) * SCALE)
-            var screen_y2 = Int(Float64(VIEWPORT_H) - self.terrain_y[i + 1] * SCALE)
+            # Create polygon vertices in world coordinates
+            var vertices = List[RenderVec2]()
+            vertices.append(RenderVec2(x1, self.terrain_y[i]))
+            vertices.append(RenderVec2(x2, self.terrain_y[i + 1]))
+            vertices.append(RenderVec2(x2, 0.0))  # Bottom
+            vertices.append(RenderVec2(x1, 0.0))
 
-            # Draw filled quad from terrain to bottom
-            var points = List[SDL_Point]()
-            points.append(SDL_Point(Int32(screen_x1), Int32(screen_y1)))
-            points.append(SDL_Point(Int32(screen_x2), Int32(screen_y2)))
-            points.append(SDL_Point(Int32(screen_x2), Int32(VIEWPORT_H)))
-            points.append(SDL_Point(Int32(screen_x1), Int32(VIEWPORT_H)))
-            self.renderer.draw_polygon(points^, terrain_color, filled=True)
+            self.renderer.draw_polygon_world(vertices, camera, terrain_color, filled=True)
 
-    fn _draw_hull(mut self):
-        """Draw hull polygon with scroll offset."""
+    fn _draw_hull(mut self, camera: Camera):
+        """Draw hull polygon using Transform2D and Camera."""
         var hull = self.world.bodies[self.hull_idx].copy()
         var pos = hull.position
         var angle = hull.angle
 
-        var hull_color = SDL_Color(127, 51, 229, 255)
-        var outline_color = SDL_Color(76, 76, 127, 255)
+        var hull_color = hull_purple()
 
-        # Hull vertices
-        var hull_verts = List[Vec2]()
-        hull_verts.append(Vec2(-30.0 / SCALE, 9.0 / SCALE))
-        hull_verts.append(Vec2(6.0 / SCALE, 9.0 / SCALE))
-        hull_verts.append(Vec2(34.0 / SCALE, 1.0 / SCALE))
-        hull_verts.append(Vec2(34.0 / SCALE, -8.0 / SCALE))
-        hull_verts.append(Vec2(-30.0 / SCALE, -8.0 / SCALE))
+        # Hull vertices in local coordinates (already in world units)
+        var hull_verts = List[RenderVec2]()
+        hull_verts.append(RenderVec2(-30.0 / SCALE, 9.0 / SCALE))
+        hull_verts.append(RenderVec2(6.0 / SCALE, 9.0 / SCALE))
+        hull_verts.append(RenderVec2(34.0 / SCALE, 1.0 / SCALE))
+        hull_verts.append(RenderVec2(34.0 / SCALE, -8.0 / SCALE))
+        hull_verts.append(RenderVec2(-30.0 / SCALE, -8.0 / SCALE))
 
-        # Transform to screen space
-        var points = List[SDL_Point]()
-        var c = cos(angle)
-        var s = sin(angle)
-        for idx in range(len(hull_verts)):
-            var v = hull_verts[idx]
-            var rx = v.x * c - v.y * s
-            var ry = v.x * s + v.y * c
-            var world_x = pos.x + rx
-            var world_y = pos.y + ry
-            var screen_x = Int((world_x - self.scroll) * SCALE)
-            var screen_y = Int(Float64(VIEWPORT_H) - world_y * SCALE)
-            points.append(SDL_Point(Int32(screen_x), Int32(screen_y)))
+        # Create transform for hull position and rotation
+        var transform = Transform2D(pos.x, pos.y, angle)
 
-        self.renderer.draw_polygon(points^, hull_color, filled=True)
+        self.renderer.draw_transformed_polygon(hull_verts, transform, camera, hull_color, filled=True)
 
-    fn _draw_legs(mut self):
-        """Draw leg segments."""
+    fn _draw_legs(mut self, camera: Camera):
+        """Draw leg segments using Transform2D and Camera."""
         for side in range(2):
             var upper = self.world.bodies[self.upper_leg_indices[side]].copy()
             var lower = self.world.bodies[self.lower_leg_indices[side]].copy()
 
             # Color based on ground contact
-            var leg_color: SDL_Color
-            if self.leg_ground_contact[side]:
-                leg_color = SDL_Color(0, 200, 0, 255)  # Green for contact
-            else:
-                leg_color = SDL_Color(127, 127, 127, 255)  # Gray otherwise
+            var leg_color = contact_green() if self.leg_ground_contact[side] else inactive_gray()
 
             # Draw upper leg
-            self._draw_leg_segment(upper, LEG_W / 2.0, LEG_H / 2.0, leg_color)
+            self._draw_leg_segment(upper, LEG_W / 2.0, LEG_H / 2.0, leg_color, camera)
 
             # Draw lower leg (narrower)
-            self._draw_leg_segment(lower, 0.8 * LEG_W / 2.0, LEG_H / 2.0, leg_color)
+            self._draw_leg_segment(
+                lower, 0.8 * LEG_W / 2.0, LEG_H / 2.0, leg_color, camera
+            )
 
     fn _draw_leg_segment(
         mut self,
@@ -918,32 +1011,19 @@ struct BipedalWalkerEnv(BoxContinuousActionEnv):
         half_w: Float64,
         half_h: Float64,
         color: SDL_Color,
+        camera: Camera,
     ):
-        """Draw a single leg segment as a rotated box."""
+        """Draw a single leg segment as a rotated box using Transform2D."""
         var pos = body.position
         var angle = body.angle
-        var c = cos(angle)
-        var s = sin(angle)
 
-        # Box corners
-        var corners = List[Vec2]()
-        corners.append(Vec2(-half_w, -half_h))
-        corners.append(Vec2(half_w, -half_h))
-        corners.append(Vec2(half_w, half_h))
-        corners.append(Vec2(-half_w, half_h))
+        # Use shape factory for leg box
+        var leg_verts = make_rect(half_w * 2.0, half_h * 2.0, centered=True)
 
-        var points = List[SDL_Point]()
-        for idx in range(len(corners)):
-            var v = corners[idx]
-            var rx = v.x * c - v.y * s
-            var ry = v.x * s + v.y * c
-            var world_x = pos.x + rx
-            var world_y = pos.y + ry
-            var screen_x = Int((world_x - self.scroll) * SCALE)
-            var screen_y = Int(Float64(VIEWPORT_H) - world_y * SCALE)
-            points.append(SDL_Point(Int32(screen_x), Int32(screen_y)))
+        # Create transform for leg position and rotation
+        var transform = Transform2D(pos.x, pos.y, angle)
 
-        self.renderer.draw_polygon(points^, color, filled=True)
+        self.renderer.draw_transformed_polygon(leg_verts, transform, camera, color, filled=True)
 
 
 # ===== Helper Functions =====

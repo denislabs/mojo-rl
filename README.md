@@ -76,7 +76,6 @@ pixi run -e apple mojo run examples/lunar_lander_dqn.mojo
 pixi run -e nvidia mojo run examples/lunar_lander_dqn.mojo
 ```
 
-> **Note**: GPU support is currently on hold due to an Apple Silicon bug in Mojo GPU runtime.
 
 ## Algorithms
 
@@ -193,7 +192,6 @@ mojo-rl/
 │   ├── linear_fa.mojo     # Linear function approximation (polynomial, RBF features)
 │   ├── vec_env.mojo       # Vectorized environment support
 │   ├── metrics.mojo       # Training metrics and logging
-│   └── sdl2.mojo          # SDL2 FFI bindings for rendering
 ├── agents/                # Algorithm implementations (tabular & linear)
 │   ├── qlearning.mojo
 │   ├── sarsa.mojo
@@ -252,6 +250,9 @@ mojo-rl/
 │   ├── collision.mojo     # Edge-polygon collision detection
 │   ├── joint.mojo         # Revolute joint with motor/limits
 │   └── world.mojo         # Physics world simulation
+├── render/                # Rendering infrastructure
+│   ├── sdl2.mojo          # SDL2 FFI bindings for rendering
+│   └── renderer_base.mojo # Renderer base class
 └── envs/                  # Environment implementations
     ├── gridworld.mojo
     ├── frozenlake.mojo
@@ -263,7 +264,6 @@ mojo-rl/
     ├── pendulum.mojo          # Native Pendulum with integrated SDL2 rendering
     ├── lunar_lander.mojo      # Native LunarLander with custom physics + SDL2 rendering
     ├── vec_cartpole.mojo      # Vectorized CartPole for parallel training
-    ├── renderer_base.mojo     # SDL2 rendering infrastructure
     └── gymnasium/             # Gymnasium wrappers
         ├── gymnasium_wrapper.mojo
         ├── gymnasium_classic_control.mojo
@@ -477,5 +477,6 @@ fn main() raises:
 See [ROADMAP.md](ROADMAP.md) for planned features including:
 - ~~Deep RL algorithms~~ ✅ DQN, Dueling DQN, DQN+PER, DDPG, TD3, SAC, A2C, PPO all implemented
 - ~~Prioritized Experience Replay~~ ✅ Implemented with sum-tree
-- GPU support for deep RL (on hold due to Apple Silicon bug)
+- ~~GPU support for training~~ ✅ Trainer with GPU support
+- GPU-accelerated deep RL agents
 - More native environment ports (BipedalWalker)

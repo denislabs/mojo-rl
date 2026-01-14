@@ -13,9 +13,26 @@ Requires SDL2 and SDL2_ttf: brew install sdl2 sdl2_ttf
 
 from math import cos, sin, pi
 from random import random_float64
-from core import State, Action, DiscreteEnv, TileCoding, BoxDiscreteActionEnv, BoxContinuousActionEnv, PolynomialFeatures
-from core.sdl2 import SDL_Color, SDL_Point
-from .renderer_base import RendererBase
+from core import (
+    State,
+    Action,
+    DiscreteEnv,
+    TileCoding,
+    BoxDiscreteActionEnv,
+    BoxContinuousActionEnv,
+    PolynomialFeatures,
+)
+from render import (
+    RendererBase,
+    SDL_Color,
+    Vec2,
+    Camera,
+    # Colors
+    sky_blue,
+    black,
+    light_gray,
+    rgb,
+)
 
 
 # ============================================================================
@@ -143,9 +160,7 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
     var num_bins_velocity: Int
 
     fn __init__(
-        out self,
-        num_bins_angle: Int = 15,
-        num_bins_velocity: Int = 15
+        out self, num_bins_angle: Int = 15, num_bins_velocity: Int = 15
     ) raises:
         """Initialize Pendulum with default physics parameters.
 
@@ -252,10 +267,9 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
         self.last_torque = u
 
         # Physics: θ'' = (3g/2L) * sin(θ) + (3/mL²) * u
-        var theta_acc = (
-            (3.0 * self.g) / (2.0 * self.l) * sin(self.theta)
-            + (3.0 / (self.m * self.l * self.l)) * u
-        )
+        var theta_acc = (3.0 * self.g) / (2.0 * self.l) * sin(self.theta) + (
+            3.0 / (self.m * self.l * self.l)
+        ) * u
 
         # Euler integration
         self.theta_dot = self.theta_dot + theta_acc * self.dt
@@ -379,6 +393,7 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
 
         Uses 2D discretization: angle bins × velocity bins
         """
+
         # Discretize angle (θ in [-π, π])
         fn bin_value(
             value: Float64, low: Float64, high: Float64, bins: Int
@@ -390,17 +405,19 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
                 normalized = 1.0
             return Int(normalized * Float64(bins - 1))
 
-        var b_angle = bin_value(
-            self.theta, -pi, pi, self.num_bins_angle
-        )
+        var b_angle = bin_value(self.theta, -pi, pi, self.num_bins_angle)
         var b_vel = bin_value(
-            self.theta_dot, -self.max_speed, self.max_speed, self.num_bins_velocity
+            self.theta_dot,
+            -self.max_speed,
+            self.max_speed,
+            self.num_bins_velocity,
         )
 
         return b_angle * self.num_bins_velocity + b_vel
 
     fn get_obs(self) -> SIMD[DType.float64, 4]:
-        """Return current continuous observation as SIMD (optimized, padded to 4D)."""
+        """Return current continuous observation as SIMD (optimized, padded to 4D).
+        """
         return self._get_obs()
 
     # ========================================================================
@@ -419,7 +436,8 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
         return obs^
 
     fn reset_obs_list(mut self) -> List[Float64]:
-        """Reset environment and return initial observation as list (trait method)."""
+        """Reset environment and return initial observation as list (trait method).
+        """
         _ = self.reset()
         return self.get_obs_list()
 
@@ -469,6 +487,7 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
         """Render the current state using SDL2.
 
         Lazily initializes the display on first call.
+        Uses Camera for world-to-screen coordinate conversion.
         """
         if not self.render_initialized:
             if not self.renderer.init_display():
@@ -476,7 +495,6 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
                 return
             self.render_initialized = True
 
-        # Handle events
         if not self.renderer.handle_events():
             self.close()
             return
@@ -484,62 +502,69 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
         # Clear screen with sky color
         self.renderer.clear_with_color(self.sky_color)
 
-        # Calculate bob position
-        # θ=0 is pointing up (negative y direction)
-        # Positive θ is clockwise
-        var bob_x = self.pivot_x + Int(Float64(self.rod_length) * sin(self.theta))
-        var bob_y = self.pivot_y + Int(Float64(self.rod_length) * cos(self.theta))
+        # Create camera centered on screen (Y-flip for physics coords)
+        var zoom = 100.0  # pixels per world unit
+        var camera = self.renderer.make_camera(zoom, True)
+
+        # World coordinates
+        var pivot = Vec2(0.0, 0.0)  # Pivot at origin
+        var rod_length_world = 1.5  # Rod length in world units
+        var bob_radius_world = 0.2
+
+        # Draw reference circle (the trajectory the bob follows)
+        self.renderer.draw_circle_world(
+            pivot, rod_length_world, camera, light_gray(), False
+        )
 
         # Draw torque indicator (arc showing applied torque)
         if self.last_torque != 0.0:
-            var torque_length = Int(abs(self.last_torque) * 30)
-            var torque_direction = 1 if self.last_torque > 0 else -1
-            # Draw a small arc/line indicating torque direction
-            var arc_start_x = self.pivot_x + torque_direction * 30
-            var arc_start_y = self.pivot_y - 30
-            self.renderer.draw_line(
-                self.pivot_x, self.pivot_y - 30,
-                arc_start_x, arc_start_y - torque_length,
-                self.torque_color, 4
+            var torque_scale = abs(self.last_torque) * 0.3
+            var torque_direction = 1.0 if self.last_torque > 0 else -1.0
+            var arc_offset = Vec2(torque_direction * 0.3, 0.3)
+            var arc_end = Vec2(
+                torque_direction * 0.3,
+                0.3 + torque_scale,
+            )
+            self.renderer.draw_line_world(
+                pivot + Vec2(0, 0.3),
+                pivot + arc_end,
+                camera,
+                self.torque_color,
+                4,
             )
 
-        # Draw rod
-        self.renderer.draw_line(
-            self.pivot_x, self.pivot_y,
-            bob_x, bob_y,
-            self.rod_color, self.rod_width
+        # Use the draw_pendulum helper
+        # Note: theta=0 points up (negative Y in screen coords before flip)
+        # The draw_pendulum function expects angle from vertical (0 = down)
+        # So we adjust: pendulum_angle = pi + theta
+        self.renderer.draw_pendulum(
+            pivot,
+            self.theta + pi,  # Adjust so 0 = down for the helper
+            rod_length_world,
+            bob_radius_world,
+            camera,
+            self.rod_color,
+            self.bob_color,
+            self.pivot_color,
+            8,  # rod width
         )
 
-        # Draw bob (mass at end of pendulum)
-        self.renderer.draw_circle(
-            bob_x, bob_y,
-            self.bob_radius, self.bob_color, filled=True
+        # Draw bob border
+        var bob_pos = Vec2(
+            pivot.x + rod_length_world * sin(self.theta),
+            pivot.y - rod_length_world * cos(self.theta),
         )
-        # Bob border
-        var black = SDL_Color(0, 0, 0, 255)
-        self.renderer.draw_circle(
-            bob_x, bob_y,
-            self.bob_radius, black, filled=False
-        )
-
-        # Draw pivot point
-        self.renderer.draw_circle(
-            self.pivot_x, self.pivot_y,
-            self.pivot_radius, self.pivot_color, filled=True
-        )
-
-        # Draw reference circle (the circle the bob moves along)
-        var ref_color = SDL_Color(200, 200, 200, 255)
-        self.renderer.draw_circle(
-            self.pivot_x, self.pivot_y,
-            self.rod_length, ref_color, filled=False
+        self.renderer.draw_circle_world(
+            bob_pos, bob_radius_world, camera, black(), False
         )
 
         # Draw info text
         var info_lines = List[String]()
         info_lines.append("Step: " + String(self.steps))
         info_lines.append("Reward: " + String(Int(self.total_reward)))
-        info_lines.append("Angle: " + String(self.theta * 180.0 / pi)[:6] + " deg")
+        info_lines.append(
+            "Angle: " + String(self.theta * 180.0 / pi)[:6] + " deg"
+        )
         info_lines.append("Vel: " + String(self.theta_dot)[:6])
         info_lines.append("Torque: " + String(self.last_torque)[:5])
         self.renderer.draw_info_box(info_lines)
@@ -586,7 +611,9 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
     # ========================================================================
 
     @staticmethod
-    fn get_num_states(num_bins_angle: Int = 15, num_bins_velocity: Int = 15) -> Int:
+    fn get_num_states(
+        num_bins_angle: Int = 15, num_bins_velocity: Int = 15
+    ) -> Int:
         """Get the number of discrete states for Pendulum with given bins."""
         return num_bins_angle * num_bins_velocity
 
@@ -594,7 +621,7 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
     fn discretize_obs(
         obs: SIMD[DType.float64, 4],
         num_bins_angle: Int = 15,
-        num_bins_velocity: Int = 15
+        num_bins_velocity: Int = 15,
     ) -> Int:
         """Discretize continuous observation into a single state index.
 
@@ -624,7 +651,9 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
             return Int(normalized * Float64(bins - 1))
 
         var b_angle = bin_value(theta, -pi, pi, num_bins_angle)
-        var b_vel = bin_value(theta_dot, -max_speed, max_speed, num_bins_velocity)
+        var b_vel = bin_value(
+            theta_dot, -max_speed, max_speed, num_bins_velocity
+        )
 
         return b_angle * num_bins_velocity + b_vel
 

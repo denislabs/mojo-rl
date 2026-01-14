@@ -15,8 +15,19 @@ Requires SDL2 and SDL2_ttf: brew install sdl2 sdl2_ttf
 from math import cos, sin
 from random import random_float64
 from core import State, Action, DiscreteEnv, TileCoding, BoxDiscreteActionEnv
-from core.sdl2 import SDL_Color, SDL_Point
-from .renderer_base import RendererBase
+from render import (
+    RendererBase,
+    SDL_Color,
+    SDL_Point,
+    Vec2,
+    Camera,
+    # Colors
+    sky_blue,
+    mountain_brown,
+    car_red,
+    black,
+    rgb,
+)
 
 
 # ============================================================================
@@ -291,7 +302,8 @@ struct MountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
         return b0 * self.num_bins + b1
 
     fn get_obs(self) -> SIMD[DType.float64, 4]:
-        """Return current continuous observation as SIMD (optimized, padded to 4D)."""
+        """Return current continuous observation as SIMD (optimized, padded to 4D).
+        """
         return self._get_obs()
 
     # ========================================================================
@@ -309,7 +321,8 @@ struct MountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
         return obs^
 
     fn reset_obs_list(mut self) -> List[Float64]:
-        """Reset environment and return initial observation as list (trait method)."""
+        """Reset environment and return initial observation as list (trait method).
+        """
         _ = self.reset()
         return self.get_obs_list()
 
@@ -391,6 +404,7 @@ struct MountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
         """Render the current state using SDL2.
 
         Lazily initializes the display on first call.
+        MountainCar uses custom coordinate conversion due to the terrain function.
         """
         if not self.render_initialized:
             if not self.renderer.init_display():
@@ -402,7 +416,6 @@ struct MountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
                 self.max_position - self.min_position
             )
 
-        # Handle events
         if not self.renderer.handle_events():
             self.close()
             return
@@ -451,8 +464,8 @@ struct MountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
             var screen_x = self._world_to_screen_x(pos)
             var screen_y = self._world_to_screen_y(height)
             outline_points.append(self.renderer.make_point(screen_x, screen_y))
-        var black = SDL_Color(0, 0, 0, 255)
-        self.renderer.draw_lines(outline_points, black, closed=False, width=2)
+        var outline_color = black()
+        self.renderer.draw_lines(outline_points, outline_color, closed=False, width=2)
 
         # Draw goal flag
         var flag_height_world = self._height(self.goal_position)
@@ -500,7 +513,7 @@ struct MountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
             self.car_color,
         )
         # Car border
-        var border_color = SDL_Color(0, 0, 0, 255)
+        var border_color = black()
         self.renderer.draw_rect(
             car_x - self.car_width // 2,
             car_y - self.car_height - self.wheel_radius,
@@ -529,7 +542,7 @@ struct MountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
         var arrow_length = Int(self.velocity * 1000)
         if arrow_length != 0:
             var arrow_y = car_y - self.car_height - self.wheel_radius - 10
-            var arrow_color = SDL_Color(0, 0, 0, 255)
+            var arrow_color = black()
             self.renderer.draw_line(
                 car_x, arrow_y, car_x + arrow_length, arrow_y, arrow_color, 3
             )

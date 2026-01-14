@@ -27,8 +27,18 @@ from core import (
     PolynomialFeatures,
     GPUDiscreteEnv,
 )
-from core.sdl2 import SDL_Color, SDL_Point
-from .renderer_base import RendererBase
+from render import (
+    RendererBase,
+    SDL_Color,
+    Vec2,
+    Camera,
+    # Colors
+    cart_blue,
+    pole_tan,
+    axle_purple,
+    black,
+    white,
+)
 from deep_rl.gpu import random_range, xorshift32
 from layout import LayoutTensor, Layout
 from gpu import block_dim, block_idx, thread_idx
@@ -465,79 +475,75 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
         """Render the current state using SDL2.
 
         Lazily initializes the display on first call.
+        Uses Camera for world-to-screen coordinate conversion.
         """
+        # Begin frame handles init, events, and clear
         if not self.render_initialized:
             if not self.renderer.init_display():
                 print("Failed to initialize display")
                 return
             self.render_initialized = True
-            # Update scale based on actual screen width
-            self.scale = Float64(self.renderer.screen_width) / self.world_width
-            self.pole_len_pixels = Int(self.scale * 0.5 * 2)
 
-        # Handle events
         if not self.renderer.handle_events():
             self.close()
             return
 
-        # Clear screen
         self.renderer.clear()
 
-        # Calculate cart position in pixels
-        var cart_x = Int(
-            self.x * self.scale + Float64(self.renderer.screen_width) / 2.0
-        )
+        # Create camera centered on screen with Y-flip
+        # zoom = pixels per world unit, centered at world origin
+        var zoom = Float64(self.renderer.screen_width) / self.world_width
+        var camera = self.renderer.make_camera_at(0.0, 0.5, zoom, True)
 
-        # Draw track
-        var track_y = self.cart_y + self.cart_height // 2
-        self.renderer.draw_line(
-            0, track_y, self.renderer.screen_width, track_y, self.track_color, 2
-        )
+        # World coordinates: cart moves along X, ground is at Y=0
+        var cart_pos = Vec2(self.x, 0.15)  # Cart center slightly above ground
+        var cart_width_world = 0.4
+        var cart_height_world = 0.24
 
-        # Draw cart
-        var cart_left = cart_x - self.cart_width // 2
-        var cart_top = self.cart_y - self.cart_height // 2
-        self.renderer.draw_rect(
-            cart_left,
-            cart_top,
-            self.cart_width,
-            self.cart_height,
+        # Draw ground/track line at Y=0
+        self.renderer.draw_ground_line(0.0, camera, self.track_color, 2)
+
+        # Draw cart as rectangle
+        self.renderer.draw_rect_world(
+            cart_pos,
+            cart_width_world,
+            cart_height_world,
+            camera,
             self.cart_color,
+            centered=True,
         )
 
-        # Draw pole
-        var pole_start_x = cart_x
-        var pole_start_y = self.cart_y - self.cart_height // 2
-
-        # theta=0 means upright, positive theta is clockwise
-        var pole_end_x = pole_start_x + Int(
-            Float64(self.pole_len_pixels) * sin(self.theta)
+        # Draw pole - starts at top of cart, rotates around pivot
+        var pivot = Vec2(self.x, cart_pos.y + cart_height_world / 2.0)
+        var pole_length = 0.5  # Half the pole length in world units
+        # theta=0 means upright (positive Y), positive theta rotates clockwise
+        var pole_end = Vec2(
+            pivot.x + pole_length * sin(self.theta),
+            pivot.y + pole_length * cos(self.theta),
         )
-        var pole_end_y = pole_start_y - Int(
-            Float64(self.pole_len_pixels) * cos(self.theta)
-        )
-
-        self.renderer.draw_line(
-            pole_start_x,
-            pole_start_y,
-            pole_end_x,
-            pole_end_y,
-            self.pole_color,
-            self.pole_width,
-        )
+        self.renderer.draw_link(pivot, pole_end, camera, self.pole_color, 10)
 
         # Draw axle (pivot point)
-        self.renderer.draw_circle(
-            pole_start_x, pole_start_y, self.axle_radius, self.axle_color
-        )
+        self.renderer.draw_joint(pivot, 0.04, camera, self.axle_color)
 
         # Draw wheels
-        var wheel_radius = 5
-        var wheel_y = self.cart_y + self.cart_height // 2
-        var black = SDL_Color(0, 0, 0, 255)
-        self.renderer.draw_circle(cart_left + 10, wheel_y, wheel_radius, black)
-        self.renderer.draw_circle(
-            cart_left + self.cart_width - 10, wheel_y, wheel_radius, black
+        var wheel_radius = 0.04
+        var wheel_y = cart_pos.y - cart_height_world / 2.0
+        var wheel_offset = cart_width_world / 2.0 - 0.08
+        var wheel_color = black()
+        self.renderer.draw_circle_world(
+            Vec2(self.x - wheel_offset, wheel_y),
+            wheel_radius,
+            camera,
+            wheel_color,
+            True,
+        )
+        self.renderer.draw_circle_world(
+            Vec2(self.x + wheel_offset, wheel_y),
+            wheel_radius,
+            camera,
+            wheel_color,
+            True,
         )
 
         # Draw info text

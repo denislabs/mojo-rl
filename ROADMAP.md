@@ -223,11 +223,10 @@
 
 ## In Progress / Next Steps
 
-### GPU Support ⏸️ ON HOLD
-> **Status**: GPU work paused due to Apple Silicon bug in Mojo GPU runtime.
-> Will resume when the issue is resolved by Modular.
-- [ ] GPU tensor operations - Tiled matmul, elementwise ops (partially implemented in Linear, ReLU, Tanh)
-- [ ] GPU-accelerated training - Full batch processing on GPU for deep RL agents
+### GPU Support
+- [x] GPU tensor operations - Tiled matmul, elementwise ops (implemented in Linear, ReLU, Tanh)
+- [x] GPU-accelerated training - Trainer with `train_gpu[BATCH]()` method
+- [ ] GPU-accelerated deep RL agents - Full batch processing on GPU for DQN, SAC, etc.
 - [ ] Mixed CPU/GPU pipeline - Environment stepping on CPU, network forward/backward on GPU
 - [ ] GPU replay buffer - Store and sample transitions on GPU to avoid CPU-GPU transfers
 

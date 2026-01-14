@@ -34,7 +34,7 @@ from .linear_fa import (
     make_mountain_car_poly_features,
     FeatureExtractor,
 )
-from .sdl2 import SDL2, SDL_Event, SDL_Point, SDL_Rect, SDL_Color
+
 from .vec_env import (
     VecStepResult,
     simd_splat_f64,

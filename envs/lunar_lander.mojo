@@ -17,13 +17,49 @@ from random import random_float64
 from physics.vec2 import Vec2, vec2
 from physics.shape import PolygonShape, CircleShape, EdgeShape
 from physics.body import Body, BODY_STATIC, BODY_DYNAMIC
-from physics.fixture import Filter, CATEGORY_GROUND, CATEGORY_LANDER, CATEGORY_LEG, CATEGORY_PARTICLE
+from physics.fixture import (
+    Filter,
+    CATEGORY_GROUND,
+    CATEGORY_LANDER,
+    CATEGORY_LEG,
+    CATEGORY_PARTICLE,
+)
 from physics.world import World
 from physics.joint import RevoluteJoint
 
-from core import State, Action, BoxDiscreteActionEnv, BoxContinuousActionEnv, BoxSpace, DiscreteSpace
-from core.sdl2 import SDL_Color, SDL_Point
-from envs.renderer_base import RendererBase
+from core import (
+    State,
+    Action,
+    BoxDiscreteActionEnv,
+    BoxContinuousActionEnv,
+    BoxSpace,
+    DiscreteSpace,
+)
+from render import (
+    RendererBase,
+    SDL_Color,
+    SDL_Point,
+    Camera,
+    Vec2 as RenderVec2,
+    Transform2D,
+    # Colors
+    space_black,
+    moon_gray,
+    dark_gray,
+    white,
+    yellow,
+    red,
+    lander_gray,
+    contact_green,
+    inactive_gray,
+    flame_color,
+    rgb,
+    darken,
+    # Shapes
+    make_lander_body,
+    make_leg_box,
+    scale_vertices,
+)
 
 
 # ===== Action Struct =====
@@ -95,13 +131,16 @@ comptime VIEWPORT_H: Int = 400
 @register_passable("trivial")
 struct Particle:
     """Simple particle for engine flame effects."""
+
     var x: Float64
     var y: Float64
     var vx: Float64
     var vy: Float64
     var ttl: Float64  # Time to live in seconds
 
-    fn __init__(out self, x: Float64, y: Float64, vx: Float64, vy: Float64, ttl: Float64):
+    fn __init__(
+        out self, x: Float64, y: Float64, vx: Float64, vy: Float64, ttl: Float64
+    ):
         self.x = x
         self.y = y
         self.vx = vx
@@ -112,7 +151,7 @@ struct Particle:
 # ===== State Struct =====
 
 
-struct LunarLanderState(State, Copyable, ImplicitlyCopyable, Movable):
+struct LunarLanderState(Copyable, ImplicitlyCopyable, Movable, State):
     """Observation state for LunarLander (8D continuous observation)."""
 
     var x: Float64  # Horizontal position (normalized)
@@ -361,12 +400,16 @@ struct LunarLanderEnv(BoxDiscreteActionEnv):
                 filter=Filter.ground(),
             )
 
-        self.terrain_fixture_count = len(self.world.fixtures) - self.terrain_fixture_start
+        self.terrain_fixture_count = (
+            len(self.world.fixtures) - self.terrain_fixture_start
+        )
 
         # Create lander
         var initial_x = W / 2.0
         var initial_y = H
-        self.lander_idx = self.world.create_body(BODY_DYNAMIC, Vec2(initial_x, initial_y))
+        self.lander_idx = self.world.create_body(
+            BODY_DYNAMIC, Vec2(initial_x, initial_y)
+        )
 
         # Lander polygon shape (vertices from Gymnasium)
         var lander_verts = List[Vec2]()
@@ -468,11 +511,15 @@ struct LunarLanderEnv(BoxDiscreteActionEnv):
             else:
                 self.right_joint_idx = joint_idx
 
-    fn step_discrete(mut self, action: Int) -> Tuple[LunarLanderState, Float64, Bool]:
+    fn step_discrete(
+        mut self, action: Int
+    ) -> Tuple[LunarLanderState, Float64, Bool]:
         """Step with discrete action (0=nop, 1=left, 2=main, 3=right)."""
         return self._step_internal(action, Vec2.zero())
 
-    fn step_continuous(mut self, action: Vec2) -> Tuple[LunarLanderState, Float64, Bool]:
+    fn step_continuous(
+        mut self, action: Vec2
+    ) -> Tuple[LunarLanderState, Float64, Bool]:
         """Step with continuous action (main_throttle, lateral_throttle)."""
         return self._step_internal(-1, action)
 
@@ -482,25 +529,35 @@ struct LunarLanderEnv(BoxDiscreteActionEnv):
         """Internal step function."""
         # Apply wind
         if self.enable_wind:
-            var left_contact = self._is_leg_contacting(self.left_leg_fixture_idx)
-            var right_contact = self._is_leg_contacting(self.right_leg_fixture_idx)
+            var left_contact = self._is_leg_contacting(
+                self.left_leg_fixture_idx
+            )
+            var right_contact = self._is_leg_contacting(
+                self.right_leg_fixture_idx
+            )
 
             if not (left_contact or right_contact):
                 # Wind force
-                var wind_mag = tanh(
-                    sin(0.02 * Float64(self.wind_idx))
-                    + sin(pi * 0.01 * Float64(self.wind_idx))
-                ) * self.wind_power
+                var wind_mag = (
+                    tanh(
+                        sin(0.02 * Float64(self.wind_idx))
+                        + sin(pi * 0.01 * Float64(self.wind_idx))
+                    )
+                    * self.wind_power
+                )
                 self.wind_idx += 1
                 self.world.bodies[self.lander_idx].apply_force_to_center(
                     Vec2(wind_mag, 0.0)
                 )
 
                 # Turbulence torque
-                var torque_mag = tanh(
-                    sin(0.02 * Float64(self.torque_idx))
-                    + sin(pi * 0.01 * Float64(self.torque_idx))
-                ) * self.turbulence_power
+                var torque_mag = (
+                    tanh(
+                        sin(0.02 * Float64(self.torque_idx))
+                        + sin(pi * 0.01 * Float64(self.torque_idx))
+                    )
+                    * self.turbulence_power
+                )
                 self.torque_idx += 1
                 self.world.bodies[self.lander_idx].apply_torque(torque_mag)
 
@@ -528,25 +585,50 @@ struct LunarLanderEnv(BoxDiscreteActionEnv):
             if abs(lateral_throttle) > 0.5:
                 var direction = sign(lateral_throttle)
                 s_power = clamp(abs(lateral_throttle), 0.5, 1.0)
-                self._apply_side_engine(lander, tip, side, dispersion_x, dispersion_y, direction, s_power)
+                self._apply_side_engine(
+                    lander,
+                    tip,
+                    side,
+                    dispersion_x,
+                    dispersion_y,
+                    direction,
+                    s_power,
+                )
         else:
             # Discrete action
             if discrete_action == 2:  # Main engine
                 m_power = 1.0
             elif discrete_action == 1:  # Left engine
                 s_power = 1.0
-                self._apply_side_engine(lander, tip, side, dispersion_x, dispersion_y, -1.0, s_power)
+                self._apply_side_engine(
+                    lander, tip, side, dispersion_x, dispersion_y, -1.0, s_power
+                )
             elif discrete_action == 3:  # Right engine
                 s_power = 1.0
-                self._apply_side_engine(lander, tip, side, dispersion_x, dispersion_y, 1.0, s_power)
+                self._apply_side_engine(
+                    lander, tip, side, dispersion_x, dispersion_y, 1.0, s_power
+                )
 
         # Apply main engine
         if m_power > 0.0:
-            var ox = tip.x * (MAIN_ENGINE_Y_LOCATION / SCALE + 2.0 * dispersion_x) + side.x * dispersion_y
-            var oy = -tip.y * (MAIN_ENGINE_Y_LOCATION / SCALE + 2.0 * dispersion_x) - side.y * dispersion_y
-            var impulse_pos = Vec2(lander.position.x + ox, lander.position.y + oy)
-            var impulse = Vec2(-ox * MAIN_ENGINE_POWER * m_power, -oy * MAIN_ENGINE_POWER * m_power)
-            self.world.bodies[self.lander_idx].apply_linear_impulse(impulse, impulse_pos)
+            var ox = (
+                tip.x * (MAIN_ENGINE_Y_LOCATION / SCALE + 2.0 * dispersion_x)
+                + side.x * dispersion_y
+            )
+            var oy = (
+                -tip.y * (MAIN_ENGINE_Y_LOCATION / SCALE + 2.0 * dispersion_x)
+                - side.y * dispersion_y
+            )
+            var impulse_pos = Vec2(
+                lander.position.x + ox, lander.position.y + oy
+            )
+            var impulse = Vec2(
+                -ox * MAIN_ENGINE_POWER * m_power,
+                -oy * MAIN_ENGINE_POWER * m_power,
+            )
+            self.world.bodies[self.lander_idx].apply_linear_impulse(
+                impulse, impulse_pos
+            )
 
             # Spawn main engine flame particles
             self._spawn_main_engine_particles(lander.position, tip, m_power)
@@ -556,7 +638,9 @@ struct LunarLanderEnv(BoxDiscreteActionEnv):
             var direction = -1.0 if discrete_action == 1 else 1.0
             if self.continuous:
                 direction = sign(continuous_action.y)
-            self._spawn_side_engine_particles(lander.position, tip, side, direction, s_power)
+            self._spawn_side_engine_particles(
+                lander.position, tip, side, direction, s_power
+            )
 
         # Update existing particles
         self._update_particles()
@@ -601,16 +685,26 @@ struct LunarLanderEnv(BoxDiscreteActionEnv):
         s_power: Float64,
     ):
         """Apply side engine force."""
-        var ox = tip.x * dispersion_x + side.x * (3.0 * dispersion_y + direction * SIDE_ENGINE_AWAY / SCALE)
-        var oy = -tip.y * dispersion_x - side.y * (3.0 * dispersion_y + direction * SIDE_ENGINE_AWAY / SCALE)
+        var ox = tip.x * dispersion_x + side.x * (
+            3.0 * dispersion_y + direction * SIDE_ENGINE_AWAY / SCALE
+        )
+        var oy = -tip.y * dispersion_x - side.y * (
+            3.0 * dispersion_y + direction * SIDE_ENGINE_AWAY / SCALE
+        )
         var impulse_pos = Vec2(
             lander.position.x + ox - tip.x * 17.0 / SCALE,
             lander.position.y + oy + tip.y * SIDE_ENGINE_HEIGHT / SCALE,
         )
-        var impulse = Vec2(-ox * SIDE_ENGINE_POWER * s_power, -oy * SIDE_ENGINE_POWER * s_power)
-        self.world.bodies[self.lander_idx].apply_linear_impulse(impulse, impulse_pos)
+        var impulse = Vec2(
+            -ox * SIDE_ENGINE_POWER * s_power, -oy * SIDE_ENGINE_POWER * s_power
+        )
+        self.world.bodies[self.lander_idx].apply_linear_impulse(
+            impulse, impulse_pos
+        )
 
-    fn _spawn_main_engine_particles(mut self, pos: Vec2, tip: Vec2, power: Float64):
+    fn _spawn_main_engine_particles(
+        mut self, pos: Vec2, tip: Vec2, power: Float64
+    ):
         """Spawn flame particles from main engine."""
         # Spawn 2-4 particles per frame when engine is on
         var num_particles = 2 + Int(random_float64() * 3.0)
@@ -623,14 +717,23 @@ struct LunarLanderEnv(BoxDiscreteActionEnv):
             # Velocity DOWNWARD (opposite of thrust direction = -tip)
             var spread = (random_float64() - 0.5) * 2.0
             var vx = -tip.x * 3.0 * power + spread
-            var vy = -tip.y * 3.0 * power + (random_float64() - 0.5)  # Fixed: -tip.y
+            var vy = -tip.y * 3.0 * power + (
+                random_float64() - 0.5
+            )  # Fixed: -tip.y
 
             # Short lifetime
             var ttl = 0.1 + random_float64() * 0.2
 
             self.flame_particles.append(Particle(px, py, vx, vy, ttl))
 
-    fn _spawn_side_engine_particles(mut self, pos: Vec2, tip: Vec2, side: Vec2, direction: Float64, power: Float64):
+    fn _spawn_side_engine_particles(
+        mut self,
+        pos: Vec2,
+        tip: Vec2,
+        side: Vec2,
+        direction: Float64,
+        power: Float64,
+    ):
         """Spawn flame particles from side engine.
 
         direction: -1 for left engine, +1 for right engine
@@ -648,8 +751,12 @@ struct LunarLanderEnv(BoxDiscreteActionEnv):
             # Right engine (dir=+1) pushes lander left, so exhaust goes RIGHT (-side * -(+1) = +side... wait)
             # Actually: left engine exhaust goes left (in side direction), right engine exhaust goes right (in -side direction)
             # So velocity = -side * direction
-            var vx = -side.x * direction * 2.0 * power + (random_float64() - 0.5)
-            var vy = -side.y * direction * 2.0 * power + (random_float64() - 0.5)
+            var vx = -side.x * direction * 2.0 * power + (
+                random_float64() - 0.5
+            )
+            var vy = -side.y * direction * 2.0 * power + (
+                random_float64() - 0.5
+            )
 
             # Short lifetime
             var ttl = 0.08 + random_float64() * 0.15
@@ -671,7 +778,9 @@ struct LunarLanderEnv(BoxDiscreteActionEnv):
             var new_ttl = p.ttl - dt
 
             if new_ttl > 0.0:
-                new_particles.append(Particle(new_x, new_y, p.vx, new_vy, new_ttl))
+                new_particles.append(
+                    Particle(new_x, new_y, p.vx, new_vy, new_ttl)
+                )
 
         self.flame_particles = new_particles^
 
@@ -691,12 +800,18 @@ struct LunarLanderEnv(BoxDiscreteActionEnv):
         state.vy = vel.y * (H / 2.0) / Float64(FPS)
         state.angle = lander.angle
         state.angular_velocity = 20.0 * lander.angular_velocity / Float64(FPS)
-        state.left_leg_contact = 1.0 if self._is_leg_contacting(self.left_leg_fixture_idx) else 0.0
-        state.right_leg_contact = 1.0 if self._is_leg_contacting(self.right_leg_fixture_idx) else 0.0
+        state.left_leg_contact = 1.0 if self._is_leg_contacting(
+            self.left_leg_fixture_idx
+        ) else 0.0
+        state.right_leg_contact = 1.0 if self._is_leg_contacting(
+            self.right_leg_fixture_idx
+        ) else 0.0
 
         return state^
 
-    fn _compute_reward(mut self, state: LunarLanderState, m_power: Float64, s_power: Float64) -> Float64:
+    fn _compute_reward(
+        mut self, state: LunarLanderState, m_power: Float64, s_power: Float64
+    ) -> Float64:
         """Compute reward based on state."""
         var shaping = (
             -100.0 * sqrt(state.x * state.x + state.y * state.y)
@@ -722,7 +837,11 @@ struct LunarLanderEnv(BoxDiscreteActionEnv):
         for i in range(len(contacts)):
             var fix_idx = contacts[i]
             # Check if contacting terrain
-            if fix_idx >= self.terrain_fixture_start and fix_idx < self.terrain_fixture_start + self.terrain_fixture_count:
+            if (
+                fix_idx >= self.terrain_fixture_start
+                and fix_idx
+                < self.terrain_fixture_start + self.terrain_fixture_count
+            ):
                 return True
         return False
 
@@ -731,106 +850,135 @@ struct LunarLanderEnv(BoxDiscreteActionEnv):
         var contacts = self.world.get_fixture_contacts(self.lander_fixture_idx)
         for i in range(len(contacts)):
             var fix_idx = contacts[i]
-            if fix_idx >= self.terrain_fixture_start and fix_idx < self.terrain_fixture_start + self.terrain_fixture_count:
+            if (
+                fix_idx >= self.terrain_fixture_start
+                and fix_idx
+                < self.terrain_fixture_start + self.terrain_fixture_count
+            ):
                 return True
         return False
 
     fn render(mut self):
         """Render the environment."""
+        # Initialize display if needed
         if not self.render_initialized:
             if not self.renderer.init_display():
                 return
-            # Set dark background color (space)
-            self.renderer.background_color = self.renderer.make_color(0, 0, 40)
             self.render_initialized = True
 
-        # Clear screen with dark background
-        self.renderer.clear()
-
-        if not self.renderer.handle_events():
+        # Begin frame with space background
+        if not self.renderer.begin_frame_with_color(space_black()):
             self.close()
             return
 
+        # Create camera - centered at viewport center, with physics scale
+        # Camera Y at helipad level + some offset to see terrain and sky
+        var W = Float64(VIEWPORT_W) / SCALE
+        var H = Float64(VIEWPORT_H) / SCALE
+        var camera = Camera(
+            W / 2.0,  # Center X in world units
+            H / 2.0,  # Center Y in world units
+            SCALE,  # Zoom = physics scale
+            VIEWPORT_W,
+            VIEWPORT_H,
+            flip_y=True,  # Y increases upward in physics
+        )
+
         # Draw terrain (filled)
-        self._draw_terrain()
+        self._draw_terrain(camera)
 
         # Draw helipad
-        self._draw_helipad()
+        self._draw_helipad(camera)
 
         # Draw helipad flags
-        self._draw_flags()
+        self._draw_flags(camera)
 
         # Draw flame particles (behind lander)
-        self._draw_particles()
+        self._draw_particles(camera)
 
         # Draw legs (before lander so lander draws on top)
-        self._draw_legs()
+        self._draw_legs(camera)
 
         # Draw lander
-        self._draw_lander()
+        self._draw_lander(camera)
 
         self.renderer.flip()
 
-    fn _draw_terrain(mut self):
-        """Draw terrain as filled polygons."""
-        var terrain_color = self.renderer.make_color(102, 102, 102)
-        var terrain_dark = self.renderer.make_color(64, 64, 64)
+    fn _draw_terrain(mut self, camera: Camera):
+        """Draw terrain as filled polygons using world coordinates."""
+        var terrain_color = moon_gray()
+        var terrain_dark = dark_gray()
 
         # Draw each terrain segment as a filled quad (from terrain line to bottom)
         for i in range(len(self.terrain_x) - 1):
-            var x1 = Int(self.terrain_x[i] * SCALE)
-            var y1 = Int(Float64(VIEWPORT_H) - self.terrain_y[i] * SCALE)
-            var x2 = Int(self.terrain_x[i + 1] * SCALE)
-            var y2 = Int(Float64(VIEWPORT_H) - self.terrain_y[i + 1] * SCALE)
+            # Create polygon vertices in world coordinates
+            var vertices = List[RenderVec2]()
+            vertices.append(RenderVec2(self.terrain_x[i], self.terrain_y[i]))
+            vertices.append(RenderVec2(self.terrain_x[i + 1], self.terrain_y[i + 1]))
+            vertices.append(RenderVec2(self.terrain_x[i + 1], 0.0))  # Bottom
+            vertices.append(RenderVec2(self.terrain_x[i], 0.0))
 
-            # Create filled polygon from terrain to bottom of screen
-            var points = List[SDL_Point]()
-            points.append(SDL_Point(Int32(x1), Int32(y1)))
-            points.append(SDL_Point(Int32(x2), Int32(y2)))
-            points.append(SDL_Point(Int32(x2), Int32(VIEWPORT_H)))
-            points.append(SDL_Point(Int32(x1), Int32(VIEWPORT_H)))
-            self.renderer.draw_polygon(points, terrain_color, filled=True)
+            self.renderer.draw_polygon_world(vertices, camera, terrain_color, filled=True)
 
             # Draw terrain outline for contrast
-            self.renderer.draw_line(x1, y1, x2, y2, terrain_dark, 2)
+            self.renderer.draw_line_world(
+                RenderVec2(self.terrain_x[i], self.terrain_y[i]),
+                RenderVec2(self.terrain_x[i + 1], self.terrain_y[i + 1]),
+                camera,
+                terrain_dark,
+                2,
+            )
 
-    fn _draw_helipad(mut self):
-        """Draw the helipad landing zone."""
-        var helipad_color = self.renderer.make_color(80, 80, 80)
+    fn _draw_helipad(mut self, camera: Camera):
+        """Draw the helipad landing zone using world coordinates."""
+        var helipad_color = darken(moon_gray(), 0.8)
 
-        # Draw helipad as a darker rectangle
-        var x1 = Int(self.helipad_x1 * SCALE)
-        var x2 = Int(self.helipad_x2 * SCALE)
-        var y = Int(Float64(VIEWPORT_H) - self.helipad_y * SCALE)
+        # Helipad is a thick horizontal bar (in world units)
+        var bar_height = 4.0 / SCALE  # 4 pixels in world units
+        self.renderer.draw_rect_world(
+            RenderVec2((self.helipad_x1 + self.helipad_x2) / 2.0, self.helipad_y + bar_height / 2.0),
+            self.helipad_x2 - self.helipad_x1,
+            bar_height,
+            camera,
+            helipad_color,
+            centered=True,
+        )
 
-        # Helipad is a thick horizontal bar
-        self.renderer.draw_rect(x1, y - 2, x2 - x1, 4, helipad_color, 0)
+    fn _draw_flags(mut self, camera: Camera):
+        """Draw helipad flags with poles using world coordinates."""
+        var white_color = white()
+        var yellow_color = yellow()
+        var red_color = red()
 
-    fn _draw_flags(mut self):
-        """Draw helipad flags with poles."""
-        var white = self.renderer.make_color(255, 255, 255)
-        var yellow = self.renderer.make_color(255, 215, 0)
-        var red = self.renderer.make_color(255, 0, 0)
+        # Flag dimensions in world units
+        var pole_height = 50.0 / SCALE
+        var flag_width = 25.0 / SCALE
+        var flag_height = 20.0 / SCALE
 
         for flag_idx in range(2):
             var x_pos = self.helipad_x1 if flag_idx == 0 else self.helipad_x2
-            var x = Int(x_pos * SCALE)
-            var ground_y = Int(Float64(VIEWPORT_H) - self.helipad_y * SCALE)
-            var pole_top = ground_y - 50
+            var ground_y = self.helipad_y
+            var pole_top_y = ground_y + pole_height
 
             # Flag pole (white vertical line)
-            self.renderer.draw_line(x, ground_y, x, pole_top, white, 2)
+            self.renderer.draw_line_world(
+                RenderVec2(x_pos, ground_y),
+                RenderVec2(x_pos, pole_top_y),
+                camera,
+                white_color,
+                2,
+            )
 
             # Flag as a filled triangle
-            var flag_color = yellow if flag_idx == 0 else red
-            var flag_points = List[SDL_Point]()
-            flag_points.append(SDL_Point(Int32(x), Int32(pole_top)))
-            flag_points.append(SDL_Point(Int32(x + 25), Int32(pole_top + 10)))
-            flag_points.append(SDL_Point(Int32(x), Int32(pole_top + 20)))
-            self.renderer.draw_polygon(flag_points, flag_color, filled=True)
+            var flag_color = yellow_color if flag_idx == 0 else red_color
+            var flag_verts = List[RenderVec2]()
+            flag_verts.append(RenderVec2(x_pos, pole_top_y))
+            flag_verts.append(RenderVec2(x_pos + flag_width, pole_top_y - flag_height / 2.0))
+            flag_verts.append(RenderVec2(x_pos, pole_top_y - flag_height))
+            self.renderer.draw_polygon_world(flag_verts, camera, flag_color, filled=True)
 
-    fn _draw_lander(mut self):
-        """Draw lander body as filled polygon."""
+    fn _draw_lander(mut self, camera: Camera):
+        """Draw lander body as filled polygon using Transform2D."""
         if self.lander_idx < 0:
             return
 
@@ -838,36 +986,21 @@ struct LunarLanderEnv(BoxDiscreteActionEnv):
         var pos = lander.position
         var angle = lander.angle
 
-        # Original lander vertices (Gymnasium colors: gray body with yellow/orange accents)
-        var poly_verts = List[Vec2]()
-        poly_verts.append(Vec2(-14.0, 17.0))
-        poly_verts.append(Vec2(-17.0, 0.0))
-        poly_verts.append(Vec2(-17.0, -10.0))
-        poly_verts.append(Vec2(17.0, -10.0))
-        poly_verts.append(Vec2(17.0, 0.0))
-        poly_verts.append(Vec2(14.0, 17.0))
+        # Use shape factory for lander body, scale from pixels to world units
+        var lander_verts_raw = make_lander_body()
+        var lander_verts = scale_vertices(lander_verts_raw^, 1.0 / SCALE)
 
-        var c = cos(angle)
-        var s = sin(angle)
-
-        # Build SDL_Point list for filled polygon
-        var points = List[SDL_Point]()
-        for i in range(len(poly_verts)):
-            var v = poly_verts[i]
-            var rx = v.x * c - v.y * s
-            var ry = v.x * s + v.y * c
-            var screen_x = Int(pos.x * SCALE + rx)
-            var screen_y = Int(Float64(VIEWPORT_H) - (pos.y * SCALE + ry))
-            points.append(SDL_Point(Int32(screen_x), Int32(screen_y)))
+        # Create transform for lander position and rotation
+        var transform = Transform2D(pos.x, pos.y, angle)
 
         # Draw filled lander body (grayish-white like the original)
-        var lander_fill = self.renderer.make_color(230, 230, 230)
-        var lander_outline = self.renderer.make_color(100, 100, 100)
-        self.renderer.draw_polygon(points, lander_fill, filled=True)
-        self.renderer.draw_polygon(points, lander_outline, filled=False)
+        var lander_fill = rgb(230, 230, 230)
+        var lander_outline = rgb(100, 100, 100)
+        self.renderer.draw_transformed_polygon(lander_verts, transform, camera, lander_fill, filled=True)
+        self.renderer.draw_transformed_polygon(lander_verts, transform, camera, lander_outline, filled=False)
 
-    fn _draw_legs(mut self):
-        """Draw lander legs as filled polygons."""
+    fn _draw_legs(mut self, camera: Camera):
+        """Draw lander legs as filled polygons using Transform2D."""
         # Check leg ground contact for color
         var left_contact = self._is_leg_contacting(self.left_leg_fixture_idx)
         var right_contact = self._is_leg_contacting(self.right_leg_fixture_idx)
@@ -883,56 +1016,39 @@ struct LunarLanderEnv(BoxDiscreteActionEnv):
 
             # Color changes when leg touches ground (green = contact)
             var is_touching = left_contact if leg_idx == 0 else right_contact
-            var leg_fill = self.renderer.make_color(77, 166, 77) if is_touching else self.renderer.make_color(128, 128, 128)
-            var leg_outline = self.renderer.make_color(50, 100, 50) if is_touching else self.renderer.make_color(80, 80, 80)
+            var leg_fill = contact_green() if is_touching else inactive_gray()
+            var leg_outline = darken(leg_fill, 0.6)
 
-            # Leg box vertices
-            var hw = LEG_W
-            var hh = LEG_H
+            # Leg box vertices using shape factory (in world units)
+            var leg_verts = make_leg_box(LEG_W * 2.0 / SCALE, LEG_H * 2.0 / SCALE)
 
-            var verts = List[Vec2]()
-            verts.append(Vec2(-hw, -hh))
-            verts.append(Vec2(hw, -hh))
-            verts.append(Vec2(hw, hh))
-            verts.append(Vec2(-hw, hh))
-
-            var c = cos(angle)
-            var s = sin(angle)
-
-            # Build SDL_Point list for filled polygon
-            var points = List[SDL_Point]()
-            for i in range(len(verts)):
-                var v = verts[i]
-                var rx = v.x * c - v.y * s
-                var ry = v.x * s + v.y * c
-                var screen_x = Int(pos.x * SCALE + rx)
-                var screen_y = Int(Float64(VIEWPORT_H) - (pos.y * SCALE + ry))
-                points.append(SDL_Point(Int32(screen_x), Int32(screen_y)))
+            # Create transform for leg position and rotation
+            var transform = Transform2D(pos.x, pos.y, angle)
 
             # Draw filled leg
-            self.renderer.draw_polygon(points, leg_fill, filled=True)
-            self.renderer.draw_polygon(points, leg_outline, filled=False)
+            self.renderer.draw_transformed_polygon(leg_verts, transform, camera, leg_fill, filled=True)
+            self.renderer.draw_transformed_polygon(leg_verts, transform, camera, leg_outline, filled=False)
 
-    fn _draw_particles(mut self):
-        """Draw flame particles."""
+    fn _draw_particles(mut self, camera: Camera):
+        """Draw flame particles using world coordinates and flame_color."""
         for i in range(len(self.flame_particles)):
             var p = self.flame_particles[i]
 
-            # Convert world to screen coordinates
-            var screen_x = Int(p.x * SCALE)
-            var screen_y = Int(Float64(VIEWPORT_H) - p.y * SCALE)
-
-            # Color based on remaining lifetime (yellow -> orange -> red)
+            # Color based on remaining lifetime using flame_color utility
             var life_ratio = p.ttl / 0.3  # Normalize to 0-1
-            var r = 255
-            var g = Int(200.0 * life_ratio + 50.0)  # Yellow to orange
-            var b = Int(50.0 * life_ratio)
+            var particle_color = flame_color(life_ratio)
 
-            var particle_color = self.renderer.make_color(r, g, b)
+            # Radius in world units (2-4 pixels converted)
+            var radius_world = (2.0 + life_ratio * 2.0) / SCALE
 
-            # Draw as small filled circle (radius 2-4 based on lifetime)
-            var radius = 2 + Int(life_ratio * 2.0)
-            self.renderer.draw_circle(screen_x, screen_y, radius, particle_color, filled=True)
+            # Draw using Camera world coordinates
+            self.renderer.draw_circle_world(
+                RenderVec2(p.x, p.y),
+                radius_world,
+                camera,
+                particle_color,
+                filled=True,
+            )
 
     fn close(mut self):
         """Close the environment."""
@@ -942,7 +1058,9 @@ struct LunarLanderEnv(BoxDiscreteActionEnv):
 
     # ===== Trait Methods (BoxDiscreteActionEnv) =====
 
-    fn step(mut self, action: LunarLanderAction) -> Tuple[LunarLanderState, Float64, Bool]:
+    fn step(
+        mut self, action: LunarLanderAction
+    ) -> Tuple[LunarLanderState, Float64, Bool]:
         """Take an action and return (next_state, reward, done).
 
         Implements Env trait.

@@ -22,8 +22,15 @@ from core import (
     BoxDiscreteActionEnv,
     PolynomialFeatures,
 )
-from core.sdl2 import SDL_Color, SDL_Point
-from .renderer_base import RendererBase
+from render import (
+    RendererBase,
+    SDL_Color,
+    Vec2,
+    Camera,
+    # Colors
+    black,
+    rgb,
+)
 
 
 # ============================================================================
@@ -190,7 +197,9 @@ struct AcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
     # Book or NIPS dynamics
     var use_book_dynamics: Bool
 
-    fn __init__(out self, num_bins: Int = 6, use_book_dynamics: Bool = True) raises:
+    fn __init__(
+        out self, num_bins: Int = 6, use_book_dynamics: Bool = True
+    ) raises:
         """Initialize Acrobot with default physics parameters.
 
         Args:
@@ -237,7 +246,9 @@ struct AcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
         self.render_initialized = False
 
         # Renderer settings
-        self.scale = 500.0 / (2.0 * (self.link_length_1 + self.link_length_2) + 0.4)
+        self.scale = 500.0 / (
+            2.0 * (self.link_length_1 + self.link_length_2) + 0.4
+        )
         self.link1_color = SDL_Color(0, 204, 204, 255)  # Cyan
         self.link2_color = SDL_Color(0, 204, 204, 255)  # Cyan
         self.joint_color = SDL_Color(204, 204, 0, 255)  # Yellow
@@ -328,7 +339,9 @@ struct AcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
     # Internal physics helpers
     # ========================================================================
 
-    fn _dsdt(self, s: SIMD[DType.float64, 4], torque: Float64) -> SIMD[DType.float64, 4]:
+    fn _dsdt(
+        self, s: SIMD[DType.float64, 4], torque: Float64
+    ) -> SIMD[DType.float64, 4]:
         """Compute derivatives for the equations of motion.
 
         Args:
@@ -492,7 +505,7 @@ struct AcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
             n5 = 1.0
         var b5 = Int(n5 * Float64(n - 1))
 
-        return (((((b0 * n + b1) * n + b2) * n + b3) * n + b4) * n + b5)
+        return ((((b0 * n + b1) * n + b2) * n + b3) * n + b4) * n + b5
 
     @always_inline
     fn get_obs(self) -> SIMD[DType.float64, 8]:
@@ -518,7 +531,8 @@ struct AcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
         return obs^
 
     fn reset_obs_list(mut self) -> List[Float64]:
-        """Reset environment and return initial observation as list (trait method)."""
+        """Reset environment and return initial observation as list (trait method).
+        """
         _ = self.reset()
         return self.get_obs_list()
 
@@ -599,6 +613,7 @@ struct AcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
         """Render the current state using SDL2.
 
         Lazily initializes the display on first call.
+        Uses Camera for world-to-screen coordinate conversion.
         """
         if not self.render_initialized:
             if not self.renderer.init_display():
@@ -606,7 +621,6 @@ struct AcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
                 return
             self.render_initialized = True
 
-        # Handle events
         if not self.renderer.handle_events():
             self.close()
             return
@@ -614,48 +628,43 @@ struct AcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
         # Clear screen with white background
         self.renderer.clear()
 
-        var screen_width = self.renderer.screen_width
-        var screen_height = self.renderer.screen_height
-        var offset_x = screen_width // 2
-        var offset_y = screen_height // 2
-
-        # Compute bound and scale
+        # Create camera with appropriate zoom
+        # Total reach is link_length_1 + link_length_2, add margin
         var bound_val = self.link_length_1 + self.link_length_2 + 0.2
-        var scale = Float64(min(screen_width, screen_height)) / (bound_val * 2.0)
+        var zoom = Float64(
+            min(self.renderer.screen_width, self.renderer.screen_height)
+        ) / (bound_val * 2.0)
+        var camera = self.renderer.make_camera(zoom, True)
 
-        # Draw target line (height = 1.0 above the fixed point)
-        var target_y = offset_y - Int(1.0 * scale)
-        self.renderer.draw_line(
-            0, target_y, screen_width, target_y, self.target_color, 2
-        )
-
-        # Fixed point at center
-        var p0_x = offset_x
-        var p0_y = offset_y
+        # World coordinates (Y points up, 0,0 at center)
+        var p0 = Vec2(0.0, 0.0)  # Fixed pivot at origin
 
         # First link endpoint
-        # theta1=0 means pointing straight down
-        var p1_x = p0_x + Int(self.link_length_1 * sin(self.theta1) * scale)
-        var p1_y = p0_y + Int(self.link_length_1 * cos(self.theta1) * scale)
+        # theta1=0 means pointing straight down (negative Y in world coords)
+        var p1 = Vec2(
+            p0.x + self.link_length_1 * sin(self.theta1),
+            p0.y - self.link_length_1 * cos(self.theta1),
+        )
 
         # Second link endpoint
         # theta2 is relative to theta1
         var angle2 = self.theta1 + self.theta2
-        var p2_x = p1_x + Int(self.link_length_2 * sin(angle2) * scale)
-        var p2_y = p1_y + Int(self.link_length_2 * cos(angle2) * scale)
+        var p2 = Vec2(
+            p1.x + self.link_length_2 * sin(angle2),
+            p1.y - self.link_length_2 * cos(angle2),
+        )
 
-        # Draw links
-        self.renderer.draw_line(
-            p0_x, p0_y, p1_x, p1_y, self.link1_color, self.link_width
-        )
-        self.renderer.draw_line(
-            p1_x, p1_y, p2_x, p2_y, self.link2_color, self.link_width
-        )
+        # Draw target line (height = 1.0 above the fixed point)
+        self.renderer.draw_ground_line(1.0, camera, self.target_color, 2)
+
+        # Draw links using helper methods
+        self.renderer.draw_link(p0, p1, camera, self.link1_color, self.link_width)
+        self.renderer.draw_link(p1, p2, camera, self.link2_color, self.link_width)
 
         # Draw joints
-        var joint_radius = 5
-        self.renderer.draw_circle(p0_x, p0_y, joint_radius, self.joint_color)
-        self.renderer.draw_circle(p1_x, p1_y, joint_radius, self.joint_color)
+        var joint_radius = 0.05
+        self.renderer.draw_joint(p0, joint_radius, camera, self.joint_color)
+        self.renderer.draw_joint(p1, joint_radius, camera, self.joint_color)
 
         # Draw info text
         var info_lines = List[String]()
@@ -717,7 +726,9 @@ struct AcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
         var max_vel_1 = 4.0 * pi
         var max_vel_2 = 9.0 * pi
 
-        fn bin_value(value: Float64, low: Float64, high: Float64, bins: Int) -> Int:
+        fn bin_value(
+            value: Float64, low: Float64, high: Float64, bins: Int
+        ) -> Int:
             var normalized = (value - low) / (high - low)
             if normalized < 0.0:
                 normalized = 0.0
@@ -732,7 +743,7 @@ struct AcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
         var b4 = bin_value(obs[4], -max_vel_1, max_vel_1, n)  # theta1_dot
         var b5 = bin_value(obs[5], -max_vel_2, max_vel_2, n)  # theta2_dot
 
-        return (((((b0 * n + b1) * n + b2) * n + b3) * n + b4) * n + b5)
+        return ((((b0 * n + b1) * n + b2) * n + b3) * n + b4) * n + b5
 
     @staticmethod
     fn make_tile_coding(
