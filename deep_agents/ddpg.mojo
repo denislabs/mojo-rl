@@ -36,31 +36,8 @@ from deep_rl.optimizer import Adam
 from deep_rl.initializer import Kaiming, Xavier
 from deep_rl.training import Network
 from deep_rl.replay import ReplayBuffer
+from deep_rl.gpu.random import gaussian_noise
 from core import TrainingMetrics, BoxContinuousActionEnv
-
-
-# =============================================================================
-# Helper Functions
-# =============================================================================
-
-
-fn _gaussian_noise() -> Float64:
-    """Generate standard Gaussian noise using Box-Muller transform."""
-    var u1 = random_float64()
-    var u2 = random_float64()
-    # Avoid log(0)
-    if u1 < 1e-10:
-        u1 = 1e-10
-    return sqrt(-2.0 * log(u1)) * _cos(2.0 * 3.14159265358979 * u2)
-
-
-fn _cos(x: Float64) -> Float64:
-    """Compute cosine using Taylor series."""
-    var x2 = x * x
-    var x4 = x2 * x2
-    var x6 = x4 * x2
-    var x8 = x4 * x4
-    return 1.0 - x2 / 2.0 + x4 / 24.0 - x6 / 720.0 + x8 / 40320.0
 
 
 # =============================================================================
@@ -310,7 +287,7 @@ struct DeepDDPGAgent[
             var a = Float64(actor_output[i]) * self.action_scale
 
             if add_noise:
-                a += self.noise_std * self.action_scale * _gaussian_noise()
+                a += self.noise_std * self.action_scale * gaussian_noise()
 
             # Clip to action bounds
             if a > self.action_scale:

@@ -46,31 +46,8 @@ from deep_rl.optimizer import Adam
 from deep_rl.initializer import Kaiming
 from deep_rl.training import Network
 from deep_rl.replay import ReplayBuffer, HeapReplayBuffer, ReplayBufferTrait
+from deep_rl.gpu.random import gaussian_noise
 from core import TrainingMetrics, BoxContinuousActionEnv
-
-
-# =============================================================================
-# Helper Functions
-# =============================================================================
-
-
-fn _gaussian_noise() -> Float64:
-    """Generate standard Gaussian noise using Box-Muller transform."""
-    var u1 = random_float64()
-    var u2 = random_float64()
-    # Avoid log(0)
-    if u1 < 1e-10:
-        u1 = 1e-10
-    return sqrt(-2.0 * log(u1)) * cos(2.0 * 3.14159265358979 * u2)
-
-
-fn cos(x: Float64) -> Float64:
-    """Compute cosine using Taylor series."""
-    var x2 = x * x
-    var x4 = x2 * x2
-    var x6 = x4 * x2
-    var x8 = x4 * x4
-    return 1.0 - x2 / 2.0 + x4 / 24.0 - x6 / 720.0 + x8 / 40320.0
 
 
 # =============================================================================
@@ -396,7 +373,7 @@ struct DeepSACAgent[
                 uninitialized=True
             )
             for i in range(Self.ACTIONS):
-                noise[i] = Scalar[dtype](_gaussian_noise())
+                noise[i] = Scalar[dtype](gaussian_noise())
 
             var noise_tensor = LayoutTensor[
                 dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
@@ -584,7 +561,7 @@ struct DeepSACAgent[
             uninitialized=True
         )
         for i in range(Self.BATCH * Self.ACTIONS):
-            next_noise[i] = Scalar[dtype](_gaussian_noise())
+            next_noise[i] = Scalar[dtype](gaussian_noise())
 
         var next_sampled_actions = InlineArray[
             Scalar[dtype], Self.BATCH * Self.ACTIONS
@@ -827,7 +804,7 @@ struct DeepSACAgent[
             uninitialized=True
         )
         for i in range(Self.BATCH * Self.ACTIONS):
-            curr_noise[i] = Scalar[dtype](_gaussian_noise())
+            curr_noise[i] = Scalar[dtype](gaussian_noise())
 
         var curr_sampled_actions = InlineArray[
             Scalar[dtype], Self.BATCH * Self.ACTIONS

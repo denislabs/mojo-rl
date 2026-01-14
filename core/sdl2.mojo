@@ -133,6 +133,7 @@ struct SDL2:
     var window: SDLHandle
     var renderer: SDLHandle
     var font: SDLHandle
+    var large_font: SDLHandle  # Larger font for scores/titles
 
     fn __init__(out self) raises:
         """Initialize SDL2 wrapper (does not init SDL itself)."""
@@ -143,6 +144,7 @@ struct SDL2:
         self.window = SDLHandle()
         self.renderer = SDLHandle()
         self.font = SDLHandle()
+        self.large_font = SDLHandle()
 
     fn init(mut self) -> Bool:
         """Initialize SDL2 video subsystem.
@@ -548,6 +550,30 @@ struct SDL2:
         self.font = SDLHandle(ptr)
         return self.font
 
+    fn open_large_font(mut self, path: String, size: Int) -> SDLHandle:
+        """Open a large TrueType font for scores/titles.
+
+        Args:
+            path: Path to .ttf file.
+            size: Font size in points.
+
+        Returns:
+            Font handle (NULL on failure).
+        """
+        var open_fn = self.ttf_handle.get_function[
+            fn (
+                UnsafePointer[UInt8, ImmutAnyOrigin], Int32
+            ) -> UnsafePointer[UInt8, MutAnyOrigin]
+        ]("TTF_OpenFont")
+        var path_ptr = (
+            path.unsafe_ptr()
+            .bitcast[UInt8]()
+            .unsafe_origin_cast[ImmutAnyOrigin]()
+        )
+        var ptr = open_fn(path_ptr, Int32(size))
+        self.large_font = SDLHandle(ptr)
+        return self.large_font
+
     fn render_text(
         self,
         text: String,
@@ -575,6 +601,37 @@ struct SDL2:
             .unsafe_origin_cast[ImmutAnyOrigin]()
         )
         var ptr = render_fn(self.font.ptr, text_ptr, color)
+        return SDLHandle(ptr)
+
+    fn render_text_large(
+        self,
+        text: String,
+        color: SDL_Color,
+    ) -> SDLHandle:
+        """Render text to a surface using the large font.
+
+        Args:
+            text: Text to render.
+            color: Text color.
+
+        Returns:
+            Surface handle (NULL on failure).
+        """
+        if not self.large_font:
+            return SDLHandle()
+        var render_fn = self.ttf_handle.get_function[
+            fn (
+                UnsafePointer[UInt8, MutAnyOrigin],
+                UnsafePointer[UInt8, ImmutAnyOrigin],
+                SDL_Color,
+            ) -> UnsafePointer[UInt8, MutAnyOrigin]
+        ]("TTF_RenderText_Solid")
+        var text_ptr = (
+            text.unsafe_ptr()
+            .bitcast[UInt8]()
+            .unsafe_origin_cast[ImmutAnyOrigin]()
+        )
+        var ptr = render_fn(self.large_font.ptr, text_ptr, color)
         return SDLHandle(ptr)
 
     fn create_texture_from_surface(

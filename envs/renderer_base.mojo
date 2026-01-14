@@ -138,7 +138,7 @@ struct RendererBase:
             print("Failed to create renderer")
             return False
 
-        # Try to load a system font
+        # Try to load system fonts
         # macOS system fonts location
         var font_paths = List[String]()
         font_paths.append("/System/Library/Fonts/Helvetica.ttc")
@@ -148,8 +148,11 @@ struct RendererBase:
 
         for i in range(len(font_paths)):
             var path = font_paths[i]
+            # Normal font (size 20)
             var font = self.sdl.open_font(path, 20)
             if font:
+                # Also open large font (size 42) for scores
+                _ = self.sdl.open_large_font(path, 42)
                 break
 
         self.initialized = True
@@ -364,6 +367,49 @@ struct RendererBase:
 
         # Render text to surface
         var surface = self.sdl.render_text(text, color)
+        if not surface:
+            return
+
+        # Create texture from surface
+        var texture = self.sdl.create_texture_from_surface(surface)
+        if not texture:
+            self.sdl.free_surface(surface)
+            return
+
+        # Get texture dimensions
+        var dims = self.sdl.query_texture(texture)
+        var w = dims[0]
+        var h = dims[1]
+
+        # Render to screen
+        self.sdl.render_copy(texture, x, y, w, h)
+
+        # Cleanup
+        self.sdl.destroy_texture(texture)
+        self.sdl.free_surface(surface)
+
+    fn draw_text_large(
+        mut self,
+        text: String,
+        x: Int,
+        y: Int,
+        color: SDL_Color,
+    ):
+        """Draw large text at specified position (for scores/titles).
+
+        Args:
+            text: Text to render.
+            x: X position.
+            y: Y position.
+            color: Text color.
+        """
+        if not self.sdl.large_font:
+            # Fall back to regular text if large font not available
+            self.draw_text(text, x, y, color)
+            return
+
+        # Render text to surface using large font
+        var surface = self.sdl.render_text_large(text, color)
         if not surface:
             return
 

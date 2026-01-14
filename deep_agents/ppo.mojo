@@ -208,31 +208,6 @@ struct DeepPPOAgent[
         # Training state
         self.train_step_count = 0
 
-    fn _softmax(
-        self,
-        logits: InlineArray[Scalar[dtype], Self.ACTIONS],
-    ) -> InlineArray[Scalar[dtype], Self.ACTIONS]:
-        """Compute numerically stable softmax."""
-        var probs = InlineArray[Scalar[dtype], Self.ACTIONS](fill=0)
-
-        # Find max for numerical stability
-        var max_logit = logits[0]
-        for i in range(1, Self.ACTIONS):
-            if logits[i] > max_logit:
-                max_logit = logits[i]
-
-        # Compute exp and sum
-        var sum_exp = Scalar[dtype](0.0)
-        for i in range(Self.ACTIONS):
-            probs[i] = exp(logits[i] - max_logit)
-            sum_exp += probs[i]
-
-        # Normalize
-        for i in range(Self.ACTIONS):
-            probs[i] /= sum_exp
-
-        return probs
-
     fn select_action(
         self,
         obs: InlineArray[Scalar[dtype], Self.OBS],
@@ -252,7 +227,7 @@ struct DeepPPOAgent[
         self.actor.forward[1](obs, logits)
 
         # Compute softmax probabilities
-        var probs = self._softmax(logits)
+        var probs = softmax_inline[dtype, Self.ACTIONS](logits)
 
         # Forward critic to get value
         var value_out = InlineArray[Scalar[dtype], 1](uninitialized=True)
@@ -262,23 +237,9 @@ struct DeepPPOAgent[
         # Sample or select greedy action
         var action: Int
         if training:
-            # Sample from categorical distribution
-            var rand = Scalar[dtype](random_float64())
-            var cumsum = Scalar[dtype](0.0)
-            action = Self.ACTIONS - 1
-            for a in range(Self.ACTIONS):
-                cumsum += probs[a]
-                if rand < cumsum:
-                    action = a
-                    break
+            action = sample_from_probs_inline[dtype, Self.ACTIONS](probs)
         else:
-            # Greedy action
-            action = 0
-            var best_prob = probs[0]
-            for a in range(1, Self.ACTIONS):
-                if probs[a] > best_prob:
-                    best_prob = probs[a]
-                    action = a
+            action = argmax_probs_inline[dtype, Self.ACTIONS](probs)
 
         # Compute log probability
         var log_prob = log(probs[action] + Scalar[dtype](1e-8))
@@ -306,21 +267,6 @@ struct DeepPPOAgent[
         self.buffer_dones[self.buffer_idx] = done
 
         self.buffer_idx += 1
-
-    fn _shuffle_indices(self, n: Int, mut indices: InlineArray[Int, Self.ROLLOUT]):
-        """Generate shuffled indices using Fisher-Yates."""
-        for i in range(n):
-            indices[i] = i
-
-        # Fisher-Yates shuffle
-        for i in range(n - 1, 0, -1):
-            var j = Int(random_float64() * Float64(i + 1))
-            if j > i:
-                j = i
-            # Swap
-            var temp = indices[i]
-            indices[i] = indices[j]
-            indices[j] = temp
 
     fn update(
         mut self,
@@ -362,20 +308,7 @@ struct DeepPPOAgent[
 
         # Normalize advantages
         if self.normalize_advantages and buffer_len > 1:
-            var adv_mean = Scalar[dtype](0.0)
-            for t in range(buffer_len):
-                adv_mean += advantages[t]
-            adv_mean /= Scalar[dtype](buffer_len)
-
-            var adv_var = Scalar[dtype](0.0)
-            for t in range(buffer_len):
-                var diff = advantages[t] - adv_mean
-                adv_var += diff * diff
-            adv_var /= Scalar[dtype](buffer_len)
-            var adv_std = (adv_var + Scalar[dtype](1e-8)) ** 0.5
-
-            for t in range(buffer_len):
-                advantages[t] = (advantages[t] - adv_mean) / adv_std
+            normalize_inline[dtype, Self.ROLLOUT](buffer_len, advantages)
 
         # =====================================================================
         # Multiple epochs of optimization
@@ -386,7 +319,7 @@ struct DeepPPOAgent[
 
         for epoch in range(self.num_epochs):
             # Shuffle indices for minibatch sampling
-            self._shuffle_indices(buffer_len, indices)
+            shuffle_indices_inline[Self.ROLLOUT](buffer_len, indices)
 
             var batch_start = 0
             while batch_start < buffer_len:
@@ -419,7 +352,7 @@ struct DeepPPOAgent[
                     ](uninitialized=True)
                     self.actor.forward_with_cache[1](obs, logits, actor_cache)
 
-                    var probs = self._softmax(logits)
+                    var probs = softmax_inline[dtype, Self.ACTIONS](logits)
                     var new_log_prob = log(probs[action] + Scalar[dtype](1e-8))
 
                     # Probability ratio r(θ) = π_θ(a|s) / π_θ_old(a|s)

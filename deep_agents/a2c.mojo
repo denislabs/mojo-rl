@@ -40,68 +40,9 @@ from deep_rl.optimizer import Adam
 from deep_rl.initializer import Xavier
 from deep_rl.training import Network
 from core import TrainingMetrics, BoxDiscreteActionEnv
-
-
-# =============================================================================
-# Helper: Compute n-step returns with GAE
-# =============================================================================
-
-
-fn compute_gae_inline[
-    rollout_len: Int
-](
-    rewards: InlineArray[Scalar[dtype], rollout_len],
-    values: InlineArray[Scalar[dtype], rollout_len],
-    next_value: Scalar[dtype],
-    dones: InlineArray[Bool, rollout_len],
-    gamma: Float64,
-    gae_lambda: Float64,
-    mut advantages: InlineArray[Scalar[dtype], rollout_len],
-    mut returns: InlineArray[Scalar[dtype], rollout_len],
-):
-    """Compute GAE advantages and returns.
-
-    GAE: A_t = δ_t + (γλ)δ_{t+1} + (γλ)²δ_{t+2} + ...
-    where δ_t = r_t + γV(s_{t+1}) - V(s_t)
-
-    Args:
-        rewards: Rewards collected during rollout.
-        values: Value estimates for each state.
-        next_value: Bootstrap value V(s_T).
-        dones: Done flags for each step.
-        gamma: Discount factor.
-        gae_lambda: GAE lambda parameter.
-        advantages: Output buffer for advantages.
-        returns: Output buffer for returns (advantages + values).
-    """
-    var gae = Scalar[dtype](0.0)
-    var gae_decay = Scalar[dtype](gamma * gae_lambda)
-
-    # Compute GAE backwards
-    for t in range(rollout_len - 1, -1, -1):
-        # Get next value
-        var next_val: Scalar[dtype]
-        if t == rollout_len - 1:
-            next_val = next_value
-        else:
-            next_val = values[t + 1]
-
-        # Zero out next value if done
-        if dones[t]:
-            next_val = Scalar[dtype](0.0)
-
-        # TD residual: δ_t = r_t + γV(s_{t+1}) - V(s_t)
-        var delta = rewards[t] + Scalar[dtype](gamma) * next_val - values[t]
-
-        # GAE: A_t = δ_t + γλA_{t+1}
-        # Reset GAE if done
-        if dones[t]:
-            gae = delta
-        else:
-            gae = delta + gae_decay * gae
-
-        advantages[t] = gae
-        returns[t] = gae + values[t]
+from core.utils.gae import compute_gae_inline
+from core.utils.softmax import softmax_inline, sample_from_probs_inline, argmax_probs_inline
+from core.utils.normalization import normalize_inline
 
 
 # =============================================================================
@@ -256,31 +197,6 @@ struct DeepA2CAgent[
         # Training state
         self.train_step_count = 0
 
-    fn _softmax(
-        self,
-        logits: InlineArray[Scalar[dtype], Self.ACTIONS],
-    ) -> InlineArray[Scalar[dtype], Self.ACTIONS]:
-        """Compute numerically stable softmax."""
-        var probs = InlineArray[Scalar[dtype], Self.ACTIONS](fill=0)
-
-        # Find max for numerical stability
-        var max_logit = logits[0]
-        for i in range(1, Self.ACTIONS):
-            if logits[i] > max_logit:
-                max_logit = logits[i]
-
-        # Compute exp and sum
-        var sum_exp = Scalar[dtype](0.0)
-        for i in range(Self.ACTIONS):
-            probs[i] = exp(logits[i] - max_logit)
-            sum_exp += probs[i]
-
-        # Normalize
-        for i in range(Self.ACTIONS):
-            probs[i] /= sum_exp
-
-        return probs
-
     fn select_action(
         self,
         obs: InlineArray[Scalar[dtype], Self.OBS],
@@ -300,7 +216,7 @@ struct DeepA2CAgent[
         self.actor.forward[1](obs, logits)
 
         # Compute softmax probabilities
-        var probs = self._softmax(logits)
+        var probs = softmax_inline[dtype, Self.ACTIONS](logits)
 
         # Forward critic to get value
         var value_out = InlineArray[Scalar[dtype], 1](uninitialized=True)
@@ -310,23 +226,9 @@ struct DeepA2CAgent[
         # Sample or select greedy action
         var action: Int
         if training:
-            # Sample from categorical distribution
-            var rand = Scalar[dtype](random_float64())
-            var cumsum = Scalar[dtype](0.0)
-            action = Self.ACTIONS - 1
-            for a in range(Self.ACTIONS):
-                cumsum += probs[a]
-                if rand < cumsum:
-                    action = a
-                    break
+            action = sample_from_probs_inline[dtype, Self.ACTIONS](probs)
         else:
-            # Greedy action
-            action = 0
-            var best_prob = probs[0]
-            for a in range(1, Self.ACTIONS):
-                if probs[a] > best_prob:
-                    best_prob = probs[a]
-                    action = a
+            action = argmax_probs_inline[dtype, Self.ACTIONS](probs)
 
         # Compute log probability
         var log_prob = log(probs[action] + Scalar[dtype](1e-8))
@@ -379,32 +281,21 @@ struct DeepA2CAgent[
         var advantages = InlineArray[Scalar[dtype], Self.ROLLOUT](fill=0)
         var returns = InlineArray[Scalar[dtype], Self.ROLLOUT](fill=0)
 
-        compute_gae_inline[Self.ROLLOUT](
+        compute_gae_inline[dtype, Self.ROLLOUT](
             self.buffer_rewards,
             self.buffer_values,
             next_value,
             self.buffer_dones,
             self.gamma,
             self.gae_lambda,
+            self.buffer_idx,
             advantages,
             returns,
         )
 
         # Normalize advantages
-        var adv_mean = Scalar[dtype](0.0)
-        var adv_var = Scalar[dtype](0.0)
-        for t in range(self.buffer_idx):
-            adv_mean += advantages[t]
-        adv_mean /= Scalar[dtype](self.buffer_idx)
-
-        for t in range(self.buffer_idx):
-            var diff = advantages[t] - adv_mean
-            adv_var += diff * diff
-        adv_var /= Scalar[dtype](self.buffer_idx)
-        var adv_std = (adv_var + Scalar[dtype](1e-8)) ** 0.5
-
-        for t in range(self.buffer_idx):
-            advantages[t] = (advantages[t] - adv_mean) / adv_std
+        if self.buffer_idx > 1:
+            normalize_inline[dtype, Self.ROLLOUT](self.buffer_idx, advantages)
 
         # =====================================================================
         # Update loop over rollout
@@ -436,7 +327,7 @@ struct DeepA2CAgent[
             )
             self.actor.forward_with_cache[1](obs, logits, actor_cache)
 
-            var probs = self._softmax(logits)
+            var probs = softmax_inline[dtype, Self.ACTIONS](logits)
             var new_log_prob = log(probs[action] + Scalar[dtype](1e-8))
 
             # Policy loss: -log_prob * advantage

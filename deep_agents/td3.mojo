@@ -44,31 +44,8 @@ from deep_rl.optimizer import Adam
 from deep_rl.initializer import Kaiming, Xavier
 from deep_rl.training import Network
 from deep_rl.replay import ReplayBuffer
+from deep_rl.gpu.random import gaussian_noise
 from core import TrainingMetrics, BoxContinuousActionEnv
-
-
-# =============================================================================
-# Helper Functions
-# =============================================================================
-
-
-fn _gaussian_noise() -> Float64:
-    """Generate standard Gaussian noise using Box-Muller transform."""
-    var u1 = random_float64()
-    var u2 = random_float64()
-    # Avoid log(0)
-    if u1 < 1e-10:
-        u1 = 1e-10
-    return sqrt(-2.0 * log(u1)) * _cos(2.0 * 3.14159265358979 * u2)
-
-
-fn _cos(x: Float64) -> Float64:
-    """Compute cosine using Taylor series."""
-    var x2 = x * x
-    var x4 = x2 * x2
-    var x6 = x4 * x2
-    var x8 = x4 * x4
-    return 1.0 - x2 / 2.0 + x4 / 24.0 - x6 / 720.0 + x8 / 40320.0
 
 
 # =============================================================================
@@ -375,7 +352,7 @@ struct DeepTD3Agent[
             var a = Float64(actor_output[i]) * self.action_scale
 
             if add_noise:
-                a += self.noise_std * self.action_scale * _gaussian_noise()
+                a += self.noise_std * self.action_scale * gaussian_noise()
 
             # Clip to action bounds
             if a > self.action_scale:
@@ -477,7 +454,7 @@ struct DeepTD3Agent[
                 var idx = b * Self.ACTIONS + i
 
                 # Generate clipped noise
-                var noise = _gaussian_noise() * self.target_noise_std
+                var noise = gaussian_noise() * self.target_noise_std
                 if noise > self.target_noise_clip:
                     noise = self.target_noise_clip
                 elif noise < -self.target_noise_clip:
@@ -798,16 +775,17 @@ struct DeepTD3Agent[
             var action = InlineArray[Float64, Self.action_dim](
                 uninitialized=True
             )
+            var action_list = List[Float64](capacity=Self.action_dim)
             for i in range(Self.action_dim):
                 action[i] = (random_float64() * 2.0 - 1.0) * self.action_scale
+                action_list.append(action[i])
 
-            # Step environment
-            var step_action = action[0]
-            var result = env.step_continuous(step_action)
+            # Step environment with full action vector
+            var result = env.step_continuous_vec(action_list^)
             var reward = result[1]
             var done = result[2]
 
-            var next_obs = self._list_to_simd(env.get_obs_list())
+            var next_obs = self._list_to_simd(result[0])
             self.store_transition(warmup_obs, action, reward, next_obs, done)
 
             warmup_obs = next_obs
@@ -833,13 +811,17 @@ struct DeepTD3Agent[
                 # Select action with exploration noise
                 var action = self.select_action(obs, add_noise=True)
 
-                # Step environment
-                var step_action = action[0]
-                var result = env.step_continuous(step_action)
+                # Convert action to List for step_continuous_vec
+                var action_list = List[Float64](capacity=Self.action_dim)
+                for i in range(Self.action_dim):
+                    action_list.append(action[i])
+
+                # Step environment with full action vector
+                var result = env.step_continuous_vec(action_list^)
                 var reward = result[1]
                 var done = result[2]
 
-                var next_obs = self._list_to_simd(env.get_obs_list())
+                var next_obs = self._list_to_simd(result[0])
 
                 # Store transition
                 self.store_transition(obs, action, reward, next_obs, done)
@@ -913,9 +895,13 @@ struct DeepTD3Agent[
                 # Deterministic action (no noise)
                 var action = self.select_action(obs, add_noise=False)
 
-                # Step environment
-                var step_action = action[0]
-                var result = env.step_continuous(step_action)
+                # Convert action to List for step_continuous_vec
+                var action_list = List[Float64](capacity=Self.action_dim)
+                for i in range(Self.action_dim):
+                    action_list.append(action[i])
+
+                # Step environment with full action vector
+                var result = env.step_continuous_vec(action_list^)
                 var reward = result[1]
                 var done = result[2]
 
@@ -923,7 +909,7 @@ struct DeepTD3Agent[
                     env.render()
 
                 episode_reward += reward
-                obs = self._list_to_simd(env.get_obs_list())
+                obs = self._list_to_simd(result[0])
                 episode_steps += 1
 
                 if done:
