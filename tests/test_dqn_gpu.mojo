@@ -27,12 +27,13 @@ comptime OBS_DIM = 4
 comptime NUM_ACTIONS = 2
 comptime HIDDEN_DIM = 64
 comptime BUFFER_CAPACITY = 10000
-comptime BATCH_SIZE = 128  # Larger batch for better GPU utilization
+comptime BATCH_SIZE = 64  # Training batch size for gradient updates
+comptime N_ENVS = 32  # Smaller number of parallel environments
 
-comptime NUM_EPISODES = 500  # More episodes for better training
+comptime NUM_EPISODES = 1000  # More episodes for better convergence
 comptime MAX_STEPS = 500
-comptime WARMUP_STEPS = 500
-comptime TRAIN_EVERY = 1  # Train every iteration for faster learning
+comptime WARMUP_STEPS = 1000  # Standard warmup
+comptime TRAIN_EVERY = 1  # Train every iteration
 comptime SYNC_EVERY = 10  # Sync GPU params to CPU every N episodes
 
 
@@ -55,21 +56,27 @@ fn main() raises:
     with DeviceContext() as ctx:
         var env = CartPoleEnv()
         var agent = DQNAgent[
-            OBS_DIM, NUM_ACTIONS, HIDDEN_DIM, BUFFER_CAPACITY, BATCH_SIZE
+            OBS_DIM,
+            NUM_ACTIONS,
+            HIDDEN_DIM,
+            BUFFER_CAPACITY,
+            BATCH_SIZE,
+            N_ENVS,
         ](
             gamma=0.99,
             tau=0.005,
             lr=0.001,
             epsilon=1.0,
             epsilon_min=0.01,
-            epsilon_decay=0.995,
+            epsilon_decay=0.995,  # Standard decay
         )
 
         print("Environment: CartPole")
         print("Agent: DQN (Double DQN enabled, GPU)")
         print("  Hidden dim: " + String(HIDDEN_DIM))
         print("  Buffer capacity: " + String(BUFFER_CAPACITY))
-        print("  Batch size: " + String(BATCH_SIZE))
+        print("  Batch size (training): " + String(BATCH_SIZE))
+        print("  N envs (parallel): " + String(N_ENVS))
         print("  Sync every: " + String(SYNC_EVERY) + " episodes")
         print()
 
@@ -82,7 +89,7 @@ fn main() raises:
 
         var start_time = perf_counter_ns()
 
-        var metrics = agent.train_gpu_full(
+        var metrics = agent.train_gpu(
             ctx,
             env,
             num_episodes=NUM_EPISODES,
@@ -91,7 +98,7 @@ fn main() raises:
             train_every=TRAIN_EVERY,
             sync_every=SYNC_EVERY,
             verbose=True,
-            print_every=10,
+            print_every=100,
             environment_name="CartPole (GPU)",
         )
 
