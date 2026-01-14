@@ -29,9 +29,9 @@ comptime NUM_ACTIONS = 2
 comptime HIDDEN_DIM = 64
 comptime ROLLOUT_LEN = 128  # Steps per rollout per environment
 comptime N_ENVS = 256  # Smaller for testing (use 1024 for full training)
-comptime GPU_MINIBATCH_SIZE = 64
+comptime GPU_MINIBATCH_SIZE = 64  # Larger minibatch = fewer kernel launches
 
-comptime NUM_EPISODES = 5000  # Target episodes for timing test
+comptime NUM_EPISODES = 8_000  # More episodes to reach convergence
 
 
 # =============================================================================
@@ -61,12 +61,12 @@ fn main() raises:
         ](
             gamma=0.99,
             gae_lambda=0.95,
-            clip_epsilon=0.2,
+            clip_epsilon=0.1,  # More conservative policy updates
             actor_lr=0.0003,
-            critic_lr=0.001,
+            critic_lr=0.0003,  # Same as actor for stability
             entropy_coef=0.01,
             value_loss_coef=0.5,
-            num_epochs=4,
+            num_epochs=2,  # Fewer epochs = less overfitting
             minibatch_size=GPU_MINIBATCH_SIZE,
             normalize_advantages=True,
         )
@@ -77,7 +77,9 @@ fn main() raises:
         print("  Rollout length: " + String(ROLLOUT_LEN))
         print("  N envs (parallel): " + String(N_ENVS))
         print("  Minibatch size: " + String(GPU_MINIBATCH_SIZE))
-        print("  Total transitions per rollout: " + String(ROLLOUT_LEN * N_ENVS))
+        print(
+            "  Total transitions per rollout: " + String(ROLLOUT_LEN * N_ENVS)
+        )
         print()
 
         # =====================================================================
