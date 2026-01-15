@@ -39,6 +39,12 @@ from deep_rl.model import Linear, ReLU, seq
 from deep_rl.optimizer import Adam
 from deep_rl.initializer import Xavier
 from deep_rl.training import Network
+from deep_rl.checkpoint import (
+    save_checkpoint_file,
+    read_checkpoint_file,
+    split_lines,
+    find_section_start,
+)
 from core import TrainingMetrics, BoxDiscreteActionEnv
 from core.utils.gae import compute_gae_inline
 from core.utils.softmax import softmax_inline, sample_from_probs_inline, argmax_probs_inline
@@ -132,6 +138,10 @@ struct DeepA2CAgent[
     # Training state
     var train_step_count: Int
 
+    # Checkpointing
+    var checkpoint_every: Int
+    var checkpoint_path: String
+
     fn __init__(
         out self,
         gamma: Float64 = 0.99,
@@ -141,6 +151,8 @@ struct DeepA2CAgent[
         entropy_coef: Float64 = 0.01,
         value_loss_coef: Float64 = 0.5,
         max_grad_norm: Float64 = 0.5,
+        checkpoint_every: Int = 0,
+        checkpoint_path: String = "",
     ):
         """Initialize Deep A2C agent.
 
@@ -152,6 +164,8 @@ struct DeepA2CAgent[
             entropy_coef: Entropy bonus coefficient (default: 0.01).
             value_loss_coef: Value loss coefficient (default: 0.5).
             max_grad_norm: Max gradient norm for clipping (default: 0.5).
+            checkpoint_every: Save checkpoint every N episodes (0 = disabled).
+            checkpoint_path: Path to save checkpoints.
         """
         # Build actor and critic models
         var actor_model = seq(
@@ -196,6 +210,10 @@ struct DeepA2CAgent[
 
         # Training state
         self.train_step_count = 0
+
+        # Checkpointing
+        self.checkpoint_every = checkpoint_every
+        self.checkpoint_path = checkpoint_path
 
     fn select_action(
         self,
@@ -501,7 +519,148 @@ struct DeepA2CAgent[
                     total_steps,
                 )
 
+            # Auto-checkpoint
+            if (
+                self.checkpoint_every > 0
+                and self.checkpoint_path != ""
+                and (episode + 1) % self.checkpoint_every == 0
+            ):
+                try:
+                    self.save_checkpoint(self.checkpoint_path)
+                    if verbose:
+                        print("  [Checkpoint saved at episode", episode + 1, "]")
+                except e:
+                    print("  [Checkpoint failed:", str(e), "]")
+
         return metrics^
+
+    fn save_checkpoint(self, path: String) raises:
+        """Save agent state to a checkpoint file.
+
+        Args:
+            path: Path to save checkpoint file.
+        """
+        # Build checkpoint content
+        var content = String("# mojo-rl checkpoint v1\n")
+        content += "# type: deep_a2c_agent\n"
+        content += "# obs_dim: " + str(Self.OBS) + "\n"
+        content += "# num_actions: " + str(Self.ACTIONS) + "\n"
+        content += "# hidden_dim: " + str(Self.HIDDEN) + "\n"
+        content += "# rollout_len: " + str(Self.ROLLOUT) + "\n\n"
+
+        # Actor params
+        content += "actor_params:\n"
+        for i in range(Self.actor.PARAM_SIZE):
+            content += str(self.actor.params[i]) + "\n"
+
+        # Actor optimizer state
+        content += "\nactor_optimizer_state:\n"
+        for i in range(Self.actor.PARAM_SIZE * Self.actor.STATE_PER_PARAM):
+            content += str(self.actor.optimizer_state[i]) + "\n"
+
+        # Critic params
+        content += "\ncritic_params:\n"
+        for i in range(Self.critic.PARAM_SIZE):
+            content += str(self.critic.params[i]) + "\n"
+
+        # Critic optimizer state
+        content += "\ncritic_optimizer_state:\n"
+        for i in range(Self.critic.PARAM_SIZE * Self.critic.STATE_PER_PARAM):
+            content += str(self.critic.optimizer_state[i]) + "\n"
+
+        # Hyperparameters
+        content += "\nmetadata:\n"
+        content += "gamma=" + str(self.gamma) + "\n"
+        content += "gae_lambda=" + str(self.gae_lambda) + "\n"
+        content += "actor_lr=" + str(self.actor_lr) + "\n"
+        content += "critic_lr=" + str(self.critic_lr) + "\n"
+        content += "entropy_coef=" + str(self.entropy_coef) + "\n"
+        content += "value_loss_coef=" + str(self.value_loss_coef) + "\n"
+        content += "max_grad_norm=" + str(self.max_grad_norm) + "\n"
+        content += "train_step_count=" + str(self.train_step_count) + "\n"
+
+        save_checkpoint_file(path, content)
+
+    fn load_checkpoint(mut self, path: String) raises:
+        """Load agent state from a checkpoint file.
+
+        Args:
+            path: Path to checkpoint file.
+        """
+        var content = read_checkpoint_file(path)
+        var lines = split_lines(content)
+
+        # Find section starts
+        var actor_params_start = find_section_start(lines, "actor_params:")
+        var actor_opt_start = find_section_start(lines, "actor_optimizer_state:")
+        var critic_params_start = find_section_start(lines, "critic_params:")
+        var critic_opt_start = find_section_start(lines, "critic_optimizer_state:")
+        var metadata_start = find_section_start(lines, "metadata:")
+
+        # Load actor params
+        var line_idx = actor_params_start + 1
+        for i in range(Self.actor.PARAM_SIZE):
+            if line_idx < len(lines) and lines[line_idx] != "":
+                self.actor.params[i] = Scalar[dtype](Float64(atof(lines[line_idx])))
+                line_idx += 1
+
+        # Load actor optimizer state
+        line_idx = actor_opt_start + 1
+        for i in range(Self.actor.PARAM_SIZE * Self.actor.STATE_PER_PARAM):
+            if line_idx < len(lines) and lines[line_idx] != "":
+                self.actor.optimizer_state[i] = Scalar[dtype](
+                    Float64(atof(lines[line_idx]))
+                )
+                line_idx += 1
+
+        # Load critic params
+        line_idx = critic_params_start + 1
+        for i in range(Self.critic.PARAM_SIZE):
+            if line_idx < len(lines) and lines[line_idx] != "":
+                self.critic.params[i] = Scalar[dtype](Float64(atof(lines[line_idx])))
+                line_idx += 1
+
+        # Load critic optimizer state
+        line_idx = critic_opt_start + 1
+        for i in range(Self.critic.PARAM_SIZE * Self.critic.STATE_PER_PARAM):
+            if line_idx < len(lines) and lines[line_idx] != "":
+                self.critic.optimizer_state[i] = Scalar[dtype](
+                    Float64(atof(lines[line_idx]))
+                )
+                line_idx += 1
+
+        # Load metadata
+        line_idx = metadata_start + 1
+        while line_idx < len(lines) and lines[line_idx] != "":
+            var line = lines[line_idx]
+            var eq_pos = -1
+            for i in range(len(line)):
+                if line[i] == "=":
+                    eq_pos = i
+                    break
+
+            if eq_pos > 0:
+                var key = line[:eq_pos]
+                var value = line[eq_pos + 1 :]
+
+                if key == "gamma":
+                    self.gamma = Float64(atof(value))
+                elif key == "gae_lambda":
+                    self.gae_lambda = Float64(atof(value))
+                elif key == "actor_lr":
+                    self.actor_lr = Float64(atof(value))
+                elif key == "critic_lr":
+                    self.critic_lr = Float64(atof(value))
+                elif key == "entropy_coef":
+                    self.entropy_coef = Float64(atof(value))
+                elif key == "value_loss_coef":
+                    self.value_loss_coef = Float64(atof(value))
+                elif key == "max_grad_norm":
+                    self.max_grad_norm = Float64(atof(value))
+                elif key == "train_step_count":
+                    self.train_step_count = Int(atof(value))
+
+            line_idx += 1
 
     fn evaluate[
         E: BoxDiscreteActionEnv

@@ -3,6 +3,17 @@ from ..optimizer import Optimizer
 from ..loss import LossFunction
 from ..constants import dtype
 from ..initializer import Initializer, Xavier
+from ..checkpoint import (
+    write_checkpoint_header,
+    write_float_section_list,
+    write_metadata_section,
+    parse_checkpoint_header,
+    read_checkpoint_file,
+    read_float_section_list,
+    read_metadata_section,
+    get_metadata_value,
+    save_checkpoint_file,
+)
 
 from layout import Layout, LayoutTensor
 from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
@@ -50,6 +61,8 @@ struct Trainer[
 
     var epochs: Int
     var print_every: Int
+    var checkpoint_every: Int  # Save checkpoint every N epochs (0 to disable)
+    var checkpoint_path: String  # Path for auto-checkpointing
     var model: Self.MODEL
     var optimizer: Self.OPTIMIZER
     var loss_function: Self.LOSS_FUNCTION
@@ -68,6 +81,8 @@ struct Trainer[
         initializer: Self.INITIALIZER,
         epochs: Int = 100,
         print_every: Int = 10,
+        checkpoint_every: Int = 0,
+        checkpoint_path: String = "",
     ):
         """Initialize trainer with the specified initializer.
 
@@ -78,9 +93,13 @@ struct Trainer[
             initializer: The weight initializer.
             epochs: Number of training epochs.
             print_every: Print loss every N epochs (0 to disable).
+            checkpoint_every: Save checkpoint every N epochs (0 to disable).
+            checkpoint_path: Path to save checkpoints (required if checkpoint_every > 0).
         """
         self.epochs = epochs
         self.print_every = print_every
+        self.checkpoint_every = checkpoint_every
+        self.checkpoint_path = checkpoint_path
         self.model = model
         self.optimizer = optimizer
         self.loss_function = loss_function
@@ -202,6 +221,18 @@ struct Trainer[
 
             if self.print_every > 0 and epoch % self.print_every == 0:
                 print("Epoch " + String(epoch) + " - Loss: " + String(loss))
+
+            # Auto-checkpoint
+            if self.checkpoint_every > 0 and len(self.checkpoint_path) > 0:
+                if (epoch + 1) % self.checkpoint_every == 0:
+                    try:
+                        self.save_checkpoint(self.checkpoint_path)
+                        print("Checkpoint saved at epoch " + String(epoch + 1))
+                    except:
+                        print(
+                            "Warning: Failed to save checkpoint at epoch "
+                            + String(epoch + 1)
+                        )
 
         return TrainResult(final_loss, self.epochs)
 
@@ -362,6 +393,22 @@ struct Trainer[
             # Note: No sync here - GPU ops queue up and execute in order.
             # We only sync when reading results back (loss printing) or at the end.
 
+            # Auto-checkpoint (requires copying params back from GPU)
+            if self.checkpoint_every > 0 and len(self.checkpoint_path) > 0:
+                if (epoch + 1) % self.checkpoint_every == 0:
+                    # Copy params and state from GPU to host
+                    ctx.enqueue_copy(params_host, params_buf)
+                    ctx.enqueue_copy(state_host, state_buf)
+                    ctx.synchronize()
+                    # Update trainer's params temporarily for checkpoint
+                    for i in range(PARAM_SIZE):
+                        self.params[i] = params_host[i]
+                    for i in range(STATE_SIZE):
+                        self.optimizer_state[i] = state_host[i]
+                    # Save checkpoint
+                    self.save_checkpoint(self.checkpoint_path)
+                    print("Checkpoint saved at epoch " + String(epoch + 1))
+
         # Compute final loss if not already computed
         if self.print_every == 0 or (self.epochs - 1) % self.print_every != 0:
             Self.LOSS_FUNCTION.forward_gpu[BATCH, Self.MODEL.OUT_DIM](
@@ -383,3 +430,74 @@ struct Trainer[
             self.optimizer_state[i] = state_host[i]
 
         return TrainResult(final_loss, self.epochs)
+
+    # =========================================================================
+    # Checkpoint Save/Load
+    # =========================================================================
+
+    fn save_checkpoint(self, filepath: String) raises:
+        """Save trainer parameters and optimizer state to a checkpoint file.
+
+        Args:
+            filepath: Path to save the checkpoint file.
+
+        Example:
+            trainer.save_checkpoint("trainer.ckpt")
+        """
+        comptime PARAM_SIZE = Self.MODEL.PARAM_SIZE
+        comptime STATE_SIZE = Self.MODEL.PARAM_SIZE * Self.OPTIMIZER.STATE_PER_PARAM
+
+        var content = write_checkpoint_header("trainer", PARAM_SIZE, STATE_SIZE)
+        content += write_float_section_list("params:", self.params)
+        content += write_float_section_list("optimizer_state:", self.optimizer_state)
+
+        # Add metadata
+        var metadata = List[String]()
+        metadata.append("epochs=" + String(self.epochs))
+        metadata.append("print_every=" + String(self.print_every))
+        content += write_metadata_section(metadata)
+
+        save_checkpoint_file(filepath, content)
+
+    fn load_checkpoint(mut self, filepath: String) raises:
+        """Load trainer parameters and optimizer state from a checkpoint file.
+
+        Args:
+            filepath: Path to the checkpoint file.
+
+        Example:
+            trainer.load_checkpoint("trainer.ckpt")
+        """
+        comptime PARAM_SIZE = Self.MODEL.PARAM_SIZE
+        comptime STATE_SIZE = Self.MODEL.PARAM_SIZE * Self.OPTIMIZER.STATE_PER_PARAM
+
+        var content = read_checkpoint_file(filepath)
+        var header = parse_checkpoint_header(content)
+
+        # Validate sizes match
+        if header.param_size != PARAM_SIZE:
+            print(
+                "Warning: checkpoint param_size ("
+                + String(header.param_size)
+                + ") != trainer PARAM_SIZE ("
+                + String(PARAM_SIZE)
+                + ")"
+            )
+
+        # Load parameters
+        var loaded_params = read_float_section_list(content, "params:", PARAM_SIZE)
+        for i in range(PARAM_SIZE):
+            self.params[i] = loaded_params[i]
+
+        # Load optimizer state
+        var loaded_state = read_float_section_list(
+            content, "optimizer_state:", STATE_SIZE
+        )
+        for i in range(STATE_SIZE):
+            self.optimizer_state[i] = loaded_state[i]
+
+        # Load metadata (optional)
+        var metadata = read_metadata_section(content)
+        var epochs_str = get_metadata_value(metadata, "epochs")
+        if len(epochs_str) > 0:
+            self.epochs = Int(atol(epochs_str))

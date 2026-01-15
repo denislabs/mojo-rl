@@ -43,6 +43,19 @@ from deep_rl.optimizer import Adam
 from deep_rl.initializer import Kaiming
 from deep_rl.training import Network
 from deep_rl.replay import ReplayBuffer
+from deep_rl.checkpoint import (
+    write_checkpoint_header,
+    write_float_section,
+    write_metadata_section,
+    parse_checkpoint_header,
+    read_checkpoint_file,
+    read_float_section,
+    read_metadata_section,
+    get_metadata_value,
+    save_checkpoint_file,
+    split_lines,
+    find_section_start,
+)
 from deep_rl.gpu import (
     random_range,
     xorshift32,
@@ -286,6 +299,10 @@ struct DQNAgent[
     # Training state
     var train_step_count: Int
 
+    # Auto-checkpoint settings
+    var checkpoint_every: Int  # Save checkpoint every N episodes (0 to disable)
+    var checkpoint_path: String  # Path for auto-checkpointing
+
     fn __init__(
         out self,
         gamma: Float64 = 0.99,
@@ -294,6 +311,8 @@ struct DQNAgent[
         epsilon: Float64 = 1.0,
         epsilon_min: Float64 = 0.01,
         epsilon_decay: Float64 = 0.995,
+        checkpoint_every: Int = 0,
+        checkpoint_path: String = "",
     ):
         """Initialize DQN agent.
 
@@ -304,6 +323,8 @@ struct DQNAgent[
             epsilon: Initial exploration rate (default: 1.0).
             epsilon_min: Minimum exploration rate (default: 0.01).
             epsilon_decay: Epsilon decay per episode (default: 0.995).
+            checkpoint_every: Save checkpoint every N episodes (0 to disable).
+            checkpoint_path: Path to save checkpoints (required if checkpoint_every > 0).
         """
         # Create Q-network model
         var q_model = seq(
@@ -334,6 +355,10 @@ struct DQNAgent[
         self.epsilon_min = epsilon_min
         self.epsilon_decay = epsilon_decay
         self.train_step_count = 0
+
+        # Auto-checkpoint settings
+        self.checkpoint_every = checkpoint_every
+        self.checkpoint_path = checkpoint_path
 
     fn select_action(self, obs: SIMD[DType.float64, Self.obs_dim]) -> Int:
         """Select action using epsilon-greedy policy.
@@ -703,6 +728,21 @@ struct DQNAgent[
                     + String(total_steps)
                 )
 
+            # Auto-checkpoint
+            if self.checkpoint_every > 0 and len(self.checkpoint_path) > 0:
+                if (episode + 1) % self.checkpoint_every == 0:
+                    try:
+                        self.save_checkpoint(self.checkpoint_path)
+                        if verbose:
+                            print(
+                                "Checkpoint saved at episode " + String(episode + 1)
+                            )
+                    except:
+                        print(
+                            "Warning: Failed to save checkpoint at episode "
+                            + String(episode + 1)
+                        )
+
         return metrics^
 
     fn evaluate[
@@ -763,6 +803,7 @@ struct DQNAgent[
         mut q_buf: DeviceBuffer[dtype],
         mut actions_buf: DeviceBuffer[dtype],
         params_buf: DeviceBuffer[dtype],
+        workspace_buf: DeviceBuffer[dtype],
         rng_seed: UInt32,
     ) raises:
         """Select actions for n_envs environments using GPU forward pass.
@@ -776,6 +817,7 @@ struct DQNAgent[
             q_buf: Pre-allocated GPU buffer for Q-values [n_envs * num_actions].
             actions_buf: Pre-allocated GPU buffer for actions [n_envs].
             params_buf: GPU buffer containing current params.
+            workspace_buf: Pre-allocated workspace buffer [n_envs * WORKSPACE_PER_SAMPLE].
             rng_seed: Seed for random number generation (should vary per call).
         """
         var obs = LayoutTensor[
@@ -789,9 +831,9 @@ struct DQNAgent[
             MutAnyOrigin,
         ](q_buf.unsafe_ptr())
 
-        # Forward pass on GPU for n_envs environments
-        self.online_model.forward_gpu[Self.n_envs](
-            ctx, obs_buf, q_buf, params_buf
+        # Forward pass on GPU for n_envs environments (using pre-allocated workspace)
+        self.online_model.forward_gpu_ws[Self.n_envs](
+            ctx, obs_buf, q_buf, params_buf, workspace_buf
         )
 
         # Find argmax with epsilon-greedy
@@ -950,6 +992,8 @@ struct DQNAgent[
         mut rewards_buf: DeviceBuffer[dtype],
         mut dones_buf: DeviceBuffer[dtype],
         mut actions_buf: DeviceBuffer[dtype],
+        # Workspace buffer (pre-allocated to avoid GPU memory leak)
+        workspace_buf: DeviceBuffer[dtype],
     ) raises -> Float64:
         """Online GPU training step using current batch directly (no replay buffer).
 
@@ -964,15 +1008,15 @@ struct DQNAgent[
         and next_obs_buf should contain the state AFTER the step.
         The training loop is responsible for copying obs to next_obs before stepping.
         """
-        # GPU Forward pass: online network with cache
+        # GPU Forward pass: online network with cache (using pre-allocated workspace)
         # obs_buf contains the previous observations (before step)
-        self.online_model.forward_gpu_with_cache[Self.batch_size](
-            ctx, obs_buf, q_values_buf, online_params_buf, cache_buf
+        self.online_model.forward_gpu_with_cache_ws[Self.batch_size](
+            ctx, obs_buf, q_values_buf, online_params_buf, cache_buf, workspace_buf
         )
 
-        # GPU Forward pass: target network (no cache)
-        self.target_model.forward_gpu[Self.batch_size](
-            ctx, next_obs_buf, next_q_values_buf, target_params_buf
+        # GPU Forward pass: target network (no cache, using pre-allocated workspace)
+        self.target_model.forward_gpu_ws[Self.batch_size](
+            ctx, next_obs_buf, next_q_values_buf, target_params_buf, workspace_buf
         )
 
         # GPU TD Target computation
@@ -997,9 +1041,9 @@ struct DQNAgent[
 
         @parameter
         if Self.double_dqn:
-            # For Double DQN: forward online network on next_obs
-            self.online_model.forward_gpu[Self.batch_size](
-                ctx, next_obs_buf, online_next_q_buf, online_params_buf
+            # For Double DQN: forward online network on next_obs (using workspace)
+            self.online_model.forward_gpu_ws[Self.batch_size](
+                ctx, next_obs_buf, online_next_q_buf, online_params_buf, workspace_buf
             )
 
             var online_next_tensor = LayoutTensor[
@@ -1174,14 +1218,15 @@ struct DQNAgent[
             block_dim=(TPB,),
         )
 
-        # GPU Backward pass
-        self.online_model.backward_gpu[Self.batch_size](
+        # GPU Backward pass (using pre-allocated workspace)
+        self.online_model.backward_gpu_ws[Self.batch_size](
             ctx,
             grad_output_buf,
             grad_input_buf,
             online_params_buf,
             cache_buf,
             online_grads_buf,
+            workspace_buf,
         )
 
         # GPU Optimizer update
@@ -1281,6 +1326,12 @@ struct DQNAgent[
         comptime BATCH_Q_SIZE = Self.batch_size * Self.num_actions
         comptime BATCH_CACHE_SIZE = Self.batch_size * Self.NETWORK_CACHE_SIZE
 
+        # Workspace sizes for forward passes (5-layer network = 4*HIDDEN intermediates)
+        # This prevents GPU memory leaks from repeated internal buffer allocations
+        comptime WORKSPACE_PER_SAMPLE = 4 * Self.HIDDEN
+        comptime ENV_WORKSPACE_SIZE = Self.n_envs * WORKSPACE_PER_SAMPLE
+        comptime BATCH_WORKSPACE_SIZE = Self.batch_size * WORKSPACE_PER_SAMPLE
+
         # Network parameter buffers
         var online_params_buf = ctx.enqueue_create_buffer[dtype](PARAM_SIZE)
         var online_grads_buf = ctx.enqueue_create_buffer[dtype](PARAM_SIZE)
@@ -1335,6 +1386,16 @@ struct DQNAgent[
         var targets_buf = ctx.enqueue_create_buffer[dtype](Self.batch_size)
         var next_obs_host = ctx.enqueue_create_host_buffer[dtype](
             BATCH_OBS_SIZE
+        )
+
+        # =====================================================================
+        # Pre-allocated workspace buffers (prevents GPU memory leak!)
+        # =====================================================================
+        var env_workspace_buf = ctx.enqueue_create_buffer[dtype](
+            ENV_WORKSPACE_SIZE
+        )
+        var batch_workspace_buf = ctx.enqueue_create_buffer[dtype](
+            BATCH_WORKSPACE_SIZE
         )
 
         # =====================================================================
@@ -1458,6 +1519,7 @@ struct DQNAgent[
         var total_steps = 0
         var completed_episodes = 0
         var last_print_episode = 0
+        var last_checkpoint_episode = 0
 
         # Create tensor views for episode tracking kernels (n_envs environments)
         var rewards_tensor = LayoutTensor[
@@ -1751,6 +1813,7 @@ struct DQNAgent[
                 env_q_values_buf,
                 actions_buf,
                 online_params_buf,
+                env_workspace_buf,
                 UInt32(warmup_count * 7919 + 12345),  # Varying seed
             )
 
@@ -1835,6 +1898,7 @@ struct DQNAgent[
                 env_q_values_buf,
                 actions_buf,
                 online_params_buf,
+                env_workspace_buf,
                 UInt32(
                     total_steps * 2654435761 + iteration_count * 7919
                 ),  # Varying seed
@@ -1980,6 +2044,7 @@ struct DQNAgent[
                         sampled_rewards_buf,  # Sampled rewards
                         sampled_dones_buf,  # Sampled dones
                         sampled_actions_buf,  # Sampled actions
+                        batch_workspace_buf,  # Pre-allocated workspace
                     )
                 ctx.synchronize()
                 t4 = perf_counter_ns()
@@ -2078,6 +2143,33 @@ struct DQNAgent[
                         + String(total_steps)
                     )
 
+            # =================================================================
+            # Auto-checkpoint (similar milestone tracking as printing)
+            # =================================================================
+            if (
+                self.checkpoint_every > 0
+                and len(self.checkpoint_path) > 0
+                and completed_episodes > 0
+            ):
+                var next_ckpt_milestone = (
+                    (last_checkpoint_episode // self.checkpoint_every) + 1
+                ) * self.checkpoint_every
+                if completed_episodes >= next_ckpt_milestone:
+                    last_checkpoint_episode = completed_episodes
+                    # Make sure params are synced to CPU before saving
+                    self.online_model.copy_params_from_device(
+                        ctx, online_params_buf
+                    )
+                    self.target_model.copy_params_from_device(
+                        ctx, target_params_buf
+                    )
+                    self.save_checkpoint(self.checkpoint_path)
+                    if verbose:
+                        print(
+                            "Checkpoint saved at episode "
+                            + String(completed_episodes)
+                        )
+
         # Copy GPU params back to CPU for evaluation
         self.online_model.copy_params_from_device(ctx, online_params_buf)
         self.target_model.copy_params_from_device(ctx, target_params_buf)
@@ -2118,3 +2210,142 @@ struct DQNAgent[
                 )
 
         return metrics^
+
+    # =========================================================================
+    # Checkpoint Save/Load
+    # =========================================================================
+
+    fn save_checkpoint(self, filepath: String) raises:
+        """Save DQN agent state to a single checkpoint file.
+
+        Saves online and target network parameters, optimizer states,
+        hyperparameters, and training counters. Replay buffer is NOT saved.
+
+        Args:
+            filepath: Path to the checkpoint file (e.g., "dqn_agent.ckpt").
+
+        Example:
+            agent.save_checkpoint("checkpoints/dqn_agent.ckpt")
+        """
+        comptime PARAM_SIZE = Self.NETWORK_PARAM_SIZE
+        comptime STATE_SIZE = Self.NETWORK_PARAM_SIZE * Adam.STATE_PER_PARAM
+
+        # Header
+        var content = String("# mojo-rl checkpoint v1\n")
+        content += "# type: dqn_agent\n"
+        content += "# param_size: " + String(PARAM_SIZE) + "\n"
+        content += "# state_size: " + String(STATE_SIZE) + "\n"
+        content += "# dtype: float32\n"
+
+        # Online network params (write directly to avoid type mismatch)
+        content += "online_params:\n"
+        for i in range(PARAM_SIZE):
+            content += String(Float64(self.online_model.params[i])) + "\n"
+
+        # Online optimizer state
+        content += "online_optimizer_state:\n"
+        for i in range(STATE_SIZE):
+            content += String(Float64(self.online_model.optimizer_state[i])) + "\n"
+
+        # Target network params
+        content += "target_params:\n"
+        for i in range(PARAM_SIZE):
+            content += String(Float64(self.target_model.params[i])) + "\n"
+
+        # Target optimizer state
+        content += "target_optimizer_state:\n"
+        for i in range(STATE_SIZE):
+            content += String(Float64(self.target_model.optimizer_state[i])) + "\n"
+
+        # Metadata: hyperparameters and training state
+        content += "metadata:\n"
+        content += "gamma=" + String(self.gamma) + "\n"
+        content += "tau=" + String(self.tau) + "\n"
+        content += "lr=" + String(self.lr) + "\n"
+        content += "epsilon=" + String(self.epsilon) + "\n"
+        content += "epsilon_min=" + String(self.epsilon_min) + "\n"
+        content += "epsilon_decay=" + String(self.epsilon_decay) + "\n"
+        content += "train_step_count=" + String(self.train_step_count) + "\n"
+
+        save_checkpoint_file(filepath, content)
+
+    fn load_checkpoint(mut self, filepath: String) raises:
+        """Load DQN agent state from a single checkpoint file.
+
+        Loads online and target network parameters, optimizer states,
+        hyperparameters, and training counters. Replay buffer starts empty.
+
+        Args:
+            filepath: Path to the checkpoint file (e.g., "dqn_agent.ckpt").
+
+        Example:
+            agent.load_checkpoint("checkpoints/dqn_agent.ckpt")
+        """
+        comptime PARAM_SIZE = Self.NETWORK_PARAM_SIZE
+        comptime STATE_SIZE = Self.NETWORK_PARAM_SIZE * Adam.STATE_PER_PARAM
+
+        var content = read_checkpoint_file(filepath)
+
+        # Parse file into lines
+        var lines = split_lines(content)
+
+        # Find and load each section
+        var online_params_start = find_section_start(lines, "online_params:")
+        var online_state_start = find_section_start(lines, "online_optimizer_state:")
+        var target_params_start = find_section_start(lines, "target_params:")
+        var target_state_start = find_section_start(lines, "target_optimizer_state:")
+
+        # Load online network params
+        if online_params_start >= 0:
+            for i in range(PARAM_SIZE):
+                var line = lines[online_params_start + i]
+                self.online_model.params[i] = Scalar[dtype](atof(line))
+
+        # Load online optimizer state
+        if online_state_start >= 0:
+            for i in range(STATE_SIZE):
+                var line = lines[online_state_start + i]
+                self.online_model.optimizer_state[i] = Scalar[dtype](atof(line))
+
+        # Load target network params
+        if target_params_start >= 0:
+            for i in range(PARAM_SIZE):
+                var line = lines[target_params_start + i]
+                self.target_model.params[i] = Scalar[dtype](atof(line))
+
+        # Load target optimizer state
+        if target_state_start >= 0:
+            for i in range(STATE_SIZE):
+                var line = lines[target_state_start + i]
+                self.target_model.optimizer_state[i] = Scalar[dtype](atof(line))
+
+        # Load metadata
+        var metadata = read_metadata_section(content)
+
+        var gamma_str = get_metadata_value(metadata, "gamma")
+        if len(gamma_str) > 0:
+            self.gamma = atof(gamma_str)
+
+        var tau_str = get_metadata_value(metadata, "tau")
+        if len(tau_str) > 0:
+            self.tau = atof(tau_str)
+
+        var lr_str = get_metadata_value(metadata, "lr")
+        if len(lr_str) > 0:
+            self.lr = atof(lr_str)
+
+        var epsilon_str = get_metadata_value(metadata, "epsilon")
+        if len(epsilon_str) > 0:
+            self.epsilon = atof(epsilon_str)
+
+        var epsilon_min_str = get_metadata_value(metadata, "epsilon_min")
+        if len(epsilon_min_str) > 0:
+            self.epsilon_min = atof(epsilon_min_str)
+
+        var epsilon_decay_str = get_metadata_value(metadata, "epsilon_decay")
+        if len(epsilon_decay_str) > 0:
+            self.epsilon_decay = atof(epsilon_decay_str)
+
+        var train_step_str = get_metadata_value(metadata, "train_step_count")
+        if len(train_step_str) > 0:
+            self.train_step_count = Int(atol(train_step_str))

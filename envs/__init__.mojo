@@ -7,6 +7,7 @@ from .mountain_car import MountainCarEnv, MountainCarState, MountainCarAction
 from .pendulum import PendulumEnv, PendulumState, PendulumAction
 from .acrobot import AcrobotEnv, AcrobotState, AcrobotAction
 from .lunar_lander import LunarLanderEnv, LunarLanderState, LunarLanderAction
+from .lunar_lander_gpu import LunarLanderGPU
 from .bipedal_walker import (
     BipedalWalkerEnv,
     BipedalWalkerState,

@@ -42,6 +42,12 @@ from deep_rl.model import Linear, ReLU, seq
 from deep_rl.optimizer import Adam
 from deep_rl.initializer import Xavier
 from deep_rl.training import Network
+from deep_rl.checkpoint import (
+    split_lines,
+    find_section_start,
+    save_checkpoint_file,
+    read_checkpoint_file,
+)
 from deep_rl.gpu import (
     random_range,
     xorshift32,
@@ -367,7 +373,9 @@ fn gradient_norm_kernel[
     BLOCK_SIZE: Int,
 ](
     # Output
-    partial_sums: LayoutTensor[dtype, Layout.row_major(NUM_BLOCKS), MutAnyOrigin],
+    partial_sums: LayoutTensor[
+        dtype, Layout.row_major(NUM_BLOCKS), MutAnyOrigin
+    ],
     # Input
     grads: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
 ):
@@ -643,6 +651,10 @@ struct DeepPPOAgent[
     # Training state
     var train_step_count: Int
 
+    # Auto-checkpoint settings
+    var checkpoint_every: Int  # Save checkpoint every N episodes (0 to disable)
+    var checkpoint_path: String  # Path for auto-checkpointing
+
     fn __init__(
         out self,
         gamma: Float64 = 0.99,
@@ -661,6 +673,9 @@ struct DeepPPOAgent[
         anneal_lr: Bool = True,
         anneal_entropy: Bool = False,
         target_total_steps: Int = 0,
+        # Checkpoint settings
+        checkpoint_every: Int = 0,
+        checkpoint_path: String = "",
     ):
         """Initialize Deep PPO agent.
 
@@ -680,6 +695,8 @@ struct DeepPPOAgent[
             anneal_lr: Whether to linearly anneal learning rate (default: True).
             anneal_entropy: Whether to anneal entropy coefficient (default: False).
             target_total_steps: Target total steps for annealing, 0=auto (default: 0).
+            checkpoint_every: Save checkpoint every N episodes (0 to disable).
+            checkpoint_path: Path to save checkpoints.
         """
         # Build actor and critic models
         var actor_model = seq(
@@ -734,6 +751,10 @@ struct DeepPPOAgent[
 
         # Training state
         self.train_step_count = 0
+
+        # Auto-checkpoint settings
+        self.checkpoint_every = checkpoint_every
+        self.checkpoint_path = checkpoint_path
 
     fn select_action(
         self,
@@ -1095,6 +1116,16 @@ struct DeepPPOAgent[
                     total_steps,
                 )
 
+            # Auto-checkpoint
+            if self.checkpoint_every > 0 and len(self.checkpoint_path) > 0:
+                if (episode + 1) % self.checkpoint_every == 0:
+                    try:
+                        self.save_checkpoint(self.checkpoint_path)
+                        if verbose:
+                            print("Checkpoint saved at episode", episode + 1)
+                    except:
+                        print("Warning: Failed to save checkpoint at episode", episode + 1)
+
         return metrics^
 
     fn evaluate[
@@ -1213,6 +1244,12 @@ struct DeepPPOAgent[
         comptime MINIBATCH_BLOCKS = (MINIBATCH + TPB - 1) // TPB
         comptime ROLLOUT_BLOCKS = (ROLLOUT_TOTAL + TPB - 1) // TPB
 
+        # Workspace sizes for forward passes (5-layer network = 4*HIDDEN intermediates)
+        # Formula: for seq(L,R,L,R,L), workspace = 4 * HIDDEN per sample
+        comptime WORKSPACE_PER_SAMPLE = 4 * Self.HIDDEN
+        comptime ENV_WORKSPACE_SIZE = Self.n_envs * WORKSPACE_PER_SAMPLE
+        comptime MINIBATCH_WORKSPACE_SIZE = MINIBATCH * WORKSPACE_PER_SAMPLE
+
         # =====================================================================
         # Network parameter buffers
         # =====================================================================
@@ -1223,6 +1260,20 @@ struct DeepPPOAgent[
         var critic_params_buf = ctx.enqueue_create_buffer[dtype](CRITIC_PARAMS)
         var critic_grads_buf = ctx.enqueue_create_buffer[dtype](CRITIC_PARAMS)
         var critic_state_buf = ctx.enqueue_create_buffer[dtype](CRITIC_STATE)
+
+        # Pre-allocated workspace buffers (prevents GPU memory leak!)
+        var actor_env_workspace_buf = ctx.enqueue_create_buffer[dtype](
+            ENV_WORKSPACE_SIZE
+        )
+        var critic_env_workspace_buf = ctx.enqueue_create_buffer[dtype](
+            ENV_WORKSPACE_SIZE
+        )
+        var actor_minibatch_workspace_buf = ctx.enqueue_create_buffer[dtype](
+            MINIBATCH_WORKSPACE_SIZE
+        )
+        var critic_minibatch_workspace_buf = ctx.enqueue_create_buffer[dtype](
+            MINIBATCH_WORKSPACE_SIZE
+        )
 
         # =====================================================================
         # Environment buffers (n_envs parallel environments)
@@ -1335,7 +1386,9 @@ struct DeepPPOAgent[
         # KL divergence and gradient clipping buffers
         # =====================================================================
         var kl_divergences_buf = ctx.enqueue_create_buffer[dtype](MINIBATCH)
-        var kl_divergences_host = ctx.enqueue_create_host_buffer[dtype](MINIBATCH)
+        var kl_divergences_host = ctx.enqueue_create_host_buffer[dtype](
+            MINIBATCH
+        )
 
         # Gradient norm computation buffers
         comptime ACTOR_GRAD_BLOCKS = (ACTOR_PARAMS + TPB - 1) // TPB
@@ -1346,12 +1399,12 @@ struct DeepPPOAgent[
         var critic_grad_partial_sums_buf = ctx.enqueue_create_buffer[dtype](
             CRITIC_GRAD_BLOCKS
         )
-        var actor_grad_partial_sums_host = ctx.enqueue_create_host_buffer[dtype](
-            ACTOR_GRAD_BLOCKS
-        )
-        var critic_grad_partial_sums_host = ctx.enqueue_create_host_buffer[dtype](
-            CRITIC_GRAD_BLOCKS
-        )
+        var actor_grad_partial_sums_host = ctx.enqueue_create_host_buffer[
+            dtype
+        ](ACTOR_GRAD_BLOCKS)
+        var critic_grad_partial_sums_host = ctx.enqueue_create_host_buffer[
+            dtype
+        ](CRITIC_GRAD_BLOCKS)
 
         # =====================================================================
         # Initialize network parameters on GPU
@@ -1570,10 +1623,24 @@ struct DeepPPOAgent[
         ]
 
         # =====================================================================
+        # Timing accumulators (for final summary)
+        # =====================================================================
+        var total_phase1_ns: UInt = 0
+        var total_phase2_ns: UInt = 0
+        var total_phase3_ns: UInt = 0
+        var total_shuffle_ns: UInt = 0
+        var total_indices_ns: UInt = 0
+        var total_gather_ns: UInt = 0
+        var total_actor_train_ns: UInt = 0
+        var total_critic_train_ns: UInt = 0
+
+        # =====================================================================
         # Main Training Loop
         # =====================================================================
 
         while completed_episodes < num_episodes:
+            # Track episodes at start of rollout for aggregated logging
+            var rollout_start_episodes = completed_episodes
             rollout_count += 1
             var rollout_start = perf_counter_ns()
 
@@ -1585,19 +1652,18 @@ struct DeepPPOAgent[
             for t in range(Self.rollout_len):
                 # Select actions for all environments
                 var rng_seed = UInt32(total_steps * 2654435761 + t * 7919)
-                # Forward actor to get logits
-                self.actor.model.forward_gpu_no_cache[Self.n_envs](
-                    ctx, logits_buf, obs_buf, actor_params_buf
+                # Forward actor to get logits (using pre-allocated workspace)
+                self.actor.model.forward_gpu_no_cache_ws[Self.n_envs](
+                    ctx, logits_buf, obs_buf, actor_params_buf, actor_env_workspace_buf
                 )
 
-                # Forward critic to get values
-                self.critic.model.forward_gpu_no_cache[Self.n_envs](
-                    ctx, values_buf, obs_buf, critic_params_buf
+                # Forward critic to get values (using pre-allocated workspace)
+                self.critic.model.forward_gpu_no_cache_ws[Self.n_envs](
+                    ctx, values_buf, obs_buf, critic_params_buf, critic_env_workspace_buf
                 )
                 ctx.synchronize()
 
                 # Sample actions and compute log probs on GPU
-
                 ctx.enqueue_function[
                     sample_actions_wrapper, sample_actions_wrapper
                 ](
@@ -1724,16 +1790,35 @@ struct DeepPPOAgent[
                         )
                         completed_episodes += 1
 
-                        if verbose and completed_episodes % print_every == 0:
-                            var avg = metrics.mean_reward_last_n(print_every)
-                            print(
-                                "Episode",
-                                completed_episodes,
-                                "| Avg reward:",
-                                String(avg)[:7],
-                                "| Steps:",
-                                total_steps,
+                        # Auto-checkpoint (GPU)
+                        if (
+                            self.checkpoint_every > 0
+                            and self.checkpoint_path != ""
+                            and completed_episodes % self.checkpoint_every == 0
+                        ):
+                            # Copy params and state from GPU to CPU
+                            self.actor.copy_params_from_device(
+                                ctx, actor_params_buf
                             )
+                            self.actor.copy_state_from_device(
+                                ctx, actor_state_buf
+                            )
+                            self.critic.copy_params_from_device(
+                                ctx, critic_params_buf
+                            )
+                            self.critic.copy_state_from_device(
+                                ctx, critic_state_buf
+                            )
+                            ctx.synchronize()
+
+                            # Save checkpoint
+                            self.save_checkpoint(self.checkpoint_path)
+                            if verbose:
+                                print(
+                                    "  [Checkpoint saved at episode",
+                                    completed_episodes,
+                                    "]",
+                                )
 
                 # Reset episode tracking for done environments
                 ctx.enqueue_function[
@@ -1766,10 +1851,9 @@ struct DeepPPOAgent[
             # =================================================================
             var phase2_start = perf_counter_ns()
 
-            # Get bootstrap values from final observations
-
-            self.critic.model.forward_gpu_no_cache[Self.n_envs](
-                ctx, values_buf, obs_buf, critic_params_buf
+            # Get bootstrap values from final observations (using pre-allocated workspace)
+            self.critic.model.forward_gpu_no_cache_ws[Self.n_envs](
+                ctx, values_buf, obs_buf, critic_params_buf, critic_env_workspace_buf
             )
 
             ctx.enqueue_copy(bootstrap_values_host, values_buf)
@@ -1851,7 +1935,9 @@ struct DeepPPOAgent[
             var phase3_start = perf_counter_ns()
 
             # Compute annealing progress (0.0 to 1.0)
-            var progress = Float64(total_steps) / Float64(annealing_target_steps)
+            var progress = Float64(total_steps) / Float64(
+                annealing_target_steps
+            )
             if progress > 1.0:
                 progress = 1.0
 
@@ -1974,7 +2060,9 @@ struct DeepPPOAgent[
 
                     # Check KL divergence for early stopping
                     if self.target_kl > 0.0:
-                        ctx.enqueue_copy(kl_divergences_host, kl_divergences_buf)
+                        ctx.enqueue_copy(
+                            kl_divergences_host, kl_divergences_buf
+                        )
                         ctx.synchronize()
 
                         # Compute mean KL
@@ -2018,7 +2106,8 @@ struct DeepPPOAgent[
                             block_dim=(TPB,),
                         )
                         ctx.enqueue_copy(
-                            actor_grad_partial_sums_host, actor_grad_partial_sums_buf
+                            actor_grad_partial_sums_host,
+                            actor_grad_partial_sums_buf,
                         )
                         ctx.synchronize()
 
@@ -2104,14 +2193,17 @@ struct DeepPPOAgent[
                             block_dim=(TPB,),
                         )
                         ctx.enqueue_copy(
-                            critic_grad_partial_sums_host, critic_grad_partial_sums_buf
+                            critic_grad_partial_sums_host,
+                            critic_grad_partial_sums_buf,
                         )
                         ctx.synchronize()
 
                         # Sum partial sums on CPU
                         var critic_grad_sq_sum = Scalar[dtype](0.0)
                         for i in range(CRITIC_GRAD_BLOCKS):
-                            critic_grad_sq_sum += critic_grad_partial_sums_host[i]
+                            critic_grad_sq_sum += critic_grad_partial_sums_host[
+                                i
+                            ]
                         from math import sqrt
 
                         var critic_grad_norm = Float64(sqrt(critic_grad_sq_sum))
@@ -2122,7 +2214,8 @@ struct DeepPPOAgent[
                                 self.max_grad_norm / critic_grad_norm
                             )
                             ctx.enqueue_function[
-                                critic_grad_clip_wrapper, critic_grad_clip_wrapper
+                                critic_grad_clip_wrapper,
+                                critic_grad_clip_wrapper,
                             ](
                                 critic_grads_tensor,
                                 clip_scale,
@@ -2143,45 +2236,35 @@ struct DeepPPOAgent[
 
             var phase3_end = perf_counter_ns()
 
-            # Print phase 3 sub-timings
-            if verbose:
-                var shuffle_ms = Float64(shuffle_time_ns) / 1e6
-                var indices_ms = Float64(indices_copy_time_ns) / 1e6
-                var gather_ms = Float64(gather_time_ns) / 1e6
-                var actor_ms = Float64(actor_train_time_ns) / 1e6
-                var critic_ms = Float64(critic_train_time_ns) / 1e6
-                print(
-                    "    P3 breakdown: shuffle:",
-                    String(shuffle_ms)[:5],
-                    "ms | indices:",
-                    String(indices_ms)[:5],
-                    "ms | gather:",
-                    String(gather_ms)[:5],
-                    "ms | actor:",
-                    String(actor_ms)[:5],
-                    "ms | critic:",
-                    String(critic_ms)[:5],
-                    "ms",
-                )
+            # Accumulate timing for final summary
+            total_phase1_ns += phase1_end - phase1_start
+            total_phase2_ns += phase2_end - phase2_start
+            total_phase3_ns += phase3_end - phase3_start
+            total_shuffle_ns += shuffle_time_ns
+            total_indices_ns += indices_copy_time_ns
+            total_gather_ns += gather_time_ns
+            total_actor_train_ns += actor_train_time_ns
+            total_critic_train_ns += critic_train_time_ns
 
-            # Print timing for this rollout
-            if verbose:
-                var p1_ms = Float64(phase1_end - phase1_start) / 1e6
-                var p2_ms = Float64(phase2_end - phase2_start) / 1e6
-                var p3_ms = Float64(phase3_end - phase3_start) / 1e6
-                var total_ms = Float64(phase3_end - rollout_start) / 1e6
+            # Print rollout summary with episode range (aggregated)
+            if verbose and rollout_count % print_every == 0:
+                var rollout_end_episodes = completed_episodes
+                var episodes_this_rollout = rollout_end_episodes - rollout_start_episodes
+                var avg_reward = metrics.mean_reward_last_n(
+                    min(100, completed_episodes)
+                )
                 print(
-                    "  Rollout",
+                    "Rollout",
                     rollout_count,
-                    "| P1(collect):",
-                    String(p1_ms)[:6],
-                    "ms | P2(GAE):",
-                    String(p2_ms)[:6],
-                    "ms | P3(train):",
-                    String(p3_ms)[:6],
-                    "ms | Total:",
-                    String(total_ms)[:6],
-                    "ms",
+                    "| Episodes",
+                    rollout_start_episodes + 1,
+                    "-",
+                    rollout_end_episodes,
+                    "(+" + String(episodes_this_rollout) + ")",
+                    "| Avg(100):",
+                    String(avg_reward)[:7],
+                    "| Steps:",
+                    total_steps,
                 )
 
         # =====================================================================
@@ -2193,7 +2276,190 @@ struct DeepPPOAgent[
         self.critic.copy_state_from_device(ctx, critic_state_buf)
         ctx.synchronize()
 
+        # =====================================================================
+        # Print final timing summary
+        # =====================================================================
+        if verbose:
+            var total_time_ns = total_phase1_ns + total_phase2_ns + total_phase3_ns
+            var p1_pct = Float64(total_phase1_ns) / Float64(total_time_ns) * 100
+            var p2_pct = Float64(total_phase2_ns) / Float64(total_time_ns) * 100
+            var p3_pct = Float64(total_phase3_ns) / Float64(total_time_ns) * 100
+            print()
+            print("-" * 60)
+            print("Performance Summary (" + String(rollout_count) + " rollouts)")
+            print("-" * 60)
+            print(
+                "  Phase 1 (collect):  ",
+                String(Float64(total_phase1_ns) / 1e9)[:6],
+                "s (",
+                String(p1_pct)[:4],
+                "%)",
+            )
+            print(
+                "  Phase 2 (GAE):      ",
+                String(Float64(total_phase2_ns) / 1e9)[:6],
+                "s (",
+                String(p2_pct)[:4],
+                "%)",
+            )
+            print(
+                "  Phase 3 (train):    ",
+                String(Float64(total_phase3_ns) / 1e9)[:6],
+                "s (",
+                String(p3_pct)[:4],
+                "%)",
+            )
+            print()
+            print("  Phase 3 breakdown:")
+            print(
+                "    Shuffle:      ",
+                String(Float64(total_shuffle_ns) / 1e6)[:8],
+                "ms",
+            )
+            print(
+                "    Indices copy: ",
+                String(Float64(total_indices_ns) / 1e6)[:8],
+                "ms",
+            )
+            print(
+                "    Gather:       ",
+                String(Float64(total_gather_ns) / 1e6)[:8],
+                "ms",
+            )
+            print(
+                "    Actor train:  ",
+                String(Float64(total_actor_train_ns) / 1e6)[:8],
+                "ms",
+            )
+            print(
+                "    Critic train: ",
+                String(Float64(total_critic_train_ns) / 1e6)[:8],
+                "ms",
+            )
+            print("-" * 60)
+
         return metrics^
+
+    # =========================================================================
+    # Checkpoint Save/Load
+    # =========================================================================
+
+    fn save_checkpoint(self, filepath: String) raises:
+        """Save agent state to a checkpoint file.
+
+        Saves actor and critic networks and hyperparameters.
+
+        Args:
+            filepath: Path to save the checkpoint file.
+        """
+        var actor_param_size = self.actor.PARAM_SIZE
+        var critic_param_size = self.critic.PARAM_SIZE
+        var actor_state_size = actor_param_size * Adam.STATE_PER_PARAM
+        var critic_state_size = critic_param_size * Adam.STATE_PER_PARAM
+
+        var content = String("# mojo-rl checkpoint v1\n")
+        content += "# type: ppo_agent\n"
+        content += "# actor_param_size: " + String(actor_param_size) + "\n"
+        content += "# critic_param_size: " + String(critic_param_size) + "\n"
+
+        # Actor params
+        content += "actor_params:\n"
+        for i in range(actor_param_size):
+            content += String(Float64(self.actor.params[i])) + "\n"
+
+        content += "actor_optimizer_state:\n"
+        for i in range(actor_state_size):
+            content += String(Float64(self.actor.optimizer_state[i])) + "\n"
+
+        # Critic params
+        content += "critic_params:\n"
+        for i in range(critic_param_size):
+            content += String(Float64(self.critic.params[i])) + "\n"
+
+        content += "critic_optimizer_state:\n"
+        for i in range(critic_state_size):
+            content += String(Float64(self.critic.optimizer_state[i])) + "\n"
+
+        # Metadata
+        content += "metadata:\n"
+        content += "gamma=" + String(self.gamma) + "\n"
+        content += "gae_lambda=" + String(self.gae_lambda) + "\n"
+        content += "clip_epsilon=" + String(self.clip_epsilon) + "\n"
+        content += "actor_lr=" + String(self.actor_lr) + "\n"
+        content += "critic_lr=" + String(self.critic_lr) + "\n"
+        content += "entropy_coef=" + String(self.entropy_coef) + "\n"
+        content += "value_loss_coef=" + String(self.value_loss_coef) + "\n"
+        content += "num_epochs=" + String(self.num_epochs) + "\n"
+        content += "minibatch_size=" + String(self.minibatch_size) + "\n"
+        content += "normalize_advantages=" + String(self.normalize_advantages) + "\n"
+        content += "target_kl=" + String(self.target_kl) + "\n"
+        content += "max_grad_norm=" + String(self.max_grad_norm) + "\n"
+        content += "train_step_count=" + String(self.train_step_count) + "\n"
+
+        save_checkpoint_file(filepath, content)
+
+    fn load_checkpoint(mut self, filepath: String) raises:
+        """Load agent state from a checkpoint file.
+
+        Args:
+            filepath: Path to the checkpoint file.
+        """
+        var actor_param_size = self.actor.PARAM_SIZE
+        var critic_param_size = self.critic.PARAM_SIZE
+        var actor_state_size = actor_param_size * Adam.STATE_PER_PARAM
+        var critic_state_size = critic_param_size * Adam.STATE_PER_PARAM
+
+        var content = read_checkpoint_file(filepath)
+        var lines = split_lines(content)
+
+        # Load actor params
+        var actor_params_start = find_section_start(lines, "actor_params:") + 1
+        for i in range(actor_param_size):
+            self.actor.params[i] = Scalar[dtype](atof(lines[actor_params_start + i]))
+
+        var actor_state_start = find_section_start(lines, "actor_optimizer_state:") + 1
+        for i in range(actor_state_size):
+            self.actor.optimizer_state[i] = Scalar[dtype](atof(lines[actor_state_start + i]))
+
+        # Load critic params
+        var critic_params_start = find_section_start(lines, "critic_params:") + 1
+        for i in range(critic_param_size):
+            self.critic.params[i] = Scalar[dtype](atof(lines[critic_params_start + i]))
+
+        var critic_state_start = find_section_start(lines, "critic_optimizer_state:") + 1
+        for i in range(critic_state_size):
+            self.critic.optimizer_state[i] = Scalar[dtype](atof(lines[critic_state_start + i]))
+
+        # Load metadata
+        var metadata_start = find_section_start(lines, "metadata:") + 1
+        for i in range(metadata_start, len(lines)):
+            var line = lines[i]
+            if line.startswith("gamma="):
+                self.gamma = atof(String(line[6:]))
+            elif line.startswith("gae_lambda="):
+                self.gae_lambda = atof(String(line[11:]))
+            elif line.startswith("clip_epsilon="):
+                self.clip_epsilon = atof(String(line[13:]))
+            elif line.startswith("actor_lr="):
+                self.actor_lr = atof(String(line[9:]))
+            elif line.startswith("critic_lr="):
+                self.critic_lr = atof(String(line[10:]))
+            elif line.startswith("entropy_coef="):
+                self.entropy_coef = atof(String(line[13:]))
+            elif line.startswith("value_loss_coef="):
+                self.value_loss_coef = atof(String(line[16:]))
+            elif line.startswith("num_epochs="):
+                self.num_epochs = Int(atol(String(line[11:])))
+            elif line.startswith("minibatch_size="):
+                self.minibatch_size = Int(atol(String(line[15:])))
+            elif line.startswith("normalize_advantages="):
+                self.normalize_advantages = String(line[21:]) == "True"
+            elif line.startswith("target_kl="):
+                self.target_kl = atof(String(line[10:]))
+            elif line.startswith("max_grad_norm="):
+                self.max_grad_norm = atof(String(line[14:]))
+            elif line.startswith("train_step_count="):
+                self.train_step_count = Int(atol(String(line[17:])))
 
 
 # =============================================================================

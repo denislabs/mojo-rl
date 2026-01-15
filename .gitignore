@@ -211,3 +211,6 @@ __marimo__/
 
 main
 *.csv
+
+
+*.ckpt

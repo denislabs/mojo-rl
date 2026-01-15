@@ -350,7 +350,12 @@ New neural network components for deep_rl.
 
 ### Infrastructure Improvements
 Developer experience and training efficiency.
-- [ ] **Checkpointing** - Save/load agent state for resuming training
+- [x] **Checkpointing** - Save/load agent state for resuming training
+  - `deep_rl/checkpoint/` - Checkpoint utilities module (text-based format)
+  - `Network.save_checkpoint(path)` / `load_checkpoint(path)` - Single file for params + optimizer state
+  - `Trainer.save_checkpoint(path)` / `load_checkpoint(path)` - Single file for trainer state
+  - `DQNAgent.save_checkpoint(path)` / `load_checkpoint(path)` - Single file for full agent (both networks + hyperparams)
+  - `examples/checkpoint_demo.mojo` - Usage demo
 - [x] **Learning rate schedulers** - Linear decay in Deep PPO (`anneal_lr=True`)
   - [ ] Cosine annealing, warmup (future)
 - [ ] **Curriculum learning** - Progressive environment difficulty

@@ -37,6 +37,12 @@ from deep_rl.initializer import Kaiming, Xavier
 from deep_rl.training import Network
 from deep_rl.replay import ReplayBuffer
 from deep_rl.gpu.random import gaussian_noise
+from deep_rl.checkpoint import (
+    split_lines,
+    find_section_start,
+    save_checkpoint_file,
+    read_checkpoint_file,
+)
 from core import TrainingMetrics, BoxContinuousActionEnv
 
 
@@ -180,6 +186,10 @@ struct DeepDDPGAgent[
     var total_steps: Int
     var train_step_count: Int
 
+    # Auto-checkpoint settings
+    var checkpoint_every: Int  # Save checkpoint every N episodes (0 to disable)
+    var checkpoint_path: String  # Path for auto-checkpointing
+
     fn __init__(
         out self,
         gamma: Float64 = 0.99,
@@ -190,6 +200,8 @@ struct DeepDDPGAgent[
         noise_std: Float64 = 0.1,
         noise_std_min: Float64 = 0.01,
         noise_decay: Float64 = 0.995,
+        checkpoint_every: Int = 0,
+        checkpoint_path: String = "",
     ):
         """Initialize Deep DDPG agent.
 
@@ -202,6 +214,8 @@ struct DeepDDPGAgent[
             noise_std: Initial exploration noise std (default: 0.1).
             noise_std_min: Minimum exploration noise std (default: 0.01).
             noise_decay: Noise decay per episode (default: 0.995).
+            checkpoint_every: Save checkpoint every N episodes (0 to disable).
+            checkpoint_path: Path to save checkpoints.
         """
         # Build actor model
         var actor_model = seq(
@@ -252,6 +266,10 @@ struct DeepDDPGAgent[
         # Training state
         self.total_steps = 0
         self.train_step_count = 0
+
+        # Auto-checkpoint settings
+        self.checkpoint_every = checkpoint_every
+        self.checkpoint_path = checkpoint_path
 
     fn select_action(
         self,
@@ -724,6 +742,16 @@ struct DeepDDPGAgent[
                     total_train_steps,
                 )
 
+            # Auto-checkpoint
+            if self.checkpoint_every > 0 and len(self.checkpoint_path) > 0:
+                if (episode + 1) % self.checkpoint_every == 0:
+                    try:
+                        self.save_checkpoint(self.checkpoint_path)
+                        if verbose:
+                            print("Checkpoint saved at episode", episode + 1)
+                    except:
+                        print("Warning: Failed to save checkpoint at episode", episode + 1)
+
         return metrics^
 
     fn evaluate[
@@ -792,3 +820,132 @@ struct DeepDDPGAgent[
                 )
 
         return total_reward / Float64(num_episodes)
+
+    # =========================================================================
+    # Checkpoint Save/Load
+    # =========================================================================
+
+    fn save_checkpoint(self, filepath: String) raises:
+        """Save agent state to a checkpoint file.
+
+        Saves actor, actor_target, critic, critic_target networks and hyperparameters.
+
+        Args:
+            filepath: Path to save the checkpoint file.
+        """
+        # Get param sizes from networks
+        var actor_param_size = self.actor.PARAM_SIZE
+        var critic_param_size = self.critic.PARAM_SIZE
+        var actor_state_size = actor_param_size * Adam.STATE_PER_PARAM
+        var critic_state_size = critic_param_size * Adam.STATE_PER_PARAM
+
+        var content = String("# mojo-rl checkpoint v1\n")
+        content += "# type: ddpg_agent\n"
+        content += "# actor_param_size: " + String(actor_param_size) + "\n"
+        content += "# critic_param_size: " + String(critic_param_size) + "\n"
+
+        # Actor params
+        content += "actor_params:\n"
+        for i in range(actor_param_size):
+            content += String(Float64(self.actor.params[i])) + "\n"
+
+        content += "actor_optimizer_state:\n"
+        for i in range(actor_state_size):
+            content += String(Float64(self.actor.optimizer_state[i])) + "\n"
+
+        content += "actor_target_params:\n"
+        for i in range(actor_param_size):
+            content += String(Float64(self.actor_target.params[i])) + "\n"
+
+        # Critic params
+        content += "critic_params:\n"
+        for i in range(critic_param_size):
+            content += String(Float64(self.critic.params[i])) + "\n"
+
+        content += "critic_optimizer_state:\n"
+        for i in range(critic_state_size):
+            content += String(Float64(self.critic.optimizer_state[i])) + "\n"
+
+        content += "critic_target_params:\n"
+        for i in range(critic_param_size):
+            content += String(Float64(self.critic_target.params[i])) + "\n"
+
+        # Metadata
+        content += "metadata:\n"
+        content += "gamma=" + String(self.gamma) + "\n"
+        content += "tau=" + String(self.tau) + "\n"
+        content += "actor_lr=" + String(self.actor_lr) + "\n"
+        content += "critic_lr=" + String(self.critic_lr) + "\n"
+        content += "action_scale=" + String(self.action_scale) + "\n"
+        content += "noise_std=" + String(self.noise_std) + "\n"
+        content += "noise_std_min=" + String(self.noise_std_min) + "\n"
+        content += "noise_decay=" + String(self.noise_decay) + "\n"
+        content += "total_steps=" + String(self.total_steps) + "\n"
+        content += "train_step_count=" + String(self.train_step_count) + "\n"
+
+        save_checkpoint_file(filepath, content)
+
+    fn load_checkpoint(mut self, filepath: String) raises:
+        """Load agent state from a checkpoint file.
+
+        Args:
+            filepath: Path to the checkpoint file.
+        """
+        var actor_param_size = self.actor.PARAM_SIZE
+        var critic_param_size = self.critic.PARAM_SIZE
+        var actor_state_size = actor_param_size * Adam.STATE_PER_PARAM
+        var critic_state_size = critic_param_size * Adam.STATE_PER_PARAM
+
+        var content = read_checkpoint_file(filepath)
+        var lines = split_lines(content)
+
+        # Load actor params
+        var actor_params_start = find_section_start(lines, "actor_params:") + 1
+        for i in range(actor_param_size):
+            self.actor.params[i] = Scalar[dtype](atof(lines[actor_params_start + i]))
+
+        var actor_state_start = find_section_start(lines, "actor_optimizer_state:") + 1
+        for i in range(actor_state_size):
+            self.actor.optimizer_state[i] = Scalar[dtype](atof(lines[actor_state_start + i]))
+
+        var actor_target_start = find_section_start(lines, "actor_target_params:") + 1
+        for i in range(actor_param_size):
+            self.actor_target.params[i] = Scalar[dtype](atof(lines[actor_target_start + i]))
+
+        # Load critic params
+        var critic_params_start = find_section_start(lines, "critic_params:") + 1
+        for i in range(critic_param_size):
+            self.critic.params[i] = Scalar[dtype](atof(lines[critic_params_start + i]))
+
+        var critic_state_start = find_section_start(lines, "critic_optimizer_state:") + 1
+        for i in range(critic_state_size):
+            self.critic.optimizer_state[i] = Scalar[dtype](atof(lines[critic_state_start + i]))
+
+        var critic_target_start = find_section_start(lines, "critic_target_params:") + 1
+        for i in range(critic_param_size):
+            self.critic_target.params[i] = Scalar[dtype](atof(lines[critic_target_start + i]))
+
+        # Load metadata
+        var metadata_start = find_section_start(lines, "metadata:") + 1
+        for i in range(metadata_start, len(lines)):
+            var line = lines[i]
+            if line.startswith("gamma="):
+                self.gamma = atof(String(line[6:]))
+            elif line.startswith("tau="):
+                self.tau = atof(String(line[4:]))
+            elif line.startswith("actor_lr="):
+                self.actor_lr = atof(String(line[9:]))
+            elif line.startswith("critic_lr="):
+                self.critic_lr = atof(String(line[10:]))
+            elif line.startswith("action_scale="):
+                self.action_scale = atof(String(line[13:]))
+            elif line.startswith("noise_std="):
+                self.noise_std = atof(String(line[10:]))
+            elif line.startswith("noise_std_min="):
+                self.noise_std_min = atof(String(line[14:]))
+            elif line.startswith("noise_decay="):
+                self.noise_decay = atof(String(line[12:]))
+            elif line.startswith("total_steps="):
+                self.total_steps = Int(atol(String(line[12:])))
+            elif line.startswith("train_step_count="):
+                self.train_step_count = Int(atol(String(line[17:])))

@@ -43,6 +43,14 @@ from ..model import Model
 from ..optimizer import Optimizer
 from ..initializer import Initializer, Xavier
 from ..constants import dtype
+from ..checkpoint import (
+    write_checkpoint_header,
+    write_float_section,
+    parse_checkpoint_header,
+    read_checkpoint_file,
+    read_float_section,
+    save_checkpoint_file,
+)
 
 from layout import Layout, LayoutTensor
 from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
@@ -71,6 +79,7 @@ struct Network[
     comptime OUT_DIM: Int = Self.MODEL.OUT_DIM
     comptime PARAM_SIZE: Int = Self.MODEL.PARAM_SIZE
     comptime CACHE_SIZE: Int = Self.MODEL.CACHE_SIZE
+    comptime WORKSPACE_SIZE_PER_SAMPLE: Int = Self.MODEL.WORKSPACE_SIZE_PER_SAMPLE
 
     var model: Self.MODEL
     var optimizer: Self.OPTIMIZER
@@ -432,6 +441,109 @@ struct Network[
             grads_buf,
         )
 
+    # =========================================================================
+    # GPU Forward/Backward with Workspace (avoids internal allocation)
+    # =========================================================================
+
+    fn forward_gpu_ws[
+        BATCH: Int
+    ](
+        self,
+        ctx: DeviceContext,
+        input_buf: DeviceBuffer[dtype],
+        mut output_buf: DeviceBuffer[dtype],
+        params_buf: DeviceBuffer[dtype],
+        workspace_buf: DeviceBuffer[dtype],
+    ) raises:
+        """GPU forward pass without caching, using pre-allocated workspace.
+
+        Use this to avoid GPU memory leaks from repeated internal allocations.
+        Workspace size must be BATCH * MODEL.WORKSPACE_SIZE_PER_SAMPLE.
+
+        Args:
+            ctx: GPU device context.
+            input_buf: Input buffer [BATCH * IN_DIM].
+            output_buf: Output buffer [BATCH * OUT_DIM] (written).
+            params_buf: Parameters buffer [PARAM_SIZE].
+            workspace_buf: Pre-allocated workspace [BATCH * WORKSPACE_SIZE_PER_SAMPLE].
+        """
+        Self.MODEL.forward_gpu_no_cache_ws[BATCH](
+            ctx,
+            output_buf,
+            input_buf,
+            params_buf,
+            workspace_buf,
+        )
+
+    fn forward_gpu_with_cache_ws[
+        BATCH: Int
+    ](
+        self,
+        ctx: DeviceContext,
+        input_buf: DeviceBuffer[dtype],
+        mut output_buf: DeviceBuffer[dtype],
+        params_buf: DeviceBuffer[dtype],
+        mut cache_buf: DeviceBuffer[dtype],
+        workspace_buf: DeviceBuffer[dtype],
+    ) raises:
+        """GPU forward pass with caching, using pre-allocated workspace.
+
+        Use this to avoid GPU memory leaks from repeated internal allocations.
+        Workspace size must be BATCH * MODEL.WORKSPACE_SIZE_PER_SAMPLE.
+
+        Args:
+            ctx: GPU device context.
+            input_buf: Input buffer [BATCH * IN_DIM].
+            output_buf: Output buffer [BATCH * OUT_DIM] (written).
+            params_buf: Parameters buffer [PARAM_SIZE].
+            cache_buf: Cache buffer [BATCH * CACHE_SIZE] (written).
+            workspace_buf: Pre-allocated workspace [BATCH * WORKSPACE_SIZE_PER_SAMPLE].
+        """
+        Self.MODEL.forward_gpu_ws[BATCH](
+            ctx,
+            output_buf,
+            input_buf,
+            params_buf,
+            cache_buf,
+            workspace_buf,
+        )
+
+    fn backward_gpu_ws[
+        BATCH: Int
+    ](
+        self,
+        ctx: DeviceContext,
+        grad_output_buf: DeviceBuffer[dtype],
+        mut grad_input_buf: DeviceBuffer[dtype],
+        params_buf: DeviceBuffer[dtype],
+        cache_buf: DeviceBuffer[dtype],
+        mut grads_buf: DeviceBuffer[dtype],
+        workspace_buf: DeviceBuffer[dtype],
+    ) raises:
+        """GPU backward pass using pre-allocated workspace.
+
+        Use this to avoid GPU memory leaks from repeated internal allocations.
+        Workspace size must be BATCH * MODEL.WORKSPACE_SIZE_PER_SAMPLE.
+
+        Args:
+            ctx: GPU device context.
+            grad_output_buf: Gradient w.r.t. output [BATCH * OUT_DIM].
+            grad_input_buf: Gradient w.r.t. input [BATCH * IN_DIM] (written).
+            params_buf: Parameters buffer [PARAM_SIZE].
+            cache_buf: Cache from forward [BATCH * CACHE_SIZE].
+            grads_buf: Parameter gradients [PARAM_SIZE] (accumulated).
+            workspace_buf: Pre-allocated workspace [BATCH * WORKSPACE_SIZE_PER_SAMPLE].
+        """
+        Self.MODEL.backward_gpu_ws[BATCH](
+            ctx,
+            grad_input_buf,
+            grad_output_buf,
+            params_buf,
+            cache_buf,
+            grads_buf,
+            workspace_buf,
+        )
+
     fn backward_input_gpu[
         BATCH: Int
     ](
@@ -572,3 +684,64 @@ struct Network[
         ctx.synchronize()
         for i in range(STATE_SIZE):
             self.optimizer_state[i] = state_host[i]
+
+    # =========================================================================
+    # Checkpoint Save/Load
+    # =========================================================================
+
+    fn save_checkpoint(self, filepath: String) raises:
+        """Save network parameters and optimizer state to a checkpoint file.
+
+        Args:
+            filepath: Path to save the checkpoint file.
+
+        Example:
+            network.save_checkpoint("model.ckpt")
+        """
+        comptime PARAM_SIZE = Self.MODEL.PARAM_SIZE
+        comptime STATE_SIZE = Self.MODEL.PARAM_SIZE * Self.OPTIMIZER.STATE_PER_PARAM
+
+        var content = write_checkpoint_header("network", PARAM_SIZE, STATE_SIZE)
+        content += write_float_section[PARAM_SIZE]("params:", self.params)
+        content += write_float_section[STATE_SIZE](
+            "optimizer_state:", self.optimizer_state
+        )
+
+        save_checkpoint_file(filepath, content)
+
+    fn load_checkpoint(mut self, filepath: String) raises:
+        """Load network parameters and optimizer state from a checkpoint file.
+
+        Args:
+            filepath: Path to the checkpoint file.
+
+        Example:
+            network.load_checkpoint("model.ckpt")
+        """
+        comptime PARAM_SIZE = Self.MODEL.PARAM_SIZE
+        comptime STATE_SIZE = Self.MODEL.PARAM_SIZE * Self.OPTIMIZER.STATE_PER_PARAM
+
+        var content = read_checkpoint_file(filepath)
+        var header = parse_checkpoint_header(content)
+
+        # Validate sizes match
+        if header.param_size != PARAM_SIZE:
+            print(
+                "Warning: checkpoint param_size ("
+                + String(header.param_size)
+                + ") != network PARAM_SIZE ("
+                + String(PARAM_SIZE)
+                + ")"
+            )
+
+        # Load parameters
+        var loaded_params = read_float_section[PARAM_SIZE](content, "params:")
+        for i in range(PARAM_SIZE):
+            self.params[i] = loaded_params[i]
+
+        # Load optimizer state
+        var loaded_state = read_float_section[STATE_SIZE](
+            content, "optimizer_state:"
+        )
+        for i in range(STATE_SIZE):
+            self.optimizer_state[i] = loaded_state[i]

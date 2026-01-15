@@ -5,8 +5,6 @@ from gpu import thread_idx, block_idx, block_dim, barrier
 from gpu.host import DeviceContext, DeviceBuffer
 from gpu.memory import AddressSpace
 
-from ..gpu.matmul import matmul_bias_kernel
-
 
 struct Linear[in_dim: Int, out_dim: Int](Model):
     """Linear layer: y = x @ W + b (stateless).
@@ -165,72 +163,65 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
             b: Bias vector [OUT_DIM].
             cache: Cache buffer [BATCH, IN_DIM] for backward pass (written).
         """
-        matmul_bias_kernel[
-            dtype=dtype,
-            M=BATCH,
-            N = Self.OUT_DIM,
-            K = Self.IN_DIM,
-            TILE=TILE,
-        ](output, input, W, b, cache)
-        # var local_row = Int(thread_idx.y)
-        # var local_col = Int(thread_idx.x)
-        # var global_row = Int(block_idx.y) * TILE + local_row
-        # var global_col = Int(block_idx.x) * TILE + local_col
+        var local_row = Int(thread_idx.y)
+        var local_col = Int(thread_idx.x)
+        var global_row = Int(block_idx.y) * TILE + local_row
+        var global_col = Int(block_idx.x) * TILE + local_col
 
-        # # Shared memory for tiles
-        # var x_shared = LayoutTensor[
-        #     dtype,
-        #     Layout.row_major(TILE, TILE),
-        #     MutAnyOrigin,
-        #     address_space = AddressSpace.SHARED,
-        # ].stack_allocation()
+        # Shared memory for tiles
+        var x_shared = LayoutTensor[
+            dtype,
+            Layout.row_major(TILE, TILE),
+            MutAnyOrigin,
+            address_space = AddressSpace.SHARED,
+        ].stack_allocation()
 
-        # var W_shared = LayoutTensor[
-        #     dtype,
-        #     Layout.row_major(TILE, TILE),
-        #     MutAnyOrigin,
-        #     address_space = AddressSpace.SHARED,
-        # ].stack_allocation()
+        var W_shared = LayoutTensor[
+            dtype,
+            Layout.row_major(TILE, TILE),
+            MutAnyOrigin,
+            address_space = AddressSpace.SHARED,
+        ].stack_allocation()
 
-        # # Start with bias
-        # var acc: output.element_type = 0
-        # if global_col < Self.OUT_DIM:
-        #     acc = b[global_col]
+        # Start with bias
+        var acc: output.element_type = 0
+        if global_col < Self.OUT_DIM:
+            acc = b[global_col]
 
-        # # Cache input (each thread caches one element if in bounds)
-        # # We do this during the first tile load to overlap with computation
-        # # Runtime loop to avoid compile-time explosion with large IN_DIM
-        # for tile_idx in range((Self.IN_DIM + TILE - 1) // TILE):
-        #     var x_col = tile_idx * TILE + local_col
+        # Cache input (each thread caches one element if in bounds)
+        # We do this during the first tile load to overlap with computation
+        # Runtime loop to avoid compile-time explosion with large IN_DIM
+        for tile_idx in range((Self.IN_DIM + TILE - 1) // TILE):
+            var x_col = tile_idx * TILE + local_col
 
-        #     # Load x tile and cache
-        #     if global_row < BATCH and x_col < Self.IN_DIM:
-        #         var x_val = input[global_row, x_col]
-        #         x_shared[local_row, local_col] = x_val
-        #         # Cache the input value
-        #         cache[global_row, x_col] = x_val
-        #     else:
-        #         x_shared[local_row, local_col] = 0
+            # Load x tile and cache
+            if global_row < BATCH and x_col < Self.IN_DIM:
+                var x_val = input[global_row, x_col]
+                x_shared[local_row, local_col] = x_val
+                # Cache the input value
+                cache[global_row, x_col] = x_val
+            else:
+                x_shared[local_row, local_col] = 0
 
-        #     # Load W tile
-        #     var W_row = tile_idx * TILE + local_row
-        #     if W_row < Self.IN_DIM and global_col < Self.OUT_DIM:
-        #         W_shared[local_row, local_col] = W[W_row, global_col]
-        #     else:
-        #         W_shared[local_row, local_col] = 0
+            # Load W tile
+            var W_row = tile_idx * TILE + local_row
+            if W_row < Self.IN_DIM and global_col < Self.OUT_DIM:
+                W_shared[local_row, local_col] = W[W_row, global_col]
+            else:
+                W_shared[local_row, local_col] = 0
 
-        #     barrier()
+            barrier()
 
-        #     # Compute partial dot product
-        #     @parameter
-        #     for k in range(TILE):
-        #         acc += x_shared[local_row, k] * W_shared[k, local_col]
+            # Compute partial dot product
+            @parameter
+            for k in range(TILE):
+                acc += x_shared[local_row, k] * W_shared[k, local_col]
 
-        #     barrier()
+            barrier()
 
-        # # Write result
-        # if global_row < BATCH and global_col < Self.OUT_DIM:
-        #     output[global_row, global_col] = acc
+        # Write result
+        if global_row < BATCH and global_col < Self.OUT_DIM:
+            output[global_row, global_col] = acc
 
     @always_inline
     @staticmethod
