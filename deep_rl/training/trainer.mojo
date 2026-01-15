@@ -54,11 +54,11 @@ struct Trainer[
     var optimizer: Self.OPTIMIZER
     var loss_function: Self.LOSS_FUNCTION
     var initializer: Self.INITIALIZER
-    var params: InlineArray[Scalar[dtype], Self.MODEL.PARAM_SIZE]
-    var grads: InlineArray[Scalar[dtype], Self.MODEL.PARAM_SIZE]
-    var optimizer_state: InlineArray[
-        Scalar[dtype], Self.MODEL.PARAM_SIZE * Self.OPTIMIZER.STATE_PER_PARAM
-    ]
+    # Use heap-allocated List instead of stack-allocated InlineArray
+    # to avoid stack overflow with large models
+    var params: List[Scalar[dtype]]
+    var grads: List[Scalar[dtype]]
+    var optimizer_state: List[Scalar[dtype]]
 
     fn __init__(
         out self,
@@ -86,25 +86,24 @@ struct Trainer[
         self.loss_function = loss_function
         self.initializer = initializer
 
-        # Initialize params using the initializer
-        self.params = self.initializer.init[
+        # Initialize params using the initializer (heap-allocated)
+        var init_params = self.initializer.init[
             Self.MODEL.PARAM_SIZE, Self.MODEL.IN_DIM, Self.MODEL.OUT_DIM
         ]()
-
-        # Initialize grads to zero
-        self.grads = InlineArray[Scalar[dtype], Self.MODEL.PARAM_SIZE](
-            uninitialized=True
-        )
+        self.params = List[Scalar[dtype]](capacity=Self.MODEL.PARAM_SIZE)
         for i in range(Self.MODEL.PARAM_SIZE):
-            self.grads[i] = 0
+            self.params.append(init_params[i])
 
-        # Initialize optimizer state to zero (moments for Adam, unused for SGD)
-        self.optimizer_state = InlineArray[
-            Scalar[dtype],
-            Self.MODEL.PARAM_SIZE * Self.OPTIMIZER.STATE_PER_PARAM,
-        ](uninitialized=True)
-        for i in range(Self.MODEL.PARAM_SIZE * Self.OPTIMIZER.STATE_PER_PARAM):
-            self.optimizer_state[i] = 0
+        # Initialize grads to zero (heap-allocated)
+        self.grads = List[Scalar[dtype]](capacity=Self.MODEL.PARAM_SIZE)
+        for i in range(Self.MODEL.PARAM_SIZE):
+            self.grads.append(0)
+
+        # Initialize optimizer state to zero (heap-allocated)
+        comptime STATE_SIZE = Self.MODEL.PARAM_SIZE * Self.OPTIMIZER.STATE_PER_PARAM
+        self.optimizer_state = List[Scalar[dtype]](capacity=STATE_SIZE)
+        for i in range(STATE_SIZE):
+            self.optimizer_state.append(0)
 
     fn train[
         BATCH: Int

@@ -104,13 +104,14 @@ struct Seq2[L0: Model, L1: Model](Model):
         Cache layout (blocked): [L0's cache | L1's cache]
         Params layout: [L0's params | L1's params]
         """
-        # Intermediate buffer for L0 output / L1 input
-        var buffer0_storage = InlineArray[
-            Scalar[dtype], BATCH * Self.L0.OUT_DIM
-        ](uninitialized=True)
+        # Intermediate buffer for L0 output / L1 input (heap-allocated to avoid stack overflow)
+        comptime INTER_SIZE = BATCH * Self.L0.OUT_DIM
+        var buffer0_storage = List[Scalar[dtype]](capacity=INTER_SIZE)
+        for _ in range(INTER_SIZE):
+            buffer0_storage.append(0)
         var buffer0 = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.L0.OUT_DIM), MutAnyOrigin
-        ](buffer0_storage)
+        ](buffer0_storage.unsafe_ptr())
 
         # Create zero-copy views using pointer offsets
         var params_ptr = params.ptr
@@ -156,13 +157,14 @@ struct Seq2[L0: Model, L1: Model](Model):
         ],
     ):
         """Forward pass without caching (for inference)."""
-        # Intermediate buffer for L0 output / L1 input
-        var buffer0_storage = InlineArray[
-            Scalar[dtype], BATCH * Self.L0.OUT_DIM
-        ](uninitialized=True)
+        # Intermediate buffer for L0 output / L1 input (heap-allocated to avoid stack overflow)
+        comptime INTER_SIZE = BATCH * Self.L0.OUT_DIM
+        var buffer0_storage = List[Scalar[dtype]](capacity=INTER_SIZE)
+        for _ in range(INTER_SIZE):
+            buffer0_storage.append(0)
         var buffer0 = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.L0.OUT_DIM), MutAnyOrigin
-        ](buffer0_storage)
+        ](buffer0_storage.unsafe_ptr())
 
         # Create zero-copy views using pointer offsets
         var params_ptr = params.ptr
@@ -237,13 +239,14 @@ struct Seq2[L0: Model, L1: Model](Model):
             dtype, Layout.row_major(BATCH, Self.L1.CACHE_SIZE), MutAnyOrigin
         ](l1_cache_ptr)
 
-        # Intermediate buffer for gradient at buffer0
-        var grad_buffer0_storage = InlineArray[
-            Scalar[dtype], BATCH * Self.L0.OUT_DIM
-        ](uninitialized=True)
+        # Intermediate buffer for gradient at buffer0 (heap-allocated to avoid stack overflow)
+        comptime INTER_SIZE = BATCH * Self.L0.OUT_DIM
+        var grad_buffer0_storage = List[Scalar[dtype]](capacity=INTER_SIZE)
+        for _ in range(INTER_SIZE):
+            grad_buffer0_storage.append(0)
         var grad_buffer0 = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.L0.OUT_DIM), MutAnyOrigin
-        ](grad_buffer0_storage)
+        ](grad_buffer0_storage.unsafe_ptr())
 
         # L1 backward: grad_output -> grad_buffer0
         # Rebind grad_output to L1's output type

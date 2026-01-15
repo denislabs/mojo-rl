@@ -345,7 +345,6 @@ struct Tanh[dim: Int](Model):
             input: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
             ],
-            batch_size: Int,
         ):
             Self.forward_kernel_impl_no_cache[BATCH](output, input)
 
@@ -378,7 +377,6 @@ struct Tanh[dim: Int](Model):
             params_buf: Parameters buffer (unused for Tanh).
             cache_buf: Cached tanh output from forward pass [BATCH * dim].
             grads_buf: Parameter gradients (unused for Tanh).
-            batch_size: Runtime batch size for bounds checking.
         """
         var grad_input = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin

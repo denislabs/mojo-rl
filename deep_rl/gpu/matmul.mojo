@@ -12,8 +12,9 @@ For neural networks: C = A @ B where A is (M, K) and B is (K, N)
 
 from gpu import thread_idx, block_idx, block_dim, barrier
 from gpu.host import DeviceContext
-from gpu.memory import AddressSpace
+from gpu.memory import AddressSpace, async_copy_wait_all
 from layout import Layout, LayoutTensor
+from layout.layout_tensor import copy_dram_to_sram_async
 
 
 @always_inline
@@ -59,7 +60,6 @@ fn tiled_matmul_kernel[
     comptime num_tiles = (K + TILE - 1) // TILE
 
     # Iterate over tiles
-    @parameter
     for tile_idx in range(num_tiles):
         # Load A tile: A[global_row, tile_idx * TILE + local_col]
         a_col = tile_idx * TILE + local_col
@@ -89,3 +89,182 @@ fn tiled_matmul_kernel[
     # Write result
     if global_row < M and global_col < N:
         output[global_row, global_col] = acc
+
+
+@always_inline
+fn matmul_kernel[
+    dtype: DType,
+    M: Int,
+    N: Int,
+    K: Int,
+    TILE: Int,
+](
+    output: LayoutTensor[dtype, Layout.row_major(M, N), MutAnyOrigin],
+    a: LayoutTensor[dtype, Layout.row_major(M, K), ImmutAnyOrigin],
+    b: LayoutTensor[dtype, Layout.row_major(K, N), ImmutAnyOrigin],
+):
+    """Idiomatic tiled matmul using tile() and async memory copies.
+
+    This version assumes M, N, K are all divisible by TILE.
+    For arbitrary dimensions, use tiled_matmul_kernel_general.
+
+    Grid: ((N + TILE - 1) // TILE, (M + TILE - 1) // TILE)
+    Block: (TILE, TILE)
+    """
+    var local_row = Int(thread_idx.y)
+    var local_col = Int(thread_idx.x)
+    var block_row = Int(block_idx.y)
+    var block_col = Int(block_idx.x)
+
+    # Get output tile that this block is responsible for
+    var out_tile = output.tile[TILE, TILE](block_row, block_col)
+
+    # Shared memory for tiles
+    var a_shared = LayoutTensor[
+        dtype,
+        Layout.row_major(TILE, TILE),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ].stack_allocation()
+
+    var b_shared = LayoutTensor[
+        dtype,
+        Layout.row_major(TILE, TILE),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ].stack_allocation()
+
+    var acc: output.element_type = 0
+
+    # Thread layout for coalesced memory access
+    # Each thread loads one element, threads arranged in row-major order
+    comptime NUM_THREADS = TILE * TILE
+    comptime BLOCK_DIM_COUNT = 2
+    comptime load_layout = Layout.row_major(1, TILE)
+
+    # Number of tiles along K dimension
+    comptime num_k_tiles = K // TILE
+
+    # Use runtime loop to avoid compile-time explosion with large K
+    for tile_idx in range(num_k_tiles):
+        # Get tiles from A and B
+        var a_tile = a.tile[TILE, TILE](block_row, tile_idx)
+        var b_tile = b.tile[TILE, TILE](tile_idx, block_col)
+
+        # Async copy tiles to shared memory with coalesced access
+        copy_dram_to_sram_async[
+            thread_layout=load_layout,
+            num_threads=NUM_THREADS,
+            block_dim_count=BLOCK_DIM_COUNT,
+        ](a_shared, a_tile)
+
+        copy_dram_to_sram_async[
+            thread_layout=load_layout,
+            num_threads=NUM_THREADS,
+            block_dim_count=BLOCK_DIM_COUNT,
+        ](b_shared, b_tile)
+
+        # Wait for async copies to complete
+        async_copy_wait_all()
+        barrier()
+
+        # Compute partial matrix multiplication for this tile
+        @parameter
+        for k in range(TILE):
+            acc += a_shared[local_row, k] * b_shared[k, local_col]
+
+        barrier()
+
+    # Write result to output tile
+    out_tile[local_row, local_col] = acc
+
+
+@always_inline
+fn matmul_bias_kernel[
+    dtype: DType,
+    M: Int,
+    N: Int,
+    K: Int,
+    TILE: Int,
+](
+    output: LayoutTensor[dtype, Layout.row_major(M, N), MutAnyOrigin],
+    a: LayoutTensor[dtype, Layout.row_major(M, K), ImmutAnyOrigin],
+    b: LayoutTensor[dtype, Layout.row_major(K, N), ImmutAnyOrigin],
+    bias: LayoutTensor[dtype, Layout.row_major(N), ImmutAnyOrigin],
+):
+    """Matmul with bias kernel using shared memory tiling.
+
+    This version assumes M, N, K are all divisible by TILE.
+    For arbitrary dimensions, use tiled_matmul_kernel_general.
+
+    Grid: ((N + TILE - 1) // TILE, (M + TILE - 1) // TILE)
+    Block: (TILE, TILE)
+    """
+    var local_row = Int(thread_idx.y)
+    var local_col = Int(thread_idx.x)
+    var block_row = Int(block_idx.y)
+    var block_col = Int(block_idx.x)
+    var global_col = Int(block_idx.x) * TILE + local_col
+    # Get output tile that this block is responsible for
+    var out_tile = output.tile[TILE, TILE](block_row, block_col)
+
+    # Shared memory for tiles
+    var a_shared = LayoutTensor[
+        dtype,
+        Layout.row_major(TILE, TILE),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ].stack_allocation()
+
+    var b_shared = LayoutTensor[
+        dtype,
+        Layout.row_major(TILE, TILE),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ].stack_allocation()
+
+    var acc: output.element_type = 0
+    if global_col < N:
+        acc = bias[global_col]
+
+    # Thread layout for coalesced memory access
+    # Each thread loads one element, threads arranged in row-major order
+    comptime NUM_THREADS = TILE * TILE
+    comptime BLOCK_DIM_COUNT = 2
+    comptime load_layout = Layout.row_major(1, TILE)
+
+    # Number of tiles along K dimension
+    comptime num_k_tiles = K // TILE
+
+    # Use runtime loop to avoid compile-time explosion with large K
+    for tile_idx in range(num_k_tiles):
+        # Get tiles from A and B
+        var a_tile = a.tile[TILE, TILE](block_row, tile_idx)
+        var b_tile = b.tile[TILE, TILE](tile_idx, block_col)
+
+        # Async copy tiles to shared memory with coalesced access
+        copy_dram_to_sram_async[
+            thread_layout=load_layout,
+            num_threads=NUM_THREADS,
+            block_dim_count=BLOCK_DIM_COUNT,
+        ](a_shared, a_tile)
+
+        copy_dram_to_sram_async[
+            thread_layout=load_layout,
+            num_threads=NUM_THREADS,
+            block_dim_count=BLOCK_DIM_COUNT,
+        ](b_shared, b_tile)
+
+        # Wait for async copies to complete
+        async_copy_wait_all()
+        barrier()
+
+        # Compute partial matrix multiplication for this tile
+        @parameter
+        for k in range(TILE):
+            acc += a_shared[local_row, k] * b_shared[k, local_col]
+
+        barrier()
+
+    # Write result to output tile
+    out_tile[local_row, local_col] = acc

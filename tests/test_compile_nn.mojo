@@ -18,9 +18,9 @@ from deep_rl.model import Linear
 # Constants
 # =============================================================================
 
-comptime BATCH_SIZE = 1024
+comptime BATCH_SIZE = 4096
 comptime INPUT_DIM = 2
-comptime HIDDEN_DIM = 1024
+comptime HIDDEN_DIM = 4096
 
 # Linear layer constants
 comptime LinearLayer = Linear[INPUT_DIM, HIDDEN_DIM]

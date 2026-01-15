@@ -31,7 +31,7 @@ from deep_rl.initializer import Xavier
 
 comptime BATCH_SIZE = 1024
 comptime INPUT_DIM = 2
-comptime HIDDEN_DIM = 1024
+comptime HIDDEN_DIM = 1024  # Testing with heap-allocated Trainer
 comptime OUTPUT_DIM = 1
 
 comptime NUM_EPOCHS = 500
