@@ -30,7 +30,7 @@ comptime OBS_DIM = 8
 comptime NUM_ACTIONS = 4
 
 # Network architecture
-comptime HIDDEN_DIM = 300
+comptime HIDDEN_DIM = 256
 
 # GPU training parameters
 comptime ROLLOUT_LEN = 128  # Steps per rollout per environment

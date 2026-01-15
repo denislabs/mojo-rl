@@ -84,11 +84,10 @@ struct Network[
     var model: Self.MODEL
     var optimizer: Self.OPTIMIZER
     var initializer: Self.INITIALIZER
-    var params: InlineArray[Scalar[dtype], Self.MODEL.PARAM_SIZE]
-    var grads: InlineArray[Scalar[dtype], Self.MODEL.PARAM_SIZE]
-    var optimizer_state: InlineArray[
-        Scalar[dtype], Self.MODEL.PARAM_SIZE * Self.OPTIMIZER.STATE_PER_PARAM
-    ]
+    # Heap-allocated arrays to support large hidden dimensions
+    var params: List[Scalar[dtype]]
+    var grads: List[Scalar[dtype]]
+    var optimizer_state: List[Scalar[dtype]]
 
     fn __init__(
         out self,
@@ -107,25 +106,24 @@ struct Network[
         self.optimizer = optimizer
         self.initializer = initializer
 
-        # Initialize params using the initializer
-        self.params = self.initializer.init[
+        # Initialize params using the initializer (copy from InlineArray to List)
+        var init_params = self.initializer.init[
             Self.MODEL.PARAM_SIZE, Self.MODEL.IN_DIM, Self.MODEL.OUT_DIM
         ]()
+        self.params = List[Scalar[dtype]](capacity=Self.MODEL.PARAM_SIZE)
+        for i in range(Self.MODEL.PARAM_SIZE):
+            self.params.append(init_params[i])
 
         # Initialize grads to zero
-        self.grads = InlineArray[Scalar[dtype], Self.MODEL.PARAM_SIZE](
-            uninitialized=True
-        )
+        self.grads = List[Scalar[dtype]](capacity=Self.MODEL.PARAM_SIZE)
         for i in range(Self.MODEL.PARAM_SIZE):
-            self.grads[i] = 0
+            self.grads.append(Scalar[dtype](0))
 
         # Initialize optimizer state to zero
-        self.optimizer_state = InlineArray[
-            Scalar[dtype],
-            Self.MODEL.PARAM_SIZE * Self.OPTIMIZER.STATE_PER_PARAM,
-        ](uninitialized=True)
-        for i in range(Self.MODEL.PARAM_SIZE * Self.OPTIMIZER.STATE_PER_PARAM):
-            self.optimizer_state[i] = 0
+        comptime STATE_SIZE = Self.MODEL.PARAM_SIZE * Self.OPTIMIZER.STATE_PER_PARAM
+        self.optimizer_state = List[Scalar[dtype]](capacity=STATE_SIZE)
+        for i in range(STATE_SIZE):
+            self.optimizer_state.append(Scalar[dtype](0))
 
     # =========================================================================
     # CPU Forward Pass
@@ -196,6 +194,48 @@ struct Network[
         )
 
     # =========================================================================
+    # CPU Forward Pass (Heap-allocated cache variants)
+    # =========================================================================
+
+    fn forward_with_cache_heap[
+        BATCH: Int
+    ](
+        self,
+        input: InlineArray[Scalar[dtype], BATCH * Self.MODEL.IN_DIM],
+        mut output: InlineArray[Scalar[dtype], BATCH * Self.MODEL.OUT_DIM],
+        mut cache: List[Scalar[dtype]],
+    ):
+        """Forward pass with heap-allocated cache (for large hidden dimensions).
+
+        Use this variant when CACHE_SIZE is large to avoid stack overflow.
+        The cache List must be pre-allocated with size >= BATCH * CACHE_SIZE.
+
+        Args:
+            input: Input tensor [BATCH * IN_DIM].
+            output: Output tensor [BATCH * OUT_DIM] (written).
+            cache: Heap-allocated cache List [BATCH * CACHE_SIZE] (written).
+        """
+        var input_tensor = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
+        ](input.unsafe_ptr())
+        var output_tensor = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+        ](output.unsafe_ptr())
+        var params_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
+        ](self.params.unsafe_ptr())
+        var cache_tensor = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE), MutAnyOrigin
+        ](cache.unsafe_ptr())
+
+        self.model.forward[BATCH](
+            input_tensor,
+            output_tensor,
+            params_tensor,
+            cache_tensor,
+        )
+
+    # =========================================================================
     # CPU Backward Pass
     # =========================================================================
 
@@ -220,6 +260,48 @@ struct Network[
             grad_output: Gradient of loss w.r.t. output [BATCH * OUT_DIM].
             grad_input: Gradient of loss w.r.t. input [BATCH * IN_DIM] (written).
             cache: Cache from forward_with_cache [BATCH * CACHE_SIZE].
+        """
+        var grad_output_tensor = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+        ](grad_output.unsafe_ptr())
+        var grad_input_tensor = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
+        ](grad_input.unsafe_ptr())
+        var params_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
+        ](self.params.unsafe_ptr())
+        var cache_tensor = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE), MutAnyOrigin
+        ](cache.unsafe_ptr())
+        var grads_tensor = LayoutTensor[
+            dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
+        ](self.grads.unsafe_ptr())
+
+        self.model.backward[BATCH](
+            grad_output_tensor,
+            grad_input_tensor,
+            params_tensor,
+            cache_tensor,
+            grads_tensor,
+        )
+
+    fn backward_heap[
+        BATCH: Int
+    ](
+        mut self,
+        grad_output: InlineArray[Scalar[dtype], BATCH * Self.MODEL.OUT_DIM],
+        mut grad_input: InlineArray[Scalar[dtype], BATCH * Self.MODEL.IN_DIM],
+        cache: List[Scalar[dtype]],
+    ):
+        """Backward pass with heap-allocated cache (for large hidden dimensions).
+
+        Use this variant when CACHE_SIZE is large to avoid stack overflow.
+        Call zero_grads() before this if you want fresh gradients.
+
+        Args:
+            grad_output: Gradient of loss w.r.t. output [BATCH * OUT_DIM].
+            grad_input: Gradient of loss w.r.t. input [BATCH * IN_DIM] (written).
+            cache: Heap-allocated cache from forward_with_cache_heap [BATCH * CACHE_SIZE].
         """
         var grad_output_tensor = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
@@ -702,10 +784,16 @@ struct Network[
         comptime STATE_SIZE = Self.MODEL.PARAM_SIZE * Self.OPTIMIZER.STATE_PER_PARAM
 
         var content = write_checkpoint_header("network", PARAM_SIZE, STATE_SIZE)
-        content += write_float_section[PARAM_SIZE]("params:", self.params)
-        content += write_float_section[STATE_SIZE](
-            "optimizer_state:", self.optimizer_state
-        )
+
+        # Write params section (manual for List compatibility)
+        content += "params:\n"
+        for i in range(PARAM_SIZE):
+            content += String(Float64(self.params[i])) + "\n"
+
+        # Write optimizer_state section
+        content += "optimizer_state:\n"
+        for i in range(STATE_SIZE):
+            content += String(Float64(self.optimizer_state[i])) + "\n"
 
         save_checkpoint_file(filepath, content)
 

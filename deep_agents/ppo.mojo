@@ -26,6 +26,10 @@ Usage:
 
     var metrics = agent.train(env, num_episodes=1000)
 
+Features:
+ - Per-minibatch advantage normalization (norm_adv_per_minibatch)
+ - Value clipping for stable critic updates (clip_value)
+
 Reference: Schulman et al., "Proximal Policy Optimization Algorithms" (2017)
 """
 
@@ -144,6 +148,9 @@ fn ppo_gather_minibatch_kernel[
     mb_old_log_probs: LayoutTensor[
         dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
     ],
+    mb_old_values: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+    ],
     # Inputs - rollout buffers and indices
     rollout_obs: LayoutTensor[
         dtype, Layout.row_major(TOTAL_SIZE, OBS_DIM), MutAnyOrigin
@@ -154,6 +161,9 @@ fn ppo_gather_minibatch_kernel[
     advantages: LayoutTensor[dtype, Layout.row_major(TOTAL_SIZE), MutAnyOrigin],
     returns: LayoutTensor[dtype, Layout.row_major(TOTAL_SIZE), MutAnyOrigin],
     rollout_log_probs: LayoutTensor[
+        dtype, Layout.row_major(TOTAL_SIZE), MutAnyOrigin
+    ],
+    rollout_values: LayoutTensor[
         dtype, Layout.row_major(TOTAL_SIZE), MutAnyOrigin
     ],
     indices: LayoutTensor[
@@ -176,6 +186,7 @@ fn ppo_gather_minibatch_kernel[
     mb_advantages[i] = advantages[src_idx]
     mb_returns[i] = returns[src_idx]
     mb_old_log_probs[i] = rollout_log_probs[src_idx]
+    mb_old_values[i] = rollout_values[src_idx]
 
 
 @always_inline
@@ -468,6 +479,96 @@ fn ppo_critic_grad_kernel[
     )
 
 
+@always_inline
+fn ppo_critic_grad_clipped_kernel[
+    dtype: DType,
+    BATCH_SIZE: Int,
+](
+    # Outputs
+    grad_values: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, 1), MutAnyOrigin
+    ],
+    # Inputs
+    values: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE, 1), MutAnyOrigin],
+    old_values: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    returns: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    value_loss_coef: Scalar[dtype],
+    clip_epsilon: Scalar[dtype],
+    batch_size: Int,
+):
+    """Compute gradient for critic with value clipping.
+
+    Value clipping prevents the value function from changing too drastically:
+    V_clipped = V_old + clip(V - V_old, -ε, +ε)
+    L_value = max((V - returns)², (V_clipped - returns)²)
+
+    We take gradient of the max, which means we use the gradient of whichever
+    loss is larger (more pessimistic update).
+    """
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= BATCH_SIZE:
+        return
+
+    var v_new_simd = values[b, 0]
+    var v_old_simd = old_values[b]
+    var ret_simd = returns[b]
+
+    # Extract scalar values
+    var v_new = Scalar[dtype](v_new_simd[0])
+    var v_old = Scalar[dtype](v_old_simd[0])
+    var ret = Scalar[dtype](ret_simd[0])
+
+    # Clipped value
+    var v_diff = v_new - v_old
+    var v_clipped: Scalar[dtype]
+    if v_diff > clip_epsilon:
+        v_clipped = v_old + clip_epsilon
+    elif v_diff < -clip_epsilon:
+        v_clipped = v_old - clip_epsilon
+    else:
+        v_clipped = v_new
+
+    # Unclipped and clipped losses
+    var loss_unclipped = (v_new - ret) * (v_new - ret)
+    var loss_clipped = (v_clipped - ret) * (v_clipped - ret)
+
+    # Use gradient of the larger loss (pessimistic)
+    var grad: Scalar[dtype]
+    if loss_unclipped > loss_clipped:
+        # Gradient of unclipped loss
+        grad = Scalar[dtype](2.0) * (v_new - ret)
+    else:
+        # Gradient of clipped loss - but v_clipped might be clamped
+        if v_diff > clip_epsilon or v_diff < -clip_epsilon:
+            # v_clipped doesn't depend on v_new, so gradient is 0
+            grad = Scalar[dtype](0.0)
+        else:
+            # v_clipped = v_new, same as unclipped
+            grad = Scalar[dtype](2.0) * (v_new - ret)
+
+    grad_values[b, 0] = value_loss_coef * grad / Scalar[dtype](BATCH_SIZE)
+
+
+@always_inline
+fn normalize_advantages_kernel[
+    dtype: DType,
+    BATCH_SIZE: Int,
+](
+    # In/Out
+    advantages: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    # Inputs (pre-computed on CPU and passed in)
+    mean: Scalar[dtype],
+    std: Scalar[dtype],
+    batch_size: Int,
+):
+    """Normalize advantages in-place using pre-computed mean and std."""
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= batch_size:
+        return
+
+    advantages[b] = (advantages[b] - mean) / (std + Scalar[dtype](1e-8))
+
+
 # =============================================================================
 # GPU Kernels: Store transition data
 # =============================================================================
@@ -638,14 +739,16 @@ struct DeepPPOAgent[
     var anneal_lr: Bool  # Whether to linearly anneal learning rate
     var anneal_entropy: Bool  # Whether to anneal entropy coefficient
     var target_total_steps: Int  # Target steps for annealing (0 = auto-calculate)
+    var clip_value: Bool  # Whether to clip value function updates
+    var norm_adv_per_minibatch: Bool  # Normalize advantages per minibatch
 
-    # Rollout buffers
-    var buffer_obs: InlineArray[Scalar[dtype], Self.ROLLOUT * Self.OBS]
-    var buffer_actions: InlineArray[Int, Self.ROLLOUT]
-    var buffer_rewards: InlineArray[Scalar[dtype], Self.ROLLOUT]
-    var buffer_values: InlineArray[Scalar[dtype], Self.ROLLOUT]
-    var buffer_log_probs: InlineArray[Scalar[dtype], Self.ROLLOUT]
-    var buffer_dones: InlineArray[Bool, Self.ROLLOUT]
+    # Rollout buffers (heap-allocated to avoid stack overflow for large ROLLOUT/OBS)
+    var buffer_obs: List[Scalar[dtype]]
+    var buffer_actions: List[Int]
+    var buffer_rewards: List[Scalar[dtype]]
+    var buffer_values: List[Scalar[dtype]]
+    var buffer_log_probs: List[Scalar[dtype]]
+    var buffer_dones: List[Bool]
     var buffer_idx: Int
 
     # Training state
@@ -673,6 +776,8 @@ struct DeepPPOAgent[
         anneal_lr: Bool = True,
         anneal_entropy: Bool = False,
         target_total_steps: Int = 0,
+        clip_value: Bool = True,
+        norm_adv_per_minibatch: Bool = True,
         # Checkpoint settings
         checkpoint_every: Int = 0,
         checkpoint_path: String = "",
@@ -695,6 +800,8 @@ struct DeepPPOAgent[
             anneal_lr: Whether to linearly anneal learning rate (default: True).
             anneal_entropy: Whether to anneal entropy coefficient (default: False).
             target_total_steps: Target total steps for annealing, 0=auto (default: 0).
+            clip_value: Whether to clip value function updates (default: True).
+            norm_adv_per_minibatch: Normalize advantages per minibatch (default: True).
             checkpoint_every: Save checkpoint every N episodes (0 to disable).
             checkpoint_path: Path to save checkpoints.
         """
@@ -737,16 +844,34 @@ struct DeepPPOAgent[
         self.anneal_lr = anneal_lr
         self.anneal_entropy = anneal_entropy
         self.target_total_steps = target_total_steps
+        self.clip_value = clip_value
+        self.norm_adv_per_minibatch = norm_adv_per_minibatch
 
-        # Initialize buffers
-        self.buffer_obs = InlineArray[Scalar[dtype], Self.ROLLOUT * Self.OBS](
-            fill=0
-        )
-        self.buffer_actions = InlineArray[Int, Self.ROLLOUT](fill=0)
-        self.buffer_rewards = InlineArray[Scalar[dtype], Self.ROLLOUT](fill=0)
-        self.buffer_values = InlineArray[Scalar[dtype], Self.ROLLOUT](fill=0)
-        self.buffer_log_probs = InlineArray[Scalar[dtype], Self.ROLLOUT](fill=0)
-        self.buffer_dones = InlineArray[Bool, Self.ROLLOUT](fill=False)
+        # Initialize buffers (heap-allocated Lists)
+        self.buffer_obs = List[Scalar[dtype]](capacity=Self.ROLLOUT * Self.OBS)
+        for _ in range(Self.ROLLOUT * Self.OBS):
+            self.buffer_obs.append(Scalar[dtype](0))
+
+        self.buffer_actions = List[Int](capacity=Self.ROLLOUT)
+        for _ in range(Self.ROLLOUT):
+            self.buffer_actions.append(0)
+
+        self.buffer_rewards = List[Scalar[dtype]](capacity=Self.ROLLOUT)
+        for _ in range(Self.ROLLOUT):
+            self.buffer_rewards.append(Scalar[dtype](0))
+
+        self.buffer_values = List[Scalar[dtype]](capacity=Self.ROLLOUT)
+        for _ in range(Self.ROLLOUT):
+            self.buffer_values.append(Scalar[dtype](0))
+
+        self.buffer_log_probs = List[Scalar[dtype]](capacity=Self.ROLLOUT)
+        for _ in range(Self.ROLLOUT):
+            self.buffer_log_probs.append(Scalar[dtype](0))
+
+        self.buffer_dones = List[Bool](capacity=Self.ROLLOUT)
+        for _ in range(Self.ROLLOUT):
+            self.buffer_dones.append(False)
+
         self.buffer_idx = 0
 
         # Training state
@@ -840,36 +965,74 @@ struct DeepPPOAgent[
         self.critic.forward[1](next_obs, next_value_out)
         var next_value = next_value_out[0]
 
-        # Compute GAE advantages and returns
-        var advantages = InlineArray[Scalar[dtype], Self.ROLLOUT](fill=0)
-        var returns = InlineArray[Scalar[dtype], Self.ROLLOUT](fill=0)
+        # Compute GAE advantages and returns (inline for List compatibility)
+        var advantages = List[Scalar[dtype]](capacity=Self.ROLLOUT)
+        var returns = List[Scalar[dtype]](capacity=Self.ROLLOUT)
+        for _ in range(buffer_len):
+            advantages.append(Scalar[dtype](0))
+            returns.append(Scalar[dtype](0))
 
-        compute_gae_inline[dtype, Self.ROLLOUT](
-            self.buffer_rewards,
-            self.buffer_values,
-            next_value,
-            self.buffer_dones,
-            self.gamma,
-            self.gae_lambda,
-            buffer_len,
-            advantages,
-            returns,
-        )
+        # GAE computation
+        var gae = Scalar[dtype](0.0)
+        var gae_decay = Scalar[dtype](self.gamma * self.gae_lambda)
+        for t in range(buffer_len - 1, -1, -1):
+            var next_val: Scalar[dtype]
+            if t == buffer_len - 1:
+                next_val = next_value
+            else:
+                next_val = self.buffer_values[t + 1]
+
+            # Reset GAE at episode boundary
+            if self.buffer_dones[t]:
+                next_val = Scalar[dtype](0.0)
+                gae = Scalar[dtype](0.0)
+
+            # TD residual: δ = r + γV(s') - V(s)
+            var delta = (
+                self.buffer_rewards[t]
+                + Scalar[dtype](self.gamma) * next_val
+                - self.buffer_values[t]
+            )
+
+            # GAE accumulation: A = δ + γλA'
+            gae = delta + gae_decay * gae
+
+            advantages[t] = gae
+            returns[t] = gae + self.buffer_values[t]
 
         # Normalize advantages
         if self.normalize_advantages and buffer_len > 1:
-            normalize_inline[dtype, Self.ROLLOUT](buffer_len, advantages)
+            var mean = Scalar[dtype](0.0)
+            for i in range(buffer_len):
+                mean += advantages[i]
+            mean /= Scalar[dtype](buffer_len)
+
+            var var_sum = Scalar[dtype](0.0)
+            for i in range(buffer_len):
+                var diff = advantages[i] - mean
+                var_sum += diff * diff
+
+            from math import sqrt
+            var std = sqrt(var_sum / Scalar[dtype](buffer_len) + Scalar[dtype](1e-8))
+            for i in range(buffer_len):
+                advantages[i] = (advantages[i] - mean) / std
 
         # =====================================================================
         # Multiple epochs of optimization
         # =====================================================================
 
         var total_loss = Scalar[dtype](0.0)
-        var indices = InlineArray[Int, Self.ROLLOUT](fill=0)
+        var indices = List[Int](capacity=buffer_len)
+        for i in range(buffer_len):
+            indices.append(i)
 
         for epoch in range(self.num_epochs):
-            # Shuffle indices for minibatch sampling
-            shuffle_indices_inline[Self.ROLLOUT](buffer_len, indices)
+            # Shuffle indices for minibatch sampling using Fisher-Yates
+            for i in range(buffer_len - 1, 0, -1):
+                var j = Int(random_float64() * Float64(i + 1))
+                var temp = indices[i]
+                indices[i] = indices[j]
+                indices[j] = temp
 
             var batch_start = 0
             while batch_start < buffer_len:
@@ -877,9 +1040,40 @@ struct DeepPPOAgent[
                 if batch_end > buffer_len:
                     batch_end = buffer_len
 
+                var mb_size = batch_end - batch_start
+
+                # Per-minibatch advantage normalization
+                var mb_advantages = List[Scalar[dtype]](capacity=mb_size)
+                for b in range(batch_start, batch_end):
+                    var t = indices[b]
+                    mb_advantages.append(advantages[t])
+
+                if self.norm_adv_per_minibatch and mb_size > 1:
+                    var mb_mean = Scalar[dtype](0.0)
+                    for i in range(mb_size):
+                        mb_mean += mb_advantages[i]
+                    mb_mean /= Scalar[dtype](mb_size)
+
+                    var mb_var_sum = Scalar[dtype](0.0)
+                    for i in range(mb_size):
+                        var diff = mb_advantages[i] - mb_mean
+                        mb_var_sum += diff * diff
+
+                    from math import sqrt
+
+                    var mb_std = sqrt(
+                        mb_var_sum / Scalar[dtype](mb_size)
+                        + Scalar[dtype](1e-8)
+                    )
+                    for i in range(mb_size):
+                        mb_advantages[i] = (
+                            mb_advantages[i] - mb_mean
+                        ) / mb_std
+
                 # Process minibatch
                 for b in range(batch_start, batch_end):
                     var t = indices[b]
+                    var mb_idx = b - batch_start
 
                     # Get observation for this timestep
                     var obs = InlineArray[Scalar[dtype], Self.OBS](fill=0)
@@ -888,7 +1082,8 @@ struct DeepPPOAgent[
 
                     var action = self.buffer_actions[t]
                     var old_log_prob = self.buffer_log_probs[t]
-                    var advantage = advantages[t]
+                    var old_value = self.buffer_values[t]
+                    var advantage = mb_advantages[mb_idx]
                     var return_t = returns[t]
 
                     # ==========================================================
@@ -897,10 +1092,7 @@ struct DeepPPOAgent[
                     var logits = InlineArray[Scalar[dtype], Self.ACTIONS](
                         uninitialized=True
                     )
-                    var actor_cache = InlineArray[
-                        Scalar[dtype], Self.ACTOR_CACHE
-                    ](uninitialized=True)
-                    self.actor.forward_with_cache[1](obs, logits, actor_cache)
+                    self.actor.forward[1](obs, logits)
 
                     var probs = softmax_inline[dtype, Self.ACTIONS](logits)
                     var new_log_prob = log(probs[action] + Scalar[dtype](1e-8))
@@ -962,12 +1154,17 @@ struct DeepPPOAgent[
                                 - Scalar[dtype](self.entropy_coef) * d_entropy
                             )
 
-                    # Backward through actor
+                    # Backward through actor (use heap-allocated cache for large HIDDEN)
+                    var actor_cache = List[Scalar[dtype]](capacity=Self.ACTOR_CACHE)
+                    for _ in range(Self.ACTOR_CACHE):
+                        actor_cache.append(Scalar[dtype](0))
+                    self.actor.forward_with_cache_heap[1](obs, logits, actor_cache)
+
                     var actor_grad_input = InlineArray[Scalar[dtype], Self.OBS](
                         fill=0
                     )
                     self.actor.zero_grads()
-                    self.actor.backward[1](
+                    self.actor.backward_heap[1](
                         d_logits, actor_grad_input, actor_cache
                     )
                     self.actor.update()
@@ -978,10 +1175,10 @@ struct DeepPPOAgent[
                     var value_out = InlineArray[Scalar[dtype], 1](
                         uninitialized=True
                     )
-                    var critic_cache = InlineArray[
-                        Scalar[dtype], Self.CRITIC_CACHE
-                    ](uninitialized=True)
-                    self.critic.forward_with_cache[1](
+                    var critic_cache = List[Scalar[dtype]](capacity=Self.CRITIC_CACHE)
+                    for _ in range(Self.CRITIC_CACHE):
+                        critic_cache.append(Scalar[dtype](0))
+                    self.critic.forward_with_cache_heap[1](
                         obs, value_out, critic_cache
                     )
 
@@ -990,20 +1187,68 @@ struct DeepPPOAgent[
                     # Value loss: (return - value)^2
                     var value_loss = (return_t - value) * (return_t - value)
 
-                    # Critic gradient
+                    # Critic gradient (with optional value clipping)
                     var d_value = InlineArray[Scalar[dtype], 1](fill=0)
-                    d_value[0] = (
-                        Scalar[dtype](2.0)
-                        * Scalar[dtype](self.value_loss_coef)
-                        * (value - return_t)
-                    )
+                    if self.clip_value:
+                        # Clipped value function
+                        var v_diff = value - old_value
+                        var v_clipped: Scalar[dtype]
+                        if v_diff > Scalar[dtype](self.clip_epsilon):
+                            v_clipped = old_value + Scalar[dtype](
+                                self.clip_epsilon
+                            )
+                        elif v_diff < -Scalar[dtype](self.clip_epsilon):
+                            v_clipped = old_value - Scalar[dtype](
+                                self.clip_epsilon
+                            )
+                        else:
+                            v_clipped = value
+
+                        # Unclipped and clipped losses
+                        var loss_unclipped = (value - return_t) * (
+                            value - return_t
+                        )
+                        var loss_clipped = (v_clipped - return_t) * (
+                            v_clipped - return_t
+                        )
+
+                        # Use gradient of the larger loss (pessimistic)
+                        if loss_unclipped > loss_clipped:
+                            # Gradient of unclipped loss
+                            d_value[0] = (
+                                Scalar[dtype](2.0)
+                                * Scalar[dtype](self.value_loss_coef)
+                                * (value - return_t)
+                            )
+                        else:
+                            # Gradient of clipped loss
+                            if (
+                                v_diff > Scalar[dtype](self.clip_epsilon)
+                                or v_diff < -Scalar[dtype](self.clip_epsilon)
+                            ):
+                                # v_clipped doesn't depend on value, gradient is 0
+                                d_value[0] = Scalar[dtype](0.0)
+                            else:
+                                # v_clipped = value
+                                d_value[0] = (
+                                    Scalar[dtype](2.0)
+                                    * Scalar[dtype](self.value_loss_coef)
+                                    * (value - return_t)
+                                )
+                    else:
+                        # Regular gradient
+                        d_value[0] = (
+                            Scalar[dtype](2.0)
+                            * Scalar[dtype](self.value_loss_coef)
+                            * (value - return_t)
+                        )
 
                     # Backward through critic
                     var critic_grad_input = InlineArray[
                         Scalar[dtype], Self.OBS
                     ](fill=0)
                     self.critic.zero_grads()
-                    self.critic.backward[1](
+                    self.critic.backward_heap[1](
                         d_value, critic_grad_input, critic_cache
                     )
                     self.critic.update()
@@ -1124,7 +1369,10 @@ struct DeepPPOAgent[
                         if verbose:
                             print("Checkpoint saved at episode", episode + 1)
                     except:
-                        print("Warning: Failed to save checkpoint at episode", episode + 1)
+                        print(
+                            "Warning: Failed to save checkpoint at episode",
+                            episode + 1,
+                        )
 
         return metrics^
 
@@ -1354,6 +1602,7 @@ struct DeepPPOAgent[
         var mb_advantages_buf = ctx.enqueue_create_buffer[dtype](MINIBATCH)
         var mb_returns_buf = ctx.enqueue_create_buffer[dtype](MINIBATCH)
         var mb_old_log_probs_buf = ctx.enqueue_create_buffer[dtype](MINIBATCH)
+        var mb_old_values_buf = ctx.enqueue_create_buffer[dtype](MINIBATCH)  # For value clipping
         var mb_indices_buf = ctx.enqueue_create_buffer[DType.int32](MINIBATCH)
         var mb_indices_host = ctx.enqueue_create_host_buffer[DType.int32](
             MINIBATCH
@@ -1389,6 +1638,9 @@ struct DeepPPOAgent[
         var kl_divergences_host = ctx.enqueue_create_host_buffer[dtype](
             MINIBATCH
         )
+
+        # Per-minibatch advantage normalization buffers
+        var mb_advantages_host = ctx.enqueue_create_host_buffer[dtype](MINIBATCH)
 
         # Gradient norm computation buffers
         comptime ACTOR_GRAD_BLOCKS = (ACTOR_PARAMS + TPB - 1) // TPB
@@ -1463,6 +1715,9 @@ struct DeepPPOAgent[
         var mb_old_log_probs_tensor = LayoutTensor[
             dtype, Layout.row_major(MINIBATCH), MutAnyOrigin
         ](mb_old_log_probs_buf.unsafe_ptr())
+        var mb_old_values_tensor = LayoutTensor[
+            dtype, Layout.row_major(MINIBATCH), MutAnyOrigin
+        ](mb_old_values_buf.unsafe_ptr())
         var rollout_obs_tensor = LayoutTensor[
             dtype,
             Layout.row_major(ROLLOUT_TOTAL, Self.OBS),
@@ -1480,6 +1735,9 @@ struct DeepPPOAgent[
         var rollout_log_probs_tensor = LayoutTensor[
             dtype, Layout.row_major(ROLLOUT_TOTAL), MutAnyOrigin
         ](rollout_log_probs_buf.unsafe_ptr())
+        var rollout_values_tensor = LayoutTensor[
+            dtype, Layout.row_major(ROLLOUT_TOTAL), MutAnyOrigin
+        ](rollout_values_buf.unsafe_ptr())
         var mb_indices_tensor = LayoutTensor[
             DType.int32, Layout.row_major(MINIBATCH), MutAnyOrigin
         ](mb_indices_buf.unsafe_ptr())
@@ -1603,6 +1861,12 @@ struct DeepPPOAgent[
             dtype, MINIBATCH, Self.ACTIONS
         ]
         comptime critic_grad_wrapper = ppo_critic_grad_kernel[dtype, MINIBATCH]
+        comptime critic_grad_clipped_wrapper = ppo_critic_grad_clipped_kernel[
+            dtype, MINIBATCH
+        ]
+        comptime normalize_advantages_wrapper = normalize_advantages_kernel[
+            dtype, MINIBATCH
+        ]
 
         # Gradient clipping kernel wrappers
         comptime actor_grad_norm_wrapper = gradient_norm_kernel[
@@ -1654,12 +1918,20 @@ struct DeepPPOAgent[
                 var rng_seed = UInt32(total_steps * 2654435761 + t * 7919)
                 # Forward actor to get logits (using pre-allocated workspace)
                 self.actor.model.forward_gpu_no_cache_ws[Self.n_envs](
-                    ctx, logits_buf, obs_buf, actor_params_buf, actor_env_workspace_buf
+                    ctx,
+                    logits_buf,
+                    obs_buf,
+                    actor_params_buf,
+                    actor_env_workspace_buf,
                 )
 
                 # Forward critic to get values (using pre-allocated workspace)
                 self.critic.model.forward_gpu_no_cache_ws[Self.n_envs](
-                    ctx, values_buf, obs_buf, critic_params_buf, critic_env_workspace_buf
+                    ctx,
+                    values_buf,
+                    obs_buf,
+                    critic_params_buf,
+                    critic_env_workspace_buf,
                 )
                 ctx.synchronize()
 
@@ -1853,7 +2125,11 @@ struct DeepPPOAgent[
 
             # Get bootstrap values from final observations (using pre-allocated workspace)
             self.critic.model.forward_gpu_no_cache_ws[Self.n_envs](
-                ctx, values_buf, obs_buf, critic_params_buf, critic_env_workspace_buf
+                ctx,
+                values_buf,
+                obs_buf,
+                critic_params_buf,
+                critic_env_workspace_buf,
             )
 
             ctx.enqueue_copy(bootstrap_values_host, values_buf)
@@ -2011,11 +2287,13 @@ struct DeepPPOAgent[
                         mb_advantages_tensor,
                         mb_returns_tensor,
                         mb_old_log_probs_tensor,
+                        mb_old_values_tensor,
                         rollout_obs_tensor,
                         rollout_actions_tensor,
                         advantages_tensor,
                         returns_tensor,
                         rollout_log_probs_tensor,
+                        rollout_values_tensor,
                         mb_indices_tensor,
                         MINIBATCH,
                         grid_dim=(MINIBATCH_BLOCKS,),
@@ -2024,19 +2302,58 @@ struct DeepPPOAgent[
                     ctx.synchronize()
                     gather_time_ns += perf_counter_ns() - gather_start
 
+                    # Per-minibatch advantage normalization
+                    if self.norm_adv_per_minibatch:
+                        # Copy advantages to CPU, compute mean/std, normalize on GPU
+                        ctx.enqueue_copy(mb_advantages_host, mb_advantages_buf)
+                        ctx.synchronize()
+
+                        # Compute mean and std on CPU
+                        var adv_mean = Scalar[dtype](0.0)
+                        for i in range(MINIBATCH):
+                            adv_mean += mb_advantages_host[i]
+                        adv_mean /= Scalar[dtype](MINIBATCH)
+
+                        var adv_var_sum = Scalar[dtype](0.0)
+                        for i in range(MINIBATCH):
+                            var diff = mb_advantages_host[i] - adv_mean
+                            adv_var_sum += diff * diff
+
+                        from math import sqrt
+
+                        var adv_std = sqrt(
+                            adv_var_sum / Scalar[dtype](MINIBATCH)
+                            + Scalar[dtype](1e-8)
+                        )
+
+                        # Normalize advantages on GPU
+                        ctx.enqueue_function[
+                            normalize_advantages_wrapper,
+                            normalize_advantages_wrapper,
+                        ](
+                            mb_advantages_tensor,
+                            adv_mean,
+                            adv_std,
+                            MINIBATCH,
+                            grid_dim=(MINIBATCH_BLOCKS,),
+                            block_dim=(TPB,),
+                        )
+                        ctx.synchronize()
+
                     # Train actor (inlined)
                     var actor_start = perf_counter_ns()
 
                     # Zero actor gradients
                     ctx.enqueue_memset(actor_grads_buf, 0)
 
-                    # Forward pass with cache
-                    self.actor.model.forward_gpu[MINIBATCH](
+                    # Forward pass with cache (using pre-allocated workspace)
+                    self.actor.model.forward_gpu_ws[MINIBATCH](
                         ctx,
                         actor_logits_buf,
                         mb_obs_buf,
                         actor_params_buf,
                         actor_cache_buf,
+                        actor_minibatch_workspace_buf,
                     )
                     ctx.synchronize()
 
@@ -2084,14 +2401,15 @@ struct DeepPPOAgent[
                                 )
                             break  # Break from minibatch loop
 
-                    # Backward pass
-                    self.actor.model.backward_gpu[MINIBATCH](
+                    # Backward pass (using pre-allocated workspace)
+                    self.actor.model.backward_gpu_ws[MINIBATCH](
                         ctx,
                         actor_grad_input_buf,
                         actor_grad_output_buf,
                         actor_params_buf,
                         actor_cache_buf,
                         actor_grads_buf,
+                        actor_minibatch_workspace_buf,
                     )
 
                     # Gradient clipping for actor
@@ -2147,38 +2465,58 @@ struct DeepPPOAgent[
                     # Zero critic gradients
                     ctx.enqueue_memset(critic_grads_buf, 0)
 
-                    # Forward pass with cache
-                    self.critic.model.forward_gpu[MINIBATCH](
+                    # Forward pass with cache (using pre-allocated workspace)
+                    self.critic.model.forward_gpu_ws[MINIBATCH](
                         ctx,
                         critic_values_buf,
                         mb_obs_buf,
                         critic_params_buf,
                         critic_cache_buf,
+                        critic_minibatch_workspace_buf,
                     )
                     ctx.synchronize()
 
                     # Compute value loss gradient
-                    ctx.enqueue_function[
-                        critic_grad_wrapper, critic_grad_wrapper
-                    ](
-                        critic_grad_output_tensor,
-                        critic_values_tensor,
-                        critic_returns_tensor,
-                        Scalar[dtype](self.value_loss_coef),
-                        MINIBATCH,
-                        grid_dim=(MINIBATCH_BLOCKS,),
-                        block_dim=(TPB,),
-                    )
+                    if self.clip_value:
+                        # Use clipped critic gradient
+                        ctx.enqueue_function[
+                            critic_grad_clipped_wrapper,
+                            critic_grad_clipped_wrapper,
+                        ](
+                            critic_grad_output_tensor,
+                            critic_values_tensor,
+                            mb_old_values_tensor,
+                            critic_returns_tensor,
+                            Scalar[dtype](self.value_loss_coef),
+                            Scalar[dtype](self.clip_epsilon),
+                            MINIBATCH,
+                            grid_dim=(MINIBATCH_BLOCKS,),
+                            block_dim=(TPB,),
+                        )
+                    else:
+                        # Use regular critic gradient
+                        ctx.enqueue_function[
+                            critic_grad_wrapper, critic_grad_wrapper
+                        ](
+                            critic_grad_output_tensor,
+                            critic_values_tensor,
+                            critic_returns_tensor,
+                            Scalar[dtype](self.value_loss_coef),
+                            MINIBATCH,
+                            grid_dim=(MINIBATCH_BLOCKS,),
+                            block_dim=(TPB,),
+                        )
                     ctx.synchronize()
 
-                    # Backward pass
-                    self.critic.model.backward_gpu[MINIBATCH](
+                    # Backward pass (using pre-allocated workspace)
+                    self.critic.model.backward_gpu_ws[MINIBATCH](
                         ctx,
                         critic_grad_input_buf,
                         critic_grad_output_buf,
                         critic_params_buf,
                         critic_cache_buf,
                         critic_grads_buf,
+                        critic_minibatch_workspace_buf,
                     )
 
                     # Gradient clipping for critic
@@ -2249,7 +2587,9 @@ struct DeepPPOAgent[
             # Print rollout summary with episode range (aggregated)
             if verbose and rollout_count % print_every == 0:
                 var rollout_end_episodes = completed_episodes
-                var episodes_this_rollout = rollout_end_episodes - rollout_start_episodes
+                var episodes_this_rollout = (
+                    rollout_end_episodes - rollout_start_episodes
+                )
                 var avg_reward = metrics.mean_reward_last_n(
                     min(100, completed_episodes)
                 )
@@ -2280,13 +2620,17 @@ struct DeepPPOAgent[
         # Print final timing summary
         # =====================================================================
         if verbose:
-            var total_time_ns = total_phase1_ns + total_phase2_ns + total_phase3_ns
+            var total_time_ns = (
+                total_phase1_ns + total_phase2_ns + total_phase3_ns
+            )
             var p1_pct = Float64(total_phase1_ns) / Float64(total_time_ns) * 100
             var p2_pct = Float64(total_phase2_ns) / Float64(total_time_ns) * 100
             var p3_pct = Float64(total_phase3_ns) / Float64(total_time_ns) * 100
             print()
             print("-" * 60)
-            print("Performance Summary (" + String(rollout_count) + " rollouts)")
+            print(
+                "Performance Summary (" + String(rollout_count) + " rollouts)"
+            )
             print("-" * 60)
             print(
                 "  Phase 1 (collect):  ",
@@ -2391,7 +2735,9 @@ struct DeepPPOAgent[
         content += "value_loss_coef=" + String(self.value_loss_coef) + "\n"
         content += "num_epochs=" + String(self.num_epochs) + "\n"
         content += "minibatch_size=" + String(self.minibatch_size) + "\n"
-        content += "normalize_advantages=" + String(self.normalize_advantages) + "\n"
+        content += (
+            "normalize_advantages=" + String(self.normalize_advantages) + "\n"
+        )
         content += "target_kl=" + String(self.target_kl) + "\n"
         content += "max_grad_norm=" + String(self.max_grad_norm) + "\n"
         content += "train_step_count=" + String(self.train_step_count) + "\n"
@@ -2415,20 +2761,34 @@ struct DeepPPOAgent[
         # Load actor params
         var actor_params_start = find_section_start(lines, "actor_params:") + 1
         for i in range(actor_param_size):
-            self.actor.params[i] = Scalar[dtype](atof(lines[actor_params_start + i]))
+            self.actor.params[i] = Scalar[dtype](
+                atof(lines[actor_params_start + i])
+            )
 
-        var actor_state_start = find_section_start(lines, "actor_optimizer_state:") + 1
+        var actor_state_start = (
+            find_section_start(lines, "actor_optimizer_state:") + 1
+        )
         for i in range(actor_state_size):
-            self.actor.optimizer_state[i] = Scalar[dtype](atof(lines[actor_state_start + i]))
+            self.actor.optimizer_state[i] = Scalar[dtype](
+                atof(lines[actor_state_start + i])
+            )
 
         # Load critic params
-        var critic_params_start = find_section_start(lines, "critic_params:") + 1
+        var critic_params_start = (
+            find_section_start(lines, "critic_params:") + 1
+        )
         for i in range(critic_param_size):
-            self.critic.params[i] = Scalar[dtype](atof(lines[critic_params_start + i]))
+            self.critic.params[i] = Scalar[dtype](
+                atof(lines[critic_params_start + i])
+            )
 
-        var critic_state_start = find_section_start(lines, "critic_optimizer_state:") + 1
+        var critic_state_start = (
+            find_section_start(lines, "critic_optimizer_state:") + 1
+        )
         for i in range(critic_state_size):
-            self.critic.optimizer_state[i] = Scalar[dtype](atof(lines[critic_state_start + i]))
+            self.critic.optimizer_state[i] = Scalar[dtype](
+                atof(lines[critic_state_start + i])
+            )
 
         # Load metadata
         var metadata_start = find_section_start(lines, "metadata:") + 1
