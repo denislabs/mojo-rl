@@ -254,12 +254,20 @@ struct Seq2[L0: Model, L1: Model](Model):
             dtype, Layout.row_major(BATCH, Self.L1.IN_DIM), MutAnyOrigin
         ](grad_buffer0.ptr)
         self.layer1.backward[BATCH](
-            l1_grad_output, l1_grad_input, l1_params, l1_cache, l1_grads
+            l1_grad_output,
+            l1_grad_input,
+            l1_params,
+            l1_cache,
+            l1_grads,
         )
 
         # L0 backward: grad_buffer0 -> grad_input
         self.layer0.backward[BATCH](
-            grad_buffer0, grad_input, l0_params, l0_cache, l0_grads
+            grad_buffer0,
+            grad_input,
+            l0_params,
+            l0_cache,
+            l0_grads,
         )
         # No copy-back needed - grads views modify the original in-place
 
@@ -343,12 +351,20 @@ struct Seq2[L0: Model, L1: Model](Model):
 
         # L0: input -> inter_buf
         Self.L0.forward_gpu[BATCH](
-            ctx, inter_buf, input_buf, l0_params_buf, l0_cache_buf
+            ctx,
+            inter_buf,
+            input_buf,
+            l0_params_buf,
+            l0_cache_buf,
         )
 
         # L1: inter_buf -> output
         Self.L1.forward_gpu[BATCH](
-            ctx, output_buf, inter_buf, l1_params_buf, l1_cache_buf
+            ctx,
+            output_buf,
+            inter_buf,
+            l1_params_buf,
+            l1_cache_buf,
         )
 
     @staticmethod
@@ -391,12 +407,18 @@ struct Seq2[L0: Model, L1: Model](Model):
 
         # L0: input -> inter_buf
         Self.L0.forward_gpu_no_cache[BATCH](
-            ctx, inter_buf, input_buf, l0_params_buf
+            ctx,
+            inter_buf,
+            input_buf,
+            l0_params_buf,
         )
 
         # L1: inter_buf -> output
         Self.L1.forward_gpu_no_cache[BATCH](
-            ctx, output_buf, inter_buf, l1_params_buf
+            ctx,
+            output_buf,
+            inter_buf,
+            l1_params_buf,
         )
 
     @staticmethod
@@ -680,12 +702,20 @@ struct Seq2[L0: Model, L1: Model](Model):
 
         # L0: input -> inter_buf
         Self.L0.forward_gpu_no_cache_ws[BATCH](
-            ctx, inter_buf, input_buf, l0_params_buf, l0_workspace_buf
+            ctx,
+            inter_buf,
+            input_buf,
+            l0_params_buf,
+            l0_workspace_buf,
         )
 
         # L1: inter_buf -> output
         Self.L1.forward_gpu_no_cache_ws[BATCH](
-            ctx, output_buf, inter_buf, l1_params_buf, l1_workspace_buf
+            ctx,
+            output_buf,
+            inter_buf,
+            l1_params_buf,
+            l1_workspace_buf,
         )
 
     @staticmethod

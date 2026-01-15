@@ -1,17 +1,9 @@
-from ..constants import dtype
+from ..constants import dtype, TILE, TPB
 from .model import Model
 from layout import LayoutTensor, Layout
 from gpu import thread_idx, block_idx, block_dim, barrier
 from gpu.host import DeviceContext, DeviceBuffer
 from gpu.memory import AddressSpace
-
-
-# =============================================================================
-# GPU Constants
-# =============================================================================
-
-comptime TILE = 16  # Tile size for matmul kernels
-comptime TPB = 256  # Threads per block for elementwise/reduction ops
 
 
 struct Linear[in_dim: Int, out_dim: Int](Model):
@@ -198,8 +190,8 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
 
         # Cache input (each thread caches one element if in bounds)
         # We do this during the first tile load to overlap with computation
-        @parameter
-        for tile_idx in range(0, (Self.IN_DIM + TILE - 1) // TILE):
+        # Runtime loop to avoid compile-time explosion with large IN_DIM
+        for tile_idx in range((Self.IN_DIM + TILE - 1) // TILE):
             var x_col = tile_idx * TILE + local_col
 
             # Load x tile and cache
@@ -275,8 +267,8 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
         if global_col < Self.OUT_DIM:
             acc = b[global_col]
 
-        @parameter
-        for tile_idx in range(0, (Self.IN_DIM + TILE - 1) // TILE):
+        var tile_x = (Self.IN_DIM + TILE - 1) // TILE
+        for tile_idx in range(0, tile_x):
             var x_col = tile_idx * TILE + local_col
             if global_row < BATCH and x_col < Self.IN_DIM:
                 x_shared[local_row, local_col] = input[global_row, x_col]
@@ -341,8 +333,8 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
 
         var acc: grad_input.element_type = 0
 
-        @parameter
-        for tile_idx in range(0, (Self.OUT_DIM + TILE - 1) // TILE):
+        # Runtime loop to avoid compile-time explosion with large OUT_DIM
+        for tile_idx in range((Self.OUT_DIM + TILE - 1) // TILE):
             # Load dy tile
             var dy_col = tile_idx * TILE + local_col
             if global_row < BATCH and dy_col < Self.OUT_DIM:
@@ -415,8 +407,9 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
 
         var acc: dW.element_type = 0
 
-        @parameter
-        for tile_idx in range(0, (BATCH + TILE - 1) // TILE):
+        # Runtime loop to avoid compile-time explosion with large BATCH
+        var tile_x = (BATCH + TILE - 1) // TILE
+        for tile_idx in range(tile_x):
             # Load x.T tile
             var batch_idx = tile_idx * TILE + local_col
             if global_row < Self.IN_DIM and batch_idx < BATCH:
@@ -553,7 +546,13 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
                 dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
             ],
         ):
-            Self.forward_kernel_impl[BATCH](output, input, W, b, cache)
+            Self.forward_kernel_impl[BATCH](
+                output,
+                input,
+                W,
+                b,
+                cache,
+            )
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             output,
@@ -581,6 +580,7 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
             output_buf: Output buffer [BATCH * OUT_DIM].
             input_buf: Input buffer [BATCH * IN_DIM].
             params_buf: Parameters buffer [PARAM_SIZE] = [W_flat | b].
+            batch_size: Batch size.
         """
         var params_ptr = params_buf.unsafe_ptr()
         var b_ptr = params_ptr + Self.IN_DIM * Self.OUT_DIM
@@ -617,7 +617,12 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
                 dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
             ],
         ):
-            Self.forward_kernel_impl_no_cache[BATCH](output, input, W, b)
+            Self.forward_kernel_impl_no_cache[BATCH](
+                output,
+                input,
+                W,
+                b,
+            )
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             output,
@@ -656,6 +661,7 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
             params_buf: Parameters buffer [PARAM_SIZE] = [W_flat | b].
             cache_buf: Cached input from forward pass [BATCH * IN_DIM].
             grads_buf: Parameter gradients [PARAM_SIZE] = [dW_flat | db] (written).
+            batch_size: Batch size.
         """
         # Create tensor views
         var params_ptr = params_buf.unsafe_ptr()
@@ -699,7 +705,11 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
                 ImmutAnyOrigin,
             ],
         ):
-            Self.backward_dx_kernel_impl[BATCH](grad_input, grad_output, W)
+            Self.backward_dx_kernel_impl[BATCH](
+                grad_input,
+                grad_output,
+                W,
+            )
 
         ctx.enqueue_function[dx_kernel_wrapper, dx_kernel_wrapper](
             grad_input,
@@ -725,7 +735,11 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
                 dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
             ],
         ):
-            Self.backward_dW_kernel_impl[BATCH](dW, cache, grad_output)
+            Self.backward_dW_kernel_impl[BATCH](
+                dW,
+                cache,
+                grad_output,
+            )
 
         ctx.enqueue_function[dW_kernel_wrapper, dW_kernel_wrapper](
             dW,
@@ -745,7 +759,10 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
                 dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
             ],
         ):
-            Self.backward_db_kernel_impl[BATCH](db, grad_output)
+            Self.backward_db_kernel_impl[BATCH](
+                db,
+                grad_output,
+            )
 
         ctx.enqueue_function[db_kernel_wrapper, db_kernel_wrapper](
             db,
@@ -772,7 +789,11 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
     ) raises:
         """GPU forward with workspace (workspace unused for Linear)."""
         Self.forward_gpu[BATCH](
-            ctx, output_buf, input_buf, params_buf, cache_buf
+            ctx,
+            output_buf,
+            input_buf,
+            params_buf,
+            cache_buf,
         )
 
     @staticmethod
@@ -787,7 +808,12 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
     ) raises:
         """GPU forward without cache, with workspace (workspace unused for Linear).
         """
-        Self.forward_gpu_no_cache[BATCH](ctx, output_buf, input_buf, params_buf)
+        Self.forward_gpu_no_cache[BATCH](
+            ctx,
+            output_buf,
+            input_buf,
+            params_buf,
+        )
 
     @staticmethod
     fn backward_gpu_ws[

@@ -29,9 +29,9 @@ from deep_rl.initializer import Xavier
 # Constants
 # =============================================================================
 
-comptime BATCH_SIZE = 64
+comptime BATCH_SIZE = 1024
 comptime INPUT_DIM = 2
-comptime HIDDEN_DIM = 32
+comptime HIDDEN_DIM = 1024
 comptime OUTPUT_DIM = 1
 
 comptime NUM_EPOCHS = 500
@@ -136,7 +136,11 @@ def main():
     var start_time = perf_counter_ns()
 
     with DeviceContext() as ctx:
-        var result = trainer.train_gpu[BATCH_SIZE](ctx, input_data, target_data)
+        var result = trainer.train_gpu[BATCH_SIZE](
+            ctx,
+            input_data,
+            target_data,
+        )
 
         var end_time = perf_counter_ns()
         var elapsed_ms = Float64(end_time - start_time) / 1e6

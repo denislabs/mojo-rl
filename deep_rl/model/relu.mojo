@@ -1,11 +1,8 @@
-from ..constants import dtype
+from ..constants import dtype, TPB
 from .model import Model
 from layout import LayoutTensor, Layout
 from gpu import thread_idx, block_idx, block_dim
 from gpu.host import DeviceContext, DeviceBuffer
-
-# GPU constant
-comptime TPB = 256  # Threads per block for elementwise ops
 
 
 struct ReLU[dim: Int](Model):
@@ -78,6 +75,20 @@ struct ReLU[dim: Int](Model):
 
         Note: params is unused (ReLU has no parameters).
         """
+        self.forward_impl[BATCH](input, output)
+
+    fn forward_impl[
+        BATCH: Int,
+    ](
+        self,
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+    ):
+        """Forward pass implementation."""
         for batch in range(BATCH):
             for i in range(Self.dim):
                 var val = input[batch, i]
@@ -108,6 +119,29 @@ struct ReLU[dim: Int](Model):
         Uses cached pre-activation values from forward pass.
         Note: params and grads are unused (ReLU has no parameters).
         """
+        self.backward_impl[BATCH](grad_output, grad_input, params, cache, grads)
+
+    fn backward_impl[
+        BATCH: Int,
+    ](
+        self,
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        mut grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        mut grads: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+    ):
+        """Backward pass implementation."""
         for batch in range(BATCH):
             for i in range(Self.dim):
                 var pre = cache[batch, i]
@@ -115,13 +149,6 @@ struct ReLU[dim: Int](Model):
 
     # =========================================================================
     # GPU Kernel Implementations (@always_inline for fusion)
-    # =========================================================================
-    #
-    # These are the core GPU computations that can be inlined into fused kernels.
-    # ReLU uses 1D elementwise parallelism.
-    #
-    # Grid: ((BATCH * dim + TPB - 1) // TPB,)
-    # Block: (TPB,)
     # =========================================================================
 
     @always_inline
@@ -139,19 +166,7 @@ struct ReLU[dim: Int](Model):
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
         ],
     ):
-        """Forward pass kernel implementation: y = max(0, x) with caching.
-
-        This is the core GPU computation that can be inlined into fused kernels.
-        Uses 1D elementwise parallelism.
-
-        Grid: ((BATCH * dim + TPB - 1) // TPB,)
-        Block: (TPB,)
-
-        Args:
-            output: Output tensor [BATCH, dim] (written).
-            input: Input tensor [BATCH, dim].
-            cache: Cache buffer [BATCH, dim] for backward pass (written).
-        """
+        """Forward pass kernel: y = max(0, x) with caching."""
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         if idx >= BATCH * Self.dim:
             return
@@ -159,7 +174,7 @@ struct ReLU[dim: Int](Model):
         var row = idx // Self.dim
         var col = idx % Self.dim
         var val = input[row, col]
-        cache[row, col] = val  # Cache for backward
+        cache[row, col] = val
         output[row, col] = val if val > 0 else 0
 
     @always_inline
@@ -174,11 +189,7 @@ struct ReLU[dim: Int](Model):
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
         ],
     ):
-        """Forward pass kernel implementation without caching (for inference).
-
-        Grid: ((BATCH * dim + TPB - 1) // TPB,)
-        Block: (TPB,)
-        """
+        """Forward pass kernel without caching (for inference)."""
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         if idx >= BATCH * Self.dim:
             return
@@ -203,13 +214,7 @@ struct ReLU[dim: Int](Model):
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
         ],
     ):
-        """Backward pass kernel implementation: dx = dy * (x > 0).
-
-        Uses cached pre-activation values from forward pass.
-
-        Grid: ((BATCH * dim + TPB - 1) // TPB,)
-        Block: (TPB,)
-        """
+        """Backward pass kernel: dx = dy * (x > 0)."""
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         if idx >= BATCH * Self.dim:
             return
@@ -222,13 +227,6 @@ struct ReLU[dim: Int](Model):
     # =========================================================================
     # GPU Launchers (with DeviceContext)
     # =========================================================================
-    #
-    # These functions handle buffer-to-tensor conversion, grid/block config,
-    # and kernel launch. They call the _kernel_impl functions.
-    #
-    # Note: ReLU has no parameters, so params_buf and grads_buf are unused
-    # but kept for API consistency with Linear.
-    # =========================================================================
 
     @staticmethod
     fn forward_gpu[
@@ -237,18 +235,10 @@ struct ReLU[dim: Int](Model):
         ctx: DeviceContext,
         output_buf: DeviceBuffer[dtype],
         input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],  # Unused for ReLU
+        params_buf: DeviceBuffer[dtype],
         cache_buf: DeviceBuffer[dtype],
     ) raises:
-        """Launch forward pass on GPU with caching.
-
-        Args:
-            ctx: GPU device context.
-            output_buf: Output buffer [BATCH * dim].
-            input_buf: Input buffer [BATCH * dim].
-            params_buf: Parameters buffer (unused for ReLU, kept for API consistency).
-            cache_buf: Cache buffer [BATCH * dim] for backward pass.
-        """
+        """Launch forward pass on GPU with caching."""
         var output = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
         ](output_buf.unsafe_ptr())
@@ -259,8 +249,8 @@ struct ReLU[dim: Int](Model):
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
         ](cache_buf.unsafe_ptr())
 
-        comptime total_elements = BATCH * Self.dim
-        comptime grid_x = (total_elements + TPB - 1) // TPB
+        var total_elements = BATCH * Self.dim
+        var grid_x = (total_elements + TPB - 1) // TPB
 
         @always_inline
         fn kernel_wrapper(
@@ -291,16 +281,9 @@ struct ReLU[dim: Int](Model):
         ctx: DeviceContext,
         output_buf: DeviceBuffer[dtype],
         input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],  # Unused for ReLU
+        params_buf: DeviceBuffer[dtype],
     ) raises:
-        """Launch forward pass on GPU without caching (for inference).
-
-        Args:
-            ctx: GPU device context.
-            output_buf: Output buffer [BATCH * dim].
-            input_buf: Input buffer [BATCH * dim].
-            params_buf: Parameters buffer (unused for ReLU, kept for API consistency).
-        """
+        """Launch forward pass on GPU without caching (for inference)."""
         var output = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
         ](output_buf.unsafe_ptr())
@@ -308,8 +291,8 @@ struct ReLU[dim: Int](Model):
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
         ](input_buf.unsafe_ptr())
 
-        comptime total_elements = BATCH * Self.dim
-        comptime grid_x = (total_elements + TPB - 1) // TPB
+        var total_elements = BATCH * Self.dim
+        var grid_x = (total_elements + TPB - 1) // TPB
 
         @always_inline
         fn kernel_wrapper(
@@ -336,22 +319,11 @@ struct ReLU[dim: Int](Model):
         ctx: DeviceContext,
         grad_input_buf: DeviceBuffer[dtype],
         grad_output_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],  # Unused for ReLU
+        params_buf: DeviceBuffer[dtype],
         cache_buf: DeviceBuffer[dtype],
-        grads_buf: DeviceBuffer[dtype],  # Unused for ReLU
+        grads_buf: DeviceBuffer[dtype],
     ) raises:
-        """Launch backward pass on GPU.
-
-        ReLU has no parameters, so only grad_input is computed.
-
-        Args:
-            ctx: GPU device context.
-            grad_input_buf: Gradient w.r.t. input [BATCH * dim] (written).
-            grad_output_buf: Gradient w.r.t. output [BATCH * dim].
-            params_buf: Parameters buffer (unused for ReLU).
-            cache_buf: Cached pre-activation from forward pass [BATCH * dim].
-            grads_buf: Parameter gradients (unused for ReLU).
-        """
+        """Launch backward pass on GPU."""
         var grad_input = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
         ](grad_input_buf.unsafe_ptr())
@@ -362,8 +334,8 @@ struct ReLU[dim: Int](Model):
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
         ](cache_buf.unsafe_ptr())
 
-        comptime total_elements = BATCH * Self.dim
-        comptime grid_x = (total_elements + TPB - 1) // TPB
+        var total_elements = BATCH * Self.dim
+        var grid_x = (total_elements + TPB - 1) // TPB
 
         @always_inline
         fn kernel_wrapper(
@@ -389,7 +361,6 @@ struct ReLU[dim: Int](Model):
 
     # =========================================================================
     # GPU Workspace Methods (for Sequential compatibility)
-    # ReLU is a leaf layer, so workspace is unused - just delegate to regular methods.
     # =========================================================================
 
     @staticmethod
@@ -401,11 +372,15 @@ struct ReLU[dim: Int](Model):
         input_buf: DeviceBuffer[dtype],
         params_buf: DeviceBuffer[dtype],
         cache_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],  # Unused for ReLU
+        workspace_buf: DeviceBuffer[dtype],
     ) raises:
         """GPU forward with workspace (workspace unused for ReLU)."""
         Self.forward_gpu[BATCH](
-            ctx, output_buf, input_buf, params_buf, cache_buf
+            ctx,
+            output_buf,
+            input_buf,
+            params_buf,
+            cache_buf,
         )
 
     @staticmethod
@@ -416,11 +391,16 @@ struct ReLU[dim: Int](Model):
         output_buf: DeviceBuffer[dtype],
         input_buf: DeviceBuffer[dtype],
         params_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],  # Unused for ReLU
+        workspace_buf: DeviceBuffer[dtype],
     ) raises:
         """GPU forward without cache, with workspace (workspace unused for ReLU).
         """
-        Self.forward_gpu_no_cache[BATCH](ctx, output_buf, input_buf, params_buf)
+        Self.forward_gpu_no_cache[BATCH](
+            ctx,
+            output_buf,
+            input_buf,
+            params_buf,
+        )
 
     @staticmethod
     fn backward_gpu_ws[
@@ -432,7 +412,7 @@ struct ReLU[dim: Int](Model):
         params_buf: DeviceBuffer[dtype],
         cache_buf: DeviceBuffer[dtype],
         grads_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],  # Unused for ReLU
+        workspace_buf: DeviceBuffer[dtype],
     ) raises:
         """GPU backward with workspace (workspace unused for ReLU)."""
         Self.backward_gpu[BATCH](

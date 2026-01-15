@@ -1,12 +1,9 @@
-from ..constants import dtype
+from ..constants import dtype, TPB
 from .model import Model
 from layout import LayoutTensor, Layout
 from gpu import thread_idx, block_idx, block_dim
 from gpu.host import DeviceContext, DeviceBuffer
 from math import exp
-
-# GPU constant
-comptime TPB = 256  # Threads per block for elementwise ops
 
 
 struct Softmax[dim: Int](Model):
@@ -196,7 +193,7 @@ struct Softmax[dim: Int](Model):
         Each block handles one sample in the batch.
         Thread 0 does all the work (simple version for small dim).
 
-        Grid: (BATCH,)
+        Grid: (batch_size,)
         Block: (1,)
         """
         var batch_idx = Int(block_idx.x)
@@ -243,7 +240,7 @@ struct Softmax[dim: Int](Model):
     ):
         """Forward pass kernel without caching (for inference).
 
-        Grid: (BATCH,)
+        Grid: (batch_size,)
         Block: (1,)
         """
         var batch_idx = Int(block_idx.x)
@@ -290,7 +287,7 @@ struct Softmax[dim: Int](Model):
     ):
         """Backward pass kernel: dx_i = y_i * (dy_i - sum(y * dy)).
 
-        Grid: (BATCH,)
+        Grid: (batch_size,)
         Block: (1,)
         """
         var batch_idx = Int(block_idx.x)

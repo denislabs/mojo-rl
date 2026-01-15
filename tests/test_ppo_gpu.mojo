@@ -29,9 +29,9 @@ comptime NUM_ACTIONS = 2
 comptime HIDDEN_DIM = 64
 comptime ROLLOUT_LEN = 128  # Steps per rollout per environment
 comptime N_ENVS = 256  # Smaller for testing (use 1024 for full training)
-comptime GPU_MINIBATCH_SIZE = 64  # Larger minibatch = fewer kernel launches
+comptime GPU_MINIBATCH_SIZE = 512  # Larger minibatch = fewer kernel launches
 
-comptime NUM_EPISODES = 8_000  # More episodes to reach convergence
+comptime NUM_EPISODES = 17_500  # More episodes to reach convergence
 
 
 # =============================================================================
@@ -61,14 +61,20 @@ fn main() raises:
         ](
             gamma=0.99,
             gae_lambda=0.95,
-            clip_epsilon=0.1,  # More conservative policy updates
+            clip_epsilon=0.2,  # Standard PPO clipping
             actor_lr=0.0003,
-            critic_lr=0.0003,  # Same as actor for stability
+            critic_lr=0.001,  # Higher critic LR for faster value fitting
             entropy_coef=0.01,
             value_loss_coef=0.5,
-            num_epochs=2,  # Fewer epochs = less overfitting
+            num_epochs=4,  # Standard PPO epochs
             minibatch_size=GPU_MINIBATCH_SIZE,
             normalize_advantages=True,
+            # Advanced hyperparameters
+            target_kl=0.02,  # KL threshold for early epoch stopping (set to 0 to disable)
+            max_grad_norm=0.5,  # Gradient clipping
+            anneal_lr=True,  # Linear LR decay
+            anneal_entropy=False,  # Keep exploration constant
+            target_total_steps=0,  # Auto-calculate based on num_episodes
         )
 
         print("Environment: CartPole (GPU)")
@@ -80,6 +86,10 @@ fn main() raises:
         print(
             "  Total transitions per rollout: " + String(ROLLOUT_LEN * N_ENVS)
         )
+        print("  Advanced features:")
+        print("    - LR annealing: enabled")
+        print("    - KL early stopping: target_kl=0.02")
+        print("    - Gradient clipping: max_grad_norm=0.5")
         print()
 
         # =====================================================================
@@ -134,6 +144,10 @@ fn main() raises:
             env, num_episodes=10, max_steps=500, verbose=False
         )
         print("Evaluation average: " + String(eval_avg)[:7])
+
+        agent.evaluate(
+            env, num_episodes=1, max_steps=500, verbose=False, render=True
+        )
 
         print()
         print("=" * 70)

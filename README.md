@@ -7,8 +7,8 @@ A reinforcement learning framework written in Mojo, featuring trait-based design
 - **Trait-based architecture**: Generic interfaces for environments, agents, states, and actions
 - **30+ RL algorithms**: TD methods, multi-step, eligibility traces, model-based planning, function approximation, policy gradients, PPO, continuous control (DDPG, TD3, SAC), and deep RL (DQN, Double DQN, Dueling DQN, DQN+PER, A2C, PPO)
 - **Deep RL infrastructure**: Trait-based neural network framework with Model, Optimizer, LossFunction, and Initializer traits; Linear/ReLU/Tanh layers; SGD/Adam optimizers; Sequential composition via `seq()`; GPU kernels with tiled matmul
-- **9 native environments**: GridWorld, FrozenLake, CliffWalking, Taxi, CartPole, MountainCar, Acrobot, Pendulum, LunarLander
-- **Integrated SDL2 rendering**: Native visualization for continuous-state environments (CartPole, MountainCar, Acrobot, Pendulum, LunarLander)
+- **11 native environments**: GridWorld, FrozenLake, CliffWalking, Taxi, CartPole, MountainCar, Acrobot, Pendulum, LunarLander, BipedalWalker, CarRacing
+- **Integrated SDL2 rendering**: Native visualization for continuous-state environments (CartPole, MountainCar, Acrobot, Pendulum, LunarLander, BipedalWalker, CarRacing)
 - **20+ Gymnasium wrappers**: Classic Control, Box2D, Toy Text, MuJoCo environments
 - **Experience replay**: Uniform and prioritized replay buffers for both discrete and continuous actions
 - **Policy gradient methods**: REINFORCE, Actor-Critic, A2C, PPO with GAE
@@ -148,7 +148,7 @@ pixi run -e nvidia mojo run examples/lunar_lander_dqn.mojo
 | **Deep TD3** | TD3 with twin critics, delayed policy updates, target policy smoothing |
 | **Deep SAC** | Soft Actor-Critic with entropy regularization and automatic temperature |
 | **Deep A2C** | Advantage Actor-Critic with GAE for variance reduction |
-| **Deep PPO** | Proximal Policy Optimization with clipped surrogate objective |
+| **Deep PPO** | Proximal Policy Optimization with clipped surrogate, LR annealing, KL early stopping, gradient clipping |
 
 ## Environments
 
@@ -164,6 +164,8 @@ pixi run -e nvidia mojo run examples/lunar_lander_dqn.mojo
 | **Acrobot** | Continuous | 3 | Swing two-link pendulum above threshold, integrated SDL2 rendering |
 | **Pendulum** | Continuous | Continuous | Swing up and balance inverted pendulum, integrated SDL2 rendering |
 | **LunarLander** | Continuous (8D) | 4 (discrete) | Land spacecraft on helipad, custom 2D physics engine, flame particles, SDL2 rendering |
+| **BipedalWalker** | Continuous (24D) | Continuous (4D) | Walk on terrain, normal/hardcore modes, lidar, custom 2D physics, SDL2 rendering |
+| **CarRacing** | Continuous (12D) | Continuous (3D) / Discrete (5) | Top-down racing, procedural tracks, 4-wheel friction, SDL2 rendering |
 
 ### Gymnasium Wrappers (`envs/gymnasium/`)
 Wrap any Gymnasium environment with Python interop:
@@ -263,6 +265,8 @@ mojo-rl/
     ├── acrobot.mojo           # Native Acrobot with integrated SDL2 rendering
     ├── pendulum.mojo          # Native Pendulum with integrated SDL2 rendering
     ├── lunar_lander.mojo      # Native LunarLander with custom physics + SDL2 rendering
+    ├── bipedal_walker.mojo    # Native BipedalWalker with custom physics + SDL2 rendering
+    ├── car_racing.mojo        # Native CarRacing with procedural tracks + SDL2 rendering
     ├── vec_cartpole.mojo      # Vectorized CartPole for parallel training
     └── gymnasium/             # Gymnasium wrappers
         ├── gymnasium_wrapper.mojo
@@ -470,7 +474,7 @@ fn main() raises:
 | Deep TD3 | Above + `policy_delay`, `target_noise_std`, `target_noise_clip` |
 | Deep SAC | `actor_lr`, `critic_lr`, `gamma`, `tau`, `alpha`, `auto_alpha`, `target_entropy`, `hidden_dim`, `batch_size` |
 | Deep A2C | `actor_lr`, `critic_lr`, `gamma`, `gae_lambda`, `entropy_coef`, `hidden_dim` |
-| Deep PPO | `actor_lr`, `critic_lr`, `gamma`, `gae_lambda`, `clip_epsilon`, `num_epochs`, `entropy_coef`, `hidden_dim` |
+| Deep PPO | `actor_lr`, `critic_lr`, `gamma`, `gae_lambda`, `clip_epsilon`, `num_epochs`, `entropy_coef`, `hidden_dim`, `target_kl`, `max_grad_norm`, `anneal_lr`, `anneal_entropy` |
 
 ## Roadmap
 
@@ -478,5 +482,6 @@ See [ROADMAP.md](ROADMAP.md) for planned features including:
 - ~~Deep RL algorithms~~ ✅ DQN, Dueling DQN, DQN+PER, DDPG, TD3, SAC, A2C, PPO all implemented
 - ~~Prioritized Experience Replay~~ ✅ Implemented with sum-tree
 - ~~GPU support for training~~ ✅ Trainer with GPU support
+- ~~Learning rate scheduling~~ ✅ Linear annealing in Deep PPO
+- ~~BipedalWalker and CarRacing~~ ✅ Native implementations with custom physics
 - GPU-accelerated deep RL agents
-- More native environment ports (BipedalWalker)

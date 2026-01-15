@@ -1,12 +1,9 @@
-from ..constants import dtype
+from ..constants import dtype, TPB
 from .model import Model
 from layout import LayoutTensor, Layout
 from gpu import thread_idx, block_idx, block_dim
 from gpu.host import DeviceContext, DeviceBuffer
 from math import exp
-
-# GPU constant
-comptime TPB = 256  # Threads per block for elementwise ops
 
 
 struct Tanh[dim: Int](Model):
@@ -163,7 +160,7 @@ struct Tanh[dim: Int](Model):
         This is the core GPU computation that can be inlined into fused kernels.
         Uses 1D elementwise parallelism.
 
-        Grid: ((BATCH * dim + TPB - 1) // TPB,)
+        Grid: ((batch_size * dim + TPB - 1) // TPB,)
         Block: (TPB,)
 
         Args:
@@ -201,7 +198,7 @@ struct Tanh[dim: Int](Model):
     ):
         """Forward pass kernel implementation without caching (for inference).
 
-        Grid: ((BATCH * dim + TPB - 1) // TPB,)
+        Grid: ((batch_size * dim + TPB - 1) // TPB,)
         Block: (TPB,)
         """
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -236,7 +233,7 @@ struct Tanh[dim: Int](Model):
 
         Uses cached tanh output from forward pass.
 
-        Grid: ((BATCH * dim + TPB - 1) // TPB,)
+        Grid: ((batch_size * dim + TPB - 1) // TPB,)
         Block: (TPB,)
         """
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -289,7 +286,7 @@ struct Tanh[dim: Int](Model):
         ](cache_buf.unsafe_ptr())
 
         comptime total_elements = BATCH * Self.dim
-        comptime grid_x = (total_elements + TPB - 1) // TPB
+        var grid_x = (total_elements + TPB - 1) // TPB
 
         @always_inline
         fn kernel_wrapper(
@@ -338,7 +335,7 @@ struct Tanh[dim: Int](Model):
         ](input_buf.unsafe_ptr())
 
         comptime total_elements = BATCH * Self.dim
-        comptime grid_x = (total_elements + TPB - 1) // TPB
+        var grid_x = (total_elements + TPB - 1) // TPB
 
         @always_inline
         fn kernel_wrapper(
@@ -348,6 +345,7 @@ struct Tanh[dim: Int](Model):
             input: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
             ],
+            batch_size: Int,
         ):
             Self.forward_kernel_impl_no_cache[BATCH](output, input)
 
@@ -380,6 +378,7 @@ struct Tanh[dim: Int](Model):
             params_buf: Parameters buffer (unused for Tanh).
             cache_buf: Cached tanh output from forward pass [BATCH * dim].
             grads_buf: Parameter gradients (unused for Tanh).
+            batch_size: Runtime batch size for bounds checking.
         """
         var grad_input = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
@@ -392,7 +391,7 @@ struct Tanh[dim: Int](Model):
         ](cache_buf.unsafe_ptr())
 
         comptime total_elements = BATCH * Self.dim
-        comptime grid_x = (total_elements + TPB - 1) // TPB
+        var grid_x = (total_elements + TPB - 1) // TPB
 
         @always_inline
         fn kernel_wrapper(

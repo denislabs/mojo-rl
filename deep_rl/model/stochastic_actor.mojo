@@ -18,8 +18,8 @@ comptime TPB = 256  # Threads per block for elementwise ops
 # =============================================================================
 
 comptime LOG_STD_MIN: Float64 = -20.0  # Minimum log_std to prevent exp underflow
-comptime LOG_STD_MAX: Float64 = 2.0    # Maximum log_std to prevent exp overflow
-comptime EPS: Float64 = 1e-6           # Small constant for numerical stability
+comptime LOG_STD_MAX: Float64 = 2.0  # Maximum log_std to prevent exp overflow
+comptime EPS: Float64 = 1e-6  # Small constant for numerical stability
 
 
 struct StochasticActor[in_dim: Int, action_dim: Int](Model):
@@ -54,7 +54,9 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
     comptime IN_DIM: Int = Self.in_dim
     comptime OUT_DIM: Int = Self.action_dim * 2  # mean and log_std concatenated
     # Two linear layers: mean_head and log_std_head, each with W and b
-    comptime PARAM_SIZE: Int = 2 * (Self.in_dim * Self.action_dim + Self.action_dim)
+    comptime PARAM_SIZE: Int = 2 * (
+        Self.in_dim * Self.action_dim + Self.action_dim
+    )
     comptime CACHE_SIZE: Int = Self.in_dim  # Cache input for backward pass
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = 0  # Leaf layer
 
@@ -263,46 +265,46 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
             for i in range(Self.in_dim):
                 for j in range(Self.action_dim):
                     grad_input[batch, i] = (
-                        grad_input[batch, i] +
-                        grad_output[batch, j] * W_mean[i, j]
+                        grad_input[batch, i]
+                        + grad_output[batch, j] * W_mean[i, j]
                     )
 
             # Backward through log_std head: dx += dy_log_std @ W_log_std.T
             for i in range(Self.in_dim):
                 for j in range(Self.action_dim):
                     grad_input[batch, i] = (
-                        grad_input[batch, i] +
-                        grad_output[batch, Self.action_dim + j] * W_log_std[i, j]
+                        grad_input[batch, i]
+                        + grad_output[batch, Self.action_dim + j]
+                        * W_log_std[i, j]
                     )
 
             # Accumulate dW_mean = x.T @ dy_mean
             for i in range(Self.in_dim):
                 for j in range(Self.action_dim):
                     dW_mean[i, j] = (
-                        dW_mean[i, j] +
-                        cache[batch, i] * grad_output[batch, j]
+                        dW_mean[i, j] + cache[batch, i] * grad_output[batch, j]
                     )
 
             # Accumulate db_mean
             for j in range(Self.action_dim):
                 grads[Self._mean_b_offset() + j] = (
-                    grads[Self._mean_b_offset() + j] +
-                    grad_output[batch, j]
+                    grads[Self._mean_b_offset() + j] + grad_output[batch, j]
                 )
 
             # Accumulate dW_log_std = x.T @ dy_log_std
             for i in range(Self.in_dim):
                 for j in range(Self.action_dim):
                     dW_log_std[i, j] = (
-                        dW_log_std[i, j] +
-                        cache[batch, i] * grad_output[batch, Self.action_dim + j]
+                        dW_log_std[i, j]
+                        + cache[batch, i]
+                        * grad_output[batch, Self.action_dim + j]
                     )
 
             # Accumulate db_log_std
             for j in range(Self.action_dim):
                 grads[Self._log_std_b_offset() + j] = (
-                    grads[Self._log_std_b_offset() + j] +
-                    grad_output[batch, Self.action_dim + j]
+                    grads[Self._log_std_b_offset() + j]
+                    + grad_output[batch, Self.action_dim + j]
                 )
 
     # =========================================================================
@@ -321,13 +323,17 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
             dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
         ],
         W_mean: LayoutTensor[
-            dtype, Layout.row_major(Self.in_dim, Self.action_dim), ImmutAnyOrigin
+            dtype,
+            Layout.row_major(Self.in_dim, Self.action_dim),
+            ImmutAnyOrigin,
         ],
         b_mean: LayoutTensor[
             dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
         ],
         W_log_std: LayoutTensor[
-            dtype, Layout.row_major(Self.in_dim, Self.action_dim), ImmutAnyOrigin
+            dtype,
+            Layout.row_major(Self.in_dim, Self.action_dim),
+            ImmutAnyOrigin,
         ],
         b_log_std: LayoutTensor[
             dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
@@ -367,7 +373,6 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
         if global_col < Self.action_dim:
             mean_acc = b_mean[global_col]
 
-        @parameter
         for tile_idx in range(0, (Self.in_dim + TILE - 1) // TILE):
             var x_col = tile_idx * TILE + local_col
 
@@ -399,7 +404,6 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
         if global_col < Self.action_dim:
             log_std_acc = b_log_std[global_col]
 
-        @parameter
         for tile_idx in range(0, (Self.in_dim + TILE - 1) // TILE):
             var x_col = tile_idx * TILE + local_col
 
@@ -434,7 +438,9 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
                 log_std_val = Scalar[DType.float32](LOG_STD_MIN)
             elif log_std_val > Scalar[DType.float32](LOG_STD_MAX):
                 log_std_val = Scalar[DType.float32](LOG_STD_MAX)
-            output[global_row, Self.action_dim + global_col] = rebind[output.element_type](log_std_val)
+            output[global_row, Self.action_dim + global_col] = rebind[
+                output.element_type
+            ](log_std_val)
 
     @always_inline
     @staticmethod
@@ -448,13 +454,17 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
             dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
         ],
         W_mean: LayoutTensor[
-            dtype, Layout.row_major(Self.in_dim, Self.action_dim), ImmutAnyOrigin
+            dtype,
+            Layout.row_major(Self.in_dim, Self.action_dim),
+            ImmutAnyOrigin,
         ],
         b_mean: LayoutTensor[
             dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
         ],
         W_log_std: LayoutTensor[
-            dtype, Layout.row_major(Self.in_dim, Self.action_dim), ImmutAnyOrigin
+            dtype,
+            Layout.row_major(Self.in_dim, Self.action_dim),
+            ImmutAnyOrigin,
         ],
         b_log_std: LayoutTensor[
             dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
@@ -485,7 +495,6 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
         if global_col < Self.action_dim:
             mean_acc = b_mean[global_col]
 
-        @parameter
         for tile_idx in range(0, (Self.in_dim + TILE - 1) // TILE):
             var x_col = tile_idx * TILE + local_col
             if global_row < BATCH and x_col < Self.in_dim:
@@ -512,7 +521,6 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
         if global_col < Self.action_dim:
             log_std_acc = b_log_std[global_col]
 
-        @parameter
         for tile_idx in range(0, (Self.in_dim + TILE - 1) // TILE):
             var x_col = tile_idx * TILE + local_col
             if global_row < BATCH and x_col < Self.in_dim:
@@ -542,7 +550,9 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
                 log_std_val = Scalar[DType.float32](LOG_STD_MIN)
             elif log_std_val > Scalar[DType.float32](LOG_STD_MAX):
                 log_std_val = Scalar[DType.float32](LOG_STD_MAX)
-            output[global_row, Self.action_dim + global_col] = rebind[output.element_type](log_std_val)
+            output[global_row, Self.action_dim + global_col] = rebind[
+                output.element_type
+            ](log_std_val)
 
     # =========================================================================
     # GPU Launchers
@@ -568,13 +578,17 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
             dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
         ](input_buf.unsafe_ptr())
         var W_mean = LayoutTensor[
-            dtype, Layout.row_major(Self.in_dim, Self.action_dim), ImmutAnyOrigin
+            dtype,
+            Layout.row_major(Self.in_dim, Self.action_dim),
+            ImmutAnyOrigin,
         ](params_ptr + Self._mean_W_offset())
         var b_mean = LayoutTensor[
             dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
         ](params_ptr + Self._mean_b_offset())
         var W_log_std = LayoutTensor[
-            dtype, Layout.row_major(Self.in_dim, Self.action_dim), ImmutAnyOrigin
+            dtype,
+            Layout.row_major(Self.in_dim, Self.action_dim),
+            ImmutAnyOrigin,
         ](params_ptr + Self._log_std_W_offset())
         var b_log_std = LayoutTensor[
             dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
@@ -595,13 +609,17 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
                 dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
             ],
             W_mean: LayoutTensor[
-                dtype, Layout.row_major(Self.in_dim, Self.action_dim), ImmutAnyOrigin
+                dtype,
+                Layout.row_major(Self.in_dim, Self.action_dim),
+                ImmutAnyOrigin,
             ],
             b_mean: LayoutTensor[
                 dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
             ],
             W_log_std: LayoutTensor[
-                dtype, Layout.row_major(Self.in_dim, Self.action_dim), ImmutAnyOrigin
+                dtype,
+                Layout.row_major(Self.in_dim, Self.action_dim),
+                ImmutAnyOrigin,
             ],
             b_log_std: LayoutTensor[
                 dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
@@ -609,9 +627,16 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
             cache: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
             ],
+            batch_size: Int,
         ):
             Self.forward_kernel_impl[BATCH](
-                output, input, W_mean, b_mean, W_log_std, b_log_std, cache
+                output,
+                input,
+                W_mean,
+                b_mean,
+                W_log_std,
+                b_log_std,
+                cache,
             )
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
@@ -645,13 +670,17 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
             dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
         ](input_buf.unsafe_ptr())
         var W_mean = LayoutTensor[
-            dtype, Layout.row_major(Self.in_dim, Self.action_dim), ImmutAnyOrigin
+            dtype,
+            Layout.row_major(Self.in_dim, Self.action_dim),
+            ImmutAnyOrigin,
         ](params_ptr + Self._mean_W_offset())
         var b_mean = LayoutTensor[
             dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
         ](params_ptr + Self._mean_b_offset())
         var W_log_std = LayoutTensor[
-            dtype, Layout.row_major(Self.in_dim, Self.action_dim), ImmutAnyOrigin
+            dtype,
+            Layout.row_major(Self.in_dim, Self.action_dim),
+            ImmutAnyOrigin,
         ](params_ptr + Self._log_std_W_offset())
         var b_log_std = LayoutTensor[
             dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
@@ -669,13 +698,17 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
                 dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
             ],
             W_mean: LayoutTensor[
-                dtype, Layout.row_major(Self.in_dim, Self.action_dim), ImmutAnyOrigin
+                dtype,
+                Layout.row_major(Self.in_dim, Self.action_dim),
+                ImmutAnyOrigin,
             ],
             b_mean: LayoutTensor[
                 dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
             ],
             W_log_std: LayoutTensor[
-                dtype, Layout.row_major(Self.in_dim, Self.action_dim), ImmutAnyOrigin
+                dtype,
+                Layout.row_major(Self.in_dim, Self.action_dim),
+                ImmutAnyOrigin,
             ],
             b_log_std: LayoutTensor[
                 dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
@@ -723,10 +756,14 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
         ](grad_output_buf.unsafe_ptr())
         var W_mean = LayoutTensor[
-            dtype, Layout.row_major(Self.in_dim, Self.action_dim), ImmutAnyOrigin
+            dtype,
+            Layout.row_major(Self.in_dim, Self.action_dim),
+            ImmutAnyOrigin,
         ](params_ptr + Self._mean_W_offset())
         var W_log_std = LayoutTensor[
-            dtype, Layout.row_major(Self.in_dim, Self.action_dim), ImmutAnyOrigin
+            dtype,
+            Layout.row_major(Self.in_dim, Self.action_dim),
+            ImmutAnyOrigin,
         ](params_ptr + Self._log_std_W_offset())
         var cache = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.in_dim), ImmutAnyOrigin
@@ -757,10 +794,14 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
                 dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
             ],
             W_mean: LayoutTensor[
-                dtype, Layout.row_major(Self.in_dim, Self.action_dim), ImmutAnyOrigin
+                dtype,
+                Layout.row_major(Self.in_dim, Self.action_dim),
+                ImmutAnyOrigin,
             ],
             W_log_std: LayoutTensor[
-                dtype, Layout.row_major(Self.in_dim, Self.action_dim), ImmutAnyOrigin
+                dtype,
+                Layout.row_major(Self.in_dim, Self.action_dim),
+                ImmutAnyOrigin,
             ],
         ):
             Self.backward_dx_kernel_impl[BATCH](
@@ -783,7 +824,9 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
         @always_inline
         fn dW_mean_kernel_wrapper(
             dW_mean: LayoutTensor[
-                dtype, Layout.row_major(Self.in_dim, Self.action_dim), MutAnyOrigin
+                dtype,
+                Layout.row_major(Self.in_dim, Self.action_dim),
+                MutAnyOrigin,
             ],
             cache: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.in_dim), ImmutAnyOrigin
@@ -792,7 +835,9 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
                 dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
             ],
         ):
-            Self.backward_dW_mean_kernel_impl[BATCH](dW_mean, cache, grad_output)
+            Self.backward_dW_mean_kernel_impl[BATCH](
+                dW_mean, cache, grad_output
+            )
 
         ctx.enqueue_function[dW_mean_kernel_wrapper, dW_mean_kernel_wrapper](
             dW_mean,
@@ -806,7 +851,9 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
         @always_inline
         fn dW_log_std_kernel_wrapper(
             dW_log_std: LayoutTensor[
-                dtype, Layout.row_major(Self.in_dim, Self.action_dim), MutAnyOrigin
+                dtype,
+                Layout.row_major(Self.in_dim, Self.action_dim),
+                MutAnyOrigin,
             ],
             cache: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.in_dim), ImmutAnyOrigin
@@ -819,7 +866,9 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
                 dW_log_std, cache, grad_output
             )
 
-        ctx.enqueue_function[dW_log_std_kernel_wrapper, dW_log_std_kernel_wrapper](
+        ctx.enqueue_function[
+            dW_log_std_kernel_wrapper, dW_log_std_kernel_wrapper
+        ](
             dW_log_std,
             cache,
             grad_output,
@@ -858,7 +907,9 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
         ):
             Self.backward_db_log_std_kernel_impl[BATCH](db_log_std, grad_output)
 
-        ctx.enqueue_function[db_log_std_kernel_wrapper, db_log_std_kernel_wrapper](
+        ctx.enqueue_function[
+            db_log_std_kernel_wrapper, db_log_std_kernel_wrapper
+        ](
             db_log_std,
             grad_output,
             grid_dim=(Self.action_dim,),
@@ -881,10 +932,14 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
         ],
         W_mean: LayoutTensor[
-            dtype, Layout.row_major(Self.in_dim, Self.action_dim), ImmutAnyOrigin
+            dtype,
+            Layout.row_major(Self.in_dim, Self.action_dim),
+            ImmutAnyOrigin,
         ],
         W_log_std: LayoutTensor[
-            dtype, Layout.row_major(Self.in_dim, Self.action_dim), ImmutAnyOrigin
+            dtype,
+            Layout.row_major(Self.in_dim, Self.action_dim),
+            ImmutAnyOrigin,
         ],
     ):
         """Compute dx = dy_mean @ W_mean.T + dy_log_std @ W_log_std.T."""
@@ -910,11 +965,12 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
         # First: dy_mean @ W_mean.T
         var acc: grad_input.element_type = 0
 
-        @parameter
         for tile_idx in range(0, (Self.action_dim + TILE - 1) // TILE):
             var dy_col = tile_idx * TILE + local_col
             if global_row < BATCH and dy_col < Self.action_dim:
-                dy_shared[local_row, local_col] = grad_output[global_row, dy_col]
+                dy_shared[local_row, local_col] = grad_output[
+                    global_row, dy_col
+                ]
             else:
                 dy_shared[local_row, local_col] = 0
 
@@ -933,7 +989,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
             barrier()
 
         # Second: add dy_log_std @ W_log_std.T
-        @parameter
+
         for tile_idx in range(0, (Self.action_dim + TILE - 1) // TILE):
             var dy_col = tile_idx * TILE + local_col
             if global_row < BATCH and dy_col < Self.action_dim:
@@ -997,7 +1053,6 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
 
         var acc: dW_mean.element_type = 0
 
-        @parameter
         for tile_idx in range(0, (BATCH + TILE - 1) // TILE):
             var batch_idx = tile_idx * TILE + local_col
             if global_row < Self.in_dim and batch_idx < BATCH:
@@ -1007,7 +1062,9 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
 
             var dy_row = tile_idx * TILE + local_row
             if dy_row < BATCH and global_col < Self.action_dim:
-                dy_shared[local_row, local_col] = grad_output[dy_row, global_col]
+                dy_shared[local_row, local_col] = grad_output[
+                    dy_row, global_col
+                ]
             else:
                 dy_shared[local_row, local_col] = 0
 
@@ -1168,7 +1225,9 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
         workspace_buf: DeviceBuffer[dtype],
     ) raises:
         """GPU forward with workspace (workspace unused for StochasticActor)."""
-        Self.forward_gpu[BATCH](ctx, output_buf, input_buf, params_buf, cache_buf)
+        Self.forward_gpu[BATCH](
+            ctx, output_buf, input_buf, params_buf, cache_buf
+        )
 
     @staticmethod
     fn forward_gpu_no_cache_ws[
@@ -1195,7 +1254,8 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
         grads_buf: DeviceBuffer[dtype],
         workspace_buf: DeviceBuffer[dtype],
     ) raises:
-        """GPU backward with workspace (workspace unused for StochasticActor)."""
+        """GPU backward with workspace (workspace unused for StochasticActor).
+        """
         Self.backward_gpu[BATCH](
             ctx,
             grad_input_buf,
@@ -1214,10 +1274,18 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
 fn rsample[
     BATCH: Int, action_dim: Int
 ](
-    mean: LayoutTensor[dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin],
-    log_std: LayoutTensor[dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin],
-    noise: LayoutTensor[dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin],
-    mut action: LayoutTensor[dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin],
+    mean: LayoutTensor[
+        dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin
+    ],
+    log_std: LayoutTensor[
+        dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin
+    ],
+    noise: LayoutTensor[
+        dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin
+    ],
+    mut action: LayoutTensor[
+        dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin
+    ],
     mut log_prob: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
 ):
     """Reparameterized sample with log probability computation.
@@ -1255,8 +1323,12 @@ fn rsample[
             action[batch, j] = Scalar[dtype](tanh_z)
 
             # Log probability of Gaussian: -0.5 * (log(2*pi) + 2*log_std + ((z - mean)/std)^2)
-            var z_normalized = n  # (z - mean) / std = n since z = mean + std * n
-            var log_gaussian = -0.5 * (LOG_2PI + 2.0 * ls + z_normalized * z_normalized)
+            var z_normalized = (
+                n  # (z - mean) / std = n since z = mean + std * n
+            )
+            var log_gaussian = -0.5 * (
+                LOG_2PI + 2.0 * ls + z_normalized * z_normalized
+            )
 
             # Squashing correction: -log(1 - tanh(z)^2 + eps)
             var squash_correction = log(1.0 - tanh_z * tanh_z + EPS)
@@ -1269,10 +1341,18 @@ fn rsample[
 fn sample_action[
     BATCH: Int, action_dim: Int
 ](
-    mean: LayoutTensor[dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin],
-    log_std: LayoutTensor[dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin],
-    noise: LayoutTensor[dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin],
-    mut action: LayoutTensor[dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin],
+    mean: LayoutTensor[
+        dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin
+    ],
+    log_std: LayoutTensor[
+        dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin
+    ],
+    noise: LayoutTensor[
+        dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin
+    ],
+    mut action: LayoutTensor[
+        dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin
+    ],
 ):
     """Sample actions using reparameterization trick (without log_prob).
 
@@ -1301,9 +1381,15 @@ fn sample_action[
 fn compute_log_prob[
     BATCH: Int, action_dim: Int
 ](
-    mean: LayoutTensor[dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin],
-    log_std: LayoutTensor[dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin],
-    action: LayoutTensor[dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin],
+    mean: LayoutTensor[
+        dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin
+    ],
+    log_std: LayoutTensor[
+        dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin
+    ],
+    action: LayoutTensor[
+        dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin
+    ],
     mut log_prob: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
 ):
     """Compute log probability of actions under the Gaussian policy.
@@ -1340,7 +1426,9 @@ fn compute_log_prob[
             var z_normalized = (z - m) / std
 
             # Log probability of Gaussian
-            var log_gaussian = -0.5 * (LOG_2PI + 2.0 * ls + z_normalized * z_normalized)
+            var log_gaussian = -0.5 * (
+                LOG_2PI + 2.0 * ls + z_normalized * z_normalized
+            )
 
             # Squashing correction
             var squash_correction = log(1.0 - a * a + EPS)
@@ -1353,8 +1441,12 @@ fn compute_log_prob[
 fn get_deterministic_action[
     BATCH: Int, action_dim: Int
 ](
-    mean: LayoutTensor[dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin],
-    mut action: LayoutTensor[dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin],
+    mean: LayoutTensor[
+        dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin
+    ],
+    mut action: LayoutTensor[
+        dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin
+    ],
 ):
     """Get deterministic action by applying tanh to the mean.
 
@@ -1381,12 +1473,22 @@ fn get_deterministic_action[
 fn rsample_with_cache[
     BATCH: Int, action_dim: Int
 ](
-    mean: LayoutTensor[dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin],
-    log_std: LayoutTensor[dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin],
-    noise: LayoutTensor[dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin],
-    mut action: LayoutTensor[dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin],
+    mean: LayoutTensor[
+        dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin
+    ],
+    log_std: LayoutTensor[
+        dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin
+    ],
+    noise: LayoutTensor[
+        dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin
+    ],
+    mut action: LayoutTensor[
+        dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin
+    ],
     mut log_prob: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
-    mut z_cache: LayoutTensor[dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin],
+    mut z_cache: LayoutTensor[
+        dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin
+    ],
 ):
     """Reparameterized sample with caching for backward pass.
 
@@ -1427,7 +1529,9 @@ fn rsample_with_cache[
 
             # Log probability of Gaussian
             var z_normalized = n  # (z - mean) / std = n
-            var log_gaussian = -0.5 * (LOG_2PI + 2.0 * ls + z_normalized * z_normalized)
+            var log_gaussian = -0.5 * (
+                LOG_2PI + 2.0 * ls + z_normalized * z_normalized
+            )
 
             # Squashing correction
             var squash_correction = log(1.0 - tanh_z * tanh_z + EPS)
@@ -1440,13 +1544,27 @@ fn rsample_with_cache[
 fn rsample_backward[
     BATCH: Int, action_dim: Int
 ](
-    grad_action: LayoutTensor[dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin],
-    grad_log_prob: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
-    action: LayoutTensor[dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin],
-    log_std: LayoutTensor[dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin],
-    noise: LayoutTensor[dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin],
-    mut grad_mean: LayoutTensor[dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin],
-    mut grad_log_std: LayoutTensor[dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin],
+    grad_action: LayoutTensor[
+        dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin
+    ],
+    grad_log_prob: LayoutTensor[
+        dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
+    ],
+    action: LayoutTensor[
+        dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin
+    ],
+    log_std: LayoutTensor[
+        dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin
+    ],
+    noise: LayoutTensor[
+        dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin
+    ],
+    mut grad_mean: LayoutTensor[
+        dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin
+    ],
+    mut grad_log_std: LayoutTensor[
+        dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin
+    ],
 ):
     """Backward pass through the reparameterization trick.
 
@@ -1518,12 +1636,22 @@ fn rsample_backward[
 fn rsample_with_cache_kernel_impl[
     BATCH: Int, action_dim: Int
 ](
-    mean: LayoutTensor[dtype, Layout.row_major(BATCH, action_dim), ImmutAnyOrigin],
-    log_std: LayoutTensor[dtype, Layout.row_major(BATCH, action_dim), ImmutAnyOrigin],
-    noise: LayoutTensor[dtype, Layout.row_major(BATCH, action_dim), ImmutAnyOrigin],
-    mut action: LayoutTensor[dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin],
+    mean: LayoutTensor[
+        dtype, Layout.row_major(BATCH, action_dim), ImmutAnyOrigin
+    ],
+    log_std: LayoutTensor[
+        dtype, Layout.row_major(BATCH, action_dim), ImmutAnyOrigin
+    ],
+    noise: LayoutTensor[
+        dtype, Layout.row_major(BATCH, action_dim), ImmutAnyOrigin
+    ],
+    mut action: LayoutTensor[
+        dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin
+    ],
     mut log_prob: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
-    mut z_cache: LayoutTensor[dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin],
+    mut z_cache: LayoutTensor[
+        dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin
+    ],
 ):
     """GPU kernel for rsample_with_cache.
 
@@ -1571,13 +1699,27 @@ fn rsample_with_cache_kernel_impl[
 fn rsample_backward_kernel_impl[
     BATCH: Int, action_dim: Int
 ](
-    grad_action: LayoutTensor[dtype, Layout.row_major(BATCH, action_dim), ImmutAnyOrigin],
-    grad_log_prob: LayoutTensor[dtype, Layout.row_major(BATCH, 1), ImmutAnyOrigin],
-    action: LayoutTensor[dtype, Layout.row_major(BATCH, action_dim), ImmutAnyOrigin],
-    log_std: LayoutTensor[dtype, Layout.row_major(BATCH, action_dim), ImmutAnyOrigin],
-    noise: LayoutTensor[dtype, Layout.row_major(BATCH, action_dim), ImmutAnyOrigin],
-    mut grad_mean: LayoutTensor[dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin],
-    mut grad_log_std: LayoutTensor[dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin],
+    grad_action: LayoutTensor[
+        dtype, Layout.row_major(BATCH, action_dim), ImmutAnyOrigin
+    ],
+    grad_log_prob: LayoutTensor[
+        dtype, Layout.row_major(BATCH, 1), ImmutAnyOrigin
+    ],
+    action: LayoutTensor[
+        dtype, Layout.row_major(BATCH, action_dim), ImmutAnyOrigin
+    ],
+    log_std: LayoutTensor[
+        dtype, Layout.row_major(BATCH, action_dim), ImmutAnyOrigin
+    ],
+    noise: LayoutTensor[
+        dtype, Layout.row_major(BATCH, action_dim), ImmutAnyOrigin
+    ],
+    grad_mean: LayoutTensor[
+        dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin
+    ],
+    grad_log_std: LayoutTensor[
+        dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin
+    ],
 ):
     """GPU kernel for rsample_backward.
 
@@ -1586,7 +1728,7 @@ fn rsample_backward_kernel_impl[
     Block: (TPB,)
     """
     var idx = Int(block_idx.x) * TPB + Int(thread_idx.x)
-    var total_size = BATCH * action_dim
+    comptime total_size = BATCH * action_dim
 
     if idx >= total_size:
         return
@@ -1645,25 +1787,25 @@ fn rsample_backward_gpu[
     """
     var grad_action = LayoutTensor[
         dtype, Layout.row_major(BATCH, action_dim), ImmutAnyOrigin
-    ](grad_action_buf.unsafe_ptr())
+    ](grad_action_buf)
     var grad_log_prob = LayoutTensor[
         dtype, Layout.row_major(BATCH, 1), ImmutAnyOrigin
-    ](grad_log_prob_buf.unsafe_ptr())
+    ](grad_log_prob_buf)
     var action = LayoutTensor[
         dtype, Layout.row_major(BATCH, action_dim), ImmutAnyOrigin
-    ](action_buf.unsafe_ptr())
+    ](action_buf)
     var log_std = LayoutTensor[
         dtype, Layout.row_major(BATCH, action_dim), ImmutAnyOrigin
-    ](log_std_buf.unsafe_ptr())
+    ](log_std_buf)
     var noise = LayoutTensor[
         dtype, Layout.row_major(BATCH, action_dim), ImmutAnyOrigin
-    ](noise_buf.unsafe_ptr())
+    ](noise_buf)
     var grad_mean = LayoutTensor[
         dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin
-    ](grad_mean_buf.unsafe_ptr())
+    ](grad_mean_buf)
     var grad_log_std = LayoutTensor[
         dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin
-    ](grad_log_std_buf.unsafe_ptr())
+    ](grad_log_std_buf)
 
     comptime total_size = BATCH * action_dim
     comptime grid_size = (total_size + TPB - 1) // TPB
@@ -1693,8 +1835,13 @@ fn rsample_backward_gpu[
         ],
     ):
         rsample_backward_kernel_impl[BATCH, action_dim](
-            grad_action, grad_log_prob, action, log_std, noise,
-            grad_mean, grad_log_std
+            grad_action,
+            grad_log_prob,
+            action,
+            log_std,
+            noise,
+            grad_mean,
+            grad_log_std,
         )
 
     ctx.enqueue_function[kernel_wrapper, kernel_wrapper](

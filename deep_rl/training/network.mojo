@@ -145,7 +145,11 @@ struct Network[
             dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
         ](self.params.unsafe_ptr())
 
-        self.model.forward[BATCH](input_tensor, output_tensor, params_tensor)
+        self.model.forward[BATCH](
+            input_tensor,
+            output_tensor,
+            params_tensor,
+        )
 
     fn forward_with_cache[
         BATCH: Int
@@ -176,7 +180,10 @@ struct Network[
         ](cache.unsafe_ptr())
 
         self.model.forward[BATCH](
-            input_tensor, output_tensor, params_tensor, cache_tensor
+            input_tensor,
+            output_tensor,
+            params_tensor,
+            cache_tensor,
         )
 
     # =========================================================================
@@ -332,7 +339,9 @@ struct Network[
         var tau_scalar = Scalar[dtype](tau)
         var one_minus_tau = Scalar[dtype](1.0 - tau)
         for i in range(Self.MODEL.PARAM_SIZE):
-            self.params[i] = tau_scalar * source.params[i] + one_minus_tau * self.params[i]
+            self.params[i] = (
+                tau_scalar * source.params[i] + one_minus_tau * self.params[i]
+            )
 
     # =========================================================================
     # GPU Forward Pass
@@ -356,7 +365,10 @@ struct Network[
             params_buf: Parameters buffer [PARAM_SIZE].
         """
         Self.MODEL.forward_gpu_no_cache[BATCH](
-            ctx, output_buf, input_buf, params_buf
+            ctx,
+            output_buf,
+            input_buf,
+            params_buf,
         )
 
     fn forward_gpu_with_cache[
@@ -379,7 +391,11 @@ struct Network[
             cache_buf: Cache buffer [BATCH * CACHE_SIZE] (written).
         """
         Self.MODEL.forward_gpu[BATCH](
-            ctx, output_buf, input_buf, params_buf, cache_buf
+            ctx,
+            output_buf,
+            input_buf,
+            params_buf,
+            cache_buf,
         )
 
     # =========================================================================

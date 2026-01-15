@@ -1,12 +1,9 @@
-from ..constants import dtype
+from ..constants import dtype, TPB
 from .model import Model
 from layout import LayoutTensor, Layout
 from gpu import thread_idx, block_idx, block_dim
 from gpu.host import DeviceContext, DeviceBuffer
 from math import exp
-
-# GPU constant
-comptime TPB = 256  # Threads per block for elementwise ops
 
 
 struct Sigmoid[dim: Int](Model):
@@ -51,13 +48,14 @@ struct Sigmoid[dim: Int](Model):
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
+        batch_size: Int,
     ):
         """Forward: y = 1 / (1 + exp(-x)).
 
         Caches sigmoid output for backward pass (derivative uses output).
         Note: params is unused (Sigmoid has no parameters).
         """
-        for batch in range(BATCH):
+        for batch in range(batch_size):
             for i in range(Self.dim):
                 var val = rebind[Scalar[dtype]](input[batch, i])
                 var val_f64 = Float64(val)
@@ -79,12 +77,13 @@ struct Sigmoid[dim: Int](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        batch_size: Int,
     ):
         """Forward pass without caching (for inference).
 
         Note: params is unused (Sigmoid has no parameters).
         """
-        for batch in range(BATCH):
+        for batch in range(batch_size):
             for i in range(Self.dim):
                 var val = rebind[Scalar[dtype]](input[batch, i])
                 var val_f64 = Float64(val)
@@ -111,6 +110,7 @@ struct Sigmoid[dim: Int](Model):
         mut grads: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        batch_size: Int,
     ):
         """Backward: dx = dy * y * (1 - y).
 
@@ -118,7 +118,7 @@ struct Sigmoid[dim: Int](Model):
         Note: params and grads are unused (Sigmoid has no parameters).
         """
         var one = Scalar[dtype](1.0)
-        for batch in range(BATCH):
+        for batch in range(batch_size):
             for i in range(Self.dim):
                 var y = rebind[Scalar[dtype]](cache[batch, i])  # Cached sigmoid output
                 var dy = rebind[Scalar[dtype]](grad_output[batch, i])
@@ -143,14 +143,15 @@ struct Sigmoid[dim: Int](Model):
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
         ],
+        batch_size: Int,
     ):
         """Forward pass kernel: y = 1 / (1 + exp(-x)) with caching.
 
-        Grid: ((BATCH * dim + TPB - 1) // TPB,)
+        Grid: ((batch_size * dim + TPB - 1) // TPB,)
         Block: (TPB,)
         """
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-        if idx >= BATCH * Self.dim:
+        if idx >= batch_size * Self.dim:
             return
 
         var row = idx // Self.dim
@@ -179,14 +180,15 @@ struct Sigmoid[dim: Int](Model):
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
         ],
+        batch_size: Int,
     ):
         """Forward pass kernel without caching (for inference).
 
-        Grid: ((BATCH * dim + TPB - 1) // TPB,)
+        Grid: ((batch_size * dim + TPB - 1) // TPB,)
         Block: (TPB,)
         """
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-        if idx >= BATCH * Self.dim:
+        if idx >= batch_size * Self.dim:
             return
 
         var row = idx // Self.dim
@@ -217,16 +219,17 @@ struct Sigmoid[dim: Int](Model):
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
         ],
+        batch_size: Int,
     ):
         """Backward pass kernel: dx = dy * y * (1 - y).
 
         Uses cached sigmoid output from forward pass.
 
-        Grid: ((BATCH * dim + TPB - 1) // TPB,)
+        Grid: ((batch_size * dim + TPB - 1) // TPB,)
         Block: (TPB,)
         """
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-        if idx >= BATCH * Self.dim:
+        if idx >= batch_size * Self.dim:
             return
 
         var row = idx // Self.dim
@@ -249,6 +252,7 @@ struct Sigmoid[dim: Int](Model):
         input_buf: DeviceBuffer[dtype],
         params_buf: DeviceBuffer[dtype],  # Unused for Sigmoid
         cache_buf: DeviceBuffer[dtype],
+        batch_size: Int,
     ) raises:
         """Launch forward pass on GPU with caching."""
         var output = LayoutTensor[
@@ -261,8 +265,8 @@ struct Sigmoid[dim: Int](Model):
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
         ](cache_buf.unsafe_ptr())
 
-        comptime total_elements = BATCH * Self.dim
-        comptime grid_x = (total_elements + TPB - 1) // TPB
+        var total_elements = batch_size * Self.dim
+        var grid_x = (total_elements + TPB - 1) // TPB
 
         @always_inline
         fn kernel_wrapper(
@@ -275,13 +279,15 @@ struct Sigmoid[dim: Int](Model):
             cache: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
             ],
+            batch_size: Int,
         ):
-            Self.forward_kernel_impl[BATCH](output, input, cache)
+            Self.forward_kernel_impl[BATCH](output, input, cache, batch_size)
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             output,
             input,
             cache,
+            batch_size,
             grid_dim=(grid_x,),
             block_dim=(TPB,),
         )
@@ -294,6 +300,7 @@ struct Sigmoid[dim: Int](Model):
         output_buf: DeviceBuffer[dtype],
         input_buf: DeviceBuffer[dtype],
         params_buf: DeviceBuffer[dtype],  # Unused for Sigmoid
+        batch_size: Int,
     ) raises:
         """Launch forward pass on GPU without caching (for inference)."""
         var output = LayoutTensor[
@@ -303,8 +310,8 @@ struct Sigmoid[dim: Int](Model):
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
         ](input_buf.unsafe_ptr())
 
-        comptime total_elements = BATCH * Self.dim
-        comptime grid_x = (total_elements + TPB - 1) // TPB
+        var total_elements = batch_size * Self.dim
+        var grid_x = (total_elements + TPB - 1) // TPB
 
         @always_inline
         fn kernel_wrapper(
@@ -314,12 +321,14 @@ struct Sigmoid[dim: Int](Model):
             input: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
             ],
+            batch_size: Int,
         ):
-            Self.forward_kernel_impl_no_cache[BATCH](output, input)
+            Self.forward_kernel_impl_no_cache[BATCH](output, input, batch_size)
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             output,
             input,
+            batch_size,
             grid_dim=(grid_x,),
             block_dim=(TPB,),
         )
@@ -334,6 +343,7 @@ struct Sigmoid[dim: Int](Model):
         params_buf: DeviceBuffer[dtype],  # Unused for Sigmoid
         cache_buf: DeviceBuffer[dtype],
         grads_buf: DeviceBuffer[dtype],  # Unused for Sigmoid
+        batch_size: Int,
     ) raises:
         """Launch backward pass on GPU."""
         var grad_input = LayoutTensor[
@@ -346,8 +356,8 @@ struct Sigmoid[dim: Int](Model):
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
         ](cache_buf.unsafe_ptr())
 
-        comptime total_elements = BATCH * Self.dim
-        comptime grid_x = (total_elements + TPB - 1) // TPB
+        var total_elements = batch_size * Self.dim
+        var grid_x = (total_elements + TPB - 1) // TPB
 
         @always_inline
         fn kernel_wrapper(
@@ -360,13 +370,15 @@ struct Sigmoid[dim: Int](Model):
             cache: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
             ],
+            batch_size: Int,
         ):
-            Self.backward_kernel_impl[BATCH](grad_input, grad_output, cache)
+            Self.backward_kernel_impl[BATCH](grad_input, grad_output, cache, batch_size)
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             grad_input,
             grad_output,
             cache,
+            batch_size,
             grid_dim=(grid_x,),
             block_dim=(TPB,),
         )
@@ -386,10 +398,11 @@ struct Sigmoid[dim: Int](Model):
         params_buf: DeviceBuffer[dtype],
         cache_buf: DeviceBuffer[dtype],
         workspace_buf: DeviceBuffer[dtype],  # Unused for Sigmoid
+        batch_size: Int,
     ) raises:
         """GPU forward with workspace (workspace unused for Sigmoid)."""
         Self.forward_gpu[BATCH](
-            ctx, output_buf, input_buf, params_buf, cache_buf
+            ctx, output_buf, input_buf, params_buf, cache_buf, batch_size
         )
 
     @staticmethod
@@ -401,9 +414,10 @@ struct Sigmoid[dim: Int](Model):
         input_buf: DeviceBuffer[dtype],
         params_buf: DeviceBuffer[dtype],
         workspace_buf: DeviceBuffer[dtype],  # Unused for Sigmoid
+        batch_size: Int,
     ) raises:
         """GPU forward without cache, with workspace (workspace unused)."""
-        Self.forward_gpu_no_cache[BATCH](ctx, output_buf, input_buf, params_buf)
+        Self.forward_gpu_no_cache[BATCH](ctx, output_buf, input_buf, params_buf, batch_size)
 
     @staticmethod
     fn backward_gpu_ws[
@@ -416,6 +430,7 @@ struct Sigmoid[dim: Int](Model):
         cache_buf: DeviceBuffer[dtype],
         grads_buf: DeviceBuffer[dtype],
         workspace_buf: DeviceBuffer[dtype],  # Unused for Sigmoid
+        batch_size: Int,
     ) raises:
         """GPU backward with workspace (workspace unused for Sigmoid)."""
         Self.backward_gpu[BATCH](
@@ -425,4 +440,5 @@ struct Sigmoid[dim: Int](Model):
             params_buf,
             cache_buf,
             grads_buf,
+            batch_size,
         )

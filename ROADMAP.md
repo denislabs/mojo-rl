@@ -24,6 +24,24 @@
   - Wind and turbulence effects
   - SDL2 rendering with terrain, lander, legs, helipad, flags, and flame particles
   - Implements `BoxDiscreteActionEnv` trait for RL agent compatibility
+- [x] BipedalWalker (Native) - Pure Mojo implementation with custom 2D physics engine
+  - `bipedal_walker.mojo` - Physics matching Gymnasium BipedalWalker-v3
+  - Both normal and hardcore modes (stumps, pits, stairs obstacles)
+  - Continuous action space (4D: hip and knee torques for both legs)
+  - 24D observation: hull state, joint angles/speeds, leg contacts, 10-ray lidar
+  - Custom Box2D-style physics with revolute joints and motors
+  - SDL2 rendering with scrolling viewport following the walker
+  - Implements `BoxContinuousActionEnv` trait for RL agent compatibility
+- [x] CarRacing (Native) - Pure Mojo implementation with procedural track generation
+  - `car_racing.mojo` - Physics matching Gymnasium CarRacing-v3
+  - Procedural track generation with random bezier checkpoints
+  - Top-down car dynamics with 4-wheel friction model
+  - Continuous action space (3D: steering, gas, brake)
+  - Discrete action space (5: nothing, left, right, gas, brake)
+  - 12D observation: position, velocity, angle, wheel states, waypoint direction
+  - Tile-based reward system (+1000/N per tile, -0.1 per frame)
+  - SDL2 rendering with rotating camera following the car
+  - Implements `BoxContinuousActionEnv` trait for RL agent compatibility
 
 ### Environments - Gymnasium Wrappers (`envs/gymnasium/`)
 - [x] Generic Gymnasium wrapper - Works with any Gymnasium environment
@@ -218,8 +236,14 @@
   - Clipped surrogate objective for stable policy updates
   - Multiple optimization epochs per rollout
   - GAE for advantage estimation
+  - **Advanced training features (environment-agnostic):**
+    - Linear learning rate annealing (`anneal_lr=True`)
+    - KL divergence early stopping (`target_kl=0.015`) - stops epoch if policy changes too much
+    - Gradient norm clipping (`max_grad_norm=0.5`) - prevents exploding gradients
+    - Entropy coefficient annealing (`anneal_entropy=False`) - optional exploration decay
   - Works with `BoxDiscreteActionEnv` trait
   - `examples/cartpole_deep_a2c_ppo.mojo` - CartPole training demo
+  - `tests/test_ppo_gpu.mojo` - GPU training test with advanced features
 
 ## In Progress / Next Steps
 
@@ -261,7 +285,8 @@
 ### Environments - Native Ports (Next)
 - [x] LunarLander (Native) - Port Box2D physics to pure Mojo (COMPLETED - see above)
 - [x] Pendulum (Native) - Port continuous action environment (COMPLETED - see above)
-- [ ] BipedalWalker (Native) - Port Box2D walker physics to pure Mojo
+- [x] BipedalWalker (Native) - Port Box2D walker physics to pure Mojo (COMPLETED - see above)
+- [x] CarRacing (Native) - Port Box2D car racing with procedural tracks (COMPLETED - see above)
 - [ ] Custom environment builder
 
 ## Future Exploration
@@ -326,7 +351,8 @@ New neural network components for deep_rl.
 ### Infrastructure Improvements
 Developer experience and training efficiency.
 - [ ] **Checkpointing** - Save/load agent state for resuming training
-- [ ] **Learning rate schedulers** - Linear decay, cosine annealing, warmup
+- [x] **Learning rate schedulers** - Linear decay in Deep PPO (`anneal_lr=True`)
+  - [ ] Cosine annealing, warmup (future)
 - [ ] **Curriculum learning** - Progressive environment difficulty
 - [ ] **Population-based training** - Evolutionary hyperparameter optimization
 - [ ] **Imitation learning** - Behavioral cloning, DAgger
@@ -377,7 +403,7 @@ Lower-effort additions that extend existing work.
 | Deep Dueling DQN | Deep RL ✅ | Separate V(s) and A(s,a) streams (NEW architecture) |
 | Deep DQN + PER | Deep RL ✅ | Priority sampling by TD error + IS weights (NEW architecture) |
 | Deep A2C | Deep RL ✅ | Advantage Actor-Critic with GAE (NEW architecture) |
-| Deep PPO | Deep RL ✅ | Clipped surrogate + multiple epochs (NEW architecture) |
+| Deep PPO | Deep RL ✅ | Clipped surrogate + LR annealing + KL early stop + grad clipping (NEW architecture) |
 
 ## Architecture Notes
 
@@ -421,4 +447,4 @@ var model = seq(
 | Dueling DQN | `deep_agents/dueling_dqn.mojo` | Discrete actions, V(s) + A(s,a) split |
 | DQN + PER | `deep_agents/dqn_per.mojo` | Discrete actions, prioritized replay |
 | A2C | `deep_agents/a2c.mojo` | Discrete actions, actor-critic with GAE |
-| PPO | `deep_agents/ppo.mojo` | Discrete actions, clipped surrogate |
+| PPO | `deep_agents/ppo.mojo` | Discrete actions, clipped surrogate, LR annealing, KL early stop, grad clip |

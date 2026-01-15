@@ -118,7 +118,8 @@ struct HuberLoss(LossFunction):
 
         var my_value: Scalar[dtype] = 0
         var idx = Int(local_i)
-        while idx < BATCH * OUT_DIM:
+        comptime SIZE = BATCH * OUT_DIM
+        while idx < SIZE:
             var row = idx // OUT_DIM
             var col = idx % OUT_DIM
             var pred = rebind[Scalar[dtype]](predictions[row, col])
@@ -136,7 +137,7 @@ struct HuberLoss(LossFunction):
         var total = block.sum[block_size=TPB, broadcast=False](val=my_value)
 
         if local_i == 0:
-            loss[0] = total[0] / Scalar[dtype](BATCH * OUT_DIM)
+            loss[0] = total[0] / Scalar[dtype](SIZE)
 
     @always_inline
     @staticmethod
@@ -157,7 +158,8 @@ struct HuberLoss(LossFunction):
     ):
         """Compute gradient of Huber loss."""
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-        if idx >= BATCH * OUT_DIM:
+        comptime SIZE = BATCH * OUT_DIM
+        if idx >= SIZE:
             return
 
         var row = idx // OUT_DIM
@@ -166,7 +168,7 @@ struct HuberLoss(LossFunction):
         var target = rebind[Scalar[dtype]](targets[row, col])
         var diff = pred - target
         var abs_diff = _abs(diff)
-        var n = Scalar[dtype](BATCH * OUT_DIM)
+        var n = Scalar[dtype](SIZE)
         var zero = Scalar[dtype](0.0)
 
         if abs_diff <= delta:
@@ -174,7 +176,9 @@ struct HuberLoss(LossFunction):
             grad_output[row, col] = diff / n
         else:
             # Linear region
-            var sign: Scalar[dtype] = Scalar[dtype](1.0) if diff > zero else Scalar[dtype](-1.0)
+            var sign: Scalar[dtype] = Scalar[dtype](
+                1.0
+            ) if diff > zero else Scalar[dtype](-1.0)
             grad_output[row, col] = delta * sign / n
 
     # =========================================================================
@@ -192,7 +196,9 @@ struct HuberLoss(LossFunction):
         targets_buf: DeviceBuffer[dtype],
     ) raises:
         """Launch forward pass on GPU (trait-compatible, uses delta=1.0)."""
-        Self._forward_gpu_impl[BATCH, OUT_DIM](ctx, loss_buf, predictions_buf, targets_buf, 1.0)
+        Self._forward_gpu_impl[BATCH, OUT_DIM](
+            ctx, loss_buf, predictions_buf, targets_buf, 1.0
+        )
 
     @staticmethod
     fn _forward_gpu_impl[
@@ -260,7 +266,9 @@ struct HuberLoss(LossFunction):
         targets_buf: DeviceBuffer[dtype],
     ) raises:
         """Launch backward pass on GPU (trait-compatible, uses delta=1.0)."""
-        Self._backward_gpu_impl[BATCH, OUT_DIM](ctx, grad_output_buf, predictions_buf, targets_buf, 1.0)
+        Self._backward_gpu_impl[BATCH, OUT_DIM](
+            ctx, grad_output_buf, predictions_buf, targets_buf, 1.0
+        )
 
     @staticmethod
     fn _backward_gpu_impl[
@@ -281,6 +289,7 @@ struct HuberLoss(LossFunction):
             predictions_buf: Predictions buffer [BATCH * OUT_DIM].
             targets_buf: Targets buffer [BATCH * OUT_DIM].
             delta: Huber loss delta threshold.
+            size: Size of the loss function.
         """
         var grad_output = LayoutTensor[
             dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin

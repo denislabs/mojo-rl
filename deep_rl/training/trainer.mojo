@@ -167,7 +167,10 @@ struct Trainer[
         for epoch in range(self.epochs):
             # Forward pass (with cache and params)
             self.model.forward[BATCH](
-                input_tensor, output_tensor, params_tensor, cache_tensor
+                input_tensor,
+                output_tensor,
+                params_tensor,
+                cache_tensor,
             )
 
             # Compute loss and gradient (still uses InlineArray for now)
@@ -228,7 +231,11 @@ struct Trainer[
         ](self.params.unsafe_ptr())
 
         # Use forward - no cache needed for evaluation
-        self.model.forward[BATCH](input_tensor, output_tensor, params_tensor)
+        self.model.forward[BATCH](
+            input_tensor,
+            output_tensor,
+            params_tensor,
+        )
 
         return self.loss_function.forward[BATCH * Self.MODEL.OUT_DIM](
             output_storage, target
@@ -311,7 +318,12 @@ struct Trainer[
 
             # Forward pass (using workspace to avoid internal allocation)
             Self.MODEL.forward_gpu_ws[BATCH](
-                ctx, output_buf, input_buf, params_buf, cache_buf, workspace_buf
+                ctx,
+                output_buf,
+                input_buf,
+                params_buf,
+                cache_buf,
+                workspace_buf,
             )
 
             # Compute loss gradient (backward of loss function)

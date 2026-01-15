@@ -244,7 +244,7 @@ struct LayerNorm[dim: Int](Model):
     ):
         """Forward pass kernel with caching.
 
-        Grid: (BATCH,)
+        Grid: (batch_size,)
         Block: (1,)
         """
         var batch_idx = Int(block_idx.x)
@@ -304,7 +304,7 @@ struct LayerNorm[dim: Int](Model):
     ):
         """Forward pass kernel without caching.
 
-        Grid: (BATCH,)
+        Grid: (batch_size,)
         Block: (1,)
         """
         var batch_idx = Int(block_idx.x)
@@ -368,7 +368,7 @@ struct LayerNorm[dim: Int](Model):
         Note: Parameter gradients need atomic adds across batch samples,
         which is complex on GPU. This simple version processes sequentially.
 
-        Grid: (BATCH,)
+        Grid: (batch_size,)
         Block: (1,)
         """
         var batch_idx = Int(block_idx.x)
