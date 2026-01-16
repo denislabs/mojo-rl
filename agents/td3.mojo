@@ -53,6 +53,8 @@ from core.continuous_replay_buffer import (
 )
 from core import PolynomialFeatures, TrainingMetrics, BoxContinuousActionEnv
 from deep_rl.gpu.random import gaussian_noise
+from render import RendererBase
+from memory import UnsafePointer
 
 
 struct TD3Agent(Copyable, Movable):
@@ -830,7 +832,9 @@ struct TD3Agent(Copyable, Movable):
         features: PolynomialFeatures,
         num_episodes: Int = 10,
         max_steps_per_episode: Int = 200,
-        render: Bool = False,
+        renderer: UnsafePointer[RendererBase, MutAnyOrigin] = UnsafePointer[
+            RendererBase, MutAnyOrigin
+        ](),
     ) -> Float64:
         """Evaluate the trained TD3 agent using deterministic policy.
 
@@ -839,6 +843,7 @@ struct TD3Agent(Copyable, Movable):
             features: PolynomialFeatures extractor for state representation.
             num_episodes: Number of evaluation episodes.
             max_steps_per_episode: Maximum steps per episode.
+            renderer: Optional pointer to renderer for visualization.
 
         Returns:
             Average reward over evaluation episodes.
@@ -851,8 +856,8 @@ struct TD3Agent(Copyable, Movable):
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps_per_episode):
-                if render:
-                    env.render()
+                if renderer:
+                    env.render(renderer[])
 
                 var state_features = features.get_features_simd4(obs)
 

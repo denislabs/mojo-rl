@@ -138,35 +138,18 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
     var total_reward: Float64
     var last_torque: Float64  # For rendering
 
-    # Renderer (lazy initialized)
-    var renderer: RendererBase
-    var render_initialized: Bool
-
-    # Renderer settings
-    var pivot_x: Int
-    var pivot_y: Int
-    var rod_length: Int
-    var rod_width: Int
-    var bob_radius: Int
-    var pivot_radius: Int
-    var sky_color: SDL_Color
-    var rod_color: SDL_Color
-    var bob_color: SDL_Color
-    var pivot_color: SDL_Color
-    var torque_color: SDL_Color
-
     # Discretization settings (for DiscreteEnv)
     var num_bins_angle: Int
     var num_bins_velocity: Int
 
     fn __init__(
         out self, num_bins_angle: Int = 15, num_bins_velocity: Int = 15
-    ) raises:
+    ):
         """Initialize Pendulum with default physics parameters.
 
         Args:
-            num_bins_angle: Number of bins for angle discretization
-            num_bins_velocity: Number of bins for velocity discretization
+            num_bins_angle: Number of bins for angle discretization.
+            num_bins_velocity: Number of bins for velocity discretization.
         """
         # Physics constants from Gymnasium
         self.max_speed = 8.0
@@ -186,30 +169,6 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
         self.done = False
         self.total_reward = 0.0
         self.last_torque = 0.0
-
-        # Initialize renderer (but don't open window yet)
-        self.renderer = RendererBase(
-            width=500,
-            height=500,
-            fps=20,  # Match physics dt=0.05
-            title="Pendulum - Native Mojo (SDL2)",
-        )
-        self.render_initialized = False
-
-        # Renderer settings
-        self.pivot_x = 250  # Center of screen
-        self.pivot_y = 250
-        self.rod_length = 150
-        self.rod_width = 6
-        self.bob_radius = 20
-        self.pivot_radius = 8
-
-        # Colors
-        self.sky_color = SDL_Color(230, 230, 250, 255)  # Lavender
-        self.rod_color = SDL_Color(139, 69, 19, 255)  # Brown
-        self.bob_color = SDL_Color(70, 130, 180, 255)  # Steel blue
-        self.pivot_color = SDL_Color(50, 50, 50, 255)  # Dark gray
-        self.torque_color = SDL_Color(255, 165, 0, 255)  # Orange
 
         # Discretization settings
         self.num_bins_angle = num_bins_angle
@@ -483,28 +442,28 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
         var result = self.step(PendulumAction(direction=action))
         return (self._get_obs(), result[1], result[2])
 
-    fn render(mut self):
+    fn render(mut self, mut renderer: RendererBase):
         """Render the current state using SDL2.
 
-        Lazily initializes the display on first call.
-        Uses Camera for world-to-screen coordinate conversion.
+        Args:
+            renderer: External renderer to use for drawing.
         """
-        if not self.render_initialized:
-            if not self.renderer.init_display():
-                print("Failed to initialize display")
-                return
-            self.render_initialized = True
-
-        if not self.renderer.handle_events():
-            self.close()
+        if not renderer.begin_frame():
             return
 
+        # Colors
+        var sky_color = sky_blue()
+        var rod_color = rgb(139, 69, 19)  # Saddle brown
+        var bob_color = rgb(255, 0, 0)  # Red
+        var pivot_color = rgb(50, 50, 50)  # Dark gray
+        var torque_color = rgb(0, 200, 0)  # Green
+
         # Clear screen with sky color
-        self.renderer.clear_with_color(self.sky_color)
+        renderer.clear_with_color(sky_color)
 
         # Create camera centered on screen (Y-flip for physics coords)
         var zoom = 100.0  # pixels per world unit
-        var camera = self.renderer.make_camera(zoom, True)
+        var camera = renderer.make_camera(zoom, True)
 
         # World coordinates
         var pivot = Vec2(0.0, 0.0)  # Pivot at origin
@@ -512,7 +471,7 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
         var bob_radius_world = 0.2
 
         # Draw reference circle (the trajectory the bob follows)
-        self.renderer.draw_circle_world(
+        renderer.draw_circle_world(
             pivot, rod_length_world, camera, light_gray(), False
         )
 
@@ -525,11 +484,11 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
                 torque_direction * 0.3,
                 0.3 + torque_scale,
             )
-            self.renderer.draw_line_world(
+            renderer.draw_line_world(
                 pivot + Vec2(0, 0.3),
                 pivot + arc_end,
                 camera,
-                self.torque_color,
+                torque_color,
                 4,
             )
 
@@ -537,15 +496,15 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
         # Note: theta=0 points up (negative Y in screen coords before flip)
         # The draw_pendulum function expects angle from vertical (0 = down)
         # So we adjust: pendulum_angle = pi + theta
-        self.renderer.draw_pendulum(
+        renderer.draw_pendulum(
             pivot,
             self.theta + pi,  # Adjust so 0 = down for the helper
             rod_length_world,
             bob_radius_world,
             camera,
-            self.rod_color,
-            self.bob_color,
-            self.pivot_color,
+            rod_color,
+            bob_color,
+            pivot_color,
             8,  # rod width
         )
 
@@ -554,7 +513,7 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
             pivot.x + rod_length_world * sin(self.theta),
             pivot.y - rod_length_world * cos(self.theta),
         )
-        self.renderer.draw_circle_world(
+        renderer.draw_circle_world(
             bob_pos, bob_radius_world, camera, black(), False
         )
 
@@ -567,16 +526,14 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
         )
         info_lines.append("Vel: " + String(self.theta_dot)[:6])
         info_lines.append("Torque: " + String(self.last_torque)[:5])
-        self.renderer.draw_info_box(info_lines)
+        renderer.draw_info_box(info_lines)
 
         # Update display
-        self.renderer.flip()
+        renderer.flip()
 
     fn close(mut self):
-        """Clean up renderer resources."""
-        if self.render_initialized:
-            self.renderer.close()
-            self.render_initialized = False
+        """Clean up resources (no-op since renderer is external)."""
+        pass
 
     fn is_done(self) -> Bool:
         """Check if episode is done."""

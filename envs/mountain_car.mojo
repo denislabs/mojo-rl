@@ -117,29 +117,10 @@ struct MountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
     var done: Bool
     var total_reward: Float64
 
-    # Renderer (lazy initialized)
-    var renderer: RendererBase
-    var render_initialized: Bool
-
-    # Renderer settings
-    var scale_x: Float64
-    var scale_y: Float64
-    var ground_y: Int
-    var sky_color: SDL_Color
-    var mountain_color: SDL_Color
-    var car_color: SDL_Color
-    var wheel_color: SDL_Color
-    var flag_color: SDL_Color
-    var flag_pole_color: SDL_Color
-    var car_width: Int
-    var car_height: Int
-    var wheel_radius: Int
-    var flag_height: Int
-
     # Discretization settings (for DiscreteEnv)
     var num_bins: Int
 
-    fn __init__(out self, num_bins: Int = 20) raises:
+    fn __init__(out self, num_bins: Int = 20):
         """Initialize MountainCar with default physics parameters."""
         # Physics constants from Gymnasium
         self.min_position = -1.2
@@ -159,30 +140,6 @@ struct MountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
         self.max_steps = 200
         self.done = False
         self.total_reward = 0.0
-
-        # Initialize renderer (but don't open window yet)
-        self.renderer = RendererBase(
-            width=600,
-            height=400,
-            fps=30,
-            title="MountainCar - Native Mojo (SDL2)",
-        )
-        self.render_initialized = False
-
-        # Renderer settings
-        self.scale_x = 600.0 / (self.max_position - self.min_position)
-        self.scale_y = 200.0
-        self.ground_y = 300
-        self.sky_color = SDL_Color(135, 206, 235, 255)  # Light sky blue
-        self.mountain_color = SDL_Color(139, 119, 101, 255)  # Brown/tan
-        self.car_color = SDL_Color(200, 50, 50, 255)  # Red car
-        self.wheel_color = SDL_Color(40, 40, 40, 255)  # Dark gray
-        self.flag_color = SDL_Color(255, 215, 0, 255)  # Gold
-        self.flag_pole_color = SDL_Color(100, 100, 100, 255)  # Gray
-        self.car_width = 40
-        self.car_height = 20
-        self.wheel_radius = 6
-        self.flag_height = 50
 
         # Discretization settings
         self.num_bins = num_bins
@@ -392,44 +349,56 @@ struct MountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
         """Get terrain height at a given position."""
         return sin(3.0 * position) * 0.45 + 0.55
 
-    fn _world_to_screen_x(self, position: Float64) -> Int:
-        """Convert world position to screen X coordinate."""
-        return Int((position - self.min_position) * self.scale_x)
-
-    fn _world_to_screen_y(self, height: Float64) -> Int:
-        """Convert world height to screen Y coordinate (inverted)."""
-        return self.ground_y - Int(height * self.scale_y)
-
-    fn render(mut self):
+    fn render(mut self, mut renderer: RendererBase):
         """Render the current state using SDL2.
 
-        Lazily initializes the display on first call.
         MountainCar uses custom coordinate conversion due to the terrain function.
-        """
-        if not self.render_initialized:
-            if not self.renderer.init_display():
-                print("Failed to initialize display")
-                return
-            self.render_initialized = True
-            # Update scale based on actual screen width
-            self.scale_x = Float64(self.renderer.screen_width) / (
-                self.max_position - self.min_position
-            )
 
-        if not self.renderer.handle_events():
-            self.close()
+        Args:
+            renderer: The RendererBase to use for rendering.
+        """
+        # Begin frame handles init, events, and clear
+        if not renderer.begin_frame():
             return
 
+        # Rendering constants
+        var scale_x = Float64(renderer.screen_width) / (
+            self.max_position - self.min_position
+        )
+        var scale_y = 200.0
+        var ground_y = 300
+
+        # Colors
+        var sky_color_ = sky_blue()
+        var mountain_color_ = mountain_brown()
+        var car_color_ = car_red()
+        var wheel_color = rgb(40, 40, 40)
+        var flag_color = rgb(255, 215, 0)
+        var flag_pole_color = rgb(100, 100, 100)
+
+        # Dimensions
+        var car_width = 40
+        var car_height = 20
+        var wheel_radius = 6
+        var flag_height = 50
+
+        # Helper functions for coordinate conversion
+        fn world_to_screen_x(
+            pos: Float64, min_pos: Float64, sx: Float64
+        ) -> Int:
+            return Int((pos - min_pos) * sx)
+
+        fn world_to_screen_y(h: Float64, gy: Int, sy: Float64) -> Int:
+            return gy - Int(h * sy)
+
         # Clear screen with sky color
-        self.renderer.clear_with_color(self.sky_color)
+        renderer.clear_with_color(sky_color_)
 
         # Draw mountain terrain as filled polygon
         var terrain_points = List[SDL_Point]()
 
         # Start from bottom-left
-        terrain_points.append(
-            self.renderer.make_point(0, self.renderer.screen_height)
-        )
+        terrain_points.append(renderer.make_point(0, renderer.screen_height))
 
         # Add terrain points
         var num_points = 100
@@ -438,21 +407,17 @@ struct MountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
                 self.max_position - self.min_position
             ) * Float64(i) / Float64(num_points)
             var height = self._height(pos)
-            var screen_x = self._world_to_screen_x(pos)
-            var screen_y = self._world_to_screen_y(height)
-            terrain_points.append(self.renderer.make_point(screen_x, screen_y))
+            var screen_x = world_to_screen_x(pos, self.min_position, scale_x)
+            var screen_y = world_to_screen_y(height, ground_y, scale_y)
+            terrain_points.append(renderer.make_point(screen_x, screen_y))
 
         # End at bottom-right
         terrain_points.append(
-            self.renderer.make_point(
-                self.renderer.screen_width, self.renderer.screen_height
-            )
+            renderer.make_point(renderer.screen_width, renderer.screen_height)
         )
 
         # Draw filled mountain
-        self.renderer.draw_polygon(
-            terrain_points, self.mountain_color, filled=True
-        )
+        renderer.draw_polygon(terrain_points, mountain_color_, filled=True)
 
         # Draw mountain outline
         var outline_points = List[SDL_Point]()
@@ -461,89 +426,81 @@ struct MountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
                 self.max_position - self.min_position
             ) * Float64(i) / Float64(num_points)
             var height = self._height(pos)
-            var screen_x = self._world_to_screen_x(pos)
-            var screen_y = self._world_to_screen_y(height)
-            outline_points.append(self.renderer.make_point(screen_x, screen_y))
+            var screen_x = world_to_screen_x(pos, self.min_position, scale_x)
+            var screen_y = world_to_screen_y(height, ground_y, scale_y)
+            outline_points.append(renderer.make_point(screen_x, screen_y))
         var outline_color = black()
-        self.renderer.draw_lines(outline_points, outline_color, closed=False, width=2)
+        renderer.draw_lines(outline_points, outline_color, closed=False, width=2)
 
         # Draw goal flag
         var flag_height_world = self._height(self.goal_position)
-        var flag_x = self._world_to_screen_x(self.goal_position)
-        var flag_base_y = self._world_to_screen_y(flag_height_world)
+        var flag_x = world_to_screen_x(
+            self.goal_position, self.min_position, scale_x
+        )
+        var flag_base_y = world_to_screen_y(flag_height_world, ground_y, scale_y)
 
         # Flag pole
-        self.renderer.draw_line(
+        renderer.draw_line(
             flag_x,
             flag_base_y,
             flag_x,
-            flag_base_y - self.flag_height,
-            self.flag_pole_color,
+            flag_base_y - flag_height,
+            flag_pole_color,
             3,
         )
 
         # Flag (triangle)
         var flag_points = List[SDL_Point]()
         flag_points.append(
-            self.renderer.make_point(flag_x, flag_base_y - self.flag_height)
+            renderer.make_point(flag_x, flag_base_y - flag_height)
         )
         flag_points.append(
-            self.renderer.make_point(
-                flag_x + 20, flag_base_y - self.flag_height + 10
-            )
+            renderer.make_point(flag_x + 20, flag_base_y - flag_height + 10)
         )
         flag_points.append(
-            self.renderer.make_point(
-                flag_x, flag_base_y - self.flag_height + 20
-            )
+            renderer.make_point(flag_x, flag_base_y - flag_height + 20)
         )
-        self.renderer.draw_polygon(flag_points, self.flag_color, filled=True)
+        renderer.draw_polygon(flag_points, flag_color, filled=True)
 
         # Draw car
         var car_height_world = self._height(self.position)
-        var car_x = self._world_to_screen_x(self.position)
-        var car_y = self._world_to_screen_y(car_height_world)
+        var car_x = world_to_screen_x(self.position, self.min_position, scale_x)
+        var car_y = world_to_screen_y(car_height_world, ground_y, scale_y)
 
         # Car body
-        self.renderer.draw_rect(
-            car_x - self.car_width // 2,
-            car_y - self.car_height - self.wheel_radius,
-            self.car_width,
-            self.car_height,
-            self.car_color,
+        renderer.draw_rect(
+            car_x - car_width // 2,
+            car_y - car_height - wheel_radius,
+            car_width,
+            car_height,
+            car_color_,
         )
         # Car border
         var border_color = black()
-        self.renderer.draw_rect(
-            car_x - self.car_width // 2,
-            car_y - self.car_height - self.wheel_radius,
-            self.car_width,
-            self.car_height,
+        renderer.draw_rect(
+            car_x - car_width // 2,
+            car_y - car_height - wheel_radius,
+            car_width,
+            car_height,
             border_color,
             border_width=2,
         )
 
         # Wheels
-        var wheel_y_offset = car_y - self.wheel_radius
-        self.renderer.draw_circle(
-            car_x - self.car_width // 4,
-            wheel_y_offset,
-            self.wheel_radius,
-            self.wheel_color,
+        var wheel_y_offset = car_y - wheel_radius
+        renderer.draw_circle(
+            car_x - car_width // 4, wheel_y_offset, wheel_radius, wheel_color
         )
-        self.renderer.draw_circle(
-            car_x + self.car_width // 4,
-            wheel_y_offset,
-            self.wheel_radius,
-            self.wheel_color,
+        renderer.draw_circle(
+            car_x + car_width // 4, wheel_y_offset, wheel_radius, wheel_color
         )
 
         # Draw velocity indicator (arrow)
         var arrow_length = Int(self.velocity * 1000)
         if arrow_length != 0:
-            var arrow_y = car_y - self.car_height - self.wheel_radius - 10
+            var arrow_y = car_y - car_height - wheel_radius - 10
             var arrow_color = black()
-            self.renderer.draw_line(
+            renderer.draw_line(
                 car_x, arrow_y, car_x + arrow_length, arrow_y, arrow_color, 3
             )
 
@@ -553,16 +510,14 @@ struct MountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
         info_lines.append("Reward: " + String(Int(self.total_reward)))
         info_lines.append("Pos: " + String(self.position)[:6])
         info_lines.append("Vel: " + String(self.velocity)[:7])
-        self.renderer.draw_info_box(info_lines)
+        renderer.draw_info_box(info_lines)
 
         # Update display
-        self.renderer.flip()
+        renderer.flip()
 
     fn close(mut self):
-        """Clean up renderer resources."""
-        if self.render_initialized:
-            self.renderer.close()
-            self.render_initialized = False
+        """Clean up resources (no-op since renderer is external)."""
+        pass
 
     fn is_done(self) -> Bool:
         """Check if episode is done."""

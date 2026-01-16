@@ -41,6 +41,8 @@ from deep_rl.initializer import Kaiming
 from deep_rl.training import Network
 from deep_rl.replay import PrioritizedReplayBuffer
 from core import TrainingMetrics, BoxDiscreteActionEnv
+from render import RendererBase
+from memory import UnsafePointer
 
 
 # =============================================================================
@@ -597,7 +599,9 @@ struct DQNPERAgent[
         num_episodes: Int = 10,
         max_steps: Int = 1000,
         verbose: Bool = False,
-        render: Bool = False,
+        renderer: UnsafePointer[RendererBase, MutAnyOrigin] = UnsafePointer[
+            RendererBase, MutAnyOrigin
+        ](),
     ) -> Float64:
         """Evaluate the agent using greedy policy (no exploration).
 
@@ -606,7 +610,7 @@ struct DQNPERAgent[
             num_episodes: Number of evaluation episodes.
             max_steps: Maximum steps per episode.
             verbose: Whether to print per-episode results.
-            render: Whether to render the environment.
+            renderer: Optional pointer to renderer for visualization.
 
         Returns:
             Average reward over evaluation episodes.
@@ -629,8 +633,8 @@ struct DQNPERAgent[
                 var reward = result[1]
                 var done = result[2]
 
-                if render:
-                    env.render()
+                if renderer:
+                    env.render(renderer[])
 
                 episode_reward += reward
                 obs = self._list_to_inline(next_obs_list)

@@ -1,4 +1,5 @@
 from core import State, Action, Env, DiscreteEnv
+from render import RendererBase
 
 
 @fieldwise_init
@@ -254,8 +255,9 @@ struct TaxiEnv(DiscreteEnv):
         """Return current state."""
         return self.state
 
-    fn render(mut self):
-        """Print the taxi grid."""
+    fn render(mut self, mut renderer: RendererBase):
+        """Print the taxi grid (text-based, renderer argument ignored)."""
+        _ = renderer
         var loc_chars = List[String]()
         loc_chars.append("R")
         loc_chars.append("G")

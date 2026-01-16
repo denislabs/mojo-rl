@@ -41,7 +41,7 @@ comptime DEFAULT_VELOCITY_ITERATIONS: Int = 8
 comptime DEFAULT_POSITION_ITERATIONS: Int = 3
 
 
-struct ContactListener:
+struct ContactListener(Copyable, Movable):
     """Callback interface for contact events.
 
     Tracks fixture indices for contacts - actual callback handling
@@ -57,8 +57,18 @@ struct ContactListener:
         self.fixture_b_idx = -1
         self.enabled = False
 
+    fn __copyinit__(out self, other: Self):
+        self.fixture_a_idx = other.fixture_a_idx
+        self.fixture_b_idx = other.fixture_b_idx
+        self.enabled = other.enabled
 
-struct World:
+    fn __moveinit__(out self, deinit other: Self):
+        self.fixture_a_idx = other.fixture_a_idx
+        self.fixture_b_idx = other.fixture_b_idx
+        self.enabled = other.enabled
+
+
+struct World(Copyable, Movable):
     """Physics world simulation manager."""
 
     var gravity: Vec2

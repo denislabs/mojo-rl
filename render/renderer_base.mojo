@@ -478,6 +478,85 @@ struct RendererBase:
             self.initialized = False
 
     # =========================================================================
+    # Renderer Trait Methods
+    # =========================================================================
+
+    fn get_screen_width(self) -> Int:
+        """Return screen width in pixels."""
+        return self.screen_width
+
+    fn get_screen_height(self) -> Int:
+        """Return screen height in pixels."""
+        return self.screen_height
+
+    fn get_should_quit(self) -> Bool:
+        """Return True if quit has been requested."""
+        return self.should_quit
+
+    fn clear_rgb(mut self, r: Int, g: Int, b: Int):
+        """Clear screen with specified RGB color."""
+        var color = SDL_Color(UInt8(r), UInt8(g), UInt8(b), 255)
+        self.clear_with_color(color)
+
+    fn draw_line_rgb(
+        mut self,
+        x1: Int,
+        y1: Int,
+        x2: Int,
+        y2: Int,
+        r: Int,
+        g: Int,
+        b: Int,
+        width: Int,
+    ):
+        """Draw a line in screen coordinates with RGB color."""
+        var color = SDL_Color(UInt8(r), UInt8(g), UInt8(b), 255)
+        self.draw_line(x1, y1, x2, y2, color, width)
+
+    fn draw_rect_rgb(
+        mut self,
+        x: Int,
+        y: Int,
+        width: Int,
+        height: Int,
+        r: Int,
+        g: Int,
+        b: Int,
+        filled: Bool,
+    ):
+        """Draw a rectangle in screen coordinates with RGB color."""
+        var color = SDL_Color(UInt8(r), UInt8(g), UInt8(b), 255)
+        var border_width = 0 if filled else 1
+        self.draw_rect(x, y, width, height, color, border_width)
+
+    fn draw_circle_rgb(
+        mut self,
+        center_x: Int,
+        center_y: Int,
+        radius: Int,
+        r: Int,
+        g: Int,
+        b: Int,
+        filled: Bool,
+    ):
+        """Draw a circle in screen coordinates with RGB color."""
+        var color = SDL_Color(UInt8(r), UInt8(g), UInt8(b), 255)
+        self.draw_circle(center_x, center_y, radius, color, filled)
+
+    fn draw_text_rgb(
+        mut self,
+        text: String,
+        x: Int,
+        y: Int,
+        r: Int,
+        g: Int,
+        b: Int,
+    ):
+        """Draw text at specified position with RGB color."""
+        var color = SDL_Color(UInt8(r), UInt8(g), UInt8(b), 255)
+        self.draw_text(text, x, y, color)
+
+    # =========================================================================
     # High-Level Helper Methods (Camera/Transform-aware)
     # =========================================================================
 
@@ -856,7 +935,9 @@ struct RendererBase:
         self.draw_circle_world(bob, bob_radius, camera, bob_color, True)
 
         # Draw pivot
-        self.draw_circle_world(pivot, bob_radius * 0.4, camera, pivot_color, True)
+        self.draw_circle_world(
+            pivot, bob_radius * 0.4, camera, pivot_color, True
+        )
 
     fn draw_arc(
         mut self,
@@ -1164,7 +1245,10 @@ struct RendererBase:
             RotatingCamera at specified position.
         """
         return RotatingCamera(
-            x, y, angle, zoom,
+            x,
+            y,
+            angle,
+            zoom,
             self.screen_width,
             self.screen_height,
         )
@@ -1192,7 +1276,10 @@ struct RendererBase:
             RotatingCamera with custom screen center.
         """
         return RotatingCamera(
-            x, y, angle, zoom,
+            x,
+            y,
+            angle,
+            zoom,
             self.screen_width,
             self.screen_height,
             screen_center_x,

@@ -1,5 +1,6 @@
 from .state import State
 from .action import Action
+from render import RendererBase
 
 
 trait Env:
@@ -15,7 +16,9 @@ trait Env:
     comptime StateType: State
     comptime ActionType: Action
 
-    fn step(mut self, action: Self.ActionType) -> Tuple[Self.StateType, Float64, Bool]:
+    fn step(
+        mut self, action: Self.ActionType
+    ) -> Tuple[Self.StateType, Float64, Bool]:
         """Take an action and return (next_state, reward, done)."""
         ...
 
@@ -27,7 +30,10 @@ trait Env:
         """Return current state representation."""
         ...
 
-    fn render(mut self):
+    fn render(
+        mut self,
+        mut renderer: RendererBase,
+    ):
         """Render the environment (optional)."""
         ...
 

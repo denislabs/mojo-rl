@@ -31,6 +31,8 @@ Example usage:
 from random import random_float64, random_si64
 from core.tile_coding import TileCoding, TiledWeights
 from core import BoxDiscreteActionEnv, TrainingMetrics
+from render import RendererBase
+from memory import UnsafePointer
 
 
 struct TiledQLearningAgent:
@@ -254,7 +256,9 @@ struct TiledQLearningAgent:
         tile_coding: TileCoding,
         num_episodes: Int = 10,
         max_steps: Int = 500,
-        render: Bool = False,
+        renderer: UnsafePointer[RendererBase, MutAnyOrigin] = UnsafePointer[
+            RendererBase, MutAnyOrigin
+        ](),
     ) -> Float64:
         """Evaluate the agent on the environment.
 
@@ -263,7 +267,7 @@ struct TiledQLearningAgent:
             tile_coding: TileCoding instance for feature extraction.
             num_episodes: Number of evaluation episodes.
             max_steps: Maximum steps per episode.
-            render: Whether to render the environment.
+            renderer: Optional pointer to renderer for visualization.
 
         Returns:
             Average reward across episodes.
@@ -275,8 +279,8 @@ struct TiledQLearningAgent:
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps):
-                if render:
-                    env.render()
+                if renderer:
+                    env.render(renderer[])
 
                 var tiles = tile_coding.get_tiles(obs)
                 var action = self.get_best_action(tiles)
@@ -469,7 +473,9 @@ struct TiledSARSAAgent:
         tile_coding: TileCoding,
         num_episodes: Int = 10,
         max_steps: Int = 500,
-        render: Bool = False,
+        renderer: UnsafePointer[RendererBase, MutAnyOrigin] = UnsafePointer[
+            RendererBase, MutAnyOrigin
+        ](),
     ) -> Float64:
         """Evaluate the agent on the environment.
 
@@ -478,7 +484,7 @@ struct TiledSARSAAgent:
             tile_coding: TileCoding instance for feature extraction.
             num_episodes: Number of evaluation episodes.
             max_steps: Maximum steps per episode.
-            render: Whether to render the environment.
+            renderer: Optional pointer to renderer for visualization.
 
         Returns:
             Average reward across episodes.
@@ -490,8 +496,8 @@ struct TiledSARSAAgent:
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps):
-                if render:
-                    env.render()
+                if renderer:
+                    env.render(renderer[])
 
                 var tiles = tile_coding.get_tiles(obs)
                 var action = self.get_best_action(tiles)
@@ -731,7 +737,9 @@ struct TiledSARSALambdaAgent:
         tile_coding: TileCoding,
         num_episodes: Int = 10,
         max_steps: Int = 500,
-        render: Bool = False,
+        renderer: UnsafePointer[RendererBase, MutAnyOrigin] = UnsafePointer[
+            RendererBase, MutAnyOrigin
+        ](),
     ) -> Float64:
         """Evaluate the agent on the environment.
 
@@ -740,7 +748,7 @@ struct TiledSARSALambdaAgent:
             tile_coding: TileCoding instance for feature extraction.
             num_episodes: Number of evaluation episodes.
             max_steps: Maximum steps per episode.
-            render: Whether to render the environment.
+            renderer: Optional pointer to renderer for visualization.
 
         Returns:
             Average reward across episodes.
@@ -752,8 +760,8 @@ struct TiledSARSALambdaAgent:
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps):
-                if render:
-                    env.render()
+                if renderer:
+                    env.render(renderer[])
 
                 var tiles = tile_coding.get_tiles(obs)
                 var action = self.get_best_action(tiles)

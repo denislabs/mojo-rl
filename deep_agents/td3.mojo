@@ -52,6 +52,8 @@ from deep_rl.checkpoint import (
     read_checkpoint_file,
 )
 from core import TrainingMetrics, BoxContinuousActionEnv
+from render import RendererBase
+from memory import UnsafePointer
 
 
 # =============================================================================
@@ -886,7 +888,10 @@ struct DeepTD3Agent[
                         if verbose:
                             print("Checkpoint saved at episode", episode + 1)
                     except:
-                        print("Warning: Failed to save checkpoint at episode", episode + 1)
+                        print(
+                            "Warning: Failed to save checkpoint at episode",
+                            episode + 1,
+                        )
 
         return metrics^
 
@@ -898,7 +903,9 @@ struct DeepTD3Agent[
         num_episodes: Int = 10,
         max_steps: Int = 200,
         verbose: Bool = False,
-        render: Bool = False,
+        renderer: UnsafePointer[RendererBase, MutAnyOrigin] = UnsafePointer[
+            RendererBase, MutAnyOrigin
+        ](),
     ) -> Float64:
         """Evaluate the agent using deterministic policy (no noise).
 
@@ -907,7 +914,7 @@ struct DeepTD3Agent[
             num_episodes: Number of evaluation episodes.
             max_steps: Maximum steps per episode.
             verbose: Whether to print per-episode results.
-            render: Whether to render the environment.
+            renderer: Optional pointer to renderer for visualization.
 
         Returns:
             Average reward over evaluation episodes.
@@ -933,8 +940,8 @@ struct DeepTD3Agent[
                 var reward = result[1]
                 var done = result[2]
 
-                if render:
-                    env.render()
+                if renderer:
+                    env.render(renderer[])
 
                 episode_reward += reward
                 obs = self._list_to_simd(result[0])
@@ -1053,46 +1060,76 @@ struct DeepTD3Agent[
         var lines = split_lines(content)
 
         # Load actor params
-        var actor_params_start = find_section_start(lines, "actor_params:") + 1
+        var actor_params_start = find_section_start(lines, "actor_params:")
         for i in range(actor_param_size):
-            self.actor.params[i] = Scalar[dtype](atof(lines[actor_params_start + i]))
+            self.actor.params[i] = Scalar[dtype](
+                atof(lines[actor_params_start + i])
+            )
 
-        var actor_state_start = find_section_start(lines, "actor_optimizer_state:") + 1
+        var actor_state_start = find_section_start(
+            lines, "actor_optimizer_state:"
+        )
         for i in range(actor_state_size):
-            self.actor.optimizer_state[i] = Scalar[dtype](atof(lines[actor_state_start + i]))
+            self.actor.optimizer_state[i] = Scalar[dtype](
+                atof(lines[actor_state_start + i])
+            )
 
-        var actor_target_start = find_section_start(lines, "actor_target_params:") + 1
+        var actor_target_start = find_section_start(
+            lines, "actor_target_params:"
+        )
         for i in range(actor_param_size):
-            self.actor_target.params[i] = Scalar[dtype](atof(lines[actor_target_start + i]))
+            self.actor_target.params[i] = Scalar[dtype](
+                atof(lines[actor_target_start + i])
+            )
 
         # Load critic1 params
-        var critic1_params_start = find_section_start(lines, "critic1_params:") + 1
+        var critic1_params_start = find_section_start(lines, "critic1_params:")
         for i in range(critic_param_size):
-            self.critic1.params[i] = Scalar[dtype](atof(lines[critic1_params_start + i]))
+            self.critic1.params[i] = Scalar[dtype](
+                atof(lines[critic1_params_start + i])
+            )
 
-        var critic1_state_start = find_section_start(lines, "critic1_optimizer_state:") + 1
+        var critic1_state_start = find_section_start(
+            lines, "critic1_optimizer_state:"
+        )
         for i in range(critic_state_size):
-            self.critic1.optimizer_state[i] = Scalar[dtype](atof(lines[critic1_state_start + i]))
+            self.critic1.optimizer_state[i] = Scalar[dtype](
+                atof(lines[critic1_state_start + i])
+            )
 
-        var critic1_target_start = find_section_start(lines, "critic1_target_params:") + 1
+        var critic1_target_start = find_section_start(
+            lines, "critic1_target_params:"
+        )
         for i in range(critic_param_size):
-            self.critic1_target.params[i] = Scalar[dtype](atof(lines[critic1_target_start + i]))
+            self.critic1_target.params[i] = Scalar[dtype](
+                atof(lines[critic1_target_start + i])
+            )
 
         # Load critic2 params
-        var critic2_params_start = find_section_start(lines, "critic2_params:") + 1
+        var critic2_params_start = find_section_start(lines, "critic2_params:")
         for i in range(critic_param_size):
-            self.critic2.params[i] = Scalar[dtype](atof(lines[critic2_params_start + i]))
+            self.critic2.params[i] = Scalar[dtype](
+                atof(lines[critic2_params_start + i])
+            )
 
-        var critic2_state_start = find_section_start(lines, "critic2_optimizer_state:") + 1
+        var critic2_state_start = find_section_start(
+            lines, "critic2_optimizer_state:"
+        )
         for i in range(critic_state_size):
-            self.critic2.optimizer_state[i] = Scalar[dtype](atof(lines[critic2_state_start + i]))
+            self.critic2.optimizer_state[i] = Scalar[dtype](
+                atof(lines[critic2_state_start + i])
+            )
 
-        var critic2_target_start = find_section_start(lines, "critic2_target_params:") + 1
+        var critic2_target_start = find_section_start(
+            lines, "critic2_target_params:"
+        )
         for i in range(critic_param_size):
-            self.critic2_target.params[i] = Scalar[dtype](atof(lines[critic2_target_start + i]))
+            self.critic2_target.params[i] = Scalar[dtype](
+                atof(lines[critic2_target_start + i])
+            )
 
         # Load metadata
-        var metadata_start = find_section_start(lines, "metadata:") + 1
+        var metadata_start = find_section_start(lines, "metadata:")
         for i in range(metadata_start, len(lines)):
             var line = lines[i]
             if line.startswith("gamma="):

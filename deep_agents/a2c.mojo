@@ -46,8 +46,14 @@ from deep_rl.checkpoint import (
     find_section_start,
 )
 from core import TrainingMetrics, BoxDiscreteActionEnv
+from render import RendererBase
+from memory import UnsafePointer
 from core.utils.gae import compute_gae_inline
-from core.utils.softmax import softmax_inline, sample_from_probs_inline, argmax_probs_inline
+from core.utils.softmax import (
+    softmax_inline,
+    sample_from_probs_inline,
+    argmax_probs_inline,
+)
 from core.utils.normalization import normalize_inline
 
 
@@ -230,7 +236,9 @@ struct DeepA2CAgent[
             Tuple of (action, log_prob, value).
         """
         # Forward actor to get logits
-        var logits = InlineArray[Scalar[dtype], Self.ACTIONS](uninitialized=True)
+        var logits = InlineArray[Scalar[dtype], Self.ACTIONS](
+            uninitialized=True
+        )
         self.actor.forward[1](obs, logits)
 
         # Compute softmax probabilities
@@ -370,9 +378,9 @@ struct DeepA2CAgent[
                     d_log_prob = -probs[a]
 
                 # Entropy gradient (simplified)
-                var d_entropy = -probs[a] * (Scalar[dtype](1.0) + log(
-                    probs[a] + Scalar[dtype](1e-8)
-                ))
+                var d_entropy = -probs[a] * (
+                    Scalar[dtype](1.0) + log(probs[a] + Scalar[dtype](1e-8))
+                )
 
                 d_logits[a] = (
                     -advantage * d_log_prob
@@ -490,7 +498,9 @@ struct DeepA2CAgent[
                 var next_obs = self._list_to_inline(next_obs_list)
 
                 # Store transition
-                self.store_transition(obs, action, reward, log_prob, value, done)
+                self.store_transition(
+                    obs, action, reward, log_prob, value, done
+                )
 
                 episode_reward += reward
                 obs = next_obs
@@ -528,9 +538,11 @@ struct DeepA2CAgent[
                 try:
                     self.save_checkpoint(self.checkpoint_path)
                     if verbose:
-                        print("  [Checkpoint saved at episode", episode + 1, "]")
+                        print(
+                            "  [Checkpoint saved at episode", episode + 1, "]"
+                        )
                 except e:
-                    print("  [Checkpoint failed:", str(e), "]")
+                    print("  [Checkpoint failed:", String(e), "]")
 
         return metrics^
 
@@ -543,20 +555,20 @@ struct DeepA2CAgent[
         # Build checkpoint content
         var content = String("# mojo-rl checkpoint v1\n")
         content += "# type: deep_a2c_agent\n"
-        content += "# obs_dim: " + str(Self.OBS) + "\n"
-        content += "# num_actions: " + str(Self.ACTIONS) + "\n"
-        content += "# hidden_dim: " + str(Self.HIDDEN) + "\n"
-        content += "# rollout_len: " + str(Self.ROLLOUT) + "\n\n"
+        content += "# obs_dim: " + String(Self.OBS) + "\n"
+        content += "# num_actions: " + String(Self.ACTIONS) + "\n"
+        content += "# hidden_dim: " + String(Self.HIDDEN) + "\n"
+        content += "# rollout_len: " + String(Self.ROLLOUT) + "\n\n"
 
         # Actor params
         content += "actor_params:\n"
         for i in range(Self.actor.PARAM_SIZE):
-            content += str(self.actor.params[i]) + "\n"
+            content += String(self.actor.params[i]) + "\n"
 
         # Actor optimizer state
         content += "\nactor_optimizer_state:\n"
         for i in range(Self.actor.PARAM_SIZE * Self.actor.STATE_PER_PARAM):
-            content += str(self.actor.optimizer_state[i]) + "\n"
+            content += String(self.actor.optimizer_state[i]) + "\n"
 
         # Critic params
         content += "\ncritic_params:\n"
@@ -570,14 +582,14 @@ struct DeepA2CAgent[
 
         # Hyperparameters
         content += "\nmetadata:\n"
-        content += "gamma=" + str(self.gamma) + "\n"
-        content += "gae_lambda=" + str(self.gae_lambda) + "\n"
-        content += "actor_lr=" + str(self.actor_lr) + "\n"
-        content += "critic_lr=" + str(self.critic_lr) + "\n"
-        content += "entropy_coef=" + str(self.entropy_coef) + "\n"
-        content += "value_loss_coef=" + str(self.value_loss_coef) + "\n"
-        content += "max_grad_norm=" + str(self.max_grad_norm) + "\n"
-        content += "train_step_count=" + str(self.train_step_count) + "\n"
+        content += "gamma=" + String(self.gamma) + "\n"
+        content += "gae_lambda=" + String(self.gae_lambda) + "\n"
+        content += "actor_lr=" + String(self.actor_lr) + "\n"
+        content += "critic_lr=" + String(self.critic_lr) + "\n"
+        content += "entropy_coef=" + String(self.entropy_coef) + "\n"
+        content += "value_loss_coef=" + String(self.value_loss_coef) + "\n"
+        content += "max_grad_norm=" + String(self.max_grad_norm) + "\n"
+        content += "train_step_count=" + String(self.train_step_count) + "\n"
 
         save_checkpoint_file(path, content)
 
@@ -592,20 +604,26 @@ struct DeepA2CAgent[
 
         # Find section starts
         var actor_params_start = find_section_start(lines, "actor_params:")
-        var actor_opt_start = find_section_start(lines, "actor_optimizer_state:")
+        var actor_opt_start = find_section_start(
+            lines, "actor_optimizer_state:"
+        )
         var critic_params_start = find_section_start(lines, "critic_params:")
-        var critic_opt_start = find_section_start(lines, "critic_optimizer_state:")
+        var critic_opt_start = find_section_start(
+            lines, "critic_optimizer_state:"
+        )
         var metadata_start = find_section_start(lines, "metadata:")
 
         # Load actor params
-        var line_idx = actor_params_start + 1
+        var line_idx = actor_params_start
         for i in range(Self.actor.PARAM_SIZE):
             if line_idx < len(lines) and lines[line_idx] != "":
-                self.actor.params[i] = Scalar[dtype](Float64(atof(lines[line_idx])))
+                self.actor.params[i] = Scalar[dtype](
+                    Float64(atof(lines[line_idx]))
+                )
                 line_idx += 1
 
         # Load actor optimizer state
-        line_idx = actor_opt_start + 1
+        line_idx = actor_opt_start
         for i in range(Self.actor.PARAM_SIZE * Self.actor.STATE_PER_PARAM):
             if line_idx < len(lines) and lines[line_idx] != "":
                 self.actor.optimizer_state[i] = Scalar[dtype](
@@ -614,14 +632,16 @@ struct DeepA2CAgent[
                 line_idx += 1
 
         # Load critic params
-        line_idx = critic_params_start + 1
+        line_idx = critic_params_start
         for i in range(Self.critic.PARAM_SIZE):
             if line_idx < len(lines) and lines[line_idx] != "":
-                self.critic.params[i] = Scalar[dtype](Float64(atof(lines[line_idx])))
+                self.critic.params[i] = Scalar[dtype](
+                    Float64(atof(lines[line_idx]))
+                )
                 line_idx += 1
 
         # Load critic optimizer state
-        line_idx = critic_opt_start + 1
+        line_idx = critic_opt_start
         for i in range(Self.critic.PARAM_SIZE * Self.critic.STATE_PER_PARAM):
             if line_idx < len(lines) and lines[line_idx] != "":
                 self.critic.optimizer_state[i] = Scalar[dtype](
@@ -630,7 +650,7 @@ struct DeepA2CAgent[
                 line_idx += 1
 
         # Load metadata
-        line_idx = metadata_start + 1
+        line_idx = metadata_start
         while line_idx < len(lines) and lines[line_idx] != "":
             var line = lines[line_idx]
             var eq_pos = -1
@@ -670,7 +690,9 @@ struct DeepA2CAgent[
         num_episodes: Int = 10,
         max_steps: Int = 1000,
         verbose: Bool = False,
-        render: Bool = False,
+        renderer: UnsafePointer[RendererBase, MutAnyOrigin] = UnsafePointer[
+            RendererBase, MutAnyOrigin
+        ](),
     ) -> Float64:
         """Evaluate the agent using greedy policy.
 
@@ -679,7 +701,7 @@ struct DeepA2CAgent[
             num_episodes: Number of evaluation episodes.
             max_steps: Maximum steps per episode.
             verbose: Whether to print per-episode results.
-            render: Whether to render the environment.
+            renderer: Optional pointer to renderer for visualization.
 
         Returns:
             Average reward over evaluation episodes.
@@ -703,8 +725,8 @@ struct DeepA2CAgent[
                 var reward = result[1]
                 var done = result[2]
 
-                if render:
-                    env.render()
+                if renderer:
+                    env.render(renderer[])
 
                 episode_reward += reward
                 obs = self._list_to_inline(next_obs_list)

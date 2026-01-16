@@ -47,6 +47,8 @@ from random import random_float64
 from core.tile_coding import TileCoding
 from core import BoxDiscreteActionEnv, TrainingMetrics
 from core.utils.softmax import softmax, sample_from_probs, argmax_probs
+from render import RendererBase
+from memory import UnsafePointer
 
 
 struct REINFORCEAgent(Copyable, ImplicitlyCopyable, Movable):
@@ -434,7 +436,9 @@ struct REINFORCEAgent(Copyable, ImplicitlyCopyable, Movable):
         tile_coding: TileCoding,
         num_episodes: Int = 10,
         max_steps: Int = 500,
-        render: Bool = False,
+        renderer: UnsafePointer[RendererBase, MutAnyOrigin] = UnsafePointer[
+            RendererBase, MutAnyOrigin
+        ](),
     ) -> Float64:
         """Evaluate the agent on the environment.
 
@@ -443,7 +447,7 @@ struct REINFORCEAgent(Copyable, ImplicitlyCopyable, Movable):
             tile_coding: TileCoding instance for feature extraction.
             num_episodes: Number of evaluation episodes.
             max_steps: Maximum steps per episode.
-            render: Whether to render the environment.
+            renderer: Optional pointer to renderer for visualization.
 
         Returns:
             Average reward across episodes.
@@ -455,8 +459,8 @@ struct REINFORCEAgent(Copyable, ImplicitlyCopyable, Movable):
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps):
-                if render:
-                    env.render()
+                if renderer:
+                    env.render(renderer[])
 
                 var tiles = tile_coding.get_tiles(obs)
                 var action = self.get_best_action(tiles)
@@ -810,7 +814,9 @@ struct REINFORCEWithEntropyAgent(Copyable, ImplicitlyCopyable, Movable):
         tile_coding: TileCoding,
         num_episodes: Int = 10,
         max_steps: Int = 500,
-        render: Bool = False,
+        renderer: UnsafePointer[RendererBase, MutAnyOrigin] = UnsafePointer[
+            RendererBase, MutAnyOrigin
+        ](),
     ) -> Float64:
         """Evaluate the agent on the environment.
 
@@ -819,7 +825,7 @@ struct REINFORCEWithEntropyAgent(Copyable, ImplicitlyCopyable, Movable):
             tile_coding: TileCoding instance for feature extraction.
             num_episodes: Number of evaluation episodes.
             max_steps: Maximum steps per episode.
-            render: Whether to render the environment.
+            renderer: Optional pointer to renderer for visualization.
 
         Returns:
             Average reward across episodes.
@@ -831,8 +837,8 @@ struct REINFORCEWithEntropyAgent(Copyable, ImplicitlyCopyable, Movable):
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps):
-                if render:
-                    env.render()
+                if renderer:
+                    env.render(renderer[])
 
                 var tiles = tile_coding.get_tiles(obs)
                 var action = self.get_best_action(tiles)

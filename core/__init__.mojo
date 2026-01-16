@@ -1,6 +1,7 @@
 from .state import State
 from .action import Action
 from .env import Env
+from .renderer import Renderer
 from .env_traits import (
     DiscreteStateEnv,
     ContinuousStateEnv,

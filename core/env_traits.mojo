@@ -244,6 +244,7 @@ trait GPUDiscreteEnv:
         dones: LayoutTensor[
             dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
         ],
+        rng_seed: Scalar[DType.uint64],
     ):
         """Perform one environment step. Returns (reward, done).
 
@@ -251,6 +252,13 @@ trait GPUDiscreteEnv:
         Actions use ImmutAnyOrigin since they are read-only.
         Actions should be 0.0, 1.0, 2.0, etc. (cast to Int inside kernel).
         Dones should be 0.0 (false) or 1.0 (true).
+
+        Args:
+            states: State tensor [BATCH_SIZE, STATE_SIZE].
+            actions: Action tensor [BATCH_SIZE].
+            rewards: Reward tensor [BATCH_SIZE] (output).
+            dones: Done flag tensor [BATCH_SIZE] (output).
+            rng_seed: Random seed for physics (e.g., engine dispersion).
         """
         ...
 
@@ -276,8 +284,18 @@ trait GPUDiscreteEnv:
         actions: DeviceBuffer[dtype],
         mut rewards: DeviceBuffer[dtype],
         mut dones: DeviceBuffer[dtype],
+        rng_seed: UInt64 = 0,
     ) raises:
-        """Perform one environment step. Returns (reward, done)."""
+        """Perform one environment step. Returns (reward, done).
+
+        Args:
+            ctx: GPU device context.
+            states: State buffer on GPU.
+            actions: Actions buffer on GPU.
+            rewards: Rewards buffer on GPU (output).
+            dones: Done flags buffer on GPU (output).
+            rng_seed: Optional random seed for physics (e.g., engine dispersion).
+        """
         ...
 
     @staticmethod

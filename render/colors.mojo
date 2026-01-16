@@ -12,6 +12,23 @@ from .sdl2 import SDL_Color
 # =============================================================================
 
 
+struct Colors:
+    comptime white: SDL_Color = SDL_Color(255, 255, 255, 255)
+    comptime black: SDL_Color = SDL_Color(0, 0, 0, 255)
+    comptime red: SDL_Color = SDL_Color(255, 0, 0, 255)
+    comptime green: SDL_Color = SDL_Color(0, 255, 0, 255)
+    comptime blue: SDL_Color = SDL_Color(0, 0, 255, 255)
+    comptime yellow: SDL_Color = SDL_Color(255, 255, 0, 255)
+    comptime cyan: SDL_Color = SDL_Color(0, 255, 255, 255)
+    comptime magenta: SDL_Color = SDL_Color(255, 0, 255, 255)
+    comptime orange: SDL_Color = SDL_Color(255, 165, 0, 255)
+    comptime purple: SDL_Color = SDL_Color(128, 0, 128, 255)
+    comptime gray: SDL_Color = SDL_Color(128, 128, 128, 255)
+    comptime light_gray: SDL_Color = SDL_Color(192, 192, 192, 255)
+    comptime dark_gray: SDL_Color = SDL_Color(64, 64, 64, 255)
+    comptime transparent: SDL_Color = SDL_Color(0, 0, 0, 0)
+
+
 fn white() -> SDL_Color:
     return SDL_Color(255, 255, 255, 255)
 

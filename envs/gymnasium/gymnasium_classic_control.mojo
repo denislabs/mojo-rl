@@ -21,6 +21,7 @@ from core import (
     TileCoding,
     PolynomialFeatures,
 )
+from render import RendererBase
 
 
 # ============================================================================
@@ -319,8 +320,9 @@ struct GymCartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv):
     # Additional methods
     # ========================================================================
 
-    fn render(mut self):
-        """Render the environment."""
+    fn render(mut self, mut renderer: RendererBase):
+        """Render the environment (uses Gymnasium's renderer, renderer argument ignored)."""
+        _ = renderer
         try:
             _ = self.env.render()
         except:
@@ -591,8 +593,9 @@ struct GymMountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
     # Additional methods
     # ========================================================================
 
-    fn render(mut self):
-        """Render the environment."""
+    fn render(mut self, mut renderer: RendererBase):
+        """Render the environment (uses Gymnasium's renderer, renderer argument ignored)."""
+        _ = renderer
         try:
             _ = self.env.render()
         except:
@@ -851,8 +854,9 @@ struct GymAcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
         """Return full 6D observation (in 8-element SIMD)."""
         return self.current_obs
 
-    fn render(mut self):
-        """Render the environment."""
+    fn render(mut self, mut renderer: RendererBase):
+        """Render the environment (uses Gymnasium's renderer, renderer argument ignored)."""
+        _ = renderer
         try:
             _ = self.env.render()
         except:
@@ -1117,8 +1121,9 @@ struct GymPendulumEnv(BoxContinuousActionEnv):
         var result = self.step(GymPendulumAction(torque=torque))
         return (self.current_obs, result[1], result[2])
 
-    fn render(mut self):
-        """Render the environment."""
+    fn render(mut self, mut renderer: RendererBase):
+        """Render the environment (uses Gymnasium's renderer, renderer argument ignored)."""
+        _ = renderer
         try:
             _ = self.env.render()
         except:

@@ -159,28 +159,10 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
     var done: Bool
     var total_reward: Float64
 
-    # Renderer (lazy initialized)
-    var renderer: RendererBase
-    var render_initialized: Bool
-
-    # Renderer settings
-    var world_width: Float64
-    var scale: Float64
-    var cart_y: Int
-    var cart_color: SDL_Color
-    var pole_color: SDL_Color
-    var axle_color: SDL_Color
-    var track_color: SDL_Color
-    var cart_width: Int
-    var cart_height: Int
-    var pole_width: Int
-    var pole_len_pixels: Int
-    var axle_radius: Int
-
     # Discretization settings (for DiscreteEnv)
     var num_bins: Int
 
-    fn __init__(out self, num_bins: Int = 10) raises:
+    fn __init__(out self, num_bins: Int = 10):
         """Initialize CartPole environment."""
         # State
         self.x = 0.0
@@ -192,31 +174,6 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
         self.steps = 0
         self.done = False
         self.total_reward = 0.0
-
-        # Initialize renderer (but don't open window yet)
-        self.renderer = RendererBase(
-            width=600,
-            height=400,
-            fps=50,  # Match physics tau=0.02
-            title="CartPole - Native Mojo (SDL2)",
-        )
-        self.render_initialized = False
-
-        # Renderer settings
-        self.world_width = 4.8  # x_threshold * 2
-        self.scale = 600.0 / self.world_width
-        self.cart_y = 300
-        self.cart_color = SDL_Color(31, 119, 180, 255)  # Blue
-        self.pole_color = SDL_Color(204, 153, 102, 255)  # Tan/brown
-        self.axle_color = SDL_Color(127, 127, 204, 255)  # Purple-ish
-        self.track_color = SDL_Color(0, 0, 0, 255)  # Black
-        self.cart_width = 50
-        self.cart_height = 30
-        self.pole_width = 10
-        self.pole_len_pixels = Int(
-            self.scale * 0.5 * 2
-        )  # length * 2 (full pole)
-        self.axle_radius = 5
 
         # Discretization settings
         self.num_bins = num_bins
@@ -471,45 +428,49 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
 
         return (self._get_obs(), reward, self.done)
 
-    fn render(mut self):
+    fn render(mut self, mut renderer: RendererBase):
         """Render the current state using SDL2.
 
-        Lazily initializes the display on first call.
         Uses Camera for world-to-screen coordinate conversion.
+        The renderer should be initialized before calling this method.
+
+        Args:
+            renderer: The RendererBase to use for rendering.
         """
         # Begin frame handles init, events, and clear
-        if not self.render_initialized:
-            if not self.renderer.init_display():
-                print("Failed to initialize display")
-                return
-            self.render_initialized = True
-
-        if not self.renderer.handle_events():
-            self.close()
+        if not renderer.begin_frame():
             return
 
-        self.renderer.clear()
+        # Constants for rendering
+        var world_width = 4.8  # x_threshold * 2
 
         # Create camera centered on screen with Y-flip
         # zoom = pixels per world unit, centered at world origin
-        var zoom = Float64(self.renderer.screen_width) / self.world_width
-        var camera = self.renderer.make_camera_at(0.0, 0.5, zoom, True)
+        var zoom = Float64(renderer.screen_width) / world_width
+        var camera = renderer.make_camera_at(0.0, 0.5, zoom, True)
 
         # World coordinates: cart moves along X, ground is at Y=0
         var cart_pos = Vec2(self.x, 0.15)  # Cart center slightly above ground
         var cart_width_world = 0.4
         var cart_height_world = 0.24
 
+        # Colors
+        var track_color = black()
+        var cart_color_ = cart_blue()
+        var pole_color_ = pole_tan()
+        var axle_color_ = axle_purple()
+        var wheel_color = black()
+
         # Draw ground/track line at Y=0
-        self.renderer.draw_ground_line(0.0, camera, self.track_color, 2)
+        renderer.draw_ground_line(0.0, camera, track_color, 2)
 
         # Draw cart as rectangle
-        self.renderer.draw_rect_world(
+        renderer.draw_rect_world(
             cart_pos,
             cart_width_world,
             cart_height_world,
             camera,
-            self.cart_color,
+            cart_color_,
             centered=True,
         )
 
@@ -521,24 +482,23 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
             pivot.x + pole_length * sin(self.theta),
             pivot.y + pole_length * cos(self.theta),
         )
-        self.renderer.draw_link(pivot, pole_end, camera, self.pole_color, 10)
+        renderer.draw_link(pivot, pole_end, camera, pole_color_, 10)
 
         # Draw axle (pivot point)
-        self.renderer.draw_joint(pivot, 0.04, camera, self.axle_color)
+        renderer.draw_joint(pivot, 0.04, camera, axle_color_)
 
         # Draw wheels
         var wheel_radius = 0.04
         var wheel_y = cart_pos.y - cart_height_world / 2.0
         var wheel_offset = cart_width_world / 2.0 - 0.08
-        var wheel_color = black()
-        self.renderer.draw_circle_world(
+        renderer.draw_circle_world(
             Vec2(self.x - wheel_offset, wheel_y),
             wheel_radius,
             camera,
             wheel_color,
             True,
         )
-        self.renderer.draw_circle_world(
+        renderer.draw_circle_world(
             Vec2(self.x + wheel_offset, wheel_y),
             wheel_radius,
             camera,
@@ -550,16 +510,14 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
         var info_lines = List[String]()
         info_lines.append("Step: " + String(self.steps))
         info_lines.append("Reward: " + String(Int(self.total_reward)))
-        self.renderer.draw_info_box(info_lines)
+        renderer.draw_info_box(info_lines)
 
         # Update display
-        self.renderer.flip()
+        renderer.flip()
 
     fn close(mut self):
-        """Clean up renderer resources."""
-        if self.render_initialized:
-            self.renderer.close()
-            self.render_initialized = False
+        """Clean up resources (no-op since renderer is external)."""
+        pass
 
     @always_inline
     fn is_done(self) -> Bool:
@@ -725,7 +683,10 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
         dones: LayoutTensor[
             gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
         ],
+        rng_seed: Scalar[DType.uint64],
     ):
+        # Note: rng_seed is unused in CartPole (no random physics elements)
+        # It's included for trait compatibility with GPUDiscreteEnv
         var i = Int(block_dim.x * block_idx.x + thread_idx.x)
         if i >= BATCH_SIZE:
             return
@@ -925,6 +886,7 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
         actions_buf: DeviceBuffer[gpu_dtype],
         mut rewards_buf: DeviceBuffer[gpu_dtype],
         mut dones_buf: DeviceBuffer[gpu_dtype],
+        rng_seed: UInt64 = 0,
     ) raises:
         """Launch step kernel on GPU.
 
@@ -934,7 +896,9 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
             actions_buf: Actions buffer [BATCH_SIZE].
             rewards_buf: Rewards buffer [BATCH_SIZE] (written).
             dones_buf: Dones buffer [BATCH_SIZE] (written).
+            rng_seed: Random seed (unused in CartPole, for trait compatibility).
         """
+        # Note: rng_seed is unused in CartPole (no random physics elements)
         # Create tensor views from buffers
         var states = LayoutTensor[
             gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -951,6 +915,9 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
 
         # Configure grid
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
+
+        # Convert seed (unused in CartPole but needed for trait compatibility)
+        var seed = Scalar[DType.uint64](rng_seed)
 
         # Define kernel wrapper that calls the impl
         # Note: MutAnyOrigin allows mutation, no `mut` keyword needed on wrapper params
@@ -970,9 +937,10 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
             dones: LayoutTensor[
                 gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
             ],
+            rng_seed: Scalar[DType.uint64],
         ):
             Self.step_kernel[BATCH_SIZE, STATE_SIZE](
-                states, actions, rewards, dones
+                states, actions, rewards, dones, rng_seed
             )
 
         ctx.enqueue_function[step_wrapper, step_wrapper](
@@ -980,6 +948,7 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
             actions,
             rewards,
             dones,
+            seed,
             grid_dim=(BLOCKS,),
             block_dim=(Self.TPB,),
         )

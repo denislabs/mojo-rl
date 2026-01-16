@@ -1,4 +1,5 @@
 from core import State, Action, Env, DiscreteEnv
+from render import RendererBase
 from random import random_float64
 
 
@@ -172,8 +173,9 @@ struct FrozenLakeEnv(DiscreteEnv):
         """Return current state."""
         return self.state
 
-    fn render(mut self):
-        """Print the grid."""
+    fn render(mut self, mut renderer: RendererBase):
+        """Print the grid (text-based, renderer argument ignored)."""
+        _ = renderer
         for row in range(self.size):
             var line = String("")
             for col in range(self.size):

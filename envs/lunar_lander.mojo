@@ -223,7 +223,7 @@ struct LunarLanderState(Copyable, ImplicitlyCopyable, Movable, State):
 # ===== Environment =====
 
 
-struct LunarLanderEnv(BoxDiscreteActionEnv):
+struct LunarLanderEnv(BoxDiscreteActionEnv, Copyable, Movable):
     """Native Mojo LunarLander environment.
 
     Implements BoxDiscreteActionEnv for function approximation methods:
@@ -283,10 +283,6 @@ struct LunarLanderEnv(BoxDiscreteActionEnv):
     var wind_idx: Int
     var torque_idx: Int
 
-    # Rendering
-    var renderer: RendererBase
-    var render_initialized: Bool
-
     fn __init__(
         out self,
         continuous: Bool = False,
@@ -324,8 +320,6 @@ struct LunarLanderEnv(BoxDiscreteActionEnv):
         self.turbulence_power = turbulence_power
         self.wind_idx = 0
         self.torque_idx = 0
-        self.renderer = RendererBase(VIEWPORT_W, VIEWPORT_H, FPS, "LunarLander")
-        self.render_initialized = False
 
     fn reset(mut self) -> Self.StateType:
         """Reset the environment and return initial state.
@@ -445,8 +439,26 @@ struct LunarLanderEnv(BoxDiscreteActionEnv):
 
         self.initialized = True
 
-        # Do one step with no action to get initial state
-        return self._get_state()
+        # Step physics once to integrate the random initial force
+        # This ensures the initial observation includes the velocity from the force,
+        # which matches GPU behavior and prevents the large reward spike in step 0
+        self.world.step(1.0 / Float64(FPS), 6, 2)
+
+        # Compute initial shaping so first step reward is delta, not absolute
+        var init_state = self._get_state()
+        self.prev_shaping = (
+            -100.0
+            * sqrt(init_state.x * init_state.x + init_state.y * init_state.y)
+            - 100.0
+            * sqrt(
+                init_state.vx * init_state.vx + init_state.vy * init_state.vy
+            )
+            - 100.0 * abs(init_state.angle)
+            + 10.0 * init_state.left_leg_contact
+            + 10.0 * init_state.right_leg_contact
+        )
+
+        return init_state^
 
     fn _create_legs(mut self, initial_x: Float64, initial_y: Float64):
         """Create lander legs and joints."""
@@ -858,17 +870,15 @@ struct LunarLanderEnv(BoxDiscreteActionEnv):
                 return True
         return False
 
-    fn render(mut self):
-        """Render the environment."""
-        # Initialize display if needed
-        if not self.render_initialized:
-            if not self.renderer.init_display():
-                return
-            self.render_initialized = True
+    fn render(mut self, mut renderer: RendererBase):
+        """Render the environment using the provided renderer.
+
+        The renderer should be initialized before calling this method.
+        Call renderer.init_display() before first use if needed.
+        """
 
         # Begin frame with space background
-        if not self.renderer.begin_frame_with_color(space_black()):
-            self.close()
+        if not renderer.begin_frame_with_color(space_black()):
             return
 
         # Create camera - centered at viewport center, with physics scale
@@ -885,26 +895,26 @@ struct LunarLanderEnv(BoxDiscreteActionEnv):
         )
 
         # Draw terrain (filled)
-        self._draw_terrain(camera)
+        self._draw_terrain(camera, renderer)
 
         # Draw helipad
-        self._draw_helipad(camera)
+        self._draw_helipad(camera, renderer)
 
         # Draw helipad flags
-        self._draw_flags(camera)
+        self._draw_flags(camera, renderer)
 
         # Draw flame particles (behind lander)
-        self._draw_particles(camera)
+        self._draw_particles(camera, renderer)
 
         # Draw legs (before lander so lander draws on top)
-        self._draw_legs(camera)
+        self._draw_legs(camera, renderer)
 
         # Draw lander
-        self._draw_lander(camera)
+        self._draw_lander(camera, renderer)
 
-        self.renderer.flip()
+        renderer.flip()
 
-    fn _draw_terrain(mut self, camera: Camera):
+    fn _draw_terrain(self, camera: Camera, mut renderer: RendererBase):
         """Draw terrain as filled polygons using world coordinates."""
         var terrain_color = moon_gray()
         var terrain_dark = dark_gray()
@@ -914,14 +924,18 @@ struct LunarLanderEnv(BoxDiscreteActionEnv):
             # Create polygon vertices in world coordinates
             var vertices = List[RenderVec2]()
             vertices.append(RenderVec2(self.terrain_x[i], self.terrain_y[i]))
-            vertices.append(RenderVec2(self.terrain_x[i + 1], self.terrain_y[i + 1]))
+            vertices.append(
+                RenderVec2(self.terrain_x[i + 1], self.terrain_y[i + 1])
+            )
             vertices.append(RenderVec2(self.terrain_x[i + 1], 0.0))  # Bottom
             vertices.append(RenderVec2(self.terrain_x[i], 0.0))
 
-            self.renderer.draw_polygon_world(vertices, camera, terrain_color, filled=True)
+            renderer.draw_polygon_world(
+                vertices, camera, terrain_color, filled=True
+            )
 
             # Draw terrain outline for contrast
-            self.renderer.draw_line_world(
+            renderer.draw_line_world(
                 RenderVec2(self.terrain_x[i], self.terrain_y[i]),
                 RenderVec2(self.terrain_x[i + 1], self.terrain_y[i + 1]),
                 camera,
@@ -929,14 +943,17 @@ struct LunarLanderEnv(BoxDiscreteActionEnv):
                 2,
             )
 
-    fn _draw_helipad(mut self, camera: Camera):
+    fn _draw_helipad(self, camera: Camera, mut renderer: RendererBase):
         """Draw the helipad landing zone using world coordinates."""
         var helipad_color = darken(moon_gray(), 0.8)
 
         # Helipad is a thick horizontal bar (in world units)
         var bar_height = 4.0 / SCALE  # 4 pixels in world units
-        self.renderer.draw_rect_world(
-            RenderVec2((self.helipad_x1 + self.helipad_x2) / 2.0, self.helipad_y + bar_height / 2.0),
+        renderer.draw_rect_world(
+            RenderVec2(
+                (self.helipad_x1 + self.helipad_x2) / 2.0,
+                self.helipad_y + bar_height / 2.0,
+            ),
             self.helipad_x2 - self.helipad_x1,
             bar_height,
             camera,
@@ -944,7 +961,7 @@ struct LunarLanderEnv(BoxDiscreteActionEnv):
             centered=True,
         )
 
-    fn _draw_flags(mut self, camera: Camera):
+    fn _draw_flags(self, camera: Camera, mut renderer: RendererBase):
         """Draw helipad flags with poles using world coordinates."""
         var white_color = white()
         var yellow_color = yellow()
@@ -961,7 +978,7 @@ struct LunarLanderEnv(BoxDiscreteActionEnv):
             var pole_top_y = ground_y + pole_height
 
             # Flag pole (white vertical line)
-            self.renderer.draw_line_world(
+            renderer.draw_line_world(
                 RenderVec2(x_pos, ground_y),
                 RenderVec2(x_pos, pole_top_y),
                 camera,
@@ -973,11 +990,15 @@ struct LunarLanderEnv(BoxDiscreteActionEnv):
             var flag_color = yellow_color if flag_idx == 0 else red_color
             var flag_verts = List[RenderVec2]()
             flag_verts.append(RenderVec2(x_pos, pole_top_y))
-            flag_verts.append(RenderVec2(x_pos + flag_width, pole_top_y - flag_height / 2.0))
+            flag_verts.append(
+                RenderVec2(x_pos + flag_width, pole_top_y - flag_height / 2.0)
+            )
             flag_verts.append(RenderVec2(x_pos, pole_top_y - flag_height))
-            self.renderer.draw_polygon_world(flag_verts, camera, flag_color, filled=True)
+            renderer.draw_polygon_world(
+                flag_verts, camera, flag_color, filled=True
+            )
 
-    fn _draw_lander(mut self, camera: Camera):
+    fn _draw_lander(self, camera: Camera, mut renderer: RendererBase):
         """Draw lander body as filled polygon using Transform2D."""
         if self.lander_idx < 0:
             return
@@ -996,10 +1017,14 @@ struct LunarLanderEnv(BoxDiscreteActionEnv):
         # Draw filled lander body (grayish-white like the original)
         var lander_fill = rgb(230, 230, 230)
         var lander_outline = rgb(100, 100, 100)
-        self.renderer.draw_transformed_polygon(lander_verts, transform, camera, lander_fill, filled=True)
-        self.renderer.draw_transformed_polygon(lander_verts, transform, camera, lander_outline, filled=False)
+        renderer.draw_transformed_polygon(
+            lander_verts, transform, camera, lander_fill, filled=True
+        )
+        renderer.draw_transformed_polygon(
+            lander_verts, transform, camera, lander_outline, filled=False
+        )
 
-    fn _draw_legs(mut self, camera: Camera):
+    fn _draw_legs(self, camera: Camera, mut renderer: RendererBase):
         """Draw lander legs as filled polygons using Transform2D."""
         # Check leg ground contact for color
         var left_contact = self._is_leg_contacting(self.left_leg_fixture_idx)
@@ -1020,16 +1045,22 @@ struct LunarLanderEnv(BoxDiscreteActionEnv):
             var leg_outline = darken(leg_fill, 0.6)
 
             # Leg box vertices using shape factory (in world units)
-            var leg_verts = make_leg_box(LEG_W * 2.0 / SCALE, LEG_H * 2.0 / SCALE)
+            var leg_verts = make_leg_box(
+                LEG_W * 2.0 / SCALE, LEG_H * 2.0 / SCALE
+            )
 
             # Create transform for leg position and rotation
             var transform = Transform2D(pos.x, pos.y, angle)
 
             # Draw filled leg
-            self.renderer.draw_transformed_polygon(leg_verts, transform, camera, leg_fill, filled=True)
-            self.renderer.draw_transformed_polygon(leg_verts, transform, camera, leg_outline, filled=False)
+            renderer.draw_transformed_polygon(
+                leg_verts, transform, camera, leg_fill, filled=True
+            )
+            renderer.draw_transformed_polygon(
+                leg_verts, transform, camera, leg_outline, filled=False
+            )
 
-    fn _draw_particles(mut self, camera: Camera):
+    fn _draw_particles(self, camera: Camera, mut renderer: RendererBase):
         """Draw flame particles using world coordinates and flame_color."""
         for i in range(len(self.flame_particles)):
             var p = self.flame_particles[i]
@@ -1042,7 +1073,7 @@ struct LunarLanderEnv(BoxDiscreteActionEnv):
             var radius_world = (2.0 + life_ratio * 2.0) / SCALE
 
             # Draw using Camera world coordinates
-            self.renderer.draw_circle_world(
+            renderer.draw_circle_world(
                 RenderVec2(p.x, p.y),
                 radius_world,
                 camera,
@@ -1050,11 +1081,13 @@ struct LunarLanderEnv(BoxDiscreteActionEnv):
                 filled=True,
             )
 
-    fn close(mut self):
-        """Close the environment."""
-        if self.render_initialized:
-            self.renderer.close()
-            self.render_initialized = False
+    fn close(self):
+        """Close the environment.
+
+        Note: Rendering is now decoupled. Call renderer.close() separately
+        when using a RendererBase for visualization.
+        """
+        pass
 
     # ===== Trait Methods (BoxDiscreteActionEnv) =====
 

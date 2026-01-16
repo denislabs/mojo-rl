@@ -8,14 +8,16 @@ Requires SDL2: brew install sdl2 sdl2_ttf
 from envs import AcrobotEnv
 from random import random_float64
 from time import sleep
+from render import RendererBase
 
 
 fn main() raises:
     print("=== Acrobot Native Rendering Demo ===")
     print("Close the window or press Ctrl+C to exit\n")
 
-    # Create environment
+    # Create environment and renderer
     var env = AcrobotEnv(num_bins=6)
+    var renderer = RendererBase(500, 500, 15, "Acrobot")
 
     # Run episodes with rendering
     var num_episodes = 5
@@ -38,7 +40,7 @@ fn main() raises:
             steps += 1
 
             # Render at approximately 15 FPS (matching Gymnasium)
-            env.render()
+            env.render(renderer)
 
             # Add small delay to see the animation
             sleep(0.02)
@@ -54,5 +56,5 @@ fn main() raises:
         print()
 
     # Clean up
-    env.close()
+    renderer.close()
     print("=== Demo Complete ===")

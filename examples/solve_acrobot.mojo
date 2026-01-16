@@ -25,6 +25,7 @@ Requires SDL2 for visualization: brew install sdl2 sdl2_ttf
 
 from envs import AcrobotEnv
 from agents import QLearningAgent, SARSALambdaAgent
+from render import RendererBase
 
 
 fn main() raises:
@@ -169,6 +170,7 @@ fn main() raises:
     print("")
 
     # Run visual demo with the trained agent
+    var renderer = RendererBase(500, 500, 15, "Acrobot")
     for episode in range(3):
         _ = env_q.reset()
         var total_reward: Float64 = 0.0
@@ -187,7 +189,7 @@ fn main() raises:
             steps += 1
 
             # Render every frame
-            env_q.render()
+            env_q.render(renderer)
 
             if result[2]:
                 if total_reward > -max_steps:
@@ -196,6 +198,7 @@ fn main() raises:
                     print("  Timeout after", steps, "steps")
                 break
 
+    renderer.close()
     env_q.close()
 
     print("")

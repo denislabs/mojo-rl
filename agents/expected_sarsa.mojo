@@ -1,6 +1,8 @@
 from random import random_si64, random_float64
 from .qlearning import QTable
 from core import TabularAgent, DiscreteEnv, TrainingMetrics
+from render import RendererBase
+from memory import UnsafePointer
 
 
 struct ExpectedSARSAAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
@@ -180,14 +182,16 @@ struct ExpectedSARSAAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
         self,
         mut env: E,
         num_episodes: Int = 10,
-        render: Bool = False,
+        renderer: UnsafePointer[RendererBase, MutAnyOrigin] = UnsafePointer[
+            RendererBase, MutAnyOrigin
+        ](),
     ) -> Float64:
         """Evaluate the agent on the environment.
 
         Args:
             env: The discrete environment to evaluate on.
             num_episodes: Number of evaluation episodes.
-            render: Whether to render the environment.
+            renderer: Optional pointer to renderer for visualization.
 
         Returns:
             Average reward across episodes.
@@ -199,8 +203,8 @@ struct ExpectedSARSAAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
             var episode_reward: Float64 = 0.0
 
             for _ in range(1000):
-                if render:
-                    env.render()
+                if renderer:
+                    env.render(renderer[])
 
                 var state_idx = env.state_to_index(state)
                 var action_idx = self.get_best_action(state_idx)

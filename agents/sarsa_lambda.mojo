@@ -1,9 +1,11 @@
 from random import random_si64, random_float64
 from .qlearning import QTable
 from core import TabularAgent, DiscreteEnv, TrainingMetrics
+from render import RendererBase
+from memory import UnsafePointer
 
 
-struct SARSALambdaAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable):
+struct SARSALambdaAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
     """SARSA(λ) agent with eligibility traces.
 
     Eligibility traces unify TD and Monte Carlo methods by maintaining
@@ -159,7 +161,9 @@ struct SARSALambdaAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable):
         """Return the greedy action for a state."""
         return self.q_table.get_best_action(state_idx)
 
-    fn train[E: DiscreteEnv](
+    fn train[
+        E: DiscreteEnv
+    ](
         mut self,
         mut env: E,
         num_episodes: Int,
@@ -219,18 +223,22 @@ struct SARSALambdaAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable):
 
         return metrics^
 
-    fn evaluate[E: DiscreteEnv](
+    fn evaluate[
+        E: DiscreteEnv
+    ](
         self,
         mut env: E,
         num_episodes: Int = 10,
-        render: Bool = False,
+        renderer: UnsafePointer[RendererBase, MutAnyOrigin] = UnsafePointer[
+            RendererBase, MutAnyOrigin
+        ](),
     ) -> Float64:
         """Evaluate the agent on the environment.
 
         Args:
             env: The discrete environment to evaluate on.
             num_episodes: Number of evaluation episodes.
-            render: Whether to render the environment.
+            renderer: Optional pointer to renderer for visualization.
 
         Returns:
             Average reward across episodes.
@@ -242,8 +250,8 @@ struct SARSALambdaAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable):
             var episode_reward: Float64 = 0.0
 
             for _ in range(1000):
-                if render:
-                    env.render()
+                if renderer:
+                    env.render(renderer[])
 
                 var state_idx = env.state_to_index(state)
                 var action_idx = self.get_best_action(state_idx)

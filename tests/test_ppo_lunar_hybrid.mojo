@@ -1,15 +1,14 @@
-"""Test PPO Agent GPU Training on LunarLander.
+"""Test PPO Agent Hybrid GPU+CPU Training on LunarLander.
 
-This tests the GPU implementation of PPO using the simplified GPU-compatible
-LunarLander environment with:
-- Parallel environments on GPU
-- Simplified rigid body physics
-- Wind/turbulence effects
-- Reward shaping for faster learning
+This tests the hybrid GPU+CPU implementation of PPO using the native Mojo
+LunarLander environment with accurate 2D physics:
+- Neural network computations on GPU (forward/backward passes)
+- Environment physics on CPU (accurate Box2D-style simulation)
+- No physics mismatch between training and evaluation
 
 Run with:
-    pixi run -e apple mojo run tests/test_ppo_lunar_gpu.mojo    # Apple Silicon
-    pixi run -e nvidia mojo run tests/test_ppo_lunar_gpu.mojo   # NVIDIA GPU
+    pixi run -e apple mojo run tests/test_ppo_lunar_hybrid.mojo    # Apple Silicon
+    pixi run -e nvidia mojo run tests/test_ppo_lunar_hybrid.mojo   # NVIDIA GPU
 """
 
 from random import seed
@@ -18,7 +17,7 @@ from time import perf_counter_ns
 from gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOAgent
-from envs.lunar_lander_gpu import LunarLanderGPU
+from envs.lunar_lander import LunarLanderEnv
 
 
 # =============================================================================
@@ -32,13 +31,13 @@ comptime NUM_ACTIONS = 4
 # Network architecture
 comptime HIDDEN_DIM = 300
 
-# GPU training parameters
+# Hybrid training parameters
 comptime ROLLOUT_LEN = 128  # Steps per rollout per environment
-comptime N_ENVS = 256  # Parallel environments
+comptime N_ENVS = 256  # Parallel CPU environments (smaller than GPU version)
 comptime GPU_MINIBATCH_SIZE = 512  # Minibatch size for PPO updates
 
-# Training duration
-comptime NUM_EPISODES = 5_000  # More episodes for LunarLander (harder than CartPole)
+# Training duration (fewer episodes since CPU physics is slower)
+comptime NUM_EPISODES = 50_000
 
 
 # =============================================================================
@@ -49,8 +48,26 @@ comptime NUM_EPISODES = 5_000  # More episodes for LunarLander (harder than Cart
 fn main() raises:
     seed(42)
     print("=" * 70)
-    print("PPO Agent GPU Test on LunarLander")
+    print("PPO Agent Hybrid (GPU+CPU) Test on LunarLander")
     print("=" * 70)
+    print()
+
+    # =========================================================================
+    # Create CPU environments
+    # =========================================================================
+
+    print("Creating " + String(N_ENVS) + " CPU environments...")
+    var envs = List[LunarLanderEnv]()
+    for i in range(N_ENVS):
+        var env = LunarLanderEnv(
+            continuous=False,
+            gravity=-10.0,
+            enable_wind=True,
+            wind_power=15.0,
+            turbulence_power=1.5,
+        )
+        envs.append(env^)
+    print("Done!")
     print()
 
     # =========================================================================
@@ -79,28 +96,28 @@ fn main() raises:
             max_grad_norm=0.5,
             anneal_lr=True,
             anneal_entropy=False,
-            target_total_steps=0,  # Auto-calculate+
+            target_total_steps=0,  # Auto-calculate
             clip_value=True,
             norm_adv_per_minibatch=True,
-            checkpoint_every=1000,
-            checkpoint_path="ppo_lunar_gpu.ckpt",
+            checkpoint_every=500,
+            checkpoint_path="ppo_lunar_hybrid.ckpt",
         )
 
-        # agent.load_checkpoint("ppo_lunar_gpu.ckpt")
+        agent.load_checkpoint("ppo_lunar_hybrid.ckpt")
 
-        print("Environment: LunarLander (GPU)")
-        print("Agent: PPO (GPU)")
+        print("Environment: LunarLander (CPU - accurate physics)")
+        print("Training: Hybrid GPU+CPU")
+        print("  Neural network: GPU")
+        print("  Physics: CPU (native Mojo 2D physics)")
+        print()
+        print("Agent: PPO")
         print("  Hidden dim: " + String(HIDDEN_DIM))
         print("  Rollout length: " + String(ROLLOUT_LEN))
-        print("  N envs (parallel): " + String(N_ENVS))
+        print("  N envs (parallel CPU): " + String(N_ENVS))
         print("  Minibatch size: " + String(GPU_MINIBATCH_SIZE))
         print(
             "  Total transitions per rollout: " + String(ROLLOUT_LEN * N_ENVS)
         )
-        print("  Advanced features:")
-        print("    - LR annealing: enabled")
-        print("    - KL early stopping: target_kl=0.02")
-        print("    - Gradient clipping: max_grad_norm=0.5")
         print()
         print("LunarLander specifics:")
         print(
@@ -109,24 +126,22 @@ fn main() raises:
         )
         print("  - 4 actions: nop, left, main, right")
         print("  - Wind effects: enabled")
-        print(
-            "  - Reward shaping: distance + velocity + angle penalties, leg"
-            " contact bonus"
-        )
+        print("  - Physics: Accurate 2D rigid body simulation")
         print()
 
         # =====================================================================
-        # Train using the train_gpu() method
+        # Train using the train_gpu_cpu_env() method (hybrid)
         # =====================================================================
 
-        print("Starting GPU training...")
+        print("Starting Hybrid GPU+CPU training...")
         print("-" * 70)
 
         var start_time = perf_counter_ns()
 
         try:
-            var metrics = agent.train_gpu[LunarLanderGPU](
+            var metrics = agent.train_gpu_cpu_env(
                 ctx,
+                envs,
                 num_episodes=NUM_EPISODES,
                 verbose=True,
                 print_every=1,
@@ -137,14 +152,14 @@ fn main() raises:
 
             print("-" * 70)
             print()
-            print(">>> train_gpu returned successfully! <<<")
+            print(">>> train_gpu_cpu_env returned successfully! <<<")
 
             # =================================================================
             # Summary
             # =================================================================
 
             print("=" * 70)
-            print("GPU Training Complete")
+            print("Hybrid GPU+CPU Training Complete")
             print("=" * 70)
             print()
             print("Total episodes: " + String(NUM_EPISODES))
@@ -178,6 +193,9 @@ fn main() raises:
                     " reward < -100)"
                 )
 
+            print()
+            print("Key benefit: Trained policy will transfer correctly to")
+            print("evaluation since the same physics are used throughout!")
             print()
             print("=" * 70)
 

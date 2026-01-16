@@ -72,6 +72,8 @@ from deep_rl.gpu import (
     gather_batch_kernel,
 )
 from core import TrainingMetrics, BoxDiscreteActionEnv, GPUDiscreteEnv
+from render import RendererBase
+from memory import UnsafePointer
 
 
 # =============================================================================
@@ -735,7 +737,8 @@ struct DQNAgent[
                         self.save_checkpoint(self.checkpoint_path)
                         if verbose:
                             print(
-                                "Checkpoint saved at episode " + String(episode + 1)
+                                "Checkpoint saved at episode "
+                                + String(episode + 1)
                             )
                     except:
                         print(
@@ -752,7 +755,9 @@ struct DQNAgent[
         mut env: E,
         num_episodes: Int = 10,
         max_steps: Int = 500,
-        render: Bool = False,
+        renderer: UnsafePointer[RendererBase, MutAnyOrigin] = UnsafePointer[
+            RendererBase, MutAnyOrigin
+        ](),
     ) -> Float64:
         """Evaluate the agent on the environment using greedy policy.
 
@@ -763,7 +768,7 @@ struct DQNAgent[
             env: The environment to evaluate on.
             num_episodes: Number of evaluation episodes (default: 10).
             max_steps: Maximum steps per episode (default: 500).
-            render: Whether to render the environment (default: False).
+            renderer: Optional pointer to renderer for visualization.
 
         Returns:
             Average reward across episodes.
@@ -775,8 +780,8 @@ struct DQNAgent[
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps):
-                if render:
-                    env.render()
+                if renderer:
+                    env.render(renderer[])
 
                 # Select action (uses current epsilon - typically low after training)
                 var action = self.select_action(obs)
@@ -791,7 +796,7 @@ struct DQNAgent[
 
             total_reward += episode_reward
 
-        if render:
+        if renderer:
             env.close()
 
         return total_reward / Float64(num_episodes)
@@ -906,7 +911,9 @@ struct DQNAgent[
         mut env: E,
         num_episodes: Int = 10,
         max_steps: Int = 500,
-        render: Bool = False,
+        renderer: UnsafePointer[RendererBase, MutAnyOrigin] = UnsafePointer[
+            RendererBase, MutAnyOrigin
+        ](),
     ) -> Float64:
         """Evaluate the agent using pure greedy policy (epsilon=0).
 
@@ -917,7 +924,7 @@ struct DQNAgent[
             env: The environment to evaluate on.
             num_episodes: Number of evaluation episodes (default: 10).
             max_steps: Maximum steps per episode (default: 500).
-            render: Whether to render the environment (default: False).
+            renderer: Optional pointer to renderer for visualization.
 
         Returns:
             Average reward across episodes.
@@ -929,8 +936,8 @@ struct DQNAgent[
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps):
-                if render:
-                    env.render()
+                if renderer:
+                    env.render(renderer[])
 
                 # Greedy action: argmax_a Q(s, a) - no epsilon
                 var obs_input = InlineArray[Scalar[dtype], Self.obs_dim](
@@ -962,7 +969,7 @@ struct DQNAgent[
 
             total_reward += episode_reward
 
-        if render:
+        if renderer:
             env.close()
 
         return total_reward / Float64(num_episodes)
@@ -1011,12 +1018,21 @@ struct DQNAgent[
         # GPU Forward pass: online network with cache (using pre-allocated workspace)
         # obs_buf contains the previous observations (before step)
         self.online_model.forward_gpu_with_cache_ws[Self.batch_size](
-            ctx, obs_buf, q_values_buf, online_params_buf, cache_buf, workspace_buf
+            ctx,
+            obs_buf,
+            q_values_buf,
+            online_params_buf,
+            cache_buf,
+            workspace_buf,
         )
 
         # GPU Forward pass: target network (no cache, using pre-allocated workspace)
         self.target_model.forward_gpu_ws[Self.batch_size](
-            ctx, next_obs_buf, next_q_values_buf, target_params_buf, workspace_buf
+            ctx,
+            next_obs_buf,
+            next_q_values_buf,
+            target_params_buf,
+            workspace_buf,
         )
 
         # GPU TD Target computation
@@ -1043,7 +1059,11 @@ struct DQNAgent[
         if Self.double_dqn:
             # For Double DQN: forward online network on next_obs (using workspace)
             self.online_model.forward_gpu_ws[Self.batch_size](
-                ctx, next_obs_buf, online_next_q_buf, online_params_buf, workspace_buf
+                ctx,
+                next_obs_buf,
+                online_next_q_buf,
+                online_params_buf,
+                workspace_buf,
             )
 
             var online_next_tensor = LayoutTensor[
@@ -2245,7 +2265,9 @@ struct DQNAgent[
         # Online optimizer state
         content += "online_optimizer_state:\n"
         for i in range(STATE_SIZE):
-            content += String(Float64(self.online_model.optimizer_state[i])) + "\n"
+            content += (
+                String(Float64(self.online_model.optimizer_state[i])) + "\n"
+            )
 
         # Target network params
         content += "target_params:\n"
@@ -2255,7 +2277,9 @@ struct DQNAgent[
         # Target optimizer state
         content += "target_optimizer_state:\n"
         for i in range(STATE_SIZE):
-            content += String(Float64(self.target_model.optimizer_state[i])) + "\n"
+            content += (
+                String(Float64(self.target_model.optimizer_state[i])) + "\n"
+            )
 
         # Metadata: hyperparameters and training state
         content += "metadata:\n"
@@ -2291,9 +2315,13 @@ struct DQNAgent[
 
         # Find and load each section
         var online_params_start = find_section_start(lines, "online_params:")
-        var online_state_start = find_section_start(lines, "online_optimizer_state:")
+        var online_state_start = find_section_start(
+            lines, "online_optimizer_state:"
+        )
         var target_params_start = find_section_start(lines, "target_params:")
-        var target_state_start = find_section_start(lines, "target_optimizer_state:")
+        var target_state_start = find_section_start(
+            lines, "target_optimizer_state:"
+        )
 
         # Load online network params
         if online_params_start >= 0:

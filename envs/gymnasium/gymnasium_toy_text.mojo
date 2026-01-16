@@ -12,6 +12,7 @@ All implement DiscreteEnv trait for use with generic tabular agents.
 
 from python import Python, PythonObject
 from core import State, Action, DiscreteEnv
+from render import RendererBase
 
 
 # ============================================================================
@@ -350,8 +351,9 @@ struct GymFrozenLakeEnv(DiscreteEnv):
     # Additional methods
     # ========================================================================
 
-    fn render(mut self):
-        """Render the environment."""
+    fn render(mut self, mut renderer: RendererBase):
+        """Render the environment (uses Gymnasium's renderer, renderer argument ignored)."""
+        _ = renderer
         try:
             _ = self.env.render()
         except:
@@ -483,8 +485,9 @@ struct GymTaxiEnv(DiscreteEnv):
     # Additional methods
     # ========================================================================
 
-    fn render(mut self):
-        """Render the environment."""
+    fn render(mut self, mut renderer: RendererBase):
+        """Render the environment (uses Gymnasium's renderer, renderer argument ignored)."""
+        _ = renderer
         try:
             _ = self.env.render()
         except:
@@ -654,8 +657,9 @@ struct GymBlackjackEnv(DiscreteEnv):
         var ua = 1 if self.usable_ace else 0
         return ps * 20 + dc * 2 + ua
 
-    fn render(mut self):
-        """Render the environment."""
+    fn render(mut self, mut renderer: RendererBase):
+        """Render the environment (uses Gymnasium's renderer, renderer argument ignored)."""
+        _ = renderer
         try:
             _ = self.env.render()
         except:
@@ -798,8 +802,9 @@ struct GymCliffWalkingEnv(DiscreteEnv):
     # Additional methods
     # ========================================================================
 
-    fn render(mut self):
-        """Render the environment."""
+    fn render(mut self, mut renderer: RendererBase):
+        """Render the environment (uses Gymnasium's renderer, renderer argument ignored)."""
+        _ = renderer
         try:
             _ = self.env.render()
         except:

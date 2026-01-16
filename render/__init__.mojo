@@ -12,10 +12,19 @@ This package provides:
 from .sdl2 import SDL2, SDL_Event, SDL_Point, SDL_Rect, SDL_Color, SDLHandle
 
 # Transform utilities
-from .transform import Vec2, Transform2D, Camera, RotatingCamera, make_centered_camera, make_offset_camera, make_rotating_camera
+from .transform import (
+    Vec2,
+    Transform2D,
+    Camera,
+    RotatingCamera,
+    make_centered_camera,
+    make_offset_camera,
+    make_rotating_camera,
+)
 
 # Color utilities and palettes
 from .colors import (
+    Colors,
     # Basic colors
     white,
     black,

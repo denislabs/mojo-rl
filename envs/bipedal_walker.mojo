@@ -280,11 +280,7 @@ struct BipedalWalkerEnv(BoxContinuousActionEnv):
     # Configuration
     var hardcore: Bool
 
-    # Rendering
-    var renderer: RendererBase
-    var render_initialized: Bool
-
-    fn __init__(out self, hardcore: Bool = False) raises:
+    fn __init__(out self, hardcore: Bool = False):
         """Create BipedalWalker environment.
 
         Args:
@@ -309,10 +305,6 @@ struct BipedalWalkerEnv(BoxContinuousActionEnv):
         self.terrain_y = List[Float64]()
         self.obstacle_body_indices = List[Int]()
         self.hardcore = hardcore
-        self.renderer = RendererBase(
-            VIEWPORT_W, VIEWPORT_H, FPS, "BipedalWalker"
-        )
-        self.render_initialized = False
 
     # ===== Env Trait Methods =====
 
@@ -332,15 +324,17 @@ struct BipedalWalkerEnv(BoxContinuousActionEnv):
         """Get current state."""
         return self._get_observation()
 
-    fn render(mut self):
-        """Render the environment."""
-        self._render_internal()
+    fn render(mut self, mut renderer: RendererBase):
+        """Render the environment.
+
+        Args:
+            renderer: External renderer to use for drawing.
+        """
+        self._render_internal(renderer)
 
     fn close(mut self):
-        """Close the environment."""
-        if self.render_initialized:
-            self.renderer.close()
-            self.render_initialized = False
+        """Clean up resources (no-op since renderer is external)."""
+        pass
 
     # ===== BoxContinuousActionEnv Trait Methods =====
 
@@ -907,16 +901,14 @@ struct BipedalWalkerEnv(BoxContinuousActionEnv):
 
     # ===== Rendering =====
 
-    fn _render_internal(mut self):
-        """Render the environment with scrolling Camera."""
-        if not self.render_initialized:
-            if not self.renderer.init_display():
-                return
-            self.render_initialized = True
+    fn _render_internal(mut self, mut renderer: RendererBase):
+        """Render the environment with scrolling Camera.
 
+        Args:
+            renderer: External renderer to use for drawing.
+        """
         # Begin frame with sky background
-        if not self.renderer.begin_frame_with_color(sky_blue()):
-            self.close()
+        if not renderer.begin_frame_with_color(sky_blue()):
             return
 
         # Create scrolling camera that follows the walker
@@ -932,20 +924,20 @@ struct BipedalWalkerEnv(BoxContinuousActionEnv):
         )
 
         # Draw terrain
-        self._draw_terrain(camera)
+        self._draw_terrain(renderer, camera)
 
         # Draw walker
-        self._draw_hull(camera)
-        self._draw_legs(camera)
+        self._draw_hull(renderer, camera)
+        self._draw_legs(renderer, camera)
 
         # Draw info text
         var hull = self.world.bodies[self.hull_idx].copy()
         var info_text = String("x: ") + String(Int(hull.position.x * 10) / 10)
-        self.renderer.draw_text(info_text, 10, 10, white())
+        renderer.draw_text(info_text, 10, 10, white())
 
-        self.renderer.flip()
+        renderer.flip()
 
-    fn _draw_terrain(mut self, camera: Camera):
+    fn _draw_terrain(self, mut renderer: RendererBase, camera: Camera):
         """Draw terrain polygons using Camera world coordinates."""
         var terrain_color = grass_green()
 
@@ -954,8 +946,13 @@ struct BipedalWalkerEnv(BoxContinuousActionEnv):
             var x2 = self.terrain_x[i + 1]
 
             # Skip if off-screen (using camera visibility check)
-            if not camera.is_visible(RenderVec2(x1, self.terrain_y[i]), margin=TERRAIN_STEP * 2):
-                if not camera.is_visible(RenderVec2(x2, self.terrain_y[i + 1]), margin=TERRAIN_STEP * 2):
+            if not camera.is_visible(
+                RenderVec2(x1, self.terrain_y[i]), margin=TERRAIN_STEP * 2
+            ):
+                if not camera.is_visible(
+                    RenderVec2(x2, self.terrain_y[i + 1]),
+                    margin=TERRAIN_STEP * 2,
+                ):
                     continue
 
             # Create polygon vertices in world coordinates
@@ -965,9 +962,11 @@ struct BipedalWalkerEnv(BoxContinuousActionEnv):
             vertices.append(RenderVec2(x2, 0.0))  # Bottom
             vertices.append(RenderVec2(x1, 0.0))
 
-            self.renderer.draw_polygon_world(vertices, camera, terrain_color, filled=True)
+            renderer.draw_polygon_world(
+                vertices, camera, terrain_color, filled=True
+            )
 
-    fn _draw_hull(mut self, camera: Camera):
+    fn _draw_hull(self, mut renderer: RendererBase, camera: Camera):
         """Draw hull polygon using Transform2D and Camera."""
         var hull = self.world.bodies[self.hull_idx].copy()
         var pos = hull.position
@@ -986,27 +985,34 @@ struct BipedalWalkerEnv(BoxContinuousActionEnv):
         # Create transform for hull position and rotation
         var transform = Transform2D(pos.x, pos.y, angle)
 
-        self.renderer.draw_transformed_polygon(hull_verts, transform, camera, hull_color, filled=True)
+        renderer.draw_transformed_polygon(
+            hull_verts, transform, camera, hull_color, filled=True
+        )
 
-    fn _draw_legs(mut self, camera: Camera):
+    fn _draw_legs(self, mut renderer: RendererBase, camera: Camera):
         """Draw leg segments using Transform2D and Camera."""
         for side in range(2):
             var upper = self.world.bodies[self.upper_leg_indices[side]].copy()
             var lower = self.world.bodies[self.lower_leg_indices[side]].copy()
 
             # Color based on ground contact
-            var leg_color = contact_green() if self.leg_ground_contact[side] else inactive_gray()
+            var leg_color = contact_green() if self.leg_ground_contact[
+                side
+            ] else inactive_gray()
 
             # Draw upper leg
-            self._draw_leg_segment(upper, LEG_W / 2.0, LEG_H / 2.0, leg_color, camera)
+            self._draw_leg_segment(
+                renderer, upper, LEG_W / 2.0, LEG_H / 2.0, leg_color, camera
+            )
 
             # Draw lower leg (narrower)
             self._draw_leg_segment(
-                lower, 0.8 * LEG_W / 2.0, LEG_H / 2.0, leg_color, camera
+                renderer, lower, 0.8 * LEG_W / 2.0, LEG_H / 2.0, leg_color, camera
             )
 
     fn _draw_leg_segment(
-        mut self,
+        self,
+        mut renderer: RendererBase,
         body: Body,
         half_w: Float64,
         half_h: Float64,
@@ -1023,7 +1029,9 @@ struct BipedalWalkerEnv(BoxContinuousActionEnv):
         # Create transform for leg position and rotation
         var transform = Transform2D(pos.x, pos.y, angle)
 
-        self.renderer.draw_transformed_polygon(leg_verts, transform, camera, color, filled=True)
+        renderer.draw_transformed_polygon(
+            leg_verts, transform, camera, color, filled=True
+        )
 
 
 # ===== Helper Functions =====

@@ -361,16 +361,12 @@ struct CarRacingEnv(BoxContinuousActionEnv):
     var bg_color: InlineArray[UInt8, 3]
     var grass_color: InlineArray[UInt8, 3]
 
-    # Rendering
-    var renderer: RendererBase
-    var render_initialized: Bool
-
     fn __init__(
         out self,
         continuous: Bool = True,
         lap_complete_percent: Float64 = 0.95,
         domain_randomize: Bool = False,
-    ) raises:
+    ):
         """Create CarRacing environment.
 
         Args:
@@ -411,9 +407,6 @@ struct CarRacingEnv(BoxContinuousActionEnv):
             UInt8(102), UInt8(230), UInt8(102)
         )
 
-        self.renderer = RendererBase(WINDOW_W, WINDOW_H, FPS, "CarRacing")
-        self.render_initialized = False
-
     # ===== Env Trait Methods =====
 
     fn reset(mut self) -> Self.StateType:
@@ -432,15 +425,17 @@ struct CarRacingEnv(BoxContinuousActionEnv):
         """Get current state."""
         return self._get_observation()
 
-    fn render(mut self):
-        """Render the environment."""
-        self._render_internal()
+    fn render(mut self, mut renderer: RendererBase):
+        """Render the environment.
+
+        Args:
+            renderer: External renderer to use for drawing.
+        """
+        self._render_internal(renderer)
 
     fn close(mut self):
-        """Close the environment."""
-        if self.render_initialized:
-            self.renderer.close()
-            self.render_initialized = False
+        """Clean up resources (no-op since renderer is external)."""
+        pass
 
     # ===== BoxContinuousActionEnv Trait Methods =====
 
@@ -999,17 +994,15 @@ struct CarRacingEnv(BoxContinuousActionEnv):
 
     # ===== Rendering =====
 
-    fn _render_internal(mut self):
-        """Render the environment with RotatingCamera following car."""
-        if not self.render_initialized:
-            if not self.renderer.init_display():
-                return
-            self.render_initialized = True
+    fn _render_internal(mut self, mut renderer: RendererBase):
+        """Render the environment with RotatingCamera following car.
 
+        Args:
+            renderer: External renderer to use for drawing.
+        """
         # Draw background with custom color
         var bg_color = SDL_Color(self.bg_color[0], self.bg_color[1], self.bg_color[2], 255)
-        if not self.renderer.begin_frame_with_color(bg_color):
-            self.close()
+        if not renderer.begin_frame_with_color(bg_color):
             return
 
         # Create rotating camera - follows car with rotation
@@ -1023,7 +1016,7 @@ struct CarRacingEnv(BoxContinuousActionEnv):
         var screen_center_x = Float64(WINDOW_W) / 2.0
         var screen_center_y = Float64(WINDOW_H) * 3.0 / 4.0  # Car at 3/4 down
 
-        var camera = self.renderer.make_rotating_camera_offset(
+        var camera = renderer.make_rotating_camera_offset(
             self.hull_position.x,
             self.hull_position.y,
             -self.hull_angle,  # Negative to rotate view opposite to car
@@ -1033,18 +1026,18 @@ struct CarRacingEnv(BoxContinuousActionEnv):
         )
 
         # Draw grass patches
-        self._draw_grass(camera)
+        self._draw_grass(renderer, camera)
 
         # Draw track
-        self._draw_track(camera)
+        self._draw_track(renderer, camera)
 
         # Draw car
-        self._draw_car(camera)
+        self._draw_car(renderer, camera)
 
         # Draw info (HUD - not in world space)
-        self._draw_info()
+        self._draw_info(renderer)
 
-        self.renderer.flip()
+        renderer.flip()
 
     fn _world_to_screen(
         self,
@@ -1072,7 +1065,7 @@ struct CarRacingEnv(BoxContinuousActionEnv):
 
         return (screen_x, WINDOW_H - screen_y)  # Flip Y
 
-    fn _draw_grass(mut self, camera: RotatingCamera):
+    fn _draw_grass(self, mut renderer: RendererBase, camera: RotatingCamera):
         """Draw grass patches in a checkerboard pattern using RotatingCamera."""
         var grass_clr = SDL_Color(
             self.grass_color[0], self.grass_color[1], self.grass_color[2], 255
@@ -1096,9 +1089,9 @@ struct CarRacingEnv(BoxContinuousActionEnv):
                 vertices.append(RenderVec2(world_x + GRASS_DIM, world_y + GRASS_DIM))
                 vertices.append(RenderVec2(world_x, world_y + GRASS_DIM))
 
-                self.renderer.draw_polygon_rotating(vertices, camera, grass_clr, filled=True)
+                renderer.draw_polygon_rotating(vertices, camera, grass_clr, filled=True)
 
-    fn _draw_track(mut self, camera: RotatingCamera):
+    fn _draw_track(self, mut renderer: RendererBase, camera: RotatingCamera):
         """Draw track tiles using RotatingCamera."""
         var road_clr = SDL_Color(
             self.road_color[0], self.road_color[1], self.road_color[2], 255
@@ -1139,9 +1132,9 @@ struct CarRacingEnv(BoxContinuousActionEnv):
             vertices.append(RenderVec2(tile.v2.x, tile.v2.y))
             vertices.append(RenderVec2(tile.v3.x, tile.v3.y))
 
-            self.renderer.draw_polygon_rotating(vertices, camera, tile_color, filled=True)
+            renderer.draw_polygon_rotating(vertices, camera, tile_color, filled=True)
 
-    fn _draw_car(mut self, camera: RotatingCamera):
+    fn _draw_car(self, mut renderer: RendererBase, camera: RotatingCamera):
         """Draw the car (hull and wheels) using Transform2D and RotatingCamera."""
         # Hull transform (position and rotation)
         var hull_transform = Transform2D(self.hull_position.x, self.hull_position.y, self.hull_angle)
@@ -1155,7 +1148,7 @@ struct CarRacingEnv(BoxContinuousActionEnv):
         hull1.append(RenderVec2(60.0 * CAR_SIZE, 130.0 * CAR_SIZE))
         hull1.append(RenderVec2(60.0 * CAR_SIZE, 110.0 * CAR_SIZE))
         hull1.append(RenderVec2(-60.0 * CAR_SIZE, 110.0 * CAR_SIZE))
-        self.renderer.draw_transformed_polygon_rotating(hull1, hull_transform, camera, hull_color, filled=True)
+        renderer.draw_transformed_polygon_rotating(hull1, hull_transform, camera, hull_color, filled=True)
 
         # Hull polygon 2 (cabin)
         var hull2 = List[RenderVec2]()
@@ -1163,7 +1156,7 @@ struct CarRacingEnv(BoxContinuousActionEnv):
         hull2.append(RenderVec2(15.0 * CAR_SIZE, 120.0 * CAR_SIZE))
         hull2.append(RenderVec2(20.0 * CAR_SIZE, 20.0 * CAR_SIZE))
         hull2.append(RenderVec2(-20.0 * CAR_SIZE, 20.0 * CAR_SIZE))
-        self.renderer.draw_transformed_polygon_rotating(hull2, hull_transform, camera, hull_color, filled=True)
+        renderer.draw_transformed_polygon_rotating(hull2, hull_transform, camera, hull_color, filled=True)
 
         # Hull polygon 3 (body)
         var hull3 = List[RenderVec2]()
@@ -1175,7 +1168,7 @@ struct CarRacingEnv(BoxContinuousActionEnv):
         hull3.append(RenderVec2(-50.0 * CAR_SIZE, -40.0 * CAR_SIZE))
         hull3.append(RenderVec2(-50.0 * CAR_SIZE, -10.0 * CAR_SIZE))
         hull3.append(RenderVec2(-25.0 * CAR_SIZE, 20.0 * CAR_SIZE))
-        self.renderer.draw_transformed_polygon_rotating(hull3, hull_transform, camera, hull_color, filled=True)
+        renderer.draw_transformed_polygon_rotating(hull3, hull_transform, camera, hull_color, filled=True)
 
         # Hull polygon 4 (rear spoiler)
         var hull4 = List[RenderVec2]()
@@ -1183,15 +1176,16 @@ struct CarRacingEnv(BoxContinuousActionEnv):
         hull4.append(RenderVec2(50.0 * CAR_SIZE, -120.0 * CAR_SIZE))
         hull4.append(RenderVec2(50.0 * CAR_SIZE, -90.0 * CAR_SIZE))
         hull4.append(RenderVec2(-50.0 * CAR_SIZE, -90.0 * CAR_SIZE))
-        self.renderer.draw_transformed_polygon_rotating(hull4, hull_transform, camera, hull_color, filled=True)
+        renderer.draw_transformed_polygon_rotating(hull4, hull_transform, camera, hull_color, filled=True)
 
         # Draw wheels
         var wheel_color = black()
         for i in range(4):
-            self._draw_wheel(i, wheel_color, camera)
+            self._draw_wheel(renderer, i, wheel_color, camera)
 
     fn _draw_hull_poly(
-        mut self,
+        self,
+        mut renderer: RendererBase,
         local_verts: List[Vec2],
         color: SDL_Color,
         zoom: Float64,
@@ -1199,7 +1193,7 @@ struct CarRacingEnv(BoxContinuousActionEnv):
         cam_y: Float64,
         cam_angle: Float64,
     ):
-        """Draw a hull polygon."""
+        """Draw a hull polygon (legacy method, not currently used)."""
         var c = cos(self.hull_angle)
         var s = sin(self.hull_angle)
 
@@ -1222,10 +1216,11 @@ struct CarRacingEnv(BoxContinuousActionEnv):
             )
             points.append(SDL_Point(Int32(screen[0]), Int32(screen[1])))
 
-        self.renderer.draw_polygon(points^, color, filled=True)
+        renderer.draw_polygon(points^, color, filled=True)
 
     fn _draw_wheel(
-        mut self,
+        self,
+        mut renderer: RendererBase,
         wheel_idx: Int,
         color: SDL_Color,
         camera: RotatingCamera,
@@ -1246,7 +1241,7 @@ struct CarRacingEnv(BoxContinuousActionEnv):
         wheel_verts.append(RenderVec2(hw, hr))
         wheel_verts.append(RenderVec2(hw, -hr))
         wheel_verts.append(RenderVec2(-hw, -hr))
-        self.renderer.draw_transformed_polygon_rotating(wheel_verts, wheel_transform, camera, color, filled=True)
+        renderer.draw_transformed_polygon_rotating(wheel_verts, wheel_transform, camera, color, filled=True)
 
         # Draw rotation stripe (gray stripe that simulates wheel rolling)
         # Based on wheel phase angle
@@ -1274,9 +1269,9 @@ struct CarRacingEnv(BoxContinuousActionEnv):
         stripe_verts.append(RenderVec2(hw, hr * c1))
         stripe_verts.append(RenderVec2(hw, hr * c2))
         stripe_verts.append(RenderVec2(-hw, hr * c2))
-        self.renderer.draw_transformed_polygon_rotating(stripe_verts, wheel_transform, camera, stripe_color, filled=True)
+        renderer.draw_transformed_polygon_rotating(stripe_verts, wheel_transform, camera, stripe_color, filled=True)
 
-    fn _draw_info(mut self):
+    fn _draw_info(self, mut renderer: RendererBase):
         """Draw info panel with indicators like original Gymnasium."""
         var W = WINDOW_W
         var H = WINDOW_H
@@ -1285,7 +1280,7 @@ struct CarRacingEnv(BoxContinuousActionEnv):
 
         # Draw black background panel (bottom 5 units)
         var bg_color = SDL_Color(0, 0, 0, 255)
-        self.renderer.draw_rect(0, Int(H - 5 * h), W, Int(5 * h), bg_color, 0)
+        renderer.draw_rect(0, Int(H - 5 * h), W, Int(5 * h), bg_color, 0)
 
         # Calculate speed
         var true_speed = sqrt(
@@ -1297,13 +1292,14 @@ struct CarRacingEnv(BoxContinuousActionEnv):
         if true_speed > 0.0001:
             var speed_height = 0.02 * true_speed
             self._draw_vertical_indicator(
-                5, speed_height, SDL_Color(255, 255, 255, 255), s, h, H
+                renderer, 5, speed_height, SDL_Color(255, 255, 255, 255), s, h, H
             )
 
         # Draw ABS sensors (wheel omega indicators)
         # Front wheels (blue)
         if abs_f64(self.wheels[0].omega) > 0.0001:
             self._draw_vertical_indicator(
+                renderer,
                 7,
                 0.01 * self.wheels[0].omega,
                 SDL_Color(0, 0, 255, 255),
@@ -1313,6 +1309,7 @@ struct CarRacingEnv(BoxContinuousActionEnv):
             )
         if abs_f64(self.wheels[1].omega) > 0.0001:
             self._draw_vertical_indicator(
+                renderer,
                 8,
                 0.01 * self.wheels[1].omega,
                 SDL_Color(0, 0, 255, 255),
@@ -1323,6 +1320,7 @@ struct CarRacingEnv(BoxContinuousActionEnv):
         # Rear wheels (purple-blue)
         if abs_f64(self.wheels[2].omega) > 0.0001:
             self._draw_vertical_indicator(
+                renderer,
                 9,
                 0.01 * self.wheels[2].omega,
                 SDL_Color(51, 0, 255, 255),
@@ -1332,6 +1330,7 @@ struct CarRacingEnv(BoxContinuousActionEnv):
             )
         if abs_f64(self.wheels[3].omega) > 0.0001:
             self._draw_vertical_indicator(
+                renderer,
                 10,
                 0.01 * self.wheels[3].omega,
                 SDL_Color(51, 0, 255, 255),
@@ -1344,12 +1343,13 @@ struct CarRacingEnv(BoxContinuousActionEnv):
         var steer_angle = self.wheels[0].joint_angle
         if abs_f64(steer_angle) > 0.0001:
             self._draw_horizontal_indicator(
-                20, -10.0 * steer_angle, SDL_Color(0, 255, 0, 255), s, h, H
+                renderer, 20, -10.0 * steer_angle, SDL_Color(0, 255, 0, 255), s, h, H
             )
 
         # Draw angular velocity indicator (red horizontal bar at position 30)
         if abs_f64(self.hull_angular_velocity) > 0.0001:
             self._draw_horizontal_indicator(
+                renderer,
                 30,
                 -0.8 * self.hull_angular_velocity,
                 SDL_Color(255, 0, 0, 255),
@@ -1361,12 +1361,13 @@ struct CarRacingEnv(BoxContinuousActionEnv):
         # Draw reward score using large white text
         var score = Int(self.reward)
         # Use large font for the score display
-        self.renderer.draw_text_large(
+        renderer.draw_text_large(
             String(score), 30, Int(H - 4.0 * h), SDL_Color(255, 255, 255, 255)
         )
 
     fn _draw_vertical_indicator(
-        mut self,
+        self,
+        mut renderer: RendererBase,
         place: Int,
         val: Float64,
         color: SDL_Color,
@@ -1389,10 +1390,11 @@ struct CarRacingEnv(BoxContinuousActionEnv):
         y2 = min_i64(y2, H)
 
         if y2 > y1:
-            self.renderer.draw_rect(x1, y1, x2 - x1, y2 - y1, color, 0)
+            renderer.draw_rect(x1, y1, x2 - x1, y2 - y1, color, 0)
 
     fn _draw_horizontal_indicator(
-        mut self,
+        self,
+        mut renderer: RendererBase,
         place: Int,
         val: Float64,
         color: SDL_Color,
@@ -1417,7 +1419,7 @@ struct CarRacingEnv(BoxContinuousActionEnv):
         x2 = min_i64(x2, WINDOW_W)
 
         if x2 > x1:
-            self.renderer.draw_rect(x1, y1, x2 - x1, y2 - y1, color, 0)
+            renderer.draw_rect(x1, y1, x2 - x1, y2 - y1, color, 0)
 
 
 # ===== Helper Functions =====

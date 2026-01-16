@@ -1,9 +1,11 @@
 from random import random_si64, random_float64
 from .qlearning import QTable
 from core import TabularAgent, DiscreteEnv, TrainingMetrics
+from render import RendererBase
+from memory import UnsafePointer
 
 
-struct SARSAAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable):
+struct SARSAAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
     """Tabular SARSA agent with epsilon-greedy exploration.
 
     SARSA is on-policy: uses Q(s',a') instead of max Q(s',a').
@@ -74,7 +76,9 @@ struct SARSAAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable):
         if done:
             target = reward
         else:
-            target = reward + self.discount_factor * self.q_table.get_max_value(next_state_idx)
+            target = reward + self.discount_factor * self.q_table.get_max_value(
+                next_state_idx
+            )
         var new_q = current_q + self.learning_rate * (target - current_q)
         self.q_table.set(state_idx, action, new_q)
 
@@ -93,7 +97,9 @@ struct SARSAAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable):
         if done:
             target = reward
         else:
-            target = reward + self.discount_factor * self.q_table.get(next_state_idx, next_action)
+            target = reward + self.discount_factor * self.q_table.get(
+                next_state_idx, next_action
+            )
         var new_q = current_q + self.learning_rate * (target - current_q)
         self.q_table.set(state_idx, action, new_q)
 
@@ -106,7 +112,9 @@ struct SARSAAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable):
     fn get_best_action(self, state_idx: Int) -> Int:
         return self.q_table.get_best_action(state_idx)
 
-    fn train[E: DiscreteEnv](
+    fn train[
+        E: DiscreteEnv
+    ](
         mut self,
         mut env: E,
         num_episodes: Int,
@@ -151,7 +159,14 @@ struct SARSAAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable):
                 var next_action_idx = self.select_action(next_state_idx)
 
                 # True SARSA update with next action
-                self.update_sarsa(state_idx, action_idx, reward, next_state_idx, next_action_idx, done)
+                self.update_sarsa(
+                    state_idx,
+                    action_idx,
+                    reward,
+                    next_state_idx,
+                    next_action_idx,
+                    done,
+                )
 
                 total_reward += reward
                 steps += 1
@@ -169,18 +184,22 @@ struct SARSAAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable):
 
         return metrics^
 
-    fn evaluate[E: DiscreteEnv](
+    fn evaluate[
+        E: DiscreteEnv
+    ](
         self,
         mut env: E,
         num_episodes: Int = 10,
-        render: Bool = False,
+        renderer: UnsafePointer[RendererBase, MutAnyOrigin] = UnsafePointer[
+            RendererBase, MutAnyOrigin
+        ](),
     ) -> Float64:
         """Evaluate the agent on the environment.
 
         Args:
             env: The discrete environment to evaluate on.
             num_episodes: Number of evaluation episodes.
-            render: Whether to render the environment.
+            renderer: Optional pointer to renderer for visualization.
 
         Returns:
             Average reward across episodes.
@@ -192,8 +211,8 @@ struct SARSAAgent(TabularAgent, Copyable, Movable, ImplicitlyCopyable):
             var episode_reward: Float64 = 0.0
 
             for _ in range(1000):
-                if render:
-                    env.render()
+                if renderer:
+                    env.render(renderer[])
 
                 var state_idx = env.state_to_index(state)
                 var action_idx = self.get_best_action(state_idx)

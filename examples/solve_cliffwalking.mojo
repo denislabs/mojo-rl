@@ -29,6 +29,7 @@ Run with:
 
 from envs import CliffWalkingEnv
 from agents import QLearningAgent, SARSAAgent, SARSALambdaAgent
+from render import RendererBase
 
 
 fn main() raises:
@@ -250,8 +251,9 @@ fn main() raises:
     print("-" * 60)
 
     var demo_env = CliffWalkingEnv(width=12, height=4)
+    var renderer = RendererBase()
     _ = demo_env.reset()
-    demo_env.render()
+    demo_env.render(renderer)
 
     var action_names = List[String]()
     action_names.append("UP")
@@ -272,7 +274,7 @@ fn main() raises:
         if result[2]:
             print("Goal reached in", step + 1, "steps!")
             print("Total reward:", total_reward_q)
-            demo_env.render()
+            demo_env.render(renderer)
             break
 
     print("")

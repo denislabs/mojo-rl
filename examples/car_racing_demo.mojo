@@ -13,6 +13,7 @@ Run with:
 
 from random import random_float64
 from envs.car_racing import CarRacingEnv, CarRacingAction
+from render import RendererBase
 
 
 fn main() raises:
@@ -24,6 +25,7 @@ fn main() raises:
     print("")
 
     var env = CarRacingEnv(continuous=True)
+    var renderer = RendererBase(1000, 800, 50, "CarRacing")
     var state = env.reset()
 
     var total_reward: Float64 = 0.0
@@ -74,7 +76,7 @@ fn main() raises:
         step_count += 1
 
         # Render
-        env.render()
+        env.render(renderer)
 
         # Print progress periodically
         if step_count % 100 == 0:
@@ -102,7 +104,7 @@ fn main() raises:
                 print("\nEpisode", episode, "started")
                 print("Track has", env.track_length, "tiles")
 
-    env.close()
+    renderer.close()
     print("\nDemo finished!")
 
 

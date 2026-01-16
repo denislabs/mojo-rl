@@ -17,6 +17,7 @@ from core import (
     BoxContinuousActionEnv,
     DiscreteEnv,
 )
+from render import RendererBase
 
 
 # ============================================================================
@@ -337,8 +338,9 @@ struct GymLunarLanderEnv(BoxDiscreteActionEnv & DiscreteEnv):
         """Return full 8D observation."""
         return self.current_obs
 
-    fn render(mut self):
-        """Render the environment."""
+    fn render(mut self, mut renderer: RendererBase):
+        """Render the environment (uses Gymnasium's renderer, renderer argument ignored)."""
+        _ = renderer
         try:
             _ = self.env.render()
         except:
@@ -620,8 +622,9 @@ struct GymBipedalWalkerEnv(BoxContinuousActionEnv):
         for i in range(24):
             obs.append(self.current_obs[i])
 
-    fn render(mut self):
-        """Render the environment."""
+    fn render(mut self, mut renderer: RendererBase):
+        """Render the environment (uses Gymnasium's renderer, renderer argument ignored)."""
+        _ = renderer
         try:
             _ = self.env.render()
         except:
@@ -898,8 +901,9 @@ struct GymCarRacingEnv(BoxContinuousActionEnv):
         self.episode_length = 0
         return obs
 
-    fn render(mut self):
-        """Render the environment."""
+    fn render(mut self, mut renderer: RendererBase):
+        """Render the environment (uses Gymnasium's renderer, renderer argument ignored)."""
+        _ = renderer
         try:
             _ = self.env.render()
         except:

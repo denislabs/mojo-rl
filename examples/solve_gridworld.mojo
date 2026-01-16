@@ -17,6 +17,7 @@ Run with:
 
 from envs import GridWorldEnv
 from agents import QLearningAgent, SARSAAgent, SARSALambdaAgent, DoubleQLearningAgent
+from render import RendererBase
 
 
 fn main() raises:
@@ -166,8 +167,9 @@ fn main() raises:
     print("-" * 60)
     print("Demonstrating learned policy (Q-Learning):")
     print("-" * 60)
+    var renderer = RendererBase()
     _ = env_q.reset()
-    env_q.render()
+    env_q.render(renderer)
 
     var episode_reward: Float64 = 0.0
     var steps = 0
@@ -188,7 +190,7 @@ fn main() raises:
         action_names.append("LEFT")
 
         print("Action:", action_names[action_idx])
-        env_q.render()
+        env_q.render(renderer)
 
         if result[2]:
             print("Goal reached in", steps, "steps!")

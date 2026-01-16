@@ -16,6 +16,7 @@ Actions: 4D continuous [hip1, knee1, hip2, knee2] in [-1, 1]
 from envs.bipedal_walker import BipedalWalkerEnv, BipedalWalkerState
 from random import random_float64, seed
 from time import sleep
+from render import RendererBase
 
 
 fn main() raises:
@@ -25,6 +26,9 @@ fn main() raises:
 
     # Seed random for reproducibility
     seed(42)
+
+    # Create renderer (shared across environments)
+    var renderer = RendererBase(600, 400, 50, "BipedalWalker")
 
     # Create environment (normal mode for first demo)
     var env = BipedalWalkerEnv(hardcore=False)
@@ -56,7 +60,7 @@ fn main() raises:
             steps += 1
 
             # Render the frame
-            env.render()
+            env.render(renderer)
 
             # Print progress every 100 steps
             if steps % 100 == 0:
@@ -107,7 +111,7 @@ fn main() raises:
             steps += 1
 
             # Render the frame
-            env_hardcore.render()
+            env_hardcore.render(renderer)
 
         print(
             "Hardcore Episode",
@@ -122,6 +126,5 @@ fn main() raises:
         sleep(0.5)
 
     # Clean up
-    env.close()
-    env_hardcore.close()
+    renderer.close()
     print("=== Demo Complete ===")

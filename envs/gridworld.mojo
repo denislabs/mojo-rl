@@ -1,4 +1,5 @@
 from core import State, Action, Env, DiscreteEnv
+from render import RendererBase
 
 
 @fieldwise_init
@@ -116,8 +117,9 @@ struct GridWorldEnv(DiscreteEnv):
         """Return current state."""
         return self.state
 
-    fn render(mut self):
-        """Print the grid with agent position."""
+    fn render(mut self, mut renderer: RendererBase):
+        """Print the grid with agent position (text-based, renderer argument ignored)."""
+        _ = renderer
         for y in range(self.height - 1, -1, -1):
             var row = String("")
             for x in range(self.width):

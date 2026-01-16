@@ -179,27 +179,13 @@ struct AcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
     var done: Bool
     var total_reward: Float64
 
-    # Renderer (lazy initialized)
-    var renderer: RendererBase
-    var render_initialized: Bool
-
-    # Renderer settings
-    var scale: Float64
-    var link1_color: SDL_Color
-    var link2_color: SDL_Color
-    var joint_color: SDL_Color
-    var target_color: SDL_Color
-    var link_width: Int
-
     # Discretization settings (for DiscreteEnv)
     var num_bins: Int
 
     # Book or NIPS dynamics
     var use_book_dynamics: Bool
 
-    fn __init__(
-        out self, num_bins: Int = 6, use_book_dynamics: Bool = True
-    ) raises:
+    fn __init__(out self, num_bins: Int = 6, use_book_dynamics: Bool = True):
         """Initialize Acrobot with default physics parameters.
 
         Args:
@@ -235,25 +221,6 @@ struct AcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
         self.max_steps = 500
         self.done = False
         self.total_reward = 0.0
-
-        # Initialize renderer (but don't open window yet)
-        self.renderer = RendererBase(
-            width=500,
-            height=500,
-            fps=15,  # Match Gymnasium render_fps
-            title="Acrobot - Native Mojo (SDL2)",
-        )
-        self.render_initialized = False
-
-        # Renderer settings
-        self.scale = 500.0 / (
-            2.0 * (self.link_length_1 + self.link_length_2) + 0.4
-        )
-        self.link1_color = SDL_Color(0, 204, 204, 255)  # Cyan
-        self.link2_color = SDL_Color(0, 204, 204, 255)  # Cyan
-        self.joint_color = SDL_Color(204, 204, 0, 255)  # Yellow
-        self.target_color = SDL_Color(0, 0, 0, 255)  # Black
-        self.link_width = 10
 
         # Discretization settings
         self.num_bins = num_bins
@@ -609,32 +576,31 @@ struct AcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
     # Rendering
     # ========================================================================
 
-    fn render(mut self):
+    fn render(mut self, mut renderer: RendererBase):
         """Render the current state using SDL2.
 
-        Lazily initializes the display on first call.
         Uses Camera for world-to-screen coordinate conversion.
-        """
-        if not self.render_initialized:
-            if not self.renderer.init_display():
-                print("Failed to initialize display")
-                return
-            self.render_initialized = True
 
-        if not self.renderer.handle_events():
-            self.close()
+        Args:
+            renderer: The RendererBase to use for rendering.
+        """
+        # Begin frame handles init, events, and clear
+        if not renderer.begin_frame():
             return
 
-        # Clear screen with white background
-        self.renderer.clear()
+        # Colors
+        var link_color = rgb(0, 204, 204)  # Cyan
+        var joint_color = rgb(204, 204, 0)  # Yellow
+        var target_color = black()
+        var link_width = 10
 
         # Create camera with appropriate zoom
         # Total reach is link_length_1 + link_length_2, add margin
         var bound_val = self.link_length_1 + self.link_length_2 + 0.2
         var zoom = Float64(
-            min(self.renderer.screen_width, self.renderer.screen_height)
+            min(renderer.screen_width, renderer.screen_height)
         ) / (bound_val * 2.0)
-        var camera = self.renderer.make_camera(zoom, True)
+        var camera = renderer.make_camera(zoom, True)
 
         # World coordinates (Y points up, 0,0 at center)
         var p0 = Vec2(0.0, 0.0)  # Fixed pivot at origin
@@ -655,31 +621,29 @@ struct AcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
         )
 
         # Draw target line (height = 1.0 above the fixed point)
-        self.renderer.draw_ground_line(1.0, camera, self.target_color, 2)
+        renderer.draw_ground_line(1.0, camera, target_color, 2)
 
         # Draw links using helper methods
-        self.renderer.draw_link(p0, p1, camera, self.link1_color, self.link_width)
-        self.renderer.draw_link(p1, p2, camera, self.link2_color, self.link_width)
+        renderer.draw_link(p0, p1, camera, link_color, link_width)
+        renderer.draw_link(p1, p2, camera, link_color, link_width)
 
         # Draw joints
         var joint_radius = 0.05
-        self.renderer.draw_joint(p0, joint_radius, camera, self.joint_color)
-        self.renderer.draw_joint(p1, joint_radius, camera, self.joint_color)
+        renderer.draw_joint(p0, joint_radius, camera, joint_color)
+        renderer.draw_joint(p1, joint_radius, camera, joint_color)
 
         # Draw info text
         var info_lines = List[String]()
         info_lines.append("Step: " + String(self.steps))
         info_lines.append("Reward: " + String(Int(self.total_reward)))
-        self.renderer.draw_info_box(info_lines)
+        renderer.draw_info_box(info_lines)
 
         # Update display
-        self.renderer.flip()
+        renderer.flip()
 
     fn close(mut self):
-        """Clean up renderer resources."""
-        if self.render_initialized:
-            self.renderer.close()
-            self.render_initialized = False
+        """Clean up resources (no-op since renderer is external)."""
+        pass
 
     @always_inline
     fn is_done(self) -> Bool:

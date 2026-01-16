@@ -16,6 +16,7 @@ Actions: 0=nothing, 1=left engine, 2=main engine, 3=right engine
 from envs.lunar_lander import LunarLanderEnv
 from random import random_float64, seed
 from time import sleep
+from render import RendererBase
 
 
 fn main() raises:
@@ -28,6 +29,7 @@ fn main() raises:
 
     # Create environment (discrete actions, no wind for clearer demo)
     var env = LunarLanderEnv(continuous=False, enable_wind=False)
+    var renderer = RendererBase(600, 400, 50, "LunarLander")
 
     # Run episodes with rendering
     var num_episodes = 5
@@ -64,7 +66,7 @@ fn main() raises:
             steps += 1
 
             # Render the frame
-            env.render()
+            env.render(renderer)
 
         var status = "SUCCESS!" if total_reward > 100 else "CRASHED"
         print(
@@ -83,7 +85,7 @@ fn main() raises:
         sleep(0.5)
 
     # Clean up
-    env.close()
+    renderer.close()
     print("=== Demo Complete ===")
 
 

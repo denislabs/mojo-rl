@@ -38,6 +38,7 @@ Run with:
 
 from envs import TaxiEnv
 from agents import QLearningAgent, DoubleQLearningAgent, DynaQAgent
+from render import RendererBase
 
 
 fn main() raises:
@@ -210,10 +211,11 @@ fn main() raises:
     action_names.append("DROPOFF")
 
     var demo_env = TaxiEnv()
+    var renderer = RendererBase()
     _ = demo_env.reset()
 
     print("Initial state:")
-    demo_env.render()
+    demo_env.render(renderer)
 
     var total_reward: Float64 = 0.0
     for step in range(30):
@@ -227,7 +229,7 @@ fn main() raises:
         var result = demo_env.step(action)
         total_reward += result[1]
 
-        demo_env.render()
+        demo_env.render(renderer)
 
         if result[2]:
             print("Task completed!")

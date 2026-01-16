@@ -27,6 +27,7 @@ Run with:
 
 from envs import FrozenLakeEnv
 from agents import QLearningAgent, DoubleQLearningAgent
+from render import RendererBase
 
 
 fn train_and_evaluate(
@@ -243,8 +244,9 @@ fn main() raises:
     # Run a demo episode
     print("Demo episode:")
     var demo_env = FrozenLakeEnv(size=4, is_slippery=True)
+    var renderer = RendererBase()
     _ = demo_env.reset()
-    demo_env.render()
+    demo_env.render(renderer)
 
     for step in range(20):
         var state = demo_env.get_state()
@@ -254,7 +256,7 @@ fn main() raises:
 
         print("Step", step + 1, "- Intended:", action_names[action_idx])
         var result = demo_env.step(action)
-        demo_env.render()
+        demo_env.render(renderer)
 
         if result[2]:
             if result[1] > 0.5:
