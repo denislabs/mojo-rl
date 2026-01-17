@@ -111,6 +111,14 @@ comptime SIDE_ENGINE_FUEL_COST: Float64 = 0.03
 # Terrain generation
 comptime TERRAIN_CHUNKS: Int = 11
 
+# Particle effect constants (cosmetic only)
+comptime PARTICLE_TTL: Float64 = 0.4  # Particle lifetime in seconds
+comptime PARTICLES_PER_FRAME_MAIN: Int = 3  # Particles per frame for main engine
+comptime PARTICLES_PER_FRAME_SIDE: Int = 2  # Particles per frame for side engines
+comptime PARTICLE_SPEED_MAIN: Float64 = 8.0  # Base speed for main engine particles
+comptime PARTICLE_SPEED_SIDE: Float64 = 5.0  # Base speed for side engine particles
+comptime MAX_PARTICLES: Int = 100  # Maximum particles to keep (prevent memory bloat)
+
 
 # =============================================================================
 # Particle Effect (cosmetic only, no physics)
@@ -196,6 +204,9 @@ struct LunarLanderV2[BATCH: Int = 1, CONTINUOUS: Bool = False]:
 
     # Edge terrain collision system
     var edge_collision: EdgeTerrainCollision
+
+    # Particle effects (cosmetic only)
+    var particles: List[Particle]
 
     fn __init__(
         out self,
@@ -300,6 +311,9 @@ struct LunarLanderV2[BATCH: Int = 1, CONTINUOUS: Bool = False]:
 
         # Edge terrain collision system
         self.edge_collision = EdgeTerrainCollision(Self.BATCH)
+
+        # Initialize particles list (cosmetic)
+        self.particles = List[Particle]()
 
         # Reset all environments
         self.reset_all()
@@ -442,6 +456,9 @@ struct LunarLanderV2[BATCH: Int = 1, CONTINUOUS: Bool = False]:
         self.step_count[env] = 0
         self.game_over[env] = False
         self.prev_shaping[env] = self._compute_shaping(env)
+
+        # Clear particles on reset
+        self.particles.clear()
 
         # Reset wind indices with random offset
         if self.enable_wind:
@@ -846,6 +863,93 @@ struct LunarLanderV2[BATCH: Int = 1, CONTINUOUS: Bool = False]:
 
         self.physics.set_body_velocity(env, Self.BODY_LANDER, vx + dvx, vy + dvy, omega + domega)
 
+        # Spawn particles for visual effect
+        self._spawn_particles(env, m_power, s_power, direction)
+
+    fn _spawn_particles(
+        mut self, env: Int, m_power: Float64, s_power: Float64, direction: Float64
+    ):
+        """Spawn particles for engine flame effects (cosmetic only)."""
+        # Get lander position and orientation
+        var x = Float64(self.physics.get_body_x(env, Self.BODY_LANDER))
+        var y = Float64(self.physics.get_body_y(env, Self.BODY_LANDER))
+        var angle = Float64(self.physics.get_body_angle(env, Self.BODY_LANDER))
+
+        # Direction vectors
+        var tip_x = sin(angle)
+        var tip_y = cos(angle)
+        var side_x = -tip_y
+        var side_y = tip_x
+
+        # Random values for particle spread
+        self.rng_counter += 1
+        var rng = PhiloxRandom(seed=Int(self.rng_seed), offset=self.rng_counter)
+
+        # Main engine particles (fire downward from bottom)
+        if m_power > 0.0:
+            for _ in range(PARTICLES_PER_FRAME_MAIN):
+                var rand_vals = rng.step_uniform()
+                var spread_x = (Float64(rand_vals[0]) * 2.0 - 1.0) * 0.3
+                var spread_y = (Float64(rand_vals[1]) * 2.0 - 1.0) * 0.3
+                var speed_var = 0.7 + Float64(rand_vals[2]) * 0.6  # 0.7-1.3 speed variation
+
+                # Particle spawn position (bottom of lander)
+                var spawn_x = x + tip_x * (-(10.0 / SCALE))
+                var spawn_y = y - tip_y * (10.0 / SCALE)
+
+                # Velocity (downward with spread)
+                var vel_x = tip_x * PARTICLE_SPEED_MAIN * m_power * speed_var + spread_x
+                var vel_y = -tip_y * PARTICLE_SPEED_MAIN * m_power * speed_var + spread_y
+
+                # Add particle
+                self.particles.append(Particle(
+                    spawn_x, spawn_y, vel_x, vel_y, PARTICLE_TTL
+                ))
+
+        # Side engine particles
+        if s_power > 0.0:
+            for _ in range(PARTICLES_PER_FRAME_SIDE):
+                var rand_vals = rng.step_uniform()
+                var spread_x = (Float64(rand_vals[0]) * 2.0 - 1.0) * 0.2
+                var spread_y = (Float64(rand_vals[1]) * 2.0 - 1.0) * 0.2
+                var speed_var = 0.7 + Float64(rand_vals[2]) * 0.6
+
+                # Particle spawn position (side of lander)
+                var spawn_x = x + side_x * direction * SIDE_ENGINE_AWAY
+                var spawn_y = y - side_y * direction * SIDE_ENGINE_AWAY + tip_y * SIDE_ENGINE_HEIGHT
+
+                # Velocity (sideways opposite to direction with spread)
+                var vel_x = -side_x * direction * PARTICLE_SPEED_SIDE * s_power * speed_var + spread_x
+                var vel_y = side_y * direction * PARTICLE_SPEED_SIDE * s_power * speed_var + spread_y
+
+                self.particles.append(Particle(
+                    spawn_x, spawn_y, vel_x, vel_y, PARTICLE_TTL
+                ))
+
+        # Limit total particles to prevent memory bloat
+        while len(self.particles) > MAX_PARTICLES:
+            _ = self.particles.pop(0)
+
+    fn _update_particles(mut self, dt: Float64):
+        """Update particle positions and remove dead particles."""
+        var i = 0
+        while i < len(self.particles):
+            var p = self.particles[i]
+            # Update position
+            var new_x = p.x + p.vx * dt
+            var new_y = p.y + p.vy * dt
+            # Apply gravity to particles (they fall)
+            var new_vy = p.vy + GRAVITY * dt * 0.3  # Lighter gravity for particles
+            var new_ttl = p.ttl - dt
+
+            if new_ttl <= 0.0:
+                # Remove dead particle
+                _ = self.particles.pop(i)
+            else:
+                # Update particle in place
+                self.particles[i] = Particle(new_x, new_y, p.vx, new_vy, new_ttl)
+                i += 1
+
     fn _compute_step_result(
         mut self, env: Int, m_power: Float64, s_power: Float64, is_continuous: Bool
     ) -> Tuple[Scalar[physics_dtype], Bool]:
@@ -1042,6 +1146,10 @@ struct LunarLanderV2[BATCH: Int = 1, CONTINUOUS: Bool = False]:
         # Draw lander
         self._draw_lander(env, camera, renderer)
 
+        # Update and draw particles (engine flame effects)
+        self._update_particles(TAU)
+        self._draw_particles(camera, renderer)
+
         renderer.flip()
 
     fn _draw_terrain(mut self, env: Int, camera: Camera, mut renderer: RendererBase):
@@ -1209,4 +1317,31 @@ struct LunarLanderV2[BATCH: Int = 1, CONTINUOUS: Bool = False]:
             )
             renderer.draw_transformed_polygon(
                 leg_verts, transform, camera, leg_outline, filled=False
+            )
+
+    fn _draw_particles(mut self, camera: Camera, mut renderer: RendererBase):
+        """Draw engine flame particles."""
+        for i in range(len(self.particles)):
+            var p = self.particles[i]
+
+            # Compute particle color based on TTL (fade from yellow/orange to red)
+            var life_ratio = p.ttl / PARTICLE_TTL  # 1.0 = just spawned, 0.0 = about to die
+
+            # Color interpolation: yellow (255, 255, 0) -> orange (255, 128, 0) -> red (255, 0, 0)
+            var r = UInt8(255)
+            var g = UInt8(Int(255 * life_ratio * life_ratio))  # Fade green faster
+            var b = UInt8(Int(50 * life_ratio))  # Slight blue for hot particles
+            var particle_color = SDL_Color(r, g, b, UInt8(Int(255 * life_ratio)))
+
+            # Particle size based on TTL (shrink as they age)
+            var size = 0.08 + 0.12 * life_ratio  # World units
+
+            # Draw as small filled rectangle
+            renderer.draw_rect_world(
+                RenderVec2(p.x, p.y),
+                size,
+                size,
+                camera,
+                particle_color,
+                centered=True,
             )
