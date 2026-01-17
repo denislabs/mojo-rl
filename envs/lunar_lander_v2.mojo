@@ -28,6 +28,30 @@ from physics_gpu.integrators import SemiImplicitEuler
 from physics_gpu.solvers import ImpulseSolver
 from physics_gpu.joints import RevoluteJointSolver
 
+# Rendering imports
+from render import (
+    RendererBase,
+    SDL_Color,
+    Camera,
+    Vec2 as RenderVec2,
+    Transform2D,
+    # Colors
+    space_black,
+    moon_gray,
+    dark_gray,
+    white,
+    yellow,
+    red,
+    contact_green,
+    inactive_gray,
+    rgb,
+    darken,
+    # Shapes
+    make_lander_body,
+    make_leg_box,
+    scale_vertices,
+)
+
 
 # =============================================================================
 # Physics Constants - Matched to Gymnasium LunarLander-v3
@@ -86,6 +110,36 @@ comptime SIDE_ENGINE_FUEL_COST: Float64 = 0.03
 
 # Terrain generation
 comptime TERRAIN_CHUNKS: Int = 11
+
+
+# =============================================================================
+# Particle Effect (cosmetic only, no physics)
+# =============================================================================
+
+
+@register_passable("trivial")
+struct Particle:
+    """Simple particle for engine flame effects (cosmetic only)."""
+
+    var x: Float64
+    var y: Float64
+    var vx: Float64
+    var vy: Float64
+    var ttl: Float64  # Time to live in seconds
+
+    fn __init__(
+        out self,
+        x: Float64,
+        y: Float64,
+        vx: Float64,
+        vy: Float64,
+        ttl: Float64,
+    ):
+        self.x = x
+        self.y = y
+        self.vx = vx
+        self.vy = vy
+        self.ttl = ttl
 
 
 # =============================================================================
@@ -942,3 +996,217 @@ struct LunarLanderV2[BATCH: Int = 1, CONTINUOUS: Bool = False]:
     fn is_continuous(self) -> Bool:
         """Return whether using continuous action space."""
         return Self.CONTINUOUS
+
+    # =========================================================================
+    # Rendering Methods
+    # =========================================================================
+
+    fn render(mut self, env: Int, mut renderer: RendererBase):
+        """Render a specific environment using the provided renderer.
+
+        Args:
+            env: Environment index to render (0 to BATCH-1).
+            renderer: Initialized RendererBase instance.
+
+        The renderer should be initialized before calling this method.
+        Call renderer.init_display() before first use if needed.
+        """
+        # Begin frame with space background
+        if not renderer.begin_frame_with_color(space_black()):
+            return
+
+        # Create camera - centered at viewport center, with physics scale
+        var W = Float64(VIEWPORT_W) / Float64(SCALE)
+        var H = Float64(VIEWPORT_H) / Float64(SCALE)
+        var camera = Camera(
+            W / 2.0,  # Center X in world units
+            H / 2.0,  # Center Y in world units
+            Float64(SCALE),  # Zoom = physics scale
+            Int(VIEWPORT_W),
+            Int(VIEWPORT_H),
+            flip_y=True,  # Y increases upward in physics
+        )
+
+        # Draw terrain (filled)
+        self._draw_terrain(env, camera, renderer)
+
+        # Draw helipad
+        self._draw_helipad(env, camera, renderer)
+
+        # Draw helipad flags
+        self._draw_flags(env, camera, renderer)
+
+        # Draw legs (before lander so lander draws on top)
+        self._draw_legs(env, camera, renderer)
+
+        # Draw lander
+        self._draw_lander(env, camera, renderer)
+
+        renderer.flip()
+
+    fn _draw_terrain(mut self, env: Int, camera: Camera, mut renderer: RendererBase):
+        """Draw terrain as filled polygons using world coordinates."""
+        var terrain_color = moon_gray()
+        var terrain_dark = dark_gray()
+
+        var W = Float64(VIEWPORT_W) / Float64(SCALE)
+
+        # Draw each terrain segment as a filled quad (from terrain line to bottom)
+        for i in range(TERRAIN_CHUNKS - 1):
+            # Compute terrain x positions (evenly spaced across viewport)
+            var x1 = W / Float64(TERRAIN_CHUNKS - 1) * Float64(i)
+            var x2 = W / Float64(TERRAIN_CHUNKS - 1) * Float64(i + 1)
+
+            # Get terrain heights from buffer
+            var y1 = Float64(self.terrain_heights[env * TERRAIN_CHUNKS + i])
+            var y2 = Float64(self.terrain_heights[env * TERRAIN_CHUNKS + i + 1])
+
+            # Create polygon vertices in world coordinates
+            var vertices = List[RenderVec2]()
+            vertices.append(RenderVec2(x1, y1))
+            vertices.append(RenderVec2(x2, y2))
+            vertices.append(RenderVec2(x2, 0.0))  # Bottom
+            vertices.append(RenderVec2(x1, 0.0))
+
+            renderer.draw_polygon_world(
+                vertices, camera, terrain_color, filled=True
+            )
+
+            # Draw terrain outline for contrast
+            renderer.draw_line_world(
+                RenderVec2(x1, y1),
+                RenderVec2(x2, y2),
+                camera,
+                terrain_dark,
+                2,
+            )
+
+    fn _draw_helipad(mut self, env: Int, camera: Camera, mut renderer: RendererBase):
+        """Draw the helipad landing zone using world coordinates."""
+        var helipad_color = darken(moon_gray(), 0.8)
+
+        var W = Float64(VIEWPORT_W) / Float64(SCALE)
+
+        # Compute helipad x positions (centered, spanning a few chunks)
+        var helipad_x1 = W / Float64(TERRAIN_CHUNKS - 1) * Float64(TERRAIN_CHUNKS // 2 - 1)
+        var helipad_x2 = W / Float64(TERRAIN_CHUNKS - 1) * Float64(TERRAIN_CHUNKS // 2 + 1)
+
+        # Helipad is a thick horizontal bar (in world units)
+        var bar_height = 4.0 / Float64(SCALE)  # 4 pixels in world units
+        renderer.draw_rect_world(
+            RenderVec2(
+                (helipad_x1 + helipad_x2) / 2.0,
+                Float64(HELIPAD_Y) + bar_height / 2.0,
+            ),
+            helipad_x2 - helipad_x1,
+            bar_height,
+            camera,
+            helipad_color,
+            centered=True,
+        )
+
+    fn _draw_flags(mut self, env: Int, camera: Camera, mut renderer: RendererBase):
+        """Draw helipad flags with poles using world coordinates."""
+        var white_color = white()
+        var yellow_color = yellow()
+        var red_color = red()
+
+        var W = Float64(VIEWPORT_W) / Float64(SCALE)
+
+        # Compute helipad x positions
+        var helipad_x1 = W / Float64(TERRAIN_CHUNKS - 1) * Float64(TERRAIN_CHUNKS // 2 - 1)
+        var helipad_x2 = W / Float64(TERRAIN_CHUNKS - 1) * Float64(TERRAIN_CHUNKS // 2 + 1)
+
+        # Flag dimensions in world units
+        var pole_height = 50.0 / Float64(SCALE)
+        var flag_width = 25.0 / Float64(SCALE)
+        var flag_height = 20.0 / Float64(SCALE)
+
+        for flag_idx in range(2):
+            var x_pos = helipad_x1 if flag_idx == 0 else helipad_x2
+            var ground_y = Float64(HELIPAD_Y)
+            var pole_top_y = ground_y + pole_height
+
+            # Flag pole (white vertical line)
+            renderer.draw_line_world(
+                RenderVec2(x_pos, ground_y),
+                RenderVec2(x_pos, pole_top_y),
+                camera,
+                white_color,
+                2,
+            )
+
+            # Flag as a filled triangle
+            var flag_color = yellow_color if flag_idx == 0 else red_color
+            var flag_verts = List[RenderVec2]()
+            flag_verts.append(RenderVec2(x_pos, pole_top_y))
+            flag_verts.append(
+                RenderVec2(x_pos + flag_width, pole_top_y - flag_height / 2.0)
+            )
+            flag_verts.append(RenderVec2(x_pos, pole_top_y - flag_height))
+            renderer.draw_polygon_world(
+                flag_verts, camera, flag_color, filled=True
+            )
+
+    fn _draw_lander(mut self, env: Int, camera: Camera, mut renderer: RendererBase):
+        """Draw lander body as filled polygon using Transform2D."""
+        # Get lander position and angle from physics
+        var pos_x = Float64(self.physics.get_body_x(env, Self.BODY_LANDER))
+        var pos_y = Float64(self.physics.get_body_y(env, Self.BODY_LANDER))
+        var angle = Float64(self.physics.get_body_angle(env, Self.BODY_LANDER))
+
+        # Use shape factory for lander body, scale from pixels to world units
+        var lander_verts_raw = make_lander_body()
+        var lander_verts = scale_vertices(
+            lander_verts_raw^, 1.0 / Float64(SCALE)
+        )
+
+        # Create transform for lander position and rotation
+        var transform = Transform2D(pos_x, pos_y, angle)
+
+        # Draw filled lander body (grayish-white like the original)
+        var lander_fill = rgb(230, 230, 230)
+        var lander_outline = rgb(100, 100, 100)
+        renderer.draw_transformed_polygon(
+            lander_verts, transform, camera, lander_fill, filled=True
+        )
+        renderer.draw_transformed_polygon(
+            lander_verts, transform, camera, lander_outline, filled=False
+        )
+
+    fn _draw_legs(mut self, env: Int, camera: Camera, mut renderer: RendererBase):
+        """Draw lander legs as filled polygons using Transform2D."""
+        # Get leg contact from observation
+        var obs = self.get_observation(env)
+        var left_contact = Float64(obs[6]) > 0.5
+        var right_contact = Float64(obs[7]) > 0.5
+
+        for leg_idx in range(2):
+            var body_idx = Self.BODY_LEFT_LEG if leg_idx == 0 else Self.BODY_RIGHT_LEG
+
+            # Get leg position and angle from physics
+            var pos_x = Float64(self.physics.get_body_x(env, body_idx))
+            var pos_y = Float64(self.physics.get_body_y(env, body_idx))
+            var angle = Float64(self.physics.get_body_angle(env, body_idx))
+
+            # Color changes when leg touches ground (green = contact)
+            var is_touching = left_contact if leg_idx == 0 else right_contact
+            var leg_fill = contact_green() if is_touching else inactive_gray()
+            var leg_outline = darken(leg_fill, 0.6)
+
+            # Leg box vertices using shape factory (in world units)
+            var leg_verts = make_leg_box(
+                Float64(LEG_W) * 2.0,
+                Float64(LEG_H) * 2.0,
+            )
+
+            # Create transform for leg position and rotation
+            var transform = Transform2D(pos_x, pos_y, angle)
+
+            # Draw filled leg
+            renderer.draw_transformed_polygon(
+                leg_verts, transform, camera, leg_fill, filled=True
+            )
+            renderer.draw_transformed_polygon(
+                leg_verts, transform, camera, leg_outline, filled=False
+            )
