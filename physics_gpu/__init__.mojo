@@ -127,3 +127,6 @@ from .world import PhysicsWorld
 from .layout import PhysicsLayout, LunarLanderLayout, CartPoleLayout
 from .kernel import PhysicsKernel, PhysicsConfig
 from .state import PhysicsState
+
+# Strided state helper for GPUDiscreteEnv (flat layout)
+from .state_strided import PhysicsStateStrided

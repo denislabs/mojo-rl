@@ -383,3 +383,240 @@ struct SemiImplicitEuler(Integrator):
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )
+
+    # =========================================================================
+    # Strided GPU Kernels for Flat State Layout
+    # =========================================================================
+    #
+    # These methods work with flat [BATCH, STATE_SIZE] layout where physics
+    # data is packed per-environment with offsets.
+    #
+    # Memory layout: state[env * ENV_STRIDE + OFFSET + body * BODY_STATE_SIZE + field]
+    # This enables integration with GPUDiscreteEnv trait.
+    # =========================================================================
+
+    @always_inline
+    @staticmethod
+    fn integrate_velocities_kernel_strided[
+        BATCH: Int,
+        NUM_BODIES: Int,
+        ENV_STRIDE: Int,
+        BODIES_OFFSET: Int,
+        FORCES_OFFSET: Int,
+    ](
+        state: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH * ENV_STRIDE),
+            MutAnyOrigin,
+        ],
+        gravity_x: Scalar[dtype],
+        gravity_y: Scalar[dtype],
+        dt: Scalar[dtype],
+    ):
+        """GPU kernel for velocity integration with strided layout.
+
+        Args:
+            state: Flat state buffer [BATCH * ENV_STRIDE].
+            gravity_x: Gravity X component.
+            gravity_y: Gravity Y component.
+            dt: Time step.
+        """
+        var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+        if env >= BATCH:
+            return
+
+        var env_base = env * ENV_STRIDE
+
+        @parameter
+        for body in range(NUM_BODIES):
+            var body_base = env_base + BODIES_OFFSET + body * BODY_STATE_SIZE
+            var force_base = env_base + FORCES_OFFSET + body * 3
+
+            var inv_mass = state[body_base + IDX_INV_MASS]
+            var inv_inertia = state[body_base + IDX_INV_INERTIA]
+
+            # Skip static bodies
+            if inv_mass == Scalar[dtype](0):
+                continue
+
+            var vx = state[body_base + IDX_VX]
+            var vy = state[body_base + IDX_VY]
+            var omega = state[body_base + IDX_OMEGA]
+
+            var fx = state[force_base + 0]
+            var fy = state[force_base + 1]
+            var tau = state[force_base + 2]
+
+            vx = vx + (fx * inv_mass + gravity_x) * dt
+            vy = vy + (fy * inv_mass + gravity_y) * dt
+            omega = omega + tau * inv_inertia * dt
+
+            state[body_base + IDX_VX] = vx
+            state[body_base + IDX_VY] = vy
+            state[body_base + IDX_OMEGA] = omega
+
+    @always_inline
+    @staticmethod
+    fn integrate_positions_kernel_strided[
+        BATCH: Int,
+        NUM_BODIES: Int,
+        ENV_STRIDE: Int,
+        BODIES_OFFSET: Int,
+    ](
+        state: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH * ENV_STRIDE),
+            MutAnyOrigin,
+        ],
+        dt: Scalar[dtype],
+    ):
+        """GPU kernel for position integration with strided layout.
+
+        Args:
+            state: Flat state buffer [BATCH * ENV_STRIDE].
+            dt: Time step.
+        """
+        var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+        if env >= BATCH:
+            return
+
+        var env_base = env * ENV_STRIDE
+
+        @parameter
+        for body in range(NUM_BODIES):
+            var body_base = env_base + BODIES_OFFSET + body * BODY_STATE_SIZE
+
+            var inv_mass = state[body_base + IDX_INV_MASS]
+
+            if inv_mass == Scalar[dtype](0):
+                continue
+
+            var x = state[body_base + IDX_X]
+            var y = state[body_base + IDX_Y]
+            var angle = state[body_base + IDX_ANGLE]
+            var vx = state[body_base + IDX_VX]
+            var vy = state[body_base + IDX_VY]
+            var omega = state[body_base + IDX_OMEGA]
+
+            x = x + vx * dt
+            y = y + vy * dt
+            angle = angle + omega * dt
+
+            # Normalize angle
+            var pi_val = Scalar[dtype](PI)
+            var two_pi_val = Scalar[dtype](TWO_PI)
+            if angle > Scalar[dtype](100.0) or angle < Scalar[dtype](-100.0):
+                angle = Scalar[dtype](0.0)
+            if angle > pi_val:
+                angle = angle - two_pi_val
+            if angle > pi_val:
+                angle = angle - two_pi_val
+            if angle < -pi_val:
+                angle = angle + two_pi_val
+            if angle < -pi_val:
+                angle = angle + two_pi_val
+
+            state[body_base + IDX_X] = x
+            state[body_base + IDX_Y] = y
+            state[body_base + IDX_ANGLE] = angle
+
+    @staticmethod
+    fn integrate_velocities_gpu_strided[
+        BATCH: Int,
+        NUM_BODIES: Int,
+        ENV_STRIDE: Int,
+        BODIES_OFFSET: Int,
+        FORCES_OFFSET: Int,
+    ](
+        ctx: DeviceContext,
+        mut state_buf: DeviceBuffer[dtype],
+        gravity_x: Scalar[dtype],
+        gravity_y: Scalar[dtype],
+        dt: Scalar[dtype],
+    ) raises:
+        """Launch strided velocity integration kernel on GPU.
+
+        Args:
+            ctx: GPU device context.
+            state_buf: Flat state buffer [BATCH * ENV_STRIDE].
+            gravity_x: Gravity X component.
+            gravity_y: Gravity Y component.
+            dt: Time step.
+        """
+        var state = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH * ENV_STRIDE),
+            MutAnyOrigin,
+        ](state_buf.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH + TPB - 1) // TPB
+
+        @always_inline
+        fn kernel_wrapper(
+            state: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH * ENV_STRIDE),
+                MutAnyOrigin,
+            ],
+            gravity_x: Scalar[dtype],
+            gravity_y: Scalar[dtype],
+            dt: Scalar[dtype],
+        ):
+            SemiImplicitEuler.integrate_velocities_kernel_strided[
+                BATCH, NUM_BODIES, ENV_STRIDE, BODIES_OFFSET, FORCES_OFFSET
+            ](state, gravity_x, gravity_y, dt)
+
+        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+            state,
+            gravity_x,
+            gravity_y,
+            dt,
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+    @staticmethod
+    fn integrate_positions_gpu_strided[
+        BATCH: Int,
+        NUM_BODIES: Int,
+        ENV_STRIDE: Int,
+        BODIES_OFFSET: Int,
+    ](
+        ctx: DeviceContext,
+        mut state_buf: DeviceBuffer[dtype],
+        dt: Scalar[dtype],
+    ) raises:
+        """Launch strided position integration kernel on GPU.
+
+        Args:
+            ctx: GPU device context.
+            state_buf: Flat state buffer [BATCH * ENV_STRIDE].
+            dt: Time step.
+        """
+        var state = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH * ENV_STRIDE),
+            MutAnyOrigin,
+        ](state_buf.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH + TPB - 1) // TPB
+
+        @always_inline
+        fn kernel_wrapper(
+            state: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH * ENV_STRIDE),
+                MutAnyOrigin,
+            ],
+            dt: Scalar[dtype],
+        ):
+            SemiImplicitEuler.integrate_positions_kernel_strided[
+                BATCH, NUM_BODIES, ENV_STRIDE, BODIES_OFFSET
+            ](state, dt)
+
+        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+            state,
+            dt,
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )

@@ -817,3 +817,376 @@ struct ImpulseSolver(ConstraintSolver):
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )
+
+    # =========================================================================
+    # Strided GPU Kernels for Flat State Layout
+    # =========================================================================
+    #
+    # These methods work with flat [BATCH, STATE_SIZE] layout for bodies.
+    # Contacts are kept in standard layout as workspace (not persisted).
+    # Memory layout: state[env * ENV_STRIDE + BODIES_OFFSET + body * BODY_STATE_SIZE + field]
+    # =========================================================================
+
+    @always_inline
+    @staticmethod
+    fn solve_velocity_kernel_strided[
+        BATCH: Int,
+        NUM_BODIES: Int,
+        MAX_CONTACTS: Int,
+        ENV_STRIDE: Int,
+        BODIES_OFFSET: Int,
+    ](
+        state: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH * ENV_STRIDE),
+            MutAnyOrigin,
+        ],
+        contacts: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE),
+            MutAnyOrigin,
+        ],
+        contact_counts: LayoutTensor[
+            dtype, Layout.row_major(BATCH), MutAnyOrigin
+        ],
+        friction: Scalar[dtype],
+        restitution: Scalar[dtype],
+    ):
+        """GPU kernel for velocity constraint solving with strided body layout."""
+        var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+        if env >= BATCH:
+            return
+
+        var env_base = env * ENV_STRIDE + BODIES_OFFSET
+        var count = Int(contact_counts[env])
+
+        for c in range(count):
+            var body_a_idx = Int(contacts[env, c, CONTACT_BODY_A])
+            var body_b_idx = Int(contacts[env, c, CONTACT_BODY_B])
+
+            var body_a_base = env_base + body_a_idx * BODY_STATE_SIZE
+
+            var point_x = contacts[env, c, CONTACT_POINT_X]
+            var point_y = contacts[env, c, CONTACT_POINT_Y]
+            var normal_x = contacts[env, c, CONTACT_NORMAL_X]
+            var normal_y = contacts[env, c, CONTACT_NORMAL_Y]
+
+            var pos_a_x = state[body_a_base + IDX_X]
+            var pos_a_y = state[body_a_base + IDX_Y]
+            var vel_a_x = state[body_a_base + IDX_VX]
+            var vel_a_y = state[body_a_base + IDX_VY]
+            var omega_a = state[body_a_base + IDX_OMEGA]
+            var inv_mass_a = state[body_a_base + IDX_INV_MASS]
+            var inv_inertia_a = state[body_a_base + IDX_INV_INERTIA]
+
+            var inv_mass_b = Scalar[dtype](0)
+            var inv_inertia_b = Scalar[dtype](0)
+            var vel_b_x = Scalar[dtype](0)
+            var vel_b_y = Scalar[dtype](0)
+            var omega_b = Scalar[dtype](0)
+            var pos_b_x = point_x
+            var pos_b_y = point_y
+            var body_b_base = 0
+
+            if body_b_idx >= 0:
+                body_b_base = env_base + body_b_idx * BODY_STATE_SIZE
+                pos_b_x = rebind[Scalar[dtype]](state[body_b_base + IDX_X])
+                pos_b_y = rebind[Scalar[dtype]](state[body_b_base + IDX_Y])
+                vel_b_x = rebind[Scalar[dtype]](state[body_b_base + IDX_VX])
+                vel_b_y = rebind[Scalar[dtype]](state[body_b_base + IDX_VY])
+                omega_b = rebind[Scalar[dtype]](state[body_b_base + IDX_OMEGA])
+                inv_mass_b = rebind[Scalar[dtype]](state[body_b_base + IDX_INV_MASS])
+                inv_inertia_b = rebind[Scalar[dtype]](state[body_b_base + IDX_INV_INERTIA])
+
+            var ra_x = point_x - pos_a_x
+            var ra_y = point_y - pos_a_y
+            var rb_x = point_x - pos_b_x
+            var rb_y = point_y - pos_b_y
+
+            var vel_at_a_x = vel_a_x - omega_a * ra_y
+            var vel_at_a_y = vel_a_y + omega_a * ra_x
+            var vel_at_b_x = vel_b_x - omega_b * rb_y
+            var vel_at_b_y = vel_b_y + omega_b * rb_x
+
+            var rel_vel_x = vel_at_a_x - vel_at_b_x
+            var rel_vel_y = vel_at_a_y - vel_at_b_y
+            var vel_normal = rel_vel_x * normal_x + rel_vel_y * normal_y
+
+            if vel_normal < Scalar[dtype](0):
+                var ra_cross_n = ra_x * normal_y - ra_y * normal_x
+                var rb_cross_n = rb_x * normal_y - rb_y * normal_x
+
+                var k = inv_mass_a + inv_mass_b
+                k = k + inv_inertia_a * ra_cross_n * ra_cross_n
+                k = k + inv_inertia_b * rb_cross_n * rb_cross_n
+
+                var j_normal = -(Scalar[dtype](1) + restitution) * vel_normal / k
+
+                var old_impulse = contacts[env, c, CONTACT_NORMAL_IMPULSE]
+                var new_impulse = old_impulse + j_normal
+                if new_impulse < Scalar[dtype](0):
+                    new_impulse = Scalar[dtype](0)
+                contacts[env, c, CONTACT_NORMAL_IMPULSE] = new_impulse
+                j_normal = new_impulse - old_impulse
+
+                var impulse_x = j_normal * normal_x
+                var impulse_y = j_normal * normal_y
+
+                state[body_a_base + IDX_VX] = vel_a_x + impulse_x * inv_mass_a
+                state[body_a_base + IDX_VY] = vel_a_y + impulse_y * inv_mass_a
+                state[body_a_base + IDX_OMEGA] = omega_a + (ra_x * impulse_y - ra_y * impulse_x) * inv_inertia_a
+
+                if body_b_idx >= 0:
+                    state[body_b_base + IDX_VX] = vel_b_x - impulse_x * inv_mass_b
+                    state[body_b_base + IDX_VY] = vel_b_y - impulse_y * inv_mass_b
+                    state[body_b_base + IDX_OMEGA] = omega_b - (rb_x * impulse_y - rb_y * impulse_x) * inv_inertia_b
+
+                # Update velocities for friction calculation
+                vel_a_x = rebind[Scalar[dtype]](state[body_a_base + IDX_VX])
+                vel_a_y = rebind[Scalar[dtype]](state[body_a_base + IDX_VY])
+                omega_a = rebind[Scalar[dtype]](state[body_a_base + IDX_OMEGA])
+                if body_b_idx >= 0:
+                    vel_b_x = rebind[Scalar[dtype]](state[body_b_base + IDX_VX])
+                    vel_b_y = rebind[Scalar[dtype]](state[body_b_base + IDX_VY])
+                    omega_b = rebind[Scalar[dtype]](state[body_b_base + IDX_OMEGA])
+
+                # Recompute relative velocity for friction
+                vel_at_a_x = vel_a_x - omega_a * ra_y
+                vel_at_a_y = vel_a_y + omega_a * ra_x
+                vel_at_b_x = vel_b_x - omega_b * rb_y
+                vel_at_b_y = vel_b_y + omega_b * rb_x
+                rel_vel_x = vel_at_a_x - vel_at_b_x
+                rel_vel_y = vel_at_a_y - vel_at_b_y
+
+                # Friction impulse
+                var tangent_x = -normal_y
+                var tangent_y = normal_x
+                var vel_tangent = rel_vel_x * tangent_x + rel_vel_y * tangent_y
+
+                var ra_cross_t = ra_x * tangent_y - ra_y * tangent_x
+                var rb_cross_t = rb_x * tangent_y - rb_y * tangent_x
+                var k_t = inv_mass_a + inv_mass_b
+                k_t = k_t + inv_inertia_a * ra_cross_t * ra_cross_t
+                k_t = k_t + inv_inertia_b * rb_cross_t * rb_cross_t
+
+                var j_tangent = -vel_tangent / k_t
+
+                var max_friction = friction * contacts[env, c, CONTACT_NORMAL_IMPULSE]
+                var old_tangent = contacts[env, c, CONTACT_TANGENT_IMPULSE]
+                var new_tangent = old_tangent + j_tangent
+                if new_tangent > max_friction:
+                    new_tangent = max_friction
+                elif new_tangent < -max_friction:
+                    new_tangent = -max_friction
+                contacts[env, c, CONTACT_TANGENT_IMPULSE] = new_tangent
+                j_tangent = new_tangent - old_tangent
+
+                var friction_x = j_tangent * tangent_x
+                var friction_y = j_tangent * tangent_y
+
+                state[body_a_base + IDX_VX] = state[body_a_base + IDX_VX] + friction_x * inv_mass_a
+                state[body_a_base + IDX_VY] = state[body_a_base + IDX_VY] + friction_y * inv_mass_a
+                state[body_a_base + IDX_OMEGA] = state[body_a_base + IDX_OMEGA] + (ra_x * friction_y - ra_y * friction_x) * inv_inertia_a
+
+                if body_b_idx >= 0:
+                    state[body_b_base + IDX_VX] = state[body_b_base + IDX_VX] - friction_x * inv_mass_b
+                    state[body_b_base + IDX_VY] = state[body_b_base + IDX_VY] - friction_y * inv_mass_b
+                    state[body_b_base + IDX_OMEGA] = state[body_b_base + IDX_OMEGA] - (rb_x * friction_y - rb_y * friction_x) * inv_inertia_b
+
+    @always_inline
+    @staticmethod
+    fn solve_position_kernel_strided[
+        BATCH: Int,
+        NUM_BODIES: Int,
+        MAX_CONTACTS: Int,
+        ENV_STRIDE: Int,
+        BODIES_OFFSET: Int,
+    ](
+        state: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH * ENV_STRIDE),
+            MutAnyOrigin,
+        ],
+        contacts: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE),
+            MutAnyOrigin,
+        ],
+        contact_counts: LayoutTensor[
+            dtype, Layout.row_major(BATCH), MutAnyOrigin
+        ],
+        baumgarte: Scalar[dtype],
+        slop: Scalar[dtype],
+    ):
+        """GPU kernel for position constraint solving with strided body layout."""
+        var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+        if env >= BATCH:
+            return
+
+        var env_base = env * ENV_STRIDE + BODIES_OFFSET
+        var count = Int(contact_counts[env])
+
+        for c in range(count):
+            var body_a_idx = Int(contacts[env, c, CONTACT_BODY_A])
+            var body_b_idx = Int(contacts[env, c, CONTACT_BODY_B])
+
+            var body_a_base = env_base + body_a_idx * BODY_STATE_SIZE
+
+            var normal_x = contacts[env, c, CONTACT_NORMAL_X]
+            var normal_y = contacts[env, c, CONTACT_NORMAL_Y]
+            var penetration = contacts[env, c, CONTACT_DEPTH]
+
+            var correction = penetration - slop
+            if correction <= Scalar[dtype](0):
+                continue
+
+            correction = baumgarte * correction
+
+            var inv_mass_a = rebind[Scalar[dtype]](state[body_a_base + IDX_INV_MASS])
+            var inv_mass_b = Scalar[dtype](0)
+            var body_b_base = 0
+            if body_b_idx >= 0:
+                body_b_base = env_base + body_b_idx * BODY_STATE_SIZE
+                inv_mass_b = rebind[Scalar[dtype]](state[body_b_base + IDX_INV_MASS])
+
+            var total_inv_mass = inv_mass_a + inv_mass_b
+            if total_inv_mass == Scalar[dtype](0):
+                continue
+
+            var correction_a = correction * inv_mass_a / total_inv_mass
+            var correction_b = correction * inv_mass_b / total_inv_mass
+
+            state[body_a_base + IDX_X] = state[body_a_base + IDX_X] + normal_x * correction_a
+            state[body_a_base + IDX_Y] = state[body_a_base + IDX_Y] + normal_y * correction_a
+
+            if body_b_idx >= 0:
+                state[body_b_base + IDX_X] = state[body_b_base + IDX_X] - normal_x * correction_b
+                state[body_b_base + IDX_Y] = state[body_b_base + IDX_Y] - normal_y * correction_b
+
+    @staticmethod
+    fn solve_velocity_gpu_strided[
+        BATCH: Int,
+        NUM_BODIES: Int,
+        MAX_CONTACTS: Int,
+        ENV_STRIDE: Int,
+        BODIES_OFFSET: Int,
+    ](
+        ctx: DeviceContext,
+        mut state_buf: DeviceBuffer[dtype],
+        mut contacts_buf: DeviceBuffer[dtype],
+        contact_counts_buf: DeviceBuffer[dtype],
+        friction: Scalar[dtype],
+        restitution: Scalar[dtype],
+    ) raises:
+        """Launch strided velocity constraint solver kernel."""
+        var state = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH * ENV_STRIDE),
+            MutAnyOrigin,
+        ](state_buf.unsafe_ptr())
+        var contacts = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE),
+            MutAnyOrigin,
+        ](contacts_buf.unsafe_ptr())
+        var contact_counts = LayoutTensor[
+            dtype, Layout.row_major(BATCH), MutAnyOrigin
+        ](contact_counts_buf.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH + TPB - 1) // TPB
+
+        @always_inline
+        fn kernel_wrapper(
+            state: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH * ENV_STRIDE),
+                MutAnyOrigin,
+            ],
+            contacts: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE),
+                MutAnyOrigin,
+            ],
+            contact_counts: LayoutTensor[
+                dtype, Layout.row_major(BATCH), MutAnyOrigin
+            ],
+            friction: Scalar[dtype],
+            restitution: Scalar[dtype],
+        ):
+            ImpulseSolver.solve_velocity_kernel_strided[
+                BATCH, NUM_BODIES, MAX_CONTACTS, ENV_STRIDE, BODIES_OFFSET
+            ](state, contacts, contact_counts, friction, restitution)
+
+        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+            state,
+            contacts,
+            contact_counts,
+            friction,
+            restitution,
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+    @staticmethod
+    fn solve_position_gpu_strided[
+        BATCH: Int,
+        NUM_BODIES: Int,
+        MAX_CONTACTS: Int,
+        ENV_STRIDE: Int,
+        BODIES_OFFSET: Int,
+    ](
+        ctx: DeviceContext,
+        mut state_buf: DeviceBuffer[dtype],
+        contacts_buf: DeviceBuffer[dtype],
+        contact_counts_buf: DeviceBuffer[dtype],
+        baumgarte: Scalar[dtype],
+        slop: Scalar[dtype],
+    ) raises:
+        """Launch strided position constraint solver kernel."""
+        var state = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH * ENV_STRIDE),
+            MutAnyOrigin,
+        ](state_buf.unsafe_ptr())
+        var contacts = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE),
+            MutAnyOrigin,
+        ](contacts_buf.unsafe_ptr())
+        var contact_counts = LayoutTensor[
+            dtype, Layout.row_major(BATCH), MutAnyOrigin
+        ](contact_counts_buf.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH + TPB - 1) // TPB
+
+        @always_inline
+        fn kernel_wrapper(
+            state: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH * ENV_STRIDE),
+                MutAnyOrigin,
+            ],
+            contacts: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE),
+                MutAnyOrigin,
+            ],
+            contact_counts: LayoutTensor[
+                dtype, Layout.row_major(BATCH), MutAnyOrigin
+            ],
+            baumgarte: Scalar[dtype],
+            slop: Scalar[dtype],
+        ):
+            ImpulseSolver.solve_position_kernel_strided[
+                BATCH, NUM_BODIES, MAX_CONTACTS, ENV_STRIDE, BODIES_OFFSET
+            ](state, contacts, contact_counts, baumgarte, slop)
+
+        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+            state,
+            contacts,
+            contact_counts,
+            baumgarte,
+            slop,
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )
