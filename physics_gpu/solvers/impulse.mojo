@@ -97,12 +97,12 @@ struct ImpulseSolver(ConstraintSolver):
         MAX_CONTACTS: Int,
     ](
         self,
-        mut bodies: LayoutTensor[
+        bodies: LayoutTensor[
             dtype,
             Layout.row_major(BATCH, NUM_BODIES, BODY_STATE_SIZE),
             MutAnyOrigin,
         ],
-        mut contacts: LayoutTensor[
+        contacts: LayoutTensor[
             dtype,
             Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE),
             MutAnyOrigin,
@@ -537,11 +537,19 @@ struct ImpulseSolver(ConstraintSolver):
                 # Update velocities for friction calculation
                 vel_a_x = rebind[Scalar[dtype]](bodies[env, body_a_idx, IDX_VX])
                 vel_a_y = rebind[Scalar[dtype]](bodies[env, body_a_idx, IDX_VY])
-                omega_a = rebind[Scalar[dtype]](bodies[env, body_a_idx, IDX_OMEGA])
+                omega_a = rebind[Scalar[dtype]](
+                    bodies[env, body_a_idx, IDX_OMEGA]
+                )
                 if body_b_idx >= 0:
-                    vel_b_x = rebind[Scalar[dtype]](bodies[env, body_b_idx, IDX_VX])
-                    vel_b_y = rebind[Scalar[dtype]](bodies[env, body_b_idx, IDX_VY])
-                    omega_b = rebind[Scalar[dtype]](bodies[env, body_b_idx, IDX_OMEGA])
+                    vel_b_x = rebind[Scalar[dtype]](
+                        bodies[env, body_b_idx, IDX_VX]
+                    )
+                    vel_b_y = rebind[Scalar[dtype]](
+                        bodies[env, body_b_idx, IDX_VY]
+                    )
+                    omega_b = rebind[Scalar[dtype]](
+                        bodies[env, body_b_idx, IDX_OMEGA]
+                    )
 
                 # Recompute relative velocity for friction
                 vel_at_a_x = vel_a_x - omega_a * ra_y
@@ -565,7 +573,9 @@ struct ImpulseSolver(ConstraintSolver):
                 var j_tangent = -vel_tangent / k_t
 
                 # Clamp by friction cone
-                var max_friction = friction * contacts[env, c, CONTACT_NORMAL_IMPULSE]
+                var max_friction = (
+                    friction * contacts[env, c, CONTACT_NORMAL_IMPULSE]
+                )
                 var old_tangent = contacts[env, c, CONTACT_TANGENT_IMPULSE]
                 var new_tangent = old_tangent + j_tangent
                 if new_tangent > max_friction:
@@ -592,14 +602,17 @@ struct ImpulseSolver(ConstraintSolver):
 
                 if body_b_idx >= 0:
                     bodies[env, body_b_idx, IDX_VX] = (
-                        bodies[env, body_b_idx, IDX_VX] - friction_x * inv_mass_b
+                        bodies[env, body_b_idx, IDX_VX]
+                        - friction_x * inv_mass_b
                     )
                     bodies[env, body_b_idx, IDX_VY] = (
-                        bodies[env, body_b_idx, IDX_VY] - friction_y * inv_mass_b
+                        bodies[env, body_b_idx, IDX_VY]
+                        - friction_y * inv_mass_b
                     )
                     bodies[env, body_b_idx, IDX_OMEGA] = (
                         bodies[env, body_b_idx, IDX_OMEGA]
-                        - (rb_x * friction_y - rb_y * friction_x) * inv_inertia_b
+                        - (rb_x * friction_y - rb_y * friction_x)
+                        * inv_inertia_b
                     )
 
     @always_inline

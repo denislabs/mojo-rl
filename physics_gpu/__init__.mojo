@@ -93,5 +93,10 @@ from .integrators import SemiImplicitEuler
 from .collision import FlatTerrainCollision
 from .solvers import ImpulseSolver
 
-# Main orchestrator
+# Main orchestrator (original API)
 from .world import PhysicsWorld
+
+# New GPU-compatible architecture (mirrors deep_rl patterns)
+from .layout import PhysicsLayout, LunarLanderLayout, CartPoleLayout
+from .kernel import PhysicsKernel, PhysicsConfig
+from .state import PhysicsState
