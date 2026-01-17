@@ -13,12 +13,13 @@ trait Env:
     Returns from step: (next_state, reward, done)
     """
 
+    comptime dtype: DType
     comptime StateType: State
     comptime ActionType: Action
 
     fn step(
         mut self, action: Self.ActionType
-    ) -> Tuple[Self.StateType, Float64, Bool]:
+    ) -> Tuple[Self.StateType, Scalar[Self.dtype], Bool]:
         """Take an action and return (next_state, reward, done)."""
         ...
 

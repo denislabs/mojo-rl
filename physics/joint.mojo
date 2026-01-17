@@ -13,9 +13,10 @@ Used by LunarLander to attach legs to lander body.
 from math import cos, sin
 from physics.vec2 import Vec2, vec2, cross, cross_sv, cross_vs
 from physics.body import Body, Transform, BODY_DYNAMIC
+from physics.utils import clamp
 
 
-struct RevoluteJoint(Copyable, Movable):
+struct RevoluteJoint[dtype: DType](Copyable, Movable):
     """Revolute (hinge) joint with motor and limits."""
 
     # Connected bodies (indices into World.bodies)
@@ -23,40 +24,40 @@ struct RevoluteJoint(Copyable, Movable):
     var body_b_idx: Int
 
     # Anchor points in local coordinates
-    var local_anchor_a: Vec2
-    var local_anchor_b: Vec2
+    var local_anchor_a: Vec2[Self.dtype]
+    var local_anchor_b: Vec2[Self.dtype]
 
     # Reference angle (initial angle difference: body_b.angle - body_a.angle)
-    var reference_angle: Float64
+    var reference_angle: Scalar[Self.dtype]
 
     # Motor
     var enable_motor: Bool
-    var motor_speed: Float64  # Target angular velocity (rad/s)
-    var max_motor_torque: Float64
+    var motor_speed: Scalar[Self.dtype]  # Target angular velocity (rad/s)
+    var max_motor_torque: Scalar[Self.dtype]
 
     # Limits
     var enable_limit: Bool
-    var lower_angle: Float64
-    var upper_angle: Float64
+    var lower_angle: Scalar[Self.dtype]
+    var upper_angle: Scalar[Self.dtype]
 
     # Solver state
-    var impulse: Vec2  # Accumulated point constraint impulse
-    var motor_impulse: Float64  # Accumulated motor impulse
-    var lower_impulse: Float64  # Accumulated lower limit impulse
-    var upper_impulse: Float64  # Accumulated upper limit impulse
+    var impulse: Vec2[Self.dtype]  # Accumulated point constraint impulse
+    var motor_impulse: Scalar[Self.dtype]  # Accumulated motor impulse
+    var lower_impulse: Scalar[Self.dtype]  # Accumulated lower limit impulse
+    var upper_impulse: Scalar[Self.dtype]  # Accumulated upper limit impulse
 
     # Cached solver data
-    var r_a: Vec2  # World anchor relative to body A center
-    var r_b: Vec2  # World anchor relative to body B center
-    var mass: Float64  # Effective mass for point constraint
-    var motor_mass: Float64  # Effective mass for motor constraint
+    var r_a: Vec2[Self.dtype]  # World anchor relative to body A center
+    var r_b: Vec2[Self.dtype]  # World anchor relative to body B center
+    var mass: Scalar[Self.dtype]  # Effective mass for point constraint
+    var motor_mass: Scalar[Self.dtype]  # Effective mass for motor constraint
 
     fn __init__(out self):
         """Create default joint."""
         self.body_a_idx = -1
         self.body_b_idx = -1
-        self.local_anchor_a = Vec2.zero()
-        self.local_anchor_b = Vec2.zero()
+        self.local_anchor_a = Vec2[Self.dtype].zero()
+        self.local_anchor_b = Vec2[Self.dtype].zero()
         self.reference_angle = 0.0
         self.enable_motor = False
         self.motor_speed = 0.0
@@ -64,12 +65,12 @@ struct RevoluteJoint(Copyable, Movable):
         self.enable_limit = False
         self.lower_angle = 0.0
         self.upper_angle = 0.0
-        self.impulse = Vec2.zero()
+        self.impulse = Vec2[Self.dtype].zero()
         self.motor_impulse = 0.0
         self.lower_impulse = 0.0
         self.upper_impulse = 0.0
-        self.r_a = Vec2.zero()
-        self.r_b = Vec2.zero()
+        self.r_a = Vec2[Self.dtype].zero()
+        self.r_b = Vec2[Self.dtype].zero()
         self.mass = 0.0
         self.motor_mass = 0.0
 
@@ -77,15 +78,15 @@ struct RevoluteJoint(Copyable, Movable):
         out self,
         body_a_idx: Int,
         body_b_idx: Int,
-        local_anchor_a: Vec2,
-        local_anchor_b: Vec2,
-        reference_angle: Float64 = 0.0,
+        local_anchor_a: Vec2[Self.dtype],
+        local_anchor_b: Vec2[Self.dtype],
+        reference_angle: Scalar[Self.dtype] = 0.0,
         enable_motor: Bool = False,
-        motor_speed: Float64 = 0.0,
-        max_motor_torque: Float64 = 0.0,
+        motor_speed: Scalar[Self.dtype] = 0.0,
+        max_motor_torque: Scalar[Self.dtype] = 0.0,
         enable_limit: Bool = False,
-        lower_angle: Float64 = 0.0,
-        upper_angle: Float64 = 0.0,
+        lower_angle: Scalar[Self.dtype] = 0.0,
+        upper_angle: Scalar[Self.dtype] = 0.0,
     ):
         """Create revolute joint with configuration."""
         self.body_a_idx = body_a_idx
@@ -99,28 +100,32 @@ struct RevoluteJoint(Copyable, Movable):
         self.enable_limit = enable_limit
         self.lower_angle = lower_angle
         self.upper_angle = upper_angle
-        self.impulse = Vec2.zero()
+        self.impulse = Vec2[Self.dtype].zero()
         self.motor_impulse = 0.0
         self.lower_impulse = 0.0
         self.upper_impulse = 0.0
-        self.r_a = Vec2.zero()
-        self.r_b = Vec2.zero()
+        self.r_a = Vec2[Self.dtype].zero()
+        self.r_b = Vec2[Self.dtype].zero()
         self.mass = 0.0
         self.motor_mass = 0.0
 
-    fn get_joint_angle(self, body_a: Body, body_b: Body) -> Float64:
+    fn get_joint_angle(
+        self, body_a: Body[Self.dtype], body_b: Body[Self.dtype]
+    ) -> Scalar[Self.dtype]:
         """Get current joint angle relative to reference."""
         return body_b.angle - body_a.angle - self.reference_angle
 
-    fn get_joint_speed(self, body_a: Body, body_b: Body) -> Float64:
+    fn get_joint_speed(
+        self, body_a: Body[Self.dtype], body_b: Body[Self.dtype]
+    ) -> Scalar[Self.dtype]:
         """Get current joint angular velocity."""
         return body_b.angular_velocity - body_a.angular_velocity
 
     fn init_velocity_constraints(
         mut self,
-        body_a: Body,
-        body_b: Body,
-        dt: Float64,
+        body_a: Body[Self.dtype],
+        body_b: Body[Self.dtype],
+        dt: Scalar[Self.dtype],
     ):
         """Initialize solver data for velocity constraints."""
         # Compute world anchor positions relative to body centers
@@ -135,24 +140,22 @@ struct RevoluteJoint(Copyable, Movable):
         var inv_inertia_b = body_b.mass_data.inv_inertia
 
         # For 2D revolute joint, use scalar effective mass
-        var k: Float64 = inv_mass_a + inv_mass_b
-        k += inv_inertia_a * (
-            self.r_a.x * self.r_a.x + self.r_a.y * self.r_a.y
-        )
-        k += inv_inertia_b * (
-            self.r_b.x * self.r_b.x + self.r_b.y * self.r_b.y
-        )
+        var k: Scalar[Self.dtype] = inv_mass_a + inv_mass_b
+        k += inv_inertia_a * (self.r_a.x * self.r_a.x + self.r_a.y * self.r_a.y)
+        k += inv_inertia_b * (self.r_b.x * self.r_b.x + self.r_b.y * self.r_b.y)
         self.mass = 1.0 / k if k > 0.0 else 0.0
 
         # Motor effective mass
-        self.motor_mass = 1.0 / (inv_inertia_a + inv_inertia_b) if (
-            inv_inertia_a + inv_inertia_b
-        ) > 0.0 else 0.0
+        self.motor_mass = (
+            1.0
+            / (inv_inertia_a + inv_inertia_b) if (inv_inertia_a + inv_inertia_b)
+            > 0.0 else 0.0
+        )
 
     fn solve_velocity_constraints(
         mut self,
-        mut body_a: Body,
-        mut body_b: Body,
+        mut body_a: Body[Self.dtype],
+        mut body_b: Body[Self.dtype],
     ):
         """Solve velocity constraints (called iteratively)."""
         var inv_mass_a = body_a.mass_data.inv_mass
@@ -169,7 +172,9 @@ struct RevoluteJoint(Copyable, Movable):
             )
             var impulse = -self.motor_mass * cdot
             var old_impulse = self.motor_impulse
-            var max_impulse = self.max_motor_torque * (1.0 / 60.0)  # dt normalized
+            var max_impulse = self.max_motor_torque * (
+                1.0 / 60.0
+            )  # dt normalized
             self.motor_impulse = clamp(
                 old_impulse + impulse, -max_impulse, max_impulse
             )
@@ -188,7 +193,7 @@ struct RevoluteJoint(Copyable, Movable):
                 var cdot = angular_vel
                 var impulse = -self.motor_mass * cdot
                 var old_impulse = self.lower_impulse
-                self.lower_impulse = max_f64(old_impulse + impulse, 0.0)
+                self.lower_impulse = max(old_impulse + impulse, 0.0)
                 impulse = self.lower_impulse - old_impulse
 
                 body_a.angular_velocity -= inv_inertia_a * impulse
@@ -199,7 +204,7 @@ struct RevoluteJoint(Copyable, Movable):
                 var cdot = angular_vel
                 var impulse = self.motor_mass * cdot
                 var old_impulse = self.upper_impulse
-                self.upper_impulse = max_f64(old_impulse + impulse, 0.0)
+                self.upper_impulse = max(old_impulse + impulse, 0.0)
                 impulse = self.upper_impulse - old_impulse
 
                 body_a.angular_velocity += inv_inertia_a * impulse
@@ -224,27 +229,25 @@ struct RevoluteJoint(Copyable, Movable):
 
     fn solve_position_constraints(
         mut self,
-        mut body_a: Body,
-        mut body_b: Body,
+        mut body_a: Body[Self.dtype],
+        mut body_b: Body[Self.dtype],
     ) -> Bool:
         """Solve position constraints (position correction).
 
         Returns True if constraint is satisfied.
         """
-        comptime SLOP: Float64 = 0.005  # Linear slop
-        comptime MAX_CORRECTION: Float64 = 0.2
+        comptime SLOP: Scalar[Self.dtype] = 0.005  # Linear slop
+        comptime MAX_CORRECTION: Scalar[Self.dtype] = 0.2
 
         # Recompute anchor positions
         var r_a = body_a.get_world_vector(self.local_anchor_a)
         var r_b = body_b.get_world_vector(self.local_anchor_b)
 
         # Position error
-        var c = (
-            body_b.position + r_b - body_a.position - r_a
-        )
+        var c = body_b.position + r_b - body_a.position - r_a
 
         var position_error = c.length()
-        var angular_error: Float64 = 0.0
+        var angular_error: Scalar[Self.dtype] = 0.0
 
         # Compute effective mass
         var inv_mass_a = body_a.mass_data.inv_mass
@@ -252,7 +255,7 @@ struct RevoluteJoint(Copyable, Movable):
         var inv_inertia_a = body_a.mass_data.inv_inertia
         var inv_inertia_b = body_b.mass_data.inv_inertia
 
-        var k: Float64 = inv_mass_a + inv_mass_b
+        var k: Scalar[Self.dtype] = inv_mass_a + inv_mass_b
         k += inv_inertia_a * (r_a.x * r_a.x + r_a.y * r_a.y)
         k += inv_inertia_b * (r_b.x * r_b.x + r_b.y * r_b.y)
         var mass = 1.0 / k if k > 0.0 else 0.0
@@ -275,16 +278,20 @@ struct RevoluteJoint(Copyable, Movable):
         if self.enable_limit:
             var joint_angle = self.get_joint_angle(body_a, body_b)
 
-            var angle_error: Float64 = 0.0
+            var angle_error: Scalar[Self.dtype] = 0.0
             if joint_angle < self.lower_angle:
                 angle_error = joint_angle - self.lower_angle
             elif joint_angle > self.upper_angle:
                 angle_error = joint_angle - self.upper_angle
 
-            if abs_f64(angle_error) > 0.0:
-                var motor_mass = 1.0 / (inv_inertia_a + inv_inertia_b) if (
-                    inv_inertia_a + inv_inertia_b
-                ) > 0.0 else 0.0
+            if abs(angle_error) > 0.0:
+                var motor_mass = (
+                    1.0
+                    / (inv_inertia_a + inv_inertia_b) if (
+                        inv_inertia_a + inv_inertia_b
+                    )
+                    > 0.0 else 0.0
+                )
                 var angle_impulse = clamp(
                     -motor_mass * angle_error, -MAX_CORRECTION, MAX_CORRECTION
                 )
@@ -295,28 +302,6 @@ struct RevoluteJoint(Copyable, Movable):
                 body_a.transform = Transform(body_a.position, body_a.angle)
                 body_b.transform = Transform(body_b.position, body_b.angle)
 
-                angular_error = abs_f64(angle_error)
+                angular_error = abs(angle_error)
 
         return position_error < 3.0 * SLOP and angular_error < 0.01
-
-
-# Helper functions
-
-
-fn clamp(x: Float64, low: Float64, high: Float64) -> Float64:
-    """Clamp value to range."""
-    if x < low:
-        return low
-    if x > high:
-        return high
-    return x
-
-
-fn max_f64(a: Float64, b: Float64) -> Float64:
-    """Maximum of two floats."""
-    return a if a > b else b
-
-
-fn abs_f64(x: Float64) -> Float64:
-    """Absolute value."""
-    return x if x >= 0.0 else -x

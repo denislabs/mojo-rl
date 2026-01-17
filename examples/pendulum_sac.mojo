@@ -36,7 +36,7 @@ fn main() raises:
     print("=" * 60 + "\n")
 
     # Create environment
-    var env = PendulumEnv()
+    var env = PendulumEnv[DType.float64]()
 
     # Create polynomial feature extractor (degree 2)
     # Observation: [cos(θ), sin(θ), θ_dot]

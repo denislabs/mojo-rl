@@ -11,29 +11,29 @@ from physics.shape import PolygonShape, EdgeShape
 from physics.body import Transform
 
 
-struct RaycastResult(Copyable, ImplicitlyCopyable, Movable):
+struct RaycastResult[dtype: DType](Copyable, ImplicitlyCopyable, Movable):
     """Result of a raycast query."""
 
     var hit: Bool  # True if ray hit something
-    var point: Vec2  # World-space hit point
-    var normal: Vec2  # Surface normal at hit point
-    var fraction: Float64  # Distance fraction along ray (0.0-1.0)
+    var point: Vec2[Self.dtype]  # World-space hit point
+    var normal: Vec2[Self.dtype]  # Surface normal at hit point
+    var fraction: Scalar[Self.dtype]  # Distance fraction along ray (0.0-1.0)
     var fixture_idx: Int  # Index of hit fixture (-1 if no hit)
 
     fn __init__(out self):
         """Create empty (no hit) result."""
         self.hit = False
-        self.point = Vec2.zero()
-        self.normal = Vec2.zero()
+        self.point = Vec2[Self.dtype].zero()
+        self.normal = Vec2[Self.dtype].zero()
         self.fraction = 1.0
         self.fixture_idx = -1
 
     fn __init__(
         out self,
         hit: Bool,
-        point: Vec2,
-        normal: Vec2,
-        fraction: Float64,
+        point: Vec2[Self.dtype],
+        normal: Vec2[Self.dtype],
+        fraction: Scalar[Self.dtype],
         fixture_idx: Int = -1,
     ):
         """Create raycast result with given values."""
@@ -63,12 +63,14 @@ struct RaycastResult(Copyable, ImplicitlyCopyable, Movable):
         self.fixture_idx = existing.fixture_idx
 
 
-fn raycast_edge(
-    ray_start: Vec2,
-    ray_end: Vec2,
-    edge: EdgeShape,
-    xf: Transform,
-) -> RaycastResult:
+fn raycast_edge[
+    dtype: DType
+](
+    ray_start: Vec2[dtype],
+    ray_end: Vec2[dtype],
+    edge: EdgeShape[dtype],
+    xf: Transform[dtype],
+) -> RaycastResult[dtype]:
     """Cast ray against an edge shape.
 
     Uses parametric line intersection:
@@ -98,9 +100,9 @@ fn raycast_edge(
     var cross_de = d.x * e.y - d.y * e.x
 
     # Check if parallel (cross product near zero)
-    comptime EPSILON: Float64 = 1e-10
-    if abs_f64(cross_de) < EPSILON:
-        return RaycastResult.no_hit()
+    comptime EPSILON: Scalar[dtype] = 1e-10
+    if abs(cross_de) < EPSILON:
+        return RaycastResult[dtype].no_hit()
 
     # Vector from ray start to edge start
     var f = v1 - ray_start
@@ -131,15 +133,17 @@ fn raycast_edge(
             fraction=t,
         )
 
-    return RaycastResult.no_hit()
+    return RaycastResult[dtype].no_hit()
 
 
-fn raycast_polygon(
-    ray_start: Vec2,
-    ray_end: Vec2,
-    polygon: PolygonShape,
-    xf: Transform,
-) -> RaycastResult:
+fn raycast_polygon[
+    dtype: DType
+](
+    ray_start: Vec2[dtype],
+    ray_end: Vec2[dtype],
+    polygon: PolygonShape[dtype],
+    xf: Transform[dtype],
+) -> RaycastResult[dtype]:
     """Cast ray against a convex polygon shape.
 
     Tests ray against each polygon edge and returns closest hit.
@@ -154,22 +158,22 @@ fn raycast_polygon(
         RaycastResult with hit info (fraction is distance along ray)
     """
     if polygon.count < 3:
-        return RaycastResult.no_hit()
+        return RaycastResult[dtype].no_hit()
 
     # Ray direction
     var d = ray_end - ray_start
     var d_len_sq = d.length_squared()
     if d_len_sq < 1e-20:
-        return RaycastResult.no_hit()
+        return RaycastResult[dtype].no_hit()
 
     # Transform polygon vertices to world space
-    var world_verts = InlineArray[Vec2, 8](Vec2.zero())
+    var world_verts = InlineArray[Vec2[dtype], 8](Vec2[dtype].zero())
     for i in range(polygon.count):
         world_verts[i] = xf.apply(polygon.vertices[i])
 
     # Test ray against each edge, find closest hit
-    var best_fraction: Float64 = 1.0 + 1e-6  # Start slightly > 1.0
-    var best_normal = Vec2.zero()
+    var best_fraction: Scalar[dtype] = 1.0 + 1e-6  # Start slightly > 1.0
+    var best_normal = Vec2[dtype].zero()
     var hit_found = False
 
     for i in range(polygon.count):
@@ -183,8 +187,8 @@ fn raycast_polygon(
         # Cross product d x e
         var cross_de = d.x * e.y - d.y * e.x
 
-        comptime EPSILON: Float64 = 1e-10
-        if abs_f64(cross_de) < EPSILON:
+        comptime EPSILON: Scalar[dtype] = 1e-10
+        if abs(cross_de) < EPSILON:
             continue  # Parallel, skip this edge
 
         # Vector from ray start to edge start
@@ -215,12 +219,4 @@ fn raycast_polygon(
             fraction=best_fraction,
         )
 
-    return RaycastResult.no_hit()
-
-
-# ===== Helper functions =====
-
-
-fn abs_f64(x: Float64) -> Float64:
-    """Absolute value."""
-    return x if x >= 0.0 else -x
+    return RaycastResult[dtype].no_hit()

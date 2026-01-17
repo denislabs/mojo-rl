@@ -49,7 +49,7 @@ def main():
     # Create environment and agent
     # =========================================================================
 
-    var env = CartPoleEnv()
+    var env = CartPoleEnv[DType.float64]()
     var agent = DQNAgent[
         OBS_DIM, NUM_ACTIONS, HIDDEN_DIM, BUFFER_CAPACITY, BATCH_SIZE
     ](

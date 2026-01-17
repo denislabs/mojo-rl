@@ -1275,9 +1275,11 @@ struct DeepPPOAgent[
 
         return Float64(total_loss / Scalar[dtype](self.num_epochs * buffer_len))
 
-    fn _list_to_inline(
-        self, obs_list: List[Float64]
-    ) -> InlineArray[Scalar[dtype], Self.OBS]:
+    fn _list_to_inline[
+        dtype: DType
+    ](self, obs_list: List[Scalar[dtype]]) -> InlineArray[
+        Scalar[dtype], Self.OBS
+    ]:
         """Convert List[Float64] to InlineArray."""
         var obs = InlineArray[Scalar[dtype], Self.OBS](fill=0)
         for i in range(Self.OBS):
@@ -2008,7 +2010,12 @@ struct DeepPPOAgent[
                 # Use a different multiplier to get independent seed from action sampling
                 var env_step_seed = UInt64(total_steps * 1103515245 + t * 12345)
                 EnvType.step_kernel_gpu[Self.n_envs, Self.OBS](
-                    ctx, obs_buf, actions_buf, rewards_buf, dones_buf, env_step_seed
+                    ctx,
+                    obs_buf,
+                    actions_buf,
+                    rewards_buf,
+                    dones_buf,
+                    env_step_seed,
                 )
                 ctx.synchronize()
 
@@ -3065,7 +3072,7 @@ struct DeepPPOAgent[
         # =====================================================================
         # Episode tracking (CPU-side)
         # =====================================================================
-        var episode_rewards = List[Float64]()
+        var episode_rewards = List[Scalar[dtype]]()
         var episode_steps = List[Int]()
         for _ in range(Self.n_envs):
             episode_rewards.append(0.0)
@@ -3238,7 +3245,7 @@ struct DeepPPOAgent[
                     )
 
                     # Update episode tracking
-                    episode_rewards[i] += reward
+                    episode_rewards[i] += Scalar[dtype](reward)
                     episode_steps[i] += 1
 
                     # Handle episode completion

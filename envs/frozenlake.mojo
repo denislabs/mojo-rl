@@ -63,6 +63,7 @@ struct FrozenLakeEnv(DiscreteEnv):
     Actions: 0=left, 1=down, 2=right, 3=up
     """
 
+    comptime dtype = DType.float64
     comptime StateType = FrozenState
     comptime ActionType = FrozenAction
 
@@ -136,7 +137,7 @@ struct FrozenLakeEnv(DiscreteEnv):
 
     fn step(
         mut self, action: FrozenAction
-    ) -> Tuple[FrozenState, Float64, Bool]:
+    ) -> Tuple[FrozenState, Scalar[Self.dtype], Bool]:
         """Take an action and return (next_state, reward, done).
 
         If slippery, there's a 1/3 chance of moving in each of the 3 directions
@@ -160,7 +161,7 @@ struct FrozenLakeEnv(DiscreteEnv):
         var in_hole = self._is_hole(new_position)
         var at_goal = new_position == self.goal
         var done = in_hole or at_goal
-        var reward: Float64 = 1.0 if at_goal else 0.0
+        var reward: Scalar[Self.dtype] = 1.0 if at_goal else 0.0
 
         return (self.state, reward, done)
 

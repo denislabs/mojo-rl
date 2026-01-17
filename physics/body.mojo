@@ -13,20 +13,15 @@ from physics.vec2 import Vec2, vec2, cross_sv, cross_vs
 comptime BODY_STATIC: Int = 0
 comptime BODY_DYNAMIC: Int = 1
 
-# Sleep constants
-comptime SLEEP_TIME_THRESHOLD: Float64 = 0.5  # Seconds of low velocity before sleep
-comptime SLEEP_LINEAR_THRESHOLD: Float64 = 0.01  # Linear velocity threshold
-comptime SLEEP_ANGULAR_THRESHOLD: Float64 = 0.01  # Angular velocity threshold
 
-
-struct MassData(Copyable, Movable):
+struct MassData[dtype: DType](Copyable, Movable):
     """Mass properties of a body."""
 
-    var mass: Float64
-    var inv_mass: Float64
-    var inertia: Float64  # Moment of inertia about center of mass
-    var inv_inertia: Float64
-    var center: Vec2  # Local center of mass
+    var mass: Scalar[Self.dtype]
+    var inv_mass: Scalar[Self.dtype]
+    var inertia: Scalar[Self.dtype]  # Moment of inertia about center of mass
+    var inv_inertia: Scalar[Self.dtype]
+    var center: Vec2[Self.dtype]  # Local center of mass
 
     fn __init__(out self):
         """Create default (zero) mass data."""
@@ -34,13 +29,13 @@ struct MassData(Copyable, Movable):
         self.inv_mass = 0.0
         self.inertia = 0.0
         self.inv_inertia = 0.0
-        self.center = Vec2.zero()
+        self.center = Vec2[Self.dtype].zero()
 
     fn __init__(
         out self,
-        mass: Float64,
-        inertia: Float64,
-        center: Vec2 = Vec2.zero(),
+        mass: Scalar[Self.dtype],
+        inertia: Scalar[Self.dtype],
+        center: Vec2[Self.dtype] = Vec2[Self.dtype].zero(),
     ):
         """Create mass data with given values."""
         self.mass = mass
@@ -49,43 +44,45 @@ struct MassData(Copyable, Movable):
         self.inv_inertia = 1.0 / inertia if inertia > 0.0 else 0.0
         self.center = center
 
-    fn set_mass(mut self, mass: Float64):
+    fn set_mass(mut self, mass: Scalar[Self.dtype]):
         """Set mass and update inverse."""
         self.mass = mass
         self.inv_mass = 1.0 / mass if mass > 0.0 else 0.0
 
-    fn set_inertia(mut self, inertia: Float64):
+    fn set_inertia(mut self, inertia: Scalar[Self.dtype]):
         """Set inertia and update inverse."""
         self.inertia = inertia
         self.inv_inertia = 1.0 / inertia if inertia > 0.0 else 0.0
 
 
-struct Transform(Copyable, Movable):
+struct Transform[dtype: DType](Copyable, Movable):
     """2D rigid body transform (position + rotation)."""
 
-    var position: Vec2
-    var cos_angle: Float64
-    var sin_angle: Float64
+    var position: Vec2[Self.dtype]
+    var cos_angle: Scalar[Self.dtype]
+    var sin_angle: Scalar[Self.dtype]
 
     fn __init__(out self):
         """Create identity transform."""
-        self.position = Vec2.zero()
+        self.position = Vec2[Self.dtype].zero()
         self.cos_angle = 1.0
         self.sin_angle = 0.0
 
-    fn __init__(out self, position: Vec2, angle: Float64):
+    fn __init__(
+        out self, position: Vec2[Self.dtype], angle: Scalar[Self.dtype]
+    ):
         """Create transform from position and angle."""
         self.position = position
         self.cos_angle = cos(angle)
         self.sin_angle = sin(angle)
 
-    fn set_angle(mut self, angle: Float64):
+    fn set_angle(mut self, angle: Scalar[Self.dtype]):
         """Update rotation."""
         self.cos_angle = cos(angle)
         self.sin_angle = sin(angle)
 
     @always_inline
-    fn apply(self, v: Vec2) -> Vec2:
+    fn apply(self, v: Vec2[Self.dtype]) -> Vec2[Self.dtype]:
         """Transform local point to world space."""
         return Vec2(
             self.position.x + v.x * self.cos_angle - v.y * self.sin_angle,
@@ -93,7 +90,7 @@ struct Transform(Copyable, Movable):
         )
 
     @always_inline
-    fn apply_rotation(self, v: Vec2) -> Vec2:
+    fn apply_rotation(self, v: Vec2[Self.dtype]) -> Vec2[Self.dtype]:
         """Transform local vector to world space (rotation only)."""
         return Vec2(
             v.x * self.cos_angle - v.y * self.sin_angle,
@@ -101,7 +98,7 @@ struct Transform(Copyable, Movable):
         )
 
     @always_inline
-    fn apply_inverse(self, v: Vec2) -> Vec2:
+    fn apply_inverse(self, v: Vec2[Self.dtype]) -> Vec2[Self.dtype]:
         """Transform world point to local space."""
         var p = v - self.position
         return Vec2(
@@ -110,7 +107,7 @@ struct Transform(Copyable, Movable):
         )
 
     @always_inline
-    fn apply_inverse_rotation(self, v: Vec2) -> Vec2:
+    fn apply_inverse_rotation(self, v: Vec2[Self.dtype]) -> Vec2[Self.dtype]:
         """Transform world vector to local space (rotation only)."""
         return Vec2(
             v.x * self.cos_angle + v.y * self.sin_angle,
@@ -118,32 +115,43 @@ struct Transform(Copyable, Movable):
         )
 
 
-struct Body(Copyable, Movable):
+struct Body[dtype: DType](Copyable, Movable):
     """Rigid body with dynamics."""
+
+    # Sleep constants
+    comptime SLEEP_TIME_THRESHOLD: Scalar[
+        Self.dtype
+    ] = 0.5  # Seconds of low velocity before sleep
+    comptime SLEEP_LINEAR_THRESHOLD: Scalar[
+        Self.dtype
+    ] = 0.01  # Linear velocity threshold
+    comptime SLEEP_ANGULAR_THRESHOLD: Scalar[
+        Self.dtype
+    ] = 0.01  # Angular velocity threshold
 
     # Identity
     var body_type: Int
     var user_data: Int  # For game-specific data (e.g., entity ID)
 
     # Transform
-    var position: Vec2
-    var angle: Float64
-    var transform: Transform  # Cached transform
+    var position: Vec2[Self.dtype]
+    var angle: Scalar[Self.dtype]
+    var transform: Transform[Self.dtype]  # Cached transform
 
     # Velocities
-    var linear_velocity: Vec2
-    var angular_velocity: Float64
+    var linear_velocity: Vec2[Self.dtype]
+    var angular_velocity: Scalar[Self.dtype]
 
     # Forces accumulated this step
-    var force: Vec2
-    var torque: Float64
+    var force: Vec2[Self.dtype]
+    var torque: Scalar[Self.dtype]
 
     # Mass properties
-    var mass_data: MassData
+    var mass_data: MassData[Self.dtype]
 
     # State
     var awake: Bool
-    var sleep_time: Float64
+    var sleep_time: Scalar[Self.dtype]
 
     # Fixture indices (stored in World)
     var fixture_start: Int
@@ -152,18 +160,23 @@ struct Body(Copyable, Movable):
     # LunarLander-specific: leg ground contact
     var ground_contact: Bool
 
-    fn __init__(out self, body_type: Int, position: Vec2, angle: Float64 = 0.0):
+    fn __init__(
+        out self,
+        body_type: Int,
+        position: Vec2[Self.dtype],
+        angle: Scalar[Self.dtype] = 0.0,
+    ):
         """Create a new body."""
         self.body_type = body_type
         self.user_data = 0
         self.position = position
         self.angle = angle
         self.transform = Transform(position, angle)
-        self.linear_velocity = Vec2.zero()
+        self.linear_velocity = Vec2[Self.dtype].zero()
         self.angular_velocity = 0.0
-        self.force = Vec2.zero()
+        self.force = Vec2[Self.dtype].zero()
         self.torque = 0.0
-        self.mass_data = MassData()
+        self.mass_data = MassData[Self.dtype]()
         self.awake = True
         self.sleep_time = 0.0
         self.fixture_start = 0
@@ -174,14 +187,14 @@ struct Body(Copyable, Movable):
         """Create default body."""
         self.body_type = BODY_STATIC
         self.user_data = 0
-        self.position = Vec2.zero()
+        self.position = Vec2[Self.dtype].zero()
         self.angle = 0.0
-        self.transform = Transform()
-        self.linear_velocity = Vec2.zero()
+        self.transform = Transform[Self.dtype]()
+        self.linear_velocity = Vec2[Self.dtype].zero()
         self.angular_velocity = 0.0
-        self.force = Vec2.zero()
+        self.force = Vec2[Self.dtype].zero()
         self.torque = 0.0
-        self.mass_data = MassData()
+        self.mass_data = MassData[Self.dtype]()
         self.awake = True
         self.sleep_time = 0.0
         self.fixture_start = 0
@@ -191,7 +204,7 @@ struct Body(Copyable, Movable):
     # ===== Force/Impulse Application =====
 
     @always_inline
-    fn apply_force_to_center(mut self, force: Vec2):
+    fn apply_force_to_center(mut self, force: Vec2[Self.dtype]):
         """Apply force at center of mass (no torque)."""
         if self.body_type != BODY_DYNAMIC:
             return
@@ -199,7 +212,7 @@ struct Body(Copyable, Movable):
         self.set_awake(True)
 
     @always_inline
-    fn apply_force(mut self, force: Vec2, point: Vec2):
+    fn apply_force(mut self, force: Vec2[Self.dtype], point: Vec2[Self.dtype]):
         """Apply force at world point, generating torque."""
         if self.body_type != BODY_DYNAMIC:
             return
@@ -210,7 +223,7 @@ struct Body(Copyable, Movable):
         self.set_awake(True)
 
     @always_inline
-    fn apply_torque(mut self, torque: Float64):
+    fn apply_torque(mut self, torque: Scalar[Self.dtype]):
         """Apply torque (angular force)."""
         if self.body_type != BODY_DYNAMIC:
             return
@@ -218,7 +231,9 @@ struct Body(Copyable, Movable):
         self.set_awake(True)
 
     @always_inline
-    fn apply_linear_impulse(mut self, impulse: Vec2, point: Vec2):
+    fn apply_linear_impulse(
+        mut self, impulse: Vec2[Self.dtype], point: Vec2[Self.dtype]
+    ):
         """Apply impulse at world point."""
         if self.body_type != BODY_DYNAMIC:
             return
@@ -229,7 +244,7 @@ struct Body(Copyable, Movable):
         self.set_awake(True)
 
     @always_inline
-    fn apply_linear_impulse_to_center(mut self, impulse: Vec2):
+    fn apply_linear_impulse_to_center(mut self, impulse: Vec2[Self.dtype]):
         """Apply impulse at center of mass (no angular effect)."""
         if self.body_type != BODY_DYNAMIC:
             return
@@ -237,7 +252,7 @@ struct Body(Copyable, Movable):
         self.set_awake(True)
 
     @always_inline
-    fn apply_angular_impulse(mut self, impulse: Float64):
+    fn apply_angular_impulse(mut self, impulse: Scalar[Self.dtype]):
         """Apply angular impulse."""
         if self.body_type != BODY_DYNAMIC:
             return
@@ -247,34 +262,39 @@ struct Body(Copyable, Movable):
     # ===== Transform Helpers =====
 
     @always_inline
-    fn get_world_point(self, local_point: Vec2) -> Vec2:
+    fn get_world_point(self, local_point: Vec2[Self.dtype]) -> Vec2[Self.dtype]:
         """Transform local point to world coordinates."""
         return self.transform.apply(local_point)
 
     @always_inline
-    fn get_world_vector(self, local_vec: Vec2) -> Vec2:
+    fn get_world_vector(self, local_vec: Vec2[Self.dtype]) -> Vec2[Self.dtype]:
         """Transform local vector to world coordinates."""
         return self.transform.apply_rotation(local_vec)
 
     @always_inline
-    fn get_local_point(self, world_point: Vec2) -> Vec2:
+    fn get_local_point(self, world_point: Vec2[Self.dtype]) -> Vec2[Self.dtype]:
         """Transform world point to local coordinates."""
         return self.transform.apply_inverse(world_point)
 
     @always_inline
-    fn get_local_vector(self, world_vec: Vec2) -> Vec2:
+    fn get_local_vector(self, world_vec: Vec2[Self.dtype]) -> Vec2[Self.dtype]:
         """Transform world vector to local coordinates."""
         return self.transform.apply_inverse_rotation(world_vec)
 
     @always_inline
-    fn get_linear_velocity_at_point(self, world_point: Vec2) -> Vec2:
-        """Get linear velocity at a world point (includes angular contribution)."""
+    fn get_linear_velocity_at_point(
+        self, world_point: Vec2[Self.dtype]
+    ) -> Vec2[Self.dtype]:
+        """Get linear velocity at a world point (includes angular contribution).
+        """
         var r = world_point - self.position
         return self.linear_velocity + cross_sv(self.angular_velocity, r)
 
     # ===== Integration =====
 
-    fn integrate_velocities(mut self, gravity: Vec2, dt: Float64):
+    fn integrate_velocities(
+        mut self, gravity: Vec2[Self.dtype], dt: Scalar[Self.dtype]
+    ):
         """Update velocities from forces (semi-implicit Euler step 1)."""
         if self.body_type != BODY_DYNAMIC or not self.awake:
             return
@@ -288,10 +308,10 @@ struct Body(Copyable, Movable):
         self.angular_velocity += self.torque * self.mass_data.inv_inertia * dt
 
         # Clear forces
-        self.force = Vec2.zero()
+        self.force = Vec2[Self.dtype].zero()
         self.torque = 0.0
 
-    fn integrate_positions(mut self, dt: Float64):
+    fn integrate_positions(mut self, dt: Scalar[Self.dtype]):
         """Update positions from velocities (semi-implicit Euler step 2)."""
         if self.body_type != BODY_DYNAMIC or not self.awake:
             return
@@ -314,12 +334,12 @@ struct Body(Copyable, Movable):
             self.sleep_time = 0.0
         else:
             self.awake = False
-            self.linear_velocity = Vec2.zero()
+            self.linear_velocity = Vec2[Self.dtype].zero()
             self.angular_velocity = 0.0
-            self.force = Vec2.zero()
+            self.force = Vec2[Self.dtype].zero()
             self.torque = 0.0
 
-    fn update_sleep_state(mut self, dt: Float64):
+    fn update_sleep_state(mut self, dt: Scalar[Self.dtype]):
         """Update sleep timer and potentially put body to sleep."""
         if self.body_type == BODY_STATIC:
             return
@@ -329,23 +349,27 @@ struct Body(Copyable, Movable):
         var angular_speed = abs(self.angular_velocity)
 
         if (
-            linear_speed_sq > SLEEP_LINEAR_THRESHOLD * SLEEP_LINEAR_THRESHOLD
-            or angular_speed > SLEEP_ANGULAR_THRESHOLD
+            linear_speed_sq
+            > Self.SLEEP_LINEAR_THRESHOLD * Self.SLEEP_LINEAR_THRESHOLD
+            or angular_speed > Self.SLEEP_ANGULAR_THRESHOLD
         ):
             self.sleep_time = 0.0
         else:
             self.sleep_time += dt
-            if self.sleep_time >= SLEEP_TIME_THRESHOLD:
+            if self.sleep_time >= Self.SLEEP_TIME_THRESHOLD:
                 self.set_awake(False)
 
     # ===== Mass =====
 
     fn set_mass_data(
-        mut self, mass: Float64, inertia: Float64, center: Vec2 = Vec2.zero()
+        mut self,
+        mass: Scalar[Self.dtype],
+        inertia: Scalar[Self.dtype],
+        center: Vec2[Self.dtype] = Vec2[Self.dtype].zero(),
     ):
         """Set mass properties directly."""
         if self.body_type != BODY_DYNAMIC:
-            self.mass_data = MassData()
+            self.mass_data = MassData[Self.dtype]()
             return
         self.mass_data = MassData(mass, inertia, center)
 
@@ -356,9 +380,3 @@ struct Body(Copyable, Movable):
     fn is_dynamic(self) -> Bool:
         """Check if body is dynamic."""
         return self.body_type == BODY_DYNAMIC
-
-
-# Helper function
-fn abs(x: Float64) -> Float64:
-    """Absolute value."""
-    return x if x >= 0.0 else -x

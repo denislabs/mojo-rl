@@ -2,29 +2,29 @@
 Vec2: 2D Vector Math for Physics Engine
 
 SIMD-optimized 2D vector implementation for the minimal Box2D physics engine.
-Uses SIMD[DType.float64, 2] for hardware acceleration.
+Uses SIMD[Scalar[dtype], 2] for hardware acceleration.
 """
 
 from math import sqrt, sin, cos
 
 
 @register_passable("trivial")
-struct Vec2(Copyable, Movable, Stringable):
+struct Vec2[dtype: DType](Copyable, Movable, Stringable):
     """2D vector using SIMD for performance."""
 
-    var x: Float64
-    var y: Float64
+    var x: Scalar[Self.dtype]
+    var y: Scalar[Self.dtype]
 
     # ===== Constructors =====
 
     @always_inline
-    fn __init__(out self, x: Float64, y: Float64):
+    fn __init__(out self, x: Scalar[Self.dtype], y: Scalar[Self.dtype]):
         """Create a Vec2 from x and y components."""
         self.x = x
         self.y = y
 
     @always_inline
-    fn __init__(out self, value: Float64):
+    fn __init__(out self, value: Scalar[Self.dtype]):
         """Create a Vec2 with both components set to the same value."""
         self.x = value
         self.y = value
@@ -66,17 +66,17 @@ struct Vec2(Copyable, Movable, Stringable):
         return Self(self.x - other.x, self.y - other.y)
 
     @always_inline
-    fn __mul__(self, scalar: Float64) -> Self:
+    fn __mul__(self, scalar: Scalar[Self.dtype]) -> Self:
         """Scalar multiplication."""
         return Self(self.x * scalar, self.y * scalar)
 
     @always_inline
-    fn __rmul__(self, scalar: Float64) -> Self:
+    fn __rmul__(self, scalar: Scalar[Self.dtype]) -> Self:
         """Scalar multiplication (reversed)."""
         return Self(self.x * scalar, self.y * scalar)
 
     @always_inline
-    fn __truediv__(self, scalar: Float64) -> Self:
+    fn __truediv__(self, scalar: Scalar[Self.dtype]) -> Self:
         """Scalar division."""
         var inv = 1.0 / scalar
         return Self(self.x * inv, self.y * inv)
@@ -99,7 +99,7 @@ struct Vec2(Copyable, Movable, Stringable):
         self.y -= other.y
 
     @always_inline
-    fn __imul__(mut self, scalar: Float64):
+    fn __imul__(mut self, scalar: Scalar[Self.dtype]):
         """In-place scalar multiplication."""
         self.x *= scalar
         self.y *= scalar
@@ -117,27 +117,27 @@ struct Vec2(Copyable, Movable, Stringable):
     # ===== Vector Operations =====
 
     @always_inline
-    fn dot(self, other: Self) -> Float64:
+    fn dot(self, other: Self) -> Scalar[Self.dtype]:
         """Dot product."""
         return self.x * other.x + self.y * other.y
 
     @always_inline
-    fn cross(self, other: Self) -> Float64:
+    fn cross(self, other: Self) -> Scalar[Self.dtype]:
         """2D cross product (returns scalar z-component)."""
         return self.x * other.y - self.y * other.x
 
     @always_inline
-    fn cross_scalar(self, s: Float64) -> Self:
+    fn cross_scalar(self, s: Scalar[Self.dtype]) -> Self:
         """Cross product with scalar: v x s = (s * v.y, -s * v.x)."""
         return Self(s * self.y, -s * self.x)
 
     @always_inline
-    fn length_squared(self) -> Float64:
+    fn length_squared(self) -> Scalar[Self.dtype]:
         """Squared length (avoids sqrt)."""
         return self.x * self.x + self.y * self.y
 
     @always_inline
-    fn length(self) -> Float64:
+    fn length(self) -> Scalar[Self.dtype]:
         """Vector length (magnitude)."""
         return sqrt(self.length_squared())
 
@@ -159,7 +159,8 @@ struct Vec2(Copyable, Movable, Stringable):
 
     @always_inline
     fn perpendicular(self) -> Self:
-        """Return perpendicular vector (rotated 90 degrees counter-clockwise)."""
+        """Return perpendicular vector (rotated 90 degrees counter-clockwise).
+        """
         return Self(-self.y, self.x)
 
     @always_inline
@@ -168,14 +169,16 @@ struct Vec2(Copyable, Movable, Stringable):
         return Self(self.y, -self.x)
 
     @always_inline
-    fn rotate(self, angle: Float64) -> Self:
+    fn rotate(self, angle: Scalar[Self.dtype]) -> Self:
         """Rotate vector by angle (radians)."""
         var c = cos(angle)
         var s = sin(angle)
         return Self(self.x * c - self.y * s, self.x * s + self.y * c)
 
     @always_inline
-    fn rotate_by_cs(self, cos_angle: Float64, sin_angle: Float64) -> Self:
+    fn rotate_by_cs(
+        self, cos_angle: Scalar[Self.dtype], sin_angle: Scalar[Self.dtype]
+    ) -> Self:
         """Rotate vector by pre-computed cos and sin values."""
         return Self(
             self.x * cos_angle - self.y * sin_angle,
@@ -196,17 +199,17 @@ struct Vec2(Copyable, Movable, Stringable):
         return self - normal * (2.0 * self.dot(normal))
 
     @always_inline
-    fn distance_to(self, other: Self) -> Float64:
+    fn distance_to(self, other: Self) -> Scalar[Self.dtype]:
         """Distance to another point."""
         return (self - other).length()
 
     @always_inline
-    fn distance_squared_to(self, other: Self) -> Float64:
+    fn distance_squared_to(self, other: Self) -> Scalar[Self.dtype]:
         """Squared distance to another point."""
         return (self - other).length_squared()
 
     @always_inline
-    fn lerp(self, other: Self, t: Float64) -> Self:
+    fn lerp(self, other: Self, t: Scalar[Self.dtype]) -> Self:
         """Linear interpolation between two vectors."""
         return self + (other - self) * t
 
@@ -218,12 +221,12 @@ struct Vec2(Copyable, Movable, Stringable):
         return Self(ax, ay)
 
     @always_inline
-    fn min_component(self) -> Float64:
+    fn min_component(self) -> Scalar[Self.dtype]:
         """Return minimum component."""
         return self.x if self.x < self.y else self.y
 
     @always_inline
-    fn max_component(self) -> Float64:
+    fn max_component(self) -> Scalar[Self.dtype]:
         """Return maximum component."""
         return self.x if self.x > self.y else self.y
 
@@ -249,55 +252,55 @@ struct Vec2(Copyable, Movable, Stringable):
 
 
 @always_inline
-fn vec2(x: Float64, y: Float64) -> Vec2:
+fn vec2[dtype: DType](x: Scalar[dtype], y: Scalar[dtype]) -> Vec2[dtype]:
     """Convenience constructor function."""
     return Vec2(x, y)
 
 
 @always_inline
-fn dot(a: Vec2, b: Vec2) -> Float64:
+fn dot[dtype: DType](a: Vec2[dtype], b: Vec2[dtype]) -> Scalar[dtype]:
     """Dot product of two vectors."""
     return a.dot(b)
 
 
 @always_inline
-fn cross(a: Vec2, b: Vec2) -> Float64:
+fn cross[dtype: DType](a: Vec2[dtype], b: Vec2[dtype]) -> Scalar[dtype]:
     """2D cross product (returns scalar)."""
     return a.cross(b)
 
 
 @always_inline
-fn cross_sv(s: Float64, v: Vec2) -> Vec2:
+fn cross_sv[dtype: DType](s: Scalar[dtype], v: Vec2[dtype]) -> Vec2[dtype]:
     """Cross product: scalar x vector = (-s * v.y, s * v.x)."""
     return Vec2(-s * v.y, s * v.x)
 
 
 @always_inline
-fn cross_vs(v: Vec2, s: Float64) -> Vec2:
+fn cross_vs[dtype: DType](v: Vec2[dtype], s: Scalar[dtype]) -> Vec2[dtype]:
     """Cross product: vector x scalar = (s * v.y, -s * v.x)."""
     return Vec2(s * v.y, -s * v.x)
 
 
 @always_inline
-fn length(v: Vec2) -> Float64:
+fn length[dtype: DType](v: Vec2[dtype]) -> Scalar[dtype]:
     """Vector length."""
     return v.length()
 
 
 @always_inline
-fn normalize(v: Vec2) -> Vec2:
+fn normalize[dtype: DType](v: Vec2[dtype]) -> Vec2[dtype]:
     """Normalize vector."""
     return v.normalize()
 
 
 @always_inline
-fn distance(a: Vec2, b: Vec2) -> Float64:
+fn distance[dtype: DType](a: Vec2[dtype], b: Vec2[dtype]) -> Scalar[dtype]:
     """Distance between two points."""
     return a.distance_to(b)
 
 
 @always_inline
-fn min_vec(a: Vec2, b: Vec2) -> Vec2:
+fn min_vec[dtype: DType](a: Vec2[dtype], b: Vec2[dtype]) -> Vec2[dtype]:
     """Component-wise minimum."""
     return Vec2(
         a.x if a.x < b.x else b.x,
@@ -306,7 +309,7 @@ fn min_vec(a: Vec2, b: Vec2) -> Vec2:
 
 
 @always_inline
-fn max_vec(a: Vec2, b: Vec2) -> Vec2:
+fn max_vec[dtype: DType](a: Vec2[dtype], b: Vec2[dtype]) -> Vec2[dtype]:
     """Component-wise maximum."""
     return Vec2(
         a.x if a.x > b.x else b.x,
@@ -315,13 +318,17 @@ fn max_vec(a: Vec2, b: Vec2) -> Vec2:
 
 
 @always_inline
-fn clamp_vec(v: Vec2, low: Vec2, high: Vec2) -> Vec2:
+fn clamp_vec[
+    dtype: DType
+](v: Vec2[dtype], low: Vec2[dtype], high: Vec2[dtype]) -> Vec2[dtype]:
     """Clamp vector components to range."""
     return max_vec(low, min_vec(v, high))
 
 
 @always_inline
-fn clamp_length(v: Vec2, max_length: Float64) -> Vec2:
+fn clamp_length[
+    dtype: DType
+](v: Vec2[dtype], max_length: Scalar[dtype]) -> Vec2[dtype]:
     """Clamp vector length to maximum."""
     var len_sq = v.length_squared()
     if len_sq > max_length * max_length:

@@ -449,7 +449,9 @@ struct Trainer[
 
         var content = write_checkpoint_header("trainer", PARAM_SIZE, STATE_SIZE)
         content += write_float_section_list("params:", self.params)
-        content += write_float_section_list("optimizer_state:", self.optimizer_state)
+        content += write_float_section_list(
+            "optimizer_state:", self.optimizer_state
+        )
 
         # Add metadata
         var metadata = List[String]()
@@ -485,7 +487,9 @@ struct Trainer[
             )
 
         # Load parameters
-        var loaded_params = read_float_section_list(content, "params:", PARAM_SIZE)
+        var loaded_params = read_float_section_list(
+            content, "params:", PARAM_SIZE
+        )
         for i in range(PARAM_SIZE):
             self.params[i] = loaded_params[i]
 

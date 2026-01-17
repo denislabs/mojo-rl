@@ -139,7 +139,7 @@ fn main() raises:
         # =====================================================================
 
         print("Evaluating greedy policy (10 episodes)...")
-        var env = CartPoleEnv()
+        var env = CartPoleEnv[DType.float64]()
         var eval_avg = agent.evaluate(
             env, num_episodes=10, max_steps=500, verbose=False
         )

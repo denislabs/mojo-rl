@@ -27,7 +27,9 @@ fn main() raises:
     print("")
 
     # Create tile coding
-    var tc = MountainCarEnv.make_tile_coding(num_tilings=8, tiles_per_dim=8)
+    var tc = MountainCarEnv[DType.float64].make_tile_coding(
+        num_tilings=8, tiles_per_dim=8
+    )
 
     # Create agent
     var agent = TiledQLearningAgent(
@@ -40,7 +42,7 @@ fn main() raises:
         epsilon_min=0.01,
     )
 
-    var env = MountainCarEnv()
+    var env = MountainCarEnv[DType.float64]()
 
     # Training phase
     print("-" * 60)

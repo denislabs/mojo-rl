@@ -609,13 +609,16 @@ struct DQNAgent[
     # High-level training and evaluation methods
     # =========================================================================
 
-    fn _list_to_simd(
-        self, obs_list: List[Float64]
-    ) -> SIMD[DType.float64, Self.obs_dim]:
-        """Convert List[Float64] to SIMD for internal use."""
+    fn _list_to_simd[
+        T: DType
+    ](self, obs_list: List[Scalar[T]]) -> SIMD[DType.float64, Self.obs_dim]:
+        """Convert List[Scalar[T]] to SIMD[float64] for internal use.
+
+        Works with any scalar dtype (float32, float64, etc).
+        """
         var obs = SIMD[DType.float64, Self.obs_dim]()
         for i in range(Self.obs_dim):
-            obs[i] = obs_list[i]
+            obs[i] = Float64(obs_list[i])
         return obs
 
     fn train[
@@ -664,7 +667,7 @@ struct DQNAgent[
 
             var next_obs = self._list_to_simd(result[0])
             self.store_transition(
-                warmup_obs, action, result[1], next_obs, result[2]
+                warmup_obs, action, Float64(result[1]), next_obs, result[2]
             )
 
             warmup_obs = next_obs
@@ -690,7 +693,7 @@ struct DQNAgent[
                 # Step environment
                 var result = env.step_obs(action)
                 var next_obs = self._list_to_simd(result[0])
-                var reward = result[1]
+                var reward = Float64(result[1])
                 var done = result[2]
 
                 # Store transition
@@ -788,7 +791,7 @@ struct DQNAgent[
 
                 # Step environment
                 var result = env.step_obs(action)
-                episode_reward += result[1]
+                episode_reward += Float64(result[1])
                 obs = self._list_to_simd(result[0])
 
                 if result[2]:  # done
@@ -932,7 +935,12 @@ struct DQNAgent[
         var total_reward: Float64 = 0.0
 
         for _ in range(num_episodes):
-            var obs = self._list_to_simd(env.reset_obs_list())
+            # Convert environment obs list to SIMD (handles any dtype)
+            var obs_list = env.reset_obs_list()
+            var obs = SIMD[DType.float64, Self.obs_dim]()
+            for i in range(Self.obs_dim):
+                obs[i] = Float64(obs_list[i])
+
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps):
@@ -961,8 +969,11 @@ struct DQNAgent[
 
                 # Step environment
                 var result = env.step_obs(best_action)
-                episode_reward += result[1]
-                obs = self._list_to_simd(result[0])
+                episode_reward += Float64(result[1])
+
+                # Convert next obs to SIMD (handles any dtype)
+                for i in range(Self.obs_dim):
+                    obs[i] = Float64(result[0][i])
 
                 if result[2]:  # done
                     break

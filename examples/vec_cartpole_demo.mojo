@@ -142,7 +142,7 @@ fn run_scalar_benchmark(num_envs: Int, num_steps: Int) raises -> Tuple[Int, Floa
     Returns:
         Tuple of (total_episodes_completed, elapsed_time_seconds).
     """
-    var env = CartPoleEnv()
+    var env = CartPoleEnv[DType.float64]()
     _ = env.reset()
 
     var total_episodes = 0

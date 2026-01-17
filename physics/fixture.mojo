@@ -38,9 +38,7 @@ struct Filter(Copyable, Movable):
     var category_bits: UInt16
     var mask_bits: UInt16
 
-    fn __init__(
-        out self, category: UInt16 = 0x0001, mask: UInt16 = 0xFFFF
-    ):
+    fn __init__(out self, category: UInt16 = 0x0001, mask: UInt16 = 0xFFFF):
         """Create filter with category and mask."""
         self.category_bits = category
         self.mask_bits = mask
@@ -48,10 +46,9 @@ struct Filter(Copyable, Movable):
     @always_inline
     fn should_collide(self, other: Self) -> Bool:
         """Check if two filters allow collision."""
-        return (
-            (self.category_bits & other.mask_bits) != 0
-            and (other.category_bits & self.mask_bits) != 0
-        )
+        return (self.category_bits & other.mask_bits) != 0 and (
+            other.category_bits & self.mask_bits
+        ) != 0
 
     @staticmethod
     fn ground() -> Self:
@@ -78,18 +75,18 @@ struct Filter(Copyable, Movable):
 
 
 @register_passable("trivial")
-struct AABB(Copyable, Movable):
+struct AABB[dtype: DType](Copyable, Movable):
     """Axis-Aligned Bounding Box for broad phase collision detection."""
 
-    var lower: Vec2
-    var upper: Vec2
+    var lower: Vec2[Self.dtype]
+    var upper: Vec2[Self.dtype]
 
     fn __init__(out self):
         """Create empty AABB."""
-        self.lower = Vec2.zero()
-        self.upper = Vec2.zero()
+        self.lower = Vec2[Self.dtype].zero()
+        self.upper = Vec2[Self.dtype].zero()
 
-    fn __init__(out self, lower: Vec2, upper: Vec2):
+    fn __init__(out self, lower: Vec2[Self.dtype], upper: Vec2[Self.dtype]):
         """Create AABB from corners."""
         self.lower = lower
         self.upper = upper
@@ -105,7 +102,7 @@ struct AABB(Copyable, Movable):
         )
 
     @always_inline
-    fn contains(self, point: Vec2) -> Bool:
+    fn contains(self, point: Vec2[Self.dtype]) -> Bool:
         """Check if point is inside AABB."""
         return (
             point.x >= self.lower.x
@@ -116,59 +113,61 @@ struct AABB(Copyable, Movable):
 
     fn combine(self, other: Self) -> Self:
         """Create AABB that contains both AABBs."""
-        return Self(min_vec(self.lower, other.lower), max_vec(self.upper, other.upper))
+        return Self(
+            min_vec(self.lower, other.lower), max_vec(self.upper, other.upper)
+        )
 
-    fn expand(self, amount: Float64) -> Self:
+    fn expand(self, amount: Scalar[Self.dtype]) -> Self:
         """Expand AABB by amount in all directions."""
-        var delta = Vec2(amount, amount)
+        var delta = Vec2[Self.dtype](amount, amount)
         return Self(self.lower - delta, self.upper + delta)
 
 
 # ===== Fixture =====
 
 
-struct Fixture(Copyable, Movable):
+struct Fixture[dtype: DType](Copyable, Movable):
     """Attaches a shape to a body with material properties."""
 
     var body_idx: Int  # Index in World.bodies
     var shape_type: Int
 
     # Shape data (only one is valid based on shape_type)
-    var polygon: PolygonShape
-    var circle: CircleShape
-    var edge: EdgeShape
+    var polygon: PolygonShape[Self.dtype]
+    var circle: CircleShape[Self.dtype]
+    var edge: EdgeShape[Self.dtype]
 
     # Material properties
-    var density: Float64
-    var friction: Float64
-    var restitution: Float64
+    var density: Scalar[Self.dtype]
+    var friction: Scalar[Self.dtype]
+    var restitution: Scalar[Self.dtype]
 
     # Collision filtering
     var filter: Filter
 
     # AABB (computed and cached)
-    var aabb: AABB
+    var aabb: AABB[Self.dtype]
 
     fn __init__(out self):
         """Create empty fixture."""
         self.body_idx = -1
         self.shape_type = SHAPE_POLYGON
-        self.polygon = PolygonShape()
-        self.circle = CircleShape(0.0)
-        self.edge = EdgeShape()
+        self.polygon = PolygonShape[Self.dtype]()
+        self.circle = CircleShape[Self.dtype](0.0)
+        self.edge = EdgeShape[Self.dtype]()
         self.density = 1.0
         self.friction = 0.2
         self.restitution = 0.0
         self.filter = Filter()
-        self.aabb = AABB()
+        self.aabb = AABB[Self.dtype]()
 
     @staticmethod
     fn from_polygon(
         body_idx: Int,
-        var polygon: PolygonShape,
-        density: Float64 = 1.0,
-        friction: Float64 = 0.2,
-        restitution: Float64 = 0.0,
+        var polygon: PolygonShape[Self.dtype],
+        density: Scalar[Self.dtype] = 1.0,
+        friction: Scalar[Self.dtype] = 0.2,
+        restitution: Scalar[Self.dtype] = 0.0,
         filter: Filter = Filter(),
     ) -> Self:
         """Create fixture with polygon shape."""
@@ -185,10 +184,10 @@ struct Fixture(Copyable, Movable):
     @staticmethod
     fn from_circle(
         body_idx: Int,
-        var circle: CircleShape,
-        density: Float64 = 1.0,
-        friction: Float64 = 0.2,
-        restitution: Float64 = 0.0,
+        var circle: CircleShape[Self.dtype],
+        density: Scalar[Self.dtype] = 1.0,
+        friction: Scalar[Self.dtype] = 0.2,
+        restitution: Scalar[Self.dtype] = 0.0,
         filter: Filter = Filter(),
     ) -> Self:
         """Create fixture with circle shape."""
@@ -205,10 +204,10 @@ struct Fixture(Copyable, Movable):
     @staticmethod
     fn from_edge(
         body_idx: Int,
-        var edge: EdgeShape,
-        density: Float64 = 0.0,
-        friction: Float64 = 0.1,
-        restitution: Float64 = 0.0,
+        var edge: EdgeShape[Self.dtype],
+        density: Scalar[Self.dtype] = 0.0,
+        friction: Scalar[Self.dtype] = 0.1,
+        restitution: Scalar[Self.dtype] = 0.0,
         filter: Filter = Filter(),
     ) -> Self:
         """Create fixture with edge shape."""
@@ -222,7 +221,7 @@ struct Fixture(Copyable, Movable):
         f.filter = filter
         return f^
 
-    fn compute_aabb(mut self, transform: Transform):
+    fn compute_aabb(mut self, transform: Transform[Self.dtype]):
         """Compute AABB for this fixture given body transform."""
         if self.shape_type == SHAPE_POLYGON:
             self._compute_polygon_aabb(transform)
@@ -231,10 +230,10 @@ struct Fixture(Copyable, Movable):
         else:  # SHAPE_EDGE
             self._compute_edge_aabb(transform)
 
-    fn _compute_polygon_aabb(mut self, transform: Transform):
+    fn _compute_polygon_aabb(mut self, transform: Transform[Self.dtype]):
         """Compute AABB for polygon shape."""
         if self.polygon.count == 0:
-            self.aabb = AABB()
+            self.aabb = AABB[Self.dtype]()
             return
 
         var p = transform.apply(self.polygon.vertices[0])
@@ -248,19 +247,21 @@ struct Fixture(Copyable, Movable):
 
         self.aabb = AABB(lower, upper)
 
-    fn _compute_circle_aabb(mut self, transform: Transform):
+    fn _compute_circle_aabb(mut self, transform: Transform[Self.dtype]):
         """Compute AABB for circle shape."""
         var center = transform.apply(self.circle.center)
         var r = Vec2(self.circle.radius, self.circle.radius)
         self.aabb = AABB(center - r, center + r)
 
-    fn _compute_edge_aabb(mut self, transform: Transform):
+    fn _compute_edge_aabb(mut self, transform: Transform[Self.dtype]):
         """Compute AABB for edge shape."""
         var v1 = transform.apply(self.edge.v1)
         var v2 = transform.apply(self.edge.v2)
         self.aabb = AABB(min_vec(v1, v2), max_vec(v1, v2))
 
-    fn compute_mass(self) -> Tuple[Float64, Float64, Vec2]:
+    fn compute_mass(
+        self,
+    ) -> Tuple[Scalar[Self.dtype], Scalar[Self.dtype], Vec2[Self.dtype]]:
         """Compute mass properties based on shape and density.
 
         Returns: (mass, inertia, center)
@@ -270,4 +271,4 @@ struct Fixture(Copyable, Movable):
         elif self.shape_type == SHAPE_CIRCLE:
             return self.circle.compute_mass(self.density)
         else:  # SHAPE_EDGE - edges have no mass
-            return (0.0, 0.0, Vec2.zero())
+            return (0.0, 0.0, Vec2[Self.dtype].zero())

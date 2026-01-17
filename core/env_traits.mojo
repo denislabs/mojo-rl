@@ -70,11 +70,11 @@ trait ContinuousStateEnv(Env):
     Examples: CartPole (4D), MountainCar (2D), Acrobot (6D), MuJoCo environments.
     """
 
-    fn get_obs_list(self) -> List[Float64]:
+    fn get_obs_list(self) -> List[Scalar[Self.dtype]]:
         """Return current continuous observation as a flexible list."""
         ...
 
-    fn reset_obs_list(mut self) -> List[Float64]:
+    fn reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
         """Reset environment and return initial continuous observation."""
         ...
 
@@ -119,7 +119,7 @@ trait ContinuousActionEnv(Env):
         """Return the dimension of the action vector."""
         ...
 
-    fn action_low(self) -> Float64:
+    fn action_low(self) -> Scalar[Self.dtype]:
         """Return the lower bound for action values.
 
         Note: Assumes symmetric bounds. For asymmetric bounds,
@@ -127,7 +127,7 @@ trait ContinuousActionEnv(Env):
         """
         ...
 
-    fn action_high(self) -> Float64:
+    fn action_high(self) -> Scalar[Self.dtype]:
         """Return the upper bound for action values."""
         ...
 
@@ -164,7 +164,9 @@ trait BoxDiscreteActionEnv(ContinuousStateEnv, DiscreteActionEnv):
     Examples: CartPole (4D), MountainCar (2D), Acrobot (6D), LunarLander.
     """
 
-    fn step_obs(mut self, action: Int) -> Tuple[List[Float64], Float64, Bool]:
+    fn step_obs(
+        mut self, action: Int
+    ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
         """Take discrete action and return (continuous_obs, reward, done).
 
         Convenience method for function approximation algorithms that
@@ -184,8 +186,8 @@ trait BoxContinuousActionEnv(ContinuousActionEnv, ContinuousStateEnv):
     """
 
     fn step_continuous(
-        mut self, action: Float64
-    ) -> Tuple[List[Float64], Float64, Bool]:
+        mut self, action: Scalar[Self.dtype]
+    ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
         """Take 1D continuous action and return (continuous_obs, reward, done).
 
         Convenience method for environments with single-dimensional actions.
@@ -194,8 +196,8 @@ trait BoxContinuousActionEnv(ContinuousActionEnv, ContinuousStateEnv):
         ...
 
     fn step_continuous_vec(
-        mut self, action: List[Float64]
-    ) -> Tuple[List[Float64], Float64, Bool]:
+        mut self, action: List[Scalar[Self.dtype]]
+    ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
         """Take multi-dimensional continuous action and return (obs, reward, done).
 
         This is the primary method for continuous control algorithms (SAC, DDPG, TD3)
@@ -206,6 +208,22 @@ trait BoxContinuousActionEnv(ContinuousActionEnv, ContinuousStateEnv):
 
         Returns:
             Tuple of (observation_list, reward, done).
+        """
+        ...
+
+    fn step_continuous_vec_f64(
+        mut self, action: List[Float64]
+    ) -> Tuple[List[Float64], Float64, Bool]:
+        """Take multi-dimensional continuous action (Float64) and return (obs, reward, done).
+
+        Convenience method using Float64 for compatibility with generic agents.
+        Default implementation converts to Self.dtype and calls step_continuous_vec.
+
+        Args:
+            action: List of Float64 action values.
+
+        Returns:
+            Tuple of (observation_list, reward, done) as Float64.
         """
         ...
 
@@ -241,9 +259,7 @@ trait GPUDiscreteEnv:
         rewards: LayoutTensor[
             dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
         ],
-        dones: LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ],
+        dones: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
         rng_seed: Scalar[DType.uint64],
     ):
         """Perform one environment step. Returns (reward, done).

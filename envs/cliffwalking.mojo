@@ -71,6 +71,7 @@ struct CliffWalkingEnv(DiscreteEnv):
     Actions: 0=up, 1=right, 2=down, 3=left
     """
 
+    comptime dtype = DType.float64
     comptime StateType = CliffState
     comptime ActionType = CliffAction
 
@@ -108,7 +109,9 @@ struct CliffWalkingEnv(DiscreteEnv):
         """
         return y == 0 and x > 0 and x < self.width - 1
 
-    fn step(mut self, action: CliffAction) -> Tuple[CliffState, Float64, Bool]:
+    fn step(
+        mut self, action: CliffAction
+    ) -> Tuple[CliffState, Scalar[Self.dtype], Bool]:
         """Take an action and return (next_state, reward, done).
 
         Rewards:
@@ -131,13 +134,13 @@ struct CliffWalkingEnv(DiscreteEnv):
         # Check if fell off cliff
         if self._is_cliff(new_x, new_y):
             self.state = self.start  # Return to start
-            return (self.state, -100.0, False)
+            return (self.state, Scalar[Self.dtype](-100.0), False)
 
         self.state = CliffState(new_x, new_y)
 
         # Check if reached goal
         var done = self.state == self.goal
-        var reward: Float64 = -1.0
+        var reward: Scalar[Self.dtype] = -1.0
 
         return (self.state, reward, done)
 

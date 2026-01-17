@@ -101,26 +101,6 @@ struct LunarLanderAction(Action, Copyable, ImplicitlyCopyable, Movable):
 # ===== Constants from Gymnasium =====
 
 comptime FPS: Int = 50
-comptime SCALE: Float64 = 30.0
-
-comptime MAIN_ENGINE_POWER: Float64 = 13.0
-comptime SIDE_ENGINE_POWER: Float64 = 0.6
-
-comptime INITIAL_RANDOM: Float64 = 1000.0
-
-# Lander polygon vertices (in SCALE units)
-comptime LANDER_POLY_COUNT: Int = 6
-
-comptime LEG_AWAY: Float64 = 20.0
-comptime LEG_DOWN: Float64 = 18.0
-comptime LEG_W: Float64 = 2.0
-comptime LEG_H: Float64 = 8.0
-comptime LEG_SPRING_TORQUE: Float64 = 40.0
-
-comptime SIDE_ENGINE_HEIGHT: Float64 = 14.0
-comptime SIDE_ENGINE_AWAY: Float64 = 12.0
-comptime MAIN_ENGINE_Y_LOCATION: Float64 = 4.0
-
 comptime VIEWPORT_W: Int = 600
 comptime VIEWPORT_H: Int = 400
 
@@ -129,17 +109,22 @@ comptime VIEWPORT_H: Int = 400
 
 
 @register_passable("trivial")
-struct Particle:
+struct Particle[dtype: DType]:
     """Simple particle for engine flame effects."""
 
-    var x: Float64
-    var y: Float64
-    var vx: Float64
-    var vy: Float64
-    var ttl: Float64  # Time to live in seconds
+    var x: Scalar[Self.dtype]
+    var y: Scalar[Self.dtype]
+    var vx: Scalar[Self.dtype]
+    var vy: Scalar[Self.dtype]
+    var ttl: Scalar[Self.dtype]  # Time to live in seconds
 
     fn __init__(
-        out self, x: Float64, y: Float64, vx: Float64, vy: Float64, ttl: Float64
+        out self,
+        x: Scalar[Self.dtype],
+        y: Scalar[Self.dtype],
+        vx: Scalar[Self.dtype],
+        vy: Scalar[Self.dtype],
+        ttl: Scalar[Self.dtype],
     ):
         self.x = x
         self.y = y
@@ -151,17 +136,19 @@ struct Particle:
 # ===== State Struct =====
 
 
-struct LunarLanderState(Copyable, ImplicitlyCopyable, Movable, State):
+struct LunarLanderState[dtype: DType](
+    Copyable, ImplicitlyCopyable, Movable, State
+):
     """Observation state for LunarLander (8D continuous observation)."""
 
-    var x: Float64  # Horizontal position (normalized)
-    var y: Float64  # Vertical position (normalized)
-    var vx: Float64  # Horizontal velocity (normalized)
-    var vy: Float64  # Vertical velocity (normalized)
-    var angle: Float64  # Angle (radians)
-    var angular_velocity: Float64  # Angular velocity (normalized)
-    var left_leg_contact: Float64  # 1.0 if touching, 0.0 otherwise
-    var right_leg_contact: Float64  # 1.0 if touching, 0.0 otherwise
+    var x: Scalar[Self.dtype]  # Horizontal position (normalized)
+    var y: Scalar[Self.dtype]  # Vertical position (normalized)
+    var vx: Scalar[Self.dtype]  # Horizontal velocity (normalized)
+    var vy: Scalar[Self.dtype]  # Vertical velocity (normalized)
+    var angle: Scalar[Self.dtype]  # Angle (radians)
+    var angular_velocity: Scalar[Self.dtype]  # Angular velocity (normalized)
+    var left_leg_contact: Scalar[Self.dtype]  # 1.0 if touching, 0.0 otherwise
+    var right_leg_contact: Scalar[Self.dtype]  # 1.0 if touching, 0.0 otherwise
 
     fn __init__(out self):
         self.x = 0.0
@@ -206,9 +193,9 @@ struct LunarLanderState(Copyable, ImplicitlyCopyable, Movable, State):
             and self.right_leg_contact == other.right_leg_contact
         )
 
-    fn to_list(self) -> List[Float64]:
+    fn to_list(self) -> List[Scalar[Self.dtype]]:
         """Convert to list for agent interface."""
-        var result = List[Float64]()
+        var result = List[Scalar[Self.dtype]]()
         result.append(self.x)
         result.append(self.y)
         result.append(self.vx)
@@ -223,7 +210,7 @@ struct LunarLanderState(Copyable, ImplicitlyCopyable, Movable, State):
 # ===== Environment =====
 
 
-struct LunarLanderEnv(BoxDiscreteActionEnv, Copyable, Movable):
+struct LunarLanderEnv[DTYPE: DType](BoxDiscreteActionEnv, Copyable, Movable):
     """Native Mojo LunarLander environment.
 
     Implements BoxDiscreteActionEnv for function approximation methods:
@@ -234,11 +221,32 @@ struct LunarLanderEnv(BoxDiscreteActionEnv, Copyable, Movable):
     """
 
     # Type aliases for trait conformance
-    comptime StateType = LunarLanderState
+    comptime dtype = Self.DTYPE
+    comptime StateType = LunarLanderState[Self.dtype]
     comptime ActionType = LunarLanderAction
 
+    comptime SCALE: Scalar[Self.dtype] = 30.0
+
+    comptime MAIN_ENGINE_POWER: Scalar[Self.dtype] = 13.0
+    comptime SIDE_ENGINE_POWER: Scalar[Self.dtype] = 0.6
+
+    comptime INITIAL_RANDOM: Scalar[Self.dtype] = 1000.0
+
+    # Lander polygon vertices (in SCALE units)
+    comptime LANDER_POLY_COUNT: Int = 6
+
+    comptime LEG_AWAY: Scalar[Self.dtype] = 20.0
+    comptime LEG_DOWN: Scalar[Self.dtype] = 18.0
+    comptime LEG_W: Scalar[Self.dtype] = 2.0
+    comptime LEG_H: Scalar[Self.dtype] = 8.0
+    comptime LEG_SPRING_TORQUE: Scalar[Self.dtype] = 40.0
+
+    comptime SIDE_ENGINE_HEIGHT: Scalar[Self.dtype] = 14.0
+    comptime SIDE_ENGINE_AWAY: Scalar[Self.dtype] = 12.0
+    comptime MAIN_ENGINE_Y_LOCATION: Scalar[Self.dtype] = 4.0
+
     # Physics world
-    var world: World
+    var world: World[Self.dtype]
 
     # Body indices
     var moon_idx: Int
@@ -258,26 +266,26 @@ struct LunarLanderEnv(BoxDiscreteActionEnv, Copyable, Movable):
     var right_joint_idx: Int
 
     # Particles (visual flame effects)
-    var flame_particles: List[Particle]
+    var flame_particles: List[Particle[Self.dtype]]
 
     # Game state
     var game_over: Bool
-    var prev_shaping: Float64
+    var prev_shaping: Scalar[Self.dtype]
     var initialized: Bool
 
     # Terrain
-    var helipad_x1: Float64
-    var helipad_x2: Float64
-    var helipad_y: Float64
-    var terrain_x: List[Float64]
-    var terrain_y: List[Float64]
+    var helipad_x1: Scalar[Self.dtype]
+    var helipad_x2: Scalar[Self.dtype]
+    var helipad_y: Scalar[Self.dtype]
+    var terrain_x: List[Scalar[Self.dtype]]
+    var terrain_y: List[Scalar[Self.dtype]]
 
     # Configuration
     var continuous: Bool
-    var gravity: Float64
+    var gravity: Scalar[Self.dtype]
     var enable_wind: Bool
-    var wind_power: Float64
-    var turbulence_power: Float64
+    var wind_power: Scalar[Self.dtype]
+    var turbulence_power: Scalar[Self.dtype]
 
     # Wind state
     var wind_idx: Int
@@ -286,13 +294,13 @@ struct LunarLanderEnv(BoxDiscreteActionEnv, Copyable, Movable):
     fn __init__(
         out self,
         continuous: Bool = False,
-        gravity: Float64 = -10.0,
+        gravity: Scalar[Self.dtype] = -10.0,
         enable_wind: Bool = False,
-        wind_power: Float64 = 15.0,
-        turbulence_power: Float64 = 1.5,
+        wind_power: Scalar[Self.dtype] = 15.0,
+        turbulence_power: Scalar[Self.dtype] = 1.5,
     ) raises:
         """Create LunarLander environment."""
-        self.world = World(Vec2(0.0, gravity))
+        self.world = World[Self.dtype](Vec2[Self.dtype](0.0, gravity))
         self.moon_idx = -1
         self.lander_idx = -1
         self.left_leg_idx = -1
@@ -304,15 +312,15 @@ struct LunarLanderEnv(BoxDiscreteActionEnv, Copyable, Movable):
         self.terrain_fixture_count = 0
         self.left_joint_idx = -1
         self.right_joint_idx = -1
-        self.flame_particles = List[Particle]()
+        self.flame_particles = List[Particle[Self.dtype]]()
         self.game_over = False
         self.prev_shaping = 0.0
         self.initialized = False
         self.helipad_x1 = 0.0
         self.helipad_x2 = 0.0
         self.helipad_y = 0.0
-        self.terrain_x = List[Float64]()
-        self.terrain_y = List[Float64]()
+        self.terrain_x = List[Scalar[Self.dtype]]()
+        self.terrain_y = List[Scalar[Self.dtype]]()
         self.continuous = continuous
         self.gravity = gravity
         self.enable_wind = enable_wind
@@ -328,21 +336,21 @@ struct LunarLanderEnv(BoxDiscreteActionEnv, Copyable, Movable):
         """
         return self._reset_internal()
 
-    fn reset(mut self, seed: Int) -> LunarLanderState:
+    fn reset(mut self, seed: Int) -> LunarLanderState[Self.dtype]:
         """Reset environment to initial state with optional seed."""
         # Note: seed is currently ignored (use random.seed() externally)
         return self._reset_internal()
 
-    fn _reset_internal(mut self) -> LunarLanderState:
+    fn _reset_internal(mut self) -> LunarLanderState[Self.dtype]:
         """Internal reset implementation."""
         # Recreate world
-        self.world = World(Vec2(0.0, self.gravity))
+        self.world = World[Self.dtype](Vec2[Self.dtype](0.0, self.gravity))
         self.flame_particles.clear()
         self.game_over = False
         self.prev_shaping = 0.0
 
-        var W = Float64(VIEWPORT_W) / SCALE
-        var H = Float64(VIEWPORT_H) / SCALE
+        var W = Scalar[Self.dtype](VIEWPORT_W) / Self.SCALE
+        var H = Scalar[Self.dtype](VIEWPORT_H) / Self.SCALE
 
         # Generate terrain
         comptime CHUNKS: Int = 11
@@ -350,13 +358,15 @@ struct LunarLanderEnv(BoxDiscreteActionEnv, Copyable, Movable):
         self.terrain_y.clear()
 
         # Generate random heights
-        var heights = List[Float64]()
+        var heights = List[Scalar[Self.dtype]]()
         for _ in range(CHUNKS + 1):
-            heights.append(random_float64() * H / 2.0)
+            heights.append(Scalar[Self.dtype](random_float64()) * H / 2.0)
 
         # Create chunk x positions
         for i in range(CHUNKS):
-            self.terrain_x.append(W / Float64(CHUNKS - 1) * Float64(i))
+            self.terrain_x.append(
+                W / Scalar[Self.dtype](CHUNKS - 1) * Scalar[Self.dtype](i)
+            )
 
         # Set helipad flat area
         self.helipad_x1 = self.terrain_x[CHUNKS // 2 - 1]
@@ -375,18 +385,23 @@ struct LunarLanderEnv(BoxDiscreteActionEnv, Copyable, Movable):
             var idx_prev = max(i - 1, 0)
             var idx_next = min(i + 1, CHUNKS)
             self.terrain_y.append(
-                0.33 * (heights[idx_prev] + heights[i] + heights[idx_next])
+                Scalar[Self.dtype](0.33)
+                * (heights[idx_prev] + heights[i] + heights[idx_next])
             )
 
         # Create moon (static body for terrain)
-        self.moon_idx = self.world.create_body(BODY_STATIC, Vec2.zero())
+        self.moon_idx = self.world.create_body(
+            BODY_STATIC, Vec2[Self.dtype].zero()
+        )
         self.terrain_fixture_start = len(self.world.fixtures)
 
         # Create edge fixtures for terrain
         for i in range(CHUNKS - 1):
-            var p1 = Vec2(self.terrain_x[i], self.terrain_y[i])
-            var p2 = Vec2(self.terrain_x[i + 1], self.terrain_y[i + 1])
-            var edge = EdgeShape(p1, p2)
+            var p1 = Vec2[Self.dtype](self.terrain_x[i], self.terrain_y[i])
+            var p2 = Vec2[Self.dtype](
+                self.terrain_x[i + 1], self.terrain_y[i + 1]
+            )
+            var edge = EdgeShape[Self.dtype](p1, p2)
             _ = self.world.create_edge_fixture(
                 self.moon_idx,
                 edge^,
@@ -402,19 +417,31 @@ struct LunarLanderEnv(BoxDiscreteActionEnv, Copyable, Movable):
         var initial_x = W / 2.0
         var initial_y = H
         self.lander_idx = self.world.create_body(
-            BODY_DYNAMIC, Vec2(initial_x, initial_y)
+            BODY_DYNAMIC, Vec2[Self.dtype](initial_x, initial_y)
         )
 
         # Lander polygon shape (vertices from Gymnasium)
-        var lander_verts = List[Vec2]()
-        lander_verts.append(Vec2(-14.0 / SCALE, 17.0 / SCALE))
-        lander_verts.append(Vec2(-17.0 / SCALE, 0.0 / SCALE))
-        lander_verts.append(Vec2(-17.0 / SCALE, -10.0 / SCALE))
-        lander_verts.append(Vec2(17.0 / SCALE, -10.0 / SCALE))
-        lander_verts.append(Vec2(17.0 / SCALE, 0.0 / SCALE))
-        lander_verts.append(Vec2(14.0 / SCALE, 17.0 / SCALE))
+        var lander_verts = List[Vec2[Self.dtype]]()
+        lander_verts.append(
+            Vec2[Self.dtype](-14.0 / Self.SCALE, 17.0 / Self.SCALE)
+        )
+        lander_verts.append(
+            Vec2[Self.dtype](-17.0 / Self.SCALE, 0.0 / Self.SCALE)
+        )
+        lander_verts.append(
+            Vec2[Self.dtype](-17.0 / Self.SCALE, -10.0 / Self.SCALE)
+        )
+        lander_verts.append(
+            Vec2[Self.dtype](17.0 / Self.SCALE, -10.0 / Self.SCALE)
+        )
+        lander_verts.append(
+            Vec2[Self.dtype](17.0 / Self.SCALE, 0.0 / Self.SCALE)
+        )
+        lander_verts.append(
+            Vec2[Self.dtype](14.0 / Self.SCALE, 17.0 / Self.SCALE)
+        )
 
-        var lander_poly = PolygonShape(lander_verts^)
+        var lander_poly = PolygonShape[Self.dtype](lander_verts^)
         self.lander_fixture_idx = self.world.create_polygon_fixture(
             self.lander_idx,
             lander_poly^,
@@ -425,9 +452,17 @@ struct LunarLanderEnv(BoxDiscreteActionEnv, Copyable, Movable):
         )
 
         # Apply random initial force
-        var fx = (random_float64() * 2.0 - 1.0) * INITIAL_RANDOM
-        var fy = (random_float64() * 2.0 - 1.0) * INITIAL_RANDOM
-        self.world.bodies[self.lander_idx].apply_force_to_center(Vec2(fx, fy))
+        var fx = (
+            Scalar[Self.dtype](random_float64() * 2.0 - 1.0)
+            * Self.INITIAL_RANDOM
+        )
+        var fy = (
+            Scalar[Self.dtype](random_float64() * 2.0 - 1.0)
+            * Self.INITIAL_RANDOM
+        )
+        self.world.bodies[self.lander_idx].apply_force_to_center(
+            Vec2[Self.dtype](fx, fy)
+        )
 
         # Create legs
         self._create_legs(initial_x, initial_y)
@@ -442,42 +477,48 @@ struct LunarLanderEnv(BoxDiscreteActionEnv, Copyable, Movable):
         # Step physics once to integrate the random initial force
         # This ensures the initial observation includes the velocity from the force,
         # which matches GPU behavior and prevents the large reward spike in step 0
-        self.world.step(1.0 / Float64(FPS), 6, 2)
+        self.world.step(Scalar[Self.dtype](1.0) / Scalar[Self.dtype](FPS), 6, 2)
 
         # Compute initial shaping so first step reward is delta, not absolute
         var init_state = self._get_state()
         self.prev_shaping = (
-            -100.0
+            Scalar[Self.dtype](-100.0)
             * sqrt(init_state.x * init_state.x + init_state.y * init_state.y)
-            - 100.0
+            - Scalar[Self.dtype](100.0)
             * sqrt(
                 init_state.vx * init_state.vx + init_state.vy * init_state.vy
             )
-            - 100.0 * abs(init_state.angle)
-            + 10.0 * init_state.left_leg_contact
-            + 10.0 * init_state.right_leg_contact
+            - Scalar[Self.dtype](100.0) * abs(init_state.angle)
+            + Scalar[Self.dtype](10.0) * init_state.left_leg_contact
+            + Scalar[Self.dtype](10.0) * init_state.right_leg_contact
         )
 
         return init_state^
 
-    fn _create_legs(mut self, initial_x: Float64, initial_y: Float64):
+    fn _create_legs(
+        mut self, initial_x: Scalar[Self.dtype], initial_y: Scalar[Self.dtype]
+    ):
         """Create lander legs and joints."""
         for side in range(2):
             var i = -1 if side == 0 else 1
 
-            var leg_x = initial_x - Float64(i) * LEG_AWAY / SCALE
-            var leg_angle = Float64(i) * 0.05
+            var leg_x = (
+                initial_x - Scalar[Self.dtype](i) * Self.LEG_AWAY / Self.SCALE
+            )
+            var leg_angle = Scalar[Self.dtype](i) * Scalar[Self.dtype](0.05)
 
             var leg_idx = self.world.create_body(
-                BODY_DYNAMIC, Vec2(leg_x, initial_y), leg_angle
+                BODY_DYNAMIC, Vec2[Self.dtype](leg_x, initial_y), leg_angle
             )
 
             # Leg is a box
-            var leg_poly = PolygonShape.from_box(LEG_W / SCALE, LEG_H / SCALE)
+            var leg_poly = PolygonShape[Self.dtype].from_box(
+                Self.LEG_W / Self.SCALE, Self.LEG_H / Self.SCALE
+            )
             var leg_fixture = self.world.create_polygon_fixture(
                 leg_idx,
                 leg_poly^,
-                density=1.0,
+                density=5.0,
                 friction=0.1,
                 restitution=0.0,
                 filter=Filter.leg(),
@@ -491,13 +532,14 @@ struct LunarLanderEnv(BoxDiscreteActionEnv, Copyable, Movable):
                 self.right_leg_fixture_idx = leg_fixture
 
             # Create revolute joint
-            var local_anchor_a = Vec2.zero()
-            var local_anchor_b = Vec2(
-                Float64(i) * LEG_AWAY / SCALE, LEG_DOWN / SCALE
+            var local_anchor_a = Vec2[Self.dtype].zero()
+            var local_anchor_b = Vec2[Self.dtype](
+                Scalar[Self.dtype](i) * Self.LEG_AWAY / Self.SCALE,
+                Self.LEG_DOWN / Self.SCALE,
             )
 
-            var lower_angle: Float64
-            var upper_angle: Float64
+            var lower_angle: Scalar[Self.dtype]
+            var upper_angle: Scalar[Self.dtype]
             if i == -1:
                 lower_angle = 0.9 - 0.5
                 upper_angle = 0.9
@@ -511,8 +553,8 @@ struct LunarLanderEnv(BoxDiscreteActionEnv, Copyable, Movable):
                 local_anchor_a,
                 local_anchor_b,
                 enable_motor=True,
-                motor_speed=0.3 * Float64(i),
-                max_motor_torque=LEG_SPRING_TORQUE,
+                motor_speed=Scalar[Self.dtype](0.3) * Scalar[Self.dtype](i),
+                max_motor_torque=Self.LEG_SPRING_TORQUE,
                 enable_limit=True,
                 lower_angle=lower_angle,
                 upper_angle=upper_angle,
@@ -525,19 +567,19 @@ struct LunarLanderEnv(BoxDiscreteActionEnv, Copyable, Movable):
 
     fn step_discrete(
         mut self, action: Int
-    ) -> Tuple[LunarLanderState, Float64, Bool]:
+    ) -> Tuple[LunarLanderState[Self.dtype], Scalar[Self.dtype], Bool]:
         """Step with discrete action (0=nop, 1=left, 2=main, 3=right)."""
-        return self._step_internal(action, Vec2.zero())
+        return self._step_internal(action, Vec2[Self.dtype].zero())
 
     fn step_continuous(
-        mut self, action: Vec2
-    ) -> Tuple[LunarLanderState, Float64, Bool]:
+        mut self, action: Vec2[Self.dtype]
+    ) -> Tuple[LunarLanderState[Self.dtype], Scalar[Self.dtype], Bool]:
         """Step with continuous action (main_throttle, lateral_throttle)."""
         return self._step_internal(-1, action)
 
     fn _step_internal(
-        mut self, discrete_action: Int, continuous_action: Vec2
-    ) -> Tuple[LunarLanderState, Float64, Bool]:
+        mut self, discrete_action: Int, continuous_action: Vec2[Self.dtype]
+    ) -> Tuple[LunarLanderState[Self.dtype], Scalar[Self.dtype], Bool]:
         """Internal step function."""
         # Apply wind
         if self.enable_wind:
@@ -551,22 +593,28 @@ struct LunarLanderEnv(BoxDiscreteActionEnv, Copyable, Movable):
             if not (left_contact or right_contact):
                 # Wind force
                 var wind_mag = (
-                    tanh(
-                        sin(0.02 * Float64(self.wind_idx))
-                        + sin(pi * 0.01 * Float64(self.wind_idx))
+                    Scalar[Self.dtype](
+                        tanh(
+                            sin(0.02 * Scalar[Self.dtype](self.wind_idx))
+                            + sin(pi * 0.01 * Scalar[Self.dtype](self.wind_idx))
+                        )
                     )
                     * self.wind_power
                 )
                 self.wind_idx += 1
                 self.world.bodies[self.lander_idx].apply_force_to_center(
-                    Vec2(wind_mag, 0.0)
+                    Vec2[Self.dtype](wind_mag, 0.0)
                 )
 
                 # Turbulence torque
                 var torque_mag = (
-                    tanh(
-                        sin(0.02 * Float64(self.torque_idx))
-                        + sin(pi * 0.01 * Float64(self.torque_idx))
+                    Scalar[Self.dtype](
+                        tanh(
+                            sin(0.02 * Scalar[Self.dtype](self.torque_idx))
+                            + sin(
+                                pi * 0.01 * Scalar[Self.dtype](self.torque_idx)
+                            )
+                        )
                     )
                     * self.turbulence_power
                 )
@@ -575,28 +623,43 @@ struct LunarLanderEnv(BoxDiscreteActionEnv, Copyable, Movable):
 
         # Get lander state
         var lander = self.world.bodies[self.lander_idx].copy()
-        var tip = Vec2(sin(lander.angle), cos(lander.angle))
-        var side = Vec2(-tip.y, tip.x)
+        var tip = Vec2[Self.dtype](sin(lander.angle), cos(lander.angle))
+        var side = Vec2[Self.dtype](-tip.y, tip.x)
 
         # Random dispersion
-        var dispersion_x = (random_float64() * 2.0 - 1.0) / SCALE
-        var dispersion_y = (random_float64() * 2.0 - 1.0) / SCALE
+        var dispersion_x = (
+            Scalar[Self.dtype](random_float64() * 2.0 - 1.0) / Self.SCALE
+        )
+        var dispersion_y = (
+            Scalar[Self.dtype](random_float64() * 2.0 - 1.0) / Self.SCALE
+        )
 
         # Apply engine forces
-        var m_power: Float64 = 0.0
-        var s_power: Float64 = 0.0
+        var m_power: Scalar[Self.dtype] = 0.0
+        var s_power: Scalar[Self.dtype] = 0.0
 
         if self.continuous:
             # Continuous action: [main, lateral]
             var main_throttle = continuous_action.x
             var lateral_throttle = continuous_action.y
 
-            if main_throttle > 0.0:
-                m_power = (clamp(main_throttle, 0.0, 1.0) + 1.0) * 0.5
+            if main_throttle > Scalar[Self.dtype](0.0):
+                m_power = (
+                    clamp(
+                        main_throttle,
+                        Scalar[Self.dtype](0.0),
+                        Scalar[Self.dtype](1.0),
+                    )
+                    + Scalar[Self.dtype](1.0)
+                ) * Scalar[Self.dtype](0.5)
 
-            if abs(lateral_throttle) > 0.5:
+            if abs(lateral_throttle) > Scalar[Self.dtype](0.5):
                 var direction = sign(lateral_throttle)
-                s_power = clamp(abs(lateral_throttle), 0.5, 1.0)
+                s_power = clamp(
+                    abs(lateral_throttle),
+                    Scalar[Self.dtype](0.5),
+                    Scalar[Self.dtype](1.0),
+                )
                 self._apply_side_engine(
                     lander,
                     tip,
@@ -613,30 +676,50 @@ struct LunarLanderEnv(BoxDiscreteActionEnv, Copyable, Movable):
             elif discrete_action == 1:  # Left engine
                 s_power = 1.0
                 self._apply_side_engine(
-                    lander, tip, side, dispersion_x, dispersion_y, -1.0, s_power
+                    lander,
+                    tip,
+                    side,
+                    dispersion_x,
+                    dispersion_y,
+                    Scalar[Self.dtype](-1.0),
+                    s_power,
                 )
             elif discrete_action == 3:  # Right engine
                 s_power = 1.0
                 self._apply_side_engine(
-                    lander, tip, side, dispersion_x, dispersion_y, 1.0, s_power
+                    lander,
+                    tip,
+                    side,
+                    dispersion_x,
+                    dispersion_y,
+                    Scalar[Self.dtype](1.0),
+                    s_power,
                 )
 
         # Apply main engine
-        if m_power > 0.0:
+        if m_power > Scalar[Self.dtype](0.0):
             var ox = (
-                tip.x * (MAIN_ENGINE_Y_LOCATION / SCALE + 2.0 * dispersion_x)
+                tip.x
+                * (
+                    Self.MAIN_ENGINE_Y_LOCATION / Self.SCALE
+                    + Scalar[Self.dtype](2.0) * dispersion_x
+                )
                 + side.x * dispersion_y
             )
             var oy = (
-                -tip.y * (MAIN_ENGINE_Y_LOCATION / SCALE + 2.0 * dispersion_x)
+                -tip.y
+                * (
+                    Self.MAIN_ENGINE_Y_LOCATION / Self.SCALE
+                    + Scalar[Self.dtype](2.0) * dispersion_x
+                )
                 - side.y * dispersion_y
             )
-            var impulse_pos = Vec2(
+            var impulse_pos = Vec2[Self.dtype](
                 lander.position.x + ox, lander.position.y + oy
             )
-            var impulse = Vec2(
-                -ox * MAIN_ENGINE_POWER * m_power,
-                -oy * MAIN_ENGINE_POWER * m_power,
+            var impulse = Vec2[Self.dtype](
+                -ox * Self.MAIN_ENGINE_POWER * m_power,
+                -oy * Self.MAIN_ENGINE_POWER * m_power,
             )
             self.world.bodies[self.lander_idx].apply_linear_impulse(
                 impulse, impulse_pos
@@ -646,8 +729,10 @@ struct LunarLanderEnv(BoxDiscreteActionEnv, Copyable, Movable):
             self._spawn_main_engine_particles(lander.position, tip, m_power)
 
         # Spawn side engine particles if firing
-        if s_power > 0.0:
-            var direction = -1.0 if discrete_action == 1 else 1.0
+        if s_power > Scalar[Self.dtype](0.0):
+            var direction = Scalar[Self.dtype](
+                -1.0
+            ) if discrete_action == 1 else Scalar[Self.dtype](1.0)
             if self.continuous:
                 direction = sign(continuous_action.y)
             self._spawn_side_engine_particles(
@@ -658,7 +743,7 @@ struct LunarLanderEnv(BoxDiscreteActionEnv, Copyable, Movable):
         self._update_particles()
 
         # Step physics
-        self.world.step(1.0 / Float64(FPS), 6, 2)
+        self.world.step(Scalar[Self.dtype](1.0) / Scalar[Self.dtype](FPS), 6, 2)
 
         # Check leg contacts (used internally for state, variables checked for debug)
         _ = self._is_leg_contacting(self.left_leg_fixture_idx)
@@ -677,7 +762,7 @@ struct LunarLanderEnv(BoxDiscreteActionEnv, Copyable, Movable):
 
         # Check termination
         var terminated = False
-        if self.game_over or abs(state.x) >= 1.0:
+        if self.game_over or abs(state.x) >= Scalar[Self.dtype](1.0):
             terminated = True
             reward = -100.0
         if not self.world.bodies[self.lander_idx].awake:
@@ -688,63 +773,81 @@ struct LunarLanderEnv(BoxDiscreteActionEnv, Copyable, Movable):
 
     fn _apply_side_engine(
         mut self,
-        lander: Body,
-        tip: Vec2,
-        side: Vec2,
-        dispersion_x: Float64,
-        dispersion_y: Float64,
-        direction: Float64,
-        s_power: Float64,
+        lander: Body[Self.dtype],
+        tip: Vec2[Self.dtype],
+        side: Vec2[Self.dtype],
+        dispersion_x: Scalar[Self.dtype],
+        dispersion_y: Scalar[Self.dtype],
+        direction: Scalar[Self.dtype],
+        s_power: Scalar[Self.dtype],
     ):
         """Apply side engine force."""
         var ox = tip.x * dispersion_x + side.x * (
-            3.0 * dispersion_y + direction * SIDE_ENGINE_AWAY / SCALE
+            Scalar[Self.dtype](3.0) * dispersion_y
+            + direction * Self.SIDE_ENGINE_AWAY / Self.SCALE
         )
         var oy = -tip.y * dispersion_x - side.y * (
-            3.0 * dispersion_y + direction * SIDE_ENGINE_AWAY / SCALE
+            Scalar[Self.dtype](3.0) * dispersion_y
+            + direction * Self.SIDE_ENGINE_AWAY / Self.SCALE
         )
-        var impulse_pos = Vec2(
-            lander.position.x + ox - tip.x * 17.0 / SCALE,
-            lander.position.y + oy + tip.y * SIDE_ENGINE_HEIGHT / SCALE,
+        var impulse_pos = Vec2[Self.dtype](
+            lander.position.x
+            + ox
+            - tip.x * Scalar[Self.dtype](17.0) / Self.SCALE,
+            lander.position.y
+            + oy
+            + tip.y * Self.SIDE_ENGINE_HEIGHT / Self.SCALE,
         )
-        var impulse = Vec2(
-            -ox * SIDE_ENGINE_POWER * s_power, -oy * SIDE_ENGINE_POWER * s_power
+        var impulse = Vec2[Self.dtype](
+            -ox * Self.SIDE_ENGINE_POWER * s_power,
+            -oy * Self.SIDE_ENGINE_POWER * s_power,
         )
         self.world.bodies[self.lander_idx].apply_linear_impulse(
             impulse, impulse_pos
         )
 
     fn _spawn_main_engine_particles(
-        mut self, pos: Vec2, tip: Vec2, power: Float64
+        mut self,
+        pos: Vec2[Self.dtype],
+        tip: Vec2[Self.dtype],
+        power: Scalar[Self.dtype],
     ):
         """Spawn flame particles from main engine."""
         # Spawn 2-4 particles per frame when engine is on
         var num_particles = 2 + Int(random_float64() * 3.0)
         for _ in range(num_particles):
             # Position below the lander (opposite of tip direction)
-            var offset_x = (random_float64() - 0.5) * 0.3
-            var px = pos.x - tip.x * 0.5 + offset_x
-            var py = pos.y - tip.y * 0.5  # Below lander
+            var offset_x = Scalar[Self.dtype](random_float64() - 0.5) * Scalar[
+                Self.dtype
+            ](0.3)
+            var px = pos.x - tip.x * Scalar[Self.dtype](0.5) + offset_x
+            var py = pos.y - tip.y * Scalar[Self.dtype](0.5)  # Below lander
 
             # Velocity DOWNWARD (opposite of thrust direction = -tip)
-            var spread = (random_float64() - 0.5) * 2.0
-            var vx = -tip.x * 3.0 * power + spread
-            var vy = -tip.y * 3.0 * power + (
+            var spread = Scalar[Self.dtype](random_float64() - 0.5) * Scalar[
+                Self.dtype
+            ](2.0)
+            var vx = -tip.x * Scalar[Self.dtype](3.0) * power + spread
+            var vy = -tip.y * Scalar[Self.dtype](3.0) * power + Scalar[
+                Self.dtype
+            ](
                 random_float64() - 0.5
             )  # Fixed: -tip.y
 
             # Short lifetime
-            var ttl = 0.1 + random_float64() * 0.2
+            var ttl = Scalar[Self.dtype](0.1 + random_float64() * 0.2)
 
-            self.flame_particles.append(Particle(px, py, vx, vy, ttl))
+            self.flame_particles.append(
+                Particle[Self.dtype](px, py, vx, vy, ttl)
+            )
 
     fn _spawn_side_engine_particles(
         mut self,
-        pos: Vec2,
-        tip: Vec2,
-        side: Vec2,
-        direction: Float64,
-        power: Float64,
+        pos: Vec2[Self.dtype],
+        tip: Vec2[Self.dtype],
+        side: Vec2[Self.dtype],
+        direction: Scalar[Self.dtype],
+        power: Scalar[Self.dtype],
     ):
         """Spawn flame particles from side engine.
 
@@ -755,30 +858,32 @@ struct LunarLanderEnv(BoxDiscreteActionEnv, Copyable, Movable):
         var num_particles = 1 + Int(random_float64() * 2.0)
         for _ in range(num_particles):
             # Position at side of lander where engine is
-            var px = pos.x - side.x * direction * 0.6
-            var py = pos.y - side.y * direction * 0.6
+            var px = pos.x - side.x * direction * Scalar[Self.dtype](0.6)
+            var py = pos.y - side.y * direction * Scalar[Self.dtype](0.6)
 
             # Velocity: exhaust goes outward from the engine
             # Left engine (dir=-1) pushes lander right, so exhaust goes LEFT (-side * -(-1) = -side)
             # Right engine (dir=+1) pushes lander left, so exhaust goes RIGHT (-side * -(+1) = +side... wait)
             # Actually: left engine exhaust goes left (in side direction), right engine exhaust goes right (in -side direction)
             # So velocity = -side * direction
-            var vx = -side.x * direction * 2.0 * power + (
-                random_float64() - 0.5
-            )
-            var vy = -side.y * direction * 2.0 * power + (
-                random_float64() - 0.5
-            )
+            var vx = -side.x * direction * Scalar[Self.dtype](
+                2.0
+            ) * power + Scalar[Self.dtype](random_float64() - 0.5)
+            var vy = -side.y * direction * Scalar[Self.dtype](
+                2.0
+            ) * power + Scalar[Self.dtype](random_float64() - 0.5)
 
             # Short lifetime
-            var ttl = 0.08 + random_float64() * 0.15
+            var ttl = Scalar[Self.dtype](0.08 + random_float64() * 0.15)
 
-            self.flame_particles.append(Particle(px, py, vx, vy, ttl))
+            self.flame_particles.append(
+                Particle[Self.dtype](px, py, vx, vy, ttl)
+            )
 
     fn _update_particles(mut self):
         """Update particle positions and remove dead particles."""
-        var dt = 1.0 / Float64(FPS)
-        var new_particles = List[Particle]()
+        var dt = Scalar[Self.dtype](1.0) / Scalar[Self.dtype](FPS)
+        var new_particles = List[Particle[Self.dtype]]()
 
         for i in range(len(self.flame_particles)):
             var p = self.flame_particles[i]
@@ -786,60 +891,85 @@ struct LunarLanderEnv(BoxDiscreteActionEnv, Copyable, Movable):
             var new_x = p.x + p.vx * dt
             var new_y = p.y + p.vy * dt
             # Apply gravity to particles
-            var new_vy = p.vy + self.gravity * dt * 0.3
+            var new_vy = p.vy + self.gravity * dt * Scalar[Self.dtype](0.3)
             var new_ttl = p.ttl - dt
 
-            if new_ttl > 0.0:
+            if new_ttl > Scalar[Self.dtype](0.0):
                 new_particles.append(
-                    Particle(new_x, new_y, p.vx, new_vy, new_ttl)
+                    Particle[Self.dtype](new_x, new_y, p.vx, new_vy, new_ttl)
                 )
 
         self.flame_particles = new_particles^
 
-    fn _get_state(self) -> LunarLanderState:
+    fn _get_state(self) -> LunarLanderState[Self.dtype]:
         """Get current observation state."""
         var lander = self.world.bodies[self.lander_idx].copy()
         var pos = lander.position
         var vel = lander.linear_velocity
 
-        var W = Float64(VIEWPORT_W) / SCALE
-        var H = Float64(VIEWPORT_H) / SCALE
+        var W = Scalar[Self.dtype](VIEWPORT_W) / Self.SCALE
+        var H = Scalar[Self.dtype](VIEWPORT_H) / Self.SCALE
 
-        var state = LunarLanderState()
-        state.x = (pos.x - W / 2.0) / (W / 2.0)
-        state.y = (pos.y - (self.helipad_y + LEG_DOWN / SCALE)) / (H / 2.0)
-        state.vx = vel.x * (W / 2.0) / Float64(FPS)
-        state.vy = vel.y * (H / 2.0) / Float64(FPS)
+        var state = LunarLanderState[Self.dtype]()
+        state.x = (pos.x - W / Scalar[Self.dtype](2.0)) / (
+            W / Scalar[Self.dtype](2.0)
+        )
+        state.y = (pos.y - (self.helipad_y + Self.LEG_DOWN / Self.SCALE)) / (
+            H / Scalar[Self.dtype](2.0)
+        )
+        state.vx = (
+            vel.x * (W / Scalar[Self.dtype](2.0)) / Scalar[Self.dtype](FPS)
+        )
+        state.vy = (
+            vel.y * (H / Scalar[Self.dtype](2.0)) / Scalar[Self.dtype](FPS)
+        )
         state.angle = lander.angle
-        state.angular_velocity = 20.0 * lander.angular_velocity / Float64(FPS)
-        state.left_leg_contact = 1.0 if self._is_leg_contacting(
-            self.left_leg_fixture_idx
-        ) else 0.0
-        state.right_leg_contact = 1.0 if self._is_leg_contacting(
-            self.right_leg_fixture_idx
-        ) else 0.0
+        state.angular_velocity = (
+            Scalar[Self.dtype](20.0)
+            * lander.angular_velocity
+            / Scalar[Self.dtype](FPS)
+        )
+        state.left_leg_contact = Scalar[Self.dtype](
+            1.0
+        ) if self._is_leg_contacting(self.left_leg_fixture_idx) else Scalar[
+            Self.dtype
+        ](
+            0.0
+        )
+        state.right_leg_contact = Scalar[Self.dtype](
+            1.0
+        ) if self._is_leg_contacting(self.right_leg_fixture_idx) else Scalar[
+            Self.dtype
+        ](
+            0.0
+        )
 
         return state^
 
     fn _compute_reward(
-        mut self, state: LunarLanderState, m_power: Float64, s_power: Float64
-    ) -> Float64:
+        mut self,
+        state: LunarLanderState[Self.dtype],
+        m_power: Scalar[Self.dtype],
+        s_power: Scalar[Self.dtype],
+    ) -> Scalar[Self.dtype]:
         """Compute reward based on state."""
         var shaping = (
-            -100.0 * sqrt(state.x * state.x + state.y * state.y)
-            - 100.0 * sqrt(state.vx * state.vx + state.vy * state.vy)
-            - 100.0 * abs(state.angle)
-            + 10.0 * state.left_leg_contact
-            + 10.0 * state.right_leg_contact
+            Scalar[Self.dtype](-100.0)
+            * sqrt(state.x * state.x + state.y * state.y)
+            - Scalar[Self.dtype](100.0)
+            * sqrt(state.vx * state.vx + state.vy * state.vy)
+            - Scalar[Self.dtype](100.0) * abs(state.angle)
+            + Scalar[Self.dtype](10.0) * state.left_leg_contact
+            + Scalar[Self.dtype](10.0) * state.right_leg_contact
         )
 
-        var reward: Float64 = 0.0
+        var reward: Scalar[Self.dtype] = 0.0
         if self.initialized:
             reward = shaping - self.prev_shaping
         self.prev_shaping = shaping
 
-        reward -= m_power * 0.30
-        reward -= s_power * 0.03
+        reward -= m_power * Scalar[Self.dtype](0.30)
+        reward -= s_power * Scalar[Self.dtype](0.03)
 
         return reward
 
@@ -883,12 +1013,12 @@ struct LunarLanderEnv(BoxDiscreteActionEnv, Copyable, Movable):
 
         # Create camera - centered at viewport center, with physics scale
         # Camera Y at helipad level + some offset to see terrain and sky
-        var W = Float64(VIEWPORT_W) / SCALE
-        var H = Float64(VIEWPORT_H) / SCALE
+        var W = Float64(VIEWPORT_W) / Float64(Self.SCALE)
+        var H = Float64(VIEWPORT_H) / Float64(Self.SCALE)
         var camera = Camera(
             W / 2.0,  # Center X in world units
             H / 2.0,  # Center Y in world units
-            SCALE,  # Zoom = physics scale
+            Float64(Self.SCALE),  # Zoom = physics scale
             VIEWPORT_W,
             VIEWPORT_H,
             flip_y=True,  # Y increases upward in physics
@@ -923,12 +1053,21 @@ struct LunarLanderEnv(BoxDiscreteActionEnv, Copyable, Movable):
         for i in range(len(self.terrain_x) - 1):
             # Create polygon vertices in world coordinates
             var vertices = List[RenderVec2]()
-            vertices.append(RenderVec2(self.terrain_x[i], self.terrain_y[i]))
             vertices.append(
-                RenderVec2(self.terrain_x[i + 1], self.terrain_y[i + 1])
+                RenderVec2(
+                    Float64(self.terrain_x[i]), Float64(self.terrain_y[i])
+                )
             )
-            vertices.append(RenderVec2(self.terrain_x[i + 1], 0.0))  # Bottom
-            vertices.append(RenderVec2(self.terrain_x[i], 0.0))
+            vertices.append(
+                RenderVec2(
+                    Float64(self.terrain_x[i + 1]),
+                    Float64(self.terrain_y[i + 1]),
+                )
+            )
+            vertices.append(
+                RenderVec2(Float64(self.terrain_x[i + 1]), 0.0)
+            )  # Bottom
+            vertices.append(RenderVec2(Float64(self.terrain_x[i]), 0.0))
 
             renderer.draw_polygon_world(
                 vertices, camera, terrain_color, filled=True
@@ -936,8 +1075,13 @@ struct LunarLanderEnv(BoxDiscreteActionEnv, Copyable, Movable):
 
             # Draw terrain outline for contrast
             renderer.draw_line_world(
-                RenderVec2(self.terrain_x[i], self.terrain_y[i]),
-                RenderVec2(self.terrain_x[i + 1], self.terrain_y[i + 1]),
+                RenderVec2(
+                    Float64(self.terrain_x[i]), Float64(self.terrain_y[i])
+                ),
+                RenderVec2(
+                    Float64(self.terrain_x[i + 1]),
+                    Float64(self.terrain_y[i + 1]),
+                ),
                 camera,
                 terrain_dark,
                 2,
@@ -948,13 +1092,13 @@ struct LunarLanderEnv(BoxDiscreteActionEnv, Copyable, Movable):
         var helipad_color = darken(moon_gray(), 0.8)
 
         # Helipad is a thick horizontal bar (in world units)
-        var bar_height = 4.0 / SCALE  # 4 pixels in world units
+        var bar_height = 4.0 / Float64(Self.SCALE)  # 4 pixels in world units
         renderer.draw_rect_world(
             RenderVec2(
-                (self.helipad_x1 + self.helipad_x2) / 2.0,
-                self.helipad_y + bar_height / 2.0,
+                Float64(self.helipad_x1 + self.helipad_x2) / 2.0,
+                Float64(self.helipad_y) + bar_height / 2.0,
             ),
-            self.helipad_x2 - self.helipad_x1,
+            Float64(self.helipad_x2 - self.helipad_x1),
             bar_height,
             camera,
             helipad_color,
@@ -968,13 +1112,15 @@ struct LunarLanderEnv(BoxDiscreteActionEnv, Copyable, Movable):
         var red_color = red()
 
         # Flag dimensions in world units
-        var pole_height = 50.0 / SCALE
-        var flag_width = 25.0 / SCALE
-        var flag_height = 20.0 / SCALE
+        var pole_height = 50.0 / Float64(Self.SCALE)
+        var flag_width = 25.0 / Float64(Self.SCALE)
+        var flag_height = 20.0 / Float64(Self.SCALE)
 
         for flag_idx in range(2):
-            var x_pos = self.helipad_x1 if flag_idx == 0 else self.helipad_x2
-            var ground_y = self.helipad_y
+            var x_pos = Float64(self.helipad_x1) if flag_idx == 0 else Float64(
+                self.helipad_x2
+            )
+            var ground_y = Float64(self.helipad_y)
             var pole_top_y = ground_y + pole_height
 
             # Flag pole (white vertical line)
@@ -1009,10 +1155,14 @@ struct LunarLanderEnv(BoxDiscreteActionEnv, Copyable, Movable):
 
         # Use shape factory for lander body, scale from pixels to world units
         var lander_verts_raw = make_lander_body()
-        var lander_verts = scale_vertices(lander_verts_raw^, 1.0 / SCALE)
+        var lander_verts = scale_vertices(
+            lander_verts_raw^, 1.0 / Float64(Self.SCALE)
+        )
 
         # Create transform for lander position and rotation
-        var transform = Transform2D(pos.x, pos.y, angle)
+        var transform = Transform2D(
+            Float64(pos.x), Float64(pos.y), Float64(angle)
+        )
 
         # Draw filled lander body (grayish-white like the original)
         var lander_fill = rgb(230, 230, 230)
@@ -1046,11 +1196,14 @@ struct LunarLanderEnv(BoxDiscreteActionEnv, Copyable, Movable):
 
             # Leg box vertices using shape factory (in world units)
             var leg_verts = make_leg_box(
-                LEG_W * 2.0 / SCALE, LEG_H * 2.0 / SCALE
+                Float64(Self.LEG_W) * 2.0 / Float64(Self.SCALE),
+                Float64(Self.LEG_H) * 2.0 / Float64(Self.SCALE),
             )
 
             # Create transform for leg position and rotation
-            var transform = Transform2D(pos.x, pos.y, angle)
+            var transform = Transform2D(
+                Float64(pos.x), Float64(pos.y), Float64(angle)
+            )
 
             # Draw filled leg
             renderer.draw_transformed_polygon(
@@ -1066,15 +1219,15 @@ struct LunarLanderEnv(BoxDiscreteActionEnv, Copyable, Movable):
             var p = self.flame_particles[i]
 
             # Color based on remaining lifetime using flame_color utility
-            var life_ratio = p.ttl / 0.3  # Normalize to 0-1
+            var life_ratio = Float64(p.ttl) / 0.3  # Normalize to 0-1
             var particle_color = flame_color(life_ratio)
 
             # Radius in world units (2-4 pixels converted)
-            var radius_world = (2.0 + life_ratio * 2.0) / SCALE
+            var radius_world = (2.0 + life_ratio * 2.0) / Float64(Self.SCALE)
 
             # Draw using Camera world coordinates
             renderer.draw_circle_world(
-                RenderVec2(p.x, p.y),
+                RenderVec2(Float64(p.x), Float64(p.y)),
                 radius_world,
                 camera,
                 particle_color,
@@ -1093,28 +1246,28 @@ struct LunarLanderEnv(BoxDiscreteActionEnv, Copyable, Movable):
 
     fn step(
         mut self, action: LunarLanderAction
-    ) -> Tuple[LunarLanderState, Float64, Bool]:
+    ) -> Tuple[LunarLanderState[Self.dtype], Scalar[Self.dtype], Bool]:
         """Take an action and return (next_state, reward, done).
 
         Implements Env trait.
         """
         return self.step_discrete(action.action_idx)
 
-    fn get_state(self) -> LunarLanderState:
+    fn get_state(self) -> LunarLanderState[Self.dtype]:
         """Return current state representation.
 
         Implements Env trait.
         """
         return self._get_state()
 
-    fn get_obs_list(self) -> List[Float64]:
+    fn get_obs_list(self) -> List[Scalar[Self.dtype]]:
         """Return current continuous observation as a flexible list.
 
         Implements ContinuousStateEnv trait.
         """
         return self._get_state().to_list()
 
-    fn reset_obs_list(mut self) -> List[Float64]:
+    fn reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
         """Reset environment and return initial continuous observation.
 
         Implements ContinuousStateEnv trait.
@@ -1145,7 +1298,9 @@ struct LunarLanderEnv(BoxDiscreteActionEnv, Copyable, Movable):
         """
         return 4
 
-    fn step_obs(mut self, action: Int) -> Tuple[List[Float64], Float64, Bool]:
+    fn step_obs(
+        mut self, action: Int
+    ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
         """Take discrete action and return (continuous_obs, reward, done).
 
         Implements BoxDiscreteActionEnv trait.
@@ -1159,7 +1314,9 @@ struct LunarLanderEnv(BoxDiscreteActionEnv, Copyable, Movable):
 # ===== Helper functions =====
 
 
-fn clamp(x: Float64, low: Float64, high: Float64) -> Float64:
+fn clamp[
+    dtype: DType
+](x: Scalar[dtype], low: Scalar[dtype], high: Scalar[dtype]) -> Scalar[dtype]:
     """Clamp value to range."""
     if x < low:
         return low
@@ -1168,18 +1325,18 @@ fn clamp(x: Float64, low: Float64, high: Float64) -> Float64:
     return x
 
 
-fn abs(x: Float64) -> Float64:
+fn abs[dtype: DType](x: Scalar[dtype]) -> Scalar[dtype]:
     """Absolute value."""
-    return x if x >= 0.0 else -x
+    return x if x >= Scalar[dtype](0.0) else -x
 
 
-fn sign(x: Float64) -> Float64:
+fn sign[dtype: DType](x: Scalar[dtype]) -> Scalar[dtype]:
     """Sign of value."""
-    if x > 0.0:
-        return 1.0
-    elif x < 0.0:
-        return -1.0
-    return 0.0
+    if x > Scalar[dtype](0.0):
+        return Scalar[dtype](1.0)
+    elif x < Scalar[dtype](0.0):
+        return Scalar[dtype](-1.0)
+    return Scalar[dtype](0.0)
 
 
 fn min(a: Int, b: Int) -> Int:

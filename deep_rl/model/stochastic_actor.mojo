@@ -73,6 +73,97 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
         pass
 
     # =========================================================================
+    # Custom initialization for RL (small weights for stable initial policy)
+    # =========================================================================
+
+    @staticmethod
+    fn init_params_small(
+        mut params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        weight_scale: Float64 = 0.01,
+        log_std_init: Float64 = -0.5,
+    ):
+        """Initialize StochasticActor parameters with small weights.
+
+        This is crucial for stable RL training:
+        - Mean head: small weights so initial mean ≈ 0 (random policy)
+        - Log_std head: small weights + bias so initial std ≈ 0.6 (moderate exploration)
+
+        Args:
+            params: Parameter tensor to initialize in-place.
+            weight_scale: Scale for weight initialization (default 0.01).
+            log_std_init: Initial value for log_std bias (default -0.5, std≈0.6).
+        """
+        from random import random_float64
+
+        # Initialize mean head weights with small random values
+        var mean_W_size = Self.in_dim * Self.action_dim
+        for i in range(mean_W_size):
+            params[Self._mean_W_offset() + i] = Scalar[dtype](
+                (random_float64() * 2.0 - 1.0) * weight_scale
+            )
+
+        # Initialize mean head bias to 0
+        for i in range(Self.action_dim):
+            params[Self._mean_b_offset() + i] = Scalar[dtype](0.0)
+
+        # Initialize log_std head weights with small random values
+        var log_std_W_size = Self.in_dim * Self.action_dim
+        for i in range(log_std_W_size):
+            params[Self._log_std_W_offset() + i] = Scalar[dtype](
+                (random_float64() * 2.0 - 1.0) * weight_scale
+            )
+
+        # Initialize log_std head bias to log_std_init
+        for i in range(Self.action_dim):
+            params[Self._log_std_b_offset() + i] = Scalar[dtype](log_std_init)
+
+    @staticmethod
+    fn init_params_with_mean_bias(
+        mut params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        mean_biases: List[Float64],
+        weight_scale: Float64 = 0.01,
+        log_std_init: Float64 = -0.5,
+    ):
+        """Initialize StochasticActor with per-action mean biases.
+
+        This is useful for environments where the default action should not be
+        centered at 0. For example, in CarRacing:
+        - action 0 (steering): bias = 0 (centered)
+        - action 1 (gas): bias = 2.0 (tanh ≈ 0.96, maps to gas ≈ 0.98)
+        - action 2 (brake): bias = -2.0 (tanh ≈ -0.96, maps to brake ≈ 0.02)
+
+        Args:
+            params: Parameter tensor to initialize in-place.
+            mean_biases: Per-action bias values (length must match action_dim).
+            weight_scale: Scale for weight initialization (default 0.01).
+            log_std_init: Initial value for log_std bias (default -0.5, std≈0.6).
+        """
+        from random import random_float64
+
+        # Initialize mean head weights with small random values
+        var mean_W_size = Self.in_dim * Self.action_dim
+        for i in range(mean_W_size):
+            params[Self._mean_W_offset() + i] = Scalar[dtype](
+                (random_float64() * 2.0 - 1.0) * weight_scale
+            )
+
+        # Initialize mean head bias with provided per-action biases
+        for i in range(Self.action_dim):
+            var bias = mean_biases[i] if i < len(mean_biases) else 0.0
+            params[Self._mean_b_offset() + i] = Scalar[dtype](bias)
+
+        # Initialize log_std head weights with small random values
+        var log_std_W_size = Self.in_dim * Self.action_dim
+        for i in range(log_std_W_size):
+            params[Self._log_std_W_offset() + i] = Scalar[dtype](
+                (random_float64() * 2.0 - 1.0) * weight_scale
+            )
+
+        # Initialize log_std head bias to log_std_init
+        for i in range(Self.action_dim):
+            params[Self._log_std_b_offset() + i] = Scalar[dtype](log_std_init)
+
+    # =========================================================================
     # Helper: Get parameter offsets
     # =========================================================================
 
@@ -627,7 +718,6 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
             cache: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
             ],
-            batch_size: Int,
         ):
             Self.forward_kernel_impl[BATCH](
                 output,

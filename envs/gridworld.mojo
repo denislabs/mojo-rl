@@ -57,6 +57,7 @@ struct GridWorldEnv(DiscreteEnv):
     Rewards: -1 per step, +10 for reaching goal.
     """
 
+    comptime dtype = DType.float64
     comptime StateType = GridState
     comptime ActionType = GridAction
 
@@ -87,7 +88,9 @@ struct GridWorldEnv(DiscreteEnv):
         """Return number of actions (4 directions)."""
         return 4
 
-    fn step(mut self, action: GridAction) -> Tuple[GridState, Float64, Bool]:
+    fn step(
+        mut self, action: GridAction
+    ) -> Tuple[GridState, Scalar[Self.dtype], Bool]:
         """Take an action and return (next_state, reward, done)."""
         var new_x = self.state.x
         var new_y = self.state.y
@@ -104,7 +107,7 @@ struct GridWorldEnv(DiscreteEnv):
         self.state = GridState(new_x, new_y)
 
         var done = self.state == self.goal
-        var reward: Float64 = 10.0 if done else -1.0
+        var reward: Scalar[Self.dtype] = 10.0 if done else -1.0
 
         return (self.state, reward, done)
 

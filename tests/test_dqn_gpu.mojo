@@ -54,7 +54,7 @@ fn main() raises:
     # =========================================================================
 
     with DeviceContext() as ctx:
-        var env = CartPoleEnv()
+        var env = CartPoleEnv[DType.float64]()
         var agent = DQNAgent[
             OBS_DIM,
             NUM_ACTIONS,

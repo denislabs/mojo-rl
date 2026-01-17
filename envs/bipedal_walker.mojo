@@ -194,6 +194,27 @@ struct BipedalWalkerState(Copyable, ImplicitlyCopyable, Movable, State):
             result.append(self.lidar[i])
         return result^
 
+    fn to_list_typed[dtype: DType](self) -> List[Scalar[dtype]]:
+        """Convert to 24D list with specified dtype."""
+        var result = List[Scalar[dtype]]()
+        result.append(Scalar[dtype](self.hull_angle))
+        result.append(Scalar[dtype](self.hull_angular_velocity))
+        result.append(Scalar[dtype](self.vel_x))
+        result.append(Scalar[dtype](self.vel_y))
+        result.append(Scalar[dtype](self.hip1_angle))
+        result.append(Scalar[dtype](self.hip1_speed))
+        result.append(Scalar[dtype](self.knee1_angle))
+        result.append(Scalar[dtype](self.knee1_speed))
+        result.append(Scalar[dtype](self.leg1_contact))
+        result.append(Scalar[dtype](self.hip2_angle))
+        result.append(Scalar[dtype](self.hip2_speed))
+        result.append(Scalar[dtype](self.knee2_angle))
+        result.append(Scalar[dtype](self.knee2_speed))
+        result.append(Scalar[dtype](self.leg2_contact))
+        for i in range(NUM_LIDAR):
+            result.append(Scalar[dtype](self.lidar[i]))
+        return result^
+
 
 # ===== Action Struct =====
 
@@ -229,7 +250,7 @@ struct BipedalWalkerAction(Action, Copyable, ImplicitlyCopyable, Movable):
 # ===== Environment =====
 
 
-struct BipedalWalkerEnv(BoxContinuousActionEnv):
+struct BipedalWalkerEnv[DTYPE: DType](BoxContinuousActionEnv):
     """Native Mojo BipedalWalker environment.
 
     Implements BoxContinuousActionEnv for continuous control algorithms:
@@ -240,6 +261,7 @@ struct BipedalWalkerEnv(BoxContinuousActionEnv):
     """
 
     # Type aliases for trait conformance
+    comptime dtype = Self.DTYPE
     comptime StateType = BipedalWalkerState
     comptime ActionType = BipedalWalkerAction
 
@@ -314,11 +336,12 @@ struct BipedalWalkerEnv(BoxContinuousActionEnv):
 
     fn step(
         mut self, action: Self.ActionType
-    ) -> Tuple[Self.StateType, Float64, Bool]:
+    ) -> Tuple[Self.StateType, Scalar[Self.dtype], Bool]:
         """Take action and return (next_state, reward, done)."""
-        return self.step_continuous_4d(
+        var result = self.step_continuous_4d(
             action.hip1, action.knee1, action.hip2, action.knee2
         )
+        return (result[0], Scalar[Self.dtype](result[1]), result[2])
 
     fn get_state(self) -> Self.StateType:
         """Get current state."""
@@ -338,14 +361,14 @@ struct BipedalWalkerEnv(BoxContinuousActionEnv):
 
     # ===== BoxContinuousActionEnv Trait Methods =====
 
-    fn get_obs_list(self) -> List[Float64]:
+    fn get_obs_list(self) -> List[Scalar[Self.dtype]]:
         """Return 24D observation as list."""
-        return self._get_observation().to_list()
+        return self._get_observation().to_list_typed[Self.dtype]()
 
-    fn reset_obs_list(mut self) -> List[Float64]:
+    fn reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
         """Reset and return initial observation."""
         var state = self.reset()
-        return state.to_list()
+        return state.to_list_typed[Self.dtype]()
 
     fn obs_dim(self) -> Int:
         """Observation dimension: 24."""
@@ -355,20 +378,21 @@ struct BipedalWalkerEnv(BoxContinuousActionEnv):
         """Action dimension: 4."""
         return 4
 
-    fn action_low(self) -> Float64:
+    fn action_low(self) -> Scalar[Self.dtype]:
         """Action lower bound: -1.0."""
-        return -1.0
+        return Scalar[Self.dtype](-1.0)
 
-    fn action_high(self) -> Float64:
+    fn action_high(self) -> Scalar[Self.dtype]:
         """Action upper bound: 1.0."""
-        return 1.0
+        return Scalar[Self.dtype](1.0)
 
     fn step_continuous(
-        mut self, action: Float64
-    ) -> Tuple[List[Float64], Float64, Bool]:
+        mut self, action: Scalar[Self.dtype]
+    ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
         """Step with single action (applies to all joints)."""
-        var result = self.step_continuous_4d(action, action, action, action)
-        return (result[0].to_list(), result[1], result[2])
+        var action_f64 = Float64(action)
+        var result = self.step_continuous_4d(action_f64, action_f64, action_f64, action_f64)
+        return (result[0].to_list_typed[Self.dtype](), Scalar[Self.dtype](result[1]), result[2])
 
     # ===== Main Step Function =====
 
@@ -461,15 +485,15 @@ struct BipedalWalkerEnv(BoxContinuousActionEnv):
 
     fn step_continuous_vec(
         mut self,
-        action: List[Float64],
-    ) -> Tuple[List[Float64], Float64, Bool]:
+        action: List[Scalar[Self.dtype]],
+    ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
         """Take action as list and return (obs, reward, done)."""
-        var hip1 = action[0] if len(action) > 0 else 0.0
-        var knee1 = action[1] if len(action) > 1 else 0.0
-        var hip2 = action[2] if len(action) > 2 else 0.0
-        var knee2 = action[3] if len(action) > 3 else 0.0
+        var hip1 = Float64(action[0]) if len(action) > 0 else 0.0
+        var knee1 = Float64(action[1]) if len(action) > 1 else 0.0
+        var hip2 = Float64(action[2]) if len(action) > 2 else 0.0
+        var knee2 = Float64(action[3]) if len(action) > 3 else 0.0
         var result = self.step_continuous_4d(hip1, knee1, hip2, knee2)
-        return (result[0].to_list(), result[1], result[2])
+        return (result[0].to_list_typed[Self.dtype](), Scalar[Self.dtype](result[1]), result[2])
 
     # ===== Internal Methods =====
 

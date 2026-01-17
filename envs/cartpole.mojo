@@ -117,7 +117,9 @@ struct CartPoleAction(Action, Copyable, ImplicitlyCopyable, Movable):
         return Self(direction=1)
 
 
-struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
+struct CartPoleEnv[DTYPE: DType](
+    BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv
+):
     """Native Mojo CartPole environment with integrated SDL2 rendering.
 
     State: [cart_position, cart_velocity, pole_angle, pole_angular_velocity] (4D).
@@ -134,12 +136,13 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
     - GPUDiscreteEnv: for fused GPU kernels (A2C, PPO, etc.)
 
     Usage:
-        env = CartPoleEnv()
+        env = CartPoleEnv[DType.float64]()
         obs = env.reset()
         obs, reward, done = env.step(action)
     """
 
     # Type aliases for CPU trait conformance
+    comptime dtype = Self.DTYPE
     comptime StateType = CartPoleState
     comptime ActionType = CartPoleAction
 
@@ -149,15 +152,15 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
     comptime NUM_ACTIONS: Int = 2  # Left (0) or Right (1)
 
     # Current state
-    var x: Float64  # Cart position
-    var x_dot: Float64  # Cart velocity
-    var theta: Float64  # Pole angle (radians, 0 = upright)
-    var theta_dot: Float64  # Pole angular velocity
+    var x: Scalar[Self.dtype]  # Cart position
+    var x_dot: Scalar[Self.dtype]  # Cart velocity
+    var theta: Scalar[Self.dtype]  # Pole angle (radians, 0 = upright)
+    var theta_dot: Scalar[Self.dtype]  # Pole angular velocity
 
     # Episode tracking
     var steps: Int
     var done: Bool
-    var total_reward: Float64
+    var total_reward: Scalar[Self.dtype]
 
     # Discretization settings (for DiscreteEnv)
     var num_bins: Int
@@ -201,7 +204,7 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
 
     fn step(
         mut self, action: CartPoleAction
-    ) -> Tuple[CartPoleState, Float64, Bool]:
+    ) -> Tuple[CartPoleState, Scalar[Self.dtype], Bool]:
         """Take action and return (state, reward, done).
 
         Args:
@@ -210,7 +213,9 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
         Physics uses Euler integration (same as Gymnasium).
         """
         # Determine force direction
-        var force = FORCE_MAG if action.direction == 1 else -FORCE_MAG
+        var force = Scalar[Self.dtype](
+            FORCE_MAG
+        ) if action.direction == 1 else Scalar[Self.dtype](-FORCE_MAG)
 
         # Physics calculations
         var costheta = cos(self.theta)
@@ -219,30 +224,41 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
         # Equations of motion (derived from Lagrangian mechanics)
         var temp = (
             force
-            + POLE_MASS_LENGTH * self.theta_dot * self.theta_dot * sintheta
-        ) / TOTAL_MASS
+            + Scalar[Self.dtype](POLE_MASS_LENGTH)
+            * self.theta_dot
+            * self.theta_dot
+            * sintheta
+        ) / Scalar[Self.dtype](TOTAL_MASS)
 
-        var thetaacc = (GRAVITY * sintheta - costheta * temp) / (
-            POLE_HALF_LENGTH
-            * (4.0 / 3.0 - POLE_MASS * costheta * costheta / TOTAL_MASS)
+        var thetaacc = (
+            Scalar[Self.dtype](GRAVITY) * sintheta - costheta * temp
+        ) / (
+            Scalar[Self.dtype](POLE_HALF_LENGTH)
+            * (
+                Scalar[Self.dtype](4.0 / 3.0)
+                - Scalar[Self.dtype](POLE_MASS) * costheta * costheta
+                / Scalar[Self.dtype](TOTAL_MASS)
+            )
         )
 
-        var xacc = temp - POLE_MASS_LENGTH * thetaacc * costheta / TOTAL_MASS
+        var xacc = temp - Scalar[Self.dtype](
+            POLE_MASS_LENGTH
+        ) * thetaacc * costheta / Scalar[Self.dtype](TOTAL_MASS)
 
         # Euler integration
-        self.x = self.x + TAU * self.x_dot
-        self.x_dot = self.x_dot + TAU * xacc
-        self.theta = self.theta + TAU * self.theta_dot
-        self.theta_dot = self.theta_dot + TAU * thetaacc
+        self.x = self.x + Scalar[Self.dtype](TAU) * self.x_dot
+        self.x_dot = self.x_dot + Scalar[Self.dtype](TAU) * xacc
+        self.theta = self.theta + Scalar[Self.dtype](TAU) * self.theta_dot
+        self.theta_dot = self.theta_dot + Scalar[Self.dtype](TAU) * thetaacc
 
         self.steps += 1
 
         # Check termination conditions
         var terminated = (
-            self.x < -X_THRESHOLD
-            or self.x > X_THRESHOLD
-            or self.theta < -THETA_THRESHOLD
-            or self.theta > THETA_THRESHOLD
+            self.x < Scalar[Self.dtype](-X_THRESHOLD)
+            or self.x > Scalar[Self.dtype](X_THRESHOLD)
+            or self.theta < Scalar[Self.dtype](-THETA_THRESHOLD)
+            or self.theta > Scalar[Self.dtype](THETA_THRESHOLD)
         )
 
         var truncated = self.steps >= MAX_STEPS
@@ -250,7 +266,7 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
         self.done = terminated or truncated
 
         # Reward: +1 for every step the pole stays upright
-        var reward: Float64 = 1.0 if not terminated else 0.0
+        var reward: Scalar[Self.dtype] = 1.0 if not terminated else 0.0
         self.total_reward += reward
 
         return (CartPoleState(index=self._discretize_obs()), reward, self.done)
@@ -331,26 +347,28 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
     # ContinuousStateEnv / BoxDiscreteActionEnv trait methods
     # ========================================================================
 
-    fn get_obs_list(self) -> List[Float64]:
+    fn get_obs_list(self) -> List[Scalar[Self.dtype]]:
         """Return current continuous observation as a flexible list (trait method).
         """
-        var obs = List[Float64](capacity=4)
+        var obs = List[Scalar[Self.dtype]](capacity=4)
         obs.append(self.x)
         obs.append(self.x_dot)
         obs.append(self.theta)
         obs.append(self.theta_dot)
         return obs^
 
-    fn reset_obs_list(mut self) -> List[Float64]:
+    fn reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
         """Reset environment and return initial observation as list (trait method).
         """
         _ = self.reset()
         return self.get_obs_list()
 
-    fn step_obs(mut self, action: Int) -> Tuple[List[Float64], Float64, Bool]:
+    fn step_obs(
+        mut self, action: Int
+    ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
         """Take action and return (obs_list, reward, done) - trait method.
 
-        This is the BoxDiscreteActionEnv trait method using List[Float64].
+        This is the BoxDiscreteActionEnv trait method using List[Scalar].
         For performance-critical code, use step_raw() which returns SIMD.
         """
         var result = self.step_raw(action)
@@ -375,7 +393,7 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
     @always_inline
     fn step_raw(
         mut self, action: Int
-    ) -> Tuple[SIMD[DType.float64, 4], Float64, Bool]:
+    ) -> Tuple[SIMD[DType.float64, 4], Scalar[Self.dtype], Bool]:
         """Take action and return raw continuous observation.
 
         Use this for function approximation methods that need the continuous
@@ -388,42 +406,55 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
             Tuple of (observation, reward, done).
         """
         # Inline physics for maximum performance (avoid step() call overhead)
-        var force = FORCE_MAG if action == 1 else -FORCE_MAG
+        var force = Scalar[Self.dtype](
+            FORCE_MAG
+        ) if action == 1 else Scalar[Self.dtype](-FORCE_MAG)
 
         var costheta = cos(self.theta)
         var sintheta = sin(self.theta)
 
         var temp = (
             force
-            + POLE_MASS_LENGTH * self.theta_dot * self.theta_dot * sintheta
-        ) / TOTAL_MASS
+            + Scalar[Self.dtype](POLE_MASS_LENGTH)
+            * self.theta_dot
+            * self.theta_dot
+            * sintheta
+        ) / Scalar[Self.dtype](TOTAL_MASS)
 
-        var thetaacc = (GRAVITY * sintheta - costheta * temp) / (
-            POLE_HALF_LENGTH
-            * (4.0 / 3.0 - POLE_MASS * costheta * costheta / TOTAL_MASS)
+        var thetaacc = (
+            Scalar[Self.dtype](GRAVITY) * sintheta - costheta * temp
+        ) / (
+            Scalar[Self.dtype](POLE_HALF_LENGTH)
+            * (
+                Scalar[Self.dtype](4.0 / 3.0)
+                - Scalar[Self.dtype](POLE_MASS) * costheta * costheta
+                / Scalar[Self.dtype](TOTAL_MASS)
+            )
         )
 
-        var xacc = temp - POLE_MASS_LENGTH * thetaacc * costheta / TOTAL_MASS
+        var xacc = temp - Scalar[Self.dtype](
+            POLE_MASS_LENGTH
+        ) * thetaacc * costheta / Scalar[Self.dtype](TOTAL_MASS)
 
         # Euler integration
-        self.x = self.x + TAU * self.x_dot
-        self.x_dot = self.x_dot + TAU * xacc
-        self.theta = self.theta + TAU * self.theta_dot
-        self.theta_dot = self.theta_dot + TAU * thetaacc
+        self.x = self.x + Scalar[Self.dtype](TAU) * self.x_dot
+        self.x_dot = self.x_dot + Scalar[Self.dtype](TAU) * xacc
+        self.theta = self.theta + Scalar[Self.dtype](TAU) * self.theta_dot
+        self.theta_dot = self.theta_dot + Scalar[Self.dtype](TAU) * thetaacc
 
         self.steps += 1
 
         # Check termination
         var terminated = (
-            self.x < -X_THRESHOLD
-            or self.x > X_THRESHOLD
-            or self.theta < -THETA_THRESHOLD
-            or self.theta > THETA_THRESHOLD
+            self.x < Scalar[Self.dtype](-X_THRESHOLD)
+            or self.x > Scalar[Self.dtype](X_THRESHOLD)
+            or self.theta < Scalar[Self.dtype](-THETA_THRESHOLD)
+            or self.theta > Scalar[Self.dtype](THETA_THRESHOLD)
         )
         var truncated = self.steps >= MAX_STEPS
         self.done = terminated or truncated
 
-        var reward: Float64 = 1.0 if not terminated else 0.0
+        var reward: Scalar[Self.dtype] = 1.0 if not terminated else 0.0
         self.total_reward += reward
 
         return (self._get_obs(), reward, self.done)
@@ -450,7 +481,10 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
         var camera = renderer.make_camera_at(0.0, 0.5, zoom, True)
 
         # World coordinates: cart moves along X, ground is at Y=0
-        var cart_pos = Vec2(self.x, 0.15)  # Cart center slightly above ground
+        # Cast to Float64 for rendering
+        var x_f64 = Float64(self.x)
+        var theta_f64 = Float64(self.theta)
+        var cart_pos = Vec2(x_f64, 0.15)  # Cart center slightly above ground
         var cart_width_world = 0.4
         var cart_height_world = 0.24
 
@@ -475,12 +509,12 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
         )
 
         # Draw pole - starts at top of cart, rotates around pivot
-        var pivot = Vec2(self.x, cart_pos.y + cart_height_world / 2.0)
+        var pivot = Vec2(x_f64, cart_pos.y + cart_height_world / 2.0)
         var pole_length = 0.5  # Half the pole length in world units
         # theta=0 means upright (positive Y), positive theta rotates clockwise
         var pole_end = Vec2(
-            pivot.x + pole_length * sin(self.theta),
-            pivot.y + pole_length * cos(self.theta),
+            pivot.x + pole_length * sin(theta_f64),
+            pivot.y + pole_length * cos(theta_f64),
         )
         renderer.draw_link(pivot, pole_end, camera, pole_color_, 10)
 
@@ -492,14 +526,14 @@ struct CartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv):
         var wheel_y = cart_pos.y - cart_height_world / 2.0
         var wheel_offset = cart_width_world / 2.0 - 0.08
         renderer.draw_circle_world(
-            Vec2(self.x - wheel_offset, wheel_y),
+            Vec2(x_f64 - wheel_offset, wheel_y),
             wheel_radius,
             camera,
             wheel_color,
             True,
         )
         renderer.draw_circle_world(
-            Vec2(self.x + wheel_offset, wheel_y),
+            Vec2(x_f64 + wheel_offset, wheel_y),
             wheel_radius,
             camera,
             wheel_color,

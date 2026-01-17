@@ -60,7 +60,7 @@ fn main() raises:
     print("Using tabular Q-learning with", num_states, "states")
     print("")
 
-    var env_q = AcrobotEnv(num_bins=num_bins)
+    var env_q = AcrobotEnv[DType.float64](num_bins=num_bins)
     var agent_q = QLearningAgent(
         num_states=num_states,
         num_actions=env_q.num_actions(),
@@ -95,7 +95,7 @@ fn main() raises:
     print("SARSA(lambda) with eligibility traces for faster credit assignment.")
     print("")
 
-    var env_sl = AcrobotEnv(num_bins=num_bins)
+    var env_sl = AcrobotEnv[DType.float64](num_bins=num_bins)
     var agent_sl = SARSALambdaAgent(
         num_states=num_states,
         num_actions=env_sl.num_actions(),

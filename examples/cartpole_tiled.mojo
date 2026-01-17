@@ -41,7 +41,7 @@ fn main() raises:
     )
 
     # Create environment
-    var env = CartPoleEnv()
+    var env = CartPoleEnv[DType.float64]()
 
     var metrics = agent.train(
         env,

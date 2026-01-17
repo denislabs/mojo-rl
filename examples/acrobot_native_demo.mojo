@@ -16,7 +16,7 @@ fn main() raises:
     print("Close the window or press Ctrl+C to exit\n")
 
     # Create environment and renderer
-    var env = AcrobotEnv(num_bins=6)
+    var env = AcrobotEnv[DType.float64](num_bins=6)
     var renderer = RendererBase(500, 500, 15, "Acrobot")
 
     # Run episodes with rendering

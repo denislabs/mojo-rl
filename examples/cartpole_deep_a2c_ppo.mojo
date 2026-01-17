@@ -54,7 +54,7 @@ fn main() raises:
     print("Training Deep A2C...")
     print("=" * 60)
 
-    var env_a2c = CartPoleEnv()
+    var env_a2c = CartPoleEnv[DType.float64]()
 
     # Create A2C agent
     # CartPole: 4D observations, 2 discrete actions
@@ -94,7 +94,7 @@ fn main() raises:
     print("Training Deep PPO...")
     print("=" * 60)
 
-    var env_ppo = CartPoleEnv()
+    var env_ppo = CartPoleEnv[DType.float64]()
 
     # Create PPO agent
     var ppo_agent = DeepPPOAgent[

@@ -32,7 +32,7 @@ fn main() raises:
     print("-" * 60)
 
     # Create environment
-    var env = CartPoleEnv()
+    var env = CartPoleEnv[DType.float64]()
 
     # Create polynomial feature extractor with normalization
     var features = CartPoleEnv.make_poly_features(degree=2)

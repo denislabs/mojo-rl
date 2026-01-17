@@ -68,16 +68,16 @@ struct ContactListener(Copyable, Movable):
         self.enabled = other.enabled
 
 
-struct World(Copyable, Movable):
+struct World[dtype: DType](Copyable, Movable):
     """Physics world simulation manager."""
 
-    var gravity: Vec2
+    var gravity: Vec2[Self.dtype]
 
     # Storage
-    var bodies: List[Body]
-    var fixtures: List[Fixture]
-    var joints: List[RevoluteJoint]
-    var contacts: List[Contact]
+    var bodies: List[Body[Self.dtype]]
+    var fixtures: List[Fixture[Self.dtype]]
+    var joints: List[RevoluteJoint[Self.dtype]]
+    var contacts: List[Contact[Self.dtype]]
 
     # Free lists for reuse
     var free_body_indices: List[Int]
@@ -90,13 +90,15 @@ struct World(Copyable, Movable):
     var begin_contacts: List[Tuple[Int, Int]]  # (fixture_a, fixture_b) pairs
     var end_contacts: List[Tuple[Int, Int]]
 
-    fn __init__(out self, gravity: Vec2 = Vec2(0.0, -10.0)):
+    fn __init__(
+        out self, gravity: Vec2[Self.dtype] = Vec2[Self.dtype](0.0, -10.0)
+    ):
         """Create world with given gravity."""
         self.gravity = gravity
-        self.bodies = List[Body]()
-        self.fixtures = List[Fixture]()
-        self.joints = List[RevoluteJoint]()
-        self.contacts = List[Contact]()
+        self.bodies = List[Body[Self.dtype]]()
+        self.fixtures = List[Fixture[Self.dtype]]()
+        self.joints = List[RevoluteJoint[Self.dtype]]()
+        self.contacts = List[Contact[Self.dtype]]()
         self.free_body_indices = List[Int]()
         self.free_fixture_indices = List[Int]()
         self.contact_listener = ContactListener()
@@ -108,11 +110,11 @@ struct World(Copyable, Movable):
     fn create_body(
         mut self,
         body_type: Int,
-        position: Vec2,
-        angle: Float64 = 0.0,
+        position: Vec2[Self.dtype],
+        angle: Scalar[Self.dtype] = 0.0,
     ) -> Int:
         """Create a new body and return its index."""
-        var body = Body(body_type, position, angle)
+        var body = Body[Self.dtype](body_type, position, angle)
 
         # Reuse freed index if available
         if len(self.free_body_indices) > 0:
@@ -131,7 +133,7 @@ struct World(Copyable, Movable):
             return
 
         # Clear body data
-        self.bodies[body_idx] = Body()
+        self.bodies[body_idx] = Body[Self.dtype]()
         self.bodies[body_idx].body_type = -1  # Mark as destroyed
 
         # Add to free list
@@ -139,11 +141,11 @@ struct World(Copyable, Movable):
 
         # TODO: Also destroy associated fixtures and joints
 
-    fn get_body_copy(self, idx: Int) -> Body:
+    fn get_body_copy(self, idx: Int) -> Body[Self.dtype]:
         """Get body by index (returns copy)."""
         return self.bodies[idx].copy()
 
-    fn get_body_ref(mut self, idx: Int) -> ref [self.bodies] Body:
+    fn get_body_ref(mut self, idx: Int) -> ref [self.bodies] Body[Self.dtype]:
         """Get mutable reference to body."""
         return self.bodies[idx]
 
@@ -152,14 +154,14 @@ struct World(Copyable, Movable):
     fn create_polygon_fixture(
         mut self,
         body_idx: Int,
-        var polygon: PolygonShape,
-        density: Float64 = 1.0,
-        friction: Float64 = 0.2,
-        restitution: Float64 = 0.0,
+        var polygon: PolygonShape[Self.dtype],
+        density: Scalar[Self.dtype] = 1.0,
+        friction: Scalar[Self.dtype] = 0.2,
+        restitution: Scalar[Self.dtype] = 0.0,
         filter: Filter = Filter(),
     ) -> Int:
         """Create polygon fixture attached to body."""
-        var fixture = Fixture.from_polygon(
+        var fixture = Fixture[Self.dtype].from_polygon(
             body_idx, polygon^, density, friction, restitution, filter
         )
 
@@ -184,14 +186,14 @@ struct World(Copyable, Movable):
     fn create_circle_fixture(
         mut self,
         body_idx: Int,
-        var circle: CircleShape,
-        density: Float64 = 1.0,
-        friction: Float64 = 0.2,
-        restitution: Float64 = 0.0,
+        var circle: CircleShape[Self.dtype],
+        density: Scalar[Self.dtype] = 1.0,
+        friction: Scalar[Self.dtype] = 0.2,
+        restitution: Scalar[Self.dtype] = 0.0,
         filter: Filter = Filter(),
     ) -> Int:
         """Create circle fixture attached to body."""
-        var fixture = Fixture.from_circle(
+        var fixture = Fixture[Self.dtype].from_circle(
             body_idx, circle^, density, friction, restitution, filter
         )
 
@@ -216,9 +218,9 @@ struct World(Copyable, Movable):
     fn create_edge_fixture(
         mut self,
         body_idx: Int,
-        var edge: EdgeShape,
-        friction: Float64 = 0.1,
-        restitution: Float64 = 0.0,
+        var edge: EdgeShape[Self.dtype],
+        friction: Scalar[Self.dtype] = 0.1,
+        restitution: Scalar[Self.dtype] = 0.0,
         filter: Filter = Filter(),
     ) -> Int:
         """Create edge fixture attached to body."""
@@ -246,9 +248,9 @@ struct World(Copyable, Movable):
         if self.bodies[body_idx].body_type != BODY_DYNAMIC:
             return
 
-        var total_mass: Float64 = 0.0
-        var total_inertia: Float64 = 0.0
-        var center = Vec2.zero()
+        var total_mass: Scalar[Self.dtype] = 0.0
+        var total_inertia: Scalar[Self.dtype] = 0.0
+        var center = Vec2[Self.dtype].zero()
 
         var start = self.bodies[body_idx].fixture_start
         var count = self.bodies[body_idx].fixture_count
@@ -278,20 +280,22 @@ struct World(Copyable, Movable):
         mut self,
         body_a_idx: Int,
         body_b_idx: Int,
-        local_anchor_a: Vec2,
-        local_anchor_b: Vec2,
+        local_anchor_a: Vec2[Self.dtype],
+        local_anchor_b: Vec2[Self.dtype],
         enable_motor: Bool = False,
-        motor_speed: Float64 = 0.0,
-        max_motor_torque: Float64 = 0.0,
+        motor_speed: Scalar[Self.dtype] = 0.0,
+        max_motor_torque: Scalar[Self.dtype] = 0.0,
         enable_limit: Bool = False,
-        lower_angle: Float64 = 0.0,
-        upper_angle: Float64 = 0.0,
+        lower_angle: Scalar[Self.dtype] = 0.0,
+        upper_angle: Scalar[Self.dtype] = 0.0,
     ) -> Int:
         """Create revolute joint and return its index."""
         # Compute reference angle from current body angles
-        var ref_angle = self.bodies[body_b_idx].angle - self.bodies[body_a_idx].angle
+        var ref_angle = (
+            self.bodies[body_b_idx].angle - self.bodies[body_a_idx].angle
+        )
 
-        var joint = RevoluteJoint(
+        var joint = RevoluteJoint[Self.dtype](
             body_a_idx,
             body_b_idx,
             local_anchor_a,
@@ -313,7 +317,7 @@ struct World(Copyable, Movable):
 
     fn step(
         mut self,
-        dt: Float64,
+        dt: Scalar[Self.dtype],
         velocity_iterations: Int = DEFAULT_VELOCITY_ITERATIONS,
         position_iterations: Int = DEFAULT_POSITION_ITERATIONS,
     ):
@@ -363,13 +367,16 @@ struct World(Copyable, Movable):
             if self.bodies[i].body_type >= 0:  # Not destroyed
                 self.bodies[i].update_sleep_state(dt)
 
-    fn _integrate_velocities(mut self, dt: Float64):
+    fn _integrate_velocities(mut self, dt: Scalar[Self.dtype]):
         """Apply forces and integrate velocities."""
         for i in range(len(self.bodies)):
-            if self.bodies[i].body_type == BODY_DYNAMIC and self.bodies[i].awake:
+            if (
+                self.bodies[i].body_type == BODY_DYNAMIC
+                and self.bodies[i].awake
+            ):
                 self.bodies[i].integrate_velocities(self.gravity, dt)
 
-    fn _integrate_positions(mut self, dt: Float64):
+    fn _integrate_positions(mut self, dt: Scalar[Self.dtype]):
         """Integrate positions from velocities."""
         for i in range(len(self.bodies)):
             if self.bodies[i].body_type == BODY_DYNAMIC:
@@ -395,7 +402,7 @@ struct World(Copyable, Movable):
                 self._check_collision(i, j)
 
         # Remove non-touching contacts
-        var new_contacts = List[Contact]()
+        var new_contacts = List[Contact[Self.dtype]]()
         for i in range(len(self.contacts)):
             if self.contacts[i].touching:
                 new_contacts.append(self.contacts[i].copy())
@@ -422,7 +429,7 @@ struct World(Copyable, Movable):
         var body_b = self.bodies[fix_b.body_idx].copy()
 
         # Narrow phase
-        var manifold = ContactManifold()
+        var manifold = ContactManifold[Self.dtype]()
 
         # Track which fixture is edge (for consistent ordering)
         var actual_fix_a_idx = fix_a_idx
@@ -433,7 +440,9 @@ struct World(Copyable, Movable):
             manifold = collide_edge_polygon(
                 fix_a.edge, body_a.transform, fix_b.polygon, body_b.transform
             )
-        elif fix_b.shape_type == SHAPE_EDGE and fix_a.shape_type == SHAPE_POLYGON:
+        elif (
+            fix_b.shape_type == SHAPE_EDGE and fix_a.shape_type == SHAPE_POLYGON
+        ):
             manifold = collide_edge_polygon(
                 fix_b.edge, body_b.transform, fix_a.polygon, body_a.transform
             )
@@ -442,11 +451,15 @@ struct World(Copyable, Movable):
             actual_fix_b_idx = fix_a_idx
 
         # Edge-Circle
-        elif fix_a.shape_type == SHAPE_EDGE and fix_b.shape_type == SHAPE_CIRCLE:
+        elif (
+            fix_a.shape_type == SHAPE_EDGE and fix_b.shape_type == SHAPE_CIRCLE
+        ):
             manifold = collide_edge_circle(
                 fix_a.edge, body_a.transform, fix_b.circle, body_b.transform
             )
-        elif fix_b.shape_type == SHAPE_EDGE and fix_a.shape_type == SHAPE_CIRCLE:
+        elif (
+            fix_b.shape_type == SHAPE_EDGE and fix_a.shape_type == SHAPE_CIRCLE
+        ):
             manifold = collide_edge_circle(
                 fix_b.edge, body_b.transform, fix_a.circle, body_a.transform
             )
@@ -454,7 +467,10 @@ struct World(Copyable, Movable):
             actual_fix_b_idx = fix_a_idx
 
         # Polygon-Polygon
-        elif fix_a.shape_type == SHAPE_POLYGON and fix_b.shape_type == SHAPE_POLYGON:
+        elif (
+            fix_a.shape_type == SHAPE_POLYGON
+            and fix_b.shape_type == SHAPE_POLYGON
+        ):
             manifold = collide_polygon_polygon(
                 fix_a.polygon, body_a.transform, fix_b.polygon, body_b.transform
             )
@@ -470,7 +486,8 @@ struct World(Copyable, Movable):
             for i in range(len(self.contacts)):
                 if (
                     self.contacts[i].manifold.fixture_a_idx == actual_fix_a_idx
-                    and self.contacts[i].manifold.fixture_b_idx == actual_fix_b_idx
+                    and self.contacts[i].manifold.fixture_b_idx
+                    == actual_fix_b_idx
                 ):
                     found_idx = i
                     break
@@ -481,7 +498,7 @@ struct World(Copyable, Movable):
                 self.contacts[found_idx].touching = True
             else:
                 # Create new contact
-                var contact = Contact()
+                var contact = Contact[Self.dtype]()
                 contact.manifold = manifold^
                 contact.body_a_idx = self.fixtures[actual_fix_a_idx].body_idx
                 contact.body_b_idx = self.fixtures[actual_fix_b_idx].body_idx
@@ -524,7 +541,7 @@ struct World(Copyable, Movable):
 
             var fix_a_idx = self.contacts[i].manifold.fixture_a_idx
             var fix_b_idx = self.contacts[i].manifold.fixture_b_idx
-            var restitution = max_f64(
+            var restitution = max(
                 self.fixtures[fix_a_idx].restitution,
                 self.fixtures[fix_b_idx].restitution,
             )
@@ -581,12 +598,9 @@ struct World(Copyable, Movable):
     fn is_body_contacting(self, body_idx: Int) -> Bool:
         """Check if body is in contact with anything."""
         for i in range(len(self.contacts)):
-            if (
-                self.contacts[i].touching
-                and (
-                    self.contacts[i].body_a_idx == body_idx
-                    or self.contacts[i].body_b_idx == body_idx
-                )
+            if self.contacts[i].touching and (
+                self.contacts[i].body_a_idx == body_idx
+                or self.contacts[i].body_b_idx == body_idx
             ):
                 return True
         return False
@@ -607,10 +621,10 @@ struct World(Copyable, Movable):
 
     fn raycast(
         self,
-        ray_start: Vec2,
-        ray_end: Vec2,
+        ray_start: Vec2[Self.dtype],
+        ray_end: Vec2[Self.dtype],
         filter_mask: UInt16 = 0xFFFF,
-    ) -> RaycastResult:
+    ) -> RaycastResult[Self.dtype]:
         """Cast ray against all fixtures and return closest hit.
 
         Args:
@@ -621,7 +635,7 @@ struct World(Copyable, Movable):
         Returns:
             RaycastResult with closest hit info
         """
-        var best_result = RaycastResult.no_hit()
+        var best_result = RaycastResult[Self.dtype].no_hit()
 
         for i in range(len(self.fixtures)):
             var fix = self.fixtures[i].copy()
@@ -635,12 +649,16 @@ struct World(Copyable, Movable):
                 continue
 
             var body = self.bodies[fix.body_idx].copy()
-            var result: RaycastResult
+            var result: RaycastResult[Self.dtype]
 
             if fix.shape_type == SHAPE_EDGE:
-                result = raycast_edge(ray_start, ray_end, fix.edge, body.transform)
+                result = raycast_edge(
+                    ray_start, ray_end, fix.edge, body.transform
+                )
             elif fix.shape_type == SHAPE_POLYGON:
-                result = raycast_polygon(ray_start, ray_end, fix.polygon, body.transform)
+                result = raycast_polygon(
+                    ray_start, ray_end, fix.polygon, body.transform
+                )
             else:
                 # Skip circles for now (lidar doesn't need them)
                 continue
@@ -653,11 +671,11 @@ struct World(Copyable, Movable):
 
     fn raycast_fixture_range(
         self,
-        ray_start: Vec2,
-        ray_end: Vec2,
+        ray_start: Vec2[Self.dtype],
+        ray_end: Vec2[Self.dtype],
         fixture_start: Int,
         fixture_count: Int,
-    ) -> RaycastResult:
+    ) -> RaycastResult[Self.dtype]:
         """Cast ray against a specific range of fixtures.
 
         Useful for testing against terrain only (for lidar).
@@ -671,9 +689,9 @@ struct World(Copyable, Movable):
         Returns:
             RaycastResult with closest hit info
         """
-        var best_result = RaycastResult.no_hit()
+        var best_result = RaycastResult[Self.dtype].no_hit()
 
-        var end_idx = min_i64(fixture_start + fixture_count, len(self.fixtures))
+        var end_idx = min(fixture_start + fixture_count, len(self.fixtures))
         for i in range(fixture_start, end_idx):
             var fix = self.fixtures[i].copy()
 
@@ -682,12 +700,16 @@ struct World(Copyable, Movable):
                 continue
 
             var body = self.bodies[fix.body_idx].copy()
-            var result: RaycastResult
+            var result: RaycastResult[Self.dtype]
 
             if fix.shape_type == SHAPE_EDGE:
-                result = raycast_edge(ray_start, ray_end, fix.edge, body.transform)
+                result = raycast_edge(
+                    ray_start, ray_end, fix.edge, body.transform
+                )
             elif fix.shape_type == SHAPE_POLYGON:
-                result = raycast_polygon(ray_start, ray_end, fix.polygon, body.transform)
+                result = raycast_polygon(
+                    ray_start, ray_end, fix.polygon, body.transform
+                )
             else:
                 continue
 
@@ -696,13 +718,3 @@ struct World(Copyable, Movable):
                 best_result.fixture_idx = i
 
         return best_result^
-
-
-fn max_f64(a: Float64, b: Float64) -> Float64:
-    """Maximum of two floats."""
-    return a if a > b else b
-
-
-fn min_i64(a: Int, b: Int) -> Int:
-    """Minimum of two integers."""
-    return a if a < b else b

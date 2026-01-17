@@ -20,31 +20,39 @@ comptime SHAPE_EDGE: Int = 2
 comptime MAX_POLYGON_VERTICES: Int = 8
 
 
-struct PolygonShape(Copyable, Movable):
+struct PolygonShape[dtype: DType](Copyable, Movable):
     """Convex polygon shape with up to MAX_POLYGON_VERTICES vertices.
 
     Vertices are stored in counter-clockwise order.
     Normals point outward from edges.
     """
 
-    var vertices: InlineArray[Vec2, MAX_POLYGON_VERTICES]
-    var normals: InlineArray[Vec2, MAX_POLYGON_VERTICES]
+    var vertices: InlineArray[Vec2[Self.dtype], MAX_POLYGON_VERTICES]
+    var normals: InlineArray[Vec2[Self.dtype], MAX_POLYGON_VERTICES]
     var count: Int
-    var centroid: Vec2
+    var centroid: Vec2[Self.dtype]
 
     fn __init__(out self):
         """Create empty polygon."""
-        self.vertices = InlineArray[Vec2, MAX_POLYGON_VERTICES](Vec2.zero())
-        self.normals = InlineArray[Vec2, MAX_POLYGON_VERTICES](Vec2.zero())
+        self.vertices = InlineArray[Vec2[Self.dtype], MAX_POLYGON_VERTICES](
+            Vec2[Self.dtype].zero()
+        )
+        self.normals = InlineArray[Vec2[Self.dtype], MAX_POLYGON_VERTICES](
+            Vec2[Self.dtype].zero()
+        )
         self.count = 0
-        self.centroid = Vec2.zero()
+        self.centroid = Vec2[Self.dtype].zero()
 
-    fn __init__(out self, vertices: List[Vec2]):
+    fn __init__(out self, vertices: List[Vec2[Self.dtype]]):
         """Create polygon from list of vertices (counter-clockwise order)."""
-        self.vertices = InlineArray[Vec2, MAX_POLYGON_VERTICES](Vec2.zero())
-        self.normals = InlineArray[Vec2, MAX_POLYGON_VERTICES](Vec2.zero())
+        self.vertices = InlineArray[Vec2[Self.dtype], MAX_POLYGON_VERTICES](
+            Vec2[Self.dtype].zero()
+        )
+        self.normals = InlineArray[Vec2[Self.dtype], MAX_POLYGON_VERTICES](
+            Vec2[Self.dtype].zero()
+        )
         self.count = min(len(vertices), MAX_POLYGON_VERTICES)
-        self.centroid = Vec2.zero()
+        self.centroid = Vec2[Self.dtype].zero()
 
         # Copy vertices
         for i in range(self.count):
@@ -55,7 +63,9 @@ struct PolygonShape(Copyable, Movable):
         self._compute_centroid()
 
     @staticmethod
-    fn from_box(half_width: Float64, half_height: Float64) -> Self:
+    fn from_box(
+        half_width: Scalar[Self.dtype], half_height: Scalar[Self.dtype]
+    ) -> Self:
         """Create box polygon centered at origin."""
         var result = Self()
         result.count = 4
@@ -69,7 +79,10 @@ struct PolygonShape(Copyable, Movable):
 
     @staticmethod
     fn from_box_offset(
-        half_width: Float64, half_height: Float64, center: Vec2, angle: Float64
+        half_width: Scalar[Self.dtype],
+        half_height: Scalar[Self.dtype],
+        center: Vec2[Self.dtype],
+        angle: Scalar[Self.dtype],
     ) -> Self:
         """Create box polygon with center offset and rotation."""
         from math import cos, sin
@@ -78,7 +91,7 @@ struct PolygonShape(Copyable, Movable):
         result.count = 4
 
         # Box vertices relative to center
-        var verts = InlineArray[Vec2, 4](Vec2.zero())
+        var verts = InlineArray[Vec2[Self.dtype], 4](Vec2[Self.dtype].zero())
         verts[0] = Vec2(-half_width, -half_height)
         verts[1] = Vec2(half_width, -half_height)
         verts[2] = Vec2(half_width, half_height)
@@ -112,9 +125,9 @@ struct PolygonShape(Copyable, Movable):
                 self.centroid = self.vertices[0]
             return
 
-        var area: Float64 = 0.0
-        var cx: Float64 = 0.0
-        var cy: Float64 = 0.0
+        var area: Scalar[Self.dtype] = 0.0
+        var cx: Scalar[Self.dtype] = 0.0
+        var cy: Scalar[Self.dtype] = 0.0
 
         for i in range(self.count):
             var p1 = self.vertices[i]
@@ -135,20 +148,25 @@ struct PolygonShape(Copyable, Movable):
             for i in range(self.count):
                 cx += self.vertices[i].x
                 cy += self.vertices[i].y
-            self.centroid = Vec2(cx / Float64(self.count), cy / Float64(self.count))
+            self.centroid = Vec2(
+                cx / Scalar[Self.dtype](self.count),
+                cy / Scalar[Self.dtype](self.count),
+            )
 
-    fn compute_mass(self, density: Float64) -> Tuple[Float64, Float64, Vec2]:
+    fn compute_mass(
+        self, density: Scalar[Self.dtype]
+    ) -> Tuple[Scalar[Self.dtype], Scalar[Self.dtype], Vec2[Self.dtype]]:
         """Compute mass, inertia, and center of mass.
 
         Returns: (mass, inertia, center)
         """
         if self.count < 3:
-            return (0.0, 0.0, Vec2.zero())
+            return (0.0, 0.0, Vec2[Self.dtype].zero())
 
-        var area: Float64 = 0.0
-        var inertia: Float64 = 0.0
-        var cx: Float64 = 0.0
-        var cy: Float64 = 0.0
+        var area: Scalar[Self.dtype] = 0.0
+        var inertia: Scalar[Self.dtype] = 0.0
+        var cx: Scalar[Self.dtype] = 0.0
+        var cy: Scalar[Self.dtype] = 0.0
 
         # Use triangulation from centroid
         for i in range(self.count):
@@ -185,7 +203,7 @@ struct PolygonShape(Copyable, Movable):
 
         area = abs(area)
         if area < 1e-10:
-            return (0.0, 0.0, Vec2.zero())
+            return (0.0, 0.0, Vec2[Self.dtype].zero())
 
         var center = Vec2(cx / area, cy / area)
         var mass = density * area
@@ -197,7 +215,7 @@ struct PolygonShape(Copyable, Movable):
 
         return (mass, inertia, center)
 
-    fn get_support(self, direction: Vec2) -> Vec2:
+    fn get_support(self, direction: Vec2[Self.dtype]) -> Vec2[Self.dtype]:
         """Get the vertex farthest along the given direction (for SAT)."""
         var best_index = 0
         var best_value = self.vertices[0].dot(direction)
@@ -210,7 +228,7 @@ struct PolygonShape(Copyable, Movable):
 
         return self.vertices[best_index]
 
-    fn get_support_index(self, direction: Vec2) -> Int:
+    fn get_support_index(self, direction: Vec2[Self.dtype]) -> Int:
         """Get index of vertex farthest along the given direction."""
         var best_index = 0
         var best_value = self.vertices[0].dot(direction)
@@ -224,18 +242,24 @@ struct PolygonShape(Copyable, Movable):
         return best_index
 
 
-struct CircleShape(Copyable, Movable):
+struct CircleShape[dtype: DType](Copyable, Movable):
     """Circle shape with radius and local center offset."""
 
-    var radius: Float64
-    var center: Vec2  # Local offset from body center
+    var radius: Scalar[Self.dtype]
+    var center: Vec2[Self.dtype]  # Local offset from body center
 
-    fn __init__(out self, radius: Float64, center: Vec2 = Vec2.zero()):
+    fn __init__(
+        out self,
+        radius: Scalar[Self.dtype],
+        center: Vec2[Self.dtype] = Vec2[Self.dtype].zero(),
+    ):
         """Create circle with given radius and optional center offset."""
         self.radius = radius
         self.center = center
 
-    fn compute_mass(self, density: Float64) -> Tuple[Float64, Float64, Vec2]:
+    fn compute_mass(
+        self, density: Scalar[Self.dtype]
+    ) -> Tuple[Scalar[Self.dtype], Scalar[Self.dtype], Vec2[Self.dtype]]:
         """Compute mass, inertia, and center of mass.
 
         Returns: (mass, inertia, center)
@@ -248,18 +272,19 @@ struct CircleShape(Copyable, Movable):
         return (mass, inertia, self.center)
 
 
-struct EdgeShape(Copyable, Movable):
+struct EdgeShape[dtype: DType](Copyable, Movable):
     """Edge (line segment) shape for static terrain.
 
     Edges are one-sided - collision only happens on the normal side.
     """
 
-    var v1: Vec2  # Start vertex
-    var v2: Vec2  # End vertex
-    var normal: Vec2  # Outward normal (computed from vertices)
+    var v1: Vec2[Self.dtype]  # Start vertex
+    var v2: Vec2[Self.dtype]  # End vertex
+    var normal: Vec2[Self.dtype]  # Outward normal (computed from vertices)
 
-    fn __init__(out self, v1: Vec2, v2: Vec2):
-        """Create edge from two vertices. Normal points to the left of v1->v2."""
+    fn __init__(out self, v1: Vec2[Self.dtype], v2: Vec2[Self.dtype]):
+        """Create edge from two vertices. Normal points to the left of v1->v2.
+        """
         self.v1 = v1
         self.v2 = v2
         # Compute normal (perpendicular to edge, pointing left/outward)
@@ -268,19 +293,19 @@ struct EdgeShape(Copyable, Movable):
 
     fn __init__(out self):
         """Create empty edge."""
-        self.v1 = Vec2.zero()
-        self.v2 = Vec2.zero()
-        self.normal = Vec2.unit_y()
+        self.v1 = Vec2[Self.dtype].zero()
+        self.v2 = Vec2[Self.dtype].zero()
+        self.normal = Vec2[Self.dtype].unit_y()
 
-    fn length(self) -> Float64:
+    fn length(self) -> Scalar[Self.dtype]:
         """Get edge length."""
         return (self.v2 - self.v1).length()
 
-    fn direction(self) -> Vec2:
+    fn direction(self) -> Vec2[Self.dtype]:
         """Get normalized edge direction from v1 to v2."""
         return (self.v2 - self.v1).normalize()
 
-    fn closest_point(self, point: Vec2) -> Vec2:
+    fn closest_point(self, point: Vec2[Self.dtype]) -> Vec2[Self.dtype]:
         """Get closest point on edge to given point."""
         var edge = self.v2 - self.v1
         var len_sq = edge.length_squared()
@@ -297,21 +322,3 @@ struct EdgeShape(Copyable, Movable):
             return self.v2
         else:
             return self.v1 + edge * t
-
-
-# ===== Helper functions =====
-
-
-fn abs(x: Float64) -> Float64:
-    """Absolute value."""
-    return x if x >= 0.0 else -x
-
-
-fn min(a: Int, b: Int) -> Int:
-    """Minimum of two integers."""
-    return a if a < b else b
-
-
-fn max(a: Int, b: Int) -> Int:
-    """Maximum of two integers."""
-    return a if a > b else b

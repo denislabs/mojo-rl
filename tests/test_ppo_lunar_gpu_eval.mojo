@@ -44,7 +44,7 @@ comptime DEBUG_PRINT_EVERY = 50  # Print debug info every N steps
 # =============================================================================
 
 
-fn format_obs(obs: List[Float64]) -> String:
+fn format_obs(obs: List[Float32]) -> String:
     """Format observation for debug printing."""
     return (
         "x="
@@ -152,7 +152,7 @@ fn main() raises:
         print("-" * 70)
         print()
 
-        var env = LunarLanderEnv()
+        var env = LunarLanderEnv[DType.float32]()
 
         try:
             # Reset environment
@@ -163,7 +163,7 @@ fn main() raises:
             print("  " + format_obs(obs_list))
             print()
 
-            var total_reward: Float64 = 0.0
+            var total_reward: Float32 = 0.0
             var step = 0
 
             for i in range(MAX_STEPS):

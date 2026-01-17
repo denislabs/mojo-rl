@@ -61,7 +61,7 @@ fn main() raises:
     print("Algorithm 1: Tiled Q-Learning")
     print("-" * 60)
 
-    var env_q = MountainCarEnv()
+    var env_q = MountainCarEnv[DType.float64]()
     var agent_q = TiledQLearningAgent(
         tile_coding=tc,
         num_actions=env_q.num_actions(),
@@ -99,7 +99,7 @@ fn main() raises:
     # Create fresh tile coding
     var tc_sl = MountainCarEnv.make_tile_coding(num_tilings=8, tiles_per_dim=8)
 
-    var env_sl = MountainCarEnv()
+    var env_sl = MountainCarEnv[DType.float64]()
     var agent_sl = TiledSARSALambdaAgent(
         tile_coding=tc_sl,
         num_actions=env_sl.num_actions(),

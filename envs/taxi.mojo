@@ -110,6 +110,7 @@ struct TaxiEnv(DiscreteEnv):
         (taxi_row, taxi_col, passenger_loc, destination)
     """
 
+    comptime dtype = DType.float64
     comptime StateType = TaxiState
     comptime ActionType = TaxiAction
 
@@ -193,12 +194,14 @@ struct TaxiEnv(DiscreteEnv):
         """
         return 6
 
-    fn step(mut self, action: TaxiAction) -> Tuple[TaxiState, Float64, Bool]:
+    fn step(
+        mut self, action: TaxiAction
+    ) -> Tuple[TaxiState, Scalar[Self.dtype], Bool]:
         """Take an action and return (next_state, reward, done)."""
         var new_row = self.state.taxi_row
         var new_col = self.state.taxi_col
         var new_pass_loc = self.state.passenger_loc
-        var reward: Float64 = -1.0
+        var reward: Scalar[Self.dtype] = -1.0
         var done = False
 
         if action.action == 0:  # south

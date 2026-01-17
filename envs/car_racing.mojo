@@ -46,55 +46,12 @@ from render import (
 )
 
 
-# ===== Constants from Gymnasium =====
-
-comptime FPS: Int = 50
-comptime SCALE: Float64 = 6.0  # Track scale
-
-comptime TRACK_RAD: Float64 = 900.0 / SCALE  # Track base radius
-comptime PLAYFIELD: Float64 = 2000.0 / SCALE  # Game over boundary
-comptime TRACK_DETAIL_STEP: Float64 = 21.0 / SCALE
-comptime TRACK_TURN_RATE: Float64 = 0.31
-comptime TRACK_WIDTH: Float64 = 40.0 / SCALE
-comptime BORDER: Float64 = 8.0 / SCALE
-comptime BORDER_MIN_COUNT: Int = 4
-comptime GRASS_DIM: Float64 = PLAYFIELD / 20.0
-
-# Viewport
-comptime STATE_W: Int = 96
-comptime STATE_H: Int = 96
-comptime VIDEO_W: Int = 600
-comptime VIDEO_H: Int = 400
-comptime WINDOW_W: Int = 1000
-comptime WINDOW_H: Int = 800
-
-# Camera zoom
-comptime ZOOM: Float64 = 2.7
-
-# Car constants (from car_dynamics.py)
-comptime CAR_SIZE: Float64 = 0.02
-comptime ENGINE_POWER: Float64 = 100000000.0 * CAR_SIZE * CAR_SIZE
-comptime WHEEL_MOMENT_OF_INERTIA: Float64 = 4000.0 * CAR_SIZE * CAR_SIZE
-comptime FRICTION_LIMIT: Float64 = 1000000.0 * CAR_SIZE * CAR_SIZE
-comptime WHEEL_R: Float64 = 27.0
-comptime WHEEL_W: Float64 = 14.0
-
-# Friction for road vs grass
-comptime ROAD_FRICTION: Float64 = 1.0
-comptime GRASS_FRICTION: Float64 = 0.6
-
-# Track generation
-comptime NUM_CHECKPOINTS: Int = 12
-comptime TERRAIN_GRASS: Int = 10
-
-# Maximum track tiles (for array sizing)
-comptime MAX_TRACK_TILES: Int = 500
-
-
 # ===== State Struct =====
 
 
-struct CarRacingState(Copyable, ImplicitlyCopyable, Movable, State):
+struct CarRacingState[DTYPE: DType](
+    Copyable, ImplicitlyCopyable, Movable, State
+):
     """State for CarRacing - position, velocity, and car orientation.
 
     For state-based RL (not pixel-based), provides:
@@ -105,22 +62,25 @@ struct CarRacingState(Copyable, ImplicitlyCopyable, Movable, State):
     - Next waypoint direction
     """
 
-    var x: Float64
-    var y: Float64
-    var vx: Float64
-    var vy: Float64
-    var angle: Float64
-    var angular_velocity: Float64
+    comptime SCALE: Scalar[Self.DTYPE] = 6.0
+    comptime PLAYFIELD: Scalar[Self.DTYPE] = 2000.0 / Self.SCALE
+
+    var x: Scalar[Self.DTYPE]
+    var y: Scalar[Self.DTYPE]
+    var vx: Scalar[Self.DTYPE]
+    var vy: Scalar[Self.DTYPE]
+    var angle: Scalar[Self.DTYPE]
+    var angular_velocity: Scalar[Self.DTYPE]
 
     # Wheel states
-    var wheel_omega: InlineArray[Float64, 4]
+    var wheel_omega: InlineArray[Scalar[Self.DTYPE], 4]
 
     # Track progress (0 to 1)
-    var track_progress: Float64
+    var track_progress: Scalar[Self.DTYPE]
 
     # Next waypoint relative direction
-    var waypoint_dx: Float64
-    var waypoint_dy: Float64
+    var waypoint_dx: Scalar[Self.DTYPE]
+    var waypoint_dy: Scalar[Self.DTYPE]
 
     fn __init__(out self):
         self.x = 0.0
@@ -129,7 +89,7 @@ struct CarRacingState(Copyable, ImplicitlyCopyable, Movable, State):
         self.vy = 0.0
         self.angle = 0.0
         self.angular_velocity = 0.0
-        self.wheel_omega = InlineArray[Float64, 4](0.0)
+        self.wheel_omega = InlineArray[Scalar[Self.DTYPE], 4](0.0)
         self.track_progress = 0.0
         self.waypoint_dx = 0.0
         self.waypoint_dy = 0.0
@@ -161,20 +121,44 @@ struct CarRacingState(Copyable, ImplicitlyCopyable, Movable, State):
     fn __eq__(self, other: Self) -> Bool:
         return self.x == other.x and self.y == other.y
 
-    fn to_list(self) -> List[Float64]:
-        """Convert to list for agent interface."""
-        var result = List[Float64]()
-        result.append(self.x / PLAYFIELD)  # Normalized
-        result.append(self.y / PLAYFIELD)
-        result.append(self.vx / 100.0)  # Normalized velocity
-        result.append(self.vy / 100.0)
-        result.append(self.angle / pi)  # Normalized angle
-        result.append(self.angular_velocity / 5.0)
+    fn to_list(self) -> List[Scalar[Self.DTYPE]]:
+        """Convert to list for agent interface.
+
+        Note: Values are already normalized by _get_observation(),
+        so we just return them as-is to avoid double normalization.
+        """
+        var result = List[Scalar[Self.DTYPE]]()
+        result.append(self.x)  # Already normalized by _get_observation
+        result.append(self.y)
+        result.append(self.vx)  # Already normalized
+        result.append(self.vy)
+        result.append(self.angle)  # Already normalized
+        result.append(self.angular_velocity)  # Already normalized
         for i in range(4):
-            result.append(self.wheel_omega[i] / 100.0)
+            result.append(self.wheel_omega[i])  # Already normalized
         result.append(self.track_progress)
         result.append(self.waypoint_dx)
         result.append(self.waypoint_dy)
+        return result^
+
+    fn to_list_typed[dtype: DType](self) -> List[Scalar[dtype]]:
+        """Convert to list with specified dtype.
+
+        Note: Values are already normalized by _get_observation(),
+        so we just return them as-is to avoid double normalization.
+        """
+        var result = List[Scalar[dtype]]()
+        result.append(Scalar[dtype](self.x))  # Already normalized
+        result.append(Scalar[dtype](self.y))
+        result.append(Scalar[dtype](self.vx))  # Already normalized
+        result.append(Scalar[dtype](self.vy))
+        result.append(Scalar[dtype](self.angle))  # Already normalized
+        result.append(Scalar[dtype](self.angular_velocity))
+        for i in range(4):
+            result.append(Scalar[dtype](self.wheel_omega[i]))
+        result.append(Scalar[dtype](self.track_progress))
+        result.append(Scalar[dtype](self.waypoint_dx))
+        result.append(Scalar[dtype](self.waypoint_dy))
         return result^
 
 
@@ -182,12 +166,14 @@ struct CarRacingState(Copyable, ImplicitlyCopyable, Movable, State):
 
 
 @fieldwise_init
-struct CarRacingAction(Action, Copyable, ImplicitlyCopyable, Movable):
+struct CarRacingAction[DTYPE: DType](
+    Action, Copyable, ImplicitlyCopyable, Movable
+):
     """Continuous action for CarRacing: [steering, gas, brake]."""
 
-    var steering: Float64  # -1 (left) to +1 (right)
-    var gas: Float64  # 0 to 1
-    var brake: Float64  # 0 to 1
+    var steering: Scalar[Self.DTYPE]  # -1 (left) to +1 (right)
+    var gas: Scalar[Self.DTYPE]  # 0 to 1
+    var brake: Scalar[Self.DTYPE]  # 0 to 1
 
     fn __init__(out self):
         self.steering = 0.0
@@ -208,29 +194,31 @@ struct CarRacingAction(Action, Copyable, ImplicitlyCopyable, Movable):
 # ===== Track Tile =====
 
 
-struct TrackTile(Copyable, ImplicitlyCopyable, Movable):
+struct TrackTile[DTYPE: DType](Copyable, ImplicitlyCopyable, Movable):
     """A single track tile with vertices and state."""
 
-    var v0: Vec2
-    var v1: Vec2
-    var v2: Vec2
-    var v3: Vec2
+    comptime ROAD_FRICTION: Scalar[Self.DTYPE] = 1.0
+
+    var v0: Vec2[Self.DTYPE]
+    var v1: Vec2[Self.DTYPE]
+    var v2: Vec2[Self.DTYPE]
+    var v3: Vec2[Self.DTYPE]
     var road_visited: Bool
-    var road_friction: Float64
+    var road_friction: Scalar[Self.DTYPE]
     var idx: Int
 
     # Track centerline for this tile
-    var center_x: Float64
-    var center_y: Float64
-    var beta: Float64  # Direction angle
+    var center_x: Scalar[Self.DTYPE]
+    var center_y: Scalar[Self.DTYPE]
+    var beta: Scalar[Self.DTYPE]  # Direction angle
 
     fn __init__(out self):
-        self.v0 = Vec2.zero()
-        self.v1 = Vec2.zero()
-        self.v2 = Vec2.zero()
-        self.v3 = Vec2.zero()
+        self.v0 = Vec2[Self.DTYPE].zero()
+        self.v1 = Vec2[Self.DTYPE].zero()
+        self.v2 = Vec2[Self.DTYPE].zero()
+        self.v3 = Vec2[Self.DTYPE].zero()
         self.road_visited = False
-        self.road_friction = ROAD_FRICTION
+        self.road_friction = Self.ROAD_FRICTION
         self.idx = 0
         self.center_x = 0.0
         self.center_y = 0.0
@@ -264,21 +252,24 @@ struct TrackTile(Copyable, ImplicitlyCopyable, Movable):
 # ===== Wheel State =====
 
 
-struct WheelState(Copyable, ImplicitlyCopyable, Movable):
+struct WheelState[DTYPE: DType](Copyable, ImplicitlyCopyable, Movable):
     """State for a single wheel."""
 
-    var position: Vec2
-    var angle: Float64
-    var omega: Float64  # Angular velocity (wheel rotation)
-    var phase: Float64  # Wheel rotation phase (for rendering)
-    var gas: Float64
-    var brake: Float64
-    var steer: Float64
-    var joint_angle: Float64  # Current steering joint angle
-    var wheel_rad: Float64
+    comptime WHEEL_R: Scalar[Self.DTYPE] = 27.0
+    comptime CAR_SIZE: Scalar[Self.DTYPE] = 0.02
+
+    var position: Vec2[Self.DTYPE]
+    var angle: Scalar[Self.DTYPE]
+    var omega: Scalar[Self.DTYPE]  # Angular velocity (wheel rotation)
+    var phase: Scalar[Self.DTYPE]  # Wheel rotation phase (for rendering)
+    var gas: Scalar[Self.DTYPE]
+    var brake: Scalar[Self.DTYPE]
+    var steer: Scalar[Self.DTYPE]
+    var joint_angle: Scalar[Self.DTYPE]  # Current steering joint angle
+    var wheel_rad: Scalar[Self.DTYPE]
 
     fn __init__(out self):
-        self.position = Vec2.zero()
+        self.position = Vec2[Self.DTYPE].zero()
         self.angle = 0.0
         self.omega = 0.0
         self.phase = 0.0
@@ -286,7 +277,7 @@ struct WheelState(Copyable, ImplicitlyCopyable, Movable):
         self.brake = 0.0
         self.steer = 0.0
         self.joint_angle = 0.0
-        self.wheel_rad = WHEEL_R * CAR_SIZE
+        self.wheel_rad = Self.WHEEL_R * Self.CAR_SIZE
 
     fn __copyinit__(out self, other: Self):
         self.position = other.position
@@ -314,7 +305,9 @@ struct WheelState(Copyable, ImplicitlyCopyable, Movable):
 # ===== Environment =====
 
 
-struct CarRacingEnv(BoxContinuousActionEnv):
+struct CarRacingEnv[DTYPE: DType](
+    BoxContinuousActionEnv, Copyable, ImplicitlyCopyable, Movable
+):
     """Native Mojo CarRacing environment.
 
     A top-down racing environment where an agent must navigate
@@ -326,35 +319,92 @@ struct CarRacingEnv(BoxContinuousActionEnv):
     - 3D continuous action: [steering, gas, brake]
     """
 
-    comptime StateType = CarRacingState
-    comptime ActionType = CarRacingAction
+    comptime dtype = Self.DTYPE
+    comptime StateType = CarRacingState[Self.DTYPE]
+    comptime ActionType = CarRacingAction[Self.DTYPE]
+
+    # ===== Constants from Gymnasium =====
+
+    comptime FPS: Int = 50
+    comptime SCALE: Scalar[Self.DTYPE] = 6.0  # Track scale
+
+    comptime TRACK_RAD: Scalar[Self.DTYPE] = Scalar[Self.DTYPE](
+        900.0 / Self.SCALE
+    )  # Track base radius
+    comptime PLAYFIELD: Scalar[
+        Self.DTYPE
+    ] = 2000.0 / Self.SCALE  # Game over boundary
+    comptime TRACK_DETAIL_STEP: Scalar[Self.DTYPE] = 21.0 / Self.SCALE
+    comptime TRACK_TURN_RATE: Scalar[Self.DTYPE] = 0.31
+    comptime TRACK_WIDTH: Scalar[Self.DTYPE] = 40.0 / Self.SCALE
+    comptime BORDER: Scalar[Self.DTYPE] = 8.0 / Self.SCALE
+    comptime BORDER_MIN_COUNT: Int = 4
+    comptime GRASS_DIM: Scalar[Self.DTYPE] = Self.PLAYFIELD / 20.0
+
+    # Viewport
+    comptime STATE_W: Int = 96
+    comptime STATE_H: Int = 96
+    comptime VIDEO_W: Int = 600
+    comptime VIDEO_H: Int = 400
+    comptime WINDOW_W: Int = 1000
+    comptime WINDOW_H: Int = 800
+
+    # Camera zoom
+    comptime ZOOM: Scalar[Self.DTYPE] = 2.7
+
+    # Car constants (from car_dynamics.py)
+    comptime CAR_SIZE: Scalar[Self.DTYPE] = 0.02
+    comptime ENGINE_POWER: Scalar[
+        Self.DTYPE
+    ] = 100000000.0 * Self.CAR_SIZE * Self.CAR_SIZE
+    comptime WHEEL_MOMENT_OF_INERTIA: Scalar[
+        Self.DTYPE
+    ] = 4000.0 * Self.CAR_SIZE * Self.CAR_SIZE
+    comptime FRICTION_LIMIT: Scalar[
+        Self.DTYPE
+    ] = 1000000.0 * Self.CAR_SIZE * Self.CAR_SIZE
+    comptime WHEEL_R: Scalar[Self.DTYPE] = 27.0
+    comptime WHEEL_W: Scalar[Self.DTYPE] = 14.0
+
+    # Friction for road vs grass
+    comptime ROAD_FRICTION: Scalar[Self.DTYPE] = 1.0
+    comptime GRASS_FRICTION: Scalar[Self.DTYPE] = 0.6
+
+    # Track generation
+    comptime NUM_CHECKPOINTS: Int = 12
+    comptime TERRAIN_GRASS: Int = 10
+
+    # Maximum track tiles (for array sizing)
+    comptime MAX_TRACK_TILES: Int = 500
 
     # Car state
-    var hull_position: Vec2
-    var hull_angle: Float64
-    var hull_velocity: Vec2
-    var hull_angular_velocity: Float64
+    var hull_position: Vec2[Self.DTYPE]
+    var hull_angle: Scalar[Self.DTYPE]
+    var hull_velocity: Vec2[Self.DTYPE]
+    var hull_angular_velocity: Scalar[Self.DTYPE]
 
     # 4 wheels: front-left, front-right, rear-left, rear-right
-    var wheels: InlineArray[WheelState, 4]
+    var wheels: InlineArray[WheelState[Self.DTYPE], 4]
 
     # Track data
-    var track: List[TrackTile]
+    var track: List[TrackTile[Self.DTYPE]]
     var track_length: Int
     var tile_visited_count: Int
-    var start_alpha: Float64
+    var start_alpha: Scalar[Self.DTYPE]
 
     # Game state
-    var reward: Float64
-    var prev_reward: Float64
+    var reward: Scalar[Self.DTYPE]
+    var prev_reward: Scalar[Self.DTYPE]
     var game_over: Bool
-    var t: Float64  # Time
+    var t: Scalar[Self.DTYPE]  # Time
     var new_lap: Bool
 
     # Configuration
     var continuous: Bool
-    var lap_complete_percent: Float64
+    var lap_complete_percent: Scalar[Self.DTYPE]
     var domain_randomize: Bool
+    var max_steps: Int
+    var step_count: Int
 
     # Colors (for rendering)
     var road_color: InlineArray[UInt8, 3]
@@ -364,8 +414,9 @@ struct CarRacingEnv(BoxContinuousActionEnv):
     fn __init__(
         out self,
         continuous: Bool = True,
-        lap_complete_percent: Float64 = 0.95,
+        lap_complete_percent: Scalar[Self.DTYPE] = 0.95,
         domain_randomize: Bool = False,
+        max_steps: Int = 1000,  # Default 1000 steps like Gymnasium
     ):
         """Create CarRacing environment.
 
@@ -375,13 +426,15 @@ struct CarRacingEnv(BoxContinuousActionEnv):
             lap_complete_percent: Fraction of tiles needed for lap completion.
             domain_randomize: If True, randomize colors each reset.
         """
-        self.hull_position = Vec2.zero()
+        self.hull_position = Vec2[Self.DTYPE].zero()
         self.hull_angle = 0.0
-        self.hull_velocity = Vec2.zero()
+        self.hull_velocity = Vec2[Self.DTYPE].zero()
         self.hull_angular_velocity = 0.0
-        self.wheels = InlineArray[WheelState, 4](WheelState())
+        self.wheels = InlineArray[WheelState[Self.DTYPE], 4](
+            WheelState[Self.DTYPE]()
+        )
 
-        self.track = List[TrackTile]()
+        self.track = List[TrackTile[Self.DTYPE]]()
         self.track_length = 0
         self.tile_visited_count = 0
         self.start_alpha = 0.0
@@ -395,6 +448,8 @@ struct CarRacingEnv(BoxContinuousActionEnv):
         self.continuous = continuous
         self.lap_complete_percent = lap_complete_percent
         self.domain_randomize = domain_randomize
+        self.max_steps = max_steps
+        self.step_count = 0
 
         # Default colors
         self.road_color = InlineArray[UInt8, 3](
@@ -407,6 +462,54 @@ struct CarRacingEnv(BoxContinuousActionEnv):
             UInt8(102), UInt8(230), UInt8(102)
         )
 
+    fn __copyinit__(out self, other: Self):
+        self.hull_position = other.hull_position
+        self.hull_angle = other.hull_angle
+        self.hull_velocity = other.hull_velocity
+        self.hull_angular_velocity = other.hull_angular_velocity
+        self.wheels = other.wheels
+        self.track = other.track.copy()
+        self.track_length = other.track_length
+        self.tile_visited_count = other.tile_visited_count
+        self.start_alpha = other.start_alpha
+        self.reward = other.reward
+        self.prev_reward = other.prev_reward
+        self.game_over = other.game_over
+        self.t = other.t
+        self.new_lap = other.new_lap
+        self.continuous = other.continuous
+        self.lap_complete_percent = other.lap_complete_percent
+        self.domain_randomize = other.domain_randomize
+        self.max_steps = other.max_steps
+        self.step_count = other.step_count
+        self.road_color = other.road_color
+        self.bg_color = other.bg_color
+        self.grass_color = other.grass_color
+
+    fn __moveinit__(out self, deinit other: Self):
+        self.hull_position = other.hull_position
+        self.hull_angle = other.hull_angle
+        self.hull_velocity = other.hull_velocity
+        self.hull_angular_velocity = other.hull_angular_velocity
+        self.wheels = other.wheels
+        self.track = other.track^
+        self.track_length = other.track_length
+        self.tile_visited_count = other.tile_visited_count
+        self.start_alpha = other.start_alpha
+        self.reward = other.reward
+        self.prev_reward = other.prev_reward
+        self.game_over = other.game_over
+        self.t = other.t
+        self.new_lap = other.new_lap
+        self.continuous = other.continuous
+        self.lap_complete_percent = other.lap_complete_percent
+        self.domain_randomize = other.domain_randomize
+        self.max_steps = other.max_steps
+        self.step_count = other.step_count
+        self.road_color = other.road_color
+        self.bg_color = other.bg_color
+        self.grass_color = other.grass_color
+
     # ===== Env Trait Methods =====
 
     fn reset(mut self) -> Self.StateType:
@@ -415,11 +518,12 @@ struct CarRacingEnv(BoxContinuousActionEnv):
 
     fn step(
         mut self, action: Self.ActionType
-    ) -> Tuple[Self.StateType, Float64, Bool]:
+    ) -> Tuple[Self.StateType, Scalar[Self.dtype], Bool]:
         """Take action and return (next_state, reward, done)."""
-        return self.step_continuous_3d(
+        var result = self.step_continuous_3d(
             action.steering, action.gas, action.brake
         )
+        return (result[0], Scalar[Self.dtype](result[1]), result[2])
 
     fn get_state(self) -> Self.StateType:
         """Get current state."""
@@ -439,14 +543,14 @@ struct CarRacingEnv(BoxContinuousActionEnv):
 
     # ===== BoxContinuousActionEnv Trait Methods =====
 
-    fn get_obs_list(self) -> List[Float64]:
+    fn get_obs_list(self) -> List[Scalar[Self.dtype]]:
         """Return observation as list."""
-        return self._get_observation().to_list()
+        return self._get_observation().to_list_typed[Self.dtype]()
 
-    fn reset_obs_list(mut self) -> List[Float64]:
+    fn reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
         """Reset and return initial observation."""
         var state = self.reset()
-        return state.to_list()
+        return state.to_list_typed[Self.dtype]()
 
     fn obs_dim(self) -> Int:
         """Observation dimension: 13."""
@@ -456,43 +560,54 @@ struct CarRacingEnv(BoxContinuousActionEnv):
         """Action dimension: 3 (steering, gas, brake)."""
         return 3
 
-    fn action_low(self) -> Float64:
+    fn action_low(self) -> Scalar[Self.dtype]:
         """Action lower bound: -1.0 (for steering)."""
-        return -1.0
+        return Scalar[Self.dtype](-1.0)
 
-    fn action_high(self) -> Float64:
+    fn action_high(self) -> Scalar[Self.dtype]:
         """Action upper bound: 1.0."""
-        return 1.0
+        return Scalar[Self.dtype](1.0)
 
     fn step_continuous(
-        mut self, action: Float64
-    ) -> Tuple[List[Float64], Float64, Bool]:
+        mut self, action: Scalar[Self.dtype]
+    ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
         """Step with single action (applies to steering only)."""
+
         var result = self.step_continuous_3d(action, 0.5, 0.0)
-        return (result[0].to_list(), result[1], result[2])
+        return (
+            result[0].to_list_typed[Self.dtype](),
+            Scalar[Self.dtype](result[1]),
+            result[2],
+        )
 
     # ===== Main Step Functions =====
 
     fn step_continuous_3d(
         mut self,
-        steering: Float64,
-        gas: Float64,
-        brake: Float64,
-    ) -> Tuple[CarRacingState, Float64, Bool]:
+        steering: Scalar[Self.DTYPE],
+        gas: Scalar[Self.DTYPE],
+        brake: Scalar[Self.DTYPE],
+    ) -> Tuple[CarRacingState[Self.DTYPE], Scalar[Self.DTYPE], Bool]:
         """Take continuous action and return (obs, reward, done).
 
         Args:
-            steering: Steering angle [-1 (left) to +1 (right)]
-            gas: Gas pedal [0 to 1]
-            brake: Brake pedal [0 to 1]
+            steering: Steering angle [-1 (left) to +1 (right)].
+            gas: Gas pedal [-1 to 1], remapped to [0, 1].
+            brake: Brake pedal [-1 to 1], remapped to [0, 1].
 
         Returns:
-            Tuple of (observation, reward, done)
+            Tuple of (observation, reward, done).
+
+        Note: Gas and brake are remapped from [-1, 1] to [0, 1] to work with
+        tanh-based policies that output [-1, 1] for all action dimensions.
         """
-        # Clamp inputs
+        # Clamp and remap inputs
+        # Steering: [-1, 1] -> [-1, 1] (no change)
         var steer = clamp(steering, -1.0, 1.0)
-        var gas_val = clamp(gas, 0.0, 1.0)
-        var brake_val = clamp(brake, 0.0, 1.0)
+        # Gas: [-1, 1] -> [0, 1] (remap for tanh policies)
+        var gas_val = clamp((gas + 1.0) * 0.5, 0.0, 1.0)
+        # Brake: [-1, 1] -> [0, 1] (remap for tanh policies)
+        var brake_val = clamp((brake + 1.0) * 0.5, 0.0, 1.0)
 
         # Apply controls to car
         self._steer(steer)
@@ -500,10 +615,10 @@ struct CarRacingEnv(BoxContinuousActionEnv):
         self._brake(brake_val)
 
         # Step car physics
-        self._step_car_physics(1.0 / Float64(FPS))
+        self._step_car_physics(1.0 / Scalar[Self.DTYPE](Self.FPS))
 
         # Update time
-        self.t += 1.0 / Float64(FPS)
+        self.t += 1.0 / Scalar[Self.DTYPE](Self.FPS)
 
         # Check tile visits
         self._check_tile_visits()
@@ -517,13 +632,16 @@ struct CarRacingEnv(BoxContinuousActionEnv):
         var step_reward = self.reward - self.prev_reward
         self.prev_reward = self.reward
 
+        # Increment step count
+        self.step_count += 1
+
         # Check termination
         var terminated = False
 
         # Check if off playfield
         if (
-            abs_f64(self.hull_position.x) > PLAYFIELD
-            or abs_f64(self.hull_position.y) > PLAYFIELD
+            abs(self.hull_position.x) > Self.PLAYFIELD
+            or abs(self.hull_position.y) > Self.PLAYFIELD
         ):
             terminated = True
             step_reward = -100.0
@@ -536,11 +654,15 @@ struct CarRacingEnv(BoxContinuousActionEnv):
         if self.tile_visited_count == self.track_length:
             terminated = True
 
+        # Check max steps (truncation)
+        if self.max_steps > 0 and self.step_count >= self.max_steps:
+            terminated = True
+
         return (state^, step_reward, terminated)
 
     fn step_discrete(
         mut self, action: Int
-    ) -> Tuple[CarRacingState, Float64, Bool]:
+    ) -> Tuple[CarRacingState[Self.DTYPE], Scalar[Self.DTYPE], Bool]:
         """Take discrete action and return (obs, reward, done).
 
         Actions:
@@ -550,9 +672,9 @@ struct CarRacingEnv(BoxContinuousActionEnv):
             3: Gas
             4: Brake
         """
-        var steering: Float64 = 0.0
-        var gas: Float64 = 0.0
-        var brake: Float64 = 0.0
+        var steering: Scalar[Self.DTYPE] = 0.0
+        var gas: Scalar[Self.DTYPE] = 0.0
+        var brake: Scalar[Self.DTYPE] = 0.0
 
         if action == 1:
             steering = -0.6
@@ -567,18 +689,38 @@ struct CarRacingEnv(BoxContinuousActionEnv):
 
     fn step_continuous_vec(
         mut self,
-        action: List[Float64],
-    ) -> Tuple[List[Float64], Float64, Bool]:
+        action: List[Scalar[Self.dtype]],
+    ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
         """Take action as list and return (obs, reward, done)."""
         var steering = action[0] if len(action) > 0 else 0.0
         var gas = action[1] if len(action) > 1 else 0.0
         var brake = action[2] if len(action) > 2 else 0.0
         var result = self.step_continuous_3d(steering, gas, brake)
-        return (result[0].to_list(), result[1], result[2])
+        return (
+            result[0].to_list_typed[Self.dtype](),
+            Scalar[Self.dtype](result[1]),
+            result[2],
+        )
+
+    fn step_continuous_vec_f64(
+        mut self,
+        action: List[Float64],
+    ) -> Tuple[List[Float64], Float64, Bool]:
+        """Take action as Float64 list and return (obs, reward, done)."""
+        var steering = Scalar[Self.dtype](action[0] if len(action) > 0 else 0.0)
+        var gas = Scalar[Self.dtype](action[1] if len(action) > 1 else 0.0)
+        var brake = Scalar[Self.dtype](action[2] if len(action) > 2 else 0.0)
+        var result = self.step_continuous_3d(steering, gas, brake)
+        # Convert observation to Float64 list
+        var obs_typed = result[0].to_list()
+        var obs_f64 = List[Float64]()
+        for i in range(len(obs_typed)):
+            obs_f64.append(Float64(obs_typed[i]))
+        return (obs_f64^, Float64(result[1]), result[2])
 
     # ===== Internal Methods =====
 
-    fn _reset_internal(mut self) -> CarRacingState:
+    fn _reset_internal(mut self) -> CarRacingState[Self.DTYPE]:
         """Internal reset implementation."""
         self.reward = 0.0
         self.prev_reward = 0.0
@@ -586,6 +728,7 @@ struct CarRacingEnv(BoxContinuousActionEnv):
         self.t = 0.0
         self.new_lap = False
         self.game_over = False
+        self.step_count = 0
 
         # Randomize colors if enabled
         if self.domain_randomize:
@@ -604,10 +747,10 @@ struct CarRacingEnv(BoxContinuousActionEnv):
             # So to point along tangent: θ + pi/2 = beta => θ = beta - pi/2
             self.hull_angle = start_tile.beta - pi / 2.0
         else:
-            self.hull_position = Vec2(1.5 * TRACK_RAD, 0.0)
+            self.hull_position = Vec2(1.5 * Self.TRACK_RAD, 0.0)
             self.hull_angle = 0.0
 
-        self.hull_velocity = Vec2.zero()
+        self.hull_velocity = Vec2[Self.DTYPE].zero()
         self.hull_angular_velocity = 0.0
 
         # Initialize wheels
@@ -648,11 +791,18 @@ struct CarRacingEnv(BoxContinuousActionEnv):
         self.track.clear()
 
         var num_tiles: Int = 100
-        var rad = TRACK_RAD
+        var rad = Self.TRACK_RAD
 
         for i in range(num_tiles):
-            var alpha1 = 2.0 * pi * Float64(i) / Float64(num_tiles)
-            var alpha2 = 2.0 * pi * Float64(i + 1) / Float64(num_tiles)
+            var alpha1 = (
+                2.0 * pi * Scalar[Self.DTYPE](i) / Scalar[Self.DTYPE](num_tiles)
+            )
+            var alpha2 = (
+                2.0
+                * pi
+                * Scalar[Self.DTYPE](i + 1)
+                / Scalar[Self.DTYPE](num_tiles)
+            )
 
             # Center line points
             var x1 = rad * cos(alpha1)
@@ -666,25 +816,25 @@ struct CarRacingEnv(BoxContinuousActionEnv):
 
             # Create quad with vertices in order: inner1, inner2, outer2, outer1
             # This ensures proper winding for polygon fill
-            var tile = TrackTile()
+            var tile = TrackTile[Self.DTYPE]()
             tile.v0 = Vec2(
-                x1 - TRACK_WIDTH * cos(alpha1),  # Inner edge at point 1
-                y1 - TRACK_WIDTH * sin(alpha1),
+                x1 - Self.TRACK_WIDTH * cos(alpha1),  # Inner edge at point 1
+                y1 - Self.TRACK_WIDTH * sin(alpha1),
             )
             tile.v1 = Vec2(
-                x2 - TRACK_WIDTH * cos(alpha2),  # Inner edge at point 2
-                y2 - TRACK_WIDTH * sin(alpha2),
+                x2 - Self.TRACK_WIDTH * cos(alpha2),  # Inner edge at point 2
+                y2 - Self.TRACK_WIDTH * sin(alpha2),
             )
             tile.v2 = Vec2(
-                x2 + TRACK_WIDTH * cos(alpha2),  # Outer edge at point 2
-                y2 + TRACK_WIDTH * sin(alpha2),
+                x2 + Self.TRACK_WIDTH * cos(alpha2),  # Outer edge at point 2
+                y2 + Self.TRACK_WIDTH * sin(alpha2),
             )
             tile.v3 = Vec2(
-                x1 + TRACK_WIDTH * cos(alpha1),  # Outer edge at point 1
-                y1 + TRACK_WIDTH * sin(alpha1),
+                x1 + Self.TRACK_WIDTH * cos(alpha1),  # Outer edge at point 1
+                y1 + Self.TRACK_WIDTH * sin(alpha1),
             )
             tile.road_visited = False
-            tile.road_friction = ROAD_FRICTION
+            tile.road_friction = Self.ROAD_FRICTION
             tile.idx = i
             tile.center_x = (x1 + x2) / 2.0
             tile.center_y = (y1 + y2) / 2.0
@@ -700,18 +850,26 @@ struct CarRacingEnv(BoxContinuousActionEnv):
     fn _init_wheels(mut self):
         """Initialize wheel positions relative to hull."""
         # Wheel positions: front-left, front-right, rear-left, rear-right
-        var wheel_offsets = InlineArray[Vec2, 4](
-            Vec2(-55.0 * CAR_SIZE, 80.0 * CAR_SIZE),  # Front-left
-            Vec2(55.0 * CAR_SIZE, 80.0 * CAR_SIZE),  # Front-right
-            Vec2(-55.0 * CAR_SIZE, -82.0 * CAR_SIZE),  # Rear-left
-            Vec2(55.0 * CAR_SIZE, -82.0 * CAR_SIZE),  # Rear-right
+        var wheel_offsets = InlineArray[Vec2[Self.DTYPE], 4](
+            Vec2[Self.DTYPE](
+                -55.0 * Self.CAR_SIZE, 80.0 * Self.CAR_SIZE
+            ),  # Front-left
+            Vec2[Self.DTYPE](
+                55.0 * Self.CAR_SIZE, 80.0 * Self.CAR_SIZE
+            ),  # Front-right
+            Vec2[Self.DTYPE](
+                -55.0 * Self.CAR_SIZE, -82.0 * Self.CAR_SIZE
+            ),  # Rear-left
+            Vec2[Self.DTYPE](
+                55.0 * Self.CAR_SIZE, -82.0 * Self.CAR_SIZE
+            ),  # Rear-right
         )
 
         var c = cos(self.hull_angle)
         var s = sin(self.hull_angle)
 
         for i in range(4):
-            self.wheels[i] = WheelState()
+            self.wheels[i] = WheelState[Self.DTYPE]()
             var offset = wheel_offsets[i]
             # Rotate offset by hull angle
             var rotated_x = offset.x * c - offset.y * s
@@ -728,12 +886,12 @@ struct CarRacingEnv(BoxContinuousActionEnv):
             self.wheels[i].steer = 0.0
             self.wheels[i].joint_angle = 0.0
 
-    fn _steer(mut self, s: Float64):
+    fn _steer(mut self, s: Scalar[Self.DTYPE]):
         """Apply steering to front wheels."""
         self.wheels[0].steer = s
         self.wheels[1].steer = s
 
-    fn _gas(mut self, g: Float64):
+    fn _gas(mut self, g: Scalar[Self.DTYPE]):
         """Apply gas to rear wheels (rear-wheel drive)."""
         var gas_val = clamp(g, 0.0, 1.0)
         # Gradually increase gas
@@ -743,12 +901,12 @@ struct CarRacingEnv(BoxContinuousActionEnv):
                 diff = 0.1
             self.wheels[i].gas += diff
 
-    fn _brake(mut self, b: Float64):
+    fn _brake(mut self, b: Scalar[Self.DTYPE]):
         """Apply brakes to all wheels."""
         for i in range(4):
             self.wheels[i].brake = b
 
-    fn _step_car_physics(mut self, dt: Float64):
+    fn _step_car_physics(mut self, dt: Scalar[Self.DTYPE]):
         """Step car physics simulation."""
         # Process each wheel
         for i in range(4):
@@ -757,15 +915,15 @@ struct CarRacingEnv(BoxContinuousActionEnv):
         # Update hull from wheel forces (simplified - average wheel positions)
         self._update_hull_from_wheels(dt)
 
-    fn _step_wheel(mut self, wheel_idx: Int, dt: Float64):
+    fn _step_wheel(mut self, wheel_idx: Int, dt: Scalar[Self.DTYPE]):
         """Step physics for a single wheel."""
         # Steering joint (front wheels only)
         if wheel_idx < 2:
             var target = self.wheels[wheel_idx].steer * 0.4  # Max steer angle
             var current = self.wheels[wheel_idx].joint_angle
             var dir = sign(target - current)
-            var val = abs_f64(target - current)
-            var motor_speed = dir * min_f64(50.0 * val, 3.0)
+            var val = abs(target - current)
+            var motor_speed = dir * min(50.0 * val, 3.0)
             self.wheels[wheel_idx].joint_angle += motor_speed * dt
             self.wheels[wheel_idx].joint_angle = clamp(
                 self.wheels[wheel_idx].joint_angle, -0.4, 0.4
@@ -782,7 +940,7 @@ struct CarRacingEnv(BoxContinuousActionEnv):
         var vs = side.x * v.x + side.y * v.y  # Side speed
 
         # Friction limit (road vs grass)
-        var friction_limit = FRICTION_LIMIT * self._get_friction_at(
+        var friction_limit = Self.FRICTION_LIMIT * self._get_friction_at(
             self.wheels[wheel_idx].position
         )
 
@@ -791,21 +949,21 @@ struct CarRacingEnv(BoxContinuousActionEnv):
             var gas = self.wheels[wheel_idx].gas
             self.wheels[wheel_idx].omega += (
                 dt
-                * ENGINE_POWER
+                * Self.ENGINE_POWER
                 * gas
-                / WHEEL_MOMENT_OF_INERTIA
-                / (abs_f64(self.wheels[wheel_idx].omega) + 5.0)
+                / Self.WHEEL_MOMENT_OF_INERTIA
+                / (abs(self.wheels[wheel_idx].omega) + 5.0)
             )
 
         # Braking
         if self.wheels[wheel_idx].brake >= 0.9:
             self.wheels[wheel_idx].omega = 0.0
         elif self.wheels[wheel_idx].brake > 0.0:
-            var brake_force: Float64 = 15.0
+            var brake_force: Scalar[Self.DTYPE] = 15.0
             var dir = -sign(self.wheels[wheel_idx].omega)
             var val = brake_force * self.wheels[wheel_idx].brake
-            if abs_f64(val) > abs_f64(self.wheels[wheel_idx].omega):
-                val = abs_f64(self.wheels[wheel_idx].omega)
+            if abs(val) > abs(self.wheels[wheel_idx].omega):
+                val = abs(self.wheels[wheel_idx].omega)
             self.wheels[wheel_idx].omega += dir * val
 
         # Update wheel phase
@@ -816,13 +974,13 @@ struct CarRacingEnv(BoxContinuousActionEnv):
         var f_force = -vf + vr  # Forward force
         var p_force = -vs  # Perpendicular force
 
-        f_force *= 205000.0 * CAR_SIZE * CAR_SIZE
-        p_force *= 205000.0 * CAR_SIZE * CAR_SIZE
+        f_force *= 205000.0 * Self.CAR_SIZE * Self.CAR_SIZE
+        p_force *= 205000.0 * Self.CAR_SIZE * Self.CAR_SIZE
 
         var force = sqrt(f_force * f_force + p_force * p_force)
 
         # Clamp to friction limit
-        if abs_f64(force) > friction_limit:
+        if abs(force) > friction_limit:
             var scale = friction_limit / force
             f_force *= scale
             p_force *= scale
@@ -832,7 +990,7 @@ struct CarRacingEnv(BoxContinuousActionEnv):
             dt
             * f_force
             * self.wheels[wheel_idx].wheel_rad
-            / WHEEL_MOMENT_OF_INERTIA
+            / Self.WHEEL_MOMENT_OF_INERTIA
         )
 
         # Store force for hull update
@@ -842,14 +1000,14 @@ struct CarRacingEnv(BoxContinuousActionEnv):
         )
 
         # Apply to hull (simplified)
-        var mass: Float64 = 1000.0  # Approximate car mass
+        var mass: Scalar[Self.DTYPE] = 1000.0  # Approximate car mass
         self.hull_velocity.x += wheel_force.x * dt / mass
         self.hull_velocity.y += wheel_force.y * dt / mass
 
-    fn _update_hull_from_wheels(mut self, dt: Float64):
+    fn _update_hull_from_wheels(mut self, dt: Scalar[Self.DTYPE]):
         """Update hull position and rotation from wheel states."""
         # Apply velocity damping
-        var drag: Float64 = 0.99
+        var drag: Scalar[Self.DTYPE] = 0.99
         self.hull_velocity.x *= drag
         self.hull_velocity.y *= drag
 
@@ -868,7 +1026,9 @@ struct CarRacingEnv(BoxContinuousActionEnv):
 
         # Angular velocity from steering (simplified Ackermann)
         if speed > 0.1:
-            var wheelbase: Float64 = 162.0 * CAR_SIZE  # Distance between axles
+            var wheelbase: Scalar[Self.DTYPE] = (
+                162.0 * Self.CAR_SIZE
+            )  # Distance between axles
             self.hull_angular_velocity = speed * sin(steer) / wheelbase
         else:
             self.hull_angular_velocity *= 0.9  # Damping at low speed
@@ -882,11 +1042,11 @@ struct CarRacingEnv(BoxContinuousActionEnv):
             self.hull_angle += 2.0 * pi
 
         # Update wheel positions
-        var wheel_offsets = InlineArray[Vec2, 4](
-            Vec2(-55.0 * CAR_SIZE, 80.0 * CAR_SIZE),
-            Vec2(55.0 * CAR_SIZE, 80.0 * CAR_SIZE),
-            Vec2(-55.0 * CAR_SIZE, -82.0 * CAR_SIZE),
-            Vec2(55.0 * CAR_SIZE, -82.0 * CAR_SIZE),
+        var wheel_offsets = InlineArray[Vec2[Self.DTYPE], 4](
+            Vec2[Self.DTYPE](-55.0 * Self.CAR_SIZE, 80.0 * Self.CAR_SIZE),
+            Vec2[Self.DTYPE](55.0 * Self.CAR_SIZE, 80.0 * Self.CAR_SIZE),
+            Vec2[Self.DTYPE](-55.0 * Self.CAR_SIZE, -82.0 * Self.CAR_SIZE),
+            Vec2[Self.DTYPE](55.0 * Self.CAR_SIZE, -82.0 * Self.CAR_SIZE),
         )
 
         var c = cos(self.hull_angle)
@@ -902,15 +1062,15 @@ struct CarRacingEnv(BoxContinuousActionEnv):
             )
             self.wheels[i].angle = self.hull_angle + self.wheels[i].joint_angle
 
-    fn _get_friction_at(self, pos: Vec2) -> Float64:
+    fn _get_friction_at(self, pos: Vec2[Self.DTYPE]) -> Scalar[Self.DTYPE]:
         """Get friction coefficient at position (road vs grass)."""
         # Check if position is on any track tile
         for i in range(self.track_length):
             if self._point_in_tile(pos, i):
                 return self.track[i].road_friction
-        return GRASS_FRICTION
+        return Self.GRASS_FRICTION
 
-    fn _point_in_tile(self, pos: Vec2, tile_idx: Int) -> Bool:
+    fn _point_in_tile(self, pos: Vec2[Self.DTYPE], tile_idx: Int) -> Bool:
         """Check if point is inside track tile (simple cross product test)."""
         if tile_idx >= self.track_length:
             return False
@@ -944,35 +1104,52 @@ struct CarRacingEnv(BoxContinuousActionEnv):
                 if not self.track[i].road_visited:
                     if self._point_in_tile(wheel_pos, i):
                         self.track[i].road_visited = True
-                        self.reward += 1000.0 / Float64(self.track_length)
+                        self.reward += 1000.0 / Scalar[Self.DTYPE](
+                            self.track_length
+                        )
                         self.tile_visited_count += 1
 
                         # Check lap completion
                         if (
                             i == 0
-                            and Float64(self.tile_visited_count)
-                            / Float64(self.track_length)
+                            and Scalar[Self.DTYPE](self.tile_visited_count)
+                            / Scalar[Self.DTYPE](self.track_length)
                             > self.lap_complete_percent
                         ):
                             self.new_lap = True
 
-    fn _get_observation(self) -> CarRacingState:
-        """Build observation state."""
-        var state = CarRacingState()
+    fn _get_observation(self) -> CarRacingState[Self.DTYPE]:
+        """Build observation state with normalized values for neural networks.
 
-        state.x = self.hull_position.x
-        state.y = self.hull_position.y
-        state.vx = self.hull_velocity.x
-        state.vy = self.hull_velocity.y
-        state.angle = self.hull_angle
-        state.angular_velocity = self.hull_angular_velocity
+        All observations are normalized to approximately [-1, 1] range.
+        """
+        var state = CarRacingState[Self.DTYPE]()
 
+        # Normalize position by playfield size
+        state.x = self.hull_position.x / Self.PLAYFIELD
+        state.y = self.hull_position.y / Self.PLAYFIELD
+
+        # Normalize velocity (typical max ~50 units/s)
+        var vel_scale: Scalar[Self.DTYPE] = 50.0
+        state.vx = self.hull_velocity.x / vel_scale
+        state.vy = self.hull_velocity.y / vel_scale
+
+        # Normalize angle by pi
+        state.angle = self.hull_angle / Scalar[Self.DTYPE](pi)
+
+        # Normalize angular velocity (typical max ~5 rad/s)
+        var ang_vel_scale: Scalar[Self.DTYPE] = 5.0
+        state.angular_velocity = self.hull_angular_velocity / ang_vel_scale
+
+        # Normalize wheel omega (typical max ~100)
+        var omega_scale: Scalar[Self.DTYPE] = 100.0
         for i in range(4):
-            state.wheel_omega[i] = self.wheels[i].omega
+            state.wheel_omega[i] = self.wheels[i].omega / omega_scale
 
-        state.track_progress = Float64(self.tile_visited_count) / Float64(
-            max_i64(self.track_length, 1)
-        )
+        # Track progress already in [0, 1]
+        state.track_progress = Scalar[Self.DTYPE](
+            self.tile_visited_count
+        ) / max(self.track_length, 1)
 
         # Find next unvisited tile for waypoint
         var next_tile_idx = 0
@@ -1001,26 +1178,32 @@ struct CarRacingEnv(BoxContinuousActionEnv):
             renderer: External renderer to use for drawing.
         """
         # Draw background with custom color
-        var bg_color = SDL_Color(self.bg_color[0], self.bg_color[1], self.bg_color[2], 255)
+        var bg_color = SDL_Color(
+            self.bg_color[0], self.bg_color[1], self.bg_color[2], 255
+        )
         if not renderer.begin_frame_with_color(bg_color):
             return
 
         # Create rotating camera - follows car with rotation
         # Camera zoom interpolates from 0.1 to ZOOM over first second
-        var zoom = ZOOM * SCALE * min_f64(self.t, 1.0) + 0.1 * SCALE * max_f64(
-            1.0 - self.t, 0.0
-        )
+        var zoom = Self.ZOOM * Self.SCALE * min(
+            self.t, 1.0
+        ) + 0.1 * Self.SCALE * max(1.0 - self.t, 0.0)
 
         # Screen center for camera (car appears in lower portion of screen)
         # Original: WINDOW_W/2, WINDOW_H - WINDOW_H/4 = (500, 600)
-        var screen_center_x = Float64(WINDOW_W) / 2.0
-        var screen_center_y = Float64(WINDOW_H) * 3.0 / 4.0  # Car at 3/4 down
+        var screen_center_x = Float64(Self.WINDOW_W) / 2.0
+        var screen_center_y = (
+            Float64(Self.WINDOW_H) * 3.0 / 4.0
+        )  # Car at 3/4 down
 
         var camera = renderer.make_rotating_camera_offset(
-            self.hull_position.x,
-            self.hull_position.y,
-            -self.hull_angle,  # Negative to rotate view opposite to car
-            zoom,
+            Float64(self.hull_position.x),
+            Float64(self.hull_position.y),
+            Float64(
+                -self.hull_angle
+            ),  # Negative to rotate view opposite to car
+            Float64(zoom),
             screen_center_x,
             screen_center_y,
         )
@@ -1060,10 +1243,10 @@ struct CarRacingEnv(BoxContinuousActionEnv):
         var ry = dx * s + dy * c
 
         # Scale and offset to screen center
-        var screen_x = Int(WINDOW_W / 2 + rx * zoom)
-        var screen_y = Int(WINDOW_H / 4 + ry * zoom)
+        var screen_x = Int(Self.WINDOW_W / 2 + rx * zoom)
+        var screen_y = Int(Self.WINDOW_H / 4 + ry * zoom)
 
-        return (screen_x, WINDOW_H - screen_y)  # Flip Y
+        return (screen_x, Self.WINDOW_H - screen_y)  # Flip Y
 
     fn _draw_grass(self, mut renderer: RendererBase, camera: RotatingCamera):
         """Draw grass patches in a checkerboard pattern using RotatingCamera."""
@@ -1074,22 +1257,35 @@ struct CarRacingEnv(BoxContinuousActionEnv):
         # Draw grass grid
         for gx in range(-10, 10, 2):
             for gy in range(-10, 10, 2):
-                var world_x = Float64(gx) * GRASS_DIM
-                var world_y = Float64(gy) * GRASS_DIM
+                var world_x = Float64(gx) * Float64(Self.GRASS_DIM)
+                var world_y = Float64(gy) * Float64(Self.GRASS_DIM)
 
                 # Skip if too far from camera
-                var dist = sqrt((world_x - camera.x) ** 2 + (world_y - camera.y) ** 2)
-                if dist > PLAYFIELD:
+                var dist = sqrt(
+                    (world_x - camera.x) ** 2 + (world_y - camera.y) ** 2
+                )
+                if dist > Float64(Self.PLAYFIELD):
                     continue
 
                 # Grass quad corners in world coordinates
                 var vertices = List[RenderVec2]()
                 vertices.append(RenderVec2(world_x, world_y))
-                vertices.append(RenderVec2(world_x + GRASS_DIM, world_y))
-                vertices.append(RenderVec2(world_x + GRASS_DIM, world_y + GRASS_DIM))
-                vertices.append(RenderVec2(world_x, world_y + GRASS_DIM))
+                vertices.append(
+                    RenderVec2(world_x + Float64(Self.GRASS_DIM), world_y)
+                )
+                vertices.append(
+                    RenderVec2(
+                        world_x + Float64(Self.GRASS_DIM),
+                        world_y + Float64(Self.GRASS_DIM),
+                    )
+                )
+                vertices.append(
+                    RenderVec2(world_x, world_y + Float64(Self.GRASS_DIM))
+                )
 
-                renderer.draw_polygon_rotating(vertices, camera, grass_clr, filled=True)
+                renderer.draw_polygon_rotating(
+                    vertices, camera, grass_clr, filled=True
+                )
 
     fn _draw_track(self, mut renderer: RendererBase, camera: RotatingCamera):
         """Draw track tiles using RotatingCamera."""
@@ -1102,81 +1298,177 @@ struct CarRacingEnv(BoxContinuousActionEnv):
 
             # Check if tile is visible (rough culling)
             var dist = sqrt(
-                (tile.center_x - camera.x) ** 2 + (tile.center_y - camera.y) ** 2
+                (Float64(tile.center_x) - Float64(camera.x)) ** 2
+                + (Float64(tile.center_y) - Float64(camera.y)) ** 2
             )
-            if dist > 500.0:  # Skip tiles too far away
+            if dist > Float64(500.0):  # Skip tiles too far away
                 continue
 
             # Tile color (slight variation based on index)
             var c = UInt8(Int(0.01 * Float64(i % 3) * 255.0))
             var tile_color = SDL_Color(
-                UInt8(min_i64(Int(road_clr.r) + Int(c), 255)),
-                UInt8(min_i64(Int(road_clr.g) + Int(c), 255)),
-                UInt8(min_i64(Int(road_clr.b) + Int(c), 255)),
+                UInt8(min(Int(road_clr.r) + Int(c), 255)),
+                UInt8(min(Int(road_clr.g) + Int(c), 255)),
+                UInt8(min(Int(road_clr.b) + Int(c), 255)),
                 255,
             )
 
             # Green tint for visited tiles
             if tile.road_visited:
                 tile_color = SDL_Color(
-                    UInt8(max_i64(Int(tile_color.r) - 30, 0)),
-                    UInt8(min_i64(Int(tile_color.g) + 30, 255)),
-                    UInt8(max_i64(Int(tile_color.b) - 30, 0)),
+                    UInt8(max(Int(tile_color.r) - 30, 0)),
+                    UInt8(min(Int(tile_color.g) + 30, 255)),
+                    UInt8(max(Int(tile_color.b) - 30, 0)),
                     255,
                 )
 
             # Create polygon vertices in world coordinates
             var vertices = List[RenderVec2]()
-            vertices.append(RenderVec2(tile.v0.x, tile.v0.y))
-            vertices.append(RenderVec2(tile.v1.x, tile.v1.y))
-            vertices.append(RenderVec2(tile.v2.x, tile.v2.y))
-            vertices.append(RenderVec2(tile.v3.x, tile.v3.y))
+            vertices.append(RenderVec2(Float64(tile.v0.x), Float64(tile.v0.y)))
+            vertices.append(RenderVec2(Float64(tile.v1.x), Float64(tile.v1.y)))
+            vertices.append(RenderVec2(Float64(tile.v2.x), Float64(tile.v2.y)))
+            vertices.append(RenderVec2(Float64(tile.v3.x), Float64(tile.v3.y)))
 
-            renderer.draw_polygon_rotating(vertices, camera, tile_color, filled=True)
+            renderer.draw_polygon_rotating(
+                vertices, camera, tile_color, filled=True
+            )
 
     fn _draw_car(self, mut renderer: RendererBase, camera: RotatingCamera):
-        """Draw the car (hull and wheels) using Transform2D and RotatingCamera."""
+        """Draw the car (hull and wheels) using Transform2D and RotatingCamera.
+        """
         # Hull transform (position and rotation)
-        var hull_transform = Transform2D(self.hull_position.x, self.hull_position.y, self.hull_angle)
+        var hull_transform = Transform2D(
+            Float64(self.hull_position.x),
+            Float64(self.hull_position.y),
+            Float64(self.hull_angle),
+        )
 
         # Hull polygons (from car_dynamics.py)
         var hull_color = car_red()
 
         # Hull polygon 1 (front spoiler)
         var hull1 = List[RenderVec2]()
-        hull1.append(RenderVec2(-60.0 * CAR_SIZE, 130.0 * CAR_SIZE))
-        hull1.append(RenderVec2(60.0 * CAR_SIZE, 130.0 * CAR_SIZE))
-        hull1.append(RenderVec2(60.0 * CAR_SIZE, 110.0 * CAR_SIZE))
-        hull1.append(RenderVec2(-60.0 * CAR_SIZE, 110.0 * CAR_SIZE))
-        renderer.draw_transformed_polygon_rotating(hull1, hull_transform, camera, hull_color, filled=True)
+        hull1.append(
+            RenderVec2(
+                -60.0 * Float64(Self.CAR_SIZE), 130.0 * Float64(Self.CAR_SIZE)
+            )
+        )
+        hull1.append(
+            RenderVec2(
+                60.0 * Float64(Self.CAR_SIZE), 130.0 * Float64(Self.CAR_SIZE)
+            )
+        )
+        hull1.append(
+            RenderVec2(
+                60.0 * Float64(Self.CAR_SIZE), 110.0 * Float64(Self.CAR_SIZE)
+            )
+        )
+        hull1.append(
+            RenderVec2(
+                -60.0 * Float64(Self.CAR_SIZE), 110.0 * Float64(Self.CAR_SIZE)
+            )
+        )
+        renderer.draw_transformed_polygon_rotating(
+            hull1, hull_transform, camera, hull_color, filled=True
+        )
 
         # Hull polygon 2 (cabin)
         var hull2 = List[RenderVec2]()
-        hull2.append(RenderVec2(-15.0 * CAR_SIZE, 120.0 * CAR_SIZE))
-        hull2.append(RenderVec2(15.0 * CAR_SIZE, 120.0 * CAR_SIZE))
-        hull2.append(RenderVec2(20.0 * CAR_SIZE, 20.0 * CAR_SIZE))
-        hull2.append(RenderVec2(-20.0 * CAR_SIZE, 20.0 * CAR_SIZE))
-        renderer.draw_transformed_polygon_rotating(hull2, hull_transform, camera, hull_color, filled=True)
+        hull2.append(
+            RenderVec2(
+                -15.0 * Float64(Self.CAR_SIZE), 120.0 * Float64(Self.CAR_SIZE)
+            )
+        )
+        hull2.append(
+            RenderVec2(
+                15.0 * Float64(Self.CAR_SIZE), 120.0 * Float64(Self.CAR_SIZE)
+            )
+        )
+        hull2.append(
+            RenderVec2(
+                20.0 * Float64(Self.CAR_SIZE), 20.0 * Float64(Self.CAR_SIZE)
+            )
+        )
+        hull2.append(
+            RenderVec2(
+                -20.0 * Float64(Self.CAR_SIZE), 20.0 * Float64(Self.CAR_SIZE)
+            )
+        )
+        renderer.draw_transformed_polygon_rotating(
+            hull2, hull_transform, camera, hull_color, filled=True
+        )
 
         # Hull polygon 3 (body)
         var hull3 = List[RenderVec2]()
-        hull3.append(RenderVec2(25.0 * CAR_SIZE, 20.0 * CAR_SIZE))
-        hull3.append(RenderVec2(50.0 * CAR_SIZE, -10.0 * CAR_SIZE))
-        hull3.append(RenderVec2(50.0 * CAR_SIZE, -40.0 * CAR_SIZE))
-        hull3.append(RenderVec2(20.0 * CAR_SIZE, -90.0 * CAR_SIZE))
-        hull3.append(RenderVec2(-20.0 * CAR_SIZE, -90.0 * CAR_SIZE))
-        hull3.append(RenderVec2(-50.0 * CAR_SIZE, -40.0 * CAR_SIZE))
-        hull3.append(RenderVec2(-50.0 * CAR_SIZE, -10.0 * CAR_SIZE))
-        hull3.append(RenderVec2(-25.0 * CAR_SIZE, 20.0 * CAR_SIZE))
-        renderer.draw_transformed_polygon_rotating(hull3, hull_transform, camera, hull_color, filled=True)
+        hull3.append(
+            RenderVec2(
+                25.0 * Float64(Self.CAR_SIZE), 20.0 * Float64(Self.CAR_SIZE)
+            )
+        )
+        hull3.append(
+            RenderVec2(
+                50.0 * Float64(Self.CAR_SIZE), -10.0 * Float64(Self.CAR_SIZE)
+            )
+        )
+        hull3.append(
+            RenderVec2(
+                50.0 * Float64(Self.CAR_SIZE), -40.0 * Float64(Self.CAR_SIZE)
+            )
+        )
+        hull3.append(
+            RenderVec2(
+                20.0 * Float64(Self.CAR_SIZE), -90.0 * Float64(Self.CAR_SIZE)
+            )
+        )
+        hull3.append(
+            RenderVec2(
+                -20.0 * Float64(Self.CAR_SIZE), -90.0 * Float64(Self.CAR_SIZE)
+            )
+        )
+        hull3.append(
+            RenderVec2(
+                -50.0 * Float64(Self.CAR_SIZE), -40.0 * Float64(Self.CAR_SIZE)
+            )
+        )
+        hull3.append(
+            RenderVec2(
+                -50.0 * Float64(Self.CAR_SIZE), -10.0 * Float64(Self.CAR_SIZE)
+            )
+        )
+        hull3.append(
+            RenderVec2(
+                -25.0 * Float64(Self.CAR_SIZE), 20.0 * Float64(Self.CAR_SIZE)
+            )
+        )
+        renderer.draw_transformed_polygon_rotating(
+            hull3, hull_transform, camera, hull_color, filled=True
+        )
 
         # Hull polygon 4 (rear spoiler)
         var hull4 = List[RenderVec2]()
-        hull4.append(RenderVec2(-50.0 * CAR_SIZE, -120.0 * CAR_SIZE))
-        hull4.append(RenderVec2(50.0 * CAR_SIZE, -120.0 * CAR_SIZE))
-        hull4.append(RenderVec2(50.0 * CAR_SIZE, -90.0 * CAR_SIZE))
-        hull4.append(RenderVec2(-50.0 * CAR_SIZE, -90.0 * CAR_SIZE))
-        renderer.draw_transformed_polygon_rotating(hull4, hull_transform, camera, hull_color, filled=True)
+        hull4.append(
+            RenderVec2(
+                -50.0 * Float64(Self.CAR_SIZE), -120.0 * Float64(Self.CAR_SIZE)
+            )
+        )
+        hull4.append(
+            RenderVec2(
+                50.0 * Float64(Self.CAR_SIZE), -120.0 * Float64(Self.CAR_SIZE)
+            )
+        )
+        hull4.append(
+            RenderVec2(
+                50.0 * Float64(Self.CAR_SIZE), -90.0 * Float64(Self.CAR_SIZE)
+            )
+        )
+        hull4.append(
+            RenderVec2(
+                -50.0 * Float64(Self.CAR_SIZE), -90.0 * Float64(Self.CAR_SIZE)
+            )
+        )
+        renderer.draw_transformed_polygon_rotating(
+            hull4, hull_transform, camera, hull_color, filled=True
+        )
 
         # Draw wheels
         var wheel_color = black()
@@ -1186,7 +1478,7 @@ struct CarRacingEnv(BoxContinuousActionEnv):
     fn _draw_hull_poly(
         self,
         mut renderer: RendererBase,
-        local_verts: List[Vec2],
+        local_verts: List[Vec2[Self.DTYPE]],
         color: SDL_Color,
         zoom: Float64,
         cam_x: Float64,
@@ -1212,7 +1504,12 @@ struct CarRacingEnv(BoxContinuousActionEnv):
             var world_y = self.hull_position.y + ry
 
             var screen = self._world_to_screen(
-                world_x, world_y, zoom, cam_x, cam_y, cam_angle
+                Float64(world_x),
+                Float64(world_y),
+                Float64(zoom),
+                Float64(cam_x),
+                Float64(cam_y),
+                Float64(cam_angle),
             )
             points.append(SDL_Point(Int32(screen[0]), Int32(screen[1])))
 
@@ -1229,11 +1526,15 @@ struct CarRacingEnv(BoxContinuousActionEnv):
         var wheel = self.wheels[wheel_idx]
 
         # Wheel rectangle dimensions
-        var hw = WHEEL_W * CAR_SIZE
-        var hr = WHEEL_R * CAR_SIZE
+        var hw = Float64(Self.WHEEL_W) * Float64(Self.CAR_SIZE)
+        var hr = Float64(Self.WHEEL_R) * Float64(Self.CAR_SIZE)
 
         # Wheel transform
-        var wheel_transform = Transform2D(wheel.position.x, wheel.position.y, wheel.angle)
+        var wheel_transform = Transform2D(
+            Float64(wheel.position.x),
+            Float64(wheel.position.y),
+            Float64(wheel.angle),
+        )
 
         # Draw main wheel body (black)
         var wheel_verts = List[RenderVec2]()
@@ -1241,7 +1542,9 @@ struct CarRacingEnv(BoxContinuousActionEnv):
         wheel_verts.append(RenderVec2(hw, hr))
         wheel_verts.append(RenderVec2(hw, -hr))
         wheel_verts.append(RenderVec2(-hw, -hr))
-        renderer.draw_transformed_polygon_rotating(wheel_verts, wheel_transform, camera, color, filled=True)
+        renderer.draw_transformed_polygon_rotating(
+            wheel_verts, wheel_transform, camera, color, filled=True
+        )
 
         # Draw rotation stripe (gray stripe that simulates wheel rolling)
         # Based on wheel phase angle
@@ -1265,22 +1568,24 @@ struct CarRacingEnv(BoxContinuousActionEnv):
         # Draw the white/gray stripe
         var stripe_color = rgb(77, 77, 77)  # WHEEL_WHITE
         var stripe_verts = List[RenderVec2]()
-        stripe_verts.append(RenderVec2(-hw, hr * c1))
-        stripe_verts.append(RenderVec2(hw, hr * c1))
-        stripe_verts.append(RenderVec2(hw, hr * c2))
-        stripe_verts.append(RenderVec2(-hw, hr * c2))
-        renderer.draw_transformed_polygon_rotating(stripe_verts, wheel_transform, camera, stripe_color, filled=True)
+        stripe_verts.append(RenderVec2(-hw, Float64(hr) * Float64(c1)))
+        stripe_verts.append(RenderVec2(hw, Float64(hr) * Float64(c1)))
+        stripe_verts.append(RenderVec2(hw, Float64(hr) * Float64(c2)))
+        stripe_verts.append(RenderVec2(-hw, Float64(hr) * Float64(c2)))
+        renderer.draw_transformed_polygon_rotating(
+            stripe_verts, wheel_transform, camera, stripe_color, filled=True
+        )
 
     fn _draw_info(self, mut renderer: RendererBase):
         """Draw info panel with indicators like original Gymnasium."""
-        var W = WINDOW_W
-        var H = WINDOW_H
+        var W = Float64(Self.WINDOW_W)
+        var H = Float64(Self.WINDOW_H)
         var s = Float64(W) / 40.0  # Scale unit
         var h = Float64(H) / 40.0  # Height unit
 
         # Draw black background panel (bottom 5 units)
         var bg_color = SDL_Color(0, 0, 0, 255)
-        renderer.draw_rect(0, Int(H - 5 * h), W, Int(5 * h), bg_color, 0)
+        renderer.draw_rect(0, Int(H - 5 * h), Int(W), Int(5 * h), bg_color, 0)
 
         # Calculate speed
         var true_speed = sqrt(
@@ -1292,70 +1597,82 @@ struct CarRacingEnv(BoxContinuousActionEnv):
         if true_speed > 0.0001:
             var speed_height = 0.02 * true_speed
             self._draw_vertical_indicator(
-                renderer, 5, speed_height, SDL_Color(255, 255, 255, 255), s, h, H
+                renderer,
+                5,
+                Float64(speed_height),
+                SDL_Color(255, 255, 255, 255),
+                s,
+                h,
+                Int(H),
             )
 
         # Draw ABS sensors (wheel omega indicators)
         # Front wheels (blue)
-        if abs_f64(self.wheels[0].omega) > 0.0001:
+        if abs(Float64(self.wheels[0].omega)) > 0.0001:
             self._draw_vertical_indicator(
                 renderer,
                 7,
-                0.01 * self.wheels[0].omega,
+                0.01 * Float64(self.wheels[0].omega),
                 SDL_Color(0, 0, 255, 255),
                 s,
                 h,
-                H,
+                Int(H),
             )
-        if abs_f64(self.wheels[1].omega) > 0.0001:
+        if abs(Float64(self.wheels[1].omega)) > 0.0001:
             self._draw_vertical_indicator(
                 renderer,
                 8,
-                0.01 * self.wheels[1].omega,
+                0.01 * Float64(self.wheels[1].omega),
                 SDL_Color(0, 0, 255, 255),
                 s,
                 h,
-                H,
+                Int(H),
             )
         # Rear wheels (purple-blue)
-        if abs_f64(self.wheels[2].omega) > 0.0001:
+        if abs(Float64(self.wheels[2].omega)) > 0.0001:
             self._draw_vertical_indicator(
                 renderer,
                 9,
-                0.01 * self.wheels[2].omega,
+                0.01 * Float64(self.wheels[2].omega),
                 SDL_Color(51, 0, 255, 255),
                 s,
                 h,
-                H,
+                Int(H),
             )
-        if abs_f64(self.wheels[3].omega) > 0.0001:
+        if abs(Float64(self.wheels[3].omega)) > 0.0001:
             self._draw_vertical_indicator(
                 renderer,
                 10,
-                0.01 * self.wheels[3].omega,
+                0.01 * Float64(self.wheels[3].omega),
                 SDL_Color(51, 0, 255, 255),
                 s,
                 h,
-                H,
+                Int(H),
             )
 
         # Draw steering angle indicator (green horizontal bar at position 20)
         var steer_angle = self.wheels[0].joint_angle
-        if abs_f64(steer_angle) > 0.0001:
+        if abs(Float64(steer_angle)) > 0.0001:
             self._draw_horizontal_indicator(
-                renderer, 20, -10.0 * steer_angle, SDL_Color(0, 255, 0, 255), s, h, H
+                renderer,
+                20,
+                -10.0 * Float64(steer_angle),
+                SDL_Color(0, 255, 0, 255),
+                s,
+                h,
+                Int(H),
             )
 
         # Draw angular velocity indicator (red horizontal bar at position 30)
-        if abs_f64(self.hull_angular_velocity) > 0.0001:
+        if abs(Float64(self.hull_angular_velocity)) > 0.0001:
             self._draw_horizontal_indicator(
                 renderer,
                 30,
-                -0.8 * self.hull_angular_velocity,
+                -0.8 * Float64(self.hull_angular_velocity),
                 SDL_Color(255, 0, 0, 255),
                 s,
                 h,
-                H,
+                Int(H),
             )
 
         # Draw reward score using large white text
@@ -1386,8 +1703,8 @@ struct CarRacingEnv(BoxContinuousActionEnv):
             var tmp = y1
             y1 = y2
             y2 = tmp
-        y1 = max_i64(y1, Int(Float64(H) - 5 * h))
-        y2 = min_i64(y2, H)
+        y1 = max(y1, Int(Float64(H) - 5 * h))
+        y2 = min(y2, H)
 
         if y2 > y1:
             renderer.draw_rect(x1, y1, x2 - x1, y2 - y1, color, 0)
@@ -1415,8 +1732,8 @@ struct CarRacingEnv(BoxContinuousActionEnv):
             x2 = tmp
 
         # Clamp x values
-        x1 = max_i64(x1, 0)
-        x2 = min_i64(x2, WINDOW_W)
+        x1 = max(x1, 0)
+        x2 = min(x2, Self.WINDOW_W)
 
         if x2 > x1:
             renderer.draw_rect(x1, y1, x2 - x1, y2 - y1, color, 0)
@@ -1425,7 +1742,9 @@ struct CarRacingEnv(BoxContinuousActionEnv):
 # ===== Helper Functions =====
 
 
-fn clamp(x: Float64, low: Float64, high: Float64) -> Float64:
+fn clamp[
+    DTYPE: DType
+](x: Scalar[DTYPE], low: Scalar[DTYPE], high: Scalar[DTYPE]) -> Scalar[DTYPE]:
     """Clamp value to range."""
     if x < low:
         return low
@@ -1434,35 +1753,10 @@ fn clamp(x: Float64, low: Float64, high: Float64) -> Float64:
     return x
 
 
-fn abs_f64(x: Float64) -> Float64:
-    """Absolute value."""
-    return x if x >= 0.0 else -x
-
-
-fn sign(x: Float64) -> Float64:
+fn sign[DTYPE: DType](x: Scalar[DTYPE]) -> Scalar[DTYPE]:
     """Sign of value."""
     if x > 0.0:
         return 1.0
     elif x < 0.0:
         return -1.0
     return 0.0
-
-
-fn min_f64(a: Float64, b: Float64) -> Float64:
-    """Minimum of two floats."""
-    return a if a < b else b
-
-
-fn max_f64(a: Float64, b: Float64) -> Float64:
-    """Maximum of two floats."""
-    return a if a > b else b
-
-
-fn min_i64(a: Int, b: Int) -> Int:
-    """Minimum of two integers."""
-    return a if a < b else b
-
-
-fn max_i64(a: Int, b: Int) -> Int:
-    """Maximum of two integers."""
-    return a if a > b else b

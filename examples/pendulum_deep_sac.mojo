@@ -35,7 +35,7 @@ fn main() raises:
     print("=" * 60 + "\n")
 
     # Create environment
-    var env = PendulumEnv()
+    var env = PendulumEnv[DType.float64]()
 
     # Pendulum observation: [cos(theta), sin(theta), theta_dot]
     # Pendulum action: torque in [-2, 2]

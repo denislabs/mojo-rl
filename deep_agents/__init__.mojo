@@ -11,7 +11,8 @@ Available agents:
 - DeepTD3Agent: Twin Delayed DDPG
 - DeepSACAgent: Soft Actor-Critic
 - DeepA2CAgent: Advantage Actor-Critic
-- DeepPPOAgent: Proximal Policy Optimization
+- DeepPPOAgent: Proximal Policy Optimization (discrete actions)
+- DeepPPOContinuousAgent: PPO for continuous action spaces
 """
 
 from .dqn import DQNAgent
@@ -22,3 +23,4 @@ from .sac import DeepSACAgent
 from .dueling_dqn import DuelingDQNAgent
 from .a2c import DeepA2CAgent
 from .ppo import DeepPPOAgent
+from .ppo_continuous import DeepPPOContinuousAgent

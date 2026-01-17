@@ -34,7 +34,7 @@ fn main() raises:
     print("=" * 60)
     print("")
 
-    var env = CartPoleEnv()
+    var env = CartPoleEnv[DType.float64]()
     var tc = CartPoleEnv.make_tile_coding(
         num_tilings=8,
         tiles_per_dim=8,

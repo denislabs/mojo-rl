@@ -97,7 +97,9 @@ struct PendulumAction(Action, Copyable, ImplicitlyCopyable, Movable):
         return Float64(self.direction - 1) * 2.0
 
 
-struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
+struct PendulumEnv[DTYPE: DType](
+    BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv & Copyable & Movable
+):
     """Native Mojo Pendulum environment with integrated SDL2 rendering.
 
     State observation: [cos(θ), sin(θ), θ_dot] (3D).
@@ -116,31 +118,68 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
     """
 
     # Type aliases for trait conformance
+    comptime dtype = Self.DTYPE
     comptime StateType = PendulumState
     comptime ActionType = PendulumAction
 
     # Physical constants (same as Gymnasium)
-    var max_speed: Float64
-    var max_torque: Float64
-    var dt: Float64  # Time step (seconds)
-    var g: Float64  # Gravity
-    var m: Float64  # Mass
-    var l: Float64  # Length
+    var max_speed: Scalar[Self.dtype]
+    var max_torque: Scalar[Self.dtype]
+    var dt: Scalar[Self.dtype]  # Time step (seconds)
+    var g: Scalar[Self.dtype]  # Gravity
+    var m: Scalar[Self.dtype]  # Mass
+    var l: Scalar[Self.dtype]  # Length
 
     # Current state
-    var theta: Float64  # Angle (radians, 0 = pointing up)
-    var theta_dot: Float64  # Angular velocity
+    var theta: Scalar[Self.dtype]  # Angle (radians, 0 = pointing up)
+    var theta_dot: Scalar[Self.dtype]  # Angular velocity
 
     # Episode tracking
     var steps: Int
     var max_steps: Int
     var done: Bool
-    var total_reward: Float64
-    var last_torque: Float64  # For rendering
+    var total_reward: Scalar[Self.dtype]
+    var last_torque: Scalar[Self.dtype]  # For rendering
 
     # Discretization settings (for DiscreteEnv)
     var num_bins_angle: Int
     var num_bins_velocity: Int
+
+    fn __copyinit__(out self, existing: Self):
+        """Copy constructor."""
+        self.max_speed = existing.max_speed
+        self.max_torque = existing.max_torque
+        self.dt = existing.dt
+        self.g = existing.g
+        self.m = existing.m
+        self.l = existing.l
+        self.theta = existing.theta
+        self.theta_dot = existing.theta_dot
+        self.steps = existing.steps
+        self.max_steps = existing.max_steps
+        self.done = existing.done
+        self.total_reward = existing.total_reward
+        self.last_torque = existing.last_torque
+        self.num_bins_angle = existing.num_bins_angle
+        self.num_bins_velocity = existing.num_bins_velocity
+
+    fn __moveinit__(out self, deinit existing: Self):
+        """Move constructor."""
+        self.max_speed = existing.max_speed
+        self.max_torque = existing.max_torque
+        self.dt = existing.dt
+        self.g = existing.g
+        self.m = existing.m
+        self.l = existing.l
+        self.theta = existing.theta
+        self.theta_dot = existing.theta_dot
+        self.steps = existing.steps
+        self.max_steps = existing.max_steps
+        self.done = existing.done
+        self.total_reward = existing.total_reward
+        self.last_torque = existing.last_torque
+        self.num_bins_angle = existing.num_bins_angle
+        self.num_bins_velocity = existing.num_bins_velocity
 
     fn __init__(
         out self, num_bins_angle: Int = 15, num_bins_velocity: Int = 15
@@ -152,23 +191,23 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
             num_bins_velocity: Number of bins for velocity discretization.
         """
         # Physics constants from Gymnasium
-        self.max_speed = 8.0
-        self.max_torque = 2.0
-        self.dt = 0.05  # 20 Hz updates
-        self.g = 10.0
-        self.m = 1.0
-        self.l = 1.0
+        self.max_speed = Scalar[Self.dtype](8.0)
+        self.max_torque = Scalar[Self.dtype](2.0)
+        self.dt = Scalar[Self.dtype](0.05)  # 20 Hz updates
+        self.g = Scalar[Self.dtype](10.0)
+        self.m = Scalar[Self.dtype](1.0)
+        self.l = Scalar[Self.dtype](1.0)
 
         # State (θ=0 is pointing up, positive is clockwise)
-        self.theta = pi  # Start pointing down
-        self.theta_dot = 0.0
+        self.theta = Scalar[Self.dtype](pi)  # Start pointing down
+        self.theta_dot = Scalar[Self.dtype](0.0)
 
         # Episode
         self.steps = 0
         self.max_steps = 200
         self.done = False
-        self.total_reward = 0.0
-        self.last_torque = 0.0
+        self.total_reward = Scalar[Self.dtype](0.0)
+        self.last_torque = Scalar[Self.dtype](0.0)
 
         # Discretization settings
         self.num_bins_angle = num_bins_angle
@@ -187,20 +226,20 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
         Returns PendulumState with discretized state index.
         """
         # Random initial angle in [-π, π]
-        self.theta = (random_float64() * 2.0 - 1.0) * pi
+        self.theta = Scalar[Self.dtype]((random_float64() * 2.0 - 1.0) * pi)
         # Random initial angular velocity in [-1, 1]
-        self.theta_dot = (random_float64() * 2.0 - 1.0) * 1.0
+        self.theta_dot = Scalar[Self.dtype]((random_float64() * 2.0 - 1.0) * 1.0)
 
         self.steps = 0
         self.done = False
-        self.total_reward = 0.0
-        self.last_torque = 0.0
+        self.total_reward = Scalar[Self.dtype](0.0)
+        self.last_torque = Scalar[Self.dtype](0.0)
 
         return PendulumState(index=self._discretize_obs())
 
     fn step(
         mut self, action: PendulumAction
-    ) -> Tuple[PendulumState, Float64, Bool]:
+    ) -> Tuple[PendulumState, Scalar[Self.dtype], Bool]:
         """Take discrete action and return (state, reward, done).
 
         Args:
@@ -209,12 +248,12 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
         Returns:
             Tuple of (new_state, reward, done)
         """
-        var torque = action.to_continuous()
+        var torque = Scalar[Self.dtype](action.to_continuous())
         return self._step_with_torque(torque)
 
     fn _step_with_torque(
-        mut self, torque: Float64
-    ) -> Tuple[PendulumState, Float64, Bool]:
+        mut self, torque: Scalar[Self.dtype]
+    ) -> Tuple[PendulumState, Scalar[Self.dtype], Bool]:
         """Internal step function that accepts continuous torque."""
         # Clamp torque
         var u = torque
@@ -226,8 +265,9 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
         self.last_torque = u
 
         # Physics: θ'' = (3g/2L) * sin(θ) + (3/mL²) * u
-        var theta_acc = (3.0 * self.g) / (2.0 * self.l) * sin(self.theta) + (
-            3.0 / (self.m * self.l * self.l)
+        var sin_theta = Scalar[Self.dtype](sin(Float64(self.theta)))
+        var theta_acc = (Scalar[Self.dtype](3.0) * self.g) / (Scalar[Self.dtype](2.0) * self.l) * sin_theta + (
+            Scalar[Self.dtype](3.0) / (self.m * self.l * self.l)
         ) * u
 
         # Euler integration
@@ -248,8 +288,8 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
         # Compute reward: -(θ² + 0.1*θ_dot² + 0.001*u²)
         var reward = -(
             self.theta * self.theta
-            + 0.1 * self.theta_dot * self.theta_dot
-            + 0.001 * u * u
+            + Scalar[Self.dtype](0.1) * self.theta_dot * self.theta_dot
+            + Scalar[Self.dtype](0.001) * u * u
         )
         self.total_reward += reward
 
@@ -275,8 +315,8 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
     # ========================================================================
 
     fn step_continuous(
-        mut self, torque: Float64
-    ) -> Tuple[List[Float64], Float64, Bool]:
+        mut self, torque: Scalar[Self.dtype]
+    ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
         """Take 1D continuous action and return (obs_list, reward, done).
 
         Args:
@@ -290,8 +330,8 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
         return (self.get_obs_list(), reward, self.done)
 
     fn step_continuous_vec(
-        mut self, action: List[Float64]
-    ) -> Tuple[List[Float64], Float64, Bool]:
+        mut self, action: List[Scalar[Self.dtype]]
+    ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
         """Take multi-dimensional continuous action (trait method).
 
         For Pendulum, only the first element is used as torque.
@@ -302,12 +342,33 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
         Returns:
             Tuple of (observation as List, reward, done).
         """
-        var torque = action[0] if len(action) > 0 else 0.0
+        var torque = action[0] if len(action) > 0 else Scalar[Self.dtype](0.0)
         return self.step_continuous(torque)
 
+    fn step_continuous_vec_f64(
+        mut self, action: List[Float64]
+    ) -> Tuple[List[Float64], Float64, Bool]:
+        """Take multi-dimensional continuous action (Float64) and return (obs, reward, done).
+
+        Convenience method using Float64 for compatibility with generic agents.
+
+        Args:
+            action: List of Float64 action values.
+
+        Returns:
+            Tuple of (observation_list, reward, done) as Float64.
+        """
+        var torque = Scalar[Self.dtype](action[0] if len(action) > 0 else 0.0)
+        var result = self._step_with_torque(torque)
+        var obs_typed = self.get_obs_list()
+        var obs_f64 = List[Float64]()
+        for i in range(len(obs_typed)):
+            obs_f64.append(Float64(obs_typed[i]))
+        return (obs_f64^, Float64(result[1]), result[2])
+
     fn step_continuous_simd(
-        mut self, torque: Float64
-    ) -> Tuple[SIMD[DType.float64, 4], Float64, Bool]:
+        mut self, torque: Scalar[Self.dtype]
+    ) -> Tuple[SIMD[Self.dtype, 4], Scalar[Self.dtype], Bool]:
         """Take continuous action and return SIMD observation (optimized).
 
         This is the SIMD-optimized version for performance-critical code.
@@ -326,25 +387,27 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
     # Internal helpers
     # ========================================================================
 
-    fn _angle_normalize(self, x: Float64) -> Float64:
+    fn _angle_normalize(self, x: Scalar[Self.dtype]) -> Scalar[Self.dtype]:
         """Normalize angle to [-π, π]."""
         var result = x
-        while result > pi:
-            result -= 2.0 * pi
-        while result < -pi:
-            result += 2.0 * pi
+        var pi_val = Scalar[Self.dtype](pi)
+        var two_pi = Scalar[Self.dtype](2.0 * pi)
+        while result > pi_val:
+            result -= two_pi
+        while result < -pi_val:
+            result += two_pi
         return result
 
-    fn _get_obs(self) -> SIMD[DType.float64, 4]:
+    fn _get_obs(self) -> SIMD[Self.dtype, 4]:
         """Return current continuous observation [cos(θ), sin(θ), θ_dot, 0].
 
         Padded to 4D for consistency with other environments.
         """
-        var obs = SIMD[DType.float64, 4]()
-        obs[0] = cos(self.theta)
-        obs[1] = sin(self.theta)
+        var obs = SIMD[Self.dtype, 4]()
+        obs[0] = Scalar[Self.dtype](cos(Float64(self.theta)))
+        obs[1] = Scalar[Self.dtype](sin(Float64(self.theta)))
         obs[2] = self.theta_dot
-        obs[3] = 0.0  # Padding
+        obs[3] = Scalar[Self.dtype](0.0)  # Padding
         return obs
 
     fn _discretize_obs(self) -> Int:
@@ -364,17 +427,17 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
                 normalized = 1.0
             return Int(normalized * Float64(bins - 1))
 
-        var b_angle = bin_value(self.theta, -pi, pi, self.num_bins_angle)
+        var b_angle = bin_value(Float64(self.theta), -pi, pi, self.num_bins_angle)
         var b_vel = bin_value(
-            self.theta_dot,
-            -self.max_speed,
-            self.max_speed,
+            Float64(self.theta_dot),
+            Float64(-self.max_speed),
+            Float64(self.max_speed),
             self.num_bins_velocity,
         )
 
         return b_angle * self.num_bins_velocity + b_vel
 
-    fn get_obs(self) -> SIMD[DType.float64, 4]:
+    fn get_obs(self) -> SIMD[Self.dtype, 4]:
         """Return current continuous observation as SIMD (optimized, padded to 4D).
         """
         return self._get_obs()
@@ -383,27 +446,27 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
     # ContinuousStateEnv / BoxDiscreteActionEnv / BoxContinuousActionEnv trait methods
     # ========================================================================
 
-    fn get_obs_list(self) -> List[Float64]:
+    fn get_obs_list(self) -> List[Scalar[Self.dtype]]:
         """Return current continuous observation as a flexible list (trait method).
 
         Returns true 3D observation without padding.
         """
-        var obs = List[Float64](capacity=3)
-        obs.append(cos(self.theta))
-        obs.append(sin(self.theta))
+        var obs = List[Scalar[Self.dtype]](capacity=3)
+        obs.append(Scalar[Self.dtype](cos(Float64(self.theta))))
+        obs.append(Scalar[Self.dtype](sin(Float64(self.theta))))
         obs.append(self.theta_dot)
         return obs^
 
-    fn reset_obs_list(mut self) -> List[Float64]:
+    fn reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
         """Reset environment and return initial observation as list (trait method).
         """
         _ = self.reset()
         return self.get_obs_list()
 
-    fn step_obs(mut self, action: Int) -> Tuple[List[Float64], Float64, Bool]:
+    fn step_obs(mut self, action: Int) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
         """Take discrete action and return (obs_list, reward, done) - trait method.
 
-        This is the BoxDiscreteActionEnv trait method using List[Float64].
+        This is the BoxDiscreteActionEnv trait method using List[Scalar[Self.dtype]].
         For performance-critical code, use step_raw() which returns SIMD.
         """
         var result = self.step(PendulumAction(direction=action))
@@ -413,7 +476,7 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
     # SIMD-optimized observation API (for performance)
     # ========================================================================
 
-    fn reset_obs(mut self) -> SIMD[DType.float64, 4]:
+    fn reset_obs(mut self) -> SIMD[Self.dtype, 4]:
         """Reset environment and return raw continuous observation.
 
         Use this for function approximation methods (tile coding, linear FA)
@@ -427,7 +490,7 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
 
     fn step_raw(
         mut self, action: Int
-    ) -> Tuple[SIMD[DType.float64, 4], Float64, Bool]:
+    ) -> Tuple[SIMD[Self.dtype, 4], Scalar[Self.dtype], Bool]:
         """Take discrete action and return raw continuous observation.
 
         Use this for function approximation methods that need the continuous
@@ -450,6 +513,11 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
         """
         if not renderer.begin_frame():
             return
+
+        # Convert state variables to Float64 for rendering
+        var theta_f64 = Float64(self.theta)
+        var theta_dot_f64 = Float64(self.theta_dot)
+        var last_torque_f64 = Float64(self.last_torque)
 
         # Colors
         var sky_color = sky_blue()
@@ -476,9 +544,9 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
         )
 
         # Draw torque indicator (arc showing applied torque)
-        if self.last_torque != 0.0:
-            var torque_scale = abs(self.last_torque) * 0.3
-            var torque_direction = 1.0 if self.last_torque > 0 else -1.0
+        if last_torque_f64 != 0.0:
+            var torque_scale = abs(last_torque_f64) * 0.3
+            var torque_direction = 1.0 if last_torque_f64 > 0 else -1.0
             var arc_offset = Vec2(torque_direction * 0.3, 0.3)
             var arc_end = Vec2(
                 torque_direction * 0.3,
@@ -498,7 +566,7 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
         # So we adjust: pendulum_angle = pi + theta
         renderer.draw_pendulum(
             pivot,
-            self.theta + pi,  # Adjust so 0 = down for the helper
+            theta_f64 + pi,  # Adjust so 0 = down for the helper
             rod_length_world,
             bob_radius_world,
             camera,
@@ -510,8 +578,8 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
 
         # Draw bob border
         var bob_pos = Vec2(
-            pivot.x + rod_length_world * sin(self.theta),
-            pivot.y - rod_length_world * cos(self.theta),
+            pivot.x + rod_length_world * sin(theta_f64),
+            pivot.y - rod_length_world * cos(theta_f64),
         )
         renderer.draw_circle_world(
             bob_pos, bob_radius_world, camera, black(), False
@@ -522,10 +590,10 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
         info_lines.append("Step: " + String(self.steps))
         info_lines.append("Reward: " + String(Int(self.total_reward)))
         info_lines.append(
-            "Angle: " + String(self.theta * 180.0 / pi)[:6] + " deg"
+            "Angle: " + String(theta_f64 * 180.0 / pi)[:6] + " deg"
         )
-        info_lines.append("Vel: " + String(self.theta_dot)[:6])
-        info_lines.append("Torque: " + String(self.last_torque)[:5])
+        info_lines.append("Vel: " + String(theta_dot_f64)[:6])
+        info_lines.append("Torque: " + String(last_torque_f64)[:5])
         renderer.draw_info_box(info_lines)
 
         # Update display
@@ -551,11 +619,11 @@ struct PendulumEnv(BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv):
         """Return action dimension (1 for torque)."""
         return 1
 
-    fn action_low(self) -> Float64:
+    fn action_low(self) -> Scalar[Self.dtype]:
         """Return lower bound for action values."""
         return -self.max_torque
 
-    fn action_high(self) -> Float64:
+    fn action_high(self) -> Scalar[Self.dtype]:
         """Return upper bound for action values."""
         return self.max_torque
 

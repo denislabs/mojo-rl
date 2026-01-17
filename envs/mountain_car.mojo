@@ -80,7 +80,7 @@ struct MountainCarAction(Action, Copyable, ImplicitlyCopyable, Movable):
         return Self(direction=2)
 
 
-struct MountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
+struct MountainCarEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
     """Native Mojo MountainCar environment with integrated SDL2 rendering.
 
     State: [position, velocity] (2D).
@@ -95,27 +95,28 @@ struct MountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
     """
 
     # Type aliases for trait conformance
+    comptime dtype = Self.DTYPE
     comptime StateType = MountainCarState
     comptime ActionType = MountainCarAction
 
     # Physical constants (same as Gymnasium)
-    var min_position: Float64
-    var max_position: Float64
-    var max_speed: Float64
-    var goal_position: Float64
-    var goal_velocity: Float64
-    var force: Float64
-    var gravity: Float64
+    var min_position: Scalar[Self.dtype]
+    var max_position: Scalar[Self.dtype]
+    var max_speed: Scalar[Self.dtype]
+    var goal_position: Scalar[Self.dtype]
+    var goal_velocity: Scalar[Self.dtype]
+    var force: Scalar[Self.dtype]
+    var gravity: Scalar[Self.dtype]
 
     # Current state
-    var position: Float64
-    var velocity: Float64
+    var position: Scalar[Self.dtype]
+    var velocity: Scalar[Self.dtype]
 
     # Episode tracking
     var steps: Int
     var max_steps: Int
     var done: Bool
-    var total_reward: Float64
+    var total_reward: Scalar[Self.dtype]
 
     # Discretization settings (for DiscreteEnv)
     var num_bins: Int
@@ -168,7 +169,7 @@ struct MountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
 
     fn step(
         mut self, action: MountainCarAction
-    ) -> Tuple[MountainCarState, Float64, Bool]:
+    ) -> Tuple[MountainCarState, Scalar[Self.dtype], Bool]:
         """Take action and return (state, reward, done).
 
         Args:
@@ -182,13 +183,13 @@ struct MountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
         Collisions at boundaries are inelastic (velocity set to 0).
         """
         # Convert action to force direction: 0->-1, 1->0, 2->+1
-        var force_direction = Float64(action.direction - 1)
+        var force_direction = Scalar[Self.dtype](action.direction - 1)
 
         # Update velocity
         self.velocity = (
             self.velocity
             + force_direction * self.force
-            - cos(3.0 * self.position) * self.gravity
+            - cos(Scalar[Self.dtype](3.0) * self.position) * self.gravity
         )
 
         # Clip velocity
@@ -217,7 +218,7 @@ struct MountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
         self.done = goal_reached or truncated
 
         # Reward: -1 for each step until goal
-        var reward: Float64 = -1.0
+        var reward: Scalar[Self.dtype] = -1.0
         self.total_reward += reward
 
         return (
@@ -267,26 +268,28 @@ struct MountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
     # ContinuousStateEnv / BoxDiscreteActionEnv trait methods
     # ========================================================================
 
-    fn get_obs_list(self) -> List[Float64]:
+    fn get_obs_list(self) -> List[Scalar[Self.dtype]]:
         """Return current continuous observation as a flexible list (trait method).
 
         Returns true 2D observation without padding.
         """
-        var obs = List[Float64](capacity=2)
+        var obs = List[Scalar[Self.dtype]](capacity=2)
         obs.append(self.position)
         obs.append(self.velocity)
         return obs^
 
-    fn reset_obs_list(mut self) -> List[Float64]:
+    fn reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
         """Reset environment and return initial observation as list (trait method).
         """
         _ = self.reset()
         return self.get_obs_list()
 
-    fn step_obs(mut self, action: Int) -> Tuple[List[Float64], Float64, Bool]:
+    fn step_obs(
+        mut self, action: Int
+    ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
         """Take action and return (obs_list, reward, done) - trait method.
 
-        This is the BoxDiscreteActionEnv trait method using List[Float64].
+        This is the BoxDiscreteActionEnv trait method using List[Scalar].
         For performance-critical code, use step_raw() which returns SIMD.
         """
         var result = self.step(MountainCarAction(direction=action))
@@ -326,7 +329,7 @@ struct MountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
 
     fn step_raw(
         mut self, action: Int
-    ) -> Tuple[SIMD[DType.float64, 4], Float64, Bool]:
+    ) -> Tuple[SIMD[DType.float64, 4], Scalar[Self.dtype], Bool]:
         """Take action and return raw continuous observation.
 
         Use this for function approximation methods that need the continuous
@@ -345,9 +348,11 @@ struct MountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
     # Internal helpers
     # ========================================================================
 
-    fn _height(self, position: Float64) -> Float64:
+    fn _height(self, position: Scalar[Self.dtype]) -> Scalar[Self.dtype]:
         """Get terrain height at a given position."""
-        return sin(3.0 * position) * 0.45 + 0.55
+        return sin(Scalar[Self.dtype](3.0) * position) * Scalar[Self.dtype](
+            0.45
+        ) + Scalar[Self.dtype](0.55)
 
     fn render(mut self, mut renderer: RendererBase):
         """Render the current state using SDL2.
@@ -361,10 +366,15 @@ struct MountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
         if not renderer.begin_frame():
             return
 
+        # Cast to Float64 for rendering
+        var min_pos_f64 = Float64(self.min_position)
+        var max_pos_f64 = Float64(self.max_position)
+        var goal_pos_f64 = Float64(self.goal_position)
+        var pos_f64 = Float64(self.position)
+        var vel_f64 = Float64(self.velocity)
+
         # Rendering constants
-        var scale_x = Float64(renderer.screen_width) / (
-            self.max_position - self.min_position
-        )
+        var scale_x = Float64(renderer.screen_width) / (max_pos_f64 - min_pos_f64)
         var scale_y = 200.0
         var ground_y = 300
 
@@ -391,6 +401,10 @@ struct MountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
         fn world_to_screen_y(h: Float64, gy: Int, sy: Float64) -> Int:
             return gy - Int(h * sy)
 
+        fn height_f64(position: Float64) -> Float64:
+            """Get terrain height at a given position for rendering."""
+            return sin(3.0 * position) * 0.45 + 0.55
+
         # Clear screen with sky color
         renderer.clear_with_color(sky_color_)
 
@@ -403,11 +417,11 @@ struct MountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
         # Add terrain points
         var num_points = 100
         for i in range(num_points + 1):
-            var pos = self.min_position + (
-                self.max_position - self.min_position
-            ) * Float64(i) / Float64(num_points)
-            var height = self._height(pos)
-            var screen_x = world_to_screen_x(pos, self.min_position, scale_x)
+            var pos = min_pos_f64 + (max_pos_f64 - min_pos_f64) * Float64(
+                i
+            ) / Float64(num_points)
+            var height = height_f64(pos)
+            var screen_x = world_to_screen_x(pos, min_pos_f64, scale_x)
             var screen_y = world_to_screen_y(height, ground_y, scale_y)
             terrain_points.append(renderer.make_point(screen_x, screen_y))
 
@@ -422,21 +436,19 @@ struct MountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
         # Draw mountain outline
         var outline_points = List[SDL_Point]()
         for i in range(num_points + 1):
-            var pos = self.min_position + (
-                self.max_position - self.min_position
-            ) * Float64(i) / Float64(num_points)
-            var height = self._height(pos)
-            var screen_x = world_to_screen_x(pos, self.min_position, scale_x)
+            var pos = min_pos_f64 + (max_pos_f64 - min_pos_f64) * Float64(
+                i
+            ) / Float64(num_points)
+            var height = height_f64(pos)
+            var screen_x = world_to_screen_x(pos, min_pos_f64, scale_x)
             var screen_y = world_to_screen_y(height, ground_y, scale_y)
             outline_points.append(renderer.make_point(screen_x, screen_y))
         var outline_color = black()
         renderer.draw_lines(outline_points, outline_color, closed=False, width=2)
 
         # Draw goal flag
-        var flag_height_world = self._height(self.goal_position)
-        var flag_x = world_to_screen_x(
-            self.goal_position, self.min_position, scale_x
-        )
+        var flag_height_world = height_f64(goal_pos_f64)
+        var flag_x = world_to_screen_x(goal_pos_f64, min_pos_f64, scale_x)
         var flag_base_y = world_to_screen_y(flag_height_world, ground_y, scale_y)
 
         # Flag pole
@@ -463,8 +475,8 @@ struct MountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
         renderer.draw_polygon(flag_points, flag_color, filled=True)
 
         # Draw car
-        var car_height_world = self._height(self.position)
-        var car_x = world_to_screen_x(self.position, self.min_position, scale_x)
+        var car_height_world = height_f64(pos_f64)
+        var car_x = world_to_screen_x(pos_f64, min_pos_f64, scale_x)
         var car_y = world_to_screen_y(car_height_world, ground_y, scale_y)
 
         # Car body
@@ -496,7 +508,7 @@ struct MountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
         )
 
         # Draw velocity indicator (arrow)
-        var arrow_length = Int(self.velocity * 1000)
+        var arrow_length = Int(vel_f64 * 1000)
         if arrow_length != 0:
             var arrow_y = car_y - car_height - wheel_radius - 10
             var arrow_color = black()
@@ -508,8 +520,8 @@ struct MountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
         var info_lines = List[String]()
         info_lines.append("Step: " + String(self.steps))
         info_lines.append("Reward: " + String(Int(self.total_reward)))
-        info_lines.append("Pos: " + String(self.position)[:6])
-        info_lines.append("Vel: " + String(self.velocity)[:7])
+        info_lines.append("Pos: " + String(pos_f64)[:6])
+        info_lines.append("Vel: " + String(vel_f64)[:7])
         renderer.draw_info_box(info_lines)
 
         # Update display

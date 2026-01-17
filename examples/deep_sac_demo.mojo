@@ -18,7 +18,7 @@ fn main() raises:
     print("=" * 60)
 
     # Create environment
-    var env = PendulumEnv()
+    var env = PendulumEnv[DType.float64]()
 
     # Create Deep SAC agent
     # Pendulum: obs_dim=3 (cos θ, sin θ, θ_dot), action_dim=1 (torque in [-2, 2])

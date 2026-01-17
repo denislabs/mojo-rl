@@ -107,7 +107,7 @@ fn benchmark_episode() raises:
     print("=" * 60)
 
     # Create environment and agent
-    var env = PendulumEnv()
+    var env = PendulumEnv[DType.float64]()
 
     comptime obs_dim = 3
     comptime action_dim = 1

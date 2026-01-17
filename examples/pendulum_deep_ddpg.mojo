@@ -23,7 +23,7 @@ fn main() raises:
     print("")
 
     # Create environment
-    var env = PendulumEnv()
+    var env = PendulumEnv[DType.float64]()
 
     # Create Deep DDPG agent with compile-time dimensions
     # obs_dim=3: [cos(θ), sin(θ), θ_dot]

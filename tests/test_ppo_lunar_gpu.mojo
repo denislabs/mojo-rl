@@ -18,7 +18,7 @@ from time import perf_counter_ns
 from gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOAgent
-from envs.lunar_lander_gpu import LunarLanderGPU
+from envs.lunar_lander_gpu_v4 import LunarLanderGPUv4
 
 
 # =============================================================================
@@ -83,10 +83,10 @@ fn main() raises:
             clip_value=True,
             norm_adv_per_minibatch=True,
             checkpoint_every=1000,
-            checkpoint_path="ppo_lunar_gpu.ckpt",
+            checkpoint_path="ppo_lunar_gpu_v4.ckpt",
         )
 
-        # agent.load_checkpoint("ppo_lunar_gpu.ckpt")
+        # agent.load_checkpoint("ppo_lunar_gpu_v4.ckpt")
 
         print("Environment: LunarLander (GPU)")
         print("Agent: PPO (GPU)")
@@ -125,7 +125,7 @@ fn main() raises:
         var start_time = perf_counter_ns()
 
         try:
-            var metrics = agent.train_gpu[LunarLanderGPU](
+            var metrics = agent.train_gpu[LunarLanderGPUv4](
                 ctx,
                 num_episodes=NUM_EPISODES,
                 verbose=True,

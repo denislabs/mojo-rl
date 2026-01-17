@@ -71,7 +71,7 @@ fn main() raises:
     print("Deterministic actor with Gaussian exploration noise.")
     print("")
 
-    var env_ddpg = PendulumEnv()
+    var env_ddpg = PendulumEnv[DType.float64]()
     var buffer_ddpg = ContinuousReplayBuffer(
         capacity=100000,
         feature_dim=features.get_num_features(),
@@ -121,7 +121,7 @@ fn main() raises:
     print("Improved DDPG with twin critics and delayed policy updates.")
     print("")
 
-    var env_td3 = PendulumEnv()
+    var env_td3 = PendulumEnv[DType.float64]()
     var buffer_td3 = ContinuousReplayBuffer(
         capacity=100000,
         feature_dim=features.get_num_features(),

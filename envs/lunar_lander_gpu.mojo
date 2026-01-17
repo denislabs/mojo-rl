@@ -94,6 +94,18 @@ comptime SCALE: Float64 = 30.0
 comptime FPS: Int = 50
 comptime TAU: Float64 = 0.02  # 1/FPS
 
+# Sub-stepping for improved physics stability
+# More sub-steps = better accuracy but more computation
+# Box2D uses 6-8 velocity iterations, we use 4 sub-steps as a simpler approach
+comptime NUM_SUBSTEPS: Int = 4
+comptime SUB_TAU: Float64 = TAU / Float64(NUM_SUBSTEPS)  # 0.005s per sub-step
+
+# Hidden state for improved physics (Velocity Verlet + contact caching)
+# State layout: [obs(8), hidden(4)] = 12 total
+# Hidden: [prev_vx, prev_vy, prev_angular_vel, contact_impulse_sum]
+comptime HIDDEN_STATE_SIZE: Int = 4
+comptime FULL_STATE_SIZE: Int = 8 + HIDDEN_STATE_SIZE  # 12 total
+
 # Lander geometry (in physics units, after SCALE division)
 comptime LEG_AWAY: Float64 = 20.0 / 30.0  # ~0.667 - horizontal distance from center
 comptime LEG_DOWN: Float64 = 18.0 / 30.0  # ~0.6 - vertical distance below center
@@ -165,8 +177,10 @@ struct LunarLanderGPU(GPUDiscreteEnv):
     """
 
     # GPUDiscreteEnv trait constants
-    comptime STATE_SIZE: Int = 8
-    comptime OBS_DIM: Int = 8
+    # STATE_SIZE includes hidden state for physics (prev velocities, contact cache)
+    # OBS_DIM is what the neural network sees (first 8 values only)
+    comptime STATE_SIZE: Int = FULL_STATE_SIZE  # 12 (8 obs + 4 hidden)
+    comptime OBS_DIM: Int = 8  # Neural network input dimension
     comptime NUM_ACTIONS: Int = 4
     comptime TPB: Int = 256
 

@@ -11,7 +11,7 @@ fn main() raises:
     print("=== Acrobot Environment Demo ===\n")
 
     # Create environment
-    var env = AcrobotEnv(num_bins=6)
+    var env = AcrobotEnv[DType.float64](num_bins=6)
 
     print("Environment created successfully!")
     print("Observation dimension:", env.obs_dim())

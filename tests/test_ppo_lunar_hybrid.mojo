@@ -44,6 +44,8 @@ comptime NUM_EPISODES = 50_000
 # Main
 # =============================================================================
 
+comptime dtype = DType.float32
+
 
 fn main() raises:
     seed(42)
@@ -57,9 +59,9 @@ fn main() raises:
     # =========================================================================
 
     print("Creating " + String(N_ENVS) + " CPU environments...")
-    var envs = List[LunarLanderEnv]()
+    var envs = List[LunarLanderEnv[dtype]]()
     for i in range(N_ENVS):
-        var env = LunarLanderEnv(
+        var env = LunarLanderEnv[dtype](
             continuous=False,
             gravity=-10.0,
             enable_wind=True,

@@ -131,7 +131,7 @@ fn bound(x: Float64, m: Float64, M: Float64) -> Float64:
     return x
 
 
-struct AcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
+struct AcrobotEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
     """Native Mojo Acrobot environment with integrated SDL2 rendering.
 
     State: [theta1, theta2, theta1_dot, theta2_dot] (internal).
@@ -147,37 +147,38 @@ struct AcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
     """
 
     # Type aliases for trait conformance
+    comptime dtype = Self.DTYPE
     comptime StateType = AcrobotState
     comptime ActionType = AcrobotAction
 
     # Physical constants (same as Gymnasium)
-    var gravity: Float64
-    var link_length_1: Float64  # Length of link 1 [m]
-    var link_length_2: Float64  # Length of link 2 [m]
-    var link_mass_1: Float64  # Mass of link 1 [kg]
-    var link_mass_2: Float64  # Mass of link 2 [kg]
-    var link_com_pos_1: Float64  # Position of center of mass of link 1 [m]
-    var link_com_pos_2: Float64  # Position of center of mass of link 2 [m]
-    var link_moi: Float64  # Moments of inertia for both links
+    var gravity: Scalar[Self.dtype]
+    var link_length_1: Scalar[Self.dtype]  # Length of link 1 [m]
+    var link_length_2: Scalar[Self.dtype]  # Length of link 2 [m]
+    var link_mass_1: Scalar[Self.dtype]  # Mass of link 1 [kg]
+    var link_mass_2: Scalar[Self.dtype]  # Mass of link 2 [kg]
+    var link_com_pos_1: Scalar[Self.dtype]  # Position of center of mass of link 1 [m]
+    var link_com_pos_2: Scalar[Self.dtype]  # Position of center of mass of link 2 [m]
+    var link_moi: Scalar[Self.dtype]  # Moments of inertia for both links
 
-    var max_vel_1: Float64  # Max angular velocity for joint 1
-    var max_vel_2: Float64  # Max angular velocity for joint 2
+    var max_vel_1: Scalar[Self.dtype]  # Max angular velocity for joint 1
+    var max_vel_2: Scalar[Self.dtype]  # Max angular velocity for joint 2
 
-    var avail_torque: SIMD[DType.float64, 4]  # Available torques [-1, 0, 1]
-    var torque_noise_max: Float64
-    var dt: Float64  # Time step
+    var avail_torque: SIMD[Self.dtype, 4]  # Available torques [-1, 0, 1]
+    var torque_noise_max: Scalar[Self.dtype]
+    var dt: Scalar[Self.dtype]  # Time step
 
     # Current state (angles and angular velocities)
-    var theta1: Float64  # Angle of link 1 (0 = pointing down)
-    var theta2: Float64  # Angle of link 2 relative to link 1
-    var theta1_dot: Float64  # Angular velocity of link 1
-    var theta2_dot: Float64  # Angular velocity of link 2
+    var theta1: Scalar[Self.dtype]  # Angle of link 1 (0 = pointing down)
+    var theta2: Scalar[Self.dtype]  # Angle of link 2 relative to link 1
+    var theta1_dot: Scalar[Self.dtype]  # Angular velocity of link 1
+    var theta2_dot: Scalar[Self.dtype]  # Angular velocity of link 2
 
     # Episode tracking
     var steps: Int
     var max_steps: Int
     var done: Bool
-    var total_reward: Float64
+    var total_reward: Scalar[Self.dtype]
 
     # Discretization settings (for DiscreteEnv)
     var num_bins: Int
@@ -193,34 +194,34 @@ struct AcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
             use_book_dynamics: If True, use book dynamics; if False, use NIPS paper dynamics.
         """
         # Physics constants from Gymnasium
-        self.gravity = 9.8
-        self.link_length_1 = 1.0
-        self.link_length_2 = 1.0
-        self.link_mass_1 = 1.0
-        self.link_mass_2 = 1.0
-        self.link_com_pos_1 = 0.5
-        self.link_com_pos_2 = 0.5
-        self.link_moi = 1.0
+        self.gravity = Scalar[Self.dtype](9.8)
+        self.link_length_1 = Scalar[Self.dtype](1.0)
+        self.link_length_2 = Scalar[Self.dtype](1.0)
+        self.link_mass_1 = Scalar[Self.dtype](1.0)
+        self.link_mass_2 = Scalar[Self.dtype](1.0)
+        self.link_com_pos_1 = Scalar[Self.dtype](0.5)
+        self.link_com_pos_2 = Scalar[Self.dtype](0.5)
+        self.link_moi = Scalar[Self.dtype](1.0)
 
-        self.max_vel_1 = 4.0 * pi
-        self.max_vel_2 = 9.0 * pi
+        self.max_vel_1 = Scalar[Self.dtype](4.0 * pi)
+        self.max_vel_2 = Scalar[Self.dtype](9.0 * pi)
 
         # Available torques: [-1, 0, +1] (padded to SIMD width 4)
-        self.avail_torque = SIMD[DType.float64, 4](-1.0, 0.0, 1.0, 0.0)
-        self.torque_noise_max = 0.0
-        self.dt = 0.2  # Time step
+        self.avail_torque = SIMD[Self.dtype, 4](-1.0, 0.0, 1.0, 0.0)
+        self.torque_noise_max = Scalar[Self.dtype](0.0)
+        self.dt = Scalar[Self.dtype](0.2)  # Time step
 
         # State
-        self.theta1 = 0.0
-        self.theta2 = 0.0
-        self.theta1_dot = 0.0
-        self.theta2_dot = 0.0
+        self.theta1 = Scalar[Self.dtype](0.0)
+        self.theta2 = Scalar[Self.dtype](0.0)
+        self.theta1_dot = Scalar[Self.dtype](0.0)
+        self.theta2_dot = Scalar[Self.dtype](0.0)
 
         # Episode
         self.steps = 0
         self.max_steps = 500
         self.done = False
-        self.total_reward = 0.0
+        self.total_reward = Scalar[Self.dtype](0.0)
 
         # Discretization settings
         self.num_bins = num_bins
@@ -238,20 +239,20 @@ struct AcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
         Returns AcrobotState with discretized state index.
         """
         # Random initial state in [-0.1, 0.1] for each component
-        self.theta1 = (random_float64() - 0.5) * 0.2
-        self.theta2 = (random_float64() - 0.5) * 0.2
-        self.theta1_dot = (random_float64() - 0.5) * 0.2
-        self.theta2_dot = (random_float64() - 0.5) * 0.2
+        self.theta1 = Scalar[Self.dtype]((random_float64() - 0.5) * 0.2)
+        self.theta2 = Scalar[Self.dtype]((random_float64() - 0.5) * 0.2)
+        self.theta1_dot = Scalar[Self.dtype]((random_float64() - 0.5) * 0.2)
+        self.theta2_dot = Scalar[Self.dtype]((random_float64() - 0.5) * 0.2)
 
         self.steps = 0
         self.done = False
-        self.total_reward = 0.0
+        self.total_reward = Scalar[Self.dtype](0.0)
 
         return AcrobotState(index=self._discretize_obs())
 
     fn step(
         mut self, action: AcrobotAction
-    ) -> Tuple[AcrobotState, Float64, Bool]:
+    ) -> Tuple[AcrobotState, Scalar[Self.dtype], Bool]:
         """Take action and return (state, reward, done).
 
         Args:
@@ -263,18 +264,18 @@ struct AcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
         var torque = self.avail_torque[action.torque_idx]
 
         # Add noise to torque if configured
-        if self.torque_noise_max > 0.0:
-            torque += (random_float64() - 0.5) * 2.0 * self.torque_noise_max
+        if self.torque_noise_max > Scalar[Self.dtype](0.0):
+            torque += Scalar[Self.dtype]((random_float64() - 0.5) * 2.0) * self.torque_noise_max
 
         # Perform RK4 integration
         var ns = self._rk4_step(torque)
 
         # Wrap angles to [-pi, pi]
-        self.theta1 = wrap(ns[0], -pi, pi)
-        self.theta2 = wrap(ns[1], -pi, pi)
+        self.theta1 = self._wrap(ns[0], Scalar[Self.dtype](-pi), Scalar[Self.dtype](pi))
+        self.theta2 = self._wrap(ns[1], Scalar[Self.dtype](-pi), Scalar[Self.dtype](pi))
         # Bound velocities
-        self.theta1_dot = bound(ns[2], -self.max_vel_1, self.max_vel_1)
-        self.theta2_dot = bound(ns[3], -self.max_vel_2, self.max_vel_2)
+        self.theta1_dot = self._bound(ns[2], -self.max_vel_1, self.max_vel_1)
+        self.theta2_dot = self._bound(ns[3], -self.max_vel_2, self.max_vel_2)
 
         self.steps += 1
 
@@ -285,7 +286,7 @@ struct AcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
         self.done = terminated or truncated
 
         # Reward: -1 for each step, 0 at terminal
-        var reward: Float64 = 0.0 if terminated else -1.0
+        var reward = Scalar[Self.dtype](0.0) if terminated else Scalar[Self.dtype](-1.0)
         self.total_reward += reward
 
         return (AcrobotState(index=self._discretize_obs()), reward, self.done)
@@ -306,9 +307,27 @@ struct AcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
     # Internal physics helpers
     # ========================================================================
 
+    fn _wrap(self, x: Scalar[Self.dtype], m: Scalar[Self.dtype], M: Scalar[Self.dtype]) -> Scalar[Self.dtype]:
+        """Wraps x so m <= x <= M using modular arithmetic."""
+        var diff = M - m
+        var result = x
+        while result > M:
+            result = result - diff
+        while result < m:
+            result = result + diff
+        return result
+
+    fn _bound(self, x: Scalar[Self.dtype], m: Scalar[Self.dtype], M: Scalar[Self.dtype]) -> Scalar[Self.dtype]:
+        """Clamps x to be within [m, M]."""
+        if x < m:
+            return m
+        elif x > M:
+            return M
+        return x
+
     fn _dsdt(
-        self, s: SIMD[DType.float64, 4], torque: Float64
-    ) -> SIMD[DType.float64, 4]:
+        self, s: SIMD[Self.dtype, 4], torque: Scalar[Self.dtype]
+    ) -> SIMD[Self.dtype, 4]:
         """Compute derivatives for the equations of motion.
 
         Args:
@@ -332,23 +351,28 @@ struct AcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
         var dtheta1 = s[2]
         var dtheta2 = s[3]
 
+        var cos_theta2 = cos(Float64(theta2))
+        var sin_theta2 = sin(Float64(theta2))
+        var cos_t1_t2_pi2 = cos(Float64(theta1 + theta2) - pi / 2.0)
+        var cos_t1_pi2 = cos(Float64(theta1) - pi / 2.0)
+
         var d1 = (
             m1 * lc1 * lc1
-            + m2 * (l1 * l1 + lc2 * lc2 + 2.0 * l1 * lc2 * cos(theta2))
+            + m2 * (l1 * l1 + lc2 * lc2 + Scalar[Self.dtype](2.0) * l1 * lc2 * Scalar[Self.dtype](cos_theta2))
             + I1
             + I2
         )
-        var d2 = m2 * (lc2 * lc2 + l1 * lc2 * cos(theta2)) + I2
+        var d2 = m2 * (lc2 * lc2 + l1 * lc2 * Scalar[Self.dtype](cos_theta2)) + I2
 
-        var phi2 = m2 * lc2 * g * cos(theta1 + theta2 - pi / 2.0)
+        var phi2 = m2 * lc2 * g * Scalar[Self.dtype](cos_t1_t2_pi2)
         var phi1 = (
-            -m2 * l1 * lc2 * dtheta2 * dtheta2 * sin(theta2)
-            - 2.0 * m2 * l1 * lc2 * dtheta2 * dtheta1 * sin(theta2)
-            + (m1 * lc1 + m2 * l1) * g * cos(theta1 - pi / 2.0)
+            -m2 * l1 * lc2 * dtheta2 * dtheta2 * Scalar[Self.dtype](sin_theta2)
+            - Scalar[Self.dtype](2.0) * m2 * l1 * lc2 * dtheta2 * dtheta1 * Scalar[Self.dtype](sin_theta2)
+            + (m1 * lc1 + m2 * l1) * g * Scalar[Self.dtype](cos_t1_pi2)
             + phi2
         )
 
-        var ddtheta2: Float64
+        var ddtheta2: Scalar[Self.dtype]
         if not self.use_book_dynamics:
             # NIPS paper dynamics
             ddtheta2 = (torque + d2 / d1 * phi1 - phi2) / (
@@ -359,15 +383,15 @@ struct AcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
             ddtheta2 = (
                 torque
                 + d2 / d1 * phi1
-                - m2 * l1 * lc2 * dtheta1 * dtheta1 * sin(theta2)
+                - m2 * l1 * lc2 * dtheta1 * dtheta1 * Scalar[Self.dtype](sin_theta2)
                 - phi2
             ) / (m2 * lc2 * lc2 + I2 - d2 * d2 / d1)
 
         var ddtheta1 = -(d2 * ddtheta2 + phi1) / d1
 
-        return SIMD[DType.float64, 4](dtheta1, dtheta2, ddtheta1, ddtheta2)
+        return SIMD[Self.dtype, 4](dtheta1, dtheta2, ddtheta1, ddtheta2)
 
-    fn _rk4_step(self, torque: Float64) -> SIMD[DType.float64, 4]:
+    fn _rk4_step(self, torque: Scalar[Self.dtype]) -> SIMD[Self.dtype, 4]:
         """Perform one RK4 integration step.
 
         Args:
@@ -376,44 +400,44 @@ struct AcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
         Returns:
             New state [theta1, theta2, dtheta1, dtheta2]
         """
-        var y0 = SIMD[DType.float64, 4](
+        var y0 = SIMD[Self.dtype, 4](
             self.theta1, self.theta2, self.theta1_dot, self.theta2_dot
         )
 
         var dt = self.dt
-        var dt2 = dt / 2.0
+        var dt2 = dt / Scalar[Self.dtype](2.0)
 
         var k1 = self._dsdt(y0, torque)
         var k2 = self._dsdt(y0 + dt2 * k1, torque)
         var k3 = self._dsdt(y0 + dt2 * k2, torque)
         var k4 = self._dsdt(y0 + dt * k3, torque)
 
-        return y0 + dt / 6.0 * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+        return y0 + dt / Scalar[Self.dtype](6.0) * (k1 + Scalar[Self.dtype](2.0) * k2 + Scalar[Self.dtype](2.0) * k3 + k4)
 
     fn _terminal(self) -> Bool:
         """Check if the free end has reached the target height."""
-        return -cos(self.theta1) - cos(self.theta2 + self.theta1) > 1.0
+        return -cos(Float64(self.theta1)) - cos(Float64(self.theta2 + self.theta1)) > 1.0
 
     # ========================================================================
     # Observation helpers
     # ========================================================================
 
     @always_inline
-    fn _get_obs(self) -> SIMD[DType.float64, 8]:
+    fn _get_obs(self) -> SIMD[Self.dtype, 8]:
         """Return current continuous observation.
 
         Returns [cos(θ1), sin(θ1), cos(θ2), sin(θ2), θ1_dot, θ2_dot, 0, 0]
         (padded to SIMD width 8).
         """
-        var obs = SIMD[DType.float64, 8]()
-        obs[0] = cos(self.theta1)
-        obs[1] = sin(self.theta1)
-        obs[2] = cos(self.theta2)
-        obs[3] = sin(self.theta2)
+        var obs = SIMD[Self.dtype, 8]()
+        obs[0] = Scalar[Self.dtype](cos(Float64(self.theta1)))
+        obs[1] = Scalar[Self.dtype](sin(Float64(self.theta1)))
+        obs[2] = Scalar[Self.dtype](cos(Float64(self.theta2)))
+        obs[3] = Scalar[Self.dtype](sin(Float64(self.theta2)))
         obs[4] = self.theta1_dot
         obs[5] = self.theta2_dot
-        obs[6] = 0.0
-        obs[7] = 0.0
+        obs[6] = Scalar[Self.dtype](0.0)
+        obs[7] = Scalar[Self.dtype](0.0)
         return obs
 
     @always_inline
@@ -425,7 +449,7 @@ struct AcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
         var n = self.num_bins
 
         # cos(theta1): [-1, 1]
-        var n0 = (cos(self.theta1) + 1.0) / 2.0
+        var n0 = (cos(Float64(self.theta1)) + 1.0) / 2.0
         if n0 < 0.0:
             n0 = 0.0
         elif n0 > 1.0:
@@ -433,7 +457,7 @@ struct AcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
         var b0 = Int(n0 * Float64(n - 1))
 
         # sin(theta1): [-1, 1]
-        var n1 = (sin(self.theta1) + 1.0) / 2.0
+        var n1 = (sin(Float64(self.theta1)) + 1.0) / 2.0
         if n1 < 0.0:
             n1 = 0.0
         elif n1 > 1.0:
@@ -441,7 +465,7 @@ struct AcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
         var b1 = Int(n1 * Float64(n - 1))
 
         # cos(theta2): [-1, 1]
-        var n2 = (cos(self.theta2) + 1.0) / 2.0
+        var n2 = (cos(Float64(self.theta2)) + 1.0) / 2.0
         if n2 < 0.0:
             n2 = 0.0
         elif n2 > 1.0:
@@ -449,7 +473,7 @@ struct AcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
         var b2 = Int(n2 * Float64(n - 1))
 
         # sin(theta2): [-1, 1]
-        var n3 = (sin(self.theta2) + 1.0) / 2.0
+        var n3 = (sin(Float64(self.theta2)) + 1.0) / 2.0
         if n3 < 0.0:
             n3 = 0.0
         elif n3 > 1.0:
@@ -457,7 +481,7 @@ struct AcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
         var b3 = Int(n3 * Float64(n - 1))
 
         # theta1_dot: [-4*pi, 4*pi]
-        var n4 = (self.theta1_dot + self.max_vel_1) / (2.0 * self.max_vel_1)
+        var n4 = (Float64(self.theta1_dot) + Float64(self.max_vel_1)) / (2.0 * Float64(self.max_vel_1))
         if n4 < 0.0:
             n4 = 0.0
         elif n4 > 1.0:
@@ -465,7 +489,7 @@ struct AcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
         var b4 = Int(n4 * Float64(n - 1))
 
         # theta2_dot: [-9*pi, 9*pi]
-        var n5 = (self.theta2_dot + self.max_vel_2) / (2.0 * self.max_vel_2)
+        var n5 = (Float64(self.theta2_dot) + Float64(self.max_vel_2)) / (2.0 * Float64(self.max_vel_2))
         if n5 < 0.0:
             n5 = 0.0
         elif n5 > 1.0:
@@ -475,7 +499,7 @@ struct AcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
         return ((((b0 * n + b1) * n + b2) * n + b3) * n + b4) * n + b5
 
     @always_inline
-    fn get_obs(self) -> SIMD[DType.float64, 8]:
+    fn get_obs(self) -> SIMD[Self.dtype, 8]:
         """Return current continuous observation as SIMD (optimized)."""
         return self._get_obs()
 
@@ -483,30 +507,30 @@ struct AcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
     # ContinuousStateEnv / BoxDiscreteActionEnv trait methods
     # ========================================================================
 
-    fn get_obs_list(self) -> List[Float64]:
+    fn get_obs_list(self) -> List[Scalar[Self.dtype]]:
         """Return current continuous observation as a flexible list (trait method).
 
         Returns true 6D observation without padding.
         """
-        var obs = List[Float64](capacity=6)
-        obs.append(cos(self.theta1))
-        obs.append(sin(self.theta1))
-        obs.append(cos(self.theta2))
-        obs.append(sin(self.theta2))
+        var obs = List[Scalar[Self.dtype]](capacity=6)
+        obs.append(Scalar[Self.dtype](cos(Float64(self.theta1))))
+        obs.append(Scalar[Self.dtype](sin(Float64(self.theta1))))
+        obs.append(Scalar[Self.dtype](cos(Float64(self.theta2))))
+        obs.append(Scalar[Self.dtype](sin(Float64(self.theta2))))
         obs.append(self.theta1_dot)
         obs.append(self.theta2_dot)
         return obs^
 
-    fn reset_obs_list(mut self) -> List[Float64]:
+    fn reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
         """Reset environment and return initial observation as list (trait method).
         """
         _ = self.reset()
         return self.get_obs_list()
 
-    fn step_obs(mut self, action: Int) -> Tuple[List[Float64], Float64, Bool]:
+    fn step_obs(mut self, action: Int) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
         """Take action and return (obs_list, reward, done) - trait method.
 
-        This is the BoxDiscreteActionEnv trait method using List[Float64].
+        This is the BoxDiscreteActionEnv trait method using List[Scalar[Self.dtype]].
         For performance-critical code, use step_raw() which returns SIMD.
         """
         var result = self.step_raw(action)
@@ -516,7 +540,7 @@ struct AcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
     # SIMD-optimized observation API (for performance)
     # ========================================================================
 
-    fn reset_obs(mut self) -> SIMD[DType.float64, 8]:
+    fn reset_obs(mut self) -> SIMD[Self.dtype, 8]:
         """Reset environment and return raw continuous observation.
 
         Use this for function approximation methods (tile coding, linear FA)
@@ -531,7 +555,7 @@ struct AcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
     @always_inline
     fn step_raw(
         mut self, action: Int
-    ) -> Tuple[SIMD[DType.float64, 8], Float64, Bool]:
+    ) -> Tuple[SIMD[Self.dtype, 8], Scalar[Self.dtype], Bool]:
         """Take action and return raw continuous observation.
 
         Use this for function approximation methods that need the continuous
@@ -547,18 +571,18 @@ struct AcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
         var torque = self.avail_torque[action]
 
         # Add noise to torque if configured
-        if self.torque_noise_max > 0.0:
-            torque += (random_float64() - 0.5) * 2.0 * self.torque_noise_max
+        if self.torque_noise_max > Scalar[Self.dtype](0.0):
+            torque += Scalar[Self.dtype]((random_float64() - 0.5) * 2.0) * self.torque_noise_max
 
         # Perform RK4 integration
         var ns = self._rk4_step(torque)
 
         # Wrap angles to [-pi, pi]
-        self.theta1 = wrap(ns[0], -pi, pi)
-        self.theta2 = wrap(ns[1], -pi, pi)
+        self.theta1 = self._wrap(ns[0], Scalar[Self.dtype](-pi), Scalar[Self.dtype](pi))
+        self.theta2 = self._wrap(ns[1], Scalar[Self.dtype](-pi), Scalar[Self.dtype](pi))
         # Bound velocities
-        self.theta1_dot = bound(ns[2], -self.max_vel_1, self.max_vel_1)
-        self.theta2_dot = bound(ns[3], -self.max_vel_2, self.max_vel_2)
+        self.theta1_dot = self._bound(ns[2], -self.max_vel_1, self.max_vel_1)
+        self.theta2_dot = self._bound(ns[3], -self.max_vel_2, self.max_vel_2)
 
         self.steps += 1
 
@@ -567,7 +591,7 @@ struct AcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
         var truncated = self.steps >= self.max_steps
         self.done = terminated or truncated
 
-        var reward: Float64 = 0.0 if terminated else -1.0
+        var reward = Scalar[Self.dtype](0.0) if terminated else Scalar[Self.dtype](-1.0)
         self.total_reward += reward
 
         return (self._get_obs(), reward, self.done)
@@ -588,6 +612,12 @@ struct AcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
         if not renderer.begin_frame():
             return
 
+        # Convert state variables to Float64 for rendering
+        var theta1_f64 = Float64(self.theta1)
+        var theta2_f64 = Float64(self.theta2)
+        var link_length_1_f64 = Float64(self.link_length_1)
+        var link_length_2_f64 = Float64(self.link_length_2)
+
         # Colors
         var link_color = rgb(0, 204, 204)  # Cyan
         var joint_color = rgb(204, 204, 0)  # Yellow
@@ -596,7 +626,7 @@ struct AcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
 
         # Create camera with appropriate zoom
         # Total reach is link_length_1 + link_length_2, add margin
-        var bound_val = self.link_length_1 + self.link_length_2 + 0.2
+        var bound_val = link_length_1_f64 + link_length_2_f64 + 0.2
         var zoom = Float64(
             min(renderer.screen_width, renderer.screen_height)
         ) / (bound_val * 2.0)
@@ -608,16 +638,16 @@ struct AcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
         # First link endpoint
         # theta1=0 means pointing straight down (negative Y in world coords)
         var p1 = Vec2(
-            p0.x + self.link_length_1 * sin(self.theta1),
-            p0.y - self.link_length_1 * cos(self.theta1),
+            p0.x + link_length_1_f64 * sin(theta1_f64),
+            p0.y - link_length_1_f64 * cos(theta1_f64),
         )
 
         # Second link endpoint
         # theta2 is relative to theta1
-        var angle2 = self.theta1 + self.theta2
+        var angle2 = theta1_f64 + theta2_f64
         var p2 = Vec2(
-            p1.x + self.link_length_2 * sin(angle2),
-            p1.y - self.link_length_2 * cos(angle2),
+            p1.x + link_length_2_f64 * sin(angle2),
+            p1.y - link_length_2_f64 * cos(angle2),
         )
 
         # Draw target line (height = 1.0 above the fixed point)
