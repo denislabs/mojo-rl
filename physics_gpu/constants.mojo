@@ -82,6 +82,49 @@ comptime CONTACT_NORMAL_IMPULSE: Int = 7  # For warm starting
 comptime CONTACT_TANGENT_IMPULSE: Int = 8
 
 # =============================================================================
+# Joint Layout
+# =============================================================================
+# Joints connect two bodies and constrain their relative motion
+# Revolute joint layout:
+# [type, body_a, body_b, anchor_ax, anchor_ay, anchor_bx, anchor_by,
+#  ref_angle, lower_limit, upper_limit, max_motor_torque, motor_speed,
+#  stiffness, damping, flags, impulse, motor_impulse]
+
+comptime JOINT_DATA_SIZE: Int = 17
+
+# Joint types
+comptime JOINT_REVOLUTE: Int = 0
+comptime JOINT_DISTANCE: Int = 1  # For future use
+comptime JOINT_PRISMATIC: Int = 2  # For future use
+
+# Joint data indices
+comptime JOINT_TYPE: Int = 0
+comptime JOINT_BODY_A: Int = 1
+comptime JOINT_BODY_B: Int = 2
+comptime JOINT_ANCHOR_AX: Int = 3  # Local anchor on body A
+comptime JOINT_ANCHOR_AY: Int = 4
+comptime JOINT_ANCHOR_BX: Int = 5  # Local anchor on body B
+comptime JOINT_ANCHOR_BY: Int = 6
+comptime JOINT_REF_ANGLE: Int = 7  # Reference angle (angle_b - angle_a at creation)
+comptime JOINT_LOWER_LIMIT: Int = 8  # Lower angle limit
+comptime JOINT_UPPER_LIMIT: Int = 9  # Upper angle limit
+comptime JOINT_MAX_MOTOR_TORQUE: Int = 10
+comptime JOINT_MOTOR_SPEED: Int = 11  # Target motor speed
+comptime JOINT_STIFFNESS: Int = 12  # Spring stiffness (for soft joints)
+comptime JOINT_DAMPING: Int = 13  # Spring damping
+comptime JOINT_FLAGS: Int = 14  # Bit flags: 1=limit_enabled, 2=motor_enabled, 4=spring_enabled
+comptime JOINT_IMPULSE: Int = 15  # Accumulated constraint impulse (for warm starting)
+comptime JOINT_MOTOR_IMPULSE: Int = 16  # Accumulated motor impulse
+
+# Joint flags
+comptime JOINT_FLAG_LIMIT_ENABLED: Int = 1
+comptime JOINT_FLAG_MOTOR_ENABLED: Int = 2
+comptime JOINT_FLAG_SPRING_ENABLED: Int = 4
+
+# Maximum joints per environment
+comptime MAX_JOINTS_PER_ENV: Int = 8
+
+# =============================================================================
 # Default Physics Constants
 # =============================================================================
 

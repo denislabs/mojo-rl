@@ -46,6 +46,7 @@ from .constants import (
     BODY_STATE_SIZE,
     SHAPE_MAX_SIZE,
     CONTACT_DATA_SIZE,
+    JOINT_DATA_SIZE,
     IDX_X,
     IDX_Y,
     IDX_ANGLE,
@@ -72,6 +73,31 @@ from .constants import (
     CONTACT_DEPTH,
     CONTACT_NORMAL_IMPULSE,
     CONTACT_TANGENT_IMPULSE,
+    # Joint constants
+    JOINT_TYPE,
+    JOINT_BODY_A,
+    JOINT_BODY_B,
+    JOINT_ANCHOR_AX,
+    JOINT_ANCHOR_AY,
+    JOINT_ANCHOR_BX,
+    JOINT_ANCHOR_BY,
+    JOINT_REF_ANGLE,
+    JOINT_LOWER_LIMIT,
+    JOINT_UPPER_LIMIT,
+    JOINT_MAX_MOTOR_TORQUE,
+    JOINT_MOTOR_SPEED,
+    JOINT_STIFFNESS,
+    JOINT_DAMPING,
+    JOINT_FLAGS,
+    JOINT_IMPULSE,
+    JOINT_MOTOR_IMPULSE,
+    JOINT_REVOLUTE,
+    JOINT_DISTANCE,
+    JOINT_PRISMATIC,
+    JOINT_FLAG_LIMIT_ENABLED,
+    JOINT_FLAG_MOTOR_ENABLED,
+    JOINT_FLAG_SPRING_ENABLED,
+    MAX_JOINTS_PER_ENV,
     DEFAULT_GRAVITY_X,
     DEFAULT_GRAVITY_Y,
     DEFAULT_DT,
@@ -92,6 +118,7 @@ from .traits import Integrator, CollisionSystem, ConstraintSolver
 from .integrators import SemiImplicitEuler
 from .collision import FlatTerrainCollision, EdgeTerrainCollision, MAX_TERRAIN_EDGES
 from .solvers import ImpulseSolver
+from .joints import RevoluteJointSolver
 
 # Main orchestrator (original API)
 from .world import PhysicsWorld

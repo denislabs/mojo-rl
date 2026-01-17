@@ -42,6 +42,7 @@ from .constants import (
     BODY_STATE_SIZE,
     SHAPE_MAX_SIZE,
     CONTACT_DATA_SIZE,
+    JOINT_DATA_SIZE,
     IDX_X,
     IDX_Y,
     IDX_ANGLE,
@@ -57,6 +58,20 @@ from .constants import (
     IDX_SHAPE,
     SHAPE_POLYGON,
     SHAPE_CIRCLE,
+    # Joint constants
+    JOINT_TYPE,
+    JOINT_BODY_A,
+    JOINT_BODY_B,
+    JOINT_ANCHOR_AX,
+    JOINT_ANCHOR_AY,
+    JOINT_ANCHOR_BX,
+    JOINT_ANCHOR_BY,
+    JOINT_REF_ANGLE,
+    JOINT_STIFFNESS,
+    JOINT_DAMPING,
+    JOINT_FLAGS,
+    JOINT_REVOLUTE,
+    JOINT_FLAG_SPRING_ENABLED,
 )
 from .layout import PhysicsLayout
 from .kernel import PhysicsKernel, PhysicsConfig
@@ -67,6 +82,7 @@ struct PhysicsState[
     NUM_BODIES: Int,
     NUM_SHAPES: Int,
     MAX_CONTACTS: Int = 16,
+    MAX_JOINTS: Int = 8,
 ]:
     """Memory management wrapper for physics simulation.
 
@@ -79,10 +95,11 @@ struct PhysicsState[
         NUM_BODIES: Number of bodies per environment.
         NUM_SHAPES: Total number of shape definitions.
         MAX_CONTACTS: Maximum contacts per environment.
+        MAX_JOINTS: Maximum joints per environment.
     """
 
     # Layout for compile-time sizes
-    comptime LAYOUT = PhysicsLayout[Self.BATCH, Self.NUM_BODIES, Self.NUM_SHAPES, Self.MAX_CONTACTS]
+    comptime LAYOUT = PhysicsLayout[Self.BATCH, Self.NUM_BODIES, Self.NUM_SHAPES, Self.MAX_CONTACTS, Self.MAX_JOINTS]
 
     # Buffer sizes (from layout)
     comptime BODIES_SIZE: Int = Self.LAYOUT.BODIES_SIZE
@@ -90,6 +107,8 @@ struct PhysicsState[
     comptime FORCES_SIZE: Int = Self.LAYOUT.FORCES_SIZE
     comptime CONTACTS_SIZE: Int = Self.LAYOUT.CONTACTS_SIZE
     comptime COUNTS_SIZE: Int = Self.LAYOUT.COUNTS_SIZE
+    comptime JOINTS_SIZE: Int = Self.LAYOUT.JOINTS_SIZE
+    comptime JOINT_COUNTS_SIZE: Int = Self.LAYOUT.JOINT_COUNTS_SIZE
 
     # Heap-allocated buffers
     var bodies: List[Scalar[dtype]]
@@ -97,6 +116,8 @@ struct PhysicsState[
     var forces: List[Scalar[dtype]]
     var contacts: List[Scalar[dtype]]
     var contact_counts: List[Scalar[dtype]]
+    var joints: List[Scalar[dtype]]
+    var joint_counts: List[Scalar[dtype]]
 
     # =========================================================================
     # Initialization
@@ -128,6 +149,16 @@ struct PhysicsState[
         self.contact_counts = List[Scalar[dtype]](capacity=Self.COUNTS_SIZE)
         for _ in range(Self.COUNTS_SIZE):
             self.contact_counts.append(Scalar[dtype](0))
+
+        # Allocate and zero-fill joints
+        self.joints = List[Scalar[dtype]](capacity=Self.JOINTS_SIZE)
+        for _ in range(Self.JOINTS_SIZE):
+            self.joints.append(Scalar[dtype](0))
+
+        # Allocate and zero-fill joint counts
+        self.joint_counts = List[Scalar[dtype]](capacity=Self.JOINT_COUNTS_SIZE)
+        for _ in range(Self.JOINT_COUNTS_SIZE):
+            self.joint_counts.append(Scalar[dtype](0))
 
     # =========================================================================
     # Tensor Views (zero-copy)
@@ -194,6 +225,30 @@ struct PhysicsState[
         """Get tensor view of contact counts."""
         return LayoutTensor[dtype, Layout.row_major(Self.BATCH), MutAnyOrigin](
             self.contact_counts.unsafe_ptr()
+        )
+
+    @always_inline
+    fn get_joints_tensor(
+        mut self,
+    ) -> LayoutTensor[
+        dtype,
+        Layout.row_major(Self.BATCH, Self.MAX_JOINTS, JOINT_DATA_SIZE),
+        MutAnyOrigin,
+    ]:
+        """Get tensor view of joints."""
+        return LayoutTensor[
+            dtype,
+            Layout.row_major(Self.BATCH, Self.MAX_JOINTS, JOINT_DATA_SIZE),
+            MutAnyOrigin,
+        ](self.joints.unsafe_ptr())
+
+    @always_inline
+    fn get_joint_counts_tensor(
+        mut self,
+    ) -> LayoutTensor[dtype, Layout.row_major(Self.BATCH), MutAnyOrigin]:
+        """Get tensor view of joint counts."""
+        return LayoutTensor[dtype, Layout.row_major(Self.BATCH), MutAnyOrigin](
+            self.joint_counts.unsafe_ptr()
         )
 
     # =========================================================================
@@ -401,15 +456,105 @@ struct PhysicsState[
         return Int(contact_counts[env])
 
     # =========================================================================
+    # Joint Definitions
+    # =========================================================================
+
+    fn add_revolute_joint(
+        mut self,
+        env: Int,
+        body_a: Int,
+        body_b: Int,
+        anchor_ax: Float64,
+        anchor_ay: Float64,
+        anchor_bx: Float64,
+        anchor_by: Float64,
+        stiffness: Float64 = 0.0,
+        damping: Float64 = 0.0,
+    ) -> Int:
+        """Add a revolute joint between two bodies.
+
+        Args:
+            env: Environment index.
+            body_a: First body index.
+            body_b: Second body index.
+            anchor_ax: Local anchor x on body A.
+            anchor_ay: Local anchor y on body A.
+            anchor_bx: Local anchor x on body B.
+            anchor_by: Local anchor y on body B.
+            stiffness: Spring stiffness (0 for rigid joint).
+            damping: Spring damping.
+
+        Returns:
+            Joint index, or -1 if max joints reached.
+        """
+        var joint_counts = self.get_joint_counts_tensor()
+        var joints = self.get_joints_tensor()
+        var bodies = self.get_bodies_tensor()
+
+        var joint_idx = Int(joint_counts[env])
+        if joint_idx >= Self.MAX_JOINTS:
+            return -1
+
+        # Set joint type
+        joints[env, joint_idx, JOINT_TYPE] = Scalar[dtype](JOINT_REVOLUTE)
+
+        # Set body indices
+        joints[env, joint_idx, JOINT_BODY_A] = Scalar[dtype](body_a)
+        joints[env, joint_idx, JOINT_BODY_B] = Scalar[dtype](body_b)
+
+        # Set local anchors
+        joints[env, joint_idx, JOINT_ANCHOR_AX] = Scalar[dtype](anchor_ax)
+        joints[env, joint_idx, JOINT_ANCHOR_AY] = Scalar[dtype](anchor_ay)
+        joints[env, joint_idx, JOINT_ANCHOR_BX] = Scalar[dtype](anchor_bx)
+        joints[env, joint_idx, JOINT_ANCHOR_BY] = Scalar[dtype](anchor_by)
+
+        # Compute reference angle (angle_b - angle_a at creation)
+        var angle_a = rebind[Scalar[dtype]](bodies[env, body_a, IDX_ANGLE])
+        var angle_b = rebind[Scalar[dtype]](bodies[env, body_b, IDX_ANGLE])
+        joints[env, joint_idx, JOINT_REF_ANGLE] = angle_b - angle_a
+
+        # Set spring properties
+        joints[env, joint_idx, JOINT_STIFFNESS] = Scalar[dtype](stiffness)
+        joints[env, joint_idx, JOINT_DAMPING] = Scalar[dtype](damping)
+
+        # Set flags
+        var flags = 0
+        if stiffness > 0.0 or damping > 0.0:
+            flags = flags | JOINT_FLAG_SPRING_ENABLED
+        joints[env, joint_idx, JOINT_FLAGS] = Scalar[dtype](flags)
+
+        # Increment count
+        joint_counts[env] = Scalar[dtype](joint_idx + 1)
+
+        return joint_idx
+
+    fn get_joint_count(mut self, env: Int) -> Int:
+        """Get number of active joints for an environment."""
+        var joint_counts = self.get_joint_counts_tensor()
+        return Int(joint_counts[env])
+
+    fn clear_joints(mut self, env: Int):
+        """Clear all joints for an environment."""
+        var joint_counts = self.get_joint_counts_tensor()
+        var joints = self.get_joints_tensor()
+
+        for j in range(Self.MAX_JOINTS):
+            for i in range(JOINT_DATA_SIZE):
+                joints[env, j, i] = Scalar[dtype](0)
+        joint_counts[env] = Scalar[dtype](0)
+
+    # =========================================================================
     # Environment Reset
     # =========================================================================
 
     fn reset_env(mut self, env: Int):
-        """Reset a single environment to initial state (clears velocities, forces, contacts)."""
+        """Reset a single environment to initial state (clears velocities, forces, contacts, joints)."""
         var bodies = self.get_bodies_tensor()
         var forces = self.get_forces_tensor()
         var contacts = self.get_contacts_tensor()
         var contact_counts = self.get_contact_counts_tensor()
+        var joints = self.get_joints_tensor()
+        var joint_counts = self.get_joint_counts_tensor()
 
         # Clear body velocities and forces
         for body in range(Self.NUM_BODIES):
@@ -425,6 +570,12 @@ struct PhysicsState[
             for i in range(CONTACT_DATA_SIZE):
                 contacts[env, c, i] = Scalar[dtype](0)
         contact_counts[env] = Scalar[dtype](0)
+
+        # Clear joints
+        for j in range(Self.MAX_JOINTS):
+            for i in range(JOINT_DATA_SIZE):
+                joints[env, j, i] = Scalar[dtype](0)
+        joint_counts[env] = Scalar[dtype](0)
 
     # =========================================================================
     # GPU Buffer Management (for persistent GPU execution)

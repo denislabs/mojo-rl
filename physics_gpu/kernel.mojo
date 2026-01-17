@@ -36,6 +36,7 @@ from .constants import (
     BODY_STATE_SIZE,
     SHAPE_MAX_SIZE,
     CONTACT_DATA_SIZE,
+    JOINT_DATA_SIZE,
     IDX_FX,
     IDX_FY,
     IDX_TAU,
@@ -46,11 +47,13 @@ from .constants import (
     DEFAULT_RESTITUTION,
     DEFAULT_BAUMGARTE,
     DEFAULT_SLOP,
+    MAX_JOINTS_PER_ENV,
 )
 from .layout import PhysicsLayout
 from .integrators.euler import SemiImplicitEuler
 from .collision.flat_terrain import FlatTerrainCollision
 from .solvers.impulse import ImpulseSolver
+from .joints.revolute import RevoluteJointSolver
 
 
 @fieldwise_init
@@ -210,6 +213,106 @@ struct PhysicsKernel:
                 forces[env, body, 2] = Scalar[dtype](0)
 
     # =========================================================================
+    # CPU Physics Step with Joints
+    # =========================================================================
+
+    @staticmethod
+    fn step_with_joints[
+        BATCH: Int,
+        NUM_BODIES: Int,
+        NUM_SHAPES: Int,
+        MAX_CONTACTS: Int,
+        MAX_JOINTS: Int,
+    ](
+        mut bodies: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, NUM_BODIES, BODY_STATE_SIZE),
+            MutAnyOrigin,
+        ],
+        shapes: LayoutTensor[
+            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
+        ],
+        mut forces: LayoutTensor[
+            dtype, Layout.row_major(BATCH, NUM_BODIES, 3), MutAnyOrigin
+        ],
+        mut contacts: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE),
+            MutAnyOrigin,
+        ],
+        mut contact_counts: LayoutTensor[
+            dtype, Layout.row_major(BATCH), MutAnyOrigin
+        ],
+        mut joints: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, MAX_JOINTS, JOINT_DATA_SIZE),
+            MutAnyOrigin,
+        ],
+        joint_counts: LayoutTensor[
+            dtype, Layout.row_major(BATCH), MutAnyOrigin
+        ],
+        config: PhysicsConfig,
+    ):
+        """Execute one physics step on CPU with joint constraints.
+
+        Args:
+            bodies: Body state tensor [BATCH, NUM_BODIES, BODY_STATE_SIZE].
+            shapes: Shape definitions [NUM_SHAPES, SHAPE_MAX_SIZE].
+            forces: Accumulated forces [BATCH, NUM_BODIES, 3].
+            contacts: Contact manifold [BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE].
+            contact_counts: Active contacts per env [BATCH].
+            joints: Joint constraints [BATCH, MAX_JOINTS, JOINT_DATA_SIZE].
+            joint_counts: Active joints per env [BATCH].
+            config: Physics configuration.
+        """
+        # Create temporary component instances
+        var integrator = SemiImplicitEuler()
+        var collision = FlatTerrainCollision(Float64(config.ground_y))
+        var solver = ImpulseSolver(
+            Float64(config.friction), Float64(config.restitution)
+        )
+
+        # 1. Integrate velocities
+        integrator.integrate_velocities[BATCH, NUM_BODIES](
+            bodies, forces, config.gravity_x, config.gravity_y, config.dt
+        )
+
+        # 2. Detect collisions
+        collision.detect[BATCH, NUM_BODIES, NUM_SHAPES, MAX_CONTACTS](
+            bodies, shapes, contacts, contact_counts
+        )
+
+        # 3. Solve velocity constraints (contacts)
+        for _ in range(config.velocity_iterations):
+            solver.solve_velocity[BATCH, NUM_BODIES, MAX_CONTACTS](
+                bodies, contacts, contact_counts
+            )
+
+        # 4. Solve joint velocity constraints
+        for _ in range(config.velocity_iterations):
+            RevoluteJointSolver.solve_velocity[BATCH, NUM_BODIES, MAX_JOINTS](
+                bodies, joints, joint_counts, config.dt
+            )
+
+        # 5. Integrate positions
+        integrator.integrate_positions[BATCH, NUM_BODIES](bodies, config.dt)
+
+        # 6. Solve position constraints (contacts)
+        for _ in range(config.position_iterations):
+            solver.solve_position[BATCH, NUM_BODIES, MAX_CONTACTS](
+                bodies, contacts, contact_counts
+            )
+
+        # 7. Solve joint position constraints
+        for _ in range(config.position_iterations):
+            RevoluteJointSolver.solve_position[BATCH, NUM_BODIES, MAX_JOINTS](
+                bodies, joints, joint_counts, config.baumgarte, config.slop
+            )
+
+        # 8. Clear forces
+        PhysicsKernel._clear_forces[BATCH, NUM_BODIES](forces)
+
+    # =========================================================================
     # GPU Physics Step
     # =========================================================================
 
@@ -286,6 +389,113 @@ struct PhysicsKernel:
                 bodies_buf,
                 contacts_buf,
                 contact_counts_buf,
+                config.baumgarte,
+                config.slop,
+            )
+
+        # Note: Force clearing handled by PhysicsState after copy back
+
+    # =========================================================================
+    # GPU Physics Step with Joints
+    # =========================================================================
+
+    @staticmethod
+    fn step_gpu_with_joints[
+        BATCH: Int,
+        NUM_BODIES: Int,
+        NUM_SHAPES: Int,
+        MAX_CONTACTS: Int,
+        MAX_JOINTS: Int,
+    ](
+        ctx: DeviceContext,
+        mut bodies_buf: DeviceBuffer[dtype],
+        shapes_buf: DeviceBuffer[dtype],
+        forces_buf: DeviceBuffer[dtype],
+        mut contacts_buf: DeviceBuffer[dtype],
+        mut contact_counts_buf: DeviceBuffer[dtype],
+        mut joints_buf: DeviceBuffer[dtype],
+        joint_counts_buf: DeviceBuffer[dtype],
+        config: PhysicsConfig,
+    ) raises:
+        """Execute one physics step on GPU with joint constraints.
+
+        Args:
+            ctx: GPU device context.
+            bodies_buf: Body state buffer.
+            shapes_buf: Shape definitions buffer.
+            forces_buf: Forces buffer.
+            contacts_buf: Contacts buffer.
+            contact_counts_buf: Contact counts buffer.
+            joints_buf: Joints buffer.
+            joint_counts_buf: Joint counts buffer.
+            config: Physics configuration.
+        """
+        # 1. Integrate velocities
+        SemiImplicitEuler.integrate_velocities_gpu[BATCH, NUM_BODIES](
+            ctx,
+            bodies_buf,
+            forces_buf,
+            config.gravity_x,
+            config.gravity_y,
+            config.dt,
+        )
+
+        # 2. Detect collisions
+        FlatTerrainCollision.detect_gpu[
+            BATCH, NUM_BODIES, NUM_SHAPES, MAX_CONTACTS
+        ](
+            ctx,
+            bodies_buf,
+            shapes_buf,
+            contacts_buf,
+            contact_counts_buf,
+            config.ground_y,
+        )
+
+        # 3. Solve velocity constraints (contacts)
+        for _ in range(config.velocity_iterations):
+            ImpulseSolver.solve_velocity_gpu[BATCH, NUM_BODIES, MAX_CONTACTS](
+                ctx,
+                bodies_buf,
+                contacts_buf,
+                contact_counts_buf,
+                config.friction,
+                config.restitution,
+            )
+
+        # 4. Solve joint velocity constraints
+        for _ in range(config.velocity_iterations):
+            RevoluteJointSolver.solve_velocity_gpu[BATCH, NUM_BODIES, MAX_JOINTS](
+                ctx,
+                bodies_buf,
+                joints_buf,
+                joint_counts_buf,
+                config.dt,
+            )
+
+        # 5. Integrate positions
+        SemiImplicitEuler.integrate_positions_gpu[BATCH, NUM_BODIES](
+            ctx, bodies_buf, config.dt
+        )
+
+        # 6. Solve position constraints (contacts)
+        for _ in range(config.position_iterations):
+            ImpulseSolver.solve_position_gpu[BATCH, NUM_BODIES, MAX_CONTACTS](
+                ctx,
+                bodies_buf,
+                contacts_buf,
+                contact_counts_buf,
+                config.baumgarte,
+                config.slop,
+            )
+
+        # 7. Solve joint position constraints
+        for _ in range(config.position_iterations):
+            RevoluteJointSolver.solve_position_gpu[BATCH, NUM_BODIES, MAX_JOINTS](
+                ctx,
+                bodies_buf,
+                joints_buf,
+                joint_counts_buf,
                 config.baumgarte,
                 config.slop,
             )

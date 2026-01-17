@@ -18,14 +18,15 @@ from gpu.host import DeviceContext, DeviceBuffer
 from layout import LayoutTensor, Layout
 from random.philox import Random as PhiloxRandom
 
-from physics_gpu import PhysicsState, PhysicsConfig, dtype as physics_dtype
+from physics_gpu import PhysicsState, PhysicsConfig, PhysicsKernel, dtype as physics_dtype
 from physics_gpu import EdgeTerrainCollision, MAX_TERRAIN_EDGES
 from physics_gpu.constants import (
     IDX_X, IDX_Y, IDX_VX, IDX_VY, IDX_ANGLE, IDX_OMEGA,
-    BODY_STATE_SIZE, SHAPE_MAX_SIZE, CONTACT_DATA_SIZE,
+    BODY_STATE_SIZE, SHAPE_MAX_SIZE, CONTACT_DATA_SIZE, JOINT_DATA_SIZE,
 )
 from physics_gpu.integrators import SemiImplicitEuler
 from physics_gpu.solvers import ImpulseSolver
+from physics_gpu.joints import RevoluteJointSolver
 
 
 # =============================================================================
@@ -71,6 +72,14 @@ comptime SIDE_ENGINE_AWAY: Float64 = 12.0 / SCALE
 comptime LANDER_MASS: Float64 = 5.0
 comptime LANDER_INERTIA: Float64 = 2.0
 
+# Leg mass/inertia (lighter than main body)
+comptime LEG_MASS: Float64 = 0.2
+comptime LEG_INERTIA: Float64 = 0.02
+
+# Leg joint properties (spring for flexibility)
+comptime LEG_SPRING_STIFFNESS: Float64 = 400.0  # Spring stiffness
+comptime LEG_SPRING_DAMPING: Float64 = 40.0     # Damping factor
+
 # Reward constants
 comptime MAIN_ENGINE_FUEL_COST: Float64 = 0.30
 comptime SIDE_ENGINE_FUEL_COST: Float64 = 0.03
@@ -91,20 +100,27 @@ struct LunarLanderV2[BATCH: Int = 1, CONTINUOUS: Bool = False]:
     - PhysicsState for memory management
     - PhysicsConfig for runtime parameters
     - PhysicsKernel for stateless computation
+    - Revolute joints for leg connections
 
     Parameters:
         BATCH: Number of parallel environments.
         CONTINUOUS: If True, use continuous action space [main, lateral].
     """
 
-    comptime NUM_BODIES: Int = 1
-    comptime NUM_SHAPES: Int = 1
+    # Body indices
+    comptime BODY_LANDER: Int = 0
+    comptime BODY_LEFT_LEG: Int = 1
+    comptime BODY_RIGHT_LEG: Int = 2
+
+    comptime NUM_BODIES: Int = 3  # Main lander + 2 legs
+    comptime NUM_SHAPES: Int = 3  # Main lander shape + 2 leg shapes
     comptime MAX_CONTACTS: Int = 8
+    comptime MAX_JOINTS: Int = 2  # 2 revolute joints for legs
     comptime OBS_DIM: Int = 8
     comptime NUM_ACTIONS: Int = 4  # For discrete mode
 
-    # Physics state
-    var physics: PhysicsState[Self.BATCH, Self.NUM_BODIES, Self.NUM_SHAPES, Self.MAX_CONTACTS]
+    # Physics state with joints
+    var physics: PhysicsState[Self.BATCH, Self.NUM_BODIES, Self.NUM_SHAPES, Self.MAX_CONTACTS, Self.MAX_JOINTS]
     var config: PhysicsConfig
 
     # Environment state
@@ -142,8 +158,8 @@ struct LunarLanderV2[BATCH: Int = 1, CONTINUOUS: Bool = False]:
             wind_power: Maximum wind force magnitude (0-20 recommended).
             turbulence_power: Maximum rotational turbulence (0-2 recommended).
         """
-        # Create physics state
-        self.physics = PhysicsState[Self.BATCH, Self.NUM_BODIES, Self.NUM_SHAPES, Self.MAX_CONTACTS]()
+        # Create physics state with joints
+        self.physics = PhysicsState[Self.BATCH, Self.NUM_BODIES, Self.NUM_SHAPES, Self.MAX_CONTACTS, Self.MAX_JOINTS]()
 
         # Create physics config
         self.config = PhysicsConfig(
@@ -154,34 +170,52 @@ struct LunarLanderV2[BATCH: Int = 1, CONTINUOUS: Bool = False]:
             restitution=0.0,
         )
 
-        # Define lander shape as polygon
-        var vertices_x = List[Float64]()
-        var vertices_y = List[Float64]()
+        # Define main lander shape as polygon (shape 0)
+        var lander_vx = List[Float64]()
+        var lander_vy = List[Float64]()
 
         # Lander body corners (CCW order) - matches LANDER_POLY from Gymnasium
         # LANDER_POLY = [(-14, +17), (-17, 0), (-17, -10), (+17, -10), (+17, 0), (+14, +17)]
-        vertices_x.append(-14.0 / SCALE)
-        vertices_y.append(17.0 / SCALE)
-        vertices_x.append(-17.0 / SCALE)
-        vertices_y.append(0.0 / SCALE)
-        vertices_x.append(-17.0 / SCALE)
-        vertices_y.append(-10.0 / SCALE)
-        vertices_x.append(17.0 / SCALE)
-        vertices_y.append(-10.0 / SCALE)
-        vertices_x.append(17.0 / SCALE)
-        vertices_y.append(0.0 / SCALE)
-        vertices_x.append(14.0 / SCALE)
-        vertices_y.append(17.0 / SCALE)
+        lander_vx.append(-14.0 / SCALE)
+        lander_vy.append(17.0 / SCALE)
+        lander_vx.append(-17.0 / SCALE)
+        lander_vy.append(0.0 / SCALE)
+        lander_vx.append(-17.0 / SCALE)
+        lander_vy.append(-10.0 / SCALE)
+        lander_vx.append(17.0 / SCALE)
+        lander_vy.append(-10.0 / SCALE)
+        lander_vx.append(17.0 / SCALE)
+        lander_vy.append(0.0 / SCALE)
+        lander_vx.append(14.0 / SCALE)
+        lander_vy.append(17.0 / SCALE)
 
-        # Add leg tip vertices for contact detection
-        # Left leg tip
-        vertices_x.append(-LEG_AWAY)
-        vertices_y.append(-10.0 / SCALE - LEG_DOWN - LEG_H)
-        # Right leg tip
-        vertices_x.append(LEG_AWAY)
-        vertices_y.append(-10.0 / SCALE - LEG_DOWN - LEG_H)
+        self.physics.define_polygon_shape(0, lander_vx, lander_vy)
 
-        self.physics.define_polygon_shape(0, vertices_x, vertices_y)
+        # Define left leg shape (shape 1) - small rectangle
+        var left_leg_vx = List[Float64]()
+        var left_leg_vy = List[Float64]()
+        left_leg_vx.append(-LEG_W)
+        left_leg_vy.append(LEG_H)
+        left_leg_vx.append(-LEG_W)
+        left_leg_vy.append(-LEG_H)
+        left_leg_vx.append(LEG_W)
+        left_leg_vy.append(-LEG_H)
+        left_leg_vx.append(LEG_W)
+        left_leg_vy.append(LEG_H)
+        self.physics.define_polygon_shape(1, left_leg_vx, left_leg_vy)
+
+        # Define right leg shape (shape 2) - same as left
+        var right_leg_vx = List[Float64]()
+        var right_leg_vy = List[Float64]()
+        right_leg_vx.append(-LEG_W)
+        right_leg_vy.append(LEG_H)
+        right_leg_vx.append(-LEG_W)
+        right_leg_vy.append(-LEG_H)
+        right_leg_vx.append(LEG_W)
+        right_leg_vy.append(-LEG_H)
+        right_leg_vx.append(LEG_W)
+        right_leg_vy.append(LEG_H)
+        self.physics.define_polygon_shape(2, right_leg_vx, right_leg_vy)
 
         # Initialize tracking variables
         self.prev_shaping = List[Scalar[physics_dtype]](capacity=Self.BATCH)
@@ -266,12 +300,65 @@ struct LunarLanderV2[BATCH: Int = 1, CONTINUOUS: Bool = False]:
         var init_vx = init_fx * TAU / LANDER_MASS
         var init_vy = init_fy * TAU / LANDER_MASS
 
-        # Set body state
-        self.physics.set_body_position(env, 0, init_x, init_y)
-        self.physics.set_body_velocity(env, 0, init_vx, init_vy, 0.0)
-        self.physics.set_body_angle(env, 0, 0.0)
-        self.physics.set_body_mass(env, 0, LANDER_MASS, LANDER_INERTIA)
-        self.physics.set_body_shape(env, 0, 0)
+        # Clear existing joints before adding new ones
+        self.physics.clear_joints(env)
+
+        # Set main lander body state (body 0)
+        self.physics.set_body_position(env, Self.BODY_LANDER, init_x, init_y)
+        self.physics.set_body_velocity(env, Self.BODY_LANDER, init_vx, init_vy, 0.0)
+        self.physics.set_body_angle(env, Self.BODY_LANDER, 0.0)
+        self.physics.set_body_mass(env, Self.BODY_LANDER, LANDER_MASS, LANDER_INERTIA)
+        self.physics.set_body_shape(env, Self.BODY_LANDER, 0)
+
+        # Compute initial leg positions relative to lander
+        # Left leg: attached at (-LEG_AWAY, -10/SCALE) on lander, extending down by LEG_DOWN
+        var left_leg_x = init_x - LEG_AWAY
+        var left_leg_y = init_y - (10.0 / SCALE) - LEG_DOWN
+
+        # Right leg: attached at (+LEG_AWAY, -10/SCALE) on lander, extending down by LEG_DOWN
+        var right_leg_x = init_x + LEG_AWAY
+        var right_leg_y = init_y - (10.0 / SCALE) - LEG_DOWN
+
+        # Set left leg body state (body 1)
+        self.physics.set_body_position(env, Self.BODY_LEFT_LEG, left_leg_x, left_leg_y)
+        self.physics.set_body_velocity(env, Self.BODY_LEFT_LEG, init_vx, init_vy, 0.0)
+        self.physics.set_body_angle(env, Self.BODY_LEFT_LEG, 0.0)
+        self.physics.set_body_mass(env, Self.BODY_LEFT_LEG, LEG_MASS, LEG_INERTIA)
+        self.physics.set_body_shape(env, Self.BODY_LEFT_LEG, 1)
+
+        # Set right leg body state (body 2)
+        self.physics.set_body_position(env, Self.BODY_RIGHT_LEG, right_leg_x, right_leg_y)
+        self.physics.set_body_velocity(env, Self.BODY_RIGHT_LEG, init_vx, init_vy, 0.0)
+        self.physics.set_body_angle(env, Self.BODY_RIGHT_LEG, 0.0)
+        self.physics.set_body_mass(env, Self.BODY_RIGHT_LEG, LEG_MASS, LEG_INERTIA)
+        self.physics.set_body_shape(env, Self.BODY_RIGHT_LEG, 2)
+
+        # Add revolute joints connecting legs to main lander
+        # Left leg joint: connects lander to left leg with spring for flexibility
+        _ = self.physics.add_revolute_joint(
+            env=env,
+            body_a=Self.BODY_LANDER,
+            body_b=Self.BODY_LEFT_LEG,
+            anchor_ax=-LEG_AWAY,           # Anchor on lander (local coords)
+            anchor_ay=-10.0 / SCALE,       # Bottom of lander body
+            anchor_bx=0.0,                 # Anchor on leg (center top)
+            anchor_by=LEG_H,               # Top of leg
+            stiffness=LEG_SPRING_STIFFNESS,
+            damping=LEG_SPRING_DAMPING,
+        )
+
+        # Right leg joint
+        _ = self.physics.add_revolute_joint(
+            env=env,
+            body_a=Self.BODY_LANDER,
+            body_b=Self.BODY_RIGHT_LEG,
+            anchor_ax=LEG_AWAY,
+            anchor_ay=-10.0 / SCALE,
+            anchor_bx=0.0,
+            anchor_by=LEG_H,
+            stiffness=LEG_SPRING_STIFFNESS,
+            damping=LEG_SPRING_DAMPING,
+        )
 
         # Reset tracking
         self.step_count[env] = 0
@@ -338,16 +425,16 @@ struct LunarLanderV2[BATCH: Int = 1, CONTINUOUS: Bool = False]:
         ) * self.turbulence_power
         self.torque_idx[env] += 1
 
-        # Apply wind force (convert to velocity change)
-        var vx = Float64(self.physics.get_body_vx(env, 0))
-        var vy = Float64(self.physics.get_body_vy(env, 0))
-        var omega = Float64(self.physics.get_body_omega(env, 0))
+        # Apply wind force (convert to velocity change) to main lander
+        var vx = Float64(self.physics.get_body_vx(env, Self.BODY_LANDER))
+        var vy = Float64(self.physics.get_body_vy(env, Self.BODY_LANDER))
+        var omega = Float64(self.physics.get_body_omega(env, Self.BODY_LANDER))
 
         # F = ma, so dv = F*dt/m
         var dvx = wind_mag * TAU / LANDER_MASS
         var domega = torque_mag * TAU / LANDER_INERTIA
 
-        self.physics.set_body_velocity(env, 0, vx + dvx, vy, omega + domega)
+        self.physics.set_body_velocity(env, Self.BODY_LANDER, vx + dvx, vy, omega + domega)
 
     fn step(mut self, env: Int, action: Int) -> Tuple[Scalar[physics_dtype], Bool]:
         """Take a step with discrete action (CPU).
@@ -429,13 +516,15 @@ struct LunarLanderV2[BATCH: Int = 1, CONTINUOUS: Bool = False]:
         return self._compute_step_result(env, m_power, s_power, is_continuous)
 
     fn _step_physics_with_edge_collision(mut self):
-        """Execute physics step using edge terrain collision."""
+        """Execute physics step using edge terrain collision and joint constraints."""
         # Get tensor views
         var bodies = self.physics.get_bodies_tensor()
         var shapes = self.physics.get_shapes_tensor()
         var forces = self.physics.get_forces_tensor()
         var contacts = self.physics.get_contacts_tensor()
         var contact_counts = self.physics.get_contact_counts_tensor()
+        var joints = self.physics.get_joints_tensor()
+        var joint_counts = self.physics.get_joint_counts_tensor()
 
         # Create component instances
         var integrator = SemiImplicitEuler()
@@ -451,22 +540,34 @@ struct LunarLanderV2[BATCH: Int = 1, CONTINUOUS: Bool = False]:
             bodies, shapes, contacts, contact_counts
         )
 
-        # 3. Solve velocity constraints
+        # 3. Solve velocity constraints (contacts)
         for _ in range(self.config.velocity_iterations):
             solver.solve_velocity[Self.BATCH, Self.NUM_BODIES, Self.MAX_CONTACTS](
                 bodies, contacts, contact_counts
             )
 
-        # 4. Integrate positions
+        # 4. Solve joint velocity constraints
+        for _ in range(self.config.velocity_iterations):
+            RevoluteJointSolver.solve_velocity[Self.BATCH, Self.NUM_BODIES, Self.MAX_JOINTS](
+                bodies, joints, joint_counts, self.config.dt
+            )
+
+        # 5. Integrate positions
         integrator.integrate_positions[Self.BATCH, Self.NUM_BODIES](bodies, self.config.dt)
 
-        # 5. Solve position constraints
+        # 6. Solve position constraints (contacts)
         for _ in range(self.config.position_iterations):
             solver.solve_position[Self.BATCH, Self.NUM_BODIES, Self.MAX_CONTACTS](
                 bodies, contacts, contact_counts
             )
 
-        # 6. Clear forces
+        # 7. Solve joint position constraints
+        for _ in range(self.config.position_iterations):
+            RevoluteJointSolver.solve_position[Self.BATCH, Self.NUM_BODIES, Self.MAX_JOINTS](
+                bodies, joints, joint_counts, self.config.baumgarte, self.config.slop
+            )
+
+        # 8. Clear forces
         for env in range(Self.BATCH):
             for body in range(Self.NUM_BODIES):
                 forces[env, body, 0] = Scalar[physics_dtype](0)
@@ -536,18 +637,22 @@ struct LunarLanderV2[BATCH: Int = 1, CONTINUOUS: Bool = False]:
         return self._compute_step_result(env, m_power, s_power, is_continuous)
 
     fn _step_physics_gpu_with_edge_collision(mut self, ctx: DeviceContext) raises:
-        """Execute physics step using edge terrain collision on GPU."""
+        """Execute physics step using edge terrain collision and joints on GPU."""
         # Allocate GPU buffers
         var bodies_buf = ctx.enqueue_create_buffer[physics_dtype](Self.BATCH * Self.NUM_BODIES * BODY_STATE_SIZE)
         var shapes_buf = ctx.enqueue_create_buffer[physics_dtype](Self.NUM_SHAPES * SHAPE_MAX_SIZE)
         var forces_buf = ctx.enqueue_create_buffer[physics_dtype](Self.BATCH * Self.NUM_BODIES * 3)
         var contacts_buf = ctx.enqueue_create_buffer[physics_dtype](Self.BATCH * Self.MAX_CONTACTS * CONTACT_DATA_SIZE)
         var contact_counts_buf = ctx.enqueue_create_buffer[physics_dtype](Self.BATCH)
+        var joints_buf = ctx.enqueue_create_buffer[physics_dtype](Self.BATCH * Self.MAX_JOINTS * JOINT_DATA_SIZE)
+        var joint_counts_buf = ctx.enqueue_create_buffer[physics_dtype](Self.BATCH)
 
         # Copy to GPU
         ctx.enqueue_copy(bodies_buf, self.physics.bodies.unsafe_ptr())
         ctx.enqueue_copy(shapes_buf, self.physics.shapes.unsafe_ptr())
         ctx.enqueue_copy(forces_buf, self.physics.forces.unsafe_ptr())
+        ctx.enqueue_copy(joints_buf, self.physics.joints.unsafe_ptr())
+        ctx.enqueue_copy(joint_counts_buf, self.physics.joint_counts.unsafe_ptr())
 
         # 1. Integrate velocities
         SemiImplicitEuler.integrate_velocities_gpu[Self.BATCH, Self.NUM_BODIES](
@@ -560,22 +665,35 @@ struct LunarLanderV2[BATCH: Int = 1, CONTINUOUS: Bool = False]:
             ctx, bodies_buf, shapes_buf, contacts_buf, contact_counts_buf
         )
 
-        # 3. Solve velocity constraints
+        # 3. Solve velocity constraints (contacts)
         for _ in range(self.config.velocity_iterations):
             ImpulseSolver.solve_velocity_gpu[Self.BATCH, Self.NUM_BODIES, Self.MAX_CONTACTS](
                 ctx, bodies_buf, contacts_buf, contact_counts_buf,
                 self.config.friction, self.config.restitution
             )
 
-        # 4. Integrate positions
+        # 4. Solve joint velocity constraints
+        for _ in range(self.config.velocity_iterations):
+            RevoluteJointSolver.solve_velocity_gpu[Self.BATCH, Self.NUM_BODIES, Self.MAX_JOINTS](
+                ctx, bodies_buf, joints_buf, joint_counts_buf, self.config.dt
+            )
+
+        # 5. Integrate positions
         SemiImplicitEuler.integrate_positions_gpu[Self.BATCH, Self.NUM_BODIES](
             ctx, bodies_buf, self.config.dt
         )
 
-        # 5. Solve position constraints
+        # 6. Solve position constraints (contacts)
         for _ in range(self.config.position_iterations):
             ImpulseSolver.solve_position_gpu[Self.BATCH, Self.NUM_BODIES, Self.MAX_CONTACTS](
                 ctx, bodies_buf, contacts_buf, contact_counts_buf,
+                self.config.baumgarte, self.config.slop
+            )
+
+        # 7. Solve joint position constraints
+        for _ in range(self.config.position_iterations):
+            RevoluteJointSolver.solve_position_gpu[Self.BATCH, Self.NUM_BODIES, Self.MAX_JOINTS](
+                ctx, bodies_buf, joints_buf, joint_counts_buf,
                 self.config.baumgarte, self.config.slop
             )
 
@@ -596,14 +714,14 @@ struct LunarLanderV2[BATCH: Int = 1, CONTINUOUS: Bool = False]:
     fn _apply_engines(
         mut self, env: Int, m_power: Float64, s_power: Float64, direction: Float64
     ):
-        """Apply engine impulses."""
+        """Apply engine impulses to the main lander body."""
         if m_power == 0.0 and s_power == 0.0:
             return
 
-        var angle = Float64(self.physics.get_body_angle(env, 0))
-        var vx = Float64(self.physics.get_body_vx(env, 0))
-        var vy = Float64(self.physics.get_body_vy(env, 0))
-        var omega = Float64(self.physics.get_body_omega(env, 0))
+        var angle = Float64(self.physics.get_body_angle(env, Self.BODY_LANDER))
+        var vx = Float64(self.physics.get_body_vx(env, Self.BODY_LANDER))
+        var vy = Float64(self.physics.get_body_vy(env, Self.BODY_LANDER))
+        var omega = Float64(self.physics.get_body_omega(env, Self.BODY_LANDER))
 
         # Direction vectors
         var tip_x = sin(angle)
@@ -648,7 +766,7 @@ struct LunarLanderV2[BATCH: Int = 1, CONTINUOUS: Bool = False]:
             var torque = r_x * impulse_y - r_y * impulse_x
             domega += torque / LANDER_INERTIA
 
-        self.physics.set_body_velocity(env, 0, vx + dvx, vy + dvy, omega + domega)
+        self.physics.set_body_velocity(env, Self.BODY_LANDER, vx + dvx, vy + dvy, omega + domega)
 
     fn _compute_step_result(
         mut self, env: Int, m_power: Float64, s_power: Float64, is_continuous: Bool
@@ -661,11 +779,11 @@ struct LunarLanderV2[BATCH: Int = 1, CONTINUOUS: Bool = False]:
         var left_contact = obs[6]
         var right_contact = obs[7]
 
-        var y = Float64(self.physics.get_body_y(env, 0))
-        var vx = Float64(self.physics.get_body_vx(env, 0))
-        var vy = Float64(self.physics.get_body_vy(env, 0))
-        var omega = Float64(self.physics.get_body_omega(env, 0))
-        var angle = Float64(self.physics.get_body_angle(env, 0))
+        var y = Float64(self.physics.get_body_y(env, Self.BODY_LANDER))
+        var vx = Float64(self.physics.get_body_vx(env, Self.BODY_LANDER))
+        var vy = Float64(self.physics.get_body_vy(env, Self.BODY_LANDER))
+        var omega = Float64(self.physics.get_body_omega(env, Self.BODY_LANDER))
+        var angle = Float64(self.physics.get_body_angle(env, Self.BODY_LANDER))
 
         # Shaping reward
         var new_shaping = self._compute_shaping(env)
@@ -686,7 +804,7 @@ struct LunarLanderV2[BATCH: Int = 1, CONTINUOUS: Bool = False]:
 
         # Check if lander body touched ground (crash)
         # Use terrain height at current x position
-        var x = Float64(self.physics.get_body_x(env, 0))
+        var x = Float64(self.physics.get_body_x(env, Self.BODY_LANDER))
         var terrain_y = self._get_terrain_height(env, x)
         var cos_angle = cos(angle)
         var lander_bottom_y = y - (10.0 / SCALE) * abs(cos_angle)  # Bottom of lander body
@@ -728,12 +846,13 @@ struct LunarLanderV2[BATCH: Int = 1, CONTINUOUS: Bool = False]:
 
     fn get_observation(mut self, env: Int) -> InlineArray[Scalar[physics_dtype], 8]:
         """Get normalized observation for an environment."""
-        var x = Float64(self.physics.get_body_x(env, 0))
-        var y = Float64(self.physics.get_body_y(env, 0))
-        var vx = Float64(self.physics.get_body_vx(env, 0))
-        var vy = Float64(self.physics.get_body_vy(env, 0))
-        var angle = Float64(self.physics.get_body_angle(env, 0))
-        var omega = Float64(self.physics.get_body_omega(env, 0))
+        # Get main lander body state
+        var x = Float64(self.physics.get_body_x(env, Self.BODY_LANDER))
+        var y = Float64(self.physics.get_body_y(env, Self.BODY_LANDER))
+        var vx = Float64(self.physics.get_body_vx(env, Self.BODY_LANDER))
+        var vy = Float64(self.physics.get_body_vy(env, Self.BODY_LANDER))
+        var angle = Float64(self.physics.get_body_angle(env, Self.BODY_LANDER))
+        var omega = Float64(self.physics.get_body_omega(env, Self.BODY_LANDER))
 
         # Normalize position (matches Gymnasium exactly)
         var x_norm = (x - HELIPAD_X) / (W_UNITS / 2.0)
@@ -746,30 +865,35 @@ struct LunarLanderV2[BATCH: Int = 1, CONTINUOUS: Bool = False]:
         var angle_norm = angle
         var omega_norm = 20.0 * omega / Float64(FPS)
 
-        # Leg contact detection based on leg tip world positions
+        # Leg contact detection using actual leg body positions
         var left_contact = Scalar[physics_dtype](0.0)
         var right_contact = Scalar[physics_dtype](0.0)
 
-        var cos_a = cos(angle)
-        var sin_a = sin(angle)
+        # Get left leg body position and compute bottom point
+        var left_leg_x = Float64(self.physics.get_body_x(env, Self.BODY_LEFT_LEG))
+        var left_leg_y = Float64(self.physics.get_body_y(env, Self.BODY_LEFT_LEG))
+        var left_leg_angle = Float64(self.physics.get_body_angle(env, Self.BODY_LEFT_LEG))
+        var left_cos = cos(left_leg_angle)
+        var left_sin = sin(left_leg_angle)
+        # Bottom of leg in world coords
+        var left_tip_y = left_leg_y + (0.0) * left_cos - (-LEG_H) * left_sin
+        var left_tip_x = left_leg_x + (0.0) * left_cos + (-LEG_H) * left_sin
+        var left_terrain_y = self._get_terrain_height(env, left_tip_x)
 
-        # Left leg tip world position
-        var left_local_x = -LEG_AWAY
-        var left_local_y = -10.0 / SCALE - LEG_DOWN - LEG_H
-        var left_world_x = x + left_local_x * cos_a - left_local_y * sin_a
-        var left_world_y = y + left_local_x * sin_a + left_local_y * cos_a
-        var left_terrain_y = self._get_terrain_height(env, left_world_x)
+        # Get right leg body position and compute bottom point
+        var right_leg_x = Float64(self.physics.get_body_x(env, Self.BODY_RIGHT_LEG))
+        var right_leg_y = Float64(self.physics.get_body_y(env, Self.BODY_RIGHT_LEG))
+        var right_leg_angle = Float64(self.physics.get_body_angle(env, Self.BODY_RIGHT_LEG))
+        var right_cos = cos(right_leg_angle)
+        var right_sin = sin(right_leg_angle)
+        # Bottom of leg in world coords
+        var right_tip_y = right_leg_y + (0.0) * right_cos - (-LEG_H) * right_sin
+        var right_tip_x = right_leg_x + (0.0) * right_cos + (-LEG_H) * right_sin
+        var right_terrain_y = self._get_terrain_height(env, right_tip_x)
 
-        # Right leg tip world position
-        var right_local_x = LEG_AWAY
-        var right_local_y = -10.0 / SCALE - LEG_DOWN - LEG_H
-        var right_world_x = x + right_local_x * cos_a - right_local_y * sin_a
-        var right_world_y = y + right_local_x * sin_a + right_local_y * cos_a
-        var right_terrain_y = self._get_terrain_height(env, right_world_x)
-
-        if left_world_y <= left_terrain_y + 0.01:
+        if left_tip_y <= left_terrain_y + 0.01:
             left_contact = Scalar[physics_dtype](1.0)
-        if right_world_y <= right_terrain_y + 0.01:
+        if right_tip_y <= right_terrain_y + 0.01:
             right_contact = Scalar[physics_dtype](1.0)
 
         return InlineArray[Scalar[physics_dtype], 8](

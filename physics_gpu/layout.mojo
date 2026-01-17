@@ -28,6 +28,8 @@ from .constants import (
     BODY_STATE_SIZE,
     SHAPE_MAX_SIZE,
     CONTACT_DATA_SIZE,
+    JOINT_DATA_SIZE,
+    MAX_JOINTS_PER_ENV,
 )
 
 
@@ -36,6 +38,7 @@ struct PhysicsLayout[
     NUM_BODIES: Int,
     NUM_SHAPES: Int,
     MAX_CONTACTS: Int = 16,
+    MAX_JOINTS: Int = MAX_JOINTS_PER_ENV,
 ]:
     """Compile-time buffer layout for GPU physics.
 
@@ -47,6 +50,7 @@ struct PhysicsLayout[
         NUM_BODIES: Number of bodies per environment.
         NUM_SHAPES: Total number of shape definitions (shared across envs).
         MAX_CONTACTS: Maximum contacts per environment.
+        MAX_JOINTS: Maximum joints per environment.
     """
 
     # =========================================================================
@@ -73,6 +77,14 @@ struct PhysicsLayout[
     # Number of active contacts per environment
     comptime COUNTS_SIZE: Int = Self.BATCH
 
+    # Joints: [BATCH, MAX_JOINTS, JOINT_DATA_SIZE]
+    # Joint constraint data for each environment
+    comptime JOINTS_SIZE: Int = Self.BATCH * Self.MAX_JOINTS * JOINT_DATA_SIZE
+
+    # Joint counts: [BATCH]
+    # Number of active joints per environment
+    comptime JOINT_COUNTS_SIZE: Int = Self.BATCH
+
     # =========================================================================
     # Unified Buffer Layout (Option A)
     # =========================================================================
@@ -83,9 +95,11 @@ struct PhysicsLayout[
     comptime FORCES_OFFSET: Int = Self.SHAPES_OFFSET + Self.SHAPES_SIZE
     comptime CONTACTS_OFFSET: Int = Self.FORCES_OFFSET + Self.FORCES_SIZE
     comptime COUNTS_OFFSET: Int = Self.CONTACTS_OFFSET + Self.CONTACTS_SIZE
+    comptime JOINTS_OFFSET: Int = Self.COUNTS_OFFSET + Self.COUNTS_SIZE
+    comptime JOINT_COUNTS_OFFSET: Int = Self.JOINTS_OFFSET + Self.JOINTS_SIZE
 
     # Total size for unified buffer
-    comptime TOTAL_SIZE: Int = Self.COUNTS_OFFSET + Self.COUNTS_SIZE
+    comptime TOTAL_SIZE: Int = Self.JOINT_COUNTS_OFFSET + Self.JOINT_COUNTS_SIZE
 
     # =========================================================================
     # Per-Environment Sizes (for partial state operations)
@@ -95,6 +109,7 @@ struct PhysicsLayout[
     comptime SINGLE_ENV_BODIES_SIZE: Int = Self.NUM_BODIES * BODY_STATE_SIZE
     comptime SINGLE_ENV_FORCES_SIZE: Int = Self.NUM_BODIES * 3
     comptime SINGLE_ENV_CONTACTS_SIZE: Int = Self.MAX_CONTACTS * CONTACT_DATA_SIZE
+    comptime SINGLE_ENV_JOINTS_SIZE: Int = Self.MAX_JOINTS * JOINT_DATA_SIZE
 
     # =========================================================================
     # Utility Methods
@@ -141,6 +156,20 @@ struct PhysicsLayout[
             Offset in the forces buffer.
         """
         return (env * Self.NUM_BODIES + body) * 3
+
+    @staticmethod
+    @always_inline
+    fn joint_offset(env: Int, joint: Int) -> Int:
+        """Compute flat buffer offset for a specific joint.
+
+        Args:
+            env: Environment index.
+            joint: Joint index within environment.
+
+        Returns:
+            Offset in the joints buffer.
+        """
+        return (env * Self.MAX_JOINTS + joint) * JOINT_DATA_SIZE
 
 
 # =========================================================================

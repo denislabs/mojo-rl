@@ -2,6 +2,7 @@
 
 Tests:
 - Basic functionality
+- Revolute joints (leg physics)
 - CPU vs GPU equivalence
 - Wind effects
 - Continuous action space
@@ -52,6 +53,99 @@ fn test_basic_functionality() raises:
 
     print("Total reward:", total_reward)
     print("\n✓ TEST PASSED: Basic functionality works!")
+
+
+fn test_revolute_joints() raises:
+    """Test that revolute joints connect legs to main body correctly."""
+    print("\n" + "=" * 60)
+    print("LunarLanderV2: Revolute Joints Test")
+    print("=" * 60)
+
+    var env = LunarLanderV2[1](seed=42)
+
+    # Verify physics setup
+    print("Physics configuration:")
+    print("  Bodies:", env.NUM_BODIES, "(main lander + 2 legs)")
+    print("  Shapes:", env.NUM_SHAPES, "(lander polygon + 2 leg rectangles)")
+    print("  Max joints:", env.MAX_JOINTS)
+
+    # Get joint count
+    var joint_count = env.physics.get_joint_count(0)
+    print("  Active joints:", joint_count)
+
+    # Get body positions
+    print("\nInitial body positions:")
+    var lander_x = Float64(env.physics.get_body_x(0, env.BODY_LANDER))
+    var lander_y = Float64(env.physics.get_body_y(0, env.BODY_LANDER))
+    var left_leg_x = Float64(env.physics.get_body_x(0, env.BODY_LEFT_LEG))
+    var left_leg_y = Float64(env.physics.get_body_y(0, env.BODY_LEFT_LEG))
+    var right_leg_x = Float64(env.physics.get_body_x(0, env.BODY_RIGHT_LEG))
+    var right_leg_y = Float64(env.physics.get_body_y(0, env.BODY_RIGHT_LEG))
+
+    print("  Lander:    (", lander_x, ",", lander_y, ")")
+    print("  Left leg:  (", left_leg_x, ",", left_leg_y, ")")
+    print("  Right leg: (", right_leg_x, ",", right_leg_y, ")")
+
+    # Run physics and verify legs stay attached
+    print("\nRunning 50 physics steps (no thrust)...")
+    for step in range(50):
+        _ = env.step(0, 0)  # No action
+
+    print("\nBody positions after falling:")
+    var lander_x2 = Float64(env.physics.get_body_x(0, env.BODY_LANDER))
+    var lander_y2 = Float64(env.physics.get_body_y(0, env.BODY_LANDER))
+    var left_leg_x2 = Float64(env.physics.get_body_x(0, env.BODY_LEFT_LEG))
+    var left_leg_y2 = Float64(env.physics.get_body_y(0, env.BODY_LEFT_LEG))
+    var right_leg_x2 = Float64(env.physics.get_body_x(0, env.BODY_RIGHT_LEG))
+    var right_leg_y2 = Float64(env.physics.get_body_y(0, env.BODY_RIGHT_LEG))
+
+    print("  Lander:    (", lander_x2, ",", lander_y2, ")")
+    print("  Left leg:  (", left_leg_x2, ",", left_leg_y2, ")")
+    print("  Right leg: (", right_leg_x2, ",", right_leg_y2, ")")
+
+    # Calculate relative positions (legs should stay below lander)
+    var left_rel_x = left_leg_x2 - lander_x2
+    var left_rel_y = left_leg_y2 - lander_y2
+    var right_rel_x = right_leg_x2 - lander_x2
+    var right_rel_y = right_leg_y2 - lander_y2
+
+    print("\nLeg positions relative to lander:")
+    print("  Left leg:  (", left_rel_x, ",", left_rel_y, ")")
+    print("  Right leg: (", right_rel_x, ",", right_rel_y, ")")
+
+    # Check constraints:
+    # 1. Both legs should be below lander (negative relative y)
+    # 2. Left leg should be to the left (negative relative x)
+    # 3. Right leg should be to the right (positive relative x)
+    var legs_below = left_rel_y < 0 and right_rel_y < 0
+    var left_is_left = left_rel_x < 0
+    var right_is_right = right_rel_x > 0
+
+    print("\nJoint constraint checks:")
+    print("  Legs below lander:", legs_below)
+    print("  Left leg on left:", left_is_left)
+    print("  Right leg on right:", right_is_right)
+
+    # Test leg contact detection with actual leg bodies
+    print("\nLeg contact detection test:")
+    env.reset(0)
+
+    # Run until landing or timeout
+    for step in range(500):
+        _ = env.step(0, 2)  # Main engine to slow descent
+        var obs = env.get_observation(0)
+
+        if step % 100 == 0:
+            print("  Step", step, "- y:", obs[1], "left_leg:", obs[6], "right_leg:", obs[7])
+
+        if obs[6] > Scalar[dtype](0.5) or obs[7] > Scalar[dtype](0.5):
+            print("  Leg contact detected at step", step)
+            break
+
+    if joint_count == 2 and legs_below and left_is_left and right_is_right:
+        print("\n✓ TEST PASSED: Revolute joints work correctly!")
+    else:
+        print("\n✗ TEST FAILED: Joint constraints not satisfied!")
 
 
 fn test_cpu_gpu_equivalence() raises:
@@ -352,9 +446,11 @@ fn main() raises:
     print("\n")
     print("=" * 60)
     print("    LUNAR LANDER V2 TESTS")
+    print("    (with revolute joint leg physics)")
     print("=" * 60)
 
     test_basic_functionality()
+    test_revolute_joints()
     test_cpu_gpu_equivalence()
     test_wind_effects()
     test_continuous_actions()
