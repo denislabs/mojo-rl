@@ -90,7 +90,7 @@ from .traits import Integrator, CollisionSystem, ConstraintSolver
 
 # Implementations
 from .integrators import SemiImplicitEuler
-from .collision import FlatTerrainCollision
+from .collision import FlatTerrainCollision, EdgeTerrainCollision, MAX_TERRAIN_EDGES
 from .solvers import ImpulseSolver
 
 # Main orchestrator (original API)
