@@ -203,6 +203,44 @@ struct RevoluteJointSolver:
                         bodies[env, body_a, IDX_OMEGA] = bodies[env, body_a, IDX_OMEGA] - inv_ia * angular_impulse / eff_inertia
                         bodies[env, body_b, IDX_OMEGA] = bodies[env, body_b, IDX_OMEGA] + inv_ib * angular_impulse / eff_inertia
 
+                # Handle angle limits
+                if flags & JOINT_FLAG_LIMIT_ENABLED:
+                    var lower_limit = rebind[Scalar[dtype]](joints[env, j, JOINT_LOWER_LIMIT])
+                    var upper_limit = rebind[Scalar[dtype]](joints[env, j, JOINT_UPPER_LIMIT])
+                    var lim_ref_angle = rebind[Scalar[dtype]](joints[env, j, JOINT_REF_ANGLE])
+
+                    # Current relative angle
+                    var current_wa = rebind[Scalar[dtype]](bodies[env, body_a, IDX_OMEGA])
+                    var current_wb = rebind[Scalar[dtype]](bodies[env, body_b, IDX_OMEGA])
+                    var current_angle_a = rebind[Scalar[dtype]](bodies[env, body_a, IDX_ANGLE])
+                    var current_angle_b = rebind[Scalar[dtype]](bodies[env, body_b, IDX_ANGLE])
+                    var relative_angle = current_angle_b - current_angle_a - lim_ref_angle
+
+                    # Relative angular velocity
+                    var rel_omega = current_wb - current_wa
+
+                    # Effective inertia for angular constraint
+                    var lim_eff_inertia = rebind[Scalar[dtype]](inv_ia) + rebind[Scalar[dtype]](inv_ib)
+                    if lim_eff_inertia > Scalar[dtype](1e-10):
+                        var limit_impulse = Scalar[dtype](0.0)
+
+                        # Check lower limit
+                        if relative_angle <= lower_limit:
+                            # At lower limit, prevent further clockwise rotation (negative rel_omega)
+                            if rel_omega < Scalar[dtype](0.0):
+                                limit_impulse = -rel_omega / lim_eff_inertia
+
+                        # Check upper limit
+                        elif relative_angle >= upper_limit:
+                            # At upper limit, prevent further counter-clockwise rotation (positive rel_omega)
+                            if rel_omega > Scalar[dtype](0.0):
+                                limit_impulse = -rel_omega / lim_eff_inertia
+
+                        # Apply limit impulse
+                        if limit_impulse != Scalar[dtype](0.0):
+                            bodies[env, body_a, IDX_OMEGA] = current_wa - rebind[Scalar[dtype]](inv_ia) * limit_impulse
+                            bodies[env, body_b, IDX_OMEGA] = current_wb + rebind[Scalar[dtype]](inv_ib) * limit_impulse
+
                 # Handle motor
                 if flags & JOINT_FLAG_MOTOR_ENABLED:
                     var motor_speed = joints[env, j, JOINT_MOTOR_SPEED]
@@ -333,6 +371,36 @@ struct RevoluteJointSolver:
                 bodies[env, body_b, IDX_X] = xb + inv_mb * correction_x
                 bodies[env, body_b, IDX_Y] = yb + inv_mb * correction_y
                 bodies[env, body_b, IDX_ANGLE] = angle_b + inv_ib * (rbx * correction_y - rby * correction_x)
+
+                # Handle angle limit position correction
+                var flags = Int(joints[env, j, JOINT_FLAGS])
+                if flags & JOINT_FLAG_LIMIT_ENABLED:
+                    var lower_limit = rebind[Scalar[dtype]](joints[env, j, JOINT_LOWER_LIMIT])
+                    var upper_limit = rebind[Scalar[dtype]](joints[env, j, JOINT_UPPER_LIMIT])
+                    var pos_ref_angle = rebind[Scalar[dtype]](joints[env, j, JOINT_REF_ANGLE])
+
+                    # Current relative angle (after point constraint correction)
+                    var cur_angle_a = rebind[Scalar[dtype]](bodies[env, body_a, IDX_ANGLE])
+                    var cur_angle_b = rebind[Scalar[dtype]](bodies[env, body_b, IDX_ANGLE])
+                    var relative_angle = cur_angle_b - cur_angle_a - pos_ref_angle
+
+                    # Effective inertia
+                    var pos_eff_inertia = rebind[Scalar[dtype]](inv_ia) + rebind[Scalar[dtype]](inv_ib)
+                    if pos_eff_inertia > Scalar[dtype](1e-10):
+                        var angle_correction = Scalar[dtype](0.0)
+
+                        # Check lower limit
+                        if relative_angle < lower_limit:
+                            angle_correction = baumgarte * (lower_limit - relative_angle)
+
+                        # Check upper limit
+                        elif relative_angle > upper_limit:
+                            angle_correction = baumgarte * (upper_limit - relative_angle)
+
+                        # Apply angle correction
+                        if angle_correction != Scalar[dtype](0.0):
+                            bodies[env, body_a, IDX_ANGLE] = cur_angle_a - rebind[Scalar[dtype]](inv_ia) * angle_correction / pos_eff_inertia
+                            bodies[env, body_b, IDX_ANGLE] = cur_angle_b + rebind[Scalar[dtype]](inv_ib) * angle_correction / pos_eff_inertia
 
     # =========================================================================
     # GPU Implementation
@@ -502,6 +570,42 @@ struct RevoluteJointSolver:
                     bodies[env, body_a, IDX_OMEGA] = bodies[env, body_a, IDX_OMEGA] - inv_ia * angular_impulse / eff_inertia
                     bodies[env, body_b, IDX_OMEGA] = bodies[env, body_b, IDX_OMEGA] + inv_ib * angular_impulse / eff_inertia
 
+            # Handle angle limits (GPU)
+            if flags & JOINT_FLAG_LIMIT_ENABLED:
+                var lower_limit = rebind[Scalar[dtype]](joints[env, j, JOINT_LOWER_LIMIT])
+                var upper_limit = rebind[Scalar[dtype]](joints[env, j, JOINT_UPPER_LIMIT])
+                var lim_ref_angle = rebind[Scalar[dtype]](joints[env, j, JOINT_REF_ANGLE])
+
+                # Current relative angle
+                var current_wa = rebind[Scalar[dtype]](bodies[env, body_a, IDX_OMEGA])
+                var current_wb = rebind[Scalar[dtype]](bodies[env, body_b, IDX_OMEGA])
+                var current_angle_a = rebind[Scalar[dtype]](bodies[env, body_a, IDX_ANGLE])
+                var current_angle_b = rebind[Scalar[dtype]](bodies[env, body_b, IDX_ANGLE])
+                var relative_angle = current_angle_b - current_angle_a - lim_ref_angle
+
+                # Relative angular velocity
+                var rel_omega = current_wb - current_wa
+
+                # Effective inertia for angular constraint
+                var lim_eff_inertia = rebind[Scalar[dtype]](inv_ia) + rebind[Scalar[dtype]](inv_ib)
+                if lim_eff_inertia > Scalar[dtype](1e-10):
+                    var limit_impulse = Scalar[dtype](0.0)
+
+                    # Check lower limit
+                    if relative_angle <= lower_limit:
+                        if rel_omega < Scalar[dtype](0.0):
+                            limit_impulse = -rel_omega / lim_eff_inertia
+
+                    # Check upper limit
+                    elif relative_angle >= upper_limit:
+                        if rel_omega > Scalar[dtype](0.0):
+                            limit_impulse = -rel_omega / lim_eff_inertia
+
+                    # Apply limit impulse
+                    if limit_impulse != Scalar[dtype](0.0):
+                        bodies[env, body_a, IDX_OMEGA] = current_wa - rebind[Scalar[dtype]](inv_ia) * limit_impulse
+                        bodies[env, body_b, IDX_OMEGA] = current_wb + rebind[Scalar[dtype]](inv_ib) * limit_impulse
+
     @staticmethod
     fn solve_position_gpu[
         BATCH: Int,
@@ -647,3 +751,33 @@ struct RevoluteJointSolver:
             bodies[env, body_b, IDX_X] = xb + inv_mb * correction_x
             bodies[env, body_b, IDX_Y] = yb + inv_mb * correction_y
             bodies[env, body_b, IDX_ANGLE] = angle_b + inv_ib * (rbx * correction_y - rby * correction_x)
+
+            # Handle angle limit position correction (GPU)
+            var flags = Int(joints[env, j, JOINT_FLAGS])
+            if flags & JOINT_FLAG_LIMIT_ENABLED:
+                var lower_limit = rebind[Scalar[dtype]](joints[env, j, JOINT_LOWER_LIMIT])
+                var upper_limit = rebind[Scalar[dtype]](joints[env, j, JOINT_UPPER_LIMIT])
+                var pos_ref_angle = rebind[Scalar[dtype]](joints[env, j, JOINT_REF_ANGLE])
+
+                # Current relative angle (after point constraint correction)
+                var cur_angle_a = rebind[Scalar[dtype]](bodies[env, body_a, IDX_ANGLE])
+                var cur_angle_b = rebind[Scalar[dtype]](bodies[env, body_b, IDX_ANGLE])
+                var relative_angle = cur_angle_b - cur_angle_a - pos_ref_angle
+
+                # Effective inertia
+                var pos_eff_inertia = rebind[Scalar[dtype]](inv_ia) + rebind[Scalar[dtype]](inv_ib)
+                if pos_eff_inertia > Scalar[dtype](1e-10):
+                    var angle_correction = Scalar[dtype](0.0)
+
+                    # Check lower limit
+                    if relative_angle < lower_limit:
+                        angle_correction = baumgarte * (lower_limit - relative_angle)
+
+                    # Check upper limit
+                    elif relative_angle > upper_limit:
+                        angle_correction = baumgarte * (upper_limit - relative_angle)
+
+                    # Apply angle correction
+                    if angle_correction != Scalar[dtype](0.0):
+                        bodies[env, body_a, IDX_ANGLE] = cur_angle_a - rebind[Scalar[dtype]](inv_ia) * angle_correction / pos_eff_inertia
+                        bodies[env, body_b, IDX_ANGLE] = cur_angle_b + rebind[Scalar[dtype]](inv_ib) * angle_correction / pos_eff_inertia

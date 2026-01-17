@@ -269,15 +269,29 @@ struct LunarLanderV2[BATCH: Int = 1, CONTINUOUS: Bool = False]:
         # Generate terrain heights for this environment
         self.rng_counter += 1
         var terrain_rng = PhiloxRandom(seed=Int(self.rng_seed) + env + 1000, offset=self.rng_counter)
-        for chunk in range(TERRAIN_CHUNKS):
+
+        # First pass: generate raw heights
+        var raw_heights = InlineArray[Float64, TERRAIN_CHUNKS + 1](fill=HELIPAD_Y)
+        for chunk in range(TERRAIN_CHUNKS + 1):
             var terrain_rand = terrain_rng.step_uniform()
-            var height = Float64(terrain_rand[0]) * (H_UNITS / 2.0)
+            raw_heights[chunk] = Float64(terrain_rand[0]) * (H_UNITS / 2.0)
 
-            # Make helipad area flat
-            if chunk >= TERRAIN_CHUNKS // 2 - 2 and chunk <= TERRAIN_CHUNKS // 2 + 2:
-                height = HELIPAD_Y
+        # Second pass: apply 3-point smoothing (like original Gymnasium)
+        for chunk in range(TERRAIN_CHUNKS):
+            var smooth_height: Float64
+            if chunk == 0:
+                smooth_height = (raw_heights[0] + raw_heights[0] + raw_heights[1]) / 3.0
+            elif chunk == TERRAIN_CHUNKS - 1:
+                smooth_height = (raw_heights[chunk - 1] + raw_heights[chunk] + raw_heights[chunk]) / 3.0
+            else:
+                smooth_height = (raw_heights[chunk - 1] + raw_heights[chunk] + raw_heights[chunk + 1]) / 3.0
+            self.terrain_heights[env * TERRAIN_CHUNKS + chunk] = Scalar[physics_dtype](smooth_height)
 
-            self.terrain_heights[env * TERRAIN_CHUNKS + chunk] = Scalar[physics_dtype](height)
+        # Third pass: make helipad area flat AFTER smoothing
+        # Helipad spans chunks 3-7 (center ± 2 chunks)
+        for chunk in range(TERRAIN_CHUNKS // 2 - 2, TERRAIN_CHUNKS // 2 + 3):
+            if chunk >= 0 and chunk < TERRAIN_CHUNKS:
+                self.terrain_heights[env * TERRAIN_CHUNKS + chunk] = Scalar[physics_dtype](HELIPAD_Y)
 
         # Set up edge terrain collision from heights
         var env_heights = List[Scalar[physics_dtype]]()
@@ -334,6 +348,10 @@ struct LunarLanderV2[BATCH: Int = 1, CONTINUOUS: Bool = False]:
         self.physics.set_body_shape(env, Self.BODY_RIGHT_LEG, 2)
 
         # Add revolute joints connecting legs to main lander
+        # Joint angle limits match original Gymnasium LunarLander:
+        # Left leg:  lower=+0.4, upper=+0.9 (leg angles outward left)
+        # Right leg: lower=-0.9, upper=-0.4 (leg angles outward right)
+
         # Left leg joint: connects lander to left leg with spring for flexibility
         _ = self.physics.add_revolute_joint(
             env=env,
@@ -345,6 +363,9 @@ struct LunarLanderV2[BATCH: Int = 1, CONTINUOUS: Bool = False]:
             anchor_by=LEG_H,               # Top of leg
             stiffness=LEG_SPRING_STIFFNESS,
             damping=LEG_SPRING_DAMPING,
+            lower_limit=0.4,               # Left leg lower limit (+0.9 - 0.5)
+            upper_limit=0.9,               # Left leg upper limit
+            enable_limit=True,
         )
 
         # Right leg joint
@@ -358,6 +379,9 @@ struct LunarLanderV2[BATCH: Int = 1, CONTINUOUS: Bool = False]:
             anchor_by=LEG_H,
             stiffness=LEG_SPRING_STIFFNESS,
             damping=LEG_SPRING_DAMPING,
+            lower_limit=-0.9,              # Right leg lower limit
+            upper_limit=-0.4,              # Right leg upper limit (-0.9 + 0.5)
+            enable_limit=True,
         )
 
         # Reset tracking

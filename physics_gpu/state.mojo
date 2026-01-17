@@ -67,10 +67,13 @@ from .constants import (
     JOINT_ANCHOR_BX,
     JOINT_ANCHOR_BY,
     JOINT_REF_ANGLE,
+    JOINT_LOWER_LIMIT,
+    JOINT_UPPER_LIMIT,
     JOINT_STIFFNESS,
     JOINT_DAMPING,
     JOINT_FLAGS,
     JOINT_REVOLUTE,
+    JOINT_FLAG_LIMIT_ENABLED,
     JOINT_FLAG_SPRING_ENABLED,
 )
 from .layout import PhysicsLayout
@@ -470,6 +473,9 @@ struct PhysicsState[
         anchor_by: Float64,
         stiffness: Float64 = 0.0,
         damping: Float64 = 0.0,
+        lower_limit: Float64 = 0.0,
+        upper_limit: Float64 = 0.0,
+        enable_limit: Bool = False,
     ) -> Int:
         """Add a revolute joint between two bodies.
 
@@ -483,6 +489,9 @@ struct PhysicsState[
             anchor_by: Local anchor y on body B.
             stiffness: Spring stiffness (0 for rigid joint).
             damping: Spring damping.
+            lower_limit: Lower angle limit in radians (relative to reference angle).
+            upper_limit: Upper angle limit in radians (relative to reference angle).
+            enable_limit: Whether to enable angle limits.
 
         Returns:
             Joint index, or -1 if max joints reached.
@@ -513,6 +522,10 @@ struct PhysicsState[
         var angle_b = rebind[Scalar[dtype]](bodies[env, body_b, IDX_ANGLE])
         joints[env, joint_idx, JOINT_REF_ANGLE] = angle_b - angle_a
 
+        # Set angle limits
+        joints[env, joint_idx, JOINT_LOWER_LIMIT] = Scalar[dtype](lower_limit)
+        joints[env, joint_idx, JOINT_UPPER_LIMIT] = Scalar[dtype](upper_limit)
+
         # Set spring properties
         joints[env, joint_idx, JOINT_STIFFNESS] = Scalar[dtype](stiffness)
         joints[env, joint_idx, JOINT_DAMPING] = Scalar[dtype](damping)
@@ -521,6 +534,8 @@ struct PhysicsState[
         var flags = 0
         if stiffness > 0.0 or damping > 0.0:
             flags = flags | JOINT_FLAG_SPRING_ENABLED
+        if enable_limit:
+            flags = flags | JOINT_FLAG_LIMIT_ENABLED
         joints[env, joint_idx, JOINT_FLAGS] = Scalar[dtype](flags)
 
         # Increment count
