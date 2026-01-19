@@ -141,7 +141,7 @@ fn main() raises:
         )
 
         print("Loading checkpoint...")
-        agent.load_checkpoint("ppo_lunar_gpu_v2.ckpt")
+        agent.load_checkpoint("ppo_lunar_hybrid_v2.ckpt")
         print("Checkpoint loaded successfully!")
         print()
 

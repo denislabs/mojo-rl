@@ -127,6 +127,11 @@ comptime LEG_SPRING_DAMPING: Float64 = 40.0
 comptime MAIN_ENGINE_POWER: Float64 = 13.0
 comptime SIDE_ENGINE_POWER: Float64 = 0.6
 
+# Engine mount positions (matching lunar_lander_v2.mojo)
+comptime MAIN_ENGINE_Y_OFFSET: Float64 = 4.0 / SCALE
+comptime SIDE_ENGINE_HEIGHT: Float64 = 14.0 / SCALE
+comptime SIDE_ENGINE_AWAY: Float64 = 12.0 / SCALE
+
 # Reward constants
 comptime CRASH_PENALTY: Float64 = -100.0
 comptime LAND_REWARD: Float64 = 100.0
@@ -158,6 +163,99 @@ comptime TERRAIN_CHUNKS: Int = 11
 comptime BODY_LANDER: Int = 0
 comptime BODY_LEFT_LEG: Int = 1
 comptime BODY_RIGHT_LEG: Int = 2
+
+
+# =============================================================================
+# Helper Functions - Observation Normalization & Shaping
+# =============================================================================
+
+
+@always_inline
+fn normalize_position[T: DType](x: Scalar[T], y: Scalar[T]) -> Tuple[Scalar[T], Scalar[T]]:
+    """Normalize position relative to helipad center.
+
+    Args:
+        x: Raw x position in world units.
+        y: Raw y position in world units.
+
+    Returns:
+        Tuple of (x_norm, y_norm) in range approximately [-1, 1].
+    """
+    var x_norm = (x - Scalar[T](HELIPAD_X)) / Scalar[T](W_UNITS / 2.0)
+    var y_norm = (y - Scalar[T](HELIPAD_Y + LEG_DOWN / SCALE)) / Scalar[T](H_UNITS / 2.0)
+    return (x_norm, y_norm)
+
+
+@always_inline
+fn normalize_velocity[T: DType](vx: Scalar[T], vy: Scalar[T]) -> Tuple[Scalar[T], Scalar[T]]:
+    """Normalize velocity for observation.
+
+    Args:
+        vx: Raw x velocity.
+        vy: Raw y velocity.
+
+    Returns:
+        Tuple of (vx_norm, vy_norm) scaled by viewport and FPS.
+    """
+    var vx_norm = vx * Scalar[T](W_UNITS / 2.0) / Scalar[T](FPS)
+    var vy_norm = vy * Scalar[T](H_UNITS / 2.0) / Scalar[T](FPS)
+    return (vx_norm, vy_norm)
+
+
+@always_inline
+fn normalize_angular_velocity[T: DType](omega: Scalar[T]) -> Scalar[T]:
+    """Normalize angular velocity for observation.
+
+    Args:
+        omega: Raw angular velocity in rad/s.
+
+    Returns:
+        Normalized angular velocity.
+    """
+    return Scalar[T](20.0) * omega / Scalar[T](FPS)
+
+
+@always_inline
+fn compute_shaping[T: DType](
+    x_norm: Scalar[T],
+    y_norm: Scalar[T],
+    vx_norm: Scalar[T],
+    vy_norm: Scalar[T],
+    angle: Scalar[T],
+    left_contact: Scalar[T],
+    right_contact: Scalar[T],
+) -> Scalar[T]:
+    """Compute shaping potential for reward calculation.
+
+    The shaping reward encourages:
+    - Being close to landing pad (low distance)
+    - Moving slowly (low speed)
+    - Being upright (low angle)
+    - Having legs in contact with ground
+
+    Args:
+        x_norm: Normalized x position.
+        y_norm: Normalized y position.
+        vx_norm: Normalized x velocity.
+        vy_norm: Normalized y velocity.
+        angle: Angle in radians.
+        left_contact: 1.0 if left leg touching, 0.0 otherwise.
+        right_contact: 1.0 if right leg touching, 0.0 otherwise.
+
+    Returns:
+        Shaping potential value.
+    """
+    var dist = sqrt(x_norm * x_norm + y_norm * y_norm)
+    var speed = sqrt(vx_norm * vx_norm + vy_norm * vy_norm)
+    var abs_angle = angle if angle >= Scalar[T](0.0) else -angle
+
+    return (
+        Scalar[T](-100.0) * dist
+        - Scalar[T](100.0) * speed
+        - Scalar[T](100.0) * abs_angle
+        + Scalar[T](10.0) * left_contact
+        + Scalar[T](10.0) * right_contact
+    )
 
 
 # =============================================================================
@@ -753,18 +851,17 @@ struct LunarLanderV2GPU[DTYPE: DType](
 
     fn _update_cached_state(mut self):
         """Update the cached state from physics state."""
-        var x = Float64(self.physics.get_body_x(0, Self.BODY_LANDER))
-        var y = Float64(self.physics.get_body_y(0, Self.BODY_LANDER))
-        var vx = Float64(self.physics.get_body_vx(0, Self.BODY_LANDER))
-        var vy = Float64(self.physics.get_body_vy(0, Self.BODY_LANDER))
+        var x = Scalar[DType.float64](self.physics.get_body_x(0, Self.BODY_LANDER))
+        var y = Scalar[DType.float64](self.physics.get_body_y(0, Self.BODY_LANDER))
+        var vx = Scalar[DType.float64](self.physics.get_body_vx(0, Self.BODY_LANDER))
+        var vy = Scalar[DType.float64](self.physics.get_body_vy(0, Self.BODY_LANDER))
         var angle = Float64(self.physics.get_body_angle(0, Self.BODY_LANDER))
-        var omega = Float64(self.physics.get_body_omega(0, Self.BODY_LANDER))
+        var omega = Scalar[DType.float64](self.physics.get_body_omega(0, Self.BODY_LANDER))
 
-        var x_norm = (x - HELIPAD_X) / (W_UNITS / 2.0)
-        var y_norm = (y - (HELIPAD_Y + LEG_DOWN / SCALE)) / (H_UNITS / 2.0)
-        var vx_norm = vx * (W_UNITS / 2.0) / Float64(FPS)
-        var vy_norm = vy * (H_UNITS / 2.0) / Float64(FPS)
-        var omega_norm = 20.0 * omega / Float64(FPS)
+        # Normalize using helper functions
+        var pos_norm = normalize_position[DType.float64](x, y)
+        var vel_norm = normalize_velocity[DType.float64](vx, vy)
+        var omega_norm = normalize_angular_velocity[DType.float64](omega)
 
         var left_leg_y = Float64(self.physics.get_body_y(0, Self.BODY_LEFT_LEG))
         var left_leg_x = Float64(self.physics.get_body_x(0, Self.BODY_LEFT_LEG))
@@ -773,10 +870,10 @@ struct LunarLanderV2GPU[DTYPE: DType](
         var right_leg_x = Float64(self.physics.get_body_x(0, Self.BODY_RIGHT_LEG))
         var right_terrain_y = self._get_terrain_height(right_leg_x)
 
-        self.cached_state.x = Scalar[Self.dtype](x_norm)
-        self.cached_state.y = Scalar[Self.dtype](y_norm)
-        self.cached_state.vx = Scalar[Self.dtype](vx_norm)
-        self.cached_state.vy = Scalar[Self.dtype](vy_norm)
+        self.cached_state.x = Scalar[Self.dtype](pos_norm[0])
+        self.cached_state.y = Scalar[Self.dtype](pos_norm[1])
+        self.cached_state.vx = Scalar[Self.dtype](vel_norm[0])
+        self.cached_state.vy = Scalar[Self.dtype](vel_norm[1])
         self.cached_state.angle = Scalar[Self.dtype](angle)
         self.cached_state.angular_velocity = Scalar[Self.dtype](omega_norm)
         self.cached_state.left_leg_contact = Scalar[Self.dtype](
@@ -789,28 +886,8 @@ struct LunarLanderV2GPU[DTYPE: DType](
     fn _compute_shaping(mut self) -> Scalar[Self.dtype]:
         """Compute the shaping potential for reward calculation."""
         var obs = self.get_observation(0)
-        var x_norm = obs[0]
-        var y_norm = obs[1]
-        var vx_norm = obs[2]
-        var vy_norm = obs[3]
-        var angle = obs[4]
-        var left_contact = obs[6]
-        var right_contact = obs[7]
-
-        var dist = sqrt(
-            Float64(x_norm) * Float64(x_norm) + Float64(y_norm) * Float64(y_norm)
-        )
-        var speed = sqrt(
-            Float64(vx_norm) * Float64(vx_norm) + Float64(vy_norm) * Float64(vy_norm)
-        )
-        var angle_abs = abs(Float64(angle))
-
-        return (
-            Scalar[Self.dtype](-100.0) * Scalar[Self.dtype](dist)
-            + Scalar[Self.dtype](-100.0) * Scalar[Self.dtype](speed)
-            + Scalar[Self.dtype](-100.0) * Scalar[Self.dtype](angle_abs)
-            + Scalar[Self.dtype](10.0) * left_contact
-            + Scalar[Self.dtype](10.0) * right_contact
+        return compute_shaping[Self.dtype](
+            obs[0], obs[1], obs[2], obs[3], obs[4], obs[6], obs[7]
         )
 
     fn get_observation(
@@ -818,23 +895,17 @@ struct LunarLanderV2GPU[DTYPE: DType](
     ) -> InlineArray[Scalar[Self.dtype], OBS_DIM_VAL]:
         """Get normalized observation for an environment."""
         # Get main lander body state
-        var x = Float64(self.physics.get_body_x(env, Self.BODY_LANDER))
-        var y = Float64(self.physics.get_body_y(env, Self.BODY_LANDER))
-        var vx = Float64(self.physics.get_body_vx(env, Self.BODY_LANDER))
-        var vy = Float64(self.physics.get_body_vy(env, Self.BODY_LANDER))
-        var angle = Float64(self.physics.get_body_angle(env, Self.BODY_LANDER))
-        var omega = Float64(self.physics.get_body_omega(env, Self.BODY_LANDER))
+        var x = Scalar[DType.float64](self.physics.get_body_x(env, Self.BODY_LANDER))
+        var y = Scalar[DType.float64](self.physics.get_body_y(env, Self.BODY_LANDER))
+        var vx = Scalar[DType.float64](self.physics.get_body_vx(env, Self.BODY_LANDER))
+        var vy = Scalar[DType.float64](self.physics.get_body_vy(env, Self.BODY_LANDER))
+        var angle = Scalar[DType.float64](self.physics.get_body_angle(env, Self.BODY_LANDER))
+        var omega = Scalar[DType.float64](self.physics.get_body_omega(env, Self.BODY_LANDER))
 
-        # Normalize position
-        var x_norm = (x - HELIPAD_X) / (W_UNITS / 2.0)
-        var y_norm = (y - (HELIPAD_Y + LEG_DOWN / SCALE)) / (H_UNITS / 2.0)
-
-        # Normalize velocity
-        var vx_norm = vx * (W_UNITS / 2.0) / Float64(FPS)
-        var vy_norm = vy * (H_UNITS / 2.0) / Float64(FPS)
-
-        var angle_norm = angle
-        var omega_norm = 20.0 * omega / Float64(FPS)
+        # Normalize using helper functions
+        var pos_norm = normalize_position[DType.float64](x, y)
+        var vel_norm = normalize_velocity[DType.float64](vx, vy)
+        var omega_norm = normalize_angular_velocity[DType.float64](omega)
 
         # Leg contact detection
         var left_contact = Scalar[Self.dtype](0.0)
@@ -855,11 +926,11 @@ struct LunarLanderV2GPU[DTYPE: DType](
             right_contact = Scalar[Self.dtype](1.0)
 
         return InlineArray[Scalar[Self.dtype], OBS_DIM_VAL](
-            Scalar[Self.dtype](x_norm),
-            Scalar[Self.dtype](y_norm),
-            Scalar[Self.dtype](vx_norm),
-            Scalar[Self.dtype](vy_norm),
-            Scalar[Self.dtype](angle_norm),
+            Scalar[Self.dtype](pos_norm[0]),
+            Scalar[Self.dtype](pos_norm[1]),
+            Scalar[Self.dtype](vel_norm[0]),
+            Scalar[Self.dtype](vel_norm[1]),
+            Scalar[Self.dtype](angle),
             Scalar[Self.dtype](omega_norm),
             left_contact,
             right_contact,
@@ -1401,23 +1472,6 @@ struct LunarLanderV2GPU[DTYPE: DType](
                 states, env, env * 12345
             )
 
-    @staticmethod
-    fn selective_reset_kernel[
-        BATCH_SIZE: Int,
-    ](
-        states: LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL), MutAnyOrigin
-        ],
-        dones: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
-        rng_seed: Int,
-    ):
-        """CPU selective reset kernel."""
-        for env in range(BATCH_SIZE):
-            if rebind[Scalar[dtype]](dones[env]) > Scalar[dtype](0.5):
-                LunarLanderV2GPU[Self.dtype]._reset_env_cpu[
-                    BATCH_SIZE, STATE_SIZE_VAL
-                ](states, env, rng_seed + env)
-
     # =========================================================================
     # GPU Kernels
     # =========================================================================
@@ -1597,8 +1651,6 @@ struct LunarLanderV2GPU[DTYPE: DType](
         STATE_SIZE: Int,
     ](ctx: DeviceContext, mut states_buf: DeviceBuffer[dtype]) raises:
         """GPU reset kernel."""
-
-        print("reset kernel GPU")
         # Create 2D LayoutTensor from buffer
         var states = LayoutTensor[
             dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -1836,13 +1888,21 @@ struct LunarLanderV2GPU[DTYPE: DType](
             physics.get_body_omega[BATCH_SIZE](typed_states, BODY_LANDER)
         )
 
-        # Normalize observation (matching Gymnasium)
-        var x_norm = (x - HELIPAD_X) / (W_UNITS / 2.0)
-        var y_norm = (y - (HELIPAD_Y + LEG_DOWN / SCALE)) / (H_UNITS / 2.0)
-        var vx_norm = vx * (W_UNITS / 2.0) / 50.0
-        var vy_norm = vy * (H_UNITS / 2.0) / 50.0
+        # Normalize observation using helper functions
+        var pos_norm = normalize_position[DType.float64](
+            Scalar[DType.float64](x), Scalar[DType.float64](y)
+        )
+        var vel_norm = normalize_velocity[DType.float64](
+            Scalar[DType.float64](vx), Scalar[DType.float64](vy)
+        )
+        var x_norm = Float64(pos_norm[0])
+        var y_norm = Float64(pos_norm[1])
+        var vx_norm = Float64(vel_norm[0])
+        var vy_norm = Float64(vel_norm[1])
         var angle_norm = angle
-        var omega_norm = 20.0 * omega / 50.0
+        var omega_norm = Float64(
+            normalize_angular_velocity[DType.float64](Scalar[DType.float64](omega))
+        )
 
         # Compute leg contacts (simplified - check if y is near terrain)
         var left_contact: Float64 = 0.0
@@ -1868,17 +1928,16 @@ struct LunarLanderV2GPU[DTYPE: DType](
         states[env, OBS_OFFSET + 6] = Scalar[dtype](left_contact)
         states[env, OBS_OFFSET + 7] = Scalar[dtype](right_contact)
 
-        # Compute shaping reward (matching Gymnasium)
-        var dist = sqrt(x_norm * x_norm + y_norm * y_norm)
-        var speed = sqrt(vx_norm * vx_norm + vy_norm * vy_norm)
-        var abs_angle = angle if angle >= 0.0 else -angle  # manual abs
-        var shaping = (
-            -100.0 * dist
-            - 100.0 * speed
-            - 100.0 * abs_angle
-            + 10.0 * left_contact
-            + 10.0 * right_contact
-        )
+        # Compute shaping reward using helper function
+        var shaping = Float64(compute_shaping[DType.float64](
+            Scalar[DType.float64](x_norm),
+            Scalar[DType.float64](y_norm),
+            Scalar[DType.float64](vx_norm),
+            Scalar[DType.float64](vy_norm),
+            Scalar[DType.float64](angle),
+            Scalar[DType.float64](left_contact),
+            Scalar[DType.float64](right_contact),
+        ))
 
         var prev_shaping = Float64(
             rebind[Scalar[dtype]](
@@ -2000,8 +2059,8 @@ struct LunarLanderV2GPU[DTYPE: DType](
             ]
         ](states)
 
-        # Simple RNG
-        var rng = UInt64(seed * 1664525 + 1013904223)
+        # Use Philox RNG (GPU-compatible counter-based RNG)
+        var rng = PhiloxRandom(seed=seed + env, offset=0)
 
         # Generate terrain heights
         var n_edges = TERRAIN_CHUNKS - 1
@@ -2009,10 +2068,9 @@ struct LunarLanderV2GPU[DTYPE: DType](
 
         var x_spacing = W_UNITS / Float64(TERRAIN_CHUNKS - 1)
         for edge in range(n_edges):
-            rng = rng * 6364136223846793005 + 1442695040888963407
-            var rand1 = Float64(rng >> 33) / Float64(2147483647)
-            rng = rng * 6364136223846793005 + 1442695040888963407
-            var rand2 = Float64(rng >> 33) / Float64(2147483647)
+            var rand_vals = rng.step_uniform()
+            var rand1 = Float64(rand_vals[0])
+            var rand2 = Float64(rand_vals[1])
 
             var x0 = Float64(edge) * x_spacing
             var x1 = Float64(edge + 1) * x_spacing
@@ -2045,10 +2103,9 @@ struct LunarLanderV2GPU[DTYPE: DType](
             )
 
         # Initialize lander at top center with random velocity
-        rng = rng * 6364136223846793005 + 1442695040888963407
-        var init_vx = (Float64(rng >> 33) / Float64(2147483647) - 0.5) * 2.0
-        rng = rng * 6364136223846793005 + 1442695040888963407
-        var init_vy = (Float64(rng >> 33) / Float64(2147483647) - 0.5) * 2.0
+        var vel_rand = rng.step_uniform()
+        var init_vx = (Float64(vel_rand[0]) - 0.5) * 2.0
+        var init_vy = (Float64(vel_rand[1]) - 0.5) * 2.0
 
         physics.set_body_position[BATCH_SIZE](
             typed_states, BODY_LANDER, HELIPAD_X, H_UNITS
@@ -2509,7 +2566,8 @@ struct LunarLanderV2GPU[DTYPE: DType](
             if i >= BATCH_SIZE:
                 return
 
-            # Clear forces (using 2D indexing)
+            # Clear forces - we use impulse-based physics directly on velocities
+            # Forces stay at 0 so velocity integration only applies gravity
             for body in range(NUM_BODIES):
                 var force_off = FORCES_OFFSET + body * 3
                 states[i, force_off + 0] = Scalar[dtype](0)
@@ -2526,44 +2584,101 @@ struct LunarLanderV2GPU[DTYPE: DType](
             if action == 0:
                 return
 
-            var angle = states[i, BODIES_OFFSET + IDX_ANGLE]
+            # Get step count for RNG offset (ensures different random values each step)
+            var step_count = Int(states[i, METADATA_OFFSET + META_STEP_COUNT])
+
+            # Create Philox RNG with seed based on environment index
+            # This matches the CPU approach in lunar_lander_v2.mojo
+            var rng = PhiloxRandom(seed=i + 12345, offset=step_count)
+            var rand_vals = rng.step_uniform()
+
+            # Random dispersion (matching CPU implementation) - use float32 for GPU
+            var dispersion_x = (rand_vals[0] * Scalar[dtype](2.0) - Scalar[dtype](1.0)) / Scalar[dtype](SCALE)
+            var dispersion_y = (rand_vals[1] * Scalar[dtype](2.0) - Scalar[dtype](1.0)) / Scalar[dtype](SCALE)
+
+            # Get lander orientation
+            var angle = rebind[Scalar[dtype]](states[i, BODIES_OFFSET + IDX_ANGLE])
             var tip_x = sin(angle)
             var tip_y = cos(angle)
             var side_x = -tip_y
             var side_y = tip_x
 
-            # Match CPU impulse behavior:
-            # CPU main engine: impulse = -oy * MAIN_ENGINE_POWER where oy = -tip_y * offset
-            # CPU offset = 4.0 / SCALE ≈ 0.133, so impulse ≈ 0.133 * 13 = 1.73
-            # GPU: force = impulse / dt to match velocity change
-            var main_offset = Scalar[dtype](4.0 / SCALE)  # Same as CPU main_y_offset
-            var side_offset = Scalar[dtype](12.0 / SCALE)  # Same as CPU side_away
+            # Get current lander velocity
+            var vx = rebind[Scalar[dtype]](states[i, BODIES_OFFSET + IDX_VX])
+            var vy = rebind[Scalar[dtype]](states[i, BODIES_OFFSET + IDX_VY])
+            var omega = rebind[Scalar[dtype]](states[i, BODIES_OFFSET + IDX_OMEGA])
 
-            # Main engine: exhaust offset in -tip direction gives thrust in +tip direction
-            var main_impulse = main_offset * Scalar[dtype](MAIN_ENGINE_POWER)
-            var main_force = main_impulse / Scalar[dtype](DT)
+            # Velocity changes from impulse (will be accumulated)
+            var dvx = Scalar[dtype](0)
+            var dvy = Scalar[dtype](0)
+            var domega = Scalar[dtype](0)
 
-            # Side engine: exhaust offset in side direction
-            var side_impulse = side_offset * Scalar[dtype](SIDE_ENGINE_POWER)
-            var side_force = side_impulse / Scalar[dtype](DT)
+            # Constants as float32
+            var main_y_offset = Scalar[dtype](MAIN_ENGINE_Y_OFFSET)
+            var side_away = Scalar[dtype](SIDE_ENGINE_AWAY)
+            var side_height = Scalar[dtype](SIDE_ENGINE_HEIGHT)
+            var main_power = Scalar[dtype](MAIN_ENGINE_POWER)
+            var side_power = Scalar[dtype](SIDE_ENGINE_POWER)
+            var lander_mass = Scalar[dtype](LANDER_MASS)
+            var lander_inertia = Scalar[dtype](LANDER_INERTIA)
+            var scale = Scalar[dtype](SCALE)
 
-            if action == 2:  # Main engine - thrust upward (in tip direction)
-                states[i, FORCES_OFFSET + 0] = -tip_x * main_force
-                states[i, FORCES_OFFSET + 1] = tip_y * main_force
-            elif action == 1:  # Left engine - push right (opposite side_x when direction=-1)
-                states[i, FORCES_OFFSET + 0] = side_x * side_force
-                states[i, FORCES_OFFSET + 1] = -side_y * side_force
-                # Torque to rotate counter-clockwise
-                states[i, FORCES_OFFSET + 2] = Scalar[dtype](
-                    SIDE_ENGINE_POWER * 0.5 / DT
-                )
-            elif action == 3:  # Right engine - push left
-                states[i, FORCES_OFFSET + 0] = -side_x * side_force
-                states[i, FORCES_OFFSET + 1] = side_y * side_force
-                # Torque to rotate clockwise
-                states[i, FORCES_OFFSET + 2] = Scalar[dtype](
-                    -SIDE_ENGINE_POWER * 0.5 / DT
-                )
+            if action == 2:  # Main engine
+                # Exhaust position with dispersion (matching CPU exactly)
+                var ox = tip_x * (main_y_offset + Scalar[dtype](2.0) * dispersion_x) + side_x * dispersion_y
+                var oy = -tip_y * (main_y_offset + Scalar[dtype](2.0) * dispersion_x) - side_y * dispersion_y
+
+                # Impulse in opposite direction of exhaust
+                var impulse_x = -ox * main_power
+                var impulse_y = -oy * main_power
+
+                # Velocity change from impulse
+                dvx += impulse_x / lander_mass
+                dvy += impulse_y / lander_mass
+
+                # Torque from off-center impulse
+                var torque = ox * impulse_y - oy * impulse_x
+                domega += torque / lander_inertia
+
+            elif action == 1:  # Left engine (direction = -1)
+                var direction = Scalar[dtype](-1.0)
+                var ox = tip_x * dispersion_x + side_x * (Scalar[dtype](3.0) * dispersion_y + direction * side_away)
+                var oy = -tip_y * dispersion_x - side_y * (Scalar[dtype](3.0) * dispersion_y + direction * side_away)
+
+                var impulse_x = -ox * side_power
+                var impulse_y = -oy * side_power
+
+                dvx += impulse_x / lander_mass
+                dvy += impulse_y / lander_mass
+
+                # Torque arm position (matching Gymnasium)
+                var r_x = ox - tip_x * Scalar[dtype](17.0) / scale
+                var r_y = oy + tip_y * side_height
+                var torque = r_x * impulse_y - r_y * impulse_x
+                domega += torque / lander_inertia
+
+            elif action == 3:  # Right engine (direction = +1)
+                var direction = Scalar[dtype](1.0)
+                var ox = tip_x * dispersion_x + side_x * (Scalar[dtype](3.0) * dispersion_y + direction * side_away)
+                var oy = -tip_y * dispersion_x - side_y * (Scalar[dtype](3.0) * dispersion_y + direction * side_away)
+
+                var impulse_x = -ox * side_power
+                var impulse_y = -oy * side_power
+
+                dvx += impulse_x / lander_mass
+                dvy += impulse_y / lander_mass
+
+                # Torque arm position (matching Gymnasium)
+                var r_x = ox - tip_x * Scalar[dtype](17.0) / scale
+                var r_y = oy + tip_y * side_height
+                var torque = r_x * impulse_y - r_y * impulse_x
+                domega += torque / lander_inertia
+
+            # Apply impulse-based velocity changes directly to body state
+            # This matches the CPU approach in lunar_lander_v2.mojo
+            states[i, BODIES_OFFSET + IDX_VX] = vx + dvx
+            states[i, BODIES_OFFSET + IDX_VY] = vy + dvy
+            states[i, BODIES_OFFSET + IDX_OMEGA] = omega + domega
 
         ctx.enqueue_function[apply_wrapper, apply_wrapper](
             states,
@@ -2667,24 +2782,18 @@ struct LunarLanderV2GPU[DTYPE: DType](
                 states[i, lander_off + IDX_OMEGA]
             )
 
-            # Normalize observation - use Scalar[dtype] constants
-            var half_w: states.element_type = Scalar[dtype](W_UNITS / 2.0)
-            var half_h: states.element_type = Scalar[dtype](H_UNITS / 2.0)
-            var helipad_x: states.element_type = Scalar[dtype](HELIPAD_X)
-            var helipad_y: states.element_type = Scalar[dtype](HELIPAD_Y)
-            var leg_down_scaled: states.element_type = Scalar[dtype](
-                LEG_DOWN / SCALE
+            # Normalize observation using helper functions
+            var pos_norm = normalize_position[dtype](
+                rebind[Scalar[dtype]](x), rebind[Scalar[dtype]](y)
             )
-
-            var x_norm: states.element_type = (x - helipad_x) / half_w
-            var y_norm: states.element_type = (
-                y - (helipad_y + leg_down_scaled)
-            ) / half_h
-            var vx_norm: states.element_type = vx * half_w / Scalar[dtype](50.0)
-            var vy_norm: states.element_type = vy * half_h / Scalar[dtype](50.0)
-            var omega_norm: states.element_type = (
-                omega * Scalar[dtype](20.0) / Scalar[dtype](50.0)
+            var vel_norm = normalize_velocity[dtype](
+                rebind[Scalar[dtype]](vx), rebind[Scalar[dtype]](vy)
             )
+            var x_norm = pos_norm[0]
+            var y_norm = pos_norm[1]
+            var vx_norm = vel_norm[0]
+            var vy_norm = vel_norm[1]
+            var omega_norm = normalize_angular_velocity[dtype](rebind[Scalar[dtype]](omega))
 
             # Check leg contacts (2D indexing)
             var left_contact: states.element_type = Scalar[dtype](0.0)
@@ -2695,6 +2804,7 @@ struct LunarLanderV2GPU[DTYPE: DType](
             var right_y: states.element_type = rebind[Scalar[dtype]](
                 states[i, BODIES_OFFSET + 2 * BODY_STATE_SIZE + IDX_Y]
             )
+            var helipad_y: states.element_type = Scalar[dtype](HELIPAD_Y)
             var contact_threshold: states.element_type = helipad_y + Scalar[
                 dtype
             ](0.1)
@@ -2713,23 +2823,15 @@ struct LunarLanderV2GPU[DTYPE: DType](
             states[i, OBS_OFFSET + 6] = left_contact
             states[i, OBS_OFFSET + 7] = right_contact
 
-            # Compute shaping
-            var dist: states.element_type = sqrt(
-                x_norm * x_norm + y_norm * y_norm
-            )
-            var speed: states.element_type = sqrt(
-                vx_norm * vx_norm + vy_norm * vy_norm
-            )
-            var abs_angle: states.element_type = angle
-            if angle < Scalar[dtype](0.0):
-                abs_angle = -angle
-
-            var shaping: states.element_type = (
-                Scalar[dtype](-100.0) * dist
-                - Scalar[dtype](100.0) * speed
-                - Scalar[dtype](100.0) * abs_angle
-                + Scalar[dtype](10.0) * left_contact
-                + Scalar[dtype](10.0) * right_contact
+            # Compute shaping using helper function
+            var shaping = compute_shaping[dtype](
+                x_norm,
+                y_norm,
+                vx_norm,
+                vy_norm,
+                rebind[Scalar[dtype]](angle),
+                rebind[Scalar[dtype]](left_contact),
+                rebind[Scalar[dtype]](right_contact),
             )
 
             var prev_shaping: states.element_type = rebind[Scalar[dtype]](

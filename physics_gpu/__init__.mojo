@@ -130,3 +130,13 @@ from .state import PhysicsState
 
 # Strided state helper for GPUDiscreteEnv (flat layout)
 from .state_strided import PhysicsStateStrided
+
+# Strided layout and helpers for modular physics (reduces env boilerplate)
+from .layout_strided import (
+    PhysicsLayoutStrided,
+    LunarLanderLayoutStrided,
+    CartPoleLayoutStrided,
+    AcrobotLayoutStrided,
+)
+from .kernel_strided import PhysicsKernelStrided, PhysicsConfigStrided, CollisionType
+from .env_helpers import PhysicsEnvHelpers
