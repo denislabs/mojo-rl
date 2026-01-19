@@ -1,4 +1,4 @@
-"""Test LunarLanderV2GPU environment using CPU kernels.
+"""Test LunarLanderV2 environment using CPU kernels.
 
 This tests the GPU environment implementation using the CPU fallback kernels
 to verify the physics and state layout are correct.
@@ -12,21 +12,21 @@ from random import seed
 
 from layout import Layout, LayoutTensor
 
-from envs.lunar_lander_v2_gpu import LunarLanderV2GPU
+from envs.lunar_lander import LunarLanderV2
 from physics_gpu import dtype
 
 
 comptime BATCH_SIZE: Int = 8
-comptime STATE_SIZE: Int = LunarLanderV2GPU.STATE_SIZE
-comptime OBS_DIM: Int = LunarLanderV2GPU.OBS_DIM
-comptime NUM_ACTIONS: Int = LunarLanderV2GPU.NUM_ACTIONS
+comptime STATE_SIZE: Int = LunarLanderV2.STATE_SIZE
+comptime OBS_DIM: Int = LunarLanderV2.OBS_DIM
+comptime NUM_ACTIONS: Int = LunarLanderV2.NUM_ACTIONS
 
 
 fn main() raises:
     seed(42)
 
     print("=" * 70)
-    print("LunarLanderV2GPU CPU Test")
+    print("LunarLanderV2 CPU Test")
     print("=" * 70)
     print()
     print("Configuration:")
@@ -66,13 +66,13 @@ fn main() raises:
         dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
     ](rewards_data.unsafe_ptr())
 
-    var dones = LayoutTensor[
-        dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-    ](dones_data.unsafe_ptr())
+    var dones = LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin](
+        dones_data.unsafe_ptr()
+    )
 
     # Reset all environments
     print("1. Resetting all environments...")
-    LunarLanderV2GPU.reset_kernel[BATCH_SIZE, STATE_SIZE](states)
+    LunarLanderV2.reset_kernel[BATCH_SIZE, STATE_SIZE](states)
 
     # Print initial states
     print()
@@ -103,9 +103,11 @@ fn main() raises:
             actions_data[i] = Scalar[dtype](action)
 
         # Step all environments
-        LunarLanderV2GPU.step_kernel[BATCH_SIZE, STATE_SIZE](
+        LunarLanderV2.step_kernel[BATCH_SIZE, STATE_SIZE](
             states,
-            LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), ImmutAnyOrigin](actions_data.unsafe_ptr()),
+            LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), ImmutAnyOrigin](
+                actions_data.unsafe_ptr()
+            ),
             rewards,
             dones,
             Scalar[DType.uint64](rng),
@@ -124,7 +126,10 @@ fn main() raises:
     print("  Total steps:", step_count * BATCH_SIZE)
     print("  Total reward:", total_reward)
     print("  Episodes completed:", episode_count)
-    print("  Average reward per step:", total_reward / Float64(step_count * BATCH_SIZE))
+    print(
+        "  Average reward per step:",
+        total_reward / Float64(step_count * BATCH_SIZE),
+    )
 
     # Print final states
     print()
@@ -140,4 +145,4 @@ fn main() raises:
     print("Test completed successfully!")
     print()
     print("Note: This tests the CPU implementation. The GPU version uses")
-    print("the same logic but with GPU-optimized strided physics methods.")
+    print("the same logic but with GPU-optimized physics methods.")

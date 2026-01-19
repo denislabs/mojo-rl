@@ -246,51 +246,6 @@ trait GPUDiscreteEnv:
     comptime NUM_ACTIONS: Int
 
     @staticmethod
-    fn step_kernel[
-        BATCH_SIZE: Int,
-        STATE_SIZE: Int,
-    ](
-        states: LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ],
-        actions: LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE), ImmutAnyOrigin
-        ],
-        rewards: LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ],
-        dones: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
-        rng_seed: Scalar[DType.uint64],
-    ):
-        """Perform one environment step. Returns (reward, done).
-
-        Note: MutAnyOrigin allows mutation without `mut` keyword.
-        Actions use ImmutAnyOrigin since they are read-only.
-        Actions should be 0.0, 1.0, 2.0, etc. (cast to Int inside kernel).
-        Dones should be 0.0 (false) or 1.0 (true).
-
-        Args:
-            states: State tensor [BATCH_SIZE, STATE_SIZE].
-            actions: Action tensor [BATCH_SIZE].
-            rewards: Reward tensor [BATCH_SIZE] (output).
-            dones: Done flag tensor [BATCH_SIZE] (output).
-            rng_seed: Random seed for physics (e.g., engine dispersion).
-        """
-        ...
-
-    @staticmethod
-    fn reset_kernel[
-        BATCH_SIZE: Int,
-        STATE_SIZE: Int,
-    ](
-        states: LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ],
-    ):
-        """Reset state to random initial values."""
-        ...
-
-    @staticmethod
     fn step_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,

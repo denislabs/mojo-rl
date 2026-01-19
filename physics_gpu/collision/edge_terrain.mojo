@@ -407,317 +407,6 @@ struct EdgeTerrainCollision(CollisionSystem):
             contact_counts[env] = Scalar[dtype](count)
 
     # =========================================================================
-    # GPU Kernel Implementation
-    # =========================================================================
-
-    @always_inline
-    @staticmethod
-    fn detect_kernel[
-        BATCH: Int,
-        NUM_BODIES: Int,
-        NUM_SHAPES: Int,
-        MAX_CONTACTS: Int,
-        MAX_EDGES: Int,
-    ](
-        bodies: LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, NUM_BODIES, BODY_STATE_SIZE),
-            MutAnyOrigin,
-        ],
-        shapes: LayoutTensor[
-            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
-        ],
-        edges: LayoutTensor[
-            dtype, Layout.row_major(BATCH, MAX_EDGES, 6), MutAnyOrigin
-        ],
-        edge_counts: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
-        contacts: LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE),
-            MutAnyOrigin,
-        ],
-        contact_counts: LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ],
-    ):
-        """GPU kernel: one thread per environment."""
-        var env = Int(block_dim.x * block_idx.x + thread_idx.x)
-        if env >= BATCH:
-            return
-
-        var count = 0
-        var n_edges = Int(edge_counts[env])
-
-        for body_idx in range(NUM_BODIES):
-            var body_x = bodies[env, body_idx, IDX_X]
-            var body_y = bodies[env, body_idx, IDX_Y]
-            var body_angle = bodies[env, body_idx, IDX_ANGLE]
-            var shape_idx = Int(bodies[env, body_idx, IDX_SHAPE])
-            var shape_type = Int(shapes[shape_idx, 0])
-
-            var cos_a = cos(body_angle)
-            var sin_a = sin(body_angle)
-
-            if shape_type == SHAPE_POLYGON:
-                var n_verts = Int(shapes[shape_idx, 1])
-
-                for v in range(MAX_POLYGON_VERTS):
-                    if v >= n_verts:
-                        break
-
-                    var local_x = shapes[shape_idx, 2 + v * 2]
-                    var local_y = shapes[shape_idx, 3 + v * 2]
-                    var world_x = body_x + local_x * cos_a - local_y * sin_a
-                    var world_y = body_y + local_x * sin_a + local_y * cos_a
-
-                    # Check against each terrain edge
-                    for edge_idx in range(MAX_EDGES):
-                        if edge_idx >= n_edges:
-                            break
-
-                        var e_x0 = edges[env, edge_idx, 0]
-                        var e_y0 = edges[env, edge_idx, 1]
-                        var e_x1 = edges[env, edge_idx, 2]
-                        var e_y1 = edges[env, edge_idx, 3]
-                        var e_nx = edges[env, edge_idx, 4]
-                        var e_ny = edges[env, edge_idx, 5]
-
-                        # Check x range
-                        var x_min = e_x0
-                        var x_max = e_x1
-                        if e_x0 > e_x1:
-                            x_min = e_x1
-                            x_max = e_x0
-
-                        if world_x < x_min - Scalar[dtype](
-                            0.1
-                        ) or world_x > x_max + Scalar[dtype](0.1):
-                            continue
-
-                        # Project vertex onto edge line
-                        var edge_dx = e_x1 - e_x0
-                        var edge_dy = e_y1 - e_y0
-                        var edge_len_sq = edge_dx * edge_dx + edge_dy * edge_dy
-
-                        if edge_len_sq < Scalar[dtype](1e-6):
-                            continue
-
-                        var t = (
-                            (world_x - e_x0) * edge_dx
-                            + (world_y - e_y0) * edge_dy
-                        ) / edge_len_sq
-                        if t < Scalar[dtype](0):
-                            t = Scalar[dtype](0)
-                        if t > Scalar[dtype](1):
-                            t = Scalar[dtype](1)
-
-                        var closest_x = e_x0 + t * edge_dx
-                        var closest_y = e_y0 + t * edge_dy
-
-                        var dist_x = world_x - closest_x
-                        var dist_y = world_y - closest_y
-                        var penetration = -(dist_x * e_nx + dist_y * e_ny)
-
-                        if (
-                            penetration > Scalar[dtype](0)
-                            and count < MAX_CONTACTS
-                        ):
-                            contacts[env, count, CONTACT_BODY_A] = Scalar[
-                                dtype
-                            ](body_idx)
-                            contacts[env, count, CONTACT_BODY_B] = Scalar[
-                                dtype
-                            ](-1)
-                            contacts[env, count, CONTACT_POINT_X] = world_x
-                            contacts[env, count, CONTACT_POINT_Y] = world_y
-                            contacts[env, count, CONTACT_NORMAL_X] = e_nx
-                            contacts[env, count, CONTACT_NORMAL_Y] = e_ny
-                            contacts[env, count, CONTACT_DEPTH] = penetration
-                            contacts[
-                                env, count, CONTACT_NORMAL_IMPULSE
-                            ] = Scalar[dtype](0)
-                            contacts[
-                                env, count, CONTACT_TANGENT_IMPULSE
-                            ] = Scalar[dtype](0)
-                            count += 1
-
-            elif shape_type == SHAPE_CIRCLE:
-                var radius = shapes[shape_idx, 1]
-                var center_offset_x = shapes[shape_idx, 2]
-                var center_offset_y = shapes[shape_idx, 3]
-
-                var center_world_x = (
-                    body_x + center_offset_x * cos_a - center_offset_y * sin_a
-                )
-                var center_world_y = (
-                    body_y + center_offset_x * sin_a + center_offset_y * cos_a
-                )
-
-                for edge_idx in range(MAX_EDGES):
-                    if edge_idx >= n_edges:
-                        break
-
-                    var e_x0 = edges[env, edge_idx, 0]
-                    var e_y0 = edges[env, edge_idx, 1]
-                    var e_x1 = edges[env, edge_idx, 2]
-                    var e_y1 = edges[env, edge_idx, 3]
-                    var e_nx = edges[env, edge_idx, 4]
-                    var e_ny = edges[env, edge_idx, 5]
-
-                    var edge_dx = e_x1 - e_x0
-                    var edge_dy = e_y1 - e_y0
-                    var edge_len_sq = edge_dx * edge_dx + edge_dy * edge_dy
-
-                    if edge_len_sq < Scalar[dtype](1e-6):
-                        continue
-
-                    var t = (
-                        (center_world_x - e_x0) * edge_dx
-                        + (center_world_y - e_y0) * edge_dy
-                    ) / edge_len_sq
-                    if t < Scalar[dtype](0):
-                        t = Scalar[dtype](0)
-                    if t > Scalar[dtype](1):
-                        t = Scalar[dtype](1)
-
-                    var closest_x = e_x0 + t * edge_dx
-                    var closest_y = e_y0 + t * edge_dy
-
-                    var dist_x = center_world_x - closest_x
-                    var dist_y = center_world_y - closest_y
-                    var dist = sqrt(dist_x * dist_x + dist_y * dist_y)
-                    var penetration = radius - dist
-
-                    if penetration > Scalar[dtype](0) and count < MAX_CONTACTS:
-                        var contact_nx = e_nx
-                        var contact_ny = e_ny
-                        if dist > Scalar[dtype](1e-6):
-                            contact_nx = dist_x / dist
-                            contact_ny = dist_y / dist
-
-                        contacts[env, count, CONTACT_BODY_A] = Scalar[dtype](
-                            body_idx
-                        )
-                        contacts[env, count, CONTACT_BODY_B] = Scalar[dtype](-1)
-                        contacts[env, count, CONTACT_POINT_X] = closest_x
-                        contacts[env, count, CONTACT_POINT_Y] = closest_y
-                        contacts[env, count, CONTACT_NORMAL_X] = contact_nx
-                        contacts[env, count, CONTACT_NORMAL_Y] = contact_ny
-                        contacts[env, count, CONTACT_DEPTH] = penetration
-                        contacts[env, count, CONTACT_NORMAL_IMPULSE] = Scalar[
-                            dtype
-                        ](0)
-                        contacts[env, count, CONTACT_TANGENT_IMPULSE] = Scalar[
-                            dtype
-                        ](0)
-                        count += 1
-
-        contact_counts[env] = Scalar[dtype](count)
-
-    # =========================================================================
-    # GPU Kernel Launcher
-    # =========================================================================
-
-    fn detect_gpu[
-        BATCH: Int,
-        NUM_BODIES: Int,
-        NUM_SHAPES: Int,
-        MAX_CONTACTS: Int,
-    ](
-        self,
-        ctx: DeviceContext,
-        bodies_buf: DeviceBuffer[dtype],
-        shapes_buf: DeviceBuffer[dtype],
-        mut contacts_buf: DeviceBuffer[dtype],
-        mut contact_counts_buf: DeviceBuffer[dtype],
-    ) raises:
-        """Launch collision detection kernel on GPU."""
-        # Allocate GPU buffers for edge data
-        var edge_data = ctx.enqueue_create_buffer[dtype](
-            BATCH * MAX_TERRAIN_EDGES * 6
-        )
-        var edge_count_data = ctx.enqueue_create_buffer[dtype](BATCH)
-
-        # Create temporary host buffer for edge counts (convert Int to Scalar[dtype])
-        var edge_counts_host = List[Scalar[dtype]](capacity=BATCH)
-        for i in range(BATCH):
-            edge_counts_host.append(Scalar[dtype](self.edge_counts[i]))
-
-        # Copy edge data from host to device using proper GPU copy
-        ctx.enqueue_copy(edge_data, self.edges.unsafe_ptr())
-        ctx.enqueue_copy(edge_count_data, edge_counts_host.unsafe_ptr())
-        ctx.synchronize()  # Ensure data is copied before kernel runs
-
-        var bodies = LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, NUM_BODIES, BODY_STATE_SIZE),
-            MutAnyOrigin,
-        ](bodies_buf.unsafe_ptr())
-        var shapes = LayoutTensor[
-            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
-        ](shapes_buf.unsafe_ptr())
-        var edges = LayoutTensor[
-            dtype, Layout.row_major(BATCH, MAX_TERRAIN_EDGES, 6), MutAnyOrigin
-        ](edge_data.unsafe_ptr())
-        var edge_counts = LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ](edge_count_data.unsafe_ptr())
-        var contacts = LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE),
-            MutAnyOrigin,
-        ](contacts_buf.unsafe_ptr())
-        var contact_counts = LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ](contact_counts_buf.unsafe_ptr())
-
-        comptime BLOCKS = (BATCH + TPB - 1) // TPB
-
-        @always_inline
-        fn kernel_wrapper(
-            bodies: LayoutTensor[
-                dtype,
-                Layout.row_major(BATCH, NUM_BODIES, BODY_STATE_SIZE),
-                MutAnyOrigin,
-            ],
-            shapes: LayoutTensor[
-                dtype,
-                Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE),
-                MutAnyOrigin,
-            ],
-            edges: LayoutTensor[
-                dtype,
-                Layout.row_major(BATCH, MAX_TERRAIN_EDGES, 6),
-                MutAnyOrigin,
-            ],
-            edge_counts: LayoutTensor[
-                dtype, Layout.row_major(BATCH), MutAnyOrigin
-            ],
-            contacts: LayoutTensor[
-                dtype,
-                Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE),
-                MutAnyOrigin,
-            ],
-            contact_counts: LayoutTensor[
-                dtype, Layout.row_major(BATCH), MutAnyOrigin
-            ],
-        ):
-            EdgeTerrainCollision.detect_kernel[
-                BATCH, NUM_BODIES, NUM_SHAPES, MAX_CONTACTS, MAX_TERRAIN_EDGES
-            ](bodies, shapes, edges, edge_counts, contacts, contact_counts)
-
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
-            bodies,
-            shapes,
-            edges,
-            edge_counts,
-            contacts,
-            contact_counts,
-            grid_dim=(BLOCKS,),
-            block_dim=(TPB,),
-        )
-
-    # =========================================================================
     # Strided GPU Kernels for 2D State Layout
     # =========================================================================
     #
@@ -729,7 +418,7 @@ struct EdgeTerrainCollision(CollisionSystem):
 
     @always_inline
     @staticmethod
-    fn detect_kernel_strided[
+    fn detect_kernel[
         BATCH: Int,
         NUM_BODIES: Int,
         NUM_SHAPES: Int,
@@ -807,7 +496,9 @@ struct EdgeTerrainCollision(CollisionSystem):
                             x_min = e_x1
                             x_max = e_x0
 
-                        if world_x < x_min - Scalar[dtype](0.1) or world_x > x_max + Scalar[dtype](0.1):
+                        if world_x < x_min - Scalar[dtype](
+                            0.1
+                        ) or world_x > x_max + Scalar[dtype](0.1):
                             continue
 
                         var edge_dx = e_x1 - e_x0
@@ -817,7 +508,10 @@ struct EdgeTerrainCollision(CollisionSystem):
                         if edge_len_sq < Scalar[dtype](1e-6):
                             continue
 
-                        var t = ((world_x - e_x0) * edge_dx + (world_y - e_y0) * edge_dy) / edge_len_sq
+                        var t = (
+                            (world_x - e_x0) * edge_dx
+                            + (world_y - e_y0) * edge_dy
+                        ) / edge_len_sq
                         if t < Scalar[dtype](0):
                             t = Scalar[dtype](0)
                         if t > Scalar[dtype](1):
@@ -830,16 +524,27 @@ struct EdgeTerrainCollision(CollisionSystem):
                         var dist_y = world_y - closest_y
                         var penetration = -(dist_x * e_nx + dist_y * e_ny)
 
-                        if penetration > Scalar[dtype](0) and count < MAX_CONTACTS:
-                            contacts[env, count, CONTACT_BODY_A] = Scalar[dtype](body_idx)
-                            contacts[env, count, CONTACT_BODY_B] = Scalar[dtype](-1)
+                        if (
+                            penetration > Scalar[dtype](0)
+                            and count < MAX_CONTACTS
+                        ):
+                            contacts[env, count, CONTACT_BODY_A] = Scalar[
+                                dtype
+                            ](body_idx)
+                            contacts[env, count, CONTACT_BODY_B] = Scalar[
+                                dtype
+                            ](-1)
                             contacts[env, count, CONTACT_POINT_X] = world_x
                             contacts[env, count, CONTACT_POINT_Y] = world_y
                             contacts[env, count, CONTACT_NORMAL_X] = e_nx
                             contacts[env, count, CONTACT_NORMAL_Y] = e_ny
                             contacts[env, count, CONTACT_DEPTH] = penetration
-                            contacts[env, count, CONTACT_NORMAL_IMPULSE] = Scalar[dtype](0)
-                            contacts[env, count, CONTACT_TANGENT_IMPULSE] = Scalar[dtype](0)
+                            contacts[
+                                env, count, CONTACT_NORMAL_IMPULSE
+                            ] = Scalar[dtype](0)
+                            contacts[
+                                env, count, CONTACT_TANGENT_IMPULSE
+                            ] = Scalar[dtype](0)
                             count += 1
 
             elif shape_type == SHAPE_CIRCLE:
@@ -847,8 +552,12 @@ struct EdgeTerrainCollision(CollisionSystem):
                 var center_offset_x = shapes[shape_idx, 2]
                 var center_offset_y = shapes[shape_idx, 3]
 
-                var center_world_x = body_x + center_offset_x * cos_a - center_offset_y * sin_a
-                var center_world_y = body_y + center_offset_x * sin_a + center_offset_y * cos_a
+                var center_world_x = (
+                    body_x + center_offset_x * cos_a - center_offset_y * sin_a
+                )
+                var center_world_y = (
+                    body_y + center_offset_x * sin_a + center_offset_y * cos_a
+                )
 
                 for edge_idx in range(MAX_EDGES):
                     if edge_idx >= n_edges:
@@ -869,7 +578,10 @@ struct EdgeTerrainCollision(CollisionSystem):
                     if edge_len_sq < Scalar[dtype](1e-6):
                         continue
 
-                    var t = ((center_world_x - e_x0) * edge_dx + (center_world_y - e_y0) * edge_dy) / edge_len_sq
+                    var t = (
+                        (center_world_x - e_x0) * edge_dx
+                        + (center_world_y - e_y0) * edge_dy
+                    ) / edge_len_sq
                     if t < Scalar[dtype](0):
                         t = Scalar[dtype](0)
                     if t > Scalar[dtype](1):
@@ -890,21 +602,27 @@ struct EdgeTerrainCollision(CollisionSystem):
                             contact_nx = dist_x / dist
                             contact_ny = dist_y / dist
 
-                        contacts[env, count, CONTACT_BODY_A] = Scalar[dtype](body_idx)
+                        contacts[env, count, CONTACT_BODY_A] = Scalar[dtype](
+                            body_idx
+                        )
                         contacts[env, count, CONTACT_BODY_B] = Scalar[dtype](-1)
                         contacts[env, count, CONTACT_POINT_X] = closest_x
                         contacts[env, count, CONTACT_POINT_Y] = closest_y
                         contacts[env, count, CONTACT_NORMAL_X] = contact_nx
                         contacts[env, count, CONTACT_NORMAL_Y] = contact_ny
                         contacts[env, count, CONTACT_DEPTH] = penetration
-                        contacts[env, count, CONTACT_NORMAL_IMPULSE] = Scalar[dtype](0)
-                        contacts[env, count, CONTACT_TANGENT_IMPULSE] = Scalar[dtype](0)
+                        contacts[env, count, CONTACT_NORMAL_IMPULSE] = Scalar[
+                            dtype
+                        ](0)
+                        contacts[env, count, CONTACT_TANGENT_IMPULSE] = Scalar[
+                            dtype
+                        ](0)
                         count += 1
 
         contact_counts[env] = Scalar[dtype](count)
 
     @staticmethod
-    fn detect_gpu_strided[
+    fn detect_gpu[
         BATCH: Int,
         NUM_BODIES: Int,
         NUM_SHAPES: Int,
@@ -948,9 +666,13 @@ struct EdgeTerrainCollision(CollisionSystem):
                 dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
             ],
             shapes: LayoutTensor[
-                dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
+                dtype,
+                Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE),
+                MutAnyOrigin,
             ],
-            edge_counts: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+            edge_counts: LayoutTensor[
+                dtype, Layout.row_major(BATCH), MutAnyOrigin
+            ],
             contacts: LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE),
@@ -960,8 +682,15 @@ struct EdgeTerrainCollision(CollisionSystem):
                 dtype, Layout.row_major(BATCH), MutAnyOrigin
             ],
         ):
-            EdgeTerrainCollision.detect_kernel_strided[
-                BATCH, NUM_BODIES, NUM_SHAPES, MAX_CONTACTS, MAX_EDGES, STATE_SIZE, BODIES_OFFSET, EDGES_OFFSET
+            EdgeTerrainCollision.detect_kernel[
+                BATCH,
+                NUM_BODIES,
+                NUM_SHAPES,
+                MAX_CONTACTS,
+                MAX_EDGES,
+                STATE_SIZE,
+                BODIES_OFFSET,
+                EDGES_OFFSET,
             ](state, shapes, edge_counts, contacts, contact_counts)
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](

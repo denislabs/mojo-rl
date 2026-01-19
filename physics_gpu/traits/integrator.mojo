@@ -36,7 +36,9 @@ trait Integrator(Movable & ImplicitlyCopyable):
     ](
         self,
         mut bodies: LayoutTensor[
-            dtype, Layout.row_major(BATCH, NUM_BODIES, BODY_STATE_SIZE), MutAnyOrigin
+            dtype,
+            Layout.row_major(BATCH, NUM_BODIES, BODY_STATE_SIZE),
+            MutAnyOrigin,
         ],
         forces: LayoutTensor[
             dtype, Layout.row_major(BATCH, NUM_BODIES, 3), MutAnyOrigin
@@ -62,7 +64,9 @@ trait Integrator(Movable & ImplicitlyCopyable):
     ](
         self,
         mut bodies: LayoutTensor[
-            dtype, Layout.row_major(BATCH, NUM_BODIES, BODY_STATE_SIZE), MutAnyOrigin
+            dtype,
+            Layout.row_major(BATCH, NUM_BODIES, BODY_STATE_SIZE),
+            MutAnyOrigin,
         ],
         dt: Scalar[dtype],
     ):
@@ -81,13 +85,16 @@ trait Integrator(Movable & ImplicitlyCopyable):
     # =========================================================================
 
     @staticmethod
+    @staticmethod
     fn integrate_velocities_gpu[
         BATCH: Int,
         NUM_BODIES: Int,
+        STATE_SIZE: Int,
+        BODIES_OFFSET: Int,
+        FORCES_OFFSET: Int,
     ](
         ctx: DeviceContext,
-        mut bodies_buf: DeviceBuffer[dtype],
-        forces_buf: DeviceBuffer[dtype],
+        mut state_buf: DeviceBuffer[dtype],
         gravity_x: Scalar[dtype],
         gravity_y: Scalar[dtype],
         dt: Scalar[dtype],
@@ -108,9 +115,11 @@ trait Integrator(Movable & ImplicitlyCopyable):
     fn integrate_positions_gpu[
         BATCH: Int,
         NUM_BODIES: Int,
+        STATE_SIZE: Int,
+        BODIES_OFFSET: Int,
     ](
         ctx: DeviceContext,
-        mut bodies_buf: DeviceBuffer[dtype],
+        mut state_buf: DeviceBuffer[dtype],
         dt: Scalar[dtype],
     ) raises:
         """GPU kernel launcher for position integration.

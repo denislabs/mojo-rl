@@ -12,12 +12,8 @@ from random import seed, random_float64
 
 from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
-from envs.lunar_lander import LunarLanderEnv
-from envs.lunar_lander_gpu_v2 import (
-    LunarLanderGPUv2,
-    gpu_dtype,
-    FULL_STATE_SIZE,
-)
+from envs.lunar_lander import LunarLanderEnv, LunarLanderV2, LLConstants
+
 
 # Constants for comparison
 comptime TOLERANCE: Float32 = 0.15
@@ -26,6 +22,8 @@ comptime ABS_TOLERANCE: Float32 = 0.5
 # Extended test parameters
 comptime LONG_EPISODE_STEPS: Int = 200
 comptime DRIFT_CHECK_INTERVAL: Int = 25
+
+comptime gpu_dtype = DType.float32
 
 
 fn abs_val(x: Float32) -> Float32:
@@ -40,7 +38,7 @@ fn run_gpu_single_step(
 ) raises -> List[Float32]:
     """Run a single GPU V2 physics step and return the resulting state."""
     comptime BATCH_SIZE = 1
-    comptime STATE_SIZE = FULL_STATE_SIZE  # 12 for V2
+    comptime STATE_SIZE = LLConstants.FULL_STATE_SIZE  # 12 for V2
 
     var states_buf = ctx.enqueue_create_buffer[gpu_dtype](
         BATCH_SIZE * STATE_SIZE
@@ -75,7 +73,7 @@ fn run_gpu_single_step(
     ctx.enqueue_copy(dones_buf, host_dones)
     ctx.synchronize()
 
-    LunarLanderGPUv2.step_kernel_gpu[BATCH_SIZE, STATE_SIZE](
+    LunarLanderV2.step_kernel_gpu[BATCH_SIZE, STATE_SIZE](
         ctx, states_buf, actions_buf, rewards_buf, dones_buf, UInt64(step_seed)
     )
     ctx.synchronize()

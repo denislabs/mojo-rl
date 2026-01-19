@@ -15,9 +15,9 @@ These helpers work with both CPU LayoutTensors and GPU DeviceBuffers.
 Example:
     ```mojo
     from physics_gpu.env_helpers import PhysicsEnvHelpers
-    from physics_gpu.layout_strided import LunarLanderLayoutStrided
+    from physics_gpu.layout import LunarLanderLayout
 
-    comptime Layout = LunarLanderLayoutStrided
+    comptime Layout = LunarLanderLayout
 
     # Initialize a body
     PhysicsEnvHelpers.init_body[BATCH, Layout.NUM_BODIES, Layout.STATE_SIZE, Layout.BODIES_OFFSET](
@@ -129,7 +129,9 @@ struct PhysicsEnvHelpers:
         if mass > 0:
             states[env, off + IDX_INV_MASS] = Scalar[dtype](1.0 / mass)
             if inertia > 0:
-                states[env, off + IDX_INV_INERTIA] = Scalar[dtype](1.0 / inertia)
+                states[env, off + IDX_INV_INERTIA] = Scalar[dtype](
+                    1.0 / inertia
+                )
             else:
                 states[env, off + IDX_INV_INERTIA] = Scalar[dtype](0)
         else:
@@ -492,9 +494,9 @@ struct PhysicsEnvHelpers:
         Returns:
             Joint index, or -1 if max joints reached.
         """
-        var joint_idx = Self.get_joint_count[BATCH, STATE_SIZE, JOINT_COUNT_OFFSET](
-            states, env
-        )
+        var joint_idx = Self.get_joint_count[
+            BATCH, STATE_SIZE, JOINT_COUNT_OFFSET
+        ](states, env)
         if joint_idx >= MAX_JOINTS:
             return -1
 
@@ -629,7 +631,9 @@ struct PhysicsEnvHelpers:
         Self.set_edge[BATCH, STATE_SIZE, EDGES_OFFSET](
             states, env, 0, x_min, ground_y, x_max, ground_y, 0.0, 1.0
         )
-        Self.set_edge_count[BATCH, STATE_SIZE, EDGE_COUNT_OFFSET](states, env, 1)
+        Self.set_edge_count[BATCH, STATE_SIZE, EDGE_COUNT_OFFSET](
+            states, env, 1
+        )
 
     # =========================================================================
     # Metadata Access

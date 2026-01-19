@@ -17,7 +17,7 @@ from time import perf_counter_ns
 from gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOAgent
-from envs.lunar_lander_v2_gpu import LunarLanderV2GPU
+from envs.lunar_lander_v2_gpu import LunarLanderV2
 
 
 # =============================================================================
@@ -59,9 +59,9 @@ fn main() raises:
     # =========================================================================
 
     print("Creating " + String(N_ENVS) + " CPU environments...")
-    var envs = List[LunarLanderV2GPU[dtype]]()
+    var envs = List[LunarLanderV2[dtype]]()
     for i in range(N_ENVS):
-        var env = LunarLanderV2GPU[dtype](
+        var env = LunarLanderV2[dtype](
             enable_wind=True,
             wind_power=15.0,
             turbulence_power=1.5,

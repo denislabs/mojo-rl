@@ -11,7 +11,18 @@ Run with:
 from gpu.host import DeviceContext
 from layout import LayoutTensor, Layout
 
-from physics_gpu.constants import dtype, BODY_STATE_SIZE, IDX_X, IDX_Y, IDX_ANGLE, IDX_VX, IDX_VY, IDX_OMEGA, IDX_INV_MASS, IDX_INV_INERTIA
+from physics_gpu.constants import (
+    dtype,
+    BODY_STATE_SIZE,
+    IDX_X,
+    IDX_Y,
+    IDX_ANGLE,
+    IDX_VX,
+    IDX_VY,
+    IDX_OMEGA,
+    IDX_INV_MASS,
+    IDX_INV_INERTIA,
+)
 from physics_gpu.integrators.euler import SemiImplicitEuler
 
 # Constants
@@ -40,7 +51,9 @@ fn test_direct_integration() raises:
     print_separator()
 
     with DeviceContext() as ctx:
-        var states_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE * STATE_SIZE)
+        var states_buf = ctx.enqueue_create_buffer[dtype](
+            BATCH_SIZE * STATE_SIZE
+        )
         var host_states = ctx.enqueue_create_host_buffer[dtype](STATE_SIZE)
 
         # Initialize state
@@ -74,7 +87,7 @@ fn test_direct_integration() raises:
         ctx.synchronize()
 
         # Run velocity integration
-        SemiImplicitEuler.integrate_velocities_gpu_strided[
+        SemiImplicitEuler.integrate_velocities_gpu[
             BATCH_SIZE, NUM_BODIES, STATE_SIZE, BODIES_OFFSET, FORCES_OFFSET
         ](
             ctx,
@@ -95,7 +108,9 @@ fn test_direct_integration() raises:
         print()
 
         # Expected: dvy = (86.67 * 0.2 + (-10)) * 0.02 = (17.33 - 10) * 0.02 = 0.147
-        var expected_dvy = (Float64(main_force) * (1.0 / LANDER_MASS) + GRAVITY_Y) * DT
+        var expected_dvy = (
+            Float64(main_force) * (1.0 / LANDER_MASS) + GRAVITY_Y
+        ) * DT
         print("Expected dvy =", expected_dvy)
         print("Actual dvy =", vy_after)
         print("Ratio =", vy_after / expected_dvy if expected_dvy != 0 else 0.0)
@@ -110,7 +125,9 @@ fn test_gravity_only() raises:
     print_separator()
 
     with DeviceContext() as ctx:
-        var states_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE * STATE_SIZE)
+        var states_buf = ctx.enqueue_create_buffer[dtype](
+            BATCH_SIZE * STATE_SIZE
+        )
         var host_states = ctx.enqueue_create_host_buffer[dtype](STATE_SIZE)
 
         # Initialize state
@@ -138,7 +155,7 @@ fn test_gravity_only() raises:
         ctx.synchronize()
 
         # Run velocity integration
-        SemiImplicitEuler.integrate_velocities_gpu_strided[
+        SemiImplicitEuler.integrate_velocities_gpu[
             BATCH_SIZE, NUM_BODIES, STATE_SIZE, BODIES_OFFSET, FORCES_OFFSET
         ](
             ctx,

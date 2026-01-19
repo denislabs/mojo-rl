@@ -1,7 +1,7 @@
 """Training script for LunarLanderV2 GPU environment.
 
-This demonstrates the LunarLanderV2GPU environment which implements GPUDiscreteEnv
-trait and uses the physics_gpu architecture with strided methods for full physics
+This demonstrates the LunarLanderV2 environment which implements GPUDiscreteEnv
+trait and uses the physics_gpu architecture with GPU methods for full physics
 simulation on GPU.
 
 Usage:
@@ -15,15 +15,15 @@ from math import exp, sqrt
 from gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
-from envs.lunar_lander_v2_gpu import LunarLanderV2GPU
+from envs.lunar_lander import LunarLanderV2
 from physics_gpu import dtype, TPB
 
 
 # Training hyperparameters
 comptime BATCH_SIZE: Int = 32  # Number of parallel environments (reduced for testing)
-comptime STATE_SIZE: Int = LunarLanderV2GPU.STATE_SIZE
-comptime OBS_DIM: Int = LunarLanderV2GPU.OBS_DIM
-comptime NUM_ACTIONS: Int = LunarLanderV2GPU.NUM_ACTIONS
+comptime STATE_SIZE: Int = LunarLanderV2.STATE_SIZE
+comptime OBS_DIM: Int = LunarLanderV2.OBS_DIM
+comptime NUM_ACTIONS: Int = LunarLanderV2.NUM_ACTIONS
 
 # REINFORCE hyperparameters
 comptime HIDDEN_DIM: Int = 64
@@ -64,7 +64,9 @@ fn main() raises:
     with DeviceContext() as ctx:
         # Allocate GPU buffers
         print("Allocating GPU buffers...")
-        var states_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE * STATE_SIZE)
+        var states_buf = ctx.enqueue_create_buffer[dtype](
+            BATCH_SIZE * STATE_SIZE
+        )
         var actions_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE)
         var rewards_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE)
         var dones_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE)
@@ -77,7 +79,7 @@ fn main() raises:
 
         # Reset all environments
         print("Resetting all environments...")
-        LunarLanderV2GPU.reset_kernel_gpu[BATCH_SIZE, STATE_SIZE](ctx, states_buf)
+        LunarLanderV2.reset_kernel_gpu[BATCH_SIZE, STATE_SIZE](ctx, states_buf)
         ctx.synchronize()
 
         # Training statistics
@@ -107,15 +109,15 @@ fn main() raises:
                         actions_host[i] = Scalar[dtype](action)
 
                 # Step all environments
-                LunarLanderV2GPU.step_kernel_gpu[BATCH_SIZE, STATE_SIZE](
+                LunarLanderV2.step_kernel_gpu[BATCH_SIZE, STATE_SIZE](
                     ctx, states_buf, actions_buf, rewards_buf, dones_buf
                 )
 
                 # Selective reset for done environments
                 rng_state = xorshift32(rng_state)
-                LunarLanderV2GPU.selective_reset_kernel_gpu[BATCH_SIZE, STATE_SIZE](
-                    ctx, states_buf, dones_buf, UInt32(rng_state)
-                )
+                LunarLanderV2.selective_reset_kernel_gpu[
+                    BATCH_SIZE, STATE_SIZE
+                ](ctx, states_buf, dones_buf, UInt32(rng_state))
 
                 ctx.synchronize()
 
@@ -140,7 +142,9 @@ fn main() raises:
                 var elapsed_s = Float64(elapsed_ns) / 1e9
                 var steps_per_sec = Float64(step_count * BATCH_SIZE) / elapsed_s
 
-                var avg_reward = update_reward / Float64(STEPS_PER_UPDATE * BATCH_SIZE)
+                var avg_reward = update_reward / Float64(
+                    STEPS_PER_UPDATE * BATCH_SIZE
+                )
                 var avg_ep_reward: Float64 = 0.0
                 if update_episodes > 0:
                     avg_ep_reward = update_reward / Float64(update_episodes)
@@ -149,11 +153,18 @@ fn main() raises:
                     best_avg_reward = avg_reward
 
                 print(
-                    "Update", update + 1, "/", NUM_UPDATES,
-                    "| Steps:", step_count * BATCH_SIZE,
-                    "| Episodes:", episode_count,
-                    "| Avg Reward:", avg_reward,
-                    "| Steps/s:", Int(steps_per_sec),
+                    "Update",
+                    update + 1,
+                    "/",
+                    NUM_UPDATES,
+                    "| Steps:",
+                    step_count * BATCH_SIZE,
+                    "| Episodes:",
+                    episode_count,
+                    "| Avg Reward:",
+                    avg_reward,
+                    "| Steps/s:",
+                    Int(steps_per_sec),
                 )
 
         var total_time = Float64(perf_counter_ns() - start_time) / 1e9
@@ -164,7 +175,11 @@ fn main() raises:
         print("  Total steps:", step_count * BATCH_SIZE)
         print("  Total episodes:", episode_count)
         print("  Total time:", total_time, "seconds")
-        print("  Throughput:", Int(Float64(step_count * BATCH_SIZE) / total_time), "steps/s")
+        print(
+            "  Throughput:",
+            Int(Float64(step_count * BATCH_SIZE) / total_time),
+            "steps/s",
+        )
         print("  Best avg reward:", best_avg_reward)
         print()
 
@@ -172,7 +187,7 @@ fn main() raises:
         print("Running final test episodes...")
 
         # Reset for test
-        LunarLanderV2GPU.reset_kernel_gpu[BATCH_SIZE, STATE_SIZE](ctx, states_buf)
+        LunarLanderV2.reset_kernel_gpu[BATCH_SIZE, STATE_SIZE](ctx, states_buf)
         ctx.synchronize()
 
         var test_rewards = List[Float64]()
@@ -189,11 +204,11 @@ fn main() raises:
                     var action = Int(rng_state % NUM_ACTIONS)
                     actions_host[i] = Scalar[dtype](action)
 
-            LunarLanderV2GPU.step_kernel_gpu[BATCH_SIZE, STATE_SIZE](
+            LunarLanderV2.step_kernel_gpu[BATCH_SIZE, STATE_SIZE](
                 ctx, states_buf, actions_buf, rewards_buf, dones_buf
             )
 
-            LunarLanderV2GPU.selective_reset_kernel_gpu[BATCH_SIZE, STATE_SIZE](
+            LunarLanderV2.selective_reset_kernel_gpu[BATCH_SIZE, STATE_SIZE](
                 ctx, states_buf, dones_buf, UInt32(rng_state)
             )
 
@@ -224,15 +239,21 @@ fn main() raises:
         var total_test_length: Int = 0
         for i in range(len(test_rewards)):
             print(
-                "  Episode", i + 1,
-                ": Reward =", test_rewards[i],
-                ", Length =", test_lengths[i]
+                "  Episode",
+                i + 1,
+                ": Reward =",
+                test_rewards[i],
+                ", Length =",
+                test_lengths[i],
             )
             total_test_reward += test_rewards[i]
             total_test_length += test_lengths[i]
 
         print()
-        print("Average test reward:", total_test_reward / Float64(len(test_rewards)))
+        print(
+            "Average test reward:",
+            total_test_reward / Float64(len(test_rewards)),
+        )
         print("Average episode length:", total_test_length // len(test_rewards))
         print()
         print("Done!")

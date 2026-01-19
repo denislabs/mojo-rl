@@ -183,208 +183,6 @@ struct SemiImplicitEuler(Integrator):
                 bodies[env, body, IDX_ANGLE] = angle
 
     # =========================================================================
-    # GPU Kernel Implementations
-    # =========================================================================
-
-    @always_inline
-    @staticmethod
-    fn integrate_velocities_kernel[
-        BATCH: Int,
-        NUM_BODIES: Int,
-    ](
-        bodies: LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, NUM_BODIES, BODY_STATE_SIZE),
-            MutAnyOrigin,
-        ],
-        forces: LayoutTensor[
-            dtype, Layout.row_major(BATCH, NUM_BODIES, 3), MutAnyOrigin
-        ],
-        gravity_x: Scalar[dtype],
-        gravity_y: Scalar[dtype],
-        dt: Scalar[dtype],
-    ):
-        """GPU kernel: one thread per environment."""
-        var env = Int(block_dim.x * block_idx.x + thread_idx.x)
-        if env >= BATCH:
-            return
-
-        # Process all bodies in this environment sequentially
-        # (NUM_BODIES is small for RL, typically 3-10)
-        @parameter
-        for body in range(NUM_BODIES):
-            var inv_mass = bodies[env, body, IDX_INV_MASS]
-            var inv_inertia = bodies[env, body, IDX_INV_INERTIA]
-
-            # Skip static bodies
-            if inv_mass == Scalar[dtype](0):
-                continue
-
-            var vx = bodies[env, body, IDX_VX]
-            var vy = bodies[env, body, IDX_VY]
-            var omega = bodies[env, body, IDX_OMEGA]
-
-            var fx = forces[env, body, 0]
-            var fy = forces[env, body, 1]
-            var tau = forces[env, body, 2]
-
-            vx = vx + (fx * inv_mass + gravity_x) * dt
-            vy = vy + (fy * inv_mass + gravity_y) * dt
-            omega = omega + tau * inv_inertia * dt
-
-            bodies[env, body, IDX_VX] = vx
-            bodies[env, body, IDX_VY] = vy
-            bodies[env, body, IDX_OMEGA] = omega
-
-    @always_inline
-    @staticmethod
-    fn integrate_positions_kernel[
-        BATCH: Int,
-        NUM_BODIES: Int,
-    ](
-        bodies: LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, NUM_BODIES, BODY_STATE_SIZE),
-            MutAnyOrigin,
-        ],
-        dt: Scalar[dtype],
-    ):
-        """GPU kernel: one thread per environment."""
-        var env = Int(block_dim.x * block_idx.x + thread_idx.x)
-        if env >= BATCH:
-            return
-
-        @parameter
-        for body in range(NUM_BODIES):
-            var inv_mass = bodies[env, body, IDX_INV_MASS]
-
-            if inv_mass == Scalar[dtype](0):
-                continue
-
-            var x = bodies[env, body, IDX_X]
-            var y = bodies[env, body, IDX_Y]
-            var angle = bodies[env, body, IDX_ANGLE]
-            var vx = bodies[env, body, IDX_VX]
-            var vy = bodies[env, body, IDX_VY]
-            var omega = bodies[env, body, IDX_OMEGA]
-
-            x = x + vx * dt
-            y = y + vy * dt
-            angle = angle + omega * dt
-
-            # Normalize angle
-            var pi_val = Scalar[dtype](PI)
-            var two_pi_val = Scalar[dtype](TWO_PI)
-            if angle > Scalar[dtype](100.0) or angle < Scalar[dtype](-100.0):
-                angle = Scalar[dtype](0.0)
-            if angle > pi_val:
-                angle = angle - two_pi_val
-            if angle > pi_val:
-                angle = angle - two_pi_val
-            if angle < -pi_val:
-                angle = angle + two_pi_val
-            if angle < -pi_val:
-                angle = angle + two_pi_val
-
-            bodies[env, body, IDX_X] = x
-            bodies[env, body, IDX_Y] = y
-            bodies[env, body, IDX_ANGLE] = angle
-
-    # =========================================================================
-    # GPU Kernel Launchers
-    # =========================================================================
-
-    @staticmethod
-    fn integrate_velocities_gpu[
-        BATCH: Int,
-        NUM_BODIES: Int,
-    ](
-        ctx: DeviceContext,
-        mut bodies_buf: DeviceBuffer[dtype],
-        forces_buf: DeviceBuffer[dtype],
-        gravity_x: Scalar[dtype],
-        gravity_y: Scalar[dtype],
-        dt: Scalar[dtype],
-    ) raises:
-        """Launch velocity integration kernel on GPU."""
-        var bodies = LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, NUM_BODIES, BODY_STATE_SIZE),
-            MutAnyOrigin,
-        ](bodies_buf.unsafe_ptr())
-        var forces = LayoutTensor[
-            dtype, Layout.row_major(BATCH, NUM_BODIES, 3), MutAnyOrigin
-        ](forces_buf.unsafe_ptr())
-
-        comptime BLOCKS = (BATCH + TPB - 1) // TPB
-
-        @always_inline
-        fn kernel_wrapper(
-            bodies: LayoutTensor[
-                dtype,
-                Layout.row_major(BATCH, NUM_BODIES, BODY_STATE_SIZE),
-                MutAnyOrigin,
-            ],
-            forces: LayoutTensor[
-                dtype, Layout.row_major(BATCH, NUM_BODIES, 3), MutAnyOrigin
-            ],
-            gravity_x: Scalar[dtype],
-            gravity_y: Scalar[dtype],
-            dt: Scalar[dtype],
-        ):
-            SemiImplicitEuler.integrate_velocities_kernel[BATCH, NUM_BODIES](
-                bodies, forces, gravity_x, gravity_y, dt
-            )
-
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
-            bodies,
-            forces,
-            gravity_x,
-            gravity_y,
-            dt,
-            grid_dim=(BLOCKS,),
-            block_dim=(TPB,),
-        )
-
-    @staticmethod
-    fn integrate_positions_gpu[
-        BATCH: Int,
-        NUM_BODIES: Int,
-    ](
-        ctx: DeviceContext,
-        mut bodies_buf: DeviceBuffer[dtype],
-        dt: Scalar[dtype],
-    ) raises:
-        """Launch position integration kernel on GPU."""
-        var bodies = LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, NUM_BODIES, BODY_STATE_SIZE),
-            MutAnyOrigin,
-        ](bodies_buf.unsafe_ptr())
-
-        comptime BLOCKS = (BATCH + TPB - 1) // TPB
-
-        @always_inline
-        fn kernel_wrapper(
-            bodies: LayoutTensor[
-                dtype,
-                Layout.row_major(BATCH, NUM_BODIES, BODY_STATE_SIZE),
-                MutAnyOrigin,
-            ],
-            dt: Scalar[dtype],
-        ):
-            SemiImplicitEuler.integrate_positions_kernel[BATCH, NUM_BODIES](
-                bodies, dt
-            )
-
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
-            bodies,
-            dt,
-            grid_dim=(BLOCKS,),
-            block_dim=(TPB,),
-        )
-
-    # =========================================================================
     # Strided GPU Kernels for 2D State Layout
     # =========================================================================
     #
@@ -397,7 +195,7 @@ struct SemiImplicitEuler(Integrator):
 
     @always_inline
     @staticmethod
-    fn integrate_velocities_kernel_strided[
+    fn integrate_velocities_kernel[
         BATCH: Int,
         NUM_BODIES: Int,
         STATE_SIZE: Int,
@@ -455,7 +253,7 @@ struct SemiImplicitEuler(Integrator):
 
     @always_inline
     @staticmethod
-    fn integrate_positions_kernel_strided[
+    fn integrate_positions_kernel[
         BATCH: Int,
         NUM_BODIES: Int,
         STATE_SIZE: Int,
@@ -517,7 +315,7 @@ struct SemiImplicitEuler(Integrator):
             state[env, body_off + IDX_ANGLE] = angle
 
     @staticmethod
-    fn integrate_velocities_gpu_strided[
+    fn integrate_velocities_gpu[
         BATCH: Int,
         NUM_BODIES: Int,
         STATE_SIZE: Int,
@@ -558,7 +356,7 @@ struct SemiImplicitEuler(Integrator):
             gravity_y: Scalar[dtype],
             dt: Scalar[dtype],
         ):
-            SemiImplicitEuler.integrate_velocities_kernel_strided[
+            SemiImplicitEuler.integrate_velocities_kernel[
                 BATCH, NUM_BODIES, STATE_SIZE, BODIES_OFFSET, FORCES_OFFSET
             ](state, gravity_x, gravity_y, dt)
 
@@ -572,7 +370,7 @@ struct SemiImplicitEuler(Integrator):
         )
 
     @staticmethod
-    fn integrate_positions_gpu_strided[
+    fn integrate_positions_gpu[
         BATCH: Int,
         NUM_BODIES: Int,
         STATE_SIZE: Int,
@@ -606,7 +404,7 @@ struct SemiImplicitEuler(Integrator):
             ],
             dt: Scalar[dtype],
         ):
-            SemiImplicitEuler.integrate_positions_kernel_strided[
+            SemiImplicitEuler.integrate_positions_kernel[
                 BATCH, NUM_BODIES, STATE_SIZE, BODIES_OFFSET
             ](state, dt)
 

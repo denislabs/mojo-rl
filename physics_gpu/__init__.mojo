@@ -10,32 +10,7 @@ Architecture:
 - CollisionSystem trait: Collision detection (FlatTerrainCollision)
 - ConstraintSolver trait: Contact resolution (ImpulseSolver)
 
-Example:
-    ```mojo
-    from physics_gpu import PhysicsWorld
-    from gpu.host import DeviceContext
 
-    # Create world with 1024 parallel environments, 3 bodies each
-    var world = PhysicsWorld[1024, 3, 2](
-        ground_y=0.0,
-        gravity_y=-10.0,
-    )
-
-    # Setup bodies and shapes (define vertices first)
-    var vx = List[Float64]()
-    var vy = List[Float64]()
-    vx.append(-0.5); vx.append(0.5); vx.append(0.5); vx.append(-0.5)
-    vy.append(-0.5); vy.append(-0.5); vy.append(0.5); vy.append(0.5)
-    world.define_polygon_shape(0, vx, vy)
-    world.set_body_mass(env=0, body=0, mass=1.0, inertia=0.1)
-
-    # Run physics on CPU
-    world.step()
-
-    # Or run on GPU
-    var ctx = DeviceContext()
-    world.step_gpu(ctx)
-    ```
 """
 
 # Core constants and types
@@ -116,27 +91,24 @@ from .traits import Integrator, CollisionSystem, ConstraintSolver
 
 # Implementations
 from .integrators import SemiImplicitEuler
-from .collision import FlatTerrainCollision, EdgeTerrainCollision, MAX_TERRAIN_EDGES
+from .collision import (
+    FlatTerrainCollision,
+    EdgeTerrainCollision,
+    MAX_TERRAIN_EDGES,
+)
 from .solvers import ImpulseSolver
 from .joints import RevoluteJointSolver
 
-# Main orchestrator (original API)
-from .world import PhysicsWorld
-
-# New GPU-compatible architecture (mirrors deep_rl patterns)
-from .layout import PhysicsLayout, LunarLanderLayout, CartPoleLayout
-from .kernel import PhysicsKernel, PhysicsConfig
-from .state import PhysicsState
 
 # Strided state helper for GPUDiscreteEnv (flat layout)
-from .state_strided import PhysicsStateStrided
+from .state import PhysicsState, PhysicsStateOwned
 
 # Strided layout and helpers for modular physics (reduces env boilerplate)
-from .layout_strided import (
-    PhysicsLayoutStrided,
-    LunarLanderLayoutStrided,
-    CartPoleLayoutStrided,
-    AcrobotLayoutStrided,
+from .layout import (
+    PhysicsLayout,
+    LunarLanderLayout,
+    CartPoleLayout,
+    AcrobotLayout,
 )
-from .kernel_strided import PhysicsKernelStrided, PhysicsConfigStrided, CollisionType
+from .kernel import PhysicsKernel, PhysicsConfig
 from .env_helpers import PhysicsEnvHelpers

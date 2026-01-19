@@ -6,8 +6,12 @@ from .cartpole import CartPoleEnv, CartPoleState, CartPoleAction
 from .mountain_car import MountainCarEnv, MountainCarState, MountainCarAction
 from .pendulum import PendulumEnv, PendulumState, PendulumAction
 from .acrobot import AcrobotEnv, AcrobotState, AcrobotAction
-from .lunar_lander import LunarLanderEnv, LunarLanderState, LunarLanderAction
-from .lunar_lander_v2_gpu import LunarLanderV2GPU
+from .lunar_lander import (
+    LunarLanderEnv,
+    LunarLanderState,
+    LunarLanderAction,
+    LunarLanderV2,
+)
 from .bipedal_walker import (
     BipedalWalkerEnv,
     BipedalWalkerState,

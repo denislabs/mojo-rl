@@ -18,7 +18,7 @@ from time import perf_counter_ns
 from gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOAgent
-from envs.lunar_lander_v2_gpu import LunarLanderV2GPU
+from envs.lunar_lander import LunarLanderV2
 
 
 # =============================================================================
@@ -38,7 +38,7 @@ comptime N_ENVS = 256  # Parallel environments
 comptime GPU_MINIBATCH_SIZE = 512  # Minibatch size for PPO updates
 
 # Training duration
-comptime NUM_EPISODES = 50_000  # More episodes for LunarLander (harder than CartPole)
+comptime NUM_EPISODES = 5_000  # More episodes for LunarLander (harder than CartPole)
 
 comptime dtype = DType.float32
 
@@ -126,7 +126,7 @@ fn main() raises:
         var start_time = perf_counter_ns()
 
         try:
-            var metrics = agent.train_gpu[LunarLanderV2GPU[dtype]](
+            var metrics = agent.train_gpu[LunarLanderV2[dtype]](
                 ctx,
                 num_episodes=NUM_EPISODES,
                 verbose=True,

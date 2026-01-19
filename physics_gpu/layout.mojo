@@ -1,26 +1,31 @@
-"""PhysicsLayout - Compile-time buffer size computation for GPU physics.
+"""PhysicsLayout - Compile-time layout for flat 2D strided buffers.
 
-This module provides compile-time computation of buffer sizes and offsets,
-similar to how deep_rl models compute PARAM_SIZE and CACHE_SIZE.
+This module provides compile-time computation of buffer sizes and offsets
+for the flat 2D [BATCH, STATE_SIZE] layout required by GPUDiscreteEnv.
 
-The layout defines:
-- BODIES_SIZE: Total floats for body state [BATCH, NUM_BODIES, BODY_STATE_SIZE]
-- SHAPES_SIZE: Total floats for shapes [NUM_SHAPES, SHAPE_MAX_SIZE]
-- FORCES_SIZE: Total floats for forces [BATCH, NUM_BODIES, 3]
-- CONTACTS_SIZE: Total floats for contacts [BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE]
-- COUNTS_SIZE: Total floats for contact counts [BATCH]
-- TOTAL_SIZE: Combined size for a unified buffer (optional)
+PhysicsLayout packs all physics data per-environment in a single row:
+
+    state[env, OFFSET + body * BODY_STATE_SIZE + field]
+
+This enables efficient GPU access patterns and compatibility with the GPUDiscreteEnv trait.
 
 Example:
     ```mojo
     from physics_gpu.layout import PhysicsLayout
 
-    # Define layout for 1024 envs, 3 bodies, 2 shapes, up to 16 contacts
-    alias Layout = PhysicsLayout[1024, 3, 2, 16]
+    # Define layout for LunarLander: 3 bodies, 2 joints, 16 terrain edges
+    comptime Layout = PhysicsLayout[
+        NUM_BODIES=3,
+        MAX_CONTACTS=8,
+        MAX_JOINTS=2,
+        MAX_TERRAIN_EDGES=16,
+        OBS_DIM=8,
+        METADATA_SIZE=4,
+    ]
 
-    # Access sizes at compile time
-    comptime bodies_size = Layout.BODIES_SIZE  # 1024 * 3 * 13
-    comptime total_size = Layout.TOTAL_SIZE
+    # Access computed sizes and offsets at compile time
+    comptime state_size = Layout.STATE_SIZE  # Total floats per environment
+    comptime bodies_off = Layout.BODIES_OFFSET  # Offset to body data
     ```
 """
 
@@ -34,150 +39,239 @@ from .constants import (
 
 
 struct PhysicsLayout[
-    BATCH: Int,
     NUM_BODIES: Int,
-    NUM_SHAPES: Int,
     MAX_CONTACTS: Int = 16,
     MAX_JOINTS: Int = MAX_JOINTS_PER_ENV,
+    MAX_TERRAIN_EDGES: Int = 16,
+    OBS_DIM: Int = 8,
+    METADATA_SIZE: Int = 4,
+    NUM_SHAPES: Int = 3,  # Number of shape definitions (shared across envs)
 ]:
-    """Compile-time buffer layout for GPU physics.
+    """Compile-time layout calculator for flat 2D strided buffers.
 
-    This struct is purely for compile-time constants - it has no runtime state.
-    Use it to compute buffer sizes and offsets for physics state.
+    This struct computes buffer sizes and offsets at compile time for physics
+    data stored in a flat [BATCH, STATE_SIZE] layout. All state for one
+    environment is packed contiguously in a single row.
 
     Parameters:
-        BATCH: Number of parallel environments.
-        NUM_BODIES: Number of bodies per environment.
-        NUM_SHAPES: Total number of shape definitions (shared across envs).
-        MAX_CONTACTS: Maximum contacts per environment.
+        NUM_BODIES: Number of rigid bodies per environment.
+        MAX_CONTACTS: Maximum contact points per environment.
         MAX_JOINTS: Maximum joints per environment.
+        MAX_TERRAIN_EDGES: Maximum terrain edge segments per environment.
+        OBS_DIM: Observation dimension (typically 8 for LunarLander).
+        METADATA_SIZE: Size of metadata (step_count, total_reward, etc.).
+        NUM_SHAPES: Number of shape definitions (shared across all envs).
+
+    Layout (offsets are cumulative):
+        [observation | bodies | forces | joints | joint_count | edges | edge_count | metadata]
     """
 
     # =========================================================================
-    # Individual Buffer Sizes
+    # Component Sizes
     # =========================================================================
 
-    # Bodies: [BATCH, NUM_BODIES, BODY_STATE_SIZE]
-    # Each body stores: x, y, angle, vx, vy, omega, fx, fy, tau, mass, inv_mass, inv_inertia, shape_idx
-    comptime BODIES_SIZE: Int = Self.BATCH * Self.NUM_BODIES * BODY_STATE_SIZE
+    # Bodies: NUM_BODIES * 13 floats per body
+    # Layout per body: [x, y, angle, vx, vy, omega, fx, fy, tau, mass, inv_mass, inv_inertia, shape_idx]
+    comptime BODIES_SIZE: Int = Self.NUM_BODIES * BODY_STATE_SIZE
 
-    # Shapes: [NUM_SHAPES, SHAPE_MAX_SIZE]
-    # Shape definitions are shared across all environments
+    # Forces: NUM_BODIES * 3 floats (fx, fy, torque)
+    # Stored separately from bodies for efficient clearing
+    comptime FORCES_SIZE: Int = Self.NUM_BODIES * 3
+
+    # Joints: MAX_JOINTS * 17 floats per joint
+    comptime JOINTS_SIZE: Int = Self.MAX_JOINTS * JOINT_DATA_SIZE
+
+    # Terrain edges: MAX_TERRAIN_EDGES * 6 floats per edge (x0, y0, x1, y1, nx, ny)
+    comptime EDGES_SIZE: Int = Self.MAX_TERRAIN_EDGES * 6
+
+    # Shapes: Shared across all environments (separate buffer)
     comptime SHAPES_SIZE: Int = Self.NUM_SHAPES * SHAPE_MAX_SIZE
 
-    # Forces: [BATCH, NUM_BODIES, 3] (fx, fy, torque)
-    # Accumulated forces cleared after each physics step
-    comptime FORCES_SIZE: Int = Self.BATCH * Self.NUM_BODIES * 3
-
-    # Contacts: [BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE]
-    # Contact manifold data for constraint solving
-    comptime CONTACTS_SIZE: Int = Self.BATCH * Self.MAX_CONTACTS * CONTACT_DATA_SIZE
-
-    # Contact counts: [BATCH]
-    # Number of active contacts per environment
-    comptime COUNTS_SIZE: Int = Self.BATCH
-
-    # Joints: [BATCH, MAX_JOINTS, JOINT_DATA_SIZE]
-    # Joint constraint data for each environment
-    comptime JOINTS_SIZE: Int = Self.BATCH * Self.MAX_JOINTS * JOINT_DATA_SIZE
-
-    # Joint counts: [BATCH]
-    # Number of active joints per environment
-    comptime JOINT_COUNTS_SIZE: Int = Self.BATCH
+    # Contacts: Workspace for collision detection (separate buffer)
+    comptime CONTACTS_SIZE: Int = Self.MAX_CONTACTS * CONTACT_DATA_SIZE
 
     # =========================================================================
-    # Unified Buffer Layout (Option A)
-    # =========================================================================
-    # If using a single unified buffer, these are the offsets
-
-    comptime BODIES_OFFSET: Int = 0
-    comptime SHAPES_OFFSET: Int = Self.BODIES_OFFSET + Self.BODIES_SIZE
-    comptime FORCES_OFFSET: Int = Self.SHAPES_OFFSET + Self.SHAPES_SIZE
-    comptime CONTACTS_OFFSET: Int = Self.FORCES_OFFSET + Self.FORCES_SIZE
-    comptime COUNTS_OFFSET: Int = Self.CONTACTS_OFFSET + Self.CONTACTS_SIZE
-    comptime JOINTS_OFFSET: Int = Self.COUNTS_OFFSET + Self.COUNTS_SIZE
-    comptime JOINT_COUNTS_OFFSET: Int = Self.JOINTS_OFFSET + Self.JOINTS_SIZE
-
-    # Total size for unified buffer
-    comptime TOTAL_SIZE: Int = Self.JOINT_COUNTS_OFFSET + Self.JOINT_COUNTS_SIZE
-
-    # =========================================================================
-    # Per-Environment Sizes (for partial state operations)
+    # Offsets within Environment State (cumulative)
     # =========================================================================
 
-    # Size of physics state for a single environment (useful for reset)
-    comptime SINGLE_ENV_BODIES_SIZE: Int = Self.NUM_BODIES * BODY_STATE_SIZE
-    comptime SINGLE_ENV_FORCES_SIZE: Int = Self.NUM_BODIES * 3
-    comptime SINGLE_ENV_CONTACTS_SIZE: Int = Self.MAX_CONTACTS * CONTACT_DATA_SIZE
-    comptime SINGLE_ENV_JOINTS_SIZE: Int = Self.MAX_JOINTS * JOINT_DATA_SIZE
+    # Observation at the start
+    comptime OBS_OFFSET: Int = 0
+
+    # Bodies follow observation
+    comptime BODIES_OFFSET: Int = Self.OBS_DIM
+
+    # Forces follow bodies
+    comptime FORCES_OFFSET: Int = Self.BODIES_OFFSET + Self.BODIES_SIZE
+
+    # Joints follow forces
+    comptime JOINTS_OFFSET: Int = Self.FORCES_OFFSET + Self.FORCES_SIZE
+
+    # Joint count (single value)
+    comptime JOINT_COUNT_OFFSET: Int = Self.JOINTS_OFFSET + Self.JOINTS_SIZE
+
+    # Terrain edges follow joint count
+    comptime EDGES_OFFSET: Int = Self.JOINT_COUNT_OFFSET + 1
+
+    # Edge count (single value)
+    comptime EDGE_COUNT_OFFSET: Int = Self.EDGES_OFFSET + Self.EDGES_SIZE
+
+    # Metadata at the end
+    comptime METADATA_OFFSET: Int = Self.EDGE_COUNT_OFFSET + 1
 
     # =========================================================================
-    # Utility Methods
+    # Total State Size
+    # =========================================================================
+
+    # Total size per environment
+    comptime STATE_SIZE: Int = Self.METADATA_OFFSET + Self.METADATA_SIZE
+
+    # =========================================================================
+    # Utility Methods - Body Access
     # =========================================================================
 
     @staticmethod
     @always_inline
-    fn body_offset(env: Int, body: Int) -> Int:
-        """Compute flat buffer offset for a specific body in an environment.
+    fn body_offset(body: Int) -> Int:
+        """Compute offset for a specific body within environment state.
 
         Args:
-            env: Environment index.
-            body: Body index within environment.
+            body: Body index (0 to NUM_BODIES-1).
 
         Returns:
-            Offset in the bodies buffer.
+            Offset to body's first field (x position).
         """
-        return (env * Self.NUM_BODIES + body) * BODY_STATE_SIZE
+        return Self.BODIES_OFFSET + body * BODY_STATE_SIZE
 
     @staticmethod
     @always_inline
-    fn contact_offset(env: Int, contact: Int) -> Int:
-        """Compute flat buffer offset for a specific contact.
+    fn body_field_offset(body: Int, field: Int) -> Int:
+        """Compute offset for a specific field of a body.
 
         Args:
-            env: Environment index.
-            contact: Contact index within environment.
+            body: Body index.
+            field: Field index (IDX_X, IDX_Y, etc.).
 
         Returns:
-            Offset in the contacts buffer.
+            Offset to the specific field.
         """
-        return (env * Self.MAX_CONTACTS + contact) * CONTACT_DATA_SIZE
+        return Self.BODIES_OFFSET + body * BODY_STATE_SIZE + field
+
+    # =========================================================================
+    # Utility Methods - Force Access
+    # =========================================================================
 
     @staticmethod
     @always_inline
-    fn force_offset(env: Int, body: Int) -> Int:
-        """Compute flat buffer offset for a body's forces.
+    fn force_offset(body: Int) -> Int:
+        """Compute offset for a body's forces within environment state.
 
         Args:
-            env: Environment index.
-            body: Body index within environment.
+            body: Body index.
 
         Returns:
-            Offset in the forces buffer.
+            Offset to body's force data (fx).
         """
-        return (env * Self.NUM_BODIES + body) * 3
+        return Self.FORCES_OFFSET + body * 3
+
+    # =========================================================================
+    # Utility Methods - Joint Access
+    # =========================================================================
 
     @staticmethod
     @always_inline
-    fn joint_offset(env: Int, joint: Int) -> Int:
-        """Compute flat buffer offset for a specific joint.
+    fn joint_offset(joint: Int) -> Int:
+        """Compute offset for a specific joint within environment state.
 
         Args:
-            env: Environment index.
-            joint: Joint index within environment.
+            joint: Joint index.
 
         Returns:
-            Offset in the joints buffer.
+            Offset to joint's first field.
         """
-        return (env * Self.MAX_JOINTS + joint) * JOINT_DATA_SIZE
+        return Self.JOINTS_OFFSET + joint * JOINT_DATA_SIZE
+
+    @staticmethod
+    @always_inline
+    fn joint_field_offset(joint: Int, field: Int) -> Int:
+        """Compute offset for a specific field of a joint.
+
+        Args:
+            joint: Joint index.
+            field: Field index (JOINT_TYPE, JOINT_BODY_A, etc.).
+
+        Returns:
+            Offset to the specific field.
+        """
+        return Self.JOINTS_OFFSET + joint * JOINT_DATA_SIZE + field
+
+    # =========================================================================
+    # Utility Methods - Edge Access
+    # =========================================================================
+
+    @staticmethod
+    @always_inline
+    fn edge_offset(edge: Int) -> Int:
+        """Compute offset for a specific edge within environment state.
+
+        Args:
+            edge: Edge index.
+
+        Returns:
+            Offset to edge's first field (x0).
+        """
+        return Self.EDGES_OFFSET + edge * 6
+
+    # =========================================================================
+    # Utility Methods - Metadata Access
+    # =========================================================================
+
+    @staticmethod
+    @always_inline
+    fn metadata_offset(field: Int) -> Int:
+        """Compute offset for a metadata field.
+
+        Args:
+            field: Metadata field index.
+
+        Returns:
+            Offset to the metadata field.
+        """
+        return Self.METADATA_OFFSET + field
 
 
-# =========================================================================
+# =============================================================================
 # Common Layout Aliases
-# =========================================================================
+# =============================================================================
 
-# LunarLander: 1 body (lander), 1 shape (hexagon), up to 4 contacts
-comptime LunarLanderLayout = PhysicsLayout[1, 1, 1, 4]
+# LunarLander: 3 bodies (lander + 2 legs), 2 joints, 16 terrain edges
+comptime LunarLanderLayout = PhysicsLayout[
+    NUM_BODIES=3,
+    MAX_CONTACTS=8,
+    MAX_JOINTS=2,
+    MAX_TERRAIN_EDGES=16,
+    OBS_DIM=8,
+    METADATA_SIZE=4,
+    NUM_SHAPES=3,
+]
 
-# CartPole: 2 bodies (cart + pole), 2 shapes, up to 2 contacts
-comptime CartPoleLayout = PhysicsLayout[1, 2, 2, 2]
+# CartPole: 2 bodies (cart + pole), 1 joint, flat terrain
+comptime CartPoleLayout = PhysicsLayout[
+    NUM_BODIES=2,
+    MAX_CONTACTS=4,
+    MAX_JOINTS=1,
+    MAX_TERRAIN_EDGES=2,
+    OBS_DIM=4,
+    METADATA_SIZE=2,
+    NUM_SHAPES=2,
+]
+
+# Acrobot: 2 bodies (2 links), 1 joint, no terrain
+comptime AcrobotLayout = PhysicsLayout[
+    NUM_BODIES=2,
+    MAX_CONTACTS=0,
+    MAX_JOINTS=1,
+    MAX_TERRAIN_EDGES=0,
+    OBS_DIM=6,
+    METADATA_SIZE=2,
+    NUM_SHAPES=2,
+]

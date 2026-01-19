@@ -74,7 +74,9 @@ struct FlatTerrainCollision(CollisionSystem):
     ](
         self,
         bodies: LayoutTensor[
-            dtype, Layout.row_major(BATCH, NUM_BODIES, BODY_STATE_SIZE), MutAnyOrigin
+            dtype,
+            Layout.row_major(BATCH, NUM_BODIES, BODY_STATE_SIZE),
+            MutAnyOrigin,
         ],
         shapes: LayoutTensor[
             dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
@@ -123,27 +125,36 @@ struct FlatTerrainCollision(CollisionSystem):
 
                         # Check penetration (ground normal points up)
                         var penetration = self.ground_y - world_y
-                        if penetration > Scalar[dtype](0) and count < MAX_CONTACTS:
+                        if (
+                            penetration > Scalar[dtype](0)
+                            and count < MAX_CONTACTS
+                        ):
                             # Store contact
-                            contacts[env, count, CONTACT_BODY_A] = Scalar[dtype](
-                                body_idx
-                            )
-                            contacts[env, count, CONTACT_BODY_B] = Scalar[dtype](
+                            contacts[env, count, CONTACT_BODY_A] = Scalar[
+                                dtype
+                            ](body_idx)
+                            contacts[env, count, CONTACT_BODY_B] = Scalar[
+                                dtype
+                            ](
                                 -1
                             )  # -1 = ground
                             contacts[env, count, CONTACT_POINT_X] = world_x
                             contacts[env, count, CONTACT_POINT_Y] = world_y
-                            contacts[env, count, CONTACT_NORMAL_X] = Scalar[dtype](0)
-                            contacts[env, count, CONTACT_NORMAL_Y] = Scalar[dtype](
+                            contacts[env, count, CONTACT_NORMAL_X] = Scalar[
+                                dtype
+                            ](0)
+                            contacts[env, count, CONTACT_NORMAL_Y] = Scalar[
+                                dtype
+                            ](
                                 1
                             )  # Up
                             contacts[env, count, CONTACT_DEPTH] = penetration
-                            contacts[env, count, CONTACT_NORMAL_IMPULSE] = Scalar[
-                                dtype
-                            ](0)
-                            contacts[env, count, CONTACT_TANGENT_IMPULSE] = Scalar[
-                                dtype
-                            ](0)
+                            contacts[
+                                env, count, CONTACT_NORMAL_IMPULSE
+                            ] = Scalar[dtype](0)
+                            contacts[
+                                env, count, CONTACT_TANGENT_IMPULSE
+                            ] = Scalar[dtype](0)
                             count += 1
 
                 elif shape_type == SHAPE_CIRCLE:
@@ -154,26 +165,40 @@ struct FlatTerrainCollision(CollisionSystem):
 
                     # Transform center to world
                     var center_world_x = (
-                        body_x + center_offset_x * cos_a - center_offset_y * sin_a
+                        body_x
+                        + center_offset_x * cos_a
+                        - center_offset_y * sin_a
                     )
                     var center_world_y = (
-                        body_y + center_offset_x * sin_a + center_offset_y * cos_a
+                        body_y
+                        + center_offset_x * sin_a
+                        + center_offset_y * cos_a
                     )
 
                     # Check penetration
                     var penetration = self.ground_y - (center_world_y - radius)
                     if penetration > Scalar[dtype](0) and count < MAX_CONTACTS:
-                        contacts[env, count, CONTACT_BODY_A] = Scalar[dtype](body_idx)
+                        contacts[env, count, CONTACT_BODY_A] = Scalar[dtype](
+                            body_idx
+                        )
                         contacts[env, count, CONTACT_BODY_B] = Scalar[dtype](-1)
                         contacts[env, count, CONTACT_POINT_X] = center_world_x
-                        contacts[env, count, CONTACT_POINT_Y] = center_world_y - radius
-                        contacts[env, count, CONTACT_NORMAL_X] = Scalar[dtype](0)
-                        contacts[env, count, CONTACT_NORMAL_Y] = Scalar[dtype](1)
-                        contacts[env, count, CONTACT_DEPTH] = penetration
-                        contacts[env, count, CONTACT_NORMAL_IMPULSE] = Scalar[dtype](0)
-                        contacts[env, count, CONTACT_TANGENT_IMPULSE] = Scalar[dtype](
+                        contacts[env, count, CONTACT_POINT_Y] = (
+                            center_world_y - radius
+                        )
+                        contacts[env, count, CONTACT_NORMAL_X] = Scalar[dtype](
                             0
                         )
+                        contacts[env, count, CONTACT_NORMAL_Y] = Scalar[dtype](
+                            1
+                        )
+                        contacts[env, count, CONTACT_DEPTH] = penetration
+                        contacts[env, count, CONTACT_NORMAL_IMPULSE] = Scalar[
+                            dtype
+                        ](0)
+                        contacts[env, count, CONTACT_TANGENT_IMPULSE] = Scalar[
+                            dtype
+                        ](0)
                         count += 1
 
             contact_counts[env] = Scalar[dtype](count)
@@ -191,15 +216,21 @@ struct FlatTerrainCollision(CollisionSystem):
         MAX_CONTACTS: Int,
     ](
         bodies: LayoutTensor[
-            dtype, Layout.row_major(BATCH, NUM_BODIES, BODY_STATE_SIZE), MutAnyOrigin
+            dtype,
+            Layout.row_major(BATCH, NUM_BODIES, BODY_STATE_SIZE),
+            MutAnyOrigin,
         ],
         shapes: LayoutTensor[
             dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
         ],
         contacts: LayoutTensor[
-            dtype, Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE), MutAnyOrigin
+            dtype,
+            Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE),
+            MutAnyOrigin,
         ],
-        contact_counts: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+        contact_counts: LayoutTensor[
+            dtype, Layout.row_major(BATCH), MutAnyOrigin
+        ],
         ground_y: Scalar[dtype],
     ):
         """GPU kernel: one thread per environment."""
@@ -235,17 +266,25 @@ struct FlatTerrainCollision(CollisionSystem):
 
                     var penetration = ground_y - world_y
                     if penetration > Scalar[dtype](0) and count < MAX_CONTACTS:
-                        contacts[env, count, CONTACT_BODY_A] = Scalar[dtype](body_idx)
+                        contacts[env, count, CONTACT_BODY_A] = Scalar[dtype](
+                            body_idx
+                        )
                         contacts[env, count, CONTACT_BODY_B] = Scalar[dtype](-1)
                         contacts[env, count, CONTACT_POINT_X] = world_x
                         contacts[env, count, CONTACT_POINT_Y] = world_y
-                        contacts[env, count, CONTACT_NORMAL_X] = Scalar[dtype](0)
-                        contacts[env, count, CONTACT_NORMAL_Y] = Scalar[dtype](1)
-                        contacts[env, count, CONTACT_DEPTH] = penetration
-                        contacts[env, count, CONTACT_NORMAL_IMPULSE] = Scalar[dtype](0)
-                        contacts[env, count, CONTACT_TANGENT_IMPULSE] = Scalar[dtype](
+                        contacts[env, count, CONTACT_NORMAL_X] = Scalar[dtype](
                             0
                         )
+                        contacts[env, count, CONTACT_NORMAL_Y] = Scalar[dtype](
+                            1
+                        )
+                        contacts[env, count, CONTACT_DEPTH] = penetration
+                        contacts[env, count, CONTACT_NORMAL_IMPULSE] = Scalar[
+                            dtype
+                        ](0)
+                        contacts[env, count, CONTACT_TANGENT_IMPULSE] = Scalar[
+                            dtype
+                        ](0)
                         count += 1
 
             elif shape_type == SHAPE_CIRCLE:
@@ -262,86 +301,26 @@ struct FlatTerrainCollision(CollisionSystem):
 
                 var penetration = ground_y - (center_world_y - radius)
                 if penetration > Scalar[dtype](0) and count < MAX_CONTACTS:
-                    contacts[env, count, CONTACT_BODY_A] = Scalar[dtype](body_idx)
+                    contacts[env, count, CONTACT_BODY_A] = Scalar[dtype](
+                        body_idx
+                    )
                     contacts[env, count, CONTACT_BODY_B] = Scalar[dtype](-1)
                     contacts[env, count, CONTACT_POINT_X] = center_world_x
-                    contacts[env, count, CONTACT_POINT_Y] = center_world_y - radius
+                    contacts[env, count, CONTACT_POINT_Y] = (
+                        center_world_y - radius
+                    )
                     contacts[env, count, CONTACT_NORMAL_X] = Scalar[dtype](0)
                     contacts[env, count, CONTACT_NORMAL_Y] = Scalar[dtype](1)
                     contacts[env, count, CONTACT_DEPTH] = penetration
-                    contacts[env, count, CONTACT_NORMAL_IMPULSE] = Scalar[dtype](0)
-                    contacts[env, count, CONTACT_TANGENT_IMPULSE] = Scalar[dtype](0)
+                    contacts[env, count, CONTACT_NORMAL_IMPULSE] = Scalar[
+                        dtype
+                    ](0)
+                    contacts[env, count, CONTACT_TANGENT_IMPULSE] = Scalar[
+                        dtype
+                    ](0)
                     count += 1
 
         contact_counts[env] = Scalar[dtype](count)
-
-    # =========================================================================
-    # GPU Kernel Launcher
-    # =========================================================================
-
-    @staticmethod
-    fn detect_gpu[
-        BATCH: Int,
-        NUM_BODIES: Int,
-        NUM_SHAPES: Int,
-        MAX_CONTACTS: Int,
-    ](
-        ctx: DeviceContext,
-        bodies_buf: DeviceBuffer[dtype],
-        shapes_buf: DeviceBuffer[dtype],
-        mut contacts_buf: DeviceBuffer[dtype],
-        mut contact_counts_buf: DeviceBuffer[dtype],
-        ground_y: Scalar[dtype],
-    ) raises:
-        """Launch collision detection kernel on GPU."""
-        var bodies = LayoutTensor[
-            dtype, Layout.row_major(BATCH, NUM_BODIES, BODY_STATE_SIZE), MutAnyOrigin
-        ](bodies_buf.unsafe_ptr())
-        var shapes = LayoutTensor[
-            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
-        ](shapes_buf.unsafe_ptr())
-        var contacts = LayoutTensor[
-            dtype, Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE), MutAnyOrigin
-        ](contacts_buf.unsafe_ptr())
-        var contact_counts = LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ](contact_counts_buf.unsafe_ptr())
-
-        comptime BLOCKS = (BATCH + TPB - 1) // TPB
-
-        @always_inline
-        fn kernel_wrapper(
-            bodies: LayoutTensor[
-                dtype,
-                Layout.row_major(BATCH, NUM_BODIES, BODY_STATE_SIZE),
-                MutAnyOrigin,
-            ],
-            shapes: LayoutTensor[
-                dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
-            ],
-            contacts: LayoutTensor[
-                dtype,
-                Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE),
-                MutAnyOrigin,
-            ],
-            contact_counts: LayoutTensor[
-                dtype, Layout.row_major(BATCH), MutAnyOrigin
-            ],
-            ground_y: Scalar[dtype],
-        ):
-            FlatTerrainCollision.detect_kernel[BATCH, NUM_BODIES, NUM_SHAPES, MAX_CONTACTS](
-                bodies, shapes, contacts, contact_counts, ground_y
-            )
-
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
-            bodies,
-            shapes,
-            contacts,
-            contact_counts,
-            ground_y,
-            grid_dim=(BLOCKS,),
-            block_dim=(TPB,),
-        )
 
     # =========================================================================
     # Strided GPU Kernels for 2D State Layout
@@ -354,7 +333,7 @@ struct FlatTerrainCollision(CollisionSystem):
 
     @always_inline
     @staticmethod
-    fn detect_kernel_strided[
+    fn detect_kernel[
         BATCH: Int,
         NUM_BODIES: Int,
         NUM_SHAPES: Int,
@@ -375,10 +354,13 @@ struct FlatTerrainCollision(CollisionSystem):
             Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE),
             MutAnyOrigin,
         ],
-        contact_counts: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+        contact_counts: LayoutTensor[
+            dtype, Layout.row_major(BATCH), MutAnyOrigin
+        ],
         ground_y: Scalar[dtype],
     ):
-        """GPU kernel for flat terrain collision with 2D strided state layout."""
+        """GPU kernel for flat terrain collision with 2D strided state layout.
+        """
         var env = Int(block_dim.x * block_idx.x + thread_idx.x)
         if env >= BATCH:
             return
@@ -413,15 +395,25 @@ struct FlatTerrainCollision(CollisionSystem):
 
                     var penetration = ground_y - world_y
                     if penetration > Scalar[dtype](0) and count < MAX_CONTACTS:
-                        contacts[env, count, CONTACT_BODY_A] = Scalar[dtype](body_idx)
+                        contacts[env, count, CONTACT_BODY_A] = Scalar[dtype](
+                            body_idx
+                        )
                         contacts[env, count, CONTACT_BODY_B] = Scalar[dtype](-1)
                         contacts[env, count, CONTACT_POINT_X] = world_x
                         contacts[env, count, CONTACT_POINT_Y] = world_y
-                        contacts[env, count, CONTACT_NORMAL_X] = Scalar[dtype](0)
-                        contacts[env, count, CONTACT_NORMAL_Y] = Scalar[dtype](1)
+                        contacts[env, count, CONTACT_NORMAL_X] = Scalar[dtype](
+                            0
+                        )
+                        contacts[env, count, CONTACT_NORMAL_Y] = Scalar[dtype](
+                            1
+                        )
                         contacts[env, count, CONTACT_DEPTH] = penetration
-                        contacts[env, count, CONTACT_NORMAL_IMPULSE] = Scalar[dtype](0)
-                        contacts[env, count, CONTACT_TANGENT_IMPULSE] = Scalar[dtype](0)
+                        contacts[env, count, CONTACT_NORMAL_IMPULSE] = Scalar[
+                            dtype
+                        ](0)
+                        contacts[env, count, CONTACT_TANGENT_IMPULSE] = Scalar[
+                            dtype
+                        ](0)
                         count += 1
 
             elif shape_type == SHAPE_CIRCLE:
@@ -438,21 +430,29 @@ struct FlatTerrainCollision(CollisionSystem):
 
                 var penetration = ground_y - (center_world_y - radius)
                 if penetration > Scalar[dtype](0) and count < MAX_CONTACTS:
-                    contacts[env, count, CONTACT_BODY_A] = Scalar[dtype](body_idx)
+                    contacts[env, count, CONTACT_BODY_A] = Scalar[dtype](
+                        body_idx
+                    )
                     contacts[env, count, CONTACT_BODY_B] = Scalar[dtype](-1)
                     contacts[env, count, CONTACT_POINT_X] = center_world_x
-                    contacts[env, count, CONTACT_POINT_Y] = center_world_y - radius
+                    contacts[env, count, CONTACT_POINT_Y] = (
+                        center_world_y - radius
+                    )
                     contacts[env, count, CONTACT_NORMAL_X] = Scalar[dtype](0)
                     contacts[env, count, CONTACT_NORMAL_Y] = Scalar[dtype](1)
                     contacts[env, count, CONTACT_DEPTH] = penetration
-                    contacts[env, count, CONTACT_NORMAL_IMPULSE] = Scalar[dtype](0)
-                    contacts[env, count, CONTACT_TANGENT_IMPULSE] = Scalar[dtype](0)
+                    contacts[env, count, CONTACT_NORMAL_IMPULSE] = Scalar[
+                        dtype
+                    ](0)
+                    contacts[env, count, CONTACT_TANGENT_IMPULSE] = Scalar[
+                        dtype
+                    ](0)
                     count += 1
 
         contact_counts[env] = Scalar[dtype](count)
 
     @staticmethod
-    fn detect_gpu_strided[
+    fn detect_gpu[
         BATCH: Int,
         NUM_BODIES: Int,
         NUM_SHAPES: Int,
@@ -495,7 +495,9 @@ struct FlatTerrainCollision(CollisionSystem):
                 MutAnyOrigin,
             ],
             shapes: LayoutTensor[
-                dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
+                dtype,
+                Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE),
+                MutAnyOrigin,
             ],
             contacts: LayoutTensor[
                 dtype,
@@ -507,8 +509,13 @@ struct FlatTerrainCollision(CollisionSystem):
             ],
             ground_y: Scalar[dtype],
         ):
-            FlatTerrainCollision.detect_kernel_strided[
-                BATCH, NUM_BODIES, NUM_SHAPES, MAX_CONTACTS, STATE_SIZE, BODIES_OFFSET
+            FlatTerrainCollision.detect_kernel[
+                BATCH,
+                NUM_BODIES,
+                NUM_SHAPES,
+                MAX_CONTACTS,
+                STATE_SIZE,
+                BODIES_OFFSET,
             ](state, shapes, contacts, contact_counts, ground_y)
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](

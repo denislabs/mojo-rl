@@ -1,28 +1,32 @@
-"""PhysicsKernel - Stateless physics computation orchestrator.
+"""PhysicsKernelStrided - Unified physics step orchestrator for strided 2D layouts.
 
-This module provides stateless static methods for physics simulation,
-similar to how deep_rl Model trait provides forward/backward methods.
+This module provides a single unified function that executes a complete physics
+simulation step on GPU. It coordinates all physics components:
 
-The kernel composes:
-- Integrator: Velocity and position updates
-- CollisionSystem: Contact detection
-- ConstraintSolver: Impulse-based constraint resolution
+1. Velocity integration (gravity + forces)
+2. Collision detection (edge terrain or flat terrain)
+3. Velocity constraint solving (contacts + joints)
+4. Position integration
+5. Position constraint solving
 
-All state is passed via LayoutTensor views or DeviceBuffers - no heap
-allocation in kernel code, making it suitable for GPU execution.
+This replaces 20+ lines of manual physics component calls with a single function.
 
 Example:
     ```mojo
-    from physics_gpu.kernel import PhysicsKernel, PhysicsConfig
+    from physics_gpu.kernel import PhysicsKernel
+    from physics_gpu.layout import LunarLanderLayout
 
-    # CPU step - pass LayoutTensor views
-    PhysicsKernel.step[BATCH, NUM_BODIES, NUM_SHAPES, MAX_CONTACTS](
-        bodies, shapes, forces, contacts, counts, config
-    )
+    comptime Layout = LunarLanderLayout
 
-    # GPU step - pass DeviceBuffers
-    PhysicsKernel.step_gpu[BATCH, NUM_BODIES, NUM_SHAPES, MAX_CONTACTS](
-        ctx, bodies_buf, shapes_buf, forces_buf, contacts_buf, counts_buf, config
+    # One call instead of many!
+    PhysicsKernel.step_gpu[BATCH, Layout](
+        ctx,
+        states_buf,
+        shapes_buf,
+        contacts_buf,
+        contact_counts_buf,
+        config,
+        collision_type=CollisionType.EDGE_TERRAIN,
     )
     ```
 """
@@ -37,366 +41,351 @@ from .constants import (
     SHAPE_MAX_SIZE,
     CONTACT_DATA_SIZE,
     JOINT_DATA_SIZE,
-    IDX_FX,
-    IDX_FY,
-    IDX_TAU,
-    DEFAULT_GRAVITY_X,
-    DEFAULT_GRAVITY_Y,
-    DEFAULT_DT,
     DEFAULT_FRICTION,
     DEFAULT_RESTITUTION,
     DEFAULT_BAUMGARTE,
     DEFAULT_SLOP,
-    MAX_JOINTS_PER_ENV,
+    DEFAULT_VELOCITY_ITERATIONS,
+    DEFAULT_POSITION_ITERATIONS,
 )
 from .layout import PhysicsLayout
 from .integrators.euler import SemiImplicitEuler
+from .collision.edge_terrain import EdgeTerrainCollision
 from .collision.flat_terrain import FlatTerrainCollision
 from .solvers.impulse import ImpulseSolver
 from .joints.revolute import RevoluteJointSolver
 
 
-@fieldwise_init
 struct PhysicsConfig(Copyable, Movable):
-    """Runtime configuration for physics simulation.
+    """Configuration for strided physics simulation.
 
-    This struct holds physics parameters that can vary at runtime.
-    Passed to kernel methods rather than stored as state.
+    Contains all parameters needed for a physics step.
     """
 
-    var gravity_x: Scalar[dtype]
-    var gravity_y: Scalar[dtype]
-    var dt: Scalar[dtype]
-    var ground_y: Scalar[dtype]
-    var friction: Scalar[dtype]
-    var restitution: Scalar[dtype]
-    var baumgarte: Scalar[dtype]
-    var slop: Scalar[dtype]
+    var gravity_x: Float64
+    var gravity_y: Float64
+    var dt: Float64
+    var friction: Float64
+    var restitution: Float64
+    var baumgarte: Float64
+    var slop: Float64
     var velocity_iterations: Int
     var position_iterations: Int
 
     fn __init__(
         out self,
-        gravity_x: Float64 = DEFAULT_GRAVITY_X,
-        gravity_y: Float64 = DEFAULT_GRAVITY_Y,
-        dt: Float64 = DEFAULT_DT,
-        ground_y: Float64 = 0.0,
+        gravity_x: Float64 = 0.0,
+        gravity_y: Float64 = -10.0,
+        dt: Float64 = 0.02,
         friction: Float64 = DEFAULT_FRICTION,
         restitution: Float64 = DEFAULT_RESTITUTION,
         baumgarte: Float64 = DEFAULT_BAUMGARTE,
         slop: Float64 = DEFAULT_SLOP,
-        velocity_iterations: Int = 6,
-        position_iterations: Int = 2,
+        velocity_iterations: Int = DEFAULT_VELOCITY_ITERATIONS,
+        position_iterations: Int = DEFAULT_POSITION_ITERATIONS,
     ):
-        """Initialize physics configuration with defaults."""
-        self.gravity_x = Scalar[dtype](gravity_x)
-        self.gravity_y = Scalar[dtype](gravity_y)
-        self.dt = Scalar[dtype](dt)
-        self.ground_y = Scalar[dtype](ground_y)
-        self.friction = Scalar[dtype](friction)
-        self.restitution = Scalar[dtype](restitution)
-        self.baumgarte = Scalar[dtype](baumgarte)
-        self.slop = Scalar[dtype](slop)
+        self.gravity_x = gravity_x
+        self.gravity_y = gravity_y
+        self.dt = dt
+        self.friction = friction
+        self.restitution = restitution
+        self.baumgarte = baumgarte
+        self.slop = slop
         self.velocity_iterations = velocity_iterations
         self.position_iterations = position_iterations
 
+    fn __copyinit__(out self, existing: Self):
+        self.gravity_x = existing.gravity_x
+        self.gravity_y = existing.gravity_y
+        self.dt = existing.dt
+        self.friction = existing.friction
+        self.restitution = existing.restitution
+        self.baumgarte = existing.baumgarte
+        self.slop = existing.slop
+        self.velocity_iterations = existing.velocity_iterations
+        self.position_iterations = existing.position_iterations
+
+    fn __moveinit__(out self, deinit existing: Self):
+        self.gravity_x = existing.gravity_x
+        self.gravity_y = existing.gravity_y
+        self.dt = existing.dt
+        self.friction = existing.friction
+        self.restitution = existing.restitution
+        self.baumgarte = existing.baumgarte
+        self.slop = existing.slop
+        self.velocity_iterations = existing.velocity_iterations
+        self.position_iterations = existing.position_iterations
+
+
+struct CollisionType:
+    """Enum for collision detection type."""
+
+    comptime NONE: Int = 0  # No collision detection
+    comptime FLAT_TERRAIN: Int = 1  # Simple flat ground at fixed Y
+    comptime EDGE_TERRAIN: Int = 2  # Edge-based terrain (stored in state)
+
 
 struct PhysicsKernel:
-    """Stateless physics computation orchestrator.
+    """Unified physics step orchestrator for strided 2D layouts.
 
-    This struct provides static methods for physics simulation.
-    It has no instance state - all state is passed via parameters.
-    This design enables both CPU and GPU execution with identical logic.
+    Executes a complete physics simulation step:
+    1. Integrate velocities (apply gravity + forces)
+    2. Detect collisions
+    3. Solve velocity constraints (contacts + joints) - multiple iterations
+    4. Integrate positions
+    5. Solve position constraints - multiple iterations
 
-    The physics step follows Box2D's simulation order:
-    1. Integrate velocities (apply forces and gravity)
-    2. Detect collisions (generate contacts)
-    3. Solve velocity constraints (apply impulses)
-    4. Integrate positions (update using new velocities)
-    5. Solve position constraints (resolve penetration)
-    6. Clear forces
+    All operations use the strided 2D [BATCH, STATE_SIZE] layout.
     """
 
-    # Stateless - use static methods only
-
     # =========================================================================
-    # CPU Physics Step
+    # GPU Physics Step - Edge Terrain
     # =========================================================================
 
     @staticmethod
-    fn step[
+    fn step_gpu_edge_terrain[
         BATCH: Int,
         NUM_BODIES: Int,
         NUM_SHAPES: Int,
         MAX_CONTACTS: Int,
-    ](
-        mut bodies: LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, NUM_BODIES, BODY_STATE_SIZE),
-            MutAnyOrigin,
-        ],
-        shapes: LayoutTensor[
-            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
-        ],
-        mut forces: LayoutTensor[
-            dtype, Layout.row_major(BATCH, NUM_BODIES, 3), MutAnyOrigin
-        ],
-        mut contacts: LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE),
-            MutAnyOrigin,
-        ],
-        mut contact_counts: LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ],
-        config: PhysicsConfig,
-    ):
-        """Execute one physics step on CPU.
-
-        Args:
-            bodies: Body state tensor [BATCH, NUM_BODIES, BODY_STATE_SIZE].
-            shapes: Shape definitions [NUM_SHAPES, SHAPE_MAX_SIZE].
-            forces: Accumulated forces [BATCH, NUM_BODIES, 3].
-            contacts: Contact manifold [BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE].
-            contact_counts: Active contacts per env [BATCH].
-            config: Physics configuration.
-        """
-        # Create temporary component instances (stateless, just for method dispatch)
-        var integrator = SemiImplicitEuler()
-        var collision = FlatTerrainCollision(Float64(config.ground_y))
-        var solver = ImpulseSolver(
-            Float64(config.friction), Float64(config.restitution)
-        )
-
-        # 1. Integrate velocities
-        integrator.integrate_velocities[BATCH, NUM_BODIES](
-            bodies, forces, config.gravity_x, config.gravity_y, config.dt
-        )
-
-        # 2. Detect collisions
-        collision.detect[BATCH, NUM_BODIES, NUM_SHAPES, MAX_CONTACTS](
-            bodies, shapes, contacts, contact_counts
-        )
-
-        # 3. Solve velocity constraints
-        for _ in range(config.velocity_iterations):
-            solver.solve_velocity[BATCH, NUM_BODIES, MAX_CONTACTS](
-                bodies, contacts, contact_counts
-            )
-
-        # 4. Integrate positions
-        integrator.integrate_positions[BATCH, NUM_BODIES](bodies, config.dt)
-
-        # 5. Solve position constraints
-        for _ in range(config.position_iterations):
-            solver.solve_position[BATCH, NUM_BODIES, MAX_CONTACTS](
-                bodies, contacts, contact_counts
-            )
-
-        # 6. Clear forces
-        PhysicsKernel._clear_forces[BATCH, NUM_BODIES](forces)
-
-    @staticmethod
-    fn _clear_forces[
-        BATCH: Int,
-        NUM_BODIES: Int,
-    ](
-        mut forces: LayoutTensor[
-            dtype, Layout.row_major(BATCH, NUM_BODIES, 3), MutAnyOrigin
-        ],
-    ):
-        """Clear accumulated forces after physics step."""
-        for env in range(BATCH):
-            for body in range(NUM_BODIES):
-                forces[env, body, 0] = Scalar[dtype](0)
-                forces[env, body, 1] = Scalar[dtype](0)
-                forces[env, body, 2] = Scalar[dtype](0)
-
-    # =========================================================================
-    # CPU Physics Step with Joints
-    # =========================================================================
-
-    @staticmethod
-    fn step_with_joints[
-        BATCH: Int,
-        NUM_BODIES: Int,
-        NUM_SHAPES: Int,
-        MAX_CONTACTS: Int,
-        MAX_JOINTS: Int,
-    ](
-        mut bodies: LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, NUM_BODIES, BODY_STATE_SIZE),
-            MutAnyOrigin,
-        ],
-        shapes: LayoutTensor[
-            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
-        ],
-        mut forces: LayoutTensor[
-            dtype, Layout.row_major(BATCH, NUM_BODIES, 3), MutAnyOrigin
-        ],
-        mut contacts: LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE),
-            MutAnyOrigin,
-        ],
-        mut contact_counts: LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ],
-        mut joints: LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, MAX_JOINTS, JOINT_DATA_SIZE),
-            MutAnyOrigin,
-        ],
-        joint_counts: LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ],
-        config: PhysicsConfig,
-    ):
-        """Execute one physics step on CPU with joint constraints.
-
-        Args:
-            bodies: Body state tensor [BATCH, NUM_BODIES, BODY_STATE_SIZE].
-            shapes: Shape definitions [NUM_SHAPES, SHAPE_MAX_SIZE].
-            forces: Accumulated forces [BATCH, NUM_BODIES, 3].
-            contacts: Contact manifold [BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE].
-            contact_counts: Active contacts per env [BATCH].
-            joints: Joint constraints [BATCH, MAX_JOINTS, JOINT_DATA_SIZE].
-            joint_counts: Active joints per env [BATCH].
-            config: Physics configuration.
-        """
-        # Create temporary component instances
-        var integrator = SemiImplicitEuler()
-        var collision = FlatTerrainCollision(Float64(config.ground_y))
-        var solver = ImpulseSolver(
-            Float64(config.friction), Float64(config.restitution)
-        )
-
-        # 1. Integrate velocities
-        integrator.integrate_velocities[BATCH, NUM_BODIES](
-            bodies, forces, config.gravity_x, config.gravity_y, config.dt
-        )
-
-        # 2. Detect collisions
-        collision.detect[BATCH, NUM_BODIES, NUM_SHAPES, MAX_CONTACTS](
-            bodies, shapes, contacts, contact_counts
-        )
-
-        # 3. Solve velocity constraints (contacts)
-        for _ in range(config.velocity_iterations):
-            solver.solve_velocity[BATCH, NUM_BODIES, MAX_CONTACTS](
-                bodies, contacts, contact_counts
-            )
-
-        # 4. Solve joint velocity constraints
-        for _ in range(config.velocity_iterations):
-            RevoluteJointSolver.solve_velocity[BATCH, NUM_BODIES, MAX_JOINTS](
-                bodies, joints, joint_counts, config.dt
-            )
-
-        # 5. Integrate positions
-        integrator.integrate_positions[BATCH, NUM_BODIES](bodies, config.dt)
-
-        # 6. Solve position constraints (contacts)
-        for _ in range(config.position_iterations):
-            solver.solve_position[BATCH, NUM_BODIES, MAX_CONTACTS](
-                bodies, contacts, contact_counts
-            )
-
-        # 7. Solve joint position constraints
-        for _ in range(config.position_iterations):
-            RevoluteJointSolver.solve_position[BATCH, NUM_BODIES, MAX_JOINTS](
-                bodies, joints, joint_counts, config.baumgarte, config.slop
-            )
-
-        # 8. Clear forces
-        PhysicsKernel._clear_forces[BATCH, NUM_BODIES](forces)
-
-    # =========================================================================
-    # GPU Physics Step
-    # =========================================================================
-
-    @staticmethod
-    fn step_gpu[
-        BATCH: Int,
-        NUM_BODIES: Int,
-        NUM_SHAPES: Int,
-        MAX_CONTACTS: Int,
+        MAX_TERRAIN_EDGES: Int,
+        STATE_SIZE: Int,
+        BODIES_OFFSET: Int,
+        FORCES_OFFSET: Int,
+        EDGES_OFFSET: Int,
     ](
         ctx: DeviceContext,
-        mut bodies_buf: DeviceBuffer[dtype],
+        mut states_buf: DeviceBuffer[dtype],
         shapes_buf: DeviceBuffer[dtype],
-        forces_buf: DeviceBuffer[dtype],
+        edge_counts_buf: DeviceBuffer[dtype],
         mut contacts_buf: DeviceBuffer[dtype],
         mut contact_counts_buf: DeviceBuffer[dtype],
         config: PhysicsConfig,
     ) raises:
-        """Execute one physics step on GPU.
+        """Execute full physics step on GPU with edge terrain collision.
 
-        This mirrors the CPU step but uses GPU kernels.
+        This is for physics-based environments with terrain but no joints.
+        For environments with joints (like LunarLander), use step_gpu_with_joints.
 
         Args:
             ctx: GPU device context.
-            bodies_buf: Body state buffer [BATCH * NUM_BODIES * BODY_STATE_SIZE].
-            shapes_buf: Shape definitions buffer [NUM_SHAPES * SHAPE_MAX_SIZE].
-            forces_buf: Forces buffer [BATCH * NUM_BODIES * 3].
-            contacts_buf: Contacts buffer [BATCH * MAX_CONTACTS * CONTACT_DATA_SIZE].
-            contact_counts_buf: Contact counts buffer [BATCH].
+            states_buf: State buffer [BATCH, STATE_SIZE].
+            shapes_buf: Shape definitions [NUM_SHAPES, SHAPE_MAX_SIZE].
+            edge_counts_buf: Edge counts per environment [BATCH].
+            contacts_buf: Contact workspace [BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE].
+            contact_counts_buf: Contact counts [BATCH].
             config: Physics configuration.
         """
-        # 1. Integrate velocities
-        SemiImplicitEuler.integrate_velocities_gpu[BATCH, NUM_BODIES](
-            ctx,
-            bodies_buf,
-            forces_buf,
-            config.gravity_x,
-            config.gravity_y,
-            config.dt,
-        )
+        # Scalar parameters
+        var gravity_x = Scalar[dtype](config.gravity_x)
+        var gravity_y = Scalar[dtype](config.gravity_y)
+        var dt = Scalar[dtype](config.dt)
+        var friction = Scalar[dtype](config.friction)
+        var restitution = Scalar[dtype](config.restitution)
+        var baumgarte = Scalar[dtype](config.baumgarte)
+        var slop = Scalar[dtype](config.slop)
 
-        # 2. Detect collisions
-        FlatTerrainCollision.detect_gpu[
-            BATCH, NUM_BODIES, NUM_SHAPES, MAX_CONTACTS
+        # 1. Integrate velocities (apply gravity + forces)
+        SemiImplicitEuler.integrate_velocities_gpu[
+            BATCH, NUM_BODIES, STATE_SIZE, BODIES_OFFSET, FORCES_OFFSET
+        ](ctx, states_buf, gravity_x, gravity_y, dt)
+
+        # 2. Detect collisions against edge terrain
+        EdgeTerrainCollision.detect_gpu[
+            BATCH,
+            NUM_BODIES,
+            NUM_SHAPES,
+            MAX_CONTACTS,
+            MAX_TERRAIN_EDGES,
+            STATE_SIZE,
+            BODIES_OFFSET,
+            EDGES_OFFSET,
         ](
             ctx,
-            bodies_buf,
+            states_buf,
+            shapes_buf,
+            edge_counts_buf,
+            contacts_buf,
+            contact_counts_buf,
+        )
+
+        # 3. Solve velocity constraints (contacts only, no joints)
+        for _ in range(config.velocity_iterations):
+            ImpulseSolver.solve_velocity_gpu[
+                BATCH, NUM_BODIES, MAX_CONTACTS, STATE_SIZE, BODIES_OFFSET
+            ](
+                ctx,
+                states_buf,
+                contacts_buf,
+                contact_counts_buf,
+                friction,
+                restitution,
+            )
+
+        # 4. Integrate positions
+        SemiImplicitEuler.integrate_positions_gpu[
+            BATCH, NUM_BODIES, STATE_SIZE, BODIES_OFFSET
+        ](ctx, states_buf, dt)
+
+        # 5. Solve position constraints (contacts only)
+        for _ in range(config.position_iterations):
+            ImpulseSolver.solve_position_gpu[
+                BATCH, NUM_BODIES, MAX_CONTACTS, STATE_SIZE, BODIES_OFFSET
+            ](
+                ctx,
+                states_buf,
+                contacts_buf,
+                contact_counts_buf,
+                baumgarte,
+                slop,
+            )
+
+        ctx.synchronize()
+
+    # =========================================================================
+    # GPU Physics Step - Flat Terrain
+    # =========================================================================
+
+    @staticmethod
+    fn step_gpu_flat_terrain[
+        BATCH: Int,
+        NUM_BODIES: Int,
+        NUM_SHAPES: Int,
+        MAX_CONTACTS: Int,
+        STATE_SIZE: Int,
+        BODIES_OFFSET: Int,
+        FORCES_OFFSET: Int,
+    ](
+        ctx: DeviceContext,
+        mut states_buf: DeviceBuffer[dtype],
+        shapes_buf: DeviceBuffer[dtype],
+        mut contacts_buf: DeviceBuffer[dtype],
+        mut contact_counts_buf: DeviceBuffer[dtype],
+        config: PhysicsConfig,
+        ground_y: Float64,
+    ) raises:
+        """Execute full physics step on GPU with flat terrain collision.
+
+        Simpler collision detection for environments with flat ground.
+
+        Args:
+            ctx: GPU device context.
+            states_buf: State buffer [BATCH, STATE_SIZE].
+            shapes_buf: Shape definitions [NUM_SHAPES, SHAPE_MAX_SIZE].
+            contacts_buf: Contact workspace [BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE].
+            contact_counts_buf: Contact counts [BATCH].
+            config: Physics configuration.
+            ground_y: Y coordinate of flat ground.
+        """
+        # Scalar parameters
+        var gravity_x = Scalar[dtype](config.gravity_x)
+        var gravity_y = Scalar[dtype](config.gravity_y)
+        var dt = Scalar[dtype](config.dt)
+        var friction = Scalar[dtype](config.friction)
+        var restitution = Scalar[dtype](config.restitution)
+        var baumgarte = Scalar[dtype](config.baumgarte)
+        var slop = Scalar[dtype](config.slop)
+        var ground_y_scalar = Scalar[dtype](ground_y)
+
+        # 1. Integrate velocities
+        SemiImplicitEuler.integrate_velocities_gpu[
+            BATCH, NUM_BODIES, STATE_SIZE, BODIES_OFFSET, FORCES_OFFSET
+        ](ctx, states_buf, gravity_x, gravity_y, dt)
+
+        # 2. Detect collisions against flat terrain
+        FlatTerrainCollision.detect_gpu[
+            BATCH,
+            NUM_BODIES,
+            NUM_SHAPES,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            BODIES_OFFSET,
+        ](
+            ctx,
+            states_buf,
             shapes_buf,
             contacts_buf,
             contact_counts_buf,
-            config.ground_y,
+            ground_y_scalar,
         )
 
         # 3. Solve velocity constraints
         for _ in range(config.velocity_iterations):
-            ImpulseSolver.solve_velocity_gpu[BATCH, NUM_BODIES, MAX_CONTACTS](
+            ImpulseSolver.solve_velocity_gpu[
+                BATCH, NUM_BODIES, MAX_CONTACTS, STATE_SIZE, BODIES_OFFSET
+            ](
                 ctx,
-                bodies_buf,
+                states_buf,
                 contacts_buf,
                 contact_counts_buf,
-                config.friction,
-                config.restitution,
+                friction,
+                restitution,
             )
 
         # 4. Integrate positions
-        SemiImplicitEuler.integrate_positions_gpu[BATCH, NUM_BODIES](
-            ctx, bodies_buf, config.dt
-        )
+        SemiImplicitEuler.integrate_positions_gpu[
+            BATCH, NUM_BODIES, STATE_SIZE, BODIES_OFFSET
+        ](ctx, states_buf, dt)
 
         # 5. Solve position constraints
         for _ in range(config.position_iterations):
-            ImpulseSolver.solve_position_gpu[BATCH, NUM_BODIES, MAX_CONTACTS](
+            ImpulseSolver.solve_position_gpu[
+                BATCH, NUM_BODIES, MAX_CONTACTS, STATE_SIZE, BODIES_OFFSET
+            ](
                 ctx,
-                bodies_buf,
+                states_buf,
                 contacts_buf,
                 contact_counts_buf,
-                config.baumgarte,
-                config.slop,
+                baumgarte,
+                slop,
             )
 
-        # Note: Force clearing handled by PhysicsState after copy back
+        ctx.synchronize()
 
     # =========================================================================
-    # GPU Physics Step with Joints
+    # GPU Physics Step - No Collision
+    # =========================================================================
+
+    @staticmethod
+    fn step_gpu_no_collision[
+        BATCH: Int,
+        NUM_BODIES: Int,
+        STATE_SIZE: Int,
+        BODIES_OFFSET: Int,
+        FORCES_OFFSET: Int,
+    ](
+        ctx: DeviceContext,
+        mut states_buf: DeviceBuffer[dtype],
+        config: PhysicsConfig,
+    ) raises:
+        """Execute physics step on GPU without collision detection.
+
+        Useful for environments like Acrobot where there's no ground contact.
+
+        Args:
+            ctx: GPU device context.
+            states_buf: State buffer [BATCH, STATE_SIZE].
+            config: Physics configuration.
+        """
+        # Scalar parameters
+        var gravity_x = Scalar[dtype](config.gravity_x)
+        var gravity_y = Scalar[dtype](config.gravity_y)
+        var dt = Scalar[dtype](config.dt)
+
+        # 1. Integrate velocities
+        SemiImplicitEuler.integrate_velocities_gpu[
+            BATCH, NUM_BODIES, STATE_SIZE, BODIES_OFFSET, FORCES_OFFSET
+        ](ctx, states_buf, gravity_x, gravity_y, dt)
+
+        # 2. Integrate positions
+        SemiImplicitEuler.integrate_positions_gpu[
+            BATCH, NUM_BODIES, STATE_SIZE, BODIES_OFFSET
+        ](ctx, states_buf, dt)
+
+        ctx.synchronize()
+
+    # =========================================================================
+    # GPU Physics Step - With Joint Constraints
     # =========================================================================
 
     @staticmethod
@@ -406,230 +395,122 @@ struct PhysicsKernel:
         NUM_SHAPES: Int,
         MAX_CONTACTS: Int,
         MAX_JOINTS: Int,
+        MAX_TERRAIN_EDGES: Int,
+        STATE_SIZE: Int,
+        BODIES_OFFSET: Int,
+        FORCES_OFFSET: Int,
+        JOINTS_OFFSET: Int,
+        EDGES_OFFSET: Int,
     ](
         ctx: DeviceContext,
-        mut bodies_buf: DeviceBuffer[dtype],
+        mut states_buf: DeviceBuffer[dtype],
         shapes_buf: DeviceBuffer[dtype],
-        forces_buf: DeviceBuffer[dtype],
+        edge_counts_buf: DeviceBuffer[dtype],
         mut contacts_buf: DeviceBuffer[dtype],
         mut contact_counts_buf: DeviceBuffer[dtype],
-        mut joints_buf: DeviceBuffer[dtype],
         joint_counts_buf: DeviceBuffer[dtype],
         config: PhysicsConfig,
     ) raises:
-        """Execute one physics step on GPU with joint constraints.
+        """Execute full physics step on GPU with edge terrain and joint constraints.
+
+        This is the most complete physics step, handling:
+        - Gravity and forces
+        - Edge terrain collision
+        - Contact constraints
+        - Revolute joint constraints
 
         Args:
             ctx: GPU device context.
-            bodies_buf: Body state buffer.
-            shapes_buf: Shape definitions buffer.
-            forces_buf: Forces buffer.
-            contacts_buf: Contacts buffer.
-            contact_counts_buf: Contact counts buffer.
-            joints_buf: Joints buffer.
-            joint_counts_buf: Joint counts buffer.
+            states_buf: State buffer [BATCH, STATE_SIZE].
+            shapes_buf: Shape definitions [NUM_SHAPES, SHAPE_MAX_SIZE].
+            edge_counts_buf: Edge counts per environment [BATCH].
+            contacts_buf: Contact workspace [BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE].
+            contact_counts_buf: Contact counts [BATCH].
+            joint_counts_buf: Joint counts per environment [BATCH].
             config: Physics configuration.
         """
-        # 1. Integrate velocities
-        SemiImplicitEuler.integrate_velocities_gpu[BATCH, NUM_BODIES](
-            ctx,
-            bodies_buf,
-            forces_buf,
-            config.gravity_x,
-            config.gravity_y,
-            config.dt,
-        )
+        # Scalar parameters
+        var gravity_x = Scalar[dtype](config.gravity_x)
+        var gravity_y = Scalar[dtype](config.gravity_y)
+        var dt = Scalar[dtype](config.dt)
+        var friction = Scalar[dtype](config.friction)
+        var restitution = Scalar[dtype](config.restitution)
+        var baumgarte = Scalar[dtype](config.baumgarte)
+        var slop = Scalar[dtype](config.slop)
 
-        # 2. Detect collisions
-        FlatTerrainCollision.detect_gpu[
-            BATCH, NUM_BODIES, NUM_SHAPES, MAX_CONTACTS
+        # 1. Integrate velocities (apply gravity + forces)
+        SemiImplicitEuler.integrate_velocities_gpu[
+            BATCH, NUM_BODIES, STATE_SIZE, BODIES_OFFSET, FORCES_OFFSET
+        ](ctx, states_buf, gravity_x, gravity_y, dt)
+
+        # 2. Detect collisions against edge terrain
+        EdgeTerrainCollision.detect_gpu[
+            BATCH,
+            NUM_BODIES,
+            NUM_SHAPES,
+            MAX_CONTACTS,
+            MAX_TERRAIN_EDGES,
+            STATE_SIZE,
+            BODIES_OFFSET,
+            EDGES_OFFSET,
         ](
             ctx,
-            bodies_buf,
+            states_buf,
             shapes_buf,
+            edge_counts_buf,
             contacts_buf,
             contact_counts_buf,
-            config.ground_y,
         )
 
-        # 3. Solve velocity constraints (contacts)
+        # 3. Solve velocity constraints (contacts + joints)
         for _ in range(config.velocity_iterations):
-            ImpulseSolver.solve_velocity_gpu[BATCH, NUM_BODIES, MAX_CONTACTS](
+            # Solve contact velocity constraints
+            ImpulseSolver.solve_velocity_gpu[
+                BATCH, NUM_BODIES, MAX_CONTACTS, STATE_SIZE, BODIES_OFFSET
+            ](
                 ctx,
-                bodies_buf,
+                states_buf,
                 contacts_buf,
                 contact_counts_buf,
-                config.friction,
-                config.restitution,
+                friction,
+                restitution,
             )
 
-        # 4. Solve joint velocity constraints
-        for _ in range(config.velocity_iterations):
-            RevoluteJointSolver.solve_velocity_gpu[BATCH, NUM_BODIES, MAX_JOINTS](
-                ctx,
-                bodies_buf,
-                joints_buf,
-                joint_counts_buf,
-                config.dt,
-            )
+            # Solve joint velocity constraints
+            RevoluteJointSolver.solve_velocity_gpu[
+                BATCH,
+                NUM_BODIES,
+                MAX_JOINTS,
+                STATE_SIZE,
+                BODIES_OFFSET,
+                JOINTS_OFFSET,
+            ](ctx, states_buf, joint_counts_buf, dt)
 
-        # 5. Integrate positions
-        SemiImplicitEuler.integrate_positions_gpu[BATCH, NUM_BODIES](
-            ctx, bodies_buf, config.dt
-        )
+        # 4. Integrate positions
+        SemiImplicitEuler.integrate_positions_gpu[
+            BATCH, NUM_BODIES, STATE_SIZE, BODIES_OFFSET
+        ](ctx, states_buf, dt)
 
-        # 6. Solve position constraints (contacts)
+        # 5. Solve position constraints (contacts + joints)
         for _ in range(config.position_iterations):
-            ImpulseSolver.solve_position_gpu[BATCH, NUM_BODIES, MAX_CONTACTS](
+            ImpulseSolver.solve_position_gpu[
+                BATCH, NUM_BODIES, MAX_CONTACTS, STATE_SIZE, BODIES_OFFSET
+            ](
                 ctx,
-                bodies_buf,
+                states_buf,
                 contacts_buf,
                 contact_counts_buf,
-                config.baumgarte,
-                config.slop,
+                baumgarte,
+                slop,
             )
 
-        # 7. Solve joint position constraints
-        for _ in range(config.position_iterations):
-            RevoluteJointSolver.solve_position_gpu[BATCH, NUM_BODIES, MAX_JOINTS](
-                ctx,
-                bodies_buf,
-                joints_buf,
-                joint_counts_buf,
-                config.baumgarte,
-                config.slop,
-            )
+            RevoluteJointSolver.solve_position_gpu[
+                BATCH,
+                NUM_BODIES,
+                MAX_JOINTS,
+                STATE_SIZE,
+                BODIES_OFFSET,
+                JOINTS_OFFSET,
+            ](ctx, states_buf, joint_counts_buf, baumgarte, slop)
 
-        # Note: Force clearing handled by PhysicsState after copy back
-
-    # =========================================================================
-    # Individual Operations (for custom simulation loops)
-    # =========================================================================
-
-    @staticmethod
-    fn integrate_velocities[
-        BATCH: Int,
-        NUM_BODIES: Int,
-    ](
-        mut bodies: LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, NUM_BODIES, BODY_STATE_SIZE),
-            MutAnyOrigin,
-        ],
-        forces: LayoutTensor[
-            dtype, Layout.row_major(BATCH, NUM_BODIES, 3), MutAnyOrigin
-        ],
-        config: PhysicsConfig,
-    ):
-        """CPU: Integrate velocities only."""
-        var integrator = SemiImplicitEuler()
-        integrator.integrate_velocities[BATCH, NUM_BODIES](
-            bodies, forces, config.gravity_x, config.gravity_y, config.dt
-        )
-
-    @staticmethod
-    fn integrate_positions[
-        BATCH: Int,
-        NUM_BODIES: Int,
-    ](
-        mut bodies: LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, NUM_BODIES, BODY_STATE_SIZE),
-            MutAnyOrigin,
-        ],
-        config: PhysicsConfig,
-    ):
-        """CPU: Integrate positions only."""
-        var integrator = SemiImplicitEuler()
-        integrator.integrate_positions[BATCH, NUM_BODIES](bodies, config.dt)
-
-    @staticmethod
-    fn detect_collisions[
-        BATCH: Int,
-        NUM_BODIES: Int,
-        NUM_SHAPES: Int,
-        MAX_CONTACTS: Int,
-    ](
-        bodies: LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, NUM_BODIES, BODY_STATE_SIZE),
-            MutAnyOrigin,
-        ],
-        shapes: LayoutTensor[
-            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
-        ],
-        mut contacts: LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE),
-            MutAnyOrigin,
-        ],
-        mut contact_counts: LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ],
-        config: PhysicsConfig,
-    ):
-        """CPU: Detect collisions only."""
-        var collision = FlatTerrainCollision(Float64(config.ground_y))
-        collision.detect[BATCH, NUM_BODIES, NUM_SHAPES, MAX_CONTACTS](
-            bodies, shapes, contacts, contact_counts
-        )
-
-    @staticmethod
-    fn solve_velocity_constraints[
-        BATCH: Int,
-        NUM_BODIES: Int,
-        MAX_CONTACTS: Int,
-    ](
-        mut bodies: LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, NUM_BODIES, BODY_STATE_SIZE),
-            MutAnyOrigin,
-        ],
-        contacts: LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE),
-            MutAnyOrigin,
-        ],
-        contact_counts: LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ],
-        config: PhysicsConfig,
-    ):
-        """CPU: Solve velocity constraints only."""
-        var solver = ImpulseSolver(
-            Float64(config.friction), Float64(config.restitution)
-        )
-        for _ in range(config.velocity_iterations):
-            solver.solve_velocity[BATCH, NUM_BODIES, MAX_CONTACTS](
-                bodies, contacts, contact_counts
-            )
-
-    @staticmethod
-    fn solve_position_constraints[
-        BATCH: Int,
-        NUM_BODIES: Int,
-        MAX_CONTACTS: Int,
-    ](
-        mut bodies: LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, NUM_BODIES, BODY_STATE_SIZE),
-            MutAnyOrigin,
-        ],
-        contacts: LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE),
-            MutAnyOrigin,
-        ],
-        contact_counts: LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ],
-        config: PhysicsConfig,
-    ):
-        """CPU: Solve position constraints only."""
-        var solver = ImpulseSolver(
-            Float64(config.friction), Float64(config.restitution)
-        )
-        for _ in range(config.position_iterations):
-            solver.solve_position[BATCH, NUM_BODIES, MAX_CONTACTS](
-                bodies, contacts, contact_counts
-            )
+        ctx.synchronize()
