@@ -819,12 +819,12 @@ struct ImpulseSolver(ConstraintSolver):
         )
 
     # =========================================================================
-    # Strided GPU Kernels for Flat State Layout
+    # Strided GPU Kernels for 2D State Layout
     # =========================================================================
     #
-    # These methods work with flat [BATCH, STATE_SIZE] layout for bodies.
+    # These methods work with 2D [BATCH, STATE_SIZE] layout for bodies.
     # Contacts are kept in standard layout as workspace (not persisted).
-    # Memory layout: state[env * ENV_STRIDE + BODIES_OFFSET + body * BODY_STATE_SIZE + field]
+    # Memory layout: state[env, BODIES_OFFSET + body * BODY_STATE_SIZE + field]
     # =========================================================================
 
     @always_inline
@@ -833,12 +833,12 @@ struct ImpulseSolver(ConstraintSolver):
         BATCH: Int,
         NUM_BODIES: Int,
         MAX_CONTACTS: Int,
-        ENV_STRIDE: Int,
+        STATE_SIZE: Int,
         BODIES_OFFSET: Int,
     ](
         state: LayoutTensor[
             dtype,
-            Layout.row_major(BATCH * ENV_STRIDE),
+            Layout.row_major(BATCH, STATE_SIZE),
             MutAnyOrigin,
         ],
         contacts: LayoutTensor[
@@ -852,32 +852,31 @@ struct ImpulseSolver(ConstraintSolver):
         friction: Scalar[dtype],
         restitution: Scalar[dtype],
     ):
-        """GPU kernel for velocity constraint solving with strided body layout."""
+        """GPU kernel for velocity constraint solving with 2D strided layout."""
         var env = Int(block_dim.x * block_idx.x + thread_idx.x)
         if env >= BATCH:
             return
 
-        var env_base = env * ENV_STRIDE + BODIES_OFFSET
         var count = Int(contact_counts[env])
 
         for c in range(count):
             var body_a_idx = Int(contacts[env, c, CONTACT_BODY_A])
             var body_b_idx = Int(contacts[env, c, CONTACT_BODY_B])
 
-            var body_a_base = env_base + body_a_idx * BODY_STATE_SIZE
+            var body_a_off = BODIES_OFFSET + body_a_idx * BODY_STATE_SIZE
 
             var point_x = contacts[env, c, CONTACT_POINT_X]
             var point_y = contacts[env, c, CONTACT_POINT_Y]
             var normal_x = contacts[env, c, CONTACT_NORMAL_X]
             var normal_y = contacts[env, c, CONTACT_NORMAL_Y]
 
-            var pos_a_x = state[body_a_base + IDX_X]
-            var pos_a_y = state[body_a_base + IDX_Y]
-            var vel_a_x = state[body_a_base + IDX_VX]
-            var vel_a_y = state[body_a_base + IDX_VY]
-            var omega_a = state[body_a_base + IDX_OMEGA]
-            var inv_mass_a = state[body_a_base + IDX_INV_MASS]
-            var inv_inertia_a = state[body_a_base + IDX_INV_INERTIA]
+            var pos_a_x = state[env, body_a_off + IDX_X]
+            var pos_a_y = state[env, body_a_off + IDX_Y]
+            var vel_a_x = state[env, body_a_off + IDX_VX]
+            var vel_a_y = state[env, body_a_off + IDX_VY]
+            var omega_a = state[env, body_a_off + IDX_OMEGA]
+            var inv_mass_a = state[env, body_a_off + IDX_INV_MASS]
+            var inv_inertia_a = state[env, body_a_off + IDX_INV_INERTIA]
 
             var inv_mass_b = Scalar[dtype](0)
             var inv_inertia_b = Scalar[dtype](0)
@@ -886,17 +885,17 @@ struct ImpulseSolver(ConstraintSolver):
             var omega_b = Scalar[dtype](0)
             var pos_b_x = point_x
             var pos_b_y = point_y
-            var body_b_base = 0
+            var body_b_off = 0
 
             if body_b_idx >= 0:
-                body_b_base = env_base + body_b_idx * BODY_STATE_SIZE
-                pos_b_x = rebind[Scalar[dtype]](state[body_b_base + IDX_X])
-                pos_b_y = rebind[Scalar[dtype]](state[body_b_base + IDX_Y])
-                vel_b_x = rebind[Scalar[dtype]](state[body_b_base + IDX_VX])
-                vel_b_y = rebind[Scalar[dtype]](state[body_b_base + IDX_VY])
-                omega_b = rebind[Scalar[dtype]](state[body_b_base + IDX_OMEGA])
-                inv_mass_b = rebind[Scalar[dtype]](state[body_b_base + IDX_INV_MASS])
-                inv_inertia_b = rebind[Scalar[dtype]](state[body_b_base + IDX_INV_INERTIA])
+                body_b_off = BODIES_OFFSET + body_b_idx * BODY_STATE_SIZE
+                pos_b_x = rebind[Scalar[dtype]](state[env, body_b_off + IDX_X])
+                pos_b_y = rebind[Scalar[dtype]](state[env, body_b_off + IDX_Y])
+                vel_b_x = rebind[Scalar[dtype]](state[env, body_b_off + IDX_VX])
+                vel_b_y = rebind[Scalar[dtype]](state[env, body_b_off + IDX_VY])
+                omega_b = rebind[Scalar[dtype]](state[env, body_b_off + IDX_OMEGA])
+                inv_mass_b = rebind[Scalar[dtype]](state[env, body_b_off + IDX_INV_MASS])
+                inv_inertia_b = rebind[Scalar[dtype]](state[env, body_b_off + IDX_INV_INERTIA])
 
             var ra_x = point_x - pos_a_x
             var ra_y = point_y - pos_a_y
@@ -932,23 +931,23 @@ struct ImpulseSolver(ConstraintSolver):
                 var impulse_x = j_normal * normal_x
                 var impulse_y = j_normal * normal_y
 
-                state[body_a_base + IDX_VX] = vel_a_x + impulse_x * inv_mass_a
-                state[body_a_base + IDX_VY] = vel_a_y + impulse_y * inv_mass_a
-                state[body_a_base + IDX_OMEGA] = omega_a + (ra_x * impulse_y - ra_y * impulse_x) * inv_inertia_a
+                state[env, body_a_off + IDX_VX] = vel_a_x + impulse_x * inv_mass_a
+                state[env, body_a_off + IDX_VY] = vel_a_y + impulse_y * inv_mass_a
+                state[env, body_a_off + IDX_OMEGA] = omega_a + (ra_x * impulse_y - ra_y * impulse_x) * inv_inertia_a
 
                 if body_b_idx >= 0:
-                    state[body_b_base + IDX_VX] = vel_b_x - impulse_x * inv_mass_b
-                    state[body_b_base + IDX_VY] = vel_b_y - impulse_y * inv_mass_b
-                    state[body_b_base + IDX_OMEGA] = omega_b - (rb_x * impulse_y - rb_y * impulse_x) * inv_inertia_b
+                    state[env, body_b_off + IDX_VX] = vel_b_x - impulse_x * inv_mass_b
+                    state[env, body_b_off + IDX_VY] = vel_b_y - impulse_y * inv_mass_b
+                    state[env, body_b_off + IDX_OMEGA] = omega_b - (rb_x * impulse_y - rb_y * impulse_x) * inv_inertia_b
 
                 # Update velocities for friction calculation
-                vel_a_x = rebind[Scalar[dtype]](state[body_a_base + IDX_VX])
-                vel_a_y = rebind[Scalar[dtype]](state[body_a_base + IDX_VY])
-                omega_a = rebind[Scalar[dtype]](state[body_a_base + IDX_OMEGA])
+                vel_a_x = rebind[Scalar[dtype]](state[env, body_a_off + IDX_VX])
+                vel_a_y = rebind[Scalar[dtype]](state[env, body_a_off + IDX_VY])
+                omega_a = rebind[Scalar[dtype]](state[env, body_a_off + IDX_OMEGA])
                 if body_b_idx >= 0:
-                    vel_b_x = rebind[Scalar[dtype]](state[body_b_base + IDX_VX])
-                    vel_b_y = rebind[Scalar[dtype]](state[body_b_base + IDX_VY])
-                    omega_b = rebind[Scalar[dtype]](state[body_b_base + IDX_OMEGA])
+                    vel_b_x = rebind[Scalar[dtype]](state[env, body_b_off + IDX_VX])
+                    vel_b_y = rebind[Scalar[dtype]](state[env, body_b_off + IDX_VY])
+                    omega_b = rebind[Scalar[dtype]](state[env, body_b_off + IDX_OMEGA])
 
                 # Recompute relative velocity for friction
                 vel_at_a_x = vel_a_x - omega_a * ra_y
@@ -984,14 +983,14 @@ struct ImpulseSolver(ConstraintSolver):
                 var friction_x = j_tangent * tangent_x
                 var friction_y = j_tangent * tangent_y
 
-                state[body_a_base + IDX_VX] = state[body_a_base + IDX_VX] + friction_x * inv_mass_a
-                state[body_a_base + IDX_VY] = state[body_a_base + IDX_VY] + friction_y * inv_mass_a
-                state[body_a_base + IDX_OMEGA] = state[body_a_base + IDX_OMEGA] + (ra_x * friction_y - ra_y * friction_x) * inv_inertia_a
+                state[env, body_a_off + IDX_VX] = state[env, body_a_off + IDX_VX] + friction_x * inv_mass_a
+                state[env, body_a_off + IDX_VY] = state[env, body_a_off + IDX_VY] + friction_y * inv_mass_a
+                state[env, body_a_off + IDX_OMEGA] = state[env, body_a_off + IDX_OMEGA] + (ra_x * friction_y - ra_y * friction_x) * inv_inertia_a
 
                 if body_b_idx >= 0:
-                    state[body_b_base + IDX_VX] = state[body_b_base + IDX_VX] - friction_x * inv_mass_b
-                    state[body_b_base + IDX_VY] = state[body_b_base + IDX_VY] - friction_y * inv_mass_b
-                    state[body_b_base + IDX_OMEGA] = state[body_b_base + IDX_OMEGA] - (rb_x * friction_y - rb_y * friction_x) * inv_inertia_b
+                    state[env, body_b_off + IDX_VX] = state[env, body_b_off + IDX_VX] - friction_x * inv_mass_b
+                    state[env, body_b_off + IDX_VY] = state[env, body_b_off + IDX_VY] - friction_y * inv_mass_b
+                    state[env, body_b_off + IDX_OMEGA] = state[env, body_b_off + IDX_OMEGA] - (rb_x * friction_y - rb_y * friction_x) * inv_inertia_b
 
     @always_inline
     @staticmethod
@@ -999,12 +998,12 @@ struct ImpulseSolver(ConstraintSolver):
         BATCH: Int,
         NUM_BODIES: Int,
         MAX_CONTACTS: Int,
-        ENV_STRIDE: Int,
+        STATE_SIZE: Int,
         BODIES_OFFSET: Int,
     ](
         state: LayoutTensor[
             dtype,
-            Layout.row_major(BATCH * ENV_STRIDE),
+            Layout.row_major(BATCH, STATE_SIZE),
             MutAnyOrigin,
         ],
         contacts: LayoutTensor[
@@ -1018,19 +1017,18 @@ struct ImpulseSolver(ConstraintSolver):
         baumgarte: Scalar[dtype],
         slop: Scalar[dtype],
     ):
-        """GPU kernel for position constraint solving with strided body layout."""
+        """GPU kernel for position constraint solving with 2D strided layout."""
         var env = Int(block_dim.x * block_idx.x + thread_idx.x)
         if env >= BATCH:
             return
 
-        var env_base = env * ENV_STRIDE + BODIES_OFFSET
         var count = Int(contact_counts[env])
 
         for c in range(count):
             var body_a_idx = Int(contacts[env, c, CONTACT_BODY_A])
             var body_b_idx = Int(contacts[env, c, CONTACT_BODY_B])
 
-            var body_a_base = env_base + body_a_idx * BODY_STATE_SIZE
+            var body_a_off = BODIES_OFFSET + body_a_idx * BODY_STATE_SIZE
 
             var normal_x = contacts[env, c, CONTACT_NORMAL_X]
             var normal_y = contacts[env, c, CONTACT_NORMAL_Y]
@@ -1042,12 +1040,12 @@ struct ImpulseSolver(ConstraintSolver):
 
             correction = baumgarte * correction
 
-            var inv_mass_a = rebind[Scalar[dtype]](state[body_a_base + IDX_INV_MASS])
+            var inv_mass_a = rebind[Scalar[dtype]](state[env, body_a_off + IDX_INV_MASS])
             var inv_mass_b = Scalar[dtype](0)
-            var body_b_base = 0
+            var body_b_off = 0
             if body_b_idx >= 0:
-                body_b_base = env_base + body_b_idx * BODY_STATE_SIZE
-                inv_mass_b = rebind[Scalar[dtype]](state[body_b_base + IDX_INV_MASS])
+                body_b_off = BODIES_OFFSET + body_b_idx * BODY_STATE_SIZE
+                inv_mass_b = rebind[Scalar[dtype]](state[env, body_b_off + IDX_INV_MASS])
 
             var total_inv_mass = inv_mass_a + inv_mass_b
             if total_inv_mass == Scalar[dtype](0):
@@ -1056,19 +1054,19 @@ struct ImpulseSolver(ConstraintSolver):
             var correction_a = correction * inv_mass_a / total_inv_mass
             var correction_b = correction * inv_mass_b / total_inv_mass
 
-            state[body_a_base + IDX_X] = state[body_a_base + IDX_X] + normal_x * correction_a
-            state[body_a_base + IDX_Y] = state[body_a_base + IDX_Y] + normal_y * correction_a
+            state[env, body_a_off + IDX_X] = state[env, body_a_off + IDX_X] + normal_x * correction_a
+            state[env, body_a_off + IDX_Y] = state[env, body_a_off + IDX_Y] + normal_y * correction_a
 
             if body_b_idx >= 0:
-                state[body_b_base + IDX_X] = state[body_b_base + IDX_X] - normal_x * correction_b
-                state[body_b_base + IDX_Y] = state[body_b_base + IDX_Y] - normal_y * correction_b
+                state[env, body_b_off + IDX_X] = state[env, body_b_off + IDX_X] - normal_x * correction_b
+                state[env, body_b_off + IDX_Y] = state[env, body_b_off + IDX_Y] - normal_y * correction_b
 
     @staticmethod
     fn solve_velocity_gpu_strided[
         BATCH: Int,
         NUM_BODIES: Int,
         MAX_CONTACTS: Int,
-        ENV_STRIDE: Int,
+        STATE_SIZE: Int,
         BODIES_OFFSET: Int,
     ](
         ctx: DeviceContext,
@@ -1081,7 +1079,7 @@ struct ImpulseSolver(ConstraintSolver):
         """Launch strided velocity constraint solver kernel."""
         var state = LayoutTensor[
             dtype,
-            Layout.row_major(BATCH * ENV_STRIDE),
+            Layout.row_major(BATCH, STATE_SIZE),
             MutAnyOrigin,
         ](state_buf.unsafe_ptr())
         var contacts = LayoutTensor[
@@ -1099,7 +1097,7 @@ struct ImpulseSolver(ConstraintSolver):
         fn kernel_wrapper(
             state: LayoutTensor[
                 dtype,
-                Layout.row_major(BATCH * ENV_STRIDE),
+                Layout.row_major(BATCH, STATE_SIZE),
                 MutAnyOrigin,
             ],
             contacts: LayoutTensor[
@@ -1114,7 +1112,7 @@ struct ImpulseSolver(ConstraintSolver):
             restitution: Scalar[dtype],
         ):
             ImpulseSolver.solve_velocity_kernel_strided[
-                BATCH, NUM_BODIES, MAX_CONTACTS, ENV_STRIDE, BODIES_OFFSET
+                BATCH, NUM_BODIES, MAX_CONTACTS, STATE_SIZE, BODIES_OFFSET
             ](state, contacts, contact_counts, friction, restitution)
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
@@ -1132,7 +1130,7 @@ struct ImpulseSolver(ConstraintSolver):
         BATCH: Int,
         NUM_BODIES: Int,
         MAX_CONTACTS: Int,
-        ENV_STRIDE: Int,
+        STATE_SIZE: Int,
         BODIES_OFFSET: Int,
     ](
         ctx: DeviceContext,
@@ -1145,7 +1143,7 @@ struct ImpulseSolver(ConstraintSolver):
         """Launch strided position constraint solver kernel."""
         var state = LayoutTensor[
             dtype,
-            Layout.row_major(BATCH * ENV_STRIDE),
+            Layout.row_major(BATCH, STATE_SIZE),
             MutAnyOrigin,
         ](state_buf.unsafe_ptr())
         var contacts = LayoutTensor[
@@ -1163,7 +1161,7 @@ struct ImpulseSolver(ConstraintSolver):
         fn kernel_wrapper(
             state: LayoutTensor[
                 dtype,
-                Layout.row_major(BATCH * ENV_STRIDE),
+                Layout.row_major(BATCH, STATE_SIZE),
                 MutAnyOrigin,
             ],
             contacts: LayoutTensor[
@@ -1178,7 +1176,7 @@ struct ImpulseSolver(ConstraintSolver):
             slop: Scalar[dtype],
         ):
             ImpulseSolver.solve_position_kernel_strided[
-                BATCH, NUM_BODIES, MAX_CONTACTS, ENV_STRIDE, BODIES_OFFSET
+                BATCH, NUM_BODIES, MAX_CONTACTS, STATE_SIZE, BODIES_OFFSET
             ](state, contacts, contact_counts, baumgarte, slop)
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](

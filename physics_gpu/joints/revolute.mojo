@@ -783,12 +783,12 @@ struct RevoluteJointSolver:
                         bodies[env, body_b, IDX_ANGLE] = cur_angle_b + rebind[Scalar[dtype]](inv_ib) * angle_correction / pos_eff_inertia
 
     # =========================================================================
-    # Strided GPU Kernels for Flat State Layout
+    # Strided GPU Kernels for 2D State Layout
     # =========================================================================
     #
-    # These methods work with flat [BATCH, STATE_SIZE] layout for bodies.
-    # Joints are kept in standard layout (stored in state at JOINTS_OFFSET).
-    # Memory layout: state[env * ENV_STRIDE + OFFSET + ...]
+    # These methods work with 2D [BATCH, STATE_SIZE] layout for bodies.
+    # Joints are stored at JOINTS_OFFSET within each environment's state.
+    # Memory layout: state[env, OFFSET + ...]
     # =========================================================================
 
     @always_inline
@@ -797,65 +797,62 @@ struct RevoluteJointSolver:
         BATCH: Int,
         NUM_BODIES: Int,
         MAX_JOINTS: Int,
-        ENV_STRIDE: Int,
+        STATE_SIZE: Int,
         BODIES_OFFSET: Int,
         JOINTS_OFFSET: Int,
     ](
         state: LayoutTensor[
             dtype,
-            Layout.row_major(BATCH * ENV_STRIDE),
+            Layout.row_major(BATCH, STATE_SIZE),
             MutAnyOrigin,
         ],
         joint_counts: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         dt: Scalar[dtype],
     ):
-        """GPU kernel for velocity constraint solving with strided body layout."""
+        """GPU kernel for velocity constraint solving with 2D strided layout."""
         var env = Int(block_dim.x * block_idx.x + thread_idx.x)
         if env >= BATCH:
             return
 
-        var env_base = env * ENV_STRIDE
-        var bodies_base = env_base + BODIES_OFFSET
-        var joints_base = env_base + JOINTS_OFFSET
         var n_joints = Int(joint_counts[env])
 
         for j in range(MAX_JOINTS):
             if j >= n_joints:
                 break
 
-            var joint_base = joints_base + j * JOINT_DATA_SIZE
-            var joint_type = Int(state[joint_base + JOINT_TYPE])
+            var joint_off = JOINTS_OFFSET + j * JOINT_DATA_SIZE
+            var joint_type = Int(state[env, joint_off + JOINT_TYPE])
             if joint_type != JOINT_REVOLUTE:
                 continue
 
-            var body_a = Int(state[joint_base + JOINT_BODY_A])
-            var body_b = Int(state[joint_base + JOINT_BODY_B])
+            var body_a = Int(state[env, joint_off + JOINT_BODY_A])
+            var body_b = Int(state[env, joint_off + JOINT_BODY_B])
 
-            var body_a_base = bodies_base + body_a * BODY_STATE_SIZE
-            var body_b_base = bodies_base + body_b * BODY_STATE_SIZE
+            var body_a_off = BODIES_OFFSET + body_a * BODY_STATE_SIZE
+            var body_b_off = BODIES_OFFSET + body_b * BODY_STATE_SIZE
 
-            var xa = state[body_a_base + IDX_X]
-            var ya = state[body_a_base + IDX_Y]
-            var angle_a = state[body_a_base + IDX_ANGLE]
-            var vxa = state[body_a_base + IDX_VX]
-            var vya = state[body_a_base + IDX_VY]
-            var wa = state[body_a_base + IDX_OMEGA]
-            var inv_ma = state[body_a_base + IDX_INV_MASS]
-            var inv_ia = state[body_a_base + IDX_INV_INERTIA]
+            var xa = state[env, body_a_off + IDX_X]
+            var ya = state[env, body_a_off + IDX_Y]
+            var angle_a = state[env, body_a_off + IDX_ANGLE]
+            var vxa = state[env, body_a_off + IDX_VX]
+            var vya = state[env, body_a_off + IDX_VY]
+            var wa = state[env, body_a_off + IDX_OMEGA]
+            var inv_ma = state[env, body_a_off + IDX_INV_MASS]
+            var inv_ia = state[env, body_a_off + IDX_INV_INERTIA]
 
-            var xb = state[body_b_base + IDX_X]
-            var yb = state[body_b_base + IDX_Y]
-            var angle_b = state[body_b_base + IDX_ANGLE]
-            var vxb = state[body_b_base + IDX_VX]
-            var vyb = state[body_b_base + IDX_VY]
-            var wb = state[body_b_base + IDX_OMEGA]
-            var inv_mb = state[body_b_base + IDX_INV_MASS]
-            var inv_ib = state[body_b_base + IDX_INV_INERTIA]
+            var xb = state[env, body_b_off + IDX_X]
+            var yb = state[env, body_b_off + IDX_Y]
+            var angle_b = state[env, body_b_off + IDX_ANGLE]
+            var vxb = state[env, body_b_off + IDX_VX]
+            var vyb = state[env, body_b_off + IDX_VY]
+            var wb = state[env, body_b_off + IDX_OMEGA]
+            var inv_mb = state[env, body_b_off + IDX_INV_MASS]
+            var inv_ib = state[env, body_b_off + IDX_INV_INERTIA]
 
-            var local_ax = state[joint_base + JOINT_ANCHOR_AX]
-            var local_ay = state[joint_base + JOINT_ANCHOR_AY]
-            var local_bx = state[joint_base + JOINT_ANCHOR_BX]
-            var local_by = state[joint_base + JOINT_ANCHOR_BY]
+            var local_ax = state[env, joint_off + JOINT_ANCHOR_AX]
+            var local_ay = state[env, joint_off + JOINT_ANCHOR_AY]
+            var local_bx = state[env, joint_off + JOINT_ANCHOR_BX]
+            var local_by = state[env, joint_off + JOINT_ANCHOR_BY]
 
             var cos_a = cos(angle_a)
             var sin_a = sin(angle_a)
@@ -891,43 +888,43 @@ struct RevoluteJointSolver:
             var impulse_x = -(inv_k11 * cdot_x + inv_k12 * cdot_y)
             var impulse_y = -(inv_k12 * cdot_x + inv_k22 * cdot_y)
 
-            state[body_a_base + IDX_VX] = vxa - inv_ma * impulse_x
-            state[body_a_base + IDX_VY] = vya - inv_ma * impulse_y
-            state[body_a_base + IDX_OMEGA] = wa - inv_ia * (rax * impulse_y - ray * impulse_x)
+            state[env, body_a_off + IDX_VX] = vxa - inv_ma * impulse_x
+            state[env, body_a_off + IDX_VY] = vya - inv_ma * impulse_y
+            state[env, body_a_off + IDX_OMEGA] = wa - inv_ia * (rax * impulse_y - ray * impulse_x)
 
-            state[body_b_base + IDX_VX] = vxb + inv_mb * impulse_x
-            state[body_b_base + IDX_VY] = vyb + inv_mb * impulse_y
-            state[body_b_base + IDX_OMEGA] = wb + inv_ib * (rbx * impulse_y - rby * impulse_x)
+            state[env, body_b_off + IDX_VX] = vxb + inv_mb * impulse_x
+            state[env, body_b_off + IDX_VY] = vyb + inv_mb * impulse_y
+            state[env, body_b_off + IDX_OMEGA] = wb + inv_ib * (rbx * impulse_y - rby * impulse_x)
 
             # Spring handling
-            var flags = Int(state[joint_base + JOINT_FLAGS])
+            var flags = Int(state[env, joint_off + JOINT_FLAGS])
             if flags & JOINT_FLAG_SPRING_ENABLED:
-                var stiffness = state[joint_base + JOINT_STIFFNESS]
-                var damping = state[joint_base + JOINT_DAMPING]
-                var ref_angle = state[joint_base + JOINT_REF_ANGLE]
+                var stiffness = state[env, joint_off + JOINT_STIFFNESS]
+                var damping = state[env, joint_off + JOINT_DAMPING]
+                var ref_angle = state[env, joint_off + JOINT_REF_ANGLE]
 
                 var current_angle = angle_b - angle_a
                 var angle_error = current_angle - ref_angle
-                var rel_omega = state[body_b_base + IDX_OMEGA] - state[body_a_base + IDX_OMEGA]
+                var rel_omega = state[env, body_b_off + IDX_OMEGA] - state[env, body_a_off + IDX_OMEGA]
 
                 var spring_torque = -stiffness * angle_error - damping * rel_omega
                 var angular_impulse = spring_torque * dt
 
                 var eff_inertia = inv_ia + inv_ib
                 if eff_inertia > Scalar[dtype](1e-10):
-                    state[body_a_base + IDX_OMEGA] = state[body_a_base + IDX_OMEGA] - inv_ia * angular_impulse / eff_inertia
-                    state[body_b_base + IDX_OMEGA] = state[body_b_base + IDX_OMEGA] + inv_ib * angular_impulse / eff_inertia
+                    state[env, body_a_off + IDX_OMEGA] = state[env, body_a_off + IDX_OMEGA] - inv_ia * angular_impulse / eff_inertia
+                    state[env, body_b_off + IDX_OMEGA] = state[env, body_b_off + IDX_OMEGA] + inv_ib * angular_impulse / eff_inertia
 
             # Handle angle limits
             if flags & JOINT_FLAG_LIMIT_ENABLED:
-                var lower_limit = rebind[Scalar[dtype]](state[joint_base + JOINT_LOWER_LIMIT])
-                var upper_limit = rebind[Scalar[dtype]](state[joint_base + JOINT_UPPER_LIMIT])
-                var lim_ref_angle = rebind[Scalar[dtype]](state[joint_base + JOINT_REF_ANGLE])
+                var lower_limit = rebind[Scalar[dtype]](state[env, joint_off + JOINT_LOWER_LIMIT])
+                var upper_limit = rebind[Scalar[dtype]](state[env, joint_off + JOINT_UPPER_LIMIT])
+                var lim_ref_angle = rebind[Scalar[dtype]](state[env, joint_off + JOINT_REF_ANGLE])
 
-                var current_wa = rebind[Scalar[dtype]](state[body_a_base + IDX_OMEGA])
-                var current_wb = rebind[Scalar[dtype]](state[body_b_base + IDX_OMEGA])
-                var current_angle_a = rebind[Scalar[dtype]](state[body_a_base + IDX_ANGLE])
-                var current_angle_b = rebind[Scalar[dtype]](state[body_b_base + IDX_ANGLE])
+                var current_wa = rebind[Scalar[dtype]](state[env, body_a_off + IDX_OMEGA])
+                var current_wb = rebind[Scalar[dtype]](state[env, body_b_off + IDX_OMEGA])
+                var current_angle_a = rebind[Scalar[dtype]](state[env, body_a_off + IDX_ANGLE])
+                var current_angle_b = rebind[Scalar[dtype]](state[env, body_b_off + IDX_ANGLE])
                 var relative_angle = current_angle_b - current_angle_a - lim_ref_angle
 
                 var rel_omega = current_wb - current_wa
@@ -944,8 +941,8 @@ struct RevoluteJointSolver:
                             limit_impulse = -rel_omega / lim_eff_inertia
 
                     if limit_impulse != Scalar[dtype](0.0):
-                        state[body_a_base + IDX_OMEGA] = current_wa - rebind[Scalar[dtype]](inv_ia) * limit_impulse
-                        state[body_b_base + IDX_OMEGA] = current_wb + rebind[Scalar[dtype]](inv_ib) * limit_impulse
+                        state[env, body_a_off + IDX_OMEGA] = current_wa - rebind[Scalar[dtype]](inv_ia) * limit_impulse
+                        state[env, body_b_off + IDX_OMEGA] = current_wb + rebind[Scalar[dtype]](inv_ib) * limit_impulse
 
     @always_inline
     @staticmethod
@@ -953,60 +950,57 @@ struct RevoluteJointSolver:
         BATCH: Int,
         NUM_BODIES: Int,
         MAX_JOINTS: Int,
-        ENV_STRIDE: Int,
+        STATE_SIZE: Int,
         BODIES_OFFSET: Int,
         JOINTS_OFFSET: Int,
     ](
         state: LayoutTensor[
             dtype,
-            Layout.row_major(BATCH * ENV_STRIDE),
+            Layout.row_major(BATCH, STATE_SIZE),
             MutAnyOrigin,
         ],
         joint_counts: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         baumgarte: Scalar[dtype],
         slop: Scalar[dtype],
     ):
-        """GPU kernel for position constraint solving with strided body layout."""
+        """GPU kernel for position constraint solving with 2D strided layout."""
         var env = Int(block_dim.x * block_idx.x + thread_idx.x)
         if env >= BATCH:
             return
 
-        var env_base = env * ENV_STRIDE
-        var bodies_base = env_base + BODIES_OFFSET
-        var joints_base = env_base + JOINTS_OFFSET
         var n_joints = Int(joint_counts[env])
 
         for j in range(MAX_JOINTS):
             if j >= n_joints:
                 break
 
-            var joint_base = joints_base + j * JOINT_DATA_SIZE
-            var joint_type = Int(state[joint_base + JOINT_TYPE])
+            var joint_off = JOINTS_OFFSET + j * JOINT_DATA_SIZE
+            var joint_type = Int(state[env, joint_off + JOINT_TYPE])
             if joint_type != JOINT_REVOLUTE:
                 continue
 
-            var body_a = Int(state[joint_base + JOINT_BODY_A])
-            var body_b = Int(state[joint_base + JOINT_BODY_B])
+            var body_a = Int(state[env, joint_off + JOINT_BODY_A])
+            var body_b = Int(state[env, joint_off + JOINT_BODY_B])
 
-            var body_a_base = bodies_base + body_a * BODY_STATE_SIZE
-            var body_b_base = bodies_base + body_b * BODY_STATE_SIZE
+            var body_a_off = BODIES_OFFSET + body_a * BODY_STATE_SIZE
+            var body_b_off = BODIES_OFFSET + body_b * BODY_STATE_SIZE
 
-            var xa = state[body_a_base + IDX_X]
-            var ya = state[body_a_base + IDX_Y]
-            var angle_a = state[body_a_base + IDX_ANGLE]
-            var inv_ma = state[body_a_base + IDX_INV_MASS]
-            var inv_ia = state[body_a_base + IDX_INV_INERTIA]
+            var xa = state[env, body_a_off + IDX_X]
+            var ya = state[env, body_a_off + IDX_Y]
+            var angle_a = state[env, body_a_off + IDX_ANGLE]
+            var inv_ma = state[env, body_a_off + IDX_INV_MASS]
+            var inv_ia = state[env, body_a_off + IDX_INV_INERTIA]
 
-            var xb = state[body_b_base + IDX_X]
-            var yb = state[body_b_base + IDX_Y]
-            var angle_b = state[body_b_base + IDX_ANGLE]
-            var inv_mb = state[body_b_base + IDX_INV_MASS]
-            var inv_ib = state[body_b_base + IDX_INV_INERTIA]
+            var xb = state[env, body_b_off + IDX_X]
+            var yb = state[env, body_b_off + IDX_Y]
+            var angle_b = state[env, body_b_off + IDX_ANGLE]
+            var inv_mb = state[env, body_b_off + IDX_INV_MASS]
+            var inv_ib = state[env, body_b_off + IDX_INV_INERTIA]
 
-            var local_ax = state[joint_base + JOINT_ANCHOR_AX]
-            var local_ay = state[joint_base + JOINT_ANCHOR_AY]
-            var local_bx = state[joint_base + JOINT_ANCHOR_BX]
-            var local_by = state[joint_base + JOINT_ANCHOR_BY]
+            var local_ax = state[env, joint_off + JOINT_ANCHOR_AX]
+            var local_ay = state[env, joint_off + JOINT_ANCHOR_AY]
+            var local_bx = state[env, joint_off + JOINT_ANCHOR_BX]
+            var local_by = state[env, joint_off + JOINT_ANCHOR_BY]
 
             var cos_a = cos(angle_a)
             var sin_a = sin(angle_a)
@@ -1046,23 +1040,23 @@ struct RevoluteJointSolver:
             var correction_x = -baumgarte * (inv_k11 * cx + inv_k12 * cy)
             var correction_y = -baumgarte * (inv_k12 * cx + inv_k22 * cy)
 
-            state[body_a_base + IDX_X] = xa - inv_ma * correction_x
-            state[body_a_base + IDX_Y] = ya - inv_ma * correction_y
-            state[body_a_base + IDX_ANGLE] = angle_a - inv_ia * (rax * correction_y - ray * correction_x)
+            state[env, body_a_off + IDX_X] = xa - inv_ma * correction_x
+            state[env, body_a_off + IDX_Y] = ya - inv_ma * correction_y
+            state[env, body_a_off + IDX_ANGLE] = angle_a - inv_ia * (rax * correction_y - ray * correction_x)
 
-            state[body_b_base + IDX_X] = xb + inv_mb * correction_x
-            state[body_b_base + IDX_Y] = yb + inv_mb * correction_y
-            state[body_b_base + IDX_ANGLE] = angle_b + inv_ib * (rbx * correction_y - rby * correction_x)
+            state[env, body_b_off + IDX_X] = xb + inv_mb * correction_x
+            state[env, body_b_off + IDX_Y] = yb + inv_mb * correction_y
+            state[env, body_b_off + IDX_ANGLE] = angle_b + inv_ib * (rbx * correction_y - rby * correction_x)
 
             # Handle angle limit position correction
-            var flags = Int(state[joint_base + JOINT_FLAGS])
+            var flags = Int(state[env, joint_off + JOINT_FLAGS])
             if flags & JOINT_FLAG_LIMIT_ENABLED:
-                var lower_limit = rebind[Scalar[dtype]](state[joint_base + JOINT_LOWER_LIMIT])
-                var upper_limit = rebind[Scalar[dtype]](state[joint_base + JOINT_UPPER_LIMIT])
-                var pos_ref_angle = rebind[Scalar[dtype]](state[joint_base + JOINT_REF_ANGLE])
+                var lower_limit = rebind[Scalar[dtype]](state[env, joint_off + JOINT_LOWER_LIMIT])
+                var upper_limit = rebind[Scalar[dtype]](state[env, joint_off + JOINT_UPPER_LIMIT])
+                var pos_ref_angle = rebind[Scalar[dtype]](state[env, joint_off + JOINT_REF_ANGLE])
 
-                var cur_angle_a = rebind[Scalar[dtype]](state[body_a_base + IDX_ANGLE])
-                var cur_angle_b = rebind[Scalar[dtype]](state[body_b_base + IDX_ANGLE])
+                var cur_angle_a = rebind[Scalar[dtype]](state[env, body_a_off + IDX_ANGLE])
+                var cur_angle_b = rebind[Scalar[dtype]](state[env, body_b_off + IDX_ANGLE])
                 var relative_angle = cur_angle_b - cur_angle_a - pos_ref_angle
 
                 var pos_eff_inertia = rebind[Scalar[dtype]](inv_ia) + rebind[Scalar[dtype]](inv_ib)
@@ -1075,15 +1069,15 @@ struct RevoluteJointSolver:
                         angle_correction = baumgarte * (upper_limit - relative_angle)
 
                     if angle_correction != Scalar[dtype](0.0):
-                        state[body_a_base + IDX_ANGLE] = cur_angle_a - rebind[Scalar[dtype]](inv_ia) * angle_correction / pos_eff_inertia
-                        state[body_b_base + IDX_ANGLE] = cur_angle_b + rebind[Scalar[dtype]](inv_ib) * angle_correction / pos_eff_inertia
+                        state[env, body_a_off + IDX_ANGLE] = cur_angle_a - rebind[Scalar[dtype]](inv_ia) * angle_correction / pos_eff_inertia
+                        state[env, body_b_off + IDX_ANGLE] = cur_angle_b + rebind[Scalar[dtype]](inv_ib) * angle_correction / pos_eff_inertia
 
     @staticmethod
     fn solve_velocity_gpu_strided[
         BATCH: Int,
         NUM_BODIES: Int,
         MAX_JOINTS: Int,
-        ENV_STRIDE: Int,
+        STATE_SIZE: Int,
         BODIES_OFFSET: Int,
         JOINTS_OFFSET: Int,
     ](
@@ -1092,9 +1086,9 @@ struct RevoluteJointSolver:
         joint_counts_buf: DeviceBuffer[dtype],
         dt: Scalar[dtype],
     ) raises:
-        """Solve velocity constraints on GPU with strided layout."""
+        """Solve velocity constraints on GPU with 2D strided layout."""
         var state = LayoutTensor[
-            dtype, Layout.row_major(BATCH * ENV_STRIDE), MutAnyOrigin
+            dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
         ](state_buf.unsafe_ptr())
         var joint_counts = LayoutTensor[
             dtype, Layout.row_major(BATCH), MutAnyOrigin
@@ -1105,13 +1099,13 @@ struct RevoluteJointSolver:
         @always_inline
         fn kernel_wrapper(
             state: LayoutTensor[
-                dtype, Layout.row_major(BATCH * ENV_STRIDE), MutAnyOrigin
+                dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
             ],
             joint_counts: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
             dt: Scalar[dtype],
         ):
             RevoluteJointSolver._solve_velocity_kernel_strided[
-                BATCH, NUM_BODIES, MAX_JOINTS, ENV_STRIDE, BODIES_OFFSET, JOINTS_OFFSET
+                BATCH, NUM_BODIES, MAX_JOINTS, STATE_SIZE, BODIES_OFFSET, JOINTS_OFFSET
             ](state, joint_counts, dt)
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
@@ -1125,7 +1119,7 @@ struct RevoluteJointSolver:
         BATCH: Int,
         NUM_BODIES: Int,
         MAX_JOINTS: Int,
-        ENV_STRIDE: Int,
+        STATE_SIZE: Int,
         BODIES_OFFSET: Int,
         JOINTS_OFFSET: Int,
     ](
@@ -1135,9 +1129,9 @@ struct RevoluteJointSolver:
         baumgarte: Scalar[dtype],
         slop: Scalar[dtype],
     ) raises:
-        """Solve position constraints on GPU with strided layout."""
+        """Solve position constraints on GPU with 2D strided layout."""
         var state = LayoutTensor[
-            dtype, Layout.row_major(BATCH * ENV_STRIDE), MutAnyOrigin
+            dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
         ](state_buf.unsafe_ptr())
         var joint_counts = LayoutTensor[
             dtype, Layout.row_major(BATCH), MutAnyOrigin
@@ -1148,14 +1142,14 @@ struct RevoluteJointSolver:
         @always_inline
         fn kernel_wrapper(
             state: LayoutTensor[
-                dtype, Layout.row_major(BATCH * ENV_STRIDE), MutAnyOrigin
+                dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
             ],
             joint_counts: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
             baumgarte: Scalar[dtype],
             slop: Scalar[dtype],
         ):
             RevoluteJointSolver._solve_position_kernel_strided[
-                BATCH, NUM_BODIES, MAX_JOINTS, ENV_STRIDE, BODIES_OFFSET, JOINTS_OFFSET
+                BATCH, NUM_BODIES, MAX_JOINTS, STATE_SIZE, BODIES_OFFSET, JOINTS_OFFSET
             ](state, joint_counts, baumgarte, slop)
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](

@@ -718,11 +718,11 @@ struct EdgeTerrainCollision(CollisionSystem):
         )
 
     # =========================================================================
-    # Strided GPU Kernels for Flat State Layout
+    # Strided GPU Kernels for 2D State Layout
     # =========================================================================
     #
-    # These methods work with flat [BATCH, STATE_SIZE] layout.
-    # Bodies and edges are at offsets in the flat state.
+    # These methods work with 2D [BATCH, STATE_SIZE] layout.
+    # Bodies and edges are at offsets within each environment's state.
     # Shapes are shared across all environments (separate buffer).
     # Contacts are workspace output.
     # =========================================================================
@@ -735,13 +735,13 @@ struct EdgeTerrainCollision(CollisionSystem):
         NUM_SHAPES: Int,
         MAX_CONTACTS: Int,
         MAX_EDGES: Int,
-        ENV_STRIDE: Int,
+        STATE_SIZE: Int,
         BODIES_OFFSET: Int,
         EDGES_OFFSET: Int,
     ](
         state: LayoutTensor[
             dtype,
-            Layout.row_major(BATCH * ENV_STRIDE),
+            Layout.row_major(BATCH, STATE_SIZE),
             MutAnyOrigin,
         ],
         shapes: LayoutTensor[
@@ -757,25 +757,21 @@ struct EdgeTerrainCollision(CollisionSystem):
             dtype, Layout.row_major(BATCH), MutAnyOrigin
         ],
     ):
-        """GPU kernel for edge terrain collision with strided layout."""
+        """GPU kernel for edge terrain collision with 2D strided layout."""
         var env = Int(block_dim.x * block_idx.x + thread_idx.x)
         if env >= BATCH:
             return
-
-        var env_base = env * ENV_STRIDE
-        var bodies_base = env_base + BODIES_OFFSET
-        var edges_base = env_base + EDGES_OFFSET
 
         var count = 0
         var n_edges = Int(edge_counts[env])
 
         for body_idx in range(NUM_BODIES):
-            var body_base = bodies_base + body_idx * BODY_STATE_SIZE
+            var body_off = BODIES_OFFSET + body_idx * BODY_STATE_SIZE
 
-            var body_x = state[body_base + IDX_X]
-            var body_y = state[body_base + IDX_Y]
-            var body_angle = state[body_base + IDX_ANGLE]
-            var shape_idx = Int(state[body_base + IDX_SHAPE])
+            var body_x = state[env, body_off + IDX_X]
+            var body_y = state[env, body_off + IDX_Y]
+            var body_angle = state[env, body_off + IDX_ANGLE]
+            var shape_idx = Int(state[env, body_off + IDX_SHAPE])
             var shape_type = Int(shapes[shape_idx, 0])
 
             var cos_a = cos(body_angle)
@@ -797,13 +793,13 @@ struct EdgeTerrainCollision(CollisionSystem):
                         if edge_idx >= n_edges:
                             break
 
-                        var edge_offset = edges_base + edge_idx * 6
-                        var e_x0 = state[edge_offset + 0]
-                        var e_y0 = state[edge_offset + 1]
-                        var e_x1 = state[edge_offset + 2]
-                        var e_y1 = state[edge_offset + 3]
-                        var e_nx = state[edge_offset + 4]
-                        var e_ny = state[edge_offset + 5]
+                        var edge_off = EDGES_OFFSET + edge_idx * 6
+                        var e_x0 = state[env, edge_off + 0]
+                        var e_y0 = state[env, edge_off + 1]
+                        var e_x1 = state[env, edge_off + 2]
+                        var e_y1 = state[env, edge_off + 3]
+                        var e_nx = state[env, edge_off + 4]
+                        var e_ny = state[env, edge_off + 5]
 
                         var x_min = e_x0
                         var x_max = e_x1
@@ -858,13 +854,13 @@ struct EdgeTerrainCollision(CollisionSystem):
                     if edge_idx >= n_edges:
                         break
 
-                    var edge_offset = edges_base + edge_idx * 6
-                    var e_x0 = state[edge_offset + 0]
-                    var e_y0 = state[edge_offset + 1]
-                    var e_x1 = state[edge_offset + 2]
-                    var e_y1 = state[edge_offset + 3]
-                    var e_nx = state[edge_offset + 4]
-                    var e_ny = state[edge_offset + 5]
+                    var edge_off = EDGES_OFFSET + edge_idx * 6
+                    var e_x0 = state[env, edge_off + 0]
+                    var e_y0 = state[env, edge_off + 1]
+                    var e_x1 = state[env, edge_off + 2]
+                    var e_y1 = state[env, edge_off + 3]
+                    var e_nx = state[env, edge_off + 4]
+                    var e_ny = state[env, edge_off + 5]
 
                     var edge_dx = e_x1 - e_x0
                     var edge_dy = e_y1 - e_y0
@@ -914,7 +910,7 @@ struct EdgeTerrainCollision(CollisionSystem):
         NUM_SHAPES: Int,
         MAX_CONTACTS: Int,
         MAX_EDGES: Int,
-        ENV_STRIDE: Int,
+        STATE_SIZE: Int,
         BODIES_OFFSET: Int,
         EDGES_OFFSET: Int,
     ](
@@ -927,7 +923,7 @@ struct EdgeTerrainCollision(CollisionSystem):
     ) raises:
         """Launch strided collision detection kernel on GPU."""
         var state = LayoutTensor[
-            dtype, Layout.row_major(BATCH * ENV_STRIDE), MutAnyOrigin
+            dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
         ](state_buf.unsafe_ptr())
         var shapes = LayoutTensor[
             dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
@@ -949,7 +945,7 @@ struct EdgeTerrainCollision(CollisionSystem):
         @always_inline
         fn kernel_wrapper(
             state: LayoutTensor[
-                dtype, Layout.row_major(BATCH * ENV_STRIDE), MutAnyOrigin
+                dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
             ],
             shapes: LayoutTensor[
                 dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
@@ -965,7 +961,7 @@ struct EdgeTerrainCollision(CollisionSystem):
             ],
         ):
             EdgeTerrainCollision.detect_kernel_strided[
-                BATCH, NUM_BODIES, NUM_SHAPES, MAX_CONTACTS, MAX_EDGES, ENV_STRIDE, BODIES_OFFSET, EDGES_OFFSET
+                BATCH, NUM_BODIES, NUM_SHAPES, MAX_CONTACTS, MAX_EDGES, STATE_SIZE, BODIES_OFFSET, EDGES_OFFSET
             ](state, shapes, edge_counts, contacts, contact_counts)
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
