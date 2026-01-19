@@ -17,7 +17,7 @@ from time import perf_counter_ns
 from gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOAgent
-from envs.lunar_lander import LunarLanderEnv
+from envs.lunar_lander_v2_gpu import LunarLanderV2GPU
 
 
 # =============================================================================
@@ -59,11 +59,9 @@ fn main() raises:
     # =========================================================================
 
     print("Creating " + String(N_ENVS) + " CPU environments...")
-    var envs = List[LunarLanderEnv[dtype]]()
+    var envs = List[LunarLanderV2GPU[dtype]]()
     for i in range(N_ENVS):
-        var env = LunarLanderEnv[dtype](
-            continuous=False,
-            gravity=-10.0,
+        var env = LunarLanderV2GPU[dtype](
             enable_wind=True,
             wind_power=15.0,
             turbulence_power=1.5,
@@ -102,7 +100,7 @@ fn main() raises:
             clip_value=True,
             norm_adv_per_minibatch=True,
             checkpoint_every=500,
-            checkpoint_path="ppo_lunar_hybrid_test.ckpt",
+            checkpoint_path="ppo_lunar_hybrid_v2.ckpt",
         )
 
         # agent.load_checkpoint("ppo_lunar_hybrid.ckpt")

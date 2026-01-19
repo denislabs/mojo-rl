@@ -105,7 +105,9 @@ fn test_physics_comparison() raises:
 
     # Set V2 leg positions
     var left_leg_x = init_x - leg_away
-    var left_leg_y = init_y - leg_down - (10.0 / SCALE)  # Adjusted for V2's leg attachment
+    var left_leg_y = (
+        init_y - leg_down - (10.0 / SCALE)
+    )  # Adjusted for V2's leg attachment
     var right_leg_x = init_x + leg_away
     var right_leg_y = init_y - leg_down - (10.0 / SCALE)
 
@@ -131,8 +133,26 @@ fn test_physics_comparison() raises:
     var obs_v2 = env_v2.get_observation(0)
 
     print("Initial observations:")
-    print("  V1: x=", obs_v1[0], " y=", obs_v1[1], " vx=", obs_v1[2], " vy=", obs_v1[3])
-    print("  V2: x=", obs_v2[0], " y=", obs_v2[1], " vx=", obs_v2[2], " vy=", obs_v2[3])
+    print(
+        "  V1: x=",
+        obs_v1[0],
+        " y=",
+        obs_v1[1],
+        " vx=",
+        obs_v1[2],
+        " vy=",
+        obs_v1[3],
+    )
+    print(
+        "  V2: x=",
+        obs_v2[0],
+        " y=",
+        obs_v2[1],
+        " vx=",
+        obs_v2[2],
+        " vy=",
+        obs_v2[3],
+    )
     print()
 
     # Define action sequence for testing
@@ -170,7 +190,10 @@ fn test_physics_comparison() raises:
     var total_x_diff: Float64 = 0.0
     var total_y_diff: Float64 = 0.0
 
-    print("Step | Action | V1 y    | V2 y    | y diff  | V1 vy   | V2 vy   | vy diff")
+    print(
+        "Step | Action | V1 y    | V2 y    | y diff  | V1 vy   | V2 vy   | vy"
+        " diff"
+    )
     print("-" * 75)
 
     var v1_done = False
@@ -237,7 +260,23 @@ fn test_physics_comparison() raises:
 
         # Print every 5 steps
         if step % 5 == 0 or step < 5:
-            print(step, "    |", action, "     |", v1_y, "|", v2_y, "|", y_diff, "|", v1_vy, "|", v2_vy, "|", vy_diff)
+            print(
+                step,
+                "    |",
+                action,
+                "     |",
+                v1_y,
+                "|",
+                v2_y,
+                "|",
+                y_diff,
+                "|",
+                v1_vy,
+                "|",
+                v2_vy,
+                "|",
+                vy_diff,
+            )
 
         # Check if either environment terminated
         if done_v1 and not v1_done:
@@ -273,13 +312,17 @@ fn test_physics_comparison() raises:
     # Determine if physics match within tolerance
     var tolerance: Float64 = 0.1  # 10% tolerance for physics differences
     var physics_match = (
-        max_y_diff < tolerance and
-        max_vy_diff < tolerance and
-        max_angle_diff < tolerance
+        max_y_diff < tolerance
+        and max_vy_diff < tolerance
+        and max_angle_diff < tolerance
     )
 
     if physics_match:
-        print("RESULT: Physics engines produce SIMILAR trajectories (within", tolerance, "tolerance)")
+        print(
+            "RESULT: Physics engines produce SIMILAR trajectories (within",
+            tolerance,
+            "tolerance)",
+        )
     else:
         print("RESULT: Physics engines produce DIFFERENT trajectories")
         print("  This is expected due to different physics implementations:")
@@ -353,7 +396,9 @@ fn test_free_fall_comparison() raises:
         var v2_vy = Float64(obs_v2[3])
         var y_diff = abs_f64(v1_y - v2_y)
 
-        print(step, "    |", v1_y, "|", v2_y, "|", v1_vy, "|", v2_vy, "|", y_diff)
+        print(
+            step, "    |", v1_y, "|", v2_y, "|", v1_vy, "|", v2_vy, "|", y_diff
+        )
 
         if result_v1[2] or result_v1[2]:  # Either terminated
             break
@@ -426,7 +471,9 @@ fn test_main_engine_comparison() raises:
         var v2_vy = Float64(obs_v2[3])
         var vy_diff = abs_f64(v1_vy - v2_vy)
 
-        print(step, "    |", v1_y, "|", v2_y, "|", v1_vy, "|", v2_vy, "|", vy_diff)
+        print(
+            step, "    |", v1_y, "|", v2_y, "|", v1_vy, "|", v2_vy, "|", vy_diff
+        )
 
     print_separator()
 

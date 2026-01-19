@@ -16,6 +16,7 @@ from gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOAgent
 from envs.lunar_lander import LunarLanderEnv
+from envs.lunar_lander_v2_gpu import LunarLanderV2GPU
 from render import RendererBase
 
 # =============================================================================
@@ -140,7 +141,7 @@ fn main() raises:
         )
 
         print("Loading checkpoint...")
-        agent.load_checkpoint("ppo_lunar_hybrid copy 2.ckpt")
+        agent.load_checkpoint("ppo_lunar_gpu_v2.ckpt")
         print("Checkpoint loaded successfully!")
         print()
 
@@ -152,7 +153,7 @@ fn main() raises:
         print("-" * 70)
         print()
 
-        var env = LunarLanderEnv[DType.float32]()
+        var env = LunarLanderV2GPU[DType.float32]()
 
         try:
             # Reset environment

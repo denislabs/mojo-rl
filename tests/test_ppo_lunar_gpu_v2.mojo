@@ -38,7 +38,7 @@ comptime N_ENVS = 256  # Parallel environments
 comptime GPU_MINIBATCH_SIZE = 512  # Minibatch size for PPO updates
 
 # Training duration
-comptime NUM_EPISODES = 5_000  # More episodes for LunarLander (harder than CartPole)
+comptime NUM_EPISODES = 50_000  # More episodes for LunarLander (harder than CartPole)
 
 comptime dtype = DType.float32
 

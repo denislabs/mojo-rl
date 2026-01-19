@@ -626,6 +626,34 @@ fn _store_post_step_kernel[
     r_dones[i] = dones[i]
 
 
+@always_inline
+fn _extract_obs_from_state_kernel[
+    dtype: DType,
+    N_ENVS: Int,
+    STATE_SIZE: Int,
+    OBS_DIM: Int,
+](
+    # Output - observation buffer for neural network input
+    obs: LayoutTensor[dtype, Layout.row_major(N_ENVS, OBS_DIM), MutAnyOrigin],
+    # Input - full state buffer from environment
+    states: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS, STATE_SIZE), MutAnyOrigin
+    ],
+):
+    """Extract observations from full state buffer.
+
+    For environments where STATE_SIZE > OBS_DIM, observations are stored
+    at the beginning of each environment's state (offset 0).
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= N_ENVS:
+        return
+
+    # Copy first OBS_DIM elements from state to obs
+    for d in range(OBS_DIM):
+        obs[i, d] = states[i, d]
+
+
 # =============================================================================
 # Deep PPO Agent
 # =============================================================================
@@ -1491,6 +1519,8 @@ struct DeepPPOAgent[
         comptime CRITIC_STATE = CRITIC_PARAMS * 2
 
         comptime ENV_OBS_SIZE = Self.n_envs * Self.OBS
+        # Full environment state size (may be larger than OBS for complex physics)
+        comptime ENV_STATE_SIZE = Self.n_envs * EnvType.STATE_SIZE
         comptime ROLLOUT_TOTAL = Self.TOTAL_ROLLOUT_SIZE
         comptime ROLLOUT_OBS_SIZE = ROLLOUT_TOTAL * Self.OBS
 
@@ -1538,6 +1568,9 @@ struct DeepPPOAgent[
         # =====================================================================
         # Environment buffers (n_envs parallel environments)
         # =====================================================================
+        # Full state buffer for environment (includes physics state, metadata, etc.)
+        var states_buf = ctx.enqueue_create_buffer[dtype](ENV_STATE_SIZE)
+        # Observation buffer for neural network input (extracted from states)
         var obs_buf = ctx.enqueue_create_buffer[dtype](ENV_OBS_SIZE)
         var rewards_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
         var dones_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
@@ -1685,6 +1718,13 @@ struct DeepPPOAgent[
         # =====================================================================
         # Create LayoutTensor views
         # =====================================================================
+        # Full state tensor for environment (physics, metadata, etc.)
+        var states_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.n_envs, EnvType.STATE_SIZE),
+            MutAnyOrigin,
+        ](states_buf.unsafe_ptr())
+        # Observation tensor for neural network input
         var obs_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.n_envs, Self.OBS), MutAnyOrigin
         ](obs_buf.unsafe_ptr())
@@ -1814,6 +1854,11 @@ struct DeepPPOAgent[
             dtype, Layout.row_major(CRITIC_GRAD_BLOCKS), MutAnyOrigin
         ](critic_grad_partial_sums_buf.unsafe_ptr())
 
+        # Define extract_obs_wrapper early (needed for initial reset)
+        comptime extract_obs_wrapper = _extract_obs_from_state_kernel[
+            dtype, Self.n_envs, EnvType.STATE_SIZE, Self.OBS
+        ]
+
         # Initialize episode tracking to zero
         ctx.enqueue_memset(episode_rewards_buf, 0)
         ctx.enqueue_memset(episode_steps_buf, 0)
@@ -1821,7 +1866,17 @@ struct DeepPPOAgent[
         # =====================================================================
         # Initialize all environments on GPU
         # =====================================================================
-        EnvType.reset_kernel_gpu[Self.n_envs, Self.OBS](ctx, obs_buf)
+        # Reset environments (writes to full state buffer)
+        EnvType.reset_kernel_gpu[Self.n_envs, EnvType.STATE_SIZE](ctx, states_buf)
+        ctx.synchronize()
+
+        # Extract observations from state buffer for neural network input
+        ctx.enqueue_function[extract_obs_wrapper, extract_obs_wrapper](
+            obs_tensor,
+            states_tensor,
+            grid_dim=(ENV_BLOCKS,),
+            block_dim=(TPB,),
+        )
         ctx.synchronize()
 
         # =====================================================================
@@ -2009,13 +2064,22 @@ struct DeepPPOAgent[
                 # Step all environments (pass seed for physics randomness)
                 # Use a different multiplier to get independent seed from action sampling
                 var env_step_seed = UInt64(total_steps * 1103515245 + t * 12345)
-                EnvType.step_kernel_gpu[Self.n_envs, Self.OBS](
+                EnvType.step_kernel_gpu[Self.n_envs, EnvType.STATE_SIZE](
                     ctx,
-                    obs_buf,
+                    states_buf,
                     actions_buf,
                     rewards_buf,
                     dones_buf,
                     env_step_seed,
+                )
+                ctx.synchronize()
+
+                # Extract observations from state buffer for neural network input
+                ctx.enqueue_function[extract_obs_wrapper, extract_obs_wrapper](
+                    obs_tensor,
+                    states_tensor,
+                    grid_dim=(ENV_BLOCKS,),
+                    block_dim=(TPB,),
                 )
                 ctx.synchronize()
 
@@ -2127,11 +2191,20 @@ struct DeepPPOAgent[
                 )
 
                 # Auto-reset done environments
-                EnvType.selective_reset_kernel_gpu[Self.n_envs, Self.OBS](
+                EnvType.selective_reset_kernel_gpu[Self.n_envs, EnvType.STATE_SIZE](
                     ctx,
-                    obs_buf,
+                    states_buf,
                     dones_buf,
                     UInt32(total_steps * 1013904223 + t * 2654435761),
+                )
+                ctx.synchronize()
+
+                # Extract observations from state buffer after selective reset
+                ctx.enqueue_function[extract_obs_wrapper, extract_obs_wrapper](
+                    obs_tensor,
+                    states_tensor,
+                    grid_dim=(ENV_BLOCKS,),
+                    block_dim=(TPB,),
                 )
                 ctx.synchronize()
 

@@ -57,6 +57,10 @@ from physics_gpu import (
     PhysicsStateStrided,
     PhysicsState,
     PhysicsConfig,
+    # Contact data indices for collision-based crash detection
+    CONTACT_BODY_A,
+    CONTACT_BODY_B,
+    CONTACT_DEPTH,
 )
 from physics_gpu.integrators.euler import SemiImplicitEuler
 from physics_gpu.collision.edge_terrain import (
@@ -539,6 +543,10 @@ struct LunarLanderV2GPU[DTYPE: DType](
         self.terrain_heights = List[Scalar[Self.dtype]](other.terrain_heights)
         self.edge_collision = EdgeTerrainCollision(1)
         self.cached_state = other.cached_state
+        # Initialize physics shapes (critical for physics to work!)
+        self._init_physics_shapes()
+        # Reset to initialize physics state properly
+        self._reset_cpu()
 
     fn __moveinit__(out self, deinit other: Self):
         """Move constructor."""
@@ -570,10 +578,47 @@ struct LunarLanderV2GPU[DTYPE: DType](
         self.terrain_heights = other.terrain_heights^
         self.edge_collision = EdgeTerrainCollision(1)
         self.cached_state = other.cached_state
+        # Initialize physics shapes (critical for physics to work!)
+        self._init_physics_shapes()
+        # Reset to initialize physics state properly
+        self._reset_cpu()
 
     # =========================================================================
     # CPU Single-Environment Methods
     # =========================================================================
+
+    fn _init_physics_shapes(mut self):
+        """Initialize physics shapes. Must be called after creating fresh PhysicsState."""
+        # Define lander shape as polygon (shape 0)
+        var lander_vx = List[Float64]()
+        var lander_vy = List[Float64]()
+        lander_vx.append(-14.0 / SCALE)
+        lander_vy.append(17.0 / SCALE)
+        lander_vx.append(-17.0 / SCALE)
+        lander_vy.append(0.0 / SCALE)
+        lander_vx.append(-17.0 / SCALE)
+        lander_vy.append(-10.0 / SCALE)
+        lander_vx.append(17.0 / SCALE)
+        lander_vy.append(-10.0 / SCALE)
+        lander_vx.append(17.0 / SCALE)
+        lander_vy.append(0.0 / SCALE)
+        lander_vx.append(14.0 / SCALE)
+        lander_vy.append(17.0 / SCALE)
+        self.physics.define_polygon_shape(0, lander_vx, lander_vy)
+
+        # Define leg shapes (shapes 1 and 2)
+        var leg_vx = List[Float64]()
+        var leg_vy = List[Float64]()
+        leg_vx.append(-LEG_W)
+        leg_vy.append(LEG_H)
+        leg_vx.append(-LEG_W)
+        leg_vy.append(-LEG_H)
+        leg_vx.append(LEG_W)
+        leg_vy.append(-LEG_H)
+        leg_vx.append(LEG_W)
+        leg_vy.append(LEG_H)
+        self.physics.define_polygon_shape(1, leg_vx, leg_vy)
+        self.physics.define_polygon_shape(2, leg_vx, leg_vy)
 
     fn _reset_cpu(mut self):
         """Internal reset for CPU single-env operation."""
@@ -852,6 +897,107 @@ struct LunarLanderV2GPU[DTYPE: DType](
                 )
                 i += 1
 
+    fn _spawn_main_engine_particles(
+        mut self,
+        pos_x: Float64,
+        pos_y: Float64,
+        tip_x: Float64,
+        tip_y: Float64,
+        power: Float64,
+    ):
+        """Spawn flame particles from main engine.
+
+        Args:
+            pos_x, pos_y: Lander center position.
+            tip_x, tip_y: Unit vector pointing "up" from lander (sin(angle), cos(angle)).
+            power: Engine power (0.0 to 1.0).
+        """
+        if power <= 0.0:
+            return
+
+        # Spawn 2-4 particles per frame when engine is on
+        self.rng_counter += 1
+        var rng = PhiloxRandom(seed=Int(self.rng_seed) + 5000, offset=self.rng_counter)
+
+        var num_particles = 2 + Int(rng.step_uniform()[0] * 3.0)
+        for _ in range(num_particles):
+            var rand_vals = rng.step_uniform()
+
+            # Position below the lander (opposite of tip direction)
+            var offset_x = (Float64(rand_vals[0]) - 0.5) * 0.3
+            var px = pos_x - tip_x * 0.5 + offset_x
+            var py = pos_y - tip_y * 0.5  # Below lander
+
+            # Velocity DOWNWARD (opposite of thrust direction = -tip)
+            var spread = (Float64(rand_vals[1]) - 0.5) * 2.0
+            var vx = -tip_x * 3.0 * power + spread
+            var vy = -tip_y * 3.0 * power + (Float64(rand_vals[2]) - 0.5)
+
+            # Short lifetime
+            var ttl = 0.1 + Float64(rand_vals[3]) * 0.2
+
+            self.particles.append(
+                Particle[Self.dtype](
+                    Scalar[Self.dtype](px),
+                    Scalar[Self.dtype](py),
+                    Scalar[Self.dtype](vx),
+                    Scalar[Self.dtype](vy),
+                    Scalar[Self.dtype](ttl),
+                )
+            )
+
+    fn _spawn_side_engine_particles(
+        mut self,
+        pos_x: Float64,
+        pos_y: Float64,
+        tip_x: Float64,
+        tip_y: Float64,
+        side_x: Float64,
+        side_y: Float64,
+        direction: Float64,
+        power: Float64,
+    ):
+        """Spawn flame particles from side engine.
+
+        Args:
+            pos_x, pos_y: Lander center position.
+            tip_x, tip_y: Unit vector pointing "up" from lander.
+            side_x, side_y: Unit vector pointing "right" from lander (-tip_y, tip_x).
+            direction: -1 for left engine, +1 for right engine.
+            power: Engine power (0.0 to 1.0).
+        """
+        if power <= 0.0:
+            return
+
+        # Spawn 1-2 particles per frame when engine is on
+        self.rng_counter += 1
+        var rng = PhiloxRandom(seed=Int(self.rng_seed) + 6000, offset=self.rng_counter)
+
+        var num_particles = 1 + Int(rng.step_uniform()[0] * 2.0)
+        for _ in range(num_particles):
+            var rand_vals = rng.step_uniform()
+
+            # Position at side of lander where engine is
+            var px = pos_x - side_x * direction * 0.6
+            var py = pos_y - side_y * direction * 0.6
+
+            # Velocity: exhaust goes outward from the engine
+            var vx = -side_x * direction * 2.0 * power + (Float64(rand_vals[0]) - 0.5)
+            var vy = -side_y * direction * 2.0 * power + (Float64(rand_vals[1]) - 0.5)
+
+            # Short lifetime
+            var ttl = 0.08 + Float64(rand_vals[2]) * 0.15
+
+            self.particles.append(
+                Particle[Self.dtype](
+                    Scalar[Self.dtype](px),
+                    Scalar[Self.dtype](py),
+                    Scalar[Self.dtype](vx),
+                    Scalar[Self.dtype](vy),
+                    Scalar[Self.dtype](ttl),
+                )
+            )
+
     # =========================================================================
     # BoxDiscreteActionEnv Trait Methods
     # =========================================================================
@@ -891,6 +1037,23 @@ struct LunarLanderV2GPU[DTYPE: DType](
 
         # Apply engine forces
         self._apply_engines(m_power, s_power, direction)
+
+        # Spawn particles for engine flames (cosmetic effect)
+        if m_power > 0.0 or s_power > 0.0:
+            var pos_x = Float64(self.physics.get_body_x(0, Self.BODY_LANDER))
+            var pos_y = Float64(self.physics.get_body_y(0, Self.BODY_LANDER))
+            var angle = Float64(self.physics.get_body_angle(0, Self.BODY_LANDER))
+            var tip_x = sin(angle)
+            var tip_y = cos(angle)
+            var side_x = -tip_y
+            var side_y = tip_x
+
+            if m_power > 0.0:
+                self._spawn_main_engine_particles(pos_x, pos_y, tip_x, tip_y, m_power)
+            if s_power > 0.0:
+                self._spawn_side_engine_particles(
+                    pos_x, pos_y, tip_x, tip_y, side_x, side_y, direction, s_power
+                )
 
         # Physics step
         self._step_physics_cpu()
@@ -1044,6 +1207,28 @@ struct LunarLanderV2GPU[DTYPE: DType](
             forces[0, body, 1] = Scalar[dtype](0)
             forces[0, body, 2] = Scalar[dtype](0)
 
+    fn _has_lander_body_contact(mut self) -> Bool:
+        """Check if the lander body (not legs) is in contact with terrain.
+
+        Uses the collision detection system results to determine if the main
+        lander body (BODY_LANDER = 0) has any contacts. Leg contacts (bodies 1, 2)
+        are excluded since those are expected during landing.
+
+        Returns:
+            True if lander body is touching terrain (crash condition).
+        """
+        var contacts = self.physics.get_contacts_tensor()
+        var contact_counts = self.physics.get_contact_counts_tensor()
+        var n_contacts = Int(contact_counts[0])
+
+        for i in range(n_contacts):
+            var body_a = Int(contacts[0, i, CONTACT_BODY_A])
+            # BODY_LANDER = 0, legs are 1 and 2
+            # Contact with terrain means body_b = -1 (static)
+            if body_a == Self.BODY_LANDER:
+                return True
+        return False
+
     fn _compute_step_result(
         mut self, m_power: Float64, s_power: Float64
     ) -> Tuple[Scalar[Self.dtype], Bool]:
@@ -1074,23 +1259,26 @@ struct LunarLanderV2GPU[DTYPE: DType](
             terminated = True
             reward = Scalar[Self.dtype](-100.0)
 
-        var x = Float64(self.physics.get_body_x(0, Self.BODY_LANDER))
-        var terrain_y = self._get_terrain_height(x)
-        var cos_angle = cos(angle)
-        var lander_bottom_y = y - (10.0 / SCALE) * abs(cos_angle)
-
         var both_legs = (
             left_contact > Scalar[Self.dtype](0.5)
             and right_contact > Scalar[Self.dtype](0.5)
         )
 
-        if lander_bottom_y <= terrain_y and not both_legs:
+        var speed = sqrt(vx * vx + vy * vy)
+
+        # Crash: lander body touches ground (using collision detection system)
+        # This is the proper physics-based crash detection, matching the original
+        # LunarLanderEnv which uses _is_lander_contacting()
+        var lander_contact = self._has_lander_body_contact()
+        if lander_contact:
             terminated = True
             self.game_over = True
             reward = Scalar[Self.dtype](-100.0)
 
-        var speed = sqrt(vx * vx + vy * vy)
-        var is_at_rest = speed < 0.1 and abs(omega) < 0.1 and both_legs
+        # Successful landing: both legs down, nearly at rest
+        # Use strict thresholds matching the original LunarLanderEnv's sleep detection
+        # (SLEEP_LINEAR_THRESHOLD = 0.01, SLEEP_ANGULAR_THRESHOLD = 0.01)
+        var is_at_rest = speed < 0.01 and abs(omega) < 0.01 and both_legs
 
         if is_at_rest:
             terminated = True
@@ -1289,6 +1477,9 @@ struct LunarLanderV2GPU[DTYPE: DType](
             ctx, states_buf, actions_buf
         )
 
+        # Synchronize to ensure forces are written before velocity integration
+        ctx.synchronize()
+
         # 2. Integrate velocities using existing physics architecture
         SemiImplicitEuler.integrate_velocities_gpu_strided[
             BATCH_SIZE, NUM_BODIES, STATE_SIZE_VAL, BODIES_OFFSET, FORCES_OFFSET
@@ -1389,10 +1580,12 @@ struct LunarLanderV2GPU[DTYPE: DType](
             )
 
         # 7. Finalize step (update obs, compute rewards, check termination)
+        # Pass contacts_buf for collision-based crash detection
         LunarLanderV2GPU[Self.dtype]._finalize_step_gpu[BATCH_SIZE](
             ctx,
             states_buf,
             actions_buf,
+            contacts_buf,
             contact_counts_buf,
             rewards_buf,
             dones_buf,
@@ -1711,16 +1904,60 @@ struct LunarLanderV2GPU[DTYPE: DType](
             done = 1.0
             reward = CRASH_PENALTY
 
-        # Below ground or too high
-        if y < 0.0 or y > H_UNITS * 1.5:
+        # Too high
+        if y > H_UNITS * 1.5:
             done = 1.0
             reward = CRASH_PENALTY
 
-        # Successful landing
+        # Calculate the lowest point of the lander body considering rotation
+        # Lander shape has bottom vertices at (±17/SCALE, -10/SCALE) and
+        # side vertices at (±17/SCALE, 0). When rotated, find minimum y.
+        var sin_angle = sin(angle)
+        var cos_angle = cos(angle)
+
+        # Bottom vertices (-17/SCALE, -10/SCALE) and (17/SCALE, -10/SCALE) transformed
+        var bottom_left_y = y - (17.0 / SCALE) * sin_angle - (10.0 / SCALE) * cos_angle
+        var bottom_right_y = y + (17.0 / SCALE) * sin_angle - (10.0 / SCALE) * cos_angle
+        # Side vertices (±17/SCALE, 0) - important when highly tilted
+        var side_left_y = y - (17.0 / SCALE) * sin_angle
+        var side_right_y = y + (17.0 / SCALE) * sin_angle
+        # Top vertices (±14/SCALE, 17/SCALE) - for upside down case
+        var top_left_y = y - (14.0 / SCALE) * sin_angle + (17.0 / SCALE) * cos_angle
+        var top_right_y = y + (14.0 / SCALE) * sin_angle + (17.0 / SCALE) * cos_angle
+
+        # Find the minimum y (lowest point of lander)
+        var lander_lowest_y = bottom_left_y
+        if bottom_right_y < lander_lowest_y:
+            lander_lowest_y = bottom_right_y
+        if side_left_y < lander_lowest_y:
+            lander_lowest_y = side_left_y
+        if side_right_y < lander_lowest_y:
+            lander_lowest_y = side_right_y
+        if top_left_y < lander_lowest_y:
+            lander_lowest_y = top_left_y
+        if top_right_y < lander_lowest_y:
+            lander_lowest_y = top_right_y
+
+        # Successful landing check (needs both legs)
         var both_legs = left_contact > 0.5 and right_contact > 0.5
         var speed_val = sqrt(vx * vx + vy * vy)
+
+        # Crash: lander body touches ground without both legs
+        # Use HELIPAD_Y as simplified terrain height for GPU
+        if lander_lowest_y <= HELIPAD_Y and not both_legs:
+            done = 1.0
+            reward = CRASH_PENALTY
+
+        # Crash: high-speed impact even with legs down (too fast to survive)
+        # Threshold of 0.5 corresponds to roughly 2.5 m/s impact velocity
+        if lander_lowest_y <= HELIPAD_Y + 0.1 and speed_val > 0.5:
+            done = 1.0
+            reward = CRASH_PENALTY
+
+        # Successful landing: both legs down, nearly stopped
+        # Use strict thresholds matching original LunarLanderEnv (0.01)
         var abs_omega = omega if omega >= 0.0 else -omega
-        if both_legs and speed_val < 0.1 and abs_omega < 0.1:
+        if both_legs and speed_val < 0.01 and abs_omega < 0.01:
             done = 1.0
             reward = reward + LAND_REWARD
 
@@ -1905,10 +2142,16 @@ struct LunarLanderV2GPU[DTYPE: DType](
         states[env, OBS_OFFSET + 6] = Scalar[dtype](0)
         states[env, OBS_OFFSET + 7] = Scalar[dtype](0)
 
+        # Compute initial shaping (same formula as _finalize_step_gpu)
+        # At reset: x_norm=0, angle=0, left_contact=0, right_contact=0
+        var dist = abs(y_norm)  # sqrt(0² + y_norm²) = |y_norm|
+        var speed = sqrt(vx_norm * vx_norm + vy_norm * vy_norm)
+        var init_shaping = -100.0 * dist - 100.0 * speed
+
         # Initialize metadata
         states[env, METADATA_OFFSET + META_STEP_COUNT] = Scalar[dtype](0)
         states[env, METADATA_OFFSET + META_TOTAL_REWARD] = Scalar[dtype](0)
-        states[env, METADATA_OFFSET + META_PREV_SHAPING] = Scalar[dtype](0)
+        states[env, METADATA_OFFSET + META_PREV_SHAPING] = Scalar[dtype](init_shaping)
         states[env, METADATA_OFFSET + META_DONE] = Scalar[dtype](0)
 
     # =========================================================================
@@ -1936,7 +2179,7 @@ struct LunarLanderV2GPU[DTYPE: DType](
         states[env, EDGE_COUNT_OFFSET] = Scalar[dtype](n_edges)
 
         var x_spacing: states.element_type = Scalar[dtype](
-            W_UNITS / TERRAIN_CHUNKS - 1
+            W_UNITS / (TERRAIN_CHUNKS - 1)
         )
         for edge in range(n_edges):
             var rand_vals = rng.step_uniform()
@@ -2080,10 +2323,23 @@ struct LunarLanderV2GPU[DTYPE: DType](
         states[env, OBS_OFFSET + 6] = Scalar[dtype](0)
         states[env, OBS_OFFSET + 7] = Scalar[dtype](0)
 
+        # Compute initial shaping (same formula as _finalize_step_gpu)
+        # At reset: x_norm=0, angle=0, left_contact=0, right_contact=0
+        var y_norm_abs: states.element_type = y_norm
+        if y_norm < 0:
+            y_norm_abs = -y_norm
+        var dist: states.element_type = y_norm_abs  # sqrt(0² + y_norm²) = |y_norm|
+        var speed: states.element_type = sqrt(vx_norm * vx_norm + vy_norm * vy_norm)
+        var init_shaping: states.element_type = (
+            Scalar[dtype](-100.0) * dist
+            - Scalar[dtype](100.0) * speed
+            # angle = 0, left_contact = 0, right_contact = 0
+        )
+
         # Initialize metadata
         states[env, METADATA_OFFSET + META_STEP_COUNT] = Scalar[dtype](0)
         states[env, METADATA_OFFSET + META_TOTAL_REWARD] = Scalar[dtype](0)
-        states[env, METADATA_OFFSET + META_PREV_SHAPING] = Scalar[dtype](0)
+        states[env, METADATA_OFFSET + META_PREV_SHAPING] = init_shaping
         states[env, METADATA_OFFSET + META_DONE] = Scalar[dtype](0)
 
     @staticmethod
@@ -2276,32 +2532,37 @@ struct LunarLanderV2GPU[DTYPE: DType](
             var side_x = -tip_y
             var side_y = tip_x
 
-            if action == 2:  # Main engine
-                states[i, FORCES_OFFSET + 0] = -tip_x * Scalar[dtype](
-                    MAIN_ENGINE_POWER
-                )
-                states[i, FORCES_OFFSET + 1] = tip_y * Scalar[dtype](
-                    MAIN_ENGINE_POWER
-                )
-            elif action == 1:  # Left engine
-                states[i, FORCES_OFFSET + 0] = side_x * Scalar[dtype](
-                    SIDE_ENGINE_POWER
-                )
-                states[i, FORCES_OFFSET + 1] = -side_y * Scalar[dtype](
-                    SIDE_ENGINE_POWER
-                )
+            # Match CPU impulse behavior:
+            # CPU main engine: impulse = -oy * MAIN_ENGINE_POWER where oy = -tip_y * offset
+            # CPU offset = 4.0 / SCALE ≈ 0.133, so impulse ≈ 0.133 * 13 = 1.73
+            # GPU: force = impulse / dt to match velocity change
+            var main_offset = Scalar[dtype](4.0 / SCALE)  # Same as CPU main_y_offset
+            var side_offset = Scalar[dtype](12.0 / SCALE)  # Same as CPU side_away
+
+            # Main engine: exhaust offset in -tip direction gives thrust in +tip direction
+            var main_impulse = main_offset * Scalar[dtype](MAIN_ENGINE_POWER)
+            var main_force = main_impulse / Scalar[dtype](DT)
+
+            # Side engine: exhaust offset in side direction
+            var side_impulse = side_offset * Scalar[dtype](SIDE_ENGINE_POWER)
+            var side_force = side_impulse / Scalar[dtype](DT)
+
+            if action == 2:  # Main engine - thrust upward (in tip direction)
+                states[i, FORCES_OFFSET + 0] = -tip_x * main_force
+                states[i, FORCES_OFFSET + 1] = tip_y * main_force
+            elif action == 1:  # Left engine - push right (opposite side_x when direction=-1)
+                states[i, FORCES_OFFSET + 0] = side_x * side_force
+                states[i, FORCES_OFFSET + 1] = -side_y * side_force
+                # Torque to rotate counter-clockwise
                 states[i, FORCES_OFFSET + 2] = Scalar[dtype](
-                    SIDE_ENGINE_POWER * 0.5
+                    SIDE_ENGINE_POWER * 0.5 / DT
                 )
-            elif action == 3:  # Right engine
-                states[i, FORCES_OFFSET + 0] = -side_x * Scalar[dtype](
-                    SIDE_ENGINE_POWER
-                )
-                states[i, FORCES_OFFSET + 1] = side_y * Scalar[dtype](
-                    SIDE_ENGINE_POWER
-                )
+            elif action == 3:  # Right engine - push left
+                states[i, FORCES_OFFSET + 0] = -side_x * side_force
+                states[i, FORCES_OFFSET + 1] = side_y * side_force
+                # Torque to rotate clockwise
                 states[i, FORCES_OFFSET + 2] = Scalar[dtype](
-                    -SIDE_ENGINE_POWER * 0.5
+                    -SIDE_ENGINE_POWER * 0.5 / DT
                 )
 
         ctx.enqueue_function[apply_wrapper, apply_wrapper](
@@ -2318,6 +2579,7 @@ struct LunarLanderV2GPU[DTYPE: DType](
         ctx: DeviceContext,
         mut states_buf: DeviceBuffer[dtype],
         actions_buf: DeviceBuffer[dtype],
+        contacts_buf: DeviceBuffer[dtype],
         contact_counts_buf: DeviceBuffer[dtype],
         mut rewards_buf: DeviceBuffer[dtype],
         mut dones_buf: DeviceBuffer[dtype],
@@ -2329,6 +2591,11 @@ struct LunarLanderV2GPU[DTYPE: DType](
         var actions = LayoutTensor[
             dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
         ](actions_buf.unsafe_ptr())
+        var contacts = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH_SIZE, MAX_CONTACTS, CONTACT_DATA_SIZE),
+            MutAnyOrigin,
+        ](contacts_buf.unsafe_ptr())
         var contact_counts = LayoutTensor[
             dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
         ](contact_counts_buf.unsafe_ptr())
@@ -2350,6 +2617,11 @@ struct LunarLanderV2GPU[DTYPE: DType](
             ],
             actions: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
+            contacts: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH_SIZE, MAX_CONTACTS, CONTACT_DATA_SIZE),
+                MutAnyOrigin,
             ],
             contact_counts: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
@@ -2481,9 +2753,24 @@ struct LunarLanderV2GPU[DTYPE: DType](
                 done = Scalar[dtype](1.0)
                 reward = Scalar[dtype](CRASH_PENALTY)
 
-            # Below ground or too high
+            # Too high
             var h_units_max: states.element_type = Scalar[dtype](H_UNITS * 1.5)
-            if y < Scalar[dtype](0.0) or y > h_units_max:
+            if y > h_units_max:
+                done = Scalar[dtype](1.0)
+                reward = Scalar[dtype](CRASH_PENALTY)
+
+            # Crash: lander body touches ground (using collision detection system)
+            # Check if any contact has body_a == BODY_LANDER (0)
+            # This matches the original LunarLanderEnv's _is_lander_contacting()
+            var n_contacts = Int(contact_counts[i])
+            var lander_contact = False
+            for c in range(n_contacts):
+                var body_a = Int(contacts[i, c, CONTACT_BODY_A])
+                if body_a == BODY_LANDER:  # BODY_LANDER = 0
+                    lander_contact = True
+                    break
+
+            if lander_contact:
                 done = Scalar[dtype](1.0)
                 reward = Scalar[dtype](CRASH_PENALTY)
 
@@ -2495,10 +2782,11 @@ struct LunarLanderV2GPU[DTYPE: DType](
             var abs_omega: states.element_type = omega
             if omega < Scalar[dtype](0.0):
                 abs_omega = -omega
+            # Use strict thresholds matching original LunarLanderEnv (0.01)
             if (
                 both_legs
-                and speed_val < Scalar[dtype](0.1)
-                and abs_omega < Scalar[dtype](0.1)
+                and speed_val < Scalar[dtype](0.01)
+                and abs_omega < Scalar[dtype](0.01)
             ):
                 done = Scalar[dtype](1.0)
                 reward = reward + Scalar[dtype](LAND_REWARD)
@@ -2521,6 +2809,7 @@ struct LunarLanderV2GPU[DTYPE: DType](
         ctx.enqueue_function[finalize_wrapper, finalize_wrapper](
             states,
             actions,
+            contacts,
             contact_counts,
             rewards,
             dones,

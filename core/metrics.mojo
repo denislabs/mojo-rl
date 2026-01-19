@@ -8,7 +8,7 @@ pandas, or any spreadsheet application.
 from math import sqrt
 
 
-struct EpisodeMetrics(Copyable, Movable, ImplicitlyCopyable):
+struct EpisodeMetrics(Copyable, ImplicitlyCopyable, Movable):
     """Metrics collected for a single episode."""
 
     var episode: Int
@@ -16,7 +16,13 @@ struct EpisodeMetrics(Copyable, Movable, ImplicitlyCopyable):
     var steps: Int
     var epsilon: Float64
 
-    fn __init__(out self, episode: Int, total_reward: Float64, steps: Int, epsilon: Float64):
+    fn __init__(
+        out self,
+        episode: Int,
+        total_reward: Float64,
+        steps: Int,
+        epsilon: Float64,
+    ):
         self.episode = episode
         self.total_reward = total_reward
         self.steps = steps
@@ -35,7 +41,7 @@ struct EpisodeMetrics(Copyable, Movable, ImplicitlyCopyable):
         self.epsilon = existing.epsilon
 
 
-struct TrainingMetrics(Copyable, Movable, ImplicitlyCopyable):
+struct TrainingMetrics(Copyable, ImplicitlyCopyable, Movable):
     """Collects and manages training metrics across episodes.
 
     This struct accumulates episode-level metrics during training and provides
@@ -53,7 +59,11 @@ struct TrainingMetrics(Copyable, Movable, ImplicitlyCopyable):
     var algorithm_name: String
     var environment_name: String
 
-    fn __init__(out self, algorithm_name: String = "Unknown", environment_name: String = "Unknown"):
+    fn __init__(
+        out self,
+        algorithm_name: String = "Unknown",
+        environment_name: String = "Unknown",
+    ):
         """Initialize training metrics collector.
 
         Args:
@@ -76,7 +86,15 @@ struct TrainingMetrics(Copyable, Movable, ImplicitlyCopyable):
         self.algorithm_name = existing.algorithm_name^
         self.environment_name = existing.environment_name^
 
-    fn log_episode(mut self, episode: Int, total_reward: Float64, steps: Int, epsilon: Float64):
+    fn log_episode[
+        dtype: DType
+    ](
+        mut self,
+        episode: Int,
+        total_reward: Scalar[dtype],
+        steps: Int,
+        epsilon: Float64,
+    ):
         """Log metrics for a completed episode.
 
         Args:
@@ -85,7 +103,9 @@ struct TrainingMetrics(Copyable, Movable, ImplicitlyCopyable):
             steps: Number of steps taken in the episode.
             epsilon: Current epsilon value at end of episode.
         """
-        self.episodes.append(EpisodeMetrics(episode, total_reward, steps, epsilon))
+        self.episodes.append(
+            EpisodeMetrics(episode, Float64(total_reward), steps, epsilon)
+        )
 
     fn num_episodes(self) -> Int:
         """Return the number of logged episodes."""
@@ -259,11 +279,16 @@ struct TrainingMetrics(Copyable, Movable, ImplicitlyCopyable):
         var avg = sum_val / Float64(len(self.episodes) - start_idx)
 
         print(
-            "Episode", episode + 1,
-            "| Reward:", ep.total_reward,
-            "| Steps:", ep.steps,
-            "| Avg(" + String(window) + "):", avg,
-            "| Eps:", ep.epsilon
+            "Episode",
+            episode + 1,
+            "| Reward:",
+            ep.total_reward,
+            "| Steps:",
+            ep.steps,
+            "| Avg(" + String(window) + "):",
+            avg,
+            "| Eps:",
+            ep.epsilon,
         )
 
 
@@ -286,7 +311,12 @@ fn compute_success_rate(rewards: List[Float64], threshold: Float64) -> Float64:
     return Float64(count) / Float64(len(rewards))
 
 
-fn compute_convergence_episode(rewards: List[Float64], target: Float64, window: Int = 100, threshold: Float64 = 0.95) -> Int:
+fn compute_convergence_episode(
+    rewards: List[Float64],
+    target: Float64,
+    window: Int = 100,
+    threshold: Float64 = 0.95,
+) -> Int:
     """Find the first episode where moving average reaches target.
 
     Args:
