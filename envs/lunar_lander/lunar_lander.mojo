@@ -60,152 +60,15 @@ from render import (
     make_leg_box,
     scale_vertices,
 )
+from .state import LunarLanderState
+from .particle import Particle
+from .action import LunarLanderAction
 
+# ===== Constants =====
 
-# ===== Action Struct =====
-
-
-@fieldwise_init
-struct LunarLanderAction(Action, Copyable, ImplicitlyCopyable, Movable):
-    """Action for LunarLander: 0=nop, 1=left, 2=main, 3=right."""
-
-    var action_idx: Int
-
-    fn __copyinit__(out self, existing: Self):
-        self.action_idx = existing.action_idx
-
-    fn __moveinit__(out self, deinit existing: Self):
-        self.action_idx = existing.action_idx
-
-    @staticmethod
-    fn nop() -> Self:
-        """Do nothing."""
-        return Self(action_idx=0)
-
-    @staticmethod
-    fn left_engine() -> Self:
-        """Fire left engine."""
-        return Self(action_idx=1)
-
-    @staticmethod
-    fn main_engine() -> Self:
-        """Fire main engine."""
-        return Self(action_idx=2)
-
-    @staticmethod
-    fn right_engine() -> Self:
-        """Fire right engine."""
-        return Self(action_idx=3)
-
-
-# ===== Constants from Gymnasium =====
-
-comptime FPS: Int = 50
 comptime VIEWPORT_W: Int = 600
 comptime VIEWPORT_H: Int = 400
-
-
-# ===== Particle for engine flames =====
-
-
-@register_passable("trivial")
-struct Particle[dtype: DType]:
-    """Simple particle for engine flame effects."""
-
-    var x: Scalar[Self.dtype]
-    var y: Scalar[Self.dtype]
-    var vx: Scalar[Self.dtype]
-    var vy: Scalar[Self.dtype]
-    var ttl: Scalar[Self.dtype]  # Time to live in seconds
-
-    fn __init__(
-        out self,
-        x: Scalar[Self.dtype],
-        y: Scalar[Self.dtype],
-        vx: Scalar[Self.dtype],
-        vy: Scalar[Self.dtype],
-        ttl: Scalar[Self.dtype],
-    ):
-        self.x = x
-        self.y = y
-        self.vx = vx
-        self.vy = vy
-        self.ttl = ttl
-
-
-# ===== State Struct =====
-
-
-struct LunarLanderState[dtype: DType](
-    Copyable, ImplicitlyCopyable, Movable, State
-):
-    """Observation state for LunarLander (8D continuous observation)."""
-
-    var x: Scalar[Self.dtype]  # Horizontal position (normalized)
-    var y: Scalar[Self.dtype]  # Vertical position (normalized)
-    var vx: Scalar[Self.dtype]  # Horizontal velocity (normalized)
-    var vy: Scalar[Self.dtype]  # Vertical velocity (normalized)
-    var angle: Scalar[Self.dtype]  # Angle (radians)
-    var angular_velocity: Scalar[Self.dtype]  # Angular velocity (normalized)
-    var left_leg_contact: Scalar[Self.dtype]  # 1.0 if touching, 0.0 otherwise
-    var right_leg_contact: Scalar[Self.dtype]  # 1.0 if touching, 0.0 otherwise
-
-    fn __init__(out self):
-        self.x = 0.0
-        self.y = 0.0
-        self.vx = 0.0
-        self.vy = 0.0
-        self.angle = 0.0
-        self.angular_velocity = 0.0
-        self.left_leg_contact = 0.0
-        self.right_leg_contact = 0.0
-
-    fn __moveinit__(out self, deinit other: Self):
-        self.x = other.x
-        self.y = other.y
-        self.vx = other.vx
-        self.vy = other.vy
-        self.angle = other.angle
-        self.angular_velocity = other.angular_velocity
-        self.left_leg_contact = other.left_leg_contact
-        self.right_leg_contact = other.right_leg_contact
-
-    fn __copyinit__(out self, other: Self):
-        self.x = other.x
-        self.y = other.y
-        self.vx = other.vx
-        self.vy = other.vy
-        self.angle = other.angle
-        self.angular_velocity = other.angular_velocity
-        self.left_leg_contact = other.left_leg_contact
-        self.right_leg_contact = other.right_leg_contact
-
-    fn __eq__(self, other: Self) -> Bool:
-        """Check equality of two states."""
-        return (
-            self.x == other.x
-            and self.y == other.y
-            and self.vx == other.vx
-            and self.vy == other.vy
-            and self.angle == other.angle
-            and self.angular_velocity == other.angular_velocity
-            and self.left_leg_contact == other.left_leg_contact
-            and self.right_leg_contact == other.right_leg_contact
-        )
-
-    fn to_list(self) -> List[Scalar[Self.dtype]]:
-        """Convert to list for agent interface."""
-        var result = List[Scalar[Self.dtype]]()
-        result.append(self.x)
-        result.append(self.y)
-        result.append(self.vx)
-        result.append(self.vy)
-        result.append(self.angle)
-        result.append(self.angular_velocity)
-        result.append(self.left_leg_contact)
-        result.append(self.right_leg_contact)
-        return result^
-
+comptime FPS: Int = 60
 
 # ===== Environment =====
 

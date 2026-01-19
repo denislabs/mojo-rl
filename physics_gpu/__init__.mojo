@@ -113,3 +113,28 @@ from .layout import (
 )
 from .kernel import PhysicsKernel, PhysicsConfig
 from .env_helpers import PhysicsEnvHelpers
+
+# Car physics module (slip-based tire friction for CarRacing)
+from .car import (
+    # Layout
+    CarRacingLayout,
+    # Physics components
+    WheelFriction,
+    TileCollision,
+    CarDynamics,
+    # GPU kernel
+    CarPhysicsKernel,
+    # Constants
+    SIZE,
+    ENGINE_POWER,
+    BRAKE_FORCE,
+    WHEEL_MOMENT_OF_INERTIA,
+    WHEEL_RADIUS,
+    FRICTION_LIMIT,
+    FRICTION_COEF,
+    ROAD_FRICTION,
+    GRASS_FRICTION,
+    STEERING_LIMIT,
+    STEERING_MOTOR_SPEED,
+    CAR_DT,
+)

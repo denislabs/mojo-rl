@@ -17,4 +17,11 @@ from .bipedal_walker import (
     BipedalWalkerState,
     BipedalWalkerAction,
 )
-from .car_racing import CarRacingEnv, CarRacingState, CarRacingAction
+from .car_racing import (
+    CarRacingEnv,
+    CarRacingState,
+    CarRacingAction,
+    CarRacingV2,
+    CarRacingV2State,
+    CarRacingV2Action,
+)
