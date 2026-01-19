@@ -503,9 +503,13 @@ struct RevoluteJointSolver:
     # Memory layout: state[env, OFFSET + ...]
     # =========================================================================
 
+    # =========================================================================
+    # Single-Environment Methods (can be called from fused kernels)
+    # =========================================================================
+
     @always_inline
     @staticmethod
-    fn _solve_velocity_kernel[
+    fn solve_velocity_single_env[
         BATCH: Int,
         NUM_BODIES: Int,
         MAX_JOINTS: Int,
@@ -513,25 +517,23 @@ struct RevoluteJointSolver:
         BODIES_OFFSET: Int,
         JOINTS_OFFSET: Int,
     ](
+        env: Int,
         state: LayoutTensor[
             dtype,
             Layout.row_major(BATCH, STATE_SIZE),
             MutAnyOrigin,
         ],
-        joint_counts: LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ],
+        joint_count: Int,
         dt: Scalar[dtype],
     ):
-        """GPU kernel for velocity constraint solving with 2D strided layout."""
-        var env = Int(block_dim.x * block_idx.x + thread_idx.x)
-        if env >= BATCH:
-            return
+        """Solve velocity constraints for a single environment.
 
-        var n_joints = Int(joint_counts[env])
-
+        This is the core solving logic, extracted to be callable from:
+        - _solve_velocity_kernel (standalone kernel)
+        - FusedConstraintSolver (fused kernel)
+        """
         for j in range(MAX_JOINTS):
-            if j >= n_joints:
+            if j >= joint_count:
                 break
 
             var joint_off = JOINTS_OFFSET + j * JOINT_DATA_SIZE
@@ -699,7 +701,7 @@ struct RevoluteJointSolver:
 
     @always_inline
     @staticmethod
-    fn _solve_position_kernel[
+    fn _solve_velocity_kernel[
         BATCH: Int,
         NUM_BODIES: Int,
         MAX_JOINTS: Int,
@@ -715,18 +717,46 @@ struct RevoluteJointSolver:
         joint_counts: LayoutTensor[
             dtype, Layout.row_major(BATCH), MutAnyOrigin
         ],
-        baumgarte: Scalar[dtype],
-        slop: Scalar[dtype],
+        dt: Scalar[dtype],
     ):
-        """GPU kernel for position constraint solving with 2D strided layout."""
+        """GPU kernel for velocity constraint solving with 2D strided layout."""
         var env = Int(block_dim.x * block_idx.x + thread_idx.x)
         if env >= BATCH:
             return
 
         var n_joints = Int(joint_counts[env])
+        RevoluteJointSolver.solve_velocity_single_env[
+            BATCH, NUM_BODIES, MAX_JOINTS, STATE_SIZE, BODIES_OFFSET, JOINTS_OFFSET
+        ](env, state, n_joints, dt)
 
+    @always_inline
+    @staticmethod
+    fn solve_position_single_env[
+        BATCH: Int,
+        NUM_BODIES: Int,
+        MAX_JOINTS: Int,
+        STATE_SIZE: Int,
+        BODIES_OFFSET: Int,
+        JOINTS_OFFSET: Int,
+    ](
+        env: Int,
+        state: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, STATE_SIZE),
+            MutAnyOrigin,
+        ],
+        joint_count: Int,
+        baumgarte: Scalar[dtype],
+        slop: Scalar[dtype],
+    ):
+        """Solve position constraints for a single environment.
+
+        This is the core solving logic, extracted to be callable from:
+        - _solve_position_kernel (standalone kernel)
+        - FusedConstraintSolver (fused kernel)
+        """
         for j in range(MAX_JOINTS):
-            if j >= n_joints:
+            if j >= joint_count:
                 break
 
             var joint_off = JOINTS_OFFSET + j * JOINT_DATA_SIZE
@@ -856,6 +886,37 @@ struct RevoluteJointSolver:
                             * angle_correction
                             / pos_eff_inertia
                         )
+
+    @always_inline
+    @staticmethod
+    fn _solve_position_kernel[
+        BATCH: Int,
+        NUM_BODIES: Int,
+        MAX_JOINTS: Int,
+        STATE_SIZE: Int,
+        BODIES_OFFSET: Int,
+        JOINTS_OFFSET: Int,
+    ](
+        state: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, STATE_SIZE),
+            MutAnyOrigin,
+        ],
+        joint_counts: LayoutTensor[
+            dtype, Layout.row_major(BATCH), MutAnyOrigin
+        ],
+        baumgarte: Scalar[dtype],
+        slop: Scalar[dtype],
+    ):
+        """GPU kernel for position constraint solving with 2D strided layout."""
+        var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+        if env >= BATCH:
+            return
+
+        var n_joints = Int(joint_counts[env])
+        RevoluteJointSolver.solve_position_single_env[
+            BATCH, NUM_BODIES, MAX_JOINTS, STATE_SIZE, BODIES_OFFSET, JOINTS_OFFSET
+        ](env, state, n_joints, baumgarte, slop)
 
     @staticmethod
     fn solve_velocity_gpu[

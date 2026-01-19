@@ -249,15 +249,17 @@ trait GPUDiscreteEnv:
     fn step_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
+        OBS_DIM: Int,
     ](
         ctx: DeviceContext,
         mut states: DeviceBuffer[dtype],
         actions: DeviceBuffer[dtype],
         mut rewards: DeviceBuffer[dtype],
         mut dones: DeviceBuffer[dtype],
+        mut obs: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
     ) raises:
-        """Perform one environment step. Returns (reward, done).
+        """Perform one environment step and extract observations.
 
         Args:
             ctx: GPU device context.
@@ -265,6 +267,7 @@ trait GPUDiscreteEnv:
             actions: Actions buffer on GPU.
             rewards: Rewards buffer on GPU (output).
             dones: Done flags buffer on GPU (output).
+            obs: Observations buffer on GPU (output).
             rng_seed: Optional random seed for physics (e.g., engine dispersion).
         """
         ...

@@ -193,15 +193,20 @@ struct SemiImplicitEuler(Integrator):
     # This enables integration with GPUDiscreteEnv trait.
     # =========================================================================
 
+    # =========================================================================
+    # Single-Environment Methods (can be called from fused kernels)
+    # =========================================================================
+
     @always_inline
     @staticmethod
-    fn integrate_velocities_kernel[
+    fn integrate_velocities_single_env[
         BATCH: Int,
         NUM_BODIES: Int,
         STATE_SIZE: Int,
         BODIES_OFFSET: Int,
         FORCES_OFFSET: Int,
     ](
+        env: Int,
         state: LayoutTensor[
             dtype,
             Layout.row_major(BATCH, STATE_SIZE),
@@ -211,18 +216,12 @@ struct SemiImplicitEuler(Integrator):
         gravity_y: Scalar[dtype],
         dt: Scalar[dtype],
     ):
-        """GPU kernel for velocity integration with 2D strided layout.
+        """Integrate velocities for a single environment.
 
-        Args:
-            state: State tensor [BATCH, STATE_SIZE].
-            gravity_x: Gravity X component.
-            gravity_y: Gravity Y component.
-            dt: Time step.
+        This is the core logic, extracted to be callable from:
+        - integrate_velocities_kernel (standalone kernel)
+        - PhysicsStepKernel (fused kernel)
         """
-        var env = Int(block_dim.x * block_idx.x + thread_idx.x)
-        if env >= BATCH:
-            return
-
         @parameter
         for body in range(NUM_BODIES):
             var body_off = BODIES_OFFSET + body * BODY_STATE_SIZE
@@ -253,12 +252,13 @@ struct SemiImplicitEuler(Integrator):
 
     @always_inline
     @staticmethod
-    fn integrate_positions_kernel[
+    fn integrate_positions_single_env[
         BATCH: Int,
         NUM_BODIES: Int,
         STATE_SIZE: Int,
         BODIES_OFFSET: Int,
     ](
+        env: Int,
         state: LayoutTensor[
             dtype,
             Layout.row_major(BATCH, STATE_SIZE),
@@ -266,16 +266,12 @@ struct SemiImplicitEuler(Integrator):
         ],
         dt: Scalar[dtype],
     ):
-        """GPU kernel for position integration with 2D strided layout.
+        """Integrate positions for a single environment.
 
-        Args:
-            state: State tensor [BATCH, STATE_SIZE].
-            dt: Time step.
+        This is the core logic, extracted to be callable from:
+        - integrate_positions_kernel (standalone kernel)
+        - PhysicsStepKernel (fused kernel)
         """
-        var env = Int(block_dim.x * block_idx.x + thread_idx.x)
-        if env >= BATCH:
-            return
-
         @parameter
         for body in range(NUM_BODIES):
             var body_off = BODIES_OFFSET + body * BODY_STATE_SIZE
@@ -313,6 +309,57 @@ struct SemiImplicitEuler(Integrator):
             state[env, body_off + IDX_X] = x
             state[env, body_off + IDX_Y] = y
             state[env, body_off + IDX_ANGLE] = angle
+
+    @always_inline
+    @staticmethod
+    fn integrate_velocities_kernel[
+        BATCH: Int,
+        NUM_BODIES: Int,
+        STATE_SIZE: Int,
+        BODIES_OFFSET: Int,
+        FORCES_OFFSET: Int,
+    ](
+        state: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, STATE_SIZE),
+            MutAnyOrigin,
+        ],
+        gravity_x: Scalar[dtype],
+        gravity_y: Scalar[dtype],
+        dt: Scalar[dtype],
+    ):
+        """GPU kernel for velocity integration with 2D strided layout."""
+        var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+        if env >= BATCH:
+            return
+
+        SemiImplicitEuler.integrate_velocities_single_env[
+            BATCH, NUM_BODIES, STATE_SIZE, BODIES_OFFSET, FORCES_OFFSET
+        ](env, state, gravity_x, gravity_y, dt)
+
+    @always_inline
+    @staticmethod
+    fn integrate_positions_kernel[
+        BATCH: Int,
+        NUM_BODIES: Int,
+        STATE_SIZE: Int,
+        BODIES_OFFSET: Int,
+    ](
+        state: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, STATE_SIZE),
+            MutAnyOrigin,
+        ],
+        dt: Scalar[dtype],
+    ):
+        """GPU kernel for position integration with 2D strided layout."""
+        var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+        if env >= BATCH:
+            return
+
+        SemiImplicitEuler.integrate_positions_single_env[
+            BATCH, NUM_BODIES, STATE_SIZE, BODIES_OFFSET
+        ](env, state, dt)
 
     @staticmethod
     fn integrate_velocities_gpu[

@@ -2004,7 +2004,7 @@ struct DeepPPOAgent[
                     critic_params_buf,
                     critic_env_workspace_buf,
                 )
-                ctx.synchronize()
+                # No sync needed - GPU ops execute in order within stream
 
                 # Sample actions and compute log probs on GPU
                 ctx.enqueue_function[
@@ -2017,8 +2017,7 @@ struct DeepPPOAgent[
                     grid_dim=(ENV_BLOCKS,),
                     block_dim=(TPB,),
                 )
-
-                ctx.synchronize()
+                # No sync needed - GPU ops execute in order within stream
 
                 # Store pre-step observation to rollout buffer using kernel
                 var t_offset = t * Self.n_envs
@@ -2061,27 +2060,19 @@ struct DeepPPOAgent[
                     block_dim=(TPB,),
                 )
 
-                # Step all environments (pass seed for physics randomness)
+                # Step all environments + extract observations (fused kernel)
                 # Use a different multiplier to get independent seed from action sampling
                 var env_step_seed = UInt64(total_steps * 1103515245 + t * 12345)
-                EnvType.step_kernel_gpu[Self.n_envs, EnvType.STATE_SIZE](
+                EnvType.step_kernel_gpu[Self.n_envs, EnvType.STATE_SIZE, Self.OBS](
                     ctx,
                     states_buf,
                     actions_buf,
                     rewards_buf,
                     dones_buf,
+                    obs_buf,
                     env_step_seed,
                 )
-                ctx.synchronize()
-
-                # Extract observations from state buffer for neural network input
-                ctx.enqueue_function[extract_obs_wrapper, extract_obs_wrapper](
-                    obs_tensor,
-                    states_tensor,
-                    grid_dim=(ENV_BLOCKS,),
-                    block_dim=(TPB,),
-                )
-                ctx.synchronize()
+                # No sync needed - obs extraction is fused into step kernel
 
                 # Store rewards and dones
                 var rollout_rewards_t = LayoutTensor[
@@ -2197,7 +2188,7 @@ struct DeepPPOAgent[
                     dones_buf,
                     UInt32(total_steps * 1013904223 + t * 2654435761),
                 )
-                ctx.synchronize()
+                # No sync needed - GPU ops execute in order within stream
 
                 # Extract observations from state buffer after selective reset
                 ctx.enqueue_function[extract_obs_wrapper, extract_obs_wrapper](
@@ -2206,7 +2197,7 @@ struct DeepPPOAgent[
                     grid_dim=(ENV_BLOCKS,),
                     block_dim=(TPB,),
                 )
-                ctx.synchronize()
+                # No sync needed - next iteration's GPU ops will wait automatically
 
             # Early exit if we've reached target episodes
             if completed_episodes >= num_episodes:

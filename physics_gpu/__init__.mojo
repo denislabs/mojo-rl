@@ -96,8 +96,9 @@ from .collision import (
     EdgeTerrainCollision,
     MAX_TERRAIN_EDGES,
 )
-from .solvers import ImpulseSolver
+from .solvers import ImpulseSolver, UnifiedConstraintSolver
 from .joints import RevoluteJointSolver
+from .kernels import PhysicsStepKernel, PhysicsStepKernelParallel
 
 
 # Strided state helper for GPUDiscreteEnv (flat layout)

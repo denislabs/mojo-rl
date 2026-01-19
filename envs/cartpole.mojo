@@ -914,15 +914,17 @@ struct CartPoleEnv[DTYPE: DType](
     fn step_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
+        OBS_DIM: Int,
     ](
         ctx: DeviceContext,
         mut states_buf: DeviceBuffer[gpu_dtype],
         actions_buf: DeviceBuffer[gpu_dtype],
         mut rewards_buf: DeviceBuffer[gpu_dtype],
         mut dones_buf: DeviceBuffer[gpu_dtype],
+        mut obs_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64 = 0,
     ) raises:
-        """Launch step kernel on GPU.
+        """Launch step kernel on GPU with fused obs extraction.
 
         Args:
             ctx: GPU device context.
@@ -930,9 +932,9 @@ struct CartPoleEnv[DTYPE: DType](
             actions_buf: Actions buffer [BATCH_SIZE].
             rewards_buf: Rewards buffer [BATCH_SIZE] (written).
             dones_buf: Dones buffer [BATCH_SIZE] (written).
+            obs_buf: Observations buffer [BATCH_SIZE * OBS_DIM] (written).
             rng_seed: Random seed (unused in CartPole, for trait compatibility).
         """
-        # Note: rng_seed is unused in CartPole (no random physics elements)
         # Create tensor views from buffers
         var states = LayoutTensor[
             gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -946,6 +948,9 @@ struct CartPoleEnv[DTYPE: DType](
         var dones = LayoutTensor[
             gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
         ](dones_buf.unsafe_ptr())
+        var obs = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+        ](obs_buf.unsafe_ptr())
 
         # Configure grid
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
@@ -953,8 +958,7 @@ struct CartPoleEnv[DTYPE: DType](
         # Convert seed (unused in CartPole but needed for trait compatibility)
         var seed = Scalar[DType.uint64](rng_seed)
 
-        # Define kernel wrapper that calls the impl
-        # Note: MutAnyOrigin allows mutation, no `mut` keyword needed on wrapper params
+        # Define kernel wrapper that calls the impl and extracts obs
         @always_inline
         fn step_wrapper(
             states: LayoutTensor[
@@ -971,17 +975,26 @@ struct CartPoleEnv[DTYPE: DType](
             dones: LayoutTensor[
                 gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
             ],
+            obs: LayoutTensor[
+                gpu_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+            ],
             rng_seed: Scalar[DType.uint64],
         ):
             Self.step_kernel[BATCH_SIZE, STATE_SIZE](
                 states, actions, rewards, dones, rng_seed
             )
+            # Extract observations (for CartPole, obs == state)
+            var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if i < BATCH_SIZE:
+                for d in range(OBS_DIM):
+                    obs[i, d] = states[i, d]
 
         ctx.enqueue_function[step_wrapper, step_wrapper](
             states,
             actions,
             rewards,
             dones,
+            obs,
             seed,
             grid_dim=(BLOCKS,),
             block_dim=(Self.TPB,),
