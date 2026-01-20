@@ -1,10 +1,9 @@
 from ..constants import dtype, TILE, TPB
 from .model import Model
 from layout import LayoutTensor, Layout
-from layout.layout_tensor import copy_dram_to_sram_async
 from gpu import thread_idx, block_idx, block_dim, barrier
 from gpu.host import DeviceContext, DeviceBuffer
-from gpu.memory import AddressSpace, async_copy_wait_all
+from gpu.memory import AddressSpace
 
 
 struct Linear[in_dim: Int, out_dim: Int](Model):
@@ -286,269 +285,6 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
 
             @parameter
             for k in range(TILE):
-                acc += x_shared[local_row, k] * W_shared[k, local_col]
-
-            barrier()
-
-        if global_row < BATCH and global_col < Self.OUT_DIM:
-            output[global_row, global_col] = acc
-
-    @always_inline
-    @staticmethod
-    fn forward_kernel_impl_async[
-        BATCH: Int,
-    ](
-        output: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
-        ],
-        input: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
-        ],
-        W: LayoutTensor[
-            dtype, Layout.row_major(Self.IN_DIM, Self.OUT_DIM), ImmutAnyOrigin
-        ],
-        b: LayoutTensor[dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin],
-        cache: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
-        ],
-    ):
-        """Forward pass kernel using idiomatic async copy: y = x @ W + b.
-
-        Uses copy_dram_to_sram_async for efficient memory transfers that:
-        - Bypass registers (reduced register pressure)
-        - Use dedicated copy engines
-        - Enable compute-memory overlap
-
-        Grid: ((OUT_DIM + TILE - 1) // TILE, (BATCH + TILE - 1) // TILE)
-        Block: (TILE, TILE)
-        """
-        var local_row = Int(thread_idx.y)
-        var local_col = Int(thread_idx.x)
-        var global_row = Int(block_idx.y) * TILE + local_row
-        var global_col = Int(block_idx.x) * TILE + local_col
-
-        # Shared memory for tiles
-        var x_shared = LayoutTensor[
-            dtype,
-            Layout.row_major(TILE, TILE),
-            MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
-        ].stack_allocation()
-
-        var W_shared = LayoutTensor[
-            dtype,
-            Layout.row_major(TILE, TILE),
-            MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
-        ].stack_allocation()
-
-        # Constants for async copy
-        comptime NUM_THREADS = TILE * TILE
-        comptime BLOCK_DIM_COUNT = 2  # 2D thread block
-        comptime load_layout = Layout.row_major(1, TILE)  # Coalesced loading
-
-        # Start with bias
-        var acc: output.element_type = 0
-        if global_col < Self.OUT_DIM:
-            acc = b[global_col]
-
-        # Number of full tiles and check for remainder
-        comptime num_full_tiles = Self.IN_DIM // TILE
-        comptime has_remainder = (Self.IN_DIM % TILE) != 0
-
-        # Process full tiles using async copy
-        @parameter
-        for tile_idx in range(num_full_tiles):
-            # Get tiles using the tile API
-            var x_tile = input.tile[TILE, TILE](
-                Int(block_idx.y), tile_idx
-            )
-            var W_tile = W.tile[TILE, TILE](
-                tile_idx, Int(block_idx.x)
-            )
-
-            # Async copy tiles to shared memory
-            copy_dram_to_sram_async[
-                thread_layout = load_layout,
-                num_threads = NUM_THREADS,
-                block_dim_count = BLOCK_DIM_COUNT,
-            ](x_shared, x_tile)
-
-            copy_dram_to_sram_async[
-                thread_layout = load_layout,
-                num_threads = NUM_THREADS,
-                block_dim_count = BLOCK_DIM_COUNT,
-            ](W_shared, W_tile)
-
-            # Wait for async copies to complete
-            async_copy_wait_all()
-            barrier()
-
-            # Cache input during first set of tiles (overlap with compute)
-            @parameter
-            if tile_idx == 0:
-                # Cache one element per thread from the first tile
-                var cache_col = local_col
-                if global_row < BATCH and cache_col < Self.IN_DIM:
-                    cache[global_row, cache_col] = x_shared[local_row, local_col]
-
-            # Compute partial dot product
-            @parameter
-            for k in range(TILE):
-                acc += x_shared[local_row, k] * W_shared[k, local_col]
-
-            # Cache remaining elements from this tile
-            @parameter
-            if tile_idx > 0:
-                var cache_col = tile_idx * TILE + local_col
-                if global_row < BATCH and cache_col < Self.IN_DIM:
-                    cache[global_row, cache_col] = x_shared[local_row, local_col]
-
-            barrier()
-
-        # Handle remainder tile with manual loading (bounds checking needed)
-        @parameter
-        if has_remainder:
-            comptime remainder_tile_idx = num_full_tiles
-            var x_col = remainder_tile_idx * TILE + local_col
-            var W_row = remainder_tile_idx * TILE + local_row
-
-            # Manual load with bounds checking for remainder
-            if global_row < BATCH and x_col < Self.IN_DIM:
-                var x_val = input[global_row, x_col]
-                x_shared[local_row, local_col] = x_val
-                cache[global_row, x_col] = x_val
-            else:
-                x_shared[local_row, local_col] = 0
-
-            if W_row < Self.IN_DIM and global_col < Self.OUT_DIM:
-                W_shared[local_row, local_col] = W[W_row, global_col]
-            else:
-                W_shared[local_row, local_col] = 0
-
-            barrier()
-
-            # Compute remainder partial dot product
-            comptime remainder_size = Self.IN_DIM - remainder_tile_idx * TILE
-            @parameter
-            for k in range(remainder_size):
-                acc += x_shared[local_row, k] * W_shared[k, local_col]
-
-            barrier()
-
-        # Write result
-        if global_row < BATCH and global_col < Self.OUT_DIM:
-            output[global_row, global_col] = acc
-
-    @always_inline
-    @staticmethod
-    fn forward_kernel_impl_async_no_cache[
-        BATCH: Int,
-    ](
-        output: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
-        ],
-        input: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
-        ],
-        W: LayoutTensor[
-            dtype, Layout.row_major(Self.IN_DIM, Self.OUT_DIM), ImmutAnyOrigin
-        ],
-        b: LayoutTensor[dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin],
-    ):
-        """Forward pass kernel using idiomatic async copy (inference, no cache).
-
-        Uses copy_dram_to_sram_async for efficient memory transfers.
-
-        Grid: ((OUT_DIM + TILE - 1) // TILE, (BATCH + TILE - 1) // TILE)
-        Block: (TILE, TILE)
-        """
-        var local_row = Int(thread_idx.y)
-        var local_col = Int(thread_idx.x)
-        var global_row = Int(block_idx.y) * TILE + local_row
-        var global_col = Int(block_idx.x) * TILE + local_col
-
-        # Shared memory for tiles
-        var x_shared = LayoutTensor[
-            dtype,
-            Layout.row_major(TILE, TILE),
-            MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
-        ].stack_allocation()
-
-        var W_shared = LayoutTensor[
-            dtype,
-            Layout.row_major(TILE, TILE),
-            MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
-        ].stack_allocation()
-
-        # Constants for async copy
-        comptime NUM_THREADS = TILE * TILE
-        comptime BLOCK_DIM_COUNT = 2
-        comptime load_layout = Layout.row_major(1, TILE)
-
-        # Start with bias
-        var acc: output.element_type = 0
-        if global_col < Self.OUT_DIM:
-            acc = b[global_col]
-
-        comptime num_full_tiles = Self.IN_DIM // TILE
-        comptime has_remainder = (Self.IN_DIM % TILE) != 0
-
-        # Process full tiles using async copy
-        @parameter
-        for tile_idx in range(num_full_tiles):
-            var x_tile = input.tile[TILE, TILE](
-                Int(block_idx.y), tile_idx
-            )
-            var W_tile = W.tile[TILE, TILE](
-                tile_idx, Int(block_idx.x)
-            )
-
-            copy_dram_to_sram_async[
-                thread_layout = load_layout,
-                num_threads = NUM_THREADS,
-                block_dim_count = BLOCK_DIM_COUNT,
-            ](x_shared, x_tile)
-
-            copy_dram_to_sram_async[
-                thread_layout = load_layout,
-                num_threads = NUM_THREADS,
-                block_dim_count = BLOCK_DIM_COUNT,
-            ](W_shared, W_tile)
-
-            async_copy_wait_all()
-            barrier()
-
-            @parameter
-            for k in range(TILE):
-                acc += x_shared[local_row, k] * W_shared[k, local_col]
-
-            barrier()
-
-        # Handle remainder tile with manual loading
-        @parameter
-        if has_remainder:
-            comptime remainder_tile_idx = num_full_tiles
-            var x_col = remainder_tile_idx * TILE + local_col
-            var W_row = remainder_tile_idx * TILE + local_row
-
-            if global_row < BATCH and x_col < Self.IN_DIM:
-                x_shared[local_row, local_col] = input[global_row, x_col]
-            else:
-                x_shared[local_row, local_col] = 0
-
-            if W_row < Self.IN_DIM and global_col < Self.OUT_DIM:
-                W_shared[local_row, local_col] = W[W_row, global_col]
-            else:
-                W_shared[local_row, local_col] = 0
-
-            barrier()
-
-            comptime remainder_size = Self.IN_DIM - remainder_tile_idx * TILE
-            @parameter
-            for k in range(remainder_size):
                 acc += x_shared[local_row, k] * W_shared[k, local_col]
 
             barrier()
@@ -872,7 +608,9 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
                 # Load cache.T tile into shared_A
                 var batch_idx = tile_idx * TILE + local_col
                 if global_row < Self.IN_DIM and batch_idx < BATCH:
-                    shared_A[local_row, local_col] = cache[batch_idx, global_row]
+                    shared_A[local_row, local_col] = cache[
+                        batch_idx, global_row
+                    ]
                 else:
                     shared_A[local_row, local_col] = 0
 
@@ -910,6 +648,7 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
                 # Reduce across local_row dimension (thread with local_row==0 sums)
                 if local_row == 0:
                     var total = shared_A[0, local_col]
+
                     @parameter
                     for r in range(1, TILE):
                         total += shared_A[r, local_col]
@@ -986,8 +725,7 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
                 dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
             ],
         ):
-            # Use async kernel with copy_dram_to_sram_async for better performance
-            Self.forward_kernel_impl_async[BATCH](
+            Self.forward_kernel_impl[BATCH](
                 output,
                 input,
                 W,
@@ -1058,8 +796,7 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
                 dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
             ],
         ):
-            # Use async kernel with copy_dram_to_sram_async for better performance
-            Self.forward_kernel_impl_async_no_cache[BATCH](
+            Self.forward_kernel_impl_no_cache[BATCH](
                 output,
                 input,
                 W,
