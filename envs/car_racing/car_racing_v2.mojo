@@ -16,8 +16,9 @@ from math import sqrt, cos, sin, pi
 from layout import Layout, LayoutTensor
 from gpu import thread_idx, block_idx, block_dim
 from gpu.host import DeviceContext, DeviceBuffer
+from random.philox import Random as PhiloxRandom
 
-from core import BoxContinuousActionEnv, Action
+from core import BoxContinuousActionEnv, GPUContinuousEnv, Action
 from render import (
     RendererBase,
     RotatingCamera,
@@ -85,7 +86,9 @@ from physics_gpu.car.layout import (
 # =============================================================================
 
 
-struct CarRacingV2(BoxContinuousActionEnv, Copyable, Movable):
+struct CarRacingV2[DTYPE: DType](
+    BoxContinuousActionEnv, Copyable, GPUContinuousEnv, Movable
+):
     """CarRacing environment with GPU-accelerated physics.
 
     This environment uses the physics_gpu/car/ module for slip-based
@@ -107,13 +110,13 @@ struct CarRacingV2(BoxContinuousActionEnv, Copyable, Movable):
     """
 
     # Required trait aliases
-    comptime dtype = DType.float64  # For Env trait
+    comptime dtype = Self.DTYPE  # For Env trait
     comptime Layout = CRConstants.Layout
     comptime STATE_SIZE: Int = CRConstants.STATE_SIZE
     comptime OBS_DIM: Int = CRConstants.OBS_DIM
     comptime ACTION_DIM: Int = CRConstants.ACTION_DIM
-    comptime StateType = CarRacingV2State[Self.dtype]
-    comptime ActionType = CarRacingV2Action[Self.dtype]
+    comptime StateType = CarRacingV2State[Self.DTYPE]
+    comptime ActionType = CarRacingV2Action[Self.DTYPE]
 
     # Track generator (Float64 for precision)
     var track: TrackGenerator[DType.float64]
@@ -137,7 +140,7 @@ struct CarRacingV2(BoxContinuousActionEnv, Copyable, Movable):
     var domain_randomize: Bool
 
     # Cached state
-    var cached_state: CarRacingV2State[DType.float64]
+    var cached_state: CarRacingV2State[Self.dtype]
 
     # =========================================================================
     # Initialization
@@ -183,7 +186,7 @@ struct CarRacingV2(BoxContinuousActionEnv, Copyable, Movable):
         self.domain_randomize = domain_randomize
 
         # Cached state
-        self.cached_state = CarRacingV2State[DType.float64]()
+        self.cached_state = CarRacingV2State[Self.dtype]()
 
     fn __copyinit__(out self, other: Self):
         self.track = TrackGenerator[DType.float64]()
@@ -223,7 +226,7 @@ struct CarRacingV2(BoxContinuousActionEnv, Copyable, Movable):
         """Reset the environment and return initial state."""
         # Generate track (procedural random track)
         var seed = UInt64(self.step_count + 42)  # Different seed each reset
-        self.track.generate_random_track(seed)
+        self.track.generate_random_track(seed, verbose=False)
 
         # Copy track to tiles buffer
         self._update_tiles_buffer()
@@ -253,7 +256,7 @@ struct CarRacingV2(BoxContinuousActionEnv, Copyable, Movable):
 
     fn step(
         mut self, action: Self.ActionType
-    ) -> Tuple[Self.StateType, Float64, Bool]:
+    ) -> Tuple[Self.StateType, Scalar[Self.dtype], Bool]:
         """Take action and return (next_state, reward, done)."""
         # Clamp and remap action inputs
         var steering = clamp(Float64(action.steering), -1.0, 1.0)
@@ -280,7 +283,7 @@ struct CarRacingV2(BoxContinuousActionEnv, Copyable, Movable):
 
         # Cache and return state
         self._update_cached_state()
-        return (self.cached_state, step_reward, self.done)
+        return (self.cached_state, Scalar[Self.dtype](step_reward), self.done)
 
     fn get_state(self) -> Self.StateType:
         """Get current state."""
@@ -290,11 +293,23 @@ struct CarRacingV2(BoxContinuousActionEnv, Copyable, Movable):
         """Render the environment with rotating camera following the car."""
         # Get car state from physics buffer
         var state = self._get_state_tensor()
-        var hull_x = Float64(rebind[Scalar[dtype]](state[0, Self.Layout.HULL_OFFSET + HULL_X]))
-        var hull_y = Float64(rebind[Scalar[dtype]](state[0, Self.Layout.HULL_OFFSET + HULL_Y]))
-        var hull_angle = Float64(rebind[Scalar[dtype]](state[0, Self.Layout.HULL_OFFSET + HULL_ANGLE]))
-        var hull_vx = Float64(rebind[Scalar[dtype]](state[0, Self.Layout.HULL_OFFSET + HULL_VX]))
-        var hull_vy = Float64(rebind[Scalar[dtype]](state[0, Self.Layout.HULL_OFFSET + HULL_VY]))
+        var hull_x = Float64(
+            rebind[Scalar[dtype]](state[0, Self.Layout.HULL_OFFSET + HULL_X])
+        )
+        var hull_y = Float64(
+            rebind[Scalar[dtype]](state[0, Self.Layout.HULL_OFFSET + HULL_Y])
+        )
+        var hull_angle = Float64(
+            rebind[Scalar[dtype]](
+                state[0, Self.Layout.HULL_OFFSET + HULL_ANGLE]
+            )
+        )
+        var hull_vx = Float64(
+            rebind[Scalar[dtype]](state[0, Self.Layout.HULL_OFFSET + HULL_VX])
+        )
+        var hull_vy = Float64(
+            rebind[Scalar[dtype]](state[0, Self.Layout.HULL_OFFSET + HULL_VY])
+        )
 
         # Background color (grass green)
         var bg_color = SDL_Color(102, 204, 102, 255)
@@ -304,14 +319,17 @@ struct CarRacingV2(BoxContinuousActionEnv, Copyable, Movable):
         # Create rotating camera - follows car with rotation
         # Camera zoom interpolates during first second
         var t = Float64(self.step_count) * CRConstants.DT
-        var zoom = CRConstants.ZOOM * CRConstants.SCALE * min(t, 1.0) + 0.1 * CRConstants.SCALE * max(1.0 - t, 0.0)
+        var zoom = CRConstants.ZOOM * CRConstants.SCALE * min(
+            t, 1.0
+        ) + 0.1 * CRConstants.SCALE * max(1.0 - t, 0.0)
 
         # Screen center for camera (car appears in lower portion)
         var screen_center_x = Float64(CRConstants.WINDOW_W) / 2.0
         var screen_center_y = Float64(CRConstants.WINDOW_H) * 3.0 / 4.0
 
         var camera = renderer.make_rotating_camera_offset(
-            hull_x, hull_y,
+            hull_x,
+            hull_y,
             -hull_angle,  # Negative to rotate view opposite to car
             zoom,
             screen_center_x,
@@ -351,11 +369,22 @@ struct CarRacingV2(BoxContinuousActionEnv, Copyable, Movable):
                 # Grass quad corners
                 var vertices = List[RenderVec2]()
                 vertices.append(RenderVec2(world_x, world_y))
-                vertices.append(RenderVec2(world_x + CRConstants.GRASS_DIM, world_y))
-                vertices.append(RenderVec2(world_x + CRConstants.GRASS_DIM, world_y + CRConstants.GRASS_DIM))
-                vertices.append(RenderVec2(world_x, world_y + CRConstants.GRASS_DIM))
+                vertices.append(
+                    RenderVec2(world_x + CRConstants.GRASS_DIM, world_y)
+                )
+                vertices.append(
+                    RenderVec2(
+                        world_x + CRConstants.GRASS_DIM,
+                        world_y + CRConstants.GRASS_DIM,
+                    )
+                )
+                vertices.append(
+                    RenderVec2(world_x, world_y + CRConstants.GRASS_DIM)
+                )
 
-                renderer.draw_polygon_rotating(vertices, camera, grass_clr, filled=True)
+                renderer.draw_polygon_rotating(
+                    vertices, camera, grass_clr, filled=True
+                )
 
     fn _draw_track(self, mut renderer: RendererBase, camera: RotatingCamera):
         """Draw track tiles."""
@@ -397,7 +426,9 @@ struct CarRacingV2(BoxContinuousActionEnv, Copyable, Movable):
             vertices.append(RenderVec2(Float64(tile.v2_x), Float64(tile.v2_y)))
             vertices.append(RenderVec2(Float64(tile.v3_x), Float64(tile.v3_y)))
 
-            renderer.draw_polygon_rotating(vertices, camera, tile_color, filled=True)
+            renderer.draw_polygon_rotating(
+                vertices, camera, tile_color, filled=True
+            )
 
     fn _draw_car(
         self,
@@ -423,7 +454,9 @@ struct CarRacingV2(BoxContinuousActionEnv, Copyable, Movable):
         hull1.append(RenderVec2(60.0 * car_size, 130.0 * car_size))
         hull1.append(RenderVec2(60.0 * car_size, 110.0 * car_size))
         hull1.append(RenderVec2(-60.0 * car_size, 110.0 * car_size))
-        renderer.draw_transformed_polygon_rotating(hull1, hull_transform, camera, hull_color, filled=True)
+        renderer.draw_transformed_polygon_rotating(
+            hull1, hull_transform, camera, hull_color, filled=True
+        )
 
         # Hull polygon 2 (cabin)
         var hull2 = List[RenderVec2]()
@@ -431,7 +464,9 @@ struct CarRacingV2(BoxContinuousActionEnv, Copyable, Movable):
         hull2.append(RenderVec2(15.0 * car_size, 120.0 * car_size))
         hull2.append(RenderVec2(20.0 * car_size, 20.0 * car_size))
         hull2.append(RenderVec2(-20.0 * car_size, 20.0 * car_size))
-        renderer.draw_transformed_polygon_rotating(hull2, hull_transform, camera, hull_color, filled=True)
+        renderer.draw_transformed_polygon_rotating(
+            hull2, hull_transform, camera, hull_color, filled=True
+        )
 
         # Hull polygon 3 (body)
         var hull3 = List[RenderVec2]()
@@ -443,7 +478,9 @@ struct CarRacingV2(BoxContinuousActionEnv, Copyable, Movable):
         hull3.append(RenderVec2(-50.0 * car_size, -40.0 * car_size))
         hull3.append(RenderVec2(-50.0 * car_size, -10.0 * car_size))
         hull3.append(RenderVec2(-25.0 * car_size, 20.0 * car_size))
-        renderer.draw_transformed_polygon_rotating(hull3, hull_transform, camera, hull_color, filled=True)
+        renderer.draw_transformed_polygon_rotating(
+            hull3, hull_transform, camera, hull_color, filled=True
+        )
 
         # Hull polygon 4 (rear spoiler)
         var hull4 = List[RenderVec2]()
@@ -451,7 +488,9 @@ struct CarRacingV2(BoxContinuousActionEnv, Copyable, Movable):
         hull4.append(RenderVec2(50.0 * car_size, -120.0 * car_size))
         hull4.append(RenderVec2(50.0 * car_size, -90.0 * car_size))
         hull4.append(RenderVec2(-50.0 * car_size, -90.0 * car_size))
-        renderer.draw_transformed_polygon_rotating(hull4, hull_transform, camera, hull_color, filled=True)
+        renderer.draw_transformed_polygon_rotating(
+            hull4, hull_transform, camera, hull_color, filled=True
+        )
 
         # Draw wheels
         var wheel_color = black()
@@ -459,13 +498,19 @@ struct CarRacingV2(BoxContinuousActionEnv, Copyable, Movable):
         var hr = 27.0 * car_size  # Wheel radius
 
         # Wheel positions (local coords) - FL, FR, RL, RR
-        var wheel_pos_x = InlineArray[Float64, 4](WHEEL_POS_FL_X, WHEEL_POS_FR_X, WHEEL_POS_RL_X, WHEEL_POS_RR_X)
-        var wheel_pos_y = InlineArray[Float64, 4](WHEEL_POS_FL_Y, WHEEL_POS_FR_Y, WHEEL_POS_RL_Y, WHEEL_POS_RR_Y)
+        var wheel_pos_x = InlineArray[Float64, 4](
+            WHEEL_POS_FL_X, WHEEL_POS_FR_X, WHEEL_POS_RL_X, WHEEL_POS_RR_X
+        )
+        var wheel_pos_y = InlineArray[Float64, 4](
+            WHEEL_POS_FL_Y, WHEEL_POS_FR_Y, WHEEL_POS_RL_Y, WHEEL_POS_RR_Y
+        )
 
         for i in range(4):
             # Get wheel joint angle from state
             var wheel_off = Self.Layout.WHEELS_OFFSET + i * WHEEL_STATE_SIZE
-            var joint_angle = Float64(rebind[Scalar[dtype]](state[0, wheel_off + WHEEL_JOINT_ANGLE]))
+            var joint_angle = Float64(
+                rebind[Scalar[dtype]](state[0, wheel_off + WHEEL_JOINT_ANGLE])
+            )
 
             # World position of wheel
             var local_x = wheel_pos_x[i]
@@ -488,7 +533,9 @@ struct CarRacingV2(BoxContinuousActionEnv, Copyable, Movable):
             wheel_verts.append(RenderVec2(hw, hr))
             wheel_verts.append(RenderVec2(hw, -hr))
             wheel_verts.append(RenderVec2(-hw, -hr))
-            renderer.draw_transformed_polygon_rotating(wheel_verts, wheel_transform, camera, wheel_color, filled=True)
+            renderer.draw_transformed_polygon_rotating(
+                wheel_verts, wheel_transform, camera, wheel_color, filled=True
+            )
 
     fn _draw_info(self, mut renderer: RendererBase, vx: Float64, vy: Float64):
         """Draw HUD info panel."""
@@ -507,23 +554,41 @@ struct CarRacingV2(BoxContinuousActionEnv, Copyable, Movable):
         # Draw speed indicator (white bar)
         if speed > 0.0001:
             var speed_height = 0.02 * speed
-            self._draw_vertical_indicator(renderer, 5, speed_height, white(), s, h, Int(H))
+            self._draw_vertical_indicator(
+                renderer, 5, speed_height, white(), s, h, Int(H)
+            )
 
         # Get wheel omegas from physics buffer
         var state = self._get_state_tensor()
         for i in range(4):
             var wheel_off = Self.Layout.WHEELS_OFFSET + i * WHEEL_STATE_SIZE
-            var omega = Float64(rebind[Scalar[dtype]](state[0, wheel_off + WHEEL_OMEGA]))
+            var omega = Float64(
+                rebind[Scalar[dtype]](state[0, wheel_off + WHEEL_OMEGA])
+            )
 
             var abs_omega = omega if omega >= 0.0 else -omega
             if abs_omega > 0.0001:
                 # Front wheels in blue, rear in purple
-                var color = SDL_Color(0, 0, 255, 255) if i < 2 else SDL_Color(128, 0, 255, 255)
-                self._draw_vertical_indicator(renderer, 7 + i, 0.01 * omega, color, s, h, Int(H))
+                var color = SDL_Color(0, 0, 255, 255) if i < 2 else SDL_Color(
+                    128, 0, 255, 255
+                )
+                self._draw_vertical_indicator(
+                    renderer, 7 + i, 0.01 * omega, color, s, h, Int(H)
+                )
 
         # Draw progress indicator (green)
-        var progress = Float64(self.tiles_visited) / Float64(max(self.track.track_length, 1))
-        self._draw_vertical_indicator(renderer, 15, progress * 3.0, SDL_Color(0, 255, 0, 255), s, h, Int(H))
+        var progress = Float64(self.tiles_visited) / Float64(
+            max(self.track.track_length, 1)
+        )
+        self._draw_vertical_indicator(
+            renderer,
+            15,
+            progress * 3.0,
+            SDL_Color(0, 255, 0, 255),
+            s,
+            h,
+            Int(H),
+        )
 
     fn _draw_vertical_indicator(
         self,
@@ -535,17 +600,24 @@ struct CarRacingV2(BoxContinuousActionEnv, Copyable, Movable):
         h: Float64,
         screen_h: Int,
     ):
-        """Draw a vertical indicator bar."""
+        """Draw a vertical indicator bar inside the HUD panel."""
         var x = Int(Float64(x_pos) * s)
         var bar_h = min(height * h, 4.0 * h)
         var abs_bar_h = bar_h if bar_h >= 0.0 else -bar_h
 
+        # HUD panel occupies bottom 5*h pixels
+        # Baseline is in the middle of the HUD panel
+        var baseline = screen_h - Int(2.5 * h)  # Middle of HUD
+
         if bar_h >= 0.0:
-            var y = screen_h - Int(5 * h) - Int(bar_h)
-            renderer.draw_rect(x, y, Int(s), Int(abs_bar_h), color, 0)
+            # Positive: draw upward from baseline
+            var y = baseline - Int(abs_bar_h)
+            renderer.draw_rect(x, y, Int(s), Int(abs_bar_h) + 1, color, 0)
         else:
-            var y = screen_h - Int(5 * h)
-            renderer.draw_rect(x, y, Int(s), Int(abs_bar_h), color, 0)
+            # Negative: draw downward from baseline
+            renderer.draw_rect(
+                x, baseline, Int(s), Int(abs_bar_h) + 1, color, 0
+            )
 
     fn close(mut self):
         """Clean up resources."""
@@ -586,28 +658,28 @@ struct CarRacingV2(BoxContinuousActionEnv, Copyable, Movable):
         """Step with single action (applies to steering only)."""
         var act = CarRacingV2Action[Self.dtype](action, 0.0, 0.0)
         var result = self.step(act)
-        return (result[0].to_list_typed[Self.dtype](), result[1], result[2])
+        return (
+            result[0].to_list_typed[Self.dtype](),
+            Scalar[Self.dtype](result[1]),
+            result[2],
+        )
 
-    fn step_continuous_vec(
-        mut self, action: List[Scalar[Self.dtype]]
-    ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
-        """Step with action vector."""
-        var act = CarRacingV2Action[Self.dtype].from_list(action)
-        var result = self.step(act)
-        return (result[0].to_list_typed[Self.dtype](), result[1], result[2])
-
-    fn step_continuous_vec_f64(
-        mut self, action: List[Float64]
-    ) -> Tuple[List[Float64], Float64, Bool]:
-        """Step with action vector (Float64 convenience method)."""
+    fn step_continuous_vec[
+        DTYPE_VEC: DType
+    ](mut self, action: List[Scalar[DTYPE_VEC]]) -> Tuple[
+        List[Scalar[DTYPE_VEC]], Scalar[DTYPE_VEC], Bool
+    ]:
+        """Step with action vector (DTYPE convenience method)."""
         var typed_action = List[Scalar[Self.dtype]]()
         for i in range(len(action)):
             typed_action.append(Scalar[Self.dtype](action[i]))
-        var result = self.step_continuous_vec(typed_action)
-        var obs_f64 = List[Float64]()
-        for i in range(len(result[0])):
-            obs_f64.append(Float64(result[0][i]))
-        return (obs_f64^, Float64(result[1]), result[2])
+        var act = CarRacingV2Action[Self.dtype].from_list(typed_action)
+        var result = self.step(act)
+        return (
+            result[0].to_list_typed[DTYPE_VEC](),
+            Scalar[DTYPE_VEC](result[1]),
+            result[2],
+        )
 
     # =========================================================================
     # Internal State Buffer Access
@@ -667,9 +739,13 @@ struct CarRacingV2(BoxContinuousActionEnv, Copyable, Movable):
     ):
         """Set control inputs in state buffer."""
         var state = self._get_state_tensor()
-        state[0, Self.Layout.CONTROLS_OFFSET + CTRL_STEERING] = Scalar[dtype](steering)
+        state[0, Self.Layout.CONTROLS_OFFSET + CTRL_STEERING] = Scalar[dtype](
+            steering
+        )
         state[0, Self.Layout.CONTROLS_OFFSET + CTRL_GAS] = Scalar[dtype](gas)
-        state[0, Self.Layout.CONTROLS_OFFSET + CTRL_BRAKE] = Scalar[dtype](brake)
+        state[0, Self.Layout.CONTROLS_OFFSET + CTRL_BRAKE] = Scalar[dtype](
+            brake
+        )
 
     fn _update_tiles_buffer(mut self):
         """Copy track tiles to tiles buffer."""
@@ -707,8 +783,12 @@ struct CarRacingV2(BoxContinuousActionEnv, Copyable, Movable):
         var tiles = self._get_tiles_tensor()
 
         # Get hull position (use rebind to extract Scalar from LayoutTensor)
-        var hull_x = rebind[Scalar[dtype]](state[0, Self.Layout.HULL_OFFSET + HULL_X])
-        var hull_y = rebind[Scalar[dtype]](state[0, Self.Layout.HULL_OFFSET + HULL_Y])
+        var hull_x = rebind[Scalar[dtype]](
+            state[0, Self.Layout.HULL_OFFSET + HULL_X]
+        )
+        var hull_y = rebind[Scalar[dtype]](
+            state[0, Self.Layout.HULL_OFFSET + HULL_Y]
+        )
 
         # Check which tile we're on
         var tile_idx = TileCollision.check_tile_visited[MAX_TRACK_TILES](
@@ -732,8 +812,12 @@ struct CarRacingV2(BoxContinuousActionEnv, Copyable, Movable):
         var state = self._get_state_tensor()
 
         # Get hull position (rebind to Scalar, then cast to Float64)
-        var hull_x = Float64(rebind[Scalar[dtype]](state[0, Self.Layout.HULL_OFFSET + HULL_X]))
-        var hull_y = Float64(rebind[Scalar[dtype]](state[0, Self.Layout.HULL_OFFSET + HULL_Y]))
+        var hull_x = Float64(
+            rebind[Scalar[dtype]](state[0, Self.Layout.HULL_OFFSET + HULL_X])
+        )
+        var hull_y = Float64(
+            rebind[Scalar[dtype]](state[0, Self.Layout.HULL_OFFSET + HULL_Y])
+        )
 
         var playfield = Float64(CRConstants.PLAYFIELD)
 
@@ -745,9 +829,9 @@ struct CarRacingV2(BoxContinuousActionEnv, Copyable, Movable):
             step_reward = -100.0
 
         # Check lap completion
-        var progress = Float64(self.tiles_visited) / Float64(max(
-            self.track.track_length, 1
-        ))
+        var progress = Float64(self.tiles_visited) / Float64(
+            max(self.track.track_length, 1)
+        )
         if progress >= self.lap_complete_percent:
             self.done = True
 
@@ -762,8 +846,55 @@ struct CarRacingV2(BoxContinuousActionEnv, Copyable, Movable):
 
     fn _update_observation(mut self):
         """Update observation in state buffer (called after physics step)."""
-        # CarDynamics.step_with_obs already updates observations
-        pass
+        # Copy hull state to observation buffer
+        var state = self._get_state_tensor()
+
+        # Hull state (6 values)
+        state[0, Self.Layout.OBS_OFFSET + 0] = state[
+            0, Self.Layout.HULL_OFFSET + HULL_X
+        ]
+        state[0, Self.Layout.OBS_OFFSET + 1] = state[
+            0, Self.Layout.HULL_OFFSET + HULL_Y
+        ]
+        state[0, Self.Layout.OBS_OFFSET + 2] = state[
+            0, Self.Layout.HULL_OFFSET + HULL_ANGLE
+        ]
+        state[0, Self.Layout.OBS_OFFSET + 3] = state[
+            0, Self.Layout.HULL_OFFSET + HULL_VX
+        ]
+        state[0, Self.Layout.OBS_OFFSET + 4] = state[
+            0, Self.Layout.HULL_OFFSET + HULL_VY
+        ]
+        state[0, Self.Layout.OBS_OFFSET + 5] = state[
+            0, Self.Layout.HULL_OFFSET + HULL_OMEGA
+        ]
+
+        # Front wheel angles (2 values)
+        var fl_off = Self.Layout.WHEELS_OFFSET + 0 * WHEEL_STATE_SIZE
+        var fr_off = Self.Layout.WHEELS_OFFSET + 1 * WHEEL_STATE_SIZE
+        state[0, Self.Layout.OBS_OFFSET + 6] = state[
+            0, fl_off + WHEEL_JOINT_ANGLE
+        ]
+        state[0, Self.Layout.OBS_OFFSET + 7] = state[
+            0, fr_off + WHEEL_JOINT_ANGLE
+        ]
+
+        # Wheel angular velocities (4 values)
+        for wheel in range(NUM_WHEELS):
+            var wheel_off = Self.Layout.WHEELS_OFFSET + wheel * WHEEL_STATE_SIZE
+            state[0, Self.Layout.OBS_OFFSET + 8 + wheel] = state[
+                0, wheel_off + WHEEL_OMEGA
+            ]
+
+        # Speed indicator (computed from vx, vy)
+        var vx = rebind[Scalar[dtype]](
+            state[0, Self.Layout.HULL_OFFSET + HULL_VX]
+        )
+        var vy = rebind[Scalar[dtype]](
+            state[0, Self.Layout.HULL_OFFSET + HULL_VY]
+        )
+        var speed = sqrt(vx * vx + vy * vy)
+        state[0, Self.Layout.OBS_OFFSET + 12] = speed
 
     fn _update_cached_state(mut self):
         """Update cached state from buffer."""
@@ -771,44 +902,199 @@ struct CarRacingV2(BoxContinuousActionEnv, Copyable, Movable):
         var obs_off = Self.Layout.OBS_OFFSET
 
         # Extract values using rebind and convert to Float64
-        self.cached_state.x = Float64(rebind[Scalar[dtype]](state[0, obs_off + 0]))
-        self.cached_state.y = Float64(rebind[Scalar[dtype]](state[0, obs_off + 1]))
-        self.cached_state.angle = Float64(rebind[Scalar[dtype]](state[0, obs_off + 2]))
-        self.cached_state.vx = Float64(rebind[Scalar[dtype]](state[0, obs_off + 3]))
-        self.cached_state.vy = Float64(rebind[Scalar[dtype]](state[0, obs_off + 4]))
-        self.cached_state.angular_velocity = Float64(rebind[Scalar[dtype]](state[0, obs_off + 5]))
-        self.cached_state.wheel_angle_fl = Float64(rebind[Scalar[dtype]](state[0, obs_off + 6]))
-        self.cached_state.wheel_angle_fr = Float64(rebind[Scalar[dtype]](state[0, obs_off + 7]))
-        self.cached_state.wheel_omega_fl = Float64(rebind[Scalar[dtype]](state[0, obs_off + 8]))
-        self.cached_state.wheel_omega_fr = Float64(rebind[Scalar[dtype]](state[0, obs_off + 9]))
-        self.cached_state.wheel_omega_rl = Float64(rebind[Scalar[dtype]](state[0, obs_off + 10]))
-        self.cached_state.wheel_omega_rr = Float64(rebind[Scalar[dtype]](state[0, obs_off + 11]))
-        self.cached_state.speed = Float64(rebind[Scalar[dtype]](state[0, obs_off + 12]))
+        self.cached_state.x = rebind[Scalar[Self.dtype]](state[0, obs_off + 0])
+        self.cached_state.y = rebind[Scalar[Self.dtype]](state[0, obs_off + 1])
+        self.cached_state.angle = rebind[Scalar[Self.dtype]](
+            state[0, obs_off + 2]
+        )
+        self.cached_state.vx = rebind[Scalar[Self.dtype]](state[0, obs_off + 3])
+        self.cached_state.vy = rebind[Scalar[Self.dtype]](state[0, obs_off + 4])
+        self.cached_state.angular_velocity = rebind[Scalar[Self.dtype]](
+            state[0, obs_off + 5]
+        )
+        self.cached_state.wheel_angle_fl = rebind[Scalar[Self.dtype]](
+            state[0, obs_off + 6]
+        )
+        self.cached_state.wheel_angle_fr = rebind[Scalar[Self.dtype]](
+            state[0, obs_off + 7]
+        )
+        self.cached_state.wheel_omega_fl = rebind[Scalar[Self.dtype]](
+            state[0, obs_off + 8]
+        )
+
+        self.cached_state.wheel_omega_fr = rebind[Scalar[Self.dtype]](
+            state[0, obs_off + 9]
+        )
+
+        self.cached_state.wheel_omega_rl = rebind[Scalar[Self.dtype]](
+            state[0, obs_off + 10]
+        )
+
+        self.cached_state.wheel_omega_rr = rebind[Scalar[Self.dtype]](
+            state[0, obs_off + 11]
+        )
+
+        self.cached_state.speed = rebind[Scalar[Self.dtype]](
+            state[0, obs_off + 12]
+        )
 
     # =========================================================================
-    # GPU Batch Operations (Static Methods)
+    # GPU Batch Operations (Static Methods) - GPUContinuousEnv Trait
     # =========================================================================
 
     @staticmethod
-    fn reset_kernel_gpu[BATCH: Int](
+    fn step_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        OBS_DIM: Int,
+        ACTION_DIM: Int,
+    ](
         ctx: DeviceContext,
-        mut states_buf: DeviceBuffer[dtype],
-        tiles_buf: DeviceBuffer[dtype],
-        num_tiles: Int,
+        mut states: DeviceBuffer[dtype],
+        actions: DeviceBuffer[dtype],
+        mut rewards: DeviceBuffer[dtype],
+        mut dones: DeviceBuffer[dtype],
+        mut obs: DeviceBuffer[dtype],
+        rng_seed: UInt64 = 0,
     ) raises:
-        """Reset all environments (GPU batch).
+        """Perform one environment step with continuous actions (GPUContinuousEnv trait).
+
+        NOTE: This trait-compliant method requires a pre-initialized track in a
+        separate tiles buffer. For full functionality, use step_kernel_gpu_with_track.
+        This method uses a simple circular track stored as a static buffer.
 
         Args:
             ctx: GPU device context.
-            states_buf: State buffer [BATCH * STATE_SIZE].
-            tiles_buf: Track tiles buffer (shared).
-            num_tiles: Number of track tiles.
+            states: State buffer [BATCH_SIZE * STATE_SIZE].
+            actions: Continuous actions buffer [BATCH_SIZE * ACTION_DIM].
+            rewards: Rewards buffer (output) [BATCH_SIZE].
+            dones: Done flags buffer (output) [BATCH_SIZE].
+            obs: Observations buffer (output) [BATCH_SIZE * OBS_DIM].
+            rng_seed: Optional random seed for physics.
         """
-        # TODO: Implement GPU reset kernel
-        pass
+        # Create a simple circular track buffer for trait compliance
+        # In production, use step_kernel_gpu_with_track for proper track support
+        var tiles_buf = ctx.enqueue_create_buffer[dtype](
+            MAX_TRACK_TILES * TILE_DATA_SIZE
+        )
+
+        # Initialize simple circular track
+        CarRacingV2[Self.dtype]._init_circular_track_gpu(ctx, tiles_buf)
+
+        # Use the full implementation with track
+        var obs_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE * OBS_DIM)
+        CarRacingV2[Self.dtype].step_kernel_gpu_with_track[BATCH_SIZE](
+            ctx, states, actions, tiles_buf, 100, rewards, dones, obs_buf
+        )
+
+        # Copy observations to output buffer
+        CarRacingV2[Self.dtype]._copy_obs_gpu[BATCH_SIZE, OBS_DIM](
+            ctx, states, obs
+        )
 
     @staticmethod
-    fn step_kernel_gpu[BATCH: Int](
+    fn reset_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+    ](ctx: DeviceContext, mut states: DeviceBuffer[dtype]) raises:
+        """Reset all environments to random initial values (GPUContinuousEnv trait).
+
+        Initializes cars at start position of a simple circular track.
+        For procedural tracks, use reset_kernel_gpu_with_track.
+
+        Args:
+            ctx: GPU device context.
+            states: State buffer [BATCH_SIZE * STATE_SIZE].
+        """
+        var states_tensor = LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ](states.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
+
+        @always_inline
+        fn reset_wrapper(
+            states: LayoutTensor[
+                dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+            ],
+        ):
+            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if env >= BATCH_SIZE:
+                return
+            CarRacingV2[Self.dtype]._reset_env_gpu[BATCH_SIZE, STATE_SIZE](
+                states, env, env * 12345
+            )
+
+        ctx.enqueue_function[reset_wrapper, reset_wrapper](
+            states_tensor,
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+    @staticmethod
+    fn selective_reset_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+    ](
+        ctx: DeviceContext,
+        mut states: DeviceBuffer[dtype],
+        mut dones: DeviceBuffer[dtype],
+        rng_seed: UInt32,
+    ) raises:
+        """Reset only done environments (GPUContinuousEnv trait).
+
+        Args:
+            ctx: GPU device context.
+            states: State buffer [BATCH_SIZE * STATE_SIZE].
+            dones: Done flags buffer [BATCH_SIZE].
+            rng_seed: Random seed for initialization.
+        """
+        var states_tensor = LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ](states.unsafe_ptr())
+
+        var dones_tensor = LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ](dones.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
+
+        @always_inline
+        fn selective_reset_wrapper(
+            states: LayoutTensor[
+                dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+            ],
+            dones: LayoutTensor[
+                dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
+            seed: Scalar[dtype],
+        ):
+            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if env >= BATCH_SIZE:
+                return
+            # Only reset if done
+            if rebind[Scalar[dtype]](dones[env]) > Scalar[dtype](0.5):
+                CarRacingV2[Self.dtype]._reset_env_gpu[BATCH_SIZE, STATE_SIZE](
+                    states, env, Int(seed) + env
+                )
+                dones[env] = Scalar[dtype](0.0)
+
+        ctx.enqueue_function[selective_reset_wrapper, selective_reset_wrapper](
+            states_tensor,
+            dones_tensor,
+            Scalar[dtype](rng_seed),
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+    # =========================================================================
+    # Extended GPU Methods (CarRacing-specific with track buffer)
+    # =========================================================================
+
+    @staticmethod
+    fn step_kernel_gpu_with_track[
+        BATCH: Int
+    ](
         ctx: DeviceContext,
         mut states_buf: DeviceBuffer[dtype],
         actions_buf: DeviceBuffer[dtype],
@@ -816,8 +1102,12 @@ struct CarRacingV2(BoxContinuousActionEnv, Copyable, Movable):
         num_tiles: Int,
         mut rewards_buf: DeviceBuffer[dtype],
         mut dones_buf: DeviceBuffer[dtype],
+        mut obs_buf: DeviceBuffer[dtype],
     ) raises:
-        """Step all environments (GPU batch).
+        """Step all environments with shared track data (CarRacing-specific).
+
+        This is the primary GPU step method that provides full functionality
+        with proper track tile collision and reward computation.
 
         Args:
             ctx: GPU device context.
@@ -827,12 +1117,363 @@ struct CarRacingV2(BoxContinuousActionEnv, Copyable, Movable):
             num_tiles: Number of track tiles.
             rewards_buf: Output rewards [BATCH].
             dones_buf: Output done flags [BATCH].
+            obs_buf: Output observations [BATCH * OBS_DIM].
         """
-        # Step 1: Copy actions to state controls
-        # (TODO: Add action copy kernel)
+        # Create tensor views
+        var states = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, CRConstants.STATE_SIZE),
+            MutAnyOrigin,
+        ](states_buf.unsafe_ptr())
 
-        # Step 2: Run physics
-        CarPhysicsKernel.step_gpu[
+        var actions = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, CRConstants.ACTION_DIM),
+            MutAnyOrigin,
+        ](actions_buf.unsafe_ptr())
+
+        var tiles = LayoutTensor[
+            dtype,
+            Layout.row_major(MAX_TRACK_TILES, TILE_DATA_SIZE),
+            MutAnyOrigin,
+        ](tiles_buf.unsafe_ptr())
+
+        var rewards = LayoutTensor[
+            dtype, Layout.row_major(BATCH), MutAnyOrigin
+        ](rewards_buf.unsafe_ptr())
+
+        var dones = LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin](
+            dones_buf.unsafe_ptr()
+        )
+
+        var obs = LayoutTensor[
+            dtype, Layout.row_major(BATCH, CRConstants.OBS_DIM), MutAnyOrigin
+        ](obs_buf.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH + TPB - 1) // TPB
+
+        # Fused step kernel: actions -> physics -> reward -> done -> obs
+        @always_inline
+        fn step_wrapper(
+            states: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, CRConstants.STATE_SIZE),
+                MutAnyOrigin,
+            ],
+            actions: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, CRConstants.ACTION_DIM),
+                MutAnyOrigin,
+            ],
+            tiles: LayoutTensor[
+                dtype,
+                Layout.row_major(MAX_TRACK_TILES, TILE_DATA_SIZE),
+                MutAnyOrigin,
+            ],
+            rewards: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+            dones: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+            obs: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, CRConstants.OBS_DIM),
+                MutAnyOrigin,
+            ],
+            num_tiles: Int,
+        ):
+            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if env >= BATCH:
+                return
+            CarRacingV2[Self.dtype]._step_env_gpu[BATCH](
+                env, states, actions, tiles, num_tiles, rewards, dones, obs
+            )
+
+        ctx.enqueue_function[step_wrapper, step_wrapper](
+            states,
+            actions,
+            tiles,
+            rewards,
+            dones,
+            obs,
+            num_tiles,
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+    @staticmethod
+    fn reset_kernel_gpu_with_track[
+        BATCH: Int
+    ](
+        ctx: DeviceContext,
+        mut states_buf: DeviceBuffer[dtype],
+        tiles_buf: DeviceBuffer[dtype],
+        num_tiles: Int,
+    ) raises:
+        """Reset all environments with shared track data (CarRacing-specific).
+
+        Args:
+            ctx: GPU device context.
+            states_buf: State buffer [BATCH * STATE_SIZE].
+            tiles_buf: Track tiles buffer (shared).
+            num_tiles: Number of track tiles.
+        """
+        var states = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, CRConstants.STATE_SIZE),
+            MutAnyOrigin,
+        ](states_buf.unsafe_ptr())
+
+        var tiles = LayoutTensor[
+            dtype,
+            Layout.row_major(MAX_TRACK_TILES, TILE_DATA_SIZE),
+            MutAnyOrigin,
+        ](tiles_buf.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH + TPB - 1) // TPB
+
+        @always_inline
+        fn reset_wrapper(
+            states: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, CRConstants.STATE_SIZE),
+                MutAnyOrigin,
+            ],
+            tiles: LayoutTensor[
+                dtype,
+                Layout.row_major(MAX_TRACK_TILES, TILE_DATA_SIZE),
+                MutAnyOrigin,
+            ],
+            num_tiles: Int,
+        ):
+            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if env >= BATCH:
+                return
+            CarRacingV2[Self.dtype]._reset_env_with_track_gpu[BATCH](
+                states, tiles, num_tiles, env, env * 12345
+            )
+
+        ctx.enqueue_function[reset_wrapper, reset_wrapper](
+            states,
+            tiles,
+            num_tiles,
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+    # =========================================================================
+    # GPU Helper Methods (Private)
+    # =========================================================================
+
+    @always_inline
+    @staticmethod
+    fn _reset_env_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+    ](
+        states: LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ],
+        env: Int,
+        seed: Int,
+    ):
+        """Reset a single environment to initial state (GPU-compatible).
+
+        Initializes car at start of a simple circular track.
+        """
+        # Simple circular track start position
+        var start_x = Scalar[dtype](
+            CRConstants.TRACK_RAD
+        )  # Start at right side of circle
+        var start_y = Scalar[dtype](0.0)
+        var start_angle = Scalar[dtype](
+            pi / 2.0
+        )  # Facing up (tangent to circle)
+
+        # Add small random perturbation
+        var rng = PhiloxRandom(seed=seed + env, offset=0)
+        var rand_vals = rng.step_uniform()
+        var rand_angle: Scalar[dtype] = (
+            rand_vals[0] - Scalar[dtype](0.5)
+        ) * Scalar[dtype](0.1)
+
+        # Clear entire state
+        for i in range(STATE_SIZE):
+            states[env, i] = Scalar[dtype](0.0)
+
+        # Set hull state
+        states[env, CRConstants.HULL_OFFSET + HULL_X] = start_x
+        states[env, CRConstants.HULL_OFFSET + HULL_Y] = start_y
+        states[env, CRConstants.HULL_OFFSET + HULL_ANGLE] = (
+            start_angle + rand_angle
+        )
+        states[env, CRConstants.HULL_OFFSET + HULL_VX] = Scalar[dtype](0.0)
+        states[env, CRConstants.HULL_OFFSET + HULL_VY] = Scalar[dtype](0.0)
+        states[env, CRConstants.HULL_OFFSET + HULL_OMEGA] = Scalar[dtype](0.0)
+
+        # Initialize wheel states (all zeros - angles and omegas)
+        for wheel in range(NUM_WHEELS):
+            var wheel_off = CRConstants.WHEELS_OFFSET + wheel * WHEEL_STATE_SIZE
+            states[env, wheel_off + WHEEL_OMEGA] = Scalar[dtype](0.0)
+            states[env, wheel_off + WHEEL_JOINT_ANGLE] = Scalar[dtype](0.0)
+            states[env, wheel_off + WHEEL_PHASE] = Scalar[dtype](0.0)
+
+        # Initialize controls to zero
+        states[env, CRConstants.CONTROLS_OFFSET + CTRL_STEERING] = Scalar[
+            dtype
+        ](0.0)
+        states[env, CRConstants.CONTROLS_OFFSET + CTRL_GAS] = Scalar[dtype](0.0)
+        states[env, CRConstants.CONTROLS_OFFSET + CTRL_BRAKE] = Scalar[dtype](
+            0.0
+        )
+
+        # Initialize metadata
+        states[env, CRConstants.METADATA_OFFSET + META_STEP_COUNT] = Scalar[
+            dtype
+        ](0.0)
+        states[env, CRConstants.METADATA_OFFSET + META_TOTAL_REWARD] = Scalar[
+            dtype
+        ](0.0)
+        states[env, CRConstants.METADATA_OFFSET + META_DONE] = Scalar[dtype](
+            0.0
+        )
+        states[env, CRConstants.METADATA_OFFSET + META_TRUNCATED] = Scalar[
+            dtype
+        ](0.0)
+        states[env, CRConstants.METADATA_OFFSET + META_TILES_VISITED] = Scalar[
+            dtype
+        ](0.0)
+
+        # Initialize observation
+        states[env, CRConstants.OBS_OFFSET + 0] = start_x
+        states[env, CRConstants.OBS_OFFSET + 1] = start_y
+        states[env, CRConstants.OBS_OFFSET + 2] = start_angle + rand_angle
+        for i in range(3, CRConstants.OBS_DIM):
+            states[env, CRConstants.OBS_OFFSET + i] = Scalar[dtype](0.0)
+
+    @always_inline
+    @staticmethod
+    fn _reset_env_with_track_gpu[
+        BATCH: Int,
+    ](
+        states: LayoutTensor[
+            dtype, Layout.row_major(BATCH, CRConstants.STATE_SIZE), MutAnyOrigin
+        ],
+        tiles: LayoutTensor[
+            dtype,
+            Layout.row_major(MAX_TRACK_TILES, TILE_DATA_SIZE),
+            MutAnyOrigin,
+        ],
+        num_tiles: Int,
+        env: Int,
+        seed: Int,
+    ):
+        """Reset environment using track data to find start position."""
+        # Get start position from first tile (approximate center)
+        var tile0_v0x = rebind[Scalar[dtype]](tiles[0, 0])  # TILE_V0_X
+        var tile0_v0y = rebind[Scalar[dtype]](tiles[0, 1])  # TILE_V0_Y
+        var tile0_v3x = rebind[Scalar[dtype]](tiles[0, 6])  # TILE_V3_X
+        var tile0_v3y = rebind[Scalar[dtype]](tiles[0, 7])  # TILE_V3_Y
+
+        var start_x = (tile0_v0x + tile0_v3x) / Scalar[dtype](2.0)
+        var start_y = (tile0_v0y + tile0_v3y) / Scalar[dtype](2.0)
+
+        # Compute angle from tile direction (v0 to v1)
+        var tile0_v1x = rebind[Scalar[dtype]](tiles[0, 2])  # TILE_V1_X
+        var tile0_v1y = rebind[Scalar[dtype]](tiles[0, 3])  # TILE_V1_Y
+        var dx = tile0_v1x - tile0_v0x
+        var dy = tile0_v1y - tile0_v0y
+        var track_dir = Scalar[dtype](0.0)
+        if dx != Scalar[dtype](0.0) or dy != Scalar[dtype](0.0):
+            # atan2 approximation for GPU
+            var abs_dx = dx if dx >= Scalar[dtype](0.0) else -dx
+            var abs_dy = dy if dy >= Scalar[dtype](0.0) else -dy
+            if abs_dx > abs_dy:
+                track_dir = dy / dx
+                if dx < Scalar[dtype](0.0):
+                    track_dir = track_dir + Scalar[dtype](pi)
+            else:
+                track_dir = Scalar[dtype](pi / 2.0) - dx / dy
+                if dy < Scalar[dtype](0.0):
+                    track_dir = track_dir + Scalar[dtype](pi)
+
+        var start_angle = track_dir
+
+        # Clear and initialize state
+        for i in range(CRConstants.STATE_SIZE):
+            states[env, i] = Scalar[dtype](0.0)
+
+        # Set hull state
+        states[env, CRConstants.HULL_OFFSET + HULL_X] = start_x
+        states[env, CRConstants.HULL_OFFSET + HULL_Y] = start_y
+        states[env, CRConstants.HULL_OFFSET + HULL_ANGLE] = start_angle
+
+        # Initialize observation
+        states[env, CRConstants.OBS_OFFSET + 0] = start_x
+        states[env, CRConstants.OBS_OFFSET + 1] = start_y
+        states[env, CRConstants.OBS_OFFSET + 2] = start_angle
+
+    @always_inline
+    @staticmethod
+    fn _step_env_gpu[
+        BATCH: Int,
+    ](
+        env: Int,
+        states: LayoutTensor[
+            dtype, Layout.row_major(BATCH, CRConstants.STATE_SIZE), MutAnyOrigin
+        ],
+        actions: LayoutTensor[
+            dtype, Layout.row_major(BATCH, CRConstants.ACTION_DIM), MutAnyOrigin
+        ],
+        tiles: LayoutTensor[
+            dtype,
+            Layout.row_major(MAX_TRACK_TILES, TILE_DATA_SIZE),
+            MutAnyOrigin,
+        ],
+        num_tiles: Int,
+        rewards: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+        dones: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+        obs: LayoutTensor[
+            dtype, Layout.row_major(BATCH, CRConstants.OBS_DIM), MutAnyOrigin
+        ],
+    ):
+        """Execute one step for a single environment (GPU kernel body)."""
+        # Check if already done
+        var was_done = rebind[Scalar[dtype]](
+            states[env, CRConstants.METADATA_OFFSET + META_DONE]
+        ) > Scalar[dtype](0.5)
+        if was_done:
+            rewards[env] = Scalar[dtype](0.0)
+            dones[env] = Scalar[dtype](1.0)
+            return
+
+        # Step 1: Copy actions to controls (clamp and remap)
+        var steering = rebind[Scalar[dtype]](actions[env, 0])
+        var gas_raw = rebind[Scalar[dtype]](actions[env, 1])
+        var brake_raw = rebind[Scalar[dtype]](actions[env, 2])
+
+        # Clamp steering to [-1, 1]
+        if steering > Scalar[dtype](1.0):
+            steering = Scalar[dtype](1.0)
+        elif steering < Scalar[dtype](-1.0):
+            steering = Scalar[dtype](-1.0)
+
+        # Remap gas and brake from [-1, 1] to [0, 1]
+        var gas = (gas_raw + Scalar[dtype](1.0)) * Scalar[dtype](0.5)
+        var brake = (brake_raw + Scalar[dtype](1.0)) * Scalar[dtype](0.5)
+        if gas > Scalar[dtype](1.0):
+            gas = Scalar[dtype](1.0)
+        elif gas < Scalar[dtype](0.0):
+            gas = Scalar[dtype](0.0)
+        if brake > Scalar[dtype](1.0):
+            brake = Scalar[dtype](1.0)
+        elif brake < Scalar[dtype](0.0):
+            brake = Scalar[dtype](0.0)
+
+        states[env, CRConstants.CONTROLS_OFFSET + CTRL_STEERING] = steering
+        states[env, CRConstants.CONTROLS_OFFSET + CTRL_GAS] = gas
+        states[env, CRConstants.CONTROLS_OFFSET + CTRL_BRAKE] = brake
+
+        # Step 2: Run physics (using CarDynamics)
+        var dt = Scalar[dtype](CRConstants.DT)
+        CarDynamics.step_with_obs[
             BATCH,
             CRConstants.STATE_SIZE,
             CRConstants.OBS_OFFSET,
@@ -841,10 +1482,194 @@ struct CarRacingV2(BoxContinuousActionEnv, Copyable, Movable):
             CRConstants.WHEELS_OFFSET,
             CRConstants.CONTROLS_OFFSET,
             MAX_TRACK_TILES,
-        ](ctx, states_buf, tiles_buf, num_tiles, Scalar[dtype](CRConstants.DT))
+        ](env, states, tiles, num_tiles, dt)
 
-        # Step 3: Compute rewards and dones
-        # (TODO: Add reward/done kernel)
+        # Step 3: Compute reward
+        var step_reward = Scalar[dtype](-0.1)  # Time penalty
+
+        # Check tile visits for reward
+        var hull_x = rebind[Scalar[dtype]](
+            states[env, CRConstants.HULL_OFFSET + HULL_X]
+        )
+        var hull_y = rebind[Scalar[dtype]](
+            states[env, CRConstants.HULL_OFFSET + HULL_Y]
+        )
+        var tile_idx = TileCollision.check_tile_visited[MAX_TRACK_TILES](
+            hull_x, hull_y, tiles, num_tiles
+        )
+
+        # Simple tile visit reward (in full implementation, track visited tiles)
+        var tiles_visited = rebind[Scalar[dtype]](
+            states[env, CRConstants.METADATA_OFFSET + META_TILES_VISITED]
+        )
+        if tile_idx >= 0:
+            # Reward for being on track (simplified - full version tracks unique visits)
+            var tile_idx_f = Scalar[dtype](tile_idx)
+            if tile_idx_f > tiles_visited:
+                step_reward = step_reward + Scalar[dtype](1000.0) / Scalar[
+                    dtype
+                ](num_tiles)
+                states[
+                    env, CRConstants.METADATA_OFFSET + META_TILES_VISITED
+                ] = tile_idx_f
+
+        # Step 4: Check termination
+        var done = Scalar[dtype](0.0)
+        var playfield = Scalar[dtype](CRConstants.PLAYFIELD)
+
+        # Off playfield check
+        var abs_x = hull_x if hull_x >= Scalar[dtype](0.0) else -hull_x
+        var abs_y = hull_y if hull_y >= Scalar[dtype](0.0) else -hull_y
+        if abs_x > playfield or abs_y > playfield:
+            done = Scalar[dtype](1.0)
+            step_reward = Scalar[dtype](-100.0)
+
+        # Lap completion check
+        var num_tiles_f = Scalar[dtype](num_tiles)
+        var progress = tiles_visited / num_tiles_f
+        if progress >= Scalar[dtype](CRConstants.LAP_COMPLETE_PERCENT):
+            done = Scalar[dtype](1.0)
+
+        # Max steps check
+        var step_count = rebind[Scalar[dtype]](
+            states[env, CRConstants.METADATA_OFFSET + META_STEP_COUNT]
+        )
+        step_count = step_count + Scalar[dtype](1.0)
+        states[env, CRConstants.METADATA_OFFSET + META_STEP_COUNT] = step_count
+
+        if step_count >= Scalar[dtype](CRConstants.MAX_STEPS):
+            done = Scalar[dtype](1.0)
+            states[env, CRConstants.METADATA_OFFSET + META_TRUNCATED] = Scalar[
+                dtype
+            ](1.0)
+
+        # Update metadata
+        var total_reward = rebind[Scalar[dtype]](
+            states[env, CRConstants.METADATA_OFFSET + META_TOTAL_REWARD]
+        )
+        total_reward = total_reward + step_reward
+        states[
+            env, CRConstants.METADATA_OFFSET + META_TOTAL_REWARD
+        ] = total_reward
+        states[env, CRConstants.METADATA_OFFSET + META_DONE] = done
+
+        # Step 5: Write outputs
+        rewards[env] = step_reward
+        dones[env] = done
+
+        # Copy observation to output buffer
+        for i in range(CRConstants.OBS_DIM):
+            obs[env, i] = states[env, CRConstants.OBS_OFFSET + i]
+
+    @staticmethod
+    fn _init_circular_track_gpu(
+        ctx: DeviceContext,
+        mut tiles_buf: DeviceBuffer[dtype],
+    ) raises:
+        """Initialize a simple circular track in GPU buffer."""
+        var tiles = LayoutTensor[
+            dtype,
+            Layout.row_major(MAX_TRACK_TILES, TILE_DATA_SIZE),
+            MutAnyOrigin,
+        ](tiles_buf.unsafe_ptr())
+
+        @always_inline
+        fn init_track_wrapper(
+            tiles: LayoutTensor[
+                dtype,
+                Layout.row_major(MAX_TRACK_TILES, TILE_DATA_SIZE),
+                MutAnyOrigin,
+            ],
+        ):
+            var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if tid > 0:
+                return
+
+            # Generate simple circular track (100 tiles)
+            var num_tiles = 100
+            var rad = Scalar[dtype](CRConstants.TRACK_RAD)
+            var width = Scalar[dtype](CRConstants.TRACK_WIDTH)
+            var two_pi = Scalar[dtype](2.0 * pi)
+
+            for i in range(num_tiles):
+                var alpha1 = (
+                    two_pi * Scalar[dtype](i) / Scalar[dtype](num_tiles)
+                )
+                var alpha2 = (
+                    two_pi * Scalar[dtype](i + 1) / Scalar[dtype](num_tiles)
+                )
+
+                var x1 = rad * cos(alpha1)
+                var y1 = rad * sin(alpha1)
+                var x2 = rad * cos(alpha2)
+                var y2 = rad * sin(alpha2)
+
+                # Inner edge
+                tiles[i, 0] = x1 - width * cos(alpha1)  # v0_x
+                tiles[i, 1] = y1 - width * sin(alpha1)  # v0_y
+                tiles[i, 2] = x2 - width * cos(alpha2)  # v1_x
+                tiles[i, 3] = y2 - width * sin(alpha2)  # v1_y
+
+                # Outer edge
+                tiles[i, 4] = x2 + width * cos(alpha2)  # v2_x
+                tiles[i, 5] = y2 + width * sin(alpha2)  # v2_y
+                tiles[i, 6] = x1 + width * cos(alpha1)  # v3_x
+                tiles[i, 7] = y1 + width * sin(alpha1)  # v3_y
+
+                # Friction (road)
+                tiles[i, 8] = Scalar[dtype](1.0)
+
+        ctx.enqueue_function[init_track_wrapper, init_track_wrapper](
+            tiles,
+            grid_dim=(1,),
+            block_dim=(1,),
+        )
+
+    @staticmethod
+    fn _copy_obs_gpu[
+        BATCH_SIZE: Int,
+        OBS_DIM: Int,
+    ](
+        ctx: DeviceContext,
+        states: DeviceBuffer[dtype],
+        mut obs: DeviceBuffer[dtype],
+    ) raises:
+        """Copy observations from state buffer to output obs buffer."""
+        var states_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH_SIZE, CRConstants.STATE_SIZE),
+            MutAnyOrigin,
+        ](states.unsafe_ptr())
+
+        var obs_tensor = LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+        ](obs.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
+
+        @always_inline
+        fn copy_obs_wrapper(
+            states: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH_SIZE, CRConstants.STATE_SIZE),
+                MutAnyOrigin,
+            ],
+            obs: LayoutTensor[
+                dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+            ],
+        ):
+            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if env >= BATCH_SIZE:
+                return
+            for i in range(OBS_DIM):
+                obs[env, i] = states[env, CRConstants.OBS_OFFSET + i]
+
+        ctx.enqueue_function[copy_obs_wrapper, copy_obs_wrapper](
+            states_tensor,
+            obs_tensor,
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )
 
 
 # =============================================================================

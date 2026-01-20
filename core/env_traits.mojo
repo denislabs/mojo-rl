@@ -15,18 +15,26 @@ Combined Traits:
     BoxDiscreteActionEnv  = ContinuousStateEnv & DiscreteActionEnv
     BoxContinuousActionEnv = ContinuousStateEnv & ContinuousActionEnv
 
+GPU Environment Traits (Experimental):
+    GPUDiscreteEnv    - GPU-compatible discrete action environments (e.g., LunarLander)
+    GPUContinuousEnv  - GPU-compatible continuous action environments (e.g., CarRacing)
+
 Environments implement combinations:
     GridWorld:   DiscreteEnv (tabular)
     CartPole:    DiscreteEnv + BoxDiscreteActionEnv (4D obs)
     MountainCar: DiscreteEnv + BoxDiscreteActionEnv (2D obs)
     Acrobot:     DiscreteEnv + BoxDiscreteActionEnv (6D obs)
     Pendulum:    DiscreteEnv + BoxContinuousActionEnv (3D obs, 1D action)
+    LunarLander: BoxDiscreteActionEnv + GPUDiscreteEnv (8D obs, 4 actions)
+    CarRacing:   BoxContinuousActionEnv + GPUContinuousEnv (13D obs, 3D action)
 
 Algorithms specify requirements:
     Q-Learning (tabular): DiscreteEnv
     Tile-coded Q-Learning: BoxDiscreteActionEnv
     PPO:                   BoxDiscreteActionEnv (or BoxContinuousActionEnv)
     SAC/DDPG/TD3:          BoxContinuousActionEnv
+    GPU DQN:               GPUDiscreteEnv
+    GPU SAC/DDPG/TD3:      GPUContinuousEnv
 """
 
 from .env import Env
@@ -195,9 +203,11 @@ trait BoxContinuousActionEnv(ContinuousActionEnv, ContinuousStateEnv):
         """
         ...
 
-    fn step_continuous_vec(
-        mut self, action: List[Scalar[Self.dtype]]
-    ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
+    fn step_continuous_vec[
+        DTYPE: DType
+    ](mut self, action: List[Scalar[DTYPE]]) -> Tuple[
+        List[Scalar[DTYPE]], Scalar[DTYPE], Bool
+    ]:
         """Take multi-dimensional continuous action and return (obs, reward, done).
 
         This is the primary method for continuous control algorithms (SAC, DDPG, TD3)
@@ -208,22 +218,6 @@ trait BoxContinuousActionEnv(ContinuousActionEnv, ContinuousStateEnv):
 
         Returns:
             Tuple of (observation_list, reward, done).
-        """
-        ...
-
-    fn step_continuous_vec_f64(
-        mut self, action: List[Float64]
-    ) -> Tuple[List[Float64], Float64, Bool]:
-        """Take multi-dimensional continuous action (Float64) and return (obs, reward, done).
-
-        Convenience method using Float64 for compatibility with generic agents.
-        Default implementation converts to Self.dtype and calls step_continuous_vec.
-
-        Args:
-            action: List of Float64 action values.
-
-        Returns:
-            Tuple of (observation_list, reward, done) as Float64.
         """
         ...
 
@@ -278,6 +272,75 @@ trait GPUDiscreteEnv:
         STATE_SIZE: Int,
     ](ctx: DeviceContext, mut states: DeviceBuffer[dtype],) raises:
         """Reset state to random initial values."""
+        ...
+
+    @staticmethod
+    fn selective_reset_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+    ](
+        ctx: DeviceContext,
+        mut states: DeviceBuffer[dtype],
+        mut dones: DeviceBuffer[dtype],
+        rng_seed: UInt32,
+    ) raises:
+        """Reset only done environments to random initial values.
+
+        This enables efficient vectorized training where only completed
+        episodes are reset while others continue running.
+        """
+        ...
+
+
+trait GPUContinuousEnv:
+    """Trait for GPU-compatible continuous action environments.
+
+    Environments must define compile-time constants and inline methods
+    for use in fused GPU kernels. Unlike GPUDiscreteEnv, actions are
+    continuous vectors (e.g., [steering, gas, brake] for CarRacing).
+
+    Examples: CarRacing (3D actions), Pendulum (1D action), BipedalWalker (4D actions).
+    """
+
+    # Compile-time constants for environment dimensions
+    comptime STATE_SIZE: Int
+    comptime OBS_DIM: Int
+    comptime ACTION_DIM: Int
+
+    @staticmethod
+    fn step_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        OBS_DIM: Int,
+        ACTION_DIM: Int,
+    ](
+        ctx: DeviceContext,
+        mut states: DeviceBuffer[dtype],
+        actions: DeviceBuffer[dtype],
+        mut rewards: DeviceBuffer[dtype],
+        mut dones: DeviceBuffer[dtype],
+        mut obs: DeviceBuffer[dtype],
+        rng_seed: UInt64 = 0,
+    ) raises:
+        """Perform one environment step with continuous actions.
+
+        Args:
+            ctx: GPU device context.
+            states: State buffer on GPU [BATCH_SIZE * STATE_SIZE].
+            actions: Continuous actions buffer on GPU [BATCH_SIZE * ACTION_DIM].
+            rewards: Rewards buffer on GPU (output) [BATCH_SIZE].
+            dones: Done flags buffer on GPU (output) [BATCH_SIZE].
+            obs: Observations buffer on GPU (output) [BATCH_SIZE * OBS_DIM].
+            rng_seed: Optional random seed for physics.
+        """
+        ...
+
+    @staticmethod
+    fn reset_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+    ](ctx: DeviceContext, mut states: DeviceBuffer[dtype]) raises:
+        """Reset all environments to random initial values."""
         ...
 
     @staticmethod

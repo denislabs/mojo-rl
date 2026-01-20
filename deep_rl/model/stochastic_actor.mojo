@@ -78,7 +78,9 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
 
     @staticmethod
     fn init_params_small(
-        mut params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        mut params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
         weight_scale: Float64 = 0.01,
         log_std_init: Float64 = -0.5,
     ):
@@ -119,7 +121,9 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
 
     @staticmethod
     fn init_params_with_mean_bias(
-        mut params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        mut params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
         mean_biases: List[Float64],
         weight_scale: Float64 = 0.01,
         log_std_init: Float64 = -0.5,
@@ -833,9 +837,8 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
         """Launch backward pass on GPU.
 
         Computes gradients for both mean and log_std heads.
+        Uses fused kernels for better performance with small action_dim.
         """
-        from gpu import block
-
         var params_ptr = params_buf.unsafe_ptr()
         var grads_ptr = grads_buf.unsafe_ptr()
 
@@ -858,25 +861,16 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
         var cache = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.in_dim), ImmutAnyOrigin
         ](cache_buf.unsafe_ptr())
-        var dW_mean = LayoutTensor[
-            dtype, Layout.row_major(Self.in_dim, Self.action_dim), MutAnyOrigin
-        ](grads_ptr + Self._mean_W_offset())
-        var db_mean = LayoutTensor[
-            dtype, Layout.row_major(Self.action_dim), MutAnyOrigin
-        ](grads_ptr + Self._mean_b_offset())
-        var dW_log_std = LayoutTensor[
-            dtype, Layout.row_major(Self.in_dim, Self.action_dim), MutAnyOrigin
-        ](grads_ptr + Self._log_std_W_offset())
-        var db_log_std = LayoutTensor[
-            dtype, Layout.row_major(Self.action_dim), MutAnyOrigin
-        ](grads_ptr + Self._log_std_b_offset())
+        var grads = LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ](grads_ptr)
 
-        # Kernel 1: dx = dy_mean @ W_mean.T + dy_log_std @ W_log_std.T
-        comptime dx_grid_x = (Self.IN_DIM + TILE - 1) // TILE
-        comptime dx_grid_y = (BATCH + TILE - 1) // TILE
+        # Fused kernel 1: Compute dx (elementwise, optimized for small action_dim)
+        comptime dx_total = BATCH * Self.IN_DIM
+        comptime dx_grid = (dx_total + TPB - 1) // TPB
 
         @always_inline
-        fn dx_kernel_wrapper(
+        fn dx_fused_kernel_wrapper(
             grad_input: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
             ],
@@ -894,120 +888,218 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
                 ImmutAnyOrigin,
             ],
         ):
-            Self.backward_dx_kernel_impl[BATCH](
+            Self.backward_dx_fused_kernel_impl[BATCH](
                 grad_input, grad_output, W_mean, W_log_std
             )
 
-        ctx.enqueue_function[dx_kernel_wrapper, dx_kernel_wrapper](
+        ctx.enqueue_function[dx_fused_kernel_wrapper, dx_fused_kernel_wrapper](
             grad_input,
             grad_output,
             W_mean,
             W_log_std,
-            grid_dim=(dx_grid_x, dx_grid_y),
-            block_dim=(TILE, TILE),
-        )
-
-        # Kernel 2: dW_mean = x.T @ dy_mean
-        comptime dW_grid_x = (Self.action_dim + TILE - 1) // TILE
-        comptime dW_grid_y = (Self.in_dim + TILE - 1) // TILE
-
-        @always_inline
-        fn dW_mean_kernel_wrapper(
-            dW_mean: LayoutTensor[
-                dtype,
-                Layout.row_major(Self.in_dim, Self.action_dim),
-                MutAnyOrigin,
-            ],
-            cache: LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.in_dim), ImmutAnyOrigin
-            ],
-            grad_output: LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
-            ],
-        ):
-            Self.backward_dW_mean_kernel_impl[BATCH](
-                dW_mean, cache, grad_output
-            )
-
-        ctx.enqueue_function[dW_mean_kernel_wrapper, dW_mean_kernel_wrapper](
-            dW_mean,
-            cache,
-            grad_output,
-            grid_dim=(dW_grid_x, dW_grid_y),
-            block_dim=(TILE, TILE),
-        )
-
-        # Kernel 3: dW_log_std = x.T @ dy_log_std
-        @always_inline
-        fn dW_log_std_kernel_wrapper(
-            dW_log_std: LayoutTensor[
-                dtype,
-                Layout.row_major(Self.in_dim, Self.action_dim),
-                MutAnyOrigin,
-            ],
-            cache: LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.in_dim), ImmutAnyOrigin
-            ],
-            grad_output: LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
-            ],
-        ):
-            Self.backward_dW_log_std_kernel_impl[BATCH](
-                dW_log_std, cache, grad_output
-            )
-
-        ctx.enqueue_function[
-            dW_log_std_kernel_wrapper, dW_log_std_kernel_wrapper
-        ](
-            dW_log_std,
-            cache,
-            grad_output,
-            grid_dim=(dW_grid_x, dW_grid_y),
-            block_dim=(TILE, TILE),
-        )
-
-        # Kernel 4: db_mean = sum(dy_mean, axis=0)
-        @always_inline
-        fn db_mean_kernel_wrapper(
-            db_mean: LayoutTensor[
-                dtype, Layout.row_major(Self.action_dim), MutAnyOrigin
-            ],
-            grad_output: LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
-            ],
-        ):
-            Self.backward_db_mean_kernel_impl[BATCH](db_mean, grad_output)
-
-        ctx.enqueue_function[db_mean_kernel_wrapper, db_mean_kernel_wrapper](
-            db_mean,
-            grad_output,
-            grid_dim=(Self.action_dim,),
+            grid_dim=(dx_grid,),
             block_dim=(TPB,),
         )
 
-        # Kernel 5: db_log_std = sum(dy_log_std, axis=0)
+        # Fused kernel 2: Compute dW_mean, dW_log_std, db_mean, db_log_std
+        # One block per (in_dim, action_dim) pair for dW
+        # Plus action_dim blocks for db
+        comptime dW_total = Self.in_dim * Self.action_dim
+        comptime dW_db_grid = dW_total + 2 * Self.action_dim
+
         @always_inline
-        fn db_log_std_kernel_wrapper(
-            db_log_std: LayoutTensor[
-                dtype, Layout.row_major(Self.action_dim), MutAnyOrigin
+        fn dW_db_fused_kernel_wrapper(
+            grads: LayoutTensor[
+                dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+            ],
+            cache: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.in_dim), ImmutAnyOrigin
             ],
             grad_output: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
             ],
         ):
-            Self.backward_db_log_std_kernel_impl[BATCH](db_log_std, grad_output)
+            Self.backward_dW_db_fused_kernel_impl[BATCH](
+                grads, cache, grad_output
+            )
 
         ctx.enqueue_function[
-            db_log_std_kernel_wrapper, db_log_std_kernel_wrapper
+            dW_db_fused_kernel_wrapper, dW_db_fused_kernel_wrapper
         ](
-            db_log_std,
+            grads,
+            cache,
             grad_output,
-            grid_dim=(Self.action_dim,),
+            grid_dim=(dW_db_grid,),
             block_dim=(TPB,),
         )
 
     # =========================================================================
-    # Backward GPU Kernel Implementations
+    # Fused Backward GPU Kernel Implementations (optimized for small action_dim)
+    # =========================================================================
+
+    @always_inline
+    @staticmethod
+    fn backward_dx_fused_kernel_impl[
+        BATCH: Int,
+    ](
+        grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
+        ],
+        W_mean: LayoutTensor[
+            dtype,
+            Layout.row_major(Self.in_dim, Self.action_dim),
+            ImmutAnyOrigin,
+        ],
+        W_log_std: LayoutTensor[
+            dtype,
+            Layout.row_major(Self.in_dim, Self.action_dim),
+            ImmutAnyOrigin,
+        ],
+    ):
+        """Fused dx kernel: dx = dy_mean @ W_mean.T + dy_log_std @ W_log_std.T.
+
+        Optimized for small action_dim by using elementwise computation
+        with a simple loop over action_dim instead of tiled matmul.
+
+        Grid: ((BATCH * IN_DIM + TPB - 1) // TPB,)
+        Block: (TPB,)
+        """
+        var idx = Int(block_idx.x) * TPB + Int(thread_idx.x)
+        comptime total_size = BATCH * Self.IN_DIM
+
+        if idx >= total_size:
+            return
+
+        var batch = idx // Self.IN_DIM
+        var i = idx % Self.IN_DIM
+
+        # Compute dx[batch, i] = sum_j(dy_mean[batch, j] * W_mean[i, j])
+        #                      + sum_j(dy_log_std[batch, j] * W_log_std[i, j])
+        var acc: grad_input.element_type = 0
+
+        for j in range(Self.action_dim):
+            var dy_mean = grad_output[batch, j]
+            var dy_log_std = grad_output[batch, Self.action_dim + j]
+            acc += dy_mean * W_mean[i, j] + dy_log_std * W_log_std[i, j]
+
+        grad_input[batch, i] = acc
+
+    @always_inline
+    @staticmethod
+    fn backward_dW_db_fused_kernel_impl[
+        BATCH: Int,
+    ](
+        grads: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.in_dim), ImmutAnyOrigin
+        ],
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
+        ],
+    ):
+        """Fused kernel for dW_mean, dW_log_std, db_mean, db_log_std.
+
+        Uses block reduction for summing over batch dimension.
+
+        Grid layout:
+        - Blocks [0, in_dim * action_dim): compute dW_mean[i, j]
+        - Blocks [in_dim * action_dim, 2 * in_dim * action_dim): compute dW_log_std[i, j]
+        - Blocks [2 * in_dim * action_dim, ... + action_dim): compute db_mean[j]
+        - Blocks [... + action_dim, ... + 2 * action_dim): compute db_log_std[j]
+
+        Each block uses TPB threads to sum over BATCH samples.
+        """
+        from gpu import block as gpu_block
+
+        var block_id = Int(block_idx.x)
+        var local_i = Int(thread_idx.x)
+
+        comptime dW_size = Self.in_dim * Self.action_dim
+        comptime dW_mean_start = 0
+        comptime dW_log_std_start = dW_size
+        comptime db_mean_start = 2 * dW_size
+        comptime db_log_std_start = 2 * dW_size + Self.action_dim
+
+        if block_id < dW_size:
+            # Compute dW_mean[i, j] = sum_b(cache[b, i] * grad_output[b, j])
+            var i = block_id // Self.action_dim
+            var j = block_id % Self.action_dim
+
+            var my_sum: grads.element_type = 0
+            var b = local_i
+            while b < BATCH:
+                my_sum += cache[b, i] * grad_output[b, j]
+                b += TPB
+
+            var total = gpu_block.sum[block_size=TPB, broadcast=False](
+                val=my_sum
+            )
+
+            if local_i == 0:
+                grads[Self._mean_W_offset() + i * Self.action_dim + j] = total[0]
+
+        elif block_id < 2 * dW_size:
+            # Compute dW_log_std[i, j] = sum_b(cache[b, i] * grad_output[b, action_dim + j])
+            var local_block = block_id - dW_size
+            var i = local_block // Self.action_dim
+            var j = local_block % Self.action_dim
+
+            var my_sum: grads.element_type = 0
+            var b = local_i
+            while b < BATCH:
+                my_sum += cache[b, i] * grad_output[b, Self.action_dim + j]
+                b += TPB
+
+            var total = gpu_block.sum[block_size=TPB, broadcast=False](
+                val=my_sum
+            )
+
+            if local_i == 0:
+                grads[Self._log_std_W_offset() + i * Self.action_dim + j] = (
+                    total[0]
+                )
+
+        elif block_id < db_mean_start + Self.action_dim:
+            # Compute db_mean[j] = sum_b(grad_output[b, j])
+            var j = block_id - db_mean_start
+
+            var my_sum: grads.element_type = 0
+            var b = local_i
+            while b < BATCH:
+                my_sum += grad_output[b, j]
+                b += TPB
+
+            var total = gpu_block.sum[block_size=TPB, broadcast=False](
+                val=my_sum
+            )
+
+            if local_i == 0:
+                grads[Self._mean_b_offset() + j] = total[0]
+
+        elif block_id < db_log_std_start + Self.action_dim:
+            # Compute db_log_std[j] = sum_b(grad_output[b, action_dim + j])
+            var j = block_id - db_log_std_start
+
+            var my_sum: grads.element_type = 0
+            var b = local_i
+            while b < BATCH:
+                my_sum += grad_output[b, Self.action_dim + j]
+                b += TPB
+
+            var total = gpu_block.sum[block_size=TPB, broadcast=False](
+                val=my_sum
+            )
+
+            if local_i == 0:
+                grads[Self._log_std_b_offset() + j] = total[0]
+
+    # =========================================================================
+    # Legacy Backward GPU Kernel Implementations (tiled matmul, for large dims)
     # =========================================================================
 
     @always_inline
@@ -1206,7 +1298,6 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
 
         var acc: dW_log_std.element_type = 0
 
-        @parameter
         for tile_idx in range(0, (BATCH + TILE - 1) // TILE):
             var batch_idx = tile_idx * TILE + local_col
             if global_row < Self.in_dim and batch_idx < BATCH:

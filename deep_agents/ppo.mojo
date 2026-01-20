@@ -33,7 +33,7 @@ Features:
 Reference: Schulman et al., "Proximal Policy Optimization Algorithms" (2017)
 """
 
-from math import exp, log
+from math import exp, log, sqrt
 from random import random_float64, seed
 from time import perf_counter_ns
 from gpu import thread_idx, block_idx, block_dim, barrier
@@ -1042,8 +1042,6 @@ struct DeepPPOAgent[
                 var diff = advantages[i] - mean
                 var_sum += diff * diff
 
-            from math import sqrt
-
             var std = sqrt(
                 var_sum / Scalar[dtype](buffer_len) + Scalar[dtype](1e-8)
             )
@@ -1091,8 +1089,6 @@ struct DeepPPOAgent[
                     for i in range(mb_size):
                         var diff = mb_advantages[i] - mb_mean
                         mb_var_sum += diff * diff
-
-                    from math import sqrt
 
                     var mb_std = sqrt(
                         mb_var_sum / Scalar[dtype](mb_size)
@@ -1867,7 +1863,9 @@ struct DeepPPOAgent[
         # Initialize all environments on GPU
         # =====================================================================
         # Reset environments (writes to full state buffer)
-        EnvType.reset_kernel_gpu[Self.n_envs, EnvType.STATE_SIZE](ctx, states_buf)
+        EnvType.reset_kernel_gpu[Self.n_envs, EnvType.STATE_SIZE](
+            ctx, states_buf
+        )
         ctx.synchronize()
 
         # Extract observations from state buffer for neural network input
@@ -2063,7 +2061,9 @@ struct DeepPPOAgent[
                 # Step all environments + extract observations (fused kernel)
                 # Use a different multiplier to get independent seed from action sampling
                 var env_step_seed = UInt64(total_steps * 1103515245 + t * 12345)
-                EnvType.step_kernel_gpu[Self.n_envs, EnvType.STATE_SIZE, Self.OBS](
+                EnvType.step_kernel_gpu[
+                    Self.n_envs, EnvType.STATE_SIZE, Self.OBS
+                ](
                     ctx,
                     states_buf,
                     actions_buf,
@@ -2182,7 +2182,9 @@ struct DeepPPOAgent[
                 )
 
                 # Auto-reset done environments
-                EnvType.selective_reset_kernel_gpu[Self.n_envs, EnvType.STATE_SIZE](
+                EnvType.selective_reset_kernel_gpu[
+                    Self.n_envs, EnvType.STATE_SIZE
+                ](
                     ctx,
                     states_buf,
                     dones_buf,
@@ -2276,7 +2278,6 @@ struct DeepPPOAgent[
                 for i in range(ROLLOUT_TOTAL):
                     var diff = advantages_host[i] - mean
                     var_sum += diff * diff
-                from math import sqrt
 
                 var variance = var_sum / Scalar[dtype](ROLLOUT_TOTAL)
                 var std = sqrt(variance + Scalar[dtype](1e-8))
@@ -2406,8 +2407,6 @@ struct DeepPPOAgent[
                             var diff = mb_advantages_host[i] - adv_mean
                             adv_var_sum += diff * diff
 
-                        from math import sqrt
-
                         var adv_std = sqrt(
                             adv_var_sum / Scalar[dtype](MINIBATCH)
                             + Scalar[dtype](1e-8)
@@ -2520,8 +2519,6 @@ struct DeepPPOAgent[
                         var actor_grad_sq_sum = Scalar[dtype](0.0)
                         for i in range(ACTOR_GRAD_BLOCKS):
                             actor_grad_sq_sum += actor_grad_partial_sums_host[i]
-                        from math import sqrt
-
                         var actor_grad_norm = Float64(sqrt(actor_grad_sq_sum))
 
                         # Clip if necessary
@@ -2629,8 +2626,6 @@ struct DeepPPOAgent[
                             critic_grad_sq_sum += critic_grad_partial_sums_host[
                                 i
                             ]
-                        from math import sqrt
-
                         var critic_grad_norm = Float64(sqrt(critic_grad_sq_sum))
 
                         # Clip if necessary
@@ -3441,7 +3436,6 @@ struct DeepPPOAgent[
                 for i in range(ROLLOUT_TOTAL):
                     var diff = advantages_host[i] - mean
                     var_sum += diff * diff
-                from math import sqrt
 
                 var variance = var_sum / Scalar[dtype](ROLLOUT_TOTAL)
                 var std = sqrt(variance + Scalar[dtype](1e-8))
@@ -3543,8 +3537,6 @@ struct DeepPPOAgent[
                         for i in range(MINIBATCH):
                             var diff = mb_advantages_host[i] - adv_mean
                             adv_var_sum += diff * diff
-
-                        from math import sqrt
 
                         var adv_std = sqrt(
                             adv_var_sum / Scalar[dtype](MINIBATCH)
@@ -3648,8 +3640,6 @@ struct DeepPPOAgent[
                         var actor_grad_sq_sum = Scalar[dtype](0.0)
                         for i in range(ACTOR_GRAD_BLOCKS):
                             actor_grad_sq_sum += actor_grad_partial_sums_host[i]
-                        from math import sqrt
-
                         var actor_grad_norm = Float64(sqrt(actor_grad_sq_sum))
 
                         if actor_grad_norm > self.max_grad_norm:
@@ -3744,8 +3734,6 @@ struct DeepPPOAgent[
                             critic_grad_sq_sum += critic_grad_partial_sums_host[
                                 i
                             ]
-                        from math import sqrt
-
                         var critic_grad_norm = Float64(sqrt(critic_grad_sq_sum))
 
                         if critic_grad_norm > self.max_grad_norm:

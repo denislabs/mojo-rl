@@ -71,6 +71,8 @@ def main():
     var model = seq(
         Linear[INPUT_DIM, HIDDEN_DIM](),
         Tanh[HIDDEN_DIM](),
+        Linear[HIDDEN_DIM, HIDDEN_DIM](),
+        ReLU[HIDDEN_DIM](),
         Linear[HIDDEN_DIM, OUTPUT_DIM](),
     )
 

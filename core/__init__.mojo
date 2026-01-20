@@ -11,6 +11,7 @@ from .env_traits import (
     BoxDiscreteActionEnv,
     BoxContinuousActionEnv,
     GPUDiscreteEnv,
+    GPUContinuousEnv,
 )
 from .space import Space, DiscreteSpace, BoxSpace
 from .agent import Agent

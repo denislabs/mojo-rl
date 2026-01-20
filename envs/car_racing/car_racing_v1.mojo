@@ -687,36 +687,28 @@ struct CarRacingEnv[DTYPE: DType](
 
         return self.step_continuous_3d(steering, gas, brake)
 
-    fn step_continuous_vec(
+    fn step_continuous_vec[
+        DTYPE_VEC: DType
+    ](
         mut self,
-        action: List[Scalar[Self.dtype]],
-    ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
+        action: List[Scalar[DTYPE_VEC]],
+    ) -> Tuple[
+        List[Scalar[DTYPE_VEC]], Scalar[DTYPE_VEC], Bool
+    ]:
         """Take action as list and return (obs, reward, done)."""
-        var steering = action[0] if len(action) > 0 else 0.0
-        var gas = action[1] if len(action) > 1 else 0.0
-        var brake = action[2] if len(action) > 2 else 0.0
+        var typed_action = List[Scalar[Self.dtype]]()
+        for i in range(len(action)):
+            typed_action.append(Scalar[Self.dtype](action[i]))
+
+        var steering = typed_action[0] if len(typed_action) > 0 else 0.0
+        var gas = typed_action[1] if len(typed_action) > 1 else 0.0
+        var brake = typed_action[2] if len(typed_action) > 2 else 0.0
         var result = self.step_continuous_3d(steering, gas, brake)
         return (
-            result[0].to_list_typed[Self.dtype](),
-            Scalar[Self.dtype](result[1]),
+            result[0].to_list_typed[DTYPE_VEC](),
+            Scalar[DTYPE_VEC](result[1]),
             result[2],
         )
-
-    fn step_continuous_vec_f64(
-        mut self,
-        action: List[Float64],
-    ) -> Tuple[List[Float64], Float64, Bool]:
-        """Take action as Float64 list and return (obs, reward, done)."""
-        var steering = Scalar[Self.dtype](action[0] if len(action) > 0 else 0.0)
-        var gas = Scalar[Self.dtype](action[1] if len(action) > 1 else 0.0)
-        var brake = Scalar[Self.dtype](action[2] if len(action) > 2 else 0.0)
-        var result = self.step_continuous_3d(steering, gas, brake)
-        # Convert observation to Float64 list
-        var obs_typed = result[0].to_list()
-        var obs_f64 = List[Float64]()
-        for i in range(len(obs_typed)):
-            obs_f64.append(Float64(obs_typed[i]))
-        return (obs_f64^, Float64(result[1]), result[2])
 
     # ===== Internal Methods =====
 

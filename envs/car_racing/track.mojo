@@ -12,6 +12,7 @@ Algorithm (matching Gymnasium car_racing.py):
 
 from math import sin, cos, sqrt, pi, atan2
 from random import random_float64
+from random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor
 
 from physics_gpu.car.constants import (
@@ -34,32 +35,34 @@ from .constants import CRConstants
 
 
 # =============================================================================
-# Simple Seeded Random Number Generator
+# Track RNG using PhiloxRandom (GPU/CPU compatible)
 # =============================================================================
 
 
 struct TrackRNG:
-    """Simple xorshift64 random number generator for reproducible track generation."""
+    """PhiloxRandom-based RNG for reproducible track generation (GPU/CPU compatible)."""
 
-    var state: UInt64
+    var seed: Int
+    var counter: Int
 
     fn __init__(out self, seed: UInt64):
-        # Ensure non-zero state
-        self.state = seed if seed != 0 else 1
+        self.seed = Int(seed) if seed != 0 else 1
+        self.counter = 0
 
     fn next(mut self) -> UInt64:
-        """Generate next random value using xorshift64."""
-        var x = self.state
-        x ^= x << 13
-        x ^= x >> 7
-        x ^= x << 17
-        self.state = x
-        return x
+        """Generate next random value."""
+        self.counter += 1
+        var rng = PhiloxRandom(seed=self.seed, offset=self.counter)
+        var vals = rng.step_uniform()
+        # Convert float to UInt64-like range
+        return UInt64(Float64(vals[0]) * Float64(UInt64.MAX))
 
     fn uniform(mut self, low: Float64, high: Float64) -> Float64:
         """Generate uniform random float in [low, high)."""
-        var val = self.next()
-        var normalized = Float64(val) / Float64(UInt64.MAX)
+        self.counter += 1
+        var rng = PhiloxRandom(seed=self.seed, offset=self.counter)
+        var vals = rng.step_uniform()
+        var normalized = Float64(vals[0])
         return low + normalized * (high - low)
 
     fn uniform_scalar[
@@ -308,7 +311,7 @@ struct TrackGenerator[DTYPE: DType](Copyable, Movable):
 
         self.track_length = len(self.track)
 
-    fn generate_random_track(mut self, seed: UInt64 = 42):
+    fn generate_random_track(mut self, seed: UInt64 = 42, verbose: Bool = False):
         """Generate a random procedural track matching Gymnasium's algorithm.
 
         Algorithm:
@@ -323,16 +326,21 @@ struct TrackGenerator[DTYPE: DType](Copyable, Movable):
 
         # Try multiple times with different seeds
         for attempt in range(20):
-            var success = self._try_generate_track(rng)
+            var success = self._try_generate_track(rng, verbose)
             if success:
+                if verbose:
+                    print("Track generated successfully on attempt", attempt + 1)
+                    print("  Track length:", self.track_length)
                 return
             # Try different seed on failure
             _ = rng.next()
 
         # Fallback to simple track
+        if verbose:
+            print("Falling back to simple circular track")
         self.generate_simple_track()
 
-    fn _try_generate_track(mut self, mut rng: TrackRNG) -> Bool:
+    fn _try_generate_track(mut self, mut rng: TrackRNG, verbose: Bool = False) -> Bool:
         """Attempt to generate a random track. Returns True on success."""
         self.track.clear()
 
@@ -398,34 +406,43 @@ struct TrackGenerator[DTYPE: DType](Copyable, Movable):
         var no_freeze = 2500
         var visited_other_side = False
 
-        while True:
-            # Current angle from origin
-            var alpha = atan2(y, x)
+        while no_freeze > 0:
+            no_freeze -= 1
 
-            # Track lap completion
-            if visited_other_side and alpha > Scalar[Self.DTYPE](0.0):
+            # Current angle from origin (raw, can be negative)
+            var alpha_raw = atan2(y, x)
+
+            # Track lap completion (using raw alpha)
+            if visited_other_side and alpha_raw > Scalar[Self.DTYPE](0.0):
                 laps += 1
                 visited_other_side = False
-            if alpha < Scalar[Self.DTYPE](0.0):
+            if alpha_raw < Scalar[Self.DTYPE](0.0):
                 visited_other_side = True
+
+            # Normalized alpha for checkpoint finding (always positive)
+            var alpha = alpha_raw
+            if alpha < Scalar[Self.DTYPE](0.0):
                 alpha = alpha + two_pi
 
             # Find current destination checkpoint
-            var found_dest = False
+            var failed = True
             for _ in range(num_checkpoints + 1):
                 var dest = checkpoints[dest_i % num_checkpoints]
-                var dest_alpha = dest.alpha
-
-                if alpha <= dest_alpha:
-                    found_dest = True
+                if alpha <= dest.alpha:
+                    failed = False
                     break
                 dest_i += 1
                 if dest_i % num_checkpoints == 0:
                     break
 
-            if not found_dest:
+            if failed:
+                # Wrap alpha and try again
                 alpha = alpha - two_pi
-                continue
+                for _ in range(num_checkpoints + 1):
+                    var dest = checkpoints[dest_i % num_checkpoints]
+                    if alpha <= dest.alpha:
+                        break
+                    dest_i += 1
 
             var dest = checkpoints[dest_i % num_checkpoints]
             var dest_x = dest.x
@@ -445,7 +462,6 @@ struct TrackGenerator[DTYPE: DType](Copyable, Movable):
             var proj = r1x * dest_dx + r1y * dest_dy
 
             # Normalize beta relative to alpha
-            var pi_val = Scalar[Self.DTYPE](pi)
             var pi_1_5 = Scalar[Self.DTYPE](1.5 * pi)
             while beta - alpha > pi_1_5:
                 beta = beta - two_pi
@@ -475,24 +491,26 @@ struct TrackGenerator[DTYPE: DType](Copyable, Movable):
             x = x + p1x * detail_step
             y = y + p1y * detail_step
 
-            # Record track point
+            # Record track point (use raw alpha for start line detection)
             var avg_beta = prev_beta * Scalar[Self.DTYPE](0.5) + beta * Scalar[Self.DTYPE](
                 0.5
             )
-            track_points.append(TrackPoint[Self.DTYPE](alpha, avg_beta, x, y))
+            track_points.append(TrackPoint[Self.DTYPE](alpha_raw, avg_beta, x, y))
 
-            # Exit conditions
+            # Exit if enough laps completed
             if laps > 4:
-                break
-            no_freeze -= 1
-            if no_freeze == 0:
                 break
 
         # =====================================================================
         # Step 3: Find closed loop (i1..i2)
         # =====================================================================
 
+        if verbose:
+            print("  Track points generated:", len(track_points), "laps:", laps)
+
         if len(track_points) < 10:
+            if verbose:
+                print("  Failed: too few track points")
             return False
 
         var i1 = -1
@@ -514,12 +532,22 @@ struct TrackGenerator[DTYPE: DType](Copyable, Movable):
                     i1 = i
                     break
 
+        if verbose:
+            print("  Loop indices: i1=", i1, "i2=", i2)
+
         if i1 == -1 or i2 == -1 or i2 <= i1:
+            if verbose:
+                print("  Failed: invalid loop indices")
             return False
 
         # Extract the closed loop segment
         var loop_length = i2 - i1 - 1
+        if verbose:
+            print("  Loop length:", loop_length)
+
         if loop_length < 20:
+            if verbose:
+                print("  Failed: loop too short")
             return False
 
         # =====================================================================
@@ -538,7 +566,12 @@ struct TrackGenerator[DTYPE: DType](Copyable, Movable):
         var proj_y = first_perp_y * dy
         var well_glued = sqrt(proj_x * proj_x + proj_y * proj_y)
 
+        if verbose:
+            print("  Well glued:", well_glued, "vs", detail_step)
+
         if well_glued > detail_step:
+            if verbose:
+                print("  Failed: loop not well glued")
             return False
 
         # =====================================================================
@@ -575,7 +608,9 @@ struct TrackGenerator[DTYPE: DType](Copyable, Movable):
             tile.idx = j
             tile.center_x = (p1.x + p2.x) / Scalar[Self.DTYPE](2.0)
             tile.center_y = (p1.y + p2.y) / Scalar[Self.DTYPE](2.0)
-            tile.direction = p1.beta
+            # Store direction consistent with simple track (beta + pi/2)
+            # get_start_position subtracts pi/2 to get car angle
+            tile.direction = p1.beta + Scalar[Self.DTYPE](pi / 2.0)
 
             self.track.append(tile^)
 

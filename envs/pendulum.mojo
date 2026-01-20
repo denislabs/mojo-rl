@@ -98,7 +98,11 @@ struct PendulumAction(Action, Copyable, ImplicitlyCopyable, Movable):
 
 
 struct PendulumEnv[DTYPE: DType](
-    BoxDiscreteActionEnv & DiscreteEnv & BoxContinuousActionEnv & Copyable & Movable
+    BoxDiscreteActionEnv
+    & DiscreteEnv
+    & BoxContinuousActionEnv
+    & Copyable
+    & Movable
 ):
     """Native Mojo Pendulum environment with integrated SDL2 rendering.
 
@@ -228,7 +232,9 @@ struct PendulumEnv[DTYPE: DType](
         # Random initial angle in [-π, π]
         self.theta = Scalar[Self.dtype]((random_float64() * 2.0 - 1.0) * pi)
         # Random initial angular velocity in [-1, 1]
-        self.theta_dot = Scalar[Self.dtype]((random_float64() * 2.0 - 1.0) * 1.0)
+        self.theta_dot = Scalar[Self.dtype](
+            (random_float64() * 2.0 - 1.0) * 1.0
+        )
 
         self.steps = 0
         self.done = False
@@ -266,7 +272,9 @@ struct PendulumEnv[DTYPE: DType](
 
         # Physics: θ'' = (3g/2L) * sin(θ) + (3/mL²) * u
         var sin_theta = Scalar[Self.dtype](sin(Float64(self.theta)))
-        var theta_acc = (Scalar[Self.dtype](3.0) * self.g) / (Scalar[Self.dtype](2.0) * self.l) * sin_theta + (
+        var theta_acc = (Scalar[Self.dtype](3.0) * self.g) / (
+            Scalar[Self.dtype](2.0) * self.l
+        ) * sin_theta + (
             Scalar[Self.dtype](3.0) / (self.m * self.l * self.l)
         ) * u
 
@@ -329,9 +337,11 @@ struct PendulumEnv[DTYPE: DType](
         var reward = result[1]
         return (self.get_obs_list(), reward, self.done)
 
-    fn step_continuous_vec(
-        mut self, action: List[Scalar[Self.dtype]]
-    ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
+    fn step_continuous_vec[
+        DTYPE_VEC: DType
+    ](mut self, action: List[Scalar[DTYPE_VEC]]) -> Tuple[
+        List[Scalar[DTYPE_VEC]], Scalar[DTYPE_VEC], Bool
+    ]:
         """Take multi-dimensional continuous action (trait method).
 
         For Pendulum, only the first element is used as torque.
@@ -342,29 +352,15 @@ struct PendulumEnv[DTYPE: DType](
         Returns:
             Tuple of (observation as List, reward, done).
         """
-        var torque = action[0] if len(action) > 0 else Scalar[Self.dtype](0.0)
-        return self.step_continuous(torque)
-
-    fn step_continuous_vec_f64(
-        mut self, action: List[Float64]
-    ) -> Tuple[List[Float64], Float64, Bool]:
-        """Take multi-dimensional continuous action (Float64) and return (obs, reward, done).
-
-        Convenience method using Float64 for compatibility with generic agents.
-
-        Args:
-            action: List of Float64 action values.
-
-        Returns:
-            Tuple of (observation_list, reward, done) as Float64.
-        """
-        var torque = Scalar[Self.dtype](action[0] if len(action) > 0 else 0.0)
-        var result = self._step_with_torque(torque)
-        var obs_typed = self.get_obs_list()
-        var obs_f64 = List[Float64]()
-        for i in range(len(obs_typed)):
-            obs_f64.append(Float64(obs_typed[i]))
-        return (obs_f64^, Float64(result[1]), result[2])
+        var torque = Scalar[Self.dtype](action[0]) if len(
+            action
+        ) > 0 else Scalar[Self.dtype](0.0)
+        var results = self.step_continuous(torque)
+        var obs = List[Scalar[DTYPE_VEC]](capacity=3)
+        obs.append(Scalar[DTYPE_VEC](results[0][0]))
+        obs.append(Scalar[DTYPE_VEC](results[0][1]))
+        obs.append(Scalar[DTYPE_VEC](results[0][2]))
+        return (obs^, Scalar[DTYPE_VEC](results[1]), results[2])
 
     fn step_continuous_simd(
         mut self, torque: Scalar[Self.dtype]
@@ -427,7 +423,9 @@ struct PendulumEnv[DTYPE: DType](
                 normalized = 1.0
             return Int(normalized * Float64(bins - 1))
 
-        var b_angle = bin_value(Float64(self.theta), -pi, pi, self.num_bins_angle)
+        var b_angle = bin_value(
+            Float64(self.theta), -pi, pi, self.num_bins_angle
+        )
         var b_vel = bin_value(
             Float64(self.theta_dot),
             Float64(-self.max_speed),
@@ -463,7 +461,9 @@ struct PendulumEnv[DTYPE: DType](
         _ = self.reset()
         return self.get_obs_list()
 
-    fn step_obs(mut self, action: Int) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
+    fn step_obs(
+        mut self, action: Int
+    ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
         """Take discrete action and return (obs_list, reward, done) - trait method.
 
         This is the BoxDiscreteActionEnv trait method using List[Scalar[Self.dtype]].
