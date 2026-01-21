@@ -3,6 +3,7 @@ from .model import (
     Model,
     seq,
     Linear,
+    LinearReLU,
     ReLU,
     Tanh,
     Sigmoid,

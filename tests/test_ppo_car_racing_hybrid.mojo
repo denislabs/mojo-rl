@@ -16,7 +16,7 @@ from time import perf_counter_ns
 
 from gpu.host import DeviceContext
 
-from deep_agents.ppo_continuous import DeepPPOContinuousAgent
+from deep_agents.ppo import DeepPPOContinuousAgent
 from envs.car_racing import CarRacingEnv
 
 
@@ -82,8 +82,8 @@ fn main() raises:
         # - brake: -2.0 (tanh(-2) ≈ -0.96, maps to brake ≈ 0.02 after remapping)
         # This makes the default policy drive forward with full gas, no brake
         var action_mean_biases = List[Float64]()
-        action_mean_biases.append(0.0)   # steering: centered
-        action_mean_biases.append(2.0)   # gas: bias toward high
+        action_mean_biases.append(0.0)  # steering: centered
+        action_mean_biases.append(2.0)  # gas: bias toward high
         action_mean_biases.append(-2.0)  # brake: bias toward low
 
         var agent = DeepPPOContinuousAgent[
@@ -93,6 +93,7 @@ fn main() raises:
             ROLLOUT_LEN,
             N_ENVS,
             GPU_MINIBATCH_SIZE,
+            clip_value=True,
         ](
             gamma=0.99,
             gae_lambda=0.95,
@@ -112,7 +113,6 @@ fn main() raises:
             anneal_lr=False,  # Keep LR constant
             anneal_entropy=False,  # Keep entropy constant
             target_total_steps=0,  # Auto-calculate
-            clip_value=True,
             norm_adv_per_minibatch=True,
             checkpoint_every=500,
             checkpoint_path="ppo_car_racing_hybrid.ckpt",

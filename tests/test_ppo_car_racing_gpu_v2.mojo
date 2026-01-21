@@ -1,15 +1,15 @@
-"""Test PPO Agent GPU Training on LunarLander.
+"""Test PPO Agent GPU Training on CarRacing.
 
-This tests the GPU implementation of PPO using the simplified GPU-compatible
-LunarLander environment with:
+This tests the GPU implementation of PPO using the GPU-compatible
+CarRacingV2 environment with:
 - Parallel environments on GPU
-- Simplified rigid body physics
-- Wind/turbulence effects
-- Reward shaping for faster learning
+- 2D car physics simulation
+- Track generation and collision detection
+- Continuous action space (steering, gas, brake)
 
 Run with:
-    pixi run -e apple mojo run tests/test_ppo_lunar_gpu.mojo    # Apple Silicon
-    pixi run -e nvidia mojo run tests/test_ppo_lunar_gpu.mojo   # NVIDIA GPU
+    pixi run -e apple mojo run tests/test_ppo_car_racing_gpu_v2.mojo    # Apple Silicon
+    pixi run -e nvidia mojo run tests/test_ppo_car_racing_gpu_v2.mojo   # NVIDIA GPU
 """
 
 from random import seed
@@ -17,7 +17,7 @@ from time import perf_counter_ns
 
 from gpu.host import DeviceContext
 
-from deep_agents.ppo_continuous import DeepPPOContinuousAgent
+from deep_agents.ppo import DeepPPOContinuousAgent
 from envs.car_racing import CarRacingV2
 
 
@@ -25,20 +25,20 @@ from envs.car_racing import CarRacingV2
 # Constants
 # =============================================================================
 
-# CarRacingV2: 11D observation, 3 continuous actions
-comptime OBS_DIM = 11
+# CarRacingV2: 13D observation, 3 continuous actions
+comptime OBS_DIM = 13
 comptime NUM_ACTIONS = 3
 
 # Network architecture
 comptime HIDDEN_DIM = 300
 
 # GPU training parameters
-comptime ROLLOUT_LEN = 1024  # Steps per rollout per environment
+comptime ROLLOUT_LEN = 512  # Steps per rollout per environment
 comptime N_ENVS = 512  # Parallel environments
 comptime GPU_MINIBATCH_SIZE = 512  # Minibatch size for PPO updates
 
 # Training duration
-comptime NUM_EPISODES = 50_000  # More episodes for LunarLander (harder than CartPole)
+comptime NUM_EPISODES = 10_000  # Many episodes for CarRacing (complex environment)
 
 comptime dtype = DType.float32
 
@@ -50,7 +50,7 @@ comptime dtype = DType.float32
 fn main() raises:
     seed(42)
     print("=" * 70)
-    print("PPO Agent GPU Test on LunarLander")
+    print("PPO Agent GPU Test on CarRacing")
     print("=" * 70)
     print()
 
@@ -59,35 +59,47 @@ fn main() raises:
     # =========================================================================
 
     with DeviceContext() as ctx:
+        # Initialize action mean biases for CarRacing:
+        # - steering: 0 (centered)
+        # - gas: 0.5 (moderate forward bias, tanh(0.5) ≈ 0.46)
+        # - brake: -0.5 (moderate no-brake bias, tanh(-0.5) ≈ -0.46)
+        # Reduced from (0, 2, -2) to prevent too aggressive initial policy
+        var action_mean_biases = List[Float64]()
+        action_mean_biases.append(0.0)  # steering: centered
+        action_mean_biases.append(0.5)  # gas: slight forward bias
+        action_mean_biases.append(-0.5)  # brake: slight no-brake bias
+
         var agent = DeepPPOContinuousAgent[
-            OBS_DIM,
-            NUM_ACTIONS,
-            HIDDEN_DIM,
-            ROLLOUT_LEN,
-            N_ENVS,
-            GPU_MINIBATCH_SIZE,
+            obs_dim=OBS_DIM,
+            action_dim=NUM_ACTIONS,
+            hidden_dim=HIDDEN_DIM,
+            rollout_len=ROLLOUT_LEN,
+            n_envs=N_ENVS,
+            gpu_minibatch_size=GPU_MINIBATCH_SIZE,
+            clip_value=True,
         ](
             gamma=0.99,
             gae_lambda=0.95,
-            clip_epsilon=0.2,
-            actor_lr=0.0003,
-            critic_lr=0.0003,
-            entropy_coef=0.01,
+            clip_epsilon=0.2,  # Standard clipping
+            actor_lr=0.00005,  # Moderate LR
+            critic_lr=0.0005,  # Moderate for value learning
+            entropy_coef=0.01,  # Standard entropy
             value_loss_coef=0.5,
-            num_epochs=10,
+            num_epochs=4,  # Fewer epochs to prevent overfitting on rollout
             # Advanced hyperparameters
-            target_kl=0.02,
+            target_kl=15.0,  # Allow more updates per rollout
             max_grad_norm=0.5,
-            anneal_lr=True,
+            anneal_lr=True,  # Enable annealing
             anneal_entropy=False,
-            target_total_steps=0,  # Auto-calculate+
-            clip_value=True,
+            target_total_steps=0,  # Auto-calculate
             norm_adv_per_minibatch=True,
             checkpoint_every=1000,
             checkpoint_path="ppo_car_racing_gpu_v2.ckpt",
+            # Per-action mean biases for initialization
+            action_mean_biases=action_mean_biases^,
         )
 
-        # agent.load_checkpoint("ppo_lunar_gpu_v2.ckpt")
+        # agent.load_checkpoint("ppo_car_racing_gpu_v2.ckpt")
 
         print("Environment: CarRacingV2 (GPU)")
         print("Agent: PPO (GPU)")
@@ -100,15 +112,16 @@ fn main() raises:
         )
         print("  Advanced features:")
         print("    - LR annealing: enabled")
-        print("    - KL early stopping: target_kl=0.02")
+        print("    - KL early stopping: DISABLED (debugging)")
         print("    - Gradient clipping: max_grad_norm=0.5")
         print()
         print("CarRacingV2 specifics:")
         print(
-            "  - 11D observations: [x, y, vx, vy, angle, ang_vel, left_leg,"
-            " right_leg, speed, progress, lap]"
+            "  - 13D observations: [x, y, angle, vx, vy, ang_vel,"
+            " wheel_angles(2), wheel_omegas(4), speed]"
         )
         print("  - 3 actions: steering, gas, brake")
+        print("  - Action biases: gas=0.5, brake=-0.5 (moderate forward bias)")
         print()
 
         # =====================================================================
@@ -121,11 +134,13 @@ fn main() raises:
         var start_time = perf_counter_ns()
 
         try:
-            var metrics = agent.train_gpu[CarRacingV2[dtype]](
+            # Use specialized CarRacing training with full track support
+            var metrics = agent.train_gpu_car_racing(
                 ctx,
                 num_episodes=NUM_EPISODES,
                 verbose=True,
                 print_every=1,
+                track_seed=42,
             )
 
             var end_time = perf_counter_ns()

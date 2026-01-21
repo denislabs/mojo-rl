@@ -28,3 +28,4 @@ from .constants import PConstants, PendulumLayout
 from .state import PendulumV2State
 from .action import PendulumV2Action
 from .pendulum_v2 import PendulumV2
+from .pendulum_v1 import PendulumEnv, PendulumState, PendulumAction

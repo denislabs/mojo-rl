@@ -43,211 +43,9 @@ from render import (
     scale_vertices,
 )
 
-
-# ===== Constants from Gymnasium =====
-
-comptime FPS: Int = 50
-comptime SCALE: Float64 = 30.0
-
-comptime MOTORS_TORQUE: Float64 = 80.0
-comptime SPEED_HIP: Float64 = 4.0
-comptime SPEED_KNEE: Float64 = 6.0
-
-comptime LIDAR_RANGE: Float64 = 160.0 / SCALE  # ~5.33 meters
-comptime NUM_LIDAR: Int = 10
-
-comptime INITIAL_RANDOM: Float64 = 5.0
-
-# Hull polygon vertices (scaled to Box2D units)
-comptime HULL_VERTEX_COUNT: Int = 5
-
-# Leg dimensions
-comptime LEG_DOWN: Float64 = -8.0 / SCALE
-comptime LEG_W: Float64 = 8.0 / SCALE
-comptime LEG_H: Float64 = 34.0 / SCALE
-
-# Terrain
-comptime TERRAIN_STEP: Float64 = 14.0 / SCALE
-comptime TERRAIN_LENGTH: Int = 200
-comptime TERRAIN_HEIGHT: Float64 = 400.0 / SCALE / 4.0  # ~3.33
-comptime TERRAIN_GRASS: Int = 10
-comptime TERRAIN_STARTPAD: Int = 20
-comptime FRICTION: Float64 = 2.5
-
-# Viewport
-comptime VIEWPORT_W: Int = 600
-comptime VIEWPORT_H: Int = 400
-
-# Terrain types for hardcore mode
-comptime TERRAIN_GRASS_TYPE: Int = 0
-comptime TERRAIN_STUMP: Int = 1
-comptime TERRAIN_STAIRS: Int = 2
-comptime TERRAIN_PIT: Int = 3
-
-
-# ===== State Struct =====
-
-
-struct BipedalWalkerState(Copyable, ImplicitlyCopyable, Movable, State):
-    """Observation state for BipedalWalker (24D continuous observation)."""
-
-    # Hull state (4)
-    var hull_angle: Float64
-    var hull_angular_velocity: Float64
-    var vel_x: Float64
-    var vel_y: Float64
-
-    # Leg 1 state (5): hip, knee, contact
-    var hip1_angle: Float64
-    var hip1_speed: Float64
-    var knee1_angle: Float64
-    var knee1_speed: Float64
-    var leg1_contact: Float64
-
-    # Leg 2 state (5)
-    var hip2_angle: Float64
-    var hip2_speed: Float64
-    var knee2_angle: Float64
-    var knee2_speed: Float64
-    var leg2_contact: Float64
-
-    # Lidar (10)
-    var lidar: InlineArray[Float64, NUM_LIDAR]
-
-    fn __init__(out self):
-        self.hull_angle = 0.0
-        self.hull_angular_velocity = 0.0
-        self.vel_x = 0.0
-        self.vel_y = 0.0
-        self.hip1_angle = 0.0
-        self.hip1_speed = 0.0
-        self.knee1_angle = 0.0
-        self.knee1_speed = 0.0
-        self.leg1_contact = 0.0
-        self.hip2_angle = 0.0
-        self.hip2_speed = 0.0
-        self.knee2_angle = 0.0
-        self.knee2_speed = 0.0
-        self.leg2_contact = 0.0
-        self.lidar = InlineArray[Float64, NUM_LIDAR](1.0)
-
-    fn __copyinit__(out self, other: Self):
-        self.hull_angle = other.hull_angle
-        self.hull_angular_velocity = other.hull_angular_velocity
-        self.vel_x = other.vel_x
-        self.vel_y = other.vel_y
-        self.hip1_angle = other.hip1_angle
-        self.hip1_speed = other.hip1_speed
-        self.knee1_angle = other.knee1_angle
-        self.knee1_speed = other.knee1_speed
-        self.leg1_contact = other.leg1_contact
-        self.hip2_angle = other.hip2_angle
-        self.hip2_speed = other.hip2_speed
-        self.knee2_angle = other.knee2_angle
-        self.knee2_speed = other.knee2_speed
-        self.leg2_contact = other.leg2_contact
-        self.lidar = other.lidar
-
-    fn __moveinit__(out self, deinit other: Self):
-        self.hull_angle = other.hull_angle
-        self.hull_angular_velocity = other.hull_angular_velocity
-        self.vel_x = other.vel_x
-        self.vel_y = other.vel_y
-        self.hip1_angle = other.hip1_angle
-        self.hip1_speed = other.hip1_speed
-        self.knee1_angle = other.knee1_angle
-        self.knee1_speed = other.knee1_speed
-        self.leg1_contact = other.leg1_contact
-        self.hip2_angle = other.hip2_angle
-        self.hip2_speed = other.hip2_speed
-        self.knee2_angle = other.knee2_angle
-        self.knee2_speed = other.knee2_speed
-        self.leg2_contact = other.leg2_contact
-        self.lidar = other.lidar
-
-    fn __eq__(self, other: Self) -> Bool:
-        return (
-            self.hull_angle == other.hull_angle
-            and self.hull_angular_velocity == other.hull_angular_velocity
-            and self.vel_x == other.vel_x
-            and self.vel_y == other.vel_y
-        )
-
-    fn to_list(self) -> List[Float64]:
-        """Convert to 24D list for agent interface."""
-        var result = List[Float64]()
-        result.append(self.hull_angle)
-        result.append(self.hull_angular_velocity)
-        result.append(self.vel_x)
-        result.append(self.vel_y)
-        result.append(self.hip1_angle)
-        result.append(self.hip1_speed)
-        result.append(self.knee1_angle)
-        result.append(self.knee1_speed)
-        result.append(self.leg1_contact)
-        result.append(self.hip2_angle)
-        result.append(self.hip2_speed)
-        result.append(self.knee2_angle)
-        result.append(self.knee2_speed)
-        result.append(self.leg2_contact)
-        for i in range(NUM_LIDAR):
-            result.append(self.lidar[i])
-        return result^
-
-    fn to_list_typed[dtype: DType](self) -> List[Scalar[dtype]]:
-        """Convert to 24D list with specified dtype."""
-        var result = List[Scalar[dtype]]()
-        result.append(Scalar[dtype](self.hull_angle))
-        result.append(Scalar[dtype](self.hull_angular_velocity))
-        result.append(Scalar[dtype](self.vel_x))
-        result.append(Scalar[dtype](self.vel_y))
-        result.append(Scalar[dtype](self.hip1_angle))
-        result.append(Scalar[dtype](self.hip1_speed))
-        result.append(Scalar[dtype](self.knee1_angle))
-        result.append(Scalar[dtype](self.knee1_speed))
-        result.append(Scalar[dtype](self.leg1_contact))
-        result.append(Scalar[dtype](self.hip2_angle))
-        result.append(Scalar[dtype](self.hip2_speed))
-        result.append(Scalar[dtype](self.knee2_angle))
-        result.append(Scalar[dtype](self.knee2_speed))
-        result.append(Scalar[dtype](self.leg2_contact))
-        for i in range(NUM_LIDAR):
-            result.append(Scalar[dtype](self.lidar[i]))
-        return result^
-
-
-# ===== Action Struct =====
-
-
-@fieldwise_init
-struct BipedalWalkerAction(Action, Copyable, ImplicitlyCopyable, Movable):
-    """4D continuous action for BipedalWalker."""
-
-    var hip1: Float64
-    var knee1: Float64
-    var hip2: Float64
-    var knee2: Float64
-
-    fn __init__(out self):
-        self.hip1 = 0.0
-        self.knee1 = 0.0
-        self.hip2 = 0.0
-        self.knee2 = 0.0
-
-    fn __copyinit__(out self, existing: Self):
-        self.hip1 = existing.hip1
-        self.knee1 = existing.knee1
-        self.hip2 = existing.hip2
-        self.knee2 = existing.knee2
-
-    fn __moveinit__(out self, deinit existing: Self):
-        self.hip1 = existing.hip1
-        self.knee1 = existing.knee1
-        self.hip2 = existing.hip2
-        self.knee2 = existing.knee2
-
-
-# ===== Environment =====
+from .state import BipedalWalkerState
+from .action import BipedalWalkerAction
+from .constants import BipedalWalkerConstants
 
 
 struct BipedalWalkerEnv[DTYPE: DType](BoxContinuousActionEnv):
@@ -262,11 +60,12 @@ struct BipedalWalkerEnv[DTYPE: DType](BoxContinuousActionEnv):
 
     # Type aliases for trait conformance
     comptime dtype = Self.DTYPE
-    comptime StateType = BipedalWalkerState
-    comptime ActionType = BipedalWalkerAction
+    comptime StateType = BipedalWalkerState[Self.dtype]
+    comptime ActionType = BipedalWalkerAction[Self.dtype]
+    comptime Constants = BipedalWalkerConstants[Self.DTYPE]
 
     # Physics world
-    var world: World
+    var world: World[Self.dtype]
 
     # Body indices
     var hull_idx: Int
@@ -289,12 +88,12 @@ struct BipedalWalkerEnv[DTYPE: DType](BoxContinuousActionEnv):
 
     # Game state
     var game_over: Bool
-    var prev_shaping: Float64
-    var scroll: Float64
+    var prev_shaping: Scalar[Self.dtype]
+    var scroll: Scalar[Self.dtype]
 
     # Terrain data
-    var terrain_x: List[Float64]
-    var terrain_y: List[Float64]
+    var terrain_x: List[Scalar[Self.dtype]]
+    var terrain_y: List[Scalar[Self.dtype]]
 
     # Obstacle polygons (for hardcore mode)
     var obstacle_body_indices: List[Int]
@@ -308,7 +107,7 @@ struct BipedalWalkerEnv[DTYPE: DType](BoxContinuousActionEnv):
         Args:
             hardcore: If True, use procedural terrain with obstacles.
         """
-        self.world = World(Vec2(0.0, -10.0))
+        self.world = World[Self.dtype](Vec2[Self.dtype](0.0, -10.0))
         self.hull_idx = -1
         self.upper_leg_indices = InlineArray[Int, 2](-1)
         self.lower_leg_indices = InlineArray[Int, 2](-1)
@@ -323,8 +122,8 @@ struct BipedalWalkerEnv[DTYPE: DType](BoxContinuousActionEnv):
         self.game_over = False
         self.prev_shaping = 0.0
         self.scroll = 0.0
-        self.terrain_x = List[Float64]()
-        self.terrain_y = List[Float64]()
+        self.terrain_x = List[Scalar[Self.dtype]]()
+        self.terrain_y = List[Scalar[Self.dtype]]()
         self.obstacle_body_indices = List[Int]()
         self.hardcore = hardcore
 
@@ -390,54 +189,66 @@ struct BipedalWalkerEnv[DTYPE: DType](BoxContinuousActionEnv):
         mut self, action: Scalar[Self.dtype]
     ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
         """Step with single action (applies to all joints)."""
-        var action_f64 = Float64(action)
-        var result = self.step_continuous_4d(action_f64, action_f64, action_f64, action_f64)
-        return (result[0].to_list_typed[Self.dtype](), Scalar[Self.dtype](result[1]), result[2])
+
+        var result = self.step_continuous_4d(action, action, action, action)
+        return (
+            result[0].to_list_typed[Self.dtype](),
+            Scalar[Self.dtype](result[1]),
+            result[2],
+        )
 
     # ===== Main Step Function =====
 
     fn step_continuous_4d(
         mut self,
-        hip1: Float64,
-        knee1: Float64,
-        hip2: Float64,
-        knee2: Float64,
-    ) -> Tuple[BipedalWalkerState, Float64, Bool]:
+        hip1: Scalar[Self.dtype],
+        knee1: Scalar[Self.dtype],
+        hip2: Scalar[Self.dtype],
+        knee2: Scalar[Self.dtype],
+    ) -> Tuple[BipedalWalkerState[Self.DTYPE], Scalar[Self.DTYPE], Bool]:
         """Take 4D continuous action and return (obs, reward, done).
 
         Args:
-            hip1: Left hip torque in [-1, 1]
-            knee1: Left knee torque in [-1, 1]
-            hip2: Right hip torque in [-1, 1]
-            knee2: Right knee torque in [-1, 1]
+            hip1: Left hip torque in [-1, 1].
+            knee1: Left knee torque in [-1, 1].
+            hip2: Right hip torque in [-1, 1].
+            knee2: Right knee torque in [-1, 1].
 
         Returns:
-            Tuple of (observation, reward, done)
+            Tuple of (observation, reward, done).
         """
-        var actions = InlineArray[Float64, 4](hip1, knee1, hip2, knee2)
+        var actions = InlineArray[Scalar[Self.dtype], 4](
+            hip1, knee1, hip2, knee2
+        )
 
         # Apply motor control to joints
         for i in range(2):
             # Hip joint
             var hip_action = clamp(actions[i * 2], -1.0, 1.0)
+            self.world.joints[self.hip_joint_indices[i]].motor_speed = Scalar[
+                Self.dtype
+            ](Self.Constants.SPEED_HIP * sign(hip_action))
             self.world.joints[
                 self.hip_joint_indices[i]
-            ].motor_speed = SPEED_HIP * sign(hip_action)
-            self.world.joints[
-                self.hip_joint_indices[i]
-            ].max_motor_torque = MOTORS_TORQUE * abs_f64(hip_action)
+            ].max_motor_torque = Scalar[Self.dtype](
+                Self.Constants.MOTORS_TORQUE * abs(hip_action)
+            )
 
             # Knee joint
             var knee_action = clamp(actions[i * 2 + 1], -1.0, 1.0)
+            self.world.joints[self.knee_joint_indices[i]].motor_speed = Scalar[
+                Self.dtype
+            ](Self.Constants.SPEED_KNEE * sign(knee_action))
             self.world.joints[
                 self.knee_joint_indices[i]
-            ].motor_speed = SPEED_KNEE * sign(knee_action)
-            self.world.joints[
-                self.knee_joint_indices[i]
-            ].max_motor_torque = MOTORS_TORQUE * abs_f64(knee_action)
+            ].max_motor_torque = Scalar[Self.dtype](
+                Self.Constants.MOTORS_TORQUE * abs(knee_action)
+            )
 
         # Step physics (higher iterations for stability like Gymnasium)
-        self.world.step(1.0 / Float64(FPS), 6 * 30, 2 * 30)
+        self.world.step(
+            Scalar[Self.dtype](1.0 / Self.Constants.FPS), 6 * 30, 2 * 30
+        )
 
         # Update ground contact detection
         self._update_ground_contacts()
@@ -451,16 +262,18 @@ struct BipedalWalkerEnv[DTYPE: DType](BoxContinuousActionEnv):
         var vel = hull.linear_velocity
 
         # Update scroll for rendering
-        self.scroll = pos.x - Float64(VIEWPORT_W) / SCALE / 5.0
+        self.scroll = (
+            pos.x - Self.Constants.VIEWPORT_W / Self.Constants.SCALE / 5.0
+        )
 
         # Build observation
         var state = self._get_observation()
 
         # Compute reward
-        var shaping = 130.0 * pos.x / SCALE  # Forward progress
-        shaping -= 5.0 * abs_f64(state.hull_angle)  # Stability penalty
+        var shaping = 130.0 * pos.x / Self.Constants.SCALE  # Forward progress
+        shaping -= 5.0 * abs(state.hull_angle)  # Stability penalty
 
-        var reward: Float64 = 0.0
+        var reward: Scalar[Self.dtype] = 0.0
         if self.prev_shaping != 0.0:
             reward = shaping - self.prev_shaping
         self.prev_shaping = shaping
@@ -468,7 +281,9 @@ struct BipedalWalkerEnv[DTYPE: DType](BoxContinuousActionEnv):
         # Energy penalty
         for i in range(4):
             reward -= (
-                0.00035 * MOTORS_TORQUE * abs_f64(clamp(actions[i], -1.0, 1.0))
+                0.00035
+                * Self.Constants.MOTORS_TORQUE
+                * abs(clamp(actions[i], -1.0, 1.0))
             )
 
         # Check termination
@@ -478,29 +293,44 @@ struct BipedalWalkerEnv[DTYPE: DType](BoxContinuousActionEnv):
             terminated = True
 
         # Success condition
-        if pos.x > Float64(TERRAIN_LENGTH - TERRAIN_GRASS) * TERRAIN_STEP:
+        if (
+            pos.x
+            > Scalar[Self.dtype](
+                Self.Constants.TERRAIN_LENGTH - Self.Constants.TERRAIN_GRASS
+            )
+            * Self.Constants.TERRAIN_STEP
+        ):
             terminated = True
 
         return (state^, reward, terminated)
 
-    fn step_continuous_vec(
+    fn step_continuous_vec[
+        DTYPE_VEC: DType
+    ](
         mut self,
-        action: List[Scalar[Self.dtype]],
-    ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
+        action: List[Scalar[DTYPE_VEC]],
+    ) -> Tuple[
+        List[Scalar[DTYPE_VEC]], Scalar[DTYPE_VEC], Bool
+    ]:
         """Take action as list and return (obs, reward, done)."""
-        var hip1 = Float64(action[0]) if len(action) > 0 else 0.0
-        var knee1 = Float64(action[1]) if len(action) > 1 else 0.0
-        var hip2 = Float64(action[2]) if len(action) > 2 else 0.0
-        var knee2 = Float64(action[3]) if len(action) > 3 else 0.0
+        var hip1 = Scalar[Self.dtype](action[0]) if len(action) > 0 else 0.0
+        var knee1 = Scalar[Self.dtype](action[1]) if len(action) > 1 else 0.0
+        var hip2 = Scalar[Self.dtype](action[2]) if len(action) > 2 else 0.0
+        var knee2 = Scalar[Self.dtype](action[3]) if len(action) > 3 else 0.0
         var result = self.step_continuous_4d(hip1, knee1, hip2, knee2)
-        return (result[0].to_list_typed[Self.dtype](), Scalar[Self.dtype](result[1]), result[2])
+
+        return (
+            result[0].to_list_typed[DTYPE_VEC](),
+            Scalar[DTYPE_VEC](result[1]),
+            result[2],
+        )
 
     # ===== Internal Methods =====
 
-    fn _reset_internal(mut self) -> BipedalWalkerState:
+    fn _reset_internal(mut self) -> BipedalWalkerState[Self.DTYPE]:
         """Internal reset implementation."""
         # Recreate world
-        self.world = World(Vec2(0.0, -10.0))
+        self.world = World[Self.dtype](Vec2[Self.dtype](0.0, -10.0))
         self.game_over = False
         self.prev_shaping = 0.0
         self.scroll = 0.0
@@ -513,8 +343,10 @@ struct BipedalWalkerEnv[DTYPE: DType](BoxContinuousActionEnv):
             self._generate_terrain_normal()
 
         # Create walker at start position
-        var init_x = Float64(TERRAIN_STARTPAD) * TERRAIN_STEP
-        var init_y = TERRAIN_HEIGHT + 2.0 * LEG_H
+        var init_x = (
+            Self.Constants.TERRAIN_STARTPAD * Self.Constants.TERRAIN_STEP
+        )
+        var init_y = Self.Constants.TERRAIN_HEIGHT + 2.0 * Self.Constants.LEG_H
         self._create_walker(init_x, init_y)
 
         return self._get_observation()
@@ -524,34 +356,42 @@ struct BipedalWalkerEnv[DTYPE: DType](BoxContinuousActionEnv):
         self.terrain_x.clear()
         self.terrain_y.clear()
 
-        var y = TERRAIN_HEIGHT
-        var velocity: Float64 = 0.0
+        var y = Self.Constants.TERRAIN_HEIGHT
+        var velocity: Scalar[Self.dtype] = 0.0
 
-        for i in range(TERRAIN_LENGTH):
-            var x = Float64(i) * TERRAIN_STEP
+        for i in range(Self.Constants.TERRAIN_LENGTH):
+            var x = Scalar[Self.dtype](i) * Self.Constants.TERRAIN_STEP
             self.terrain_x.append(x)
 
             # Smooth random variation
-            velocity = 0.8 * velocity + 0.01 * sign(TERRAIN_HEIGHT - y)
-            if i > TERRAIN_STARTPAD:
-                velocity += (random_float64() * 2.0 - 1.0) / SCALE
+            velocity = 0.8 * velocity + 0.01 * sign(
+                Self.Constants.TERRAIN_HEIGHT - y
+            )
+            if i > Self.Constants.TERRAIN_STARTPAD:
+                velocity += (
+                    Scalar[Self.dtype](random_float64() * 2.0 - 1.0)
+                ) / Self.Constants.SCALE
             y += velocity
 
             self.terrain_y.append(y)
 
         # Create ground body
-        var ground_idx = self.world.create_body(BODY_STATIC, Vec2.zero())
+        var ground_idx = self.world.create_body(
+            BODY_STATIC, Vec2[Self.dtype].zero()
+        )
         self.terrain_fixture_start = len(self.world.fixtures)
 
         # Create edge fixtures for terrain
-        for i in range(TERRAIN_LENGTH - 1):
-            var p1 = Vec2(self.terrain_x[i], self.terrain_y[i])
-            var p2 = Vec2(self.terrain_x[i + 1], self.terrain_y[i + 1])
+        for i in range(Self.Constants.TERRAIN_LENGTH - 1):
+            var p1 = Vec2[Self.dtype](self.terrain_x[i], self.terrain_y[i])
+            var p2 = Vec2[Self.dtype](
+                self.terrain_x[i + 1], self.terrain_y[i + 1]
+            )
             var edge = EdgeShape(p1, p2)
             _ = self.world.create_edge_fixture(
                 ground_idx,
                 edge^,
-                friction=FRICTION,
+                friction=Self.Constants.FRICTION,
                 filter=Filter.ground(),
             )
 
@@ -564,97 +404,119 @@ struct BipedalWalkerEnv[DTYPE: DType](BoxContinuousActionEnv):
         self.terrain_x.clear()
         self.terrain_y.clear()
 
-        var state: Int = TERRAIN_GRASS_TYPE
-        var counter: Int = TERRAIN_STARTPAD
+        var state: Int = Self.Constants.TERRAIN_GRASS_TYPE
+        var counter: Int = Self.Constants.TERRAIN_STARTPAD
         var oneshot: Bool = False
-        var y = TERRAIN_HEIGHT
-        var velocity: Float64 = 0.0
-        var original_y: Float64 = 0.0
+        var y = Self.Constants.TERRAIN_HEIGHT
+        var velocity: Scalar[Self.dtype] = 0.0
+        var original_y: Scalar[Self.dtype] = 0.0
 
         # Stairs state
-        var stair_height: Float64 = 0.0
+        var stair_height: Scalar[Self.dtype] = 0.0
         var stair_width: Int = 0
         var stair_steps: Int = 0
 
         # Ground body for edges
-        var ground_idx = self.world.create_body(BODY_STATIC, Vec2.zero())
+        var ground_idx = self.world.create_body(
+            BODY_STATIC, Vec2[Self.dtype].zero()
+        )
         self.terrain_fixture_start = len(self.world.fixtures)
 
-        for i in range(TERRAIN_LENGTH):
-            var x = Float64(i) * TERRAIN_STEP
+        for i in range(Self.Constants.TERRAIN_LENGTH):
+            var x = Scalar[Self.dtype](i * Self.Constants.TERRAIN_STEP)
             self.terrain_x.append(x)
 
-            if state == TERRAIN_GRASS_TYPE:
-                velocity = 0.8 * velocity + 0.01 * sign(TERRAIN_HEIGHT - y)
-                if i > TERRAIN_STARTPAD:
-                    velocity += (random_float64() * 2.0 - 1.0) / SCALE
+            if state == Self.Constants.TERRAIN_GRASS_TYPE:
+                velocity = 0.8 * velocity + 0.01 * sign(
+                    Self.Constants.TERRAIN_HEIGHT - y
+                )
+                if i > Self.Constants.TERRAIN_STARTPAD:
+                    velocity += (
+                        Scalar[Self.dtype](random_float64() * 2.0 - 1.0)
+                    ) / Self.Constants.SCALE
                 y += velocity
 
-            elif state == TERRAIN_PIT:
+            elif state == Self.Constants.TERRAIN_PIT:
                 if oneshot:
                     counter = Int(random_float64() * 3.0) + 3
                     original_y = y
                     oneshot = False
                 if counter > 1:
-                    y = original_y - 4.0 * TERRAIN_STEP
+                    y = original_y - 4.0 * Self.Constants.TERRAIN_STEP
                 else:
                     y = original_y
 
-            elif state == TERRAIN_STUMP:
+            elif state == Self.Constants.TERRAIN_STUMP:
                 if oneshot:
                     counter = Int(random_float64() * 2.0) + 1
-                    var stump_width = Float64(counter) * TERRAIN_STEP
-                    var stump_height = Float64(counter) * TERRAIN_STEP
+                    var stump_width = Scalar[Self.dtype](
+                        counter * Self.Constants.TERRAIN_STEP
+                    )
+                    var stump_height = Scalar[Self.dtype](
+                        counter * Self.Constants.TERRAIN_STEP
+                    )
                     # Create stump polygon
-                    var stump_verts = List[Vec2]()
-                    stump_verts.append(Vec2(x, y))
-                    stump_verts.append(Vec2(x + stump_width, y))
-                    stump_verts.append(Vec2(x + stump_width, y + stump_height))
-                    stump_verts.append(Vec2(x, y + stump_height))
+                    var stump_verts = List[Vec2[Self.dtype]]()
+                    stump_verts.append(Vec2[Self.dtype](x, y))
+                    stump_verts.append(Vec2[Self.dtype](x + stump_width, y))
+                    stump_verts.append(
+                        Vec2[Self.dtype](x + stump_width, y + stump_height)
+                    )
+                    stump_verts.append(Vec2[Self.dtype](x, y + stump_height))
                     var stump_body_idx = self.world.create_body(
-                        BODY_STATIC, Vec2.zero()
+                        BODY_STATIC, Vec2[Self.dtype].zero()
                     )
                     var stump_poly = PolygonShape(stump_verts^)
                     _ = self.world.create_polygon_fixture(
                         stump_body_idx,
                         stump_poly^,
-                        friction=FRICTION,
+                        friction=Self.Constants.FRICTION,
                         filter=Filter.ground(),
                     )
                     self.obstacle_body_indices.append(stump_body_idx)
                     oneshot = False
 
-            elif state == TERRAIN_STAIRS:
+            elif state == Self.Constants.TERRAIN_STAIRS:
                 if oneshot:
-                    stair_height = 1.0 if random_float64() > 0.5 else -1.0
+                    stair_height = Scalar[Self.dtype](
+                        1.0
+                    ) if random_float64() > 0.5 else Scalar[Self.dtype](-1.0)
                     stair_width = Int(random_float64() * 2.0) + 4
                     stair_steps = Int(random_float64() * 3.0) + 3
                     counter = stair_steps * stair_width
                     original_y = y
                     # Create stair polygons
                     for s in range(stair_steps):
-                        var step_x = x + Float64(s * stair_width) * TERRAIN_STEP
+                        var step_x = (
+                            x + s * stair_width * Self.Constants.TERRAIN_STEP
+                        )
                         var step_y = (
                             original_y
-                            + Float64(s) * stair_height * TERRAIN_STEP
+                            + s * stair_height * Self.Constants.TERRAIN_STEP
                         )
-                        var step_w = Float64(stair_width) * TERRAIN_STEP
-                        var step_h = abs_f64(stair_height) * TERRAIN_STEP
-                        var step_verts = List[Vec2]()
-                        step_verts.append(Vec2(step_x, step_y))
-                        step_verts.append(Vec2(step_x + step_w, step_y))
+                        var step_w = stair_width * Self.Constants.TERRAIN_STEP
+                        var step_h = (
+                            abs(stair_height) * Self.Constants.TERRAIN_STEP
+                        )
+                        var step_verts = List[Vec2[Self.dtype]]()
+                        step_verts.append(Vec2[Self.dtype](step_x, step_y))
                         step_verts.append(
-                            Vec2(step_x + step_w, step_y + step_h)
+                            Vec2[Self.dtype](step_x + step_w, step_y)
                         )
-                        step_verts.append(Vec2(step_x, step_y + step_h))
+                        step_verts.append(
+                            Vec2[Self.dtype](step_x + step_w, step_y + step_h)
+                        )
+                        step_verts.append(
+                            Vec2[Self.dtype](step_x, step_y + step_h)
+                        )
                         var step_body_idx = self.world.create_body(
-                            BODY_STATIC, Vec2.zero()
+                            BODY_STATIC, Vec2[Self.dtype].zero()
                         )
                         var step_poly = PolygonShape(step_verts^)
                         _ = self.world.create_polygon_fixture(
                             step_body_idx,
                             step_poly^,
-                            friction=FRICTION,
+                            friction=Self.Constants.FRICTION,
                             filter=Filter.ground(),
                         )
                         self.obstacle_body_indices.append(step_body_idx)
@@ -665,35 +527,38 @@ struct BipedalWalkerEnv[DTYPE: DType](BoxContinuousActionEnv):
                     ) // stair_width
                     y = (
                         original_y
-                        + Float64(step_idx) * stair_height * TERRAIN_STEP
+                        + Scalar[Self.dtype](step_idx)
+                        * stair_height
+                        * Self.Constants.TERRAIN_STEP
                     )
 
             self.terrain_y.append(y)
             counter -= 1
 
             if counter == 0:
-                counter = (
-                    Int(random_float64() * Float64(TERRAIN_GRASS // 2))
-                    + TERRAIN_GRASS // 2
-                )
-                if state == TERRAIN_GRASS_TYPE:
+                counter = Int(
+                    Scalar[Self.dtype](random_float64())
+                    * Scalar[Self.dtype](Self.Constants.TERRAIN_GRASS // 2)
+                ) + Int(Scalar[Self.dtype](Self.Constants.TERRAIN_GRASS // 2))
+
+                if state == Self.Constants.TERRAIN_GRASS_TYPE:
                     state = (
                         Int(random_float64() * 3.0) + 1
                     )  # STUMP, STAIRS, or PIT
                     oneshot = True
                 else:
-                    state = TERRAIN_GRASS_TYPE
+                    state = Self.Constants.TERRAIN_GRASS_TYPE
                     oneshot = True
 
         # Create edge fixtures for base terrain
-        for i in range(TERRAIN_LENGTH - 1):
+        for i in range(Self.Constants.TERRAIN_LENGTH - 1):
             var p1 = Vec2(self.terrain_x[i], self.terrain_y[i])
             var p2 = Vec2(self.terrain_x[i + 1], self.terrain_y[i + 1])
             var edge = EdgeShape(p1, p2)
             _ = self.world.create_edge_fixture(
                 ground_idx,
                 edge^,
-                friction=FRICTION,
+                friction=Self.Constants.FRICTION,
                 filter=Filter.ground(),
             )
 
@@ -701,15 +566,37 @@ struct BipedalWalkerEnv[DTYPE: DType](BoxContinuousActionEnv):
             len(self.world.fixtures) - self.terrain_fixture_start
         )
 
-    fn _create_walker(mut self, init_x: Float64, init_y: Float64):
+    fn _create_walker(
+        mut self, init_x: Scalar[Self.dtype], init_y: Scalar[Self.dtype]
+    ):
         """Create hull and 4 leg segments with joints."""
         # Create hull
-        var hull_verts = List[Vec2]()
-        hull_verts.append(Vec2(-30.0 / SCALE, 9.0 / SCALE))
-        hull_verts.append(Vec2(6.0 / SCALE, 9.0 / SCALE))
-        hull_verts.append(Vec2(34.0 / SCALE, 1.0 / SCALE))
-        hull_verts.append(Vec2(34.0 / SCALE, -8.0 / SCALE))
-        hull_verts.append(Vec2(-30.0 / SCALE, -8.0 / SCALE))
+        var hull_verts = List[Vec2[Self.dtype]]()
+        hull_verts.append(
+            Vec2[Self.dtype](
+                -30.0 / Self.Constants.SCALE, 9.0 / Self.Constants.SCALE
+            )
+        )
+        hull_verts.append(
+            Vec2[Self.dtype](
+                6.0 / Self.Constants.SCALE, 9.0 / Self.Constants.SCALE
+            )
+        )
+        hull_verts.append(
+            Vec2[Self.dtype](
+                34.0 / Self.Constants.SCALE, 1.0 / Self.Constants.SCALE
+            )
+        )
+        hull_verts.append(
+            Vec2[Self.dtype](
+                34.0 / Self.Constants.SCALE, -8.0 / Self.Constants.SCALE
+            )
+        )
+        hull_verts.append(
+            Vec2[Self.dtype](
+                -30.0 / Self.Constants.SCALE, -8.0 / Self.Constants.SCALE
+            )
+        )
 
         self.hull_idx = self.world.create_body(
             BODY_DYNAMIC, Vec2(init_x, init_y)
@@ -725,7 +612,10 @@ struct BipedalWalkerEnv[DTYPE: DType](BoxContinuousActionEnv):
         )
 
         # Apply random initial force
-        var fx = (random_float64() * 2.0 - 1.0) * INITIAL_RANDOM
+        var fx = (
+            Scalar[Self.dtype](random_float64() * 2.0 - 1.0)
+            * Self.Constants.INITIAL_RANDOM
+        )
         self.world.bodies[self.hull_idx].apply_force_to_center(Vec2(fx, 0.0))
 
         # Create legs (2 legs, each with upper and lower segment)
@@ -733,11 +623,17 @@ struct BipedalWalkerEnv[DTYPE: DType](BoxContinuousActionEnv):
             var i = Float64(-1 if side == 0 else 1)
 
             # Upper leg
-            var upper_y = init_y + LEG_DOWN - LEG_H / 2.0
-            var upper_idx = self.world.create_body(
-                BODY_DYNAMIC, Vec2(init_x, upper_y), i * 0.05
+            var upper_y = (
+                init_y + Self.Constants.LEG_DOWN - Self.Constants.LEG_H / 2.0
             )
-            var upper_poly = PolygonShape.from_box(LEG_W / 2.0, LEG_H / 2.0)
+            var upper_idx = self.world.create_body(
+                BODY_DYNAMIC,
+                Vec2[Self.dtype](init_x, upper_y),
+                Scalar[Self.dtype](i) * 0.05,
+            )
+            var upper_poly = PolygonShape.from_box(
+                Self.Constants.LEG_W / 2.0, Self.Constants.LEG_H / 2.0
+            )
             self.upper_leg_fixture_indices[
                 side
             ] = self.world.create_polygon_fixture(
@@ -754,11 +650,13 @@ struct BipedalWalkerEnv[DTYPE: DType](BoxContinuousActionEnv):
             var hip_joint_idx = self.world.create_revolute_joint(
                 self.hull_idx,
                 upper_idx,
-                local_anchor_a=Vec2(0.0, LEG_DOWN),
-                local_anchor_b=Vec2(0.0, LEG_H / 2.0),
+                local_anchor_a=Vec2[Self.dtype](0.0, Self.Constants.LEG_DOWN),
+                local_anchor_b=Vec2[Self.dtype](
+                    0.0, Self.Constants.LEG_H / 2.0
+                ),
                 enable_motor=True,
-                motor_speed=i,
-                max_motor_torque=MOTORS_TORQUE,
+                motor_speed=Scalar[Self.dtype](i),
+                max_motor_torque=Self.Constants.MOTORS_TORQUE,
                 enable_limit=True,
                 lower_angle=-0.8,
                 upper_angle=1.1,
@@ -766,12 +664,18 @@ struct BipedalWalkerEnv[DTYPE: DType](BoxContinuousActionEnv):
             self.hip_joint_indices[side] = hip_joint_idx
 
             # Lower leg
-            var lower_y = init_y + LEG_DOWN - LEG_H * 3.0 / 2.0
+            var lower_y = (
+                init_y
+                + Self.Constants.LEG_DOWN
+                - Self.Constants.LEG_H * 3.0 / 2.0
+            )
             var lower_idx = self.world.create_body(
-                BODY_DYNAMIC, Vec2(init_x, lower_y), i * 0.05
+                BODY_DYNAMIC,
+                Vec2[Self.dtype](init_x, lower_y),
+                Scalar[Self.dtype](i) * 0.05,
             )
             var lower_poly = PolygonShape.from_box(
-                0.8 * LEG_W / 2.0, LEG_H / 2.0
+                0.8 * Self.Constants.LEG_W / 2.0, Self.Constants.LEG_H / 2.0
             )
             self.lower_leg_fixture_indices[
                 side
@@ -789,20 +693,24 @@ struct BipedalWalkerEnv[DTYPE: DType](BoxContinuousActionEnv):
             var knee_joint_idx = self.world.create_revolute_joint(
                 upper_idx,
                 lower_idx,
-                local_anchor_a=Vec2(0.0, -LEG_H / 2.0),
-                local_anchor_b=Vec2(0.0, LEG_H / 2.0),
+                local_anchor_a=Vec2[Self.dtype](
+                    0.0, -Self.Constants.LEG_H / 2.0
+                ),
+                local_anchor_b=Vec2[Self.dtype](
+                    0.0, Self.Constants.LEG_H / 2.0
+                ),
                 enable_motor=True,
                 motor_speed=1.0,
-                max_motor_torque=MOTORS_TORQUE,
+                max_motor_torque=Self.Constants.MOTORS_TORQUE,
                 enable_limit=True,
                 lower_angle=-1.6,
                 upper_angle=-0.1,
             )
             self.knee_joint_indices[side] = knee_joint_idx
 
-    fn _get_observation(self) -> BipedalWalkerState:
+    fn _get_observation(self) -> BipedalWalkerState[Self.DTYPE]:
         """Build 24D observation from current state."""
-        var state = BipedalWalkerState()
+        var state = BipedalWalkerState[Self.DTYPE]()
 
         var hull = self.world.bodies[self.hull_idx].copy()
         var pos = hull.position
@@ -810,9 +718,21 @@ struct BipedalWalkerEnv[DTYPE: DType](BoxContinuousActionEnv):
 
         # Hull state (normalized)
         state.hull_angle = hull.angle
-        state.hull_angular_velocity = 2.0 * hull.angular_velocity / Float64(FPS)
-        state.vel_x = 0.3 * vel.x * (Float64(VIEWPORT_W) / SCALE) / Float64(FPS)
-        state.vel_y = 0.3 * vel.y * (Float64(VIEWPORT_H) / SCALE) / Float64(FPS)
+        state.hull_angular_velocity = (
+            2.0 * hull.angular_velocity / Self.Constants.FPS
+        )
+        state.vel_x = (
+            0.3
+            * vel.x
+            * (Self.Constants.VIEWPORT_W / Self.Constants.SCALE)
+            / Self.Constants.FPS
+        )
+        state.vel_y = (
+            0.3
+            * vel.y
+            * (Self.Constants.VIEWPORT_H / Self.Constants.SCALE)
+            / Self.Constants.FPS
+        )
 
         # Leg 1 (left) state
         var upper1 = self.world.bodies[self.upper_leg_indices[0]].copy()
@@ -824,7 +744,7 @@ struct BipedalWalkerEnv[DTYPE: DType](BoxContinuousActionEnv):
             self.world.joints[self.hip_joint_indices[0]].get_joint_speed(
                 hull, upper1
             )
-            / SPEED_HIP
+            / Self.Constants.SPEED_HIP
         )
         state.knee1_angle = (
             self.world.joints[self.knee_joint_indices[0]].get_joint_angle(
@@ -836,9 +756,11 @@ struct BipedalWalkerEnv[DTYPE: DType](BoxContinuousActionEnv):
             self.world.joints[self.knee_joint_indices[0]].get_joint_speed(
                 upper1, lower1
             )
-            / SPEED_KNEE
+            / Self.Constants.SPEED_KNEE
         )
-        state.leg1_contact = 1.0 if self.leg_ground_contact[0] else 0.0
+        state.leg1_contact = Scalar[Self.dtype](1.0) if self.leg_ground_contact[
+            0
+        ] else Scalar[Self.dtype](0.0)
 
         # Leg 2 (right) state
         var upper2 = self.world.bodies[self.upper_leg_indices[1]].copy()
@@ -850,7 +772,7 @@ struct BipedalWalkerEnv[DTYPE: DType](BoxContinuousActionEnv):
             self.world.joints[self.hip_joint_indices[1]].get_joint_speed(
                 hull, upper2
             )
-            / SPEED_HIP
+            / Self.Constants.SPEED_HIP
         )
         state.knee2_angle = (
             self.world.joints[self.knee_joint_indices[1]].get_joint_angle(
@@ -862,26 +784,33 @@ struct BipedalWalkerEnv[DTYPE: DType](BoxContinuousActionEnv):
             self.world.joints[self.knee_joint_indices[1]].get_joint_speed(
                 upper2, lower2
             )
-            / SPEED_KNEE
+            / Self.Constants.SPEED_KNEE
         )
-        state.leg2_contact = 1.0 if self.leg_ground_contact[1] else 0.0
+        state.leg2_contact = Scalar[Self.dtype](1.0) if self.leg_ground_contact[
+            1
+        ] else Scalar[Self.dtype](0.0)
 
         # Lidar
         self._perform_lidar(pos, state)
 
         return state^
 
-    fn _perform_lidar(self, pos: Vec2, mut state: BipedalWalkerState):
+    fn _perform_lidar(
+        self, pos: Vec2[Self.dtype], mut state: BipedalWalkerState[Self.dtype]
+    ):
         """Perform 10 lidar raycasts and store fractions in state."""
-        for i in range(NUM_LIDAR):
+        for i in range(Self.Constants.NUM_LIDAR):
             # Lidar angles span ~1.5 radians (from Gymnasium)
-            var angle = 1.5 * Float64(i) / Float64(NUM_LIDAR)
+            var angle = (
+                Scalar[Self.dtype](1.5)
+                * Scalar[Self.dtype](i)
+                / Self.Constants.NUM_LIDAR
+            )
+            var ray_end_x = pos.x + sin(angle) * Self.Constants.LIDAR_RANGE
+            var ray_end_y = pos.y - cos(angle) * Self.Constants.LIDAR_RANGE
 
             var ray_start = pos
-            var ray_end = Vec2(
-                pos.x + sin(angle) * LIDAR_RANGE,
-                pos.y - cos(angle) * LIDAR_RANGE,
-            )
+            var ray_end = Vec2[Self.dtype](ray_end_x, ray_end_y)
 
             # Raycast against terrain (ground category only)
             var result = self.world.raycast(ray_start, ray_end, CATEGORY_GROUND)
@@ -937,13 +866,20 @@ struct BipedalWalkerEnv[DTYPE: DType](BoxContinuousActionEnv):
 
         # Create scrolling camera that follows the walker
         # Camera X = scroll position, Y centered vertically
-        var cam_y = Float64(VIEWPORT_H) / SCALE / 2.0
+        var cam_y = (
+            Float64(Self.Constants.VIEWPORT_H)
+            / Float64(Self.Constants.SCALE)
+            / 2.0
+        )
         var camera = Camera(
-            self.scroll + Float64(VIEWPORT_W) / SCALE / 2.0,  # Follow scroll
+            Float64(self.scroll)
+            + Float64(Self.Constants.VIEWPORT_W)
+            / Float64(Self.Constants.SCALE)
+            / 2.0,  # Follow scroll
             cam_y,
-            SCALE,
-            VIEWPORT_W,
-            VIEWPORT_H,
+            Float64(Self.Constants.SCALE),
+            Int(Self.Constants.VIEWPORT_W),
+            Int(Self.Constants.VIEWPORT_H),
             flip_y=True,
         )
 
@@ -971,20 +907,23 @@ struct BipedalWalkerEnv[DTYPE: DType](BoxContinuousActionEnv):
 
             # Skip if off-screen (using camera visibility check)
             if not camera.is_visible(
-                RenderVec2(x1, self.terrain_y[i]), margin=TERRAIN_STEP * 2
+                RenderVec2(Float64(x1), Float64(self.terrain_y[i])),
+                margin=Float64(Self.Constants.TERRAIN_STEP) * 2,
             ):
                 if not camera.is_visible(
-                    RenderVec2(x2, self.terrain_y[i + 1]),
-                    margin=TERRAIN_STEP * 2,
+                    RenderVec2(Float64(x2), Float64(self.terrain_y[i + 1])),
+                    margin=Float64(Self.Constants.TERRAIN_STEP) * 2,
                 ):
                     continue
 
             # Create polygon vertices in world coordinates
             var vertices = List[RenderVec2]()
-            vertices.append(RenderVec2(x1, self.terrain_y[i]))
-            vertices.append(RenderVec2(x2, self.terrain_y[i + 1]))
-            vertices.append(RenderVec2(x2, 0.0))  # Bottom
-            vertices.append(RenderVec2(x1, 0.0))
+            vertices.append(RenderVec2(Float64(x1), Float64(self.terrain_y[i])))
+            vertices.append(
+                RenderVec2(Float64(x2), Float64(self.terrain_y[i + 1]))
+            )
+            vertices.append(RenderVec2(Float64(x2), 0.0))  # Bottom
+            vertices.append(RenderVec2(Float64(x1), 0.0))
 
             renderer.draw_polygon_world(
                 vertices, camera, terrain_color, filled=True
@@ -1000,14 +939,41 @@ struct BipedalWalkerEnv[DTYPE: DType](BoxContinuousActionEnv):
 
         # Hull vertices in local coordinates (already in world units)
         var hull_verts = List[RenderVec2]()
-        hull_verts.append(RenderVec2(-30.0 / SCALE, 9.0 / SCALE))
-        hull_verts.append(RenderVec2(6.0 / SCALE, 9.0 / SCALE))
-        hull_verts.append(RenderVec2(34.0 / SCALE, 1.0 / SCALE))
-        hull_verts.append(RenderVec2(34.0 / SCALE, -8.0 / SCALE))
-        hull_verts.append(RenderVec2(-30.0 / SCALE, -8.0 / SCALE))
+        hull_verts.append(
+            RenderVec2(
+                Float64(-30.0 / Self.Constants.SCALE),
+                Float64(9.0 / Self.Constants.SCALE),
+            )
+        )
+        hull_verts.append(
+            RenderVec2(
+                Float64(6.0 / Self.Constants.SCALE),
+                Float64(9.0 / Self.Constants.SCALE),
+            )
+        )
+        hull_verts.append(
+            RenderVec2(
+                Float64(34.0 / Self.Constants.SCALE),
+                Float64(1.0 / Self.Constants.SCALE),
+            )
+        )
+        hull_verts.append(
+            RenderVec2(
+                Float64(34.0 / Self.Constants.SCALE),
+                Float64(-8.0 / Self.Constants.SCALE),
+            )
+        )
+        hull_verts.append(
+            RenderVec2(
+                Float64(-30.0 / Self.Constants.SCALE),
+                Float64(-8.0 / Self.Constants.SCALE),
+            )
+        )
 
         # Create transform for hull position and rotation
-        var transform = Transform2D(pos.x, pos.y, angle)
+        var transform = Transform2D(
+            Float64(pos.x), Float64(pos.y), Float64(angle)
+        )
 
         renderer.draw_transformed_polygon(
             hull_verts, transform, camera, hull_color, filled=True
@@ -1026,12 +992,22 @@ struct BipedalWalkerEnv[DTYPE: DType](BoxContinuousActionEnv):
 
             # Draw upper leg
             self._draw_leg_segment(
-                renderer, upper, LEG_W / 2.0, LEG_H / 2.0, leg_color, camera
+                renderer,
+                upper,
+                Float64(Self.Constants.LEG_W / 2.0),
+                Float64(Self.Constants.LEG_H / 2.0),
+                leg_color,
+                camera,
             )
 
             # Draw lower leg (narrower)
             self._draw_leg_segment(
-                renderer, lower, 0.8 * LEG_W / 2.0, LEG_H / 2.0, leg_color, camera
+                renderer,
+                lower,
+                0.8 * Float64(Self.Constants.LEG_W / 2.0),
+                Float64(Self.Constants.LEG_H / 2.0),
+                leg_color,
+                camera,
             )
 
     fn _draw_leg_segment(
@@ -1051,7 +1027,9 @@ struct BipedalWalkerEnv[DTYPE: DType](BoxContinuousActionEnv):
         var leg_verts = make_rect(half_w * 2.0, half_h * 2.0, centered=True)
 
         # Create transform for leg position and rotation
-        var transform = Transform2D(pos.x, pos.y, angle)
+        var transform = Transform2D(
+            Float64(pos.x), Float64(pos.y), Float64(angle)
+        )
 
         renderer.draw_transformed_polygon(
             leg_verts, transform, camera, color, filled=True
@@ -1061,7 +1039,9 @@ struct BipedalWalkerEnv[DTYPE: DType](BoxContinuousActionEnv):
 # ===== Helper Functions =====
 
 
-fn clamp(x: Float64, low: Float64, high: Float64) -> Float64:
+fn clamp[
+    DTYPE: DType
+](x: Scalar[DTYPE], low: Scalar[DTYPE], high: Scalar[DTYPE]) -> Scalar[DTYPE]:
     """Clamp value to range."""
     if x < low:
         return low
@@ -1070,18 +1050,13 @@ fn clamp(x: Float64, low: Float64, high: Float64) -> Float64:
     return x
 
 
-fn abs_f64(x: Float64) -> Float64:
-    """Absolute value."""
-    return x if x >= 0.0 else -x
-
-
-fn sign(x: Float64) -> Float64:
+fn sign[DTYPE: DType](x: Scalar[DTYPE]) -> Scalar[DTYPE]:
     """Sign of value."""
     if x > 0.0:
-        return 1.0
+        return Scalar[DTYPE](1.0)
     elif x < 0.0:
-        return -1.0
-    return 0.0
+        return Scalar[DTYPE](-1.0)
+    return Scalar[DTYPE](0.0)
 
 
 fn max(a: Int, b: Int) -> Int:

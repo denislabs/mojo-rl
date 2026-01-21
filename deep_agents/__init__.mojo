@@ -22,5 +22,4 @@ from .td3 import DeepTD3Agent
 from .sac import DeepSACAgent
 from .dueling_dqn import DuelingDQNAgent
 from .a2c import DeepA2CAgent
-from .ppo import DeepPPOAgent
-from .ppo_continuous import DeepPPOContinuousAgent
+from .ppo import DeepPPOAgent, DeepPPOContinuousAgent

@@ -36,7 +36,7 @@ struct CRConstants:
 
     # Engine and brake
     comptime ENGINE_POWER: Float64 = ENGINE_POWER  # 40000
-    comptime BRAKE_FORCE: Float64 = BRAKE_FORCE    # 15.0
+    comptime BRAKE_FORCE: Float64 = BRAKE_FORCE  # 15.0
 
     # Wheel properties
     comptime WHEEL_MOMENT: Float64 = WHEEL_MOMENT_OF_INERTIA  # 1.6
@@ -46,12 +46,12 @@ struct CRConstants:
 
     # Friction
     comptime FRICTION_LIMIT: Float64 = FRICTION_LIMIT  # 400
-    comptime FRICTION_COEF: Float64 = FRICTION_COEF    # 82
-    comptime ROAD_FRICTION: Float64 = ROAD_FRICTION    # 1.0
+    comptime FRICTION_COEF: Float64 = FRICTION_COEF  # 82
+    comptime ROAD_FRICTION: Float64 = ROAD_FRICTION  # 1.0
     comptime GRASS_FRICTION: Float64 = GRASS_FRICTION  # 0.6
 
     # Steering
-    comptime STEER_LIMIT: Float64 = STEERING_LIMIT     # 0.4 rad
+    comptime STEER_LIMIT: Float64 = STEERING_LIMIT  # 0.4 rad
     comptime STEER_SPEED: Float64 = STEERING_MOTOR_SPEED  # 3.0 rad/s
 
     # =========================================================================
@@ -86,7 +86,7 @@ struct CRConstants:
     # Episode Constants
     # =========================================================================
 
-    comptime MAX_STEPS: Int = 1000
+    comptime MAX_STEPS: Int = 500
     comptime LAP_COMPLETE_PERCENT: Float64 = 0.95
 
     # =========================================================================

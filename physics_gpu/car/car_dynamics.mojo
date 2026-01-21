@@ -25,6 +25,8 @@ from .constants import (
     STEERING_LIMIT,
     STEERING_MOTOR_SPEED,
     STEERING_GAIN,
+    FRICTION_LIMIT,
+    ROAD_FRICTION,
     CAR_DT,
     CAR_PI,
     CAR_TWO_PI,
@@ -420,6 +422,66 @@ struct CarDynamics:
         ](env, state, tiles, num_active_tiles, dt)
 
         # Update observations
+        CarDynamics.update_observation[
+            BATCH, STATE_SIZE, OBS_OFFSET, OBS_DIM, HULL_OFFSET, WHEELS_OFFSET
+        ](env, state)
+
+    @staticmethod
+    @always_inline
+    fn step_trackless[
+        BATCH: Int,
+        STATE_SIZE: Int,
+        OBS_OFFSET: Int,
+        OBS_DIM: Int,
+        HULL_OFFSET: Int,
+        WHEELS_OFFSET: Int,
+        CONTROLS_OFFSET: Int,
+    ](
+        env: Int,
+        state: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, STATE_SIZE),
+            MutAnyOrigin,
+        ],
+        dt: Scalar[dtype],
+    ):
+        """Perform physics step without track (uses default road friction).
+
+        This version assumes all wheels are on road (friction = 1.0).
+        Useful for simplified training without track tile collision.
+
+        Args:
+            env: Environment index.
+            state: State tensor.
+            dt: Time step.
+        """
+        # Step 1: Update steering joints
+        CarDynamics.update_steering[BATCH, STATE_SIZE, WHEELS_OFFSET, CONTROLS_OFFSET](
+            env, state, dt
+        )
+
+        # Step 2: Use default road friction for all wheels (no tile lookup)
+        # friction_limits = [fl, fr, rl, rr] all set to FRICTION_LIMIT * ROAD_FRICTION
+        var default_friction = Scalar[dtype](FRICTION_LIMIT * ROAD_FRICTION)
+        var friction_limits = InlineArray[Scalar[dtype], NUM_WHEELS](
+            default_friction, default_friction, default_friction, default_friction
+        )
+
+        # Step 3: Compute wheel forces (also updates wheel omegas)
+        var forces = WheelFriction.compute_all_wheels_forces[
+            BATCH, STATE_SIZE, HULL_OFFSET, WHEELS_OFFSET, CONTROLS_OFFSET
+        ](env, state, friction_limits, dt)
+
+        var fx = forces[0]
+        var fy = forces[1]
+        var torque = forces[2]
+
+        # Step 4: Integrate hull dynamics
+        CarDynamics.integrate_hull[BATCH, STATE_SIZE, HULL_OFFSET](
+            env, state, fx, fy, torque, dt
+        )
+
+        # Step 5: Update observations
         CarDynamics.update_observation[
             BATCH, STATE_SIZE, OBS_OFFSET, OBS_DIM, HULL_OFFSET, WHEELS_OFFSET
         ](env, state)

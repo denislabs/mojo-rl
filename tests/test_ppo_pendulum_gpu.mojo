@@ -21,7 +21,7 @@ from time import perf_counter_ns
 
 from gpu.host import DeviceContext
 
-from deep_agents.ppo_continuous import DeepPPOContinuousAgent
+from deep_agents.ppo import DeepPPOContinuousAgent
 from envs.pendulum import PendulumV2, PConstants
 
 
@@ -65,12 +65,13 @@ fn main() raises:
 
     with DeviceContext() as ctx:
         var agent = DeepPPOContinuousAgent[
-            OBS_DIM,
-            NUM_ACTIONS,
-            HIDDEN_DIM,
-            ROLLOUT_LEN,
-            N_ENVS,
-            GPU_MINIBATCH_SIZE,
+            obs_dim=OBS_DIM,
+            action_dim=NUM_ACTIONS,
+            hidden_dim=HIDDEN_DIM,
+            rollout_len=ROLLOUT_LEN,
+            n_envs=N_ENVS,
+            gpu_minibatch_size=GPU_MINIBATCH_SIZE,
+            clip_value=True,
         ](
             gamma=0.99,  # Standard discount
             gae_lambda=0.95,  # Standard GAE lambda
@@ -86,7 +87,6 @@ fn main() raises:
             anneal_lr=True,  # Enable LR annealing
             anneal_entropy=False,
             target_total_steps=0,
-            clip_value=True,
             norm_adv_per_minibatch=True,
             checkpoint_every=1000,
             checkpoint_path="ppo_pendulum_gpu.ckpt",

@@ -42,7 +42,7 @@ from gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 
 from deep_rl.constants import dtype, TILE, TPB
-from deep_rl.model import Linear, ReLU, seq
+from deep_rl.model import Linear, ReLU, LinearReLU, seq
 from deep_rl.optimizer import Adam
 from deep_rl.initializer import Xavier
 from deep_rl.training import Network
@@ -453,6 +453,88 @@ fn gradient_clip_kernel[
 
 
 @always_inline
+fn gradient_reduce_and_compute_scale_kernel[
+    dtype: DType,
+    NUM_BLOCKS: Int,
+    BLOCK_SIZE: Int,
+](
+    # Output
+    scale_out: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
+    # Input
+    partial_sums: LayoutTensor[dtype, Layout.row_major(NUM_BLOCKS), MutAnyOrigin],
+    max_grad_norm: Scalar[dtype],
+):
+    """Reduce partial sums and compute clipping scale entirely on GPU.
+
+    This kernel runs with a single block. It:
+    1. Loads all partial sums into shared memory
+    2. Reduces them to get total squared gradient norm
+    3. Computes scale = min(1.0, max_grad_norm / norm)
+    4. Stores scale to global memory for the next kernel
+    """
+    var thread_id = Int(thread_idx.x)
+
+    # Shared memory for reduction
+    var shared = LayoutTensor[
+        dtype,
+        Layout.row_major(BLOCK_SIZE),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ].stack_allocation()
+
+    # Load partial sums (handle case where NUM_BLOCKS > BLOCK_SIZE by striding)
+    var local_sum = Scalar[dtype](0.0)
+    var idx = thread_id
+    while idx < NUM_BLOCKS:
+        local_sum += rebind[Scalar[dtype]](partial_sums[idx])
+        idx += BLOCK_SIZE
+    shared[thread_id] = local_sum
+
+    barrier()
+
+    # Reduction within block
+    var stride = BLOCK_SIZE // 2
+    while stride > 0:
+        if thread_id < stride:
+            shared[thread_id] = shared[thread_id] + shared[thread_id + stride]
+        barrier()
+        stride = stride // 2
+
+    # Thread 0 computes and stores the scale
+    if thread_id == 0:
+        var total_sq_sum = rebind[Scalar[dtype]](shared[0])
+        var norm = Scalar[dtype](sqrt(total_sq_sum))
+        var scale = Scalar[dtype](1.0)
+        if norm > max_grad_norm:
+            scale = max_grad_norm / (norm + Scalar[dtype](1e-8))
+        scale_out[0] = scale
+
+
+@always_inline
+fn gradient_apply_scale_kernel[
+    dtype: DType,
+    PARAM_SIZE: Int,
+](
+    # In/Out
+    grads: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+    # Input
+    scale_in: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
+):
+    """Apply precomputed scale to all gradients.
+
+    This kernel reads the scale computed by gradient_reduce_and_compute_scale_kernel
+    and applies it to all gradients. Always runs (no conditional), but when no
+    clipping is needed, scale=1.0 so it's a no-op multiply.
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= PARAM_SIZE:
+        return
+
+    var scale = scale_in[0]
+    grads[i] = grads[i] * scale
+
+
+@always_inline
 fn ppo_critic_grad_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
@@ -725,10 +807,8 @@ struct DeepPPOAgent[
     var actor: Network[
         type_of(
             seq(
-                Linear[Self.OBS, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
+                LinearReLU[Self.OBS, Self.HIDDEN](),
+                LinearReLU[Self.HIDDEN, Self.HIDDEN](),
                 Linear[Self.HIDDEN, Self.ACTIONS](),
             )
         ),
@@ -740,10 +820,8 @@ struct DeepPPOAgent[
     var critic: Network[
         type_of(
             seq(
-                Linear[Self.OBS, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
+                LinearReLU[Self.OBS, Self.HIDDEN](),
+                LinearReLU[Self.HIDDEN, Self.HIDDEN](),
                 Linear[Self.HIDDEN, 1](),
             )
         ),
@@ -837,18 +915,14 @@ struct DeepPPOAgent[
         """
         # Build actor and critic models
         var actor_model = seq(
-            Linear[Self.OBS, Self.HIDDEN](),
-            ReLU[Self.HIDDEN](),
-            Linear[Self.HIDDEN, Self.HIDDEN](),
-            ReLU[Self.HIDDEN](),
+            LinearReLU[Self.OBS, Self.HIDDEN](),
+            LinearReLU[Self.HIDDEN, Self.HIDDEN](),
             Linear[Self.HIDDEN, Self.ACTIONS](),
         )
 
         var critic_model = seq(
-            Linear[Self.OBS, Self.HIDDEN](),
-            ReLU[Self.HIDDEN](),
-            Linear[Self.HIDDEN, Self.HIDDEN](),
-            ReLU[Self.HIDDEN](),
+            LinearReLU[Self.OBS, Self.HIDDEN](),
+            LinearReLU[Self.HIDDEN, Self.HIDDEN](),
             Linear[Self.HIDDEN, 1](),
         )
 
@@ -1687,7 +1761,7 @@ struct DeepPPOAgent[
             MINIBATCH
         )
 
-        # Gradient norm computation buffers
+        # Gradient norm computation buffers (fused kernel keeps everything on GPU)
         comptime ACTOR_GRAD_BLOCKS = (ACTOR_PARAMS + TPB - 1) // TPB
         comptime CRITIC_GRAD_BLOCKS = (CRITIC_PARAMS + TPB - 1) // TPB
         var actor_grad_partial_sums_buf = ctx.enqueue_create_buffer[dtype](
@@ -1696,12 +1770,9 @@ struct DeepPPOAgent[
         var critic_grad_partial_sums_buf = ctx.enqueue_create_buffer[dtype](
             CRITIC_GRAD_BLOCKS
         )
-        var actor_grad_partial_sums_host = ctx.enqueue_create_host_buffer[
-            dtype
-        ](ACTOR_GRAD_BLOCKS)
-        var critic_grad_partial_sums_host = ctx.enqueue_create_host_buffer[
-            dtype
-        ](CRITIC_GRAD_BLOCKS)
+        # Scale buffers for fused gradient clipping (single scalar each)
+        var actor_scale_buf = ctx.enqueue_create_buffer[dtype](1)
+        var critic_scale_buf = ctx.enqueue_create_buffer[dtype](1)
 
         # =====================================================================
         # Initialize network parameters on GPU
@@ -1849,6 +1920,12 @@ struct DeepPPOAgent[
         var critic_grad_partial_sums_tensor = LayoutTensor[
             dtype, Layout.row_major(CRITIC_GRAD_BLOCKS), MutAnyOrigin
         ](critic_grad_partial_sums_buf.unsafe_ptr())
+        var actor_scale_tensor = LayoutTensor[
+            dtype, Layout.row_major(1), MutAnyOrigin
+        ](actor_scale_buf.unsafe_ptr())
+        var critic_scale_tensor = LayoutTensor[
+            dtype, Layout.row_major(1), MutAnyOrigin
+        ](critic_scale_buf.unsafe_ptr())
 
         # Define extract_obs_wrapper early (needed for initial reset)
         comptime extract_obs_wrapper = _extract_obs_from_state_kernel[
@@ -1937,17 +2014,24 @@ struct DeepPPOAgent[
             dtype, MINIBATCH
         ]
 
-        # Gradient clipping kernel wrappers
+        # Gradient clipping kernel wrappers (fused version eliminates host copy)
         comptime actor_grad_norm_wrapper = gradient_norm_kernel[
             dtype, ACTOR_PARAMS, ACTOR_GRAD_BLOCKS, TPB
         ]
         comptime critic_grad_norm_wrapper = gradient_norm_kernel[
             dtype, CRITIC_PARAMS, CRITIC_GRAD_BLOCKS, TPB
         ]
-        comptime actor_grad_clip_wrapper = gradient_clip_kernel[
+        # Fused two-kernel approach: reduce+scale then apply
+        comptime actor_reduce_scale_wrapper = gradient_reduce_and_compute_scale_kernel[
+            dtype, ACTOR_GRAD_BLOCKS, TPB
+        ]
+        comptime actor_apply_scale_wrapper = gradient_apply_scale_kernel[
             dtype, ACTOR_PARAMS
         ]
-        comptime critic_grad_clip_wrapper = gradient_clip_kernel[
+        comptime critic_reduce_scale_wrapper = gradient_reduce_and_compute_scale_kernel[
+            dtype, CRITIC_GRAD_BLOCKS, TPB
+        ]
+        comptime critic_apply_scale_wrapper = gradient_apply_scale_kernel[
             dtype, CRITIC_PARAMS
         ]
 
@@ -2498,9 +2582,9 @@ struct DeepPPOAgent[
                         actor_minibatch_workspace_buf,
                     )
 
-                    # Gradient clipping for actor
+                    # Gradient clipping for actor (fused: no host copy)
                     if self.max_grad_norm > 0.0:
-                        # Compute gradient norm using block reduction
+                        # Step 1: Compute partial sums of squared gradients
                         ctx.enqueue_function[
                             actor_grad_norm_wrapper, actor_grad_norm_wrapper
                         ](
@@ -2509,32 +2593,28 @@ struct DeepPPOAgent[
                             grid_dim=(ACTOR_GRAD_BLOCKS,),
                             block_dim=(TPB,),
                         )
-                        ctx.enqueue_copy(
-                            actor_grad_partial_sums_host,
-                            actor_grad_partial_sums_buf,
+                        # Step 2: Reduce partial sums and compute scale (single block)
+                        ctx.enqueue_function[
+                            actor_reduce_scale_wrapper,
+                            actor_reduce_scale_wrapper,
+                        ](
+                            actor_scale_tensor,
+                            actor_grad_partial_sums_tensor,
+                            Scalar[dtype](self.max_grad_norm),
+                            grid_dim=(1,),
+                            block_dim=(TPB,),
+                        )
+                        # Step 3: Apply scale to all gradients
+                        ctx.enqueue_function[
+                            actor_apply_scale_wrapper,
+                            actor_apply_scale_wrapper,
+                        ](
+                            actor_grads_tensor,
+                            actor_scale_tensor,
+                            grid_dim=(ACTOR_GRAD_BLOCKS,),
+                            block_dim=(TPB,),
                         )
                         ctx.synchronize()
-
-                        # Sum partial sums on CPU
-                        var actor_grad_sq_sum = Scalar[dtype](0.0)
-                        for i in range(ACTOR_GRAD_BLOCKS):
-                            actor_grad_sq_sum += actor_grad_partial_sums_host[i]
-                        var actor_grad_norm = Float64(sqrt(actor_grad_sq_sum))
-
-                        # Clip if necessary
-                        if actor_grad_norm > self.max_grad_norm:
-                            var clip_scale = Scalar[dtype](
-                                self.max_grad_norm / actor_grad_norm
-                            )
-                            ctx.enqueue_function[
-                                actor_grad_clip_wrapper, actor_grad_clip_wrapper
-                            ](
-                                actor_grads_tensor,
-                                clip_scale,
-                                grid_dim=(ACTOR_GRAD_BLOCKS,),
-                                block_dim=(TPB,),
-                            )
-                            ctx.synchronize()
 
                     # Update actor parameters
                     self.actor.optimizer.step_gpu[Self.ACTOR_PARAM_SIZE](
@@ -2603,9 +2683,9 @@ struct DeepPPOAgent[
                         critic_minibatch_workspace_buf,
                     )
 
-                    # Gradient clipping for critic
+                    # Gradient clipping for critic (fused: no host copy)
                     if self.max_grad_norm > 0.0:
-                        # Compute gradient norm using block reduction
+                        # Step 1: Compute partial sums of squared gradients
                         ctx.enqueue_function[
                             critic_grad_norm_wrapper, critic_grad_norm_wrapper
                         ](
@@ -2614,35 +2694,28 @@ struct DeepPPOAgent[
                             grid_dim=(CRITIC_GRAD_BLOCKS,),
                             block_dim=(TPB,),
                         )
-                        ctx.enqueue_copy(
-                            critic_grad_partial_sums_host,
-                            critic_grad_partial_sums_buf,
+                        # Step 2: Reduce partial sums and compute scale (single block)
+                        ctx.enqueue_function[
+                            critic_reduce_scale_wrapper,
+                            critic_reduce_scale_wrapper,
+                        ](
+                            critic_scale_tensor,
+                            critic_grad_partial_sums_tensor,
+                            Scalar[dtype](self.max_grad_norm),
+                            grid_dim=(1,),
+                            block_dim=(TPB,),
+                        )
+                        # Step 3: Apply scale to all gradients
+                        ctx.enqueue_function[
+                            critic_apply_scale_wrapper,
+                            critic_apply_scale_wrapper,
+                        ](
+                            critic_grads_tensor,
+                            critic_scale_tensor,
+                            grid_dim=(CRITIC_GRAD_BLOCKS,),
+                            block_dim=(TPB,),
                         )
                         ctx.synchronize()
-
-                        # Sum partial sums on CPU
-                        var critic_grad_sq_sum = Scalar[dtype](0.0)
-                        for i in range(CRITIC_GRAD_BLOCKS):
-                            critic_grad_sq_sum += critic_grad_partial_sums_host[
-                                i
-                            ]
-                        var critic_grad_norm = Float64(sqrt(critic_grad_sq_sum))
-
-                        # Clip if necessary
-                        if critic_grad_norm > self.max_grad_norm:
-                            var clip_scale = Scalar[dtype](
-                                self.max_grad_norm / critic_grad_norm
-                            )
-                            ctx.enqueue_function[
-                                critic_grad_clip_wrapper,
-                                critic_grad_clip_wrapper,
-                            ](
-                                critic_grads_tensor,
-                                clip_scale,
-                                grid_dim=(CRITIC_GRAD_BLOCKS,),
-                                block_dim=(TPB,),
-                            )
-                            ctx.synchronize()
 
                     # Update critic parameters
                     self.critic.optimizer.step_gpu[Self.CRITIC_PARAM_SIZE](
@@ -2978,6 +3051,7 @@ struct DeepPPOAgent[
             MINIBATCH
         )
 
+        # Gradient norm computation buffers (fused kernel keeps everything on GPU)
         comptime ACTOR_GRAD_BLOCKS = (ACTOR_PARAMS + TPB - 1) // TPB
         comptime CRITIC_GRAD_BLOCKS = (CRITIC_PARAMS + TPB - 1) // TPB
         var actor_grad_partial_sums_buf = ctx.enqueue_create_buffer[dtype](
@@ -2986,12 +3060,9 @@ struct DeepPPOAgent[
         var critic_grad_partial_sums_buf = ctx.enqueue_create_buffer[dtype](
             CRITIC_GRAD_BLOCKS
         )
-        var actor_grad_partial_sums_host = ctx.enqueue_create_host_buffer[
-            dtype
-        ](ACTOR_GRAD_BLOCKS)
-        var critic_grad_partial_sums_host = ctx.enqueue_create_host_buffer[
-            dtype
-        ](CRITIC_GRAD_BLOCKS)
+        # Scale buffers for fused gradient clipping (single scalar each)
+        var actor_scale_buf = ctx.enqueue_create_buffer[dtype](1)
+        var critic_scale_buf = ctx.enqueue_create_buffer[dtype](1)
 
         # =====================================================================
         # Initialize network parameters on GPU
@@ -3116,6 +3187,12 @@ struct DeepPPOAgent[
         var critic_grad_partial_sums_tensor = LayoutTensor[
             dtype, Layout.row_major(CRITIC_GRAD_BLOCKS), MutAnyOrigin
         ](critic_grad_partial_sums_buf.unsafe_ptr())
+        var actor_scale_tensor = LayoutTensor[
+            dtype, Layout.row_major(1), MutAnyOrigin
+        ](actor_scale_buf.unsafe_ptr())
+        var critic_scale_tensor = LayoutTensor[
+            dtype, Layout.row_major(1), MutAnyOrigin
+        ](critic_scale_buf.unsafe_ptr())
 
         # =====================================================================
         # Initialize all CPU environments and copy observations to GPU
@@ -3174,10 +3251,17 @@ struct DeepPPOAgent[
         comptime critic_grad_norm_wrapper = gradient_norm_kernel[
             dtype, CRITIC_PARAMS, CRITIC_GRAD_BLOCKS, TPB
         ]
-        comptime actor_grad_clip_wrapper = gradient_clip_kernel[
+        # Fused two-kernel approach: reduce+scale then apply
+        comptime actor_reduce_scale_wrapper = gradient_reduce_and_compute_scale_kernel[
+            dtype, ACTOR_GRAD_BLOCKS, TPB
+        ]
+        comptime actor_apply_scale_wrapper = gradient_apply_scale_kernel[
             dtype, ACTOR_PARAMS
         ]
-        comptime critic_grad_clip_wrapper = gradient_clip_kernel[
+        comptime critic_reduce_scale_wrapper = gradient_reduce_and_compute_scale_kernel[
+            dtype, CRITIC_GRAD_BLOCKS, TPB
+        ]
+        comptime critic_apply_scale_wrapper = gradient_apply_scale_kernel[
             dtype, CRITIC_PARAMS
         ]
 
@@ -3621,8 +3705,9 @@ struct DeepPPOAgent[
                         actor_minibatch_workspace_buf,
                     )
 
-                    # Gradient clipping for actor
+                    # Gradient clipping for actor (fused: no host copy)
                     if self.max_grad_norm > 0.0:
+                        # Step 1: Compute partial sums of squared gradients
                         ctx.enqueue_function[
                             actor_grad_norm_wrapper, actor_grad_norm_wrapper
                         ](
@@ -3631,30 +3716,28 @@ struct DeepPPOAgent[
                             grid_dim=(ACTOR_GRAD_BLOCKS,),
                             block_dim=(TPB,),
                         )
-                        ctx.enqueue_copy(
-                            actor_grad_partial_sums_host,
-                            actor_grad_partial_sums_buf,
+                        # Step 2: Reduce partial sums and compute scale (single block)
+                        ctx.enqueue_function[
+                            actor_reduce_scale_wrapper,
+                            actor_reduce_scale_wrapper,
+                        ](
+                            actor_scale_tensor,
+                            actor_grad_partial_sums_tensor,
+                            Scalar[dtype](self.max_grad_norm),
+                            grid_dim=(1,),
+                            block_dim=(TPB,),
+                        )
+                        # Step 3: Apply scale to all gradients
+                        ctx.enqueue_function[
+                            actor_apply_scale_wrapper,
+                            actor_apply_scale_wrapper,
+                        ](
+                            actor_grads_tensor,
+                            actor_scale_tensor,
+                            grid_dim=(ACTOR_GRAD_BLOCKS,),
+                            block_dim=(TPB,),
                         )
                         ctx.synchronize()
-
-                        var actor_grad_sq_sum = Scalar[dtype](0.0)
-                        for i in range(ACTOR_GRAD_BLOCKS):
-                            actor_grad_sq_sum += actor_grad_partial_sums_host[i]
-                        var actor_grad_norm = Float64(sqrt(actor_grad_sq_sum))
-
-                        if actor_grad_norm > self.max_grad_norm:
-                            var clip_scale = Scalar[dtype](
-                                self.max_grad_norm / actor_grad_norm
-                            )
-                            ctx.enqueue_function[
-                                actor_grad_clip_wrapper, actor_grad_clip_wrapper
-                            ](
-                                actor_grads_tensor,
-                                clip_scale,
-                                grid_dim=(ACTOR_GRAD_BLOCKS,),
-                                block_dim=(TPB,),
-                            )
-                            ctx.synchronize()
 
                     self.actor.optimizer.step_gpu[Self.ACTOR_PARAM_SIZE](
                         ctx, actor_params_buf, actor_grads_buf, actor_state_buf
@@ -3713,8 +3796,9 @@ struct DeepPPOAgent[
                         critic_minibatch_workspace_buf,
                     )
 
-                    # Gradient clipping for critic
+                    # Gradient clipping for critic (fused: no host copy)
                     if self.max_grad_norm > 0.0:
+                        # Step 1: Compute partial sums of squared gradients
                         ctx.enqueue_function[
                             critic_grad_norm_wrapper, critic_grad_norm_wrapper
                         ](
@@ -3723,33 +3807,28 @@ struct DeepPPOAgent[
                             grid_dim=(CRITIC_GRAD_BLOCKS,),
                             block_dim=(TPB,),
                         )
-                        ctx.enqueue_copy(
-                            critic_grad_partial_sums_host,
-                            critic_grad_partial_sums_buf,
+                        # Step 2: Reduce partial sums and compute scale (single block)
+                        ctx.enqueue_function[
+                            critic_reduce_scale_wrapper,
+                            critic_reduce_scale_wrapper,
+                        ](
+                            critic_scale_tensor,
+                            critic_grad_partial_sums_tensor,
+                            Scalar[dtype](self.max_grad_norm),
+                            grid_dim=(1,),
+                            block_dim=(TPB,),
+                        )
+                        # Step 3: Apply scale to all gradients
+                        ctx.enqueue_function[
+                            critic_apply_scale_wrapper,
+                            critic_apply_scale_wrapper,
+                        ](
+                            critic_grads_tensor,
+                            critic_scale_tensor,
+                            grid_dim=(CRITIC_GRAD_BLOCKS,),
+                            block_dim=(TPB,),
                         )
                         ctx.synchronize()
-
-                        var critic_grad_sq_sum = Scalar[dtype](0.0)
-                        for i in range(CRITIC_GRAD_BLOCKS):
-                            critic_grad_sq_sum += critic_grad_partial_sums_host[
-                                i
-                            ]
-                        var critic_grad_norm = Float64(sqrt(critic_grad_sq_sum))
-
-                        if critic_grad_norm > self.max_grad_norm:
-                            var clip_scale = Scalar[dtype](
-                                self.max_grad_norm / critic_grad_norm
-                            )
-                            ctx.enqueue_function[
-                                critic_grad_clip_wrapper,
-                                critic_grad_clip_wrapper,
-                            ](
-                                critic_grads_tensor,
-                                clip_scale,
-                                grid_dim=(CRITIC_GRAD_BLOCKS,),
-                                block_dim=(TPB,),
-                            )
-                            ctx.synchronize()
 
                     self.critic.optimizer.step_gpu[Self.CRITIC_PARAM_SIZE](
                         ctx,

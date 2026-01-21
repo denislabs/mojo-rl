@@ -802,7 +802,7 @@ struct CarRacingV2[DTYPE: DType](
             if self.track.mark_tile_visited(tile_idx):
                 # New tile visited!
                 self.tiles_visited += 1
-                step_reward += 1000.0 / Float64(self.track.track_length)
+                step_reward += 100.0 / Float64(self.track.track_length)
 
         self.total_reward += step_reward
         return step_reward
@@ -959,9 +959,12 @@ struct CarRacingV2[DTYPE: DType](
     ) raises:
         """Perform one environment step with continuous actions (GPUContinuousEnv trait).
 
-        NOTE: This trait-compliant method requires a pre-initialized track in a
-        separate tiles buffer. For full functionality, use step_kernel_gpu_with_track.
-        This method uses a simple circular track stored as a static buffer.
+        This simplified version uses a trackless step kernel that:
+        - Applies physics and updates car state
+        - Computes rewards based on forward progress (velocity in heading direction)
+        - Terminates on out-of-bounds or max steps
+
+        For full track functionality, use step_kernel_gpu_with_track.
 
         Args:
             ctx: GPU device context.
@@ -972,24 +975,9 @@ struct CarRacingV2[DTYPE: DType](
             obs: Observations buffer (output) [BATCH_SIZE * OBS_DIM].
             rng_seed: Optional random seed for physics.
         """
-        # Create a simple circular track buffer for trait compliance
-        # In production, use step_kernel_gpu_with_track for proper track support
-        var tiles_buf = ctx.enqueue_create_buffer[dtype](
-            MAX_TRACK_TILES * TILE_DATA_SIZE
-        )
-
-        # Initialize simple circular track
-        CarRacingV2[Self.dtype]._init_circular_track_gpu(ctx, tiles_buf)
-
-        # Use the full implementation with track
-        var obs_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE * OBS_DIM)
-        CarRacingV2[Self.dtype].step_kernel_gpu_with_track[BATCH_SIZE](
-            ctx, states, actions, tiles_buf, 100, rewards, dones, obs_buf
-        )
-
-        # Copy observations to output buffer
-        CarRacingV2[Self.dtype]._copy_obs_gpu[BATCH_SIZE, OBS_DIM](
-            ctx, states, obs
+        # Use simplified trackless step kernel
+        CarRacingV2[Self.dtype]._step_kernel_gpu_trackless[BATCH_SIZE](
+            ctx, states, actions, rewards, dones, obs
         )
 
     @staticmethod
@@ -1262,6 +1250,235 @@ struct CarRacingV2[DTYPE: DType](
     # GPU Helper Methods (Private)
     # =========================================================================
 
+    @staticmethod
+    fn _step_kernel_gpu_trackless[
+        BATCH: Int,
+    ](
+        ctx: DeviceContext,
+        mut states_buf: DeviceBuffer[dtype],
+        actions_buf: DeviceBuffer[dtype],
+        mut rewards_buf: DeviceBuffer[dtype],
+        mut dones_buf: DeviceBuffer[dtype],
+        mut obs_buf: DeviceBuffer[dtype],
+    ) raises:
+        """Step all environments without track tiles (simplified rewards).
+
+        This version doesn't need a track buffer - rewards are based on:
+        - Forward velocity (speed in heading direction)
+        - Time penalty
+        - Out-of-bounds penalty
+
+        Args:
+            ctx: GPU device context.
+            states_buf: State buffer [BATCH * STATE_SIZE].
+            actions_buf: Action buffer [BATCH * 3].
+            rewards_buf: Output rewards [BATCH].
+            dones_buf: Output done flags [BATCH].
+            obs_buf: Output observations [BATCH * OBS_DIM].
+        """
+        var states = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, CRConstants.STATE_SIZE),
+            MutAnyOrigin,
+        ](states_buf.unsafe_ptr())
+
+        var actions = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, CRConstants.ACTION_DIM),
+            MutAnyOrigin,
+        ](actions_buf.unsafe_ptr())
+
+        var rewards = LayoutTensor[
+            dtype, Layout.row_major(BATCH), MutAnyOrigin
+        ](rewards_buf.unsafe_ptr())
+
+        var dones = LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin](
+            dones_buf.unsafe_ptr()
+        )
+
+        var obs = LayoutTensor[
+            dtype, Layout.row_major(BATCH, CRConstants.OBS_DIM), MutAnyOrigin
+        ](obs_buf.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH + TPB - 1) // TPB
+
+        @always_inline
+        fn step_trackless_wrapper(
+            states: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, CRConstants.STATE_SIZE),
+                MutAnyOrigin,
+            ],
+            actions: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, CRConstants.ACTION_DIM),
+                MutAnyOrigin,
+            ],
+            rewards: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+            dones: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+            obs: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, CRConstants.OBS_DIM),
+                MutAnyOrigin,
+            ],
+        ):
+            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if env >= BATCH:
+                return
+            CarRacingV2[Self.dtype]._step_env_gpu_trackless[BATCH](
+                env, states, actions, rewards, dones, obs
+            )
+
+        ctx.enqueue_function[step_trackless_wrapper, step_trackless_wrapper](
+            states,
+            actions,
+            rewards,
+            dones,
+            obs,
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+    @always_inline
+    @staticmethod
+    fn _step_env_gpu_trackless[
+        BATCH: Int,
+    ](
+        env: Int,
+        states: LayoutTensor[
+            dtype, Layout.row_major(BATCH, CRConstants.STATE_SIZE), MutAnyOrigin
+        ],
+        actions: LayoutTensor[
+            dtype, Layout.row_major(BATCH, CRConstants.ACTION_DIM), MutAnyOrigin
+        ],
+        rewards: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+        dones: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+        obs: LayoutTensor[
+            dtype, Layout.row_major(BATCH, CRConstants.OBS_DIM), MutAnyOrigin
+        ],
+    ):
+        """Execute one step for a single environment without track (GPU kernel body).
+
+        Rewards are based on forward velocity instead of track tile visits.
+        """
+        # Check if already done
+        var was_done = rebind[Scalar[dtype]](
+            states[env, CRConstants.METADATA_OFFSET + META_DONE]
+        ) > Scalar[dtype](0.5)
+        if was_done:
+            rewards[env] = Scalar[dtype](0.0)
+            dones[env] = Scalar[dtype](1.0)
+            return
+
+        # Step 1: Copy actions to controls (clamp and remap)
+        var steering = rebind[Scalar[dtype]](actions[env, 0])
+        var gas_raw = rebind[Scalar[dtype]](actions[env, 1])
+        var brake_raw = rebind[Scalar[dtype]](actions[env, 2])
+
+        # Clamp steering to [-1, 1]
+        if steering > Scalar[dtype](1.0):
+            steering = Scalar[dtype](1.0)
+        elif steering < Scalar[dtype](-1.0):
+            steering = Scalar[dtype](-1.0)
+
+        # Remap gas and brake from [-1, 1] to [0, 1]
+        var gas = (gas_raw + Scalar[dtype](1.0)) * Scalar[dtype](0.5)
+        var brake = (brake_raw + Scalar[dtype](1.0)) * Scalar[dtype](0.5)
+        if gas > Scalar[dtype](1.0):
+            gas = Scalar[dtype](1.0)
+        elif gas < Scalar[dtype](0.0):
+            gas = Scalar[dtype](0.0)
+        if brake > Scalar[dtype](1.0):
+            brake = Scalar[dtype](1.0)
+        elif brake < Scalar[dtype](0.0):
+            brake = Scalar[dtype](0.0)
+
+        states[env, CRConstants.CONTROLS_OFFSET + CTRL_STEERING] = steering
+        states[env, CRConstants.CONTROLS_OFFSET + CTRL_GAS] = gas
+        states[env, CRConstants.CONTROLS_OFFSET + CTRL_BRAKE] = brake
+
+        # Step 2: Run simplified physics (no track collision)
+        var dt = Scalar[dtype](CRConstants.DT)
+        CarDynamics.step_trackless[
+            BATCH,
+            CRConstants.STATE_SIZE,
+            CRConstants.OBS_OFFSET,
+            CRConstants.OBS_DIM,
+            CRConstants.HULL_OFFSET,
+            CRConstants.WHEELS_OFFSET,
+            CRConstants.CONTROLS_OFFSET,
+        ](env, states, dt)
+
+        # Step 3: Compute reward based on forward velocity
+        var hull_x = rebind[Scalar[dtype]](
+            states[env, CRConstants.HULL_OFFSET + HULL_X]
+        )
+        var hull_y = rebind[Scalar[dtype]](
+            states[env, CRConstants.HULL_OFFSET + HULL_Y]
+        )
+        var hull_vx = rebind[Scalar[dtype]](
+            states[env, CRConstants.HULL_OFFSET + HULL_VX]
+        )
+        var hull_vy = rebind[Scalar[dtype]](
+            states[env, CRConstants.HULL_OFFSET + HULL_VY]
+        )
+        var hull_angle = rebind[Scalar[dtype]](
+            states[env, CRConstants.HULL_OFFSET + HULL_ANGLE]
+        )
+
+        # Forward velocity = velocity component in heading direction
+        # Forward direction is (cos(angle), sin(angle)) where angle=0 is right, angle=pi/2 is up
+        var cos_angle = cos(hull_angle)
+        var sin_angle = sin(hull_angle)
+        var forward_vel = hull_vx * cos_angle + hull_vy * sin_angle
+
+        # Reward: forward velocity bonus minus small time penalty
+        # Increased velocity coefficient to make forward motion clearly rewarding
+        # Reduced time penalty so agent can learn without needing high speed
+        var step_reward = forward_vel * Scalar[dtype](1.0) - Scalar[dtype](0.01)
+
+        # Step 4: Check termination
+        var done = Scalar[dtype](0.0)
+        var playfield = Scalar[dtype](CRConstants.PLAYFIELD)
+
+        # Off playfield check - smaller penalty to reduce variance
+        var abs_x = hull_x if hull_x >= Scalar[dtype](0.0) else -hull_x
+        var abs_y = hull_y if hull_y >= Scalar[dtype](0.0) else -hull_y
+        if abs_x > playfield or abs_y > playfield:
+            done = Scalar[dtype](1.0)
+            step_reward = Scalar[dtype](-10.0)
+
+        # Max steps check
+        var step_count = rebind[Scalar[dtype]](
+            states[env, CRConstants.METADATA_OFFSET + META_STEP_COUNT]
+        )
+        step_count = step_count + Scalar[dtype](1.0)
+        states[env, CRConstants.METADATA_OFFSET + META_STEP_COUNT] = step_count
+
+        if step_count >= Scalar[dtype](CRConstants.MAX_STEPS):
+            done = Scalar[dtype](1.0)
+            states[env, CRConstants.METADATA_OFFSET + META_TRUNCATED] = Scalar[
+                dtype
+            ](1.0)
+
+        # Update metadata
+        var total_reward = rebind[Scalar[dtype]](
+            states[env, CRConstants.METADATA_OFFSET + META_TOTAL_REWARD]
+        )
+        total_reward = total_reward + step_reward
+        states[
+            env, CRConstants.METADATA_OFFSET + META_TOTAL_REWARD
+        ] = total_reward
+        states[env, CRConstants.METADATA_OFFSET + META_DONE] = done
+
+        # Step 5: Write outputs
+        rewards[env] = step_reward
+        dones[env] = done
+
+        # Copy observation to output buffer
+        for i in range(CRConstants.OBS_DIM):
+            obs[env, i] = states[env, CRConstants.OBS_OFFSET + i]
+
     @always_inline
     @staticmethod
     fn _reset_env_gpu[
@@ -1506,7 +1723,7 @@ struct CarRacingV2[DTYPE: DType](
             # Reward for being on track (simplified - full version tracks unique visits)
             var tile_idx_f = Scalar[dtype](tile_idx)
             if tile_idx_f > tiles_visited:
-                step_reward = step_reward + Scalar[dtype](1000.0) / Scalar[
+                step_reward = step_reward + Scalar[dtype](100.0) / Scalar[
                     dtype
                 ](num_tiles)
                 states[
@@ -1670,6 +1887,529 @@ struct CarRacingV2[DTYPE: DType](
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )
+
+    # =========================================================================
+    # GPU Methods with Per-Env Visited Buffer (Full Track Support)
+    # =========================================================================
+
+    @staticmethod
+    fn step_kernel_gpu_with_visited[
+        BATCH: Int
+    ](
+        ctx: DeviceContext,
+        mut states_buf: DeviceBuffer[dtype],
+        actions_buf: DeviceBuffer[dtype],
+        tiles_buf: DeviceBuffer[dtype],
+        num_tiles: Int,
+        mut visited_buf: DeviceBuffer[dtype],
+        mut rewards_buf: DeviceBuffer[dtype],
+        mut dones_buf: DeviceBuffer[dtype],
+        mut obs_buf: DeviceBuffer[dtype],
+    ) raises:
+        """Step all environments with track tiles and per-env visited tracking.
+
+        This provides full track support with proper tile visit reward tracking.
+        Each environment has its own visited buffer to track which tiles have
+        been visited, giving reward only for first visits.
+
+        Args:
+            ctx: GPU device context.
+            states_buf: State buffer [BATCH * STATE_SIZE].
+            actions_buf: Action buffer [BATCH * 3].
+            tiles_buf: Track tiles buffer (shared) [MAX_TRACK_TILES * TILE_DATA_SIZE].
+            num_tiles: Number of track tiles.
+            visited_buf: Per-env visited flags [BATCH * MAX_TRACK_TILES].
+            rewards_buf: Output rewards [BATCH].
+            dones_buf: Output done flags [BATCH].
+            obs_buf: Output observations [BATCH * OBS_DIM].
+        """
+        var states = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, CRConstants.STATE_SIZE),
+            MutAnyOrigin,
+        ](states_buf.unsafe_ptr())
+
+        var actions = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, CRConstants.ACTION_DIM),
+            MutAnyOrigin,
+        ](actions_buf.unsafe_ptr())
+
+        var tiles = LayoutTensor[
+            dtype,
+            Layout.row_major(MAX_TRACK_TILES, TILE_DATA_SIZE),
+            MutAnyOrigin,
+        ](tiles_buf.unsafe_ptr())
+
+        var visited = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, MAX_TRACK_TILES),
+            MutAnyOrigin,
+        ](visited_buf.unsafe_ptr())
+
+        var rewards = LayoutTensor[
+            dtype, Layout.row_major(BATCH), MutAnyOrigin
+        ](rewards_buf.unsafe_ptr())
+
+        var dones = LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin](
+            dones_buf.unsafe_ptr()
+        )
+
+        var obs = LayoutTensor[
+            dtype, Layout.row_major(BATCH, CRConstants.OBS_DIM), MutAnyOrigin
+        ](obs_buf.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH + TPB - 1) // TPB
+
+        @always_inline
+        fn step_visited_wrapper(
+            states: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, CRConstants.STATE_SIZE),
+                MutAnyOrigin,
+            ],
+            actions: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, CRConstants.ACTION_DIM),
+                MutAnyOrigin,
+            ],
+            tiles: LayoutTensor[
+                dtype,
+                Layout.row_major(MAX_TRACK_TILES, TILE_DATA_SIZE),
+                MutAnyOrigin,
+            ],
+            visited: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, MAX_TRACK_TILES),
+                MutAnyOrigin,
+            ],
+            rewards: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+            dones: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+            obs: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, CRConstants.OBS_DIM),
+                MutAnyOrigin,
+            ],
+            num_tiles: Int,
+        ):
+            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if env >= BATCH:
+                return
+            CarRacingV2[Self.dtype]._step_env_gpu_with_visited[BATCH](
+                env, states, actions, tiles, num_tiles, visited, rewards, dones, obs
+            )
+
+        ctx.enqueue_function[step_visited_wrapper, step_visited_wrapper](
+            states,
+            actions,
+            tiles,
+            visited,
+            rewards,
+            dones,
+            obs,
+            num_tiles,
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+    @staticmethod
+    fn selective_reset_kernel_gpu_with_visited[
+        BATCH: Int
+    ](
+        ctx: DeviceContext,
+        mut states_buf: DeviceBuffer[dtype],
+        tiles_buf: DeviceBuffer[dtype],
+        num_tiles: Int,
+        mut visited_buf: DeviceBuffer[dtype],
+        mut dones_buf: DeviceBuffer[dtype],
+        rng_seed: UInt32,
+    ) raises:
+        """Reset only done environments and clear their visited flags.
+
+        Args:
+            ctx: GPU device context.
+            states_buf: State buffer [BATCH * STATE_SIZE].
+            tiles_buf: Track tiles buffer (shared).
+            num_tiles: Number of track tiles.
+            visited_buf: Per-env visited flags [BATCH * MAX_TRACK_TILES].
+            dones_buf: Done flags buffer [BATCH].
+            rng_seed: Random seed for initialization.
+        """
+        var states = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, CRConstants.STATE_SIZE),
+            MutAnyOrigin,
+        ](states_buf.unsafe_ptr())
+
+        var tiles = LayoutTensor[
+            dtype,
+            Layout.row_major(MAX_TRACK_TILES, TILE_DATA_SIZE),
+            MutAnyOrigin,
+        ](tiles_buf.unsafe_ptr())
+
+        var visited = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, MAX_TRACK_TILES),
+            MutAnyOrigin,
+        ](visited_buf.unsafe_ptr())
+
+        var dones = LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin](
+            dones_buf.unsafe_ptr()
+        )
+
+        comptime BLOCKS = (BATCH + TPB - 1) // TPB
+
+        @always_inline
+        fn selective_reset_visited_wrapper(
+            states: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, CRConstants.STATE_SIZE),
+                MutAnyOrigin,
+            ],
+            tiles: LayoutTensor[
+                dtype,
+                Layout.row_major(MAX_TRACK_TILES, TILE_DATA_SIZE),
+                MutAnyOrigin,
+            ],
+            visited: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, MAX_TRACK_TILES),
+                MutAnyOrigin,
+            ],
+            dones: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+            num_tiles: Int,
+            seed: Scalar[dtype],
+        ):
+            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if env >= BATCH:
+                return
+            # Only reset if done
+            if rebind[Scalar[dtype]](dones[env]) > Scalar[dtype](0.5):
+                # Reset environment state
+                CarRacingV2[Self.dtype]._reset_env_with_track_gpu[BATCH](
+                    states, tiles, num_tiles, env, Int(seed) + env
+                )
+                # Clear visited flags for this env
+                for i in range(MAX_TRACK_TILES):
+                    visited[env, i] = Scalar[dtype](0.0)
+                # Clear done flag
+                dones[env] = Scalar[dtype](0.0)
+
+        ctx.enqueue_function[
+            selective_reset_visited_wrapper, selective_reset_visited_wrapper
+        ](
+            states,
+            tiles,
+            visited,
+            dones,
+            num_tiles,
+            Scalar[dtype](rng_seed),
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+    @staticmethod
+    fn reset_kernel_gpu_with_visited[
+        BATCH: Int
+    ](
+        ctx: DeviceContext,
+        mut states_buf: DeviceBuffer[dtype],
+        tiles_buf: DeviceBuffer[dtype],
+        num_tiles: Int,
+        mut visited_buf: DeviceBuffer[dtype],
+    ) raises:
+        """Reset all environments and clear all visited flags.
+
+        Args:
+            ctx: GPU device context.
+            states_buf: State buffer [BATCH * STATE_SIZE].
+            tiles_buf: Track tiles buffer (shared).
+            num_tiles: Number of track tiles.
+            visited_buf: Per-env visited flags [BATCH * MAX_TRACK_TILES].
+        """
+        var states = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, CRConstants.STATE_SIZE),
+            MutAnyOrigin,
+        ](states_buf.unsafe_ptr())
+
+        var tiles = LayoutTensor[
+            dtype,
+            Layout.row_major(MAX_TRACK_TILES, TILE_DATA_SIZE),
+            MutAnyOrigin,
+        ](tiles_buf.unsafe_ptr())
+
+        var visited = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, MAX_TRACK_TILES),
+            MutAnyOrigin,
+        ](visited_buf.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH + TPB - 1) // TPB
+
+        @always_inline
+        fn reset_visited_wrapper(
+            states: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, CRConstants.STATE_SIZE),
+                MutAnyOrigin,
+            ],
+            tiles: LayoutTensor[
+                dtype,
+                Layout.row_major(MAX_TRACK_TILES, TILE_DATA_SIZE),
+                MutAnyOrigin,
+            ],
+            visited: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, MAX_TRACK_TILES),
+                MutAnyOrigin,
+            ],
+            num_tiles: Int,
+        ):
+            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if env >= BATCH:
+                return
+            # Reset environment state
+            CarRacingV2[Self.dtype]._reset_env_with_track_gpu[BATCH](
+                states, tiles, num_tiles, env, env * 12345
+            )
+            # Clear visited flags for this env
+            for i in range(MAX_TRACK_TILES):
+                visited[env, i] = Scalar[dtype](0.0)
+
+        ctx.enqueue_function[reset_visited_wrapper, reset_visited_wrapper](
+            states,
+            tiles,
+            visited,
+            num_tiles,
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+    @always_inline
+    @staticmethod
+    fn _step_env_gpu_with_visited[
+        BATCH: Int,
+    ](
+        env: Int,
+        states: LayoutTensor[
+            dtype, Layout.row_major(BATCH, CRConstants.STATE_SIZE), MutAnyOrigin
+        ],
+        actions: LayoutTensor[
+            dtype, Layout.row_major(BATCH, CRConstants.ACTION_DIM), MutAnyOrigin
+        ],
+        tiles: LayoutTensor[
+            dtype,
+            Layout.row_major(MAX_TRACK_TILES, TILE_DATA_SIZE),
+            MutAnyOrigin,
+        ],
+        num_tiles: Int,
+        visited: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, MAX_TRACK_TILES),
+            MutAnyOrigin,
+        ],
+        rewards: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+        dones: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+        obs: LayoutTensor[
+            dtype, Layout.row_major(BATCH, CRConstants.OBS_DIM), MutAnyOrigin
+        ],
+    ):
+        """Execute one step for a single environment with proper visited tracking."""
+        # Check if already done
+        var was_done = rebind[Scalar[dtype]](
+            states[env, CRConstants.METADATA_OFFSET + META_DONE]
+        ) > Scalar[dtype](0.5)
+        if was_done:
+            rewards[env] = Scalar[dtype](0.0)
+            dones[env] = Scalar[dtype](1.0)
+            return
+
+        # Step 1: Copy actions to controls (clamp and remap)
+        var steering = rebind[Scalar[dtype]](actions[env, 0])
+        var gas_raw = rebind[Scalar[dtype]](actions[env, 1])
+        var brake_raw = rebind[Scalar[dtype]](actions[env, 2])
+
+        # Clamp steering to [-1, 1]
+        if steering > Scalar[dtype](1.0):
+            steering = Scalar[dtype](1.0)
+        elif steering < Scalar[dtype](-1.0):
+            steering = Scalar[dtype](-1.0)
+
+        # Remap gas and brake from [-1, 1] to [0, 1]
+        var gas = (gas_raw + Scalar[dtype](1.0)) * Scalar[dtype](0.5)
+        var brake = (brake_raw + Scalar[dtype](1.0)) * Scalar[dtype](0.5)
+        if gas > Scalar[dtype](1.0):
+            gas = Scalar[dtype](1.0)
+        elif gas < Scalar[dtype](0.0):
+            gas = Scalar[dtype](0.0)
+        if brake > Scalar[dtype](1.0):
+            brake = Scalar[dtype](1.0)
+        elif brake < Scalar[dtype](0.0):
+            brake = Scalar[dtype](0.0)
+
+        states[env, CRConstants.CONTROLS_OFFSET + CTRL_STEERING] = steering
+        states[env, CRConstants.CONTROLS_OFFSET + CTRL_GAS] = gas
+        states[env, CRConstants.CONTROLS_OFFSET + CTRL_BRAKE] = brake
+
+        # Step 2: Run physics (using CarDynamics)
+        var dt = Scalar[dtype](CRConstants.DT)
+        CarDynamics.step_with_obs[
+            BATCH,
+            CRConstants.STATE_SIZE,
+            CRConstants.OBS_OFFSET,
+            CRConstants.OBS_DIM,
+            CRConstants.HULL_OFFSET,
+            CRConstants.WHEELS_OFFSET,
+            CRConstants.CONTROLS_OFFSET,
+            MAX_TRACK_TILES,
+        ](env, states, tiles, num_tiles, dt)
+
+        # Step 3: Compute reward with proper visited tracking
+        # Read hull state for position and velocity
+        var hull_x = rebind[Scalar[dtype]](
+            states[env, CRConstants.HULL_OFFSET + HULL_X]
+        )
+        var hull_y = rebind[Scalar[dtype]](
+            states[env, CRConstants.HULL_OFFSET + HULL_Y]
+        )
+        var hull_vx = rebind[Scalar[dtype]](
+            states[env, CRConstants.HULL_OFFSET + HULL_VX]
+        )
+        var hull_vy = rebind[Scalar[dtype]](
+            states[env, CRConstants.HULL_OFFSET + HULL_VY]
+        )
+        var hull_angle = rebind[Scalar[dtype]](
+            states[env, CRConstants.HULL_OFFSET + HULL_ANGLE]
+        )
+
+        # Forward velocity = velocity component in heading direction
+        var cos_angle = cos(hull_angle)
+        var sin_angle = sin(hull_angle)
+        var forward_vel = hull_vx * cos_angle + hull_vy * sin_angle
+
+        # Base reward: forward velocity bonus (dense) plus small time penalty
+        # This provides dense learning signal while tile rewards provide sparse goals
+        # Increased velocity coefficient to 0.5 for stronger forward motion incentive
+        var step_reward = forward_vel * Scalar[dtype](
+            0.5
+        ) - Scalar[dtype](0.01)
+
+        # Check tile visits for additional reward
+        var tile_idx = TileCollision.check_tile_visited[MAX_TRACK_TILES](
+            hull_x, hull_y, tiles, num_tiles
+        )
+
+        # Get current visited count
+        var tiles_visited = rebind[Scalar[dtype]](
+            states[env, CRConstants.METADATA_OFFSET + META_TILES_VISITED]
+        )
+
+        # Check if this is a newly visited tile
+        if tile_idx >= 0 and tile_idx < num_tiles:
+            var already_visited = rebind[Scalar[dtype]](visited[env, tile_idx])
+            if already_visited < Scalar[dtype](0.5):
+                # First visit to this tile - give reward!
+                step_reward = step_reward + Scalar[dtype](100.0) / Scalar[
+                    dtype
+                ](num_tiles)
+                # Mark as visited
+                visited[env, tile_idx] = Scalar[dtype](1.0)
+                # Update visited count
+                tiles_visited = tiles_visited + Scalar[dtype](1.0)
+                states[
+                    env, CRConstants.METADATA_OFFSET + META_TILES_VISITED
+                ] = tiles_visited
+
+        # Step 4: Check termination
+        var done = Scalar[dtype](0.0)
+        var playfield = Scalar[dtype](CRConstants.PLAYFIELD)
+
+        # Off playfield check
+        var abs_x = hull_x if hull_x >= Scalar[dtype](0.0) else -hull_x
+        var abs_y = hull_y if hull_y >= Scalar[dtype](0.0) else -hull_y
+        if abs_x > playfield or abs_y > playfield:
+            done = Scalar[dtype](1.0)
+            step_reward = Scalar[dtype](-100.0)
+
+        # Lap completion check
+        var num_tiles_f = Scalar[dtype](num_tiles)
+        var progress = tiles_visited / num_tiles_f
+        if progress >= Scalar[dtype](CRConstants.LAP_COMPLETE_PERCENT):
+            done = Scalar[dtype](1.0)
+
+        # Max steps check
+        var step_count = rebind[Scalar[dtype]](
+            states[env, CRConstants.METADATA_OFFSET + META_STEP_COUNT]
+        )
+        step_count = step_count + Scalar[dtype](1.0)
+        states[env, CRConstants.METADATA_OFFSET + META_STEP_COUNT] = step_count
+
+        if step_count >= Scalar[dtype](CRConstants.MAX_STEPS):
+            done = Scalar[dtype](1.0)
+            states[env, CRConstants.METADATA_OFFSET + META_TRUNCATED] = Scalar[
+                dtype
+            ](1.0)
+
+        # Update metadata
+        var total_reward = rebind[Scalar[dtype]](
+            states[env, CRConstants.METADATA_OFFSET + META_TOTAL_REWARD]
+        )
+        total_reward = total_reward + step_reward
+        states[
+            env, CRConstants.METADATA_OFFSET + META_TOTAL_REWARD
+        ] = total_reward
+        states[env, CRConstants.METADATA_OFFSET + META_DONE] = done
+
+        # Step 5: Write outputs
+        rewards[env] = step_reward
+        dones[env] = done
+
+        # Copy observation to output buffer
+        for i in range(CRConstants.OBS_DIM):
+            obs[env, i] = states[env, CRConstants.OBS_OFFSET + i]
+
+    @staticmethod
+    fn generate_track_to_buffer(
+        ctx: DeviceContext,
+        mut tiles_buf: DeviceBuffer[dtype],
+        seed: UInt64 = 42,
+    ) raises -> Int:
+        """Generate a random track and copy to GPU buffer.
+
+        Args:
+            ctx: GPU device context.
+            tiles_buf: Track tiles buffer (at least MAX_TRACK_TILES * TILE_DATA_SIZE).
+            seed: Random seed for track generation.
+
+        Returns:
+            Number of tiles in the generated track.
+        """
+        # Generate track on CPU
+        var track = TrackGenerator[DType.float64]()
+        track.generate_random_track(seed, verbose=False)
+
+        # Create host buffer for copying
+        var tiles_host = ctx.enqueue_create_host_buffer[dtype](
+            MAX_TRACK_TILES * TILE_DATA_SIZE
+        )
+        ctx.synchronize()
+
+        # Create tensor view for the host buffer
+        var tiles_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(MAX_TRACK_TILES, TILE_DATA_SIZE),
+            MutAnyOrigin,
+        ](tiles_host.unsafe_ptr())
+
+        # Copy track data to host buffer
+        track.to_buffer[MAX_TRACK_TILES](tiles_tensor)
+
+        # Copy to GPU
+        ctx.enqueue_copy(tiles_buf, tiles_host)
+        ctx.synchronize()
+
+        return track.track_length
 
 
 # =============================================================================
