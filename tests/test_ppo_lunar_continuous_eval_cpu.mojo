@@ -110,12 +110,13 @@ fn main() raises:
 
         var start_time = perf_counter_ns()
 
-        # Run evaluation with rendering
+        # Run evaluation with rendering (stochastic to match training)
         var avg_reward = agent.evaluate[LunarLanderV2[dtype]](
             env,
             num_episodes=NUM_EPISODES,
             max_steps=MAX_STEPS,
             verbose=True,
+            stochastic=True,  # Use sampling like training
             renderer=UnsafePointer(to=renderer),
         )
 
@@ -148,12 +149,13 @@ fn main() raises:
 
         var start_time = perf_counter_ns()
 
-        # Run evaluation without rendering
+        # Run evaluation without rendering (stochastic to match training)
         var avg_reward = agent.evaluate[LunarLanderV2[dtype]](
             env,
             num_episodes=NUM_EPISODES,
             max_steps=MAX_STEPS,
             verbose=True,
+            stochastic=True,  # Use sampling like training
         )
 
         var elapsed_ms = (perf_counter_ns() - start_time) / 1_000_000

@@ -69,7 +69,7 @@ from core import TrainingMetrics, BoxContinuousActionEnv, GPUContinuousEnv
 from render import RendererBase
 from memory import UnsafePointer
 from core.utils.gae import compute_gae_inline
-from core.utils.normalization import normalize_inline
+from core.utils.normalization import normalize_inline, RunningMeanStd
 from core.utils.shuffle import shuffle_indices_inline
 from .kernels import (
     _sample_continuous_actions_kernel,
@@ -220,6 +220,10 @@ struct DeepPPOContinuousAgent[
     var checkpoint_every: Int
     var checkpoint_path: String
 
+    # Reward normalization (CleanRL-style)
+    var normalize_rewards: Bool
+    var reward_rms: RunningMeanStd
+
     fn __init__(
         out self,
         gamma: Float64 = 0.99,
@@ -244,6 +248,8 @@ struct DeepPPOContinuousAgent[
         # Checkpoint settings
         checkpoint_every: Int = 0,
         checkpoint_path: String = "",
+        # Reward normalization (CleanRL-style)
+        normalize_rewards: Bool = True,
         # Per-action mean biases for policy initialization (optional)
         # Use this for environments where default action != 0
         # e.g., CarRacing: [0, 2.0, -2.0] for steering=0, gas=high, brake=low
@@ -369,6 +375,9 @@ struct DeepPPOContinuousAgent[
 
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
+
+        self.normalize_rewards = normalize_rewards
+        self.reward_rms = RunningMeanStd()
 
     # =========================================================================
     # Action Selection (for evaluation)
@@ -584,17 +593,19 @@ struct DeepPPOContinuousAgent[
         num_episodes: Int = 10,
         max_steps: Int = 1000,
         verbose: Bool = False,
+        stochastic: Bool = False,
         renderer: UnsafePointer[RendererBase, MutAnyOrigin] = UnsafePointer[
             RendererBase, MutAnyOrigin
         ](),
     ) -> Float64:
-        """Evaluate the agent using deterministic policy (CPU with optional rendering).
+        """Evaluate the agent (CPU with optional rendering).
 
         Args:
             env: The environment to evaluate on.
             num_episodes: Number of evaluation episodes.
             max_steps: Maximum steps per episode.
             verbose: Whether to print per-episode results.
+            stochastic: If True, sample from policy; if False, use mean (deterministic).
             renderer: Optional pointer to renderer for visualization.
 
         Returns:
@@ -612,8 +623,8 @@ struct DeepPPOContinuousAgent[
             var episode_steps = 0
 
             for step in range(max_steps):
-                # Deterministic action (training=False uses mean, no sampling)
-                var action_result = self.select_action(obs, training=False)
+                # stochastic=True samples from policy, False uses mean
+                var action_result = self.select_action(obs, training=stochastic)
                 var actions = action_result[0]
 
                 # Convert actions to List[Scalar[dtype]] for environment
@@ -662,14 +673,16 @@ struct DeepPPOContinuousAgent[
         num_episodes: Int = 100,
         max_steps: Int = 1000,
         verbose: Bool = False,
+        stochastic: Bool = False,
     ) raises -> Float64:
-        """Evaluate the agent using deterministic policy on GPU parallel environments.
+        """Evaluate the agent on GPU parallel environments.
 
         Args:
             ctx: GPU device context.
             num_episodes: Target number of evaluation episodes.
             max_steps: Maximum steps per episode.
             verbose: Whether to print progress.
+            stochastic: If True, sample from policy; if False, use mean (deterministic).
 
         Returns:
             Average reward over completed episodes.
@@ -698,6 +711,13 @@ struct DeepPPOContinuousAgent[
             Self.ACTOR_PARAM_SIZE
         )
         ctx.enqueue_copy(actor_params_buf, self.actor.params.unsafe_ptr())
+
+        # Workspace buffer for forward pass
+        comptime WORKSPACE_PER_SAMPLE = 4 * Self.HIDDEN
+        comptime ENV_WORKSPACE_SIZE = Self.n_envs * WORKSPACE_PER_SAMPLE
+        var actor_workspace_buf = ctx.enqueue_create_buffer[dtype](
+            ENV_WORKSPACE_SIZE
+        )
 
         # Tracking arrays (on CPU)
         var episode_rewards = List[Float64]()
@@ -730,58 +750,92 @@ struct DeepPPOContinuousAgent[
         # =====================================================================
         # Evaluation loop
         # =====================================================================
+        comptime BLOCKS = (Self.n_envs + TPB - 1) // TPB
+
+        # Buffers for stochastic sampling (z_values and log_probs not used but required)
+        var z_values_buf = ctx.enqueue_create_buffer[dtype](ENV_ACTION_SIZE)
+        var log_probs_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
+
+        # Kernel for deterministic action extraction
+        @always_inline
+        fn extract_deterministic_actions(
+            actions: LayoutTensor[
+                dtype, Layout.row_major(Self.n_envs, Self.ACTIONS), MutAnyOrigin
+            ],
+            actor_out: LayoutTensor[
+                dtype,
+                Layout.row_major(Self.n_envs, Self.ACTOR_OUT),
+                ImmutAnyOrigin,
+            ],
+        ):
+            var idx = Int(block_idx.x) * TPB + Int(thread_idx.x)
+            if idx >= Self.n_envs:
+                return
+
+            # Use mean (first ACTIONS elements), apply tanh
+            for j in range(Self.ACTIONS):
+                var mean = actor_out[idx, j]
+                # tanh for GPU (using exp-based formula for numerical stability)
+                var exp_2x = exp(mean * 2)
+                var tanh_val = (exp_2x - 1) / (exp_2x + 1)
+                actions[idx, j] = tanh_val
+
+        # Sampling kernel wrapper for stochastic evaluation
+        comptime sample_actions_wrapper = _sample_continuous_actions_kernel[
+            dtype, Self.n_envs, Self.ACTIONS
+        ]
+
         var step = 0
         while episodes_completed < num_episodes and step < max_steps:
-            # Forward actor to get mean and log_std (deterministic: use mean only)
+            # Forward actor to get mean and log_std
             self.actor.model.forward_gpu_no_cache_ws[Self.n_envs](
                 ctx,
                 actor_out_buf,
                 obs_buf,
                 actor_params_buf,
-                actor_params_buf,  # Unused workspace
+                actor_workspace_buf,
             )
-
-            # Extract means and apply tanh squashing (deterministic actions)
-            comptime BLOCKS = (Self.n_envs + TPB - 1) // TPB
-
-            @always_inline
-            fn extract_deterministic_actions(
-                actions: LayoutTensor[
-                    dtype, Layout.row_major(Self.n_envs, Self.ACTIONS), MutAnyOrigin
-                ],
-                actor_out: LayoutTensor[
-                    dtype,
-                    Layout.row_major(Self.n_envs, Self.ACTOR_OUT),
-                    ImmutAnyOrigin,
-                ],
-            ):
-                var idx = Int(block_idx.x) * TPB + Int(thread_idx.x)
-                if idx >= Self.n_envs:
-                    return
-
-                # Use mean (first ACTIONS elements), apply tanh
-                for j in range(Self.ACTIONS):
-                    var mean = actor_out[idx, j]
-                    # tanh for GPU (using exp-based formula for numerical stability)
-                    var exp_2x = exp(mean * 2)
-                    var tanh_val = (exp_2x - 1) / (exp_2x + 1)
-                    actions[idx, j] = tanh_val
 
             var actions_tensor = LayoutTensor[
                 dtype, Layout.row_major(Self.n_envs, Self.ACTIONS), MutAnyOrigin
             ](actions_buf.unsafe_ptr())
             var actor_out_tensor = LayoutTensor[
-                dtype, Layout.row_major(Self.n_envs, Self.ACTOR_OUT), ImmutAnyOrigin
+                dtype, Layout.row_major(Self.n_envs, Self.ACTOR_OUT), MutAnyOrigin
             ](actor_out_buf.unsafe_ptr())
 
-            ctx.enqueue_function[
-                extract_deterministic_actions, extract_deterministic_actions
-            ](
-                actions_tensor,
-                actor_out_tensor,
-                grid_dim=(BLOCKS,),
-                block_dim=(TPB,),
-            )
+            if stochastic:
+                # Stochastic: sample from policy distribution
+                var z_values_tensor = LayoutTensor[
+                    dtype, Layout.row_major(Self.n_envs, Self.ACTIONS), MutAnyOrigin
+                ](z_values_buf.unsafe_ptr())
+                var log_probs_tensor = LayoutTensor[
+                    dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
+                ](log_probs_buf.unsafe_ptr())
+
+                ctx.enqueue_function[
+                    sample_actions_wrapper, sample_actions_wrapper
+                ](
+                    actor_out_tensor,
+                    actions_tensor,
+                    z_values_tensor,
+                    log_probs_tensor,
+                    Scalar[DType.uint32](step * 2654435761),
+                    grid_dim=(BLOCKS,),
+                    block_dim=(TPB,),
+                )
+            else:
+                # Deterministic: use mean action
+                var actor_out_immut = LayoutTensor[
+                    dtype, Layout.row_major(Self.n_envs, Self.ACTOR_OUT), ImmutAnyOrigin
+                ](actor_out_buf.unsafe_ptr())
+                ctx.enqueue_function[
+                    extract_deterministic_actions, extract_deterministic_actions
+                ](
+                    actions_tensor,
+                    actor_out_immut,
+                    grid_dim=(BLOCKS,),
+                    block_dim=(TPB,),
+                )
 
             # Step all environments
             EnvType.step_kernel_gpu[
@@ -2706,6 +2760,14 @@ struct DeepPPOContinuousAgent[
             ctx.enqueue_copy(rollout_values_host, rollout_values_buf)
             ctx.enqueue_copy(rollout_dones_host, rollout_dones_buf)
             ctx.synchronize()
+
+            # Reward normalization (CleanRL-style)
+            # This prevents dense fuel penalties from dominating over sparse landing bonuses
+            if self.normalize_rewards:
+                # Update running statistics with the new rewards
+                self.reward_rms.update(rollout_rewards_host, ROLLOUT_TOTAL)
+                # Normalize rewards in-place
+                self.reward_rms.normalize(rollout_rewards_host, ROLLOUT_TOTAL)
 
             # Compute GAE for each environment
             for env_idx in range(Self.n_envs):

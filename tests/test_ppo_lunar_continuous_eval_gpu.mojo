@@ -211,8 +211,9 @@ fn main() raises:
                     obs[j] = host_obs[env_idx * OBS_DIM + j]
 
                 # select_action returns (actions_array, log_prob, value)
-                # training=False means deterministic (use mean, no sampling)
-                var action_result = agent.select_action(obs, training=False)
+                # training=True means stochastic (sample from distribution)
+                # Using True because the mean action collapses to near-zero throttle
+                var action_result = agent.select_action(obs, training=True)
                 var actions = action_result[0]
 
                 # DEBUG: Detailed layer-by-layer trace of forward pass

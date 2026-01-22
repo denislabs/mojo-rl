@@ -17,6 +17,8 @@ Example usage:
     normalize_inline(buffer_len, advantages)
 """
 
+from gpu.host import HostBuffer
+
 
 fn normalize(mut values: List[Float64], eps: Float64 = 1e-8):
     """Normalize values in-place to have zero mean and unit variance.
@@ -176,3 +178,115 @@ fn compute_mean_std(values: List[Float64]) -> Tuple[Float64, Float64]:
     variance /= Float64(n)
 
     return (mean, variance ** 0.5)
+
+
+# =============================================================================
+# Running Mean/Std for Reward Normalization (CleanRL-style)
+# =============================================================================
+
+
+struct RunningMeanStd:
+    """Running mean and standard deviation tracker using Welford's algorithm.
+
+    This is used for reward normalization in PPO and other algorithms.
+    The running statistics are updated incrementally with each batch,
+    which provides stable normalization across the entire training run.
+
+    Reference: CleanRL's VecNormalize implementation.
+
+    Example:
+        var rms = RunningMeanStd()
+        # During training:
+        rms.update_batch(rewards_host, n_rewards)
+        # Normalize rewards:
+        for i in range(n):
+            rewards[i] = (rewards[i] - rms.mean) / (rms.std() + 1e-8)
+    """
+
+    var count: Float64
+    var mean: Float64
+    var var_sum: Float64  # Sum of squared differences (M2 in Welford's)
+
+    fn __init__(out self):
+        """Initialize with zero statistics."""
+        self.count = 0.0
+        self.mean = 0.0
+        self.var_sum = 0.0
+
+    fn variance(self) -> Float64:
+        """Return the running variance."""
+        if self.count < 2:
+            return 1.0  # Default to 1 to avoid division issues
+        return self.var_sum / self.count
+
+    fn std(self) -> Float64:
+        """Return the running standard deviation."""
+        return (self.variance() + 1e-8) ** 0.5
+
+    fn update[
+        dt: DType
+    ](mut self, buffer: HostBuffer[dt], n: Int):
+        """Update running statistics with a batch of values.
+
+        Uses Welford's online algorithm for numerically stable updates.
+        See: https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance
+
+        Args:
+            buffer: HostBuffer containing the values.
+            n: Number of values to process from the buffer.
+        """
+        if n == 0:
+            return
+
+        # Compute batch statistics first
+        var batch_mean = Float64(0.0)
+        for i in range(n):
+            batch_mean += Float64(buffer[i])
+        batch_mean /= Float64(n)
+
+        var batch_var = Float64(0.0)
+        for i in range(n):
+            var diff = Float64(buffer[i]) - batch_mean
+            batch_var += diff * diff
+        batch_var /= Float64(n)
+
+        # Combine with running statistics using parallel algorithm
+        # Reference: Chan et al., "Updating Formulae and a Pairwise Algorithm"
+        var new_count = self.count + Float64(n)
+
+        if self.count == 0:
+            # First batch
+            self.mean = batch_mean
+            self.var_sum = batch_var * Float64(n)
+        else:
+            # Combine running and batch statistics
+            var delta = batch_mean - self.mean
+            var new_mean = self.mean + delta * Float64(n) / new_count
+
+            # Update variance using parallel algorithm
+            self.var_sum = (
+                self.var_sum
+                + batch_var * Float64(n)
+                + delta * delta * self.count * Float64(n) / new_count
+            )
+            self.mean = new_mean
+
+        self.count = new_count
+
+    fn normalize[
+        dt: DType
+    ](self, mut buffer: HostBuffer[dt], n: Int, eps: Float64 = 1e-8):
+        """Normalize values in-place using running statistics.
+
+        Computes: buffer[i] = (buffer[i] - mean) / (std + eps)
+
+        Args:
+            buffer: HostBuffer to normalize in-place.
+            n: Number of values to normalize.
+            eps: Small constant for numerical stability.
+        """
+        var std_val = self.std()
+        for i in range(n):
+            buffer[i] = Scalar[dt](
+                (Float64(buffer[i]) - self.mean) / (std_val + eps)
+            )

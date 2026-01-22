@@ -19,8 +19,12 @@ comptime TPB = 256  # Threads per block for elementwise ops
 
 comptime LOG_STD_MIN: Float64 = -2.0  # Minimum log_std (std ≈ 0.14)
 comptime LOG_STD_MAX: Float64 = 0.5  # Maximum log_std (std ≈ 1.65)
-# Note: Mean is NOT clamped - tanh squashing naturally bounds actions to [-1, 1]
-# This follows SOTA implementations (CleanRL, Stable-Baselines3)
+
+# Mean clamping to prevent saturation (tanh(2) ≈ 0.96, tanh(3) ≈ 0.995)
+# Clamping to [-2, 2] ensures gradients flow and policy can recover from
+# degenerate states where the mean drifts to extreme values
+comptime MEAN_MIN: Float64 = -2.0
+comptime MEAN_MAX: Float64 = 2.0
 comptime EPS: Float64 = 1e-6  # Small constant for numerical stability
 
 
@@ -227,12 +231,21 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
                 cache[batch, i] = input[batch, i]
 
             # Compute mean = input @ W_mean + b_mean
-            # No clamping - let tanh squashing naturally bound actions
+            # Clamp to [-2, 2] to prevent tanh saturation and gradient vanishing
             for j in range(Self.action_dim):
-                var mean_acc = params[Self._mean_b_offset() + j]  # bias
+                var mean_acc = Float64(
+                    rebind[Scalar[dtype]](params[Self._mean_b_offset() + j])
+                )  # bias
                 for i in range(Self.in_dim):
-                    mean_acc += input[batch, i] * W_mean[i, j]
-                output[batch, j] = mean_acc
+                    mean_acc += Float64(
+                        rebind[Scalar[dtype]](input[batch, i])
+                    ) * Float64(rebind[Scalar[dtype]](W_mean[i, j]))
+                # Clamp mean to prevent extreme values
+                if mean_acc < MEAN_MIN:
+                    mean_acc = MEAN_MIN
+                elif mean_acc > MEAN_MAX:
+                    mean_acc = MEAN_MAX
+                output[batch, j] = Scalar[dtype](mean_acc)
 
             # State-independent log_std (clamped)
             for j in range(Self.action_dim):
@@ -266,12 +279,21 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
 
         for batch in range(BATCH):
             # Compute mean = input @ W_mean + b_mean
-            # No clamping - let tanh squashing naturally bound actions
+            # Clamp to [-2, 2] to prevent tanh saturation and gradient vanishing
             for j in range(Self.action_dim):
-                var mean_acc = params[Self._mean_b_offset() + j]
+                var mean_acc = Float64(
+                    rebind[Scalar[dtype]](params[Self._mean_b_offset() + j])
+                )
                 for i in range(Self.in_dim):
-                    mean_acc += input[batch, i] * W_mean[i, j]
-                output[batch, j] = mean_acc
+                    mean_acc += Float64(
+                        rebind[Scalar[dtype]](input[batch, i])
+                    ) * Float64(rebind[Scalar[dtype]](W_mean[i, j]))
+                # Clamp mean to prevent extreme values
+                if mean_acc < MEAN_MIN:
+                    mean_acc = MEAN_MIN
+                elif mean_acc > MEAN_MAX:
+                    mean_acc = MEAN_MAX
+                output[batch, j] = Scalar[dtype](mean_acc)
 
             # State-independent log_std (clamped)
             for j in range(Self.action_dim):
@@ -452,9 +474,14 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
 
             barrier()
 
-        # Write results (mean not clamped - let tanh squashing handle bounds)
+        # Write results with mean clamping to prevent tanh saturation
         if global_row < BATCH and global_col < Self.action_dim:
-            # No mean clamping - let tanh squashing naturally bound actions
+            # Clamp mean to [-2, 2] to prevent extreme values that cause tanh saturation
+            # and gradient vanishing (tanh(2) ≈ 0.96, tanh(3) ≈ 0.995)
+            if mean_acc < Scalar[dtype](MEAN_MIN):
+                mean_acc = Scalar[dtype](MEAN_MIN)
+            elif mean_acc > Scalar[dtype](MEAN_MAX):
+                mean_acc = Scalar[dtype](MEAN_MAX)
             output[global_row, global_col] = mean_acc
 
             # State-independent log_std (clamped for numerical stability)
@@ -543,9 +570,14 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
 
             barrier()
 
-        # Write results (mean not clamped - let tanh squashing handle bounds)
+        # Write results with mean clamping to prevent tanh saturation
         if global_row < BATCH and global_col < Self.action_dim:
-            # No mean clamping - let tanh squashing naturally bound actions
+            # Clamp mean to [-2, 2] to prevent extreme values that cause tanh saturation
+            # and gradient vanishing (tanh(2) ≈ 0.96, tanh(3) ≈ 0.995)
+            if mean_acc < Scalar[dtype](MEAN_MIN):
+                mean_acc = Scalar[dtype](MEAN_MIN)
+            elif mean_acc > Scalar[dtype](MEAN_MAX):
+                mean_acc = Scalar[dtype](MEAN_MAX)
             output[global_row, global_col] = mean_acc
 
             # State-independent log_std (clamped for numerical stability)
