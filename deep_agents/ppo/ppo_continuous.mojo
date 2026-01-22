@@ -9,7 +9,7 @@ This PPO implementation supports continuous action spaces using a Gaussian polic
 
 Key features:
 - Works with any BoxContinuousActionEnv (continuous obs, continuous actions)
-- Gaussian policy with tanh squashing for bounded actions [-1, 1]
+- Unbounded Gaussian policy (CleanRL-style) - actions clipped at environment boundary
 - Clipped policy ratio for stable updates
 - Multiple epochs of optimization per rollout
 - Entropy bonus for exploration
@@ -105,7 +105,7 @@ struct DeepPPOContinuousAgent[
 ]:
     """Deep Proximal Policy Optimization Agent for Continuous Action Spaces.
 
-    Uses a Gaussian policy with tanh squashing for bounded actions [-1, 1].
+    Uses an unbounded Gaussian policy (CleanRL-style) - actions clipped at env boundary.
     Supports hybrid GPU+CPU training where neural networks run on GPU and
     environment physics (like CarRacing) run on CPU.
 
@@ -390,15 +390,15 @@ struct DeepPPOContinuousAgent[
     ) -> Tuple[
         InlineArray[Scalar[dtype], Self.ACTIONS], Scalar[dtype], Scalar[dtype]
     ]:
-        """Select continuous action from policy.
+        """Select continuous action from unbounded Gaussian policy (CleanRL-style).
 
         Args:
             obs: Current observation.
             training: If True, sample from Gaussian; else use mean (deterministic).
 
         Returns:
-            Tuple of (actions, log_prob, value) where actions is an array of
-            continuous action values in [-1, 1].
+            Tuple of (actions, log_prob, value) where actions are unbounded
+            (clipping to env bounds is done at environment step).
         """
         # Forward actor to get mean and log_std
         # StochasticActor outputs: [mean_0, ..., mean_n, log_std_0, ..., log_std_n]
@@ -421,7 +421,7 @@ struct DeepPPOContinuousAgent[
         self.critic.forward[1](obs, value_out)
         var value = value_out[0]
 
-        # Compute actions
+        # Compute actions (unbounded Gaussian, no tanh squashing)
         var actions = InlineArray[Scalar[dtype], Self.ACTIONS](
             uninitialized=True
         )
@@ -432,35 +432,34 @@ struct DeepPPOContinuousAgent[
             var log_std = log_stds[j]
             var std = exp(log_std)
 
-            var action_raw: Scalar[dtype]
+            var action: Scalar[dtype]
             if training:
-                # Sample from Gaussian: action = mean + std * noise
-                var noise = Scalar[dtype](
-                    random_float64(-1.0, 1.0) * 0.5
-                )  # Approximate Gaussian
-                action_raw = mean + std * noise
+                # Sample from Gaussian using Box-Muller transform (same as GPU kernel)
+                # Generate two uniform random numbers in (0, 1)
+                var u1 = random_float64(0.0, 1.0)
+                var u2 = random_float64(0.0, 1.0)
+                # Avoid log(0) by ensuring u1 > 0
+                if u1 < 1e-10:
+                    u1 = 1e-10
+                # Box-Muller transform for standard normal
+                var mag = sqrt(-2.0 * log(u1))
+                var noise = Scalar[dtype](mag * cos(u2 * 6.283185307179586))
+                action = mean + std * noise
 
-                # Compute log probability (Gaussian)
-                var z = (action_raw - mean) / (std + Scalar[dtype](1e-8))
+                # Simple Gaussian log probability (no tanh correction)
+                var action_normalized = (action - mean) / (std + Scalar[dtype](1e-8))
                 var log_prob_gaussian = (
-                    -Scalar[dtype](0.5) * z * z
+                    -Scalar[dtype](0.5) * action_normalized * action_normalized
                     - log_std
                     - Scalar[dtype](0.9189385)  # -0.5 * log(2*pi)
                 )
-                # Correction for tanh squashing
-                var tanh_action = Scalar[dtype](tanh(Float64(action_raw)))
-                var log_prob_correction = log(
-                    Scalar[dtype](1.0)
-                    - tanh_action * tanh_action
-                    + Scalar[dtype](1e-6)
-                )
-                total_log_prob += log_prob_gaussian - log_prob_correction
+                total_log_prob += log_prob_gaussian
             else:
                 # Deterministic: use mean
-                action_raw = mean
+                action = mean
 
-            # Apply tanh squashing to bound actions to [-1, 1]
-            actions[j] = Scalar[dtype](tanh(Float64(action_raw)))
+            # Unbounded action (clipping done at environment step)
+            actions[j] = action
 
         return (actions, total_log_prob, value)
 
@@ -593,19 +592,22 @@ struct DeepPPOContinuousAgent[
         num_episodes: Int = 10,
         max_steps: Int = 1000,
         verbose: Bool = False,
-        stochastic: Bool = False,
+        stochastic: Bool = True,
         renderer: UnsafePointer[RendererBase, MutAnyOrigin] = UnsafePointer[
             RendererBase, MutAnyOrigin
         ](),
     ) -> Float64:
         """Evaluate the agent (CPU with optional rendering).
 
+        Uses unbounded Gaussian policy (CleanRL-style). Actions are clipped
+        to [-1, 1] at the environment boundary.
+
         Args:
             env: The environment to evaluate on.
             num_episodes: Number of evaluation episodes.
             max_steps: Maximum steps per episode.
             verbose: Whether to print per-episode results.
-            stochastic: If True, sample from policy; if False, use mean (deterministic).
+            stochastic: If True (default), sample from policy; if False, use mean.
             renderer: Optional pointer to renderer for visualization.
 
         Returns:
@@ -627,10 +629,18 @@ struct DeepPPOContinuousAgent[
                 var action_result = self.select_action(obs, training=stochastic)
                 var actions = action_result[0]
 
-                # Convert actions to List[Scalar[dtype]] for environment
+                # Convert actions to List for environment
+                # Apply action scaling and clip to environment bounds
                 var action_list = List[Scalar[dtype]]()
                 for j in range(Self.ACTIONS):
-                    action_list.append(actions[j])
+                    var action_val = Float64(actions[j])
+                    action_val = action_val * self.action_scale + self.action_bias
+                    # Clip to [-1, 1] for environment (unbounded Gaussian may exceed)
+                    if action_val > 1.0:
+                        action_val = 1.0
+                    elif action_val < -1.0:
+                        action_val = -1.0
+                    action_list.append(Scalar[dtype](action_val))
 
                 # Step environment with multi-dimensional actions
                 var result = env.step_continuous_vec[dtype](action_list)
@@ -673,16 +683,19 @@ struct DeepPPOContinuousAgent[
         num_episodes: Int = 100,
         max_steps: Int = 1000,
         verbose: Bool = False,
-        stochastic: Bool = False,
+        stochastic: Bool = True,
     ) raises -> Float64:
         """Evaluate the agent on GPU parallel environments.
+
+        Uses unbounded Gaussian policy (CleanRL-style). Actions are clipped
+        to environment bounds by the GPU environment kernel.
 
         Args:
             ctx: GPU device context.
             num_episodes: Target number of evaluation episodes.
             max_steps: Maximum steps per episode.
             verbose: Whether to print progress.
-            stochastic: If True, sample from policy; if False, use mean (deterministic).
+            stochastic: If True (default), sample from policy; if False, use mean.
 
         Returns:
             Average reward over completed episodes.
@@ -752,11 +765,10 @@ struct DeepPPOContinuousAgent[
         # =====================================================================
         comptime BLOCKS = (Self.n_envs + TPB - 1) // TPB
 
-        # Buffers for stochastic sampling (z_values and log_probs not used but required)
-        var z_values_buf = ctx.enqueue_create_buffer[dtype](ENV_ACTION_SIZE)
+        # Buffers for stochastic sampling (log_probs needed for sampling kernel)
         var log_probs_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
 
-        # Kernel for deterministic action extraction
+        # Kernel for deterministic action extraction (unbounded Gaussian - use mean directly)
         @always_inline
         fn extract_deterministic_actions(
             actions: LayoutTensor[
@@ -772,13 +784,9 @@ struct DeepPPOContinuousAgent[
             if idx >= Self.n_envs:
                 return
 
-            # Use mean (first ACTIONS elements), apply tanh
+            # Use mean directly (unbounded Gaussian, no tanh squashing)
             for j in range(Self.ACTIONS):
-                var mean = actor_out[idx, j]
-                # tanh for GPU (using exp-based formula for numerical stability)
-                var exp_2x = exp(mean * 2)
-                var tanh_val = (exp_2x - 1) / (exp_2x + 1)
-                actions[idx, j] = tanh_val
+                actions[idx, j] = actor_out[idx, j]
 
         # Sampling kernel wrapper for stochastic evaluation
         comptime sample_actions_wrapper = _sample_continuous_actions_kernel[
@@ -804,10 +812,7 @@ struct DeepPPOContinuousAgent[
             ](actor_out_buf.unsafe_ptr())
 
             if stochastic:
-                # Stochastic: sample from policy distribution
-                var z_values_tensor = LayoutTensor[
-                    dtype, Layout.row_major(Self.n_envs, Self.ACTIONS), MutAnyOrigin
-                ](z_values_buf.unsafe_ptr())
+                # Stochastic: sample from policy distribution (unbounded Gaussian)
                 var log_probs_tensor = LayoutTensor[
                     dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
                 ](log_probs_buf.unsafe_ptr())
@@ -817,7 +822,6 @@ struct DeepPPOContinuousAgent[
                 ](
                     actor_out_tensor,
                     actions_tensor,
-                    z_values_tensor,
                     log_probs_tensor,
                     Scalar[DType.uint32](step * 2654435761),
                     grid_dim=(BLOCKS,),
@@ -1030,7 +1034,6 @@ struct DeepPPOContinuousAgent[
         var actions_host = ctx.enqueue_create_host_buffer[dtype](
             ENV_ACTION_SIZE
         )
-        var z_values_buf = ctx.enqueue_create_buffer[dtype](ENV_ACTION_SIZE)
         var values_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
         var log_probs_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
         var actor_output_buf = ctx.enqueue_create_buffer[dtype](
@@ -1041,7 +1044,7 @@ struct DeepPPOContinuousAgent[
         # Rollout buffers
         # =====================================================================
         var rollout_obs_buf = ctx.enqueue_create_buffer[dtype](ROLLOUT_OBS_SIZE)
-        var rollout_z_values_buf = ctx.enqueue_create_buffer[dtype](
+        var rollout_actions_buf = ctx.enqueue_create_buffer[dtype](
             ROLLOUT_ACTION_SIZE
         )
         var rollout_rewards_buf = ctx.enqueue_create_buffer[dtype](
@@ -1079,7 +1082,7 @@ struct DeepPPOContinuousAgent[
         # Minibatch buffers (for training)
         # =====================================================================
         var mb_obs_buf = ctx.enqueue_create_buffer[dtype](MINIBATCH_OBS_SIZE)
-        var mb_z_values_buf = ctx.enqueue_create_buffer[dtype](
+        var mb_actions_buf = ctx.enqueue_create_buffer[dtype](
             MINIBATCH_ACTION_SIZE
         )
         var mb_advantages_buf = ctx.enqueue_create_buffer[dtype](MINIBATCH)
@@ -1161,9 +1164,6 @@ struct DeepPPOContinuousAgent[
         var actions_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.n_envs, Self.ACTIONS), MutAnyOrigin
         ](actions_buf.unsafe_ptr())
-        var z_values_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.n_envs, Self.ACTIONS), MutAnyOrigin
-        ](z_values_buf.unsafe_ptr())
         var actor_output_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.n_envs, Self.ACTOR_OUT), MutAnyOrigin
         ](actor_output_buf.unsafe_ptr())
@@ -1176,9 +1176,9 @@ struct DeepPPOContinuousAgent[
             Layout.row_major(MINIBATCH, Self.OBS),
             MutAnyOrigin,
         ](mb_obs_buf.unsafe_ptr())
-        var mb_z_values_tensor = LayoutTensor[
+        var mb_actions_tensor = LayoutTensor[
             dtype, Layout.row_major(MINIBATCH, Self.ACTIONS), MutAnyOrigin
-        ](mb_z_values_buf.unsafe_ptr())
+        ](mb_actions_buf.unsafe_ptr())
         var mb_advantages_tensor = LayoutTensor[
             dtype, Layout.row_major(MINIBATCH), MutAnyOrigin
         ](mb_advantages_buf.unsafe_ptr())
@@ -1196,9 +1196,9 @@ struct DeepPPOContinuousAgent[
             Layout.row_major(ROLLOUT_TOTAL, Self.OBS),
             MutAnyOrigin,
         ](rollout_obs_buf.unsafe_ptr())
-        var rollout_z_values_tensor = LayoutTensor[
+        var rollout_actions_tensor = LayoutTensor[
             dtype, Layout.row_major(ROLLOUT_TOTAL, Self.ACTIONS), MutAnyOrigin
-        ](rollout_z_values_buf.unsafe_ptr())
+        ](rollout_actions_buf.unsafe_ptr())
         var advantages_tensor = LayoutTensor[
             dtype, Layout.row_major(ROLLOUT_TOTAL), MutAnyOrigin
         ](advantages_buf.unsafe_ptr())
@@ -1391,14 +1391,12 @@ struct DeepPPOContinuousAgent[
                 )
                 ctx.synchronize()
 
-                # Sample continuous actions on GPU
-                # Outputs both actions (post-tanh for env) and z_values (pre-tanh for training)
+                # Sample continuous actions on GPU (unbounded Gaussian)
                 ctx.enqueue_function[
                     sample_actions_wrapper, sample_actions_wrapper
                 ](
                     actor_output_tensor,
                     actions_tensor,
-                    z_values_tensor,
                     log_probs_tensor,
                     Scalar[DType.uint32](rng_seed),
                     grid_dim=(ENV_BLOCKS,),
@@ -1410,7 +1408,7 @@ struct DeepPPOContinuousAgent[
                 ctx.enqueue_copy(actions_host, actions_buf)
                 ctx.synchronize()
 
-                # Store pre-step data to rollout buffer (using z_values, not actions)
+                # Store pre-step data to rollout buffer (using actions directly)
                 var t_offset = t * Self.n_envs
 
                 var rollout_obs_t = LayoutTensor[
@@ -1418,11 +1416,11 @@ struct DeepPPOContinuousAgent[
                     Layout.row_major(Self.n_envs, Self.OBS),
                     MutAnyOrigin,
                 ](rollout_obs_buf.unsafe_ptr() + t_offset * Self.OBS)
-                var rollout_z_values_t = LayoutTensor[
+                var rollout_actions_t = LayoutTensor[
                     dtype,
                     Layout.row_major(Self.n_envs, Self.ACTIONS),
                     MutAnyOrigin,
-                ](rollout_z_values_buf.unsafe_ptr() + t_offset * Self.ACTIONS)
+                ](rollout_actions_buf.unsafe_ptr() + t_offset * Self.ACTIONS)
                 var rollout_log_probs_t = LayoutTensor[
                     dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
                 ](rollout_log_probs_buf.unsafe_ptr() + t_offset)
@@ -1438,11 +1436,11 @@ struct DeepPPOContinuousAgent[
                     store_pre_step_wrapper, store_pre_step_wrapper
                 ](
                     rollout_obs_t,
-                    rollout_z_values_t,
+                    rollout_actions_t,
                     rollout_log_probs_t,
                     rollout_values_t,
                     obs_tensor,
-                    z_values_tensor,
+                    actions_tensor,
                     log_probs_tensor,
                     values_tensor_t,
                     grid_dim=(ENV_BLOCKS,),
@@ -1455,18 +1453,22 @@ struct DeepPPOContinuousAgent[
                 # =============================================================
 
                 for i in range(Self.n_envs):
-                    # Build action list from GPU buffer using Float64
-                    # (compatible with all continuous environments)
-                    var action_list = List[Float64]()
+                    # Build action list from GPU buffer
+                    var action_list = List[Scalar[dtype]]()
                     for a in range(Self.ACTIONS):
                         var action_val = Float64(
                             actions_host[i * Self.ACTIONS + a]
                         )
-                        # Apply action scaling
+                        # Apply action scaling and clip to environment bounds
                         action_val = (
                             action_val * self.action_scale + self.action_bias
                         )
-                        action_list.append(action_val)
+                        # Clip to [-1, 1] for environment (unbounded Gaussian may exceed)
+                        if action_val > 1.0:
+                            action_val = 1.0
+                        elif action_val < -1.0:
+                            action_val = -1.0
+                        action_list.append(Scalar[dtype](action_val))
 
                     var result = envs[i].step_continuous_vec[dtype](
                         action_list^
@@ -1709,13 +1711,13 @@ struct DeepPPOContinuousAgent[
                     var gather_start = perf_counter_ns()
                     ctx.enqueue_function[gather_wrapper, gather_wrapper](
                         mb_obs_tensor,
-                        mb_z_values_tensor,
+                        mb_actions_tensor,
                         mb_advantages_tensor,
                         mb_returns_tensor,
                         mb_old_log_probs_tensor,
                         mb_old_values_tensor,
                         rollout_obs_tensor,
-                        rollout_z_values_tensor,
+                        rollout_actions_tensor,
                         advantages_tensor,
                         returns_tensor,
                         rollout_log_probs_tensor,
@@ -1765,7 +1767,7 @@ struct DeepPPOContinuousAgent[
                         actor_output_mb_tensor,
                         mb_old_log_probs_tensor,
                         mb_advantages_tensor,
-                        mb_z_values_tensor,
+                        mb_actions_tensor,
                         Scalar[dtype](self.clip_epsilon),
                         Scalar[dtype](current_entropy_coef),
                         MINIBATCH,
@@ -2124,7 +2126,6 @@ struct DeepPPOContinuousAgent[
         var rewards_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
         var dones_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
         var actions_buf = ctx.enqueue_create_buffer[dtype](ENV_ACTION_SIZE)
-        var z_values_buf = ctx.enqueue_create_buffer[dtype](ENV_ACTION_SIZE)
         var values_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
         var log_probs_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
         var actor_output_buf = ctx.enqueue_create_buffer[dtype](
@@ -2155,7 +2156,7 @@ struct DeepPPOContinuousAgent[
         # Rollout buffers
         # =====================================================================
         var rollout_obs_buf = ctx.enqueue_create_buffer[dtype](ROLLOUT_OBS_SIZE)
-        var rollout_z_values_buf = ctx.enqueue_create_buffer[dtype](
+        var rollout_actions_buf = ctx.enqueue_create_buffer[dtype](
             ROLLOUT_ACTION_SIZE
         )
         var rollout_rewards_buf = ctx.enqueue_create_buffer[dtype](
@@ -2193,7 +2194,7 @@ struct DeepPPOContinuousAgent[
         # Minibatch buffers (for training)
         # =====================================================================
         var mb_obs_buf = ctx.enqueue_create_buffer[dtype](MINIBATCH_OBS_SIZE)
-        var mb_z_values_buf = ctx.enqueue_create_buffer[dtype](
+        var mb_actions_buf = ctx.enqueue_create_buffer[dtype](
             MINIBATCH_ACTION_SIZE
         )
         var mb_advantages_buf = ctx.enqueue_create_buffer[dtype](MINIBATCH)
@@ -2280,9 +2281,6 @@ struct DeepPPOContinuousAgent[
         var actions_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.n_envs, Self.ACTIONS), MutAnyOrigin
         ](actions_buf.unsafe_ptr())
-        var z_values_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.n_envs, Self.ACTIONS), MutAnyOrigin
-        ](z_values_buf.unsafe_ptr())
         var actor_output_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.n_envs, Self.ACTOR_OUT), MutAnyOrigin
         ](actor_output_buf.unsafe_ptr())
@@ -2311,9 +2309,9 @@ struct DeepPPOContinuousAgent[
             Layout.row_major(MINIBATCH, Self.OBS),
             MutAnyOrigin,
         ](mb_obs_buf.unsafe_ptr())
-        var mb_z_values_tensor = LayoutTensor[
+        var mb_actions_tensor = LayoutTensor[
             dtype, Layout.row_major(MINIBATCH, Self.ACTIONS), MutAnyOrigin
-        ](mb_z_values_buf.unsafe_ptr())
+        ](mb_actions_buf.unsafe_ptr())
         var mb_advantages_tensor = LayoutTensor[
             dtype, Layout.row_major(MINIBATCH), MutAnyOrigin
         ](mb_advantages_buf.unsafe_ptr())
@@ -2331,9 +2329,9 @@ struct DeepPPOContinuousAgent[
             Layout.row_major(ROLLOUT_TOTAL, Self.OBS),
             MutAnyOrigin,
         ](rollout_obs_buf.unsafe_ptr())
-        var rollout_z_values_tensor = LayoutTensor[
+        var rollout_actions_tensor = LayoutTensor[
             dtype, Layout.row_major(ROLLOUT_TOTAL, Self.ACTIONS), MutAnyOrigin
-        ](rollout_z_values_buf.unsafe_ptr())
+        ](rollout_actions_buf.unsafe_ptr())
         var advantages_tensor = LayoutTensor[
             dtype, Layout.row_major(ROLLOUT_TOTAL), MutAnyOrigin
         ](advantages_buf.unsafe_ptr())
@@ -2544,21 +2542,19 @@ struct DeepPPOContinuousAgent[
                     critic_env_workspace_buf,
                 )
 
-                # Sample continuous actions on GPU
-                # Outputs both actions (post-tanh for env) and z_values (pre-tanh for training)
+                # Sample continuous actions on GPU (unbounded Gaussian)
                 ctx.enqueue_function[
                     sample_actions_wrapper, sample_actions_wrapper
                 ](
                     actor_output_tensor,
                     actions_tensor,
-                    z_values_tensor,
                     log_probs_tensor,
                     Scalar[DType.uint32](rng_seed),
                     grid_dim=(ENV_BLOCKS,),
                     block_dim=(TPB,),
                 )
 
-                # Store pre-step data to rollout buffer (using z_values, not actions)
+                # Store pre-step data to rollout buffer (using actions directly)
                 var t_offset = t * Self.n_envs
 
                 var rollout_obs_t = LayoutTensor[
@@ -2566,11 +2562,11 @@ struct DeepPPOContinuousAgent[
                     Layout.row_major(Self.n_envs, Self.OBS),
                     MutAnyOrigin,
                 ](rollout_obs_buf.unsafe_ptr() + t_offset * Self.OBS)
-                var rollout_z_values_t = LayoutTensor[
+                var rollout_actions_t = LayoutTensor[
                     dtype,
                     Layout.row_major(Self.n_envs, Self.ACTIONS),
                     MutAnyOrigin,
-                ](rollout_z_values_buf.unsafe_ptr() + t_offset * Self.ACTIONS)
+                ](rollout_actions_buf.unsafe_ptr() + t_offset * Self.ACTIONS)
                 var rollout_log_probs_t = LayoutTensor[
                     dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
                 ](rollout_log_probs_buf.unsafe_ptr() + t_offset)
@@ -2586,11 +2582,11 @@ struct DeepPPOContinuousAgent[
                     store_pre_step_wrapper, store_pre_step_wrapper
                 ](
                     rollout_obs_t,
-                    rollout_z_values_t,
+                    rollout_actions_t,
                     rollout_log_probs_t,
                     rollout_values_t,
                     obs_tensor,
-                    z_values_tensor,
+                    actions_tensor,
                     log_probs_tensor,
                     values_tensor_t,
                     grid_dim=(ENV_BLOCKS,),
@@ -2905,13 +2901,13 @@ struct DeepPPOContinuousAgent[
                     var gather_start = perf_counter_ns()
                     ctx.enqueue_function[gather_wrapper, gather_wrapper](
                         mb_obs_tensor,
-                        mb_z_values_tensor,
+                        mb_actions_tensor,
                         mb_advantages_tensor,
                         mb_returns_tensor,
                         mb_old_log_probs_tensor,
                         mb_old_values_tensor,
                         rollout_obs_tensor,
-                        rollout_z_values_tensor,
+                        rollout_actions_tensor,
                         advantages_tensor,
                         returns_tensor,
                         rollout_log_probs_tensor,
@@ -2961,7 +2957,7 @@ struct DeepPPOContinuousAgent[
                         actor_output_mb_tensor,
                         mb_old_log_probs_tensor,
                         mb_advantages_tensor,
-                        mb_z_values_tensor,
+                        mb_actions_tensor,
                         Scalar[dtype](self.clip_epsilon),
                         Scalar[dtype](current_entropy_coef),
                         MINIBATCH,
@@ -3446,7 +3442,6 @@ struct DeepPPOContinuousAgent[
         var rewards_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
         var dones_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
         var actions_buf = ctx.enqueue_create_buffer[dtype](ENV_ACTION_SIZE)
-        var z_values_buf = ctx.enqueue_create_buffer[dtype](ENV_ACTION_SIZE)
         var values_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
         var log_probs_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
         var actor_output_buf = ctx.enqueue_create_buffer[dtype](
@@ -3482,7 +3477,7 @@ struct DeepPPOContinuousAgent[
         # Rollout buffers
         # =====================================================================
         var rollout_obs_buf = ctx.enqueue_create_buffer[dtype](ROLLOUT_OBS_SIZE)
-        var rollout_z_values_buf = ctx.enqueue_create_buffer[dtype](
+        var rollout_actions_buf = ctx.enqueue_create_buffer[dtype](
             ROLLOUT_ACTION_SIZE
         )
         var rollout_rewards_buf = ctx.enqueue_create_buffer[dtype](
@@ -3520,7 +3515,7 @@ struct DeepPPOContinuousAgent[
         # Minibatch buffers (for training)
         # =====================================================================
         var mb_obs_buf = ctx.enqueue_create_buffer[dtype](MINIBATCH_OBS_SIZE)
-        var mb_z_values_buf = ctx.enqueue_create_buffer[dtype](
+        var mb_actions_buf = ctx.enqueue_create_buffer[dtype](
             MINIBATCH_ACTION_SIZE
         )
         var mb_advantages_buf = ctx.enqueue_create_buffer[dtype](MINIBATCH)
@@ -3624,9 +3619,6 @@ struct DeepPPOContinuousAgent[
         var actions_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.n_envs, Self.ACTIONS), MutAnyOrigin
         ](actions_buf.unsafe_ptr())
-        var z_values_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.n_envs, Self.ACTIONS), MutAnyOrigin
-        ](z_values_buf.unsafe_ptr())
         var actor_output_tensor = LayoutTensor[
             dtype, Layout.row_major(Self.n_envs, Self.ACTOR_OUT), MutAnyOrigin
         ](actor_output_buf.unsafe_ptr())
@@ -3655,9 +3647,9 @@ struct DeepPPOContinuousAgent[
             Layout.row_major(MINIBATCH, Self.OBS),
             MutAnyOrigin,
         ](mb_obs_buf.unsafe_ptr())
-        var mb_z_values_tensor = LayoutTensor[
+        var mb_actions_tensor = LayoutTensor[
             dtype, Layout.row_major(MINIBATCH, Self.ACTIONS), MutAnyOrigin
-        ](mb_z_values_buf.unsafe_ptr())
+        ](mb_actions_buf.unsafe_ptr())
         var mb_advantages_tensor = LayoutTensor[
             dtype, Layout.row_major(MINIBATCH), MutAnyOrigin
         ](mb_advantages_buf.unsafe_ptr())
@@ -3675,9 +3667,9 @@ struct DeepPPOContinuousAgent[
             Layout.row_major(ROLLOUT_TOTAL, Self.OBS),
             MutAnyOrigin,
         ](rollout_obs_buf.unsafe_ptr())
-        var rollout_z_values_tensor = LayoutTensor[
+        var rollout_actions_tensor = LayoutTensor[
             dtype, Layout.row_major(ROLLOUT_TOTAL, Self.ACTIONS), MutAnyOrigin
-        ](rollout_z_values_buf.unsafe_ptr())
+        ](rollout_actions_buf.unsafe_ptr())
         var advantages_tensor = LayoutTensor[
             dtype, Layout.row_major(ROLLOUT_TOTAL), MutAnyOrigin
         ](advantages_buf.unsafe_ptr())
@@ -3868,7 +3860,7 @@ struct DeepPPOContinuousAgent[
                 ](
                     actor_output_tensor,
                     actions_tensor,
-                    z_values_tensor,
+                    actions_tensor,
                     log_probs_tensor,
                     Scalar[DType.uint32](rng_seed),
                     grid_dim=(ENV_BLOCKS,),
@@ -3883,11 +3875,11 @@ struct DeepPPOContinuousAgent[
                     Layout.row_major(Self.n_envs, Self.OBS),
                     MutAnyOrigin,
                 ](rollout_obs_buf.unsafe_ptr() + t_offset * Self.OBS)
-                var rollout_z_values_t = LayoutTensor[
+                var rollout_actions_t = LayoutTensor[
                     dtype,
                     Layout.row_major(Self.n_envs, Self.ACTIONS),
                     MutAnyOrigin,
-                ](rollout_z_values_buf.unsafe_ptr() + t_offset * Self.ACTIONS)
+                ](rollout_actions_buf.unsafe_ptr() + t_offset * Self.ACTIONS)
                 var rollout_log_probs_t = LayoutTensor[
                     dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
                 ](rollout_log_probs_buf.unsafe_ptr() + t_offset)
@@ -3903,11 +3895,11 @@ struct DeepPPOContinuousAgent[
                     store_pre_step_wrapper, store_pre_step_wrapper
                 ](
                     rollout_obs_t,
-                    rollout_z_values_t,
+                    rollout_actions_t,
                     rollout_log_probs_t,
                     rollout_values_t,
                     obs_tensor,
-                    z_values_tensor,
+                    actions_tensor,
                     log_probs_tensor,
                     values_tensor_t,
                     grid_dim=(ENV_BLOCKS,),
@@ -4193,13 +4185,13 @@ struct DeepPPOContinuousAgent[
                     # Gather minibatch
                     ctx.enqueue_function[gather_wrapper, gather_wrapper](
                         mb_obs_tensor,
-                        mb_z_values_tensor,
+                        mb_actions_tensor,
                         mb_advantages_tensor,
                         mb_returns_tensor,
                         mb_old_log_probs_tensor,
                         mb_old_values_tensor,
                         rollout_obs_tensor,
-                        rollout_z_values_tensor,
+                        rollout_actions_tensor,
                         advantages_tensor,
                         returns_tensor,
                         rollout_log_probs_tensor,
@@ -4242,7 +4234,7 @@ struct DeepPPOContinuousAgent[
                         actor_output_mb_tensor,
                         mb_old_log_probs_tensor,
                         mb_advantages_tensor,
-                        mb_z_values_tensor,
+                        mb_actions_tensor,
                         Scalar[dtype](self.clip_epsilon),
                         Scalar[dtype](self.entropy_coef),
                         MINIBATCH,

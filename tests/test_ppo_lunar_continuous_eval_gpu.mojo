@@ -349,13 +349,17 @@ fn main() raises:
                         actions[1],
                     )
 
-                # Copy 2D action to host buffer (no transformation needed)
-                # The GPU kernel handles the action interpretation:
-                # - action[0]: main throttle, values < 0 are clipped to 0
-                # - action[1]: side control in [-1, 1]
-                # This matches how training passes actions directly from the policy
+                # Copy 2D action to host buffer with clipping
+                # Unbounded Gaussian policy can output values outside [-1, 1]
+                # Must clip to match environment bounds (CleanRL-style)
                 for a in range(ACTION_DIM):
-                    host_actions[env_idx * ACTION_DIM + a] = actions[a]
+                    var action_val = actions[a]
+                    # Clip to [-1, 1] for environment bounds
+                    if action_val > Scalar[gpu_dtype](1.0):
+                        action_val = Scalar[gpu_dtype](1.0)
+                    elif action_val < Scalar[gpu_dtype](-1.0):
+                        action_val = Scalar[gpu_dtype](-1.0)
+                    host_actions[env_idx * ACTION_DIM + a] = action_val
 
             # Copy actions to GPU
             ctx.enqueue_copy(actions_buf, host_actions.unsafe_ptr())

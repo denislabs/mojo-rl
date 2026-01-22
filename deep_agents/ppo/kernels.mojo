@@ -22,24 +22,23 @@ fn _sample_continuous_actions_kernel[
     actions: LayoutTensor[
         dtype, Layout.row_major(N_ENVS, ACTION_DIM), MutAnyOrigin
     ],
-    z_values: LayoutTensor[
-        dtype, Layout.row_major(N_ENVS, ACTION_DIM), MutAnyOrigin
-    ],
     log_probs: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     # Random seed
     rng_seed: Scalar[DType.uint32],
 ):
-    """Sample continuous actions from Gaussian policy on GPU.
+    """Sample continuous actions from unbounded Gaussian policy on GPU (CleanRL-style).
 
     Actor output layout: [mean (ACTION_DIM) | log_std (ACTION_DIM)]
-    Uses reparameterization trick: action = tanh(mean + exp(log_std) * noise)
+    Uses reparameterization trick: action = mean + exp(log_std) * noise
 
-    Outputs both:
-    - actions: post-tanh values for environment stepping
-    - z_values: pre-tanh values for training (avoids atanh numerical issues)
+    NO TANH SQUASHING - actions are unbounded, clipping happens at environment boundary.
+    This matches CleanRL's PPO continuous implementation and avoids train/eval mismatch.
+
+    Log probability is simple Gaussian (no Jacobian correction):
+    log_prob = sum(-0.5 * (log(2*pi) + 2*log_std + ((action-mean)/std)^2))
     """
     comptime EPS: Scalar[dtype] = 1e-6
-    comptime LOG_STD_MIN: Scalar[dtype] = -20.0
+    comptime LOG_STD_MIN: Scalar[dtype] = -5.0  # Match StochasticActor
     comptime LOG_STD_MAX: Scalar[dtype] = 2.0
     comptime LOG_2PI: Scalar[dtype] = 1.8378770664093453
 
@@ -79,55 +78,22 @@ fn _sample_continuous_actions_kernel[
             mag * cos(u2_for_cos * Float32(6.283185307179586))
         )
 
-        # Reparameterization: z = mean + std * noise
+        # Reparameterization: action = mean + std * noise (unbounded Gaussian)
         var std = exp(log_std)
-        var z_unclamped = mean + std * noise
+        var action = mean + std * noise
 
-        # Clamp z to prevent tanh saturation (keeps gradients flowing)
-        # tanh(5) ≈ 0.9999, tanh(-5) ≈ -0.9999, so this still allows near-boundary actions
-        comptime Z_CLAMP: Scalar[dtype] = 5.0
-        var z = z_unclamped
-        if z > Z_CLAMP:
-            z = Z_CLAMP
-        elif z < -Z_CLAMP:
-            z = -Z_CLAMP
+        # Store unbounded action directly (no tanh squashing)
+        actions[i, j] = action
 
-        # Store pre-tanh z for training (avoids atanh numerical issues)
-        z_values[i, j] = z
-
-        # Tanh squashing for bounded action
-        var exp_z = exp(z)
-        var exp_neg_z = exp(-z)
-        var tanh_z = (exp_z - exp_neg_z) / (exp_z + exp_neg_z)
-        actions[i, j] = tanh_z
-
-        # Log probability of Gaussian - use clamped z for consistency with gradient kernel
-        var z_normalized = (z - mean) / (std + EPS)
-
-        # Clamp z_normalized for numerical stability (must match gradient kernel)
-        comptime Z_NORM_CLAMP: Scalar[dtype] = 10.0
-        if z_normalized > Z_NORM_CLAMP:
-            z_normalized = Z_NORM_CLAMP
-        elif z_normalized < -Z_NORM_CLAMP:
-            z_normalized = -Z_NORM_CLAMP
+        # Simple Gaussian log probability (no squashing correction)
+        var action_normalized = (action - mean) / (std + EPS)
 
         var neg_half: Scalar[dtype] = -0.5
         var log_gaussian = neg_half * (
-            LOG_2PI + Scalar[dtype](2.0) * log_std + z_normalized * z_normalized
+            LOG_2PI + Scalar[dtype](2.0) * log_std + action_normalized * action_normalized
         )
 
-        # Squashing correction: -log(1 - tanh(z)^2 + eps)
-        var tanh_z_scalar = tanh_z  # Already Scalar[dtype] now
-        var one_minus_tanh_sq = (
-            Scalar[dtype](1.0)
-            - tanh_z_scalar * tanh_z_scalar
-            + Scalar[dtype](1e-6)
-        )
-        # log() requires Float32 conversion
-        var squash_for_log = Float32(one_minus_tanh_sq) + Float32(1e-8)
-        var squash_correction = Scalar[dtype](log(squash_for_log))
-
-        total_log_prob = total_log_prob + log_gaussian - squash_correction
+        total_log_prob = total_log_prob + log_gaussian
 
     log_probs[i] = total_log_prob
 
@@ -141,14 +107,14 @@ fn _store_continuous_pre_step_kernel[
 ](
     # Outputs - rollout buffer at timestep t
     r_obs: LayoutTensor[dtype, Layout.row_major(N_ENVS, OBS_DIM), MutAnyOrigin],
-    r_z_values: LayoutTensor[
+    r_actions: LayoutTensor[
         dtype, Layout.row_major(N_ENVS, ACTION_DIM), MutAnyOrigin
     ],
     r_log_probs: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     r_values: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     # Inputs - current step data
     obs: LayoutTensor[dtype, Layout.row_major(N_ENVS, OBS_DIM), MutAnyOrigin],
-    z_values: LayoutTensor[
+    actions: LayoutTensor[
         dtype, Layout.row_major(N_ENVS, ACTION_DIM), MutAnyOrigin
     ],
     log_probs: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
@@ -156,8 +122,7 @@ fn _store_continuous_pre_step_kernel[
 ):
     """Store pre-step data to rollout buffer for continuous actions.
 
-    Stores pre-tanh z_values instead of post-tanh actions to avoid
-    atanh numerical precision issues during training.
+    Stores unbounded actions directly (CleanRL-style, no tanh squashing).
     """
     var i = Int(block_dim.x * block_idx.x + thread_idx.x)
     if i >= N_ENVS:
@@ -166,7 +131,7 @@ fn _store_continuous_pre_step_kernel[
     for d in range(OBS_DIM):
         r_obs[i, d] = obs[i, d]
     for a in range(ACTION_DIM):
-        r_z_values[i, a] = z_values[i, a]
+        r_actions[i, a] = actions[i, a]
     r_log_probs[i] = log_probs[i]
     r_values[i] = values[i]
 
@@ -204,7 +169,7 @@ fn ppo_continuous_gather_minibatch_kernel[
     mb_obs: LayoutTensor[
         dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
     ],
-    mb_z_values: LayoutTensor[
+    mb_actions: LayoutTensor[
         dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
     ],
     mb_advantages: LayoutTensor[
@@ -221,7 +186,7 @@ fn ppo_continuous_gather_minibatch_kernel[
     rollout_obs: LayoutTensor[
         dtype, Layout.row_major(TOTAL_SIZE, OBS_DIM), MutAnyOrigin
     ],
-    rollout_z_values: LayoutTensor[
+    rollout_actions: LayoutTensor[
         dtype, Layout.row_major(TOTAL_SIZE, ACTION_DIM), MutAnyOrigin
     ],
     advantages: LayoutTensor[dtype, Layout.row_major(TOTAL_SIZE), MutAnyOrigin],
@@ -239,7 +204,7 @@ fn ppo_continuous_gather_minibatch_kernel[
 ):
     """Gather samples from rollout buffer using shuffled indices for continuous actions.
 
-    Uses pre-tanh z_values to avoid atanh numerical precision issues.
+    Uses unbounded actions directly (CleanRL-style, no tanh squashing).
     """
     var i = Int(block_dim.x * block_idx.x + thread_idx.x)
     if i >= batch_size:
@@ -251,9 +216,9 @@ fn ppo_continuous_gather_minibatch_kernel[
     for d in range(OBS_DIM):
         mb_obs[i, d] = rollout_obs[src_idx, d]
 
-    # Gather pre-tanh z values (not post-tanh actions)
+    # Gather unbounded actions directly
     for a in range(ACTION_DIM):
-        mb_z_values[i, a] = rollout_z_values[src_idx, a]
+        mb_actions[i, a] = rollout_actions[src_idx, a]
 
     mb_advantages[i] = advantages[src_idx]
     mb_returns[i] = returns[src_idx]
@@ -282,22 +247,21 @@ fn ppo_continuous_actor_grad_kernel[
         dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
     ],
     advantages: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
-    z_values: LayoutTensor[
+    actions: LayoutTensor[
         dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
     ],
     clip_epsilon: Scalar[dtype],
     entropy_coef: Scalar[dtype],
     batch_size: Int,
 ):
-    """Compute gradient for PPO actor with Gaussian policy and clipped surrogate objective.
+    """Compute gradient for PPO actor with unbounded Gaussian policy (CleanRL-style).
 
-    For Gaussian policy:
-    - log_prob = sum_j(-0.5 * (LOG_2PI + 2*log_std[j] + ((z[j]-mean[j])/std[j])^2) - log(1-tanh(z)^2))
-    - d_log_prob/d_mean = (z - mean) / std^2
-    - d_log_prob/d_log_std = ((z - mean)^2 / std^2 - 1)
-    - Plus squashing correction terms
+    For unbounded Gaussian policy (no tanh squashing):
+    - log_prob = sum_j(-0.5 * (LOG_2PI + 2*log_std[j] + ((action[j]-mean[j])/std[j])^2))
+    - d_log_prob/d_mean = (action - mean) / std^2
+    - d_log_prob/d_log_std = ((action - mean)^2 / std^2 - 1)
 
-    Uses pre-tanh z_values directly (stored from collection) to avoid atanh numerical issues.
+    Uses unbounded actions directly (stored from collection).
     """
     var b = Int(block_dim.x * block_idx.x + thread_idx.x)
     if b >= batch_size:
@@ -312,29 +276,24 @@ fn ppo_continuous_actor_grad_kernel[
     var neg_half: Scalar[dtype] = -0.5
 
     # Numerical stability constants
-    comptime LOG_STD_MIN: Scalar[dtype] = -20.0
+    comptime LOG_STD_MIN: Scalar[dtype] = -5.0  # Match StochasticActor
     comptime LOG_STD_MAX: Scalar[dtype] = 2.0
-    comptime Z_CLAMP: Scalar[dtype] = 5.0  # Clamp z to prevent extreme values
-    comptime Z_NORM_CLAMP: Scalar[dtype] = 10.0  # Clamp z_normalized
     comptime LOG_PROB_DIFF_MAX: Scalar[dtype] = 20.0  # Prevent ratio explosion
     comptime GRAD_CLIP: Scalar[dtype] = 10.0  # Clip individual gradients
 
     var advantage = advantages[b]
     var old_log_prob = old_log_probs[b]
 
-    # Compute new log_prob using stored pre-tanh z_values (no atanh needed!)
+    # Compute new log_prob using stored actions
     var new_log_prob: Scalar[dtype] = 0.0
     var entropy_sum: Scalar[dtype] = 0.0
 
     # Arrays to store intermediate values for gradient computation
-    var z_vals = InlineArray[Scalar[dtype], ACTION_DIM](fill=Scalar[dtype](0.0))
+    var action_vals = InlineArray[Scalar[dtype], ACTION_DIM](fill=Scalar[dtype](0.0))
     var mean_vals = InlineArray[Scalar[dtype], ACTION_DIM](
         fill=Scalar[dtype](0.0)
     )
     var std_vals = InlineArray[Scalar[dtype], ACTION_DIM](
-        fill=Scalar[dtype](0.0)
-    )
-    var tanh_z_vals = InlineArray[Scalar[dtype], ACTION_DIM](
         fill=Scalar[dtype](0.0)
     )
 
@@ -342,12 +301,12 @@ fn ppo_continuous_actor_grad_kernel[
         # Extract tensor elements using [0] pattern and wrap in Scalar[dtype]
         var mean_val_raw = actor_output[b, j]
         var log_std_val_raw = actor_output[b, ACTION_DIM + j]
-        var z_val_raw = z_values[b, j]
+        var action_val_raw = actions[b, j]
 
         # Convert to Scalar[dtype] using [0] extraction
         var mean_val = Scalar[dtype](mean_val_raw[0])
         var log_std_val = Scalar[dtype](log_std_val_raw[0])
-        var z_val = Scalar[dtype](z_val_raw[0])
+        var action_val = Scalar[dtype](action_val_raw[0])
 
         # Clamp log_std for numerical stability
         if log_std_val < LOG_STD_MIN:
@@ -355,44 +314,21 @@ fn ppo_continuous_actor_grad_kernel[
         elif log_std_val > LOG_STD_MAX:
             log_std_val = LOG_STD_MAX
 
-        # Clamp z to prevent extreme values (matches sampling kernel)
-        if z_val > Z_CLAMP:
-            z_val = Z_CLAMP
-        elif z_val < -Z_CLAMP:
-            z_val = -Z_CLAMP
-
-        # Compute tanh(z) for squashing correction
-        var exp_z = exp(z_val)
-        var exp_neg_z = exp(-z_val)
-        var tanh_z = (exp_z - exp_neg_z) / (exp_z + exp_neg_z)
-
         var std_val = exp(log_std_val)
-        # Always add eps for division by std
-        var z_normalized = (z_val - mean_val) / (std_val + eps)
-
-        # Clamp z_normalized to prevent extreme log_prob values
-        if z_normalized > Z_NORM_CLAMP:
-            z_normalized = Z_NORM_CLAMP
-        elif z_normalized < -Z_NORM_CLAMP:
-            z_normalized = -Z_NORM_CLAMP
+        # Compute normalized action for log_prob
+        var action_normalized = (action_val - mean_val) / (std_val + eps)
 
         # Store for gradient computation
-        z_vals[j] = z_val
+        action_vals[j] = action_val
         mean_vals[j] = mean_val
         std_vals[j] = std_val
-        tanh_z_vals[j] = tanh_z
 
-        # Log probability of Gaussian
+        # Simple Gaussian log probability (no squashing correction)
         var log_gaussian = neg_half * (
-            log_2pi + two * log_std_val + z_normalized * z_normalized
+            log_2pi + two * log_std_val + action_normalized * action_normalized
         )
 
-        # Squashing correction: -log(1 - tanh(z)^2 + eps)
-        var one_minus_tanh_sq = one - tanh_z * tanh_z + eps
-        var squash_for_log = Float32(one_minus_tanh_sq) + Float32(1e-8)
-        var squash_correction = Scalar[dtype](log(squash_for_log))
-
-        new_log_prob = new_log_prob + log_gaussian - squash_correction
+        new_log_prob = new_log_prob + log_gaussian
 
         # Entropy: H = 0.5 * (LOG_2PI + 1 + 2*log_std)
         entropy_sum = entropy_sum + half * (log_2pi + one + two * log_std_val)
@@ -425,9 +361,6 @@ fn ppo_continuous_actor_grad_kernel[
 
     # PPO clipped objective: min(ratio * A, clipped_ratio * A)
     # Gradient is 0 when we use the clipped objective (i.e., clipped_ratio * A < ratio * A)
-    # This happens when:
-    # - ratio > 1+ε and A > 0: clipped (1+ε)*A < ratio*A
-    # - ratio < 1-ε and A < 0: clipped (1-ε)*A < ratio*A (since A < 0, smaller ratio gives larger product)
     var unclipped_obj = ratio * advantage
     var clipped_obj = clipped_ratio * advantage
     var is_clipped = clipped_obj < unclipped_obj
@@ -439,23 +372,17 @@ fn ppo_continuous_actor_grad_kernel[
             grad_output[b, j] = Scalar[dtype](0.0)
             grad_output[b, ACTION_DIM + j] = Scalar[dtype](0.0)
         else:
-            var z = z_vals[j]
+            var action = action_vals[j]
             var mean = mean_vals[j]
             var std = std_vals[j]
 
-            var z_normalized = (z - mean) / (std + eps)
+            var action_normalized = (action - mean) / (std + eps)
 
-            # Clamp z_normalized for gradient computation
-            if z_normalized > Z_NORM_CLAMP:
-                z_normalized = Z_NORM_CLAMP
-            elif z_normalized < -Z_NORM_CLAMP:
-                z_normalized = -Z_NORM_CLAMP
+            # d_log_prob/d_mean = action_normalized / std
+            var d_log_prob_d_mean = action_normalized / (std + eps)
 
-            # d_log_prob/d_mean = z_normalized / std
-            var d_log_prob_d_mean = z_normalized / (std + eps)
-
-            # d_log_prob/d_log_std = (z_normalized^2 - 1)
-            var d_log_prob_d_log_std = z_normalized * z_normalized - one
+            # d_log_prob/d_log_std = (action_normalized^2 - 1)
+            var d_log_prob_d_log_std = action_normalized * action_normalized - one
 
             # Entropy gradient: d_entropy/d_log_std = 1
             var d_entropy_d_log_std: Scalar[dtype] = 1.0

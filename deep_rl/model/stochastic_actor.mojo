@@ -17,32 +17,32 @@ comptime TPB = 256  # Threads per block for elementwise ops
 # Constants for numerical stability
 # =============================================================================
 
-comptime LOG_STD_MIN: Float64 = -2.0  # Minimum log_std (std ≈ 0.14)
-comptime LOG_STD_MAX: Float64 = 0.5  # Maximum log_std (std ≈ 1.65)
+# Log_std bounds for numerical stability
+# CleanRL uses similar bounds to prevent std from collapsing or exploding
+comptime LOG_STD_MIN: Float64 = -5.0  # Minimum log_std (std ≈ 0.0067)
+comptime LOG_STD_MAX: Float64 = 2.0   # Maximum log_std (std ≈ 7.4)
 
-# Mean clamping to prevent saturation (tanh(2) ≈ 0.96, tanh(3) ≈ 0.995)
-# Clamping to [-2, 2] ensures gradients flow and policy can recover from
-# degenerate states where the mean drifts to extreme values
-comptime MEAN_MIN: Float64 = -2.0
-comptime MEAN_MAX: Float64 = 2.0
+# No mean clamping - we use unbounded Gaussian (CleanRL-style)
+# Actions are clipped at environment boundary, not here
 comptime EPS: Float64 = 1e-6  # Small constant for numerical stability
 
 
 struct StochasticActor[in_dim: Int, action_dim: Int](Model):
-    """Stochastic Actor (Gaussian Policy) for continuous action spaces.
+    """Stochastic Actor (Unbounded Gaussian Policy) for continuous action spaces.
 
     This layer implements a diagonal Gaussian policy with learned mean and
-    state-independent log_std. It's designed for use with SAC, PPO, and other
-    policy gradient algorithms.
+    state-independent log_std, following CleanRL's PPO continuous design.
+    NO TANH SQUASHING - actions are clipped at environment boundary.
 
     Architecture:
         - Input: features [BATCH, in_dim] (typically from a backbone network)
         - Output: [mean, log_std] concatenated as [BATCH, action_dim * 2]
-        - Mean head: linear layer (input -> mean)
+        - Mean head: linear layer (input -> mean), unbounded output
         - Log_std: state-independent learnable parameter (like CleanRL's PPO)
 
-    The state-independent log_std design prevents weight explosion during training,
-    which can cause the policy to collapse or produce extreme pre-clamp values.
+    The state-independent log_std design prevents weight explosion during training.
+    The unbounded mean allows the policy to learn any action value, with clipping
+    applied only at the environment interface.
 
     Parameters layout:
         [W_mean (in_dim * action_dim) | b_mean (action_dim) | log_std (action_dim)]
@@ -50,15 +50,15 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
     Cache layout:
         [input (in_dim)] - caches input for backward pass
 
-    Usage with reparameterization trick:
+    Usage (CleanRL-style, no tanh):
         1. Forward pass: output = [mean, log_std]
         2. Sample noise: epsilon ~ N(0, 1)
-        3. Compute pre-tanh action: z = mean + exp(log_std) * epsilon
-        4. Apply tanh squashing: action = tanh(z)
-        5. Compute log_prob with squashing correction:
-           log_prob = log_normal(z; mean, std) - sum(log(1 - tanh(z)^2 + eps))
+        3. Compute action: action = mean + exp(log_std) * epsilon
+        4. Clip for environment: clipped_action = clip(action, -1, 1)
+        5. Compute log_prob (simple Gaussian, no Jacobian correction):
+           log_prob = -0.5 * sum((action - mean)^2 / std^2 + 2*log_std + log(2*pi))
 
-    Utility methods are provided for sampling and log probability computation.
+    This approach is simpler and avoids train/eval mismatch issues with tanh.
     """
 
     comptime IN_DIM: Int = Self.in_dim
@@ -230,8 +230,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
             for i in range(Self.in_dim):
                 cache[batch, i] = input[batch, i]
 
-            # Compute mean = input @ W_mean + b_mean
-            # Clamp to [-2, 2] to prevent tanh saturation and gradient vanishing
+            # Compute mean = input @ W_mean + b_mean (unbounded, CleanRL-style)
             for j in range(Self.action_dim):
                 var mean_acc = Float64(
                     rebind[Scalar[dtype]](params[Self._mean_b_offset() + j])
@@ -240,14 +239,10 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
                     mean_acc += Float64(
                         rebind[Scalar[dtype]](input[batch, i])
                     ) * Float64(rebind[Scalar[dtype]](W_mean[i, j]))
-                # Clamp mean to prevent extreme values
-                if mean_acc < MEAN_MIN:
-                    mean_acc = MEAN_MIN
-                elif mean_acc > MEAN_MAX:
-                    mean_acc = MEAN_MAX
+                # No clamping - unbounded mean, actions clipped at env boundary
                 output[batch, j] = Scalar[dtype](mean_acc)
 
-            # State-independent log_std (clamped)
+            # State-independent log_std (clamped for numerical stability)
             for j in range(Self.action_dim):
                 var log_std_val = Float64(
                     rebind[Scalar[dtype]](params[Self._log_std_offset() + j])
@@ -278,8 +273,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
         ](params.ptr + Self._mean_W_offset())
 
         for batch in range(BATCH):
-            # Compute mean = input @ W_mean + b_mean
-            # Clamp to [-2, 2] to prevent tanh saturation and gradient vanishing
+            # Compute mean = input @ W_mean + b_mean (unbounded, CleanRL-style)
             for j in range(Self.action_dim):
                 var mean_acc = Float64(
                     rebind[Scalar[dtype]](params[Self._mean_b_offset() + j])
@@ -288,14 +282,10 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
                     mean_acc += Float64(
                         rebind[Scalar[dtype]](input[batch, i])
                     ) * Float64(rebind[Scalar[dtype]](W_mean[i, j]))
-                # Clamp mean to prevent extreme values
-                if mean_acc < MEAN_MIN:
-                    mean_acc = MEAN_MIN
-                elif mean_acc > MEAN_MAX:
-                    mean_acc = MEAN_MAX
+                # No clamping - unbounded mean, actions clipped at env boundary
                 output[batch, j] = Scalar[dtype](mean_acc)
 
-            # State-independent log_std (clamped)
+            # State-independent log_std (clamped for numerical stability)
             for j in range(Self.action_dim):
                 var log_std_val = Float64(
                     rebind[Scalar[dtype]](params[Self._log_std_offset() + j])
@@ -474,14 +464,9 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
 
             barrier()
 
-        # Write results with mean clamping to prevent tanh saturation
+        # Write results (unbounded mean, CleanRL-style)
         if global_row < BATCH and global_col < Self.action_dim:
-            # Clamp mean to [-2, 2] to prevent extreme values that cause tanh saturation
-            # and gradient vanishing (tanh(2) ≈ 0.96, tanh(3) ≈ 0.995)
-            if mean_acc < Scalar[dtype](MEAN_MIN):
-                mean_acc = Scalar[dtype](MEAN_MIN)
-            elif mean_acc > Scalar[dtype](MEAN_MAX):
-                mean_acc = Scalar[dtype](MEAN_MAX)
+            # No mean clamping - unbounded Gaussian, actions clipped at env boundary
             output[global_row, global_col] = mean_acc
 
             # State-independent log_std (clamped for numerical stability)
@@ -570,14 +555,9 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
 
             barrier()
 
-        # Write results with mean clamping to prevent tanh saturation
+        # Write results (unbounded mean, CleanRL-style)
         if global_row < BATCH and global_col < Self.action_dim:
-            # Clamp mean to [-2, 2] to prevent extreme values that cause tanh saturation
-            # and gradient vanishing (tanh(2) ≈ 0.96, tanh(3) ≈ 0.995)
-            if mean_acc < Scalar[dtype](MEAN_MIN):
-                mean_acc = Scalar[dtype](MEAN_MIN)
-            elif mean_acc > Scalar[dtype](MEAN_MAX):
-                mean_acc = Scalar[dtype](MEAN_MAX)
+            # No mean clamping - unbounded Gaussian, actions clipped at env boundary
             output[global_row, global_col] = mean_acc
 
             # State-independent log_std (clamped for numerical stability)
