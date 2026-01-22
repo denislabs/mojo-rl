@@ -15,7 +15,13 @@ from gpu import thread_idx, block_idx, block_dim
 from gpu.host import DeviceContext, DeviceBuffer
 from random.philox import Random as PhiloxRandom
 
-from core import GPUDiscreteEnv, BoxDiscreteActionEnv, Action
+from core import (
+    GPUDiscreteEnv,
+    BoxDiscreteActionEnv,
+    Action,
+    GPUContinuousEnv,
+    BoxContinuousActionEnv,
+)
 
 from .state import LunarLanderState
 from .particle import Particle
@@ -115,7 +121,12 @@ from render import (
 
 
 struct LunarLanderV2[DTYPE: DType](
-    BoxDiscreteActionEnv, Copyable, GPUDiscreteEnv, Movable
+    BoxContinuousActionEnv,
+    BoxDiscreteActionEnv,
+    Copyable,
+    GPUContinuousEnv,
+    GPUDiscreteEnv,
+    Movable,
 ):
     """LunarLander environment with full physics using GPU methods.
 
@@ -135,6 +146,7 @@ struct LunarLanderV2[DTYPE: DType](
     comptime STATE_SIZE: Int = LLConstants.STATE_SIZE_VAL
     comptime OBS_DIM: Int = LLConstants.OBS_DIM_VAL
     comptime NUM_ACTIONS: Int = LLConstants.NUM_ACTIONS_VAL
+    comptime ACTION_DIM: Int = LLConstants.ACTION_DIM_VAL  # For GPUContinuousEnv
     comptime dtype = Self.DTYPE
     comptime StateType = LunarLanderState[Self.dtype]
     comptime ActionType = LunarLanderAction
@@ -1271,6 +1283,153 @@ struct LunarLanderV2[DTYPE: DType](
         var obs = self.get_obs_list()
         return (obs^, result[0], result[1])
 
+    # =========================================================================
+    # BoxContinuousActionEnv Trait Methods
+    # =========================================================================
+
+    fn action_dim(self) -> Int:
+        """Return action dimension (2 for LunarLander continuous).
+
+        Action space:
+        - action[0]: main engine throttle (0.0 to 1.0, 0 = off, 1 = full power)
+        - action[1]: side engine control (-1.0 to 1.0, negative = left, positive = right)
+        """
+        return LLConstants.ACTION_DIM_VAL
+
+    fn action_low(self) -> Scalar[Self.dtype]:
+        """Return lower bound for action values (-1.0 for side engine)."""
+        return Scalar[Self.dtype](-1.0)
+
+    fn action_high(self) -> Scalar[Self.dtype]:
+        """Return upper bound for action values (1.0)."""
+        return Scalar[Self.dtype](1.0)
+
+    fn step_continuous(
+        mut self, action: Scalar[Self.dtype]
+    ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
+        """Take 1D continuous action (main engine only) and return (obs, reward, done).
+
+        For single-dimensional control, interprets action as main engine throttle.
+        Policy outputs [-1, 1] via tanh, remapped to [0, 1].
+        """
+        # Remap main throttle from [-1, 1] to [0, 1]: (x + 1) / 2
+        var m_power = (Float64(action) + 1.0) * 0.5
+        if m_power < 0.0:
+            m_power = 0.0
+        if m_power > 1.0:
+            m_power = 1.0
+        var result = self._step_cpu_continuous(m_power, 0.0, 0.0)
+        return (self.get_obs_list(), result[0], result[1])
+
+    fn step_continuous_vec[
+        DTYPE_VEC: DType
+    ](mut self, action: List[Scalar[DTYPE_VEC]]) -> Tuple[
+        List[Scalar[DTYPE_VEC]], Scalar[DTYPE_VEC], Bool
+    ]:
+        """Take 2D continuous action and return (obs, reward, done).
+
+        Action space:
+        - Policy outputs actions in [-1, 1] via tanh
+        - action[0]: main engine throttle - remapped from [-1, 1] to [0, 1]
+        - action[1]: side engine control (-1.0 to 1.0)
+                     negative = left engine, positive = right engine
+                     magnitude determines power (0.5 to 1.0 mapped to 0-100%)
+        """
+        # Extract and clip actions
+        var m_power = Float64(0.0)
+        var s_power = Float64(0.0)
+        var direction = Float64(0.0)
+
+        if len(action) > 0:
+            # Remap main throttle from [-1, 1] to [0, 1]: (x + 1) / 2
+            m_power = (Float64(action[0]) + 1.0) * 0.5
+            # Clip main engine to [0, 1] (safety clamp)
+            if m_power < 0.0:
+                m_power = 0.0
+            if m_power > 1.0:
+                m_power = 1.0
+
+        if len(action) > 1:
+            var side_action = Float64(action[1])
+            # Clip side control to [-1, 1]
+            if side_action < -1.0:
+                side_action = -1.0
+            if side_action > 1.0:
+                side_action = 1.0
+
+            # Determine direction and power from side action
+            # Matching Gymnasium: abs(action[1]) > 0.5 activates engine
+            if side_action < -0.5:
+                direction = -1.0  # Left engine
+                # Map [-1, -0.5] to [1, 0] power
+                s_power = (-side_action - 0.5) * 2.0
+            elif side_action > 0.5:
+                direction = 1.0  # Right engine
+                # Map [0.5, 1] to [0, 1] power
+                s_power = (side_action - 0.5) * 2.0
+
+        var result = self._step_cpu_continuous(m_power, s_power, direction)
+
+        # Convert observation to requested dtype
+        var obs_internal = self.get_obs_list()
+        var obs = List[Scalar[DTYPE_VEC]](capacity=LLConstants.OBS_DIM_VAL)
+        for i in range(len(obs_internal)):
+            obs.append(Scalar[DTYPE_VEC](obs_internal[i]))
+        return (obs^, Scalar[DTYPE_VEC](result[0]), result[1])
+
+    fn _step_cpu_continuous(
+        mut self, m_power: Float64, s_power: Float64, direction: Float64
+    ) -> Tuple[Scalar[Self.dtype], Bool]:
+        """Internal CPU step implementation for continuous actions.
+
+        Args:
+            m_power: Main engine power (0.0 to 1.0).
+            s_power: Side engine power (0.0 to 1.0).
+            direction: Side engine direction (-1.0 = left, 1.0 = right, 0.0 = off).
+        """
+        # Apply wind
+        self._apply_wind()
+
+        # Apply engine forces with continuous power
+        self._apply_engines(m_power, s_power, direction)
+
+        # Spawn particles for engine flames (cosmetic effect)
+        if m_power > 0.0 or s_power > 0.0:
+            var pos_x = Float64(self.physics.get_body_x(0, Self.BODY_LANDER))
+            var pos_y = Float64(self.physics.get_body_y(0, Self.BODY_LANDER))
+            var angle = Float64(
+                self.physics.get_body_angle(0, Self.BODY_LANDER)
+            )
+            var tip_x = sin(angle)
+            var tip_y = cos(angle)
+            var side_x = -tip_y
+            var side_y = tip_x
+
+            if m_power > 0.0:
+                self._spawn_main_engine_particles(
+                    pos_x, pos_y, tip_x, tip_y, m_power
+                )
+            if s_power > 0.0:
+                self._spawn_side_engine_particles(
+                    pos_x,
+                    pos_y,
+                    tip_x,
+                    tip_y,
+                    side_x,
+                    side_y,
+                    direction,
+                    s_power,
+                )
+
+        # Physics step
+        self._step_physics_cpu()
+
+        # Update cached state
+        self._update_cached_state()
+
+        # Compute reward and termination
+        return self._compute_step_result(m_power, s_power)
+
     fn render(mut self, mut renderer: RendererBase):
         """Render the environment (Env trait method)."""
         # Render env 0 for single-env CPU mode
@@ -1331,6 +1490,77 @@ struct LunarLanderV2[DTYPE: DType](
         # Kernel 2: Fused physics + finalize + extract_obs
         LunarLanderV2[Self.dtype]._physics_finalize_obs_fused_gpu[
             BATCH_SIZE, OBS_DIM
+        ](
+            ctx,
+            states_buf,
+            shapes_buf,
+            edge_counts_buf,
+            joint_counts_buf,
+            contacts_buf,
+            contact_counts_buf,
+            actions_buf,
+            rewards_buf,
+            dones_buf,
+            obs_buf,
+            Scalar[dtype](LLConstants.GRAVITY_X),
+            Scalar[dtype](LLConstants.GRAVITY_Y),
+            Scalar[dtype](LLConstants.DT),
+            Scalar[dtype](LLConstants.FRICTION),
+            Scalar[dtype](LLConstants.RESTITUTION),
+            Scalar[dtype](LLConstants.BAUMGARTE),
+            Scalar[dtype](LLConstants.SLOP),
+        )
+
+    @staticmethod
+    fn step_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        OBS_DIM: Int,
+        ACTION_DIM: Int,
+    ](
+        ctx: DeviceContext,
+        mut states_buf: DeviceBuffer[dtype],
+        actions_buf: DeviceBuffer[dtype],
+        mut rewards_buf: DeviceBuffer[dtype],
+        mut dones_buf: DeviceBuffer[dtype],
+        mut obs_buf: DeviceBuffer[dtype],
+        rng_seed: UInt64 = 0,
+    ) raises:
+        """GPU step kernel for continuous actions (GPUContinuousEnv trait).
+
+        Actions buffer layout: [BATCH_SIZE, ACTION_DIM] where:
+        - action[0]: main engine throttle (policy outputs [-1, 1], remapped to [0, 1])
+        - action[1]: side engine control (-1.0 to 1.0)
+        """
+        # Allocate workspace buffers
+        var contacts_buf = ctx.enqueue_create_buffer[dtype](
+            BATCH_SIZE * LLConstants.MAX_CONTACTS * CONTACT_DATA_SIZE
+        )
+        var contact_counts_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE)
+        var shapes_buf = ctx.enqueue_create_buffer[dtype](
+            LLConstants.NUM_SHAPES * SHAPE_MAX_SIZE
+        )
+        var edge_counts_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE)
+        var joint_counts_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE)
+
+        # Initialize shapes (once, shared across environments)
+        LunarLanderV2[Self.dtype]._init_shapes_gpu(ctx, shapes_buf)
+
+        # Kernel 1: Fused setup for continuous actions
+        LunarLanderV2[Self.dtype]._setup_fused_gpu_continuous[
+            BATCH_SIZE, ACTION_DIM
+        ](
+            ctx,
+            states_buf,
+            actions_buf,
+            edge_counts_buf,
+            joint_counts_buf,
+            contact_counts_buf,
+        )
+
+        # Kernel 2: Fused physics + finalize + extract_obs (with continuous actions)
+        LunarLanderV2[Self.dtype]._physics_finalize_obs_fused_gpu_continuous[
+            BATCH_SIZE, OBS_DIM, ACTION_DIM
         ](
             ctx,
             states_buf,
@@ -2328,6 +2558,663 @@ struct LunarLanderV2[DTYPE: DType](
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )
+
+    # =========================================================================
+    # Continuous Action GPU Kernels (GPUContinuousEnv)
+    # =========================================================================
+
+    @staticmethod
+    fn _setup_fused_gpu_continuous[
+        BATCH_SIZE: Int,
+        ACTION_DIM: Int,
+    ](
+        ctx: DeviceContext,
+        mut states_buf: DeviceBuffer[dtype],
+        actions_buf: DeviceBuffer[dtype],
+        mut edge_counts_buf: DeviceBuffer[dtype],
+        mut joint_counts_buf: DeviceBuffer[dtype],
+        mut contact_counts_buf: DeviceBuffer[dtype],
+    ) raises:
+        """Fused setup kernel for continuous actions."""
+        var states = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH_SIZE, LLConstants.STATE_SIZE_VAL),
+            MutAnyOrigin,
+        ](states_buf.unsafe_ptr())
+        var actions = LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+        ](actions_buf.unsafe_ptr())
+        var edge_counts = LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ](edge_counts_buf.unsafe_ptr())
+        var joint_counts = LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ](joint_counts_buf.unsafe_ptr())
+        var contact_counts = LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ](contact_counts_buf.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
+
+        @always_inline
+        fn setup_kernel_continuous(
+            states: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH_SIZE, LLConstants.STATE_SIZE_VAL),
+                MutAnyOrigin,
+            ],
+            actions: LayoutTensor[
+                dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+            ],
+            edge_counts: LayoutTensor[
+                dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
+            joint_counts: LayoutTensor[
+                dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
+            contact_counts: LayoutTensor[
+                dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
+        ):
+            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if env >= BATCH_SIZE:
+                return
+            LunarLanderV2[dtype]._setup_single_env_continuous[
+                BATCH_SIZE, ACTION_DIM
+            ](env, states, actions, edge_counts, joint_counts, contact_counts)
+
+        ctx.enqueue_function[setup_kernel_continuous, setup_kernel_continuous](
+            states,
+            actions,
+            edge_counts,
+            joint_counts,
+            contact_counts,
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+    @always_inline
+    @staticmethod
+    fn _setup_single_env_continuous[
+        BATCH_SIZE: Int,
+        ACTION_DIM: Int,
+    ](
+        env: Int,
+        states: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH_SIZE, LLConstants.STATE_SIZE_VAL),
+            MutAnyOrigin,
+        ],
+        actions: LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+        ],
+        edge_counts: LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ],
+        joint_counts: LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ],
+        contact_counts: LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ],
+    ):
+        """Fused setup for single env with continuous actions."""
+        # 1. Zero contact count
+        contact_counts[env] = Scalar[dtype](0)
+
+        # 2. Extract edge/joint counts from state
+        edge_counts[env] = states[env, LLConstants.EDGE_COUNT_OFFSET]
+        joint_counts[env] = states[env, LLConstants.JOINT_COUNT_OFFSET]
+
+        # 3. Clear forces
+        for body in range(LLConstants.NUM_BODIES):
+            var force_off = LLConstants.FORCES_OFFSET + body * 3
+            states[env, force_off + 0] = Scalar[dtype](0)
+            states[env, force_off + 1] = Scalar[dtype](0)
+            states[env, force_off + 2] = Scalar[dtype](0)
+
+        # 4. Check if done - skip force application
+        if rebind[Scalar[dtype]](
+            states[env, LLConstants.METADATA_OFFSET + LLConstants.META_DONE]
+        ) > Scalar[dtype](0.5):
+            return
+
+        # 5. Extract continuous actions
+        # Policy outputs actions in [-1, 1] via tanh
+        # action[0]: main engine throttle - remap from [-1, 1] to [0, 1]
+        # action[1]: side engine control (-1 to 1) - keep as-is
+        var raw_throttle = rebind[Scalar[dtype]](actions[env, 0])
+        var side_control = rebind[Scalar[dtype]](actions[env, 1])
+
+        # Remap main throttle from [-1, 1] to [0, 1]: (x + 1) / 2
+        var main_throttle = (raw_throttle + Scalar[dtype](1.0)) * Scalar[dtype](
+            0.5
+        )
+
+        # Clip main engine to [0, 1] (safety clamp)
+        if main_throttle < Scalar[dtype](0.0):
+            main_throttle = Scalar[dtype](0.0)
+        if main_throttle > Scalar[dtype](1.0):
+            main_throttle = Scalar[dtype](1.0)
+
+        # Clip side control to [-1, 1]
+        if side_control < Scalar[dtype](-1.0):
+            side_control = Scalar[dtype](-1.0)
+        if side_control > Scalar[dtype](1.0):
+            side_control = Scalar[dtype](1.0)
+
+        # Convert side control to direction and power
+        # Matching Gymnasium: abs(action[1]) > 0.5 activates engine
+        var m_power = main_throttle
+        var s_power = Scalar[dtype](0.0)
+        var direction = Scalar[dtype](0.0)
+
+        if side_control < Scalar[dtype](-0.5):
+            direction = Scalar[dtype](-1.0)  # Left engine
+            s_power = (-side_control - Scalar[dtype](0.5)) * Scalar[dtype](2.0)
+        elif side_control > Scalar[dtype](0.5):
+            direction = Scalar[dtype](1.0)  # Right engine
+            s_power = (side_control - Scalar[dtype](0.5)) * Scalar[dtype](2.0)
+
+        # Early exit if no thrust
+        if m_power <= Scalar[dtype](0.0) and s_power <= Scalar[dtype](0.0):
+            return
+
+        # 6. Apply engine forces
+        var step_count = Int(
+            states[
+                env, LLConstants.METADATA_OFFSET + LLConstants.META_STEP_COUNT
+            ]
+        )
+
+        var rng = PhiloxRandom(seed=env + 12345, offset=step_count)
+        var rand_vals = rng.step_uniform()
+
+        var dispersion_x = (
+            rand_vals[0] * Scalar[dtype](2.0) - Scalar[dtype](1.0)
+        ) / Scalar[dtype](LLConstants.SCALE)
+        var dispersion_y = (
+            rand_vals[1] * Scalar[dtype](2.0) - Scalar[dtype](1.0)
+        ) / Scalar[dtype](LLConstants.SCALE)
+
+        var angle = rebind[Scalar[dtype]](
+            states[env, LLConstants.BODIES_OFFSET + IDX_ANGLE]
+        )
+        var tip_x = sin(angle)
+        var tip_y = cos(angle)
+        var side_x = -tip_y
+        var side_y = tip_x
+
+        var vx = rebind[Scalar[dtype]](
+            states[env, LLConstants.BODIES_OFFSET + IDX_VX]
+        )
+        var vy = rebind[Scalar[dtype]](
+            states[env, LLConstants.BODIES_OFFSET + IDX_VY]
+        )
+        var omega = rebind[Scalar[dtype]](
+            states[env, LLConstants.BODIES_OFFSET + IDX_OMEGA]
+        )
+
+        var dvx = Scalar[dtype](0)
+        var dvy = Scalar[dtype](0)
+        var domega = Scalar[dtype](0)
+
+        var main_y_offset = Scalar[dtype](LLConstants.MAIN_ENGINE_Y_OFFSET)
+        var side_away = Scalar[dtype](LLConstants.SIDE_ENGINE_AWAY)
+        var side_height = Scalar[dtype](LLConstants.SIDE_ENGINE_HEIGHT)
+        var main_power_const = Scalar[dtype](LLConstants.MAIN_ENGINE_POWER)
+        var side_power_const = Scalar[dtype](LLConstants.SIDE_ENGINE_POWER)
+        var lander_mass = Scalar[dtype](LLConstants.LANDER_MASS)
+        var lander_inertia = Scalar[dtype](LLConstants.LANDER_INERTIA)
+        var scale = Scalar[dtype](LLConstants.SCALE)
+
+        # Apply main engine force (scaled by m_power)
+        if m_power > Scalar[dtype](0.0):
+            var ox = (
+                tip_x * (main_y_offset + Scalar[dtype](2.0) * dispersion_x)
+                + side_x * dispersion_y
+            )
+            var oy = (
+                -tip_y * (main_y_offset + Scalar[dtype](2.0) * dispersion_x)
+                - side_y * dispersion_y
+            )
+            var impulse_x = -ox * main_power_const * m_power
+            var impulse_y = -oy * main_power_const * m_power
+            dvx += impulse_x / lander_mass
+            dvy += impulse_y / lander_mass
+            var torque = ox * impulse_y - oy * impulse_x
+            domega += torque / lander_inertia
+
+        # Apply side engine force (scaled by s_power)
+        if s_power > Scalar[dtype](0.0):
+            var ox = tip_x * dispersion_x + side_x * (
+                Scalar[dtype](3.0) * dispersion_y + direction * side_away
+            )
+            var oy = -tip_y * dispersion_x - side_y * (
+                Scalar[dtype](3.0) * dispersion_y + direction * side_away
+            )
+            var impulse_x = -ox * side_power_const * s_power
+            var impulse_y = -oy * side_power_const * s_power
+            dvx += impulse_x / lander_mass
+            dvy += impulse_y / lander_mass
+            var r_x = ox - tip_x * Scalar[dtype](17.0) / scale
+            var r_y = oy + tip_y * side_height
+            var torque = r_x * impulse_y - r_y * impulse_x
+            domega += torque / lander_inertia
+
+        states[env, LLConstants.BODIES_OFFSET + IDX_VX] = vx + dvx
+        states[env, LLConstants.BODIES_OFFSET + IDX_VY] = vy + dvy
+        states[env, LLConstants.BODIES_OFFSET + IDX_OMEGA] = omega + domega
+
+    @staticmethod
+    fn _physics_finalize_obs_fused_gpu_continuous[
+        BATCH_SIZE: Int,
+        OBS_DIM: Int,
+        ACTION_DIM: Int,
+    ](
+        ctx: DeviceContext,
+        mut states_buf: DeviceBuffer[dtype],
+        shapes_buf: DeviceBuffer[dtype],
+        edge_counts_buf: DeviceBuffer[dtype],
+        joint_counts_buf: DeviceBuffer[dtype],
+        mut contacts_buf: DeviceBuffer[dtype],
+        mut contact_counts_buf: DeviceBuffer[dtype],
+        actions_buf: DeviceBuffer[dtype],
+        mut rewards_buf: DeviceBuffer[dtype],
+        mut dones_buf: DeviceBuffer[dtype],
+        mut obs_buf: DeviceBuffer[dtype],
+        gravity_x: Scalar[dtype],
+        gravity_y: Scalar[dtype],
+        dt: Scalar[dtype],
+        friction: Scalar[dtype],
+        restitution: Scalar[dtype],
+        baumgarte: Scalar[dtype],
+        slop: Scalar[dtype],
+    ) raises:
+        """Fused physics + finalize + extract_obs for continuous actions."""
+        var states = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH_SIZE, LLConstants.STATE_SIZE_VAL),
+            MutAnyOrigin,
+        ](states_buf.unsafe_ptr())
+        var shapes = LayoutTensor[
+            dtype,
+            Layout.row_major(LLConstants.NUM_SHAPES, SHAPE_MAX_SIZE),
+            MutAnyOrigin,
+        ](shapes_buf.unsafe_ptr())
+        var edge_counts = LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ](edge_counts_buf.unsafe_ptr())
+        var joint_counts = LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ](joint_counts_buf.unsafe_ptr())
+        var contacts = LayoutTensor[
+            dtype,
+            Layout.row_major(
+                BATCH_SIZE, LLConstants.MAX_CONTACTS, CONTACT_DATA_SIZE
+            ),
+            MutAnyOrigin,
+        ](contacts_buf.unsafe_ptr())
+        var contact_counts = LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ](contact_counts_buf.unsafe_ptr())
+        var actions = LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+        ](actions_buf.unsafe_ptr())
+        var rewards = LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ](rewards_buf.unsafe_ptr())
+        var dones = LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ](dones_buf.unsafe_ptr())
+        var obs = LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+        ](obs_buf.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
+
+        @always_inline
+        fn physics_finalize_obs_kernel_continuous(
+            states: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH_SIZE, LLConstants.STATE_SIZE_VAL),
+                MutAnyOrigin,
+            ],
+            shapes: LayoutTensor[
+                dtype,
+                Layout.row_major(LLConstants.NUM_SHAPES, SHAPE_MAX_SIZE),
+                MutAnyOrigin,
+            ],
+            edge_counts: LayoutTensor[
+                dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
+            joint_counts: LayoutTensor[
+                dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
+            contacts: LayoutTensor[
+                dtype,
+                Layout.row_major(
+                    BATCH_SIZE, LLConstants.MAX_CONTACTS, CONTACT_DATA_SIZE
+                ),
+                MutAnyOrigin,
+            ],
+            contact_counts: LayoutTensor[
+                dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
+            actions: LayoutTensor[
+                dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+            ],
+            rewards: LayoutTensor[
+                dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
+            dones: LayoutTensor[
+                dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
+            obs: LayoutTensor[
+                dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+            ],
+            gravity_x: Scalar[dtype],
+            gravity_y: Scalar[dtype],
+            dt: Scalar[dtype],
+            friction: Scalar[dtype],
+            restitution: Scalar[dtype],
+            baumgarte: Scalar[dtype],
+            slop: Scalar[dtype],
+        ):
+            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if env >= BATCH_SIZE:
+                return
+
+            var n_edges = Int(edge_counts[env])
+            var n_joints = Int(joint_counts[env])
+
+            # Physics Step (same as discrete version)
+            SemiImplicitEuler.integrate_velocities_single_env[
+                BATCH_SIZE,
+                LLConstants.NUM_BODIES,
+                LLConstants.STATE_SIZE_VAL,
+                LLConstants.BODIES_OFFSET,
+                LLConstants.FORCES_OFFSET,
+            ](env, states, gravity_x, gravity_y, dt)
+
+            EdgeTerrainCollision.detect_single_env[
+                BATCH_SIZE,
+                LLConstants.NUM_BODIES,
+                LLConstants.NUM_SHAPES,
+                LLConstants.MAX_CONTACTS,
+                MAX_TERRAIN_EDGES,
+                LLConstants.STATE_SIZE_VAL,
+                LLConstants.BODIES_OFFSET,
+                LLConstants.EDGES_OFFSET,
+            ](env, states, shapes, n_edges, contacts, contact_counts)
+
+            var n_contacts = Int(contact_counts[env])
+
+            for _ in range(LLConstants.VELOCITY_ITERATIONS):
+                ImpulseSolver.solve_velocity_single_env[
+                    BATCH_SIZE,
+                    LLConstants.NUM_BODIES,
+                    LLConstants.MAX_CONTACTS,
+                    LLConstants.STATE_SIZE_VAL,
+                    LLConstants.BODIES_OFFSET,
+                ](env, states, contacts, n_contacts, friction, restitution)
+
+                RevoluteJointSolver.solve_velocity_single_env[
+                    BATCH_SIZE,
+                    LLConstants.NUM_BODIES,
+                    LLConstants.MAX_JOINTS,
+                    LLConstants.STATE_SIZE_VAL,
+                    LLConstants.BODIES_OFFSET,
+                    LLConstants.JOINTS_OFFSET,
+                ](env, states, n_joints, dt)
+
+            SemiImplicitEuler.integrate_positions_single_env[
+                BATCH_SIZE,
+                LLConstants.NUM_BODIES,
+                LLConstants.STATE_SIZE_VAL,
+                LLConstants.BODIES_OFFSET,
+            ](env, states, dt)
+
+            for _ in range(LLConstants.POSITION_ITERATIONS):
+                ImpulseSolver.solve_position_single_env[
+                    BATCH_SIZE,
+                    LLConstants.NUM_BODIES,
+                    LLConstants.MAX_CONTACTS,
+                    LLConstants.STATE_SIZE_VAL,
+                    LLConstants.BODIES_OFFSET,
+                ](env, states, contacts, n_contacts, baumgarte, slop)
+
+                RevoluteJointSolver.solve_position_single_env[
+                    BATCH_SIZE,
+                    LLConstants.NUM_BODIES,
+                    LLConstants.MAX_JOINTS,
+                    LLConstants.STATE_SIZE_VAL,
+                    LLConstants.BODIES_OFFSET,
+                    LLConstants.JOINTS_OFFSET,
+                ](env, states, n_joints, baumgarte, slop)
+
+            # Finalize with continuous action fuel costs
+            LunarLanderV2[dtype]._finalize_single_env_continuous[
+                BATCH_SIZE, ACTION_DIM
+            ](env, states, actions, contacts, contact_counts, rewards, dones)
+
+            # Extract observations to separate obs buffer
+            for d in range(OBS_DIM):
+                obs[env, d] = states[env, d]
+
+        ctx.enqueue_function[
+            physics_finalize_obs_kernel_continuous,
+            physics_finalize_obs_kernel_continuous,
+        ](
+            states,
+            shapes,
+            edge_counts,
+            joint_counts,
+            contacts,
+            contact_counts,
+            actions,
+            rewards,
+            dones,
+            obs,
+            gravity_x,
+            gravity_y,
+            dt,
+            friction,
+            restitution,
+            baumgarte,
+            slop,
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+    @always_inline
+    @staticmethod
+    fn _finalize_single_env_continuous[
+        BATCH_SIZE: Int,
+        ACTION_DIM: Int,
+    ](
+        env: Int,
+        states: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH_SIZE, LLConstants.STATE_SIZE_VAL),
+            MutAnyOrigin,
+        ],
+        actions: LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+        ],
+        contacts: LayoutTensor[
+            dtype,
+            Layout.row_major(
+                BATCH_SIZE, LLConstants.MAX_CONTACTS, CONTACT_DATA_SIZE
+            ),
+            MutAnyOrigin,
+        ],
+        contact_counts: LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ],
+        rewards: LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ],
+        dones: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    ):
+        """Finalize step for single env with continuous action fuel costs."""
+        var lander_off = LLConstants.BODIES_OFFSET
+
+        # Check if already done
+        if rebind[Scalar[dtype]](
+            states[env, LLConstants.METADATA_OFFSET + LLConstants.META_DONE]
+        ) > Scalar[dtype](0.5):
+            rewards[env] = Scalar[dtype](0)
+            dones[env] = Scalar[dtype](1)
+            return
+
+        # Get lander state
+        var x = rebind[Scalar[dtype]](states[env, lander_off + IDX_X])
+        var y = rebind[Scalar[dtype]](states[env, lander_off + IDX_Y])
+        var vx = rebind[Scalar[dtype]](states[env, lander_off + IDX_VX])
+        var vy = rebind[Scalar[dtype]](states[env, lander_off + IDX_VY])
+        var angle = rebind[Scalar[dtype]](states[env, lander_off + IDX_ANGLE])
+        var omega = rebind[Scalar[dtype]](states[env, lander_off + IDX_OMEGA])
+
+        # Normalize observation
+        var pos_norm = normalize_position[dtype](x, y)
+        var vel_norm = normalize_velocity[dtype](vx, vy)
+        var x_norm = pos_norm[0]
+        var y_norm = pos_norm[1]
+        var vx_norm = vel_norm[0]
+        var vy_norm = vel_norm[1]
+        var omega_norm = normalize_angular_velocity[dtype](omega)
+
+        # Check leg contacts
+        var left_contact = Scalar[dtype](0.0)
+        var right_contact = Scalar[dtype](0.0)
+        var left_y = rebind[Scalar[dtype]](
+            states[env, LLConstants.BODIES_OFFSET + BODY_STATE_SIZE + IDX_Y]
+        )
+        var right_y = rebind[Scalar[dtype]](
+            states[env, LLConstants.BODIES_OFFSET + 2 * BODY_STATE_SIZE + IDX_Y]
+        )
+        var helipad_y = Scalar[dtype](LLConstants.HELIPAD_Y)
+        var contact_threshold = helipad_y + Scalar[dtype](0.1)
+        if left_y <= contact_threshold:
+            left_contact = Scalar[dtype](1.0)
+        if right_y <= contact_threshold:
+            right_contact = Scalar[dtype](1.0)
+
+        # Update observation
+        states[env, LLConstants.OBS_OFFSET + 0] = x_norm
+        states[env, LLConstants.OBS_OFFSET + 1] = y_norm
+        states[env, LLConstants.OBS_OFFSET + 2] = vx_norm
+        states[env, LLConstants.OBS_OFFSET + 3] = vy_norm
+        states[env, LLConstants.OBS_OFFSET + 4] = angle
+        states[env, LLConstants.OBS_OFFSET + 5] = omega_norm
+        states[env, LLConstants.OBS_OFFSET + 6] = left_contact
+        states[env, LLConstants.OBS_OFFSET + 7] = right_contact
+
+        # Compute shaping
+        var shaping = compute_shaping[dtype](
+            x_norm, y_norm, vx_norm, vy_norm, angle, left_contact, right_contact
+        )
+        var prev_shaping = rebind[Scalar[dtype]](
+            states[
+                env, LLConstants.METADATA_OFFSET + LLConstants.META_PREV_SHAPING
+            ]
+        )
+        var reward = shaping - prev_shaping
+        states[
+            env, LLConstants.METADATA_OFFSET + LLConstants.META_PREV_SHAPING
+        ] = shaping
+
+        # Continuous fuel costs (proportional to throttle)
+        # Policy outputs actions in [-1, 1] via tanh, remap throttle to [0, 1]
+        var raw_throttle = rebind[Scalar[dtype]](actions[env, 0])
+        var side_control = rebind[Scalar[dtype]](actions[env, 1])
+
+        # Remap main throttle from [-1, 1] to [0, 1]: (x + 1) / 2
+        var main_throttle = (raw_throttle + Scalar[dtype](1.0)) * Scalar[dtype](
+            0.5
+        )
+
+        # Clip for fuel calculation (safety clamp)
+        if main_throttle < Scalar[dtype](0.0):
+            main_throttle = Scalar[dtype](0.0)
+        if main_throttle > Scalar[dtype](1.0):
+            main_throttle = Scalar[dtype](1.0)
+
+        # Main engine fuel cost (proportional to throttle)
+        reward = reward - main_throttle * Scalar[dtype](
+            LLConstants.MAIN_ENGINE_FUEL_COST
+        )
+
+        # Side engine fuel cost (proportional to power used)
+        var abs_side = side_control
+        if abs_side < Scalar[dtype](0.0):
+            abs_side = -abs_side
+        if abs_side > Scalar[dtype](0.5):
+            var s_power = (abs_side - Scalar[dtype](0.5)) * Scalar[dtype](2.0)
+            reward = reward - s_power * Scalar[dtype](
+                LLConstants.SIDE_ENGINE_FUEL_COST
+            )
+
+        # Check termination
+        var done = Scalar[dtype](0.0)
+
+        # Out of bounds
+        if x_norm >= Scalar[dtype](1.0) or x_norm <= Scalar[dtype](-1.0):
+            done = Scalar[dtype](1.0)
+            reward = Scalar[dtype](LLConstants.CRASH_PENALTY)
+
+        # Too high
+        var h_units_max = Scalar[dtype](LLConstants.H_UNITS * 1.5)
+        if y > h_units_max:
+            done = Scalar[dtype](1.0)
+            reward = Scalar[dtype](LLConstants.CRASH_PENALTY)
+
+        # Crash: lander body touches ground
+        var n_contacts = Int(contact_counts[env])
+        var lander_contact = False
+        for c in range(n_contacts):
+            var body_a = Int(contacts[env, c, CONTACT_BODY_A])
+            if body_a == LLConstants.BODY_LANDER:
+                lander_contact = True
+                break
+
+        if lander_contact:
+            done = Scalar[dtype](1.0)
+            reward = Scalar[dtype](LLConstants.CRASH_PENALTY)
+
+        # Successful landing
+        var both_legs = left_contact > Scalar[dtype](
+            0.5
+        ) and right_contact > Scalar[dtype](0.5)
+        var speed_val = sqrt(vx * vx + vy * vy)
+        var abs_omega = omega
+        if omega < Scalar[dtype](0.0):
+            abs_omega = -omega
+        if (
+            both_legs
+            and speed_val < Scalar[dtype](0.01)
+            and abs_omega < Scalar[dtype](0.01)
+        ):
+            done = Scalar[dtype](1.0)
+            reward = reward + Scalar[dtype](LLConstants.LAND_REWARD)
+
+        # Max steps
+        var step_count = rebind[Scalar[dtype]](
+            states[
+                env, LLConstants.METADATA_OFFSET + LLConstants.META_STEP_COUNT
+            ]
+        )
+        if step_count > Scalar[dtype](1000.0):
+            done = Scalar[dtype](1.0)
+
+        # Update metadata
+        states[
+            env, LLConstants.METADATA_OFFSET + LLConstants.META_STEP_COUNT
+        ] = step_count + Scalar[dtype](1.0)
+        states[env, LLConstants.METADATA_OFFSET + LLConstants.META_DONE] = done
+        rewards[env] = reward
+        dones[env] = done
 
     # =========================================================================
     # Rendering Methods

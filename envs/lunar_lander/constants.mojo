@@ -87,7 +87,8 @@ struct LLConstants:
     comptime MAX_CONTACTS: Int = Self.LL.MAX_CONTACTS
     comptime MAX_JOINTS: Int = Self.LL.MAX_JOINTS
     comptime OBS_DIM_VAL: Int = Self.LL.OBS_DIM
-    comptime NUM_ACTIONS_VAL: Int = 4
+    comptime NUM_ACTIONS_VAL: Int = 4  # Discrete: noop, left, main, right
+    comptime ACTION_DIM_VAL: Int = 2  # Continuous: [main_throttle, side_throttle]
 
     # Buffer sizes (from layout)
     comptime BODIES_SIZE: Int = Self.LL.BODIES_SIZE

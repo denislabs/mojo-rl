@@ -33,7 +33,7 @@ Usage:
 Reference: Schulman et al., "Proximal Policy Optimization Algorithms" (2017)
 """
 
-from math import exp, log, sqrt, cos
+from math import exp, log, sqrt, cos, tanh
 from random import random_float64, seed
 from time import perf_counter_ns
 from gpu import thread_idx, block_idx, block_dim, barrier
@@ -141,13 +141,13 @@ struct DeepPPOContinuousAgent[
 
     # Network parameter sizes
     # Actor: Linear[obs, hidden] + ReLU + Linear[hidden, hidden] + ReLU + StochasticActor[hidden, action]
-    # StochasticActor params: 2 * (hidden * action + action) for mean and log_std heads
+    # StochasticActor params: (hidden * action + action) for mean head + action for state-independent log_std
     comptime ACTOR_PARAM_SIZE: Int = (
         Self.OBS * Self.HIDDEN
         + Self.HIDDEN  # Linear 1
         + Self.HIDDEN * Self.HIDDEN
         + Self.HIDDEN  # Linear 2
-        + 2 * (Self.HIDDEN * Self.ACTIONS + Self.ACTIONS)  # StochasticActor
+        + (Self.HIDDEN * Self.ACTIONS + Self.ACTIONS + Self.ACTIONS)  # StochasticActor
     )
     # Critic: Linear[obs, hidden] + ReLU + Linear[hidden, hidden] + ReLU + Linear[hidden, 1]
     comptime CRITIC_PARAM_SIZE: Int = (
@@ -300,8 +300,9 @@ struct DeepPPOContinuousAgent[
             + Self.HIDDEN * Self.HIDDEN  # Linear 1
             + Self.HIDDEN  # Linear 2
         )
-        comptime STOCHASTIC_ACTOR_SIZE = 2 * (
-            Self.HIDDEN * Self.ACTIONS + Self.ACTIONS
+        # State-independent log_std: W_mean + b_mean + log_std
+        comptime STOCHASTIC_ACTOR_SIZE = (
+            Self.HIDDEN * Self.ACTIONS + Self.ACTIONS + Self.ACTIONS
         )
         var stochastic_actor_params = LayoutTensor[
             dtype, Layout.row_major(STOCHASTIC_ACTOR_SIZE), MutAnyOrigin
@@ -368,6 +369,91 @@ struct DeepPPOContinuousAgent[
 
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
+
+    # =========================================================================
+    # Action Selection (for evaluation)
+    # =========================================================================
+
+    fn select_action(
+        self,
+        obs: InlineArray[Scalar[dtype], Self.OBS],
+        training: Bool = True,
+    ) -> Tuple[
+        InlineArray[Scalar[dtype], Self.ACTIONS], Scalar[dtype], Scalar[dtype]
+    ]:
+        """Select continuous action from policy.
+
+        Args:
+            obs: Current observation.
+            training: If True, sample from Gaussian; else use mean (deterministic).
+
+        Returns:
+            Tuple of (actions, log_prob, value) where actions is an array of
+            continuous action values in [-1, 1].
+        """
+        # Forward actor to get mean and log_std
+        # StochasticActor outputs: [mean_0, ..., mean_n, log_std_0, ..., log_std_n]
+        var actor_output = InlineArray[Scalar[dtype], Self.ACTOR_OUT](
+            uninitialized=True
+        )
+        self.actor.forward[1](obs, actor_output)
+
+        # Extract means and log_stds
+        var means = InlineArray[Scalar[dtype], Self.ACTIONS](uninitialized=True)
+        var log_stds = InlineArray[Scalar[dtype], Self.ACTIONS](
+            uninitialized=True
+        )
+        for j in range(Self.ACTIONS):
+            means[j] = actor_output[j]
+            log_stds[j] = actor_output[Self.ACTIONS + j]
+
+        # Forward critic to get value
+        var value_out = InlineArray[Scalar[dtype], 1](uninitialized=True)
+        self.critic.forward[1](obs, value_out)
+        var value = value_out[0]
+
+        # Compute actions
+        var actions = InlineArray[Scalar[dtype], Self.ACTIONS](
+            uninitialized=True
+        )
+        var total_log_prob = Scalar[dtype](0.0)
+
+        for j in range(Self.ACTIONS):
+            var mean = means[j]
+            var log_std = log_stds[j]
+            var std = exp(log_std)
+
+            var action_raw: Scalar[dtype]
+            if training:
+                # Sample from Gaussian: action = mean + std * noise
+                var noise = Scalar[dtype](
+                    random_float64(-1.0, 1.0) * 0.5
+                )  # Approximate Gaussian
+                action_raw = mean + std * noise
+
+                # Compute log probability (Gaussian)
+                var z = (action_raw - mean) / (std + Scalar[dtype](1e-8))
+                var log_prob_gaussian = (
+                    -Scalar[dtype](0.5) * z * z
+                    - log_std
+                    - Scalar[dtype](0.9189385)  # -0.5 * log(2*pi)
+                )
+                # Correction for tanh squashing
+                var tanh_action = Scalar[dtype](tanh(Float64(action_raw)))
+                var log_prob_correction = log(
+                    Scalar[dtype](1.0)
+                    - tanh_action * tanh_action
+                    + Scalar[dtype](1e-6)
+                )
+                total_log_prob += log_prob_gaussian - log_prob_correction
+            else:
+                # Deterministic: use mean
+                action_raw = mean
+
+            # Apply tanh squashing to bound actions to [-1, 1]
+            actions[j] = Scalar[dtype](tanh(Float64(action_raw)))
+
+        return (actions, total_log_prob, value)
 
     # =========================================================================
     # Checkpoint Save/Load
@@ -485,6 +571,296 @@ struct DeepPPOContinuousAgent[
                 idx += 1
 
         print("Checkpoint loaded from:", path)
+
+    # =========================================================================
+    # Evaluation Methods
+    # =========================================================================
+
+    fn evaluate[
+        E: BoxContinuousActionEnv
+    ](
+        self,
+        mut env: E,
+        num_episodes: Int = 10,
+        max_steps: Int = 1000,
+        verbose: Bool = False,
+        renderer: UnsafePointer[RendererBase, MutAnyOrigin] = UnsafePointer[
+            RendererBase, MutAnyOrigin
+        ](),
+    ) -> Float64:
+        """Evaluate the agent using deterministic policy (CPU with optional rendering).
+
+        Args:
+            env: The environment to evaluate on.
+            num_episodes: Number of evaluation episodes.
+            max_steps: Maximum steps per episode.
+            verbose: Whether to print per-episode results.
+            renderer: Optional pointer to renderer for visualization.
+
+        Returns:
+            Average reward over evaluation episodes.
+        """
+        var total_reward: Float64 = 0.0
+
+        for episode in range(num_episodes):
+            var obs_list = env.reset_obs_list()
+            var obs = InlineArray[Scalar[dtype], Self.OBS](uninitialized=True)
+            for i in range(Self.OBS):
+                obs[i] = Scalar[dtype](obs_list[i])
+
+            var episode_reward: Float64 = 0.0
+            var episode_steps = 0
+
+            for step in range(max_steps):
+                # Deterministic action (training=False uses mean, no sampling)
+                var action_result = self.select_action(obs, training=False)
+                var actions = action_result[0]
+
+                # Convert actions to List[Scalar[dtype]] for environment
+                var action_list = List[Scalar[dtype]]()
+                for j in range(Self.ACTIONS):
+                    action_list.append(actions[j])
+
+                # Step environment with multi-dimensional actions
+                var result = env.step_continuous_vec[dtype](action_list)
+                var next_obs_list = result[0].copy()
+                var reward = result[1]
+                var done = result[2]
+
+                if renderer:
+                    env.render(renderer[])
+
+                episode_reward += Float64(reward)
+                episode_steps += 1
+
+                # Update observation
+                for i in range(Self.OBS):
+                    obs[i] = next_obs_list[i]
+
+                if done:
+                    break
+
+            total_reward += episode_reward
+
+            if verbose:
+                print(
+                    "Eval Episode",
+                    episode + 1,
+                    "| Reward:",
+                    String(episode_reward)[:10],
+                    "| Steps:",
+                    episode_steps,
+                )
+
+        return total_reward / Float64(num_episodes)
+
+    fn evaluate_gpu[
+        EnvType: GPUContinuousEnv
+    ](
+        self,
+        ctx: DeviceContext,
+        num_episodes: Int = 100,
+        max_steps: Int = 1000,
+        verbose: Bool = False,
+    ) raises -> Float64:
+        """Evaluate the agent using deterministic policy on GPU parallel environments.
+
+        Args:
+            ctx: GPU device context.
+            num_episodes: Target number of evaluation episodes.
+            max_steps: Maximum steps per episode.
+            verbose: Whether to print progress.
+
+        Returns:
+            Average reward over completed episodes.
+        """
+        # =====================================================================
+        # Buffer allocation
+        # =====================================================================
+        comptime ENV_OBS_SIZE = Self.n_envs * Self.OBS
+        comptime ENV_STATE_SIZE = Self.n_envs * EnvType.STATE_SIZE
+        comptime ENV_ACTION_SIZE = Self.n_envs * Self.ACTIONS
+
+        # Environment state buffers
+        var env_states_buf = ctx.enqueue_create_buffer[dtype](ENV_STATE_SIZE)
+        var obs_buf = ctx.enqueue_create_buffer[dtype](ENV_OBS_SIZE)
+        var rewards_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
+        var dones_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
+
+        # Action buffers
+        var actions_buf = ctx.enqueue_create_buffer[dtype](ENV_ACTION_SIZE)
+        var actor_out_buf = ctx.enqueue_create_buffer[dtype](
+            Self.n_envs * Self.ACTOR_OUT
+        )
+
+        # Network parameter buffers (copy from CPU)
+        var actor_params_buf = ctx.enqueue_create_buffer[dtype](
+            Self.ACTOR_PARAM_SIZE
+        )
+        ctx.enqueue_copy(actor_params_buf, self.actor.params.unsafe_ptr())
+
+        # Tracking arrays (on CPU)
+        var episode_rewards = List[Float64]()
+        var current_rewards = InlineArray[Float64, Self.n_envs](fill=0.0)
+        var episodes_completed = 0
+
+        # =====================================================================
+        # Initialize environments
+        # =====================================================================
+        EnvType.reset_kernel_gpu[Self.n_envs, EnvType.STATE_SIZE](
+            ctx, env_states_buf
+        )
+        # Extract initial observations
+        EnvType.step_kernel_gpu[
+            Self.n_envs, EnvType.STATE_SIZE, Self.OBS, Self.ACTIONS
+        ](
+            ctx,
+            env_states_buf,
+            actions_buf,  # Dummy actions for initial obs extraction
+            rewards_buf,
+            dones_buf,
+            obs_buf,
+            0,  # rng_seed
+        )
+        ctx.synchronize()
+
+        if verbose:
+            print("Running GPU evaluation with", Self.n_envs, "parallel envs...")
+
+        # =====================================================================
+        # Evaluation loop
+        # =====================================================================
+        var step = 0
+        while episodes_completed < num_episodes and step < max_steps:
+            # Forward actor to get mean and log_std (deterministic: use mean only)
+            self.actor.model.forward_gpu_no_cache_ws[Self.n_envs](
+                ctx,
+                actor_out_buf,
+                obs_buf,
+                actor_params_buf,
+                actor_params_buf,  # Unused workspace
+            )
+
+            # Extract means and apply tanh squashing (deterministic actions)
+            comptime BLOCKS = (Self.n_envs + TPB - 1) // TPB
+
+            @always_inline
+            fn extract_deterministic_actions(
+                actions: LayoutTensor[
+                    dtype, Layout.row_major(Self.n_envs, Self.ACTIONS), MutAnyOrigin
+                ],
+                actor_out: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.n_envs, Self.ACTOR_OUT),
+                    ImmutAnyOrigin,
+                ],
+            ):
+                var idx = Int(block_idx.x) * TPB + Int(thread_idx.x)
+                if idx >= Self.n_envs:
+                    return
+
+                # Use mean (first ACTIONS elements), apply tanh
+                for j in range(Self.ACTIONS):
+                    var mean = actor_out[idx, j]
+                    # tanh for GPU (using exp-based formula for numerical stability)
+                    var exp_2x = exp(mean * 2)
+                    var tanh_val = (exp_2x - 1) / (exp_2x + 1)
+                    actions[idx, j] = tanh_val
+
+            var actions_tensor = LayoutTensor[
+                dtype, Layout.row_major(Self.n_envs, Self.ACTIONS), MutAnyOrigin
+            ](actions_buf.unsafe_ptr())
+            var actor_out_tensor = LayoutTensor[
+                dtype, Layout.row_major(Self.n_envs, Self.ACTOR_OUT), ImmutAnyOrigin
+            ](actor_out_buf.unsafe_ptr())
+
+            ctx.enqueue_function[
+                extract_deterministic_actions, extract_deterministic_actions
+            ](
+                actions_tensor,
+                actor_out_tensor,
+                grid_dim=(BLOCKS,),
+                block_dim=(TPB,),
+            )
+
+            # Step all environments
+            EnvType.step_kernel_gpu[
+                Self.n_envs, EnvType.STATE_SIZE, Self.OBS, Self.ACTIONS
+            ](
+                ctx,
+                env_states_buf,
+                actions_buf,
+                rewards_buf,
+                dones_buf,
+                obs_buf,
+                UInt64(step),  # rng_seed
+            )
+            ctx.synchronize()
+
+            # Copy rewards and dones to CPU
+            var rewards_host = InlineArray[Scalar[dtype], Self.n_envs](
+                uninitialized=True
+            )
+            var dones_host = InlineArray[Scalar[dtype], Self.n_envs](
+                uninitialized=True
+            )
+            ctx.enqueue_copy(rewards_host.unsafe_ptr(), rewards_buf)
+            ctx.enqueue_copy(dones_host.unsafe_ptr(), dones_buf)
+            ctx.synchronize()
+
+            # Track rewards and episode completion
+            for i in range(Self.n_envs):
+                current_rewards[i] += Float64(rewards_host[i])
+
+                if dones_host[i] > 0:
+                    episode_rewards.append(current_rewards[i])
+                    current_rewards[i] = 0.0
+                    episodes_completed += 1
+
+                    if episodes_completed >= num_episodes:
+                        break
+
+            # Auto-reset done environments
+            EnvType.selective_reset_kernel_gpu[Self.n_envs, EnvType.STATE_SIZE](
+                ctx,
+                env_states_buf,
+                dones_buf,
+                UInt32(step),
+            )
+
+            step += 1
+
+        # =====================================================================
+        # Compute statistics
+        # =====================================================================
+        if len(episode_rewards) == 0:
+            if verbose:
+                print("Warning: No episodes completed!")
+            return 0.0
+
+        var total_reward: Float64 = 0.0
+        var min_reward = episode_rewards[0]
+        var max_reward = episode_rewards[0]
+
+        for i in range(len(episode_rewards)):
+            total_reward += episode_rewards[i]
+            if episode_rewards[i] < min_reward:
+                min_reward = episode_rewards[i]
+            if episode_rewards[i] > max_reward:
+                max_reward = episode_rewards[i]
+
+        var avg_reward = total_reward / Float64(len(episode_rewards))
+
+        if verbose:
+            print("----------------------------------------------------------------------")
+            print("GPU EVALUATION SUMMARY (Continuous Actions)")
+            print("----------------------------------------------------------------------")
+            print("Episodes completed:", len(episode_rewards))
+            print("Average reward:", avg_reward)
+            print("Min reward:", min_reward)
+            print("Max reward:", max_reward)
+
+        return avg_reward
 
     # =========================================================================
     # GPU Training with CPU Environments (Hybrid)

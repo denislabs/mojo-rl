@@ -87,7 +87,7 @@ fn main() raises:
             value_loss_coef=0.5,
             num_epochs=4,  # Fewer epochs to prevent overfitting on rollout
             # Advanced hyperparameters
-            target_kl=15.0,  # Allow more updates per rollout
+            target_kl=0.0,  # Disabled - mean clamping prevents worst saturation
             max_grad_norm=0.5,
             anneal_lr=True,  # Enable annealing
             anneal_entropy=False,
@@ -99,7 +99,7 @@ fn main() raises:
             action_mean_biases=action_mean_biases^,
         )
 
-        # agent.load_checkpoint("ppo_car_racing_gpu_v2.ckpt")
+        agent.load_checkpoint("ppo_car_racing_gpu_v2.ckpt")
 
         print("Environment: CarRacingV2 (GPU)")
         print("Agent: PPO (GPU)")

@@ -17,25 +17,31 @@ comptime TPB = 256  # Threads per block for elementwise ops
 # Constants for numerical stability
 # =============================================================================
 
-comptime LOG_STD_MIN: Float64 = -20.0  # Minimum log_std to prevent exp underflow
-comptime LOG_STD_MAX: Float64 = 2.0  # Maximum log_std to prevent exp overflow
+comptime LOG_STD_MIN: Float64 = -2.0  # Minimum log_std (std ≈ 0.14)
+comptime LOG_STD_MAX: Float64 = 0.5  # Maximum log_std (std ≈ 1.65)
+# Note: Mean is NOT clamped - tanh squashing naturally bounds actions to [-1, 1]
+# This follows SOTA implementations (CleanRL, Stable-Baselines3)
 comptime EPS: Float64 = 1e-6  # Small constant for numerical stability
 
 
 struct StochasticActor[in_dim: Int, action_dim: Int](Model):
     """Stochastic Actor (Gaussian Policy) for continuous action spaces.
 
-    This layer implements a diagonal Gaussian policy with learned mean and log_std.
-    It's designed for use with SAC, PPO, and other policy gradient algorithms.
+    This layer implements a diagonal Gaussian policy with learned mean and
+    state-independent log_std. It's designed for use with SAC, PPO, and other
+    policy gradient algorithms.
 
     Architecture:
         - Input: features [BATCH, in_dim] (typically from a backbone network)
         - Output: [mean, log_std] concatenated as [BATCH, action_dim * 2]
-        - Two separate linear heads: mean_head and log_std_head
+        - Mean head: linear layer (input -> mean)
+        - Log_std: state-independent learnable parameter (like CleanRL's PPO)
+
+    The state-independent log_std design prevents weight explosion during training,
+    which can cause the policy to collapse or produce extreme pre-clamp values.
 
     Parameters layout:
-        [W_mean (in_dim * action_dim) | b_mean (action_dim) |
-         W_log_std (in_dim * action_dim) | b_log_std (action_dim)]
+        [W_mean (in_dim * action_dim) | b_mean (action_dim) | log_std (action_dim)]
 
     Cache layout:
         [input (in_dim)] - caches input for backward pass
@@ -53,9 +59,12 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
 
     comptime IN_DIM: Int = Self.in_dim
     comptime OUT_DIM: Int = Self.action_dim * 2  # mean and log_std concatenated
-    # Two linear layers: mean_head and log_std_head, each with W and b
-    comptime PARAM_SIZE: Int = 2 * (
-        Self.in_dim * Self.action_dim + Self.action_dim
+    # Mean head: W (in_dim * action_dim) + b (action_dim)
+    # Log_std: state-independent learnable parameter (action_dim only, no weights)
+    # This prevents log_std weight explosion during training
+    comptime PARAM_SIZE: Int = (
+        Self.in_dim * Self.action_dim + Self.action_dim  # mean head
+        + Self.action_dim  # log_std (state-independent)
     )
     comptime CACHE_SIZE: Int = Self.in_dim  # Cache input for backward pass
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = 0  # Leaf layer
@@ -88,12 +97,12 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
 
         This is crucial for stable RL training:
         - Mean head: small weights so initial mean ≈ 0 (random policy)
-        - Log_std head: small weights + bias so initial std ≈ 0.6 (moderate exploration)
+        - Log_std: state-independent learnable parameter initialized to log_std_init
 
         Args:
             params: Parameter tensor to initialize in-place.
             weight_scale: Scale for weight initialization (default 0.01).
-            log_std_init: Initial value for log_std bias (default -0.5, std≈0.6).
+            log_std_init: Initial value for log_std (default -0.5, std≈0.6).
         """
         from random import random_float64
 
@@ -108,16 +117,9 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
         for i in range(Self.action_dim):
             params[Self._mean_b_offset() + i] = Scalar[dtype](0.0)
 
-        # Initialize log_std head weights with small random values
-        var log_std_W_size = Self.in_dim * Self.action_dim
-        for i in range(log_std_W_size):
-            params[Self._log_std_W_offset() + i] = Scalar[dtype](
-                (random_float64() * 2.0 - 1.0) * weight_scale
-            )
-
-        # Initialize log_std head bias to log_std_init
+        # Initialize state-independent log_std to log_std_init
         for i in range(Self.action_dim):
-            params[Self._log_std_b_offset() + i] = Scalar[dtype](log_std_init)
+            params[Self._log_std_offset() + i] = Scalar[dtype](log_std_init)
 
     @staticmethod
     fn init_params_with_mean_bias(
@@ -140,7 +142,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
             params: Parameter tensor to initialize in-place.
             mean_biases: Per-action bias values (length must match action_dim).
             weight_scale: Scale for weight initialization (default 0.01).
-            log_std_init: Initial value for log_std bias (default -0.5, std≈0.6).
+            log_std_init: Initial value for log_std (default -0.5, std≈0.6).
         """
         from random import random_float64
 
@@ -156,16 +158,9 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
             var bias = mean_biases[i] if i < len(mean_biases) else 0.0
             params[Self._mean_b_offset() + i] = Scalar[dtype](bias)
 
-        # Initialize log_std head weights with small random values
-        var log_std_W_size = Self.in_dim * Self.action_dim
-        for i in range(log_std_W_size):
-            params[Self._log_std_W_offset() + i] = Scalar[dtype](
-                (random_float64() * 2.0 - 1.0) * weight_scale
-            )
-
-        # Initialize log_std head bias to log_std_init
+        # Initialize state-independent log_std to log_std_init
         for i in range(Self.action_dim):
-            params[Self._log_std_b_offset() + i] = Scalar[dtype](log_std_init)
+            params[Self._log_std_offset() + i] = Scalar[dtype](log_std_init)
 
     # =========================================================================
     # Helper: Get parameter offsets
@@ -185,15 +180,9 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
 
     @always_inline
     @staticmethod
-    fn _log_std_W_offset() -> Int:
-        """Offset for log_std head weights."""
+    fn _log_std_offset() -> Int:
+        """Offset for state-independent log_std parameters."""
         return Self.in_dim * Self.action_dim + Self.action_dim
-
-    @always_inline
-    @staticmethod
-    fn _log_std_b_offset() -> Int:
-        """Offset for log_std head bias."""
-        return 2 * Self.in_dim * Self.action_dim + Self.action_dim
 
     # =========================================================================
     # Forward passes
@@ -219,7 +208,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
         """Forward pass: compute mean and log_std from input features.
 
         Output layout: [mean (action_dim) | log_std (action_dim)]
-        log_std is clamped to [LOG_STD_MIN, LOG_STD_MAX] for numerical stability.
+        log_std is state-independent (same for all inputs) and clamped.
 
         Args:
             input: Input features [BATCH, in_dim].
@@ -227,13 +216,10 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
             params: Model parameters.
             cache: Cache buffer [BATCH, in_dim] for backward pass.
         """
-        # Create views for weights
+        # Create view for mean weights
         var W_mean = LayoutTensor[
             dtype, Layout.row_major(Self.in_dim, Self.action_dim), MutAnyOrigin
         ](params.ptr + Self._mean_W_offset())
-        var W_log_std = LayoutTensor[
-            dtype, Layout.row_major(Self.in_dim, Self.action_dim), MutAnyOrigin
-        ](params.ptr + Self._log_std_W_offset())
 
         for batch in range(BATCH):
             # Cache input for backward
@@ -241,19 +227,18 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
                 cache[batch, i] = input[batch, i]
 
             # Compute mean = input @ W_mean + b_mean
+            # No clamping - let tanh squashing naturally bound actions
             for j in range(Self.action_dim):
                 var mean_acc = params[Self._mean_b_offset() + j]  # bias
                 for i in range(Self.in_dim):
                     mean_acc += input[batch, i] * W_mean[i, j]
                 output[batch, j] = mean_acc
 
-            # Compute log_std = clamp(input @ W_log_std + b_log_std)
+            # State-independent log_std (clamped)
             for j in range(Self.action_dim):
-                var log_std_acc = params[Self._log_std_b_offset() + j]  # bias
-                for i in range(Self.in_dim):
-                    log_std_acc += input[batch, i] * W_log_std[i, j]
-                # Clamp log_std for numerical stability
-                var log_std_val = Float64(rebind[Scalar[dtype]](log_std_acc))
+                var log_std_val = Float64(
+                    rebind[Scalar[dtype]](params[Self._log_std_offset() + j])
+                )
                 if log_std_val < LOG_STD_MIN:
                     log_std_val = LOG_STD_MIN
                 elif log_std_val > LOG_STD_MAX:
@@ -278,24 +263,21 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
         var W_mean = LayoutTensor[
             dtype, Layout.row_major(Self.in_dim, Self.action_dim), MutAnyOrigin
         ](params.ptr + Self._mean_W_offset())
-        var W_log_std = LayoutTensor[
-            dtype, Layout.row_major(Self.in_dim, Self.action_dim), MutAnyOrigin
-        ](params.ptr + Self._log_std_W_offset())
 
         for batch in range(BATCH):
-            # Compute mean
+            # Compute mean = input @ W_mean + b_mean
+            # No clamping - let tanh squashing naturally bound actions
             for j in range(Self.action_dim):
                 var mean_acc = params[Self._mean_b_offset() + j]
                 for i in range(Self.in_dim):
                     mean_acc += input[batch, i] * W_mean[i, j]
                 output[batch, j] = mean_acc
 
-            # Compute clamped log_std
+            # State-independent log_std (clamped)
             for j in range(Self.action_dim):
-                var log_std_acc = params[Self._log_std_b_offset() + j]
-                for i in range(Self.in_dim):
-                    log_std_acc += input[batch, i] * W_log_std[i, j]
-                var log_std_val = Float64(rebind[Scalar[dtype]](log_std_acc))
+                var log_std_val = Float64(
+                    rebind[Scalar[dtype]](params[Self._log_std_offset() + j])
+                )
                 if log_std_val < LOG_STD_MIN:
                     log_std_val = LOG_STD_MIN
                 elif log_std_val > LOG_STD_MAX:
@@ -326,7 +308,9 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        """Backward pass: compute gradients for both mean and log_std heads.
+        """Backward pass: compute gradients for mean head and log_std.
+
+        Note: log_std is state-independent, so no gradient flows through it to input.
 
         Args:
             grad_output: Gradient w.r.t. output [BATCH, action_dim * 2].
@@ -339,38 +323,24 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
         var W_mean = LayoutTensor[
             dtype, Layout.row_major(Self.in_dim, Self.action_dim), MutAnyOrigin
         ](params.ptr + Self._mean_W_offset())
-        var W_log_std = LayoutTensor[
-            dtype, Layout.row_major(Self.in_dim, Self.action_dim), MutAnyOrigin
-        ](params.ptr + Self._log_std_W_offset())
 
         # Create views for gradient storage
         var dW_mean = LayoutTensor[
             dtype, Layout.row_major(Self.in_dim, Self.action_dim), MutAnyOrigin
         ](grads.ptr + Self._mean_W_offset())
-        var dW_log_std = LayoutTensor[
-            dtype, Layout.row_major(Self.in_dim, Self.action_dim), MutAnyOrigin
-        ](grads.ptr + Self._log_std_W_offset())
 
         for batch in range(BATCH):
             # Initialize grad_input to zero
             for i in range(Self.in_dim):
                 grad_input[batch, i] = 0
 
-            # Backward through mean head: dx += dy_mean @ W_mean.T
+            # Backward through mean head only: dx = dy_mean @ W_mean.T
+            # (log_std is state-independent, no gradient flows to input)
             for i in range(Self.in_dim):
                 for j in range(Self.action_dim):
                     grad_input[batch, i] = (
                         grad_input[batch, i]
                         + grad_output[batch, j] * W_mean[i, j]
-                    )
-
-            # Backward through log_std head: dx += dy_log_std @ W_log_std.T
-            for i in range(Self.in_dim):
-                for j in range(Self.action_dim):
-                    grad_input[batch, i] = (
-                        grad_input[batch, i]
-                        + grad_output[batch, Self.action_dim + j]
-                        * W_log_std[i, j]
                     )
 
             # Accumulate dW_mean = x.T @ dy_mean
@@ -386,19 +356,10 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
                     grads[Self._mean_b_offset() + j] + grad_output[batch, j]
                 )
 
-            # Accumulate dW_log_std = x.T @ dy_log_std
-            for i in range(Self.in_dim):
-                for j in range(Self.action_dim):
-                    dW_log_std[i, j] = (
-                        dW_log_std[i, j]
-                        + cache[batch, i]
-                        * grad_output[batch, Self.action_dim + j]
-                    )
-
-            # Accumulate db_log_std
+            # Accumulate d_log_std (state-independent, gradient goes directly to param)
             for j in range(Self.action_dim):
-                grads[Self._log_std_b_offset() + j] = (
-                    grads[Self._log_std_b_offset() + j]
+                grads[Self._log_std_offset() + j] = (
+                    grads[Self._log_std_offset() + j]
                     + grad_output[batch, Self.action_dim + j]
                 )
 
@@ -425,21 +386,18 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
         b_mean: LayoutTensor[
             dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
         ],
-        W_log_std: LayoutTensor[
-            dtype,
-            Layout.row_major(Self.in_dim, Self.action_dim),
-            ImmutAnyOrigin,
-        ],
-        b_log_std: LayoutTensor[
+        log_std: LayoutTensor[
             dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
         ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
         ],
     ):
-        """Forward kernel: compute mean and log_std with tiled matmul.
+        """Forward kernel: compute mean with tiled matmul, use state-independent log_std.
 
-        Uses separate tiles for mean and log_std computation.
+        State-independent log_std means log_std is a learnable parameter that doesn't
+        depend on the input. This prevents log_std weight explosion during training.
+
         Grid: ((action_dim + TILE - 1) // TILE, (BATCH + TILE - 1) // TILE)
         Block: (TILE, TILE)
         """
@@ -448,7 +406,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
         var global_row = Int(block_idx.y) * TILE + local_row
         var global_col = Int(block_idx.x) * TILE + local_col
 
-        # Shared memory for tiles
+        # Shared memory for tiled matmul
         var x_shared = LayoutTensor[
             dtype,
             Layout.row_major(TILE, TILE),
@@ -494,41 +452,13 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
 
             barrier()
 
-        # Compute log_std = input @ W_log_std + b_log_std
-        var log_std_acc: output.element_type = 0
-        if global_col < Self.action_dim:
-            log_std_acc = b_log_std[global_col]
-
-        for tile_idx in range(0, (Self.in_dim + TILE - 1) // TILE):
-            var x_col = tile_idx * TILE + local_col
-
-            # Load input tile (already in x_shared from mean computation in some cases)
-            if global_row < BATCH and x_col < Self.in_dim:
-                x_shared[local_row, local_col] = input[global_row, x_col]
-            else:
-                x_shared[local_row, local_col] = 0
-
-            # Load W_log_std tile
-            var W_row = tile_idx * TILE + local_row
-            if W_row < Self.in_dim and global_col < Self.action_dim:
-                W_shared[local_row, local_col] = W_log_std[W_row, global_col]
-            else:
-                W_shared[local_row, local_col] = 0
-
-            barrier()
-
-            @parameter
-            for k in range(TILE):
-                log_std_acc += x_shared[local_row, k] * W_shared[k, local_col]
-
-            barrier()
-
-        # Write results with clamping for log_std
+        # Write results (mean not clamped - let tanh squashing handle bounds)
         if global_row < BATCH and global_col < Self.action_dim:
+            # No mean clamping - let tanh squashing naturally bound actions
             output[global_row, global_col] = mean_acc
 
-            # Clamp log_std
-            var log_std_val = rebind[Scalar[DType.float32]](log_std_acc)
+            # State-independent log_std (clamped for numerical stability)
+            var log_std_val = rebind[Scalar[DType.float32]](log_std[global_col])
             if log_std_val < Scalar[DType.float32](LOG_STD_MIN):
                 log_std_val = Scalar[DType.float32](LOG_STD_MIN)
             elif log_std_val > Scalar[DType.float32](LOG_STD_MAX):
@@ -556,16 +486,18 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
         b_mean: LayoutTensor[
             dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
         ],
-        W_log_std: LayoutTensor[
-            dtype,
-            Layout.row_major(Self.in_dim, Self.action_dim),
-            ImmutAnyOrigin,
-        ],
-        b_log_std: LayoutTensor[
+        log_std: LayoutTensor[
             dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
         ],
     ):
-        """Forward kernel without caching (for inference)."""
+        """Forward kernel without caching (for inference).
+
+        State-independent log_std means log_std is a learnable parameter that doesn't
+        depend on the input. This prevents log_std weight explosion during training.
+
+        Grid: ((action_dim + TILE - 1) // TILE, (BATCH + TILE - 1) // TILE)
+        Block: (TILE, TILE)
+        """
         var local_row = Int(thread_idx.y)
         var local_col = Int(thread_idx.x)
         var global_row = Int(block_idx.y) * TILE + local_row
@@ -585,7 +517,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
             address_space = AddressSpace.SHARED,
         ].stack_allocation()
 
-        # Compute mean
+        # Compute mean = input @ W_mean + b_mean
         var mean_acc: output.element_type = 0
         if global_col < Self.action_dim:
             mean_acc = b_mean[global_col]
@@ -611,36 +543,13 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
 
             barrier()
 
-        # Compute log_std
-        var log_std_acc: output.element_type = 0
-        if global_col < Self.action_dim:
-            log_std_acc = b_log_std[global_col]
-
-        for tile_idx in range(0, (Self.in_dim + TILE - 1) // TILE):
-            var x_col = tile_idx * TILE + local_col
-            if global_row < BATCH and x_col < Self.in_dim:
-                x_shared[local_row, local_col] = input[global_row, x_col]
-            else:
-                x_shared[local_row, local_col] = 0
-
-            var W_row = tile_idx * TILE + local_row
-            if W_row < Self.in_dim and global_col < Self.action_dim:
-                W_shared[local_row, local_col] = W_log_std[W_row, global_col]
-            else:
-                W_shared[local_row, local_col] = 0
-
-            barrier()
-
-            @parameter
-            for k in range(TILE):
-                log_std_acc += x_shared[local_row, k] * W_shared[k, local_col]
-
-            barrier()
-
+        # Write results (mean not clamped - let tanh squashing handle bounds)
         if global_row < BATCH and global_col < Self.action_dim:
+            # No mean clamping - let tanh squashing naturally bound actions
             output[global_row, global_col] = mean_acc
 
-            var log_std_val = rebind[Scalar[DType.float32]](log_std_acc)
+            # State-independent log_std (clamped for numerical stability)
+            var log_std_val = rebind[Scalar[DType.float32]](log_std[global_col])
             if log_std_val < Scalar[DType.float32](LOG_STD_MIN):
                 log_std_val = Scalar[DType.float32](LOG_STD_MIN)
             elif log_std_val > Scalar[DType.float32](LOG_STD_MAX):
@@ -680,14 +589,9 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
         var b_mean = LayoutTensor[
             dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
         ](params_ptr + Self._mean_b_offset())
-        var W_log_std = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.in_dim, Self.action_dim),
-            ImmutAnyOrigin,
-        ](params_ptr + Self._log_std_W_offset())
-        var b_log_std = LayoutTensor[
+        var log_std = LayoutTensor[
             dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
-        ](params_ptr + Self._log_std_b_offset())
+        ](params_ptr + Self._log_std_offset())
         var cache = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
         ](cache_buf.unsafe_ptr())
@@ -711,12 +615,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
             b_mean: LayoutTensor[
                 dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
             ],
-            W_log_std: LayoutTensor[
-                dtype,
-                Layout.row_major(Self.in_dim, Self.action_dim),
-                ImmutAnyOrigin,
-            ],
-            b_log_std: LayoutTensor[
+            log_std: LayoutTensor[
                 dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
             ],
             cache: LayoutTensor[
@@ -728,8 +627,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
                 input,
                 W_mean,
                 b_mean,
-                W_log_std,
-                b_log_std,
+                log_std,
                 cache,
             )
 
@@ -738,8 +636,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
             input,
             W_mean,
             b_mean,
-            W_log_std,
-            b_log_std,
+            log_std,
             cache,
             grid_dim=(grid_x, grid_y),
             block_dim=(TILE, TILE),
@@ -771,14 +668,9 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
         var b_mean = LayoutTensor[
             dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
         ](params_ptr + Self._mean_b_offset())
-        var W_log_std = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.in_dim, Self.action_dim),
-            ImmutAnyOrigin,
-        ](params_ptr + Self._log_std_W_offset())
-        var b_log_std = LayoutTensor[
+        var log_std = LayoutTensor[
             dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
-        ](params_ptr + Self._log_std_b_offset())
+        ](params_ptr + Self._log_std_offset())
 
         comptime grid_x = (Self.action_dim + TILE - 1) // TILE
         comptime grid_y = (BATCH + TILE - 1) // TILE
@@ -799,17 +691,12 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
             b_mean: LayoutTensor[
                 dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
             ],
-            W_log_std: LayoutTensor[
-                dtype,
-                Layout.row_major(Self.in_dim, Self.action_dim),
-                ImmutAnyOrigin,
-            ],
-            b_log_std: LayoutTensor[
+            log_std: LayoutTensor[
                 dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
             ],
         ):
             Self.forward_kernel_impl_no_cache[BATCH](
-                output, input, W_mean, b_mean, W_log_std, b_log_std
+                output, input, W_mean, b_mean, log_std
             )
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
@@ -817,8 +704,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
             input,
             W_mean,
             b_mean,
-            W_log_std,
-            b_log_std,
+            log_std,
             grid_dim=(grid_x, grid_y),
             block_dim=(TILE, TILE),
         )
@@ -836,7 +722,8 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
     ) raises:
         """Launch backward pass on GPU.
 
-        Computes gradients for both mean and log_std heads.
+        Computes gradients for mean head (dW_mean, db_mean) and log_std.
+        With state-independent log_std, no gradient flows to input from log_std.
         Uses fused kernels for better performance with small action_dim.
         """
         var params_ptr = params_buf.unsafe_ptr()
@@ -853,11 +740,6 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
             Layout.row_major(Self.in_dim, Self.action_dim),
             ImmutAnyOrigin,
         ](params_ptr + Self._mean_W_offset())
-        var W_log_std = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.in_dim, Self.action_dim),
-            ImmutAnyOrigin,
-        ](params_ptr + Self._log_std_W_offset())
         var cache = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.in_dim), ImmutAnyOrigin
         ](cache_buf.unsafe_ptr())
@@ -866,6 +748,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
         ](grads_ptr)
 
         # Fused kernel 1: Compute dx (elementwise, optimized for small action_dim)
+        # Note: With state-independent log_std, only mean head contributes to dx
         comptime dx_total = BATCH * Self.IN_DIM
         comptime dx_grid = (dx_total + TPB - 1) // TPB
 
@@ -882,30 +765,26 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
                 Layout.row_major(Self.in_dim, Self.action_dim),
                 ImmutAnyOrigin,
             ],
-            W_log_std: LayoutTensor[
-                dtype,
-                Layout.row_major(Self.in_dim, Self.action_dim),
-                ImmutAnyOrigin,
-            ],
         ):
             Self.backward_dx_fused_kernel_impl[BATCH](
-                grad_input, grad_output, W_mean, W_log_std
+                grad_input, grad_output, W_mean
             )
 
         ctx.enqueue_function[dx_fused_kernel_wrapper, dx_fused_kernel_wrapper](
             grad_input,
             grad_output,
             W_mean,
-            W_log_std,
             grid_dim=(dx_grid,),
             block_dim=(TPB,),
         )
 
-        # Fused kernel 2: Compute dW_mean, dW_log_std, db_mean, db_log_std
-        # One block per (in_dim, action_dim) pair for dW
-        # Plus action_dim blocks for db
-        comptime dW_total = Self.in_dim * Self.action_dim
-        comptime dW_db_grid = dW_total + 2 * Self.action_dim
+        # Fused kernel 2: Compute dW_mean, db_mean, d_log_std
+        # Grid layout:
+        # - Blocks [0, in_dim * action_dim): compute dW_mean[i, j]
+        # - Blocks [in_dim * action_dim, ... + action_dim): compute db_mean[j]
+        # - Blocks [... + action_dim, ... + 2*action_dim): compute d_log_std[j]
+        comptime dW_size = Self.in_dim * Self.action_dim
+        comptime dW_db_grid = dW_size + 2 * Self.action_dim
 
         @always_inline
         fn dW_db_fused_kernel_wrapper(
@@ -953,14 +832,10 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
             Layout.row_major(Self.in_dim, Self.action_dim),
             ImmutAnyOrigin,
         ],
-        W_log_std: LayoutTensor[
-            dtype,
-            Layout.row_major(Self.in_dim, Self.action_dim),
-            ImmutAnyOrigin,
-        ],
     ):
-        """Fused dx kernel: dx = dy_mean @ W_mean.T + dy_log_std @ W_log_std.T.
+        """Fused dx kernel: dx = dy_mean @ W_mean.T.
 
+        With state-independent log_std, only mean head contributes to input gradient.
         Optimized for small action_dim by using elementwise computation
         with a simple loop over action_dim instead of tiled matmul.
 
@@ -977,13 +852,12 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
         var i = idx % Self.IN_DIM
 
         # Compute dx[batch, i] = sum_j(dy_mean[batch, j] * W_mean[i, j])
-        #                      + sum_j(dy_log_std[batch, j] * W_log_std[i, j])
+        # Note: log_std is state-independent, so no gradient flows to input from it
         var acc: grad_input.element_type = 0
 
         for j in range(Self.action_dim):
             var dy_mean = grad_output[batch, j]
-            var dy_log_std = grad_output[batch, Self.action_dim + j]
-            acc += dy_mean * W_mean[i, j] + dy_log_std * W_log_std[i, j]
+            acc += dy_mean * W_mean[i, j]
 
         grad_input[batch, i] = acc
 
@@ -1002,15 +876,15 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
         ],
     ):
-        """Fused kernel for dW_mean, dW_log_std, db_mean, db_log_std.
+        """Fused kernel for dW_mean, db_mean, d_log_std.
 
+        With state-independent log_std, there's no dW_log_std (no weights).
         Uses block reduction for summing over batch dimension.
 
         Grid layout:
         - Blocks [0, in_dim * action_dim): compute dW_mean[i, j]
-        - Blocks [in_dim * action_dim, 2 * in_dim * action_dim): compute dW_log_std[i, j]
-        - Blocks [2 * in_dim * action_dim, ... + action_dim): compute db_mean[j]
-        - Blocks [... + action_dim, ... + 2 * action_dim): compute db_log_std[j]
+        - Blocks [in_dim * action_dim, ... + action_dim): compute db_mean[j]
+        - Blocks [... + action_dim, ... + 2*action_dim): compute d_log_std[j]
 
         Each block uses TPB threads to sum over BATCH samples.
         """
@@ -1020,10 +894,8 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
         var local_i = Int(thread_idx.x)
 
         comptime dW_size = Self.in_dim * Self.action_dim
-        comptime dW_mean_start = 0
-        comptime dW_log_std_start = dW_size
-        comptime db_mean_start = 2 * dW_size
-        comptime db_log_std_start = 2 * dW_size + Self.action_dim
+        comptime db_mean_start = dW_size
+        comptime d_log_std_start = dW_size + Self.action_dim
 
         if block_id < dW_size:
             # Compute dW_mean[i, j] = sum_b(cache[b, i] * grad_output[b, j])
@@ -1043,27 +915,6 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
             if local_i == 0:
                 grads[Self._mean_W_offset() + i * Self.action_dim + j] = total[0]
 
-        elif block_id < 2 * dW_size:
-            # Compute dW_log_std[i, j] = sum_b(cache[b, i] * grad_output[b, action_dim + j])
-            var local_block = block_id - dW_size
-            var i = local_block // Self.action_dim
-            var j = local_block % Self.action_dim
-
-            var my_sum: grads.element_type = 0
-            var b = local_i
-            while b < BATCH:
-                my_sum += cache[b, i] * grad_output[b, Self.action_dim + j]
-                b += TPB
-
-            var total = gpu_block.sum[block_size=TPB, broadcast=False](
-                val=my_sum
-            )
-
-            if local_i == 0:
-                grads[Self._log_std_W_offset() + i * Self.action_dim + j] = (
-                    total[0]
-                )
-
         elif block_id < db_mean_start + Self.action_dim:
             # Compute db_mean[j] = sum_b(grad_output[b, j])
             var j = block_id - db_mean_start
@@ -1081,9 +932,10 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
             if local_i == 0:
                 grads[Self._mean_b_offset() + j] = total[0]
 
-        elif block_id < db_log_std_start + Self.action_dim:
-            # Compute db_log_std[j] = sum_b(grad_output[b, action_dim + j])
-            var j = block_id - db_log_std_start
+        elif block_id < d_log_std_start + Self.action_dim:
+            # Compute d_log_std[j] = sum_b(grad_output[b, action_dim + j])
+            # This goes directly to the state-independent log_std parameter
+            var j = block_id - d_log_std_start
 
             var my_sum: grads.element_type = 0
             var b = local_i
@@ -1096,7 +948,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
             )
 
             if local_i == 0:
-                grads[Self._log_std_b_offset() + j] = total[0]
+                grads[Self._log_std_offset() + j] = total[0]
 
     # =========================================================================
     # Legacy Backward GPU Kernel Implementations (tiled matmul, for large dims)
@@ -1118,13 +970,12 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
             Layout.row_major(Self.in_dim, Self.action_dim),
             ImmutAnyOrigin,
         ],
-        W_log_std: LayoutTensor[
-            dtype,
-            Layout.row_major(Self.in_dim, Self.action_dim),
-            ImmutAnyOrigin,
-        ],
     ):
-        """Compute dx = dy_mean @ W_mean.T + dy_log_std @ W_log_std.T."""
+        """Compute dx = dy_mean @ W_mean.T.
+
+        With state-independent log_std, only mean head contributes to input gradient.
+        Tiled matmul version for large dimensions.
+        """
         var local_row = Int(thread_idx.y)
         var local_col = Int(thread_idx.x)
         var global_row = Int(block_idx.y) * TILE + local_row  # BATCH
@@ -1144,7 +995,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
             address_space = AddressSpace.SHARED,
         ].stack_allocation()
 
-        # First: dy_mean @ W_mean.T
+        # dx = dy_mean @ W_mean.T
         var acc: grad_input.element_type = 0
 
         for tile_idx in range(0, (Self.action_dim + TILE - 1) // TILE):
@@ -1159,31 +1010,6 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
             var W_col = tile_idx * TILE + local_row
             if W_col < Self.action_dim and global_col < Self.IN_DIM:
                 W_T_shared[local_row, local_col] = W_mean[global_col, W_col]
-            else:
-                W_T_shared[local_row, local_col] = 0
-
-            barrier()
-
-            @parameter
-            for k in range(TILE):
-                acc += dy_shared[local_row, k] * W_T_shared[k, local_col]
-
-            barrier()
-
-        # Second: add dy_log_std @ W_log_std.T
-
-        for tile_idx in range(0, (Self.action_dim + TILE - 1) // TILE):
-            var dy_col = tile_idx * TILE + local_col
-            if global_row < BATCH and dy_col < Self.action_dim:
-                dy_shared[local_row, local_col] = grad_output[
-                    global_row, Self.action_dim + dy_col
-                ]
-            else:
-                dy_shared[local_row, local_col] = 0
-
-            var W_col = tile_idx * TILE + local_row
-            if W_col < Self.action_dim and global_col < Self.IN_DIM:
-                W_T_shared[local_row, local_col] = W_log_std[global_col, W_col]
             else:
                 W_T_shared[local_row, local_col] = 0
 
@@ -1263,67 +1089,40 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
 
     @always_inline
     @staticmethod
-    fn backward_dW_log_std_kernel_impl[
+    fn backward_d_log_std_kernel_impl[
         BATCH: Int,
     ](
-        dW_log_std: LayoutTensor[
-            dtype, Layout.row_major(Self.in_dim, Self.action_dim), MutAnyOrigin
-        ],
-        cache: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.in_dim), ImmutAnyOrigin
+        d_log_std: LayoutTensor[
+            dtype, Layout.row_major(Self.action_dim), MutAnyOrigin
         ],
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
         ],
     ):
-        """Compute dW_log_std = x.T @ dy_log_std."""
-        var local_row = Int(thread_idx.y)
-        var local_col = Int(thread_idx.x)
-        var global_row = Int(block_idx.y) * TILE + local_row  # IN_DIM
-        var global_col = Int(block_idx.x) * TILE + local_col  # action_dim
+        """Compute d_log_std = sum(dy_log_std, axis=0).
 
-        var x_T_shared = LayoutTensor[
-            dtype,
-            Layout.row_major(TILE, TILE),
-            MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
-        ].stack_allocation()
+        With state-independent log_std, gradient goes directly to the parameter.
+        This is a simple sum reduction over the batch dimension.
+        """
+        from gpu import block
 
-        var dy_shared = LayoutTensor[
-            dtype,
-            Layout.row_major(TILE, TILE),
-            MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
-        ].stack_allocation()
+        var col = Int(block_idx.x)
+        var local_i = Int(thread_idx.x)
 
-        var acc: dW_log_std.element_type = 0
+        if col >= Self.action_dim:
+            return
 
-        for tile_idx in range(0, (BATCH + TILE - 1) // TILE):
-            var batch_idx = tile_idx * TILE + local_col
-            if global_row < Self.in_dim and batch_idx < BATCH:
-                x_T_shared[local_row, local_col] = cache[batch_idx, global_row]
-            else:
-                x_T_shared[local_row, local_col] = 0
+        var my_sum: d_log_std.element_type = 0
+        var batch_idx = local_i
+        while batch_idx < BATCH:
+            # Log_std gradient is in second half of output
+            my_sum += grad_output[batch_idx, Self.action_dim + col]
+            batch_idx += TPB
 
-            var dy_row = tile_idx * TILE + local_row
-            if dy_row < BATCH and global_col < Self.action_dim:
-                # Log_std gradient is in second half of output
-                dy_shared[local_row, local_col] = grad_output[
-                    dy_row, Self.action_dim + global_col
-                ]
-            else:
-                dy_shared[local_row, local_col] = 0
+        var total = block.sum[block_size=TPB, broadcast=False](val=my_sum)
 
-            barrier()
-
-            @parameter
-            for k in range(TILE):
-                acc += x_T_shared[local_row, k] * dy_shared[k, local_col]
-
-            barrier()
-
-        if global_row < Self.in_dim and global_col < Self.action_dim:
-            dW_log_std[global_row, global_col] = acc
+        if local_i == 0:
+            d_log_std[col] = total[0]
 
     @always_inline
     @staticmethod
@@ -1356,39 +1155,6 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
 
         if local_i == 0:
             db_mean[col] = total[0]
-
-    @always_inline
-    @staticmethod
-    fn backward_db_log_std_kernel_impl[
-        BATCH: Int,
-    ](
-        db_log_std: LayoutTensor[
-            dtype, Layout.row_major(Self.action_dim), MutAnyOrigin
-        ],
-        grad_output: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
-        ],
-    ):
-        """Compute db_log_std = sum(dy_log_std, axis=0)."""
-        from gpu import block
-
-        var col = Int(block_idx.x)
-        var local_i = Int(thread_idx.x)
-
-        if col >= Self.action_dim:
-            return
-
-        var my_sum: db_log_std.element_type = 0
-        var batch_idx = local_i
-        while batch_idx < BATCH:
-            # Log_std gradient is in second half of output
-            my_sum += grad_output[batch_idx, Self.action_dim + col]
-            batch_idx += TPB
-
-        var total = block.sum[block_size=TPB, broadcast=False](val=my_sum)
-
-        if local_i == 0:
-            db_log_std[col] = total[0]
 
     # =========================================================================
     # GPU Workspace Methods (for Sequential compatibility)
