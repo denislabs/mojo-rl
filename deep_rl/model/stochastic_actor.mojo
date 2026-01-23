@@ -5,6 +5,7 @@ from gpu import thread_idx, block_idx, block_dim, barrier
 from gpu.host import DeviceContext, DeviceBuffer
 from gpu.memory import AddressSpace
 from math import exp, log, sqrt
+from gpu.primitives import block
 
 # =============================================================================
 # GPU Constants
@@ -20,7 +21,7 @@ comptime TPB = 256  # Threads per block for elementwise ops
 # Log_std bounds for numerical stability
 # CleanRL uses similar bounds to prevent std from collapsing or exploding
 comptime LOG_STD_MIN: Float64 = -5.0  # Minimum log_std (std ≈ 0.0067)
-comptime LOG_STD_MAX: Float64 = 2.0   # Maximum log_std (std ≈ 7.4)
+comptime LOG_STD_MAX: Float64 = 2.0  # Maximum log_std (std ≈ 7.4)
 
 # No mean clamping - we use unbounded Gaussian (CleanRL-style)
 # Actions are clipped at environment boundary, not here
@@ -67,7 +68,8 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
     # Log_std: state-independent learnable parameter (action_dim only, no weights)
     # This prevents log_std weight explosion during training
     comptime PARAM_SIZE: Int = (
-        Self.in_dim * Self.action_dim + Self.action_dim  # mean head
+        Self.in_dim * Self.action_dim
+        + Self.action_dim  # mean head
         + Self.action_dim  # log_std (state-independent)
     )
     comptime CACHE_SIZE: Int = Self.in_dim  # Cache input for backward pass
@@ -900,7 +902,6 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
 
         Each block uses TPB threads to sum over BATCH samples.
         """
-        from gpu import block as gpu_block
 
         var block_id = Int(block_idx.x)
         var local_i = Int(thread_idx.x)
@@ -920,12 +921,12 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
                 my_sum += cache[b, i] * grad_output[b, j]
                 b += TPB
 
-            var total = gpu_block.sum[block_size=TPB, broadcast=False](
-                val=my_sum
-            )
+            var total = block.sum[block_size=TPB, broadcast=False](val=my_sum)
 
             if local_i == 0:
-                grads[Self._mean_W_offset() + i * Self.action_dim + j] = total[0]
+                grads[Self._mean_W_offset() + i * Self.action_dim + j] = total[
+                    0
+                ]
 
         elif block_id < db_mean_start + Self.action_dim:
             # Compute db_mean[j] = sum_b(grad_output[b, j])
@@ -937,9 +938,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
                 my_sum += grad_output[b, j]
                 b += TPB
 
-            var total = gpu_block.sum[block_size=TPB, broadcast=False](
-                val=my_sum
-            )
+            var total = block.sum[block_size=TPB, broadcast=False](val=my_sum)
 
             if local_i == 0:
                 grads[Self._mean_b_offset() + j] = total[0]
@@ -955,9 +954,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
                 my_sum += grad_output[b, Self.action_dim + j]
                 b += TPB
 
-            var total = gpu_block.sum[block_size=TPB, broadcast=False](
-                val=my_sum
-            )
+            var total = block.sum[block_size=TPB, broadcast=False](val=my_sum)
 
             if local_i == 0:
                 grads[Self._log_std_offset() + j] = total[0]
@@ -1116,7 +1113,6 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
         With state-independent log_std, gradient goes directly to the parameter.
         This is a simple sum reduction over the batch dimension.
         """
-        from gpu import block
 
         var col = Int(block_idx.x)
         var local_i = Int(thread_idx.x)
@@ -1149,7 +1145,6 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
         ],
     ):
         """Compute db_mean = sum(dy_mean, axis=0)."""
-        from gpu import block
 
         var col = Int(block_idx.x)
         var local_i = Int(thread_idx.x)

@@ -1682,33 +1682,61 @@ struct LunarLanderV2[DTYPE: DType](
         # Use Philox RNG (GPU-compatible counter-based RNG)
         var rng = PhiloxRandom(seed=seed + env, offset=0)
 
-        # Generate terrain
+        # Generate terrain (matching CPU version with smoothing)
         var n_edges = LLConstants.TERRAIN_CHUNKS - 1
+        var n_chunks = LLConstants.TERRAIN_CHUNKS
         states[env, LLConstants.EDGE_COUNT_OFFSET] = Scalar[dtype](n_edges)
 
         var x_spacing: states.element_type = Scalar[dtype](
             LLConstants.W_UNITS / (LLConstants.TERRAIN_CHUNKS - 1)
         )
-        for edge in range(n_edges):
+
+        # Step 1: Generate raw heights (matching CPU: random * H_UNITS/2)
+        # Use a local array to store raw heights before smoothing
+        var raw_heights = InlineArray[Scalar[dtype], 12](fill=Scalar[dtype](0.0))
+        var h_units_half = Scalar[dtype](LLConstants.H_UNITS / 2.0)
+        for chunk in range(n_chunks + 1):
             var rand_vals = rng.step_uniform()
-            var rand1: states.element_type = rand_vals[0]
-            var rand2: states.element_type = rand_vals[1]
+            raw_heights[chunk] = rand_vals[0] * h_units_half
 
-            var x0: states.element_type = edge * x_spacing
-            var x1: states.element_type = (edge + 1) * x_spacing
-            var y0: states.element_type = 0.0
-            var y1: states.element_type = 0.0
-
-            # Helipad area is flat
-            if (
-                edge >= LLConstants.TERRAIN_CHUNKS // 2 - 2
-                and edge < LLConstants.TERRAIN_CHUNKS // 2 + 2
-            ):
-                y0 = Scalar[dtype](LLConstants.HELIPAD_Y)
-                y1 = Scalar[dtype](LLConstants.HELIPAD_Y)
+        # Step 2: Apply 3-point smoothing (matching CPU)
+        var smoothed_heights = InlineArray[Scalar[dtype], 11](
+            fill=Scalar[dtype](LLConstants.HELIPAD_Y)
+        )
+        for chunk in range(n_chunks):
+            var smooth_height: Scalar[dtype]
+            if chunk == 0:
+                smooth_height = (
+                    raw_heights[0] + raw_heights[0] + raw_heights[1]
+                ) / Scalar[dtype](3.0)
+            elif chunk == n_chunks - 1:
+                smooth_height = (
+                    raw_heights[chunk - 1]
+                    + raw_heights[chunk]
+                    + raw_heights[chunk]
+                ) / Scalar[dtype](3.0)
             else:
-                y0 = Scalar[dtype](LLConstants.HELIPAD_Y) + (rand1 - 0.5) * 2.0
-                y1 = Scalar[dtype](LLConstants.HELIPAD_Y) + (rand2 - 0.5) * 2.0
+                smooth_height = (
+                    raw_heights[chunk - 1]
+                    + raw_heights[chunk]
+                    + raw_heights[chunk + 1]
+                ) / Scalar[dtype](3.0)
+            smoothed_heights[chunk] = smooth_height
+
+        # Step 3: Flatten helipad area (matching CPU)
+        for chunk in range(
+            LLConstants.TERRAIN_CHUNKS // 2 - 2,
+            LLConstants.TERRAIN_CHUNKS // 2 + 3,
+        ):
+            if chunk >= 0 and chunk < n_chunks:
+                smoothed_heights[chunk] = Scalar[dtype](LLConstants.HELIPAD_Y)
+
+        # Step 4: Build edges from adjacent chunk heights
+        for edge in range(n_edges):
+            var x0: states.element_type = Scalar[dtype](edge) * x_spacing
+            var x1: states.element_type = Scalar[dtype](edge + 1) * x_spacing
+            var y0 = smoothed_heights[edge]
+            var y1 = smoothed_heights[edge + 1]
 
             # Compute edge normal (pointing up)
             var dx = x1 - x0
@@ -2160,20 +2188,56 @@ struct LunarLanderV2[DTYPE: DType](
         var vy_norm = vel_norm[1]
         var omega_norm = normalize_angular_velocity[dtype](omega)
 
-        # Check leg contacts
+        # Check leg contacts using actual terrain height at leg positions
+        # (matches CPU behavior which checks against actual terrain height)
         var left_contact = Scalar[dtype](0.0)
         var right_contact = Scalar[dtype](0.0)
+
+        # Get leg positions
+        var left_x = rebind[Scalar[dtype]](
+            states[env, LLConstants.BODIES_OFFSET + BODY_STATE_SIZE + IDX_X]
+        )
         var left_y = rebind[Scalar[dtype]](
             states[env, LLConstants.BODIES_OFFSET + BODY_STATE_SIZE + IDX_Y]
+        )
+        var right_x = rebind[Scalar[dtype]](
+            states[env, LLConstants.BODIES_OFFSET + 2 * BODY_STATE_SIZE + IDX_X]
         )
         var right_y = rebind[Scalar[dtype]](
             states[env, LLConstants.BODIES_OFFSET + 2 * BODY_STATE_SIZE + IDX_Y]
         )
-        var helipad_y = Scalar[dtype](LLConstants.HELIPAD_Y)
-        var contact_threshold = helipad_y + Scalar[dtype](0.1)
-        if left_y <= contact_threshold:
+
+        # Compute terrain height at leg positions from edges
+        # Edge layout: x0, y0, x1, y1, nx, ny (6 values per edge)
+        var n_edges = LLConstants.TERRAIN_CHUNKS - 1
+        var x_spacing = Scalar[dtype](
+            LLConstants.W_UNITS / Float64(LLConstants.TERRAIN_CHUNKS - 1)
+        )
+
+        # Left leg terrain height
+        var left_chunk_idx = Int(left_x / x_spacing)
+        if left_chunk_idx < 0:
+            left_chunk_idx = 0
+        if left_chunk_idx >= n_edges:
+            left_chunk_idx = n_edges - 1
+        var left_edge_off = LLConstants.EDGES_OFFSET + left_chunk_idx * 6
+        var left_terrain_y = rebind[Scalar[dtype]](states[env, left_edge_off + 1])
+
+        # Right leg terrain height
+        var right_chunk_idx = Int(right_x / x_spacing)
+        if right_chunk_idx < 0:
+            right_chunk_idx = 0
+        if right_chunk_idx >= n_edges:
+            right_chunk_idx = n_edges - 1
+        var right_edge_off = LLConstants.EDGES_OFFSET + right_chunk_idx * 6
+        var right_terrain_y = rebind[Scalar[dtype]](states[env, right_edge_off + 1])
+
+        # Check contact: leg_y - LEG_H <= terrain_y + tolerance (matching CPU)
+        var leg_h = Scalar[dtype](LLConstants.LEG_H)
+        var contact_tolerance = Scalar[dtype](0.01)
+        if left_y - leg_h <= left_terrain_y + contact_tolerance:
             left_contact = Scalar[dtype](1.0)
-        if right_y <= contact_threshold:
+        if right_y - leg_h <= right_terrain_y + contact_tolerance:
             right_contact = Scalar[dtype](1.0)
 
         # Update observation
@@ -3085,20 +3149,56 @@ struct LunarLanderV2[DTYPE: DType](
         var vy_norm = vel_norm[1]
         var omega_norm = normalize_angular_velocity[dtype](omega)
 
-        # Check leg contacts
+        # Check leg contacts using actual terrain height at leg positions
+        # (matches CPU behavior which checks against actual terrain height)
         var left_contact = Scalar[dtype](0.0)
         var right_contact = Scalar[dtype](0.0)
+
+        # Get leg positions
+        var left_x = rebind[Scalar[dtype]](
+            states[env, LLConstants.BODIES_OFFSET + BODY_STATE_SIZE + IDX_X]
+        )
         var left_y = rebind[Scalar[dtype]](
             states[env, LLConstants.BODIES_OFFSET + BODY_STATE_SIZE + IDX_Y]
+        )
+        var right_x = rebind[Scalar[dtype]](
+            states[env, LLConstants.BODIES_OFFSET + 2 * BODY_STATE_SIZE + IDX_X]
         )
         var right_y = rebind[Scalar[dtype]](
             states[env, LLConstants.BODIES_OFFSET + 2 * BODY_STATE_SIZE + IDX_Y]
         )
-        var helipad_y = Scalar[dtype](LLConstants.HELIPAD_Y)
-        var contact_threshold = helipad_y + Scalar[dtype](0.1)
-        if left_y <= contact_threshold:
+
+        # Compute terrain height at leg positions from edges
+        # Edge layout: x0, y0, x1, y1, nx, ny (6 values per edge)
+        var n_edges = LLConstants.TERRAIN_CHUNKS - 1
+        var x_spacing = Scalar[dtype](
+            LLConstants.W_UNITS / Float64(LLConstants.TERRAIN_CHUNKS - 1)
+        )
+
+        # Left leg terrain height
+        var left_chunk_idx = Int(left_x / x_spacing)
+        if left_chunk_idx < 0:
+            left_chunk_idx = 0
+        if left_chunk_idx >= n_edges:
+            left_chunk_idx = n_edges - 1
+        var left_edge_off = LLConstants.EDGES_OFFSET + left_chunk_idx * 6
+        var left_terrain_y = rebind[Scalar[dtype]](states[env, left_edge_off + 1])
+
+        # Right leg terrain height
+        var right_chunk_idx = Int(right_x / x_spacing)
+        if right_chunk_idx < 0:
+            right_chunk_idx = 0
+        if right_chunk_idx >= n_edges:
+            right_chunk_idx = n_edges - 1
+        var right_edge_off = LLConstants.EDGES_OFFSET + right_chunk_idx * 6
+        var right_terrain_y = rebind[Scalar[dtype]](states[env, right_edge_off + 1])
+
+        # Check contact: leg_y - LEG_H <= terrain_y + tolerance (matching CPU)
+        var leg_h = Scalar[dtype](LLConstants.LEG_H)
+        var contact_tolerance = Scalar[dtype](0.01)
+        if left_y - leg_h <= left_terrain_y + contact_tolerance:
             left_contact = Scalar[dtype](1.0)
-        if right_y <= contact_threshold:
+        if right_y - leg_h <= right_terrain_y + contact_tolerance:
             right_contact = Scalar[dtype](1.0)
 
         # Update observation

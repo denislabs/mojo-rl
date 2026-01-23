@@ -615,10 +615,17 @@ struct PendulumV2[DTYPE: DType](
     ](mut self, action: List[Scalar[DTYPE_VEC]]) -> Tuple[
         List[Scalar[DTYPE_VEC]], Scalar[DTYPE_VEC], Bool
     ]:
-        """Take continuous action and return (obs, reward, done)."""
-        var torque = Scalar[Self.dtype](action[0]) if len(
+        """Take continuous action and return (obs, reward, done).
+
+        Action is expected in [-1, 1] range (normalized).
+        This method scales it by MAX_TORQUE to match GPU behavior.
+        """
+        var raw_action = Scalar[Self.dtype](action[0]) if len(
             action
         ) > 0 else Scalar[Self.dtype](0.0)
+        # Scale action from [-1, 1] to [-MAX_TORQUE, MAX_TORQUE]
+        # This matches the GPU step kernel behavior
+        var torque = raw_action * self.max_torque
         var result = self._step_with_torque(torque)
         var obs = List[Scalar[DTYPE_VEC]](capacity=3)
         obs.append(Scalar[DTYPE_VEC](cos(Float64(self.theta))))

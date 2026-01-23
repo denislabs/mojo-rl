@@ -67,6 +67,28 @@ fn normalize_angular_velocity[T: DType](omega: Scalar[T]) -> Scalar[T]:
 
 
 @always_inline
+fn get_terrain_height_at_x[T: DType](x: Scalar[T]) -> Scalar[T]:
+    """Get terrain height at a given x position using simplified chunk lookup.
+
+    This matches the CPU version's _get_terrain_height() behavior, which returns
+    the height at the start of the chunk containing x (no interpolation).
+
+    Note: For GPU, the actual terrain edges need to be passed in. This function
+    returns helipad_y for the helipad region and a basic approximation otherwise.
+    Use get_terrain_height_from_edges for actual terrain lookup in GPU kernels.
+
+    Args:
+        x: X position in world units.
+
+    Returns:
+        Approximate terrain height (helipad_y for simplicity).
+    """
+    # For the helipad region, terrain is always at HELIPAD_Y
+    # For non-helipad regions, this is an approximation
+    return Scalar[T](LLConstants.HELIPAD_Y)
+
+
+@always_inline
 fn compute_shaping[
     T: DType
 ](

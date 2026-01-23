@@ -83,7 +83,10 @@ fn main() raises:
     except:
         print("Error loading checkpoint!")
         print("Make sure you have trained the agent first:")
-        print("  pixi run -e apple mojo run tests/test_ppo_lunar_continuous_gpu.mojo")
+        print(
+            "  pixi run -e apple mojo run"
+            " tests/test_ppo_lunar_continuous_gpu.mojo"
+        )
         return
 
     print()
@@ -106,7 +109,9 @@ fn main() raises:
         print("  Episodes:", NUM_EPISODES)
         print("  Max steps per episode:", MAX_STEPS)
         print()
-        print("----------------------------------------------------------------------")
+        print(
+            "----------------------------------------------------------------------"
+        )
 
         var start_time = perf_counter_ns()
 
@@ -123,9 +128,13 @@ fn main() raises:
         var elapsed_ms = (perf_counter_ns() - start_time) / 1_000_000
 
         print()
-        print("----------------------------------------------------------------------")
+        print(
+            "----------------------------------------------------------------------"
+        )
         print("CPU EVALUATION SUMMARY (with rendering)")
-        print("----------------------------------------------------------------------")
+        print(
+            "----------------------------------------------------------------------"
+        )
         print("Episodes completed:", NUM_EPISODES)
         print("Average reward:", avg_reward)
         print("Evaluation time:", elapsed_ms / 1000, "seconds")
@@ -145,7 +154,9 @@ fn main() raises:
         print("  Episodes:", NUM_EPISODES)
         print("  Max steps per episode:", MAX_STEPS)
         print()
-        print("----------------------------------------------------------------------")
+        print(
+            "----------------------------------------------------------------------"
+        )
 
         var start_time = perf_counter_ns()
 
@@ -161,9 +172,13 @@ fn main() raises:
         var elapsed_ms = (perf_counter_ns() - start_time) / 1_000_000
 
         print()
-        print("----------------------------------------------------------------------")
+        print(
+            "----------------------------------------------------------------------"
+        )
         print("CPU EVALUATION SUMMARY (headless)")
-        print("----------------------------------------------------------------------")
+        print(
+            "----------------------------------------------------------------------"
+        )
         print("Episodes completed:", NUM_EPISODES)
         print("Average reward:", avg_reward)
         print("Evaluation time:", elapsed_ms / 1000, "seconds")

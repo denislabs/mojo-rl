@@ -44,7 +44,7 @@ comptime N_ENVS = 512  # Parallel environments
 comptime GPU_MINIBATCH_SIZE = 512  # Minibatch size for PPO updates
 
 # Training duration
-comptime NUM_EPISODES = 25_000  # LunarLander needs more episodes than Pendulum
+comptime NUM_EPISODES = 10_000  # LunarLander needs more episodes than Pendulum
 
 comptime dtype = DType.float32
 
@@ -97,6 +97,8 @@ fn main() raises:
             # Action scaling: PPO outputs [-1, 1], we need [0, 1] for main and [-1, 1] for side
             # The environment handles this internally via step_continuous_vec
         )
+
+        # agent.load_checkpoint("ppo_lunar_continuous_gpu.ckpt")
 
         print("Environment: LunarLander Continuous (GPU)")
         print("Agent: PPO Continuous (GPU)")

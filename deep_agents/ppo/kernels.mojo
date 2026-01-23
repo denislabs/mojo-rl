@@ -831,3 +831,43 @@ fn _extract_obs_from_state_continuous_kernel[
     # Copy first OBS_DIM elements from state to obs
     for d in range(OBS_DIM):
         obs[i, d] = states[i, d]
+
+
+# =============================================================================
+# Log_std Parameter Clamping Kernel
+# =============================================================================
+
+
+@always_inline
+fn clamp_log_std_params_kernel[
+    dtype: DType,
+    PARAM_SIZE: Int,
+    LOG_STD_OFFSET: Int,
+    ACTION_DIM: Int,
+](
+    params: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+):
+    """Clamp log_std parameters to valid range [-5.0, 2.0].
+
+    This kernel should be called after each optimizer step to prevent
+    log_std from drifting to extreme values during training.
+
+    Args:
+        params: Actor network parameters.
+        LOG_STD_OFFSET: Offset to log_std parameters within actor params.
+        ACTION_DIM: Number of action dimensions (number of log_std params).
+    """
+    comptime LOG_STD_MIN: Scalar[dtype] = -5.0
+    comptime LOG_STD_MAX: Scalar[dtype] = 2.0
+
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= ACTION_DIM:
+        return
+
+    var param_idx = LOG_STD_OFFSET + i
+    var val = params[param_idx]
+
+    if val < LOG_STD_MIN:
+        params[param_idx] = LOG_STD_MIN
+    elif val > LOG_STD_MAX:
+        params[param_idx] = LOG_STD_MAX

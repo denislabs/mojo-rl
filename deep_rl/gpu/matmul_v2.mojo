@@ -19,7 +19,6 @@ from gpu.memory import AddressSpace, async_copy_wait_all
 from layout import Layout, LayoutTensor
 from layout.layout_tensor import copy_dram_to_sram_async
 
-
 # =============================================================================
 # Idiomatic Tiled Matrix Multiplication
 # =============================================================================
@@ -87,15 +86,15 @@ fn tiled_matmul_kernel_idiomatic[
 
         # Async copy tiles to shared memory with coalesced access
         copy_dram_to_sram_async[
-            thread_layout = load_layout,
-            num_threads = NUM_THREADS,
-            block_dim_count = BLOCK_DIM_COUNT,
+            thread_layout=load_layout,
+            num_threads=NUM_THREADS,
+            block_dim_count=BLOCK_DIM_COUNT,
         ](a_shared, a_tile)
 
         copy_dram_to_sram_async[
-            thread_layout = load_layout,
-            num_threads = NUM_THREADS,
-            block_dim_count = BLOCK_DIM_COUNT,
+            thread_layout=load_layout,
+            num_threads=NUM_THREADS,
+            block_dim_count=BLOCK_DIM_COUNT,
         ](b_shared, b_tile)
 
         # Wait for async copies to complete
@@ -281,8 +280,12 @@ fn linear_backward_dx_kernel[
     OUT_DIM: Int,
     TILE: Int,
 ](
-    grad_input: LayoutTensor[dtype, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
-    grad_output: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), ImmutAnyOrigin],
+    grad_input: LayoutTensor[
+        dtype, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin
+    ],
+    grad_output: LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_DIM), ImmutAnyOrigin
+    ],
     W: LayoutTensor[dtype, Layout.row_major(IN_DIM, OUT_DIM), ImmutAnyOrigin],
 ):
     """Linear layer backward for input gradient: dx = dy @ W.T.
@@ -350,7 +353,9 @@ fn linear_backward_dW_kernel[
 ](
     dW: LayoutTensor[dtype, Layout.row_major(IN_DIM, OUT_DIM), MutAnyOrigin],
     cache: LayoutTensor[dtype, Layout.row_major(BATCH, IN_DIM), ImmutAnyOrigin],
-    grad_output: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), ImmutAnyOrigin],
+    grad_output: LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_DIM), ImmutAnyOrigin
+    ],
 ):
     """Linear layer backward for weight gradient: dW = x.T @ dy.
 

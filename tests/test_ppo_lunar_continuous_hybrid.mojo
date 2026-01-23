@@ -1,14 +1,21 @@
-"""Test PPO Agent Hybrid GPU+CPU Training on LunarLander.
+"""Test PPO Continuous Agent Hybrid GPU+CPU Training on LunarLander.
 
-This tests the hybrid GPU+CPU implementation of PPO using the native Mojo
-LunarLander environment with accurate 2D physics:
+This tests the hybrid GPU+CPU implementation of PPO with continuous actions using the
+LunarLanderV2 environment with:
 - Neural network computations on GPU (forward/backward passes)
 - Environment physics on CPU (accurate Box2D-style simulation)
+- 2D continuous action space (main throttle + side control)
 - No physics mismatch between training and evaluation
 
+Action space (matching Gymnasium LunarLander-v3 continuous):
+- action[0]: main engine throttle (0.0 to 1.0)
+- action[1]: side engine control (-1.0 to 1.0)
+            negative = left engine, positive = right engine
+            magnitude > 0.5 activates the engine
+
 Run with:
-    pixi run -e apple mojo run tests/test_ppo_lunar_hybrid.mojo    # Apple Silicon
-    pixi run -e nvidia mojo run tests/test_ppo_lunar_hybrid.mojo   # NVIDIA GPU
+    pixi run -e apple mojo run tests/test_ppo_lunar_continuous_hybrid.mojo    # Apple Silicon
+    pixi run -e nvidia mojo run tests/test_ppo_lunar_continuous_hybrid.mojo   # NVIDIA GPU
 """
 
 from random import seed
@@ -16,41 +23,41 @@ from time import perf_counter_ns
 
 from gpu.host import DeviceContext
 
-from deep_agents.ppo import DeepPPOAgent
-from envs.lunar_lander import LunarLanderV2
+from deep_agents.ppo import DeepPPOContinuousAgent
+from envs.lunar_lander import LunarLanderV2, LLConstants
 
 
 # =============================================================================
 # Constants
 # =============================================================================
 
-# LunarLander: 8D observation, 4 discrete actions
-comptime OBS_DIM = 8
-comptime NUM_ACTIONS = 4
+# LunarLander: 8D observation, 2D continuous action
+comptime OBS_DIM = LLConstants.OBS_DIM_VAL  # 8: [x, y, vx, vy, angle, ang_vel, left_leg, right_leg]
+comptime ACTION_DIM = LLConstants.ACTION_DIM_VAL  # 2: [main_throttle, side_control]
 
-# Network architecture
-comptime HIDDEN_DIM = 300
+# Network architecture (larger for LunarLander - more complex than Pendulum)
+comptime HIDDEN_DIM = 256
 
 # Hybrid training parameters
 comptime ROLLOUT_LEN = 128  # Steps per rollout per environment
-comptime N_ENVS = 256  # Parallel CPU environments (smaller than GPU version)
+comptime N_ENVS = 256  # Parallel CPU environments (smaller than pure GPU version)
 comptime GPU_MINIBATCH_SIZE = 512  # Minibatch size for PPO updates
 
-# Training duration (fewer episodes since CPU physics is slower)
-comptime NUM_EPISODES = 50_000
+# Training duration
+comptime NUM_EPISODES = 50_000  # LunarLander needs many episodes
+
+comptime dtype = DType.float32
 
 
 # =============================================================================
 # Main
 # =============================================================================
 
-comptime dtype = DType.float32
-
 
 fn main() raises:
     seed(42)
     print("=" * 70)
-    print("PPO Agent Hybrid (GPU+CPU) Test on LunarLander")
+    print("PPO Continuous Agent Hybrid (GPU+CPU) Test on LunarLander")
     print("=" * 70)
     print()
 
@@ -75,42 +82,46 @@ fn main() raises:
     # =========================================================================
 
     with DeviceContext() as ctx:
-        var agent = DeepPPOAgent[
-            OBS_DIM,
-            NUM_ACTIONS,
-            HIDDEN_DIM,
-            ROLLOUT_LEN,
-            N_ENVS,
-            GPU_MINIBATCH_SIZE,
+        var agent = DeepPPOContinuousAgent[
+            obs_dim=OBS_DIM,
+            action_dim=ACTION_DIM,
+            hidden_dim=HIDDEN_DIM,
+            rollout_len=ROLLOUT_LEN,
+            n_envs=N_ENVS,
+            gpu_minibatch_size=GPU_MINIBATCH_SIZE,
+            clip_value=True,
         ](
-            gamma=0.99,
-            gae_lambda=0.95,
-            clip_epsilon=0.2,
-            actor_lr=0.0003,
-            critic_lr=0.0003,
-            entropy_coef=0.01,
+            gamma=0.99,  # Standard discount
+            gae_lambda=0.95,  # Standard GAE lambda
+            clip_epsilon=0.2,  # Standard clipping
+            actor_lr=0.0003,  # Standard learning rate
+            critic_lr=0.001,  # Higher critic LR for faster value learning
+            entropy_coef=0.05,  # Higher entropy to prevent mean collapse
             value_loss_coef=0.5,
-            num_epochs=10,
+            num_epochs=10,  # More epochs for LunarLander
             # Advanced hyperparameters
-            target_kl=0.02,
+            target_kl=0.1,  # KL early stopping
             max_grad_norm=0.5,
-            anneal_lr=True,
+            anneal_lr=False,  # Disabled - causes late-training collapse
             anneal_entropy=False,
             target_total_steps=0,  # Auto-calculate
-            clip_value=True,
             norm_adv_per_minibatch=True,
             checkpoint_every=500,
-            checkpoint_path="ppo_lunar_hybrid_v2.ckpt",
+            checkpoint_path="ppo_lunar_continuous_hybrid.ckpt",
+            # Reward normalization (CleanRL-style) - prevents fuel penalties from dominating
+            normalize_rewards=True,
+            # Action scaling: PPO outputs [-1, 1], we need [0, 1] for main and [-1, 1] for side
+            # The environment handles this internally via step_continuous_vec
         )
 
-        # agent.load_checkpoint("ppo_lunar_hybrid.ckpt")
-
-        print("Environment: LunarLander (CPU - accurate physics)")
+        print("Environment: LunarLander Continuous (CPU - accurate physics)")
         print("Training: Hybrid GPU+CPU")
         print("  Neural network: GPU")
         print("  Physics: CPU (native Mojo 2D physics)")
         print()
-        print("Agent: PPO")
+        print("Agent: PPO Continuous")
+        print("  Observation dim: " + String(OBS_DIM))
+        print("  Action dim: " + String(ACTION_DIM))
         print("  Hidden dim: " + String(HIDDEN_DIM))
         print("  Rollout length: " + String(ROLLOUT_LEN))
         print("  N envs (parallel CPU): " + String(N_ENVS))
@@ -119,14 +130,32 @@ fn main() raises:
             "  Total transitions per rollout: " + String(ROLLOUT_LEN * N_ENVS)
         )
         print()
-        print("LunarLander specifics:")
+        print("  Advanced features:")
+        print("    - LR annealing: disabled (prevents late collapse)")
+        print("    - KL early stopping: target_kl=0.1")
+        print("    - Gradient clipping: max_grad_norm=0.5")
+        print("    - Reward normalization: enabled (CleanRL-style)")
+        print("    - Higher entropy: 0.05 (prevents mean collapse)")
+        print()
+        print("LunarLander Continuous specifics:")
         print(
             "  - 8D observations: [x, y, vx, vy, angle, ang_vel, left_leg,"
             " right_leg]"
         )
-        print("  - 4 actions: nop, left, main, right")
+        print("  - 2D continuous actions:")
+        print("      action[0]: main engine throttle (0.0 to 1.0)")
+        print("      action[1]: side engine control (-1.0 to 1.0)")
+        print("                 negative = left, positive = right")
+        print("  - Reward shaping: distance + velocity + angle penalties")
+        print("  - Landing bonus: +100, Crash penalty: -100")
+        print("  - Fuel costs: proportional to throttle")
         print("  - Wind effects: enabled")
-        print("  - Physics: Accurate 2D rigid body simulation")
+        print()
+        print("Expected rewards:")
+        print("  - Random policy: ~-200 to -400")
+        print("  - Learning policy: > -100")
+        print("  - Good policy: > 0")
+        print("  - Successful landing: > 100")
         print()
 
         # =====================================================================
@@ -173,25 +202,32 @@ fn main() raises:
             # Print metrics summary
             print(
                 "Final average reward (last 100 episodes): "
-                + String(metrics.mean_reward_last_n(100))[:7]
+                + String(metrics.mean_reward_last_n(100))[:8]
             )
-            print("Best episode reward: " + String(metrics.max_reward())[:7])
+            print("Best episode reward: " + String(metrics.max_reward())[:8])
             print()
 
             # Check for successful training
             var final_avg = metrics.mean_reward_last_n(100)
-            if final_avg > 0.0:
+            if final_avg > 100.0:
+                print(
+                    "EXCELLENT: Agent consistently lands successfully!"
+                    " (avg reward > 100)"
+                )
+            elif final_avg > 0.0:
                 print("SUCCESS: Agent learned to land! (avg reward > 0)")
             elif final_avg > -100.0:
                 print(
-                    "PARTIAL: Agent is learning but not consistently landing"
+                    "GOOD PROGRESS: Agent is learning to control"
                     " (avg reward > -100)"
                 )
-            else:
+            elif final_avg > -200.0:
                 print(
-                    "NEEDS MORE TRAINING: Agent still crashing frequently (avg"
-                    " reward < -100)"
+                    "LEARNING: Agent improving but needs more training"
+                    " (avg reward > -200)"
                 )
+            else:
+                print("EARLY STAGE: Agent still exploring (avg reward < -200)")
 
             print()
             print("Key benefit: Trained policy will transfer correctly to")

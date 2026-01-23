@@ -4,6 +4,7 @@ from layout import LayoutTensor, Layout
 from gpu import thread_idx, block_idx, block_dim, barrier
 from gpu.host import DeviceContext, DeviceBuffer
 from gpu.memory import AddressSpace
+from gpu.primitives import block
 
 
 struct Linear[in_dim: Int, out_dim: Int](Model):
@@ -454,7 +455,6 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
 
         Each block handles one output dimension and reduces across batch.
         """
-        from gpu import block
 
         var col = Int(block_idx.x)
         var local_i = Int(thread_idx.x)
