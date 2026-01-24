@@ -1004,12 +1004,18 @@ struct CartPoleEnv[DTYPE: DType](
     fn reset_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
-    ](ctx: DeviceContext, mut states_buf: DeviceBuffer[gpu_dtype],) raises:
+    ](
+        ctx: DeviceContext,
+        mut states_buf: DeviceBuffer[gpu_dtype],
+        rng_seed: UInt64 = 0,
+    ) raises:
         """Launch reset kernel on GPU.
 
         Args:
             ctx: GPU device context.
             states_buf: States buffer [BATCH_SIZE * STATE_SIZE] (written).
+            rng_seed: Random seed for initial state generation (unused for CartPole
+                     but included for trait compatibility).
         """
         # Create tensor view from buffer
         var states = LayoutTensor[
@@ -1021,6 +1027,7 @@ struct CartPoleEnv[DTYPE: DType](
 
         # Define kernel wrapper
         # Note: MutAnyOrigin allows mutation, no `mut` keyword needed on wrapper params
+        # CartPole doesn't have terrain - initial states are deterministic per env index
         @always_inline
         fn reset_wrapper(
             states: LayoutTensor[
@@ -1045,7 +1052,7 @@ struct CartPoleEnv[DTYPE: DType](
         ctx: DeviceContext,
         mut states_buf: DeviceBuffer[gpu_dtype],
         mut dones_buf: DeviceBuffer[gpu_dtype],
-        rng_seed: UInt32,
+        rng_seed: UInt64,
     ) raises:
         """Launch selective reset kernel on GPU - only resets done environments.
 
@@ -1065,7 +1072,7 @@ struct CartPoleEnv[DTYPE: DType](
 
         # Configure grid
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
-        var seed = Scalar[DType.uint32](rng_seed)
+        var seed = Scalar[DType.uint64](rng_seed)
 
         # Define kernel wrapper
         @always_inline
@@ -1078,10 +1085,11 @@ struct CartPoleEnv[DTYPE: DType](
             dones: LayoutTensor[
                 gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
             ],
-            rng_seed: Scalar[DType.uint32],
+            rng_seed: Scalar[DType.uint64],
         ):
+            # Cast to uint32 for the inner kernel (RNG uses 32-bit state)
             Self.selective_reset_kernel[BATCH_SIZE, STATE_SIZE](
-                states, dones, rng_seed
+                states, dones, Scalar[DType.uint32](rng_seed)
             )
 
         ctx.enqueue_function[selective_reset_wrapper, selective_reset_wrapper](

@@ -1242,7 +1242,7 @@ struct LunarLanderV2[DTYPE: DType](
 
         if is_at_rest:
             terminated = True
-            reward = Scalar[Self.dtype](100.0)
+            reward = reward + Scalar[Self.dtype](100.0)
 
         if self.step_count >= 1000:
             terminated = True
@@ -1586,8 +1586,20 @@ struct LunarLanderV2[DTYPE: DType](
     fn reset_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
-    ](ctx: DeviceContext, mut states_buf: DeviceBuffer[dtype]) raises:
-        """GPU reset kernel."""
+    ](
+        ctx: DeviceContext,
+        mut states_buf: DeviceBuffer[dtype],
+        rng_seed: UInt64 = 0,
+    ) raises:
+        """GPU reset kernel.
+
+        Args:
+            ctx: Device context for GPU operations.
+            states_buf: Buffer to store environment states.
+            rng_seed: Random seed for terrain generation. Use different values
+                     across calls to get varied terrains. If 0, uses a default
+                     seed that still varies per environment.
+        """
         # Create 2D LayoutTensor from buffer
         var states = LayoutTensor[
             dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -1600,17 +1612,23 @@ struct LunarLanderV2[DTYPE: DType](
             states: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
             ],
+            seed: Scalar[dtype],
         ):
             var i = Int(block_dim.x * block_idx.x + thread_idx.x)
             if i >= BATCH_SIZE:
                 return
-            # Use env index as seed for deterministic but varied initial states
+            # Combine seed with env index using prime multiplier for good distribution
+            # seed * 2654435761 + i * 12345 ensures different terrains across:
+            # - Different environments in same batch (via i * 12345)
+            # - Different reset calls (via seed * large_prime)
+            var combined_seed = Int(seed) * 2654435761 + i * 12345
             LunarLanderV2[Self.dtype]._reset_env_gpu[BATCH_SIZE, STATE_SIZE](
-                states, i, i * 12345
+                states, i, combined_seed
             )
 
         ctx.enqueue_function[reset_wrapper, reset_wrapper](
             states,
+            Scalar[dtype](rng_seed),
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )
@@ -1623,9 +1641,18 @@ struct LunarLanderV2[DTYPE: DType](
         ctx: DeviceContext,
         mut states_buf: DeviceBuffer[dtype],
         mut dones_buf: DeviceBuffer[dtype],
-        rng_seed: UInt32,
+        rng_seed: UInt64,
     ) raises:
-        """GPU selective reset kernel."""
+        """GPU selective reset kernel - resets only done environments.
+
+        Args:
+            ctx: Device context for GPU operations.
+            states_buf: Buffer containing environment states.
+            dones_buf: Buffer indicating which environments are done.
+            rng_seed: Random seed for terrain generation. Should be different
+                     each call (e.g., current training step) to get varied
+                     terrains on reset.
+        """
         var states = LayoutTensor[
             dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
         ](states_buf.unsafe_ptr())
@@ -1650,9 +1677,12 @@ struct LunarLanderV2[DTYPE: DType](
             if i >= BATCH_SIZE:
                 return
             if rebind[Scalar[dtype]](dones[i]) > Scalar[dtype](0.5):
+                # Combine seed with env index using prime multiplier for good distribution
+                # This ensures different terrains across different reset calls
+                var combined_seed = Int(seed) * 2654435761 + i * 12345
                 LunarLanderV2[Self.dtype]._reset_env_gpu[
                     BATCH_SIZE, STATE_SIZE
-                ](states, i, Int(seed) + i)
+                ](states, i, combined_seed)
 
         ctx.enqueue_function[selective_reset_wrapper, selective_reset_wrapper](
             states,
@@ -1757,9 +1787,19 @@ struct LunarLanderV2[DTYPE: DType](
             states[env, edge_off + 5] = ny
 
         # Initialize lander
+        # Initial velocity matching CPU: (rand * 2 - 1) * INITIAL_RANDOM * DT / LANDER_MASS
+        # INITIAL_RANDOM = 1000.0, DT = 0.02, LANDER_MASS = 5.0
+        # = (rand * 2 - 1) * 1000 * 0.02 / 5 = (rand * 2 - 1) * 4.0
         var rand_vals = rng.step_uniform()
-        var init_vx: states.element_type = (rand_vals[2] - 0.5) * 2.0
-        var init_vy: states.element_type = (rand_vals[3] - 0.5) * 2.0
+        var init_random_scale = Scalar[dtype](
+            1000.0 * LLConstants.DT / LLConstants.LANDER_MASS
+        )  # = 4.0
+        var init_vx: states.element_type = (
+            rand_vals[2] * Scalar[dtype](2.0) - Scalar[dtype](1.0)
+        ) * init_random_scale
+        var init_vy: states.element_type = (
+            rand_vals[3] * Scalar[dtype](2.0) - Scalar[dtype](1.0)
+        ) * init_random_scale
 
         var lander_off = LLConstants.BODIES_OFFSET
         states[env, lander_off + IDX_X] = Scalar[dtype](LLConstants.HELIPAD_X)

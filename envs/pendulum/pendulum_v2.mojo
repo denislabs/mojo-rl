@@ -290,7 +290,11 @@ struct PendulumV2[DTYPE: DType](
     fn reset_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
-    ](ctx: DeviceContext, mut states: DeviceBuffer[dtype]) raises:
+    ](
+        ctx: DeviceContext,
+        mut states: DeviceBuffer[dtype],
+        rng_seed: UInt64 = 0,
+    ) raises:
         """Reset all environments to random initial values (GPUContinuousEnv trait).
 
         Initial angle is uniformly random in [-π, π].
@@ -299,6 +303,8 @@ struct PendulumV2[DTYPE: DType](
         Args:
             ctx: GPU device context.
             states: State buffer [BATCH_SIZE * STATE_SIZE].
+            rng_seed: Random seed for initial state generation. Use different
+                     values across calls for varied initial states.
         """
         var states_tensor = LayoutTensor[
             dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -311,16 +317,20 @@ struct PendulumV2[DTYPE: DType](
             states: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
             ],
+            seed: Scalar[dtype],
         ):
             var env = Int(block_dim.x * block_idx.x + thread_idx.x)
             if env >= BATCH_SIZE:
                 return
+            # Combine seed with env index using prime multiplier for good distribution
+            var combined_seed = Int(seed) * 2654435761 + env * 12345
             PendulumV2[Self.dtype]._reset_env_gpu[BATCH_SIZE, STATE_SIZE](
-                states, env, env * 12345
+                states, env, combined_seed
             )
 
         ctx.enqueue_function[reset_wrapper, reset_wrapper](
             states_tensor,
+            Scalar[dtype](rng_seed),
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )
@@ -333,7 +343,7 @@ struct PendulumV2[DTYPE: DType](
         ctx: DeviceContext,
         mut states: DeviceBuffer[dtype],
         mut dones: DeviceBuffer[dtype],
-        rng_seed: UInt32,
+        rng_seed: UInt64,
     ) raises:
         """Reset only done environments (GPUContinuousEnv trait).
 
@@ -341,7 +351,8 @@ struct PendulumV2[DTYPE: DType](
             ctx: GPU device context.
             states: State buffer [BATCH_SIZE * STATE_SIZE].
             dones: Done flags buffer [BATCH_SIZE].
-            rng_seed: Random seed for initialization.
+            rng_seed: Random seed for initialization. Should be different each call
+                     (e.g., training step counter) for varied initial states.
         """
         var states_tensor = LayoutTensor[
             dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -366,8 +377,10 @@ struct PendulumV2[DTYPE: DType](
                 return
             # Only reset if done
             if rebind[Scalar[dtype]](dones[env]) > Scalar[dtype](0.5):
+                # Combine seed with env index using prime multiplier for good distribution
+                var combined_seed = Int(seed) * 2654435761 + env * 12345
                 PendulumV2[Self.dtype]._reset_env_gpu[BATCH_SIZE, STATE_SIZE](
-                    states, env, Int(seed) + env
+                    states, env, combined_seed
                 )
                 dones[env] = Scalar[dtype](0.0)
 

@@ -270,8 +270,19 @@ trait GPUDiscreteEnv:
     fn reset_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
-    ](ctx: DeviceContext, mut states: DeviceBuffer[dtype],) raises:
-        """Reset state to random initial values."""
+    ](
+        ctx: DeviceContext,
+        mut states: DeviceBuffer[dtype],
+        rng_seed: UInt64 = 0,
+    ) raises:
+        """Reset state to random initial values.
+
+        Args:
+            ctx: GPU device context.
+            states: State buffer on GPU.
+            rng_seed: Random seed for terrain/initial state generation.
+                     Use different values across calls to get varied environments.
+        """
         ...
 
     @staticmethod
@@ -282,12 +293,19 @@ trait GPUDiscreteEnv:
         ctx: DeviceContext,
         mut states: DeviceBuffer[dtype],
         mut dones: DeviceBuffer[dtype],
-        rng_seed: UInt32,
+        rng_seed: UInt64,
     ) raises:
         """Reset only done environments to random initial values.
 
         This enables efficient vectorized training where only completed
         episodes are reset while others continue running.
+
+        Args:
+            ctx: GPU device context.
+            states: State buffer on GPU.
+            dones: Done flags buffer on GPU.
+            rng_seed: Random seed for terrain/initial state generation.
+                     Should be different each call (e.g., training step counter).
         """
         ...
 
@@ -339,8 +357,19 @@ trait GPUContinuousEnv:
     fn reset_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
-    ](ctx: DeviceContext, mut states: DeviceBuffer[dtype]) raises:
-        """Reset all environments to random initial values."""
+    ](
+        ctx: DeviceContext,
+        mut states: DeviceBuffer[dtype],
+        rng_seed: UInt64 = 0,
+    ) raises:
+        """Reset all environments to random initial values.
+
+        Args:
+            ctx: GPU device context.
+            states: State buffer on GPU.
+            rng_seed: Random seed for terrain/initial state generation.
+                     Use different values across calls to get varied environments.
+        """
         ...
 
     @staticmethod
@@ -351,11 +380,18 @@ trait GPUContinuousEnv:
         ctx: DeviceContext,
         mut states: DeviceBuffer[dtype],
         mut dones: DeviceBuffer[dtype],
-        rng_seed: UInt32,
+        rng_seed: UInt64,
     ) raises:
         """Reset only done environments to random initial values.
 
         This enables efficient vectorized training where only completed
         episodes are reset while others continue running.
+
+        Args:
+            ctx: GPU device context.
+            states: State buffer on GPU.
+            dones: Done flags buffer on GPU.
+            rng_seed: Random seed for terrain/initial state generation.
+                     Should be different each call (e.g., training step counter).
         """
         ...

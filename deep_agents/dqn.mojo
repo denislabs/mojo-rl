@@ -1878,7 +1878,7 @@ struct DQNAgent[
             warmup_count += Self.n_envs
 
             # Reset done environments
-            var rng_seed = UInt32(warmup_count * 7919 + 42)
+            var rng_seed = UInt64(warmup_count * 7919 + 42)
             EnvType.selective_reset_kernel_gpu[Self.n_envs, Self.obs_dim](
                 ctx, obs_buf, dones_buf, rng_seed
             )
@@ -1887,7 +1887,7 @@ struct DQNAgent[
 
         # Reset ALL environments after warmup to start fresh episodes
         # (warmup may leave envs mid-episode, which would give incorrect episode rewards)
-        EnvType.reset_kernel_gpu[Self.n_envs, Self.obs_dim](ctx, obs_buf)
+        EnvType.reset_kernel_gpu[Self.n_envs, Self.obs_dim](ctx, obs_buf, UInt64(warmup_count))
 
         if verbose:
             print("Warmup complete. Replay buffer size: " + String(rb_size))
@@ -2125,7 +2125,7 @@ struct DQNAgent[
             # Note: extract_completed_episodes_kernel already reset episode tracking for done envs
             if any_done:
                 # Use varying seed based on total_steps for different random init each time
-                var rng_seed = UInt32(
+                var rng_seed = UInt64(
                     total_steps * 7919 + 42
                 )  # Prime-based variation
                 EnvType.selective_reset_kernel_gpu[Self.n_envs, Self.obs_dim](

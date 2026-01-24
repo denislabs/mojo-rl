@@ -160,7 +160,7 @@ fn main() raises:
 
             # Reset done environments
             LunarLanderGPU.selective_reset_kernel_gpu[EVAL_ENVS, OBS_DIM](
-                ctx, states_buf, dones_buf, UInt32(step * 12345)
+                ctx, states_buf, dones_buf, UInt64(step * 12345)
             )
             ctx.synchronize()
 

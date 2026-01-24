@@ -2272,7 +2272,7 @@ struct DeepPPOAgent[
                     ctx,
                     states_buf,
                     dones_buf,
-                    UInt32(total_steps * 1013904223 + t * 2654435761),
+                    UInt64(total_steps * 1013904223 + t * 2654435761),
                 )
                 # No sync needed - GPU ops execute in order within stream
 

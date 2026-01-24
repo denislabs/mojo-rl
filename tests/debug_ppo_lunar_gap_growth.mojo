@@ -54,7 +54,7 @@ fn main() raises:
     print("  OBS_DIM:", OBS_DIM)
     print("  ACTION_DIM:", ACTION_DIM)
     print("  HIDDEN_DIM:", HIDDEN_DIM)
-    print("  entropy_coef: 0.05")
+    print("  entropy_coef: 0.01")
     print("  target_kl: 0.1")
     print("  anneal_lr: False")
     print("  normalize_rewards: True")
@@ -75,7 +75,7 @@ fn main() raises:
             clip_epsilon=0.2,
             actor_lr=0.0003,
             critic_lr=0.001,
-            entropy_coef=0.05,  # Higher entropy for LunarLander
+            entropy_coef=0.01,  # Higher entropy for LunarLander
             value_loss_coef=0.5,
             num_epochs=10,  # More epochs for LunarLander
             target_kl=0.1,  # KL early stopping

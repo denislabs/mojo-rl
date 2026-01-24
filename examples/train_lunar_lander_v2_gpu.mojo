@@ -117,7 +117,7 @@ fn main() raises:
                 rng_state = xorshift32(rng_state)
                 LunarLanderV2.selective_reset_kernel_gpu[
                     BATCH_SIZE, STATE_SIZE
-                ](ctx, states_buf, dones_buf, UInt32(rng_state))
+                ](ctx, states_buf, dones_buf, UInt64(rng_state))
 
                 ctx.synchronize()
 
@@ -209,7 +209,7 @@ fn main() raises:
             )
 
             LunarLanderV2.selective_reset_kernel_gpu[BATCH_SIZE, STATE_SIZE](
-                ctx, states_buf, dones_buf, UInt32(rng_state)
+                ctx, states_buf, dones_buf, UInt64(rng_state)
             )
 
             ctx.synchronize()

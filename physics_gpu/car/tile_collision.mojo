@@ -312,3 +312,191 @@ struct TileCollision:
                 return i
 
         return -1
+
+    # =========================================================================
+    # Embedded Track Methods (track stored in per-env state buffer)
+    # =========================================================================
+
+    @staticmethod
+    @always_inline
+    fn get_friction_at_embedded[
+        BATCH: Int,
+        STATE_SIZE: Int,
+        TRACK_OFFSET: Int,
+        MAX_TILES: Int,
+    ](
+        env: Int,
+        x: Scalar[dtype],
+        y: Scalar[dtype],
+        states: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, STATE_SIZE),
+            MutAnyOrigin,
+        ],
+        num_active_tiles: Int,
+    ) -> Scalar[dtype]:
+        """Get friction coefficient at position using embedded track data.
+
+        Reads track tiles from per-env state buffer instead of separate tiles buffer.
+
+        Args:
+            env: Environment index.
+            x, y: World position to query.
+            states: State tensor with embedded track at TRACK_OFFSET.
+            num_active_tiles: Number of valid tiles.
+
+        Returns:
+            Friction coefficient (GRASS_FRICTION if not on road).
+        """
+        # Search through all active tiles
+        for i in range(num_active_tiles):
+            var tile_off = TRACK_OFFSET + i * TILE_DATA_SIZE
+            var v0x = rebind[Scalar[dtype]](states[env, tile_off + TILE_V0_X])
+            var v0y = rebind[Scalar[dtype]](states[env, tile_off + TILE_V0_Y])
+            var v1x = rebind[Scalar[dtype]](states[env, tile_off + TILE_V1_X])
+            var v1y = rebind[Scalar[dtype]](states[env, tile_off + TILE_V1_Y])
+            var v2x = rebind[Scalar[dtype]](states[env, tile_off + TILE_V2_X])
+            var v2y = rebind[Scalar[dtype]](states[env, tile_off + TILE_V2_Y])
+            var v3x = rebind[Scalar[dtype]](states[env, tile_off + TILE_V3_X])
+            var v3y = rebind[Scalar[dtype]](states[env, tile_off + TILE_V3_Y])
+
+            if TileCollision.point_in_quad(
+                x, y, v0x, v0y, v1x, v1y, v2x, v2y, v3x, v3y
+            ):
+                return rebind[Scalar[dtype]](states[env, tile_off + TILE_FRICTION])
+
+        return Scalar[dtype](GRASS_FRICTION)
+
+    @staticmethod
+    @always_inline
+    fn get_friction_limit_at_embedded[
+        BATCH: Int,
+        STATE_SIZE: Int,
+        TRACK_OFFSET: Int,
+        MAX_TILES: Int,
+    ](
+        env: Int,
+        x: Scalar[dtype],
+        y: Scalar[dtype],
+        states: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, STATE_SIZE),
+            MutAnyOrigin,
+        ],
+        num_active_tiles: Int,
+    ) -> Scalar[dtype]:
+        """Get friction limit at position using embedded track data.
+
+        Args:
+            env: Environment index.
+            x, y: World position to query.
+            states: State tensor with embedded track.
+            num_active_tiles: Number of valid tiles.
+
+        Returns:
+            Friction limit = FRICTION_LIMIT * surface_friction.
+        """
+        var surface_friction = TileCollision.get_friction_at_embedded[
+            BATCH, STATE_SIZE, TRACK_OFFSET, MAX_TILES
+        ](env, x, y, states, num_active_tiles)
+        return Scalar[dtype](FRICTION_LIMIT) * surface_friction
+
+    @staticmethod
+    @always_inline
+    fn check_tile_visited_embedded[
+        BATCH: Int,
+        STATE_SIZE: Int,
+        TRACK_OFFSET: Int,
+        MAX_TILES: Int,
+    ](
+        env: Int,
+        x: Scalar[dtype],
+        y: Scalar[dtype],
+        states: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, STATE_SIZE),
+            MutAnyOrigin,
+        ],
+        num_active_tiles: Int,
+    ) -> Int:
+        """Check if position is on any tile using embedded track data.
+
+        Args:
+            env: Environment index.
+            x, y: Position to check.
+            states: State tensor with embedded track.
+            num_active_tiles: Number of valid tiles.
+
+        Returns:
+            Tile index if on a tile, -1 if on grass.
+        """
+        for i in range(num_active_tiles):
+            var tile_off = TRACK_OFFSET + i * TILE_DATA_SIZE
+            var v0x = rebind[Scalar[dtype]](states[env, tile_off + TILE_V0_X])
+            var v0y = rebind[Scalar[dtype]](states[env, tile_off + TILE_V0_Y])
+            var v1x = rebind[Scalar[dtype]](states[env, tile_off + TILE_V1_X])
+            var v1y = rebind[Scalar[dtype]](states[env, tile_off + TILE_V1_Y])
+            var v2x = rebind[Scalar[dtype]](states[env, tile_off + TILE_V2_X])
+            var v2y = rebind[Scalar[dtype]](states[env, tile_off + TILE_V2_Y])
+            var v3x = rebind[Scalar[dtype]](states[env, tile_off + TILE_V3_X])
+            var v3y = rebind[Scalar[dtype]](states[env, tile_off + TILE_V3_Y])
+
+            if TileCollision.point_in_quad(
+                x, y, v0x, v0y, v1x, v1y, v2x, v2y, v3x, v3y
+            ):
+                return i
+
+        return -1
+
+    @staticmethod
+    @always_inline
+    fn check_and_mark_visited_embedded[
+        BATCH: Int,
+        STATE_SIZE: Int,
+        TRACK_OFFSET: Int,
+        VISITED_OFFSET: Int,
+        MAX_TILES: Int,
+    ](
+        env: Int,
+        x: Scalar[dtype],
+        y: Scalar[dtype],
+        states: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, STATE_SIZE),
+            MutAnyOrigin,
+        ],
+        num_active_tiles: Int,
+    ) -> Tuple[Int, Bool]:
+        """Check tile visit and mark as visited if new.
+
+        Combines tile lookup and visited flag update for efficiency.
+
+        Args:
+            env: Environment index.
+            x, y: Position to check.
+            states: State tensor with embedded track and visited flags.
+            num_active_tiles: Number of valid tiles.
+
+        Returns:
+            Tuple of (tile_index, is_newly_visited).
+            tile_index is -1 if not on any tile.
+        """
+        var tile_idx = TileCollision.check_tile_visited_embedded[
+            BATCH, STATE_SIZE, TRACK_OFFSET, MAX_TILES
+        ](env, x, y, states, num_active_tiles)
+
+        if tile_idx < 0:
+            return (tile_idx, False)
+
+        # Check if already visited
+        var visited_off = VISITED_OFFSET + tile_idx
+        var already_visited = rebind[Scalar[dtype]](
+            states[env, visited_off]
+        ) > Scalar[dtype](0.5)
+
+        if already_visited:
+            return (tile_idx, False)
+
+        # Mark as visited
+        states[env, visited_off] = Scalar[dtype](1.0)
+        return (tile_idx, True)

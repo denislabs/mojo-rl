@@ -7,20 +7,33 @@ CarRacing state differs from impulse-based physics:
 - No separate rigid bodies - hull position is the only dynamic state
 - Wheel positions are derived from hull position + angle
 - Controls (steering, gas, brake) are stored in state for GPU access
-- Track tiles are stored separately (shared across all envs)
+- Track tiles and visited flags are embedded per-environment
 
-Layout per environment:
-    [observation | hull_state | wheel_states | controls | metadata]
+Layout per environment (3040 floats):
+    [observation | hull_state | wheel_states | controls | metadata | track_tiles | visited_flags]
+
+    Offset    Size     Description
+    ------    ----     -----------
+    0         13       OBS (observation vector)
+    13        6        HULL_STATE (x, y, angle, vx, vy, omega)
+    19        12       WHEELS (4 wheels × 3 fields each)
+    31        3        CONTROLS (steering, gas, brake)
+    34        6        METADATA (step_count, total_reward, done, truncated, tiles_visited, num_tiles)
+    40        2700     TRACK_TILES (300 tiles × 9 floats each)
+    2740      300      VISITED_FLAGS (300 boolean flags as floats)
+    ------    ----
+    Total:    3040     floats per environment
 
 Example:
     ```mojo
     from physics_gpu.car.layout import CarRacingLayout
 
-    comptime Layout = CarRacingLayout[OBS_DIM=13, METADATA_SIZE=5]
+    comptime Layout = CarRacingLayout[OBS_DIM=13, METADATA_SIZE=6]
 
     # Access computed sizes at compile time
     comptime state_size = Layout.STATE_SIZE
     comptime hull_offset = Layout.HULL_OFFSET
+    comptime track_offset = Layout.TRACK_OFFSET
     ```
 """
 
@@ -34,21 +47,27 @@ from .constants import (
 
 struct CarRacingLayout[
     OBS_DIM: Int = 13,
-    METADATA_SIZE: Int = 5,
+    METADATA_SIZE: Int = 6,
+    MAX_TILES: Int = 300,
+    TILE_DATA_SIZE: Int = 9,
 ]:
     """Compile-time layout calculator for CarRacing state buffers.
 
     Parameters:
         OBS_DIM: Observation dimension (13 for state-based CarRacing).
             [x, y, angle, vx, vy, omega, wheel_angles[4], wheel_omegas[3]]
-        METADATA_SIZE: Size of metadata (step_count, total_reward, done, etc.).
+        METADATA_SIZE: Size of metadata (step_count, total_reward, done, truncated, tiles_visited, num_tiles).
+        MAX_TILES: Maximum track tiles per environment.
+        TILE_DATA_SIZE: Size of each tile (9 floats: 4 vertices × 2 coords + friction).
 
-    Layout per environment (39 floats total with defaults):
+    Layout per environment (3040 floats total with defaults):
         - Observation: [0, OBS_DIM) = 13 floats
         - Hull state: [OBS_DIM, OBS_DIM + 6) = 6 floats [x, y, angle, vx, vy, omega]
         - Wheel states: [next, next + 12) = 12 floats (4 wheels x 3 floats each)
         - Controls: [next, next + 3) = 3 floats [steering, gas, brake]
-        - Metadata: [next, next + 5) = 5 floats
+        - Metadata: [next, next + 6) = 6 floats
+        - Track tiles: [next, next + 2700) = 300 tiles × 9 floats
+        - Visited flags: [next, next + 300) = 300 boolean flags
     """
 
     # =========================================================================
@@ -63,6 +82,12 @@ struct CarRacingLayout[
 
     # Controls: [steering, gas, brake]
     comptime CONTROLS_SIZE: Int = CONTROL_SIZE  # 3
+
+    # Track tiles: MAX_TILES tiles × TILE_DATA_SIZE floats each
+    comptime TRACK_SIZE: Int = Self.MAX_TILES * Self.TILE_DATA_SIZE  # 300 * 9 = 2700
+
+    # Visited flags: one per tile
+    comptime VISITED_SIZE: Int = Self.MAX_TILES  # 300
 
     # =========================================================================
     # Offsets within Environment State (cumulative)
@@ -80,16 +105,22 @@ struct CarRacingLayout[
     # Controls follow wheel states
     comptime CONTROLS_OFFSET: Int = Self.WHEELS_OFFSET + Self.WHEELS_SIZE
 
-    # Metadata at the end
+    # Metadata follows controls
     comptime METADATA_OFFSET: Int = Self.CONTROLS_OFFSET + Self.CONTROLS_SIZE
+
+    # Track tiles follow metadata (embedded per-environment)
+    comptime TRACK_OFFSET: Int = Self.METADATA_OFFSET + Self.METADATA_SIZE
+
+    # Visited flags follow track tiles
+    comptime VISITED_OFFSET: Int = Self.TRACK_OFFSET + Self.TRACK_SIZE
 
     # =========================================================================
     # Total State Size
     # =========================================================================
 
     # Total size per environment
-    # Default: 13 + 6 + 12 + 3 + 5 = 39 floats
-    comptime STATE_SIZE: Int = Self.METADATA_OFFSET + Self.METADATA_SIZE
+    # Default: 13 + 6 + 12 + 3 + 6 + 2700 + 300 = 3040 floats
+    comptime STATE_SIZE: Int = Self.VISITED_OFFSET + Self.VISITED_SIZE
 
     # =========================================================================
     # Utility Methods - Hull Access
@@ -173,6 +204,54 @@ struct CarRacingLayout[
         """
         return Self.METADATA_OFFSET + field
 
+    # =========================================================================
+    # Utility Methods - Track Tile Access
+    # =========================================================================
+
+    @staticmethod
+    @always_inline
+    fn track_tile_offset(tile_idx: Int) -> Int:
+        """Compute offset for a track tile's data.
+
+        Args:
+            tile_idx: Tile index (0 to MAX_TILES-1).
+
+        Returns:
+            Offset to the tile's first field (v0x).
+        """
+        return Self.TRACK_OFFSET + tile_idx * Self.TILE_DATA_SIZE
+
+    @staticmethod
+    @always_inline
+    fn track_tile_field_offset(tile_idx: Int, field: Int) -> Int:
+        """Compute offset for a specific field of a track tile.
+
+        Args:
+            tile_idx: Tile index.
+            field: Field index within tile (0-8: v0x, v0y, v1x, v1y, v2x, v2y, v3x, v3y, friction).
+
+        Returns:
+            Offset to the specific field.
+        """
+        return Self.TRACK_OFFSET + tile_idx * Self.TILE_DATA_SIZE + field
+
+    # =========================================================================
+    # Utility Methods - Visited Flags Access
+    # =========================================================================
+
+    @staticmethod
+    @always_inline
+    fn visited_flag_offset(tile_idx: Int) -> Int:
+        """Compute offset for a visited flag.
+
+        Args:
+            tile_idx: Tile index.
+
+        Returns:
+            Offset to the visited flag for this tile.
+        """
+        return Self.VISITED_OFFSET + tile_idx
+
 
 # =============================================================================
 # Metadata Field Indices
@@ -183,3 +262,4 @@ comptime META_TOTAL_REWARD: Int = 1
 comptime META_DONE: Int = 2
 comptime META_TRUNCATED: Int = 3
 comptime META_TILES_VISITED: Int = 4
+comptime META_NUM_TILES: Int = 5

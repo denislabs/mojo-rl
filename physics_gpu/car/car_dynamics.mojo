@@ -486,6 +486,146 @@ struct CarDynamics:
             BATCH, STATE_SIZE, OBS_OFFSET, OBS_DIM, HULL_OFFSET, WHEELS_OFFSET
         ](env, state)
 
+    @staticmethod
+    @always_inline
+    fn step_with_embedded_track[
+        BATCH: Int,
+        STATE_SIZE: Int,
+        OBS_OFFSET: Int,
+        OBS_DIM: Int,
+        HULL_OFFSET: Int,
+        WHEELS_OFFSET: Int,
+        CONTROLS_OFFSET: Int,
+        TRACK_OFFSET: Int,
+        MAX_TILES: Int,
+    ](
+        env: Int,
+        state: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, STATE_SIZE),
+            MutAnyOrigin,
+        ],
+        num_active_tiles: Int,
+        dt: Scalar[dtype],
+    ):
+        """Perform physics step with track tiles embedded in state buffer.
+
+        This version reads track data from the per-env state buffer instead
+        of a separate tiles buffer. Each environment has its own track tiles
+        stored at TRACK_OFFSET within its state.
+
+        Args:
+            env: Environment index.
+            state: State tensor with embedded track at TRACK_OFFSET.
+            num_active_tiles: Number of valid tiles for this env.
+            dt: Time step.
+        """
+        # Step 1: Update steering joints
+        CarDynamics.update_steering[BATCH, STATE_SIZE, WHEELS_OFFSET, CONTROLS_OFFSET](
+            env, state, dt
+        )
+
+        # Step 2: Get friction limits from embedded track tiles
+        var hull_x = rebind[Scalar[dtype]](state[env, HULL_OFFSET + HULL_X])
+        var hull_y = rebind[Scalar[dtype]](state[env, HULL_OFFSET + HULL_Y])
+        var hull_angle = rebind[Scalar[dtype]](state[env, HULL_OFFSET + HULL_ANGLE])
+
+        # Get wheel friction limits using embedded track data
+        var friction_limits = CarDynamics._get_wheel_friction_limits_embedded[
+            BATCH, STATE_SIZE, HULL_OFFSET, TRACK_OFFSET, MAX_TILES
+        ](env, state, hull_x, hull_y, hull_angle, num_active_tiles)
+
+        # Step 3: Compute wheel forces (also updates wheel omegas)
+        var forces = WheelFriction.compute_all_wheels_forces[
+            BATCH, STATE_SIZE, HULL_OFFSET, WHEELS_OFFSET, CONTROLS_OFFSET
+        ](env, state, friction_limits, dt)
+
+        var fx = forces[0]
+        var fy = forces[1]
+        var torque = forces[2]
+
+        # Step 4: Integrate hull dynamics
+        CarDynamics.integrate_hull[BATCH, STATE_SIZE, HULL_OFFSET](
+            env, state, fx, fy, torque, dt
+        )
+
+        # Step 5: Update observations
+        CarDynamics.update_observation[
+            BATCH, STATE_SIZE, OBS_OFFSET, OBS_DIM, HULL_OFFSET, WHEELS_OFFSET
+        ](env, state)
+
+    @staticmethod
+    @always_inline
+    fn _get_wheel_friction_limits_embedded[
+        BATCH: Int,
+        STATE_SIZE: Int,
+        HULL_OFFSET: Int,
+        TRACK_OFFSET: Int,
+        MAX_TILES: Int,
+    ](
+        env: Int,
+        state: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, STATE_SIZE),
+            MutAnyOrigin,
+        ],
+        hull_x: Scalar[dtype],
+        hull_y: Scalar[dtype],
+        hull_angle: Scalar[dtype],
+        num_active_tiles: Int,
+    ) -> InlineArray[Scalar[dtype], NUM_WHEELS]:
+        """Get friction limits for all 4 wheels using embedded track data.
+
+        Args:
+            env: Environment index.
+            state: State tensor with embedded track.
+            hull_x, hull_y: Hull center position.
+            hull_angle: Hull orientation.
+            num_active_tiles: Number of valid tiles.
+
+        Returns:
+            Array of friction limits [FL, FR, RL, RR].
+        """
+        var cos_a = cos(hull_angle)
+        var sin_a = sin(hull_angle)
+
+        # Wheel local positions
+        var local_fl = WheelFriction.get_wheel_local_pos(0)  # FL
+        var local_fr = WheelFriction.get_wheel_local_pos(1)  # FR
+        var local_rl = WheelFriction.get_wheel_local_pos(2)  # RL
+        var local_rr = WheelFriction.get_wheel_local_pos(3)  # RR
+
+        # Transform to world coordinates
+        var fl_x = hull_x + local_fl[0] * cos_a - local_fl[1] * sin_a
+        var fl_y = hull_y + local_fl[0] * sin_a + local_fl[1] * cos_a
+
+        var fr_x = hull_x + local_fr[0] * cos_a - local_fr[1] * sin_a
+        var fr_y = hull_y + local_fr[0] * sin_a + local_fr[1] * cos_a
+
+        var rl_x = hull_x + local_rl[0] * cos_a - local_rl[1] * sin_a
+        var rl_y = hull_y + local_rl[0] * sin_a + local_rl[1] * cos_a
+
+        var rr_x = hull_x + local_rr[0] * cos_a - local_rr[1] * sin_a
+        var rr_y = hull_y + local_rr[0] * sin_a + local_rr[1] * cos_a
+
+        # Get friction limits using embedded track
+        var fl_limit = TileCollision.get_friction_limit_at_embedded[
+            BATCH, STATE_SIZE, TRACK_OFFSET, MAX_TILES
+        ](env, fl_x, fl_y, state, num_active_tiles)
+        var fr_limit = TileCollision.get_friction_limit_at_embedded[
+            BATCH, STATE_SIZE, TRACK_OFFSET, MAX_TILES
+        ](env, fr_x, fr_y, state, num_active_tiles)
+        var rl_limit = TileCollision.get_friction_limit_at_embedded[
+            BATCH, STATE_SIZE, TRACK_OFFSET, MAX_TILES
+        ](env, rl_x, rl_y, state, num_active_tiles)
+        var rr_limit = TileCollision.get_friction_limit_at_embedded[
+            BATCH, STATE_SIZE, TRACK_OFFSET, MAX_TILES
+        ](env, rr_x, rr_y, state, num_active_tiles)
+
+        return InlineArray[Scalar[dtype], NUM_WHEELS](
+            fl_limit, fr_limit, rl_limit, rr_limit
+        )
+
     # =========================================================================
     # CPU Batch Processing
     # =========================================================================

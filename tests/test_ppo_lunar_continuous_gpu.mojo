@@ -80,7 +80,7 @@ fn main() raises:
             clip_epsilon=0.2,  # Standard clipping
             actor_lr=0.0003,  # Standard learning rate
             critic_lr=0.001,  # Higher critic LR for faster value learning
-            entropy_coef=0.05,  # Higher entropy to prevent mean collapse
+            entropy_coef=0.01,  # Higher entropy to prevent mean collapse
             value_loss_coef=0.5,
             num_epochs=10,  # More epochs for LunarLander
             # Advanced hyperparameters

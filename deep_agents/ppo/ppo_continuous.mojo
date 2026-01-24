@@ -912,7 +912,7 @@ struct DeepPPOContinuousAgent[
                 ctx,
                 env_states_buf,
                 dones_buf,
-                UInt32(step),
+                UInt64(step),
             )
 
             # Extract observations from reset environments (critical for correct forward pass)
@@ -2787,7 +2787,7 @@ struct DeepPPOContinuousAgent[
                     ctx,
                     states_buf,
                     dones_buf,
-                    UInt32(total_steps * 1013904223 + t * 2654435761),
+                    UInt64(total_steps * 1013904223 + t * 2654435761),
                 )
 
                 # Extract observations from state buffer after selective reset

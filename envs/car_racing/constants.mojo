@@ -93,7 +93,11 @@ struct CRConstants:
     # State Layout (from CarRacingLayout)
     # =========================================================================
 
-    comptime Layout = CarRacingLayout[OBS_DIM=13, METADATA_SIZE=5]
+    # Layout with embedded track tiles and visited flags
+    # Total: 3040 floats per environment
+    comptime Layout = CarRacingLayout[
+        OBS_DIM=13, METADATA_SIZE=6, MAX_TILES=300, TILE_DATA_SIZE=9
+    ]
 
     # Observation dimension
     comptime OBS_DIM: Int = Self.Layout.OBS_DIM  # 13
@@ -101,15 +105,22 @@ struct CRConstants:
     # Action dimension (continuous)
     comptime ACTION_DIM: Int = 3  # [steering, gas, brake]
 
-    # State size per environment
-    comptime STATE_SIZE: Int = Self.Layout.STATE_SIZE  # 39
+    # State size per environment (3040 with embedded track)
+    comptime STATE_SIZE: Int = Self.Layout.STATE_SIZE  # 3040
 
     # Offsets
-    comptime OBS_OFFSET: Int = Self.Layout.OBS_OFFSET
-    comptime HULL_OFFSET: Int = Self.Layout.HULL_OFFSET
-    comptime WHEELS_OFFSET: Int = Self.Layout.WHEELS_OFFSET
-    comptime CONTROLS_OFFSET: Int = Self.Layout.CONTROLS_OFFSET
-    comptime METADATA_OFFSET: Int = Self.Layout.METADATA_OFFSET
+    comptime OBS_OFFSET: Int = Self.Layout.OBS_OFFSET  # 0
+    comptime HULL_OFFSET: Int = Self.Layout.HULL_OFFSET  # 13
+    comptime WHEELS_OFFSET: Int = Self.Layout.WHEELS_OFFSET  # 19
+    comptime CONTROLS_OFFSET: Int = Self.Layout.CONTROLS_OFFSET  # 31
+    comptime METADATA_OFFSET: Int = Self.Layout.METADATA_OFFSET  # 34
+    comptime TRACK_OFFSET: Int = Self.Layout.TRACK_OFFSET  # 40
+    comptime VISITED_OFFSET: Int = Self.Layout.VISITED_OFFSET  # 2740
+
+    # Track/visited sizes (from layout)
+    comptime TRACK_SIZE: Int = Self.Layout.TRACK_SIZE  # 2700
+    comptime VISITED_SIZE: Int = Self.Layout.VISITED_SIZE  # 300
+    comptime TILE_DATA_SIZE: Int = Self.Layout.TILE_DATA_SIZE  # 9
 
     # Metadata fields
     comptime META_STEP_COUNT: Int = 0
@@ -117,6 +128,7 @@ struct CRConstants:
     comptime META_DONE: Int = 2
     comptime META_TRUNCATED: Int = 3
     comptime META_TILES_VISITED: Int = 4
+    comptime META_NUM_TILES: Int = 5
 
     # =========================================================================
     # Wheel Constants
