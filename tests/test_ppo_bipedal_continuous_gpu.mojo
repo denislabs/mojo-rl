@@ -40,11 +40,11 @@ comptime HIDDEN_DIM = 512
 
 # GPU training parameters
 comptime ROLLOUT_LEN = 256  # Steps per rollout per environment
-comptime N_ENVS = 512  # Parallel environments
+comptime N_ENVS = 1024  # Parallel environments
 comptime GPU_MINIBATCH_SIZE = 512  # Minibatch size for PPO updates
 
 # Training duration (BipedalWalker needs more episodes than LunarLander)
-comptime NUM_EPISODES = 10_000
+comptime NUM_EPISODES = 50_000
 
 comptime dtype = DType.float32
 
@@ -95,7 +95,7 @@ fn main() raises:
             # Reward normalization (CleanRL-style)
             normalize_rewards=True,
             # Observation noise for robustness (domain randomization)
-            obs_noise_std=0.05,
+            obs_noise_std=0.01,
         )
 
         # agent.load_checkpoint("ppo_bipedal_continuous_gpu.ckpt")

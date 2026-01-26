@@ -1746,18 +1746,25 @@ struct BipedalWalkerV2[
             # Increment step count
             states[env, BWConstants.METADATA_OFFSET + BWConstants.META_STEP_COUNT] = step_count + Scalar[dtype](1)
 
-            # Shaping reward: forward progress
+            # Shaping reward: forward progress (matching CPU: 130.0 * hull_x / SCALE)
             var prev_x = states[env, BWConstants.METADATA_OFFSET + 1]  # Store prev_x in metadata[1]
             var forward_progress = hull_x - prev_x
             states[env, BWConstants.METADATA_OFFSET + 1] = hull_x  # Update prev_x
 
-            # Reward: forward progress minus angle penalty
-            var angle_penalty = Scalar[dtype](5.0) * (hull_angle * hull_angle)
-            var reward = Scalar[dtype](130.0) * forward_progress - angle_penalty
+            # Reward: forward progress minus angle penalty (matching CPU formula)
+            # CPU uses: 130.0 * delta_x / SCALE - 5.0 * abs(angle) - energy_penalty
+            var angle_abs = hull_angle if hull_angle >= Scalar[dtype](0) else -hull_angle
+            var angle_penalty = Scalar[dtype](5.0) * angle_abs
+            var reward = Scalar[dtype](130.0 / BWConstants.SCALE) * forward_progress - angle_penalty
 
-            # Bonus for leg ground contact (encourages standing/walking)
-            var contact_bonus = (left_leg_contact + right_leg_contact) * Scalar[dtype](0.1)
-            reward = reward + contact_bonus
+            # Energy penalty (matching CPU: 0.00035 * MOTORS_TORQUE * sum(abs(actions)))
+            var a0 = hip1_action if hip1_action >= Scalar[dtype](0) else -hip1_action
+            var a1 = knee1_action if knee1_action >= Scalar[dtype](0) else -knee1_action
+            var a2 = hip2_action if hip2_action >= Scalar[dtype](0) else -hip2_action
+            var a3 = knee2_action if knee2_action >= Scalar[dtype](0) else -knee2_action
+            var energy = a0 + a1 + a2 + a3
+            var energy_penalty = Scalar[dtype](0.00035 * BWConstants.MOTORS_TORQUE) * energy
+            reward = reward - energy_penalty
 
             # Check termination conditions
             var done = Scalar[dtype](0.0)
