@@ -123,12 +123,15 @@ from .collision import (
     Contact3D,
     ContactManifold,
     SpherePlaneCollision,
+    SpherePlaneCollisionGPU,
     CapsulePlaneCollision,
+    CapsulePlaneCollisionGPU,
 )
 
 # Integrators
 from .integrators import (
     SemiImplicitEuler3D,
+    SemiImplicitEuler3DGPU,
     integrate_velocities_3d,
     integrate_positions_3d,
     integrate_quaternion,
@@ -137,6 +140,7 @@ from .integrators import (
 # Solvers
 from .solvers import (
     ContactSolver3D,
+    ImpulseSolver3DGPU,
     solve_contact_velocity,
     solve_contact_position,
     JointSolver3D,
@@ -145,4 +149,4 @@ from .solvers import (
 )
 
 # Kernels / Physics World
-from .kernels import PhysicsWorld3D
+from .kernels import PhysicsWorld3D, Physics3DStepKernel

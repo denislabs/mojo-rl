@@ -6,13 +6,30 @@ Orchestrates the physics simulation pipeline:
 3. Solve velocity constraints (contacts and joints)
 4. Integrate positions
 5. Solve position constraints
+
+GPU support follows the physics2d fused kernel pattern, combining all
+physics operations in ONE kernel launch for maximum performance.
 """
+
+from math import sqrt
+from layout import LayoutTensor, Layout
+from gpu import thread_idx, block_idx, block_dim
+from gpu.host import DeviceContext, DeviceBuffer
 
 from math3d import Vec3, Quat
 from ..constants import (
+    dtype,
+    TPB,
     BODY_STATE_SIZE_3D,
+    CONTACT_DATA_SIZE_3D,
     IDX_PX, IDX_PY, IDX_PZ,
     IDX_QW, IDX_QX, IDX_QY, IDX_QZ,
+    IDX_VX, IDX_VY, IDX_VZ,
+    IDX_WX, IDX_WY, IDX_WZ,
+    IDX_FX, IDX_FY, IDX_FZ,
+    IDX_TX, IDX_TY, IDX_TZ,
+    IDX_INV_MASS,
+    IDX_IXX, IDX_IYY, IDX_IZZ,
     IDX_SHAPE_3D,
     IDX_BODY_TYPE,
     BODY_DYNAMIC,
@@ -23,6 +40,12 @@ from ..constants import (
     DEFAULT_VELOCITY_ITERATIONS_3D,
     DEFAULT_POSITION_ITERATIONS_3D,
     DEFAULT_FRICTION_3D,
+    CONTACT_BODY_A_3D, CONTACT_BODY_B_3D,
+    CONTACT_POINT_X, CONTACT_POINT_Y, CONTACT_POINT_Z,
+    CONTACT_NORMAL_X, CONTACT_NORMAL_Y, CONTACT_NORMAL_Z,
+    CONTACT_DEPTH_3D,
+    CONTACT_IMPULSE_N, CONTACT_IMPULSE_T1, CONTACT_IMPULSE_T2,
+    CONTACT_TANGENT1_X, CONTACT_TANGENT1_Y, CONTACT_TANGENT1_Z,
 )
 from ..collision import (
     Contact3D,
@@ -40,6 +63,9 @@ from ..solvers import (
     solve_contact_velocity,
     solve_contact_position,
 )
+from ..integrators.euler3d import SemiImplicitEuler3DGPU
+from ..collision.sphere_plane import SpherePlaneCollisionGPU
+from ..solvers.impulse3d import ImpulseSolver3DGPU
 
 
 struct PhysicsWorld3D:
@@ -411,3 +437,387 @@ struct PhysicsWorld3D:
             state[base + IDX_WY],
             state[base + IDX_WZ],
         )
+
+
+# =============================================================================
+# GPU Implementation - Fused Physics Step Kernel
+# =============================================================================
+
+
+struct Physics3DStepKernel:
+    """Fused physics step kernel for 3D - runs ENTIRE physics step in ONE kernel.
+
+    This kernel performs:
+    1. Velocity integration (forces + gravity → velocities)
+    2. Collision detection (bodies vs ground → contacts)
+    3. Velocity constraint solving (all iterations)
+    4. Position integration (velocities → positions)
+    5. Position constraint solving (all iterations)
+
+    ALL IN ONE GPU KERNEL LAUNCH.
+
+    Performance benefit: Reduces kernel launches from 9+ to 1.
+
+    Example usage:
+        ```mojo
+        # Instead of multiple kernel launches:
+        SemiImplicitEuler3DGPU.integrate_velocities_gpu[...]()
+        SpherePlaneCollisionGPU.detect_gpu[...]()
+        for _ in range(10):
+            ImpulseSolver3DGPU.solve_velocity_gpu[...]()
+        SemiImplicitEuler3DGPU.integrate_positions_gpu[...]()
+        for _ in range(5):
+            ImpulseSolver3DGPU.solve_position_gpu[...]()
+
+        # Use:
+        Physics3DStepKernel.step_gpu[..., VEL_ITERATIONS=10, POS_ITERATIONS=5](...)
+        ```
+    """
+
+    # =========================================================================
+    # Fused Physics Step Kernel - Single Environment Logic
+    # =========================================================================
+
+    @always_inline
+    @staticmethod
+    fn _step_single_env[
+        BATCH: Int,
+        NUM_BODIES: Int,
+        MAX_CONTACTS: Int,
+        STATE_SIZE: Int,
+        BODIES_OFFSET: Int,
+        CONTACTS_OFFSET: Int,
+        CONTACT_COUNT_OFFSET: Int,
+        VEL_ITERATIONS: Int,
+        POS_ITERATIONS: Int,
+    ](
+        env: Int,
+        state: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, STATE_SIZE),
+            MutAnyOrigin,
+        ],
+        shape_types: LayoutTensor[
+            dtype,
+            Layout.row_major(NUM_BODIES),
+            MutAnyOrigin,
+        ],
+        shape_radii: LayoutTensor[
+            dtype,
+            Layout.row_major(NUM_BODIES),
+            MutAnyOrigin,
+        ],
+        contacts: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE_3D),
+            MutAnyOrigin,
+        ],
+        contact_counts: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH),
+            MutAnyOrigin,
+        ],
+        gravity_x: Scalar[dtype],
+        gravity_y: Scalar[dtype],
+        gravity_z: Scalar[dtype],
+        dt: Scalar[dtype],
+        ground_height: Scalar[dtype],
+        friction: Scalar[dtype],
+        restitution: Scalar[dtype],
+        baumgarte: Scalar[dtype],
+        slop: Scalar[dtype],
+    ):
+        """Run complete physics step for a single environment.
+
+        This is the core fused logic that can be called from fused kernels
+        or standalone kernels.
+        """
+        # =====================================================================
+        # Step 1: Integrate velocities (v' = v + a*dt)
+        # =====================================================================
+        SemiImplicitEuler3DGPU.integrate_velocities_single_env[
+            BATCH, NUM_BODIES, STATE_SIZE, BODIES_OFFSET
+        ](env, state, gravity_x, gravity_y, gravity_z, dt)
+
+        # =====================================================================
+        # Step 2: Collision detection (spheres vs ground)
+        # =====================================================================
+        # Reset contact count for this environment
+        contact_counts[env] = Scalar[dtype](0)
+
+        # Detect sphere-ground collisions
+        SpherePlaneCollisionGPU.detect_single_env_with_separate_contacts[
+            BATCH, NUM_BODIES, MAX_CONTACTS, STATE_SIZE, BODIES_OFFSET
+        ](env, state, shape_types, shape_radii, contacts, contact_counts, ground_height)
+
+        # Get contact count after detection
+        var n_contacts = Int(contact_counts[env])
+
+        # =====================================================================
+        # Step 3: Velocity constraints (all iterations)
+        # =====================================================================
+        for _ in range(VEL_ITERATIONS):
+            ImpulseSolver3DGPU.solve_velocity_single_env[
+                BATCH, NUM_BODIES, MAX_CONTACTS, STATE_SIZE, BODIES_OFFSET
+            ](env, state, contacts, n_contacts, friction, restitution)
+
+        # =====================================================================
+        # Step 4: Integrate positions (x' = x + v'*dt)
+        # =====================================================================
+        SemiImplicitEuler3DGPU.integrate_positions_single_env[
+            BATCH, NUM_BODIES, STATE_SIZE, BODIES_OFFSET
+        ](env, state, dt)
+
+        # =====================================================================
+        # Step 5: Position constraints (all iterations)
+        # =====================================================================
+        for _ in range(POS_ITERATIONS):
+            ImpulseSolver3DGPU.solve_position_single_env[
+                BATCH, NUM_BODIES, MAX_CONTACTS, STATE_SIZE, BODIES_OFFSET
+            ](env, state, contacts, n_contacts, baumgarte, slop)
+
+    # =========================================================================
+    # GPU Kernel Entry Point
+    # =========================================================================
+
+    @always_inline
+    @staticmethod
+    fn _step_kernel[
+        BATCH: Int,
+        NUM_BODIES: Int,
+        MAX_CONTACTS: Int,
+        STATE_SIZE: Int,
+        BODIES_OFFSET: Int,
+        CONTACTS_OFFSET: Int,
+        CONTACT_COUNT_OFFSET: Int,
+        VEL_ITERATIONS: Int,
+        POS_ITERATIONS: Int,
+    ](
+        state: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, STATE_SIZE),
+            MutAnyOrigin,
+        ],
+        shape_types: LayoutTensor[
+            dtype,
+            Layout.row_major(NUM_BODIES),
+            MutAnyOrigin,
+        ],
+        shape_radii: LayoutTensor[
+            dtype,
+            Layout.row_major(NUM_BODIES),
+            MutAnyOrigin,
+        ],
+        contacts: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE_3D),
+            MutAnyOrigin,
+        ],
+        contact_counts: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH),
+            MutAnyOrigin,
+        ],
+        gravity_x: Scalar[dtype],
+        gravity_y: Scalar[dtype],
+        gravity_z: Scalar[dtype],
+        dt: Scalar[dtype],
+        ground_height: Scalar[dtype],
+        friction: Scalar[dtype],
+        restitution: Scalar[dtype],
+        baumgarte: Scalar[dtype],
+        slop: Scalar[dtype],
+    ):
+        """GPU kernel that runs the ENTIRE physics step in one kernel."""
+        var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+        if env >= BATCH:
+            return
+
+        Physics3DStepKernel._step_single_env[
+            BATCH, NUM_BODIES, MAX_CONTACTS, STATE_SIZE,
+            BODIES_OFFSET, CONTACTS_OFFSET, CONTACT_COUNT_OFFSET,
+            VEL_ITERATIONS, POS_ITERATIONS,
+        ](
+            env, state, shape_types, shape_radii, contacts, contact_counts,
+            gravity_x, gravity_y, gravity_z, dt, ground_height,
+            friction, restitution, baumgarte, slop,
+        )
+
+    # =========================================================================
+    # Public GPU API
+    # =========================================================================
+
+    @staticmethod
+    fn step_gpu[
+        BATCH: Int,
+        NUM_BODIES: Int,
+        MAX_CONTACTS: Int,
+        STATE_SIZE: Int,
+        BODIES_OFFSET: Int,
+        CONTACTS_OFFSET: Int,
+        CONTACT_COUNT_OFFSET: Int,
+        VEL_ITERATIONS: Int = 10,
+        POS_ITERATIONS: Int = 5,
+    ](
+        ctx: DeviceContext,
+        mut state_buf: DeviceBuffer[dtype],
+        shape_types_buf: DeviceBuffer[dtype],
+        shape_radii_buf: DeviceBuffer[dtype],
+        mut contacts_buf: DeviceBuffer[dtype],
+        mut contact_counts_buf: DeviceBuffer[dtype],
+        gravity_x: Scalar[dtype],
+        gravity_y: Scalar[dtype],
+        gravity_z: Scalar[dtype],
+        dt: Scalar[dtype],
+        ground_height: Scalar[dtype],
+        friction: Scalar[dtype],
+        restitution: Scalar[dtype],
+        baumgarte: Scalar[dtype],
+        slop: Scalar[dtype],
+    ) raises:
+        """Run the ENTIRE physics step in ONE kernel launch.
+
+        This fuses:
+        - Velocity integration
+        - Collision detection (sphere-ground)
+        - Velocity constraints (all iterations)
+        - Position integration
+        - Position constraints (all iterations)
+
+        Args:
+            ctx: GPU device context.
+            state_buf: State buffer [BATCH * STATE_SIZE].
+            shape_types_buf: Shape types [NUM_BODIES].
+            shape_radii_buf: Shape radii [NUM_BODIES].
+            contacts_buf: Contact buffer [BATCH * MAX_CONTACTS * CONTACT_DATA_SIZE_3D].
+            contact_counts_buf: Contact counts [BATCH].
+            gravity_x, gravity_y, gravity_z: Gravity components.
+            dt: Time step.
+            ground_height: Z-coordinate of ground plane.
+            friction: Coulomb friction coefficient.
+            restitution: Bounce coefficient.
+            baumgarte: Position correction factor.
+            slop: Penetration allowance.
+        """
+        var state = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, STATE_SIZE),
+            MutAnyOrigin,
+        ](state_buf.unsafe_ptr())
+        var shape_types = LayoutTensor[
+            dtype,
+            Layout.row_major(NUM_BODIES),
+            MutAnyOrigin,
+        ](shape_types_buf.unsafe_ptr())
+        var shape_radii = LayoutTensor[
+            dtype,
+            Layout.row_major(NUM_BODIES),
+            MutAnyOrigin,
+        ](shape_radii_buf.unsafe_ptr())
+        var contacts = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE_3D),
+            MutAnyOrigin,
+        ](contacts_buf.unsafe_ptr())
+        var contact_counts = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH),
+            MutAnyOrigin,
+        ](contact_counts_buf.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH + TPB - 1) // TPB
+
+        @always_inline
+        fn kernel_wrapper(
+            state: LayoutTensor[dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
+            shape_types: LayoutTensor[dtype, Layout.row_major(NUM_BODIES), MutAnyOrigin],
+            shape_radii: LayoutTensor[dtype, Layout.row_major(NUM_BODIES), MutAnyOrigin],
+            contacts: LayoutTensor[dtype, Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE_3D), MutAnyOrigin],
+            contact_counts: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+            gravity_x: Scalar[dtype],
+            gravity_y: Scalar[dtype],
+            gravity_z: Scalar[dtype],
+            dt: Scalar[dtype],
+            ground_height: Scalar[dtype],
+            friction: Scalar[dtype],
+            restitution: Scalar[dtype],
+            baumgarte: Scalar[dtype],
+            slop: Scalar[dtype],
+        ):
+            Physics3DStepKernel._step_kernel[
+                BATCH, NUM_BODIES, MAX_CONTACTS, STATE_SIZE,
+                BODIES_OFFSET, CONTACTS_OFFSET, CONTACT_COUNT_OFFSET,
+                VEL_ITERATIONS, POS_ITERATIONS,
+            ](
+                state, shape_types, shape_radii, contacts, contact_counts,
+                gravity_x, gravity_y, gravity_z, dt, ground_height,
+                friction, restitution, baumgarte, slop,
+            )
+
+        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+            state, shape_types, shape_radii, contacts, contact_counts,
+            gravity_x, gravity_y, gravity_z, dt, ground_height,
+            friction, restitution, baumgarte, slop,
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+    @staticmethod
+    fn step_gpu_with_layout[
+        L: PhysicsLayout3D,
+        VEL_ITERATIONS: Int = 10,
+        POS_ITERATIONS: Int = 5,
+        BATCH: Int = 1024,
+    ](
+        ctx: DeviceContext,
+        mut state_buf: DeviceBuffer[dtype],
+        shape_types_buf: DeviceBuffer[dtype],
+        shape_radii_buf: DeviceBuffer[dtype],
+        mut contacts_buf: DeviceBuffer[dtype],
+        mut contact_counts_buf: DeviceBuffer[dtype],
+        gravity_x: Scalar[dtype],
+        gravity_y: Scalar[dtype],
+        gravity_z: Scalar[dtype],
+        dt: Scalar[dtype],
+        ground_height: Scalar[dtype],
+        friction: Scalar[dtype],
+        restitution: Scalar[dtype],
+        baumgarte: Scalar[dtype],
+        slop: Scalar[dtype],
+    ) raises:
+        """Run physics step using a PhysicsLayout3D for automatic offset computation.
+
+        This is a convenience wrapper that extracts layout parameters automatically.
+
+        Args:
+            ctx: GPU device context.
+            state_buf: State buffer.
+            shape_types_buf: Shape types.
+            shape_radii_buf: Shape radii.
+            contacts_buf: Contact buffer.
+            contact_counts_buf: Contact counts.
+            gravity_x, gravity_y, gravity_z: Gravity components.
+            dt: Time step.
+            ground_height: Ground plane height.
+            friction, restitution, baumgarte, slop: Physics parameters.
+        """
+        Physics3DStepKernel.step_gpu[
+            BATCH,
+            L.NUM_BODIES,
+            L.MAX_CONTACTS,
+            L.STATE_SIZE,
+            L.BODIES_OFFSET,
+            L.CONTACTS_OFFSET,
+            L.CONTACT_COUNT_OFFSET,
+            VEL_ITERATIONS,
+            POS_ITERATIONS,
+        ](
+            ctx, state_buf, shape_types_buf, shape_radii_buf,
+            contacts_buf, contact_counts_buf,
+            gravity_x, gravity_y, gravity_z, dt, ground_height,
+            friction, restitution, baumgarte, slop,
+        )
+
+
+# Import layout for convenience method
+from ..layout import PhysicsLayout3D

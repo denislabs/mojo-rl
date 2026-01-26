@@ -5,6 +5,7 @@ Provides sequential impulse solvers for contacts and joints.
 
 from .impulse3d import (
     ContactSolver3D,
+    ImpulseSolver3DGPU,
     solve_contact_velocity,
     solve_contact_position,
 )

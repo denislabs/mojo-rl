@@ -2,12 +2,22 @@
 
 Integrates velocities and positions for 3D rigid bodies, including
 quaternion integration for rotations.
+
+GPU support follows the three-method hierarchy pattern:
+1. *_single_env - @always_inline @staticmethod, inline core logic
+2. *_kernel - GPU kernel entry point, computes env from thread ID
+3. *_gpu - Public API, creates LayoutTensor views, launches kernel
 """
 
 from math import sqrt
+from layout import LayoutTensor, Layout
+from gpu import thread_idx, block_idx, block_dim
+from gpu.host import DeviceContext, DeviceBuffer
+
 from math3d import Vec3, Quat
 from ..constants import (
     dtype,
+    TPB,
     BODY_STATE_SIZE_3D,
     IDX_PX, IDX_PY, IDX_PZ,
     IDX_QW, IDX_QX, IDX_QY, IDX_QZ,
@@ -339,3 +349,388 @@ struct SemiImplicitEuler3D:
         # v_point = v_cm + omega x r
         var r = point - pos
         return vel + omega.cross(r)
+
+
+# =============================================================================
+# GPU Implementation
+# =============================================================================
+
+
+struct SemiImplicitEuler3DGPU:
+    """GPU-compatible Semi-Implicit Euler integrator for 3D rigid body dynamics.
+
+    This integrator provides GPU kernel methods following the three-method hierarchy:
+    1. *_single_env - Core logic callable from fused kernels
+    2. *_kernel - GPU kernel entry point
+    3. *_gpu - Public API for standalone kernel launches
+
+    Integration order (matches Box2D):
+    1. v' = v + (F/m + g) * dt   (velocity update)
+    2. x' = x + v' * dt          (position update using NEW velocity)
+    """
+
+    # =========================================================================
+    # Single-Environment Methods (can be called from fused kernels)
+    # =========================================================================
+
+    @always_inline
+    @staticmethod
+    fn integrate_velocities_single_env[
+        BATCH: Int,
+        NUM_BODIES: Int,
+        STATE_SIZE: Int,
+        BODIES_OFFSET: Int,
+    ](
+        env: Int,
+        state: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, STATE_SIZE),
+            MutAnyOrigin,
+        ],
+        gravity_x: Scalar[dtype],
+        gravity_y: Scalar[dtype],
+        gravity_z: Scalar[dtype],
+        dt: Scalar[dtype],
+    ):
+        """Integrate velocities for a single environment.
+
+        Updates linear and angular velocities based on accumulated forces/torques.
+        Clears force/torque accumulators after integration.
+
+        Args:
+            env: Environment index.
+            state: State buffer [BATCH, STATE_SIZE].
+            gravity_x, gravity_y, gravity_z: Gravity components.
+            dt: Time step.
+        """
+        @parameter
+        for body in range(NUM_BODIES):
+            var body_off = BODIES_OFFSET + body * BODY_STATE_SIZE_3D
+
+            # Check if body is dynamic
+            var body_type = Int(state[env, body_off + IDX_BODY_TYPE])
+            if body_type != BODY_DYNAMIC:
+                continue
+
+            # Get inverse mass (0 = static body)
+            var inv_mass = state[env, body_off + IDX_INV_MASS]
+            if inv_mass <= Scalar[dtype](0):
+                continue
+
+            # Get inverse inertia (diagonal approximation)
+            var ixx = state[env, body_off + IDX_IXX]
+            var iyy = state[env, body_off + IDX_IYY]
+            var izz = state[env, body_off + IDX_IZZ]
+
+            var inv_ixx = Scalar[dtype](0)
+            var inv_iyy = Scalar[dtype](0)
+            var inv_izz = Scalar[dtype](0)
+            if ixx > Scalar[dtype](1e-10):
+                inv_ixx = Scalar[dtype](1.0) / ixx
+            if iyy > Scalar[dtype](1e-10):
+                inv_iyy = Scalar[dtype](1.0) / iyy
+            if izz > Scalar[dtype](1e-10):
+                inv_izz = Scalar[dtype](1.0) / izz
+
+            # Get current velocities
+            var vx = state[env, body_off + IDX_VX]
+            var vy = state[env, body_off + IDX_VY]
+            var vz = state[env, body_off + IDX_VZ]
+            var wx = state[env, body_off + IDX_WX]
+            var wy = state[env, body_off + IDX_WY]
+            var wz = state[env, body_off + IDX_WZ]
+
+            # Get forces and torques
+            var fx = state[env, body_off + IDX_FX]
+            var fy = state[env, body_off + IDX_FY]
+            var fz = state[env, body_off + IDX_FZ]
+            var tx = state[env, body_off + IDX_TX]
+            var ty = state[env, body_off + IDX_TY]
+            var tz = state[env, body_off + IDX_TZ]
+
+            # Add gravity force (F = m * g, but we use F/m = g * inv_mass * mass = g)
+            # Linear velocity: v' = v + (F/m + g) * dt
+            vx = vx + (fx * inv_mass + gravity_x) * dt
+            vy = vy + (fy * inv_mass + gravity_y) * dt
+            vz = vz + (fz * inv_mass + gravity_z) * dt
+
+            # Angular velocity: w' = w + I^-1 * tau * dt (diagonal inertia)
+            wx = wx + tx * inv_ixx * dt
+            wy = wy + ty * inv_iyy * dt
+            wz = wz + tz * inv_izz * dt
+
+            # Write back velocities
+            state[env, body_off + IDX_VX] = vx
+            state[env, body_off + IDX_VY] = vy
+            state[env, body_off + IDX_VZ] = vz
+            state[env, body_off + IDX_WX] = wx
+            state[env, body_off + IDX_WY] = wy
+            state[env, body_off + IDX_WZ] = wz
+
+            # Clear force/torque accumulators
+            state[env, body_off + IDX_FX] = Scalar[dtype](0)
+            state[env, body_off + IDX_FY] = Scalar[dtype](0)
+            state[env, body_off + IDX_FZ] = Scalar[dtype](0)
+            state[env, body_off + IDX_TX] = Scalar[dtype](0)
+            state[env, body_off + IDX_TY] = Scalar[dtype](0)
+            state[env, body_off + IDX_TZ] = Scalar[dtype](0)
+
+    @always_inline
+    @staticmethod
+    fn integrate_positions_single_env[
+        BATCH: Int,
+        NUM_BODIES: Int,
+        STATE_SIZE: Int,
+        BODIES_OFFSET: Int,
+    ](
+        env: Int,
+        state: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, STATE_SIZE),
+            MutAnyOrigin,
+        ],
+        dt: Scalar[dtype],
+    ):
+        """Integrate positions for a single environment.
+
+        Updates position and orientation using the NEW velocities
+        (after integrate_velocities_single_env).
+
+        Args:
+            env: Environment index.
+            state: State buffer [BATCH, STATE_SIZE].
+            dt: Time step.
+        """
+        @parameter
+        for body in range(NUM_BODIES):
+            var body_off = BODIES_OFFSET + body * BODY_STATE_SIZE_3D
+
+            # Check if body is dynamic
+            var body_type = Int(state[env, body_off + IDX_BODY_TYPE])
+            if body_type != BODY_DYNAMIC:
+                continue
+
+            var inv_mass = state[env, body_off + IDX_INV_MASS]
+            if inv_mass <= Scalar[dtype](0):
+                continue
+
+            # Get current position
+            var px = state[env, body_off + IDX_PX]
+            var py = state[env, body_off + IDX_PY]
+            var pz = state[env, body_off + IDX_PZ]
+
+            # Get NEW velocities (after velocity integration)
+            var vx = state[env, body_off + IDX_VX]
+            var vy = state[env, body_off + IDX_VY]
+            var vz = state[env, body_off + IDX_VZ]
+            var wx = state[env, body_off + IDX_WX]
+            var wy = state[env, body_off + IDX_WY]
+            var wz = state[env, body_off + IDX_WZ]
+
+            # Integrate linear position: x' = x + v * dt
+            px = px + vx * dt
+            py = py + vy * dt
+            pz = pz + vz * dt
+
+            # Write back position
+            state[env, body_off + IDX_PX] = px
+            state[env, body_off + IDX_PY] = py
+            state[env, body_off + IDX_PZ] = pz
+
+            # Integrate quaternion orientation
+            # q' = q + 0.5 * dt * omega_quat * q
+            # where omega_quat = (0, wx, wy, wz)
+            var qw = state[env, body_off + IDX_QW]
+            var qx = state[env, body_off + IDX_QX]
+            var qy = state[env, body_off + IDX_QY]
+            var qz = state[env, body_off + IDX_QZ]
+
+            # Quaternion multiplication: omega_quat * q
+            # (0, wx, wy, wz) * (qw, qx, qy, qz)
+            var half_dt = Scalar[dtype](0.5) * dt
+            var dqw = half_dt * (-wx * qx - wy * qy - wz * qz)
+            var dqx = half_dt * (wx * qw + wy * qz - wz * qy)
+            var dqy = half_dt * (wy * qw + wz * qx - wx * qz)
+            var dqz = half_dt * (wz * qw + wx * qy - wy * qx)
+
+            # Update quaternion
+            qw = qw + dqw
+            qx = qx + dqx
+            qy = qy + dqy
+            qz = qz + dqz
+
+            # Normalize quaternion
+            var len_sq = qw * qw + qx * qx + qy * qy + qz * qz
+            if len_sq > Scalar[dtype](1e-10):
+                var inv_len = Scalar[dtype](1.0) / sqrt(len_sq)
+                qw = qw * inv_len
+                qx = qx * inv_len
+                qy = qy * inv_len
+                qz = qz * inv_len
+
+            # Write back normalized quaternion
+            state[env, body_off + IDX_QW] = qw
+            state[env, body_off + IDX_QX] = qx
+            state[env, body_off + IDX_QY] = qy
+            state[env, body_off + IDX_QZ] = qz
+
+    # =========================================================================
+    # GPU Kernel Entry Points
+    # =========================================================================
+
+    @always_inline
+    @staticmethod
+    fn integrate_velocities_kernel[
+        BATCH: Int,
+        NUM_BODIES: Int,
+        STATE_SIZE: Int,
+        BODIES_OFFSET: Int,
+    ](
+        state: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, STATE_SIZE),
+            MutAnyOrigin,
+        ],
+        gravity_x: Scalar[dtype],
+        gravity_y: Scalar[dtype],
+        gravity_z: Scalar[dtype],
+        dt: Scalar[dtype],
+    ):
+        """GPU kernel for velocity integration with 2D strided layout."""
+        var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+        if env >= BATCH:
+            return
+
+        SemiImplicitEuler3DGPU.integrate_velocities_single_env[
+            BATCH, NUM_BODIES, STATE_SIZE, BODIES_OFFSET
+        ](env, state, gravity_x, gravity_y, gravity_z, dt)
+
+    @always_inline
+    @staticmethod
+    fn integrate_positions_kernel[
+        BATCH: Int,
+        NUM_BODIES: Int,
+        STATE_SIZE: Int,
+        BODIES_OFFSET: Int,
+    ](
+        state: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, STATE_SIZE),
+            MutAnyOrigin,
+        ],
+        dt: Scalar[dtype],
+    ):
+        """GPU kernel for position integration with 2D strided layout."""
+        var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+        if env >= BATCH:
+            return
+
+        SemiImplicitEuler3DGPU.integrate_positions_single_env[
+            BATCH, NUM_BODIES, STATE_SIZE, BODIES_OFFSET
+        ](env, state, dt)
+
+    # =========================================================================
+    # Public GPU API
+    # =========================================================================
+
+    @staticmethod
+    fn integrate_velocities_gpu[
+        BATCH: Int,
+        NUM_BODIES: Int,
+        STATE_SIZE: Int,
+        BODIES_OFFSET: Int,
+    ](
+        ctx: DeviceContext,
+        mut state_buf: DeviceBuffer[dtype],
+        gravity_x: Scalar[dtype],
+        gravity_y: Scalar[dtype],
+        gravity_z: Scalar[dtype],
+        dt: Scalar[dtype],
+    ) raises:
+        """Launch velocity integration kernel on GPU.
+
+        Args:
+            ctx: GPU device context.
+            state_buf: State buffer [BATCH * STATE_SIZE].
+            gravity_x, gravity_y, gravity_z: Gravity components.
+            dt: Time step.
+        """
+        var state = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, STATE_SIZE),
+            MutAnyOrigin,
+        ](state_buf.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH + TPB - 1) // TPB
+
+        @always_inline
+        fn kernel_wrapper(
+            state: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, STATE_SIZE),
+                MutAnyOrigin,
+            ],
+            gravity_x: Scalar[dtype],
+            gravity_y: Scalar[dtype],
+            gravity_z: Scalar[dtype],
+            dt: Scalar[dtype],
+        ):
+            SemiImplicitEuler3DGPU.integrate_velocities_kernel[
+                BATCH, NUM_BODIES, STATE_SIZE, BODIES_OFFSET
+            ](state, gravity_x, gravity_y, gravity_z, dt)
+
+        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+            state,
+            gravity_x,
+            gravity_y,
+            gravity_z,
+            dt,
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+    @staticmethod
+    fn integrate_positions_gpu[
+        BATCH: Int,
+        NUM_BODIES: Int,
+        STATE_SIZE: Int,
+        BODIES_OFFSET: Int,
+    ](
+        ctx: DeviceContext,
+        mut state_buf: DeviceBuffer[dtype],
+        dt: Scalar[dtype],
+    ) raises:
+        """Launch position integration kernel on GPU.
+
+        Args:
+            ctx: GPU device context.
+            state_buf: State buffer [BATCH * STATE_SIZE].
+            dt: Time step.
+        """
+        var state = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, STATE_SIZE),
+            MutAnyOrigin,
+        ](state_buf.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH + TPB - 1) // TPB
+
+        @always_inline
+        fn kernel_wrapper(
+            state: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, STATE_SIZE),
+                MutAnyOrigin,
+            ],
+            dt: Scalar[dtype],
+        ):
+            SemiImplicitEuler3DGPU.integrate_positions_kernel[
+                BATCH, NUM_BODIES, STATE_SIZE, BODIES_OFFSET
+            ](state, dt)
+
+        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+            state,
+            dt,
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )

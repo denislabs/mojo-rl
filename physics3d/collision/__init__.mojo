@@ -8,5 +8,5 @@ in MuJoCo-style environments:
 """
 
 from .contact3d import Contact3D, ContactManifold
-from .sphere_plane import SpherePlaneCollision
-from .capsule_plane import CapsulePlaneCollision
+from .sphere_plane import SpherePlaneCollision, SpherePlaneCollisionGPU
+from .capsule_plane import CapsulePlaneCollision, CapsulePlaneCollisionGPU
