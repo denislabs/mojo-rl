@@ -39,7 +39,8 @@ from ..constants import (
 )
 
 # Maximum number of terrain edges per environment
-comptime MAX_TERRAIN_EDGES: Int = 16
+# Set to 128 to support BipedalWalker's more complex terrain
+comptime MAX_TERRAIN_EDGES: Int = 128
 
 
 struct EdgeTerrainCollision(CollisionSystem):

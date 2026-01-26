@@ -120,7 +120,12 @@ from render import (
 # =============================================================================
 
 
-struct LunarLanderV2[DTYPE: DType](
+struct LunarLanderV2[
+    DTYPE: DType,
+    ENABLE_WIND: Bool = False,
+    WIND_POWER: Float64 = 15.0,
+    TURBULENCE_POWER: Float64 = 1.5,
+](
     BoxContinuousActionEnv,
     BoxDiscreteActionEnv,
     Copyable,
@@ -150,6 +155,9 @@ struct LunarLanderV2[DTYPE: DType](
     comptime dtype = Self.DTYPE
     comptime StateType = LunarLanderState[Self.dtype]
     comptime ActionType = LunarLanderAction
+
+    # Type alias for static method calls (includes all compile-time params)
+    comptime SelfType = LunarLanderV2[Self.DTYPE, Self.ENABLE_WIND, Self.WIND_POWER, Self.TURBULENCE_POWER]
 
     # Body index constants for instance methods
     comptime BODY_LANDER: Int = 0
@@ -182,10 +190,8 @@ struct LunarLanderV2[DTYPE: DType](
     var rng_seed: UInt64
     var rng_counter: UInt64
 
-    # Wind parameters
-    var enable_wind: Bool
-    var wind_power: Float64
-    var turbulence_power: Float64
+    # Wind state (runtime indices for deterministic wind progression)
+    # Wind parameters (enable_wind, wind_power, turbulence_power) are compile-time struct params
     var wind_idx: Int
     var torque_idx: Int
 
@@ -205,17 +211,16 @@ struct LunarLanderV2[DTYPE: DType](
     fn __init__(
         out self,
         seed: UInt64 = 42,
-        enable_wind: Bool = False,
-        wind_power: Float64 = 15.0,
-        turbulence_power: Float64 = 1.5,
     ):
         """Initialize the environment for CPU single-env operation.
 
+        Wind parameters are now compile-time struct parameters:
+        - ENABLE_WIND: Bool = False
+        - WIND_POWER: Float64 = 15.0
+        - TURBULENCE_POWER: Float64 = 1.5
+
         Args:
             seed: Random seed for reproducibility.
-            enable_wind: Enable wind effects.
-            wind_power: Maximum wind force magnitude.
-            turbulence_power: Maximum rotational turbulence.
         """
         # Initialize particle list
         self.particles = List[Particle[Self.dtype]]()
@@ -287,10 +292,7 @@ struct LunarLanderV2[DTYPE: DType](
         self.rng_seed = seed
         self.rng_counter = 0
 
-        # Wind settings
-        self.enable_wind = enable_wind
-        self.wind_power = wind_power
-        self.turbulence_power = turbulence_power
+        # Wind state indices (parameters are compile-time struct params)
         self.wind_idx = 0
         self.torque_idx = 0
 
@@ -345,9 +347,6 @@ struct LunarLanderV2[DTYPE: DType](
         self.game_over = other.game_over
         self.rng_seed = other.rng_seed
         self.rng_counter = other.rng_counter
-        self.enable_wind = other.enable_wind
-        self.wind_power = other.wind_power
-        self.turbulence_power = other.turbulence_power
         self.wind_idx = other.wind_idx
         self.torque_idx = other.torque_idx
         self.terrain_heights = List[Scalar[Self.dtype]](other.terrain_heights)
@@ -391,9 +390,6 @@ struct LunarLanderV2[DTYPE: DType](
         self.game_over = other.game_over
         self.rng_seed = other.rng_seed
         self.rng_counter = other.rng_counter
-        self.enable_wind = other.enable_wind
-        self.wind_power = other.wind_power
-        self.turbulence_power = other.turbulence_power
         self.wind_idx = other.wind_idx
         self.torque_idx = other.torque_idx
         self.terrain_heights = other.terrain_heights^
@@ -445,15 +441,16 @@ struct LunarLanderV2[DTYPE: DType](
     fn _reset_cpu(mut self):
         """Internal reset for CPU single-env operation."""
         # Generate random values using Philox
+        # Use combined_seed formula matching GPU for consistency:
+        # combined_seed = seed * 2654435761 + counter * 12345
+        # This ensures same seed+counter produces same state on both CPU and GPU
         self.rng_counter += 1
-        var rng = PhiloxRandom(seed=Int(self.rng_seed), offset=self.rng_counter)
+        var combined_seed = Int(self.rng_seed) * 2654435761 + self.rng_counter * 12345
+        var rng = PhiloxRandom(seed=combined_seed, offset=0)
         var rand_vals = rng.step_uniform()
 
-        # Generate terrain heights
-        self.rng_counter += 1
-        var terrain_rng = PhiloxRandom(
-            seed=Int(self.rng_seed) + 1000, offset=self.rng_counter
-        )
+        # Generate terrain heights using separate RNG stream (matching GPU)
+        var terrain_rng = PhiloxRandom(seed=combined_seed + 1000, offset=0)
 
         # First pass: generate raw heights
         var raw_heights = InlineArray[Float64, LLConstants.TERRAIN_CHUNKS + 1](
@@ -618,8 +615,9 @@ struct LunarLanderV2[DTYPE: DType](
         # Clear particles
         self.particles.clear()
 
-        # Reset wind indices
-        if self.enable_wind:
+        # Reset wind indices (compile-time eliminated if ENABLE_WIND=False)
+        @parameter
+        if Self.ENABLE_WIND:
             self.rng_counter += 1
             var wind_rng = PhiloxRandom(
                 seed=Int(self.rng_seed) + 2000, offset=self.rng_counter
@@ -979,8 +977,13 @@ struct LunarLanderV2[DTYPE: DType](
         return self._compute_step_result(m_power, s_power)
 
     fn _apply_wind(mut self):
-        """Apply wind and turbulence forces."""
-        if not self.enable_wind:
+        """Apply wind and turbulence forces.
+
+        Uses compile-time struct parameters ENABLE_WIND, WIND_POWER, TURBULENCE_POWER.
+        When ENABLE_WIND is False, this is a no-op eliminated at compile time.
+        """
+        @parameter
+        if not Self.ENABLE_WIND:
             return
 
         var obs = self.get_observation(0)
@@ -992,14 +995,14 @@ struct LunarLanderV2[DTYPE: DType](
         var k = 0.01
         var wind_t = Float64(self.wind_idx)
         var wind_mag = (
-            tanh(sin(0.02 * wind_t) + sin(pi * k * wind_t)) * self.wind_power
+            tanh(sin(0.02 * wind_t) + sin(pi * k * wind_t)) * Self.WIND_POWER
         )
         self.wind_idx += 1
 
         var torque_t = Float64(self.torque_idx)
         var torque_mag = (
             tanh(sin(0.02 * torque_t) + sin(pi * k * torque_t))
-            * self.turbulence_power
+            * Self.TURBULENCE_POWER
         )
         self.torque_idx += 1
 
@@ -1031,8 +1034,10 @@ struct LunarLanderV2[DTYPE: DType](
         var side_x = -tip_y
         var side_y = tip_x
 
-        self.rng_counter += 1
-        var rng = PhiloxRandom(seed=Int(self.rng_seed), offset=self.rng_counter)
+        # Engine dispersion RNG matches GPU pattern for consistency:
+        # GPU uses: seed = env + 12345, offset = step_count
+        # CPU (single env = 0) uses: seed = 12345, offset = step_count
+        var rng = PhiloxRandom(seed=12345, offset=self.step_count)
         var rand_vals = rng.step_uniform()
         var dispersion_x = (
             Float64(rand_vals[0]) * 2.0 - 1.0
@@ -1123,14 +1128,12 @@ struct LunarLanderV2[DTYPE: DType](
             LLConstants.MAX_CONTACTS,
         ](bodies, shapes, contacts, contact_counts)
 
-        # Solve velocity constraints
+        # Solve velocity constraints (contacts + joints INTERLEAVED to match GPU)
+        # GPU uses UnifiedConstraintSolver which interleaves: contact iter, joint iter, repeat
         for _ in range(self.config.velocity_iterations):
             solver.solve_velocity[
                 1, LLConstants.NUM_BODIES, LLConstants.MAX_CONTACTS
             ](bodies, contacts, contact_counts)
-
-        # Solve joint velocity constraints
-        for _ in range(self.config.velocity_iterations):
             RevoluteJointSolver.solve_velocity[
                 1, LLConstants.NUM_BODIES, LLConstants.MAX_JOINTS
             ](bodies, joints, joint_counts, dt)
@@ -1138,14 +1141,11 @@ struct LunarLanderV2[DTYPE: DType](
         # Integrate positions
         integrator.integrate_positions[1, LLConstants.NUM_BODIES](bodies, dt)
 
-        # Solve position constraints
+        # Solve position constraints (contacts + joints INTERLEAVED to match GPU)
         for _ in range(self.config.position_iterations):
             solver.solve_position[
                 1, LLConstants.NUM_BODIES, LLConstants.MAX_CONTACTS
             ](bodies, contacts, contact_counts)
-
-        # Solve joint position constraints
-        for _ in range(self.config.position_iterations):
             RevoluteJointSolver.solve_position[
                 1, LLConstants.NUM_BODIES, LLConstants.MAX_JOINTS
             ](
@@ -1618,10 +1618,12 @@ struct LunarLanderV2[DTYPE: DType](
             if i >= BATCH_SIZE:
                 return
             # Combine seed with env index using prime multiplier for good distribution
-            # seed * 2654435761 + i * 12345 ensures different terrains across:
-            # - Different environments in same batch (via i * 12345)
+            # seed * 2654435761 + (i+1) * 12345 ensures different terrains across:
+            # - Different environments in same batch (via (i+1) * 12345)
             # - Different reset calls (via seed * large_prime)
-            var combined_seed = Int(seed) * 2654435761 + i * 12345
+            # Using (i+1) instead of i aligns with CPU's increment-before-use pattern
+            # so GPU env 0 matches CPU reset #1, GPU env 1 matches CPU reset #2, etc.
+            var combined_seed = Int(seed) * 2654435761 + (i + 1) * 12345
             LunarLanderV2[Self.dtype]._reset_env_gpu[BATCH_SIZE, STATE_SIZE](
                 states, i, combined_seed
             )
@@ -1679,7 +1681,8 @@ struct LunarLanderV2[DTYPE: DType](
             if rebind[Scalar[dtype]](dones[i]) > Scalar[dtype](0.5):
                 # Combine seed with env index using prime multiplier for good distribution
                 # This ensures different terrains across different reset calls
-                var combined_seed = Int(seed) * 2654435761 + i * 12345
+                # Using (i+1) aligns with CPU's increment-before-use pattern
+                var combined_seed = Int(seed) * 2654435761 + (i + 1) * 12345
                 LunarLanderV2[Self.dtype]._reset_env_gpu[
                     BATCH_SIZE, STATE_SIZE
                 ](states, i, combined_seed)
@@ -1710,7 +1713,13 @@ struct LunarLanderV2[DTYPE: DType](
     ):
         """Reset a single environment (GPU version)."""
         # Use Philox RNG (GPU-compatible counter-based RNG)
-        var rng = PhiloxRandom(seed=seed + env, offset=0)
+        # Note: seed is already combined_seed from wrapper (= base_seed * 2654435761 + env * 12345)
+        # Use separate RNG streams for velocity and terrain to match CPU exactly
+        var velocity_rng = PhiloxRandom(seed=seed, offset=0)
+        var velocity_rand = velocity_rng.step_uniform()
+
+        # Terrain uses separate RNG stream (seed + 1000) matching CPU
+        var terrain_rng = PhiloxRandom(seed=seed + 1000, offset=0)
 
         # Generate terrain (matching CPU version with smoothing)
         var n_edges = LLConstants.TERRAIN_CHUNKS - 1
@@ -1726,7 +1735,7 @@ struct LunarLanderV2[DTYPE: DType](
         var raw_heights = InlineArray[Scalar[dtype], 12](fill=Scalar[dtype](0.0))
         var h_units_half = Scalar[dtype](LLConstants.H_UNITS / 2.0)
         for chunk in range(n_chunks + 1):
-            var rand_vals = rng.step_uniform()
+            var rand_vals = terrain_rng.step_uniform()
             raw_heights[chunk] = rand_vals[0] * h_units_half
 
         # Step 2: Apply 3-point smoothing (matching CPU)
@@ -1790,15 +1799,15 @@ struct LunarLanderV2[DTYPE: DType](
         # Initial velocity matching CPU: (rand * 2 - 1) * INITIAL_RANDOM * DT / LANDER_MASS
         # INITIAL_RANDOM = 1000.0, DT = 0.02, LANDER_MASS = 5.0
         # = (rand * 2 - 1) * 1000 * 0.02 / 5 = (rand * 2 - 1) * 4.0
-        var rand_vals = rng.step_uniform()
+        # Use velocity_rand[0] and [1] to match CPU exactly
         var init_random_scale = Scalar[dtype](
             1000.0 * LLConstants.DT / LLConstants.LANDER_MASS
         )  # = 4.0
         var init_vx: states.element_type = (
-            rand_vals[2] * Scalar[dtype](2.0) - Scalar[dtype](1.0)
+            velocity_rand[0] * Scalar[dtype](2.0) - Scalar[dtype](1.0)
         ) * init_random_scale
         var init_vy: states.element_type = (
-            rand_vals[3] * Scalar[dtype](2.0) - Scalar[dtype](1.0)
+            velocity_rand[1] * Scalar[dtype](2.0) - Scalar[dtype](1.0)
         ) * init_random_scale
 
         var lander_off = LLConstants.BODIES_OFFSET
@@ -2022,6 +2031,73 @@ struct LunarLanderV2[DTYPE: DType](
 
     @always_inline
     @staticmethod
+    fn _apply_wind_gpu[
+        BATCH_SIZE: Int,
+    ](
+        env: Int,
+        states: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH_SIZE, LLConstants.STATE_SIZE_VAL),
+            MutAnyOrigin,
+        ],
+        step_count: Int,
+    ):
+        """Apply wind and turbulence forces for GPU computation.
+
+        Uses compile-time parameters ENABLE_WIND, WIND_POWER, TURBULENCE_POWER
+        from the struct. When ENABLE_WIND is False, this is a no-op that gets
+        eliminated at compile time.
+        """
+        @parameter
+        if not Self.ENABLE_WIND:
+            return
+
+        # Check leg contacts from observation - skip wind if grounded
+        var left_contact = rebind[Scalar[dtype]](
+            states[env, LLConstants.OBS_OFFSET + 6]
+        )
+        var right_contact = rebind[Scalar[dtype]](
+            states[env, LLConstants.OBS_OFFSET + 7]
+        )
+        if left_contact > Scalar[dtype](0.5) or right_contact > Scalar[dtype](
+            0.5
+        ):
+            return
+
+        # Compute wind magnitude using deterministic wave pattern
+        # This matches the CPU implementation's wave formula
+        var k = Scalar[dtype](0.01)
+        var wind_t = Scalar[dtype](step_count)
+        var wind_mag = tanh(
+            sin(Scalar[dtype](0.02) * wind_t)
+            + sin(Scalar[dtype](pi) * k * wind_t)
+        ) * Scalar[dtype](Self.WIND_POWER)
+        var torque_mag = tanh(
+            sin(Scalar[dtype](0.02) * wind_t)
+            + sin(Scalar[dtype](pi) * k * wind_t)
+        ) * Scalar[dtype](Self.TURBULENCE_POWER)
+
+        # Apply to lander velocity
+        var dt = Scalar[dtype](LLConstants.DT)
+        var lander_mass = Scalar[dtype](LLConstants.LANDER_MASS)
+        var lander_inertia = Scalar[dtype](LLConstants.LANDER_INERTIA)
+
+        var vx = rebind[Scalar[dtype]](
+            states[env, LLConstants.BODIES_OFFSET + IDX_VX]
+        )
+        var omega = rebind[Scalar[dtype]](
+            states[env, LLConstants.BODIES_OFFSET + IDX_OMEGA]
+        )
+
+        states[env, LLConstants.BODIES_OFFSET + IDX_VX] = (
+            vx + wind_mag * dt / lander_mass
+        )
+        states[env, LLConstants.BODIES_OFFSET + IDX_OMEGA] = (
+            omega + torque_mag * dt / lander_inertia
+        )
+
+    @always_inline
+    @staticmethod
     fn _setup_single_env[
         BATCH_SIZE: Int,
     ](
@@ -2065,16 +2141,22 @@ struct LunarLanderV2[DTYPE: DType](
         ) > Scalar[dtype](0.5):
             return
 
-        var action = Int(actions[env])
-        if action == 0:
-            return
-
-        # 5. Apply engine forces based on action
+        # 5. Get step count for wind and engine dispersion
         var step_count = Int(
             states[
                 env, LLConstants.METADATA_OFFSET + LLConstants.META_STEP_COUNT
             ]
         )
+
+        # 6. Apply wind forces (compile-time eliminated if ENABLE_WIND=False)
+        SelfType._apply_wind_gpu[BATCH_SIZE](env, states, step_count)
+
+        # 7. Check action - no-op action skips engine forces
+        var action = Int(actions[env])
+        if action == 0:
+            return
+
+        # 8. Apply engine forces based on action
 
         var rng = PhiloxRandom(seed=env + 12345, offset=step_count)
         var rand_vals = rng.step_uniform()
@@ -2255,22 +2337,34 @@ struct LunarLanderV2[DTYPE: DType](
         )
 
         # Left leg terrain height
+        # Use chunk index to get terrain height (matching CPU which has TERRAIN_CHUNKS heights)
+        # Edge i stores: x0, y0 (chunk i height), x1, y1 (chunk i+1 height), nx, ny
+        # For chunk 0 to n_edges-1, use y0 from edge[chunk]
+        # For chunk n_edges (last chunk), use y1 from edge[n_edges-1]
         var left_chunk_idx = Int(left_x / x_spacing)
         if left_chunk_idx < 0:
             left_chunk_idx = 0
+        var left_terrain_y: Scalar[dtype]
         if left_chunk_idx >= n_edges:
-            left_chunk_idx = n_edges - 1
-        var left_edge_off = LLConstants.EDGES_OFFSET + left_chunk_idx * 6
-        var left_terrain_y = rebind[Scalar[dtype]](states[env, left_edge_off + 1])
+            # Last chunk: use y1 from the last edge
+            var last_edge_off = LLConstants.EDGES_OFFSET + (n_edges - 1) * 6
+            left_terrain_y = rebind[Scalar[dtype]](states[env, last_edge_off + 3])  # y1
+        else:
+            var left_edge_off = LLConstants.EDGES_OFFSET + left_chunk_idx * 6
+            left_terrain_y = rebind[Scalar[dtype]](states[env, left_edge_off + 1])  # y0
 
         # Right leg terrain height
         var right_chunk_idx = Int(right_x / x_spacing)
         if right_chunk_idx < 0:
             right_chunk_idx = 0
+        var right_terrain_y: Scalar[dtype]
         if right_chunk_idx >= n_edges:
-            right_chunk_idx = n_edges - 1
-        var right_edge_off = LLConstants.EDGES_OFFSET + right_chunk_idx * 6
-        var right_terrain_y = rebind[Scalar[dtype]](states[env, right_edge_off + 1])
+            # Last chunk: use y1 from the last edge
+            var last_edge_off = LLConstants.EDGES_OFFSET + (n_edges - 1) * 6
+            right_terrain_y = rebind[Scalar[dtype]](states[env, last_edge_off + 3])  # y1
+        else:
+            var right_edge_off = LLConstants.EDGES_OFFSET + right_chunk_idx * 6
+            right_terrain_y = rebind[Scalar[dtype]](states[env, right_edge_off + 1])  # y0
 
         # Check contact: leg_y - LEG_H <= terrain_y + tolerance (matching CPU)
         var leg_h = Scalar[dtype](LLConstants.LEG_H)
@@ -2426,7 +2520,7 @@ struct LunarLanderV2[DTYPE: DType](
             var env = Int(block_dim.x * block_idx.x + thread_idx.x)
             if env >= BATCH_SIZE:
                 return
-            LunarLanderV2[dtype]._setup_single_env[BATCH_SIZE](
+            SelfType._setup_single_env[BATCH_SIZE](
                 env, states, actions, edge_counts, joint_counts, contact_counts
             )
 
@@ -2631,7 +2725,7 @@ struct LunarLanderV2[DTYPE: DType](
                 ](env, states, n_joints, baumgarte, slop)
 
             # Finalize (writes obs to states at OBS_OFFSET)
-            LunarLanderV2[dtype]._finalize_single_env[BATCH_SIZE](
+            SelfType._finalize_single_env[BATCH_SIZE](
                 env, states, actions, contacts, contact_counts, rewards, dones
             )
 
@@ -2723,7 +2817,7 @@ struct LunarLanderV2[DTYPE: DType](
             var env = Int(block_dim.x * block_idx.x + thread_idx.x)
             if env >= BATCH_SIZE:
                 return
-            LunarLanderV2[dtype]._setup_single_env_continuous[
+            SelfType._setup_single_env_continuous[
                 BATCH_SIZE, ACTION_DIM
             ](env, states, actions, edge_counts, joint_counts, contact_counts)
 
@@ -2783,7 +2877,17 @@ struct LunarLanderV2[DTYPE: DType](
         ) > Scalar[dtype](0.5):
             return
 
-        # 5. Extract continuous actions
+        # 5. Get step count for wind and engine dispersion
+        var step_count = Int(
+            states[
+                env, LLConstants.METADATA_OFFSET + LLConstants.META_STEP_COUNT
+            ]
+        )
+
+        # 6. Apply wind forces (compile-time eliminated if ENABLE_WIND=False)
+        SelfType._apply_wind_gpu[BATCH_SIZE](env, states, step_count)
+
+        # 7. Extract continuous actions
         # Policy outputs actions in [-1, 1] via tanh
         # action[0]: main engine throttle - remap from [-1, 1] to [0, 1]
         # action[1]: side engine control (-1 to 1) - keep as-is
@@ -2824,13 +2928,7 @@ struct LunarLanderV2[DTYPE: DType](
         if m_power <= Scalar[dtype](0.0) and s_power <= Scalar[dtype](0.0):
             return
 
-        # 6. Apply engine forces
-        var step_count = Int(
-            states[
-                env, LLConstants.METADATA_OFFSET + LLConstants.META_STEP_COUNT
-            ]
-        )
-
+        # 8. Apply engine forces
         var rng = PhiloxRandom(seed=env + 12345, offset=step_count)
         var rand_vals = rng.step_uniform()
 
@@ -3098,7 +3196,7 @@ struct LunarLanderV2[DTYPE: DType](
                 ](env, states, n_joints, baumgarte, slop)
 
             # Finalize with continuous action fuel costs
-            LunarLanderV2[dtype]._finalize_single_env_continuous[
+            SelfType._finalize_single_env_continuous[
                 BATCH_SIZE, ACTION_DIM
             ](env, states, actions, contacts, contact_counts, rewards, dones)
 
@@ -3216,22 +3314,34 @@ struct LunarLanderV2[DTYPE: DType](
         )
 
         # Left leg terrain height
+        # Use chunk index to get terrain height (matching CPU which has TERRAIN_CHUNKS heights)
+        # Edge i stores: x0, y0 (chunk i height), x1, y1 (chunk i+1 height), nx, ny
+        # For chunk 0 to n_edges-1, use y0 from edge[chunk]
+        # For chunk n_edges (last chunk), use y1 from edge[n_edges-1]
         var left_chunk_idx = Int(left_x / x_spacing)
         if left_chunk_idx < 0:
             left_chunk_idx = 0
+        var left_terrain_y: Scalar[dtype]
         if left_chunk_idx >= n_edges:
-            left_chunk_idx = n_edges - 1
-        var left_edge_off = LLConstants.EDGES_OFFSET + left_chunk_idx * 6
-        var left_terrain_y = rebind[Scalar[dtype]](states[env, left_edge_off + 1])
+            # Last chunk: use y1 from the last edge
+            var last_edge_off = LLConstants.EDGES_OFFSET + (n_edges - 1) * 6
+            left_terrain_y = rebind[Scalar[dtype]](states[env, last_edge_off + 3])  # y1
+        else:
+            var left_edge_off = LLConstants.EDGES_OFFSET + left_chunk_idx * 6
+            left_terrain_y = rebind[Scalar[dtype]](states[env, left_edge_off + 1])  # y0
 
         # Right leg terrain height
         var right_chunk_idx = Int(right_x / x_spacing)
         if right_chunk_idx < 0:
             right_chunk_idx = 0
+        var right_terrain_y: Scalar[dtype]
         if right_chunk_idx >= n_edges:
-            right_chunk_idx = n_edges - 1
-        var right_edge_off = LLConstants.EDGES_OFFSET + right_chunk_idx * 6
-        var right_terrain_y = rebind[Scalar[dtype]](states[env, right_edge_off + 1])
+            # Last chunk: use y1 from the last edge
+            var last_edge_off = LLConstants.EDGES_OFFSET + (n_edges - 1) * 6
+            right_terrain_y = rebind[Scalar[dtype]](states[env, last_edge_off + 3])  # y1
+        else:
+            var right_edge_off = LLConstants.EDGES_OFFSET + right_chunk_idx * 6
+            right_terrain_y = rebind[Scalar[dtype]](states[env, right_edge_off + 1])  # y0
 
         # Check contact: leg_y - LEG_H <= terrain_y + tolerance (matching CPU)
         var leg_h = Scalar[dtype](LLConstants.LEG_H)

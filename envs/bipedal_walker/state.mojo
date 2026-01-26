@@ -64,7 +64,9 @@ struct BipedalWalkerState[DTYPE: DType](
         self.knee2_angle = other.knee2_angle
         self.knee2_speed = other.knee2_speed
         self.leg2_contact = other.leg2_contact
-        self.lidar = other.lidar
+        self.lidar = InlineArray[Scalar[Self.DTYPE], Self.NUM_LIDAR](fill=Scalar[Self.DTYPE](1.0))
+        for i in range(Self.NUM_LIDAR):
+            self.lidar[i] = other.lidar[i]
 
     fn __moveinit__(out self, deinit other: Self):
         self.hull_angle = other.hull_angle
@@ -81,7 +83,9 @@ struct BipedalWalkerState[DTYPE: DType](
         self.knee2_angle = other.knee2_angle
         self.knee2_speed = other.knee2_speed
         self.leg2_contact = other.leg2_contact
-        self.lidar = other.lidar
+        self.lidar = InlineArray[Scalar[Self.DTYPE], Self.NUM_LIDAR](fill=Scalar[Self.DTYPE](1.0))
+        for i in range(Self.NUM_LIDAR):
+            self.lidar[i] = other.lidar[i]
 
     fn __eq__(self, other: Self) -> Bool:
         return (

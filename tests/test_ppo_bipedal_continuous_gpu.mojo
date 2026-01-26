@@ -1,21 +1,21 @@
-"""Test PPO Continuous Agent GPU Training on LunarLander.
+"""Test PPO Continuous Agent GPU Training on BipedalWalker.
 
 This tests the GPU implementation of PPO with continuous actions using the
-LunarLanderV2 environment with:
+BipedalWalkerV2 environment with:
 - Parallel environments on GPU
-- Full rigid body physics with joints
-- 2D continuous action space (main throttle + side control)
-- Reward shaping for faster learning
+- Full rigid body physics with motor-enabled joints
+- 4D continuous action space (hip and knee torques)
+- 24D observation (hull state + leg states + lidar)
 
-Action space (matching Gymnasium LunarLander-v3 continuous):
-- action[0]: main engine throttle (0.0 to 1.0)
-- action[1]: side engine control (-1.0 to 1.0)
-            negative = left engine, positive = right engine
-            magnitude > 0.5 activates the engine
+Action space (matching Gymnasium BipedalWalker-v3 continuous):
+- action[0]: hip1 torque (-1.0 to 1.0)
+- action[1]: knee1 torque (-1.0 to 1.0)
+- action[2]: hip2 torque (-1.0 to 1.0)
+- action[3]: knee2 torque (-1.0 to 1.0)
 
 Run with:
-    pixi run -e apple mojo run tests/test_ppo_lunar_continuous_gpu.mojo    # Apple Silicon
-    pixi run -e nvidia mojo run tests/test_ppo_lunar_continuous_gpu.mojo   # NVIDIA GPU
+    pixi run -e apple mojo run tests/test_ppo_bipedal_continuous_gpu.mojo    # Apple Silicon
+    pixi run -e nvidia mojo run tests/test_ppo_bipedal_continuous_gpu.mojo   # NVIDIA GPU
 """
 
 from random import seed
@@ -24,27 +24,27 @@ from time import perf_counter_ns
 from gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.lunar_lander import LunarLanderV2, LLConstants
+from envs.bipedal_walker import BipedalWalkerV2, BWConstants
 
 
 # =============================================================================
 # Constants
 # =============================================================================
 
-# LunarLander: 8D observation, 2D continuous action
-comptime OBS_DIM = LLConstants.OBS_DIM_VAL  # 8: [x, y, vx, vy, angle, ang_vel, left_leg, right_leg]
-comptime ACTION_DIM = LLConstants.ACTION_DIM_VAL  # 2: [main_throttle, side_control]
+# BipedalWalker: 24D observation, 4D continuous action
+comptime OBS_DIM = BWConstants.OBS_DIM_VAL  # 24: hull state + leg states + lidar
+comptime ACTION_DIM = BWConstants.ACTION_DIM_VAL  # 4: [hip1, knee1, hip2, knee2]
 
-# Network architecture (larger for LunarLander - more complex than Pendulum)
-comptime HIDDEN_DIM = 256
+# Network architecture (larger for BipedalWalker - harder task than LunarLander)
+comptime HIDDEN_DIM = 512
 
 # GPU training parameters
-comptime ROLLOUT_LEN = 128  # Steps per rollout per environment
+comptime ROLLOUT_LEN = 256  # Steps per rollout per environment
 comptime N_ENVS = 512  # Parallel environments
 comptime GPU_MINIBATCH_SIZE = 512  # Minibatch size for PPO updates
 
-# Training duration
-comptime NUM_EPISODES = 10_000  # LunarLander needs more episodes than Pendulum
+# Training duration (BipedalWalker needs more episodes than LunarLander)
+comptime NUM_EPISODES = 10_000
 
 comptime dtype = DType.float32
 
@@ -57,7 +57,7 @@ comptime dtype = DType.float32
 fn main() raises:
     seed(42)
     print("=" * 70)
-    print("PPO Continuous Agent GPU Test on LunarLander")
+    print("PPO Continuous Agent GPU Test on BipedalWalker")
     print("=" * 70)
     print()
 
@@ -80,9 +80,9 @@ fn main() raises:
             clip_epsilon=0.2,  # Standard clipping
             actor_lr=0.0003,  # Standard learning rate
             critic_lr=0.001,  # Higher critic LR for faster value learning
-            entropy_coef=0.01,  # Higher entropy to prevent mean collapse
+            entropy_coef=0.02,  # Higher entropy for exploration in hard task
             value_loss_coef=0.5,
-            num_epochs=10,  # More epochs for LunarLander
+            num_epochs=10,  # More epochs for BipedalWalker
             # Advanced hyperparameters
             target_kl=0.1,  # KL early stopping
             max_grad_norm=0.5,
@@ -90,20 +90,17 @@ fn main() raises:
             anneal_entropy=False,
             target_total_steps=0,  # Auto-calculate
             norm_adv_per_minibatch=True,
-            checkpoint_every=1000,
-            checkpoint_path="ppo_lunar_continuous_gpu.ckpt",
-            # Reward normalization (CleanRL-style) - prevents fuel penalties from dominating
+            checkpoint_every=1_000,
+            checkpoint_path="ppo_bipedal_continuous_gpu.ckpt",
+            # Reward normalization (CleanRL-style)
             normalize_rewards=True,
             # Observation noise for robustness (domain randomization)
-            # Helps policy generalize between GPU and CPU physics differences
             obs_noise_std=0.05,
-            # Action scaling: PPO outputs [-1, 1], we need [0, 1] for main and [-1, 1] for side
-            # The environment handles this internally via step_continuous_vec
         )
 
-        # agent.load_checkpoint("ppo_lunar_continuous_gpu.ckpt")
+        # agent.load_checkpoint("ppo_bipedal_continuous_gpu.ckpt")
 
-        print("Environment: LunarLander Continuous (GPU)")
+        print("Environment: BipedalWalker Continuous (GPU)")
         print("Agent: PPO Continuous (GPU)")
         print("  Observation dim: " + String(OBS_DIM))
         print("  Action dim: " + String(ACTION_DIM))
@@ -116,29 +113,35 @@ fn main() raises:
         )
         print("  Advanced features:")
         print("    - LR annealing: disabled (prevents late collapse)")
-        print("    - KL early stopping: target_kl=0.02")
+        print("    - KL early stopping: target_kl=0.1")
         print("    - Gradient clipping: max_grad_norm=0.5")
         print("    - Reward normalization: enabled (CleanRL-style)")
-        print("    - Higher entropy: 0.05 (prevents mean collapse)")
+        print("    - Higher entropy: 0.02 (for exploration)")
         print()
-        print("LunarLander Continuous specifics:")
+        print("BipedalWalker specifics:")
+        print("  - 24D observations: [hull_angle, hull_ang_vel, vel_x, vel_y,")
         print(
-            "  - 8D observations: [x, y, vx, vy, angle, ang_vel, left_leg,"
-            " right_leg]"
+            "                       hip1_angle, hip1_speed, knee1_angle,"
+            " knee1_speed, leg1_contact,"
         )
-        print("  - 2D continuous actions:")
-        print("      action[0]: main engine throttle (0.0 to 1.0)")
-        print("      action[1]: side engine control (-1.0 to 1.0)")
-        print("                 negative = left, positive = right")
-        print("  - Reward shaping: distance + velocity + angle penalties")
-        print("  - Landing bonus: +100, Crash penalty: -100")
-        print("  - Fuel costs: proportional to throttle")
+        print(
+            "                       hip2_angle, hip2_speed, knee2_angle,"
+            " knee2_speed, leg2_contact,"
+        )
+        print("                       lidar[0-9]]")
+        print("  - 4D continuous actions:")
+        print("      action[0]: hip1 torque (-1.0 to 1.0)")
+        print("      action[1]: knee1 torque (-1.0 to 1.0)")
+        print("      action[2]: hip2 torque (-1.0 to 1.0)")
+        print("      action[3]: knee2 torque (-1.0 to 1.0)")
+        print("  - Reward shaping: forward progress + angle penalty")
+        print("  - Termination: hull contacts ground")
         print()
         print("Expected rewards:")
-        print("  - Random policy: ~-200 to -400")
-        print("  - Learning policy: > -100")
-        print("  - Good policy: > 0")
-        print("  - Successful landing: > 100")
+        print("  - Random policy: ~-100 to -300")
+        print("  - Learning policy: > -50")
+        print("  - Good policy: > 100")
+        print("  - Walking well: > 200")
         print()
 
         # =====================================================================
@@ -151,7 +154,7 @@ fn main() raises:
         var start_time = perf_counter_ns()
 
         try:
-            var metrics = agent.train_gpu[LunarLanderV2[dtype]](
+            var metrics = agent.train_gpu[BipedalWalkerV2[dtype]](
                 ctx,
                 num_episodes=NUM_EPISODES,
                 verbose=True,
@@ -191,25 +194,25 @@ fn main() raises:
 
             # Check for successful training
             var final_avg = metrics.mean_reward_last_n(100)
-            if final_avg > 100.0:
+            if final_avg > 200.0:
                 print(
-                    "EXCELLENT: Agent consistently lands successfully!"
-                    " (avg reward > 100)"
+                    "EXCELLENT: Agent is walking consistently!"
+                    " (avg reward > 200)"
                 )
+            elif final_avg > 100.0:
+                print("SUCCESS: Agent learned to walk! (avg reward > 100)")
             elif final_avg > 0.0:
-                print("SUCCESS: Agent learned to land! (avg reward > 0)")
-            elif final_avg > -100.0:
                 print(
-                    "GOOD PROGRESS: Agent is learning to control"
-                    " (avg reward > -100)"
+                    "GOOD PROGRESS: Agent is learning to balance"
+                    " (avg reward > 0)"
                 )
-            elif final_avg > -200.0:
+            elif final_avg > -50.0:
                 print(
                     "LEARNING: Agent improving but needs more training"
-                    " (avg reward > -200)"
+                    " (avg reward > -50)"
                 )
             else:
-                print("EARLY STAGE: Agent still exploring (avg reward < -200)")
+                print("EARLY STAGE: Agent still exploring (avg reward < -50)")
 
             print()
             print("=" * 70)

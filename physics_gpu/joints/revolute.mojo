@@ -625,10 +625,8 @@ struct RevoluteJointSolver:
 
                 var current_angle = angle_b - angle_a
                 var angle_error = current_angle - ref_angle
-                var rel_omega = (
-                    state[env, body_b_off + IDX_OMEGA]
-                    - state[env, body_a_off + IDX_OMEGA]
-                )
+                # Use pre-impulse omega values (wa, wb) to match CPU behavior
+                var rel_omega = wb - wa
 
                 var spring_torque = (
                     -stiffness * angle_error - damping * rel_omega
@@ -698,6 +696,38 @@ struct RevoluteJointSolver:
                             current_wb
                             + rebind[Scalar[dtype]](inv_ib) * limit_impulse
                         )
+
+            # Handle motor (after spring and limit handling)
+            if flags & JOINT_FLAG_MOTOR_ENABLED:
+                var motor_speed = state[env, joint_off + JOINT_MOTOR_SPEED]
+                var max_torque = state[env, joint_off + JOINT_MAX_MOTOR_TORQUE]
+
+                # Current relative angular velocity (read updated values)
+                var current_wa = state[env, body_a_off + IDX_OMEGA]
+                var current_wb = state[env, body_b_off + IDX_OMEGA]
+                var rel_omega = current_wb - current_wa
+
+                # Motor wants to achieve target speed
+                var speed_error = motor_speed - rel_omega
+
+                # Effective inertia for motor
+                var eff_inertia = inv_ia + inv_ib
+                if eff_inertia > Scalar[dtype](1e-10):
+                    var motor_impulse = speed_error / eff_inertia
+
+                    # Clamp to max torque
+                    var max_impulse = max_torque * dt
+                    if motor_impulse > max_impulse:
+                        motor_impulse = max_impulse
+                    if motor_impulse < -max_impulse:
+                        motor_impulse = -max_impulse
+
+                    state[env, body_a_off + IDX_OMEGA] = (
+                        current_wa - inv_ia * motor_impulse
+                    )
+                    state[env, body_b_off + IDX_OMEGA] = (
+                        current_wb + inv_ib * motor_impulse
+                    )
 
     @always_inline
     @staticmethod

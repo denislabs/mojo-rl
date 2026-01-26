@@ -871,3 +871,55 @@ fn clamp_log_std_params_kernel[
         params[param_idx] = LOG_STD_MIN
     elif val > LOG_STD_MAX:
         params[param_idx] = LOG_STD_MAX
+
+
+# =============================================================================
+# Observation Noise Kernel (Domain Randomization)
+# =============================================================================
+
+
+@always_inline
+fn add_obs_noise_kernel[
+    dtype: DType,
+    N_ENVS: Int,
+    OBS_DIM: Int,
+](
+    obs: LayoutTensor[dtype, Layout.row_major(N_ENVS, OBS_DIM), MutAnyOrigin],
+    noise_std: Scalar[dtype],
+    rng_seed: Scalar[DType.uint32],
+):
+    """Add Gaussian noise to observations for domain randomization.
+
+    This makes the policy more robust to small observation differences
+    between training and evaluation (e.g., CPU vs GPU physics).
+
+    Uses Box-Muller transform with PhiloxRandom for GPU-friendly random numbers.
+
+    Args:
+        obs: Observation tensor [N_ENVS, OBS_DIM] - modified in-place.
+        noise_std: Standard deviation of Gaussian noise to add.
+        rng_seed: Random seed for reproducibility.
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= N_ENVS:
+        return
+
+    # Skip if noise_std is 0
+    if noise_std <= Scalar[dtype](0.0):
+        return
+
+    # Add noise to each observation dimension
+    for d in range(OBS_DIM):
+        # Create unique seed per (env, dim) for independent random streams
+        var philox = PhiloxRandom(seed=Int(rng_seed) + i * OBS_DIM + d, offset=0)
+        var rand_vals = philox.step_uniform()
+        var u1 = rand_vals[0]
+        var u2 = rand_vals[1]
+
+        # Box-Muller transform for standard normal
+        var u1_safe = Float32(u1) + Float32(1e-8)
+        var mag = sqrt(-2.0 * log(u1_safe))
+        var noise = Scalar[dtype](mag * cos(Float32(u2) * Float32(6.283185307179586)))
+
+        # Add scaled noise to observation
+        obs[i, d] = obs[i, d] + noise * noise_std

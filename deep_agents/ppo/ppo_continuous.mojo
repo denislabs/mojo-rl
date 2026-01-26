@@ -88,6 +88,7 @@ from .kernels import (
     _extract_obs_from_state_continuous_kernel,
     _store_post_step_kernel,
     clamp_log_std_params_kernel,
+    add_obs_noise_kernel,
 )
 
 # =============================================================================
@@ -227,6 +228,9 @@ struct DeepPPOContinuousAgent[
     var normalize_rewards: Bool
     var reward_rms: RunningMeanStd
 
+    # Observation noise for robustness (domain randomization)
+    var obs_noise_std: Float64
+
     fn __init__(
         out self,
         gamma: Float64 = 0.99,
@@ -257,6 +261,8 @@ struct DeepPPOContinuousAgent[
         # Use this for environments where default action != 0
         # e.g., CarRacing: [0, 2.0, -2.0] for steering=0, gas=high, brake=low
         action_mean_biases: List[Float64] = List[Float64](),
+        # Observation noise for robustness (domain randomization)
+        obs_noise_std: Float64 = 0.0,
     ):
         """Initialize Deep PPO Continuous agent.
 
@@ -280,6 +286,7 @@ struct DeepPPOContinuousAgent[
             action_bias: Bias for actions (default: 0.0).
             checkpoint_every: Save checkpoint every N episodes (0 to disable).
             checkpoint_path: Path for auto-checkpointing.
+            obs_noise_std: Std dev of Gaussian noise added to observations (default: 0.0).
         """
         self.actor = Network[
             type_of(
@@ -381,6 +388,8 @@ struct DeepPPOContinuousAgent[
 
         self.normalize_rewards = normalize_rewards
         self.reward_rms = RunningMeanStd()
+
+        self.obs_noise_std = obs_noise_std
 
     # =========================================================================
     # Action Selection (for evaluation)
@@ -2518,6 +2527,12 @@ struct DeepPPOContinuousAgent[
             dtype, CRITIC_PARAMS, CRITIC_GRAD_BLOCKS, TPB
         ]
 
+        # Observation noise wrapper (for domain randomization)
+        comptime obs_noise_wrapper = add_obs_noise_kernel[
+            dtype, Self.n_envs, Self.OBS
+        ]
+        var obs_noise_std_scalar = Scalar[dtype](self.obs_noise_std)
+
         # =====================================================================
         # Initialize episode tracking and environments
         # =====================================================================
@@ -2537,6 +2552,16 @@ struct DeepPPOContinuousAgent[
             grid_dim=(ENV_BLOCKS,),
             block_dim=(TPB,),
         )
+
+        # Add observation noise for domain randomization (if enabled)
+        if self.obs_noise_std > 0.0:
+            ctx.enqueue_function[obs_noise_wrapper, obs_noise_wrapper](
+                obs_tensor,
+                obs_noise_std_scalar,
+                Scalar[DType.uint32](42),  # Initial seed
+                grid_dim=(ENV_BLOCKS,),
+                block_dim=(TPB,),
+            )
         ctx.synchronize()
 
         # =====================================================================
@@ -2675,6 +2700,17 @@ struct DeepPPOContinuousAgent[
                     obs_buf,
                     env_step_seed,
                 )
+
+                # Add observation noise for domain randomization (if enabled)
+                if self.obs_noise_std > 0.0:
+                    var noise_seed = UInt32(total_steps * 2654435761 + t * 7919)
+                    ctx.enqueue_function[obs_noise_wrapper, obs_noise_wrapper](
+                        obs_tensor,
+                        obs_noise_std_scalar,
+                        Scalar[DType.uint32](noise_seed),
+                        grid_dim=(ENV_BLOCKS,),
+                        block_dim=(TPB,),
+                    )
 
                 # Store rewards and dones
                 var rollout_rewards_t = LayoutTensor[

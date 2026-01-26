@@ -1,11 +1,11 @@
-"""Debug script to track train-eval gap growth over time for LunarLander.
+"""Debug script to track train-eval gap growth over time for BipedalWalker.
 
 This script trains with periodic evaluation to see when/how the gap appears.
 It also tracks log_std parameters to detect drift.
 
 Run with:
-    pixi run -e apple mojo run tests/debug_ppo_lunar_gap_growth.mojo
-    pixi run -e nvidia mojo run tests/debug_ppo_lunar_gap_growth.mojo
+    pixi run -e apple mojo run tests/debug_ppo_bipedal_gap_growth.mojo
+    pixi run -e nvidia mojo run tests/debug_ppo_bipedal_gap_growth.mojo
 """
 
 from random import seed
@@ -14,18 +14,18 @@ from time import perf_counter_ns
 from gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.lunar_lander import LunarLanderV2, LLConstants
+from envs.bipedal_walker import BipedalWalkerV2, BWConstants
 from deep_rl import dtype as gpu_dtype
 
 
 # =============================================================================
-# Constants (matching test_ppo_lunar_continuous_gpu.mojo)
+# Constants (matching test_ppo_bipedal_continuous_gpu.mojo)
 # =============================================================================
 
-comptime OBS_DIM = LLConstants.OBS_DIM_VAL  # 8
-comptime ACTION_DIM = LLConstants.ACTION_DIM_VAL  # 2
-comptime HIDDEN_DIM = 256
-comptime ROLLOUT_LEN = 128
+comptime OBS_DIM = BWConstants.OBS_DIM_VAL  # 24
+comptime ACTION_DIM = BWConstants.ACTION_DIM_VAL  # 4
+comptime HIDDEN_DIM = 512
+comptime ROLLOUT_LEN = 256
 comptime N_ENVS = 512
 comptime GPU_MINIBATCH_SIZE = 512
 
@@ -35,13 +35,13 @@ comptime dtype = DType.float32
 comptime TOTAL_EPISODES = 10000
 comptime EVAL_EVERY = 1000  # Evaluate every N episodes
 comptime EVAL_EPISODES = 50
-comptime MAX_STEPS = 1000
+comptime MAX_STEPS = 1600  # BipedalWalker episodes can be longer
 
 
 fn main() raises:
     seed(42)
     print("=" * 70)
-    print("DEBUG: Tracking Train-Eval Gap Growth Over Time (LunarLander)")
+    print("DEBUG: Tracking Train-Eval Gap Growth Over Time (BipedalWalker)")
     print("=" * 70)
     print()
     print("Configuration:")
@@ -54,7 +54,7 @@ fn main() raises:
     print("  OBS_DIM:", OBS_DIM)
     print("  ACTION_DIM:", ACTION_DIM)
     print("  HIDDEN_DIM:", HIDDEN_DIM)
-    print("  entropy_coef: 0.01")
+    print("  entropy_coef: 0.02")
     print("  target_kl: 0.1")
     print("  anneal_lr: False")
     print("  normalize_rewards: True")
@@ -75,12 +75,12 @@ fn main() raises:
             clip_epsilon=0.2,
             actor_lr=0.0003,
             critic_lr=0.001,
-            entropy_coef=0.01,  # Higher entropy for LunarLander
+            entropy_coef=0.02,  # Higher entropy for BipedalWalker
             value_loss_coef=0.5,
-            num_epochs=10,  # More epochs for LunarLander
+            num_epochs=10,
             target_kl=0.1,  # KL early stopping
             max_grad_norm=0.5,
-            anneal_lr=False,  # Disabled for LunarLander
+            anneal_lr=False,  # Disabled for BipedalWalker
             anneal_entropy=False,
             target_total_steps=0,
             norm_adv_per_minibatch=True,
@@ -99,24 +99,26 @@ fn main() raises:
         var eval_cpu_rewards = List[Float64]()
         var eval_gpu_rewards = List[Float64]()
         var checkpoints = List[Int]()
-        var log_std_0_values = List[Float64]()
-        var log_std_1_values = List[Float64]()
+        var log_std_values = List[List[Float64]]()
 
         var episodes_trained = 0
         var checkpoint_num = 0
 
         # Initial log_std values
         print("Initial log_std params:")
-        print("  log_std[0]:", agent.actor.params[log_std_offset])
-        print("  log_std[1]:", agent.actor.params[log_std_offset + 1])
+        for i in range(ACTION_DIM):
+            print(
+                "  log_std[" + String(i) + "]:",
+                agent.actor.params[log_std_offset + i],
+            )
         print()
 
-        print("=" * 90)
+        print("=" * 110)
         print(
             "Episode  | Train Avg | CPU Eval | GPU Eval | Gap(CPU) |"
-            " Gap(GPU) | log_std[0] | log_std[1]"
+            " Gap(GPU) | log_std[0] | log_std[1] | log_std[2] | log_std[3]"
         )
-        print("=" * 90)
+        print("=" * 110)
 
         while episodes_trained < TOTAL_EPISODES:
             # Train for EVAL_EVERY episodes
@@ -124,7 +126,7 @@ fn main() raises:
                 EVAL_EVERY, TOTAL_EPISODES - episodes_trained
             )
 
-            var metrics = agent.train_gpu[LunarLanderV2[gpu_dtype]](
+            var metrics = agent.train_gpu[BipedalWalkerV2[gpu_dtype]](
                 ctx,
                 num_episodes=episodes_this_round,
                 verbose=False,
@@ -137,11 +139,14 @@ fn main() raises:
             )
 
             # Get current log_std values
-            var log_std_0 = Float64(agent.actor.params[log_std_offset])
-            var log_std_1 = Float64(agent.actor.params[log_std_offset + 1])
+            var current_log_std = List[Float64]()
+            for i in range(ACTION_DIM):
+                current_log_std.append(
+                    Float64(agent.actor.params[log_std_offset + i])
+                )
 
             # Evaluate on GPU (stochastic)
-            var eval_gpu_avg = agent.evaluate_gpu[LunarLanderV2[gpu_dtype]](
+            var eval_gpu_avg = agent.evaluate_gpu[BipedalWalkerV2[gpu_dtype]](
                 ctx,
                 num_episodes=EVAL_EPISODES,
                 max_steps=MAX_STEPS,
@@ -150,7 +155,7 @@ fn main() raises:
             )
 
             # Evaluate on CPU (stochastic)
-            var env = LunarLanderV2[dtype]()
+            var env = BipedalWalkerV2[dtype]()
             var eval_cpu_avg = agent.evaluate(
                 env,
                 num_episodes=EVAL_EPISODES,
@@ -166,8 +171,7 @@ fn main() raises:
             eval_cpu_rewards.append(eval_cpu_avg)
             eval_gpu_rewards.append(eval_gpu_avg)
             checkpoints.append(episodes_trained)
-            log_std_0_values.append(log_std_0)
-            log_std_1_values.append(log_std_1)
+            log_std_values.append(current_log_std.copy())
 
             # Print results
             print(
@@ -183,25 +187,29 @@ fn main() raises:
                 "|",
                 String(gap_gpu)[:8].ljust(8),
                 "|",
-                String(log_std_0)[:10].ljust(10),
+                String(current_log_std[0])[:10].ljust(10),
                 "|",
-                String(log_std_1)[:10],
+                String(current_log_std[1])[:10].ljust(10),
+                "|",
+                String(current_log_std[2])[:10].ljust(10),
+                "|",
+                String(current_log_std[3])[:10],
             )
 
             checkpoint_num += 1
 
         # Final summary
         print()
-        print("=" * 90)
+        print("=" * 110)
         print("GAP GROWTH ANALYSIS")
-        print("=" * 90)
+        print("=" * 110)
         print()
 
         print(
-            "Chkpt | Episodes | Training | CPU Eval | GPU Eval |"
-            " Gap(CPU) | Gap(GPU) | log_std[0] | log_std[1]"
+            "Chkpt | Episodes | Training | CPU Eval | GPU Eval | Gap(CPU) |"
+            " Gap(GPU) | log_std[0] | log_std[1] | log_std[2] | log_std[3]"
         )
-        print("-" * 110)
+        print("-" * 130)
         for i in range(len(checkpoints)):
             var gap_cpu = train_rewards[i] - eval_cpu_rewards[i]
             var gap_gpu = train_rewards[i] - eval_gpu_rewards[i]
@@ -220,9 +228,13 @@ fn main() raises:
                 "|",
                 String(gap_gpu)[:8].rjust(8),
                 "|",
-                String(log_std_0_values[i])[:10].rjust(10),
+                String(log_std_values[i][0])[:10].rjust(10),
                 "|",
-                String(log_std_1_values[i])[:10].rjust(10),
+                String(log_std_values[i][1])[:10].rjust(10),
+                "|",
+                String(log_std_values[i][2])[:10].rjust(10),
+                "|",
+                String(log_std_values[i][3])[:10].rjust(10),
             )
 
         print()
@@ -256,41 +268,39 @@ fn main() raises:
             print()
 
             # Log_std analysis
-            var log_std_0_start = log_std_0_values[0]
-            var log_std_0_end = log_std_0_values[len(log_std_0_values) - 1]
-            var log_std_1_start = log_std_1_values[0]
-            var log_std_1_end = log_std_1_values[len(log_std_1_values) - 1]
-
             print("log_std Parameter Analysis:")
-            print(
-                "  log_std[0]: ",
-                log_std_0_start,
-                " -> ",
-                log_std_0_end,
-                " (change: ",
-                log_std_0_end - log_std_0_start,
-                ")",
-            )
-            print(
-                "  log_std[1]: ",
-                log_std_1_start,
-                " -> ",
-                log_std_1_end,
-                " (change: ",
-                log_std_1_end - log_std_1_start,
-                ")",
-            )
+            for i in range(ACTION_DIM):
+                var log_std_start = log_std_values[0][i]
+                var log_std_end = log_std_values[len(log_std_values) - 1][i]
+                print(
+                    "  log_std[" + String(i) + "]: ",
+                    log_std_start,
+                    " -> ",
+                    log_std_end,
+                    " (change: ",
+                    log_std_end - log_std_start,
+                    ")",
+                )
             print()
 
             # Check for log_std drift
-            if log_std_0_end > 2.0 or log_std_1_end > 2.0:
-                print("WARNING: log_std exceeded LOG_STD_MAX=2.0!")
+            var any_high = False
+            var any_low = False
+            for i in range(ACTION_DIM):
+                var log_std_end = log_std_values[len(log_std_values) - 1][i]
+                if log_std_end > 2.0:
+                    any_high = True
+                if log_std_end < -5.0:
+                    any_low = True
+
+            if any_high:
+                print("WARNING: Some log_std exceeded LOG_STD_MAX=2.0!")
                 print(
                     "  This causes very high variance actions during training"
                 )
                 print("  but deterministic eval uses clamped values.")
-            elif log_std_0_end < -5.0 or log_std_1_end < -5.0:
-                print("WARNING: log_std went below LOG_STD_MIN=-5.0!")
+            elif any_low:
+                print("WARNING: Some log_std went below LOG_STD_MIN=-5.0!")
                 print("  This causes near-deterministic training behavior.")
 
             # Gap analysis
@@ -321,6 +331,6 @@ fn main() raises:
                 print("  This may indicate environment physics differences.")
 
         print()
-        print("=" * 90)
+        print("=" * 110)
 
     print(">>> Gap growth analysis completed <<<")

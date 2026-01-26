@@ -1198,22 +1198,48 @@ struct CarRacingV2[DTYPE: DType](
         var start_x = (tile0_v0x + tile0_v3x) / Scalar[dtype](2.0)
         var start_y = (tile0_v0y + tile0_v3y) / Scalar[dtype](2.0)
 
-        # Compute angle from tile direction (v0 to v1)
+        # Compute angle from tile direction (v0 to v1) using proper atan2 approximation
         var dx = tile0_v1x - tile0_v0x
         var dy = tile0_v1y - tile0_v0y
         var start_angle = Scalar[dtype](0.0)
-        if dx != Scalar[dtype](0.0) or dy != Scalar[dtype](0.0):
-            # Use atan2 approximation
+        var dist_sq = dx * dx + dy * dy
+        if dist_sq > Scalar[dtype](0.0001):
             var abs_dx = dx if dx >= Scalar[dtype](0.0) else -dx
             var abs_dy = dy if dy >= Scalar[dtype](0.0) else -dy
+
             if abs_dx > abs_dy:
-                start_angle = dy / dx
+                # |dy/dx| <= 1, use atan directly with polynomial approximation
+                var t = dy / dx
+                var t2 = t * t
+                var t3 = t2 * t
+                var t5 = t3 * t2
+                var atan_val = t - t3 / Scalar[dtype](3.0) + t5 / Scalar[dtype](5.0)
+                # Clamp to valid range for numerical stability
+                if atan_val > Scalar[dtype](0.8):
+                    atan_val = Scalar[dtype](0.8)
+                elif atan_val < Scalar[dtype](-0.8):
+                    atan_val = Scalar[dtype](-0.8)
+                start_angle = atan_val
                 if dx < Scalar[dtype](0.0):
-                    start_angle = start_angle + Scalar[dtype](pi)
+                    if dy >= Scalar[dtype](0.0):
+                        start_angle = start_angle + Scalar[dtype](pi)
+                    else:
+                        start_angle = start_angle - Scalar[dtype](pi)
             else:
-                start_angle = Scalar[dtype](pi / 2.0) - dx / dy
+                # |dx/dy| < 1, use atan(1/x) = pi/2 - atan(x)
+                var t = dx / dy
+                var t2 = t * t
+                var t3 = t2 * t
+                var t5 = t3 * t2
+                var atan_val = t - t3 / Scalar[dtype](3.0) + t5 / Scalar[dtype](5.0)
+                # Clamp to valid range
+                if atan_val > Scalar[dtype](0.8):
+                    atan_val = Scalar[dtype](0.8)
+                elif atan_val < Scalar[dtype](-0.8):
+                    atan_val = Scalar[dtype](-0.8)
+                start_angle = Scalar[dtype](pi / 2.0) - atan_val
                 if dy < Scalar[dtype](0.0):
-                    start_angle = start_angle + Scalar[dtype](pi)
+                    start_angle = -start_angle
 
         # Set hull state
         states[env, CRConstants.HULL_OFFSET + HULL_X] = start_x
@@ -1325,17 +1351,45 @@ struct CarRacingV2[DTYPE: DType](
             # Simple steering towards destination
             var angle_to_dest = Scalar[dtype](0.0)
             if dist > Scalar[dtype](0.001):
-                # Approximate atan2
+                # Proper atan2 approximation using polynomial approximation of atan
+                # atan(x) ≈ x - x³/3 + x⁵/5 for |x| <= 1 (Taylor series)
+                # For |x| > 1, use atan(x) = pi/2 - atan(1/x)
                 var abs_dx = dx if dx >= Scalar[dtype](0.0) else -dx
                 var abs_dy = dy if dy >= Scalar[dtype](0.0) else -dy
+
                 if abs_dx > abs_dy:
-                    angle_to_dest = dy / dx
+                    # |dy/dx| <= 1, use atan directly
+                    var t = dy / dx
+                    var t2 = t * t
+                    var t3 = t2 * t
+                    var t5 = t3 * t2
+                    var atan_val = t - t3 / Scalar[dtype](3.0) + t5 / Scalar[dtype](5.0)
+                    # Clamp to valid range
+                    if atan_val > Scalar[dtype](0.8):
+                        atan_val = Scalar[dtype](0.8)
+                    elif atan_val < Scalar[dtype](-0.8):
+                        atan_val = Scalar[dtype](-0.8)
+                    angle_to_dest = atan_val
                     if dx < Scalar[dtype](0.0):
-                        angle_to_dest = angle_to_dest + Scalar[dtype](pi)
+                        if dy >= Scalar[dtype](0.0):
+                            angle_to_dest = angle_to_dest + Scalar[dtype](pi)
+                        else:
+                            angle_to_dest = angle_to_dest - Scalar[dtype](pi)
                 else:
-                    angle_to_dest = Scalar[dtype](pi / 2.0) - dx / dy
+                    # |dx/dy| < 1, use atan(1/x) = pi/2 - atan(x)
+                    var t = dx / dy
+                    var t2 = t * t
+                    var t3 = t2 * t
+                    var t5 = t3 * t2
+                    var atan_val = t - t3 / Scalar[dtype](3.0) + t5 / Scalar[dtype](5.0)
+                    # Clamp to valid range
+                    if atan_val > Scalar[dtype](0.8):
+                        atan_val = Scalar[dtype](0.8)
+                    elif atan_val < Scalar[dtype](-0.8):
+                        atan_val = Scalar[dtype](-0.8)
+                    angle_to_dest = Scalar[dtype](pi / 2.0) - atan_val
                     if dy < Scalar[dtype](0.0):
-                        angle_to_dest = angle_to_dest + Scalar[dtype](pi)
+                        angle_to_dest = -angle_to_dest
 
             var angle_diff = angle_to_dest - beta
             # Normalize to [-pi, pi]
@@ -1562,7 +1616,11 @@ struct CarRacingV2[DTYPE: DType](
 
         # Reward for newly visited tile
         if is_newly_visited:
-            step_reward = step_reward + Scalar[dtype](100.0) / Scalar[dtype](num_tiles)
+            # Guard against division by zero
+            var tile_reward = Scalar[dtype](1.0)  # Default to 1.0 reward
+            if num_tiles > 0:
+                tile_reward = Scalar[dtype](100.0) / Scalar[dtype](num_tiles)
+            step_reward = step_reward + tile_reward
             tiles_visited = tiles_visited + Scalar[dtype](1.0)
             states[env, CRConstants.METADATA_OFFSET + META_TILES_VISITED] = tiles_visited
 
@@ -1578,7 +1636,7 @@ struct CarRacingV2[DTYPE: DType](
             step_reward = Scalar[dtype](-100.0)
 
         # Lap completion check
-        var num_tiles_f = Scalar[dtype](num_tiles)
+        var num_tiles_f = Scalar[dtype](max(num_tiles, 1))  # Guard against division by zero
         var progress = tiles_visited / num_tiles_f
         if progress >= Scalar[dtype](CRConstants.LAP_COMPLETE_PERCENT):
             done = Scalar[dtype](1.0)

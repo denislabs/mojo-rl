@@ -99,7 +99,7 @@ fn main() raises:
             action_mean_biases=action_mean_biases^,
         )
 
-        agent.load_checkpoint("ppo_car_racing_gpu_v2.ckpt")
+        # agent.load_checkpoint("ppo_car_racing_gpu_v2.ckpt")
 
         print("Environment: CarRacingV2 (GPU)")
         print("Agent: PPO (GPU)")
@@ -135,12 +135,11 @@ fn main() raises:
 
         try:
             # Use specialized CarRacing training with full track support
-            var metrics = agent.train_gpu_car_racing(
+            var metrics = agent.train_gpu[CarRacingV2[dtype]](
                 ctx,
                 num_episodes=NUM_EPISODES,
                 verbose=True,
                 print_every=1,
-                track_seed=42,
             )
 
             var end_time = perf_counter_ns()

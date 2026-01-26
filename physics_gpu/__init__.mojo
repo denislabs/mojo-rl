@@ -110,9 +110,13 @@ from .layout import (
     LunarLanderLayout,
     CartPoleLayout,
     AcrobotLayout,
+    BipedalWalkerLayout,
 )
 from .kernel import PhysicsKernel, PhysicsConfig
 from .env_helpers import PhysicsEnvHelpers
+
+# Lidar raycast module for BipedalWalker
+from .lidar import Lidar
 
 # Car physics module (slip-based tire friction for CarRacing)
 from .car import (

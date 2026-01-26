@@ -257,11 +257,25 @@ struct WheelFriction:
         # Step 5: Clamp to friction envelope
         # =====================================================================
 
-        var force_mag = sqrt(f_force * f_force + p_force * p_force)
-        if force_mag > friction_limit:
+        # Compute force magnitude with protection against floating-point issues
+        var force_sq = f_force * f_force + p_force * p_force
+        # Clamp to prevent sqrt of negative (shouldn't happen but floating-point)
+        if force_sq < zero:
+            force_sq = zero
+        var force_mag = sqrt(force_sq)
+
+        # Clamp forces to friction envelope
+        # Guard against division by zero (only divide when force_mag is significant)
+        if force_mag > friction_limit and force_mag > Scalar[dtype](1e-8):
             var scale = friction_limit / force_mag
             f_force = f_force * scale
             p_force = p_force * scale
+
+        # NaN protection: if forces are NaN, reset to zero
+        if f_force != f_force:  # NaN check (NaN != NaN is true)
+            f_force = zero
+        if p_force != p_force:
+            p_force = zero
 
         # =====================================================================
         # Step 6: Update wheel omega from friction reaction
@@ -270,7 +284,20 @@ struct WheelFriction:
         # Friction on wheel surface creates torque that opposes rotation
         # tau = f_force * wheel_radius (in direction opposing omega)
         # alpha = tau / I
-        omega = omega - dt * f_force * wheel_rad / moment
+        # Guard: moment should never be zero but add protection
+        if moment > Scalar[dtype](1e-8):
+            omega = omega - dt * f_force * wheel_rad / moment
+
+        # Clamp wheel omega to reasonable bounds (prevents instability)
+        var max_wheel_omega = Scalar[dtype](200.0)  # ~30 rotations/second
+        if omega > max_wheel_omega:
+            omega = max_wheel_omega
+        elif omega < -max_wheel_omega:
+            omega = -max_wheel_omega
+
+        # NaN protection for omega
+        if omega != omega:  # NaN check
+            omega = zero
 
         # =====================================================================
         # Step 7: Transform forces to world frame

@@ -109,22 +109,34 @@ struct CarDynamics:
             state: State tensor.
             dt: Time step.
         """
-        var steering_input = rebind[Scalar[dtype]](state[env, CONTROLS_OFFSET + CTRL_STEERING])
+        var steering_input = rebind[Scalar[dtype]](
+            state[env, CONTROLS_OFFSET + CTRL_STEERING]
+        )
 
         # Clamp steering input to limits
         var steer_limit = Scalar[dtype](STEERING_LIMIT)
-        var target_angle = steering_input * steer_limit  # Map [-1,1] to [-limit, limit]
+        var target_angle = (
+            steering_input * steer_limit
+        )  # Map [-1,1] to [-limit, limit]
 
         # Update front-left wheel
         var fl_off = WHEELS_OFFSET + WHEEL_FL * WHEEL_STATE_SIZE
-        var fl_angle = rebind[Scalar[dtype]](state[env, fl_off + WHEEL_JOINT_ANGLE])
-        fl_angle = CarDynamics._update_steering_angle(fl_angle, target_angle, dt)
+        var fl_angle = rebind[Scalar[dtype]](
+            state[env, fl_off + WHEEL_JOINT_ANGLE]
+        )
+        fl_angle = CarDynamics._update_steering_angle(
+            fl_angle, target_angle, dt
+        )
         state[env, fl_off + WHEEL_JOINT_ANGLE] = fl_angle
 
         # Update front-right wheel (same steering angle)
         var fr_off = WHEELS_OFFSET + WHEEL_FR * WHEEL_STATE_SIZE
-        var fr_angle = rebind[Scalar[dtype]](state[env, fr_off + WHEEL_JOINT_ANGLE])
-        fr_angle = CarDynamics._update_steering_angle(fr_angle, target_angle, dt)
+        var fr_angle = rebind[Scalar[dtype]](
+            state[env, fr_off + WHEEL_JOINT_ANGLE]
+        )
+        fr_angle = CarDynamics._update_steering_angle(
+            fr_angle, target_angle, dt
+        )
         state[env, fr_off + WHEEL_JOINT_ANGLE] = fr_angle
 
     @staticmethod
@@ -147,7 +159,6 @@ struct CarDynamics:
         var diff = target - current
         var gain = Scalar[dtype](STEERING_GAIN)
         var max_speed = Scalar[dtype](STEERING_MOTOR_SPEED)
-        var zero = Scalar[dtype](0.0)
 
         # Compute motor speed (proportional to error, capped)
         var speed = diff * gain
@@ -217,10 +228,43 @@ struct CarDynamics:
         vy = vy + fy * inv_mass * dt
         omega = omega + torque * inv_inertia * dt
 
+        # Clamp velocities to prevent overflow (max ~500 m/s is reasonable for a car)
+        var max_vel = Scalar[dtype](500.0)
+        var max_omega = Scalar[dtype](50.0)  # ~8 full rotations per second
+        if vx > max_vel:
+            vx = max_vel
+        elif vx < -max_vel:
+            vx = -max_vel
+        if vy > max_vel:
+            vy = max_vel
+        elif vy < -max_vel:
+            vy = -max_vel
+        if omega > max_omega:
+            omega = max_omega
+        elif omega < -max_omega:
+            omega = -max_omega
+
+        # Check for NaN and reset to safe values if detected
+        # NaN != NaN is true, so we use this property
+        if vx != vx:  # NaN check
+            vx = Scalar[dtype](0.0)
+        if vy != vy:
+            vy = Scalar[dtype](0.0)
+        if omega != omega:
+            omega = Scalar[dtype](0.0)
+
         # Then update position using new velocity
         x = x + vx * dt
         y = y + vy * dt
         angle = angle + omega * dt
+
+        # Check position for NaN
+        if x != x:
+            x = Scalar[dtype](0.0)
+        if y != y:
+            y = Scalar[dtype](0.0)
+        if angle != angle:
+            angle = Scalar[dtype](0.0)
 
         # Normalize angle to [-pi, pi]
         var pi_val = Scalar[dtype](CAR_PI)
@@ -287,18 +331,20 @@ struct CarDynamics:
             dt: Time step.
         """
         # Step 1: Update steering joints
-        CarDynamics.update_steering[BATCH, STATE_SIZE, WHEELS_OFFSET, CONTROLS_OFFSET](
-            env, state, dt
-        )
+        CarDynamics.update_steering[
+            BATCH, STATE_SIZE, WHEELS_OFFSET, CONTROLS_OFFSET
+        ](env, state, dt)
 
         # Step 2: Get friction limits from track tiles
         var hull_x = rebind[Scalar[dtype]](state[env, HULL_OFFSET + HULL_X])
         var hull_y = rebind[Scalar[dtype]](state[env, HULL_OFFSET + HULL_Y])
-        var hull_angle = rebind[Scalar[dtype]](state[env, HULL_OFFSET + HULL_ANGLE])
-
-        var friction_limits = TileCollision.get_wheel_friction_limits[MAX_TILES](
-            hull_x, hull_y, hull_angle, tiles, num_active_tiles
+        var hull_angle = rebind[Scalar[dtype]](
+            state[env, HULL_OFFSET + HULL_ANGLE]
         )
+
+        var friction_limits = TileCollision.get_wheel_friction_limits[
+            MAX_TILES
+        ](hull_x, hull_y, hull_angle, tiles, num_active_tiles)
 
         # Step 3: Compute wheel forces (also updates wheel omegas)
         var forces = WheelFriction.compute_all_wheels_forces[
@@ -365,12 +411,21 @@ struct CarDynamics:
         @parameter
         for wheel in range(NUM_WHEELS):
             var wheel_off = WHEELS_OFFSET + wheel * WHEEL_STATE_SIZE
-            state[env, OBS_OFFSET + 8 + wheel] = state[env, wheel_off + WHEEL_OMEGA]
+            state[env, OBS_OFFSET + 8 + wheel] = state[
+                env, wheel_off + WHEEL_OMEGA
+            ]
 
-        # Speed indicator (computed from vx, vy)
+        # Speed indicator (computed from vx, vy) with NaN protection
         var vx = rebind[Scalar[dtype]](state[env, HULL_OFFSET + HULL_VX])
         var vy = rebind[Scalar[dtype]](state[env, HULL_OFFSET + HULL_VY])
-        var speed = sqrt(vx * vx + vy * vy)
+        var speed_sq = vx * vx + vy * vy
+        # Clamp to prevent sqrt of negative due to floating-point errors
+        if speed_sq < Scalar[dtype](0.0):
+            speed_sq = Scalar[dtype](0.0)
+        var speed = sqrt(speed_sq)
+        # NaN protection
+        if speed != speed:  # NaN check
+            speed = Scalar[dtype](0.0)
         state[env, OBS_OFFSET + 12] = speed
 
     # =========================================================================
@@ -417,8 +472,13 @@ struct CarDynamics:
         """
         # Physics step
         CarDynamics.step_single_env[
-            BATCH, STATE_SIZE, OBS_OFFSET, HULL_OFFSET, WHEELS_OFFSET,
-            CONTROLS_OFFSET, MAX_TILES
+            BATCH,
+            STATE_SIZE,
+            OBS_OFFSET,
+            HULL_OFFSET,
+            WHEELS_OFFSET,
+            CONTROLS_OFFSET,
+            MAX_TILES,
         ](env, state, tiles, num_active_tiles, dt)
 
         # Update observations
@@ -456,15 +516,18 @@ struct CarDynamics:
             dt: Time step.
         """
         # Step 1: Update steering joints
-        CarDynamics.update_steering[BATCH, STATE_SIZE, WHEELS_OFFSET, CONTROLS_OFFSET](
-            env, state, dt
-        )
+        CarDynamics.update_steering[
+            BATCH, STATE_SIZE, WHEELS_OFFSET, CONTROLS_OFFSET
+        ](env, state, dt)
 
         # Step 2: Use default road friction for all wheels (no tile lookup)
         # friction_limits = [fl, fr, rl, rr] all set to FRICTION_LIMIT * ROAD_FRICTION
         var default_friction = Scalar[dtype](FRICTION_LIMIT * ROAD_FRICTION)
         var friction_limits = InlineArray[Scalar[dtype], NUM_WHEELS](
-            default_friction, default_friction, default_friction, default_friction
+            default_friction,
+            default_friction,
+            default_friction,
+            default_friction,
         )
 
         # Step 3: Compute wheel forces (also updates wheel omegas)
@@ -521,14 +584,16 @@ struct CarDynamics:
             dt: Time step.
         """
         # Step 1: Update steering joints
-        CarDynamics.update_steering[BATCH, STATE_SIZE, WHEELS_OFFSET, CONTROLS_OFFSET](
-            env, state, dt
-        )
+        CarDynamics.update_steering[
+            BATCH, STATE_SIZE, WHEELS_OFFSET, CONTROLS_OFFSET
+        ](env, state, dt)
 
         # Step 2: Get friction limits from embedded track tiles
         var hull_x = rebind[Scalar[dtype]](state[env, HULL_OFFSET + HULL_X])
         var hull_y = rebind[Scalar[dtype]](state[env, HULL_OFFSET + HULL_Y])
-        var hull_angle = rebind[Scalar[dtype]](state[env, HULL_OFFSET + HULL_ANGLE])
+        var hull_angle = rebind[Scalar[dtype]](
+            state[env, HULL_OFFSET + HULL_ANGLE]
+        )
 
         # Get wheel friction limits using embedded track data
         var friction_limits = CarDynamics._get_wheel_friction_limits_embedded[
@@ -664,6 +729,12 @@ struct CarDynamics:
         """
         for env in range(BATCH):
             CarDynamics.step_with_obs[
-                BATCH, STATE_SIZE, OBS_OFFSET, OBS_DIM, HULL_OFFSET,
-                WHEELS_OFFSET, CONTROLS_OFFSET, MAX_TILES
+                BATCH,
+                STATE_SIZE,
+                OBS_OFFSET,
+                OBS_DIM,
+                HULL_OFFSET,
+                WHEELS_OFFSET,
+                CONTROLS_OFFSET,
+                MAX_TILES,
             ](env, state, tiles, num_active_tiles, dt)

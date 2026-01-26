@@ -275,3 +275,14 @@ comptime AcrobotLayout = PhysicsLayout[
     METADATA_SIZE=2,
     NUM_SHAPES=2,
 ]
+
+# BipedalWalker: 5 bodies (hull + 4 legs), 4 joints, 128 terrain edges
+comptime BipedalWalkerLayout = PhysicsLayout[
+    NUM_BODIES=5,
+    MAX_CONTACTS=20,
+    MAX_JOINTS=4,
+    MAX_TERRAIN_EDGES=128,
+    OBS_DIM=24,
+    METADATA_SIZE=8,
+    NUM_SHAPES=5,
+]
