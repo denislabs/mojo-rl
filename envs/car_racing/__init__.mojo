@@ -2,7 +2,7 @@
 
 This module provides both CPU and GPU implementations of CarRacing:
 - CarRacingEnv: Original CPU implementation (from car_racing_v1.mojo)
-- CarRacingV2: GPU-accelerated implementation using physics_gpu/car/
+- CarRacingV2: GPU-accelerated implementation using physics2d/car/
 
 Usage:
     from envs.car_racing import CarRacingEnv, CarRacingV2

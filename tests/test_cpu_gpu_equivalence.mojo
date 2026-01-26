@@ -13,8 +13,8 @@ and compares CPU vs GPU results at each step.
 from builtin.math import abs
 from gpu.host import DeviceContext
 
-from physics_gpu.constants import dtype
-from physics_gpu.world import PhysicsWorld
+from physics2d.constants import dtype
+from physics2d.world import PhysicsWorld
 
 
 fn test_falling_box() raises:

@@ -11,7 +11,7 @@ Run with:
 from gpu.host import DeviceContext
 from layout import LayoutTensor, Layout
 
-from physics_gpu.constants import (
+from physics2d.constants import (
     dtype,
     BODY_STATE_SIZE,
     IDX_X,
@@ -23,7 +23,7 @@ from physics_gpu.constants import (
     IDX_INV_MASS,
     IDX_INV_INERTIA,
 )
-from physics_gpu.integrators.euler import SemiImplicitEuler
+from physics2d.integrators.euler import SemiImplicitEuler
 
 # Constants
 comptime BATCH_SIZE = 1

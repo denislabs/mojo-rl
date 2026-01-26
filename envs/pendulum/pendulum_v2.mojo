@@ -46,7 +46,7 @@ from .action import PendulumV2Action
 from .constants import PConstants, PendulumLayout
 
 # Import global GPU constants
-from physics_gpu import dtype, TPB
+from physics2d import dtype, TPB
 
 
 # =============================================================================
@@ -262,8 +262,12 @@ struct PendulumV2[DTYPE: DType](
             actions: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
             ],
-            rewards: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
-            dones: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+            rewards: LayoutTensor[
+                dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
+            dones: LayoutTensor[
+                dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
             obs: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
             ],
@@ -369,7 +373,9 @@ struct PendulumV2[DTYPE: DType](
             states: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
             ],
-            dones: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+            dones: LayoutTensor[
+                dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
             seed: Scalar[dtype],
         ):
             var env = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -410,9 +416,13 @@ struct PendulumV2[DTYPE: DType](
         actions: LayoutTensor[
             dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
         ],
-        rewards: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+        rewards: LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ],
         dones: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
-        obs: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin],
+        obs: LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+        ],
         env: Int,
     ):
         """Step a single environment (GPU-compatible inline function).
@@ -452,7 +462,9 @@ struct PendulumV2[DTYPE: DType](
         # Read current state - theta from offset 3, theta_dot from obs offset 2
         var theta = rebind[Scalar[dtype]](states[env, THETA_ABS])
         var theta_dot = rebind[Scalar[dtype]](states[env, OBS_THETA_DOT])
-        var step_count = rebind[Scalar[dtype]](states[env, META_OFF + META_STEP])
+        var step_count = rebind[Scalar[dtype]](
+            states[env, META_OFF + META_STEP]
+        )
         var total_reward = rebind[Scalar[dtype]](
             states[env, META_OFF + META_TOTAL_REWARD]
         )
@@ -571,7 +583,9 @@ struct PendulumV2[DTYPE: DType](
 
         # Random angle in [-π, π] using dtype-native pi to avoid Float64
         var PI = Scalar[dtype](3.14159265358979323846)
-        var theta = (rand_vals[0] * Scalar[dtype](2.0) - Scalar[dtype](1.0)) * PI
+        var theta = (
+            rand_vals[0] * Scalar[dtype](2.0) - Scalar[dtype](1.0)
+        ) * PI
 
         # Random angular velocity in [-1, 1]
         var theta_dot = rand_vals[1] * Scalar[dtype](2.0) - Scalar[dtype](1.0)
@@ -697,7 +711,9 @@ struct PendulumV2[DTYPE: DType](
 
     fn get_state(self) -> PendulumV2State[Self.dtype]:
         """Return current observation state."""
-        return PendulumV2State[Self.dtype].from_theta(self.theta, self.theta_dot)
+        return PendulumV2State[Self.dtype].from_theta(
+            self.theta, self.theta_dot
+        )
 
     fn state_to_index(self, state: PendulumV2State[Self.dtype]) -> Int:
         """Convert state to index for tabular methods."""
@@ -776,7 +792,8 @@ struct PendulumV2[DTYPE: DType](
         return result
 
     fn _discretize_obs(self) -> Int:
-        """Discretize current continuous observation into a single state index."""
+        """Discretize current continuous observation into a single state index.
+        """
 
         fn bin_value(
             value: Float64, low: Float64, high: Float64, bins: Int

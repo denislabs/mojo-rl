@@ -21,7 +21,7 @@ from random import random_float64, seed
 from time import perf_counter
 
 from envs.bipedal_walker import BipedalWalkerV2, BWConstants
-from physics_gpu import dtype
+from physics2d import dtype
 
 
 fn main() raises:

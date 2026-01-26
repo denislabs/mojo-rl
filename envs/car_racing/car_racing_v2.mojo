@@ -1,4 +1,4 @@
-"""CarRacing V2 GPU environment using the physics_gpu/car/ module.
+"""CarRacing V2 GPU environment using the physics2d/car/ module.
 
 This implementation uses the modular car physics components:
 - CarRacingLayout for compile-time layout computation
@@ -37,15 +37,15 @@ from .action import CarRacingV2Action
 from .constants import CRConstants
 from .track import TrackTileV2, TrackGenerator
 
-from physics_gpu import dtype, TPB
-from physics_gpu.car import (
+from physics2d import dtype, TPB
+from physics2d.car import (
     CarRacingLayout,
     CarDynamics,
     CarPhysicsKernel,
     TileCollision,
     WheelFriction,
 )
-from physics_gpu.car.constants import (
+from physics2d.car.constants import (
     HULL_X,
     HULL_Y,
     HULL_ANGLE,
@@ -72,7 +72,7 @@ from physics_gpu.car.constants import (
     WHEEL_POS_RR_X,
     WHEEL_POS_RR_Y,
 )
-from physics_gpu.car.layout import (
+from physics2d.car.layout import (
     META_STEP_COUNT,
     META_TOTAL_REWARD,
     META_DONE,
@@ -92,7 +92,7 @@ struct CarRacingV2[DTYPE: DType](
 ):
     """CarRacing environment with GPU-accelerated physics.
 
-    This environment uses the physics_gpu/car/ module for slip-based
+    This environment uses the physics2d/car/ module for slip-based
     tire friction physics with GPU acceleration.
 
     Features:
@@ -122,7 +122,7 @@ struct CarRacingV2[DTYPE: DType](
     # Track generator (Float64 for precision)
     var track: TrackGenerator[DType.float64]
 
-    # Physics state buffer (using physics_gpu dtype = float32)
+    # Physics state buffer (using physics2d dtype = float32)
     var state_buffer: List[Scalar[dtype]]
 
     # Track tiles buffer (for TileCollision)
@@ -1007,8 +1007,12 @@ struct CarRacingV2[DTYPE: DType](
             actions: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
             ],
-            rewards: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
-            dones: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+            rewards: LayoutTensor[
+                dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
+            dones: LayoutTensor[
+                dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
             obs: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
             ],
@@ -1016,9 +1020,9 @@ struct CarRacingV2[DTYPE: DType](
             var env = Int(block_dim.x * block_idx.x + thread_idx.x)
             if env >= BATCH_SIZE:
                 return
-            CarRacingV2[Self.dtype]._step_env_gpu_embedded[BATCH_SIZE, STATE_SIZE, OBS_DIM, ACTION_DIM](
-                env, states, actions, rewards, dones, obs
-            )
+            CarRacingV2[Self.dtype]._step_env_gpu_embedded[
+                BATCH_SIZE, STATE_SIZE, OBS_DIM, ACTION_DIM
+            ](env, states, actions, rewards, dones, obs)
 
         ctx.enqueue_function[step_embedded_wrapper, step_embedded_wrapper](
             states_tensor,
@@ -1182,9 +1186,9 @@ struct CarRacingV2[DTYPE: DType](
         ](states, env, rng)
 
         # Store number of tiles in metadata
-        states[env, CRConstants.METADATA_OFFSET + META_NUM_TILES] = Scalar[dtype](
-            num_tiles
-        )
+        states[env, CRConstants.METADATA_OFFSET + META_NUM_TILES] = Scalar[
+            dtype
+        ](num_tiles)
 
         # Get start position from first tile center
         var tile0_off = CRConstants.TRACK_OFFSET
@@ -1213,7 +1217,9 @@ struct CarRacingV2[DTYPE: DType](
                 var t2 = t * t
                 var t3 = t2 * t
                 var t5 = t3 * t2
-                var atan_val = t - t3 / Scalar[dtype](3.0) + t5 / Scalar[dtype](5.0)
+                var atan_val = (
+                    t - t3 / Scalar[dtype](3.0) + t5 / Scalar[dtype](5.0)
+                )
                 # Clamp to valid range for numerical stability
                 if atan_val > Scalar[dtype](0.8):
                     atan_val = Scalar[dtype](0.8)
@@ -1231,7 +1237,9 @@ struct CarRacingV2[DTYPE: DType](
                 var t2 = t * t
                 var t3 = t2 * t
                 var t5 = t3 * t2
-                var atan_val = t - t3 / Scalar[dtype](3.0) + t5 / Scalar[dtype](5.0)
+                var atan_val = (
+                    t - t3 / Scalar[dtype](3.0) + t5 / Scalar[dtype](5.0)
+                )
                 # Clamp to valid range
                 if atan_val > Scalar[dtype](0.8):
                     atan_val = Scalar[dtype](0.8)
@@ -1257,16 +1265,30 @@ struct CarRacingV2[DTYPE: DType](
             states[env, wheel_off + WHEEL_PHASE] = Scalar[dtype](0.0)
 
         # Initialize controls to zero
-        states[env, CRConstants.CONTROLS_OFFSET + CTRL_STEERING] = Scalar[dtype](0.0)
+        states[env, CRConstants.CONTROLS_OFFSET + CTRL_STEERING] = Scalar[
+            dtype
+        ](0.0)
         states[env, CRConstants.CONTROLS_OFFSET + CTRL_GAS] = Scalar[dtype](0.0)
-        states[env, CRConstants.CONTROLS_OFFSET + CTRL_BRAKE] = Scalar[dtype](0.0)
+        states[env, CRConstants.CONTROLS_OFFSET + CTRL_BRAKE] = Scalar[dtype](
+            0.0
+        )
 
         # Initialize remaining metadata
-        states[env, CRConstants.METADATA_OFFSET + META_STEP_COUNT] = Scalar[dtype](0.0)
-        states[env, CRConstants.METADATA_OFFSET + META_TOTAL_REWARD] = Scalar[dtype](0.0)
-        states[env, CRConstants.METADATA_OFFSET + META_DONE] = Scalar[dtype](0.0)
-        states[env, CRConstants.METADATA_OFFSET + META_TRUNCATED] = Scalar[dtype](0.0)
-        states[env, CRConstants.METADATA_OFFSET + META_TILES_VISITED] = Scalar[dtype](0.0)
+        states[env, CRConstants.METADATA_OFFSET + META_STEP_COUNT] = Scalar[
+            dtype
+        ](0.0)
+        states[env, CRConstants.METADATA_OFFSET + META_TOTAL_REWARD] = Scalar[
+            dtype
+        ](0.0)
+        states[env, CRConstants.METADATA_OFFSET + META_DONE] = Scalar[dtype](
+            0.0
+        )
+        states[env, CRConstants.METADATA_OFFSET + META_TRUNCATED] = Scalar[
+            dtype
+        ](0.0)
+        states[env, CRConstants.METADATA_OFFSET + META_TILES_VISITED] = Scalar[
+            dtype
+        ](0.0)
 
         # Initialize observation
         states[env, CRConstants.OBS_OFFSET + 0] = start_x
@@ -1308,14 +1330,28 @@ struct CarRacingV2[DTYPE: DType](
         var num_checkpoints = 12
 
         # Generate random checkpoints around a circle
-        var checkpoints_x = InlineArray[Scalar[dtype], 12](fill=Scalar[dtype](0))
-        var checkpoints_y = InlineArray[Scalar[dtype], 12](fill=Scalar[dtype](0))
+        var checkpoints_x = InlineArray[Scalar[dtype], 12](
+            fill=Scalar[dtype](0)
+        )
+        var checkpoints_y = InlineArray[Scalar[dtype], 12](
+            fill=Scalar[dtype](0)
+        )
 
         for c in range(num_checkpoints):
             var rand_vals = rng.step_uniform()
-            var noise = (rand_vals[0] - Scalar[dtype](0.5)) * two_pi / Scalar[dtype](num_checkpoints) * Scalar[dtype](0.5)
-            var alpha = two_pi * Scalar[dtype](c) / Scalar[dtype](num_checkpoints) + noise
-            var rad = track_rad * (Scalar[dtype](0.5) + rand_vals[1] * Scalar[dtype](0.5))
+            var noise = (
+                (rand_vals[0] - Scalar[dtype](0.5))
+                * two_pi
+                / Scalar[dtype](num_checkpoints)
+                * Scalar[dtype](0.5)
+            )
+            var alpha = (
+                two_pi * Scalar[dtype](c) / Scalar[dtype](num_checkpoints)
+                + noise
+            )
+            var rad = track_rad * (
+                Scalar[dtype](0.5) + rand_vals[1] * Scalar[dtype](0.5)
+            )
 
             # First checkpoint fixed for consistent start
             if c == 0:
@@ -1363,7 +1399,9 @@ struct CarRacingV2[DTYPE: DType](
                     var t2 = t * t
                     var t3 = t2 * t
                     var t5 = t3 * t2
-                    var atan_val = t - t3 / Scalar[dtype](3.0) + t5 / Scalar[dtype](5.0)
+                    var atan_val = (
+                        t - t3 / Scalar[dtype](3.0) + t5 / Scalar[dtype](5.0)
+                    )
                     # Clamp to valid range
                     if atan_val > Scalar[dtype](0.8):
                         atan_val = Scalar[dtype](0.8)
@@ -1381,7 +1419,9 @@ struct CarRacingV2[DTYPE: DType](
                     var t2 = t * t
                     var t3 = t2 * t
                     var t5 = t3 * t2
-                    var atan_val = t - t3 / Scalar[dtype](3.0) + t5 / Scalar[dtype](5.0)
+                    var atan_val = (
+                        t - t3 / Scalar[dtype](3.0) + t5 / Scalar[dtype](5.0)
+                    )
                     # Clamp to valid range
                     if atan_val > Scalar[dtype](0.8):
                         atan_val = Scalar[dtype](0.8)
@@ -1402,7 +1442,9 @@ struct CarRacingV2[DTYPE: DType](
             var steer = turn_rate
             if angle_diff < Scalar[dtype](0.0):
                 steer = -turn_rate
-            if angle_diff > Scalar[dtype](-0.1) and angle_diff < Scalar[dtype](0.1):
+            if angle_diff > Scalar[dtype](-0.1) and angle_diff < Scalar[dtype](
+                0.1
+            ):
                 steer = angle_diff
 
             beta = beta + steer
@@ -1417,13 +1459,16 @@ struct CarRacingV2[DTYPE: DType](
             var perp_x = -sin(beta) * track_width / Scalar[dtype](2.0)
             var perp_y = cos(beta) * track_width / Scalar[dtype](2.0)
 
-            var tile_off = CRConstants.TRACK_OFFSET + num_tiles * CRConstants.TILE_DATA_SIZE
+            var tile_off = (
+                CRConstants.TRACK_OFFSET
+                + num_tiles * CRConstants.TILE_DATA_SIZE
+            )
             states[env, tile_off + 0] = prev_x - perp_x  # v0x (inner left)
             states[env, tile_off + 1] = prev_y - perp_y  # v0y
-            states[env, tile_off + 2] = x - perp_x       # v1x (inner right)
-            states[env, tile_off + 3] = y - perp_y       # v1y
-            states[env, tile_off + 4] = x + perp_x       # v2x (outer right)
-            states[env, tile_off + 5] = y + perp_y       # v2y
+            states[env, tile_off + 2] = x - perp_x  # v1x (inner right)
+            states[env, tile_off + 3] = y - perp_y  # v1y
+            states[env, tile_off + 4] = x + perp_x  # v2x (outer right)
+            states[env, tile_off + 5] = y + perp_y  # v2y
             states[env, tile_off + 6] = prev_x + perp_x  # v3x (outer left)
             states[env, tile_off + 7] = prev_y + perp_y  # v3y
             states[env, tile_off + 8] = Scalar[dtype](1.0)  # friction (road)
@@ -1525,9 +1570,11 @@ struct CarRacingV2[DTYPE: DType](
             return
 
         # Get number of tiles from metadata
-        var num_tiles = Int(rebind[Scalar[dtype]](
-            states[env, CRConstants.METADATA_OFFSET + META_NUM_TILES]
-        ))
+        var num_tiles = Int(
+            rebind[Scalar[dtype]](
+                states[env, CRConstants.METADATA_OFFSET + META_NUM_TILES]
+            )
+        )
         if num_tiles <= 0:
             num_tiles = 100  # Fallback
 
@@ -1622,7 +1669,9 @@ struct CarRacingV2[DTYPE: DType](
                 tile_reward = Scalar[dtype](100.0) / Scalar[dtype](num_tiles)
             step_reward = step_reward + tile_reward
             tiles_visited = tiles_visited + Scalar[dtype](1.0)
-            states[env, CRConstants.METADATA_OFFSET + META_TILES_VISITED] = tiles_visited
+            states[
+                env, CRConstants.METADATA_OFFSET + META_TILES_VISITED
+            ] = tiles_visited
 
         # Step 4: Check termination
         var done = Scalar[dtype](0.0)
@@ -1636,7 +1685,9 @@ struct CarRacingV2[DTYPE: DType](
             step_reward = Scalar[dtype](-100.0)
 
         # Lap completion check
-        var num_tiles_f = Scalar[dtype](max(num_tiles, 1))  # Guard against division by zero
+        var num_tiles_f = Scalar[dtype](
+            max(num_tiles, 1)
+        )  # Guard against division by zero
         var progress = tiles_visited / num_tiles_f
         if progress >= Scalar[dtype](CRConstants.LAP_COMPLETE_PERCENT):
             done = Scalar[dtype](1.0)
@@ -1650,14 +1701,18 @@ struct CarRacingV2[DTYPE: DType](
 
         if step_count >= Scalar[dtype](CRConstants.MAX_STEPS):
             done = Scalar[dtype](1.0)
-            states[env, CRConstants.METADATA_OFFSET + META_TRUNCATED] = Scalar[dtype](1.0)
+            states[env, CRConstants.METADATA_OFFSET + META_TRUNCATED] = Scalar[
+                dtype
+            ](1.0)
 
         # Update metadata
         var total_reward = rebind[Scalar[dtype]](
             states[env, CRConstants.METADATA_OFFSET + META_TOTAL_REWARD]
         )
         total_reward = total_reward + step_reward
-        states[env, CRConstants.METADATA_OFFSET + META_TOTAL_REWARD] = total_reward
+        states[
+            env, CRConstants.METADATA_OFFSET + META_TOTAL_REWARD
+        ] = total_reward
         states[env, CRConstants.METADATA_OFFSET + META_DONE] = done
 
         # Step 5: Write outputs

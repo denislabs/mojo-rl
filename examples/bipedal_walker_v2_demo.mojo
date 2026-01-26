@@ -3,7 +3,7 @@
 Run with: pixi run mojo run examples/bipedal_walker_v2_demo.mojo
 
 Features:
-- Uses physics_gpu module for physics simulation
+- Uses physics2d module for physics simulation
 - Motor-enabled revolute joints for leg control
 - Edge terrain collision
 - 24D observation (hull state + joint states + lidar)
@@ -13,14 +13,18 @@ This demo runs the CPU single-environment mode for visualization.
 For batch GPU training, see bipedal_walker_v2_gpu_demo.mojo.
 """
 
-from envs.bipedal_walker import BipedalWalkerV2, BipedalWalkerState, BipedalWalkerAction
+from envs.bipedal_walker import (
+    BipedalWalkerV2,
+    BipedalWalkerState,
+    BipedalWalkerAction,
+)
 from random import random_float64, seed
 from time import sleep
 
 
 fn main() raises:
     print("=== BipedalWalker v2 Demo (CPU Mode) ===")
-    print("Using physics_gpu module with motor-enabled joints")
+    print("Using physics2d module with motor-enabled joints")
     print()
 
     # Seed random for reproducibility
@@ -46,7 +50,9 @@ fn main() raises:
             var hip2 = Float32((random_float64() * 2.0 - 1.0) * 0.5)
             var knee2 = Float32((random_float64() * 2.0 - 1.0) * 0.5)
 
-            var action = BipedalWalkerAction[DType.float32](hip1, knee1, hip2, knee2)
+            var action = BipedalWalkerAction[DType.float32](
+                hip1, knee1, hip2, knee2
+            )
             var result = env.step(action)
             state = result[0]
             var reward = Float64(result[1])
@@ -59,8 +65,18 @@ fn main() raises:
             if steps % 100 == 0:
                 print("  Step", steps, "| Reward:", Int(total_reward))
                 print("    Hull angle:", Float64(state.hull_angle))
-                print("    Vel x:", Float64(state.vel_x), "y:", Float64(state.vel_y))
-                print("    Leg contacts: L=", state.leg1_contact, "R=", state.leg2_contact)
+                print(
+                    "    Vel x:",
+                    Float64(state.vel_x),
+                    "y:",
+                    Float64(state.vel_y),
+                )
+                print(
+                    "    Leg contacts: L=",
+                    state.leg1_contact,
+                    "R=",
+                    state.leg2_contact,
+                )
 
         print(
             "Episode",

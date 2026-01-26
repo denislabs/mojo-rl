@@ -1,4 +1,4 @@
-"""LunarLanderV2 GPU environment using the physics_gpu modular architecture.
+"""LunarLanderV2 GPU environment using the physics2d modular architecture.
 
 This implementation uses the new modular physics components:
 - LunarLanderLayout for compile-time layout computation
@@ -33,12 +33,12 @@ from .helpers import (
     normalize_velocity,
     normalize_angular_velocity,
 )
-from physics_gpu.integrators.euler import SemiImplicitEuler
-from physics_gpu.collision.edge_terrain import EdgeTerrainCollision
-from physics_gpu.solvers.impulse import ImpulseSolver
-from physics_gpu.joints.revolute import RevoluteJointSolver
+from physics2d.integrators.euler import SemiImplicitEuler
+from physics2d.collision.edge_terrain import EdgeTerrainCollision
+from physics2d.solvers.impulse import ImpulseSolver
+from physics2d.joints.revolute import RevoluteJointSolver
 
-from physics_gpu import (
+from physics2d import (
     dtype,
     TPB,
     BODY_STATE_SIZE,
@@ -83,13 +83,13 @@ from physics_gpu import (
     PhysicsKernel,
     PhysicsConfig,
 )
-from physics_gpu.integrators.euler import SemiImplicitEuler
-from physics_gpu.collision.edge_terrain import (
+from physics2d.integrators.euler import SemiImplicitEuler
+from physics2d.collision.edge_terrain import (
     EdgeTerrainCollision,
     MAX_TERRAIN_EDGES,
 )
-from physics_gpu.solvers.impulse import ImpulseSolver
-from physics_gpu.joints.revolute import RevoluteJointSolver
+from physics2d.solvers.impulse import ImpulseSolver
+from physics2d.joints.revolute import RevoluteJointSolver
 
 # Rendering imports
 from render import (
@@ -135,7 +135,7 @@ struct LunarLanderV2[
 ):
     """LunarLander environment with full physics using GPU methods.
 
-    This environment uses the existing physics_gpu architecture:
+    This environment uses the existing physics2d architecture:
     - PhysicsState for accessing physics data in flat layout
     - SemiImplicitEuler.integrate_velocities_gpu
     - SemiImplicitEuler.integrate_positions_gpu
@@ -157,7 +157,9 @@ struct LunarLanderV2[
     comptime ActionType = LunarLanderAction
 
     # Type alias for static method calls (includes all compile-time params)
-    comptime SelfType = LunarLanderV2[Self.DTYPE, Self.ENABLE_WIND, Self.WIND_POWER, Self.TURBULENCE_POWER]
+    comptime SelfType = LunarLanderV2[
+        Self.DTYPE, Self.ENABLE_WIND, Self.WIND_POWER, Self.TURBULENCE_POWER
+    ]
 
     # Body index constants for instance methods
     comptime BODY_LANDER: Int = 0
@@ -445,7 +447,9 @@ struct LunarLanderV2[
         # combined_seed = seed * 2654435761 + counter * 12345
         # This ensures same seed+counter produces same state on both CPU and GPU
         self.rng_counter += 1
-        var combined_seed = Int(self.rng_seed) * 2654435761 + self.rng_counter * 12345
+        var combined_seed = (
+            Int(self.rng_seed) * 2654435761 + self.rng_counter * 12345
+        )
         var rng = PhiloxRandom(seed=combined_seed, offset=0)
         var rand_vals = rng.step_uniform()
 
@@ -982,6 +986,7 @@ struct LunarLanderV2[
         Uses compile-time struct parameters ENABLE_WIND, WIND_POWER, TURBULENCE_POWER.
         When ENABLE_WIND is False, this is a no-op eliminated at compile time.
         """
+
         @parameter
         if not Self.ENABLE_WIND:
             return
@@ -1732,7 +1737,9 @@ struct LunarLanderV2[
 
         # Step 1: Generate raw heights (matching CPU: random * H_UNITS/2)
         # Use a local array to store raw heights before smoothing
-        var raw_heights = InlineArray[Scalar[dtype], 12](fill=Scalar[dtype](0.0))
+        var raw_heights = InlineArray[Scalar[dtype], 12](
+            fill=Scalar[dtype](0.0)
+        )
         var h_units_half = Scalar[dtype](LLConstants.H_UNITS / 2.0)
         for chunk in range(n_chunks + 1):
             var rand_vals = terrain_rng.step_uniform()
@@ -2048,6 +2055,7 @@ struct LunarLanderV2[
         from the struct. When ENABLE_WIND is False, this is a no-op that gets
         eliminated at compile time.
         """
+
         @parameter
         if not Self.ENABLE_WIND:
             return
@@ -2149,7 +2157,7 @@ struct LunarLanderV2[
         )
 
         # 6. Apply wind forces (compile-time eliminated if ENABLE_WIND=False)
-        SelfType._apply_wind_gpu[BATCH_SIZE](env, states, step_count)
+        Self.SelfType._apply_wind_gpu[BATCH_SIZE](env, states, step_count)
 
         # 7. Check action - no-op action skips engine forces
         var action = Int(actions[env])
@@ -2348,10 +2356,14 @@ struct LunarLanderV2[
         if left_chunk_idx >= n_edges:
             # Last chunk: use y1 from the last edge
             var last_edge_off = LLConstants.EDGES_OFFSET + (n_edges - 1) * 6
-            left_terrain_y = rebind[Scalar[dtype]](states[env, last_edge_off + 3])  # y1
+            left_terrain_y = rebind[Scalar[dtype]](
+                states[env, last_edge_off + 3]
+            )  # y1
         else:
             var left_edge_off = LLConstants.EDGES_OFFSET + left_chunk_idx * 6
-            left_terrain_y = rebind[Scalar[dtype]](states[env, left_edge_off + 1])  # y0
+            left_terrain_y = rebind[Scalar[dtype]](
+                states[env, left_edge_off + 1]
+            )  # y0
 
         # Right leg terrain height
         var right_chunk_idx = Int(right_x / x_spacing)
@@ -2361,10 +2373,14 @@ struct LunarLanderV2[
         if right_chunk_idx >= n_edges:
             # Last chunk: use y1 from the last edge
             var last_edge_off = LLConstants.EDGES_OFFSET + (n_edges - 1) * 6
-            right_terrain_y = rebind[Scalar[dtype]](states[env, last_edge_off + 3])  # y1
+            right_terrain_y = rebind[Scalar[dtype]](
+                states[env, last_edge_off + 3]
+            )  # y1
         else:
             var right_edge_off = LLConstants.EDGES_OFFSET + right_chunk_idx * 6
-            right_terrain_y = rebind[Scalar[dtype]](states[env, right_edge_off + 1])  # y0
+            right_terrain_y = rebind[Scalar[dtype]](
+                states[env, right_edge_off + 1]
+            )  # y0
 
         # Check contact: leg_y - LEG_H <= terrain_y + tolerance (matching CPU)
         var leg_h = Scalar[dtype](LLConstants.LEG_H)
@@ -2520,7 +2536,7 @@ struct LunarLanderV2[
             var env = Int(block_dim.x * block_idx.x + thread_idx.x)
             if env >= BATCH_SIZE:
                 return
-            SelfType._setup_single_env[BATCH_SIZE](
+            Self.SelfType._setup_single_env[BATCH_SIZE](
                 env, states, actions, edge_counts, joint_counts, contact_counts
             )
 
@@ -2725,7 +2741,7 @@ struct LunarLanderV2[
                 ](env, states, n_joints, baumgarte, slop)
 
             # Finalize (writes obs to states at OBS_OFFSET)
-            SelfType._finalize_single_env[BATCH_SIZE](
+            Self.SelfType._finalize_single_env[BATCH_SIZE](
                 env, states, actions, contacts, contact_counts, rewards, dones
             )
 
@@ -2817,9 +2833,9 @@ struct LunarLanderV2[
             var env = Int(block_dim.x * block_idx.x + thread_idx.x)
             if env >= BATCH_SIZE:
                 return
-            SelfType._setup_single_env_continuous[
-                BATCH_SIZE, ACTION_DIM
-            ](env, states, actions, edge_counts, joint_counts, contact_counts)
+            Self.SelfType._setup_single_env_continuous[BATCH_SIZE, ACTION_DIM](
+                env, states, actions, edge_counts, joint_counts, contact_counts
+            )
 
         ctx.enqueue_function[setup_kernel_continuous, setup_kernel_continuous](
             states,
@@ -2885,7 +2901,7 @@ struct LunarLanderV2[
         )
 
         # 6. Apply wind forces (compile-time eliminated if ENABLE_WIND=False)
-        SelfType._apply_wind_gpu[BATCH_SIZE](env, states, step_count)
+        Self.SelfType._apply_wind_gpu[BATCH_SIZE](env, states, step_count)
 
         # 7. Extract continuous actions
         # Policy outputs actions in [-1, 1] via tanh
@@ -3196,7 +3212,7 @@ struct LunarLanderV2[
                 ](env, states, n_joints, baumgarte, slop)
 
             # Finalize with continuous action fuel costs
-            SelfType._finalize_single_env_continuous[
+            Self.SelfType._finalize_single_env_continuous[
                 BATCH_SIZE, ACTION_DIM
             ](env, states, actions, contacts, contact_counts, rewards, dones)
 
@@ -3325,10 +3341,14 @@ struct LunarLanderV2[
         if left_chunk_idx >= n_edges:
             # Last chunk: use y1 from the last edge
             var last_edge_off = LLConstants.EDGES_OFFSET + (n_edges - 1) * 6
-            left_terrain_y = rebind[Scalar[dtype]](states[env, last_edge_off + 3])  # y1
+            left_terrain_y = rebind[Scalar[dtype]](
+                states[env, last_edge_off + 3]
+            )  # y1
         else:
             var left_edge_off = LLConstants.EDGES_OFFSET + left_chunk_idx * 6
-            left_terrain_y = rebind[Scalar[dtype]](states[env, left_edge_off + 1])  # y0
+            left_terrain_y = rebind[Scalar[dtype]](
+                states[env, left_edge_off + 1]
+            )  # y0
 
         # Right leg terrain height
         var right_chunk_idx = Int(right_x / x_spacing)
@@ -3338,10 +3358,14 @@ struct LunarLanderV2[
         if right_chunk_idx >= n_edges:
             # Last chunk: use y1 from the last edge
             var last_edge_off = LLConstants.EDGES_OFFSET + (n_edges - 1) * 6
-            right_terrain_y = rebind[Scalar[dtype]](states[env, last_edge_off + 3])  # y1
+            right_terrain_y = rebind[Scalar[dtype]](
+                states[env, last_edge_off + 3]
+            )  # y1
         else:
             var right_edge_off = LLConstants.EDGES_OFFSET + right_chunk_idx * 6
-            right_terrain_y = rebind[Scalar[dtype]](states[env, right_edge_off + 1])  # y0
+            right_terrain_y = rebind[Scalar[dtype]](
+                states[env, right_edge_off + 1]
+            )  # y0
 
         # Check contact: leg_y - LEG_H <= terrain_y + tolerance (matching CPU)
         var leg_h = Scalar[dtype](LLConstants.LEG_H)

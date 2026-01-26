@@ -1,7 +1,7 @@
 """Training script for LunarLanderV2 GPU environment.
 
 This demonstrates the LunarLanderV2 environment which implements GPUDiscreteEnv
-trait and uses the physics_gpu architecture with GPU methods for full physics
+trait and uses the physics2d architecture with GPU methods for full physics
 simulation on GPU.
 
 Usage:
@@ -16,7 +16,7 @@ from gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from envs.lunar_lander import LunarLanderV2
-from physics_gpu import dtype, TPB
+from physics2d import dtype, TPB
 
 
 # Training hyperparameters

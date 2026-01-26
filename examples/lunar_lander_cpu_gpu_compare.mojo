@@ -14,7 +14,7 @@ from random import seed as set_seed
 
 from envs.lunar_lander import LunarLanderV2
 from envs.lunar_lander.constants import LLConstants
-from physics_gpu import (
+from physics2d import (
     dtype,
     TPB,
     BODY_STATE_SIZE,
@@ -93,7 +93,9 @@ fn compare_observation(
 
     var all_match = True
     for i in range(8):
-        var is_match = compare_scalar(obs_names[i], cpu_obs[i], gpu_obs[i], tolerance)
+        var is_match = compare_scalar(
+            obs_names[i], cpu_obs[i], gpu_obs[i], tolerance
+        )
         if not is_match:
             all_match = False
 
@@ -218,7 +220,8 @@ fn extract_gpu_metadata[
     ctx: DeviceContext,
     env_idx: Int,
 ) raises -> InlineArray[Scalar[dtype], 4]:
-    """Extract metadata (step_count, total_reward, prev_shaping, done) from GPU."""
+    """Extract metadata (step_count, total_reward, prev_shaping, done) from GPU.
+    """
     var meta = InlineArray[Scalar[dtype], 4](fill=Scalar[dtype](0))
 
     var meta_host = ctx.enqueue_create_host_buffer[dtype](4)
@@ -322,11 +325,16 @@ fn test_reset_comparison(ctx: DeviceContext) raises -> Bool:
         "step_count", Scalar[dtype](0), gpu_meta[LLConstants.META_STEP_COUNT]
     )
     _ = compare_scalar(
-        "total_reward", Scalar[dtype](0), gpu_meta[LLConstants.META_TOTAL_REWARD]
+        "total_reward",
+        Scalar[dtype](0),
+        gpu_meta[LLConstants.META_TOTAL_REWARD],
     )
     var cpu_shaping = cpu_env.prev_shaping
     _ = compare_scalar(
-        "prev_shaping", cpu_shaping, gpu_meta[LLConstants.META_PREV_SHAPING], 1e-2
+        "prev_shaping",
+        cpu_shaping,
+        gpu_meta[LLConstants.META_PREV_SHAPING],
+        1e-2,
     )
     _ = compare_scalar(
         "done", Scalar[dtype](0), gpu_meta[LLConstants.META_DONE]
@@ -403,7 +411,9 @@ fn test_step_comparison(ctx: DeviceContext) raises -> Bool:
     test_actions.append(a4^)
 
     var all_match = True
-    var tolerance: Float64 = 1e-2  # Slightly larger tolerance for accumulated errors
+    var tolerance: Float64 = (
+        1e-2  # Slightly larger tolerance for accumulated errors
+    )
 
     for step in range(len(test_actions)):
         print("\n--- Step", step + 1, "---")
@@ -476,10 +486,12 @@ fn test_step_comparison(ctx: DeviceContext) raises -> Bool:
         )
         var body_match = True
         body_match = (
-            compare_scalar("x", cpu_body_x, gpu_body[0], tolerance) and body_match
+            compare_scalar("x", cpu_body_x, gpu_body[0], tolerance)
+            and body_match
         )
         body_match = (
-            compare_scalar("y", cpu_body_y, gpu_body[1], tolerance) and body_match
+            compare_scalar("y", cpu_body_y, gpu_body[1], tolerance)
+            and body_match
         )
         body_match = (
             compare_scalar("vx", cpu_body_vx, gpu_body[3], tolerance)
@@ -490,7 +502,9 @@ fn test_step_comparison(ctx: DeviceContext) raises -> Bool:
             and body_match
         )
 
-        var step_match = reward_match and done_match and obs_match and body_match
+        var step_match = (
+            reward_match and done_match and obs_match and body_match
+        )
         print(
             "\n  [Step",
             step + 1,
@@ -568,7 +582,15 @@ fn test_flat_terrain_comparison(ctx: DeviceContext) raises -> Bool:
         # GPU step
         LunarLanderV2[dtype].step_kernel_gpu[
             N_ENVS, STATE_SIZE, OBS_DIM, ACTION_DIM
-        ](ctx, gpu_states, gpu_actions, gpu_rewards, gpu_dones, gpu_obs, UInt64(step))
+        ](
+            ctx,
+            gpu_states,
+            gpu_actions,
+            gpu_rewards,
+            gpu_dones,
+            gpu_obs,
+            UInt64(step),
+        )
         ctx.synchronize()
 
         # Compare key metrics
@@ -614,7 +636,15 @@ fn test_flat_terrain_comparison(ctx: DeviceContext) raises -> Bool:
         # GPU step
         LunarLanderV2[dtype].step_kernel_gpu[
             N_ENVS, STATE_SIZE, OBS_DIM, ACTION_DIM
-        ](ctx, gpu_states, gpu_actions, gpu_rewards, gpu_dones, gpu_obs, UInt64(step + 5))
+        ](
+            ctx,
+            gpu_states,
+            gpu_actions,
+            gpu_rewards,
+            gpu_dones,
+            gpu_obs,
+            UInt64(step + 5),
+        )
         ctx.synchronize()
 
         if cpu_done:
@@ -716,7 +746,15 @@ fn test_reward_accumulation(ctx: DeviceContext) raises -> Bool:
         # GPU step
         LunarLanderV2[dtype].step_kernel_gpu[
             N_ENVS, STATE_SIZE, OBS_DIM, ACTION_DIM
-        ](ctx, gpu_states, gpu_actions, gpu_rewards, gpu_dones, gpu_obs, UInt64(step))
+        ](
+            ctx,
+            gpu_states,
+            gpu_actions,
+            gpu_rewards,
+            gpu_dones,
+            gpu_obs,
+            UInt64(step),
+        )
         ctx.synchronize()
 
         ctx.enqueue_copy(rewards_host, gpu_rewards)
@@ -814,8 +852,20 @@ fn test_contact_detection(ctx: DeviceContext) raises -> Bool:
             init_match = False
     print("  Initial states match:", init_match)
     if not init_match:
-        print("  CPU obs:", cpu_init_obs[0], cpu_init_obs[1], cpu_init_obs[2], cpu_init_obs[3])
-        print("  GPU obs:", gpu_init_obs[0], gpu_init_obs[1], gpu_init_obs[2], gpu_init_obs[3])
+        print(
+            "  CPU obs:",
+            cpu_init_obs[0],
+            cpu_init_obs[1],
+            cpu_init_obs[2],
+            cpu_init_obs[3],
+        )
+        print(
+            "  GPU obs:",
+            gpu_init_obs[0],
+            gpu_init_obs[1],
+            gpu_init_obs[2],
+            gpu_init_obs[3],
+        )
 
     print("\n[Running until contact or timeout (100 steps)]")
     print("Using mostly noop to let gravity bring lander down...\n")
@@ -843,7 +893,15 @@ fn test_contact_detection(ctx: DeviceContext) raises -> Bool:
         # GPU step
         LunarLanderV2[dtype].step_kernel_gpu[
             N_ENVS, STATE_SIZE, OBS_DIM, ACTION_DIM
-        ](ctx, gpu_states, gpu_actions, gpu_rewards, gpu_dones, gpu_obs, UInt64(step))
+        ](
+            ctx,
+            gpu_states,
+            gpu_actions,
+            gpu_rewards,
+            gpu_dones,
+            gpu_obs,
+            UInt64(step),
+        )
         ctx.synchronize()
 
         ctx.enqueue_copy(dones_host, gpu_dones)
@@ -861,10 +919,24 @@ fn test_contact_detection(ctx: DeviceContext) raises -> Bool:
 
         # Show early steps to track divergence
         if step < 5:
-            print("  Step", step + 1, "| CPU vx:", cpu_obs[2], "GPU vx:", gpu_obs_arr[2], "| diff:", abs_f64(Float64(cpu_obs[2] - gpu_obs_arr[2])))
+            print(
+                "  Step",
+                step + 1,
+                "| CPU vx:",
+                cpu_obs[2],
+                "GPU vx:",
+                gpu_obs_arr[2],
+                "| diff:",
+                abs_f64(Float64(cpu_obs[2] - gpu_obs_arr[2])),
+            )
 
         # Report contact events
-        if cpu_left_contact or gpu_left_contact or cpu_right_contact or gpu_right_contact:
+        if (
+            cpu_left_contact
+            or gpu_left_contact
+            or cpu_right_contact
+            or gpu_right_contact
+        ):
             print(
                 "  Step",
                 step + 1,
@@ -900,32 +972,75 @@ fn test_contact_detection(ctx: DeviceContext) raises -> Bool:
                 var gpu_vx = gpu_obs_arr[2]
                 var gpu_vy = gpu_obs_arr[3]
                 var gpu_omega = gpu_obs_arr[5]
-                print("    CPU: vx_norm=", cpu_vx, "vy_norm=", cpu_vy, "omega_norm=", cpu_omega)
-                print("    GPU: vx_norm=", gpu_vx, "vy_norm=", gpu_vy, "omega_norm=", gpu_omega)
+                print(
+                    "    CPU: vx_norm=",
+                    cpu_vx,
+                    "vy_norm=",
+                    cpu_vy,
+                    "omega_norm=",
+                    cpu_omega,
+                )
+                print(
+                    "    GPU: vx_norm=",
+                    gpu_vx,
+                    "vy_norm=",
+                    gpu_vy,
+                    "omega_norm=",
+                    gpu_omega,
+                )
 
                 # Compute actual speed (vx and vy are normalized by 5.0 in observation)
-                var cpu_speed = sqrt(Float64(cpu_vx * cpu_vx + cpu_vy * cpu_vy)) * 5.0
-                var gpu_speed = sqrt(Float64(gpu_vx * gpu_vx + gpu_vy * gpu_vy)) * 5.0
+                var cpu_speed = (
+                    sqrt(Float64(cpu_vx * cpu_vx + cpu_vy * cpu_vy)) * 5.0
+                )
+                var gpu_speed = (
+                    sqrt(Float64(gpu_vx * gpu_vx + gpu_vy * gpu_vy)) * 5.0
+                )
                 # omega_norm is omega / 5.0, so actual omega = omega_norm * 5.0
                 var cpu_omega_actual = abs_f64(Float64(cpu_omega)) * 5.0
                 var gpu_omega_actual = abs_f64(Float64(gpu_omega)) * 5.0
-                print("    CPU actual: speed=", cpu_speed, "omega=", cpu_omega_actual)
-                print("    GPU actual: speed=", gpu_speed, "omega=", gpu_omega_actual)
+                print(
+                    "    CPU actual: speed=",
+                    cpu_speed,
+                    "omega=",
+                    cpu_omega_actual,
+                )
+                print(
+                    "    GPU actual: speed=",
+                    gpu_speed,
+                    "omega=",
+                    gpu_omega_actual,
+                )
                 print("    is_at_rest threshold: speed < 0.01, omega < 0.01")
-                print("    CPU is_at_rest:", cpu_speed < 0.01 and cpu_omega_actual < 0.01)
-                print("    GPU is_at_rest:", gpu_speed < 0.01 and gpu_omega_actual < 0.01)
+                print(
+                    "    CPU is_at_rest:",
+                    cpu_speed < 0.01 and cpu_omega_actual < 0.01,
+                )
+                print(
+                    "    GPU is_at_rest:",
+                    gpu_speed < 0.01 and gpu_omega_actual < 0.01,
+                )
 
                 # Check x_norm bounds
                 var cpu_x_norm = cpu_obs[0]
                 var gpu_x_norm = gpu_obs_arr[0]
-                print("    CPU x_norm=", cpu_x_norm, "(out of bounds if >= 1 or <= -1)")
+                print(
+                    "    CPU x_norm=",
+                    cpu_x_norm,
+                    "(out of bounds if >= 1 or <= -1)",
+                )
                 print("    GPU x_norm=", gpu_x_norm)
 
                 # Check lander body contact (crash condition)
                 print("\n    [Crash Detection Analysis]")
                 print("    If neither is_at_rest nor x_norm out of bounds,")
-                print("    then CPU must be detecting LANDER BODY CONTACT (crash)")
-                print("    This means lander body (not legs) touched ground on CPU but not GPU")
+                print(
+                    "    then CPU must be detecting LANDER BODY CONTACT (crash)"
+                )
+                print(
+                    "    This means lander body (not legs) touched ground on"
+                    " CPU but not GPU"
+                )
 
                 # Get lander body position
                 var cpu_body = cpu_env.physics.get_body_y(0, 0)  # lander y
@@ -986,21 +1101,41 @@ fn test_deterministic_physics(ctx: DeviceContext) raises -> Bool:
     # Copy body states from CPU to host buffer
     for body in range(3):
         var body_off = LLConstants.BODIES_OFFSET + body * BODY_STATE_SIZE
-        state_host[body_off + IDX_X] = Scalar[dtype](cpu_env.physics.get_body_x(0, body))
-        state_host[body_off + IDX_Y] = Scalar[dtype](cpu_env.physics.get_body_y(0, body))
-        state_host[body_off + IDX_ANGLE] = Scalar[dtype](cpu_env.physics.get_body_angle(0, body))
-        state_host[body_off + IDX_VX] = Scalar[dtype](cpu_env.physics.get_body_vx(0, body))
-        state_host[body_off + IDX_VY] = Scalar[dtype](cpu_env.physics.get_body_vy(0, body))
-        state_host[body_off + IDX_OMEGA] = Scalar[dtype](cpu_env.physics.get_body_omega(0, body))
+        state_host[body_off + IDX_X] = Scalar[dtype](
+            cpu_env.physics.get_body_x(0, body)
+        )
+        state_host[body_off + IDX_Y] = Scalar[dtype](
+            cpu_env.physics.get_body_y(0, body)
+        )
+        state_host[body_off + IDX_ANGLE] = Scalar[dtype](
+            cpu_env.physics.get_body_angle(0, body)
+        )
+        state_host[body_off + IDX_VX] = Scalar[dtype](
+            cpu_env.physics.get_body_vx(0, body)
+        )
+        state_host[body_off + IDX_VY] = Scalar[dtype](
+            cpu_env.physics.get_body_vy(0, body)
+        )
+        state_host[body_off + IDX_OMEGA] = Scalar[dtype](
+            cpu_env.physics.get_body_omega(0, body)
+        )
         # Mass properties
         if body == 0:
             state_host[body_off + 9] = Scalar[dtype](LLConstants.LANDER_MASS)
-            state_host[body_off + 10] = Scalar[dtype](1.0 / LLConstants.LANDER_MASS)
-            state_host[body_off + 11] = Scalar[dtype](1.0 / LLConstants.LANDER_INERTIA)
+            state_host[body_off + 10] = Scalar[dtype](
+                1.0 / LLConstants.LANDER_MASS
+            )
+            state_host[body_off + 11] = Scalar[dtype](
+                1.0 / LLConstants.LANDER_INERTIA
+            )
         else:
             state_host[body_off + 9] = Scalar[dtype](LLConstants.LEG_MASS)
-            state_host[body_off + 10] = Scalar[dtype](1.0 / LLConstants.LEG_MASS)
-            state_host[body_off + 11] = Scalar[dtype](1.0 / LLConstants.LEG_INERTIA)
+            state_host[body_off + 10] = Scalar[dtype](
+                1.0 / LLConstants.LEG_MASS
+            )
+            state_host[body_off + 11] = Scalar[dtype](
+                1.0 / LLConstants.LEG_INERTIA
+            )
         state_host[body_off + 12] = Scalar[dtype](body)  # shape index
 
     # Copy observations
@@ -1009,16 +1144,26 @@ fn test_deterministic_physics(ctx: DeviceContext) raises -> Bool:
         state_host[LLConstants.OBS_OFFSET + i] = cpu_obs[i]
 
     # Copy metadata
-    state_host[LLConstants.METADATA_OFFSET + LLConstants.META_STEP_COUNT] = Scalar[dtype](0)
-    state_host[LLConstants.METADATA_OFFSET + LLConstants.META_TOTAL_REWARD] = Scalar[dtype](0)
-    state_host[LLConstants.METADATA_OFFSET + LLConstants.META_PREV_SHAPING] = cpu_env.prev_shaping
-    state_host[LLConstants.METADATA_OFFSET + LLConstants.META_DONE] = Scalar[dtype](0)
+    state_host[
+        LLConstants.METADATA_OFFSET + LLConstants.META_STEP_COUNT
+    ] = Scalar[dtype](0)
+    state_host[
+        LLConstants.METADATA_OFFSET + LLConstants.META_TOTAL_REWARD
+    ] = Scalar[dtype](0)
+    state_host[
+        LLConstants.METADATA_OFFSET + LLConstants.META_PREV_SHAPING
+    ] = cpu_env.prev_shaping
+    state_host[LLConstants.METADATA_OFFSET + LLConstants.META_DONE] = Scalar[
+        dtype
+    ](0)
 
     # Copy terrain edges from CPU
     var n_edges = LLConstants.TERRAIN_CHUNKS - 1
     state_host[LLConstants.EDGE_COUNT_OFFSET] = Scalar[dtype](n_edges)
 
-    var x_spacing = LLConstants.W_UNITS / Float64(LLConstants.TERRAIN_CHUNKS - 1)
+    var x_spacing = LLConstants.W_UNITS / Float64(
+        LLConstants.TERRAIN_CHUNKS - 1
+    )
     for edge in range(n_edges):
         var x0 = Float64(edge) * x_spacing
         var x1 = Float64(edge + 1) * x_spacing
@@ -1058,8 +1203,12 @@ fn test_deterministic_physics(ctx: DeviceContext) raises -> Bool:
     # We need a kernel to selectively copy
     @always_inline
     fn copy_state_kernel(
-        dst: LayoutTensor[dtype, Layout.row_major(N_ENVS, STATE_SIZE), MutAnyOrigin],
-        src_bodies: LayoutTensor[dtype, Layout.row_major(3, BODY_STATE_SIZE), ImmutAnyOrigin],
+        dst: LayoutTensor[
+            dtype, Layout.row_major(N_ENVS, STATE_SIZE), MutAnyOrigin
+        ],
+        src_bodies: LayoutTensor[
+            dtype, Layout.row_major(3, BODY_STATE_SIZE), ImmutAnyOrigin
+        ],
         src_obs: LayoutTensor[dtype, Layout.row_major(8), ImmutAnyOrigin],
         src_meta: LayoutTensor[dtype, Layout.row_major(4), ImmutAnyOrigin],
         prev_shaping: Scalar[dtype],
@@ -1076,7 +1225,9 @@ fn test_deterministic_physics(ctx: DeviceContext) raises -> Bool:
 
         # Copy metadata
         dst[0, LLConstants.METADATA_OFFSET + 0] = Scalar[dtype](0)  # step_count
-        dst[0, LLConstants.METADATA_OFFSET + 1] = Scalar[dtype](0)  # total_reward
+        dst[0, LLConstants.METADATA_OFFSET + 1] = Scalar[dtype](
+            0
+        )  # total_reward
         dst[0, LLConstants.METADATA_OFFSET + 2] = prev_shaping
         dst[0, LLConstants.METADATA_OFFSET + 3] = Scalar[dtype](0)  # done
 
@@ -1106,18 +1257,18 @@ fn test_deterministic_physics(ctx: DeviceContext) raises -> Bool:
     ctx.enqueue_copy(obs_buf_small, obs_host_buf)
     ctx.enqueue_copy(meta_buf, meta_host)
 
-    var dst_tensor = LayoutTensor[dtype, Layout.row_major(N_ENVS, STATE_SIZE), MutAnyOrigin](
-        gpu_states.unsafe_ptr()
-    )
-    var src_bodies_tensor = LayoutTensor[dtype, Layout.row_major(3, BODY_STATE_SIZE), MutAnyOrigin](
-        bodies_buf.unsafe_ptr()
-    )
+    var dst_tensor = LayoutTensor[
+        dtype, Layout.row_major(N_ENVS, STATE_SIZE), MutAnyOrigin
+    ](gpu_states.unsafe_ptr())
+    var src_bodies_tensor = LayoutTensor[
+        dtype, Layout.row_major(3, BODY_STATE_SIZE), MutAnyOrigin
+    ](bodies_buf.unsafe_ptr())
     var src_obs_tensor = LayoutTensor[dtype, Layout.row_major(8), MutAnyOrigin](
         obs_buf_small.unsafe_ptr()
     )
-    var src_meta_tensor = LayoutTensor[dtype, Layout.row_major(4), MutAnyOrigin](
-        meta_buf.unsafe_ptr()
-    )
+    var src_meta_tensor = LayoutTensor[
+        dtype, Layout.row_major(4), MutAnyOrigin
+    ](meta_buf.unsafe_ptr())
 
     ctx.enqueue_function[copy_state_kernel, copy_state_kernel](
         dst_tensor,
@@ -1132,7 +1283,9 @@ fn test_deterministic_physics(ctx: DeviceContext) raises -> Bool:
 
     # Verify initial state matches
     print("\n[Verifying initial state after copy]")
-    var gpu_obs_init = extract_gpu_observation[N_ENVS, STATE_SIZE](gpu_states, ctx, 0)
+    var gpu_obs_init = extract_gpu_observation[N_ENVS, STATE_SIZE](
+        gpu_states, ctx, 0
+    )
     var init_match = compare_observation(cpu_obs, gpu_obs_init, tolerance=1e-5)
 
     if not init_match:
@@ -1187,7 +1340,15 @@ fn test_deterministic_physics(ctx: DeviceContext) raises -> Bool:
         # GPU step
         LunarLanderV2[dtype].step_kernel_gpu[
             N_ENVS, STATE_SIZE, OBS_DIM, ACTION_DIM
-        ](ctx, gpu_states, gpu_actions, gpu_rewards, gpu_dones, gpu_obs, UInt64(step))
+        ](
+            ctx,
+            gpu_states,
+            gpu_actions,
+            gpu_rewards,
+            gpu_dones,
+            gpu_obs,
+            UInt64(step),
+        )
         ctx.synchronize()
 
         ctx.enqueue_copy(rewards_host, gpu_rewards)
@@ -1198,7 +1359,9 @@ fn test_deterministic_physics(ctx: DeviceContext) raises -> Bool:
         var gpu_done = dones_host[0] > 0.5
 
         # Extract GPU observation
-        var gpu_obs_step = extract_gpu_observation[N_ENVS, STATE_SIZE](gpu_states, ctx, 0)
+        var gpu_obs_step = extract_gpu_observation[N_ENVS, STATE_SIZE](
+            gpu_states, ctx, 0
+        )
 
         # Compare
         var reward_diff = abs_f64(Float64(cpu_reward - gpu_reward))
@@ -1209,14 +1372,28 @@ fn test_deterministic_physics(ctx: DeviceContext) raises -> Bool:
         var cpu_vx = Scalar[dtype](cpu_env.physics.get_body_vx(0, 0))
         var cpu_vy = Scalar[dtype](cpu_env.physics.get_body_vy(0, 0))
 
-        var gpu_body = extract_gpu_body_state[N_ENVS, STATE_SIZE](gpu_states, ctx, 0, 0)
+        var gpu_body = extract_gpu_body_state[N_ENVS, STATE_SIZE](
+            gpu_states, ctx, 0, 0
+        )
 
-        var pos_diff = sqrt(Float64((cpu_x - gpu_body[0]) * (cpu_x - gpu_body[0]) +
-                                    (cpu_y - gpu_body[1]) * (cpu_y - gpu_body[1])))
-        var vel_diff = sqrt(Float64((cpu_vx - gpu_body[3]) * (cpu_vx - gpu_body[3]) +
-                                    (cpu_vy - gpu_body[4]) * (cpu_vy - gpu_body[4])))
+        var pos_diff = sqrt(
+            Float64(
+                (cpu_x - gpu_body[0]) * (cpu_x - gpu_body[0])
+                + (cpu_y - gpu_body[1]) * (cpu_y - gpu_body[1])
+            )
+        )
+        var vel_diff = sqrt(
+            Float64(
+                (cpu_vx - gpu_body[3]) * (cpu_vx - gpu_body[3])
+                + (cpu_vy - gpu_body[4]) * (cpu_vy - gpu_body[4])
+            )
+        )
 
-        var step_match = reward_diff < tolerance and pos_diff < tolerance and vel_diff < tolerance
+        var step_match = (
+            reward_diff < tolerance
+            and pos_diff < tolerance
+            and vel_diff < tolerance
+        )
 
         var action_name: String
         if action_type == 0:
@@ -1229,27 +1406,54 @@ fn test_deterministic_physics(ctx: DeviceContext) raises -> Bool:
             action_name = "right"
 
         print(
-            "  Step", step + 1, "(", action_name, ")",
-            "| Reward diff:", String(reward_diff)[:8],
-            "| Pos diff:", String(pos_diff)[:8],
-            "| Vel diff:", String(vel_diff)[:8],
-            "|", "OK" if step_match else "MISMATCH",
+            "  Step",
+            step + 1,
+            "(",
+            action_name,
+            ")",
+            "| Reward diff:",
+            String(reward_diff)[:8],
+            "| Pos diff:",
+            String(pos_diff)[:8],
+            "| Vel diff:",
+            String(vel_diff)[:8],
+            "|",
+            "OK" if step_match else "MISMATCH",
         )
 
         if not step_match:
             all_match = False
             # Print detailed comparison
-            print("    CPU: x=", cpu_x, "y=", cpu_y, "vx=", cpu_vx, "vy=", cpu_vy)
-            print("    GPU: x=", gpu_body[0], "y=", gpu_body[1], "vx=", gpu_body[3], "vy=", gpu_body[4])
+            print(
+                "    CPU: x=", cpu_x, "y=", cpu_y, "vx=", cpu_vx, "vy=", cpu_vy
+            )
+            print(
+                "    GPU: x=",
+                gpu_body[0],
+                "y=",
+                gpu_body[1],
+                "vx=",
+                gpu_body[3],
+                "vy=",
+                gpu_body[4],
+            )
 
         if cpu_done or gpu_done:
             print("  Episode terminated at step", step + 1)
             if cpu_done != gpu_done:
-                print("    WARNING: Done flag mismatch! CPU:", cpu_done, "GPU:", gpu_done)
+                print(
+                    "    WARNING: Done flag mismatch! CPU:",
+                    cpu_done,
+                    "GPU:",
+                    gpu_done,
+                )
                 all_match = False
             break
 
-    print("\n[DETERMINISTIC PHYSICS TEST RESULT]:", "PASS" if all_match else "FAIL")
+    print(
+        "\n[DETERMINISTIC PHYSICS TEST RESULT]:",
+        "PASS" if all_match else "FAIL",
+    )
     return all_match
 
 
@@ -1293,20 +1497,40 @@ fn test_gravity_only(ctx: DeviceContext) raises -> Bool:
 
     for body in range(3):
         var body_off = body * BODY_STATE_SIZE
-        bodies_host[body_off + IDX_X] = Scalar[dtype](cpu_env.physics.get_body_x(0, body))
-        bodies_host[body_off + IDX_Y] = Scalar[dtype](cpu_env.physics.get_body_y(0, body))
-        bodies_host[body_off + IDX_ANGLE] = Scalar[dtype](cpu_env.physics.get_body_angle(0, body))
-        bodies_host[body_off + IDX_VX] = Scalar[dtype](cpu_env.physics.get_body_vx(0, body))
-        bodies_host[body_off + IDX_VY] = Scalar[dtype](cpu_env.physics.get_body_vy(0, body))
-        bodies_host[body_off + IDX_OMEGA] = Scalar[dtype](cpu_env.physics.get_body_omega(0, body))
+        bodies_host[body_off + IDX_X] = Scalar[dtype](
+            cpu_env.physics.get_body_x(0, body)
+        )
+        bodies_host[body_off + IDX_Y] = Scalar[dtype](
+            cpu_env.physics.get_body_y(0, body)
+        )
+        bodies_host[body_off + IDX_ANGLE] = Scalar[dtype](
+            cpu_env.physics.get_body_angle(0, body)
+        )
+        bodies_host[body_off + IDX_VX] = Scalar[dtype](
+            cpu_env.physics.get_body_vx(0, body)
+        )
+        bodies_host[body_off + IDX_VY] = Scalar[dtype](
+            cpu_env.physics.get_body_vy(0, body)
+        )
+        bodies_host[body_off + IDX_OMEGA] = Scalar[dtype](
+            cpu_env.physics.get_body_omega(0, body)
+        )
         if body == 0:
             bodies_host[body_off + 9] = Scalar[dtype](LLConstants.LANDER_MASS)
-            bodies_host[body_off + 10] = Scalar[dtype](1.0 / LLConstants.LANDER_MASS)
-            bodies_host[body_off + 11] = Scalar[dtype](1.0 / LLConstants.LANDER_INERTIA)
+            bodies_host[body_off + 10] = Scalar[dtype](
+                1.0 / LLConstants.LANDER_MASS
+            )
+            bodies_host[body_off + 11] = Scalar[dtype](
+                1.0 / LLConstants.LANDER_INERTIA
+            )
         else:
             bodies_host[body_off + 9] = Scalar[dtype](LLConstants.LEG_MASS)
-            bodies_host[body_off + 10] = Scalar[dtype](1.0 / LLConstants.LEG_MASS)
-            bodies_host[body_off + 11] = Scalar[dtype](1.0 / LLConstants.LEG_INERTIA)
+            bodies_host[body_off + 10] = Scalar[dtype](
+                1.0 / LLConstants.LEG_MASS
+            )
+            bodies_host[body_off + 11] = Scalar[dtype](
+                1.0 / LLConstants.LEG_INERTIA
+            )
         bodies_host[body_off + 12] = Scalar[dtype](body)
 
     var cpu_obs = cpu_env.get_observation(0)
@@ -1320,8 +1544,12 @@ fn test_gravity_only(ctx: DeviceContext) raises -> Bool:
 
     @always_inline
     fn copy_state_kernel2(
-        dst: LayoutTensor[dtype, Layout.row_major(N_ENVS, STATE_SIZE), MutAnyOrigin],
-        src_bodies: LayoutTensor[dtype, Layout.row_major(3, BODY_STATE_SIZE), ImmutAnyOrigin],
+        dst: LayoutTensor[
+            dtype, Layout.row_major(N_ENVS, STATE_SIZE), MutAnyOrigin
+        ],
+        src_bodies: LayoutTensor[
+            dtype, Layout.row_major(3, BODY_STATE_SIZE), ImmutAnyOrigin
+        ],
         src_obs: LayoutTensor[dtype, Layout.row_major(8), ImmutAnyOrigin],
         prev_shaping: Scalar[dtype],
     ):
@@ -1336,12 +1564,12 @@ fn test_gravity_only(ctx: DeviceContext) raises -> Bool:
         dst[0, LLConstants.METADATA_OFFSET + 2] = prev_shaping
         dst[0, LLConstants.METADATA_OFFSET + 3] = Scalar[dtype](0)
 
-    var dst_tensor = LayoutTensor[dtype, Layout.row_major(N_ENVS, STATE_SIZE), MutAnyOrigin](
-        gpu_states.unsafe_ptr()
-    )
-    var src_bodies_tensor = LayoutTensor[dtype, Layout.row_major(3, BODY_STATE_SIZE), MutAnyOrigin](
-        bodies_buf.unsafe_ptr()
-    )
+    var dst_tensor = LayoutTensor[
+        dtype, Layout.row_major(N_ENVS, STATE_SIZE), MutAnyOrigin
+    ](gpu_states.unsafe_ptr())
+    var src_bodies_tensor = LayoutTensor[
+        dtype, Layout.row_major(3, BODY_STATE_SIZE), MutAnyOrigin
+    ](bodies_buf.unsafe_ptr())
     var src_obs_tensor = LayoutTensor[dtype, Layout.row_major(8), MutAnyOrigin](
         obs_buf_small.unsafe_ptr()
     )
@@ -1357,7 +1585,9 @@ fn test_gravity_only(ctx: DeviceContext) raises -> Bool:
     ctx.synchronize()
 
     # Verify initial state
-    var gpu_obs_init = extract_gpu_observation[N_ENVS, STATE_SIZE](gpu_states, ctx, 0)
+    var gpu_obs_init = extract_gpu_observation[N_ENVS, STATE_SIZE](
+        gpu_states, ctx, 0
+    )
     print("[Initial state verification]")
     var init_match = True
     for i in range(8):
@@ -1375,7 +1605,7 @@ fn test_gravity_only(ctx: DeviceContext) raises -> Bool:
 
     # Set noop action
     actions_host[0] = Scalar[dtype](-1.0)  # main off
-    actions_host[1] = Scalar[dtype](0.0)   # side off
+    actions_host[1] = Scalar[dtype](0.0)  # side off
     ctx.enqueue_copy(gpu_actions, actions_host)
 
     var all_match = True
@@ -1394,7 +1624,15 @@ fn test_gravity_only(ctx: DeviceContext) raises -> Bool:
         # GPU step
         LunarLanderV2[dtype].step_kernel_gpu[
             N_ENVS, STATE_SIZE, OBS_DIM, ACTION_DIM
-        ](ctx, gpu_states, gpu_actions, gpu_rewards, gpu_dones, gpu_obs, UInt64(step))
+        ](
+            ctx,
+            gpu_states,
+            gpu_actions,
+            gpu_rewards,
+            gpu_dones,
+            gpu_obs,
+            UInt64(step),
+        )
         ctx.synchronize()
 
         ctx.enqueue_copy(rewards_host, gpu_rewards)
@@ -1407,29 +1645,55 @@ fn test_gravity_only(ctx: DeviceContext) raises -> Bool:
         var cpu_vx = Scalar[dtype](cpu_env.physics.get_body_vx(0, 0))
         var cpu_vy = Scalar[dtype](cpu_env.physics.get_body_vy(0, 0))
 
-        var gpu_body = extract_gpu_body_state[N_ENVS, STATE_SIZE](gpu_states, ctx, 0, 0)
+        var gpu_body = extract_gpu_body_state[N_ENVS, STATE_SIZE](
+            gpu_states, ctx, 0, 0
+        )
 
-        var pos_diff = sqrt(Float64((cpu_x - gpu_body[0]) * (cpu_x - gpu_body[0]) +
-                                    (cpu_y - gpu_body[1]) * (cpu_y - gpu_body[1])))
-        var vel_diff = sqrt(Float64((cpu_vx - gpu_body[3]) * (cpu_vx - gpu_body[3]) +
-                                    (cpu_vy - gpu_body[4]) * (cpu_vy - gpu_body[4])))
+        var pos_diff = sqrt(
+            Float64(
+                (cpu_x - gpu_body[0]) * (cpu_x - gpu_body[0])
+                + (cpu_y - gpu_body[1]) * (cpu_y - gpu_body[1])
+            )
+        )
+        var vel_diff = sqrt(
+            Float64(
+                (cpu_vx - gpu_body[3]) * (cpu_vx - gpu_body[3])
+                + (cpu_vy - gpu_body[4]) * (cpu_vy - gpu_body[4])
+            )
+        )
         var reward_diff = abs_f64(Float64(cpu_reward - gpu_reward))
 
         var step_match = pos_diff < tolerance and vel_diff < tolerance
 
         if (step + 1) % 5 == 0 or not step_match:
             print(
-                "  Step", step + 1,
-                "| Pos diff:", String(pos_diff)[:10],
-                "| Vel diff:", String(vel_diff)[:10],
-                "| Reward diff:", String(reward_diff)[:10],
-                "|", "OK" if step_match else "MISMATCH",
+                "  Step",
+                step + 1,
+                "| Pos diff:",
+                String(pos_diff)[:10],
+                "| Vel diff:",
+                String(vel_diff)[:10],
+                "| Reward diff:",
+                String(reward_diff)[:10],
+                "|",
+                "OK" if step_match else "MISMATCH",
             )
 
         if not step_match:
             all_match = False
-            print("    CPU: x=", cpu_x, "y=", cpu_y, "vx=", cpu_vx, "vy=", cpu_vy)
-            print("    GPU: x=", gpu_body[0], "y=", gpu_body[1], "vx=", gpu_body[3], "vy=", gpu_body[4])
+            print(
+                "    CPU: x=", cpu_x, "y=", cpu_y, "vx=", cpu_vx, "vy=", cpu_vy
+            )
+            print(
+                "    GPU: x=",
+                gpu_body[0],
+                "y=",
+                gpu_body[1],
+                "vx=",
+                gpu_body[3],
+                "vy=",
+                gpu_body[4],
+            )
 
         if cpu_done:
             print("  Episode terminated at step", step + 1)
@@ -1438,10 +1702,16 @@ fn test_gravity_only(ctx: DeviceContext) raises -> Bool:
     print("\n[GRAVITY-ONLY TEST RESULT]:", "PASS" if all_match else "FAIL")
 
     if all_match:
-        print("\n  CONCLUSION: Pure physics (gravity, integration) is CONSISTENT!")
-        print("  The divergence in other tests is due to ENGINE DISPERSION RNG.")
+        print(
+            "\n  CONCLUSION: Pure physics (gravity, integration) is CONSISTENT!"
+        )
+        print(
+            "  The divergence in other tests is due to ENGINE DISPERSION RNG."
+        )
     else:
-        print("\n  CONCLUSION: Physics integration differs between CPU and GPU.")
+        print(
+            "\n  CONCLUSION: Physics integration differs between CPU and GPU."
+        )
 
     return all_match
 
@@ -1484,7 +1754,9 @@ fn test_reward_deep_dive(ctx: DeviceContext) raises -> Bool:
 
     # Get initial observations and shaping from both
     var cpu_obs_init = cpu_env.get_observation(0)
-    var gpu_obs_init = extract_gpu_observation[N_ENVS, STATE_SIZE](gpu_states, ctx, 0)
+    var gpu_obs_init = extract_gpu_observation[N_ENVS, STATE_SIZE](
+        gpu_states, ctx, 0
+    )
 
     print("[Initial State Analysis]")
     print("\n  CPU Observation:")
@@ -1512,7 +1784,13 @@ fn test_reward_deep_dive(ctx: DeviceContext) raises -> Bool:
         var speed = sqrt(vx * vx + vy * vy)
         var angle_abs = angle if angle >= 0 else -angle
 
-        return -100.0 * dist - 100.0 * speed - 100.0 * angle_abs + 10.0 * left + 10.0 * right
+        return (
+            -100.0 * dist
+            - 100.0 * speed
+            - 100.0 * angle_abs
+            + 10.0 * left
+            + 10.0 * right
+        )
 
     var cpu_shaping = compute_shaping_manual(cpu_obs_init)
     var gpu_shaping = compute_shaping_manual(gpu_obs_init)
@@ -1523,10 +1801,16 @@ fn test_reward_deep_dive(ctx: DeviceContext) raises -> Bool:
 
     # Get GPU stored shaping
     var gpu_meta = extract_gpu_metadata[N_ENVS, STATE_SIZE](gpu_states, ctx, 0)
-    print("  GPU initial shaping (stored):", Float64(gpu_meta[LLConstants.META_PREV_SHAPING]))
+    print(
+        "  GPU initial shaping (stored):",
+        Float64(gpu_meta[LLConstants.META_PREV_SHAPING]),
+    )
 
     print("\n  Shaping diff (computed):", abs_f64(cpu_shaping - gpu_shaping))
-    print("  This diff comes from observation differences (different RNG at reset)")
+    print(
+        "  This diff comes from observation differences (different RNG at"
+        " reset)"
+    )
 
     # Now copy CPU state to GPU for identical starting point
     print("\n[Copying CPU state to GPU...]")
@@ -1536,20 +1820,40 @@ fn test_reward_deep_dive(ctx: DeviceContext) raises -> Bool:
 
     for body in range(3):
         var body_off = body * BODY_STATE_SIZE
-        bodies_host[body_off + IDX_X] = Scalar[dtype](cpu_env.physics.get_body_x(0, body))
-        bodies_host[body_off + IDX_Y] = Scalar[dtype](cpu_env.physics.get_body_y(0, body))
-        bodies_host[body_off + IDX_ANGLE] = Scalar[dtype](cpu_env.physics.get_body_angle(0, body))
-        bodies_host[body_off + IDX_VX] = Scalar[dtype](cpu_env.physics.get_body_vx(0, body))
-        bodies_host[body_off + IDX_VY] = Scalar[dtype](cpu_env.physics.get_body_vy(0, body))
-        bodies_host[body_off + IDX_OMEGA] = Scalar[dtype](cpu_env.physics.get_body_omega(0, body))
+        bodies_host[body_off + IDX_X] = Scalar[dtype](
+            cpu_env.physics.get_body_x(0, body)
+        )
+        bodies_host[body_off + IDX_Y] = Scalar[dtype](
+            cpu_env.physics.get_body_y(0, body)
+        )
+        bodies_host[body_off + IDX_ANGLE] = Scalar[dtype](
+            cpu_env.physics.get_body_angle(0, body)
+        )
+        bodies_host[body_off + IDX_VX] = Scalar[dtype](
+            cpu_env.physics.get_body_vx(0, body)
+        )
+        bodies_host[body_off + IDX_VY] = Scalar[dtype](
+            cpu_env.physics.get_body_vy(0, body)
+        )
+        bodies_host[body_off + IDX_OMEGA] = Scalar[dtype](
+            cpu_env.physics.get_body_omega(0, body)
+        )
         if body == 0:
             bodies_host[body_off + 9] = Scalar[dtype](LLConstants.LANDER_MASS)
-            bodies_host[body_off + 10] = Scalar[dtype](1.0 / LLConstants.LANDER_MASS)
-            bodies_host[body_off + 11] = Scalar[dtype](1.0 / LLConstants.LANDER_INERTIA)
+            bodies_host[body_off + 10] = Scalar[dtype](
+                1.0 / LLConstants.LANDER_MASS
+            )
+            bodies_host[body_off + 11] = Scalar[dtype](
+                1.0 / LLConstants.LANDER_INERTIA
+            )
         else:
             bodies_host[body_off + 9] = Scalar[dtype](LLConstants.LEG_MASS)
-            bodies_host[body_off + 10] = Scalar[dtype](1.0 / LLConstants.LEG_MASS)
-            bodies_host[body_off + 11] = Scalar[dtype](1.0 / LLConstants.LEG_INERTIA)
+            bodies_host[body_off + 10] = Scalar[dtype](
+                1.0 / LLConstants.LEG_MASS
+            )
+            bodies_host[body_off + 11] = Scalar[dtype](
+                1.0 / LLConstants.LEG_INERTIA
+            )
         bodies_host[body_off + 12] = Scalar[dtype](body)
 
     for i in range(8):
@@ -1562,8 +1866,12 @@ fn test_reward_deep_dive(ctx: DeviceContext) raises -> Bool:
 
     @always_inline
     fn copy_full_state_kernel(
-        dst: LayoutTensor[dtype, Layout.row_major(N_ENVS, STATE_SIZE), MutAnyOrigin],
-        src_bodies: LayoutTensor[dtype, Layout.row_major(3, BODY_STATE_SIZE), ImmutAnyOrigin],
+        dst: LayoutTensor[
+            dtype, Layout.row_major(N_ENVS, STATE_SIZE), MutAnyOrigin
+        ],
+        src_bodies: LayoutTensor[
+            dtype, Layout.row_major(3, BODY_STATE_SIZE), ImmutAnyOrigin
+        ],
         src_obs: LayoutTensor[dtype, Layout.row_major(8), ImmutAnyOrigin],
         prev_shaping: Scalar[dtype],
     ):
@@ -1578,12 +1886,12 @@ fn test_reward_deep_dive(ctx: DeviceContext) raises -> Bool:
         dst[0, LLConstants.METADATA_OFFSET + 2] = prev_shaping
         dst[0, LLConstants.METADATA_OFFSET + 3] = Scalar[dtype](0)
 
-    var dst_tensor = LayoutTensor[dtype, Layout.row_major(N_ENVS, STATE_SIZE), MutAnyOrigin](
-        gpu_states.unsafe_ptr()
-    )
-    var src_bodies_tensor = LayoutTensor[dtype, Layout.row_major(3, BODY_STATE_SIZE), MutAnyOrigin](
-        bodies_buf.unsafe_ptr()
-    )
+    var dst_tensor = LayoutTensor[
+        dtype, Layout.row_major(N_ENVS, STATE_SIZE), MutAnyOrigin
+    ](gpu_states.unsafe_ptr())
+    var src_bodies_tensor = LayoutTensor[
+        dtype, Layout.row_major(3, BODY_STATE_SIZE), MutAnyOrigin
+    ](bodies_buf.unsafe_ptr())
     var src_obs_tensor = LayoutTensor[dtype, Layout.row_major(8), MutAnyOrigin](
         obs_buf_small.unsafe_ptr()
     )
@@ -1599,10 +1907,17 @@ fn test_reward_deep_dive(ctx: DeviceContext) raises -> Bool:
     ctx.synchronize()
 
     # Verify copy
-    var gpu_obs_after_copy = extract_gpu_observation[N_ENVS, STATE_SIZE](gpu_states, ctx, 0)
-    var gpu_meta_after_copy = extract_gpu_metadata[N_ENVS, STATE_SIZE](gpu_states, ctx, 0)
+    var gpu_obs_after_copy = extract_gpu_observation[N_ENVS, STATE_SIZE](
+        gpu_states, ctx, 0
+    )
+    var gpu_meta_after_copy = extract_gpu_metadata[N_ENVS, STATE_SIZE](
+        gpu_states, ctx, 0
+    )
 
-    print("  After copy - GPU prev_shaping:", Float64(gpu_meta_after_copy[LLConstants.META_PREV_SHAPING]))
+    print(
+        "  After copy - GPU prev_shaping:",
+        Float64(gpu_meta_after_copy[LLConstants.META_PREV_SHAPING]),
+    )
     print("  After copy - CPU prev_shaping:", Float64(cpu_env.prev_shaping))
 
     # Now step ONCE with noop and compare rewards in detail
@@ -1618,7 +1933,16 @@ fn test_reward_deep_dive(ctx: DeviceContext) raises -> Bool:
     var cpu_pre_vx = Scalar[dtype](cpu_env.physics.get_body_vx(0, 0))
     var cpu_pre_vy = Scalar[dtype](cpu_env.physics.get_body_vy(0, 0))
 
-    print("  Pre-step CPU: x=", cpu_pre_x, "y=", cpu_pre_y, "vx=", cpu_pre_vx, "vy=", cpu_pre_vy)
+    print(
+        "  Pre-step CPU: x=",
+        cpu_pre_x,
+        "y=",
+        cpu_pre_y,
+        "vx=",
+        cpu_pre_vx,
+        "vy=",
+        cpu_pre_vy,
+    )
 
     # CPU step
     var action = List[Scalar[dtype]]()
@@ -1645,12 +1969,33 @@ fn test_reward_deep_dive(ctx: DeviceContext) raises -> Bool:
     var cpu_post_vx = Scalar[dtype](cpu_env.physics.get_body_vx(0, 0))
     var cpu_post_vy = Scalar[dtype](cpu_env.physics.get_body_vy(0, 0))
 
-    var gpu_body_after = extract_gpu_body_state[N_ENVS, STATE_SIZE](gpu_states, ctx, 0, 0)
-    var gpu_obs_after = extract_gpu_observation[N_ENVS, STATE_SIZE](gpu_states, ctx, 0)
+    var gpu_body_after = extract_gpu_body_state[N_ENVS, STATE_SIZE](
+        gpu_states, ctx, 0, 0
+    )
+    var gpu_obs_after = extract_gpu_observation[N_ENVS, STATE_SIZE](
+        gpu_states, ctx, 0
+    )
 
-    print("  Post-step CPU: x=", cpu_post_x, "y=", cpu_post_y, "vx=", cpu_post_vx, "vy=", cpu_post_vy)
-    print("  Post-step GPU: x=", gpu_body_after[0], "y=", gpu_body_after[1],
-          "vx=", gpu_body_after[3], "vy=", gpu_body_after[4])
+    print(
+        "  Post-step CPU: x=",
+        cpu_post_x,
+        "y=",
+        cpu_post_y,
+        "vx=",
+        cpu_post_vx,
+        "vy=",
+        cpu_post_vy,
+    )
+    print(
+        "  Post-step GPU: x=",
+        gpu_body_after[0],
+        "y=",
+        gpu_body_after[1],
+        "vx=",
+        gpu_body_after[3],
+        "vy=",
+        gpu_body_after[4],
+    )
 
     # Compute shaping for post-step observations
     var cpu_obs_arr = InlineArray[Scalar[dtype], 8](fill=Scalar[dtype](0))
@@ -1669,7 +2014,9 @@ fn test_reward_deep_dive(ctx: DeviceContext) raises -> Bool:
     print("  Reward diff:", abs_f64(Float64(cpu_reward - gpu_reward)))
 
     # Break down reward components
-    var cpu_prev_shaping = Float64(cpu_env.prev_shaping)  # This was updated after step!
+    var cpu_prev_shaping = Float64(
+        cpu_env.prev_shaping
+    )  # This was updated after step!
     # We need to get it from BEFORE the step - but we didn't save it
     # Actually the test above shows the issue already
 
@@ -1731,20 +2078,40 @@ fn test_synchronized_contact_detection(ctx: DeviceContext) raises -> Bool:
     # Copy body states
     for body in range(3):
         var body_off = LLConstants.BODIES_OFFSET + body * BODY_STATE_SIZE
-        state_host[body_off + IDX_X] = Scalar[dtype](cpu_env.physics.get_body_x(0, body))
-        state_host[body_off + IDX_Y] = Scalar[dtype](cpu_env.physics.get_body_y(0, body))
-        state_host[body_off + IDX_ANGLE] = Scalar[dtype](cpu_env.physics.get_body_angle(0, body))
-        state_host[body_off + IDX_VX] = Scalar[dtype](cpu_env.physics.get_body_vx(0, body))
-        state_host[body_off + IDX_VY] = Scalar[dtype](cpu_env.physics.get_body_vy(0, body))
-        state_host[body_off + IDX_OMEGA] = Scalar[dtype](cpu_env.physics.get_body_omega(0, body))
+        state_host[body_off + IDX_X] = Scalar[dtype](
+            cpu_env.physics.get_body_x(0, body)
+        )
+        state_host[body_off + IDX_Y] = Scalar[dtype](
+            cpu_env.physics.get_body_y(0, body)
+        )
+        state_host[body_off + IDX_ANGLE] = Scalar[dtype](
+            cpu_env.physics.get_body_angle(0, body)
+        )
+        state_host[body_off + IDX_VX] = Scalar[dtype](
+            cpu_env.physics.get_body_vx(0, body)
+        )
+        state_host[body_off + IDX_VY] = Scalar[dtype](
+            cpu_env.physics.get_body_vy(0, body)
+        )
+        state_host[body_off + IDX_OMEGA] = Scalar[dtype](
+            cpu_env.physics.get_body_omega(0, body)
+        )
         if body == 0:
             state_host[body_off + 9] = Scalar[dtype](LLConstants.LANDER_MASS)
-            state_host[body_off + 10] = Scalar[dtype](1.0 / LLConstants.LANDER_MASS)
-            state_host[body_off + 11] = Scalar[dtype](1.0 / LLConstants.LANDER_INERTIA)
+            state_host[body_off + 10] = Scalar[dtype](
+                1.0 / LLConstants.LANDER_MASS
+            )
+            state_host[body_off + 11] = Scalar[dtype](
+                1.0 / LLConstants.LANDER_INERTIA
+            )
         else:
             state_host[body_off + 9] = Scalar[dtype](LLConstants.LEG_MASS)
-            state_host[body_off + 10] = Scalar[dtype](1.0 / LLConstants.LEG_MASS)
-            state_host[body_off + 11] = Scalar[dtype](1.0 / LLConstants.LEG_INERTIA)
+            state_host[body_off + 10] = Scalar[dtype](
+                1.0 / LLConstants.LEG_MASS
+            )
+            state_host[body_off + 11] = Scalar[dtype](
+                1.0 / LLConstants.LEG_INERTIA
+            )
         state_host[body_off + 12] = Scalar[dtype](body)
 
     # Copy observations
@@ -1753,16 +2120,26 @@ fn test_synchronized_contact_detection(ctx: DeviceContext) raises -> Bool:
         state_host[LLConstants.OBS_OFFSET + i] = cpu_obs_init[i]
 
     # Copy metadata
-    state_host[LLConstants.METADATA_OFFSET + LLConstants.META_STEP_COUNT] = Scalar[dtype](0)
-    state_host[LLConstants.METADATA_OFFSET + LLConstants.META_TOTAL_REWARD] = Scalar[dtype](0)
-    state_host[LLConstants.METADATA_OFFSET + LLConstants.META_PREV_SHAPING] = cpu_env.prev_shaping
-    state_host[LLConstants.METADATA_OFFSET + LLConstants.META_DONE] = Scalar[dtype](0)
+    state_host[
+        LLConstants.METADATA_OFFSET + LLConstants.META_STEP_COUNT
+    ] = Scalar[dtype](0)
+    state_host[
+        LLConstants.METADATA_OFFSET + LLConstants.META_TOTAL_REWARD
+    ] = Scalar[dtype](0)
+    state_host[
+        LLConstants.METADATA_OFFSET + LLConstants.META_PREV_SHAPING
+    ] = cpu_env.prev_shaping
+    state_host[LLConstants.METADATA_OFFSET + LLConstants.META_DONE] = Scalar[
+        dtype
+    ](0)
 
     # Copy terrain edges
     var n_edges = LLConstants.TERRAIN_CHUNKS - 1
     state_host[LLConstants.EDGE_COUNT_OFFSET] = Scalar[dtype](n_edges)
 
-    var chunk_width = LLConstants.W_UNITS / Float64(LLConstants.TERRAIN_CHUNKS - 1)
+    var chunk_width = LLConstants.W_UNITS / Float64(
+        LLConstants.TERRAIN_CHUNKS - 1
+    )
     for edge in range(n_edges):
         var x0 = Float64(edge) * chunk_width
         var x1 = Float64(edge + 1) * chunk_width
@@ -1792,14 +2169,18 @@ fn test_synchronized_contact_detection(ctx: DeviceContext) raises -> Bool:
     for j in range(n_joints):
         var joint_off = LLConstants.JOINTS_OFFSET + j * JOINT_DATA_SIZE
         for k in range(JOINT_DATA_SIZE):
-            state_host[joint_off + k] = rebind[Scalar[dtype]](cpu_joints[0, j, k])
+            state_host[joint_off + k] = rebind[Scalar[dtype]](
+                cpu_joints[0, j, k]
+            )
 
     # Upload to GPU
     ctx.enqueue_copy(gpu_states, state_host)
     ctx.synchronize()
 
     # Verify initial state match
-    var gpu_obs_init = extract_gpu_observation[N_ENVS, STATE_SIZE](gpu_states, ctx, 0)
+    var gpu_obs_init = extract_gpu_observation[N_ENVS, STATE_SIZE](
+        gpu_states, ctx, 0
+    )
     var init_match = True
     for i in range(8):
         if abs_f64(Float64(cpu_obs_init[i] - gpu_obs_init[i])) > 1e-4:
@@ -1813,7 +2194,7 @@ fn test_synchronized_contact_detection(ctx: DeviceContext) raises -> Bool:
 
     # Set noop action
     actions_host[0] = Scalar[dtype](-1.0)  # main engine off
-    actions_host[1] = Scalar[dtype](0.0)   # side engine off
+    actions_host[1] = Scalar[dtype](0.0)  # side engine off
     ctx.enqueue_copy(gpu_actions, actions_host)
 
     var action = List[Scalar[dtype]]()
@@ -1834,7 +2215,15 @@ fn test_synchronized_contact_detection(ctx: DeviceContext) raises -> Bool:
         # GPU step
         LunarLanderV2[dtype].step_kernel_gpu[
             N_ENVS, STATE_SIZE, OBS_DIM, ACTION_DIM
-        ](ctx, gpu_states, gpu_actions, gpu_rewards, gpu_dones, gpu_obs, UInt64(step))
+        ](
+            ctx,
+            gpu_states,
+            gpu_actions,
+            gpu_rewards,
+            gpu_dones,
+            gpu_obs,
+            UInt64(step),
+        )
         ctx.synchronize()
 
         ctx.enqueue_copy(dones_host, gpu_dones)
@@ -1844,17 +2233,30 @@ fn test_synchronized_contact_detection(ctx: DeviceContext) raises -> Bool:
         var gpu_reward = rewards_host[0]
         gpu_total_reward += Float64(gpu_reward)
 
-        var gpu_obs_arr = extract_gpu_observation[N_ENVS, STATE_SIZE](gpu_states, ctx, 0)
+        var gpu_obs_arr = extract_gpu_observation[N_ENVS, STATE_SIZE](
+            gpu_states, ctx, 0
+        )
 
         # Track physics state divergence (omega is critical for shaping reward)
         var cpu_omega = Float64(cpu_env.physics.get_body_omega(0, 0))
-        var gpu_lander_state = extract_gpu_body_state[N_ENVS, STATE_SIZE](gpu_states, ctx, 0, 0)
+        var gpu_lander_state = extract_gpu_body_state[N_ENVS, STATE_SIZE](
+            gpu_states, ctx, 0, 0
+        )
         var gpu_omega = Float64(gpu_lander_state[5])
         var omega_diff = abs_f64(cpu_omega - gpu_omega)
 
         # Report every 10 steps to track divergence growth
         if step % 10 == 0 or omega_diff > 0.1:
-            print("  Step", step + 1, "| CPU omega:", cpu_omega, "| GPU omega:", gpu_omega, "| diff:", omega_diff)
+            print(
+                "  Step",
+                step + 1,
+                "| CPU omega:",
+                cpu_omega,
+                "| GPU omega:",
+                gpu_omega,
+                "| diff:",
+                omega_diff,
+            )
 
         # Compare rewards at each step
         var reward_diff = abs_f64(Float64(cpu_reward) - Float64(gpu_reward))
@@ -1873,38 +2275,74 @@ fn test_synchronized_contact_detection(ctx: DeviceContext) raises -> Bool:
         # Report contact events
         if cpu_left or gpu_left or cpu_right or gpu_right:
             print(
-                "  Step", step + 1,
-                "| Left: CPU=", cpu_left, "GPU=", gpu_left,
-                "| Right: CPU=", cpu_right, "GPU=", gpu_right,
+                "  Step",
+                step + 1,
+                "| Left: CPU=",
+                cpu_left,
+                "GPU=",
+                gpu_left,
+                "| Right: CPU=",
+                cpu_right,
+                "GPU=",
+                gpu_right,
             )
             if cpu_left != gpu_left or cpu_right != gpu_right:
                 # Debug: print contact values and leg positions
                 print("    CPU obs[6]=", cpu_obs[6], "obs[7]=", cpu_obs[7])
-                print("    GPU obs[6]=", gpu_obs_arr[6], "obs[7]=", gpu_obs_arr[7])
+                print(
+                    "    GPU obs[6]=", gpu_obs_arr[6], "obs[7]=", gpu_obs_arr[7]
+                )
 
                 # Get leg positions from CPU
                 var cpu_left_leg_y = cpu_env.physics.get_body_y(0, 1)
                 var cpu_right_leg_y = cpu_env.physics.get_body_y(0, 2)
                 var cpu_left_leg_x = cpu_env.physics.get_body_x(0, 1)
                 var cpu_right_leg_x = cpu_env.physics.get_body_x(0, 2)
-                print("    CPU left_leg: x=", cpu_left_leg_x, "y=", cpu_left_leg_y)
-                print("    CPU right_leg: x=", cpu_right_leg_x, "y=", cpu_right_leg_y)
+                print(
+                    "    CPU left_leg: x=", cpu_left_leg_x, "y=", cpu_left_leg_y
+                )
+                print(
+                    "    CPU right_leg: x=",
+                    cpu_right_leg_x,
+                    "y=",
+                    cpu_right_leg_y,
+                )
 
                 # Get leg positions from GPU
-                var gpu_body_left = extract_gpu_body_state[N_ENVS, STATE_SIZE](gpu_states, ctx, 0, 1)
-                var gpu_body_right = extract_gpu_body_state[N_ENVS, STATE_SIZE](gpu_states, ctx, 0, 2)
-                print("    GPU left_leg: x=", gpu_body_left[0], "y=", gpu_body_left[1])
-                print("    GPU right_leg: x=", gpu_body_right[0], "y=", gpu_body_right[1])
+                var gpu_body_left = extract_gpu_body_state[N_ENVS, STATE_SIZE](
+                    gpu_states, ctx, 0, 1
+                )
+                var gpu_body_right = extract_gpu_body_state[N_ENVS, STATE_SIZE](
+                    gpu_states, ctx, 0, 2
+                )
+                print(
+                    "    GPU left_leg: x=",
+                    gpu_body_left[0],
+                    "y=",
+                    gpu_body_left[1],
+                )
+                print(
+                    "    GPU right_leg: x=",
+                    gpu_body_right[0],
+                    "y=",
+                    gpu_body_right[1],
+                )
                 print("    LEG_H=", LLConstants.LEG_H, "tolerance=0.01")
 
                 # Also check main lander body
                 var cpu_lander_y = cpu_env.physics.get_body_y(0, 0)
                 var cpu_lander_x = cpu_env.physics.get_body_x(0, 0)
-                var gpu_lander = extract_gpu_body_state[N_ENVS, STATE_SIZE](gpu_states, ctx, 0, 0)
+                var gpu_lander = extract_gpu_body_state[N_ENVS, STATE_SIZE](
+                    gpu_states, ctx, 0, 0
+                )
                 print("    CPU lander: x=", cpu_lander_x, "y=", cpu_lander_y)
                 print("    GPU lander: x=", gpu_lander[0], "y=", gpu_lander[1])
-                print("    Lander diff: x=", abs_f64(Float64(cpu_lander_x) - Float64(gpu_lander[0])),
-                      "y=", abs_f64(Float64(cpu_lander_y) - Float64(gpu_lander[1])))
+                print(
+                    "    Lander diff: x=",
+                    abs_f64(Float64(cpu_lander_x) - Float64(gpu_lander[0])),
+                    "y=",
+                    abs_f64(Float64(cpu_lander_y) - Float64(gpu_lander[1])),
+                )
 
             if cpu_left != gpu_left:
                 print("    MISMATCH: Left contact differs!")
@@ -1925,26 +2363,42 @@ fn test_synchronized_contact_detection(ctx: DeviceContext) raises -> Bool:
             var cpu_speed = sqrt(cpu_vx * cpu_vx + cpu_vy * cpu_vy)
             var cpu_omega = Float64(cpu_env.physics.get_body_omega(0, 0))
             var cpu_both_legs = cpu_obs[6] > 0.5 and cpu_obs[7] > 0.5
-            var cpu_is_at_rest = cpu_speed < 0.01 and abs_f64(cpu_omega) < 0.01 and cpu_both_legs
+            var cpu_is_at_rest = (
+                cpu_speed < 0.01 and abs_f64(cpu_omega) < 0.01 and cpu_both_legs
+            )
 
             print("    CPU termination:")
             print("      lander_contact (crash):", cpu_lander_contact)
             print("      speed:", cpu_speed, "omega:", cpu_omega)
-            print("      both_legs:", cpu_both_legs, "is_at_rest (landing):", cpu_is_at_rest)
+            print(
+                "      both_legs:",
+                cpu_both_legs,
+                "is_at_rest (landing):",
+                cpu_is_at_rest,
+            )
             print("      final reward:", cpu_reward)
 
             # GPU termination info
             var gpu_vx = Float64(gpu_obs_arr[2])
             var gpu_vy = Float64(gpu_obs_arr[3])
             var gpu_speed = sqrt(gpu_vx * gpu_vx + gpu_vy * gpu_vy)
-            var gpu_lander = extract_gpu_body_state[N_ENVS, STATE_SIZE](gpu_states, ctx, 0, 0)
+            var gpu_lander = extract_gpu_body_state[N_ENVS, STATE_SIZE](
+                gpu_states, ctx, 0, 0
+            )
             var gpu_omega = Float64(gpu_lander[5])  # omega is at index 5
             var gpu_both_legs = gpu_obs_arr[6] > 0.5 and gpu_obs_arr[7] > 0.5
-            var gpu_is_at_rest = gpu_speed < 0.01 and abs_f64(gpu_omega) < 0.01 and gpu_both_legs
+            var gpu_is_at_rest = (
+                gpu_speed < 0.01 and abs_f64(gpu_omega) < 0.01 and gpu_both_legs
+            )
 
             print("    GPU termination:")
             print("      speed:", gpu_speed, "omega:", gpu_omega)
-            print("      both_legs:", gpu_both_legs, "is_at_rest (landing):", gpu_is_at_rest)
+            print(
+                "      both_legs:",
+                gpu_both_legs,
+                "is_at_rest (landing):",
+                gpu_is_at_rest,
+            )
             print("      final reward:", gpu_reward)
 
             print("\n    TOTAL EPISODE REWARDS:")
@@ -1957,7 +2411,9 @@ fn test_synchronized_contact_detection(ctx: DeviceContext) raises -> Bool:
                 all_match = False
             break
 
-    print("\n[SYNCHRONIZED CONTACT TEST RESULT]:", "PASS" if all_match else "FAIL")
+    print(
+        "\n[SYNCHRONIZED CONTACT TEST RESULT]:", "PASS" if all_match else "FAIL"
+    )
     return all_match
 
 
@@ -2025,8 +2481,13 @@ fn main() raises:
     print("Failed:", failed, "/", len(test_results))
 
     if failed > 0:
-        print("\nNote: 'precision drift' tests may fail due to float32/float64 differences")
+        print(
+            "\nNote: 'precision drift' tests may fail due to float32/float64"
+            " differences"
+        )
         print("accumulating over many steps. This is expected behavior.")
-        print("CRITICAL tests verify that physics is identical when states match.")
+        print(
+            "CRITICAL tests verify that physics is identical when states match."
+        )
     else:
         print("\nAll tests passed - CPU and GPU behavior appear consistent!")

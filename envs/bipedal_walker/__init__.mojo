@@ -4,6 +4,6 @@ from .bipedal_walker_v1 import (
     BipedalWalkerAction,
 )
 
-# v2: GPU-compatible version using physics_gpu
+# v2: GPU-compatible version using physics2d
 from .bipedal_walker_v2 import BipedalWalkerV2
 from .constants_v2 import BWConstants

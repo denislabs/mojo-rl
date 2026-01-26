@@ -13,7 +13,7 @@ from random import seed
 from layout import Layout, LayoutTensor
 
 from envs.lunar_lander import LunarLanderV2
-from physics_gpu import dtype
+from physics2d import dtype
 
 
 comptime BATCH_SIZE: Int = 8

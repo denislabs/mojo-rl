@@ -16,7 +16,7 @@ This directory contains documentation for the GPU physics engine project for Moj
 
 The GPU physics engine is **fully functional** with the following features implemented:
 
-### Core Physics Engine (`physics_gpu/`)
+### Core Physics Engine (`physics2d/`)
 
 | Component | Status | Description |
 |-----------|--------|-------------|
@@ -67,7 +67,7 @@ Create a **modular physics engine** that:
 ## Quick Start
 
 ```mojo
-from physics_gpu import PhysicsLayout, PhysicsKernel, PhysicsState
+from physics2d import PhysicsLayout, PhysicsKernel, PhysicsState
 from envs.lunar_lander_v2 import LunarLanderV2
 
 # Create environment with batched physics

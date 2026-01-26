@@ -577,7 +577,7 @@ fn test_accumulated_drift():
 
 ```
 mojo-rl/
-├── physics_gpu/                      # GPU-compatible physics engine
+├── physics2d/                      # GPU-compatible physics engine
 │   ├── __init__.mojo                 # Module exports
 │   ├── constants.mojo                # dtype, TILE, TPB, body/shape/contact indices
 │   ├── layout.mojo                   # PhysicsLayout - compile-time memory configuration
@@ -593,7 +593,7 @@ mojo-rl/
 │       └── revolute.mojo            # RevoluteJointSolver - springs + angle limits
 │
 ├── envs/
-│   ├── lunar_lander_v2.mojo         # LunarLanderV2 using physics_gpu
+│   ├── lunar_lander_v2.mojo         # LunarLanderV2 using physics2d
 │   │                                  # - 3 bodies (lander + 2 legs)
 │   │                                  # - 2 revolute joints with springs/limits
 │   │                                  # - Terrain smoothing

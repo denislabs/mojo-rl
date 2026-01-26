@@ -18,12 +18,12 @@ Reference: Gymnasium/envs/box2d/car_racing.py
 from math import sin, cos, sqrt, pi, atan2
 from random import random_float64
 
-from physics.vec2 import Vec2, vec2
-from physics.shape import PolygonShape, CircleShape, EdgeShape
-from physics.body import Body, BODY_STATIC, BODY_DYNAMIC, Transform
-from physics.fixture import Filter, CATEGORY_GROUND
-from physics.world import World
-from physics.joint import RevoluteJoint
+from physics_legacy.vec2 import Vec2, vec2
+from physics_legacy.shape import PolygonShape, CircleShape, EdgeShape
+from physics_legacy.body import Body, BODY_STATIC, BODY_DYNAMIC, Transform
+from physics_legacy.fixture import Filter, CATEGORY_GROUND
+from physics_legacy.world import World
+from physics_legacy.joint import RevoluteJoint
 
 from core import State, Action, BoxContinuousActionEnv, BoxSpace, DiscreteSpace
 from render import (
@@ -101,7 +101,7 @@ struct CarRacingState[DTYPE: DType](
         self.vy = other.vy
         self.angle = other.angle
         self.angular_velocity = other.angular_velocity
-        self.wheel_omega = other.wheel_omega
+        self.wheel_omega = other.wheel_omega.copy()
         self.track_progress = other.track_progress
         self.waypoint_dx = other.waypoint_dx
         self.waypoint_dy = other.waypoint_dy
@@ -113,7 +113,7 @@ struct CarRacingState[DTYPE: DType](
         self.vy = other.vy
         self.angle = other.angle
         self.angular_velocity = other.angular_velocity
-        self.wheel_omega = other.wheel_omega
+        self.wheel_omega = other.wheel_omega.copy()
         self.track_progress = other.track_progress
         self.waypoint_dx = other.waypoint_dx
         self.waypoint_dy = other.waypoint_dy

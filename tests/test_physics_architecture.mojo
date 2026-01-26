@@ -6,7 +6,7 @@ results to the original PhysicsWorld API.
 
 from gpu.host import DeviceContext
 
-from physics_gpu import (
+from physics2d import (
     dtype,
     PhysicsWorld,
     PhysicsLayout,
@@ -27,10 +27,20 @@ fn test_layout_sizes():
 
     # Verify sizes
     print("Layout: BATCH=4, NUM_BODIES=3, NUM_SHAPES=2, MAX_CONTACTS=8")
-    print("  BODIES_SIZE:", TestLayout.BODIES_SIZE, "(expected:", 4 * 3 * 13, ")")
+    print(
+        "  BODIES_SIZE:", TestLayout.BODIES_SIZE, "(expected:", 4 * 3 * 13, ")"
+    )
     print("  SHAPES_SIZE:", TestLayout.SHAPES_SIZE, "(expected:", 2 * 20, ")")
-    print("  FORCES_SIZE:", TestLayout.FORCES_SIZE, "(expected:", 4 * 3 * 3, ")")
-    print("  CONTACTS_SIZE:", TestLayout.CONTACTS_SIZE, "(expected:", 4 * 8 * 9, ")")
+    print(
+        "  FORCES_SIZE:", TestLayout.FORCES_SIZE, "(expected:", 4 * 3 * 3, ")"
+    )
+    print(
+        "  CONTACTS_SIZE:",
+        TestLayout.CONTACTS_SIZE,
+        "(expected:",
+        4 * 8 * 9,
+        ")",
+    )
     print("  COUNTS_SIZE:", TestLayout.COUNTS_SIZE, "(expected:", 4, ")")
     print("  TOTAL_SIZE:", TestLayout.TOTAL_SIZE)
 
@@ -216,7 +226,14 @@ fn test_gpu_execution() raises:
 
     print("Initial positions:")
     for env in range(4):
-        print("  env", env, ": x=", state.get_body_x(env, 0), "y=", state.get_body_y(env, 0))
+        print(
+            "  env",
+            env,
+            ": x=",
+            state.get_body_x(env, 0),
+            "y=",
+            state.get_body_y(env, 0),
+        )
 
     # GPU step
     var ctx = DeviceContext()
@@ -227,7 +244,14 @@ fn test_gpu_execution() raises:
 
     print("\nAfter 10 GPU steps:")
     for env in range(4):
-        print("  env", env, ": x=", state.get_body_x(env, 0), "y=", state.get_body_y(env, 0))
+        print(
+            "  env",
+            env,
+            ": x=",
+            state.get_body_x(env, 0),
+            "y=",
+            state.get_body_y(env, 0),
+        )
 
     # Verify gravity applied (y should have decreased)
     var all_fell = True

@@ -15,7 +15,7 @@ from random import random_float64
 from random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor
 
-from physics_gpu.car.constants import (
+from physics2d.car.constants import (
     TILE_DATA_SIZE,
     TILE_V0_X,
     TILE_V0_Y,
@@ -29,7 +29,7 @@ from physics_gpu.car.constants import (
     MAX_TRACK_TILES,
     ROAD_FRICTION,
 )
-from physics_gpu import dtype
+from physics2d import dtype
 
 from .constants import CRConstants
 
@@ -40,7 +40,8 @@ from .constants import CRConstants
 
 
 struct TrackRNG:
-    """PhiloxRandom-based RNG for reproducible track generation (GPU/CPU compatible)."""
+    """PhiloxRandom-based RNG for reproducible track generation (GPU/CPU compatible).
+    """
 
     var seed: Int
     var counter: Int
@@ -216,7 +217,9 @@ struct TrackTileV2[DTYPE: DType](Copyable, ImplicitlyCopyable, Movable):
         self.center_y = other.center_y
         self.direction = other.direction
 
-    fn to_buffer[MAX_TILES: Int](
+    fn to_buffer[
+        MAX_TILES: Int
+    ](
         self,
         mut tiles: LayoutTensor[
             dtype,
@@ -275,7 +278,10 @@ struct TrackGenerator[DTYPE: DType](Copyable, Movable):
                 2.0 * pi * Scalar[Self.DTYPE](i) / Scalar[Self.DTYPE](num_tiles)
             )
             var alpha2 = (
-                2.0 * pi * Scalar[Self.DTYPE](i + 1) / Scalar[Self.DTYPE](num_tiles)
+                2.0
+                * pi
+                * Scalar[Self.DTYPE](i + 1)
+                / Scalar[Self.DTYPE](num_tiles)
             )
 
             # Center line points
@@ -311,7 +317,9 @@ struct TrackGenerator[DTYPE: DType](Copyable, Movable):
 
         self.track_length = len(self.track)
 
-    fn generate_random_track(mut self, seed: UInt64 = 42, verbose: Bool = False):
+    fn generate_random_track(
+        mut self, seed: UInt64 = 42, verbose: Bool = False
+    ):
         """Generate a random procedural track matching Gymnasium's algorithm.
 
         Algorithm:
@@ -329,7 +337,9 @@ struct TrackGenerator[DTYPE: DType](Copyable, Movable):
             var success = self._try_generate_track(rng, verbose)
             if success:
                 if verbose:
-                    print("Track generated successfully on attempt", attempt + 1)
+                    print(
+                        "Track generated successfully on attempt", attempt + 1
+                    )
                     print("  Track length:", self.track_length)
                 return
             # Try different seed on failure
@@ -340,7 +350,9 @@ struct TrackGenerator[DTYPE: DType](Copyable, Movable):
             print("Falling back to simple circular track")
         self.generate_simple_track()
 
-    fn _try_generate_track(mut self, mut rng: TrackRNG, verbose: Bool = False) -> Bool:
+    fn _try_generate_track(
+        mut self, mut rng: TrackRNG, verbose: Bool = False
+    ) -> Bool:
         """Attempt to generate a random track. Returns True on success."""
         self.track.clear()
 
@@ -370,7 +382,8 @@ struct TrackGenerator[DTYPE: DType](Copyable, Movable):
 
             # Random radius
             var rad = rng.uniform_scalar[Self.DTYPE](
-                Float64(CRConstants.TRACK_RAD) / 3.0, Float64(CRConstants.TRACK_RAD)
+                Float64(CRConstants.TRACK_RAD) / 3.0,
+                Float64(CRConstants.TRACK_RAD),
             )
 
             # First checkpoint: fixed position
@@ -388,8 +401,10 @@ struct TrackGenerator[DTYPE: DType](Copyable, Movable):
             checkpoints.append(Checkpoint[Self.DTYPE](alpha, x, y))
 
         # Start alpha for detecting closed loop
-        var start_alpha = two_pi * Scalar[Self.DTYPE](-0.5) / Scalar[Self.DTYPE](
-            num_checkpoints
+        var start_alpha = (
+            two_pi
+            * Scalar[Self.DTYPE](-0.5)
+            / Scalar[Self.DTYPE](num_checkpoints)
         )
 
         # =====================================================================
@@ -492,10 +507,12 @@ struct TrackGenerator[DTYPE: DType](Copyable, Movable):
             y = y + p1y * detail_step
 
             # Record track point (use raw alpha for start line detection)
-            var avg_beta = prev_beta * Scalar[Self.DTYPE](0.5) + beta * Scalar[Self.DTYPE](
-                0.5
+            var avg_beta = prev_beta * Scalar[Self.DTYPE](0.5) + beta * Scalar[
+                Self.DTYPE
+            ](0.5)
+            track_points.append(
+                TrackPoint[Self.DTYPE](alpha_raw, avg_beta, x, y)
             )
-            track_points.append(TrackPoint[Self.DTYPE](alpha_raw, avg_beta, x, y))
 
             # Exit if enough laps completed
             if laps > 4:
@@ -523,7 +540,9 @@ struct TrackGenerator[DTYPE: DType](Copyable, Movable):
             var prev_alpha = track_points[i - 1].alpha
 
             # Check if crossing start line
-            var pass_through_start = curr_alpha > start_alpha and prev_alpha <= start_alpha
+            var pass_through_start = (
+                curr_alpha > start_alpha and prev_alpha <= start_alpha
+            )
 
             if pass_through_start:
                 if i2 == -1:
@@ -621,7 +640,9 @@ struct TrackGenerator[DTYPE: DType](Copyable, Movable):
         self.track_length = len(self.track)
         return self.track_length >= 20
 
-    fn to_buffer[MAX_TILES: Int](
+    fn to_buffer[
+        MAX_TILES: Int
+    ](
         self,
         mut tiles: LayoutTensor[
             dtype,

@@ -1,4 +1,4 @@
-"""BipedalWalker v2 GPU environment using the physics_gpu modular architecture.
+"""BipedalWalker v2 GPU environment using the physics2d modular architecture.
 
 This implementation uses the new modular physics components:
 - BipedalWalkerLayout for compile-time layout computation
@@ -42,13 +42,13 @@ from .state import BipedalWalkerState
 from .action import BipedalWalkerAction
 from .constants_v2 import BWConstants
 
-from physics_gpu.integrators.euler import SemiImplicitEuler
-from physics_gpu.collision.edge_terrain import EdgeTerrainCollision
-from physics_gpu.solvers.impulse import ImpulseSolver
-from physics_gpu.joints.revolute import RevoluteJointSolver
-from physics_gpu.lidar import Lidar
+from physics2d.integrators.euler import SemiImplicitEuler
+from physics2d.collision.edge_terrain import EdgeTerrainCollision
+from physics2d.solvers.impulse import ImpulseSolver
+from physics2d.joints.revolute import RevoluteJointSolver
+from physics2d.lidar import Lidar
 
-from physics_gpu import (
+from physics2d import (
     dtype,
     TPB,
     BODY_STATE_SIZE,
@@ -100,9 +100,7 @@ from physics_gpu import (
 # =============================================================================
 
 
-struct BipedalWalkerV2[
-    DTYPE: DType,
-](
+struct BipedalWalkerV2[DTYPE: DType,](
     BoxContinuousActionEnv,
     Copyable,
     GPUContinuousEnv,
@@ -110,7 +108,7 @@ struct BipedalWalkerV2[
 ):
     """BipedalWalker v2 environment with GPU-compatible physics.
 
-    Uses physics_gpu architecture for efficient batched simulation:
+    Uses physics2d architecture for efficient batched simulation:
     - PhysicsState for accessing physics data in flat layout
     - Motor-enabled revolute joints for leg control
     - Edge terrain collision for ground contact
@@ -368,7 +366,9 @@ struct BipedalWalkerV2[
     fn _reset_cpu(mut self):
         """Internal reset for CPU single-env operation."""
         self.rng_counter += 1
-        var combined_seed = Int(self.rng_seed) * 2654435761 + Int(self.rng_counter) * 12345
+        var combined_seed = (
+            Int(self.rng_seed) * 2654435761 + Int(self.rng_counter) * 12345
+        )
         var rng = PhiloxRandom(seed=combined_seed, offset=0)
 
         # Generate terrain
@@ -401,23 +401,33 @@ struct BipedalWalkerV2[
         var velocity = Scalar[Self.dtype](0.0)
 
         for i in range(BWConstants.TERRAIN_LENGTH):
-            var x = Scalar[Self.dtype](i) * Scalar[Self.dtype](BWConstants.TERRAIN_STEP)
+            var x = Scalar[Self.dtype](i) * Scalar[Self.dtype](
+                BWConstants.TERRAIN_STEP
+            )
             self.terrain_x.append(x)
 
             # Smooth random variation
             var terrain_height = Scalar[Self.dtype](BWConstants.TERRAIN_HEIGHT)
-            velocity = Scalar[Self.dtype](0.8) * velocity + Scalar[Self.dtype](0.01) * (
-                Scalar[Self.dtype](1.0) if terrain_height > y else Scalar[Self.dtype](-1.0)
+            velocity = Scalar[Self.dtype](0.8) * velocity + Scalar[Self.dtype](
+                0.01
+            ) * (
+                Scalar[Self.dtype](1.0) if terrain_height
+                > y else Scalar[Self.dtype](-1.0)
             )
             if i > BWConstants.TERRAIN_STARTPAD:
                 var rand_vals = terrain_rng.step_uniform()
-                velocity = velocity + (Scalar[Self.dtype](rand_vals[0]) * Scalar[Self.dtype](2.0) - Scalar[Self.dtype](1.0)) / Scalar[Self.dtype](BWConstants.SCALE)
+                velocity = velocity + (
+                    Scalar[Self.dtype](rand_vals[0]) * Scalar[Self.dtype](2.0)
+                    - Scalar[Self.dtype](1.0)
+                ) / Scalar[Self.dtype](BWConstants.SCALE)
 
             y = y + velocity
             self.terrain_y.append(y)
 
         # Set up edge terrain
-        var n_edges = min(BWConstants.TERRAIN_LENGTH - 1, BWConstants.MAX_TERRAIN_EDGES)
+        var n_edges = min(
+            BWConstants.TERRAIN_LENGTH - 1, BWConstants.MAX_TERRAIN_EDGES
+        )
         var state = self.physics.get_state_tensor()
         state[0, BWConstants.EDGE_COUNT_OFFSET] = Scalar[dtype](n_edges)
 
@@ -458,7 +468,9 @@ struct BipedalWalkerV2[
             self.edge_collision.edges[collision_edge_off + 4] = nx
             self.edge_collision.edges[collision_edge_off + 5] = ny
 
-    fn _create_walker_cpu(mut self, init_x: Float64, init_y: Float64, mut rng: PhiloxRandom):
+    fn _create_walker_cpu(
+        mut self, init_x: Float64, init_y: Float64, mut rng: PhiloxRandom
+    ):
         """Create the bipedal walker bodies and joints."""
         var rand_vals = rng.step_uniform()
         var init_vx = (Float64(rand_vals[0]) * 2.0 - 1.0) * 0.1
@@ -474,8 +486,12 @@ struct BipedalWalkerV2[
         state[0, hull_off + IDX_VX] = Scalar[dtype](init_vx)
         state[0, hull_off + IDX_VY] = Scalar[dtype](init_vy)
         state[0, hull_off + IDX_OMEGA] = Scalar[dtype](0)
-        state[0, hull_off + IDX_INV_MASS] = Scalar[dtype](1.0 / BWConstants.HULL_MASS)
-        state[0, hull_off + IDX_INV_INERTIA] = Scalar[dtype](1.0 / BWConstants.HULL_INERTIA)
+        state[0, hull_off + IDX_INV_MASS] = Scalar[dtype](
+            1.0 / BWConstants.HULL_MASS
+        )
+        state[0, hull_off + IDX_INV_INERTIA] = Scalar[dtype](
+            1.0 / BWConstants.HULL_INERTIA
+        )
         state[0, hull_off + IDX_SHAPE] = Scalar[dtype](0)
 
         # Create legs
@@ -483,31 +499,49 @@ struct BipedalWalkerV2[
             var sign = Scalar[dtype](-1.0) if leg == 0 else Scalar[dtype](1.0)
 
             # Upper leg
-            var upper_off = BWConstants.BODIES_OFFSET + (leg * 2 + 1) * BODY_STATE_SIZE
+            var upper_off = (
+                BWConstants.BODIES_OFFSET + (leg * 2 + 1) * BODY_STATE_SIZE
+            )
             var upper_x = init_x
-            var upper_y = init_y + BWConstants.LEG_DOWN - BWConstants.UPPER_LEG_H / 2
+            var upper_y = (
+                init_y + BWConstants.LEG_DOWN - BWConstants.UPPER_LEG_H / 2
+            )
             state[0, upper_off + IDX_X] = Scalar[dtype](upper_x)
             state[0, upper_off + IDX_Y] = Scalar[dtype](upper_y)
             state[0, upper_off + IDX_ANGLE] = Scalar[dtype](0)
             state[0, upper_off + IDX_VX] = Scalar[dtype](init_vx)
             state[0, upper_off + IDX_VY] = Scalar[dtype](init_vy)
             state[0, upper_off + IDX_OMEGA] = Scalar[dtype](0)
-            state[0, upper_off + IDX_INV_MASS] = Scalar[dtype](1.0 / BWConstants.LEG_MASS)
-            state[0, upper_off + IDX_INV_INERTIA] = Scalar[dtype](1.0 / BWConstants.LEG_INERTIA)
+            state[0, upper_off + IDX_INV_MASS] = Scalar[dtype](
+                1.0 / BWConstants.LEG_MASS
+            )
+            state[0, upper_off + IDX_INV_INERTIA] = Scalar[dtype](
+                1.0 / BWConstants.LEG_INERTIA
+            )
             state[0, upper_off + IDX_SHAPE] = Scalar[dtype](leg * 2 + 1)
 
             # Lower leg
-            var lower_off = BWConstants.BODIES_OFFSET + (leg * 2 + 2) * BODY_STATE_SIZE
+            var lower_off = (
+                BWConstants.BODIES_OFFSET + (leg * 2 + 2) * BODY_STATE_SIZE
+            )
             var lower_x = init_x
-            var lower_y = upper_y - BWConstants.UPPER_LEG_H / 2 - BWConstants.LOWER_LEG_H / 2
+            var lower_y = (
+                upper_y
+                - BWConstants.UPPER_LEG_H / 2
+                - BWConstants.LOWER_LEG_H / 2
+            )
             state[0, lower_off + IDX_X] = Scalar[dtype](lower_x)
             state[0, lower_off + IDX_Y] = Scalar[dtype](lower_y)
             state[0, lower_off + IDX_ANGLE] = Scalar[dtype](0)
             state[0, lower_off + IDX_VX] = Scalar[dtype](init_vx)
             state[0, lower_off + IDX_VY] = Scalar[dtype](init_vy)
             state[0, lower_off + IDX_OMEGA] = Scalar[dtype](0)
-            state[0, lower_off + IDX_INV_MASS] = Scalar[dtype](1.0 / BWConstants.LOWER_LEG_MASS)
-            state[0, lower_off + IDX_INV_INERTIA] = Scalar[dtype](1.0 / BWConstants.LOWER_LEG_INERTIA)
+            state[0, lower_off + IDX_INV_MASS] = Scalar[dtype](
+                1.0 / BWConstants.LOWER_LEG_MASS
+            )
+            state[0, lower_off + IDX_INV_INERTIA] = Scalar[dtype](
+                1.0 / BWConstants.LOWER_LEG_INERTIA
+            )
             state[0, lower_off + IDX_SHAPE] = Scalar[dtype](leg * 2 + 2)
 
         # Create joints
@@ -515,36 +549,66 @@ struct BipedalWalkerV2[
 
         for leg in range(2):
             # Hip joint (hull to upper leg)
-            var hip_off = BWConstants.JOINTS_OFFSET + (leg * 2) * JOINT_DATA_SIZE
+            var hip_off = (
+                BWConstants.JOINTS_OFFSET + (leg * 2) * JOINT_DATA_SIZE
+            )
             state[0, hip_off + JOINT_TYPE] = Scalar[dtype](JOINT_REVOLUTE)
             state[0, hip_off + JOINT_BODY_A] = Scalar[dtype](0)  # Hull
-            state[0, hip_off + JOINT_BODY_B] = Scalar[dtype](leg * 2 + 1)  # Upper leg
+            state[0, hip_off + JOINT_BODY_B] = Scalar[dtype](
+                leg * 2 + 1
+            )  # Upper leg
             state[0, hip_off + JOINT_ANCHOR_AX] = Scalar[dtype](0)
-            state[0, hip_off + JOINT_ANCHOR_AY] = Scalar[dtype](BWConstants.LEG_DOWN)
+            state[0, hip_off + JOINT_ANCHOR_AY] = Scalar[dtype](
+                BWConstants.LEG_DOWN
+            )
             state[0, hip_off + JOINT_ANCHOR_BX] = Scalar[dtype](0)
-            state[0, hip_off + JOINT_ANCHOR_BY] = Scalar[dtype](BWConstants.UPPER_LEG_H / 2)
+            state[0, hip_off + JOINT_ANCHOR_BY] = Scalar[dtype](
+                BWConstants.UPPER_LEG_H / 2
+            )
             state[0, hip_off + JOINT_REF_ANGLE] = Scalar[dtype](0)
-            state[0, hip_off + JOINT_LOWER_LIMIT] = Scalar[dtype](BWConstants.HIP_LIMIT_LOW)
-            state[0, hip_off + JOINT_UPPER_LIMIT] = Scalar[dtype](BWConstants.HIP_LIMIT_HIGH)
-            state[0, hip_off + JOINT_MAX_MOTOR_TORQUE] = Scalar[dtype](BWConstants.MOTORS_TORQUE)
+            state[0, hip_off + JOINT_LOWER_LIMIT] = Scalar[dtype](
+                BWConstants.HIP_LIMIT_LOW
+            )
+            state[0, hip_off + JOINT_UPPER_LIMIT] = Scalar[dtype](
+                BWConstants.HIP_LIMIT_HIGH
+            )
+            state[0, hip_off + JOINT_MAX_MOTOR_TORQUE] = Scalar[dtype](
+                BWConstants.MOTORS_TORQUE
+            )
             state[0, hip_off + JOINT_MOTOR_SPEED] = Scalar[dtype](0)
             state[0, hip_off + JOINT_FLAGS] = Scalar[dtype](
                 JOINT_FLAG_LIMIT_ENABLED | JOINT_FLAG_MOTOR_ENABLED
             )
 
             # Knee joint (upper leg to lower leg)
-            var knee_off = BWConstants.JOINTS_OFFSET + (leg * 2 + 1) * JOINT_DATA_SIZE
+            var knee_off = (
+                BWConstants.JOINTS_OFFSET + (leg * 2 + 1) * JOINT_DATA_SIZE
+            )
             state[0, knee_off + JOINT_TYPE] = Scalar[dtype](JOINT_REVOLUTE)
-            state[0, knee_off + JOINT_BODY_A] = Scalar[dtype](leg * 2 + 1)  # Upper leg
-            state[0, knee_off + JOINT_BODY_B] = Scalar[dtype](leg * 2 + 2)  # Lower leg
+            state[0, knee_off + JOINT_BODY_A] = Scalar[dtype](
+                leg * 2 + 1
+            )  # Upper leg
+            state[0, knee_off + JOINT_BODY_B] = Scalar[dtype](
+                leg * 2 + 2
+            )  # Lower leg
             state[0, knee_off + JOINT_ANCHOR_AX] = Scalar[dtype](0)
-            state[0, knee_off + JOINT_ANCHOR_AY] = Scalar[dtype](-BWConstants.UPPER_LEG_H / 2)
+            state[0, knee_off + JOINT_ANCHOR_AY] = Scalar[dtype](
+                -BWConstants.UPPER_LEG_H / 2
+            )
             state[0, knee_off + JOINT_ANCHOR_BX] = Scalar[dtype](0)
-            state[0, knee_off + JOINT_ANCHOR_BY] = Scalar[dtype](BWConstants.LOWER_LEG_H / 2)
+            state[0, knee_off + JOINT_ANCHOR_BY] = Scalar[dtype](
+                BWConstants.LOWER_LEG_H / 2
+            )
             state[0, knee_off + JOINT_REF_ANGLE] = Scalar[dtype](0)
-            state[0, knee_off + JOINT_LOWER_LIMIT] = Scalar[dtype](BWConstants.KNEE_LIMIT_LOW)
-            state[0, knee_off + JOINT_UPPER_LIMIT] = Scalar[dtype](BWConstants.KNEE_LIMIT_HIGH)
-            state[0, knee_off + JOINT_MAX_MOTOR_TORQUE] = Scalar[dtype](BWConstants.MOTORS_TORQUE)
+            state[0, knee_off + JOINT_LOWER_LIMIT] = Scalar[dtype](
+                BWConstants.KNEE_LIMIT_LOW
+            )
+            state[0, knee_off + JOINT_UPPER_LIMIT] = Scalar[dtype](
+                BWConstants.KNEE_LIMIT_HIGH
+            )
+            state[0, knee_off + JOINT_MAX_MOTOR_TORQUE] = Scalar[dtype](
+                BWConstants.MOTORS_TORQUE
+            )
             state[0, knee_off + JOINT_MOTOR_SPEED] = Scalar[dtype](0)
             state[0, knee_off + JOINT_FLAGS] = Scalar[dtype](
                 JOINT_FLAG_LIMIT_ENABLED | JOINT_FLAG_MOTOR_ENABLED
@@ -560,7 +624,9 @@ struct BipedalWalkerV2[
     fn _compute_shaping(mut self) -> Scalar[Self.dtype]:
         """Compute potential-based shaping reward."""
         var state = self.physics.get_state_tensor()
-        var hull_x = Float64(rebind[Scalar[dtype]](state[0, BWConstants.BODIES_OFFSET + IDX_X]))
+        var hull_x = Float64(
+            rebind[Scalar[dtype]](state[0, BWConstants.BODIES_OFFSET + IDX_X])
+        )
 
         # Forward progress is the main shaping
         return Scalar[Self.dtype](130.0 * hull_x / BWConstants.SCALE)
@@ -570,15 +636,37 @@ struct BipedalWalkerV2[
         var state = self.physics.get_state_tensor()
 
         # Hull state
-        var hull_angle = Float64(rebind[Scalar[dtype]](state[0, BWConstants.BODIES_OFFSET + IDX_ANGLE]))
-        var hull_omega = Float64(rebind[Scalar[dtype]](state[0, BWConstants.BODIES_OFFSET + IDX_OMEGA]))
-        var hull_vx = Float64(rebind[Scalar[dtype]](state[0, BWConstants.BODIES_OFFSET + IDX_VX]))
-        var hull_vy = Float64(rebind[Scalar[dtype]](state[0, BWConstants.BODIES_OFFSET + IDX_VY]))
+        var hull_angle = Float64(
+            rebind[Scalar[dtype]](
+                state[0, BWConstants.BODIES_OFFSET + IDX_ANGLE]
+            )
+        )
+        var hull_omega = Float64(
+            rebind[Scalar[dtype]](
+                state[0, BWConstants.BODIES_OFFSET + IDX_OMEGA]
+            )
+        )
+        var hull_vx = Float64(
+            rebind[Scalar[dtype]](state[0, BWConstants.BODIES_OFFSET + IDX_VX])
+        )
+        var hull_vy = Float64(
+            rebind[Scalar[dtype]](state[0, BWConstants.BODIES_OFFSET + IDX_VY])
+        )
 
         self.cached_state.hull_angle = Scalar[Self.dtype](hull_angle)
-        self.cached_state.hull_angular_velocity = Scalar[Self.dtype](hull_omega / 5.0)  # Normalized
-        self.cached_state.vel_x = Scalar[Self.dtype](hull_vx * (BWConstants.VIEWPORT_W / BWConstants.SCALE) / BWConstants.FPS)
-        self.cached_state.vel_y = Scalar[Self.dtype](hull_vy * (BWConstants.VIEWPORT_H / BWConstants.SCALE) / BWConstants.FPS)
+        self.cached_state.hull_angular_velocity = Scalar[Self.dtype](
+            hull_omega / 5.0
+        )  # Normalized
+        self.cached_state.vel_x = Scalar[Self.dtype](
+            hull_vx
+            * (BWConstants.VIEWPORT_W / BWConstants.SCALE)
+            / BWConstants.FPS
+        )
+        self.cached_state.vel_y = Scalar[Self.dtype](
+            hull_vy
+            * (BWConstants.VIEWPORT_H / BWConstants.SCALE)
+            / BWConstants.FPS
+        )
 
         # Leg 1 (left) state
         var hip1_off = BWConstants.JOINTS_OFFSET + 0 * JOINT_DATA_SIZE
@@ -586,17 +674,39 @@ struct BipedalWalkerV2[
         var upper1_off = BWConstants.BODIES_OFFSET + 1 * BODY_STATE_SIZE
         var lower1_off = BWConstants.BODIES_OFFSET + 2 * BODY_STATE_SIZE
 
-        var hull_angle_state = Float64(rebind[Scalar[dtype]](state[0, BWConstants.BODIES_OFFSET + IDX_ANGLE]))
-        var upper1_angle = Float64(rebind[Scalar[dtype]](state[0, upper1_off + IDX_ANGLE]))
-        var lower1_angle = Float64(rebind[Scalar[dtype]](state[0, lower1_off + IDX_ANGLE]))
-        var upper1_omega = Float64(rebind[Scalar[dtype]](state[0, upper1_off + IDX_OMEGA]))
-        var lower1_omega = Float64(rebind[Scalar[dtype]](state[0, lower1_off + IDX_OMEGA]))
+        var hull_angle_state = Float64(
+            rebind[Scalar[dtype]](
+                state[0, BWConstants.BODIES_OFFSET + IDX_ANGLE]
+            )
+        )
+        var upper1_angle = Float64(
+            rebind[Scalar[dtype]](state[0, upper1_off + IDX_ANGLE])
+        )
+        var lower1_angle = Float64(
+            rebind[Scalar[dtype]](state[0, lower1_off + IDX_ANGLE])
+        )
+        var upper1_omega = Float64(
+            rebind[Scalar[dtype]](state[0, upper1_off + IDX_OMEGA])
+        )
+        var lower1_omega = Float64(
+            rebind[Scalar[dtype]](state[0, lower1_off + IDX_OMEGA])
+        )
 
-        self.cached_state.hip1_angle = Scalar[Self.dtype]((upper1_angle - hull_angle_state) / 1.0)
-        self.cached_state.hip1_speed = Scalar[Self.dtype]((upper1_omega - hull_omega) / 10.0)
-        self.cached_state.knee1_angle = Scalar[Self.dtype]((lower1_angle - upper1_angle) / 1.0)
-        self.cached_state.knee1_speed = Scalar[Self.dtype]((lower1_omega - upper1_omega) / 10.0)
-        self.cached_state.leg1_contact = Scalar[Self.dtype](1.0) if self.left_leg_contact else Scalar[Self.dtype](0.0)
+        self.cached_state.hip1_angle = Scalar[Self.dtype](
+            (upper1_angle - hull_angle_state) / 1.0
+        )
+        self.cached_state.hip1_speed = Scalar[Self.dtype](
+            (upper1_omega - hull_omega) / 10.0
+        )
+        self.cached_state.knee1_angle = Scalar[Self.dtype](
+            (lower1_angle - upper1_angle) / 1.0
+        )
+        self.cached_state.knee1_speed = Scalar[Self.dtype](
+            (lower1_omega - upper1_omega) / 10.0
+        )
+        self.cached_state.leg1_contact = Scalar[Self.dtype](
+            1.0
+        ) if self.left_leg_contact else Scalar[Self.dtype](0.0)
 
         # Leg 2 (right) state
         var hip2_off = BWConstants.JOINTS_OFFSET + 2 * JOINT_DATA_SIZE
@@ -604,28 +714,58 @@ struct BipedalWalkerV2[
         var upper2_off = BWConstants.BODIES_OFFSET + 3 * BODY_STATE_SIZE
         var lower2_off = BWConstants.BODIES_OFFSET + 4 * BODY_STATE_SIZE
 
-        var upper2_angle = Float64(rebind[Scalar[dtype]](state[0, upper2_off + IDX_ANGLE]))
-        var lower2_angle = Float64(rebind[Scalar[dtype]](state[0, lower2_off + IDX_ANGLE]))
-        var upper2_omega = Float64(rebind[Scalar[dtype]](state[0, upper2_off + IDX_OMEGA]))
-        var lower2_omega = Float64(rebind[Scalar[dtype]](state[0, lower2_off + IDX_OMEGA]))
+        var upper2_angle = Float64(
+            rebind[Scalar[dtype]](state[0, upper2_off + IDX_ANGLE])
+        )
+        var lower2_angle = Float64(
+            rebind[Scalar[dtype]](state[0, lower2_off + IDX_ANGLE])
+        )
+        var upper2_omega = Float64(
+            rebind[Scalar[dtype]](state[0, upper2_off + IDX_OMEGA])
+        )
+        var lower2_omega = Float64(
+            rebind[Scalar[dtype]](state[0, lower2_off + IDX_OMEGA])
+        )
 
-        self.cached_state.hip2_angle = Scalar[Self.dtype]((upper2_angle - hull_angle_state) / 1.0)
-        self.cached_state.hip2_speed = Scalar[Self.dtype]((upper2_omega - hull_omega) / 10.0)
-        self.cached_state.knee2_angle = Scalar[Self.dtype]((lower2_angle - upper2_angle) / 1.0)
-        self.cached_state.knee2_speed = Scalar[Self.dtype]((lower2_omega - upper2_omega) / 10.0)
-        self.cached_state.leg2_contact = Scalar[Self.dtype](1.0) if self.right_leg_contact else Scalar[Self.dtype](0.0)
+        self.cached_state.hip2_angle = Scalar[Self.dtype](
+            (upper2_angle - hull_angle_state) / 1.0
+        )
+        self.cached_state.hip2_speed = Scalar[Self.dtype](
+            (upper2_omega - hull_omega) / 10.0
+        )
+        self.cached_state.knee2_angle = Scalar[Self.dtype](
+            (lower2_angle - upper2_angle) / 1.0
+        )
+        self.cached_state.knee2_speed = Scalar[Self.dtype](
+            (lower2_omega - upper2_omega) / 10.0
+        )
+        self.cached_state.leg2_contact = Scalar[Self.dtype](
+            1.0
+        ) if self.right_leg_contact else Scalar[Self.dtype](0.0)
 
         # Lidar raycast
-        var hull_x = rebind[Scalar[dtype]](state[0, BWConstants.BODIES_OFFSET + IDX_X])
-        var hull_y = rebind[Scalar[dtype]](state[0, BWConstants.BODIES_OFFSET + IDX_Y])
-        var hull_angle_rad = rebind[Scalar[dtype]](state[0, BWConstants.BODIES_OFFSET + IDX_ANGLE])
+        var hull_x = rebind[Scalar[dtype]](
+            state[0, BWConstants.BODIES_OFFSET + IDX_X]
+        )
+        var hull_y = rebind[Scalar[dtype]](
+            state[0, BWConstants.BODIES_OFFSET + IDX_Y]
+        )
+        var hull_angle_rad = rebind[Scalar[dtype]](
+            state[0, BWConstants.BODIES_OFFSET + IDX_ANGLE]
+        )
         var n_edges = Int(state[0, BWConstants.EDGE_COUNT_OFFSET])
         var lidar_range = Scalar[dtype](BWConstants.LIDAR_RANGE)
 
         for i in range(BWConstants.NUM_LIDAR):
             # Angle relative to hull: 0 to 1.5 radians (looking down/forward)
-            var local_angle = Scalar[dtype](i) * Scalar[dtype](1.5) / Scalar[dtype](BWConstants.NUM_LIDAR - 1)
-            var world_angle = hull_angle_rad - local_angle - Scalar[dtype](pi / 2.0)
+            var local_angle = (
+                Scalar[dtype](i)
+                * Scalar[dtype](1.5)
+                / Scalar[dtype](BWConstants.NUM_LIDAR - 1)
+            )
+            var world_angle = (
+                hull_angle_rad - local_angle - Scalar[dtype](pi / 2.0)
+            )
 
             # Ray direction
             var ray_dx = cos(world_angle) * lidar_range
@@ -649,15 +789,24 @@ struct BipedalWalkerV2[
                 var ey = edge_y1 - edge_y0
                 var denom = ray_dx * ey - ray_dy * ex
 
-                if denom > Scalar[dtype](-1e-10) and denom < Scalar[dtype](1e-10):
+                if denom > Scalar[dtype](-1e-10) and denom < Scalar[dtype](
+                    1e-10
+                ):
                     continue  # Parallel
 
                 var dx_ray = hull_x - edge_x0
                 var dy_ray = hull_y - edge_y0
                 var t = (ex * dy_ray - ey * dx_ray) / denom  # Along ray
-                var u = (ray_dx * dy_ray - ray_dy * dx_ray) / denom  # Along edge
+                var u = (
+                    ray_dx * dy_ray - ray_dy * dx_ray
+                ) / denom  # Along edge
 
-                if t >= Scalar[dtype](0.0) and t <= Scalar[dtype](1.0) and u >= Scalar[dtype](0.0) and u <= Scalar[dtype](1.0):
+                if (
+                    t >= Scalar[dtype](0.0)
+                    and t <= Scalar[dtype](1.0)
+                    and u >= Scalar[dtype](0.0)
+                    and u <= Scalar[dtype](1.0)
+                ):
                     if t < min_t:
                         min_t = t
 
@@ -703,7 +852,9 @@ struct BipedalWalkerV2[
         var joint_counts = self.physics.get_joint_counts_tensor()
 
         var integrator = SemiImplicitEuler()
-        var solver = ImpulseSolver(BWConstants.FRICTION, BWConstants.RESTITUTION)
+        var solver = ImpulseSolver(
+            BWConstants.FRICTION, BWConstants.RESTITUTION
+        )
 
         var gravity_x = Scalar[dtype](self.config.gravity_x)
         var gravity_y = Scalar[dtype](self.config.gravity_y)
@@ -713,33 +864,46 @@ struct BipedalWalkerV2[
 
         # Integrate velocities
         integrator.integrate_velocities[1, BWConstants.NUM_BODIES](
-            bodies, forces, gravity_x, gravity_y, dt,
+            bodies,
+            forces,
+            gravity_x,
+            gravity_y,
+            dt,
         )
 
         # Detect collisions
         self.edge_collision.detect[
-            1, BWConstants.NUM_BODIES, BWConstants.NUM_SHAPES, BWConstants.MAX_CONTACTS,
+            1,
+            BWConstants.NUM_BODIES,
+            BWConstants.NUM_SHAPES,
+            BWConstants.MAX_CONTACTS,
         ](bodies, shapes, contacts, contact_counts)
 
         # Solve velocity constraints
         for _ in range(self.config.velocity_iterations):
-            solver.solve_velocity[1, BWConstants.NUM_BODIES, BWConstants.MAX_CONTACTS](
-                bodies, contacts, contact_counts
-            )
-            RevoluteJointSolver.solve_velocity[1, BWConstants.NUM_BODIES, BWConstants.MAX_JOINTS](
-                bodies, joints, joint_counts, dt
-            )
+            solver.solve_velocity[
+                1, BWConstants.NUM_BODIES, BWConstants.MAX_CONTACTS
+            ](bodies, contacts, contact_counts)
+            RevoluteJointSolver.solve_velocity[
+                1, BWConstants.NUM_BODIES, BWConstants.MAX_JOINTS
+            ](bodies, joints, joint_counts, dt)
 
         # Integrate positions
         integrator.integrate_positions[1, BWConstants.NUM_BODIES](bodies, dt)
 
         # Solve position constraints
         for _ in range(self.config.position_iterations):
-            solver.solve_position[1, BWConstants.NUM_BODIES, BWConstants.MAX_CONTACTS](
-                bodies, contacts, contact_counts
-            )
-            RevoluteJointSolver.solve_position[1, BWConstants.NUM_BODIES, BWConstants.MAX_JOINTS](
-                bodies, joints, joint_counts, baumgarte, slop,
+            solver.solve_position[
+                1, BWConstants.NUM_BODIES, BWConstants.MAX_CONTACTS
+            ](bodies, contacts, contact_counts)
+            RevoluteJointSolver.solve_position[
+                1, BWConstants.NUM_BODIES, BWConstants.MAX_JOINTS
+            ](
+                bodies,
+                joints,
+                joint_counts,
+                baumgarte,
+                slop,
             )
 
         # Clear forces
@@ -778,9 +942,15 @@ struct BipedalWalkerV2[
             hip1_action = Scalar[Self.dtype](1.0)
         if hip1_action < Scalar[Self.dtype](-1.0):
             hip1_action = Scalar[Self.dtype](-1.0)
-        var hip1_sign = Scalar[dtype](1.0) if hip1_action >= Scalar[Self.dtype](0) else Scalar[dtype](-1.0)
-        state[0, hip1_off + JOINT_MOTOR_SPEED] = hip1_sign * Scalar[dtype](BWConstants.SPEED_HIP)
-        state[0, hip1_off + JOINT_MAX_MOTOR_TORQUE] = Scalar[dtype](BWConstants.MOTORS_TORQUE) * Scalar[dtype](abs(hip1_action))
+        var hip1_sign = Scalar[dtype](1.0) if hip1_action >= Scalar[Self.dtype](
+            0
+        ) else Scalar[dtype](-1.0)
+        state[0, hip1_off + JOINT_MOTOR_SPEED] = hip1_sign * Scalar[dtype](
+            BWConstants.SPEED_HIP
+        )
+        state[0, hip1_off + JOINT_MAX_MOTOR_TORQUE] = Scalar[dtype](
+            BWConstants.MOTORS_TORQUE
+        ) * Scalar[dtype](abs(hip1_action))
 
         # Knee 1 (left)
         var knee1_off = BWConstants.JOINTS_OFFSET + 1 * JOINT_DATA_SIZE
@@ -789,9 +959,15 @@ struct BipedalWalkerV2[
             knee1_action = Scalar[Self.dtype](1.0)
         if knee1_action < Scalar[Self.dtype](-1.0):
             knee1_action = Scalar[Self.dtype](-1.0)
-        var knee1_sign = Scalar[dtype](1.0) if knee1_action >= Scalar[Self.dtype](0) else Scalar[dtype](-1.0)
-        state[0, knee1_off + JOINT_MOTOR_SPEED] = knee1_sign * Scalar[dtype](BWConstants.SPEED_KNEE)
-        state[0, knee1_off + JOINT_MAX_MOTOR_TORQUE] = Scalar[dtype](BWConstants.MOTORS_TORQUE) * Scalar[dtype](abs(knee1_action))
+        var knee1_sign = Scalar[dtype](1.0) if knee1_action >= Scalar[
+            Self.dtype
+        ](0) else Scalar[dtype](-1.0)
+        state[0, knee1_off + JOINT_MOTOR_SPEED] = knee1_sign * Scalar[dtype](
+            BWConstants.SPEED_KNEE
+        )
+        state[0, knee1_off + JOINT_MAX_MOTOR_TORQUE] = Scalar[dtype](
+            BWConstants.MOTORS_TORQUE
+        ) * Scalar[dtype](abs(knee1_action))
 
         # Hip 2 (right)
         var hip2_off = BWConstants.JOINTS_OFFSET + 2 * JOINT_DATA_SIZE
@@ -800,9 +976,15 @@ struct BipedalWalkerV2[
             hip2_action = Scalar[Self.dtype](1.0)
         if hip2_action < Scalar[Self.dtype](-1.0):
             hip2_action = Scalar[Self.dtype](-1.0)
-        var hip2_sign = Scalar[dtype](1.0) if hip2_action >= Scalar[Self.dtype](0) else Scalar[dtype](-1.0)
-        state[0, hip2_off + JOINT_MOTOR_SPEED] = hip2_sign * Scalar[dtype](BWConstants.SPEED_HIP)
-        state[0, hip2_off + JOINT_MAX_MOTOR_TORQUE] = Scalar[dtype](BWConstants.MOTORS_TORQUE) * Scalar[dtype](abs(hip2_action))
+        var hip2_sign = Scalar[dtype](1.0) if hip2_action >= Scalar[Self.dtype](
+            0
+        ) else Scalar[dtype](-1.0)
+        state[0, hip2_off + JOINT_MOTOR_SPEED] = hip2_sign * Scalar[dtype](
+            BWConstants.SPEED_HIP
+        )
+        state[0, hip2_off + JOINT_MAX_MOTOR_TORQUE] = Scalar[dtype](
+            BWConstants.MOTORS_TORQUE
+        ) * Scalar[dtype](abs(hip2_action))
 
         # Knee 2 (right)
         var knee2_off = BWConstants.JOINTS_OFFSET + 3 * JOINT_DATA_SIZE
@@ -811,9 +993,15 @@ struct BipedalWalkerV2[
             knee2_action = Scalar[Self.dtype](1.0)
         if knee2_action < Scalar[Self.dtype](-1.0):
             knee2_action = Scalar[Self.dtype](-1.0)
-        var knee2_sign = Scalar[dtype](1.0) if knee2_action >= Scalar[Self.dtype](0) else Scalar[dtype](-1.0)
-        state[0, knee2_off + JOINT_MOTOR_SPEED] = knee2_sign * Scalar[dtype](BWConstants.SPEED_KNEE)
-        state[0, knee2_off + JOINT_MAX_MOTOR_TORQUE] = Scalar[dtype](BWConstants.MOTORS_TORQUE) * Scalar[dtype](abs(knee2_action))
+        var knee2_sign = Scalar[dtype](1.0) if knee2_action >= Scalar[
+            Self.dtype
+        ](0) else Scalar[dtype](-1.0)
+        state[0, knee2_off + JOINT_MOTOR_SPEED] = knee2_sign * Scalar[dtype](
+            BWConstants.SPEED_KNEE
+        )
+        state[0, knee2_off + JOINT_MAX_MOTOR_TORQUE] = Scalar[dtype](
+            BWConstants.MOTORS_TORQUE
+        ) * Scalar[dtype](abs(knee2_action))
 
         # Physics step
         self._step_physics_cpu()
@@ -824,7 +1012,9 @@ struct BipedalWalkerV2[
 
         # Update scroll for rendering
         var hull_x_scroll = self.physics.get_body_x(0, Self.BODY_HULL)
-        self.scroll = Scalar[Self.dtype](hull_x_scroll) - Scalar[Self.dtype](BWConstants.VIEWPORT_W / BWConstants.SCALE / 5.0)
+        self.scroll = Scalar[Self.dtype](hull_x_scroll) - Scalar[Self.dtype](
+            BWConstants.VIEWPORT_W / BWConstants.SCALE / 5.0
+        )
 
         # Update cached state
         self._update_cached_state()
@@ -839,7 +1029,9 @@ struct BipedalWalkerV2[
         self.step_count += 1
 
         var hull_x = Float64(self.physics.get_body_x(0, Self.BODY_HULL))
-        var _ = Float64(self.physics.get_body_y(0, Self.BODY_HULL))  # hull_y unused for now
+        var _ = Float64(
+            self.physics.get_body_y(0, Self.BODY_HULL)
+        )  # hull_y unused for now
         var hull_angle = Float64(self.physics.get_body_angle(0, Self.BODY_HULL))
 
         # Shaping reward (forward progress)
@@ -852,10 +1044,15 @@ struct BipedalWalkerV2[
 
         # Energy penalty
         var energy = (
-            abs(action.hip1) + abs(action.knee1) +
-            abs(action.hip2) + abs(action.knee2)
+            abs(action.hip1)
+            + abs(action.knee1)
+            + abs(action.hip2)
+            + abs(action.knee2)
         )
-        reward = reward - Scalar[Self.dtype](0.00035 * BWConstants.MOTORS_TORQUE) * energy
+        reward = (
+            reward
+            - Scalar[Self.dtype](0.00035 * BWConstants.MOTORS_TORQUE) * energy
+        )
 
         var terminated = False
 
@@ -870,7 +1067,10 @@ struct BipedalWalkerV2[
             terminated = True
 
         # Success: reached end of terrain
-        var terrain_end = Float64(BWConstants.TERRAIN_LENGTH - BWConstants.TERRAIN_GRASS) * BWConstants.TERRAIN_STEP
+        var terrain_end = (
+            Float64(BWConstants.TERRAIN_LENGTH - BWConstants.TERRAIN_GRASS)
+            * BWConstants.TERRAIN_STEP
+        )
         if hull_x > terrain_end:
             terminated = True
 
@@ -913,18 +1113,30 @@ struct BipedalWalkerV2[
         mut self, action: Scalar[Self.dtype]
     ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
         """Step with single scalar action (applied to all joints)."""
-        var act = BipedalWalkerAction[Self.dtype](action, action, action, action)
+        var act = BipedalWalkerAction[Self.dtype](
+            action, action, action, action
+        )
         var result = self._step_cpu_continuous(act)
         return (self.get_obs_list(), result[0], result[1])
 
-    fn step_continuous_vec[DTYPE_VEC: DType](
-        mut self, action: List[Scalar[DTYPE_VEC]]
-    ) -> Tuple[List[Scalar[DTYPE_VEC]], Scalar[DTYPE_VEC], Bool]:
+    fn step_continuous_vec[
+        DTYPE_VEC: DType
+    ](mut self, action: List[Scalar[DTYPE_VEC]]) -> Tuple[
+        List[Scalar[DTYPE_VEC]], Scalar[DTYPE_VEC], Bool
+    ]:
         """Step with vector action."""
-        var hip1 = Scalar[Self.dtype](action[0]) if len(action) > 0 else Scalar[Self.dtype](0)
-        var knee1 = Scalar[Self.dtype](action[1]) if len(action) > 1 else Scalar[Self.dtype](0)
-        var hip2 = Scalar[Self.dtype](action[2]) if len(action) > 2 else Scalar[Self.dtype](0)
-        var knee2 = Scalar[Self.dtype](action[3]) if len(action) > 3 else Scalar[Self.dtype](0)
+        var hip1 = Scalar[Self.dtype](action[0]) if len(action) > 0 else Scalar[
+            Self.dtype
+        ](0)
+        var knee1 = Scalar[Self.dtype](action[1]) if len(
+            action
+        ) > 1 else Scalar[Self.dtype](0)
+        var hip2 = Scalar[Self.dtype](action[2]) if len(action) > 2 else Scalar[
+            Self.dtype
+        ](0)
+        var knee2 = Scalar[Self.dtype](action[3]) if len(
+            action
+        ) > 3 else Scalar[Self.dtype](0)
         var act = BipedalWalkerAction[Self.dtype](hip1, knee1, hip2, knee2)
         var result = self._step_cpu_continuous(act)
 
@@ -960,9 +1172,7 @@ struct BipedalWalkerV2[
         # Create scrolling camera that follows the walker
         # Camera X = scroll position, Y centered vertically
         var cam_y = (
-            Float64(BWConstants.VIEWPORT_H)
-            / Float64(BWConstants.SCALE)
-            / 2.0
+            Float64(BWConstants.VIEWPORT_H) / Float64(BWConstants.SCALE) / 2.0
         )
         var camera = Camera(
             Float64(self.scroll)
@@ -1075,9 +1285,15 @@ struct BipedalWalkerV2[
     fn _draw_legs(mut self, mut renderer: RendererBase, camera: Camera):
         """Draw leg segments using Transform2D and Camera."""
         for side in range(2):
-            var upper_body_idx = Self.BODY_UPPER_LEG_L if side == 0 else Self.BODY_UPPER_LEG_R
-            var lower_body_idx = Self.BODY_LOWER_LEG_L if side == 0 else Self.BODY_LOWER_LEG_R
-            var has_contact = self.left_leg_contact if side == 0 else self.right_leg_contact
+            var upper_body_idx = (
+                Self.BODY_UPPER_LEG_L if side == 0 else Self.BODY_UPPER_LEG_R
+            )
+            var lower_body_idx = (
+                Self.BODY_LOWER_LEG_L if side == 0 else Self.BODY_LOWER_LEG_R
+            )
+            var has_contact = (
+                self.left_leg_contact if side == 0 else self.right_leg_contact
+            )
 
             # Color based on ground contact
             var leg_color = contact_green() if has_contact else inactive_gray()
@@ -1163,7 +1379,9 @@ struct BipedalWalkerV2[
         BipedalWalkerV2[Self.dtype]._init_shapes_gpu(ctx, shapes_buf)
 
         # Fused step kernel
-        BipedalWalkerV2[Self.dtype]._fused_step_gpu[BATCH_SIZE, OBS_DIM, ACTION_DIM](
+        BipedalWalkerV2[Self.dtype]._fused_step_gpu[
+            BATCH_SIZE, OBS_DIM, ACTION_DIM
+        ](
             ctx,
             states_buf,
             shapes_buf,
@@ -1252,9 +1470,9 @@ struct BipedalWalkerV2[
             var done_val = dones[i]
             if done_val > Scalar[dtype](0.5):
                 var combined_seed = Int(seed) * 2654435761 + (i + 1) * 12345
-                BipedalWalkerV2[Self.dtype]._reset_env_gpu[BATCH_SIZE, STATE_SIZE](
-                    states, i, combined_seed
-                )
+                BipedalWalkerV2[Self.dtype]._reset_env_gpu[
+                    BATCH_SIZE, STATE_SIZE
+                ](states, i, combined_seed)
                 # Clear done flag after reset
                 dones[i] = Scalar[dtype](0.0)
 
@@ -1287,7 +1505,9 @@ struct BipedalWalkerV2[
         var terrain_rng = PhiloxRandom(seed=seed + 1000, offset=0)
 
         # Generate terrain
-        var n_edges = min(BWConstants.TERRAIN_LENGTH - 1, BWConstants.MAX_TERRAIN_EDGES)
+        var n_edges = min(
+            BWConstants.TERRAIN_LENGTH - 1, BWConstants.MAX_TERRAIN_EDGES
+        )
         states[env, BWConstants.EDGE_COUNT_OFFSET] = Scalar[dtype](n_edges)
 
         var y: Scalar[dtype] = Scalar[dtype](BWConstants.TERRAIN_HEIGHT)
@@ -1295,17 +1515,24 @@ struct BipedalWalkerV2[
         var prev_y = y
 
         for edge in range(n_edges):
-            var x0 = Scalar[dtype](edge) * Scalar[dtype](BWConstants.TERRAIN_STEP)
-            var x1 = Scalar[dtype](edge + 1) * Scalar[dtype](BWConstants.TERRAIN_STEP)
+            var x0 = Scalar[dtype](edge) * Scalar[dtype](
+                BWConstants.TERRAIN_STEP
+            )
+            var x1 = Scalar[dtype](edge + 1) * Scalar[dtype](
+                BWConstants.TERRAIN_STEP
+            )
 
             prev_y = y
             var terrain_height = Scalar[dtype](BWConstants.TERRAIN_HEIGHT)
             velocity = Scalar[dtype](0.8) * velocity + Scalar[dtype](0.01) * (
-                Scalar[dtype](1.0) if terrain_height > y else Scalar[dtype](-1.0)
+                Scalar[dtype](1.0) if terrain_height
+                > y else Scalar[dtype](-1.0)
             )
             if edge > BWConstants.TERRAIN_STARTPAD:
                 var rand_vals = terrain_rng.step_uniform()
-                velocity = velocity + (rand_vals[0] * Scalar[dtype](2.0) - Scalar[dtype](1.0)) / Scalar[dtype](BWConstants.SCALE)
+                velocity = velocity + (
+                    rand_vals[0] * Scalar[dtype](2.0) - Scalar[dtype](1.0)
+                ) / Scalar[dtype](BWConstants.SCALE)
             y = y + velocity
 
             # Compute normal
@@ -1328,10 +1555,18 @@ struct BipedalWalkerV2[
 
         # Initialize walker
         var rand_vals = rng.step_uniform()
-        var init_x = Scalar[dtype](BWConstants.TERRAIN_STARTPAD * BWConstants.TERRAIN_STEP)
-        var init_y = Scalar[dtype](BWConstants.TERRAIN_HEIGHT + 2.0 * BWConstants.LEG_H)
-        var init_vx = (rand_vals[0] * Scalar[dtype](2.0) - Scalar[dtype](1.0)) * Scalar[dtype](0.1)
-        var init_vy = (rand_vals[1] * Scalar[dtype](2.0) - Scalar[dtype](1.0)) * Scalar[dtype](0.1)
+        var init_x = Scalar[dtype](
+            BWConstants.TERRAIN_STARTPAD * BWConstants.TERRAIN_STEP
+        )
+        var init_y = Scalar[dtype](
+            BWConstants.TERRAIN_HEIGHT + 2.0 * BWConstants.LEG_H
+        )
+        var init_vx = (
+            rand_vals[0] * Scalar[dtype](2.0) - Scalar[dtype](1.0)
+        ) * Scalar[dtype](0.1)
+        var init_vy = (
+            rand_vals[1] * Scalar[dtype](2.0) - Scalar[dtype](1.0)
+        ) * Scalar[dtype](0.1)
 
         # Hull
         var hull_off = BWConstants.BODIES_OFFSET
@@ -1341,68 +1576,116 @@ struct BipedalWalkerV2[
         states[env, hull_off + IDX_VX] = init_vx
         states[env, hull_off + IDX_VY] = init_vy
         states[env, hull_off + IDX_OMEGA] = Scalar[dtype](0)
-        states[env, hull_off + IDX_INV_MASS] = Scalar[dtype](1.0 / BWConstants.HULL_MASS)
-        states[env, hull_off + IDX_INV_INERTIA] = Scalar[dtype](1.0 / BWConstants.HULL_INERTIA)
+        states[env, hull_off + IDX_INV_MASS] = Scalar[dtype](
+            1.0 / BWConstants.HULL_MASS
+        )
+        states[env, hull_off + IDX_INV_INERTIA] = Scalar[dtype](
+            1.0 / BWConstants.HULL_INERTIA
+        )
         states[env, hull_off + IDX_SHAPE] = Scalar[dtype](0)
 
         # Legs
         for leg in range(2):
-            var upper_off = BWConstants.BODIES_OFFSET + (leg * 2 + 1) * BODY_STATE_SIZE
-            var upper_y = init_y + Scalar[dtype](BWConstants.LEG_DOWN) - Scalar[dtype](BWConstants.UPPER_LEG_H / 2)
+            var upper_off = (
+                BWConstants.BODIES_OFFSET + (leg * 2 + 1) * BODY_STATE_SIZE
+            )
+            var upper_y = (
+                init_y
+                + Scalar[dtype](BWConstants.LEG_DOWN)
+                - Scalar[dtype](BWConstants.UPPER_LEG_H / 2)
+            )
             states[env, upper_off + IDX_X] = init_x
             states[env, upper_off + IDX_Y] = upper_y
             states[env, upper_off + IDX_ANGLE] = Scalar[dtype](0)
             states[env, upper_off + IDX_VX] = init_vx
             states[env, upper_off + IDX_VY] = init_vy
             states[env, upper_off + IDX_OMEGA] = Scalar[dtype](0)
-            states[env, upper_off + IDX_INV_MASS] = Scalar[dtype](1.0 / BWConstants.LEG_MASS)
-            states[env, upper_off + IDX_INV_INERTIA] = Scalar[dtype](1.0 / BWConstants.LEG_INERTIA)
+            states[env, upper_off + IDX_INV_MASS] = Scalar[dtype](
+                1.0 / BWConstants.LEG_MASS
+            )
+            states[env, upper_off + IDX_INV_INERTIA] = Scalar[dtype](
+                1.0 / BWConstants.LEG_INERTIA
+            )
             states[env, upper_off + IDX_SHAPE] = Scalar[dtype](leg * 2 + 1)
 
-            var lower_off = BWConstants.BODIES_OFFSET + (leg * 2 + 2) * BODY_STATE_SIZE
-            var lower_y = upper_y - Scalar[dtype](BWConstants.UPPER_LEG_H / 2) - Scalar[dtype](BWConstants.LOWER_LEG_H / 2)
+            var lower_off = (
+                BWConstants.BODIES_OFFSET + (leg * 2 + 2) * BODY_STATE_SIZE
+            )
+            var lower_y = (
+                upper_y
+                - Scalar[dtype](BWConstants.UPPER_LEG_H / 2)
+                - Scalar[dtype](BWConstants.LOWER_LEG_H / 2)
+            )
             states[env, lower_off + IDX_X] = init_x
             states[env, lower_off + IDX_Y] = lower_y
             states[env, lower_off + IDX_ANGLE] = Scalar[dtype](0)
             states[env, lower_off + IDX_VX] = init_vx
             states[env, lower_off + IDX_VY] = init_vy
             states[env, lower_off + IDX_OMEGA] = Scalar[dtype](0)
-            states[env, lower_off + IDX_INV_MASS] = Scalar[dtype](1.0 / BWConstants.LOWER_LEG_MASS)
-            states[env, lower_off + IDX_INV_INERTIA] = Scalar[dtype](1.0 / BWConstants.LOWER_LEG_INERTIA)
+            states[env, lower_off + IDX_INV_MASS] = Scalar[dtype](
+                1.0 / BWConstants.LOWER_LEG_MASS
+            )
+            states[env, lower_off + IDX_INV_INERTIA] = Scalar[dtype](
+                1.0 / BWConstants.LOWER_LEG_INERTIA
+            )
             states[env, lower_off + IDX_SHAPE] = Scalar[dtype](leg * 2 + 2)
 
         # Joints
         states[env, BWConstants.JOINT_COUNT_OFFSET] = Scalar[dtype](4)
         for leg in range(2):
-            var hip_off = BWConstants.JOINTS_OFFSET + (leg * 2) * JOINT_DATA_SIZE
+            var hip_off = (
+                BWConstants.JOINTS_OFFSET + (leg * 2) * JOINT_DATA_SIZE
+            )
             states[env, hip_off + JOINT_TYPE] = Scalar[dtype](JOINT_REVOLUTE)
             states[env, hip_off + JOINT_BODY_A] = Scalar[dtype](0)
             states[env, hip_off + JOINT_BODY_B] = Scalar[dtype](leg * 2 + 1)
             states[env, hip_off + JOINT_ANCHOR_AX] = Scalar[dtype](0)
-            states[env, hip_off + JOINT_ANCHOR_AY] = Scalar[dtype](BWConstants.LEG_DOWN)
+            states[env, hip_off + JOINT_ANCHOR_AY] = Scalar[dtype](
+                BWConstants.LEG_DOWN
+            )
             states[env, hip_off + JOINT_ANCHOR_BX] = Scalar[dtype](0)
-            states[env, hip_off + JOINT_ANCHOR_BY] = Scalar[dtype](BWConstants.UPPER_LEG_H / 2)
+            states[env, hip_off + JOINT_ANCHOR_BY] = Scalar[dtype](
+                BWConstants.UPPER_LEG_H / 2
+            )
             states[env, hip_off + JOINT_REF_ANGLE] = Scalar[dtype](0)
-            states[env, hip_off + JOINT_LOWER_LIMIT] = Scalar[dtype](BWConstants.HIP_LIMIT_LOW)
-            states[env, hip_off + JOINT_UPPER_LIMIT] = Scalar[dtype](BWConstants.HIP_LIMIT_HIGH)
-            states[env, hip_off + JOINT_MAX_MOTOR_TORQUE] = Scalar[dtype](BWConstants.MOTORS_TORQUE)
+            states[env, hip_off + JOINT_LOWER_LIMIT] = Scalar[dtype](
+                BWConstants.HIP_LIMIT_LOW
+            )
+            states[env, hip_off + JOINT_UPPER_LIMIT] = Scalar[dtype](
+                BWConstants.HIP_LIMIT_HIGH
+            )
+            states[env, hip_off + JOINT_MAX_MOTOR_TORQUE] = Scalar[dtype](
+                BWConstants.MOTORS_TORQUE
+            )
             states[env, hip_off + JOINT_MOTOR_SPEED] = Scalar[dtype](0)
             states[env, hip_off + JOINT_FLAGS] = Scalar[dtype](
                 JOINT_FLAG_LIMIT_ENABLED | JOINT_FLAG_MOTOR_ENABLED
             )
 
-            var knee_off = BWConstants.JOINTS_OFFSET + (leg * 2 + 1) * JOINT_DATA_SIZE
+            var knee_off = (
+                BWConstants.JOINTS_OFFSET + (leg * 2 + 1) * JOINT_DATA_SIZE
+            )
             states[env, knee_off + JOINT_TYPE] = Scalar[dtype](JOINT_REVOLUTE)
             states[env, knee_off + JOINT_BODY_A] = Scalar[dtype](leg * 2 + 1)
             states[env, knee_off + JOINT_BODY_B] = Scalar[dtype](leg * 2 + 2)
             states[env, knee_off + JOINT_ANCHOR_AX] = Scalar[dtype](0)
-            states[env, knee_off + JOINT_ANCHOR_AY] = Scalar[dtype](-BWConstants.UPPER_LEG_H / 2)
+            states[env, knee_off + JOINT_ANCHOR_AY] = Scalar[dtype](
+                -BWConstants.UPPER_LEG_H / 2
+            )
             states[env, knee_off + JOINT_ANCHOR_BX] = Scalar[dtype](0)
-            states[env, knee_off + JOINT_ANCHOR_BY] = Scalar[dtype](BWConstants.LOWER_LEG_H / 2)
+            states[env, knee_off + JOINT_ANCHOR_BY] = Scalar[dtype](
+                BWConstants.LOWER_LEG_H / 2
+            )
             states[env, knee_off + JOINT_REF_ANGLE] = Scalar[dtype](0)
-            states[env, knee_off + JOINT_LOWER_LIMIT] = Scalar[dtype](BWConstants.KNEE_LIMIT_LOW)
-            states[env, knee_off + JOINT_UPPER_LIMIT] = Scalar[dtype](BWConstants.KNEE_LIMIT_HIGH)
-            states[env, knee_off + JOINT_MAX_MOTOR_TORQUE] = Scalar[dtype](BWConstants.MOTORS_TORQUE)
+            states[env, knee_off + JOINT_LOWER_LIMIT] = Scalar[dtype](
+                BWConstants.KNEE_LIMIT_LOW
+            )
+            states[env, knee_off + JOINT_UPPER_LIMIT] = Scalar[dtype](
+                BWConstants.KNEE_LIMIT_HIGH
+            )
+            states[env, knee_off + JOINT_MAX_MOTOR_TORQUE] = Scalar[dtype](
+                BWConstants.MOTORS_TORQUE
+            )
             states[env, knee_off + JOINT_MOTOR_SPEED] = Scalar[dtype](0)
             states[env, knee_off + JOINT_FLAGS] = Scalar[dtype](
                 JOINT_FLAG_LIMIT_ENABLED | JOINT_FLAG_MOTOR_ENABLED
@@ -1420,15 +1703,31 @@ struct BipedalWalkerV2[
             states[env, BWConstants.OBS_OFFSET + i] = Scalar[dtype](0)
 
         # Initialize metadata
-        states[env, BWConstants.METADATA_OFFSET + BWConstants.META_STEP_COUNT] = Scalar[dtype](0)
+        states[
+            env, BWConstants.METADATA_OFFSET + BWConstants.META_STEP_COUNT
+        ] = Scalar[dtype](0)
         # META_TOTAL_REWARD (index 1) is used to store prev_x for GPU reward computation
-        states[env, BWConstants.METADATA_OFFSET + BWConstants.META_TOTAL_REWARD] = init_x  # prev_x for shaping reward
-        states[env, BWConstants.METADATA_OFFSET + BWConstants.META_PREV_SHAPING] = Scalar[dtype](0)
-        states[env, BWConstants.METADATA_OFFSET + BWConstants.META_DONE] = Scalar[dtype](0)
-        states[env, BWConstants.METADATA_OFFSET + BWConstants.META_SCROLL] = Scalar[dtype](0)
-        states[env, BWConstants.METADATA_OFFSET + BWConstants.META_LEFT_CONTACT] = Scalar[dtype](0)
-        states[env, BWConstants.METADATA_OFFSET + BWConstants.META_RIGHT_CONTACT] = Scalar[dtype](0)
-        states[env, BWConstants.METADATA_OFFSET + BWConstants.META_GAME_OVER] = Scalar[dtype](0)
+        states[
+            env, BWConstants.METADATA_OFFSET + BWConstants.META_TOTAL_REWARD
+        ] = init_x  # prev_x for shaping reward
+        states[
+            env, BWConstants.METADATA_OFFSET + BWConstants.META_PREV_SHAPING
+        ] = Scalar[dtype](0)
+        states[
+            env, BWConstants.METADATA_OFFSET + BWConstants.META_DONE
+        ] = Scalar[dtype](0)
+        states[
+            env, BWConstants.METADATA_OFFSET + BWConstants.META_SCROLL
+        ] = Scalar[dtype](0)
+        states[
+            env, BWConstants.METADATA_OFFSET + BWConstants.META_LEFT_CONTACT
+        ] = Scalar[dtype](0)
+        states[
+            env, BWConstants.METADATA_OFFSET + BWConstants.META_RIGHT_CONTACT
+        ] = Scalar[dtype](0)
+        states[
+            env, BWConstants.METADATA_OFFSET + BWConstants.META_GAME_OVER
+        ] = Scalar[dtype](0)
 
     @staticmethod
     fn _init_shapes_gpu(
@@ -1563,9 +1862,9 @@ struct BipedalWalkerV2[
                 return
 
             # Apply motor actions
-            BipedalWalkerV2[Self.dtype]._apply_motor_actions_gpu[BATCH_SIZE, STATE_SIZE, ACTION_DIM](
-                env, states, actions
-            )
+            BipedalWalkerV2[Self.dtype]._apply_motor_actions_gpu[
+                BATCH_SIZE, STATE_SIZE, ACTION_DIM
+            ](env, states, actions)
 
             # Motor torques create reaction forces on the hull
             # Asymmetric motor commands cause angular momentum that can destabilize the walker
@@ -1576,15 +1875,21 @@ struct BipedalWalkerV2[
 
             # Hip asymmetry creates rotation (if left hip pushes more than right, hull rotates)
             # Reduced torque coefficients for more stable but still learnable dynamics
-            var hip_asymmetry = (hip1_action - hip2_action) * Scalar[dtype](0.015)
+            var hip_asymmetry = (hip1_action - hip2_action) * Scalar[dtype](
+                0.015
+            )
             # Knee asymmetry also contributes
-            var knee_asymmetry = (knee1_action - knee2_action) * Scalar[dtype](0.01)
+            var knee_asymmetry = (knee1_action - knee2_action) * Scalar[dtype](
+                0.01
+            )
             # Total torque on hull
             var hull_torque = hip_asymmetry + knee_asymmetry
 
             # Apply torque to hull angular velocity
             var hull_omega = states[env, BWConstants.BODIES_OFFSET + IDX_OMEGA]
-            states[env, BWConstants.BODIES_OFFSET + IDX_OMEGA] = hull_omega + hull_torque
+            states[env, BWConstants.BODIES_OFFSET + IDX_OMEGA] = (
+                hull_omega + hull_torque
+            )
 
             # Physics simulation: Apply gravity and integrate
             var dt = Scalar[dtype](BWConstants.DT)
@@ -1592,7 +1897,9 @@ struct BipedalWalkerV2[
 
             # Apply gravity and integrate all bodies
             for body in range(BWConstants.NUM_BODIES):
-                var body_off = BWConstants.BODIES_OFFSET + body * BODY_STATE_SIZE
+                var body_off = (
+                    BWConstants.BODIES_OFFSET + body * BODY_STATE_SIZE
+                )
 
                 # Apply gravity to velocity
                 var vy = states[env, body_off + IDX_VY]
@@ -1602,9 +1909,15 @@ struct BipedalWalkerV2[
                 # Integrate positions
                 var vx = states[env, body_off + IDX_VX]
                 var omega = states[env, body_off + IDX_OMEGA]
-                states[env, body_off + IDX_X] = states[env, body_off + IDX_X] + vx * dt
-                states[env, body_off + IDX_Y] = states[env, body_off + IDX_Y] + vy * dt
-                states[env, body_off + IDX_ANGLE] = states[env, body_off + IDX_ANGLE] + omega * dt
+                states[env, body_off + IDX_X] = (
+                    states[env, body_off + IDX_X] + vx * dt
+                )
+                states[env, body_off + IDX_Y] = (
+                    states[env, body_off + IDX_Y] + vy * dt
+                )
+                states[env, body_off + IDX_ANGLE] = (
+                    states[env, body_off + IDX_ANGLE] + omega * dt
+                )
 
             # Ground collision response - prevent bodies from falling through terrain
             var terrain_y = Scalar[dtype](BWConstants.TERRAIN_HEIGHT)
@@ -1613,7 +1926,9 @@ struct BipedalWalkerV2[
             var right_leg_contact = Scalar[dtype](0.0)
 
             for body in range(BWConstants.NUM_BODIES):
-                var body_off = BWConstants.BODIES_OFFSET + body * BODY_STATE_SIZE
+                var body_off = (
+                    BWConstants.BODIES_OFFSET + body * BODY_STATE_SIZE
+                )
                 var body_y = states[env, body_off + IDX_Y]
                 var body_vy = states[env, body_off + IDX_VY]
 
@@ -1621,7 +1936,9 @@ struct BipedalWalkerV2[
                 # Hull is taller, legs are thinner
                 var body_radius = Scalar[dtype](0.0)
                 if body == 0:  # Hull
-                    body_radius = Scalar[dtype](12.0 / BWConstants.SCALE)  # Hull bottom
+                    body_radius = Scalar[dtype](
+                        12.0 / BWConstants.SCALE
+                    )  # Hull bottom
                 elif body == 1 or body == 3:  # Upper legs
                     body_radius = Scalar[dtype](BWConstants.UPPER_LEG_H / 2)
                 else:  # Lower legs (bodies 2 and 4)
@@ -1637,9 +1954,13 @@ struct BipedalWalkerV2[
                     # Stop downward velocity and apply some friction
                     if body_vy < Scalar[dtype](0):
                         # Simple collision response: reverse and dampen velocity
-                        states[env, body_off + IDX_VY] = Scalar[dtype](-0.1) * body_vy
+                        states[env, body_off + IDX_VY] = (
+                            Scalar[dtype](-0.1) * body_vy
+                        )
                         # Apply friction to horizontal velocity
-                        states[env, body_off + IDX_VX] = states[env, body_off + IDX_VX] * Scalar[dtype](0.95)
+                        states[env, body_off + IDX_VX] = states[
+                            env, body_off + IDX_VX
+                        ] * Scalar[dtype](0.95)
 
                     # Track contacts
                     if body == 0:  # Hull
@@ -1650,120 +1971,217 @@ struct BipedalWalkerV2[
                         right_leg_contact = Scalar[dtype](1.0)
 
             # Store contact information in metadata
-            states[env, BWConstants.METADATA_OFFSET + BWConstants.META_LEFT_CONTACT] = left_leg_contact
-            states[env, BWConstants.METADATA_OFFSET + BWConstants.META_RIGHT_CONTACT] = right_leg_contact
-            states[env, BWConstants.METADATA_OFFSET + BWConstants.META_GAME_OVER] = hull_contact
+            states[
+                env, BWConstants.METADATA_OFFSET + BWConstants.META_LEFT_CONTACT
+            ] = left_leg_contact
+            states[
+                env,
+                BWConstants.METADATA_OFFSET + BWConstants.META_RIGHT_CONTACT,
+            ] = right_leg_contact
+            states[
+                env, BWConstants.METADATA_OFFSET + BWConstants.META_GAME_OVER
+            ] = hull_contact
 
             # Ground contact propulsion: when legs are on ground, hip actions create forward thrust
             # This simulates the leg pushing against the ground to move forward
             # Positive hip action on grounded leg = push backward against ground = move forward
-            var left_thrust = left_leg_contact * actions[env, 0] * Scalar[dtype](0.08)
-            var right_thrust = right_leg_contact * actions[env, 2] * Scalar[dtype](0.08)
+            var left_thrust = (
+                left_leg_contact * actions[env, 0] * Scalar[dtype](0.08)
+            )
+            var right_thrust = (
+                right_leg_contact * actions[env, 2] * Scalar[dtype](0.08)
+            )
             var total_thrust = left_thrust + right_thrust
 
             var hull_vx_prop = states[env, BWConstants.BODIES_OFFSET + IDX_VX]
-            states[env, BWConstants.BODIES_OFFSET + IDX_VX] = hull_vx_prop + total_thrust
+            states[env, BWConstants.BODIES_OFFSET + IDX_VX] = (
+                hull_vx_prop + total_thrust
+            )
 
             # If legs are on ground AND hull is upright, enforce minimum hull height
             # This simulates ground reaction force through the leg structure
             # But if hull is tilted too much, let it fall (so it can crash)
-            var current_hull_angle = states[env, BWConstants.BODIES_OFFSET + IDX_ANGLE]
-            var angle_ok = current_hull_angle > Scalar[dtype](-0.7) and current_hull_angle < Scalar[dtype](0.7)
+            var current_hull_angle = states[
+                env, BWConstants.BODIES_OFFSET + IDX_ANGLE
+            ]
+            var angle_ok = current_hull_angle > Scalar[dtype](
+                -0.7
+            ) and current_hull_angle < Scalar[dtype](0.7)
 
-            if (left_leg_contact > Scalar[dtype](0.5) or right_leg_contact > Scalar[dtype](0.5)) and angle_ok:
+            if (
+                left_leg_contact > Scalar[dtype](0.5)
+                or right_leg_contact > Scalar[dtype](0.5)
+            ) and angle_ok:
                 # Hull minimum height = terrain + leg_down offset + some clearance
-                var min_hull_height = terrain_y + Scalar[dtype](BWConstants.UPPER_LEG_H + BWConstants.LOWER_LEG_H) + Scalar[dtype](0.2)
-                var current_hull_y = states[env, BWConstants.BODIES_OFFSET + IDX_Y]
+                var min_hull_height = (
+                    terrain_y
+                    + Scalar[dtype](
+                        BWConstants.UPPER_LEG_H + BWConstants.LOWER_LEG_H
+                    )
+                    + Scalar[dtype](0.2)
+                )
+                var current_hull_y = states[
+                    env, BWConstants.BODIES_OFFSET + IDX_Y
+                ]
 
                 if current_hull_y < min_hull_height:
                     # Push hull up to minimum height
-                    states[env, BWConstants.BODIES_OFFSET + IDX_Y] = min_hull_height
+                    states[
+                        env, BWConstants.BODIES_OFFSET + IDX_Y
+                    ] = min_hull_height
                     # Stop downward velocity
-                    var current_hull_vy = states[env, BWConstants.BODIES_OFFSET + IDX_VY]
+                    var current_hull_vy = states[
+                        env, BWConstants.BODIES_OFFSET + IDX_VY
+                    ]
                     if current_hull_vy < Scalar[dtype](0):
-                        states[env, BWConstants.BODIES_OFFSET + IDX_VY] = Scalar[dtype](0)
+                        states[
+                            env, BWConstants.BODIES_OFFSET + IDX_VY
+                        ] = Scalar[dtype](0)
 
             # Simple joint constraint enforcement - keep legs attached to hull
             # This is a simplified version that just maintains approximate distances
             var hull_x = states[env, BWConstants.BODIES_OFFSET + IDX_X]
             var hull_y_pos = states[env, BWConstants.BODIES_OFFSET + IDX_Y]
-            var hull_angle_val = states[env, BWConstants.BODIES_OFFSET + IDX_ANGLE]
+            var hull_angle_val = states[
+                env, BWConstants.BODIES_OFFSET + IDX_ANGLE
+            ]
 
             # Compute hull's leg attachment point (in world coords)
             var leg_attach_y = hull_y_pos + Scalar[dtype](BWConstants.LEG_DOWN)
 
             for leg in range(2):
                 # Upper leg should be attached to hull
-                var upper_off = BWConstants.BODIES_OFFSET + (leg * 2 + 1) * BODY_STATE_SIZE
+                var upper_off = (
+                    BWConstants.BODIES_OFFSET + (leg * 2 + 1) * BODY_STATE_SIZE
+                )
                 var upper_x = states[env, upper_off + IDX_X]
                 var upper_y = states[env, upper_off + IDX_Y]
 
                 # Target position: upper leg center is at hull attachment point minus half upper leg height
-                var target_upper_y = leg_attach_y - Scalar[dtype](BWConstants.UPPER_LEG_H / 2)
+                var target_upper_y = leg_attach_y - Scalar[dtype](
+                    BWConstants.UPPER_LEG_H / 2
+                )
 
                 # Strong constraint: snap to target position
-                var blend = Scalar[dtype](0.9)  # Strong constraint to keep legs attached
-                states[env, upper_off + IDX_X] = upper_x + blend * (hull_x - upper_x)
-                states[env, upper_off + IDX_Y] = upper_y + blend * (target_upper_y - upper_y)
+                var blend = Scalar[dtype](
+                    0.9
+                )  # Strong constraint to keep legs attached
+                states[env, upper_off + IDX_X] = upper_x + blend * (
+                    hull_x - upper_x
+                )
+                states[env, upper_off + IDX_Y] = upper_y + blend * (
+                    target_upper_y - upper_y
+                )
 
                 # Sync upper leg velocity with hull to maintain attachment
-                var hull_vy_constraint = states[env, BWConstants.BODIES_OFFSET + IDX_VY]
-                var hull_vx_constraint = states[env, BWConstants.BODIES_OFFSET + IDX_VX]
-                states[env, upper_off + IDX_VY] = states[env, upper_off + IDX_VY] + blend * (hull_vy_constraint - states[env, upper_off + IDX_VY])
-                states[env, upper_off + IDX_VX] = states[env, upper_off + IDX_VX] + blend * (hull_vx_constraint - states[env, upper_off + IDX_VX])
+                var hull_vy_constraint = states[
+                    env, BWConstants.BODIES_OFFSET + IDX_VY
+                ]
+                var hull_vx_constraint = states[
+                    env, BWConstants.BODIES_OFFSET + IDX_VX
+                ]
+                states[env, upper_off + IDX_VY] = states[
+                    env, upper_off + IDX_VY
+                ] + blend * (
+                    hull_vy_constraint - states[env, upper_off + IDX_VY]
+                )
+                states[env, upper_off + IDX_VX] = states[
+                    env, upper_off + IDX_VX
+                ] + blend * (
+                    hull_vx_constraint - states[env, upper_off + IDX_VX]
+                )
 
                 # Lower leg should be attached to upper leg
-                var lower_off = BWConstants.BODIES_OFFSET + (leg * 2 + 2) * BODY_STATE_SIZE
+                var lower_off = (
+                    BWConstants.BODIES_OFFSET + (leg * 2 + 2) * BODY_STATE_SIZE
+                )
                 var lower_x = states[env, lower_off + IDX_X]
                 var lower_y = states[env, lower_off + IDX_Y]
 
                 # Get upper leg's current position for attachment
                 var upper_y_current = states[env, upper_off + IDX_Y]
-                var target_lower_y = upper_y_current - Scalar[dtype](BWConstants.UPPER_LEG_H / 2) - Scalar[dtype](BWConstants.LOWER_LEG_H / 2)
+                var target_lower_y = (
+                    upper_y_current
+                    - Scalar[dtype](BWConstants.UPPER_LEG_H / 2)
+                    - Scalar[dtype](BWConstants.LOWER_LEG_H / 2)
+                )
 
                 # Strong constraint for lower leg too
-                states[env, lower_off + IDX_X] = lower_x + blend * (states[env, upper_off + IDX_X] - lower_x)
-                states[env, lower_off + IDX_Y] = lower_y + blend * (target_lower_y - lower_y)
+                states[env, lower_off + IDX_X] = lower_x + blend * (
+                    states[env, upper_off + IDX_X] - lower_x
+                )
+                states[env, lower_off + IDX_Y] = lower_y + blend * (
+                    target_lower_y - lower_y
+                )
 
                 # Also sync velocities to maintain constraint
                 var upper_vy = states[env, upper_off + IDX_VY]
                 var upper_vx = states[env, upper_off + IDX_VX]
-                states[env, lower_off + IDX_VY] = states[env, lower_off + IDX_VY] + blend * (upper_vy - states[env, lower_off + IDX_VY])
-                states[env, lower_off + IDX_VX] = states[env, lower_off + IDX_VX] + blend * (upper_vx - states[env, lower_off + IDX_VX])
+                states[env, lower_off + IDX_VY] = states[
+                    env, lower_off + IDX_VY
+                ] + blend * (upper_vy - states[env, lower_off + IDX_VY])
+                states[env, lower_off + IDX_VX] = states[
+                    env, lower_off + IDX_VX
+                ] + blend * (upper_vx - states[env, lower_off + IDX_VX])
 
             # Extract observation
-            BipedalWalkerV2[Self.dtype]._extract_obs_gpu[BATCH_SIZE, STATE_SIZE, OBS_DIM](
-                env, states, obs
-            )
+            BipedalWalkerV2[Self.dtype]._extract_obs_gpu[
+                BATCH_SIZE, STATE_SIZE, OBS_DIM
+            ](env, states, obs)
 
             # Get hull state for reward/done computation (reuse hull_x from joint constraints)
             var hull_off = BWConstants.BODIES_OFFSET
             var hull_y = states[env, hull_off + IDX_Y]
             var hull_angle = states[env, hull_off + IDX_ANGLE]
             var hull_vx = states[env, hull_off + IDX_VX]
-            var step_count = states[env, BWConstants.METADATA_OFFSET + BWConstants.META_STEP_COUNT]
+            var step_count = states[
+                env, BWConstants.METADATA_OFFSET + BWConstants.META_STEP_COUNT
+            ]
 
             # Increment step count
-            states[env, BWConstants.METADATA_OFFSET + BWConstants.META_STEP_COUNT] = step_count + Scalar[dtype](1)
+            states[
+                env, BWConstants.METADATA_OFFSET + BWConstants.META_STEP_COUNT
+            ] = step_count + Scalar[dtype](1)
 
             # Shaping reward: forward progress (matching CPU: 130.0 * hull_x / SCALE)
-            var prev_x = states[env, BWConstants.METADATA_OFFSET + 1]  # Store prev_x in metadata[1]
+            var prev_x = states[
+                env, BWConstants.METADATA_OFFSET + 1
+            ]  # Store prev_x in metadata[1]
             var forward_progress = hull_x - prev_x
-            states[env, BWConstants.METADATA_OFFSET + 1] = hull_x  # Update prev_x
+            states[
+                env, BWConstants.METADATA_OFFSET + 1
+            ] = hull_x  # Update prev_x
 
             # Reward: forward progress minus angle penalty (matching CPU formula)
             # CPU uses: 130.0 * delta_x / SCALE - 5.0 * abs(angle) - energy_penalty
-            var angle_abs = hull_angle if hull_angle >= Scalar[dtype](0) else -hull_angle
+            var angle_abs = (
+                hull_angle if hull_angle >= Scalar[dtype](0) else -hull_angle
+            )
             var angle_penalty = Scalar[dtype](5.0) * angle_abs
-            var reward = Scalar[dtype](130.0 / BWConstants.SCALE) * forward_progress - angle_penalty
+            var reward = (
+                Scalar[dtype](130.0 / BWConstants.SCALE) * forward_progress
+                - angle_penalty
+            )
 
             # Energy penalty (matching CPU: 0.00035 * MOTORS_TORQUE * sum(abs(actions)))
-            var a0 = hip1_action if hip1_action >= Scalar[dtype](0) else -hip1_action
-            var a1 = knee1_action if knee1_action >= Scalar[dtype](0) else -knee1_action
-            var a2 = hip2_action if hip2_action >= Scalar[dtype](0) else -hip2_action
-            var a3 = knee2_action if knee2_action >= Scalar[dtype](0) else -knee2_action
+            var a0 = (
+                hip1_action if hip1_action >= Scalar[dtype](0) else -hip1_action
+            )
+            var a1 = (
+                knee1_action if knee1_action
+                >= Scalar[dtype](0) else -knee1_action
+            )
+            var a2 = (
+                hip2_action if hip2_action >= Scalar[dtype](0) else -hip2_action
+            )
+            var a3 = (
+                knee2_action if knee2_action
+                >= Scalar[dtype](0) else -knee2_action
+            )
             var energy = a0 + a1 + a2 + a3
-            var energy_penalty = Scalar[dtype](0.00035 * BWConstants.MOTORS_TORQUE) * energy
+            var energy_penalty = (
+                Scalar[dtype](0.00035 * BWConstants.MOTORS_TORQUE) * energy
+            )
             reward = reward - energy_penalty
 
             # Check termination conditions
@@ -1781,7 +2199,9 @@ struct BipedalWalkerV2[
                 reward = Scalar[dtype](BWConstants.CRASH_PENALTY)
 
             # Hull angle too extreme (fell over) - matches angle_ok threshold
-            if hull_angle > Scalar[dtype](0.7) or hull_angle < Scalar[dtype](-0.7):
+            if hull_angle > Scalar[dtype](0.7) or hull_angle < Scalar[dtype](
+                -0.7
+            ):
                 done = Scalar[dtype](1.0)
                 reward = Scalar[dtype](BWConstants.CRASH_PENALTY)
 
@@ -1826,10 +2246,18 @@ struct BipedalWalkerV2[
             hip1_action = Scalar[dtype](1.0)
         if hip1_action < Scalar[dtype](-1.0):
             hip1_action = Scalar[dtype](-1.0)
-        var hip1_sign = Scalar[dtype](1.0) if hip1_action >= Scalar[dtype](0) else Scalar[dtype](-1.0)
-        states[env, hip1_off + JOINT_MOTOR_SPEED] = hip1_sign * Scalar[dtype](BWConstants.SPEED_HIP)
-        var hip1_abs = hip1_action if hip1_action >= Scalar[dtype](0) else -hip1_action
-        states[env, hip1_off + JOINT_MAX_MOTOR_TORQUE] = Scalar[dtype](BWConstants.MOTORS_TORQUE) * hip1_abs
+        var hip1_sign = Scalar[dtype](1.0) if hip1_action >= Scalar[dtype](
+            0
+        ) else Scalar[dtype](-1.0)
+        states[env, hip1_off + JOINT_MOTOR_SPEED] = hip1_sign * Scalar[dtype](
+            BWConstants.SPEED_HIP
+        )
+        var hip1_abs = (
+            hip1_action if hip1_action >= Scalar[dtype](0) else -hip1_action
+        )
+        states[env, hip1_off + JOINT_MAX_MOTOR_TORQUE] = (
+            Scalar[dtype](BWConstants.MOTORS_TORQUE) * hip1_abs
+        )
 
         # Knee 1
         var knee1_off = BWConstants.JOINTS_OFFSET + 1 * JOINT_DATA_SIZE
@@ -1838,10 +2266,18 @@ struct BipedalWalkerV2[
             knee1_action = Scalar[dtype](1.0)
         if knee1_action < Scalar[dtype](-1.0):
             knee1_action = Scalar[dtype](-1.0)
-        var knee1_sign = Scalar[dtype](1.0) if knee1_action >= Scalar[dtype](0) else Scalar[dtype](-1.0)
-        states[env, knee1_off + JOINT_MOTOR_SPEED] = knee1_sign * Scalar[dtype](BWConstants.SPEED_KNEE)
-        var knee1_abs = knee1_action if knee1_action >= Scalar[dtype](0) else -knee1_action
-        states[env, knee1_off + JOINT_MAX_MOTOR_TORQUE] = Scalar[dtype](BWConstants.MOTORS_TORQUE) * knee1_abs
+        var knee1_sign = Scalar[dtype](1.0) if knee1_action >= Scalar[dtype](
+            0
+        ) else Scalar[dtype](-1.0)
+        states[env, knee1_off + JOINT_MOTOR_SPEED] = knee1_sign * Scalar[dtype](
+            BWConstants.SPEED_KNEE
+        )
+        var knee1_abs = (
+            knee1_action if knee1_action >= Scalar[dtype](0) else -knee1_action
+        )
+        states[env, knee1_off + JOINT_MAX_MOTOR_TORQUE] = (
+            Scalar[dtype](BWConstants.MOTORS_TORQUE) * knee1_abs
+        )
 
         # Hip 2
         var hip2_off = BWConstants.JOINTS_OFFSET + 2 * JOINT_DATA_SIZE
@@ -1850,10 +2286,18 @@ struct BipedalWalkerV2[
             hip2_action = Scalar[dtype](1.0)
         if hip2_action < Scalar[dtype](-1.0):
             hip2_action = Scalar[dtype](-1.0)
-        var hip2_sign = Scalar[dtype](1.0) if hip2_action >= Scalar[dtype](0) else Scalar[dtype](-1.0)
-        states[env, hip2_off + JOINT_MOTOR_SPEED] = hip2_sign * Scalar[dtype](BWConstants.SPEED_HIP)
-        var hip2_abs = hip2_action if hip2_action >= Scalar[dtype](0) else -hip2_action
-        states[env, hip2_off + JOINT_MAX_MOTOR_TORQUE] = Scalar[dtype](BWConstants.MOTORS_TORQUE) * hip2_abs
+        var hip2_sign = Scalar[dtype](1.0) if hip2_action >= Scalar[dtype](
+            0
+        ) else Scalar[dtype](-1.0)
+        states[env, hip2_off + JOINT_MOTOR_SPEED] = hip2_sign * Scalar[dtype](
+            BWConstants.SPEED_HIP
+        )
+        var hip2_abs = (
+            hip2_action if hip2_action >= Scalar[dtype](0) else -hip2_action
+        )
+        states[env, hip2_off + JOINT_MAX_MOTOR_TORQUE] = (
+            Scalar[dtype](BWConstants.MOTORS_TORQUE) * hip2_abs
+        )
 
         # Knee 2
         var knee2_off = BWConstants.JOINTS_OFFSET + 3 * JOINT_DATA_SIZE
@@ -1862,10 +2306,18 @@ struct BipedalWalkerV2[
             knee2_action = Scalar[dtype](1.0)
         if knee2_action < Scalar[dtype](-1.0):
             knee2_action = Scalar[dtype](-1.0)
-        var knee2_sign = Scalar[dtype](1.0) if knee2_action >= Scalar[dtype](0) else Scalar[dtype](-1.0)
-        states[env, knee2_off + JOINT_MOTOR_SPEED] = knee2_sign * Scalar[dtype](BWConstants.SPEED_KNEE)
-        var knee2_abs = knee2_action if knee2_action >= Scalar[dtype](0) else -knee2_action
-        states[env, knee2_off + JOINT_MAX_MOTOR_TORQUE] = Scalar[dtype](BWConstants.MOTORS_TORQUE) * knee2_abs
+        var knee2_sign = Scalar[dtype](1.0) if knee2_action >= Scalar[dtype](
+            0
+        ) else Scalar[dtype](-1.0)
+        states[env, knee2_off + JOINT_MOTOR_SPEED] = knee2_sign * Scalar[dtype](
+            BWConstants.SPEED_KNEE
+        )
+        var knee2_abs = (
+            knee2_action if knee2_action >= Scalar[dtype](0) else -knee2_action
+        )
+        states[env, knee2_off + JOINT_MAX_MOTOR_TORQUE] = (
+            Scalar[dtype](BWConstants.MOTORS_TORQUE) * knee2_abs
+        )
 
     @always_inline
     @staticmethod
@@ -1892,8 +2344,12 @@ struct BipedalWalkerV2[
 
         obs[env, 0] = hull_angle
         obs[env, 1] = hull_omega / Scalar[dtype](5.0)
-        obs[env, 2] = hull_vx * Scalar[dtype](BWConstants.VIEWPORT_W / BWConstants.SCALE / BWConstants.FPS)
-        obs[env, 3] = hull_vy * Scalar[dtype](BWConstants.VIEWPORT_H / BWConstants.SCALE / BWConstants.FPS)
+        obs[env, 2] = hull_vx * Scalar[dtype](
+            BWConstants.VIEWPORT_W / BWConstants.SCALE / BWConstants.FPS
+        )
+        obs[env, 3] = hull_vy * Scalar[dtype](
+            BWConstants.VIEWPORT_H / BWConstants.SCALE / BWConstants.FPS
+        )
 
         # Leg 1 (left)
         var upper1_off = BWConstants.BODIES_OFFSET + 1 * BODY_STATE_SIZE
@@ -1903,11 +2359,13 @@ struct BipedalWalkerV2[
         var upper1_omega = states[env, upper1_off + IDX_OMEGA]
         var lower1_omega = states[env, lower1_off + IDX_OMEGA]
 
-        obs[env, 4] = (upper1_angle - hull_angle)
+        obs[env, 4] = upper1_angle - hull_angle
         obs[env, 5] = (upper1_omega - hull_omega) / Scalar[dtype](10.0)
-        obs[env, 6] = (lower1_angle - upper1_angle)
+        obs[env, 6] = lower1_angle - upper1_angle
         obs[env, 7] = (lower1_omega - upper1_omega) / Scalar[dtype](10.0)
-        obs[env, 8] = states[env, BWConstants.METADATA_OFFSET + BWConstants.META_LEFT_CONTACT]
+        obs[env, 8] = states[
+            env, BWConstants.METADATA_OFFSET + BWConstants.META_LEFT_CONTACT
+        ]
 
         # Leg 2 (right)
         var upper2_off = BWConstants.BODIES_OFFSET + 3 * BODY_STATE_SIZE
@@ -1917,11 +2375,13 @@ struct BipedalWalkerV2[
         var upper2_omega = states[env, upper2_off + IDX_OMEGA]
         var lower2_omega = states[env, lower2_off + IDX_OMEGA]
 
-        obs[env, 9] = (upper2_angle - hull_angle)
+        obs[env, 9] = upper2_angle - hull_angle
         obs[env, 10] = (upper2_omega - hull_omega) / Scalar[dtype](10.0)
-        obs[env, 11] = (lower2_angle - upper2_angle)
+        obs[env, 11] = lower2_angle - upper2_angle
         obs[env, 12] = (lower2_omega - upper2_omega) / Scalar[dtype](10.0)
-        obs[env, 13] = states[env, BWConstants.METADATA_OFFSET + BWConstants.META_RIGHT_CONTACT]
+        obs[env, 13] = states[
+            env, BWConstants.METADATA_OFFSET + BWConstants.META_RIGHT_CONTACT
+        ]
 
         # Lidar (placeholder - 1.0 = no hit)
         for i in range(BWConstants.NUM_LIDAR):

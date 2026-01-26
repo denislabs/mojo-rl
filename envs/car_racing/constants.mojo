@@ -1,10 +1,10 @@
 """CarRacing V2 environment constants.
 
 These constants define the environment configuration, using physics constants
-from physics_gpu/car/ for consistency with the GPU physics implementation.
+from physics2d/car/ for consistency with the GPU physics implementation.
 """
 
-from physics_gpu.car import (
+from physics2d.car import (
     CarRacingLayout,
     SIZE,
     ENGINE_POWER,
@@ -25,7 +25,7 @@ struct CRConstants:
     """CarRacing environment constants."""
 
     # =========================================================================
-    # Physics Constants (from physics_gpu/car/)
+    # Physics Constants (from physics2d/car/)
     # =========================================================================
 
     comptime DT: Float64 = CAR_DT  # 0.02 = 50 FPS
@@ -147,7 +147,7 @@ struct CRConstants:
     comptime HULL_MASS: Float64 = 10.0
     comptime HULL_INERTIA: Float64 = 10.0
 
-    # Wheel positions (in SIZE units, from physics_gpu/car/constants.mojo)
+    # Wheel positions (in SIZE units, from physics2d/car/constants.mojo)
     comptime WHEEL_POS_FL_X: Float64 = -55.0 * Self.SIZE
     comptime WHEEL_POS_FL_Y: Float64 = 80.0 * Self.SIZE
     comptime WHEEL_POS_FR_X: Float64 = 55.0 * Self.SIZE

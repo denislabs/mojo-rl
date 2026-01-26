@@ -14,12 +14,12 @@ Features:
 from math import sin, cos, sqrt, pi, tanh
 from random import random_float64
 
-from physics.vec2 import Vec2, vec2
-from physics.shape import PolygonShape, CircleShape, EdgeShape
-from physics.body import Body, BODY_STATIC, BODY_DYNAMIC
-from physics.fixture import Filter, CATEGORY_GROUND
-from physics.world import World
-from physics.joint import RevoluteJoint
+from physics_legacy.vec2 import Vec2, vec2
+from physics_legacy.shape import PolygonShape, CircleShape, EdgeShape
+from physics_legacy.body import Body, BODY_STATIC, BODY_DYNAMIC
+from physics_legacy.fixture import Filter, CATEGORY_GROUND
+from physics_legacy.world import World
+from physics_legacy.joint import RevoluteJoint
 
 from core import State, Action, BoxContinuousActionEnv, BoxSpace, DiscreteSpace
 from render import (

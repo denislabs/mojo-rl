@@ -302,7 +302,7 @@ fn learn_physics_parameters(
 
 The fundamental problem was: CPU used Box2D, GPU used hand-written physics.
 
-**Solution**: Created unified `physics_gpu/` module with identical CPU and GPU code paths. Same `PhysicsKernel` functions run on both backends.
+**Solution**: Created unified `physics2d/` module with identical CPU and GPU code paths. Same `PhysicsKernel` functions run on both backends.
 
 **2. No Shared Code Path** → **FIXED**
 
@@ -475,7 +475,7 @@ for body in range(NUM_BODIES):  # NUM_BODIES is comptime
 
 ### ✅ Completed
 
-1. [x] Create `physics_gpu/` directory structure
+1. [x] Create `physics2d/` directory structure
 2. [x] Implement Semi-Implicit Euler integration (CPU + GPU)
 3. [x] Write tests for CPU-GPU equivalence
 4. [x] Implement `EdgeTerrainCollision` for varying terrain heights

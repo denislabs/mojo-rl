@@ -3,7 +3,7 @@
 # =============================================================================
 
 
-from physics_gpu import LunarLanderLayout, PhysicsState
+from physics2d import LunarLanderLayout, PhysicsState
 
 
 struct LLConstants:
