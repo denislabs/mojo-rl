@@ -65,9 +65,9 @@ struct HalfCheetahPlanarAction[DTYPE: DType](
         return result^
 
     @staticmethod
-    fn from_list(action: List[Scalar[DTYPE]]) -> Self:
+    fn from_list(action: List[Scalar[Self.DTYPE]]) -> Self:
         """Create action from 6D list."""
-        var act = HalfCheetahPlanarAction[DTYPE]()
+        var act = HalfCheetahPlanarAction[Self.DTYPE]()
         if len(action) >= 6:
             act.bthigh = action[0]
             act.bshin = action[1]

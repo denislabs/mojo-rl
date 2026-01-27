@@ -15,7 +15,3 @@ HalfCheetahPlanar implements:
 
 from .hopper_planar import HopperPlanar, HopperPlanarConstants
 from .walker_planar import Walker2dPlanar, Walker2dPlanarConstants
-from .cheetah_planar import HalfCheetahPlanar, HalfCheetahPlanarConstants
-from .state import HalfCheetahPlanarState
-from .action import HalfCheetahPlanarAction
-from .constants_v2 import HCConstants

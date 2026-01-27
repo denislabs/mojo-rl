@@ -124,9 +124,12 @@ struct HCConstants:
     # ==========================================================================
     # Motor Parameters
     # ==========================================================================
+    # NOTE: MAX_TORQUE must be scaled for the small limb inertias.
+    # With I = 0.00175 kg·m² (bthigh), torque of 1 Nm gives Δω ≈ 5.7 rad/s per substep.
+    # MuJoCo's gear=120 scales the action, not the actual torque magnitude.
 
-    comptime MAX_TORQUE: Float64 = 120.0
-    comptime GEAR_RATIO: Float64 = 120.0
+    comptime MAX_TORQUE: Float64 = 1.0  # Nm - scaled for physics2d limb inertias
+    comptime GEAR_RATIO: Float64 = 120.0  # Used for MuJoCo compatibility (not torque)
 
     # ==========================================================================
     # Reward Parameters
@@ -136,10 +139,24 @@ struct HCConstants:
     comptime FORWARD_REWARD_WEIGHT: Float64 = 1.0
 
     # ==========================================================================
-    # Episode Parameters (no early termination)
+    # Episode Parameters
     # ==========================================================================
 
     comptime MAX_STEPS: Int = 1000
+
+    # ==========================================================================
+    # Termination Parameters (healthy bounds)
+    # ==========================================================================
+
+    # Terminate if torso height drops below this (fallen over)
+    # NOTE: MuJoCo HalfCheetah doesn't terminate on falling by default.
+    # Set to False for standard training (recommended), True for faster iteration.
+    comptime TERMINATE_WHEN_UNHEALTHY: Bool = False
+    # Lenient thresholds - HalfCheetah is meant to run horizontally, not stay upright
+    # Torso radius is 0.046, so center at 0.0 means touching ground
+    comptime HEALTHY_Z_MIN: Float64 = -0.5  # Allow torso below ground (sliding/recovering)
+    comptime HEALTHY_Z_MAX: Float64 = 2.0  # Reasonable ceiling
+    comptime HEALTHY_ANGLE_MAX: Float64 = 2.0  # ~115 degrees - very generous for cheetah
 
     # ==========================================================================
     # Layout Constants (from HalfCheetahLayout)

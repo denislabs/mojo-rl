@@ -16,22 +16,22 @@ struct MuJoCoConstants:
     """Common constants for MuJoCo-style environments."""
 
     # Physics
-    alias GRAVITY: Float64 = -9.81
-    alias TIMESTEP: Float64 = 0.002  # 500 Hz physics
-    alias FRAME_SKIP: Int = 5  # 100 Hz control
+    comptime GRAVITY: Float64 = -9.81
+    comptime TIMESTEP: Float64 = 0.002  # 500 Hz physics
+    comptime FRAME_SKIP: Int = 5  # 100 Hz control
 
     # Solver
-    alias VELOCITY_ITERATIONS: Int = 6
-    alias POSITION_ITERATIONS: Int = 2
+    comptime VELOCITY_ITERATIONS: Int = 6
+    comptime POSITION_ITERATIONS: Int = 2
 
     # Rendering
-    alias WINDOW_WIDTH: Int = 800
-    alias WINDOW_HEIGHT: Int = 600
+    comptime WINDOW_WIDTH: Int = 800
+    comptime WINDOW_HEIGHT: Int = 600
 
     # Contact
-    alias GROUND_FRICTION: Float64 = 0.9
-    alias CONTACT_STIFFNESS: Float64 = 10000.0
-    alias CONTACT_DAMPING: Float64 = 500.0
+    comptime GROUND_FRICTION: Float64 = 0.9
+    comptime CONTACT_STIFFNESS: Float64 = 10000.0
+    comptime CONTACT_DAMPING: Float64 = 500.0
 
 
 @fieldwise_init
@@ -221,7 +221,9 @@ struct MuJoCoEnvBase3D:
         # Use approximation for small angles
         return sinp  # asin(x) ≈ x for small x
 
-    fn compute_control_cost(self, actions: List[Float64], weight: Float64) -> Float64:
+    fn compute_control_cost(
+        self, actions: List[Float64], weight: Float64
+    ) -> Float64:
         """Compute control cost as weighted sum of squared actions."""
         var cost = 0.0
         for i in range(len(actions)):

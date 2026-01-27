@@ -21,7 +21,7 @@ fn main() raises:
     print()
 
     # Create environment
-    var env = CarRacingV2(max_steps=500)
+    var env = CarRacingV2[DType.float32](max_steps=500)
     print("Environment created")
     print("  Observation dim:", env.obs_dim())
     print("  Action dim:", env.action_dim())
@@ -49,21 +49,23 @@ fn main() raises:
     print("Press Ctrl+C to stop")
     print()
 
-    var total_reward: Float64 = 0.0
+    var total_reward: Float32 = 0.0
     var step = 0
     var done = False
 
     while not done and step < 500:
         # Generate random action (with slight gas bias to move forward)
-        var steering = Float64(random_float64()) * 2.0 - 1.0  # [-1, 1]
-        var gas = Float64(random_float64()) * 0.8  # [0, 0.8] - mostly forward
-        var brake = Float64(random_float64()) * 0.2  # [0, 0.2] - occasional brake
+        var steering = Float32(random_float64()) * 2.0 - 1.0  # [-1, 1]
+        var gas = Float32(random_float64()) * 0.8  # [0, 0.8] - mostly forward
+        var brake = (
+            Float32(random_float64()) * 0.2
+        )  # [0, 0.2] - occasional brake
 
         # Remap to [-1, 1] range expected by environment
         gas = gas * 2.0 - 1.0  # Now [-1, 0.6]
         brake = brake * 2.0 - 1.0  # Now [-1, -0.6]
 
-        var action = CarRacingV2Action[DType.float64](steering, gas, brake)
+        var action = CarRacingV2Action[DType.float32](steering, gas, brake)
 
         # Step environment
         var result = env.step(action)

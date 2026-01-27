@@ -451,6 +451,133 @@ struct FlatTerrainCollision(CollisionSystem):
 
         contact_counts[env] = Scalar[dtype](count)
 
+    @always_inline
+    @staticmethod
+    fn detect_single_env[
+        BATCH: Int,
+        NUM_BODIES: Int,
+        NUM_SHAPES: Int,
+        MAX_CONTACTS: Int,
+        STATE_SIZE: Int,
+        BODIES_OFFSET: Int,
+    ](
+        env: Int,
+        state: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, STATE_SIZE),
+            MutAnyOrigin,
+        ],
+        shapes: LayoutTensor[
+            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
+        ],
+        ground_y: Scalar[dtype],
+        contacts: LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE),
+            MutAnyOrigin,
+        ],
+        contact_counts: LayoutTensor[
+            dtype, Layout.row_major(BATCH), MutAnyOrigin
+        ],
+    ):
+        """Detect collisions for a single environment against flat terrain.
+
+        This is the core logic, extracted to be callable from:
+        - detect_kernel (standalone kernel)
+        - Fused physics step kernels
+
+        Args:
+            env: Environment index.
+            state: State tensor [BATCH, STATE_SIZE].
+            shapes: Shape definitions [NUM_SHAPES, SHAPE_MAX_SIZE].
+            ground_y: Y coordinate of ground plane.
+            contacts: Contact buffer to write to.
+            contact_counts: Contact count per environment.
+        """
+        var count = 0
+
+        for body_idx in range(NUM_BODIES):
+            var body_off = BODIES_OFFSET + body_idx * BODY_STATE_SIZE
+
+            var body_x = state[env, body_off + IDX_X]
+            var body_y = state[env, body_off + IDX_Y]
+            var body_angle = state[env, body_off + IDX_ANGLE]
+            var shape_idx = Int(state[env, body_off + IDX_SHAPE])
+            var shape_type = Int(shapes[shape_idx, 0])
+
+            var cos_a = cos(body_angle)
+            var sin_a = sin(body_angle)
+
+            if shape_type == SHAPE_POLYGON:
+                var n_verts = Int(shapes[shape_idx, 1])
+
+                for v in range(MAX_POLYGON_VERTS):
+                    if v >= n_verts:
+                        break
+
+                    var local_x = shapes[shape_idx, 2 + v * 2]
+                    var local_y = shapes[shape_idx, 3 + v * 2]
+                    var world_x = body_x + local_x * cos_a - local_y * sin_a
+                    var world_y = body_y + local_x * sin_a + local_y * cos_a
+
+                    var penetration = ground_y - world_y
+                    if penetration > Scalar[dtype](0) and count < MAX_CONTACTS:
+                        contacts[env, count, CONTACT_BODY_A] = Scalar[dtype](
+                            body_idx
+                        )
+                        contacts[env, count, CONTACT_BODY_B] = Scalar[dtype](-1)
+                        contacts[env, count, CONTACT_POINT_X] = world_x
+                        contacts[env, count, CONTACT_POINT_Y] = world_y
+                        contacts[env, count, CONTACT_NORMAL_X] = Scalar[dtype](
+                            0
+                        )
+                        contacts[env, count, CONTACT_NORMAL_Y] = Scalar[dtype](
+                            1
+                        )
+                        contacts[env, count, CONTACT_DEPTH] = penetration
+                        contacts[env, count, CONTACT_NORMAL_IMPULSE] = Scalar[
+                            dtype
+                        ](0)
+                        contacts[env, count, CONTACT_TANGENT_IMPULSE] = Scalar[
+                            dtype
+                        ](0)
+                        count += 1
+
+            elif shape_type == SHAPE_CIRCLE:
+                var radius = shapes[shape_idx, 1]
+                var center_offset_x = shapes[shape_idx, 2]
+                var center_offset_y = shapes[shape_idx, 3]
+
+                var center_world_x = (
+                    body_x + center_offset_x * cos_a - center_offset_y * sin_a
+                )
+                var center_world_y = (
+                    body_y + center_offset_x * sin_a + center_offset_y * cos_a
+                )
+
+                var penetration = ground_y - (center_world_y - radius)
+                if penetration > Scalar[dtype](0) and count < MAX_CONTACTS:
+                    contacts[env, count, CONTACT_BODY_A] = Scalar[dtype](
+                        body_idx
+                    )
+                    contacts[env, count, CONTACT_BODY_B] = Scalar[dtype](-1)
+                    contacts[env, count, CONTACT_POINT_X] = center_world_x
+                    contacts[env, count, CONTACT_POINT_Y] = (
+                        center_world_y - radius
+                    )
+                    contacts[env, count, CONTACT_NORMAL_X] = Scalar[dtype](0)
+                    contacts[env, count, CONTACT_NORMAL_Y] = Scalar[dtype](1)
+                    contacts[env, count, CONTACT_DEPTH] = penetration
+                    contacts[env, count, CONTACT_NORMAL_IMPULSE] = Scalar[
+                        dtype
+                    ](0)
+                    contacts[env, count, CONTACT_TANGENT_IMPULSE] = Scalar[
+                        dtype
+                    ](0)
+                    count += 1
+
+        contact_counts[env] = Scalar[dtype](count)
+
     @staticmethod
     fn detect_gpu[
         BATCH: Int,

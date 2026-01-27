@@ -1,7 +1,8 @@
 from ..constants import dtype, TPB
 from .loss import LossFunction
 from layout import LayoutTensor, Layout
-from gpu import thread_idx, block_idx, block_dim, block
+from gpu import thread_idx, block_idx, block_dim
+from gpu.primitives import block
 from gpu.host import DeviceContext, DeviceBuffer
 from math import exp, log
 
