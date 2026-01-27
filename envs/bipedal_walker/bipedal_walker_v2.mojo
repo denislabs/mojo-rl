@@ -1029,9 +1029,7 @@ struct BipedalWalkerV2[DTYPE: DType,](
         self.step_count += 1
 
         var hull_x = Float64(self.physics.get_body_x(0, Self.BODY_HULL))
-        var _ = Float64(
-            self.physics.get_body_y(0, Self.BODY_HULL)
-        )  # hull_y unused for now
+        var hull_y = Float64(self.physics.get_body_y(0, Self.BODY_HULL))
         var hull_angle = Float64(self.physics.get_body_angle(0, Self.BODY_HULL))
 
         # Shaping reward (forward progress)
@@ -1054,7 +1052,29 @@ struct BipedalWalkerV2[DTYPE: DType,](
             - Scalar[Self.dtype](0.00035 * BWConstants.MOTORS_TORQUE) * energy
         )
 
+        # Height penalty: strongly penalize crawling
+        # Standing height is ~TERRAIN_HEIGHT + 2*LEG_H (~5.6)
+        var min_height = BWConstants.TERRAIN_HEIGHT + BWConstants.LEG_H * 1.5  # ~5.0, penalty starts
+        var critical_height = BWConstants.TERRAIN_HEIGHT + BWConstants.LEG_H * 1.2  # ~4.7, terminate below
+        if hull_y < min_height:
+            # Strong penalty for being too low (crawling)
+            reward = reward - Scalar[Self.dtype](10.0 * (min_height - hull_y))
+
+        # Velocity shaping: reward forward movement, penalize backward
+        var vel_x = Float64(self.cached_state.vel_x)
+        if vel_x > 0.0:
+            # Bonus for moving forward - encourages actual walking
+            reward = reward + Scalar[Self.dtype](3.0 * vel_x)
+        else:
+            # Penalty for going backward
+            reward = reward - Scalar[Self.dtype](5.0 * abs(vel_x))
+
         var terminated = False
+
+        # Terminate if crawling too low (hull almost touching ground)
+        if hull_y < critical_height:
+            reward = Scalar[Self.dtype](-50.0)  # Moderate penalty for crawling termination
+            terminated = True
 
         # Game over: hull touched ground
         if self.game_over:
@@ -1698,9 +1718,10 @@ struct BipedalWalkerV2[DTYPE: DType,](
             states[env, force_off + 1] = Scalar[dtype](0)
             states[env, force_off + 2] = Scalar[dtype](0)
 
-        # Initialize observation (zeros)
-        for i in range(BWConstants.OBS_DIM_VAL):
-            states[env, BWConstants.OBS_OFFSET + i] = Scalar[dtype](0)
+        # Compute initial observation (matches CPU _update_cached_state)
+        BipedalWalkerV2[Self.dtype]._compute_initial_obs_reset_gpu[
+            BATCH_SIZE, STATE_SIZE
+        ](states, env)
 
         # Initialize metadata
         states[
@@ -1728,6 +1749,151 @@ struct BipedalWalkerV2[DTYPE: DType,](
         states[
             env, BWConstants.METADATA_OFFSET + BWConstants.META_GAME_OVER
         ] = Scalar[dtype](0)
+
+    @always_inline
+    @staticmethod
+    fn _compute_initial_obs_reset_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+    ](
+        states: LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ],
+        env: Int,
+    ):
+        """Compute initial observation after reset (GPU version).
+
+        Matches CPU _update_cached_state() + lidar computation.
+        Writes to states[env, OBS_OFFSET:OBS_OFFSET+24].
+        """
+        var obs_off = BWConstants.OBS_OFFSET
+
+        # Hull state
+        var hull_off = BWConstants.BODIES_OFFSET
+        var hull_angle = rebind[Scalar[dtype]](states[env, hull_off + IDX_ANGLE])
+        var hull_omega = rebind[Scalar[dtype]](states[env, hull_off + IDX_OMEGA])
+        var hull_vx = rebind[Scalar[dtype]](states[env, hull_off + IDX_VX])
+        var hull_vy = rebind[Scalar[dtype]](states[env, hull_off + IDX_VY])
+        var hull_x = rebind[Scalar[dtype]](states[env, hull_off + IDX_X])
+        var hull_y = rebind[Scalar[dtype]](states[env, hull_off + IDX_Y])
+
+        # [0]: hull_angle
+        states[env, obs_off + 0] = hull_angle
+
+        # [1]: hull_angular_velocity (normalized by /5.0)
+        states[env, obs_off + 1] = hull_omega / Scalar[dtype](5.0)
+
+        # [2]: vel_x = hull_vx * (VIEWPORT_W/SCALE) / FPS
+        var vel_scale_x = Scalar[dtype](
+            BWConstants.VIEWPORT_W / BWConstants.SCALE / BWConstants.FPS
+        )
+        states[env, obs_off + 2] = hull_vx * vel_scale_x
+
+        # [3]: vel_y = hull_vy * (VIEWPORT_H/SCALE) / FPS
+        var vel_scale_y = Scalar[dtype](
+            BWConstants.VIEWPORT_H / BWConstants.SCALE / BWConstants.FPS
+        )
+        states[env, obs_off + 3] = hull_vy * vel_scale_y
+
+        # Leg 1 (left) - bodies 1 (upper) and 2 (lower)
+        var upper1_off = BWConstants.BODIES_OFFSET + 1 * BODY_STATE_SIZE
+        var lower1_off = BWConstants.BODIES_OFFSET + 2 * BODY_STATE_SIZE
+        var upper1_angle = rebind[Scalar[dtype]](states[env, upper1_off + IDX_ANGLE])
+        var lower1_angle = rebind[Scalar[dtype]](states[env, lower1_off + IDX_ANGLE])
+        var upper1_omega = rebind[Scalar[dtype]](states[env, upper1_off + IDX_OMEGA])
+        var lower1_omega = rebind[Scalar[dtype]](states[env, lower1_off + IDX_OMEGA])
+
+        # [4]: hip1_angle = (upper1_angle - hull_angle)
+        states[env, obs_off + 4] = upper1_angle - hull_angle
+
+        # [5]: hip1_speed = (upper1_omega - hull_omega) / 10.0
+        states[env, obs_off + 5] = (upper1_omega - hull_omega) / Scalar[dtype](10.0)
+
+        # [6]: knee1_angle = (lower1_angle - upper1_angle)
+        states[env, obs_off + 6] = lower1_angle - upper1_angle
+
+        # [7]: knee1_speed = (lower1_omega - upper1_omega) / 10.0
+        states[env, obs_off + 7] = (lower1_omega - upper1_omega) / Scalar[dtype](10.0)
+
+        # [8]: leg1_contact = 0.0 (no contact at reset)
+        states[env, obs_off + 8] = Scalar[dtype](0.0)
+
+        # Leg 2 (right) - bodies 3 (upper) and 4 (lower)
+        var upper2_off = BWConstants.BODIES_OFFSET + 3 * BODY_STATE_SIZE
+        var lower2_off = BWConstants.BODIES_OFFSET + 4 * BODY_STATE_SIZE
+        var upper2_angle = rebind[Scalar[dtype]](states[env, upper2_off + IDX_ANGLE])
+        var lower2_angle = rebind[Scalar[dtype]](states[env, lower2_off + IDX_ANGLE])
+        var upper2_omega = rebind[Scalar[dtype]](states[env, upper2_off + IDX_OMEGA])
+        var lower2_omega = rebind[Scalar[dtype]](states[env, lower2_off + IDX_OMEGA])
+
+        # [9]: hip2_angle = (upper2_angle - hull_angle)
+        states[env, obs_off + 9] = upper2_angle - hull_angle
+
+        # [10]: hip2_speed = (upper2_omega - hull_omega) / 10.0
+        states[env, obs_off + 10] = (upper2_omega - hull_omega) / Scalar[dtype](10.0)
+
+        # [11]: knee2_angle = (lower2_angle - upper2_angle)
+        states[env, obs_off + 11] = lower2_angle - upper2_angle
+
+        # [12]: knee2_speed = (lower2_omega - upper2_omega) / 10.0
+        states[env, obs_off + 12] = (lower2_omega - upper2_omega) / Scalar[dtype](10.0)
+
+        # [13]: leg2_contact = 0.0 (no contact at reset)
+        states[env, obs_off + 13] = Scalar[dtype](0.0)
+
+        # [14-23]: Lidar (10 rays)
+        var n_edges = Int(states[env, BWConstants.EDGE_COUNT_OFFSET])
+        var lidar_range = Scalar[dtype](BWConstants.LIDAR_RANGE)
+
+        for i in range(BWConstants.NUM_LIDAR):
+            # Angle relative to hull: 0 to 1.5 radians (matches CPU Lidar)
+            var local_angle = Scalar[dtype](i) * Scalar[dtype](1.5) / Scalar[dtype](
+                BWConstants.NUM_LIDAR - 1
+            )
+            var world_angle = hull_angle - local_angle - Scalar[dtype](
+                1.5707963267948966
+            )  # pi/2
+
+            # Ray direction scaled by range
+            var ray_dx = cos(world_angle) * lidar_range
+            var ray_dy = sin(world_angle) * lidar_range
+
+            var min_t = Scalar[dtype](1.0)  # Default to max range
+
+            # Check against each terrain edge
+            for edge_idx in range(BWConstants.MAX_TERRAIN_EDGES):
+                if edge_idx >= n_edges:
+                    break
+
+                var edge_off = BWConstants.EDGES_OFFSET + edge_idx * 6
+                var edge_x0 = rebind[Scalar[dtype]](states[env, edge_off + 0])
+                var edge_y0 = rebind[Scalar[dtype]](states[env, edge_off + 1])
+                var edge_x1 = rebind[Scalar[dtype]](states[env, edge_off + 2])
+                var edge_y1 = rebind[Scalar[dtype]](states[env, edge_off + 3])
+
+                # Ray-edge intersection
+                var ex = edge_x1 - edge_x0
+                var ey = edge_y1 - edge_y0
+                var denom = ray_dx * ey - ray_dy * ex
+
+                if denom > Scalar[dtype](-1e-10) and denom < Scalar[dtype](1e-10):
+                    continue  # Parallel
+
+                var dx = hull_x - edge_x0
+                var dy = hull_y - edge_y0
+                var t = (ex * dy - ey * dx) / denom
+                var u = (ray_dx * dy - ray_dy * dx) / denom
+
+                if (
+                    t >= Scalar[dtype](0.0)
+                    and t <= Scalar[dtype](1.0)
+                    and u >= Scalar[dtype](0.0)
+                    and u <= Scalar[dtype](1.0)
+                ):
+                    if t < min_t:
+                        min_t = t
+
+            states[env, obs_off + BWConstants.LIDAR_START_IDX + i] = min_t
 
     @staticmethod
     fn _init_shapes_gpu(
@@ -1819,13 +1985,22 @@ struct BipedalWalkerV2[DTYPE: DType,](
         mut dones_buf: DeviceBuffer[dtype],
         mut obs_buf: DeviceBuffer[dtype],
     ) raises:
-        """Fused GPU step kernel."""
+        """Fused GPU step kernel - uses proper physics matching CPU."""
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
         comptime STATE_SIZE = BWConstants.STATE_SIZE_VAL
 
         var states = LayoutTensor[
             dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
         ](states_buf.unsafe_ptr())
+        var shapes = LayoutTensor[
+            dtype, Layout.row_major(BWConstants.NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
+        ](shapes_buf.unsafe_ptr())
+        var contacts = LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE, BWConstants.MAX_CONTACTS, CONTACT_DATA_SIZE), MutAnyOrigin
+        ](contacts_buf.unsafe_ptr())
+        var contact_counts = LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ](contact_counts_buf.unsafe_ptr())
         var actions = LayoutTensor[
             dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
         ](actions_buf.unsafe_ptr())
@@ -1844,6 +2019,15 @@ struct BipedalWalkerV2[DTYPE: DType,](
             states: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
             ],
+            shapes: LayoutTensor[
+                dtype, Layout.row_major(BWConstants.NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
+            ],
+            contacts: LayoutTensor[
+                dtype, Layout.row_major(BATCH_SIZE, BWConstants.MAX_CONTACTS, CONTACT_DATA_SIZE), MutAnyOrigin
+            ],
+            contact_counts: LayoutTensor[
+                dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
             actions: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
             ],
@@ -1861,279 +2045,145 @@ struct BipedalWalkerV2[DTYPE: DType,](
             if env >= BATCH_SIZE:
                 return
 
-            # Apply motor actions
+            # Apply motor actions to joints
             BipedalWalkerV2[Self.dtype]._apply_motor_actions_gpu[
                 BATCH_SIZE, STATE_SIZE, ACTION_DIM
             ](env, states, actions)
 
-            # Motor torques create reaction forces on the hull
-            # Asymmetric motor commands cause angular momentum that can destabilize the walker
-            var hip1_action = actions[env, 0]
-            var hip2_action = actions[env, 2]
-            var knee1_action = actions[env, 1]
-            var knee2_action = actions[env, 3]
-
-            # Hip asymmetry creates rotation (if left hip pushes more than right, hull rotates)
-            # Reduced torque coefficients for more stable but still learnable dynamics
-            var hip_asymmetry = (hip1_action - hip2_action) * Scalar[dtype](
-                0.015
-            )
-            # Knee asymmetry also contributes
-            var knee_asymmetry = (knee1_action - knee2_action) * Scalar[dtype](
-                0.01
-            )
-            # Total torque on hull
-            var hull_torque = hip_asymmetry + knee_asymmetry
-
-            # Apply torque to hull angular velocity
-            var hull_omega = states[env, BWConstants.BODIES_OFFSET + IDX_OMEGA]
-            states[env, BWConstants.BODIES_OFFSET + IDX_OMEGA] = (
-                hull_omega + hull_torque
-            )
-
-            # Physics simulation: Apply gravity and integrate
+            # Physics constants
             var dt = Scalar[dtype](BWConstants.DT)
+            var gravity_x = Scalar[dtype](BWConstants.GRAVITY_X)
             var gravity_y = Scalar[dtype](BWConstants.GRAVITY_Y)
+            var friction = Scalar[dtype](BWConstants.FRICTION)
+            var restitution = Scalar[dtype](BWConstants.RESTITUTION)
+            var baumgarte = Scalar[dtype](BWConstants.BAUMGARTE)
+            var slop = Scalar[dtype](BWConstants.SLOP)
 
-            # Apply gravity and integrate all bodies
+            # Get joint count
+            var joint_count = Int(states[env, BWConstants.JOINT_COUNT_OFFSET])
+            var n_edges = Int(states[env, BWConstants.EDGE_COUNT_OFFSET])
+
+            # Step 1: Integrate velocities (apply gravity + external forces)
+            SemiImplicitEuler.integrate_velocities_single_env[
+                BATCH_SIZE,
+                BWConstants.NUM_BODIES,
+                STATE_SIZE,
+                BWConstants.BODIES_OFFSET,
+                BWConstants.FORCES_OFFSET,
+            ](env, states, gravity_x, gravity_y, dt)
+
+            # Step 2: Collision detection against terrain edges
+            EdgeTerrainCollision.detect_single_env[
+                BATCH_SIZE,
+                BWConstants.NUM_BODIES,
+                BWConstants.NUM_SHAPES,
+                BWConstants.MAX_CONTACTS,
+                BWConstants.MAX_TERRAIN_EDGES,
+                STATE_SIZE,
+                BWConstants.BODIES_OFFSET,
+                BWConstants.EDGES_OFFSET,
+            ](env, states, shapes, n_edges, contacts, contact_counts)
+
+            var contact_count = Int(contact_counts[env])
+
+            # Step 3: Velocity constraint solving (multiple iterations)
+            for _ in range(BWConstants.VELOCITY_ITERATIONS):
+                # Solve contact constraints
+                ImpulseSolver.solve_velocity_single_env[
+                    BATCH_SIZE,
+                    BWConstants.NUM_BODIES,
+                    BWConstants.MAX_CONTACTS,
+                    STATE_SIZE,
+                    BWConstants.BODIES_OFFSET,
+                ](env, states, contacts, contact_count, friction, restitution)
+
+                # Solve joint constraints
+                RevoluteJointSolver.solve_velocity_single_env[
+                    BATCH_SIZE,
+                    BWConstants.NUM_BODIES,
+                    BWConstants.MAX_JOINTS,
+                    STATE_SIZE,
+                    BWConstants.BODIES_OFFSET,
+                    BWConstants.JOINTS_OFFSET,
+                ](env, states, joint_count, dt)
+
+            # Step 4: Integrate positions
+            SemiImplicitEuler.integrate_positions_single_env[
+                BATCH_SIZE,
+                BWConstants.NUM_BODIES,
+                STATE_SIZE,
+                BWConstants.BODIES_OFFSET,
+            ](env, states, dt)
+
+            # Step 5: Position constraint solving (multiple iterations)
+            for _ in range(BWConstants.POSITION_ITERATIONS):
+                # Solve contact position constraints
+                ImpulseSolver.solve_position_single_env[
+                    BATCH_SIZE,
+                    BWConstants.NUM_BODIES,
+                    BWConstants.MAX_CONTACTS,
+                    STATE_SIZE,
+                    BWConstants.BODIES_OFFSET,
+                ](env, states, contacts, contact_count, baumgarte, slop)
+
+                # Solve joint position constraints
+                RevoluteJointSolver.solve_position_single_env[
+                    BATCH_SIZE,
+                    BWConstants.NUM_BODIES,
+                    BWConstants.MAX_JOINTS,
+                    STATE_SIZE,
+                    BWConstants.BODIES_OFFSET,
+                    BWConstants.JOINTS_OFFSET,
+                ](env, states, joint_count, baumgarte, slop)
+
+            # Step 6: Clear forces
             for body in range(BWConstants.NUM_BODIES):
-                var body_off = (
-                    BWConstants.BODIES_OFFSET + body * BODY_STATE_SIZE
-                )
+                var force_off = BWConstants.FORCES_OFFSET + body * 3
+                states[env, force_off + 0] = Scalar[dtype](0)
+                states[env, force_off + 1] = Scalar[dtype](0)
+                states[env, force_off + 2] = Scalar[dtype](0)
 
-                # Apply gravity to velocity
-                var vy = states[env, body_off + IDX_VY]
-                vy = vy + gravity_y * dt
-                states[env, body_off + IDX_VY] = vy
-
-                # Integrate positions
-                var vx = states[env, body_off + IDX_VX]
-                var omega = states[env, body_off + IDX_OMEGA]
-                states[env, body_off + IDX_X] = (
-                    states[env, body_off + IDX_X] + vx * dt
-                )
-                states[env, body_off + IDX_Y] = (
-                    states[env, body_off + IDX_Y] + vy * dt
-                )
-                states[env, body_off + IDX_ANGLE] = (
-                    states[env, body_off + IDX_ANGLE] + omega * dt
-                )
-
-            # Ground collision response - prevent bodies from falling through terrain
-            var terrain_y = Scalar[dtype](BWConstants.TERRAIN_HEIGHT)
+            # Step 7: Update contact flags and check hull contact
             var hull_contact = Scalar[dtype](0.0)
             var left_leg_contact = Scalar[dtype](0.0)
             var right_leg_contact = Scalar[dtype](0.0)
 
-            for body in range(BWConstants.NUM_BODIES):
-                var body_off = (
-                    BWConstants.BODIES_OFFSET + body * BODY_STATE_SIZE
-                )
-                var body_y = states[env, body_off + IDX_Y]
-                var body_vy = states[env, body_off + IDX_VY]
-
-                # Get body radius (approximate based on body type)
-                # Hull is taller, legs are thinner
-                var body_radius = Scalar[dtype](0.0)
-                if body == 0:  # Hull
-                    body_radius = Scalar[dtype](
-                        12.0 / BWConstants.SCALE
-                    )  # Hull bottom
-                elif body == 1 or body == 3:  # Upper legs
-                    body_radius = Scalar[dtype](BWConstants.UPPER_LEG_H / 2)
-                else:  # Lower legs (bodies 2 and 4)
-                    body_radius = Scalar[dtype](BWConstants.LOWER_LEG_H / 2)
-
-                var ground_level = terrain_y + body_radius
-
-                # Check if body is below ground
-                if body_y < ground_level:
-                    # Push back above ground
-                    states[env, body_off + IDX_Y] = ground_level
-
-                    # Stop downward velocity and apply some friction
-                    if body_vy < Scalar[dtype](0):
-                        # Simple collision response: reverse and dampen velocity
-                        states[env, body_off + IDX_VY] = (
-                            Scalar[dtype](-0.1) * body_vy
-                        )
-                        # Apply friction to horizontal velocity
-                        states[env, body_off + IDX_VX] = states[
-                            env, body_off + IDX_VX
-                        ] * Scalar[dtype](0.95)
-
-                    # Track contacts
-                    if body == 0:  # Hull
-                        hull_contact = Scalar[dtype](1.0)
-                    elif body == 2:  # Lower leg left
-                        left_leg_contact = Scalar[dtype](1.0)
-                    elif body == 4:  # Lower leg right
-                        right_leg_contact = Scalar[dtype](1.0)
+            for c in range(contact_count):
+                var body_a = Int(contacts[env, c, CONTACT_BODY_A])
+                if body_a == 0:  # Hull
+                    hull_contact = Scalar[dtype](1.0)
+                elif body_a == 2:  # Lower leg left
+                    left_leg_contact = Scalar[dtype](1.0)
+                elif body_a == 4:  # Lower leg right
+                    right_leg_contact = Scalar[dtype](1.0)
 
             # Store contact information in metadata
             states[
                 env, BWConstants.METADATA_OFFSET + BWConstants.META_LEFT_CONTACT
             ] = left_leg_contact
             states[
-                env,
-                BWConstants.METADATA_OFFSET + BWConstants.META_RIGHT_CONTACT,
+                env, BWConstants.METADATA_OFFSET + BWConstants.META_RIGHT_CONTACT
             ] = right_leg_contact
             states[
                 env, BWConstants.METADATA_OFFSET + BWConstants.META_GAME_OVER
             ] = hull_contact
 
-            # Ground contact propulsion: when legs are on ground, hip actions create forward thrust
-            # This simulates the leg pushing against the ground to move forward
-            # Positive hip action on grounded leg = push backward against ground = move forward
-            var left_thrust = (
-                left_leg_contact * actions[env, 0] * Scalar[dtype](0.08)
-            )
-            var right_thrust = (
-                right_leg_contact * actions[env, 2] * Scalar[dtype](0.08)
-            )
-            var total_thrust = left_thrust + right_thrust
+            # Step 8: Compute lidar (10 rays from hull)
+            BipedalWalkerV2[Self.dtype]._compute_lidar_gpu[
+                BATCH_SIZE, STATE_SIZE, OBS_DIM
+            ](env, states, obs)
 
-            var hull_vx_prop = states[env, BWConstants.BODIES_OFFSET + IDX_VX]
-            states[env, BWConstants.BODIES_OFFSET + IDX_VX] = (
-                hull_vx_prop + total_thrust
-            )
-
-            # If legs are on ground AND hull is upright, enforce minimum hull height
-            # This simulates ground reaction force through the leg structure
-            # But if hull is tilted too much, let it fall (so it can crash)
-            var current_hull_angle = states[
-                env, BWConstants.BODIES_OFFSET + IDX_ANGLE
-            ]
-            var angle_ok = current_hull_angle > Scalar[dtype](
-                -0.7
-            ) and current_hull_angle < Scalar[dtype](0.7)
-
-            if (
-                left_leg_contact > Scalar[dtype](0.5)
-                or right_leg_contact > Scalar[dtype](0.5)
-            ) and angle_ok:
-                # Hull minimum height = terrain + leg_down offset + some clearance
-                var min_hull_height = (
-                    terrain_y
-                    + Scalar[dtype](
-                        BWConstants.UPPER_LEG_H + BWConstants.LOWER_LEG_H
-                    )
-                    + Scalar[dtype](0.2)
-                )
-                var current_hull_y = states[
-                    env, BWConstants.BODIES_OFFSET + IDX_Y
-                ]
-
-                if current_hull_y < min_hull_height:
-                    # Push hull up to minimum height
-                    states[
-                        env, BWConstants.BODIES_OFFSET + IDX_Y
-                    ] = min_hull_height
-                    # Stop downward velocity
-                    var current_hull_vy = states[
-                        env, BWConstants.BODIES_OFFSET + IDX_VY
-                    ]
-                    if current_hull_vy < Scalar[dtype](0):
-                        states[
-                            env, BWConstants.BODIES_OFFSET + IDX_VY
-                        ] = Scalar[dtype](0)
-
-            # Simple joint constraint enforcement - keep legs attached to hull
-            # This is a simplified version that just maintains approximate distances
-            var hull_x = states[env, BWConstants.BODIES_OFFSET + IDX_X]
-            var hull_y_pos = states[env, BWConstants.BODIES_OFFSET + IDX_Y]
-            var hull_angle_val = states[
-                env, BWConstants.BODIES_OFFSET + IDX_ANGLE
-            ]
-
-            # Compute hull's leg attachment point (in world coords)
-            var leg_attach_y = hull_y_pos + Scalar[dtype](BWConstants.LEG_DOWN)
-
-            for leg in range(2):
-                # Upper leg should be attached to hull
-                var upper_off = (
-                    BWConstants.BODIES_OFFSET + (leg * 2 + 1) * BODY_STATE_SIZE
-                )
-                var upper_x = states[env, upper_off + IDX_X]
-                var upper_y = states[env, upper_off + IDX_Y]
-
-                # Target position: upper leg center is at hull attachment point minus half upper leg height
-                var target_upper_y = leg_attach_y - Scalar[dtype](
-                    BWConstants.UPPER_LEG_H / 2
-                )
-
-                # Strong constraint: snap to target position
-                var blend = Scalar[dtype](
-                    0.9
-                )  # Strong constraint to keep legs attached
-                states[env, upper_off + IDX_X] = upper_x + blend * (
-                    hull_x - upper_x
-                )
-                states[env, upper_off + IDX_Y] = upper_y + blend * (
-                    target_upper_y - upper_y
-                )
-
-                # Sync upper leg velocity with hull to maintain attachment
-                var hull_vy_constraint = states[
-                    env, BWConstants.BODIES_OFFSET + IDX_VY
-                ]
-                var hull_vx_constraint = states[
-                    env, BWConstants.BODIES_OFFSET + IDX_VX
-                ]
-                states[env, upper_off + IDX_VY] = states[
-                    env, upper_off + IDX_VY
-                ] + blend * (
-                    hull_vy_constraint - states[env, upper_off + IDX_VY]
-                )
-                states[env, upper_off + IDX_VX] = states[
-                    env, upper_off + IDX_VX
-                ] + blend * (
-                    hull_vx_constraint - states[env, upper_off + IDX_VX]
-                )
-
-                # Lower leg should be attached to upper leg
-                var lower_off = (
-                    BWConstants.BODIES_OFFSET + (leg * 2 + 2) * BODY_STATE_SIZE
-                )
-                var lower_x = states[env, lower_off + IDX_X]
-                var lower_y = states[env, lower_off + IDX_Y]
-
-                # Get upper leg's current position for attachment
-                var upper_y_current = states[env, upper_off + IDX_Y]
-                var target_lower_y = (
-                    upper_y_current
-                    - Scalar[dtype](BWConstants.UPPER_LEG_H / 2)
-                    - Scalar[dtype](BWConstants.LOWER_LEG_H / 2)
-                )
-
-                # Strong constraint for lower leg too
-                states[env, lower_off + IDX_X] = lower_x + blend * (
-                    states[env, upper_off + IDX_X] - lower_x
-                )
-                states[env, lower_off + IDX_Y] = lower_y + blend * (
-                    target_lower_y - lower_y
-                )
-
-                # Also sync velocities to maintain constraint
-                var upper_vy = states[env, upper_off + IDX_VY]
-                var upper_vx = states[env, upper_off + IDX_VX]
-                states[env, lower_off + IDX_VY] = states[
-                    env, lower_off + IDX_VY
-                ] + blend * (upper_vy - states[env, lower_off + IDX_VY])
-                states[env, lower_off + IDX_VX] = states[
-                    env, lower_off + IDX_VX
-                ] + blend * (upper_vx - states[env, lower_off + IDX_VX])
-
-            # Extract observation
+            # Extract observation (non-lidar parts)
             BipedalWalkerV2[Self.dtype]._extract_obs_gpu[
                 BATCH_SIZE, STATE_SIZE, OBS_DIM
             ](env, states, obs)
 
-            # Get hull state for reward/done computation (reuse hull_x from joint constraints)
+            # Step 9: Compute reward and termination
             var hull_off = BWConstants.BODIES_OFFSET
+            var hull_x = states[env, hull_off + IDX_X]
             var hull_y = states[env, hull_off + IDX_Y]
-            var hull_angle = states[env, hull_off + IDX_ANGLE]
             var hull_vx = states[env, hull_off + IDX_VX]
+            var hull_angle = states[env, hull_off + IDX_ANGLE]
             var step_count = states[
                 env, BWConstants.METADATA_OFFSET + BWConstants.META_STEP_COUNT
             ]
@@ -2143,17 +2193,12 @@ struct BipedalWalkerV2[DTYPE: DType,](
                 env, BWConstants.METADATA_OFFSET + BWConstants.META_STEP_COUNT
             ] = step_count + Scalar[dtype](1)
 
-            # Shaping reward: forward progress (matching CPU: 130.0 * hull_x / SCALE)
-            var prev_x = states[
-                env, BWConstants.METADATA_OFFSET + 1
-            ]  # Store prev_x in metadata[1]
+            # Shaping reward: forward progress
+            var prev_x = states[env, BWConstants.METADATA_OFFSET + 1]
             var forward_progress = hull_x - prev_x
-            states[
-                env, BWConstants.METADATA_OFFSET + 1
-            ] = hull_x  # Update prev_x
+            states[env, BWConstants.METADATA_OFFSET + 1] = hull_x
 
-            # Reward: forward progress minus angle penalty (matching CPU formula)
-            # CPU uses: 130.0 * delta_x / SCALE - 5.0 * abs(angle) - energy_penalty
+            # Reward: forward progress minus angle penalty
             var angle_abs = (
                 hull_angle if hull_angle >= Scalar[dtype](0) else -hull_angle
             )
@@ -2163,20 +2208,22 @@ struct BipedalWalkerV2[DTYPE: DType,](
                 - angle_penalty
             )
 
-            # Energy penalty (matching CPU: 0.00035 * MOTORS_TORQUE * sum(abs(actions)))
+            # Energy penalty
+            var hip1_action = actions[env, 0]
+            var knee1_action = actions[env, 1]
+            var hip2_action = actions[env, 2]
+            var knee2_action = actions[env, 3]
             var a0 = (
                 hip1_action if hip1_action >= Scalar[dtype](0) else -hip1_action
             )
             var a1 = (
-                knee1_action if knee1_action
-                >= Scalar[dtype](0) else -knee1_action
+                knee1_action if knee1_action >= Scalar[dtype](0) else -knee1_action
             )
             var a2 = (
                 hip2_action if hip2_action >= Scalar[dtype](0) else -hip2_action
             )
             var a3 = (
-                knee2_action if knee2_action
-                >= Scalar[dtype](0) else -knee2_action
+                knee2_action if knee2_action >= Scalar[dtype](0) else -knee2_action
             )
             var energy = a0 + a1 + a2 + a3
             var energy_penalty = (
@@ -2184,37 +2231,69 @@ struct BipedalWalkerV2[DTYPE: DType,](
             )
             reward = reward - energy_penalty
 
+            # Height penalty: strongly penalize crawling
+            var min_height = Scalar[dtype](
+                BWConstants.TERRAIN_HEIGHT + BWConstants.LEG_H * 1.5
+            )  # ~5.0, penalty starts
+            var critical_height = Scalar[dtype](
+                BWConstants.TERRAIN_HEIGHT + BWConstants.LEG_H * 1.2
+            )  # ~4.7, terminate below
+            if hull_y < min_height:
+                # Strong penalty for being too low (crawling)
+                reward = reward - Scalar[dtype](10.0) * (min_height - hull_y)
+
+            # Velocity shaping: reward forward movement, penalize backward
+            # Scale hull_vx same as observation vel_x
+            var vel_scale_x = Scalar[dtype](
+                BWConstants.VIEWPORT_W / BWConstants.SCALE / BWConstants.FPS
+            )
+            var vel_x = hull_vx * vel_scale_x
+            if vel_x > Scalar[dtype](0.0):
+                # Bonus for moving forward - encourages actual walking
+                reward = reward + Scalar[dtype](3.0) * vel_x
+            else:
+                var vel_x_abs = -vel_x
+                reward = reward - Scalar[dtype](5.0) * vel_x_abs
+
             # Check termination conditions
             var done = Scalar[dtype](0.0)
-            var max_steps = Scalar[dtype](1600)  # BipedalWalker episode length
+            var max_steps = Scalar[dtype](2000)  # Match CPU max_steps
             var new_step_count = step_count + Scalar[dtype](1)
 
             # Time limit
             if new_step_count >= max_steps:
                 done = Scalar[dtype](1.0)
 
-            # Hull touched ground (game over) - use hull_contact from collision detection
+            # Hull touched ground (game over)
             if hull_contact > Scalar[dtype](0.5):
                 done = Scalar[dtype](1.0)
                 reward = Scalar[dtype](BWConstants.CRASH_PENALTY)
 
-            # Hull angle too extreme (fell over) - matches angle_ok threshold
-            if hull_angle > Scalar[dtype](0.7) or hull_angle < Scalar[dtype](
-                -0.7
-            ):
+            # Crawling too low (hull almost touching ground)
+            if hull_y < critical_height:
                 done = Scalar[dtype](1.0)
-                reward = Scalar[dtype](BWConstants.CRASH_PENALTY)
+                reward = Scalar[dtype](-50.0)  # Moderate penalty for crawling
 
             # Out of bounds (fell off left edge)
             if hull_x < Scalar[dtype](0):
                 done = Scalar[dtype](1.0)
                 reward = Scalar[dtype](BWConstants.CRASH_PENALTY)
 
+            # Success: reached end of terrain
+            var terrain_end = Scalar[dtype](
+                BWConstants.TERRAIN_LENGTH - BWConstants.TERRAIN_GRASS
+            ) * Scalar[dtype](BWConstants.TERRAIN_STEP)
+            if hull_x > terrain_end:
+                done = Scalar[dtype](1.0)
+
             rewards[env] = reward
             dones[env] = done
 
         ctx.enqueue_function[step_wrapper, step_wrapper](
             states,
+            shapes,
+            contacts,
+            contact_counts,
             actions,
             rewards,
             dones,
@@ -2222,6 +2301,95 @@ struct BipedalWalkerV2[DTYPE: DType,](
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )
+
+    @always_inline
+    @staticmethod
+    fn _compute_lidar_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        OBS_DIM: Int,
+    ](
+        env: Int,
+        states: LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ],
+        obs: LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+        ],
+    ):
+        """Compute 10 lidar readings from hull position.
+
+        Uses same algorithm as CPU Lidar.raycast_env_gpu:
+        - Rays spread from 0 to 1.5 radians relative to hull
+        - world_angle = hull_angle - local_angle - pi/2
+        - Ray direction scaled by lidar_range
+        """
+        var hull_off = BWConstants.BODIES_OFFSET
+        var hull_x = rebind[Scalar[dtype]](states[env, hull_off + IDX_X])
+        var hull_y = rebind[Scalar[dtype]](states[env, hull_off + IDX_Y])
+        var hull_angle = rebind[Scalar[dtype]](states[env, hull_off + IDX_ANGLE])
+
+        var n_edges = Int(states[env, BWConstants.EDGE_COUNT_OFFSET])
+        var lidar_range = Scalar[dtype](BWConstants.LIDAR_RANGE)
+
+        # 10 lidar rays spread from 0 to 1.5 radians relative to hull
+        for i in range(BWConstants.NUM_LIDAR):
+            # Angle relative to hull: 0 to 1.5 radians (matches CPU Lidar)
+            var local_angle = Scalar[dtype](i) * Scalar[dtype](1.5) / Scalar[dtype](
+                BWConstants.NUM_LIDAR - 1
+            )
+            var world_angle = hull_angle - local_angle - Scalar[dtype](
+                1.5707963267948966
+            )  # pi/2
+
+            # Ray direction scaled by range (matches CPU)
+            var ray_dx = cos(world_angle) * lidar_range
+            var ray_dy = sin(world_angle) * lidar_range
+
+            var min_t = Scalar[dtype](1.0)  # Normalized distance (1.0 = no hit)
+
+            # Check against each terrain edge
+            for edge_idx in range(BWConstants.MAX_TERRAIN_EDGES):
+                if edge_idx >= n_edges:
+                    break
+
+                var edge_off = BWConstants.EDGES_OFFSET + edge_idx * 6
+                var edge_x0 = rebind[Scalar[dtype]](states[env, edge_off + 0])
+                var edge_y0 = rebind[Scalar[dtype]](states[env, edge_off + 1])
+                var edge_x1 = rebind[Scalar[dtype]](states[env, edge_off + 2])
+                var edge_y1 = rebind[Scalar[dtype]](states[env, edge_off + 3])
+
+                # Ray-edge intersection (matches Lidar._ray_edge_intersection)
+                var ex = edge_x1 - edge_x0
+                var ey = edge_y1 - edge_y0
+
+                # Denominator: cross product of directions
+                var denom = ray_dx * ey - ray_dy * ex
+
+                # Check if parallel (denom ~= 0)
+                if denom > Scalar[dtype](-1e-10) and denom < Scalar[dtype](1e-10):
+                    continue  # Skip parallel edges
+
+                # Vector from edge start to ray origin
+                var dx = hull_x - edge_x0
+                var dy = hull_y - edge_y0
+
+                # Compute intersection parameters
+                var t = (ex * dy - ey * dx) / denom  # Parameter along ray [0,1]
+                var u = (ray_dx * dy - ray_dy * dx) / denom  # Parameter along edge [0,1]
+
+                # Valid intersection: t in [0, 1] and u in [0, 1]
+                if (
+                    t >= Scalar[dtype](0.0)
+                    and t <= Scalar[dtype](1.0)
+                    and u >= Scalar[dtype](0.0)
+                    and u <= Scalar[dtype](1.0)
+                ):
+                    if t < min_t:
+                        min_t = t
+
+            obs[env, BWConstants.LIDAR_START_IDX + i] = min_t
+            states[env, BWConstants.OBS_OFFSET + BWConstants.LIDAR_START_IDX + i] = min_t
 
     @always_inline
     @staticmethod
@@ -2334,7 +2502,10 @@ struct BipedalWalkerV2[DTYPE: DType,](
             dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
         ],
     ):
-        """Extract 24D observation from state."""
+        """Extract 24D observation from state.
+
+        Writes to both obs tensor AND state buffer at OBS_OFFSET for consistency.
+        """
         # Hull state
         var hull_off = BWConstants.BODIES_OFFSET
         var hull_angle = states[env, hull_off + IDX_ANGLE]
@@ -2342,14 +2513,23 @@ struct BipedalWalkerV2[DTYPE: DType,](
         var hull_vx = states[env, hull_off + IDX_VX]
         var hull_vy = states[env, hull_off + IDX_VY]
 
-        obs[env, 0] = hull_angle
-        obs[env, 1] = hull_omega / Scalar[dtype](5.0)
-        obs[env, 2] = hull_vx * Scalar[dtype](
+        var obs0 = hull_angle
+        var obs1 = hull_omega / Scalar[dtype](5.0)
+        var obs2 = hull_vx * Scalar[dtype](
             BWConstants.VIEWPORT_W / BWConstants.SCALE / BWConstants.FPS
         )
-        obs[env, 3] = hull_vy * Scalar[dtype](
+        var obs3 = hull_vy * Scalar[dtype](
             BWConstants.VIEWPORT_H / BWConstants.SCALE / BWConstants.FPS
         )
+
+        obs[env, 0] = obs0
+        obs[env, 1] = obs1
+        obs[env, 2] = obs2
+        obs[env, 3] = obs3
+        states[env, BWConstants.OBS_OFFSET + 0] = obs0
+        states[env, BWConstants.OBS_OFFSET + 1] = obs1
+        states[env, BWConstants.OBS_OFFSET + 2] = obs2
+        states[env, BWConstants.OBS_OFFSET + 3] = obs3
 
         # Leg 1 (left)
         var upper1_off = BWConstants.BODIES_OFFSET + 1 * BODY_STATE_SIZE
@@ -2359,13 +2539,24 @@ struct BipedalWalkerV2[DTYPE: DType,](
         var upper1_omega = states[env, upper1_off + IDX_OMEGA]
         var lower1_omega = states[env, lower1_off + IDX_OMEGA]
 
-        obs[env, 4] = upper1_angle - hull_angle
-        obs[env, 5] = (upper1_omega - hull_omega) / Scalar[dtype](10.0)
-        obs[env, 6] = lower1_angle - upper1_angle
-        obs[env, 7] = (lower1_omega - upper1_omega) / Scalar[dtype](10.0)
-        obs[env, 8] = states[
+        var obs4 = upper1_angle - hull_angle
+        var obs5 = (upper1_omega - hull_omega) / Scalar[dtype](10.0)
+        var obs6 = lower1_angle - upper1_angle
+        var obs7 = (lower1_omega - upper1_omega) / Scalar[dtype](10.0)
+        var obs8 = states[
             env, BWConstants.METADATA_OFFSET + BWConstants.META_LEFT_CONTACT
         ]
+
+        obs[env, 4] = obs4
+        obs[env, 5] = obs5
+        obs[env, 6] = obs6
+        obs[env, 7] = obs7
+        obs[env, 8] = obs8
+        states[env, BWConstants.OBS_OFFSET + 4] = obs4
+        states[env, BWConstants.OBS_OFFSET + 5] = obs5
+        states[env, BWConstants.OBS_OFFSET + 6] = obs6
+        states[env, BWConstants.OBS_OFFSET + 7] = obs7
+        states[env, BWConstants.OBS_OFFSET + 8] = obs8
 
         # Leg 2 (right)
         var upper2_off = BWConstants.BODIES_OFFSET + 3 * BODY_STATE_SIZE
@@ -2375,14 +2566,23 @@ struct BipedalWalkerV2[DTYPE: DType,](
         var upper2_omega = states[env, upper2_off + IDX_OMEGA]
         var lower2_omega = states[env, lower2_off + IDX_OMEGA]
 
-        obs[env, 9] = upper2_angle - hull_angle
-        obs[env, 10] = (upper2_omega - hull_omega) / Scalar[dtype](10.0)
-        obs[env, 11] = lower2_angle - upper2_angle
-        obs[env, 12] = (lower2_omega - upper2_omega) / Scalar[dtype](10.0)
-        obs[env, 13] = states[
+        var obs9 = upper2_angle - hull_angle
+        var obs10 = (upper2_omega - hull_omega) / Scalar[dtype](10.0)
+        var obs11 = lower2_angle - upper2_angle
+        var obs12 = (lower2_omega - upper2_omega) / Scalar[dtype](10.0)
+        var obs13 = states[
             env, BWConstants.METADATA_OFFSET + BWConstants.META_RIGHT_CONTACT
         ]
 
-        # Lidar (placeholder - 1.0 = no hit)
-        for i in range(BWConstants.NUM_LIDAR):
-            obs[env, 14 + i] = Scalar[dtype](1.0)
+        obs[env, 9] = obs9
+        obs[env, 10] = obs10
+        obs[env, 11] = obs11
+        obs[env, 12] = obs12
+        obs[env, 13] = obs13
+        states[env, BWConstants.OBS_OFFSET + 9] = obs9
+        states[env, BWConstants.OBS_OFFSET + 10] = obs10
+        states[env, BWConstants.OBS_OFFSET + 11] = obs11
+        states[env, BWConstants.OBS_OFFSET + 12] = obs12
+        states[env, BWConstants.OBS_OFFSET + 13] = obs13
+
+        # Lidar values are computed by _compute_lidar_gpu

@@ -286,3 +286,14 @@ comptime BipedalWalkerLayout = PhysicsLayout[
     METADATA_SIZE=8,
     NUM_SHAPES=5,
 ]
+
+# HalfCheetah: 7 bodies (torso + 2x thigh, shin, foot), 6 joints, flat terrain
+comptime HalfCheetahLayout = PhysicsLayout[
+    NUM_BODIES=7,
+    MAX_CONTACTS=14,
+    MAX_JOINTS=6,
+    MAX_TERRAIN_EDGES=2,
+    OBS_DIM=17,
+    METADATA_SIZE=8,
+    NUM_SHAPES=7,
+]

@@ -44,7 +44,7 @@ comptime N_ENVS = 512  # Parallel environments
 comptime GPU_MINIBATCH_SIZE = 512  # Minibatch size for PPO updates
 
 # Training duration (BipedalWalker needs more episodes than LunarLander)
-comptime NUM_EPISODES = 50_000
+comptime NUM_EPISODES = 100_000
 
 comptime dtype = DType.float32
 
@@ -78,13 +78,13 @@ fn main() raises:
             gamma=0.99,  # Standard discount
             gae_lambda=0.95,  # Standard GAE lambda
             clip_epsilon=0.2,  # Standard clipping
-            actor_lr=0.0003,  # Standard learning rate
+            actor_lr=0.0001,  # Standard learning rate
             critic_lr=0.001,  # Higher critic LR for faster value learning
-            entropy_coef=0.02,  # Higher entropy for exploration in hard task
+            entropy_coef=0.1,  # Higher entropy for exploration in hard task
             value_loss_coef=0.5,
-            num_epochs=10,  # More epochs for BipedalWalker
+            num_epochs=5,  # More epochs for BipedalWalker
             # Advanced hyperparameters
-            target_kl=0.1,  # KL early stopping
+            target_kl=0.0,  # KL early stopping
             max_grad_norm=0.5,
             anneal_lr=False,  # Disabled - causes late-training collapse
             anneal_entropy=False,
@@ -98,7 +98,7 @@ fn main() raises:
             obs_noise_std=0.01,
         )
 
-        # agent.load_checkpoint("ppo_bipedal_continuous_gpu.ckpt")
+        agent.load_checkpoint("ppo_bipedal_continuous_gpu.ckpt")
 
         print("Environment: BipedalWalker Continuous (GPU)")
         print("Agent: PPO Continuous (GPU)")

@@ -111,6 +111,7 @@ from .layout import (
     CartPoleLayout,
     AcrobotLayout,
     BipedalWalkerLayout,
+    HalfCheetahLayout,
 )
 from .kernel import PhysicsKernel, PhysicsConfig
 from .env_helpers import PhysicsEnvHelpers
