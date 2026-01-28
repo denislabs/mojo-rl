@@ -13,7 +13,9 @@ from math3d import Vec3
 # =============================================================================
 
 
-fn compute_box_inertia(mass: Float64, half_extents: Vec3) -> Vec3:
+fn compute_box_inertia[
+    DTYPE: DType
+](mass: Scalar[DTYPE], half_extents: Vec3[DTYPE]) -> Vec3[DTYPE]:
     """Compute diagonal inertia tensor for a box.
 
     Args:
@@ -45,7 +47,9 @@ fn compute_box_inertia(mass: Float64, half_extents: Vec3) -> Vec3:
     )
 
 
-fn compute_sphere_inertia(mass: Float64, radius: Float64) -> Vec3:
+fn compute_sphere_inertia[
+    DTYPE: DType
+](mass: Scalar[DTYPE], radius: Scalar[DTYPE]) -> Vec3[DTYPE]:
     """Compute diagonal inertia tensor for a solid sphere.
 
     Args:
@@ -61,7 +65,14 @@ fn compute_sphere_inertia(mass: Float64, radius: Float64) -> Vec3:
     return Vec3(I, I, I)
 
 
-fn compute_capsule_inertia(mass: Float64, radius: Float64, half_height: Float64, axis: Int = 2) -> Vec3:
+fn compute_capsule_inertia[
+    DTYPE: DType
+](
+    mass: Scalar[DTYPE],
+    radius: Scalar[DTYPE],
+    half_height: Scalar[DTYPE],
+    axis: Int = 2,
+) -> Vec3[DTYPE]:
     """Compute diagonal inertia tensor for a capsule.
 
     A capsule is a cylinder capped with hemispheres.
@@ -100,7 +111,9 @@ fn compute_capsule_inertia(mass: Float64, radius: Float64, half_height: Float64,
     # Each hemisphere has inertia (2/5) * m/2 * r^2 about its center
     # Plus parallel axis theorem to shift to capsule center
     var I_hemi = (2.0 / 5.0) * (m_sphere / 2.0) * r * r
-    var d = half_height + (3.0 / 8.0) * r  # Distance from capsule center to hemisphere CoM
+    var d = (
+        half_height + (3.0 / 8.0) * r
+    )  # Distance from capsule center to hemisphere CoM
     var I_hemi_shifted = I_hemi + (m_sphere / 2.0) * d * d  # Parallel axis
 
     # Combined inertia
@@ -116,7 +129,14 @@ fn compute_capsule_inertia(mass: Float64, radius: Float64, half_height: Float64,
         return Vec3(I_radial, I_radial, I_axial)
 
 
-fn compute_cylinder_inertia(mass: Float64, radius: Float64, half_height: Float64, axis: Int = 2) -> Vec3:
+fn compute_cylinder_inertia[
+    DTYPE: DType
+](
+    mass: Scalar[DTYPE],
+    radius: Scalar[DTYPE],
+    half_height: Scalar[DTYPE],
+    axis: Int = 2,
+) -> Vec3[DTYPE]:
     """Compute diagonal inertia tensor for a solid cylinder.
 
     Args:
@@ -144,7 +164,9 @@ fn compute_cylinder_inertia(mass: Float64, radius: Float64, half_height: Float64
         return Vec3(I_radial, I_radial, I_axial)
 
 
-fn compute_ellipsoid_inertia(mass: Float64, radii: Vec3) -> Vec3:
+fn compute_ellipsoid_inertia[
+    DTYPE: DType
+](mass: Scalar[DTYPE], radii: Vec3[DTYPE]) -> Vec3[DTYPE]:
     """Compute diagonal inertia tensor for a solid ellipsoid.
 
     Args:
@@ -175,7 +197,11 @@ fn compute_ellipsoid_inertia(mass: Float64, radii: Vec3) -> Vec3:
 # =============================================================================
 
 
-fn parallel_axis_offset(inertia: Vec3, mass: Float64, offset: Vec3) -> Vec3:
+fn parallel_axis_offset[
+    DTYPE: DType
+](inertia: Vec3[DTYPE], mass: Scalar[DTYPE], offset: Vec3[DTYPE]) -> Vec3[
+    DTYPE
+]:
     """Apply parallel axis theorem to shift inertia tensor.
 
     Args:
@@ -206,11 +232,13 @@ fn parallel_axis_offset(inertia: Vec3, mass: Float64, offset: Vec3) -> Vec3:
 # =============================================================================
 
 
-fn combine_inertias(
-    inertias: List[Vec3],
-    masses: List[Float64],
-    positions: List[Vec3],
-) -> Tuple[Vec3, Float64, Vec3]:
+fn combine_inertias[
+    DTYPE: DType
+](
+    inertias: List[Vec3[DTYPE]],
+    masses: List[Scalar[DTYPE]],
+    positions: List[Vec3[DTYPE]],
+) -> Tuple[Vec3[DTYPE], Scalar[DTYPE], Vec3[DTYPE]]:
     """Combine multiple bodies into a single equivalent body.
 
     Args:
@@ -223,11 +251,11 @@ fn combine_inertias(
     """
     var n = len(masses)
     if n == 0:
-        return (Vec3.zero(), 0.0, Vec3.zero())
+        return (Vec3[DTYPE].zero(), Scalar[DTYPE](0.0), Vec3[DTYPE].zero())
 
     # Compute total mass and center of mass
-    var total_mass = Float64(0.0)
-    var com = Vec3.zero()
+    var total_mass = Scalar[DTYPE](0.0)
+    var com = Vec3[DTYPE].zero()
 
     for i in range(n):
         total_mass += masses[i]
@@ -237,7 +265,7 @@ fn combine_inertias(
         com = com / total_mass
 
     # Shift each inertia to combined CoM and sum
-    var combined_inertia = Vec3.zero()
+    var combined_inertia = Vec3[DTYPE].zero()
 
     for i in range(n):
         var offset = positions[i] - com
@@ -252,18 +280,28 @@ fn combine_inertias(
 # =============================================================================
 
 
-fn get_torso_inertia(mass: Float64 = 10.0) -> Tuple[Vec3, Float64]:
+fn get_torso_inertia[
+    DTYPE: DType
+](mass: Scalar[DTYPE] = Scalar[DTYPE](10.0)) -> Tuple[
+    Vec3[DTYPE], Scalar[DTYPE]
+]:
     """Get default torso inertia for humanoid-like robots.
 
     Returns (inertia, actual_mass) for a torso-sized box.
     """
     # Approximate torso as box: 0.3m x 0.2m x 0.5m
-    var half_extents = Vec3(0.15, 0.1, 0.25)
-    var inertia = compute_box_inertia(mass, half_extents)
+    var half_extents = Vec3[DTYPE](0.15, 0.1, 0.25)
+    var inertia = compute_box_inertia[DTYPE](mass, half_extents)
     return (inertia, mass)
 
 
-fn get_limb_inertia(mass: Float64 = 2.0, length: Float64 = 0.4, radius: Float64 = 0.04) -> Tuple[Vec3, Float64]:
+fn get_limb_inertia[
+    DTYPE: DType
+](
+    mass: Scalar[DTYPE] = Scalar[DTYPE](2.0),
+    length: Scalar[DTYPE] = Scalar[DTYPE](0.4),
+    radius: Scalar[DTYPE] = Scalar[DTYPE](0.04),
+) -> Tuple[Vec3[DTYPE], Scalar[DTYPE]]:
     """Get default limb (thigh/shin) inertia as a capsule.
 
     Returns (inertia, actual_mass).
@@ -276,12 +314,16 @@ fn get_limb_inertia(mass: Float64 = 2.0, length: Float64 = 0.4, radius: Float64 
     return (inertia, mass)
 
 
-fn get_foot_inertia(mass: Float64 = 1.0) -> Tuple[Vec3, Float64]:
+fn get_foot_inertia[
+    DTYPE: DType
+](mass: Scalar[DTYPE] = Scalar[DTYPE](1.0)) -> Tuple[
+    Vec3[DTYPE], Scalar[DTYPE]
+]:
     """Get default foot inertia as a small box.
 
     Returns (inertia, actual_mass).
     """
     # Foot as flat box: 0.15m x 0.06m x 0.03m
-    var half_extents = Vec3(0.075, 0.03, 0.015)
-    var inertia = compute_box_inertia(mass, half_extents)
+    var half_extents = Vec3[DTYPE](0.075, 0.03, 0.015)
+    var inertia = compute_box_inertia[DTYPE](mass, half_extents)
     return (inertia, mass)

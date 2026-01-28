@@ -4,14 +4,14 @@ Provides Quat struct for representing 3D rotations without gimbal lock.
 Convention: (w, x, y, z) where w is the scalar part.
 """
 
-from math import sqrt, cos, sin, acos, atan2
+from math import sqrt, cos, sin, acos, atan2, asin
 
 
 from .vec3 import Vec3
 
 
 @fieldwise_init
-struct Quat(ImplicitlyCopyable, Movable, Stringable):
+struct Quat[DTYPE: DType](ImplicitlyCopyable, Movable, Stringable):
     """Unit quaternion for 3D rotations.
 
     Stores rotation as (w, x, y, z) where:
@@ -22,10 +22,10 @@ struct Quat(ImplicitlyCopyable, Movable, Stringable):
     q = (cos(θ/2), sin(θ/2) * n)
     """
 
-    var w: Float64  # Scalar part
-    var x: Float64  # Vector part x
-    var y: Float64  # Vector part y
-    var z: Float64  # Vector part z
+    var w: Scalar[Self.DTYPE]  # Scalar part
+    var x: Scalar[Self.DTYPE]  # Vector part x
+    var y: Scalar[Self.DTYPE]  # Vector part y
+    var z: Scalar[Self.DTYPE]  # Vector part z
 
     # =========================================================================
     # Factory Methods
@@ -37,7 +37,9 @@ struct Quat(ImplicitlyCopyable, Movable, Stringable):
         return Self(1.0, 0.0, 0.0, 0.0)
 
     @staticmethod
-    fn from_axis_angle(axis: Vec3, angle: Float64) -> Self:
+    fn from_axis_angle(
+        axis: Vec3[Self.DTYPE], angle: Scalar[Self.DTYPE]
+    ) -> Self:
         """Create quaternion from axis-angle representation.
 
         Args:
@@ -54,7 +56,9 @@ struct Quat(ImplicitlyCopyable, Movable, Stringable):
         return Self(c, n.x * s, n.y * s, n.z * s)
 
     @staticmethod
-    fn from_euler_xyz(x: Float64, y: Float64, z: Float64) -> Self:
+    fn from_euler_xyz(
+        x: Scalar[Self.DTYPE], y: Scalar[Self.DTYPE], z: Scalar[Self.DTYPE]
+    ) -> Self:
         """Create quaternion from Euler angles (XYZ rotation order).
 
         Args:
@@ -80,7 +84,9 @@ struct Quat(ImplicitlyCopyable, Movable, Stringable):
         )
 
     @staticmethod
-    fn from_euler_zyx(z: Float64, y: Float64, x: Float64) -> Self:
+    fn from_euler_zyx(
+        z: Scalar[Self.DTYPE], y: Scalar[Self.DTYPE], x: Scalar[Self.DTYPE]
+    ) -> Self:
         """Create quaternion from Euler angles (ZYX rotation order).
 
         Common in robotics and aviation (yaw-pitch-roll).
@@ -108,7 +114,9 @@ struct Quat(ImplicitlyCopyable, Movable, Stringable):
         )
 
     @staticmethod
-    fn from_two_vectors(from_vec: Vec3, to_vec: Vec3) -> Self:
+    fn from_two_vectors(
+        from_vec: Vec3[Self.DTYPE], to_vec: Vec3[Self.DTYPE]
+    ) -> Self:
         """Create quaternion that rotates from_vec to to_vec.
 
         Args:
@@ -127,10 +135,12 @@ struct Quat(ImplicitlyCopyable, Movable, Stringable):
             return Self.identity()
         elif d < -0.9999:
             # Vectors are opposite, find orthogonal axis
-            var axis = Vec3.unit_x().cross(f)
+            var axis = Vec3[Self.DTYPE].unit_x().cross(f)
             if axis.length_squared() < 0.0001:
-                axis = Vec3.unit_y().cross(f)
-            return Self.from_axis_angle(axis.normalized(), 3.14159265358979323846)
+                axis = Vec3[Self.DTYPE].unit_y().cross(f)
+            return Self.from_axis_angle(
+                axis.normalized(), 3.14159265358979323846
+            )
         else:
             var axis = f.cross(t)
             var w = 1.0 + d
@@ -147,10 +157,22 @@ struct Quat(ImplicitlyCopyable, Movable, Stringable):
         (q1 * q2) applies q2 first, then q1.
         """
         return Self(
-            self.w * other.w - self.x * other.x - self.y * other.y - self.z * other.z,
-            self.w * other.x + self.x * other.w + self.y * other.z - self.z * other.y,
-            self.w * other.y - self.x * other.z + self.y * other.w + self.z * other.x,
-            self.w * other.z + self.x * other.y - self.y * other.x + self.z * other.w,
+            self.w * other.w
+            - self.x * other.x
+            - self.y * other.y
+            - self.z * other.z,
+            self.w * other.x
+            + self.x * other.w
+            + self.y * other.z
+            - self.z * other.y,
+            self.w * other.y
+            - self.x * other.z
+            + self.y * other.w
+            + self.z * other.x,
+            self.w * other.z
+            + self.x * other.y
+            - self.y * other.x
+            + self.z * other.w,
         )
 
     fn __neg__(self) -> Self:
@@ -177,11 +199,16 @@ struct Quat(ImplicitlyCopyable, Movable, Stringable):
             -self.z * inv_len_sq,
         )
 
-    fn length_squared(self) -> Float64:
+    fn length_squared(self) -> Scalar[Self.DTYPE]:
         """Squared norm of quaternion."""
-        return self.w * self.w + self.x * self.x + self.y * self.y + self.z * self.z
+        return (
+            self.w * self.w
+            + self.x * self.x
+            + self.y * self.y
+            + self.z * self.z
+        )
 
-    fn length(self) -> Float64:
+    fn length(self) -> Scalar[Self.DTYPE]:
         """Norm of quaternion (should be 1 for unit quaternion)."""
         return sqrt(self.length_squared())
 
@@ -207,7 +234,7 @@ struct Quat(ImplicitlyCopyable, Movable, Stringable):
     # Rotation Operations
     # =========================================================================
 
-    fn rotate_vec(self, v: Vec3) -> Vec3:
+    fn rotate_vec(self, v: Vec3[Self.DTYPE]) -> Vec3[Self.DTYPE]:
         """Rotate a vector by this quaternion.
 
         Uses optimized formula: v' = v + 2*w*(q_vec × v) + 2*(q_vec × (q_vec × v))
@@ -227,7 +254,7 @@ struct Quat(ImplicitlyCopyable, Movable, Stringable):
         # v' = v + w*t + q_vec × t
         return v + t * self.w + qv.cross(t)
 
-    fn rotate_vec_inverse(self, v: Vec3) -> Vec3:
+    fn rotate_vec_inverse(self, v: Vec3[Self.DTYPE]) -> Vec3[Self.DTYPE]:
         """Rotate a vector by inverse of this quaternion.
 
         Args:
@@ -242,7 +269,7 @@ struct Quat(ImplicitlyCopyable, Movable, Stringable):
     # Conversion to Other Representations
     # =========================================================================
 
-    fn to_axis_angle(self) -> Tuple[Vec3, Float64]:
+    fn to_axis_angle(self) -> Tuple[Vec3[Self.DTYPE], Scalar[Self.DTYPE]]:
         """Convert to axis-angle representation.
 
         Returns:
@@ -253,15 +280,15 @@ struct Quat(ImplicitlyCopyable, Movable, Stringable):
         var angle = 2.0 * acos(min(max(q.w, -1.0), 1.0))
 
         var s = sqrt(1.0 - q.w * q.w)
-        var axis: Vec3
+        var axis: Vec3[Self.DTYPE]
         if s < 0.0001:
-            axis = Vec3.unit_x()
+            axis = Vec3[Self.DTYPE].unit_x()
         else:
-            axis = Vec3(q.x / s, q.y / s, q.z / s)
+            axis = Vec3[Self.DTYPE](q.x / s, q.y / s, q.z / s)
 
         return (axis, angle)
 
-    fn to_euler_xyz(self) -> Vec3:
+    fn to_euler_xyz(self) -> Vec3[Self.DTYPE]:
         """Convert to Euler angles (XYZ rotation order).
 
         Returns:
@@ -274,9 +301,13 @@ struct Quat(ImplicitlyCopyable, Movable, Stringable):
 
         # Pitch (y-axis rotation)
         var sinp = 2.0 * (self.w * self.y - self.z * self.x)
-        var pitch: Float64
+        var pitch: Scalar[Self.DTYPE]
         if abs(sinp) >= 1.0:
-            pitch = 1.5707963267948966 if sinp > 0 else -1.5707963267948966  # +/- pi/2
+            pitch = Scalar[Self.DTYPE](
+                1.5707963267948966
+            ) if sinp > 0 else Scalar[Self.DTYPE](
+                -1.5707963267948966
+            )  # +/- pi/2
         else:
             pitch = asin(sinp)
 
@@ -287,23 +318,23 @@ struct Quat(ImplicitlyCopyable, Movable, Stringable):
 
         return Vec3(roll, pitch, yaw)
 
-    fn get_forward(self) -> Vec3:
+    fn get_forward(self) -> Vec3[Self.DTYPE]:
         """Get the forward direction (positive Z after rotation)."""
-        return self.rotate_vec(Vec3.unit_z())
+        return self.rotate_vec(Vec3[Self.DTYPE].unit_z())
 
-    fn get_right(self) -> Vec3:
+    fn get_right(self) -> Vec3[Self.DTYPE]:
         """Get the right direction (positive X after rotation)."""
-        return self.rotate_vec(Vec3.unit_x())
+        return self.rotate_vec(Vec3[Self.DTYPE].unit_x())
 
-    fn get_up(self) -> Vec3:
+    fn get_up(self) -> Vec3[Self.DTYPE]:
         """Get the up direction (positive Y after rotation)."""
-        return self.rotate_vec(Vec3.unit_y())
+        return self.rotate_vec(Vec3[Self.DTYPE].unit_y())
 
     # =========================================================================
     # Interpolation
     # =========================================================================
 
-    fn slerp(self, other: Self, t: Float64) -> Self:
+    fn slerp(self, other: Self, t: Scalar[Self.DTYPE]) -> Self:
         """Spherical linear interpolation.
 
         Interpolates smoothly between two rotations.
@@ -316,7 +347,12 @@ struct Quat(ImplicitlyCopyable, Movable, Stringable):
             Interpolated quaternion.
         """
         # Compute dot product
-        var d = self.w * other.w + self.x * other.x + self.y * other.y + self.z * other.z
+        var d = (
+            self.w * other.w
+            + self.x * other.x
+            + self.y * other.y
+            + self.z * other.z
+        )
 
         # Ensure shortest path
         var other_adj = other
@@ -347,7 +383,7 @@ struct Quat(ImplicitlyCopyable, Movable, Stringable):
             self.z * s0 + other_adj.z * s1,
         )
 
-    fn nlerp(self, other: Self, t: Float64) -> Self:
+    fn nlerp(self, other: Self, t: Scalar[Self.DTYPE]) -> Self:
         """Normalized linear interpolation.
 
         Faster than slerp but not constant velocity.
@@ -361,7 +397,12 @@ struct Quat(ImplicitlyCopyable, Movable, Stringable):
         """
         # Ensure shortest path
         var other_adj = other
-        var d = self.w * other.w + self.x * other.x + self.y * other.y + self.z * other.z
+        var d = (
+            self.w * other.w
+            + self.x * other.x
+            + self.y * other.y
+            + self.z * other.z
+        )
         if d < 0.0:
             other_adj = -other
 
@@ -378,15 +419,28 @@ struct Quat(ImplicitlyCopyable, Movable, Stringable):
 
     fn __eq__(self, other: Self) -> Bool:
         """Equality check."""
-        return self.w == other.w and self.x == other.x and self.y == other.y and self.z == other.z
+        return (
+            self.w == other.w
+            and self.x == other.x
+            and self.y == other.y
+            and self.z == other.z
+        )
 
     fn __ne__(self, other: Self) -> Bool:
         """Inequality check."""
         return not (self == other)
 
-    fn approx_eq(self, other: Self, tolerance: Float64 = 1e-10) -> Bool:
-        """Approximate equality (accounting for q and -q being same rotation)."""
-        var d = abs(self.w * other.w + self.x * other.x + self.y * other.y + self.z * other.z)
+    fn approx_eq(
+        self, other: Self, tolerance: Scalar[Self.DTYPE] = 1e-10
+    ) -> Bool:
+        """Approximate equality (accounting for q and -q being same rotation).
+        """
+        var d = abs(
+            self.w * other.w
+            + self.x * other.x
+            + self.y * other.y
+            + self.z * other.z
+        )
         return abs(d - 1.0) < tolerance
 
     # =========================================================================
@@ -413,16 +467,20 @@ struct Quat(ImplicitlyCopyable, Movable, Stringable):
 # =========================================================================
 
 
-fn quat_identity() -> Quat:
+fn quat_identity[DTYPE: DType]() -> Quat[DTYPE]:
     """Return identity quaternion."""
-    return Quat.identity()
+    return Quat[DTYPE].identity()
 
 
-fn quat_from_axis_angle(axis: Vec3, angle: Float64) -> Quat:
+fn quat_from_axis_angle[
+    DTYPE: DType
+](axis: Vec3[DTYPE], angle: Scalar[DTYPE]) -> Quat[DTYPE]:
     """Create quaternion from axis-angle."""
     return Quat.from_axis_angle(axis, angle)
 
 
-fn slerp(a: Quat, b: Quat, t: Float64) -> Quat:
+fn slerp[
+    DTYPE: DType
+](a: Quat[DTYPE], b: Quat[DTYPE], t: Scalar[DTYPE]) -> Quat[DTYPE]:
     """Spherical linear interpolation."""
     return a.slerp(b, t)

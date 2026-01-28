@@ -8,23 +8,36 @@ from math import sqrt, cos, sin
 from math3d import Vec3, Quat
 from ..constants import (
     BODY_STATE_SIZE_3D,
-    IDX_PX, IDX_PY, IDX_PZ,
-    IDX_QW, IDX_QX, IDX_QY, IDX_QZ,
-    IDX_VX, IDX_VY, IDX_VZ,
-    IDX_WX, IDX_WY, IDX_WZ,
+    IDX_PX,
+    IDX_PY,
+    IDX_PZ,
+    IDX_QW,
+    IDX_QX,
+    IDX_QY,
+    IDX_QZ,
+    IDX_VX,
+    IDX_VY,
+    IDX_VZ,
+    IDX_WX,
+    IDX_WY,
+    IDX_WZ,
     IDX_INV_MASS,
-    IDX_IXX, IDX_IYY, IDX_IZZ,
+    IDX_IXX,
+    IDX_IYY,
+    IDX_IZZ,
     IDX_BODY_TYPE,
     BODY_DYNAMIC,
     DEFAULT_BAUMGARTE_3D,
 )
 
 
-fn _get_world_anchor(
-    state: List[Float64],
+fn _get_world_anchor[
+    DTYPE: DType
+](
+    state: List[Scalar[DTYPE]],
     body_idx: Int,
-    local_anchor: Vec3,
-) -> Vec3:
+    local_anchor: Vec3[DTYPE],
+) -> Vec3[DTYPE]:
     """Transform local anchor point to world space.
 
     Args:
@@ -53,11 +66,15 @@ fn _get_world_anchor(
     return pos + q.rotate_vec(local_anchor)
 
 
-fn _get_world_axis(
-    state: List[Float64],
+fn _get_world_axis[
+    DTYPE: DType
+](
+    state: List[Scalar[DTYPE]],
     body_idx: Int,
-    local_axis: Vec3,
-) -> Vec3:
+    local_axis: Vec3[DTYPE],
+) -> Vec3[
+    DTYPE
+]:
     """Transform local axis to world space.
 
     Args:
@@ -80,11 +97,13 @@ fn _get_world_axis(
     return q.rotate_vec(local_axis).normalized()
 
 
-fn _apply_impulse_at_point(
-    mut state: List[Float64],
+fn _apply_impulse_at_point[
+    DTYPE: DType
+](
+    mut state: List[Scalar[DTYPE]],
     body_idx: Int,
-    impulse: Vec3,
-    world_point: Vec3,
+    impulse: Vec3[DTYPE],
+    world_point: Vec3[DTYPE],
 ):
     """Apply impulse to body at world-space point."""
     if body_idx < 0:
@@ -112,20 +131,24 @@ fn _apply_impulse_at_point(
     var r = world_point - pos
     var torque = r.cross(impulse)
 
-    var inv_ixx = 1.0 / state[base + IDX_IXX] if state[base + IDX_IXX] > 0.0 else 0.0
-    var inv_iyy = 1.0 / state[base + IDX_IYY] if state[base + IDX_IYY] > 0.0 else 0.0
-    var inv_izz = 1.0 / state[base + IDX_IZZ] if state[base + IDX_IZZ] > 0.0 else 0.0
+    var inv_ixx = (
+        1.0 / state[base + IDX_IXX] if state[base + IDX_IXX] > 0.0 else 0.0
+    )
+    var inv_iyy = (
+        1.0 / state[base + IDX_IYY] if state[base + IDX_IYY] > 0.0 else 0.0
+    )
+    var inv_izz = (
+        1.0 / state[base + IDX_IZZ] if state[base + IDX_IZZ] > 0.0 else 0.0
+    )
 
     state[base + IDX_WX] += torque.x * inv_ixx
     state[base + IDX_WY] += torque.y * inv_iyy
     state[base + IDX_WZ] += torque.z * inv_izz
 
 
-fn _apply_angular_impulse(
-    mut state: List[Float64],
-    body_idx: Int,
-    angular_impulse: Vec3,
-):
+fn _apply_angular_impulse[
+    DTYPE: DType
+](mut state: List[Scalar[DTYPE]], body_idx: Int, angular_impulse: Vec3[DTYPE],):
     """Apply pure angular impulse to body."""
     if body_idx < 0:
         return
@@ -136,22 +159,30 @@ fn _apply_angular_impulse(
     if body_type != BODY_DYNAMIC:
         return
 
-    var inv_ixx = 1.0 / state[base + IDX_IXX] if state[base + IDX_IXX] > 0.0 else 0.0
-    var inv_iyy = 1.0 / state[base + IDX_IYY] if state[base + IDX_IYY] > 0.0 else 0.0
-    var inv_izz = 1.0 / state[base + IDX_IZZ] if state[base + IDX_IZZ] > 0.0 else 0.0
+    var inv_ixx = (
+        1.0 / state[base + IDX_IXX] if state[base + IDX_IXX] > 0.0 else 0.0
+    )
+    var inv_iyy = (
+        1.0 / state[base + IDX_IYY] if state[base + IDX_IYY] > 0.0 else 0.0
+    )
+    var inv_izz = (
+        1.0 / state[base + IDX_IZZ] if state[base + IDX_IZZ] > 0.0 else 0.0
+    )
 
     state[base + IDX_WX] += angular_impulse.x * inv_ixx
     state[base + IDX_WY] += angular_impulse.y * inv_iyy
     state[base + IDX_WZ] += angular_impulse.z * inv_izz
 
 
-fn solve_hinge_velocity(
-    mut state: List[Float64],
+fn solve_hinge_velocity[
+    DTYPE: DType
+](
+    mut state: List[Scalar[DTYPE]],
     body_a: Int,
     body_b: Int,
-    anchor_a: Vec3,
-    anchor_b: Vec3,
-    axis_a: Vec3,
+    anchor_a: Vec3[DTYPE],
+    anchor_b: Vec3[DTYPE],
+    axis_a: Vec3[DTYPE],
 ):
     """Solve hinge joint velocity constraint.
 
@@ -168,9 +199,12 @@ fn solve_hinge_velocity(
         axis_a: Hinge axis in body A's local frame.
     """
     # Get world-space anchors
-    var world_anchor_a = _get_world_anchor(state, body_a, anchor_a)
-    var world_anchor_b = _get_world_anchor(state, body_b, anchor_b) if body_b >= 0 else anchor_b
-    var world_axis = _get_world_axis(state, body_a, axis_a)
+    var world_anchor_a = _get_world_anchor[DTYPE](state, body_a, anchor_a)
+    var world_anchor_b = (
+        _get_world_anchor[DTYPE](state, body_b, anchor_b) if body_b
+        >= 0 else anchor_b
+    )
+    var world_axis = _get_world_axis[DTYPE](state, body_a, axis_a)
 
     # --- Point-to-point constraint (ball joint part) ---
     var base_a = body_a * BODY_STATE_SIZE_3D
@@ -196,8 +230,8 @@ fn solve_hinge_velocity(
     # Velocity at anchor on A
     var vel_anchor_a = vel_a + omega_a.cross(r_a)
 
-    var vel_anchor_b = Vec3.zero()
-    var r_b = Vec3.zero()
+    var vel_anchor_b = Vec3[DTYPE].zero()
+    var r_b = Vec3[DTYPE].zero()
 
     if body_b >= 0:
         var base_b = body_b * BODY_STATE_SIZE_3D
@@ -225,7 +259,7 @@ fn solve_hinge_velocity(
 
     # Compute effective mass (simplified: use inverse masses)
     var inv_mass_a = state[base_a + IDX_INV_MASS]
-    var inv_mass_b = 0.0
+    var inv_mass_b = Scalar[DTYPE](0.0)
     if body_b >= 0:
         var base_b = body_b * BODY_STATE_SIZE_3D
         inv_mass_b = state[base_b + IDX_INV_MASS]
@@ -249,7 +283,7 @@ fn solve_hinge_velocity(
         state[base_a + IDX_WZ],
     )
 
-    var omega_b = Vec3.zero()
+    var omega_b = Vec3[DTYPE].zero()
     if body_b >= 0:
         var base_b = body_b * BODY_STATE_SIZE_3D
         omega_b = Vec3(
@@ -269,18 +303,30 @@ fn solve_hinge_velocity(
     if omega_perp.length_squared() > 1e-10:
         # Get inverse inertias
         var inv_i_a = Vec3(
-            1.0 / state[base_a + IDX_IXX] if state[base_a + IDX_IXX] > 0.0 else 0.0,
-            1.0 / state[base_a + IDX_IYY] if state[base_a + IDX_IYY] > 0.0 else 0.0,
-            1.0 / state[base_a + IDX_IZZ] if state[base_a + IDX_IZZ] > 0.0 else 0.0,
+            1.0 / state[base_a + IDX_IXX] if state[base_a + IDX_IXX]
+            > 0.0 else 0.0,
+            1.0 / state[base_a + IDX_IYY] if state[base_a + IDX_IYY]
+            > 0.0 else 0.0,
+            1.0 / state[base_a + IDX_IZZ] if state[base_a + IDX_IZZ]
+            > 0.0 else 0.0,
         )
 
         var k_angular = inv_i_a.x + inv_i_a.y + inv_i_a.z
 
         if body_b >= 0:
             var base_b = body_b * BODY_STATE_SIZE_3D
-            k_angular += 1.0 / state[base_b + IDX_IXX] if state[base_b + IDX_IXX] > 0.0 else 0.0
-            k_angular += 1.0 / state[base_b + IDX_IYY] if state[base_b + IDX_IYY] > 0.0 else 0.0
-            k_angular += 1.0 / state[base_b + IDX_IZZ] if state[base_b + IDX_IZZ] > 0.0 else 0.0
+            k_angular += (
+                1.0 / state[base_b + IDX_IXX] if state[base_b + IDX_IXX]
+                > 0.0 else 0.0
+            )
+            k_angular += (
+                1.0 / state[base_b + IDX_IYY] if state[base_b + IDX_IYY]
+                > 0.0 else 0.0
+            )
+            k_angular += (
+                1.0 / state[base_b + IDX_IZZ] if state[base_b + IDX_IZZ]
+                > 0.0 else 0.0
+            )
 
         if k_angular > 0.0:
             var angular_impulse = omega_perp * (-0.5 / k_angular)
@@ -288,13 +334,15 @@ fn solve_hinge_velocity(
             _apply_angular_impulse(state, body_b, angular_impulse * -1.0)
 
 
-fn solve_hinge_position(
-    mut state: List[Float64],
+fn solve_hinge_position[
+    DTYPE: DType
+](
+    mut state: List[Scalar[DTYPE]],
     body_a: Int,
     body_b: Int,
-    anchor_a: Vec3,
-    anchor_b: Vec3,
-    baumgarte: Float64 = DEFAULT_BAUMGARTE_3D,
+    anchor_a: Vec3[DTYPE],
+    anchor_b: Vec3[DTYPE],
+    baumgarte: Scalar[DTYPE] = Scalar[DTYPE](DEFAULT_BAUMGARTE_3D),
 ):
     """Solve hinge joint position constraint.
 
@@ -309,8 +357,10 @@ fn solve_hinge_position(
         baumgarte: Stabilization factor.
     """
     # Get world-space anchors
-    var world_anchor_a = _get_world_anchor(state, body_a, anchor_a)
-    var world_anchor_b = _get_world_anchor(state, body_b, anchor_b) if body_b >= 0 else anchor_b
+    var world_anchor_a = _get_world_anchor[DTYPE](state, body_a, anchor_a)
+    var world_anchor_b = (
+        _get_world_anchor(state, body_b, anchor_b) if body_b >= 0 else anchor_b
+    )
 
     # Position error
     var error = world_anchor_a - world_anchor_b
@@ -322,7 +372,7 @@ fn solve_hinge_position(
     var base_a = body_a * BODY_STATE_SIZE_3D
 
     var inv_mass_a = state[base_a + IDX_INV_MASS]
-    var inv_mass_b = 0.0
+    var inv_mass_b = Scalar[DTYPE](0.0)
     if body_b >= 0:
         var base_b = body_b * BODY_STATE_SIZE_3D
         inv_mass_b = state[base_b + IDX_INV_MASS]
@@ -346,16 +396,18 @@ fn solve_hinge_position(
         state[base_b + IDX_PZ] -= correction.z * inv_mass_b
 
 
-struct JointSolver3D:
+struct JointSolver3D[DTYPE: DType]:
     """Joint constraint solver for 3D articulated bodies."""
 
-    var baumgarte: Float64
+    var baumgarte: Scalar[Self.DTYPE]
     var velocity_iterations: Int
     var position_iterations: Int
 
     fn __init__(
         out self,
-        baumgarte: Float64 = DEFAULT_BAUMGARTE_3D,
+        baumgarte: Scalar[Self.DTYPE] = Scalar[Self.DTYPE](
+            DEFAULT_BAUMGARTE_3D
+        ),
         velocity_iterations: Int = 10,
         position_iterations: Int = 5,
     ):
@@ -372,12 +424,12 @@ struct JointSolver3D:
 
     fn solve_hinge_velocities(
         self,
-        mut state: List[Float64],
+        mut state: List[Scalar[Self.DTYPE]],
         body_a: Int,
         body_b: Int,
-        anchor_a: Vec3,
-        anchor_b: Vec3,
-        axis_a: Vec3,
+        anchor_a: Vec3[Self.DTYPE],
+        anchor_b: Vec3[Self.DTYPE],
+        axis_a: Vec3[Self.DTYPE],
     ):
         """Solve hinge joint velocity constraints.
 
@@ -390,15 +442,17 @@ struct JointSolver3D:
             axis_a: Hinge axis in body A's frame.
         """
         for _ in range(self.velocity_iterations):
-            solve_hinge_velocity(state, body_a, body_b, anchor_a, anchor_b, axis_a)
+            solve_hinge_velocity(
+                state, body_a, body_b, anchor_a, anchor_b, axis_a
+            )
 
     fn solve_hinge_positions(
         self,
-        mut state: List[Float64],
+        mut state: List[Scalar[Self.DTYPE]],
         body_a: Int,
         body_b: Int,
-        anchor_a: Vec3,
-        anchor_b: Vec3,
+        anchor_a: Vec3[Self.DTYPE],
+        anchor_b: Vec3[Self.DTYPE],
     ):
         """Solve hinge joint position constraints.
 
@@ -410,4 +464,6 @@ struct JointSolver3D:
             anchor_b: Local anchor on body B.
         """
         for _ in range(self.position_iterations):
-            solve_hinge_position(state, body_a, body_b, anchor_a, anchor_b, self.baumgarte)
+            solve_hinge_position[Self.DTYPE](
+                state, body_a, body_b, anchor_a, anchor_b, self.baumgarte
+            )

@@ -26,7 +26,9 @@ trait ConstraintSolver3D:
         CONTACTS_OFFSET: Int,
         JOINTS_OFFSET: Int,
     ](
-        state: LayoutTensor[dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
+        state: LayoutTensor[
+            dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+        ],
         env: Int,
         contact_count: Int,
         joint_count: Int,
@@ -51,7 +53,9 @@ trait ConstraintSolver3D:
         CONTACTS_OFFSET: Int,
         JOINTS_OFFSET: Int,
     ](
-        state: LayoutTensor[dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
+        state: LayoutTensor[
+            dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+        ],
         env: Int,
         contact_count: Int,
         joint_count: Int,
@@ -78,7 +82,9 @@ trait ConstraintSolver3D:
         VEL_ITERATIONS: Int,
         POS_ITERATIONS: Int,
     ](
-        state: LayoutTensor[dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
+        state: LayoutTensor[
+            dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+        ],
         env: Int,
         contact_count: Int,
         joint_count: Int,

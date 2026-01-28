@@ -19,16 +19,27 @@ from ..constants import (
     TPB,
     BODY_STATE_SIZE_3D,
     CONTACT_DATA_SIZE_3D,
-    IDX_PX, IDX_PY, IDX_PZ,
+    IDX_PX,
+    IDX_PY,
+    IDX_PZ,
     IDX_BODY_TYPE,
     BODY_DYNAMIC,
     SHAPE_SPHERE,
-    CONTACT_BODY_A_3D, CONTACT_BODY_B_3D,
-    CONTACT_POINT_X, CONTACT_POINT_Y, CONTACT_POINT_Z,
-    CONTACT_NORMAL_X, CONTACT_NORMAL_Y, CONTACT_NORMAL_Z,
+    CONTACT_BODY_A_3D,
+    CONTACT_BODY_B_3D,
+    CONTACT_POINT_X,
+    CONTACT_POINT_Y,
+    CONTACT_POINT_Z,
+    CONTACT_NORMAL_X,
+    CONTACT_NORMAL_Y,
+    CONTACT_NORMAL_Z,
     CONTACT_DEPTH_3D,
-    CONTACT_IMPULSE_N, CONTACT_IMPULSE_T1, CONTACT_IMPULSE_T2,
-    CONTACT_TANGENT1_X, CONTACT_TANGENT1_Y, CONTACT_TANGENT1_Z,
+    CONTACT_IMPULSE_N,
+    CONTACT_IMPULSE_T1,
+    CONTACT_IMPULSE_T2,
+    CONTACT_TANGENT1_X,
+    CONTACT_TANGENT1_Y,
+    CONTACT_TANGENT1_Z,
 )
 
 
@@ -110,7 +121,9 @@ struct SpherePlaneCollision:
             return Contact3D()
 
         # Contact point on ground directly below sphere center
-        var contact_point = Vec3(sphere_center.x, sphere_center.y, ground_height)
+        var contact_point = Vec3(
+            sphere_center.x, sphere_center.y, ground_height
+        )
 
         return Contact3D(
             body_a=body_idx,
@@ -150,9 +163,9 @@ fn detect_spheres_ground(
             centers[i], radii[i], ground_height, body_indices[i]
         )
         if contact.is_valid():
-            contacts.append(contact)
+            contacts.append(contact.copy())
 
-    return contacts
+    return contacts^
 
 
 # =============================================================================
@@ -249,11 +262,15 @@ struct SpherePlaneCollisionGPU:
                 continue
 
             # Write contact to state buffer
-            var contact_off = CONTACTS_OFFSET + contact_count * CONTACT_DATA_SIZE_3D
+            var contact_off = (
+                CONTACTS_OFFSET + contact_count * CONTACT_DATA_SIZE_3D
+            )
 
             # Body indices
             state[env, contact_off + CONTACT_BODY_A_3D] = Scalar[dtype](body)
-            state[env, contact_off + CONTACT_BODY_B_3D] = Scalar[dtype](-1)  # Ground
+            state[env, contact_off + CONTACT_BODY_B_3D] = Scalar[dtype](
+                -1
+            )  # Ground
 
             # Contact point (on ground directly below sphere center)
             state[env, contact_off + CONTACT_POINT_X] = px
@@ -366,7 +383,9 @@ struct SpherePlaneCollisionGPU:
                 continue
 
             # Write to contacts tensor
-            contacts[env, contact_count, CONTACT_BODY_A_3D] = Scalar[dtype](body)
+            contacts[env, contact_count, CONTACT_BODY_A_3D] = Scalar[dtype](
+                body
+            )
             contacts[env, contact_count, CONTACT_BODY_B_3D] = Scalar[dtype](-1)
 
             contacts[env, contact_count, CONTACT_POINT_X] = px
@@ -438,7 +457,15 @@ struct SpherePlaneCollisionGPU:
 
         SpherePlaneCollisionGPU.detect_single_env_with_separate_contacts[
             BATCH, NUM_BODIES, MAX_CONTACTS, STATE_SIZE, BODIES_OFFSET
-        ](env, state, shape_types, shape_radii, contacts, contact_counts, ground_height)
+        ](
+            env,
+            state,
+            shape_types,
+            shape_radii,
+            contacts,
+            contact_counts,
+            ground_height,
+        )
 
     # =========================================================================
     # Public GPU API
@@ -530,7 +557,14 @@ struct SpherePlaneCollisionGPU:
         ):
             SpherePlaneCollisionGPU.detect_kernel[
                 BATCH, NUM_BODIES, MAX_CONTACTS, STATE_SIZE, BODIES_OFFSET
-            ](state, shape_types, shape_radii, contacts, contact_counts, ground_height)
+            ](
+                state,
+                shape_types,
+                shape_radii,
+                contacts,
+                contact_counts,
+                ground_height,
+            )
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             state,

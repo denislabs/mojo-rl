@@ -18,33 +18,56 @@ from ..constants import (
     TPB,
     BODY_STATE_SIZE_3D,
     CONTACT_DATA_SIZE_3D,
-    IDX_PX, IDX_PY, IDX_PZ,
-    IDX_QW, IDX_QX, IDX_QY, IDX_QZ,
-    IDX_VX, IDX_VY, IDX_VZ,
-    IDX_WX, IDX_WY, IDX_WZ,
-    IDX_MASS, IDX_INV_MASS,
-    IDX_IXX, IDX_IYY, IDX_IZZ,
+    IDX_PX,
+    IDX_PY,
+    IDX_PZ,
+    IDX_QW,
+    IDX_QX,
+    IDX_QY,
+    IDX_QZ,
+    IDX_VX,
+    IDX_VY,
+    IDX_VZ,
+    IDX_WX,
+    IDX_WY,
+    IDX_WZ,
+    IDX_MASS,
+    IDX_INV_MASS,
+    IDX_IXX,
+    IDX_IYY,
+    IDX_IZZ,
     IDX_BODY_TYPE,
     BODY_DYNAMIC,
     DEFAULT_BAUMGARTE_3D,
     DEFAULT_SLOP_3D,
     DEFAULT_FRICTION_3D,
-    CONTACT_BODY_A_3D, CONTACT_BODY_B_3D,
-    CONTACT_POINT_X, CONTACT_POINT_Y, CONTACT_POINT_Z,
-    CONTACT_NORMAL_X, CONTACT_NORMAL_Y, CONTACT_NORMAL_Z,
+    CONTACT_BODY_A_3D,
+    CONTACT_BODY_B_3D,
+    CONTACT_POINT_X,
+    CONTACT_POINT_Y,
+    CONTACT_POINT_Z,
+    CONTACT_NORMAL_X,
+    CONTACT_NORMAL_Y,
+    CONTACT_NORMAL_Z,
     CONTACT_DEPTH_3D,
-    CONTACT_IMPULSE_N, CONTACT_IMPULSE_T1, CONTACT_IMPULSE_T2,
-    CONTACT_TANGENT1_X, CONTACT_TANGENT1_Y, CONTACT_TANGENT1_Z,
+    CONTACT_IMPULSE_N,
+    CONTACT_IMPULSE_T1,
+    CONTACT_IMPULSE_T2,
+    CONTACT_TANGENT1_X,
+    CONTACT_TANGENT1_Y,
+    CONTACT_TANGENT1_Z,
 )
 from ..collision import Contact3D
 
 
-fn _get_inverse_mass_matrix(
-    state: List[Float64],
+fn _get_inverse_mass_matrix[
+    DTYPE: DType
+](
+    state: List[Scalar[DTYPE]],
     body_idx: Int,
-    point: Vec3,
-    normal: Vec3,
-) -> Float64:
+    point: Vec3[DTYPE],
+    normal: Vec3[DTYPE],
+) -> Scalar[DTYPE]:
     """Compute effective inverse mass for contact constraint.
 
     Returns: K = 1/m_a + 1/m_b + r_a x n * I_a^-1 * r_a x n + r_b x n * I_b^-1 * r_b x n
@@ -63,7 +86,7 @@ fn _get_inverse_mass_matrix(
     var inv_mass = state[base + IDX_INV_MASS]
 
     # Get body position
-    var pos = Vec3(
+    var pos = Vec3[DTYPE](
         state[base + IDX_PX],
         state[base + IDX_PY],
         state[base + IDX_PZ],
@@ -76,9 +99,15 @@ fn _get_inverse_mass_matrix(
     var r_cross_n = r.cross(normal)
 
     # Get inverse inertia (diagonal approximation)
-    var inv_ixx = 1.0 / state[base + IDX_IXX] if state[base + IDX_IXX] > 0.0 else 0.0
-    var inv_iyy = 1.0 / state[base + IDX_IYY] if state[base + IDX_IYY] > 0.0 else 0.0
-    var inv_izz = 1.0 / state[base + IDX_IZZ] if state[base + IDX_IZZ] > 0.0 else 0.0
+    var inv_ixx = (
+        1.0 / state[base + IDX_IXX] if state[base + IDX_IXX] > 0.0 else 0.0
+    )
+    var inv_iyy = (
+        1.0 / state[base + IDX_IYY] if state[base + IDX_IYY] > 0.0 else 0.0
+    )
+    var inv_izz = (
+        1.0 / state[base + IDX_IZZ] if state[base + IDX_IZZ] > 0.0 else 0.0
+    )
 
     # K contribution from rotation: (r x n) * I^-1 * (r x n)
     var rot_contrib = (
@@ -90,14 +119,18 @@ fn _get_inverse_mass_matrix(
     return inv_mass + rot_contrib
 
 
-fn _get_velocity_at_point(
-    state: List[Float64],
+fn _get_velocity_at_point[
+    DTYPE: DType
+](
+    state: List[Scalar[DTYPE]],
     body_idx: Int,
-    point: Vec3,
-) -> Vec3:
+    point: Vec3[DTYPE],
+) -> Vec3[
+    DTYPE
+]:
     """Get velocity of body at contact point."""
     if body_idx < 0:
-        return Vec3.zero()
+        return Vec3[DTYPE].zero()
 
     var base = body_idx * BODY_STATE_SIZE_3D
 
@@ -121,11 +154,13 @@ fn _get_velocity_at_point(
     return vel + omega.cross(r)
 
 
-fn _apply_impulse(
-    mut state: List[Float64],
+fn _apply_impulse[
+    DTYPE: DType
+](
+    mut state: List[Scalar[DTYPE]],
     body_idx: Int,
-    impulse: Vec3,
-    point: Vec3,
+    impulse: Vec3[DTYPE],
+    point: Vec3[DTYPE],
 ):
     """Apply impulse to body at contact point."""
     if body_idx < 0:
@@ -154,20 +189,28 @@ fn _apply_impulse(
     var r = point - pos
     var torque_impulse = r.cross(impulse)
 
-    var inv_ixx = 1.0 / state[base + IDX_IXX] if state[base + IDX_IXX] > 0.0 else 0.0
-    var inv_iyy = 1.0 / state[base + IDX_IYY] if state[base + IDX_IYY] > 0.0 else 0.0
-    var inv_izz = 1.0 / state[base + IDX_IZZ] if state[base + IDX_IZZ] > 0.0 else 0.0
+    var inv_ixx = (
+        1.0 / state[base + IDX_IXX] if state[base + IDX_IXX] > 0.0 else 0.0
+    )
+    var inv_iyy = (
+        1.0 / state[base + IDX_IYY] if state[base + IDX_IYY] > 0.0 else 0.0
+    )
+    var inv_izz = (
+        1.0 / state[base + IDX_IZZ] if state[base + IDX_IZZ] > 0.0 else 0.0
+    )
 
     state[base + IDX_WX] += torque_impulse.x * inv_ixx
     state[base + IDX_WY] += torque_impulse.y * inv_iyy
     state[base + IDX_WZ] += torque_impulse.z * inv_izz
 
 
-fn solve_contact_velocity(
-    mut state: List[Float64],
-    mut contact: Contact3D,
-    friction: Float64 = DEFAULT_FRICTION_3D,
-    restitution: Float64 = 0.0,
+fn solve_contact_velocity[
+    DTYPE: DType
+](
+    mut state: List[Scalar[DTYPE]],
+    mut contact: Contact3D[DTYPE],
+    friction: Scalar[DTYPE] = Scalar[DTYPE](DEFAULT_FRICTION_3D),
+    restitution: Scalar[DTYPE] = Scalar[DTYPE](0.0),
 ):
     """Solve contact velocity constraint using sequential impulses.
 
@@ -200,9 +243,13 @@ fn solve_contact_velocity(
         return
 
     # Compute effective mass for normal direction
-    var k_normal = _get_inverse_mass_matrix(state, body_a, contact.point, contact.normal)
+    var k_normal = _get_inverse_mass_matrix(
+        state, body_a, contact.point, contact.normal
+    )
     if body_b >= 0:
-        k_normal += _get_inverse_mass_matrix(state, body_b, contact.point, contact.normal)
+        k_normal += _get_inverse_mass_matrix(
+            state, body_b, contact.point, contact.normal
+        )
 
     if k_normal <= 0.0:
         return
@@ -231,11 +278,19 @@ fn solve_contact_velocity(
     var vt2 = rel_vel.dot(contact.tangent2)
 
     # Effective mass for tangent directions
-    var k_t1 = _get_inverse_mass_matrix(state, body_a, contact.point, contact.tangent1)
-    var k_t2 = _get_inverse_mass_matrix(state, body_a, contact.point, contact.tangent2)
+    var k_t1 = _get_inverse_mass_matrix(
+        state, body_a, contact.point, contact.tangent1
+    )
+    var k_t2 = _get_inverse_mass_matrix(
+        state, body_a, contact.point, contact.tangent2
+    )
     if body_b >= 0:
-        k_t1 += _get_inverse_mass_matrix(state, body_b, contact.point, contact.tangent1)
-        k_t2 += _get_inverse_mass_matrix(state, body_b, contact.point, contact.tangent2)
+        k_t1 += _get_inverse_mass_matrix(
+            state, body_b, contact.point, contact.tangent1
+        )
+        k_t2 += _get_inverse_mass_matrix(
+            state, body_b, contact.point, contact.tangent2
+        )
 
     # Tangent impulses
     var j_t1 = -vt1 / k_t1 if k_t1 > 0.0 else 0.0
@@ -251,7 +306,10 @@ fn solve_contact_velocity(
     contact.impulse_t2 += j_t2
 
     # Clamp to friction cone
-    var tangent_mag = sqrt(contact.impulse_t1 * contact.impulse_t1 + contact.impulse_t2 * contact.impulse_t2)
+    var tangent_mag = sqrt(
+        contact.impulse_t1 * contact.impulse_t1
+        + contact.impulse_t2 * contact.impulse_t2
+    )
     if tangent_mag > max_friction and tangent_mag > 0.0:
         var scale = max_friction / tangent_mag
         contact.impulse_t1 *= scale
@@ -266,11 +324,13 @@ fn solve_contact_velocity(
     _apply_impulse(state, body_b, friction_impulse * -1.0, contact.point)
 
 
-fn solve_contact_position(
-    mut state: List[Float64],
-    contact: Contact3D,
-    baumgarte: Float64 = DEFAULT_BAUMGARTE_3D,
-    slop: Float64 = DEFAULT_SLOP_3D,
+fn solve_contact_position[
+    DTYPE: DType
+](
+    mut state: List[Scalar[DTYPE]],
+    contact: Contact3D[DTYPE],
+    baumgarte: Scalar[DTYPE] = Scalar[DTYPE](DEFAULT_BAUMGARTE_3D),
+    slop: Scalar[DTYPE] = Scalar[DTYPE](DEFAULT_SLOP_3D),
 ):
     """Solve contact position constraint (Baumgarte stabilization).
 
@@ -294,8 +354,8 @@ fn solve_contact_position(
     var body_b = contact.body_b
 
     # Compute effective mass (linear only for position correction)
-    var inv_mass_a = 0.0
-    var inv_mass_b = 0.0
+    var inv_mass_a = Scalar[DTYPE](0.0)
+    var inv_mass_b = Scalar[DTYPE](0.0)
 
     if body_a >= 0:
         var base_a = body_a * BODY_STATE_SIZE_3D
@@ -310,7 +370,9 @@ fn solve_contact_position(
         return
 
     # Position correction
-    var correction = contact.normal * (baumgarte * correction_depth / total_inv_mass)
+    var correction = contact.normal * (
+        baumgarte * correction_depth / total_inv_mass
+    )
 
     # Apply position correction
     if body_a >= 0:
@@ -332,19 +394,19 @@ struct ContactSolver3D:
     Uses sequential impulses with warm starting for stable contact resolution.
     """
 
-    var friction: Float64
-    var restitution: Float64
-    var baumgarte: Float64
-    var slop: Float64
+    var friction: Scalar[dtype]
+    var restitution: Scalar[dtype]
+    var baumgarte: Scalar[dtype]
+    var slop: Scalar[dtype]
     var velocity_iterations: Int
     var position_iterations: Int
 
     fn __init__(
         out self,
-        friction: Float64 = DEFAULT_FRICTION_3D,
-        restitution: Float64 = 0.0,
-        baumgarte: Float64 = DEFAULT_BAUMGARTE_3D,
-        slop: Float64 = DEFAULT_SLOP_3D,
+        friction: Scalar[dtype] = Scalar[dtype](DEFAULT_FRICTION_3D),
+        restitution: Scalar[dtype] = Scalar[dtype](0.0),
+        baumgarte: Scalar[dtype] = Scalar[dtype](DEFAULT_BAUMGARTE_3D),
+        slop: Scalar[dtype] = Scalar[dtype](DEFAULT_SLOP_3D),
         velocity_iterations: Int = 10,
         position_iterations: Int = 5,
     ):
@@ -367,8 +429,8 @@ struct ContactSolver3D:
 
     fn solve_velocities(
         self,
-        mut state: List[Float64],
-        mut contacts: List[Contact3D],
+        mut state: List[Scalar[dtype]],
+        mut contacts: List[Contact3D[dtype]],
     ):
         """Solve velocity constraints for all contacts.
 
@@ -384,8 +446,8 @@ struct ContactSolver3D:
 
     fn solve_positions(
         self,
-        mut state: List[Float64],
-        contacts: List[Contact3D],
+        mut state: List[Scalar[dtype]],
+        contacts: List[Contact3D[dtype]],
     ):
         """Solve position constraints for all contacts.
 
@@ -401,8 +463,8 @@ struct ContactSolver3D:
 
     fn solve(
         self,
-        mut state: List[Float64],
-        mut contacts: List[Contact3D],
+        mut state: List[Scalar[dtype]],
+        mut contacts: List[Contact3D[dtype]],
     ):
         """Solve all contact constraints (velocity then position).
 
@@ -491,9 +553,9 @@ struct ImpulseSolver3DGPU:
             var inv_mass_a = state[env, body_a_off + IDX_INV_MASS]
 
             # Get inverse inertia for body A (diagonal)
-            var ixx_a = state[env, body_a_off + IDX_IXX]
-            var iyy_a = state[env, body_a_off + IDX_IYY]
-            var izz_a = state[env, body_a_off + IDX_IZZ]
+            var ixx_a = rebind[Scalar[dtype]](state[env, body_a_off + IDX_IXX])
+            var iyy_a = rebind[Scalar[dtype]](state[env, body_a_off + IDX_IYY])
+            var izz_a = rebind[Scalar[dtype]](state[env, body_a_off + IDX_IZZ])
             var inv_ixx_a = Scalar[dtype](0)
             var inv_iyy_a = Scalar[dtype](0)
             var inv_izz_a = Scalar[dtype](0)
@@ -528,13 +590,27 @@ struct ImpulseSolver3DGPU:
                 vel_b_x = rebind[Scalar[dtype]](state[env, body_b_off + IDX_VX])
                 vel_b_y = rebind[Scalar[dtype]](state[env, body_b_off + IDX_VY])
                 vel_b_z = rebind[Scalar[dtype]](state[env, body_b_off + IDX_VZ])
-                omega_b_x = rebind[Scalar[dtype]](state[env, body_b_off + IDX_WX])
-                omega_b_y = rebind[Scalar[dtype]](state[env, body_b_off + IDX_WY])
-                omega_b_z = rebind[Scalar[dtype]](state[env, body_b_off + IDX_WZ])
-                inv_mass_b = rebind[Scalar[dtype]](state[env, body_b_off + IDX_INV_MASS])
-                var ixx_b = state[env, body_b_off + IDX_IXX]
-                var iyy_b = state[env, body_b_off + IDX_IYY]
-                var izz_b = state[env, body_b_off + IDX_IZZ]
+                omega_b_x = rebind[Scalar[dtype]](
+                    state[env, body_b_off + IDX_WX]
+                )
+                omega_b_y = rebind[Scalar[dtype]](
+                    state[env, body_b_off + IDX_WY]
+                )
+                omega_b_z = rebind[Scalar[dtype]](
+                    state[env, body_b_off + IDX_WZ]
+                )
+                inv_mass_b = rebind[Scalar[dtype]](
+                    state[env, body_b_off + IDX_INV_MASS]
+                )
+                var ixx_b = rebind[Scalar[dtype]](
+                    state[env, body_b_off + IDX_IXX]
+                )
+                var iyy_b = rebind[Scalar[dtype]](
+                    state[env, body_b_off + IDX_IYY]
+                )
+                var izz_b = rebind[Scalar[dtype]](
+                    state[env, body_b_off + IDX_IZZ]
+                )
                 if ixx_b > Scalar[dtype](1e-10):
                     inv_ixx_b = Scalar[dtype](1.0) / ixx_b
                 if iyy_b > Scalar[dtype](1e-10):
@@ -565,7 +641,11 @@ struct ImpulseSolver3DGPU:
             var rel_vel_z = vel_at_a_z - vel_at_b_z
 
             # Normal component of relative velocity
-            var vel_normal = rel_vel_x * normal_x + rel_vel_y * normal_y + rel_vel_z * normal_z
+            var vel_normal = (
+                rel_vel_x * normal_x
+                + rel_vel_y * normal_y
+                + rel_vel_z * normal_z
+            )
 
             # Only resolve if approaching
             if vel_normal < Scalar[dtype](0):
@@ -590,7 +670,9 @@ struct ImpulseSolver3DGPU:
                     continue
 
                 # Normal impulse: j = -(1+e) * v_n / K
-                var j_normal = -(Scalar[dtype](1) + restitution) * vel_normal / k
+                var j_normal = (
+                    -(Scalar[dtype](1) + restitution) * vel_normal / k
+                )
 
                 # Clamp accumulated impulse
                 var old_impulse = contacts[env, c, CONTACT_IMPULSE_N]
@@ -606,28 +688,52 @@ struct ImpulseSolver3DGPU:
                 var impulse_z = j_normal * normal_z
 
                 # Linear velocity change: v += j/m
-                state[env, body_a_off + IDX_VX] = vel_a_x + impulse_x * inv_mass_a
-                state[env, body_a_off + IDX_VY] = vel_a_y + impulse_y * inv_mass_a
-                state[env, body_a_off + IDX_VZ] = vel_a_z + impulse_z * inv_mass_a
+                state[env, body_a_off + IDX_VX] = (
+                    vel_a_x + impulse_x * inv_mass_a
+                )
+                state[env, body_a_off + IDX_VY] = (
+                    vel_a_y + impulse_y * inv_mass_a
+                )
+                state[env, body_a_off + IDX_VZ] = (
+                    vel_a_z + impulse_z * inv_mass_a
+                )
 
                 # Angular velocity change: w += I^-1 * (r x j)
                 var torque_a_x = ra_y * impulse_z - ra_z * impulse_y
                 var torque_a_y = ra_z * impulse_x - ra_x * impulse_z
                 var torque_a_z = ra_x * impulse_y - ra_y * impulse_x
-                state[env, body_a_off + IDX_WX] = omega_a_x + torque_a_x * inv_ixx_a
-                state[env, body_a_off + IDX_WY] = omega_a_y + torque_a_y * inv_iyy_a
-                state[env, body_a_off + IDX_WZ] = omega_a_z + torque_a_z * inv_izz_a
+                state[env, body_a_off + IDX_WX] = (
+                    omega_a_x + torque_a_x * inv_ixx_a
+                )
+                state[env, body_a_off + IDX_WY] = (
+                    omega_a_y + torque_a_y * inv_iyy_a
+                )
+                state[env, body_a_off + IDX_WZ] = (
+                    omega_a_z + torque_a_z * inv_izz_a
+                )
 
                 if body_b_idx >= 0:
-                    state[env, body_b_off + IDX_VX] = vel_b_x - impulse_x * inv_mass_b
-                    state[env, body_b_off + IDX_VY] = vel_b_y - impulse_y * inv_mass_b
-                    state[env, body_b_off + IDX_VZ] = vel_b_z - impulse_z * inv_mass_b
+                    state[env, body_b_off + IDX_VX] = (
+                        vel_b_x - impulse_x * inv_mass_b
+                    )
+                    state[env, body_b_off + IDX_VY] = (
+                        vel_b_y - impulse_y * inv_mass_b
+                    )
+                    state[env, body_b_off + IDX_VZ] = (
+                        vel_b_z - impulse_z * inv_mass_b
+                    )
                     var torque_b_x = rb_y * impulse_z - rb_z * impulse_y
                     var torque_b_y = rb_z * impulse_x - rb_x * impulse_z
                     var torque_b_z = rb_x * impulse_y - rb_y * impulse_x
-                    state[env, body_b_off + IDX_WX] = omega_b_x - torque_b_x * inv_ixx_b
-                    state[env, body_b_off + IDX_WY] = omega_b_y - torque_b_y * inv_iyy_b
-                    state[env, body_b_off + IDX_WZ] = omega_b_z - torque_b_z * inv_izz_b
+                    state[env, body_b_off + IDX_WX] = (
+                        omega_b_x - torque_b_x * inv_ixx_b
+                    )
+                    state[env, body_b_off + IDX_WY] = (
+                        omega_b_y - torque_b_y * inv_iyy_b
+                    )
+                    state[env, body_b_off + IDX_WZ] = (
+                        omega_b_z - torque_b_z * inv_izz_b
+                    )
 
                 # ============================================================
                 # Friction
@@ -637,16 +743,34 @@ struct ImpulseSolver3DGPU:
                 vel_a_x = rebind[Scalar[dtype]](state[env, body_a_off + IDX_VX])
                 vel_a_y = rebind[Scalar[dtype]](state[env, body_a_off + IDX_VY])
                 vel_a_z = rebind[Scalar[dtype]](state[env, body_a_off + IDX_VZ])
-                omega_a_x = rebind[Scalar[dtype]](state[env, body_a_off + IDX_WX])
-                omega_a_y = rebind[Scalar[dtype]](state[env, body_a_off + IDX_WY])
-                omega_a_z = rebind[Scalar[dtype]](state[env, body_a_off + IDX_WZ])
+                omega_a_x = rebind[Scalar[dtype]](
+                    state[env, body_a_off + IDX_WX]
+                )
+                omega_a_y = rebind[Scalar[dtype]](
+                    state[env, body_a_off + IDX_WY]
+                )
+                omega_a_z = rebind[Scalar[dtype]](
+                    state[env, body_a_off + IDX_WZ]
+                )
                 if body_b_idx >= 0:
-                    vel_b_x = rebind[Scalar[dtype]](state[env, body_b_off + IDX_VX])
-                    vel_b_y = rebind[Scalar[dtype]](state[env, body_b_off + IDX_VY])
-                    vel_b_z = rebind[Scalar[dtype]](state[env, body_b_off + IDX_VZ])
-                    omega_b_x = rebind[Scalar[dtype]](state[env, body_b_off + IDX_WX])
-                    omega_b_y = rebind[Scalar[dtype]](state[env, body_b_off + IDX_WY])
-                    omega_b_z = rebind[Scalar[dtype]](state[env, body_b_off + IDX_WZ])
+                    vel_b_x = rebind[Scalar[dtype]](
+                        state[env, body_b_off + IDX_VX]
+                    )
+                    vel_b_y = rebind[Scalar[dtype]](
+                        state[env, body_b_off + IDX_VY]
+                    )
+                    vel_b_z = rebind[Scalar[dtype]](
+                        state[env, body_b_off + IDX_VZ]
+                    )
+                    omega_b_x = rebind[Scalar[dtype]](
+                        state[env, body_b_off + IDX_WX]
+                    )
+                    omega_b_y = rebind[Scalar[dtype]](
+                        state[env, body_b_off + IDX_WY]
+                    )
+                    omega_b_z = rebind[Scalar[dtype]](
+                        state[env, body_b_off + IDX_WZ]
+                    )
 
                 # Recompute relative velocity for friction
                 vel_at_a_x = vel_a_x + (omega_a_y * ra_z - omega_a_z * ra_y)
@@ -670,41 +794,73 @@ struct ImpulseSolver3DGPU:
                 var tangent2_z = normal_x * tangent1_y - normal_y * tangent1_x
 
                 # Tangential velocity components
-                var vel_t1 = rel_vel_x * tangent1_x + rel_vel_y * tangent1_y + rel_vel_z * tangent1_z
-                var vel_t2 = rel_vel_x * tangent2_x + rel_vel_y * tangent2_y + rel_vel_z * tangent2_z
+                var vel_t1 = rebind[Scalar[dtype]](
+                    rel_vel_x * tangent1_x
+                    + rel_vel_y * tangent1_y
+                    + rel_vel_z * tangent1_z
+                )
+                var vel_t2 = rebind[Scalar[dtype]](
+                    rel_vel_x * tangent2_x
+                    + rel_vel_y * tangent2_y
+                    + rel_vel_z * tangent2_z
+                )
 
                 # Effective mass for tangent directions
                 var ra_cross_t1_x = ra_y * tangent1_z - ra_z * tangent1_y
                 var ra_cross_t1_y = ra_z * tangent1_x - ra_x * tangent1_z
                 var ra_cross_t1_z = ra_x * tangent1_y - ra_y * tangent1_x
 
-                var k_t1 = inv_mass_a + inv_mass_b
-                k_t1 = k_t1 + ra_cross_t1_x * ra_cross_t1_x * inv_ixx_a
-                k_t1 = k_t1 + ra_cross_t1_y * ra_cross_t1_y * inv_iyy_a
-                k_t1 = k_t1 + ra_cross_t1_z * ra_cross_t1_z * inv_izz_a
+                var k_t1 = rebind[Scalar[dtype]](inv_mass_a + inv_mass_b)
+                k_t1 = k_t1 + rebind[Scalar[dtype]](
+                    ra_cross_t1_x * ra_cross_t1_x * inv_ixx_a
+                )
+                k_t1 = k_t1 + rebind[Scalar[dtype]](
+                    ra_cross_t1_y * ra_cross_t1_y * inv_iyy_a
+                )
+                k_t1 = k_t1 + rebind[Scalar[dtype]](
+                    ra_cross_t1_z * ra_cross_t1_z * inv_izz_a
+                )
                 if body_b_idx >= 0:
                     var rb_cross_t1_x = rb_y * tangent1_z - rb_z * tangent1_y
                     var rb_cross_t1_y = rb_z * tangent1_x - rb_x * tangent1_z
                     var rb_cross_t1_z = rb_x * tangent1_y - rb_y * tangent1_x
-                    k_t1 = k_t1 + rb_cross_t1_x * rb_cross_t1_x * inv_ixx_b
-                    k_t1 = k_t1 + rb_cross_t1_y * rb_cross_t1_y * inv_iyy_b
-                    k_t1 = k_t1 + rb_cross_t1_z * rb_cross_t1_z * inv_izz_b
+                    k_t1 = k_t1 + rebind[Scalar[dtype]](
+                        rb_cross_t1_x * rb_cross_t1_x * inv_ixx_b
+                    )
+                    k_t1 = k_t1 + rebind[Scalar[dtype]](
+                        rb_cross_t1_y * rb_cross_t1_y * inv_iyy_b
+                    )
+                    k_t1 = k_t1 + rebind[Scalar[dtype]](
+                        rb_cross_t1_z * rb_cross_t1_z * inv_izz_b
+                    )
 
                 var ra_cross_t2_x = ra_y * tangent2_z - ra_z * tangent2_y
                 var ra_cross_t2_y = ra_z * tangent2_x - ra_x * tangent2_z
                 var ra_cross_t2_z = ra_x * tangent2_y - ra_y * tangent2_x
 
-                var k_t2 = inv_mass_a + inv_mass_b
-                k_t2 = k_t2 + ra_cross_t2_x * ra_cross_t2_x * inv_ixx_a
-                k_t2 = k_t2 + ra_cross_t2_y * ra_cross_t2_y * inv_iyy_a
-                k_t2 = k_t2 + ra_cross_t2_z * ra_cross_t2_z * inv_izz_a
+                var k_t2 = rebind[Scalar[dtype]](inv_mass_a + inv_mass_b)
+                k_t2 = k_t2 + rebind[Scalar[dtype]](
+                    ra_cross_t2_x * ra_cross_t2_x * inv_ixx_a
+                )
+                k_t2 = k_t2 + rebind[Scalar[dtype]](
+                    ra_cross_t2_y * ra_cross_t2_y * inv_iyy_a
+                )
+                k_t2 = k_t2 + rebind[Scalar[dtype]](
+                    ra_cross_t2_z * ra_cross_t2_z * inv_izz_a
+                )
                 if body_b_idx >= 0:
                     var rb_cross_t2_x = rb_y * tangent2_z - rb_z * tangent2_y
                     var rb_cross_t2_y = rb_z * tangent2_x - rb_x * tangent2_z
                     var rb_cross_t2_z = rb_x * tangent2_y - rb_y * tangent2_x
-                    k_t2 = k_t2 + rb_cross_t2_x * rb_cross_t2_x * inv_ixx_b
-                    k_t2 = k_t2 + rb_cross_t2_y * rb_cross_t2_y * inv_iyy_b
-                    k_t2 = k_t2 + rb_cross_t2_z * rb_cross_t2_z * inv_izz_b
+                    k_t2 = k_t2 + rebind[Scalar[dtype]](
+                        rb_cross_t2_x * rb_cross_t2_x * inv_ixx_b
+                    )
+                    k_t2 = k_t2 + rebind[Scalar[dtype]](
+                        rb_cross_t2_y * rb_cross_t2_y * inv_iyy_b
+                    )
+                    k_t2 = k_t2 + rebind[Scalar[dtype]](
+                        rb_cross_t2_z * rb_cross_t2_z * inv_izz_b
+                    )
 
                 # Friction impulses
                 var j_t1 = Scalar[dtype](0)
@@ -715,49 +871,101 @@ struct ImpulseSolver3DGPU:
                     j_t2 = -vel_t2 / k_t2
 
                 # Friction cone clamping
-                var max_friction = friction * contacts[env, c, CONTACT_IMPULSE_N]
+                var max_friction = (
+                    friction * contacts[env, c, CONTACT_IMPULSE_N]
+                )
                 var old_t1 = contacts[env, c, CONTACT_IMPULSE_T1]
                 var old_t2 = contacts[env, c, CONTACT_IMPULSE_T2]
                 var new_t1 = old_t1 + j_t1
                 var new_t2 = old_t2 + j_t2
 
                 var friction_mag = sqrt(new_t1 * new_t1 + new_t2 * new_t2)
-                if friction_mag > max_friction and friction_mag > Scalar[dtype](0):
+                if friction_mag > max_friction and friction_mag > Scalar[dtype](
+                    0
+                ):
                     var scale = max_friction / friction_mag
                     new_t1 = new_t1 * scale
                     new_t2 = new_t2 * scale
 
                 contacts[env, c, CONTACT_IMPULSE_T1] = new_t1
                 contacts[env, c, CONTACT_IMPULSE_T2] = new_t2
-                j_t1 = new_t1 - old_t1
-                j_t2 = new_t2 - old_t2
+                j_t1 = rebind[Scalar[dtype]](new_t1 - old_t1)
+                j_t2 = rebind[Scalar[dtype]](new_t2 - old_t2)
 
                 # Apply friction impulse
                 var friction_impulse_x = j_t1 * tangent1_x + j_t2 * tangent2_x
                 var friction_impulse_y = j_t1 * tangent1_y + j_t2 * tangent2_y
                 var friction_impulse_z = j_t1 * tangent1_z + j_t2 * tangent2_z
 
-                state[env, body_a_off + IDX_VX] = state[env, body_a_off + IDX_VX] + friction_impulse_x * inv_mass_a
-                state[env, body_a_off + IDX_VY] = state[env, body_a_off + IDX_VY] + friction_impulse_y * inv_mass_a
-                state[env, body_a_off + IDX_VZ] = state[env, body_a_off + IDX_VZ] + friction_impulse_z * inv_mass_a
+                state[env, body_a_off + IDX_VX] = (
+                    state[env, body_a_off + IDX_VX]
+                    + friction_impulse_x * inv_mass_a
+                )
+                state[env, body_a_off + IDX_VY] = (
+                    state[env, body_a_off + IDX_VY]
+                    + friction_impulse_y * inv_mass_a
+                )
+                state[env, body_a_off + IDX_VZ] = (
+                    state[env, body_a_off + IDX_VZ]
+                    + friction_impulse_z * inv_mass_a
+                )
 
-                var friction_torque_a_x = ra_y * friction_impulse_z - ra_z * friction_impulse_y
-                var friction_torque_a_y = ra_z * friction_impulse_x - ra_x * friction_impulse_z
-                var friction_torque_a_z = ra_x * friction_impulse_y - ra_y * friction_impulse_x
-                state[env, body_a_off + IDX_WX] = state[env, body_a_off + IDX_WX] + friction_torque_a_x * inv_ixx_a
-                state[env, body_a_off + IDX_WY] = state[env, body_a_off + IDX_WY] + friction_torque_a_y * inv_iyy_a
-                state[env, body_a_off + IDX_WZ] = state[env, body_a_off + IDX_WZ] + friction_torque_a_z * inv_izz_a
+                var friction_torque_a_x = (
+                    ra_y * friction_impulse_z - ra_z * friction_impulse_y
+                )
+                var friction_torque_a_y = (
+                    ra_z * friction_impulse_x - ra_x * friction_impulse_z
+                )
+                var friction_torque_a_z = (
+                    ra_x * friction_impulse_y - ra_y * friction_impulse_x
+                )
+                state[env, body_a_off + IDX_WX] = (
+                    state[env, body_a_off + IDX_WX]
+                    + friction_torque_a_x * inv_ixx_a
+                )
+                state[env, body_a_off + IDX_WY] = (
+                    state[env, body_a_off + IDX_WY]
+                    + friction_torque_a_y * inv_iyy_a
+                )
+                state[env, body_a_off + IDX_WZ] = (
+                    state[env, body_a_off + IDX_WZ]
+                    + friction_torque_a_z * inv_izz_a
+                )
 
                 if body_b_idx >= 0:
-                    state[env, body_b_off + IDX_VX] = state[env, body_b_off + IDX_VX] - friction_impulse_x * inv_mass_b
-                    state[env, body_b_off + IDX_VY] = state[env, body_b_off + IDX_VY] - friction_impulse_y * inv_mass_b
-                    state[env, body_b_off + IDX_VZ] = state[env, body_b_off + IDX_VZ] - friction_impulse_z * inv_mass_b
-                    var friction_torque_b_x = rb_y * friction_impulse_z - rb_z * friction_impulse_y
-                    var friction_torque_b_y = rb_z * friction_impulse_x - rb_x * friction_impulse_z
-                    var friction_torque_b_z = rb_x * friction_impulse_y - rb_y * friction_impulse_x
-                    state[env, body_b_off + IDX_WX] = state[env, body_b_off + IDX_WX] - friction_torque_b_x * inv_ixx_b
-                    state[env, body_b_off + IDX_WY] = state[env, body_b_off + IDX_WY] - friction_torque_b_y * inv_iyy_b
-                    state[env, body_b_off + IDX_WZ] = state[env, body_b_off + IDX_WZ] - friction_torque_b_z * inv_izz_b
+                    state[env, body_b_off + IDX_VX] = (
+                        state[env, body_b_off + IDX_VX]
+                        - friction_impulse_x * inv_mass_b
+                    )
+                    state[env, body_b_off + IDX_VY] = (
+                        state[env, body_b_off + IDX_VY]
+                        - friction_impulse_y * inv_mass_b
+                    )
+                    state[env, body_b_off + IDX_VZ] = (
+                        state[env, body_b_off + IDX_VZ]
+                        - friction_impulse_z * inv_mass_b
+                    )
+                    var friction_torque_b_x = (
+                        rb_y * friction_impulse_z - rb_z * friction_impulse_y
+                    )
+                    var friction_torque_b_y = (
+                        rb_z * friction_impulse_x - rb_x * friction_impulse_z
+                    )
+                    var friction_torque_b_z = (
+                        rb_x * friction_impulse_y - rb_y * friction_impulse_x
+                    )
+                    state[env, body_b_off + IDX_WX] = (
+                        state[env, body_b_off + IDX_WX]
+                        - friction_torque_b_x * inv_ixx_b
+                    )
+                    state[env, body_b_off + IDX_WY] = (
+                        state[env, body_b_off + IDX_WY]
+                        - friction_torque_b_y * inv_iyy_b
+                    )
+                    state[env, body_b_off + IDX_WZ] = (
+                        state[env, body_b_off + IDX_WZ]
+                        - friction_torque_b_z * inv_izz_b
+                    )
 
     @always_inline
     @staticmethod
@@ -813,12 +1021,16 @@ struct ImpulseSolver3DGPU:
 
             correction = baumgarte * correction
 
-            var inv_mass_a = rebind[Scalar[dtype]](state[env, body_a_off + IDX_INV_MASS])
+            var inv_mass_a = rebind[Scalar[dtype]](
+                state[env, body_a_off + IDX_INV_MASS]
+            )
             var inv_mass_b = Scalar[dtype](0)
             var body_b_off = 0
             if body_b_idx >= 0:
                 body_b_off = BODIES_OFFSET + body_b_idx * BODY_STATE_SIZE_3D
-                inv_mass_b = rebind[Scalar[dtype]](state[env, body_b_off + IDX_INV_MASS])
+                inv_mass_b = rebind[Scalar[dtype]](
+                    state[env, body_b_off + IDX_INV_MASS]
+                )
 
             var total_inv_mass = inv_mass_a + inv_mass_b
             if total_inv_mass <= Scalar[dtype](0):
@@ -828,14 +1040,26 @@ struct ImpulseSolver3DGPU:
             var correction_b = correction * inv_mass_b / total_inv_mass
 
             # Apply position correction
-            state[env, body_a_off + IDX_PX] = state[env, body_a_off + IDX_PX] + normal_x * correction_a
-            state[env, body_a_off + IDX_PY] = state[env, body_a_off + IDX_PY] + normal_y * correction_a
-            state[env, body_a_off + IDX_PZ] = state[env, body_a_off + IDX_PZ] + normal_z * correction_a
+            state[env, body_a_off + IDX_PX] = (
+                state[env, body_a_off + IDX_PX] + normal_x * correction_a
+            )
+            state[env, body_a_off + IDX_PY] = (
+                state[env, body_a_off + IDX_PY] + normal_y * correction_a
+            )
+            state[env, body_a_off + IDX_PZ] = (
+                state[env, body_a_off + IDX_PZ] + normal_z * correction_a
+            )
 
             if body_b_idx >= 0:
-                state[env, body_b_off + IDX_PX] = state[env, body_b_off + IDX_PX] - normal_x * correction_b
-                state[env, body_b_off + IDX_PY] = state[env, body_b_off + IDX_PY] - normal_y * correction_b
-                state[env, body_b_off + IDX_PZ] = state[env, body_b_off + IDX_PZ] - normal_z * correction_b
+                state[env, body_b_off + IDX_PX] = (
+                    state[env, body_b_off + IDX_PX] - normal_x * correction_b
+                )
+                state[env, body_b_off + IDX_PY] = (
+                    state[env, body_b_off + IDX_PY] - normal_y * correction_b
+                )
+                state[env, body_b_off + IDX_PZ] = (
+                    state[env, body_b_off + IDX_PZ] - normal_z * correction_b
+                )
 
     # =========================================================================
     # GPU Kernel Entry Points
@@ -955,9 +1179,17 @@ struct ImpulseSolver3DGPU:
 
         @always_inline
         fn kernel_wrapper(
-            state: LayoutTensor[dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
-            contacts: LayoutTensor[dtype, Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE_3D), MutAnyOrigin],
-            contact_counts: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+            state: LayoutTensor[
+                dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+            ],
+            contacts: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE_3D),
+                MutAnyOrigin,
+            ],
+            contact_counts: LayoutTensor[
+                dtype, Layout.row_major(BATCH), MutAnyOrigin
+            ],
             friction: Scalar[dtype],
             restitution: Scalar[dtype],
         ):
@@ -966,7 +1198,11 @@ struct ImpulseSolver3DGPU:
             ](state, contacts, contact_counts, friction, restitution)
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
-            state, contacts, contact_counts, friction, restitution,
+            state,
+            contacts,
+            contact_counts,
+            friction,
+            restitution,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )
@@ -1007,9 +1243,17 @@ struct ImpulseSolver3DGPU:
 
         @always_inline
         fn kernel_wrapper(
-            state: LayoutTensor[dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
-            contacts: LayoutTensor[dtype, Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE_3D), MutAnyOrigin],
-            contact_counts: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+            state: LayoutTensor[
+                dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+            ],
+            contacts: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE_3D),
+                MutAnyOrigin,
+            ],
+            contact_counts: LayoutTensor[
+                dtype, Layout.row_major(BATCH), MutAnyOrigin
+            ],
             baumgarte: Scalar[dtype],
             slop: Scalar[dtype],
         ):
@@ -1018,7 +1262,11 @@ struct ImpulseSolver3DGPU:
             ](state, contacts, contact_counts, baumgarte, slop)
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
-            state, contacts, contact_counts, baumgarte, slop,
+            state,
+            contacts,
+            contact_counts,
+            baumgarte,
+            slop,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )

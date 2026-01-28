@@ -37,16 +37,18 @@ from envs.half_cheetah import HalfCheetahPlanarV2, HCConstants
 comptime OBS_DIM = HCConstants.OBS_DIM_VAL  # 17: torso state + joint angles/velocities
 comptime ACTION_DIM = HCConstants.ACTION_DIM_VAL  # 6: [bthigh, bshin, bfoot, fthigh, fshin, ffoot]
 
-# Network architecture (larger for HalfCheetah - continuous control task)
-comptime HIDDEN_DIM = 512
+# Network architecture (scaled for GPU)
+comptime HIDDEN_DIM = 256  # Larger network for GPU efficiency
 
-# GPU training parameters
-comptime ROLLOUT_LEN = 256  # Steps per rollout per environment
-comptime N_ENVS = 512  # Parallel environments
-comptime GPU_MINIBATCH_SIZE = 512  # Minibatch size for PPO updates
+# GPU training parameters (GPU-optimized with CleanRL ratios)
+# CleanRL uses 2048 steps * 1 env = 2048 batch, 32 minibatches = 64 per minibatch
+# Scaled for GPU: 256 envs * 512 steps = 131072 batch, ~64 minibatches = 2048 per minibatch
+comptime ROLLOUT_LEN = 512  # Longer than before for better GAE
+comptime N_ENVS = 256  # Good GPU parallelism
+comptime GPU_MINIBATCH_SIZE = 2048  # Efficient GPU batch size
 
 # Training duration (HalfCheetah needs many episodes to learn running)
-comptime NUM_EPISODES = 1_025
+comptime NUM_EPISODES = 50_000
 
 comptime dtype = DType.float32
 
@@ -80,30 +82,33 @@ fn main() raises:
             gamma=0.99,  # Standard discount
             gae_lambda=0.95,  # Standard GAE lambda
             clip_epsilon=0.2,  # Standard clipping
-            actor_lr=0.0003,  # Standard learning rate
-            critic_lr=0.001,  # Higher critic LR for faster value learning
-            entropy_coef=0.01,  # Lower entropy (HalfCheetah is more structured)
+            actor_lr=0.0003,  # CleanRL: 3e-4 (same for actor and critic)
+            critic_lr=0.0003,  # CleanRL: 3e-4 (same as actor!)
+            entropy_coef=0.0,  # CleanRL: 0 for MuJoCo (CRITICAL!)
             value_loss_coef=0.5,
-            num_epochs=10,  # More epochs for continuous control
+            num_epochs=10,  # CleanRL default (was 4)
             # Advanced hyperparameters
             target_kl=0.0,  # KL early stopping disabled
             max_grad_norm=0.5,
-            anneal_lr=False,  # Disabled - causes late-training collapse
+            anneal_lr=True,  # CleanRL uses LR annealing
             anneal_entropy=False,
             target_total_steps=0,  # Auto-calculate
             norm_adv_per_minibatch=True,
             checkpoint_every=1_000,
-            checkpoint_path="ppo_half_cheetah_continuous_gpu.ckpt",
+            checkpoint_path="ppo_half_cheetah_cleanrl.ckpt",
             # Reward normalization (CleanRL-style)
             normalize_rewards=True,
-            # Observation noise for robustness (domain randomization)
-            obs_noise_std=0.01,
+            # No observation noise (CleanRL doesn't use this)
+            obs_noise_std=0.0,
         )
 
-        agent.load_checkpoint("ppo_half_cheetah_continuous_gpu.ckpt")
+        # Checkpoint disabled - architecture changed to CleanRL-style
+        # agent.load_checkpoint("ppo_half_cheetah_cleanrl.ckpt")
 
         print("Environment: HalfCheetah V2 Continuous (GPU)")
-        print("Agent: PPO Continuous (GPU)")
+        print(
+            "Agent: PPO Continuous (GPU) - CleanRL hyperparams, GPU-optimized"
+        )
         print("  Observation dim: " + String(OBS_DIM))
         print("  Action dim: " + String(ACTION_DIM))
         print("  Hidden dim: " + String(HIDDEN_DIM))
@@ -113,11 +118,13 @@ fn main() raises:
         print(
             "  Total transitions per rollout: " + String(ROLLOUT_LEN * N_ENVS)
         )
-        print("  Advanced features:")
-        print("    - LR annealing: disabled (prevents late collapse)")
+        print("  Key CleanRL hyperparameters (GPU-scaled):")
+        print("    - Learning rate: 3e-4 (same for actor & critic)")
+        print("    - Entropy coef: 0.0 (CRITICAL for MuJoCo)")
+        print("    - Update epochs: 10")
+        print("    - LR annealing: enabled")
         print("    - Gradient clipping: max_grad_norm=0.5")
-        print("    - Reward normalization: enabled (CleanRL-style)")
-        print("    - Entropy coef: 0.01 (structured task)")
+        print("    - Reward normalization: enabled")
         print()
         print("HalfCheetah V2 specifics:")
         print("  - 17D observations: [torso_z, torso_angle,")

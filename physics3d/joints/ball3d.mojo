@@ -65,7 +65,9 @@ struct Ball3D:
         STATE_SIZE: Int,
         JOINTS_OFFSET: Int,
     ](
-        state: LayoutTensor[dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
+        state: LayoutTensor[
+            dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+        ],
         env: Int,
         joint_idx: Int,
         body_a: Int,
@@ -109,7 +111,9 @@ struct Ball3D:
         BODIES_OFFSET: Int,
         JOINTS_OFFSET: Int,
     ](
-        state: LayoutTensor[dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
+        state: LayoutTensor[
+            dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+        ],
         env: Int,
         joint_idx: Int,
         dt: Scalar[dtype],
@@ -131,55 +135,59 @@ struct Ball3D:
         var body_b_off = BODIES_OFFSET + body_b * BODY_STATE_SIZE_3D
 
         # Get mass properties
-        var inv_ma = Float64(state[env, body_a_off + IDX_INV_MASS])
-        var inv_mb = Float64(state[env, body_b_off + IDX_INV_MASS])
+        var inv_ma = rebind[Scalar[dtype]](
+            state[env, body_a_off + IDX_INV_MASS]
+        )
+        var inv_mb = rebind[Scalar[dtype]](
+            state[env, body_b_off + IDX_INV_MASS]
+        )
 
         # Get orientations
         var qa = Quat(
-            Float64(state[env, body_a_off + IDX_QW]),
-            Float64(state[env, body_a_off + IDX_QX]),
-            Float64(state[env, body_a_off + IDX_QY]),
-            Float64(state[env, body_a_off + IDX_QZ]),
+            rebind[Scalar[dtype]](state[env, body_a_off + IDX_QW]),
+            rebind[Scalar[dtype]](state[env, body_a_off + IDX_QX]),
+            rebind[Scalar[dtype]](state[env, body_a_off + IDX_QY]),
+            rebind[Scalar[dtype]](state[env, body_a_off + IDX_QZ]),
         )
         var qb = Quat(
-            Float64(state[env, body_b_off + IDX_QW]),
-            Float64(state[env, body_b_off + IDX_QX]),
-            Float64(state[env, body_b_off + IDX_QY]),
-            Float64(state[env, body_b_off + IDX_QZ]),
+            rebind[Scalar[dtype]](state[env, body_b_off + IDX_QW]),
+            rebind[Scalar[dtype]](state[env, body_b_off + IDX_QX]),
+            rebind[Scalar[dtype]](state[env, body_b_off + IDX_QY]),
+            rebind[Scalar[dtype]](state[env, body_b_off + IDX_QZ]),
         )
 
         # Get velocities
         var va = Vec3(
-            Float64(state[env, body_a_off + IDX_VX]),
-            Float64(state[env, body_a_off + IDX_VY]),
-            Float64(state[env, body_a_off + IDX_VZ]),
+            rebind[Scalar[dtype]](state[env, body_a_off + IDX_VX]),
+            rebind[Scalar[dtype]](state[env, body_a_off + IDX_VY]),
+            rebind[Scalar[dtype]](state[env, body_a_off + IDX_VZ]),
         )
         var vb = Vec3(
-            Float64(state[env, body_b_off + IDX_VX]),
-            Float64(state[env, body_b_off + IDX_VY]),
-            Float64(state[env, body_b_off + IDX_VZ]),
+            rebind[Scalar[dtype]](state[env, body_b_off + IDX_VX]),
+            rebind[Scalar[dtype]](state[env, body_b_off + IDX_VY]),
+            rebind[Scalar[dtype]](state[env, body_b_off + IDX_VZ]),
         )
         var wa = Vec3(
-            Float64(state[env, body_a_off + IDX_WX]),
-            Float64(state[env, body_a_off + IDX_WY]),
-            Float64(state[env, body_a_off + IDX_WZ]),
+            rebind[Scalar[dtype]](state[env, body_a_off + IDX_WX]),
+            rebind[Scalar[dtype]](state[env, body_a_off + IDX_WY]),
+            rebind[Scalar[dtype]](state[env, body_a_off + IDX_WZ]),
         )
         var wb = Vec3(
-            Float64(state[env, body_b_off + IDX_WX]),
-            Float64(state[env, body_b_off + IDX_WY]),
-            Float64(state[env, body_b_off + IDX_WZ]),
+            rebind[Scalar[dtype]](state[env, body_b_off + IDX_WX]),
+            rebind[Scalar[dtype]](state[env, body_b_off + IDX_WY]),
+            rebind[Scalar[dtype]](state[env, body_b_off + IDX_WZ]),
         )
 
         # Local anchors
         var anchor_a_local = Vec3(
-            Float64(state[env, joint_off + JOINT3D_ANCHOR_AX]),
-            Float64(state[env, joint_off + JOINT3D_ANCHOR_AY]),
-            Float64(state[env, joint_off + JOINT3D_ANCHOR_AZ]),
+            rebind[Scalar[dtype]](state[env, joint_off + JOINT3D_ANCHOR_AX]),
+            rebind[Scalar[dtype]](state[env, joint_off + JOINT3D_ANCHOR_AY]),
+            rebind[Scalar[dtype]](state[env, joint_off + JOINT3D_ANCHOR_AZ]),
         )
         var anchor_b_local = Vec3(
-            Float64(state[env, joint_off + JOINT3D_ANCHOR_BX]),
-            Float64(state[env, joint_off + JOINT3D_ANCHOR_BY]),
-            Float64(state[env, joint_off + JOINT3D_ANCHOR_BZ]),
+            rebind[Scalar[dtype]](state[env, joint_off + JOINT3D_ANCHOR_BX]),
+            rebind[Scalar[dtype]](state[env, joint_off + JOINT3D_ANCHOR_BY]),
+            rebind[Scalar[dtype]](state[env, joint_off + JOINT3D_ANCHOR_BZ]),
         )
 
         # Transform anchors to world frame
@@ -195,25 +203,42 @@ struct Ball3D:
 
         # Effective mass (simplified scalar)
         var inv_ia_avg = (
-            Float64(1.0 / (state[env, body_a_off + IDX_IXX] + 1e-10))
-            + Float64(1.0 / (state[env, body_a_off + IDX_IYY] + 1e-10))
-            + Float64(1.0 / (state[env, body_a_off + IDX_IZZ] + 1e-10))
+            rebind[Scalar[dtype]](
+                1.0 / (state[env, body_a_off + IDX_IXX] + 1e-10)
+            )
+            + rebind[Scalar[dtype]](
+                1.0 / (state[env, body_a_off + IDX_IYY] + 1e-10)
+            )
+            + rebind[Scalar[dtype]](
+                1.0 / (state[env, body_a_off + IDX_IZZ] + 1e-10)
+            )
         ) / 3.0
 
         var inv_ib_avg = (
-            Float64(1.0 / (state[env, body_b_off + IDX_IXX] + 1e-10))
-            + Float64(1.0 / (state[env, body_b_off + IDX_IYY] + 1e-10))
-            + Float64(1.0 / (state[env, body_b_off + IDX_IZZ] + 1e-10))
+            rebind[Scalar[dtype]](
+                1.0 / (state[env, body_b_off + IDX_IXX] + 1e-10)
+            )
+            + rebind[Scalar[dtype]](
+                1.0 / (state[env, body_b_off + IDX_IYY] + 1e-10)
+            )
+            + rebind[Scalar[dtype]](
+                1.0 / (state[env, body_b_off + IDX_IZZ] + 1e-10)
+            )
         ) / 3.0
 
-        var eff_mass = inv_ma + inv_mb + ra.length_squared() * inv_ia_avg + rb.length_squared() * inv_ib_avg
+        var eff_mass = (
+            inv_ma
+            + inv_mb
+            + ra.length_squared() * inv_ia_avg
+            + rb.length_squared() * inv_ib_avg
+        )
 
         if eff_mass < 1e-10:
             eff_mass = 1e-10
 
         # Compute and apply impulse
         var inv_eff_mass = 1.0 / eff_mass
-        var impulse = cdot * (-inv_eff_mass)
+        var impulse = cdot * rebind[Scalar[dtype]](-inv_eff_mass)
 
         # Apply linear impulse
         var new_va = va - impulse * inv_ma
@@ -254,7 +279,9 @@ struct Ball3D:
         BODIES_OFFSET: Int,
         JOINTS_OFFSET: Int,
     ](
-        state: LayoutTensor[dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
+        state: LayoutTensor[
+            dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+        ],
         env: Int,
         joint_idx: Int,
         baumgarte: Scalar[dtype],
@@ -275,39 +302,39 @@ struct Ball3D:
 
         # Get positions and orientations
         var pa = Vec3(
-            Float64(state[env, body_a_off + IDX_PX]),
-            Float64(state[env, body_a_off + IDX_PY]),
-            Float64(state[env, body_a_off + IDX_PZ]),
+            rebind[Scalar[dtype]](state[env, body_a_off + IDX_PX]),
+            rebind[Scalar[dtype]](state[env, body_a_off + IDX_PY]),
+            rebind[Scalar[dtype]](state[env, body_a_off + IDX_PZ]),
         )
         var pb = Vec3(
-            Float64(state[env, body_b_off + IDX_PX]),
-            Float64(state[env, body_b_off + IDX_PY]),
-            Float64(state[env, body_b_off + IDX_PZ]),
+            rebind[Scalar[dtype]](state[env, body_b_off + IDX_PX]),
+            rebind[Scalar[dtype]](state[env, body_b_off + IDX_PY]),
+            rebind[Scalar[dtype]](state[env, body_b_off + IDX_PZ]),
         )
 
         var qa = Quat(
-            Float64(state[env, body_a_off + IDX_QW]),
-            Float64(state[env, body_a_off + IDX_QX]),
-            Float64(state[env, body_a_off + IDX_QY]),
-            Float64(state[env, body_a_off + IDX_QZ]),
+            rebind[Scalar[dtype]](state[env, body_a_off + IDX_QW]),
+            rebind[Scalar[dtype]](state[env, body_a_off + IDX_QX]),
+            rebind[Scalar[dtype]](state[env, body_a_off + IDX_QY]),
+            rebind[Scalar[dtype]](state[env, body_a_off + IDX_QZ]),
         )
         var qb = Quat(
-            Float64(state[env, body_b_off + IDX_QW]),
-            Float64(state[env, body_b_off + IDX_QX]),
-            Float64(state[env, body_b_off + IDX_QY]),
-            Float64(state[env, body_b_off + IDX_QZ]),
+            rebind[Scalar[dtype]](state[env, body_b_off + IDX_QW]),
+            rebind[Scalar[dtype]](state[env, body_b_off + IDX_QX]),
+            rebind[Scalar[dtype]](state[env, body_b_off + IDX_QY]),
+            rebind[Scalar[dtype]](state[env, body_b_off + IDX_QZ]),
         )
 
         # Local anchors
         var anchor_a_local = Vec3(
-            Float64(state[env, joint_off + JOINT3D_ANCHOR_AX]),
-            Float64(state[env, joint_off + JOINT3D_ANCHOR_AY]),
-            Float64(state[env, joint_off + JOINT3D_ANCHOR_AZ]),
+            rebind[Scalar[dtype]](state[env, joint_off + JOINT3D_ANCHOR_AX]),
+            rebind[Scalar[dtype]](state[env, joint_off + JOINT3D_ANCHOR_AY]),
+            rebind[Scalar[dtype]](state[env, joint_off + JOINT3D_ANCHOR_AZ]),
         )
         var anchor_b_local = Vec3(
-            Float64(state[env, joint_off + JOINT3D_ANCHOR_BX]),
-            Float64(state[env, joint_off + JOINT3D_ANCHOR_BY]),
-            Float64(state[env, joint_off + JOINT3D_ANCHOR_BZ]),
+            rebind[Scalar[dtype]](state[env, joint_off + JOINT3D_ANCHOR_BX]),
+            rebind[Scalar[dtype]](state[env, joint_off + JOINT3D_ANCHOR_BY]),
+            rebind[Scalar[dtype]](state[env, joint_off + JOINT3D_ANCHOR_BZ]),
         )
 
         # World anchors
@@ -318,19 +345,23 @@ struct Ball3D:
         var error = anchor_b_world - anchor_a_world
         var error_mag = error.length()
 
-        if error_mag < Float64(slop):
+        if error_mag < Scalar[dtype](slop):
             return
 
         # Get mass properties
-        var inv_ma = Float64(state[env, body_a_off + IDX_INV_MASS])
-        var inv_mb = Float64(state[env, body_b_off + IDX_INV_MASS])
+        var inv_ma = rebind[Scalar[dtype]](
+            state[env, body_a_off + IDX_INV_MASS]
+        )
+        var inv_mb = rebind[Scalar[dtype]](
+            state[env, body_b_off + IDX_INV_MASS]
+        )
 
         var total_inv_mass = inv_ma + inv_mb
         if total_inv_mass < 1e-10:
             return
 
         # Position correction
-        var correction = error * Float64(baumgarte)
+        var correction = error * Scalar[dtype](baumgarte)
         var delta_a = correction * (inv_ma / total_inv_mass)
         var delta_b = correction * (-inv_mb / total_inv_mass)
 

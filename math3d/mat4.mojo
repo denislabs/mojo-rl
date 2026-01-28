@@ -12,7 +12,7 @@ from .mat3 import Mat3
 from .quat import Quat
 
 
-struct Mat4(ImplicitlyCopyable, Movable, Stringable):
+struct Mat4[DTYPE: DType](ImplicitlyCopyable, Movable, Stringable):
     """4x4 matrix for 3D transformations.
 
     Row-major storage. Affine transforms store rotation/scale in top-left 3x3
@@ -26,25 +26,25 @@ struct Mat4(ImplicitlyCopyable, Movable, Stringable):
     """
 
     # Row 0
-    var m00: Float64
-    var m01: Float64
-    var m02: Float64
-    var m03: Float64
+    var m00: Scalar[Self.DTYPE]
+    var m01: Scalar[Self.DTYPE]
+    var m02: Scalar[Self.DTYPE]
+    var m03: Scalar[Self.DTYPE]
     # Row 1
-    var m10: Float64
-    var m11: Float64
-    var m12: Float64
-    var m13: Float64
+    var m10: Scalar[Self.DTYPE]
+    var m11: Scalar[Self.DTYPE]
+    var m12: Scalar[Self.DTYPE]
+    var m13: Scalar[Self.DTYPE]
     # Row 2
-    var m20: Float64
-    var m21: Float64
-    var m22: Float64
-    var m23: Float64
+    var m20: Scalar[Self.DTYPE]
+    var m21: Scalar[Self.DTYPE]
+    var m22: Scalar[Self.DTYPE]
+    var m23: Scalar[Self.DTYPE]
     # Row 3
-    var m30: Float64
-    var m31: Float64
-    var m32: Float64
-    var m33: Float64
+    var m30: Scalar[Self.DTYPE]
+    var m31: Scalar[Self.DTYPE]
+    var m32: Scalar[Self.DTYPE]
+    var m33: Scalar[Self.DTYPE]
 
     # =========================================================================
     # Constructors
@@ -71,22 +71,22 @@ struct Mat4(ImplicitlyCopyable, Movable, Stringable):
 
     fn __init__(
         out self,
-        m00: Float64,
-        m01: Float64,
-        m02: Float64,
-        m03: Float64,
-        m10: Float64,
-        m11: Float64,
-        m12: Float64,
-        m13: Float64,
-        m20: Float64,
-        m21: Float64,
-        m22: Float64,
-        m23: Float64,
-        m30: Float64,
-        m31: Float64,
-        m32: Float64,
-        m33: Float64,
+        m00: Scalar[Self.DTYPE],
+        m01: Scalar[Self.DTYPE],
+        m02: Scalar[Self.DTYPE],
+        m03: Scalar[Self.DTYPE],
+        m10: Scalar[Self.DTYPE],
+        m11: Scalar[Self.DTYPE],
+        m12: Scalar[Self.DTYPE],
+        m13: Scalar[Self.DTYPE],
+        m20: Scalar[Self.DTYPE],
+        m21: Scalar[Self.DTYPE],
+        m22: Scalar[Self.DTYPE],
+        m23: Scalar[Self.DTYPE],
+        m30: Scalar[Self.DTYPE],
+        m31: Scalar[Self.DTYPE],
+        m32: Scalar[Self.DTYPE],
+        m33: Scalar[Self.DTYPE],
     ):
         """Initialize with explicit elements (row-major order)."""
         self.m00 = m00
@@ -106,7 +106,7 @@ struct Mat4(ImplicitlyCopyable, Movable, Stringable):
         self.m32 = m32
         self.m33 = m33
 
-    fn __init__(out self, rotation: Mat3, translation: Vec3):
+    fn __init__(out self, rotation: Mat3[Self.DTYPE], translation: Vec3[Self.DTYPE]):
         """Initialize from rotation matrix and translation."""
         self.m00 = rotation.m00
         self.m01 = rotation.m01
@@ -157,7 +157,7 @@ struct Mat4(ImplicitlyCopyable, Movable, Stringable):
         )
 
     @staticmethod
-    fn from_translation(t: Vec3) -> Self:
+    fn from_translation(t: Vec3[Self.DTYPE]) -> Self:
         """Create a translation matrix."""
         return Self(
             1.0,
@@ -179,7 +179,7 @@ struct Mat4(ImplicitlyCopyable, Movable, Stringable):
         )
 
     @staticmethod
-    fn from_scale(s: Vec3) -> Self:
+    fn from_scale(s: Vec3[Self.DTYPE]) -> Self:
         """Create a scaling matrix."""
         return Self(
             s.x,
@@ -201,7 +201,7 @@ struct Mat4(ImplicitlyCopyable, Movable, Stringable):
         )
 
     @staticmethod
-    fn from_scale(s: Float64) -> Self:
+    fn from_scale(s: Scalar[Self.DTYPE]) -> Self:
         """Create a uniform scaling matrix."""
         return Self(
             s,
@@ -223,22 +223,22 @@ struct Mat4(ImplicitlyCopyable, Movable, Stringable):
         )
 
     @staticmethod
-    fn from_rotation(r: Mat3) -> Self:
+    fn from_rotation(r: Mat3[Self.DTYPE]) -> Self:
         """Create transformation from rotation matrix."""
-        return Self(r, Vec3.zero())
+        return Self(r, Vec3[Self.DTYPE].zero())
 
     @staticmethod
-    fn from_quat(q: Quat) -> Self:
+    fn from_quat(q: Quat[Self.DTYPE]) -> Self:
         """Create transformation from quaternion rotation."""
-        return Self(Mat3.from_quat(q), Vec3.zero())
+        return Self(Mat3.from_quat(q), Vec3[Self.DTYPE].zero())
 
     @staticmethod
-    fn from_quat(q: Quat, translation: Vec3) -> Self:
+    fn from_quat(q: Quat[Self.DTYPE], translation: Vec3[Self.DTYPE]) -> Self:
         """Create transformation from quaternion and translation."""
         return Self(Mat3.from_quat(q), translation)
 
     @staticmethod
-    fn compose(translation: Vec3, rotation: Quat, scale: Vec3) -> Self:
+    fn compose(translation: Vec3[Self.DTYPE], rotation: Quat[Self.DTYPE], scale: Vec3[Self.DTYPE]) -> Self:
         """Compose a transformation from TRS components.
 
         Order: scale, then rotate, then translate.
@@ -269,7 +269,7 @@ struct Mat4(ImplicitlyCopyable, Movable, Stringable):
     # =========================================================================
 
     @staticmethod
-    fn rotation_x(angle: Float64) -> Self:
+    fn rotation_x(angle: Scalar[Self.DTYPE]) -> Self:
         """Create rotation matrix around X axis."""
         var c = cos(angle)
         var s = sin(angle)
@@ -293,7 +293,7 @@ struct Mat4(ImplicitlyCopyable, Movable, Stringable):
         )
 
     @staticmethod
-    fn rotation_y(angle: Float64) -> Self:
+    fn rotation_y(angle: Scalar[Self.DTYPE]) -> Self:
         """Create rotation matrix around Y axis."""
         var c = cos(angle)
         var s = sin(angle)
@@ -317,7 +317,7 @@ struct Mat4(ImplicitlyCopyable, Movable, Stringable):
         )
 
     @staticmethod
-    fn rotation_z(angle: Float64) -> Self:
+    fn rotation_z(angle: Scalar[Self.DTYPE]) -> Self:
         """Create rotation matrix around Z axis."""
         var c = cos(angle)
         var s = sin(angle)
@@ -341,7 +341,7 @@ struct Mat4(ImplicitlyCopyable, Movable, Stringable):
         )
 
     @staticmethod
-    fn rotation_axis(axis: Vec3, angle: Float64) -> Self:
+    fn rotation_axis(axis: Vec3[Self.DTYPE], angle: Scalar[Self.DTYPE]) -> Self:
         """Create rotation matrix around arbitrary axis."""
         return Self.from_rotation(Mat3.rotation_axis(axis, angle))
 
@@ -350,7 +350,7 @@ struct Mat4(ImplicitlyCopyable, Movable, Stringable):
     # =========================================================================
 
     @staticmethod
-    fn look_at(eye: Vec3, target: Vec3, up: Vec3) -> Self:
+    fn look_at(eye: Vec3[Self.DTYPE], target: Vec3[Self.DTYPE], up: Vec3[Self.DTYPE]) -> Self:
         """Create a view matrix looking from eye toward target.
 
         Args:
@@ -385,7 +385,7 @@ struct Mat4(ImplicitlyCopyable, Movable, Stringable):
         )
 
     @staticmethod
-    fn perspective(fov_y: Float64, aspect: Float64, near: Float64, far: Float64) -> Self:
+    fn perspective(fov_y: Scalar[Self.DTYPE], aspect: Scalar[Self.DTYPE], near: Scalar[Self.DTYPE], far: Scalar[Self.DTYPE]) -> Self:
         """Create a perspective projection matrix.
 
         Args:
@@ -422,12 +422,12 @@ struct Mat4(ImplicitlyCopyable, Movable, Stringable):
 
     @staticmethod
     fn orthographic(
-        left: Float64,
-        right: Float64,
-        bottom: Float64,
-        top: Float64,
-        near: Float64,
-        far: Float64,
+        left: Scalar[Self.DTYPE],
+        right: Scalar[Self.DTYPE],
+        bottom: Scalar[Self.DTYPE],
+        top: Scalar[Self.DTYPE],
+        near: Scalar[Self.DTYPE],
+        far: Scalar[Self.DTYPE],
     ) -> Self:
         """Create an orthographic projection matrix.
 
@@ -469,11 +469,11 @@ struct Mat4(ImplicitlyCopyable, Movable, Stringable):
     # Component Access
     # =========================================================================
 
-    fn get_translation(self) -> Vec3:
+    fn get_translation(self) -> Vec3[Self.DTYPE]:
         """Extract translation component."""
         return Vec3(self.m03, self.m13, self.m23)
 
-    fn get_rotation(self) -> Mat3:
+    fn get_rotation(self) -> Mat3[Self.DTYPE]:
         """Extract rotation/scale component as 3x3 matrix."""
         return Mat3(
             self.m00,
@@ -487,7 +487,7 @@ struct Mat4(ImplicitlyCopyable, Movable, Stringable):
             self.m22,
         )
 
-    fn get_scale(self) -> Vec3:
+    fn get_scale(self) -> Vec3[Self.DTYPE]:
         """Extract scale from the matrix (assuming no shear)."""
         return Vec3(
             Vec3(self.m00, self.m10, self.m20).length(),
@@ -495,7 +495,7 @@ struct Mat4(ImplicitlyCopyable, Movable, Stringable):
             Vec3(self.m02, self.m12, self.m22).length(),
         )
 
-    fn set_translation(mut self, t: Vec3):
+    fn set_translation(mut self, t: Vec3[Self.DTYPE]):
         """Set translation component."""
         self.m03 = t.x
         self.m13 = t.y
@@ -547,7 +547,7 @@ struct Mat4(ImplicitlyCopyable, Movable, Stringable):
             self.m33 - other.m33,
         )
 
-    fn __mul__(self, scalar: Float64) -> Self:
+    fn __mul__(self, scalar: Scalar[Self.DTYPE]) -> Self:
         """Scalar multiplication."""
         return Self(
             self.m00 * scalar,
@@ -637,7 +637,7 @@ struct Mat4(ImplicitlyCopyable, Movable, Stringable):
             + self.m33 * other.m33,
         )
 
-    fn transform_point(self, p: Vec3) -> Vec3:
+    fn transform_point(self, p: Vec3[Self.DTYPE]) -> Vec3[Self.DTYPE]:
         """Transform a point (applies translation).
 
         Treats p as (x, y, z, 1) and returns (x', y', z').
@@ -648,7 +648,7 @@ struct Mat4(ImplicitlyCopyable, Movable, Stringable):
             self.m20 * p.x + self.m21 * p.y + self.m22 * p.z + self.m23,
         )
 
-    fn transform_vector(self, v: Vec3) -> Vec3:
+    fn transform_vector(self, v: Vec3[Self.DTYPE]) -> Vec3[Self.DTYPE]:
         """Transform a direction vector (no translation).
 
         Treats v as (x, y, z, 0) and returns (x', y', z').
@@ -659,7 +659,7 @@ struct Mat4(ImplicitlyCopyable, Movable, Stringable):
             self.m20 * v.x + self.m21 * v.y + self.m22 * v.z,
         )
 
-    fn transform_normal(self, n: Vec3) -> Vec3:
+    fn transform_normal(self, n: Vec3[Self.DTYPE]) -> Vec3[Self.DTYPE]:
         """Transform a normal vector.
 
         Normals transform by the inverse transpose of the upper 3x3.
@@ -715,7 +715,7 @@ struct Mat4(ImplicitlyCopyable, Movable, Stringable):
 
         return Self(inv_rot, inv_t)
 
-    fn determinant(self) -> Float64:
+    fn determinant(self) -> Scalar[Self.DTYPE]:
         """Compute determinant of the 4x4 matrix."""
         var a = self.m00 * (
             self.m11 * (self.m22 * self.m33 - self.m23 * self.m32)
@@ -881,7 +881,7 @@ struct Mat4(ImplicitlyCopyable, Movable, Stringable):
         """Inequality check."""
         return not (self == other)
 
-    fn approx_eq(self, other: Self, tolerance: Float64 = 1e-10) -> Bool:
+    fn approx_eq(self, other: Self, tolerance: Scalar[Self.DTYPE] = 1e-10) -> Bool:
         """Approximate equality with tolerance."""
         return (
             abs(self.m00 - other.m00) < tolerance
@@ -950,21 +950,21 @@ struct Mat4(ImplicitlyCopyable, Movable, Stringable):
 # =========================================================================
 
 
-fn mat4_identity() -> Mat4:
+fn mat4_identity[DTYPE: DType]() -> Mat4[DTYPE]:
     """Return identity matrix."""
-    return Mat4.identity()
+    return Mat4[DTYPE].identity()
 
 
-fn mat4_translation(t: Vec3) -> Mat4:
+fn mat4_translation[DTYPE: DType](t: Vec3[DTYPE]) -> Mat4[DTYPE]:
     """Create translation matrix."""
-    return Mat4.from_translation(t)
+    return Mat4[DTYPE].from_translation(t)
 
 
-fn mat4_look_at(eye: Vec3, target: Vec3, up: Vec3) -> Mat4:
+fn mat4_look_at[DTYPE: DType](eye: Vec3[DTYPE], target: Vec3[DTYPE], up: Vec3[DTYPE]) -> Mat4[DTYPE]:
     """Create view matrix."""
     return Mat4.look_at(eye, target, up)
 
 
-fn mat4_perspective(fov_y: Float64, aspect: Float64, near: Float64, far: Float64) -> Mat4:
+fn mat4_perspective[DTYPE: DType](fov_y: Scalar[DTYPE], aspect: Scalar[DTYPE], near: Scalar[DTYPE], far: Scalar[DTYPE]) -> Mat4[DTYPE]:
     """Create perspective projection matrix."""
-    return Mat4.perspective(fov_y, aspect, near, far)
+    return Mat4[DTYPE].perspective(fov_y, aspect, near, far)

@@ -23,10 +23,11 @@ from deep_rl import dtype
 
 comptime OBS_DIM = HCConstants.OBS_DIM_VAL  # 17
 comptime ACTION_DIM = HCConstants.ACTION_DIM_VAL  # 6
-comptime HIDDEN_DIM = 512
-comptime ROLLOUT_LEN = 256
-comptime N_ENVS = 512
-comptime GPU_MINIBATCH_SIZE = 512
+# Must match training configuration!
+comptime HIDDEN_DIM = 256
+comptime ROLLOUT_LEN = 512
+comptime N_ENVS = 256
+comptime GPU_MINIBATCH_SIZE = 2048
 
 # Evaluation settings
 comptime NUM_EPISODES = 10
@@ -78,7 +79,7 @@ fn main() raises:
 
     print("Loading checkpoint...")
     try:
-        agent.load_checkpoint("ppo_half_cheetah_continuous_gpu.ckpt")
+        agent.load_checkpoint("ppo_half_cheetah_cleanrl.ckpt")
         print("Checkpoint loaded successfully!")
     except:
         print("Error loading checkpoint!")
@@ -102,7 +103,9 @@ fn main() raises:
     @parameter
     if RENDER:
         var renderer = RendererBase(
-            width=800, height=400, title="PPO HalfCheetah V2 Continuous - CPU Eval"
+            width=800,
+            height=400,
+            title="PPO HalfCheetah V2 Continuous - CPU Eval",
         )
 
         print("Running CPU evaluation with rendering...")

@@ -6,44 +6,44 @@ Stores collision information for constraint solving.
 from math3d import Vec3
 
 
-struct Contact3D(Copyable, Movable):
+struct Contact3D[DTYPE: DType](Copyable, Movable):
     """Single 3D contact point between two bodies."""
 
     var body_a: Int  # Index of first body
     var body_b: Int  # Index of second body (-1 for static/ground)
-    var point: Vec3  # World-space contact point
-    var normal: Vec3  # Contact normal (from A to B)
-    var depth: Float64  # Penetration depth (positive = penetrating)
+    var point: Vec3[Self.DTYPE]  # World-space contact point
+    var normal: Vec3[Self.DTYPE]  # Contact normal (from A to B)
+    var depth: Scalar[Self.DTYPE]  # Penetration depth (positive = penetrating)
 
     # Cached impulses for warm starting
-    var impulse_n: Float64  # Normal impulse
-    var impulse_t1: Float64  # Tangent impulse 1
-    var impulse_t2: Float64  # Tangent impulse 2
+    var impulse_n: Scalar[Self.DTYPE]  # Normal impulse
+    var impulse_t1: Scalar[Self.DTYPE]  # Tangent impulse 1
+    var impulse_t2: Scalar[Self.DTYPE]  # Tangent impulse 2
 
     # Tangent basis for friction
-    var tangent1: Vec3
-    var tangent2: Vec3
+    var tangent1: Vec3[Self.DTYPE]
+    var tangent2: Vec3[Self.DTYPE]
 
     fn __init__(out self):
         """Initialize empty contact."""
         self.body_a = -1
         self.body_b = -1
-        self.point = Vec3.zero()
-        self.normal = Vec3.unit_z()
+        self.point = Vec3[Self.DTYPE].zero()
+        self.normal = Vec3[Self.DTYPE].unit_z()
         self.depth = 0.0
         self.impulse_n = 0.0
         self.impulse_t1 = 0.0
         self.impulse_t2 = 0.0
-        self.tangent1 = Vec3.unit_x()
-        self.tangent2 = Vec3.unit_y()
+        self.tangent1 = Vec3[Self.DTYPE].unit_x()
+        self.tangent2 = Vec3[Self.DTYPE].unit_y()
 
     fn __init__(
         out self,
         body_a: Int,
         body_b: Int,
-        point: Vec3,
-        normal: Vec3,
-        depth: Float64,
+        point: Vec3[Self.DTYPE],
+        normal: Vec3[Self.DTYPE],
+        depth: Scalar[Self.DTYPE],
     ):
         """Initialize contact with given properties."""
         self.body_a = body_a
@@ -56,8 +56,8 @@ struct Contact3D(Copyable, Movable):
         self.impulse_t2 = 0.0
 
         # Initialize tangent vectors before computing basis
-        self.tangent1 = Vec3.unit_x()
-        self.tangent2 = Vec3.unit_y()
+        self.tangent1 = Vec3[Self.DTYPE].unit_x()
+        self.tangent2 = Vec3[Self.DTYPE].unit_y()
 
         # Compute tangent basis orthogonal to normal
         self._compute_tangent_basis()
@@ -65,9 +65,9 @@ struct Contact3D(Copyable, Movable):
     fn _compute_tangent_basis(mut self):
         """Compute tangent vectors orthogonal to normal for friction."""
         # Choose a vector not parallel to normal
-        var up = Vec3(0.0, 0.0, 1.0)
+        var up = Vec3[Self.DTYPE](0.0, 0.0, 1.0)
         if abs(self.normal.dot(up)) > 0.99:
-            up = Vec3(1.0, 0.0, 0.0)
+            up = Vec3[Self.DTYPE](1.0, 0.0, 0.0)
 
         self.tangent1 = self.normal.cross(up).normalized()
         self.tangent2 = self.normal.cross(self.tangent1).normalized()
@@ -77,7 +77,7 @@ struct Contact3D(Copyable, Movable):
         return self.body_a >= 0 and self.depth > 0.0
 
 
-struct ContactManifold(Movable):
+struct ContactManifold[DTYPE: DType](Movable):
     """Collection of contact points between two bodies or body/ground.
 
     A manifold stores up to MAX_POINTS contacts for the same body pair.
@@ -88,15 +88,15 @@ struct ContactManifold(Movable):
 
     var body_a: Int
     var body_b: Int
-    var contacts: List[Contact3D]
+    var contacts: List[Contact3D[Self.DTYPE]]
 
     fn __init__(out self, body_a: Int, body_b: Int):
         """Initialize empty manifold for body pair."""
         self.body_a = body_a
         self.body_b = body_b
-        self.contacts = List[Contact3D]()
+        self.contacts = List[Contact3D[Self.DTYPE]]()
 
-    fn add_contact(mut self, var contact: Contact3D):
+    fn add_contact(mut self, var contact: Contact3D[Self.DTYPE]):
         """Add a contact point to the manifold.
 
         If manifold is full, replaces the contact with smallest depth.
@@ -120,10 +120,10 @@ struct ContactManifold(Movable):
         """Clear all contacts."""
         self.contacts.clear()
 
-    fn get_deepest(self) -> Contact3D:
+    fn get_deepest(self) -> Contact3D[Self.DTYPE]:
         """Get the contact with maximum penetration depth."""
         if len(self.contacts) == 0:
-            return Contact3D()
+            return Contact3D[Self.DTYPE]()
 
         var deepest_idx = 0
         var max_depth = self.contacts[0].depth
@@ -133,14 +133,14 @@ struct ContactManifold(Movable):
                 max_depth = self.contacts[i].depth
                 deepest_idx = i
 
-        return self.contacts[deepest_idx]
+        return self.contacts[deepest_idx].copy()
 
-    fn get_average_normal(self) -> Vec3:
+    fn get_average_normal(self) -> Vec3[Self.DTYPE]:
         """Get average contact normal across all contacts."""
         if len(self.contacts) == 0:
-            return Vec3.unit_z()
+            return Vec3[Self.DTYPE].unit_z()
 
-        var avg = Vec3.zero()
+        var avg = Vec3[Self.DTYPE].zero()
         for i in range(len(self.contacts)):
             avg += self.contacts[i].normal
 

@@ -4,8 +4,9 @@ Software wireframe renderer using SDL2 for display.
 Projects 3D shapes to 2D and draws them as line segments.
 """
 
-from math3d import Vec3, Quat
-from render.sdl2 import SDL2, SDL_Event, SDL_QUIT
+from math import sqrt
+from math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
+from render.sdl2 import SDL2, SDL_Event, SDL_QUIT, SDL_Point
 from .camera3d import Camera3D
 from .shapes3d import (
     WireframeLine,
@@ -15,6 +16,9 @@ from .shapes3d import (
     create_ground_grid,
     create_axes,
 )
+
+comptime Vec3 = Vec3Generic[DType.float64]
+comptime Quat = QuatGeneric[DType.float64]
 
 
 struct Color3D:
@@ -112,7 +116,9 @@ struct Renderer3D:
             eye=camera.eye,
             target=camera.target,
             up=camera.up,
-            fov=camera.fov * 180.0 / 3.14159265358979,  # Convert back to degrees
+            fov=camera.fov
+            * 180.0
+            / 3.14159265358979,  # Convert back to degrees
             aspect=Float64(width) / Float64(height),
             near=camera.near,
             far=camera.far,
@@ -220,7 +226,9 @@ struct Renderer3D:
             color: Wireframe color.
             segments: Number of circular segments.
         """
-        var capsule = WireframeCapsule(center, orientation, radius, half_height, axis, segments)
+        var capsule = WireframeCapsule(
+            center, orientation, radius, half_height, axis, segments
+        )
         var lines = capsule.get_lines()
         self.draw_lines_3d(lines, color)
 
@@ -342,3 +350,368 @@ struct Renderer3D:
             ms: Milliseconds to delay.
         """
         self.sdl.delay(ms)
+
+    fn draw_filled_quad_3d(
+        self,
+        p0: Vec3,
+        p1: Vec3,
+        p2: Vec3,
+        p3: Vec3,
+        color: Color3D,
+    ):
+        """Draw a filled quadrilateral in 3D.
+
+        Args:
+            p0, p1, p2, p3: Four corners of the quad (in order).
+            color: Fill color.
+        """
+        # Project all 4 corners to screen
+        var s0 = self.camera.project_to_screen(p0)
+        var s1 = self.camera.project_to_screen(p1)
+        var s2 = self.camera.project_to_screen(p2)
+        var s3 = self.camera.project_to_screen(p3)
+
+        # Check if all visible
+        if not (s0[2] and s1[2] and s2[2] and s3[2]):
+            return
+
+        # Create polygon points
+        var points = List[SDL_Point]()
+        points.append(SDL_Point(Int32(s0[0]), Int32(s0[1])))
+        points.append(SDL_Point(Int32(s1[0]), Int32(s1[1])))
+        points.append(SDL_Point(Int32(s2[0]), Int32(s2[1])))
+        points.append(SDL_Point(Int32(s3[0]), Int32(s3[1])))
+
+        self.sdl.set_draw_color(color.r, color.g, color.b)
+        self.sdl.fill_polygon(points)
+
+    fn draw_filled_circle_2d(
+        self,
+        screen_x: Int,
+        screen_y: Int,
+        radius: Int,
+        color: Color3D,
+    ):
+        """Draw a filled circle in screen space.
+
+        Args:
+            screen_x: Screen X coordinate.
+            screen_y: Screen Y coordinate.
+            radius: Circle radius in pixels.
+            color: Fill color.
+        """
+        self.sdl.set_draw_color(color.r, color.g, color.b)
+        self.sdl.fill_circle(screen_x, screen_y, radius)
+
+    fn draw_shaded_sphere_2d(
+        self,
+        screen_x: Int,
+        screen_y: Int,
+        radius: Int,
+        color: Color3D,
+    ):
+        """Draw a shaded sphere with 3D volume effect.
+
+        Uses concentric circles with gradient colors to simulate
+        a lit sphere with ambient and diffuse lighting.
+
+        Args:
+            screen_x: Screen X coordinate.
+            screen_y: Screen Y coordinate.
+            radius: Sphere radius in pixels.
+            color: Base color.
+        """
+        if radius < 2:
+            self.sdl.set_draw_color(color.r, color.g, color.b)
+            self.sdl.fill_circle(screen_x, screen_y, radius)
+            return
+
+        # Light direction (upper-left) - offset for highlight
+        var light_offset_x = -radius // 4
+        var light_offset_y = -radius // 4
+
+        # Draw concentric circles from outside-in for gradient effect
+        # Dark edge -> base color -> bright highlight
+        var num_rings = min(radius, 20)
+
+        for i in range(num_rings, -1, -1):
+            var t = Float64(i) / Float64(num_rings)  # 1.0 at edge, 0.0 at center
+            var ring_radius = Int(Float64(radius) * t)
+
+            # Calculate color: dark at edge, bright toward center
+            # Edge is 40% of base color, center is 120% (clamped)
+            var brightness = 0.4 + 0.8 * (1.0 - t)
+
+            var r = Int(Float64(color.r) * brightness)
+            var g = Int(Float64(color.g) * brightness)
+            var b = Int(Float64(color.b) * brightness)
+
+            # Clamp to 255
+            r = min(r, 255)
+            g = min(g, 255)
+            b = min(b, 255)
+
+            self.sdl.set_draw_color(UInt8(r), UInt8(g), UInt8(b))
+            self.sdl.fill_circle(screen_x, screen_y, ring_radius)
+
+        # Add specular highlight spot
+        var highlight_x = screen_x + light_offset_x
+        var highlight_y = screen_y + light_offset_y
+        var highlight_radius = max(radius // 5, 2)
+
+        # White-ish highlight blended with color
+        var hr = min(Int(Float64(color.r) * 0.3 + 180), 255)
+        var hg = min(Int(Float64(color.g) * 0.3 + 180), 255)
+        var hb = min(Int(Float64(color.b) * 0.3 + 180), 255)
+
+        self.sdl.set_draw_color(UInt8(hr), UInt8(hg), UInt8(hb))
+        self.sdl.fill_circle(highlight_x, highlight_y, highlight_radius)
+
+    fn draw_filled_capsule_2d(
+        self,
+        center: Vec3,
+        orientation: Quat,
+        radius: Float64,
+        half_height: Float64,
+        axis: Int = 2,
+        color: Color3D = Color3D.white(),
+    ):
+        """Draw a filled capsule by projecting to 2D.
+
+        Creates a filled capsule by projecting the 3D capsule endpoints
+        and drawing a filled rectangle with circular caps.
+
+        Args:
+            center: Capsule center in world space.
+            orientation: Capsule orientation.
+            radius: Capsule radius.
+            half_height: Half-height of cylindrical part.
+            axis: Local axis (0=X, 1=Y, 2=Z).
+            color: Fill color.
+        """
+        # Get local axis direction
+        var local_axis: Vec3
+        if axis == 0:
+            local_axis = Vec3.unit_x()
+        elif axis == 1:
+            local_axis = Vec3.unit_y()
+        else:
+            local_axis = Vec3.unit_z()
+
+        # Transform to world space
+        var world_axis = orientation.rotate_vec(local_axis)
+
+        # End points of capsule
+        var top = center + world_axis * half_height
+        var bottom = center - world_axis * half_height
+
+        # Project endpoints to screen
+        var s_top = self.camera.project_to_screen(top)
+        var s_bottom = self.camera.project_to_screen(bottom)
+        var s_center = self.camera.project_to_screen(center)
+
+        if not (s_top[2] and s_bottom[2]):
+            return
+
+        # Calculate screen-space radius (approximate based on center distance)
+        var view_center = self.camera.get_view_matrix().transform_point(center)
+        var depth = -view_center.z
+        if depth <= 0.1:
+            return
+
+        # Approximate screen radius based on perspective
+        # Use camera FOV to compute proper scaling
+        var fov_scale = 1.0 / (depth * 0.7)  # Adjusted for typical viewing angles
+        var screen_radius = Int(radius * Float64(self.height) * fov_scale)
+        screen_radius = max(screen_radius, 3)  # Minimum visible size
+
+        # Direction vector on screen
+        var dx = Float64(s_top[0] - s_bottom[0])
+        var dy = Float64(s_top[1] - s_bottom[1])
+        var length = sqrt(dx * dx + dy * dy)
+
+        if length < 1.0:
+            # Too small, just draw a circle
+            self.sdl.set_draw_color(color.r, color.g, color.b)
+            self.sdl.fill_circle(s_center[0], s_center[1], screen_radius)
+            return
+
+        # Perpendicular direction for width
+        var perp_x = -dy / length * Float64(screen_radius)
+        var perp_y = dx / length * Float64(screen_radius)
+
+        # Draw filled quadrilateral for the body
+        var points = List[SDL_Point]()
+        points.append(
+            SDL_Point(
+                Int32(s_top[0] + Int(perp_x)), Int32(s_top[1] + Int(perp_y))
+            )
+        )
+        points.append(
+            SDL_Point(
+                Int32(s_top[0] - Int(perp_x)), Int32(s_top[1] - Int(perp_y))
+            )
+        )
+        points.append(
+            SDL_Point(
+                Int32(s_bottom[0] - Int(perp_x)),
+                Int32(s_bottom[1] - Int(perp_y)),
+            )
+        )
+        points.append(
+            SDL_Point(
+                Int32(s_bottom[0] + Int(perp_x)),
+                Int32(s_bottom[1] + Int(perp_y)),
+            )
+        )
+
+        self.sdl.set_draw_color(color.r, color.g, color.b)
+        self.sdl.fill_polygon(points)
+
+        # Draw filled circles at the caps
+        self.sdl.fill_circle(s_top[0], s_top[1], screen_radius)
+        self.sdl.fill_circle(s_bottom[0], s_bottom[1], screen_radius)
+
+    fn draw_shaded_capsule_2d(
+        self,
+        center: Vec3,
+        orientation: Quat,
+        radius: Float64,
+        half_height: Float64,
+        axis: Int = 2,
+        color: Color3D = Color3D.white(),
+    ):
+        """Draw a shaded capsule with 3D volume effect.
+
+        Creates a capsule with gradient shading to simulate lighting,
+        giving the appearance of a 3D cylinder with hemispherical caps.
+
+        Args:
+            center: Capsule center in world space.
+            orientation: Capsule orientation.
+            radius: Capsule radius.
+            half_height: Half-height of cylindrical part.
+            axis: Local axis (0=X, 1=Y, 2=Z).
+            color: Base color.
+        """
+        # Get local axis direction
+        var local_axis: Vec3
+        if axis == 0:
+            local_axis = Vec3.unit_x()
+        elif axis == 1:
+            local_axis = Vec3.unit_y()
+        else:
+            local_axis = Vec3.unit_z()
+
+        # Transform to world space
+        var world_axis = orientation.rotate_vec(local_axis)
+
+        # End points of capsule
+        var top = center + world_axis * half_height
+        var bottom = center - world_axis * half_height
+
+        # Project endpoints to screen
+        var s_top = self.camera.project_to_screen(top)
+        var s_bottom = self.camera.project_to_screen(bottom)
+        var s_center = self.camera.project_to_screen(center)
+
+        if not (s_top[2] and s_bottom[2]):
+            return
+
+        # Calculate screen-space radius
+        var view_center = self.camera.get_view_matrix().transform_point(center)
+        var depth = -view_center.z
+        if depth <= 0.1:
+            return
+
+        var fov_scale = 1.0 / (depth * 0.7)
+        var screen_radius = Int(radius * Float64(self.height) * fov_scale)
+        screen_radius = max(screen_radius, 3)
+
+        # Direction vector on screen
+        var dx = Float64(s_top[0] - s_bottom[0])
+        var dy = Float64(s_top[1] - s_bottom[1])
+        var length = sqrt(dx * dx + dy * dy)
+
+        if length < 1.0:
+            # Too small, draw as shaded sphere
+            self.draw_shaded_sphere_2d(s_center[0], s_center[1], screen_radius, color)
+            return
+
+        # Perpendicular direction for width (this is "up" relative to capsule)
+        var perp_x = -dy / length
+        var perp_y = dx / length
+
+        # Draw multiple layers for gradient shading
+        # From outside (dark) to center (bright)
+        var num_layers = min(screen_radius, 15)
+
+        for layer in range(num_layers, -1, -1):
+            var t = Float64(layer) / Float64(num_layers)  # 1.0 at edge, 0.0 at center
+            var layer_radius = Int(Float64(screen_radius) * t)
+            if layer_radius < 1:
+                layer_radius = 1
+
+            # Calculate brightness: dark at edge, bright toward center
+            var brightness = 0.4 + 0.7 * (1.0 - t)
+
+            var r = Int(Float64(color.r) * brightness)
+            var g = Int(Float64(color.g) * brightness)
+            var b = Int(Float64(color.b) * brightness)
+            r = min(r, 255)
+            g = min(g, 255)
+            b = min(b, 255)
+
+            self.sdl.set_draw_color(UInt8(r), UInt8(g), UInt8(b))
+
+            # Draw the cylindrical body as a quad
+            var offset_x = perp_x * Float64(layer_radius)
+            var offset_y = perp_y * Float64(layer_radius)
+
+            var points = List[SDL_Point]()
+            points.append(SDL_Point(
+                Int32(s_top[0] + Int(offset_x)),
+                Int32(s_top[1] + Int(offset_y))
+            ))
+            points.append(SDL_Point(
+                Int32(s_top[0] - Int(offset_x)),
+                Int32(s_top[1] - Int(offset_y))
+            ))
+            points.append(SDL_Point(
+                Int32(s_bottom[0] - Int(offset_x)),
+                Int32(s_bottom[1] - Int(offset_y))
+            ))
+            points.append(SDL_Point(
+                Int32(s_bottom[0] + Int(offset_x)),
+                Int32(s_bottom[1] + Int(offset_y))
+            ))
+
+            self.sdl.fill_polygon(points)
+
+            # Draw caps at this layer
+            self.sdl.fill_circle(s_top[0], s_top[1], layer_radius)
+            self.sdl.fill_circle(s_bottom[0], s_bottom[1], layer_radius)
+
+        # Add highlight strip along the cylinder
+        var highlight_offset = screen_radius // 3
+        var hr = min(Int(Float64(color.r) * 0.3 + 180), 255)
+        var hg = min(Int(Float64(color.g) * 0.3 + 180), 255)
+        var hb = min(Int(Float64(color.b) * 0.3 + 180), 255)
+        self.sdl.set_draw_color(UInt8(hr), UInt8(hg), UInt8(hb))
+
+        # Draw highlight line along one edge
+        var hl_x = perp_x * Float64(highlight_offset)
+        var hl_y = perp_y * Float64(highlight_offset)
+        self.sdl.draw_line(
+            s_top[0] - Int(hl_x), s_top[1] - Int(hl_y),
+            s_bottom[0] - Int(hl_x), s_bottom[1] - Int(hl_y),
+        )
+
+        # Add highlight spots on caps
+        var cap_highlight_radius = max(screen_radius // 5, 2)
+        self.sdl.fill_circle(
+            s_top[0] - Int(hl_x), s_top[1] - Int(hl_y), cap_highlight_radius
+        )
+        self.sdl.fill_circle(
+            s_bottom[0] - Int(hl_x), s_bottom[1] - Int(hl_y), cap_highlight_radius
+        )

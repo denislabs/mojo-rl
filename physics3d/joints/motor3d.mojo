@@ -8,7 +8,7 @@ from math import sqrt
 from math3d import Vec3
 
 
-struct PDController:
+struct PDController[DTYPE: DType](Copyable, ImplicitlyCopyable, Movable):
     """PD controller parameters for joint motors.
 
     The control law is:
@@ -17,22 +17,27 @@ struct PDController:
     The torque is clamped to ±max_force.
     """
 
-    var kp: Float64  # Proportional gain (stiffness)
-    var kd: Float64  # Derivative gain (damping)
-    var max_force: Float64  # Maximum torque magnitude
+    var kp: Scalar[Self.DTYPE]  # Proportional gain (stiffness)
+    var kd: Scalar[Self.DTYPE]  # Derivative gain (damping)
+    var max_force: Scalar[Self.DTYPE]  # Maximum torque magnitude
 
     fn __init__(
         out self,
-        kp: Float64 = 100.0,
-        kd: Float64 = 10.0,
-        max_force: Float64 = 100.0,
+        kp: Scalar[Self.DTYPE] = Scalar[Self.DTYPE](100.0),
+        kd: Scalar[Self.DTYPE] = Scalar[Self.DTYPE](10.0),
+        max_force: Scalar[Self.DTYPE] = Scalar[Self.DTYPE](100.0),
     ):
         """Initialize PD controller with default gains."""
         self.kp = kp
         self.kd = kd
         self.max_force = max_force
 
-    fn compute_torque(self, target: Float64, current: Float64, velocity: Float64) -> Float64:
+    fn compute_torque(
+        self,
+        target: Scalar[Self.DTYPE],
+        current: Scalar[Self.DTYPE],
+        velocity: Scalar[Self.DTYPE],
+    ) -> Scalar[Self.DTYPE]:
         """Compute control torque.
 
         Args:
@@ -54,7 +59,7 @@ struct PDController:
         return torque
 
 
-struct Motor3D:
+struct Motor3D[DTYPE: DType]:
     """General motor controller for 3D joints.
 
     Supports multiple control modes:
@@ -69,16 +74,16 @@ struct Motor3D:
     comptime MODE_POSITION: Int = 2
 
     var mode: Int
-    var kp: Float64  # Position gain
-    var kd: Float64  # Velocity/damping gain
-    var max_force: Float64
+    var kp: Scalar[Self.DTYPE]  # Position gain
+    var kd: Scalar[Self.DTYPE]  # Velocity/damping gain
+    var max_force: Scalar[Self.DTYPE]
 
     fn __init__(
         out self,
         mode: Int = 2,  # Default to position control
-        kp: Float64 = 100.0,
-        kd: Float64 = 10.0,
-        max_force: Float64 = 100.0,
+        kp: Scalar[Self.DTYPE] = Scalar[Self.DTYPE](100.0),
+        kd: Scalar[Self.DTYPE] = Scalar[Self.DTYPE](10.0),
+        max_force: Scalar[Self.DTYPE] = Scalar[Self.DTYPE](100.0),
     ):
         """Initialize motor controller."""
         self.mode = mode
@@ -88,10 +93,10 @@ struct Motor3D:
 
     fn compute_torque(
         self,
-        target: Float64,  # Target position or velocity
-        current_pos: Float64,
-        current_vel: Float64,
-    ) -> Float64:
+        target: Scalar[Self.DTYPE],  # Target position or velocity
+        current_pos: Scalar[Self.DTYPE],
+        current_vel: Scalar[Self.DTYPE],
+    ) -> Scalar[Self.DTYPE]:
         """Compute control torque based on mode.
 
         Args:
@@ -103,7 +108,7 @@ struct Motor3D:
         Returns:
             Control torque.
         """
-        var torque: Float64
+        var torque: Scalar[Self.DTYPE]
 
         if self.mode == Self.MODE_TORQUE:
             # Direct torque control
@@ -129,70 +134,76 @@ struct Motor3D:
 # =============================================================================
 
 
-fn make_hopper_motors() -> List[PDController]:
+fn make_hopper_motors[DTYPE: DType]() -> List[PDController[DTYPE]]:
     """Create motor controllers for Hopper environment.
 
     Hopper has 3 motors: hip, knee, ankle
     """
-    var motors = List[PDController]()
-    motors.append(PDController(kp=100.0, kd=10.0, max_force=100.0))  # Hip
-    motors.append(PDController(kp=100.0, kd=10.0, max_force=100.0))  # Knee
-    motors.append(PDController(kp=100.0, kd=10.0, max_force=100.0))  # Ankle
-    return motors
+    var motors = List[PDController[DTYPE]]()
+    motors.append(
+        PDController[DTYPE](kp=100.0, kd=10.0, max_force=100.0)
+    )  # Hip
+    motors.append(
+        PDController[DTYPE](kp=100.0, kd=10.0, max_force=100.0)
+    )  # Knee
+    motors.append(
+        PDController[DTYPE](kp=100.0, kd=10.0, max_force=100.0)
+    )  # Ankle
+    return motors^
 
 
-fn make_walker_motors() -> List[PDController]:
+fn make_walker_motors[DTYPE: DType]() -> List[PDController[DTYPE]]:
     """Create motor controllers for Walker2d environment.
 
     Walker has 6 motors: 3 per leg (hip, knee, ankle)
     """
-    var motors = List[PDController]()
+    var motors = List[PDController[DTYPE]]()
     for i in range(6):
-        motors.append(PDController(kp=100.0, kd=10.0, max_force=100.0))
-    return motors
+        motors.append(PDController[DTYPE](kp=100.0, kd=10.0, max_force=100.0))
+    return motors^
 
 
-fn make_cheetah_motors() -> List[PDController]:
+fn make_cheetah_motors[DTYPE: DType]() -> List[PDController[DTYPE]]:
     """Create motor controllers for HalfCheetah environment.
 
     Cheetah has 6 motors: 3 back leg + 3 front leg
     """
-    var motors = List[PDController]()
+    var motors = List[PDController[DTYPE]]()
     for i in range(6):
-        motors.append(PDController(kp=120.0, kd=12.0, max_force=120.0))
-    return motors
+        motors.append(PDController[DTYPE](kp=120.0, kd=12.0, max_force=120.0))
+    return motors^
 
 
-fn make_ant_motors() -> List[PDController]:
+fn make_ant_motors[DTYPE: DType]() -> List[PDController[DTYPE]]:
     """Create motor controllers for Ant environment.
 
     Ant has 8 motors: 2 per leg (hip, ankle) × 4 legs
     """
-    var motors = List[PDController]()
+    var motors = List[PDController[DTYPE]]()
     for i in range(8):
-        motors.append(PDController(kp=100.0, kd=10.0, max_force=150.0))
-    return motors
+        motors.append(PDController[DTYPE](kp=100.0, kd=10.0, max_force=150.0))
+    return motors^
 
 
-fn make_humanoid_motors() -> List[PDController]:
+fn make_humanoid_motors[DTYPE: DType]() -> List[PDController[DTYPE]]:
     """Create motor controllers for Humanoid environment.
 
     Humanoid has 17 motors for various joints.
     Different joints have different gains.
     """
-    var motors = List[PDController]()
+    var motors = List[PDController[DTYPE]]()
 
     # Abdomen (3 DOF)
-    motors.append(PDController(kp=100.0, kd=10.0, max_force=100.0))
-    motors.append(PDController(kp=100.0, kd=10.0, max_force=100.0))
-    motors.append(PDController(kp=100.0, kd=10.0, max_force=100.0))
+    motors.append(PDController[DTYPE](kp=100.0, kd=10.0, max_force=100.0))
+    motors.append(PDController[DTYPE](kp=100.0, kd=10.0, max_force=100.0))
+    motors.append(PDController[DTYPE](kp=100.0, kd=10.0, max_force=100.0))
 
     # Legs (6 DOF each, 12 total)
     for _ in range(12):
-        motors.append(PDController(kp=100.0, kd=10.0, max_force=100.0))
+        motors.append(PDController[DTYPE](kp=100.0, kd=10.0, max_force=100.0))
 
     # Arms (2 DOF, simplified)
-    motors.append(PDController(kp=50.0, kd=5.0, max_force=50.0))
-    motors.append(PDController(kp=50.0, kd=5.0, max_force=50.0))
+    motors.append(PDController[DTYPE](kp=50.0, kd=5.0, max_force=50.0))
+    motors.append(PDController[DTYPE](kp=50.0, kd=5.0, max_force=50.0))
 
-    return motors
+    return motors^

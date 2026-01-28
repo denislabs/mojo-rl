@@ -4,7 +4,11 @@ Provides view and projection matrices for rendering 3D scenes.
 """
 
 from math import sqrt, sin, cos, tan
-from math3d import Vec3, Mat4
+from math3d import Vec3 as Vec3Generic, Mat4 as Mat4Generic
+
+# Type alias for Vec3 with float64 precision (used throughout render3d)
+comptime Vec3 = Vec3Generic[DType.float64]
+comptime Mat4 = Mat4Generic[DType.float64]
 
 
 struct Camera3D:
@@ -14,14 +18,14 @@ struct Camera3D:
     looking at `target`, with `up` defining the vertical direction.
     """
 
-    var eye: Vec3       # Camera position
-    var target: Vec3    # Look-at point
-    var up: Vec3        # Up vector
+    var eye: Vec3  # Camera position
+    var target: Vec3  # Look-at point
+    var up: Vec3  # Up vector
 
-    var fov: Float64    # Field of view in radians
-    var aspect: Float64 # Aspect ratio (width/height)
-    var near: Float64   # Near clipping plane
-    var far: Float64    # Far clipping plane
+    var fov: Float64  # Field of view in radians
+    var aspect: Float64  # Aspect ratio (width/height)
+    var near: Float64  # Near clipping plane
+    var far: Float64  # Far clipping plane
 
     # Screen dimensions for projection
     var screen_width: Int
@@ -96,24 +100,33 @@ struct Camera3D:
             Tuple of (screen_x, screen_y, is_visible).
             is_visible is False if the point is behind the camera.
         """
-        # Get view-projection matrix
-        var vp = self.get_view_projection()
+        # First transform to view space to check if behind camera
+        var view = self.get_view_matrix()
+        var view_point = view.transform_point(world_point)
 
-        # Transform point to clip space
-        var clip = vp.transform_point(world_point)
-
-        # Check if point is behind camera (w <= 0 in homogeneous coords)
-        # For our simplified projection, check if z is behind near plane
-        var view_point = self.get_view_matrix().transform_point(world_point)
+        # Check if point is behind camera (in view space, camera looks down -Z)
         if view_point.z > -self.near:
             return (0, 0, False)
 
-        # Perspective divide (already done in transform_point for our Mat4)
-        var ndc_x = clip.x
-        var ndc_y = clip.y
+        # Get projection matrix and compute clip space coordinates
+        var proj = self.get_projection_matrix()
 
-        # Clamp NDC coordinates to [-1, 1] range
-        if ndc_x < -2.0 or ndc_x > 2.0 or ndc_y < -2.0 or ndc_y > 2.0:
+        # Compute homogeneous clip coordinates (need full 4D transform)
+        # For perspective matrix, w' = -view_z (from m32 = -1)
+        var clip_x = proj.m00 * view_point.x + proj.m01 * view_point.y + proj.m02 * view_point.z + proj.m03
+        var clip_y = proj.m10 * view_point.x + proj.m11 * view_point.y + proj.m12 * view_point.z + proj.m13
+        var clip_z = proj.m20 * view_point.x + proj.m21 * view_point.y + proj.m22 * view_point.z + proj.m23
+        var clip_w = proj.m30 * view_point.x + proj.m31 * view_point.y + proj.m32 * view_point.z + proj.m33
+
+        # Perspective divide to get NDC
+        if abs(clip_w) < 0.0001:
+            return (0, 0, False)
+
+        var ndc_x = clip_x / clip_w
+        var ndc_y = clip_y / clip_w
+
+        # Clamp NDC coordinates to [-1, 1] range (with some margin for edge cases)
+        if ndc_x < -1.5 or ndc_x > 1.5 or ndc_y < -1.5 or ndc_y > 1.5:
             return (0, 0, False)
 
         # Convert NDC to screen coordinates
@@ -198,12 +211,14 @@ struct Camera3D:
     fn _atan2(y: Float64, x: Float64) -> Float64:
         """Compute atan2(y, x)."""
         from math import atan2
+
         return atan2(y, x)
 
     @staticmethod
     fn _acos(x: Float64) -> Float64:
         """Compute acos(x) with clamping."""
         from math import acos
+
         var clamped = x
         if clamped > 1.0:
             clamped = 1.0

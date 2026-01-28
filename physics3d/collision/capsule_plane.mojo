@@ -20,17 +20,31 @@ from ..constants import (
     TPB,
     BODY_STATE_SIZE_3D,
     CONTACT_DATA_SIZE_3D,
-    IDX_PX, IDX_PY, IDX_PZ,
-    IDX_QW, IDX_QX, IDX_QY, IDX_QZ,
+    IDX_PX,
+    IDX_PY,
+    IDX_PZ,
+    IDX_QW,
+    IDX_QX,
+    IDX_QY,
+    IDX_QZ,
     IDX_BODY_TYPE,
     BODY_DYNAMIC,
     SHAPE_CAPSULE,
-    CONTACT_BODY_A_3D, CONTACT_BODY_B_3D,
-    CONTACT_POINT_X, CONTACT_POINT_Y, CONTACT_POINT_Z,
-    CONTACT_NORMAL_X, CONTACT_NORMAL_Y, CONTACT_NORMAL_Z,
+    CONTACT_BODY_A_3D,
+    CONTACT_BODY_B_3D,
+    CONTACT_POINT_X,
+    CONTACT_POINT_Y,
+    CONTACT_POINT_Z,
+    CONTACT_NORMAL_X,
+    CONTACT_NORMAL_Y,
+    CONTACT_NORMAL_Z,
     CONTACT_DEPTH_3D,
-    CONTACT_IMPULSE_N, CONTACT_IMPULSE_T1, CONTACT_IMPULSE_T2,
-    CONTACT_TANGENT1_X, CONTACT_TANGENT1_Y, CONTACT_TANGENT1_Z,
+    CONTACT_IMPULSE_N,
+    CONTACT_IMPULSE_T1,
+    CONTACT_IMPULSE_T2,
+    CONTACT_TANGENT1_X,
+    CONTACT_TANGENT1_Y,
+    CONTACT_TANGENT1_Z,
 )
 
 
@@ -111,7 +125,9 @@ struct CapsulePlaneCollision:
         var manifold = ContactManifold(body_idx, -1)
 
         # Get capsule endpoints
-        var endpoints = Self.get_capsule_endpoints(center, orientation, half_height, axis)
+        var endpoints = Self.get_capsule_endpoints(
+            center, orientation, half_height, axis
+        )
         var p0 = endpoints[0]
         var p1 = endpoints[1]
 
@@ -246,9 +262,9 @@ fn detect_capsules_ground(
 
         # Add all contacts from manifold
         for j in range(len(manifold.contacts)):
-            contacts.append(manifold.contacts[j])
+            contacts.append(manifold.contacts[j].copy())
 
-    return contacts
+    return contacts^
 
 
 # =============================================================================
@@ -269,7 +285,9 @@ struct CapsulePlaneCollisionGPU:
 
     @always_inline
     @staticmethod
-    fn rotate_vec_by_quat(
+    fn rotate_vec_by_quat[
+        dtype: DType
+    ](
         qw: Scalar[dtype],
         qx: Scalar[dtype],
         qy: Scalar[dtype],
@@ -398,18 +416,26 @@ struct CapsulePlaneCollisionGPU:
             var axis = Int(shape_axes[body])
 
             # Get local axis direction
-            var local_ax = Scalar[dtype](0)
-            var local_ay = Scalar[dtype](0)
-            var local_az = Scalar[dtype](0)
+            var local_ax: state.element_type = 0
+            var local_ay: state.element_type = 0
+            var local_az: state.element_type = 0
             if axis == 0:
-                local_ax = Scalar[dtype](1)  # X axis
+                local_ax = 1  # X axis
             elif axis == 1:
-                local_ay = Scalar[dtype](1)  # Y axis
+                local_ay = 1  # Y axis
             else:
-                local_az = Scalar[dtype](1)  # Z axis
+                local_az = 1  # Z axis
 
             # Rotate to world space
-            var world_axis = Self.rotate_vec_by_quat(qw, qx, qy, qz, local_ax, local_ay, local_az)
+            var world_axis = Self.rotate_vec_by_quat(
+                rebind[Scalar[dtype]](qw),
+                rebind[Scalar[dtype]](qx),
+                rebind[Scalar[dtype]](qy),
+                rebind[Scalar[dtype]](qz),
+                rebind[Scalar[dtype]](local_ax),
+                rebind[Scalar[dtype]](local_ay),
+                rebind[Scalar[dtype]](local_az),
+            )
             var world_ax = world_axis[0]
             var world_ay = world_axis[1]
             var world_az = world_axis[2]
@@ -430,8 +456,12 @@ struct CapsulePlaneCollisionGPU:
             if depth0 > Scalar[dtype](0) and contact_count < MAX_CONTACTS:
                 var contact_off = contact_count
 
-                contacts[env, contact_off, CONTACT_BODY_A_3D] = Scalar[dtype](body)
-                contacts[env, contact_off, CONTACT_BODY_B_3D] = Scalar[dtype](-1)
+                contacts[env, contact_off, CONTACT_BODY_A_3D] = Scalar[dtype](
+                    body
+                )
+                contacts[env, contact_off, CONTACT_BODY_B_3D] = Scalar[dtype](
+                    -1
+                )
 
                 contacts[env, contact_off, CONTACT_POINT_X] = p0_x
                 contacts[env, contact_off, CONTACT_POINT_Y] = p0_y
@@ -444,12 +474,22 @@ struct CapsulePlaneCollisionGPU:
                 contacts[env, contact_off, CONTACT_DEPTH_3D] = depth0
 
                 contacts[env, contact_off, CONTACT_IMPULSE_N] = Scalar[dtype](0)
-                contacts[env, contact_off, CONTACT_IMPULSE_T1] = Scalar[dtype](0)
-                contacts[env, contact_off, CONTACT_IMPULSE_T2] = Scalar[dtype](0)
+                contacts[env, contact_off, CONTACT_IMPULSE_T1] = Scalar[dtype](
+                    0
+                )
+                contacts[env, contact_off, CONTACT_IMPULSE_T2] = Scalar[dtype](
+                    0
+                )
 
-                contacts[env, contact_off, CONTACT_TANGENT1_X] = Scalar[dtype](1)
-                contacts[env, contact_off, CONTACT_TANGENT1_Y] = Scalar[dtype](0)
-                contacts[env, contact_off, CONTACT_TANGENT1_Z] = Scalar[dtype](0)
+                contacts[env, contact_off, CONTACT_TANGENT1_X] = Scalar[dtype](
+                    1
+                )
+                contacts[env, contact_off, CONTACT_TANGENT1_Y] = Scalar[dtype](
+                    0
+                )
+                contacts[env, contact_off, CONTACT_TANGENT1_Z] = Scalar[dtype](
+                    0
+                )
 
                 contact_count += 1
 
@@ -459,8 +499,12 @@ struct CapsulePlaneCollisionGPU:
             if depth1 > Scalar[dtype](0) and contact_count < MAX_CONTACTS:
                 var contact_off = contact_count
 
-                contacts[env, contact_off, CONTACT_BODY_A_3D] = Scalar[dtype](body)
-                contacts[env, contact_off, CONTACT_BODY_B_3D] = Scalar[dtype](-1)
+                contacts[env, contact_off, CONTACT_BODY_A_3D] = Scalar[dtype](
+                    body
+                )
+                contacts[env, contact_off, CONTACT_BODY_B_3D] = Scalar[dtype](
+                    -1
+                )
 
                 contacts[env, contact_off, CONTACT_POINT_X] = p1_x
                 contacts[env, contact_off, CONTACT_POINT_Y] = p1_y
@@ -473,12 +517,22 @@ struct CapsulePlaneCollisionGPU:
                 contacts[env, contact_off, CONTACT_DEPTH_3D] = depth1
 
                 contacts[env, contact_off, CONTACT_IMPULSE_N] = Scalar[dtype](0)
-                contacts[env, contact_off, CONTACT_IMPULSE_T1] = Scalar[dtype](0)
-                contacts[env, contact_off, CONTACT_IMPULSE_T2] = Scalar[dtype](0)
+                contacts[env, contact_off, CONTACT_IMPULSE_T1] = Scalar[dtype](
+                    0
+                )
+                contacts[env, contact_off, CONTACT_IMPULSE_T2] = Scalar[dtype](
+                    0
+                )
 
-                contacts[env, contact_off, CONTACT_TANGENT1_X] = Scalar[dtype](1)
-                contacts[env, contact_off, CONTACT_TANGENT1_Y] = Scalar[dtype](0)
-                contacts[env, contact_off, CONTACT_TANGENT1_Z] = Scalar[dtype](0)
+                contacts[env, contact_off, CONTACT_TANGENT1_X] = Scalar[dtype](
+                    1
+                )
+                contacts[env, contact_off, CONTACT_TANGENT1_Y] = Scalar[dtype](
+                    0
+                )
+                contacts[env, contact_off, CONTACT_TANGENT1_Z] = Scalar[dtype](
+                    0
+                )
 
                 contact_count += 1
 
@@ -541,8 +595,17 @@ struct CapsulePlaneCollisionGPU:
 
         CapsulePlaneCollisionGPU.detect_single_env[
             BATCH, NUM_BODIES, MAX_CONTACTS, STATE_SIZE, BODIES_OFFSET
-        ](env, state, shape_types, shape_radii, shape_half_heights, shape_axes,
-          contacts, contact_counts, ground_height)
+        ](
+            env,
+            state,
+            shape_types,
+            shape_radii,
+            shape_half_heights,
+            shape_axes,
+            contacts,
+            contact_counts,
+            ground_height,
+        )
 
     # =========================================================================
     # Public GPU API
@@ -619,23 +682,53 @@ struct CapsulePlaneCollisionGPU:
 
         @always_inline
         fn kernel_wrapper(
-            state: LayoutTensor[dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
-            shape_types: LayoutTensor[dtype, Layout.row_major(NUM_BODIES), MutAnyOrigin],
-            shape_radii: LayoutTensor[dtype, Layout.row_major(NUM_BODIES), MutAnyOrigin],
-            shape_half_heights: LayoutTensor[dtype, Layout.row_major(NUM_BODIES), MutAnyOrigin],
-            shape_axes: LayoutTensor[dtype, Layout.row_major(NUM_BODIES), MutAnyOrigin],
-            contacts: LayoutTensor[dtype, Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE_3D), MutAnyOrigin],
-            contact_counts: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+            state: LayoutTensor[
+                dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+            ],
+            shape_types: LayoutTensor[
+                dtype, Layout.row_major(NUM_BODIES), MutAnyOrigin
+            ],
+            shape_radii: LayoutTensor[
+                dtype, Layout.row_major(NUM_BODIES), MutAnyOrigin
+            ],
+            shape_half_heights: LayoutTensor[
+                dtype, Layout.row_major(NUM_BODIES), MutAnyOrigin
+            ],
+            shape_axes: LayoutTensor[
+                dtype, Layout.row_major(NUM_BODIES), MutAnyOrigin
+            ],
+            contacts: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE_3D),
+                MutAnyOrigin,
+            ],
+            contact_counts: LayoutTensor[
+                dtype, Layout.row_major(BATCH), MutAnyOrigin
+            ],
             ground_height: Scalar[dtype],
         ):
             CapsulePlaneCollisionGPU.detect_kernel[
                 BATCH, NUM_BODIES, MAX_CONTACTS, STATE_SIZE, BODIES_OFFSET
-            ](state, shape_types, shape_radii, shape_half_heights, shape_axes,
-              contacts, contact_counts, ground_height)
+            ](
+                state,
+                shape_types,
+                shape_radii,
+                shape_half_heights,
+                shape_axes,
+                contacts,
+                contact_counts,
+                ground_height,
+            )
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
-            state, shape_types, shape_radii, shape_half_heights, shape_axes,
-            contacts, contact_counts, ground_height,
+            state,
+            shape_types,
+            shape_radii,
+            shape_half_heights,
+            shape_axes,
+            contacts,
+            contact_counts,
+            ground_height,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )

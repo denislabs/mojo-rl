@@ -15,9 +15,9 @@ Key features:
 - Entropy bonus for exploration
 - Advantage normalization
 
-Architecture:
-- Actor: obs -> hidden (ReLU) -> hidden (ReLU) -> StochasticActor (mean + log_std)
-- Critic: obs -> hidden (ReLU) -> hidden (ReLU) -> 1 (value)
+Architecture (CleanRL-style with Tanh activations):
+- Actor: obs -> hidden (Tanh) -> hidden (Tanh) -> StochasticActor (mean + log_std)
+- Critic: obs -> hidden (Tanh) -> hidden (Tanh) -> 1 (value)
 
 Usage:
     from deep_agents.ppo_continuous import DeepPPOContinuousAgent
@@ -42,7 +42,7 @@ from gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 
 from deep_rl.constants import dtype, TILE, TPB
-from deep_rl.model import Linear, ReLU, LinearReLU, seq, StochasticActor
+from deep_rl.model import Linear, ReLU, LinearReLU, LinearTanh, seq, StochasticActor
 from deep_rl.optimizer import Adam
 from deep_rl.initializer import Xavier, Kaiming
 from deep_rl.training import Network
@@ -171,8 +171,8 @@ struct DeepPPOContinuousAgent[
     var actor: Network[
         type_of(
             seq(
-                LinearReLU[Self.OBS, Self.HIDDEN](),
-                LinearReLU[Self.HIDDEN, Self.HIDDEN](),
+                LinearTanh[Self.OBS, Self.HIDDEN](),
+                LinearTanh[Self.HIDDEN, Self.HIDDEN](),
                 StochasticActor[Self.HIDDEN, Self.ACTIONS](),
             )
         ),
@@ -184,8 +184,8 @@ struct DeepPPOContinuousAgent[
     var critic: Network[
         type_of(
             seq(
-                LinearReLU[Self.OBS, Self.HIDDEN](),
-                LinearReLU[Self.HIDDEN, Self.HIDDEN](),
+                LinearTanh[Self.OBS, Self.HIDDEN](),
+                LinearTanh[Self.HIDDEN, Self.HIDDEN](),
                 Linear[Self.HIDDEN, 1](),
             )
         ),
@@ -291,8 +291,8 @@ struct DeepPPOContinuousAgent[
         self.actor = Network[
             type_of(
                 seq(
-                    LinearReLU[Self.OBS, Self.HIDDEN](),
-                    LinearReLU[Self.HIDDEN, Self.HIDDEN](),
+                    LinearTanh[Self.OBS, Self.HIDDEN](),
+                    LinearTanh[Self.HIDDEN, Self.HIDDEN](),
                     StochasticActor[Self.HIDDEN, Self.ACTIONS](),
                 )
             ),
@@ -300,8 +300,8 @@ struct DeepPPOContinuousAgent[
             Kaiming,
         ](
             seq(
-                LinearReLU[Self.OBS, Self.HIDDEN](),
-                LinearReLU[Self.HIDDEN, Self.HIDDEN](),
+                LinearTanh[Self.OBS, Self.HIDDEN](),
+                LinearTanh[Self.HIDDEN, Self.HIDDEN](),
                 StochasticActor[Self.HIDDEN, Self.ACTIONS](),
             ),
             Adam(lr=actor_lr),
@@ -344,8 +344,8 @@ struct DeepPPOContinuousAgent[
         self.critic = Network[
             type_of(
                 seq(
-                    LinearReLU[Self.OBS, Self.HIDDEN](),
-                    LinearReLU[Self.HIDDEN, Self.HIDDEN](),
+                    LinearTanh[Self.OBS, Self.HIDDEN](),
+                    LinearTanh[Self.HIDDEN, Self.HIDDEN](),
                     Linear[Self.HIDDEN, 1](),
                 )
             ),
@@ -353,8 +353,8 @@ struct DeepPPOContinuousAgent[
             Kaiming,
         ](
             seq(
-                LinearReLU[Self.OBS, Self.HIDDEN](),
-                LinearReLU[Self.HIDDEN, Self.HIDDEN](),
+                LinearTanh[Self.OBS, Self.HIDDEN](),
+                LinearTanh[Self.HIDDEN, Self.HIDDEN](),
                 Linear[Self.HIDDEN, 1](),
             ),
             Adam(lr=critic_lr),

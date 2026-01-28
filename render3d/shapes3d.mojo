@@ -4,7 +4,10 @@ Generates vertices and edges for wireframe rendering of common 3D shapes.
 """
 
 from math import sin, cos
-from math3d import Vec3, Quat
+from math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
+
+comptime Vec3 = Vec3Generic[DType.float64]
+comptime Quat = QuatGeneric[DType.float64]
 
 
 struct WireframeLine(Copyable, Movable):
@@ -42,7 +45,7 @@ struct WireframeSphere:
         center: Vec3 = Vec3.zero(),
         radius: Float64 = 1.0,
         segments: Int = 12,  # Longitude divisions
-        rings: Int = 8,      # Latitude divisions
+        rings: Int = 8,  # Latitude divisions
     ):
         """Initialize sphere wireframe.
 
@@ -192,7 +195,9 @@ struct WireframeCapsule:
         # Draw vertical lines (cylinder edges)
         for i in range(self.segments):
             var theta = Float64(i) * 2.0 * pi / Float64(self.segments)
-            var offset = world_u * (self.radius * cos(theta)) + world_v * (self.radius * sin(theta))
+            var offset = world_u * (self.radius * cos(theta)) + world_v * (
+                self.radius * sin(theta)
+            )
 
             var p_top = top + offset
             var p_bottom = bottom + offset
@@ -204,8 +209,12 @@ struct WireframeCapsule:
             var theta1 = Float64(i) * 2.0 * pi / Float64(self.segments)
             var theta2 = Float64(i + 1) * 2.0 * pi / Float64(self.segments)
 
-            var offset1 = world_u * (self.radius * cos(theta1)) + world_v * (self.radius * sin(theta1))
-            var offset2 = world_u * (self.radius * cos(theta2)) + world_v * (self.radius * sin(theta2))
+            var offset1 = world_u * (self.radius * cos(theta1)) + world_v * (
+                self.radius * sin(theta1)
+            )
+            var offset2 = world_u * (self.radius * cos(theta2)) + world_v * (
+                self.radius * sin(theta2)
+            )
 
             # Top circle
             lines.append(WireframeLine(top + offset1, top + offset2))
@@ -224,8 +233,16 @@ struct WireframeCapsule:
                 var phi1 = Float64(j) * pi / Float64(self.segments)
                 var phi2 = Float64(j + 1) * pi / Float64(self.segments)
 
-                var p1 = top + arc_u * (self.radius * sin(phi1)) + world_axis * (self.radius * cos(phi1))
-                var p2 = top + arc_u * (self.radius * sin(phi2)) + world_axis * (self.radius * cos(phi2))
+                var p1 = (
+                    top
+                    + arc_u * (self.radius * sin(phi1))
+                    + world_axis * (self.radius * cos(phi1))
+                )
+                var p2 = (
+                    top
+                    + arc_u * (self.radius * sin(phi2))
+                    + world_axis * (self.radius * cos(phi2))
+                )
                 lines.append(WireframeLine(p1, p2))
 
             # Bottom hemisphere
@@ -233,8 +250,16 @@ struct WireframeCapsule:
                 var phi1 = Float64(j) * pi / Float64(self.segments)
                 var phi2 = Float64(j + 1) * pi / Float64(self.segments)
 
-                var p1 = bottom + arc_u * (self.radius * sin(phi1)) - world_axis * (self.radius * cos(phi1))
-                var p2 = bottom + arc_u * (self.radius * sin(phi2)) - world_axis * (self.radius * cos(phi2))
+                var p1 = (
+                    bottom
+                    + arc_u * (self.radius * sin(phi1))
+                    - world_axis * (self.radius * cos(phi1))
+                )
+                var p2 = (
+                    bottom
+                    + arc_u * (self.radius * sin(phi2))
+                    - world_axis * (self.radius * cos(phi2))
+                )
                 lines.append(WireframeLine(p1, p2))
 
         return lines^
@@ -335,18 +360,22 @@ fn create_ground_grid(
     # Lines parallel to X axis
     for i in range(divisions + 1):
         var y = -size + Float64(i) * step
-        lines.append(WireframeLine(
-            Vec3(-size, y, height),
-            Vec3(size, y, height),
-        ))
+        lines.append(
+            WireframeLine(
+                Vec3(-size, y, height),
+                Vec3(size, y, height),
+            )
+        )
 
     # Lines parallel to Y axis
     for i in range(divisions + 1):
         var x = -size + Float64(i) * step
-        lines.append(WireframeLine(
-            Vec3(x, -size, height),
-            Vec3(x, size, height),
-        ))
+        lines.append(
+            WireframeLine(
+                Vec3(x, -size, height),
+                Vec3(x, size, height),
+            )
+        )
 
     return lines^
 

@@ -79,6 +79,7 @@ from physics2d import (
     PhysicsStateOwned,
     PhysicsConfig,
     CONTACT_BODY_A,
+    CONTACT_BODY_B,
 )
 
 
@@ -794,8 +795,31 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
             ctrl_cost += a_clamped * a_clamped
         ctrl_cost *= HCConstants.CTRL_COST_WEIGHT
 
-        # Total reward (no healthy reward for HalfCheetah)
-        var reward = forward_reward - ctrl_cost
+        # Height bonus to discourage crawling
+        var height_bonus = 0.0
+        if torso_z > HCConstants.MIN_HEIGHT_FOR_BONUS:
+            # Bonus scales linearly with height, saturates at TARGET_HEIGHT
+            var effective_height = min(torso_z, HCConstants.TARGET_HEIGHT)
+            height_bonus = HCConstants.HEIGHT_BONUS_WEIGHT * effective_height
+
+        # Ground contact penalty - penalize non-foot body parts touching ground
+        # Bodies that should NOT touch: torso(0), bthigh(1), bshin(2), fthigh(4), fshin(5)
+        # Bodies that CAN touch: bfoot(3), ffoot(6)
+        var ground_contact_penalty = 0.0
+        var contacts = self.physics.get_contacts_tensor()
+        var contact_counts = self.physics.get_contact_counts_tensor()
+        var num_contacts = Int(contact_counts[0])
+        for c in range(num_contacts):
+            var body_a = Int(contacts[0, c, CONTACT_BODY_A])
+            var body_b = Int(contacts[0, c, CONTACT_BODY_B])
+            # Check if this is a ground contact (body_b == -1)
+            if body_b == -1:
+                # Penalize if body_a is not a foot (3 or 6)
+                if body_a != HCConstants.BODY_BFOOT and body_a != HCConstants.BODY_FFOOT:
+                    ground_contact_penalty += HCConstants.GROUND_CONTACT_PENALTY
+
+        # Total reward
+        var reward = forward_reward - ctrl_cost + height_bonus - ground_contact_penalty
 
         self.step_count += 1
         self.total_reward += reward
@@ -1798,6 +1822,9 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
 
         # Compute reward
         var x_after = rebind[Scalar[dtype]](states[env, torso_off + IDX_X])
+        var torso_z = rebind[Scalar[dtype]](states[env, torso_off + IDX_Y])
+        var torso_angle = rebind[Scalar[dtype]](states[env, torso_off + IDX_ANGLE])
+
         var forward_velocity = (x_after - x_before) / (dt * Scalar[dtype](HCConstants.FRAME_SKIP))
         var forward_reward = Scalar[dtype](HCConstants.FORWARD_REWARD_WEIGHT) * forward_velocity
 
@@ -1813,17 +1840,36 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
             ctrl_cost = ctrl_cost + a * a
         ctrl_cost = ctrl_cost * Scalar[dtype](HCConstants.CTRL_COST_WEIGHT)
 
-        var reward = forward_reward - ctrl_cost
+        # Height bonus to discourage crawling
+        var height_bonus = Scalar[dtype](0.0)
+        if torso_z > Scalar[dtype](HCConstants.MIN_HEIGHT_FOR_BONUS):
+            # Bonus scales linearly with height, saturates at TARGET_HEIGHT
+            var effective_height = torso_z
+            if effective_height > Scalar[dtype](HCConstants.TARGET_HEIGHT):
+                effective_height = Scalar[dtype](HCConstants.TARGET_HEIGHT)
+            height_bonus = Scalar[dtype](HCConstants.HEIGHT_BONUS_WEIGHT) * effective_height
+
+        # Ground contact penalty - penalize non-foot body parts touching ground
+        # Bodies that should NOT touch: torso(0), bthigh(1), bshin(2), fthigh(4), fshin(5)
+        # Bodies that CAN touch: bfoot(3), ffoot(6)
+        var ground_contact_penalty = Scalar[dtype](0.0)
+        var num_contacts = Int(contact_counts[env])
+        for c in range(num_contacts):
+            var body_a = Int(contacts[env, c, CONTACT_BODY_A])
+            var body_b = Int(contacts[env, c, CONTACT_BODY_B])
+            # Check if this is a ground contact (body_b == -1)
+            if body_b == -1:
+                # Penalize if body_a is not a foot (3 or 6)
+                if body_a != HCConstants.BODY_BFOOT and body_a != HCConstants.BODY_FFOOT:
+                    ground_contact_penalty = ground_contact_penalty + Scalar[dtype](HCConstants.GROUND_CONTACT_PENALTY)
+
+        var reward = forward_reward - ctrl_cost + height_bonus - ground_contact_penalty
         rewards[env] = reward
 
         # Update step count
         var step_count = rebind[Scalar[dtype]](states[env, meta_off + HCConstants.META_STEP_COUNT])
         step_count = step_count + Scalar[dtype](1.0)
         states[env, meta_off + HCConstants.META_STEP_COUNT] = step_count
-
-        # Get torso state for healthy check
-        var torso_z = rebind[Scalar[dtype]](states[env, torso_off + IDX_Y])
-        var torso_angle = rebind[Scalar[dtype]](states[env, torso_off + IDX_ANGLE])
 
         var done = Scalar[dtype](0.0)
 

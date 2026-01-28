@@ -24,10 +24,11 @@ from deep_rl import dtype as gpu_dtype
 
 comptime OBS_DIM = HCConstants.OBS_DIM_VAL  # 17
 comptime ACTION_DIM = HCConstants.ACTION_DIM_VAL  # 6
-comptime HIDDEN_DIM = 512
-comptime ROLLOUT_LEN = 256
-comptime N_ENVS = 512
-comptime GPU_MINIBATCH_SIZE = 512
+# Must match training configuration!
+comptime HIDDEN_DIM = 256
+comptime ROLLOUT_LEN = 512
+comptime N_ENVS = 256
+comptime GPU_MINIBATCH_SIZE = 2048
 
 # Evaluation settings
 comptime EVAL_EPISODES = 100
@@ -71,13 +72,13 @@ fn main() raises:
             target_total_steps=0,
             norm_adv_per_minibatch=True,
             checkpoint_every=1000,
-            checkpoint_path="ppo_half_cheetah_continuous_gpu.ckpt",
+            checkpoint_path="ppo_half_cheetah_cleanrl.ckpt",
             normalize_rewards=True,  # Match training
         )
 
         print("Loading checkpoint...")
         try:
-            agent.load_checkpoint("ppo_half_cheetah_continuous_gpu.ckpt")
+            agent.load_checkpoint("ppo_half_cheetah_cleanrl.ckpt")
             print("Checkpoint loaded successfully!")
         except:
             print("Error loading checkpoint!")
@@ -92,17 +93,26 @@ fn main() raises:
         print()
         print("Actor param diagnostics:")
         print("  Total params:", len(agent.actor.params))
-        print("  First 5:", agent.actor.params[0], agent.actor.params[1],
-              agent.actor.params[2], agent.actor.params[3], agent.actor.params[4])
+        print(
+            "  First 5:",
+            agent.actor.params[0],
+            agent.actor.params[1],
+            agent.actor.params[2],
+            agent.actor.params[3],
+            agent.actor.params[4],
+        )
 
         # log_std params are the last ACTION_DIM params
         var log_std_offset = len(agent.actor.params) - ACTION_DIM
-        print("  log_std params:", agent.actor.params[log_std_offset],
-              agent.actor.params[log_std_offset + 1],
-              agent.actor.params[log_std_offset + 2],
-              agent.actor.params[log_std_offset + 3],
-              agent.actor.params[log_std_offset + 4],
-              agent.actor.params[log_std_offset + 5])
+        print(
+            "  log_std params:",
+            agent.actor.params[log_std_offset],
+            agent.actor.params[log_std_offset + 1],
+            agent.actor.params[log_std_offset + 2],
+            agent.actor.params[log_std_offset + 3],
+            agent.actor.params[log_std_offset + 4],
+            agent.actor.params[log_std_offset + 5],
+        )
         print()
 
         # =====================================================================
@@ -115,7 +125,9 @@ fn main() raises:
 
         var start_time = perf_counter_ns()
 
-        var stochastic_reward = agent.evaluate_gpu[HalfCheetahPlanarV2[gpu_dtype]](
+        var stochastic_reward = agent.evaluate_gpu[
+            HalfCheetahPlanarV2[gpu_dtype]
+        ](
             ctx,
             num_episodes=EVAL_EPISODES,
             max_steps=MAX_STEPS,
@@ -132,7 +144,9 @@ fn main() raises:
 
         start_time = perf_counter_ns()
 
-        var deterministic_reward = agent.evaluate_gpu[HalfCheetahPlanarV2[gpu_dtype]](
+        var deterministic_reward = agent.evaluate_gpu[
+            HalfCheetahPlanarV2[gpu_dtype]
+        ](
             ctx,
             num_episodes=EVAL_EPISODES,
             max_steps=MAX_STEPS,

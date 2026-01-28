@@ -138,6 +138,17 @@ struct HCConstants:
     comptime CTRL_COST_WEIGHT: Float64 = 0.1
     comptime FORWARD_REWARD_WEIGHT: Float64 = 1.0
 
+    # Height bonus to discourage crawling behavior
+    # Rewards keeping torso elevated above ground
+    comptime HEIGHT_BONUS_WEIGHT: Float64 = 1.0  # Reward per unit height (increased)
+    comptime TARGET_HEIGHT: Float64 = 0.5  # Height at which bonus saturates
+    comptime MIN_HEIGHT_FOR_BONUS: Float64 = 0.1  # Below this, no bonus
+
+    # Ground contact penalty - penalize non-foot body parts touching ground
+    # Bodies that SHOULD NOT touch ground: torso(0), bthigh(1), bshin(2), fthigh(4), fshin(5)
+    # Bodies that CAN touch ground: bfoot(3), ffoot(6)
+    comptime GROUND_CONTACT_PENALTY: Float64 = 0.5  # Penalty per illegal ground contact
+
     # ==========================================================================
     # Episode Parameters
     # ==========================================================================

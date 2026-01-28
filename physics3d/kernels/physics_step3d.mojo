@@ -22,14 +22,29 @@ from ..constants import (
     TPB,
     BODY_STATE_SIZE_3D,
     CONTACT_DATA_SIZE_3D,
-    IDX_PX, IDX_PY, IDX_PZ,
-    IDX_QW, IDX_QX, IDX_QY, IDX_QZ,
-    IDX_VX, IDX_VY, IDX_VZ,
-    IDX_WX, IDX_WY, IDX_WZ,
-    IDX_FX, IDX_FY, IDX_FZ,
-    IDX_TX, IDX_TY, IDX_TZ,
+    IDX_PX,
+    IDX_PY,
+    IDX_PZ,
+    IDX_QW,
+    IDX_QX,
+    IDX_QY,
+    IDX_QZ,
+    IDX_VX,
+    IDX_VY,
+    IDX_VZ,
+    IDX_WX,
+    IDX_WY,
+    IDX_WZ,
+    IDX_FX,
+    IDX_FY,
+    IDX_FZ,
+    IDX_TX,
+    IDX_TY,
+    IDX_TZ,
     IDX_INV_MASS,
-    IDX_IXX, IDX_IYY, IDX_IZZ,
+    IDX_IXX,
+    IDX_IYY,
+    IDX_IZZ,
     IDX_SHAPE_3D,
     IDX_BODY_TYPE,
     BODY_DYNAMIC,
@@ -40,12 +55,21 @@ from ..constants import (
     DEFAULT_VELOCITY_ITERATIONS_3D,
     DEFAULT_POSITION_ITERATIONS_3D,
     DEFAULT_FRICTION_3D,
-    CONTACT_BODY_A_3D, CONTACT_BODY_B_3D,
-    CONTACT_POINT_X, CONTACT_POINT_Y, CONTACT_POINT_Z,
-    CONTACT_NORMAL_X, CONTACT_NORMAL_Y, CONTACT_NORMAL_Z,
+    CONTACT_BODY_A_3D,
+    CONTACT_BODY_B_3D,
+    CONTACT_POINT_X,
+    CONTACT_POINT_Y,
+    CONTACT_POINT_Z,
+    CONTACT_NORMAL_X,
+    CONTACT_NORMAL_Y,
+    CONTACT_NORMAL_Z,
     CONTACT_DEPTH_3D,
-    CONTACT_IMPULSE_N, CONTACT_IMPULSE_T1, CONTACT_IMPULSE_T2,
-    CONTACT_TANGENT1_X, CONTACT_TANGENT1_Y, CONTACT_TANGENT1_Z,
+    CONTACT_IMPULSE_N,
+    CONTACT_IMPULSE_T1,
+    CONTACT_IMPULSE_T2,
+    CONTACT_TANGENT1_X,
+    CONTACT_TANGENT1_Y,
+    CONTACT_TANGENT1_Z,
 )
 from ..collision import (
     Contact3D,
@@ -68,35 +92,37 @@ from ..collision.sphere_plane import SpherePlaneCollisionGPU
 from ..solvers.impulse3d import ImpulseSolver3DGPU
 
 
-struct PhysicsWorld3D:
+struct PhysicsWorld3D[DTYPE: DType]:
     """3D Physics world for MuJoCo-style environments.
 
     Manages rigid body simulation with contacts and joints.
     """
 
     var num_bodies: Int
-    var gravity: Vec3
-    var dt: Float64
+    var gravity: Vec3[Self.DTYPE]
+    var dt: Scalar[Self.DTYPE]
     var velocity_iterations: Int
     var position_iterations: Int
-    var friction: Float64
-    var ground_height: Float64
+    var friction: Scalar[Self.DTYPE]
+    var ground_height: Scalar[Self.DTYPE]
 
     # Body shape information for collision detection
     var shape_types: List[Int]
-    var shape_radii: List[Float64]
-    var shape_half_heights: List[Float64]  # For capsules
+    var shape_radii: List[Scalar[Self.DTYPE]]
+    var shape_half_heights: List[Scalar[Self.DTYPE]]  # For capsules
     var shape_axes: List[Int]  # Capsule axis (0=X, 1=Y, 2=Z)
 
     fn __init__(
         out self,
         num_bodies: Int,
-        gravity: Vec3 = Vec3(0.0, 0.0, DEFAULT_GRAVITY_Z_3D),
-        dt: Float64 = DEFAULT_DT_3D,
+        gravity: Vec3[Self.DTYPE] = Vec3[Self.DTYPE](
+            0.0, 0.0, Scalar[Self.DTYPE](DEFAULT_GRAVITY_Z_3D)
+        ),
+        dt: Scalar[Self.DTYPE] = Scalar[Self.DTYPE](DEFAULT_DT_3D),
         velocity_iterations: Int = DEFAULT_VELOCITY_ITERATIONS_3D,
         position_iterations: Int = DEFAULT_POSITION_ITERATIONS_3D,
-        friction: Float64 = DEFAULT_FRICTION_3D,
-        ground_height: Float64 = 0.0,
+        friction: Scalar[Self.DTYPE] = Scalar[Self.DTYPE](DEFAULT_FRICTION_3D),
+        ground_height: Scalar[Self.DTYPE] = Scalar[Self.DTYPE](0.0),
     ):
         """Initialize physics world.
 
@@ -119,8 +145,8 @@ struct PhysicsWorld3D:
 
         # Initialize shape arrays with defaults
         self.shape_types = List[Int]()
-        self.shape_radii = List[Float64]()
-        self.shape_half_heights = List[Float64]()
+        self.shape_radii = List[Scalar[Self.DTYPE]]()
+        self.shape_half_heights = List[Scalar[Self.DTYPE]]()
         self.shape_axes = List[Int]()
 
         for _ in range(num_bodies):
@@ -129,7 +155,7 @@ struct PhysicsWorld3D:
             self.shape_half_heights.append(0.0)
             self.shape_axes.append(2)  # Z-axis default
 
-    fn set_sphere_shape(mut self, body_idx: Int, radius: Float64):
+    fn set_sphere_shape(mut self, body_idx: Int, radius: Scalar[Self.DTYPE]):
         """Set body shape to sphere.
 
         Args:
@@ -143,8 +169,8 @@ struct PhysicsWorld3D:
     fn set_capsule_shape(
         mut self,
         body_idx: Int,
-        radius: Float64,
-        half_height: Float64,
+        radius: Scalar[Self.DTYPE],
+        half_height: Scalar[Self.DTYPE],
         axis: Int = 2,
     ):
         """Set body shape to capsule.
@@ -162,8 +188,8 @@ struct PhysicsWorld3D:
 
     fn detect_ground_contacts(
         self,
-        state: List[Float64],
-    ) -> List[Contact3D]:
+        state: List[Scalar[Self.DTYPE]],
+    ) -> List[Contact3D[Self.DTYPE]]:
         """Detect collisions between bodies and ground plane.
 
         Args:
@@ -172,7 +198,7 @@ struct PhysicsWorld3D:
         Returns:
             List of contact points.
         """
-        var contacts = List[Contact3D]()
+        var contacts = List[Contact3D[Self.DTYPE]]()
 
         for i in range(self.num_bodies):
             var base = i * BODY_STATE_SIZE_3D
@@ -225,7 +251,7 @@ struct PhysicsWorld3D:
 
         return contacts^
 
-    fn step(self, mut state: List[Float64]):
+    fn step(self, mut state: List[Scalar[Self.DTYPE]]):
         """Perform one physics simulation step.
 
         Pipeline:
@@ -248,7 +274,9 @@ struct PhysicsWorld3D:
         # Step 3: Solve velocity constraints
         for _ in range(self.velocity_iterations):
             for i in range(len(contacts)):
-                solve_contact_velocity(state, contacts[i], self.friction, 0.0)
+                solve_contact_velocity[Self.DTYPE](
+                    state, contacts[i], self.friction, 0.0
+                )
 
         # Step 4: Integrate positions
         for i in range(self.num_bodies):
@@ -257,16 +285,16 @@ struct PhysicsWorld3D:
         # Step 5: Solve position constraints
         for _ in range(self.position_iterations):
             for i in range(len(contacts)):
-                solve_contact_position(state, contacts[i])
+                solve_contact_position[Self.DTYPE](state, contacts[i])
 
     fn step_with_joints(
         self,
-        mut state: List[Float64],
+        mut state: List[Scalar[Self.DTYPE]],
         joint_body_a: List[Int],
         joint_body_b: List[Int],
-        joint_anchor_a: List[Vec3],
-        joint_anchor_b: List[Vec3],
-        joint_axis: List[Vec3],
+        joint_anchor_a: List[Vec3[Self.DTYPE]],
+        joint_anchor_b: List[Vec3[Self.DTYPE]],
+        joint_axis: List[Vec3[Self.DTYPE]],
     ):
         """Perform physics step with joint constraints.
 
@@ -314,7 +342,7 @@ struct PhysicsWorld3D:
         for _ in range(self.position_iterations):
             # Contact constraints
             for i in range(len(contacts)):
-                solve_contact_position(state, contacts[i])
+                solve_contact_position[Self.DTYPE](state, contacts[i])
 
             # Joint constraints
             for j in range(num_joints):
@@ -328,11 +356,11 @@ struct PhysicsWorld3D:
 
     fn apply_motor_torques(
         self,
-        mut state: List[Float64],
+        mut state: List[Scalar[Self.DTYPE]],
         joint_body_a: List[Int],
         joint_body_b: List[Int],
-        joint_axis: List[Vec3],
-        torques: List[Float64],
+        joint_axis: List[Vec3[Self.DTYPE]],
+        torques: List[Scalar[Self.DTYPE]],
     ):
         """Apply motor torques to joints.
 
@@ -369,7 +397,9 @@ struct PhysicsWorld3D:
                 state[base_b + IDX_TY] -= tau.y
                 state[base_b + IDX_TZ] -= tau.z
 
-    fn get_body_position(self, state: List[Float64], body_idx: Int) -> Vec3:
+    fn get_body_position(
+        self, state: List[Scalar[Self.DTYPE]], body_idx: Int
+    ) -> Vec3[Self.DTYPE]:
         """Get body center position.
 
         Args:
@@ -386,7 +416,9 @@ struct PhysicsWorld3D:
             state[base + IDX_PZ],
         )
 
-    fn get_body_orientation(self, state: List[Float64], body_idx: Int) -> Quat:
+    fn get_body_orientation(
+        self, state: List[Scalar[Self.DTYPE]], body_idx: Int
+    ) -> Quat[Self.DTYPE]:
         """Get body orientation.
 
         Args:
@@ -404,7 +436,9 @@ struct PhysicsWorld3D:
             state[base + IDX_QZ],
         )
 
-    fn get_body_velocity(self, state: List[Float64], body_idx: Int) -> Vec3:
+    fn get_body_velocity(
+        self, state: List[Scalar[Self.DTYPE]], body_idx: Int
+    ) -> Vec3[Self.DTYPE]:
         """Get body linear velocity.
 
         Args:
@@ -421,7 +455,9 @@ struct PhysicsWorld3D:
             state[base + IDX_VZ],
         )
 
-    fn get_body_angular_velocity(self, state: List[Float64], body_idx: Int) -> Vec3:
+    fn get_body_angular_velocity(
+        self, state: List[Scalar[Self.DTYPE]], body_idx: Int
+    ) -> Vec3[Self.DTYPE]:
         """Get body angular velocity.
 
         Args:
@@ -458,20 +494,6 @@ struct Physics3DStepKernel:
 
     Performance benefit: Reduces kernel launches from 9+ to 1.
 
-    Example usage:
-        ```mojo
-        # Instead of multiple kernel launches:
-        SemiImplicitEuler3DGPU.integrate_velocities_gpu[...]()
-        SpherePlaneCollisionGPU.detect_gpu[...]()
-        for _ in range(10):
-            ImpulseSolver3DGPU.solve_velocity_gpu[...]()
-        SemiImplicitEuler3DGPU.integrate_positions_gpu[...]()
-        for _ in range(5):
-            ImpulseSolver3DGPU.solve_position_gpu[...]()
-
-        # Use:
-        Physics3DStepKernel.step_gpu[..., VEL_ITERATIONS=10, POS_ITERATIONS=5](...)
-        ```
     """
 
     # =========================================================================
@@ -548,7 +570,15 @@ struct Physics3DStepKernel:
         # Detect sphere-ground collisions
         SpherePlaneCollisionGPU.detect_single_env_with_separate_contacts[
             BATCH, NUM_BODIES, MAX_CONTACTS, STATE_SIZE, BODIES_OFFSET
-        ](env, state, shape_types, shape_radii, contacts, contact_counts, ground_height)
+        ](
+            env,
+            state,
+            shape_types,
+            shape_radii,
+            contacts,
+            contact_counts,
+            ground_height,
+        )
 
         # Get contact count after detection
         var n_contacts = Int(contact_counts[env])
@@ -634,13 +664,31 @@ struct Physics3DStepKernel:
             return
 
         Physics3DStepKernel._step_single_env[
-            BATCH, NUM_BODIES, MAX_CONTACTS, STATE_SIZE,
-            BODIES_OFFSET, CONTACTS_OFFSET, CONTACT_COUNT_OFFSET,
-            VEL_ITERATIONS, POS_ITERATIONS,
+            BATCH,
+            NUM_BODIES,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            BODIES_OFFSET,
+            CONTACTS_OFFSET,
+            CONTACT_COUNT_OFFSET,
+            VEL_ITERATIONS,
+            POS_ITERATIONS,
         ](
-            env, state, shape_types, shape_radii, contacts, contact_counts,
-            gravity_x, gravity_y, gravity_z, dt, ground_height,
-            friction, restitution, baumgarte, slop,
+            env,
+            state,
+            shape_types,
+            shape_radii,
+            contacts,
+            contact_counts,
+            gravity_x,
+            gravity_y,
+            gravity_z,
+            dt,
+            ground_height,
+            friction,
+            restitution,
+            baumgarte,
+            slop,
         )
 
     # =========================================================================
@@ -729,11 +777,23 @@ struct Physics3DStepKernel:
 
         @always_inline
         fn kernel_wrapper(
-            state: LayoutTensor[dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
-            shape_types: LayoutTensor[dtype, Layout.row_major(NUM_BODIES), MutAnyOrigin],
-            shape_radii: LayoutTensor[dtype, Layout.row_major(NUM_BODIES), MutAnyOrigin],
-            contacts: LayoutTensor[dtype, Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE_3D), MutAnyOrigin],
-            contact_counts: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+            state: LayoutTensor[
+                dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+            ],
+            shape_types: LayoutTensor[
+                dtype, Layout.row_major(NUM_BODIES), MutAnyOrigin
+            ],
+            shape_radii: LayoutTensor[
+                dtype, Layout.row_major(NUM_BODIES), MutAnyOrigin
+            ],
+            contacts: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE_3D),
+                MutAnyOrigin,
+            ],
+            contact_counts: LayoutTensor[
+                dtype, Layout.row_major(BATCH), MutAnyOrigin
+            ],
             gravity_x: Scalar[dtype],
             gravity_y: Scalar[dtype],
             gravity_z: Scalar[dtype],
@@ -745,19 +805,47 @@ struct Physics3DStepKernel:
             slop: Scalar[dtype],
         ):
             Physics3DStepKernel._step_kernel[
-                BATCH, NUM_BODIES, MAX_CONTACTS, STATE_SIZE,
-                BODIES_OFFSET, CONTACTS_OFFSET, CONTACT_COUNT_OFFSET,
-                VEL_ITERATIONS, POS_ITERATIONS,
+                BATCH,
+                NUM_BODIES,
+                MAX_CONTACTS,
+                STATE_SIZE,
+                BODIES_OFFSET,
+                CONTACTS_OFFSET,
+                CONTACT_COUNT_OFFSET,
+                VEL_ITERATIONS,
+                POS_ITERATIONS,
             ](
-                state, shape_types, shape_radii, contacts, contact_counts,
-                gravity_x, gravity_y, gravity_z, dt, ground_height,
-                friction, restitution, baumgarte, slop,
+                state,
+                shape_types,
+                shape_radii,
+                contacts,
+                contact_counts,
+                gravity_x,
+                gravity_y,
+                gravity_z,
+                dt,
+                ground_height,
+                friction,
+                restitution,
+                baumgarte,
+                slop,
             )
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
-            state, shape_types, shape_radii, contacts, contact_counts,
-            gravity_x, gravity_y, gravity_z, dt, ground_height,
-            friction, restitution, baumgarte, slop,
+            state,
+            shape_types,
+            shape_radii,
+            contacts,
+            contact_counts,
+            gravity_x,
+            gravity_y,
+            gravity_z,
+            dt,
+            ground_height,
+            friction,
+            restitution,
+            baumgarte,
+            slop,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )
@@ -812,10 +900,21 @@ struct Physics3DStepKernel:
             VEL_ITERATIONS,
             POS_ITERATIONS,
         ](
-            ctx, state_buf, shape_types_buf, shape_radii_buf,
-            contacts_buf, contact_counts_buf,
-            gravity_x, gravity_y, gravity_z, dt, ground_height,
-            friction, restitution, baumgarte, slop,
+            ctx,
+            state_buf,
+            shape_types_buf,
+            shape_radii_buf,
+            contacts_buf,
+            contact_counts_buf,
+            gravity_x,
+            gravity_y,
+            gravity_z,
+            dt,
+            ground_height,
+            friction,
+            restitution,
+            baumgarte,
+            slop,
         )
 
 

@@ -2,6 +2,7 @@ from .model import Model
 from .sequential import seq, Seq2
 from .linear import Linear
 from .linear_relu import LinearReLU
+from .linear_tanh import LinearTanh
 from .relu import ReLU
 from .tanh import Tanh
 from .sigmoid import Sigmoid
