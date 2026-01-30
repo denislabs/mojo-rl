@@ -6,8 +6,9 @@ A MuJoCo-inspired physics engine with Model/Data separation.
 
 Phase 1: Single free-falling body
 Phase 2: Ground contact (sphere-plane)
+Phase 3: Multiple bodies + sphere-sphere collision
 
-Example usage:
+Example usage (single body):
     from physics3d_v2 import Model, Data, Body, Geom, step
 
     # Create a 1kg sphere
@@ -23,20 +24,48 @@ Example usage:
     for i in range(100):
         step(model, data)
         print("z =", data.get_z())
+
+Example usage (multi-body):
+    from physics3d_v2 import MultiBodyModel, MultiBodyData, step_multi_body
+
+    # Create a 2-body system with max 10 contacts
+    var model = MultiBodyModel[DType.float64, 2, 10]()
+    model.set_body(0, mass=1.0, radius=0.1)
+    model.set_body(1, mass=1.0, radius=0.1)
+
+    var data = MultiBodyData[DType.float64, 2, 10]()
+    data.set_body_position(0, 0, 0, 1.0)  # Body 0 at height 1m
+    data.set_body_position(1, 0, 0, 0.3)  # Body 1 at height 0.3m
+
+    # Simulate
+    for i in range(100):
+        step_multi_body(model, data)
+        print("body0 z =", data.get_body_z(0))
 """
 
 from .constants import TILE, TPB, PhysicsConstants
 from .constants import GEOM_PLANE, GEOM_SPHERE
 from .types import Body, Geom, Contact, Model, Data
+
+# Phase 3: Multi-body types
+from .types import MultiBodyContact, MultiBodyModel, MultiBodyData
+
 from .kinematics import update_kinematics
 from .dynamics import compute_acceleration
 from .integrator import integrate
 from .collision import detect_sphere_plane
 from .solver import solve_contact
 
-# Note: render module is imported separately to avoid SDL2 dependency
+# Phase 3: Multi-body modules
+from .collision_primitives import sphere_sphere, sphere_plane
+from .multi_body_collision import detect_all_contacts
+from .multi_body_solver import solve_velocity_constraints, solve_position_constraints
+from .multi_body_step import step_multi_body, simulate_multi_body
+
+# Note: render modules are imported separately to avoid SDL2 dependency
 # for non-rendering use cases:
 #   from physics3d_v2.render import Physics3DRenderer
+#   from physics3d_v2.render_multi_body import MultiBodyRenderer
 
 
 fn step[DTYPE: DType](model: Model[DTYPE], mut data: Data[DTYPE]):
