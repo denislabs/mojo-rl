@@ -24,8 +24,8 @@ from physics_legacy.fixture import (
     CATEGORY_LEG,
     CATEGORY_PARTICLE,
 )
-from physics.world import World
-from physics.joint import RevoluteJoint
+from physics_legacy.world import World
+from physics_legacy.joint import RevoluteJoint
 
 from core import (
     State,

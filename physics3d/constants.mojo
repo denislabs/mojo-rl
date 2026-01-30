@@ -14,7 +14,7 @@ from math import pi
 comptime dtype = DType.float32
 
 # GPU kernel configuration
-comptime TILE: Int = 16  # Tile size for tiled operations
+comptime TILE: Int = 16  # Tile size for tiled operations (optimal for Apple Silicon)
 comptime TPB: Int = 256  # Threads per block for elementwise ops
 
 # =============================================================================
@@ -128,7 +128,7 @@ comptime CONTACT_FLAGS: Int = 15  # Contact flags
 # Joints connect two bodies and constrain their relative motion
 # Layout is joint-type specific, but all start with common header
 
-comptime JOINT_DATA_SIZE_3D: Int = 32
+comptime JOINT_DATA_SIZE_3D: Int = 36  # Increased from 32 to accommodate new fields
 
 # Common joint header
 comptime JOINT3D_TYPE: Int = 0
@@ -169,8 +169,18 @@ comptime JOINT3D_IMPULSE_Y: Int = 22
 comptime JOINT3D_IMPULSE_Z: Int = 23
 comptime JOINT3D_MOTOR_IMPULSE: Int = 24
 
+# Passive joint dynamics (MuJoCo-style spring-damper)
+comptime JOINT3D_STIFFNESS: Int = 25      # Spring stiffness (Nm/rad)
+comptime JOINT3D_DAMPING: Int = 26        # Velocity damping (Nm·s/rad)
+comptime JOINT3D_ARMATURE: Int = 27       # Rotor inertia (kg·m²)
+comptime JOINT3D_REFERENCE_POS: Int = 28  # Spring reference position (rad)
+
+# Soft constraint parameters (MuJoCo solref/solimp)
+comptime JOINT3D_TIMECONST: Int = 29      # Time constant for soft constraint (s)
+comptime JOINT3D_DAMPRATIO: Int = 30      # Damping ratio for soft constraint
+
 # Reserved for additional data
-# 25-31 available
+# 31-35 available
 
 # Joint types
 comptime JOINT_HINGE: Int = 0  # 1-DOF revolute joint

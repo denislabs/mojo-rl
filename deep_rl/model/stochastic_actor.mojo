@@ -7,12 +7,7 @@ from gpu.memory import AddressSpace
 from math import exp, log, sqrt
 from gpu.primitives import block
 
-# =============================================================================
-# GPU Constants
-# =============================================================================
-
-comptime TILE = 16  # Tile size for matmul kernels
-comptime TPB = 256  # Threads per block for elementwise ops
+from ..constants import TPB, TILE
 
 # =============================================================================
 # Constants for numerical stability

@@ -6,7 +6,7 @@ Supports static (terrain) and dynamic (lander, legs, particles) bodies.
 """
 
 from math import cos, sin
-from physics.vec2 import Vec2, vec2, cross_sv, cross_vs
+from physics_legacy.vec2 import Vec2, vec2, cross_sv, cross_vs
 
 
 # Body type constants

@@ -4,9 +4,7 @@ from layout import LayoutTensor, Layout
 from gpu import thread_idx, block_idx, block_dim
 from gpu.host import DeviceContext, DeviceBuffer
 from random import seed, random_ui64
-
-# GPU constant
-comptime TPB = 256  # Threads per block
+from ..constants import TPB
 
 
 struct Dropout[dim: Int, p: Float64, training: Bool](Model):

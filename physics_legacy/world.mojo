@@ -12,8 +12,8 @@ Implements the Box2D-style simulation loop:
 7. Update sleep states
 """
 
-from physics.vec2 import Vec2, vec2
-from physics.shape import (
+from physics_legacy.vec2 import Vec2, vec2
+from physics_legacy.shape import (
     SHAPE_POLYGON,
     SHAPE_CIRCLE,
     SHAPE_EDGE,
@@ -21,9 +21,15 @@ from physics.shape import (
     CircleShape,
     EdgeShape,
 )
-from physics.body import Body, Transform, MassData, BODY_STATIC, BODY_DYNAMIC
-from physics.fixture import Fixture, Filter, AABB
-from physics.collision import (
+from physics_legacy.body import (
+    Body,
+    Transform,
+    MassData,
+    BODY_STATIC,
+    BODY_DYNAMIC,
+)
+from physics_legacy.fixture import Fixture, Filter, AABB
+from physics_legacy.collision import (
     Contact,
     ContactManifold,
     collide_edge_polygon,
@@ -32,8 +38,8 @@ from physics.collision import (
     solve_contact_velocity,
     solve_contact_position,
 )
-from physics.joint import RevoluteJoint
-from physics.raycast import RaycastResult, raycast_edge, raycast_polygon
+from physics_legacy.joint import RevoluteJoint
+from physics_legacy.raycast import RaycastResult, raycast_edge, raycast_polygon
 
 
 # Default simulation parameters

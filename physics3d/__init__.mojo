@@ -100,6 +100,14 @@ from .constants import (
     JOINT3D_IMPULSE_Y,
     JOINT3D_IMPULSE_Z,
     JOINT3D_MOTOR_IMPULSE,
+    # Passive dynamics indices
+    JOINT3D_STIFFNESS,
+    JOINT3D_DAMPING,
+    JOINT3D_ARMATURE,
+    JOINT3D_REFERENCE_POS,
+    # Soft constraint indices
+    JOINT3D_TIMECONST,
+    JOINT3D_DAMPRATIO,
     JOINT3D_FLAG_LIMIT_ENABLED,
     JOINT3D_FLAG_MOTOR_ENABLED,
     # Joint types
@@ -179,3 +187,9 @@ from .solvers import (
 
 # Kernels / Physics World
 from .kernels import PhysicsWorld3D, Physics3DStepKernel
+
+# Passive joint dynamics
+from .passive import PassiveJointForces
+
+# Soft constraint compliance
+from .soft_constraint import SoftConstraint, AxisProjectedMass

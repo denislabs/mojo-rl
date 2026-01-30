@@ -5,7 +5,7 @@ A lightweight physics engine implementing only the Box2D features
 needed for LunarLander simulation.
 """
 
-from physics.vec2 import (
+from physics_legacy.vec2 import (
     Vec2,
     vec2,
     dot,
@@ -20,7 +20,7 @@ from physics.vec2 import (
     clamp_vec,
     clamp_length,
 )
-from physics.shape import (
+from physics_legacy.shape import (
     SHAPE_POLYGON,
     SHAPE_CIRCLE,
     SHAPE_EDGE,
@@ -29,14 +29,14 @@ from physics.shape import (
     CircleShape,
     EdgeShape,
 )
-from physics.body import (
+from physics_legacy.body import (
     BODY_STATIC,
     BODY_DYNAMIC,
     MassData,
     Transform,
     Body,
 )
-from physics.fixture import (
+from physics_legacy.fixture import (
     CATEGORY_GROUND,
     CATEGORY_LANDER,
     CATEGORY_LEG,
@@ -45,7 +45,7 @@ from physics.fixture import (
     AABB,
     Fixture,
 )
-from physics.collision import (
+from physics_legacy.collision import (
     ContactPoint,
     ContactManifold,
     Contact,
@@ -53,6 +53,6 @@ from physics.collision import (
     collide_edge_circle,
     collide_polygon_polygon,
 )
-from physics.joint import RevoluteJoint
-from physics.world import World, ContactListener
-from physics.raycast import RaycastResult, raycast_edge, raycast_polygon
+from physics_legacy.joint import RevoluteJoint
+from physics_legacy.world import World, ContactListener
+from physics_legacy.raycast import RaycastResult, raycast_edge, raycast_polygon

@@ -8,7 +8,7 @@ Defines three shape types used by LunarLander:
 """
 
 from math import sqrt, pi
-from physics.vec2 import Vec2, vec2, cross
+from physics_legacy.vec2 import Vec2, vec2, cross
 
 
 # Shape type constants

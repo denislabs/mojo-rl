@@ -5,8 +5,8 @@ Fixtures attach shapes to bodies and define material properties
 and collision filtering.
 """
 
-from physics.vec2 import Vec2, vec2, min_vec, max_vec
-from physics.shape import (
+from physics_legacy.vec2 import Vec2, vec2, min_vec, max_vec
+from physics_legacy.shape import (
     SHAPE_POLYGON,
     SHAPE_CIRCLE,
     SHAPE_EDGE,

@@ -9,8 +9,8 @@ Uses Separating Axis Theorem (SAT) for edge-polygon collisions.
 """
 
 from math import sqrt
-from physics.vec2 import Vec2, vec2, dot, cross, min_vec, max_vec
-from physics.shape import (
+from physics_legacy.vec2 import Vec2, vec2, dot, cross, min_vec, max_vec
+from physics_legacy.shape import (
     SHAPE_POLYGON,
     SHAPE_CIRCLE,
     SHAPE_EDGE,
@@ -18,8 +18,8 @@ from physics.shape import (
     CircleShape,
     EdgeShape,
 )
-from physics.body import Body, Transform
-from physics.utils import clamp
+from physics_legacy.body import Body, Transform
+from physics_legacy.utils import clamp
 
 # Maximum contact points per manifold
 comptime MAX_MANIFOLD_POINTS: Int = 2

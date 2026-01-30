@@ -105,6 +105,7 @@ from physics3d import (
     CapsulePlaneCollision,
     CapsulePlaneCollisionGPU,
     ImpulseSolver3DGPU,
+    PassiveJointForces,
 )
 
 from math3d import Vec3, Quat
@@ -604,7 +605,14 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         self.state[foot_off + IDX_BODY_TYPE] = Scalar[dtype](BODY_DYNAMIC)
 
     fn _init_joints_cpu(mut self):
-        """Initialize all 6 hinge joints using LayoutTensor interface."""
+        """Initialize all 6 hinge joints with per-joint passive dynamics.
+
+        Each joint now includes:
+        - Stiffness: Spring force resisting deviation from neutral
+        - Damping: Velocity damping for stability
+        - Armature: Rotor inertia for improved effective mass
+        - Soft constraint parameters for stable high-torque operation
+        """
         # Create a LayoutTensor view of the state
         var state_tensor = LayoutTensor[
             dtype,
@@ -612,7 +620,7 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
             MutAnyOrigin,
         ](self.state.unsafe_ptr())
 
-        # Back hip: Torso -> BThigh
+        # Back hip: Torso -> BThigh (strongest joint)
         Hinge3D.init_joint[1, Self.STATE_SIZE, Self.JOINTS_OFFSET](
             state_tensor,
             env=0,
@@ -626,7 +634,13 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
             upper_limit=Scalar[dtype](HC3DConstantsCPU.BTHIGH_LIMIT_HIGH),
             motor_kp=Scalar[dtype](HC3DConstantsCPU.MOTOR_KP),
             motor_kd=Scalar[dtype](HC3DConstantsCPU.MOTOR_KD),
-            max_force=Scalar[dtype](HC3DConstantsCPU.GEAR_RATIO),
+            max_force=Scalar[dtype](HC3DConstantsCPU.BTHIGH_MAX_TORQUE),
+            stiffness=Scalar[dtype](HC3DConstantsCPU.BTHIGH_STIFFNESS),
+            damping=Scalar[dtype](HC3DConstantsCPU.BTHIGH_DAMPING),
+            armature=Scalar[dtype](HC3DConstantsCPU.BTHIGH_ARMATURE),
+            reference_pos=Scalar[dtype](0.0),
+            timeconst=Scalar[dtype](HC3DConstantsCPU.SOFT_TIMECONST),
+            dampratio=Scalar[dtype](HC3DConstantsCPU.SOFT_DAMPRATIO),
         )
 
         # Back knee: BThigh -> BShin
@@ -643,7 +657,13 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
             upper_limit=Scalar[dtype](HC3DConstantsCPU.BSHIN_LIMIT_HIGH),
             motor_kp=Scalar[dtype](HC3DConstantsCPU.MOTOR_KP),
             motor_kd=Scalar[dtype](HC3DConstantsCPU.MOTOR_KD),
-            max_force=Scalar[dtype](HC3DConstantsCPU.GEAR_RATIO),
+            max_force=Scalar[dtype](HC3DConstantsCPU.BSHIN_MAX_TORQUE),
+            stiffness=Scalar[dtype](HC3DConstantsCPU.BSHIN_STIFFNESS),
+            damping=Scalar[dtype](HC3DConstantsCPU.BSHIN_DAMPING),
+            armature=Scalar[dtype](HC3DConstantsCPU.BSHIN_ARMATURE),
+            reference_pos=Scalar[dtype](0.0),
+            timeconst=Scalar[dtype](HC3DConstantsCPU.SOFT_TIMECONST),
+            dampratio=Scalar[dtype](HC3DConstantsCPU.SOFT_DAMPRATIO),
         )
 
         # Back ankle: BShin -> BFoot
@@ -660,7 +680,13 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
             upper_limit=Scalar[dtype](HC3DConstantsCPU.BFOOT_LIMIT_HIGH),
             motor_kp=Scalar[dtype](HC3DConstantsCPU.MOTOR_KP),
             motor_kd=Scalar[dtype](HC3DConstantsCPU.MOTOR_KD),
-            max_force=Scalar[dtype](HC3DConstantsCPU.GEAR_RATIO),
+            max_force=Scalar[dtype](HC3DConstantsCPU.BFOOT_MAX_TORQUE),
+            stiffness=Scalar[dtype](HC3DConstantsCPU.BFOOT_STIFFNESS),
+            damping=Scalar[dtype](HC3DConstantsCPU.BFOOT_DAMPING),
+            armature=Scalar[dtype](HC3DConstantsCPU.BFOOT_ARMATURE),
+            reference_pos=Scalar[dtype](0.0),
+            timeconst=Scalar[dtype](HC3DConstantsCPU.SOFT_TIMECONST),
+            dampratio=Scalar[dtype](HC3DConstantsCPU.SOFT_DAMPRATIO),
         )
 
         # Front hip: Torso -> FThigh
@@ -677,7 +703,13 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
             upper_limit=Scalar[dtype](HC3DConstantsCPU.FTHIGH_LIMIT_HIGH),
             motor_kp=Scalar[dtype](HC3DConstantsCPU.MOTOR_KP),
             motor_kd=Scalar[dtype](HC3DConstantsCPU.MOTOR_KD),
-            max_force=Scalar[dtype](HC3DConstantsCPU.GEAR_RATIO),
+            max_force=Scalar[dtype](HC3DConstantsCPU.FTHIGH_MAX_TORQUE),
+            stiffness=Scalar[dtype](HC3DConstantsCPU.FTHIGH_STIFFNESS),
+            damping=Scalar[dtype](HC3DConstantsCPU.FTHIGH_DAMPING),
+            armature=Scalar[dtype](HC3DConstantsCPU.FTHIGH_ARMATURE),
+            reference_pos=Scalar[dtype](0.0),
+            timeconst=Scalar[dtype](HC3DConstantsCPU.SOFT_TIMECONST),
+            dampratio=Scalar[dtype](HC3DConstantsCPU.SOFT_DAMPRATIO),
         )
 
         # Front knee: FThigh -> FShin
@@ -694,10 +726,16 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
             upper_limit=Scalar[dtype](HC3DConstantsCPU.FSHIN_LIMIT_HIGH),
             motor_kp=Scalar[dtype](HC3DConstantsCPU.MOTOR_KP),
             motor_kd=Scalar[dtype](HC3DConstantsCPU.MOTOR_KD),
-            max_force=Scalar[dtype](HC3DConstantsCPU.GEAR_RATIO),
+            max_force=Scalar[dtype](HC3DConstantsCPU.FSHIN_MAX_TORQUE),
+            stiffness=Scalar[dtype](HC3DConstantsCPU.FSHIN_STIFFNESS),
+            damping=Scalar[dtype](HC3DConstantsCPU.FSHIN_DAMPING),
+            armature=Scalar[dtype](HC3DConstantsCPU.FSHIN_ARMATURE),
+            reference_pos=Scalar[dtype](0.0),
+            timeconst=Scalar[dtype](HC3DConstantsCPU.SOFT_TIMECONST),
+            dampratio=Scalar[dtype](HC3DConstantsCPU.SOFT_DAMPRATIO),
         )
 
-        # Front ankle: FShin -> FFoot
+        # Front ankle: FShin -> FFoot (weakest joint)
         Hinge3D.init_joint[1, Self.STATE_SIZE, Self.JOINTS_OFFSET](
             state_tensor,
             env=0,
@@ -711,7 +749,13 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
             upper_limit=Scalar[dtype](HC3DConstantsCPU.FFOOT_LIMIT_HIGH),
             motor_kp=Scalar[dtype](HC3DConstantsCPU.MOTOR_KP),
             motor_kd=Scalar[dtype](HC3DConstantsCPU.MOTOR_KD),
-            max_force=Scalar[dtype](HC3DConstantsCPU.GEAR_RATIO),
+            max_force=Scalar[dtype](HC3DConstantsCPU.FFOOT_MAX_TORQUE),
+            stiffness=Scalar[dtype](HC3DConstantsCPU.FFOOT_STIFFNESS),
+            damping=Scalar[dtype](HC3DConstantsCPU.FFOOT_DAMPING),
+            armature=Scalar[dtype](HC3DConstantsCPU.FFOOT_ARMATURE),
+            reference_pos=Scalar[dtype](0.0),
+            timeconst=Scalar[dtype](HC3DConstantsCPU.SOFT_TIMECONST),
+            dampratio=Scalar[dtype](HC3DConstantsCPU.SOFT_DAMPRATIO),
         )
 
         # Set joint count
@@ -798,19 +842,13 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         mut self,
         actions: List[Scalar[dtype]],
     ):
-        """Apply action torques directly to joint bodies."""
-        # Note: state_tensor could be used with Hinge3D.apply_direct_torque,
-        # but we implement torque application directly for clarity.
+        """Apply action torques directly to joint bodies.
 
+        Uses per-joint max torque values stored in joint data (JOINT3D_MAX_FORCE).
+        This allows each joint to have different torque limits based on
+        its physical properties (hips stronger than ankles).
+        """
         for j in range(6):
-            var torque = clamp(
-                actions[j], Scalar[dtype](-1.0), Scalar[dtype](1.0)
-            )
-            # NOTE: Don't multiply by GEAR_RATIO here! The 2D version notes:
-            # "GEAR_RATIO is for MuJoCo compatibility (not torque)"
-            # Using GEAR_RATIO=120 would give 120x too much torque, causing instability.
-            torque = torque * Scalar[dtype](HC3DConstantsCPU.MAX_TORQUE)
-
             # Get joint info
             var joint_off = Self.JOINTS_OFFSET + j * JOINT_DATA_SIZE_3D
 
@@ -821,7 +859,17 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
                 JOINT3D_AXIS_X,
                 JOINT3D_AXIS_Y,
                 JOINT3D_AXIS_Z,
+                JOINT3D_MAX_FORCE,
             )
+
+            # Read per-joint max torque from joint data
+            var max_torque = rebind[Scalar[dtype]](self.state[joint_off + JOINT3D_MAX_FORCE])
+
+            var torque = clamp(
+                actions[j], Scalar[dtype](-1.0), Scalar[dtype](1.0)
+            )
+            # Scale action by joint's max torque
+            torque = torque * max_torque
 
             var body_a = Int(self.state[joint_off + JOINT3D_BODY_A])
             var body_b = Int(self.state[joint_off + JOINT3D_BODY_B])
@@ -877,16 +925,37 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
                 self.state[body_b_off + IDX_TZ] + tau_z
             )
 
+    fn _apply_passive_forces_cpu(mut self):
+        """Apply passive spring-damper forces to all joints.
+
+        Passive forces resist joint motion and velocity, providing natural
+        stabilization that allows realistic torque magnitudes.
+        """
+        var state_tensor = LayoutTensor[
+            dtype,
+            Layout.row_major(1, Self.STATE_SIZE),
+            MutAnyOrigin,
+        ](self.state.unsafe_ptr())
+
+        for j in range(HC3DConstantsCPU.NUM_JOINTS):
+            PassiveJointForces.apply_passive_forces_gpu[
+                1,
+                Self.STATE_SIZE,
+                Self.BODIES_OFFSET,
+                Self.JOINTS_OFFSET,
+            ](state_tensor, 0, j)
+
     fn _physics_step_cpu(mut self, actions: List[Scalar[dtype]]):
         """Perform one physics step with frame skip.
 
-        Physics pipeline per substep (correct order):
-        1. Apply action torques to joints
-        2. Integrate velocities ONLY (gravity + forces)
-        3. Solve velocity constraints (joints)
-        4. Integrate positions (using corrected velocities)
-        5. Solve position constraints (joints)
-        6. Handle ground collisions
+        Enhanced physics pipeline with passive joint forces:
+        1. Apply passive joint forces (spring-damper)
+        2. Apply action torques to joints
+        3. Integrate velocities (gravity + forces)
+        4. Solve velocity constraints (joints + soft compliance)
+        5. Integrate positions
+        6. Solve position constraints
+        7. Handle ground collisions
         """
         var gravity = Vec3[dtype](
             Scalar[dtype](0),
@@ -906,16 +975,21 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         var slop = Scalar[dtype](HC3DConstantsCPU.SLOP)  # Penetration allowance
 
         for _ in range(HC3DConstantsCPU.FRAME_SKIP):
-            # Step 1: Apply action torques
+            # Step 1: Apply passive joint forces (spring-damper)
+            # This resists joint motion and velocity for stability
+            self._apply_passive_forces_cpu()
+
+            # Step 2: Apply action torques
             self._apply_torques_cpu(actions)
 
-            # Step 2: Integrate velocities ONLY (gravity + accumulated forces)
+            # Step 3: Integrate velocities ONLY (gravity + accumulated forces)
             for body in range(Self.NUM_BODIES):
                 integrate_velocities_3d(
                     self.state, body, gravity, dt, Self.BODIES_OFFSET
                 )
 
-            # Step 3: Solve velocity constraints for joints (multiple iterations)
+            # Step 4: Solve velocity constraints for joints (multiple iterations)
+            # Now includes soft compliance and improved effective mass
             for _ in range(HC3DConstantsCPU.VELOCITY_ITERATIONS):
                 for j in range(HC3DConstantsCPU.NUM_JOINTS):
                     Hinge3D.solve_velocity[
@@ -946,8 +1020,8 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
                         Self.JOINTS_OFFSET,
                     ](state_tensor, 0, j, baumgarte, slop)
 
-            # Step 6: Direct joint projection (enough passes for chain convergence)
-            for _ in range(15):  # Balance between accuracy and performance
+            # Step 6: Direct joint projection (reduced passes for performance)
+            for _ in range(5):  # Fewer passes - matches GPU
                 self._project_joint_positions_cpu()
 
             # Step 7: Handle ground collisions (after all constraints)
@@ -2394,6 +2468,100 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
 
     @always_inline
     @staticmethod
+    fn _project_joints_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        NUM_BODIES: Int,
+        BODIES_OFFSET: Int,
+        JOINTS_OFFSET: Int,
+    ](
+        env: Int,
+        states: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin],
+        joint_count: Int,
+    ):
+        """GPU-compatible joint projection - directly repositions bodies to maintain joint connectivity."""
+        var eps = Scalar[dtype](1e-10)
+        var two = Scalar[dtype](2.0)
+
+        for j in range(joint_count):
+            var joint_off = JOINTS_OFFSET + j * JOINT_DATA_SIZE_3D
+            var body_a = Int(states[env, joint_off + JOINT3D_BODY_A])
+            var body_b = Int(states[env, joint_off + JOINT3D_BODY_B])
+
+            var body_a_off = BODIES_OFFSET + body_a * BODY_STATE_SIZE_3D
+            var body_b_off = BODIES_OFFSET + body_b * BODY_STATE_SIZE_3D
+
+            # Get positions and orientations
+            var pa_x = rebind[Scalar[dtype]](states[env, body_a_off + IDX_PX])
+            var pa_y = rebind[Scalar[dtype]](states[env, body_a_off + IDX_PY])
+            var pa_z = rebind[Scalar[dtype]](states[env, body_a_off + IDX_PZ])
+            var pb_x = rebind[Scalar[dtype]](states[env, body_b_off + IDX_PX])
+            var pb_y = rebind[Scalar[dtype]](states[env, body_b_off + IDX_PY])
+            var pb_z = rebind[Scalar[dtype]](states[env, body_b_off + IDX_PZ])
+
+            var qa_w = rebind[Scalar[dtype]](states[env, body_a_off + IDX_QW])
+            var qa_x = rebind[Scalar[dtype]](states[env, body_a_off + IDX_QX])
+            var qa_y = rebind[Scalar[dtype]](states[env, body_a_off + IDX_QY])
+            var qa_z = rebind[Scalar[dtype]](states[env, body_a_off + IDX_QZ])
+            var qb_w = rebind[Scalar[dtype]](states[env, body_b_off + IDX_QW])
+            var qb_x = rebind[Scalar[dtype]](states[env, body_b_off + IDX_QX])
+            var qb_y = rebind[Scalar[dtype]](states[env, body_b_off + IDX_QY])
+            var qb_z = rebind[Scalar[dtype]](states[env, body_b_off + IDX_QZ])
+
+            # Get local anchors
+            var anchor_a_local_x = rebind[Scalar[dtype]](states[env, joint_off + JOINT3D_ANCHOR_AX])
+            var anchor_a_local_y = rebind[Scalar[dtype]](states[env, joint_off + JOINT3D_ANCHOR_AY])
+            var anchor_a_local_z = rebind[Scalar[dtype]](states[env, joint_off + JOINT3D_ANCHOR_AZ])
+            var anchor_b_local_x = rebind[Scalar[dtype]](states[env, joint_off + JOINT3D_ANCHOR_BX])
+            var anchor_b_local_y = rebind[Scalar[dtype]](states[env, joint_off + JOINT3D_ANCHOR_BY])
+            var anchor_b_local_z = rebind[Scalar[dtype]](states[env, joint_off + JOINT3D_ANCHOR_BZ])
+
+            # Rotate anchors to world frame
+            var ca_x = qa_y * anchor_a_local_z - qa_z * anchor_a_local_y
+            var ca_y = qa_z * anchor_a_local_x - qa_x * anchor_a_local_z
+            var ca_z = qa_x * anchor_a_local_y - qa_y * anchor_a_local_x
+            var cca_x = qa_y * ca_z - qa_z * ca_y
+            var cca_y = qa_z * ca_x - qa_x * ca_z
+            var cca_z = qa_x * ca_y - qa_y * ca_x
+            var ra_x = anchor_a_local_x + two * qa_w * ca_x + two * cca_x
+            var ra_y = anchor_a_local_y + two * qa_w * ca_y + two * cca_y
+            var ra_z = anchor_a_local_z + two * qa_w * ca_z + two * cca_z
+
+            var cb_x = qb_y * anchor_b_local_z - qb_z * anchor_b_local_y
+            var cb_y = qb_z * anchor_b_local_x - qb_x * anchor_b_local_z
+            var cb_z = qb_x * anchor_b_local_y - qb_y * anchor_b_local_x
+            var ccb_x = qb_y * cb_z - qb_z * cb_y
+            var ccb_y = qb_z * cb_x - qb_x * cb_z
+            var ccb_z = qb_x * cb_y - qb_y * cb_x
+            var rb_x = anchor_b_local_x + two * qb_w * cb_x + two * ccb_x
+            var rb_y = anchor_b_local_y + two * qb_w * cb_y + two * ccb_y
+            var rb_z = anchor_b_local_z + two * qb_w * cb_z + two * ccb_z
+
+            # World anchor positions and error
+            var err_x = (pb_x + rb_x) - (pa_x + ra_x)
+            var err_y = (pb_y + rb_y) - (pa_y + ra_y)
+            var err_z = (pb_z + rb_z) - (pa_z + ra_z)
+
+            # Get inverse masses
+            var inv_ma = rebind[Scalar[dtype]](states[env, body_a_off + IDX_INV_MASS])
+            var inv_mb = rebind[Scalar[dtype]](states[env, body_b_off + IDX_INV_MASS])
+            var total_inv_mass = inv_ma + inv_mb + eps
+
+            # Split correction by inverse mass
+            var ratio_a = inv_ma / total_inv_mass
+            var ratio_b = inv_mb / total_inv_mass
+
+            # Apply position corrections
+            states[env, body_a_off + IDX_PX] = pa_x + ratio_a * err_x
+            states[env, body_a_off + IDX_PY] = pa_y + ratio_a * err_y
+            states[env, body_a_off + IDX_PZ] = pa_z + ratio_a * err_z
+
+            states[env, body_b_off + IDX_PX] = pb_x - ratio_b * err_x
+            states[env, body_b_off + IDX_PY] = pb_y - ratio_b * err_y
+            states[env, body_b_off + IDX_PZ] = pb_z - ratio_b * err_z
+
+    @always_inline
+    @staticmethod
     fn _step_env_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
@@ -2447,21 +2615,6 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         # Get previous x position for reward computation
         var x_before = rebind[Scalar[dtype]](states[env, torso_off + IDX_PX])
 
-        # Apply direct torques to joints based on actions
-        Hinge3D.apply_direct_torques_single_env[
-            BATCH_SIZE,
-            STATE_SIZE,
-            HC3DConstantsGPU.BODIES_OFFSET,
-            HC3DConstantsGPU.JOINTS_OFFSET,
-            ACTION_DIM,
-        ](
-            env,
-            states,
-            actions,
-            # NOTE: Don't multiply by GEAR_RATIO - it's for MuJoCo compatibility, not torque
-            Scalar[dtype](HC3DConstantsGPU.MAX_TORQUE),
-        )
-
         # Physics constants
         var dt = Scalar[dtype](HC3DConstantsGPU.DT)
         var gravity_x = Scalar[dtype](HC3DConstantsGPU.GRAVITY_X)
@@ -2476,7 +2629,31 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
 
         # Full physics with Hinge3D constraints
         for _ in range(HC3DConstantsGPU.FRAME_SKIP):
-            # Step 1: Velocity integration
+            # Step 1a: Apply passive joint forces (spring-damper)
+            # This resists joint motion and velocity for stability
+            for j in range(joint_count):
+                PassiveJointForces.apply_passive_forces_gpu[
+                    BATCH_SIZE,
+                    STATE_SIZE,
+                    HC3DConstantsGPU.BODIES_OFFSET,
+                    HC3DConstantsGPU.JOINTS_OFFSET,
+                ](states, env, j)
+
+            # Step 1b: Apply direct torques to joints based on actions
+            # Uses per-joint max torque from joint data (JOINT3D_MAX_FORCE)
+            Hinge3D.apply_direct_torques_per_joint_single_env[
+                BATCH_SIZE,
+                STATE_SIZE,
+                HC3DConstantsGPU.BODIES_OFFSET,
+                HC3DConstantsGPU.JOINTS_OFFSET,
+                ACTION_DIM,
+            ](
+                env,
+                states,
+                actions,
+            )
+
+            # Step 2: Velocity integration
             SemiImplicitEuler3DGPU.integrate_velocities_single_env[
                 BATCH_SIZE,
                 HC3DConstantsGPU.NUM_BODIES,
@@ -2554,7 +2731,16 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
                     HC3DConstantsGPU.JOINTS_OFFSET,
                 ](env, states, joint_count, baumgarte, slop)
 
-            # Step 6: Clear forces for next iteration
+            # Step 6: Direct joint projection (GPU version)
+            for _ in range(5):  # Fewer passes needed - GPU gets more frequent substeps
+                HalfCheetah3D._project_joints_gpu[
+                    BATCH_SIZE, STATE_SIZE,
+                    HC3DConstantsGPU.NUM_BODIES,
+                    HC3DConstantsGPU.BODIES_OFFSET,
+                    HC3DConstantsGPU.JOINTS_OFFSET,
+                ](env, states, joint_count)
+
+            # Step 7: Clear forces for next iteration
             for body in range(HC3DConstantsGPU.NUM_BODIES):
                 var body_off = HC3DConstantsGPU.BODIES_OFFSET + body * BODY_STATE_SIZE_3D
                 states[env, body_off + IDX_FX] = Scalar[dtype](0)

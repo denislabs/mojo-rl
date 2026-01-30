@@ -11,9 +11,9 @@ Used by LunarLander to attach legs to lander body.
 """
 
 from math import cos, sin
-from physics.vec2 import Vec2, vec2, cross, cross_sv, cross_vs
-from physics.body import Body, Transform, BODY_DYNAMIC
-from physics.utils import clamp
+from physics_legacy.vec2 import Vec2, vec2, cross, cross_sv, cross_vs
+from physics_legacy.body import Body, Transform, BODY_DYNAMIC
+from physics_legacy.utils import clamp
 
 
 struct RevoluteJoint[dtype: DType](Copyable, Movable):

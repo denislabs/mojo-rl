@@ -6,9 +6,9 @@ Used by BipedalWalker's 10-beam lidar sensor.
 """
 
 from math import sqrt
-from physics.vec2 import Vec2, vec2, dot
-from physics.shape import PolygonShape, EdgeShape
-from physics.body import Transform
+from physics_legacy.vec2 import Vec2, vec2, dot
+from physics_legacy.shape import PolygonShape, EdgeShape
+from physics_legacy.body import Transform
 
 
 struct RaycastResult[dtype: DType](Copyable, ImplicitlyCopyable, Movable):

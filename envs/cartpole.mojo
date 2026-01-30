@@ -191,10 +191,10 @@ struct CartPoleEnv[DTYPE: DType](
         Returns CartPoleState with discretized state index.
         """
         # Random initial state in [-0.05, 0.05] for each component
-        self.x = (random_float64() - 0.5) * 0.1
-        self.x_dot = (random_float64() - 0.5) * 0.1
-        self.theta = (random_float64() - 0.5) * 0.1
-        self.theta_dot = (random_float64() - 0.5) * 0.1
+        self.x = Scalar[Self.dtype]((random_float64() - 0.5) * 0.1)
+        self.x_dot = Scalar[Self.dtype]((random_float64() - 0.5) * 0.1)
+        self.theta = Scalar[Self.dtype]((random_float64() - 0.5) * 0.1)
+        self.theta_dot = Scalar[Self.dtype]((random_float64() - 0.5) * 0.1)
 
         self.steps = 0
         self.done = False
@@ -236,7 +236,9 @@ struct CartPoleEnv[DTYPE: DType](
             Scalar[Self.dtype](POLE_HALF_LENGTH)
             * (
                 Scalar[Self.dtype](4.0 / 3.0)
-                - Scalar[Self.dtype](POLE_MASS) * costheta * costheta
+                - Scalar[Self.dtype](POLE_MASS)
+                * costheta
+                * costheta
                 / Scalar[Self.dtype](TOTAL_MASS)
             )
         )
@@ -266,7 +268,9 @@ struct CartPoleEnv[DTYPE: DType](
         self.done = terminated or truncated
 
         # Reward: +1 for every step the pole stays upright
-        var reward: Scalar[Self.dtype] = 1.0 if not terminated else 0.0
+        var reward: Scalar[Self.dtype] = Scalar[Self.dtype](
+            1.0
+        ) if not terminated else Scalar[Self.dtype](0.0)
         self.total_reward += reward
 
         return (CartPoleState(index=self._discretize_obs()), reward, self.done)
@@ -406,9 +410,9 @@ struct CartPoleEnv[DTYPE: DType](
             Tuple of (observation, reward, done).
         """
         # Inline physics for maximum performance (avoid step() call overhead)
-        var force = Scalar[Self.dtype](
-            FORCE_MAG
-        ) if action == 1 else Scalar[Self.dtype](-FORCE_MAG)
+        var force = Scalar[Self.dtype](FORCE_MAG) if action == 1 else Scalar[
+            Self.dtype
+        ](-FORCE_MAG)
 
         var costheta = cos(self.theta)
         var sintheta = sin(self.theta)
@@ -427,7 +431,9 @@ struct CartPoleEnv[DTYPE: DType](
             Scalar[Self.dtype](POLE_HALF_LENGTH)
             * (
                 Scalar[Self.dtype](4.0 / 3.0)
-                - Scalar[Self.dtype](POLE_MASS) * costheta * costheta
+                - Scalar[Self.dtype](POLE_MASS)
+                * costheta
+                * costheta
                 / Scalar[Self.dtype](TOTAL_MASS)
             )
         )

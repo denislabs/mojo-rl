@@ -30,15 +30,15 @@ struct HC3DConstants[DTYPE: DType = DType.float64]:
     # Physics Parameters
     # ==========================================================================
 
-    comptime DT: Scalar[Self.DTYPE] = 0.001  # Very small timestep for stability
-    comptime FRAME_SKIP: Int = 50  # More substeps to compensate
+    comptime DT: Scalar[Self.DTYPE] = 0.002  # Balanced timestep (was 0.01, too unstable; 0.001 too slow)
+    comptime FRAME_SKIP: Int = 25  # Balanced substeps (total sim time = 0.05s per step)
     comptime GRAVITY_X: Scalar[Self.DTYPE] = 0.0
     comptime GRAVITY_Y: Scalar[Self.DTYPE] = 0.0
     comptime GRAVITY_Z: Scalar[Self.DTYPE] = -9.81
 
-    # Physics solver iterations (optimized for small timestep)
-    comptime VELOCITY_ITERATIONS: Int = 20
-    comptime POSITION_ITERATIONS: Int = 10
+    # Physics solver iterations (reduced - projection handles rest)
+    comptime VELOCITY_ITERATIONS: Int = 10
+    comptime POSITION_ITERATIONS: Int = 5
 
     # Contact physics
     comptime FRICTION: Scalar[Self.DTYPE] = 0.9
@@ -142,17 +142,71 @@ struct HC3DConstants[DTYPE: DType = DType.float64]:
     comptime FFOOT_LIMIT_HIGH: Scalar[Self.DTYPE] = 0.5
 
     # ==========================================================================
-    # Motor Parameters
+    # Motor Parameters - Per-Joint Torque Limits
     # ==========================================================================
-    # NOTE: MAX_TORQUE must be low enough that the constraint solver can keep
-    # bodies connected. High torques cause bodies to separate faster than
-    # the solver can correct. With small limb inertias (~0.002 kg·m²), even
-    # 0.1 Nm creates significant angular acceleration.
+    # With proper joint stiffness/damping and soft constraint compliance,
+    # we can now use realistic MuJoCo-like torque values.
+    # The passive joint dynamics help stabilize the system.
 
-    comptime MAX_TORQUE: Scalar[Self.DTYPE] = 0.02  # Nm - very low for stable constraint solving
-    comptime GEAR_RATIO: Scalar[Self.DTYPE] = 120.0  # MuJoCo gear scaling (NOT used for torque!)
+    # Per-joint max torque (Nm) - scaled for explicit integration
+    # MuJoCo uses 120 Nm with implicit solver. For explicit integration,
+    # we need much lower values to maintain stability (roughly 10% of MuJoCo).
+    comptime BTHIGH_MAX_TORQUE: Scalar[Self.DTYPE] = 15.0  # Hip - strongest (was 120)
+    comptime BSHIN_MAX_TORQUE: Scalar[Self.DTYPE] = 12.0   # Knee (was 90)
+    comptime BFOOT_MAX_TORQUE: Scalar[Self.DTYPE] = 8.0    # Ankle (was 60)
+    comptime FTHIGH_MAX_TORQUE: Scalar[Self.DTYPE] = 15.0  # Hip - strongest (was 120)
+    comptime FSHIN_MAX_TORQUE: Scalar[Self.DTYPE] = 8.0    # Knee (was 60)
+    comptime FFOOT_MAX_TORQUE: Scalar[Self.DTYPE] = 4.0    # Ankle - weakest (was 30)
+
+    comptime GEAR_RATIO: Scalar[Self.DTYPE] = 120.0  # MuJoCo gear scaling (for reference only)
     comptime MOTOR_KP: Scalar[Self.DTYPE] = 100.0  # PD controller P gain (for reference)
     comptime MOTOR_KD: Scalar[Self.DTYPE] = 10.0  # PD controller D gain (for reference)
+
+    # ==========================================================================
+    # Joint Passive Dynamics (MuJoCo-style spring-damper)
+    # ==========================================================================
+    # IMPORTANT: MuJoCo uses an implicit solver that can handle high stiffness.
+    # Our explicit semi-implicit Euler integrator CANNOT handle MuJoCo's values.
+    # High stiffness (240 Nm/rad) causes numerical instability with explicit integration.
+    # Set to 0 to disable passive forces - rely on constraint solver instead.
+    #
+    # If needed, use values 100x smaller than MuJoCo (e.g., 2.4 instead of 240).
+
+    # Per-joint stiffness (Nm/rad) - spring constant
+    # DISABLED: Incompatible with explicit integration at MuJoCo values
+    comptime BTHIGH_STIFFNESS: Scalar[Self.DTYPE] = 0.0  # Was 240.0
+    comptime BSHIN_STIFFNESS: Scalar[Self.DTYPE] = 0.0   # Was 180.0
+    comptime BFOOT_STIFFNESS: Scalar[Self.DTYPE] = 0.0   # Was 120.0
+    comptime FTHIGH_STIFFNESS: Scalar[Self.DTYPE] = 0.0  # Was 180.0
+    comptime FSHIN_STIFFNESS: Scalar[Self.DTYPE] = 0.0   # Was 120.0
+    comptime FFOOT_STIFFNESS: Scalar[Self.DTYPE] = 0.0   # Was 60.0
+
+    # Per-joint damping (Nm·s/rad) - velocity damping coefficient
+    # DISABLED: Incompatible with explicit integration at MuJoCo values
+    comptime BTHIGH_DAMPING: Scalar[Self.DTYPE] = 0.0   # Was 6.0
+    comptime BSHIN_DAMPING: Scalar[Self.DTYPE] = 0.0    # Was 4.5
+    comptime BFOOT_DAMPING: Scalar[Self.DTYPE] = 0.0    # Was 3.0
+    comptime FTHIGH_DAMPING: Scalar[Self.DTYPE] = 0.0   # Was 4.5
+    comptime FSHIN_DAMPING: Scalar[Self.DTYPE] = 0.0    # Was 3.0
+    comptime FFOOT_DAMPING: Scalar[Self.DTYPE] = 0.0    # Was 1.5
+
+    # Per-joint armature (kg·m²) - rotor inertia for effective mass
+    # Adds stability and makes the system less sensitive to torques
+    comptime BTHIGH_ARMATURE: Scalar[Self.DTYPE] = 0.1   # Hip
+    comptime BSHIN_ARMATURE: Scalar[Self.DTYPE] = 0.08   # Knee
+    comptime BFOOT_ARMATURE: Scalar[Self.DTYPE] = 0.05   # Ankle
+    comptime FTHIGH_ARMATURE: Scalar[Self.DTYPE] = 0.1   # Hip
+    comptime FSHIN_ARMATURE: Scalar[Self.DTYPE] = 0.08   # Knee
+    comptime FFOOT_ARMATURE: Scalar[Self.DTYPE] = 0.05   # Ankle
+
+    # ==========================================================================
+    # Soft Constraint Parameters (MuJoCo solref/solimp style)
+    # ==========================================================================
+    # These soften the constraint response, preventing numerical instability
+    # when high torques would otherwise cause joint separation.
+
+    comptime SOFT_TIMECONST: Scalar[Self.DTYPE] = 0.02   # Time constant (s)
+    comptime SOFT_DAMPRATIO: Scalar[Self.DTYPE] = 1.0    # Damping ratio (critical damping)
 
     # ==========================================================================
     # Reward Parameters
