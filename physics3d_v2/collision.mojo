@@ -35,17 +35,17 @@ fn detect_sphere_plane[
     # depth > 0 means penetrating
     var depth = radius - (sphere_z - ground_z)
 
-    if depth > Scalar[dtype](0):
+    if depth > Scalar[DTYPE](0):
         data.contact.active = True
         data.contact.depth = depth
         # Normal points up (from ground toward sphere)
-        data.contact.normal_x = Scalar[dtype](0)
-        data.contact.normal_y = Scalar[dtype](0)
-        data.contact.normal_z = Scalar[dtype](1)
+        data.contact.normal_x = Scalar[DTYPE](0)
+        data.contact.normal_y = Scalar[DTYPE](0)
+        data.contact.normal_z = Scalar[DTYPE](1)
         # Contact point is on the ground directly below sphere center
         data.contact.pos_x = data.xpos_x
         data.contact.pos_y = data.xpos_y
         data.contact.pos_z = ground_z
     else:
         data.contact.active = False
-        data.contact.depth = Scalar[dtype](0)
+        data.contact.depth = Scalar[DTYPE](0)

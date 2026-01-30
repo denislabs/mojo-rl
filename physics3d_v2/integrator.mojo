@@ -35,7 +35,7 @@ fn integrate[DTYPE: DType](model: Model[DTYPE], mut data: Data[DTYPE]):
 
     # 3. Quaternion integration: q' = q + 0.5*dt*ω⊗q
     # Using Hamilton convention where q_dot = 0.5 * [ω, 0] ⊗ q
-    var half_dt = Scalar[dtype](0.5) * dt
+    var half_dt = Scalar[DTYPE](0.5) * dt
     var wx = data.qvel[3]
     var wy = data.qvel[4]
     var wz = data.qvel[5]
@@ -64,8 +64,8 @@ fn _normalize_quat[DTYPE: DType](mut data: Data[DTYPE]):
     var qw = data.qpos[6]
     var norm_sq = qx * qx + qy * qy + qz * qz + qw * qw
 
-    if norm_sq > Scalar[dtype](1e-10):
-        var inv_norm = Scalar[dtype](1.0) / sqrt(norm_sq)
+    if norm_sq > Scalar[DTYPE](1e-10):
+        var inv_norm = Scalar[DTYPE](1.0) / sqrt(norm_sq)
         data.qpos[3] *= inv_norm
         data.qpos[4] *= inv_norm
         data.qpos[5] *= inv_norm

@@ -15,7 +15,7 @@ fn compute_acceleration[
     Linear: a = F/m + g
     Angular: α = I⁻¹·τ (diagonal inertia assumption)
     """
-    var inv_mass = Scalar[dtype](1.0) / model.body.mass
+    var inv_mass = Scalar[DTYPE](1.0) / model.body.mass
 
     # Linear acceleration: a = F/m + g
     # Note: gravity is [gx, gy, gz], so we add it component-wise

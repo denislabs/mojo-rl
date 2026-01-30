@@ -37,12 +37,12 @@ fn solve_contact[DTYPE: DType](model: Model[DTYPE], mut data: Data[DTYPE]):
     var vn = data.qvel[2]
 
     # Only apply impulse if approaching ground
-    if vn < Scalar[dtype](0):
+    if vn < Scalar[DTYPE](0):
         # Impulse magnitude: j = -(1+e) * m * vn
         # For inelastic collision (e=0): j = -m * vn
         # For elastic collision (e=1): j = -2 * m * vn
         var e = model.restitution
-        var j = -(Scalar[dtype](1) + e) * m * vn
+        var j = -(Scalar[DTYPE](1) + e) * m * vn
 
         # Apply impulse: Δv = j/m (only in z direction for flat ground)
         data.qvel[2] += j / m
@@ -50,10 +50,10 @@ fn solve_contact[DTYPE: DType](model: Model[DTYPE], mut data: Data[DTYPE]):
     # Position correction (Baumgarte stabilization)
     # Pushes the sphere out of the ground to prevent sinking
     # correction = max(depth - slop, 0) * beta
-    var beta = Scalar[dtype](0.2)  # Correction factor (0.1-0.3 typical)
-    var slop = Scalar[dtype](0.001)  # Allowed penetration to prevent jitter
+    var beta = Scalar[DTYPE](0.2)  # Correction factor (0.1-0.3 typical)
+    var slop = Scalar[DTYPE](0.001)  # Allowed penetration to prevent jitter
     var depth = data.contact.depth
-    var correction = max_scalar(depth - slop, Scalar[dtype](0)) * beta
+    var correction = max_scalar(depth - slop, Scalar[DTYPE](0)) * beta
 
     # Apply correction directly to position
     data.qpos[2] += correction

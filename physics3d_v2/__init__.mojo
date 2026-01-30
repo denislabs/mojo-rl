@@ -25,7 +25,7 @@ Example usage:
         print("z =", data.get_z())
 """
 
-from .constants import dtype, TILE, TPB, DEFAULT_GRAVITY_Z, DEFAULT_TIMESTEP
+from .constants import TILE, TPB, PhysicsConstants
 from .constants import GEOM_PLANE, GEOM_SPHERE
 from .types import Body, Geom, Contact, Model, Data
 from .kinematics import update_kinematics
@@ -39,7 +39,7 @@ from .solver import solve_contact
 #   from physics3d_v2.render import Physics3DRenderer
 
 
-fn step(model: Model, mut data: Data):
+fn step[DTYPE: DType](model: Model[DTYPE], mut data: Data[DTYPE]):
     """One complete simulation step (Phase 2 version with collision).
 
     Pipeline following MuJoCo-style sequential constraint solving:
@@ -68,10 +68,10 @@ fn step(model: Model, mut data: Data):
     compute_acceleration(model, data)
 
     # If in contact with ground and not already moving up, clamp downward acceleration
-    if data.contact.active and data.qvel[2] <= Scalar[dtype](0):
+    if data.contact.active and data.qvel[2] <= Scalar[DTYPE](0):
         # Cancel gravity when resting on ground
-        if data.qacc[2] < Scalar[dtype](0):
-            data.qacc[2] = Scalar[dtype](0)
+        if data.qacc[2] < Scalar[DTYPE](0):
+            data.qacc[2] = Scalar[DTYPE](0)
 
     # 5. Integrate velocities and positions
     integrate(model, data)
@@ -87,7 +87,7 @@ fn step(model: Model, mut data: Data):
         solve_contact(model, data)
 
 
-fn step_no_collision(model: Model, mut data: Data):
+fn step_no_collision[DTYPE: DType](model: Model[DTYPE], mut data: Data[DTYPE]):
     """One simulation step without collision (Phase 1 version).
 
     Pipeline:
@@ -107,7 +107,9 @@ fn step_no_collision(model: Model, mut data: Data):
     integrate(model, data)
 
 
-fn simulate(model: Model, mut data: Data, num_steps: Int):
+fn simulate[
+    DTYPE: DType
+](model: Model[DTYPE], mut data: Data[DTYPE], num_steps: Int):
     """Run simulation for multiple steps.
 
     Args:
@@ -119,7 +121,9 @@ fn simulate(model: Model, mut data: Data, num_steps: Int):
         step(model, data)
 
 
-fn simulate_no_collision(model: Model, mut data: Data, num_steps: Int):
+fn simulate_no_collision[
+    DTYPE: DType
+](model: Model[DTYPE], mut data: Data[DTYPE], num_steps: Int):
     """Run simulation for multiple steps without collision.
 
     Args:
