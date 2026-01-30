@@ -30,21 +30,21 @@ struct HC3DConstants[DTYPE: DType = DType.float64]:
     # Physics Parameters
     # ==========================================================================
 
-    comptime DT: Scalar[Self.DTYPE] = 0.01
-    comptime FRAME_SKIP: Int = 5
+    comptime DT: Scalar[Self.DTYPE] = 0.001  # Very small timestep for stability
+    comptime FRAME_SKIP: Int = 50  # More substeps to compensate
     comptime GRAVITY_X: Scalar[Self.DTYPE] = 0.0
     comptime GRAVITY_Y: Scalar[Self.DTYPE] = 0.0
     comptime GRAVITY_Z: Scalar[Self.DTYPE] = -9.81
 
-    # Physics solver iterations (high values for stability)
+    # Physics solver iterations (optimized for small timestep)
     comptime VELOCITY_ITERATIONS: Int = 20
     comptime POSITION_ITERATIONS: Int = 10
 
     # Contact physics
     comptime FRICTION: Scalar[Self.DTYPE] = 0.9
     comptime RESTITUTION: Scalar[Self.DTYPE] = 0.0
-    comptime BAUMGARTE: Scalar[Self.DTYPE] = 0.2
-    comptime SLOP: Scalar[Self.DTYPE] = 0.005
+    comptime BAUMGARTE: Scalar[Self.DTYPE] = 0.8  # High value for tighter joint constraints
+    comptime SLOP: Scalar[Self.DTYPE] = 0.001  # Reduced slop for tighter joints
 
     # ==========================================================================
     # Body Geometry (from MuJoCo HalfCheetah XML)
@@ -144,9 +144,13 @@ struct HC3DConstants[DTYPE: DType = DType.float64]:
     # ==========================================================================
     # Motor Parameters
     # ==========================================================================
+    # NOTE: MAX_TORQUE must be low enough that the constraint solver can keep
+    # bodies connected. High torques cause bodies to separate faster than
+    # the solver can correct. With small limb inertias (~0.002 kg·m²), even
+    # 0.1 Nm creates significant angular acceleration.
 
-    comptime MAX_TORQUE: Scalar[Self.DTYPE] = 1.0  # Nm - scaled for physics3d limb inertias
-    comptime GEAR_RATIO: Scalar[Self.DTYPE] = 120.0  # MuJoCo gear scaling
+    comptime MAX_TORQUE: Scalar[Self.DTYPE] = 0.02  # Nm - very low for stable constraint solving
+    comptime GEAR_RATIO: Scalar[Self.DTYPE] = 120.0  # MuJoCo gear scaling (NOT used for torque!)
     comptime MOTOR_KP: Scalar[Self.DTYPE] = 100.0  # PD controller P gain (for reference)
     comptime MOTOR_KD: Scalar[Self.DTYPE] = 10.0  # PD controller D gain (for reference)
 

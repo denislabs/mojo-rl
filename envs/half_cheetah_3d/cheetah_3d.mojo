@@ -12,16 +12,19 @@ All physics data is packed per-environment for efficient GPU access.
 """
 
 from math import sqrt, cos, sin, asin, pi
+from memory import UnsafePointer, alloc
 from layout import Layout, LayoutTensor
 from gpu import thread_idx, block_idx, block_dim
 from gpu.host import DeviceContext, DeviceBuffer
 from random.philox import Random as PhiloxRandom
 from .action import HalfCheetah3DAction
 from .state import HalfCheetah3DState
+from .renderer import HalfCheetah3DRenderer
 
 from core import (
     GPUContinuousEnv,
     BoxContinuousActionEnv,
+    RenderableEnv,
     State,
     Action,
 )
@@ -160,6 +163,7 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
     Copyable,
     GPUContinuousEnv,
     Movable,
+    RenderableEnv,
 ):
     """HalfCheetah3D environment with GPU-compatible physics.
 
@@ -213,6 +217,11 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
     # Cached observation state
     var cached_state: HalfCheetah3DState
 
+    # Renderer (owned by environment for RenderableEnv trait)
+    # Using UnsafePointer for optional heap-allocated renderer
+    var _renderer: UnsafePointer[HalfCheetah3DRenderer, MutAnyOrigin]
+    var _renderer_initialized: Bool
+
     # =========================================================================
     # Initialization
     # =========================================================================
@@ -239,6 +248,10 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
 
         # Initialize cached state
         self.cached_state = HalfCheetah3DState()
+
+        # Initialize renderer pointer (null = no renderer)
+        self._renderer = UnsafePointer[HalfCheetah3DRenderer, MutAnyOrigin]()
+        self._renderer_initialized = False
 
         # Initialize physics shapes
         self._init_shapes()
@@ -268,6 +281,10 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         self.rng_counter = other.rng_counter
         self.cached_state = other.cached_state
 
+        # Renderer is not copied - each instance manages its own
+        self._renderer = UnsafePointer[HalfCheetah3DRenderer, MutAnyOrigin]()
+        self._renderer_initialized = False
+
     fn __moveinit__(out self, deinit other: Self):
         """Move constructor."""
         self.state = other.state^
@@ -281,6 +298,10 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         self.rng_seed = other.rng_seed
         self.rng_counter = other.rng_counter
         self.cached_state = other.cached_state
+
+        # Move renderer ownership (transfer pointer)
+        self._renderer = other._renderer
+        self._renderer_initialized = other._renderer_initialized
 
     # =========================================================================
     # Shape Initialization
@@ -347,6 +368,26 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         for i in range(Self.STATE_SIZE):
             self.state[i] = Scalar[dtype](0)
 
+        # Generate random initial velocities (matching GPU version)
+        # Use PhiloxRandom with seed and counter for reproducible but varying resets
+        var combined_seed = Int(self.rng_seed) * 2654435761 + Int(
+            self.rng_counter
+        ) * 12345
+        var rng = PhiloxRandom(seed=combined_seed, offset=0)
+        var rand_vals = rng.step_uniform()
+        self.rng_counter += 1  # Increment for next reset
+
+        # Random initial velocities in range [-0.1, 0.1] (matching GPU)
+        var init_vx = (
+            rand_vals[0] * Scalar[dtype](2.0) - Scalar[dtype](1.0)
+        ) * Scalar[dtype](0.1)
+        var init_vy = (
+            rand_vals[1] * Scalar[dtype](2.0) - Scalar[dtype](1.0)
+        ) * Scalar[dtype](0.1)
+        var init_vz = (
+            rand_vals[2] * Scalar[dtype](2.0) - Scalar[dtype](1.0)
+        ) * Scalar[dtype](0.1)
+
         # Initialize torso: horizontal at initial height
         var torso_off = (
             Self.BODIES_OFFSET + HC3DConstantsCPU.BODY_TORSO * BODY_STATE_SIZE_3D
@@ -360,6 +401,10 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         self.state[torso_off + IDX_QX] = Scalar[dtype](0.0)
         self.state[torso_off + IDX_QY] = Scalar[dtype](0.0)
         self.state[torso_off + IDX_QZ] = Scalar[dtype](0.0)
+        # Set torso initial velocities
+        self.state[torso_off + IDX_VX] = init_vx
+        self.state[torso_off + IDX_VY] = init_vy
+        self.state[torso_off + IDX_VZ] = init_vz
 
         # Set torso mass and inertia
         var torso_inertia = compute_capsule_inertia(
@@ -407,6 +452,53 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
             foot_mass=HC3DConstantsCPU.FFOOT_MASS,
             radius=HC3DConstantsCPU.FTHIGH_RADIUS,
         )
+
+        # Set random initial velocities for all leg bodies (matching GPU version)
+        # Back leg bodies
+        var bthigh_off = (
+            Self.BODIES_OFFSET
+            + HC3DConstantsCPU.BODY_BTHIGH * BODY_STATE_SIZE_3D
+        )
+        self.state[bthigh_off + IDX_VX] = init_vx
+        self.state[bthigh_off + IDX_VY] = init_vy
+        self.state[bthigh_off + IDX_VZ] = init_vz
+
+        var bshin_off = (
+            Self.BODIES_OFFSET + HC3DConstantsCPU.BODY_BSHIN * BODY_STATE_SIZE_3D
+        )
+        self.state[bshin_off + IDX_VX] = init_vx
+        self.state[bshin_off + IDX_VY] = init_vy
+        self.state[bshin_off + IDX_VZ] = init_vz
+
+        var bfoot_off = (
+            Self.BODIES_OFFSET + HC3DConstantsCPU.BODY_BFOOT * BODY_STATE_SIZE_3D
+        )
+        self.state[bfoot_off + IDX_VX] = init_vx
+        self.state[bfoot_off + IDX_VY] = init_vy
+        self.state[bfoot_off + IDX_VZ] = init_vz
+
+        # Front leg bodies
+        var fthigh_off = (
+            Self.BODIES_OFFSET
+            + HC3DConstantsCPU.BODY_FTHIGH * BODY_STATE_SIZE_3D
+        )
+        self.state[fthigh_off + IDX_VX] = init_vx
+        self.state[fthigh_off + IDX_VY] = init_vy
+        self.state[fthigh_off + IDX_VZ] = init_vz
+
+        var fshin_off = (
+            Self.BODIES_OFFSET + HC3DConstantsCPU.BODY_FSHIN * BODY_STATE_SIZE_3D
+        )
+        self.state[fshin_off + IDX_VX] = init_vx
+        self.state[fshin_off + IDX_VY] = init_vy
+        self.state[fshin_off + IDX_VZ] = init_vz
+
+        var ffoot_off = (
+            Self.BODIES_OFFSET + HC3DConstantsCPU.BODY_FFOOT * BODY_STATE_SIZE_3D
+        )
+        self.state[ffoot_off + IDX_VX] = init_vx
+        self.state[ffoot_off + IDX_VY] = init_vy
+        self.state[ffoot_off + IDX_VZ] = init_vz
 
         # Initialize joints
         self._init_joints_cpu()
@@ -714,9 +806,10 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
             var torque = clamp(
                 actions[j], Scalar[dtype](-1.0), Scalar[dtype](1.0)
             )
-            torque = torque * Scalar[dtype](
-                HC3DConstantsCPU.MAX_TORQUE * HC3DConstantsCPU.GEAR_RATIO
-            )
+            # NOTE: Don't multiply by GEAR_RATIO here! The 2D version notes:
+            # "GEAR_RATIO is for MuJoCo compatibility (not torque)"
+            # Using GEAR_RATIO=120 would give 120x too much torque, causing instability.
+            torque = torque * Scalar[dtype](HC3DConstantsCPU.MAX_TORQUE)
 
             # Get joint info
             var joint_off = Self.JOINTS_OFFSET + j * JOINT_DATA_SIZE_3D
@@ -809,8 +902,8 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         ](self.state.unsafe_ptr())
 
         var dt = Scalar[dtype](HC3DConstantsCPU.DT)
-        var baumgarte = Scalar[dtype](0.2)  # Position correction factor
-        var slop = Scalar[dtype](0.005)  # Penetration allowance
+        var baumgarte = Scalar[dtype](HC3DConstantsCPU.BAUMGARTE)  # Position correction factor
+        var slop = Scalar[dtype](HC3DConstantsCPU.SLOP)  # Penetration allowance
 
         for _ in range(HC3DConstantsCPU.FRAME_SKIP):
             # Step 1: Apply action torques
@@ -834,6 +927,9 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
                         Self.JOINTS_OFFSET,
                     ](state_tensor, 0, j, dt)
 
+            # Step 3.5: Clamp velocities to prevent numerical explosion
+            self._clamp_velocities_cpu()
+
             # Step 4: Integrate positions (using corrected velocities)
             for body in range(Self.NUM_BODIES):
                 integrate_positions_3d(self.state, body, dt, Self.BODIES_OFFSET)
@@ -850,8 +946,138 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
                         Self.JOINTS_OFFSET,
                     ](state_tensor, 0, j, baumgarte, slop)
 
-            # Step 6: Handle ground collisions (after position constraints)
+            # Step 6: Direct joint projection (enough passes for chain convergence)
+            for _ in range(15):  # Balance between accuracy and performance
+                self._project_joint_positions_cpu()
+
+            # Step 7: Handle ground collisions (after all constraints)
             self._handle_ground_collisions_cpu()
+
+    fn _clamp_velocities_cpu(mut self):
+        """Clamp linear and angular velocities to prevent numerical explosion."""
+        var max_linear_vel = Float64(10.0)   # m/s - conservative
+        var max_angular_vel = Float64(20.0)  # rad/s - conservative
+
+        for body in range(Self.NUM_BODIES):
+            var body_off = Self.BODIES_OFFSET + body * BODY_STATE_SIZE_3D
+
+            # Clamp linear velocity
+            var vx = Float64(self.state[body_off + IDX_VX])
+            var vy = Float64(self.state[body_off + IDX_VY])
+            var vz = Float64(self.state[body_off + IDX_VZ])
+            var v_sq = vx * vx + vy * vy + vz * vz
+            if v_sq > max_linear_vel * max_linear_vel:
+                var scale = max_linear_vel / sqrt(v_sq)
+                self.state[body_off + IDX_VX] = Scalar[dtype](vx * scale)
+                self.state[body_off + IDX_VY] = Scalar[dtype](vy * scale)
+                self.state[body_off + IDX_VZ] = Scalar[dtype](vz * scale)
+
+            # Clamp angular velocity
+            var wx = Float64(self.state[body_off + IDX_WX])
+            var wy = Float64(self.state[body_off + IDX_WY])
+            var wz = Float64(self.state[body_off + IDX_WZ])
+            var w_sq = wx * wx + wy * wy + wz * wz
+            if w_sq > max_angular_vel * max_angular_vel:
+                var scale = max_angular_vel / sqrt(w_sq)
+                self.state[body_off + IDX_WX] = Scalar[dtype](wx * scale)
+                self.state[body_off + IDX_WY] = Scalar[dtype](wy * scale)
+                self.state[body_off + IDX_WZ] = Scalar[dtype](wz * scale)
+
+    fn _project_joint_positions_cpu(mut self):
+        """Directly project joint positions to maintain connectivity.
+
+        This is a hard constraint that forces joint anchor points to coincide
+        by repositioning bodies proportionally based on mass. This guarantees
+        joints stay connected regardless of constraint solver convergence.
+        """
+        var eps = Float64(1e-10)
+
+        for j in range(HC3DConstantsCPU.NUM_JOINTS):
+            var joint_off = HC3DConstantsCPU.JOINTS_OFFSET + j * JOINT_DATA_SIZE_3D
+            var body_a = Int(self.state[joint_off + JOINT3D_BODY_A])
+            var body_b = Int(self.state[joint_off + JOINT3D_BODY_B])
+
+            var body_a_off = HC3DConstantsCPU.BODIES_OFFSET + body_a * BODY_STATE_SIZE_3D
+            var body_b_off = HC3DConstantsCPU.BODIES_OFFSET + body_b * BODY_STATE_SIZE_3D
+
+            # Get current positions and orientations
+            var pa_x = Float64(self.state[body_a_off + IDX_PX])
+            var pa_y = Float64(self.state[body_a_off + IDX_PY])
+            var pa_z = Float64(self.state[body_a_off + IDX_PZ])
+            var pb_x = Float64(self.state[body_b_off + IDX_PX])
+            var pb_y = Float64(self.state[body_b_off + IDX_PY])
+            var pb_z = Float64(self.state[body_b_off + IDX_PZ])
+
+            var qa_w = Float64(self.state[body_a_off + IDX_QW])
+            var qa_x = Float64(self.state[body_a_off + IDX_QX])
+            var qa_y = Float64(self.state[body_a_off + IDX_QY])
+            var qa_z = Float64(self.state[body_a_off + IDX_QZ])
+            var qb_w = Float64(self.state[body_b_off + IDX_QW])
+            var qb_x = Float64(self.state[body_b_off + IDX_QX])
+            var qb_y = Float64(self.state[body_b_off + IDX_QY])
+            var qb_z = Float64(self.state[body_b_off + IDX_QZ])
+
+            # Get local anchors
+            var anchor_a_local_x = Float64(self.state[joint_off + JOINT3D_ANCHOR_AX])
+            var anchor_a_local_y = Float64(self.state[joint_off + JOINT3D_ANCHOR_AY])
+            var anchor_a_local_z = Float64(self.state[joint_off + JOINT3D_ANCHOR_AZ])
+            var anchor_b_local_x = Float64(self.state[joint_off + JOINT3D_ANCHOR_BX])
+            var anchor_b_local_y = Float64(self.state[joint_off + JOINT3D_ANCHOR_BY])
+            var anchor_b_local_z = Float64(self.state[joint_off + JOINT3D_ANCHOR_BZ])
+
+            # Rotate anchors to world frame
+            var ca_x = qa_y * anchor_a_local_z - qa_z * anchor_a_local_y
+            var ca_y = qa_z * anchor_a_local_x - qa_x * anchor_a_local_z
+            var ca_z = qa_x * anchor_a_local_y - qa_y * anchor_a_local_x
+            var cca_x = qa_y * ca_z - qa_z * ca_y
+            var cca_y = qa_z * ca_x - qa_x * ca_z
+            var cca_z = qa_x * ca_y - qa_y * ca_x
+            var ra_x = anchor_a_local_x + 2.0 * qa_w * ca_x + 2.0 * cca_x
+            var ra_y = anchor_a_local_y + 2.0 * qa_w * ca_y + 2.0 * cca_y
+            var ra_z = anchor_a_local_z + 2.0 * qa_w * ca_z + 2.0 * cca_z
+
+            var cb_x = qb_y * anchor_b_local_z - qb_z * anchor_b_local_y
+            var cb_y = qb_z * anchor_b_local_x - qb_x * anchor_b_local_z
+            var cb_z = qb_x * anchor_b_local_y - qb_y * anchor_b_local_x
+            var ccb_x = qb_y * cb_z - qb_z * cb_y
+            var ccb_y = qb_z * cb_x - qb_x * cb_z
+            var ccb_z = qb_x * cb_y - qb_y * cb_x
+            var rb_x = anchor_b_local_x + 2.0 * qb_w * cb_x + 2.0 * ccb_x
+            var rb_y = anchor_b_local_y + 2.0 * qb_w * cb_y + 2.0 * ccb_y
+            var rb_z = anchor_b_local_z + 2.0 * qb_w * cb_z + 2.0 * ccb_z
+
+            # World anchor positions
+            var anchor_a_world_x = pa_x + ra_x
+            var anchor_a_world_y = pa_y + ra_y
+            var anchor_a_world_z = pa_z + ra_z
+            var anchor_b_world_x = pb_x + rb_x
+            var anchor_b_world_y = pb_y + rb_y
+            var anchor_b_world_z = pb_z + rb_z
+
+            # Position error (B - A)
+            var err_x = anchor_b_world_x - anchor_a_world_x
+            var err_y = anchor_b_world_y - anchor_a_world_y
+            var err_z = anchor_b_world_z - anchor_a_world_z
+
+            # Get inverse masses
+            var inv_ma = Float64(self.state[body_a_off + IDX_INV_MASS])
+            var inv_mb = Float64(self.state[body_b_off + IDX_INV_MASS])
+            var total_inv_mass = inv_ma + inv_mb + eps
+
+            # Split correction proportionally by inverse mass
+            # Body A moves by (inv_ma / total) * error
+            # Body B moves by -(inv_mb / total) * error
+            var ratio_a = inv_ma / total_inv_mass
+            var ratio_b = inv_mb / total_inv_mass
+
+            # Apply position corrections (move towards each other)
+            self.state[body_a_off + IDX_PX] = Scalar[dtype](pa_x + ratio_a * err_x)
+            self.state[body_a_off + IDX_PY] = Scalar[dtype](pa_y + ratio_a * err_y)
+            self.state[body_a_off + IDX_PZ] = Scalar[dtype](pa_z + ratio_a * err_z)
+
+            self.state[body_b_off + IDX_PX] = Scalar[dtype](pb_x - ratio_b * err_x)
+            self.state[body_b_off + IDX_PY] = Scalar[dtype](pb_y - ratio_b * err_y)
+            self.state[body_b_off + IDX_PZ] = Scalar[dtype](pb_z - ratio_b * err_z)
 
     fn _handle_ground_collisions_cpu(mut self):
         """Handle ground collisions for all bodies (capsule-aware)."""
@@ -1053,12 +1279,138 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         return self.cached_state
 
     fn render(mut self, mut renderer: RendererBase):
-        """Render the environment (not implemented for 3D)."""
+        """Render the environment using 2D renderer (not supported for 3D).
+
+        For 3D rendering, use the RenderableEnv trait methods or render_3d().
+        """
         pass
 
+    fn render_3d(self, mut renderer: HalfCheetah3DRenderer):
+        """Render the environment using an external 3D renderer.
+
+        This method allows using an externally managed renderer.
+        For self-contained rendering, use the RenderableEnv trait methods instead.
+
+        Args:
+            renderer: The 3D renderer to use for visualization.
+        """
+        if not renderer.is_open():
+            return
+
+        # Extract state for rendering
+        var torso_x = Float64(self.state[Self.BODIES_OFFSET + IDX_PX])
+        var vel_x = Float64(self.cached_state.vel_x)
+
+        # Call renderer with state
+        renderer.render(self.state, torso_x, vel_x)
+
     fn close(mut self):
-        """Close the environment."""
-        pass
+        """Close the environment and release resources."""
+        # Close renderer if initialized
+        if self._renderer_initialized:
+            try:
+                self._renderer[].close()
+            except:
+                pass
+            self._renderer.free()
+            self._renderer_initialized = False
+
+    # =========================================================================
+    # RenderableEnv Trait Implementation
+    # =========================================================================
+
+    fn init_renderer(mut self) raises -> Bool:
+        """Initialize the internal 3D renderer.
+
+        Creates and initializes a HalfCheetah3DRenderer. Multiple calls are
+        safe (returns True if already initialized).
+
+        Returns:
+            True if initialization succeeded or was already initialized.
+        """
+        if self._renderer_initialized:
+            return True
+
+        # Allocate memory for renderer on heap
+        self._renderer = alloc[HalfCheetah3DRenderer](1)
+
+        # Create and initialize the renderer in place
+        var renderer = HalfCheetah3DRenderer(
+            width=1024,
+            height=576,
+            follow_cheetah=True,
+            show_velocity=True,
+            show_shadows=True,
+        )
+        renderer.init()
+
+        # Move renderer to heap allocation
+        self._renderer.init_pointee_move(renderer^)
+        self._renderer_initialized = True
+        return True
+
+    fn render_frame(mut self) raises -> None:
+        """Render the current state using the internal 3D renderer.
+
+        No-op if renderer is not initialized. Uses the RenderableEnv trait
+        interface for algorithm-agnostic rendering.
+        """
+        if not self._renderer_initialized:
+            return
+
+        if not self._renderer[].is_open():
+            return
+
+        # Extract state for rendering
+        var torso_x = Float64(self.state[Self.BODIES_OFFSET + IDX_PX])
+        var vel_x = Float64(self.cached_state.vel_x)
+
+        # Call renderer with state
+        self._renderer[].render(self.state, torso_x, vel_x)
+
+    fn close_renderer(mut self) raises -> None:
+        """Close the internal renderer and release resources.
+
+        Safe to call multiple times or if renderer was never initialized.
+        """
+        if not self._renderer_initialized:
+            return
+
+        self._renderer[].close()
+        self._renderer.free()
+        self._renderer_initialized = False
+
+    fn is_renderer_open(self) -> Bool:
+        """Check if the internal renderer is initialized and open.
+
+        Returns:
+            True if renderer is initialized and window is open.
+        """
+        if not self._renderer_initialized:
+            return False
+        return self._renderer[].is_open()
+
+    fn check_renderer_quit(mut self) -> Bool:
+        """Check if user requested to close the renderer window.
+
+        Returns:
+            True if quit was requested (e.g., user closed window).
+        """
+        if not self._renderer_initialized:
+            return False
+        return self._renderer[].check_quit()
+
+    fn renderer_delay(self, ms: Int) -> None:
+        """Delay for specified milliseconds (for frame rate control).
+
+        No-op if renderer is not initialized.
+
+        Args:
+            ms: Milliseconds to delay.
+        """
+        if not self._renderer_initialized:
+            return
+        self._renderer[].delay(ms)
 
     # =========================================================================
     # GPUContinuousEnv Interface (Static GPU Kernels)
@@ -2106,7 +2458,8 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
             env,
             states,
             actions,
-            Scalar[dtype](HC3DConstantsGPU.MAX_TORQUE * HC3DConstantsGPU.GEAR_RATIO),
+            # NOTE: Don't multiply by GEAR_RATIO - it's for MuJoCo compatibility, not torque
+            Scalar[dtype](HC3DConstantsGPU.MAX_TORQUE),
         )
 
         # Physics constants

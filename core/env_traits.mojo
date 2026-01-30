@@ -42,6 +42,99 @@ from layout import LayoutTensor, Layout
 from deep_rl import dtype
 from gpu import DeviceContext, DeviceBuffer
 
+
+# ============================================================================
+# Renderable Environment Trait
+# ============================================================================
+
+
+trait RenderableEnv:
+    """Trait for environments that support visualization.
+
+    This trait enables environment-owned rendering, where the environment
+    manages its own renderer internally. This decouples algorithms from
+    specific renderer types (2D vs 3D) and allows a unified rendering
+    interface across all environments.
+
+    Benefits:
+    - Algorithms don't need to know about renderer types
+    - Same `render: Bool` parameter works for all environments
+    - Rendering details stay encapsulated within the environment
+    - Environments can use whatever renderer is appropriate (2D or 3D)
+
+    Usage in algorithms:
+        fn evaluate[E: BoxContinuousActionEnv & RenderableEnv](
+            self, mut env: E, render: Bool = False
+        ):
+            if render:
+                _ = env.init_renderer()
+
+            for episode in range(num_episodes):
+                # ... episode loop ...
+                if render:
+                    env.render_frame()
+                    if env.check_renderer_quit():
+                        break
+
+            if render:
+                env.close_renderer()
+
+    Environments that don't support rendering can implement these as no-ops.
+    """
+
+    fn init_renderer(mut self) raises -> Bool:
+        """Initialize the renderer.
+
+        Creates and initializes the internal renderer. Should be called
+        before any render() calls. Multiple calls are safe (no-op if
+        already initialized).
+
+        Returns:
+            True if initialization succeeded or was already initialized.
+        """
+        ...
+
+    fn render_frame(mut self) raises -> None:
+        """Render the current environment state.
+
+        No-op if renderer is not initialized. This method handles all
+        rendering internally - the environment knows how to visualize itself.
+        """
+        ...
+
+    fn close_renderer(mut self) raises -> None:
+        """Close the renderer and release resources.
+
+        Safe to call multiple times or if renderer was never initialized.
+        """
+        ...
+
+    fn is_renderer_open(self) -> Bool:
+        """Check if renderer is currently initialized and open.
+
+        Returns:
+            True if renderer is initialized and window is open.
+        """
+        ...
+
+    fn check_renderer_quit(mut self) -> Bool:
+        """Check if user requested to close the renderer window.
+
+        Returns:
+            True if quit was requested (e.g., user closed window).
+        """
+        ...
+
+    fn renderer_delay(self, ms: Int) -> None:
+        """Delay for specified milliseconds (for frame rate control).
+
+        No-op if renderer is not initialized.
+
+        Args:
+            ms: Milliseconds to delay.
+        """
+        ...
+
 # ============================================================================
 # State Space Traits
 # ============================================================================

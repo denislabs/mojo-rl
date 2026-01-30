@@ -116,7 +116,7 @@ struct SDL_Event:
         self._padding = SIMD[DType.uint8, 52](0)
 
 
-struct SDL2:
+struct SDL2(Movable):
     """SDL2 library wrapper with FFI bindings.
 
     Provides a safe interface to SDL2 functions for 2D rendering.
@@ -145,6 +145,17 @@ struct SDL2:
         self.renderer = SDLHandle()
         self.font = SDLHandle()
         self.large_font = SDLHandle()
+
+    fn __moveinit__(out self, deinit other: Self):
+        """Move constructor - transfers ownership of handles."""
+        self.handle = other.handle^
+        self.ttf_handle = other.ttf_handle^
+        self.initialized = other.initialized
+        self.ttf_initialized = other.ttf_initialized
+        self.window = other.window
+        self.renderer = other.renderer
+        self.font = other.font
+        self.large_font = other.large_font
 
     fn init(mut self) -> Bool:
         """Initialize SDL2 video subsystem.

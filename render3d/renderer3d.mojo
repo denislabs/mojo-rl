@@ -21,7 +21,7 @@ comptime Vec3 = Vec3Generic[DType.float64]
 comptime Quat = QuatGeneric[DType.float64]
 
 
-struct Color3D:
+struct Color3D(ImplicitlyCopyable, Movable):
     """RGB color for wireframe rendering."""
 
     var r: UInt8
@@ -32,6 +32,18 @@ struct Color3D:
         self.r = r
         self.g = g
         self.b = b
+
+    fn __copyinit__(out self, read other: Self):
+        """Copy constructor."""
+        self.r = other.r
+        self.g = other.g
+        self.b = other.b
+
+    fn __moveinit__(out self, deinit other: Self):
+        """Move constructor."""
+        self.r = other.r
+        self.g = other.g
+        self.b = other.b
 
     @staticmethod
     fn white() -> Self:
@@ -70,7 +82,7 @@ struct Color3D:
         return Self(64, 64, 64)
 
 
-struct Renderer3D:
+struct Renderer3D(Movable):
     """3D wireframe renderer using SDL2.
 
     Projects 3D shapes to 2D screen coordinates and draws them
@@ -125,6 +137,17 @@ struct Renderer3D:
             screen_width=width,
             screen_height=height,
         )
+
+    fn __moveinit__(out self, deinit other: Self):
+        """Move constructor - transfers ownership of SDL resources."""
+        self.sdl = other.sdl^
+        self.camera = other.camera^
+        self.width = other.width
+        self.height = other.height
+        self.background_color = other.background_color
+        self.draw_grid = other.draw_grid
+        self.draw_axes = other.draw_axes
+        self.should_quit = other.should_quit
 
     fn init(mut self, mut title: String):
         """Initialize SDL2 and create window.

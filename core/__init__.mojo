@@ -2,7 +2,9 @@ from .state import State
 from .action import Action
 from .env import Env
 from .renderer import Renderer
+from .env_renderer import EnvRenderer, EnvRenderer3D, NoRenderer
 from .env_traits import (
+    RenderableEnv,
     DiscreteStateEnv,
     ContinuousStateEnv,
     DiscreteActionEnv,
