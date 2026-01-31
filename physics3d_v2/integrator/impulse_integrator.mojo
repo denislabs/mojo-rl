@@ -28,6 +28,8 @@ from ..solver import (
 from ..joints import (
     solve_joint_velocity_constraints,
     solve_joint_position_constraints,
+    solve_joint_velocity_constraints_gpu,
+    solve_joint_position_constraints_gpu,
 )
 from ..gpu.constants import MODEL_BODY_SIZE, TPB, compute_state_size
 from math import sqrt
@@ -219,20 +221,34 @@ struct ImpulseIntegrator(Integrator):
             DTYPE, NUM_BODIES, MAX_CONTACTS, STATE_SIZE, BATCH
         ](env, state, model, restitution, 10)
 
-        # 4. Integrate positions
+        # 4. Solve joint velocity constraints
+        @parameter
+        if MAX_JOINTS > 0:
+            solve_joint_velocity_constraints_gpu[
+                DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, STATE_SIZE, BATCH
+            ](env, state, model, 5)
+
+        # 5. Integrate positions
         integrate_positions_kernel[
             DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, STATE_SIZE, BATCH
         ](env, state, dt)
 
-        # 5. Post-step collision detection
+        # 6. Post-step collision detection
         CollisionDetector.detect_all_contacts_gpu[
             DTYPE, NUM_BODIES, MAX_CONTACTS, STATE_SIZE, BATCH
         ](env, state, model, ground_z)
 
-        # 6. Position correction
+        # 7. Position correction
         solve_position_constraints_gpu[
             DTYPE, NUM_BODIES, MAX_CONTACTS, STATE_SIZE, BATCH
         ](env, state, model, Scalar[DTYPE](0.8), Scalar[DTYPE](0.001))
+
+        # 8. Solve joint position constraints
+        @parameter
+        if MAX_JOINTS > 0:
+            solve_joint_position_constraints_gpu[
+                DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, STATE_SIZE, BATCH
+            ](env, state, model, Scalar[DTYPE](0.2), 5)
 
     @staticmethod
     fn step_gpu[

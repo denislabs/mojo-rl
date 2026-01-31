@@ -26,4 +26,7 @@ from .hinge_joint import HingeJoint
 from .joint_solver import (
     solve_joint_velocity_constraints,
     solve_joint_position_constraints,
+    # GPU versions
+    solve_joint_velocity_constraints_gpu,
+    solve_joint_position_constraints_gpu,
 )
