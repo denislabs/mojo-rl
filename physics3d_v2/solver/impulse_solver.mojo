@@ -40,10 +40,10 @@ from ..gpu.constants import (
 
 
 fn solve_velocity_constraints[
-    DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int
+    DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0
 ](
-    model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS],
-    mut data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS],
+    model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
+    mut data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
     iterations: Int = 10,
 ):
     """Solve velocity constraints using sequential impulses.
@@ -66,8 +66,8 @@ fn solve_velocity_constraints[
 
 
 fn _is_grounded[
-    DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int
-](data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS], body_idx: Int,) -> Bool:
+    DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0
+](data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS], body_idx: Int,) -> Bool:
     """Check if a body has ground contact."""
     for c in range(data.num_contacts):
         if (
@@ -79,10 +79,10 @@ fn _is_grounded[
 
 
 fn _solve_single_contact_velocity[
-    DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int
+    DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0
 ](
-    model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS],
-    mut data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS],
+    model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
+    mut data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
     contact_idx: Int,
 ):
     """Solve velocity constraint for one contact.
@@ -206,10 +206,10 @@ fn _solve_single_contact_velocity[
 
 
 fn solve_position_constraints[
-    DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int
+    DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0
 ](
-    model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS],
-    mut data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS],
+    model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
+    mut data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
     baumgarte: Scalar[DTYPE] = 0.2,
     slop: Scalar[DTYPE] = 0.001,
 ):
@@ -282,10 +282,10 @@ fn solve_position_constraints[
 
 
 fn solve_resting_contacts[
-    DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int
+    DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0
 ](
-    model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS],
-    mut data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS],
+    model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
+    mut data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
 ):
     """Apply gravity cancellation for bodies in resting contact.
 

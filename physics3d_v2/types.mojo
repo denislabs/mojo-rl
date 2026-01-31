@@ -25,9 +25,20 @@ Example usage:
 Single body is just Model[DTYPE, 1, MAX_CONTACTS]:
     var model = Model[DType.float64, 1, 5](gravity_z=-9.81)
     model.set_body(0, mass=1.0, radius=0.1)
+
+With joints (pendulum example):
+    var model = Model[DType.float64, 1, 5, 1](gravity_z=-9.81)  # MAX_JOINTS=1
+    model.set_body(0, mass=1.0, radius=0.1)
+    model.add_hinge_joint(
+        parent=-1, child=0,
+        anchor_parent=(0.0, 0.0, 1.0),
+        anchor_child=(0.0, 0.0, 0.0),
+        axis=(0.0, 1.0, 0.0),
+    )
 """
 
 from .constants import CONTACT_SIZE
+from .joints.hinge_joint import HingeJoint
 
 
 @fieldwise_init
@@ -95,13 +106,21 @@ struct ContactInfo[DTYPE: DType](ImplicitlyCopyable, Movable):
         self.impulse_t2 = Scalar[Self.DTYPE](0)
 
 
-struct Model[DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int]:
+# Helper to compute max(1, n) at compile time for array sizing
+fn _max_one[n: Int]() -> Int:
+    if n > 0:
+        return n
+    return 1
+
+
+struct Model[DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0]:
     """Static configuration for physics simulation.
 
     Parameters:
         DTYPE: Data type for scalars (float32 or float64).
         NUM_BODIES: Number of bodies (compile-time constant).
         MAX_CONTACTS: Maximum number of contacts (compile-time constant).
+        MAX_JOINTS: Maximum number of joints (compile-time constant, default 0).
 
     Example:
         # Single body simulation
@@ -112,6 +131,11 @@ struct Model[DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int]:
         var model = Model[DType.float64, 5, 20](gravity_z=-9.81, restitution=0.6)
         for i in range(5):
             model.set_body(i, mass=1.0, radius=0.1)
+
+        # With joints (pendulum)
+        var model = Model[DType.float64, 1, 5, 1](gravity_z=-9.81)
+        model.set_body(0, mass=1.0, radius=0.1)
+        model.add_hinge_joint(...)
     """
 
     var gravity_z: Scalar[Self.DTYPE]
@@ -127,6 +151,10 @@ struct Model[DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int]:
     # Diagonal inertia: 3 values per body
     var inertias: InlineArray[Scalar[Self.DTYPE], Self.NUM_BODIES * 3]
     var inv_inertias: InlineArray[Scalar[Self.DTYPE], Self.NUM_BODIES * 3]
+
+    # Joint storage (sized to MAX_JOINTS, or 1 if MAX_JOINTS=0 to avoid zero-size array)
+    var joints: InlineArray[HingeJoint[Self.DTYPE], _max_one[Self.MAX_JOINTS]()]
+    var num_joints: Int
 
     fn __init__(
         out self,
@@ -169,6 +197,14 @@ struct Model[DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int]:
             self.inertias[i] = Scalar[Self.DTYPE](0.004)  # 2/5 * m * r^2 for unit sphere
             self.inv_inertias[i] = Scalar[Self.DTYPE](250.0)
 
+        # Initialize joints
+        self.joints = InlineArray[HingeJoint[Self.DTYPE], _max_one[Self.MAX_JOINTS]()](
+            uninitialized=True
+        )
+        for i in range(_max_one[Self.MAX_JOINTS]()):
+            self.joints[i] = HingeJoint[Self.DTYPE].empty()
+        self.num_joints = 0
+
     fn set_body(
         mut self,
         index: Int,
@@ -191,14 +227,49 @@ struct Model[DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int]:
         self.inv_inertias[index * 3 + 1] = inv_inertia
         self.inv_inertias[index * 3 + 2] = inv_inertia
 
+    fn add_hinge_joint(
+        mut self,
+        parent: Int,
+        child: Int,
+        anchor_parent: Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]],
+        anchor_child: Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]],
+        axis: Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]],
+    ) -> Int:
+        """Add a hinge joint to the model.
 
-struct Data[DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int]:
+        Args:
+            parent: Parent body index (-1 for world anchor).
+            child: Child body index.
+            anchor_parent: Anchor point in parent's local frame (or world if parent=-1).
+            anchor_child: Anchor point in child's local frame.
+            axis: Rotation axis in parent's local frame (or world if parent=-1).
+
+        Returns:
+            Index of the newly added joint, or -1 if MAX_JOINTS exceeded.
+        """
+        if self.num_joints >= Self.MAX_JOINTS:
+            return -1
+
+        var joint_idx = self.num_joints
+        self.joints[joint_idx] = HingeJoint[Self.DTYPE].create(
+            parent, child, anchor_parent, anchor_child, axis
+        )
+        self.num_joints += 1
+        return joint_idx
+
+    fn get_joint(self, joint_idx: Int) -> HingeJoint[Self.DTYPE]:
+        """Get a joint by index."""
+        return self.joints[joint_idx]
+
+
+struct Data[DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0]:
     """Mutable simulation state.
 
     Parameters:
         DTYPE: Data type for scalars (float32 or float64).
         NUM_BODIES: Number of bodies (compile-time constant).
         MAX_CONTACTS: Maximum number of contacts (compile-time constant).
+        MAX_JOINTS: Maximum number of joints (compile-time constant, default 0).
 
     Example:
         var data = Data[DType.float64, 5, 20]()
@@ -303,6 +374,18 @@ struct Data[DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int]:
         self.velocities[body_index * 3 + 1] = vy
         self.velocities[body_index * 3 + 2] = vz
 
+    fn set_body_angular_velocity(
+        mut self,
+        body_index: Int,
+        wx: Scalar[Self.DTYPE],
+        wy: Scalar[Self.DTYPE],
+        wz: Scalar[Self.DTYPE],
+    ):
+        """Set angular velocity of a body."""
+        self.angular_velocities[body_index * 3 + 0] = wx
+        self.angular_velocities[body_index * 3 + 1] = wy
+        self.angular_velocities[body_index * 3 + 2] = wz
+
     fn get_body_position(
         self, body_index: Int
     ) -> Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]]:
@@ -321,6 +404,16 @@ struct Data[DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int]:
             self.velocities[body_index * 3 + 0],
             self.velocities[body_index * 3 + 1],
             self.velocities[body_index * 3 + 2],
+        )
+
+    fn get_body_angular_velocity(
+        self, body_index: Int
+    ) -> Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]]:
+        """Get angular velocity of a body."""
+        return (
+            self.angular_velocities[body_index * 3 + 0],
+            self.angular_velocities[body_index * 3 + 1],
+            self.angular_velocities[body_index * 3 + 2],
         )
 
     fn get_body_z(self, body_index: Int) -> Scalar[Self.DTYPE]:

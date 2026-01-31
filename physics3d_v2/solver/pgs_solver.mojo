@@ -178,9 +178,9 @@ fn compute_reference_acceleration[
 
 
 fn compute_constraint_velocity[
-    DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int
+    DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0
 ](
-    data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS],
+    data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
     body_a: Int,
     body_b: Int,
     normal_x: Scalar[DTYPE],
@@ -220,10 +220,10 @@ fn compute_constraint_velocity[
 
 
 fn solve_constraints_pgs[
-    DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int
+    DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0
 ](
-    model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS],
-    mut data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS],
+    model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
+    mut data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
     dt: Scalar[DTYPE],
     iterations: Int = 20,
 ):
@@ -439,8 +439,8 @@ fn solve_constraints_pgs[
 
 
 fn _is_grounded[
-    DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int
-](data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS], body_idx: Int,) -> Bool:
+    DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0
+](data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS], body_idx: Int,) -> Bool:
     """Check if a body has ground contact."""
     for c in range(data.num_contacts):
         if (
@@ -457,10 +457,10 @@ fn _is_grounded[
 
 
 fn correct_positions[
-    DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int
+    DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0
 ](
-    model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS],
-    mut data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS],
+    model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
+    mut data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
     baumgarte: Scalar[DTYPE] = 0.8,
     slop: Scalar[DTYPE] = 0.0001,
 ):

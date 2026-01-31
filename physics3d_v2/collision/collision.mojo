@@ -34,10 +34,10 @@ struct CollisionDetector(CollisionSystem):
     @always_inline
     @staticmethod
     fn detect_all_contacts[
-        DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int
+        DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0
     ](
-        model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS],
-        mut data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS],
+        model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
+        mut data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
     ):
         """Detect all contacts (sphere-plane + sphere-sphere).
 

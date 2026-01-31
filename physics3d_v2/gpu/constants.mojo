@@ -3,15 +3,17 @@
 GPU kernels require flat buffer layouts. This file defines:
 1. Per-body state layout (positions, velocities, etc.)
 2. Per-contact layout (body indices, normal, depth, etc.)
-3. Total buffer size computation
+3. Per-joint layout (body indices, anchors, axis, impulses)
+4. Total buffer size computation
 
 Buffer layout for multi-body:
-  [BATCH, NUM_BODIES * BODY_STATE_SIZE + MAX_CONTACTS * CONTACT_STATE_SIZE + METADATA_SIZE]
+  [BATCH, NUM_BODIES * BODY_STATE_SIZE + MAX_CONTACTS * CONTACT_STATE_SIZE + MAX_JOINTS * JOINT_STATE_SIZE + METADATA_SIZE]
 
 Where:
   - BODY_STATE_SIZE = 22 floats per body
   - CONTACT_STATE_SIZE = 12 floats per contact
-  - METADATA_SIZE = 4 floats (num_contacts, padding)
+  - JOINT_STATE_SIZE = 16 floats per joint
+  - METADATA_SIZE = 4 floats (num_contacts, num_joints, padding)
 """
 
 # =============================================================================
@@ -114,11 +116,45 @@ comptime CONTACT_STATE_SIZE: Int = 12
 
 
 # =============================================================================
+# Per-Joint State Layout (16 floats per joint)
+# =============================================================================
+
+# Body indices (2 floats - stored as floats for GPU compatibility)
+comptime JOINT_IDX_PARENT: Int = 0  # Parent body index (-1 for world)
+comptime JOINT_IDX_CHILD: Int = 1  # Child body index
+
+# Anchor point on parent (3 floats) - local frame or world if parent=-1
+comptime JOINT_IDX_ANCHOR_PX: Int = 2
+comptime JOINT_IDX_ANCHOR_PY: Int = 3
+comptime JOINT_IDX_ANCHOR_PZ: Int = 4
+
+# Anchor point on child (3 floats) - local frame
+comptime JOINT_IDX_ANCHOR_CX: Int = 5
+comptime JOINT_IDX_ANCHOR_CY: Int = 6
+comptime JOINT_IDX_ANCHOR_CZ: Int = 7
+
+# Hinge axis (3 floats) - in parent's local frame or world if parent=-1
+comptime JOINT_IDX_AXIS_X: Int = 8
+comptime JOINT_IDX_AXIS_Y: Int = 9
+comptime JOINT_IDX_AXIS_Z: Int = 10
+
+# Accumulated impulses for warm starting (5 floats)
+comptime JOINT_IDX_IMPULSE_LX: Int = 11  # Linear impulse X
+comptime JOINT_IDX_IMPULSE_LY: Int = 12  # Linear impulse Y
+comptime JOINT_IDX_IMPULSE_LZ: Int = 13  # Linear impulse Z
+comptime JOINT_IDX_IMPULSE_AX: Int = 14  # Angular impulse 1
+comptime JOINT_IDX_IMPULSE_AY: Int = 15  # Angular impulse 2
+
+# Total joint state size
+comptime JOINT_STATE_SIZE: Int = 16
+
+
+# =============================================================================
 # Metadata Layout (4 floats)
 # =============================================================================
 
 comptime META_IDX_NUM_CONTACTS: Int = 0  # Current number of active contacts
-comptime META_IDX_PADDING_1: Int = 1
+comptime META_IDX_NUM_JOINTS: Int = 1  # Current number of active joints
 comptime META_IDX_PADDING_2: Int = 2
 comptime META_IDX_PADDING_3: Int = 3
 
@@ -130,28 +166,51 @@ comptime METADATA_SIZE: Int = 4
 # =============================================================================
 
 
-fn compute_state_size[NUM_BODIES: Int, MAX_CONTACTS: Int]() -> Int:
-    """Compute total state buffer size per environment."""
+fn compute_state_size[NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0]() -> Int:
+    """Compute total state buffer size per environment.
+
+    Args:
+        NUM_BODIES: Number of bodies in the simulation.
+        MAX_CONTACTS: Maximum number of contacts.
+        MAX_JOINTS: Maximum number of joints (default 0).
+
+    Returns:
+        Total buffer size in number of scalars.
+    """
     return (
         NUM_BODIES * BODY_STATE_SIZE
         + MAX_CONTACTS * CONTACT_STATE_SIZE
+        + MAX_JOINTS * JOINT_STATE_SIZE
         + METADATA_SIZE
     )
 
 
-fn body_offset[NUM_BODIES: Int, MAX_CONTACTS: Int](body_idx: Int) -> Int:
+fn body_offset[NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0](body_idx: Int) -> Int:
     """Get offset to start of body state within environment state."""
     return body_idx * BODY_STATE_SIZE
 
 
-fn contact_offset[NUM_BODIES: Int, MAX_CONTACTS: Int](contact_idx: Int) -> Int:
+fn contact_offset[NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0](contact_idx: Int) -> Int:
     """Get offset to start of contact state within environment state."""
     return NUM_BODIES * BODY_STATE_SIZE + contact_idx * CONTACT_STATE_SIZE
 
 
-fn metadata_offset[NUM_BODIES: Int, MAX_CONTACTS: Int]() -> Int:
+fn joint_offset[NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0](joint_idx: Int) -> Int:
+    """Get offset to start of joint state within environment state."""
+    return (
+        NUM_BODIES * BODY_STATE_SIZE
+        + MAX_CONTACTS * CONTACT_STATE_SIZE
+        + joint_idx * JOINT_STATE_SIZE
+    )
+
+
+fn metadata_offset[NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0]() -> Int:
     """Get offset to metadata within environment state."""
-    return NUM_BODIES * BODY_STATE_SIZE + MAX_CONTACTS * CONTACT_STATE_SIZE
+    return (
+        NUM_BODIES * BODY_STATE_SIZE
+        + MAX_CONTACTS * CONTACT_STATE_SIZE
+        + MAX_JOINTS * JOINT_STATE_SIZE
+    )
 
 
 # =============================================================================

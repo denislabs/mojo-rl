@@ -1,7 +1,7 @@
 """Physics3D v2 - Minimal physics engine rebuild.
 
 A MuJoCo-inspired physics engine with Model/Data separation.
-- Model: Static simulation configuration (parameterized by NUM_BODIES)
+- Model: Static simulation configuration (parameterized by NUM_BODIES, MAX_JOINTS)
 - Data: Mutable simulation state
 
 Example usage:
@@ -30,13 +30,29 @@ Example usage:
 Single body is just Model[DTYPE, 1, MAX_CONTACTS]:
     var model = Model[DType.float64, 1, 5](gravity_z=-9.81)
     model.set_body(0, mass=1.0, radius=0.1)
+
+With joints (pendulum example):
+    from physics3d_v2 import Model, Data, ImpulseIntegrator, HingeJoint
+
+    # MAX_JOINTS=1 as 4th parameter
+    var model = Model[DType.float64, 1, 5, 1](gravity_z=-9.81)
+    model.set_body(0, mass=1.0, radius=0.1)
+    model.add_hinge_joint(
+        parent=-1, child=0,  # -1 = world anchor
+        anchor_parent=(0.0, 0.0, 1.0),
+        anchor_child=(0.0, 0.0, 0.0),
+        axis=(0.0, 1.0, 0.0),  # Y-axis rotation
+    )
 """
 
 from .constants import TILE, TPB, PhysicsConstants
 from .constants import GEOM_PLANE, GEOM_SPHERE
 
-# Primary types (unified Model/Data with compile-time NUM_BODIES)
+# Primary types (unified Model/Data with compile-time NUM_BODIES, MAX_JOINTS)
 from .types import Model, Data, ContactInfo
+
+# Joint types
+from .joints import HingeJoint
 
 # Traits
 from .traits import CollisionSystem, Integrator
@@ -53,6 +69,12 @@ from .solver import (
     # PGS solver (MuJoCo style)
     solve_constraints_pgs,
     correct_positions,
+)
+
+# Joint solvers
+from .joints import (
+    solve_joint_velocity_constraints,
+    solve_joint_position_constraints,
 )
 
 # Integrators (primary API)
