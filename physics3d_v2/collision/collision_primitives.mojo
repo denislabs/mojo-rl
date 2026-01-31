@@ -14,6 +14,7 @@ Phase 3: sphere-sphere and sphere-plane primitives.
 from math import sqrt
 
 
+@always_inline
 fn sphere_sphere[
     DTYPE: DType
 ](
@@ -86,6 +87,7 @@ fn sphere_sphere[
     return (dist, contact_x, contact_y, contact_z, nx, ny, nz)
 
 
+@always_inline
 fn sphere_plane[
     DTYPE: DType
 ](

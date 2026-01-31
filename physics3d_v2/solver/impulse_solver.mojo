@@ -13,6 +13,30 @@ Reference: Erin Catto's GDC presentations on constraint solving.
 """
 
 from ..types import Model, Data
+from layout import LayoutTensor, Layout
+from ..gpu.constants import (
+    MODEL_BODY_SIZE,
+    MODEL_IDX_INV_MASS,
+    BODY_IDX_PX,
+    BODY_IDX_PY,
+    BODY_IDX_PZ,
+    BODY_IDX_VX,
+    BODY_IDX_VY,
+    BODY_IDX_VZ,
+    META_IDX_NUM_CONTACTS,
+    CONTACT_IDX_BODY_A,
+    CONTACT_IDX_BODY_B,
+    CONTACT_IDX_DIST,
+    CONTACT_IDX_NX,
+    CONTACT_IDX_NY,
+    CONTACT_IDX_NZ,
+    CONTACT_IDX_IMPULSE_N,
+    CONTACT_IDX_IMPULSE_T1,
+    CONTACT_IDX_IMPULSE_T2,
+    body_offset,
+    contact_offset,
+    metadata_offset,
+)
 
 
 fn solve_velocity_constraints[
@@ -309,3 +333,205 @@ fn solve_resting_contacts[
                     data.velocities[i * 3 + 0] = Scalar[DTYPE](0)
                 if vy > Scalar[DTYPE](-0.02) and vy < Scalar[DTYPE](0.02):
                     data.velocities[i * 3 + 1] = Scalar[DTYPE](0)
+
+
+# =========================================================================
+# Impulse Solver
+# =========================================================================
+
+
+@always_inline
+fn solve_velocity_constraints_gpu[
+    DTYPE: DType,
+    NUM_BODIES: Int,
+    MAX_CONTACTS: Int,
+    STATE_SIZE: Int,
+    BATCH: Int,
+](
+    env: Int,
+    state: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+    ],
+    model: LayoutTensor[
+        DTYPE, Layout.row_major(NUM_BODIES, MODEL_BODY_SIZE), MutAnyOrigin
+    ],
+    restitution: Scalar[DTYPE],
+    iterations: Int,
+):
+    """Solve velocity constraints using sequential impulses."""
+    var meta_off = metadata_offset[NUM_BODIES, MAX_CONTACTS]()
+    var num_contacts = Int(
+        rebind[Scalar[DTYPE]](state[env, meta_off + META_IDX_NUM_CONTACTS])
+    )
+
+    for _ in range(iterations):
+        for c in range(num_contacts):
+            var c_off = contact_offset[NUM_BODIES, MAX_CONTACTS](c)
+            var body_a = Int(
+                rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_BODY_A])
+            )
+            var body_b = Int(
+                rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_BODY_B])
+            )
+
+            var nx = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_NX])
+            var ny = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_NY])
+            var nz = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_NZ])
+
+            # Get velocities
+            var b_off_a = body_offset[NUM_BODIES, MAX_CONTACTS](body_a)
+            var vx_a = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_VX])
+            var vy_a = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_VY])
+            var vz_a = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_VZ])
+
+            var vx_b: Scalar[DTYPE] = 0
+            var vy_b: Scalar[DTYPE] = 0
+            var vz_b: Scalar[DTYPE] = 0
+            if body_b >= 0:
+                var b_off_b = body_offset[NUM_BODIES, MAX_CONTACTS](body_b)
+                vx_b = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_VX])
+                vy_b = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_VY])
+                vz_b = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_VZ])
+
+            # Relative velocity along normal
+            # Convention: rel_vn = (v_a - v_b) · n where n points from A to B
+            # rel_vn > 0 means A is moving toward B = APPROACHING
+            var rel_vx = vx_a - vx_b
+            var rel_vy = vy_a - vy_b
+            var rel_vz = vz_a - vz_b
+            var rel_vn = rel_vx * nx + rel_vy * ny + rel_vz * nz
+
+            # For ground contacts (body_b < 0), normal points UP
+            # Sphere falling has va_z < 0, so rel_vn = va_z * 1 < 0
+            # But we want rel_vn > 0 to mean "approaching", so flip for ground
+            if body_b < 0:
+                rel_vn = -rel_vn
+
+            # Only solve if approaching (rel_vn > 0)
+            if rel_vn <= Scalar[DTYPE](0):
+                continue
+
+            # Compute effective mass
+            var inv_mass_a = rebind[Scalar[DTYPE]](
+                model[body_a, MODEL_IDX_INV_MASS]
+            )
+            var inv_mass_b: Scalar[DTYPE] = 0
+            if body_b >= 0:
+                inv_mass_b = rebind[Scalar[DTYPE]](
+                    model[body_b, MODEL_IDX_INV_MASS]
+                )
+            var K = inv_mass_a + inv_mass_b
+
+            # Target: stop (rel_vn = 0) or bounce (rel_vn = -e * current)
+            # j = (rel_vn - target_vn) / K = (rel_vn + e*rel_vn) / K = (1+e)*rel_vn / K
+            var j = (Scalar[DTYPE](1) + restitution) * rel_vn / K
+
+            # Apply impulse to velocities
+            # For sphere-sphere: Body A receives impulse in -normal direction
+            #                    Body B receives impulse in +normal direction
+            # For ground contacts: We flipped rel_vn, so flip impulse direction
+            #                     Sphere should be pushed UP (+normal direction)
+            if body_b < 0:
+                # Ground contact: push sphere in +normal direction (up)
+                state[env, b_off_a + BODY_IDX_VX] = vx_a + j * nx * inv_mass_a
+                state[env, b_off_a + BODY_IDX_VY] = vy_a + j * ny * inv_mass_a
+                state[env, b_off_a + BODY_IDX_VZ] = vz_a + j * nz * inv_mass_a
+            else:
+                # Sphere-sphere: A pushed back, B pushed forward
+                state[env, b_off_a + BODY_IDX_VX] = vx_a - j * nx * inv_mass_a
+                state[env, b_off_a + BODY_IDX_VY] = vy_a - j * ny * inv_mass_a
+                state[env, b_off_a + BODY_IDX_VZ] = vz_a - j * nz * inv_mass_a
+
+                var b_off_b = body_offset[NUM_BODIES, MAX_CONTACTS](body_b)
+                state[env, b_off_b + BODY_IDX_VX] = vx_b + j * nx * inv_mass_b
+                state[env, b_off_b + BODY_IDX_VY] = vy_b + j * ny * inv_mass_b
+                state[env, b_off_b + BODY_IDX_VZ] = vz_b + j * nz * inv_mass_b
+
+
+@always_inline
+fn solve_position_constraints_gpu[
+    DTYPE: DType,
+    NUM_BODIES: Int,
+    MAX_CONTACTS: Int,
+    STATE_SIZE: Int,
+    BATCH: Int,
+](
+    env: Int,
+    state: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+    ],
+    model: LayoutTensor[
+        DTYPE, Layout.row_major(NUM_BODIES, MODEL_BODY_SIZE), MutAnyOrigin
+    ],
+    baumgarte: Scalar[DTYPE],
+    slop: Scalar[DTYPE],
+):
+    """Baumgarte position correction for penetration."""
+    var meta_off = metadata_offset[NUM_BODIES, MAX_CONTACTS]()
+    var num_contacts = Int(
+        rebind[Scalar[DTYPE]](state[env, meta_off + META_IDX_NUM_CONTACTS])
+    )
+
+    for c in range(num_contacts):
+        var c_off = contact_offset[NUM_BODIES, MAX_CONTACTS](c)
+        var body_a = Int(
+            rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_BODY_A])
+        )
+        var body_b = Int(
+            rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_BODY_B])
+        )
+        var dist = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_DIST])
+
+        # Only correct if penetrating beyond slop
+        var penetration = -dist - slop
+        if penetration <= Scalar[DTYPE](0):
+            continue
+
+        var nx = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_NX])
+        var ny = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_NY])
+        var nz = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_NZ])
+
+        var inv_mass_a = rebind[Scalar[DTYPE]](
+            model[body_a, MODEL_IDX_INV_MASS]
+        )
+        var inv_mass_b: Scalar[DTYPE] = 0
+        if body_b >= 0:
+            inv_mass_b = rebind[Scalar[DTYPE]](
+                model[body_b, MODEL_IDX_INV_MASS]
+            )
+        var total_inv_mass = inv_mass_a + inv_mass_b
+
+        var correction = baumgarte * penetration / total_inv_mass
+
+        # Push bodies apart along normal
+        # Normal conventions:
+        # - Ground contact: Normal points UP, body A (sphere) should move UP (+normal)
+        # - Sphere-sphere: Normal points from A to B, so A moves in -normal, B in +normal
+        var b_off_a = body_offset[NUM_BODIES, MAX_CONTACTS](body_a)
+        var px_a = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_PX])
+        var py_a = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_PY])
+        var pz_a = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_PZ])
+
+        if body_b < 0:
+            # Ground contact: push sphere UP (+normal direction)
+            state[env, b_off_a + BODY_IDX_PX] = px_a + correction * nx * inv_mass_a
+            state[env, b_off_a + BODY_IDX_PY] = py_a + correction * ny * inv_mass_a
+            state[env, b_off_a + BODY_IDX_PZ] = pz_a + correction * nz * inv_mass_a
+        else:
+            # Sphere-sphere: A moves in -normal, B moves in +normal
+            var ratio_a = inv_mass_a / total_inv_mass
+            var ratio_b = inv_mass_b / total_inv_mass
+            var corr_a = correction * ratio_a * total_inv_mass
+            var corr_b = correction * ratio_b * total_inv_mass
+
+            state[env, b_off_a + BODY_IDX_PX] = px_a - corr_a * nx
+            state[env, b_off_a + BODY_IDX_PY] = py_a - corr_a * ny
+            state[env, b_off_a + BODY_IDX_PZ] = pz_a - corr_a * nz
+
+            var b_off_b = body_offset[NUM_BODIES, MAX_CONTACTS](body_b)
+            var px_b = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_PX])
+            var py_b = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_PY])
+            var pz_b = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_PZ])
+            state[env, b_off_b + BODY_IDX_PX] = px_b + corr_b * nx
+            state[env, b_off_b + BODY_IDX_PY] = py_b + corr_b * ny
+            state[env, b_off_b + BODY_IDX_PZ] = pz_b + corr_b * nz

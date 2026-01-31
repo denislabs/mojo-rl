@@ -13,16 +13,21 @@ Two solver implementations:
    - Configurable timeconst/dampratio/impedance
 """
 
+from .gravity_solver import apply_gravity_gpu
+
 # Impulse-based solver (Bullet/Box2D style)
 from .impulse_solver import (
     solve_velocity_constraints,
     solve_position_constraints,
     solve_resting_contacts,
+    solve_velocity_constraints_gpu,
+    solve_position_constraints_gpu,
 )
 
 # PGS solver (MuJoCo style)
 from .pgs_solver import (
     solve_constraints_pgs,
+    solve_constraints_pgs_gpu,
     correct_positions,
     # Utility functions
     compute_spring_damper_params,

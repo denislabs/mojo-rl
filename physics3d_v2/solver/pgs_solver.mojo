@@ -25,7 +25,30 @@ Reference: MuJoCo Warp constraint.py and solver.py
 
 from math import sqrt
 from ..types import Model, Data
-
+from layout import LayoutTensor, Layout
+from ..gpu.constants import (
+    MODEL_BODY_SIZE,
+    MODEL_IDX_INV_MASS,
+    BODY_IDX_PX,
+    BODY_IDX_PY,
+    BODY_IDX_PZ,
+    BODY_IDX_VX,
+    BODY_IDX_VY,
+    BODY_IDX_VZ,
+    META_IDX_NUM_CONTACTS,
+    CONTACT_IDX_BODY_A,
+    CONTACT_IDX_BODY_B,
+    CONTACT_IDX_DIST,
+    CONTACT_IDX_NX,
+    CONTACT_IDX_NY,
+    CONTACT_IDX_NZ,
+    CONTACT_IDX_IMPULSE_N,
+    CONTACT_IDX_IMPULSE_T1,
+    CONTACT_IDX_IMPULSE_T2,
+    body_offset,
+    contact_offset,
+    metadata_offset,
+)
 
 # =============================================================================
 # MuJoCo-style Constraint Parameters
@@ -490,3 +513,127 @@ fn correct_positions[
             data.positions[body_b * 3 + 0] += correction * nx * ratio_b
             data.positions[body_b * 3 + 1] += correction * ny * ratio_b
             data.positions[body_b * 3 + 2] += correction * nz * ratio_b
+
+
+# =========================================================================
+# PGS Solver GPU (MuJoCo-style)
+# =========================================================================
+
+
+@always_inline
+fn solve_constraints_pgs_gpu[
+    DTYPE: DType,
+    NUM_BODIES: Int,
+    MAX_CONTACTS: Int,
+    STATE_SIZE: Int,
+    BATCH: Int,
+](
+    env: Int,
+    state: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+    ],
+    model: LayoutTensor[
+        DTYPE, Layout.row_major(NUM_BODIES, MODEL_BODY_SIZE), MutAnyOrigin
+    ],
+    dt: Scalar[DTYPE],
+    restitution: Scalar[DTYPE],
+    iterations: Int,
+):
+    """PGS constraint solver with spring-damper model."""
+    var meta_off = metadata_offset[NUM_BODIES, MAX_CONTACTS]()
+    var num_contacts = Int(
+        rebind[Scalar[DTYPE]](state[env, meta_off + META_IDX_NUM_CONTACTS])
+    )
+
+    # Spring-damper parameters (MuJoCo defaults)
+    var stiffness: Scalar[DTYPE] = 2000.0
+    var damping: Scalar[DTYPE] = 100.0
+
+    for _ in range(iterations):
+        for c in range(num_contacts):
+            var c_off = contact_offset[NUM_BODIES, MAX_CONTACTS](c)
+            var body_a = Int(
+                rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_BODY_A])
+            )
+            var body_b = Int(
+                rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_BODY_B])
+            )
+            var dist = rebind[Scalar[DTYPE]](
+                state[env, c_off + CONTACT_IDX_DIST]
+            )
+
+            if dist >= Scalar[DTYPE](0):
+                continue
+
+            var nx = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_NX])
+            var ny = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_NY])
+            var nz = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_NZ])
+
+            # Get velocities
+            var b_off_a = body_offset[NUM_BODIES, MAX_CONTACTS](body_a)
+            var vx_a = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_VX])
+            var vy_a = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_VY])
+            var vz_a = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_VZ])
+
+            var vx_b: Scalar[DTYPE] = 0
+            var vy_b: Scalar[DTYPE] = 0
+            var vz_b: Scalar[DTYPE] = 0
+            if body_b >= 0:
+                var b_off_b = body_offset[NUM_BODIES, MAX_CONTACTS](body_b)
+                vx_b = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_VX])
+                vy_b = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_VY])
+                vz_b = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_VZ])
+
+            var rel_vx = vx_a - vx_b
+            var rel_vy = vy_a - vy_b
+            var rel_vz = vz_a - vz_b
+            var rel_vn = rel_vx * nx + rel_vy * ny + rel_vz * nz
+
+            # Spring-damper constraint force
+            # penetration > 0 means overlap, rel_vn < 0 means approaching
+            # Damping should resist approaching velocity, so subtract rel_vn
+            var penetration = -dist
+            var bias = stiffness * penetration - damping * rel_vn
+
+            # Compute effective mass
+            var inv_mass_a = rebind[Scalar[DTYPE]](
+                model[body_a, MODEL_IDX_INV_MASS]
+            )
+            var inv_mass_b: Scalar[DTYPE] = 0
+            if body_b >= 0:
+                inv_mass_b = rebind[Scalar[DTYPE]](
+                    model[body_b, MODEL_IDX_INV_MASS]
+                )
+            var K = inv_mass_a + inv_mass_b
+
+            # Constraint impulse
+            var old_impulse = rebind[Scalar[DTYPE]](
+                state[env, c_off + CONTACT_IDX_IMPULSE_N]
+            )
+            var delta_impulse = (bias * dt) / K
+            var new_impulse = max(old_impulse + delta_impulse, Scalar[DTYPE](0))
+            delta_impulse = new_impulse - old_impulse
+            state[env, c_off + CONTACT_IDX_IMPULSE_N] = new_impulse
+
+            # Apply impulse
+            state[env, b_off_a + BODY_IDX_VX] = (
+                vx_a + delta_impulse * nx * inv_mass_a
+            )
+            state[env, b_off_a + BODY_IDX_VY] = (
+                vy_a + delta_impulse * ny * inv_mass_a
+            )
+            state[env, b_off_a + BODY_IDX_VZ] = (
+                vz_a + delta_impulse * nz * inv_mass_a
+            )
+
+            if body_b >= 0:
+                var b_off_b = body_offset[NUM_BODIES, MAX_CONTACTS](body_b)
+                state[env, b_off_b + BODY_IDX_VX] = (
+                    vx_b - delta_impulse * nx * inv_mass_b
+                )
+                state[env, b_off_b + BODY_IDX_VY] = (
+                    vy_b - delta_impulse * ny * inv_mass_b
+                )
+                state[env, b_off_b + BODY_IDX_VZ] = (
+                    vz_b - delta_impulse * nz * inv_mass_b
+                )
