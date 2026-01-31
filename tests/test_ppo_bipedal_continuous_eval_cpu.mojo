@@ -78,7 +78,7 @@ fn main() raises:
 
     print("Loading checkpoint...")
     try:
-        agent.load_checkpoint("ppo_bipedal_continuous_gpu.ckpt")
+        agent.load_checkpoint("ppo_bipedal_continuous_gpu_2.ckpt")
         print("Checkpoint loaded successfully!")
     except:
         print("Error loading checkpoint!")
@@ -102,7 +102,9 @@ fn main() raises:
     @parameter
     if RENDER:
         var renderer = RendererBase(
-            width=600, height=400, title="PPO BipedalWalker Continuous - CPU Eval"
+            width=600,
+            height=400,
+            title="PPO BipedalWalker Continuous - CPU Eval",
         )
 
         print("Running CPU evaluation with rendering...")

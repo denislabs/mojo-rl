@@ -9,9 +9,9 @@ Run with:
 Time limit: Set MAX_DURATION_SECONDS to limit demo duration (0 = infinite).
 """
 
-from physics3d_v2.types import MultiBodyModel, MultiBodyData
-from physics3d_v2.multi_body_step import step_multi_body
-from physics3d_v2.render_multi_body import MultiBodyRenderer
+from physics3d_v2.types import Model, Data
+from physics3d_v2.integrator import ImpulseIntegrator
+from physics3d_v2.render import Physics3DRenderer
 from time import perf_counter_ns
 
 # Configuration
@@ -34,7 +34,7 @@ fn main() raises:
     print()
 
     # Physics setup - multiple bouncy balls
-    var model = MultiBodyModel[DTYPE, NUM_BODIES, MAX_CONTACTS](
+    var model = Model[DTYPE, NUM_BODIES, MAX_CONTACTS](
         gravity_z=-9.81,
         timestep=0.002,  # Small timestep for smooth animation
         ground_z=0.0,
@@ -54,7 +54,7 @@ fn main() raises:
         model.set_body(i, mass=1.0, radius=radii[i])
 
     # Initialize data with staggered positions
-    var data = MultiBodyData[DTYPE, NUM_BODIES, MAX_CONTACTS]()
+    var data = Data[DTYPE, NUM_BODIES, MAX_CONTACTS]()
 
     # Arrange spheres in different starting positions
     # Body 0: Center, high
@@ -77,7 +77,7 @@ fn main() raises:
     data.set_body_velocity(3, 0.2, -0.1, 0.0)  # Moving diagonally
 
     # Renderer setup
-    var renderer = MultiBodyRenderer(
+    var renderer = Physics3DRenderer(
         width=1024,
         height=768,
         show_velocity=True,
@@ -107,7 +107,7 @@ fn main() raises:
 
         # Run multiple physics steps per frame
         for _ in range(physics_steps_per_frame):
-            step_multi_body(model, data)
+            ImpulseIntegrator.step(model, data)
 
         # Render
         renderer.render(model, data)
@@ -127,7 +127,14 @@ fn main() raises:
                     ground_contacts += 1
                 else:
                     sphere_contacts += 1
-            print("  Frame", frame_count, "- ground contacts:", ground_contacts, "sphere contacts:", sphere_contacts)
+            print(
+                "  Frame",
+                frame_count,
+                "- ground contacts:",
+                ground_contacts,
+                "sphere contacts:",
+                sphere_contacts,
+            )
             for i in range(NUM_BODIES):
                 var x = data.positions[i * 3 + 0]
                 var y = data.positions[i * 3 + 1]

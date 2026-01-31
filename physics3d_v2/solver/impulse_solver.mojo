@@ -1,6 +1,6 @@
-"""Physics3D v2 multi-body constraint solver.
+"""Physics3D v2 Impulse-Based Solver (Bullet/Box2D style).
 
-Phase 3: Sequential impulse solver with Split Impulse for position correction.
+Sequential impulse solver with Split Impulse for position correction.
 
 This uses the Split Impulse method (similar to Bullet Physics / Box2D):
 - Velocity solver: Only handles velocity constraints (stopping/bouncing)
@@ -12,41 +12,14 @@ which is critical for stable stacking.
 Reference: Erin Catto's GDC presentations on constraint solving.
 """
 
-from .types import MultiBodyModel, MultiBodyData
-
-
-fn max_scalar[
-    DTYPE: DType
-](a: Scalar[DTYPE], b: Scalar[DTYPE]) -> Scalar[DTYPE]:
-    """Return the maximum of two scalars."""
-    if a > b:
-        return a
-    return b
-
-
-fn min_scalar[
-    DTYPE: DType
-](a: Scalar[DTYPE], b: Scalar[DTYPE]) -> Scalar[DTYPE]:
-    """Return the minimum of two scalars."""
-    if a < b:
-        return a
-    return b
-
-
-fn abs_scalar[
-    DTYPE: DType
-](a: Scalar[DTYPE]) -> Scalar[DTYPE]:
-    """Return the absolute value."""
-    if a < Scalar[DTYPE](0):
-        return -a
-    return a
+from ..types import Model, Data
 
 
 fn solve_velocity_constraints[
     DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int
 ](
-    model: MultiBodyModel[DTYPE, NUM_BODIES, MAX_CONTACTS],
-    mut data: MultiBodyData[DTYPE, NUM_BODIES, MAX_CONTACTS],
+    model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS],
+    mut data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS],
     iterations: Int = 10,
 ):
     """Solve velocity constraints using sequential impulses.
@@ -70,13 +43,13 @@ fn solve_velocity_constraints[
 
 fn _is_grounded[
     DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int
-](
-    data: MultiBodyData[DTYPE, NUM_BODIES, MAX_CONTACTS],
-    body_idx: Int,
-) -> Bool:
+](data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS], body_idx: Int,) -> Bool:
     """Check if a body has ground contact."""
     for c in range(data.num_contacts):
-        if data.contacts[c].body_a == body_idx and data.contacts[c].body_b == -1:
+        if (
+            data.contacts[c].body_a == body_idx
+            and data.contacts[c].body_b == -1
+        ):
             return True
     return False
 
@@ -84,8 +57,8 @@ fn _is_grounded[
 fn _solve_single_contact_velocity[
     DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int
 ](
-    model: MultiBodyModel[DTYPE, NUM_BODIES, MAX_CONTACTS],
-    mut data: MultiBodyData[DTYPE, NUM_BODIES, MAX_CONTACTS],
+    model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS],
+    mut data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS],
     contact_idx: Int,
 ):
     """Solve velocity constraint for one contact.
@@ -183,7 +156,7 @@ fn _solve_single_contact_velocity[
 
     # Accumulated impulse clamping (total impulse must be >= 0)
     var old_impulse = data.contacts[contact_idx].impulse_n
-    var new_impulse = max_scalar(old_impulse + delta_j, Scalar[DTYPE](0))
+    var new_impulse = max(old_impulse + delta_j, Scalar[DTYPE](0))
     delta_j = new_impulse - old_impulse
     data.contacts[contact_idx].impulse_n = new_impulse
 
@@ -211,8 +184,8 @@ fn _solve_single_contact_velocity[
 fn solve_position_constraints[
     DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int
 ](
-    model: MultiBodyModel[DTYPE, NUM_BODIES, MAX_CONTACTS],
-    mut data: MultiBodyData[DTYPE, NUM_BODIES, MAX_CONTACTS],
+    model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS],
+    mut data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS],
     baumgarte: Scalar[DTYPE] = 0.2,
     slop: Scalar[DTYPE] = 0.001,
 ):
@@ -287,8 +260,8 @@ fn solve_position_constraints[
 fn solve_resting_contacts[
     DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int
 ](
-    model: MultiBodyModel[DTYPE, NUM_BODIES, MAX_CONTACTS],
-    mut data: MultiBodyData[DTYPE, NUM_BODIES, MAX_CONTACTS],
+    model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS],
+    mut data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS],
 ):
     """Apply gravity cancellation for bodies in resting contact.
 

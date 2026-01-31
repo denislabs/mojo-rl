@@ -1,7 +1,6 @@
-"""Physics3D v2 Constraint-Based Solver (MuJoCo-style).
+"""Physics3D v2 Projected Gauss-Seidel Solver (MuJoCo-style).
 
-This implements a Projected Gauss-Seidel (PGS) solver following MuJoCo's
-constraint formulation:
+This implements a PGS solver following MuJoCo's constraint formulation:
 
 Key Design Decisions:
 1. Ground contacts resolved FIRST to get proper grounded body velocities
@@ -25,25 +24,7 @@ Reference: MuJoCo Warp constraint.py and solver.py
 """
 
 from math import sqrt
-from .types import MultiBodyModel, MultiBodyData
-
-
-fn max_scalar[DTYPE: DType](a: Scalar[DTYPE], b: Scalar[DTYPE]) -> Scalar[DTYPE]:
-    if a > b:
-        return a
-    return b
-
-
-fn min_scalar[DTYPE: DType](a: Scalar[DTYPE], b: Scalar[DTYPE]) -> Scalar[DTYPE]:
-    if a < b:
-        return a
-    return b
-
-
-fn abs_scalar[DTYPE: DType](a: Scalar[DTYPE]) -> Scalar[DTYPE]:
-    if a < Scalar[DTYPE](0):
-        return -a
-    return a
+from ..types import Model, Data
 
 
 # =============================================================================
@@ -55,11 +36,11 @@ fn abs_scalar[DTYPE: DType](a: Scalar[DTYPE]) -> Scalar[DTYPE]:
 # - timeconst: time constant for the spring (smaller = stiffer)
 # - dampratio: damping ratio (1.0 = critical damping)
 
-comptime DEFAULT_TIMECONST: Float64 = 0.02   # 20ms - fairly stiff
-comptime DEFAULT_DAMPRATIO: Float64 = 1.0    # Critical damping
+comptime DEFAULT_TIMECONST: Float64 = 0.02  # 20ms - fairly stiff
+comptime DEFAULT_DAMPRATIO: Float64 = 1.0  # Critical damping
 
 # Solver impedance parameters (MuJoCo solimp)
-comptime DEFAULT_IMPEDANCE: Float64 = 0.9    # High impedance = soft contact
+comptime DEFAULT_IMPEDANCE: Float64 = 0.9  # High impedance = soft contact
 comptime MIN_IMPEDANCE: Float64 = 0.001
 comptime MAX_IMPEDANCE: Float64 = 0.999
 
@@ -69,7 +50,9 @@ comptime MAX_IMPEDANCE: Float64 = 0.999
 # =============================================================================
 
 
-fn compute_spring_damper_params[DTYPE: DType](
+fn compute_spring_damper_params[
+    DTYPE: DType
+](
     timeconst: Scalar[DTYPE],
     dampratio: Scalar[DTYPE],
     dt: Scalar[DTYPE],
@@ -83,8 +66,8 @@ fn compute_spring_damper_params[DTYPE: DType](
     Also clamp timeconst to at least 2*dt for stability.
     """
     # Clamp timeconst for stability (MuJoCo's refsafe)
-    var tc = max_scalar(timeconst, Scalar[DTYPE](2) * dt)
-    var dr = max_scalar(dampratio, Scalar[DTYPE](0.01))
+    var tc = max(timeconst, Scalar[DTYPE](2) * dt)
+    var dr = max(dampratio, Scalar[DTYPE](0.01))
 
     var k = Scalar[DTYPE](1) / (tc * tc * dr * dr)
     var b = Scalar[DTYPE](2) / tc
@@ -92,7 +75,9 @@ fn compute_spring_damper_params[DTYPE: DType](
     return (k, b)
 
 
-fn compute_effective_mass[DTYPE: DType](
+fn compute_effective_mass[
+    DTYPE: DType
+](
     inv_mass_a: Scalar[DTYPE],
     inv_mass_b: Scalar[DTYPE],
     impedance: Scalar[DTYPE] = 0.9,
@@ -111,23 +96,27 @@ fn compute_effective_mass[DTYPE: DType](
         return Scalar[DTYPE](0)
 
     # Clamp impedance
-    var imp = max_scalar(min_scalar(impedance, Scalar[DTYPE](MAX_IMPEDANCE)),
-                         Scalar[DTYPE](MIN_IMPEDANCE))
+    var imp = max(
+        min(impedance, Scalar[DTYPE](MAX_IMPEDANCE)),
+        Scalar[DTYPE](MIN_IMPEDANCE),
+    )
 
     # MuJoCo effective mass formula
     var D_inv = invweight * (Scalar[DTYPE](1) - imp) / imp
-    D_inv = max_scalar(D_inv, Scalar[DTYPE](1e-10))
+    D_inv = max(D_inv, Scalar[DTYPE](1e-10))
 
     return Scalar[DTYPE](1) / D_inv
 
 
-fn compute_reference_acceleration[DTYPE: DType](
-    penetration: Scalar[DTYPE],    # Positive when penetrating
-    velocity: Scalar[DTYPE],       # Positive when approaching
-    k: Scalar[DTYPE],              # Spring coefficient
-    b: Scalar[DTYPE],              # Damper coefficient
+fn compute_reference_acceleration[
+    DTYPE: DType
+](
+    penetration: Scalar[DTYPE],  # Positive when penetrating
+    velocity: Scalar[DTYPE],  # Positive when approaching
+    k: Scalar[DTYPE],  # Spring coefficient
+    b: Scalar[DTYPE],  # Damper coefficient
     restitution: Scalar[DTYPE],
-    dt: Scalar[DTYPE],             # Timestep for velocity->acceleration conversion
+    dt: Scalar[DTYPE],  # Timestep for velocity->acceleration conversion
 ) -> Scalar[DTYPE]:
     """Compute reference acceleration (MuJoCo-style with restitution fix).
 
@@ -168,7 +157,7 @@ fn compute_reference_acceleration[DTYPE: DType](
 fn compute_constraint_velocity[
     DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int
 ](
-    data: MultiBodyData[DTYPE, NUM_BODIES, MAX_CONTACTS],
+    data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS],
     body_a: Int,
     body_b: Int,
     normal_x: Scalar[DTYPE],
@@ -195,7 +184,11 @@ fn compute_constraint_velocity[
         vb_y = Scalar[DTYPE](0)
         vb_z = Scalar[DTYPE](0)
 
-    return (va_x - vb_x) * normal_x + (va_y - vb_y) * normal_y + (va_z - vb_z) * normal_z
+    return (
+        (va_x - vb_x) * normal_x
+        + (va_y - vb_y) * normal_y
+        + (va_z - vb_z) * normal_z
+    )
 
 
 # =============================================================================
@@ -206,8 +199,8 @@ fn compute_constraint_velocity[
 fn solve_constraints_pgs[
     DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int
 ](
-    model: MultiBodyModel[DTYPE, NUM_BODIES, MAX_CONTACTS],
-    mut data: MultiBodyData[DTYPE, NUM_BODIES, MAX_CONTACTS],
+    model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS],
+    mut data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS],
     dt: Scalar[DTYPE],
     iterations: Int = 20,
 ):
@@ -237,8 +230,12 @@ fn solve_constraints_pgs[
     # Pre-compute constraint data
     var D = InlineArray[Scalar[DTYPE], MAX_CONTACTS](uninitialized=True)
     var lambda_n = InlineArray[Scalar[DTYPE], MAX_CONTACTS](uninitialized=True)
-    var inv_mass_a_arr = InlineArray[Scalar[DTYPE], MAX_CONTACTS](uninitialized=True)
-    var inv_mass_b_arr = InlineArray[Scalar[DTYPE], MAX_CONTACTS](uninitialized=True)
+    var inv_mass_a_arr = InlineArray[Scalar[DTYPE], MAX_CONTACTS](
+        uninitialized=True
+    )
+    var inv_mass_b_arr = InlineArray[Scalar[DTYPE], MAX_CONTACTS](
+        uninitialized=True
+    )
     var had_impact = InlineArray[Bool, MAX_CONTACTS](uninitialized=True)
 
     for c in range(data.num_contacts):
@@ -286,7 +283,9 @@ fn solve_constraints_pgs[
 
         # Get velocity toward ground (negative = approaching ground for nz=+1)
         var va_z = data.velocities[body_a * 3 + 2]
-        var vel_n = va_z * nz  # Velocity in normal direction (ground normal is +z)
+        var vel_n = (
+            va_z * nz
+        )  # Velocity in normal direction (ground normal is +z)
 
         if vel_n < Scalar[DTYPE](0):
             # Approaching ground - stop or bounce
@@ -369,7 +368,9 @@ fn solve_constraints_pgs[
             # Convention differs for ground vs sphere-sphere:
             # - Ground (body_b < 0): vel > 0 means SEPARATING (moving up)
             # - Sphere-sphere: vel > 0 means APPROACHING
-            var vel = compute_constraint_velocity(data, body_a, body_b, nx, ny, nz)
+            var vel = compute_constraint_velocity(
+                data, body_a, body_b, nx, ny, nz
+            )
 
             # Penetration (positive when penetrating)
             var penetration = -contact.dist
@@ -381,7 +382,9 @@ fn solve_constraints_pgs[
                 approach_vel = -vel  # Flip for ground contacts
 
             # Skip if separating and not penetrating
-            if approach_vel <= Scalar[DTYPE](0) and penetration <= Scalar[DTYPE](0):
+            if approach_vel <= Scalar[DTYPE](0) and penetration <= Scalar[
+                DTYPE
+            ](0):
                 continue
 
             # Soft constraint: spring-damper (MuJoCo style)
@@ -397,7 +400,7 @@ fn solve_constraints_pgs[
 
             # Accumulate and clamp (unilateral constraint)
             var old_lambda = lambda_n[c]
-            var new_lambda = max_scalar(old_lambda + delta_j, Scalar[DTYPE](0))
+            var new_lambda = max(old_lambda + delta_j, Scalar[DTYPE](0))
             delta_j = new_lambda - old_lambda
             lambda_n[c] = new_lambda
 
@@ -414,13 +417,13 @@ fn solve_constraints_pgs[
 
 fn _is_grounded[
     DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int
-](
-    data: MultiBodyData[DTYPE, NUM_BODIES, MAX_CONTACTS],
-    body_idx: Int,
-) -> Bool:
+](data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS], body_idx: Int,) -> Bool:
     """Check if a body has ground contact."""
     for c in range(data.num_contacts):
-        if data.contacts[c].body_a == body_idx and data.contacts[c].body_b == -1:
+        if (
+            data.contacts[c].body_a == body_idx
+            and data.contacts[c].body_b == -1
+        ):
             return True
     return False
 
@@ -433,8 +436,8 @@ fn _is_grounded[
 fn correct_positions[
     DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int
 ](
-    model: MultiBodyModel[DTYPE, NUM_BODIES, MAX_CONTACTS],
-    mut data: MultiBodyData[DTYPE, NUM_BODIES, MAX_CONTACTS],
+    model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS],
+    mut data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS],
     baumgarte: Scalar[DTYPE] = 0.8,
     slop: Scalar[DTYPE] = 0.0001,
 ):

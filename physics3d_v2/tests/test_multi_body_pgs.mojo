@@ -6,8 +6,8 @@ Run with:
     pixi run mojo run physics3d_v2/tests/test_multi_body_v2.mojo
 """
 
-from physics3d_v2.types import MultiBodyModel, MultiBodyData
-from physics3d_v2.multi_body_step_v2 import step_multi_body_v2
+from physics3d_v2.types import Model, Data
+from physics3d_v2.integrator import PGSIntegrator
 
 
 fn abs_val(x: Float64) -> Float64:
@@ -32,13 +32,13 @@ fn test_two_spheres_collide() -> Bool:
     comptime MAX_CONTACTS = 10
     comptime DTYPE = DType.float64
 
-    var model = MultiBodyModel[DTYPE, NUM_BODIES, MAX_CONTACTS](
+    var model = Model[DTYPE, NUM_BODIES, MAX_CONTACTS](
         gravity_z=-9.81, timestep=0.001, ground_z=0.0, restitution=0.8
     )
     model.set_body(0, mass=1.0, radius=0.1)
     model.set_body(1, mass=1.0, radius=0.1)
 
-    var data = MultiBodyData[DTYPE, NUM_BODIES, MAX_CONTACTS]()
+    var data = Data[DTYPE, NUM_BODIES, MAX_CONTACTS]()
     data.set_body_position(0, -0.5, 0, 0.11)
     data.set_body_position(1, 0.5, 0, 0.11)
     data.set_body_velocity(0, 1.0, 0, 0)
@@ -55,7 +55,7 @@ fn test_two_spheres_collide() -> Bool:
     var num_steps = Int(max_time / dt)
 
     for i in range(num_steps):
-        step_multi_body_v2(model, data)
+        PGSIntegrator.step(model, data)
 
         if data.num_contacts > 0:
             for c in range(data.num_contacts):
@@ -104,14 +104,14 @@ fn test_sphere_stack() -> Bool:
     var z1: Float64 = 3.0 * radius
     var z2: Float64 = 5.0 * radius
 
-    var model = MultiBodyModel[DTYPE, NUM_BODIES, MAX_CONTACTS](
+    var model = Model[DTYPE, NUM_BODIES, MAX_CONTACTS](
         gravity_z=-9.81, timestep=0.001, ground_z=0.0, restitution=0.0
     )
     model.set_body(0, mass=1.0, radius=radius)
     model.set_body(1, mass=1.0, radius=radius)
     model.set_body(2, mass=1.0, radius=radius)
 
-    var data = MultiBodyData[DTYPE, NUM_BODIES, MAX_CONTACTS]()
+    var data = Data[DTYPE, NUM_BODIES, MAX_CONTACTS]()
     data.set_body_position(0, 0, 0, z0)
     data.set_body_position(1, 0, 0, z1)
     data.set_body_position(2, 0, 0, z2)
@@ -135,7 +135,7 @@ fn test_sphere_stack() -> Bool:
     max_z.append(z2)
 
     for _ in range(num_steps):
-        step_multi_body_v2(model, data)
+        PGSIntegrator.step(model, data)
 
         for b in range(NUM_BODIES):
             var z = data.get_body_z(b)
@@ -183,13 +183,13 @@ fn test_sphere_fall_on_sphere() -> Bool:
 
     var radius: Float64 = 0.1
 
-    var model = MultiBodyModel[DTYPE, NUM_BODIES, MAX_CONTACTS](
+    var model = Model[DTYPE, NUM_BODIES, MAX_CONTACTS](
         gravity_z=-9.81, timestep=0.001, ground_z=0.0, restitution=0.5
     )
     model.set_body(0, mass=1.0, radius=radius)
     model.set_body(1, mass=1.0, radius=radius)
 
-    var data = MultiBodyData[DTYPE, NUM_BODIES, MAX_CONTACTS]()
+    var data = Data[DTYPE, NUM_BODIES, MAX_CONTACTS]()
     data.set_body_position(0, 0, 0, radius)
     data.set_body_position(1, 0, 0, 1.0)
 
@@ -206,7 +206,7 @@ fn test_sphere_fall_on_sphere() -> Bool:
     var max_z_after_collision: Float64 = 0.0
 
     for i in range(num_steps):
-        step_multi_body_v2(model, data)
+        PGSIntegrator.step(model, data)
 
         for c in range(data.num_contacts):
             if data.contacts[c].body_a >= 0 and data.contacts[c].body_b >= 0:
