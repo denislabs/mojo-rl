@@ -85,7 +85,9 @@ fn init_state_host_buffer[
 
         # Initialize each body
         for body in range(NUM_BODIES):
-            var body_base = env_base + body_offset[NUM_BODIES, MAX_CONTACTS](body)
+            var body_base = env_base + body_offset[NUM_BODIES, MAX_CONTACTS](
+                body
+            )
 
             # Position at origin
             host_buf[body_base + BODY_IDX_PX] = Scalar[DTYPE](0)
@@ -161,7 +163,9 @@ fn create_model_host_buffer[
         HostBuffer of size [NUM_BODIES * 9].
     """
     comptime MODEL_BODY_SIZE = 9
-    var host_buf = ctx.enqueue_create_host_buffer[DTYPE](NUM_BODIES * MODEL_BODY_SIZE)
+    var host_buf = ctx.enqueue_create_host_buffer[DTYPE](
+        NUM_BODIES * MODEL_BODY_SIZE
+    )
 
     for i in range(NUM_BODIES):
         var base = i * MODEL_BODY_SIZE
@@ -193,7 +197,9 @@ fn init_model_host_buffer[
         HostBuffer of size [NUM_BODIES * 9], zero-initialized.
     """
     comptime MODEL_BODY_SIZE = 9
-    var host_buf = ctx.enqueue_create_host_buffer[DTYPE](NUM_BODIES * MODEL_BODY_SIZE)
+    var host_buf = ctx.enqueue_create_host_buffer[DTYPE](
+        NUM_BODIES * MODEL_BODY_SIZE
+    )
 
     # Zero-initialize all values
     for i in range(NUM_BODIES * MODEL_BODY_SIZE):
@@ -245,16 +251,26 @@ fn copy_data_to_host_buffer[
         host_buf[body_base + BODY_IDX_VZ] = data.velocities[body * 3 + 2]
 
         # Angular velocity
-        host_buf[body_base + BODY_IDX_WX] = data.angular_velocities[body * 3 + 0]
-        host_buf[body_base + BODY_IDX_WY] = data.angular_velocities[body * 3 + 1]
-        host_buf[body_base + BODY_IDX_WZ] = data.angular_velocities[body * 3 + 2]
+        host_buf[body_base + BODY_IDX_WX] = data.angular_velocities[
+            body * 3 + 0
+        ]
+        host_buf[body_base + BODY_IDX_WY] = data.angular_velocities[
+            body * 3 + 1
+        ]
+        host_buf[body_base + BODY_IDX_WZ] = data.angular_velocities[
+            body * 3 + 2
+        ]
 
     # Copy contacts (if any)
     var num_contacts = data.num_contacts
     for c in range(num_contacts):
         var c_base = env_base + contact_offset[NUM_BODIES, MAX_CONTACTS](c)
-        host_buf[c_base + CONTACT_IDX_BODY_A] = Scalar[DTYPE](data.contacts[c].body_a)
-        host_buf[c_base + CONTACT_IDX_BODY_B] = Scalar[DTYPE](data.contacts[c].body_b)
+        host_buf[c_base + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
+            data.contacts[c].body_a
+        )
+        host_buf[c_base + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
+            data.contacts[c].body_b
+        )
         host_buf[c_base + CONTACT_IDX_POS_X] = data.contacts[c].pos_x
         host_buf[c_base + CONTACT_IDX_POS_Y] = data.contacts[c].pos_y
         host_buf[c_base + CONTACT_IDX_POS_Z] = data.contacts[c].pos_z
@@ -314,9 +330,15 @@ fn copy_host_buffer_to_data[
         data.velocities[body * 3 + 2] = host_buf[body_base + BODY_IDX_VZ]
 
         # Angular velocity
-        data.angular_velocities[body * 3 + 0] = host_buf[body_base + BODY_IDX_WX]
-        data.angular_velocities[body * 3 + 1] = host_buf[body_base + BODY_IDX_WY]
-        data.angular_velocities[body * 3 + 2] = host_buf[body_base + BODY_IDX_WZ]
+        data.angular_velocities[body * 3 + 0] = host_buf[
+            body_base + BODY_IDX_WX
+        ]
+        data.angular_velocities[body * 3 + 1] = host_buf[
+            body_base + BODY_IDX_WY
+        ]
+        data.angular_velocities[body * 3 + 2] = host_buf[
+            body_base + BODY_IDX_WZ
+        ]
 
     # Get number of contacts from metadata
     var meta_base = env_base + metadata_offset[NUM_BODIES, MAX_CONTACTS]()
@@ -357,7 +379,9 @@ fn set_body_position[
 ):
     """Set position for a specific body in a specific environment."""
     comptime STATE_SIZE = compute_state_size[NUM_BODIES, MAX_CONTACTS]()
-    var body_base = env * STATE_SIZE + body_offset[NUM_BODIES, MAX_CONTACTS](body)
+    var body_base = env * STATE_SIZE + body_offset[NUM_BODIES, MAX_CONTACTS](
+        body
+    )
     host_buf[body_base + BODY_IDX_PX] = x
     host_buf[body_base + BODY_IDX_PY] = y
     host_buf[body_base + BODY_IDX_PZ] = z
@@ -375,7 +399,9 @@ fn set_body_velocity[
 ):
     """Set linear velocity for a specific body in a specific environment."""
     comptime STATE_SIZE = compute_state_size[NUM_BODIES, MAX_CONTACTS]()
-    var body_base = env * STATE_SIZE + body_offset[NUM_BODIES, MAX_CONTACTS](body)
+    var body_base = env * STATE_SIZE + body_offset[NUM_BODIES, MAX_CONTACTS](
+        body
+    )
     host_buf[body_base + BODY_IDX_VX] = vx
     host_buf[body_base + BODY_IDX_VY] = vy
     host_buf[body_base + BODY_IDX_VZ] = vz
@@ -387,10 +413,14 @@ fn get_body_position[
     host_buf: HostBuffer[DTYPE],
     env: Int,
     body: Int,
-) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
+) -> Tuple[
+    Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]
+]:
     """Get position for a specific body in a specific environment."""
     comptime STATE_SIZE = compute_state_size[NUM_BODIES, MAX_CONTACTS]()
-    var body_base = env * STATE_SIZE + body_offset[NUM_BODIES, MAX_CONTACTS](body)
+    var body_base = env * STATE_SIZE + body_offset[NUM_BODIES, MAX_CONTACTS](
+        body
+    )
     return (
         host_buf[body_base + BODY_IDX_PX],
         host_buf[body_base + BODY_IDX_PY],
@@ -404,10 +434,14 @@ fn get_body_velocity[
     host_buf: HostBuffer[DTYPE],
     env: Int,
     body: Int,
-) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
+) -> Tuple[
+    Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]
+]:
     """Get velocity for a specific body in a specific environment."""
     comptime STATE_SIZE = compute_state_size[NUM_BODIES, MAX_CONTACTS]()
-    var body_base = env * STATE_SIZE + body_offset[NUM_BODIES, MAX_CONTACTS](body)
+    var body_base = env * STATE_SIZE + body_offset[NUM_BODIES, MAX_CONTACTS](
+        body
+    )
     return (
         host_buf[body_base + BODY_IDX_VX],
         host_buf[body_base + BODY_IDX_VY],
@@ -420,7 +454,9 @@ fn get_body_z[
 ](host_buf: HostBuffer[DTYPE], env: Int, body: Int) -> Scalar[DTYPE]:
     """Get z position for a specific body."""
     comptime STATE_SIZE = compute_state_size[NUM_BODIES, MAX_CONTACTS]()
-    var body_base = env * STATE_SIZE + body_offset[NUM_BODIES, MAX_CONTACTS](body)
+    var body_base = env * STATE_SIZE + body_offset[NUM_BODIES, MAX_CONTACTS](
+        body
+    )
     return host_buf[body_base + BODY_IDX_PZ]
 
 
@@ -429,7 +465,9 @@ fn get_body_vz[
 ](host_buf: HostBuffer[DTYPE], env: Int, body: Int) -> Scalar[DTYPE]:
     """Get z velocity for a specific body."""
     comptime STATE_SIZE = compute_state_size[NUM_BODIES, MAX_CONTACTS]()
-    var body_base = env * STATE_SIZE + body_offset[NUM_BODIES, MAX_CONTACTS](body)
+    var body_base = env * STATE_SIZE + body_offset[NUM_BODIES, MAX_CONTACTS](
+        body
+    )
     return host_buf[body_base + BODY_IDX_VZ]
 
 
@@ -438,5 +476,7 @@ fn get_num_contacts[
 ](host_buf: HostBuffer[DTYPE], env: Int) -> Int:
     """Get number of active contacts for an environment."""
     comptime STATE_SIZE = compute_state_size[NUM_BODIES, MAX_CONTACTS]()
-    var meta_base = env * STATE_SIZE + metadata_offset[NUM_BODIES, MAX_CONTACTS]()
+    var meta_base = (
+        env * STATE_SIZE + metadata_offset[NUM_BODIES, MAX_CONTACTS]()
+    )
     return Int(host_buf[meta_base + META_IDX_NUM_CONTACTS])

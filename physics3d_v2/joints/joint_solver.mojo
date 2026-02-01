@@ -104,10 +104,18 @@ fn _get_world_axis[
     var rotated = _quat_rotate(qx, qy, qz, qw, local_x, local_y, local_z)
 
     # Normalize
-    var length_sq = rotated[0] * rotated[0] + rotated[1] * rotated[1] + rotated[2] * rotated[2]
+    var length_sq = (
+        rotated[0] * rotated[0]
+        + rotated[1] * rotated[1]
+        + rotated[2] * rotated[2]
+    )
     var inv_length = Scalar[DTYPE](1.0) / sqrt(length_sq + Scalar[DTYPE](1e-10))
 
-    return (rotated[0] * inv_length, rotated[1] * inv_length, rotated[2] * inv_length)
+    return (
+        rotated[0] * inv_length,
+        rotated[1] * inv_length,
+        rotated[2] * inv_length,
+    )
 
 
 # =============================================================================
@@ -134,18 +142,23 @@ fn _solve_single_joint_velocity[
 
     # Get world-space anchors
     var anchor_a = _get_world_anchor(
-        data, body_a,
-        joint.anchor_parent_x, joint.anchor_parent_y, joint.anchor_parent_z
+        data,
+        body_a,
+        joint.anchor_parent_x,
+        joint.anchor_parent_y,
+        joint.anchor_parent_z,
     )
     var anchor_b = _get_world_anchor(
-        data, body_b,
-        joint.anchor_child_x, joint.anchor_child_y, joint.anchor_child_z
+        data,
+        body_b,
+        joint.anchor_child_x,
+        joint.anchor_child_y,
+        joint.anchor_child_z,
     )
 
     # Get world-space hinge axis
     var axis = _get_world_axis(
-        data, body_a,
-        joint.axis_x, joint.axis_y, joint.axis_z
+        data, body_a, joint.axis_x, joint.axis_y, joint.axis_z
     )
 
     # --- Point-to-point velocity constraint (3 DOF) ---
@@ -248,9 +261,15 @@ fn _solve_single_joint_velocity[
         var tau_a_x = ra_y * impulse_z - ra_z * impulse_y
         var tau_a_y = ra_z * impulse_x - ra_x * impulse_z
         var tau_a_z = ra_x * impulse_y - ra_y * impulse_x
-        data.angular_velocities[body_a * 3 + 0] += tau_a_x * model.inv_inertias[body_a * 3 + 0]
-        data.angular_velocities[body_a * 3 + 1] += tau_a_y * model.inv_inertias[body_a * 3 + 1]
-        data.angular_velocities[body_a * 3 + 2] += tau_a_z * model.inv_inertias[body_a * 3 + 2]
+        data.angular_velocities[body_a * 3 + 0] += (
+            tau_a_x * model.inv_inertias[body_a * 3 + 0]
+        )
+        data.angular_velocities[body_a * 3 + 1] += (
+            tau_a_y * model.inv_inertias[body_a * 3 + 1]
+        )
+        data.angular_velocities[body_a * 3 + 2] += (
+            tau_a_z * model.inv_inertias[body_a * 3 + 2]
+        )
 
     data.velocities[body_b * 3 + 0] -= impulse_x * inv_mass_b
     data.velocities[body_b * 3 + 1] -= impulse_y * inv_mass_b
@@ -259,9 +278,15 @@ fn _solve_single_joint_velocity[
     var tau_b_x = rb_y * impulse_z - rb_z * impulse_y
     var tau_b_y = rb_z * impulse_x - rb_x * impulse_z
     var tau_b_z = rb_x * impulse_y - rb_y * impulse_x
-    data.angular_velocities[body_b * 3 + 0] -= tau_b_x * model.inv_inertias[body_b * 3 + 0]
-    data.angular_velocities[body_b * 3 + 1] -= tau_b_y * model.inv_inertias[body_b * 3 + 1]
-    data.angular_velocities[body_b * 3 + 2] -= tau_b_z * model.inv_inertias[body_b * 3 + 2]
+    data.angular_velocities[body_b * 3 + 0] -= (
+        tau_b_x * model.inv_inertias[body_b * 3 + 0]
+    )
+    data.angular_velocities[body_b * 3 + 1] -= (
+        tau_b_y * model.inv_inertias[body_b * 3 + 1]
+    )
+    data.angular_velocities[body_b * 3 + 2] -= (
+        tau_b_z * model.inv_inertias[body_b * 3 + 2]
+    )
 
     # --- Angular constraint (2 DOF) - restrict rotation to hinge axis ---
 
@@ -285,7 +310,9 @@ fn _solve_single_joint_velocity[
     var rel_omega_z = wa_z - wb_z
 
     # Component along hinge axis (this is allowed)
-    var omega_dot_axis = rel_omega_x * axis[0] + rel_omega_y * axis[1] + rel_omega_z * axis[2]
+    var omega_dot_axis = (
+        rel_omega_x * axis[0] + rel_omega_y * axis[1] + rel_omega_z * axis[2]
+    )
     var omega_along_x = axis[0] * omega_dot_axis
     var omega_along_y = axis[1] * omega_dot_axis
     var omega_along_z = axis[2] * omega_dot_axis
@@ -295,7 +322,11 @@ fn _solve_single_joint_velocity[
     var omega_perp_y = rel_omega_y - omega_along_y
     var omega_perp_z = rel_omega_z - omega_along_z
 
-    var omega_perp_sq = omega_perp_x * omega_perp_x + omega_perp_y * omega_perp_y + omega_perp_z * omega_perp_z
+    var omega_perp_sq = (
+        omega_perp_x * omega_perp_x
+        + omega_perp_y * omega_perp_y
+        + omega_perp_z * omega_perp_z
+    )
     if omega_perp_sq < Scalar[DTYPE](1e-12):
         return
 
@@ -320,13 +351,25 @@ fn _solve_single_joint_velocity[
 
     # Apply angular impulse
     if body_a >= 0:
-        data.angular_velocities[body_a * 3 + 0] += ang_impulse_x * model.inv_inertias[body_a * 3 + 0]
-        data.angular_velocities[body_a * 3 + 1] += ang_impulse_y * model.inv_inertias[body_a * 3 + 1]
-        data.angular_velocities[body_a * 3 + 2] += ang_impulse_z * model.inv_inertias[body_a * 3 + 2]
+        data.angular_velocities[body_a * 3 + 0] += (
+            ang_impulse_x * model.inv_inertias[body_a * 3 + 0]
+        )
+        data.angular_velocities[body_a * 3 + 1] += (
+            ang_impulse_y * model.inv_inertias[body_a * 3 + 1]
+        )
+        data.angular_velocities[body_a * 3 + 2] += (
+            ang_impulse_z * model.inv_inertias[body_a * 3 + 2]
+        )
 
-    data.angular_velocities[body_b * 3 + 0] -= ang_impulse_x * model.inv_inertias[body_b * 3 + 0]
-    data.angular_velocities[body_b * 3 + 1] -= ang_impulse_y * model.inv_inertias[body_b * 3 + 1]
-    data.angular_velocities[body_b * 3 + 2] -= ang_impulse_z * model.inv_inertias[body_b * 3 + 2]
+    data.angular_velocities[body_b * 3 + 0] -= (
+        ang_impulse_x * model.inv_inertias[body_b * 3 + 0]
+    )
+    data.angular_velocities[body_b * 3 + 1] -= (
+        ang_impulse_y * model.inv_inertias[body_b * 3 + 1]
+    )
+    data.angular_velocities[body_b * 3 + 2] -= (
+        ang_impulse_z * model.inv_inertias[body_b * 3 + 2]
+    )
 
 
 fn solve_joint_velocity_constraints[
@@ -371,12 +414,18 @@ fn _solve_single_joint_position[
 
     # Get world-space anchors
     var anchor_a = _get_world_anchor(
-        data, body_a,
-        joint.anchor_parent_x, joint.anchor_parent_y, joint.anchor_parent_z
+        data,
+        body_a,
+        joint.anchor_parent_x,
+        joint.anchor_parent_y,
+        joint.anchor_parent_z,
     )
     var anchor_b = _get_world_anchor(
-        data, body_b,
-        joint.anchor_child_x, joint.anchor_child_y, joint.anchor_child_z
+        data,
+        body_b,
+        joint.anchor_child_x,
+        joint.anchor_child_y,
+        joint.anchor_child_z,
     )
 
     # Position error
@@ -513,8 +562,12 @@ fn solve_joint_velocity_constraints_gpu[
     BATCH: Int,
 ](
     env: Int,
-    state: LayoutTensor[DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
-    model: LayoutTensor[DTYPE, Layout.row_major(NUM_BODIES, MODEL_BODY_SIZE), MutAnyOrigin],
+    state: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+    ],
+    model: LayoutTensor[
+        DTYPE, Layout.row_major(NUM_BODIES, MODEL_BODY_SIZE), MutAnyOrigin
+    ],
     iterations: Int,
 ):
     """Solve joint velocity constraints on GPU."""
@@ -535,12 +588,24 @@ fn solve_joint_velocity_constraints_gpu[
             var body_b: Int = j
 
             # Get anchor points from joint state
-            var anchor_px = rebind[Scalar[DTYPE]](state[env, j_off + JOINT_IDX_ANCHOR_PX])
-            var anchor_py = rebind[Scalar[DTYPE]](state[env, j_off + JOINT_IDX_ANCHOR_PY])
-            var anchor_pz = rebind[Scalar[DTYPE]](state[env, j_off + JOINT_IDX_ANCHOR_PZ])
-            var anchor_cx = rebind[Scalar[DTYPE]](state[env, j_off + JOINT_IDX_ANCHOR_CX])
-            var anchor_cy = rebind[Scalar[DTYPE]](state[env, j_off + JOINT_IDX_ANCHOR_CY])
-            var anchor_cz = rebind[Scalar[DTYPE]](state[env, j_off + JOINT_IDX_ANCHOR_CZ])
+            var anchor_px = rebind[Scalar[DTYPE]](
+                state[env, j_off + JOINT_IDX_ANCHOR_PX]
+            )
+            var anchor_py = rebind[Scalar[DTYPE]](
+                state[env, j_off + JOINT_IDX_ANCHOR_PY]
+            )
+            var anchor_pz = rebind[Scalar[DTYPE]](
+                state[env, j_off + JOINT_IDX_ANCHOR_PZ]
+            )
+            var anchor_cx = rebind[Scalar[DTYPE]](
+                state[env, j_off + JOINT_IDX_ANCHOR_CX]
+            )
+            var anchor_cy = rebind[Scalar[DTYPE]](
+                state[env, j_off + JOINT_IDX_ANCHOR_CY]
+            )
+            var anchor_cz = rebind[Scalar[DTYPE]](
+                state[env, j_off + JOINT_IDX_ANCHOR_CZ]
+            )
 
             # Get world-space anchor for parent
             var wa_x = anchor_px
@@ -557,27 +622,41 @@ fn solve_joint_velocity_constraints_gpu[
             var wa_wz: Scalar[DTYPE] = 0
 
             if body_a >= 0:
-                var b_off_a = body_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](body_a)
+                var b_off_a = body_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](
+                    body_a
+                )
                 pa_x = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_PX])
                 pa_y = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_PY])
                 pa_z = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_PZ])
-                var qa_x = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_QX])
-                var qa_y = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_QY])
-                var qa_z = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_QZ])
-                var qa_w = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_QW])
+                var qa_x = rebind[Scalar[DTYPE]](
+                    state[env, b_off_a + BODY_IDX_QX]
+                )
+                var qa_y = rebind[Scalar[DTYPE]](
+                    state[env, b_off_a + BODY_IDX_QY]
+                )
+                var qa_z = rebind[Scalar[DTYPE]](
+                    state[env, b_off_a + BODY_IDX_QZ]
+                )
+                var qa_w = rebind[Scalar[DTYPE]](
+                    state[env, b_off_a + BODY_IDX_QW]
+                )
                 va_x = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_VX])
                 va_y = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_VY])
                 va_z = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_VZ])
                 wa_wx = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_WX])
                 wa_wy = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_WY])
                 wa_wz = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_WZ])
-                var rot_a = _quat_rotate_gpu(qa_x, qa_y, qa_z, qa_w, anchor_px, anchor_py, anchor_pz)
+                var rot_a = _quat_rotate_gpu(
+                    qa_x, qa_y, qa_z, qa_w, anchor_px, anchor_py, anchor_pz
+                )
                 wa_x = pa_x + rot_a[0]
                 wa_y = pa_y + rot_a[1]
                 wa_z = pa_z + rot_a[2]
 
             # Get world-space anchor for child
-            var b_off_b = body_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](body_b)
+            var b_off_b = body_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](
+                body_b
+            )
             var pb_x = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_PX])
             var pb_y = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_PY])
             var pb_z = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_PZ])
@@ -592,7 +671,9 @@ fn solve_joint_velocity_constraints_gpu[
             var wb_y = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_WY])
             var wb_z = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_WZ])
 
-            var rot_b = _quat_rotate_gpu(qb_x, qb_y, qb_z, qb_w, anchor_cx, anchor_cy, anchor_cz)
+            var rot_b = _quat_rotate_gpu(
+                qb_x, qb_y, qb_z, qb_w, anchor_cx, anchor_cy, anchor_cz
+            )
             var wb_ax = pb_x + rot_b[0]
             var wb_ay = pb_y + rot_b[1]
             var wb_az = pb_z + rot_b[2]
@@ -624,7 +705,9 @@ fn solve_joint_velocity_constraints_gpu[
             var inv_mass_a: Scalar[DTYPE] = 0
             var rot_contrib_a: Scalar[DTYPE] = 0
             if body_a >= 0:
-                inv_mass_a = rebind[Scalar[DTYPE]](model[body_a, MODEL_IDX_INV_MASS])
+                inv_mass_a = rebind[Scalar[DTYPE]](
+                    model[body_a, MODEL_IDX_INV_MASS]
+                )
                 var ra_sq = ra_x * ra_x + ra_y * ra_y + ra_z * ra_z
                 var avg_inv_i_a = (
                     rebind[Scalar[DTYPE]](model[body_a, MODEL_IDX_INV_IXX])
@@ -633,7 +716,9 @@ fn solve_joint_velocity_constraints_gpu[
                 ) / Scalar[DTYPE](3.0)
                 rot_contrib_a = ra_sq * avg_inv_i_a
 
-            var inv_mass_b = rebind[Scalar[DTYPE]](model[body_b, MODEL_IDX_INV_MASS])
+            var inv_mass_b = rebind[Scalar[DTYPE]](
+                model[body_b, MODEL_IDX_INV_MASS]
+            )
             var rb_sq = rb_x * rb_x + rb_y * rb_y + rb_z * rb_z
             var avg_inv_i_b = (
                 rebind[Scalar[DTYPE]](model[body_b, MODEL_IDX_INV_IXX])
@@ -654,17 +739,31 @@ fn solve_joint_velocity_constraints_gpu[
 
             # Apply to body A
             if body_a >= 0:
-                var b_off_a = body_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](body_a)
-                state[env, b_off_a + BODY_IDX_VX] = va_x + impulse_x * inv_mass_a
-                state[env, b_off_a + BODY_IDX_VY] = va_y + impulse_y * inv_mass_a
-                state[env, b_off_a + BODY_IDX_VZ] = va_z + impulse_z * inv_mass_a
+                var b_off_a = body_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](
+                    body_a
+                )
+                state[env, b_off_a + BODY_IDX_VX] = (
+                    va_x + impulse_x * inv_mass_a
+                )
+                state[env, b_off_a + BODY_IDX_VY] = (
+                    va_y + impulse_y * inv_mass_a
+                )
+                state[env, b_off_a + BODY_IDX_VZ] = (
+                    va_z + impulse_z * inv_mass_a
+                )
 
                 var tau_a_x = ra_y * impulse_z - ra_z * impulse_y
                 var tau_a_y = ra_z * impulse_x - ra_x * impulse_z
                 var tau_a_z = ra_x * impulse_y - ra_y * impulse_x
-                var inv_ixx_a = rebind[Scalar[DTYPE]](model[body_a, MODEL_IDX_INV_IXX])
-                var inv_iyy_a = rebind[Scalar[DTYPE]](model[body_a, MODEL_IDX_INV_IYY])
-                var inv_izz_a = rebind[Scalar[DTYPE]](model[body_a, MODEL_IDX_INV_IZZ])
+                var inv_ixx_a = rebind[Scalar[DTYPE]](
+                    model[body_a, MODEL_IDX_INV_IXX]
+                )
+                var inv_iyy_a = rebind[Scalar[DTYPE]](
+                    model[body_a, MODEL_IDX_INV_IYY]
+                )
+                var inv_izz_a = rebind[Scalar[DTYPE]](
+                    model[body_a, MODEL_IDX_INV_IZZ]
+                )
                 state[env, b_off_a + BODY_IDX_WX] = wa_wx + tau_a_x * inv_ixx_a
                 state[env, b_off_a + BODY_IDX_WY] = wa_wy + tau_a_y * inv_iyy_a
                 state[env, b_off_a + BODY_IDX_WZ] = wa_wz + tau_a_z * inv_izz_a
@@ -677,9 +776,15 @@ fn solve_joint_velocity_constraints_gpu[
             var tau_b_x = rb_y * impulse_z - rb_z * impulse_y
             var tau_b_y = rb_z * impulse_x - rb_x * impulse_z
             var tau_b_z = rb_x * impulse_y - rb_y * impulse_x
-            var inv_ixx_b = rebind[Scalar[DTYPE]](model[body_b, MODEL_IDX_INV_IXX])
-            var inv_iyy_b = rebind[Scalar[DTYPE]](model[body_b, MODEL_IDX_INV_IYY])
-            var inv_izz_b = rebind[Scalar[DTYPE]](model[body_b, MODEL_IDX_INV_IZZ])
+            var inv_ixx_b = rebind[Scalar[DTYPE]](
+                model[body_b, MODEL_IDX_INV_IXX]
+            )
+            var inv_iyy_b = rebind[Scalar[DTYPE]](
+                model[body_b, MODEL_IDX_INV_IYY]
+            )
+            var inv_izz_b = rebind[Scalar[DTYPE]](
+                model[body_b, MODEL_IDX_INV_IZZ]
+            )
             state[env, b_off_b + BODY_IDX_WX] = wb_x - tau_b_x * inv_ixx_b
             state[env, b_off_b + BODY_IDX_WY] = wb_y - tau_b_y * inv_iyy_b
             state[env, b_off_b + BODY_IDX_WZ] = wb_z - tau_b_z * inv_izz_b
@@ -695,8 +800,12 @@ fn solve_joint_position_constraints_gpu[
     BATCH: Int,
 ](
     env: Int,
-    state: LayoutTensor[DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
-    model: LayoutTensor[DTYPE, Layout.row_major(NUM_BODIES, MODEL_BODY_SIZE), MutAnyOrigin],
+    state: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+    ],
+    model: LayoutTensor[
+        DTYPE, Layout.row_major(NUM_BODIES, MODEL_BODY_SIZE), MutAnyOrigin
+    ],
     baumgarte: Scalar[DTYPE],
     iterations: Int,
 ):
@@ -714,12 +823,24 @@ fn solve_joint_position_constraints_gpu[
             var body_b: Int = j
 
             # Get anchor points
-            var anchor_px = rebind[Scalar[DTYPE]](state[env, j_off + JOINT_IDX_ANCHOR_PX])
-            var anchor_py = rebind[Scalar[DTYPE]](state[env, j_off + JOINT_IDX_ANCHOR_PY])
-            var anchor_pz = rebind[Scalar[DTYPE]](state[env, j_off + JOINT_IDX_ANCHOR_PZ])
-            var anchor_cx = rebind[Scalar[DTYPE]](state[env, j_off + JOINT_IDX_ANCHOR_CX])
-            var anchor_cy = rebind[Scalar[DTYPE]](state[env, j_off + JOINT_IDX_ANCHOR_CY])
-            var anchor_cz = rebind[Scalar[DTYPE]](state[env, j_off + JOINT_IDX_ANCHOR_CZ])
+            var anchor_px = rebind[Scalar[DTYPE]](
+                state[env, j_off + JOINT_IDX_ANCHOR_PX]
+            )
+            var anchor_py = rebind[Scalar[DTYPE]](
+                state[env, j_off + JOINT_IDX_ANCHOR_PY]
+            )
+            var anchor_pz = rebind[Scalar[DTYPE]](
+                state[env, j_off + JOINT_IDX_ANCHOR_PZ]
+            )
+            var anchor_cx = rebind[Scalar[DTYPE]](
+                state[env, j_off + JOINT_IDX_ANCHOR_CX]
+            )
+            var anchor_cy = rebind[Scalar[DTYPE]](
+                state[env, j_off + JOINT_IDX_ANCHOR_CY]
+            )
+            var anchor_cz = rebind[Scalar[DTYPE]](
+                state[env, j_off + JOINT_IDX_ANCHOR_CZ]
+            )
 
             # Get world-space anchor for parent
             var wa_x = anchor_px
@@ -727,21 +848,41 @@ fn solve_joint_position_constraints_gpu[
             var wa_z = anchor_pz
 
             if body_a >= 0:
-                var b_off_a = body_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](body_a)
-                var pa_x = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_PX])
-                var pa_y = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_PY])
-                var pa_z = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_PZ])
-                var qa_x = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_QX])
-                var qa_y = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_QY])
-                var qa_z = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_QZ])
-                var qa_w = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_QW])
-                var rot_a = _quat_rotate_gpu(qa_x, qa_y, qa_z, qa_w, anchor_px, anchor_py, anchor_pz)
+                var b_off_a = body_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](
+                    body_a
+                )
+                var pa_x = rebind[Scalar[DTYPE]](
+                    state[env, b_off_a + BODY_IDX_PX]
+                )
+                var pa_y = rebind[Scalar[DTYPE]](
+                    state[env, b_off_a + BODY_IDX_PY]
+                )
+                var pa_z = rebind[Scalar[DTYPE]](
+                    state[env, b_off_a + BODY_IDX_PZ]
+                )
+                var qa_x = rebind[Scalar[DTYPE]](
+                    state[env, b_off_a + BODY_IDX_QX]
+                )
+                var qa_y = rebind[Scalar[DTYPE]](
+                    state[env, b_off_a + BODY_IDX_QY]
+                )
+                var qa_z = rebind[Scalar[DTYPE]](
+                    state[env, b_off_a + BODY_IDX_QZ]
+                )
+                var qa_w = rebind[Scalar[DTYPE]](
+                    state[env, b_off_a + BODY_IDX_QW]
+                )
+                var rot_a = _quat_rotate_gpu(
+                    qa_x, qa_y, qa_z, qa_w, anchor_px, anchor_py, anchor_pz
+                )
                 wa_x = pa_x + rot_a[0]
                 wa_y = pa_y + rot_a[1]
                 wa_z = pa_z + rot_a[2]
 
             # Get world-space anchor for child
-            var b_off_b = body_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](body_b)
+            var b_off_b = body_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](
+                body_b
+            )
             var pb_x = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_PX])
             var pb_y = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_PY])
             var pb_z = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_PZ])
@@ -750,7 +891,9 @@ fn solve_joint_position_constraints_gpu[
             var qb_z = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_QZ])
             var qb_w = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_QW])
 
-            var rot_b = _quat_rotate_gpu(qb_x, qb_y, qb_z, qb_w, anchor_cx, anchor_cy, anchor_cz)
+            var rot_b = _quat_rotate_gpu(
+                qb_x, qb_y, qb_z, qb_w, anchor_cx, anchor_cy, anchor_cz
+            )
             var wb_x = pb_x + rot_b[0]
             var wb_y = pb_y + rot_b[1]
             var wb_z = pb_z + rot_b[2]
@@ -760,15 +903,21 @@ fn solve_joint_position_constraints_gpu[
             var error_y = wa_y - wb_y
             var error_z = wa_z - wb_z
 
-            var error_sq = error_x * error_x + error_y * error_y + error_z * error_z
+            var error_sq = (
+                error_x * error_x + error_y * error_y + error_z * error_z
+            )
             if error_sq < Scalar[DTYPE](1e-12):
                 continue
 
             # Compute effective mass
             var inv_mass_a: Scalar[DTYPE] = 0
             if body_a >= 0:
-                inv_mass_a = rebind[Scalar[DTYPE]](model[body_a, MODEL_IDX_INV_MASS])
-            var inv_mass_b = rebind[Scalar[DTYPE]](model[body_b, MODEL_IDX_INV_MASS])
+                inv_mass_a = rebind[Scalar[DTYPE]](
+                    model[body_a, MODEL_IDX_INV_MASS]
+                )
+            var inv_mass_b = rebind[Scalar[DTYPE]](
+                model[body_b, MODEL_IDX_INV_MASS]
+            )
 
             var total_inv_mass = inv_mass_a + inv_mass_b
             if total_inv_mass < Scalar[DTYPE](1e-10):
@@ -781,13 +930,27 @@ fn solve_joint_position_constraints_gpu[
 
             # Apply to body A
             if body_a >= 0:
-                var b_off_a = body_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](body_a)
-                var pa_x = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_PX])
-                var pa_y = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_PY])
-                var pa_z = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_PZ])
-                state[env, b_off_a + BODY_IDX_PX] = pa_x + correction_x * inv_mass_a
-                state[env, b_off_a + BODY_IDX_PY] = pa_y + correction_y * inv_mass_a
-                state[env, b_off_a + BODY_IDX_PZ] = pa_z + correction_z * inv_mass_a
+                var b_off_a = body_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](
+                    body_a
+                )
+                var pa_x = rebind[Scalar[DTYPE]](
+                    state[env, b_off_a + BODY_IDX_PX]
+                )
+                var pa_y = rebind[Scalar[DTYPE]](
+                    state[env, b_off_a + BODY_IDX_PY]
+                )
+                var pa_z = rebind[Scalar[DTYPE]](
+                    state[env, b_off_a + BODY_IDX_PZ]
+                )
+                state[env, b_off_a + BODY_IDX_PX] = (
+                    pa_x + correction_x * inv_mass_a
+                )
+                state[env, b_off_a + BODY_IDX_PY] = (
+                    pa_y + correction_y * inv_mass_a
+                )
+                state[env, b_off_a + BODY_IDX_PZ] = (
+                    pa_z + correction_z * inv_mass_a
+                )
 
             # Apply to body B
             state[env, b_off_b + BODY_IDX_PX] = pb_x - correction_x * inv_mass_b

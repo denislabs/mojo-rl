@@ -125,7 +125,12 @@ struct PGSIntegrator(Integrator):
             var qw_new = qw + half_dt * (-wx * qx - wy * qy - wz * qz)
 
             # Normalize
-            var norm_sq = qx_new * qx_new + qy_new * qy_new + qz_new * qz_new + qw_new * qw_new
+            var norm_sq = (
+                qx_new * qx_new
+                + qy_new * qy_new
+                + qz_new * qz_new
+                + qw_new * qw_new
+            )
             if norm_sq > Scalar[DTYPE](1e-10):
                 var inv_norm = Scalar[DTYPE](1.0) / sqrt(norm_sq)
                 data.quaternions[i * 4 + 0] = qx_new * inv_norm
@@ -209,9 +214,9 @@ struct PGSIntegrator(Integrator):
         ](env, state, model, ground_z)
 
         # 2. Apply gravity
-        apply_gravity_gpu[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, STATE_SIZE, BATCH](
-            env, state, dt, gravity_z
-        )
+        apply_gravity_gpu[
+            DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, STATE_SIZE, BATCH
+        ](env, state, dt, gravity_z)
 
         # 3. Solve constraints with PGS (including friction)
         solve_constraints_pgs_gpu[
@@ -249,7 +254,11 @@ struct PGSIntegrator(Integrator):
 
     @staticmethod
     fn step_gpu[
-        DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0, BATCH: Int = 1
+        DTYPE: DType,
+        NUM_BODIES: Int,
+        MAX_CONTACTS: Int,
+        MAX_JOINTS: Int = 0,
+        BATCH: Int = 1,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],
@@ -276,7 +285,9 @@ struct PGSIntegrator(Integrator):
             friction: Friction coefficient.
         """
 
-        comptime STATE_SIZE = compute_state_size[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS]()
+        comptime STATE_SIZE = compute_state_size[
+            NUM_BODIES, MAX_CONTACTS, MAX_JOINTS
+        ]()
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
         var state = LayoutTensor[
@@ -325,7 +336,11 @@ struct PGSIntegrator(Integrator):
 
     @staticmethod
     fn simulate_gpu[
-        DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0, BATCH: Int = 1
+        DTYPE: DType,
+        NUM_BODIES: Int,
+        MAX_CONTACTS: Int,
+        MAX_JOINTS: Int = 0,
+        BATCH: Int = 1,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],

@@ -64,8 +64,12 @@ struct HingeJoint[DTYPE: DType](ImplicitlyCopyable, Movable):
     fn create(
         parent_body: Int,
         child_body: Int,
-        anchor_parent: Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]],
-        anchor_child: Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]],
+        anchor_parent: Tuple[
+            Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]
+        ],
+        anchor_child: Tuple[
+            Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]
+        ],
         axis: Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]],
     ) -> Self:
         """Create a hinge joint with specified parameters.
@@ -85,7 +89,9 @@ struct HingeJoint[DTYPE: DType](ImplicitlyCopyable, Movable):
         var ay = axis[1]
         var az = axis[2]
         var length_sq = ax * ax + ay * ay + az * az
-        var inv_length = Scalar[Self.DTYPE](1.0) / sqrt(length_sq + Scalar[Self.DTYPE](1e-10))
+        var inv_length = Scalar[Self.DTYPE](1.0) / sqrt(
+            length_sq + Scalar[Self.DTYPE](1e-10)
+        )
         ax = ax * inv_length
         ay = ay * inv_length
         az = az * inv_length

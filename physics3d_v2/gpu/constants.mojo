@@ -166,7 +166,9 @@ comptime METADATA_SIZE: Int = 4
 # =============================================================================
 
 
-fn compute_state_size[NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0]() -> Int:
+fn compute_state_size[
+    NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0
+]() -> Int:
     """Compute total state buffer size per environment.
 
     Args:
@@ -185,17 +187,23 @@ fn compute_state_size[NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0]()
     )
 
 
-fn body_offset[NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0](body_idx: Int) -> Int:
+fn body_offset[
+    NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0
+](body_idx: Int) -> Int:
     """Get offset to start of body state within environment state."""
     return body_idx * BODY_STATE_SIZE
 
 
-fn contact_offset[NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0](contact_idx: Int) -> Int:
+fn contact_offset[
+    NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0
+](contact_idx: Int) -> Int:
     """Get offset to start of contact state within environment state."""
     return NUM_BODIES * BODY_STATE_SIZE + contact_idx * CONTACT_STATE_SIZE
 
 
-fn joint_offset[NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0](joint_idx: Int) -> Int:
+fn joint_offset[
+    NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0
+](joint_idx: Int) -> Int:
     """Get offset to start of joint state within environment state."""
     return (
         NUM_BODIES * BODY_STATE_SIZE
@@ -204,7 +212,9 @@ fn joint_offset[NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0](joint_i
     )
 
 
-fn metadata_offset[NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0]() -> Int:
+fn metadata_offset[
+    NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0
+]() -> Int:
     """Get offset to metadata within environment state."""
     return (
         NUM_BODIES * BODY_STATE_SIZE

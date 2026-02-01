@@ -92,7 +92,9 @@ fn test_free_fall_gpu() raises -> Bool:
     model[8] = 1.0 / inertia  # inv_izz
 
     # Initialize state buffer
-    var host_state = init_state_host_buffer[DTYPE, NUM_BODIES, MAX_CONTACTS, BATCH](ctx)
+    var host_state = init_state_host_buffer[
+        DTYPE, NUM_BODIES, MAX_CONTACTS, BATCH
+    ](ctx)
     set_body_position[DTYPE, NUM_BODIES, MAX_CONTACTS](
         host_state, env=0, body=0, x=0.0, y=0.0, z=initial_z
     )
@@ -108,7 +110,15 @@ fn test_free_fall_gpu() raises -> Bool:
     # Simulate 100 steps (1 second)
     var num_steps = 100
     ImpulseIntegrator.simulate_gpu[DTYPE, NUM_BODIES, MAX_CONTACTS, BATCH](
-        ctx, state_buf, model_buf, num_steps, dt, gravity_z, ground_z, restitution, Scalar[DTYPE](0.5)
+        ctx,
+        state_buf,
+        model_buf,
+        num_steps,
+        dt,
+        gravity_z,
+        ground_z,
+        restitution,
+        Scalar[DTYPE](0.5),
     )
     ctx.synchronize()
 
@@ -117,8 +127,12 @@ fn test_free_fall_gpu() raises -> Bool:
     ctx.synchronize()
 
     # Get results
-    var final_z = get_body_z[DTYPE, NUM_BODIES, MAX_CONTACTS](host_state, env=0, body=0)
-    var final_vz = get_body_vz[DTYPE, NUM_BODIES, MAX_CONTACTS](host_state, env=0, body=0)
+    var final_z = get_body_z[DTYPE, NUM_BODIES, MAX_CONTACTS](
+        host_state, env=0, body=0
+    )
+    var final_vz = get_body_vz[DTYPE, NUM_BODIES, MAX_CONTACTS](
+        host_state, env=0, body=0
+    )
 
     # Analytical solution after t=1s:
     # z(t) = z0 + v0*t + 0.5*g*t^2 = 10 + 0 + 0.5*(-9.81)*1^2 = 5.095
@@ -130,8 +144,18 @@ fn test_free_fall_gpu() raises -> Bool:
     var vz_error = abs_val(Float64(final_vz) - Float64(expected_vz))
 
     print("After", num_steps, "steps (dt=0.01, t=1s):")
-    print("  z:  ", final_z, " (expected:", expected_z, ", error:", z_error, ")")
-    print("  vz: ", final_vz, " (expected:", expected_vz, ", error:", vz_error, ")")
+    print(
+        "  z:  ", final_z, " (expected:", expected_z, ", error:", z_error, ")"
+    )
+    print(
+        "  vz: ",
+        final_vz,
+        " (expected:",
+        expected_vz,
+        ", error:",
+        vz_error,
+        ")",
+    )
 
     # Check tolerances
     var z_tolerance = 0.05  # ~1% error
@@ -187,7 +211,9 @@ fn test_ball_drop_gpu() raises -> Bool:
     var initial_z: Float32 = 1.0
 
     # Initialize state buffer
-    var host_state = init_state_host_buffer[DTYPE, NUM_BODIES, MAX_CONTACTS, BATCH](ctx)
+    var host_state = init_state_host_buffer[
+        DTYPE, NUM_BODIES, MAX_CONTACTS, BATCH
+    ](ctx)
     set_body_position[DTYPE, NUM_BODIES, MAX_CONTACTS](
         host_state, env=0, body=0, x=0.0, y=0.0, z=initial_z
     )
@@ -203,7 +229,15 @@ fn test_ball_drop_gpu() raises -> Bool:
     # Simulate enough steps for ball to fall and settle
     var num_steps = 200
     PGSIntegrator.simulate_gpu[DTYPE, NUM_BODIES, MAX_CONTACTS, BATCH](
-        ctx, state_buf, model_buf, num_steps, dt, gravity_z, ground_z, restitution, Scalar[DTYPE](0.5)
+        ctx,
+        state_buf,
+        model_buf,
+        num_steps,
+        dt,
+        gravity_z,
+        ground_z,
+        restitution,
+        Scalar[DTYPE](0.5),
     )
     ctx.synchronize()
 
@@ -212,9 +246,15 @@ fn test_ball_drop_gpu() raises -> Bool:
     ctx.synchronize()
 
     # Get results
-    var final_z = get_body_z[DTYPE, NUM_BODIES, MAX_CONTACTS](host_state, env=0, body=0)
-    var final_vz = get_body_vz[DTYPE, NUM_BODIES, MAX_CONTACTS](host_state, env=0, body=0)
-    var num_contacts = get_num_contacts[DTYPE, NUM_BODIES, MAX_CONTACTS](host_state, env=0)
+    var final_z = get_body_z[DTYPE, NUM_BODIES, MAX_CONTACTS](
+        host_state, env=0, body=0
+    )
+    var final_vz = get_body_vz[DTYPE, NUM_BODIES, MAX_CONTACTS](
+        host_state, env=0, body=0
+    )
+    var num_contacts = get_num_contacts[DTYPE, NUM_BODIES, MAX_CONTACTS](
+        host_state, env=0
+    )
 
     # Expected: ball rests at z = radius = 0.1
     var expected_z: Float32 = 0.1
@@ -229,7 +269,9 @@ fn test_ball_drop_gpu() raises -> Bool:
     var z_tolerance = 0.01  # 1cm
     var vz_tolerance = 0.5
 
-    var passed = z_error < z_tolerance and abs_val(Float64(final_vz)) < vz_tolerance
+    var passed = (
+        z_error < z_tolerance and abs_val(Float64(final_vz)) < vz_tolerance
+    )
 
     if passed:
         print("PASSED: Ball settled at correct height")
@@ -280,7 +322,9 @@ fn test_two_spheres_collision_gpu() raises -> Bool:
     # Initialize state: two spheres approaching each other
     # Sphere 0: at x=-1, moving right (vx=+2)
     # Sphere 1: at x=+1, moving left (vx=-2)
-    var host_state = init_state_host_buffer[DTYPE, NUM_BODIES, MAX_CONTACTS, BATCH](ctx)
+    var host_state = init_state_host_buffer[
+        DTYPE, NUM_BODIES, MAX_CONTACTS, BATCH
+    ](ctx)
     set_body_position[DTYPE, NUM_BODIES, MAX_CONTACTS](
         host_state, env=0, body=0, x=-1.0, y=0.0, z=1.0
     )
@@ -303,17 +347,61 @@ fn test_two_spheres_collision_gpu() raises -> Bool:
     ctx.synchronize()
 
     print("Initial state:")
-    var pos0 = get_body_position[DTYPE, NUM_BODIES, MAX_CONTACTS](host_state, env=0, body=0)
-    var vel0 = get_body_velocity[DTYPE, NUM_BODIES, MAX_CONTACTS](host_state, env=0, body=0)
-    var pos1 = get_body_position[DTYPE, NUM_BODIES, MAX_CONTACTS](host_state, env=0, body=1)
-    var vel1 = get_body_velocity[DTYPE, NUM_BODIES, MAX_CONTACTS](host_state, env=0, body=1)
-    print("  Sphere 0: pos=(", pos0[0], ",", pos0[1], ",", pos0[2], "), vel=(", vel0[0], ",", vel0[1], ",", vel0[2], ")")
-    print("  Sphere 1: pos=(", pos1[0], ",", pos1[1], ",", pos1[2], "), vel=(", vel1[0], ",", vel1[1], ",", vel1[2], ")")
+    var pos0 = get_body_position[DTYPE, NUM_BODIES, MAX_CONTACTS](
+        host_state, env=0, body=0
+    )
+    var vel0 = get_body_velocity[DTYPE, NUM_BODIES, MAX_CONTACTS](
+        host_state, env=0, body=0
+    )
+    var pos1 = get_body_position[DTYPE, NUM_BODIES, MAX_CONTACTS](
+        host_state, env=0, body=1
+    )
+    var vel1 = get_body_velocity[DTYPE, NUM_BODIES, MAX_CONTACTS](
+        host_state, env=0, body=1
+    )
+    print(
+        "  Sphere 0: pos=(",
+        pos0[0],
+        ",",
+        pos0[1],
+        ",",
+        pos0[2],
+        "), vel=(",
+        vel0[0],
+        ",",
+        vel0[1],
+        ",",
+        vel0[2],
+        ")",
+    )
+    print(
+        "  Sphere 1: pos=(",
+        pos1[0],
+        ",",
+        pos1[1],
+        ",",
+        pos1[2],
+        "), vel=(",
+        vel1[0],
+        ",",
+        vel1[1],
+        ",",
+        vel1[2],
+        ")",
+    )
 
     # Simulate for enough time for collision to happen
     var num_steps = 100
     ImpulseIntegrator.simulate_gpu[DTYPE, NUM_BODIES, MAX_CONTACTS, BATCH](
-        ctx, state_buf, model_buf, num_steps, dt, gravity_z, ground_z, restitution, Scalar[DTYPE](0.5)
+        ctx,
+        state_buf,
+        model_buf,
+        num_steps,
+        dt,
+        gravity_z,
+        ground_z,
+        restitution,
+        Scalar[DTYPE](0.5),
     )
     ctx.synchronize()
 
@@ -322,12 +410,48 @@ fn test_two_spheres_collision_gpu() raises -> Bool:
     ctx.synchronize()
 
     print("\nAfter", num_steps, "steps:")
-    pos0 = get_body_position[DTYPE, NUM_BODIES, MAX_CONTACTS](host_state, env=0, body=0)
-    vel0 = get_body_velocity[DTYPE, NUM_BODIES, MAX_CONTACTS](host_state, env=0, body=0)
-    pos1 = get_body_position[DTYPE, NUM_BODIES, MAX_CONTACTS](host_state, env=0, body=1)
-    vel1 = get_body_velocity[DTYPE, NUM_BODIES, MAX_CONTACTS](host_state, env=0, body=1)
-    print("  Sphere 0: pos=(", pos0[0], ",", pos0[1], ",", pos0[2], "), vel=(", vel0[0], ",", vel0[1], ",", vel0[2], ")")
-    print("  Sphere 1: pos=(", pos1[0], ",", pos1[1], ",", pos1[2], "), vel=(", vel1[0], ",", vel1[1], ",", vel1[2], ")")
+    pos0 = get_body_position[DTYPE, NUM_BODIES, MAX_CONTACTS](
+        host_state, env=0, body=0
+    )
+    vel0 = get_body_velocity[DTYPE, NUM_BODIES, MAX_CONTACTS](
+        host_state, env=0, body=0
+    )
+    pos1 = get_body_position[DTYPE, NUM_BODIES, MAX_CONTACTS](
+        host_state, env=0, body=1
+    )
+    vel1 = get_body_velocity[DTYPE, NUM_BODIES, MAX_CONTACTS](
+        host_state, env=0, body=1
+    )
+    print(
+        "  Sphere 0: pos=(",
+        pos0[0],
+        ",",
+        pos0[1],
+        ",",
+        pos0[2],
+        "), vel=(",
+        vel0[0],
+        ",",
+        vel0[1],
+        ",",
+        vel0[2],
+        ")",
+    )
+    print(
+        "  Sphere 1: pos=(",
+        pos1[0],
+        ",",
+        pos1[1],
+        ",",
+        pos1[2],
+        "), vel=(",
+        vel1[0],
+        ",",
+        vel1[1],
+        ",",
+        vel1[2],
+        ")",
+    )
 
     # After elastic collision, velocities should be swapped
     # Sphere 0 should be moving left (vx < 0)
@@ -379,7 +503,9 @@ fn test_batched_simulation_gpu() raises -> Bool:
     model[8] = 1.0 / inertia
 
     # Initialize state buffer with different starting heights
-    var host_state = init_state_host_buffer[DTYPE, NUM_BODIES, MAX_CONTACTS, BATCH](ctx)
+    var host_state = init_state_host_buffer[
+        DTYPE, NUM_BODIES, MAX_CONTACTS, BATCH
+    ](ctx)
 
     for i in range(BATCH):
         var height: Float32 = 0.5 + Float32(i) * 0.01  # 0.5 to ~3m
@@ -398,7 +524,15 @@ fn test_batched_simulation_gpu() raises -> Bool:
     # Simulate
     var num_steps = 100
     ImpulseIntegrator.simulate_gpu[DTYPE, NUM_BODIES, MAX_CONTACTS, BATCH](
-        ctx, state_buf, model_buf, num_steps, dt, gravity_z, ground_z, restitution, Scalar[DTYPE](0.5)
+        ctx,
+        state_buf,
+        model_buf,
+        num_steps,
+        dt,
+        gravity_z,
+        ground_z,
+        restitution,
+        Scalar[DTYPE](0.5),
     )
     ctx.synchronize()
 
@@ -415,15 +549,21 @@ fn test_batched_simulation_gpu() raises -> Bool:
     sample_indices.append(255)
     for idx in range(len(sample_indices)):
         var i = sample_indices[idx]
-        var z = get_body_z[DTYPE, NUM_BODIES, MAX_CONTACTS](host_state, env=i, body=0)
-        var vz = get_body_vz[DTYPE, NUM_BODIES, MAX_CONTACTS](host_state, env=i, body=0)
+        var z = get_body_z[DTYPE, NUM_BODIES, MAX_CONTACTS](
+            host_state, env=i, body=0
+        )
+        var vz = get_body_vz[DTYPE, NUM_BODIES, MAX_CONTACTS](
+            host_state, env=i, body=0
+        )
         print("  Env", i, ": z =", z, ", vz =", vz)
 
     # Verify all balls are above ground
     var all_valid = True
     var min_z: Float32 = 1000.0
     for i in range(BATCH):
-        var z = get_body_z[DTYPE, NUM_BODIES, MAX_CONTACTS](host_state, env=i, body=0)
+        var z = get_body_z[DTYPE, NUM_BODIES, MAX_CONTACTS](
+            host_state, env=i, body=0
+        )
         if z < min_z:
             min_z = z
         if z < ground_z + radius - 0.01:
@@ -433,7 +573,9 @@ fn test_batched_simulation_gpu() raises -> Bool:
     print("  Min z across all envs:", min_z)
 
     if all_valid:
-        print("PASSED: All", BATCH, "environments valid (no ground penetration)")
+        print(
+            "PASSED: All", BATCH, "environments valid (no ground penetration)"
+        )
     else:
         print("FAILED: Some environments have errors")
 
@@ -483,7 +625,9 @@ fn test_cpu_gpu_comparison_freefall_impulse() raises -> Bool:
     var radius: Float32 = 0.1
     var inertia = 0.4 * mass * radius * radius
 
-    var model_gpu = init_model_host_buffer[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS](ctx)
+    var model_gpu = init_model_host_buffer[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS](
+        ctx
+    )
     model_gpu[0] = mass
     model_gpu[1] = 1.0 / mass
     model_gpu[2] = radius
@@ -494,7 +638,9 @@ fn test_cpu_gpu_comparison_freefall_impulse() raises -> Bool:
     model_gpu[7] = 1.0 / inertia
     model_gpu[8] = 1.0 / inertia
 
-    var host_state = init_state_host_buffer[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS, BATCH](ctx)
+    var host_state = init_state_host_buffer[
+        DTYPE_GPU, NUM_BODIES, MAX_CONTACTS, BATCH
+    ](ctx)
     set_body_position[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS](
         host_state, env=0, body=0, x=0.0, y=0.0, z=Float32(initial_z)
     )
@@ -507,17 +653,31 @@ fn test_cpu_gpu_comparison_freefall_impulse() raises -> Bool:
     ctx.synchronize()
 
     ImpulseIntegrator.simulate_gpu[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS, BATCH](
-        ctx, state_buf, model_buf, num_steps,
-        Scalar[DTYPE_GPU](dt), Scalar[DTYPE_GPU](-9.81),
-        Scalar[DTYPE_GPU](-100.0), Scalar[DTYPE_GPU](0.0), Scalar[DTYPE_GPU](0.5)
+        ctx,
+        state_buf,
+        model_buf,
+        num_steps,
+        Scalar[DTYPE_GPU](dt),
+        Scalar[DTYPE_GPU](-9.81),
+        Scalar[DTYPE_GPU](-100.0),
+        Scalar[DTYPE_GPU](0.0),
+        Scalar[DTYPE_GPU](0.5),
     )
     ctx.synchronize()
 
     ctx.enqueue_copy(host_state, state_buf)
     ctx.synchronize()
 
-    var gpu_z = Float64(get_body_z[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS](host_state, env=0, body=0))
-    var gpu_vz = Float64(get_body_vz[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS](host_state, env=0, body=0))
+    var gpu_z = Float64(
+        get_body_z[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS](
+            host_state, env=0, body=0
+        )
+    )
+    var gpu_vz = Float64(
+        get_body_vz[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS](
+            host_state, env=0, body=0
+        )
+    )
 
     # Compare
     var z_diff = abs_val(cpu_z - gpu_z)
@@ -581,7 +741,9 @@ fn test_cpu_gpu_comparison_balldrop_impulse() raises -> Bool:
     var radius_f32: Float32 = 0.1
     var inertia = 0.4 * mass_f32 * radius_f32 * radius_f32
 
-    var model_gpu = init_model_host_buffer[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS](ctx)
+    var model_gpu = init_model_host_buffer[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS](
+        ctx
+    )
     model_gpu[0] = mass_f32
     model_gpu[1] = 1.0 / mass_f32
     model_gpu[2] = radius_f32
@@ -592,7 +754,9 @@ fn test_cpu_gpu_comparison_balldrop_impulse() raises -> Bool:
     model_gpu[7] = 1.0 / inertia
     model_gpu[8] = 1.0 / inertia
 
-    var host_state = init_state_host_buffer[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS, BATCH](ctx)
+    var host_state = init_state_host_buffer[
+        DTYPE_GPU, NUM_BODIES, MAX_CONTACTS, BATCH
+    ](ctx)
     set_body_position[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS](
         host_state, env=0, body=0, x=0.0, y=0.0, z=Float32(initial_z)
     )
@@ -605,17 +769,31 @@ fn test_cpu_gpu_comparison_balldrop_impulse() raises -> Bool:
     ctx.synchronize()
 
     ImpulseIntegrator.simulate_gpu[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS, BATCH](
-        ctx, state_buf, model_buf, num_steps,
-        Scalar[DTYPE_GPU](dt), Scalar[DTYPE_GPU](-9.81),
-        Scalar[DTYPE_GPU](0.0), Scalar[DTYPE_GPU](0.0), Scalar[DTYPE_GPU](0.5)
+        ctx,
+        state_buf,
+        model_buf,
+        num_steps,
+        Scalar[DTYPE_GPU](dt),
+        Scalar[DTYPE_GPU](-9.81),
+        Scalar[DTYPE_GPU](0.0),
+        Scalar[DTYPE_GPU](0.0),
+        Scalar[DTYPE_GPU](0.5),
     )
     ctx.synchronize()
 
     ctx.enqueue_copy(host_state, state_buf)
     ctx.synchronize()
 
-    var gpu_z = Float64(get_body_z[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS](host_state, env=0, body=0))
-    var gpu_vz = Float64(get_body_vz[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS](host_state, env=0, body=0))
+    var gpu_z = Float64(
+        get_body_z[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS](
+            host_state, env=0, body=0
+        )
+    )
+    var gpu_vz = Float64(
+        get_body_vz[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS](
+            host_state, env=0, body=0
+        )
+    )
 
     # Compare
     var z_diff = abs_val(cpu_z - gpu_z)
@@ -631,7 +809,11 @@ fn test_cpu_gpu_comparison_balldrop_impulse() raises -> Bool:
     var z_tolerance = 0.02
     var vz_tolerance = 0.5
 
-    var passed = z_diff < z_tolerance and abs_val(cpu_z - radius) < z_tolerance and abs_val(gpu_z - Float64(radius_f32)) < z_tolerance
+    var passed = (
+        z_diff < z_tolerance
+        and abs_val(cpu_z - radius) < z_tolerance
+        and abs_val(gpu_z - Float64(radius_f32)) < z_tolerance
+    )
 
     if passed:
         print("PASSED: CPU and GPU both settled correctly")
@@ -679,7 +861,9 @@ fn test_cpu_gpu_comparison_freefall_pgs() raises -> Bool:
     var radius: Float32 = 0.1
     var inertia = 0.4 * mass * radius * radius
 
-    var model_gpu = init_model_host_buffer[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS](ctx)
+    var model_gpu = init_model_host_buffer[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS](
+        ctx
+    )
     model_gpu[0] = mass
     model_gpu[1] = 1.0 / mass
     model_gpu[2] = radius
@@ -690,7 +874,9 @@ fn test_cpu_gpu_comparison_freefall_pgs() raises -> Bool:
     model_gpu[7] = 1.0 / inertia
     model_gpu[8] = 1.0 / inertia
 
-    var host_state = init_state_host_buffer[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS, BATCH](ctx)
+    var host_state = init_state_host_buffer[
+        DTYPE_GPU, NUM_BODIES, MAX_CONTACTS, BATCH
+    ](ctx)
     set_body_position[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS](
         host_state, env=0, body=0, x=0.0, y=0.0, z=Float32(initial_z)
     )
@@ -703,17 +889,31 @@ fn test_cpu_gpu_comparison_freefall_pgs() raises -> Bool:
     ctx.synchronize()
 
     PGSIntegrator.simulate_gpu[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS, BATCH](
-        ctx, state_buf, model_buf, num_steps,
-        Scalar[DTYPE_GPU](dt), Scalar[DTYPE_GPU](-9.81),
-        Scalar[DTYPE_GPU](-100.0), Scalar[DTYPE_GPU](0.0), Scalar[DTYPE_GPU](0.5)
+        ctx,
+        state_buf,
+        model_buf,
+        num_steps,
+        Scalar[DTYPE_GPU](dt),
+        Scalar[DTYPE_GPU](-9.81),
+        Scalar[DTYPE_GPU](-100.0),
+        Scalar[DTYPE_GPU](0.0),
+        Scalar[DTYPE_GPU](0.5),
     )
     ctx.synchronize()
 
     ctx.enqueue_copy(host_state, state_buf)
     ctx.synchronize()
 
-    var gpu_z = Float64(get_body_z[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS](host_state, env=0, body=0))
-    var gpu_vz = Float64(get_body_vz[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS](host_state, env=0, body=0))
+    var gpu_z = Float64(
+        get_body_z[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS](
+            host_state, env=0, body=0
+        )
+    )
+    var gpu_vz = Float64(
+        get_body_vz[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS](
+            host_state, env=0, body=0
+        )
+    )
 
     # Compare
     var z_diff = abs_val(cpu_z - gpu_z)
@@ -776,7 +976,9 @@ fn test_cpu_gpu_comparison_balldrop_pgs() raises -> Bool:
     var radius_f32: Float32 = 0.1
     var inertia = 0.4 * mass_f32 * radius_f32 * radius_f32
 
-    var model_gpu = init_model_host_buffer[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS](ctx)
+    var model_gpu = init_model_host_buffer[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS](
+        ctx
+    )
     model_gpu[0] = mass_f32
     model_gpu[1] = 1.0 / mass_f32
     model_gpu[2] = radius_f32
@@ -787,7 +989,9 @@ fn test_cpu_gpu_comparison_balldrop_pgs() raises -> Bool:
     model_gpu[7] = 1.0 / inertia
     model_gpu[8] = 1.0 / inertia
 
-    var host_state = init_state_host_buffer[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS, BATCH](ctx)
+    var host_state = init_state_host_buffer[
+        DTYPE_GPU, NUM_BODIES, MAX_CONTACTS, BATCH
+    ](ctx)
     set_body_position[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS](
         host_state, env=0, body=0, x=0.0, y=0.0, z=Float32(initial_z)
     )
@@ -800,17 +1004,31 @@ fn test_cpu_gpu_comparison_balldrop_pgs() raises -> Bool:
     ctx.synchronize()
 
     PGSIntegrator.simulate_gpu[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS, BATCH](
-        ctx, state_buf, model_buf, num_steps,
-        Scalar[DTYPE_GPU](dt), Scalar[DTYPE_GPU](-9.81),
-        Scalar[DTYPE_GPU](0.0), Scalar[DTYPE_GPU](0.0), Scalar[DTYPE_GPU](0.5)
+        ctx,
+        state_buf,
+        model_buf,
+        num_steps,
+        Scalar[DTYPE_GPU](dt),
+        Scalar[DTYPE_GPU](-9.81),
+        Scalar[DTYPE_GPU](0.0),
+        Scalar[DTYPE_GPU](0.0),
+        Scalar[DTYPE_GPU](0.5),
     )
     ctx.synchronize()
 
     ctx.enqueue_copy(host_state, state_buf)
     ctx.synchronize()
 
-    var gpu_z = Float64(get_body_z[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS](host_state, env=0, body=0))
-    var gpu_vz = Float64(get_body_vz[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS](host_state, env=0, body=0))
+    var gpu_z = Float64(
+        get_body_z[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS](
+            host_state, env=0, body=0
+        )
+    )
+    var gpu_vz = Float64(
+        get_body_vz[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS](
+            host_state, env=0, body=0
+        )
+    )
 
     # Compare
     var z_diff = abs_val(cpu_z - gpu_z)
@@ -825,7 +1043,11 @@ fn test_cpu_gpu_comparison_balldrop_pgs() raises -> Bool:
     var z_tolerance = 0.02
     var vz_tolerance = 0.5
 
-    var passed = z_diff < z_tolerance and abs_val(cpu_z - radius) < z_tolerance and abs_val(gpu_z - Float64(radius_f32)) < z_tolerance
+    var passed = (
+        z_diff < z_tolerance
+        and abs_val(cpu_z - radius) < z_tolerance
+        and abs_val(gpu_z - Float64(radius_f32)) < z_tolerance
+    )
 
     if passed:
         print("PASSED: CPU and GPU both settled correctly")
@@ -881,7 +1103,9 @@ fn test_cpu_gpu_comparison_two_spheres_impulse() raises -> Bool:
     var radius: Float32 = 0.5
     var inertia = 0.4 * mass * radius * radius
 
-    var model_gpu = init_model_host_buffer[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS](ctx)
+    var model_gpu = init_model_host_buffer[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS](
+        ctx
+    )
     for i in range(NUM_BODIES):
         var offset = i * 9
         model_gpu[offset + 0] = mass
@@ -894,7 +1118,9 @@ fn test_cpu_gpu_comparison_two_spheres_impulse() raises -> Bool:
         model_gpu[offset + 7] = 1.0 / inertia
         model_gpu[offset + 8] = 1.0 / inertia
 
-    var host_state = init_state_host_buffer[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS, BATCH](ctx)
+    var host_state = init_state_host_buffer[
+        DTYPE_GPU, NUM_BODIES, MAX_CONTACTS, BATCH
+    ](ctx)
     set_body_position[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS](
         host_state, env=0, body=0, x=-1.0, y=0.0, z=1.0
     )
@@ -916,25 +1142,95 @@ fn test_cpu_gpu_comparison_two_spheres_impulse() raises -> Bool:
     ctx.synchronize()
 
     ImpulseIntegrator.simulate_gpu[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS, BATCH](
-        ctx, state_buf, model_buf, num_steps,
-        Scalar[DTYPE_GPU](dt), Scalar[DTYPE_GPU](0.0),
-        Scalar[DTYPE_GPU](-10.0), Scalar[DTYPE_GPU](1.0), Scalar[DTYPE_GPU](0.5)
+        ctx,
+        state_buf,
+        model_buf,
+        num_steps,
+        Scalar[DTYPE_GPU](dt),
+        Scalar[DTYPE_GPU](0.0),
+        Scalar[DTYPE_GPU](-10.0),
+        Scalar[DTYPE_GPU](1.0),
+        Scalar[DTYPE_GPU](0.5),
     )
     ctx.synchronize()
 
     ctx.enqueue_copy(host_state, state_buf)
     ctx.synchronize()
 
-    var gpu_pos0 = get_body_position[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS](host_state, env=0, body=0)
-    var gpu_vel0 = get_body_velocity[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS](host_state, env=0, body=0)
-    var gpu_pos1 = get_body_position[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS](host_state, env=0, body=1)
-    var gpu_vel1 = get_body_velocity[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS](host_state, env=0, body=1)
+    var gpu_pos0 = get_body_position[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS](
+        host_state, env=0, body=0
+    )
+    var gpu_vel0 = get_body_velocity[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS](
+        host_state, env=0, body=0
+    )
+    var gpu_pos1 = get_body_position[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS](
+        host_state, env=0, body=1
+    )
+    var gpu_vel1 = get_body_velocity[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS](
+        host_state, env=0, body=1
+    )
 
     print("After", num_steps, "steps (dt=0.01):")
-    print("  CPU sphere 0: pos=(", cpu_pos0[0], ",", cpu_pos0[1], ",", cpu_pos0[2], "), vel=(", cpu_vel0[0], ",", cpu_vel0[1], ",", cpu_vel0[2], ")")
-    print("  GPU sphere 0: pos=(", gpu_pos0[0], ",", gpu_pos0[1], ",", gpu_pos0[2], "), vel=(", gpu_vel0[0], ",", gpu_vel0[1], ",", gpu_vel0[2], ")")
-    print("  CPU sphere 1: pos=(", cpu_pos1[0], ",", cpu_pos1[1], ",", cpu_pos1[2], "), vel=(", cpu_vel1[0], ",", cpu_vel1[1], ",", cpu_vel1[2], ")")
-    print("  GPU sphere 1: pos=(", gpu_pos1[0], ",", gpu_pos1[1], ",", gpu_pos1[2], "), vel=(", gpu_vel1[0], ",", gpu_vel1[1], ",", gpu_vel1[2], ")")
+    print(
+        "  CPU sphere 0: pos=(",
+        cpu_pos0[0],
+        ",",
+        cpu_pos0[1],
+        ",",
+        cpu_pos0[2],
+        "), vel=(",
+        cpu_vel0[0],
+        ",",
+        cpu_vel0[1],
+        ",",
+        cpu_vel0[2],
+        ")",
+    )
+    print(
+        "  GPU sphere 0: pos=(",
+        gpu_pos0[0],
+        ",",
+        gpu_pos0[1],
+        ",",
+        gpu_pos0[2],
+        "), vel=(",
+        gpu_vel0[0],
+        ",",
+        gpu_vel0[1],
+        ",",
+        gpu_vel0[2],
+        ")",
+    )
+    print(
+        "  CPU sphere 1: pos=(",
+        cpu_pos1[0],
+        ",",
+        cpu_pos1[1],
+        ",",
+        cpu_pos1[2],
+        "), vel=(",
+        cpu_vel1[0],
+        ",",
+        cpu_vel1[1],
+        ",",
+        cpu_vel1[2],
+        ")",
+    )
+    print(
+        "  GPU sphere 1: pos=(",
+        gpu_pos1[0],
+        ",",
+        gpu_pos1[1],
+        ",",
+        gpu_pos1[2],
+        "), vel=(",
+        gpu_vel1[0],
+        ",",
+        gpu_vel1[1],
+        ",",
+        gpu_vel1[2],
+        ")",
+    )
 
     # Check qualitative behavior: both should have bounced
     # Sphere 0 should be moving left (vx < 0), sphere 1 should be moving right (vx > 0)
@@ -952,7 +1248,12 @@ fn test_cpu_gpu_comparison_two_spheres_impulse() raises -> Bool:
     # Allow larger tolerance for collision dynamics
     var pos_tolerance = 0.5  # Position can differ due to solver differences
 
-    var passed = cpu_bounced and gpu_bounced and pos_diff_0 < pos_tolerance and pos_diff_1 < pos_tolerance
+    var passed = (
+        cpu_bounced
+        and gpu_bounced
+        and pos_diff_0 < pos_tolerance
+        and pos_diff_1 < pos_tolerance
+    )
 
     if passed:
         print("PASSED: Both CPU and GPU show collision and bounce")

@@ -471,10 +471,12 @@ struct Physics3DRenderer(Movable):
 
             # Draw link line
             var lines = List[WireframeLine]()
-            lines.append(WireframeLine(
-                Vec3(parent_x, parent_y, parent_z),
-                Vec3(child_x, child_y, child_z),
-            ))
+            lines.append(
+                WireframeLine(
+                    Vec3(parent_x, parent_y, parent_z),
+                    Vec3(child_x, child_y, child_z),
+                )
+            )
             self.renderer.draw_lines_3d(lines, Physics3DColors.joint_link())
 
             # Draw pivot point if world-anchored
@@ -521,9 +523,7 @@ struct Physics3DRenderer(Movable):
         # End frame
         self.renderer.end_frame()
 
-    fn _draw_pivot(
-        self, pos_x: Float64, pos_y: Float64, pos_z: Float64
-    ):
+    fn _draw_pivot(self, pos_x: Float64, pos_y: Float64, pos_z: Float64):
         """Draw pivot point indicator (small circle)."""
         var pivot_pos = Vec3(pos_x, pos_y, pos_z)
 

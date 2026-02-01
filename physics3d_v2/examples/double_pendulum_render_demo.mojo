@@ -61,8 +61,16 @@ fn main() raises:
     _ = model.add_hinge_joint(
         parent=-1,  # World anchor
         child=0,
-        anchor_parent=(Scalar[DTYPE](0.0), Scalar[DTYPE](0.0), Scalar[DTYPE](pivot_z)),
-        anchor_child=(Scalar[DTYPE](0.0), Scalar[DTYPE](0.0), Scalar[DTYPE](L1)),
+        anchor_parent=(
+            Scalar[DTYPE](0.0),
+            Scalar[DTYPE](0.0),
+            Scalar[DTYPE](pivot_z),
+        ),
+        anchor_child=(
+            Scalar[DTYPE](0.0),
+            Scalar[DTYPE](0.0),
+            Scalar[DTYPE](L1),
+        ),
         axis=(Scalar[DTYPE](0.0), Scalar[DTYPE](1.0), Scalar[DTYPE](0.0)),
     )
 
@@ -70,8 +78,16 @@ fn main() raises:
     _ = model.add_hinge_joint(
         parent=0,
         child=1,
-        anchor_parent=(Scalar[DTYPE](0.0), Scalar[DTYPE](0.0), Scalar[DTYPE](0.0)),
-        anchor_child=(Scalar[DTYPE](0.0), Scalar[DTYPE](0.0), Scalar[DTYPE](L2)),
+        anchor_parent=(
+            Scalar[DTYPE](0.0),
+            Scalar[DTYPE](0.0),
+            Scalar[DTYPE](0.0),
+        ),
+        anchor_child=(
+            Scalar[DTYPE](0.0),
+            Scalar[DTYPE](0.0),
+            Scalar[DTYPE](L2),
+        ),
         axis=(Scalar[DTYPE](0.0), Scalar[DTYPE](1.0), Scalar[DTYPE](0.0)),
     )
 
@@ -81,12 +97,16 @@ fn main() raises:
     # Body 0 at initial angle
     var body0_x = L1 * sin(initial_angle)
     var body0_z = pivot_z - L1 * cos(initial_angle)
-    data.set_body_position(0, Scalar[DTYPE](body0_x), Scalar[DTYPE](0.0), Scalar[DTYPE](body0_z))
+    data.set_body_position(
+        0, Scalar[DTYPE](body0_x), Scalar[DTYPE](0.0), Scalar[DTYPE](body0_z)
+    )
 
     # Body 1 at same angle from body 0
     var body1_x = body0_x + L2 * sin(initial_angle)
     var body1_z = body0_z - L2 * cos(initial_angle)
-    data.set_body_position(1, Scalar[DTYPE](body1_x), Scalar[DTYPE](0.0), Scalar[DTYPE](body1_z))
+    data.set_body_position(
+        1, Scalar[DTYPE](body1_x), Scalar[DTYPE](0.0), Scalar[DTYPE](body1_z)
+    )
 
     # Set initial quaternions
     var half_angle = initial_angle / 2.0
@@ -135,9 +155,17 @@ fn main() raises:
             var p1_x = Float64(data.positions[3])
             var p1_z = Float64(data.positions[5])
             print(
-                "Frame", frame_count,
-                ": Body0 = (", p0_x, ",", p0_z,
-                "), Body1 = (", p1_x, ",", p1_z, ")"
+                "Frame",
+                frame_count,
+                ": Body0 = (",
+                p0_x,
+                ",",
+                p0_z,
+                "), Body1 = (",
+                p1_x,
+                ",",
+                p1_z,
+                ")",
             )
 
     renderer.close()

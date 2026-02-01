@@ -556,7 +556,10 @@ fn solve_constraints_pgs[
 
 fn _is_grounded[
     DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0
-](data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS], body_idx: Int,) -> Bool:
+](
+    data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
+    body_idx: Int,
+) -> Bool:
     """Check if a body has ground contact."""
     for c in range(data.num_contacts):
         if (

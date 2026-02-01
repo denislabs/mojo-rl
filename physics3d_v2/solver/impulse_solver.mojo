@@ -74,7 +74,10 @@ fn solve_velocity_constraints[
 
 fn _is_grounded[
     DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0
-](data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS], body_idx: Int,) -> Bool:
+](
+    data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
+    body_idx: Int,
+) -> Bool:
     """Check if a body has ground contact."""
     for c in range(data.num_contacts):
         if (
@@ -243,8 +246,12 @@ fn _solve_single_contact_velocity[
         vb_z = Scalar[DTYPE](0)
 
     # Compute relative tangent velocities
-    var rel_vt1 = (va_x - vb_x) * t1x + (va_y - vb_y) * t1y + (va_z - vb_z) * t1z
-    var rel_vt2 = (va_x - vb_x) * t2x + (va_y - vb_y) * t2y + (va_z - vb_z) * t2z
+    var rel_vt1 = (
+        (va_x - vb_x) * t1x + (va_y - vb_y) * t1y + (va_z - vb_z) * t1z
+    )
+    var rel_vt2 = (
+        (va_x - vb_x) * t2x + (va_y - vb_y) * t2y + (va_z - vb_z) * t2z
+    )
 
     # Compute tangent impulses to stop sliding
     var delta_jt1 = rel_vt1 / K
@@ -728,9 +735,15 @@ fn solve_position_constraints_gpu[
 
         if body_b < 0:
             # Ground contact: push sphere UP (+normal direction)
-            state[env, b_off_a + BODY_IDX_PX] = px_a + correction * nx * inv_mass_a
-            state[env, b_off_a + BODY_IDX_PY] = py_a + correction * ny * inv_mass_a
-            state[env, b_off_a + BODY_IDX_PZ] = pz_a + correction * nz * inv_mass_a
+            state[env, b_off_a + BODY_IDX_PX] = (
+                px_a + correction * nx * inv_mass_a
+            )
+            state[env, b_off_a + BODY_IDX_PY] = (
+                py_a + correction * ny * inv_mass_a
+            )
+            state[env, b_off_a + BODY_IDX_PZ] = (
+                pz_a + correction * nz * inv_mass_a
+            )
         else:
             # Sphere-sphere: A moves in -normal, B moves in +normal
             var ratio_a = inv_mass_a / total_inv_mass

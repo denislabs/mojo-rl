@@ -19,10 +19,16 @@ from math import sqrt
 fn compute_tangent_basis[
     DTYPE: DType
 ](
-    nx: Scalar[DTYPE], ny: Scalar[DTYPE], nz: Scalar[DTYPE],
+    nx: Scalar[DTYPE],
+    ny: Scalar[DTYPE],
+    nz: Scalar[DTYPE],
 ) -> Tuple[
-    Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE],  # t1
-    Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE],  # t2
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+    Scalar[DTYPE],  # t1
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+    Scalar[DTYPE],  # t2
 ]:
     """Compute two orthonormal tangent vectors from contact normal.
 
