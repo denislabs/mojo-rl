@@ -39,13 +39,13 @@ fn main() raises:
         print("Auto-exit after", MAX_DURATION_SECONDS, "seconds.")
     print()
 
-    # Physics setup - moderate friction
+    # Physics setup - lower friction to allow collisions
     var model = Model[DTYPE, NUM_BODIES, MAX_CONTACTS](
         gravity_z=-9.81,
         timestep=0.002,  # Small timestep for smooth animation
         ground_z=0.0,
-        restitution=0.3,  # Low bounce
-        friction=0.5,     # Moderate friction
+        restitution=0.7,  # Higher bounce to see collisions
+        friction=0.2,     # Lower friction so spheres can reach each other
     )
 
     # Configure bodies - all same size for clarity
@@ -57,20 +57,20 @@ fn main() raises:
     var data = Data[DTYPE, NUM_BODIES, MAX_CONTACTS]()
 
     # Sphere 0: Left side, sliding right (will collide with sphere 1)
-    data.set_body_position(0, -0.8, 0.0, radius)  # On ground
-    data.set_body_velocity(0, 2.0, 0.0, 0.0)      # Moving right at 2 m/s
+    data.set_body_position(0, -0.5, 0.0, radius)  # On ground, closer to center
+    data.set_body_velocity(0, 3.0, 0.0, 0.0)      # Moving right at 3 m/s
 
     # Sphere 1: Right side, sliding left (will collide with sphere 0)
-    data.set_body_position(1, 0.8, 0.0, radius)   # On ground
-    data.set_body_velocity(1, -2.0, 0.0, 0.0)     # Moving left at 2 m/s
+    data.set_body_position(1, 0.5, 0.0, radius)   # On ground, closer to center
+    data.set_body_velocity(1, -3.0, 0.0, 0.0)     # Moving left at 3 m/s
 
     # Sphere 2: Back, sliding forward (independent sliding demo)
     data.set_body_position(2, 0.0, 0.8, radius)   # On ground
-    data.set_body_velocity(2, 0.0, -1.5, 0.0)     # Moving forward
+    data.set_body_velocity(2, 0.0, -2.0, 0.0)     # Moving forward faster
 
     # Sphere 3: Drops from height with horizontal velocity
-    data.set_body_position(3, -0.3, -0.5, 1.0)    # Above ground
-    data.set_body_velocity(3, 1.0, 0.5, 0.0)      # Moving diagonally
+    data.set_body_position(3, -0.3, -0.5, 0.8)    # Above ground
+    data.set_body_velocity(3, 1.5, 0.5, 0.0)      # Moving diagonally
 
     # Renderer setup
     var renderer = Physics3DRenderer(
@@ -84,10 +84,10 @@ fn main() raises:
 
     print("Simulation running...")
     print("  Number of bodies:", NUM_BODIES)
-    print("  Friction coefficient: 0.5")
-    print("  Restitution: 0.3")
+    print("  Friction coefficient: 0.2")
+    print("  Restitution: 0.7")
     print()
-    print("Watch the spheres slow down due to friction!")
+    print("Watch the spheres collide, bounce, and slow down due to friction!")
     print()
 
     # Simulation loop

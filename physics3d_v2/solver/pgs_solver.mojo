@@ -322,6 +322,17 @@ fn solve_constraints_pgs[
 
             # Cancel velocity + add bounce
             var target_vz = -restitution * va_z
+
+            # Compute and store the normal impulse for friction calculation
+            # j = m * delta_v = m * (target_vz - va_z)
+            # For ground: inv_mass_b = 0, so j = delta_v / inv_mass_a
+            var inv_mass_a = inv_mass_a_arr[c]
+            if inv_mass_a > Scalar[DTYPE](1e-10):
+                var delta_vz = target_vz - va_z
+                var j = abs(delta_vz) / inv_mass_a  # Positive impulse magnitude
+                lambda_n[c] = j
+                had_impact[c] = True
+
             data.velocities[body_a * 3 + 2] = target_vz
 
     # SECOND: Handle high-velocity sphere-sphere impacts
@@ -379,7 +390,8 @@ fn solve_constraints_pgs[
     # PGS iterations for soft constraints (resting/slow contacts)
     for iteration in range(iterations):
         for c in range(data.num_contacts):
-            # Skip contacts that had impact impulse (they're bouncing)
+            # Skip contacts that had impact impulse for NORMAL constraints only
+            # (they already got their bounce impulse)
             if had_impact[c]:
                 continue
 
@@ -455,12 +467,29 @@ fn solve_constraints_pgs[
                 data.velocities[body_b * 3 + 1] += delta_j * ny * inv_mass_b
                 data.velocities[body_b * 3 + 2] += delta_j * nz * inv_mass_b
 
-            # =========================================================
-            # FRICTION SOLVING (Coulomb friction)
-            # =========================================================
+        # =========================================================
+        # FRICTION SOLVING (Coulomb friction) - separate loop
+        # Applies to ALL contacts with positive normal impulse,
+        # including impact contacts (they still have tangential velocity)
+        # =========================================================
+        for c in range(data.num_contacts):
             var jn = lambda_n[c]
             if jn <= Scalar[DTYPE](0) or model.friction <= Scalar[DTYPE](0):
                 continue
+
+            var inv_mass_a = inv_mass_a_arr[c]
+            var inv_mass_b = inv_mass_b_arr[c]
+            var K = inv_mass_a + inv_mass_b
+
+            if K < Scalar[DTYPE](1e-10):
+                continue
+
+            var contact = data.contacts[c]
+            var body_a = contact.body_a
+            var body_b = contact.body_b
+            var nx = contact.normal_x
+            var ny = contact.normal_y
+            var nz = contact.normal_z
 
             # Compute tangent basis from normal
             var tangents = compute_tangent_basis(nx, ny, nz)

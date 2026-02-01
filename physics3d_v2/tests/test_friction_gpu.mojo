@@ -102,7 +102,7 @@ fn test_sphere_sliding_to_stop_gpu() raises -> Bool:
 
     # Simulate 500 steps (0.5 seconds)
     var num_steps = 500
-    ImpulseIntegrator.simulate_gpu[DTYPE, NUM_BODIES, MAX_CONTACTS, BATCH](
+    ImpulseIntegrator.simulate_gpu[DTYPE, NUM_BODIES, MAX_CONTACTS, 0, BATCH](
         ctx, state_buf, model_buf, num_steps, dt, gravity_z, ground_z, restitution, friction
     )
     ctx.synchronize()
@@ -203,7 +203,7 @@ fn test_zero_friction_gpu() raises -> Bool:
 
     # Simulate 500 steps (0.5 seconds)
     var num_steps = 500
-    ImpulseIntegrator.simulate_gpu[DTYPE, NUM_BODIES, MAX_CONTACTS, BATCH](
+    ImpulseIntegrator.simulate_gpu[DTYPE, NUM_BODIES, MAX_CONTACTS, 0, BATCH](
         ctx, state_buf, model_buf, num_steps, dt, gravity_z, ground_z, restitution, friction
     )
     ctx.synchronize()
@@ -310,7 +310,7 @@ fn test_cpu_gpu_friction_comparison() raises -> Bool:
     ctx.enqueue_copy(model_buf, model_gpu)
     ctx.synchronize()
 
-    ImpulseIntegrator.simulate_gpu[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS, BATCH](
+    ImpulseIntegrator.simulate_gpu[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS, 0, BATCH](
         ctx, state_buf, model_buf, num_steps,
         Scalar[DTYPE_GPU](dt), Scalar[DTYPE_GPU](-9.81),
         Scalar[DTYPE_GPU](0.0), Scalar[DTYPE_GPU](0.0), Scalar[DTYPE_GPU](friction_coef)
