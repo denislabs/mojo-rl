@@ -525,11 +525,14 @@ fn solve_joint_velocity_constraints_gpu[
         for j in range(MAX_JOINTS):
             var j_off = joint_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](j)
 
-            # For now, hardcode body indices to make GPU work
-            # TODO: Investigate GPU conditional/conversion issues
-            # Known issue: Using conditionals or Int() on buffer reads causes incorrect behavior
-            var body_a = -1  # Assume world-anchored
-            var body_b = j   # Assume joint j connects to body j
+            # Body index pattern for chains/articulated bodies:
+            # Joint 0: parent = -1 (world), child = 0
+            # Joint j (j>0): parent = j-1, child = j
+            # This supports single pendulum, double pendulum, and longer chains.
+            # Note: Reading body indices from state buffer causes GPU issues,
+            # so we compute them from the joint pattern instead.
+            var body_a: Int = -1 if j == 0 else j - 1
+            var body_b: Int = j
 
             # Get anchor points from joint state
             var anchor_px = rebind[Scalar[DTYPE]](state[env, j_off + JOINT_IDX_ANCHOR_PX])
@@ -704,11 +707,11 @@ fn solve_joint_position_constraints_gpu[
         for j in range(MAX_JOINTS):
             var j_off = joint_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](j)
 
-            # Get body indices
-            # For now, assume first joint (j=0) is world-anchored to body 0
-            # This is a simplification for debugging - will generalize later
-            var body_a = -1  # World anchor (hardcoded for j=0)
-            var body_b = j   # Assume joint j connects to body j
+            # Body index pattern for chains/articulated bodies:
+            # Joint 0: parent = -1 (world), child = 0
+            # Joint j (j>0): parent = j-1, child = j
+            var body_a: Int = -1 if j == 0 else j - 1
+            var body_b: Int = j
 
             # Get anchor points
             var anchor_px = rebind[Scalar[DTYPE]](state[env, j_off + JOINT_IDX_ANCHOR_PX])

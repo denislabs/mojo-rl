@@ -100,6 +100,16 @@ struct Physics3DColors:
         """Sphere-sphere contact indicator - yellow."""
         return Color3D(255, 255, 0)
 
+    @staticmethod
+    fn joint_link() -> Color3D:
+        """Joint link color - light gray/white."""
+        return Color3D(200, 200, 200)
+
+    @staticmethod
+    fn pivot() -> Color3D:
+        """Pivot point color - gold."""
+        return Color3D(255, 200, 50)
+
 
 # =============================================================================
 # Physics 3D Renderer
@@ -392,3 +402,136 @@ struct Physics3DRenderer(Movable):
     fn is_open(self) -> Bool:
         """Check if renderer window is still open."""
         return self.initialized
+
+    fn render_with_joints[
+        DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int
+    ](
+        mut self,
+        model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
+        data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
+    ):
+        """Render physics state including joint links.
+
+        Draws lines connecting joints to visualize the pendulum links.
+
+        Args:
+            model: Model configuration with joints.
+            data: Current physics state.
+        """
+        if not self.initialized:
+            return
+
+        from render3d.shapes3d import WireframeLine
+
+        # Begin frame
+        self.renderer.begin_frame()
+
+        # Draw ground (chessboard pattern)
+        self._draw_ground(Float64(model.ground_z))
+
+        # Draw coordinate axes
+        self.renderer.draw_coordinate_axes(Vec3(0.0, 0.0, 0.01), 0.5)
+
+        # Draw shadows for all bodies
+        if self.show_shadows:
+            for i in range(NUM_BODIES):
+                self._draw_shadow(
+                    Float64(data.positions[i * 3 + 0]),
+                    Float64(data.positions[i * 3 + 1]),
+                    Float64(model.radii[i]),
+                    Float64(model.ground_z),
+                )
+
+        # Draw joint links (lines between pivot and bodies)
+        for j_idx in range(model.num_joints):
+            var joint = model.joints[j_idx]
+            var parent_body = joint.parent_body
+            var child_body = joint.child_body
+
+            # Get child body position
+            var child_x = Float64(data.positions[child_body * 3 + 0])
+            var child_y = Float64(data.positions[child_body * 3 + 1])
+            var child_z = Float64(data.positions[child_body * 3 + 2])
+
+            # Get parent anchor position (world or body)
+            var parent_x: Float64 = 0.0
+            var parent_y: Float64 = 0.0
+            var parent_z: Float64 = 0.0
+
+            if parent_body < 0:
+                # World anchor - use anchor_parent directly
+                parent_x = Float64(joint.anchor_parent_x)
+                parent_y = Float64(joint.anchor_parent_y)
+                parent_z = Float64(joint.anchor_parent_z)
+            else:
+                # Body anchor - use parent body position
+                parent_x = Float64(data.positions[parent_body * 3 + 0])
+                parent_y = Float64(data.positions[parent_body * 3 + 1])
+                parent_z = Float64(data.positions[parent_body * 3 + 2])
+
+            # Draw link line
+            var lines = List[WireframeLine]()
+            lines.append(WireframeLine(
+                Vec3(parent_x, parent_y, parent_z),
+                Vec3(child_x, child_y, child_z),
+            ))
+            self.renderer.draw_lines_3d(lines, Physics3DColors.joint_link())
+
+            # Draw pivot point if world-anchored
+            if parent_body < 0:
+                self._draw_pivot(parent_x, parent_y, parent_z)
+
+        # Draw all bodies
+        for i in range(NUM_BODIES):
+            self._draw_sphere(
+                Float64(data.positions[i * 3 + 0]),
+                Float64(data.positions[i * 3 + 1]),
+                Float64(data.positions[i * 3 + 2]),
+                Float64(model.radii[i]),
+                Physics3DColors.body_color(i),
+            )
+
+        # Draw contacts
+        if self.show_contacts:
+            for c in range(data.num_contacts):
+                var contact = data.contacts[c]
+                var is_sphere_sphere = contact.body_b >= 0
+                var color = (
+                    Physics3DColors.contact_sphere_sphere() if is_sphere_sphere else Physics3DColors.contact()
+                )
+                self._draw_contact(
+                    Float64(contact.pos_x),
+                    Float64(contact.pos_y),
+                    Float64(contact.pos_z),
+                    color,
+                )
+
+        # Draw velocity indicators
+        if self.show_velocity:
+            for i in range(NUM_BODIES):
+                self._draw_velocity(
+                    Float64(data.positions[i * 3 + 0]),
+                    Float64(data.positions[i * 3 + 1]),
+                    Float64(data.positions[i * 3 + 2]),
+                    Float64(data.velocities[i * 3 + 0]),
+                    Float64(data.velocities[i * 3 + 1]),
+                    Float64(data.velocities[i * 3 + 2]),
+                )
+
+        # End frame
+        self.renderer.end_frame()
+
+    fn _draw_pivot(
+        self, pos_x: Float64, pos_y: Float64, pos_z: Float64
+    ):
+        """Draw pivot point indicator (small circle)."""
+        var pivot_pos = Vec3(pos_x, pos_y, pos_z)
+
+        var screen_pos = self.renderer.camera.project_to_screen(pivot_pos)
+        if screen_pos[2]:
+            self.renderer.draw_filled_circle_2d(
+                screen_pos[0],
+                screen_pos[1],
+                8,
+                Physics3DColors.pivot(),
+            )
