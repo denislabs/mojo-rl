@@ -9,9 +9,78 @@ Following MuJoCo conventions:
 - normal: Points from body A to body B
 
 Phase 3: sphere-sphere and sphere-plane primitives.
+Phase 6: Added tangent basis computation for friction.
 """
 
 from math import sqrt
+
+
+@always_inline
+fn compute_tangent_basis[
+    DTYPE: DType
+](
+    nx: Scalar[DTYPE], ny: Scalar[DTYPE], nz: Scalar[DTYPE],
+) -> Tuple[
+    Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE],  # t1
+    Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE],  # t2
+]:
+    """Compute two orthonormal tangent vectors from contact normal.
+
+    Uses Gram-Schmidt: pick axis least parallel to n, cross to get t1,
+    cross again to get t2.
+
+    Args:
+        nx, ny, nz: Contact normal (should be unit vector).
+
+    Returns:
+        Tuple of (t1x, t1y, t1z, t2x, t2y, t2z) - two orthonormal tangent vectors.
+    """
+    # Find axis least parallel to normal
+    var ax: Scalar[DTYPE]
+    var ay: Scalar[DTYPE]
+    var az: Scalar[DTYPE]
+
+    var abs_nx = abs(nx)
+    var abs_ny = abs(ny)
+    var abs_nz = abs(nz)
+
+    if abs_nx < abs_ny and abs_nx < abs_nz:
+        ax = Scalar[DTYPE](1.0)
+        ay = Scalar[DTYPE](0.0)
+        az = Scalar[DTYPE](0.0)
+    elif abs_ny < abs_nz:
+        ax = Scalar[DTYPE](0.0)
+        ay = Scalar[DTYPE](1.0)
+        az = Scalar[DTYPE](0.0)
+    else:
+        ax = Scalar[DTYPE](0.0)
+        ay = Scalar[DTYPE](0.0)
+        az = Scalar[DTYPE](1.0)
+
+    # t1 = normalize(a - (a·n)*n) using Gram-Schmidt
+    var dot = ax * nx + ay * ny + az * nz
+    var t1x = ax - dot * nx
+    var t1y = ay - dot * ny
+    var t1z = az - dot * nz
+    var t1_len = sqrt(t1x * t1x + t1y * t1y + t1z * t1z)
+
+    # Normalize t1
+    if t1_len > Scalar[DTYPE](1e-10):
+        t1x = t1x / t1_len
+        t1y = t1y / t1_len
+        t1z = t1z / t1_len
+    else:
+        # Degenerate case: use fallback
+        t1x = Scalar[DTYPE](1.0)
+        t1y = Scalar[DTYPE](0.0)
+        t1z = Scalar[DTYPE](0.0)
+
+    # t2 = n × t1 (already normalized since n and t1 are unit vectors)
+    var t2x = ny * t1z - nz * t1y
+    var t2y = nz * t1x - nx * t1z
+    var t2z = nx * t1y - ny * t1x
+
+    return (t1x, t1y, t1z, t2x, t2y, t2z)
 
 
 @always_inline

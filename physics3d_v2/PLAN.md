@@ -22,12 +22,12 @@ Build a minimal, mathematically correct 3D physics engine following MuJoCo's com
 | Phase 3 | Multi-body + sphere-sphere | ✅ | ✅ | Complete |
 | Phase 4 | Single hinge joint (pendulum) | ✅ | ✅ | Complete |
 | Phase 5 | Two-link chain (double pendulum) | ✅ | ✅ | Complete |
-| Phase 6 | Friction model | ❌ | ❌ | Not started |
+| Phase 6 | Friction model | ✅ | ✅ | Complete |
 | Phase 7 | Simple walker environment | ❌ | ❌ | Not started |
 
 ---
 
-## Current Architecture (Phase 1-5 Complete)
+## Current Architecture (Phase 1-6 Complete)
 
 ### File Structure
 
@@ -46,7 +46,7 @@ physics3d_v2/
 │
 ├── collision/                 # Collision detection (CPU + GPU colocated)
 │   ├── __init__.mojo
-│   ├── collision_primitives.mojo  # Pure functions: sphere_sphere, sphere_plane
+│   ├── collision_primitives.mojo  # Pure functions: sphere_sphere, sphere_plane, compute_tangent_basis
 │   └── collision.mojo         # CollisionDetector with CPU and GPU methods
 │
 ├── solver/                    # Constraint solvers (CPU + GPU colocated)
@@ -83,7 +83,10 @@ physics3d_v2/
 │   ├── test_gpu.mojo              # GPU parity tests
 │   ├── test_render_simple.mojo    # Rendering test
 │   ├── test_render_multi_body_impulse.mojo
-│   └── test_render_multi_body_pgs.mojo
+│   ├── test_render_multi_body_pgs.mojo
+│   ├── test_friction.mojo            # Phase 6: CPU friction tests
+│   ├── test_friction_gpu.mojo        # Phase 6: GPU friction tests
+│   └── test_render_friction.mojo     # Phase 6: Visual friction demo
 │
 └── examples/
     ├── __init__.mojo
@@ -336,6 +339,15 @@ pixi run mojo run physics3d_v2/tests/test_render_multi_body_pgs.mojo
 
 # Visual double pendulum demo (requires SDL2)
 pixi run mojo run physics3d_v2/examples/double_pendulum_render_demo.mojo
+
+# Phase 6: Friction tests
+pixi run mojo run physics3d_v2/tests/test_friction.mojo
+
+# Phase 6: Friction GPU tests
+pixi run -e apple mojo run physics3d_v2/tests/test_friction_gpu.mojo
+
+# Phase 6: Visual friction demo (requires SDL2)
+pixi run mojo run physics3d_v2/tests/test_render_friction.mojo
 ```
 
 ### Test Coverage
@@ -352,6 +364,11 @@ pixi run mojo run physics3d_v2/examples/double_pendulum_render_demo.mojo
 - **Double pendulum sensitivity**: Sensitive to initial conditions (chaos indicator)
 - GPU parity: Same results as CPU for all tests
 - Batched simulation: 256 environments in parallel
+- **Friction sliding**: Sphere stops due to friction within expected time
+- **Friction cone**: Tangent impulse magnitude <= μ × normal impulse
+- **Zero friction**: Sphere slides freely without deceleration
+- **High friction**: Sphere with high friction stops quickly
+- **Two spheres friction**: Collision with friction affects motion
 
 ---
 
@@ -479,12 +496,86 @@ Added `render_with_joints()` method that draws:
 
 ---
 
-## Future Phases (Outline)
+## Phase 6: Friction Model - COMPLETE
 
-### Phase 6: Friction Model
-- Coulomb friction cone approximation
-- Tangent impulses at contacts
-- Static vs dynamic friction
+### Implementation Summary
+
+#### Files Added
+- `tests/test_friction.mojo` - CPU friction validation (5 tests)
+- `tests/test_friction_gpu.mojo` - GPU friction validation (3 tests)
+- `tests/test_render_friction.mojo` - Visual friction demonstration
+
+#### Files Modified
+- `collision/collision_primitives.mojo` - Added `compute_tangent_basis()` function
+- `solver/impulse_solver.mojo` - Added friction to velocity constraints (CPU + GPU)
+- `solver/pgs_solver.mojo` - Added friction to PGS constraints (CPU + GPU)
+- `integrator/impulse_integrator.mojo` - Pass friction parameter through pipeline
+- `integrator/pgs_integrator.mojo` - Pass friction parameter through pipeline
+
+#### Coulomb Friction Physics
+The friction model implements Coulomb friction with cone constraint:
+```
+|f_tangent| <= μ × f_normal
+```
+
+For each contact:
+1. **Tangent basis**: Two orthonormal vectors (t1, t2) perpendicular to normal
+2. **Relative tangent velocity**: v_t = v_rel - (v_rel · n) × n
+3. **Tangent impulses**: Computed to stop sliding, then clamped to friction cone
+
+#### Tangent Basis Computation
+Uses Gram-Schmidt orthogonalization from contact normal:
+```mojo
+fn compute_tangent_basis[DTYPE: DType](
+    nx: Scalar[DTYPE], ny: Scalar[DTYPE], nz: Scalar[DTYPE],
+) -> Tuple[Scalar[DTYPE], ...]:  # Returns t1x, t1y, t1z, t2x, t2y, t2z
+    # Find axis least parallel to normal
+    # t1 = normalize(axis - (axis·n)×n)
+    # t2 = n × t1
+```
+
+#### Friction Solving Algorithm
+For each contact iteration:
+1. Compute tangent basis from contact normal
+2. Compute relative tangent velocities: `rel_vt1`, `rel_vt2`
+3. Compute delta impulses: `delta_jt = rel_vt / effective_mass`
+4. Accumulate: `new_jt = old_jt + delta_jt`
+5. Clamp to friction cone:
+   ```mojo
+   var jt_mag = sqrt(new_jt1² + new_jt2²)
+   var max_friction = μ × jn
+   if jt_mag > max_friction:
+       var scale = max_friction / jt_mag
+       new_jt1 *= scale
+       new_jt2 *= scale
+   ```
+6. Apply impulse difference to velocities
+7. Store accumulated impulses for warm starting
+
+#### Test Results
+
+**CPU Tests (5 tests):**
+1. **Sphere sliding to stop**: v=1m/s, μ=0.5 → stops in ~0.2s ✅
+2. **Friction cone constraint**: All impulses satisfy |jt| <= μ×jn ✅
+3. **Zero friction**: Sphere maintains velocity when μ=0 ✅
+4. **High friction resting**: Sphere with μ=1.0 stops quickly ✅
+5. **Two spheres with friction**: Collision detected, proper bounce ✅
+
+**GPU Tests (3 tests):**
+1. **Sphere sliding to stop (GPU)**: Same behavior as CPU ✅
+2. **Zero friction (GPU)**: Velocity maintained ✅
+3. **CPU vs GPU comparison**: Position difference <5cm ✅
+
+#### Visual Demo
+`test_render_friction.mojo` shows:
+- 4 spheres with different initial velocities
+- Spheres sliding and stopping due to friction
+- Two spheres colliding and bouncing
+- One sphere dropping and landing with friction
+
+---
+
+## Future Phases (Outline)
 
 ### Phase 7: Simple Walker Environment
 - Capsule/box bodies for legs and torso

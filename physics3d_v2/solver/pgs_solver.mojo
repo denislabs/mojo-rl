@@ -20,11 +20,14 @@ Key equations from MuJoCo:
   aref = -k * penetration - b * velocity
   D = 1 / (invweight * (1 - imp) / imp)  (simplified: D = 1/invweight for imp=0.5)
 
+Phase 6: Added Coulomb friction support.
+
 Reference: MuJoCo Warp constraint.py and solver.py
 """
 
 from math import sqrt
 from ..types import Model, Data
+from ..collision.collision_primitives import compute_tangent_basis
 from layout import LayoutTensor, Layout
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
@@ -366,6 +369,13 @@ fn solve_constraints_pgs[
             lambda_n[c] = j  # Store for warm-start
             had_impact[c] = True
 
+    # Initialize friction impulse arrays
+    var lambda_t1 = InlineArray[Scalar[DTYPE], MAX_CONTACTS](uninitialized=True)
+    var lambda_t2 = InlineArray[Scalar[DTYPE], MAX_CONTACTS](uninitialized=True)
+    for c in range(data.num_contacts):
+        lambda_t1[c] = Scalar[DTYPE](0)
+        lambda_t2[c] = Scalar[DTYPE](0)
+
     # PGS iterations for soft constraints (resting/slow contacts)
     for iteration in range(iterations):
         for c in range(data.num_contacts):
@@ -436,6 +446,112 @@ fn solve_constraints_pgs[
                 data.velocities[body_b * 3 + 0] += delta_j * nx * inv_mass_b
                 data.velocities[body_b * 3 + 1] += delta_j * ny * inv_mass_b
                 data.velocities[body_b * 3 + 2] += delta_j * nz * inv_mass_b
+
+            # =========================================================
+            # FRICTION SOLVING (Coulomb friction)
+            # =========================================================
+            var jn = lambda_n[c]
+            if jn <= Scalar[DTYPE](0) or model.friction <= Scalar[DTYPE](0):
+                continue
+
+            # Compute tangent basis from normal
+            var tangents = compute_tangent_basis(nx, ny, nz)
+            var t1x = tangents[0]
+            var t1y = tangents[1]
+            var t1z = tangents[2]
+            var t2x = tangents[3]
+            var t2y = tangents[4]
+            var t2z = tangents[5]
+
+            # Get current velocities
+            var va_x = data.velocities[body_a * 3 + 0]
+            var va_y = data.velocities[body_a * 3 + 1]
+            var va_z = data.velocities[body_a * 3 + 2]
+
+            var vb_x: Scalar[DTYPE]
+            var vb_y: Scalar[DTYPE]
+            var vb_z: Scalar[DTYPE]
+            if body_b >= 0:
+                vb_x = data.velocities[body_b * 3 + 0]
+                vb_y = data.velocities[body_b * 3 + 1]
+                vb_z = data.velocities[body_b * 3 + 2]
+            else:
+                vb_x = Scalar[DTYPE](0)
+                vb_y = Scalar[DTYPE](0)
+                vb_z = Scalar[DTYPE](0)
+
+            # Compute relative tangent velocities
+            var rel_vt1 = (
+                (va_x - vb_x) * t1x + (va_y - vb_y) * t1y + (va_z - vb_z) * t1z
+            )
+            var rel_vt2 = (
+                (va_x - vb_x) * t2x + (va_y - vb_y) * t2y + (va_z - vb_z) * t2z
+            )
+
+            # Compute tangent impulses to stop sliding
+            var delta_jt1 = rel_vt1 / K
+            var delta_jt2 = rel_vt2 / K
+
+            # Accumulate tangent impulses
+            var old_jt1 = lambda_t1[c]
+            var old_jt2 = lambda_t2[c]
+            var new_jt1 = old_jt1 + delta_jt1
+            var new_jt2 = old_jt2 + delta_jt2
+
+            # Clamp to friction cone: |j_t| <= μ * j_n
+            var jt_mag = sqrt(new_jt1 * new_jt1 + new_jt2 * new_jt2)
+            var max_friction = model.friction * jn
+
+            if jt_mag > max_friction and jt_mag > Scalar[DTYPE](1e-10):
+                var scale = max_friction / jt_mag
+                new_jt1 = new_jt1 * scale
+                new_jt2 = new_jt2 * scale
+
+            # Compute actual delta after clamping
+            delta_jt1 = new_jt1 - old_jt1
+            delta_jt2 = new_jt2 - old_jt2
+            lambda_t1[c] = new_jt1
+            lambda_t2[c] = new_jt2
+
+            # Apply tangent impulses to velocities
+            if body_b < 0:
+                # Ground contact
+                data.velocities[body_a * 3 + 0] -= (
+                    delta_jt1 * t1x + delta_jt2 * t2x
+                ) * inv_mass_a
+                data.velocities[body_a * 3 + 1] -= (
+                    delta_jt1 * t1y + delta_jt2 * t2y
+                ) * inv_mass_a
+                data.velocities[body_a * 3 + 2] -= (
+                    delta_jt1 * t1z + delta_jt2 * t2z
+                ) * inv_mass_a
+            else:
+                # Sphere-sphere
+                data.velocities[body_a * 3 + 0] -= (
+                    delta_jt1 * t1x + delta_jt2 * t2x
+                ) * inv_mass_a
+                data.velocities[body_a * 3 + 1] -= (
+                    delta_jt1 * t1y + delta_jt2 * t2y
+                ) * inv_mass_a
+                data.velocities[body_a * 3 + 2] -= (
+                    delta_jt1 * t1z + delta_jt2 * t2z
+                ) * inv_mass_a
+
+                data.velocities[body_b * 3 + 0] += (
+                    delta_jt1 * t1x + delta_jt2 * t2x
+                ) * inv_mass_b
+                data.velocities[body_b * 3 + 1] += (
+                    delta_jt1 * t1y + delta_jt2 * t2y
+                ) * inv_mass_b
+                data.velocities[body_b * 3 + 2] += (
+                    delta_jt1 * t1z + delta_jt2 * t2z
+                ) * inv_mass_b
+
+    # Store final impulses in contact data for warm starting
+    for c in range(data.num_contacts):
+        data.contacts[c].impulse_n = lambda_n[c]
+        data.contacts[c].impulse_t1 = lambda_t1[c]
+        data.contacts[c].impulse_t2 = lambda_t2[c]
 
 
 fn _is_grounded[
@@ -537,9 +653,10 @@ fn solve_constraints_pgs_gpu[
     ],
     dt: Scalar[DTYPE],
     restitution: Scalar[DTYPE],
+    friction: Scalar[DTYPE],
     iterations: Int,
 ):
-    """PGS constraint solver with spring-damper model."""
+    """PGS constraint solver with spring-damper model and friction."""
     var meta_off = metadata_offset[NUM_BODIES, MAX_CONTACTS]()
     var num_contacts = Int(
         rebind[Scalar[DTYPE]](state[env, meta_off + META_IDX_NUM_CONTACTS])
@@ -548,6 +665,13 @@ fn solve_constraints_pgs_gpu[
     # Spring-damper parameters (MuJoCo defaults)
     var stiffness: Scalar[DTYPE] = 2000.0
     var damping: Scalar[DTYPE] = 100.0
+
+    # Reset impulses at start
+    for c in range(num_contacts):
+        var c_off = contact_offset[NUM_BODIES, MAX_CONTACTS](c)
+        state[env, c_off + CONTACT_IDX_IMPULSE_N] = Scalar[DTYPE](0)
+        state[env, c_off + CONTACT_IDX_IMPULSE_T1] = Scalar[DTYPE](0)
+        state[env, c_off + CONTACT_IDX_IMPULSE_T2] = Scalar[DTYPE](0)
 
     for _ in range(iterations):
         for c in range(num_contacts):
@@ -578,8 +702,9 @@ fn solve_constraints_pgs_gpu[
             var vx_b: Scalar[DTYPE] = 0
             var vy_b: Scalar[DTYPE] = 0
             var vz_b: Scalar[DTYPE] = 0
+            var b_off_b: Int = 0
             if body_b >= 0:
-                var b_off_b = body_offset[NUM_BODIES, MAX_CONTACTS](body_b)
+                b_off_b = body_offset[NUM_BODIES, MAX_CONTACTS](body_b)
                 vx_b = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_VX])
                 vy_b = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_VY])
                 vz_b = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_VZ])
@@ -590,8 +715,6 @@ fn solve_constraints_pgs_gpu[
             var rel_vn = rel_vx * nx + rel_vy * ny + rel_vz * nz
 
             # Spring-damper constraint force
-            # penetration > 0 means overlap, rel_vn < 0 means approaching
-            # Damping should resist approaching velocity, so subtract rel_vn
             var penetration = -dist
             var bias = stiffness * penetration - damping * rel_vn
 
@@ -606,7 +729,7 @@ fn solve_constraints_pgs_gpu[
                 )
             var K = inv_mass_a + inv_mass_b
 
-            # Constraint impulse
+            # Normal constraint impulse
             var old_impulse = rebind[Scalar[DTYPE]](
                 state[env, c_off + CONTACT_IDX_IMPULSE_N]
             )
@@ -615,25 +738,110 @@ fn solve_constraints_pgs_gpu[
             delta_impulse = new_impulse - old_impulse
             state[env, c_off + CONTACT_IDX_IMPULSE_N] = new_impulse
 
-            # Apply impulse
-            state[env, b_off_a + BODY_IDX_VX] = (
-                vx_a + delta_impulse * nx * inv_mass_a
-            )
-            state[env, b_off_a + BODY_IDX_VY] = (
-                vy_a + delta_impulse * ny * inv_mass_a
-            )
-            state[env, b_off_a + BODY_IDX_VZ] = (
-                vz_a + delta_impulse * nz * inv_mass_a
-            )
+            # Apply normal impulse
+            vx_a = vx_a + delta_impulse * nx * inv_mass_a
+            vy_a = vy_a + delta_impulse * ny * inv_mass_a
+            vz_a = vz_a + delta_impulse * nz * inv_mass_a
+            state[env, b_off_a + BODY_IDX_VX] = vx_a
+            state[env, b_off_a + BODY_IDX_VY] = vy_a
+            state[env, b_off_a + BODY_IDX_VZ] = vz_a
 
             if body_b >= 0:
-                var b_off_b = body_offset[NUM_BODIES, MAX_CONTACTS](body_b)
-                state[env, b_off_b + BODY_IDX_VX] = (
-                    vx_b - delta_impulse * nx * inv_mass_b
-                )
-                state[env, b_off_b + BODY_IDX_VY] = (
-                    vy_b - delta_impulse * ny * inv_mass_b
-                )
-                state[env, b_off_b + BODY_IDX_VZ] = (
-                    vz_b - delta_impulse * nz * inv_mass_b
-                )
+                vx_b = vx_b - delta_impulse * nx * inv_mass_b
+                vy_b = vy_b - delta_impulse * ny * inv_mass_b
+                vz_b = vz_b - delta_impulse * nz * inv_mass_b
+                state[env, b_off_b + BODY_IDX_VX] = vx_b
+                state[env, b_off_b + BODY_IDX_VY] = vy_b
+                state[env, b_off_b + BODY_IDX_VZ] = vz_b
+
+            # =========================================================
+            # FRICTION SOLVING
+            # =========================================================
+            var jn = new_impulse
+            if jn <= Scalar[DTYPE](0) or friction <= Scalar[DTYPE](0):
+                continue
+
+            # Compute tangent basis (inline for GPU)
+            var abs_nx = abs(nx)
+            var abs_ny = abs(ny)
+            var abs_nz = abs(nz)
+            var ax: Scalar[DTYPE]
+            var ay: Scalar[DTYPE]
+            var az: Scalar[DTYPE]
+
+            if abs_nx < abs_ny and abs_nx < abs_nz:
+                ax = Scalar[DTYPE](1.0)
+                ay = Scalar[DTYPE](0.0)
+                az = Scalar[DTYPE](0.0)
+            elif abs_ny < abs_nz:
+                ax = Scalar[DTYPE](0.0)
+                ay = Scalar[DTYPE](1.0)
+                az = Scalar[DTYPE](0.0)
+            else:
+                ax = Scalar[DTYPE](0.0)
+                ay = Scalar[DTYPE](0.0)
+                az = Scalar[DTYPE](1.0)
+
+            # t1 = normalize(a - (a·n)*n)
+            var dot = ax * nx + ay * ny + az * nz
+            var t1x = ax - dot * nx
+            var t1y = ay - dot * ny
+            var t1z = az - dot * nz
+            var t1_len = sqrt(t1x * t1x + t1y * t1y + t1z * t1z)
+            if t1_len > Scalar[DTYPE](1e-10):
+                t1x = t1x / t1_len
+                t1y = t1y / t1_len
+                t1z = t1z / t1_len
+
+            # t2 = n × t1
+            var t2x = ny * t1z - nz * t1y
+            var t2y = nz * t1x - nx * t1z
+            var t2z = nx * t1y - ny * t1x
+
+            # Compute relative tangent velocities
+            rel_vx = vx_a - vx_b
+            rel_vy = vy_a - vy_b
+            rel_vz = vz_a - vz_b
+            var rel_vt1 = rel_vx * t1x + rel_vy * t1y + rel_vz * t1z
+            var rel_vt2 = rel_vx * t2x + rel_vy * t2y + rel_vz * t2z
+
+            # Compute tangent impulses
+            var delta_jt1 = rel_vt1 / K
+            var delta_jt2 = rel_vt2 / K
+
+            # Accumulate and clamp to friction cone
+            var old_jt1 = rebind[Scalar[DTYPE]](
+                state[env, c_off + CONTACT_IDX_IMPULSE_T1]
+            )
+            var old_jt2 = rebind[Scalar[DTYPE]](
+                state[env, c_off + CONTACT_IDX_IMPULSE_T2]
+            )
+            var new_jt1 = old_jt1 + delta_jt1
+            var new_jt2 = old_jt2 + delta_jt2
+
+            var jt_mag = sqrt(new_jt1 * new_jt1 + new_jt2 * new_jt2)
+            var max_friction = friction * jn
+
+            if jt_mag > max_friction and jt_mag > Scalar[DTYPE](1e-10):
+                var scale = max_friction / jt_mag
+                new_jt1 = new_jt1 * scale
+                new_jt2 = new_jt2 * scale
+
+            delta_jt1 = new_jt1 - old_jt1
+            delta_jt2 = new_jt2 - old_jt2
+            state[env, c_off + CONTACT_IDX_IMPULSE_T1] = new_jt1
+            state[env, c_off + CONTACT_IDX_IMPULSE_T2] = new_jt2
+
+            # Apply tangent impulses
+            var dx = delta_jt1 * t1x + delta_jt2 * t2x
+            var dy = delta_jt1 * t1y + delta_jt2 * t2y
+            var dz = delta_jt1 * t1z + delta_jt2 * t2z
+
+            state[env, b_off_a + BODY_IDX_VX] = vx_a - dx * inv_mass_a
+            state[env, b_off_a + BODY_IDX_VY] = vy_a - dy * inv_mass_a
+            state[env, b_off_a + BODY_IDX_VZ] = vz_a - dz * inv_mass_a
+
+            if body_b >= 0:
+                state[env, b_off_b + BODY_IDX_VX] = vx_b + dx * inv_mass_b
+                state[env, b_off_b + BODY_IDX_VY] = vy_b + dy * inv_mass_b
+                state[env, b_off_b + BODY_IDX_VZ] = vz_b + dz * inv_mass_b

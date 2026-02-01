@@ -200,6 +200,7 @@ struct PGSIntegrator(Integrator):
         gravity_z: Scalar[DTYPE],
         ground_z: Scalar[DTYPE],
         restitution: Scalar[DTYPE],
+        friction: Scalar[DTYPE],
     ):
         """Complete PGS-based physics step for one environment."""
         # 1. Collision detection
@@ -212,10 +213,10 @@ struct PGSIntegrator(Integrator):
             env, state, dt, gravity_z
         )
 
-        # 3. Solve constraints with PGS
+        # 3. Solve constraints with PGS (including friction)
         solve_constraints_pgs_gpu[
             DTYPE, NUM_BODIES, MAX_CONTACTS, STATE_SIZE, BATCH
-        ](env, state, model, dt, restitution, 20)
+        ](env, state, model, dt, restitution, friction, 20)
 
         # 4. Solve joint velocity constraints (if any)
         @parameter
@@ -272,7 +273,7 @@ struct PGSIntegrator(Integrator):
             gravity_z: Z-component of gravity.
             ground_z: Ground plane height.
             restitution: Coefficient of restitution.
-            friction: Friction coefficient (currently unused).
+            friction: Friction coefficient.
         """
 
         comptime STATE_SIZE = compute_state_size[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS]()
@@ -300,6 +301,7 @@ struct PGSIntegrator(Integrator):
             gravity_z: Scalar[DTYPE],
             ground_z: Scalar[DTYPE],
             restitution: Scalar[DTYPE],
+            friction: Scalar[DTYPE],
         ):
             var env = Int(block_dim.x * block_idx.x + thread_idx.x)
             if env >= BATCH:
@@ -307,7 +309,7 @@ struct PGSIntegrator(Integrator):
 
             Self.step_pgs_kernel[
                 DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, STATE_SIZE, BATCH
-            ](env, state, model, dt, gravity_z, ground_z, restitution)
+            ](env, state, model, dt, gravity_z, ground_z, restitution, friction)
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             state,
@@ -316,6 +318,7 @@ struct PGSIntegrator(Integrator):
             gravity_z,
             ground_z,
             restitution,
+            friction,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )

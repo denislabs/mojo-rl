@@ -9,10 +9,14 @@ This uses the Split Impulse method (similar to Bullet Physics / Box2D):
 This separation prevents position correction from adding energy to the system,
 which is critical for stable stacking.
 
+Phase 6: Added Coulomb friction support.
+
 Reference: Erin Catto's GDC presentations on constraint solving.
 """
 
+from math import sqrt
 from ..types import Model, Data
+from ..collision.collision_primitives import compute_tangent_basis
 from layout import LayoutTensor, Layout
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
@@ -50,6 +54,7 @@ fn solve_velocity_constraints[
 
     Only handles velocity-level constraints - making sure bodies don't
     interpenetrate faster. Does NOT add position correction bias here.
+    Includes Coulomb friction solving.
 
     Args:
         model: Static model configuration.
@@ -59,6 +64,8 @@ fn solve_velocity_constraints[
     # Reset accumulated impulses at start of solve
     for c in range(data.num_contacts):
         data.contacts[c].impulse_n = Scalar[DTYPE](0)
+        data.contacts[c].impulse_t1 = Scalar[DTYPE](0)
+        data.contacts[c].impulse_t2 = Scalar[DTYPE](0)
 
     for _ in range(iterations):
         for c in range(data.num_contacts):
@@ -203,6 +210,101 @@ fn _solve_single_contact_velocity[
         data.velocities[body_b * 3 + 0] += delta_j * nx * inv_mass_b
         data.velocities[body_b * 3 + 1] += delta_j * ny * inv_mass_b
         data.velocities[body_b * 3 + 2] += delta_j * nz * inv_mass_b
+
+    # =========================================================================
+    # FRICTION SOLVING (Coulomb friction model)
+    # =========================================================================
+    # Only solve friction if we have a positive normal impulse
+    var jn = data.contacts[contact_idx].impulse_n
+    if jn <= Scalar[DTYPE](0) or model.friction <= Scalar[DTYPE](0):
+        return
+
+    # Compute tangent basis from normal
+    var tangents = compute_tangent_basis(nx, ny, nz)
+    var t1x = tangents[0]
+    var t1y = tangents[1]
+    var t1z = tangents[2]
+    var t2x = tangents[3]
+    var t2y = tangents[4]
+    var t2z = tangents[5]
+
+    # Re-read velocities after normal impulse was applied
+    va_x = data.velocities[body_a * 3 + 0]
+    va_y = data.velocities[body_a * 3 + 1]
+    va_z = data.velocities[body_a * 3 + 2]
+
+    if body_b >= 0:
+        vb_x = data.velocities[body_b * 3 + 0]
+        vb_y = data.velocities[body_b * 3 + 1]
+        vb_z = data.velocities[body_b * 3 + 2]
+    else:
+        vb_x = Scalar[DTYPE](0)
+        vb_y = Scalar[DTYPE](0)
+        vb_z = Scalar[DTYPE](0)
+
+    # Compute relative tangent velocities
+    var rel_vt1 = (va_x - vb_x) * t1x + (va_y - vb_y) * t1y + (va_z - vb_z) * t1z
+    var rel_vt2 = (va_x - vb_x) * t2x + (va_y - vb_y) * t2y + (va_z - vb_z) * t2z
+
+    # Compute tangent impulses to stop sliding
+    var delta_jt1 = rel_vt1 / K
+    var delta_jt2 = rel_vt2 / K
+
+    # Accumulate tangent impulses
+    var old_jt1 = data.contacts[contact_idx].impulse_t1
+    var old_jt2 = data.contacts[contact_idx].impulse_t2
+    var new_jt1 = old_jt1 + delta_jt1
+    var new_jt2 = old_jt2 + delta_jt2
+
+    # Clamp to friction cone: |j_t| <= μ * j_n
+    var jt_mag = sqrt(new_jt1 * new_jt1 + new_jt2 * new_jt2)
+    var max_friction = model.friction * jn
+
+    if jt_mag > max_friction and jt_mag > Scalar[DTYPE](1e-10):
+        var scale = max_friction / jt_mag
+        new_jt1 = new_jt1 * scale
+        new_jt2 = new_jt2 * scale
+
+    # Compute actual delta after clamping
+    delta_jt1 = new_jt1 - old_jt1
+    delta_jt2 = new_jt2 - old_jt2
+    data.contacts[contact_idx].impulse_t1 = new_jt1
+    data.contacts[contact_idx].impulse_t2 = new_jt2
+
+    # Apply tangent impulses to velocities
+    # Body A pushed in -t direction; Body B in +t direction
+    if body_b < 0:
+        # Ground contact: friction opposes sliding velocity
+        data.velocities[body_a * 3 + 0] -= (
+            delta_jt1 * t1x + delta_jt2 * t2x
+        ) * inv_mass_a
+        data.velocities[body_a * 3 + 1] -= (
+            delta_jt1 * t1y + delta_jt2 * t2y
+        ) * inv_mass_a
+        data.velocities[body_a * 3 + 2] -= (
+            delta_jt1 * t1z + delta_jt2 * t2z
+        ) * inv_mass_a
+    else:
+        # Sphere-sphere
+        data.velocities[body_a * 3 + 0] -= (
+            delta_jt1 * t1x + delta_jt2 * t2x
+        ) * inv_mass_a
+        data.velocities[body_a * 3 + 1] -= (
+            delta_jt1 * t1y + delta_jt2 * t2y
+        ) * inv_mass_a
+        data.velocities[body_a * 3 + 2] -= (
+            delta_jt1 * t1z + delta_jt2 * t2z
+        ) * inv_mass_a
+
+        data.velocities[body_b * 3 + 0] += (
+            delta_jt1 * t1x + delta_jt2 * t2x
+        ) * inv_mass_b
+        data.velocities[body_b * 3 + 1] += (
+            delta_jt1 * t1y + delta_jt2 * t2y
+        ) * inv_mass_b
+        data.velocities[body_b * 3 + 2] += (
+            delta_jt1 * t1z + delta_jt2 * t2z
+        ) * inv_mass_b
 
 
 fn solve_position_constraints[
@@ -356,13 +458,21 @@ fn solve_velocity_constraints_gpu[
         DTYPE, Layout.row_major(NUM_BODIES, MODEL_BODY_SIZE), MutAnyOrigin
     ],
     restitution: Scalar[DTYPE],
+    friction: Scalar[DTYPE],
     iterations: Int,
 ):
-    """Solve velocity constraints using sequential impulses."""
+    """Solve velocity constraints using sequential impulses with friction."""
     var meta_off = metadata_offset[NUM_BODIES, MAX_CONTACTS]()
     var num_contacts = Int(
         rebind[Scalar[DTYPE]](state[env, meta_off + META_IDX_NUM_CONTACTS])
     )
+
+    # Reset impulses at start
+    for c in range(num_contacts):
+        var c_off = contact_offset[NUM_BODIES, MAX_CONTACTS](c)
+        state[env, c_off + CONTACT_IDX_IMPULSE_N] = Scalar[DTYPE](0)
+        state[env, c_off + CONTACT_IDX_IMPULSE_T1] = Scalar[DTYPE](0)
+        state[env, c_off + CONTACT_IDX_IMPULSE_T2] = Scalar[DTYPE](0)
 
     for _ in range(iterations):
         for c in range(num_contacts):
@@ -387,29 +497,22 @@ fn solve_velocity_constraints_gpu[
             var vx_b: Scalar[DTYPE] = 0
             var vy_b: Scalar[DTYPE] = 0
             var vz_b: Scalar[DTYPE] = 0
+            var b_off_b: Int = 0
             if body_b >= 0:
-                var b_off_b = body_offset[NUM_BODIES, MAX_CONTACTS](body_b)
+                b_off_b = body_offset[NUM_BODIES, MAX_CONTACTS](body_b)
                 vx_b = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_VX])
                 vy_b = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_VY])
                 vz_b = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_VZ])
 
             # Relative velocity along normal
-            # Convention: rel_vn = (v_a - v_b) · n where n points from A to B
-            # rel_vn > 0 means A is moving toward B = APPROACHING
             var rel_vx = vx_a - vx_b
             var rel_vy = vy_a - vy_b
             var rel_vz = vz_a - vz_b
             var rel_vn = rel_vx * nx + rel_vy * ny + rel_vz * nz
 
-            # For ground contacts (body_b < 0), normal points UP
-            # Sphere falling has va_z < 0, so rel_vn = va_z * 1 < 0
-            # But we want rel_vn > 0 to mean "approaching", so flip for ground
+            # For ground contacts, flip sign so rel_vn > 0 means approaching ground
             if body_b < 0:
                 rel_vn = -rel_vn
-
-            # Only solve if approaching (rel_vn > 0)
-            if rel_vn <= Scalar[DTYPE](0):
-                continue
 
             # Compute effective mass
             var inv_mass_a = rebind[Scalar[DTYPE]](
@@ -422,30 +525,141 @@ fn solve_velocity_constraints_gpu[
                 )
             var K = inv_mass_a + inv_mass_b
 
-            # Target: stop (rel_vn = 0) or bounce (rel_vn = -e * current)
-            # j = (rel_vn - target_vn) / K = (rel_vn + e*rel_vn) / K = (1+e)*rel_vn / K
-            var j = (Scalar[DTYPE](1) + restitution) * rel_vn / K
+            # Only solve normal constraint if approaching
+            if rel_vn > Scalar[DTYPE](0):
+                # Normal impulse: j = (1+e)*rel_vn / K
+                var delta_j = (Scalar[DTYPE](1) + restitution) * rel_vn / K
 
-            # Apply impulse to velocities
-            # For sphere-sphere: Body A receives impulse in -normal direction
-            #                    Body B receives impulse in +normal direction
-            # For ground contacts: We flipped rel_vn, so flip impulse direction
-            #                     Sphere should be pushed UP (+normal direction)
-            if body_b < 0:
-                # Ground contact: push sphere in +normal direction (up)
-                state[env, b_off_a + BODY_IDX_VX] = vx_a + j * nx * inv_mass_a
-                state[env, b_off_a + BODY_IDX_VY] = vy_a + j * ny * inv_mass_a
-                state[env, b_off_a + BODY_IDX_VZ] = vz_a + j * nz * inv_mass_a
+                # Accumulated impulse clamping
+                var old_jn = rebind[Scalar[DTYPE]](
+                    state[env, c_off + CONTACT_IDX_IMPULSE_N]
+                )
+                var new_jn = max(old_jn + delta_j, Scalar[DTYPE](0))
+                delta_j = new_jn - old_jn
+                state[env, c_off + CONTACT_IDX_IMPULSE_N] = new_jn
+
+                # Apply normal impulse
+                if body_b < 0:
+                    # Ground contact: push sphere up
+                    vx_a = vx_a + delta_j * nx * inv_mass_a
+                    vy_a = vy_a + delta_j * ny * inv_mass_a
+                    vz_a = vz_a + delta_j * nz * inv_mass_a
+                    state[env, b_off_a + BODY_IDX_VX] = vx_a
+                    state[env, b_off_a + BODY_IDX_VY] = vy_a
+                    state[env, b_off_a + BODY_IDX_VZ] = vz_a
+                else:
+                    # Sphere-sphere
+                    vx_a = vx_a - delta_j * nx * inv_mass_a
+                    vy_a = vy_a - delta_j * ny * inv_mass_a
+                    vz_a = vz_a - delta_j * nz * inv_mass_a
+                    state[env, b_off_a + BODY_IDX_VX] = vx_a
+                    state[env, b_off_a + BODY_IDX_VY] = vy_a
+                    state[env, b_off_a + BODY_IDX_VZ] = vz_a
+
+                    vx_b = vx_b + delta_j * nx * inv_mass_b
+                    vy_b = vy_b + delta_j * ny * inv_mass_b
+                    vz_b = vz_b + delta_j * nz * inv_mass_b
+                    state[env, b_off_b + BODY_IDX_VX] = vx_b
+                    state[env, b_off_b + BODY_IDX_VY] = vy_b
+                    state[env, b_off_b + BODY_IDX_VZ] = vz_b
+
+            # =========================================================
+            # FRICTION SOLVING
+            # =========================================================
+            var jn = rebind[Scalar[DTYPE]](
+                state[env, c_off + CONTACT_IDX_IMPULSE_N]
+            )
+            if jn <= Scalar[DTYPE](0) or friction <= Scalar[DTYPE](0):
+                continue
+
+            # Compute tangent basis (inline for GPU)
+            var abs_nx = abs(nx)
+            var abs_ny = abs(ny)
+            var abs_nz = abs(nz)
+            var ax: Scalar[DTYPE]
+            var ay: Scalar[DTYPE]
+            var az: Scalar[DTYPE]
+
+            if abs_nx < abs_ny and abs_nx < abs_nz:
+                ax = Scalar[DTYPE](1.0)
+                ay = Scalar[DTYPE](0.0)
+                az = Scalar[DTYPE](0.0)
+            elif abs_ny < abs_nz:
+                ax = Scalar[DTYPE](0.0)
+                ay = Scalar[DTYPE](1.0)
+                az = Scalar[DTYPE](0.0)
             else:
-                # Sphere-sphere: A pushed back, B pushed forward
-                state[env, b_off_a + BODY_IDX_VX] = vx_a - j * nx * inv_mass_a
-                state[env, b_off_a + BODY_IDX_VY] = vy_a - j * ny * inv_mass_a
-                state[env, b_off_a + BODY_IDX_VZ] = vz_a - j * nz * inv_mass_a
+                ax = Scalar[DTYPE](0.0)
+                ay = Scalar[DTYPE](0.0)
+                az = Scalar[DTYPE](1.0)
 
-                var b_off_b = body_offset[NUM_BODIES, MAX_CONTACTS](body_b)
-                state[env, b_off_b + BODY_IDX_VX] = vx_b + j * nx * inv_mass_b
-                state[env, b_off_b + BODY_IDX_VY] = vy_b + j * ny * inv_mass_b
-                state[env, b_off_b + BODY_IDX_VZ] = vz_b + j * nz * inv_mass_b
+            # t1 = normalize(a - (a·n)*n)
+            var dot = ax * nx + ay * ny + az * nz
+            var t1x = ax - dot * nx
+            var t1y = ay - dot * ny
+            var t1z = az - dot * nz
+            var t1_len = sqrt(t1x * t1x + t1y * t1y + t1z * t1z)
+            if t1_len > Scalar[DTYPE](1e-10):
+                t1x = t1x / t1_len
+                t1y = t1y / t1_len
+                t1z = t1z / t1_len
+
+            # t2 = n × t1
+            var t2x = ny * t1z - nz * t1y
+            var t2y = nz * t1x - nx * t1z
+            var t2z = nx * t1y - ny * t1x
+
+            # Compute relative tangent velocities
+            rel_vx = vx_a - vx_b
+            rel_vy = vy_a - vy_b
+            rel_vz = vz_a - vz_b
+            var rel_vt1 = rel_vx * t1x + rel_vy * t1y + rel_vz * t1z
+            var rel_vt2 = rel_vx * t2x + rel_vy * t2y + rel_vz * t2z
+
+            # Compute tangent impulses
+            var delta_jt1 = rel_vt1 / K
+            var delta_jt2 = rel_vt2 / K
+
+            # Accumulate and clamp to friction cone
+            var old_jt1 = rebind[Scalar[DTYPE]](
+                state[env, c_off + CONTACT_IDX_IMPULSE_T1]
+            )
+            var old_jt2 = rebind[Scalar[DTYPE]](
+                state[env, c_off + CONTACT_IDX_IMPULSE_T2]
+            )
+            var new_jt1 = old_jt1 + delta_jt1
+            var new_jt2 = old_jt2 + delta_jt2
+
+            var jt_mag = sqrt(new_jt1 * new_jt1 + new_jt2 * new_jt2)
+            var max_friction = friction * jn
+
+            if jt_mag > max_friction and jt_mag > Scalar[DTYPE](1e-10):
+                var scale = max_friction / jt_mag
+                new_jt1 = new_jt1 * scale
+                new_jt2 = new_jt2 * scale
+
+            delta_jt1 = new_jt1 - old_jt1
+            delta_jt2 = new_jt2 - old_jt2
+            state[env, c_off + CONTACT_IDX_IMPULSE_T1] = new_jt1
+            state[env, c_off + CONTACT_IDX_IMPULSE_T2] = new_jt2
+
+            # Apply tangent impulses
+            var dx = delta_jt1 * t1x + delta_jt2 * t2x
+            var dy = delta_jt1 * t1y + delta_jt2 * t2y
+            var dz = delta_jt1 * t1z + delta_jt2 * t2z
+
+            if body_b < 0:
+                state[env, b_off_a + BODY_IDX_VX] = vx_a - dx * inv_mass_a
+                state[env, b_off_a + BODY_IDX_VY] = vy_a - dy * inv_mass_a
+                state[env, b_off_a + BODY_IDX_VZ] = vz_a - dz * inv_mass_a
+            else:
+                state[env, b_off_a + BODY_IDX_VX] = vx_a - dx * inv_mass_a
+                state[env, b_off_a + BODY_IDX_VY] = vy_a - dy * inv_mass_a
+                state[env, b_off_a + BODY_IDX_VZ] = vz_a - dz * inv_mass_a
+
+                state[env, b_off_b + BODY_IDX_VX] = vx_b + dx * inv_mass_b
+                state[env, b_off_b + BODY_IDX_VY] = vy_b + dy * inv_mass_b
+                state[env, b_off_b + BODY_IDX_VZ] = vz_b + dz * inv_mass_b
 
 
 @always_inline
