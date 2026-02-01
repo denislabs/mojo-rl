@@ -109,7 +109,7 @@ fn test_free_fall_gpu() raises -> Bool:
 
     # Simulate 100 steps (1 second)
     var num_steps = 100
-    ImpulseIntegrator.simulate_gpu[DTYPE, NUM_BODIES, MAX_CONTACTS, BATCH](
+    ImpulseIntegrator.simulate_gpu[DTYPE, NUM_BODIES, MAX_CONTACTS, 0, BATCH](
         ctx,
         state_buf,
         model_buf,
@@ -228,7 +228,7 @@ fn test_ball_drop_gpu() raises -> Bool:
 
     # Simulate enough steps for ball to fall and settle
     var num_steps = 200
-    PGSIntegrator.simulate_gpu[DTYPE, NUM_BODIES, MAX_CONTACTS, BATCH](
+    PGSIntegrator.simulate_gpu[DTYPE, NUM_BODIES, MAX_CONTACTS, 0, BATCH](
         ctx,
         state_buf,
         model_buf,
@@ -392,7 +392,7 @@ fn test_two_spheres_collision_gpu() raises -> Bool:
 
     # Simulate for enough time for collision to happen
     var num_steps = 100
-    ImpulseIntegrator.simulate_gpu[DTYPE, NUM_BODIES, MAX_CONTACTS, BATCH](
+    ImpulseIntegrator.simulate_gpu[DTYPE, NUM_BODIES, MAX_CONTACTS, 0, BATCH](
         ctx,
         state_buf,
         model_buf,
@@ -523,7 +523,7 @@ fn test_batched_simulation_gpu() raises -> Bool:
 
     # Simulate
     var num_steps = 100
-    ImpulseIntegrator.simulate_gpu[DTYPE, NUM_BODIES, MAX_CONTACTS, BATCH](
+    ImpulseIntegrator.simulate_gpu[DTYPE, NUM_BODIES, MAX_CONTACTS, 0, BATCH](
         ctx,
         state_buf,
         model_buf,
@@ -652,7 +652,7 @@ fn test_cpu_gpu_comparison_freefall_impulse() raises -> Bool:
     ctx.enqueue_copy(model_buf, model_gpu)
     ctx.synchronize()
 
-    ImpulseIntegrator.simulate_gpu[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS, BATCH](
+    ImpulseIntegrator.simulate_gpu[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS, 0, BATCH](
         ctx,
         state_buf,
         model_buf,
@@ -768,7 +768,7 @@ fn test_cpu_gpu_comparison_balldrop_impulse() raises -> Bool:
     ctx.enqueue_copy(model_buf, model_gpu)
     ctx.synchronize()
 
-    ImpulseIntegrator.simulate_gpu[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS, BATCH](
+    ImpulseIntegrator.simulate_gpu[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS, 0, BATCH](
         ctx,
         state_buf,
         model_buf,
@@ -888,7 +888,7 @@ fn test_cpu_gpu_comparison_freefall_pgs() raises -> Bool:
     ctx.enqueue_copy(model_buf, model_gpu)
     ctx.synchronize()
 
-    PGSIntegrator.simulate_gpu[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS, BATCH](
+    PGSIntegrator.simulate_gpu[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS, 0, BATCH](
         ctx,
         state_buf,
         model_buf,
@@ -1003,7 +1003,7 @@ fn test_cpu_gpu_comparison_balldrop_pgs() raises -> Bool:
     ctx.enqueue_copy(model_buf, model_gpu)
     ctx.synchronize()
 
-    PGSIntegrator.simulate_gpu[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS, BATCH](
+    PGSIntegrator.simulate_gpu[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS, 0, BATCH](
         ctx,
         state_buf,
         model_buf,
@@ -1141,7 +1141,7 @@ fn test_cpu_gpu_comparison_two_spheres_impulse() raises -> Bool:
     ctx.enqueue_copy(model_buf, model_gpu)
     ctx.synchronize()
 
-    ImpulseIntegrator.simulate_gpu[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS, BATCH](
+    ImpulseIntegrator.simulate_gpu[DTYPE_GPU, NUM_BODIES, MAX_CONTACTS, 0, BATCH](
         ctx,
         state_buf,
         model_buf,

@@ -438,11 +438,19 @@ fn solve_constraints_pgs[
             lambda_n[c] = new_lambda
 
             # Apply velocity change
-            data.velocities[body_a * 3 + 0] -= delta_j * nx * inv_mass_a
-            data.velocities[body_a * 3 + 1] -= delta_j * ny * inv_mass_a
-            data.velocities[body_a * 3 + 2] -= delta_j * nz * inv_mass_a
+            # For ground contacts: push sphere UP in +normal direction
+            # For sphere-sphere: push body_a in -normal, body_b in +normal
+            if body_b < 0:
+                # Ground contact: push sphere up (+normal)
+                data.velocities[body_a * 3 + 0] += delta_j * nx * inv_mass_a
+                data.velocities[body_a * 3 + 1] += delta_j * ny * inv_mass_a
+                data.velocities[body_a * 3 + 2] += delta_j * nz * inv_mass_a
+            else:
+                # Sphere-sphere: body_a moves in -normal, body_b in +normal
+                data.velocities[body_a * 3 + 0] -= delta_j * nx * inv_mass_a
+                data.velocities[body_a * 3 + 1] -= delta_j * ny * inv_mass_a
+                data.velocities[body_a * 3 + 2] -= delta_j * nz * inv_mass_a
 
-            if body_b >= 0:
                 data.velocities[body_b * 3 + 0] += delta_j * nx * inv_mass_b
                 data.velocities[body_b * 3 + 1] += delta_j * ny * inv_mass_b
                 data.velocities[body_b * 3 + 2] += delta_j * nz * inv_mass_b
