@@ -199,11 +199,21 @@ fn test_gpu_hopper_simulation() raises:
 
     var b0 = body_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](0)
     var b1 = body_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](1)
+    var j0 = joint_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](0)
 
     var initial_torso_z = state_host[b0 + BODY_IDX_PZ]
     var initial_foot_z = state_host[b1 + BODY_IDX_PZ]
     print("  Initial torso z:", initial_torso_z)
     print("  Initial foot z:", initial_foot_z)
+
+    # Verify joint values in GPU buffer
+    var verify_buffer = List[Float32](capacity=STATE_SIZE)
+    for _ in range(STATE_SIZE):
+        verify_buffer.append(0.0)
+    ctx.enqueue_copy(verify_buffer.unsafe_ptr(), state_buf)
+    ctx.synchronize()
+    print("  Joint 0 (from GPU): parent=", verify_buffer[j0 + JOINT_IDX_PARENT],
+          ", child=", verify_buffer[j0 + JOINT_IDX_CHILD])
 
     # Run 100 steps on GPU with gravity
     for _ in range(100):

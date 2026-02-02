@@ -23,7 +23,9 @@ Build a minimal, mathematically correct 3D physics engine following MuJoCo's com
 | Phase 4 | Single hinge joint (pendulum) | ✅ | ✅ | Complete |
 | Phase 5 | Two-link chain (double pendulum) | ✅ | ✅ | Complete |
 | Phase 6 | Friction model | ✅ | ✅ | Complete |
-| Phase 7 | Simple hopper (2-body + torque) | ✅ | ❌ | In Progress (7.1-7.3 complete) |
+| Phase 7 | Simple hopper (2-body + torque) | ✅ | ✅ | Complete |
+| Phase 8 | Capsule geometry | ⬚ | ⬚ | Planned |
+| Phase 9 | Box geometry | ⬚ | ⬚ | Planned |
 
 ---
 
@@ -95,7 +97,8 @@ physics3d_v2/
 │   ├── test_joint_torque_gpu.mojo   # Phase 7: GPU torque tests
 │   ├── test_joint_sensing.mojo      # Phase 7: joint sensing tests
 │   ├── test_joint_sensing_gpu.mojo  # Phase 7: GPU sensing tests
-│   └── test_hopper.mojo             # Phase 7: HopperEnv tests
+│   ├── test_hopper.mojo             # Phase 7: HopperEnv tests (CPU)
+│   └── test_hopper_gpu.mojo         # Phase 7: HopperEnv tests (GPU)
 │
 └── examples/
     ├── __init__.mojo
@@ -372,6 +375,9 @@ pixi run -e apple mojo run physics3d_v2/tests/test_joint_sensing_gpu.mojo
 
 # Phase 7: HopperEnv tests
 pixi run mojo run physics3d_v2/tests/test_hopper.mojo
+
+# Phase 7: HopperEnv GPU tests
+pixi run -e apple mojo run physics3d_v2/tests/test_hopper_gpu.mojo
 ```
 
 ### Test Coverage
@@ -409,6 +415,8 @@ pixi run mojo run physics3d_v2/tests/test_hopper.mojo
 - **HopperEnv torque response**: Hip angle changes with torque
 - **HopperEnv termination**: Episode ends when pitch exceeds limit
 - **HopperEnv reward**: Forward velocity + alive bonus - control cost
+- **GPU HopperEnv**: Joint constraints maintained, foot above ground
+- **GPU HopperEnv parity**: CPU vs GPU position difference <1cm
 
 ---
 
@@ -448,15 +456,6 @@ The hinge joint constrains 5 degrees of freedom:
 4. Compute effective mass: K = inv_mass_a + inv_mass_b + rotational_contribution
 5. Apply impulse: j = -relaxation × Δv / K
 6. Apply position correction using Baumgarte stabilization
-
-#### GPU Known Limitation
-Using conditionals or `Int()` conversion on values read from GPU state buffers causes incorrect behavior. Workaround: body indices are derived from joint index assuming sequential joint ordering:
-```mojo
-var body_a = -1  // Assume world-anchored
-var body_b = j   // Joint j connects to body j
-```
-
-This works for pendulums, chains, and articulated robots with sequential joint numbering.
 
 #### Test Results
 - **CPU Constraint accuracy**: <1.2mm error over 5 seconds
@@ -912,22 +911,40 @@ struct HopperEnv[DTYPE: DType = DType.float64]:
         # ... check height and pitch ...
 ```
 
-#### Step 7.4: Integration into Integrators
+#### Step 7.4: GPU Hopper Integration ✅ COMPLETE
 
-**Modify `integrator/impulse_integrator.mojo`:**
+**Files added:**
+- `tests/test_hopper_gpu.mojo` - GPU hopper validation tests
 
-Add `apply_joint_torques()` call early in the step pipeline:
-```mojo
-fn step[...](model: Model[...], mut data: Data[...]):
-    # 1. Collision detection (pre-step)
-    # 2. Apply gravity
-    # 3. >>> Apply joint torques (NEW) <<<
-    # 4. Solve velocity constraints
-    # 5. Solve joint velocity constraints
-    # ... rest of pipeline ...
+**Test command:**
+```bash
+pixi run -e apple mojo run physics3d_v2/tests/test_hopper_gpu.mojo
 ```
 
-Same for `pgs_integrator.mojo` and GPU versions.
+**GPU test results (all pass):**
+- GPU hopper simulation maintains joint constraints
+- Foot stays above ground with friction
+- CPU vs GPU parity validated
+
+**Critical Bug Fix: MAX_JOINTS Parameter Missing in GPU Functions**
+
+The GPU hopper test initially failed because collision detection, velocity solver, and position solver functions were missing the `MAX_JOINTS` compile-time parameter. This caused incorrect buffer offset calculations:
+
+**Problem:** Functions like `detect_all_contacts_gpu`, `solve_velocity_constraints_gpu`, and `solve_position_constraints_gpu` computed metadata offsets without accounting for joint state:
+```mojo
+# WRONG: metadata_offset[NUM_BODIES, MAX_CONTACTS]() = 82 (for pendulum)
+# CORRECT: metadata_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS]() = 100
+```
+
+This caused the collision detector to write `num_contacts` to index 82 (the joint parent location) instead of index 100 (metadata), corrupting joint indices.
+
+**Files fixed:**
+- `collision/collision.mojo` - Added `MAX_JOINTS` parameter to `detect_all_contacts_gpu`
+- `solver/impulse_solver.mojo` - Added `MAX_JOINTS` parameter to `solve_velocity_constraints_gpu` and `solve_position_constraints_gpu`
+- `solver/pgs_solver.mojo` - Added `MAX_JOINTS` parameter to `solve_constraints_pgs_gpu`
+- `integrator/impulse_integrator.mojo` - Updated all GPU function calls with `MAX_JOINTS`
+
+**Lesson learned:** All GPU functions that access the state buffer must include `MAX_JOINTS` in their compile-time parameters to compute correct offsets.
 
 ### File Structure (Phase 7)
 
@@ -950,7 +967,7 @@ physics3d_v2/
 │   ├── test_joint_sensing.mojo      # Joint sensing tests (CPU) ✅
 │   ├── test_joint_sensing_gpu.mojo  # Joint sensing tests (GPU) ✅
 │   ├── test_hopper.mojo             # CPU hopper tests ✅
-│   └── test_hopper_gpu.mojo         # GPU hopper tests (planned)
+│   └── test_hopper_gpu.mojo         # GPU hopper tests ✅
 └── examples/
     └── hopper_render_demo.mojo      # Visual demonstration
 ```
@@ -995,10 +1012,362 @@ pixi run -e apple mojo run physics3d_v2/tests/test_hopper_gpu.mojo
 | Joint constraint | Anchor error <2cm during hopping |
 | CPU/GPU parity | Position difference <1cm after 1000 steps |
 
-### Future Extensions (Phase 8+)
+---
 
-After Phase 7 is complete, possible extensions:
-- **Phase 8a**: Add second leg (3 bodies, 2 actuated joints)
-- **Phase 8b**: Add knee joint (4 bodies, 3 actuated joints)
-- **Phase 8c**: Capsule collision primitives for legs
-- **Phase 9**: Full bipedal walker
+## Phase 8: Capsule Geometry
+
+Capsules (sphere-swept lines) are essential for limbs, legs, and elongated bodies. They provide better collision behavior than spheres for articulated characters.
+
+### Goal
+Add capsule collision primitives with support for:
+- Capsule-plane collision
+- Capsule-sphere collision
+- Capsule-capsule collision
+
+### Physical Model
+
+A capsule is defined by:
+- Two endpoint positions (or center + axis + half-length)
+- Radius
+
+```
+     ___________
+    /           \
+   (  ●-------●  )  radius r
+    \___________/
+       |<--->|
+       half_length
+```
+
+The capsule can be parameterized as:
+- **Center-based**: center (x, y, z), axis (ax, ay, az), half_length, radius
+- **Endpoint-based**: p0 (x, y, z), p1 (x, y, z), radius
+
+### Implementation Steps
+
+#### Step 8.1: Capsule Data Structure
+
+**New file: `types.mojo` additions**
+```mojo
+struct CapsuleGeom[DTYPE: DType]:
+    var half_length: Scalar[DTYPE]  # Half-length along local Z-axis
+    var radius: Scalar[DTYPE]
+
+# Add geometry type enum
+comptime GEOM_SPHERE: Int = 0
+comptime GEOM_CAPSULE: Int = 1
+comptime GEOM_BOX: Int = 2
+```
+
+**Model changes:**
+```mojo
+struct Model[DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0]:
+    # Per-body geometry type
+    var geom_types: InlineArray[Int, NUM_BODIES]  # GEOM_SPHERE or GEOM_CAPSULE
+    var half_lengths: InlineArray[Scalar[DTYPE], NUM_BODIES]  # For capsules
+```
+
+#### Step 8.2: Capsule-Plane Collision
+
+Find the closest point on capsule axis to the plane, then treat as sphere-plane.
+
+```mojo
+fn capsule_plane[DTYPE: DType](
+    # Capsule center position
+    cx: Scalar[DTYPE], cy: Scalar[DTYPE], cz: Scalar[DTYPE],
+    # Capsule quaternion (for axis orientation)
+    qx: Scalar[DTYPE], qy: Scalar[DTYPE], qz: Scalar[DTYPE], qw: Scalar[DTYPE],
+    half_length: Scalar[DTYPE],
+    radius: Scalar[DTYPE],
+    # Plane (assuming horizontal at ground_z)
+    ground_z: Scalar[DTYPE],
+) -> Tuple[Scalar[DTYPE], ...]:
+    """Returns (dist, contact_x, contact_y, contact_z, nx, ny, nz).
+
+    Algorithm:
+    1. Compute capsule endpoints in world frame
+    2. Find lowest endpoint
+    3. Compute distance from lowest point to plane
+    4. Return signed distance (negative = penetration)
+    """
+```
+
+#### Step 8.3: Capsule-Sphere Collision
+
+Find closest point on capsule axis to sphere center, then sphere-sphere.
+
+```mojo
+fn capsule_sphere[DTYPE: DType](
+    # Capsule
+    cap_x, cap_y, cap_z: Scalar[DTYPE],  # Center
+    cap_qx, cap_qy, cap_qz, cap_qw: Scalar[DTYPE],  # Orientation
+    cap_half_len, cap_radius: Scalar[DTYPE],
+    # Sphere
+    sph_x, sph_y, sph_z, sph_radius: Scalar[DTYPE],
+) -> Tuple[Scalar[DTYPE], ...]:
+    """
+    Algorithm:
+    1. Project sphere center onto capsule axis (clamped to segment)
+    2. Compute distance from projection to sphere center
+    3. Return signed distance - (cap_radius + sph_radius)
+    """
+```
+
+#### Step 8.4: Capsule-Capsule Collision
+
+Find closest points between two line segments, then sphere-sphere at those points.
+
+```mojo
+fn capsule_capsule[DTYPE: DType](
+    # Capsule A
+    a_x, a_y, a_z, a_qx, a_qy, a_qz, a_qw: Scalar[DTYPE],
+    a_half_len, a_radius: Scalar[DTYPE],
+    # Capsule B
+    b_x, b_y, b_z, b_qx, b_qy, b_qz, b_qw: Scalar[DTYPE],
+    b_half_len, b_radius: Scalar[DTYPE],
+) -> Tuple[Scalar[DTYPE], ...]:
+    """
+    Algorithm:
+    1. Compute closest points between two line segments
+    2. Distance = |p_a - p_b| - (r_a + r_b)
+    3. Normal = normalize(p_b - p_a)
+    """
+```
+
+#### Step 8.5: GPU Buffer Layout Update
+
+```
+MODEL_BODY_SIZE = 11 floats per body (was 9):
+  [0]     Mass
+  [1]     Inverse mass
+  [2]     Radius
+  [3-5]   Inertia (Ixx, Iyy, Izz)
+  [6-8]   Inverse inertia
+  [9]     Geometry type (0=sphere, 1=capsule, 2=box)
+  [10]    Half-length (for capsules) or 0
+```
+
+#### Step 8.6: Collision Dispatcher Update
+
+Modify `CollisionDetector.detect_all_contacts_gpu` to dispatch based on geometry type:
+
+```mojo
+fn detect_contact_pair_gpu[...](
+    geom_type_a: Int, geom_type_b: Int,
+    # Body A state
+    # Body B state (or ground)
+):
+    if geom_type_a == GEOM_SPHERE and geom_type_b == GEOM_PLANE:
+        return sphere_plane(...)
+    elif geom_type_a == GEOM_CAPSULE and geom_type_b == GEOM_PLANE:
+        return capsule_plane(...)
+    elif geom_type_a == GEOM_SPHERE and geom_type_b == GEOM_SPHERE:
+        return sphere_sphere(...)
+    elif geom_type_a == GEOM_CAPSULE and geom_type_b == GEOM_SPHERE:
+        return capsule_sphere(...)
+    elif geom_type_a == GEOM_CAPSULE and geom_type_b == GEOM_CAPSULE:
+        return capsule_capsule(...)
+    # ... etc
+```
+
+### Test Plan
+
+```bash
+# Phase 8 tests
+pixi run mojo run physics3d_v2/tests/test_capsule_plane.mojo
+pixi run mojo run physics3d_v2/tests/test_capsule_sphere.mojo
+pixi run mojo run physics3d_v2/tests/test_capsule_capsule.mojo
+pixi run -e apple mojo run physics3d_v2/tests/test_capsule_gpu.mojo
+```
+
+### Validation Criteria
+
+| Test | Pass Criteria |
+|------|---------------|
+| Capsule-plane contact | Capsule stops at correct height (radius above ground) |
+| Capsule resting | No penetration, stable on ground |
+| Capsule-sphere collision | Proper bounce with correct contact normal |
+| Capsule-capsule collision | Bodies separate correctly, no interpenetration |
+| GPU parity | Same results as CPU |
+
+---
+
+## Phase 9: Box Geometry
+
+Boxes (oriented bounding boxes, OBBs) enable walls, platforms, and rectangular bodies.
+
+### Goal
+Add box collision primitives with support for:
+- Box-plane collision
+- Box-sphere collision
+- Box-capsule collision
+- Box-box collision (complex)
+
+### Physical Model
+
+A box is defined by:
+- Center position
+- Orientation (quaternion)
+- Half-extents (hx, hy, hz)
+
+```
+        +--------+
+       /|       /|
+      / |      / |
+     +--------+  |
+     |  +-----|--+
+     | /      | /
+     |/       |/
+     +--------+
+     |<-hx->|
+```
+
+### Implementation Steps
+
+#### Step 9.1: Box Data Structure
+
+```mojo
+struct BoxGeom[DTYPE: DType]:
+    var half_x: Scalar[DTYPE]
+    var half_y: Scalar[DTYPE]
+    var half_z: Scalar[DTYPE]
+```
+
+#### Step 9.2: Box-Plane Collision
+
+Find the vertex most penetrating the plane.
+
+```mojo
+fn box_plane[DTYPE: DType](
+    # Box center and orientation
+    cx, cy, cz, qx, qy, qz, qw: Scalar[DTYPE],
+    hx, hy, hz: Scalar[DTYPE],
+    # Plane
+    ground_z: Scalar[DTYPE],
+) -> Tuple[Scalar[DTYPE], ...]:
+    """
+    Algorithm:
+    1. Transform 8 box vertices to world frame
+    2. Find vertex with minimum z (most penetrating)
+    3. Return signed distance and contact point
+    """
+```
+
+#### Step 9.3: Box-Sphere Collision
+
+Find closest point on box surface to sphere center.
+
+```mojo
+fn box_sphere[DTYPE: DType](
+    # Box
+    box_x, box_y, box_z, box_qx, box_qy, box_qz, box_qw: Scalar[DTYPE],
+    hx, hy, hz: Scalar[DTYPE],
+    # Sphere
+    sph_x, sph_y, sph_z, sph_radius: Scalar[DTYPE],
+) -> Tuple[Scalar[DTYPE], ...]:
+    """
+    Algorithm:
+    1. Transform sphere center to box local frame
+    2. Clamp to box bounds to find closest point
+    3. Transform back to world, compute distance
+    """
+```
+
+#### Step 9.4: Box-Capsule Collision
+
+Find closest point between capsule axis and box.
+
+```mojo
+fn box_capsule[DTYPE: DType](...) -> Tuple[Scalar[DTYPE], ...]:
+    """
+    Algorithm:
+    1. Transform capsule endpoints to box local frame
+    2. Find closest point on capsule axis to box
+    3. Compute penetration and contact normal
+    """
+```
+
+#### Step 9.5: Box-Box Collision (SAT)
+
+Use Separating Axis Theorem (SAT) with 15 axes.
+
+```mojo
+fn box_box[DTYPE: DType](...) -> Tuple[Scalar[DTYPE], ...]:
+    """
+    Separating Axis Theorem (SAT):
+    Test 15 potential separating axes:
+    - 3 face normals of box A
+    - 3 face normals of box B
+    - 9 edge-edge cross products
+
+    If separated on any axis, no collision.
+    If overlapping on all axes, find minimum penetration axis for contact.
+    """
+```
+
+#### Step 9.6: GPU Buffer Layout Update
+
+```
+MODEL_BODY_SIZE = 14 floats per body:
+  [0]     Mass
+  [1]     Inverse mass
+  [2]     Radius (for sphere/capsule)
+  [3-5]   Inertia (Ixx, Iyy, Izz)
+  [6-8]   Inverse inertia
+  [9]     Geometry type (0=sphere, 1=capsule, 2=box)
+  [10]    Half-length (capsule) / Half-X (box)
+  [11]    Half-Y (box only)
+  [12]    Half-Z (box only)
+  [13]    Padding
+```
+
+### Test Plan
+
+```bash
+# Phase 9 tests
+pixi run mojo run physics3d_v2/tests/test_box_plane.mojo
+pixi run mojo run physics3d_v2/tests/test_box_sphere.mojo
+pixi run mojo run physics3d_v2/tests/test_box_capsule.mojo
+pixi run mojo run physics3d_v2/tests/test_box_box.mojo
+pixi run -e apple mojo run physics3d_v2/tests/test_box_gpu.mojo
+```
+
+### Validation Criteria
+
+| Test | Pass Criteria |
+|------|---------------|
+| Box on ground | Box rests stably on face, edge, or corner |
+| Box-sphere | Correct contact point on box surface |
+| Box-capsule | Bodies separate correctly |
+| Box-box SAT | Correct collision detection and response |
+| Stack stability | Boxes stack without interpenetration |
+| GPU parity | Same results as CPU |
+
+---
+
+## Future Extensions (Phase 10+)
+
+After geometry phases are complete, possible extensions:
+
+### Phase 10: Multi-Leg Locomotion
+- **10a**: Add second leg (3 bodies, 2 actuated joints)
+- **10b**: Add knee joints (4 bodies, 3 actuated joints per leg)
+- **10c**: Full bipedal walker with capsule legs
+
+### Phase 11: Advanced Joints
+- **11a**: Ball-and-socket joints (3 DOF rotation)
+- **11b**: Slider joints (1 DOF translation)
+- **11c**: Universal joints (2 DOF rotation)
+- **11d**: Joint limits (angle min/max)
+- **11e**: Joint damping and stiffness
+
+### Phase 12: Soft Bodies & Cables
+- **12a**: Mass-spring systems
+- **12b**: Position-based dynamics (PBD)
+- **12c**: Rope/cable simulation
+
+### Phase 13: Performance Optimization
+- **13a**: Broad-phase collision (spatial hashing, BVH)
+- **13b**: Parallel constraint solving
+- **13c**: SIMD optimizations for CPU
+- **13d**: Batched GPU collision detection

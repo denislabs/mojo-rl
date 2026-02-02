@@ -157,15 +157,6 @@ fn main() raises:
     print("Initial bob position: (", bob_x, ", 0,", bob_z, ")")
     print()
 
-    # Debug: Print buffer layout
-    print("Buffer layout:")
-    print("  Body offset(0):", body_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](0))
-    print("  Joint offset(0):", joint_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](0))
-    print("  Metadata offset:", metadata_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS]())
-    print("  Joint at index", j_off, "to", j_off + JOINT_STATE_SIZE - 1)
-    print("  Metadata at index", m_off, "to", m_off + 3)
-    print()
-
     # Run simulation
     var num_steps = 1000
     print("Running", num_steps, "steps on GPU...")

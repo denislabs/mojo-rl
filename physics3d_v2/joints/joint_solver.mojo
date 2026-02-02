@@ -13,7 +13,7 @@ Reference: Adapted from physics3d/solvers/joint_solver3d.mojo
 from math import sqrt
 from ..types import Model, Data
 from .hinge_joint import HingeJoint
-
+from utils.numerics import isnan
 
 # =============================================================================
 # Helper Functions
@@ -758,7 +758,10 @@ from ..gpu.constants import (
     JOINT_IDX_AXIS_Z,
     JOINT_IDX_TARGET_TORQUE,
     JOINT_IDX_TORQUE_LIMIT,
+    META_IDX_NUM_CONTACTS,
     META_IDX_NUM_JOINTS,
+    META_IDX_PADDING_2,
+    META_IDX_PADDING_3,
     MODEL_BODY_SIZE,
     MODEL_IDX_INV_MASS,
     MODEL_IDX_INV_IXX,
@@ -919,18 +922,28 @@ fn solve_joint_velocity_constraints_gpu[
     iterations: Int,
 ):
     """Solve joint velocity constraints on GPU."""
-    # Use compile-time MAX_JOINTS directly to avoid any Float->Int conversion issues
     # The solver will iterate over all MAX_JOINTS slots; invalid joints should be skipped
 
     for _ in range(iterations):
         for j in range(MAX_JOINTS):
             var j_off = joint_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](j)
 
-            # Body index pattern for chains/articulated bodies:
-            # Joint 0: parent = -1 (world), child = 0
-            # Joint j (j>0): parent = j-1, child = j
-            var body_a: Int = -1 if j == 0 else j - 1
-            var body_b: Int = j
+            # Read actual body indices from joint state buffer
+            # IMPORTANT: Must use rebind to get the actual Scalar value from LayoutTensor
+            var parent_f = rebind[Scalar[DTYPE]](
+                state[env, j_off + JOINT_IDX_PARENT]
+            )
+            var child_f = rebind[Scalar[DTYPE]](
+                state[env, j_off + JOINT_IDX_CHILD]
+            )
+
+            # Convert to Int - the values are stored as floats for GPU compatibility
+            var body_a: Int = Int(parent_f)
+            var body_b: Int = Int(child_f)
+
+            # Skip if child body is invalid (indicates uninitialized joint slot)
+            if body_b < 0 or body_b >= NUM_BODIES:
+                continue
 
             # Get anchor points from joint state
             var anchor_px = rebind[Scalar[DTYPE]](
@@ -1155,17 +1168,26 @@ fn solve_joint_position_constraints_gpu[
     iterations: Int,
 ):
     """Solve joint position constraints on GPU using Baumgarte stabilization."""
-    # Use compile-time MAX_JOINTS directly to avoid any Float->Int conversion issues
 
     for _ in range(iterations):
         for j in range(MAX_JOINTS):
             var j_off = joint_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](j)
 
-            # Body index pattern for chains/articulated bodies:
-            # Joint 0: parent = -1 (world), child = 0
-            # Joint j (j>0): parent = j-1, child = j
-            var body_a: Int = -1 if j == 0 else j - 1
-            var body_b: Int = j
+            # Read actual body indices from joint state buffer
+            # IMPORTANT: Must use rebind to get the actual Scalar value from LayoutTensor
+            var parent_f = rebind[Scalar[DTYPE]](
+                state[env, j_off + JOINT_IDX_PARENT]
+            )
+            var child_f = rebind[Scalar[DTYPE]](
+                state[env, j_off + JOINT_IDX_CHILD]
+            )
+
+            # Convert to Int - the values are stored as floats for GPU compatibility
+            var body_a: Int = Int(parent_f)
+            var body_b: Int = Int(child_f)
+            # Skip if child body is invalid (indicates uninitialized joint slot)
+            if body_b < 0 or body_b >= NUM_BODIES:
+                continue
 
             # Get anchor points
             var anchor_px = rebind[Scalar[DTYPE]](

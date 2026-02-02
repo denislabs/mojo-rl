@@ -454,6 +454,7 @@ fn solve_velocity_constraints_gpu[
     DTYPE: DType,
     NUM_BODIES: Int,
     MAX_CONTACTS: Int,
+    MAX_JOINTS: Int,
     STATE_SIZE: Int,
     BATCH: Int,
 ](
@@ -469,21 +470,21 @@ fn solve_velocity_constraints_gpu[
     iterations: Int,
 ):
     """Solve velocity constraints using sequential impulses with friction."""
-    var meta_off = metadata_offset[NUM_BODIES, MAX_CONTACTS]()
+    var meta_off = metadata_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS]()
     var num_contacts = Int(
         rebind[Scalar[DTYPE]](state[env, meta_off + META_IDX_NUM_CONTACTS])
     )
 
     # Reset impulses at start
     for c in range(num_contacts):
-        var c_off = contact_offset[NUM_BODIES, MAX_CONTACTS](c)
+        var c_off = contact_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](c)
         state[env, c_off + CONTACT_IDX_IMPULSE_N] = Scalar[DTYPE](0)
         state[env, c_off + CONTACT_IDX_IMPULSE_T1] = Scalar[DTYPE](0)
         state[env, c_off + CONTACT_IDX_IMPULSE_T2] = Scalar[DTYPE](0)
 
     for _ in range(iterations):
         for c in range(num_contacts):
-            var c_off = contact_offset[NUM_BODIES, MAX_CONTACTS](c)
+            var c_off = contact_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](c)
             var body_a = Int(
                 rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_BODY_A])
             )
@@ -496,7 +497,7 @@ fn solve_velocity_constraints_gpu[
             var nz = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_NZ])
 
             # Get velocities
-            var b_off_a = body_offset[NUM_BODIES, MAX_CONTACTS](body_a)
+            var b_off_a = body_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](body_a)
             var vx_a = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_VX])
             var vy_a = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_VY])
             var vz_a = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_VZ])
@@ -506,7 +507,7 @@ fn solve_velocity_constraints_gpu[
             var vz_b: Scalar[DTYPE] = 0
             var b_off_b: Int = 0
             if body_b >= 0:
-                b_off_b = body_offset[NUM_BODIES, MAX_CONTACTS](body_b)
+                b_off_b = body_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](body_b)
                 vx_b = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_VX])
                 vy_b = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_VY])
                 vz_b = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_VZ])
@@ -674,6 +675,7 @@ fn solve_position_constraints_gpu[
     DTYPE: DType,
     NUM_BODIES: Int,
     MAX_CONTACTS: Int,
+    MAX_JOINTS: Int,
     STATE_SIZE: Int,
     BATCH: Int,
 ](
@@ -688,13 +690,13 @@ fn solve_position_constraints_gpu[
     slop: Scalar[DTYPE],
 ):
     """Baumgarte position correction for penetration."""
-    var meta_off = metadata_offset[NUM_BODIES, MAX_CONTACTS]()
+    var meta_off = metadata_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS]()
     var num_contacts = Int(
         rebind[Scalar[DTYPE]](state[env, meta_off + META_IDX_NUM_CONTACTS])
     )
 
     for c in range(num_contacts):
-        var c_off = contact_offset[NUM_BODIES, MAX_CONTACTS](c)
+        var c_off = contact_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](c)
         var body_a = Int(
             rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_BODY_A])
         )
@@ -728,7 +730,7 @@ fn solve_position_constraints_gpu[
         # Normal conventions:
         # - Ground contact: Normal points UP, body A (sphere) should move UP (+normal)
         # - Sphere-sphere: Normal points from A to B, so A moves in -normal, B in +normal
-        var b_off_a = body_offset[NUM_BODIES, MAX_CONTACTS](body_a)
+        var b_off_a = body_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](body_a)
         var px_a = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_PX])
         var py_a = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_PY])
         var pz_a = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_PZ])
@@ -755,7 +757,7 @@ fn solve_position_constraints_gpu[
             state[env, b_off_a + BODY_IDX_PY] = py_a - corr_a * ny
             state[env, b_off_a + BODY_IDX_PZ] = pz_a - corr_a * nz
 
-            var b_off_b = body_offset[NUM_BODIES, MAX_CONTACTS](body_b)
+            var b_off_b = body_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](body_b)
             var px_b = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_PX])
             var py_b = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_PY])
             var pz_b = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_PZ])

@@ -221,7 +221,7 @@ struct ImpulseIntegrator(Integrator):
         """Complete impulse-based physics step for one environment."""
         # 1. Collision detection
         CollisionDetector.detect_all_contacts_gpu[
-            DTYPE, NUM_BODIES, MAX_CONTACTS, STATE_SIZE, BATCH
+            DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, STATE_SIZE, BATCH
         ](env, state, model, ground_z)
 
         # 2. Apply gravity
@@ -238,7 +238,7 @@ struct ImpulseIntegrator(Integrator):
 
         # 4. Solve velocity constraints with friction
         solve_velocity_constraints_gpu[
-            DTYPE, NUM_BODIES, MAX_CONTACTS, STATE_SIZE, BATCH
+            DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, STATE_SIZE, BATCH
         ](env, state, model, restitution, friction, 10)
 
         # 5. Solve joint velocity constraints
@@ -255,12 +255,12 @@ struct ImpulseIntegrator(Integrator):
 
         # 6. Post-step collision detection
         CollisionDetector.detect_all_contacts_gpu[
-            DTYPE, NUM_BODIES, MAX_CONTACTS, STATE_SIZE, BATCH
+            DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, STATE_SIZE, BATCH
         ](env, state, model, ground_z)
 
         # 7. Position correction
         solve_position_constraints_gpu[
-            DTYPE, NUM_BODIES, MAX_CONTACTS, STATE_SIZE, BATCH
+            DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, STATE_SIZE, BATCH
         ](env, state, model, Scalar[DTYPE](0.8), Scalar[DTYPE](0.001))
 
         # 8. Solve joint position constraints
