@@ -2,6 +2,7 @@
 
 Phase 3: Detects all contacts (sphere-plane + sphere-sphere) for multi-body systems.
 Phase 8: Added capsule collision (capsule-plane, capsule-sphere, capsule-capsule).
+Phase 9: Added box collision (box-plane, box-sphere, box-capsule, box-box).
 Uses the pure collision primitives from collision_primitives.mojo.
 """
 
@@ -11,6 +12,10 @@ from .collision_primitives import (
     capsule_plane,
     capsule_sphere,
     capsule_capsule,
+    box_plane,
+    box_sphere,
+    box_capsule,
+    box_box,
 )
 from ..types import Model, Data
 from ..traits import CollisionSystem
@@ -40,8 +45,12 @@ from ..gpu.constants import (
     MODEL_IDX_RADIUS,
     MODEL_IDX_GEOM_TYPE,
     MODEL_IDX_HALF_LENGTH,
+    MODEL_IDX_HALF_X,
+    MODEL_IDX_HALF_Y,
+    MODEL_IDX_HALF_Z,
     GEOM_SPHERE,
     GEOM_CAPSULE,
+    GEOM_BOX,
 )
 
 
@@ -56,7 +65,7 @@ struct CollisionDetector(CollisionSystem):
     ):
         """Detect all contacts (body-plane + body-body) with geometry dispatch.
 
-        Phase 8: Supports sphere and capsule geometries.
+        Phase 9: Supports sphere, capsule, and box geometries.
         O(N) for ground contacts, O(N²) for body-body.
         Fills the data.contacts buffer and sets data.num_contacts.
 
@@ -79,7 +88,23 @@ struct CollisionDetector(CollisionSystem):
             var contact_y: Scalar[DTYPE]
             var contact_z: Scalar[DTYPE]
 
-            if geom_type == GEOM_CAPSULE:
+            if geom_type == GEOM_BOX:
+                # Box-plane collision
+                var qx = data.quaternions[i * 4 + 0]
+                var qy = data.quaternions[i * 4 + 1]
+                var qz = data.quaternions[i * 4 + 2]
+                var qw = data.quaternions[i * 4 + 3]
+
+                var result = box_plane(
+                    px, py, pz, qx, qy, qz, qw,
+                    model.half_x[i], model.half_y[i], model.half_z[i],
+                    model.ground_z
+                )
+                dist = result[0]
+                contact_x = result[1]
+                contact_y = result[2]
+                contact_z = result[3]
+            elif geom_type == GEOM_CAPSULE:
                 # Capsule-plane collision
                 var qx = data.quaternions[i * 4 + 0]
                 var qy = data.quaternions[i * 4 + 1]
@@ -138,7 +163,7 @@ struct CollisionDetector(CollisionSystem):
                 var ny: Scalar[DTYPE]
                 var nz: Scalar[DTYPE]
 
-                # Get quaternions (needed for capsules)
+                # Get quaternions (needed for capsules and boxes)
                 var qx_i = data.quaternions[i * 4 + 0]
                 var qy_i = data.quaternions[i * 4 + 1]
                 var qz_i = data.quaternions[i * 4 + 2]
@@ -151,14 +176,8 @@ struct CollisionDetector(CollisionSystem):
                 # Dispatch based on geometry types
                 if geom_i == GEOM_SPHERE and geom_j == GEOM_SPHERE:
                     var result = sphere_sphere(
-                        px_i,
-                        py_i,
-                        pz_i,
-                        model.radii[i],
-                        px_j,
-                        py_j,
-                        pz_j,
-                        model.radii[j],
+                        px_i, py_i, pz_i, model.radii[i],
+                        px_j, py_j, pz_j, model.radii[j],
                     )
                     dist = result[0]
                     contact_x = result[1]
@@ -169,19 +188,10 @@ struct CollisionDetector(CollisionSystem):
                     nz = result[6]
                 elif geom_i == GEOM_CAPSULE and geom_j == GEOM_SPHERE:
                     var result = capsule_sphere(
-                        px_i,
-                        py_i,
-                        pz_i,
-                        qx_i,
-                        qy_i,
-                        qz_i,
-                        qw_i,
-                        model.half_lengths[i],
-                        model.radii[i],
-                        px_j,
-                        py_j,
-                        pz_j,
-                        model.radii[j],
+                        px_i, py_i, pz_i,
+                        qx_i, qy_i, qz_i, qw_i,
+                        model.half_lengths[i], model.radii[i],
+                        px_j, py_j, pz_j, model.radii[j],
                     )
                     dist = result[0]
                     contact_x = result[1]
@@ -193,48 +203,105 @@ struct CollisionDetector(CollisionSystem):
                 elif geom_i == GEOM_SPHERE and geom_j == GEOM_CAPSULE:
                     # Swap order: capsule first, then negate normal
                     var result = capsule_sphere(
-                        px_j,
-                        py_j,
-                        pz_j,
-                        qx_j,
-                        qy_j,
-                        qz_j,
-                        qw_j,
-                        model.half_lengths[j],
-                        model.radii[j],
-                        px_i,
-                        py_i,
-                        pz_i,
-                        model.radii[i],
+                        px_j, py_j, pz_j,
+                        qx_j, qy_j, qz_j, qw_j,
+                        model.half_lengths[j], model.radii[j],
+                        px_i, py_i, pz_i, model.radii[i],
                     )
                     dist = result[0]
                     contact_x = result[1]
                     contact_y = result[2]
                     contact_z = result[3]
-                    # Negate normal since we want i -> j direction
                     nx = -result[4]
                     ny = -result[5]
                     nz = -result[6]
                 elif geom_i == GEOM_CAPSULE and geom_j == GEOM_CAPSULE:
                     var result = capsule_capsule(
-                        px_i,
-                        py_i,
-                        pz_i,
-                        qx_i,
-                        qy_i,
-                        qz_i,
-                        qw_i,
-                        model.half_lengths[i],
-                        model.radii[i],
-                        px_j,
-                        py_j,
-                        pz_j,
-                        qx_j,
-                        qy_j,
-                        qz_j,
-                        qw_j,
-                        model.half_lengths[j],
-                        model.radii[j],
+                        px_i, py_i, pz_i,
+                        qx_i, qy_i, qz_i, qw_i,
+                        model.half_lengths[i], model.radii[i],
+                        px_j, py_j, pz_j,
+                        qx_j, qy_j, qz_j, qw_j,
+                        model.half_lengths[j], model.radii[j],
+                    )
+                    dist = result[0]
+                    contact_x = result[1]
+                    contact_y = result[2]
+                    contact_z = result[3]
+                    nx = result[4]
+                    ny = result[5]
+                    nz = result[6]
+                # Box collision cases (Phase 9)
+                elif geom_i == GEOM_BOX and geom_j == GEOM_SPHERE:
+                    var result = box_sphere(
+                        px_i, py_i, pz_i,
+                        qx_i, qy_i, qz_i, qw_i,
+                        model.half_x[i], model.half_y[i], model.half_z[i],
+                        px_j, py_j, pz_j, model.radii[j],
+                    )
+                    dist = result[0]
+                    contact_x = result[1]
+                    contact_y = result[2]
+                    contact_z = result[3]
+                    nx = result[4]
+                    ny = result[5]
+                    nz = result[6]
+                elif geom_i == GEOM_SPHERE and geom_j == GEOM_BOX:
+                    # Swap order: box first, then negate normal
+                    var result = box_sphere(
+                        px_j, py_j, pz_j,
+                        qx_j, qy_j, qz_j, qw_j,
+                        model.half_x[j], model.half_y[j], model.half_z[j],
+                        px_i, py_i, pz_i, model.radii[i],
+                    )
+                    dist = result[0]
+                    contact_x = result[1]
+                    contact_y = result[2]
+                    contact_z = result[3]
+                    nx = -result[4]
+                    ny = -result[5]
+                    nz = -result[6]
+                elif geom_i == GEOM_BOX and geom_j == GEOM_CAPSULE:
+                    var result = box_capsule(
+                        px_i, py_i, pz_i,
+                        qx_i, qy_i, qz_i, qw_i,
+                        model.half_x[i], model.half_y[i], model.half_z[i],
+                        px_j, py_j, pz_j,
+                        qx_j, qy_j, qz_j, qw_j,
+                        model.half_lengths[j], model.radii[j],
+                    )
+                    dist = result[0]
+                    contact_x = result[1]
+                    contact_y = result[2]
+                    contact_z = result[3]
+                    nx = result[4]
+                    ny = result[5]
+                    nz = result[6]
+                elif geom_i == GEOM_CAPSULE and geom_j == GEOM_BOX:
+                    # Swap order: box first, then negate normal
+                    var result = box_capsule(
+                        px_j, py_j, pz_j,
+                        qx_j, qy_j, qz_j, qw_j,
+                        model.half_x[j], model.half_y[j], model.half_z[j],
+                        px_i, py_i, pz_i,
+                        qx_i, qy_i, qz_i, qw_i,
+                        model.half_lengths[i], model.radii[i],
+                    )
+                    dist = result[0]
+                    contact_x = result[1]
+                    contact_y = result[2]
+                    contact_z = result[3]
+                    nx = -result[4]
+                    ny = -result[5]
+                    nz = -result[6]
+                elif geom_i == GEOM_BOX and geom_j == GEOM_BOX:
+                    var result = box_box(
+                        px_i, py_i, pz_i,
+                        qx_i, qy_i, qz_i, qw_i,
+                        model.half_x[i], model.half_y[i], model.half_z[i],
+                        px_j, py_j, pz_j,
+                        qx_j, qy_j, qz_j, qw_j,
+                        model.half_x[j], model.half_y[j], model.half_z[j],
                     )
                     dist = result[0]
                     contact_x = result[1]
@@ -246,14 +313,8 @@ struct CollisionDetector(CollisionSystem):
                 else:
                     # Default: Sphere-sphere (fallback)
                     var result = sphere_sphere(
-                        px_i,
-                        py_i,
-                        pz_i,
-                        model.radii[i],
-                        px_j,
-                        py_j,
-                        pz_j,
-                        model.radii[j],
+                        px_i, py_i, pz_i, model.radii[i],
+                        px_j, py_j, pz_j, model.radii[j],
                     )
                     dist = result[0]
                     contact_x = result[1]
@@ -266,14 +327,9 @@ struct CollisionDetector(CollisionSystem):
                 # Contact if penetrating (dist < 0)
                 if dist < Scalar[DTYPE](0) and data.num_contacts < MAX_CONTACTS:
                     data.contacts[data.num_contacts].set(
-                        i,
-                        j,
-                        contact_x,
-                        contact_y,
-                        contact_z,  # Contact position
-                        nx,
-                        ny,
-                        nz,  # Normal
+                        i, j,
+                        contact_x, contact_y, contact_z,
+                        nx, ny, nz,
                         dist,
                     )
                     data.num_contacts += 1
@@ -299,7 +355,7 @@ struct CollisionDetector(CollisionSystem):
     ):
         """Detect all contacts for one environment (GPU version).
 
-        Phase 8: Supports sphere and capsule geometries.
+        Phase 9: Supports sphere, capsule, and box geometries.
         """
         var num_contacts = 0
 
@@ -320,7 +376,24 @@ struct CollisionDetector(CollisionSystem):
             var contact_y: Scalar[DTYPE]
             var contact_z: Scalar[DTYPE]
 
-            if geom_type == GEOM_CAPSULE:
+            if geom_type == GEOM_BOX:
+                # Box-plane collision
+                var qx = rebind[Scalar[DTYPE]](state[env, b_off + BODY_IDX_QX])
+                var qy = rebind[Scalar[DTYPE]](state[env, b_off + BODY_IDX_QY])
+                var qz = rebind[Scalar[DTYPE]](state[env, b_off + BODY_IDX_QZ])
+                var qw = rebind[Scalar[DTYPE]](state[env, b_off + BODY_IDX_QW])
+                var hx = rebind[Scalar[DTYPE]](model[i, MODEL_IDX_HALF_X])
+                var hy = rebind[Scalar[DTYPE]](model[i, MODEL_IDX_HALF_Y])
+                var hz = rebind[Scalar[DTYPE]](model[i, MODEL_IDX_HALF_Z])
+
+                var result = box_plane(
+                    px, py, pz, qx, qy, qz, qw, hx, hy, hz, ground_z
+                )
+                dist = result[0]
+                contact_x = result[1]
+                contact_y = result[2]
+                contact_z = result[3]
+            elif geom_type == GEOM_CAPSULE:
                 # Capsule-plane collision
                 var qx = rebind[Scalar[DTYPE]](state[env, b_off + BODY_IDX_QX])
                 var qy = rebind[Scalar[DTYPE]](state[env, b_off + BODY_IDX_QY])
@@ -379,7 +452,7 @@ struct CollisionDetector(CollisionSystem):
                 var r_j = rebind[Scalar[DTYPE]](model[j, MODEL_IDX_RADIUS])
                 var geom_j = Int(rebind[Scalar[DTYPE]](model[j, MODEL_IDX_GEOM_TYPE]))
 
-                # Get quaternions (needed for capsules)
+                # Get quaternions (needed for capsules and boxes)
                 var qx_i = rebind[Scalar[DTYPE]](state[env, b_off_i + BODY_IDX_QX])
                 var qy_i = rebind[Scalar[DTYPE]](state[env, b_off_i + BODY_IDX_QY])
                 var qz_i = rebind[Scalar[DTYPE]](state[env, b_off_i + BODY_IDX_QZ])
@@ -390,6 +463,12 @@ struct CollisionDetector(CollisionSystem):
                 var qw_j = rebind[Scalar[DTYPE]](state[env, b_off_j + BODY_IDX_QW])
                 var hl_i = rebind[Scalar[DTYPE]](model[i, MODEL_IDX_HALF_LENGTH])
                 var hl_j = rebind[Scalar[DTYPE]](model[j, MODEL_IDX_HALF_LENGTH])
+                var hx_i = rebind[Scalar[DTYPE]](model[i, MODEL_IDX_HALF_X])
+                var hy_i = rebind[Scalar[DTYPE]](model[i, MODEL_IDX_HALF_Y])
+                var hz_i = rebind[Scalar[DTYPE]](model[i, MODEL_IDX_HALF_Z])
+                var hx_j = rebind[Scalar[DTYPE]](model[j, MODEL_IDX_HALF_X])
+                var hy_j = rebind[Scalar[DTYPE]](model[j, MODEL_IDX_HALF_Y])
+                var hz_j = rebind[Scalar[DTYPE]](model[j, MODEL_IDX_HALF_Z])
 
                 var dist: Scalar[DTYPE]
                 var contact_x: Scalar[DTYPE]
@@ -424,7 +503,6 @@ struct CollisionDetector(CollisionSystem):
                     ny = result[5]
                     nz = result[6]
                 elif geom_i == GEOM_SPHERE and geom_j == GEOM_CAPSULE:
-                    # Swap order: capsule first, then negate normal
                     var result = capsule_sphere(
                         px_j, py_j, pz_j, qx_j, qy_j, qz_j, qw_j, hl_j, r_j,
                         px_i, py_i, pz_i, r_i,
@@ -440,6 +518,75 @@ struct CollisionDetector(CollisionSystem):
                     var result = capsule_capsule(
                         px_i, py_i, pz_i, qx_i, qy_i, qz_i, qw_i, hl_i, r_i,
                         px_j, py_j, pz_j, qx_j, qy_j, qz_j, qw_j, hl_j, r_j,
+                    )
+                    dist = result[0]
+                    contact_x = result[1]
+                    contact_y = result[2]
+                    contact_z = result[3]
+                    nx = result[4]
+                    ny = result[5]
+                    nz = result[6]
+                # Box collision cases (Phase 9)
+                elif geom_i == GEOM_BOX and geom_j == GEOM_SPHERE:
+                    var result = box_sphere(
+                        px_i, py_i, pz_i, qx_i, qy_i, qz_i, qw_i,
+                        hx_i, hy_i, hz_i,
+                        px_j, py_j, pz_j, r_j,
+                    )
+                    dist = result[0]
+                    contact_x = result[1]
+                    contact_y = result[2]
+                    contact_z = result[3]
+                    nx = result[4]
+                    ny = result[5]
+                    nz = result[6]
+                elif geom_i == GEOM_SPHERE and geom_j == GEOM_BOX:
+                    var result = box_sphere(
+                        px_j, py_j, pz_j, qx_j, qy_j, qz_j, qw_j,
+                        hx_j, hy_j, hz_j,
+                        px_i, py_i, pz_i, r_i,
+                    )
+                    dist = result[0]
+                    contact_x = result[1]
+                    contact_y = result[2]
+                    contact_z = result[3]
+                    nx = -result[4]
+                    ny = -result[5]
+                    nz = -result[6]
+                elif geom_i == GEOM_BOX and geom_j == GEOM_CAPSULE:
+                    var result = box_capsule(
+                        px_i, py_i, pz_i, qx_i, qy_i, qz_i, qw_i,
+                        hx_i, hy_i, hz_i,
+                        px_j, py_j, pz_j, qx_j, qy_j, qz_j, qw_j,
+                        hl_j, r_j,
+                    )
+                    dist = result[0]
+                    contact_x = result[1]
+                    contact_y = result[2]
+                    contact_z = result[3]
+                    nx = result[4]
+                    ny = result[5]
+                    nz = result[6]
+                elif geom_i == GEOM_CAPSULE and geom_j == GEOM_BOX:
+                    var result = box_capsule(
+                        px_j, py_j, pz_j, qx_j, qy_j, qz_j, qw_j,
+                        hx_j, hy_j, hz_j,
+                        px_i, py_i, pz_i, qx_i, qy_i, qz_i, qw_i,
+                        hl_i, r_i,
+                    )
+                    dist = result[0]
+                    contact_x = result[1]
+                    contact_y = result[2]
+                    contact_z = result[3]
+                    nx = -result[4]
+                    ny = -result[5]
+                    nz = -result[6]
+                elif geom_i == GEOM_BOX and geom_j == GEOM_BOX:
+                    var result = box_box(
+                        px_i, py_i, pz_i, qx_i, qy_i, qz_i, qw_i,
+                        hx_i, hy_i, hz_i,
+                        px_j, py_j, pz_j, qx_j, qy_j, qz_j, qw_j,
+                        hx_j, hy_j, hz_j,
                     )
                     dist = result[0]
                     contact_x = result[1]

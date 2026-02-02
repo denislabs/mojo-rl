@@ -26,6 +26,9 @@ from .constants import (
     MODEL_IDX_INV_IZZ,
     MODEL_IDX_GEOM_TYPE,
     MODEL_IDX_HALF_LENGTH,
+    MODEL_IDX_HALF_X,
+    MODEL_IDX_HALF_Y,
+    MODEL_IDX_HALF_Z,
     GEOM_SPHERE,
     BODY_IDX_PX,
     BODY_IDX_PY,
@@ -169,8 +172,9 @@ fn create_model_host_buffer[
 ) raises -> HostBuffer[DTYPE]:
     """Create a host buffer with model data.
 
-    Layout per body (11 floats):
-    [mass, inv_mass, radius, ixx, iyy, izz, inv_ixx, inv_iyy, inv_izz, geom_type, half_length]
+    Layout per body (14 floats):
+    [mass, inv_mass, radius, ixx, iyy, izz, inv_ixx, inv_iyy, inv_izz,
+     geom_type, half_length, half_x, half_y, half_z]
 
     Returns:
         HostBuffer of size [NUM_BODIES * MODEL_BODY_SIZE].
@@ -192,6 +196,9 @@ fn create_model_host_buffer[
         host_buf[base + MODEL_IDX_INV_IZZ] = model.inv_inertias[i * 3 + 2]
         host_buf[base + MODEL_IDX_GEOM_TYPE] = Scalar[DTYPE](model.geom_types[i])
         host_buf[base + MODEL_IDX_HALF_LENGTH] = model.half_lengths[i]
+        host_buf[base + MODEL_IDX_HALF_X] = model.half_x[i]
+        host_buf[base + MODEL_IDX_HALF_Y] = model.half_y[i]
+        host_buf[base + MODEL_IDX_HALF_Z] = model.half_z[i]
 
     return host_buf^
 
@@ -201,8 +208,9 @@ fn init_model_host_buffer[
 ](ctx: DeviceContext) raises -> HostBuffer[DTYPE]:
     """Create an empty model host buffer for manual initialization.
 
-    Layout per body (11 floats):
-    [mass, inv_mass, radius, ixx, iyy, izz, inv_ixx, inv_iyy, inv_izz, geom_type, half_length]
+    Layout per body (14 floats):
+    [mass, inv_mass, radius, ixx, iyy, izz, inv_ixx, inv_iyy, inv_izz,
+     geom_type, half_length, half_x, half_y, half_z]
 
     Use for testing when you want to set model properties directly rather than
     from a CPU Model struct.
@@ -228,6 +236,9 @@ fn init_model_host_buffer[
         host_buf[base + MODEL_IDX_INV_IZZ] = Scalar[DTYPE](0)
         host_buf[base + MODEL_IDX_GEOM_TYPE] = Scalar[DTYPE](GEOM_SPHERE)
         host_buf[base + MODEL_IDX_HALF_LENGTH] = Scalar[DTYPE](0)
+        host_buf[base + MODEL_IDX_HALF_X] = Scalar[DTYPE](0)
+        host_buf[base + MODEL_IDX_HALF_Y] = Scalar[DTYPE](0)
+        host_buf[base + MODEL_IDX_HALF_Z] = Scalar[DTYPE](0)
 
     return host_buf^
 

@@ -4,7 +4,12 @@ from .collision_primitives import (
     capsule_plane,
     capsule_sphere,
     capsule_capsule,
+    box_plane,
+    box_sphere,
+    box_capsule,
+    box_box,
     compute_tangent_basis,
     rotate_vector_by_quat,
+    rotate_vector_by_quat_inverse,
 )
 from .collision import CollisionDetector

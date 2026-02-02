@@ -39,7 +39,7 @@ With joints (pendulum example):
 
 from .constants import CONTACT_SIZE
 from .joints.hinge_joint import HingeJoint
-from .gpu.constants import GEOM_SPHERE, GEOM_CAPSULE
+from .gpu.constants import GEOM_SPHERE, GEOM_CAPSULE, GEOM_BOX
 
 
 @fieldwise_init
@@ -153,10 +153,14 @@ struct Model[DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int =
     var inertias: InlineArray[Scalar[Self.DTYPE], Self.NUM_BODIES * 3]
     var inv_inertias: InlineArray[Scalar[Self.DTYPE], Self.NUM_BODIES * 3]
 
-    # Geometry type per body (Phase 8: GEOM_SPHERE, GEOM_CAPSULE, etc.)
+    # Geometry type per body (GEOM_SPHERE, GEOM_CAPSULE, GEOM_BOX)
     var geom_types: InlineArray[Int, Self.NUM_BODIES]
-    # Half-length for capsules (Phase 8: 0 for spheres)
+    # Half-length for capsules (0 for spheres)
     var half_lengths: InlineArray[Scalar[Self.DTYPE], Self.NUM_BODIES]
+    # Box half-extents (Phase 9: 0 for spheres/capsules)
+    var half_x: InlineArray[Scalar[Self.DTYPE], Self.NUM_BODIES]
+    var half_y: InlineArray[Scalar[Self.DTYPE], Self.NUM_BODIES]
+    var half_z: InlineArray[Scalar[Self.DTYPE], Self.NUM_BODIES]
 
     # Joint storage (sized to MAX_JOINTS, or 1 if MAX_JOINTS=0 to avoid zero-size array)
     var joints: InlineArray[HingeJoint[Self.DTYPE], _max_one[Self.MAX_JOINTS]()]
@@ -208,9 +212,21 @@ struct Model[DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int =
         self.half_lengths = InlineArray[Scalar[Self.DTYPE], Self.NUM_BODIES](
             uninitialized=True
         )
+        self.half_x = InlineArray[Scalar[Self.DTYPE], Self.NUM_BODIES](
+            uninitialized=True
+        )
+        self.half_y = InlineArray[Scalar[Self.DTYPE], Self.NUM_BODIES](
+            uninitialized=True
+        )
+        self.half_z = InlineArray[Scalar[Self.DTYPE], Self.NUM_BODIES](
+            uninitialized=True
+        )
         for i in range(Self.NUM_BODIES):
             self.geom_types[i] = GEOM_SPHERE
             self.half_lengths[i] = Scalar[Self.DTYPE](0.0)
+            self.half_x[i] = Scalar[Self.DTYPE](0.0)
+            self.half_y[i] = Scalar[Self.DTYPE](0.0)
+            self.half_z[i] = Scalar[Self.DTYPE](0.0)
 
         # Initialize joints
         self.joints = InlineArray[HingeJoint[Self.DTYPE], _max_one[Self.MAX_JOINTS]()](
@@ -232,6 +248,9 @@ struct Model[DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int =
         self.radii[index] = radius
         self.geom_types[index] = GEOM_SPHERE
         self.half_lengths[index] = Scalar[Self.DTYPE](0.0)
+        self.half_x[index] = Scalar[Self.DTYPE](0.0)
+        self.half_y[index] = Scalar[Self.DTYPE](0.0)
+        self.half_z[index] = Scalar[Self.DTYPE](0.0)
 
         # Sphere inertia: I = 2/5 * m * r^2
         var inertia = Scalar[Self.DTYPE](0.4) * mass * radius * radius
@@ -268,6 +287,9 @@ struct Model[DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int =
         self.radii[index] = radius
         self.geom_types[index] = GEOM_CAPSULE
         self.half_lengths[index] = half_length
+        self.half_x[index] = Scalar[Self.DTYPE](0.0)
+        self.half_y[index] = Scalar[Self.DTYPE](0.0)
+        self.half_z[index] = Scalar[Self.DTYPE](0.0)
 
         # Capsule inertia (approximation using cylinder + spherical caps)
         # For a capsule aligned along Z-axis:
@@ -282,7 +304,6 @@ struct Model[DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int =
         var h = half_length  # Half-length of cylinder part
         var r = radius
         var r2 = r * r
-        var h2 = h * h
 
         # Total length squared (cylinder + caps)
         var L = Scalar[Self.DTYPE](2.0) * h + Scalar[Self.DTYPE](2.0) * r
@@ -306,6 +327,61 @@ struct Model[DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int =
         self.inv_inertias[index * 3 + 0] = inv_I_trans
         self.inv_inertias[index * 3 + 1] = inv_I_trans
         self.inv_inertias[index * 3 + 2] = inv_I_axial
+
+    fn set_body_box(
+        mut self,
+        index: Int,
+        mass: Scalar[Self.DTYPE],
+        half_x: Scalar[Self.DTYPE],
+        half_y: Scalar[Self.DTYPE],
+        half_z: Scalar[Self.DTYPE],
+    ):
+        """Configure a body as a box with given mass and half-extents.
+
+        A box is defined by its half-extents along each axis. The full dimensions
+        are 2*half_x by 2*half_y by 2*half_z.
+
+        Args:
+            index: Body index.
+            mass: Total mass of the box.
+            half_x: Half-extent along X axis.
+            half_y: Half-extent along Y axis.
+            half_z: Half-extent along Z axis.
+        """
+        self.masses[index] = mass
+        self.inv_masses[index] = Scalar[Self.DTYPE](1.0) / mass
+        self.radii[index] = Scalar[Self.DTYPE](0.0)  # Not used for boxes
+        self.geom_types[index] = GEOM_BOX
+        self.half_lengths[index] = Scalar[Self.DTYPE](0.0)
+        self.half_x[index] = half_x
+        self.half_y[index] = half_y
+        self.half_z[index] = half_z
+
+        # Box inertia tensor (for a solid rectangular box):
+        # I_xx = (1/3) * m * (hy^2 + hz^2)
+        # I_yy = (1/3) * m * (hx^2 + hz^2)
+        # I_zz = (1/3) * m * (hx^2 + hy^2)
+        # where hx, hy, hz are the half-extents
+        # Note: Using 1/3 instead of 1/12 because we use half-extents not full dimensions
+        var hx2 = half_x * half_x
+        var hy2 = half_y * half_y
+        var hz2 = half_z * half_z
+        var factor = mass / Scalar[Self.DTYPE](3.0)
+
+        var I_xx = factor * (hy2 + hz2)
+        var I_yy = factor * (hx2 + hz2)
+        var I_zz = factor * (hx2 + hy2)
+
+        var inv_I_xx = Scalar[Self.DTYPE](1.0) / I_xx
+        var inv_I_yy = Scalar[Self.DTYPE](1.0) / I_yy
+        var inv_I_zz = Scalar[Self.DTYPE](1.0) / I_zz
+
+        self.inertias[index * 3 + 0] = I_xx
+        self.inertias[index * 3 + 1] = I_yy
+        self.inertias[index * 3 + 2] = I_zz
+        self.inv_inertias[index * 3 + 0] = inv_I_xx
+        self.inv_inertias[index * 3 + 1] = inv_I_yy
+        self.inv_inertias[index * 3 + 2] = inv_I_zz
 
     fn add_hinge_joint(
         mut self,

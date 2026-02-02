@@ -11,6 +11,7 @@ Following MuJoCo conventions:
 Phase 3: sphere-sphere and sphere-plane primitives.
 Phase 6: Added tangent basis computation for friction.
 Phase 8: Added capsule primitives (capsule-plane, capsule-sphere, capsule-capsule).
+Phase 9: Added box primitives (box-plane, box-sphere, box-capsule, box-box).
 """
 
 from math import sqrt
@@ -56,6 +57,34 @@ fn rotate_vector_by_quat[
     var rz = vz + qw * tz + (qx * ty - qy * tx)
 
     return (rx, ry, rz)
+
+
+@always_inline
+fn rotate_vector_by_quat_inverse[
+    DTYPE: DType
+](
+    vx: Scalar[DTYPE],
+    vy: Scalar[DTYPE],
+    vz: Scalar[DTYPE],
+    qx: Scalar[DTYPE],
+    qy: Scalar[DTYPE],
+    qz: Scalar[DTYPE],
+    qw: Scalar[DTYPE],
+) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
+    """Rotate a vector by the inverse (conjugate) of a quaternion.
+
+    For unit quaternions, q^(-1) = q* = (-qx, -qy, -qz, qw).
+    This transforms from world frame to local frame.
+
+    Args:
+        vx, vy, vz: Vector to rotate.
+        qx, qy, qz, qw: Unit quaternion [x, y, z, w].
+
+    Returns:
+        Rotated vector (rx, ry, rz) in local frame.
+    """
+    # Use conjugate: negate the vector part
+    return rotate_vector_by_quat(vx, vy, vz, -qx, -qy, -qz, qw)
 
 
 @always_inline
@@ -666,3 +695,696 @@ fn capsule_capsule[
 
     # Treat as sphere-sphere between the closest points
     return sphere_sphere(c1_x, c1_y, c1_z, a_radius, c2_x, c2_y, c2_z, b_radius)
+
+
+# =============================================================================
+# Box Collision Primitives (Phase 9)
+# =============================================================================
+
+
+@always_inline
+fn _check_vertex[
+    DTYPE: DType
+](
+    box_x: Scalar[DTYPE],
+    box_y: Scalar[DTYPE],
+    box_z: Scalar[DTYPE],
+    box_qx: Scalar[DTYPE],
+    box_qy: Scalar[DTYPE],
+    box_qz: Scalar[DTYPE],
+    box_qw: Scalar[DTYPE],
+    half_x: Scalar[DTYPE],
+    half_y: Scalar[DTYPE],
+    half_z: Scalar[DTYPE],
+    sx: Scalar[DTYPE],
+    sy: Scalar[DTYPE],
+    sz: Scalar[DTYPE],
+    mut min_z: Scalar[DTYPE],
+    mut lowest_x: Scalar[DTYPE],
+    mut lowest_y: Scalar[DTYPE],
+):
+    """Check one vertex and update minimum if lower."""
+    var lx = sx * half_x
+    var ly = sy * half_y
+    var lz = sz * half_z
+    var rotated = rotate_vector_by_quat(lx, ly, lz, box_qx, box_qy, box_qz, box_qw)
+    var vx = box_x + rotated[0]
+    var vy = box_y + rotated[1]
+    var vz = box_z + rotated[2]
+    if vz < min_z:
+        min_z = vz
+        lowest_x = vx
+        lowest_y = vy
+
+
+@always_inline
+fn box_plane[
+    DTYPE: DType
+](
+    # Box center and orientation
+    box_x: Scalar[DTYPE],
+    box_y: Scalar[DTYPE],
+    box_z: Scalar[DTYPE],
+    box_qx: Scalar[DTYPE],
+    box_qy: Scalar[DTYPE],
+    box_qz: Scalar[DTYPE],
+    box_qw: Scalar[DTYPE],
+    half_x: Scalar[DTYPE],
+    half_y: Scalar[DTYPE],
+    half_z: Scalar[DTYPE],
+    # Plane (horizontal at ground_z)
+    ground_z: Scalar[DTYPE],
+) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
+    """Box-plane collision detection (ground plane with normal = +Z).
+
+    A box is defined by its half-extents along each local axis.
+
+    Algorithm:
+    1. Compute all 8 vertices of the box in world frame
+    2. Find the lowest vertex (minimum z)
+    3. Compute signed distance from lowest vertex to plane
+
+    Returns:
+        Tuple of (dist, contact_x, contact_y, contact_z):
+        - dist: Signed distance from box surface to plane (negative = penetration).
+        - contact: Contact point on the ground plane below lowest vertex.
+    """
+    # Compute all 8 box vertices in world frame
+    # Local vertex offsets: (+/-hx, +/-hy, +/-hz)
+    var min_z = box_z + Scalar[DTYPE](1e10)  # Start with large value
+    var lowest_x = box_x
+    var lowest_y = box_y
+
+    # Check all 8 corners explicitly (GPU-compatible, no heap allocation)
+    var NEG = Scalar[DTYPE](-1.0)
+    var POS = Scalar[DTYPE](1.0)
+
+    _check_vertex(box_x, box_y, box_z, box_qx, box_qy, box_qz, box_qw,
+                  half_x, half_y, half_z, NEG, NEG, NEG, min_z, lowest_x, lowest_y)
+    _check_vertex(box_x, box_y, box_z, box_qx, box_qy, box_qz, box_qw,
+                  half_x, half_y, half_z, NEG, NEG, POS, min_z, lowest_x, lowest_y)
+    _check_vertex(box_x, box_y, box_z, box_qx, box_qy, box_qz, box_qw,
+                  half_x, half_y, half_z, NEG, POS, NEG, min_z, lowest_x, lowest_y)
+    _check_vertex(box_x, box_y, box_z, box_qx, box_qy, box_qz, box_qw,
+                  half_x, half_y, half_z, NEG, POS, POS, min_z, lowest_x, lowest_y)
+    _check_vertex(box_x, box_y, box_z, box_qx, box_qy, box_qz, box_qw,
+                  half_x, half_y, half_z, POS, NEG, NEG, min_z, lowest_x, lowest_y)
+    _check_vertex(box_x, box_y, box_z, box_qx, box_qy, box_qz, box_qw,
+                  half_x, half_y, half_z, POS, NEG, POS, min_z, lowest_x, lowest_y)
+    _check_vertex(box_x, box_y, box_z, box_qx, box_qy, box_qz, box_qw,
+                  half_x, half_y, half_z, POS, POS, NEG, min_z, lowest_x, lowest_y)
+    _check_vertex(box_x, box_y, box_z, box_qx, box_qy, box_qz, box_qw,
+                  half_x, half_y, half_z, POS, POS, POS, min_z, lowest_x, lowest_y)
+
+    # Signed distance from lowest vertex to ground
+    var dist = min_z - ground_z
+
+    # Contact point is on ground below lowest vertex
+    var contact_x = lowest_x
+    var contact_y = lowest_y
+    var contact_z = ground_z
+
+    return (dist, contact_x, contact_y, contact_z)
+
+
+@always_inline
+fn box_sphere[
+    DTYPE: DType
+](
+    # Box
+    box_x: Scalar[DTYPE],
+    box_y: Scalar[DTYPE],
+    box_z: Scalar[DTYPE],
+    box_qx: Scalar[DTYPE],
+    box_qy: Scalar[DTYPE],
+    box_qz: Scalar[DTYPE],
+    box_qw: Scalar[DTYPE],
+    half_x: Scalar[DTYPE],
+    half_y: Scalar[DTYPE],
+    half_z: Scalar[DTYPE],
+    # Sphere
+    sph_x: Scalar[DTYPE],
+    sph_y: Scalar[DTYPE],
+    sph_z: Scalar[DTYPE],
+    sph_radius: Scalar[DTYPE],
+) -> Tuple[
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+]:
+    """Box-sphere collision detection.
+
+    Algorithm:
+    1. Transform sphere center to box's local frame
+    2. Clamp sphere center to box bounds to find closest point on box
+    3. Compute distance from clamped point to sphere center
+    4. Transform result back to world frame
+
+    Returns:
+        Tuple of (dist, contact_x, contact_y, contact_z, normal_x, normal_y, normal_z):
+        - dist: Signed distance (negative = penetration).
+        - contact: Contact point (midpoint between surfaces).
+        - normal: Unit vector pointing from box to sphere.
+    """
+    # Transform sphere center to box's local frame
+    var rel_x = sph_x - box_x
+    var rel_y = sph_y - box_y
+    var rel_z = sph_z - box_z
+
+    var local = rotate_vector_by_quat_inverse(
+        rel_x, rel_y, rel_z, box_qx, box_qy, box_qz, box_qw
+    )
+    var local_x = local[0]
+    var local_y = local[1]
+    var local_z = local[2]
+
+    # Clamp to box bounds (closest point on box surface in local frame)
+    var clamp_x = local_x
+    var clamp_y = local_y
+    var clamp_z = local_z
+
+    if clamp_x < -half_x:
+        clamp_x = -half_x
+    elif clamp_x > half_x:
+        clamp_x = half_x
+
+    if clamp_y < -half_y:
+        clamp_y = -half_y
+    elif clamp_y > half_y:
+        clamp_y = half_y
+
+    if clamp_z < -half_z:
+        clamp_z = -half_z
+    elif clamp_z > half_z:
+        clamp_z = half_z
+
+    # Vector from closest point to sphere center (in local frame)
+    var dx = local_x - clamp_x
+    var dy = local_y - clamp_y
+    var dz = local_z - clamp_z
+    var dist_sq = dx * dx + dy * dy + dz * dz
+    var dist_to_center = sqrt(dist_sq)
+
+    # Signed distance (surface to surface)
+    var dist = dist_to_center - sph_radius
+
+    # Compute normal (from box to sphere)
+    var nx_local: Scalar[DTYPE]
+    var ny_local: Scalar[DTYPE]
+    var nz_local: Scalar[DTYPE]
+
+    if dist_to_center > Scalar[DTYPE](1e-10):
+        var inv_dist = Scalar[DTYPE](1.0) / dist_to_center
+        nx_local = dx * inv_dist
+        ny_local = dy * inv_dist
+        nz_local = dz * inv_dist
+    else:
+        # Sphere center is inside or on box surface
+        # Find which face is closest and use its normal
+        var face_dist_x = half_x - abs(local_x)
+        var face_dist_y = half_y - abs(local_y)
+        var face_dist_z = half_z - abs(local_z)
+
+        if face_dist_x <= face_dist_y and face_dist_x <= face_dist_z:
+            # X face is closest
+            nx_local = Scalar[DTYPE](1.0) if local_x >= Scalar[DTYPE](0) else Scalar[DTYPE](-1.0)
+            ny_local = Scalar[DTYPE](0.0)
+            nz_local = Scalar[DTYPE](0.0)
+            dist = -face_dist_x - sph_radius
+        elif face_dist_y <= face_dist_z:
+            # Y face is closest
+            nx_local = Scalar[DTYPE](0.0)
+            ny_local = Scalar[DTYPE](1.0) if local_y >= Scalar[DTYPE](0) else Scalar[DTYPE](-1.0)
+            nz_local = Scalar[DTYPE](0.0)
+            dist = -face_dist_y - sph_radius
+        else:
+            # Z face is closest
+            nx_local = Scalar[DTYPE](0.0)
+            ny_local = Scalar[DTYPE](0.0)
+            nz_local = Scalar[DTYPE](1.0) if local_z >= Scalar[DTYPE](0) else Scalar[DTYPE](-1.0)
+            dist = -face_dist_z - sph_radius
+
+    # Transform normal back to world frame
+    var normal_world = rotate_vector_by_quat(
+        nx_local, ny_local, nz_local, box_qx, box_qy, box_qz, box_qw
+    )
+    var nx = normal_world[0]
+    var ny = normal_world[1]
+    var nz = normal_world[2]
+
+    # Transform closest point on box to world frame
+    var closest_world = rotate_vector_by_quat(
+        clamp_x, clamp_y, clamp_z, box_qx, box_qy, box_qz, box_qw
+    )
+    var closest_x = box_x + closest_world[0]
+    var closest_y = box_y + closest_world[1]
+    var closest_z = box_z + closest_world[2]
+
+    # Contact point is midpoint between surfaces
+    var half_dist = Scalar[DTYPE](0.5) * dist
+    var contact_x = closest_x + nx * half_dist
+    var contact_y = closest_y + ny * half_dist
+    var contact_z = closest_z + nz * half_dist
+
+    return (dist, contact_x, contact_y, contact_z, nx, ny, nz)
+
+
+@always_inline
+fn box_capsule[
+    DTYPE: DType
+](
+    # Box
+    box_x: Scalar[DTYPE],
+    box_y: Scalar[DTYPE],
+    box_z: Scalar[DTYPE],
+    box_qx: Scalar[DTYPE],
+    box_qy: Scalar[DTYPE],
+    box_qz: Scalar[DTYPE],
+    box_qw: Scalar[DTYPE],
+    half_x: Scalar[DTYPE],
+    half_y: Scalar[DTYPE],
+    half_z: Scalar[DTYPE],
+    # Capsule
+    cap_x: Scalar[DTYPE],
+    cap_y: Scalar[DTYPE],
+    cap_z: Scalar[DTYPE],
+    cap_qx: Scalar[DTYPE],
+    cap_qy: Scalar[DTYPE],
+    cap_qz: Scalar[DTYPE],
+    cap_qw: Scalar[DTYPE],
+    cap_half_len: Scalar[DTYPE],
+    cap_radius: Scalar[DTYPE],
+) -> Tuple[
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+]:
+    """Box-capsule collision detection.
+
+    Algorithm:
+    1. Transform capsule endpoints to box's local frame
+    2. Find closest point on capsule segment to box (clamped)
+    3. Treat as box-sphere with the closest point as sphere center
+
+    Returns:
+        Tuple of (dist, contact_x, contact_y, contact_z, normal_x, normal_y, normal_z):
+        - dist: Signed distance (negative = penetration).
+        - contact: Contact point (midpoint between surfaces).
+        - normal: Unit vector pointing from box to capsule.
+    """
+    # Get capsule axis in world frame
+    var cap_axis = rotate_vector_by_quat(
+        Scalar[DTYPE](0.0),
+        Scalar[DTYPE](0.0),
+        Scalar[DTYPE](1.0),
+        cap_qx,
+        cap_qy,
+        cap_qz,
+        cap_qw,
+    )
+    var ax = cap_axis[0]
+    var ay = cap_axis[1]
+    var az = cap_axis[2]
+
+    # Capsule endpoints in world frame
+    var ep1_x = cap_x + ax * cap_half_len
+    var ep1_y = cap_y + ay * cap_half_len
+    var ep1_z = cap_z + az * cap_half_len
+    var ep2_x = cap_x - ax * cap_half_len
+    var ep2_y = cap_y - ay * cap_half_len
+    var ep2_z = cap_z - az * cap_half_len
+
+    # Transform capsule segment to box's local frame
+    var rel1_x = ep1_x - box_x
+    var rel1_y = ep1_y - box_y
+    var rel1_z = ep1_z - box_z
+    var local1 = rotate_vector_by_quat_inverse(
+        rel1_x, rel1_y, rel1_z, box_qx, box_qy, box_qz, box_qw
+    )
+
+    var rel2_x = ep2_x - box_x
+    var rel2_y = ep2_y - box_y
+    var rel2_z = ep2_z - box_z
+    var local2 = rotate_vector_by_quat_inverse(
+        rel2_x, rel2_y, rel2_z, box_qx, box_qy, box_qz, box_qw
+    )
+
+    # Segment direction in local frame
+    var seg_dx = local2[0] - local1[0]
+    var seg_dy = local2[1] - local1[1]
+    var seg_dz = local2[2] - local1[2]
+
+    # Find point on segment closest to box center (origin in local frame)
+    # Project origin onto segment: t = -dot(p1, d) / dot(d, d)
+    var seg_len_sq = seg_dx * seg_dx + seg_dy * seg_dy + seg_dz * seg_dz
+    var t: Scalar[DTYPE]
+
+    if seg_len_sq > Scalar[DTYPE](1e-10):
+        t = -(local1[0] * seg_dx + local1[1] * seg_dy + local1[2] * seg_dz) / seg_len_sq
+        if t < Scalar[DTYPE](0.0):
+            t = Scalar[DTYPE](0.0)
+        elif t > Scalar[DTYPE](1.0):
+            t = Scalar[DTYPE](1.0)
+    else:
+        t = Scalar[DTYPE](0.5)
+
+    # Closest point on segment (in local frame)
+    var closest_seg_x = local1[0] + t * seg_dx
+    var closest_seg_y = local1[1] + t * seg_dy
+    var closest_seg_z = local1[2] + t * seg_dz
+
+    # Transform back to world frame for box-sphere test
+    var closest_world = rotate_vector_by_quat(
+        closest_seg_x, closest_seg_y, closest_seg_z, box_qx, box_qy, box_qz, box_qw
+    )
+    var closest_x = box_x + closest_world[0]
+    var closest_y = box_y + closest_world[1]
+    var closest_z = box_z + closest_world[2]
+
+    # Now treat as box-sphere collision
+    return box_sphere(
+        box_x, box_y, box_z,
+        box_qx, box_qy, box_qz, box_qw,
+        half_x, half_y, half_z,
+        closest_x, closest_y, closest_z,
+        cap_radius,
+    )
+
+
+@always_inline
+fn _project_box_onto_axis[
+    DTYPE: DType
+](
+    # Box rotation matrix columns (already computed)
+    r0_x: Scalar[DTYPE], r0_y: Scalar[DTYPE], r0_z: Scalar[DTYPE],
+    r1_x: Scalar[DTYPE], r1_y: Scalar[DTYPE], r1_z: Scalar[DTYPE],
+    r2_x: Scalar[DTYPE], r2_y: Scalar[DTYPE], r2_z: Scalar[DTYPE],
+    # Box half-extents
+    hx: Scalar[DTYPE], hy: Scalar[DTYPE], hz: Scalar[DTYPE],
+    # Axis to project onto
+    ax: Scalar[DTYPE], ay: Scalar[DTYPE], az: Scalar[DTYPE],
+) -> Scalar[DTYPE]:
+    """Project a box onto an axis and return the half-width of the projection.
+
+    The half-width is: |dot(r0, axis)|*hx + |dot(r1, axis)|*hy + |dot(r2, axis)|*hz
+    where r0, r1, r2 are the box's rotation matrix columns.
+    """
+    return (
+        abs(r0_x * ax + r0_y * ay + r0_z * az) * hx +
+        abs(r1_x * ax + r1_y * ay + r1_z * az) * hy +
+        abs(r2_x * ax + r2_y * ay + r2_z * az) * hz
+    )
+
+
+@always_inline
+fn _test_sat_axis[
+    DTYPE: DType
+](
+    axis_x: Scalar[DTYPE],
+    axis_y: Scalar[DTYPE],
+    axis_z: Scalar[DTYPE],
+    # Translation between box centers
+    t_x: Scalar[DTYPE],
+    t_y: Scalar[DTYPE],
+    t_z: Scalar[DTYPE],
+    # Box A rotation columns
+    a0_x: Scalar[DTYPE], a0_y: Scalar[DTYPE], a0_z: Scalar[DTYPE],
+    a1_x: Scalar[DTYPE], a1_y: Scalar[DTYPE], a1_z: Scalar[DTYPE],
+    a2_x: Scalar[DTYPE], a2_y: Scalar[DTYPE], a2_z: Scalar[DTYPE],
+    a_hx: Scalar[DTYPE], a_hy: Scalar[DTYPE], a_hz: Scalar[DTYPE],
+    # Box B rotation columns
+    b0_x: Scalar[DTYPE], b0_y: Scalar[DTYPE], b0_z: Scalar[DTYPE],
+    b1_x: Scalar[DTYPE], b1_y: Scalar[DTYPE], b1_z: Scalar[DTYPE],
+    b2_x: Scalar[DTYPE], b2_y: Scalar[DTYPE], b2_z: Scalar[DTYPE],
+    b_hx: Scalar[DTYPE], b_hy: Scalar[DTYPE], b_hz: Scalar[DTYPE],
+    # Output references
+    mut min_pen: Scalar[DTYPE],
+    mut best_nx: Scalar[DTYPE],
+    mut best_ny: Scalar[DTYPE],
+    mut best_nz: Scalar[DTYPE],
+) -> Bool:
+    """Test one SAT axis. Returns True if separated (no collision)."""
+    var EPSILON = Scalar[DTYPE](1e-10)
+
+    var axis_len = sqrt(axis_x * axis_x + axis_y * axis_y + axis_z * axis_z)
+    if axis_len < EPSILON:
+        return False  # Skip degenerate axis
+
+    var inv_len = Scalar[DTYPE](1.0) / axis_len
+    var ax = axis_x * inv_len
+    var ay = axis_y * inv_len
+    var az = axis_z * inv_len
+
+    # Project centers distance onto axis
+    var center_dist = t_x * ax + t_y * ay + t_z * az
+
+    # Project both boxes onto axis
+    var proj_a = _project_box_onto_axis(
+        a0_x, a0_y, a0_z, a1_x, a1_y, a1_z, a2_x, a2_y, a2_z,
+        a_hx, a_hy, a_hz, ax, ay, az,
+    )
+    var proj_b = _project_box_onto_axis(
+        b0_x, b0_y, b0_z, b1_x, b1_y, b1_z, b2_x, b2_y, b2_z,
+        b_hx, b_hy, b_hz, ax, ay, az,
+    )
+
+    # Gap = |center_dist| - (proj_a + proj_b)
+    var gap = abs(center_dist) - (proj_a + proj_b)
+
+    if gap > Scalar[DTYPE](0.0):
+        return True  # Separating axis found
+
+    # Track minimum penetration
+    var penetration = -gap
+    if penetration < min_pen:
+        min_pen = penetration
+        # Normal should point from A to B
+        if center_dist >= Scalar[DTYPE](0.0):
+            best_nx = ax
+            best_ny = ay
+            best_nz = az
+        else:
+            best_nx = -ax
+            best_ny = -ay
+            best_nz = -az
+
+    return False
+
+
+@always_inline
+fn box_box[
+    DTYPE: DType
+](
+    # Box A
+    a_x: Scalar[DTYPE],
+    a_y: Scalar[DTYPE],
+    a_z: Scalar[DTYPE],
+    a_qx: Scalar[DTYPE],
+    a_qy: Scalar[DTYPE],
+    a_qz: Scalar[DTYPE],
+    a_qw: Scalar[DTYPE],
+    a_hx: Scalar[DTYPE],
+    a_hy: Scalar[DTYPE],
+    a_hz: Scalar[DTYPE],
+    # Box B
+    b_x: Scalar[DTYPE],
+    b_y: Scalar[DTYPE],
+    b_z: Scalar[DTYPE],
+    b_qx: Scalar[DTYPE],
+    b_qy: Scalar[DTYPE],
+    b_qz: Scalar[DTYPE],
+    b_qw: Scalar[DTYPE],
+    b_hx: Scalar[DTYPE],
+    b_hy: Scalar[DTYPE],
+    b_hz: Scalar[DTYPE],
+) -> Tuple[
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+]:
+    """Box-box collision detection using Separating Axis Theorem (SAT).
+
+    Tests 15 potential separating axes:
+    - 3 face normals from box A
+    - 3 face normals from box B
+    - 9 edge-edge cross products
+
+    Returns:
+        Tuple of (dist, contact_x, contact_y, contact_z, normal_x, normal_y, normal_z):
+        - dist: Signed distance (negative = penetration).
+        - contact: Approximate contact point (centroid of overlap region).
+        - normal: Unit vector pointing from A to B along minimum penetration axis.
+    """
+    # Compute rotation matrix columns for box A (local axes in world frame)
+    var a0 = rotate_vector_by_quat(Scalar[DTYPE](1), Scalar[DTYPE](0), Scalar[DTYPE](0), a_qx, a_qy, a_qz, a_qw)
+    var a1 = rotate_vector_by_quat(Scalar[DTYPE](0), Scalar[DTYPE](1), Scalar[DTYPE](0), a_qx, a_qy, a_qz, a_qw)
+    var a2 = rotate_vector_by_quat(Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](1), a_qx, a_qy, a_qz, a_qw)
+
+    # Compute rotation matrix columns for box B
+    var b0 = rotate_vector_by_quat(Scalar[DTYPE](1), Scalar[DTYPE](0), Scalar[DTYPE](0), b_qx, b_qy, b_qz, b_qw)
+    var b1 = rotate_vector_by_quat(Scalar[DTYPE](0), Scalar[DTYPE](1), Scalar[DTYPE](0), b_qx, b_qy, b_qz, b_qw)
+    var b2 = rotate_vector_by_quat(Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](1), b_qx, b_qy, b_qz, b_qw)
+
+    # Vector from A center to B center
+    var t_x = b_x - a_x
+    var t_y = b_y - a_y
+    var t_z = b_z - a_z
+
+    # Track minimum penetration axis
+    var min_pen = Scalar[DTYPE](1e10)  # Large positive = no contact
+    var best_nx = Scalar[DTYPE](0.0)
+    var best_ny = Scalar[DTYPE](0.0)
+    var best_nz = Scalar[DTYPE](1.0)
+
+    # Separated result for early exit
+    var SEPARATED = (Scalar[DTYPE](1.0), a_x, a_y, a_z, Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](1))
+
+    # Test 15 axes
+
+    # Box A face normals (3 axes)
+    if _test_sat_axis(a0[0], a0[1], a0[2], t_x, t_y, t_z,
+            a0[0], a0[1], a0[2], a1[0], a1[1], a1[2], a2[0], a2[1], a2[2], a_hx, a_hy, a_hz,
+            b0[0], b0[1], b0[2], b1[0], b1[1], b1[2], b2[0], b2[1], b2[2], b_hx, b_hy, b_hz,
+            min_pen, best_nx, best_ny, best_nz):
+        return SEPARATED
+    if _test_sat_axis(a1[0], a1[1], a1[2], t_x, t_y, t_z,
+            a0[0], a0[1], a0[2], a1[0], a1[1], a1[2], a2[0], a2[1], a2[2], a_hx, a_hy, a_hz,
+            b0[0], b0[1], b0[2], b1[0], b1[1], b1[2], b2[0], b2[1], b2[2], b_hx, b_hy, b_hz,
+            min_pen, best_nx, best_ny, best_nz):
+        return SEPARATED
+    if _test_sat_axis(a2[0], a2[1], a2[2], t_x, t_y, t_z,
+            a0[0], a0[1], a0[2], a1[0], a1[1], a1[2], a2[0], a2[1], a2[2], a_hx, a_hy, a_hz,
+            b0[0], b0[1], b0[2], b1[0], b1[1], b1[2], b2[0], b2[1], b2[2], b_hx, b_hy, b_hz,
+            min_pen, best_nx, best_ny, best_nz):
+        return SEPARATED
+
+    # Box B face normals (3 axes)
+    if _test_sat_axis(b0[0], b0[1], b0[2], t_x, t_y, t_z,
+            a0[0], a0[1], a0[2], a1[0], a1[1], a1[2], a2[0], a2[1], a2[2], a_hx, a_hy, a_hz,
+            b0[0], b0[1], b0[2], b1[0], b1[1], b1[2], b2[0], b2[1], b2[2], b_hx, b_hy, b_hz,
+            min_pen, best_nx, best_ny, best_nz):
+        return SEPARATED
+    if _test_sat_axis(b1[0], b1[1], b1[2], t_x, t_y, t_z,
+            a0[0], a0[1], a0[2], a1[0], a1[1], a1[2], a2[0], a2[1], a2[2], a_hx, a_hy, a_hz,
+            b0[0], b0[1], b0[2], b1[0], b1[1], b1[2], b2[0], b2[1], b2[2], b_hx, b_hy, b_hz,
+            min_pen, best_nx, best_ny, best_nz):
+        return SEPARATED
+    if _test_sat_axis(b2[0], b2[1], b2[2], t_x, t_y, t_z,
+            a0[0], a0[1], a0[2], a1[0], a1[1], a1[2], a2[0], a2[1], a2[2], a_hx, a_hy, a_hz,
+            b0[0], b0[1], b0[2], b1[0], b1[1], b1[2], b2[0], b2[1], b2[2], b_hx, b_hy, b_hz,
+            min_pen, best_nx, best_ny, best_nz):
+        return SEPARATED
+
+    # Edge-edge cross products (9 axes)
+    # A0 x B0
+    var c_x = a0[1] * b0[2] - a0[2] * b0[1]
+    var c_y = a0[2] * b0[0] - a0[0] * b0[2]
+    var c_z = a0[0] * b0[1] - a0[1] * b0[0]
+    if _test_sat_axis(c_x, c_y, c_z, t_x, t_y, t_z,
+            a0[0], a0[1], a0[2], a1[0], a1[1], a1[2], a2[0], a2[1], a2[2], a_hx, a_hy, a_hz,
+            b0[0], b0[1], b0[2], b1[0], b1[1], b1[2], b2[0], b2[1], b2[2], b_hx, b_hy, b_hz,
+            min_pen, best_nx, best_ny, best_nz):
+        return SEPARATED
+
+    # A0 x B1
+    c_x = a0[1] * b1[2] - a0[2] * b1[1]
+    c_y = a0[2] * b1[0] - a0[0] * b1[2]
+    c_z = a0[0] * b1[1] - a0[1] * b1[0]
+    if _test_sat_axis(c_x, c_y, c_z, t_x, t_y, t_z,
+            a0[0], a0[1], a0[2], a1[0], a1[1], a1[2], a2[0], a2[1], a2[2], a_hx, a_hy, a_hz,
+            b0[0], b0[1], b0[2], b1[0], b1[1], b1[2], b2[0], b2[1], b2[2], b_hx, b_hy, b_hz,
+            min_pen, best_nx, best_ny, best_nz):
+        return SEPARATED
+
+    # A0 x B2
+    c_x = a0[1] * b2[2] - a0[2] * b2[1]
+    c_y = a0[2] * b2[0] - a0[0] * b2[2]
+    c_z = a0[0] * b2[1] - a0[1] * b2[0]
+    if _test_sat_axis(c_x, c_y, c_z, t_x, t_y, t_z,
+            a0[0], a0[1], a0[2], a1[0], a1[1], a1[2], a2[0], a2[1], a2[2], a_hx, a_hy, a_hz,
+            b0[0], b0[1], b0[2], b1[0], b1[1], b1[2], b2[0], b2[1], b2[2], b_hx, b_hy, b_hz,
+            min_pen, best_nx, best_ny, best_nz):
+        return SEPARATED
+
+    # A1 x B0
+    c_x = a1[1] * b0[2] - a1[2] * b0[1]
+    c_y = a1[2] * b0[0] - a1[0] * b0[2]
+    c_z = a1[0] * b0[1] - a1[1] * b0[0]
+    if _test_sat_axis(c_x, c_y, c_z, t_x, t_y, t_z,
+            a0[0], a0[1], a0[2], a1[0], a1[1], a1[2], a2[0], a2[1], a2[2], a_hx, a_hy, a_hz,
+            b0[0], b0[1], b0[2], b1[0], b1[1], b1[2], b2[0], b2[1], b2[2], b_hx, b_hy, b_hz,
+            min_pen, best_nx, best_ny, best_nz):
+        return SEPARATED
+
+    # A1 x B1
+    c_x = a1[1] * b1[2] - a1[2] * b1[1]
+    c_y = a1[2] * b1[0] - a1[0] * b1[2]
+    c_z = a1[0] * b1[1] - a1[1] * b1[0]
+    if _test_sat_axis(c_x, c_y, c_z, t_x, t_y, t_z,
+            a0[0], a0[1], a0[2], a1[0], a1[1], a1[2], a2[0], a2[1], a2[2], a_hx, a_hy, a_hz,
+            b0[0], b0[1], b0[2], b1[0], b1[1], b1[2], b2[0], b2[1], b2[2], b_hx, b_hy, b_hz,
+            min_pen, best_nx, best_ny, best_nz):
+        return SEPARATED
+
+    # A1 x B2
+    c_x = a1[1] * b2[2] - a1[2] * b2[1]
+    c_y = a1[2] * b2[0] - a1[0] * b2[2]
+    c_z = a1[0] * b2[1] - a1[1] * b2[0]
+    if _test_sat_axis(c_x, c_y, c_z, t_x, t_y, t_z,
+            a0[0], a0[1], a0[2], a1[0], a1[1], a1[2], a2[0], a2[1], a2[2], a_hx, a_hy, a_hz,
+            b0[0], b0[1], b0[2], b1[0], b1[1], b1[2], b2[0], b2[1], b2[2], b_hx, b_hy, b_hz,
+            min_pen, best_nx, best_ny, best_nz):
+        return SEPARATED
+
+    # A2 x B0
+    c_x = a2[1] * b0[2] - a2[2] * b0[1]
+    c_y = a2[2] * b0[0] - a2[0] * b0[2]
+    c_z = a2[0] * b0[1] - a2[1] * b0[0]
+    if _test_sat_axis(c_x, c_y, c_z, t_x, t_y, t_z,
+            a0[0], a0[1], a0[2], a1[0], a1[1], a1[2], a2[0], a2[1], a2[2], a_hx, a_hy, a_hz,
+            b0[0], b0[1], b0[2], b1[0], b1[1], b1[2], b2[0], b2[1], b2[2], b_hx, b_hy, b_hz,
+            min_pen, best_nx, best_ny, best_nz):
+        return SEPARATED
+
+    # A2 x B1
+    c_x = a2[1] * b1[2] - a2[2] * b1[1]
+    c_y = a2[2] * b1[0] - a2[0] * b1[2]
+    c_z = a2[0] * b1[1] - a2[1] * b1[0]
+    if _test_sat_axis(c_x, c_y, c_z, t_x, t_y, t_z,
+            a0[0], a0[1], a0[2], a1[0], a1[1], a1[2], a2[0], a2[1], a2[2], a_hx, a_hy, a_hz,
+            b0[0], b0[1], b0[2], b1[0], b1[1], b1[2], b2[0], b2[1], b2[2], b_hx, b_hy, b_hz,
+            min_pen, best_nx, best_ny, best_nz):
+        return SEPARATED
+
+    # A2 x B2
+    c_x = a2[1] * b2[2] - a2[2] * b2[1]
+    c_y = a2[2] * b2[0] - a2[0] * b2[2]
+    c_z = a2[0] * b2[1] - a2[1] * b2[0]
+    if _test_sat_axis(c_x, c_y, c_z, t_x, t_y, t_z,
+            a0[0], a0[1], a0[2], a1[0], a1[1], a1[2], a2[0], a2[1], a2[2], a_hx, a_hy, a_hz,
+            b0[0], b0[1], b0[2], b1[0], b1[1], b1[2], b2[0], b2[1], b2[2], b_hx, b_hy, b_hz,
+            min_pen, best_nx, best_ny, best_nz):
+        return SEPARATED
+
+    # No separating axis found - boxes are colliding
+    # Signed distance is negative penetration
+    var dist = -min_pen
+
+    # Contact point: approximate as midpoint between centers
+    var contact_x = (a_x + b_x) * Scalar[DTYPE](0.5)
+    var contact_y = (a_y + b_y) * Scalar[DTYPE](0.5)
+    var contact_z = (a_z + b_z) * Scalar[DTYPE](0.5)
+
+    return (dist, contact_x, contact_y, contact_z, best_nx, best_ny, best_nz)

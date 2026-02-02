@@ -25,11 +25,11 @@ Build a minimal, mathematically correct 3D physics engine following MuJoCo's com
 | Phase 6 | Friction model | ✅ | ✅ | Complete |
 | Phase 7 | Simple hopper (2-body + torque) | ✅ | ✅ | Complete |
 | Phase 8 | Capsule geometry | ✅ | ✅ | Complete |
-| Phase 9 | Box geometry | ⬚ | ⬚ | Planned |
+| Phase 9 | Box geometry | ✅ | ✅ | Complete |
 
 ---
 
-## Current Architecture (Phase 1-6 Complete)
+## Current Architecture (Phase 1-9 Complete)
 
 ### File Structure
 
@@ -48,7 +48,7 @@ physics3d_v2/
 │
 ├── collision/                 # Collision detection (CPU + GPU colocated)
 │   ├── __init__.mojo
-│   ├── collision_primitives.mojo  # Pure functions: sphere_sphere, sphere_plane, compute_tangent_basis
+│   ├── collision_primitives.mojo  # Pure functions: sphere, capsule, box primitives, compute_tangent_basis
 │   └── collision.mojo         # CollisionDetector with CPU and GPU methods
 │
 ├── solver/                    # Constraint solvers (CPU + GPU colocated)
@@ -98,7 +98,16 @@ physics3d_v2/
 │   ├── test_joint_sensing.mojo      # Phase 7: joint sensing tests
 │   ├── test_joint_sensing_gpu.mojo  # Phase 7: GPU sensing tests
 │   ├── test_hopper.mojo             # Phase 7: HopperEnv tests (CPU)
-│   └── test_hopper_gpu.mojo         # Phase 7: HopperEnv tests (GPU)
+│   ├── test_hopper_gpu.mojo         # Phase 7: HopperEnv tests (GPU)
+│   ├── test_capsule_plane.mojo      # Phase 8: Capsule-plane tests
+│   ├── test_capsule_sphere.mojo     # Phase 8: Capsule-sphere tests
+│   ├── test_capsule_capsule.mojo    # Phase 8: Capsule-capsule tests
+│   ├── test_capsule_gpu.mojo        # Phase 8: GPU capsule tests
+│   ├── test_box_plane.mojo          # Phase 9: Box-plane tests
+│   ├── test_box_sphere.mojo         # Phase 9: Box-sphere tests
+│   ├── test_box_capsule.mojo        # Phase 9: Box-capsule tests
+│   ├── test_box_box.mojo            # Phase 9: Box-box tests
+│   └── test_box_gpu.mojo            # Phase 9: GPU box tests
 │
 └── examples/
     ├── __init__.mojo
@@ -378,6 +387,19 @@ pixi run mojo run physics3d_v2/tests/test_hopper.mojo
 
 # Phase 7: HopperEnv GPU tests
 pixi run -e apple mojo run physics3d_v2/tests/test_hopper_gpu.mojo
+
+# Phase 8: Capsule collision tests
+pixi run mojo run physics3d_v2/tests/test_capsule_plane.mojo
+pixi run mojo run physics3d_v2/tests/test_capsule_sphere.mojo
+pixi run mojo run physics3d_v2/tests/test_capsule_capsule.mojo
+pixi run -e apple mojo run physics3d_v2/tests/test_capsule_gpu.mojo
+
+# Phase 9: Box collision tests
+pixi run mojo run physics3d_v2/tests/test_box_plane.mojo
+pixi run mojo run physics3d_v2/tests/test_box_sphere.mojo
+pixi run mojo run physics3d_v2/tests/test_box_capsule.mojo
+pixi run mojo run physics3d_v2/tests/test_box_box.mojo
+pixi run -e apple mojo run physics3d_v2/tests/test_box_gpu.mojo
 ```
 
 ### Test Coverage
@@ -417,6 +439,17 @@ pixi run -e apple mojo run physics3d_v2/tests/test_hopper_gpu.mojo
 - **HopperEnv reward**: Forward velocity + alive bonus - control cost
 - **GPU HopperEnv**: Joint constraints maintained, foot above ground
 - **GPU HopperEnv parity**: CPU vs GPU position difference <1cm
+- **Box-plane collision**: Box stops at correct height (half_z for axis-aligned)
+- **Tilted box-plane**: Box stops at lowest vertex height
+- **Box drift**: No drift over 1000 steps (<0.01mm)
+- **Box-sphere face**: Sphere lands on box face at correct height
+- **Box-sphere edge/corner**: Sphere stays above ground
+- **Box-capsule face**: Capsule lands on box at correct height
+- **Box-capsule parallel/angled**: Proper collision response
+- **Box-box face-face**: Small box rests on large box correctly
+- **Box-box edge-edge**: Rotated box rests on base box
+- **Stacked boxes stability**: 3 boxes stack with minimal drift (<0.03mm)
+- **Box GPU parity**: CPU/GPU difference < 1e-6 for all box primitives
 
 ---
 
@@ -1243,16 +1276,65 @@ pixi run -e apple mojo run physics3d_v2/tests/test_capsule_gpu.mojo
 
 ---
 
-## Phase 9: Box Geometry
+## Phase 9: Box Geometry - COMPLETE
 
 Boxes (oriented bounding boxes, OBBs) enable walls, platforms, and rectangular bodies.
 
-### Goal
-Add box collision primitives with support for:
-- Box-plane collision
-- Box-sphere collision
-- Box-capsule collision
-- Box-box collision (complex)
+### Implementation Summary
+
+#### Files Added
+- `tests/test_box_plane.mojo` - CPU box-plane validation (3 tests)
+- `tests/test_box_sphere.mojo` - CPU box-sphere validation (3 tests)
+- `tests/test_box_capsule.mojo` - CPU box-capsule validation (3 tests)
+- `tests/test_box_box.mojo` - CPU box-box validation (3 tests)
+- `tests/test_box_gpu.mojo` - GPU parity validation (3 tests)
+
+#### Files Modified
+- `types.mojo` - Added `half_x`, `half_y`, `half_z` arrays to Model, added `set_body_box()` method with box inertia calculation
+- `gpu/constants.mojo` - Added `GEOM_BOX`, `MODEL_IDX_HALF_X`, `MODEL_IDX_HALF_Y`, `MODEL_IDX_HALF_Z`, updated `MODEL_BODY_SIZE` to 14
+- `collision/collision_primitives.mojo` - Added `rotate_vector_by_quat_inverse()`, `box_plane()`, `box_sphere()`, `box_capsule()`, `box_box()` with SAT algorithm
+- `collision/collision.mojo` - Updated `detect_all_contacts()` and `detect_all_contacts_gpu()` with box geometry dispatch
+- `collision/__init__.mojo` - Exported new box collision functions
+- `gpu/buffer_utils.mojo` - Updated `create_model_host_buffer()` and `init_model_host_buffer()` to include half_x/y/z
+
+#### Test Commands
+```bash
+# Phase 9 CPU tests
+pixi run mojo run physics3d_v2/tests/test_box_plane.mojo
+pixi run mojo run physics3d_v2/tests/test_box_sphere.mojo
+pixi run mojo run physics3d_v2/tests/test_box_capsule.mojo
+pixi run mojo run physics3d_v2/tests/test_box_box.mojo
+
+# Phase 9 GPU tests
+pixi run -e apple mojo run physics3d_v2/tests/test_box_gpu.mojo
+```
+
+#### Test Results
+
+**CPU Box-Plane Tests (3/3 passed):**
+- Axis-aligned box falls and stops at correct height (half_z)
+- Tilted box (45°) stops at lowest vertex height
+- Box at rest does not drift (<0.01mm)
+
+**CPU Box-Sphere Tests (3/3 passed):**
+- Sphere lands on box face at correct height
+- Sphere hits box edge and stays above ground
+- Sphere hits box corner and stays above ground
+
+**CPU Box-Capsule Tests (3/3 passed):**
+- Vertical capsule lands on box face
+- Horizontal capsule parallel to box edge lands correctly
+- Tilted capsule at 45° lands on box
+
+**CPU Box-Box Tests (3/3 passed):**
+- Face-face contact: small box rests on large box at correct height
+- Edge-edge contact: rotated box rests on base box
+- Stacked boxes stability: 3 boxes stack with <0.03mm drift
+
+**GPU Parity Tests (3/3 passed):**
+- Box-plane: CPU/GPU difference < 3e-7
+- Box-sphere: CPU/GPU difference < 1e-6
+- Box-box: CPU/GPU difference < 1e-6
 
 ### Physical Model
 
@@ -1273,90 +1355,63 @@ A box is defined by:
      |<-hx->|
 ```
 
-### Implementation Steps
+### Key Algorithms
 
-#### Step 9.1: Box Data Structure
-
+#### Box-Plane Collision
+Find the lowest of 8 rotated vertices:
 ```mojo
-struct BoxGeom[DTYPE: DType]:
-    var half_x: Scalar[DTYPE]
-    var half_y: Scalar[DTYPE]
-    var half_z: Scalar[DTYPE]
+fn box_plane[DTYPE: DType](...) -> Tuple[...]:
+    # Transform 8 vertices by quaternion rotation
+    # Find vertex with minimum z
+    # Return signed distance = min_z - ground_z
 ```
 
-#### Step 9.2: Box-Plane Collision
-
-Find the vertex most penetrating the plane.
-
+#### Box-Sphere Collision
+Transform sphere to box local frame, clamp to bounds:
 ```mojo
-fn box_plane[DTYPE: DType](
-    # Box center and orientation
-    cx, cy, cz, qx, qy, qz, qw: Scalar[DTYPE],
-    hx, hy, hz: Scalar[DTYPE],
-    # Plane
-    ground_z: Scalar[DTYPE],
-) -> Tuple[Scalar[DTYPE], ...]:
-    """
-    Algorithm:
-    1. Transform 8 box vertices to world frame
-    2. Find vertex with minimum z (most penetrating)
-    3. Return signed distance and contact point
-    """
+fn box_sphere[DTYPE: DType](...) -> Tuple[...]:
+    # Transform sphere center to box local frame using inverse quaternion
+    # Clamp to [-half_x, half_x], [-half_y, half_y], [-half_z, half_z]
+    # Transform closest point back to world frame
+    # Return distance - sphere_radius
 ```
 
-#### Step 9.3: Box-Sphere Collision
-
-Find closest point on box surface to sphere center.
-
+#### Box-Capsule Collision
+Project box center onto capsule axis, treat as box-sphere:
 ```mojo
-fn box_sphere[DTYPE: DType](
-    # Box
-    box_x, box_y, box_z, box_qx, box_qy, box_qz, box_qw: Scalar[DTYPE],
-    hx, hy, hz: Scalar[DTYPE],
-    # Sphere
-    sph_x, sph_y, sph_z, sph_radius: Scalar[DTYPE],
-) -> Tuple[Scalar[DTYPE], ...]:
-    """
-    Algorithm:
-    1. Transform sphere center to box local frame
-    2. Clamp to box bounds to find closest point
-    3. Transform back to world, compute distance
-    """
+fn box_capsule[DTYPE: DType](...) -> Tuple[...]:
+    # Compute capsule endpoints in world frame
+    # Project box center onto capsule axis (clamped)
+    # Treat as box-sphere with closest point on capsule
 ```
 
-#### Step 9.4: Box-Capsule Collision
-
-Find closest point between capsule axis and box.
-
+#### Box-Box Collision (SAT)
+Separating Axis Theorem with 15 axes:
 ```mojo
-fn box_capsule[DTYPE: DType](...) -> Tuple[Scalar[DTYPE], ...]:
-    """
-    Algorithm:
-    1. Transform capsule endpoints to box local frame
-    2. Find closest point on capsule axis to box
-    3. Compute penetration and contact normal
-    """
+fn box_box[DTYPE: DType](...) -> Tuple[...]:
+    # Test 15 potential separating axes:
+    # - 3 face normals of box A (world frame)
+    # - 3 face normals of box B (world frame)
+    # - 9 edge-edge cross products (Ax×Bx, Ax×By, ..., Az×Bz)
+    #
+    # For each axis:
+    #   Project both boxes onto axis
+    #   Compute overlap = min(max_A, max_B) - max(min_A, min_B)
+    #   Track minimum overlap axis for contact normal
+    #
+    # If separated on any axis, no collision
+    # Otherwise return minimum penetration depth and contact normal
 ```
 
-#### Step 9.5: Box-Box Collision (SAT)
-
-Use Separating Axis Theorem (SAT) with 15 axes.
-
-```mojo
-fn box_box[DTYPE: DType](...) -> Tuple[Scalar[DTYPE], ...]:
-    """
-    Separating Axis Theorem (SAT):
-    Test 15 potential separating axes:
-    - 3 face normals of box A
-    - 3 face normals of box B
-    - 9 edge-edge cross products
-
-    If separated on any axis, no collision.
-    If overlapping on all axes, find minimum penetration axis for contact.
-    """
+#### Box Inertia Tensor
+For a solid box with half-extents (hx, hy, hz):
+```
+I_xx = m * (hy² + hz²) / 3
+I_yy = m * (hx² + hz²) / 3
+I_zz = m * (hx² + hy²) / 3
 ```
 
-#### Step 9.6: GPU Buffer Layout Update
+### GPU Buffer Layout
 
 ```
 MODEL_BODY_SIZE = 14 floats per body:
@@ -1367,32 +1422,27 @@ MODEL_BODY_SIZE = 14 floats per body:
   [6-8]   Inverse inertia
   [9]     Geometry type (0=sphere, 1=capsule, 2=box)
   [10]    Half-length (capsule) / Half-X (box)
-  [11]    Half-Y (box only)
-  [12]    Half-Z (box only)
+  [11]    Half-Y (box)
+  [12]    Half-Z (box)
   [13]    Padding
 ```
 
-### Test Plan
+### GPU Compatibility Notes
 
-```bash
-# Phase 9 tests
-pixi run mojo run physics3d_v2/tests/test_box_plane.mojo
-pixi run mojo run physics3d_v2/tests/test_box_sphere.mojo
-pixi run mojo run physics3d_v2/tests/test_box_capsule.mojo
-pixi run mojo run physics3d_v2/tests/test_box_box.mojo
-pixi run -e apple mojo run physics3d_v2/tests/test_box_gpu.mojo
-```
+The box collision primitives required special handling for GPU compatibility:
+1. **No heap allocation**: Replaced `InlineArray` usage with explicit helper function calls for vertex iteration
+2. **No closures**: Refactored SAT algorithm to use module-level `_test_sat_axis()` function instead of nested closure
 
 ### Validation Criteria
 
 | Test | Pass Criteria |
 |------|---------------|
-| Box on ground | Box rests stably on face, edge, or corner |
-| Box-sphere | Correct contact point on box surface |
-| Box-capsule | Bodies separate correctly |
-| Box-box SAT | Correct collision detection and response |
-| Stack stability | Boxes stack without interpenetration |
-| GPU parity | Same results as CPU |
+| Box on ground | Box rests stably at half_z (axis-aligned) or lowest vertex (tilted) |
+| Box drift | < 1mm over 1000 steps |
+| Box-sphere | Correct penetration depth and normal for face/edge/corner cases |
+| Box-capsule | Bodies separate correctly, no interpenetration |
+| Box-box SAT | Stacked boxes stable without interpenetration |
+| GPU parity | < 1e-6 difference vs CPU |
 
 ---
 
