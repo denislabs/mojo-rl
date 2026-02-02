@@ -1,11 +1,14 @@
-"""Simple 2-body Hopper Environment for RL.
+"""4-Body Hopper Environment for RL (MuJoCo-like).
 
-A minimal locomotion environment using the physics engine:
-- 2 spheres: Torso (larger) + Foot (smaller)
-- 1 actuated hinge joint (hip)
+A realistic locomotion environment using the physics engine:
+- Torso: Capsule (vertical)
+- Thigh: Capsule (vertical)
+- Leg: Capsule (vertical)
+- Foot: Capsule (horizontal, rotated 90° around Y-axis)
+- 3 actuated hinge joints (hip, knee, ankle)
 - Ground contact with friction
 
-This is designed to be a stepping stone toward more complex walkers.
+This matches the MuJoCo Hopper structure for better comparison.
 """
 
 from math import sqrt, sin, cos, atan2
@@ -19,32 +22,41 @@ comptime PI: Float64 = 3.14159265358979323846
 
 
 struct HopperEnv[DTYPE: DType = DType.float64]:
-    """Simple 2-body hopper environment for reinforcement learning.
+    """4-body hopper environment for reinforcement learning.
 
-    Physical Configuration:
-        - Body 0 (Torso): Larger sphere (mass=1.0, radius=0.15)
-        - Body 1 (Foot): Smaller sphere (mass=0.5, radius=0.1)
-        - Joint 0 (Hip): Hinge connecting torso to foot, Y-axis rotation
+    Physical Configuration (matching MuJoCo Hopper):
+        - Body 0 (Torso): Capsule (mass=1.0, radius=0.05, half_length=0.2)
+        - Body 1 (Thigh): Capsule (mass=0.5, radius=0.05, half_length=0.225)
+        - Body 2 (Leg): Capsule (mass=0.3, radius=0.04, half_length=0.25)
+        - Body 3 (Foot): Horizontal capsule (mass=0.2, radius=0.06, half_length=0.195)
+        - Joint 0 (Hip): Hinge connecting torso to thigh, Y-axis rotation
+        - Joint 1 (Knee): Hinge connecting thigh to leg, Y-axis rotation
+        - Joint 2 (Ankle): Hinge connecting leg to foot, Y-axis rotation
 
-    Observation Space (8 dimensions):
+    Observation Space (11 dimensions, matching MuJoCo):
         [0] Torso height (z position)
-        [1] Torso x velocity
-        [2] Torso z velocity
-        [3] Torso pitch angle (rotation around Y-axis, in radians)
-        [4] Torso pitch angular velocity
-        [5] Hip angle (relative angle between torso and foot)
-        [6] Hip angular velocity
-        [7] Foot ground contact (1.0 if contact, 0.0 otherwise)
+        [1] Torso pitch angle (rotation around Y-axis)
+        [2] Hip joint angle (thigh angle)
+        [3] Knee joint angle (leg angle)
+        [4] Ankle joint angle (foot angle)
+        [5] Torso x velocity
+        [6] Torso z velocity
+        [7] Torso pitch angular velocity
+        [8] Hip angular velocity
+        [9] Knee angular velocity
+        [10] Ankle angular velocity
 
-    Action Space (1 dimension):
+    Action Space (3 dimensions):
         [0] Hip torque, normalized to [-1, 1], scaled by torque_limit
+        [1] Knee torque
+        [2] Ankle torque
 
     Reward:
         reward = forward_velocity + alive_bonus - control_cost
         where:
         - forward_velocity = torso x velocity (encourages forward motion)
         - alive_bonus = 1.0 (if not terminated)
-        - control_cost = 0.01 * torque^2 (penalizes large actions)
+        - control_cost = 0.001 * sum(torque^2) (penalizes large actions)
 
     Termination:
         Episode ends when:
@@ -56,9 +68,9 @@ struct HopperEnv[DTYPE: DType = DType.float64]:
         DTYPE: Data type for physics (default float64).
     """
 
-    # Physics
-    var model: Model[Self.DTYPE, 2, 10, 1]
-    var data: Data[Self.DTYPE, 2, 10, 1]
+    # Physics: 4 bodies, 20 max contacts, 3 joints
+    var model: Model[Self.DTYPE, 4, 20, 3]
+    var data: Data[Self.DTYPE, 4, 20, 3]
 
     # Environment parameters
     var torque_limit: Scalar[Self.DTYPE]
@@ -67,31 +79,41 @@ struct HopperEnv[DTYPE: DType = DType.float64]:
     var max_steps: Int
     var current_step: Int
 
-    # Configuration
+    # Body dimensions (matching MuJoCo Hopper)
     var torso_mass: Scalar[Self.DTYPE]
     var torso_radius: Scalar[Self.DTYPE]
+    var torso_half_length: Scalar[Self.DTYPE]
+
+    var thigh_mass: Scalar[Self.DTYPE]
+    var thigh_radius: Scalar[Self.DTYPE]
+    var thigh_half_length: Scalar[Self.DTYPE]
+
+    var leg_mass: Scalar[Self.DTYPE]
+    var leg_radius: Scalar[Self.DTYPE]
+    var leg_half_length: Scalar[Self.DTYPE]
+
     var foot_mass: Scalar[Self.DTYPE]
     var foot_radius: Scalar[Self.DTYPE]
-    var hip_height: Scalar[Self.DTYPE]  # Height of hip joint above foot center
+    var foot_half_length: Scalar[Self.DTYPE]
 
     fn __init__(
         out self,
-        torque_limit: Scalar[Self.DTYPE] = 10.0,
-        min_height: Scalar[Self.DTYPE] = 0.15,
+        torque_limit: Scalar[Self.DTYPE] = 200.0,  # MuJoCo uses gear=200
+        min_height: Scalar[Self.DTYPE] = 0.7,
         max_pitch: Scalar[Self.DTYPE] = 1.0,  # ~57 degrees
         max_steps: Int = 1000,
-        timestep: Scalar[Self.DTYPE] = 0.01,
-        friction: Scalar[Self.DTYPE] = 0.8,
+        timestep: Scalar[Self.DTYPE] = 0.002,  # MuJoCo uses 0.002
+        friction: Scalar[Self.DTYPE] = 0.9,
     ):
-        """Initialize the hopper environment.
+        """Initialize the 4-body hopper environment.
 
         Args:
-            torque_limit: Maximum hip torque in N·m (default 10.0).
-            min_height: Minimum torso height before termination (default 0.15).
+            torque_limit: Maximum joint torque in N·m (default 200.0, matching MuJoCo gear).
+            min_height: Minimum torso height before termination (default 0.7).
             max_pitch: Maximum torso pitch (radians) before termination (default 1.0).
             max_steps: Maximum episode length (default 1000).
-            timestep: Physics timestep in seconds (default 0.01).
-            friction: Ground friction coefficient (default 0.8).
+            timestep: Physics timestep in seconds (default 0.002).
+            friction: Ground friction coefficient (default 0.9).
         """
         self.torque_limit = torque_limit
         self.min_height = min_height
@@ -99,15 +121,25 @@ struct HopperEnv[DTYPE: DType = DType.float64]:
         self.max_steps = max_steps
         self.current_step = 0
 
-        # Body configuration
+        # Body configuration (matching MuJoCo Hopper dimensions)
         self.torso_mass = Scalar[Self.DTYPE](1.0)
-        self.torso_radius = Scalar[Self.DTYPE](0.15)
-        self.foot_mass = Scalar[Self.DTYPE](0.5)
-        self.foot_radius = Scalar[Self.DTYPE](0.1)
-        self.hip_height = Scalar[Self.DTYPE](0.2)  # Distance from foot center to hip
+        self.torso_radius = Scalar[Self.DTYPE](0.05)
+        self.torso_half_length = Scalar[Self.DTYPE](0.2)
+
+        self.thigh_mass = Scalar[Self.DTYPE](0.5)
+        self.thigh_radius = Scalar[Self.DTYPE](0.05)
+        self.thigh_half_length = Scalar[Self.DTYPE](0.225)
+
+        self.leg_mass = Scalar[Self.DTYPE](0.3)
+        self.leg_radius = Scalar[Self.DTYPE](0.04)
+        self.leg_half_length = Scalar[Self.DTYPE](0.25)
+
+        self.foot_mass = Scalar[Self.DTYPE](0.2)
+        self.foot_radius = Scalar[Self.DTYPE](0.06)
+        self.foot_half_length = Scalar[Self.DTYPE](0.195)
 
         # Initialize physics model
-        self.model = Model[Self.DTYPE, 2, 10, 1](
+        self.model = Model[Self.DTYPE, 4, 20, 3](
             gravity_z=Scalar[Self.DTYPE](-9.81),
             timestep=timestep,
             ground_z=Scalar[Self.DTYPE](0.0),
@@ -116,81 +148,178 @@ struct HopperEnv[DTYPE: DType = DType.float64]:
         )
 
         # Configure bodies
-        self.model.set_body(0, mass=self.torso_mass, radius=self.torso_radius)
-        self.model.set_body(1, mass=self.foot_mass, radius=self.foot_radius)
+        # Body 0: Torso (vertical capsule)
+        self.model.set_body_capsule(
+            0,
+            mass=self.torso_mass,
+            radius=self.torso_radius,
+            half_length=self.torso_half_length,
+        )
 
-        # Add hip joint: Torso (body 0) -> Foot (body 1)
-        # Anchor at bottom of torso / top of leg segment
+        # Body 1: Thigh (vertical capsule)
+        self.model.set_body_capsule(
+            1,
+            mass=self.thigh_mass,
+            radius=self.thigh_radius,
+            half_length=self.thigh_half_length,
+        )
+
+        # Body 2: Leg (vertical capsule)
+        self.model.set_body_capsule(
+            2,
+            mass=self.leg_mass,
+            radius=self.leg_radius,
+            half_length=self.leg_half_length,
+        )
+
+        # Body 3: Foot (horizontal capsule - rotated 90° around Y-axis)
+        self.model.set_body_capsule(
+            3,
+            mass=self.foot_mass,
+            radius=self.foot_radius,
+            half_length=self.foot_half_length,
+        )
+
+        # Add 3 hinge joints
+        # Joint 0: Hip (Torso -> Thigh)
         _ = self.model.add_hinge_joint(
             parent=0,  # Torso
-            child=1,  # Foot
+            child=1,   # Thigh
             anchor_parent=(
                 Scalar[Self.DTYPE](0.0),
                 Scalar[Self.DTYPE](0.0),
-                -self.torso_radius,  # Bottom of torso
+                -self.torso_half_length,  # Bottom of torso
             ),
             anchor_child=(
                 Scalar[Self.DTYPE](0.0),
                 Scalar[Self.DTYPE](0.0),
-                self.hip_height,  # Above foot center
+                self.thigh_half_length,  # Top of thigh
             ),
             axis=(
                 Scalar[Self.DTYPE](0.0),
-                Scalar[Self.DTYPE](1.0),  # Y-axis rotation (sagittal plane)
+                Scalar[Self.DTYPE](1.0),  # Y-axis rotation
                 Scalar[Self.DTYPE](0.0),
             ),
         )
 
-        # Set torque limit
+        # Joint 1: Knee (Thigh -> Leg)
+        _ = self.model.add_hinge_joint(
+            parent=1,  # Thigh
+            child=2,   # Leg
+            anchor_parent=(
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](0.0),
+                -self.thigh_half_length,  # Bottom of thigh
+            ),
+            anchor_child=(
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](0.0),
+                self.leg_half_length,  # Top of leg
+            ),
+            axis=(
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](1.0),  # Y-axis rotation
+                Scalar[Self.DTYPE](0.0),
+            ),
+        )
+
+        # Joint 2: Ankle (Leg -> Foot)
+        _ = self.model.add_hinge_joint(
+            parent=2,  # Leg
+            child=3,   # Foot
+            anchor_parent=(
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](0.0),
+                -self.leg_half_length,  # Bottom of leg
+            ),
+            anchor_child=(
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](0.0),  # Center of foot
+            ),
+            axis=(
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](1.0),  # Y-axis rotation
+                Scalar[Self.DTYPE](0.0),
+            ),
+        )
+
+        # Set torque limits for all joints
         self.model.joints[0].torque_limit = torque_limit
+        self.model.joints[1].torque_limit = torque_limit
+        self.model.joints[2].torque_limit = torque_limit
 
         # Initialize data
-        self.data = Data[Self.DTYPE, 2, 10, 1]()
+        self.data = Data[Self.DTYPE, 4, 20, 3]()
         self._reset_state()
 
     fn _reset_state(mut self):
         """Reset bodies to initial standing position."""
-        # Foot just above ground (radius height)
-        var foot_z = self.foot_radius
-        self.data.set_body_position(1, 0.0, 0.0, foot_z)
+        # Calculate positions from ground up (matching MuJoCo)
+        # Foot is horizontal (rotated 90° around Y), so its height is just its radius
+        var foot_z = self.foot_radius  # ~0.06
 
-        # Torso above foot, connected by hip
-        var torso_z = foot_z + self.hip_height + self.torso_radius
-        self.data.set_body_position(0, 0.0, 0.0, torso_z)
+        # Leg center: above foot, accounting for leg half-length + leg radius
+        var leg_z = foot_z + self.leg_radius + self.leg_half_length  # ~0.35
+
+        # Thigh center: above leg
+        var thigh_z = leg_z + self.leg_half_length + self.thigh_half_length  # ~0.825
+
+        # Torso center: above thigh
+        var torso_z = thigh_z + self.thigh_half_length + self.torso_half_length  # ~1.25
+
+        # Set positions
+        self.data.set_body_position(0, 0.0, 0.0, torso_z)  # Torso
+        self.data.set_body_position(1, 0.0, 0.0, thigh_z)  # Thigh
+        self.data.set_body_position(2, 0.0, 0.0, leg_z)    # Leg
+        self.data.set_body_position(3, 0.0, 0.0, foot_z)   # Foot
 
         # Reset velocities
-        self.data.set_body_velocity(0, 0.0, 0.0, 0.0)
-        self.data.set_body_velocity(1, 0.0, 0.0, 0.0)
-        self.data.set_body_angular_velocity(0, 0.0, 0.0, 0.0)
-        self.data.set_body_angular_velocity(1, 0.0, 0.0, 0.0)
+        for i in range(4):
+            self.data.set_body_velocity(i, 0.0, 0.0, 0.0)
+            self.data.set_body_angular_velocity(i, 0.0, 0.0, 0.0)
 
-        # Reset quaternions to identity
-        for i in range(2):
-            self.data.quaternions[i * 4 + 0] = 0.0
-            self.data.quaternions[i * 4 + 1] = 0.0
-            self.data.quaternions[i * 4 + 2] = 0.0
-            self.data.quaternions[i * 4 + 3] = 1.0
+        # Reset quaternions to identity for vertical bodies (torso, thigh, leg)
+        for i in range(3):
+            self.data.quaternions[i * 4 + 0] = 0.0  # qx
+            self.data.quaternions[i * 4 + 1] = 0.0  # qy
+            self.data.quaternions[i * 4 + 2] = 0.0  # qz
+            self.data.quaternions[i * 4 + 3] = 1.0  # qw
 
-        # Reset joint torque
-        self.model.joints[0].target_torque = Scalar[Self.DTYPE](0.0)
+        # Foot quaternion: 90° rotation around Y-axis (horizontal capsule)
+        # Quaternion for 90° Y rotation: (sin(45°), 0, 0, cos(45°)) in (x,y,z,w) format
+        # Actually for Y-axis rotation: qx=0, qy=sin(θ/2), qz=0, qw=cos(θ/2)
+        # θ = 90° = π/2, so θ/2 = π/4 = 45°
+        # sin(45°) ≈ 0.70710678, cos(45°) ≈ 0.70710678
+        self.data.quaternions[3 * 4 + 0] = 0.0           # qx
+        self.data.quaternions[3 * 4 + 1] = 0.70710678    # qy (sin(π/4))
+        self.data.quaternions[3 * 4 + 2] = 0.0           # qz
+        self.data.quaternions[3 * 4 + 3] = 0.70710678    # qw (cos(π/4))
+
+        # Reset joint torques
+        for j in range(3):
+            self.model.joints[j].target_torque = Scalar[Self.DTYPE](0.0)
 
         # Reset contact count
         self.data.num_contacts = 0
 
-    fn reset(mut self) -> InlineArray[Scalar[Self.DTYPE], 8]:
+    fn reset(mut self) -> InlineArray[Scalar[Self.DTYPE], 11]:
         """Reset the environment to initial state.
 
         Returns:
-            Initial observation (8 dimensions).
+            Initial observation (11 dimensions).
         """
         self._reset_state()
         self.current_step = 0
         return self.get_observation()
 
     fn step(
-        mut self, action: Scalar[Self.DTYPE]
+        mut self,
+        action_hip: Scalar[Self.DTYPE],
+        action_knee: Scalar[Self.DTYPE],
+        action_ankle: Scalar[Self.DTYPE],
     ) -> Tuple[
-        InlineArray[Scalar[Self.DTYPE], 8],  # observation
+        InlineArray[Scalar[Self.DTYPE], 11],  # observation
         Scalar[Self.DTYPE],  # reward
         Bool,  # terminated
         Bool,  # truncated
@@ -198,20 +327,21 @@ struct HopperEnv[DTYPE: DType = DType.float64]:
         """Take one environment step.
 
         Args:
-            action: Hip torque in range [-1, 1], will be scaled by torque_limit.
+            action_hip: Hip torque in range [-1, 1], scaled by torque_limit.
+            action_knee: Knee torque in range [-1, 1].
+            action_ankle: Ankle torque in range [-1, 1].
 
         Returns:
             Tuple of (observation, reward, terminated, truncated).
         """
-        # Clamp and scale action
-        var clamped_action = action
-        if clamped_action > 1.0:
-            clamped_action = Scalar[Self.DTYPE](1.0)
-        elif clamped_action < -1.0:
-            clamped_action = Scalar[Self.DTYPE](-1.0)
+        # Clamp and scale actions
+        var hip_torque = self._clamp_action(action_hip) * self.torque_limit
+        var knee_torque = self._clamp_action(action_knee) * self.torque_limit
+        var ankle_torque = self._clamp_action(action_ankle) * self.torque_limit
 
-        var torque = clamped_action * self.torque_limit
-        self.model.joints[0].target_torque = torque
+        self.model.joints[0].target_torque = hip_torque
+        self.model.joints[1].target_torque = knee_torque
+        self.model.joints[2].target_torque = ankle_torque
 
         # Physics step
         ImpulseIntegrator.step(self.model, self.data)
@@ -226,90 +356,87 @@ struct HopperEnv[DTYPE: DType = DType.float64]:
         var truncated = self.current_step >= self.max_steps
 
         # Compute reward
-        var reward = self._compute_reward(obs, torque, terminated)
+        var reward = self._compute_reward(obs, hip_torque, knee_torque, ankle_torque, terminated)
 
         return (obs^, reward, terminated, truncated)
 
-    fn get_observation(self) -> InlineArray[Scalar[Self.DTYPE], 8]:
+    fn _clamp_action(self, action: Scalar[Self.DTYPE]) -> Scalar[Self.DTYPE]:
+        """Clamp action to [-1, 1]."""
+        if action > 1.0:
+            return Scalar[Self.DTYPE](1.0)
+        elif action < -1.0:
+            return Scalar[Self.DTYPE](-1.0)
+        return action
+
+    fn get_observation(self) -> InlineArray[Scalar[Self.DTYPE], 11]:
         """Get current observation vector.
 
         Returns:
-            8-dimensional observation:
+            11-dimensional observation (matching MuJoCo Hopper):
             [0] Torso height (z)
-            [1] Torso x velocity
-            [2] Torso z velocity
-            [3] Torso pitch angle
-            [4] Torso pitch angular velocity
-            [5] Hip angle
-            [6] Hip angular velocity
-            [7] Foot ground contact
+            [1] Torso pitch angle
+            [2] Hip joint angle
+            [3] Knee joint angle
+            [4] Ankle joint angle
+            [5] Torso x velocity
+            [6] Torso z velocity
+            [7] Torso pitch angular velocity
+            [8] Hip angular velocity
+            [9] Knee angular velocity
+            [10] Ankle angular velocity
         """
-        var obs = InlineArray[Scalar[Self.DTYPE], 8](uninitialized=True)
+        var obs = InlineArray[Scalar[Self.DTYPE], 11](uninitialized=True)
 
         # Torso position and velocity
         var torso_pos = self.data.get_body_position(0)
         var torso_vel = self.data.get_body_velocity(0)
 
         obs[0] = torso_pos[2]  # Height (z)
-        obs[1] = torso_vel[0]  # x velocity
-        obs[2] = torso_vel[2]  # z velocity
 
         # Torso pitch (rotation around Y-axis)
-        # Extract from quaternion: pitch = atan2(2*(qw*qy - qz*qx), 1 - 2*(qx² + qy²))
         var qx = self.data.quaternions[0]
         var qy = self.data.quaternions[1]
         var qz = self.data.quaternions[2]
         var qw = self.data.quaternions[3]
 
         var sin_pitch = Scalar[Self.DTYPE](2.0) * (qw * qy - qz * qx)
-        # Clamp to avoid numerical issues with asin
         if sin_pitch > 1.0:
             sin_pitch = Scalar[Self.DTYPE](1.0)
         elif sin_pitch < -1.0:
             sin_pitch = Scalar[Self.DTYPE](-1.0)
 
-        # Use asin for pitch (simpler than full euler extraction)
         from math import asin
+        obs[1] = asin(sin_pitch)
 
-        obs[3] = asin(sin_pitch)
+        # Joint angles
+        obs[2] = get_joint_angle(self.model, self.data, 0)  # Hip
+        obs[3] = get_joint_angle(self.model, self.data, 1)  # Knee
+        obs[4] = get_joint_angle(self.model, self.data, 2)  # Ankle
+
+        # Velocities
+        obs[5] = torso_vel[0]  # x velocity
+        obs[6] = torso_vel[2]  # z velocity
 
         # Torso pitch angular velocity (Y component)
         var torso_ang_vel = self.data.get_body_angular_velocity(0)
-        obs[4] = torso_ang_vel[1]
+        obs[7] = torso_ang_vel[1]
 
-        # Hip joint angle and velocity
-        obs[5] = get_joint_angle(self.model, self.data, 0)
-        obs[6] = get_joint_angular_velocity(self.model, self.data, 0)
-
-        # Foot ground contact
-        # Check if foot (body 1) has any contacts
-        var has_contact = False
-        for c in range(self.data.num_contacts):
-            var contact = self.data.contacts[c]
-            if contact.body_a == 1 or contact.body_b == 1:
-                has_contact = True
-                break
-
-        obs[7] = Scalar[Self.DTYPE](1.0) if has_contact else Scalar[Self.DTYPE](0.0)
+        # Joint angular velocities
+        obs[8] = get_joint_angular_velocity(self.model, self.data, 0)   # Hip
+        obs[9] = get_joint_angular_velocity(self.model, self.data, 1)   # Knee
+        obs[10] = get_joint_angular_velocity(self.model, self.data, 2)  # Ankle
 
         return obs^
 
-    fn _is_terminated(self, obs: InlineArray[Scalar[Self.DTYPE], 8]) -> Bool:
-        """Check if episode should terminate.
-
-        Args:
-            obs: Current observation.
-
-        Returns:
-            True if terminated (fallen or tipped).
-        """
+    fn _is_terminated(self, obs: InlineArray[Scalar[Self.DTYPE], 11]) -> Bool:
+        """Check if episode should terminate."""
         # Check height
         var height = obs[0]
         if height < self.min_height:
             return True
 
         # Check pitch
-        var pitch = obs[3]
+        var pitch = obs[1]
         if pitch > self.max_pitch or pitch < -self.max_pitch:
             return True
 
@@ -317,30 +444,27 @@ struct HopperEnv[DTYPE: DType = DType.float64]:
 
     fn _compute_reward(
         self,
-        obs: InlineArray[Scalar[Self.DTYPE], 8],
-        torque: Scalar[Self.DTYPE],
+        obs: InlineArray[Scalar[Self.DTYPE], 11],
+        hip_torque: Scalar[Self.DTYPE],
+        knee_torque: Scalar[Self.DTYPE],
+        ankle_torque: Scalar[Self.DTYPE],
         terminated: Bool,
     ) -> Scalar[Self.DTYPE]:
-        """Compute reward for current state.
-
-        Args:
-            obs: Current observation.
-            torque: Applied torque.
-            terminated: Whether episode terminated.
-
-        Returns:
-            Scalar reward value.
-        """
+        """Compute reward for current state."""
         # Forward velocity reward
-        var forward_vel = obs[1]
+        var forward_vel = obs[5]
 
         # Alive bonus (only if not terminated)
         var alive_bonus: Scalar[Self.DTYPE] = 0.0
         if not terminated:
             alive_bonus = Scalar[Self.DTYPE](1.0)
 
-        # Control cost
-        var control_cost = Scalar[Self.DTYPE](0.01) * torque * torque
+        # Control cost (sum of squared torques)
+        var control_cost = Scalar[Self.DTYPE](0.001) * (
+            hip_torque * hip_torque +
+            knee_torque * knee_torque +
+            ankle_torque * ankle_torque
+        )
 
         return forward_vel + alive_bonus - control_cost
 
@@ -350,21 +474,20 @@ struct HopperEnv[DTYPE: DType = DType.float64]:
         """Get torso (body 0) position for visualization."""
         return self.data.get_body_position(0)
 
+    fn get_thigh_position(
+        self,
+    ) -> Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]]:
+        """Get thigh (body 1) position for visualization."""
+        return self.data.get_body_position(1)
+
+    fn get_leg_position(
+        self,
+    ) -> Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]]:
+        """Get leg (body 2) position for visualization."""
+        return self.data.get_body_position(2)
+
     fn get_foot_position(
         self,
     ) -> Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]]:
-        """Get foot (body 1) position for visualization."""
-        return self.data.get_body_position(1)
-
-    fn get_hip_anchor_world(
-        self,
-    ) -> Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]]:
-        """Get hip joint anchor point in world coordinates for visualization."""
-        # Hip is at bottom of torso
-        var torso_pos = self.data.get_body_position(0)
-        # For now, assume no rotation for simplicity
-        return (
-            torso_pos[0],
-            torso_pos[1],
-            torso_pos[2] - self.torso_radius,
-        )
+        """Get foot (body 3) position for visualization."""
+        return self.data.get_body_position(3)

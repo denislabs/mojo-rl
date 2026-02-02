@@ -26,10 +26,11 @@ Build a minimal, mathematically correct 3D physics engine following MuJoCo's com
 | Phase 7 | Simple hopper (2-body + torque) | ✅ | ✅ | Complete |
 | Phase 8 | Capsule geometry | ✅ | ✅ | Complete |
 | Phase 9 | Box geometry | ✅ | ✅ | Complete |
+| Phase 10a | Bipedal walker (3-body, 2-joint) | ✅ | ✅ | Complete |
 
 ---
 
-## Current Architecture (Phase 1-9 Complete)
+## Current Architecture (Phase 1-9, 10a Complete)
 
 ### File Structure
 
@@ -75,7 +76,8 @@ physics3d_v2/
 │
 ├── envs/                      # RL environments (Phase 7+)
 │   ├── __init__.mojo          # Module exports
-│   └── hopper.mojo            # HopperEnv struct
+│   ├── hopper.mojo            # HopperEnv struct (Phase 7)
+│   └── walker.mojo            # WalkerEnv struct (Phase 10a)
 │
 ├── tests/                     # Validation tests
 │   ├── __init__.mojo
@@ -107,11 +109,14 @@ physics3d_v2/
 │   ├── test_box_sphere.mojo         # Phase 9: Box-sphere tests
 │   ├── test_box_capsule.mojo        # Phase 9: Box-capsule tests
 │   ├── test_box_box.mojo            # Phase 9: Box-box tests
-│   └── test_box_gpu.mojo            # Phase 9: GPU box tests
+│   ├── test_box_gpu.mojo            # Phase 9: GPU box tests
+│   ├── test_walker.mojo             # Phase 10a: WalkerEnv tests (CPU)
+│   └── test_walker_gpu.mojo         # Phase 10a: WalkerEnv tests (GPU)
 │
 └── examples/
     ├── __init__.mojo
-    └── double_pendulum_render_demo.mojo  # Visual double pendulum demonstration
+    ├── double_pendulum_render_demo.mojo  # Visual double pendulum demonstration
+    └── walker_render_demo.mojo           # Visual walker demonstration (Phase 10a)
 ```
 
 ### Core Data Structures
@@ -400,6 +405,13 @@ pixi run mojo run physics3d_v2/tests/test_box_sphere.mojo
 pixi run mojo run physics3d_v2/tests/test_box_capsule.mojo
 pixi run mojo run physics3d_v2/tests/test_box_box.mojo
 pixi run -e apple mojo run physics3d_v2/tests/test_box_gpu.mojo
+
+# Phase 10a: Walker environment tests
+pixi run mojo run physics3d_v2/tests/test_walker.mojo
+pixi run -e apple mojo run physics3d_v2/tests/test_walker_gpu.mojo
+
+# Visual walker demo (requires SDL2)
+pixi run mojo run physics3d_v2/examples/walker_render_demo.mojo
 ```
 
 ### Test Coverage
@@ -450,6 +462,17 @@ pixi run -e apple mojo run physics3d_v2/tests/test_box_gpu.mojo
 - **Box-box edge-edge**: Rotated box rests on base box
 - **Stacked boxes stability**: 3 boxes stack with minimal drift (<0.03mm)
 - **Box GPU parity**: CPU/GPU difference < 1e-6 for all box primitives
+- **WalkerEnv initialization**: Model configured correctly (2 joints, 3 bodies)
+- **WalkerEnv reset**: Valid 12-dim observation (height ~0.5m, velocities ~0)
+- **WalkerEnv standing**: Stable with zero action (height drops <0.02m over 100 steps)
+- **WalkerEnv asymmetric torque**: Hip angles diverge with opposite torques
+- **WalkerEnv symmetric actuation**: Both legs move together
+- **WalkerEnv termination**: Episode ends when pitch/roll exceeds limits
+- **WalkerEnv reward**: Forward velocity + alive bonus - control cost - height penalty
+- **WalkerEnv bilateral contact**: Both feet detect ground contact
+- **GPU WalkerEnv**: 3-body simulation maintains joint constraints
+- **GPU WalkerEnv parity**: CPU vs GPU torso position difference <0.5m
+- **GPU Batched Walker**: 8 environments with different torques run in parallel
 
 ---
 
@@ -1446,13 +1469,179 @@ The box collision primitives required special handling for GPU compatibility:
 
 ---
 
-## Future Extensions (Phase 10+)
+## Phase 10a: Bipedal Walker - COMPLETE
 
-After geometry phases are complete, possible extensions:
+### Implementation Summary
 
-### Phase 10: Multi-Leg Locomotion
-- **10a**: Add second leg (3 bodies, 2 actuated joints)
-- **10b**: Add knee joints (4 bodies, 3 actuated joints per leg)
+A bipedal walker environment extending the HopperEnv to support two legs:
+- 3 bodies: Torso (sphere) + Left Foot (sphere) + Right Foot (sphere)
+- 2 actuated hinge joints: Left Hip + Right Hip
+- 12-dimensional observation space
+- 2-dimensional action space
+
+#### Files Added
+- `envs/walker.mojo` - WalkerEnv struct
+- `tests/test_walker.mojo` - CPU validation (8 tests)
+- `tests/test_walker_gpu.mojo` - GPU validation (3 tests)
+- `examples/walker_render_demo.mojo` - Visual demonstration
+
+#### Files Modified
+- `envs/__init__.mojo` - Added WalkerEnv export
+- `PLAN.md` - Updated status and documentation
+
+### Physical Configuration
+
+```
+              Torso (body 0)
+             mass=1.0, sphere
+               radius=0.2
+                  *
+                 / |
+    Left Hip   /   |   Right Hip
+   (joint 0)  /    |  (joint 1)
+             /      |
+           *         *
+     Left Foot      Right Foot
+     (body 1)       (body 2)
+    mass=0.3        mass=0.3
+    radius=0.08     radius=0.08
+
+  ============================== Ground (z=0)
+```
+
+| Body | Index | Mass | Radius | Initial Z |
+|------|-------|------|--------|-----------|
+| Torso | 0 | 1.0 kg | 0.20 m | 0.50 m |
+| Left Foot | 1 | 0.3 kg | 0.08 m | 0.08 m |
+| Right Foot | 2 | 0.3 kg | 0.08 m | 0.08 m |
+
+| Joint | Parent | Child | Torque Limit |
+|-------|--------|-------|--------------|
+| Left Hip (0) | Torso | Left Foot | 15 N*m |
+| Right Hip (1) | Torso | Right Foot | 15 N*m |
+
+### Observation Space (12 dimensions)
+
+| Index | Name | Range |
+|-------|------|-------|
+| 0 | torso_height | [0.2, 0.8] m |
+| 1 | torso_vx | [-2, 2] m/s |
+| 2 | torso_vz | [-3, 3] m/s |
+| 3 | torso_pitch | [-1.0, 1.0] rad |
+| 4 | torso_pitch_vel | [-5, 5] rad/s |
+| 5 | left_hip_angle | [-pi/2, pi/2] rad |
+| 6 | left_hip_vel | [-10, 10] rad/s |
+| 7 | left_contact | {0, 1} |
+| 8 | right_hip_angle | [-pi/2, pi/2] rad |
+| 9 | right_hip_vel | [-10, 10] rad/s |
+| 10 | right_contact | {0, 1} |
+| 11 | torso_roll | [-0.5, 0.5] rad |
+
+### Action Space (2 dimensions)
+
+| Index | Name | Range | Scaled By |
+|-------|------|-------|-----------|
+| 0 | left_hip_torque | [-1, 1] | 15 N*m |
+| 1 | right_hip_torque | [-1, 1] | 15 N*m |
+
+### Reward Function
+
+```
+reward = forward_velocity + alive_bonus - control_cost - height_penalty
+where:
+  forward_velocity = obs[1]  (torso vx)
+  alive_bonus = 1.0 if not terminated
+  control_cost = 0.005 * (left_torque^2 + right_torque^2)
+  height_penalty = 0.5 * (obs[0] - 0.45)^2
+```
+
+### Termination Conditions
+
+- `torso_height < 0.15` (fallen)
+- `|torso_pitch| > 1.0 rad` (tipped forward/backward)
+- `|torso_roll| > 0.5 rad` (tipped sideways)
+- `steps >= 1000` (timeout)
+
+### Test Results
+
+**CPU Tests (8/8 passed):**
+1. Environment initialization: 2 joints, 3 bodies configured
+2. Reset: Height ~0.5m, velocities ~0
+3. Standing stability: 100 steps with zero action, height drops <0.02m
+4. Asymmetric torque: Hip angles diverge with opposite torques
+5. Symmetric actuation: Both legs respond together
+6. Termination on falling: Destabilizing torque causes episode end
+7. Reward structure: Alive bonus ~1.0, forward velocity adds reward
+8. Bilateral contact: Both feet detect ground contact
+
+**GPU Tests (3/3 passed):**
+1. GPU walker simulation: 100 steps, walker remains upright
+2. GPU vs CPU parity: Torso position diff < 0.5m
+3. Batched simulation: 8 environments with different torques
+
+### GPU Buffer Layout
+
+```
+STATE_SIZE = 3*22 + 15*12 + 2*18 + 4 = 286 floats
+
+Body offsets: 0 (torso), 22 (left foot), 44 (right foot)
+Contact offsets: 66 to 245
+Joint offsets: 246 (left hip), 264 (right hip)
+Metadata offset: 282
+```
+
+### Test Commands
+
+```bash
+# CPU tests
+pixi run mojo run physics3d_v2/tests/test_walker.mojo
+
+# GPU tests (requires Apple Silicon)
+pixi run -e apple mojo run physics3d_v2/tests/test_walker_gpu.mojo
+
+# Visual demo (requires SDL2)
+pixi run mojo run physics3d_v2/examples/walker_render_demo.mojo
+```
+
+---
+
+## Known Issues
+
+### Horizontal Capsule Collision - Single Contact Point
+
+**Issue:** When a capsule lies horizontally on the ground plane (rotated 90° around Y-axis), the collision detection only generates 1 contact point instead of 2.
+
+**Expected behavior:** A horizontal capsule should generate 2 contact points - one at each endpoint cap where it touches the ground. This provides a stable base with proper constraint solving.
+
+**Current behavior:** Only the lowest endpoint generates a contact point. When the capsule is perfectly horizontal (both endpoints at the same height), only one arbitrary endpoint is detected.
+
+**Impact:**
+- Minor instability at rest (jittering)
+- Requires velocity damping as a workaround
+
+**Workaround applied:** Added velocity damping in `hopper_render_demo.mojo`:
+```mojo
+var linear_damping: Float64 = 0.995
+var angular_damping: Float64 = 0.99
+// Applied after each physics step to reduce oscillations at rest
+```
+
+**Root cause:** The `capsule_plane()` function in `collision/collision_primitives.mojo` computes the lowest endpoint and returns a single contact. It should detect when both endpoints are within a tolerance of the ground and generate two contacts.
+
+**Fix required:** Modify `capsule_plane()` to:
+1. Compute both endpoint distances to ground
+2. If both are within contact threshold (penetration + small tolerance), generate 2 contacts
+3. Store both contacts in the contact buffer
+
+**Affected file:** `collision/collision_primitives.mojo` - `capsule_plane()` function
+
+---
+
+## Future Extensions (Phase 10b+)
+
+### Phase 10: Multi-Leg Locomotion (continued)
+- **10a**: Bipedal walker (3 bodies, 2 actuated joints) ✅ COMPLETE
+- **10b**: Add knee joints (5 bodies, 4 actuated joints)
 - **10c**: Full bipedal walker with capsule legs
 
 ### Phase 11: Advanced Joints

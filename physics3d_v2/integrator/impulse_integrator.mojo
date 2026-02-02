@@ -102,7 +102,7 @@ struct ImpulseIntegrator(Integrator):
         # 5. Solve joint velocity constraints (if any)
         @parameter
         if MAX_JOINTS > 0:
-            solve_joint_velocity_constraints(model, data, iterations=5)
+            solve_joint_velocity_constraints(model, data, iterations=20)
 
         # 5. Handle resting contacts
         # For bodies at rest on support, clamp small downward velocities
@@ -163,7 +163,7 @@ struct ImpulseIntegrator(Integrator):
         @parameter
         if MAX_JOINTS > 0:
             solve_joint_position_constraints(
-                model, data, baumgarte=Scalar[DTYPE](0.2), iterations=5
+                model, data, baumgarte=Scalar[DTYPE](0.8), iterations=20
             )
 
         # Final resting contact handling after position correction

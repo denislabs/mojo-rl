@@ -34,9 +34,13 @@ Example:
     renderer.close()
 """
 
-from math3d import Vec3 as Vec3Generic
+from math import cos, sin, pi
+
+from math3d import Vec3 as Vec3Generic, Quat
 from render3d import Renderer3D, Camera3D, Color3D
+from render3d.shapes3d import WireframeLine
 from .types import Model, Data
+from .gpu.constants import GEOM_SPHERE, GEOM_CAPSULE, GEOM_BOX
 
 comptime Vec3 = Vec3Generic[DType.float64]
 
@@ -223,21 +227,38 @@ struct Physics3DRenderer(Movable):
         # Draw shadows for all bodies
         if self.show_shadows:
             for i in range(NUM_BODIES):
-                self._draw_shadow(
+                self._draw_shadow_for_geom(
                     Float64(data.positions[i * 3 + 0]),
                     Float64(data.positions[i * 3 + 1]),
+                    model.geom_types[i],
                     Float64(model.radii[i]),
+                    Float64(model.half_lengths[i]),
+                    Float64(model.half_x[i]),
+                    Float64(model.half_y[i]),
                     Float64(model.ground_z),
                 )
 
-        # Draw all bodies
+        # Draw all bodies based on geometry type
         for i in range(NUM_BODIES):
-            self._draw_sphere(
+            # Extract quaternion from data (stored as x, y, z, w)
+            var qx = Float64(data.quaternions[i * 4 + 0])
+            var qy = Float64(data.quaternions[i * 4 + 1])
+            var qz = Float64(data.quaternions[i * 4 + 2])
+            var qw = Float64(data.quaternions[i * 4 + 3])
+
+            self._draw_body[DTYPE](
+                i,
                 Float64(data.positions[i * 3 + 0]),
                 Float64(data.positions[i * 3 + 1]),
                 Float64(data.positions[i * 3 + 2]),
+                model.geom_types[i],
                 Float64(model.radii[i]),
+                Float64(model.half_lengths[i]),
+                Float64(model.half_x[i]),
+                Float64(model.half_y[i]),
+                Float64(model.half_z[i]),
                 Physics3DColors.body_color(i),
+                qx, qy, qz, qw,
             )
 
         # Draw contacts
@@ -353,6 +374,218 @@ struct Physics3DRenderer(Movable):
                     color,
                 )
 
+    fn _draw_capsule(
+        self,
+        pos_x: Float64,
+        pos_y: Float64,
+        pos_z: Float64,
+        radius: Float64,
+        half_length: Float64,
+        color: Color3D,
+    ):
+        """Draw a vertical capsule (cylinder + 2 hemisphere caps).
+
+        The capsule is oriented vertically (along Z-axis).
+        Total height = 2 * half_length + 2 * radius.
+        """
+        # Draw with identity quaternion (no rotation)
+        self._draw_capsule_rotated(
+            pos_x, pos_y, pos_z, radius, half_length,
+            0.0, 0.0, 0.0, 1.0,  # Identity quaternion (x, y, z, w)
+            color
+        )
+
+    fn _draw_capsule_rotated(
+        self,
+        pos_x: Float64,
+        pos_y: Float64,
+        pos_z: Float64,
+        radius: Float64,
+        half_length: Float64,
+        qx: Float64,
+        qy: Float64,
+        qz: Float64,
+        qw: Float64,
+        color: Color3D,
+    ):
+        """Draw a capsule with arbitrary orientation using quaternion.
+
+        Uses the Renderer3D's draw_shaded_capsule_2d for high-quality rendering
+        with gradient shading that simulates lighting and 3D volume.
+
+        The capsule's local axis is Z (pointing up in local frame).
+        The quaternion rotates this local Z-axis to world frame.
+
+        Args:
+            pos_x, pos_y, pos_z: Center position of the capsule.
+            radius: Capsule radius.
+            half_length: Half-length of the cylindrical part.
+            qx, qy, qz, qw: Quaternion components (x, y, z, w order from Data storage).
+            color: Rendering color.
+        """
+        # Build quaternion (Quat uses w, x, y, z order)
+        var q = Quat[DType.float64](qw, qx, qy, qz)
+        var center = Vec3(pos_x, pos_y, pos_z)
+
+        # Use the Renderer3D's shaded capsule drawing
+        # axis=2 means local Z-axis, which is rotated by the quaternion
+        self.renderer.draw_shaded_capsule_2d(
+            center,
+            q,
+            radius,
+            half_length,
+            axis=2,
+            color=color,
+        )
+
+    fn _draw_box(
+        self,
+        pos_x: Float64,
+        pos_y: Float64,
+        pos_z: Float64,
+        half_x: Float64,
+        half_y: Float64,
+        half_z: Float64,
+        color: Color3D,
+    ):
+        """Draw a wireframe box.
+
+        Box is centered at (pos_x, pos_y, pos_z) with half-extents.
+        """
+        # 8 corners of the box
+        var corners = List[Vec3]()
+        for dx in range(2):
+            for dy in range(2):
+                for dz in range(2):
+                    var x = pos_x + half_x * (2.0 * Float64(dx) - 1.0)
+                    var y = pos_y + half_y * (2.0 * Float64(dy) - 1.0)
+                    var z = pos_z + half_z * (2.0 * Float64(dz) - 1.0)
+                    corners.append(Vec3(x, y, z))
+
+        # 12 edges connecting corners
+        # Corner indices: 0=(-,-,-), 1=(-,-,+), 2=(-,+,-), 3=(-,+,+)
+        #                 4=(+,-,-), 5=(+,-,+), 6=(+,+,-), 7=(+,+,+)
+        var lines = List[WireframeLine]()
+        # Bottom face (z-)
+        lines.append(WireframeLine(corners[0], corners[2]))
+        lines.append(WireframeLine(corners[2], corners[6]))
+        lines.append(WireframeLine(corners[6], corners[4]))
+        lines.append(WireframeLine(corners[4], corners[0]))
+        # Top face (z+)
+        lines.append(WireframeLine(corners[1], corners[3]))
+        lines.append(WireframeLine(corners[3], corners[7]))
+        lines.append(WireframeLine(corners[7], corners[5]))
+        lines.append(WireframeLine(corners[5], corners[1]))
+        # Vertical edges
+        lines.append(WireframeLine(corners[0], corners[1]))
+        lines.append(WireframeLine(corners[2], corners[3]))
+        lines.append(WireframeLine(corners[4], corners[5]))
+        lines.append(WireframeLine(corners[6], corners[7]))
+
+        self.renderer.draw_lines_3d(lines, color)
+
+        # Draw filled faces for better visibility
+        # Front face (y-)
+        self.renderer.draw_filled_quad_3d(
+            corners[0], corners[1], corners[5], corners[4], color
+        )
+        # Back face (y+)
+        self.renderer.draw_filled_quad_3d(
+            corners[2], corners[3], corners[7], corners[6], color
+        )
+        # Left face (x-)
+        self.renderer.draw_filled_quad_3d(
+            corners[0], corners[1], corners[3], corners[2], color
+        )
+        # Right face (x+)
+        self.renderer.draw_filled_quad_3d(
+            corners[4], corners[5], corners[7], corners[6], color
+        )
+        # Top face (z+)
+        self.renderer.draw_filled_quad_3d(
+            corners[1], corners[3], corners[7], corners[5], color
+        )
+        # Bottom face (z-)
+        self.renderer.draw_filled_quad_3d(
+            corners[0], corners[2], corners[6], corners[4], color
+        )
+
+    fn _draw_body[DTYPE: DType](
+        self,
+        index: Int,
+        pos_x: Float64,
+        pos_y: Float64,
+        pos_z: Float64,
+        geom_type: Int,
+        radius: Float64,
+        half_length: Float64,
+        half_x: Float64,
+        half_y: Float64,
+        half_z: Float64,
+        color: Color3D,
+        qx: Float64 = 0.0,
+        qy: Float64 = 0.0,
+        qz: Float64 = 0.0,
+        qw: Float64 = 1.0,
+    ):
+        """Draw a body based on its geometry type with optional rotation."""
+        if geom_type == GEOM_CAPSULE:
+            self._draw_capsule_rotated(pos_x, pos_y, pos_z, radius, half_length, qx, qy, qz, qw, color)
+        elif geom_type == GEOM_BOX:
+            self._draw_box(pos_x, pos_y, pos_z, half_x, half_y, half_z, color)
+        else:  # GEOM_SPHERE or default
+            self._draw_sphere(pos_x, pos_y, pos_z, radius, color)
+
+    fn _draw_shadow_for_geom(
+        self,
+        pos_x: Float64,
+        pos_y: Float64,
+        geom_type: Int,
+        radius: Float64,
+        half_length: Float64,
+        half_x: Float64,
+        half_y: Float64,
+        ground_z: Float64,
+    ):
+        """Draw shadow on ground based on geometry type."""
+        var shadow_z = ground_z + 0.001
+
+        if geom_type == GEOM_CAPSULE:
+            # Capsule shadow: elongated ellipse
+            var shadow_radius_x = radius * 1.2
+            var shadow_radius_y = radius * 1.2
+            var num_segments = 12
+
+            for i in range(num_segments):
+                var angle0 = 2.0 * pi * Float64(i) / Float64(num_segments)
+                var angle1 = 2.0 * pi * Float64(i + 1) / Float64(num_segments)
+
+                var x0 = pos_x + shadow_radius_x * cos(angle0)
+                var y0 = pos_y + shadow_radius_y * sin(angle0)
+                var x1 = pos_x + shadow_radius_x * cos(angle1)
+                var y1 = pos_y + shadow_radius_y * sin(angle1)
+
+                self.renderer.draw_filled_quad_3d(
+                    Vec3(pos_x, pos_y, shadow_z),
+                    Vec3(x0, y0, shadow_z),
+                    Vec3(x1, y1, shadow_z),
+                    Vec3(pos_x, pos_y, shadow_z),
+                    Physics3DColors.shadow(),
+                )
+
+        elif geom_type == GEOM_BOX:
+            # Box shadow: rectangle
+            self.renderer.draw_filled_quad_3d(
+                Vec3(pos_x - half_x, pos_y - half_y, shadow_z),
+                Vec3(pos_x + half_x, pos_y - half_y, shadow_z),
+                Vec3(pos_x + half_x, pos_y + half_y, shadow_z),
+                Vec3(pos_x - half_x, pos_y + half_y, shadow_z),
+                Physics3DColors.shadow(),
+            )
+
+        else:  # GEOM_SPHERE
+            self._draw_shadow(pos_x, pos_y, radius, ground_z)
+
     fn _draw_contact(
         self, pos_x: Float64, pos_y: Float64, pos_z: Float64, color: Color3D
     ):
@@ -435,10 +668,14 @@ struct Physics3DRenderer(Movable):
         # Draw shadows for all bodies
         if self.show_shadows:
             for i in range(NUM_BODIES):
-                self._draw_shadow(
+                self._draw_shadow_for_geom(
                     Float64(data.positions[i * 3 + 0]),
                     Float64(data.positions[i * 3 + 1]),
+                    model.geom_types[i],
                     Float64(model.radii[i]),
+                    Float64(model.half_lengths[i]),
+                    Float64(model.half_x[i]),
+                    Float64(model.half_y[i]),
                     Float64(model.ground_z),
                 )
 
@@ -454,9 +691,9 @@ struct Physics3DRenderer(Movable):
             var child_z = Float64(data.positions[child_body * 3 + 2])
 
             # Get parent anchor position (world or body)
-            var parent_x: Float64 = 0.0
-            var parent_y: Float64 = 0.0
-            var parent_z: Float64 = 0.0
+            var parent_x: Float64
+            var parent_y: Float64
+            var parent_z: Float64
 
             if parent_body < 0:
                 # World anchor - use anchor_parent directly
@@ -483,14 +720,27 @@ struct Physics3DRenderer(Movable):
             if parent_body < 0:
                 self._draw_pivot(parent_x, parent_y, parent_z)
 
-        # Draw all bodies
+        # Draw all bodies based on geometry type
         for i in range(NUM_BODIES):
-            self._draw_sphere(
+            # Extract quaternion from data (stored as x, y, z, w)
+            var qx = Float64(data.quaternions[i * 4 + 0])
+            var qy = Float64(data.quaternions[i * 4 + 1])
+            var qz = Float64(data.quaternions[i * 4 + 2])
+            var qw = Float64(data.quaternions[i * 4 + 3])
+
+            self._draw_body[DTYPE](
+                i,
                 Float64(data.positions[i * 3 + 0]),
                 Float64(data.positions[i * 3 + 1]),
                 Float64(data.positions[i * 3 + 2]),
+                model.geom_types[i],
                 Float64(model.radii[i]),
+                Float64(model.half_lengths[i]),
+                Float64(model.half_x[i]),
+                Float64(model.half_y[i]),
+                Float64(model.half_z[i]),
                 Physics3DColors.body_color(i),
+                qx, qy, qz, qw,
             )
 
         # Draw contacts
