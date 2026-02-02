@@ -11,10 +11,10 @@ trait CollisionSystem(Movable & ImplicitlyCopyable):
 
     @staticmethod
     fn detect_all_contacts[
-        DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int
+        DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0, MAX_SLIDE_JOINTS: Int = 0
     ](
-        model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS],
-        mut data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS],
+        model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS],
+        mut data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS],
     ):
         """Detect all contacts (sphere-plane + sphere-sphere)."""
         ...
@@ -27,8 +27,10 @@ trait CollisionSystem(Movable & ImplicitlyCopyable):
         DTYPE: DType,
         NUM_BODIES: Int,
         MAX_CONTACTS: Int,
-        STATE_SIZE: Int,
-        BATCH: Int,
+        MAX_JOINTS: Int = 0,
+        MAX_SLIDE_JOINTS: Int = 0,
+        STATE_SIZE: Int = 0,
+        BATCH: Int = 1,
     ](
         env: Int,
         state: LayoutTensor[

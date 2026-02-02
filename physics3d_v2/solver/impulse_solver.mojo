@@ -44,10 +44,10 @@ from ..gpu.constants import (
 
 
 fn solve_velocity_constraints[
-    DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0
+    DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0, MAX_SLIDE_JOINTS: Int = 0
 ](
-    model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
-    mut data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
+    model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS],
+    mut data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS],
     iterations: Int = 10,
 ):
     """Solve velocity constraints using sequential impulses.
@@ -73,9 +73,9 @@ fn solve_velocity_constraints[
 
 
 fn _is_grounded[
-    DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0
+    DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0, MAX_SLIDE_JOINTS: Int = 0
 ](
-    data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
+    data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS],
     body_idx: Int,
 ) -> Bool:
     """Check if a body has ground contact."""
@@ -89,10 +89,10 @@ fn _is_grounded[
 
 
 fn _solve_single_contact_velocity[
-    DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0
+    DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0, MAX_SLIDE_JOINTS: Int = 0
 ](
-    model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
-    mut data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
+    model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS],
+    mut data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS],
     contact_idx: Int,
 ):
     """Solve velocity constraint for one contact.
@@ -315,10 +315,10 @@ fn _solve_single_contact_velocity[
 
 
 fn solve_position_constraints[
-    DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0
+    DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0, MAX_SLIDE_JOINTS: Int = 0
 ](
-    model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
-    mut data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
+    model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS],
+    mut data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS],
     baumgarte: Scalar[DTYPE] = 0.2,
     slop: Scalar[DTYPE] = 0.001,
 ):
@@ -391,10 +391,10 @@ fn solve_position_constraints[
 
 
 fn solve_resting_contacts[
-    DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0
+    DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0, MAX_SLIDE_JOINTS: Int = 0
 ](
-    model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
-    mut data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
+    model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS],
+    mut data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS],
 ):
     """Apply gravity cancellation for bodies in resting contact.
 
@@ -454,9 +454,10 @@ fn solve_velocity_constraints_gpu[
     DTYPE: DType,
     NUM_BODIES: Int,
     MAX_CONTACTS: Int,
-    MAX_JOINTS: Int,
-    STATE_SIZE: Int,
-    BATCH: Int,
+    MAX_JOINTS: Int = 0,
+    MAX_SLIDE_JOINTS: Int = 0,
+    STATE_SIZE: Int = 0,
+    BATCH: Int = 1,
 ](
     env: Int,
     state: LayoutTensor[
@@ -470,21 +471,21 @@ fn solve_velocity_constraints_gpu[
     iterations: Int,
 ):
     """Solve velocity constraints using sequential impulses with friction."""
-    var meta_off = metadata_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS]()
+    var meta_off = metadata_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS]()
     var num_contacts = Int(
         rebind[Scalar[DTYPE]](state[env, meta_off + META_IDX_NUM_CONTACTS])
     )
 
     # Reset impulses at start
     for c in range(num_contacts):
-        var c_off = contact_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](c)
+        var c_off = contact_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS](c)
         state[env, c_off + CONTACT_IDX_IMPULSE_N] = Scalar[DTYPE](0)
         state[env, c_off + CONTACT_IDX_IMPULSE_T1] = Scalar[DTYPE](0)
         state[env, c_off + CONTACT_IDX_IMPULSE_T2] = Scalar[DTYPE](0)
 
     for _ in range(iterations):
         for c in range(num_contacts):
-            var c_off = contact_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](c)
+            var c_off = contact_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS](c)
             var body_a = Int(
                 rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_BODY_A])
             )
@@ -497,7 +498,7 @@ fn solve_velocity_constraints_gpu[
             var nz = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_NZ])
 
             # Get velocities
-            var b_off_a = body_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](body_a)
+            var b_off_a = body_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS](body_a)
             var vx_a = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_VX])
             var vy_a = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_VY])
             var vz_a = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_VZ])
@@ -507,7 +508,7 @@ fn solve_velocity_constraints_gpu[
             var vz_b: Scalar[DTYPE] = 0
             var b_off_b: Int = 0
             if body_b >= 0:
-                b_off_b = body_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](body_b)
+                b_off_b = body_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS](body_b)
                 vx_b = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_VX])
                 vy_b = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_VY])
                 vz_b = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_VZ])
@@ -675,9 +676,10 @@ fn solve_position_constraints_gpu[
     DTYPE: DType,
     NUM_BODIES: Int,
     MAX_CONTACTS: Int,
-    MAX_JOINTS: Int,
-    STATE_SIZE: Int,
-    BATCH: Int,
+    MAX_JOINTS: Int = 0,
+    MAX_SLIDE_JOINTS: Int = 0,
+    STATE_SIZE: Int = 0,
+    BATCH: Int = 1,
 ](
     env: Int,
     state: LayoutTensor[
@@ -690,13 +692,13 @@ fn solve_position_constraints_gpu[
     slop: Scalar[DTYPE],
 ):
     """Baumgarte position correction for penetration."""
-    var meta_off = metadata_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS]()
+    var meta_off = metadata_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS]()
     var num_contacts = Int(
         rebind[Scalar[DTYPE]](state[env, meta_off + META_IDX_NUM_CONTACTS])
     )
 
     for c in range(num_contacts):
-        var c_off = contact_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](c)
+        var c_off = contact_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS](c)
         var body_a = Int(
             rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_BODY_A])
         )
@@ -730,7 +732,7 @@ fn solve_position_constraints_gpu[
         # Normal conventions:
         # - Ground contact: Normal points UP, body A (sphere) should move UP (+normal)
         # - Sphere-sphere: Normal points from A to B, so A moves in -normal, B in +normal
-        var b_off_a = body_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](body_a)
+        var b_off_a = body_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS](body_a)
         var px_a = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_PX])
         var py_a = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_PY])
         var pz_a = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_PZ])
@@ -757,7 +759,7 @@ fn solve_position_constraints_gpu[
             state[env, b_off_a + BODY_IDX_PY] = py_a - corr_a * ny
             state[env, b_off_a + BODY_IDX_PZ] = pz_a - corr_a * nz
 
-            var b_off_b = body_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](body_b)
+            var b_off_b = body_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS](body_b)
             var px_b = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_PX])
             var py_b = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_PY])
             var pz_b = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_PZ])

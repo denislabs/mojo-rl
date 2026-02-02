@@ -1646,7 +1646,12 @@ var angular_damping: Float64 = 0.99
 
 ### Phase 11: Advanced Joints
 - **11a**: Ball-and-socket joints (3 DOF rotation)
-- **11b**: Slider joints (1 DOF translation)
+- **11b**: Slider joints (1 DOF translation) ✅ COMPLETE
+  - SlideJoint struct with CPU/GPU solvers
+  - Integrated into Model/Data with MAX_SLIDE_JOINTS parameter
+  - Position and velocity sensing functions
+  - Force actuation support
+  - HopperEnv updated with root slide joints (X-Z plane constraint)
 - **11c**: Universal joints (2 DOF rotation)
 - **11d**: Joint limits (angle min/max)
 - **11e**: Joint damping and stiffness

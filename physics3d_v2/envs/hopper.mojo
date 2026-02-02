@@ -1,21 +1,30 @@
 """4-Body Hopper Environment for RL (MuJoCo-like).
 
 A realistic locomotion environment using the physics engine:
-- Torso: Capsule (vertical)
+- Torso: Capsule (vertical) with root joints constraining to X-Z plane
 - Thigh: Capsule (vertical)
 - Leg: Capsule (vertical)
 - Foot: Capsule (horizontal, rotated 90° around Y-axis)
+- 3 root joints (rootx slide, rootz slide, rooty hinge)
 - 3 actuated hinge joints (hip, knee, ankle)
 - Ground contact with friction
 
-This matches the MuJoCo Hopper structure for better comparison.
+This matches the MuJoCo Hopper structure:
+- Root slide joints constrain torso to X-Z plane (no Y motion)
+- Root hinge joint allows pitch rotation around Y-axis
+- The torso has 3 DOF: X translation, Z translation, Y rotation
 """
 
 from math import sqrt, sin, cos, atan2
 
 from ..types import Model, Data
-from ..integrator import ImpulseIntegrator
-from ..joints import get_joint_angle, get_joint_angular_velocity
+from ..integrator import ImpulseIntegrator, PGSIntegrator
+from ..joints import (
+    get_joint_angle,
+    get_joint_angular_velocity,
+    get_slide_joint_position,
+    get_slide_joint_velocity,
+)
 
 
 comptime PI: Float64 = 3.14159265358979323846
@@ -29,9 +38,16 @@ struct HopperEnv[DTYPE: DType = DType.float64]:
         - Body 1 (Thigh): Capsule (mass=0.5, radius=0.05, half_length=0.225)
         - Body 2 (Leg): Capsule (mass=0.3, radius=0.04, half_length=0.25)
         - Body 3 (Foot): Horizontal capsule (mass=0.2, radius=0.06, half_length=0.195)
-        - Joint 0 (Hip): Hinge connecting torso to thigh, Y-axis rotation
-        - Joint 1 (Knee): Hinge connecting thigh to leg, Y-axis rotation
-        - Joint 2 (Ankle): Hinge connecting leg to foot, Y-axis rotation
+
+    Root Joints (constraining torso to X-Z plane):
+        - Slide Joint 0 (RootX): World -> Torso, X-axis translation
+        - Slide Joint 1 (RootZ): World -> Torso, Z-axis translation
+        - Hinge Joint 0 (RootY): World -> Torso, Y-axis rotation (pitch)
+
+    Body Joints (actuated):
+        - Hinge Joint 1 (Hip): Torso -> Thigh, Y-axis rotation
+        - Hinge Joint 2 (Knee): Thigh -> Leg, Y-axis rotation
+        - Hinge Joint 3 (Ankle): Leg -> Foot, Y-axis rotation
 
     Observation Space (11 dimensions, matching MuJoCo):
         [0] Torso height (z position)
@@ -68,9 +84,11 @@ struct HopperEnv[DTYPE: DType = DType.float64]:
         DTYPE: Data type for physics (default float64).
     """
 
-    # Physics: 4 bodies, 20 max contacts, 3 joints
-    var model: Model[Self.DTYPE, 4, 20, 3]
-    var data: Data[Self.DTYPE, 4, 20, 3]
+    # Physics: 4 bodies, 20 max contacts, 4 hinge joints, 2 slide joints
+    # Hinge: RootY (0), Hip (1), Knee (2), Ankle (3)
+    # Slide: RootX (0), RootZ (1)
+    var model: Model[Self.DTYPE, 4, 20, 4, 2]
+    var data: Data[Self.DTYPE, 4, 20, 4, 2]
 
     # Environment parameters
     var torque_limit: Scalar[Self.DTYPE]
@@ -138,8 +156,8 @@ struct HopperEnv[DTYPE: DType = DType.float64]:
         self.foot_radius = Scalar[Self.DTYPE](0.06)
         self.foot_half_length = Scalar[Self.DTYPE](0.195)
 
-        # Initialize physics model
-        self.model = Model[Self.DTYPE, 4, 20, 3](
+        # Initialize physics model (4 hinge joints, 2 slide joints)
+        self.model = Model[Self.DTYPE, 4, 20, 4, 2](
             gravity_z=Scalar[Self.DTYPE](-9.81),
             timestep=timestep,
             ground_z=Scalar[Self.DTYPE](0.0),
@@ -180,8 +198,77 @@ struct HopperEnv[DTYPE: DType = DType.float64]:
             half_length=self.foot_half_length,
         )
 
-        # Add 3 hinge joints
-        # Joint 0: Hip (Torso -> Thigh)
+        # Calculate initial torso height for anchor points
+        var foot_z = self.foot_radius
+        var leg_z = foot_z + self.leg_radius + self.leg_half_length
+        var thigh_z = leg_z + self.leg_half_length + self.thigh_half_length
+        var torso_z = thigh_z + self.thigh_half_length + self.torso_half_length
+
+        # Add root joints (constrain torso to X-Z plane)
+        # Slide Joint 0: RootX (World -> Torso, X-axis translation)
+        _ = self.model.add_slide_joint(
+            parent=-1,  # World anchor
+            child=0,    # Torso
+            anchor_parent=(
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](0.0),
+                torso_z,  # Initial torso height
+            ),
+            anchor_child=(
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](0.0),
+            ),
+            axis=(
+                Scalar[Self.DTYPE](1.0),  # X-axis translation
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](0.0),
+            ),
+        )
+
+        # Slide Joint 1: RootZ (World -> Torso, Z-axis translation)
+        _ = self.model.add_slide_joint(
+            parent=-1,  # World anchor
+            child=0,    # Torso
+            anchor_parent=(
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](0.0),
+            ),
+            anchor_child=(
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](0.0),
+            ),
+            axis=(
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](1.0),  # Z-axis translation
+            ),
+        )
+
+        # Hinge Joint 0: RootY (World -> Torso, Y-axis rotation/pitch)
+        _ = self.model.add_hinge_joint(
+            parent=-1,  # World anchor
+            child=0,    # Torso
+            anchor_parent=(
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](0.0),
+                torso_z,  # Initial torso height
+            ),
+            anchor_child=(
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](0.0),
+            ),
+            axis=(
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](1.0),  # Y-axis rotation
+                Scalar[Self.DTYPE](0.0),
+            ),
+        )
+
+        # Hinge Joint 1: Hip (Torso -> Thigh)
         _ = self.model.add_hinge_joint(
             parent=0,  # Torso
             child=1,   # Thigh
@@ -202,7 +289,7 @@ struct HopperEnv[DTYPE: DType = DType.float64]:
             ),
         )
 
-        # Joint 1: Knee (Thigh -> Leg)
+        # Hinge Joint 2: Knee (Thigh -> Leg)
         _ = self.model.add_hinge_joint(
             parent=1,  # Thigh
             child=2,   # Leg
@@ -223,7 +310,7 @@ struct HopperEnv[DTYPE: DType = DType.float64]:
             ),
         )
 
-        # Joint 2: Ankle (Leg -> Foot)
+        # Hinge Joint 3: Ankle (Leg -> Foot)
         _ = self.model.add_hinge_joint(
             parent=2,  # Leg
             child=3,   # Foot
@@ -244,13 +331,14 @@ struct HopperEnv[DTYPE: DType = DType.float64]:
             ),
         )
 
-        # Set torque limits for all joints
-        self.model.joints[0].torque_limit = torque_limit
+        # Set torque limits for actuated joints (Hip=1, Knee=2, Ankle=3)
+        # RootY (joint 0) is not actuated
         self.model.joints[1].torque_limit = torque_limit
         self.model.joints[2].torque_limit = torque_limit
+        self.model.joints[3].torque_limit = torque_limit
 
         # Initialize data
-        self.data = Data[Self.DTYPE, 4, 20, 3]()
+        self.data = Data[Self.DTYPE, 4, 20, 4, 2]()
         self._reset_state()
 
     fn _reset_state(mut self):
@@ -296,8 +384,8 @@ struct HopperEnv[DTYPE: DType = DType.float64]:
         self.data.quaternions[3 * 4 + 2] = 0.0           # qz
         self.data.quaternions[3 * 4 + 3] = 0.70710678    # qw (cos(π/4))
 
-        # Reset joint torques
-        for j in range(3):
+        # Reset joint torques (4 hinge joints: RootY, Hip, Knee, Ankle)
+        for j in range(4):
             self.model.joints[j].target_torque = Scalar[Self.DTYPE](0.0)
 
         # Reset contact count
@@ -339,12 +427,13 @@ struct HopperEnv[DTYPE: DType = DType.float64]:
         var knee_torque = self._clamp_action(action_knee) * self.torque_limit
         var ankle_torque = self._clamp_action(action_ankle) * self.torque_limit
 
-        self.model.joints[0].target_torque = hip_torque
-        self.model.joints[1].target_torque = knee_torque
-        self.model.joints[2].target_torque = ankle_torque
+        # Joint indices: RootY=0, Hip=1, Knee=2, Ankle=3
+        self.model.joints[1].target_torque = hip_torque
+        self.model.joints[2].target_torque = knee_torque
+        self.model.joints[3].target_torque = ankle_torque
 
-        # Physics step
-        ImpulseIntegrator.step(self.model, self.data)
+        # Physics step (use PGS integrator for slide joint support)
+        PGSIntegrator.step(self.model, self.data)
 
         self.current_step += 1
 
@@ -408,10 +497,10 @@ struct HopperEnv[DTYPE: DType = DType.float64]:
         from math import asin
         obs[1] = asin(sin_pitch)
 
-        # Joint angles
-        obs[2] = get_joint_angle(self.model, self.data, 0)  # Hip
-        obs[3] = get_joint_angle(self.model, self.data, 1)  # Knee
-        obs[4] = get_joint_angle(self.model, self.data, 2)  # Ankle
+        # Joint angles (Hip=1, Knee=2, Ankle=3)
+        obs[2] = get_joint_angle(self.model, self.data, 1)  # Hip
+        obs[3] = get_joint_angle(self.model, self.data, 2)  # Knee
+        obs[4] = get_joint_angle(self.model, self.data, 3)  # Ankle
 
         # Velocities
         obs[5] = torso_vel[0]  # x velocity
@@ -421,10 +510,10 @@ struct HopperEnv[DTYPE: DType = DType.float64]:
         var torso_ang_vel = self.data.get_body_angular_velocity(0)
         obs[7] = torso_ang_vel[1]
 
-        # Joint angular velocities
-        obs[8] = get_joint_angular_velocity(self.model, self.data, 0)   # Hip
-        obs[9] = get_joint_angular_velocity(self.model, self.data, 1)   # Knee
-        obs[10] = get_joint_angular_velocity(self.model, self.data, 2)  # Ankle
+        # Joint angular velocities (Hip=1, Knee=2, Ankle=3)
+        obs[8] = get_joint_angular_velocity(self.model, self.data, 1)   # Hip
+        obs[9] = get_joint_angular_velocity(self.model, self.data, 2)   # Knee
+        obs[10] = get_joint_angular_velocity(self.model, self.data, 3)  # Ankle
 
         return obs^
 

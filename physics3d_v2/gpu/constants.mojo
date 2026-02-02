@@ -159,6 +159,44 @@ comptime JOINT_STATE_SIZE: Int = 18
 
 
 # =============================================================================
+# Per-Slide-Joint State Layout (18 floats per slide joint)
+# =============================================================================
+
+# Body indices (2 floats - stored as floats for GPU compatibility)
+comptime SLIDE_IDX_PARENT: Int = 0  # Parent body index (-1 for world)
+comptime SLIDE_IDX_CHILD: Int = 1  # Child body index
+
+# Anchor point on parent (3 floats) - local frame or world if parent=-1
+comptime SLIDE_IDX_ANCHOR_PX: Int = 2
+comptime SLIDE_IDX_ANCHOR_PY: Int = 3
+comptime SLIDE_IDX_ANCHOR_PZ: Int = 4
+
+# Anchor point on child (3 floats) - local frame
+comptime SLIDE_IDX_ANCHOR_CX: Int = 5
+comptime SLIDE_IDX_ANCHOR_CY: Int = 6
+comptime SLIDE_IDX_ANCHOR_CZ: Int = 7
+
+# Slide axis (3 floats) - in parent's local frame or world if parent=-1
+comptime SLIDE_IDX_AXIS_X: Int = 8
+comptime SLIDE_IDX_AXIS_Y: Int = 9
+comptime SLIDE_IDX_AXIS_Z: Int = 10
+
+# Accumulated impulses for warm starting (5 floats)
+comptime SLIDE_IDX_IMPULSE_P1: Int = 11  # Perpendicular impulse 1
+comptime SLIDE_IDX_IMPULSE_P2: Int = 12  # Perpendicular impulse 2
+comptime SLIDE_IDX_IMPULSE_AX: Int = 13  # Angular impulse X
+comptime SLIDE_IDX_IMPULSE_AY: Int = 14  # Angular impulse Y
+comptime SLIDE_IDX_IMPULSE_AZ: Int = 15  # Angular impulse Z
+
+# Actuation
+comptime SLIDE_IDX_TARGET_FORCE: Int = 16  # Control input force (N)
+comptime SLIDE_IDX_FORCE_LIMIT: Int = 17  # Maximum force magnitude
+
+# Total slide joint state size
+comptime SLIDE_JOINT_STATE_SIZE: Int = 18
+
+
+# =============================================================================
 # Metadata Layout (4 floats)
 # =============================================================================
 
@@ -176,14 +214,15 @@ comptime METADATA_SIZE: Int = 4
 
 
 fn compute_state_size[
-    NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0
+    NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0, MAX_SLIDE_JOINTS: Int = 0
 ]() -> Int:
     """Compute total state buffer size per environment.
 
     Args:
         NUM_BODIES: Number of bodies in the simulation.
         MAX_CONTACTS: Maximum number of contacts.
-        MAX_JOINTS: Maximum number of joints (default 0).
+        MAX_JOINTS: Maximum number of hinge joints (default 0).
+        MAX_SLIDE_JOINTS: Maximum number of slide joints (default 0).
 
     Returns:
         Total buffer size in number of scalars.
@@ -192,28 +231,29 @@ fn compute_state_size[
         NUM_BODIES * BODY_STATE_SIZE
         + MAX_CONTACTS * CONTACT_STATE_SIZE
         + MAX_JOINTS * JOINT_STATE_SIZE
+        + MAX_SLIDE_JOINTS * SLIDE_JOINT_STATE_SIZE
         + METADATA_SIZE
     )
 
 
 fn body_offset[
-    NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0
+    NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0, MAX_SLIDE_JOINTS: Int = 0
 ](body_idx: Int) -> Int:
     """Get offset to start of body state within environment state."""
     return body_idx * BODY_STATE_SIZE
 
 
 fn contact_offset[
-    NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0
+    NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0, MAX_SLIDE_JOINTS: Int = 0
 ](contact_idx: Int) -> Int:
     """Get offset to start of contact state within environment state."""
     return NUM_BODIES * BODY_STATE_SIZE + contact_idx * CONTACT_STATE_SIZE
 
 
 fn joint_offset[
-    NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0
+    NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0, MAX_SLIDE_JOINTS: Int = 0
 ](joint_idx: Int) -> Int:
-    """Get offset to start of joint state within environment state."""
+    """Get offset to start of hinge joint state within environment state."""
     return (
         NUM_BODIES * BODY_STATE_SIZE
         + MAX_CONTACTS * CONTACT_STATE_SIZE
@@ -221,14 +261,27 @@ fn joint_offset[
     )
 
 
+fn slide_joint_offset[
+    NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0, MAX_SLIDE_JOINTS: Int = 0
+](slide_joint_idx: Int) -> Int:
+    """Get offset to start of slide joint state within environment state."""
+    return (
+        NUM_BODIES * BODY_STATE_SIZE
+        + MAX_CONTACTS * CONTACT_STATE_SIZE
+        + MAX_JOINTS * JOINT_STATE_SIZE
+        + slide_joint_idx * SLIDE_JOINT_STATE_SIZE
+    )
+
+
 fn metadata_offset[
-    NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0
+    NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0, MAX_SLIDE_JOINTS: Int = 0
 ]() -> Int:
     """Get offset to metadata within environment state."""
     return (
         NUM_BODIES * BODY_STATE_SIZE
         + MAX_CONTACTS * CONTACT_STATE_SIZE
         + MAX_JOINTS * JOINT_STATE_SIZE
+        + MAX_SLIDE_JOINTS * SLIDE_JOINT_STATE_SIZE
     )
 
 

@@ -58,10 +58,10 @@ struct CollisionDetector(CollisionSystem):
     @always_inline
     @staticmethod
     fn detect_all_contacts[
-        DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0
+        DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0, MAX_SLIDE_JOINTS: Int = 0
     ](
-        model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
-        mut data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
+        model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS],
+        mut data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS],
     ):
         """Detect all contacts (body-plane + body-body) with geometry dispatch.
 
@@ -340,9 +340,10 @@ struct CollisionDetector(CollisionSystem):
         DTYPE: DType,
         NUM_BODIES: Int,
         MAX_CONTACTS: Int,
-        MAX_JOINTS: Int,
-        STATE_SIZE: Int,
-        BATCH: Int,
+        MAX_JOINTS: Int = 0,
+        MAX_SLIDE_JOINTS: Int = 0,
+        STATE_SIZE: Int = 0,
+        BATCH: Int = 1,
     ](
         env: Int,
         state: LayoutTensor[
@@ -364,7 +365,7 @@ struct CollisionDetector(CollisionSystem):
             if num_contacts >= MAX_CONTACTS:
                 break
 
-            var b_off = body_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](i)
+            var b_off = body_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS](i)
             var px = rebind[Scalar[DTYPE]](state[env, b_off + BODY_IDX_PX])
             var py = rebind[Scalar[DTYPE]](state[env, b_off + BODY_IDX_PY])
             var pz = rebind[Scalar[DTYPE]](state[env, b_off + BODY_IDX_PZ])
@@ -417,7 +418,7 @@ struct CollisionDetector(CollisionSystem):
                 contact_z = result[3]
 
             if dist < Scalar[DTYPE](0):
-                var c_off = contact_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](
+                var c_off = contact_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS](
                     num_contacts
                 )
                 state[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](i)
@@ -437,8 +438,8 @@ struct CollisionDetector(CollisionSystem):
                 if num_contacts >= MAX_CONTACTS:
                     break
 
-                var b_off_i = body_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](i)
-                var b_off_j = body_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](j)
+                var b_off_i = body_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS](i)
+                var b_off_j = body_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS](j)
 
                 var px_i = rebind[Scalar[DTYPE]](state[env, b_off_i + BODY_IDX_PX])
                 var py_i = rebind[Scalar[DTYPE]](state[env, b_off_i + BODY_IDX_PY])
@@ -609,7 +610,7 @@ struct CollisionDetector(CollisionSystem):
                     nz = result[6]
 
                 if dist < Scalar[DTYPE](0):
-                    var c_off = contact_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](
+                    var c_off = contact_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS](
                         num_contacts
                     )
                     state[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](i)
@@ -624,5 +625,5 @@ struct CollisionDetector(CollisionSystem):
                     num_contacts += 1
 
         # Store contact count in metadata
-        var meta_off = metadata_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS]()
+        var meta_off = metadata_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS]()
         state[env, meta_off + META_IDX_NUM_CONTACTS] = Scalar[DTYPE](num_contacts)

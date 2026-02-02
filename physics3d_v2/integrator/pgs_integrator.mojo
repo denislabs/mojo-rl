@@ -37,6 +37,13 @@ from ..joints import (
     solve_joint_position_constraints,
     solve_joint_velocity_constraints_gpu,
     solve_joint_position_constraints_gpu,
+    # Slide joint functions
+    apply_slide_joint_forces,
+    solve_slide_joint_velocity_constraints,
+    solve_slide_joint_position_constraints,
+    # Slide joint GPU functions
+    solve_slide_joint_velocity_constraints_gpu,
+    solve_slide_joint_position_constraints_gpu,
 )
 from ..gpu.constants import MODEL_BODY_SIZE, TPB, compute_state_size
 from .integrate_positions import integrate_positions_kernel
@@ -64,23 +71,24 @@ struct PGSIntegrator(Integrator):
 
     @staticmethod
     fn step[
-        DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0
+        DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0, MAX_SLIDE_JOINTS: Int = 0
     ](
-        model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
-        mut data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
+        model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS],
+        mut data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS],
     ):
         """Perform one physics simulation step on CPU.
 
         Pipeline:
         1. Collision detection
         2. Apply gravity to velocities
-        3. Solve contact constraints (PGS solver)
-        4. Solve joint velocity constraints (if any)
-        5. Integrate positions
-        6. Integrate angular positions (quaternions)
-        7. Collision detection (post-step)
-        8. Position correction (Baumgarte)
-        9. Solve joint position constraints (if any)
+        3. Apply joint torques and slide joint forces (actuation)
+        4. Solve contact constraints (PGS solver)
+        5. Solve joint and slide joint velocity constraints (if any)
+        6. Integrate positions
+        7. Integrate angular positions (quaternions)
+        8. Collision detection (post-step)
+        9. Position correction (Baumgarte)
+        10. Solve joint and slide joint position constraints (if any)
 
         Args:
             model: Static model configuration.
@@ -95,19 +103,25 @@ struct PGSIntegrator(Integrator):
         for i in range(NUM_BODIES):
             data.velocities[i * 3 + 2] += dt * model.gravity_z
 
-        # 3. Apply joint torques (actuation)
+        # 3. Apply joint torques and slide joint forces (actuation)
         @parameter
         if MAX_JOINTS > 0:
             apply_joint_torques(model, data, dt)
+        @parameter
+        if MAX_SLIDE_JOINTS > 0:
+            apply_slide_joint_forces(model, data, dt)
 
         # 4. Solve contact constraints using PGS
         # This modifies velocities to satisfy contact constraints
         solve_constraints_pgs(model, data, dt, iterations=30)
 
-        # 5. Solve joint velocity constraints (if any)
+        # 5. Solve joint and slide joint velocity constraints (if any)
         @parameter
         if MAX_JOINTS > 0:
             solve_joint_velocity_constraints(model, data, iterations=5)
+        @parameter
+        if MAX_SLIDE_JOINTS > 0:
+            solve_slide_joint_velocity_constraints(model, data, iterations=5)
 
         # 5. Integrate positions
         for i in range(NUM_BODIES * 3):
@@ -158,19 +172,24 @@ struct PGSIntegrator(Integrator):
             )
             CollisionDetector.detect_all_contacts(model, data)
 
-        # 9. Solve joint position constraints (if any)
+        # 9. Solve joint and slide joint position constraints (if any)
         @parameter
         if MAX_JOINTS > 0:
             solve_joint_position_constraints(
                 model, data, baumgarte=Scalar[DTYPE](0.2), iterations=5
             )
+        @parameter
+        if MAX_SLIDE_JOINTS > 0:
+            solve_slide_joint_position_constraints(
+                model, data, baumgarte=Scalar[DTYPE](0.2), iterations=5
+            )
 
     @staticmethod
     fn simulate[
-        DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0
+        DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0, MAX_SLIDE_JOINTS: Int = 0
     ](
-        model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
-        mut data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
+        model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS],
+        mut data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS],
         num_steps: Int,
     ):
         """Run simulation for multiple steps on CPU.
@@ -198,6 +217,7 @@ struct PGSIntegrator(Integrator):
         NUM_BODIES: Int,
         MAX_CONTACTS: Int,
         MAX_JOINTS: Int = 0,
+        MAX_SLIDE_JOINTS: Int = 0,
         STATE_SIZE: Int = 0,
         BATCH: Int = 1,
     ](
@@ -217,7 +237,7 @@ struct PGSIntegrator(Integrator):
         """Complete PGS-based physics step for one environment."""
         # 1. Collision detection
         CollisionDetector.detect_all_contacts_gpu[
-            DTYPE, NUM_BODIES, MAX_CONTACTS, STATE_SIZE, BATCH
+            DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS, STATE_SIZE, BATCH
         ](env, state, model, ground_z)
 
         # 2. Apply gravity
@@ -229,41 +249,55 @@ struct PGSIntegrator(Integrator):
         @parameter
         if MAX_JOINTS > 0:
             apply_joint_torques_gpu[
-                DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, STATE_SIZE, BATCH
+                DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, 0, STATE_SIZE, BATCH
             ](env, state, model, dt)
 
         # 4. Solve constraints with PGS (including friction)
         solve_constraints_pgs_gpu[
-            DTYPE, NUM_BODIES, MAX_CONTACTS, STATE_SIZE, BATCH
+            DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS, STATE_SIZE, BATCH
         ](env, state, model, dt, restitution, friction, 20)
 
         # 5. Solve joint velocity constraints (if any)
         @parameter
         if MAX_JOINTS > 0:
             solve_joint_velocity_constraints_gpu[
-                DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, STATE_SIZE, BATCH
+                DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS, STATE_SIZE, BATCH
             ](env, state, model, 5)
 
-        # 5. Integrate positions
+        # 5b. Solve slide joint velocity constraints (if any)
+        @parameter
+        if MAX_SLIDE_JOINTS > 0:
+            solve_slide_joint_velocity_constraints_gpu[
+                DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS, STATE_SIZE, BATCH
+            ](env, state, model, 5)
+
+        # 6. Integrate positions
         integrate_positions_kernel[
             DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, STATE_SIZE, BATCH
         ](env, state, dt)
 
-        # 6. Post-step collision detection
+        # 7. Post-step collision detection
         CollisionDetector.detect_all_contacts_gpu[
-            DTYPE, NUM_BODIES, MAX_CONTACTS, STATE_SIZE, BATCH
+            DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS, STATE_SIZE, BATCH
         ](env, state, model, ground_z)
 
-        # 7. Position correction
+        # 8. Position correction
         solve_position_constraints_gpu[
-            DTYPE, NUM_BODIES, MAX_CONTACTS, STATE_SIZE, BATCH
+            DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS, STATE_SIZE, BATCH
         ](env, state, model, Scalar[DTYPE](0.2), Scalar[DTYPE](0.001))
 
-        # 8. Solve joint position constraints (if any)
+        # 9. Solve joint position constraints (if any)
         @parameter
         if MAX_JOINTS > 0:
             solve_joint_position_constraints_gpu[
-                DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, STATE_SIZE, BATCH
+                DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS, STATE_SIZE, BATCH
+            ](env, state, model, Scalar[DTYPE](0.2), 5)
+
+        # 9b. Solve slide joint position constraints (if any)
+        @parameter
+        if MAX_SLIDE_JOINTS > 0:
+            solve_slide_joint_position_constraints_gpu[
+                DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS, STATE_SIZE, BATCH
             ](env, state, model, Scalar[DTYPE](0.2), 5)
 
     @staticmethod
@@ -272,6 +306,7 @@ struct PGSIntegrator(Integrator):
         NUM_BODIES: Int,
         MAX_CONTACTS: Int,
         MAX_JOINTS: Int = 0,
+        MAX_SLIDE_JOINTS: Int = 0,
         BATCH: Int = 1,
     ](
         ctx: DeviceContext,
@@ -300,7 +335,7 @@ struct PGSIntegrator(Integrator):
         """
 
         comptime STATE_SIZE = compute_state_size[
-            NUM_BODIES, MAX_CONTACTS, MAX_JOINTS
+            NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS
         ]()
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
@@ -333,7 +368,7 @@ struct PGSIntegrator(Integrator):
                 return
 
             Self.step_pgs_kernel[
-                DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, STATE_SIZE, BATCH
+                DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS, STATE_SIZE, BATCH
             ](env, state, model, dt, gravity_z, ground_z, restitution, friction)
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
@@ -354,6 +389,7 @@ struct PGSIntegrator(Integrator):
         NUM_BODIES: Int,
         MAX_CONTACTS: Int,
         MAX_JOINTS: Int = 0,
+        MAX_SLIDE_JOINTS: Int = 0,
         BATCH: Int = 1,
     ](
         ctx: DeviceContext,
@@ -380,7 +416,7 @@ struct PGSIntegrator(Integrator):
             friction: Friction coefficient (currently unused).
         """
         for _ in range(num_steps):
-            Self.step_gpu[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, BATCH](
+            Self.step_gpu[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS, BATCH](
                 ctx,
                 state_buf,
                 model_buf,
