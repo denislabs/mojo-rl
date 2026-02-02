@@ -24,6 +24,13 @@ Usage:
 
 from .hinge_joint import HingeJoint
 from .joint_solver import (
+    # Joint state sensing (Phase 7)
+    get_joint_angle,
+    get_joint_angular_velocity,
+    # Torque actuation (Phase 7)
+    apply_joint_torques,
+    apply_joint_torques_gpu,
+    # Constraint solving
     solve_joint_velocity_constraints,
     solve_joint_position_constraints,
     # GPU versions

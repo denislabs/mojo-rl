@@ -60,6 +60,10 @@ struct HingeJoint[DTYPE: DType](ImplicitlyCopyable, Movable):
     var impulse_ax: Scalar[Self.DTYPE]
     var impulse_ay: Scalar[Self.DTYPE]
 
+    # Actuation (Phase 7)
+    var target_torque: Scalar[Self.DTYPE]  # Control input (N·m)
+    var torque_limit: Scalar[Self.DTYPE]  # Maximum torque magnitude
+
     @staticmethod
     fn create(
         parent_body: Int,
@@ -113,6 +117,8 @@ struct HingeJoint[DTYPE: DType](ImplicitlyCopyable, Movable):
             impulse_lz=Scalar[Self.DTYPE](0),
             impulse_ax=Scalar[Self.DTYPE](0),
             impulse_ay=Scalar[Self.DTYPE](0),
+            target_torque=Scalar[Self.DTYPE](0),
+            torque_limit=Scalar[Self.DTYPE](100.0),  # Default 100 N·m limit
         )
 
     @staticmethod
@@ -135,6 +141,8 @@ struct HingeJoint[DTYPE: DType](ImplicitlyCopyable, Movable):
             impulse_lz=Scalar[Self.DTYPE](0),
             impulse_ax=Scalar[Self.DTYPE](0),
             impulse_ay=Scalar[Self.DTYPE](0),
+            target_torque=Scalar[Self.DTYPE](0),
+            torque_limit=Scalar[Self.DTYPE](100.0),
         )
 
     fn reset_impulses(mut self):
@@ -144,3 +152,26 @@ struct HingeJoint[DTYPE: DType](ImplicitlyCopyable, Movable):
         self.impulse_lz = Scalar[Self.DTYPE](0)
         self.impulse_ax = Scalar[Self.DTYPE](0)
         self.impulse_ay = Scalar[Self.DTYPE](0)
+
+    fn set_torque(mut self, torque: Scalar[Self.DTYPE]):
+        """Set target torque, clamped to torque_limit.
+
+        Args:
+            torque: Desired torque in N·m (positive = CCW around axis).
+        """
+        # Clamp to limits
+        if torque > self.torque_limit:
+            self.target_torque = self.torque_limit
+        elif torque < -self.torque_limit:
+            self.target_torque = -self.torque_limit
+        else:
+            self.target_torque = torque
+
+    fn set_torque_limit(mut self, limit: Scalar[Self.DTYPE]):
+        """Set the maximum torque magnitude.
+
+        Args:
+            limit: Maximum torque in N·m (must be positive).
+        """
+        if limit > Scalar[Self.DTYPE](0):
+            self.torque_limit = limit

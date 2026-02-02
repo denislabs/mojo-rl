@@ -119,6 +119,241 @@ fn _get_world_axis[
 
 
 # =============================================================================
+# Joint State Sensing (Observation)
+# =============================================================================
+
+
+fn _quat_conjugate[
+    DTYPE: DType
+](
+    qx: Scalar[DTYPE],
+    qy: Scalar[DTYPE],
+    qz: Scalar[DTYPE],
+    qw: Scalar[DTYPE],
+) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
+    """Compute quaternion conjugate (inverse for unit quaternions)."""
+    return (-qx, -qy, -qz, qw)
+
+
+fn _quat_multiply[
+    DTYPE: DType
+](
+    ax: Scalar[DTYPE],
+    ay: Scalar[DTYPE],
+    az: Scalar[DTYPE],
+    aw: Scalar[DTYPE],
+    bx: Scalar[DTYPE],
+    by: Scalar[DTYPE],
+    bz: Scalar[DTYPE],
+    bw: Scalar[DTYPE],
+) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
+    """Multiply two quaternions: result = a * b."""
+    var rx = aw * bx + ax * bw + ay * bz - az * by
+    var ry = aw * by - ax * bz + ay * bw + az * bx
+    var rz = aw * bz + ax * by - ay * bx + az * bw
+    var rw = aw * bw - ax * bx - ay * by - az * bz
+    return (rx, ry, rz, rw)
+
+
+fn get_joint_angle[
+    DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int
+](
+    model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
+    data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
+    joint_idx: Int,
+) -> Scalar[DTYPE]:
+    """Compute the current hinge angle in radians.
+
+    The angle is measured as the rotation of the child body relative to the
+    parent body (or world) around the hinge axis. Zero angle corresponds to
+    the initial configuration when both bodies have identity quaternions.
+
+    Args:
+        model: Static model configuration with joints.
+        data: Current simulation state.
+        joint_idx: Index of the joint to query.
+
+    Returns:
+        Angle in radians. Positive is counterclockwise around the axis.
+    """
+    var joint = model.joints[joint_idx]
+    var body_a = joint.parent_body
+    var body_b = joint.child_body
+
+    # Get quaternions (identity for world)
+    var qa_x: Scalar[DTYPE] = 0
+    var qa_y: Scalar[DTYPE] = 0
+    var qa_z: Scalar[DTYPE] = 0
+    var qa_w: Scalar[DTYPE] = 1
+
+    if body_a >= 0:
+        qa_x = data.quaternions[body_a * 4 + 0]
+        qa_y = data.quaternions[body_a * 4 + 1]
+        qa_z = data.quaternions[body_a * 4 + 2]
+        qa_w = data.quaternions[body_a * 4 + 3]
+
+    var qb_x = data.quaternions[body_b * 4 + 0]
+    var qb_y = data.quaternions[body_b * 4 + 1]
+    var qb_z = data.quaternions[body_b * 4 + 2]
+    var qb_w = data.quaternions[body_b * 4 + 3]
+
+    # Compute relative quaternion: q_rel = q_a^(-1) * q_b
+    var qa_conj = _quat_conjugate(qa_x, qa_y, qa_z, qa_w)
+    var q_rel = _quat_multiply(
+        qa_conj[0], qa_conj[1], qa_conj[2], qa_conj[3], qb_x, qb_y, qb_z, qb_w
+    )
+
+    # Get hinge axis in parent frame (or world if parent=-1)
+    var ax = joint.axis_x
+    var ay = joint.axis_y
+    var az = joint.axis_z
+
+    # Project quaternion rotation onto hinge axis
+    # For a rotation around axis, the quaternion is:
+    #   q = [sin(θ/2) * axis, cos(θ/2)]
+    # So the angle component along axis is:
+    #   sin(θ/2) = q_xyz · axis / |q_xyz|
+    #   cos(θ/2) = q_w
+    # And θ = 2 * atan2(sin(θ/2), cos(θ/2))
+
+    # Dot product of quaternion vector part with axis
+    var sin_half_theta = q_rel[0] * ax + q_rel[1] * ay + q_rel[2] * az
+    var cos_half_theta = q_rel[3]
+
+    # Use atan2 for full angle range
+    from math import atan2
+
+    var angle = Scalar[DTYPE](2.0) * atan2(sin_half_theta, cos_half_theta)
+
+    return angle
+
+
+fn get_joint_angular_velocity[
+    DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int
+](
+    model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
+    data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
+    joint_idx: Int,
+) -> Scalar[DTYPE]:
+    """Compute the angular velocity around the hinge axis.
+
+    This is the component of relative angular velocity projected onto
+    the hinge axis direction.
+
+    Args:
+        model: Static model configuration with joints.
+        data: Current simulation state.
+        joint_idx: Index of the joint to query.
+
+    Returns:
+        Angular velocity in rad/s. Positive is counterclockwise around axis.
+    """
+    var joint = model.joints[joint_idx]
+    var body_a = joint.parent_body
+    var body_b = joint.child_body
+
+    # Get angular velocities
+    var wa_x: Scalar[DTYPE] = 0
+    var wa_y: Scalar[DTYPE] = 0
+    var wa_z: Scalar[DTYPE] = 0
+
+    if body_a >= 0:
+        wa_x = data.angular_velocities[body_a * 3 + 0]
+        wa_y = data.angular_velocities[body_a * 3 + 1]
+        wa_z = data.angular_velocities[body_a * 3 + 2]
+
+    var wb_x = data.angular_velocities[body_b * 3 + 0]
+    var wb_y = data.angular_velocities[body_b * 3 + 1]
+    var wb_z = data.angular_velocities[body_b * 3 + 2]
+
+    # Relative angular velocity
+    var rel_wx = wb_x - wa_x
+    var rel_wy = wb_y - wa_y
+    var rel_wz = wb_z - wa_z
+
+    # Get world-space hinge axis
+    var axis = _get_world_axis(
+        data, body_a, joint.axis_x, joint.axis_y, joint.axis_z
+    )
+
+    # Project onto hinge axis
+    var omega_hinge = rel_wx * axis[0] + rel_wy * axis[1] + rel_wz * axis[2]
+
+    return omega_hinge
+
+
+# =============================================================================
+# Joint Torque Application (Actuation)
+# =============================================================================
+
+
+fn apply_joint_torques[
+    DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int
+](
+    model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
+    mut data: Data[DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS],
+    dt: Scalar[DTYPE],
+):
+    """Apply actuator torques to angular velocities.
+
+    This should be called early in the physics step, before constraint solving.
+    Torques are applied around the hinge axis to both parent and child bodies
+    (action-reaction pair).
+
+    Args:
+        model: Static model configuration with joints.
+        data: Mutable simulation state.
+        dt: Timestep for integration.
+    """
+    for j in range(model.num_joints):
+        var joint = model.joints[j]
+        var body_a = joint.parent_body
+        var body_b = joint.child_body
+
+        # Get torque, clamped to limits
+        var torque = joint.target_torque
+        if torque > joint.torque_limit:
+            torque = joint.torque_limit
+        elif torque < -joint.torque_limit:
+            torque = -joint.torque_limit
+
+        # Skip if no torque
+        if torque * torque < Scalar[DTYPE](1e-12):
+            continue
+
+        # Get world-space hinge axis
+        var axis = _get_world_axis(
+            data, body_a, joint.axis_x, joint.axis_y, joint.axis_z
+        )
+
+        # Apply torque to child body: Δω = τ × axis × inv_I × dt
+        # For a hinge, torque is scalar around the axis
+        var inv_I_b = (
+            model.inv_inertias[body_b * 3 + 0]
+            + model.inv_inertias[body_b * 3 + 1]
+            + model.inv_inertias[body_b * 3 + 2]
+        ) / Scalar[DTYPE](3.0)
+
+        var delta_w = torque * inv_I_b * dt
+        data.angular_velocities[body_b * 3 + 0] += delta_w * axis[0]
+        data.angular_velocities[body_b * 3 + 1] += delta_w * axis[1]
+        data.angular_velocities[body_b * 3 + 2] += delta_w * axis[2]
+
+        # Apply reaction torque to parent (Newton's third law)
+        if body_a >= 0:
+            var inv_I_a = (
+                model.inv_inertias[body_a * 3 + 0]
+                + model.inv_inertias[body_a * 3 + 1]
+                + model.inv_inertias[body_a * 3 + 2]
+            ) / Scalar[DTYPE](3.0)
+
+            var delta_w_a = torque * inv_I_a * dt
+            data.angular_velocities[body_a * 3 + 0] -= delta_w_a * axis[0]
+            data.angular_velocities[body_a * 3 + 1] -= delta_w_a * axis[1]
+            data.angular_velocities[body_a * 3 + 2] -= delta_w_a * axis[2]
+
+
+# =============================================================================
 # Velocity Constraint Solving
 # =============================================================================
 
@@ -521,6 +756,8 @@ from ..gpu.constants import (
     JOINT_IDX_AXIS_X,
     JOINT_IDX_AXIS_Y,
     JOINT_IDX_AXIS_Z,
+    JOINT_IDX_TARGET_TORQUE,
+    JOINT_IDX_TORQUE_LIMIT,
     META_IDX_NUM_JOINTS,
     MODEL_BODY_SIZE,
     MODEL_IDX_INV_MASS,
@@ -553,6 +790,117 @@ fn _quat_rotate_gpu[
 
 
 @always_inline
+fn apply_joint_torques_gpu[
+    DTYPE: DType,
+    NUM_BODIES: Int,
+    MAX_CONTACTS: Int,
+    MAX_JOINTS: Int,
+    STATE_SIZE: Int,
+    BATCH: Int,
+](
+    env: Int,
+    state: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+    ],
+    model: LayoutTensor[
+        DTYPE, Layout.row_major(NUM_BODIES, MODEL_BODY_SIZE), MutAnyOrigin
+    ],
+    dt: Scalar[DTYPE],
+):
+    """Apply actuator torques to angular velocities on GPU.
+
+    This should be called early in the physics step, before constraint solving.
+    """
+    for j in range(MAX_JOINTS):
+        var j_off = joint_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](j)
+
+        # Get torque and limit from state buffer
+        var torque = rebind[Scalar[DTYPE]](
+            state[env, j_off + JOINT_IDX_TARGET_TORQUE]
+        )
+        var torque_limit = rebind[Scalar[DTYPE]](
+            state[env, j_off + JOINT_IDX_TORQUE_LIMIT]
+        )
+
+        # Clamp torque to limits
+        if torque > torque_limit:
+            torque = torque_limit
+        elif torque < -torque_limit:
+            torque = -torque_limit
+
+        # Skip if no torque
+        if torque * torque < Scalar[DTYPE](1e-12):
+            continue
+
+        # Read body indices from state buffer and convert using Int()
+        # Our GPU debug test confirmed Int(f) works for exact integers
+        var parent_f = rebind[Scalar[DTYPE]](
+            state[env, j_off + JOINT_IDX_PARENT]
+        )
+        var child_f = rebind[Scalar[DTYPE]](state[env, j_off + JOINT_IDX_CHILD])
+        var body_a: Int = Int(parent_f)
+        var body_b: Int = Int(child_f)
+
+        # Get axis from joint state (in parent/world frame)
+        var axis_x = rebind[Scalar[DTYPE]](state[env, j_off + JOINT_IDX_AXIS_X])
+        var axis_y = rebind[Scalar[DTYPE]](state[env, j_off + JOINT_IDX_AXIS_Y])
+        var axis_z = rebind[Scalar[DTYPE]](state[env, j_off + JOINT_IDX_AXIS_Z])
+
+        # If parent is a body, rotate axis to world frame
+        if body_a >= 0:
+            var b_off_a = body_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](
+                body_a
+            )
+            var qa_x = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_QX])
+            var qa_y = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_QY])
+            var qa_z = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_QZ])
+            var qa_w = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_QW])
+            var rot_axis = _quat_rotate_gpu(
+                qa_x, qa_y, qa_z, qa_w, axis_x, axis_y, axis_z
+            )
+            axis_x = rot_axis[0]
+            axis_y = rot_axis[1]
+            axis_z = rot_axis[2]
+
+        # Apply torque to child body
+        var b_off_b = body_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](body_b)
+        var avg_inv_i_b = (
+            rebind[Scalar[DTYPE]](model[body_b, MODEL_IDX_INV_IXX])
+            + rebind[Scalar[DTYPE]](model[body_b, MODEL_IDX_INV_IYY])
+            + rebind[Scalar[DTYPE]](model[body_b, MODEL_IDX_INV_IZZ])
+        ) / Scalar[DTYPE](3.0)
+
+        var delta_w = torque * avg_inv_i_b * dt
+        var wb_x = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_WX])
+        var wb_y = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_WY])
+        var wb_z = rebind[Scalar[DTYPE]](state[env, b_off_b + BODY_IDX_WZ])
+
+        state[env, b_off_b + BODY_IDX_WX] = wb_x + delta_w * axis_x
+        state[env, b_off_b + BODY_IDX_WY] = wb_y + delta_w * axis_y
+        state[env, b_off_b + BODY_IDX_WZ] = wb_z + delta_w * axis_z
+
+        # Apply reaction torque to parent (if not world-anchored)
+        if body_a >= 0:
+            var b_off_a = body_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS](
+                body_a
+            )
+            var avg_inv_i_a = (
+                rebind[Scalar[DTYPE]](model[body_a, MODEL_IDX_INV_IXX])
+                + rebind[Scalar[DTYPE]](model[body_a, MODEL_IDX_INV_IYY])
+                + rebind[Scalar[DTYPE]](model[body_a, MODEL_IDX_INV_IZZ])
+            ) / Scalar[DTYPE](3.0)
+
+            var delta_w_a = torque * avg_inv_i_a * dt
+            var wa_x = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_WX])
+            var wa_y = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_WY])
+            var wa_z = rebind[Scalar[DTYPE]](state[env, b_off_a + BODY_IDX_WZ])
+
+            state[env, b_off_a + BODY_IDX_WX] = wa_x - delta_w_a * axis_x
+            state[env, b_off_a + BODY_IDX_WY] = wa_y - delta_w_a * axis_y
+            state[env, b_off_a + BODY_IDX_WZ] = wa_z - delta_w_a * axis_z
+
+
+@always_inline
 fn solve_joint_velocity_constraints_gpu[
     DTYPE: DType,
     NUM_BODIES: Int,
@@ -581,9 +929,6 @@ fn solve_joint_velocity_constraints_gpu[
             # Body index pattern for chains/articulated bodies:
             # Joint 0: parent = -1 (world), child = 0
             # Joint j (j>0): parent = j-1, child = j
-            # This supports single pendulum, double pendulum, and longer chains.
-            # Note: Reading body indices from state buffer causes GPU issues,
-            # so we compute them from the joint pattern instead.
             var body_a: Int = -1 if j == 0 else j - 1
             var body_b: Int = j
 

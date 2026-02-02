@@ -23,7 +23,7 @@ Build a minimal, mathematically correct 3D physics engine following MuJoCo's com
 | Phase 4 | Single hinge joint (pendulum) | ✅ | ✅ | Complete |
 | Phase 5 | Two-link chain (double pendulum) | ✅ | ✅ | Complete |
 | Phase 6 | Friction model | ✅ | ✅ | Complete |
-| Phase 7 | Simple walker environment | ❌ | ❌ | Not started |
+| Phase 7 | Simple hopper (2-body + torque) | ✅ | ❌ | In Progress (7.1-7.3 complete) |
 
 ---
 
@@ -71,6 +71,10 @@ physics3d_v2/
 │   ├── constants.mojo         # GPU buffer layout constants
 │   └── buffer_utils.mojo      # Host/device buffer creation and access
 │
+├── envs/                      # RL environments (Phase 7+)
+│   ├── __init__.mojo          # Module exports
+│   └── hopper.mojo            # HopperEnv struct
+│
 ├── tests/                     # Validation tests
 │   ├── __init__.mojo
 │   ├── test_freefall.mojo         # Phase 1: free fall validation
@@ -86,7 +90,12 @@ physics3d_v2/
 │   ├── test_render_multi_body_pgs.mojo
 │   ├── test_friction.mojo            # Phase 6: CPU friction tests
 │   ├── test_friction_gpu.mojo        # Phase 6: GPU friction tests
-│   └── test_render_friction.mojo     # Phase 6: Visual friction demo
+│   ├── test_render_friction.mojo     # Phase 6: Visual friction demo
+│   ├── test_joint_torque.mojo       # Phase 7: torque actuation tests
+│   ├── test_joint_torque_gpu.mojo   # Phase 7: GPU torque tests
+│   ├── test_joint_sensing.mojo      # Phase 7: joint sensing tests
+│   ├── test_joint_sensing_gpu.mojo  # Phase 7: GPU sensing tests
+│   └── test_hopper.mojo             # Phase 7: HopperEnv tests
 │
 └── examples/
     ├── __init__.mojo
@@ -348,6 +357,21 @@ pixi run -e apple mojo run physics3d_v2/tests/test_friction_gpu.mojo
 
 # Phase 6: Visual friction demo (requires SDL2)
 pixi run mojo run physics3d_v2/tests/test_render_friction.mojo
+
+# Phase 7: Joint torque actuation tests
+pixi run mojo run physics3d_v2/tests/test_joint_torque.mojo
+
+# Phase 7: Joint sensing tests
+pixi run mojo run physics3d_v2/tests/test_joint_sensing.mojo
+
+# Phase 7: Joint torque GPU tests
+pixi run -e apple mojo run physics3d_v2/tests/test_joint_torque_gpu.mojo
+
+# Phase 7: Joint sensing GPU tests
+pixi run -e apple mojo run physics3d_v2/tests/test_joint_sensing_gpu.mojo
+
+# Phase 7: HopperEnv tests
+pixi run mojo run physics3d_v2/tests/test_hopper.mojo
 ```
 
 ### Test Coverage
@@ -369,6 +393,22 @@ pixi run mojo run physics3d_v2/tests/test_render_friction.mojo
 - **Zero friction**: Sphere slides freely without deceleration
 - **High friction**: Sphere with high friction stops quickly
 - **Two spheres friction**: Collision with friction affects motion
+- **Joint torque actuation**: Torque causes correct angular acceleration (Δω = τ × inv_I × dt)
+- **Torque limits**: Clamped to ±torque_limit
+- **Reaction torque**: Newton's 3rd law on parent body
+- **Pendulum torque control**: Responds to control input
+- **Joint angle sensing**: Accurate angle from quaternion difference (±0.01 deg)
+- **Joint angular velocity**: Matches actual rotation speed
+- **Two-body joint sensing**: Relative angle and velocity correct
+- **GPU torque actuation**: Same results as CPU (position diff < 0.1m)
+- **GPU batched torque**: 16 environments with different torques
+- **GPU sensing parity**: Angle diff < 3.5e-06 deg, omega diff < 1e-06 rad/s
+- **HopperEnv initialization**: Model configured correctly (1 joint, 2 bodies)
+- **HopperEnv reset**: Valid observation (height, velocities, angles)
+- **HopperEnv standing**: Stable with zero action (height drops <0.01m)
+- **HopperEnv torque response**: Hip angle changes with torque
+- **HopperEnv termination**: Episode ends when pitch exceeds limit
+- **HopperEnv reward**: Forward velocity + alive bonus - control cost
 
 ---
 
@@ -575,10 +615,390 @@ For each contact iteration:
 
 ---
 
-## Future Phases (Outline)
+## Phase 7: Simple Hopper Environment
 
-### Phase 7: Simple Walker Environment
-- Capsule/box bodies for legs and torso
-- Hinge joints at hips, knees, ankles
-- Contact with ground
-- RL-ready observation/action interface
+A 2-body hopper that uses only existing primitives (spheres, hinge joints, friction). This is the minimal RL-compatible locomotion environment.
+
+### Goal
+Create a hopper that can learn to hop forward using hip torque control.
+
+### Physical Configuration
+
+```
+       Pivot (world anchor)
+         │
+         │ Link 1 (virtual - constraint only)
+         │
+        (●) Body 0: Torso (sphere, mass=1.0, radius=0.15)
+         │
+         │ Link 2 (hinge joint with torque control)
+         │
+        (●) Body 1: Foot (sphere, mass=0.5, radius=0.1)
+         │
+    ════════════════ Ground (z=0)
+```
+
+**Bodies:**
+- Body 0 (Torso): Larger sphere, mass=1.0, radius=0.15
+- Body 1 (Foot): Smaller sphere, mass=0.5, radius=0.1
+
+**Joints:**
+- Joint 0: World → Torso (optional, for constrained hopper variant)
+- Joint 1: Torso → Foot (actuated hinge, Y-axis rotation for XZ plane movement)
+
+**Unconstrained variant (recommended for RL):**
+- No world anchor - torso is free to move
+- Only 1 joint: Torso → Foot
+
+### Implementation Steps
+
+#### Step 7.1: Joint Actuation (Torque Control) ✅ COMPLETE (CPU + GPU)
+
+**Files modified:**
+- `joints/hinge_joint.mojo` - Added `target_torque`, `torque_limit`, `set_torque()`, `set_torque_limit()`
+- `joints/joint_solver.mojo` - Added `apply_joint_torques()` (CPU) and `apply_joint_torques_gpu()`
+- `gpu/constants.mojo` - Added `JOINT_IDX_TARGET_TORQUE`, `JOINT_IDX_TORQUE_LIMIT`, updated `JOINT_STATE_SIZE` to 18
+- `integrator/impulse_integrator.mojo` - Integrated torque application in pipeline
+- `integrator/pgs_integrator.mojo` - Integrated torque application in pipeline
+- `tests/test_joint_torque.mojo` - 5 CPU validation tests
+- `tests/test_joint_torque_gpu.mojo` - 3 GPU validation tests
+
+**Test commands:**
+```bash
+pixi run mojo run physics3d_v2/tests/test_joint_torque.mojo
+pixi run -e apple mojo run physics3d_v2/tests/test_joint_torque_gpu.mojo
+```
+
+**CPU test results (all pass):**
+- Torque causes angular acceleration (Δω = 1.25 rad/s for τ=5 N·m)
+- Torque limits are respected
+- Reaction torque on parent body (Newton's 3rd law)
+- Pendulum responds to torque control
+- Zero torque has no effect
+
+**GPU test results (all pass):**
+- GPU torque causes angular velocity (Δω = 1.25 rad/s)
+- GPU vs CPU parity (position diff = 0.0)
+- Batched simulation (16 envs with different torques)
+
+**Files to modify (reference):**
+- `joints/hinge_joint.mojo` - Add torque field
+- `joints/joint_solver.mojo` - Apply torque before constraint solving
+- `gpu/constants.mojo` - Add JOINT_IDX_TORQUE
+
+**HingeJoint changes:**
+```mojo
+struct HingeJoint[DTYPE: DType]:
+    # ... existing fields ...
+
+    # Actuation
+    var target_torque: Scalar[DTYPE]  # Control input (N·m)
+    var torque_limit: Scalar[DTYPE]   # Maximum torque magnitude
+```
+
+**Joint solver changes:**
+```mojo
+fn apply_joint_torques[...](
+    model: Model[...],
+    mut data: Data[...],
+):
+    """Apply actuator torques to angular velocities before constraint solving."""
+    for j in range(model.num_joints):
+        var joint = model.joints[j]
+        var torque = clamp(joint.target_torque, -joint.torque_limit, joint.torque_limit)
+
+        # Get world-space axis
+        var axis = _get_world_axis(data, joint.parent_body, joint.axis_x, joint.axis_y, joint.axis_z)
+
+        # Apply torque to child body: Δω = τ × axis × inv_I × dt
+        var body_b = joint.child_body
+        var inv_I = model.inv_inertias[body_b * 3 + 1]  # Y-axis for hinge
+        data.angular_velocities[body_b * 3 + 0] += torque * axis[0] * inv_I * dt
+        data.angular_velocities[body_b * 3 + 1] += torque * axis[1] * inv_I * dt
+        data.angular_velocities[body_b * 3 + 2] += torque * axis[2] * inv_I * dt
+
+        # Apply reaction torque to parent (if not world)
+        if joint.parent_body >= 0:
+            var body_a = joint.parent_body
+            var inv_I_a = model.inv_inertias[body_a * 3 + 1]
+            data.angular_velocities[body_a * 3 + 0] -= torque * axis[0] * inv_I_a * dt
+            data.angular_velocities[body_a * 3 + 1] -= torque * axis[1] * inv_I_a * dt
+            data.angular_velocities[body_a * 3 + 2] -= torque * axis[2] * inv_I_a * dt
+```
+
+**GPU buffer layout update:**
+```
+JOINT_STATE_SIZE = 17 floats per joint (was 16):
+  [0-1]   Body indices (parent, child)
+  [2-4]   Anchor point on parent (px, py, pz)
+  [5-7]   Anchor point on child (cx, cy, cz)
+  [8-10]  Hinge axis (ax, ay, az)
+  [11-15] Accumulated impulses (lx, ly, lz, ax, ay)
+  [16]    Target torque (control input)
+```
+
+#### Step 7.2: Joint Angle/Velocity Sensing ✅ COMPLETE (CPU + GPU verified)
+
+**Files modified:**
+- `joints/joint_solver.mojo` - Added `get_joint_angle()` and `get_joint_angular_velocity()`
+- `joints/__init__.mojo` - Exported new sensing functions
+- `tests/test_joint_sensing.mojo` - 5 CPU validation tests
+- `tests/test_joint_sensing_gpu.mojo` - 3 GPU validation tests
+
+**Test commands:**
+```bash
+pixi run mojo run physics3d_v2/tests/test_joint_sensing.mojo
+pixi run -e apple mojo run physics3d_v2/tests/test_joint_sensing_gpu.mojo
+```
+
+**CPU test results (all pass):**
+- Initial angle is zero for identity quaternions
+- Angle changes during pendulum swing (30° → 6.6° → -8°)
+- Angular velocity reading matches set value (2.0 rad/s)
+- Angle sign convention correct (+45° and -45° measured correctly)
+- Two-body joint sensing works (relative angle and velocity)
+
+**GPU test results (all pass):**
+- Angle sensing works after GPU simulation
+- Angular velocity sensing works after GPU simulation
+- CPU vs GPU sensing parity (angle diff: 3.5e-06 deg, omega diff: 1e-06 rad/s)
+
+**Implementation:**
+```mojo
+fn get_joint_angle[...](
+    model: Model[...],
+    data: Data[...],
+    joint_idx: Int,
+) -> Scalar[DTYPE]:
+    """Compute current hinge angle from quaternion difference.
+
+    Uses relative quaternion q_rel = q_parent^(-1) * q_child
+    and projects onto hinge axis using atan2.
+    Returns angle in radians.
+    """
+
+fn get_joint_angular_velocity[...](
+    model: Model[...],
+    data: Data[...],
+    joint_idx: Int,
+) -> Scalar[DTYPE]:
+    """Compute angular velocity around hinge axis.
+
+    Computes ω_rel = ω_child - ω_parent and projects onto axis.
+    Returns angular velocity in rad/s.
+    """
+```
+
+#### Step 7.3: Hopper Environment ✅ COMPLETE (CPU)
+
+**Files added:**
+- `envs/__init__.mojo` - Module exports
+- `envs/hopper.mojo` - HopperEnv struct
+- `tests/test_hopper.mojo` - 7 CPU validation tests
+
+**Test command:**
+```bash
+pixi run mojo run physics3d_v2/tests/test_hopper.mojo
+```
+
+**CPU test results (all pass):**
+1. **Environment initialization**: Model configured correctly (1 joint, 2 bodies)
+2. **Reset returns valid observation**: Height=0.45m, velocities=0, angles=0
+3. **Standing stability**: Height only drops 0.006m over 100 steps (stable)
+4. **Torque causes motion**: Hip angle reaches 90° with 50% torque
+5. **Termination on falling**: Episode terminates at step 4 with max torque (pitch exceeds limit)
+6. **Reward structure**: alive_bonus=1.0, forward velocity adds reward, control cost reduces it
+7. **Observation bounds**: Height 0.37-0.45m, max velocity 2.0 m/s, max pitch 66°
+
+**Original design (kept for reference):**
+
+**New file: `envs/hopper.mojo`**
+
+```mojo
+struct HopperEnv[DTYPE: DType = DType.float64]:
+    """Simple 2-body hopper environment for RL.
+
+    Observation (8 dims):
+        [0] Torso height (z position)
+        [1] Torso x velocity
+        [2] Torso z velocity
+        [3] Torso pitch angle (rotation around Y)
+        [4] Torso pitch angular velocity
+        [5] Hip angle (relative to torso)
+        [6] Hip angular velocity
+        [7] Foot contact (0 or 1)
+
+    Action (1 dim):
+        [0] Hip torque (normalized to [-1, 1], scaled by torque_limit)
+
+    Reward:
+        forward_reward = x_velocity
+        alive_bonus = 1.0 (if not fallen)
+        control_cost = -0.01 * torque²
+        reward = forward_reward + alive_bonus + control_cost
+
+    Termination:
+        - Torso height < 0.2 (fallen)
+        - Torso pitch > 60° (tipped over)
+    """
+
+    var model: Model[DTYPE, 2, 10, 1]
+    var data: Data[DTYPE, 2, 10, 1]
+    var torque_limit: Scalar[DTYPE]
+    var dt: Scalar[DTYPE]
+
+    fn __init__(out self, torque_limit: Scalar[DTYPE] = 5.0):
+        self.model = Model[DTYPE, 2, 10, 1](
+            gravity_z=-9.81,
+            timestep=0.01,
+            ground_z=0.0,
+            friction=0.8,
+            restitution=0.0,
+        )
+        # Torso (body 0)
+        self.model.set_body(0, mass=1.0, radius=0.15)
+        # Foot (body 1)
+        self.model.set_body(1, mass=0.5, radius=0.1)
+
+        # Hip joint: Torso → Foot
+        self.model.add_hinge_joint(
+            parent=0,
+            child=1,
+            anchor_parent=(0.0, 0.0, -0.15),  # Bottom of torso
+            anchor_child=(0.0, 0.0, 0.1),     # Top of foot
+            axis=(0.0, 1.0, 0.0),             # Y-axis rotation
+        )
+
+        self.data = Data[DTYPE, 2, 10, 1]()
+        self.torque_limit = torque_limit
+        self.dt = self.model.timestep
+        self.reset()
+
+    fn reset(mut self) -> List[Scalar[DTYPE]]:
+        """Reset to initial standing position."""
+        self.data = Data[DTYPE, 2, 10, 1]()
+        # Torso at height 0.4
+        self.data.set_body_position(0, 0.0, 0.0, 0.4)
+        # Foot at height 0.1 (radius above ground)
+        self.data.set_body_position(1, 0.0, 0.0, 0.1)
+        return self.get_observation()
+
+    fn step(mut self, action: Scalar[DTYPE]) -> Tuple[
+        List[Scalar[DTYPE]],  # observation
+        Scalar[DTYPE],        # reward
+        Bool,                 # done
+    ]:
+        """Take one step with given hip torque."""
+        # Clamp and apply action
+        var torque = action * self.torque_limit
+        self.model.joints[0].target_torque = torque
+
+        # Physics step
+        ImpulseIntegrator.step(self.model, self.data)
+
+        # Compute reward
+        var obs = self.get_observation()
+        var x_vel = obs[1]
+        var alive = not self.is_terminated()
+        var reward = x_vel + (1.0 if alive else 0.0) - 0.01 * torque * torque
+
+        return (obs, reward, not alive)
+
+    fn get_observation(self) -> List[Scalar[DTYPE]]:
+        # ... extract 8-dim observation vector ...
+
+    fn is_terminated(self) -> Bool:
+        var torso_z = self.data.get_body_z(0)
+        # ... check height and pitch ...
+```
+
+#### Step 7.4: Integration into Integrators
+
+**Modify `integrator/impulse_integrator.mojo`:**
+
+Add `apply_joint_torques()` call early in the step pipeline:
+```mojo
+fn step[...](model: Model[...], mut data: Data[...]):
+    # 1. Collision detection (pre-step)
+    # 2. Apply gravity
+    # 3. >>> Apply joint torques (NEW) <<<
+    # 4. Solve velocity constraints
+    # 5. Solve joint velocity constraints
+    # ... rest of pipeline ...
+```
+
+Same for `pgs_integrator.mojo` and GPU versions.
+
+### File Structure (Phase 7)
+
+```
+physics3d_v2/
+├── joints/
+│   ├── hinge_joint.mojo      # Add target_torque, torque_limit
+│   └── joint_solver.mojo     # Add apply_joint_torques()
+├── envs/
+│   ├── __init__.mojo         # New module
+│   └── hopper.mojo           # HopperEnv struct
+├── gpu/
+│   └── constants.mojo        # JOINT_IDX_TORQUE
+├── integrator/
+│   ├── impulse_integrator.mojo  # Call apply_joint_torques
+│   └── pgs_integrator.mojo      # Call apply_joint_torques
+├── tests/
+│   ├── test_joint_torque.mojo       # Torque actuation tests (CPU) ✅
+│   ├── test_joint_torque_gpu.mojo   # Torque actuation tests (GPU) ✅
+│   ├── test_joint_sensing.mojo      # Joint sensing tests (CPU) ✅
+│   ├── test_joint_sensing_gpu.mojo  # Joint sensing tests (GPU) ✅
+│   ├── test_hopper.mojo             # CPU hopper tests ✅
+│   └── test_hopper_gpu.mojo         # GPU hopper tests (planned)
+└── examples/
+    └── hopper_render_demo.mojo      # Visual demonstration
+```
+
+### Test Plan
+
+#### Test 7.1: Joint Torque Application
+```bash
+pixi run mojo run physics3d_v2/tests/test_joint_torque.mojo
+```
+- Apply constant torque, verify angular acceleration
+- Verify torque limits are respected
+- Verify reaction torque on parent body
+
+#### Test 7.2: Hopper Standing
+```bash
+pixi run mojo run physics3d_v2/tests/test_hopper.mojo
+```
+- Hopper stands without falling (no action)
+- Foot maintains ground contact
+- Joint constraint maintained
+
+#### Test 7.3: Hopper Hopping
+- Apply sinusoidal torque, verify hopping motion
+- Verify foot leaves and returns to ground
+- Verify forward progress with asymmetric actuation
+
+#### Test 7.4: GPU Parity
+```bash
+pixi run -e apple mojo run physics3d_v2/tests/test_hopper_gpu.mojo
+```
+- Same tests as CPU with GPU integrator
+- Batched simulation (256 hoppers)
+
+### Validation Criteria
+
+| Test | Pass Criteria |
+|------|---------------|
+| Torque response | Angular acceleration ≈ τ × inv_I |
+| Standing stability | Height maintained ±5% for 10s |
+| Hopping height | Reaches >0.5m with sinusoidal torque |
+| Joint constraint | Anchor error <2cm during hopping |
+| CPU/GPU parity | Position difference <1cm after 1000 steps |
+
+### Future Extensions (Phase 8+)
+
+After Phase 7 is complete, possible extensions:
+- **Phase 8a**: Add second leg (3 bodies, 2 actuated joints)
+- **Phase 8b**: Add knee joint (4 bodies, 3 actuated joints)
+- **Phase 8c**: Capsule collision primitives for legs
+- **Phase 9**: Full bipedal walker

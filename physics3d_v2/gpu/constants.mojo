@@ -3,7 +3,7 @@
 GPU kernels require flat buffer layouts. This file defines:
 1. Per-body state layout (positions, velocities, etc.)
 2. Per-contact layout (body indices, normal, depth, etc.)
-3. Per-joint layout (body indices, anchors, axis, impulses)
+3. Per-joint layout (body indices, anchors, axis, impulses, actuation)
 4. Total buffer size computation
 
 Buffer layout for multi-body:
@@ -12,7 +12,7 @@ Buffer layout for multi-body:
 Where:
   - BODY_STATE_SIZE = 22 floats per body
   - CONTACT_STATE_SIZE = 12 floats per contact
-  - JOINT_STATE_SIZE = 16 floats per joint
+  - JOINT_STATE_SIZE = 18 floats per joint (including actuation)
   - METADATA_SIZE = 4 floats (num_contacts, num_joints, padding)
 """
 
@@ -116,7 +116,7 @@ comptime CONTACT_STATE_SIZE: Int = 12
 
 
 # =============================================================================
-# Per-Joint State Layout (16 floats per joint)
+# Per-Joint State Layout (18 floats per joint)
 # =============================================================================
 
 # Body indices (2 floats - stored as floats for GPU compatibility)
@@ -145,8 +145,12 @@ comptime JOINT_IDX_IMPULSE_LZ: Int = 13  # Linear impulse Z
 comptime JOINT_IDX_IMPULSE_AX: Int = 14  # Angular impulse 1
 comptime JOINT_IDX_IMPULSE_AY: Int = 15  # Angular impulse 2
 
+# Actuation (Phase 7)
+comptime JOINT_IDX_TARGET_TORQUE: Int = 16  # Control input torque (N·m)
+comptime JOINT_IDX_TORQUE_LIMIT: Int = 17  # Maximum torque magnitude
+
 # Total joint state size
-comptime JOINT_STATE_SIZE: Int = 16
+comptime JOINT_STATE_SIZE: Int = 18
 
 
 # =============================================================================

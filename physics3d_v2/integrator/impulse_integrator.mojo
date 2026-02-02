@@ -26,6 +26,8 @@ from ..solver import (
     solve_position_constraints_gpu,
 )
 from ..joints import (
+    apply_joint_torques,
+    apply_joint_torques_gpu,
     solve_joint_velocity_constraints,
     solve_joint_position_constraints,
     solve_joint_velocity_constraints_gpu,
@@ -89,10 +91,15 @@ struct ImpulseIntegrator(Integrator):
         for i in range(NUM_BODIES):
             data.velocities[i * 3 + 2] += dt * model.gravity_z
 
-        # 3. Solve velocity constraints (collision response with restitution)
+        # 3. Apply joint torques (actuation)
+        @parameter
+        if MAX_JOINTS > 0:
+            apply_joint_torques(model, data, dt)
+
+        # 4. Solve velocity constraints (collision response with restitution)
         solve_velocity_constraints(model, data, iterations=30)
 
-        # 4. Solve joint velocity constraints (if any)
+        # 5. Solve joint velocity constraints (if any)
         @parameter
         if MAX_JOINTS > 0:
             solve_joint_velocity_constraints(model, data, iterations=5)
@@ -222,12 +229,19 @@ struct ImpulseIntegrator(Integrator):
             DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, STATE_SIZE, BATCH
         ](env, state, dt, gravity_z)
 
-        # 3. Solve velocity constraints with friction
+        # 3. Apply joint torques (actuation)
+        @parameter
+        if MAX_JOINTS > 0:
+            apply_joint_torques_gpu[
+                DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, STATE_SIZE, BATCH
+            ](env, state, model, dt)
+
+        # 4. Solve velocity constraints with friction
         solve_velocity_constraints_gpu[
             DTYPE, NUM_BODIES, MAX_CONTACTS, STATE_SIZE, BATCH
         ](env, state, model, restitution, friction, 10)
 
-        # 4. Solve joint velocity constraints
+        # 5. Solve joint velocity constraints
         @parameter
         if MAX_JOINTS > 0:
             solve_joint_velocity_constraints_gpu[

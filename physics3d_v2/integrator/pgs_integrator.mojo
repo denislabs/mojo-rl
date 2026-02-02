@@ -31,6 +31,8 @@ from ..solver import (
     solve_position_constraints_gpu,
 )
 from ..joints import (
+    apply_joint_torques,
+    apply_joint_torques_gpu,
     solve_joint_velocity_constraints,
     solve_joint_position_constraints,
     solve_joint_velocity_constraints_gpu,
@@ -93,11 +95,16 @@ struct PGSIntegrator(Integrator):
         for i in range(NUM_BODIES):
             data.velocities[i * 3 + 2] += dt * model.gravity_z
 
-        # 3. Solve contact constraints using PGS
+        # 3. Apply joint torques (actuation)
+        @parameter
+        if MAX_JOINTS > 0:
+            apply_joint_torques(model, data, dt)
+
+        # 4. Solve contact constraints using PGS
         # This modifies velocities to satisfy contact constraints
         solve_constraints_pgs(model, data, dt, iterations=30)
 
-        # 4. Solve joint velocity constraints (if any)
+        # 5. Solve joint velocity constraints (if any)
         @parameter
         if MAX_JOINTS > 0:
             solve_joint_velocity_constraints(model, data, iterations=5)
@@ -218,12 +225,19 @@ struct PGSIntegrator(Integrator):
             DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, STATE_SIZE, BATCH
         ](env, state, dt, gravity_z)
 
-        # 3. Solve constraints with PGS (including friction)
+        # 3. Apply joint torques (actuation)
+        @parameter
+        if MAX_JOINTS > 0:
+            apply_joint_torques_gpu[
+                DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, STATE_SIZE, BATCH
+            ](env, state, model, dt)
+
+        # 4. Solve constraints with PGS (including friction)
         solve_constraints_pgs_gpu[
             DTYPE, NUM_BODIES, MAX_CONTACTS, STATE_SIZE, BATCH
         ](env, state, model, dt, restitution, friction, 20)
 
-        # 4. Solve joint velocity constraints (if any)
+        # 5. Solve joint velocity constraints (if any)
         @parameter
         if MAX_JOINTS > 0:
             solve_joint_velocity_constraints_gpu[
