@@ -24,7 +24,7 @@ Build a minimal, mathematically correct 3D physics engine following MuJoCo's com
 | Phase 5 | Two-link chain (double pendulum) | ✅ | ✅ | Complete |
 | Phase 6 | Friction model | ✅ | ✅ | Complete |
 | Phase 7 | Simple hopper (2-body + torque) | ✅ | ✅ | Complete |
-| Phase 8 | Capsule geometry | ⬚ | ⬚ | Planned |
+| Phase 8 | Capsule geometry | ✅ | ✅ | Complete |
 | Phase 9 | Box geometry | ⬚ | ⬚ | Planned |
 
 ---
@@ -1014,9 +1014,60 @@ pixi run -e apple mojo run physics3d_v2/tests/test_hopper_gpu.mojo
 
 ---
 
-## Phase 8: Capsule Geometry
+## Phase 8: Capsule Geometry - COMPLETE
 
 Capsules (sphere-swept lines) are essential for limbs, legs, and elongated bodies. They provide better collision behavior than spheres for articulated characters.
+
+### Implementation Summary
+
+#### Files Added
+- `tests/test_capsule_plane.mojo` - CPU capsule-plane validation (4 tests)
+- `tests/test_capsule_sphere.mojo` - CPU capsule-sphere validation (4 tests)
+- `tests/test_capsule_capsule.mojo` - CPU capsule-capsule validation (4 tests)
+- `tests/test_capsule_gpu.mojo` - GPU parity validation (3 tests)
+
+#### Files Modified
+- `types.mojo` - Added `geom_types`, `half_lengths` arrays to Model, added `set_body_capsule()` method
+- `gpu/constants.mojo` - Added `GEOM_CAPSULE`, `MODEL_IDX_GEOM_TYPE`, `MODEL_IDX_HALF_LENGTH`, updated `MODEL_BODY_SIZE` to 11
+- `collision/collision_primitives.mojo` - Added `rotate_vector_by_quat()`, `capsule_plane()`, `capsule_sphere()`, `_closest_points_line_segments()`, `capsule_capsule()`
+- `collision/collision.mojo` - Updated `detect_all_contacts()` and `detect_all_contacts_gpu()` with geometry-type dispatch
+- `collision/__init__.mojo` - Exported new capsule functions
+- `gpu/buffer_utils.mojo` - Updated `create_model_host_buffer()` to include geometry type and half_length
+
+#### Test Commands
+```bash
+# Phase 8 CPU tests
+pixi run mojo run physics3d_v2/tests/test_capsule_plane.mojo
+pixi run mojo run physics3d_v2/tests/test_capsule_sphere.mojo
+pixi run mojo run physics3d_v2/tests/test_capsule_capsule.mojo
+
+# Phase 8 GPU tests
+pixi run -e apple mojo run physics3d_v2/tests/test_capsule_gpu.mojo
+```
+
+#### Test Results
+**CPU Capsule-Plane Tests (4/4 passed):**
+- Vertical capsule falls and stops at correct height (half_len + radius)
+- Horizontal capsule stops at radius above ground
+- Tilted capsule stops at lowest endpoint + radius
+- Capsule at rest does not drift (<1mm)
+
+**CPU Capsule-Sphere Tests (4/4 passed):**
+- Sphere lands on horizontal capsule surface
+- Sphere lands on capsule endpoint cap
+- Capsule-sphere bounce with restitution
+- Sphere slides along capsule (zero friction)
+
+**CPU Capsule-Capsule Tests (4/4 passed):**
+- Parallel capsules bounce apart correctly
+- Perpendicular capsules (cross) collision
+- Cap-to-cap collision (endpoints)
+- Two capsules stack on ground
+
+**GPU Parity Tests (3/3 passed):**
+- Capsule-plane: CPU/GPU difference < 1e-6
+- Capsule-sphere: CPU/GPU difference < 1mm
+- Batched simulation: 16 environments within tolerance
 
 ### Goal
 Add capsule collision primitives with support for:

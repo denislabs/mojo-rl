@@ -24,7 +24,7 @@ comptime TPB: Int = 256  # Threads per block (optimal for most GPUs)
 comptime TILE: Int = 16  # Tile size for 2D operations
 
 
-comptime MODEL_BODY_SIZE: Int = 9
+comptime MODEL_BODY_SIZE: Int = 11
 comptime MODEL_IDX_MASS: Int = 0
 comptime MODEL_IDX_INV_MASS: Int = 1
 comptime MODEL_IDX_RADIUS: Int = 2
@@ -34,6 +34,8 @@ comptime MODEL_IDX_IZZ: Int = 5
 comptime MODEL_IDX_INV_IXX: Int = 6
 comptime MODEL_IDX_INV_IYY: Int = 7
 comptime MODEL_IDX_INV_IZZ: Int = 8
+comptime MODEL_IDX_GEOM_TYPE: Int = 9  # Phase 8: Geometry type (GEOM_SPHERE, GEOM_CAPSULE, etc.)
+comptime MODEL_IDX_HALF_LENGTH: Int = 10  # Phase 8: Half-length for capsules (0 for spheres)
 # =============================================================================
 # Per-Body State Layout (22 floats per body)
 # =============================================================================
@@ -233,6 +235,8 @@ fn metadata_offset[
 
 comptime GEOM_PLANE: Int = 0
 comptime GEOM_SPHERE: Int = 1
+comptime GEOM_CAPSULE: Int = 2
+comptime GEOM_BOX: Int = 3  # Reserved for Phase 9
 
 
 # =============================================================================

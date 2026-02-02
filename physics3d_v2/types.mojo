@@ -39,6 +39,7 @@ With joints (pendulum example):
 
 from .constants import CONTACT_SIZE
 from .joints.hinge_joint import HingeJoint
+from .gpu.constants import GEOM_SPHERE, GEOM_CAPSULE
 
 
 @fieldwise_init
@@ -152,6 +153,11 @@ struct Model[DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int =
     var inertias: InlineArray[Scalar[Self.DTYPE], Self.NUM_BODIES * 3]
     var inv_inertias: InlineArray[Scalar[Self.DTYPE], Self.NUM_BODIES * 3]
 
+    # Geometry type per body (Phase 8: GEOM_SPHERE, GEOM_CAPSULE, etc.)
+    var geom_types: InlineArray[Int, Self.NUM_BODIES]
+    # Half-length for capsules (Phase 8: 0 for spheres)
+    var half_lengths: InlineArray[Scalar[Self.DTYPE], Self.NUM_BODIES]
+
     # Joint storage (sized to MAX_JOINTS, or 1 if MAX_JOINTS=0 to avoid zero-size array)
     var joints: InlineArray[HingeJoint[Self.DTYPE], _max_one[Self.MAX_JOINTS]()]
     var num_joints: Int
@@ -197,6 +203,15 @@ struct Model[DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int =
             self.inertias[i] = Scalar[Self.DTYPE](0.004)  # 2/5 * m * r^2 for unit sphere
             self.inv_inertias[i] = Scalar[Self.DTYPE](250.0)
 
+        # Initialize geometry types (default: sphere)
+        self.geom_types = InlineArray[Int, Self.NUM_BODIES](uninitialized=True)
+        self.half_lengths = InlineArray[Scalar[Self.DTYPE], Self.NUM_BODIES](
+            uninitialized=True
+        )
+        for i in range(Self.NUM_BODIES):
+            self.geom_types[i] = GEOM_SPHERE
+            self.half_lengths[i] = Scalar[Self.DTYPE](0.0)
+
         # Initialize joints
         self.joints = InlineArray[HingeJoint[Self.DTYPE], _max_one[Self.MAX_JOINTS]()](
             uninitialized=True
@@ -215,6 +230,8 @@ struct Model[DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int =
         self.masses[index] = mass
         self.inv_masses[index] = Scalar[Self.DTYPE](1.0) / mass
         self.radii[index] = radius
+        self.geom_types[index] = GEOM_SPHERE
+        self.half_lengths[index] = Scalar[Self.DTYPE](0.0)
 
         # Sphere inertia: I = 2/5 * m * r^2
         var inertia = Scalar[Self.DTYPE](0.4) * mass * radius * radius
@@ -226,6 +243,69 @@ struct Model[DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int =
         self.inv_inertias[index * 3 + 0] = inv_inertia
         self.inv_inertias[index * 3 + 1] = inv_inertia
         self.inv_inertias[index * 3 + 2] = inv_inertia
+
+    fn set_body_capsule(
+        mut self,
+        index: Int,
+        mass: Scalar[Self.DTYPE],
+        radius: Scalar[Self.DTYPE],
+        half_length: Scalar[Self.DTYPE],
+    ):
+        """Configure a body as a capsule with given mass, radius, and half-length.
+
+        A capsule is defined by a cylinder of length 2*half_length with hemispherical
+        caps of the given radius at each end. The capsule's local Z-axis is along
+        the cylinder's axis.
+
+        Args:
+            index: Body index.
+            mass: Total mass of the capsule.
+            radius: Radius of the cylinder and hemispherical caps.
+            half_length: Half-length of the cylindrical part (total length = 2*half_length + 2*radius).
+        """
+        self.masses[index] = mass
+        self.inv_masses[index] = Scalar[Self.DTYPE](1.0) / mass
+        self.radii[index] = radius
+        self.geom_types[index] = GEOM_CAPSULE
+        self.half_lengths[index] = half_length
+
+        # Capsule inertia (approximation using cylinder + spherical caps)
+        # For a capsule aligned along Z-axis:
+        # Cylinder: m_cyl = mass * (2*h) / (2*h + 4/3*r)
+        # Spheres:  m_sph = mass * (4/3*r) / (2*h + 4/3*r)
+        #
+        # Simplified formula for solid capsule:
+        # I_xx = I_yy = (1/12)*m*L^2 + (1/4)*m*r^2  (transverse)
+        # I_zz = (1/2)*m*r^2  (along axis)
+        # where L is the total length including caps
+
+        var h = half_length  # Half-length of cylinder part
+        var r = radius
+        var r2 = r * r
+        var h2 = h * h
+
+        # Total length squared (cylinder + caps)
+        var L = Scalar[Self.DTYPE](2.0) * h + Scalar[Self.DTYPE](2.0) * r
+        var L2 = L * L
+
+        # Transverse inertia (around X or Y axis)
+        # Using solid cylinder approximation: I = m*(3*r^2 + L^2)/12
+        var I_trans = mass * (
+            Scalar[Self.DTYPE](3.0) * r2 + L2
+        ) / Scalar[Self.DTYPE](12.0)
+
+        # Axial inertia (around Z axis) - cylinder: I = m*r^2/2
+        var I_axial = Scalar[Self.DTYPE](0.5) * mass * r2
+
+        var inv_I_trans = Scalar[Self.DTYPE](1.0) / I_trans
+        var inv_I_axial = Scalar[Self.DTYPE](1.0) / I_axial
+
+        self.inertias[index * 3 + 0] = I_trans  # Ixx
+        self.inertias[index * 3 + 1] = I_trans  # Iyy
+        self.inertias[index * 3 + 2] = I_axial  # Izz
+        self.inv_inertias[index * 3 + 0] = inv_I_trans
+        self.inv_inertias[index * 3 + 1] = inv_I_trans
+        self.inv_inertias[index * 3 + 2] = inv_I_axial
 
     fn add_hinge_joint(
         mut self,

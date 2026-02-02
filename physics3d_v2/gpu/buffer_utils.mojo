@@ -14,6 +14,19 @@ from .constants import (
     BODY_STATE_SIZE,
     CONTACT_STATE_SIZE,
     METADATA_SIZE,
+    MODEL_BODY_SIZE,
+    MODEL_IDX_MASS,
+    MODEL_IDX_INV_MASS,
+    MODEL_IDX_RADIUS,
+    MODEL_IDX_IXX,
+    MODEL_IDX_IYY,
+    MODEL_IDX_IZZ,
+    MODEL_IDX_INV_IXX,
+    MODEL_IDX_INV_IYY,
+    MODEL_IDX_INV_IZZ,
+    MODEL_IDX_GEOM_TYPE,
+    MODEL_IDX_HALF_LENGTH,
+    GEOM_SPHERE,
     BODY_IDX_PX,
     BODY_IDX_PY,
     BODY_IDX_PZ,
@@ -154,30 +167,31 @@ fn create_model_host_buffer[
 ](
     ctx: DeviceContext, model: Model[DTYPE, NUM_BODIES, MAX_CONTACTS]
 ) raises -> HostBuffer[DTYPE]:
-    """Create a host buffer with model data (masses, inv_masses, radii).
+    """Create a host buffer with model data.
 
-    Layout per body: [mass, inv_mass, radius, ixx, iyy, izz, inv_ixx, inv_iyy, inv_izz]
-    Total: 9 floats per body.
+    Layout per body (11 floats):
+    [mass, inv_mass, radius, ixx, iyy, izz, inv_ixx, inv_iyy, inv_izz, geom_type, half_length]
 
     Returns:
-        HostBuffer of size [NUM_BODIES * 9].
+        HostBuffer of size [NUM_BODIES * MODEL_BODY_SIZE].
     """
-    comptime MODEL_BODY_SIZE = 9
     var host_buf = ctx.enqueue_create_host_buffer[DTYPE](
         NUM_BODIES * MODEL_BODY_SIZE
     )
 
     for i in range(NUM_BODIES):
         var base = i * MODEL_BODY_SIZE
-        host_buf[base + 0] = model.masses[i]
-        host_buf[base + 1] = model.inv_masses[i]
-        host_buf[base + 2] = model.radii[i]
-        host_buf[base + 3] = model.inertias[i * 3 + 0]
-        host_buf[base + 4] = model.inertias[i * 3 + 1]
-        host_buf[base + 5] = model.inertias[i * 3 + 2]
-        host_buf[base + 6] = model.inv_inertias[i * 3 + 0]
-        host_buf[base + 7] = model.inv_inertias[i * 3 + 1]
-        host_buf[base + 8] = model.inv_inertias[i * 3 + 2]
+        host_buf[base + MODEL_IDX_MASS] = model.masses[i]
+        host_buf[base + MODEL_IDX_INV_MASS] = model.inv_masses[i]
+        host_buf[base + MODEL_IDX_RADIUS] = model.radii[i]
+        host_buf[base + MODEL_IDX_IXX] = model.inertias[i * 3 + 0]
+        host_buf[base + MODEL_IDX_IYY] = model.inertias[i * 3 + 1]
+        host_buf[base + MODEL_IDX_IZZ] = model.inertias[i * 3 + 2]
+        host_buf[base + MODEL_IDX_INV_IXX] = model.inv_inertias[i * 3 + 0]
+        host_buf[base + MODEL_IDX_INV_IYY] = model.inv_inertias[i * 3 + 1]
+        host_buf[base + MODEL_IDX_INV_IZZ] = model.inv_inertias[i * 3 + 2]
+        host_buf[base + MODEL_IDX_GEOM_TYPE] = Scalar[DTYPE](model.geom_types[i])
+        host_buf[base + MODEL_IDX_HALF_LENGTH] = model.half_lengths[i]
 
     return host_buf^
 
@@ -187,23 +201,33 @@ fn init_model_host_buffer[
 ](ctx: DeviceContext) raises -> HostBuffer[DTYPE]:
     """Create an empty model host buffer for manual initialization.
 
-    Layout per body: [mass, inv_mass, radius, ixx, iyy, izz, inv_ixx, inv_iyy, inv_izz]
-    Total: 9 floats per body.
+    Layout per body (11 floats):
+    [mass, inv_mass, radius, ixx, iyy, izz, inv_ixx, inv_iyy, inv_izz, geom_type, half_length]
 
     Use for testing when you want to set model properties directly rather than
     from a CPU Model struct.
 
     Returns:
-        HostBuffer of size [NUM_BODIES * 9], zero-initialized.
+        HostBuffer of size [NUM_BODIES * MODEL_BODY_SIZE], zero-initialized.
     """
-    comptime MODEL_BODY_SIZE = 9
     var host_buf = ctx.enqueue_create_host_buffer[DTYPE](
         NUM_BODIES * MODEL_BODY_SIZE
     )
 
-    # Zero-initialize all values
-    for i in range(NUM_BODIES * MODEL_BODY_SIZE):
-        host_buf[i] = Scalar[DTYPE](0)
+    # Initialize all values with defaults (sphere geometry)
+    for i in range(NUM_BODIES):
+        var base = i * MODEL_BODY_SIZE
+        host_buf[base + MODEL_IDX_MASS] = Scalar[DTYPE](0)
+        host_buf[base + MODEL_IDX_INV_MASS] = Scalar[DTYPE](0)
+        host_buf[base + MODEL_IDX_RADIUS] = Scalar[DTYPE](0)
+        host_buf[base + MODEL_IDX_IXX] = Scalar[DTYPE](0)
+        host_buf[base + MODEL_IDX_IYY] = Scalar[DTYPE](0)
+        host_buf[base + MODEL_IDX_IZZ] = Scalar[DTYPE](0)
+        host_buf[base + MODEL_IDX_INV_IXX] = Scalar[DTYPE](0)
+        host_buf[base + MODEL_IDX_INV_IYY] = Scalar[DTYPE](0)
+        host_buf[base + MODEL_IDX_INV_IZZ] = Scalar[DTYPE](0)
+        host_buf[base + MODEL_IDX_GEOM_TYPE] = Scalar[DTYPE](GEOM_SPHERE)
+        host_buf[base + MODEL_IDX_HALF_LENGTH] = Scalar[DTYPE](0)
 
     return host_buf^
 
