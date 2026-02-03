@@ -253,9 +253,10 @@ struct PGSIntegrator(Integrator):
             ](env, state, model, dt)
 
         # 4. Solve constraints with PGS (including friction)
+        # Use 30 iterations to match CPU
         solve_constraints_pgs_gpu[
             DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS, STATE_SIZE, BATCH
-        ](env, state, model, dt, restitution, friction, 20)
+        ](env, state, model, dt, restitution, friction, 30)
 
         # 5. Solve joint velocity constraints (if any)
         @parameter
@@ -281,10 +282,16 @@ struct PGSIntegrator(Integrator):
             DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS, STATE_SIZE, BATCH
         ](env, state, model, ground_z)
 
-        # 8. Position correction
-        solve_position_constraints_gpu[
-            DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS, STATE_SIZE, BATCH
-        ](env, state, model, Scalar[DTYPE](0.2), Scalar[DTYPE](0.001))
+        # 8. Position correction (10 iterations to match CPU)
+        # CPU does: baumgarte=0.9, slop=0.0001
+        for _ in range(10):
+            # Re-detect contacts before each correction iteration
+            CollisionDetector.detect_all_contacts_gpu[
+                DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS, STATE_SIZE, BATCH
+            ](env, state, model, ground_z)
+            solve_position_constraints_gpu[
+                DTYPE, NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS, STATE_SIZE, BATCH
+            ](env, state, model, Scalar[DTYPE](0.9), Scalar[DTYPE](0.0001))
 
         # 9. Solve joint position constraints (if any)
         @parameter

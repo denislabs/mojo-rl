@@ -31,6 +31,8 @@ from ..gpu.constants import (
     body_offset,
     contact_offset,
     metadata_offset,
+    joint_offset,
+    slide_joint_offset,
     CONTACT_IDX_BODY_A,
     CONTACT_IDX_BODY_B,
     CONTACT_IDX_POS_X,
@@ -51,6 +53,10 @@ from ..gpu.constants import (
     GEOM_SPHERE,
     GEOM_CAPSULE,
     GEOM_BOX,
+    JOINT_IDX_PARENT,
+    JOINT_IDX_CHILD,
+    SLIDE_IDX_PARENT,
+    SLIDE_IDX_CHILD,
 )
 
 
@@ -142,9 +148,33 @@ struct CollisionDetector(CollisionSystem):
                 )
                 data.num_contacts += 1
 
-        # Phase 2: Body-body contacts (all pairs)
+        # Phase 2: Body-body contacts (all pairs, excluding jointed bodies)
         for i in range(NUM_BODIES):
             for j in range(i + 1, NUM_BODIES):
+                # Skip collision between bodies connected by a joint
+                var is_connected = False
+                @parameter
+                if MAX_JOINTS > 0:
+                    for k in range(model.num_joints):
+                        var joint = model.joints[k]
+                        if (joint.parent_body == i and joint.child_body == j) or (
+                            joint.parent_body == j and joint.child_body == i
+                        ):
+                            is_connected = True
+                            break
+                @parameter
+                if MAX_SLIDE_JOINTS > 0:
+                    if not is_connected:
+                        for k in range(model.num_slide_joints):
+                            var joint = model.slide_joints[k]
+                            if (joint.parent_body == i and joint.child_body == j) or (
+                                joint.parent_body == j and joint.child_body == i
+                            ):
+                                is_connected = True
+                                break
+                if is_connected:
+                    continue
+
                 var px_i = data.positions[i * 3 + 0]
                 var py_i = data.positions[i * 3 + 1]
                 var pz_i = data.positions[i * 3 + 2]
@@ -432,11 +462,35 @@ struct CollisionDetector(CollisionSystem):
                 state[env, c_off + CONTACT_IDX_DIST] = dist
                 num_contacts += 1
 
-        # Phase 2: Body-body contacts
+        # Phase 2: Body-body contacts (excluding jointed bodies)
         for i in range(NUM_BODIES):
             for j in range(i + 1, NUM_BODIES):
                 if num_contacts >= MAX_CONTACTS:
                     break
+
+                # Skip collision between bodies connected by a joint
+                var is_connected = False
+                @parameter
+                if MAX_JOINTS > 0:
+                    for k in range(MAX_JOINTS):
+                        var j_off = joint_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS](k)
+                        var parent = Int(rebind[Scalar[DTYPE]](state[env, j_off + JOINT_IDX_PARENT]))
+                        var child = Int(rebind[Scalar[DTYPE]](state[env, j_off + JOINT_IDX_CHILD]))
+                        if (parent == i and child == j) or (parent == j and child == i):
+                            is_connected = True
+                            break
+                @parameter
+                if MAX_SLIDE_JOINTS > 0:
+                    if not is_connected:
+                        for k in range(MAX_SLIDE_JOINTS):
+                            var sj_off = slide_joint_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS](k)
+                            var parent = Int(rebind[Scalar[DTYPE]](state[env, sj_off + SLIDE_IDX_PARENT]))
+                            var child = Int(rebind[Scalar[DTYPE]](state[env, sj_off + SLIDE_IDX_CHILD]))
+                            if (parent == i and child == j) or (parent == j and child == i):
+                                is_connected = True
+                                break
+                if is_connected:
+                    continue
 
                 var b_off_i = body_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS](i)
                 var b_off_j = body_offset[NUM_BODIES, MAX_CONTACTS, MAX_JOINTS, MAX_SLIDE_JOINTS](j)

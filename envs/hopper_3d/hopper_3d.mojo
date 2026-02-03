@@ -1422,8 +1422,10 @@ struct Hopper3D[DTYPE: DType = DType.float64](
         var thigh_z = leg_z + leg_half_length + thigh_half_length
         var torso_z = thigh_z + thigh_half_length + torso_half_length
 
-        # Small random perturbation
-        var init_vx = (rand_vals[0] * Scalar[gpu_dtype](2.0) - Scalar[gpu_dtype](1.0)) * Scalar[gpu_dtype](0.01)
+        # No random perturbation - match CPU initial state exactly
+        # This ensures policies trained on GPU transfer well to CPU evaluation
+        var init_vx = Scalar[gpu_dtype](0.0)
+        _ = rand_vals  # Suppress unused variable warning
 
         # Body offsets
         var b0 = body_offset[

@@ -704,8 +704,11 @@ fn solve_constraints_pgs_gpu[
         rebind[Scalar[DTYPE]](state[env, meta_off + META_IDX_NUM_CONTACTS])
     )
 
-    # Spring-damper parameters (MuJoCo defaults)
-    var stiffness: Scalar[DTYPE] = 2000.0
+    # Spring-damper parameters (matching CPU MuJoCo-style)
+    # CPU uses: timeconst=0.02, dampratio=1.0
+    # k = 1 / (timeconst^2 * dampratio^2) = 1 / (0.02^2 * 1^2) = 2500
+    # b = 2 / timeconst = 2 / 0.02 = 100
+    var stiffness: Scalar[DTYPE] = 2500.0
     var damping: Scalar[DTYPE] = 100.0
 
     # Reset impulses at start
