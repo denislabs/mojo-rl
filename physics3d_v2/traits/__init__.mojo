@@ -1,2 +1,2 @@
 from .collision import CollisionSystem
-from .integrator import Integrator
+from .integrator import Integrator, GcIntegrator

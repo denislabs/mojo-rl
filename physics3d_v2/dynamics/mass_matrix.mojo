@@ -13,9 +13,37 @@ Reference: Featherstone, "Rigid Body Dynamics Algorithms"
 """
 
 from math import sqrt
+from layout import LayoutTensor, Layout
+
 from ..types import ModelGC, DataGC
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
-from ..kinematics.quat_math import quat_rotate
+from ..kinematics.quat_math import quat_rotate, gpu_quat_rotate
+from ..gpu.constants import (
+    gc_xpos_offset,
+    gc_xquat_offset,
+    gc_model_body_offset,
+    gc_model_joint_offset,
+    gc_model_metadata_offset,
+    GC_BODY_IDX_PARENT,
+    GC_BODY_IDX_MASS,
+    GC_BODY_IDX_IXX,
+    GC_BODY_IDX_IYY,
+    GC_BODY_IDX_IZZ,
+    GC_JOINT_IDX_TYPE,
+    GC_JOINT_IDX_BODY_ID,
+    GC_JOINT_IDX_DOF_ADR,
+    GC_JOINT_IDX_POS_X,
+    GC_JOINT_IDX_POS_Y,
+    GC_JOINT_IDX_POS_Z,
+    GC_JOINT_IDX_AXIS_X,
+    GC_JOINT_IDX_AXIS_Y,
+    GC_JOINT_IDX_AXIS_Z,
+    GC_MODEL_META_IDX_NJOINT,
+    GC_JNT_FREE,
+    GC_JNT_BALL,
+    GC_JNT_SLIDE,
+    GC_JNT_HINGE,
+)
 
 
 # Helper to ensure positive size (avoid zero-size arrays)
@@ -68,7 +96,8 @@ fn compute_mass_matrix[
 
         if joint.jnt_type == JNT_HINGE:
             # Diagonal term: rotational inertia + m*L^2
-            var m_effective = Scalar[DTYPE](0)
+            # m_effective will be computed below
+            var m_effective: Scalar[DTYPE]
 
             # Get joint axis in world frame
             var parent = model.body_parent[body]
@@ -271,3 +300,129 @@ fn solve_linear_diagonal[
             x[i] = b[i] / m_ii
         else:
             x[i] = Scalar[DTYPE](0)
+
+
+# =============================================================================
+# GPU Mass Matrix Kernel (Diagonal approximation)
+# =============================================================================
+
+
+@always_inline
+fn compute_mass_matrix_diagonal_gpu[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    STATE_SIZE: Int,
+    MODEL_SIZE: Int,
+    V_SIZE: Int,
+    BATCH: Int,
+](
+    env: Int,
+    state: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+    ],
+    model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+    mut M_diag: InlineArray[Scalar[DTYPE], V_SIZE],
+):
+    """Compute diagonal of mass matrix M(q) (GPU version).
+
+    For efficiency on GPU, we compute only diagonal elements.
+    """
+    var xpos_off = gc_xpos_offset[NQ, NV, NBODY]()
+    var xquat_off = gc_xquat_offset[NQ, NV, NBODY]()
+
+    var model_meta_off = gc_model_metadata_offset[NBODY, NJOINT]()
+    var num_joints = Int(rebind[Scalar[DTYPE]](model[0, model_meta_off + GC_MODEL_META_IDX_NJOINT]))
+
+    # Initialize to zero
+    for i in range(NV):
+        M_diag[i] = Scalar[DTYPE](0)
+
+    for j in range(num_joints):
+        var joint_off = gc_model_joint_offset[NBODY](j)
+
+        var jnt_type = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_TYPE]))
+        var body_id = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_BODY_ID]))
+        var dof_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_DOF_ADR]))
+
+        var body_off = gc_model_body_offset(body_id)
+        var parent = Int(rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_PARENT]))
+        var mass = rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_MASS])
+        var I_xx = rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_IXX])
+        var I_yy = rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_IYY])
+        var I_zz = rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_IZZ])
+        var I_avg = (I_xx + I_yy + I_zz) / Scalar[DTYPE](3)
+
+        var jpos_x = rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_POS_X])
+        var jpos_y = rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_POS_Y])
+        var jpos_z = rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_POS_Z])
+        var axis_x = rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_AXIS_X])
+        var axis_y = rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_AXIS_Y])
+        var axis_z = rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_AXIS_Z])
+
+        if jnt_type == GC_JNT_HINGE:
+            var jpos_world_x = jpos_x
+            var jpos_world_y = jpos_y
+            var jpos_world_z = jpos_z
+
+            if parent >= 0:
+                var ppx = rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 0])
+                var ppy = rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 1])
+                var ppz = rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 2])
+                var pqx = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 0])
+                var pqy = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 1])
+                var pqz = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 2])
+                var pqw = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 3])
+
+                var rotated = gpu_quat_rotate(pqx, pqy, pqz, pqw, jpos_x, jpos_y, jpos_z)
+                jpos_world_x = ppx + rotated[0]
+                jpos_world_y = ppy + rotated[1]
+                jpos_world_z = ppz + rotated[2]
+
+            var axis_world_x = axis_x
+            var axis_world_y = axis_y
+            var axis_world_z = axis_z
+            if parent >= 0:
+                var pqx = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 0])
+                var pqy = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 1])
+                var pqz = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 2])
+                var pqw = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 3])
+                var rotated = gpu_quat_rotate(pqx, pqy, pqz, pqw, axis_x, axis_y, axis_z)
+                axis_world_x = rotated[0]
+                axis_world_y = rotated[1]
+                axis_world_z = rotated[2]
+
+            var body_px = rebind[Scalar[DTYPE]](state[env, xpos_off + body_id * 3 + 0])
+            var body_py = rebind[Scalar[DTYPE]](state[env, xpos_off + body_id * 3 + 1])
+            var body_pz = rebind[Scalar[DTYPE]](state[env, xpos_off + body_id * 3 + 2])
+
+            var rx = body_px - jpos_world_x
+            var ry = body_py - jpos_world_y
+            var rz = body_pz - jpos_world_z
+
+            var r_dot_axis = rx * axis_world_x + ry * axis_world_y + rz * axis_world_z
+            var r_perp_x = rx - r_dot_axis * axis_world_x
+            var r_perp_y = ry - r_dot_axis * axis_world_y
+            var r_perp_z = rz - r_dot_axis * axis_world_z
+            var r_perp_sq = r_perp_x * r_perp_x + r_perp_y * r_perp_y + r_perp_z * r_perp_z
+
+            M_diag[dof_adr] = I_avg + mass * r_perp_sq
+
+        elif jnt_type == GC_JNT_SLIDE:
+            M_diag[dof_adr] = mass
+
+        elif jnt_type == GC_JNT_FREE:
+            M_diag[dof_adr + 0] = mass
+            M_diag[dof_adr + 1] = mass
+            M_diag[dof_adr + 2] = mass
+            M_diag[dof_adr + 3] = I_xx
+            M_diag[dof_adr + 4] = I_yy
+            M_diag[dof_adr + 5] = I_zz
+
+        elif jnt_type == GC_JNT_BALL:
+            M_diag[dof_adr + 0] = I_xx
+            M_diag[dof_adr + 1] = I_yy
+            M_diag[dof_adr + 2] = I_zz

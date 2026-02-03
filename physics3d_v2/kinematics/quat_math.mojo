@@ -259,3 +259,101 @@ fn quat_integrate[
 
     # Normalize
     return quat_normalize(new_qx, new_qy, new_qz, new_qw)
+
+
+# =============================================================================
+# GPU Quaternion Operations (InlineArray return for GPU compatibility)
+# =============================================================================
+
+
+@always_inline
+fn gpu_quat_mul[
+    DTYPE: DType
+](
+    ax: Scalar[DTYPE],
+    ay: Scalar[DTYPE],
+    az: Scalar[DTYPE],
+    aw: Scalar[DTYPE],
+    bx: Scalar[DTYPE],
+    by: Scalar[DTYPE],
+    bz: Scalar[DTYPE],
+    bw: Scalar[DTYPE],
+) -> InlineArray[Scalar[DTYPE], 4]:
+    """Quaternion multiplication a * b (GPU version with InlineArray return)."""
+    var result = InlineArray[Scalar[DTYPE], 4](uninitialized=True)
+    result[0] = aw * bx + ax * bw + ay * bz - az * by
+    result[1] = aw * by - ax * bz + ay * bw + az * bx
+    result[2] = aw * bz + ax * by - ay * bx + az * bw
+    result[3] = aw * bw - ax * bx - ay * by - az * bz
+    return result^
+
+
+@always_inline
+fn gpu_quat_rotate[
+    DTYPE: DType
+](
+    qx: Scalar[DTYPE],
+    qy: Scalar[DTYPE],
+    qz: Scalar[DTYPE],
+    qw: Scalar[DTYPE],
+    vx: Scalar[DTYPE],
+    vy: Scalar[DTYPE],
+    vz: Scalar[DTYPE],
+) -> InlineArray[Scalar[DTYPE], 3]:
+    """Rotate vector v by quaternion q: q * v * q^-1 (GPU version)."""
+    var t_x = Scalar[DTYPE](2) * (qy * vz - qz * vy)
+    var t_y = Scalar[DTYPE](2) * (qz * vx - qx * vz)
+    var t_z = Scalar[DTYPE](2) * (qx * vy - qy * vx)
+
+    var result = InlineArray[Scalar[DTYPE], 3](uninitialized=True)
+    result[0] = vx + qw * t_x + (qy * t_z - qz * t_y)
+    result[1] = vy + qw * t_y + (qz * t_x - qx * t_z)
+    result[2] = vz + qw * t_z + (qx * t_y - qy * t_x)
+    return result^
+
+
+@always_inline
+fn gpu_axis_angle_to_quat[
+    DTYPE: DType
+](
+    axis_x: Scalar[DTYPE],
+    axis_y: Scalar[DTYPE],
+    axis_z: Scalar[DTYPE],
+    angle: Scalar[DTYPE],
+) -> InlineArray[Scalar[DTYPE], 4]:
+    """Convert axis-angle to quaternion (GPU version)."""
+    var half_angle = angle * Scalar[DTYPE](0.5)
+    var s = sin(half_angle)
+    var c = cos(half_angle)
+
+    # Normalize axis
+    var len_sq = axis_x * axis_x + axis_y * axis_y + axis_z * axis_z
+    var inv_len = Scalar[DTYPE](1.0) / sqrt(len_sq + Scalar[DTYPE](1e-10))
+
+    var result = InlineArray[Scalar[DTYPE], 4](uninitialized=True)
+    result[0] = axis_x * inv_len * s
+    result[1] = axis_y * inv_len * s
+    result[2] = axis_z * inv_len * s
+    result[3] = c
+    return result^
+
+
+@always_inline
+fn gpu_quat_normalize[
+    DTYPE: DType
+](
+    qx: Scalar[DTYPE],
+    qy: Scalar[DTYPE],
+    qz: Scalar[DTYPE],
+    qw: Scalar[DTYPE],
+) -> InlineArray[Scalar[DTYPE], 4]:
+    """Normalize quaternion (GPU version)."""
+    var norm_sq = qx * qx + qy * qy + qz * qz + qw * qw
+    var inv_norm = Scalar[DTYPE](1.0) / sqrt(norm_sq + Scalar[DTYPE](1e-10))
+
+    var result = InlineArray[Scalar[DTYPE], 4](uninitialized=True)
+    result[0] = qx * inv_norm
+    result[1] = qy * inv_norm
+    result[2] = qz * inv_norm
+    result[3] = qw * inv_norm
+    return result^

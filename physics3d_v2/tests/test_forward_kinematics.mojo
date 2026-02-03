@@ -11,9 +11,9 @@ Run with:
 
 from math import sqrt, pi
 from builtin.math import abs
-from physics3d_v2.generalized.types import ModelGC, DataGC
-from physics3d_v2.generalized.kinematics.forward_kinematics import forward_kinematics
-from physics3d_v2.generalized.kinematics.quat_math import quat_rotate
+from physics3d_v2.types import ModelGC, DataGC
+from physics3d_v2.kinematics.forward_kinematics import forward_kinematics
+from physics3d_v2.kinematics.quat_math import quat_rotate
 
 
 fn test_fk_identity() -> Bool:

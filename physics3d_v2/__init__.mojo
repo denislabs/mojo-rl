@@ -78,7 +78,23 @@ from .joints import (
 )
 
 # Integrators (primary API)
-from .integrator import ImpulseIntegrator, PGSIntegrator
+from .integrator import ImpulseIntegrator, PGSIntegrator, SemiImplicitEulerIntegrator
+
+# Generalized Coordinates (GC) engine
+from .types import ModelGC, DataGC, ContactInfoGC
+from .joint_types import JointDef, JNT_FREE, JNT_BALL, JNT_SLIDE, JNT_HINGE
+from .traits import GcIntegrator
+from .kinematics.forward_kinematics import forward_kinematics, compute_body_velocities
+from .kinematics.quat_math import (
+    quat_mul,
+    quat_conjugate,
+    quat_rotate,
+    quat_normalize,
+    axis_angle_to_quat,
+    quat_integrate,
+)
+from .dynamics.mass_matrix import compute_mass_matrix, solve_linear_diagonal
+from .dynamics.bias_forces import compute_bias_forces
 
 # Note: render modules are imported separately to avoid SDL2 dependency:
 #   from physics3d_v2.render import Physics3DRenderer

@@ -135,4 +135,33 @@ from .buffer_utils import (
     get_body_z,
     get_body_vz,
     get_num_contacts,
+    # GC buffer utilities
+    create_gc_state_buffer,
+    create_gc_model_buffer,
+    copy_model_to_buffer,
+    copy_data_to_buffer,
+    copy_buffer_to_data,
 )
+
+# GC GPU kernels (main step kernel and integration-specific kernels in gc_kernels)
+from .gc_kernels import (
+    step_gc_kernel,
+    detect_ground_contacts_gpu,
+    compute_contact_forces_gpu,
+    integrate_gc_gpu,
+    normalize_qpos_quaternions_gpu,
+)
+
+# GC GPU kernels colocated with CPU implementations
+from ..kinematics.quat_math import (
+    gpu_quat_mul,
+    gpu_quat_rotate,
+    gpu_axis_angle_to_quat,
+    gpu_quat_normalize,
+)
+from ..kinematics.forward_kinematics import (
+    forward_kinematics_gpu,
+    compute_body_velocities_gpu,
+)
+from ..dynamics.mass_matrix import compute_mass_matrix_diagonal_gpu
+from ..dynamics.bias_forces import compute_bias_forces_gpu

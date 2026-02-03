@@ -11,9 +11,11 @@ Run with:
 
 from math import sqrt, pi, sin, cos
 from builtin.math import abs
-from physics3d_v2.generalized.types import ModelGC, DataGC
-from physics3d_v2.generalized.integrator.semi_implicit_euler import step_gc
-from physics3d_v2.generalized.kinematics.forward_kinematics import forward_kinematics
+from physics3d_v2.types import ModelGC, DataGC
+from physics3d_v2.integrator.semi_implicit_euler_integrator import (
+    SemiImplicitEulerIntegrator,
+)
+from physics3d_v2.kinematics.forward_kinematics import forward_kinematics
 
 
 fn test_pendulum_period() -> Bool:
@@ -40,6 +42,7 @@ fn test_pendulum_period() -> Bool:
     var model = ModelGC[DType.float64, 1, 1, 1, 1, 5](
         gravity_z=-g,
         timestep=0.001,  # Small timestep for accuracy
+        ground_z=-10.0,  # Below pendulum to avoid collision
     )
 
     model.set_body(0, mass=1.0, inertia=(0.01, 0.01, 0.01), radius=0.1)
@@ -74,7 +77,7 @@ fn test_pendulum_period() -> Bool:
     var time = Float64(0.0)
 
     for i in range(steps):
-        step_gc(model, data)
+        SemiImplicitEulerIntegrator.step(model, data)
         time = time + Float64(dt)
 
         var current_sign_positive = data.qpos[0] > Float64(0)
@@ -99,10 +102,16 @@ fn test_pendulum_period() -> Bool:
     # Period = time between consecutive positive-to-negative crossings
     # Each such crossing occurs once per full period
     var num_periods = zero_crossings - 1
-    var measured_period = (last_crossing_time - first_crossing_time) / Float64(num_periods)
+    var measured_period = (last_crossing_time - first_crossing_time) / Float64(
+        num_periods
+    )
     print("  Measured period:", measured_period, "s")
 
-    var error_pct = abs(measured_period - expected_period) / expected_period * Float64(100.0)
+    var error_pct = (
+        abs(measured_period - expected_period)
+        / expected_period
+        * Float64(100.0)
+    )
     print("  Error:", error_pct, "%")
 
     if error_pct < Float64(2.0):
@@ -124,6 +133,7 @@ fn test_energy_conservation() -> Bool:
     var model = ModelGC[DType.float64, 1, 1, 1, 1, 5](
         gravity_z=-g,
         timestep=0.001,
+        ground_z=-10.0,  # Below pendulum to avoid collision
     )
 
     model.set_body(0, mass=m, inertia=(0.01, 0.01, 0.01), radius=0.1)
@@ -147,7 +157,10 @@ fn test_energy_conservation() -> Bool:
     # PE = m*g*h where h is height of mass relative to lowest point
     # KE = 0.5 * I * omega^2 where I = m*L^2
     fn compute_energy(
-        data: DataGC[DType.float64, 1, 1, 1, 1, 5], m: Float64, g: Float64, L: Float64
+        data: DataGC[DType.float64, 1, 1, 1, 1, 5],
+        m: Float64,
+        g: Float64,
+        L: Float64,
     ) -> Float64:
         var z = data.xpos[2]
         var h = z + L  # Height relative to lowest point (z = -L)
@@ -168,7 +181,7 @@ fn test_energy_conservation() -> Bool:
     var max_energy_deviation = Float64(0.0)
 
     for i in range(steps):
-        step_gc(model, data)
+        SemiImplicitEulerIntegrator.step(model, data)
         forward_kinematics(model, data)
 
         var current_energy = compute_energy(data, m, g, L)
@@ -194,6 +207,7 @@ fn test_gravity_swinging() -> Bool:
     var model = ModelGC[DType.float64, 1, 1, 1, 1, 5](
         gravity_z=-9.81,
         timestep=0.01,
+        ground_z=-10.0,  # Below pendulum to avoid collision
     )
 
     model.set_body(0, mass=1.0, inertia=(0.1, 0.1, 0.1), radius=0.1)
@@ -214,7 +228,7 @@ fn test_gravity_swinging() -> Bool:
 
     # Run for 0.5 seconds
     for _ in range(50):
-        step_gc(model, data)
+        SemiImplicitEulerIntegrator.step(model, data)
 
     # Angle should have changed (pendulum swinging)
     var angle_change = abs(data.qpos[0] - initial_angle)
