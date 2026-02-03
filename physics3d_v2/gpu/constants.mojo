@@ -3,7 +3,7 @@
 GPU kernels require flat buffer layouts. This file defines:
 1. Per-body state layout (positions, velocities, etc.)
 2. Per-contact layout (body indices, normal, depth, etc.)
-3. Per-joint layout (body indices, anchors, axis, impulses, actuation)
+3. Per-joint layout (body indices, anchors, axis, impulses, actuation, free DOF)
 4. Total buffer size computation
 
 Buffer layout for multi-body:
@@ -12,7 +12,8 @@ Buffer layout for multi-body:
 Where:
   - BODY_STATE_SIZE = 22 floats per body
   - CONTACT_STATE_SIZE = 12 floats per contact
-  - JOINT_STATE_SIZE = 18 floats per joint (including actuation)
+  - JOINT_STATE_SIZE = 21 floats per joint (including actuation and free DOF)
+  - SLIDE_JOINT_STATE_SIZE = 21 floats per slide joint
   - METADATA_SIZE = 4 floats (num_contacts, num_joints, padding)
 """
 
@@ -154,8 +155,13 @@ comptime JOINT_IDX_IMPULSE_AY: Int = 15  # Angular impulse 2
 comptime JOINT_IDX_TARGET_TORQUE: Int = 16  # Control input torque (N·m)
 comptime JOINT_IDX_TORQUE_LIMIT: Int = 17  # Maximum torque magnitude
 
+# Free DOF mode (Phase 11f)
+comptime JOINT_IDX_IS_FREE_DOF: Int = 18  # 1.0 if free DOF, 0.0 otherwise
+comptime JOINT_IDX_QPOS: Int = 19  # Tracked joint position (angle in radians)
+comptime JOINT_IDX_QVEL: Int = 20  # Tracked joint velocity (rad/s)
+
 # Total joint state size
-comptime JOINT_STATE_SIZE: Int = 18
+comptime JOINT_STATE_SIZE: Int = 21
 
 
 # =============================================================================
@@ -192,8 +198,13 @@ comptime SLIDE_IDX_IMPULSE_AZ: Int = 15  # Angular impulse Z
 comptime SLIDE_IDX_TARGET_FORCE: Int = 16  # Control input force (N)
 comptime SLIDE_IDX_FORCE_LIMIT: Int = 17  # Maximum force magnitude
 
+# Free DOF mode (Phase 11f)
+comptime SLIDE_IDX_IS_FREE_DOF: Int = 18  # 1.0 if free DOF, 0.0 otherwise
+comptime SLIDE_IDX_QPOS: Int = 19  # Tracked joint position (meters along axis)
+comptime SLIDE_IDX_QVEL: Int = 20  # Tracked joint velocity (m/s along axis)
+
 # Total slide joint state size
-comptime SLIDE_JOINT_STATE_SIZE: Int = 18
+comptime SLIDE_JOINT_STATE_SIZE: Int = 21
 
 
 # =============================================================================

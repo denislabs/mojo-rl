@@ -10,6 +10,12 @@ Constraints:
 Physics:
 - Point-to-point constraint for anchors
 - Angular constraint to lock rotation perpendicular to axis
+
+Free DOF Mode (Phase 11f):
+- When is_free_dof=True, the joint does NOT apply constraints
+- Instead, it tracks the joint angle from body orientations (like MuJoCo)
+- Used for root joints (world→body) to avoid constraint conflicts
+- The qpos field stores the tracked joint position (angle in radians)
 """
 
 from math import sqrt
@@ -63,6 +69,12 @@ struct HingeJoint[DTYPE: DType](ImplicitlyCopyable, Movable):
     # Actuation (Phase 7)
     var target_torque: Scalar[Self.DTYPE]  # Control input (N·m)
     var torque_limit: Scalar[Self.DTYPE]  # Maximum torque magnitude
+
+    # Free DOF mode (Phase 11f)
+    # When True, joint tracks state without applying constraints (MuJoCo-style)
+    var is_free_dof: Bool
+    var qpos: Scalar[Self.DTYPE]  # Tracked joint position (angle in radians)
+    var qvel: Scalar[Self.DTYPE]  # Tracked joint velocity (rad/s)
 
     @staticmethod
     fn create(
@@ -119,6 +131,9 @@ struct HingeJoint[DTYPE: DType](ImplicitlyCopyable, Movable):
             impulse_ay=Scalar[Self.DTYPE](0),
             target_torque=Scalar[Self.DTYPE](0),
             torque_limit=Scalar[Self.DTYPE](100.0),  # Default 100 N·m limit
+            is_free_dof=False,  # Default: apply constraints
+            qpos=Scalar[Self.DTYPE](0),
+            qvel=Scalar[Self.DTYPE](0),
         )
 
     @staticmethod
@@ -143,6 +158,66 @@ struct HingeJoint[DTYPE: DType](ImplicitlyCopyable, Movable):
             impulse_ay=Scalar[Self.DTYPE](0),
             target_torque=Scalar[Self.DTYPE](0),
             torque_limit=Scalar[Self.DTYPE](100.0),
+            is_free_dof=False,
+            qpos=Scalar[Self.DTYPE](0),
+            qvel=Scalar[Self.DTYPE](0),
+        )
+
+    @staticmethod
+    fn create_free_dof(
+        parent_body: Int,
+        child_body: Int,
+        axis: Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]],
+    ) -> Self:
+        """Create a free DOF hinge joint (MuJoCo-style root joint).
+
+        A free DOF joint tracks the rotation angle around the axis but does NOT
+        apply constraints. Used for root joints where the body should rotate
+        freely while tracking the angle for observations.
+
+        Args:
+            parent_body: Parent body index (-1 for world).
+            child_body: Child body index.
+            axis: Rotation axis (will be normalized).
+
+        Returns:
+            Configured free DOF HingeJoint.
+        """
+        # Normalize axis
+        var ax = axis[0]
+        var ay = axis[1]
+        var az = axis[2]
+        var length_sq = ax * ax + ay * ay + az * az
+        var inv_length = Scalar[Self.DTYPE](1.0) / sqrt(
+            length_sq + Scalar[Self.DTYPE](1e-10)
+        )
+        ax = ax * inv_length
+        ay = ay * inv_length
+        az = az * inv_length
+
+        return Self(
+            parent_body=parent_body,
+            child_body=child_body,
+            # Anchors not used for free DOF
+            anchor_parent_x=Scalar[Self.DTYPE](0),
+            anchor_parent_y=Scalar[Self.DTYPE](0),
+            anchor_parent_z=Scalar[Self.DTYPE](0),
+            anchor_child_x=Scalar[Self.DTYPE](0),
+            anchor_child_y=Scalar[Self.DTYPE](0),
+            anchor_child_z=Scalar[Self.DTYPE](0),
+            axis_x=ax,
+            axis_y=ay,
+            axis_z=az,
+            impulse_lx=Scalar[Self.DTYPE](0),
+            impulse_ly=Scalar[Self.DTYPE](0),
+            impulse_lz=Scalar[Self.DTYPE](0),
+            impulse_ax=Scalar[Self.DTYPE](0),
+            impulse_ay=Scalar[Self.DTYPE](0),
+            target_torque=Scalar[Self.DTYPE](0),
+            torque_limit=Scalar[Self.DTYPE](0),  # No actuation for root joint
+            is_free_dof=True,  # Free DOF mode
+            qpos=Scalar[Self.DTYPE](0),
+            qvel=Scalar[Self.DTYPE](0),
         )
 
     fn reset_impulses(mut self):

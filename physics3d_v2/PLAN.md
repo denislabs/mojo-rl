@@ -27,6 +27,7 @@ Build a minimal, mathematically correct 3D physics engine following MuJoCo's com
 | Phase 8 | Capsule geometry | ✅ | ✅ | Complete |
 | Phase 9 | Box geometry | ✅ | ✅ | Complete |
 | Phase 10a | Bipedal walker (3-body, 2-joint) | ✅ | ✅ | Complete |
+| Phase 11f | Free DOF joints (MuJoCo-style roots) | ✅ | ✅ | Complete |
 
 ---
 
@@ -1655,6 +1656,27 @@ var angular_damping: Float64 = 0.99
 - **11c**: Universal joints (2 DOF rotation)
 - **11d**: Joint limits (angle min/max)
 - **11e**: Joint damping and stiffness
+- **11f**: Free DOF joints for root bodies ✅ CORE COMPLETE
+  - Problem: Current root joints (world→body) create conflicting constraints
+  - Solution: Add "free DOF" mode where joints track state without constraining
+  - Implementation (DONE):
+    - ✅ Add `is_free_dof: Bool`, `qpos`, `qvel` fields to HingeJoint and SlideJoint
+    - ✅ Add `create_free_dof()` factory methods to both joint types
+    - ✅ Add `add_free_hinge_joint()` and `add_free_slide_joint()` to Model class
+    - ✅ When `is_free_dof=True`: skip constraint solving in velocity and position solvers
+    - ✅ Updated GPU joint state layout (JOINT_STATE_SIZE = 21, SLIDE_JOINT_STATE_SIZE = 21)
+    - ✅ Updated GPU joint solvers to check is_free_dof flag
+    - ✅ Updated Hopper3D to use free DOF joints for root joints
+  - Files modified:
+    - `joints/hinge_joint.mojo` - added free_dof flag, qpos/qvel, create_free_dof()
+    - `joints/slide_joint.mojo` - added free_dof flag, qpos/qvel, create_free_dof()
+    - `joints/joint_solver.mojo` - skip constraint solving for free DOF joints (CPU + GPU)
+    - `gpu/constants.mojo` - added JOINT_IDX_IS_FREE_DOF, SLIDE_IDX_IS_FREE_DOF
+    - `types.mojo` - added add_free_hinge_joint(), add_free_slide_joint()
+    - `envs/hopper_3d/hopper_3d.mojo` - use free DOF for root joints
+  - TODO (optional enhancements):
+    - Forward kinematics: compute body position from free DOF values
+    - Inverse: update free DOF values from body state after physics step
 
 ### Phase 12: Soft Bodies & Cables
 - **12a**: Mass-spring systems
@@ -1666,3 +1688,106 @@ var angular_damping: Float64 = 0.99
 - **13b**: Parallel constraint solving
 - **13c**: SIMD optimizations for CPU
 - **13d**: Batched GPU collision detection
+
+### Phase 14: MuJoCo-Style Generalized Coordinates (Alternative Engine)
+
+**Goal**: Implement a full MuJoCo-style physics engine using generalized coordinates alongside the existing Cartesian constraint-based engine. Both engines will coexist to allow comparison.
+
+**Background**: MuJoCo uses a fundamentally different approach where joints ADD degrees of freedom rather than constrain them. The state is stored as joint positions (`qpos`) and velocities (`qvel`), with body positions computed via forward kinematics.
+
+**Key Differences from Current Engine**:
+
+| Aspect | Current (Cartesian) | MuJoCo-Style (Generalized) |
+|--------|---------------------|---------------------------|
+| State | Body positions/quaternions | Joint angles (`qpos`) |
+| Joints | Remove DOF (constraints) | Add DOF (transformations) |
+| Root joints | Fixed pivot (conflicts!) | Transform accumulation |
+| Dynamics | Impulse-based | Mass matrix in joint space |
+
+**Implementation Plan**:
+
+#### Phase 14a: Core Data Structures
+- `ModelGC` (Generalized Coordinates Model):
+  - `nq`: Total qpos size, `nv`: Total qvel size
+  - `jnt_type[]`: Joint types (FREE=7, BALL=4, SLIDE=1, HINGE=1)
+  - `jnt_qposadr[]`: Start index in qpos for each joint
+  - `jnt_dofadr[]`: Start index in qvel for each joint
+  - `jnt_bodyid[]`: Body each joint belongs to
+  - `jnt_pos[]`, `jnt_axis[]`: Joint anchor and axis in local frame
+  - `body_parentid[]`: Kinematic tree structure
+- `DataGC`:
+  - `qpos[nq]`: Joint positions (angles, quaternions, translations)
+  - `qvel[nv]`: Joint velocities
+  - `qacc[nv]`: Joint accelerations
+  - `xpos[nbody]`, `xquat[nbody]`: Computed body positions (from FK)
+
+#### Phase 14b: Forward Kinematics
+- Traverse kinematic tree from root to leaves
+- For each body, accumulate transformations from parent:
+  ```
+  xpos[body] = xpos[parent] + rotate(body_pos, xquat[parent])
+  xquat[body] = xquat[parent] * body_quat
+
+  for each joint on body:
+    if SLIDE: xpos += axis * qpos[joint]
+    if HINGE: xquat *= axis_angle_to_quat(axis, qpos[joint])
+    if BALL:  xquat *= qpos[joint] (quaternion)
+    if FREE:  xpos = qpos[0:3], xquat = qpos[3:7]
+  ```
+- GPU: Process kinematic branches in parallel
+
+#### Phase 14c: Inverse Kinematics (State Extraction)
+- After collision/contact solving, update qpos from body positions
+- For root FREE joint: direct copy
+- For SLIDE: project position difference onto axis
+- For HINGE: compute angle from quaternion difference
+
+#### Phase 14d: Dynamics in Generalized Coordinates
+- Compute composite inertia (Featherstone algorithm)
+- Mass matrix M(q) in joint space
+- Coriolis/centrifugal forces C(q, qdot)
+- Gravity forces g(q)
+- Equations of motion: M(q) * qacc = tau - C(q, qdot) - g(q) + J^T * f_contact
+- Contact Jacobian J maps contact forces to joint torques
+
+#### Phase 14e: Contact Handling
+- Compute contact Jacobian J = d(contact_point) / d(qpos)
+- Solve contact constraints in joint space
+- Options:
+  - Impulse-based (current style, but in joint space)
+  - Soft contact (MuJoCo style with spring-damper)
+
+#### Phase 14f: Integration and Testing
+- Semi-implicit Euler integrator for qpos/qvel
+- Hopper environment using new engine (`HopperGC`)
+- Comparison tests: CartesianEngine vs GeneralizedEngine
+- Performance benchmarks
+
+**File Structure**:
+```
+physics3d_v2/
+├── generalized/                    # New MuJoCo-style engine
+│   ├── __init__.mojo
+│   ├── types.mojo                  # ModelGC, DataGC
+│   ├── kinematics.mojo             # Forward/inverse kinematics
+│   ├── dynamics.mojo               # Mass matrix, Coriolis, gravity
+│   ├── integrator.mojo             # Semi-implicit Euler
+│   └── tests/
+│       ├── test_kinematics.mojo
+│       ├── test_dynamics.mojo
+│       └── test_hopper_gc.mojo     # Hopper with generalized coords
+├── envs/
+│   ├── hopper.mojo                 # Current Cartesian-based
+│   └── hopper_gc.mojo              # New generalized-coords based
+```
+
+**Validation Criteria**:
+- Forward kinematics matches MuJoCo reference
+- Pendulum period matches analytical solution
+- Hopper behavior identical between engines (within numerical tolerance)
+- GPU performance comparable to current engine
+
+**References**:
+- MuJoCo source: `mujoco-main/src/engine/engine_core_smooth.c`
+- MuJoCo Warp: `mujoco_warp-main/mujoco_warp/_src/smooth.py`
+- Featherstone, R. "Rigid Body Dynamics Algorithms" (2008)

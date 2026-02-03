@@ -372,8 +372,15 @@ fn _solve_single_joint_velocity[
     Constrains:
     1. Anchor points to have same velocity (point-to-point)
     2. Angular velocities to differ only around hinge axis
+
+    If is_free_dof=True, skip constraint solving (MuJoCo-style root joint).
     """
     var joint = model.joints[joint_idx]
+
+    # Skip constraint solving for free DOF joints
+    if joint.is_free_dof:
+        return
+
     var body_a = joint.parent_body
     var body_b = joint.child_body
 
@@ -644,8 +651,14 @@ fn _solve_single_joint_position[
     """Solve position constraint for a single hinge joint.
 
     Uses Baumgarte stabilization to correct anchor point drift.
+    If is_free_dof=True, skip constraint solving (MuJoCo-style root joint).
     """
     var joint = model.joints[joint_idx]
+
+    # Skip constraint solving for free DOF joints
+    if joint.is_free_dof:
+        return
+
     var body_a = joint.parent_body
     var body_b = joint.child_body
 
@@ -960,8 +973,15 @@ fn _solve_single_slide_joint_velocity[
     Constrains:
     1. Velocity perpendicular to slide axis (2 DOF)
     2. All angular velocities to be equal (3 DOF)
+
+    If is_free_dof=True, skip constraint solving (MuJoCo-style root joint).
     """
     var joint = model.slide_joints[joint_idx]
+
+    # Skip constraint solving for free DOF joints
+    if joint.is_free_dof:
+        return
+
     var body_a = joint.parent_body
     var body_b = joint.child_body
 
@@ -1229,8 +1249,14 @@ fn _solve_single_slide_joint_position[
     """Solve position constraint for a single slide joint.
 
     Uses Baumgarte stabilization to correct perpendicular drift.
+    If is_free_dof=True, skip constraint solving (MuJoCo-style root joint).
     """
     var joint = model.slide_joints[joint_idx]
+
+    # Skip constraint solving for free DOF joints
+    if joint.is_free_dof:
+        return
+
     var body_a = joint.parent_body
     var body_b = joint.child_body
 
@@ -1363,6 +1389,9 @@ from ..gpu.constants import (
     JOINT_IDX_AXIS_Z,
     JOINT_IDX_TARGET_TORQUE,
     JOINT_IDX_TORQUE_LIMIT,
+    JOINT_IDX_IS_FREE_DOF,
+    JOINT_IDX_QPOS,
+    JOINT_IDX_QVEL,
     # Slide joint constants
     SLIDE_JOINT_STATE_SIZE,
     SLIDE_IDX_PARENT,
@@ -1383,6 +1412,9 @@ from ..gpu.constants import (
     SLIDE_IDX_IMPULSE_AZ,
     SLIDE_IDX_TARGET_FORCE,
     SLIDE_IDX_FORCE_LIMIT,
+    SLIDE_IDX_IS_FREE_DOF,
+    SLIDE_IDX_QPOS,
+    SLIDE_IDX_QVEL,
     META_IDX_NUM_CONTACTS,
     META_IDX_NUM_JOINTS,
     META_IDX_PADDING_2,
@@ -1570,6 +1602,13 @@ fn solve_joint_velocity_constraints_gpu[
 
             # Skip if child body is invalid (indicates uninitialized joint slot)
             if body_b < 0 or body_b >= NUM_BODIES:
+                continue
+
+            # Skip free DOF joints (Phase 11f) - they don't apply constraints
+            var is_free_dof = rebind[Scalar[DTYPE]](
+                state[env, j_off + JOINT_IDX_IS_FREE_DOF]
+            )
+            if is_free_dof > Scalar[DTYPE](0.5):
                 continue
 
             # Get anchor points from joint state
@@ -1817,6 +1856,13 @@ fn solve_joint_position_constraints_gpu[
             if body_b < 0 or body_b >= NUM_BODIES:
                 continue
 
+            # Skip free DOF joints (Phase 11f) - they don't apply constraints
+            var is_free_dof = rebind[Scalar[DTYPE]](
+                state[env, j_off + JOINT_IDX_IS_FREE_DOF]
+            )
+            if is_free_dof > Scalar[DTYPE](0.5):
+                continue
+
             # Get anchor points
             var anchor_px = rebind[Scalar[DTYPE]](
                 state[env, j_off + JOINT_IDX_ANCHOR_PX]
@@ -2001,6 +2047,13 @@ fn solve_slide_joint_velocity_constraints_gpu[
 
             # Skip invalid joint slots
             if body_b < 0 or body_b >= NUM_BODIES:
+                continue
+
+            # Skip free DOF joints (Phase 11f) - they don't apply constraints
+            var is_free_dof = rebind[Scalar[DTYPE]](
+                state[env, sj_off + SLIDE_IDX_IS_FREE_DOF]
+            )
+            if is_free_dof > Scalar[DTYPE](0.5):
                 continue
 
             # Get slide axis from joint state
@@ -2190,6 +2243,13 @@ fn solve_slide_joint_position_constraints_gpu[
 
             # Skip invalid joint slots
             if body_b < 0 or body_b >= NUM_BODIES:
+                continue
+
+            # Skip free DOF joints (Phase 11f) - they don't apply constraints
+            var is_free_dof = rebind[Scalar[DTYPE]](
+                state[env, sj_off + SLIDE_IDX_IS_FREE_DOF]
+            )
+            if is_free_dof > Scalar[DTYPE](0.5):
                 continue
 
             # Get anchor points

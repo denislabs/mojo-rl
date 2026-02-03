@@ -435,6 +435,36 @@ struct Model[DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int =
         """Get a hinge joint by index."""
         return self.joints[joint_idx]
 
+    fn add_free_hinge_joint(
+        mut self,
+        parent: Int,
+        child: Int,
+        axis: Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]],
+    ) -> Int:
+        """Add a free DOF hinge joint (MuJoCo-style root joint).
+
+        A free DOF joint tracks the rotation angle around the axis but does NOT
+        apply constraints. Used for root joints where the body should rotate
+        freely while tracking the angle for observations.
+
+        Args:
+            parent: Parent body index (-1 for world).
+            child: Child body index.
+            axis: Rotation axis (will be normalized).
+
+        Returns:
+            Index of the newly added joint, or -1 if MAX_JOINTS exceeded.
+        """
+        if self.num_joints >= Self.MAX_JOINTS:
+            return -1
+
+        var joint_idx = self.num_joints
+        self.joints[joint_idx] = HingeJoint[Self.DTYPE].create_free_dof(
+            parent, child, axis
+        )
+        self.num_joints += 1
+        return joint_idx
+
     fn add_slide_joint(
         mut self,
         parent: Int,
@@ -471,6 +501,36 @@ struct Model[DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int =
     fn get_slide_joint(self, joint_idx: Int) -> SlideJoint[Self.DTYPE]:
         """Get a slide joint by index."""
         return self.slide_joints[joint_idx]
+
+    fn add_free_slide_joint(
+        mut self,
+        parent: Int,
+        child: Int,
+        axis: Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]],
+    ) -> Int:
+        """Add a free DOF slide joint (MuJoCo-style root joint).
+
+        A free DOF joint tracks the position along the axis but does NOT
+        apply constraints. Used for root joints where the body should move
+        freely while tracking the position for observations.
+
+        Args:
+            parent: Parent body index (-1 for world).
+            child: Child body index.
+            axis: Slide axis (will be normalized).
+
+        Returns:
+            Index of the newly added joint, or -1 if MAX_SLIDE_JOINTS exceeded.
+        """
+        if self.num_slide_joints >= Self.MAX_SLIDE_JOINTS:
+            return -1
+
+        var joint_idx = self.num_slide_joints
+        self.slide_joints[joint_idx] = SlideJoint[Self.DTYPE].create_free_dof(
+            parent, child, axis
+        )
+        self.num_slide_joints += 1
+        return joint_idx
 
 
 struct Data[DTYPE: DType, NUM_BODIES: Int, MAX_CONTACTS: Int, MAX_JOINTS: Int = 0, MAX_SLIDE_JOINTS: Int = 0]:

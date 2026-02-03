@@ -36,3 +36,9 @@ from .half_cheetah_3d import (
     HalfCheetah3DAction,
     HC3DConstants,
 )
+from .hopper_3d import (
+    Hopper3D,
+    Hopper3DState,
+    Hopper3DAction,
+    Hopper3DConstants,
+)
