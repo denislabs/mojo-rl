@@ -69,7 +69,11 @@ fn detect_ground_contacts[
     model: ModelGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     mut data: DataGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
 ):
-    """Detect contacts between bodies and ground plane."""
+    """Detect contacts between bodies and ground plane.
+
+    For capsules, checks both endpoints (center ± half_length along axis).
+    The capsule axis is determined by the body's world orientation.
+    """
     data.num_contacts = 0
     var ground_z = model.ground_z
 
@@ -78,23 +82,81 @@ fn detect_ground_contacts[
         var py = data.xpos[body * 3 + 1]
         var pz = data.xpos[body * 3 + 2]
         var radius = model.body_radius[body]
+        var half_length = model.body_half_length[body]
 
-        # Check if body penetrates ground
-        var dist = pz - radius - ground_z
+        # Get body orientation
+        var qx = data.xquat[body * 4 + 0]
+        var qy = data.xquat[body * 4 + 1]
+        var qz = data.xquat[body * 4 + 2]
+        var qw = data.xquat[body * 4 + 3]
 
-        if dist < Scalar[DTYPE](0):
-            if data.num_contacts < MAX_CONTACTS:
-                var idx = data.num_contacts
-                data.contacts[idx].body_a = body
-                data.contacts[idx].body_b = -1  # Ground
-                data.contacts[idx].pos_x = px
-                data.contacts[idx].pos_y = py
-                data.contacts[idx].pos_z = ground_z
-                data.contacts[idx].normal_x = Scalar[DTYPE](0)
-                data.contacts[idx].normal_y = Scalar[DTYPE](0)
-                data.contacts[idx].normal_z = Scalar[DTYPE](1)
-                data.contacts[idx].dist = dist
-                data.num_contacts += 1
+        # Capsule axis in local frame is (0, 0, 1) - along Z
+        # Transform to world frame
+        var axis_world = quat_rotate(qx, qy, qz, qw,
+            Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](1))
+        var axis_x = axis_world[0]
+        var axis_y = axis_world[1]
+        var axis_z = axis_world[2]
+
+        # For spheres (half_length = 0), just check center - radius
+        if half_length <= Scalar[DTYPE](0.0001):
+            var dist = pz - radius - ground_z
+            if dist < Scalar[DTYPE](0):
+                if data.num_contacts < MAX_CONTACTS:
+                    var idx = data.num_contacts
+                    data.contacts[idx].body_a = body
+                    data.contacts[idx].body_b = -1  # Ground
+                    data.contacts[idx].pos_x = px
+                    data.contacts[idx].pos_y = py
+                    data.contacts[idx].pos_z = ground_z
+                    data.contacts[idx].normal_x = Scalar[DTYPE](0)
+                    data.contacts[idx].normal_y = Scalar[DTYPE](0)
+                    data.contacts[idx].normal_z = Scalar[DTYPE](1)
+                    data.contacts[idx].dist = dist
+                    data.num_contacts += 1
+        else:
+            # Capsule: check both endpoints
+            # Endpoint 1: center + half_length * axis
+            var e1_x = px + half_length * axis_x
+            var e1_y = py + half_length * axis_y
+            var e1_z = pz + half_length * axis_z
+            var dist1 = e1_z - radius - ground_z
+
+            # Endpoint 2: center - half_length * axis
+            var e2_x = px - half_length * axis_x
+            var e2_y = py - half_length * axis_y
+            var e2_z = pz - half_length * axis_z
+            var dist2 = e2_z - radius - ground_z
+
+            # Check endpoint 1
+            if dist1 < Scalar[DTYPE](0):
+                if data.num_contacts < MAX_CONTACTS:
+                    var idx = data.num_contacts
+                    data.contacts[idx].body_a = body
+                    data.contacts[idx].body_b = -1  # Ground
+                    data.contacts[idx].pos_x = e1_x
+                    data.contacts[idx].pos_y = e1_y
+                    data.contacts[idx].pos_z = ground_z
+                    data.contacts[idx].normal_x = Scalar[DTYPE](0)
+                    data.contacts[idx].normal_y = Scalar[DTYPE](0)
+                    data.contacts[idx].normal_z = Scalar[DTYPE](1)
+                    data.contacts[idx].dist = dist1
+                    data.num_contacts += 1
+
+            # Check endpoint 2
+            if dist2 < Scalar[DTYPE](0):
+                if data.num_contacts < MAX_CONTACTS:
+                    var idx = data.num_contacts
+                    data.contacts[idx].body_a = body
+                    data.contacts[idx].body_b = -1  # Ground
+                    data.contacts[idx].pos_x = e2_x
+                    data.contacts[idx].pos_y = e2_y
+                    data.contacts[idx].pos_z = ground_z
+                    data.contacts[idx].normal_x = Scalar[DTYPE](0)
+                    data.contacts[idx].normal_y = Scalar[DTYPE](0)
+                    data.contacts[idx].normal_z = Scalar[DTYPE](1)
+                    data.contacts[idx].dist = dist2
+                    data.num_contacts += 1
 
 
 fn compute_contact_forces[

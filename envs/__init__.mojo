@@ -42,3 +42,9 @@ from .hopper_3d import (
     Hopper3DAction,
     Hopper3DConstants,
 )
+from .hopper_gc import (
+    HopperGC,
+    HopperGCState,
+    HopperGCAction,
+    HopperGCConstants,
+)

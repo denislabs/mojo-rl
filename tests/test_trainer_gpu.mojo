@@ -18,7 +18,7 @@ from random import seed, random_float64
 from gpu.host import DeviceContext
 
 from deep_rl.constants import dtype
-from deep_rl.model import Linear, ReLU, Tanh, seq
+from deep_rl.model import Linear, ReLU, Tanh, Seq5
 from deep_rl.loss import MSELoss
 from deep_rl.optimizer import Adam
 from deep_rl.training import Trainer
@@ -68,20 +68,20 @@ def main():
 
     # Compose: Seq2[Seq2[Linear, Tanh], Linear]
 
-    var model = seq(
-        Linear[INPUT_DIM, HIDDEN_DIM](),
-        Tanh[HIDDEN_DIM](),
-        Linear[HIDDEN_DIM, HIDDEN_DIM](),
-        ReLU[HIDDEN_DIM](),
-        Linear[HIDDEN_DIM, OUTPUT_DIM](),
-    )
+    comptime Model = Seq5[
+        Linear[INPUT_DIM, HIDDEN_DIM],
+        Tanh[HIDDEN_DIM],
+        Linear[HIDDEN_DIM, HIDDEN_DIM],
+        ReLU[HIDDEN_DIM],
+        Linear[HIDDEN_DIM, OUTPUT_DIM],
+    ]
 
     # Print model info
     print("Model created:")
-    print("  IN_DIM: " + String(model.IN_DIM))
-    print("  OUT_DIM: " + String(model.OUT_DIM))
-    print("  PARAM_SIZE: " + String(model.PARAM_SIZE))
-    print("  CACHE_SIZE: " + String(model.CACHE_SIZE))
+    print("  IN_DIM: " + String(Model.IN_DIM))
+    print("  OUT_DIM: " + String(Model.OUT_DIM))
+    print("  PARAM_SIZE: " + String(Model.PARAM_SIZE))
+    print("  CACHE_SIZE: " + String(Model.CACHE_SIZE))
     print()
 
     # =========================================================================
@@ -95,8 +95,7 @@ def main():
     # Create Trainer
     # =========================================================================
 
-    var trainer = Trainer(
-        model,
+    var trainer = Trainer[Model](
         optimizer,
         loss_fn,
         Xavier(),

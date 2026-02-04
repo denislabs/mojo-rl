@@ -26,15 +26,6 @@ struct CrossEntropyLoss(LossFunction):
     - target: one-hot encoded action or action probabilities [num_actions]
     """
 
-    fn __init__(out self):
-        pass
-
-    fn __moveinit__(out self, deinit other: Self):
-        pass
-
-    fn __copyinit__(out self, other: Self):
-        pass
-
     fn forward[
         SIZE: Int
     ](

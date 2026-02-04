@@ -189,10 +189,10 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
     # Forward passes
     # =========================================================================
 
+    @staticmethod
     fn forward[
         BATCH: Int
     ](
-        self,
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ],
@@ -250,10 +250,10 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
                     log_std_val = LOG_STD_MAX
                 output[batch, Self.action_dim + j] = Scalar[dtype](log_std_val)
 
+    @staticmethod
     fn forward[
         BATCH: Int
     ](
-        self,
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ],
@@ -297,10 +297,10 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
     # Backward pass
     # =========================================================================
 
+    @staticmethod
     fn backward[
         BATCH: Int
     ](
-        self,
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
         ],
@@ -566,260 +566,6 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
             output[global_row, Self.action_dim + global_col] = rebind[
                 output.element_type
             ](log_std_val)
-
-    # =========================================================================
-    # GPU Launchers
-    # =========================================================================
-
-    @staticmethod
-    fn forward_gpu[
-        BATCH: Int,
-    ](
-        ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-    ) raises:
-        """Launch forward pass on GPU with caching."""
-        var params_ptr = params_buf.unsafe_ptr()
-
-        var output = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
-        ](output_buf.unsafe_ptr())
-        var input = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
-        ](input_buf.unsafe_ptr())
-        var W_mean = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.in_dim, Self.action_dim),
-            ImmutAnyOrigin,
-        ](params_ptr + Self._mean_W_offset())
-        var b_mean = LayoutTensor[
-            dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
-        ](params_ptr + Self._mean_b_offset())
-        var log_std = LayoutTensor[
-            dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
-        ](params_ptr + Self._log_std_offset())
-        var cache = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
-        ](cache_buf.unsafe_ptr())
-
-        comptime grid_x = (Self.action_dim + TILE - 1) // TILE
-        comptime grid_y = (BATCH + TILE - 1) // TILE
-
-        @always_inline
-        fn kernel_wrapper(
-            output: LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
-            ],
-            input: LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
-            ],
-            W_mean: LayoutTensor[
-                dtype,
-                Layout.row_major(Self.in_dim, Self.action_dim),
-                ImmutAnyOrigin,
-            ],
-            b_mean: LayoutTensor[
-                dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
-            ],
-            log_std: LayoutTensor[
-                dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
-            ],
-            cache: LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
-            ],
-        ):
-            Self.forward_kernel_impl[BATCH](
-                output,
-                input,
-                W_mean,
-                b_mean,
-                log_std,
-                cache,
-            )
-
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
-            output,
-            input,
-            W_mean,
-            b_mean,
-            log_std,
-            cache,
-            grid_dim=(grid_x, grid_y),
-            block_dim=(TILE, TILE),
-        )
-
-    @staticmethod
-    fn forward_gpu_no_cache[
-        BATCH: Int,
-    ](
-        ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-    ) raises:
-        """Launch forward pass on GPU without caching (for inference)."""
-        var params_ptr = params_buf.unsafe_ptr()
-
-        var output = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
-        ](output_buf.unsafe_ptr())
-        var input = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
-        ](input_buf.unsafe_ptr())
-        var W_mean = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.in_dim, Self.action_dim),
-            ImmutAnyOrigin,
-        ](params_ptr + Self._mean_W_offset())
-        var b_mean = LayoutTensor[
-            dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
-        ](params_ptr + Self._mean_b_offset())
-        var log_std = LayoutTensor[
-            dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
-        ](params_ptr + Self._log_std_offset())
-
-        comptime grid_x = (Self.action_dim + TILE - 1) // TILE
-        comptime grid_y = (BATCH + TILE - 1) // TILE
-
-        @always_inline
-        fn kernel_wrapper(
-            output: LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
-            ],
-            input: LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
-            ],
-            W_mean: LayoutTensor[
-                dtype,
-                Layout.row_major(Self.in_dim, Self.action_dim),
-                ImmutAnyOrigin,
-            ],
-            b_mean: LayoutTensor[
-                dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
-            ],
-            log_std: LayoutTensor[
-                dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
-            ],
-        ):
-            Self.forward_kernel_impl_no_cache[BATCH](
-                output, input, W_mean, b_mean, log_std
-            )
-
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
-            output,
-            input,
-            W_mean,
-            b_mean,
-            log_std,
-            grid_dim=(grid_x, grid_y),
-            block_dim=(TILE, TILE),
-        )
-
-    @staticmethod
-    fn backward_gpu[
-        BATCH: Int,
-    ](
-        ctx: DeviceContext,
-        grad_input_buf: DeviceBuffer[dtype],
-        grad_output_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        grads_buf: DeviceBuffer[dtype],
-    ) raises:
-        """Launch backward pass on GPU.
-
-        Computes gradients for mean head (dW_mean, db_mean) and log_std.
-        With state-independent log_std, no gradient flows to input from log_std.
-        Uses fused kernels for better performance with small action_dim.
-        """
-        var params_ptr = params_buf.unsafe_ptr()
-        var grads_ptr = grads_buf.unsafe_ptr()
-
-        var grad_input = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
-        ](grad_input_buf.unsafe_ptr())
-        var grad_output = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
-        ](grad_output_buf.unsafe_ptr())
-        var W_mean = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.in_dim, Self.action_dim),
-            ImmutAnyOrigin,
-        ](params_ptr + Self._mean_W_offset())
-        var cache = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.in_dim), ImmutAnyOrigin
-        ](cache_buf.unsafe_ptr())
-        var grads = LayoutTensor[
-            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
-        ](grads_ptr)
-
-        # Fused kernel 1: Compute dx (elementwise, optimized for small action_dim)
-        # Note: With state-independent log_std, only mean head contributes to dx
-        comptime dx_total = BATCH * Self.IN_DIM
-        comptime dx_grid = (dx_total + TPB - 1) // TPB
-
-        @always_inline
-        fn dx_fused_kernel_wrapper(
-            grad_input: LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
-            ],
-            grad_output: LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
-            ],
-            W_mean: LayoutTensor[
-                dtype,
-                Layout.row_major(Self.in_dim, Self.action_dim),
-                ImmutAnyOrigin,
-            ],
-        ):
-            Self.backward_dx_fused_kernel_impl[BATCH](
-                grad_input, grad_output, W_mean
-            )
-
-        ctx.enqueue_function[dx_fused_kernel_wrapper, dx_fused_kernel_wrapper](
-            grad_input,
-            grad_output,
-            W_mean,
-            grid_dim=(dx_grid,),
-            block_dim=(TPB,),
-        )
-
-        # Fused kernel 2: Compute dW_mean, db_mean, d_log_std
-        # Grid layout:
-        # - Blocks [0, in_dim * action_dim): compute dW_mean[i, j]
-        # - Blocks [in_dim * action_dim, ... + action_dim): compute db_mean[j]
-        # - Blocks [... + action_dim, ... + 2*action_dim): compute d_log_std[j]
-        comptime dW_size = Self.in_dim * Self.action_dim
-        comptime dW_db_grid = dW_size + 2 * Self.action_dim
-
-        @always_inline
-        fn dW_db_fused_kernel_wrapper(
-            grads: LayoutTensor[
-                dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
-            ],
-            cache: LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.in_dim), ImmutAnyOrigin
-            ],
-            grad_output: LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
-            ],
-        ):
-            Self.backward_dW_db_fused_kernel_impl[BATCH](
-                grads, cache, grad_output
-            )
-
-        ctx.enqueue_function[
-            dW_db_fused_kernel_wrapper, dW_db_fused_kernel_wrapper
-        ](
-            grads,
-            cache,
-            grad_output,
-            grid_dim=(dW_db_grid,),
-            block_dim=(TPB,),
-        )
 
     # =========================================================================
     # Fused Backward GPU Kernel Implementations (optimized for small action_dim)
@@ -1163,7 +909,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward_gpu_ws[
+    fn forward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -1173,13 +919,78 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
         cache_buf: DeviceBuffer[dtype],
         workspace_buf: DeviceBuffer[dtype],
     ) raises:
-        """GPU forward with workspace (workspace unused for StochasticActor)."""
-        Self.forward_gpu[BATCH](
-            ctx, output_buf, input_buf, params_buf, cache_buf
+        """Launch forward pass on GPU with caching."""
+        var params_ptr = params_buf.unsafe_ptr()
+
+        var output = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ](output_buf.unsafe_ptr())
+        var input = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
+        ](input_buf.unsafe_ptr())
+        var W_mean = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.in_dim, Self.action_dim),
+            ImmutAnyOrigin,
+        ](params_ptr + Self._mean_W_offset())
+        var b_mean = LayoutTensor[
+            dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
+        ](params_ptr + Self._mean_b_offset())
+        var log_std = LayoutTensor[
+            dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
+        ](params_ptr + Self._log_std_offset())
+        var cache = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
+        ](cache_buf.unsafe_ptr())
+
+        comptime grid_x = (Self.action_dim + TILE - 1) // TILE
+        comptime grid_y = (BATCH + TILE - 1) // TILE
+
+        @always_inline
+        fn kernel_wrapper(
+            output: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+            ],
+            input: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
+            ],
+            W_mean: LayoutTensor[
+                dtype,
+                Layout.row_major(Self.in_dim, Self.action_dim),
+                ImmutAnyOrigin,
+            ],
+            b_mean: LayoutTensor[
+                dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
+            ],
+            log_std: LayoutTensor[
+                dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
+            ],
+            cache: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
+            ],
+        ):
+            Self.forward_kernel_impl[BATCH](
+                output,
+                input,
+                W_mean,
+                b_mean,
+                log_std,
+                cache,
+            )
+
+        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+            output,
+            input,
+            W_mean,
+            b_mean,
+            log_std,
+            cache,
+            grid_dim=(grid_x, grid_y),
+            block_dim=(TILE, TILE),
         )
 
     @staticmethod
-    fn forward_gpu_no_cache_ws[
+    fn forward_gpu_no_cache[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -1188,11 +999,66 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
         params_buf: DeviceBuffer[dtype],
         workspace_buf: DeviceBuffer[dtype],
     ) raises:
-        """GPU forward without cache, with workspace."""
-        Self.forward_gpu_no_cache[BATCH](ctx, output_buf, input_buf, params_buf)
+        """Launch forward pass on GPU without caching (for inference)."""
+        var params_ptr = params_buf.unsafe_ptr()
+
+        var output = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ](output_buf.unsafe_ptr())
+        var input = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
+        ](input_buf.unsafe_ptr())
+        var W_mean = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.in_dim, Self.action_dim),
+            ImmutAnyOrigin,
+        ](params_ptr + Self._mean_W_offset())
+        var b_mean = LayoutTensor[
+            dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
+        ](params_ptr + Self._mean_b_offset())
+        var log_std = LayoutTensor[
+            dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
+        ](params_ptr + Self._log_std_offset())
+
+        comptime grid_x = (Self.action_dim + TILE - 1) // TILE
+        comptime grid_y = (BATCH + TILE - 1) // TILE
+
+        @always_inline
+        fn kernel_wrapper(
+            output: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+            ],
+            input: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
+            ],
+            W_mean: LayoutTensor[
+                dtype,
+                Layout.row_major(Self.in_dim, Self.action_dim),
+                ImmutAnyOrigin,
+            ],
+            b_mean: LayoutTensor[
+                dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
+            ],
+            log_std: LayoutTensor[
+                dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
+            ],
+        ):
+            Self.forward_kernel_impl_no_cache[BATCH](
+                output, input, W_mean, b_mean, log_std
+            )
+
+        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+            output,
+            input,
+            W_mean,
+            b_mean,
+            log_std,
+            grid_dim=(grid_x, grid_y),
+            block_dim=(TILE, TILE),
+        )
 
     @staticmethod
-    fn backward_gpu_ws[
+    fn backward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -1203,15 +1069,96 @@ struct StochasticActor[in_dim: Int, action_dim: Int](Model):
         grads_buf: DeviceBuffer[dtype],
         workspace_buf: DeviceBuffer[dtype],
     ) raises:
-        """GPU backward with workspace (workspace unused for StochasticActor).
+        """Launch backward pass on GPU.
+
+        Computes gradients for mean head (dW_mean, db_mean) and log_std.
+        With state-independent log_std, no gradient flows to input from log_std.
+        Uses fused kernels for better performance with small action_dim.
         """
-        Self.backward_gpu[BATCH](
-            ctx,
-            grad_input_buf,
-            grad_output_buf,
-            params_buf,
-            cache_buf,
-            grads_buf,
+        var params_ptr = params_buf.unsafe_ptr()
+        var grads_ptr = grads_buf.unsafe_ptr()
+
+        var grad_input = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ](grad_input_buf.unsafe_ptr())
+        var grad_output = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
+        ](grad_output_buf.unsafe_ptr())
+        var W_mean = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.in_dim, Self.action_dim),
+            ImmutAnyOrigin,
+        ](params_ptr + Self._mean_W_offset())
+        var cache = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.in_dim), ImmutAnyOrigin
+        ](cache_buf.unsafe_ptr())
+        var grads = LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ](grads_ptr)
+
+        # Fused kernel 1: Compute dx (elementwise, optimized for small action_dim)
+        # Note: With state-independent log_std, only mean head contributes to dx
+        comptime dx_total = BATCH * Self.IN_DIM
+        comptime dx_grid = (dx_total + TPB - 1) // TPB
+
+        @always_inline
+        fn dx_fused_kernel_wrapper(
+            grad_input: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+            ],
+            grad_output: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
+            ],
+            W_mean: LayoutTensor[
+                dtype,
+                Layout.row_major(Self.in_dim, Self.action_dim),
+                ImmutAnyOrigin,
+            ],
+        ):
+            Self.backward_dx_fused_kernel_impl[BATCH](
+                grad_input, grad_output, W_mean
+            )
+
+        ctx.enqueue_function[dx_fused_kernel_wrapper, dx_fused_kernel_wrapper](
+            grad_input,
+            grad_output,
+            W_mean,
+            grid_dim=(dx_grid,),
+            block_dim=(TPB,),
+        )
+
+        # Fused kernel 2: Compute dW_mean, db_mean, d_log_std
+        # Grid layout:
+        # - Blocks [0, in_dim * action_dim): compute dW_mean[i, j]
+        # - Blocks [in_dim * action_dim, ... + action_dim): compute db_mean[j]
+        # - Blocks [... + action_dim, ... + 2*action_dim): compute d_log_std[j]
+        comptime dW_size = Self.in_dim * Self.action_dim
+        comptime dW_db_grid = dW_size + 2 * Self.action_dim
+
+        @always_inline
+        fn dW_db_fused_kernel_wrapper(
+            grads: LayoutTensor[
+                dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+            ],
+            cache: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.in_dim), ImmutAnyOrigin
+            ],
+            grad_output: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
+            ],
+        ):
+            Self.backward_dW_db_fused_kernel_impl[BATCH](
+                grads, cache, grad_output
+            )
+
+        ctx.enqueue_function[
+            dW_db_fused_kernel_wrapper, dW_db_fused_kernel_wrapper
+        ](
+            grads,
+            cache,
+            grad_output,
+            grid_dim=(dW_db_grid,),
+            block_dim=(TPB,),
         )
 
 
@@ -1579,69 +1526,6 @@ fn rsample_backward[
 # =============================================================================
 # GPU Kernels for Reparameterization Backward
 # =============================================================================
-
-
-@always_inline
-fn rsample_with_cache_kernel_impl[
-    BATCH: Int, action_dim: Int
-](
-    mean: LayoutTensor[
-        dtype, Layout.row_major(BATCH, action_dim), ImmutAnyOrigin
-    ],
-    log_std: LayoutTensor[
-        dtype, Layout.row_major(BATCH, action_dim), ImmutAnyOrigin
-    ],
-    noise: LayoutTensor[
-        dtype, Layout.row_major(BATCH, action_dim), ImmutAnyOrigin
-    ],
-    mut action: LayoutTensor[
-        dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin
-    ],
-    mut log_prob: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
-    mut z_cache: LayoutTensor[
-        dtype, Layout.row_major(BATCH, action_dim), MutAnyOrigin
-    ],
-):
-    """GPU kernel for rsample_with_cache.
-
-    Grid: (BATCH,)
-    Block: (action_dim,) or (TPB,) with loop if action_dim > TPB
-    """
-    var batch = Int(block_idx.x)
-    var j = Int(thread_idx.x)
-
-    if batch >= BATCH or j >= action_dim:
-        return
-
-    comptime LOG_2PI: Float64 = 1.8378770664093453
-
-    var m = Float64(rebind[Scalar[dtype]](mean[batch, j]))
-    var ls = Float64(rebind[Scalar[dtype]](log_std[batch, j]))
-    var n = Float64(rebind[Scalar[dtype]](noise[batch, j]))
-
-    # Compute std and pre-tanh action
-    var std = exp(ls)
-    var z = m + std * n
-
-    # Cache z
-    z_cache[batch, j] = Scalar[dtype](z)
-
-    # Apply tanh squashing
-    var exp_z = exp(z)
-    var exp_neg_z = exp(-z)
-    var tanh_z = (exp_z - exp_neg_z) / (exp_z + exp_neg_z)
-    action[batch, j] = Scalar[dtype](tanh_z)
-
-    # Compute per-dimension log prob contribution
-    var z_normalized = n
-    var log_gaussian = -0.5 * (LOG_2PI + 2.0 * ls + z_normalized * z_normalized)
-    var squash_correction = log(1.0 - tanh_z * tanh_z + EPS)
-    var dim_log_prob = log_gaussian - squash_correction
-
-    # Use atomic add for log_prob reduction (or use block reduction)
-    # For simplicity, we'll use a separate reduction kernel
-    # Here we just store per-dim values and reduce later
-    # This is a simplified implementation - in practice use block.sum
 
 
 @always_inline

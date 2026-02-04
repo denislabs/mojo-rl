@@ -34,10 +34,10 @@ struct Softmax[dim: Int](Model):
         """Copy constructor for Copyable trait."""
         pass
 
+    @staticmethod
     fn forward[
         BATCH: Int
     ](
-        self,
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ],
@@ -79,10 +79,10 @@ struct Softmax[dim: Int](Model):
                 output[batch, i] = softmax_val
                 cache[batch, i] = softmax_val  # Cache for backward
 
+    @staticmethod
     fn forward[
         BATCH: Int
     ](
-        self,
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ],
@@ -118,10 +118,10 @@ struct Softmax[dim: Int](Model):
                 var exp_val = rebind[Scalar[dtype]](output[batch, i])
                 output[batch, i] = exp_val / sum_exp
 
+    @staticmethod
     fn backward[
         BATCH: Int
     ](
-        self,
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
         ],
@@ -314,6 +314,7 @@ struct Softmax[dim: Int](Model):
     # GPU Launchers (with DeviceContext)
     # =========================================================================
 
+
     @staticmethod
     fn forward_gpu[
         BATCH: Int,
@@ -321,8 +322,9 @@ struct Softmax[dim: Int](Model):
         ctx: DeviceContext,
         output_buf: DeviceBuffer[dtype],
         input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],  # Unused for Softmax
+        params_buf: DeviceBuffer[dtype],
         cache_buf: DeviceBuffer[dtype],
+        workspace_buf: DeviceBuffer[dtype],  # Unused for Softmax
     ) raises:
         """Launch forward pass on GPU with caching."""
         var output = LayoutTensor[
@@ -358,6 +360,7 @@ struct Softmax[dim: Int](Model):
             block_dim=(1,),
         )
 
+
     @staticmethod
     fn forward_gpu_no_cache[
         BATCH: Int,
@@ -365,7 +368,8 @@ struct Softmax[dim: Int](Model):
         ctx: DeviceContext,
         output_buf: DeviceBuffer[dtype],
         input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],  # Unused for Softmax
+        params_buf: DeviceBuffer[dtype],
+        workspace_buf: DeviceBuffer[dtype],  # Unused for Softmax
     ) raises:
         """Launch forward pass on GPU without caching (for inference)."""
         var output = LayoutTensor[
@@ -400,11 +404,12 @@ struct Softmax[dim: Int](Model):
         ctx: DeviceContext,
         grad_input_buf: DeviceBuffer[dtype],
         grad_output_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],  # Unused for Softmax
+        params_buf: DeviceBuffer[dtype],
         cache_buf: DeviceBuffer[dtype],
-        grads_buf: DeviceBuffer[dtype],  # Unused for Softmax
+        grads_buf: DeviceBuffer[dtype],
+        workspace_buf: DeviceBuffer[dtype],  # Unused for Softmax
     ) raises:
-        """Launch backward pass on GPU."""
+         """Launch backward pass on GPU."""
         var grad_input = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
         ](grad_input_buf.unsafe_ptr())
@@ -435,60 +440,4 @@ struct Softmax[dim: Int](Model):
             cache,
             grid_dim=(BATCH,),
             block_dim=(1,),
-        )
-
-    # =========================================================================
-    # GPU Workspace Methods (for Sequential compatibility)
-    # Softmax is a leaf layer, so workspace is unused - just delegate.
-    # =========================================================================
-
-    @staticmethod
-    fn forward_gpu_ws[
-        BATCH: Int,
-    ](
-        ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],  # Unused for Softmax
-    ) raises:
-        """GPU forward with workspace (workspace unused for Softmax)."""
-        Self.forward_gpu[BATCH](
-            ctx, output_buf, input_buf, params_buf, cache_buf
-        )
-
-    @staticmethod
-    fn forward_gpu_no_cache_ws[
-        BATCH: Int,
-    ](
-        ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],  # Unused for Softmax
-    ) raises:
-        """GPU forward without cache, with workspace (workspace unused)."""
-        Self.forward_gpu_no_cache[BATCH](ctx, output_buf, input_buf, params_buf)
-
-    @staticmethod
-    fn backward_gpu_ws[
-        BATCH: Int,
-    ](
-        ctx: DeviceContext,
-        grad_input_buf: DeviceBuffer[dtype],
-        grad_output_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        grads_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],  # Unused for Softmax
-    ) raises:
-        """GPU backward with workspace (workspace unused for Softmax)."""
-        Self.backward_gpu[BATCH](
-            ctx,
-            grad_input_buf,
-            grad_output_buf,
-            params_buf,
-            cache_buf,
-            grads_buf,
         )

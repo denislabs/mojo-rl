@@ -42,7 +42,7 @@ from gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 
 from deep_rl.constants import dtype, TILE, TPB
-from deep_rl.model import Linear, ReLU, LinearReLU, seq
+from deep_rl.model import Linear, ReLU, LinearReLU, Seq3
 from deep_rl.optimizer import Adam
 from deep_rl.initializer import Xavier
 from deep_rl.training import Network
@@ -461,7 +461,9 @@ fn gradient_reduce_and_compute_scale_kernel[
     # Output
     scale_out: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
     # Input
-    partial_sums: LayoutTensor[dtype, Layout.row_major(NUM_BLOCKS), MutAnyOrigin],
+    partial_sums: LayoutTensor[
+        dtype, Layout.row_major(NUM_BLOCKS), MutAnyOrigin
+    ],
     max_grad_norm: Scalar[dtype],
 ):
     """Reduce partial sums and compute clipping scale entirely on GPU.
@@ -804,30 +806,28 @@ struct DeepPPOAgent[
     comptime GPU_MINIBATCH = Self.gpu_minibatch_size
 
     # Actor network: obs -> hidden (ReLU) -> hidden (ReLU) -> action logits
-    var actor: Network[
-        type_of(
-            seq(
-                LinearReLU[Self.OBS, Self.HIDDEN](),
-                LinearReLU[Self.HIDDEN, Self.HIDDEN](),
-                Linear[Self.HIDDEN, Self.ACTIONS](),
-            )
-        ),
+    comptime ActorNetwork = Network[
+        Seq3[
+            LinearReLU[Self.OBS, Self.HIDDEN],
+            LinearReLU[Self.HIDDEN, Self.HIDDEN],
+            Linear[Self.HIDDEN, Self.ACTIONS],
+        ],
         Adam,
         Xavier,
     ]
+    var actor: Self.ActorNetwork
 
     # Critic network: obs -> hidden (ReLU) -> hidden (ReLU) -> value
-    var critic: Network[
-        type_of(
-            seq(
-                LinearReLU[Self.OBS, Self.HIDDEN](),
-                LinearReLU[Self.HIDDEN, Self.HIDDEN](),
-                Linear[Self.HIDDEN, 1](),
-            )
-        ),
+    comptime CriticNetwork = Network[
+        Seq3[
+            LinearReLU[Self.OBS, Self.HIDDEN],
+            LinearReLU[Self.HIDDEN, Self.HIDDEN],
+            Linear[Self.HIDDEN, 1],
+        ],
         Adam,
         Xavier,
     ]
+    var critic: Self.CriticNetwork
 
     # Hyperparameters
     var gamma: Float64
@@ -913,22 +913,9 @@ struct DeepPPOAgent[
             checkpoint_every: Save checkpoint every N episodes (0 to disable).
             checkpoint_path: Path to save checkpoints.
         """
-        # Build actor and critic models
-        var actor_model = seq(
-            LinearReLU[Self.OBS, Self.HIDDEN](),
-            LinearReLU[Self.HIDDEN, Self.HIDDEN](),
-            Linear[Self.HIDDEN, Self.ACTIONS](),
-        )
-
-        var critic_model = seq(
-            LinearReLU[Self.OBS, Self.HIDDEN](),
-            LinearReLU[Self.HIDDEN, Self.HIDDEN](),
-            Linear[Self.HIDDEN, 1](),
-        )
-
         # Initialize networks
-        self.actor = Network(actor_model, Adam(lr=actor_lr), Xavier())
-        self.critic = Network(critic_model, Adam(lr=critic_lr), Xavier())
+        self.actor = Self.ActorNetwork(Adam(lr=actor_lr), Xavier())
+        self.critic = Self.CriticNetwork(Adam(lr=critic_lr), Xavier())
 
         # Store hyperparameters
         self.gamma = gamma
@@ -1383,7 +1370,7 @@ struct DeepPPOAgent[
         for i in range(Self.OBS):
             if i < len(obs_list):
                 obs[i] = Scalar[dtype](obs_list[i])
-        return obs
+        return obs^
 
     fn train[
         E: BoxDiscreteActionEnv
@@ -2070,7 +2057,7 @@ struct DeepPPOAgent[
                 # Select actions for all environments
                 var rng_seed = UInt32(total_steps * 2654435761 + t * 7919)
                 # Forward actor to get logits (using pre-allocated workspace)
-                self.actor.model.forward_gpu_no_cache_ws[Self.n_envs](
+                Self.ActorNetwork.MODEL.forward_gpu_no_cache[Self.n_envs](
                     ctx,
                     logits_buf,
                     obs_buf,
@@ -2079,7 +2066,7 @@ struct DeepPPOAgent[
                 )
 
                 # Forward critic to get values (using pre-allocated workspace)
-                self.critic.model.forward_gpu_no_cache_ws[Self.n_envs](
+                Self.CriticNetwork.MODEL.forward_gpu_no_cache[Self.n_envs](
                     ctx,
                     values_buf,
                     obs_buf,
@@ -2297,7 +2284,7 @@ struct DeepPPOAgent[
             var phase2_start = perf_counter_ns()
 
             # Get bootstrap values from final observations (using pre-allocated workspace)
-            self.critic.model.forward_gpu_no_cache_ws[Self.n_envs](
+            Self.CriticNetwork.MODEL.forward_gpu_no_cache[Self.n_envs](
                 ctx,
                 values_buf,
                 obs_buf,
@@ -2517,7 +2504,7 @@ struct DeepPPOAgent[
                     ctx.enqueue_memset(actor_grads_buf, 0)
 
                     # Forward pass with cache (using pre-allocated workspace)
-                    self.actor.model.forward_gpu_ws[MINIBATCH](
+                    Self.ActorNetwork.MODEL.forward_gpu[MINIBATCH](
                         ctx,
                         actor_logits_buf,
                         mb_obs_buf,
@@ -2572,7 +2559,7 @@ struct DeepPPOAgent[
                             break  # Break from minibatch loop
 
                     # Backward pass (using pre-allocated workspace)
-                    self.actor.model.backward_gpu_ws[MINIBATCH](
+                    Self.ActorNetwork.MODEL.backward_gpu[MINIBATCH](
                         ctx,
                         actor_grad_input_buf,
                         actor_grad_output_buf,
@@ -2630,7 +2617,7 @@ struct DeepPPOAgent[
                     ctx.enqueue_memset(critic_grads_buf, 0)
 
                     # Forward pass with cache (using pre-allocated workspace)
-                    self.critic.model.forward_gpu_ws[MINIBATCH](
+                    Self.CriticNetwork.MODEL.forward_gpu[MINIBATCH](
                         ctx,
                         critic_values_buf,
                         mb_obs_buf,
@@ -2673,7 +2660,7 @@ struct DeepPPOAgent[
                     ctx.synchronize()
 
                     # Backward pass (using pre-allocated workspace)
-                    self.critic.model.backward_gpu_ws[MINIBATCH](
+                    Self.CriticNetwork.MODEL.backward_gpu[MINIBATCH](
                         ctx,
                         critic_grad_input_buf,
                         critic_grad_output_buf,
@@ -3291,7 +3278,7 @@ struct DeepPPOAgent[
                 var rng_seed = UInt32(total_steps * 2654435761 + t * 7919)
 
                 # Forward actor on GPU to get logits
-                self.actor.model.forward_gpu_no_cache_ws[Self.n_envs](
+                Self.ActorNetwork.MODEL.forward_gpu_no_cache[Self.n_envs](
                     ctx,
                     logits_buf,
                     obs_buf,
@@ -3300,7 +3287,7 @@ struct DeepPPOAgent[
                 )
 
                 # Forward critic on GPU to get values
-                self.critic.model.forward_gpu_no_cache_ws[Self.n_envs](
+                Self.CriticNetwork.MODEL.forward_gpu_no_cache[Self.n_envs](
                     ctx,
                     values_buf,
                     obs_buf,
@@ -3463,7 +3450,7 @@ struct DeepPPOAgent[
             var phase2_start = perf_counter_ns()
 
             # Get bootstrap values from final observations
-            self.critic.model.forward_gpu_no_cache_ws[Self.n_envs](
+            Self.CriticNetwork.MODEL.forward_gpu_no_cache[Self.n_envs](
                 ctx,
                 values_buf,
                 obs_buf,
@@ -3643,7 +3630,7 @@ struct DeepPPOAgent[
                     # Train actor
                     ctx.enqueue_memset(actor_grads_buf, 0)
 
-                    self.actor.model.forward_gpu_ws[MINIBATCH](
+                    Self.ActorNetwork.MODEL.forward_gpu[MINIBATCH](
                         ctx,
                         actor_logits_buf,
                         mb_obs_buf,
@@ -3695,7 +3682,7 @@ struct DeepPPOAgent[
                                 )
                             break
 
-                    self.actor.model.backward_gpu_ws[MINIBATCH](
+                    Self.ActorNetwork.MODEL.backward_gpu[MINIBATCH](
                         ctx,
                         actor_grad_input_buf,
                         actor_grad_output_buf,
@@ -3747,7 +3734,7 @@ struct DeepPPOAgent[
                     # Train critic
                     ctx.enqueue_memset(critic_grads_buf, 0)
 
-                    self.critic.model.forward_gpu_ws[MINIBATCH](
+                    Self.CriticNetwork.MODEL.forward_gpu[MINIBATCH](
                         ctx,
                         critic_values_buf,
                         mb_obs_buf,
@@ -3786,7 +3773,7 @@ struct DeepPPOAgent[
                         )
                     ctx.synchronize()
 
-                    self.critic.model.backward_gpu_ws[MINIBATCH](
+                    Self.CriticNetwork.MODEL.backward_gpu[MINIBATCH](
                         ctx,
                         critic_grad_input_buf,
                         critic_grad_output_buf,

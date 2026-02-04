@@ -29,10 +29,10 @@ struct ReLU[dim: Int](Model):
         """Copy constructor for Copyable trait."""
         pass
 
+    @staticmethod
     fn forward[
         BATCH: Int
     ](
-        self,
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ],
@@ -57,10 +57,10 @@ struct ReLU[dim: Int](Model):
                 cache[batch, i] = val  # Cache for backward
                 output[batch, i] = val if val > 0 else 0
 
+    @staticmethod
     fn forward[
         BATCH: Int
     ](
-        self,
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ],
@@ -75,12 +75,12 @@ struct ReLU[dim: Int](Model):
 
         Note: params is unused (ReLU has no parameters).
         """
-        self.forward_impl[BATCH](input, output)
+        Self.forward_impl[BATCH](input, output)
 
+    @staticmethod
     fn forward_impl[
         BATCH: Int,
     ](
-        self,
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ],
@@ -94,10 +94,10 @@ struct ReLU[dim: Int](Model):
                 var val = input[batch, i]
                 output[batch, i] = val if val > 0 else 0
 
+    @staticmethod
     fn backward[
         BATCH: Int
     ](
-        self,
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
         ],
@@ -119,12 +119,12 @@ struct ReLU[dim: Int](Model):
         Uses cached pre-activation values from forward pass.
         Note: params and grads are unused (ReLU has no parameters).
         """
-        self.backward_impl[BATCH](grad_output, grad_input, params, cache, grads)
+        Self.backward_impl[BATCH](grad_output, grad_input, params, cache, grads)
 
+    @staticmethod
     fn backward_impl[
         BATCH: Int,
     ](
-        self,
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
         ],
@@ -237,6 +237,7 @@ struct ReLU[dim: Int](Model):
         input_buf: DeviceBuffer[dtype],
         params_buf: DeviceBuffer[dtype],
         cache_buf: DeviceBuffer[dtype],
+        workspace_buf: DeviceBuffer[dtype],
     ) raises:
         """Launch forward pass on GPU with caching."""
         var output = LayoutTensor[
@@ -282,6 +283,7 @@ struct ReLU[dim: Int](Model):
         output_buf: DeviceBuffer[dtype],
         input_buf: DeviceBuffer[dtype],
         params_buf: DeviceBuffer[dtype],
+        workspace_buf: DeviceBuffer[dtype],
     ) raises:
         """Launch forward pass on GPU without caching (for inference)."""
         var output = LayoutTensor[
@@ -322,6 +324,7 @@ struct ReLU[dim: Int](Model):
         params_buf: DeviceBuffer[dtype],
         cache_buf: DeviceBuffer[dtype],
         grads_buf: DeviceBuffer[dtype],
+        workspace_buf: DeviceBuffer[dtype],
     ) raises:
         """Launch backward pass on GPU."""
         var grad_input = LayoutTensor[
@@ -357,69 +360,4 @@ struct ReLU[dim: Int](Model):
             cache,
             grid_dim=(grid_x,),
             block_dim=(TPB,),
-        )
-
-    # =========================================================================
-    # GPU Workspace Methods (for Sequential compatibility)
-    # =========================================================================
-
-    @staticmethod
-    fn forward_gpu_ws[
-        BATCH: Int,
-    ](
-        ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],
-    ) raises:
-        """GPU forward with workspace (workspace unused for ReLU)."""
-        Self.forward_gpu[BATCH](
-            ctx,
-            output_buf,
-            input_buf,
-            params_buf,
-            cache_buf,
-        )
-
-    @staticmethod
-    fn forward_gpu_no_cache_ws[
-        BATCH: Int,
-    ](
-        ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],
-    ) raises:
-        """GPU forward without cache, with workspace (workspace unused for ReLU).
-        """
-        Self.forward_gpu_no_cache[BATCH](
-            ctx,
-            output_buf,
-            input_buf,
-            params_buf,
-        )
-
-    @staticmethod
-    fn backward_gpu_ws[
-        BATCH: Int,
-    ](
-        ctx: DeviceContext,
-        grad_input_buf: DeviceBuffer[dtype],
-        grad_output_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        grads_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],
-    ) raises:
-        """GPU backward with workspace (workspace unused for ReLU)."""
-        Self.backward_gpu[BATCH](
-            ctx,
-            grad_input_buf,
-            grad_output_buf,
-            params_buf,
-            cache_buf,
-            grads_buf,
         )

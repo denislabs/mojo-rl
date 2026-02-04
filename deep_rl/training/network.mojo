@@ -81,7 +81,6 @@ struct Network[
     comptime CACHE_SIZE: Int = Self.MODEL.CACHE_SIZE
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = Self.MODEL.WORKSPACE_SIZE_PER_SAMPLE
 
-    var model: Self.MODEL
     var optimizer: Self.OPTIMIZER
     var initializer: Self.INITIALIZER
     # Heap-allocated arrays to support large hidden dimensions
@@ -91,18 +90,16 @@ struct Network[
 
     fn __init__(
         out self,
-        model: Self.MODEL,
         optimizer: Self.OPTIMIZER,
         initializer: Self.INITIALIZER,
     ):
         """Initialize network with given model, optimizer, and initializer.
 
         Args:
-            model: The model architecture.
             optimizer: The optimizer instance.
             initializer: The weight initializer.
         """
-        self.model = model
+
         self.optimizer = optimizer
         self.initializer = initializer
 
@@ -152,7 +149,7 @@ struct Network[
             dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
         ](self.params.unsafe_ptr())
 
-        self.model.forward[BATCH](
+        Self.MODEL.forward[BATCH](
             input_tensor,
             output_tensor,
             params_tensor,
@@ -186,7 +183,7 @@ struct Network[
             dtype, Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE), MutAnyOrigin
         ](cache.unsafe_ptr())
 
-        self.model.forward[BATCH](
+        Self.MODEL.forward[BATCH](
             input_tensor,
             output_tensor,
             params_tensor,
@@ -228,7 +225,7 @@ struct Network[
             dtype, Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE), MutAnyOrigin
         ](cache.unsafe_ptr())
 
-        self.model.forward[BATCH](
+        Self.MODEL.forward[BATCH](
             input_tensor,
             output_tensor,
             params_tensor,
@@ -277,7 +274,7 @@ struct Network[
             dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
         ](self.grads.unsafe_ptr())
 
-        self.model.backward[BATCH](
+        Self.MODEL.backward[BATCH](
             grad_output_tensor,
             grad_input_tensor,
             params_tensor,
@@ -319,7 +316,7 @@ struct Network[
             dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
         ](self.grads.unsafe_ptr())
 
-        self.model.backward[BATCH](
+        Self.MODEL.backward[BATCH](
             grad_output_tensor,
             grad_input_tensor,
             params_tensor,
@@ -369,7 +366,7 @@ struct Network[
             dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
         ](self.grads.unsafe_ptr())
 
-        self.model.backward[BATCH](
+        Self.MODEL.backward[BATCH](
             grad_output_tensor,
             grad_input_tensor,
             params_tensor,
@@ -377,7 +374,7 @@ struct Network[
             grads_tensor,
         )
 
-        return grad_input
+        return grad_input^
 
     # =========================================================================
     # CPU Optimizer Step
@@ -435,99 +432,10 @@ struct Network[
             )
 
     # =========================================================================
-    # GPU Forward Pass
-    # =========================================================================
-
-    fn forward_gpu[
-        BATCH: Int
-    ](
-        self,
-        ctx: DeviceContext,
-        input_buf: DeviceBuffer[dtype],
-        mut output_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-    ) raises:
-        """GPU forward pass without caching (for inference).
-
-        Args:
-            ctx: GPU device context.
-            input_buf: Input buffer [BATCH * IN_DIM].
-            output_buf: Output buffer [BATCH * OUT_DIM] (written).
-            params_buf: Parameters buffer [PARAM_SIZE].
-        """
-        Self.MODEL.forward_gpu_no_cache[BATCH](
-            ctx,
-            output_buf,
-            input_buf,
-            params_buf,
-        )
-
-    fn forward_gpu_with_cache[
-        BATCH: Int
-    ](
-        self,
-        ctx: DeviceContext,
-        input_buf: DeviceBuffer[dtype],
-        mut output_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        mut cache_buf: DeviceBuffer[dtype],
-    ) raises:
-        """GPU forward pass with caching (for training).
-
-        Args:
-            ctx: GPU device context.
-            input_buf: Input buffer [BATCH * IN_DIM].
-            output_buf: Output buffer [BATCH * OUT_DIM] (written).
-            params_buf: Parameters buffer [PARAM_SIZE].
-            cache_buf: Cache buffer [BATCH * CACHE_SIZE] (written).
-        """
-        Self.MODEL.forward_gpu[BATCH](
-            ctx,
-            output_buf,
-            input_buf,
-            params_buf,
-            cache_buf,
-        )
-
-    # =========================================================================
-    # GPU Backward Pass
-    # =========================================================================
-
-    fn backward_gpu[
-        BATCH: Int
-    ](
-        self,
-        ctx: DeviceContext,
-        grad_output_buf: DeviceBuffer[dtype],
-        mut grad_input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        mut grads_buf: DeviceBuffer[dtype],
-    ) raises:
-        """GPU backward pass.
-
-        Args:
-            ctx: GPU device context.
-            grad_output_buf: Gradient w.r.t. output [BATCH * OUT_DIM].
-            grad_input_buf: Gradient w.r.t. input [BATCH * IN_DIM] (written).
-            params_buf: Parameters buffer [PARAM_SIZE].
-            cache_buf: Cache from forward [BATCH * CACHE_SIZE].
-            grads_buf: Parameter gradients [PARAM_SIZE] (accumulated).
-        """
-        Self.MODEL.backward_gpu[BATCH](
-            ctx,
-            grad_input_buf,
-            grad_output_buf,
-            params_buf,
-            cache_buf,
-            grads_buf,
-        )
-
-    # =========================================================================
     # GPU Forward/Backward with Workspace (avoids internal allocation)
     # =========================================================================
 
-    fn forward_gpu_ws[
+    fn forward_gpu[
         BATCH: Int
     ](
         self,
@@ -549,7 +457,7 @@ struct Network[
             params_buf: Parameters buffer [PARAM_SIZE].
             workspace_buf: Pre-allocated workspace [BATCH * WORKSPACE_SIZE_PER_SAMPLE].
         """
-        Self.MODEL.forward_gpu_no_cache_ws[BATCH](
+        Self.MODEL.forward_gpu_no_cache[BATCH](
             ctx,
             output_buf,
             input_buf,
@@ -557,7 +465,7 @@ struct Network[
             workspace_buf,
         )
 
-    fn forward_gpu_with_cache_ws[
+    fn forward_gpu_with_cache[
         BATCH: Int
     ](
         self,
@@ -581,7 +489,7 @@ struct Network[
             cache_buf: Cache buffer [BATCH * CACHE_SIZE] (written).
             workspace_buf: Pre-allocated workspace [BATCH * WORKSPACE_SIZE_PER_SAMPLE].
         """
-        Self.MODEL.forward_gpu_ws[BATCH](
+        Self.MODEL.forward_gpu[BATCH](
             ctx,
             output_buf,
             input_buf,
@@ -590,7 +498,7 @@ struct Network[
             workspace_buf,
         )
 
-    fn backward_gpu_ws[
+    fn backward_gpu[
         BATCH: Int
     ](
         self,
@@ -616,7 +524,7 @@ struct Network[
             grads_buf: Parameter gradients [PARAM_SIZE] (accumulated).
             workspace_buf: Pre-allocated workspace [BATCH * WORKSPACE_SIZE_PER_SAMPLE].
         """
-        Self.MODEL.backward_gpu_ws[BATCH](
+        Self.MODEL.backward_gpu[BATCH](
             ctx,
             grad_input_buf,
             grad_output_buf,
@@ -625,48 +533,6 @@ struct Network[
             grads_buf,
             workspace_buf,
         )
-
-    fn backward_input_gpu[
-        BATCH: Int
-    ](
-        self,
-        ctx: DeviceContext,
-        grad_output_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        mut grads_buf: DeviceBuffer[dtype],
-    ) raises -> DeviceBuffer[dtype]:
-        """GPU backward pass that returns input gradients (for critic→actor chain).
-
-        Use this when you need to chain gradients from one network's output
-        to another network's input, such as in SAC/DDPG/TD3 actor updates
-        where we need dQ/da from the critic to update the actor.
-
-        Args:
-            ctx: GPU device context.
-            grad_output_buf: Gradient w.r.t. output [BATCH * OUT_DIM].
-            params_buf: Parameters buffer [PARAM_SIZE].
-            cache_buf: Cache from forward [BATCH * CACHE_SIZE].
-            grads_buf: Parameter gradients [PARAM_SIZE] (accumulated).
-
-        Returns:
-            DeviceBuffer containing gradient w.r.t. input [BATCH * IN_DIM].
-        """
-        # Allocate buffer for input gradients
-        var grad_input_buf = ctx.enqueue_create_buffer[dtype](
-            BATCH * Self.MODEL.IN_DIM
-        )
-
-        Self.MODEL.backward_gpu[BATCH](
-            ctx,
-            grad_input_buf,
-            grad_output_buf,
-            params_buf,
-            cache_buf,
-            grads_buf,
-        )
-
-        return grad_input_buf
 
     # =========================================================================
     # GPU Optimizer Step

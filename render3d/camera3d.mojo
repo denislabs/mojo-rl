@@ -11,7 +11,7 @@ comptime Vec3 = Vec3Generic[DType.float64]
 comptime Mat4 = Mat4Generic[DType.float64]
 
 
-struct Camera3D(Movable, Copyable):
+struct Camera3D(Copyable, Movable):
     """Perspective camera for 3D rendering.
 
     Uses a look-at model where the camera is positioned at `eye`,
@@ -137,10 +137,25 @@ struct Camera3D(Movable, Copyable):
 
         # Compute homogeneous clip coordinates (need full 4D transform)
         # For perspective matrix, w' = -view_z (from m32 = -1)
-        var clip_x = proj.m00 * view_point.x + proj.m01 * view_point.y + proj.m02 * view_point.z + proj.m03
-        var clip_y = proj.m10 * view_point.x + proj.m11 * view_point.y + proj.m12 * view_point.z + proj.m13
-        var clip_z = proj.m20 * view_point.x + proj.m21 * view_point.y + proj.m22 * view_point.z + proj.m23
-        var clip_w = proj.m30 * view_point.x + proj.m31 * view_point.y + proj.m32 * view_point.z + proj.m33
+        var clip_x = (
+            proj.m00 * view_point.x
+            + proj.m01 * view_point.y
+            + proj.m02 * view_point.z
+            + proj.m03
+        )
+        var clip_y = (
+            proj.m10 * view_point.x
+            + proj.m11 * view_point.y
+            + proj.m12 * view_point.z
+            + proj.m13
+        )
+        # var clip_z = proj.m20 * view_point.x + proj.m21 * view_point.y + proj.m22 * view_point.z + proj.m23
+        var clip_w = (
+            proj.m30 * view_point.x
+            + proj.m31 * view_point.y
+            + proj.m32 * view_point.z
+            + proj.m33
+        )
 
         # Perspective divide to get NDC
         if abs(clip_w) < 0.0001:

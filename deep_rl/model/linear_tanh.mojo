@@ -60,10 +60,10 @@ struct LinearTanh[in_dim: Int, out_dim: Int](Model):
         """Copy constructor for Copyable trait."""
         pass
 
+    @staticmethod
     fn forward[
         BATCH: Int
     ](
-        self,
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ],
@@ -100,10 +100,10 @@ struct LinearTanh[in_dim: Int, out_dim: Int](Model):
                 cache[batch, Self.in_dim + j] = tanh_out
                 output[batch, j] = tanh_out
 
+    @staticmethod
     fn forward[
         BATCH: Int
     ](
-        self,
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ],
@@ -361,6 +361,7 @@ struct LinearTanh[in_dim: Int, out_dim: Int](Model):
         input_buf: DeviceBuffer[dtype],
         params_buf: DeviceBuffer[dtype],
         cache_buf: DeviceBuffer[dtype],
+        workspace_buf: DeviceBuffer[dtype],
     ) raises:
         """Launch fused forward pass on GPU with caching."""
         var params_ptr = params_buf.unsafe_ptr()
@@ -425,8 +426,9 @@ struct LinearTanh[in_dim: Int, out_dim: Int](Model):
         output_buf: DeviceBuffer[dtype],
         input_buf: DeviceBuffer[dtype],
         params_buf: DeviceBuffer[dtype],
+        workspace_buf: DeviceBuffer[dtype],
     ) raises:
-        """Launch fused forward pass on GPU without caching (inference)."""
+         """Launch fused forward pass on GPU without caching (inference)."""
         var params_ptr = params_buf.unsafe_ptr()
         var b_ptr = params_ptr + Self.IN_DIM * Self.OUT_DIM
         var output = LayoutTensor[
@@ -483,6 +485,7 @@ struct LinearTanh[in_dim: Int, out_dim: Int](Model):
         params_buf: DeviceBuffer[dtype],
         cache_buf: DeviceBuffer[dtype],
         grads_buf: DeviceBuffer[dtype],
+        workspace_buf: DeviceBuffer[dtype],
     ) raises:
         """Launch fused backward pass on GPU."""
         var grad_input = LayoutTensor[
@@ -555,68 +558,13 @@ struct LinearTanh[in_dim: Int, out_dim: Int](Model):
         )
 
     # =========================================================================
-    # GPU Workspace Methods (for Sequential compatibility)
-    # =========================================================================
-
-    @staticmethod
-    fn forward_gpu_ws[
-        BATCH: Int,
-    ](
-        ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],
-    ) raises:
-        """GPU forward with workspace (workspace unused for LinearTanh)."""
-        Self.forward_gpu[BATCH](
-            ctx, output_buf, input_buf, params_buf, cache_buf
-        )
-
-    @staticmethod
-    fn forward_gpu_no_cache_ws[
-        BATCH: Int,
-    ](
-        ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],
-    ) raises:
-        """GPU forward without cache, with workspace."""
-        Self.forward_gpu_no_cache[BATCH](ctx, output_buf, input_buf, params_buf)
-
-    @staticmethod
-    fn backward_gpu_ws[
-        BATCH: Int,
-    ](
-        ctx: DeviceContext,
-        grad_input_buf: DeviceBuffer[dtype],
-        grad_output_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        grads_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],
-    ) raises:
-        """GPU backward with workspace (workspace unused for LinearTanh)."""
-        Self.backward_gpu[BATCH](
-            ctx,
-            grad_input_buf,
-            grad_output_buf,
-            params_buf,
-            cache_buf,
-            grads_buf,
-        )
-
-    # =========================================================================
     # CPU Backward (for reference/testing)
     # =========================================================================
 
+    @staticmethod
     fn backward[
         BATCH: Int
     ](
-        self,
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
         ],

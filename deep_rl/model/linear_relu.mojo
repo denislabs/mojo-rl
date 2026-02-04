@@ -44,10 +44,10 @@ struct LinearReLU[in_dim: Int, out_dim: Int](Model):
         """Copy constructor for Copyable trait."""
         pass
 
+    @staticmethod
     fn forward[
         BATCH: Int
     ](
-        self,
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ],
@@ -91,10 +91,10 @@ struct LinearReLU[in_dim: Int, out_dim: Int](Model):
                 # Apply ReLU inline
                 output[batch, j] = acc if acc > 0 else 0
 
+    @staticmethod
     fn forward[
         BATCH: Int
     ](
-        self,
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ],
@@ -371,7 +371,9 @@ struct LinearReLU[in_dim: Int, out_dim: Int](Model):
                     # Get pre_activation from cache (after IN_DIM)
                     var pre_act = cache[global_row, Self.IN_DIM + dy_col]
                     # Apply ReLU gradient mask
-                    shared_A[local_row, local_col] = grad_val if pre_act > 0 else 0
+                    shared_A[local_row, local_col] = (
+                        grad_val if pre_act > 0 else 0
+                    )
                 else:
                     shared_A[local_row, local_col] = 0
 
@@ -415,7 +417,9 @@ struct LinearReLU[in_dim: Int, out_dim: Int](Model):
                 # Load input.T tile (from first IN_DIM elements of cache)
                 var batch_idx = tile_idx * TILE + local_col
                 if global_row < Self.IN_DIM and batch_idx < BATCH:
-                    shared_A[local_row, local_col] = cache[batch_idx, global_row]
+                    shared_A[local_row, local_col] = cache[
+                        batch_idx, global_row
+                    ]
                 else:
                     shared_A[local_row, local_col] = 0
 
@@ -451,6 +455,7 @@ struct LinearReLU[in_dim: Int, out_dim: Int](Model):
 
                 if local_row == 0:
                     var total = shared_A[0, local_col]
+
                     @parameter
                     for r in range(1, TILE):
                         total += shared_A[r, local_col]
@@ -469,6 +474,7 @@ struct LinearReLU[in_dim: Int, out_dim: Int](Model):
         input_buf: DeviceBuffer[dtype],
         params_buf: DeviceBuffer[dtype],
         cache_buf: DeviceBuffer[dtype],
+        workspace_buf: DeviceBuffer[dtype],
     ) raises:
         """Launch fused forward pass on GPU with caching."""
         var params_ptr = params_buf.unsafe_ptr()
@@ -532,6 +538,7 @@ struct LinearReLU[in_dim: Int, out_dim: Int](Model):
         output_buf: DeviceBuffer[dtype],
         input_buf: DeviceBuffer[dtype],
         params_buf: DeviceBuffer[dtype],
+        workspace_buf: DeviceBuffer[dtype],
     ) raises:
         """Launch fused forward pass on GPU without caching (inference)."""
         var params_ptr = params_buf.unsafe_ptr()
@@ -580,6 +587,7 @@ struct LinearReLU[in_dim: Int, out_dim: Int](Model):
             block_dim=(TILE, TILE),
         )
 
+
     @staticmethod
     fn backward_gpu[
         BATCH: Int,
@@ -590,8 +598,9 @@ struct LinearReLU[in_dim: Int, out_dim: Int](Model):
         params_buf: DeviceBuffer[dtype],
         cache_buf: DeviceBuffer[dtype],
         grads_buf: DeviceBuffer[dtype],
+        workspace_buf: DeviceBuffer[dtype],
     ) raises:
-        """Launch fused backward pass on GPU.
+         """Launch fused backward pass on GPU.
 
         Computes all gradients in a SINGLE kernel launch with ReLU gradient mask.
         """
@@ -665,63 +674,13 @@ struct LinearReLU[in_dim: Int, out_dim: Int](Model):
         )
 
     # =========================================================================
-    # GPU Workspace Methods (for Sequential compatibility)
-    # =========================================================================
-
-    @staticmethod
-    fn forward_gpu_ws[
-        BATCH: Int,
-    ](
-        ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],
-    ) raises:
-        """GPU forward with workspace (workspace unused for LinearReLU)."""
-        Self.forward_gpu[BATCH](
-            ctx, output_buf, input_buf, params_buf, cache_buf
-        )
-
-    @staticmethod
-    fn forward_gpu_no_cache_ws[
-        BATCH: Int,
-    ](
-        ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],
-    ) raises:
-        """GPU forward without cache, with workspace."""
-        Self.forward_gpu_no_cache[BATCH](ctx, output_buf, input_buf, params_buf)
-
-    @staticmethod
-    fn backward_gpu_ws[
-        BATCH: Int,
-    ](
-        ctx: DeviceContext,
-        grad_input_buf: DeviceBuffer[dtype],
-        grad_output_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        grads_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],
-    ) raises:
-        """GPU backward with workspace (workspace unused for LinearReLU)."""
-        Self.backward_gpu[BATCH](
-            ctx, grad_input_buf, grad_output_buf, params_buf, cache_buf, grads_buf
-        )
-
-    # =========================================================================
     # CPU Backward (for reference/testing)
     # =========================================================================
 
+    @staticmethod
     fn backward[
         BATCH: Int
     ](
-        self,
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
         ],
@@ -756,7 +715,9 @@ struct LinearReLU[in_dim: Int, out_dim: Int](Model):
                 var acc: grad_input.element_type = 0
                 for j in range(Self.out_dim):
                     var pre_act = cache[batch, Self.in_dim + j]
-                    var masked_grad = grad_output[batch, j] if pre_act > 0 else 0
+                    var masked_grad = (
+                        grad_output[batch, j] if pre_act > 0 else 0
+                    )
                     acc += masked_grad * W[i, j]
                 grad_input[batch, i] = acc
 
@@ -764,7 +725,9 @@ struct LinearReLU[in_dim: Int, out_dim: Int](Model):
             for i in range(Self.in_dim):
                 for j in range(Self.out_dim):
                     var pre_act = cache[batch, Self.in_dim + j]
-                    var masked_grad = grad_output[batch, j] if pre_act > 0 else 0
+                    var masked_grad = (
+                        grad_output[batch, j] if pre_act > 0 else 0
+                    )
                     var cached_input = cache[batch, i]
                     dW[i, j] = dW[i, j] + cached_input * masked_grad
 

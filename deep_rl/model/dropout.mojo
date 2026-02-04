@@ -7,7 +7,7 @@ from random import seed, random_ui64
 from ..constants import TPB
 
 
-struct Dropout[dim: Int, p: Float64, training: Bool](Model):
+struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
     """Dropout regularization layer.
 
     During training: y = x * mask / (1 - p) where mask ~ Bernoulli(1-p)
@@ -16,9 +16,10 @@ struct Dropout[dim: Int, p: Float64, training: Bool](Model):
     The training flag is compile-time for zero overhead when disabled.
 
     Parameters:
-        dim: Feature dimension
-        p: Dropout probability (fraction to drop)
-        training: Whether in training mode (compile-time flag)
+        dim: Feature dimension.
+        p: Dropout probability (fraction to drop).
+        SEED: Seed for random number generation.
+        training: Whether in training mode (compile-time flag).
 
     PARAM_SIZE = 0 (no learnable parameters)
     CACHE_SIZE = dim if training else 0 (cache mask for backward)
@@ -31,18 +32,6 @@ struct Dropout[dim: Int, p: Float64, training: Bool](Model):
     comptime CACHE_SIZE: Int = Self.dim if Self.training else 0
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = 0  # Leaf layer
 
-    var seed: UInt64  # Base seed for random mask generation
-
-    fn __init__(out self, seed: UInt64 = 42):
-        """Initialize Dropout with a random seed."""
-        self.seed = seed
-
-    fn __moveinit__(out self, deinit other: Self):
-        self.seed = other.seed
-
-    fn __copyinit__(out self, other: Self):
-        self.seed = other.seed
-
     @staticmethod
     fn _random_from_seed(seed: UInt64) -> Float64:
         """Generate random float in [0, 1) using xorshift64."""
@@ -53,10 +42,10 @@ struct Dropout[dim: Int, p: Float64, training: Bool](Model):
         # Convert to [0, 1)
         return Float64(x & 0xFFFFFFFFFFFF) / Float64(0xFFFFFFFFFFFF)
 
+    @staticmethod
     fn forward[
         BATCH: Int
     ](
-        self,
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ],
@@ -81,7 +70,7 @@ struct Dropout[dim: Int, p: Float64, training: Bool](Model):
             for batch in range(BATCH):
                 for i in range(Self.dim):
                     # Generate deterministic random from element index
-                    var elem_seed = self.seed ^ UInt64(
+                    var elem_seed = Self.SEED ^ UInt64(
                         (batch * Self.dim + i) * 2654435761
                     )
                     var rand = Self._random_from_seed(elem_seed)
@@ -96,10 +85,10 @@ struct Dropout[dim: Int, p: Float64, training: Bool](Model):
                 for i in range(Self.dim):
                     output[batch, i] = rebind[Scalar[dtype]](input[batch, i])
 
+    @staticmethod
     fn forward[
         BATCH: Int
     ](
-        self,
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ],
@@ -110,16 +99,35 @@ struct Dropout[dim: Int, p: Float64, training: Bool](Model):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        """Forward pass without caching (for inference)."""
-        # Without cache, we can't train, so always do identity
-        for batch in range(BATCH):
-            for i in range(Self.dim):
-                output[batch, i] = rebind[Scalar[dtype]](input[batch, i])
+        """Forward pass with caching."""
 
+        @parameter
+        if Self.training:
+            # Training mode: apply dropout mask
+            var scale = Scalar[dtype](1.0 / (1.0 - Self.p))
+            var zero = Scalar[dtype](0.0)
+
+            for batch in range(BATCH):
+                for i in range(Self.dim):
+                    # Generate deterministic random from element index
+                    var elem_seed = Self.SEED ^ UInt64(
+                        (batch * Self.dim + i) * 2654435761
+                    )
+                    var rand = Self._random_from_seed(elem_seed)
+                    var keep = rand >= Self.p
+                    var mask: Scalar[dtype] = scale if keep else zero
+                    var in_val = rebind[Scalar[dtype]](input[batch, i])
+                    output[batch, i] = in_val * mask
+        else:
+            # Inference mode: identity pass-through
+            for batch in range(BATCH):
+                for i in range(Self.dim):
+                    output[batch, i] = rebind[Scalar[dtype]](input[batch, i])
+
+    @staticmethod
     fn backward[
         BATCH: Int
     ](
-        self,
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
         ],
@@ -287,21 +295,6 @@ struct Dropout[dim: Int, p: Float64, training: Bool](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward_gpu[
-        BATCH: Int,
-    ](
-        ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],  # Unused
-        cache_buf: DeviceBuffer[dtype],
-    ) raises:
-        """Launch forward pass on GPU with caching (trait-compatible)."""
-        Self._forward_gpu_impl[BATCH](
-            ctx, output_buf, input_buf, params_buf, cache_buf, 42
-        )
-
-    @staticmethod
     fn _forward_gpu_impl[
         BATCH: Int,
     ](
@@ -372,6 +365,27 @@ struct Dropout[dim: Int, p: Float64, training: Bool](Model):
                 block_dim=(TPB,),
             )
 
+    # =========================================================================
+    # GPU Workspace Methods (for Sequential compatibility)
+    # =========================================================================
+
+    @staticmethod
+    fn forward_gpu[
+        BATCH: Int,
+    ](
+        ctx: DeviceContext,
+        output_buf: DeviceBuffer[dtype],
+        input_buf: DeviceBuffer[dtype],
+        params_buf: DeviceBuffer[dtype],
+        cache_buf: DeviceBuffer[dtype],
+        workspace_buf: DeviceBuffer[dtype],  # Unused
+    ) raises:
+        """GPU forward with workspace ."""
+
+        Self._forward_gpu_impl[BATCH](
+            ctx, output_buf, input_buf, params_buf, cache_buf, Self.SEED
+        )
+
     @staticmethod
     fn forward_gpu_no_cache[
         BATCH: Int,
@@ -379,7 +393,8 @@ struct Dropout[dim: Int, p: Float64, training: Bool](Model):
         ctx: DeviceContext,
         output_buf: DeviceBuffer[dtype],
         input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],  # Unused
+        params_buf: DeviceBuffer[dtype],
+        workspace_buf: DeviceBuffer[dtype],  # Unused
     ) raises:
         """Launch forward pass on GPU without caching (identity)."""
         var output = LayoutTensor[
@@ -417,9 +432,10 @@ struct Dropout[dim: Int, p: Float64, training: Bool](Model):
         ctx: DeviceContext,
         grad_input_buf: DeviceBuffer[dtype],
         grad_output_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],  # Unused
+        params_buf: DeviceBuffer[dtype],
         cache_buf: DeviceBuffer[dtype],
-        grads_buf: DeviceBuffer[dtype],  # Unused
+        grads_buf: DeviceBuffer[dtype],
+        workspace_buf: DeviceBuffer[dtype],  # Unused
     ) raises:
         """Launch backward pass on GPU."""
         var grad_input = LayoutTensor[
@@ -486,58 +502,3 @@ struct Dropout[dim: Int, p: Float64, training: Bool](Model):
                 grid_dim=(grid_x,),
                 block_dim=(TPB,),
             )
-
-    # =========================================================================
-    # GPU Workspace Methods (for Sequential compatibility)
-    # =========================================================================
-
-    @staticmethod
-    fn forward_gpu_ws[
-        BATCH: Int,
-    ](
-        ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],  # Unused
-    ) raises:
-        """GPU forward with workspace (unused for Dropout)."""
-        Self.forward_gpu[BATCH](
-            ctx, output_buf, input_buf, params_buf, cache_buf
-        )
-
-    @staticmethod
-    fn forward_gpu_no_cache_ws[
-        BATCH: Int,
-    ](
-        ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],  # Unused
-    ) raises:
-        """GPU forward without cache, with workspace (unused)."""
-        Self.forward_gpu_no_cache[BATCH](ctx, output_buf, input_buf, params_buf)
-
-    @staticmethod
-    fn backward_gpu_ws[
-        BATCH: Int,
-    ](
-        ctx: DeviceContext,
-        grad_input_buf: DeviceBuffer[dtype],
-        grad_output_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        grads_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],  # Unused
-    ) raises:
-        """GPU backward with workspace (unused for Dropout)."""
-        Self.backward_gpu[BATCH](
-            ctx,
-            grad_input_buf,
-            grad_output_buf,
-            params_buf,
-            cache_buf,
-            grads_buf,
-        )

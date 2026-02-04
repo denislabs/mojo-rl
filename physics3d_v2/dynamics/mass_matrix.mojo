@@ -53,6 +53,30 @@ fn _ensure_positive[n: Int]() -> Int:
     return 1
 
 
+fn _is_descendant[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+](
+    model: ModelGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    body: Int,
+    ancestor: Int,
+) -> Bool:
+    """Check if body is a descendant of ancestor in the kinematic tree.
+
+    Traverses the parent chain from body upwards to see if ancestor is found.
+    """
+    var current = body
+    while current >= 0:
+        if model.body_parent[current] == ancestor:
+            return True
+        current = model.body_parent[current]
+    return False
+
+
 # =============================================================================
 # Mass Matrix for HINGE-only Chains
 # =============================================================================
@@ -182,10 +206,10 @@ fn compute_mass_matrix[
             # Parallel axis theorem: I_total = I_cm + m * r^2
             m_effective = I_avg + mass * r_perp_sq
 
-            # Add contributions from descendant bodies
+            # Add contributions from ALL descendant bodies (not just direct children)
             for desc_body in range(body + 1, NBODY):
-                if model.body_parent[desc_body] == body:
-                    # This is a direct child, include its contribution
+                if _is_descendant(model, desc_body, body):
+                    # This body is in the subtree, include its contribution
                     var desc_mass = model.body_mass[desc_body]
                     var desc_px = data.xpos[desc_body * 3 + 0]
                     var desc_py = data.xpos[desc_body * 3 + 1]
@@ -214,12 +238,12 @@ fn compute_mass_matrix[
             M[dof_idx * NV + dof_idx] = m_effective
 
         elif joint.jnt_type == JNT_SLIDE:
-            # For slide joint, effective mass is just the body mass
-            # plus any descendants
+            # For slide joint, effective mass is the body mass
+            # plus ALL descendants (not just direct children)
             var m_total = model.body_mass[body]
 
             for desc_body in range(body + 1, NBODY):
-                if model.body_parent[desc_body] == body:
+                if _is_descendant(model, desc_body, body):
                     m_total = m_total + model.body_mass[desc_body]
 
             M[dof_idx * NV + dof_idx] = m_total
@@ -234,9 +258,9 @@ fn compute_mass_matrix[
             var I_yy = model.body_inertia[body * 3 + 1]
             var I_zz = model.body_inertia[body * 3 + 2]
 
-            # Add descendants (simplified, doesn't account for offset)
+            # Add ALL descendants (not just direct children)
             for desc_body in range(body + 1, NBODY):
-                if model.body_parent[desc_body] == body:
+                if _is_descendant(model, desc_body, body):
                     total_mass = total_mass + model.body_mass[desc_body]
                     I_xx = I_xx + model.body_inertia[desc_body * 3 + 0]
                     I_yy = I_yy + model.body_inertia[desc_body * 3 + 1]
@@ -305,6 +329,27 @@ fn solve_linear_diagonal[
 # =============================================================================
 # GPU Mass Matrix Kernel (Diagonal approximation)
 # =============================================================================
+
+
+@always_inline
+fn _is_descendant_gpu[
+    DTYPE: DType,
+    NBODY: Int,
+    MODEL_SIZE: Int,
+](
+    model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+    body: Int,
+    ancestor: Int,
+) -> Bool:
+    """GPU-compatible check if body is a descendant of ancestor."""
+    var current = body
+    while current >= 0:
+        var body_off = gc_model_body_offset(current)
+        var parent = Int(rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_PARENT]))
+        if parent == ancestor:
+            return True
+        current = parent
+    return False
 
 
 @always_inline
@@ -412,7 +457,14 @@ fn compute_mass_matrix_diagonal_gpu[
             M_diag[dof_adr] = I_avg + mass * r_perp_sq
 
         elif jnt_type == GC_JNT_SLIDE:
-            M_diag[dof_adr] = mass
+            # Accumulate mass from body and ALL descendants
+            var total_mass = mass
+            for desc_body in range(body_id + 1, NBODY):
+                if _is_descendant_gpu[DTYPE, NBODY, MODEL_SIZE](model, desc_body, body_id):
+                    var desc_body_off = gc_model_body_offset(desc_body)
+                    var desc_mass = rebind[Scalar[DTYPE]](model[0, desc_body_off + GC_BODY_IDX_MASS])
+                    total_mass = total_mass + desc_mass
+            M_diag[dof_adr] = total_mass
 
         elif jnt_type == GC_JNT_FREE:
             M_diag[dof_adr + 0] = mass

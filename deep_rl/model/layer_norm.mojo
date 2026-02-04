@@ -7,7 +7,7 @@ from math import sqrt
 from ..constants import TPB
 
 
-struct LayerNorm[dim: Int](Model):
+struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
     """Layer Normalization: y = gamma * (x - mean) / sqrt(var + eps) + beta.
 
     Normalizes across the feature dimension (last dimension).
@@ -24,28 +24,16 @@ struct LayerNorm[dim: Int](Model):
     - cache: [normalized (dim) | inv_std (1) | mean (1)] per sample
     """
 
-    var eps: Float64
-
     comptime IN_DIM: Int = Self.dim
     comptime OUT_DIM: Int = Self.dim
     comptime PARAM_SIZE: Int = 2 * Self.dim  # gamma + beta
     comptime CACHE_SIZE: Int = Self.dim + 2  # normalized + inv_std + mean
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = 0  # Leaf layer
 
-    fn __init__(out self, eps: Float64 = 1e-5):
-        """Initialize LayerNorm with epsilon for numerical stability."""
-        self.eps = eps
-
-    fn __moveinit__(out self, deinit other: Self):
-        self.eps = other.eps
-
-    fn __copyinit__(out self, other: Self):
-        self.eps = other.eps
-
+    @staticmethod
     fn forward[
         BATCH: Int
     ](
-        self,
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ],
@@ -63,7 +51,7 @@ struct LayerNorm[dim: Int](Model):
 
         Caches normalized values, inv_std, and mean for backward.
         """
-        var eps = Scalar[dtype](self.eps)
+        var eps = Scalar[dtype](Self.EPSILON)
         var n = Scalar[dtype](Self.dim)
 
         for batch in range(BATCH):
@@ -99,10 +87,10 @@ struct LayerNorm[dim: Int](Model):
             cache[batch, Self.dim] = inv_std
             cache[batch, Self.dim + 1] = mean
 
+    @staticmethod
     fn forward[
         BATCH: Int
     ](
-        self,
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ],
@@ -114,7 +102,7 @@ struct LayerNorm[dim: Int](Model):
         ],
     ):
         """Forward pass without caching (for inference)."""
-        var eps = Scalar[dtype](self.eps)
+        var eps = Scalar[dtype](Self.EPSILON)
         var n = Scalar[dtype](Self.dim)
 
         for batch in range(BATCH):
@@ -143,10 +131,10 @@ struct LayerNorm[dim: Int](Model):
                 var beta = params[Self.dim + i]
                 output[batch, i] = gamma * normalized + beta
 
+    @staticmethod
     fn backward[
         BATCH: Int
     ](
-        self,
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
         ],
@@ -408,21 +396,6 @@ struct LayerNorm[dim: Int](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward_gpu[
-        BATCH: Int,
-    ](
-        ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-    ) raises:
-        """Launch forward pass on GPU with caching (trait-compatible)."""
-        Self._forward_gpu_impl[BATCH](
-            ctx, output_buf, input_buf, params_buf, cache_buf, 1e-5
-        )
-
-    @staticmethod
     fn _forward_gpu_impl[
         BATCH: Int,
     ](
@@ -477,20 +450,6 @@ struct LayerNorm[dim: Int](Model):
         )
 
     @staticmethod
-    fn forward_gpu_no_cache[
-        BATCH: Int,
-    ](
-        ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-    ) raises:
-        """Launch forward pass on GPU without caching (trait-compatible)."""
-        Self._forward_gpu_no_cache_impl[BATCH](
-            ctx, output_buf, input_buf, params_buf, 1e-5
-        )
-
-    @staticmethod
     fn _forward_gpu_no_cache_impl[
         BATCH: Int,
     ](
@@ -536,6 +495,41 @@ struct LayerNorm[dim: Int](Model):
             block_dim=(1,),
         )
 
+    # =========================================================================
+    # GPU Workspace Methods (for Sequential compatibility)
+    # =========================================================================
+
+    @staticmethod
+    fn forward_gpu[
+        BATCH: Int,
+    ](
+        ctx: DeviceContext,
+        output_buf: DeviceBuffer[dtype],
+        input_buf: DeviceBuffer[dtype],
+        params_buf: DeviceBuffer[dtype],
+        cache_buf: DeviceBuffer[dtype],
+        workspace_buf: DeviceBuffer[dtype],
+    ) raises:
+        """Launch forward pass on GPU with caching (trait-compatible)."""
+        Self._forward_gpu_impl[BATCH](
+            ctx, output_buf, input_buf, params_buf, cache_buf, Self.EPSILON
+        )
+
+    @staticmethod
+    fn forward_gpu_no_cache[
+        BATCH: Int,
+    ](
+        ctx: DeviceContext,
+        output_buf: DeviceBuffer[dtype],
+        input_buf: DeviceBuffer[dtype],
+        params_buf: DeviceBuffer[dtype],
+        workspace_buf: DeviceBuffer[dtype],
+    ) raises:
+        """GPU forward without cache, with workspace (trait-compatible)."""
+        Self._forward_gpu_no_cache_impl[BATCH](
+            ctx, output_buf, input_buf, params_buf, Self.EPSILON
+        )
+
     @staticmethod
     fn backward_gpu[
         BATCH: Int,
@@ -546,8 +540,9 @@ struct LayerNorm[dim: Int](Model):
         params_buf: DeviceBuffer[dtype],
         cache_buf: DeviceBuffer[dtype],
         grads_buf: DeviceBuffer[dtype],
+        workspace_buf: DeviceBuffer[dtype],
     ) raises:
-        """Launch backward pass on GPU."""
+        """GPU backward pass with pre-allocated workspace."""
         var grad_input = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
         ](grad_input_buf.unsafe_ptr())
@@ -594,61 +589,4 @@ struct LayerNorm[dim: Int](Model):
             grads,
             grid_dim=(BATCH,),
             block_dim=(1,),
-        )
-
-    # =========================================================================
-    # GPU Workspace Methods (for Sequential compatibility)
-    # =========================================================================
-
-    @staticmethod
-    fn forward_gpu_ws[
-        BATCH: Int,
-    ](
-        ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],
-    ) raises:
-        """GPU forward with workspace (trait-compatible)."""
-        Self._forward_gpu_impl[BATCH](
-            ctx, output_buf, input_buf, params_buf, cache_buf, 1e-5
-        )
-
-    @staticmethod
-    fn forward_gpu_no_cache_ws[
-        BATCH: Int,
-    ](
-        ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],
-    ) raises:
-        """GPU forward without cache, with workspace (trait-compatible)."""
-        Self._forward_gpu_no_cache_impl[BATCH](
-            ctx, output_buf, input_buf, params_buf, 1e-5
-        )
-
-    @staticmethod
-    fn backward_gpu_ws[
-        BATCH: Int,
-    ](
-        ctx: DeviceContext,
-        grad_input_buf: DeviceBuffer[dtype],
-        grad_output_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        grads_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],
-    ) raises:
-        """GPU backward with workspace (unused for LayerNorm)."""
-        Self.backward_gpu[BATCH](
-            ctx,
-            grad_input_buf,
-            grad_output_buf,
-            params_buf,
-            cache_buf,
-            grads_buf,
         )

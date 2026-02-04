@@ -38,10 +38,10 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
         """Copy constructor for Copyable trait."""
         pass
 
+    @staticmethod
     fn forward[
         BATCH: Int
     ](
-        self,
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ],
@@ -85,10 +85,10 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
                     acc += input[batch, i] * W[i, j]
                 output[batch, j] = acc
 
+    @staticmethod
     fn forward[
         BATCH: Int
     ](
-        self,
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ],
@@ -662,6 +662,16 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
     # and kernel launch. They call the _kernel_impl functions.
     # =========================================================================
 
+    
+
+   
+        
+
+    # =========================================================================
+    # GPU Workspace Methods (for Sequential compatibility)
+    # Linear is a leaf layer, so workspace is unused - just delegate to regular methods.
+    # =========================================================================
+
     @staticmethod
     fn forward_gpu[
         BATCH: Int,
@@ -671,6 +681,7 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
         input_buf: DeviceBuffer[dtype],
         params_buf: DeviceBuffer[dtype],
         cache_buf: DeviceBuffer[dtype],
+        workspace_buf: DeviceBuffer[dtype],  # Unused for Linear
     ) raises:
         """Launch forward pass on GPU with caching.
 
@@ -680,6 +691,7 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
             input_buf: Input buffer [BATCH * IN_DIM].
             params_buf: Parameters buffer [PARAM_SIZE] = [W_flat | b].
             cache_buf: Cache buffer [BATCH * IN_DIM] for backward pass.
+            workspace_buf: Pre-allocated workspace [BATCH * WORKSPACE_SIZE_PER_SAMPLE], not used for Linear.
         """
         # Create tensor views from buffers
         var params_ptr = params_buf.unsafe_ptr()
@@ -751,15 +763,16 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
         output_buf: DeviceBuffer[dtype],
         input_buf: DeviceBuffer[dtype],
         params_buf: DeviceBuffer[dtype],
+        workspace_buf: DeviceBuffer[dtype],  # Unused for Linear
     ) raises:
-        """Launch forward pass on GPU without caching (for inference).
+       """Launch forward pass on GPU without caching (for inference).
 
         Args:
             ctx: GPU device context.
             output_buf: Output buffer [BATCH * OUT_DIM].
             input_buf: Input buffer [BATCH * IN_DIM].
             params_buf: Parameters buffer [PARAM_SIZE] = [W_flat | b].
-
+            workspace_buf: Pre-allocated workspace [BATCH * WORKSPACE_SIZE_PER_SAMPLE], not used for Linear.
         """
         var params_ptr = params_buf.unsafe_ptr()
         var b_ptr = params_ptr + Self.IN_DIM * Self.OUT_DIM
@@ -822,6 +835,7 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
         params_buf: DeviceBuffer[dtype],
         cache_buf: DeviceBuffer[dtype],
         grads_buf: DeviceBuffer[dtype],
+        workspace_buf: DeviceBuffer[dtype],  # Unused for Linear
     ) raises:
         """Launch backward pass on GPU using fused kernel.
 
@@ -840,6 +854,7 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
             params_buf: Parameters buffer [PARAM_SIZE] = [W_flat | b].
             cache_buf: Cached input from forward pass [BATCH * IN_DIM].
             grads_buf: Parameter gradients [PARAM_SIZE] = [dW_flat | db] (written).
+            workspace_buf: Pre-allocated workspace [BATCH * WORKSPACE_SIZE_PER_SAMPLE], not used for Linear.
         """
         # Create tensor views
         var grad_input = LayoutTensor[
@@ -921,76 +936,10 @@ struct Linear[in_dim: Int, out_dim: Int](Model):
             block_dim=(TILE, TILE),
         )
 
-    # =========================================================================
-    # GPU Workspace Methods (for Sequential compatibility)
-    # Linear is a leaf layer, so workspace is unused - just delegate to regular methods.
-    # =========================================================================
-
     @staticmethod
-    fn forward_gpu_ws[
-        BATCH: Int,
-    ](
-        ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],  # Unused for Linear
-    ) raises:
-        """GPU forward with workspace (workspace unused for Linear)."""
-        Self.forward_gpu[BATCH](
-            ctx,
-            output_buf,
-            input_buf,
-            params_buf,
-            cache_buf,
-        )
-
-    @staticmethod
-    fn forward_gpu_no_cache_ws[
-        BATCH: Int,
-    ](
-        ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],  # Unused for Linear
-    ) raises:
-        """GPU forward without cache, with workspace (workspace unused for Linear).
-        """
-        Self.forward_gpu_no_cache[BATCH](
-            ctx,
-            output_buf,
-            input_buf,
-            params_buf,
-        )
-
-    @staticmethod
-    fn backward_gpu_ws[
-        BATCH: Int,
-    ](
-        ctx: DeviceContext,
-        grad_input_buf: DeviceBuffer[dtype],
-        grad_output_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        grads_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],  # Unused for Linear
-    ) raises:
-        """GPU backward with workspace (workspace unused for Linear)."""
-        Self.backward_gpu[BATCH](
-            ctx,
-            grad_input_buf,
-            grad_output_buf,
-            params_buf,
-            cache_buf,
-            grads_buf,
-        )
-
     fn backward[
         BATCH: Int
     ](
-        self,
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
         ],

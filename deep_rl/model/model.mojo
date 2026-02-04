@@ -37,10 +37,10 @@ trait Model(Movable & ImplicitlyCopyable):
     # Forward passes
     # =========================================================================
 
+    @staticmethod
     fn forward[
         BATCH: Int
     ](
-        self,
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ],
@@ -64,10 +64,10 @@ trait Model(Movable & ImplicitlyCopyable):
         """
         ...
 
+    @staticmethod
     fn forward[
         BATCH: Int
     ](
-        self,
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ],
@@ -91,10 +91,10 @@ trait Model(Movable & ImplicitlyCopyable):
     # Backward pass
     # =========================================================================
 
+    @staticmethod
     fn backward[
         BATCH: Int
     ](
-        self,
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
         ],
@@ -123,82 +123,15 @@ trait Model(Movable & ImplicitlyCopyable):
         ...
 
     # =========================================================================
+    # GPU methods with workspace (for Sequential - avoids internal allocation)
+    # =========================================================================
+
+    # =========================================================================
     # GPU forward passes
     # =========================================================================
 
     @staticmethod
     fn forward_gpu[
-        BATCH: Int
-    ](
-        ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-    ) raises:
-        """GPU forward pass with caching (for training).
-
-        Args:
-            ctx: GPU device context.
-            output_buf: Output buffer [BATCH * OUT_DIM].
-            input_buf: Input buffer [BATCH * IN_DIM].
-            params_buf: Parameters buffer [PARAM_SIZE].
-            cache_buf: Cache buffer [BATCH * CACHE_SIZE].
-        """
-        ...
-
-    @staticmethod
-    fn forward_gpu_no_cache[
-        BATCH: Int
-    ](
-        ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-    ) raises:
-        """GPU forward pass without caching (for inference).
-
-        Args:
-            ctx: GPU device context.
-            output_buf: Output buffer [BATCH * OUT_DIM].
-            input_buf: Input buffer [BATCH * IN_DIM].
-            params_buf: Parameters buffer [PARAM_SIZE].
-        """
-        ...
-
-    # =========================================================================
-    # GPU backward pass
-    # =========================================================================
-
-    @staticmethod
-    fn backward_gpu[
-        BATCH: Int
-    ](
-        ctx: DeviceContext,
-        grad_input_buf: DeviceBuffer[dtype],
-        grad_output_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        grads_buf: DeviceBuffer[dtype],
-    ) raises:
-        """GPU backward pass: compute grad_input and accumulate parameter gradients.
-
-        Args:
-            ctx: GPU device context.
-            grad_input_buf: Gradient of loss w.r.t. input [BATCH * IN_DIM] (written).
-            grad_output_buf: Gradient of loss w.r.t. output [BATCH * OUT_DIM].
-            params_buf: Parameters buffer [PARAM_SIZE].
-            cache_buf: Cache from forward pass [BATCH * CACHE_SIZE].
-            grads_buf: Parameter gradients [PARAM_SIZE] (accumulated).
-        """
-        ...
-
-    # =========================================================================
-    # GPU methods with workspace (for Sequential - avoids internal allocation)
-    # =========================================================================
-
-    @staticmethod
-    fn forward_gpu_ws[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -224,7 +157,7 @@ trait Model(Movable & ImplicitlyCopyable):
         ...
 
     @staticmethod
-    fn forward_gpu_no_cache_ws[
+    fn forward_gpu_no_cache[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -244,8 +177,12 @@ trait Model(Movable & ImplicitlyCopyable):
         """
         ...
 
+    # =========================================================================
+    # GPU backward pass
+    # =========================================================================
+
     @staticmethod
-    fn backward_gpu_ws[
+    fn backward_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,

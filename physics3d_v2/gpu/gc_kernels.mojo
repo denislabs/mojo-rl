@@ -62,6 +62,7 @@ from .constants import (
     GC_BODY_IDX_QUAT_W,
     GC_BODY_IDX_PARENT,
     GC_BODY_IDX_RADIUS,
+    GC_BODY_IDX_HALF_LENGTH,
     GC_JOINT_IDX_TYPE,
     GC_JOINT_IDX_BODY_ID,
     GC_JOINT_IDX_QPOS_ADR,
@@ -117,8 +118,13 @@ fn detect_ground_contacts_gpu[
     ],
     model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
 ):
-    """Detect contacts between bodies and ground plane."""
+    """Detect contacts between bodies and ground plane.
+
+    For capsules, checks both endpoints (center ± half_length along axis).
+    The capsule axis is determined by the body's world orientation.
+    """
     var xpos_off = gc_xpos_offset[NQ, NV, NBODY]()
+    var xquat_off = gc_xquat_offset[NQ, NV, NBODY]()
     var contacts_off = gc_contacts_offset[NQ, NV, NBODY]()
     var meta_off = gc_metadata_offset[NQ, NV, NBODY, MAX_CONTACTS]()
 
@@ -130,25 +136,82 @@ fn detect_ground_contacts_gpu[
     for body in range(NBODY):
         var body_off = gc_model_body_offset(body)
         var radius = rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_RADIUS])
+        var half_length = rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_HALF_LENGTH])
 
         var px = rebind[Scalar[DTYPE]](state[env, xpos_off + body * 3 + 0])
         var py = rebind[Scalar[DTYPE]](state[env, xpos_off + body * 3 + 1])
         var pz = rebind[Scalar[DTYPE]](state[env, xpos_off + body * 3 + 2])
 
-        var dist = pz - radius - ground_z
+        # Get body orientation
+        var qx = rebind[Scalar[DTYPE]](state[env, xquat_off + body * 4 + 0])
+        var qy = rebind[Scalar[DTYPE]](state[env, xquat_off + body * 4 + 1])
+        var qz = rebind[Scalar[DTYPE]](state[env, xquat_off + body * 4 + 2])
+        var qw = rebind[Scalar[DTYPE]](state[env, xquat_off + body * 4 + 3])
 
-        if dist < Scalar[DTYPE](0) and num_contacts < MAX_CONTACTS:
-            var c_off = contacts_off + num_contacts * GC_CONTACT_SIZE
-            state[env, c_off + GC_CONTACT_IDX_BODY_A] = Scalar[DTYPE](body)
-            state[env, c_off + GC_CONTACT_IDX_BODY_B] = Scalar[DTYPE](-1)
-            state[env, c_off + GC_CONTACT_IDX_POS_X] = px
-            state[env, c_off + GC_CONTACT_IDX_POS_Y] = py
-            state[env, c_off + GC_CONTACT_IDX_POS_Z] = ground_z
-            state[env, c_off + GC_CONTACT_IDX_NX] = Scalar[DTYPE](0)
-            state[env, c_off + GC_CONTACT_IDX_NY] = Scalar[DTYPE](0)
-            state[env, c_off + GC_CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-            state[env, c_off + GC_CONTACT_IDX_DIST] = dist
-            num_contacts += 1
+        # Capsule axis in local frame is (0, 0, 1) - along Z
+        # Transform to world frame
+        var axis_world = gpu_quat_rotate(qx, qy, qz, qw,
+            Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](1))
+        var axis_x = axis_world[0]
+        var axis_y = axis_world[1]
+        var axis_z = axis_world[2]
+
+        # For spheres (half_length = 0), just check center - radius
+        if half_length <= Scalar[DTYPE](0.0001):
+            var dist = pz - radius - ground_z
+            if dist < Scalar[DTYPE](0) and num_contacts < MAX_CONTACTS:
+                var c_off = contacts_off + num_contacts * GC_CONTACT_SIZE
+                state[env, c_off + GC_CONTACT_IDX_BODY_A] = Scalar[DTYPE](body)
+                state[env, c_off + GC_CONTACT_IDX_BODY_B] = Scalar[DTYPE](-1)
+                state[env, c_off + GC_CONTACT_IDX_POS_X] = px
+                state[env, c_off + GC_CONTACT_IDX_POS_Y] = py
+                state[env, c_off + GC_CONTACT_IDX_POS_Z] = ground_z
+                state[env, c_off + GC_CONTACT_IDX_NX] = Scalar[DTYPE](0)
+                state[env, c_off + GC_CONTACT_IDX_NY] = Scalar[DTYPE](0)
+                state[env, c_off + GC_CONTACT_IDX_NZ] = Scalar[DTYPE](1)
+                state[env, c_off + GC_CONTACT_IDX_DIST] = dist
+                num_contacts += 1
+        else:
+            # Capsule: check both endpoints
+            # Endpoint 1: center + half_length * axis
+            var e1_x = px + half_length * axis_x
+            var e1_y = py + half_length * axis_y
+            var e1_z = pz + half_length * axis_z
+            var dist1 = e1_z - radius - ground_z
+
+            # Endpoint 2: center - half_length * axis
+            var e2_x = px - half_length * axis_x
+            var e2_y = py - half_length * axis_y
+            var e2_z = pz - half_length * axis_z
+            var dist2 = e2_z - radius - ground_z
+
+            # Check endpoint 1
+            if dist1 < Scalar[DTYPE](0) and num_contacts < MAX_CONTACTS:
+                var c_off = contacts_off + num_contacts * GC_CONTACT_SIZE
+                state[env, c_off + GC_CONTACT_IDX_BODY_A] = Scalar[DTYPE](body)
+                state[env, c_off + GC_CONTACT_IDX_BODY_B] = Scalar[DTYPE](-1)
+                state[env, c_off + GC_CONTACT_IDX_POS_X] = e1_x
+                state[env, c_off + GC_CONTACT_IDX_POS_Y] = e1_y
+                state[env, c_off + GC_CONTACT_IDX_POS_Z] = ground_z
+                state[env, c_off + GC_CONTACT_IDX_NX] = Scalar[DTYPE](0)
+                state[env, c_off + GC_CONTACT_IDX_NY] = Scalar[DTYPE](0)
+                state[env, c_off + GC_CONTACT_IDX_NZ] = Scalar[DTYPE](1)
+                state[env, c_off + GC_CONTACT_IDX_DIST] = dist1
+                num_contacts += 1
+
+            # Check endpoint 2
+            if dist2 < Scalar[DTYPE](0) and num_contacts < MAX_CONTACTS:
+                var c_off = contacts_off + num_contacts * GC_CONTACT_SIZE
+                state[env, c_off + GC_CONTACT_IDX_BODY_A] = Scalar[DTYPE](body)
+                state[env, c_off + GC_CONTACT_IDX_BODY_B] = Scalar[DTYPE](-1)
+                state[env, c_off + GC_CONTACT_IDX_POS_X] = e2_x
+                state[env, c_off + GC_CONTACT_IDX_POS_Y] = e2_y
+                state[env, c_off + GC_CONTACT_IDX_POS_Z] = ground_z
+                state[env, c_off + GC_CONTACT_IDX_NX] = Scalar[DTYPE](0)
+                state[env, c_off + GC_CONTACT_IDX_NY] = Scalar[DTYPE](0)
+                state[env, c_off + GC_CONTACT_IDX_NZ] = Scalar[DTYPE](1)
+                state[env, c_off + GC_CONTACT_IDX_DIST] = dist2
+                num_contacts += 1
 
     state[env, meta_off + GC_META_IDX_NUM_CONTACTS] = Scalar[DTYPE](num_contacts)
 

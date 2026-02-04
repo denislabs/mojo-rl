@@ -47,7 +47,9 @@ def test_buffer_allocation():
         print("    OK")
 
         print("  Allocating output buffer...")
-        var output_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE * OUTPUT_DIM)
+        var output_buf = ctx.enqueue_create_buffer[dtype](
+            BATCH_SIZE * OUTPUT_DIM
+        )
         ctx.synchronize()
         print("    OK")
 
@@ -72,7 +74,13 @@ def test_buffer_allocation():
 
 def test_linear_forward():
     """Test 2: Test single Linear layer forward pass."""
-    print("Test 2: Linear[" + String(INPUT_DIM) + ", " + String(HIDDEN_DIM) + "] forward...")
+    print(
+        "Test 2: Linear["
+        + String(INPUT_DIM)
+        + ", "
+        + String(HIDDEN_DIM)
+        + "] forward..."
+    )
 
     with DeviceContext() as ctx:
         comptime IN_DIM = INPUT_DIM
@@ -113,7 +121,9 @@ def test_tanh_forward():
 
         var input_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE * DIM)
         var output_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE * DIM)
-        var params_buf = ctx.enqueue_create_buffer[dtype](1)  # Unused but required
+        var params_buf = ctx.enqueue_create_buffer[dtype](
+            1
+        )  # Unused but required
         var cache_buf = ctx.enqueue_create_buffer[dtype](CACHE_SIZE)
 
         ctx.enqueue_memset(input_buf, 0.5)
@@ -133,7 +143,13 @@ def test_tanh_forward():
 
 def test_linear_backward():
     """Test 4: Test Linear layer backward pass."""
-    print("Test 4: Linear[" + String(HIDDEN_DIM) + ", " + String(OUTPUT_DIM) + "] backward...")
+    print(
+        "Test 4: Linear["
+        + String(HIDDEN_DIM)
+        + ", "
+        + String(OUTPUT_DIM)
+        + "] backward..."
+    )
 
     with DeviceContext() as ctx:
         comptime IN_DIM = HIDDEN_DIM
@@ -141,8 +157,12 @@ def test_linear_backward():
         comptime PARAM_SIZE = IN_DIM * OUT_DIM + OUT_DIM
         comptime CACHE_SIZE = BATCH_SIZE * IN_DIM
 
-        var grad_input_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE * IN_DIM)
-        var grad_output_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE * OUT_DIM)
+        var grad_input_buf = ctx.enqueue_create_buffer[dtype](
+            BATCH_SIZE * IN_DIM
+        )
+        var grad_output_buf = ctx.enqueue_create_buffer[dtype](
+            BATCH_SIZE * OUT_DIM
+        )
         var params_buf = ctx.enqueue_create_buffer[dtype](PARAM_SIZE)
         var cache_buf = ctx.enqueue_create_buffer[dtype](CACHE_SIZE)
         var grads_buf = ctx.enqueue_create_buffer[dtype](PARAM_SIZE)
@@ -156,7 +176,12 @@ def test_linear_backward():
 
         print("  Launching backward kernel...")
         Linear[IN_DIM, OUT_DIM].backward_gpu[BATCH_SIZE](
-            ctx, grad_input_buf, grad_output_buf, params_buf, cache_buf, grads_buf
+            ctx,
+            grad_input_buf,
+            grad_output_buf,
+            params_buf,
+            cache_buf,
+            grads_buf,
         )
         ctx.synchronize()
         print("    OK")
@@ -170,7 +195,10 @@ def test_full_model():
     print("Test 5: Full model forward/backward...")
 
     # Define model type alias for static method calls
-    comptime ModelType = Seq2[Seq2[Linear[INPUT_DIM, HIDDEN_DIM], Tanh[HIDDEN_DIM]], Linear[HIDDEN_DIM, OUTPUT_DIM]]
+    comptime ModelType = Seq2[
+        Seq2[Linear[INPUT_DIM, HIDDEN_DIM], Tanh[HIDDEN_DIM]],
+        Linear[HIDDEN_DIM, OUTPUT_DIM],
+    ]
 
     var model = seq(
         Linear[INPUT_DIM, HIDDEN_DIM](),
@@ -183,7 +211,10 @@ def test_full_model():
     print("    OUT_DIM: " + String(model.OUT_DIM))
     print("    PARAM_SIZE: " + String(model.PARAM_SIZE))
     print("    CACHE_SIZE: " + String(model.CACHE_SIZE))
-    print("    WORKSPACE_SIZE_PER_SAMPLE: " + String(model.WORKSPACE_SIZE_PER_SAMPLE))
+    print(
+        "    WORKSPACE_SIZE_PER_SAMPLE: "
+        + String(model.WORKSPACE_SIZE_PER_SAMPLE)
+    )
 
     comptime PARAM_SIZE = ModelType.PARAM_SIZE
     comptime CACHE_SIZE = BATCH_SIZE * ModelType.CACHE_SIZE
@@ -191,14 +222,20 @@ def test_full_model():
 
     with DeviceContext() as ctx:
         var input_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE * INPUT_DIM)
-        var output_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE * OUTPUT_DIM)
+        var output_buf = ctx.enqueue_create_buffer[dtype](
+            BATCH_SIZE * OUTPUT_DIM
+        )
         var params_buf = ctx.enqueue_create_buffer[dtype](PARAM_SIZE)
         var cache_buf = ctx.enqueue_create_buffer[dtype](CACHE_SIZE)
         var workspace_buf = ctx.enqueue_create_buffer[dtype](
             WORKSPACE_SIZE if WORKSPACE_SIZE > 0 else 1
         )
-        var grad_input_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE * INPUT_DIM)
-        var grad_output_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE * OUTPUT_DIM)
+        var grad_input_buf = ctx.enqueue_create_buffer[dtype](
+            BATCH_SIZE * INPUT_DIM
+        )
+        var grad_output_buf = ctx.enqueue_create_buffer[dtype](
+            BATCH_SIZE * OUTPUT_DIM
+        )
         var grads_buf = ctx.enqueue_create_buffer[dtype](PARAM_SIZE)
 
         ctx.enqueue_memset(input_buf, 0.5)
@@ -209,15 +246,21 @@ def test_full_model():
         print("  Buffers initialized")
 
         print("  Launching forward pass...")
-        ModelType.forward_gpu_ws[BATCH_SIZE](
+        ModelType.forward_gpu[BATCH_SIZE](
             ctx, output_buf, input_buf, params_buf, cache_buf, workspace_buf
         )
         ctx.synchronize()
         print("    Forward: OK")
 
         print("  Launching backward pass...")
-        ModelType.backward_gpu_ws[BATCH_SIZE](
-            ctx, grad_input_buf, grad_output_buf, params_buf, cache_buf, grads_buf, workspace_buf
+        ModelType.backward_gpu[BATCH_SIZE](
+            ctx,
+            grad_input_buf,
+            grad_output_buf,
+            params_buf,
+            cache_buf,
+            grads_buf,
+            workspace_buf,
         )
         ctx.synchronize()
         print("    Backward: OK")
@@ -230,21 +273,30 @@ def test_multiple_iterations():
     """Test 6: Multiple forward/backward iterations (like training loop)."""
     print("Test 6: Multiple iterations (10 epochs)...")
 
-    comptime ModelType = Seq2[Seq2[Linear[INPUT_DIM, HIDDEN_DIM], Tanh[HIDDEN_DIM]], Linear[HIDDEN_DIM, OUTPUT_DIM]]
+    comptime ModelType = Seq2[
+        Seq2[Linear[INPUT_DIM, HIDDEN_DIM], Tanh[HIDDEN_DIM]],
+        Linear[HIDDEN_DIM, OUTPUT_DIM],
+    ]
     comptime PARAM_SIZE = ModelType.PARAM_SIZE
     comptime CACHE_SIZE = BATCH_SIZE * ModelType.CACHE_SIZE
     comptime WORKSPACE_SIZE = BATCH_SIZE * ModelType.WORKSPACE_SIZE_PER_SAMPLE
 
     with DeviceContext() as ctx:
         var input_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE * INPUT_DIM)
-        var output_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE * OUTPUT_DIM)
+        var output_buf = ctx.enqueue_create_buffer[dtype](
+            BATCH_SIZE * OUTPUT_DIM
+        )
         var params_buf = ctx.enqueue_create_buffer[dtype](PARAM_SIZE)
         var cache_buf = ctx.enqueue_create_buffer[dtype](CACHE_SIZE)
         var workspace_buf = ctx.enqueue_create_buffer[dtype](
             WORKSPACE_SIZE if WORKSPACE_SIZE > 0 else 1
         )
-        var grad_input_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE * INPUT_DIM)
-        var grad_output_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE * OUTPUT_DIM)
+        var grad_input_buf = ctx.enqueue_create_buffer[dtype](
+            BATCH_SIZE * INPUT_DIM
+        )
+        var grad_output_buf = ctx.enqueue_create_buffer[dtype](
+            BATCH_SIZE * OUTPUT_DIM
+        )
         var grads_buf = ctx.enqueue_create_buffer[dtype](PARAM_SIZE)
 
         ctx.enqueue_memset(input_buf, 0.5)
@@ -257,7 +309,7 @@ def test_multiple_iterations():
             ctx.enqueue_memset(grads_buf, 0)
 
             # Forward
-            ModelType.forward_gpu_ws[BATCH_SIZE](
+            ModelType.forward_gpu[BATCH_SIZE](
                 ctx, output_buf, input_buf, params_buf, cache_buf, workspace_buf
             )
 
@@ -265,8 +317,14 @@ def test_multiple_iterations():
             ctx.enqueue_memset(grad_output_buf, 0.1)
 
             # Backward
-            ModelType.backward_gpu_ws[BATCH_SIZE](
-                ctx, grad_input_buf, grad_output_buf, params_buf, cache_buf, grads_buf, workspace_buf
+            ModelType.backward_gpu[BATCH_SIZE](
+                ctx,
+                grad_input_buf,
+                grad_output_buf,
+                params_buf,
+                cache_buf,
+                grads_buf,
+                workspace_buf,
             )
 
             # Sync every iteration to check for errors
@@ -295,12 +353,16 @@ def test_loss_gpu():
         print("  Buffers initialized")
 
         print("  Launching loss forward...")
-        MSELoss.forward_gpu[BATCH_SIZE, OUTPUT_DIM](ctx, loss_buf, output_buf, target_buf)
+        MSELoss.forward_gpu[BATCH_SIZE, OUTPUT_DIM](
+            ctx, loss_buf, output_buf, target_buf
+        )
         ctx.synchronize()
         print("    OK")
 
         print("  Launching loss backward...")
-        MSELoss.backward_gpu[BATCH_SIZE, OUTPUT_DIM](ctx, grad_output_buf, output_buf, target_buf)
+        MSELoss.backward_gpu[BATCH_SIZE, OUTPUT_DIM](
+            ctx, grad_output_buf, output_buf, target_buf
+        )
         ctx.synchronize()
         print("    OK")
 
@@ -312,7 +374,10 @@ def test_optimizer_gpu():
     """Test 8: Test Adam optimizer GPU step."""
     print("Test 8: Adam optimizer GPU step...")
 
-    comptime ModelType = Seq2[Seq2[Linear[INPUT_DIM, HIDDEN_DIM], Tanh[HIDDEN_DIM]], Linear[HIDDEN_DIM, OUTPUT_DIM]]
+    comptime ModelType = Seq2[
+        Seq2[Linear[INPUT_DIM, HIDDEN_DIM], Tanh[HIDDEN_DIM]],
+        Linear[HIDDEN_DIM, OUTPUT_DIM],
+    ]
     comptime PARAM_SIZE = ModelType.PARAM_SIZE
     comptime STATE_SIZE = PARAM_SIZE * 2  # Adam has 2 states per param (m, v)
 
@@ -342,7 +407,10 @@ def test_full_training_loop():
     """Test 9: Full training loop with loss and optimizer."""
     print("Test 9: Full training loop (10 epochs with loss + optimizer)...")
 
-    comptime ModelType = Seq2[Seq2[Linear[INPUT_DIM, HIDDEN_DIM], Tanh[HIDDEN_DIM]], Linear[HIDDEN_DIM, OUTPUT_DIM]]
+    comptime ModelType = Seq2[
+        Seq2[Linear[INPUT_DIM, HIDDEN_DIM], Tanh[HIDDEN_DIM]],
+        Linear[HIDDEN_DIM, OUTPUT_DIM],
+    ]
     comptime PARAM_SIZE = ModelType.PARAM_SIZE
     comptime CACHE_SIZE = BATCH_SIZE * ModelType.CACHE_SIZE
     comptime WORKSPACE_SIZE = BATCH_SIZE * ModelType.WORKSPACE_SIZE_PER_SAMPLE
@@ -350,16 +418,24 @@ def test_full_training_loop():
 
     with DeviceContext() as ctx:
         var input_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE * INPUT_DIM)
-        var target_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE * OUTPUT_DIM)
-        var output_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE * OUTPUT_DIM)
+        var target_buf = ctx.enqueue_create_buffer[dtype](
+            BATCH_SIZE * OUTPUT_DIM
+        )
+        var output_buf = ctx.enqueue_create_buffer[dtype](
+            BATCH_SIZE * OUTPUT_DIM
+        )
         var params_buf = ctx.enqueue_create_buffer[dtype](PARAM_SIZE)
         var grads_buf = ctx.enqueue_create_buffer[dtype](PARAM_SIZE)
         var cache_buf = ctx.enqueue_create_buffer[dtype](CACHE_SIZE)
         var workspace_buf = ctx.enqueue_create_buffer[dtype](
             WORKSPACE_SIZE if WORKSPACE_SIZE > 0 else 1
         )
-        var grad_output_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE * OUTPUT_DIM)
-        var grad_input_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE * INPUT_DIM)
+        var grad_output_buf = ctx.enqueue_create_buffer[dtype](
+            BATCH_SIZE * OUTPUT_DIM
+        )
+        var grad_input_buf = ctx.enqueue_create_buffer[dtype](
+            BATCH_SIZE * INPUT_DIM
+        )
         var state_buf = ctx.enqueue_create_buffer[dtype](STATE_SIZE)
         var loss_buf = ctx.enqueue_create_buffer[dtype](1)
 
@@ -377,7 +453,7 @@ def test_full_training_loop():
             ctx.enqueue_memset(grads_buf, 0)
 
             # Forward
-            ModelType.forward_gpu_ws[BATCH_SIZE](
+            ModelType.forward_gpu[BATCH_SIZE](
                 ctx, output_buf, input_buf, params_buf, cache_buf, workspace_buf
             )
 
@@ -387,12 +463,20 @@ def test_full_training_loop():
             )
 
             # Model backward
-            ModelType.backward_gpu_ws[BATCH_SIZE](
-                ctx, grad_input_buf, grad_output_buf, params_buf, cache_buf, grads_buf, workspace_buf
+            ModelType.backward_gpu[BATCH_SIZE](
+                ctx,
+                grad_input_buf,
+                grad_output_buf,
+                params_buf,
+                cache_buf,
+                grads_buf,
+                workspace_buf,
             )
 
             # Optimizer step
-            optimizer.step_gpu[PARAM_SIZE](ctx, params_buf, grads_buf, state_buf)
+            optimizer.step_gpu[PARAM_SIZE](
+                ctx, params_buf, grads_buf, state_buf
+            )
 
             ctx.synchronize()
             print("  Epoch " + String(epoch) + ": OK")
@@ -405,7 +489,10 @@ def test_trainer_like():
     """Test 10: Mimics Trainer exactly with host buffer copies."""
     print("Test 10: Trainer-like test with host buffer copies...")
 
-    comptime ModelType = Seq2[Seq2[Linear[INPUT_DIM, HIDDEN_DIM], Tanh[HIDDEN_DIM]], Linear[HIDDEN_DIM, OUTPUT_DIM]]
+    comptime ModelType = Seq2[
+        Seq2[Linear[INPUT_DIM, HIDDEN_DIM], Tanh[HIDDEN_DIM]],
+        Linear[HIDDEN_DIM, OUTPUT_DIM],
+    ]
     comptime PARAM_SIZE = ModelType.PARAM_SIZE
     comptime IN_SIZE = BATCH_SIZE * INPUT_DIM
     comptime OUT_SIZE = BATCH_SIZE * OUTPUT_DIM
@@ -426,7 +513,9 @@ def test_trainer_like():
     for i in range(PARAM_SIZE):
         params[i] = Scalar[dtype](random_float64() * 0.1 - 0.05)
 
-    var optimizer_state = InlineArray[Scalar[dtype], STATE_SIZE](uninitialized=True)
+    var optimizer_state = InlineArray[Scalar[dtype], STATE_SIZE](
+        uninitialized=True
+    )
     for i in range(STATE_SIZE):
         optimizer_state[i] = 0
 
@@ -477,7 +566,7 @@ def test_trainer_like():
         for epoch in range(50):  # Run 50 epochs like first print interval
             ctx.enqueue_memset(grads_buf, 0)
 
-            ModelType.forward_gpu_ws[BATCH_SIZE](
+            ModelType.forward_gpu[BATCH_SIZE](
                 ctx, output_buf, input_buf, params_buf, cache_buf, workspace_buf
             )
 
@@ -485,11 +574,19 @@ def test_trainer_like():
                 ctx, grad_output_buf, output_buf, target_buf
             )
 
-            ModelType.backward_gpu_ws[BATCH_SIZE](
-                ctx, grad_input_buf, grad_output_buf, params_buf, cache_buf, grads_buf, workspace_buf
+            ModelType.backward_gpu[BATCH_SIZE](
+                ctx,
+                grad_input_buf,
+                grad_output_buf,
+                params_buf,
+                cache_buf,
+                grads_buf,
+                workspace_buf,
             )
 
-            optimizer.step_gpu[PARAM_SIZE](ctx, params_buf, grads_buf, state_buf)
+            optimizer.step_gpu[PARAM_SIZE](
+                ctx, params_buf, grads_buf, state_buf
+            )
 
             # At epoch 0, also call loss forward (like Trainer does at print_every)
             if epoch == 0:
@@ -512,21 +609,30 @@ def test_many_iterations_no_sync():
     """Test 11: Many iterations without sync (like real training)."""
     print("Test 11: Many iterations without sync (100 epochs)...")
 
-    comptime ModelType = Seq2[Seq2[Linear[INPUT_DIM, HIDDEN_DIM], Tanh[HIDDEN_DIM]], Linear[HIDDEN_DIM, OUTPUT_DIM]]
+    comptime ModelType = Seq2[
+        Seq2[Linear[INPUT_DIM, HIDDEN_DIM], Tanh[HIDDEN_DIM]],
+        Linear[HIDDEN_DIM, OUTPUT_DIM],
+    ]
     comptime PARAM_SIZE = ModelType.PARAM_SIZE
     comptime CACHE_SIZE = BATCH_SIZE * ModelType.CACHE_SIZE
     comptime WORKSPACE_SIZE = BATCH_SIZE * ModelType.WORKSPACE_SIZE_PER_SAMPLE
 
     with DeviceContext() as ctx:
         var input_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE * INPUT_DIM)
-        var output_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE * OUTPUT_DIM)
+        var output_buf = ctx.enqueue_create_buffer[dtype](
+            BATCH_SIZE * OUTPUT_DIM
+        )
         var params_buf = ctx.enqueue_create_buffer[dtype](PARAM_SIZE)
         var cache_buf = ctx.enqueue_create_buffer[dtype](CACHE_SIZE)
         var workspace_buf = ctx.enqueue_create_buffer[dtype](
             WORKSPACE_SIZE if WORKSPACE_SIZE > 0 else 1
         )
-        var grad_input_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE * INPUT_DIM)
-        var grad_output_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE * OUTPUT_DIM)
+        var grad_input_buf = ctx.enqueue_create_buffer[dtype](
+            BATCH_SIZE * INPUT_DIM
+        )
+        var grad_output_buf = ctx.enqueue_create_buffer[dtype](
+            BATCH_SIZE * OUTPUT_DIM
+        )
         var grads_buf = ctx.enqueue_create_buffer[dtype](PARAM_SIZE)
 
         ctx.enqueue_memset(input_buf, 0.5)
@@ -540,13 +646,19 @@ def test_many_iterations_no_sync():
             ctx.enqueue_memset(grads_buf, 0)
 
             # Forward
-            ModelType.forward_gpu_ws[BATCH_SIZE](
+            ModelType.forward_gpu[BATCH_SIZE](
                 ctx, output_buf, input_buf, params_buf, cache_buf, workspace_buf
             )
 
             # Backward
-            ModelType.backward_gpu_ws[BATCH_SIZE](
-                ctx, grad_input_buf, grad_output_buf, params_buf, cache_buf, grads_buf, workspace_buf
+            ModelType.backward_gpu[BATCH_SIZE](
+                ctx,
+                grad_input_buf,
+                grad_output_buf,
+                params_buf,
+                cache_buf,
+                grads_buf,
+                workspace_buf,
             )
 
             # Only sync every 10 epochs

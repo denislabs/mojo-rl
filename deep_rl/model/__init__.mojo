@@ -1,5 +1,5 @@
 from .model import Model
-from .sequential import seq, Seq2
+from .sequential import Seq2, Seq3, Seq4, Seq5, Seq6, Seq7, Seq8, seq
 from .linear import Linear
 from .linear_relu import LinearReLU
 from .linear_tanh import LinearTanh

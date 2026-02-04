@@ -78,7 +78,7 @@ fn main() raises:
 
     print("Loading checkpoint...")
     try:
-        agent.load_checkpoint("ppo_bipedal_continuous_gpu_2.ckpt")
+        agent.load_checkpoint("ppo_bipedal_continuous_gpu.ckpt")
         print("Checkpoint loaded successfully!")
     except:
         print("Error loading checkpoint!")

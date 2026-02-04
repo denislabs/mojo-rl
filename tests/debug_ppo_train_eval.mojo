@@ -30,7 +30,9 @@ comptime GPU_MINIBATCH_SIZE = 64
 comptime dtype = DType.float32
 
 
-fn compute_weight_stats(params: List[Scalar[dtype]]) -> Tuple[Float64, Float64, Float64]:
+fn compute_weight_stats(
+    params: List[Scalar[dtype]],
+) -> Tuple[Float64, Float64, Float64]:
     """Compute L1 norm, L2 norm, and max absolute value of weights."""
     var l1: Float64 = 0.0
     var l2: Float64 = 0.0
@@ -84,8 +86,14 @@ fn main() raises:
         print("  L1 norm:", init_stats[0])
         print("  L2 norm:", init_stats[1])
         print("  Max abs:", init_stats[2])
-        print("  First 5:", agent.actor.params[0], agent.actor.params[1],
-              agent.actor.params[2], agent.actor.params[3], agent.actor.params[4])
+        print(
+            "  First 5:",
+            agent.actor.params[0],
+            agent.actor.params[1],
+            agent.actor.params[2],
+            agent.actor.params[3],
+            agent.actor.params[4],
+        )
 
         # Log_std is the last parameter
         var log_std_idx = len(agent.actor.params) - NUM_ACTIONS
@@ -143,8 +151,14 @@ fn main() raises:
         print("  L1 norm:", post_stats[0])
         print("  L2 norm:", post_stats[1])
         print("  Max abs:", post_stats[2])
-        print("  First 5:", agent.actor.params[0], agent.actor.params[1],
-              agent.actor.params[2], agent.actor.params[3], agent.actor.params[4])
+        print(
+            "  First 5:",
+            agent.actor.params[0],
+            agent.actor.params[1],
+            agent.actor.params[2],
+            agent.actor.params[3],
+            agent.actor.params[4],
+        )
         print("  log_std:", agent.actor.params[log_std_idx])
         print()
 
@@ -198,21 +212,29 @@ fn main() raises:
         print("=" * 70)
 
         # Create a fixed observation for comparison
-        var test_obs = InlineArray[Scalar[dtype], OBS_DIM](fill=Scalar[dtype](0.5))
+        var test_obs = InlineArray[Scalar[dtype], OBS_DIM](
+            fill=Scalar[dtype](0.5)
+        )
 
         # CPU forward pass
-        var cpu_output = InlineArray[Scalar[dtype], NUM_ACTIONS * 2](uninitialized=True)
+        var cpu_output = InlineArray[Scalar[dtype], NUM_ACTIONS * 2](
+            uninitialized=True
+        )
         agent.actor.forward[1](test_obs, cpu_output)
 
         print("Test observation:", test_obs[0], test_obs[1], test_obs[2])
-        print("CPU forward output (mean, log_std):", cpu_output[0], cpu_output[1])
+        print(
+            "CPU forward output (mean, log_std):", cpu_output[0], cpu_output[1]
+        )
         print()
 
         # GPU forward pass
         comptime ACTOR_OUT = NUM_ACTIONS * 2
         var obs_buf = ctx.enqueue_create_buffer[dtype](OBS_DIM)
         var out_buf = ctx.enqueue_create_buffer[dtype](ACTOR_OUT)
-        var params_buf = ctx.enqueue_create_buffer[dtype](len(agent.actor.params))
+        var params_buf = ctx.enqueue_create_buffer[dtype](
+            len(agent.actor.params)
+        )
         comptime WORKSPACE = 4 * HIDDEN_DIM
         var workspace_buf = ctx.enqueue_create_buffer[dtype](WORKSPACE)
 
@@ -227,7 +249,7 @@ fn main() raises:
         ctx.synchronize()
 
         # Forward pass on GPU
-        agent.actor.model.forward_gpu_no_cache_ws[1](
+        agent.actor.model.forward_gpu_no_cache[1](
             ctx,
             out_buf,
             obs_buf,
@@ -270,7 +292,9 @@ fn main() raises:
 
         if train_eval_gap > 500.0:
             print("LARGE GAP DETECTED!")
-            print("This confirms a systematic issue with training vs evaluation.")
+            print(
+                "This confirms a systematic issue with training vs evaluation."
+            )
         elif train_eval_gap > 100.0:
             print("MODERATE GAP - some discrepancy exists")
         else:

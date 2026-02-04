@@ -34,6 +34,31 @@ from gpu.host import DeviceContext, DeviceBuffer
 # =============================================================================
 
 
+# fn sum_params[*models: Model]() -> Int:
+#     comptime list = VariadicList(models)
+#     var sum = 0
+
+#     @parameter
+#     for model in list:
+#         sum += model.PARAM_SIZE
+#     return sum
+
+
+# struct Seq[*Layers: Model](Model):
+#     """Sequential container for multiple layers."""
+
+#     comptime IN_DIM: Int = Self.Layers[0].IN_DIM
+#     comptime OUT_DIM: Int = Self.Layers[-1].OUT_DIM
+#     comptime PARAM_SIZE: Int = sum_params[*Self.Layers]()
+#     comptime CACHE_SIZE: Int = sum(
+#         layer.CACHE_SIZE for layer in VariadicList(Self.Layers)
+#     )
+#     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = sum(
+#         layer.WORKSPACE_SIZE_PER_SAMPLE for layer in VariadicList(Self.Layers)
+#     )
+
+
+@fieldwise_init
 struct Seq2[L0: Model, L1: Model](Model):
     """Sequential container for 2 layers.
 
@@ -64,28 +89,10 @@ struct Seq2[L0: Model, L1: Model](Model):
         + Self.L1.WORKSPACE_SIZE_PER_SAMPLE
     )
 
-    var layer0: Self.L0
-    var layer1: Self.L1
-
-    fn __init__(out self, var l0: Self.L0, var l1: Self.L1):
-        """Initialize with two layers."""
-        self.layer0 = l0^
-        self.layer1 = l1^
-
-    fn __moveinit__(out self, deinit other: Self):
-        """Move constructor."""
-        self.layer0 = other.layer0^
-        self.layer1 = other.layer1^
-
-    fn __copyinit__(out self, other: Self):
-        """Copy constructor for Copyable trait."""
-        self.layer0 = other.layer0.copy()
-        self.layer1 = other.layer1.copy()
-
+    @staticmethod
     fn forward[
         BATCH: Int
     ](
-        self,
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ],
@@ -133,19 +140,19 @@ struct Seq2[L0: Model, L1: Model](Model):
         ](l1_cache_ptr)
 
         # L0: input -> buffer0
-        self.layer0.forward[BATCH](input, buffer0, l0_params, l0_cache)
+        Self.L0.forward[BATCH](input, buffer0, l0_params, l0_cache)
 
         # L1: buffer0 -> output
         # Rebind buffer0 to L1's input type (dimensions match since L0.OUT_DIM == L1.IN_DIM)
         var l1_input = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.L1.IN_DIM), MutAnyOrigin
         ](buffer0.ptr)
-        self.layer1.forward[BATCH](l1_input, output, l1_params, l1_cache)
+        Self.L1.forward[BATCH](l1_input, output, l1_params, l1_cache)
 
+    @staticmethod
     fn forward[
         BATCH: Int
     ](
-        self,
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ],
@@ -177,18 +184,18 @@ struct Seq2[L0: Model, L1: Model](Model):
         ](l1_params_ptr)
 
         # L0: input -> buffer0
-        self.layer0.forward[BATCH](input, buffer0, l0_params)
+        Self.L0.forward[BATCH](input, buffer0, l0_params)
 
         # L1: buffer0 -> output
         var l1_input = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.L1.IN_DIM), MutAnyOrigin
         ](buffer0.ptr)
-        self.layer1.forward[BATCH](l1_input, output, l1_params)
+        Self.L1.forward[BATCH](l1_input, output, l1_params)
 
+    @staticmethod
     fn backward[
         BATCH: Int
     ](
-        self,
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
         ],
@@ -256,7 +263,7 @@ struct Seq2[L0: Model, L1: Model](Model):
         var l1_grad_input = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.L1.IN_DIM), MutAnyOrigin
         ](grad_buffer0.ptr)
-        self.layer1.backward[BATCH](
+        Self.L1.backward[BATCH](
             l1_grad_output,
             l1_grad_input,
             l1_params,
@@ -265,7 +272,7 @@ struct Seq2[L0: Model, L1: Model](Model):
         )
 
         # L0 backward: grad_buffer0 -> grad_input
-        self.layer0.backward[BATCH](
+        Self.L0.backward[BATCH](
             grad_buffer0,
             grad_input,
             l0_params,
@@ -273,254 +280,6 @@ struct Seq2[L0: Model, L1: Model](Model):
             l0_grads,
         )
         # No copy-back needed - grads views modify the original in-place
-
-    # =========================================================================
-    # GPU Launchers (with DeviceContext)
-    # =========================================================================
-    #
-    # Sequential orchestrates GPU calls for its child layers.
-    # It allocates intermediate buffers on GPU and calls child _gpu methods.
-    #
-    # Buffer layouts:
-    # - params_buf: [L0's params | L1's params]
-    # - cache_buf: [L0's cache | L1's cache]
-    # - grads_buf: [L0's grads | L1's grads]
-    # =========================================================================
-
-    @staticmethod
-    fn forward_gpu[
-        BATCH: Int,
-    ](
-        ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-    ) raises:
-        """Launch forward pass on GPU with caching.
-
-        Orchestrates GPU calls for child layers:
-        1. Create intermediate buffer for L0 output / L1 input
-        2. L0: input -> intermediate
-        3. L1: intermediate -> output
-
-        Args:
-            ctx: GPU device context.
-            output_buf: Output buffer [BATCH * OUT_DIM].
-            input_buf: Input buffer [BATCH * IN_DIM].
-            params_buf: Parameters buffer [PARAM_SIZE] = [L0 params | L1 params].
-            cache_buf: Cache buffer [BATCH * CACHE_SIZE] = [L0 cache | L1 cache].
-        """
-        # Allocate intermediate buffer on GPU for L0 output / L1 input
-        var inter_buf = ctx.enqueue_create_buffer[dtype](
-            BATCH * Self.L0.OUT_DIM
-        )
-
-        # Create views into params_buf for each layer (owning=False for non-owning views)
-        # L0 params: offset 0, size L0.PARAM_SIZE
-        # L1 params: offset L0.PARAM_SIZE, size L1.PARAM_SIZE
-        var l0_params_ptr = params_buf.unsafe_ptr()
-        var l0_params_buf = DeviceBuffer[dtype](
-            ctx,
-            l0_params_ptr,
-            Self.L0.PARAM_SIZE,
-            owning=False,
-        )
-        var l1_params_ptr = l0_params_ptr + Self.L0.PARAM_SIZE
-        var l1_params_buf = DeviceBuffer[dtype](
-            ctx,
-            l1_params_ptr,
-            Self.L1.PARAM_SIZE,
-            owning=False,
-        )
-
-        # Create views into cache_buf for each layer
-        # L0 cache: offset 0, size BATCH * L0.CACHE_SIZE
-        # L1 cache: offset BATCH * L0.CACHE_SIZE, size BATCH * L1.CACHE_SIZE
-        var l0_cache_ptr = cache_buf.unsafe_ptr()
-        var l0_cache_buf = DeviceBuffer[dtype](
-            ctx,
-            l0_cache_ptr,
-            BATCH * Self.L0.CACHE_SIZE,
-            owning=False,
-        )
-        var l1_cache_ptr = l0_cache_ptr + BATCH * Self.L0.CACHE_SIZE
-        var l1_cache_buf = DeviceBuffer[dtype](
-            ctx,
-            l1_cache_ptr,
-            BATCH * Self.L1.CACHE_SIZE,
-            owning=False,
-        )
-
-        # L0: input -> inter_buf
-        Self.L0.forward_gpu[BATCH](
-            ctx,
-            inter_buf,
-            input_buf,
-            l0_params_buf,
-            l0_cache_buf,
-        )
-
-        # L1: inter_buf -> output
-        Self.L1.forward_gpu[BATCH](
-            ctx,
-            output_buf,
-            inter_buf,
-            l1_params_buf,
-            l1_cache_buf,
-        )
-
-    @staticmethod
-    fn forward_gpu_no_cache[
-        BATCH: Int,
-    ](
-        ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-    ) raises:
-        """Launch forward pass on GPU without caching (for inference).
-
-        Args:
-            ctx: GPU device context.
-            output_buf: Output buffer [BATCH * OUT_DIM].
-            input_buf: Input buffer [BATCH * IN_DIM].
-            params_buf: Parameters buffer [PARAM_SIZE] = [L0 params | L1 params].
-        """
-        # Allocate intermediate buffer on GPU
-        var inter_buf = ctx.enqueue_create_buffer[dtype](
-            BATCH * Self.L0.OUT_DIM
-        )
-
-        # Create views into params_buf (owning=False for non-owning views)
-        var l0_params_ptr = params_buf.unsafe_ptr()
-        var l0_params_buf = DeviceBuffer[dtype](
-            ctx,
-            l0_params_ptr,
-            Self.L0.PARAM_SIZE,
-            owning=False,
-        )
-        var l1_params_ptr = l0_params_ptr + Self.L0.PARAM_SIZE
-        var l1_params_buf = DeviceBuffer[dtype](
-            ctx,
-            l1_params_ptr,
-            Self.L1.PARAM_SIZE,
-            owning=False,
-        )
-
-        # L0: input -> inter_buf
-        Self.L0.forward_gpu_no_cache[BATCH](
-            ctx,
-            inter_buf,
-            input_buf,
-            l0_params_buf,
-        )
-
-        # L1: inter_buf -> output
-        Self.L1.forward_gpu_no_cache[BATCH](
-            ctx,
-            output_buf,
-            inter_buf,
-            l1_params_buf,
-        )
-
-    @staticmethod
-    fn backward_gpu[
-        BATCH: Int,
-    ](
-        ctx: DeviceContext,
-        grad_input_buf: DeviceBuffer[dtype],
-        grad_output_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        grads_buf: DeviceBuffer[dtype],
-    ) raises:
-        """Launch backward pass on GPU.
-
-        Orchestrates GPU calls for child layers in reverse order:
-        1. L1: grad_output -> grad_inter
-        2. L0: grad_inter -> grad_input
-
-        Args:
-            ctx: GPU device context.
-            grad_input_buf: Gradient w.r.t. input [BATCH * IN_DIM] (written).
-            grad_output_buf: Gradient w.r.t. output [BATCH * OUT_DIM].
-            params_buf: Parameters buffer [PARAM_SIZE] = [L0 params | L1 params].
-            cache_buf: Cache buffer [BATCH * CACHE_SIZE] = [L0 cache | L1 cache].
-            grads_buf: Parameter gradients [PARAM_SIZE] = [L0 grads | L1 grads] (written).
-        """
-        # Allocate intermediate gradient buffer on GPU
-        var grad_inter_buf = ctx.enqueue_create_buffer[dtype](
-            BATCH * Self.L0.OUT_DIM
-        )
-
-        # Create views into params_buf (owning=False for non-owning views)
-        var l0_params_ptr = params_buf.unsafe_ptr()
-        var l0_params_buf = DeviceBuffer[dtype](
-            ctx,
-            l0_params_ptr,
-            Self.L0.PARAM_SIZE,
-            owning=False,
-        )
-        var l1_params_ptr = l0_params_ptr + Self.L0.PARAM_SIZE
-        var l1_params_buf = DeviceBuffer[dtype](
-            ctx,
-            l1_params_ptr,
-            Self.L1.PARAM_SIZE,
-            owning=False,
-        )
-
-        # Create views into cache_buf
-        var l0_cache_ptr = cache_buf.unsafe_ptr()
-        var l0_cache_buf = DeviceBuffer[dtype](
-            ctx,
-            cache_buf.unsafe_ptr(),
-            BATCH * Self.L0.CACHE_SIZE,
-            owning=False,
-        )
-        var l1_cache_ptr = l0_cache_ptr + BATCH * Self.L0.CACHE_SIZE
-        var l1_cache_buf = DeviceBuffer[dtype](
-            ctx,
-            l1_cache_ptr,
-            BATCH * Self.L1.CACHE_SIZE,
-            owning=False,
-        )
-
-        # Create views into grads_buf
-        var l0_grads_ptr = grads_buf.unsafe_ptr()
-        var l0_grads_buf = DeviceBuffer[dtype](
-            ctx,
-            l0_grads_ptr,
-            Self.L0.PARAM_SIZE,
-            owning=False,
-        )
-        var l1_grads_ptr = l0_grads_ptr + Self.L0.PARAM_SIZE
-        var l1_grads_buf = DeviceBuffer[dtype](
-            ctx,
-            l1_grads_ptr,
-            Self.L1.PARAM_SIZE,
-            owning=False,
-        )
-
-        # L1 backward: grad_output -> grad_inter
-        Self.L1.backward_gpu[BATCH](
-            ctx,
-            grad_inter_buf,
-            grad_output_buf,
-            l1_params_buf,
-            l1_cache_buf,
-            l1_grads_buf,
-        )
-
-        # L0 backward: grad_inter -> grad_input
-        Self.L0.backward_gpu[BATCH](
-            ctx,
-            grad_input_buf,
-            grad_inter_buf,
-            l0_params_buf,
-            l0_cache_buf,
-            l0_grads_buf,
-        )
 
     # =========================================================================
     # GPU Methods with Pre-allocated Workspace (avoids internal allocation)
@@ -534,7 +293,7 @@ struct Seq2[L0: Model, L1: Model](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward_gpu_ws[
+    fn forward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -620,7 +379,7 @@ struct Seq2[L0: Model, L1: Model](Model):
         )
 
         # L0: input -> inter_buf (using workspace)
-        Self.L0.forward_gpu_ws[BATCH](
+        Self.L0.forward_gpu[BATCH](
             ctx,
             inter_buf,
             input_buf,
@@ -630,7 +389,7 @@ struct Seq2[L0: Model, L1: Model](Model):
         )
 
         # L1: inter_buf -> output (using workspace)
-        Self.L1.forward_gpu_ws[BATCH](
+        Self.L1.forward_gpu[BATCH](
             ctx,
             output_buf,
             inter_buf,
@@ -640,7 +399,7 @@ struct Seq2[L0: Model, L1: Model](Model):
         )
 
     @staticmethod
-    fn forward_gpu_no_cache_ws[
+    fn forward_gpu_no_cache[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -704,7 +463,7 @@ struct Seq2[L0: Model, L1: Model](Model):
         )
 
         # L0: input -> inter_buf
-        Self.L0.forward_gpu_no_cache_ws[BATCH](
+        Self.L0.forward_gpu_no_cache[BATCH](
             ctx,
             inter_buf,
             input_buf,
@@ -713,7 +472,7 @@ struct Seq2[L0: Model, L1: Model](Model):
         )
 
         # L1: inter_buf -> output
-        Self.L1.forward_gpu_no_cache_ws[BATCH](
+        Self.L1.forward_gpu_no_cache[BATCH](
             ctx,
             output_buf,
             inter_buf,
@@ -722,7 +481,7 @@ struct Seq2[L0: Model, L1: Model](Model):
         )
 
     @staticmethod
-    fn backward_gpu_ws[
+    fn backward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -826,7 +585,7 @@ struct Seq2[L0: Model, L1: Model](Model):
         )
 
         # L1 backward: grad_output -> grad_inter
-        Self.L1.backward_gpu_ws[BATCH](
+        Self.L1.backward_gpu[BATCH](
             ctx,
             grad_inter_buf,
             grad_output_buf,
@@ -837,7 +596,7 @@ struct Seq2[L0: Model, L1: Model](Model):
         )
 
         # L0 backward: grad_inter -> grad_input
-        Self.L0.backward_gpu_ws[BATCH](
+        Self.L0.backward_gpu[BATCH](
             ctx,
             grad_input_buf,
             grad_inter_buf,
@@ -864,47 +623,88 @@ struct Seq2[L0: Model, L1: Model](Model):
 # =============================================================================
 
 
-fn seq[L0: Model, L1: Model](var l0: L0, var l1: L1) -> Seq2[L0, L1]:
+comptime Seq3[L0: Model, L1: Model, L2: Model] = Seq2[Seq2[L0, L1], L2]
+comptime Seq4[L0: Model, L1: Model, L2: Model, L3: Model] = Seq2[
+    Seq2[Seq2[L0, L1], L2], L3
+]
+comptime Seq5[L0: Model, L1: Model, L2: Model, L3: Model, L4: Model] = Seq2[
+    Seq2[Seq2[Seq2[L0, L1], L2], L3], L4
+]
+comptime Seq6[
+    L0: Model, L1: Model, L2: Model, L3: Model, L4: Model, L5: Model
+] = Seq2[Seq2[Seq2[Seq2[Seq2[L0, L1], L2], L3], L4], L5]
+comptime Seq7[
+    L0: Model, L1: Model, L2: Model, L3: Model, L4: Model, L5: Model, L6: Model
+] = Seq2[Seq2[Seq2[Seq2[Seq2[Seq2[L0, L1], L2], L3], L4], L5], L6]
+comptime Seq8[
+    L0: Model,
+    L1: Model,
+    L2: Model,
+    L3: Model,
+    L4: Model,
+    L5: Model,
+    L6: Model,
+    L7: Model,
+] = Seq2[Seq2[Seq2[Seq2[Seq2[Seq2[Seq2[L0, L1], L2], L3], L4], L5], L6], L7]
+
+
+fn seq[L0: Model, L1: Model](l0: L0, l1: L1) -> Seq2[L0, L1]:
     """Create a 2-layer sequential model.
 
     Usage:
         var model = seq(Linear[2, 16, 4](), ReLU[16, 4]())
     """
-    return Seq2[L0, L1](l0^, l1^)
+    _ = l0
+    _ = l1
+    return Seq2[L0, L1]()
 
 
 fn seq[
     L0: Model, L1: Model, L2: Model
-](var l0: L0, var l1: L1, var l2: L2) -> Seq2[Seq2[L0, L1], L2]:
+](l0: L0, l1: L1, l2: L2) -> Seq2[Seq2[L0, L1], L2]:
     """Create a 3-layer sequential model (composed from Seq2)."""
-    return seq(seq(l0^, l1^), l2^)
+    _ = l0
+    _ = l1
+    _ = l2
+    return Seq3[L0, L1, L2]()
 
 
 fn seq[
     L0: Model, L1: Model, L2: Model, L3: Model
-](var l0: L0, var l1: L1, var l2: L2, var l3: L3) -> Seq2[
-    Seq2[Seq2[L0, L1], L2], L3
-]:
+](l0: L0, l1: L1, l2: L2, l3: L3) -> Seq4[L0, L1, L2, L3]:
     """Create a 4-layer sequential model (composed from Seq2)."""
-    return seq(seq(l0^, l1^, l2^), l3^)
+    _ = l0
+    _ = l1
+    _ = l2
+    _ = l3
+    return Seq4[L0, L1, L2, L3]()
 
 
 fn seq[
     L0: Model, L1: Model, L2: Model, L3: Model, L4: Model
-](var l0: L0, var l1: L1, var l2: L2, var l3: L3, var l4: L4) -> Seq2[
-    Seq2[Seq2[Seq2[L0, L1], L2], L3], L4
-]:
+](l0: L0, l1: L1, l2: L2, l3: L3, l4: L4) -> Seq5[L0, L1, L2, L3, L4]:
     """Create a 5-layer sequential model (composed from Seq2)."""
-    return seq(seq(seq(seq(l0^, l1^), l2^), l3^), l4^)
+    _ = l0
+    _ = l1
+    _ = l2
+    _ = l3
+    _ = l4
+    return Seq5[L0, L1, L2, L3, L4]()
 
 
 fn seq[
     L0: Model, L1: Model, L2: Model, L3: Model, L4: Model, L5: Model
-](
-    var l0: L0, var l1: L1, var l2: L2, var l3: L3, var l4: L4, var l5: L5
-) -> Seq2[Seq2[Seq2[Seq2[Seq2[L0, L1], L2], L3], L4], L5]:
+](l0: L0, l1: L1, l2: L2, l3: L3, l4: L4, l5: L5) -> Seq6[
+    L0, L1, L2, L3, L4, L5
+]:
     """Create a 6-layer sequential model (composed from Seq2)."""
-    return seq(seq(seq(seq(seq(l0^, l1^), l2^), l3^), l4^), l5^)
+    _ = l0
+    _ = l1
+    _ = l2
+    _ = l3
+    _ = l4
+    _ = l5
+    return Seq6[L0, L1, L2, L3, L4, L5]()
 
 
 fn seq[
@@ -915,17 +715,18 @@ fn seq[
     L4: Model,
     L5: Model,
     L6: Model,
-](
-    var l0: L0,
-    var l1: L1,
-    var l2: L2,
-    var l3: L3,
-    var l4: L4,
-    var l5: L5,
-    var l6: L6,
-) -> Seq2[Seq2[Seq2[Seq2[Seq2[Seq2[L0, L1], L2], L3], L4], L5], L6]:
+](l0: L0, l1: L1, l2: L2, l3: L3, l4: L4, l5: L5, l6: L6) -> Seq7[
+    L0, L1, L2, L3, L4, L5, L6
+]:
     """Create a 7-layer sequential model (composed from Seq2)."""
-    return seq(seq(seq(seq(seq(seq(l0^, l1^), l2^), l3^), l4^), l5^), l6^)
+    _ = l0
+    _ = l1
+    _ = l2
+    _ = l3
+    _ = l4
+    _ = l5
+    _ = l6
+    return Seq7[L0, L1, L2, L3, L4, L5, L6]()
 
 
 fn seq[
@@ -937,17 +738,6 @@ fn seq[
     L5: Model,
     L6: Model,
     L7: Model,
-](
-    var l0: L0,
-    var l1: L1,
-    var l2: L2,
-    var l3: L3,
-    var l4: L4,
-    var l5: L5,
-    var l6: L6,
-    var l7: L7,
-) -> Seq2[Seq2[Seq2[Seq2[Seq2[Seq2[Seq2[L0, L1], L2], L3], L4], L5], L6], L7]:
+]() -> Seq8[L0, L1, L2, L3, L4, L5, L6, L7]:
     """Create an 8-layer sequential model (composed from Seq2)."""
-    return seq(
-        seq(seq(seq(seq(seq(seq(l0^, l1^), l2^), l3^), l4^), l5^), l6^), l7^
-    )
+    return Seq8[L0, L1, L2, L3, L4, L5, L6, L7]()

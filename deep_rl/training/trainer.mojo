@@ -63,7 +63,6 @@ struct Trainer[
     var print_every: Int
     var checkpoint_every: Int  # Save checkpoint every N epochs (0 to disable)
     var checkpoint_path: String  # Path for auto-checkpointing
-    var model: Self.MODEL
     var optimizer: Self.OPTIMIZER
     var loss_function: Self.LOSS_FUNCTION
     var initializer: Self.INITIALIZER
@@ -75,7 +74,6 @@ struct Trainer[
 
     fn __init__(
         out self,
-        model: Self.MODEL,
         optimizer: Self.OPTIMIZER,
         loss_function: Self.LOSS_FUNCTION,
         initializer: Self.INITIALIZER,
@@ -87,7 +85,6 @@ struct Trainer[
         """Initialize trainer with the specified initializer.
 
         Args:
-            model: The model to train.
             optimizer: The optimizer to use.
             loss_function: The loss function to use.
             initializer: The weight initializer.
@@ -100,7 +97,6 @@ struct Trainer[
         self.print_every = print_every
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
-        self.model = model
         self.optimizer = optimizer
         self.loss_function = loss_function
         self.initializer = initializer
@@ -184,7 +180,7 @@ struct Trainer[
 
         for epoch in range(self.epochs):
             # Forward pass (with cache and params)
-            self.model.forward[BATCH](
+            Self.MODEL.forward[BATCH](
                 input_tensor,
                 output_tensor,
                 params_tensor,
@@ -204,7 +200,7 @@ struct Trainer[
                 self.grads[i] = 0
 
             # Backward pass (with cache, params, and grads)
-            self.model.backward[BATCH](
+            Self.MODEL.backward[BATCH](
                 grad_output_tensor,
                 grad_input_tensor,
                 params_tensor,
@@ -261,7 +257,7 @@ struct Trainer[
         ](self.params.unsafe_ptr())
 
         # Use forward - no cache needed for evaluation
-        self.model.forward[BATCH](
+        Self.MODEL.forward[BATCH](
             input_tensor,
             output_tensor,
             params_tensor,
@@ -347,7 +343,7 @@ struct Trainer[
             ctx.enqueue_memset(grads_buf, 0)
 
             # Forward pass (using workspace to avoid internal allocation)
-            Self.MODEL.forward_gpu_ws[BATCH](
+            Self.MODEL.forward_gpu[BATCH](
                 ctx,
                 output_buf,
                 input_buf,
@@ -362,7 +358,7 @@ struct Trainer[
             )
 
             # Backward pass through model (using workspace to avoid internal allocation)
-            Self.MODEL.backward_gpu_ws[BATCH](
+            Self.MODEL.backward_gpu[BATCH](
                 ctx,
                 grad_input_buf,
                 grad_output_buf,

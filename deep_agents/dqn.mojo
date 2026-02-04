@@ -38,7 +38,7 @@ from gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 
 from deep_rl.constants import dtype, TILE, TPB
-from deep_rl.model import Linear, ReLU, seq
+from deep_rl.model import Linear, Seq3, LinearReLU
 from deep_rl.optimizer import Adam
 from deep_rl.initializer import Kaiming
 from deep_rl.training import Network
@@ -257,33 +257,18 @@ struct DQNAgent[
         + Self.ACTIONS
     )
 
+    comptime Q_Model = Seq3[
+        LinearReLU[Self.OBS, Self.HIDDEN],
+        LinearReLU[Self.HIDDEN, Self.HIDDEN],
+        Linear[Self.HIDDEN, Self.ACTIONS],
+    ]
+
+    comptime ONLINE_MODEL = Network[Self.Q_Model, Adam, Kaiming]
+    comptime TARGET_MODEL = Network[Self.Q_Model, Adam, Kaiming]
+
     # Online and target networks
-    var online_model: Network[
-        type_of(
-            seq(
-                Linear[Self.OBS, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, Self.ACTIONS](),
-            )
-        ),
-        Adam,
-        Kaiming,
-    ]
-    var target_model: Network[
-        type_of(
-            seq(
-                Linear[Self.OBS, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, Self.ACTIONS](),
-            )
-        ),
-        Adam,
-        Kaiming,
-    ]
+    var online_model: Self.ONLINE_MODEL
+    var target_model: Self.TARGET_MODEL
 
     # Replay buffer (action_dim=1 since we store discrete action as scalar)
     var buffer: ReplayBuffer[Self.buffer_capacity, Self.obs_dim, 1, dtype]
@@ -328,18 +313,14 @@ struct DQNAgent[
             checkpoint_every: Save checkpoint every N episodes (0 to disable).
             checkpoint_path: Path to save checkpoints (required if checkpoint_every > 0).
         """
-        # Create Q-network model
-        var q_model = seq(
-            Linear[Self.OBS, Self.HIDDEN](),
-            ReLU[Self.HIDDEN](),
-            Linear[Self.HIDDEN, Self.HIDDEN](),
-            ReLU[Self.HIDDEN](),
-            Linear[Self.HIDDEN, Self.ACTIONS](),
-        )
 
         # Initialize networks
-        self.online_model = Network(q_model, Adam(lr=lr), Kaiming())
-        self.target_model = Network(q_model, Adam(lr=lr), Kaiming())
+        self.online_model = Network[Self.Q_Model, Adam, Kaiming](
+            Adam(lr=lr), Kaiming()
+        )
+        self.target_model = Network[Self.Q_Model, Adam, Kaiming](
+            Adam(lr=lr), Kaiming()
+        )
 
         # Initialize target with online's weights
         self.target_model.copy_params_from(self.online_model)
@@ -840,7 +821,7 @@ struct DQNAgent[
         ](q_buf.unsafe_ptr())
 
         # Forward pass on GPU for n_envs environments (using pre-allocated workspace)
-        self.online_model.forward_gpu_ws[Self.n_envs](
+        self.online_model.forward_gpu[Self.n_envs](
             ctx, obs_buf, q_buf, params_buf, workspace_buf
         )
 
@@ -1028,7 +1009,7 @@ struct DQNAgent[
         """
         # GPU Forward pass: online network with cache (using pre-allocated workspace)
         # obs_buf contains the previous observations (before step)
-        self.online_model.forward_gpu_with_cache_ws[Self.batch_size](
+        self.online_model.forward_gpu_with_cache[Self.batch_size](
             ctx,
             obs_buf,
             q_values_buf,
@@ -1038,7 +1019,7 @@ struct DQNAgent[
         )
 
         # GPU Forward pass: target network (no cache, using pre-allocated workspace)
-        self.target_model.forward_gpu_ws[Self.batch_size](
+        self.target_model.forward_gpu[Self.batch_size](
             ctx,
             next_obs_buf,
             next_q_values_buf,
@@ -1069,7 +1050,7 @@ struct DQNAgent[
         @parameter
         if Self.double_dqn:
             # For Double DQN: forward online network on next_obs (using workspace)
-            self.online_model.forward_gpu_ws[Self.batch_size](
+            self.online_model.forward_gpu[Self.batch_size](
                 ctx,
                 next_obs_buf,
                 online_next_q_buf,
@@ -1250,7 +1231,7 @@ struct DQNAgent[
         )
 
         # GPU Backward pass (using pre-allocated workspace)
-        self.online_model.backward_gpu_ws[Self.batch_size](
+        self.online_model.backward_gpu[Self.batch_size](
             ctx,
             grad_output_buf,
             grad_input_buf,
@@ -1887,7 +1868,9 @@ struct DQNAgent[
 
         # Reset ALL environments after warmup to start fresh episodes
         # (warmup may leave envs mid-episode, which would give incorrect episode rewards)
-        EnvType.reset_kernel_gpu[Self.n_envs, Self.obs_dim](ctx, obs_buf, UInt64(warmup_count))
+        EnvType.reset_kernel_gpu[Self.n_envs, Self.obs_dim](
+            ctx, obs_buf, UInt64(warmup_count)
+        )
 
         if verbose:
             print("Warmup complete. Replay buffer size: " + String(rb_size))

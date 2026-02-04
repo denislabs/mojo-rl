@@ -30,10 +30,10 @@ struct Tanh[dim: Int](Model):
         """Copy constructor for Copyable trait."""
         pass
 
+    @staticmethod
     fn forward[
         BATCH: Int
     ](
-        self,
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ],
@@ -68,10 +68,10 @@ struct Tanh[dim: Int](Model):
                 cache[batch, i] = t  # Cache tanh output for backward
                 output[batch, i] = t
 
+    @staticmethod
     fn forward[
         BATCH: Int
     ](
-        self,
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ],
@@ -99,10 +99,10 @@ struct Tanh[dim: Int](Model):
                 var tanh_val = (exp_val - exp_neg_val) / (exp_val + exp_neg_val)
                 output[batch, i] = Scalar[dtype](tanh_val[0])
 
+    @staticmethod
     fn backward[
         BATCH: Int
     ](
-        self,
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
         ],
@@ -256,6 +256,8 @@ struct Tanh[dim: Int](Model):
     # but kept for API consistency with Linear.
     # =========================================================================
 
+
+
     @staticmethod
     fn forward_gpu[
         BATCH: Int,
@@ -263,10 +265,11 @@ struct Tanh[dim: Int](Model):
         ctx: DeviceContext,
         output_buf: DeviceBuffer[dtype],
         input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],  # Unused for Tanh
+        params_buf: DeviceBuffer[dtype],
         cache_buf: DeviceBuffer[dtype],
+        workspace_buf: DeviceBuffer[dtype],  # Unused for Tanh
     ) raises:
-        """Launch forward pass on GPU with caching.
+         """Launch forward pass on GPU with caching.
 
         Args:
             ctx: GPU device context.
@@ -274,6 +277,7 @@ struct Tanh[dim: Int](Model):
             input_buf: Input buffer [BATCH * dim].
             params_buf: Parameters buffer (unused for Tanh, kept for API consistency).
             cache_buf: Cache buffer [BATCH * dim] for backward pass.
+            workspace_buf: Pre-allocated workspace (unused for Tanh).
         """
         var output = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
@@ -317,7 +321,8 @@ struct Tanh[dim: Int](Model):
         ctx: DeviceContext,
         output_buf: DeviceBuffer[dtype],
         input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],  # Unused for Tanh
+        params_buf: DeviceBuffer[dtype],
+        workspace_buf: DeviceBuffer[dtype],  # Unused for Tanh
     ) raises:
         """Launch forward pass on GPU without caching (for inference).
 
@@ -326,6 +331,7 @@ struct Tanh[dim: Int](Model):
             output_buf: Output buffer [BATCH * dim].
             input_buf: Input buffer [BATCH * dim].
             params_buf: Parameters buffer (unused for Tanh, kept for API consistency).
+            workspace_buf: Pre-allocated workspace (unused for Tanh).
         """
         var output = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
@@ -355,6 +361,7 @@ struct Tanh[dim: Int](Model):
             block_dim=(TPB,),
         )
 
+
     @staticmethod
     fn backward_gpu[
         BATCH: Int,
@@ -362,9 +369,10 @@ struct Tanh[dim: Int](Model):
         ctx: DeviceContext,
         grad_input_buf: DeviceBuffer[dtype],
         grad_output_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],  # Unused for Tanh
+        params_buf: DeviceBuffer[dtype],
         cache_buf: DeviceBuffer[dtype],
-        grads_buf: DeviceBuffer[dtype],  # Unused for Tanh
+        grads_buf: DeviceBuffer[dtype],
+        workspace_buf: DeviceBuffer[dtype],  # Unused for Tanh
     ) raises:
         """Launch backward pass on GPU.
 
@@ -377,6 +385,7 @@ struct Tanh[dim: Int](Model):
             params_buf: Parameters buffer (unused for Tanh).
             cache_buf: Cached tanh output from forward pass [BATCH * dim].
             grads_buf: Parameter gradients (unused for Tanh).
+            workspace_buf: Pre-allocated workspace (unused for Tanh).
         """
         var grad_input = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
@@ -411,61 +420,4 @@ struct Tanh[dim: Int](Model):
             cache,
             grid_dim=(grid_x,),
             block_dim=(TPB,),
-        )
-
-    # =========================================================================
-    # GPU Workspace Methods (for Sequential compatibility)
-    # Tanh is a leaf layer, so workspace is unused - just delegate to regular methods.
-    # =========================================================================
-
-    @staticmethod
-    fn forward_gpu_ws[
-        BATCH: Int,
-    ](
-        ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],  # Unused for Tanh
-    ) raises:
-        """GPU forward with workspace (workspace unused for Tanh)."""
-        Self.forward_gpu[BATCH](
-            ctx, output_buf, input_buf, params_buf, cache_buf
-        )
-
-    @staticmethod
-    fn forward_gpu_no_cache_ws[
-        BATCH: Int,
-    ](
-        ctx: DeviceContext,
-        output_buf: DeviceBuffer[dtype],
-        input_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],  # Unused for Tanh
-    ) raises:
-        """GPU forward without cache, with workspace (workspace unused for Tanh).
-        """
-        Self.forward_gpu_no_cache[BATCH](ctx, output_buf, input_buf, params_buf)
-
-    @staticmethod
-    fn backward_gpu_ws[
-        BATCH: Int,
-    ](
-        ctx: DeviceContext,
-        grad_input_buf: DeviceBuffer[dtype],
-        grad_output_buf: DeviceBuffer[dtype],
-        params_buf: DeviceBuffer[dtype],
-        cache_buf: DeviceBuffer[dtype],
-        grads_buf: DeviceBuffer[dtype],
-        workspace_buf: DeviceBuffer[dtype],  # Unused for Tanh
-    ) raises:
-        """GPU backward with workspace (workspace unused for Tanh)."""
-        Self.backward_gpu[BATCH](
-            ctx,
-            grad_input_buf,
-            grad_output_buf,
-            params_buf,
-            cache_buf,
-            grads_buf,
         )
