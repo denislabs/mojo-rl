@@ -454,7 +454,35 @@ fn compute_mass_matrix_diagonal_gpu[
             var r_perp_z = rz - r_dot_axis * axis_world_z
             var r_perp_sq = r_perp_x * r_perp_x + r_perp_y * r_perp_y + r_perp_z * r_perp_z
 
-            M_diag[dof_adr] = I_avg + mass * r_perp_sq
+            var m_effective = I_avg + mass * r_perp_sq
+
+            # Add contributions from ALL descendant bodies (matching CPU version)
+            for desc_body in range(body_id + 1, NBODY):
+                if _is_descendant_gpu[DTYPE, NBODY, MODEL_SIZE](model, desc_body, body_id):
+                    var desc_body_off = gc_model_body_offset(desc_body)
+                    var desc_mass = rebind[Scalar[DTYPE]](model[0, desc_body_off + GC_BODY_IDX_MASS])
+                    var desc_I_xx = rebind[Scalar[DTYPE]](model[0, desc_body_off + GC_BODY_IDX_IXX])
+                    var desc_I_yy = rebind[Scalar[DTYPE]](model[0, desc_body_off + GC_BODY_IDX_IYY])
+                    var desc_I_zz = rebind[Scalar[DTYPE]](model[0, desc_body_off + GC_BODY_IDX_IZZ])
+                    var desc_I_avg = (desc_I_xx + desc_I_yy + desc_I_zz) / Scalar[DTYPE](3)
+
+                    var desc_px = rebind[Scalar[DTYPE]](state[env, xpos_off + desc_body * 3 + 0])
+                    var desc_py = rebind[Scalar[DTYPE]](state[env, xpos_off + desc_body * 3 + 1])
+                    var desc_pz = rebind[Scalar[DTYPE]](state[env, xpos_off + desc_body * 3 + 2])
+
+                    var desc_rx = desc_px - jpos_world_x
+                    var desc_ry = desc_py - jpos_world_y
+                    var desc_rz = desc_pz - jpos_world_z
+
+                    var desc_r_dot = desc_rx * axis_world_x + desc_ry * axis_world_y + desc_rz * axis_world_z
+                    var desc_perp_x = desc_rx - desc_r_dot * axis_world_x
+                    var desc_perp_y = desc_ry - desc_r_dot * axis_world_y
+                    var desc_perp_z = desc_rz - desc_r_dot * axis_world_z
+                    var desc_perp_sq = desc_perp_x * desc_perp_x + desc_perp_y * desc_perp_y + desc_perp_z * desc_perp_z
+
+                    m_effective = m_effective + desc_I_avg + desc_mass * desc_perp_sq
+
+            M_diag[dof_adr] = m_effective
 
         elif jnt_type == GC_JNT_SLIDE:
             # Accumulate mass from body and ALL descendants

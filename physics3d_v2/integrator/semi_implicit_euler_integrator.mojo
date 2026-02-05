@@ -34,6 +34,7 @@ from ..solver.semi_implicit_euler_solver import (
     compute_bias_forces,
     compute_contact_forces,
     normalize_qpos_quaternions,
+    enforce_joint_limits,
 )
 from ..traits.integrator import GcIntegrator
 from ..gpu.constants import (
@@ -129,6 +130,9 @@ struct SemiImplicitEulerIntegrator(GcIntegrator):
 
         # 8. Normalize quaternions
         normalize_qpos_quaternions(model, data)
+
+        # 9. Enforce joint limits
+        enforce_joint_limits(model, data)
 
     @staticmethod
     fn simulate[

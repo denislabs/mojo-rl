@@ -23,7 +23,7 @@ from time import perf_counter_ns
 from gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.hopper_gc import HopperGC
+from envs.hopper_gc import HopperGC, HopperCurriculum
 from envs.hopper_gc.constants_gc import HopperGCConstantsGPU
 
 
@@ -80,13 +80,13 @@ fn main() raises:
             clip_epsilon=0.2,  # Standard clipping
             actor_lr=0.0003,  # CleanRL: 3e-4
             critic_lr=0.0003,  # CleanRL: 3e-4
-            entropy_coef=0.01,  # Small entropy for exploration (was 0.0)
+            entropy_coef=0.02,  # Small entropy for exploration (was 0.0)
             value_loss_coef=0.5,
             num_epochs=10,  # CleanRL default
-            target_kl=0.0,  # KL early stopping disabled
+            target_kl=0.015,  # KL early stopping
             max_grad_norm=0.5,
-            anneal_lr=True,  # CleanRL uses LR annealing
-            anneal_entropy=True,  # Anneal entropy to 0 over training
+            anneal_lr=False,  # CleanRL uses LR annealing
+            anneal_entropy=False,  # Anneal entropy to 0 over training
             target_total_steps=0,  # Auto-calculate
             norm_adv_per_minibatch=True,
             checkpoint_every=1_000,
@@ -148,7 +148,7 @@ fn main() raises:
         var start_time = perf_counter_ns()
 
         try:
-            var metrics = agent.train_gpu[HopperGC[dtype]](
+            var metrics = agent.train_gpu[HopperGC[dtype], HopperCurriculum](
                 ctx,
                 num_episodes=NUM_EPISODES,
                 verbose=True,

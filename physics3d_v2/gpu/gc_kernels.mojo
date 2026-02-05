@@ -78,6 +78,7 @@ from .constants import (
     GC_MODEL_META_IDX_GRAVITY_Z,
     GC_MODEL_META_IDX_TIMESTEP,
     GC_MODEL_META_IDX_GROUND_Z,
+    GC_MODEL_META_IDX_FRICTION,
     GC_CONTACT_IDX_BODY_A,
     GC_CONTACT_IDX_BODY_B,
     GC_CONTACT_IDX_POS_X,
@@ -92,6 +93,8 @@ from .constants import (
     GC_JNT_BALL,
     GC_JNT_SLIDE,
     GC_JNT_HINGE,
+    GC_JOINT_IDX_RANGE_MIN,
+    GC_JOINT_IDX_RANGE_MAX,
 )
 
 
@@ -241,7 +244,7 @@ fn compute_contact_forces_gpu[
     model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
     mut qfrc_contact: InlineArray[Scalar[DTYPE], V_SIZE],
 ):
-    """Compute joint-space contact forces."""
+    """Compute joint-space contact forces with friction."""
     var xpos_off = gc_xpos_offset[NQ, NV, NBODY]()
     var xquat_off = gc_xquat_offset[NQ, NV, NBODY]()
     var xvel_off = gc_xvel_offset[NQ, NV, NBODY]()
@@ -251,6 +254,7 @@ fn compute_contact_forces_gpu[
     var model_meta_off = gc_model_metadata_offset[NBODY, NJOINT]()
     var num_joints = Int(rebind[Scalar[DTYPE]](model[0, model_meta_off + GC_MODEL_META_IDX_NJOINT]))
     var num_contacts = Int(rebind[Scalar[DTYPE]](state[env, meta_off + GC_META_IDX_NUM_CONTACTS]))
+    var friction_coef = rebind[Scalar[DTYPE]](model[0, model_meta_off + GC_MODEL_META_IDX_FRICTION])
 
     # Initialize to zero
     for i in range(NV):
@@ -274,19 +278,59 @@ fn compute_contact_forces_gpu[
             continue
 
         var depth = -dist
+
+        # Body velocity at contact
+        var vx = rebind[Scalar[DTYPE]](state[env, xvel_off + body * 3 + 0])
+        var vy = rebind[Scalar[DTYPE]](state[env, xvel_off + body * 3 + 1])
         var vz = rebind[Scalar[DTYPE]](state[env, xvel_off + body * 3 + 2])
-        var force = stiffness * depth - damping * vz
-        if force < Scalar[DTYPE](0):
-            force = Scalar[DTYPE](0)
+
+        # Normal force (spring-damper)
+        var normal_force = stiffness * depth - damping * vz
+        if normal_force < Scalar[DTYPE](0):
+            normal_force = Scalar[DTYPE](0)
+
+        # Tangential velocity (in XY plane for ground contact)
+        var v_tangent_mag = sqrt(vx * vx + vy * vy)
+
+        # Coulomb friction force (opposes tangential velocity)
+        var max_friction = friction_coef * normal_force
+        var friction_x: Scalar[DTYPE] = Scalar[DTYPE](0)
+        var friction_y: Scalar[DTYPE] = Scalar[DTYPE](0)
+
+        if v_tangent_mag > Scalar[DTYPE](1e-6):
+            friction_x = -max_friction * (vx / v_tangent_mag)
+            friction_y = -max_friction * (vy / v_tangent_mag)
+
+        # Total contact force in world frame
+        var total_fx = friction_x
+        var total_fy = friction_y
+        var total_fz = normal_force
 
         # Project to joint space
+        # Note: A joint affects a body if the body is the joint's body OR a descendant
         for j in range(num_joints):
             var joint_off = gc_model_joint_offset[NBODY](j)
             var jnt_type = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_TYPE]))
             var joint_body = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_BODY_ID]))
             var dof_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_DOF_ADR]))
 
-            if joint_body != body:
+            # Check if this joint affects the contacted body
+            # (body is the joint's body OR a descendant of the joint's body)
+            var joint_affects = False
+            if body == joint_body:
+                joint_affects = True
+            else:
+                # Check if body is a descendant of joint_body
+                var current = body
+                while current >= 0:
+                    var current_body_off = gc_model_body_offset(current)
+                    var current_parent = Int(rebind[Scalar[DTYPE]](model[0, current_body_off + GC_BODY_IDX_PARENT]))
+                    if current_parent == joint_body:
+                        joint_affects = True
+                        break
+                    current = current_parent
+
+            if not joint_affects:
                 continue
 
             var body_off = gc_model_body_offset(joint_body)
@@ -322,13 +366,10 @@ fn compute_contact_forces_gpu[
                 var ry = cpy - jpos_world_y
                 var rz = cpz - jpos_world_z
 
-                var fx = force * nx
-                var fy = force * ny
-                var fz = force * nz
-
-                var tau_x = ry * fz - rz * fy
-                var tau_y = rz * fx - rx * fz
-                var tau_z = rx * fy - ry * fx
+                # Torque = r x F (with friction)
+                var tau_x = ry * total_fz - rz * total_fy
+                var tau_y = rz * total_fx - rx * total_fz
+                var tau_z = rx * total_fy - ry * total_fx
 
                 var axis_world_x = axis_x
                 var axis_world_y = axis_y
@@ -360,16 +401,14 @@ fn compute_contact_forces_gpu[
                     axis_world_y = rotated[1]
                     axis_world_z = rotated[2]
 
-                var fx = force * nx
-                var fy = force * ny
-                var fz = force * nz
-                var f_joint = fx * axis_world_x + fy * axis_world_y + fz * axis_world_z
+                # Project total force (with friction) onto axis
+                var f_joint = total_fx * axis_world_x + total_fy * axis_world_y + total_fz * axis_world_z
                 qfrc_contact[dof_adr] = qfrc_contact[dof_adr] + f_joint
 
             elif jnt_type == GC_JNT_FREE:
-                qfrc_contact[dof_adr + 0] = qfrc_contact[dof_adr + 0] + force * nx
-                qfrc_contact[dof_adr + 1] = qfrc_contact[dof_adr + 1] + force * ny
-                qfrc_contact[dof_adr + 2] = qfrc_contact[dof_adr + 2] + force * nz
+                qfrc_contact[dof_adr + 0] = qfrc_contact[dof_adr + 0] + total_fx
+                qfrc_contact[dof_adr + 1] = qfrc_contact[dof_adr + 1] + total_fy
+                qfrc_contact[dof_adr + 2] = qfrc_contact[dof_adr + 2] + total_fz
 
 
 # =============================================================================
@@ -491,6 +530,70 @@ fn normalize_qpos_quaternions_gpu[
 
 
 # =============================================================================
+# Joint Limit Enforcement Kernel
+# =============================================================================
+
+
+@always_inline
+fn enforce_joint_limits_gpu[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    STATE_SIZE: Int,
+    MODEL_SIZE: Int,
+    BATCH: Int,
+](
+    env: Int,
+    state: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+    ],
+    model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+):
+    """Enforce joint position limits for HINGE and SLIDE joints.
+
+    When a joint exceeds its limit:
+    1. Clamp position to the limit
+    2. Zero velocity if moving further into the limit
+    """
+    var qpos_off = gc_qpos_offset[NQ, NV]()
+    var qvel_off = gc_qvel_offset[NQ, NV]()
+
+    var model_meta_off = gc_model_metadata_offset[NBODY, NJOINT]()
+    var num_joints = Int(rebind[Scalar[DTYPE]](model[0, model_meta_off + GC_MODEL_META_IDX_NJOINT]))
+
+    for j in range(num_joints):
+        var joint_off = gc_model_joint_offset[NBODY](j)
+        var jnt_type = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_TYPE]))
+
+        # Only enforce limits for HINGE and SLIDE joints
+        if jnt_type == GC_JNT_HINGE or jnt_type == GC_JNT_SLIDE:
+            var qpos_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_QPOS_ADR]))
+            var dof_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_DOF_ADR]))
+            var range_min = rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_RANGE_MIN])
+            var range_max = rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_RANGE_MAX])
+
+            var pos = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr])
+            var vel = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr])
+
+            # Check lower limit
+            if pos < range_min:
+                state[env, qpos_off + qpos_adr] = range_min
+                # Zero velocity if moving into the limit
+                if vel < Scalar[DTYPE](0):
+                    state[env, qvel_off + dof_adr] = Scalar[DTYPE](0)
+
+            # Check upper limit
+            elif pos > range_max:
+                state[env, qpos_off + qpos_adr] = range_max
+                # Zero velocity if moving into the limit
+                if vel > Scalar[DTYPE](0):
+                    state[env, qvel_off + dof_adr] = Scalar[DTYPE](0)
+
+
+# =============================================================================
 # Complete Step Kernel
 # =============================================================================
 
@@ -580,5 +683,10 @@ fn step_gc_kernel[
 
     # 8. Normalize quaternions
     normalize_qpos_quaternions_gpu[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH
+    ](env, state, model)
+
+    # 9. Enforce joint limits
+    enforce_joint_limits_gpu[
         DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH
     ](env, state, model)

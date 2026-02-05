@@ -310,19 +310,33 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
 
         # Shape 1-6: Leg segments (rectangles approximating capsules)
         # Back thigh
-        self._define_leg_shape(1, HCConstants.BTHIGH_LENGTH, HCConstants.BTHIGH_RADIUS)
+        self._define_leg_shape(
+            1, HCConstants.BTHIGH_LENGTH, HCConstants.BTHIGH_RADIUS
+        )
         # Back shin
-        self._define_leg_shape(2, HCConstants.BSHIN_LENGTH, HCConstants.BSHIN_RADIUS)
+        self._define_leg_shape(
+            2, HCConstants.BSHIN_LENGTH, HCConstants.BSHIN_RADIUS
+        )
         # Back foot
-        self._define_leg_shape(3, HCConstants.BFOOT_LENGTH, HCConstants.BFOOT_RADIUS)
+        self._define_leg_shape(
+            3, HCConstants.BFOOT_LENGTH, HCConstants.BFOOT_RADIUS
+        )
         # Front thigh
-        self._define_leg_shape(4, HCConstants.FTHIGH_LENGTH, HCConstants.FTHIGH_RADIUS)
+        self._define_leg_shape(
+            4, HCConstants.FTHIGH_LENGTH, HCConstants.FTHIGH_RADIUS
+        )
         # Front shin
-        self._define_leg_shape(5, HCConstants.FSHIN_LENGTH, HCConstants.FSHIN_RADIUS)
+        self._define_leg_shape(
+            5, HCConstants.FSHIN_LENGTH, HCConstants.FSHIN_RADIUS
+        )
         # Front foot
-        self._define_leg_shape(6, HCConstants.FFOOT_LENGTH, HCConstants.FFOOT_RADIUS)
+        self._define_leg_shape(
+            6, HCConstants.FFOOT_LENGTH, HCConstants.FFOOT_RADIUS
+        )
 
-    fn _define_leg_shape(mut self, shape_idx: Int, length: Float64, radius: Float64):
+    fn _define_leg_shape(
+        mut self, shape_idx: Int, length: Float64, radius: Float64
+    ):
         """Define a vertical leg segment shape."""
         var vx = List[Float64]()
         var vy = List[Float64]()
@@ -367,7 +381,13 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
             1.0 / HCConstants.TORSO_MASS
         )
         state[0, torso_off + IDX_INV_INERTIA] = Scalar[dtype](
-            1.0 / (HCConstants.TORSO_MASS * HCConstants.TORSO_LENGTH * HCConstants.TORSO_LENGTH / 12.0)
+            1.0
+            / (
+                HCConstants.TORSO_MASS
+                * HCConstants.TORSO_LENGTH
+                * HCConstants.TORSO_LENGTH
+                / 12.0
+            )
         )
         state[0, torso_off + IDX_SHAPE] = Scalar[dtype](0)
 
@@ -386,7 +406,9 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
             HCConstants.BTHIGH_MASS,
             HCConstants.BSHIN_MASS,
             HCConstants.BFOOT_MASS,
-            1, 2, 3,  # shape indices
+            1,
+            2,
+            3,  # shape indices
             init_vx,
             init_vy,
         )
@@ -406,7 +428,9 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
             HCConstants.FTHIGH_MASS,
             HCConstants.FSHIN_MASS,
             HCConstants.FFOOT_MASS,
-            4, 5, 6,  # shape indices
+            4,
+            5,
+            6,  # shape indices
             init_vx,
             init_vy,
         )
@@ -432,7 +456,9 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
 
     fn _init_leg_bodies(
         mut self,
-        state: LayoutTensor[dtype, Layout.row_major(1, HCConstants.STATE_SIZE_VAL), MutAnyOrigin],
+        state: LayoutTensor[
+            dtype, Layout.row_major(1, HCConstants.STATE_SIZE_VAL), MutAnyOrigin
+        ],
         hip_x: Float64,
         hip_y: Float64,
         thigh_body: Int,
@@ -498,7 +524,9 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
 
     fn _create_joints(
         mut self,
-        state: LayoutTensor[dtype, Layout.row_major(1, HCConstants.STATE_SIZE_VAL), MutAnyOrigin],
+        state: LayoutTensor[
+            dtype, Layout.row_major(1, HCConstants.STATE_SIZE_VAL), MutAnyOrigin
+        ],
     ):
         """Create motor-enabled revolute joints for all leg segments."""
         state[0, HCConstants.JOINT_COUNT_OFFSET] = Scalar[dtype](6)
@@ -506,62 +534,94 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
         # Back leg joints
         # Joint 0: Torso to back thigh (hip)
         self._create_motor_joint(
-            state, 0,
-            HCConstants.BODY_TORSO, HCConstants.BODY_BTHIGH,
-            -HCConstants.TORSO_LENGTH / 2, 0.0,  # anchor on torso (back end)
-            0.0, HCConstants.BTHIGH_LENGTH / 2,   # anchor on thigh (top)
-            HCConstants.BTHIGH_LIMIT_LOW, HCConstants.BTHIGH_LIMIT_HIGH,
+            state,
+            0,
+            HCConstants.BODY_TORSO,
+            HCConstants.BODY_BTHIGH,
+            -HCConstants.TORSO_LENGTH / 2,
+            0.0,  # anchor on torso (back end)
+            0.0,
+            HCConstants.BTHIGH_LENGTH / 2,  # anchor on thigh (top)
+            HCConstants.BTHIGH_LIMIT_LOW,
+            HCConstants.BTHIGH_LIMIT_HIGH,
         )
 
         # Joint 1: Back thigh to back shin (knee)
         self._create_motor_joint(
-            state, 1,
-            HCConstants.BODY_BTHIGH, HCConstants.BODY_BSHIN,
-            0.0, -HCConstants.BTHIGH_LENGTH / 2,  # anchor on thigh (bottom)
-            0.0, HCConstants.BSHIN_LENGTH / 2,    # anchor on shin (top)
-            HCConstants.BSHIN_LIMIT_LOW, HCConstants.BSHIN_LIMIT_HIGH,
+            state,
+            1,
+            HCConstants.BODY_BTHIGH,
+            HCConstants.BODY_BSHIN,
+            0.0,
+            -HCConstants.BTHIGH_LENGTH / 2,  # anchor on thigh (bottom)
+            0.0,
+            HCConstants.BSHIN_LENGTH / 2,  # anchor on shin (top)
+            HCConstants.BSHIN_LIMIT_LOW,
+            HCConstants.BSHIN_LIMIT_HIGH,
         )
 
         # Joint 2: Back shin to back foot (ankle)
         self._create_motor_joint(
-            state, 2,
-            HCConstants.BODY_BSHIN, HCConstants.BODY_BFOOT,
-            0.0, -HCConstants.BSHIN_LENGTH / 2,   # anchor on shin (bottom)
-            0.0, HCConstants.BFOOT_LENGTH / 2,    # anchor on foot (top)
-            HCConstants.BFOOT_LIMIT_LOW, HCConstants.BFOOT_LIMIT_HIGH,
+            state,
+            2,
+            HCConstants.BODY_BSHIN,
+            HCConstants.BODY_BFOOT,
+            0.0,
+            -HCConstants.BSHIN_LENGTH / 2,  # anchor on shin (bottom)
+            0.0,
+            HCConstants.BFOOT_LENGTH / 2,  # anchor on foot (top)
+            HCConstants.BFOOT_LIMIT_LOW,
+            HCConstants.BFOOT_LIMIT_HIGH,
         )
 
         # Front leg joints
         # Joint 3: Torso to front thigh (hip)
         self._create_motor_joint(
-            state, 3,
-            HCConstants.BODY_TORSO, HCConstants.BODY_FTHIGH,
-            HCConstants.TORSO_LENGTH / 2, 0.0,    # anchor on torso (front end)
-            0.0, HCConstants.FTHIGH_LENGTH / 2,   # anchor on thigh (top)
-            HCConstants.FTHIGH_LIMIT_LOW, HCConstants.FTHIGH_LIMIT_HIGH,
+            state,
+            3,
+            HCConstants.BODY_TORSO,
+            HCConstants.BODY_FTHIGH,
+            HCConstants.TORSO_LENGTH / 2,
+            0.0,  # anchor on torso (front end)
+            0.0,
+            HCConstants.FTHIGH_LENGTH / 2,  # anchor on thigh (top)
+            HCConstants.FTHIGH_LIMIT_LOW,
+            HCConstants.FTHIGH_LIMIT_HIGH,
         )
 
         # Joint 4: Front thigh to front shin (knee)
         self._create_motor_joint(
-            state, 4,
-            HCConstants.BODY_FTHIGH, HCConstants.BODY_FSHIN,
-            0.0, -HCConstants.FTHIGH_LENGTH / 2,  # anchor on thigh (bottom)
-            0.0, HCConstants.FSHIN_LENGTH / 2,    # anchor on shin (top)
-            HCConstants.FSHIN_LIMIT_LOW, HCConstants.FSHIN_LIMIT_HIGH,
+            state,
+            4,
+            HCConstants.BODY_FTHIGH,
+            HCConstants.BODY_FSHIN,
+            0.0,
+            -HCConstants.FTHIGH_LENGTH / 2,  # anchor on thigh (bottom)
+            0.0,
+            HCConstants.FSHIN_LENGTH / 2,  # anchor on shin (top)
+            HCConstants.FSHIN_LIMIT_LOW,
+            HCConstants.FSHIN_LIMIT_HIGH,
         )
 
         # Joint 5: Front shin to front foot (ankle)
         self._create_motor_joint(
-            state, 5,
-            HCConstants.BODY_FSHIN, HCConstants.BODY_FFOOT,
-            0.0, -HCConstants.FSHIN_LENGTH / 2,   # anchor on shin (bottom)
-            0.0, HCConstants.FFOOT_LENGTH / 2,    # anchor on foot (top)
-            HCConstants.FFOOT_LIMIT_LOW, HCConstants.FFOOT_LIMIT_HIGH,
+            state,
+            5,
+            HCConstants.BODY_FSHIN,
+            HCConstants.BODY_FFOOT,
+            0.0,
+            -HCConstants.FSHIN_LENGTH / 2,  # anchor on shin (bottom)
+            0.0,
+            HCConstants.FFOOT_LENGTH / 2,  # anchor on foot (top)
+            HCConstants.FFOOT_LIMIT_LOW,
+            HCConstants.FFOOT_LIMIT_HIGH,
         )
 
     fn _create_motor_joint(
         mut self,
-        state: LayoutTensor[dtype, Layout.row_major(1, HCConstants.STATE_SIZE_VAL), MutAnyOrigin],
+        state: LayoutTensor[
+            dtype, Layout.row_major(1, HCConstants.STATE_SIZE_VAL), MutAnyOrigin
+        ],
         joint_idx: Int,
         body_a: Int,
         body_b: Int,
@@ -599,11 +659,21 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
 
         # Torso state
         var torso_off = HCConstants.BODIES_OFFSET
-        var torso_y = Float64(rebind[Scalar[dtype]](state[0, torso_off + IDX_Y]))
-        var torso_angle = Float64(rebind[Scalar[dtype]](state[0, torso_off + IDX_ANGLE]))
-        var torso_vx = Float64(rebind[Scalar[dtype]](state[0, torso_off + IDX_VX]))
-        var torso_vy = Float64(rebind[Scalar[dtype]](state[0, torso_off + IDX_VY]))
-        var torso_omega = Float64(rebind[Scalar[dtype]](state[0, torso_off + IDX_OMEGA]))
+        var torso_y = Float64(
+            rebind[Scalar[dtype]](state[0, torso_off + IDX_Y])
+        )
+        var torso_angle = Float64(
+            rebind[Scalar[dtype]](state[0, torso_off + IDX_ANGLE])
+        )
+        var torso_vx = Float64(
+            rebind[Scalar[dtype]](state[0, torso_off + IDX_VX])
+        )
+        var torso_vy = Float64(
+            rebind[Scalar[dtype]](state[0, torso_off + IDX_VY])
+        )
+        var torso_omega = Float64(
+            rebind[Scalar[dtype]](state[0, torso_off + IDX_OMEGA])
+        )
 
         self.cached_state.torso_z = Scalar[Self.dtype](torso_y)
         self.cached_state.torso_angle = Scalar[Self.dtype](torso_angle)
@@ -613,47 +683,109 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
 
         # Compute joint angles from body angles
         # Back leg
-        var bthigh_off = HCConstants.BODIES_OFFSET + HCConstants.BODY_BTHIGH * BODY_STATE_SIZE
-        var bshin_off = HCConstants.BODIES_OFFSET + HCConstants.BODY_BSHIN * BODY_STATE_SIZE
-        var bfoot_off = HCConstants.BODIES_OFFSET + HCConstants.BODY_BFOOT * BODY_STATE_SIZE
+        var bthigh_off = (
+            HCConstants.BODIES_OFFSET
+            + HCConstants.BODY_BTHIGH * BODY_STATE_SIZE
+        )
+        var bshin_off = (
+            HCConstants.BODIES_OFFSET + HCConstants.BODY_BSHIN * BODY_STATE_SIZE
+        )
+        var bfoot_off = (
+            HCConstants.BODIES_OFFSET + HCConstants.BODY_BFOOT * BODY_STATE_SIZE
+        )
 
-        var bthigh_angle = Float64(rebind[Scalar[dtype]](state[0, bthigh_off + IDX_ANGLE]))
-        var bshin_angle = Float64(rebind[Scalar[dtype]](state[0, bshin_off + IDX_ANGLE]))
-        var bfoot_angle = Float64(rebind[Scalar[dtype]](state[0, bfoot_off + IDX_ANGLE]))
+        var bthigh_angle = Float64(
+            rebind[Scalar[dtype]](state[0, bthigh_off + IDX_ANGLE])
+        )
+        var bshin_angle = Float64(
+            rebind[Scalar[dtype]](state[0, bshin_off + IDX_ANGLE])
+        )
+        var bfoot_angle = Float64(
+            rebind[Scalar[dtype]](state[0, bfoot_off + IDX_ANGLE])
+        )
 
-        var bthigh_omega = Float64(rebind[Scalar[dtype]](state[0, bthigh_off + IDX_OMEGA]))
-        var bshin_omega = Float64(rebind[Scalar[dtype]](state[0, bshin_off + IDX_OMEGA]))
-        var bfoot_omega = Float64(rebind[Scalar[dtype]](state[0, bfoot_off + IDX_OMEGA]))
+        var bthigh_omega = Float64(
+            rebind[Scalar[dtype]](state[0, bthigh_off + IDX_OMEGA])
+        )
+        var bshin_omega = Float64(
+            rebind[Scalar[dtype]](state[0, bshin_off + IDX_OMEGA])
+        )
+        var bfoot_omega = Float64(
+            rebind[Scalar[dtype]](state[0, bfoot_off + IDX_OMEGA])
+        )
 
         # Joint angles are relative angles between connected bodies
-        self.cached_state.bthigh_angle = Scalar[Self.dtype](bthigh_angle - torso_angle)
-        self.cached_state.bshin_angle = Scalar[Self.dtype](bshin_angle - bthigh_angle)
-        self.cached_state.bfoot_angle = Scalar[Self.dtype](bfoot_angle - bshin_angle)
+        self.cached_state.bthigh_angle = Scalar[Self.dtype](
+            bthigh_angle - torso_angle
+        )
+        self.cached_state.bshin_angle = Scalar[Self.dtype](
+            bshin_angle - bthigh_angle
+        )
+        self.cached_state.bfoot_angle = Scalar[Self.dtype](
+            bfoot_angle - bshin_angle
+        )
 
-        self.cached_state.bthigh_omega = Scalar[Self.dtype](bthigh_omega - torso_omega)
-        self.cached_state.bshin_omega = Scalar[Self.dtype](bshin_omega - bthigh_omega)
-        self.cached_state.bfoot_omega = Scalar[Self.dtype](bfoot_omega - bshin_omega)
+        self.cached_state.bthigh_omega = Scalar[Self.dtype](
+            bthigh_omega - torso_omega
+        )
+        self.cached_state.bshin_omega = Scalar[Self.dtype](
+            bshin_omega - bthigh_omega
+        )
+        self.cached_state.bfoot_omega = Scalar[Self.dtype](
+            bfoot_omega - bshin_omega
+        )
 
         # Front leg
-        var fthigh_off = HCConstants.BODIES_OFFSET + HCConstants.BODY_FTHIGH * BODY_STATE_SIZE
-        var fshin_off = HCConstants.BODIES_OFFSET + HCConstants.BODY_FSHIN * BODY_STATE_SIZE
-        var ffoot_off = HCConstants.BODIES_OFFSET + HCConstants.BODY_FFOOT * BODY_STATE_SIZE
+        var fthigh_off = (
+            HCConstants.BODIES_OFFSET
+            + HCConstants.BODY_FTHIGH * BODY_STATE_SIZE
+        )
+        var fshin_off = (
+            HCConstants.BODIES_OFFSET + HCConstants.BODY_FSHIN * BODY_STATE_SIZE
+        )
+        var ffoot_off = (
+            HCConstants.BODIES_OFFSET + HCConstants.BODY_FFOOT * BODY_STATE_SIZE
+        )
 
-        var fthigh_angle = Float64(rebind[Scalar[dtype]](state[0, fthigh_off + IDX_ANGLE]))
-        var fshin_angle = Float64(rebind[Scalar[dtype]](state[0, fshin_off + IDX_ANGLE]))
-        var ffoot_angle = Float64(rebind[Scalar[dtype]](state[0, ffoot_off + IDX_ANGLE]))
+        var fthigh_angle = Float64(
+            rebind[Scalar[dtype]](state[0, fthigh_off + IDX_ANGLE])
+        )
+        var fshin_angle = Float64(
+            rebind[Scalar[dtype]](state[0, fshin_off + IDX_ANGLE])
+        )
+        var ffoot_angle = Float64(
+            rebind[Scalar[dtype]](state[0, ffoot_off + IDX_ANGLE])
+        )
 
-        var fthigh_omega = Float64(rebind[Scalar[dtype]](state[0, fthigh_off + IDX_OMEGA]))
-        var fshin_omega = Float64(rebind[Scalar[dtype]](state[0, fshin_off + IDX_OMEGA]))
-        var ffoot_omega = Float64(rebind[Scalar[dtype]](state[0, ffoot_off + IDX_OMEGA]))
+        var fthigh_omega = Float64(
+            rebind[Scalar[dtype]](state[0, fthigh_off + IDX_OMEGA])
+        )
+        var fshin_omega = Float64(
+            rebind[Scalar[dtype]](state[0, fshin_off + IDX_OMEGA])
+        )
+        var ffoot_omega = Float64(
+            rebind[Scalar[dtype]](state[0, ffoot_off + IDX_OMEGA])
+        )
 
-        self.cached_state.fthigh_angle = Scalar[Self.dtype](fthigh_angle - torso_angle)
-        self.cached_state.fshin_angle = Scalar[Self.dtype](fshin_angle - fthigh_angle)
-        self.cached_state.ffoot_angle = Scalar[Self.dtype](ffoot_angle - fshin_angle)
+        self.cached_state.fthigh_angle = Scalar[Self.dtype](
+            fthigh_angle - torso_angle
+        )
+        self.cached_state.fshin_angle = Scalar[Self.dtype](
+            fshin_angle - fthigh_angle
+        )
+        self.cached_state.ffoot_angle = Scalar[Self.dtype](
+            ffoot_angle - fshin_angle
+        )
 
-        self.cached_state.fthigh_omega = Scalar[Self.dtype](fthigh_omega - torso_omega)
-        self.cached_state.fshin_omega = Scalar[Self.dtype](fshin_omega - fthigh_omega)
-        self.cached_state.ffoot_omega = Scalar[Self.dtype](ffoot_omega - fshin_omega)
+        self.cached_state.fthigh_omega = Scalar[Self.dtype](
+            fthigh_omega - torso_omega
+        )
+        self.cached_state.fshin_omega = Scalar[Self.dtype](
+            fshin_omega - fthigh_omega
+        )
+        self.cached_state.ffoot_omega = Scalar[Self.dtype](
+            ffoot_omega - fshin_omega
+        )
 
     fn _step_physics_cpu(mut self):
         """Execute physics step using physics2d components."""
@@ -751,12 +883,42 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
         # Apply motor actions to joints
         # Clamp actions to [-1, 1] and scale by gear ratio
         var actions = InlineArray[Float64, 6](fill=0.0)
-        actions[0] = Float64(max(min(action.bthigh, Scalar[Self.dtype](1.0)), Scalar[Self.dtype](-1.0)))
-        actions[1] = Float64(max(min(action.bshin, Scalar[Self.dtype](1.0)), Scalar[Self.dtype](-1.0)))
-        actions[2] = Float64(max(min(action.bfoot, Scalar[Self.dtype](1.0)), Scalar[Self.dtype](-1.0)))
-        actions[3] = Float64(max(min(action.fthigh, Scalar[Self.dtype](1.0)), Scalar[Self.dtype](-1.0)))
-        actions[4] = Float64(max(min(action.fshin, Scalar[Self.dtype](1.0)), Scalar[Self.dtype](-1.0)))
-        actions[5] = Float64(max(min(action.ffoot, Scalar[Self.dtype](1.0)), Scalar[Self.dtype](-1.0)))
+        actions[0] = Float64(
+            max(
+                min(action.bthigh, Scalar[Self.dtype](1.0)),
+                Scalar[Self.dtype](-1.0),
+            )
+        )
+        actions[1] = Float64(
+            max(
+                min(action.bshin, Scalar[Self.dtype](1.0)),
+                Scalar[Self.dtype](-1.0),
+            )
+        )
+        actions[2] = Float64(
+            max(
+                min(action.bfoot, Scalar[Self.dtype](1.0)),
+                Scalar[Self.dtype](-1.0),
+            )
+        )
+        actions[3] = Float64(
+            max(
+                min(action.fthigh, Scalar[Self.dtype](1.0)),
+                Scalar[Self.dtype](-1.0),
+            )
+        )
+        actions[4] = Float64(
+            max(
+                min(action.fshin, Scalar[Self.dtype](1.0)),
+                Scalar[Self.dtype](-1.0),
+            )
+        )
+        actions[5] = Float64(
+            max(
+                min(action.ffoot, Scalar[Self.dtype](1.0)),
+                Scalar[Self.dtype](-1.0),
+            )
+        )
 
         # Set motor speeds and torques (MuJoCo-style direct torque control)
         # Motor speed is large so motor always saturates in action direction
@@ -764,8 +926,12 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
         for j in range(6):
             var joint_off = HCConstants.JOINTS_OFFSET + j * JOINT_DATA_SIZE
             # Motor speed: large value in action direction to ensure saturation
-            var motor_sign = Scalar[dtype](1.0) if actions[j] >= 0.0 else Scalar[dtype](-1.0)
-            state[0, joint_off + JOINT_MOTOR_SPEED] = motor_sign * Scalar[dtype](1000.0)
+            var motor_sign = Scalar[dtype](1.0) if actions[
+                j
+            ] >= 0.0 else Scalar[dtype](-1.0)
+            state[0, joint_off + JOINT_MOTOR_SPEED] = motor_sign * Scalar[
+                dtype
+            ](1000.0)
             # Motor torque proportional to |action| for direct control
             state[0, joint_off + JOINT_MAX_MOTOR_TORQUE] = Scalar[dtype](
                 HCConstants.MAX_TORQUE * abs(actions[j])
@@ -773,20 +939,32 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
 
         # Get x position before step
         var torso_off = HCConstants.BODIES_OFFSET
-        var x_before = Float64(rebind[Scalar[dtype]](state[0, torso_off + IDX_X]))
+        var x_before = Float64(
+            rebind[Scalar[dtype]](state[0, torso_off + IDX_X])
+        )
 
         # Execute physics steps with frame skip
         for _ in range(HCConstants.FRAME_SKIP):
             self._step_physics_cpu()
 
         # Get x position after step
-        var x_after = Float64(rebind[Scalar[dtype]](state[0, torso_off + IDX_X]))
-        var torso_z = Float64(rebind[Scalar[dtype]](state[0, torso_off + IDX_Y]))
-        var torso_angle = Float64(rebind[Scalar[dtype]](state[0, torso_off + IDX_ANGLE]))
+        var x_after = Float64(
+            rebind[Scalar[dtype]](state[0, torso_off + IDX_X])
+        )
+        var torso_z = Float64(
+            rebind[Scalar[dtype]](state[0, torso_off + IDX_Y])
+        )
+        var torso_angle = Float64(
+            rebind[Scalar[dtype]](state[0, torso_off + IDX_ANGLE])
+        )
 
         # Compute reward
-        var forward_velocity = (x_after - x_before) / (HCConstants.DT * Float64(HCConstants.FRAME_SKIP))
-        var forward_reward = HCConstants.FORWARD_REWARD_WEIGHT * forward_velocity
+        var forward_velocity = (x_after - x_before) / (
+            HCConstants.DT * Float64(HCConstants.FRAME_SKIP)
+        )
+        var forward_reward = (
+            HCConstants.FORWARD_REWARD_WEIGHT * forward_velocity
+        )
 
         # Control cost (use clamped actions to avoid penalty from unbounded policy outputs)
         var ctrl_cost = 0.0
@@ -815,11 +993,16 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
             # Check if this is a ground contact (body_b == -1)
             if body_b == -1:
                 # Penalize if body_a is not a foot (3 or 6)
-                if body_a != HCConstants.BODY_BFOOT and body_a != HCConstants.BODY_FFOOT:
+                if (
+                    body_a != HCConstants.BODY_BFOOT
+                    and body_a != HCConstants.BODY_FFOOT
+                ):
                     ground_contact_penalty += HCConstants.GROUND_CONTACT_PENALTY
 
         # Total reward
-        var reward = forward_reward - ctrl_cost + height_bonus - ground_contact_penalty
+        var reward = (
+            forward_reward - ctrl_cost + height_bonus - ground_contact_penalty
+        )
 
         self.step_count += 1
         self.total_reward += reward
@@ -834,7 +1017,10 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
                 unhealthy = True
             elif torso_z > HCConstants.HEALTHY_Z_MAX:
                 unhealthy = True
-            elif torso_angle > HCConstants.HEALTHY_ANGLE_MAX or torso_angle < -HCConstants.HEALTHY_ANGLE_MAX:
+            elif (
+                torso_angle > HCConstants.HEALTHY_ANGLE_MAX
+                or torso_angle < -HCConstants.HEALTHY_ANGLE_MAX
+            ):
                 unhealthy = True
 
         # Terminate on max steps OR unhealthy state
@@ -890,12 +1076,24 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
         List[Scalar[DTYPE_VEC]], Scalar[DTYPE_VEC], Bool
     ]:
         """Step with vector action."""
-        var bthigh = Scalar[Self.dtype](action[0]) if len(action) > 0 else Scalar[Self.dtype](0)
-        var bshin = Scalar[Self.dtype](action[1]) if len(action) > 1 else Scalar[Self.dtype](0)
-        var bfoot = Scalar[Self.dtype](action[2]) if len(action) > 2 else Scalar[Self.dtype](0)
-        var fthigh = Scalar[Self.dtype](action[3]) if len(action) > 3 else Scalar[Self.dtype](0)
-        var fshin = Scalar[Self.dtype](action[4]) if len(action) > 4 else Scalar[Self.dtype](0)
-        var ffoot = Scalar[Self.dtype](action[5]) if len(action) > 5 else Scalar[Self.dtype](0)
+        var bthigh = Scalar[Self.dtype](action[0]) if len(
+            action
+        ) > 0 else Scalar[Self.dtype](0)
+        var bshin = Scalar[Self.dtype](action[1]) if len(
+            action
+        ) > 1 else Scalar[Self.dtype](0)
+        var bfoot = Scalar[Self.dtype](action[2]) if len(
+            action
+        ) > 2 else Scalar[Self.dtype](0)
+        var fthigh = Scalar[Self.dtype](action[3]) if len(
+            action
+        ) > 3 else Scalar[Self.dtype](0)
+        var fshin = Scalar[Self.dtype](action[4]) if len(
+            action
+        ) > 4 else Scalar[Self.dtype](0)
+        var ffoot = Scalar[Self.dtype](action[5]) if len(
+            action
+        ) > 5 else Scalar[Self.dtype](0)
         var act = HalfCheetahPlanarAction[Self.dtype](
             bthigh, bshin, bfoot, fthigh, fshin, ffoot
         )
@@ -927,8 +1125,12 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
         # Get torso position for camera tracking
         var state = self.physics.get_state_tensor()
         var torso_off = HCConstants.BODIES_OFFSET
-        var torso_x = Float64(rebind[Scalar[dtype]](state[0, torso_off + IDX_X]))
-        var torso_y = Float64(rebind[Scalar[dtype]](state[0, torso_off + IDX_Y]))
+        var torso_x = Float64(
+            rebind[Scalar[dtype]](state[0, torso_off + IDX_X])
+        )
+        var torso_y = Float64(
+            rebind[Scalar[dtype]](state[0, torso_off + IDX_Y])
+        )
 
         # Create camera that follows the torso
         var zoom = 200.0
@@ -958,30 +1160,87 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
         )
 
         # Draw bodies
-        self._draw_body(renderer, camera, HCConstants.BODY_TORSO, torso_color, HCConstants.TORSO_LENGTH, HCConstants.TORSO_RADIUS)
+        self._draw_body(
+            renderer,
+            camera,
+            HCConstants.BODY_TORSO,
+            torso_color,
+            HCConstants.TORSO_LENGTH,
+            HCConstants.TORSO_RADIUS,
+        )
 
         # Back leg
-        self._draw_body(renderer, camera, HCConstants.BODY_BTHIGH, back_leg_color, HCConstants.BTHIGH_LENGTH, HCConstants.BTHIGH_RADIUS)
-        self._draw_body(renderer, camera, HCConstants.BODY_BSHIN, back_leg_color, HCConstants.BSHIN_LENGTH, HCConstants.BSHIN_RADIUS)
-        self._draw_body(renderer, camera, HCConstants.BODY_BFOOT, back_leg_color, HCConstants.BFOOT_LENGTH, HCConstants.BFOOT_RADIUS)
+        self._draw_body(
+            renderer,
+            camera,
+            HCConstants.BODY_BTHIGH,
+            back_leg_color,
+            HCConstants.BTHIGH_LENGTH,
+            HCConstants.BTHIGH_RADIUS,
+        )
+        self._draw_body(
+            renderer,
+            camera,
+            HCConstants.BODY_BSHIN,
+            back_leg_color,
+            HCConstants.BSHIN_LENGTH,
+            HCConstants.BSHIN_RADIUS,
+        )
+        self._draw_body(
+            renderer,
+            camera,
+            HCConstants.BODY_BFOOT,
+            back_leg_color,
+            HCConstants.BFOOT_LENGTH,
+            HCConstants.BFOOT_RADIUS,
+        )
 
         # Front leg
-        self._draw_body(renderer, camera, HCConstants.BODY_FTHIGH, front_leg_color, HCConstants.FTHIGH_LENGTH, HCConstants.FTHIGH_RADIUS)
-        self._draw_body(renderer, camera, HCConstants.BODY_FSHIN, front_leg_color, HCConstants.FSHIN_LENGTH, HCConstants.FSHIN_RADIUS)
-        self._draw_body(renderer, camera, HCConstants.BODY_FFOOT, front_leg_color, HCConstants.FFOOT_LENGTH, HCConstants.FFOOT_RADIUS)
+        self._draw_body(
+            renderer,
+            camera,
+            HCConstants.BODY_FTHIGH,
+            front_leg_color,
+            HCConstants.FTHIGH_LENGTH,
+            HCConstants.FTHIGH_RADIUS,
+        )
+        self._draw_body(
+            renderer,
+            camera,
+            HCConstants.BODY_FSHIN,
+            front_leg_color,
+            HCConstants.FSHIN_LENGTH,
+            HCConstants.FSHIN_RADIUS,
+        )
+        self._draw_body(
+            renderer,
+            camera,
+            HCConstants.BODY_FFOOT,
+            front_leg_color,
+            HCConstants.FFOOT_LENGTH,
+            HCConstants.FFOOT_RADIUS,
+        )
 
         # Draw joints
         var joint_radius = 0.03
         # Back leg joints
         var back_hip_x = torso_x - HCConstants.TORSO_LENGTH / 2
         renderer.draw_circle_world(
-            RenderVec2(back_hip_x, torso_y), joint_radius, camera, joint_color, True
+            RenderVec2(back_hip_x, torso_y),
+            joint_radius,
+            camera,
+            joint_color,
+            True,
         )
 
         # Front leg joints
         var front_hip_x = torso_x + HCConstants.TORSO_LENGTH / 2
         renderer.draw_circle_world(
-            RenderVec2(front_hip_x, torso_y), joint_radius, camera, joint_color, True
+            RenderVec2(front_hip_x, torso_y),
+            joint_radius,
+            camera,
+            joint_color,
+            True,
         )
 
         # Draw info text
@@ -1010,7 +1269,9 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
         var body_off = HCConstants.BODIES_OFFSET + body_idx * BODY_STATE_SIZE
         var x = Float64(rebind[Scalar[dtype]](state[0, body_off + IDX_X]))
         var y = Float64(rebind[Scalar[dtype]](state[0, body_off + IDX_Y]))
-        var angle = Float64(rebind[Scalar[dtype]](state[0, body_off + IDX_ANGLE]))
+        var angle = Float64(
+            rebind[Scalar[dtype]](state[0, body_off + IDX_ANGLE])
+        )
 
         # Determine if this is horizontal (torso) or vertical (legs)
         var is_torso = body_idx == HCConstants.BODY_TORSO
@@ -1025,7 +1286,9 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
         verts.append(RenderVec2(half_len, -half_h))
 
         var transform = Transform2D(x, y, angle)
-        renderer.draw_transformed_polygon(verts, transform, camera, color, filled=True)
+        renderer.draw_transformed_polygon(
+            verts, transform, camera, color, filled=True
+        )
 
     fn close(mut self):
         """Clean up resources (no-op since renderer is external)."""
@@ -1049,6 +1312,7 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
         mut dones_buf: DeviceBuffer[dtype],
         mut obs_buf: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
+        curriculum_values: List[Scalar[dtype]] = [],
     ) raises:
         """GPU step kernel for batched continuous actions."""
         # Allocate workspace buffers
@@ -1066,7 +1330,9 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
         ctx.synchronize()  # Ensure shapes are ready before step
 
         # Fused step kernel
-        HalfCheetahPlanarV2[Self.dtype]._fused_step_gpu[BATCH_SIZE, OBS_DIM, ACTION_DIM](
+        HalfCheetahPlanarV2[Self.dtype]._fused_step_gpu[
+            BATCH_SIZE, OBS_DIM, ACTION_DIM
+        ](
             ctx,
             states_buf,
             shapes_buf,
@@ -1106,9 +1372,9 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
             if i >= BATCH_SIZE:
                 return
             var combined_seed = Int(seed) * 2654435761 + (i + 1) * 12345
-            HalfCheetahPlanarV2[Self.dtype]._reset_env_gpu[BATCH_SIZE, STATE_SIZE](
-                states, i, combined_seed
-            )
+            HalfCheetahPlanarV2[Self.dtype]._reset_env_gpu[
+                BATCH_SIZE, STATE_SIZE
+            ](states, i, combined_seed)
 
         ctx.enqueue_function[reset_wrapper, reset_wrapper](
             states,
@@ -1153,9 +1419,9 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
             var done_val = dones[i]
             if done_val > Scalar[dtype](0.5):
                 var combined_seed = Int(seed) * 2654435761 + (i + 1) * 12345
-                HalfCheetahPlanarV2[Self.dtype]._reset_env_gpu[BATCH_SIZE, STATE_SIZE](
-                    states, i, combined_seed
-                )
+                HalfCheetahPlanarV2[Self.dtype]._reset_env_gpu[
+                    BATCH_SIZE, STATE_SIZE
+                ](states, i, combined_seed)
                 dones[i] = Scalar[dtype](0.0)
 
         ctx.enqueue_function[selective_reset_wrapper, selective_reset_wrapper](
@@ -1188,8 +1454,12 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
 
         var init_x = Scalar[dtype](0.0)
         var init_y = Scalar[dtype](HCConstants.INIT_HEIGHT)
-        var init_vx = (rand_vals[0] * Scalar[dtype](2.0) - Scalar[dtype](1.0)) * Scalar[dtype](0.1)
-        var init_vy = (rand_vals[1] * Scalar[dtype](2.0) - Scalar[dtype](1.0)) * Scalar[dtype](0.1)
+        var init_vx = (
+            rand_vals[0] * Scalar[dtype](2.0) - Scalar[dtype](1.0)
+        ) * Scalar[dtype](0.1)
+        var init_vy = (
+            rand_vals[1] * Scalar[dtype](2.0) - Scalar[dtype](1.0)
+        ) * Scalar[dtype](0.1)
 
         # Initialize torso
         var torso_off = HCConstants.BODIES_OFFSET
@@ -1199,21 +1469,29 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
         states[env, torso_off + IDX_VX] = init_vx
         states[env, torso_off + IDX_VY] = init_vy
         states[env, torso_off + IDX_OMEGA] = Scalar[dtype](0)
-        states[env, torso_off + IDX_INV_MASS] = Scalar[dtype](1.0 / HCConstants.TORSO_MASS)
+        states[env, torso_off + IDX_INV_MASS] = Scalar[dtype](
+            1.0 / HCConstants.TORSO_MASS
+        )
         states[env, torso_off + IDX_INV_INERTIA] = Scalar[dtype](
-            1.0 / (HCConstants.TORSO_MASS * HCConstants.TORSO_LENGTH * HCConstants.TORSO_LENGTH / 12.0)
+            1.0
+            / (
+                HCConstants.TORSO_MASS
+                * HCConstants.TORSO_LENGTH
+                * HCConstants.TORSO_LENGTH
+                / 12.0
+            )
         )
         states[env, torso_off + IDX_SHAPE] = Scalar[dtype](0)
 
         # Initialize leg bodies (simplified for GPU)
-        HalfCheetahPlanarV2[Self.dtype]._init_leg_bodies_gpu[BATCH_SIZE, STATE_SIZE](
-            states, env, init_x, init_y, init_vx, init_vy
-        )
+        HalfCheetahPlanarV2[Self.dtype]._init_leg_bodies_gpu[
+            BATCH_SIZE, STATE_SIZE
+        ](states, env, init_x, init_y, init_vx, init_vy)
 
         # Initialize joints
-        HalfCheetahPlanarV2[Self.dtype]._init_joints_gpu[BATCH_SIZE, STATE_SIZE](
-            states, env
-        )
+        HalfCheetahPlanarV2[Self.dtype]._init_joints_gpu[
+            BATCH_SIZE, STATE_SIZE
+        ](states, env)
 
         # Clear forces
         for body in range(HCConstants.NUM_BODIES):
@@ -1230,7 +1508,9 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
         states[env, meta_off + HCConstants.META_TOTAL_REWARD] = Scalar[dtype](0)
 
         # Write initial observation
-        HalfCheetahPlanarV2[Self.dtype]._compute_obs_gpu[BATCH_SIZE, STATE_SIZE](states, env)
+        HalfCheetahPlanarV2[Self.dtype]._compute_obs_gpu[
+            BATCH_SIZE, STATE_SIZE
+        ](states, env)
 
     @always_inline
     @staticmethod
@@ -1253,76 +1533,160 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
 
         # Back leg
         # Back thigh
-        var bthigh_off = HCConstants.BODIES_OFFSET + HCConstants.BODY_BTHIGH * BODY_STATE_SIZE
+        var bthigh_off = (
+            HCConstants.BODIES_OFFSET
+            + HCConstants.BODY_BTHIGH * BODY_STATE_SIZE
+        )
         states[env, bthigh_off + IDX_X] = back_hip_x
-        states[env, bthigh_off + IDX_Y] = init_y - Scalar[dtype](HCConstants.BTHIGH_LENGTH / 2)
+        states[env, bthigh_off + IDX_Y] = init_y - Scalar[dtype](
+            HCConstants.BTHIGH_LENGTH / 2
+        )
         states[env, bthigh_off + IDX_ANGLE] = Scalar[dtype](0)
         states[env, bthigh_off + IDX_VX] = init_vx
         states[env, bthigh_off + IDX_VY] = init_vy
         states[env, bthigh_off + IDX_OMEGA] = Scalar[dtype](0)
-        states[env, bthigh_off + IDX_INV_MASS] = Scalar[dtype](1.0 / HCConstants.BTHIGH_MASS)
-        states[env, bthigh_off + IDX_INV_INERTIA] = Scalar[dtype](12.0 / (HCConstants.BTHIGH_MASS * HCConstants.BTHIGH_LENGTH * HCConstants.BTHIGH_LENGTH))
+        states[env, bthigh_off + IDX_INV_MASS] = Scalar[dtype](
+            1.0 / HCConstants.BTHIGH_MASS
+        )
+        states[env, bthigh_off + IDX_INV_INERTIA] = Scalar[dtype](
+            12.0
+            / (
+                HCConstants.BTHIGH_MASS
+                * HCConstants.BTHIGH_LENGTH
+                * HCConstants.BTHIGH_LENGTH
+            )
+        )
         states[env, bthigh_off + IDX_SHAPE] = Scalar[dtype](1)
 
         # Back shin
-        var bshin_off = HCConstants.BODIES_OFFSET + HCConstants.BODY_BSHIN * BODY_STATE_SIZE
+        var bshin_off = (
+            HCConstants.BODIES_OFFSET + HCConstants.BODY_BSHIN * BODY_STATE_SIZE
+        )
         states[env, bshin_off + IDX_X] = back_hip_x
-        states[env, bshin_off + IDX_Y] = init_y - Scalar[dtype](HCConstants.BTHIGH_LENGTH + HCConstants.BSHIN_LENGTH / 2)
+        states[env, bshin_off + IDX_Y] = init_y - Scalar[dtype](
+            HCConstants.BTHIGH_LENGTH + HCConstants.BSHIN_LENGTH / 2
+        )
         states[env, bshin_off + IDX_ANGLE] = Scalar[dtype](0)
         states[env, bshin_off + IDX_VX] = init_vx
         states[env, bshin_off + IDX_VY] = init_vy
         states[env, bshin_off + IDX_OMEGA] = Scalar[dtype](0)
-        states[env, bshin_off + IDX_INV_MASS] = Scalar[dtype](1.0 / HCConstants.BSHIN_MASS)
-        states[env, bshin_off + IDX_INV_INERTIA] = Scalar[dtype](12.0 / (HCConstants.BSHIN_MASS * HCConstants.BSHIN_LENGTH * HCConstants.BSHIN_LENGTH))
+        states[env, bshin_off + IDX_INV_MASS] = Scalar[dtype](
+            1.0 / HCConstants.BSHIN_MASS
+        )
+        states[env, bshin_off + IDX_INV_INERTIA] = Scalar[dtype](
+            12.0
+            / (
+                HCConstants.BSHIN_MASS
+                * HCConstants.BSHIN_LENGTH
+                * HCConstants.BSHIN_LENGTH
+            )
+        )
         states[env, bshin_off + IDX_SHAPE] = Scalar[dtype](2)
 
         # Back foot
-        var bfoot_off = HCConstants.BODIES_OFFSET + HCConstants.BODY_BFOOT * BODY_STATE_SIZE
+        var bfoot_off = (
+            HCConstants.BODIES_OFFSET + HCConstants.BODY_BFOOT * BODY_STATE_SIZE
+        )
         states[env, bfoot_off + IDX_X] = back_hip_x
-        states[env, bfoot_off + IDX_Y] = init_y - Scalar[dtype](HCConstants.BTHIGH_LENGTH + HCConstants.BSHIN_LENGTH + HCConstants.BFOOT_LENGTH / 2)
+        states[env, bfoot_off + IDX_Y] = init_y - Scalar[dtype](
+            HCConstants.BTHIGH_LENGTH
+            + HCConstants.BSHIN_LENGTH
+            + HCConstants.BFOOT_LENGTH / 2
+        )
         states[env, bfoot_off + IDX_ANGLE] = Scalar[dtype](0)
         states[env, bfoot_off + IDX_VX] = init_vx
         states[env, bfoot_off + IDX_VY] = init_vy
         states[env, bfoot_off + IDX_OMEGA] = Scalar[dtype](0)
-        states[env, bfoot_off + IDX_INV_MASS] = Scalar[dtype](1.0 / HCConstants.BFOOT_MASS)
-        states[env, bfoot_off + IDX_INV_INERTIA] = Scalar[dtype](12.0 / (HCConstants.BFOOT_MASS * HCConstants.BFOOT_LENGTH * HCConstants.BFOOT_LENGTH))
+        states[env, bfoot_off + IDX_INV_MASS] = Scalar[dtype](
+            1.0 / HCConstants.BFOOT_MASS
+        )
+        states[env, bfoot_off + IDX_INV_INERTIA] = Scalar[dtype](
+            12.0
+            / (
+                HCConstants.BFOOT_MASS
+                * HCConstants.BFOOT_LENGTH
+                * HCConstants.BFOOT_LENGTH
+            )
+        )
         states[env, bfoot_off + IDX_SHAPE] = Scalar[dtype](3)
 
         # Front leg
         # Front thigh
-        var fthigh_off = HCConstants.BODIES_OFFSET + HCConstants.BODY_FTHIGH * BODY_STATE_SIZE
+        var fthigh_off = (
+            HCConstants.BODIES_OFFSET
+            + HCConstants.BODY_FTHIGH * BODY_STATE_SIZE
+        )
         states[env, fthigh_off + IDX_X] = front_hip_x
-        states[env, fthigh_off + IDX_Y] = init_y - Scalar[dtype](HCConstants.FTHIGH_LENGTH / 2)
+        states[env, fthigh_off + IDX_Y] = init_y - Scalar[dtype](
+            HCConstants.FTHIGH_LENGTH / 2
+        )
         states[env, fthigh_off + IDX_ANGLE] = Scalar[dtype](0)
         states[env, fthigh_off + IDX_VX] = init_vx
         states[env, fthigh_off + IDX_VY] = init_vy
         states[env, fthigh_off + IDX_OMEGA] = Scalar[dtype](0)
-        states[env, fthigh_off + IDX_INV_MASS] = Scalar[dtype](1.0 / HCConstants.FTHIGH_MASS)
-        states[env, fthigh_off + IDX_INV_INERTIA] = Scalar[dtype](12.0 / (HCConstants.FTHIGH_MASS * HCConstants.FTHIGH_LENGTH * HCConstants.FTHIGH_LENGTH))
+        states[env, fthigh_off + IDX_INV_MASS] = Scalar[dtype](
+            1.0 / HCConstants.FTHIGH_MASS
+        )
+        states[env, fthigh_off + IDX_INV_INERTIA] = Scalar[dtype](
+            12.0
+            / (
+                HCConstants.FTHIGH_MASS
+                * HCConstants.FTHIGH_LENGTH
+                * HCConstants.FTHIGH_LENGTH
+            )
+        )
         states[env, fthigh_off + IDX_SHAPE] = Scalar[dtype](4)
 
         # Front shin
-        var fshin_off = HCConstants.BODIES_OFFSET + HCConstants.BODY_FSHIN * BODY_STATE_SIZE
+        var fshin_off = (
+            HCConstants.BODIES_OFFSET + HCConstants.BODY_FSHIN * BODY_STATE_SIZE
+        )
         states[env, fshin_off + IDX_X] = front_hip_x
-        states[env, fshin_off + IDX_Y] = init_y - Scalar[dtype](HCConstants.FTHIGH_LENGTH + HCConstants.FSHIN_LENGTH / 2)
+        states[env, fshin_off + IDX_Y] = init_y - Scalar[dtype](
+            HCConstants.FTHIGH_LENGTH + HCConstants.FSHIN_LENGTH / 2
+        )
         states[env, fshin_off + IDX_ANGLE] = Scalar[dtype](0)
         states[env, fshin_off + IDX_VX] = init_vx
         states[env, fshin_off + IDX_VY] = init_vy
         states[env, fshin_off + IDX_OMEGA] = Scalar[dtype](0)
-        states[env, fshin_off + IDX_INV_MASS] = Scalar[dtype](1.0 / HCConstants.FSHIN_MASS)
-        states[env, fshin_off + IDX_INV_INERTIA] = Scalar[dtype](12.0 / (HCConstants.FSHIN_MASS * HCConstants.FSHIN_LENGTH * HCConstants.FSHIN_LENGTH))
+        states[env, fshin_off + IDX_INV_MASS] = Scalar[dtype](
+            1.0 / HCConstants.FSHIN_MASS
+        )
+        states[env, fshin_off + IDX_INV_INERTIA] = Scalar[dtype](
+            12.0
+            / (
+                HCConstants.FSHIN_MASS
+                * HCConstants.FSHIN_LENGTH
+                * HCConstants.FSHIN_LENGTH
+            )
+        )
         states[env, fshin_off + IDX_SHAPE] = Scalar[dtype](5)
 
         # Front foot
-        var ffoot_off = HCConstants.BODIES_OFFSET + HCConstants.BODY_FFOOT * BODY_STATE_SIZE
+        var ffoot_off = (
+            HCConstants.BODIES_OFFSET + HCConstants.BODY_FFOOT * BODY_STATE_SIZE
+        )
         states[env, ffoot_off + IDX_X] = front_hip_x
-        states[env, ffoot_off + IDX_Y] = init_y - Scalar[dtype](HCConstants.FTHIGH_LENGTH + HCConstants.FSHIN_LENGTH + HCConstants.FFOOT_LENGTH / 2)
+        states[env, ffoot_off + IDX_Y] = init_y - Scalar[dtype](
+            HCConstants.FTHIGH_LENGTH
+            + HCConstants.FSHIN_LENGTH
+            + HCConstants.FFOOT_LENGTH / 2
+        )
         states[env, ffoot_off + IDX_ANGLE] = Scalar[dtype](0)
         states[env, ffoot_off + IDX_VX] = init_vx
         states[env, ffoot_off + IDX_VY] = init_vy
         states[env, ffoot_off + IDX_OMEGA] = Scalar[dtype](0)
-        states[env, ffoot_off + IDX_INV_MASS] = Scalar[dtype](1.0 / HCConstants.FFOOT_MASS)
-        states[env, ffoot_off + IDX_INV_INERTIA] = Scalar[dtype](12.0 / (HCConstants.FFOOT_MASS * HCConstants.FFOOT_LENGTH * HCConstants.FFOOT_LENGTH))
+        states[env, ffoot_off + IDX_INV_MASS] = Scalar[dtype](
+            1.0 / HCConstants.FFOOT_MASS
+        )
+        states[env, ffoot_off + IDX_INV_INERTIA] = Scalar[dtype](
+            12.0
+            / (
+                HCConstants.FFOOT_MASS
+                * HCConstants.FFOOT_LENGTH
+                * HCConstants.FFOOT_LENGTH
+            )
+        )
         states[env, ffoot_off + IDX_SHAPE] = Scalar[dtype](6)
 
     @always_inline
@@ -1347,10 +1711,14 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
         # Joint 0: Back hip
         joint_params[0][0] = Scalar[dtype](HCConstants.BODY_TORSO)  # body_a
         joint_params[0][1] = Scalar[dtype](HCConstants.BODY_BTHIGH)  # body_b
-        joint_params[0][2] = Scalar[dtype](-HCConstants.TORSO_LENGTH / 2)  # anchor_ax
+        joint_params[0][2] = Scalar[dtype](
+            -HCConstants.TORSO_LENGTH / 2
+        )  # anchor_ax
         joint_params[0][3] = Scalar[dtype](0)  # anchor_ay
         joint_params[0][4] = Scalar[dtype](0)  # anchor_bx
-        joint_params[0][5] = Scalar[dtype](HCConstants.BTHIGH_LENGTH / 2)  # anchor_by
+        joint_params[0][5] = Scalar[dtype](
+            HCConstants.BTHIGH_LENGTH / 2
+        )  # anchor_by
         joint_params[0][6] = Scalar[dtype](HCConstants.BTHIGH_LIMIT_LOW)
         joint_params[0][7] = Scalar[dtype](HCConstants.BTHIGH_LIMIT_HIGH)
 
@@ -1416,7 +1784,9 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
             states[env, joint_off + JOINT_REF_ANGLE] = Scalar[dtype](0)
             states[env, joint_off + JOINT_LOWER_LIMIT] = joint_params[j][6]
             states[env, joint_off + JOINT_UPPER_LIMIT] = joint_params[j][7]
-            states[env, joint_off + JOINT_MAX_MOTOR_TORQUE] = Scalar[dtype](HCConstants.MAX_TORQUE)
+            states[env, joint_off + JOINT_MAX_MOTOR_TORQUE] = Scalar[dtype](
+                HCConstants.MAX_TORQUE
+            )
             states[env, joint_off + JOINT_MOTOR_SPEED] = Scalar[dtype](0)
             states[env, joint_off + JOINT_FLAGS] = Scalar[dtype](
                 JOINT_FLAG_LIMIT_ENABLED | JOINT_FLAG_MOTOR_ENABLED
@@ -1439,35 +1809,65 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
         # Torso state
         var torso_off = HCConstants.BODIES_OFFSET
         var torso_y = rebind[Scalar[dtype]](states[env, torso_off + IDX_Y])
-        var torso_angle = rebind[Scalar[dtype]](states[env, torso_off + IDX_ANGLE])
+        var torso_angle = rebind[Scalar[dtype]](
+            states[env, torso_off + IDX_ANGLE]
+        )
         var torso_vx = rebind[Scalar[dtype]](states[env, torso_off + IDX_VX])
         var torso_vy = rebind[Scalar[dtype]](states[env, torso_off + IDX_VY])
-        var torso_omega = rebind[Scalar[dtype]](states[env, torso_off + IDX_OMEGA])
+        var torso_omega = rebind[Scalar[dtype]](
+            states[env, torso_off + IDX_OMEGA]
+        )
 
         states[env, obs_off + 0] = torso_y  # z position
         states[env, obs_off + 1] = torso_angle
 
         # Back leg joint angles
-        var bthigh_off = HCConstants.BODIES_OFFSET + HCConstants.BODY_BTHIGH * BODY_STATE_SIZE
-        var bshin_off = HCConstants.BODIES_OFFSET + HCConstants.BODY_BSHIN * BODY_STATE_SIZE
-        var bfoot_off = HCConstants.BODIES_OFFSET + HCConstants.BODY_BFOOT * BODY_STATE_SIZE
+        var bthigh_off = (
+            HCConstants.BODIES_OFFSET
+            + HCConstants.BODY_BTHIGH * BODY_STATE_SIZE
+        )
+        var bshin_off = (
+            HCConstants.BODIES_OFFSET + HCConstants.BODY_BSHIN * BODY_STATE_SIZE
+        )
+        var bfoot_off = (
+            HCConstants.BODIES_OFFSET + HCConstants.BODY_BFOOT * BODY_STATE_SIZE
+        )
 
-        var bthigh_angle = rebind[Scalar[dtype]](states[env, bthigh_off + IDX_ANGLE])
-        var bshin_angle = rebind[Scalar[dtype]](states[env, bshin_off + IDX_ANGLE])
-        var bfoot_angle = rebind[Scalar[dtype]](states[env, bfoot_off + IDX_ANGLE])
+        var bthigh_angle = rebind[Scalar[dtype]](
+            states[env, bthigh_off + IDX_ANGLE]
+        )
+        var bshin_angle = rebind[Scalar[dtype]](
+            states[env, bshin_off + IDX_ANGLE]
+        )
+        var bfoot_angle = rebind[Scalar[dtype]](
+            states[env, bfoot_off + IDX_ANGLE]
+        )
 
         states[env, obs_off + 2] = bthigh_angle - torso_angle
         states[env, obs_off + 3] = bshin_angle - bthigh_angle
         states[env, obs_off + 4] = bfoot_angle - bshin_angle
 
         # Front leg joint angles
-        var fthigh_off = HCConstants.BODIES_OFFSET + HCConstants.BODY_FTHIGH * BODY_STATE_SIZE
-        var fshin_off = HCConstants.BODIES_OFFSET + HCConstants.BODY_FSHIN * BODY_STATE_SIZE
-        var ffoot_off = HCConstants.BODIES_OFFSET + HCConstants.BODY_FFOOT * BODY_STATE_SIZE
+        var fthigh_off = (
+            HCConstants.BODIES_OFFSET
+            + HCConstants.BODY_FTHIGH * BODY_STATE_SIZE
+        )
+        var fshin_off = (
+            HCConstants.BODIES_OFFSET + HCConstants.BODY_FSHIN * BODY_STATE_SIZE
+        )
+        var ffoot_off = (
+            HCConstants.BODIES_OFFSET + HCConstants.BODY_FFOOT * BODY_STATE_SIZE
+        )
 
-        var fthigh_angle = rebind[Scalar[dtype]](states[env, fthigh_off + IDX_ANGLE])
-        var fshin_angle = rebind[Scalar[dtype]](states[env, fshin_off + IDX_ANGLE])
-        var ffoot_angle = rebind[Scalar[dtype]](states[env, ffoot_off + IDX_ANGLE])
+        var fthigh_angle = rebind[Scalar[dtype]](
+            states[env, fthigh_off + IDX_ANGLE]
+        )
+        var fshin_angle = rebind[Scalar[dtype]](
+            states[env, fshin_off + IDX_ANGLE]
+        )
+        var ffoot_angle = rebind[Scalar[dtype]](
+            states[env, ffoot_off + IDX_ANGLE]
+        )
 
         states[env, obs_off + 5] = fthigh_angle - torso_angle
         states[env, obs_off + 6] = fshin_angle - fthigh_angle
@@ -1479,12 +1879,24 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
         states[env, obs_off + 10] = torso_omega
 
         # Joint angular velocities
-        var bthigh_omega = rebind[Scalar[dtype]](states[env, bthigh_off + IDX_OMEGA])
-        var bshin_omega = rebind[Scalar[dtype]](states[env, bshin_off + IDX_OMEGA])
-        var bfoot_omega = rebind[Scalar[dtype]](states[env, bfoot_off + IDX_OMEGA])
-        var fthigh_omega = rebind[Scalar[dtype]](states[env, fthigh_off + IDX_OMEGA])
-        var fshin_omega = rebind[Scalar[dtype]](states[env, fshin_off + IDX_OMEGA])
-        var ffoot_omega = rebind[Scalar[dtype]](states[env, ffoot_off + IDX_OMEGA])
+        var bthigh_omega = rebind[Scalar[dtype]](
+            states[env, bthigh_off + IDX_OMEGA]
+        )
+        var bshin_omega = rebind[Scalar[dtype]](
+            states[env, bshin_off + IDX_OMEGA]
+        )
+        var bfoot_omega = rebind[Scalar[dtype]](
+            states[env, bfoot_off + IDX_OMEGA]
+        )
+        var fthigh_omega = rebind[Scalar[dtype]](
+            states[env, fthigh_off + IDX_OMEGA]
+        )
+        var fshin_omega = rebind[Scalar[dtype]](
+            states[env, fshin_off + IDX_OMEGA]
+        )
+        var ffoot_omega = rebind[Scalar[dtype]](
+            states[env, ffoot_off + IDX_OMEGA]
+        )
 
         states[env, obs_off + 11] = bthigh_omega - torso_omega
         states[env, obs_off + 12] = bshin_omega - bthigh_omega
@@ -1527,13 +1939,13 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
             shapes[0, 0] = Scalar[dtype](SHAPE_POLYGON)
             shapes[0, 1] = Scalar[dtype](4)  # 4 vertices
             shapes[0, 2] = -half_len  # v0.x
-            shapes[0, 3] = -half_h    # v0.y
+            shapes[0, 3] = -half_h  # v0.y
             shapes[0, 4] = -half_len  # v1.x
-            shapes[0, 5] = half_h     # v1.y
-            shapes[0, 6] = half_len   # v2.x
-            shapes[0, 7] = half_h     # v2.y
-            shapes[0, 8] = half_len   # v3.x
-            shapes[0, 9] = -half_h    # v3.y
+            shapes[0, 5] = half_h  # v1.y
+            shapes[0, 6] = half_len  # v2.x
+            shapes[0, 7] = half_h  # v2.y
+            shapes[0, 8] = half_len  # v3.x
+            shapes[0, 9] = -half_h  # v3.y
 
             # Shapes 1-6: Leg segments (vertical rectangles)
             var lengths = InlineArray[Scalar[dtype], 6](fill=Scalar[dtype](0))
@@ -1557,14 +1969,14 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
                 var seg_w = radii[s]
                 shapes[shape_idx, 0] = Scalar[dtype](SHAPE_POLYGON)
                 shapes[shape_idx, 1] = Scalar[dtype](4)  # 4 vertices
-                shapes[shape_idx, 2] = -seg_w   # v0.x
-                shapes[shape_idx, 3] = -seg_len # v0.y
-                shapes[shape_idx, 4] = -seg_w   # v1.x
+                shapes[shape_idx, 2] = -seg_w  # v0.x
+                shapes[shape_idx, 3] = -seg_len  # v0.y
+                shapes[shape_idx, 4] = -seg_w  # v1.x
                 shapes[shape_idx, 5] = seg_len  # v1.y
-                shapes[shape_idx, 6] = seg_w    # v2.x
+                shapes[shape_idx, 6] = seg_w  # v2.x
                 shapes[shape_idx, 7] = seg_len  # v2.y
-                shapes[shape_idx, 8] = seg_w    # v3.x
-                shapes[shape_idx, 9] = -seg_len # v3.y
+                shapes[shape_idx, 8] = seg_w  # v3.x
+                shapes[shape_idx, 9] = -seg_len  # v3.y
 
         ctx.enqueue_function[init_shapes_wrapper, init_shapes_wrapper](
             shapes,
@@ -1597,10 +2009,16 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
             dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
         ](states_buf.unsafe_ptr())
         var shapes = LayoutTensor[
-            dtype, Layout.row_major(HCConstants.NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
+            dtype,
+            Layout.row_major(HCConstants.NUM_SHAPES, SHAPE_MAX_SIZE),
+            MutAnyOrigin,
         ](shapes_buf.unsafe_ptr())
         var contacts = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, HCConstants.MAX_CONTACTS, CONTACT_DATA_SIZE), MutAnyOrigin
+            dtype,
+            Layout.row_major(
+                BATCH_SIZE, HCConstants.MAX_CONTACTS, CONTACT_DATA_SIZE
+            ),
+            MutAnyOrigin,
         ](contacts_buf.unsafe_ptr())
         var contact_counts = LayoutTensor[
             dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
@@ -1624,10 +2042,16 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
                 dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
             ],
             shapes: LayoutTensor[
-                dtype, Layout.row_major(HCConstants.NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
+                dtype,
+                Layout.row_major(HCConstants.NUM_SHAPES, SHAPE_MAX_SIZE),
+                MutAnyOrigin,
             ],
             contacts: LayoutTensor[
-                dtype, Layout.row_major(BATCH_SIZE, HCConstants.MAX_CONTACTS, CONTACT_DATA_SIZE), MutAnyOrigin
+                dtype,
+                Layout.row_major(
+                    BATCH_SIZE, HCConstants.MAX_CONTACTS, CONTACT_DATA_SIZE
+                ),
+                MutAnyOrigin,
             ],
             contact_counts: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
@@ -1649,8 +2073,18 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
             if env >= BATCH_SIZE:
                 return
 
-            HalfCheetahPlanarV2[Self.dtype]._step_env_gpu[BATCH_SIZE, STATE_SIZE, OBS_DIM, ACTION_DIM](
-                states, shapes, contacts, contact_counts, actions, rewards, dones, obs, env
+            HalfCheetahPlanarV2[Self.dtype]._step_env_gpu[
+                BATCH_SIZE, STATE_SIZE, OBS_DIM, ACTION_DIM
+            ](
+                states,
+                shapes,
+                contacts,
+                contact_counts,
+                actions,
+                rewards,
+                dones,
+                obs,
+                env,
             )
 
         ctx.enqueue_function[step_kernel, step_kernel](
@@ -1678,10 +2112,16 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
             dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
         ],
         shapes: LayoutTensor[
-            dtype, Layout.row_major(HCConstants.NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
+            dtype,
+            Layout.row_major(HCConstants.NUM_SHAPES, SHAPE_MAX_SIZE),
+            MutAnyOrigin,
         ],
         contacts: LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, HCConstants.MAX_CONTACTS, CONTACT_DATA_SIZE), MutAnyOrigin
+            dtype,
+            Layout.row_major(
+                BATCH_SIZE, HCConstants.MAX_CONTACTS, CONTACT_DATA_SIZE
+            ),
+            MutAnyOrigin,
         ],
         contact_counts: LayoutTensor[
             dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
@@ -1722,10 +2162,16 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
             elif a < Scalar[dtype](-1.0):
                 a = Scalar[dtype](-1.0)
             # Motor speed: large value in action direction to ensure saturation
-            var motor_sign = Scalar[dtype](1.0) if a >= Scalar[dtype](0.0) else Scalar[dtype](-1.0)
-            states[env, joint_off + JOINT_MOTOR_SPEED] = motor_sign * Scalar[dtype](1000.0)
+            var motor_sign = Scalar[dtype](1.0) if a >= Scalar[dtype](
+                0.0
+            ) else Scalar[dtype](-1.0)
+            states[env, joint_off + JOINT_MOTOR_SPEED] = motor_sign * Scalar[
+                dtype
+            ](1000.0)
             # Motor torque proportional to |action| for MuJoCo-style direct control
-            states[env, joint_off + JOINT_MAX_MOTOR_TORQUE] = Scalar[dtype](HCConstants.MAX_TORQUE) * abs(a)
+            states[env, joint_off + JOINT_MAX_MOTOR_TORQUE] = Scalar[dtype](
+                HCConstants.MAX_TORQUE
+            ) * abs(a)
 
         # Physics constants
         var dt = Scalar[dtype](HCConstants.DT)
@@ -1823,10 +2269,16 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
         # Compute reward
         var x_after = rebind[Scalar[dtype]](states[env, torso_off + IDX_X])
         var torso_z = rebind[Scalar[dtype]](states[env, torso_off + IDX_Y])
-        var torso_angle = rebind[Scalar[dtype]](states[env, torso_off + IDX_ANGLE])
+        var torso_angle = rebind[Scalar[dtype]](
+            states[env, torso_off + IDX_ANGLE]
+        )
 
-        var forward_velocity = (x_after - x_before) / (dt * Scalar[dtype](HCConstants.FRAME_SKIP))
-        var forward_reward = Scalar[dtype](HCConstants.FORWARD_REWARD_WEIGHT) * forward_velocity
+        var forward_velocity = (x_after - x_before) / (
+            dt * Scalar[dtype](HCConstants.FRAME_SKIP)
+        )
+        var forward_reward = (
+            Scalar[dtype](HCConstants.FORWARD_REWARD_WEIGHT) * forward_velocity
+        )
 
         # Control cost (use clamped actions to avoid penalty from unbounded policy outputs)
         var ctrl_cost = Scalar[dtype](0.0)
@@ -1847,7 +2299,10 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
             var effective_height = torso_z
             if effective_height > Scalar[dtype](HCConstants.TARGET_HEIGHT):
                 effective_height = Scalar[dtype](HCConstants.TARGET_HEIGHT)
-            height_bonus = Scalar[dtype](HCConstants.HEIGHT_BONUS_WEIGHT) * effective_height
+            height_bonus = (
+                Scalar[dtype](HCConstants.HEIGHT_BONUS_WEIGHT)
+                * effective_height
+            )
 
         # Ground contact penalty - penalize non-foot body parts touching ground
         # Bodies that should NOT touch: torso(0), bthigh(1), bshin(2), fthigh(4), fshin(5)
@@ -1860,14 +2315,23 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
             # Check if this is a ground contact (body_b == -1)
             if body_b == -1:
                 # Penalize if body_a is not a foot (3 or 6)
-                if body_a != HCConstants.BODY_BFOOT and body_a != HCConstants.BODY_FFOOT:
-                    ground_contact_penalty = ground_contact_penalty + Scalar[dtype](HCConstants.GROUND_CONTACT_PENALTY)
+                if (
+                    body_a != HCConstants.BODY_BFOOT
+                    and body_a != HCConstants.BODY_FFOOT
+                ):
+                    ground_contact_penalty = ground_contact_penalty + Scalar[
+                        dtype
+                    ](HCConstants.GROUND_CONTACT_PENALTY)
 
-        var reward = forward_reward - ctrl_cost + height_bonus - ground_contact_penalty
+        var reward = (
+            forward_reward - ctrl_cost + height_bonus - ground_contact_penalty
+        )
         rewards[env] = reward
 
         # Update step count
-        var step_count = rebind[Scalar[dtype]](states[env, meta_off + HCConstants.META_STEP_COUNT])
+        var step_count = rebind[Scalar[dtype]](
+            states[env, meta_off + HCConstants.META_STEP_COUNT]
+        )
         step_count = step_count + Scalar[dtype](1.0)
         states[env, meta_off + HCConstants.META_STEP_COUNT] = step_count
 
@@ -1893,7 +2357,9 @@ struct HalfCheetahPlanarV2[DTYPE: DType = DType.float64](
         dones[env] = done
 
         # Update observation
-        HalfCheetahPlanarV2[Self.dtype]._compute_obs_gpu[BATCH_SIZE, STATE_SIZE](states, env)
+        HalfCheetahPlanarV2[Self.dtype]._compute_obs_gpu[
+            BATCH_SIZE, STATE_SIZE
+        ](states, env)
 
         # Copy to obs buffer
         var obs_off = HCConstants.OBS_OFFSET

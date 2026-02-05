@@ -77,6 +77,8 @@ from core import (
     BoxContinuousActionEnv,
     GPUContinuousEnv,
     RenderableEnv,
+    CurriculumScheduler,
+    NoCurriculumScheduler,
 )
 from render import RendererBase
 from memory import UnsafePointer
@@ -2210,7 +2212,8 @@ struct DeepPPOContinuousAgent[
     # =========================================================================
 
     fn train_gpu[
-        EnvType: GPUContinuousEnv
+        EnvType: GPUContinuousEnv,
+        CurriculumType: CurriculumScheduler = NoCurriculumScheduler,
     ](
         mut self,
         ctx: DeviceContext,
@@ -2672,6 +2675,11 @@ struct DeepPPOContinuousAgent[
         var total_steps = 0
         var rollout_count = 0
 
+        # Curriculum stage tracking
+        var current_curriculum_stage = CurriculumType.get_stage_name[dtype](
+            Scalar[dtype](0.0)
+        )
+
         # Annealing target
         var annealing_target_steps = self.target_total_steps
         if annealing_target_steps == 0:
@@ -2706,6 +2714,10 @@ struct DeepPPOContinuousAgent[
         # =====================================================================
         # Main Training Loop
         # =====================================================================
+
+        # Log initial curriculum stage if using curriculum
+        if verbose and current_curriculum_stage != "":
+            print("[Curriculum] Starting with " + current_curriculum_stage)
 
         while completed_episodes < num_episodes:
             var rollout_start_episodes = completed_episodes
@@ -2790,6 +2802,11 @@ struct DeepPPOContinuousAgent[
 
                 # Step all environments on GPU with continuous actions
                 var env_step_seed = UInt64(total_steps * 1103515245 + t * 12345)
+
+                var progress = Scalar[dtype](
+                    total_steps / annealing_target_steps
+                )
+                var curriculum_values = CurriculumType.get_params(progress)
                 EnvType.step_kernel_gpu[
                     Self.n_envs, EnvType.STATE_SIZE, Self.OBS, Self.ACTIONS
                 ](
@@ -2800,6 +2817,7 @@ struct DeepPPOContinuousAgent[
                     dones_buf,
                     obs_buf,
                     env_step_seed,
+                    curriculum_values,
                 )
 
                 # Add observation noise for domain randomization (if enabled)
@@ -3400,6 +3418,18 @@ struct DeepPPOContinuousAgent[
             total_critic_backward_ns += critic_backward_ns
             total_critic_grad_clip_ns += critic_grad_clip_ns
             total_critic_optim_ns += critic_optim_ns
+
+            # Check for curriculum stage change
+            var training_progress = Scalar[dtype](
+                total_steps / annealing_target_steps
+            )
+            var new_stage = CurriculumType.get_stage_name[dtype](
+                training_progress
+            )
+            if new_stage != current_curriculum_stage and new_stage != "":
+                current_curriculum_stage = new_stage
+                if verbose:
+                    print("[Curriculum] " + new_stage)
 
             # Print progress
             if verbose and rollout_count % print_every == 0:

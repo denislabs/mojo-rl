@@ -1040,6 +1040,8 @@ struct ModelGC[
         pos: Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]],
         axis: Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]],
         tau_limit: Scalar[Self.DTYPE] = 1000.0,
+        range_min: Scalar[Self.DTYPE] = -1e10,
+        range_max: Scalar[Self.DTYPE] = 1e10,
     ) -> Int:
         """Add a hinge joint to a body.
 
@@ -1048,6 +1050,8 @@ struct ModelGC[
             pos: Joint position in parent frame.
             axis: Rotation axis in parent frame.
             tau_limit: Maximum torque.
+            range_min: Minimum angle in radians (default: unlimited).
+            range_max: Maximum angle in radians (default: unlimited).
 
         Returns:
             Joint index, or -1 if max joints exceeded.
@@ -1064,7 +1068,7 @@ struct ModelGC[
 
         var joint_idx = self.num_joints
         self.joints[joint_idx] = JointDef[Self.DTYPE].create_hinge(
-            body_id, qpos_adr, dof_adr, pos, axis, tau_limit
+            body_id, qpos_adr, dof_adr, pos, axis, tau_limit, range_min, range_max
         )
         self.num_joints += 1
         return joint_idx
@@ -1075,6 +1079,8 @@ struct ModelGC[
         pos: Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]],
         axis: Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]],
         force_limit: Scalar[Self.DTYPE] = 1000.0,
+        range_min: Scalar[Self.DTYPE] = -1e10,
+        range_max: Scalar[Self.DTYPE] = 1e10,
     ) -> Int:
         """Add a slide joint to a body.
 
@@ -1083,6 +1089,8 @@ struct ModelGC[
             pos: Joint position in parent frame.
             axis: Slide axis in parent frame.
             force_limit: Maximum force.
+            range_min: Minimum position in meters (default: unlimited).
+            range_max: Maximum position in meters (default: unlimited).
 
         Returns:
             Joint index, or -1 if max joints exceeded.
@@ -1099,7 +1107,7 @@ struct ModelGC[
 
         var joint_idx = self.num_joints
         self.joints[joint_idx] = JointDef[Self.DTYPE].create_slide(
-            body_id, qpos_adr, dof_adr, pos, axis, force_limit
+            body_id, qpos_adr, dof_adr, pos, axis, force_limit, range_min, range_max
         )
         self.num_joints += 1
         return joint_idx

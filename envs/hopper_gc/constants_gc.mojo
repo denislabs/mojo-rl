@@ -20,10 +20,14 @@ from physics3d_v2.gpu.constants import (
     gc_model_body_offset,
     gc_model_joint_offset,
     gc_model_metadata_offset,
+    gc_model_curriculum_offset,
     GC_MODEL_BODY_SIZE,
     GC_MODEL_JOINT_SIZE,
     GC_MODEL_META_SIZE,
+    GC_MODEL_CURRICULUM_SIZE,
     GC_CONTACT_SIZE,
+    GC_CURRICULUM_IDX_MIN_HEIGHT,
+    GC_CURRICULUM_IDX_MAX_PITCH,
 )
 
 
@@ -114,11 +118,42 @@ struct HopperGCConstants[DTYPE: DType = DType.float64]:
     comptime TORQUE_LIMIT: Scalar[Self.DTYPE] = 200.0  # MuJoCo gear=200
 
     # ==========================================================================
-    # Termination Parameters
+    # Joint Limits (from MuJoCo hopper.xml, converted to radians)
+    # ==========================================================================
+
+    # thigh_joint: range="-150 0" degrees
+    comptime THIGH_JOINT_MIN: Scalar[Self.DTYPE] = -2.618  # -150 degrees
+    comptime THIGH_JOINT_MAX: Scalar[Self.DTYPE] = 0.0     # 0 degrees
+
+    # leg_joint: range="-150 0" degrees
+    comptime LEG_JOINT_MIN: Scalar[Self.DTYPE] = -2.618    # -150 degrees
+    comptime LEG_JOINT_MAX: Scalar[Self.DTYPE] = 0.0       # 0 degrees
+
+    # foot_joint: range="-45 45" degrees
+    comptime FOOT_JOINT_MIN: Scalar[Self.DTYPE] = -0.785   # -45 degrees
+    comptime FOOT_JOINT_MAX: Scalar[Self.DTYPE] = 0.785    # 45 degrees
+
+    # ==========================================================================
+    # Termination Parameters (defaults - can be overridden by curriculum)
     # ==========================================================================
 
     comptime MIN_HEIGHT: Scalar[Self.DTYPE] = 0.7
     comptime MAX_PITCH: Scalar[Self.DTYPE] = 0.2  # ~11 degrees
+
+    # ==========================================================================
+    # Curriculum Parameters
+    # ==========================================================================
+
+    # Number of curriculum params used by Hopper (min_height, max_pitch)
+    comptime NUM_CURRICULUM_PARAMS: Int = 2
+
+    # Initial (lenient) values for curriculum
+    comptime CURRICULUM_INITIAL_MIN_HEIGHT: Scalar[Self.DTYPE] = 0.3
+    comptime CURRICULUM_INITIAL_MAX_PITCH: Scalar[Self.DTYPE] = 1.0  # ~57 degrees
+
+    # Final (strict) values for curriculum (same as MuJoCo defaults)
+    comptime CURRICULUM_FINAL_MIN_HEIGHT: Scalar[Self.DTYPE] = 0.7
+    comptime CURRICULUM_FINAL_MAX_PITCH: Scalar[Self.DTYPE] = 0.2  # ~11 degrees
 
     # ==========================================================================
     # Episode Parameters
@@ -131,7 +166,7 @@ struct HopperGCConstants[DTYPE: DType = DType.float64]:
     # ==========================================================================
 
     comptime FORWARD_REWARD_WEIGHT: Scalar[Self.DTYPE] = 1.0
-    comptime CTRL_COST_WEIGHT: Scalar[Self.DTYPE] = 0.05  # Increased from 0.001 to penalize sliding
+    comptime CTRL_COST_WEIGHT: Scalar[Self.DTYPE] = 0.001  # MuJoCo default (uses normalized actions [-1,1])
     comptime HEALTHY_REWARD: Scalar[Self.DTYPE] = 1.0
 
     # ==========================================================================
@@ -242,6 +277,12 @@ struct HopperGCConstants[DTYPE: DType = DType.float64]:
     fn get_model_metadata_offset() -> Int:
         """Get offset to metadata in model buffer."""
         return gc_model_metadata_offset[Self.NUM_BODIES, Self.NUM_JOINTS]()
+
+    @staticmethod
+    @always_inline
+    fn get_model_curriculum_offset() -> Int:
+        """Get offset to curriculum parameters in model buffer."""
+        return gc_model_curriculum_offset[Self.NUM_BODIES, Self.NUM_JOINTS]()
 
 
 # Type aliases for convenience

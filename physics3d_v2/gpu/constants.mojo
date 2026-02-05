@@ -497,7 +497,7 @@ fn gc_contact_offset[NQ: Int, NV: Int, NBODY: Int](contact_idx: Int) -> Int:
 comptime GC_METADATA_SIZE: Int = 4
 
 comptime GC_META_IDX_NUM_CONTACTS: Int = 0
-comptime GC_META_IDX_PADDING_1: Int = 1
+comptime GC_META_IDX_STEP_COUNT: Int = 1  # Episode step counter for truncation
 comptime GC_META_IDX_PADDING_2: Int = 2
 comptime GC_META_IDX_PADDING_3: Int = 3
 
@@ -569,7 +569,7 @@ fn gc_model_body_offset(body_idx: Int) -> Int:
 # Model Buffer Layout - Per Joint
 # =============================================================================
 
-comptime GC_MODEL_JOINT_SIZE: Int = 11
+comptime GC_MODEL_JOINT_SIZE: Int = 13  # Extended to include range limits
 
 comptime GC_JOINT_IDX_TYPE: Int = 0  # JNT_FREE, JNT_BALL, JNT_SLIDE, JNT_HINGE
 comptime GC_JOINT_IDX_BODY_ID: Int = 1
@@ -582,6 +582,8 @@ comptime GC_JOINT_IDX_AXIS_X: Int = 7
 comptime GC_JOINT_IDX_AXIS_Y: Int = 8
 comptime GC_JOINT_IDX_AXIS_Z: Int = 9
 comptime GC_JOINT_IDX_TAU_LIMIT: Int = 10
+comptime GC_JOINT_IDX_RANGE_MIN: Int = 11  # Minimum position (radians for hinge, meters for slide)
+comptime GC_JOINT_IDX_RANGE_MAX: Int = 12  # Maximum position
 
 
 fn gc_model_joint_offset[NBODY: Int](joint_idx: Int) -> Int:
@@ -610,12 +612,40 @@ fn gc_model_metadata_offset[NBODY: Int, NJOINT: Int]() -> Int:
     return NBODY * GC_MODEL_BODY_SIZE + NJOINT * GC_MODEL_JOINT_SIZE
 
 
+# =============================================================================
+# Model Buffer Layout - Curriculum Parameters
+# =============================================================================
+
+# Fixed-size curriculum section (environments use what they need)
+comptime GC_MODEL_CURRICULUM_SIZE: Int = 8  # Up to 8 curriculum parameters
+
+# Common curriculum parameter indices (environments can define their own)
+comptime GC_CURRICULUM_IDX_MIN_HEIGHT: Int = 0
+comptime GC_CURRICULUM_IDX_MAX_PITCH: Int = 1
+comptime GC_CURRICULUM_IDX_PARAM_2: Int = 2
+comptime GC_CURRICULUM_IDX_PARAM_3: Int = 3
+comptime GC_CURRICULUM_IDX_PARAM_4: Int = 4
+comptime GC_CURRICULUM_IDX_PARAM_5: Int = 5
+comptime GC_CURRICULUM_IDX_PARAM_6: Int = 6
+comptime GC_CURRICULUM_IDX_PARAM_7: Int = 7
+
+
+fn gc_model_curriculum_offset[NBODY: Int, NJOINT: Int]() -> Int:
+    """Offset to curriculum parameters in model buffer."""
+    return (
+        NBODY * GC_MODEL_BODY_SIZE
+        + NJOINT * GC_MODEL_JOINT_SIZE
+        + GC_MODEL_META_SIZE
+    )
+
+
 fn gc_model_size[NBODY: Int, NJOINT: Int]() -> Int:
     """Total model buffer size."""
     return (
         NBODY * GC_MODEL_BODY_SIZE
         + NJOINT * GC_MODEL_JOINT_SIZE
         + GC_MODEL_META_SIZE
+        + GC_MODEL_CURRICULUM_SIZE
     )
 
 

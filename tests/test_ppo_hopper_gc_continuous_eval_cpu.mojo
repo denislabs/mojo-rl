@@ -94,7 +94,7 @@ fn main() raises:
     # Create environment and evaluate using RenderableEnv trait
     # =========================================================================
 
-    var env = HopperGC()
+    var env = HopperGC[DType.float64, TERMINATE_ON_UNHEALTHY=False]()
 
     print("Running CPU evaluation...")
     print("  Episodes:", NUM_EPISODES)

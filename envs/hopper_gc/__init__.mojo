@@ -36,5 +36,10 @@ Rendering:
 from .hopper_gc import HopperGC
 from .state import HopperGCState
 from .action import HopperGCAction
-from .constants_gc import HopperGCConstants, HopperGCConstantsCPU, HopperGCConstantsGPU
+from .constants_gc import (
+    HopperGCConstants,
+    HopperGCConstantsCPU,
+    HopperGCConstantsGPU,
+)
 from .renderer import HopperGCRenderer, HopperGCColors
+from .curriculum import HopperCurriculum

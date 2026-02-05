@@ -58,6 +58,52 @@ fn normalize_qpos_quaternions[
             data.qpos[qpos_adr + 3] = normalized[3]
 
 
+fn enforce_joint_limits[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+](
+    model: ModelGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    mut data: DataGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+):
+    """Enforce joint position limits for HINGE and SLIDE joints.
+
+    When a joint exceeds its limit:
+    1. Clamp position to the limit
+    2. Zero velocity if moving further into the limit
+
+    This provides hard constraint behavior similar to MuJoCo's joint limits.
+    """
+    for j in range(model.num_joints):
+        var joint = model.joints[j]
+        var qpos_adr = joint.qpos_adr
+        var dof_adr = joint.dof_adr
+
+        # Only enforce limits for HINGE and SLIDE joints
+        if joint.jnt_type == JNT_HINGE or joint.jnt_type == JNT_SLIDE:
+            var pos = data.qpos[qpos_adr]
+            var vel = data.qvel[dof_adr]
+            var range_min = joint.range_min
+            var range_max = joint.range_max
+
+            # Check lower limit
+            if pos < range_min:
+                data.qpos[qpos_adr] = range_min
+                # Zero velocity if moving into the limit
+                if vel < Scalar[DTYPE](0):
+                    data.qvel[dof_adr] = Scalar[DTYPE](0)
+
+            # Check upper limit
+            elif pos > range_max:
+                data.qpos[qpos_adr] = range_max
+                # Zero velocity if moving into the limit
+                if vel > Scalar[DTYPE](0):
+                    data.qvel[dof_adr] = Scalar[DTYPE](0)
+
+
 fn detect_ground_contacts[
     DTYPE: DType,
     NQ: Int,
@@ -175,10 +221,12 @@ fn compute_contact_forces[
     """Compute joint-space contact forces from Cartesian contacts.
 
     Uses a simplified spring-damper model for ground contacts.
+    Includes Coulomb friction for tangential forces.
     Forces are projected into joint space using the Jacobian transpose.
     """
     var stiffness = Scalar[DTYPE](5000.0)  # Ground stiffness
     var damping = Scalar[DTYPE](100.0)  # Ground damping
+    var friction_coef = model.friction  # Friction coefficient
 
     for c in range(data.num_contacts):
         var contact = data.contacts[c]
@@ -190,13 +238,35 @@ fn compute_contact_forces[
         # Penetration depth (positive)
         var depth = -contact.dist
 
-        # Normal velocity
+        # Body velocity at contact point
+        var vx = data.xvel[body * 3 + 0]
+        var vy = data.xvel[body * 3 + 1]
         var vz = data.xvel[body * 3 + 2]
 
-        # Spring-damper force (in world z direction)
-        var force = stiffness * depth - damping * vz
-        if force < Scalar[DTYPE](0):
-            force = Scalar[DTYPE](0)
+        # Spring-damper normal force (in world z direction for ground)
+        var normal_force = stiffness * depth - damping * vz
+        if normal_force < Scalar[DTYPE](0):
+            normal_force = Scalar[DTYPE](0)
+
+        # Tangential velocity (in XY plane for ground contact)
+        var v_tangent_x = vx
+        var v_tangent_y = vy
+        var v_tangent_mag = sqrt(v_tangent_x * v_tangent_x + v_tangent_y * v_tangent_y)
+
+        # Coulomb friction force (opposes tangential velocity)
+        var max_friction = friction_coef * normal_force
+        var friction_x: Scalar[DTYPE] = Scalar[DTYPE](0)
+        var friction_y: Scalar[DTYPE] = Scalar[DTYPE](0)
+
+        if v_tangent_mag > Scalar[DTYPE](1e-6):
+            # Kinetic friction: F = -mu * N * v_hat
+            friction_x = -max_friction * (v_tangent_x / v_tangent_mag)
+            friction_y = -max_friction * (v_tangent_y / v_tangent_mag)
+
+        # Total contact force in world frame
+        var total_fx = friction_x
+        var total_fy = friction_y
+        var total_fz = normal_force
 
         # Project to joint space using Jacobian transpose
         # For each joint affecting this body, compute torque/force contribution
@@ -212,7 +282,7 @@ fn compute_contact_forces[
 
             if joint.jnt_type == JNT_HINGE:
                 # Compute torque: tau = r x F, projected onto joint axis
-                # r = body position - joint position
+                # r = contact position - joint position
                 var parent = model.body_parent[joint.body_id]
 
                 # Get joint position in world
@@ -247,15 +317,10 @@ fn compute_contact_forces[
                 var ry = contact.pos_y - jpos_y
                 var rz = contact.pos_z - jpos_z
 
-                # Force is in z direction (normal)
-                var fx = force * contact.normal_x
-                var fy = force * contact.normal_y
-                var fz = force * contact.normal_z
-
-                # Torque = r x F
-                var tau_x = ry * fz - rz * fy
-                var tau_y = rz * fx - rx * fz
-                var tau_z = rx * fy - ry * fx
+                # Torque = r x F (using total force with friction)
+                var tau_x = ry * total_fz - rz * total_fy
+                var tau_y = rz * total_fx - rx * total_fz
+                var tau_z = rx * total_fy - ry * total_fx
 
                 # Get joint axis in world frame
                 var axis_x = joint.axis_x
@@ -285,7 +350,7 @@ fn compute_contact_forces[
                 qfrc_contact[dof_idx] = qfrc_contact[dof_idx] + tau_joint
 
             elif joint.jnt_type == JNT_SLIDE:
-                # Force along axis
+                # Force along axis (now includes friction)
                 var axis_x = joint.axis_x
                 var axis_y = joint.axis_y
                 var axis_z = joint.axis_z
@@ -309,25 +374,20 @@ fn compute_contact_forces[
                     axis_y = axis_world[1]
                     axis_z = axis_world[2]
 
-                # Force in world frame
-                var fx = force * contact.normal_x
-                var fy = force * contact.normal_y
-                var fz = force * contact.normal_z
-
-                # Project onto axis
-                var f_joint = fx * axis_x + fy * axis_y + fz * axis_z
+                # Project total force (with friction) onto axis
+                var f_joint = total_fx * axis_x + total_fy * axis_y + total_fz * axis_z
                 qfrc_contact[dof_idx] = qfrc_contact[dof_idx] + f_joint
 
             elif joint.jnt_type == JNT_FREE:
-                # Direct force and torque
+                # Direct force and torque (with friction)
                 qfrc_contact[dof_idx + 0] = (
-                    qfrc_contact[dof_idx + 0] + force * contact.normal_x
+                    qfrc_contact[dof_idx + 0] + total_fx
                 )
                 qfrc_contact[dof_idx + 1] = (
-                    qfrc_contact[dof_idx + 1] + force * contact.normal_y
+                    qfrc_contact[dof_idx + 1] + total_fy
                 )
                 qfrc_contact[dof_idx + 2] = (
-                    qfrc_contact[dof_idx + 2] + force * contact.normal_z
+                    qfrc_contact[dof_idx + 2] + total_fz
                 )
 
 

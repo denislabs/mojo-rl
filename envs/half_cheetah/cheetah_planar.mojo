@@ -715,10 +715,16 @@ struct HalfCheetahPlanar[DTYPE: DType = DType.float64](
             torso_x + HCConstants.TORSO_LENGTH / 2 * cos(torso_angle),
             torso_y + HCConstants.TORSO_LENGTH / 2 * sin(torso_angle),
         )
-        renderer.draw_line_world(torso_start, torso_end, camera, torso_color, 12)
+        renderer.draw_line_world(
+            torso_start, torso_end, camera, torso_color, 12
+        )
         # Draw torso caps
         renderer.draw_circle_world(
-            torso_start, HCConstants.TORSO_RADIUS * 1.5, camera, torso_color, True
+            torso_start,
+            HCConstants.TORSO_RADIUS * 1.5,
+            camera,
+            torso_color,
+            True,
         )
         renderer.draw_circle_world(
             torso_end, HCConstants.TORSO_RADIUS * 1.5, camera, torso_color, True
@@ -745,7 +751,9 @@ struct HalfCheetahPlanar[DTYPE: DType = DType.float64](
             bthigh_end.x + sin(total_bshin_angle) * HCConstants.BSHIN_LENGTH,
             bthigh_end.y - cos(total_bshin_angle) * HCConstants.BSHIN_LENGTH,
         )
-        renderer.draw_line_world(bthigh_end, bshin_end, camera, back_leg_color, 6)
+        renderer.draw_line_world(
+            bthigh_end, bshin_end, camera, back_leg_color, 6
+        )
 
         # Back foot
         var bfoot_angle = self.joint_angles[HCConstants.JOINT_BFOOT]
@@ -754,7 +762,9 @@ struct HalfCheetahPlanar[DTYPE: DType = DType.float64](
             bshin_end.x + sin(total_bfoot_angle) * HCConstants.BFOOT_LENGTH,
             bshin_end.y - cos(total_bfoot_angle) * HCConstants.BFOOT_LENGTH,
         )
-        renderer.draw_line_world(bshin_end, bfoot_end, camera, back_leg_color, 5)
+        renderer.draw_line_world(
+            bshin_end, bfoot_end, camera, back_leg_color, 5
+        )
 
         # Draw front leg (thigh, shin, foot)
         var front_hip_x = torso_x + HCConstants.TORSO_LENGTH / 2
@@ -767,7 +777,11 @@ struct HalfCheetahPlanar[DTYPE: DType = DType.float64](
             front_hip_y - cos(fthigh_angle) * HCConstants.FTHIGH_LENGTH,
         )
         renderer.draw_line_world(
-            Vec2(front_hip_x, front_hip_y), fthigh_end, camera, front_leg_color, 8
+            Vec2(front_hip_x, front_hip_y),
+            fthigh_end,
+            camera,
+            front_leg_color,
+            8,
         )
 
         # Front shin
@@ -777,7 +791,9 @@ struct HalfCheetahPlanar[DTYPE: DType = DType.float64](
             fthigh_end.x + sin(total_fshin_angle) * HCConstants.FSHIN_LENGTH,
             fthigh_end.y - cos(total_fshin_angle) * HCConstants.FSHIN_LENGTH,
         )
-        renderer.draw_line_world(fthigh_end, fshin_end, camera, front_leg_color, 6)
+        renderer.draw_line_world(
+            fthigh_end, fshin_end, camera, front_leg_color, 6
+        )
 
         # Front foot
         var ffoot_angle = self.joint_angles[HCConstants.JOINT_FFOOT]
@@ -786,26 +802,44 @@ struct HalfCheetahPlanar[DTYPE: DType = DType.float64](
             fshin_end.x + sin(total_ffoot_angle) * HCConstants.FFOOT_LENGTH,
             fshin_end.y - cos(total_ffoot_angle) * HCConstants.FFOOT_LENGTH,
         )
-        renderer.draw_line_world(fshin_end, ffoot_end, camera, front_leg_color, 5)
+        renderer.draw_line_world(
+            fshin_end, ffoot_end, camera, front_leg_color, 5
+        )
 
         # Draw joints as small circles
         var joint_radius = 0.03
         # Back hip
         renderer.draw_circle_world(
-            Vec2(back_hip_x, back_hip_y), joint_radius, camera, joint_color, True
+            Vec2(back_hip_x, back_hip_y),
+            joint_radius,
+            camera,
+            joint_color,
+            True,
         )
         # Back knee
-        renderer.draw_circle_world(bthigh_end, joint_radius, camera, joint_color, True)
+        renderer.draw_circle_world(
+            bthigh_end, joint_radius, camera, joint_color, True
+        )
         # Back ankle
-        renderer.draw_circle_world(bshin_end, joint_radius, camera, joint_color, True)
+        renderer.draw_circle_world(
+            bshin_end, joint_radius, camera, joint_color, True
+        )
         # Front hip
         renderer.draw_circle_world(
-            Vec2(front_hip_x, front_hip_y), joint_radius, camera, joint_color, True
+            Vec2(front_hip_x, front_hip_y),
+            joint_radius,
+            camera,
+            joint_color,
+            True,
         )
         # Front knee
-        renderer.draw_circle_world(fthigh_end, joint_radius, camera, joint_color, True)
+        renderer.draw_circle_world(
+            fthigh_end, joint_radius, camera, joint_color, True
+        )
         # Front ankle
-        renderer.draw_circle_world(fshin_end, joint_radius, camera, joint_color, True)
+        renderer.draw_circle_world(
+            fshin_end, joint_radius, camera, joint_color, True
+        )
 
         # Draw foot endpoints (for ground contact visualization)
         var foot_marker_color = rgb(255, 100, 100)  # Red-ish
@@ -1034,6 +1068,7 @@ struct HalfCheetahPlanar[DTYPE: DType = DType.float64](
         mut dones_buf: DeviceBuffer[dtype],
         mut obs_buf: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
+        curriculum_values: List[Scalar[dtype]] = [],
     ) raises:
         """GPU step kernel for batched continuous actions."""
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB

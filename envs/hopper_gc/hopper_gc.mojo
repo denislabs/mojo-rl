@@ -34,7 +34,10 @@ from layout import Layout, LayoutTensor
 # Import GC physics engine
 from physics3d_v2.types import ModelGC, DataGC
 from physics3d_v2.integrator import SemiImplicitEulerIntegrator
-from physics3d_v2.kinematics.forward_kinematics import forward_kinematics
+from physics3d_v2.kinematics.forward_kinematics import (
+    forward_kinematics,
+    forward_kinematics_gpu,
+)
 from physics3d_v2.joint_types import JNT_HINGE, JNT_SLIDE
 from physics3d_v2.gpu.constants import (
     TPB,
@@ -48,6 +51,59 @@ from physics3d_v2.gpu.constants import (
     gc_model_size,
     GC_GEOM_CAPSULE,
     GC_META_IDX_NUM_CONTACTS,
+    GC_META_IDX_STEP_COUNT,
+    gc_model_curriculum_offset,
+    GC_CURRICULUM_IDX_MIN_HEIGHT,
+    GC_CURRICULUM_IDX_MAX_PITCH,
+    GC_MODEL_BODY_SIZE,
+    GC_MODEL_JOINT_SIZE,
+    GC_MODEL_META_SIZE,
+    GC_BODY_IDX_MASS,
+    GC_BODY_IDX_INV_MASS,
+    GC_BODY_IDX_IXX,
+    GC_BODY_IDX_IYY,
+    GC_BODY_IDX_IZZ,
+    GC_BODY_IDX_INV_IXX,
+    GC_BODY_IDX_INV_IYY,
+    GC_BODY_IDX_INV_IZZ,
+    GC_BODY_IDX_POS_X,
+    GC_BODY_IDX_POS_Y,
+    GC_BODY_IDX_POS_Z,
+    GC_BODY_IDX_QUAT_X,
+    GC_BODY_IDX_QUAT_Y,
+    GC_BODY_IDX_QUAT_Z,
+    GC_BODY_IDX_QUAT_W,
+    GC_BODY_IDX_PARENT,
+    GC_BODY_IDX_GEOM_TYPE,
+    GC_BODY_IDX_RADIUS,
+    GC_BODY_IDX_HALF_LENGTH,
+    GC_JOINT_IDX_TYPE,
+    GC_JOINT_IDX_BODY_ID,
+    GC_JOINT_IDX_QPOS_ADR,
+    GC_JOINT_IDX_DOF_ADR,
+    GC_JOINT_IDX_POS_X,
+    GC_JOINT_IDX_POS_Y,
+    GC_JOINT_IDX_POS_Z,
+    GC_JOINT_IDX_AXIS_X,
+    GC_JOINT_IDX_AXIS_Y,
+    GC_JOINT_IDX_AXIS_Z,
+    GC_JOINT_IDX_TAU_LIMIT,
+    GC_JOINT_IDX_RANGE_MIN,
+    GC_JOINT_IDX_RANGE_MAX,
+    GC_MODEL_META_IDX_NBODY,
+    GC_MODEL_META_IDX_NJOINT,
+    GC_MODEL_META_IDX_GRAVITY_X,
+    GC_MODEL_META_IDX_GRAVITY_Y,
+    GC_MODEL_META_IDX_GRAVITY_Z,
+    GC_MODEL_META_IDX_TIMESTEP,
+    GC_MODEL_META_IDX_GROUND_Z,
+    GC_MODEL_META_IDX_FRICTION,
+    gc_model_body_offset,
+    gc_model_joint_offset,
+    gc_model_metadata_offset,
+    GC_JNT_SLIDE,
+    GC_JNT_HINGE,
+    GC_GEOM_CAPSULE,
 )
 
 from .constants_gc import HopperGCConstants
@@ -67,7 +123,9 @@ comptime Quat = QuatGeneric[DType.float64]
 # =============================================================================
 
 
-struct HopperGC[DTYPE: DType = DType.float64](
+struct HopperGC[
+    DTYPE: DType = DType.float64, TERMINATE_ON_UNHEALTHY: Bool = False
+](
     BoxContinuousActionEnv,
     GPUContinuousEnv,
     RenderableEnv,
@@ -128,8 +186,22 @@ struct HopperGC[DTYPE: DType = DType.float64](
     ]()
 
     # Physics model and data
-    var model: ModelGC[Self.DTYPE, Self.NQ, Self.NV, Self.NUM_BODIES, Self.NUM_JOINTS, Self.MAX_CONTACTS]
-    var data: DataGC[Self.DTYPE, Self.NQ, Self.NV, Self.NUM_BODIES, Self.NUM_JOINTS, Self.MAX_CONTACTS]
+    var model: ModelGC[
+        Self.DTYPE,
+        Self.NQ,
+        Self.NV,
+        Self.NUM_BODIES,
+        Self.NUM_JOINTS,
+        Self.MAX_CONTACTS,
+    ]
+    var data: DataGC[
+        Self.DTYPE,
+        Self.NQ,
+        Self.NV,
+        Self.NUM_BODIES,
+        Self.NUM_JOINTS,
+        Self.MAX_CONTACTS,
+    ]
 
     # Environment parameters
     var torque_limit: Scalar[Self.DTYPE]
@@ -147,6 +219,9 @@ struct HopperGC[DTYPE: DType = DType.float64](
     # Renderer (optional)
     var _renderer: UnsafePointer[HopperGCRenderer, MutAnyOrigin]
     var _renderer_initialized: Bool
+
+    # Reset noise (matching Gymnasium Hopper reset_noise_scale=0.005)
+    var _reset_seed: Int
 
     # =========================================================================
     # Initialization
@@ -178,6 +253,7 @@ struct HopperGC[DTYPE: DType = DType.float64](
         self.current_step = 0
         self._renderer = UnsafePointer[HopperGCRenderer, MutAnyOrigin]()
         self._renderer_initialized = False
+        self._reset_seed = 0
 
         # Body dimensions (matching MuJoCo Hopper)
         var torso_mass = Scalar[Self.DTYPE](3.53429174)
@@ -204,7 +280,14 @@ struct HopperGC[DTYPE: DType = DType.float64](
         self.initial_z = torso_z
 
         # Initialize GC model
-        self.model = ModelGC[Self.DTYPE, Self.NQ, Self.NV, Self.NUM_BODIES, Self.NUM_JOINTS, Self.MAX_CONTACTS](
+        self.model = ModelGC[
+            Self.DTYPE,
+            Self.NQ,
+            Self.NV,
+            Self.NUM_BODIES,
+            Self.NUM_JOINTS,
+            Self.MAX_CONTACTS,
+        ](
             gravity_z=Scalar[Self.DTYPE](-9.81),
             timestep=timestep,
             ground_z=Scalar[Self.DTYPE](0.0),
@@ -218,48 +301,77 @@ struct HopperGC[DTYPE: DType = DType.float64](
             half_length: Scalar[Self.DTYPE],
         ) -> Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]]:
             var r2 = radius * radius
-            var L = Scalar[Self.DTYPE](2.0) * half_length + Scalar[Self.DTYPE](2.0) * radius
+            var L = (
+                Scalar[Self.DTYPE](2.0) * half_length
+                + Scalar[Self.DTYPE](2.0) * radius
+            )
             var L2 = L * L
-            var I_trans = mass * (Scalar[Self.DTYPE](3.0) * r2 + L2) / Scalar[Self.DTYPE](12.0)
+            var I_trans = (
+                mass
+                * (Scalar[Self.DTYPE](3.0) * r2 + L2)
+                / Scalar[Self.DTYPE](12.0)
+            )
             var I_axial = Scalar[Self.DTYPE](0.5) * mass * r2
             return (I_trans, I_trans, I_axial)
 
         # Body 0: Torso
-        var torso_inertia = compute_capsule_inertia(torso_mass, torso_radius, torso_half_length)
-        self.model.set_body(0, mass=torso_mass, inertia=torso_inertia, radius=torso_radius)
+        var torso_inertia = compute_capsule_inertia(
+            torso_mass, torso_radius, torso_half_length
+        )
+        self.model.set_body(
+            0, mass=torso_mass, inertia=torso_inertia, radius=torso_radius
+        )
         self.model.set_body_parent(0, -1)  # World is parent
         self.model.body_geom_type[0] = GC_GEOM_CAPSULE
         self.model.body_half_length[0] = torso_half_length
 
         # Body 1: Thigh
-        var thigh_inertia = compute_capsule_inertia(thigh_mass, thigh_radius, thigh_half_length)
-        self.model.set_body(1, mass=thigh_mass, inertia=thigh_inertia, radius=thigh_radius)
+        var thigh_inertia = compute_capsule_inertia(
+            thigh_mass, thigh_radius, thigh_half_length
+        )
+        self.model.set_body(
+            1, mass=thigh_mass, inertia=thigh_inertia, radius=thigh_radius
+        )
         self.model.set_body_parent(1, 0)  # Torso is parent
         self.model.body_geom_type[1] = GC_GEOM_CAPSULE
         self.model.body_half_length[1] = thigh_half_length
         # Local frame: offset below torso
-        self.model.set_body_local_frame(1, pos=(
-            Scalar[Self.DTYPE](0.0),
-            Scalar[Self.DTYPE](0.0),
-            -(torso_half_length + thigh_half_length),
-        ))
+        self.model.set_body_local_frame(
+            1,
+            pos=(
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](0.0),
+                -(torso_half_length + thigh_half_length),
+            ),
+        )
 
         # Body 2: Leg
-        var leg_inertia = compute_capsule_inertia(leg_mass, leg_radius, leg_half_length)
-        self.model.set_body(2, mass=leg_mass, inertia=leg_inertia, radius=leg_radius)
+        var leg_inertia = compute_capsule_inertia(
+            leg_mass, leg_radius, leg_half_length
+        )
+        self.model.set_body(
+            2, mass=leg_mass, inertia=leg_inertia, radius=leg_radius
+        )
         self.model.set_body_parent(2, 1)  # Thigh is parent
         self.model.body_geom_type[2] = GC_GEOM_CAPSULE
         self.model.body_half_length[2] = leg_half_length
         # Local frame: offset below thigh
-        self.model.set_body_local_frame(2, pos=(
-            Scalar[Self.DTYPE](0.0),
-            Scalar[Self.DTYPE](0.0),
-            -(thigh_half_length + leg_half_length),
-        ))
+        self.model.set_body_local_frame(
+            2,
+            pos=(
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](0.0),
+                -(thigh_half_length + leg_half_length),
+            ),
+        )
 
         # Body 3: Foot
-        var foot_inertia = compute_capsule_inertia(foot_mass, foot_radius, foot_half_length)
-        self.model.set_body(3, mass=foot_mass, inertia=foot_inertia, radius=foot_radius)
+        var foot_inertia = compute_capsule_inertia(
+            foot_mass, foot_radius, foot_half_length
+        )
+        self.model.set_body(
+            3, mass=foot_mass, inertia=foot_inertia, radius=foot_radius
+        )
         self.model.set_body_parent(3, 2)  # Leg is parent
         self.model.body_geom_type[3] = GC_GEOM_CAPSULE
         self.model.body_half_length[3] = foot_half_length
@@ -283,53 +395,120 @@ struct HopperGC[DTYPE: DType = DType.float64](
         # Joint 0: rootx - slide along X (body 0)
         _ = self.model.add_slide_joint(
             body_id=0,
-            pos=(Scalar[Self.DTYPE](0.0), Scalar[Self.DTYPE](0.0), Scalar[Self.DTYPE](0.0)),
-            axis=(Scalar[Self.DTYPE](1.0), Scalar[Self.DTYPE](0.0), Scalar[Self.DTYPE](0.0)),
+            pos=(
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](0.0),
+            ),
+            axis=(
+                Scalar[Self.DTYPE](1.0),
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](0.0),
+            ),
             force_limit=Scalar[Self.DTYPE](0.0),  # Not actuated
         )
 
         # Joint 1: rootz - slide along Z (body 0)
         _ = self.model.add_slide_joint(
             body_id=0,
-            pos=(Scalar[Self.DTYPE](0.0), Scalar[Self.DTYPE](0.0), Scalar[Self.DTYPE](0.0)),
-            axis=(Scalar[Self.DTYPE](0.0), Scalar[Self.DTYPE](0.0), Scalar[Self.DTYPE](1.0)),
+            pos=(
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](0.0),
+            ),
+            axis=(
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](1.0),
+            ),
             force_limit=Scalar[Self.DTYPE](0.0),  # Not actuated
         )
 
         # Joint 2: rooty - hinge around Y (body 0)
         _ = self.model.add_hinge_joint(
             body_id=0,
-            pos=(Scalar[Self.DTYPE](0.0), Scalar[Self.DTYPE](0.0), Scalar[Self.DTYPE](0.0)),
-            axis=(Scalar[Self.DTYPE](0.0), Scalar[Self.DTYPE](1.0), Scalar[Self.DTYPE](0.0)),
+            pos=(
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](0.0),
+            ),
+            axis=(
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](1.0),
+                Scalar[Self.DTYPE](0.0),
+            ),
             tau_limit=Scalar[Self.DTYPE](0.0),  # Not actuated
         )
 
         # Joint 3: thigh - hinge around Y (body 1)
+        # Joint attaches at bottom of torso: (0, 0, -torso_half_length)
+        # MuJoCo thigh_joint: range="-150 0" degrees = -2.618 to 0 radians
         _ = self.model.add_hinge_joint(
             body_id=1,
-            pos=(Scalar[Self.DTYPE](0.0), Scalar[Self.DTYPE](0.0), Scalar[Self.DTYPE](0.0)),
-            axis=(Scalar[Self.DTYPE](0.0), Scalar[Self.DTYPE](1.0), Scalar[Self.DTYPE](0.0)),
+            pos=(
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](0.0),
+                -torso_half_length,
+            ),
+            axis=(
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](1.0),
+                Scalar[Self.DTYPE](0.0),
+            ),
             tau_limit=torque_limit,
+            range_min=Scalar[Self.DTYPE](-2.618),
+            range_max=Scalar[Self.DTYPE](0.0),
         )
 
         # Joint 4: leg - hinge around Y (body 2)
+        # Joint attaches at bottom of thigh: (0, 0, -thigh_half_length)
+        # MuJoCo leg_joint: range="-150 0" degrees = -2.618 to 0 radians
         _ = self.model.add_hinge_joint(
             body_id=2,
-            pos=(Scalar[Self.DTYPE](0.0), Scalar[Self.DTYPE](0.0), Scalar[Self.DTYPE](0.0)),
-            axis=(Scalar[Self.DTYPE](0.0), Scalar[Self.DTYPE](1.0), Scalar[Self.DTYPE](0.0)),
+            pos=(
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](0.0),
+                -thigh_half_length,
+            ),
+            axis=(
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](1.0),
+                Scalar[Self.DTYPE](0.0),
+            ),
             tau_limit=torque_limit,
+            range_min=Scalar[Self.DTYPE](-2.618),
+            range_max=Scalar[Self.DTYPE](0.0),
         )
 
         # Joint 5: foot - hinge around Y (body 3)
+        # Joint attaches at bottom of leg: (0, 0, -leg_half_length)
+        # MuJoCo foot_joint: range="-45 45" degrees = -0.785 to 0.785 radians
         _ = self.model.add_hinge_joint(
             body_id=3,
-            pos=(Scalar[Self.DTYPE](0.0), Scalar[Self.DTYPE](0.0), Scalar[Self.DTYPE](0.0)),
-            axis=(Scalar[Self.DTYPE](0.0), Scalar[Self.DTYPE](1.0), Scalar[Self.DTYPE](0.0)),
+            pos=(
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](0.0),
+                -leg_half_length,
+            ),
+            axis=(
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](1.0),
+                Scalar[Self.DTYPE](0.0),
+            ),
             tau_limit=torque_limit,
+            range_min=Scalar[Self.DTYPE](-0.785),
+            range_max=Scalar[Self.DTYPE](0.785),
         )
 
         # Initialize data
-        self.data = DataGC[Self.DTYPE, Self.NQ, Self.NV, Self.NUM_BODIES, Self.NUM_JOINTS, Self.MAX_CONTACTS]()
+        self.data = DataGC[
+            Self.DTYPE,
+            Self.NQ,
+            Self.NV,
+            Self.NUM_BODIES,
+            Self.NUM_JOINTS,
+            Self.MAX_CONTACTS,
+        ]()
 
         # Initialize cached state
         self.cached_state = HopperGCState[Self.DTYPE]()
@@ -343,18 +522,54 @@ struct HopperGC[DTYPE: DType = DType.float64](
     # =========================================================================
 
     fn _reset_state(mut self):
-        """Reset to initial standing position."""
-        # Reset qpos
-        self.data.qpos[0] = Scalar[Self.DTYPE](0.0)  # rootx
-        self.data.qpos[1] = self.initial_z           # rootz
-        self.data.qpos[2] = Scalar[Self.DTYPE](0.0)  # rooty
-        self.data.qpos[3] = Scalar[Self.DTYPE](0.0)  # thigh
-        self.data.qpos[4] = Scalar[Self.DTYPE](0.0)  # leg
-        self.data.qpos[5] = Scalar[Self.DTYPE](0.0)  # foot
+        """Reset to initial standing position with random noise.
 
-        # Reset qvel
-        for i in range(Self.NV):
-            self.data.qvel[i] = Scalar[Self.DTYPE](0.0)
+        Adds random perturbations to initial qpos and qvel, matching
+        Gymnasium's Hopper reset_noise_scale=0.005.
+        """
+        # Reset noise scale (matching Gymnasium Hopper and GPU implementation)
+        var RESET_NOISE_SCALE = Scalar[Self.DTYPE](0.005)
+
+        # Create RNG with unique seed per reset
+        self._reset_seed += 1
+        var rng = PhiloxRandom(seed=self._reset_seed * 2654435761, offset=0)
+
+        # Generate random noise for qpos (6 values) and qvel (6 values)
+        var rand_qpos = rng.step_uniform()  # Returns SIMD[DType.float64, 4]
+        var rand_qpos2 = rng.step_uniform()
+        var rand_qvel = rng.step_uniform()
+        var rand_qvel2 = rng.step_uniform()
+
+        # Helper to convert uniform [0,1) to [-scale, scale)
+        @always_inline
+        fn to_noise(val: Scalar[DType.float32]) -> Scalar[Self.DTYPE]:
+            return Scalar[Self.DTYPE](val * 2.0 - 1.0) * RESET_NOISE_SCALE
+
+        # Reset qpos with noise
+        self.data.qpos[0] = Scalar[Self.DTYPE](0.0) + to_noise(
+            rand_qpos[0]
+        )  # rootx
+        self.data.qpos[1] = self.initial_z + to_noise(rand_qpos[1])  # rootz
+        self.data.qpos[2] = Scalar[Self.DTYPE](0.0) + to_noise(
+            rand_qpos[2]
+        )  # rooty
+        self.data.qpos[3] = Scalar[Self.DTYPE](0.0) + to_noise(
+            rand_qpos[3]
+        )  # thigh
+        self.data.qpos[4] = Scalar[Self.DTYPE](0.0) + to_noise(
+            rand_qpos2[0]
+        )  # leg
+        self.data.qpos[5] = Scalar[Self.DTYPE](0.0) + to_noise(
+            rand_qpos2[1]
+        )  # foot
+
+        # Reset qvel with noise
+        self.data.qvel[0] = to_noise(rand_qvel[0])  # rootx vel
+        self.data.qvel[1] = to_noise(rand_qvel[1])  # rootz vel
+        self.data.qvel[2] = to_noise(rand_qvel[2])  # rooty vel
+        self.data.qvel[3] = to_noise(rand_qvel[3])  # thigh vel
+        self.data.qvel[4] = to_noise(rand_qvel2[0])  # leg vel
+        self.data.qvel[5] = to_noise(rand_qvel2[1])  # foot vel
 
         # Reset qacc and qfrc
         for i in range(Self.NV):
@@ -371,7 +586,7 @@ struct HopperGC[DTYPE: DType = DType.float64](
         """Update cached state from physics data."""
         # Position observations (exclude qpos[0] = rootx)
         self.cached_state.z_position = self.data.qpos[1]  # rootz
-        self.cached_state.y_angle = self.data.qpos[2]     # rooty
+        self.cached_state.y_angle = self.data.qpos[2]  # rooty
         self.cached_state.thigh_angle = self.data.qpos[3]
         self.cached_state.leg_angle = self.data.qpos[4]
         self.cached_state.foot_angle = self.data.qpos[5]
@@ -406,25 +621,35 @@ struct HopperGC[DTYPE: DType = DType.float64](
     fn _compute_reward(
         self,
         x_velocity: Scalar[Self.DTYPE],
-        thigh_torque: Scalar[Self.DTYPE],
-        leg_torque: Scalar[Self.DTYPE],
-        foot_torque: Scalar[Self.DTYPE],
+        thigh_action: Scalar[Self.DTYPE],
+        leg_action: Scalar[Self.DTYPE],
+        foot_action: Scalar[Self.DTYPE],
         is_healthy: Bool,
     ) -> Scalar[Self.DTYPE]:
-        """Compute reward for current state."""
-        # Forward velocity reward
+        """Compute reward for current state (MuJoCo Hopper-v5 compatible).
+
+        Reward = forward_reward + healthy_reward - ctrl_cost
+        - forward_reward: x_velocity (forward_reward_weight = 1.0)
+        - healthy_reward: 1.0 if healthy, 0.0 otherwise
+        - ctrl_cost: 0.001 * sum(action²) using NORMALIZED actions [-1, 1]
+
+        Note: MuJoCo uses normalized actions for ctrl_cost, NOT actual torques!
+        This is critical - using torques would give ~40,000x higher cost.
+        """
+        # Forward velocity reward (weight = 1.0)
         var forward_reward = x_velocity
 
-        # Healthy reward
+        # Healthy reward - only given when healthy (matches MuJoCo v5)
         var healthy_reward: Scalar[Self.DTYPE] = 0.0
         if is_healthy:
             healthy_reward = Scalar[Self.DTYPE](1.0)
 
-        # Control cost (0.05 to penalize sliding behavior)
-        var ctrl_cost = Scalar[Self.DTYPE](0.05) * (
-            thigh_torque * thigh_torque +
-            leg_torque * leg_torque +
-            foot_torque * foot_torque
+        # Control cost using NORMALIZED actions (not torques!)
+        # MuJoCo default: ctrl_cost_weight = 0.001
+        var ctrl_cost = Scalar[Self.DTYPE](0.001) * (
+            thigh_action * thigh_action
+            + leg_action * leg_action
+            + foot_action * foot_action
         )
 
         return forward_reward + healthy_reward - ctrl_cost
@@ -481,14 +706,26 @@ struct HopperGC[DTYPE: DType = DType.float64](
         Returns:
             Tuple of (observation_list, reward, done).
         """
-        # Extract and clamp actions
-        var thigh_action = Scalar[Self.DTYPE](action[0] if len(action) > 0 else 0)
-        var leg_action = Scalar[Self.DTYPE](action[1] if len(action) > 1 else 0)
-        var foot_action = Scalar[Self.DTYPE](action[2] if len(action) > 2 else 0)
+        # Extract and clamp actions to [-1, 1]
+        var thigh_action_raw = Scalar[Self.DTYPE](
+            action[0] if len(action) > 0 else 0
+        )
+        var leg_action_raw = Scalar[Self.DTYPE](
+            action[1] if len(action) > 1 else 0
+        )
+        var foot_action_raw = Scalar[Self.DTYPE](
+            action[2] if len(action) > 2 else 0
+        )
 
-        var thigh_torque = self._clamp_action(thigh_action) * self.torque_limit
-        var leg_torque = self._clamp_action(leg_action) * self.torque_limit
-        var foot_torque = self._clamp_action(foot_action) * self.torque_limit
+        # Clamp actions to [-1, 1] (normalized actions for reward calculation)
+        var thigh_action = self._clamp_action(thigh_action_raw)
+        var leg_action = self._clamp_action(leg_action_raw)
+        var foot_action = self._clamp_action(foot_action_raw)
+
+        # Convert to actual torques for physics
+        var thigh_torque = thigh_action * self.torque_limit
+        var leg_torque = leg_action * self.torque_limit
+        var foot_torque = foot_action * self.torque_limit
 
         # Apply torques to joint DOFs (joints 3, 4, 5 are actuated)
         self.data.qfrc[3] = thigh_torque
@@ -496,6 +733,7 @@ struct HopperGC[DTYPE: DType = DType.float64](
         self.data.qfrc[5] = foot_torque
 
         # Physics step using semi-implicit Euler
+        # (includes joint limit enforcement from physics engine)
         SemiImplicitEulerIntegrator.step(self.model, self.data)
 
         self.current_step += 1
@@ -505,14 +743,18 @@ struct HopperGC[DTYPE: DType = DType.float64](
 
         # Check health and termination
         var is_healthy = self._is_healthy()
-        var terminated = not is_healthy
+        var terminated = False
+
+        @parameter
+        if Self.TERMINATE_ON_UNHEALTHY:
+            terminated = not is_healthy
         var truncated = self.current_step >= self.max_steps
         var done = terminated or truncated
 
-        # Compute reward
+        # Compute reward using NORMALIZED actions (not torques!)
         var x_velocity = self.data.qvel[0]  # rootx velocity
         var reward = self._compute_reward(
-            x_velocity, thigh_torque, leg_torque, foot_torque, is_healthy
+            x_velocity, thigh_action, leg_action, foot_action, is_healthy
         )
 
         # Build observation list
@@ -539,9 +781,15 @@ struct HopperGC[DTYPE: DType = DType.float64](
         mut self, action: Self.ActionType
     ) -> Tuple[Self.StateType, Scalar[Self.dtype], Bool]:
         """Take an action and return (next_state, reward, done)."""
-        var thigh_torque = self._clamp_action(action.thigh) * self.torque_limit
-        var leg_torque = self._clamp_action(action.leg) * self.torque_limit
-        var foot_torque = self._clamp_action(action.foot) * self.torque_limit
+        # Clamp actions to [-1, 1] (normalized for reward calculation)
+        var thigh_action = self._clamp_action(action.thigh)
+        var leg_action = self._clamp_action(action.leg)
+        var foot_action = self._clamp_action(action.foot)
+
+        # Convert to actual torques for physics
+        var thigh_torque = thigh_action * self.torque_limit
+        var leg_torque = leg_action * self.torque_limit
+        var foot_torque = foot_action * self.torque_limit
 
         # Apply torques
         self.data.qfrc[3] = thigh_torque
@@ -555,12 +803,17 @@ struct HopperGC[DTYPE: DType = DType.float64](
         self._update_cached_state()
 
         var is_healthy = self._is_healthy()
-        var terminated = not is_healthy
+        var terminated = False
+
+        @parameter
+        if Self.TERMINATE_ON_UNHEALTHY:
+            terminated = not is_healthy
         var truncated = self.current_step >= self.max_steps
 
+        # Compute reward using NORMALIZED actions (not torques!)
         var x_velocity = self.data.qvel[0]
         var reward = self._compute_reward(
-            x_velocity, thigh_torque, leg_torque, foot_torque, is_healthy
+            x_velocity, thigh_action, leg_action, foot_action, is_healthy
         )
 
         return (self.cached_state, reward, terminated or truncated)
@@ -607,7 +860,9 @@ struct HopperGC[DTYPE: DType = DType.float64](
             qvel[i] = self.data.qvel[i]
         return qvel^
 
-    fn get_torso_position(self) -> Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]]:
+    fn get_torso_position(
+        self,
+    ) -> Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]]:
         """Get torso world position from xpos."""
         return (
             self.data.xpos[0],
@@ -615,7 +870,9 @@ struct HopperGC[DTYPE: DType = DType.float64](
             self.data.xpos[2],
         )
 
-    fn get_thigh_position(self) -> Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]]:
+    fn get_thigh_position(
+        self,
+    ) -> Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]]:
         """Get thigh world position from xpos."""
         return (
             self.data.xpos[3],
@@ -623,7 +880,9 @@ struct HopperGC[DTYPE: DType = DType.float64](
             self.data.xpos[5],
         )
 
-    fn get_leg_position(self) -> Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]]:
+    fn get_leg_position(
+        self,
+    ) -> Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]]:
         """Get leg world position from xpos."""
         return (
             self.data.xpos[6],
@@ -631,7 +890,9 @@ struct HopperGC[DTYPE: DType = DType.float64](
             self.data.xpos[8],
         )
 
-    fn get_foot_position(self) -> Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]]:
+    fn get_foot_position(
+        self,
+    ) -> Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]]:
         """Get foot world position from xpos."""
         return (
             self.data.xpos[9],
@@ -639,7 +900,14 @@ struct HopperGC[DTYPE: DType = DType.float64](
             self.data.xpos[11],
         )
 
-    fn get_torso_quaternion(self) -> Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]]:
+    fn get_torso_quaternion(
+        self,
+    ) -> Tuple[
+        Scalar[Self.DTYPE],
+        Scalar[Self.DTYPE],
+        Scalar[Self.DTYPE],
+        Scalar[Self.DTYPE],
+    ]:
         """Get torso world orientation quaternion (x, y, z, w) from xquat."""
         return (
             self.data.xquat[0],
@@ -648,7 +916,14 @@ struct HopperGC[DTYPE: DType = DType.float64](
             self.data.xquat[3],
         )
 
-    fn get_thigh_quaternion(self) -> Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]]:
+    fn get_thigh_quaternion(
+        self,
+    ) -> Tuple[
+        Scalar[Self.DTYPE],
+        Scalar[Self.DTYPE],
+        Scalar[Self.DTYPE],
+        Scalar[Self.DTYPE],
+    ]:
         """Get thigh world orientation quaternion (x, y, z, w) from xquat."""
         return (
             self.data.xquat[4],
@@ -657,7 +932,14 @@ struct HopperGC[DTYPE: DType = DType.float64](
             self.data.xquat[7],
         )
 
-    fn get_leg_quaternion(self) -> Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]]:
+    fn get_leg_quaternion(
+        self,
+    ) -> Tuple[
+        Scalar[Self.DTYPE],
+        Scalar[Self.DTYPE],
+        Scalar[Self.DTYPE],
+        Scalar[Self.DTYPE],
+    ]:
         """Get leg world orientation quaternion (x, y, z, w) from xquat."""
         return (
             self.data.xquat[8],
@@ -666,7 +948,14 @@ struct HopperGC[DTYPE: DType = DType.float64](
             self.data.xquat[11],
         )
 
-    fn get_foot_quaternion(self) -> Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]]:
+    fn get_foot_quaternion(
+        self,
+    ) -> Tuple[
+        Scalar[Self.DTYPE],
+        Scalar[Self.DTYPE],
+        Scalar[Self.DTYPE],
+        Scalar[Self.DTYPE],
+    ]:
         """Get foot world orientation quaternion (x, y, z, w) from xquat."""
         return (
             self.data.xquat[12],
@@ -689,7 +978,13 @@ struct HopperGC[DTYPE: DType = DType.float64](
 
     fn is_done(self) -> Bool:
         """Check if episode is finished."""
-        return self.current_step >= self.max_steps or not self._is_healthy()
+        var truncated = self.current_step >= self.max_steps
+
+        @parameter
+        if Self.TERMINATE_ON_UNHEALTHY:
+            return truncated or not self._is_healthy()
+        else:
+            return truncated
 
     # =========================================================================
     # RenderableEnv Trait Implementation
@@ -700,7 +995,6 @@ struct HopperGC[DTYPE: DType = DType.float64](
         if self._renderer_initialized:
             return True
 
-        from memory import alloc
         self._renderer = alloc[HopperGCRenderer](1)
 
         var renderer = HopperGCRenderer(
@@ -789,10 +1083,14 @@ struct HopperGC[DTYPE: DType = DType.float64](
 
         # Render
         self._renderer[].render(
-            torso_pos, torso_quat,
-            thigh_pos, thigh_quat,
-            leg_pos, leg_quat,
-            foot_pos, foot_quat,
+            torso_pos,
+            torso_quat,
+            thigh_pos,
+            thigh_quat,
+            leg_pos,
+            leg_quat,
+            foot_pos,
+            foot_quat,
             vel_x,
         )
 
@@ -833,6 +1131,7 @@ struct HopperGC[DTYPE: DType = DType.float64](
         STATE_SIZE_VAL: Int,
         OBS_DIM_VAL: Int,
         ACTION_DIM_VAL: Int,
+        MAX_STEPS: Int = 1000,
     ](
         ctx: DeviceContext,
         mut states_buf: DeviceBuffer[gpu_dtype],
@@ -841,32 +1140,61 @@ struct HopperGC[DTYPE: DType = DType.float64](
         mut dones_buf: DeviceBuffer[gpu_dtype],
         mut obs_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64 = 0,
+        curriculum_values: List[Scalar[gpu_dtype]] = [],
     ) raises:
         """Batched GPU step function using GC physics engine.
 
         Uses SemiImplicitEulerIntegrator.step_gpu for physics.
+
         """
+
         # Create model buffer on GPU
-        comptime MODEL_SIZE = gc_model_size[HopperGC.NUM_BODIES, HopperGC.NUM_JOINTS]()
+        comptime MODEL_SIZE = gc_model_size[
+            HopperGC.NUM_BODIES, HopperGC.NUM_JOINTS
+        ]()
         var model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
 
-        # Initialize model buffer
-        HopperGC._init_model_gpu(ctx, model_buf)
+        # Initialize model buffer with default physics params
+        Self._init_model_gpu(ctx, model_buf)
+        ctx.synchronize()
+
+        # Update curriculum params if non-default values provided
+        comptime CURRICULUM_OFF = gc_model_curriculum_offset[
+            HopperGC.NUM_BODIES, HopperGC.NUM_JOINTS
+        ]()
+
+        # Copy model to host, update curriculum, copy back
+        var model_host = List[Scalar[gpu_dtype]](capacity=MODEL_SIZE)
+        for _ in range(MODEL_SIZE):
+            model_host.append(Scalar[gpu_dtype](0.0))
+        ctx.enqueue_copy(model_host.unsafe_ptr(), model_buf)
+        ctx.synchronize()
+
+        model_host[CURRICULUM_OFF + GC_CURRICULUM_IDX_MIN_HEIGHT] = (
+            curriculum_values[0] if len(curriculum_values)
+            > 0 else HopperGCConstants[gpu_dtype].MIN_HEIGHT
+        )
+        model_host[CURRICULUM_OFF + GC_CURRICULUM_IDX_MAX_PITCH] = (
+            curriculum_values[1] if len(curriculum_values)
+            > 1 else HopperGCConstants[gpu_dtype].MAX_PITCH
+        )
+
+        ctx.enqueue_copy(model_buf, model_host.unsafe_ptr())
         ctx.synchronize()
 
         # Apply actions to qfrc in state buffer
-        HopperGC._apply_actions_gpu[BATCH_SIZE, STATE_SIZE_VAL, ACTION_DIM_VAL](
+        Self._apply_actions_gpu[BATCH_SIZE, STATE_SIZE_VAL, ACTION_DIM_VAL](
             ctx, states_buf, actions_buf
         )
 
         # Run GC physics step
         SemiImplicitEulerIntegrator.step_gpu[
             gpu_dtype,
-            HopperGC.NQ,
-            HopperGC.NV,
-            HopperGC.NUM_BODIES,
-            HopperGC.NUM_JOINTS,
-            HopperGC.MAX_CONTACTS,
+            Self.NQ,
+            Self.NV,
+            Self.NUM_BODIES,
+            Self.NUM_JOINTS,
+            Self.MAX_CONTACTS,
             BATCH_SIZE,
         ](
             ctx,
@@ -877,9 +1205,23 @@ struct HopperGC[DTYPE: DType = DType.float64](
             ground_z=Scalar[gpu_dtype](0.0),
         )
 
+        # Note: Joint limits are enforced by the physics engine in step_gc_kernel
+
         # Extract observations, compute rewards, check termination
-        HopperGC._extract_obs_rewards_dones_gpu[BATCH_SIZE, STATE_SIZE_VAL, OBS_DIM_VAL](
-            ctx, states_buf, actions_buf, rewards_buf, dones_buf, obs_buf
+        Self._extract_obs_rewards_dones_gpu[
+            BATCH_SIZE,
+            STATE_SIZE_VAL,
+            MODEL_SIZE,
+            OBS_DIM_VAL,
+            MAX_STEPS,
+        ](
+            ctx,
+            states_buf,
+            model_buf,
+            actions_buf,
+            rewards_buf,
+            dones_buf,
+            obs_buf,
         )
 
     @staticmethod
@@ -891,9 +1233,14 @@ struct HopperGC[DTYPE: DType = DType.float64](
         mut states_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64 = 0,
     ) raises:
-        """Reset all environments on GPU."""
+        """Reset all environments on GPU.
+
+        Also runs forward kinematics to compute xpos/xquat, matching CPU behavior.
+        """
         var states = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL), MutAnyOrigin
+            gpu_dtype,
+            Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
+            MutAnyOrigin,
         ](states_buf.unsafe_ptr())
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
@@ -901,18 +1248,62 @@ struct HopperGC[DTYPE: DType = DType.float64](
         @always_inline
         fn reset_wrapper(
             states: LayoutTensor[
-                gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL), MutAnyOrigin
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
+                MutAnyOrigin,
             ],
             seed: Int,
         ):
             var i = Int(block_dim.x * block_idx.x + thread_idx.x)
             if i >= BATCH_SIZE:
                 return
-            HopperGC._reset_env_gpu[BATCH_SIZE, STATE_SIZE_VAL](states, i, seed)
+            Self._reset_env_gpu[BATCH_SIZE, STATE_SIZE_VAL](states, i, seed)
 
         ctx.enqueue_function[reset_wrapper, reset_wrapper](
             states,
             Int(rng_seed),
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        # Run forward kinematics to compute xpos/xquat (matching CPU behavior)
+        comptime MODEL_SIZE = gc_model_size[Self.NUM_BODIES, Self.NUM_JOINTS]()
+        var model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
+        Self._init_model_gpu(ctx, model_buf)
+
+        var model = LayoutTensor[
+            gpu_dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+        ](model_buf.unsafe_ptr())
+
+        @always_inline
+        fn fk_wrapper(
+            states: LayoutTensor[
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
+                MutAnyOrigin,
+            ],
+            model: LayoutTensor[
+                gpu_dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+            ],
+        ):
+            var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if i >= BATCH_SIZE:
+                return
+            forward_kinematics_gpu[
+                gpu_dtype,
+                Self.NQ,
+                Self.NV,
+                Self.NUM_BODIES,
+                Self.NUM_JOINTS,
+                Self.MAX_CONTACTS,
+                STATE_SIZE_VAL,
+                MODEL_SIZE,
+                BATCH_SIZE,
+            ](i, states, model)
+
+        ctx.enqueue_function[fk_wrapper, fk_wrapper](
+            states,
+            model,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )
@@ -927,9 +1318,14 @@ struct HopperGC[DTYPE: DType = DType.float64](
         mut dones_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64,
     ) raises:
-        """Reset only done environments on GPU."""
+        """Reset only done environments on GPU.
+
+        Also runs forward kinematics for reset environments, matching CPU behavior.
+        """
         var states = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL), MutAnyOrigin
+            gpu_dtype,
+            Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
+            MutAnyOrigin,
         ](states_buf.unsafe_ptr())
         var dones = LayoutTensor[
             gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
@@ -937,13 +1333,27 @@ struct HopperGC[DTYPE: DType = DType.float64](
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
+        # Create model buffer for FK
+        comptime MODEL_SIZE = gc_model_size[Self.NUM_BODIES, Self.NUM_JOINTS]()
+        var model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
+        Self._init_model_gpu(ctx, model_buf)
+
+        var model = LayoutTensor[
+            gpu_dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+        ](model_buf.unsafe_ptr())
+
         @always_inline
-        fn selective_reset_wrapper(
+        fn selective_reset_with_fk_wrapper(
             states: LayoutTensor[
-                gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL), MutAnyOrigin
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
+                MutAnyOrigin,
             ],
             dones: LayoutTensor[
                 gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
+            model: LayoutTensor[
+                gpu_dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
             ],
             seed: Int,
         ):
@@ -951,12 +1361,27 @@ struct HopperGC[DTYPE: DType = DType.float64](
             if i >= BATCH_SIZE:
                 return
             if dones[i] > Scalar[gpu_dtype](0.5):
-                HopperGC._reset_env_gpu[BATCH_SIZE, STATE_SIZE_VAL](states, i, seed)
+                Self._reset_env_gpu[BATCH_SIZE, STATE_SIZE_VAL](states, i, seed)
+                # Run FK for this environment to compute xpos/xquat
+                forward_kinematics_gpu[
+                    gpu_dtype,
+                    Self.NQ,
+                    Self.NV,
+                    Self.NUM_BODIES,
+                    Self.NUM_JOINTS,
+                    Self.MAX_CONTACTS,
+                    STATE_SIZE_VAL,
+                    MODEL_SIZE,
+                    BATCH_SIZE,
+                ](i, states, model)
                 dones[i] = Scalar[gpu_dtype](0.0)
 
-        ctx.enqueue_function[selective_reset_wrapper, selective_reset_wrapper](
+        ctx.enqueue_function[
+            selective_reset_with_fk_wrapper, selective_reset_with_fk_wrapper
+        ](
             states,
             dones,
+            model,
             Int(rng_seed),
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
@@ -971,59 +1396,13 @@ struct HopperGC[DTYPE: DType = DType.float64](
         ctx: DeviceContext,
         mut model_buf: DeviceBuffer[gpu_dtype],
     ) raises:
-        """Initialize model buffer with HopperGC parameters for GC physics engine."""
-        from physics3d_v2.gpu.constants import (
-            GC_MODEL_BODY_SIZE,
-            GC_MODEL_JOINT_SIZE,
-            GC_MODEL_META_SIZE,
-            GC_BODY_IDX_MASS,
-            GC_BODY_IDX_INV_MASS,
-            GC_BODY_IDX_IXX,
-            GC_BODY_IDX_IYY,
-            GC_BODY_IDX_IZZ,
-            GC_BODY_IDX_INV_IXX,
-            GC_BODY_IDX_INV_IYY,
-            GC_BODY_IDX_INV_IZZ,
-            GC_BODY_IDX_POS_X,
-            GC_BODY_IDX_POS_Y,
-            GC_BODY_IDX_POS_Z,
-            GC_BODY_IDX_QUAT_X,
-            GC_BODY_IDX_QUAT_Y,
-            GC_BODY_IDX_QUAT_Z,
-            GC_BODY_IDX_QUAT_W,
-            GC_BODY_IDX_PARENT,
-            GC_BODY_IDX_GEOM_TYPE,
-            GC_BODY_IDX_RADIUS,
-            GC_BODY_IDX_HALF_LENGTH,
-            GC_JOINT_IDX_TYPE,
-            GC_JOINT_IDX_BODY_ID,
-            GC_JOINT_IDX_QPOS_ADR,
-            GC_JOINT_IDX_DOF_ADR,
-            GC_JOINT_IDX_POS_X,
-            GC_JOINT_IDX_POS_Y,
-            GC_JOINT_IDX_POS_Z,
-            GC_JOINT_IDX_AXIS_X,
-            GC_JOINT_IDX_AXIS_Y,
-            GC_JOINT_IDX_AXIS_Z,
-            GC_JOINT_IDX_TAU_LIMIT,
-            GC_MODEL_META_IDX_NBODY,
-            GC_MODEL_META_IDX_NJOINT,
-            GC_MODEL_META_IDX_GRAVITY_X,
-            GC_MODEL_META_IDX_GRAVITY_Y,
-            GC_MODEL_META_IDX_GRAVITY_Z,
-            GC_MODEL_META_IDX_TIMESTEP,
-            GC_MODEL_META_IDX_GROUND_Z,
-            GC_MODEL_META_IDX_FRICTION,
-            gc_model_body_offset,
-            gc_model_joint_offset,
-            gc_model_metadata_offset,
-            GC_JNT_SLIDE,
-            GC_JNT_HINGE,
-            GC_GEOM_CAPSULE,
-        )
+        """Initialize model buffer with HopperGC parameters for GC physics engine.
+        """
 
         # Total model size: NUM_BODIES * 22 + NUM_JOINTS * 11 + 8 = 4*22 + 6*11 + 8 = 162
-        comptime MODEL_SIZE = gc_model_size[HopperGC.NUM_BODIES, HopperGC.NUM_JOINTS]()
+        comptime MODEL_SIZE = gc_model_size[
+            HopperGC.NUM_BODIES, HopperGC.NUM_JOINTS
+        ]()
 
         var model_host = List[Scalar[gpu_dtype]](capacity=MODEL_SIZE)
         for _ in range(MODEL_SIZE):
@@ -1053,9 +1432,16 @@ struct HopperGC[DTYPE: DType = DType.float64](
             half_length: Scalar[gpu_dtype],
         ) -> Tuple[Scalar[gpu_dtype], Scalar[gpu_dtype], Scalar[gpu_dtype]]:
             var r2 = radius * radius
-            var L = Scalar[gpu_dtype](2.0) * half_length + Scalar[gpu_dtype](2.0) * radius
+            var L = (
+                Scalar[gpu_dtype](2.0) * half_length
+                + Scalar[gpu_dtype](2.0) * radius
+            )
             var L2 = L * L
-            var I_trans = mass * (Scalar[gpu_dtype](3.0) * r2 + L2) / Scalar[gpu_dtype](12.0)
+            var I_trans = (
+                mass
+                * (Scalar[gpu_dtype](3.0) * r2 + L2)
+                / Scalar[gpu_dtype](12.0)
+            )
             var I_axial = Scalar[gpu_dtype](0.5) * mass * r2
             return (I_trans, I_trans, I_axial)
 
@@ -1063,16 +1449,26 @@ struct HopperGC[DTYPE: DType = DType.float64](
         # Body 0: Torso (root body, parent = -1)
         # =================================================================
         var b0 = gc_model_body_offset(0)
-        var torso_inertia = compute_capsule_inertia(torso_mass, torso_radius, torso_half_length)
+        var torso_inertia = compute_capsule_inertia(
+            torso_mass, torso_radius, torso_half_length
+        )
 
         model_host[b0 + GC_BODY_IDX_MASS] = torso_mass
-        model_host[b0 + GC_BODY_IDX_INV_MASS] = Scalar[gpu_dtype](1.0) / torso_mass
+        model_host[b0 + GC_BODY_IDX_INV_MASS] = (
+            Scalar[gpu_dtype](1.0) / torso_mass
+        )
         model_host[b0 + GC_BODY_IDX_IXX] = torso_inertia[0]
         model_host[b0 + GC_BODY_IDX_IYY] = torso_inertia[1]
         model_host[b0 + GC_BODY_IDX_IZZ] = torso_inertia[2]
-        model_host[b0 + GC_BODY_IDX_INV_IXX] = Scalar[gpu_dtype](1.0) / torso_inertia[0]
-        model_host[b0 + GC_BODY_IDX_INV_IYY] = Scalar[gpu_dtype](1.0) / torso_inertia[1]
-        model_host[b0 + GC_BODY_IDX_INV_IZZ] = Scalar[gpu_dtype](1.0) / torso_inertia[2]
+        model_host[b0 + GC_BODY_IDX_INV_IXX] = (
+            Scalar[gpu_dtype](1.0) / torso_inertia[0]
+        )
+        model_host[b0 + GC_BODY_IDX_INV_IYY] = (
+            Scalar[gpu_dtype](1.0) / torso_inertia[1]
+        )
+        model_host[b0 + GC_BODY_IDX_INV_IZZ] = (
+            Scalar[gpu_dtype](1.0) / torso_inertia[2]
+        )
         # Local frame: at origin (torso is root)
         model_host[b0 + GC_BODY_IDX_POS_X] = Scalar[gpu_dtype](0.0)
         model_host[b0 + GC_BODY_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
@@ -1082,7 +1478,9 @@ struct HopperGC[DTYPE: DType = DType.float64](
         model_host[b0 + GC_BODY_IDX_QUAT_Z] = Scalar[gpu_dtype](0.0)
         model_host[b0 + GC_BODY_IDX_QUAT_W] = Scalar[gpu_dtype](1.0)
         model_host[b0 + GC_BODY_IDX_PARENT] = Scalar[gpu_dtype](-1)  # World
-        model_host[b0 + GC_BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](GC_GEOM_CAPSULE)
+        model_host[b0 + GC_BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](
+            GC_GEOM_CAPSULE
+        )
         model_host[b0 + GC_BODY_IDX_RADIUS] = torso_radius
         model_host[b0 + GC_BODY_IDX_HALF_LENGTH] = torso_half_length
 
@@ -1090,26 +1488,40 @@ struct HopperGC[DTYPE: DType = DType.float64](
         # Body 1: Thigh (parent = torso)
         # =================================================================
         var b1 = gc_model_body_offset(1)
-        var thigh_inertia = compute_capsule_inertia(thigh_mass, thigh_radius, thigh_half_length)
+        var thigh_inertia = compute_capsule_inertia(
+            thigh_mass, thigh_radius, thigh_half_length
+        )
 
         model_host[b1 + GC_BODY_IDX_MASS] = thigh_mass
-        model_host[b1 + GC_BODY_IDX_INV_MASS] = Scalar[gpu_dtype](1.0) / thigh_mass
+        model_host[b1 + GC_BODY_IDX_INV_MASS] = (
+            Scalar[gpu_dtype](1.0) / thigh_mass
+        )
         model_host[b1 + GC_BODY_IDX_IXX] = thigh_inertia[0]
         model_host[b1 + GC_BODY_IDX_IYY] = thigh_inertia[1]
         model_host[b1 + GC_BODY_IDX_IZZ] = thigh_inertia[2]
-        model_host[b1 + GC_BODY_IDX_INV_IXX] = Scalar[gpu_dtype](1.0) / thigh_inertia[0]
-        model_host[b1 + GC_BODY_IDX_INV_IYY] = Scalar[gpu_dtype](1.0) / thigh_inertia[1]
-        model_host[b1 + GC_BODY_IDX_INV_IZZ] = Scalar[gpu_dtype](1.0) / thigh_inertia[2]
+        model_host[b1 + GC_BODY_IDX_INV_IXX] = (
+            Scalar[gpu_dtype](1.0) / thigh_inertia[0]
+        )
+        model_host[b1 + GC_BODY_IDX_INV_IYY] = (
+            Scalar[gpu_dtype](1.0) / thigh_inertia[1]
+        )
+        model_host[b1 + GC_BODY_IDX_INV_IZZ] = (
+            Scalar[gpu_dtype](1.0) / thigh_inertia[2]
+        )
         # Local frame: offset below torso
         model_host[b1 + GC_BODY_IDX_POS_X] = Scalar[gpu_dtype](0.0)
         model_host[b1 + GC_BODY_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
-        model_host[b1 + GC_BODY_IDX_POS_Z] = -(torso_half_length + thigh_half_length)
+        model_host[b1 + GC_BODY_IDX_POS_Z] = -(
+            torso_half_length + thigh_half_length
+        )
         model_host[b1 + GC_BODY_IDX_QUAT_X] = Scalar[gpu_dtype](0.0)
         model_host[b1 + GC_BODY_IDX_QUAT_Y] = Scalar[gpu_dtype](0.0)
         model_host[b1 + GC_BODY_IDX_QUAT_Z] = Scalar[gpu_dtype](0.0)
         model_host[b1 + GC_BODY_IDX_QUAT_W] = Scalar[gpu_dtype](1.0)
         model_host[b1 + GC_BODY_IDX_PARENT] = Scalar[gpu_dtype](0)  # Torso
-        model_host[b1 + GC_BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](GC_GEOM_CAPSULE)
+        model_host[b1 + GC_BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](
+            GC_GEOM_CAPSULE
+        )
         model_host[b1 + GC_BODY_IDX_RADIUS] = thigh_radius
         model_host[b1 + GC_BODY_IDX_HALF_LENGTH] = thigh_half_length
 
@@ -1117,26 +1529,40 @@ struct HopperGC[DTYPE: DType = DType.float64](
         # Body 2: Leg (parent = thigh)
         # =================================================================
         var b2 = gc_model_body_offset(2)
-        var leg_inertia = compute_capsule_inertia(leg_mass, leg_radius, leg_half_length)
+        var leg_inertia = compute_capsule_inertia(
+            leg_mass, leg_radius, leg_half_length
+        )
 
         model_host[b2 + GC_BODY_IDX_MASS] = leg_mass
-        model_host[b2 + GC_BODY_IDX_INV_MASS] = Scalar[gpu_dtype](1.0) / leg_mass
+        model_host[b2 + GC_BODY_IDX_INV_MASS] = (
+            Scalar[gpu_dtype](1.0) / leg_mass
+        )
         model_host[b2 + GC_BODY_IDX_IXX] = leg_inertia[0]
         model_host[b2 + GC_BODY_IDX_IYY] = leg_inertia[1]
         model_host[b2 + GC_BODY_IDX_IZZ] = leg_inertia[2]
-        model_host[b2 + GC_BODY_IDX_INV_IXX] = Scalar[gpu_dtype](1.0) / leg_inertia[0]
-        model_host[b2 + GC_BODY_IDX_INV_IYY] = Scalar[gpu_dtype](1.0) / leg_inertia[1]
-        model_host[b2 + GC_BODY_IDX_INV_IZZ] = Scalar[gpu_dtype](1.0) / leg_inertia[2]
+        model_host[b2 + GC_BODY_IDX_INV_IXX] = (
+            Scalar[gpu_dtype](1.0) / leg_inertia[0]
+        )
+        model_host[b2 + GC_BODY_IDX_INV_IYY] = (
+            Scalar[gpu_dtype](1.0) / leg_inertia[1]
+        )
+        model_host[b2 + GC_BODY_IDX_INV_IZZ] = (
+            Scalar[gpu_dtype](1.0) / leg_inertia[2]
+        )
         # Local frame: offset below thigh
         model_host[b2 + GC_BODY_IDX_POS_X] = Scalar[gpu_dtype](0.0)
         model_host[b2 + GC_BODY_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
-        model_host[b2 + GC_BODY_IDX_POS_Z] = -(thigh_half_length + leg_half_length)
+        model_host[b2 + GC_BODY_IDX_POS_Z] = -(
+            thigh_half_length + leg_half_length
+        )
         model_host[b2 + GC_BODY_IDX_QUAT_X] = Scalar[gpu_dtype](0.0)
         model_host[b2 + GC_BODY_IDX_QUAT_Y] = Scalar[gpu_dtype](0.0)
         model_host[b2 + GC_BODY_IDX_QUAT_Z] = Scalar[gpu_dtype](0.0)
         model_host[b2 + GC_BODY_IDX_QUAT_W] = Scalar[gpu_dtype](1.0)
         model_host[b2 + GC_BODY_IDX_PARENT] = Scalar[gpu_dtype](1)  # Thigh
-        model_host[b2 + GC_BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](GC_GEOM_CAPSULE)
+        model_host[b2 + GC_BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](
+            GC_GEOM_CAPSULE
+        )
         model_host[b2 + GC_BODY_IDX_RADIUS] = leg_radius
         model_host[b2 + GC_BODY_IDX_HALF_LENGTH] = leg_half_length
 
@@ -1144,26 +1570,42 @@ struct HopperGC[DTYPE: DType = DType.float64](
         # Body 3: Foot (parent = leg, horizontal orientation)
         # =================================================================
         var b3 = gc_model_body_offset(3)
-        var foot_inertia = compute_capsule_inertia(foot_mass, foot_radius, foot_half_length)
+        var foot_inertia = compute_capsule_inertia(
+            foot_mass, foot_radius, foot_half_length
+        )
 
         model_host[b3 + GC_BODY_IDX_MASS] = foot_mass
-        model_host[b3 + GC_BODY_IDX_INV_MASS] = Scalar[gpu_dtype](1.0) / foot_mass
+        model_host[b3 + GC_BODY_IDX_INV_MASS] = (
+            Scalar[gpu_dtype](1.0) / foot_mass
+        )
         model_host[b3 + GC_BODY_IDX_IXX] = foot_inertia[0]
         model_host[b3 + GC_BODY_IDX_IYY] = foot_inertia[1]
         model_host[b3 + GC_BODY_IDX_IZZ] = foot_inertia[2]
-        model_host[b3 + GC_BODY_IDX_INV_IXX] = Scalar[gpu_dtype](1.0) / foot_inertia[0]
-        model_host[b3 + GC_BODY_IDX_INV_IYY] = Scalar[gpu_dtype](1.0) / foot_inertia[1]
-        model_host[b3 + GC_BODY_IDX_INV_IZZ] = Scalar[gpu_dtype](1.0) / foot_inertia[2]
+        model_host[b3 + GC_BODY_IDX_INV_IXX] = (
+            Scalar[gpu_dtype](1.0) / foot_inertia[0]
+        )
+        model_host[b3 + GC_BODY_IDX_INV_IYY] = (
+            Scalar[gpu_dtype](1.0) / foot_inertia[1]
+        )
+        model_host[b3 + GC_BODY_IDX_INV_IZZ] = (
+            Scalar[gpu_dtype](1.0) / foot_inertia[2]
+        )
         # Local frame: offset below leg, 90° rotation around Y for horizontal
         model_host[b3 + GC_BODY_IDX_POS_X] = Scalar[gpu_dtype](0.0)
         model_host[b3 + GC_BODY_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
         model_host[b3 + GC_BODY_IDX_POS_Z] = -leg_half_length
         model_host[b3 + GC_BODY_IDX_QUAT_X] = Scalar[gpu_dtype](0.0)
-        model_host[b3 + GC_BODY_IDX_QUAT_Y] = Scalar[gpu_dtype](0.70710678)  # sin(π/4)
+        model_host[b3 + GC_BODY_IDX_QUAT_Y] = Scalar[gpu_dtype](
+            0.70710678
+        )  # sin(π/4)
         model_host[b3 + GC_BODY_IDX_QUAT_Z] = Scalar[gpu_dtype](0.0)
-        model_host[b3 + GC_BODY_IDX_QUAT_W] = Scalar[gpu_dtype](0.70710678)  # cos(π/4)
+        model_host[b3 + GC_BODY_IDX_QUAT_W] = Scalar[gpu_dtype](
+            0.70710678
+        )  # cos(π/4)
         model_host[b3 + GC_BODY_IDX_PARENT] = Scalar[gpu_dtype](2)  # Leg
-        model_host[b3 + GC_BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](GC_GEOM_CAPSULE)
+        model_host[b3 + GC_BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](
+            GC_GEOM_CAPSULE
+        )
         model_host[b3 + GC_BODY_IDX_RADIUS] = foot_radius
         model_host[b3 + GC_BODY_IDX_HALF_LENGTH] = foot_half_length
 
@@ -1174,14 +1616,20 @@ struct HopperGC[DTYPE: DType = DType.float64](
         model_host[j0 + GC_JOINT_IDX_TYPE] = Scalar[gpu_dtype](GC_JNT_SLIDE)
         model_host[j0 + GC_JOINT_IDX_BODY_ID] = Scalar[gpu_dtype](0)
         model_host[j0 + GC_JOINT_IDX_QPOS_ADR] = Scalar[gpu_dtype](0)  # qpos[0]
-        model_host[j0 + GC_JOINT_IDX_DOF_ADR] = Scalar[gpu_dtype](0)   # qvel[0]
+        model_host[j0 + GC_JOINT_IDX_DOF_ADR] = Scalar[gpu_dtype](0)  # qvel[0]
         model_host[j0 + GC_JOINT_IDX_POS_X] = Scalar[gpu_dtype](0.0)
         model_host[j0 + GC_JOINT_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
         model_host[j0 + GC_JOINT_IDX_POS_Z] = Scalar[gpu_dtype](0.0)
         model_host[j0 + GC_JOINT_IDX_AXIS_X] = Scalar[gpu_dtype](1.0)
         model_host[j0 + GC_JOINT_IDX_AXIS_Y] = Scalar[gpu_dtype](0.0)
         model_host[j0 + GC_JOINT_IDX_AXIS_Z] = Scalar[gpu_dtype](0.0)
-        model_host[j0 + GC_JOINT_IDX_TAU_LIMIT] = Scalar[gpu_dtype](0.0)  # Not actuated
+        model_host[j0 + GC_JOINT_IDX_TAU_LIMIT] = Scalar[gpu_dtype](
+            0.0
+        )  # Not actuated
+        model_host[j0 + GC_JOINT_IDX_RANGE_MIN] = Scalar[gpu_dtype](
+            -1e10
+        )  # Unlimited
+        model_host[j0 + GC_JOINT_IDX_RANGE_MAX] = Scalar[gpu_dtype](1e10)
 
         # =================================================================
         # Joint 1: RootZ - Slide joint, Z-axis translation (body 0)
@@ -1190,14 +1638,20 @@ struct HopperGC[DTYPE: DType = DType.float64](
         model_host[j1 + GC_JOINT_IDX_TYPE] = Scalar[gpu_dtype](GC_JNT_SLIDE)
         model_host[j1 + GC_JOINT_IDX_BODY_ID] = Scalar[gpu_dtype](0)
         model_host[j1 + GC_JOINT_IDX_QPOS_ADR] = Scalar[gpu_dtype](1)  # qpos[1]
-        model_host[j1 + GC_JOINT_IDX_DOF_ADR] = Scalar[gpu_dtype](1)   # qvel[1]
+        model_host[j1 + GC_JOINT_IDX_DOF_ADR] = Scalar[gpu_dtype](1)  # qvel[1]
         model_host[j1 + GC_JOINT_IDX_POS_X] = Scalar[gpu_dtype](0.0)
         model_host[j1 + GC_JOINT_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
         model_host[j1 + GC_JOINT_IDX_POS_Z] = Scalar[gpu_dtype](0.0)
         model_host[j1 + GC_JOINT_IDX_AXIS_X] = Scalar[gpu_dtype](0.0)
         model_host[j1 + GC_JOINT_IDX_AXIS_Y] = Scalar[gpu_dtype](0.0)
         model_host[j1 + GC_JOINT_IDX_AXIS_Z] = Scalar[gpu_dtype](1.0)
-        model_host[j1 + GC_JOINT_IDX_TAU_LIMIT] = Scalar[gpu_dtype](0.0)  # Not actuated
+        model_host[j1 + GC_JOINT_IDX_TAU_LIMIT] = Scalar[gpu_dtype](
+            0.0
+        )  # Not actuated
+        model_host[j1 + GC_JOINT_IDX_RANGE_MIN] = Scalar[gpu_dtype](
+            -1e10
+        )  # Unlimited
+        model_host[j1 + GC_JOINT_IDX_RANGE_MAX] = Scalar[gpu_dtype](1e10)
 
         # =================================================================
         # Joint 2: RootY - Hinge joint, Y-axis rotation (body 0)
@@ -1206,77 +1660,186 @@ struct HopperGC[DTYPE: DType = DType.float64](
         model_host[j2 + GC_JOINT_IDX_TYPE] = Scalar[gpu_dtype](GC_JNT_HINGE)
         model_host[j2 + GC_JOINT_IDX_BODY_ID] = Scalar[gpu_dtype](0)
         model_host[j2 + GC_JOINT_IDX_QPOS_ADR] = Scalar[gpu_dtype](2)  # qpos[2]
-        model_host[j2 + GC_JOINT_IDX_DOF_ADR] = Scalar[gpu_dtype](2)   # qvel[2]
+        model_host[j2 + GC_JOINT_IDX_DOF_ADR] = Scalar[gpu_dtype](2)  # qvel[2]
         model_host[j2 + GC_JOINT_IDX_POS_X] = Scalar[gpu_dtype](0.0)
         model_host[j2 + GC_JOINT_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
         model_host[j2 + GC_JOINT_IDX_POS_Z] = Scalar[gpu_dtype](0.0)
         model_host[j2 + GC_JOINT_IDX_AXIS_X] = Scalar[gpu_dtype](0.0)
         model_host[j2 + GC_JOINT_IDX_AXIS_Y] = Scalar[gpu_dtype](1.0)
         model_host[j2 + GC_JOINT_IDX_AXIS_Z] = Scalar[gpu_dtype](0.0)
-        model_host[j2 + GC_JOINT_IDX_TAU_LIMIT] = Scalar[gpu_dtype](0.0)  # Not actuated
+        model_host[j2 + GC_JOINT_IDX_TAU_LIMIT] = Scalar[gpu_dtype](
+            0.0
+        )  # Not actuated
+        model_host[j2 + GC_JOINT_IDX_RANGE_MIN] = Scalar[gpu_dtype](
+            -1e10
+        )  # Unlimited (torso pitch)
+        model_host[j2 + GC_JOINT_IDX_RANGE_MAX] = Scalar[gpu_dtype](1e10)
 
         # =================================================================
         # Joint 3: Thigh - Hinge joint, Y-axis rotation (body 1)
+        # Joint attaches at bottom of torso: (0, 0, -torso_half_length)
+        # MuJoCo: range="-150 0" degrees = -2.618 to 0 radians
         # =================================================================
         var j3 = gc_model_joint_offset[HopperGC.NUM_BODIES](3)
         model_host[j3 + GC_JOINT_IDX_TYPE] = Scalar[gpu_dtype](GC_JNT_HINGE)
         model_host[j3 + GC_JOINT_IDX_BODY_ID] = Scalar[gpu_dtype](1)
         model_host[j3 + GC_JOINT_IDX_QPOS_ADR] = Scalar[gpu_dtype](3)  # qpos[3]
-        model_host[j3 + GC_JOINT_IDX_DOF_ADR] = Scalar[gpu_dtype](3)   # qvel[3]
+        model_host[j3 + GC_JOINT_IDX_DOF_ADR] = Scalar[gpu_dtype](3)  # qvel[3]
         model_host[j3 + GC_JOINT_IDX_POS_X] = Scalar[gpu_dtype](0.0)
         model_host[j3 + GC_JOINT_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
-        model_host[j3 + GC_JOINT_IDX_POS_Z] = Scalar[gpu_dtype](0.0)
+        model_host[j3 + GC_JOINT_IDX_POS_Z] = -torso_half_length
         model_host[j3 + GC_JOINT_IDX_AXIS_X] = Scalar[gpu_dtype](0.0)
         model_host[j3 + GC_JOINT_IDX_AXIS_Y] = Scalar[gpu_dtype](1.0)
         model_host[j3 + GC_JOINT_IDX_AXIS_Z] = Scalar[gpu_dtype](0.0)
-        model_host[j3 + GC_JOINT_IDX_TAU_LIMIT] = Scalar[gpu_dtype](200.0)  # Actuated
+        model_host[j3 + GC_JOINT_IDX_TAU_LIMIT] = Scalar[gpu_dtype](
+            200.0
+        )  # Actuated
+        # MuJoCo thigh_joint: range="-150 0" degrees = -2.618 to 0 radians
+        model_host[j3 + GC_JOINT_IDX_RANGE_MIN] = Scalar[gpu_dtype](-2.618)
+        model_host[j3 + GC_JOINT_IDX_RANGE_MAX] = Scalar[gpu_dtype](0.0)
 
         # =================================================================
         # Joint 4: Leg - Hinge joint, Y-axis rotation (body 2)
+        # Joint attaches at bottom of thigh: (0, 0, -thigh_half_length)
+        # MuJoCo: range="-150 0" degrees = -2.618 to 0 radians
         # =================================================================
         var j4 = gc_model_joint_offset[HopperGC.NUM_BODIES](4)
         model_host[j4 + GC_JOINT_IDX_TYPE] = Scalar[gpu_dtype](GC_JNT_HINGE)
         model_host[j4 + GC_JOINT_IDX_BODY_ID] = Scalar[gpu_dtype](2)
         model_host[j4 + GC_JOINT_IDX_QPOS_ADR] = Scalar[gpu_dtype](4)  # qpos[4]
-        model_host[j4 + GC_JOINT_IDX_DOF_ADR] = Scalar[gpu_dtype](4)   # qvel[4]
+        model_host[j4 + GC_JOINT_IDX_DOF_ADR] = Scalar[gpu_dtype](4)  # qvel[4]
         model_host[j4 + GC_JOINT_IDX_POS_X] = Scalar[gpu_dtype](0.0)
         model_host[j4 + GC_JOINT_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
-        model_host[j4 + GC_JOINT_IDX_POS_Z] = Scalar[gpu_dtype](0.0)
+        model_host[j4 + GC_JOINT_IDX_POS_Z] = -thigh_half_length
         model_host[j4 + GC_JOINT_IDX_AXIS_X] = Scalar[gpu_dtype](0.0)
         model_host[j4 + GC_JOINT_IDX_AXIS_Y] = Scalar[gpu_dtype](1.0)
         model_host[j4 + GC_JOINT_IDX_AXIS_Z] = Scalar[gpu_dtype](0.0)
-        model_host[j4 + GC_JOINT_IDX_TAU_LIMIT] = Scalar[gpu_dtype](200.0)  # Actuated
+        model_host[j4 + GC_JOINT_IDX_TAU_LIMIT] = Scalar[gpu_dtype](
+            200.0
+        )  # Actuated
+        # MuJoCo leg_joint: range="-150 0" degrees = -2.618 to 0 radians
+        model_host[j4 + GC_JOINT_IDX_RANGE_MIN] = Scalar[gpu_dtype](-2.618)
+        model_host[j4 + GC_JOINT_IDX_RANGE_MAX] = Scalar[gpu_dtype](0.0)
 
         # =================================================================
         # Joint 5: Foot - Hinge joint, Y-axis rotation (body 3)
+        # Joint attaches at bottom of leg: (0, 0, -leg_half_length)
+        # MuJoCo: range="-45 45" degrees = -0.785 to 0.785 radians
         # =================================================================
         var j5 = gc_model_joint_offset[HopperGC.NUM_BODIES](5)
         model_host[j5 + GC_JOINT_IDX_TYPE] = Scalar[gpu_dtype](GC_JNT_HINGE)
         model_host[j5 + GC_JOINT_IDX_BODY_ID] = Scalar[gpu_dtype](3)
         model_host[j5 + GC_JOINT_IDX_QPOS_ADR] = Scalar[gpu_dtype](5)  # qpos[5]
-        model_host[j5 + GC_JOINT_IDX_DOF_ADR] = Scalar[gpu_dtype](5)   # qvel[5]
+        model_host[j5 + GC_JOINT_IDX_DOF_ADR] = Scalar[gpu_dtype](5)  # qvel[5]
         model_host[j5 + GC_JOINT_IDX_POS_X] = Scalar[gpu_dtype](0.0)
         model_host[j5 + GC_JOINT_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
-        model_host[j5 + GC_JOINT_IDX_POS_Z] = Scalar[gpu_dtype](0.0)
+        model_host[j5 + GC_JOINT_IDX_POS_Z] = -leg_half_length
         model_host[j5 + GC_JOINT_IDX_AXIS_X] = Scalar[gpu_dtype](0.0)
         model_host[j5 + GC_JOINT_IDX_AXIS_Y] = Scalar[gpu_dtype](1.0)
         model_host[j5 + GC_JOINT_IDX_AXIS_Z] = Scalar[gpu_dtype](0.0)
-        model_host[j5 + GC_JOINT_IDX_TAU_LIMIT] = Scalar[gpu_dtype](200.0)  # Actuated
+        model_host[j5 + GC_JOINT_IDX_TAU_LIMIT] = Scalar[gpu_dtype](
+            200.0
+        )  # Actuated
+        # MuJoCo foot_joint: range="-45 45" degrees = -0.785 to 0.785 radians
+        model_host[j5 + GC_JOINT_IDX_RANGE_MIN] = Scalar[gpu_dtype](-0.785)
+        model_host[j5 + GC_JOINT_IDX_RANGE_MAX] = Scalar[gpu_dtype](0.785)
 
         # =================================================================
         # Model Metadata
         # =================================================================
-        var meta = gc_model_metadata_offset[HopperGC.NUM_BODIES, HopperGC.NUM_JOINTS]()
-        model_host[meta + GC_MODEL_META_IDX_NBODY] = Scalar[gpu_dtype](HopperGC.NUM_BODIES)
-        model_host[meta + GC_MODEL_META_IDX_NJOINT] = Scalar[gpu_dtype](HopperGC.NUM_JOINTS)
+        var meta = gc_model_metadata_offset[
+            HopperGC.NUM_BODIES, HopperGC.NUM_JOINTS
+        ]()
+        model_host[meta + GC_MODEL_META_IDX_NBODY] = Scalar[gpu_dtype](
+            HopperGC.NUM_BODIES
+        )
+        model_host[meta + GC_MODEL_META_IDX_NJOINT] = Scalar[gpu_dtype](
+            HopperGC.NUM_JOINTS
+        )
         model_host[meta + GC_MODEL_META_IDX_GRAVITY_X] = Scalar[gpu_dtype](0.0)
         model_host[meta + GC_MODEL_META_IDX_GRAVITY_Y] = Scalar[gpu_dtype](0.0)
-        model_host[meta + GC_MODEL_META_IDX_GRAVITY_Z] = Scalar[gpu_dtype](-9.81)
+        model_host[meta + GC_MODEL_META_IDX_GRAVITY_Z] = Scalar[gpu_dtype](
+            -9.81
+        )
         model_host[meta + GC_MODEL_META_IDX_TIMESTEP] = Scalar[gpu_dtype](0.002)
         model_host[meta + GC_MODEL_META_IDX_GROUND_Z] = Scalar[gpu_dtype](0.0)
         model_host[meta + GC_MODEL_META_IDX_FRICTION] = Scalar[gpu_dtype](0.5)
 
+        # =================================================================
+        # Curriculum Parameters (initialize to MuJoCo defaults)
+        # =================================================================
+        from physics3d_v2.gpu.constants import (
+            gc_model_curriculum_offset,
+            GC_CURRICULUM_IDX_MIN_HEIGHT,
+            GC_CURRICULUM_IDX_MAX_PITCH,
+        )
+
+        var curr = gc_model_curriculum_offset[
+            HopperGC.NUM_BODIES, HopperGC.NUM_JOINTS
+        ]()
+        # Initialize to MuJoCo defaults (strict bounds)
+        model_host[curr + GC_CURRICULUM_IDX_MIN_HEIGHT] = Scalar[gpu_dtype](0.7)
+        model_host[curr + GC_CURRICULUM_IDX_MAX_PITCH] = Scalar[gpu_dtype](0.2)
+
         # Copy to GPU
+        ctx.enqueue_copy(model_buf, model_host.unsafe_ptr())
+
+    @staticmethod
+    fn init_model_gpu_with_curriculum(
+        ctx: DeviceContext,
+        mut model_buf: DeviceBuffer[gpu_dtype],
+        min_height: Scalar[gpu_dtype],
+        max_pitch: Scalar[gpu_dtype],
+    ) raises:
+        """Initialize model buffer with specified curriculum parameters.
+
+        Use this instead of _init_model_gpu when you want to set custom
+        curriculum bounds (for curriculum learning).
+
+        Args:
+            ctx: GPU device context.
+            model_buf: Model buffer to initialize.
+            min_height: Minimum torso height for health check (e.g., 0.3 for lenient, 0.7 for strict).
+            max_pitch: Maximum torso pitch angle for health check (e.g., 1.0 for lenient, 0.2 for strict).
+
+        Example:
+            # In training loop:
+            var progress = Float32(iteration) / Float32(total_iterations)
+            var scheduler = HopperCurriculum()
+            var params = scheduler.get_params(progress)
+            var model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
+            HopperGC.init_model_gpu_with_curriculum(ctx, model_buf, params[0], params[1])
+        """
+        # First, initialize with default model data
+        Self._init_model_gpu(ctx, model_buf)
+
+        # Then update curriculum params
+        from physics3d_v2.gpu.constants import (
+            gc_model_curriculum_offset,
+            GC_CURRICULUM_IDX_MIN_HEIGHT,
+            GC_CURRICULUM_IDX_MAX_PITCH,
+        )
+
+        comptime MODEL_SIZE = gc_model_size[
+            HopperGC.NUM_BODIES, HopperGC.NUM_JOINTS
+        ]()
+        comptime CURRICULUM_OFF = gc_model_curriculum_offset[
+            HopperGC.NUM_BODIES, HopperGC.NUM_JOINTS
+        ]()
+
+        # Copy model buffer to host, update curriculum, copy back
+        var model_host = List[Scalar[gpu_dtype]](capacity=MODEL_SIZE)
+        for _ in range(MODEL_SIZE):
+            model_host.append(Scalar[gpu_dtype](0.0))
+
+        ctx.enqueue_copy(model_host.unsafe_ptr(), model_buf)
+        ctx.synchronize()
+
+        # Update curriculum params
+        model_host[CURRICULUM_OFF + GC_CURRICULUM_IDX_MIN_HEIGHT] = min_height
+        model_host[CURRICULUM_OFF + GC_CURRICULUM_IDX_MAX_PITCH] = max_pitch
+
+        # Copy back to GPU
         ctx.enqueue_copy(model_buf, model_host.unsafe_ptr())
 
     @staticmethod
@@ -1304,10 +1867,14 @@ struct HopperGC[DTYPE: DType = DType.float64](
         @always_inline
         fn apply_actions_kernel(
             states: LayoutTensor[
-                gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                MutAnyOrigin,
             ],
             actions: LayoutTensor[
-                gpu_dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, ACTION_DIM),
+                MutAnyOrigin,
             ],
         ):
             var env = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -1350,19 +1917,35 @@ struct HopperGC[DTYPE: DType = DType.float64](
     fn _extract_obs_rewards_dones_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
+        MODEL_SIZE: Int,
         OBS_DIM: Int,
+        MAX_STEPS: Int = 1000,
     ](
         ctx: DeviceContext,
         mut states_buf: DeviceBuffer[gpu_dtype],
+        model_buf: DeviceBuffer[gpu_dtype],
         actions_buf: DeviceBuffer[gpu_dtype],
         mut rewards_buf: DeviceBuffer[gpu_dtype],
         mut dones_buf: DeviceBuffer[gpu_dtype],
         mut obs_buf: DeviceBuffer[gpu_dtype],
     ) raises:
-        """Extract observations, compute rewards, check termination."""
+        """Extract observations, compute rewards, check termination.
+
+        Args:
+            MAX_STEPS: Maximum steps per episode before truncation (default 1000).
+        """
+        from physics3d_v2.gpu.constants import (
+            gc_model_curriculum_offset,
+            GC_CURRICULUM_IDX_MIN_HEIGHT,
+            GC_CURRICULUM_IDX_MAX_PITCH,
+        )
+
         var states = LayoutTensor[
             gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
         ](states_buf.unsafe_ptr())
+        var model = LayoutTensor[
+            gpu_dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+        ](model_buf.unsafe_ptr())
         var actions = LayoutTensor[
             gpu_dtype, Layout.row_major(BATCH_SIZE, 3), MutAnyOrigin
         ](actions_buf.unsafe_ptr())
@@ -1377,18 +1960,28 @@ struct HopperGC[DTYPE: DType = DType.float64](
         ](obs_buf.unsafe_ptr())
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
-        comptime MIN_HEIGHT: Scalar[gpu_dtype] = 0.7
-        comptime MAX_PITCH: Scalar[gpu_dtype] = 0.2
-        comptime CTRL_COST_WEIGHT: Scalar[gpu_dtype] = 0.05  # Increased to penalize sliding
+        comptime CTRL_COST_WEIGHT: Scalar[gpu_dtype] = 0.001
         comptime HEALTHY_REWARD: Scalar[gpu_dtype] = 1.0
         comptime TORQUE_LIMIT: Scalar[gpu_dtype] = 200.0
         comptime QPOS_OFF = gc_qpos_offset[HopperGC.NQ, HopperGC.NV]()
         comptime QVEL_OFF = gc_qvel_offset[HopperGC.NQ, HopperGC.NV]()
+        comptime META_OFF = gc_metadata_offset[
+            HopperGC.NQ, HopperGC.NV, HopperGC.NUM_BODIES, HopperGC.MAX_CONTACTS
+        ]()
+        # Curriculum offset in model buffer
+        comptime CURRICULUM_OFF = gc_model_curriculum_offset[
+            HopperGC.NUM_BODIES, HopperGC.NUM_JOINTS
+        ]()
 
         @always_inline
         fn extract_kernel(
             states: LayoutTensor[
-                gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                MutAnyOrigin,
+            ],
+            model: LayoutTensor[
+                gpu_dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
             ],
             actions: LayoutTensor[
                 gpu_dtype, Layout.row_major(BATCH_SIZE, 3), MutAnyOrigin
@@ -1407,17 +2000,36 @@ struct HopperGC[DTYPE: DType = DType.float64](
             if env >= BATCH_SIZE:
                 return
 
+            # Read curriculum parameters from model buffer
+            var min_height = model[
+                0, CURRICULUM_OFF + GC_CURRICULUM_IDX_MIN_HEIGHT
+            ]
+            var max_pitch = model[
+                0, CURRICULUM_OFF + GC_CURRICULUM_IDX_MAX_PITCH
+            ]
+
+            # Increment step counter
+            var step_count = Int(
+                rebind[Scalar[gpu_dtype]](
+                    states[env, META_OFF + GC_META_IDX_STEP_COUNT]
+                )
+            )
+            step_count += 1
+            states[env, META_OFF + GC_META_IDX_STEP_COUNT] = Scalar[gpu_dtype](
+                step_count
+            )
+
             # Extract qpos (skip qpos[0] = rootx for observation)
-            var z_pos = states[env, QPOS_OFF + 1]      # rootz
-            var y_angle = states[env, QPOS_OFF + 2]    # rooty
+            var z_pos = states[env, QPOS_OFF + 1]  # rootz
+            var y_angle = states[env, QPOS_OFF + 2]  # rooty
             var thigh_angle = states[env, QPOS_OFF + 3]
             var leg_angle = states[env, QPOS_OFF + 4]
             var foot_angle = states[env, QPOS_OFF + 5]
 
             # Extract qvel
-            var x_vel = states[env, QVEL_OFF + 0]      # rootx vel
-            var z_vel = states[env, QVEL_OFF + 1]      # rootz vel
-            var y_angvel = states[env, QVEL_OFF + 2]   # rooty vel
+            var x_vel = states[env, QVEL_OFF + 0]  # rootx vel
+            var z_vel = states[env, QVEL_OFF + 1]  # rootz vel
+            var y_angvel = states[env, QVEL_OFF + 2]  # rooty vel
             var thigh_angvel = states[env, QVEL_OFF + 3]
             var leg_angvel = states[env, QVEL_OFF + 4]
             var foot_angvel = states[env, QVEL_OFF + 5]
@@ -1435,11 +2047,11 @@ struct HopperGC[DTYPE: DType = DType.float64](
             obs[env, 9] = leg_angvel
             obs[env, 10] = foot_angvel
 
-            # Check health
+            # Check health using curriculum bounds (read from model buffer)
             var is_healthy = True
-            if z_pos < MIN_HEIGHT:
+            if z_pos < min_height:
                 is_healthy = False
-            if y_angle > MAX_PITCH or y_angle < -MAX_PITCH:
+            if y_angle > max_pitch or y_angle < -max_pitch:
                 is_healthy = False
 
             # Compute reward (clamp actions to [-1,1] to match CPU behavior)
@@ -1458,31 +2070,42 @@ struct HopperGC[DTYPE: DType = DType.float64](
                 foot_action = Scalar[gpu_dtype](1.0)
             elif foot_action < Scalar[gpu_dtype](-1.0):
                 foot_action = Scalar[gpu_dtype](-1.0)
-            var thigh_torque = thigh_action * TORQUE_LIMIT
-            var leg_torque = leg_action * TORQUE_LIMIT
-            var foot_torque = foot_action * TORQUE_LIMIT
+            # Torques are used for physics (computed elsewhere)
+            # But for reward, we use NORMALIZED actions [-1,1] (MuJoCo compatible)
 
+            # Control cost using NORMALIZED actions (not torques!)
+            # MuJoCo default: ctrl_cost_weight = 0.001
             var ctrl_cost = CTRL_COST_WEIGHT * (
-                thigh_torque * thigh_torque +
-                leg_torque * leg_torque +
-                foot_torque * foot_torque
+                thigh_action * thigh_action
+                + leg_action * leg_action
+                + foot_action * foot_action
             )
 
             var healthy_reward = HEALTHY_REWARD
             if not is_healthy:
                 healthy_reward = Scalar[gpu_dtype](0.0)
 
+            # Reward = forward_velocity + healthy_reward - ctrl_cost
             var reward = x_vel + healthy_reward - ctrl_cost
             rewards[env] = reward
 
-            # Set done flag
-            if is_healthy:
-                dones[env] = Scalar[gpu_dtype](0.0)
-            else:
+            # Determine termination
+            var terminated = False
+            var truncated = step_count >= MAX_STEPS
+
+            @parameter
+            if Self.TERMINATE_ON_UNHEALTHY:
+                terminated = not is_healthy
+
+            # Set done flag (terminated OR truncated)
+            if terminated or truncated:
                 dones[env] = Scalar[gpu_dtype](1.0)
+            else:
+                dones[env] = Scalar[gpu_dtype](0.0)
 
         ctx.enqueue_function[extract_kernel, extract_kernel](
             states,
+            model,
             actions,
             rewards,
             dones,
@@ -1543,12 +2166,22 @@ struct HopperGC[DTYPE: DType = DType.float64](
             return Scalar[gpu_dtype](val * 2.0 - 1.0) * RESET_NOISE_SCALE
 
         # Reset qpos with noise
-        states[env, QPOS_OFF + 0] = Scalar[gpu_dtype](0.0) + to_noise(rand_qpos[0])  # rootx
+        states[env, QPOS_OFF + 0] = Scalar[gpu_dtype](0.0) + to_noise(
+            rand_qpos[0]
+        )  # rootx
         states[env, QPOS_OFF + 1] = torso_z + to_noise(rand_qpos[1])  # rootz
-        states[env, QPOS_OFF + 2] = Scalar[gpu_dtype](0.0) + to_noise(rand_qpos[2])  # rooty
-        states[env, QPOS_OFF + 3] = Scalar[gpu_dtype](0.0) + to_noise(rand_qpos[3])  # thigh
-        states[env, QPOS_OFF + 4] = Scalar[gpu_dtype](0.0) + to_noise(rand_qpos2[0])  # leg
-        states[env, QPOS_OFF + 5] = Scalar[gpu_dtype](0.0) + to_noise(rand_qpos2[1])  # foot
+        states[env, QPOS_OFF + 2] = Scalar[gpu_dtype](0.0) + to_noise(
+            rand_qpos[2]
+        )  # rooty
+        states[env, QPOS_OFF + 3] = Scalar[gpu_dtype](0.0) + to_noise(
+            rand_qpos[3]
+        )  # thigh
+        states[env, QPOS_OFF + 4] = Scalar[gpu_dtype](0.0) + to_noise(
+            rand_qpos2[0]
+        )  # leg
+        states[env, QPOS_OFF + 5] = Scalar[gpu_dtype](0.0) + to_noise(
+            rand_qpos2[1]
+        )  # foot
 
         # Reset qvel with noise
         states[env, QVEL_OFF + 0] = to_noise(rand_qvel[0])  # rootx vel
@@ -1562,3 +2195,9 @@ struct HopperGC[DTYPE: DType = DType.float64](
         for i in range(HopperGC.NV):
             states[env, QACC_OFF + i] = Scalar[gpu_dtype](0.0)
             states[env, QFRC_OFF + i] = Scalar[gpu_dtype](0.0)
+
+        # Reset step counter to 0
+        comptime META_OFF = gc_metadata_offset[
+            HopperGC.NQ, HopperGC.NV, HopperGC.NUM_BODIES, HopperGC.MAX_CONTACTS
+        ]()
+        states[env, META_OFF + GC_META_IDX_STEP_COUNT] = Scalar[gpu_dtype](0.0)

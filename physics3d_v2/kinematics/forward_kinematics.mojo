@@ -196,16 +196,22 @@ fn forward_kinematics[
             var local_py = model.body_pos[body * 3 + 1]
             var local_pz = model.body_pos[body * 3 + 2]
 
-            # Get parent's half length for offset decomposition
-            var parent_half: Scalar[DTYPE] = Scalar[DTYPE](0)
-            if parent >= 0:
-                parent_half = model.body_half_length[parent]
+            # Find the first joint for this body to get anchor position
+            var joint_pos_x: Scalar[DTYPE] = Scalar[DTYPE](0)
+            var joint_pos_y: Scalar[DTYPE] = Scalar[DTYPE](0)
+            var joint_pos_z: Scalar[DTYPE] = Scalar[DTYPE](0)
+            for j in range(model.num_joints):
+                if model.joints[j].body_id == body:
+                    joint_pos_x = model.joints[j].pos_x
+                    joint_pos_y = model.joints[j].pos_y
+                    joint_pos_z = model.joints[j].pos_z
+                    break
 
-            # Compute offset from parent center to joint pivot (in parent frame)
-            # For vertical capsules, this is (0, 0, -parent_half)
+            # Compute offset from parent center to joint pivot (in world frame)
+            # Uses the joint's pos attribute which specifies anchor in parent frame
             var to_joint = quat_rotate(
                 parent_qx, parent_qy, parent_qz, parent_qw,
-                Scalar[DTYPE](0), Scalar[DTYPE](0), -parent_half
+                joint_pos_x, joint_pos_y, joint_pos_z
             )
 
             # Start at joint pivot position (parent + offset to joint)
@@ -319,11 +325,10 @@ fn forward_kinematics[
                     cur_qw = new_quat[3]
 
             # After all joints, apply offset from joint pivot to body center
-            # This is body.pos minus the to_joint offset, rotated by accumulated orientation
-            # from_joint_local = (local_px, local_py, local_pz + parent_half)
+            # This is body.pos - joint.pos, rotated by accumulated orientation
             var from_joint = quat_rotate(
                 cur_qx, cur_qy, cur_qz, cur_qw,
-                local_px, local_py, local_pz + parent_half
+                local_px - joint_pos_x, local_py - joint_pos_y, local_pz - joint_pos_z
             )
             px = cur_px + from_joint[0]
             py = cur_py + from_joint[1]
@@ -625,17 +630,24 @@ fn forward_kinematics_gpu[
             #   - Body center is below joint by body_half
             #   - Total offset = parent_half + body_half
 
-            # Get parent's half length for offset decomposition
-            var parent_half: Scalar[DTYPE] = 0
-            if parent >= 0:
-                var parent_body_off = gc_model_body_offset(parent)
-                parent_half = rebind[Scalar[DTYPE]](model[0, parent_body_off + GC_BODY_IDX_HALF_LENGTH])
+            # Find the first joint for this body to get anchor position
+            var joint_pos_x: Scalar[DTYPE] = 0
+            var joint_pos_y: Scalar[DTYPE] = 0
+            var joint_pos_z: Scalar[DTYPE] = 0
+            for j in range(num_joints):
+                var jnt_off = gc_model_joint_offset[NBODY](j)
+                var jnt_body = Int(rebind[Scalar[DTYPE]](model[0, jnt_off + GC_JOINT_IDX_BODY_ID]))
+                if jnt_body == body:
+                    joint_pos_x = rebind[Scalar[DTYPE]](model[0, jnt_off + GC_JOINT_IDX_POS_X])
+                    joint_pos_y = rebind[Scalar[DTYPE]](model[0, jnt_off + GC_JOINT_IDX_POS_Y])
+                    joint_pos_z = rebind[Scalar[DTYPE]](model[0, jnt_off + GC_JOINT_IDX_POS_Z])
+                    break
 
-            # Compute offset from parent center to joint pivot (in parent frame)
-            # For vertical capsules, this is (0, 0, -parent_half)
+            # Compute offset from parent center to joint pivot (in world frame)
+            # Uses the joint's pos attribute which specifies anchor in parent frame
             var to_joint = gpu_quat_rotate(
                 cur_qx, cur_qy, cur_qz, cur_qw,
-                Scalar[DTYPE](0), Scalar[DTYPE](0), -parent_half
+                joint_pos_x, joint_pos_y, joint_pos_z
             )
 
             # Start at joint pivot position (parent + offset to joint)
@@ -738,11 +750,10 @@ fn forward_kinematics_gpu[
                     cur_qw = new_quat[3]
 
             # After all joints, apply offset from joint pivot to body center
-            # This is body_pos minus the to_joint offset, rotated by accumulated orientation
-            # from_joint_local = (body_pos_x, body_pos_y, body_pos_z + parent_half)
+            # This is body_pos - joint_pos, rotated by accumulated orientation
             var from_joint = gpu_quat_rotate(
                 cur_qx, cur_qy, cur_qz, cur_qw,
-                body_pos_x, body_pos_y, body_pos_z + parent_half
+                body_pos_x - joint_pos_x, body_pos_y - joint_pos_y, body_pos_z - joint_pos_z
             )
             var world_px = cur_px + from_joint[0]
             var world_py = cur_py + from_joint[1]

@@ -371,9 +371,9 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
 
         # Generate random initial velocities (matching GPU version)
         # Use PhiloxRandom with seed and counter for reproducible but varying resets
-        var combined_seed = Int(self.rng_seed) * 2654435761 + Int(
-            self.rng_counter
-        ) * 12345
+        var combined_seed = (
+            Int(self.rng_seed) * 2654435761 + Int(self.rng_counter) * 12345
+        )
         var rng = PhiloxRandom(seed=combined_seed, offset=0)
         var rand_vals = rng.step_uniform()
         self.rng_counter += 1  # Increment for next reset
@@ -391,7 +391,8 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
 
         # Initialize torso: horizontal at initial height
         var torso_off = (
-            Self.BODIES_OFFSET + HC3DConstantsCPU.BODY_TORSO * BODY_STATE_SIZE_3D
+            Self.BODIES_OFFSET
+            + HC3DConstantsCPU.BODY_TORSO * BODY_STATE_SIZE_3D
         )
         self.state[torso_off + IDX_PX] = Scalar[dtype](0.0)
         self.state[torso_off + IDX_PY] = Scalar[dtype](0.0)
@@ -465,14 +466,16 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         self.state[bthigh_off + IDX_VZ] = init_vz
 
         var bshin_off = (
-            Self.BODIES_OFFSET + HC3DConstantsCPU.BODY_BSHIN * BODY_STATE_SIZE_3D
+            Self.BODIES_OFFSET
+            + HC3DConstantsCPU.BODY_BSHIN * BODY_STATE_SIZE_3D
         )
         self.state[bshin_off + IDX_VX] = init_vx
         self.state[bshin_off + IDX_VY] = init_vy
         self.state[bshin_off + IDX_VZ] = init_vz
 
         var bfoot_off = (
-            Self.BODIES_OFFSET + HC3DConstantsCPU.BODY_BFOOT * BODY_STATE_SIZE_3D
+            Self.BODIES_OFFSET
+            + HC3DConstantsCPU.BODY_BFOOT * BODY_STATE_SIZE_3D
         )
         self.state[bfoot_off + IDX_VX] = init_vx
         self.state[bfoot_off + IDX_VY] = init_vy
@@ -488,14 +491,16 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         self.state[fthigh_off + IDX_VZ] = init_vz
 
         var fshin_off = (
-            Self.BODIES_OFFSET + HC3DConstantsCPU.BODY_FSHIN * BODY_STATE_SIZE_3D
+            Self.BODIES_OFFSET
+            + HC3DConstantsCPU.BODY_FSHIN * BODY_STATE_SIZE_3D
         )
         self.state[fshin_off + IDX_VX] = init_vx
         self.state[fshin_off + IDX_VY] = init_vy
         self.state[fshin_off + IDX_VZ] = init_vz
 
         var ffoot_off = (
-            Self.BODIES_OFFSET + HC3DConstantsCPU.BODY_FFOOT * BODY_STATE_SIZE_3D
+            Self.BODIES_OFFSET
+            + HC3DConstantsCPU.BODY_FFOOT * BODY_STATE_SIZE_3D
         )
         self.state[ffoot_off + IDX_VX] = init_vx
         self.state[ffoot_off + IDX_VY] = init_vy
@@ -514,9 +519,9 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         self.state[
             Self.METADATA_OFFSET + HC3DConstantsCPU.META_STEP_COUNT
         ] = Scalar[dtype](0)
-        self.state[Self.METADATA_OFFSET + HC3DConstantsCPU.META_PREV_X] = Scalar[
-            dtype
-        ](0)
+        self.state[
+            Self.METADATA_OFFSET + HC3DConstantsCPU.META_PREV_X
+        ] = Scalar[dtype](0)
         self.state[Self.METADATA_OFFSET + HC3DConstantsCPU.META_DONE] = Scalar[
             dtype
         ](0)
@@ -759,7 +764,9 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         )
 
         # Set joint count
-        self.state[HC3DConstantsCPU.Layout.JOINT_COUNT_OFFSET] = Scalar[dtype](6)
+        self.state[HC3DConstantsCPU.Layout.JOINT_COUNT_OFFSET] = Scalar[dtype](
+            6
+        )
 
     fn _update_cached_state(mut self):
         """Update cached state from physics state."""
@@ -770,7 +777,8 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         ](self.state.unsafe_ptr())
 
         var torso_off = (
-            Self.BODIES_OFFSET + HC3DConstantsCPU.BODY_TORSO * BODY_STATE_SIZE_3D
+            Self.BODIES_OFFSET
+            + HC3DConstantsCPU.BODY_TORSO * BODY_STATE_SIZE_3D
         )
 
         # Torso z position
@@ -863,7 +871,9 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
             )
 
             # Read per-joint max torque from joint data
-            var max_torque = rebind[Scalar[dtype]](self.state[joint_off + JOINT3D_MAX_FORCE])
+            var max_torque = rebind[Scalar[dtype]](
+                self.state[joint_off + JOINT3D_MAX_FORCE]
+            )
 
             var torque = clamp(
                 actions[j], Scalar[dtype](-1.0), Scalar[dtype](1.0)
@@ -971,7 +981,9 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         ](self.state.unsafe_ptr())
 
         var dt = Scalar[dtype](HC3DConstantsCPU.DT)
-        var baumgarte = Scalar[dtype](HC3DConstantsCPU.BAUMGARTE)  # Position correction factor
+        var baumgarte = Scalar[dtype](
+            HC3DConstantsCPU.BAUMGARTE
+        )  # Position correction factor
         var slop = Scalar[dtype](HC3DConstantsCPU.SLOP)  # Penetration allowance
 
         for _ in range(HC3DConstantsCPU.FRAME_SKIP):
@@ -1028,8 +1040,9 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
             self._handle_ground_collisions_cpu()
 
     fn _clamp_velocities_cpu(mut self):
-        """Clamp linear and angular velocities to prevent numerical explosion."""
-        var max_linear_vel = Float64(10.0)   # m/s - conservative
+        """Clamp linear and angular velocities to prevent numerical explosion.
+        """
+        var max_linear_vel = Float64(10.0)  # m/s - conservative
         var max_angular_vel = Float64(20.0)  # rad/s - conservative
 
         for body in range(Self.NUM_BODIES):
@@ -1067,12 +1080,18 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         var eps = Float64(1e-10)
 
         for j in range(HC3DConstantsCPU.NUM_JOINTS):
-            var joint_off = HC3DConstantsCPU.JOINTS_OFFSET + j * JOINT_DATA_SIZE_3D
+            var joint_off = (
+                HC3DConstantsCPU.JOINTS_OFFSET + j * JOINT_DATA_SIZE_3D
+            )
             var body_a = Int(self.state[joint_off + JOINT3D_BODY_A])
             var body_b = Int(self.state[joint_off + JOINT3D_BODY_B])
 
-            var body_a_off = HC3DConstantsCPU.BODIES_OFFSET + body_a * BODY_STATE_SIZE_3D
-            var body_b_off = HC3DConstantsCPU.BODIES_OFFSET + body_b * BODY_STATE_SIZE_3D
+            var body_a_off = (
+                HC3DConstantsCPU.BODIES_OFFSET + body_a * BODY_STATE_SIZE_3D
+            )
+            var body_b_off = (
+                HC3DConstantsCPU.BODIES_OFFSET + body_b * BODY_STATE_SIZE_3D
+            )
 
             # Get current positions and orientations
             var pa_x = Float64(self.state[body_a_off + IDX_PX])
@@ -1092,12 +1111,24 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
             var qb_z = Float64(self.state[body_b_off + IDX_QZ])
 
             # Get local anchors
-            var anchor_a_local_x = Float64(self.state[joint_off + JOINT3D_ANCHOR_AX])
-            var anchor_a_local_y = Float64(self.state[joint_off + JOINT3D_ANCHOR_AY])
-            var anchor_a_local_z = Float64(self.state[joint_off + JOINT3D_ANCHOR_AZ])
-            var anchor_b_local_x = Float64(self.state[joint_off + JOINT3D_ANCHOR_BX])
-            var anchor_b_local_y = Float64(self.state[joint_off + JOINT3D_ANCHOR_BY])
-            var anchor_b_local_z = Float64(self.state[joint_off + JOINT3D_ANCHOR_BZ])
+            var anchor_a_local_x = Float64(
+                self.state[joint_off + JOINT3D_ANCHOR_AX]
+            )
+            var anchor_a_local_y = Float64(
+                self.state[joint_off + JOINT3D_ANCHOR_AY]
+            )
+            var anchor_a_local_z = Float64(
+                self.state[joint_off + JOINT3D_ANCHOR_AZ]
+            )
+            var anchor_b_local_x = Float64(
+                self.state[joint_off + JOINT3D_ANCHOR_BX]
+            )
+            var anchor_b_local_y = Float64(
+                self.state[joint_off + JOINT3D_ANCHOR_BY]
+            )
+            var anchor_b_local_z = Float64(
+                self.state[joint_off + JOINT3D_ANCHOR_BZ]
+            )
 
             # Rotate anchors to world frame
             var ca_x = qa_y * anchor_a_local_z - qa_z * anchor_a_local_y
@@ -1145,13 +1176,25 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
             var ratio_b = inv_mb / total_inv_mass
 
             # Apply position corrections (move towards each other)
-            self.state[body_a_off + IDX_PX] = Scalar[dtype](pa_x + ratio_a * err_x)
-            self.state[body_a_off + IDX_PY] = Scalar[dtype](pa_y + ratio_a * err_y)
-            self.state[body_a_off + IDX_PZ] = Scalar[dtype](pa_z + ratio_a * err_z)
+            self.state[body_a_off + IDX_PX] = Scalar[dtype](
+                pa_x + ratio_a * err_x
+            )
+            self.state[body_a_off + IDX_PY] = Scalar[dtype](
+                pa_y + ratio_a * err_y
+            )
+            self.state[body_a_off + IDX_PZ] = Scalar[dtype](
+                pa_z + ratio_a * err_z
+            )
 
-            self.state[body_b_off + IDX_PX] = Scalar[dtype](pb_x - ratio_b * err_x)
-            self.state[body_b_off + IDX_PY] = Scalar[dtype](pb_y - ratio_b * err_y)
-            self.state[body_b_off + IDX_PZ] = Scalar[dtype](pb_z - ratio_b * err_z)
+            self.state[body_b_off + IDX_PX] = Scalar[dtype](
+                pb_x - ratio_b * err_x
+            )
+            self.state[body_b_off + IDX_PY] = Scalar[dtype](
+                pb_y - ratio_b * err_y
+            )
+            self.state[body_b_off + IDX_PZ] = Scalar[dtype](
+                pb_z - ratio_b * err_z
+            )
 
     fn _handle_ground_collisions_cpu(mut self):
         """Handle ground collisions for all bodies (capsule-aware)."""
@@ -1198,7 +1241,8 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
     fn _compute_reward(mut self, actions: List[Scalar[dtype]]) -> Scalar[dtype]:
         """Compute reward based on forward velocity and control cost."""
         var torso_off = (
-            Self.BODIES_OFFSET + HC3DConstantsCPU.BODY_TORSO * BODY_STATE_SIZE_3D
+            Self.BODIES_OFFSET
+            + HC3DConstantsCPU.BODY_TORSO * BODY_STATE_SIZE_3D
         )
         var x_pos = self.state[torso_off + IDX_PX]
 
@@ -1504,6 +1548,7 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         mut dones_buf: DeviceBuffer[dtype],
         mut obs_buf: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
+        curriculum_values: List[Scalar[dtype]] = [],
     ) raises:
         """Batched GPU step function.
 
@@ -1578,7 +1623,9 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         @always_inline
         fn reset_wrapper(
             states: LayoutTensor[
-                dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL), MutAnyOrigin
+                dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
+                MutAnyOrigin,
             ],
             seed: Scalar[dtype],
         ):
@@ -1620,7 +1667,9 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         @always_inline
         fn selective_reset_wrapper(
             states: LayoutTensor[
-                dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL), MutAnyOrigin
+                dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
+                MutAnyOrigin,
             ],
             dones: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
@@ -1669,12 +1718,21 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         var init_x = Scalar[dtype](0.0)
         var init_y = Scalar[dtype](0.0)
         var init_z = Scalar[dtype](HC3DConstantsGPU.INIT_HEIGHT)
-        var init_vx = (rand_vals[0] * Scalar[dtype](2.0) - Scalar[dtype](1.0)) * Scalar[dtype](0.1)
-        var init_vy = (rand_vals[1] * Scalar[dtype](2.0) - Scalar[dtype](1.0)) * Scalar[dtype](0.1)
-        var init_vz = (rand_vals[2] * Scalar[dtype](2.0) - Scalar[dtype](1.0)) * Scalar[dtype](0.1)
+        var init_vx = (
+            rand_vals[0] * Scalar[dtype](2.0) - Scalar[dtype](1.0)
+        ) * Scalar[dtype](0.1)
+        var init_vy = (
+            rand_vals[1] * Scalar[dtype](2.0) - Scalar[dtype](1.0)
+        ) * Scalar[dtype](0.1)
+        var init_vz = (
+            rand_vals[2] * Scalar[dtype](2.0) - Scalar[dtype](1.0)
+        ) * Scalar[dtype](0.1)
 
         # Initialize torso - horizontal at init height
-        var torso_off = HC3DConstantsGPU.BODIES_OFFSET + HC3DConstantsGPU.BODY_TORSO * BODY_STATE_SIZE_3D
+        var torso_off = (
+            HC3DConstantsGPU.BODIES_OFFSET
+            + HC3DConstantsGPU.BODY_TORSO * BODY_STATE_SIZE_3D
+        )
         states[env, torso_off + IDX_PX] = init_x
         states[env, torso_off + IDX_PY] = init_y
         states[env, torso_off + IDX_PZ] = init_z
@@ -1700,7 +1758,9 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         states[env, torso_off + IDX_MASS] = torso_mass
         states[env, torso_off + IDX_INV_MASS] = Scalar[dtype](1.0) / torso_mass
         # Approximate inertia for horizontal capsule
-        var torso_i = torso_mass * Scalar[dtype](HC3DConstantsGPU.TORSO_LENGTH * HC3DConstantsGPU.TORSO_LENGTH / 12.0)
+        var torso_i = torso_mass * Scalar[dtype](
+            HC3DConstantsGPU.TORSO_LENGTH * HC3DConstantsGPU.TORSO_LENGTH / 12.0
+        )
         states[env, torso_off + IDX_IXX] = torso_i
         states[env, torso_off + IDX_IYY] = torso_i
         states[env, torso_off + IDX_IZZ] = torso_i
@@ -1717,10 +1777,14 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
 
         # Initialize metadata
         var meta_off = HC3DConstantsGPU.METADATA_OFFSET
-        states[env, meta_off + HC3DConstantsGPU.META_STEP_COUNT] = Scalar[dtype](0)
+        states[env, meta_off + HC3DConstantsGPU.META_STEP_COUNT] = Scalar[
+            dtype
+        ](0)
         states[env, meta_off + HC3DConstantsGPU.META_PREV_X] = init_x
         states[env, meta_off + HC3DConstantsGPU.META_DONE] = Scalar[dtype](0)
-        states[env, meta_off + HC3DConstantsGPU.META_TOTAL_REWARD] = Scalar[dtype](0)
+        states[env, meta_off + HC3DConstantsGPU.META_TOTAL_REWARD] = Scalar[
+            dtype
+        ](0)
 
         # Write initial observation
         HalfCheetah3D._compute_obs_gpu[BATCH_SIZE, STATE_SIZE](states, env)
@@ -1743,14 +1807,23 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         init_vz: Scalar[dtype],
     ):
         """Initialize leg bodies on GPU."""
-        var back_hip_x = init_x - Scalar[dtype](HC3DConstantsGPU.TORSO_LENGTH / 2)
-        var front_hip_x = init_x + Scalar[dtype](HC3DConstantsGPU.TORSO_LENGTH / 2)
+        var back_hip_x = init_x - Scalar[dtype](
+            HC3DConstantsGPU.TORSO_LENGTH / 2
+        )
+        var front_hip_x = init_x + Scalar[dtype](
+            HC3DConstantsGPU.TORSO_LENGTH / 2
+        )
 
         # Back thigh - hangs down from hip
-        var bthigh_off = HC3DConstantsGPU.BODIES_OFFSET + HC3DConstantsGPU.BODY_BTHIGH * BODY_STATE_SIZE_3D
+        var bthigh_off = (
+            HC3DConstantsGPU.BODIES_OFFSET
+            + HC3DConstantsGPU.BODY_BTHIGH * BODY_STATE_SIZE_3D
+        )
         states[env, bthigh_off + IDX_PX] = back_hip_x
         states[env, bthigh_off + IDX_PY] = init_y
-        states[env, bthigh_off + IDX_PZ] = init_z - Scalar[dtype](HC3DConstantsGPU.BTHIGH_LENGTH / 2)
+        states[env, bthigh_off + IDX_PZ] = init_z - Scalar[dtype](
+            HC3DConstantsGPU.BTHIGH_LENGTH / 2
+        )
         states[env, bthigh_off + IDX_QW] = Scalar[dtype](1.0)
         states[env, bthigh_off + IDX_QX] = Scalar[dtype](0.0)
         states[env, bthigh_off + IDX_QY] = Scalar[dtype](0.0)
@@ -1769,8 +1842,14 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         states[env, bthigh_off + IDX_TZ] = Scalar[dtype](0.0)
         var bthigh_mass = Scalar[dtype](HC3DConstantsGPU.BTHIGH_MASS)
         states[env, bthigh_off + IDX_MASS] = bthigh_mass
-        states[env, bthigh_off + IDX_INV_MASS] = Scalar[dtype](1.0) / bthigh_mass
-        var bthigh_i = bthigh_mass * Scalar[dtype](HC3DConstantsGPU.BTHIGH_LENGTH * HC3DConstantsGPU.BTHIGH_LENGTH / 12.0)
+        states[env, bthigh_off + IDX_INV_MASS] = (
+            Scalar[dtype](1.0) / bthigh_mass
+        )
+        var bthigh_i = bthigh_mass * Scalar[dtype](
+            HC3DConstantsGPU.BTHIGH_LENGTH
+            * HC3DConstantsGPU.BTHIGH_LENGTH
+            / 12.0
+        )
         states[env, bthigh_off + IDX_IXX] = bthigh_i
         states[env, bthigh_off + IDX_IYY] = bthigh_i
         states[env, bthigh_off + IDX_IZZ] = bthigh_i
@@ -1778,10 +1857,15 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         states[env, bthigh_off + IDX_SHAPE_3D] = Scalar[dtype](1)
 
         # Back shin
-        var bshin_off = HC3DConstantsGPU.BODIES_OFFSET + HC3DConstantsGPU.BODY_BSHIN * BODY_STATE_SIZE_3D
+        var bshin_off = (
+            HC3DConstantsGPU.BODIES_OFFSET
+            + HC3DConstantsGPU.BODY_BSHIN * BODY_STATE_SIZE_3D
+        )
         states[env, bshin_off + IDX_PX] = back_hip_x
         states[env, bshin_off + IDX_PY] = init_y
-        states[env, bshin_off + IDX_PZ] = init_z - Scalar[dtype](HC3DConstantsGPU.BTHIGH_LENGTH + HC3DConstantsGPU.BSHIN_LENGTH / 2)
+        states[env, bshin_off + IDX_PZ] = init_z - Scalar[dtype](
+            HC3DConstantsGPU.BTHIGH_LENGTH + HC3DConstantsGPU.BSHIN_LENGTH / 2
+        )
         states[env, bshin_off + IDX_QW] = Scalar[dtype](1.0)
         states[env, bshin_off + IDX_QX] = Scalar[dtype](0.0)
         states[env, bshin_off + IDX_QY] = Scalar[dtype](0.0)
@@ -1801,7 +1885,9 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         var bshin_mass = Scalar[dtype](HC3DConstantsGPU.BSHIN_MASS)
         states[env, bshin_off + IDX_MASS] = bshin_mass
         states[env, bshin_off + IDX_INV_MASS] = Scalar[dtype](1.0) / bshin_mass
-        var bshin_i = bshin_mass * Scalar[dtype](HC3DConstantsGPU.BSHIN_LENGTH * HC3DConstantsGPU.BSHIN_LENGTH / 12.0)
+        var bshin_i = bshin_mass * Scalar[dtype](
+            HC3DConstantsGPU.BSHIN_LENGTH * HC3DConstantsGPU.BSHIN_LENGTH / 12.0
+        )
         states[env, bshin_off + IDX_IXX] = bshin_i
         states[env, bshin_off + IDX_IYY] = bshin_i
         states[env, bshin_off + IDX_IZZ] = bshin_i
@@ -1809,10 +1895,17 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         states[env, bshin_off + IDX_SHAPE_3D] = Scalar[dtype](2)
 
         # Back foot
-        var bfoot_off = HC3DConstantsGPU.BODIES_OFFSET + HC3DConstantsGPU.BODY_BFOOT * BODY_STATE_SIZE_3D
+        var bfoot_off = (
+            HC3DConstantsGPU.BODIES_OFFSET
+            + HC3DConstantsGPU.BODY_BFOOT * BODY_STATE_SIZE_3D
+        )
         states[env, bfoot_off + IDX_PX] = back_hip_x
         states[env, bfoot_off + IDX_PY] = init_y
-        states[env, bfoot_off + IDX_PZ] = init_z - Scalar[dtype](HC3DConstantsGPU.BTHIGH_LENGTH + HC3DConstantsGPU.BSHIN_LENGTH + HC3DConstantsGPU.BFOOT_LENGTH / 2)
+        states[env, bfoot_off + IDX_PZ] = init_z - Scalar[dtype](
+            HC3DConstantsGPU.BTHIGH_LENGTH
+            + HC3DConstantsGPU.BSHIN_LENGTH
+            + HC3DConstantsGPU.BFOOT_LENGTH / 2
+        )
         states[env, bfoot_off + IDX_QW] = Scalar[dtype](1.0)
         states[env, bfoot_off + IDX_QX] = Scalar[dtype](0.0)
         states[env, bfoot_off + IDX_QY] = Scalar[dtype](0.0)
@@ -1832,7 +1925,9 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         var bfoot_mass = Scalar[dtype](HC3DConstantsGPU.BFOOT_MASS)
         states[env, bfoot_off + IDX_MASS] = bfoot_mass
         states[env, bfoot_off + IDX_INV_MASS] = Scalar[dtype](1.0) / bfoot_mass
-        var bfoot_i = bfoot_mass * Scalar[dtype](HC3DConstantsGPU.BFOOT_LENGTH * HC3DConstantsGPU.BFOOT_LENGTH / 12.0)
+        var bfoot_i = bfoot_mass * Scalar[dtype](
+            HC3DConstantsGPU.BFOOT_LENGTH * HC3DConstantsGPU.BFOOT_LENGTH / 12.0
+        )
         states[env, bfoot_off + IDX_IXX] = bfoot_i
         states[env, bfoot_off + IDX_IYY] = bfoot_i
         states[env, bfoot_off + IDX_IZZ] = bfoot_i
@@ -1840,10 +1935,15 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         states[env, bfoot_off + IDX_SHAPE_3D] = Scalar[dtype](3)
 
         # Front thigh
-        var fthigh_off = HC3DConstantsGPU.BODIES_OFFSET + HC3DConstantsGPU.BODY_FTHIGH * BODY_STATE_SIZE_3D
+        var fthigh_off = (
+            HC3DConstantsGPU.BODIES_OFFSET
+            + HC3DConstantsGPU.BODY_FTHIGH * BODY_STATE_SIZE_3D
+        )
         states[env, fthigh_off + IDX_PX] = front_hip_x
         states[env, fthigh_off + IDX_PY] = init_y
-        states[env, fthigh_off + IDX_PZ] = init_z - Scalar[dtype](HC3DConstantsGPU.FTHIGH_LENGTH / 2)
+        states[env, fthigh_off + IDX_PZ] = init_z - Scalar[dtype](
+            HC3DConstantsGPU.FTHIGH_LENGTH / 2
+        )
         states[env, fthigh_off + IDX_QW] = Scalar[dtype](1.0)
         states[env, fthigh_off + IDX_QX] = Scalar[dtype](0.0)
         states[env, fthigh_off + IDX_QY] = Scalar[dtype](0.0)
@@ -1862,8 +1962,14 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         states[env, fthigh_off + IDX_TZ] = Scalar[dtype](0.0)
         var fthigh_mass = Scalar[dtype](HC3DConstantsGPU.FTHIGH_MASS)
         states[env, fthigh_off + IDX_MASS] = fthigh_mass
-        states[env, fthigh_off + IDX_INV_MASS] = Scalar[dtype](1.0) / fthigh_mass
-        var fthigh_i = fthigh_mass * Scalar[dtype](HC3DConstantsGPU.FTHIGH_LENGTH * HC3DConstantsGPU.FTHIGH_LENGTH / 12.0)
+        states[env, fthigh_off + IDX_INV_MASS] = (
+            Scalar[dtype](1.0) / fthigh_mass
+        )
+        var fthigh_i = fthigh_mass * Scalar[dtype](
+            HC3DConstantsGPU.FTHIGH_LENGTH
+            * HC3DConstantsGPU.FTHIGH_LENGTH
+            / 12.0
+        )
         states[env, fthigh_off + IDX_IXX] = fthigh_i
         states[env, fthigh_off + IDX_IYY] = fthigh_i
         states[env, fthigh_off + IDX_IZZ] = fthigh_i
@@ -1871,10 +1977,15 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         states[env, fthigh_off + IDX_SHAPE_3D] = Scalar[dtype](4)
 
         # Front shin
-        var fshin_off = HC3DConstantsGPU.BODIES_OFFSET + HC3DConstantsGPU.BODY_FSHIN * BODY_STATE_SIZE_3D
+        var fshin_off = (
+            HC3DConstantsGPU.BODIES_OFFSET
+            + HC3DConstantsGPU.BODY_FSHIN * BODY_STATE_SIZE_3D
+        )
         states[env, fshin_off + IDX_PX] = front_hip_x
         states[env, fshin_off + IDX_PY] = init_y
-        states[env, fshin_off + IDX_PZ] = init_z - Scalar[dtype](HC3DConstantsGPU.FTHIGH_LENGTH + HC3DConstantsGPU.FSHIN_LENGTH / 2)
+        states[env, fshin_off + IDX_PZ] = init_z - Scalar[dtype](
+            HC3DConstantsGPU.FTHIGH_LENGTH + HC3DConstantsGPU.FSHIN_LENGTH / 2
+        )
         states[env, fshin_off + IDX_QW] = Scalar[dtype](1.0)
         states[env, fshin_off + IDX_QX] = Scalar[dtype](0.0)
         states[env, fshin_off + IDX_QY] = Scalar[dtype](0.0)
@@ -1894,7 +2005,9 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         var fshin_mass = Scalar[dtype](HC3DConstantsGPU.FSHIN_MASS)
         states[env, fshin_off + IDX_MASS] = fshin_mass
         states[env, fshin_off + IDX_INV_MASS] = Scalar[dtype](1.0) / fshin_mass
-        var fshin_i = fshin_mass * Scalar[dtype](HC3DConstantsGPU.FSHIN_LENGTH * HC3DConstantsGPU.FSHIN_LENGTH / 12.0)
+        var fshin_i = fshin_mass * Scalar[dtype](
+            HC3DConstantsGPU.FSHIN_LENGTH * HC3DConstantsGPU.FSHIN_LENGTH / 12.0
+        )
         states[env, fshin_off + IDX_IXX] = fshin_i
         states[env, fshin_off + IDX_IYY] = fshin_i
         states[env, fshin_off + IDX_IZZ] = fshin_i
@@ -1902,10 +2015,17 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         states[env, fshin_off + IDX_SHAPE_3D] = Scalar[dtype](5)
 
         # Front foot
-        var ffoot_off = HC3DConstantsGPU.BODIES_OFFSET + HC3DConstantsGPU.BODY_FFOOT * BODY_STATE_SIZE_3D
+        var ffoot_off = (
+            HC3DConstantsGPU.BODIES_OFFSET
+            + HC3DConstantsGPU.BODY_FFOOT * BODY_STATE_SIZE_3D
+        )
         states[env, ffoot_off + IDX_PX] = front_hip_x
         states[env, ffoot_off + IDX_PY] = init_y
-        states[env, ffoot_off + IDX_PZ] = init_z - Scalar[dtype](HC3DConstantsGPU.FTHIGH_LENGTH + HC3DConstantsGPU.FSHIN_LENGTH + HC3DConstantsGPU.FFOOT_LENGTH / 2)
+        states[env, ffoot_off + IDX_PZ] = init_z - Scalar[dtype](
+            HC3DConstantsGPU.FTHIGH_LENGTH
+            + HC3DConstantsGPU.FSHIN_LENGTH
+            + HC3DConstantsGPU.FFOOT_LENGTH / 2
+        )
         states[env, ffoot_off + IDX_QW] = Scalar[dtype](1.0)
         states[env, ffoot_off + IDX_QX] = Scalar[dtype](0.0)
         states[env, ffoot_off + IDX_QY] = Scalar[dtype](0.0)
@@ -1925,7 +2045,9 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         var ffoot_mass = Scalar[dtype](HC3DConstantsGPU.FFOOT_MASS)
         states[env, ffoot_off + IDX_MASS] = ffoot_mass
         states[env, ffoot_off + IDX_INV_MASS] = Scalar[dtype](1.0) / ffoot_mass
-        var ffoot_i = ffoot_mass * Scalar[dtype](HC3DConstantsGPU.FFOOT_LENGTH * HC3DConstantsGPU.FFOOT_LENGTH / 12.0)
+        var ffoot_i = ffoot_mass * Scalar[dtype](
+            HC3DConstantsGPU.FFOOT_LENGTH * HC3DConstantsGPU.FFOOT_LENGTH / 12.0
+        )
         states[env, ffoot_off + IDX_IXX] = ffoot_i
         states[env, ffoot_off + IDX_IYY] = ffoot_i
         states[env, ffoot_off + IDX_IZZ] = ffoot_i
@@ -1949,23 +2071,43 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         # Joint 0: Back hip (Torso -> BThigh)
         var j0_off = HC3DConstantsGPU.JOINTS_OFFSET + 0 * JOINT_DATA_SIZE_3D
         states[env, j0_off + JOINT3D_TYPE] = Scalar[dtype](JOINT_HINGE)
-        states[env, j0_off + JOINT3D_BODY_A] = Scalar[dtype](HC3DConstantsGPU.BODY_TORSO)
-        states[env, j0_off + JOINT3D_BODY_B] = Scalar[dtype](HC3DConstantsGPU.BODY_BTHIGH)
-        states[env, j0_off + JOINT3D_ANCHOR_AX] = Scalar[dtype](-HC3DConstantsGPU.TORSO_LENGTH / 2)
+        states[env, j0_off + JOINT3D_BODY_A] = Scalar[dtype](
+            HC3DConstantsGPU.BODY_TORSO
+        )
+        states[env, j0_off + JOINT3D_BODY_B] = Scalar[dtype](
+            HC3DConstantsGPU.BODY_BTHIGH
+        )
+        states[env, j0_off + JOINT3D_ANCHOR_AX] = Scalar[dtype](
+            -HC3DConstantsGPU.TORSO_LENGTH / 2
+        )
         states[env, j0_off + JOINT3D_ANCHOR_AY] = Scalar[dtype](0.0)
         states[env, j0_off + JOINT3D_ANCHOR_AZ] = Scalar[dtype](0.0)
         states[env, j0_off + JOINT3D_ANCHOR_BX] = Scalar[dtype](0.0)
         states[env, j0_off + JOINT3D_ANCHOR_BY] = Scalar[dtype](0.0)
-        states[env, j0_off + JOINT3D_ANCHOR_BZ] = Scalar[dtype](HC3DConstantsGPU.BTHIGH_LENGTH / 2)
+        states[env, j0_off + JOINT3D_ANCHOR_BZ] = Scalar[dtype](
+            HC3DConstantsGPU.BTHIGH_LENGTH / 2
+        )
         states[env, j0_off + JOINT3D_AXIS_X] = Scalar[dtype](0.0)
         states[env, j0_off + JOINT3D_AXIS_Y] = Scalar[dtype](1.0)
         states[env, j0_off + JOINT3D_AXIS_Z] = Scalar[dtype](0.0)
-        states[env, j0_off + JOINT3D_LOWER_LIMIT] = Scalar[dtype](HC3DConstantsGPU.BTHIGH_LIMIT_LOW)
-        states[env, j0_off + JOINT3D_UPPER_LIMIT] = Scalar[dtype](HC3DConstantsGPU.BTHIGH_LIMIT_HIGH)
-        states[env, j0_off + JOINT3D_MOTOR_KP] = Scalar[dtype](HC3DConstantsGPU.MOTOR_KP)
-        states[env, j0_off + JOINT3D_MOTOR_KD] = Scalar[dtype](HC3DConstantsGPU.MOTOR_KD)
-        states[env, j0_off + JOINT3D_MAX_FORCE] = Scalar[dtype](HC3DConstantsGPU.GEAR_RATIO)
-        states[env, j0_off + JOINT3D_FLAGS] = Scalar[dtype](JOINT3D_FLAG_LIMIT_ENABLED | JOINT3D_FLAG_MOTOR_ENABLED)
+        states[env, j0_off + JOINT3D_LOWER_LIMIT] = Scalar[dtype](
+            HC3DConstantsGPU.BTHIGH_LIMIT_LOW
+        )
+        states[env, j0_off + JOINT3D_UPPER_LIMIT] = Scalar[dtype](
+            HC3DConstantsGPU.BTHIGH_LIMIT_HIGH
+        )
+        states[env, j0_off + JOINT3D_MOTOR_KP] = Scalar[dtype](
+            HC3DConstantsGPU.MOTOR_KP
+        )
+        states[env, j0_off + JOINT3D_MOTOR_KD] = Scalar[dtype](
+            HC3DConstantsGPU.MOTOR_KD
+        )
+        states[env, j0_off + JOINT3D_MAX_FORCE] = Scalar[dtype](
+            HC3DConstantsGPU.GEAR_RATIO
+        )
+        states[env, j0_off + JOINT3D_FLAGS] = Scalar[dtype](
+            JOINT3D_FLAG_LIMIT_ENABLED | JOINT3D_FLAG_MOTOR_ENABLED
+        )
         states[env, j0_off + JOINT3D_POSITION] = Scalar[dtype](0.0)
         states[env, j0_off + JOINT3D_VELOCITY] = Scalar[dtype](0.0)
         states[env, j0_off + JOINT3D_MOTOR_TARGET] = Scalar[dtype](0.0)
@@ -1977,23 +2119,43 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         # Joint 1: Back knee (BThigh -> BShin)
         var j1_off = HC3DConstantsGPU.JOINTS_OFFSET + 1 * JOINT_DATA_SIZE_3D
         states[env, j1_off + JOINT3D_TYPE] = Scalar[dtype](JOINT_HINGE)
-        states[env, j1_off + JOINT3D_BODY_A] = Scalar[dtype](HC3DConstantsGPU.BODY_BTHIGH)
-        states[env, j1_off + JOINT3D_BODY_B] = Scalar[dtype](HC3DConstantsGPU.BODY_BSHIN)
+        states[env, j1_off + JOINT3D_BODY_A] = Scalar[dtype](
+            HC3DConstantsGPU.BODY_BTHIGH
+        )
+        states[env, j1_off + JOINT3D_BODY_B] = Scalar[dtype](
+            HC3DConstantsGPU.BODY_BSHIN
+        )
         states[env, j1_off + JOINT3D_ANCHOR_AX] = Scalar[dtype](0.0)
         states[env, j1_off + JOINT3D_ANCHOR_AY] = Scalar[dtype](0.0)
-        states[env, j1_off + JOINT3D_ANCHOR_AZ] = Scalar[dtype](-HC3DConstantsGPU.BTHIGH_LENGTH / 2)
+        states[env, j1_off + JOINT3D_ANCHOR_AZ] = Scalar[dtype](
+            -HC3DConstantsGPU.BTHIGH_LENGTH / 2
+        )
         states[env, j1_off + JOINT3D_ANCHOR_BX] = Scalar[dtype](0.0)
         states[env, j1_off + JOINT3D_ANCHOR_BY] = Scalar[dtype](0.0)
-        states[env, j1_off + JOINT3D_ANCHOR_BZ] = Scalar[dtype](HC3DConstantsGPU.BSHIN_LENGTH / 2)
+        states[env, j1_off + JOINT3D_ANCHOR_BZ] = Scalar[dtype](
+            HC3DConstantsGPU.BSHIN_LENGTH / 2
+        )
         states[env, j1_off + JOINT3D_AXIS_X] = Scalar[dtype](0.0)
         states[env, j1_off + JOINT3D_AXIS_Y] = Scalar[dtype](1.0)
         states[env, j1_off + JOINT3D_AXIS_Z] = Scalar[dtype](0.0)
-        states[env, j1_off + JOINT3D_LOWER_LIMIT] = Scalar[dtype](HC3DConstantsGPU.BSHIN_LIMIT_LOW)
-        states[env, j1_off + JOINT3D_UPPER_LIMIT] = Scalar[dtype](HC3DConstantsGPU.BSHIN_LIMIT_HIGH)
-        states[env, j1_off + JOINT3D_MOTOR_KP] = Scalar[dtype](HC3DConstantsGPU.MOTOR_KP)
-        states[env, j1_off + JOINT3D_MOTOR_KD] = Scalar[dtype](HC3DConstantsGPU.MOTOR_KD)
-        states[env, j1_off + JOINT3D_MAX_FORCE] = Scalar[dtype](HC3DConstantsGPU.GEAR_RATIO)
-        states[env, j1_off + JOINT3D_FLAGS] = Scalar[dtype](JOINT3D_FLAG_LIMIT_ENABLED | JOINT3D_FLAG_MOTOR_ENABLED)
+        states[env, j1_off + JOINT3D_LOWER_LIMIT] = Scalar[dtype](
+            HC3DConstantsGPU.BSHIN_LIMIT_LOW
+        )
+        states[env, j1_off + JOINT3D_UPPER_LIMIT] = Scalar[dtype](
+            HC3DConstantsGPU.BSHIN_LIMIT_HIGH
+        )
+        states[env, j1_off + JOINT3D_MOTOR_KP] = Scalar[dtype](
+            HC3DConstantsGPU.MOTOR_KP
+        )
+        states[env, j1_off + JOINT3D_MOTOR_KD] = Scalar[dtype](
+            HC3DConstantsGPU.MOTOR_KD
+        )
+        states[env, j1_off + JOINT3D_MAX_FORCE] = Scalar[dtype](
+            HC3DConstantsGPU.GEAR_RATIO
+        )
+        states[env, j1_off + JOINT3D_FLAGS] = Scalar[dtype](
+            JOINT3D_FLAG_LIMIT_ENABLED | JOINT3D_FLAG_MOTOR_ENABLED
+        )
         states[env, j1_off + JOINT3D_POSITION] = Scalar[dtype](0.0)
         states[env, j1_off + JOINT3D_VELOCITY] = Scalar[dtype](0.0)
         states[env, j1_off + JOINT3D_MOTOR_TARGET] = Scalar[dtype](0.0)
@@ -2005,23 +2167,43 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         # Joint 2: Back ankle (BShin -> BFoot)
         var j2_off = HC3DConstantsGPU.JOINTS_OFFSET + 2 * JOINT_DATA_SIZE_3D
         states[env, j2_off + JOINT3D_TYPE] = Scalar[dtype](JOINT_HINGE)
-        states[env, j2_off + JOINT3D_BODY_A] = Scalar[dtype](HC3DConstantsGPU.BODY_BSHIN)
-        states[env, j2_off + JOINT3D_BODY_B] = Scalar[dtype](HC3DConstantsGPU.BODY_BFOOT)
+        states[env, j2_off + JOINT3D_BODY_A] = Scalar[dtype](
+            HC3DConstantsGPU.BODY_BSHIN
+        )
+        states[env, j2_off + JOINT3D_BODY_B] = Scalar[dtype](
+            HC3DConstantsGPU.BODY_BFOOT
+        )
         states[env, j2_off + JOINT3D_ANCHOR_AX] = Scalar[dtype](0.0)
         states[env, j2_off + JOINT3D_ANCHOR_AY] = Scalar[dtype](0.0)
-        states[env, j2_off + JOINT3D_ANCHOR_AZ] = Scalar[dtype](-HC3DConstantsGPU.BSHIN_LENGTH / 2)
+        states[env, j2_off + JOINT3D_ANCHOR_AZ] = Scalar[dtype](
+            -HC3DConstantsGPU.BSHIN_LENGTH / 2
+        )
         states[env, j2_off + JOINT3D_ANCHOR_BX] = Scalar[dtype](0.0)
         states[env, j2_off + JOINT3D_ANCHOR_BY] = Scalar[dtype](0.0)
-        states[env, j2_off + JOINT3D_ANCHOR_BZ] = Scalar[dtype](HC3DConstantsGPU.BFOOT_LENGTH / 2)
+        states[env, j2_off + JOINT3D_ANCHOR_BZ] = Scalar[dtype](
+            HC3DConstantsGPU.BFOOT_LENGTH / 2
+        )
         states[env, j2_off + JOINT3D_AXIS_X] = Scalar[dtype](0.0)
         states[env, j2_off + JOINT3D_AXIS_Y] = Scalar[dtype](1.0)
         states[env, j2_off + JOINT3D_AXIS_Z] = Scalar[dtype](0.0)
-        states[env, j2_off + JOINT3D_LOWER_LIMIT] = Scalar[dtype](HC3DConstantsGPU.BFOOT_LIMIT_LOW)
-        states[env, j2_off + JOINT3D_UPPER_LIMIT] = Scalar[dtype](HC3DConstantsGPU.BFOOT_LIMIT_HIGH)
-        states[env, j2_off + JOINT3D_MOTOR_KP] = Scalar[dtype](HC3DConstantsGPU.MOTOR_KP)
-        states[env, j2_off + JOINT3D_MOTOR_KD] = Scalar[dtype](HC3DConstantsGPU.MOTOR_KD)
-        states[env, j2_off + JOINT3D_MAX_FORCE] = Scalar[dtype](HC3DConstantsGPU.GEAR_RATIO)
-        states[env, j2_off + JOINT3D_FLAGS] = Scalar[dtype](JOINT3D_FLAG_LIMIT_ENABLED | JOINT3D_FLAG_MOTOR_ENABLED)
+        states[env, j2_off + JOINT3D_LOWER_LIMIT] = Scalar[dtype](
+            HC3DConstantsGPU.BFOOT_LIMIT_LOW
+        )
+        states[env, j2_off + JOINT3D_UPPER_LIMIT] = Scalar[dtype](
+            HC3DConstantsGPU.BFOOT_LIMIT_HIGH
+        )
+        states[env, j2_off + JOINT3D_MOTOR_KP] = Scalar[dtype](
+            HC3DConstantsGPU.MOTOR_KP
+        )
+        states[env, j2_off + JOINT3D_MOTOR_KD] = Scalar[dtype](
+            HC3DConstantsGPU.MOTOR_KD
+        )
+        states[env, j2_off + JOINT3D_MAX_FORCE] = Scalar[dtype](
+            HC3DConstantsGPU.GEAR_RATIO
+        )
+        states[env, j2_off + JOINT3D_FLAGS] = Scalar[dtype](
+            JOINT3D_FLAG_LIMIT_ENABLED | JOINT3D_FLAG_MOTOR_ENABLED
+        )
         states[env, j2_off + JOINT3D_POSITION] = Scalar[dtype](0.0)
         states[env, j2_off + JOINT3D_VELOCITY] = Scalar[dtype](0.0)
         states[env, j2_off + JOINT3D_MOTOR_TARGET] = Scalar[dtype](0.0)
@@ -2033,23 +2215,43 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         # Joint 3: Front hip (Torso -> FThigh)
         var j3_off = HC3DConstantsGPU.JOINTS_OFFSET + 3 * JOINT_DATA_SIZE_3D
         states[env, j3_off + JOINT3D_TYPE] = Scalar[dtype](JOINT_HINGE)
-        states[env, j3_off + JOINT3D_BODY_A] = Scalar[dtype](HC3DConstantsGPU.BODY_TORSO)
-        states[env, j3_off + JOINT3D_BODY_B] = Scalar[dtype](HC3DConstantsGPU.BODY_FTHIGH)
-        states[env, j3_off + JOINT3D_ANCHOR_AX] = Scalar[dtype](HC3DConstantsGPU.TORSO_LENGTH / 2)
+        states[env, j3_off + JOINT3D_BODY_A] = Scalar[dtype](
+            HC3DConstantsGPU.BODY_TORSO
+        )
+        states[env, j3_off + JOINT3D_BODY_B] = Scalar[dtype](
+            HC3DConstantsGPU.BODY_FTHIGH
+        )
+        states[env, j3_off + JOINT3D_ANCHOR_AX] = Scalar[dtype](
+            HC3DConstantsGPU.TORSO_LENGTH / 2
+        )
         states[env, j3_off + JOINT3D_ANCHOR_AY] = Scalar[dtype](0.0)
         states[env, j3_off + JOINT3D_ANCHOR_AZ] = Scalar[dtype](0.0)
         states[env, j3_off + JOINT3D_ANCHOR_BX] = Scalar[dtype](0.0)
         states[env, j3_off + JOINT3D_ANCHOR_BY] = Scalar[dtype](0.0)
-        states[env, j3_off + JOINT3D_ANCHOR_BZ] = Scalar[dtype](HC3DConstantsGPU.FTHIGH_LENGTH / 2)
+        states[env, j3_off + JOINT3D_ANCHOR_BZ] = Scalar[dtype](
+            HC3DConstantsGPU.FTHIGH_LENGTH / 2
+        )
         states[env, j3_off + JOINT3D_AXIS_X] = Scalar[dtype](0.0)
         states[env, j3_off + JOINT3D_AXIS_Y] = Scalar[dtype](1.0)
         states[env, j3_off + JOINT3D_AXIS_Z] = Scalar[dtype](0.0)
-        states[env, j3_off + JOINT3D_LOWER_LIMIT] = Scalar[dtype](HC3DConstantsGPU.FTHIGH_LIMIT_LOW)
-        states[env, j3_off + JOINT3D_UPPER_LIMIT] = Scalar[dtype](HC3DConstantsGPU.FTHIGH_LIMIT_HIGH)
-        states[env, j3_off + JOINT3D_MOTOR_KP] = Scalar[dtype](HC3DConstantsGPU.MOTOR_KP)
-        states[env, j3_off + JOINT3D_MOTOR_KD] = Scalar[dtype](HC3DConstantsGPU.MOTOR_KD)
-        states[env, j3_off + JOINT3D_MAX_FORCE] = Scalar[dtype](HC3DConstantsGPU.GEAR_RATIO)
-        states[env, j3_off + JOINT3D_FLAGS] = Scalar[dtype](JOINT3D_FLAG_LIMIT_ENABLED | JOINT3D_FLAG_MOTOR_ENABLED)
+        states[env, j3_off + JOINT3D_LOWER_LIMIT] = Scalar[dtype](
+            HC3DConstantsGPU.FTHIGH_LIMIT_LOW
+        )
+        states[env, j3_off + JOINT3D_UPPER_LIMIT] = Scalar[dtype](
+            HC3DConstantsGPU.FTHIGH_LIMIT_HIGH
+        )
+        states[env, j3_off + JOINT3D_MOTOR_KP] = Scalar[dtype](
+            HC3DConstantsGPU.MOTOR_KP
+        )
+        states[env, j3_off + JOINT3D_MOTOR_KD] = Scalar[dtype](
+            HC3DConstantsGPU.MOTOR_KD
+        )
+        states[env, j3_off + JOINT3D_MAX_FORCE] = Scalar[dtype](
+            HC3DConstantsGPU.GEAR_RATIO
+        )
+        states[env, j3_off + JOINT3D_FLAGS] = Scalar[dtype](
+            JOINT3D_FLAG_LIMIT_ENABLED | JOINT3D_FLAG_MOTOR_ENABLED
+        )
         states[env, j3_off + JOINT3D_POSITION] = Scalar[dtype](0.0)
         states[env, j3_off + JOINT3D_VELOCITY] = Scalar[dtype](0.0)
         states[env, j3_off + JOINT3D_MOTOR_TARGET] = Scalar[dtype](0.0)
@@ -2061,23 +2263,43 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         # Joint 4: Front knee (FThigh -> FShin)
         var j4_off = HC3DConstantsGPU.JOINTS_OFFSET + 4 * JOINT_DATA_SIZE_3D
         states[env, j4_off + JOINT3D_TYPE] = Scalar[dtype](JOINT_HINGE)
-        states[env, j4_off + JOINT3D_BODY_A] = Scalar[dtype](HC3DConstantsGPU.BODY_FTHIGH)
-        states[env, j4_off + JOINT3D_BODY_B] = Scalar[dtype](HC3DConstantsGPU.BODY_FSHIN)
+        states[env, j4_off + JOINT3D_BODY_A] = Scalar[dtype](
+            HC3DConstantsGPU.BODY_FTHIGH
+        )
+        states[env, j4_off + JOINT3D_BODY_B] = Scalar[dtype](
+            HC3DConstantsGPU.BODY_FSHIN
+        )
         states[env, j4_off + JOINT3D_ANCHOR_AX] = Scalar[dtype](0.0)
         states[env, j4_off + JOINT3D_ANCHOR_AY] = Scalar[dtype](0.0)
-        states[env, j4_off + JOINT3D_ANCHOR_AZ] = Scalar[dtype](-HC3DConstantsGPU.FTHIGH_LENGTH / 2)
+        states[env, j4_off + JOINT3D_ANCHOR_AZ] = Scalar[dtype](
+            -HC3DConstantsGPU.FTHIGH_LENGTH / 2
+        )
         states[env, j4_off + JOINT3D_ANCHOR_BX] = Scalar[dtype](0.0)
         states[env, j4_off + JOINT3D_ANCHOR_BY] = Scalar[dtype](0.0)
-        states[env, j4_off + JOINT3D_ANCHOR_BZ] = Scalar[dtype](HC3DConstantsGPU.FSHIN_LENGTH / 2)
+        states[env, j4_off + JOINT3D_ANCHOR_BZ] = Scalar[dtype](
+            HC3DConstantsGPU.FSHIN_LENGTH / 2
+        )
         states[env, j4_off + JOINT3D_AXIS_X] = Scalar[dtype](0.0)
         states[env, j4_off + JOINT3D_AXIS_Y] = Scalar[dtype](1.0)
         states[env, j4_off + JOINT3D_AXIS_Z] = Scalar[dtype](0.0)
-        states[env, j4_off + JOINT3D_LOWER_LIMIT] = Scalar[dtype](HC3DConstantsGPU.FSHIN_LIMIT_LOW)
-        states[env, j4_off + JOINT3D_UPPER_LIMIT] = Scalar[dtype](HC3DConstantsGPU.FSHIN_LIMIT_HIGH)
-        states[env, j4_off + JOINT3D_MOTOR_KP] = Scalar[dtype](HC3DConstantsGPU.MOTOR_KP)
-        states[env, j4_off + JOINT3D_MOTOR_KD] = Scalar[dtype](HC3DConstantsGPU.MOTOR_KD)
-        states[env, j4_off + JOINT3D_MAX_FORCE] = Scalar[dtype](HC3DConstantsGPU.GEAR_RATIO)
-        states[env, j4_off + JOINT3D_FLAGS] = Scalar[dtype](JOINT3D_FLAG_LIMIT_ENABLED | JOINT3D_FLAG_MOTOR_ENABLED)
+        states[env, j4_off + JOINT3D_LOWER_LIMIT] = Scalar[dtype](
+            HC3DConstantsGPU.FSHIN_LIMIT_LOW
+        )
+        states[env, j4_off + JOINT3D_UPPER_LIMIT] = Scalar[dtype](
+            HC3DConstantsGPU.FSHIN_LIMIT_HIGH
+        )
+        states[env, j4_off + JOINT3D_MOTOR_KP] = Scalar[dtype](
+            HC3DConstantsGPU.MOTOR_KP
+        )
+        states[env, j4_off + JOINT3D_MOTOR_KD] = Scalar[dtype](
+            HC3DConstantsGPU.MOTOR_KD
+        )
+        states[env, j4_off + JOINT3D_MAX_FORCE] = Scalar[dtype](
+            HC3DConstantsGPU.GEAR_RATIO
+        )
+        states[env, j4_off + JOINT3D_FLAGS] = Scalar[dtype](
+            JOINT3D_FLAG_LIMIT_ENABLED | JOINT3D_FLAG_MOTOR_ENABLED
+        )
         states[env, j4_off + JOINT3D_POSITION] = Scalar[dtype](0.0)
         states[env, j4_off + JOINT3D_VELOCITY] = Scalar[dtype](0.0)
         states[env, j4_off + JOINT3D_MOTOR_TARGET] = Scalar[dtype](0.0)
@@ -2089,23 +2311,43 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         # Joint 5: Front ankle (FShin -> FFoot)
         var j5_off = HC3DConstantsGPU.JOINTS_OFFSET + 5 * JOINT_DATA_SIZE_3D
         states[env, j5_off + JOINT3D_TYPE] = Scalar[dtype](JOINT_HINGE)
-        states[env, j5_off + JOINT3D_BODY_A] = Scalar[dtype](HC3DConstantsGPU.BODY_FSHIN)
-        states[env, j5_off + JOINT3D_BODY_B] = Scalar[dtype](HC3DConstantsGPU.BODY_FFOOT)
+        states[env, j5_off + JOINT3D_BODY_A] = Scalar[dtype](
+            HC3DConstantsGPU.BODY_FSHIN
+        )
+        states[env, j5_off + JOINT3D_BODY_B] = Scalar[dtype](
+            HC3DConstantsGPU.BODY_FFOOT
+        )
         states[env, j5_off + JOINT3D_ANCHOR_AX] = Scalar[dtype](0.0)
         states[env, j5_off + JOINT3D_ANCHOR_AY] = Scalar[dtype](0.0)
-        states[env, j5_off + JOINT3D_ANCHOR_AZ] = Scalar[dtype](-HC3DConstantsGPU.FSHIN_LENGTH / 2)
+        states[env, j5_off + JOINT3D_ANCHOR_AZ] = Scalar[dtype](
+            -HC3DConstantsGPU.FSHIN_LENGTH / 2
+        )
         states[env, j5_off + JOINT3D_ANCHOR_BX] = Scalar[dtype](0.0)
         states[env, j5_off + JOINT3D_ANCHOR_BY] = Scalar[dtype](0.0)
-        states[env, j5_off + JOINT3D_ANCHOR_BZ] = Scalar[dtype](HC3DConstantsGPU.FFOOT_LENGTH / 2)
+        states[env, j5_off + JOINT3D_ANCHOR_BZ] = Scalar[dtype](
+            HC3DConstantsGPU.FFOOT_LENGTH / 2
+        )
         states[env, j5_off + JOINT3D_AXIS_X] = Scalar[dtype](0.0)
         states[env, j5_off + JOINT3D_AXIS_Y] = Scalar[dtype](1.0)
         states[env, j5_off + JOINT3D_AXIS_Z] = Scalar[dtype](0.0)
-        states[env, j5_off + JOINT3D_LOWER_LIMIT] = Scalar[dtype](HC3DConstantsGPU.FFOOT_LIMIT_LOW)
-        states[env, j5_off + JOINT3D_UPPER_LIMIT] = Scalar[dtype](HC3DConstantsGPU.FFOOT_LIMIT_HIGH)
-        states[env, j5_off + JOINT3D_MOTOR_KP] = Scalar[dtype](HC3DConstantsGPU.MOTOR_KP)
-        states[env, j5_off + JOINT3D_MOTOR_KD] = Scalar[dtype](HC3DConstantsGPU.MOTOR_KD)
-        states[env, j5_off + JOINT3D_MAX_FORCE] = Scalar[dtype](HC3DConstantsGPU.GEAR_RATIO)
-        states[env, j5_off + JOINT3D_FLAGS] = Scalar[dtype](JOINT3D_FLAG_LIMIT_ENABLED | JOINT3D_FLAG_MOTOR_ENABLED)
+        states[env, j5_off + JOINT3D_LOWER_LIMIT] = Scalar[dtype](
+            HC3DConstantsGPU.FFOOT_LIMIT_LOW
+        )
+        states[env, j5_off + JOINT3D_UPPER_LIMIT] = Scalar[dtype](
+            HC3DConstantsGPU.FFOOT_LIMIT_HIGH
+        )
+        states[env, j5_off + JOINT3D_MOTOR_KP] = Scalar[dtype](
+            HC3DConstantsGPU.MOTOR_KP
+        )
+        states[env, j5_off + JOINT3D_MOTOR_KD] = Scalar[dtype](
+            HC3DConstantsGPU.MOTOR_KD
+        )
+        states[env, j5_off + JOINT3D_MAX_FORCE] = Scalar[dtype](
+            HC3DConstantsGPU.GEAR_RATIO
+        )
+        states[env, j5_off + JOINT3D_FLAGS] = Scalar[dtype](
+            JOINT3D_FLAG_LIMIT_ENABLED | JOINT3D_FLAG_MOTOR_ENABLED
+        )
         states[env, j5_off + JOINT3D_POSITION] = Scalar[dtype](0.0)
         states[env, j5_off + JOINT3D_VELOCITY] = Scalar[dtype](0.0)
         states[env, j5_off + JOINT3D_MOTOR_TARGET] = Scalar[dtype](0.0)
@@ -2139,7 +2381,10 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         var obs_off = HC3DConstantsGPU.OBS_OFFSET
 
         # Torso state
-        var torso_off = HC3DConstantsGPU.BODIES_OFFSET + HC3DConstantsGPU.BODY_TORSO * BODY_STATE_SIZE_3D
+        var torso_off = (
+            HC3DConstantsGPU.BODIES_OFFSET
+            + HC3DConstantsGPU.BODY_TORSO * BODY_STATE_SIZE_3D
+        )
         var torso_z = rebind[Scalar[dtype]](states[env, torso_off + IDX_PZ])
         var torso_qw = rebind[Scalar[dtype]](states[env, torso_off + IDX_QW])
         var torso_qx = rebind[Scalar[dtype]](states[env, torso_off + IDX_QX])
@@ -2147,7 +2392,9 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         var torso_qz = rebind[Scalar[dtype]](states[env, torso_off + IDX_QZ])
 
         # Extract pitch from quaternion
-        var sinp = Scalar[dtype](2.0) * (torso_qw * torso_qy - torso_qz * torso_qx)
+        var sinp = Scalar[dtype](2.0) * (
+            torso_qw * torso_qy - torso_qz * torso_qx
+        )
         if sinp > Scalar[dtype](1.0):
             sinp = Scalar[dtype](1.0)
         if sinp < Scalar[dtype](-1.0):
@@ -2159,7 +2406,10 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
 
         # Joint angles - use relative body angles (simplified for GPU)
         # Back thigh angle relative to torso
-        var bthigh_off = HC3DConstantsGPU.BODIES_OFFSET + HC3DConstantsGPU.BODY_BTHIGH * BODY_STATE_SIZE_3D
+        var bthigh_off = (
+            HC3DConstantsGPU.BODIES_OFFSET
+            + HC3DConstantsGPU.BODY_BTHIGH * BODY_STATE_SIZE_3D
+        )
         var bthigh_qw = rebind[Scalar[dtype]](states[env, bthigh_off + IDX_QW])
         var bthigh_qy = rebind[Scalar[dtype]](states[env, bthigh_off + IDX_QY])
         var bthigh_sinp = Scalar[dtype](2.0) * bthigh_qw * bthigh_qy
@@ -2171,7 +2421,10 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         states[env, obs_off + 2] = bthigh_pitch - torso_pitch
 
         # Back shin relative to thigh
-        var bshin_off = HC3DConstantsGPU.BODIES_OFFSET + HC3DConstantsGPU.BODY_BSHIN * BODY_STATE_SIZE_3D
+        var bshin_off = (
+            HC3DConstantsGPU.BODIES_OFFSET
+            + HC3DConstantsGPU.BODY_BSHIN * BODY_STATE_SIZE_3D
+        )
         var bshin_qw = rebind[Scalar[dtype]](states[env, bshin_off + IDX_QW])
         var bshin_qy = rebind[Scalar[dtype]](states[env, bshin_off + IDX_QY])
         var bshin_sinp = Scalar[dtype](2.0) * bshin_qw * bshin_qy
@@ -2183,7 +2436,10 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         states[env, obs_off + 3] = bshin_pitch - bthigh_pitch
 
         # Back foot relative to shin
-        var bfoot_off = HC3DConstantsGPU.BODIES_OFFSET + HC3DConstantsGPU.BODY_BFOOT * BODY_STATE_SIZE_3D
+        var bfoot_off = (
+            HC3DConstantsGPU.BODIES_OFFSET
+            + HC3DConstantsGPU.BODY_BFOOT * BODY_STATE_SIZE_3D
+        )
         var bfoot_qw = rebind[Scalar[dtype]](states[env, bfoot_off + IDX_QW])
         var bfoot_qy = rebind[Scalar[dtype]](states[env, bfoot_off + IDX_QY])
         var bfoot_sinp = Scalar[dtype](2.0) * bfoot_qw * bfoot_qy
@@ -2195,7 +2451,10 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         states[env, obs_off + 4] = bfoot_pitch - bshin_pitch
 
         # Front thigh relative to torso
-        var fthigh_off = HC3DConstantsGPU.BODIES_OFFSET + HC3DConstantsGPU.BODY_FTHIGH * BODY_STATE_SIZE_3D
+        var fthigh_off = (
+            HC3DConstantsGPU.BODIES_OFFSET
+            + HC3DConstantsGPU.BODY_FTHIGH * BODY_STATE_SIZE_3D
+        )
         var fthigh_qw = rebind[Scalar[dtype]](states[env, fthigh_off + IDX_QW])
         var fthigh_qy = rebind[Scalar[dtype]](states[env, fthigh_off + IDX_QY])
         var fthigh_sinp = Scalar[dtype](2.0) * fthigh_qw * fthigh_qy
@@ -2207,7 +2466,10 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         states[env, obs_off + 5] = fthigh_pitch - torso_pitch
 
         # Front shin relative to thigh
-        var fshin_off = HC3DConstantsGPU.BODIES_OFFSET + HC3DConstantsGPU.BODY_FSHIN * BODY_STATE_SIZE_3D
+        var fshin_off = (
+            HC3DConstantsGPU.BODIES_OFFSET
+            + HC3DConstantsGPU.BODY_FSHIN * BODY_STATE_SIZE_3D
+        )
         var fshin_qw = rebind[Scalar[dtype]](states[env, fshin_off + IDX_QW])
         var fshin_qy = rebind[Scalar[dtype]](states[env, fshin_off + IDX_QY])
         var fshin_sinp = Scalar[dtype](2.0) * fshin_qw * fshin_qy
@@ -2219,7 +2481,10 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         states[env, obs_off + 6] = fshin_pitch - fthigh_pitch
 
         # Front foot relative to shin
-        var ffoot_off = HC3DConstantsGPU.BODIES_OFFSET + HC3DConstantsGPU.BODY_FFOOT * BODY_STATE_SIZE_3D
+        var ffoot_off = (
+            HC3DConstantsGPU.BODIES_OFFSET
+            + HC3DConstantsGPU.BODY_FFOOT * BODY_STATE_SIZE_3D
+        )
         var ffoot_qw = rebind[Scalar[dtype]](states[env, ffoot_off + IDX_QW])
         var ffoot_qy = rebind[Scalar[dtype]](states[env, ffoot_off + IDX_QY])
         var ffoot_sinp = Scalar[dtype](2.0) * ffoot_qw * ffoot_qy
@@ -2231,9 +2496,15 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         states[env, obs_off + 7] = ffoot_pitch - fshin_pitch
 
         # Velocities
-        states[env, obs_off + 8] = rebind[Scalar[dtype]](states[env, torso_off + IDX_VX])
-        states[env, obs_off + 9] = rebind[Scalar[dtype]](states[env, torso_off + IDX_VZ])
-        states[env, obs_off + 10] = rebind[Scalar[dtype]](states[env, torso_off + IDX_WY])
+        states[env, obs_off + 8] = rebind[Scalar[dtype]](
+            states[env, torso_off + IDX_VX]
+        )
+        states[env, obs_off + 9] = rebind[Scalar[dtype]](
+            states[env, torso_off + IDX_VZ]
+        )
+        states[env, obs_off + 10] = rebind[Scalar[dtype]](
+            states[env, torso_off + IDX_WY]
+        )
 
         # Joint angular velocities (relative angular velocity around Y-axis)
         var torso_wy = rebind[Scalar[dtype]](states[env, torso_off + IDX_WY])
@@ -2284,16 +2555,24 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         @always_inline
         fn init_shapes_wrapper(
             shape_types: LayoutTensor[
-                dtype, Layout.row_major(HC3DConstantsGPU.NUM_BODIES), MutAnyOrigin
+                dtype,
+                Layout.row_major(HC3DConstantsGPU.NUM_BODIES),
+                MutAnyOrigin,
             ],
             shape_radii: LayoutTensor[
-                dtype, Layout.row_major(HC3DConstantsGPU.NUM_BODIES), MutAnyOrigin
+                dtype,
+                Layout.row_major(HC3DConstantsGPU.NUM_BODIES),
+                MutAnyOrigin,
             ],
             shape_half_heights: LayoutTensor[
-                dtype, Layout.row_major(HC3DConstantsGPU.NUM_BODIES), MutAnyOrigin
+                dtype,
+                Layout.row_major(HC3DConstantsGPU.NUM_BODIES),
+                MutAnyOrigin,
             ],
             shape_axes: LayoutTensor[
-                dtype, Layout.row_major(HC3DConstantsGPU.NUM_BODIES), MutAnyOrigin
+                dtype,
+                Layout.row_major(HC3DConstantsGPU.NUM_BODIES),
+                MutAnyOrigin,
             ],
         ):
             var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -2306,37 +2585,51 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
 
             # Torso: horizontal along X-axis
             shape_radii[0] = Scalar[dtype](HC3DConstantsGPU.TORSO_RADIUS)
-            shape_half_heights[0] = Scalar[dtype](HC3DConstantsGPU.TORSO_LENGTH / 2)
+            shape_half_heights[0] = Scalar[dtype](
+                HC3DConstantsGPU.TORSO_LENGTH / 2
+            )
             shape_axes[0] = Scalar[dtype](0)  # X-axis
 
             # Back thigh: vertical along Z-axis
             shape_radii[1] = Scalar[dtype](HC3DConstantsGPU.BTHIGH_RADIUS)
-            shape_half_heights[1] = Scalar[dtype](HC3DConstantsGPU.BTHIGH_LENGTH / 2)
+            shape_half_heights[1] = Scalar[dtype](
+                HC3DConstantsGPU.BTHIGH_LENGTH / 2
+            )
             shape_axes[1] = Scalar[dtype](2)  # Z-axis
 
             # Back shin
             shape_radii[2] = Scalar[dtype](HC3DConstantsGPU.BSHIN_RADIUS)
-            shape_half_heights[2] = Scalar[dtype](HC3DConstantsGPU.BSHIN_LENGTH / 2)
+            shape_half_heights[2] = Scalar[dtype](
+                HC3DConstantsGPU.BSHIN_LENGTH / 2
+            )
             shape_axes[2] = Scalar[dtype](2)
 
             # Back foot
             shape_radii[3] = Scalar[dtype](HC3DConstantsGPU.BFOOT_RADIUS)
-            shape_half_heights[3] = Scalar[dtype](HC3DConstantsGPU.BFOOT_LENGTH / 2)
+            shape_half_heights[3] = Scalar[dtype](
+                HC3DConstantsGPU.BFOOT_LENGTH / 2
+            )
             shape_axes[3] = Scalar[dtype](2)
 
             # Front thigh
             shape_radii[4] = Scalar[dtype](HC3DConstantsGPU.FTHIGH_RADIUS)
-            shape_half_heights[4] = Scalar[dtype](HC3DConstantsGPU.FTHIGH_LENGTH / 2)
+            shape_half_heights[4] = Scalar[dtype](
+                HC3DConstantsGPU.FTHIGH_LENGTH / 2
+            )
             shape_axes[4] = Scalar[dtype](2)
 
             # Front shin
             shape_radii[5] = Scalar[dtype](HC3DConstantsGPU.FSHIN_RADIUS)
-            shape_half_heights[5] = Scalar[dtype](HC3DConstantsGPU.FSHIN_LENGTH / 2)
+            shape_half_heights[5] = Scalar[dtype](
+                HC3DConstantsGPU.FSHIN_LENGTH / 2
+            )
             shape_axes[5] = Scalar[dtype](2)
 
             # Front foot
             shape_radii[6] = Scalar[dtype](HC3DConstantsGPU.FFOOT_RADIUS)
-            shape_half_heights[6] = Scalar[dtype](HC3DConstantsGPU.FFOOT_LENGTH / 2)
+            shape_half_heights[6] = Scalar[dtype](
+                HC3DConstantsGPU.FFOOT_LENGTH / 2
+            )
             shape_axes[6] = Scalar[dtype](2)
 
         ctx.enqueue_function[init_shapes_wrapper, init_shapes_wrapper](
@@ -2387,7 +2680,11 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
             dtype, Layout.row_major(HC3DConstantsGPU.NUM_BODIES), MutAnyOrigin
         ](shape_axes_buf.unsafe_ptr())
         var contacts = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, HC3DConstantsGPU.MAX_CONTACTS, CONTACT_DATA_SIZE_3D), MutAnyOrigin
+            dtype,
+            Layout.row_major(
+                BATCH_SIZE, HC3DConstantsGPU.MAX_CONTACTS, CONTACT_DATA_SIZE_3D
+            ),
+            MutAnyOrigin,
         ](contacts_buf.unsafe_ptr())
         var contact_counts = LayoutTensor[
             dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
@@ -2411,19 +2708,33 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
                 dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
             ],
             shape_types: LayoutTensor[
-                dtype, Layout.row_major(HC3DConstantsGPU.NUM_BODIES), MutAnyOrigin
+                dtype,
+                Layout.row_major(HC3DConstantsGPU.NUM_BODIES),
+                MutAnyOrigin,
             ],
             shape_radii: LayoutTensor[
-                dtype, Layout.row_major(HC3DConstantsGPU.NUM_BODIES), MutAnyOrigin
+                dtype,
+                Layout.row_major(HC3DConstantsGPU.NUM_BODIES),
+                MutAnyOrigin,
             ],
             shape_half_heights: LayoutTensor[
-                dtype, Layout.row_major(HC3DConstantsGPU.NUM_BODIES), MutAnyOrigin
+                dtype,
+                Layout.row_major(HC3DConstantsGPU.NUM_BODIES),
+                MutAnyOrigin,
             ],
             shape_axes: LayoutTensor[
-                dtype, Layout.row_major(HC3DConstantsGPU.NUM_BODIES), MutAnyOrigin
+                dtype,
+                Layout.row_major(HC3DConstantsGPU.NUM_BODIES),
+                MutAnyOrigin,
             ],
             contacts: LayoutTensor[
-                dtype, Layout.row_major(BATCH_SIZE, HC3DConstantsGPU.MAX_CONTACTS, CONTACT_DATA_SIZE_3D), MutAnyOrigin
+                dtype,
+                Layout.row_major(
+                    BATCH_SIZE,
+                    HC3DConstantsGPU.MAX_CONTACTS,
+                    CONTACT_DATA_SIZE_3D,
+                ),
+                MutAnyOrigin,
             ],
             contact_counts: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
@@ -2445,9 +2756,21 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
             if env >= BATCH_SIZE:
                 return
 
-            HalfCheetah3D._step_env_gpu[BATCH_SIZE, STATE_SIZE, OBS_DIM, ACTION_DIM](
-                states, shape_types, shape_radii, shape_half_heights, shape_axes,
-                contacts, contact_counts, actions, rewards, dones, obs, env
+            HalfCheetah3D._step_env_gpu[
+                BATCH_SIZE, STATE_SIZE, OBS_DIM, ACTION_DIM
+            ](
+                states,
+                shape_types,
+                shape_radii,
+                shape_half_heights,
+                shape_axes,
+                contacts,
+                contact_counts,
+                actions,
+                rewards,
+                dones,
+                obs,
+                env,
             )
 
         ctx.enqueue_function[step_kernel, step_kernel](
@@ -2476,10 +2799,13 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         JOINTS_OFFSET: Int,
     ](
         env: Int,
-        states: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin],
+        states: LayoutTensor[
+            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ],
         joint_count: Int,
     ):
-        """GPU-compatible joint projection - directly repositions bodies to maintain joint connectivity."""
+        """GPU-compatible joint projection - directly repositions bodies to maintain joint connectivity.
+        """
         var eps = Scalar[dtype](1e-10)
         var two = Scalar[dtype](2.0)
 
@@ -2509,12 +2835,24 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
             var qb_z = rebind[Scalar[dtype]](states[env, body_b_off + IDX_QZ])
 
             # Get local anchors
-            var anchor_a_local_x = rebind[Scalar[dtype]](states[env, joint_off + JOINT3D_ANCHOR_AX])
-            var anchor_a_local_y = rebind[Scalar[dtype]](states[env, joint_off + JOINT3D_ANCHOR_AY])
-            var anchor_a_local_z = rebind[Scalar[dtype]](states[env, joint_off + JOINT3D_ANCHOR_AZ])
-            var anchor_b_local_x = rebind[Scalar[dtype]](states[env, joint_off + JOINT3D_ANCHOR_BX])
-            var anchor_b_local_y = rebind[Scalar[dtype]](states[env, joint_off + JOINT3D_ANCHOR_BY])
-            var anchor_b_local_z = rebind[Scalar[dtype]](states[env, joint_off + JOINT3D_ANCHOR_BZ])
+            var anchor_a_local_x = rebind[Scalar[dtype]](
+                states[env, joint_off + JOINT3D_ANCHOR_AX]
+            )
+            var anchor_a_local_y = rebind[Scalar[dtype]](
+                states[env, joint_off + JOINT3D_ANCHOR_AY]
+            )
+            var anchor_a_local_z = rebind[Scalar[dtype]](
+                states[env, joint_off + JOINT3D_ANCHOR_AZ]
+            )
+            var anchor_b_local_x = rebind[Scalar[dtype]](
+                states[env, joint_off + JOINT3D_ANCHOR_BX]
+            )
+            var anchor_b_local_y = rebind[Scalar[dtype]](
+                states[env, joint_off + JOINT3D_ANCHOR_BY]
+            )
+            var anchor_b_local_z = rebind[Scalar[dtype]](
+                states[env, joint_off + JOINT3D_ANCHOR_BZ]
+            )
 
             # Rotate anchors to world frame
             var ca_x = qa_y * anchor_a_local_z - qa_z * anchor_a_local_y
@@ -2543,8 +2881,12 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
             var err_z = (pb_z + rb_z) - (pa_z + ra_z)
 
             # Get inverse masses
-            var inv_ma = rebind[Scalar[dtype]](states[env, body_a_off + IDX_INV_MASS])
-            var inv_mb = rebind[Scalar[dtype]](states[env, body_b_off + IDX_INV_MASS])
+            var inv_ma = rebind[Scalar[dtype]](
+                states[env, body_a_off + IDX_INV_MASS]
+            )
+            var inv_mb = rebind[Scalar[dtype]](
+                states[env, body_b_off + IDX_INV_MASS]
+            )
             var total_inv_mass = inv_ma + inv_mb + eps
 
             # Split correction by inverse mass
@@ -2584,7 +2926,11 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
             dtype, Layout.row_major(HC3DConstantsGPU.NUM_BODIES), MutAnyOrigin
         ],
         contacts: LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, HC3DConstantsGPU.MAX_CONTACTS, CONTACT_DATA_SIZE_3D), MutAnyOrigin
+            dtype,
+            Layout.row_major(
+                BATCH_SIZE, HC3DConstantsGPU.MAX_CONTACTS, CONTACT_DATA_SIZE_3D
+            ),
+            MutAnyOrigin,
         ],
         contact_counts: LayoutTensor[
             dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
@@ -2610,7 +2956,10 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         - Hinge3D for motor-enabled joints
         """
         var meta_off = HC3DConstantsGPU.METADATA_OFFSET
-        var torso_off = HC3DConstantsGPU.BODIES_OFFSET + HC3DConstantsGPU.BODY_TORSO * BODY_STATE_SIZE_3D
+        var torso_off = (
+            HC3DConstantsGPU.BODIES_OFFSET
+            + HC3DConstantsGPU.BODY_TORSO * BODY_STATE_SIZE_3D
+        )
 
         # Get previous x position for reward computation
         var x_before = rebind[Scalar[dtype]](states[env, torso_off + IDX_PX])
@@ -2732,9 +3081,12 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
                 ](env, states, joint_count, baumgarte, slop)
 
             # Step 6: Direct joint projection (GPU version)
-            for _ in range(5):  # Fewer passes needed - GPU gets more frequent substeps
+            for _ in range(
+                5
+            ):  # Fewer passes needed - GPU gets more frequent substeps
                 HalfCheetah3D._project_joints_gpu[
-                    BATCH_SIZE, STATE_SIZE,
+                    BATCH_SIZE,
+                    STATE_SIZE,
                     HC3DConstantsGPU.NUM_BODIES,
                     HC3DConstantsGPU.BODIES_OFFSET,
                     HC3DConstantsGPU.JOINTS_OFFSET,
@@ -2742,7 +3094,9 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
 
             # Step 7: Clear forces for next iteration
             for body in range(HC3DConstantsGPU.NUM_BODIES):
-                var body_off = HC3DConstantsGPU.BODIES_OFFSET + body * BODY_STATE_SIZE_3D
+                var body_off = (
+                    HC3DConstantsGPU.BODIES_OFFSET + body * BODY_STATE_SIZE_3D
+                )
                 states[env, body_off + IDX_FX] = Scalar[dtype](0)
                 states[env, body_off + IDX_FY] = Scalar[dtype](0)
                 states[env, body_off + IDX_FZ] = Scalar[dtype](0)
@@ -2752,8 +3106,13 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
 
         # Compute reward
         var x_after = rebind[Scalar[dtype]](states[env, torso_off + IDX_PX])
-        var forward_velocity = (x_after - x_before) / (dt * Scalar[dtype](HC3DConstantsGPU.FRAME_SKIP))
-        var forward_reward = Scalar[dtype](HC3DConstantsGPU.FORWARD_REWARD_WEIGHT) * forward_velocity
+        var forward_velocity = (x_after - x_before) / (
+            dt * Scalar[dtype](HC3DConstantsGPU.FRAME_SKIP)
+        )
+        var forward_reward = (
+            Scalar[dtype](HC3DConstantsGPU.FORWARD_REWARD_WEIGHT)
+            * forward_velocity
+        )
 
         # Control cost (use clamped actions)
         var ctrl_cost = Scalar[dtype](0.0)
@@ -2770,7 +3129,9 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
         rewards[env] = reward
 
         # Update step count
-        var step_count = rebind[Scalar[dtype]](states[env, meta_off + HC3DConstantsGPU.META_STEP_COUNT])
+        var step_count = rebind[Scalar[dtype]](
+            states[env, meta_off + HC3DConstantsGPU.META_STEP_COUNT]
+        )
         step_count = step_count + Scalar[dtype](1.0)
         states[env, meta_off + HC3DConstantsGPU.META_STEP_COUNT] = step_count
         states[env, meta_off + HC3DConstantsGPU.META_PREV_X] = x_after

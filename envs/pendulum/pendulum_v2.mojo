@@ -214,6 +214,7 @@ struct PendulumV2[DTYPE: DType](
         mut dones: DeviceBuffer[dtype],
         mut obs: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
+        curriculum_values: List[Scalar[dtype]] = [],
     ) raises:
         """Perform one environment step with continuous actions (GPUContinuousEnv trait).
 

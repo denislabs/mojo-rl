@@ -135,6 +135,7 @@ trait RenderableEnv:
         """
         ...
 
+
 # ============================================================================
 # State Space Traits
 # ============================================================================
@@ -432,6 +433,7 @@ trait GPUContinuousEnv:
         mut dones: DeviceBuffer[dtype],
         mut obs: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
+        curriculum_values: List[Scalar[dtype]] = [],
     ) raises:
         """Perform one environment step with continuous actions.
 
@@ -443,6 +445,8 @@ trait GPUContinuousEnv:
             dones: Done flags buffer on GPU (output) [BATCH_SIZE].
             obs: Observations buffer on GPU (output) [BATCH_SIZE * OBS_DIM].
             rng_seed: Optional random seed for physics.
+            curriculum_values: Environment-specific curriculum parameters.
+                              Empty list uses default (strict) bounds.
         """
         ...
 
@@ -488,3 +492,54 @@ trait GPUContinuousEnv:
                      Should be different each call (e.g., training step counter).
         """
         ...
+
+
+trait CurriculumScheduler(Copyable, Movable):
+    """Trait for environments that support curriculum scheduling.
+
+    Environments must define a method to get the curriculum values.
+    """
+
+    @staticmethod
+    fn get_params[DTYPE: DType](progress: Scalar[DTYPE]) -> List[Scalar[DTYPE]]:
+        """Get curriculum parameters for given training progress.
+
+        Uses linear interpolation from initial to final values.
+
+        Args:
+            progress: Training progress from 0.0 (start) to 1.0 (end).
+                     Values outside [0, 1] are clamped.
+
+        Returns:
+            List of curriculum parameter values.
+        """
+        ...
+
+    @staticmethod
+    fn get_stage_name[DTYPE: DType](progress: Scalar[DTYPE]) -> String:
+        """Get human-readable curriculum stage name.
+
+        Used for logging stage transitions during training.
+
+        Args:
+            progress: Training progress from 0.0 to 1.0.
+
+        Returns:
+            Stage name string, or empty string if no curriculum stages.
+        """
+        ...
+
+
+struct NoCurriculumScheduler(CurriculumScheduler):
+    """No curriculum scheduler.
+
+    This is a placeholder for environments that do not support curriculum scheduling.
+    """
+
+    @staticmethod
+    fn get_params[DTYPE: DType](progress: Scalar[DTYPE]) -> List[Scalar[DTYPE]]:
+        return []
+
+    @staticmethod
+    fn get_stage_name[DTYPE: DType](progress: Scalar[DTYPE]) -> String:
+        return ""

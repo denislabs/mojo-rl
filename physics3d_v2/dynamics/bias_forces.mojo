@@ -43,6 +43,32 @@ from ..gpu.constants import (
 
 
 # =============================================================================
+# GPU Helper: Check if body is descendant
+# =============================================================================
+
+
+@always_inline
+fn _is_descendant_gpu[
+    DTYPE: DType,
+    NBODY: Int,
+    MODEL_SIZE: Int,
+](
+    model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+    body: Int,
+    ancestor: Int,
+) -> Bool:
+    """GPU-compatible check if body is a descendant of ancestor."""
+    var current = body
+    while current >= 0:
+        var body_off = gc_model_body_offset(current)
+        var parent = Int(rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_PARENT]))
+        if parent == ancestor:
+            return True
+        current = parent
+    return False
+
+
+# =============================================================================
 # Bias Forces for HINGE-only Chains
 # =============================================================================
 
@@ -404,22 +430,53 @@ fn compute_bias_forces_gpu[
                 axis_world_y = rotated[1]
                 axis_world_z = rotated[2]
 
+            # Compute gravitational torque from body and all descendants (matching CPU)
+            var tau_gravity: Scalar[DTYPE] = 0
+
+            # Body contribution
             var body_px = rebind[Scalar[DTYPE]](state[env, xpos_off + body_id * 3 + 0])
             var body_py = rebind[Scalar[DTYPE]](state[env, xpos_off + body_id * 3 + 1])
             var body_pz = rebind[Scalar[DTYPE]](state[env, xpos_off + body_id * 3 + 2])
 
             var rx = body_px - jpos_world_x
             var ry = body_py - jpos_world_y
-            _ = body_pz - jpos_world_z  # rz not needed for torque calculation
+            var rz = body_pz - jpos_world_z
 
+            # Gravity force (only z component for gravity_z)
             var fz = mass * gravity_z
+            # Torque = r x F (with F = [0, 0, fz])
             var tau_x = ry * fz
             var tau_y = -rx * fz
+            # tau_z = 0 (rx*0 - ry*0)
 
-            var tau_joint = tau_x * axis_world_x + tau_y * axis_world_y
-            bias[dof_adr] = bias[dof_adr] - tau_joint
+            # Project onto joint axis
+            tau_gravity = tau_gravity + (tau_x * axis_world_x + tau_y * axis_world_y)
+
+            # Add contributions from descendant bodies
+            for desc_body in range(body_id + 1, NBODY):
+                if _is_descendant_gpu[DTYPE, NBODY, MODEL_SIZE](model, desc_body, body_id):
+                    var desc_body_off = gc_model_body_offset(desc_body)
+                    var desc_mass = rebind[Scalar[DTYPE]](model[0, desc_body_off + GC_BODY_IDX_MASS])
+
+                    var desc_px = rebind[Scalar[DTYPE]](state[env, xpos_off + desc_body * 3 + 0])
+                    var desc_py = rebind[Scalar[DTYPE]](state[env, xpos_off + desc_body * 3 + 1])
+                    var desc_pz = rebind[Scalar[DTYPE]](state[env, xpos_off + desc_body * 3 + 2])
+
+                    var desc_rx = desc_px - jpos_world_x
+                    var desc_ry = desc_py - jpos_world_y
+                    _ = desc_pz - jpos_world_z  # desc_rz not needed for torque calc
+
+                    var desc_fz = desc_mass * gravity_z
+                    var desc_tau_x = desc_ry * desc_fz
+                    var desc_tau_y = -desc_rx * desc_fz
+
+                    tau_gravity = tau_gravity + (desc_tau_x * axis_world_x + desc_tau_y * axis_world_y)
+
+            bias[dof_adr] = bias[dof_adr] - tau_gravity
 
         elif jnt_type == GC_JNT_SLIDE:
+            var axis_world_x = axis_x
+            var axis_world_y = axis_y
             var axis_world_z = axis_z
             if parent >= 0:
                 var pqx = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 0])
@@ -427,10 +484,28 @@ fn compute_bias_forces_gpu[
                 var pqz = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 2])
                 var pqw = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 3])
                 var rotated = gpu_quat_rotate(pqx, pqy, pqz, pqw, axis_x, axis_y, axis_z)
+                axis_world_x = rotated[0]
+                axis_world_y = rotated[1]
                 axis_world_z = rotated[2]
 
-            var f_gravity = mass * gravity_z * axis_world_z
+            # Accumulate total mass from body and ALL descendants (matching CPU)
+            var total_mass = mass
+            for desc_body in range(body_id + 1, NBODY):
+                if _is_descendant_gpu[DTYPE, NBODY, MODEL_SIZE](model, desc_body, body_id):
+                    var desc_body_off = gc_model_body_offset(desc_body)
+                    var desc_mass = rebind[Scalar[DTYPE]](model[0, desc_body_off + GC_BODY_IDX_MASS])
+                    total_mass = total_mass + desc_mass
+
+            # Gravity force component along axis (gravity is [0, 0, gravity_z])
+            var f_gravity = total_mass * gravity_z * axis_world_z
             bias[dof_adr] = bias[dof_adr] - f_gravity
 
         elif jnt_type == GC_JNT_FREE:
-            bias[dof_adr + 2] = bias[dof_adr + 2] - mass * gravity_z
+            # Accumulate total mass from body and ALL descendants
+            var total_mass = mass
+            for desc_body in range(body_id + 1, NBODY):
+                if _is_descendant_gpu[DTYPE, NBODY, MODEL_SIZE](model, desc_body, body_id):
+                    var desc_body_off = gc_model_body_offset(desc_body)
+                    var desc_mass = rebind[Scalar[DTYPE]](model[0, desc_body_off + GC_BODY_IDX_MASS])
+                    total_mass = total_mass + desc_mass
+            bias[dof_adr + 2] = bias[dof_adr + 2] - total_mass * gravity_z

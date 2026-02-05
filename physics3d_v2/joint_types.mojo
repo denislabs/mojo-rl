@@ -67,6 +67,11 @@ struct JointDef[DTYPE: DType](ImplicitlyCopyable, Movable):
     # Torque/force limit
     var tau_limit: Scalar[Self.DTYPE]
 
+    # Position range limits (for HINGE: radians, for SLIDE: meters)
+    # Use -inf/+inf for unlimited (default)
+    var range_min: Scalar[Self.DTYPE]
+    var range_max: Scalar[Self.DTYPE]
+
     @staticmethod
     fn empty() -> Self:
         """Create an empty/default joint definition."""
@@ -82,6 +87,8 @@ struct JointDef[DTYPE: DType](ImplicitlyCopyable, Movable):
             axis_y=Scalar[Self.DTYPE](1),
             axis_z=Scalar[Self.DTYPE](0),
             tau_limit=Scalar[Self.DTYPE](1000.0),
+            range_min=Scalar[Self.DTYPE](-1e10),  # Effectively unlimited
+            range_max=Scalar[Self.DTYPE](1e10),   # Effectively unlimited
         )
 
     @staticmethod
@@ -92,6 +99,8 @@ struct JointDef[DTYPE: DType](ImplicitlyCopyable, Movable):
         pos: Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]],
         axis: Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]],
         tau_limit: Scalar[Self.DTYPE] = 1000.0,
+        range_min: Scalar[Self.DTYPE] = -1e10,
+        range_max: Scalar[Self.DTYPE] = 1e10,
     ) -> Self:
         """Create a hinge (revolute) joint.
 
@@ -102,6 +111,8 @@ struct JointDef[DTYPE: DType](ImplicitlyCopyable, Movable):
             pos: Joint anchor position in parent frame.
             axis: Rotation axis (will be normalized).
             tau_limit: Maximum torque magnitude.
+            range_min: Minimum angle in radians (default: unlimited).
+            range_max: Maximum angle in radians (default: unlimited).
 
         Returns:
             JointDef configured as a hinge joint.
@@ -128,6 +139,8 @@ struct JointDef[DTYPE: DType](ImplicitlyCopyable, Movable):
             axis_y=ay,
             axis_z=az,
             tau_limit=tau_limit,
+            range_min=range_min,
+            range_max=range_max,
         )
 
     @staticmethod
@@ -138,6 +151,8 @@ struct JointDef[DTYPE: DType](ImplicitlyCopyable, Movable):
         pos: Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]],
         axis: Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]],
         force_limit: Scalar[Self.DTYPE] = 1000.0,
+        range_min: Scalar[Self.DTYPE] = -1e10,
+        range_max: Scalar[Self.DTYPE] = 1e10,
     ) -> Self:
         """Create a slide (prismatic) joint.
 
@@ -148,6 +163,8 @@ struct JointDef[DTYPE: DType](ImplicitlyCopyable, Movable):
             pos: Joint anchor position in parent frame.
             axis: Slide axis (will be normalized).
             force_limit: Maximum force magnitude.
+            range_min: Minimum position in meters (default: unlimited).
+            range_max: Maximum position in meters (default: unlimited).
 
         Returns:
             JointDef configured as a slide joint.
@@ -174,6 +191,8 @@ struct JointDef[DTYPE: DType](ImplicitlyCopyable, Movable):
             axis_y=ay,
             axis_z=az,
             tau_limit=force_limit,
+            range_min=range_min,
+            range_max=range_max,
         )
 
     @staticmethod
@@ -195,6 +214,8 @@ struct JointDef[DTYPE: DType](ImplicitlyCopyable, Movable):
 
         Returns:
             JointDef configured as a ball joint.
+
+        Note: Ball joints don't have simple range limits (would need cone constraints).
         """
         return Self(
             jnt_type=JNT_BALL,
@@ -208,6 +229,8 @@ struct JointDef[DTYPE: DType](ImplicitlyCopyable, Movable):
             axis_y=Scalar[Self.DTYPE](0),
             axis_z=Scalar[Self.DTYPE](1),
             tau_limit=tau_limit,
+            range_min=Scalar[Self.DTYPE](-1e10),  # Not used for ball joints
+            range_max=Scalar[Self.DTYPE](1e10),
         )
 
     @staticmethod
@@ -225,6 +248,8 @@ struct JointDef[DTYPE: DType](ImplicitlyCopyable, Movable):
 
         Returns:
             JointDef configured as a free joint.
+
+        Note: Free joints don't have range limits.
         """
         return Self(
             jnt_type=JNT_FREE,
@@ -238,6 +263,8 @@ struct JointDef[DTYPE: DType](ImplicitlyCopyable, Movable):
             axis_y=Scalar[Self.DTYPE](0),
             axis_z=Scalar[Self.DTYPE](1),
             tau_limit=Scalar[Self.DTYPE](0),  # No limit for free joint
+            range_min=Scalar[Self.DTYPE](-1e10),  # Not used for free joints
+            range_max=Scalar[Self.DTYPE](1e10),
         )
 
     fn qpos_size(self) -> Int:

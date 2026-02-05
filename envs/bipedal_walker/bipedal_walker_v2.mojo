@@ -1054,8 +1054,12 @@ struct BipedalWalkerV2[DTYPE: DType,](
 
         # Height penalty: strongly penalize crawling
         # Standing height is ~TERRAIN_HEIGHT + 2*LEG_H (~5.6)
-        var min_height = BWConstants.TERRAIN_HEIGHT + BWConstants.LEG_H * 1.5  # ~5.0, penalty starts
-        var critical_height = BWConstants.TERRAIN_HEIGHT + BWConstants.LEG_H * 1.2  # ~4.7, terminate below
+        var min_height = (
+            BWConstants.TERRAIN_HEIGHT + BWConstants.LEG_H * 1.5
+        )  # ~5.0, penalty starts
+        var critical_height = (
+            BWConstants.TERRAIN_HEIGHT + BWConstants.LEG_H * 1.2
+        )  # ~4.7, terminate below
         if hull_y < min_height:
             # Strong penalty for being too low (crawling)
             reward = reward - Scalar[Self.dtype](10.0 * (min_height - hull_y))
@@ -1073,7 +1077,9 @@ struct BipedalWalkerV2[DTYPE: DType,](
 
         # Terminate if crawling too low (hull almost touching ground)
         if hull_y < critical_height:
-            reward = Scalar[Self.dtype](-50.0)  # Moderate penalty for crawling termination
+            reward = Scalar[Self.dtype](
+                -50.0
+            )  # Moderate penalty for crawling termination
             terminated = True
 
         # Game over: hull touched ground
@@ -1382,6 +1388,7 @@ struct BipedalWalkerV2[DTYPE: DType,](
         mut dones_buf: DeviceBuffer[dtype],
         mut obs_buf: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
+        curriculum_values: List[Scalar[dtype]] = [],
     ) raises:
         """GPU step kernel for batched continuous actions."""
         # Allocate workspace buffers
@@ -1770,8 +1777,12 @@ struct BipedalWalkerV2[DTYPE: DType,](
 
         # Hull state
         var hull_off = BWConstants.BODIES_OFFSET
-        var hull_angle = rebind[Scalar[dtype]](states[env, hull_off + IDX_ANGLE])
-        var hull_omega = rebind[Scalar[dtype]](states[env, hull_off + IDX_OMEGA])
+        var hull_angle = rebind[Scalar[dtype]](
+            states[env, hull_off + IDX_ANGLE]
+        )
+        var hull_omega = rebind[Scalar[dtype]](
+            states[env, hull_off + IDX_OMEGA]
+        )
         var hull_vx = rebind[Scalar[dtype]](states[env, hull_off + IDX_VX])
         var hull_vy = rebind[Scalar[dtype]](states[env, hull_off + IDX_VY])
         var hull_x = rebind[Scalar[dtype]](states[env, hull_off + IDX_X])
@@ -1798,22 +1809,34 @@ struct BipedalWalkerV2[DTYPE: DType,](
         # Leg 1 (left) - bodies 1 (upper) and 2 (lower)
         var upper1_off = BWConstants.BODIES_OFFSET + 1 * BODY_STATE_SIZE
         var lower1_off = BWConstants.BODIES_OFFSET + 2 * BODY_STATE_SIZE
-        var upper1_angle = rebind[Scalar[dtype]](states[env, upper1_off + IDX_ANGLE])
-        var lower1_angle = rebind[Scalar[dtype]](states[env, lower1_off + IDX_ANGLE])
-        var upper1_omega = rebind[Scalar[dtype]](states[env, upper1_off + IDX_OMEGA])
-        var lower1_omega = rebind[Scalar[dtype]](states[env, lower1_off + IDX_OMEGA])
+        var upper1_angle = rebind[Scalar[dtype]](
+            states[env, upper1_off + IDX_ANGLE]
+        )
+        var lower1_angle = rebind[Scalar[dtype]](
+            states[env, lower1_off + IDX_ANGLE]
+        )
+        var upper1_omega = rebind[Scalar[dtype]](
+            states[env, upper1_off + IDX_OMEGA]
+        )
+        var lower1_omega = rebind[Scalar[dtype]](
+            states[env, lower1_off + IDX_OMEGA]
+        )
 
         # [4]: hip1_angle = (upper1_angle - hull_angle)
         states[env, obs_off + 4] = upper1_angle - hull_angle
 
         # [5]: hip1_speed = (upper1_omega - hull_omega) / 10.0
-        states[env, obs_off + 5] = (upper1_omega - hull_omega) / Scalar[dtype](10.0)
+        states[env, obs_off + 5] = (upper1_omega - hull_omega) / Scalar[dtype](
+            10.0
+        )
 
         # [6]: knee1_angle = (lower1_angle - upper1_angle)
         states[env, obs_off + 6] = lower1_angle - upper1_angle
 
         # [7]: knee1_speed = (lower1_omega - upper1_omega) / 10.0
-        states[env, obs_off + 7] = (lower1_omega - upper1_omega) / Scalar[dtype](10.0)
+        states[env, obs_off + 7] = (lower1_omega - upper1_omega) / Scalar[
+            dtype
+        ](10.0)
 
         # [8]: leg1_contact = 0.0 (no contact at reset)
         states[env, obs_off + 8] = Scalar[dtype](0.0)
@@ -1821,22 +1844,34 @@ struct BipedalWalkerV2[DTYPE: DType,](
         # Leg 2 (right) - bodies 3 (upper) and 4 (lower)
         var upper2_off = BWConstants.BODIES_OFFSET + 3 * BODY_STATE_SIZE
         var lower2_off = BWConstants.BODIES_OFFSET + 4 * BODY_STATE_SIZE
-        var upper2_angle = rebind[Scalar[dtype]](states[env, upper2_off + IDX_ANGLE])
-        var lower2_angle = rebind[Scalar[dtype]](states[env, lower2_off + IDX_ANGLE])
-        var upper2_omega = rebind[Scalar[dtype]](states[env, upper2_off + IDX_OMEGA])
-        var lower2_omega = rebind[Scalar[dtype]](states[env, lower2_off + IDX_OMEGA])
+        var upper2_angle = rebind[Scalar[dtype]](
+            states[env, upper2_off + IDX_ANGLE]
+        )
+        var lower2_angle = rebind[Scalar[dtype]](
+            states[env, lower2_off + IDX_ANGLE]
+        )
+        var upper2_omega = rebind[Scalar[dtype]](
+            states[env, upper2_off + IDX_OMEGA]
+        )
+        var lower2_omega = rebind[Scalar[dtype]](
+            states[env, lower2_off + IDX_OMEGA]
+        )
 
         # [9]: hip2_angle = (upper2_angle - hull_angle)
         states[env, obs_off + 9] = upper2_angle - hull_angle
 
         # [10]: hip2_speed = (upper2_omega - hull_omega) / 10.0
-        states[env, obs_off + 10] = (upper2_omega - hull_omega) / Scalar[dtype](10.0)
+        states[env, obs_off + 10] = (upper2_omega - hull_omega) / Scalar[dtype](
+            10.0
+        )
 
         # [11]: knee2_angle = (lower2_angle - upper2_angle)
         states[env, obs_off + 11] = lower2_angle - upper2_angle
 
         # [12]: knee2_speed = (lower2_omega - upper2_omega) / 10.0
-        states[env, obs_off + 12] = (lower2_omega - upper2_omega) / Scalar[dtype](10.0)
+        states[env, obs_off + 12] = (lower2_omega - upper2_omega) / Scalar[
+            dtype
+        ](10.0)
 
         # [13]: leg2_contact = 0.0 (no contact at reset)
         states[env, obs_off + 13] = Scalar[dtype](0.0)
@@ -1847,11 +1882,13 @@ struct BipedalWalkerV2[DTYPE: DType,](
 
         for i in range(BWConstants.NUM_LIDAR):
             # Angle relative to hull: 0 to 1.5 radians (matches CPU Lidar)
-            var local_angle = Scalar[dtype](i) * Scalar[dtype](1.5) / Scalar[dtype](
-                BWConstants.NUM_LIDAR - 1
+            var local_angle = (
+                Scalar[dtype](i)
+                * Scalar[dtype](1.5)
+                / Scalar[dtype](BWConstants.NUM_LIDAR - 1)
             )
-            var world_angle = hull_angle - local_angle - Scalar[dtype](
-                1.5707963267948966
+            var world_angle = (
+                hull_angle - local_angle - Scalar[dtype](1.5707963267948966)
             )  # pi/2
 
             # Ray direction scaled by range
@@ -1876,7 +1913,9 @@ struct BipedalWalkerV2[DTYPE: DType,](
                 var ey = edge_y1 - edge_y0
                 var denom = ray_dx * ey - ray_dy * ex
 
-                if denom > Scalar[dtype](-1e-10) and denom < Scalar[dtype](1e-10):
+                if denom > Scalar[dtype](-1e-10) and denom < Scalar[dtype](
+                    1e-10
+                ):
                     continue  # Parallel
 
                 var dx = hull_x - edge_x0
@@ -1993,10 +2032,16 @@ struct BipedalWalkerV2[DTYPE: DType,](
             dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
         ](states_buf.unsafe_ptr())
         var shapes = LayoutTensor[
-            dtype, Layout.row_major(BWConstants.NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
+            dtype,
+            Layout.row_major(BWConstants.NUM_SHAPES, SHAPE_MAX_SIZE),
+            MutAnyOrigin,
         ](shapes_buf.unsafe_ptr())
         var contacts = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, BWConstants.MAX_CONTACTS, CONTACT_DATA_SIZE), MutAnyOrigin
+            dtype,
+            Layout.row_major(
+                BATCH_SIZE, BWConstants.MAX_CONTACTS, CONTACT_DATA_SIZE
+            ),
+            MutAnyOrigin,
         ](contacts_buf.unsafe_ptr())
         var contact_counts = LayoutTensor[
             dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
@@ -2020,10 +2065,16 @@ struct BipedalWalkerV2[DTYPE: DType,](
                 dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
             ],
             shapes: LayoutTensor[
-                dtype, Layout.row_major(BWConstants.NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
+                dtype,
+                Layout.row_major(BWConstants.NUM_SHAPES, SHAPE_MAX_SIZE),
+                MutAnyOrigin,
             ],
             contacts: LayoutTensor[
-                dtype, Layout.row_major(BATCH_SIZE, BWConstants.MAX_CONTACTS, CONTACT_DATA_SIZE), MutAnyOrigin
+                dtype,
+                Layout.row_major(
+                    BATCH_SIZE, BWConstants.MAX_CONTACTS, CONTACT_DATA_SIZE
+                ),
+                MutAnyOrigin,
             ],
             contact_counts: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
@@ -2162,7 +2213,8 @@ struct BipedalWalkerV2[DTYPE: DType,](
                 env, BWConstants.METADATA_OFFSET + BWConstants.META_LEFT_CONTACT
             ] = left_leg_contact
             states[
-                env, BWConstants.METADATA_OFFSET + BWConstants.META_RIGHT_CONTACT
+                env,
+                BWConstants.METADATA_OFFSET + BWConstants.META_RIGHT_CONTACT,
             ] = right_leg_contact
             states[
                 env, BWConstants.METADATA_OFFSET + BWConstants.META_GAME_OVER
@@ -2217,13 +2269,15 @@ struct BipedalWalkerV2[DTYPE: DType,](
                 hip1_action if hip1_action >= Scalar[dtype](0) else -hip1_action
             )
             var a1 = (
-                knee1_action if knee1_action >= Scalar[dtype](0) else -knee1_action
+                knee1_action if knee1_action
+                >= Scalar[dtype](0) else -knee1_action
             )
             var a2 = (
                 hip2_action if hip2_action >= Scalar[dtype](0) else -hip2_action
             )
             var a3 = (
-                knee2_action if knee2_action >= Scalar[dtype](0) else -knee2_action
+                knee2_action if knee2_action
+                >= Scalar[dtype](0) else -knee2_action
             )
             var energy = a0 + a1 + a2 + a3
             var energy_penalty = (
@@ -2327,7 +2381,9 @@ struct BipedalWalkerV2[DTYPE: DType,](
         var hull_off = BWConstants.BODIES_OFFSET
         var hull_x = rebind[Scalar[dtype]](states[env, hull_off + IDX_X])
         var hull_y = rebind[Scalar[dtype]](states[env, hull_off + IDX_Y])
-        var hull_angle = rebind[Scalar[dtype]](states[env, hull_off + IDX_ANGLE])
+        var hull_angle = rebind[Scalar[dtype]](
+            states[env, hull_off + IDX_ANGLE]
+        )
 
         var n_edges = Int(states[env, BWConstants.EDGE_COUNT_OFFSET])
         var lidar_range = Scalar[dtype](BWConstants.LIDAR_RANGE)
@@ -2335,11 +2391,13 @@ struct BipedalWalkerV2[DTYPE: DType,](
         # 10 lidar rays spread from 0 to 1.5 radians relative to hull
         for i in range(BWConstants.NUM_LIDAR):
             # Angle relative to hull: 0 to 1.5 radians (matches CPU Lidar)
-            var local_angle = Scalar[dtype](i) * Scalar[dtype](1.5) / Scalar[dtype](
-                BWConstants.NUM_LIDAR - 1
+            var local_angle = (
+                Scalar[dtype](i)
+                * Scalar[dtype](1.5)
+                / Scalar[dtype](BWConstants.NUM_LIDAR - 1)
             )
-            var world_angle = hull_angle - local_angle - Scalar[dtype](
-                1.5707963267948966
+            var world_angle = (
+                hull_angle - local_angle - Scalar[dtype](1.5707963267948966)
             )  # pi/2
 
             # Ray direction scaled by range (matches CPU)
@@ -2367,7 +2425,9 @@ struct BipedalWalkerV2[DTYPE: DType,](
                 var denom = ray_dx * ey - ray_dy * ex
 
                 # Check if parallel (denom ~= 0)
-                if denom > Scalar[dtype](-1e-10) and denom < Scalar[dtype](1e-10):
+                if denom > Scalar[dtype](-1e-10) and denom < Scalar[dtype](
+                    1e-10
+                ):
                     continue  # Skip parallel edges
 
                 # Vector from edge start to ray origin
@@ -2376,7 +2436,9 @@ struct BipedalWalkerV2[DTYPE: DType,](
 
                 # Compute intersection parameters
                 var t = (ex * dy - ey * dx) / denom  # Parameter along ray [0,1]
-                var u = (ray_dx * dy - ray_dy * dx) / denom  # Parameter along edge [0,1]
+                var u = (
+                    ray_dx * dy - ray_dy * dx
+                ) / denom  # Parameter along edge [0,1]
 
                 # Valid intersection: t in [0, 1] and u in [0, 1]
                 if (
@@ -2389,7 +2451,9 @@ struct BipedalWalkerV2[DTYPE: DType,](
                         min_t = t
 
             obs[env, BWConstants.LIDAR_START_IDX + i] = min_t
-            states[env, BWConstants.OBS_OFFSET + BWConstants.LIDAR_START_IDX + i] = min_t
+            states[
+                env, BWConstants.OBS_OFFSET + BWConstants.LIDAR_START_IDX + i
+            ] = min_t
 
     @always_inline
     @staticmethod
