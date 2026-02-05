@@ -108,4 +108,8 @@ from .constants_gc import (
     CTRL_COST_WEIGHT,
     # Reset
     RESET_NOISE_SCALE,
+    # GPU constants struct
+    HalfCheetahGCConstants,
+    HalfCheetahGCConstantsCPU,
+    HalfCheetahGCConstantsGPU,
 )

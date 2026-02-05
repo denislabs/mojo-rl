@@ -1,8 +1,8 @@
 """HalfCheetahGC Renderer using the render3d wireframe renderer.
 
 Provides visualization of the HalfCheetahGC environment with:
-- Capsule bodies for each body segment (7 total)
-- Color-coded body parts (torso, back leg, front leg)
+- Capsule bodies for each body segment (8 total: torso, head, and 6 leg segments)
+- Color-coded body parts (torso, head, back leg, front leg)
 - Ground plane and coordinate axes
 - Orbital camera control for interactive viewing
 
@@ -22,6 +22,7 @@ from .constants_gc import (
     BODY_FTHIGH,
     BODY_FSHIN,
     BODY_FFOOT,
+    BODY_HEAD,
     NBODY,
     CAPSULE_RADIUS,
     TORSO_HALF_LENGTH,
@@ -252,8 +253,8 @@ struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
         """Render the HalfCheetahGC state.
 
         Args:
-            positions: List of 7 body positions (torso, bthigh, bshin, bfoot, fthigh, fshin, ffoot).
-            quaternions: List of 7 body orientations.
+            positions: List of 8 body positions (torso, bthigh, bshin, bfoot, fthigh, fshin, ffoot, head).
+            quaternions: List of 8 body orientations.
             vel_x: Current forward velocity (for velocity indicator).
         """
         if not self.initialized:
@@ -290,7 +291,7 @@ struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
 
         # Draw all body capsules
         self._draw_torso(positions[BODY_TORSO], quaternions[BODY_TORSO])
-        self._draw_head(positions[BODY_TORSO], quaternions[BODY_TORSO])
+        self._draw_head(positions[BODY_HEAD], quaternions[BODY_HEAD])
         self._draw_back_thigh(positions[BODY_BTHIGH], quaternions[BODY_BTHIGH])
         self._draw_back_shin(positions[BODY_BSHIN], quaternions[BODY_BSHIN])
         self._draw_back_foot(positions[BODY_BFOOT], quaternions[BODY_BFOOT])
@@ -354,11 +355,10 @@ struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
             shadow_color,
         )
 
-        # Head shadow (approximate position at front of torso)
-        var head_shadow_x = positions[BODY_TORSO].x + HEAD_POS_X
+        # Head shadow (using actual head body position)
         self._draw_ellipse_shadow(
-            head_shadow_x,
-            positions[BODY_TORSO].y,
+            positions[BODY_HEAD].x,
+            positions[BODY_HEAD].y,
             ground_z,
             self.head_half_length + 0.01,
             self.capsule_radius * 1.5,
@@ -482,38 +482,11 @@ struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
             color=HalfCheetahGCColors.torso(),
         )
 
-    fn _draw_head(self, torso_pos: Vec3, torso_quat: Quat):
-        """Draw the head capsule attached to the torso.
-
-        The head is at local position (0.6, 0, 0.1) relative to torso,
-        tilted upward by 0.87 rad around Y axis.
-        """
-        # Head local offset in torso frame
-        var local_offset = Vec3(HEAD_POS_X, HEAD_POS_Y, HEAD_POS_Z)
-
-        # Rotate local offset by torso orientation to get world offset
-        var world_offset = torso_quat.rotate_vec(local_offset)
-
-        # Head position in world frame
-        var head_pos = torso_pos + world_offset
-
-        # Head local rotation: 0.87 rad around Y axis
-        # Create quaternion for this rotation: (w, x, y, z) = (cos(θ/2), 0, sin(θ/2), 0)
-        var half_angle = HEAD_AXIS_ANGLE / 2.0
-        var head_local_quat = Quat(
-            cos(half_angle),  # w
-            0.0,              # x
-            sin(half_angle),  # y
-            0.0               # z
-        )
-
-        # Combine torso orientation with head local rotation
-        var head_quat = torso_quat * head_local_quat
-
-        # Draw head capsule
+    fn _draw_head(self, pos: Vec3, quat: Quat):
+        """Draw the head capsule using its physics position and orientation."""
         self.renderer.draw_shaded_capsule_2d(
-            center=head_pos,
-            orientation=head_quat,
+            center=pos,
+            orientation=quat,
             radius=self.capsule_radius * Self.VISUAL_RADIUS_SCALE,
             half_height=self.head_half_length,
             axis=2,  # Z-axis, will be rotated by quat

@@ -78,13 +78,20 @@ from .joints import (
 )
 
 # Integrators (primary API)
-from .integrator import ImpulseIntegrator, PGSIntegrator, SemiImplicitEulerIntegrator
+from .integrator import (
+    ImpulseIntegrator,
+    PGSIntegrator,
+    SemiImplicitEulerIntegrator,
+)
 
 # Generalized Coordinates (GC) engine
-from .types import ModelGC, DataGC, ContactInfoGC
+from .types import ModelGC, DataGC, ContactInfoGC, compute_capsule_inertia
 from .joint_types import JointDef, JNT_FREE, JNT_BALL, JNT_SLIDE, JNT_HINGE
 from .traits import GcIntegrator
-from .kinematics.forward_kinematics import forward_kinematics, compute_body_velocities
+from .kinematics.forward_kinematics import (
+    forward_kinematics,
+    compute_body_velocities,
+)
 from .kinematics.quat_math import (
     quat_mul,
     quat_conjugate,

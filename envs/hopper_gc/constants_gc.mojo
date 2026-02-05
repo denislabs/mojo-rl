@@ -52,7 +52,7 @@ struct HopperGCConstants[DTYPE: DType = DType.float64]:
     # ==========================================================================
 
     comptime DT: Scalar[Self.DTYPE] = 0.002  # MuJoCo uses 0.002
-    comptime FRAME_SKIP: Int = 5  # 5 substeps per action
+    comptime FRAME_SKIP: Int = 4  # Match Gymnasium Hopper v5 (frame_skip=4)
     comptime GRAVITY_Z: Scalar[Self.DTYPE] = -9.81
 
     # Contact physics
@@ -176,6 +176,22 @@ struct HopperGCConstants[DTYPE: DType = DType.float64]:
     comptime NUM_BODIES: Int = 4
     comptime NUM_JOINTS: Int = 6  # 2 slide + 4 hinge
     comptime MAX_CONTACTS: Int = 10
+
+    # ==========================================================================
+    # Initial State Constants
+    # ==========================================================================
+
+    # Initial torso Z position (computed from body geometry)
+    # foot_z = FOOT_RADIUS
+    # leg_z = foot_z + LEG_RADIUS + LEG_HALF_LENGTH
+    # thigh_z = leg_z + LEG_HALF_LENGTH + THIGH_HALF_LENGTH
+    # torso_z = thigh_z + THIGH_HALF_LENGTH + TORSO_HALF_LENGTH
+    comptime INITIAL_Z: Scalar[Self.DTYPE] = (
+        Self.FOOT_RADIUS
+        + Self.LEG_RADIUS + Self.LEG_HALF_LENGTH
+        + Self.LEG_HALF_LENGTH + Self.THIGH_HALF_LENGTH
+        + Self.THIGH_HALF_LENGTH + Self.TORSO_HALF_LENGTH
+    )
 
     # ==========================================================================
     # Observation/Action Dimensions

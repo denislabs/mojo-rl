@@ -7,10 +7,10 @@ This implementation uses the physics3d_v2 Generalized Coordinates (GC) engine:
 - Forward kinematics computes body positions (xpos, xquat)
 
 The Half Cheetah is a 2D planar robot (movement in XZ plane, rotation around Y axis)
-consisting of a torso with two leg chains (front and back), totaling:
-- 7 bodies: torso, bthigh, bshin, bfoot, fthigh, fshin, ffoot
-- 9 joints: 3 root DOFs (unactuated) + 6 leg joints (actuated)
-- 17D observation: 8 qpos (excluding rootx) + 9 qvel
+consisting of a torso with two leg chains (front and back) and a head, totaling:
+- 8 bodies: torso, bthigh, bshin, bfoot, fthigh, fshin, ffoot, head
+- 10 joints: 3 root DOFs (unactuated) + 6 leg joints (actuated) + 1 head (fixed)
+- 17D observation: 8 qpos (excluding rootx and head) + 9 qvel (excluding head)
 - 6D action: torques for the 6 actuated leg joints
 """
 
@@ -36,7 +36,10 @@ from layout import Layout, LayoutTensor
 # Import GC physics engine
 from physics3d_v2.types import ModelGC, DataGC
 from physics3d_v2.integrator import SemiImplicitEulerIntegrator
-from physics3d_v2.kinematics.forward_kinematics import forward_kinematics
+from physics3d_v2.kinematics.forward_kinematics import (
+    forward_kinematics,
+    forward_kinematics_gpu,
+)
 from physics3d_v2.joint_types import JNT_HINGE, JNT_SLIDE
 from physics3d_v2.gpu.constants import (
     TPB,
@@ -50,6 +53,58 @@ from physics3d_v2.gpu.constants import (
     gc_model_size,
     GC_GEOM_CAPSULE,
     GC_META_IDX_NUM_CONTACTS,
+    GC_META_IDX_STEP_COUNT,
+    gc_model_curriculum_offset,
+    GC_CURRICULUM_IDX_MIN_HEIGHT,
+    GC_CURRICULUM_IDX_MAX_PITCH,
+    GC_MODEL_BODY_SIZE,
+    GC_MODEL_JOINT_SIZE,
+    GC_MODEL_META_SIZE,
+    GC_BODY_IDX_MASS,
+    GC_BODY_IDX_INV_MASS,
+    GC_BODY_IDX_IXX,
+    GC_BODY_IDX_IYY,
+    GC_BODY_IDX_IZZ,
+    GC_BODY_IDX_INV_IXX,
+    GC_BODY_IDX_INV_IYY,
+    GC_BODY_IDX_INV_IZZ,
+    GC_BODY_IDX_POS_X,
+    GC_BODY_IDX_POS_Y,
+    GC_BODY_IDX_POS_Z,
+    GC_BODY_IDX_QUAT_X,
+    GC_BODY_IDX_QUAT_Y,
+    GC_BODY_IDX_QUAT_Z,
+    GC_BODY_IDX_QUAT_W,
+    GC_BODY_IDX_PARENT,
+    GC_BODY_IDX_GEOM_TYPE,
+    GC_BODY_IDX_RADIUS,
+    GC_BODY_IDX_HALF_LENGTH,
+    GC_JOINT_IDX_TYPE,
+    GC_JOINT_IDX_BODY_ID,
+    GC_JOINT_IDX_QPOS_ADR,
+    GC_JOINT_IDX_DOF_ADR,
+    GC_JOINT_IDX_POS_X,
+    GC_JOINT_IDX_POS_Y,
+    GC_JOINT_IDX_POS_Z,
+    GC_JOINT_IDX_AXIS_X,
+    GC_JOINT_IDX_AXIS_Y,
+    GC_JOINT_IDX_AXIS_Z,
+    GC_JOINT_IDX_TAU_LIMIT,
+    GC_JOINT_IDX_RANGE_MIN,
+    GC_JOINT_IDX_RANGE_MAX,
+    GC_MODEL_META_IDX_NBODY,
+    GC_MODEL_META_IDX_NJOINT,
+    GC_MODEL_META_IDX_GRAVITY_X,
+    GC_MODEL_META_IDX_GRAVITY_Y,
+    GC_MODEL_META_IDX_GRAVITY_Z,
+    GC_MODEL_META_IDX_TIMESTEP,
+    GC_MODEL_META_IDX_GROUND_Z,
+    GC_MODEL_META_IDX_FRICTION,
+    gc_model_body_offset,
+    gc_model_joint_offset,
+    gc_model_metadata_offset,
+    GC_JNT_SLIDE,
+    GC_JNT_HINGE,
 )
 
 from .constants_gc import (
@@ -77,6 +132,7 @@ from .constants_gc import (
     BODY_FTHIGH,
     BODY_FSHIN,
     BODY_FFOOT,
+    BODY_HEAD,
     # Joint indices
     JOINT_ROOTX,
     JOINT_ROOTZ,
@@ -87,9 +143,15 @@ from .constants_gc import (
     JOINT_FTHIGH,
     JOINT_FSHIN,
     JOINT_FFOOT,
+    JOINT_HEAD,
     # Body geometry
     CAPSULE_RADIUS,
     TORSO_HALF_LENGTH,
+    HEAD_HALF_LENGTH,
+    HEAD_POS_X,
+    HEAD_POS_Y,
+    HEAD_POS_Z,
+    HEAD_AXIS_ANGLE,
     BTHIGH_HALF_LENGTH,
     BSHIN_HALF_LENGTH,
     BFOOT_HALF_LENGTH,
@@ -98,6 +160,7 @@ from .constants_gc import (
     FFOOT_HALF_LENGTH,
     # Body masses
     TORSO_MASS,
+    HEAD_MASS,
     BTHIGH_MASS,
     BSHIN_MASS,
     BFOOT_MASS,
@@ -129,6 +192,10 @@ from .constants_gc import (
     FSHIN_UPPER,
     FFOOT_LOWER,
     FFOOT_UPPER,
+    HEAD_LOWER,
+    HEAD_UPPER,
+    # GPU constants struct
+    HalfCheetahGCConstants,
 )
 from .state import HalfCheetahGCState
 from .action import HalfCheetahGCAction
@@ -161,17 +228,19 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
         - Body 4 (FThigh): Front thigh, vertical capsule
         - Body 5 (FShin): Front shin, vertical capsule
         - Body 6 (FFoot): Front foot, horizontal capsule
+        - Body 7 (Head): Tilted capsule at front of torso
 
     Joint Configuration (MuJoCo style):
         - Joint 0 (rootx): Slide joint, X-axis translation (body 0)
         - Joint 1 (rootz): Slide joint, Z-axis translation (body 0)
         - Joint 2 (rooty): Hinge joint, Y-axis rotation (body 0)
-        - Joint 3 (bthigh): Hinge joint, Y-axis rotation (body 1)
-        - Joint 4 (bshin): Hinge joint, Y-axis rotation (body 2)
-        - Joint 5 (bfoot): Hinge joint, Y-axis rotation (body 3)
-        - Joint 6 (fthigh): Hinge joint, Y-axis rotation (body 4)
-        - Joint 7 (fshin): Hinge joint, Y-axis rotation (body 5)
-        - Joint 8 (ffoot): Hinge joint, Y-axis rotation (body 6)
+        - Joint 3 (bthigh): Hinge joint, Y-axis rotation (body 1), range [-0.52, 1.05]
+        - Joint 4 (bshin): Hinge joint, Y-axis rotation (body 2), range [-0.785, 0.785]
+        - Joint 5 (bfoot): Hinge joint, Y-axis rotation (body 3), range [-0.4, 0.785]
+        - Joint 6 (fthigh): Hinge joint, Y-axis rotation (body 4), range [-1.0, 0.7]
+        - Joint 7 (fshin): Hinge joint, Y-axis rotation (body 5), range [-1.2, 0.87]
+        - Joint 8 (ffoot): Hinge joint, Y-axis rotation (body 6), range [-0.5, 0.5]
+        - Joint 9 (head): Hinge joint, Y-axis rotation (body 7), range [0, 0] (fixed)
 
     State (qpos, qvel):
         - qpos[0]: rootx (x position)
@@ -179,12 +248,13 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
         - qpos[2]: rooty (pitch angle)
         - qpos[3-5]: back leg joint angles (bthigh, bshin, bfoot)
         - qpos[6-8]: front leg joint angles (fthigh, fshin, ffoot)
-        - qvel[0:9]: corresponding velocities
+        - qpos[9]: head angle (fixed at 0)
+        - qvel[0:10]: corresponding velocities
 
     Observation Space (17 dimensions):
-        Excludes qpos[0] (rootx) for translation invariance.
+        Excludes qpos[0] (rootx) and head for translation invariance.
         [0:8]: qpos[1:9] (z, rooty, 6 joint angles)
-        [8:17]: qvel[0:9] (all velocities including rootx velocity)
+        [8:17]: qvel[0:9] (all velocities excluding head)
 
     Action Space (6 dimensions):
         [0] bthigh torque (scaled by gear ratio 120)
@@ -544,6 +614,56 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
             quat=(quat_90y_x, quat_90y_y, quat_90y_z, quat_90y_w),
         )
 
+        # =====================================================================
+        # Body 7: Head - tilted capsule at front of torso
+        # MuJoCo XML: pos=".6 0 .1" axisangle="0 1 0 .87"
+        # Position relative to torso center, with 0.87 rad Y rotation
+        # =====================================================================
+        var head_half = Scalar[Self.DTYPE](HEAD_HALF_LENGTH)
+        var head_mass = Scalar[Self.DTYPE](HEAD_MASS)
+        var head_inertia = compute_capsule_inertia(head_mass, radius, head_half)
+        self.model.set_body(
+            BODY_HEAD, mass=head_mass, inertia=head_inertia, radius=radius
+        )
+        self.model.set_body_parent(BODY_HEAD, BODY_TORSO)
+        self.model.body_geom_type[BODY_HEAD] = GC_GEOM_CAPSULE
+        self.model.body_half_length[BODY_HEAD] = head_half
+
+        # Head position: MuJoCo pos=".6 0 .1" relative to torso center
+        # Torso has 90° Y rotation, so world coords map:
+        #   world_x -> torso_local_z, world_z -> -torso_local_x
+        # FK formula: child_center = pivot + rotate(parent_quat, body_pos + (0,0,parent_half))
+        # pivot = torso_center + (-0.5, 0, 0) [world]
+        # We want head at torso_center + (0.6, 0, 0.1) [world]
+        # So: rotate(quat_90y, (px, py, pz + 0.5)) = (1.1, 0, 0.1)
+        # With 90°Y: (pz+0.5, py, -px) = (1.1, 0, 0.1)
+        # Solution: pz = 0.6, py = 0, px = -0.1
+        var head_pos_x = Scalar[Self.DTYPE](-HEAD_POS_Z)  # -0.1
+        var head_pos_y = Scalar[Self.DTYPE](HEAD_POS_Y)  # 0.0
+        var head_pos_z = Scalar[Self.DTYPE](HEAD_POS_X)  # 0.6
+
+        # Head rotation: MuJoCo has 0.87 rad Y in world frame
+        # But torso already has 90° Y rotation, so head inherits that.
+        # To get final world rotation of 0.87 rad Y, we need:
+        # head_body_quat = inverse(torso_90Y) * target_0.87Y
+        # = (0.87 - π/2) rad Y ≈ -0.7 rad Y
+        # quat for -0.7 rad Y: (0, sin(-0.35), 0, cos(-0.35)) = (0, -0.343, 0, 0.939)
+        var head_angle = Scalar[Self.DTYPE](
+            HEAD_AXIS_ANGLE - 1.5707963268
+        )  # 0.87 - π/2 ≈ -0.7
+        var head_sin = sin(head_angle / Scalar[Self.DTYPE](2.0))
+        var head_cos = cos(head_angle / Scalar[Self.DTYPE](2.0))
+        self.model.set_body_local_frame(
+            BODY_HEAD,
+            pos=(head_pos_x, head_pos_y, head_pos_z),
+            quat=(
+                Scalar[Self.DTYPE](0.0),
+                head_sin,
+                Scalar[Self.DTYPE](0.0),
+                head_cos,
+            ),
+        )
+
     fn _setup_joints(mut self):
         """Configure all joints (root DOFs and actuated joints)."""
         # =====================================================================
@@ -617,6 +737,8 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
                 Scalar[Self.DTYPE](0.0),
             ),
             tau_limit=Scalar[Self.DTYPE](BTHIGH_GEAR),
+            range_min=Scalar[Self.DTYPE](BTHIGH_LOWER),
+            range_max=Scalar[Self.DTYPE](BTHIGH_UPPER),
         )
 
         # =====================================================================
@@ -636,6 +758,8 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
                 Scalar[Self.DTYPE](0.0),
             ),
             tau_limit=Scalar[Self.DTYPE](BSHIN_GEAR),
+            range_min=Scalar[Self.DTYPE](BSHIN_LOWER),
+            range_max=Scalar[Self.DTYPE](BSHIN_UPPER),
         )
 
         # =====================================================================
@@ -655,6 +779,8 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
                 Scalar[Self.DTYPE](0.0),
             ),
             tau_limit=Scalar[Self.DTYPE](BFOOT_GEAR),
+            range_min=Scalar[Self.DTYPE](BFOOT_LOWER),
+            range_max=Scalar[Self.DTYPE](BFOOT_UPPER),
         )
 
         # =====================================================================
@@ -674,6 +800,8 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
                 Scalar[Self.DTYPE](0.0),
             ),
             tau_limit=Scalar[Self.DTYPE](FTHIGH_GEAR),
+            range_min=Scalar[Self.DTYPE](FTHIGH_LOWER),
+            range_max=Scalar[Self.DTYPE](FTHIGH_UPPER),
         )
 
         # =====================================================================
@@ -693,6 +821,8 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
                 Scalar[Self.DTYPE](0.0),
             ),
             tau_limit=Scalar[Self.DTYPE](FSHIN_GEAR),
+            range_min=Scalar[Self.DTYPE](FSHIN_LOWER),
+            range_max=Scalar[Self.DTYPE](FSHIN_UPPER),
         )
 
         # =====================================================================
@@ -712,6 +842,31 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
                 Scalar[Self.DTYPE](0.0),
             ),
             tau_limit=Scalar[Self.DTYPE](FFOOT_GEAR),
+            range_min=Scalar[Self.DTYPE](FFOOT_LOWER),
+            range_max=Scalar[Self.DTYPE](FFOOT_UPPER),
+        )
+
+        # =====================================================================
+        # Joint 9: head - Head hinge (body 7) - FIXED joint (zero range)
+        # Attaches at head position on torso, zero range makes it rigid
+        # Joint pos is in parent (torso) frame. Torso has 90°Y rotation.
+        # World pos (0.6, 0, 0.1) -> torso local (-0.1, 0, 0.6)
+        # =====================================================================
+        _ = self.model.add_hinge_joint(
+            body_id=BODY_HEAD,
+            pos=(
+                Scalar[Self.DTYPE](-HEAD_POS_Z),  # -0.1 (world z -> -local x)
+                Scalar[Self.DTYPE](HEAD_POS_Y),  # 0.0
+                Scalar[Self.DTYPE](HEAD_POS_X),  # 0.6 (world x -> local z)
+            ),
+            axis=(
+                Scalar[Self.DTYPE](0.0),
+                Scalar[Self.DTYPE](1.0),
+                Scalar[Self.DTYPE](0.0),
+            ),
+            tau_limit=Scalar[Self.DTYPE](0.0),  # Not actuated
+            range_min=Scalar[Self.DTYPE](HEAD_LOWER),
+            range_max=Scalar[Self.DTYPE](HEAD_UPPER),
         )
 
     # =========================================================================
@@ -730,6 +885,7 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
         self.data.qpos[JOINT_FTHIGH] = Scalar[Self.DTYPE](0.0)  # fthigh
         self.data.qpos[JOINT_FSHIN] = Scalar[Self.DTYPE](0.0)  # fshin
         self.data.qpos[JOINT_FFOOT] = Scalar[Self.DTYPE](0.0)  # ffoot
+        self.data.qpos[JOINT_HEAD] = Scalar[Self.DTYPE](0.0)  # head (fixed)
 
         # Reset qvel
         for i in range(Self.NV):
@@ -1087,17 +1243,17 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
     # Position/State Accessors
     # =========================================================================
 
-    fn get_qpos(self) -> InlineArray[Scalar[Self.DTYPE], 9]:
-        """Get full qpos array."""
-        var qpos = InlineArray[Scalar[Self.DTYPE], 9](uninitialized=True)
-        for i in range(9):
+    fn get_qpos(self) -> InlineArray[Scalar[Self.DTYPE], 10]:
+        """Get full qpos array (10 DOFs including head)."""
+        var qpos = InlineArray[Scalar[Self.DTYPE], 10](uninitialized=True)
+        for i in range(10):
             qpos[i] = self.data.qpos[i]
         return qpos^
 
-    fn get_qvel(self) -> InlineArray[Scalar[Self.DTYPE], 9]:
-        """Get full qvel array."""
-        var qvel = InlineArray[Scalar[Self.DTYPE], 9](uninitialized=True)
-        for i in range(9):
+    fn get_qvel(self) -> InlineArray[Scalar[Self.DTYPE], 10]:
+        """Get full qvel array (10 DOFs including head)."""
+        var qvel = InlineArray[Scalar[Self.DTYPE], 10](uninitialized=True)
+        for i in range(10):
             qvel[i] = self.data.qvel[i]
         return qvel^
 
@@ -1247,7 +1403,6 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
 
     # =========================================================================
     # GPUContinuousEnv Interface (Static GPU Kernels)
-    # Note: GPU support can be added following the HopperGC pattern
     # =========================================================================
 
     @staticmethod
@@ -1256,6 +1411,7 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
         STATE_SIZE_VAL: Int,
         OBS_DIM_VAL: Int,
         ACTION_DIM_VAL: Int,
+        MAX_STEPS_VAL: Int = 1000,
     ](
         ctx: DeviceContext,
         mut states_buf: DeviceBuffer[gpu_dtype],
@@ -1266,9 +1422,60 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
         rng_seed: UInt64 = 0,
         curriculum_values: List[Scalar[gpu_dtype]] = [],
     ) raises:
-        """Batched GPU step function - placeholder for future implementation."""
-        # TODO: Implement GPU physics step following HopperGC pattern
-        pass
+        """Batched GPU step function using GC physics engine.
+
+        Uses SemiImplicitEulerIntegrator.step_gpu for physics.
+        """
+
+        # Create model buffer on GPU
+        comptime MODEL_SIZE = gc_model_size[
+            HalfCheetahGC.NUM_BODIES, HalfCheetahGC.NUM_JOINTS
+        ]()
+        var model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
+
+        # Initialize model buffer with default physics params
+        Self._init_model_gpu(ctx, model_buf)
+        ctx.synchronize()
+
+        # Apply actions to qfrc in state buffer
+        Self._apply_actions_gpu[BATCH_SIZE, STATE_SIZE_VAL, ACTION_DIM_VAL](
+            ctx, states_buf, actions_buf
+        )
+
+        # Run GC physics step
+        SemiImplicitEulerIntegrator.step_gpu[
+            gpu_dtype,
+            Self.NQ,
+            Self.NV,
+            Self.NUM_BODIES,
+            Self.NUM_JOINTS,
+            Self.MAX_CONTACTS,
+            BATCH_SIZE,
+        ](
+            ctx,
+            states_buf,
+            model_buf,
+            dt=Scalar[gpu_dtype](0.002),
+            gravity_z=Scalar[gpu_dtype](-9.81),
+            ground_z=Scalar[gpu_dtype](0.0),
+        )
+
+        # Extract observations, compute rewards, check termination
+        Self._extract_obs_rewards_dones_gpu[
+            BATCH_SIZE,
+            STATE_SIZE_VAL,
+            MODEL_SIZE,
+            OBS_DIM_VAL,
+            MAX_STEPS_VAL,
+        ](
+            ctx,
+            states_buf,
+            model_buf,
+            actions_buf,
+            rewards_buf,
+            dones_buf,
+            obs_buf,
+        )
 
     @staticmethod
     fn reset_kernel_gpu[
@@ -1279,10 +1486,80 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
         mut states_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64 = 0,
     ) raises:
-        """Reset all environments on GPU - placeholder for future implementation.
+        """Reset all environments on GPU.
+
+        Also runs forward kinematics to compute xpos/xquat, matching CPU behavior.
         """
-        # TODO: Implement GPU reset following HopperGC pattern
-        pass
+        var states = LayoutTensor[
+            gpu_dtype,
+            Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
+            MutAnyOrigin,
+        ](states_buf.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
+
+        @always_inline
+        fn reset_wrapper(
+            states: LayoutTensor[
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
+                MutAnyOrigin,
+            ],
+            seed: Int,
+        ):
+            var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if i >= BATCH_SIZE:
+                return
+            Self._reset_env_gpu[BATCH_SIZE, STATE_SIZE_VAL](states, i, seed)
+
+        ctx.enqueue_function[reset_wrapper, reset_wrapper](
+            states,
+            Int(rng_seed),
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        # Run forward kinematics to compute xpos/xquat (matching CPU behavior)
+        comptime MODEL_SIZE = gc_model_size[Self.NUM_BODIES, Self.NUM_JOINTS]()
+        var model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
+        Self._init_model_gpu(ctx, model_buf)
+
+        var model = LayoutTensor[
+            gpu_dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+        ](model_buf.unsafe_ptr())
+
+        @always_inline
+        fn fk_wrapper(
+            states: LayoutTensor[
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
+                MutAnyOrigin,
+            ],
+            model: LayoutTensor[
+                gpu_dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+            ],
+        ):
+            var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if i >= BATCH_SIZE:
+                return
+            forward_kinematics_gpu[
+                gpu_dtype,
+                Self.NQ,
+                Self.NV,
+                Self.NUM_BODIES,
+                Self.NUM_JOINTS,
+                Self.MAX_CONTACTS,
+                STATE_SIZE_VAL,
+                MODEL_SIZE,
+                BATCH_SIZE,
+            ](i, states, model)
+
+        ctx.enqueue_function[fk_wrapper, fk_wrapper](
+            states,
+            model,
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )
 
     @staticmethod
     fn selective_reset_kernel_gpu[
@@ -1294,7 +1571,1006 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
         mut dones_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64,
     ) raises:
-        """Reset only done environments on GPU - placeholder for future implementation.
+        """Reset only done environments on GPU.
+
+        Also runs forward kinematics for reset environments, matching CPU behavior.
         """
-        # TODO: Implement GPU selective reset following HopperGC pattern
-        pass
+        var states = LayoutTensor[
+            gpu_dtype,
+            Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
+            MutAnyOrigin,
+        ](states_buf.unsafe_ptr())
+        var dones = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ](dones_buf.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
+
+        # Create model buffer for FK
+        comptime MODEL_SIZE = gc_model_size[Self.NUM_BODIES, Self.NUM_JOINTS]()
+        var model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
+        Self._init_model_gpu(ctx, model_buf)
+
+        var model = LayoutTensor[
+            gpu_dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+        ](model_buf.unsafe_ptr())
+
+        @always_inline
+        fn selective_reset_with_fk_wrapper(
+            states: LayoutTensor[
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
+                MutAnyOrigin,
+            ],
+            dones: LayoutTensor[
+                gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
+            model: LayoutTensor[
+                gpu_dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+            ],
+            seed: Int,
+        ):
+            var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if i >= BATCH_SIZE:
+                return
+            if dones[i] > Scalar[gpu_dtype](0.5):
+                Self._reset_env_gpu[BATCH_SIZE, STATE_SIZE_VAL](states, i, seed)
+                # Run FK for this environment to compute xpos/xquat
+                forward_kinematics_gpu[
+                    gpu_dtype,
+                    Self.NQ,
+                    Self.NV,
+                    Self.NUM_BODIES,
+                    Self.NUM_JOINTS,
+                    Self.MAX_CONTACTS,
+                    STATE_SIZE_VAL,
+                    MODEL_SIZE,
+                    BATCH_SIZE,
+                ](i, states, model)
+                dones[i] = Scalar[gpu_dtype](0.0)
+
+        ctx.enqueue_function[
+            selective_reset_with_fk_wrapper, selective_reset_with_fk_wrapper
+        ](
+            states,
+            dones,
+            model,
+            Int(rng_seed),
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+    # =========================================================================
+    # GPU Helper Functions
+    # =========================================================================
+
+    @staticmethod
+    fn _init_model_gpu(
+        ctx: DeviceContext,
+        mut model_buf: DeviceBuffer[gpu_dtype],
+    ) raises:
+        """Initialize model buffer with HalfCheetahGC parameters for GC physics engine.
+
+        Uses HalfCheetahGCConstants for all body dimensions and joint limits.
+        """
+        comptime C = HalfCheetahGCConstants[gpu_dtype]
+
+        comptime MODEL_SIZE = gc_model_size[
+            HalfCheetahGC.NUM_BODIES, HalfCheetahGC.NUM_JOINTS
+        ]()
+
+        var model_host = List[Scalar[gpu_dtype]](capacity=MODEL_SIZE)
+        for _ in range(MODEL_SIZE):
+            model_host.append(Scalar[gpu_dtype](0.0))
+
+        # Body dimensions from constants
+        var capsule_radius = C.CAPSULE_RADIUS
+        var torso_half = C.TORSO_HALF_LENGTH
+        var head_half = C.HEAD_HALF_LENGTH
+        var bthigh_half = C.BTHIGH_HALF_LENGTH
+        var bshin_half = C.BSHIN_HALF_LENGTH
+        var bfoot_half = C.BFOOT_HALF_LENGTH
+        var fthigh_half = C.FTHIGH_HALF_LENGTH
+        var fshin_half = C.FSHIN_HALF_LENGTH
+        var ffoot_half = C.FFOOT_HALF_LENGTH
+
+        # Helper to compute capsule inertia
+        fn compute_capsule_inertia(
+            mass: Scalar[gpu_dtype],
+            radius: Scalar[gpu_dtype],
+            half_length: Scalar[gpu_dtype],
+        ) -> Tuple[Scalar[gpu_dtype], Scalar[gpu_dtype], Scalar[gpu_dtype]]:
+            var r2 = radius * radius
+            var L = (
+                Scalar[gpu_dtype](2.0) * half_length
+                + Scalar[gpu_dtype](2.0) * radius
+            )
+            var L2 = L * L
+            var I_trans = (
+                mass
+                * (Scalar[gpu_dtype](3.0) * r2 + L2)
+                / Scalar[gpu_dtype](12.0)
+            )
+            var I_axial = Scalar[gpu_dtype](0.5) * mass * r2
+            return (I_trans, I_trans, I_axial)
+
+        # Quaternion for 90° Y rotation (makes capsule horizontal)
+        var quat_90y_x = Scalar[gpu_dtype](0.0)
+        var quat_90y_y = Scalar[gpu_dtype](0.70710678)
+        var quat_90y_z = Scalar[gpu_dtype](0.0)
+        var quat_90y_w = Scalar[gpu_dtype](0.70710678)
+
+        # Quaternion for -90° Y rotation
+        var quat_neg90y_x = Scalar[gpu_dtype](0.0)
+        var quat_neg90y_y = Scalar[gpu_dtype](-0.70710678)
+        var quat_neg90y_z = Scalar[gpu_dtype](0.0)
+        var quat_neg90y_w = Scalar[gpu_dtype](0.70710678)
+
+        # =================================================================
+        # Body 0: Torso (horizontal, 90° Y rotation)
+        # =================================================================
+        var b0 = gc_model_body_offset(0)
+        var torso_mass = C.TORSO_MASS
+        var torso_inertia = compute_capsule_inertia(
+            torso_mass, capsule_radius, torso_half
+        )
+
+        model_host[b0 + GC_BODY_IDX_MASS] = torso_mass
+        model_host[b0 + GC_BODY_IDX_INV_MASS] = (
+            Scalar[gpu_dtype](1.0) / torso_mass
+        )
+        model_host[b0 + GC_BODY_IDX_IXX] = torso_inertia[0]
+        model_host[b0 + GC_BODY_IDX_IYY] = torso_inertia[1]
+        model_host[b0 + GC_BODY_IDX_IZZ] = torso_inertia[2]
+        model_host[b0 + GC_BODY_IDX_INV_IXX] = (
+            Scalar[gpu_dtype](1.0) / torso_inertia[0]
+        )
+        model_host[b0 + GC_BODY_IDX_INV_IYY] = (
+            Scalar[gpu_dtype](1.0) / torso_inertia[1]
+        )
+        model_host[b0 + GC_BODY_IDX_INV_IZZ] = (
+            Scalar[gpu_dtype](1.0) / torso_inertia[2]
+        )
+        model_host[b0 + GC_BODY_IDX_POS_X] = Scalar[gpu_dtype](0.0)
+        model_host[b0 + GC_BODY_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
+        model_host[b0 + GC_BODY_IDX_POS_Z] = Scalar[gpu_dtype](0.0)
+        model_host[b0 + GC_BODY_IDX_QUAT_X] = quat_90y_x
+        model_host[b0 + GC_BODY_IDX_QUAT_Y] = quat_90y_y
+        model_host[b0 + GC_BODY_IDX_QUAT_Z] = quat_90y_z
+        model_host[b0 + GC_BODY_IDX_QUAT_W] = quat_90y_w
+        model_host[b0 + GC_BODY_IDX_PARENT] = Scalar[gpu_dtype](-1)  # World
+        model_host[b0 + GC_BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](GC_GEOM_CAPSULE)
+        model_host[b0 + GC_BODY_IDX_RADIUS] = capsule_radius
+        model_host[b0 + GC_BODY_IDX_HALF_LENGTH] = torso_half
+
+        # =================================================================
+        # Body 1: Back Thigh (vertical, at back of torso)
+        # =================================================================
+        var b1 = gc_model_body_offset(1)
+        var bthigh_mass = C.BTHIGH_MASS
+        var bthigh_inertia = compute_capsule_inertia(
+            bthigh_mass, capsule_radius, bthigh_half
+        )
+
+        model_host[b1 + GC_BODY_IDX_MASS] = bthigh_mass
+        model_host[b1 + GC_BODY_IDX_INV_MASS] = (
+            Scalar[gpu_dtype](1.0) / bthigh_mass
+        )
+        model_host[b1 + GC_BODY_IDX_IXX] = bthigh_inertia[0]
+        model_host[b1 + GC_BODY_IDX_IYY] = bthigh_inertia[1]
+        model_host[b1 + GC_BODY_IDX_IZZ] = bthigh_inertia[2]
+        model_host[b1 + GC_BODY_IDX_INV_IXX] = (
+            Scalar[gpu_dtype](1.0) / bthigh_inertia[0]
+        )
+        model_host[b1 + GC_BODY_IDX_INV_IYY] = (
+            Scalar[gpu_dtype](1.0) / bthigh_inertia[1]
+        )
+        model_host[b1 + GC_BODY_IDX_INV_IZZ] = (
+            Scalar[gpu_dtype](1.0) / bthigh_inertia[2]
+        )
+        # body_pos in torso frame: (bthigh_half, 0, -torso_half)
+        model_host[b1 + GC_BODY_IDX_POS_X] = bthigh_half
+        model_host[b1 + GC_BODY_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
+        model_host[b1 + GC_BODY_IDX_POS_Z] = -torso_half
+        model_host[b1 + GC_BODY_IDX_QUAT_X] = quat_neg90y_x
+        model_host[b1 + GC_BODY_IDX_QUAT_Y] = quat_neg90y_y
+        model_host[b1 + GC_BODY_IDX_QUAT_Z] = quat_neg90y_z
+        model_host[b1 + GC_BODY_IDX_QUAT_W] = quat_neg90y_w
+        model_host[b1 + GC_BODY_IDX_PARENT] = Scalar[gpu_dtype](0)  # Torso
+        model_host[b1 + GC_BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](GC_GEOM_CAPSULE)
+        model_host[b1 + GC_BODY_IDX_RADIUS] = capsule_radius
+        model_host[b1 + GC_BODY_IDX_HALF_LENGTH] = bthigh_half
+
+        # =================================================================
+        # Body 2: Back Shin (vertical, below bthigh)
+        # =================================================================
+        var b2 = gc_model_body_offset(2)
+        var bshin_mass = C.BSHIN_MASS
+        var bshin_inertia = compute_capsule_inertia(
+            bshin_mass, capsule_radius, bshin_half
+        )
+
+        model_host[b2 + GC_BODY_IDX_MASS] = bshin_mass
+        model_host[b2 + GC_BODY_IDX_INV_MASS] = (
+            Scalar[gpu_dtype](1.0) / bshin_mass
+        )
+        model_host[b2 + GC_BODY_IDX_IXX] = bshin_inertia[0]
+        model_host[b2 + GC_BODY_IDX_IYY] = bshin_inertia[1]
+        model_host[b2 + GC_BODY_IDX_IZZ] = bshin_inertia[2]
+        model_host[b2 + GC_BODY_IDX_INV_IXX] = (
+            Scalar[gpu_dtype](1.0) / bshin_inertia[0]
+        )
+        model_host[b2 + GC_BODY_IDX_INV_IYY] = (
+            Scalar[gpu_dtype](1.0) / bshin_inertia[1]
+        )
+        model_host[b2 + GC_BODY_IDX_INV_IZZ] = (
+            Scalar[gpu_dtype](1.0) / bshin_inertia[2]
+        )
+        model_host[b2 + GC_BODY_IDX_POS_X] = Scalar[gpu_dtype](0.0)
+        model_host[b2 + GC_BODY_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
+        model_host[b2 + GC_BODY_IDX_POS_Z] = -(bthigh_half + bshin_half)
+        model_host[b2 + GC_BODY_IDX_QUAT_X] = Scalar[gpu_dtype](0.0)
+        model_host[b2 + GC_BODY_IDX_QUAT_Y] = Scalar[gpu_dtype](0.0)
+        model_host[b2 + GC_BODY_IDX_QUAT_Z] = Scalar[gpu_dtype](0.0)
+        model_host[b2 + GC_BODY_IDX_QUAT_W] = Scalar[gpu_dtype](1.0)
+        model_host[b2 + GC_BODY_IDX_PARENT] = Scalar[gpu_dtype](1)  # BThigh
+        model_host[b2 + GC_BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](GC_GEOM_CAPSULE)
+        model_host[b2 + GC_BODY_IDX_RADIUS] = capsule_radius
+        model_host[b2 + GC_BODY_IDX_HALF_LENGTH] = bshin_half
+
+        # =================================================================
+        # Body 3: Back Foot (horizontal)
+        # =================================================================
+        var b3 = gc_model_body_offset(3)
+        var bfoot_mass = C.BFOOT_MASS
+        var bfoot_inertia = compute_capsule_inertia(
+            bfoot_mass, capsule_radius, bfoot_half
+        )
+
+        model_host[b3 + GC_BODY_IDX_MASS] = bfoot_mass
+        model_host[b3 + GC_BODY_IDX_INV_MASS] = (
+            Scalar[gpu_dtype](1.0) / bfoot_mass
+        )
+        model_host[b3 + GC_BODY_IDX_IXX] = bfoot_inertia[0]
+        model_host[b3 + GC_BODY_IDX_IYY] = bfoot_inertia[1]
+        model_host[b3 + GC_BODY_IDX_IZZ] = bfoot_inertia[2]
+        model_host[b3 + GC_BODY_IDX_INV_IXX] = (
+            Scalar[gpu_dtype](1.0) / bfoot_inertia[0]
+        )
+        model_host[b3 + GC_BODY_IDX_INV_IYY] = (
+            Scalar[gpu_dtype](1.0) / bfoot_inertia[1]
+        )
+        model_host[b3 + GC_BODY_IDX_INV_IZZ] = (
+            Scalar[gpu_dtype](1.0) / bfoot_inertia[2]
+        )
+        model_host[b3 + GC_BODY_IDX_POS_X] = Scalar[gpu_dtype](0.0)
+        model_host[b3 + GC_BODY_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
+        model_host[b3 + GC_BODY_IDX_POS_Z] = -bshin_half
+        model_host[b3 + GC_BODY_IDX_QUAT_X] = quat_90y_x
+        model_host[b3 + GC_BODY_IDX_QUAT_Y] = quat_90y_y
+        model_host[b3 + GC_BODY_IDX_QUAT_Z] = quat_90y_z
+        model_host[b3 + GC_BODY_IDX_QUAT_W] = quat_90y_w
+        model_host[b3 + GC_BODY_IDX_PARENT] = Scalar[gpu_dtype](2)  # BShin
+        model_host[b3 + GC_BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](GC_GEOM_CAPSULE)
+        model_host[b3 + GC_BODY_IDX_RADIUS] = capsule_radius
+        model_host[b3 + GC_BODY_IDX_HALF_LENGTH] = bfoot_half
+
+        # =================================================================
+        # Body 4: Front Thigh (vertical, at front of torso)
+        # =================================================================
+        var b4 = gc_model_body_offset(4)
+        var fthigh_mass = C.FTHIGH_MASS
+        var fthigh_inertia = compute_capsule_inertia(
+            fthigh_mass, capsule_radius, fthigh_half
+        )
+
+        model_host[b4 + GC_BODY_IDX_MASS] = fthigh_mass
+        model_host[b4 + GC_BODY_IDX_INV_MASS] = (
+            Scalar[gpu_dtype](1.0) / fthigh_mass
+        )
+        model_host[b4 + GC_BODY_IDX_IXX] = fthigh_inertia[0]
+        model_host[b4 + GC_BODY_IDX_IYY] = fthigh_inertia[1]
+        model_host[b4 + GC_BODY_IDX_IZZ] = fthigh_inertia[2]
+        model_host[b4 + GC_BODY_IDX_INV_IXX] = (
+            Scalar[gpu_dtype](1.0) / fthigh_inertia[0]
+        )
+        model_host[b4 + GC_BODY_IDX_INV_IYY] = (
+            Scalar[gpu_dtype](1.0) / fthigh_inertia[1]
+        )
+        model_host[b4 + GC_BODY_IDX_INV_IZZ] = (
+            Scalar[gpu_dtype](1.0) / fthigh_inertia[2]
+        )
+        # body_pos in torso frame: (fthigh_half, 0, torso_half)
+        model_host[b4 + GC_BODY_IDX_POS_X] = fthigh_half
+        model_host[b4 + GC_BODY_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
+        model_host[b4 + GC_BODY_IDX_POS_Z] = torso_half
+        model_host[b4 + GC_BODY_IDX_QUAT_X] = quat_neg90y_x
+        model_host[b4 + GC_BODY_IDX_QUAT_Y] = quat_neg90y_y
+        model_host[b4 + GC_BODY_IDX_QUAT_Z] = quat_neg90y_z
+        model_host[b4 + GC_BODY_IDX_QUAT_W] = quat_neg90y_w
+        model_host[b4 + GC_BODY_IDX_PARENT] = Scalar[gpu_dtype](0)  # Torso
+        model_host[b4 + GC_BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](GC_GEOM_CAPSULE)
+        model_host[b4 + GC_BODY_IDX_RADIUS] = capsule_radius
+        model_host[b4 + GC_BODY_IDX_HALF_LENGTH] = fthigh_half
+
+        # =================================================================
+        # Body 5: Front Shin (vertical, below fthigh)
+        # =================================================================
+        var b5 = gc_model_body_offset(5)
+        var fshin_mass = C.FSHIN_MASS
+        var fshin_inertia = compute_capsule_inertia(
+            fshin_mass, capsule_radius, fshin_half
+        )
+
+        model_host[b5 + GC_BODY_IDX_MASS] = fshin_mass
+        model_host[b5 + GC_BODY_IDX_INV_MASS] = (
+            Scalar[gpu_dtype](1.0) / fshin_mass
+        )
+        model_host[b5 + GC_BODY_IDX_IXX] = fshin_inertia[0]
+        model_host[b5 + GC_BODY_IDX_IYY] = fshin_inertia[1]
+        model_host[b5 + GC_BODY_IDX_IZZ] = fshin_inertia[2]
+        model_host[b5 + GC_BODY_IDX_INV_IXX] = (
+            Scalar[gpu_dtype](1.0) / fshin_inertia[0]
+        )
+        model_host[b5 + GC_BODY_IDX_INV_IYY] = (
+            Scalar[gpu_dtype](1.0) / fshin_inertia[1]
+        )
+        model_host[b5 + GC_BODY_IDX_INV_IZZ] = (
+            Scalar[gpu_dtype](1.0) / fshin_inertia[2]
+        )
+        model_host[b5 + GC_BODY_IDX_POS_X] = Scalar[gpu_dtype](0.0)
+        model_host[b5 + GC_BODY_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
+        model_host[b5 + GC_BODY_IDX_POS_Z] = -(fthigh_half + fshin_half)
+        model_host[b5 + GC_BODY_IDX_QUAT_X] = Scalar[gpu_dtype](0.0)
+        model_host[b5 + GC_BODY_IDX_QUAT_Y] = Scalar[gpu_dtype](0.0)
+        model_host[b5 + GC_BODY_IDX_QUAT_Z] = Scalar[gpu_dtype](0.0)
+        model_host[b5 + GC_BODY_IDX_QUAT_W] = Scalar[gpu_dtype](1.0)
+        model_host[b5 + GC_BODY_IDX_PARENT] = Scalar[gpu_dtype](4)  # FThigh
+        model_host[b5 + GC_BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](GC_GEOM_CAPSULE)
+        model_host[b5 + GC_BODY_IDX_RADIUS] = capsule_radius
+        model_host[b5 + GC_BODY_IDX_HALF_LENGTH] = fshin_half
+
+        # =================================================================
+        # Body 6: Front Foot (horizontal)
+        # =================================================================
+        var b6 = gc_model_body_offset(6)
+        var ffoot_mass = C.FFOOT_MASS
+        var ffoot_inertia = compute_capsule_inertia(
+            ffoot_mass, capsule_radius, ffoot_half
+        )
+
+        model_host[b6 + GC_BODY_IDX_MASS] = ffoot_mass
+        model_host[b6 + GC_BODY_IDX_INV_MASS] = (
+            Scalar[gpu_dtype](1.0) / ffoot_mass
+        )
+        model_host[b6 + GC_BODY_IDX_IXX] = ffoot_inertia[0]
+        model_host[b6 + GC_BODY_IDX_IYY] = ffoot_inertia[1]
+        model_host[b6 + GC_BODY_IDX_IZZ] = ffoot_inertia[2]
+        model_host[b6 + GC_BODY_IDX_INV_IXX] = (
+            Scalar[gpu_dtype](1.0) / ffoot_inertia[0]
+        )
+        model_host[b6 + GC_BODY_IDX_INV_IYY] = (
+            Scalar[gpu_dtype](1.0) / ffoot_inertia[1]
+        )
+        model_host[b6 + GC_BODY_IDX_INV_IZZ] = (
+            Scalar[gpu_dtype](1.0) / ffoot_inertia[2]
+        )
+        model_host[b6 + GC_BODY_IDX_POS_X] = Scalar[gpu_dtype](0.0)
+        model_host[b6 + GC_BODY_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
+        model_host[b6 + GC_BODY_IDX_POS_Z] = -fshin_half
+        model_host[b6 + GC_BODY_IDX_QUAT_X] = quat_90y_x
+        model_host[b6 + GC_BODY_IDX_QUAT_Y] = quat_90y_y
+        model_host[b6 + GC_BODY_IDX_QUAT_Z] = quat_90y_z
+        model_host[b6 + GC_BODY_IDX_QUAT_W] = quat_90y_w
+        model_host[b6 + GC_BODY_IDX_PARENT] = Scalar[gpu_dtype](5)  # FShin
+        model_host[b6 + GC_BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](GC_GEOM_CAPSULE)
+        model_host[b6 + GC_BODY_IDX_RADIUS] = capsule_radius
+        model_host[b6 + GC_BODY_IDX_HALF_LENGTH] = ffoot_half
+
+        # =================================================================
+        # Body 7: Head (tilted capsule at front of torso)
+        # =================================================================
+        var b7 = gc_model_body_offset(7)
+        var head_mass = C.HEAD_MASS
+        var head_inertia = compute_capsule_inertia(
+            head_mass, capsule_radius, head_half
+        )
+
+        model_host[b7 + GC_BODY_IDX_MASS] = head_mass
+        model_host[b7 + GC_BODY_IDX_INV_MASS] = (
+            Scalar[gpu_dtype](1.0) / head_mass
+        )
+        model_host[b7 + GC_BODY_IDX_IXX] = head_inertia[0]
+        model_host[b7 + GC_BODY_IDX_IYY] = head_inertia[1]
+        model_host[b7 + GC_BODY_IDX_IZZ] = head_inertia[2]
+        model_host[b7 + GC_BODY_IDX_INV_IXX] = (
+            Scalar[gpu_dtype](1.0) / head_inertia[0]
+        )
+        model_host[b7 + GC_BODY_IDX_INV_IYY] = (
+            Scalar[gpu_dtype](1.0) / head_inertia[1]
+        )
+        model_host[b7 + GC_BODY_IDX_INV_IZZ] = (
+            Scalar[gpu_dtype](1.0) / head_inertia[2]
+        )
+        # Head position in torso frame
+        var head_pos_x = -C.HEAD_POS_Z  # -0.1
+        var head_pos_y = C.HEAD_POS_Y  # 0.0
+        var head_pos_z = C.HEAD_POS_X  # 0.6
+        model_host[b7 + GC_BODY_IDX_POS_X] = head_pos_x
+        model_host[b7 + GC_BODY_IDX_POS_Y] = head_pos_y
+        model_host[b7 + GC_BODY_IDX_POS_Z] = head_pos_z
+        # Head rotation: 0.87 - π/2 ≈ -0.7 rad Y
+        var head_angle = C.HEAD_AXIS_ANGLE - Scalar[gpu_dtype](1.5707963268)
+        var head_sin = sin(head_angle / Scalar[gpu_dtype](2.0))
+        var head_cos = cos(head_angle / Scalar[gpu_dtype](2.0))
+        model_host[b7 + GC_BODY_IDX_QUAT_X] = Scalar[gpu_dtype](0.0)
+        model_host[b7 + GC_BODY_IDX_QUAT_Y] = head_sin
+        model_host[b7 + GC_BODY_IDX_QUAT_Z] = Scalar[gpu_dtype](0.0)
+        model_host[b7 + GC_BODY_IDX_QUAT_W] = head_cos
+        model_host[b7 + GC_BODY_IDX_PARENT] = Scalar[gpu_dtype](0)  # Torso
+        model_host[b7 + GC_BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](GC_GEOM_CAPSULE)
+        model_host[b7 + GC_BODY_IDX_RADIUS] = capsule_radius
+        model_host[b7 + GC_BODY_IDX_HALF_LENGTH] = head_half
+
+        # =================================================================
+        # Joint 0: RootX - Slide joint, X-axis translation (body 0)
+        # =================================================================
+        var j0 = gc_model_joint_offset[HalfCheetahGC.NUM_BODIES](0)
+        model_host[j0 + GC_JOINT_IDX_TYPE] = Scalar[gpu_dtype](GC_JNT_SLIDE)
+        model_host[j0 + GC_JOINT_IDX_BODY_ID] = Scalar[gpu_dtype](0)
+        model_host[j0 + GC_JOINT_IDX_QPOS_ADR] = Scalar[gpu_dtype](0)
+        model_host[j0 + GC_JOINT_IDX_DOF_ADR] = Scalar[gpu_dtype](0)
+        model_host[j0 + GC_JOINT_IDX_POS_X] = Scalar[gpu_dtype](0.0)
+        model_host[j0 + GC_JOINT_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
+        model_host[j0 + GC_JOINT_IDX_POS_Z] = Scalar[gpu_dtype](0.0)
+        model_host[j0 + GC_JOINT_IDX_AXIS_X] = Scalar[gpu_dtype](1.0)
+        model_host[j0 + GC_JOINT_IDX_AXIS_Y] = Scalar[gpu_dtype](0.0)
+        model_host[j0 + GC_JOINT_IDX_AXIS_Z] = Scalar[gpu_dtype](0.0)
+        model_host[j0 + GC_JOINT_IDX_TAU_LIMIT] = Scalar[gpu_dtype](0.0)
+        model_host[j0 + GC_JOINT_IDX_RANGE_MIN] = Scalar[gpu_dtype](-1e10)
+        model_host[j0 + GC_JOINT_IDX_RANGE_MAX] = Scalar[gpu_dtype](1e10)
+
+        # =================================================================
+        # Joint 1: RootZ - Slide joint, Z-axis translation (body 0)
+        # =================================================================
+        var j1 = gc_model_joint_offset[HalfCheetahGC.NUM_BODIES](1)
+        model_host[j1 + GC_JOINT_IDX_TYPE] = Scalar[gpu_dtype](GC_JNT_SLIDE)
+        model_host[j1 + GC_JOINT_IDX_BODY_ID] = Scalar[gpu_dtype](0)
+        model_host[j1 + GC_JOINT_IDX_QPOS_ADR] = Scalar[gpu_dtype](1)
+        model_host[j1 + GC_JOINT_IDX_DOF_ADR] = Scalar[gpu_dtype](1)
+        model_host[j1 + GC_JOINT_IDX_POS_X] = Scalar[gpu_dtype](0.0)
+        model_host[j1 + GC_JOINT_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
+        model_host[j1 + GC_JOINT_IDX_POS_Z] = Scalar[gpu_dtype](0.0)
+        model_host[j1 + GC_JOINT_IDX_AXIS_X] = Scalar[gpu_dtype](0.0)
+        model_host[j1 + GC_JOINT_IDX_AXIS_Y] = Scalar[gpu_dtype](0.0)
+        model_host[j1 + GC_JOINT_IDX_AXIS_Z] = Scalar[gpu_dtype](1.0)
+        model_host[j1 + GC_JOINT_IDX_TAU_LIMIT] = Scalar[gpu_dtype](0.0)
+        model_host[j1 + GC_JOINT_IDX_RANGE_MIN] = Scalar[gpu_dtype](-1e10)
+        model_host[j1 + GC_JOINT_IDX_RANGE_MAX] = Scalar[gpu_dtype](1e10)
+
+        # =================================================================
+        # Joint 2: RootY - Hinge joint, Y-axis rotation (body 0)
+        # =================================================================
+        var j2 = gc_model_joint_offset[HalfCheetahGC.NUM_BODIES](2)
+        model_host[j2 + GC_JOINT_IDX_TYPE] = Scalar[gpu_dtype](GC_JNT_HINGE)
+        model_host[j2 + GC_JOINT_IDX_BODY_ID] = Scalar[gpu_dtype](0)
+        model_host[j2 + GC_JOINT_IDX_QPOS_ADR] = Scalar[gpu_dtype](2)
+        model_host[j2 + GC_JOINT_IDX_DOF_ADR] = Scalar[gpu_dtype](2)
+        model_host[j2 + GC_JOINT_IDX_POS_X] = Scalar[gpu_dtype](0.0)
+        model_host[j2 + GC_JOINT_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
+        model_host[j2 + GC_JOINT_IDX_POS_Z] = Scalar[gpu_dtype](0.0)
+        model_host[j2 + GC_JOINT_IDX_AXIS_X] = Scalar[gpu_dtype](0.0)
+        model_host[j2 + GC_JOINT_IDX_AXIS_Y] = Scalar[gpu_dtype](1.0)
+        model_host[j2 + GC_JOINT_IDX_AXIS_Z] = Scalar[gpu_dtype](0.0)
+        model_host[j2 + GC_JOINT_IDX_TAU_LIMIT] = Scalar[gpu_dtype](0.0)
+        model_host[j2 + GC_JOINT_IDX_RANGE_MIN] = Scalar[gpu_dtype](-1e10)
+        model_host[j2 + GC_JOINT_IDX_RANGE_MAX] = Scalar[gpu_dtype](1e10)
+
+        # =================================================================
+        # Joint 3: BThigh - Hinge joint, Y-axis rotation (body 1)
+        # =================================================================
+        var j3 = gc_model_joint_offset[HalfCheetahGC.NUM_BODIES](3)
+        model_host[j3 + GC_JOINT_IDX_TYPE] = Scalar[gpu_dtype](GC_JNT_HINGE)
+        model_host[j3 + GC_JOINT_IDX_BODY_ID] = Scalar[gpu_dtype](1)
+        model_host[j3 + GC_JOINT_IDX_QPOS_ADR] = Scalar[gpu_dtype](3)
+        model_host[j3 + GC_JOINT_IDX_DOF_ADR] = Scalar[gpu_dtype](3)
+        model_host[j3 + GC_JOINT_IDX_POS_X] = Scalar[gpu_dtype](0.0)
+        model_host[j3 + GC_JOINT_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
+        model_host[j3 + GC_JOINT_IDX_POS_Z] = -torso_half
+        model_host[j3 + GC_JOINT_IDX_AXIS_X] = Scalar[gpu_dtype](0.0)
+        model_host[j3 + GC_JOINT_IDX_AXIS_Y] = Scalar[gpu_dtype](1.0)
+        model_host[j3 + GC_JOINT_IDX_AXIS_Z] = Scalar[gpu_dtype](0.0)
+        model_host[j3 + GC_JOINT_IDX_TAU_LIMIT] = C.BTHIGH_GEAR
+        model_host[j3 + GC_JOINT_IDX_RANGE_MIN] = C.BTHIGH_JOINT_MIN
+        model_host[j3 + GC_JOINT_IDX_RANGE_MAX] = C.BTHIGH_JOINT_MAX
+
+        # =================================================================
+        # Joint 4: BShin - Hinge joint, Y-axis rotation (body 2)
+        # =================================================================
+        var j4 = gc_model_joint_offset[HalfCheetahGC.NUM_BODIES](4)
+        model_host[j4 + GC_JOINT_IDX_TYPE] = Scalar[gpu_dtype](GC_JNT_HINGE)
+        model_host[j4 + GC_JOINT_IDX_BODY_ID] = Scalar[gpu_dtype](2)
+        model_host[j4 + GC_JOINT_IDX_QPOS_ADR] = Scalar[gpu_dtype](4)
+        model_host[j4 + GC_JOINT_IDX_DOF_ADR] = Scalar[gpu_dtype](4)
+        model_host[j4 + GC_JOINT_IDX_POS_X] = Scalar[gpu_dtype](0.0)
+        model_host[j4 + GC_JOINT_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
+        model_host[j4 + GC_JOINT_IDX_POS_Z] = -bthigh_half
+        model_host[j4 + GC_JOINT_IDX_AXIS_X] = Scalar[gpu_dtype](0.0)
+        model_host[j4 + GC_JOINT_IDX_AXIS_Y] = Scalar[gpu_dtype](1.0)
+        model_host[j4 + GC_JOINT_IDX_AXIS_Z] = Scalar[gpu_dtype](0.0)
+        model_host[j4 + GC_JOINT_IDX_TAU_LIMIT] = C.BSHIN_GEAR
+        model_host[j4 + GC_JOINT_IDX_RANGE_MIN] = C.BSHIN_JOINT_MIN
+        model_host[j4 + GC_JOINT_IDX_RANGE_MAX] = C.BSHIN_JOINT_MAX
+
+        # =================================================================
+        # Joint 5: BFoot - Hinge joint, Y-axis rotation (body 3)
+        # =================================================================
+        var j5 = gc_model_joint_offset[HalfCheetahGC.NUM_BODIES](5)
+        model_host[j5 + GC_JOINT_IDX_TYPE] = Scalar[gpu_dtype](GC_JNT_HINGE)
+        model_host[j5 + GC_JOINT_IDX_BODY_ID] = Scalar[gpu_dtype](3)
+        model_host[j5 + GC_JOINT_IDX_QPOS_ADR] = Scalar[gpu_dtype](5)
+        model_host[j5 + GC_JOINT_IDX_DOF_ADR] = Scalar[gpu_dtype](5)
+        model_host[j5 + GC_JOINT_IDX_POS_X] = Scalar[gpu_dtype](0.0)
+        model_host[j5 + GC_JOINT_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
+        model_host[j5 + GC_JOINT_IDX_POS_Z] = -bshin_half
+        model_host[j5 + GC_JOINT_IDX_AXIS_X] = Scalar[gpu_dtype](0.0)
+        model_host[j5 + GC_JOINT_IDX_AXIS_Y] = Scalar[gpu_dtype](1.0)
+        model_host[j5 + GC_JOINT_IDX_AXIS_Z] = Scalar[gpu_dtype](0.0)
+        model_host[j5 + GC_JOINT_IDX_TAU_LIMIT] = C.BFOOT_GEAR
+        model_host[j5 + GC_JOINT_IDX_RANGE_MIN] = C.BFOOT_JOINT_MIN
+        model_host[j5 + GC_JOINT_IDX_RANGE_MAX] = C.BFOOT_JOINT_MAX
+
+        # =================================================================
+        # Joint 6: FThigh - Hinge joint, Y-axis rotation (body 4)
+        # =================================================================
+        var j6 = gc_model_joint_offset[HalfCheetahGC.NUM_BODIES](6)
+        model_host[j6 + GC_JOINT_IDX_TYPE] = Scalar[gpu_dtype](GC_JNT_HINGE)
+        model_host[j6 + GC_JOINT_IDX_BODY_ID] = Scalar[gpu_dtype](4)
+        model_host[j6 + GC_JOINT_IDX_QPOS_ADR] = Scalar[gpu_dtype](6)
+        model_host[j6 + GC_JOINT_IDX_DOF_ADR] = Scalar[gpu_dtype](6)
+        model_host[j6 + GC_JOINT_IDX_POS_X] = Scalar[gpu_dtype](0.0)
+        model_host[j6 + GC_JOINT_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
+        model_host[j6 + GC_JOINT_IDX_POS_Z] = torso_half
+        model_host[j6 + GC_JOINT_IDX_AXIS_X] = Scalar[gpu_dtype](0.0)
+        model_host[j6 + GC_JOINT_IDX_AXIS_Y] = Scalar[gpu_dtype](1.0)
+        model_host[j6 + GC_JOINT_IDX_AXIS_Z] = Scalar[gpu_dtype](0.0)
+        model_host[j6 + GC_JOINT_IDX_TAU_LIMIT] = C.FTHIGH_GEAR
+        model_host[j6 + GC_JOINT_IDX_RANGE_MIN] = C.FTHIGH_JOINT_MIN
+        model_host[j6 + GC_JOINT_IDX_RANGE_MAX] = C.FTHIGH_JOINT_MAX
+
+        # =================================================================
+        # Joint 7: FShin - Hinge joint, Y-axis rotation (body 5)
+        # =================================================================
+        var j7 = gc_model_joint_offset[HalfCheetahGC.NUM_BODIES](7)
+        model_host[j7 + GC_JOINT_IDX_TYPE] = Scalar[gpu_dtype](GC_JNT_HINGE)
+        model_host[j7 + GC_JOINT_IDX_BODY_ID] = Scalar[gpu_dtype](5)
+        model_host[j7 + GC_JOINT_IDX_QPOS_ADR] = Scalar[gpu_dtype](7)
+        model_host[j7 + GC_JOINT_IDX_DOF_ADR] = Scalar[gpu_dtype](7)
+        model_host[j7 + GC_JOINT_IDX_POS_X] = Scalar[gpu_dtype](0.0)
+        model_host[j7 + GC_JOINT_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
+        model_host[j7 + GC_JOINT_IDX_POS_Z] = -fthigh_half
+        model_host[j7 + GC_JOINT_IDX_AXIS_X] = Scalar[gpu_dtype](0.0)
+        model_host[j7 + GC_JOINT_IDX_AXIS_Y] = Scalar[gpu_dtype](1.0)
+        model_host[j7 + GC_JOINT_IDX_AXIS_Z] = Scalar[gpu_dtype](0.0)
+        model_host[j7 + GC_JOINT_IDX_TAU_LIMIT] = C.FSHIN_GEAR
+        model_host[j7 + GC_JOINT_IDX_RANGE_MIN] = C.FSHIN_JOINT_MIN
+        model_host[j7 + GC_JOINT_IDX_RANGE_MAX] = C.FSHIN_JOINT_MAX
+
+        # =================================================================
+        # Joint 8: FFoot - Hinge joint, Y-axis rotation (body 6)
+        # =================================================================
+        var j8 = gc_model_joint_offset[HalfCheetahGC.NUM_BODIES](8)
+        model_host[j8 + GC_JOINT_IDX_TYPE] = Scalar[gpu_dtype](GC_JNT_HINGE)
+        model_host[j8 + GC_JOINT_IDX_BODY_ID] = Scalar[gpu_dtype](6)
+        model_host[j8 + GC_JOINT_IDX_QPOS_ADR] = Scalar[gpu_dtype](8)
+        model_host[j8 + GC_JOINT_IDX_DOF_ADR] = Scalar[gpu_dtype](8)
+        model_host[j8 + GC_JOINT_IDX_POS_X] = Scalar[gpu_dtype](0.0)
+        model_host[j8 + GC_JOINT_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
+        model_host[j8 + GC_JOINT_IDX_POS_Z] = -fshin_half
+        model_host[j8 + GC_JOINT_IDX_AXIS_X] = Scalar[gpu_dtype](0.0)
+        model_host[j8 + GC_JOINT_IDX_AXIS_Y] = Scalar[gpu_dtype](1.0)
+        model_host[j8 + GC_JOINT_IDX_AXIS_Z] = Scalar[gpu_dtype](0.0)
+        model_host[j8 + GC_JOINT_IDX_TAU_LIMIT] = C.FFOOT_GEAR
+        model_host[j8 + GC_JOINT_IDX_RANGE_MIN] = C.FFOOT_JOINT_MIN
+        model_host[j8 + GC_JOINT_IDX_RANGE_MAX] = C.FFOOT_JOINT_MAX
+
+        # =================================================================
+        # Joint 9: Head - Hinge joint, Y-axis rotation (body 7, fixed)
+        # =================================================================
+        var j9 = gc_model_joint_offset[HalfCheetahGC.NUM_BODIES](9)
+        model_host[j9 + GC_JOINT_IDX_TYPE] = Scalar[gpu_dtype](GC_JNT_HINGE)
+        model_host[j9 + GC_JOINT_IDX_BODY_ID] = Scalar[gpu_dtype](7)
+        model_host[j9 + GC_JOINT_IDX_QPOS_ADR] = Scalar[gpu_dtype](9)
+        model_host[j9 + GC_JOINT_IDX_DOF_ADR] = Scalar[gpu_dtype](9)
+        model_host[j9 + GC_JOINT_IDX_POS_X] = head_pos_x
+        model_host[j9 + GC_JOINT_IDX_POS_Y] = head_pos_y
+        model_host[j9 + GC_JOINT_IDX_POS_Z] = head_pos_z
+        model_host[j9 + GC_JOINT_IDX_AXIS_X] = Scalar[gpu_dtype](0.0)
+        model_host[j9 + GC_JOINT_IDX_AXIS_Y] = Scalar[gpu_dtype](1.0)
+        model_host[j9 + GC_JOINT_IDX_AXIS_Z] = Scalar[gpu_dtype](0.0)
+        model_host[j9 + GC_JOINT_IDX_TAU_LIMIT] = Scalar[gpu_dtype](0.0)
+        model_host[j9 + GC_JOINT_IDX_RANGE_MIN] = C.HEAD_JOINT_MIN
+        model_host[j9 + GC_JOINT_IDX_RANGE_MAX] = C.HEAD_JOINT_MAX
+
+        # =================================================================
+        # Model Metadata
+        # =================================================================
+        var meta = gc_model_metadata_offset[
+            HalfCheetahGC.NUM_BODIES, HalfCheetahGC.NUM_JOINTS
+        ]()
+        model_host[meta + GC_MODEL_META_IDX_NBODY] = Scalar[gpu_dtype](C.NUM_BODIES)
+        model_host[meta + GC_MODEL_META_IDX_NJOINT] = Scalar[gpu_dtype](C.NUM_JOINTS)
+        model_host[meta + GC_MODEL_META_IDX_GRAVITY_X] = Scalar[gpu_dtype](0.0)
+        model_host[meta + GC_MODEL_META_IDX_GRAVITY_Y] = Scalar[gpu_dtype](0.0)
+        model_host[meta + GC_MODEL_META_IDX_GRAVITY_Z] = C.GRAVITY_Z
+        model_host[meta + GC_MODEL_META_IDX_TIMESTEP] = C.DT
+        model_host[meta + GC_MODEL_META_IDX_GROUND_Z] = Scalar[gpu_dtype](0.0)
+        model_host[meta + GC_MODEL_META_IDX_FRICTION] = C.FRICTION
+
+        # Copy to GPU
+        ctx.enqueue_copy(model_buf, model_host.unsafe_ptr())
+
+    @staticmethod
+    fn _apply_actions_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        ACTION_DIM: Int,
+    ](
+        ctx: DeviceContext,
+        mut states_buf: DeviceBuffer[gpu_dtype],
+        actions_buf: DeviceBuffer[gpu_dtype],
+    ) raises:
+        """Apply actions as joint torques to qfrc in state buffer."""
+        var states = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ](states_buf.unsafe_ptr())
+        var actions = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+        ](actions_buf.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
+        comptime C = HalfCheetahGCConstants[gpu_dtype]
+        comptime QFRC_OFF = gc_qfrc_offset[HalfCheetahGC.NQ, HalfCheetahGC.NV]()
+
+        @always_inline
+        fn apply_actions_kernel(
+            states: LayoutTensor[
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                MutAnyOrigin,
+            ],
+            actions: LayoutTensor[
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, ACTION_DIM),
+                MutAnyOrigin,
+            ],
+        ):
+            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if env >= BATCH_SIZE:
+                return
+
+            # Clamp and scale actions by gear ratios
+            var bthigh_action = actions[env, 0]
+            var bshin_action = actions[env, 1]
+            var bfoot_action = actions[env, 2]
+            var fthigh_action = actions[env, 3]
+            var fshin_action = actions[env, 4]
+            var ffoot_action = actions[env, 5]
+
+            # Clamp to [-1, 1]
+            if bthigh_action > Scalar[gpu_dtype](1.0):
+                bthigh_action = Scalar[gpu_dtype](1.0)
+            elif bthigh_action < Scalar[gpu_dtype](-1.0):
+                bthigh_action = Scalar[gpu_dtype](-1.0)
+
+            if bshin_action > Scalar[gpu_dtype](1.0):
+                bshin_action = Scalar[gpu_dtype](1.0)
+            elif bshin_action < Scalar[gpu_dtype](-1.0):
+                bshin_action = Scalar[gpu_dtype](-1.0)
+
+            if bfoot_action > Scalar[gpu_dtype](1.0):
+                bfoot_action = Scalar[gpu_dtype](1.0)
+            elif bfoot_action < Scalar[gpu_dtype](-1.0):
+                bfoot_action = Scalar[gpu_dtype](-1.0)
+
+            if fthigh_action > Scalar[gpu_dtype](1.0):
+                fthigh_action = Scalar[gpu_dtype](1.0)
+            elif fthigh_action < Scalar[gpu_dtype](-1.0):
+                fthigh_action = Scalar[gpu_dtype](-1.0)
+
+            if fshin_action > Scalar[gpu_dtype](1.0):
+                fshin_action = Scalar[gpu_dtype](1.0)
+            elif fshin_action < Scalar[gpu_dtype](-1.0):
+                fshin_action = Scalar[gpu_dtype](-1.0)
+
+            if ffoot_action > Scalar[gpu_dtype](1.0):
+                ffoot_action = Scalar[gpu_dtype](1.0)
+            elif ffoot_action < Scalar[gpu_dtype](-1.0):
+                ffoot_action = Scalar[gpu_dtype](-1.0)
+
+            # Apply torques to joints 3-8 (actuated joints)
+            states[env, QFRC_OFF + 3] = bthigh_action * C.BTHIGH_GEAR
+            states[env, QFRC_OFF + 4] = bshin_action * C.BSHIN_GEAR
+            states[env, QFRC_OFF + 5] = bfoot_action * C.BFOOT_GEAR
+            states[env, QFRC_OFF + 6] = fthigh_action * C.FTHIGH_GEAR
+            states[env, QFRC_OFF + 7] = fshin_action * C.FSHIN_GEAR
+            states[env, QFRC_OFF + 8] = ffoot_action * C.FFOOT_GEAR
+
+        ctx.enqueue_function[apply_actions_kernel, apply_actions_kernel](
+            states,
+            actions,
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+    @staticmethod
+    fn _extract_obs_rewards_dones_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        MODEL_SIZE: Int,
+        OBS_DIM: Int,
+        MAX_STEPS_VAL: Int = 1000,
+    ](
+        ctx: DeviceContext,
+        mut states_buf: DeviceBuffer[gpu_dtype],
+        model_buf: DeviceBuffer[gpu_dtype],
+        actions_buf: DeviceBuffer[gpu_dtype],
+        mut rewards_buf: DeviceBuffer[gpu_dtype],
+        mut dones_buf: DeviceBuffer[gpu_dtype],
+        mut obs_buf: DeviceBuffer[gpu_dtype],
+    ) raises:
+        """Extract observations, compute rewards, check termination.
+
+        Note: Half Cheetah never terminates early - only truncates at max_steps.
+        """
+        var states = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ](states_buf.unsafe_ptr())
+        var model = LayoutTensor[
+            gpu_dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+        ](model_buf.unsafe_ptr())
+        var actions = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE, 6), MutAnyOrigin
+        ](actions_buf.unsafe_ptr())
+        var rewards = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ](rewards_buf.unsafe_ptr())
+        var dones = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ](dones_buf.unsafe_ptr())
+        var obs = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+        ](obs_buf.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
+        comptime C = HalfCheetahGCConstants[gpu_dtype]
+        comptime QPOS_OFF = gc_qpos_offset[HalfCheetahGC.NQ, HalfCheetahGC.NV]()
+        comptime QVEL_OFF = gc_qvel_offset[HalfCheetahGC.NQ, HalfCheetahGC.NV]()
+        comptime META_OFF = gc_metadata_offset[
+            HalfCheetahGC.NQ, HalfCheetahGC.NV, HalfCheetahGC.NUM_BODIES, HalfCheetahGC.MAX_CONTACTS
+        ]()
+
+        @always_inline
+        fn extract_kernel(
+            states: LayoutTensor[
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                MutAnyOrigin,
+            ],
+            model: LayoutTensor[
+                gpu_dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+            ],
+            actions: LayoutTensor[
+                gpu_dtype, Layout.row_major(BATCH_SIZE, 6), MutAnyOrigin
+            ],
+            rewards: LayoutTensor[
+                gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
+            dones: LayoutTensor[
+                gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
+            obs: LayoutTensor[
+                gpu_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+            ],
+        ):
+            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if env >= BATCH_SIZE:
+                return
+
+            # Increment step counter
+            var step_count = Int(
+                rebind[Scalar[gpu_dtype]](
+                    states[env, META_OFF + GC_META_IDX_STEP_COUNT]
+                )
+            )
+            step_count += 1
+            states[env, META_OFF + GC_META_IDX_STEP_COUNT] = Scalar[gpu_dtype](
+                step_count
+            )
+
+            # Extract qpos (skip qpos[0] = rootx and qpos[9] = head for observation)
+            var z_pos = states[env, QPOS_OFF + 1]  # rootz
+            var y_angle = states[env, QPOS_OFF + 2]  # rooty
+            var bthigh_angle = states[env, QPOS_OFF + 3]
+            var bshin_angle = states[env, QPOS_OFF + 4]
+            var bfoot_angle = states[env, QPOS_OFF + 5]
+            var fthigh_angle = states[env, QPOS_OFF + 6]
+            var fshin_angle = states[env, QPOS_OFF + 7]
+            var ffoot_angle = states[env, QPOS_OFF + 8]
+
+            # Extract qvel (skip qvel[9] = head for observation)
+            var x_vel = states[env, QVEL_OFF + 0]  # rootx vel
+            var z_vel = states[env, QVEL_OFF + 1]  # rootz vel
+            var y_angvel = states[env, QVEL_OFF + 2]  # rooty vel
+            var bthigh_angvel = states[env, QVEL_OFF + 3]
+            var bshin_angvel = states[env, QVEL_OFF + 4]
+            var bfoot_angvel = states[env, QVEL_OFF + 5]
+            var fthigh_angvel = states[env, QVEL_OFF + 6]
+            var fshin_angvel = states[env, QVEL_OFF + 7]
+            var ffoot_angvel = states[env, QVEL_OFF + 8]
+
+            # Build observation (17D)
+            # Position observations (8D): qpos[1:9] (excluding rootx and head)
+            obs[env, 0] = z_pos
+            obs[env, 1] = y_angle
+            obs[env, 2] = bthigh_angle
+            obs[env, 3] = bshin_angle
+            obs[env, 4] = bfoot_angle
+            obs[env, 5] = fthigh_angle
+            obs[env, 6] = fshin_angle
+            obs[env, 7] = ffoot_angle
+            # Velocity observations (9D): qvel[0:9] (excluding head)
+            obs[env, 8] = x_vel
+            obs[env, 9] = z_vel
+            obs[env, 10] = y_angvel
+            obs[env, 11] = bthigh_angvel
+            obs[env, 12] = bshin_angvel
+            obs[env, 13] = bfoot_angvel
+            obs[env, 14] = fthigh_angvel
+            obs[env, 15] = fshin_angvel
+            obs[env, 16] = ffoot_angvel
+
+            # Clamp actions for reward computation
+            var bthigh_action = actions[env, 0]
+            var bshin_action = actions[env, 1]
+            var bfoot_action = actions[env, 2]
+            var fthigh_action = actions[env, 3]
+            var fshin_action = actions[env, 4]
+            var ffoot_action = actions[env, 5]
+
+            if bthigh_action > Scalar[gpu_dtype](1.0):
+                bthigh_action = Scalar[gpu_dtype](1.0)
+            elif bthigh_action < Scalar[gpu_dtype](-1.0):
+                bthigh_action = Scalar[gpu_dtype](-1.0)
+            if bshin_action > Scalar[gpu_dtype](1.0):
+                bshin_action = Scalar[gpu_dtype](1.0)
+            elif bshin_action < Scalar[gpu_dtype](-1.0):
+                bshin_action = Scalar[gpu_dtype](-1.0)
+            if bfoot_action > Scalar[gpu_dtype](1.0):
+                bfoot_action = Scalar[gpu_dtype](1.0)
+            elif bfoot_action < Scalar[gpu_dtype](-1.0):
+                bfoot_action = Scalar[gpu_dtype](-1.0)
+            if fthigh_action > Scalar[gpu_dtype](1.0):
+                fthigh_action = Scalar[gpu_dtype](1.0)
+            elif fthigh_action < Scalar[gpu_dtype](-1.0):
+                fthigh_action = Scalar[gpu_dtype](-1.0)
+            if fshin_action > Scalar[gpu_dtype](1.0):
+                fshin_action = Scalar[gpu_dtype](1.0)
+            elif fshin_action < Scalar[gpu_dtype](-1.0):
+                fshin_action = Scalar[gpu_dtype](-1.0)
+            if ffoot_action > Scalar[gpu_dtype](1.0):
+                ffoot_action = Scalar[gpu_dtype](1.0)
+            elif ffoot_action < Scalar[gpu_dtype](-1.0):
+                ffoot_action = Scalar[gpu_dtype](-1.0)
+
+            # Compute reward
+            # Forward reward = forward_reward_weight * x_velocity
+            var forward_reward = C.FORWARD_REWARD_WEIGHT * x_vel
+
+            # Control cost = ctrl_cost_weight * sum(action^2)
+            var ctrl_cost = C.CTRL_COST_WEIGHT * (
+                bthigh_action * bthigh_action
+                + bshin_action * bshin_action
+                + bfoot_action * bfoot_action
+                + fthigh_action * fthigh_action
+                + fshin_action * fshin_action
+                + ffoot_action * ffoot_action
+            )
+
+            var reward = forward_reward - ctrl_cost
+            rewards[env] = reward
+
+            # Half Cheetah never terminates, only truncates
+            var truncated = step_count >= MAX_STEPS_VAL
+
+            if truncated:
+                dones[env] = Scalar[gpu_dtype](1.0)
+            else:
+                dones[env] = Scalar[gpu_dtype](0.0)
+
+        ctx.enqueue_function[extract_kernel, extract_kernel](
+            states,
+            model,
+            actions,
+            rewards,
+            dones,
+            obs,
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+    @always_inline
+    @staticmethod
+    fn _reset_env_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+    ](
+        states: LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ],
+        env: Int,
+        seed: Int = 0,
+    ):
+        """Reset a single environment on GPU with random noise.
+
+        Adds random perturbations to initial qpos and qvel.
+        """
+        comptime C = HalfCheetahGCConstants[gpu_dtype]
+        comptime QPOS_OFF = gc_qpos_offset[HalfCheetahGC.NQ, HalfCheetahGC.NV]()
+        comptime QVEL_OFF = gc_qvel_offset[HalfCheetahGC.NQ, HalfCheetahGC.NV]()
+        comptime QACC_OFF = gc_qacc_offset[HalfCheetahGC.NQ, HalfCheetahGC.NV]()
+        comptime QFRC_OFF = gc_qfrc_offset[HalfCheetahGC.NQ, HalfCheetahGC.NV]()
+
+        # Reset noise scale
+        comptime RESET_NOISE_SCALE: Scalar[gpu_dtype] = 0.1
+
+        # Create RNG with unique seed per environment
+        var rng = PhiloxRandom(seed=seed * 2654435761 + env * 12345, offset=0)
+
+        # Generate random noise for qpos and qvel
+        var rand_qpos1 = rng.step_uniform()  # 4 values
+        var rand_qpos2 = rng.step_uniform()  # 4 values
+        var rand_qpos3 = rng.step_uniform()  # 2 more values
+        var rand_qvel1 = rng.step_uniform()  # 4 values
+        var rand_qvel2 = rng.step_uniform()  # 4 values
+        var rand_qvel3 = rng.step_uniform()  # 2 more values
+
+        # Helper to convert uniform [0,1) to [-scale, scale)
+        @always_inline
+        fn to_noise(val: Scalar[DType.float32]) -> Scalar[gpu_dtype]:
+            return Scalar[gpu_dtype](val * 2.0 - 1.0) * RESET_NOISE_SCALE
+
+        # Reset qpos with noise (10 joints)
+        states[env, QPOS_OFF + 0] = Scalar[gpu_dtype](0.0) + to_noise(rand_qpos1[0])  # rootx
+        states[env, QPOS_OFF + 1] = C.INITIAL_Z + to_noise(rand_qpos1[1])  # rootz
+        states[env, QPOS_OFF + 2] = Scalar[gpu_dtype](0.0) + to_noise(rand_qpos1[2])  # rooty
+        states[env, QPOS_OFF + 3] = Scalar[gpu_dtype](0.0) + to_noise(rand_qpos1[3])  # bthigh
+        states[env, QPOS_OFF + 4] = Scalar[gpu_dtype](0.0) + to_noise(rand_qpos2[0])  # bshin
+        states[env, QPOS_OFF + 5] = Scalar[gpu_dtype](0.0) + to_noise(rand_qpos2[1])  # bfoot
+        states[env, QPOS_OFF + 6] = Scalar[gpu_dtype](0.0) + to_noise(rand_qpos2[2])  # fthigh
+        states[env, QPOS_OFF + 7] = Scalar[gpu_dtype](0.0) + to_noise(rand_qpos2[3])  # fshin
+        states[env, QPOS_OFF + 8] = Scalar[gpu_dtype](0.0) + to_noise(rand_qpos3[0])  # ffoot
+        states[env, QPOS_OFF + 9] = Scalar[gpu_dtype](0.0)  # head (fixed, no noise)
+
+        # Reset qvel with noise (10 joints)
+        states[env, QVEL_OFF + 0] = to_noise(rand_qvel1[0])  # rootx vel
+        states[env, QVEL_OFF + 1] = to_noise(rand_qvel1[1])  # rootz vel
+        states[env, QVEL_OFF + 2] = to_noise(rand_qvel1[2])  # rooty vel
+        states[env, QVEL_OFF + 3] = to_noise(rand_qvel1[3])  # bthigh vel
+        states[env, QVEL_OFF + 4] = to_noise(rand_qvel2[0])  # bshin vel
+        states[env, QVEL_OFF + 5] = to_noise(rand_qvel2[1])  # bfoot vel
+        states[env, QVEL_OFF + 6] = to_noise(rand_qvel2[2])  # fthigh vel
+        states[env, QVEL_OFF + 7] = to_noise(rand_qvel2[3])  # fshin vel
+        states[env, QVEL_OFF + 8] = to_noise(rand_qvel3[0])  # ffoot vel
+        states[env, QVEL_OFF + 9] = Scalar[gpu_dtype](0.0)  # head vel (fixed)
+
+        # Reset qacc, qfrc to zero
+        for i in range(HalfCheetahGC.NV):
+            states[env, QACC_OFF + i] = Scalar[gpu_dtype](0.0)
+            states[env, QFRC_OFF + i] = Scalar[gpu_dtype](0.0)
+
+        # Reset step counter to 0
+        comptime META_OFF = gc_metadata_offset[
+            HalfCheetahGC.NQ, HalfCheetahGC.NV, HalfCheetahGC.NUM_BODIES, HalfCheetahGC.MAX_CONTACTS
+        ]()
+        states[env, META_OFF + GC_META_IDX_STEP_COUNT] = Scalar[gpu_dtype](0.0)

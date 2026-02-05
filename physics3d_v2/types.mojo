@@ -1068,7 +1068,14 @@ struct ModelGC[
 
         var joint_idx = self.num_joints
         self.joints[joint_idx] = JointDef[Self.DTYPE].create_hinge(
-            body_id, qpos_adr, dof_adr, pos, axis, tau_limit, range_min, range_max
+            body_id,
+            qpos_adr,
+            dof_adr,
+            pos,
+            axis,
+            tau_limit,
+            range_min,
+            range_max,
         )
         self.num_joints += 1
         return joint_idx
@@ -1107,7 +1114,14 @@ struct ModelGC[
 
         var joint_idx = self.num_joints
         self.joints[joint_idx] = JointDef[Self.DTYPE].create_slide(
-            body_id, qpos_adr, dof_adr, pos, axis, force_limit, range_min, range_max
+            body_id,
+            qpos_adr,
+            dof_adr,
+            pos,
+            axis,
+            force_limit,
+            range_min,
+            range_max,
         )
         self.num_joints += 1
         return joint_idx
@@ -1288,3 +1302,19 @@ struct DataGC[
         """Clear all applied forces."""
         for i in range(_max_one[Self.NV]()):
             self.qfrc[i] = Scalar[Self.DTYPE](0)
+
+
+@always_inline
+fn compute_capsule_inertia[
+    DTYPE: DType
+](
+    mass: Scalar[DTYPE],
+    radius: Scalar[DTYPE],
+    half_length: Scalar[DTYPE],
+) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
+    var r2 = radius * radius
+    var L = Scalar[DTYPE](2.0) * half_length + Scalar[DTYPE](2.0) * radius
+    var L2 = L * L
+    var I_trans = mass * (Scalar[DTYPE](3.0) * r2 + L2) / Scalar[DTYPE](12.0)
+    var I_axial = Scalar[DTYPE](0.5) * mass * r2
+    return (I_trans, I_trans, I_axial)

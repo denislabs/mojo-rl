@@ -1,20 +1,23 @@
-"""Test PPO Continuous Agent GPU Training on HopperGC.
+"""Test PPO Continuous Agent GPU Training on HalfCheetahGC.
 
 This tests the GPU implementation of PPO with continuous actions using the
-HopperGC environment with:
+HalfCheetahGC environment with:
 - Parallel environments on GPU
-- Generalized Coordinates physics with SemiImplicitEulerIntegrator
-- 3D continuous action space (joint torques)
-- 11D observation (matching MuJoCo Hopper)
+- Generalized Coordinates (GC) physics engine (MuJoCo-style)
+- 6D continuous action space (joint torques)
+- 17D observation (qpos + qvel excluding rootx and head)
 
-Action space (3D continuous):
-- action[0]: thigh torque (-1.0 to 1.0)
-- action[1]: leg torque (-1.0 to 1.0)
-- action[2]: foot torque (-1.0 to 1.0)
+Action space (6D continuous):
+- action[0]: back thigh (hip) torque (-1.0 to 1.0) * gear=120
+- action[1]: back shin (knee) torque (-1.0 to 1.0) * gear=90
+- action[2]: back foot (ankle) torque (-1.0 to 1.0) * gear=60
+- action[3]: front thigh (hip) torque (-1.0 to 1.0) * gear=120
+- action[4]: front shin (knee) torque (-1.0 to 1.0) * gear=60
+- action[5]: front foot (ankle) torque (-1.0 to 1.0) * gear=30
 
 Run with:
-    pixi run -e apple mojo run tests/test_ppo_hopper_gc_continuous_gpu.mojo    # Apple Silicon
-    pixi run -e nvidia mojo run tests/test_ppo_hopper_gc_continuous_gpu.mojo   # NVIDIA GPU
+    pixi run -e apple mojo run tests/test_ppo_half_cheetah_gc_continuous_gpu.mojo    # Apple Silicon
+    pixi run -e nvidia mojo run tests/test_ppo_half_cheetah_gc_continuous_gpu.mojo   # NVIDIA GPU
 """
 
 from random import seed
@@ -23,17 +26,17 @@ from time import perf_counter_ns
 from gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.hopper_gc import HopperGC, HopperCurriculum
-from envs.hopper_gc.constants_gc import HopperGCConstantsGPU
+from envs.half_cheetah_gc import HalfCheetahGC, HalfCheetahGCConstants
 
 
 # =============================================================================
 # Constants
 # =============================================================================
 
-# HopperGC: 11D observation, 3D continuous action
-comptime OBS_DIM = HopperGCConstantsGPU.OBS_DIM  # 11
-comptime ACTION_DIM = HopperGCConstantsGPU.ACTION_DIM  # 3
+# HalfCheetahGC: 17D observation, 6D continuous action
+comptime C = HalfCheetahGCConstants[DType.float32]
+comptime OBS_DIM = C.OBS_DIM  # 17
+comptime ACTION_DIM = C.ACTION_DIM  # 6
 
 # Network architecture (scaled for GPU)
 comptime HIDDEN_DIM = 256  # Larger network for GPU efficiency
@@ -57,7 +60,7 @@ comptime dtype = DType.float32
 fn main() raises:
     seed(42)
     print("=" * 70)
-    print("PPO Continuous Agent GPU Test on HopperGC")
+    print("PPO Continuous Agent GPU Test on HalfCheetahGC")
     print("=" * 70)
     print()
 
@@ -80,24 +83,22 @@ fn main() raises:
             clip_epsilon=0.2,  # Standard clipping
             actor_lr=0.0003,  # CleanRL: 3e-4
             critic_lr=0.0003,  # CleanRL: 3e-4
-            entropy_coef=0.02,  # Small entropy for exploration (was 0.0)
+            entropy_coef=0.0,  # CleanRL: 0 for MuJoCo
             value_loss_coef=0.5,
             num_epochs=10,  # CleanRL default
-            target_kl=0.015,  # KL early stopping
+            target_kl=0.0,  # KL early stopping disabled
             max_grad_norm=0.5,
-            anneal_lr=False,  # CleanRL uses LR annealing
-            anneal_entropy=False,  # Anneal entropy to 0 over training
+            anneal_lr=True,  # CleanRL uses LR annealing
+            anneal_entropy=False,
             target_total_steps=0,  # Auto-calculate
             norm_adv_per_minibatch=True,
             checkpoint_every=1_000,
-            checkpoint_path="ppo_hopper_gc.ckpt",
+            checkpoint_path="ppo_half_cheetah_gc.ckpt",
             normalize_rewards=True,
             obs_noise_std=0.0,
         )
 
-        # agent.load_checkpoint("ppo_hopper_gc.ckpt")
-
-        print("Environment: HopperGC Continuous (GPU)")
+        print("Environment: HalfCheetahGC Continuous (GPU)")
         print("Agent: PPO Continuous (GPU) - CleanRL hyperparams")
         print("  Observation dim: " + String(OBS_DIM))
         print("  Action dim: " + String(ACTION_DIM))
@@ -110,32 +111,33 @@ fn main() raises:
         )
         print("  Key hyperparameters:")
         print("    - Learning rate: 3e-4 (same for actor & critic)")
-        print("    - Entropy coef: 0.01 (for exploration, annealed to 0)")
+        print("    - Entropy coef: 0.0 (MuJoCo standard)")
         print("    - Update epochs: 10")
         print("    - LR annealing: enabled")
-        print("    - Entropy annealing: enabled")
         print("    - Gradient clipping: max_grad_norm=0.5")
         print("    - Reward normalization: enabled")
-        print("    - Reset noise: enabled (±0.005 on qpos/qvel)")
         print()
-        print("HopperGC specifics:")
-        print("  - Generalized Coordinates physics (MuJoCo-style)")
-        print("  - SemiImplicitEulerIntegrator (symplectic, energy-conserving)")
-        print("  - 4-body articulated hopper (torso, thigh, leg, foot)")
-        print("  - 6 DOF: rootx (slide), rootz (slide), rooty (hinge),")
-        print("           thigh (hinge), leg (hinge), foot (hinge)")
-        print("  - 11D observations: [rootz, rooty, thigh, leg, foot,")
-        print("                       vx, vz, omega_y, omega_thigh,")
-        print("                       omega_leg, omega_foot]")
-        print("  - 3D continuous actions (thigh, leg, foot torques)")
-        print("  - Reward: forward_velocity + alive_bonus - ctrl_cost")
-        print("  - Terminates on: torso_z < 0.7 or |pitch| > 0.2 rad")
+        print("HalfCheetahGC specifics:")
+        print("  - Generalized Coordinates (GC) physics engine")
+        print("  - MuJoCo-style joint-space dynamics")
+        print("  - Semi-implicit Euler integration (symplectic)")
+        print("  - 8 bodies: torso, 2 legs (thigh+shin+foot), head")
+        print("  - 10 joints: 3 root DOFs + 6 actuated + 1 fixed head")
+        print("  - 17D observations: [z_pos, y_angle,")
+        print("                       bthigh, bshin, bfoot,")
+        print("                       fthigh, fshin, ffoot,")
+        print("                       vel_x, vel_z, y_angvel,")
+        print("                       bthigh_vel, bshin_vel, bfoot_vel,")
+        print("                       fthigh_vel, fshin_vel, ffoot_vel]")
+        print("  - 6D continuous actions (joint torques with gear ratios)")
+        print("  - Reward: forward_velocity - ctrl_cost")
+        print("  - No termination (truncation only at max_steps)")
         print()
         print("Expected rewards:")
-        print("  - Random policy: ~-500 to -100")
+        print("  - Random policy: ~-100 to -200")
         print("  - Learning policy: > 0")
         print("  - Good policy: > 500")
-        print("  - Hopping well: > 1000")
+        print("  - Running well: > 1000")
         print()
 
         # =====================================================================
@@ -148,9 +150,7 @@ fn main() raises:
         var start_time = perf_counter_ns()
 
         try:
-            var metrics = agent.train_gpu[
-                HopperGC[dtype, TERMINATE_ON_UNHEALTHY=True], HopperCurriculum
-            ](
+            var metrics = agent.train_gpu[HalfCheetahGC[dtype]](
                 ctx,
                 num_episodes=NUM_EPISODES,
                 verbose=True,
@@ -191,9 +191,9 @@ fn main() raises:
             # Check for successful training
             var final_avg = metrics.mean_reward_last_n(100)
             if final_avg > 1000.0:
-                print("EXCELLENT: Agent is hopping well! (avg reward > 1000)")
+                print("EXCELLENT: Agent is running fast! (avg reward > 1000)")
             elif final_avg > 500.0:
-                print("SUCCESS: Agent learned to hop! (avg reward > 500)")
+                print("SUCCESS: Agent learned to run! (avg reward > 500)")
             elif final_avg > 100.0:
                 print(
                     "GOOD PROGRESS: Agent is learning locomotion"
