@@ -140,6 +140,33 @@ struct LineUniforms(ImplicitlyCopyable, Movable):
         self.color = other.color^
 
 
+struct ShadowUniforms(ImplicitlyCopyable, Movable):
+    """Shadow mapping uniforms: 80 bytes.
+
+    Layout (std140):
+      light_view_proj: mat4 (64 bytes) - light's orthographic VP matrix
+      params: vec4 (16 bytes) - x=shadow_intensity, y=bias, z=unused, w=unused
+    """
+
+    var light_view_proj: InlineArray[Float32, 16]
+    var params: InlineArray[Float32, 4]
+
+    fn __init__(out self):
+        self.light_view_proj = InlineArray[Float32, 16](fill=Float32(0))
+        self.params = InlineArray[Float32, 4](fill=Float32(0))
+        # Defaults: intensity=0.5, bias=0.005
+        self.params[0] = 0.5
+        self.params[1] = 0.005
+
+    fn __copyinit__(out self, read other: Self):
+        self.light_view_proj = other.light_view_proj.copy()
+        self.params = other.params.copy()
+
+    fn __moveinit__(out self, deinit other: Self):
+        self.light_view_proj = other.light_view_proj^
+        self.params = other.params^
+
+
 # --- Mesh data structures ---
 
 
@@ -393,3 +420,45 @@ fn make_identity_f32() -> InlineArray[Float32, 16]:
     out[10] = 1.0
     out[15] = 1.0
     return out^
+
+
+fn ortho_metal(
+    left: Float64, right: Float64,
+    bottom: Float64, top: Float64,
+    near: Float64, far: Float64,
+) -> Mat4:
+    """Metal-compatible orthographic projection with Z in [0, 1].
+
+    Args:
+        left: Left clipping plane.
+        right: Right clipping plane.
+        bottom: Bottom clipping plane.
+        top: Top clipping plane.
+        near: Near clipping plane.
+        far: Far clipping plane.
+
+    Returns:
+        4x4 orthographic projection matrix (row-major).
+    """
+    var m = Mat4.identity()
+    m.m00 = 2.0 / (right - left)
+    m.m01 = 0.0
+    m.m02 = 0.0
+    m.m03 = -(right + left) / (right - left)
+
+    m.m10 = 0.0
+    m.m11 = 2.0 / (top - bottom)
+    m.m12 = 0.0
+    m.m13 = -(top + bottom) / (top - bottom)
+
+    m.m20 = 0.0
+    m.m21 = 0.0
+    m.m22 = -1.0 / (far - near)  # Metal Z range [0, 1]
+    m.m23 = -near / (far - near)
+
+    m.m30 = 0.0
+    m.m31 = 0.0
+    m.m32 = 0.0
+    m.m33 = 1.0
+
+    return m

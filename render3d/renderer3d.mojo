@@ -20,6 +20,7 @@ from .sdl import (
     GPUBuffer,
     GPUTransferBuffer,
     GPUTexture,
+    GPUSampler,
     GPUShader,
     GPUGraphicsPipeline,
     GPUCommandBuffer,
@@ -32,6 +33,8 @@ from .sdl import (
     GPUBufferCreateInfo,
     GPUTransferBufferCreateInfo,
     GPUTextureCreateInfo,
+    GPUSamplerCreateInfo,
+    GPUTextureSamplerBinding,
     GPUColorTargetDescription,
     GPUColorTargetBlendState,
     GPUColorTargetInfo,
@@ -70,6 +73,9 @@ from .sdl import (
     GPUBlendFactor,
     GPUBlendOp,
     GPUColorComponentFlags,
+    GPUFilter,
+    GPUSamplerMipmapMode,
+    GPUSamplerAddressMode,
     PropertiesID,
     # SDL core
     Window,
@@ -96,6 +102,7 @@ from .sdl import (
     create_gpu_buffer,
     create_gpu_transfer_buffer,
     create_gpu_texture,
+    create_gpu_sampler,
     acquire_gpu_command_buffer,
     wait_and_acquire_gpu_swapchain_texture,
     begin_gpu_render_pass,
@@ -111,12 +118,14 @@ from .sdl import (
     draw_gpu_primitives,
     push_gpu_vertex_uniform_data,
     push_gpu_fragment_uniform_data,
+    bind_gpu_fragment_samplers,
     upload_to_gpu_buffer,
     map_gpu_transfer_buffer,
     unmap_gpu_transfer_buffer,
     release_gpu_buffer,
     release_gpu_transfer_buffer,
     release_gpu_texture,
+    release_gpu_sampler,
     release_gpu_shader,
     release_gpu_graphics_pipeline,
 )
@@ -126,12 +135,14 @@ from .gpu_types import (
     SceneUniforms,
     ObjectUniforms,
     LineUniforms,
+    ShadowUniforms,
     MeshData,
     MeshHandle,
     CapsuleCacheEntry,
     SolidDrawCommand,
     mat4_to_gpu_f32,
     perspective_metal,
+    ortho_metal,
     color3d_to_vec4,
     make_identity_f32,
 )
@@ -143,6 +154,9 @@ from .gpu_shaders import (
     GROUND_FRAGMENT_MSL,
     LINE_VERTEX_MSL,
     LINE_FRAGMENT_MSL,
+    SHADOW_VERTEX_MSL,
+    SHADOW_FRAGMENT_MSL,
+    REFLECTION_FRAGMENT_MSL,
 )
 
 comptime Vec3 = Vec3Generic[DType.float64]
@@ -266,9 +280,17 @@ struct Renderer3D(Movable):
     var solid_pipeline: Ptr[GPUGraphicsPipeline, AnyOrigin[True]]
     var ground_pipeline: Ptr[GPUGraphicsPipeline, AnyOrigin[True]]
     var line_pipeline: Ptr[GPUGraphicsPipeline, AnyOrigin[True]]
+    var shadow_pipeline: Ptr[GPUGraphicsPipeline, AnyOrigin[True]]
+    var reflection_pipeline: Ptr[GPUGraphicsPipeline, AnyOrigin[True]]
 
     # Depth buffer
     var depth_texture: Ptr[GPUTexture, AnyOrigin[True]]
+
+    # Shadow mapping resources
+    var shadow_map: Ptr[GPUTexture, AnyOrigin[True]]
+    var shadow_sampler: Ptr[GPUSampler, AnyOrigin[True]]
+    var shadow_uniforms: ShadowUniforms
+    var ground_z: Float64
 
     # Cached static meshes
     var sphere_mesh: MeshHandle
@@ -338,7 +360,13 @@ struct Renderer3D(Movable):
         self.solid_pipeline = Ptr[GPUGraphicsPipeline, AnyOrigin[True]]()
         self.ground_pipeline = Ptr[GPUGraphicsPipeline, AnyOrigin[True]]()
         self.line_pipeline = Ptr[GPUGraphicsPipeline, AnyOrigin[True]]()
+        self.shadow_pipeline = Ptr[GPUGraphicsPipeline, AnyOrigin[True]]()
+        self.reflection_pipeline = Ptr[GPUGraphicsPipeline, AnyOrigin[True]]()
         self.depth_texture = Ptr[GPUTexture, AnyOrigin[True]]()
+        self.shadow_map = Ptr[GPUTexture, AnyOrigin[True]]()
+        self.shadow_sampler = Ptr[GPUSampler, AnyOrigin[True]]()
+        self.shadow_uniforms = ShadowUniforms()
+        self.ground_z = 0.0
         self.line_vertex_buffer = Ptr[GPUBuffer, AnyOrigin[True]]()
         self.line_transfer_buffer = Ptr[GPUTransferBuffer, AnyOrigin[True]]()
         self.swapchain_format = GPUTextureFormat.GPU_TEXTUREFORMAT_B8G8R8A8_UNORM
@@ -366,7 +394,13 @@ struct Renderer3D(Movable):
         self.solid_pipeline = other.solid_pipeline
         self.ground_pipeline = other.ground_pipeline
         self.line_pipeline = other.line_pipeline
+        self.shadow_pipeline = other.shadow_pipeline
+        self.reflection_pipeline = other.reflection_pipeline
         self.depth_texture = other.depth_texture
+        self.shadow_map = other.shadow_map
+        self.shadow_sampler = other.shadow_sampler
+        self.shadow_uniforms = other.shadow_uniforms
+        self.ground_z = other.ground_z
         self.sphere_mesh = other.sphere_mesh^
         self.box_mesh = other.box_mesh^
         self.ground_mesh = other.ground_mesh^
@@ -427,10 +461,13 @@ struct Renderer3D(Movable):
         # 7. Create depth texture
         self._create_depth_texture()
 
-        # 8. Generate and upload static meshes
+        # 8. Create shadow map resources
+        self._create_shadow_resources()
+
+        # 9. Generate and upload static meshes
         self._upload_static_meshes()
 
-        # 9. Allocate line buffers
+        # 10. Allocate line buffers
         self._create_line_buffers()
 
         self.initialized = True
@@ -441,6 +478,7 @@ struct Renderer3D(Movable):
         stage: GPUShaderStage,
         num_uniform_buffers: UInt32,
         entrypoint: String,
+        num_samplers: UInt32 = 0,
     ) raises -> Ptr[GPUShader, AnyOrigin[True]]:
         """Compile an MSL shader from source string."""
         var code_bytes = source.as_bytes()
@@ -452,7 +490,7 @@ struct Renderer3D(Movable):
             entrypoint=ep.as_c_string_slice().unsafe_ptr(),
             format=GPUShaderFormat.GPU_SHADERFORMAT_MSL,
             stage=stage,
-            num_samplers=0,
+            num_samplers=num_samplers,
             num_storage_textures=0,
             num_storage_buffers=0,
             num_uniform_buffers=num_uniform_buffers,
@@ -471,7 +509,7 @@ struct Renderer3D(Movable):
         )
 
     fn _create_pipelines(mut self) raises:
-        """Create solid, ground, and line GPU pipelines."""
+        """Create solid, ground, line, shadow, and reflection GPU pipelines."""
         # --- Solid pipeline ---
         var solid_vs = self._create_shader(
             SOLID_VERTEX_MSL,
@@ -482,8 +520,9 @@ struct Renderer3D(Movable):
         var solid_fs = self._create_shader(
             SOLID_FRAGMENT_MSL,
             GPUShaderStage.GPU_SHADERSTAGE_FRAGMENT,
-            num_uniform_buffers=1,
+            num_uniform_buffers=2,
             entrypoint=String("solid_fragment"),
+            num_samplers=1,
         )
 
         # Vertex input - allocate attributes contiguously on heap
@@ -593,8 +632,9 @@ struct Renderer3D(Movable):
         var ground_fs = self._create_shader(
             GROUND_FRAGMENT_MSL,
             GPUShaderStage.GPU_SHADERSTAGE_FRAGMENT,
-            num_uniform_buffers=1,
+            num_uniform_buffers=2,
             entrypoint=String("ground_fragment"),
+            num_samplers=1,
         )
 
         var ground_ct = GPUColorTargetDescription(
@@ -792,9 +832,217 @@ struct Renderer3D(Movable):
 
         self.line_pipeline = create_gpu_graphics_pipeline(self.device, Ptr(to=line_pi))
 
+        # --- Shadow pipeline (depth-only, from light POV) ---
+        var shadow_vs = self._create_shader(
+            SHADOW_VERTEX_MSL,
+            GPUShaderStage.GPU_SHADERSTAGE_VERTEX,
+            num_uniform_buffers=2,
+            entrypoint=String("shadow_vertex"),
+        )
+        var shadow_fs = self._create_shader(
+            SHADOW_FRAGMENT_MSL,
+            GPUShaderStage.GPU_SHADERSTAGE_FRAGMENT,
+            num_uniform_buffers=0,
+            entrypoint=String("shadow_fragment"),
+        )
+
+        # Shadow uses same vertex layout as solid
+        var shadow_buf_desc = GPUVertexBufferDescription(
+            slot=0, pitch=32, input_rate=GPUVertexInputRate.GPU_VERTEXINPUTRATE_VERTEX, instance_step_rate=0
+        )
+        var shadow_attrs = alloc[GPUVertexAttribute](3)
+        shadow_attrs[0] = GPUVertexAttribute(
+            location=0, buffer_slot=0,
+            format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT3,
+            offset=0,
+        )
+        shadow_attrs[1] = GPUVertexAttribute(
+            location=1, buffer_slot=0,
+            format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT3,
+            offset=12,
+        )
+        shadow_attrs[2] = GPUVertexAttribute(
+            location=2, buffer_slot=0,
+            format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT2,
+            offset=24,
+        )
+        var shadow_vi = GPUVertexInputState(
+            vertex_buffer_descriptions=Ptr(to=shadow_buf_desc),
+            num_vertex_buffers=1,
+            vertex_attributes=shadow_attrs,
+            num_vertex_attributes=3,
+        )
+
+        var shadow_pi = GPUGraphicsPipelineCreateInfo(
+            vertex_shader=shadow_vs,
+            fragment_shader=shadow_fs,
+            vertex_input_state=shadow_vi,
+            primitive_type=GPUPrimitiveType.GPU_PRIMITIVETYPE_TRIANGLELIST,
+            rasterizer_state=GPURasterizerState(
+                fill_mode=GPUFillMode.GPU_FILLMODE_FILL,
+                cull_mode=GPUCullMode.GPU_CULLMODE_BACK,
+                front_face=GPUFrontFace.GPU_FRONTFACE_COUNTER_CLOCKWISE,
+                depth_bias_constant_factor=1.5,
+                depth_bias_clamp=0.0,
+                depth_bias_slope_factor=2.0,
+                enable_depth_bias=True,
+                enable_depth_clip=True,
+                padding1=0,
+                padding2=0,
+            ),
+            multisample_state=GPUMultisampleState(
+                sample_count=GPUSampleCount.GPU_SAMPLECOUNT_1,
+                sample_mask=0,
+                enable_mask=False,
+                padding1=0,
+                padding2=0,
+                padding3=0,
+            ),
+            depth_stencil_state=GPUDepthStencilState(
+                compare_op=GPUCompareOp.GPU_COMPAREOP_LESS,
+                back_stencil_state=self._no_stencil_op(),
+                front_stencil_state=self._no_stencil_op(),
+                compare_mask=0,
+                write_mask=0,
+                enable_depth_test=True,
+                enable_depth_write=True,
+                enable_stencil_test=False,
+                padding1=0,
+                padding2=0,
+                padding3=0,
+            ),
+            target_info=GPUGraphicsPipelineTargetInfo(
+                color_target_descriptions=Ptr[GPUColorTargetDescription, AnyOrigin[False]](),
+                num_color_targets=0,
+                depth_stencil_format=GPUTextureFormat.GPU_TEXTUREFORMAT_D32_FLOAT,
+                has_depth_stencil_target=True,
+                padding1=0,
+                padding2=0,
+                padding3=0,
+            ),
+            props=PropertiesID(0),
+        )
+
+        self.shadow_pipeline = create_gpu_graphics_pipeline(self.device, Ptr(to=shadow_pi))
+
+        # --- Reflection pipeline (alpha-blended, front-cull, no depth write) ---
+        var refl_fs = self._create_shader(
+            REFLECTION_FRAGMENT_MSL,
+            GPUShaderStage.GPU_SHADERSTAGE_FRAGMENT,
+            num_uniform_buffers=1,
+            entrypoint=String("reflection_fragment"),
+        )
+
+        # Reuse solid_vs for reflection (same vertex output struct)
+        # Need a second reference - create another shader
+        var refl_vs = self._create_shader(
+            SOLID_VERTEX_MSL,
+            GPUShaderStage.GPU_SHADERSTAGE_VERTEX,
+            num_uniform_buffers=2,
+            entrypoint=String("solid_vertex"),
+        )
+
+        var refl_ct = GPUColorTargetDescription(
+            format=self.swapchain_format,
+            blend_state=GPUColorTargetBlendState(
+                src_color_blendfactor=GPUBlendFactor.GPU_BLENDFACTOR_SRC_ALPHA,
+                dst_color_blendfactor=GPUBlendFactor.GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                color_blend_op=GPUBlendOp.GPU_BLENDOP_ADD,
+                src_alpha_blendfactor=GPUBlendFactor.GPU_BLENDFACTOR_ONE,
+                dst_alpha_blendfactor=GPUBlendFactor.GPU_BLENDFACTOR_ZERO,
+                alpha_blend_op=GPUBlendOp.GPU_BLENDOP_ADD,
+                color_write_mask=GPUColorComponentFlags(0x0F),
+                enable_blend=True,
+                enable_color_write_mask=False,
+                padding1=0,
+                padding2=0,
+            ),
+        )
+
+        # Reflection uses same vertex layout as solid
+        var refl_buf_desc = GPUVertexBufferDescription(
+            slot=0, pitch=32, input_rate=GPUVertexInputRate.GPU_VERTEXINPUTRATE_VERTEX, instance_step_rate=0
+        )
+        var refl_attrs = alloc[GPUVertexAttribute](3)
+        refl_attrs[0] = GPUVertexAttribute(
+            location=0, buffer_slot=0,
+            format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT3,
+            offset=0,
+        )
+        refl_attrs[1] = GPUVertexAttribute(
+            location=1, buffer_slot=0,
+            format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT3,
+            offset=12,
+        )
+        refl_attrs[2] = GPUVertexAttribute(
+            location=2, buffer_slot=0,
+            format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT2,
+            offset=24,
+        )
+        var refl_vi = GPUVertexInputState(
+            vertex_buffer_descriptions=Ptr(to=refl_buf_desc),
+            num_vertex_buffers=1,
+            vertex_attributes=refl_attrs,
+            num_vertex_attributes=3,
+        )
+
+        var refl_pi = GPUGraphicsPipelineCreateInfo(
+            vertex_shader=refl_vs,
+            fragment_shader=refl_fs,
+            vertex_input_state=refl_vi,
+            primitive_type=GPUPrimitiveType.GPU_PRIMITIVETYPE_TRIANGLELIST,
+            rasterizer_state=GPURasterizerState(
+                fill_mode=GPUFillMode.GPU_FILLMODE_FILL,
+                cull_mode=GPUCullMode.GPU_CULLMODE_FRONT,  # Front-cull (Z-flip reverses winding)
+                front_face=GPUFrontFace.GPU_FRONTFACE_COUNTER_CLOCKWISE,
+                depth_bias_constant_factor=0.0,
+                depth_bias_clamp=0.0,
+                depth_bias_slope_factor=0.0,
+                enable_depth_bias=False,
+                enable_depth_clip=True,
+                padding1=0,
+                padding2=0,
+            ),
+            multisample_state=GPUMultisampleState(
+                sample_count=GPUSampleCount.GPU_SAMPLECOUNT_1,
+                sample_mask=0,
+                enable_mask=False,
+                padding1=0,
+                padding2=0,
+                padding3=0,
+            ),
+            depth_stencil_state=GPUDepthStencilState(
+                compare_op=GPUCompareOp.GPU_COMPAREOP_LESS,
+                back_stencil_state=self._no_stencil_op(),
+                front_stencil_state=self._no_stencil_op(),
+                compare_mask=0,
+                write_mask=0,
+                enable_depth_test=True,
+                enable_depth_write=False,  # Don't write depth (ground renders on top)
+                enable_stencil_test=False,
+                padding1=0,
+                padding2=0,
+                padding3=0,
+            ),
+            target_info=GPUGraphicsPipelineTargetInfo(
+                color_target_descriptions=Ptr(to=refl_ct),
+                num_color_targets=1,
+                depth_stencil_format=GPUTextureFormat.GPU_TEXTUREFORMAT_D32_FLOAT,
+                has_depth_stencil_target=True,
+                padding1=0,
+                padding2=0,
+                padding3=0,
+            ),
+            props=PropertiesID(0),
+        )
+
+        self.reflection_pipeline = create_gpu_graphics_pipeline(self.device, Ptr(to=refl_pi))
+
         # Free heap-allocated vertex attribute arrays
         solid_attrs.free()
         ground_attrs.free()
+        shadow_attrs.free()
+        refl_attrs.free()
 
         # Release shader objects (pipelines retain them)
         release_gpu_shader(self.device, solid_vs)
@@ -803,6 +1051,10 @@ struct Renderer3D(Movable):
         release_gpu_shader(self.device, ground_fs)
         release_gpu_shader(self.device, line_vs)
         release_gpu_shader(self.device, line_fs)
+        release_gpu_shader(self.device, shadow_vs)
+        release_gpu_shader(self.device, shadow_fs)
+        release_gpu_shader(self.device, refl_vs)
+        release_gpu_shader(self.device, refl_fs)
 
     fn _create_depth_texture(mut self) raises:
         """Create the depth buffer texture."""
@@ -818,6 +1070,44 @@ struct Renderer3D(Movable):
             props=PropertiesID(0),
         )
         self.depth_texture = create_gpu_texture(self.device, Ptr(to=info))
+
+    fn _create_shadow_resources(mut self) raises:
+        """Create shadow map texture and comparison sampler."""
+        # Shadow map: D32_FLOAT, usable as both depth target and sampler source
+        var sm_info = GPUTextureCreateInfo(
+            type=GPUTextureType.GPU_TEXTURETYPE_2D,
+            format=GPUTextureFormat.GPU_TEXTUREFORMAT_D32_FLOAT,
+            usage=GPUTextureUsageFlags.GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET
+                | GPUTextureUsageFlags.GPU_TEXTUREUSAGE_SAMPLER,
+            width=1024,
+            height=1024,
+            layer_count_or_depth=1,
+            num_levels=1,
+            sample_count=GPUSampleCount.GPU_SAMPLECOUNT_1,
+            props=PropertiesID(0),
+        )
+        self.shadow_map = create_gpu_texture(self.device, Ptr(to=sm_info))
+
+        # Comparison sampler for shadow mapping
+        var sampler_info = GPUSamplerCreateInfo(
+            min_filter=GPUFilter.GPU_FILTER_LINEAR,
+            mag_filter=GPUFilter.GPU_FILTER_LINEAR,
+            mipmap_mode=GPUSamplerMipmapMode.GPU_SAMPLERMIPMAPMODE_NEAREST,
+            address_mode_u=GPUSamplerAddressMode.GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
+            address_mode_v=GPUSamplerAddressMode.GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
+            address_mode_w=GPUSamplerAddressMode.GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
+            mip_lod_bias=0.0,
+            max_anisotropy=1.0,
+            compare_op=GPUCompareOp.GPU_COMPAREOP_LESS,
+            min_lod=0.0,
+            max_lod=0.0,
+            enable_anisotropy=False,
+            enable_compare=True,
+            padding1=0,
+            padding2=0,
+            props=PropertiesID(0),
+        )
+        self.shadow_sampler = create_gpu_sampler(self.device, Ptr(to=sampler_info))
 
     fn _upload_mesh(self, mesh_data: MeshData) raises -> MeshHandle:
         """Upload mesh data to GPU buffers via transfer buffer."""
@@ -1069,6 +1359,7 @@ struct Renderer3D(Movable):
         self.ground_uniforms.model = mat4_to_gpu_f32(model)
         self.ground_uniforms.color = color3d_to_vec4(255, 255, 255)
         self.has_ground = True
+        self.ground_z = height
 
     fn draw_coordinate_axes(
         mut self,
@@ -1143,8 +1434,41 @@ struct Renderer3D(Movable):
         if self.draw_axes:
             self.draw_coordinate_axes()
 
+    fn _select_and_draw(
+        self,
+        render_pass: Ptr[GPURenderPass, AnyOrigin[True]],
+        draw: SolidDrawCommand,
+    ) raises:
+        """Select mesh buffers for a draw command, bind, and draw."""
+        var vb: Ptr[GPUBuffer, AnyOrigin[True]]
+        var ib: Ptr[GPUBuffer, AnyOrigin[True]]
+        var n_idx: UInt32
+
+        if draw.is_capsule:
+            var ci = draw.capsule_cache_idx
+            vb = self.capsule_cache[ci].mesh.vertex_buffer
+            ib = self.capsule_cache[ci].mesh.index_buffer
+            n_idx = self.capsule_cache[ci].mesh.num_indices
+        elif draw.mesh_idx == 0:
+            vb = self.sphere_mesh.vertex_buffer
+            ib = self.sphere_mesh.index_buffer
+            n_idx = self.sphere_mesh.num_indices
+        else:
+            vb = self.box_mesh.vertex_buffer
+            ib = self.box_mesh.index_buffer
+            n_idx = self.box_mesh.num_indices
+
+        var vb_binding = GPUBufferBinding(buffer=vb, offset=0)
+        bind_gpu_vertex_buffers(render_pass, 0, Ptr(to=vb_binding), 1)
+        var ib_binding = GPUBufferBinding(buffer=ib, offset=0)
+        bind_gpu_index_buffer(
+            render_pass, Ptr(to=ib_binding),
+            GPUIndexElementSize.GPU_INDEXELEMENTSIZE_16BIT,
+        )
+        draw_gpu_indexed_primitives(render_pass, n_idx, 1, 0, 0, 0)
+
     fn end_frame(mut self) raises:
-        """End frame: build scene uniforms, execute render pass, present."""
+        """End frame: shadow pass, then main pass with reflections, ground, solids, lines."""
         # Acquire command buffer
         var cmd_buf = acquire_gpu_command_buffer(self.device)
 
@@ -1171,7 +1495,66 @@ struct Renderer3D(Movable):
             upload_to_gpu_buffer(copy_pass, Ptr(to=src), Ptr(to=dst), False)
             end_gpu_copy_pass(copy_pass)
 
+        # Build scene uniforms and shadow uniforms
+        self._build_scene_uniforms()
+        self._build_light_view_proj()
+
+        # Store ground_z in scene_uniforms padding.w for reflection clipping
+        self.scene_uniforms.padding[3] = Float32(self.ground_z)
+
+        # ====================================================================
+        # SHADOW PASS (depth-only, from light POV)
+        # ====================================================================
+        if len(self.solid_draws) > 0:
+            var shadow_depth_info = GPUDepthStencilTargetInfo(
+                texture=self.shadow_map,
+                clear_depth=1.0,
+                load_op=GPULoadOp.GPU_LOADOP_CLEAR,
+                store_op=GPUStoreOp.GPU_STOREOP_STORE,
+                stencil_load_op=GPULoadOp.GPU_LOADOP_DONT_CARE,
+                stencil_store_op=GPUStoreOp.GPU_STOREOP_DONT_CARE,
+                cycle=True,
+                clear_stencil=0,
+                padding1=0,
+                padding2=0,
+            )
+
+            var shadow_pass = begin_gpu_render_pass(
+                cmd_buf,
+                Ptr[GPUColorTargetInfo, AnyOrigin[False]](),  # No color targets
+                0,
+                Ptr(to=shadow_depth_info),
+            )
+
+            var shadow_viewport = GPUViewport(
+                x=0.0, y=0.0, w=1024.0, h=1024.0, min_depth=0.0, max_depth=1.0,
+            )
+            set_gpu_viewport(shadow_pass, Ptr(to=shadow_viewport))
+
+            bind_gpu_graphics_pipeline(shadow_pass, self.shadow_pipeline)
+
+            # Push light VP as SceneUniforms (reuse struct layout)
+            var light_scene = SceneUniforms()
+            light_scene.view_proj = self.shadow_uniforms.light_view_proj.copy()
+            push_gpu_vertex_uniform_data(
+                cmd_buf, 0,
+                Ptr(to=light_scene).bitcast[NoneType](),
+                128,
+            )
+
+            for i in range(len(self.solid_draws)):
+                push_gpu_vertex_uniform_data(
+                    cmd_buf, 1,
+                    Ptr(to=self.solid_draws[i].uniforms).bitcast[NoneType](),
+                    80,
+                )
+                self._select_and_draw(shadow_pass, self.solid_draws[i])
+
+            end_gpu_render_pass(shadow_pass)
+
+        # ====================================================================
         # Acquire swapchain texture
+        # ====================================================================
         var swapchain_tex = Ptr[GPUTexture, AnyOrigin[True]]()
         var sc_w = UInt32(0)
         var sc_h = UInt32(0)
@@ -1184,7 +1567,6 @@ struct Renderer3D(Movable):
         )
 
         if not swapchain_tex:
-            # Window minimized or no texture available
             submit_gpu_command_buffer(cmd_buf)
             return
 
@@ -1193,14 +1575,12 @@ struct Renderer3D(Movable):
             self.width = Int(sc_w)
             self.height = Int(sc_h)
             self.camera.set_screen_size(self.width, self.height)
-            # Recreate depth texture
             release_gpu_texture(self.device, self.depth_texture)
             self._create_depth_texture()
 
-        # Build scene uniforms
-        self._build_scene_uniforms()
-
-        # Begin render pass
+        # ====================================================================
+        # MAIN RENDER PASS
+        # ====================================================================
         var bg_r = Float32(self.background_color.r) / 255.0
         var bg_g = Float32(self.background_color.g) / 255.0
         var bg_b = Float32(self.background_color.b) / 255.0
@@ -1238,80 +1618,58 @@ struct Renderer3D(Movable):
             cmd_buf, Ptr(to=color_info), 1, Ptr(to=depth_info)
         )
 
-        # Set viewport
         var viewport = GPUViewport(
-            x=0.0,
-            y=0.0,
-            w=c_float(sc_w),
-            h=c_float(sc_h),
-            min_depth=0.0,
-            max_depth=1.0,
+            x=0.0, y=0.0, w=c_float(sc_w), h=c_float(sc_h),
+            min_depth=0.0, max_depth=1.0,
         )
         set_gpu_viewport(render_pass, Ptr(to=viewport))
 
-        # --- Draw solid objects ---
-        bind_gpu_graphics_pipeline(render_pass, self.solid_pipeline)
-
-        # Push scene uniforms (vertex slot 0, fragment slot 0)
-        push_gpu_vertex_uniform_data(
-            cmd_buf, 0,
-            Ptr(to=self.scene_uniforms).bitcast[NoneType](),
-            128,
-        )
-        push_gpu_fragment_uniform_data(
-            cmd_buf, 0,
-            Ptr(to=self.scene_uniforms).bitcast[NoneType](),
-            128,
+        # Shadow map texture+sampler binding (reused by solid and ground passes)
+        var shadow_binding = GPUTextureSamplerBinding(
+            texture=self.shadow_map,
+            sampler=self.shadow_sampler,
         )
 
-        for i in range(len(self.solid_draws)):
-            # Push object uniforms (vertex slot 1)
+        # ------------------------------------------------------------------
+        # Phase A: REFLECTIONS (Z-flipped solid objects, semi-transparent)
+        # ------------------------------------------------------------------
+        if self.has_ground and len(self.solid_draws) > 0:
+            bind_gpu_graphics_pipeline(render_pass, self.reflection_pipeline)
+
+            # Push scene uniforms (fragment slot 0 for reflection clipping)
             push_gpu_vertex_uniform_data(
-                cmd_buf, 1,
-                Ptr(to=self.solid_draws[i].uniforms).bitcast[NoneType](),
-                80,
+                cmd_buf, 0,
+                Ptr(to=self.scene_uniforms).bitcast[NoneType](),
+                128,
+            )
+            push_gpu_fragment_uniform_data(
+                cmd_buf, 0,
+                Ptr(to=self.scene_uniforms).bitcast[NoneType](),
+                128,
             )
 
-            # Select mesh
-            var vb: Ptr[GPUBuffer, AnyOrigin[True]]
-            var ib: Ptr[GPUBuffer, AnyOrigin[True]]
-            var n_idx: UInt32
+            for i in range(len(self.solid_draws)):
+                # Build mirrored model matrix: flip Z around ground_z
+                var mirrored_uniforms = self.solid_draws[i].uniforms
+                # M_reflected = T(0,0,2*gz) * S(1,1,-1) * M
+                # This negates row 2 of the model matrix (m20,m21,m22,m23)
+                # In column-major storage: m20=[2], m21=[6], m22=[10], m23=[14]
+                var gz = Float32(self.ground_z)
+                mirrored_uniforms.model[2] = -mirrored_uniforms.model[2]    # m20
+                mirrored_uniforms.model[6] = -mirrored_uniforms.model[6]    # m21
+                mirrored_uniforms.model[10] = -mirrored_uniforms.model[10]  # m22
+                mirrored_uniforms.model[14] = -mirrored_uniforms.model[14] + 2.0 * gz  # m23
 
-            if self.solid_draws[i].is_capsule:
-                var ci = self.solid_draws[i].capsule_cache_idx
-                vb = self.capsule_cache[ci].mesh.vertex_buffer
-                ib = self.capsule_cache[ci].mesh.index_buffer
-                n_idx = self.capsule_cache[ci].mesh.num_indices
-            elif self.solid_draws[i].mesh_idx == 0:
-                vb = self.sphere_mesh.vertex_buffer
-                ib = self.sphere_mesh.index_buffer
-                n_idx = self.sphere_mesh.num_indices
-            else:
-                vb = self.box_mesh.vertex_buffer
-                ib = self.box_mesh.index_buffer
-                n_idx = self.box_mesh.num_indices
+                push_gpu_vertex_uniform_data(
+                    cmd_buf, 1,
+                    Ptr(to=mirrored_uniforms).bitcast[NoneType](),
+                    80,
+                )
+                self._select_and_draw(render_pass, self.solid_draws[i])
 
-            # Bind mesh buffers
-            var vb_binding = GPUBufferBinding(buffer=vb, offset=0)
-            bind_gpu_vertex_buffers(
-                render_pass, 0, Ptr(to=vb_binding), 1
-            )
-
-            var ib_binding = GPUBufferBinding(buffer=ib, offset=0)
-            bind_gpu_index_buffer(
-                render_pass,
-                Ptr(to=ib_binding),
-                GPUIndexElementSize.GPU_INDEXELEMENTSIZE_16BIT,
-            )
-
-            # Draw
-            draw_gpu_indexed_primitives(
-                render_pass,
-                n_idx,
-                1, 0, 0, 0,
-            )
-
-        # --- Draw ground ---
+        # ------------------------------------------------------------------
+        # Phase B: GROUND (checkerboard with shadow map sampling)
+        # ------------------------------------------------------------------
         if self.has_ground:
             bind_gpu_graphics_pipeline(render_pass, self.ground_pipeline)
 
@@ -1325,10 +1683,21 @@ struct Renderer3D(Movable):
                 Ptr(to=self.scene_uniforms).bitcast[NoneType](),
                 128,
             )
+            # Push shadow uniforms to fragment slot 1
+            push_gpu_fragment_uniform_data(
+                cmd_buf, 1,
+                Ptr(to=self.shadow_uniforms).bitcast[NoneType](),
+                80,
+            )
             push_gpu_vertex_uniform_data(
                 cmd_buf, 1,
                 Ptr(to=self.ground_uniforms).bitcast[NoneType](),
                 80,
+            )
+
+            # Bind shadow map + sampler to fragment sampler slot 0
+            bind_gpu_fragment_samplers(
+                render_pass, 0, Ptr(to=shadow_binding), 1
             )
 
             var gvb = GPUBufferBinding(
@@ -1350,7 +1719,45 @@ struct Renderer3D(Movable):
                 1, 0, 0, 0,
             )
 
-        # --- Draw lines ---
+        # ------------------------------------------------------------------
+        # Phase C: SOLID OBJECTS (with shadow map sampling)
+        # ------------------------------------------------------------------
+        if len(self.solid_draws) > 0:
+            bind_gpu_graphics_pipeline(render_pass, self.solid_pipeline)
+
+            push_gpu_vertex_uniform_data(
+                cmd_buf, 0,
+                Ptr(to=self.scene_uniforms).bitcast[NoneType](),
+                128,
+            )
+            push_gpu_fragment_uniform_data(
+                cmd_buf, 0,
+                Ptr(to=self.scene_uniforms).bitcast[NoneType](),
+                128,
+            )
+            # Push shadow uniforms to fragment slot 1
+            push_gpu_fragment_uniform_data(
+                cmd_buf, 1,
+                Ptr(to=self.shadow_uniforms).bitcast[NoneType](),
+                80,
+            )
+
+            # Bind shadow map + sampler
+            bind_gpu_fragment_samplers(
+                render_pass, 0, Ptr(to=shadow_binding), 1
+            )
+
+            for i in range(len(self.solid_draws)):
+                push_gpu_vertex_uniform_data(
+                    cmd_buf, 1,
+                    Ptr(to=self.solid_draws[i].uniforms).bitcast[NoneType](),
+                    80,
+                )
+                self._select_and_draw(render_pass, self.solid_draws[i])
+
+        # ------------------------------------------------------------------
+        # Phase D: LINES (unchanged)
+        # ------------------------------------------------------------------
         if num_line_verts >= 2:
             bind_gpu_graphics_pipeline(render_pass, self.line_pipeline)
 
@@ -1360,7 +1767,6 @@ struct Renderer3D(Movable):
                 lu.view_proj = self.scene_uniforms.view_proj.copy()
                 lu.color = self.line_colors[seg_idx].to_inline_array()
 
-                # Push same uniforms to both vertex and fragment slot 0
                 push_gpu_vertex_uniform_data(
                     cmd_buf, 0,
                     Ptr(to=lu).bitcast[NoneType](),
@@ -1420,6 +1826,41 @@ struct Renderer3D(Movable):
         self.scene_uniforms.light_color[1] = 0.98
         self.scene_uniforms.light_color[2] = 0.95
         self.scene_uniforms.light_color[3] = 0.25  # ambient intensity
+
+    fn _build_light_view_proj(mut self):
+        """Build light's orthographic view-projection matrix for shadow mapping."""
+        # Light direction (same as scene uniforms)
+        var light_dir = Vec3(
+            Float64(self.scene_uniforms.light_dir[0]),
+            Float64(self.scene_uniforms.light_dir[1]),
+            Float64(self.scene_uniforms.light_dir[2]),
+        )
+
+        # Light position: offset from camera target along negative light direction
+        var target = self.camera.target
+        var light_distance = 15.0
+        var light_pos = target - light_dir * light_distance
+
+        # Build look-at view matrix for the light using Mat4.look_at
+        # which correctly handles the sign conventions (Z-row = -forward)
+        var up = Vec3(0.0, 0.0, 1.0)
+        # If light is nearly vertical, use a different up vector
+        var abs_dot = abs(light_dir.x * up.x + light_dir.y * up.y + light_dir.z * up.z)
+        if abs_dot > 0.99:
+            up = Vec3(0.0, 1.0, 0.0)
+
+        var light_view = Mat4.look_at(light_pos, target, up)
+
+        # Orthographic projection covering the scene
+        var ortho_size = 8.0
+        var light_proj = ortho_metal(
+            -ortho_size, ortho_size,
+            -ortho_size, ortho_size,
+            0.1, 30.0,
+        )
+
+        var light_vp = light_proj @ light_view
+        self.shadow_uniforms.light_view_proj = mat4_to_gpu_f32(light_vp)
 
     # --- Event Handling ---
 
@@ -1514,10 +1955,16 @@ struct Renderer3D(Movable):
         # Release depth texture
         release_gpu_texture(self.device, self.depth_texture)
 
+        # Release shadow resources
+        release_gpu_texture(self.device, self.shadow_map)
+        release_gpu_sampler(self.device, self.shadow_sampler)
+
         # Release pipelines
         release_gpu_graphics_pipeline(self.device, self.solid_pipeline)
         release_gpu_graphics_pipeline(self.device, self.ground_pipeline)
         release_gpu_graphics_pipeline(self.device, self.line_pipeline)
+        release_gpu_graphics_pipeline(self.device, self.shadow_pipeline)
+        release_gpu_graphics_pipeline(self.device, self.reflection_pipeline)
 
         # Release window and device
         release_window_from_gpu_device(self.device, self.window)

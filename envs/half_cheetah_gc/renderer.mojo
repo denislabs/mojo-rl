@@ -263,8 +263,11 @@ struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
         self.renderer.begin_frame()
 
         # Draw ground grid (GPU shader checkerboard)
+        # Offset ground slightly below z=0 to account for visual radius scaling
+        # (visual capsule bottom extends below physics contact point)
+        var ground_offset = -self.capsule_radius * (Self.VISUAL_RADIUS_SCALE - 1.0)
         var grid_center_x = torso_pos.x if self.follow_cheetah else 0.0
-        self.renderer.draw_ground_grid(grid_center_x)
+        self.renderer.draw_ground_grid(grid_center_x, height=ground_offset)
 
         # Draw coordinate axes
         if self.follow_cheetah:

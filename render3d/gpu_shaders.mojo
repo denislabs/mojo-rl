@@ -1,19 +1,22 @@
 """MSL Shader Source Strings for GPU 3D Renderer.
 
-Three shader pairs as comptime string constants:
-  1. Solid object shaders (Blinn-Phong lighting)
-  2. Ground shaders (procedural checkerboard)
+Six shader pairs as comptime string constants:
+  1. Solid object shaders (Blinn-Phong lighting + shadow sampling)
+  2. Ground shaders (procedural checkerboard + shadow sampling)
   3. Line shaders (flat color, no lighting)
+  4. Shadow map shaders (depth-only pass from light POV)
+  5. Reflection shaders (Z-flipped, darkened, semi-transparent)
 
 SDL_GPU MSL binding convention:
   - [[buffer(0)]] = uniform slot 0
   - [[buffer(1)]] = uniform slot 1
   - Vertex buffers auto-bound at [[buffer(14+)]] by SDL_GPU
   - [[stage_in]] for vertex attributes from pipeline layout
+  - [[texture(0)]], [[sampler(0)]] = fragment sampler slot 0
 """
 
 
-# --- Solid Object Shaders (Blinn-Phong) ---
+# --- Solid Object Shaders (Blinn-Phong + Shadows) ---
 
 comptime SOLID_VERTEX_MSL = """
 #include <metal_stdlib>
@@ -80,9 +83,52 @@ struct SceneUniforms {
     float4 padding;
 };
 
+struct ShadowUniforms {
+    float4x4 light_view_proj;
+    float4 params;  // x=shadow_intensity, y=bias
+};
+
+float compute_shadow(float3 world_pos,
+                     constant ShadowUniforms &shadow,
+                     depth2d<float> shadow_map,
+                     sampler shadow_sampler) {
+    float4 light_pos = shadow.light_view_proj * float4(world_pos, 1.0);
+    float3 proj = light_pos.xyz / light_pos.w;
+
+    // Map NDC [-1,1] XY to UV [0,1]
+    float2 shadow_uv = proj.xy * 0.5 + 0.5;
+    shadow_uv.y = 1.0 - shadow_uv.y;  // Metal Y-flip
+
+    // Check if outside shadow map bounds
+    if (shadow_uv.x < 0.0 || shadow_uv.x > 1.0 || shadow_uv.y < 0.0 || shadow_uv.y > 1.0 || proj.z < 0.0 || proj.z > 1.0) {
+        return 1.0;  // Lit (outside shadow frustum)
+    }
+
+    float bias = shadow.params.y;
+    float current_depth = proj.z - bias;
+
+    // 3x3 PCF for soft shadows
+    float shadow_val = 0.0;
+    float texel_size = 1.0 / 1024.0;
+    for (int x = -1; x <= 1; x++) {
+        for (int y = -1; y <= 1; y++) {
+            float2 offset = float2(float(x), float(y)) * texel_size;
+            shadow_val += shadow_map.sample_compare(shadow_sampler, shadow_uv + offset, current_depth);
+        }
+    }
+    shadow_val /= 9.0;
+
+    // Mix between full shadow and lit based on intensity
+    float intensity = shadow.params.x;
+    return 1.0 - intensity * (1.0 - shadow_val);
+}
+
 fragment float4 solid_fragment(
     VertexOut in [[stage_in]],
-    constant SceneUniforms &scene [[buffer(0)]]
+    constant SceneUniforms &scene [[buffer(0)]],
+    constant ShadowUniforms &shadow [[buffer(1)]],
+    depth2d<float> shadow_map [[texture(0)]],
+    sampler shadow_sampler [[sampler(0)]]
 ) {
     float3 N = normalize(in.world_normal);
     float3 L = normalize(-scene.light_dir.xyz);
@@ -93,14 +139,17 @@ fragment float4 solid_fragment(
     float diffuse = max(dot(N, L), 0.0);
     float specular = pow(max(dot(N, H), 0.0), 32.0) * 0.3;
 
+    float shadow_factor = compute_shadow(in.world_pos, shadow, shadow_map, shadow_sampler);
+
     float3 light_col = scene.light_color.xyz;
-    float3 color = in.obj_color.rgb * (ambient + diffuse * light_col) + specular * light_col;
+    float3 color = in.obj_color.rgb * (ambient + shadow_factor * diffuse * light_col)
+                 + shadow_factor * specular * light_col;
 
     return float4(color, in.obj_color.a);
 }
 """
 
-# --- Ground Shaders (Procedural Checkerboard) ---
+# --- Ground Shaders (Procedural Checkerboard + Shadows) ---
 
 comptime GROUND_VERTEX_MSL = """
 #include <metal_stdlib>
@@ -163,9 +212,50 @@ struct SceneUniforms {
     float4 padding;
 };
 
+struct ShadowUniforms {
+    float4x4 light_view_proj;
+    float4 params;  // x=shadow_intensity, y=bias
+};
+
+float compute_shadow_ground(float3 world_pos,
+                            constant ShadowUniforms &shadow,
+                            depth2d<float> shadow_map,
+                            sampler shadow_sampler) {
+    float4 light_pos = shadow.light_view_proj * float4(world_pos, 1.0);
+    float3 proj = light_pos.xyz / light_pos.w;
+
+    // Map NDC [-1,1] XY to UV [0,1]
+    float2 shadow_uv = proj.xy * 0.5 + 0.5;
+    shadow_uv.y = 1.0 - shadow_uv.y;  // Metal Y-flip
+
+    if (shadow_uv.x < 0.0 || shadow_uv.x > 1.0 || shadow_uv.y < 0.0 || shadow_uv.y > 1.0 || proj.z < 0.0 || proj.z > 1.0) {
+        return 1.0;
+    }
+
+    float bias = shadow.params.y;
+    float current_depth = proj.z - bias;
+
+    // 3x3 PCF
+    float shadow_val = 0.0;
+    float texel_size = 1.0 / 1024.0;
+    for (int x = -1; x <= 1; x++) {
+        for (int y = -1; y <= 1; y++) {
+            float2 offset = float2(float(x), float(y)) * texel_size;
+            shadow_val += shadow_map.sample_compare(shadow_sampler, shadow_uv + offset, current_depth);
+        }
+    }
+    shadow_val /= 9.0;
+
+    float intensity = shadow.params.x;
+    return 1.0 - intensity * (1.0 - shadow_val);
+}
+
 fragment float4 ground_fragment(
     VertexOut in [[stage_in]],
-    constant SceneUniforms &scene [[buffer(0)]]
+    constant SceneUniforms &scene [[buffer(0)]],
+    constant ShadowUniforms &shadow [[buffer(1)]],
+    depth2d<float> shadow_map [[texture(0)]],
+    sampler shadow_sampler [[sampler(0)]]
 ) {
     // Checkerboard pattern
     float tile_size = 1.0;
@@ -183,11 +273,18 @@ fragment float4 ground_fragment(
     float diffuse = max(dot(N, L), 0.0) * 0.3 + 0.7;
     base_color *= diffuse;
 
+    // Apply shadow
+    float shadow_factor = compute_shadow_ground(in.world_pos, shadow, shadow_map, shadow_sampler);
+    base_color *= shadow_factor;
+
     // Distance fade for smooth ground edge
     float dist = length(in.world_pos.xy - scene.camera_pos.xy);
-    float fade = 1.0 - smoothstep(8.0, 12.0, dist);
+    float edge_fade = 1.0 - smoothstep(8.0, 12.0, dist);
 
-    return float4(base_color, fade);
+    // Semi-transparent ground to let reflections show through (rendered underneath)
+    float alpha = 0.55 * edge_fade;
+
+    return float4(base_color, alpha);
 }
 """
 
@@ -233,5 +330,112 @@ fragment float4 line_fragment(
     constant LineUniforms &uniforms [[buffer(0)]]
 ) {
     return uniforms.color;
+}
+"""
+
+# --- Shadow Map Shaders (Depth-Only Pass) ---
+
+comptime SHADOW_VERTEX_MSL = """
+#include <metal_stdlib>
+using namespace metal;
+
+struct VertexIn {
+    float3 position [[attribute(0)]];
+    float3 normal   [[attribute(1)]];
+    float2 uv       [[attribute(2)]];
+};
+
+struct VertexOut {
+    float4 position [[position]];
+};
+
+struct SceneUniforms {
+    float4x4 view_proj;
+    float4 camera_pos;
+    float4 light_dir;
+    float4 light_color;
+    float4 padding;
+};
+
+struct ObjectUniforms {
+    float4x4 model;
+    float4 color;
+};
+
+vertex VertexOut shadow_vertex(
+    VertexIn in [[stage_in]],
+    constant SceneUniforms &scene [[buffer(0)]],
+    constant ObjectUniforms &obj [[buffer(1)]]
+) {
+    VertexOut out;
+    float4 world = obj.model * float4(in.position, 1.0);
+    out.position = scene.view_proj * world;
+    return out;
+}
+"""
+
+comptime SHADOW_FRAGMENT_MSL = """
+#include <metal_stdlib>
+using namespace metal;
+
+// Minimal fragment shader for depth-only pass
+fragment void shadow_fragment() {
+    // Depth is written automatically; no color output needed
+}
+"""
+
+# --- Reflection Shaders (Z-Flipped, Darkened, Semi-Transparent) ---
+
+comptime REFLECTION_FRAGMENT_MSL = """
+#include <metal_stdlib>
+using namespace metal;
+
+struct VertexOut {
+    float4 position  [[position]];
+    float3 world_pos;
+    float3 world_normal;
+    float4 obj_color;
+};
+
+struct SceneUniforms {
+    float4x4 view_proj;
+    float4 camera_pos;
+    float4 light_dir;
+    float4 light_color;  // w = ambient
+    float4 padding;      // w = ground_z for reflection clipping
+};
+
+fragment float4 reflection_fragment(
+    VertexOut in [[stage_in]],
+    constant SceneUniforms &scene [[buffer(0)]]
+) {
+    // Discard fragments above the ground plane
+    float ground_z = scene.padding.w;
+    if (in.world_pos.z > ground_z + 0.001) {
+        discard_fragment();
+    }
+
+    // Basic lighting (simplified)
+    float3 N = normalize(in.world_normal);
+    float3 L = normalize(-scene.light_dir.xyz);
+    float3 V = normalize(scene.camera_pos.xyz - in.world_pos);
+    float3 H = normalize(L + V);
+
+    float ambient = scene.light_color.w;
+    float diffuse = max(dot(N, L), 0.0);
+    float specular = pow(max(dot(N, H), 0.0), 32.0) * 0.15;
+
+    float3 light_col = scene.light_color.xyz;
+    float3 color = in.obj_color.rgb * (ambient + diffuse * light_col) + specular * light_col;
+
+    // Darken and make semi-transparent for reflection effect
+    color *= 0.35;
+    float alpha = 0.35;
+
+    // Fade out near edges of ground
+    float dist = length(in.world_pos.xy - scene.camera_pos.xy);
+    alpha *= 1.0 - smoothstep(6.0, 10.0, dist);
+
+    return float4(color, alpha);
 }
 """
