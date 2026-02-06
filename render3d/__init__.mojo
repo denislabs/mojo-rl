@@ -1,14 +1,9 @@
 """3D Rendering Module.
 
-Software wireframe renderer for MuJoCo-style environment visualization.
-Uses SDL2 for display and draws 3D shapes projected to 2D.
+GPU-accelerated 3D renderer using SDL3's GPU API with Metal (MSL) shaders
+for Blinn-Phong lit environment visualization.
 """
 
 from .camera3d import Camera3D
-from .shapes3d import (
-    WireframeSphere,
-    WireframeCapsule,
-    WireframeBox,
-    WireframeLine,
-)
 from .renderer3d import Renderer3D, Color3D
+from .gpu_types import MeshHandle

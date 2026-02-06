@@ -1,7 +1,8 @@
 """3D Rendering Demo.
 
-Demonstrates the render3d module by rendering a simple 3D scene
+Demonstrates the GPU-accelerated render3d module by rendering a simple 3D scene
 with physics bodies (spheres, capsules, boxes) and ground plane.
+Uses SDL3 GPU API with Metal (MSL) shaders.
 """
 
 from render3d import (
@@ -13,9 +14,9 @@ from math3d import Vec3, Quat
 
 
 fn main() raises:
-    print("3D Rendering Demo")
-    print("Press ESC or Q to quit")
-    print("==================")
+    print("GPU 3D Rendering Demo")
+    print("Press ESC to quit")
+    print("=====================")
 
     # Create camera looking at the scene
     var camera = Camera3D(
@@ -36,8 +37,8 @@ fn main() raises:
         draw_axes=True,
     )
 
-    # Initialize SDL2
-    var title = String("3D Physics Demo")
+    # Initialize SDL3 GPU
+    var title = String("GPU 3D Physics Demo")
     renderer.init(title)
 
     print("Rendering scene...")
@@ -58,8 +59,6 @@ fn main() raises:
             center=Vec3(0.0, 0.0, 1.0),
             radius=0.5,
             color=Color3D.cyan(),
-            segments=16,
-            rings=12,
         )
 
         # Draw a capsule (rotating)
@@ -71,10 +70,9 @@ fn main() raises:
             half_height=0.3,
             axis=0,  # X-axis
             color=Color3D.yellow(),
-            segments=12,
         )
 
-        # Draw a box
+        # Draw a box (rotating)
         var box_quat = Quat.from_axis_angle(Vec3(0.0, 0.0, 1.0), -angle * 0.5)
         renderer.draw_box(
             center=Vec3(-2.0, 0.0, 0.5),
@@ -90,17 +88,14 @@ fn main() raises:
                 center=Vec3(x, 2.0, 0.25),
                 radius=0.25,
                 color=Color3D.red(),
-                segments=12,
-                rings=8,
             )
 
         # Draw a line representing a link/connection
-        from render3d.shapes3d import WireframeLine
-        var link = WireframeLine(
+        renderer.draw_line_3d(
             Vec3(0.0, 0.0, 1.5),
             Vec3(2.0, 0.0, 0.5),
+            Color3D.white(),
         )
-        renderer.draw_line_3d(link, Color3D.white())
 
         # End frame
         renderer.end_frame()
@@ -110,7 +105,7 @@ fn main() raises:
         frame += 1
 
         # Delay to cap at ~60 FPS
-        renderer.delay(16)
+        renderer.delay_ms(16)
 
         # Print status every 60 frames
         if frame % 60 == 0:

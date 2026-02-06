@@ -1,28 +1,157 @@
-"""3D Wireframe Renderer.
+"""GPU-Accelerated 3D Renderer.
 
-Software wireframe renderer using SDL2 for display.
-Projects 3D shapes to 2D and draws them as line segments.
+Uses SDL3's GPU API with Metal (MSL shaders) for true 3D rendering
+with Blinn-Phong lighting, depth buffering, and procedural checkerboard ground.
 """
 
-from math import sqrt
-from math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
-from render.sdl2 import SDL2, SDL_Event, SDL_QUIT, SDL_Point
+from memory import UnsafePointer, memcpy, alloc
+from math import sqrt, sin, cos
+from math3d import Vec3 as Vec3Generic, Quat as QuatGeneric, Mat4 as Mat4Generic
+from sys.ffi import _get_dylib_function
+from .sdl import (
+    Ptr,
+    AnyOrigin,
+    lib,
+    c_char,
+    c_float,
+    c_int,
+    # GPU types
+    GPUDevice,
+    GPUBuffer,
+    GPUTransferBuffer,
+    GPUTexture,
+    GPUShader,
+    GPUGraphicsPipeline,
+    GPUCommandBuffer,
+    GPURenderPass,
+    GPUCopyPass,
+    # Create info structs
+    GPUShaderCreateInfo,
+    GPUGraphicsPipelineCreateInfo,
+    GPUGraphicsPipelineTargetInfo,
+    GPUBufferCreateInfo,
+    GPUTransferBufferCreateInfo,
+    GPUTextureCreateInfo,
+    GPUColorTargetDescription,
+    GPUColorTargetBlendState,
+    GPUColorTargetInfo,
+    GPUDepthStencilTargetInfo,
+    GPUDepthStencilState,
+    GPURasterizerState,
+    GPUMultisampleState,
+    GPUVertexInputState,
+    GPUVertexBufferDescription,
+    GPUVertexAttribute,
+    GPUBufferBinding,
+    GPUBufferRegion,
+    GPUTransferBufferLocation,
+    GPUViewport,
+    # Enums
+    GPUPrimitiveType,
+    GPULoadOp,
+    GPUStoreOp,
+    GPUShaderStage,
+    GPUShaderFormat,
+    GPUTextureFormat,
+    GPUTextureType,
+    GPUTextureUsageFlags,
+    GPUBufferUsageFlags,
+    GPUTransferBufferUsage,
+    GPUVertexElementFormat,
+    GPUVertexInputRate,
+    GPUFillMode,
+    GPUCullMode,
+    GPUFrontFace,
+    GPUCompareOp,
+    GPUStencilOp,
+    GPUStencilOpState,
+    GPUSampleCount,
+    GPUIndexElementSize,
+    GPUBlendFactor,
+    GPUBlendOp,
+    GPUColorComponentFlags,
+    PropertiesID,
+    # SDL core
+    Window,
+    WindowFlags,
+    Event,
+    EventType,
+    KeyboardEvent,
+    Keycode,
+    FColor,
+    InitFlags,
+    # Functions
+    init,
+    quit,
+    create_window,
+    destroy_window,
+    poll_event,
+    delay,
+    destroy_gpu_device,
+    claim_window_for_gpu_device,
+    release_window_from_gpu_device,
+    get_gpu_swapchain_texture_format,
+    create_gpu_shader,
+    create_gpu_graphics_pipeline,
+    create_gpu_buffer,
+    create_gpu_transfer_buffer,
+    create_gpu_texture,
+    acquire_gpu_command_buffer,
+    wait_and_acquire_gpu_swapchain_texture,
+    begin_gpu_render_pass,
+    end_gpu_render_pass,
+    begin_gpu_copy_pass,
+    end_gpu_copy_pass,
+    submit_gpu_command_buffer,
+    bind_gpu_graphics_pipeline,
+    set_gpu_viewport,
+    bind_gpu_vertex_buffers,
+    bind_gpu_index_buffer,
+    draw_gpu_indexed_primitives,
+    draw_gpu_primitives,
+    push_gpu_vertex_uniform_data,
+    push_gpu_fragment_uniform_data,
+    upload_to_gpu_buffer,
+    map_gpu_transfer_buffer,
+    unmap_gpu_transfer_buffer,
+    release_gpu_buffer,
+    release_gpu_transfer_buffer,
+    release_gpu_texture,
+    release_gpu_shader,
+    release_gpu_graphics_pipeline,
+)
 from .camera3d import Camera3D
-from .shapes3d import (
-    WireframeLine,
-    WireframeSphere,
-    WireframeCapsule,
-    WireframeBox,
-    create_ground_grid,
-    create_axes,
+from .gpu_types import (
+    GPUVertex,
+    SceneUniforms,
+    ObjectUniforms,
+    LineUniforms,
+    MeshData,
+    MeshHandle,
+    CapsuleCacheEntry,
+    SolidDrawCommand,
+    mat4_to_gpu_f32,
+    perspective_metal,
+    color3d_to_vec4,
+    make_identity_f32,
+)
+from .gpu_mesh import generate_sphere, generate_box, generate_capsule, generate_ground
+from .gpu_shaders import (
+    SOLID_VERTEX_MSL,
+    SOLID_FRAGMENT_MSL,
+    GROUND_VERTEX_MSL,
+    GROUND_FRAGMENT_MSL,
+    LINE_VERTEX_MSL,
+    LINE_FRAGMENT_MSL,
 )
 
 comptime Vec3 = Vec3Generic[DType.float64]
 comptime Quat = QuatGeneric[DType.float64]
+comptime Mat4 = Mat4Generic[DType.float64]
 
 
 struct Color3D(ImplicitlyCopyable, Movable):
-    """RGB color for wireframe rendering."""
+    """RGB color for 3D rendering."""
 
     var r: UInt8
     var g: UInt8
@@ -34,13 +163,11 @@ struct Color3D(ImplicitlyCopyable, Movable):
         self.b = b
 
     fn __copyinit__(out self, read other: Self):
-        """Copy constructor."""
         self.r = other.r
         self.g = other.g
         self.b = other.b
 
     fn __moveinit__(out self, deinit other: Self):
-        """Move constructor."""
         self.r = other.r
         self.g = other.g
         self.b = other.b
@@ -82,21 +209,99 @@ struct Color3D(ImplicitlyCopyable, Movable):
         return Self(64, 64, 64)
 
 
-struct Renderer3D(Movable):
-    """3D wireframe renderer using SDL2.
+# Maximum line vertices per frame
+comptime MAX_LINE_VERTICES = 512
 
-    Projects 3D shapes to 2D screen coordinates and draws them
-    as wireframe line segments.
+
+# --- Line color entry for list storage ---
+
+
+struct LineColorEntry(Copyable, Movable):
+    """Stores RGBA color for a line segment."""
+
+    var r: Float32
+    var g: Float32
+    var b: Float32
+    var a: Float32
+
+    fn __init__(out self, color: InlineArray[Float32, 4]):
+        self.r = color[0]
+        self.g = color[1]
+        self.b = color[2]
+        self.a = color[3]
+
+    fn __copyinit__(out self, read other: Self):
+        self.r = other.r
+        self.g = other.g
+        self.b = other.b
+        self.a = other.a
+
+    fn __moveinit__(out self, deinit other: Self):
+        self.r = other.r
+        self.g = other.g
+        self.b = other.b
+        self.a = other.a
+
+    fn to_inline_array(self) -> InlineArray[Float32, 4]:
+        var out = InlineArray[Float32, 4](fill=Float32(0))
+        out[0] = self.r
+        out[1] = self.g
+        out[2] = self.b
+        out[3] = self.a
+        return out^
+
+
+struct Renderer3D(Movable):
+    """GPU-accelerated 3D renderer using SDL3 GPU API.
+
+    Uses Metal (MSL) shaders for Blinn-Phong lit solid rendering with
+    procedural checkerboard ground and flat-color line drawing.
     """
 
-    var sdl: SDL2
+    # SDL3 handles
+    var window: Ptr[Window, AnyOrigin[True]]
+    var device: Ptr[GPUDevice, AnyOrigin[True]]
+
+    # Pipelines
+    var solid_pipeline: Ptr[GPUGraphicsPipeline, AnyOrigin[True]]
+    var ground_pipeline: Ptr[GPUGraphicsPipeline, AnyOrigin[True]]
+    var line_pipeline: Ptr[GPUGraphicsPipeline, AnyOrigin[True]]
+
+    # Depth buffer
+    var depth_texture: Ptr[GPUTexture, AnyOrigin[True]]
+
+    # Cached static meshes
+    var sphere_mesh: MeshHandle
+    var box_mesh: MeshHandle
+    var ground_mesh: MeshHandle
+    var capsule_cache: List[CapsuleCacheEntry]
+
+    # Dynamic line buffer
+    var line_vertex_data: List[Float32]  # x,y,z per vertex
+    var line_colors: List[LineColorEntry]  # color per segment (2 verts)
+    var line_vertex_buffer: Ptr[GPUBuffer, AnyOrigin[True]]
+    var line_transfer_buffer: Ptr[GPUTransferBuffer, AnyOrigin[True]]
+
+    # Deferred draw commands
+    var solid_draws: List[SolidDrawCommand]
+    var ground_uniforms: ObjectUniforms
+    var has_ground: Bool
+
+    # Camera and scene
     var camera: Camera3D
     var width: Int
     var height: Int
     var background_color: Color3D
+    var scene_uniforms: SceneUniforms
+
+    # Swapchain format
+    var swapchain_format: GPUTextureFormat
+
+    # State
+    var initialized: Bool
+    var should_quit: Bool
     var draw_grid: Bool
     var draw_axes: Bool
-    var should_quit: Bool
 
     fn __init__(
         out self,
@@ -106,31 +311,20 @@ struct Renderer3D(Movable):
         draw_grid: Bool = True,
         draw_axes: Bool = True,
     ) raises:
-        """Initialize the 3D renderer.
-
-        Args:
-            width: Window width in pixels.
-            height: Window height in pixels.
-            camera: Camera for viewing the scene.
-            draw_grid: Whether to draw ground grid.
-            draw_axes: Whether to draw coordinate axes.
-        """
-        self.sdl = SDL2()
         self.width = width
         self.height = height
-        self.background_color = Color3D(32, 32, 48)  # Dark blue-gray
+        self.background_color = Color3D(32, 32, 48)
         self.draw_grid = draw_grid
         self.draw_axes = draw_axes
         self.should_quit = False
+        self.initialized = False
 
-        # Copy camera and update screen size
+        # Copy camera
         self.camera = Camera3D(
             eye=camera.eye,
             target=camera.target,
             up=camera.up,
-            fov=camera.fov
-            * 180.0
-            / 3.14159265358979,  # Convert back to degrees
+            fov=camera.fov * 180.0 / 3.14159265358979,
             aspect=Float64(width) / Float64(height),
             near=camera.near,
             far=camera.far,
@@ -138,206 +332,1125 @@ struct Renderer3D(Movable):
             screen_height=height,
         )
 
+        # Null handles
+        self.window = Ptr[Window, AnyOrigin[True]]()
+        self.device = Ptr[GPUDevice, AnyOrigin[True]]()
+        self.solid_pipeline = Ptr[GPUGraphicsPipeline, AnyOrigin[True]]()
+        self.ground_pipeline = Ptr[GPUGraphicsPipeline, AnyOrigin[True]]()
+        self.line_pipeline = Ptr[GPUGraphicsPipeline, AnyOrigin[True]]()
+        self.depth_texture = Ptr[GPUTexture, AnyOrigin[True]]()
+        self.line_vertex_buffer = Ptr[GPUBuffer, AnyOrigin[True]]()
+        self.line_transfer_buffer = Ptr[GPUTransferBuffer, AnyOrigin[True]]()
+        self.swapchain_format = GPUTextureFormat.GPU_TEXTUREFORMAT_B8G8R8A8_UNORM
+
+        # Meshes
+        self.sphere_mesh = MeshHandle()
+        self.box_mesh = MeshHandle()
+        self.ground_mesh = MeshHandle()
+        self.capsule_cache = List[CapsuleCacheEntry]()
+
+        # Line data
+        self.line_vertex_data = List[Float32]()
+        self.line_colors = List[LineColorEntry]()
+
+        # Draw commands
+        self.solid_draws = List[SolidDrawCommand]()
+        self.ground_uniforms = ObjectUniforms()
+        self.has_ground = False
+
+        self.scene_uniforms = SceneUniforms()
+
     fn __moveinit__(out self, deinit other: Self):
-        """Move constructor - transfers ownership of SDL resources."""
-        self.sdl = other.sdl^
+        self.window = other.window
+        self.device = other.device
+        self.solid_pipeline = other.solid_pipeline
+        self.ground_pipeline = other.ground_pipeline
+        self.line_pipeline = other.line_pipeline
+        self.depth_texture = other.depth_texture
+        self.sphere_mesh = other.sphere_mesh^
+        self.box_mesh = other.box_mesh^
+        self.ground_mesh = other.ground_mesh^
+        self.capsule_cache = other.capsule_cache^
+        self.line_vertex_data = other.line_vertex_data^
+        self.line_colors = other.line_colors^
+        self.line_vertex_buffer = other.line_vertex_buffer
+        self.line_transfer_buffer = other.line_transfer_buffer
+        self.solid_draws = other.solid_draws^
+        self.ground_uniforms = other.ground_uniforms
+        self.has_ground = other.has_ground
         self.camera = other.camera^
         self.width = other.width
         self.height = other.height
         self.background_color = other.background_color
+        self.scene_uniforms = other.scene_uniforms
+        self.swapchain_format = other.swapchain_format
+        self.initialized = other.initialized
+        self.should_quit = other.should_quit
         self.draw_grid = other.draw_grid
         self.draw_axes = other.draw_axes
-        self.should_quit = other.should_quit
 
-    fn init(mut self, mut title: String):
-        """Initialize SDL2 and create window.
+    fn init(mut self, mut title: String) raises:
+        """Initialize SDL3, GPU device, pipelines, and static meshes."""
+        # 1. Init SDL3
+        init(InitFlags.INIT_VIDEO)
 
-        Args:
-            title: Window title.
-        """
-        _ = self.sdl.init()
-        _ = self.sdl.create_window(title, self.width, self.height)
-        _ = self.sdl.create_renderer()
-
-    fn close(mut self):
-        """Close the renderer and cleanup SDL2."""
-        self.sdl.quit()
-
-    fn begin_frame(self):
-        """Begin a new frame (clear the screen)."""
-        self.sdl.set_draw_color(
-            self.background_color.r,
-            self.background_color.g,
-            self.background_color.b,
+        # 2. Create window
+        self.window = create_window(
+            title, c_int(self.width), c_int(self.height), WindowFlags(0)
         )
-        self.sdl.clear()
 
-    fn end_frame(self):
-        """End the frame (present to screen)."""
-        self.sdl.present()
+        # 3. Create GPU device (MSL shaders, debug mode)
+        # Must pass NULL (not empty string) for driver name to auto-select
+        self.device = _get_dylib_function[
+            lib,
+            "SDL_CreateGPUDevice",
+            fn (
+                GPUShaderFormat, Bool, Ptr[c_char, AnyOrigin[False]]
+            ) -> Ptr[GPUDevice, AnyOrigin[True]],
+        ]()(
+            GPUShaderFormat.GPU_SHADERFORMAT_MSL,
+            True,
+            Ptr[c_char, AnyOrigin[False]](),  # NULL = auto-select driver
+        )
 
-    fn draw_line_3d(self, line: WireframeLine, color: Color3D):
-        """Draw a 3D line segment.
+        # 4. Claim window
+        claim_window_for_gpu_device(self.device, self.window)
 
-        Args:
-            line: Line segment in world space.
-            color: Line color.
-        """
-        var start = self.camera.project_to_screen(line.start)
-        var end = self.camera.project_to_screen(line.end)
+        # 5. Get swapchain format
+        self.swapchain_format = get_gpu_swapchain_texture_format(
+            self.device, self.window
+        )
 
-        # Only draw if both endpoints are visible
-        if start[2] and end[2]:
-            self.sdl.set_draw_color(color.r, color.g, color.b)
-            self.sdl.draw_line(start[0], start[1], end[0], end[1])
+        # 6. Create shaders and pipelines
+        self._create_pipelines()
 
-    fn draw_lines_3d(self, lines: List[WireframeLine], color: Color3D):
-        """Draw multiple 3D line segments.
+        # 7. Create depth texture
+        self._create_depth_texture()
 
-        Args:
-            lines: List of line segments.
-            color: Line color.
-        """
-        self.sdl.set_draw_color(color.r, color.g, color.b)
+        # 8. Generate and upload static meshes
+        self._upload_static_meshes()
 
-        for i in range(len(lines)):
-            var start = self.camera.project_to_screen(lines[i].start)
-            var end = self.camera.project_to_screen(lines[i].end)
+        # 9. Allocate line buffers
+        self._create_line_buffers()
 
-            if start[2] and end[2]:
-                self.sdl.draw_line(start[0], start[1], end[0], end[1])
+        self.initialized = True
+
+    fn _create_shader(
+        self,
+        source: String,
+        stage: GPUShaderStage,
+        num_uniform_buffers: UInt32,
+        entrypoint: String,
+    ) raises -> Ptr[GPUShader, AnyOrigin[True]]:
+        """Compile an MSL shader from source string."""
+        var code_bytes = source.as_bytes()
+        var ep = entrypoint
+
+        var info = GPUShaderCreateInfo(
+            code_size=len(code_bytes),
+            code=code_bytes.unsafe_ptr(),
+            entrypoint=ep.as_c_string_slice().unsafe_ptr(),
+            format=GPUShaderFormat.GPU_SHADERFORMAT_MSL,
+            stage=stage,
+            num_samplers=0,
+            num_storage_textures=0,
+            num_storage_buffers=0,
+            num_uniform_buffers=num_uniform_buffers,
+            props=PropertiesID(0),
+        )
+
+        return create_gpu_shader(self.device, Ptr(to=info))
+
+    fn _no_stencil_op(self) -> GPUStencilOpState:
+        """Return a zeroed-out stencil op state."""
+        return GPUStencilOpState(
+            fail_op=GPUStencilOp.GPU_STENCILOP_KEEP,
+            pass_op=GPUStencilOp.GPU_STENCILOP_KEEP,
+            depth_fail_op=GPUStencilOp.GPU_STENCILOP_KEEP,
+            compare_op=GPUCompareOp.GPU_COMPAREOP_ALWAYS,
+        )
+
+    fn _create_pipelines(mut self) raises:
+        """Create solid, ground, and line GPU pipelines."""
+        # --- Solid pipeline ---
+        var solid_vs = self._create_shader(
+            SOLID_VERTEX_MSL,
+            GPUShaderStage.GPU_SHADERSTAGE_VERTEX,
+            num_uniform_buffers=2,
+            entrypoint=String("solid_vertex"),
+        )
+        var solid_fs = self._create_shader(
+            SOLID_FRAGMENT_MSL,
+            GPUShaderStage.GPU_SHADERSTAGE_FRAGMENT,
+            num_uniform_buffers=1,
+            entrypoint=String("solid_fragment"),
+        )
+
+        # Vertex input - allocate attributes contiguously on heap
+        var solid_buf_desc = GPUVertexBufferDescription(
+            slot=0, pitch=32, input_rate=GPUVertexInputRate.GPU_VERTEXINPUTRATE_VERTEX, instance_step_rate=0
+        )
+        var solid_attrs = alloc[GPUVertexAttribute](3)
+        solid_attrs[0] = GPUVertexAttribute(
+            location=0, buffer_slot=0,
+            format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT3,
+            offset=0,
+        )
+        solid_attrs[1] = GPUVertexAttribute(
+            location=1, buffer_slot=0,
+            format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT3,
+            offset=12,
+        )
+        solid_attrs[2] = GPUVertexAttribute(
+            location=2, buffer_slot=0,
+            format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT2,
+            offset=24,
+        )
+        var solid_vi = GPUVertexInputState(
+            vertex_buffer_descriptions=Ptr(to=solid_buf_desc),
+            num_vertex_buffers=1,
+            vertex_attributes=solid_attrs,
+            num_vertex_attributes=3,
+        )
+
+        # Color target - no blending
+        var solid_ct = GPUColorTargetDescription(
+            format=self.swapchain_format,
+            blend_state=GPUColorTargetBlendState(
+                src_color_blendfactor=GPUBlendFactor.GPU_BLENDFACTOR_ONE,
+                dst_color_blendfactor=GPUBlendFactor.GPU_BLENDFACTOR_ZERO,
+                color_blend_op=GPUBlendOp.GPU_BLENDOP_ADD,
+                src_alpha_blendfactor=GPUBlendFactor.GPU_BLENDFACTOR_ONE,
+                dst_alpha_blendfactor=GPUBlendFactor.GPU_BLENDFACTOR_ZERO,
+                alpha_blend_op=GPUBlendOp.GPU_BLENDOP_ADD,
+                color_write_mask=GPUColorComponentFlags(0x0F),
+                enable_blend=False,
+                enable_color_write_mask=False,
+                padding1=0,
+                padding2=0,
+            ),
+        )
+
+        var solid_pi = GPUGraphicsPipelineCreateInfo(
+            vertex_shader=solid_vs,
+            fragment_shader=solid_fs,
+            vertex_input_state=solid_vi,
+            primitive_type=GPUPrimitiveType.GPU_PRIMITIVETYPE_TRIANGLELIST,
+            rasterizer_state=GPURasterizerState(
+                fill_mode=GPUFillMode.GPU_FILLMODE_FILL,
+                cull_mode=GPUCullMode.GPU_CULLMODE_BACK,
+                front_face=GPUFrontFace.GPU_FRONTFACE_COUNTER_CLOCKWISE,
+                depth_bias_constant_factor=0.0,
+                depth_bias_clamp=0.0,
+                depth_bias_slope_factor=0.0,
+                enable_depth_bias=False,
+                enable_depth_clip=True,
+                padding1=0,
+                padding2=0,
+            ),
+            multisample_state=GPUMultisampleState(
+                sample_count=GPUSampleCount.GPU_SAMPLECOUNT_1,
+                sample_mask=0,
+                enable_mask=False,
+                padding1=0,
+                padding2=0,
+                padding3=0,
+            ),
+            depth_stencil_state=GPUDepthStencilState(
+                compare_op=GPUCompareOp.GPU_COMPAREOP_LESS,
+                back_stencil_state=self._no_stencil_op(),
+                front_stencil_state=self._no_stencil_op(),
+                compare_mask=0,
+                write_mask=0,
+                enable_depth_test=True,
+                enable_depth_write=True,
+                enable_stencil_test=False,
+                padding1=0,
+                padding2=0,
+                padding3=0,
+            ),
+            target_info=GPUGraphicsPipelineTargetInfo(
+                color_target_descriptions=Ptr(to=solid_ct),
+                num_color_targets=1,
+                depth_stencil_format=GPUTextureFormat.GPU_TEXTUREFORMAT_D32_FLOAT,
+                has_depth_stencil_target=True,
+                padding1=0,
+                padding2=0,
+                padding3=0,
+            ),
+            props=PropertiesID(0),
+        )
+
+        self.solid_pipeline = create_gpu_graphics_pipeline(self.device, Ptr(to=solid_pi))
+
+        # --- Ground pipeline (alpha blend for distance fade) ---
+        var ground_vs = self._create_shader(
+            GROUND_VERTEX_MSL,
+            GPUShaderStage.GPU_SHADERSTAGE_VERTEX,
+            num_uniform_buffers=2,
+            entrypoint=String("ground_vertex"),
+        )
+        var ground_fs = self._create_shader(
+            GROUND_FRAGMENT_MSL,
+            GPUShaderStage.GPU_SHADERSTAGE_FRAGMENT,
+            num_uniform_buffers=1,
+            entrypoint=String("ground_fragment"),
+        )
+
+        var ground_ct = GPUColorTargetDescription(
+            format=self.swapchain_format,
+            blend_state=GPUColorTargetBlendState(
+                src_color_blendfactor=GPUBlendFactor.GPU_BLENDFACTOR_SRC_ALPHA,
+                dst_color_blendfactor=GPUBlendFactor.GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                color_blend_op=GPUBlendOp.GPU_BLENDOP_ADD,
+                src_alpha_blendfactor=GPUBlendFactor.GPU_BLENDFACTOR_ONE,
+                dst_alpha_blendfactor=GPUBlendFactor.GPU_BLENDFACTOR_ZERO,
+                alpha_blend_op=GPUBlendOp.GPU_BLENDOP_ADD,
+                color_write_mask=GPUColorComponentFlags(0x0F),
+                enable_blend=True,
+                enable_color_write_mask=False,
+                padding1=0,
+                padding2=0,
+            ),
+        )
+
+        # Ground uses same vertex layout as solid - allocate contiguously
+        var ground_buf_desc = GPUVertexBufferDescription(
+            slot=0, pitch=32, input_rate=GPUVertexInputRate.GPU_VERTEXINPUTRATE_VERTEX, instance_step_rate=0
+        )
+        var ground_attrs = alloc[GPUVertexAttribute](3)
+        ground_attrs[0] = GPUVertexAttribute(
+            location=0, buffer_slot=0,
+            format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT3,
+            offset=0,
+        )
+        ground_attrs[1] = GPUVertexAttribute(
+            location=1, buffer_slot=0,
+            format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT3,
+            offset=12,
+        )
+        ground_attrs[2] = GPUVertexAttribute(
+            location=2, buffer_slot=0,
+            format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT2,
+            offset=24,
+        )
+        var ground_vi = GPUVertexInputState(
+            vertex_buffer_descriptions=Ptr(to=ground_buf_desc),
+            num_vertex_buffers=1,
+            vertex_attributes=ground_attrs,
+            num_vertex_attributes=3,
+        )
+
+        var ground_pi = GPUGraphicsPipelineCreateInfo(
+            vertex_shader=ground_vs,
+            fragment_shader=ground_fs,
+            vertex_input_state=ground_vi,
+            primitive_type=GPUPrimitiveType.GPU_PRIMITIVETYPE_TRIANGLELIST,
+            rasterizer_state=GPURasterizerState(
+                fill_mode=GPUFillMode.GPU_FILLMODE_FILL,
+                cull_mode=GPUCullMode.GPU_CULLMODE_NONE,
+                front_face=GPUFrontFace.GPU_FRONTFACE_COUNTER_CLOCKWISE,
+                depth_bias_constant_factor=0.0,
+                depth_bias_clamp=0.0,
+                depth_bias_slope_factor=0.0,
+                enable_depth_bias=False,
+                enable_depth_clip=True,
+                padding1=0,
+                padding2=0,
+            ),
+            multisample_state=GPUMultisampleState(
+                sample_count=GPUSampleCount.GPU_SAMPLECOUNT_1,
+                sample_mask=0,
+                enable_mask=False,
+                padding1=0,
+                padding2=0,
+                padding3=0,
+            ),
+            depth_stencil_state=GPUDepthStencilState(
+                compare_op=GPUCompareOp.GPU_COMPAREOP_LESS_OR_EQUAL,
+                back_stencil_state=self._no_stencil_op(),
+                front_stencil_state=self._no_stencil_op(),
+                compare_mask=0,
+                write_mask=0,
+                enable_depth_test=True,
+                enable_depth_write=True,
+                enable_stencil_test=False,
+                padding1=0,
+                padding2=0,
+                padding3=0,
+            ),
+            target_info=GPUGraphicsPipelineTargetInfo(
+                color_target_descriptions=Ptr(to=ground_ct),
+                num_color_targets=1,
+                depth_stencil_format=GPUTextureFormat.GPU_TEXTUREFORMAT_D32_FLOAT,
+                has_depth_stencil_target=True,
+                padding1=0,
+                padding2=0,
+                padding3=0,
+            ),
+            props=PropertiesID(0),
+        )
+
+        self.ground_pipeline = create_gpu_graphics_pipeline(self.device, Ptr(to=ground_pi))
+
+        # --- Line pipeline ---
+        var line_vs = self._create_shader(
+            LINE_VERTEX_MSL,
+            GPUShaderStage.GPU_SHADERSTAGE_VERTEX,
+            num_uniform_buffers=1,
+            entrypoint=String("line_vertex"),
+        )
+        var line_fs = self._create_shader(
+            LINE_FRAGMENT_MSL,
+            GPUShaderStage.GPU_SHADERSTAGE_FRAGMENT,
+            num_uniform_buffers=1,
+            entrypoint=String("line_fragment"),
+        )
+
+        var line_ct = GPUColorTargetDescription(
+            format=self.swapchain_format,
+            blend_state=GPUColorTargetBlendState(
+                src_color_blendfactor=GPUBlendFactor.GPU_BLENDFACTOR_ONE,
+                dst_color_blendfactor=GPUBlendFactor.GPU_BLENDFACTOR_ZERO,
+                color_blend_op=GPUBlendOp.GPU_BLENDOP_ADD,
+                src_alpha_blendfactor=GPUBlendFactor.GPU_BLENDFACTOR_ONE,
+                dst_alpha_blendfactor=GPUBlendFactor.GPU_BLENDFACTOR_ZERO,
+                alpha_blend_op=GPUBlendOp.GPU_BLENDOP_ADD,
+                color_write_mask=GPUColorComponentFlags(0x0F),
+                enable_blend=False,
+                enable_color_write_mask=False,
+                padding1=0,
+                padding2=0,
+            ),
+        )
+
+        # Line vertex input - single attribute (position only)
+        var line_buf_desc = GPUVertexBufferDescription(
+            slot=0, pitch=12, input_rate=GPUVertexInputRate.GPU_VERTEXINPUTRATE_VERTEX, instance_step_rate=0
+        )
+        var line_attr = GPUVertexAttribute(
+            location=0, buffer_slot=0,
+            format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT3,
+            offset=0,
+        )
+        var line_vi = GPUVertexInputState(
+            vertex_buffer_descriptions=Ptr(to=line_buf_desc),
+            num_vertex_buffers=1,
+            vertex_attributes=Ptr(to=line_attr),
+            num_vertex_attributes=1,
+        )
+
+        var line_pi = GPUGraphicsPipelineCreateInfo(
+            vertex_shader=line_vs,
+            fragment_shader=line_fs,
+            vertex_input_state=line_vi,
+            primitive_type=GPUPrimitiveType.GPU_PRIMITIVETYPE_LINELIST,
+            rasterizer_state=GPURasterizerState(
+                fill_mode=GPUFillMode.GPU_FILLMODE_FILL,
+                cull_mode=GPUCullMode.GPU_CULLMODE_NONE,
+                front_face=GPUFrontFace.GPU_FRONTFACE_COUNTER_CLOCKWISE,
+                depth_bias_constant_factor=0.0,
+                depth_bias_clamp=0.0,
+                depth_bias_slope_factor=0.0,
+                enable_depth_bias=False,
+                enable_depth_clip=True,
+                padding1=0,
+                padding2=0,
+            ),
+            multisample_state=GPUMultisampleState(
+                sample_count=GPUSampleCount.GPU_SAMPLECOUNT_1,
+                sample_mask=0,
+                enable_mask=False,
+                padding1=0,
+                padding2=0,
+                padding3=0,
+            ),
+            depth_stencil_state=GPUDepthStencilState(
+                compare_op=GPUCompareOp.GPU_COMPAREOP_LESS_OR_EQUAL,
+                back_stencil_state=self._no_stencil_op(),
+                front_stencil_state=self._no_stencil_op(),
+                compare_mask=0,
+                write_mask=0,
+                enable_depth_test=True,
+                enable_depth_write=False,
+                enable_stencil_test=False,
+                padding1=0,
+                padding2=0,
+                padding3=0,
+            ),
+            target_info=GPUGraphicsPipelineTargetInfo(
+                color_target_descriptions=Ptr(to=line_ct),
+                num_color_targets=1,
+                depth_stencil_format=GPUTextureFormat.GPU_TEXTUREFORMAT_D32_FLOAT,
+                has_depth_stencil_target=True,
+                padding1=0,
+                padding2=0,
+                padding3=0,
+            ),
+            props=PropertiesID(0),
+        )
+
+        self.line_pipeline = create_gpu_graphics_pipeline(self.device, Ptr(to=line_pi))
+
+        # Free heap-allocated vertex attribute arrays
+        solid_attrs.free()
+        ground_attrs.free()
+
+        # Release shader objects (pipelines retain them)
+        release_gpu_shader(self.device, solid_vs)
+        release_gpu_shader(self.device, solid_fs)
+        release_gpu_shader(self.device, ground_vs)
+        release_gpu_shader(self.device, ground_fs)
+        release_gpu_shader(self.device, line_vs)
+        release_gpu_shader(self.device, line_fs)
+
+    fn _create_depth_texture(mut self) raises:
+        """Create the depth buffer texture."""
+        var info = GPUTextureCreateInfo(
+            type=GPUTextureType.GPU_TEXTURETYPE_2D,
+            format=GPUTextureFormat.GPU_TEXTUREFORMAT_D32_FLOAT,
+            usage=GPUTextureUsageFlags.GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET,
+            width=UInt32(self.width),
+            height=UInt32(self.height),
+            layer_count_or_depth=1,
+            num_levels=1,
+            sample_count=GPUSampleCount.GPU_SAMPLECOUNT_1,
+            props=PropertiesID(0),
+        )
+        self.depth_texture = create_gpu_texture(self.device, Ptr(to=info))
+
+    fn _upload_mesh(self, mesh_data: MeshData) raises -> MeshHandle:
+        """Upload mesh data to GPU buffers via transfer buffer."""
+        var vb_size = UInt32(mesh_data.vertex_byte_size())
+        var ib_size = UInt32(mesh_data.index_byte_size())
+        var total_size = vb_size + ib_size
+
+        # Create transfer buffer
+        var tb_info = GPUTransferBufferCreateInfo(
+            usage=GPUTransferBufferUsage.GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+            size=total_size,
+            props=PropertiesID(0),
+        )
+        var transfer_buf = create_gpu_transfer_buffer(self.device, Ptr(to=tb_info))
+
+        # Map and copy data
+        var mapped = map_gpu_transfer_buffer(self.device, transfer_buf, False)
+        var mapped_ptr = mapped.bitcast[UInt8]()
+
+        # Copy vertices
+        memcpy(
+            dest=mapped_ptr,
+            src=UnsafePointer(to=mesh_data.vertices[0]).bitcast[UInt8](),
+            count=Int(vb_size),
+        )
+        # Copy indices after vertices
+        memcpy(
+            dest=mapped_ptr + Int(vb_size),
+            src=UnsafePointer(to=mesh_data.indices[0]).bitcast[UInt8](),
+            count=Int(ib_size),
+        )
+
+        unmap_gpu_transfer_buffer(self.device, transfer_buf)
+
+        # Create GPU buffers
+        var vb_info = GPUBufferCreateInfo(
+            usage=GPUBufferUsageFlags.GPU_BUFFERUSAGE_VERTEX,
+            size=vb_size,
+            props=PropertiesID(0),
+        )
+        var vertex_buffer = create_gpu_buffer(self.device, Ptr(to=vb_info))
+
+        var ib_info = GPUBufferCreateInfo(
+            usage=GPUBufferUsageFlags.GPU_BUFFERUSAGE_INDEX,
+            size=ib_size,
+            props=PropertiesID(0),
+        )
+        var index_buffer = create_gpu_buffer(self.device, Ptr(to=ib_info))
+
+        # Upload via copy pass
+        var cmd_buf = acquire_gpu_command_buffer(self.device)
+        var copy_pass = begin_gpu_copy_pass(cmd_buf)
+
+        var vb_src = GPUTransferBufferLocation(
+            transfer_buffer=transfer_buf, offset=0
+        )
+        var vb_dst = GPUBufferRegion(
+            buffer=vertex_buffer, offset=0, size=vb_size
+        )
+        upload_to_gpu_buffer(copy_pass, Ptr(to=vb_src), Ptr(to=vb_dst), False)
+
+        var ib_src = GPUTransferBufferLocation(
+            transfer_buffer=transfer_buf, offset=vb_size
+        )
+        var ib_dst = GPUBufferRegion(
+            buffer=index_buffer, offset=0, size=ib_size
+        )
+        upload_to_gpu_buffer(copy_pass, Ptr(to=ib_src), Ptr(to=ib_dst), False)
+
+        end_gpu_copy_pass(copy_pass)
+        submit_gpu_command_buffer(cmd_buf)
+
+        # Release transfer buffer
+        release_gpu_transfer_buffer(self.device, transfer_buf)
+
+        return MeshHandle(
+            vertex_buffer,
+            index_buffer,
+            UInt32(len(mesh_data.indices)),
+            UInt32(len(mesh_data.vertices)),
+        )
+
+    fn _upload_static_meshes(mut self) raises:
+        """Generate and upload sphere, box, and ground meshes."""
+        var sphere_data = generate_sphere(16, 12)
+        self.sphere_mesh = self._upload_mesh(sphere_data)
+
+        var box_data = generate_box()
+        self.box_mesh = self._upload_mesh(box_data)
+
+        var ground_data = generate_ground(12.0)
+        self.ground_mesh = self._upload_mesh(ground_data)
+
+    fn _create_line_buffers(mut self) raises:
+        """Allocate GPU and transfer buffers for dynamic line rendering."""
+        var line_buf_size = UInt32(MAX_LINE_VERTICES * 12)  # 12 bytes per vertex (float3)
+
+        var vb_info = GPUBufferCreateInfo(
+            usage=GPUBufferUsageFlags.GPU_BUFFERUSAGE_VERTEX,
+            size=line_buf_size,
+            props=PropertiesID(0),
+        )
+        self.line_vertex_buffer = create_gpu_buffer(self.device, Ptr(to=vb_info))
+
+        var tb_info = GPUTransferBufferCreateInfo(
+            usage=GPUTransferBufferUsage.GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+            size=line_buf_size,
+            props=PropertiesID(0),
+        )
+        self.line_transfer_buffer = create_gpu_transfer_buffer(
+            self.device, Ptr(to=tb_info)
+        )
+
+    # --- Public Drawing API ---
+
+    fn begin_frame(mut self):
+        """Begin a new frame: clear draw command lists."""
+        self.solid_draws.clear()
+        self.line_vertex_data.clear()
+        self.line_colors.clear()
+        self.has_ground = False
 
     fn draw_sphere(
-        self,
+        mut self,
         center: Vec3,
         radius: Float64,
         color: Color3D = Color3D.white(),
-        segments: Int = 12,
-        rings: Int = 8,
     ):
-        """Draw a wireframe sphere.
+        """Draw a solid sphere.
 
         Args:
-            center: Sphere center.
+            center: Sphere center in world space.
             radius: Sphere radius.
-            color: Wireframe color.
-            segments: Number of longitude segments.
-            rings: Number of latitude rings.
+            color: Surface color.
         """
-        var sphere = WireframeSphere(center, radius, segments, rings)
-        var lines = sphere.get_lines()
-        self.draw_lines_3d(lines, color)
+        var model = Mat4.compose(
+            center, Quat.identity(), Vec3(radius, radius, radius)
+        )
+        var uniforms = ObjectUniforms()
+        uniforms.model = mat4_to_gpu_f32(model)
+        uniforms.color = color3d_to_vec4(color.r, color.g, color.b)
+
+        self.solid_draws.append(SolidDrawCommand(0, uniforms))
 
     fn draw_capsule(
-        self,
+        mut self,
         center: Vec3,
         orientation: Quat,
         radius: Float64,
         half_height: Float64,
         axis: Int = 2,
         color: Color3D = Color3D.white(),
-        segments: Int = 12,
-    ):
-        """Draw a wireframe capsule.
+    ) raises:
+        """Draw a solid capsule.
 
         Args:
-            center: Capsule center.
+            center: Capsule center in world space.
             orientation: Capsule orientation.
             radius: Capsule radius.
-            half_height: Half-height of cylindrical part.
+            half_height: Half-height of cylindrical section.
             axis: Local axis (0=X, 1=Y, 2=Z).
-            color: Wireframe color.
-            segments: Number of circular segments.
+            color: Surface color.
         """
-        var capsule = WireframeCapsule(
-            center, orientation, radius, half_height, axis, segments
+        var f_radius = Float32(radius)
+        var f_half = Float32(half_height)
+
+        # Look up or create capsule mesh
+        var cache_idx = -1
+        for i in range(len(self.capsule_cache)):
+            if self.capsule_cache[i].matches(f_radius, f_half):
+                cache_idx = i
+                break
+
+        if cache_idx < 0:
+            # Generate new capsule mesh
+            var mesh_data = generate_capsule(f_radius, f_half)
+            var handle = self._upload_mesh(mesh_data)
+            self.capsule_cache.append(
+                CapsuleCacheEntry(f_radius, f_half, handle^)
+            )
+            cache_idx = len(self.capsule_cache) - 1
+
+        # Build model matrix
+        # Capsule geometry is along Z-axis. Apply pre-rotation if axis != 2.
+        var pre_rot = Quat.identity()
+        if axis == 0:
+            # Rotate Z -> X: 90 degrees around Y
+            pre_rot = Quat.from_axis_angle(Vec3.unit_y(), 1.5707963267949)
+        elif axis == 1:
+            # Rotate Z -> Y: -90 degrees around X
+            pre_rot = Quat.from_axis_angle(Vec3.unit_x(), -1.5707963267949)
+
+        var final_quat = orientation
+        # Apply pre-rotation: rotate local capsule geometry, then apply orientation
+        var model = Mat4.from_quat(final_quat, center) @ Mat4.from_quat(pre_rot, Vec3.zero())
+
+        var uniforms = ObjectUniforms()
+        uniforms.model = mat4_to_gpu_f32(model)
+        uniforms.color = color3d_to_vec4(color.r, color.g, color.b)
+
+        self.solid_draws.append(
+            SolidDrawCommand(0, uniforms, is_capsule=True, capsule_cache_idx=cache_idx)
         )
-        var lines = capsule.get_lines()
-        self.draw_lines_3d(lines, color)
 
     fn draw_box(
-        self,
+        mut self,
         center: Vec3,
         orientation: Quat,
         half_extents: Vec3,
         color: Color3D = Color3D.white(),
     ):
-        """Draw a wireframe box.
+        """Draw a solid box.
 
         Args:
-            center: Box center.
+            center: Box center in world space.
             orientation: Box orientation.
             half_extents: Half-extents along local X, Y, Z.
-            color: Wireframe color.
+            color: Surface color.
         """
-        var box = WireframeBox(center, orientation, half_extents)
-        var lines = box.get_lines()
-        self.draw_lines_3d(lines, color)
+        # Unit box is [-0.5, 0.5], so scale by 2 * half_extents
+        var scale = Vec3(
+            half_extents.x * 2.0,
+            half_extents.y * 2.0,
+            half_extents.z * 2.0,
+        )
+        var model = Mat4.compose(center, orientation, scale)
+
+        var uniforms = ObjectUniforms()
+        uniforms.model = mat4_to_gpu_f32(model)
+        uniforms.color = color3d_to_vec4(color.r, color.g, color.b)
+
+        self.solid_draws.append(SolidDrawCommand(1, uniforms))
 
     fn draw_ground_grid(
-        self,
-        size: Float64 = 5.0,
-        divisions: Int = 10,
+        mut self,
+        center_x: Float64 = 0.0,
+        size: Float64 = 10.0,
         height: Float64 = 0.0,
-        color: Color3D = Color3D.dark_gray(),
     ):
-        """Draw a ground plane grid.
+        """Draw the ground plane with procedural checkerboard.
 
         Args:
-            size: Half-size of the grid.
-            divisions: Number of divisions.
-            height: Z-coordinate of the grid.
-            color: Grid color.
+            center_x: X-coordinate to center the ground on (for scrolling envs).
+            size: Unused (ground mesh is pre-sized).
+            height: Z-coordinate of the ground plane.
         """
-        var lines = create_ground_grid(size, divisions, height)
-        self.draw_lines_3d(lines, color)
+        var model = Mat4.from_translation(Vec3(center_x, 0.0, height))
+        self.ground_uniforms = ObjectUniforms()
+        self.ground_uniforms.model = mat4_to_gpu_f32(model)
+        self.ground_uniforms.color = color3d_to_vec4(255, 255, 255)
+        self.has_ground = True
 
     fn draw_coordinate_axes(
-        self,
+        mut self,
         origin: Vec3 = Vec3.zero(),
         length: Float64 = 1.0,
     ):
-        """Draw coordinate axes.
-
-        X = red, Y = green, Z = blue.
+        """Draw coordinate axes: X=red, Y=green, Z=blue.
 
         Args:
             origin: Origin point.
             length: Length of each axis.
         """
-        var lines = create_axes(origin, length)
-
         # X axis - red
-        self.draw_line_3d(lines[0], Color3D.red())
+        self._add_line(
+            origin, origin + Vec3(length, 0.0, 0.0),
+            color3d_to_vec4(255, 50, 50),
+        )
         # Y axis - green
-        self.draw_line_3d(lines[1], Color3D.green())
+        self._add_line(
+            origin, origin + Vec3(0.0, length, 0.0),
+            color3d_to_vec4(50, 255, 50),
+        )
         # Z axis - blue
-        self.draw_line_3d(lines[2], Color3D.blue())
+        self._add_line(
+            origin, origin + Vec3(0.0, 0.0, length),
+            color3d_to_vec4(80, 80, 255),
+        )
+
+    fn draw_line_3d(
+        mut self,
+        start: Vec3,
+        end: Vec3,
+        color: Color3D,
+    ):
+        """Draw a 3D line segment.
+
+        Args:
+            start: Start point in world space.
+            end: End point in world space.
+            color: Line color.
+        """
+        self._add_line(
+            start, end,
+            color3d_to_vec4(color.r, color.g, color.b),
+        )
+
+    fn _add_line(
+        mut self,
+        start: Vec3,
+        end: Vec3,
+        color: InlineArray[Float32, 4],
+    ):
+        """Add a line segment to the line accumulator."""
+        if len(self.line_vertex_data) + 6 > MAX_LINE_VERTICES * 3:
+            return  # Buffer full
+
+        self.line_vertex_data.append(Float32(start.x))
+        self.line_vertex_data.append(Float32(start.y))
+        self.line_vertex_data.append(Float32(start.z))
+
+        self.line_vertex_data.append(Float32(end.x))
+        self.line_vertex_data.append(Float32(end.y))
+        self.line_vertex_data.append(Float32(end.z))
+
+        self.line_colors.append(LineColorEntry(color))
 
     fn render_scene(mut self):
-        """Render the default scene elements (grid and axes)."""
+        """Render default scene elements (grid and axes)."""
         if self.draw_grid:
             self.draw_ground_grid()
 
         if self.draw_axes:
             self.draw_coordinate_axes()
 
+    fn end_frame(mut self) raises:
+        """End frame: build scene uniforms, execute render pass, present."""
+        # Acquire command buffer
+        var cmd_buf = acquire_gpu_command_buffer(self.device)
+
+        # Upload line data if any
+        var num_line_verts = len(self.line_vertex_data) // 3
+        if num_line_verts > 0:
+            var mapped = map_gpu_transfer_buffer(
+                self.device, self.line_transfer_buffer, True
+            )
+            var mapped_f32 = mapped.bitcast[Float32]()
+            for i in range(len(self.line_vertex_data)):
+                (mapped_f32 + i)[] = self.line_vertex_data[i]
+            unmap_gpu_transfer_buffer(self.device, self.line_transfer_buffer)
+
+            var copy_pass = begin_gpu_copy_pass(cmd_buf)
+            var src = GPUTransferBufferLocation(
+                transfer_buffer=self.line_transfer_buffer, offset=0
+            )
+            var dst = GPUBufferRegion(
+                buffer=self.line_vertex_buffer,
+                offset=0,
+                size=UInt32(len(self.line_vertex_data) * 4),
+            )
+            upload_to_gpu_buffer(copy_pass, Ptr(to=src), Ptr(to=dst), False)
+            end_gpu_copy_pass(copy_pass)
+
+        # Acquire swapchain texture
+        var swapchain_tex = Ptr[GPUTexture, AnyOrigin[True]]()
+        var sc_w = UInt32(0)
+        var sc_h = UInt32(0)
+        wait_and_acquire_gpu_swapchain_texture(
+            cmd_buf,
+            self.window,
+            Ptr(to=swapchain_tex),
+            Ptr(to=sc_w),
+            Ptr(to=sc_h),
+        )
+
+        if not swapchain_tex:
+            # Window minimized or no texture available
+            submit_gpu_command_buffer(cmd_buf)
+            return
+
+        # Handle resize
+        if Int(sc_w) != self.width or Int(sc_h) != self.height:
+            self.width = Int(sc_w)
+            self.height = Int(sc_h)
+            self.camera.set_screen_size(self.width, self.height)
+            # Recreate depth texture
+            release_gpu_texture(self.device, self.depth_texture)
+            self._create_depth_texture()
+
+        # Build scene uniforms
+        self._build_scene_uniforms()
+
+        # Begin render pass
+        var bg_r = Float32(self.background_color.r) / 255.0
+        var bg_g = Float32(self.background_color.g) / 255.0
+        var bg_b = Float32(self.background_color.b) / 255.0
+
+        var color_info = GPUColorTargetInfo(
+            texture=swapchain_tex,
+            mip_level=0,
+            layer_or_depth_plane=0,
+            clear_color=FColor(bg_r, bg_g, bg_b, 1.0),
+            load_op=GPULoadOp.GPU_LOADOP_CLEAR,
+            store_op=GPUStoreOp.GPU_STOREOP_STORE,
+            resolve_texture=Ptr[GPUTexture, AnyOrigin[True]](),
+            resolve_mip_level=0,
+            resolve_layer=0,
+            cycle=True,
+            cycle_resolve_texture=False,
+            padding1=0,
+            padding2=0,
+        )
+
+        var depth_info = GPUDepthStencilTargetInfo(
+            texture=self.depth_texture,
+            clear_depth=1.0,
+            load_op=GPULoadOp.GPU_LOADOP_CLEAR,
+            store_op=GPUStoreOp.GPU_STOREOP_DONT_CARE,
+            stencil_load_op=GPULoadOp.GPU_LOADOP_DONT_CARE,
+            stencil_store_op=GPUStoreOp.GPU_STOREOP_DONT_CARE,
+            cycle=True,
+            clear_stencil=0,
+            padding1=0,
+            padding2=0,
+        )
+
+        var render_pass = begin_gpu_render_pass(
+            cmd_buf, Ptr(to=color_info), 1, Ptr(to=depth_info)
+        )
+
+        # Set viewport
+        var viewport = GPUViewport(
+            x=0.0,
+            y=0.0,
+            w=c_float(sc_w),
+            h=c_float(sc_h),
+            min_depth=0.0,
+            max_depth=1.0,
+        )
+        set_gpu_viewport(render_pass, Ptr(to=viewport))
+
+        # --- Draw solid objects ---
+        bind_gpu_graphics_pipeline(render_pass, self.solid_pipeline)
+
+        # Push scene uniforms (vertex slot 0, fragment slot 0)
+        push_gpu_vertex_uniform_data(
+            cmd_buf, 0,
+            Ptr(to=self.scene_uniforms).bitcast[NoneType](),
+            128,
+        )
+        push_gpu_fragment_uniform_data(
+            cmd_buf, 0,
+            Ptr(to=self.scene_uniforms).bitcast[NoneType](),
+            128,
+        )
+
+        for i in range(len(self.solid_draws)):
+            # Push object uniforms (vertex slot 1)
+            push_gpu_vertex_uniform_data(
+                cmd_buf, 1,
+                Ptr(to=self.solid_draws[i].uniforms).bitcast[NoneType](),
+                80,
+            )
+
+            # Select mesh
+            var vb: Ptr[GPUBuffer, AnyOrigin[True]]
+            var ib: Ptr[GPUBuffer, AnyOrigin[True]]
+            var n_idx: UInt32
+
+            if self.solid_draws[i].is_capsule:
+                var ci = self.solid_draws[i].capsule_cache_idx
+                vb = self.capsule_cache[ci].mesh.vertex_buffer
+                ib = self.capsule_cache[ci].mesh.index_buffer
+                n_idx = self.capsule_cache[ci].mesh.num_indices
+            elif self.solid_draws[i].mesh_idx == 0:
+                vb = self.sphere_mesh.vertex_buffer
+                ib = self.sphere_mesh.index_buffer
+                n_idx = self.sphere_mesh.num_indices
+            else:
+                vb = self.box_mesh.vertex_buffer
+                ib = self.box_mesh.index_buffer
+                n_idx = self.box_mesh.num_indices
+
+            # Bind mesh buffers
+            var vb_binding = GPUBufferBinding(buffer=vb, offset=0)
+            bind_gpu_vertex_buffers(
+                render_pass, 0, Ptr(to=vb_binding), 1
+            )
+
+            var ib_binding = GPUBufferBinding(buffer=ib, offset=0)
+            bind_gpu_index_buffer(
+                render_pass,
+                Ptr(to=ib_binding),
+                GPUIndexElementSize.GPU_INDEXELEMENTSIZE_16BIT,
+            )
+
+            # Draw
+            draw_gpu_indexed_primitives(
+                render_pass,
+                n_idx,
+                1, 0, 0, 0,
+            )
+
+        # --- Draw ground ---
+        if self.has_ground:
+            bind_gpu_graphics_pipeline(render_pass, self.ground_pipeline)
+
+            push_gpu_vertex_uniform_data(
+                cmd_buf, 0,
+                Ptr(to=self.scene_uniforms).bitcast[NoneType](),
+                128,
+            )
+            push_gpu_fragment_uniform_data(
+                cmd_buf, 0,
+                Ptr(to=self.scene_uniforms).bitcast[NoneType](),
+                128,
+            )
+            push_gpu_vertex_uniform_data(
+                cmd_buf, 1,
+                Ptr(to=self.ground_uniforms).bitcast[NoneType](),
+                80,
+            )
+
+            var gvb = GPUBufferBinding(
+                buffer=self.ground_mesh.vertex_buffer, offset=0
+            )
+            bind_gpu_vertex_buffers(render_pass, 0, Ptr(to=gvb), 1)
+
+            var gib = GPUBufferBinding(
+                buffer=self.ground_mesh.index_buffer, offset=0
+            )
+            bind_gpu_index_buffer(
+                render_pass, Ptr(to=gib),
+                GPUIndexElementSize.GPU_INDEXELEMENTSIZE_16BIT,
+            )
+
+            draw_gpu_indexed_primitives(
+                render_pass,
+                self.ground_mesh.num_indices,
+                1, 0, 0, 0,
+            )
+
+        # --- Draw lines ---
+        if num_line_verts >= 2:
+            bind_gpu_graphics_pipeline(render_pass, self.line_pipeline)
+
+            var line_offset = 0
+            for seg_idx in range(len(self.line_colors)):
+                var lu = LineUniforms()
+                lu.view_proj = self.scene_uniforms.view_proj.copy()
+                lu.color = self.line_colors[seg_idx].to_inline_array()
+
+                # Push same uniforms to both vertex and fragment slot 0
+                push_gpu_vertex_uniform_data(
+                    cmd_buf, 0,
+                    Ptr(to=lu).bitcast[NoneType](),
+                    80,
+                )
+                push_gpu_fragment_uniform_data(
+                    cmd_buf, 0,
+                    Ptr(to=lu).bitcast[NoneType](),
+                    80,
+                )
+
+                var lb = GPUBufferBinding(
+                    buffer=self.line_vertex_buffer,
+                    offset=UInt32(line_offset * 12),
+                )
+                bind_gpu_vertex_buffers(render_pass, 0, Ptr(to=lb), 1)
+
+                draw_gpu_primitives(render_pass, 2, 1, 0, 0)
+
+                line_offset += 2
+
+        # End render pass and submit
+        end_gpu_render_pass(render_pass)
+        submit_gpu_command_buffer(cmd_buf)
+
+    fn _build_scene_uniforms(mut self):
+        """Build scene uniforms from current camera state."""
+        var view = self.camera.get_view_matrix()
+        var proj = perspective_metal(
+            self.camera.fov,
+            self.camera.aspect,
+            self.camera.near,
+            self.camera.far,
+        )
+        var view_proj = proj @ view
+
+        self.scene_uniforms.view_proj = mat4_to_gpu_f32(view_proj)
+
+        # Camera position
+        self.scene_uniforms.camera_pos[0] = Float32(self.camera.eye.x)
+        self.scene_uniforms.camera_pos[1] = Float32(self.camera.eye.y)
+        self.scene_uniforms.camera_pos[2] = Float32(self.camera.eye.z)
+        self.scene_uniforms.camera_pos[3] = 1.0
+
+        # Light direction (from upper-left-back)
+        var lx = Float32(0.3)
+        var ly = Float32(-0.4)
+        var lz = Float32(-0.8)
+        var ll = sqrt(lx * lx + ly * ly + lz * lz)
+        self.scene_uniforms.light_dir[0] = lx / ll
+        self.scene_uniforms.light_dir[1] = ly / ll
+        self.scene_uniforms.light_dir[2] = lz / ll
+        self.scene_uniforms.light_dir[3] = 0.0
+
+        # Light color (white-ish, w = ambient)
+        self.scene_uniforms.light_color[0] = 1.0
+        self.scene_uniforms.light_color[1] = 0.98
+        self.scene_uniforms.light_color[2] = 0.95
+        self.scene_uniforms.light_color[3] = 0.25  # ambient intensity
+
+    # --- Event Handling ---
+
     fn check_quit(mut self) -> Bool:
         """Check if user wants to quit.
 
-        Polls events and returns True if quit event detected (window close).
+        Polls SDL events and returns True if quit event detected
+        (window close or Escape key).
 
         Returns:
             True if quit event detected.
         """
-        var event = SDL_Event()
+        var event = Event(UInt32(0))
 
-        while self.sdl.poll_event(event):
-            if event.type == SDL_QUIT:
-                self.should_quit = True
-                return True
+        try:
+            while poll_event(Ptr(to=event)):
+                var event_type = event[UInt32]
+                if EventType(Int(event_type)) == EventType.EVENT_QUIT:
+                    self.should_quit = True
+                    return True
+                elif EventType(Int(event_type)) == EventType.EVENT_KEY_DOWN:
+                    var key_event = event[KeyboardEvent]
+                    if Int(key_event.key) == Int(Keycode.SDLK_ESCAPE):
+                        self.should_quit = True
+                        return True
+        except:
+            pass
 
         return self.should_quit
+
+    # --- Camera Controls ---
 
     fn set_camera_position(mut self, eye: Vec3, target: Vec3):
         """Set camera position and target.
@@ -366,375 +1479,50 @@ struct Renderer3D(Movable):
         """
         self.camera.zoom(delta)
 
-    fn delay(self, ms: Int):
+    fn delay_ms(self, ms: Int) raises:
         """Delay for given milliseconds.
 
         Args:
             ms: Milliseconds to delay.
         """
-        self.sdl.delay(ms)
+        delay(UInt32(ms))
 
-    fn draw_filled_quad_3d(
-        self,
-        p0: Vec3,
-        p1: Vec3,
-        p2: Vec3,
-        p3: Vec3,
-        color: Color3D,
-    ):
-        """Draw a filled quadrilateral in 3D.
+    # --- Cleanup ---
 
-        Args:
-            p0, p1, p2, p3: Four corners of the quad (in order).
-            color: Fill color.
-        """
-        # Project all 4 corners to screen
-        var s0 = self.camera.project_to_screen(p0)
-        var s1 = self.camera.project_to_screen(p1)
-        var s2 = self.camera.project_to_screen(p2)
-        var s3 = self.camera.project_to_screen(p3)
-
-        # Check if all visible
-        if not (s0[2] and s1[2] and s2[2] and s3[2]):
+    fn close(mut self) raises:
+        """Release all GPU resources and shutdown SDL3."""
+        if not self.initialized:
             return
 
-        # Create polygon points
-        var points = List[SDL_Point]()
-        points.append(SDL_Point(Int32(s0[0]), Int32(s0[1])))
-        points.append(SDL_Point(Int32(s1[0]), Int32(s1[1])))
-        points.append(SDL_Point(Int32(s2[0]), Int32(s2[1])))
-        points.append(SDL_Point(Int32(s3[0]), Int32(s3[1])))
+        # Release capsule cache meshes
+        for i in range(len(self.capsule_cache)):
+            release_gpu_buffer(self.device, self.capsule_cache[i].mesh.vertex_buffer)
+            release_gpu_buffer(self.device, self.capsule_cache[i].mesh.index_buffer)
 
-        self.sdl.set_draw_color(color.r, color.g, color.b)
-        self.sdl.fill_polygon(points)
+        # Release static mesh buffers
+        release_gpu_buffer(self.device, self.sphere_mesh.vertex_buffer)
+        release_gpu_buffer(self.device, self.sphere_mesh.index_buffer)
+        release_gpu_buffer(self.device, self.box_mesh.vertex_buffer)
+        release_gpu_buffer(self.device, self.box_mesh.index_buffer)
+        release_gpu_buffer(self.device, self.ground_mesh.vertex_buffer)
+        release_gpu_buffer(self.device, self.ground_mesh.index_buffer)
 
-    fn draw_filled_circle_2d(
-        self,
-        screen_x: Int,
-        screen_y: Int,
-        radius: Int,
-        color: Color3D,
-    ):
-        """Draw a filled circle in screen space.
+        # Release line buffers
+        release_gpu_buffer(self.device, self.line_vertex_buffer)
+        release_gpu_transfer_buffer(self.device, self.line_transfer_buffer)
 
-        Args:
-            screen_x: Screen X coordinate.
-            screen_y: Screen Y coordinate.
-            radius: Circle radius in pixels.
-            color: Fill color.
-        """
-        self.sdl.set_draw_color(color.r, color.g, color.b)
-        self.sdl.fill_circle(screen_x, screen_y, radius)
+        # Release depth texture
+        release_gpu_texture(self.device, self.depth_texture)
 
-    fn draw_shaded_sphere_2d(
-        self,
-        screen_x: Int,
-        screen_y: Int,
-        radius: Int,
-        color: Color3D,
-    ):
-        """Draw a shaded sphere with 3D volume effect.
+        # Release pipelines
+        release_gpu_graphics_pipeline(self.device, self.solid_pipeline)
+        release_gpu_graphics_pipeline(self.device, self.ground_pipeline)
+        release_gpu_graphics_pipeline(self.device, self.line_pipeline)
 
-        Uses concentric circles with gradient colors to simulate
-        a lit sphere with ambient and diffuse lighting.
+        # Release window and device
+        release_window_from_gpu_device(self.device, self.window)
+        destroy_window(self.window)
+        destroy_gpu_device(self.device)
+        quit()
 
-        Args:
-            screen_x: Screen X coordinate.
-            screen_y: Screen Y coordinate.
-            radius: Sphere radius in pixels.
-            color: Base color.
-        """
-        if radius < 2:
-            self.sdl.set_draw_color(color.r, color.g, color.b)
-            self.sdl.fill_circle(screen_x, screen_y, radius)
-            return
-
-        # Light direction (upper-left) - offset for highlight
-        var light_offset_x = -radius // 4
-        var light_offset_y = -radius // 4
-
-        # Draw concentric circles from outside-in for gradient effect
-        # Dark edge -> base color -> bright highlight
-        var num_rings = min(radius, 20)
-
-        for i in range(num_rings, -1, -1):
-            var t = Float64(i) / Float64(num_rings)  # 1.0 at edge, 0.0 at center
-            var ring_radius = Int(Float64(radius) * t)
-
-            # Calculate color: dark at edge, bright toward center
-            # Edge is 40% of base color, center is 120% (clamped)
-            var brightness = 0.4 + 0.8 * (1.0 - t)
-
-            var r = Int(Float64(color.r) * brightness)
-            var g = Int(Float64(color.g) * brightness)
-            var b = Int(Float64(color.b) * brightness)
-
-            # Clamp to 255
-            r = min(r, 255)
-            g = min(g, 255)
-            b = min(b, 255)
-
-            self.sdl.set_draw_color(UInt8(r), UInt8(g), UInt8(b))
-            self.sdl.fill_circle(screen_x, screen_y, ring_radius)
-
-        # Add specular highlight spot
-        var highlight_x = screen_x + light_offset_x
-        var highlight_y = screen_y + light_offset_y
-        var highlight_radius = max(radius // 5, 2)
-
-        # White-ish highlight blended with color
-        var hr = min(Int(Float64(color.r) * 0.3 + 180), 255)
-        var hg = min(Int(Float64(color.g) * 0.3 + 180), 255)
-        var hb = min(Int(Float64(color.b) * 0.3 + 180), 255)
-
-        self.sdl.set_draw_color(UInt8(hr), UInt8(hg), UInt8(hb))
-        self.sdl.fill_circle(highlight_x, highlight_y, highlight_radius)
-
-    fn draw_filled_capsule_2d(
-        self,
-        center: Vec3,
-        orientation: Quat,
-        radius: Float64,
-        half_height: Float64,
-        axis: Int = 2,
-        color: Color3D = Color3D.white(),
-    ):
-        """Draw a filled capsule by projecting to 2D.
-
-        Creates a filled capsule by projecting the 3D capsule endpoints
-        and drawing a filled rectangle with circular caps.
-
-        Args:
-            center: Capsule center in world space.
-            orientation: Capsule orientation.
-            radius: Capsule radius.
-            half_height: Half-height of cylindrical part.
-            axis: Local axis (0=X, 1=Y, 2=Z).
-            color: Fill color.
-        """
-        # Get local axis direction
-        var local_axis: Vec3
-        if axis == 0:
-            local_axis = Vec3.unit_x()
-        elif axis == 1:
-            local_axis = Vec3.unit_y()
-        else:
-            local_axis = Vec3.unit_z()
-
-        # Transform to world space
-        var world_axis = orientation.rotate_vec(local_axis)
-
-        # End points of capsule
-        var top = center + world_axis * half_height
-        var bottom = center - world_axis * half_height
-
-        # Project endpoints to screen
-        var s_top = self.camera.project_to_screen(top)
-        var s_bottom = self.camera.project_to_screen(bottom)
-        var s_center = self.camera.project_to_screen(center)
-
-        if not (s_top[2] and s_bottom[2]):
-            return
-
-        # Calculate screen-space radius (approximate based on center distance)
-        var view_center = self.camera.get_view_matrix().transform_point(center)
-        var depth = -view_center.z
-        if depth <= 0.1:
-            return
-
-        # Approximate screen radius based on perspective
-        # Use camera FOV to compute proper scaling
-        var fov_scale = 1.0 / (depth * 0.7)  # Adjusted for typical viewing angles
-        var screen_radius = Int(radius * Float64(self.height) * fov_scale)
-        screen_radius = max(screen_radius, 3)  # Minimum visible size
-
-        # Direction vector on screen
-        var dx = Float64(s_top[0] - s_bottom[0])
-        var dy = Float64(s_top[1] - s_bottom[1])
-        var length = sqrt(dx * dx + dy * dy)
-
-        if length < 1.0:
-            # Too small, just draw a circle
-            self.sdl.set_draw_color(color.r, color.g, color.b)
-            self.sdl.fill_circle(s_center[0], s_center[1], screen_radius)
-            return
-
-        # Perpendicular direction for width
-        var perp_x = -dy / length * Float64(screen_radius)
-        var perp_y = dx / length * Float64(screen_radius)
-
-        # Draw filled quadrilateral for the body
-        var points = List[SDL_Point]()
-        points.append(
-            SDL_Point(
-                Int32(s_top[0] + Int(perp_x)), Int32(s_top[1] + Int(perp_y))
-            )
-        )
-        points.append(
-            SDL_Point(
-                Int32(s_top[0] - Int(perp_x)), Int32(s_top[1] - Int(perp_y))
-            )
-        )
-        points.append(
-            SDL_Point(
-                Int32(s_bottom[0] - Int(perp_x)),
-                Int32(s_bottom[1] - Int(perp_y)),
-            )
-        )
-        points.append(
-            SDL_Point(
-                Int32(s_bottom[0] + Int(perp_x)),
-                Int32(s_bottom[1] + Int(perp_y)),
-            )
-        )
-
-        self.sdl.set_draw_color(color.r, color.g, color.b)
-        self.sdl.fill_polygon(points)
-
-        # Draw filled circles at the caps
-        self.sdl.fill_circle(s_top[0], s_top[1], screen_radius)
-        self.sdl.fill_circle(s_bottom[0], s_bottom[1], screen_radius)
-
-    fn draw_shaded_capsule_2d(
-        self,
-        center: Vec3,
-        orientation: Quat,
-        radius: Float64,
-        half_height: Float64,
-        axis: Int = 2,
-        color: Color3D = Color3D.white(),
-    ):
-        """Draw a shaded capsule with 3D volume effect.
-
-        Creates a capsule with gradient shading to simulate lighting,
-        giving the appearance of a 3D cylinder with hemispherical caps.
-
-        Args:
-            center: Capsule center in world space.
-            orientation: Capsule orientation.
-            radius: Capsule radius.
-            half_height: Half-height of cylindrical part.
-            axis: Local axis (0=X, 1=Y, 2=Z).
-            color: Base color.
-        """
-        # Get local axis direction
-        var local_axis: Vec3
-        if axis == 0:
-            local_axis = Vec3.unit_x()
-        elif axis == 1:
-            local_axis = Vec3.unit_y()
-        else:
-            local_axis = Vec3.unit_z()
-
-        # Transform to world space
-        var world_axis = orientation.rotate_vec(local_axis)
-
-        # End points of capsule
-        var top = center + world_axis * half_height
-        var bottom = center - world_axis * half_height
-
-        # Project endpoints to screen
-        var s_top = self.camera.project_to_screen(top)
-        var s_bottom = self.camera.project_to_screen(bottom)
-        var s_center = self.camera.project_to_screen(center)
-
-        if not (s_top[2] and s_bottom[2]):
-            return
-
-        # Calculate screen-space radius
-        var view_center = self.camera.get_view_matrix().transform_point(center)
-        var depth = -view_center.z
-        if depth <= 0.1:
-            return
-
-        var fov_scale = 1.0 / (depth * 0.7)
-        var screen_radius = Int(radius * Float64(self.height) * fov_scale)
-        screen_radius = max(screen_radius, 3)
-
-        # Direction vector on screen
-        var dx = Float64(s_top[0] - s_bottom[0])
-        var dy = Float64(s_top[1] - s_bottom[1])
-        var length = sqrt(dx * dx + dy * dy)
-
-        if length < 1.0:
-            # Too small, draw as shaded sphere
-            self.draw_shaded_sphere_2d(s_center[0], s_center[1], screen_radius, color)
-            return
-
-        # Perpendicular direction for width (this is "up" relative to capsule)
-        var perp_x = -dy / length
-        var perp_y = dx / length
-
-        # Draw multiple layers for gradient shading
-        # From outside (dark) to center (bright)
-        var num_layers = min(screen_radius, 15)
-
-        for layer in range(num_layers, -1, -1):
-            var t = Float64(layer) / Float64(num_layers)  # 1.0 at edge, 0.0 at center
-            var layer_radius = Int(Float64(screen_radius) * t)
-            if layer_radius < 1:
-                layer_radius = 1
-
-            # Calculate brightness: dark at edge, bright toward center
-            var brightness = 0.4 + 0.7 * (1.0 - t)
-
-            var r = Int(Float64(color.r) * brightness)
-            var g = Int(Float64(color.g) * brightness)
-            var b = Int(Float64(color.b) * brightness)
-            r = min(r, 255)
-            g = min(g, 255)
-            b = min(b, 255)
-
-            self.sdl.set_draw_color(UInt8(r), UInt8(g), UInt8(b))
-
-            # Draw the cylindrical body as a quad
-            var offset_x = perp_x * Float64(layer_radius)
-            var offset_y = perp_y * Float64(layer_radius)
-
-            var points = List[SDL_Point]()
-            points.append(SDL_Point(
-                Int32(s_top[0] + Int(offset_x)),
-                Int32(s_top[1] + Int(offset_y))
-            ))
-            points.append(SDL_Point(
-                Int32(s_top[0] - Int(offset_x)),
-                Int32(s_top[1] - Int(offset_y))
-            ))
-            points.append(SDL_Point(
-                Int32(s_bottom[0] - Int(offset_x)),
-                Int32(s_bottom[1] - Int(offset_y))
-            ))
-            points.append(SDL_Point(
-                Int32(s_bottom[0] + Int(offset_x)),
-                Int32(s_bottom[1] + Int(offset_y))
-            ))
-
-            self.sdl.fill_polygon(points)
-
-            # Draw caps at this layer
-            self.sdl.fill_circle(s_top[0], s_top[1], layer_radius)
-            self.sdl.fill_circle(s_bottom[0], s_bottom[1], layer_radius)
-
-        # Add highlight strip along the cylinder
-        var highlight_offset = screen_radius // 3
-        var hr = min(Int(Float64(color.r) * 0.3 + 180), 255)
-        var hg = min(Int(Float64(color.g) * 0.3 + 180), 255)
-        var hb = min(Int(Float64(color.b) * 0.3 + 180), 255)
-        self.sdl.set_draw_color(UInt8(hr), UInt8(hg), UInt8(hb))
-
-        # Draw highlight line along one edge
-        var hl_x = perp_x * Float64(highlight_offset)
-        var hl_y = perp_y * Float64(highlight_offset)
-        self.sdl.draw_line(
-            s_top[0] - Int(hl_x), s_top[1] - Int(hl_y),
-            s_bottom[0] - Int(hl_x), s_bottom[1] - Int(hl_y),
-        )
-
-        # Add highlight spots on caps
-        var cap_highlight_radius = max(screen_radius // 5, 2)
-        self.sdl.fill_circle(
-            s_top[0] - Int(hl_x), s_top[1] - Int(hl_y), cap_highlight_radius
-        )
-        self.sdl.fill_circle(
-            s_bottom[0] - Int(hl_x), s_bottom[1] - Int(hl_y), cap_highlight_radius
-        )
+        self.initialized = False
