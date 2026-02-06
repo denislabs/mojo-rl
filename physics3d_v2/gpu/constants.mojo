@@ -498,7 +498,7 @@ comptime GC_METADATA_SIZE: Int = 4
 
 comptime GC_META_IDX_NUM_CONTACTS: Int = 0
 comptime GC_META_IDX_STEP_COUNT: Int = 1  # Episode step counter for truncation
-comptime GC_META_IDX_PADDING_2: Int = 2
+comptime GC_META_IDX_PREV_X: Int = 2  # Previous x position for velocity computation
 comptime GC_META_IDX_PADDING_3: Int = 3
 
 

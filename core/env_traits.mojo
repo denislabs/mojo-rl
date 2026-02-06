@@ -493,6 +493,34 @@ trait GPUContinuousEnv:
         """
         ...
 
+    @staticmethod
+    fn extract_obs_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        OBS_DIM: Int,
+    ](
+        ctx: DeviceContext,
+        states: DeviceBuffer[dtype],
+        mut obs: DeviceBuffer[dtype],
+    ) raises:
+        """Extract observations from state buffer for all environments.
+
+        Each environment implements this to correctly map its internal state
+        representation to the observation vector expected by the neural network.
+        For environments where obs = state[0:OBS_DIM], this is a simple copy.
+        For GC environments, this extracts the correct qpos/qvel subset.
+
+        This is called after reset (initial obs) and after selective_reset
+        (to update obs for reset environments). step_kernel_gpu handles its
+        own obs extraction internally.
+
+        Args:
+            ctx: GPU device context.
+            states: State buffer on GPU [BATCH_SIZE * STATE_SIZE].
+            obs: Observations buffer on GPU (output) [BATCH_SIZE * OBS_DIM].
+        """
+        ...
+
 
 trait CurriculumScheduler(Copyable, Movable):
     """Trait for environments that support curriculum scheduling.

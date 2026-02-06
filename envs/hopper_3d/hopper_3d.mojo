@@ -1065,6 +1065,48 @@ struct Hopper3D[DTYPE: DType = DType.float64](
             block_dim=(TPB,),
         )
 
+    @staticmethod
+    fn extract_obs_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE_VAL: Int,
+        OBS_DIM_VAL: Int,
+    ](
+        ctx: DeviceContext,
+        states_buf: DeviceBuffer[gpu_dtype],
+        mut obs_buf: DeviceBuffer[gpu_dtype],
+    ) raises:
+        """Extract observations from state buffer (trivial copy: obs = state[0:OBS_DIM])."""
+        var states = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL), MutAnyOrigin
+        ](states_buf.unsafe_ptr())
+        var obs = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM_VAL), MutAnyOrigin
+        ](obs_buf.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
+
+        @always_inline
+        fn extract_obs(
+            states: LayoutTensor[
+                gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL), MutAnyOrigin
+            ],
+            obs: LayoutTensor[
+                gpu_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM_VAL), MutAnyOrigin
+            ],
+        ):
+            var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if i >= BATCH_SIZE:
+                return
+            for d in range(OBS_DIM_VAL):
+                obs[i, d] = states[i, d]
+
+        ctx.enqueue_function[extract_obs, extract_obs](
+            states,
+            obs,
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )
+
     # =========================================================================
     # GPU Helper Functions
     # =========================================================================

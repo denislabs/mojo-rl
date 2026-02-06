@@ -1408,6 +1408,76 @@ struct HopperGC[
             block_dim=(TPB,),
         )
 
+    @staticmethod
+    fn extract_obs_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE_VAL: Int,
+        OBS_DIM_VAL: Int,
+    ](
+        ctx: DeviceContext,
+        states_buf: DeviceBuffer[gpu_dtype],
+        mut obs_buf: DeviceBuffer[gpu_dtype],
+    ) raises:
+        """Extract correct observations from GC state buffer.
+
+        For GC environments, observations are NOT at state[0:OBS_DIM].
+        The correct 11D observation is: qpos[1:6] (5 positions) + qvel[0:6] (6 velocities).
+        This excludes rootx (qpos[0]) from observations.
+        """
+        var states = LayoutTensor[
+            gpu_dtype,
+            Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
+            MutAnyOrigin,
+        ](states_buf.unsafe_ptr())
+        var obs = LayoutTensor[
+            gpu_dtype,
+            Layout.row_major(BATCH_SIZE, OBS_DIM_VAL),
+            MutAnyOrigin,
+        ](obs_buf.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
+        comptime QPOS_OFF = gc_qpos_offset[HopperGC.NQ, HopperGC.NV]()
+        comptime QVEL_OFF = gc_qvel_offset[HopperGC.NQ, HopperGC.NV]()
+
+        @always_inline
+        fn extract_gc_obs(
+            states: LayoutTensor[
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
+                MutAnyOrigin,
+            ],
+            obs: LayoutTensor[
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, OBS_DIM_VAL),
+                MutAnyOrigin,
+            ],
+        ):
+            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if env >= BATCH_SIZE:
+                return
+
+            # Position observations (5D): qpos[1:6] (excluding rootx)
+            obs[env, 0] = states[env, QPOS_OFF + 1]  # rootz
+            obs[env, 1] = states[env, QPOS_OFF + 2]  # rooty
+            obs[env, 2] = states[env, QPOS_OFF + 3]  # thigh
+            obs[env, 3] = states[env, QPOS_OFF + 4]  # leg
+            obs[env, 4] = states[env, QPOS_OFF + 5]  # foot
+
+            # Velocity observations (6D): qvel[0:6]
+            obs[env, 5] = states[env, QVEL_OFF + 0]   # x_vel
+            obs[env, 6] = states[env, QVEL_OFF + 1]   # z_vel
+            obs[env, 7] = states[env, QVEL_OFF + 2]   # y_angvel
+            obs[env, 8] = states[env, QVEL_OFF + 3]   # thigh_vel
+            obs[env, 9] = states[env, QVEL_OFF + 4]   # leg_vel
+            obs[env, 10] = states[env, QVEL_OFF + 5]  # foot_vel
+
+        ctx.enqueue_function[extract_gc_obs, extract_gc_obs](
+            states,
+            obs,
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )
+
     # =========================================================================
     # GPU Helper Functions
     # =========================================================================

@@ -99,7 +99,6 @@ from .kernels import (
     ppo_critic_grad_kernel,
     ppo_critic_grad_clipped_kernel,
     normalize_advantages_kernel,
-    _extract_obs_from_state_continuous_kernel,
     _store_post_step_kernel,
     clamp_log_std_params_kernel,
     add_obs_noise_kernel,
@@ -865,25 +864,11 @@ struct DeepPPOContinuousAgent[
             ctx, env_states_buf
         )
 
-        # Extract initial observations (WITHOUT stepping - just read from state)
+        # Extract initial observations using environment-specific kernel
         comptime ENV_BLOCKS = (Self.n_envs + TPB - 1) // TPB
-        var obs_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.n_envs, Self.OBS), MutAnyOrigin
-        ](obs_buf.unsafe_ptr())
-        var states_tensor = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.n_envs, EnvType.STATE_SIZE),
-            MutAnyOrigin,
-        ](env_states_buf.unsafe_ptr())
 
-        comptime extract_obs_wrapper = _extract_obs_from_state_continuous_kernel[
-            dtype, Self.n_envs, EnvType.STATE_SIZE, Self.OBS
-        ]
-        ctx.enqueue_function[extract_obs_wrapper, extract_obs_wrapper](
-            obs_tensor,
-            states_tensor,
-            grid_dim=(ENV_BLOCKS,),
-            block_dim=(TPB,),
+        EnvType.extract_obs_kernel_gpu[Self.n_envs, EnvType.STATE_SIZE, Self.OBS](
+            ctx, env_states_buf, obs_buf
         )
         ctx.synchronize()
 
@@ -1022,13 +1007,10 @@ struct DeepPPOContinuousAgent[
                 UInt64(step),
             )
 
-            # Extract observations from reset environments (critical for correct forward pass)
-            ctx.enqueue_function[extract_obs_wrapper, extract_obs_wrapper](
-                obs_tensor,
-                states_tensor,
-                grid_dim=(ENV_BLOCKS,),
-                block_dim=(TPB,),
-            )
+            # Extract observations from reset environments using env-specific kernel
+            EnvType.extract_obs_kernel_gpu[
+                Self.n_envs, EnvType.STATE_SIZE, Self.OBS
+            ](ctx, env_states_buf, obs_buf)
 
             step += 1
 
@@ -2567,10 +2549,6 @@ struct DeepPPOContinuousAgent[
         # =====================================================================
         # Define kernel wrappers
         # =====================================================================
-        comptime extract_obs_wrapper = _extract_obs_from_state_continuous_kernel[
-            dtype, Self.n_envs, EnvType.STATE_SIZE, Self.OBS
-        ]
-
         comptime accum_rewards_wrapper = accumulate_rewards_kernel[
             dtype, Self.n_envs
         ]
@@ -2649,13 +2627,10 @@ struct DeepPPOContinuousAgent[
         )
         ctx.synchronize()
 
-        # Extract observations from state buffer
-        ctx.enqueue_function[extract_obs_wrapper, extract_obs_wrapper](
-            obs_tensor,
-            states_tensor,
-            grid_dim=(ENV_BLOCKS,),
-            block_dim=(TPB,),
-        )
+        # Extract observations from state buffer using env-specific kernel
+        EnvType.extract_obs_kernel_gpu[
+            Self.n_envs, EnvType.STATE_SIZE, Self.OBS
+        ](ctx, states_buf, obs_buf)
 
         # Add observation noise for domain randomization (if enabled)
         if self.obs_noise_std > 0.0:
@@ -2946,12 +2921,9 @@ struct DeepPPOContinuousAgent[
                 )
 
                 # Extract observations from state buffer after selective reset
-                ctx.enqueue_function[extract_obs_wrapper, extract_obs_wrapper](
-                    obs_tensor,
-                    states_tensor,
-                    grid_dim=(ENV_BLOCKS,),
-                    block_dim=(TPB,),
-                )
+                EnvType.extract_obs_kernel_gpu[
+                    Self.n_envs, EnvType.STATE_SIZE, Self.OBS
+                ](ctx, states_buf, obs_buf)
 
             # Early exit if we've reached target episodes
             if completed_episodes >= num_episodes:
