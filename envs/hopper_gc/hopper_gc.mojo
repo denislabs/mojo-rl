@@ -1,8 +1,8 @@
 """HopperGC Environment - MuJoCo-style Hopper using Generalized Coordinates engine.
 
-This implementation uses the physics3d_v2 Generalized Coordinates (GC) engine:
+This implementation uses the physics3d Generalized Coordinates (GC) engine:
 - ModelGC/DataGC for joint-space physics (MuJoCo-style)
-- SemiImplicitEulerIntegrator for symplectic integration
+- ConstraintGcIntegrator for constraint-based contact solving
 - Joint-space state: qpos (positions), qvel (velocities)
 - Forward kinematics computes body positions (xpos, xquat)
 
@@ -32,14 +32,14 @@ from gpu import thread_idx, block_idx, block_dim
 from layout import Layout, LayoutTensor
 
 # Import GC physics engine
-from physics3d_v2.types import ModelGC, DataGC, compute_capsule_inertia
-from physics3d_v2.integrator import SemiImplicitEulerIntegrator
-from physics3d_v2.kinematics.forward_kinematics import (
+from physics3d.types import ModelGC, DataGC, compute_capsule_inertia
+from physics3d.integrator import ConstraintGcIntegrator
+from physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     forward_kinematics_gpu,
 )
-from physics3d_v2.joint_types import JNT_HINGE, JNT_SLIDE
-from physics3d_v2.gpu.constants import (
+from physics3d.joint_types import JNT_HINGE, JNT_SLIDE
+from physics3d.gpu.constants import (
     TPB,
     gc_state_size,
     gc_qpos_offset,
@@ -724,7 +724,7 @@ struct HopperGC[
 
         # Physics step with frame_skip (matching Gymnasium do_simulation)
         for _ in range(self.frame_skip):
-            SemiImplicitEulerIntegrator.step(self.model, self.data)
+            ConstraintGcIntegrator.step(self.model, self.data)
 
         self.current_step += 1
 
@@ -800,7 +800,7 @@ struct HopperGC[
 
         # Physics step with frame_skip (matching Gymnasium do_simulation)
         for _ in range(self.frame_skip):
-            SemiImplicitEulerIntegrator.step(self.model, self.data)
+            ConstraintGcIntegrator.step(self.model, self.data)
 
         self.current_step += 1
         self._update_cached_state()
@@ -1155,7 +1155,7 @@ struct HopperGC[
     ) raises:
         """Batched GPU step function using GC physics engine.
 
-        Uses SemiImplicitEulerIntegrator.step_gpu for physics.
+        Uses ConstraintGcIntegrator.step_gpu for physics.
 
         """
 
@@ -1207,7 +1207,7 @@ struct HopperGC[
         # Run GC physics step with frame_skip (matching Gymnasium do_simulation)
         comptime FRAME_SKIP = HopperGCConstants[gpu_dtype].FRAME_SKIP
         for _ in range(FRAME_SKIP):
-            SemiImplicitEulerIntegrator.step_gpu[
+            ConstraintGcIntegrator.step_gpu[
                 gpu_dtype,
                 Self.NQ,
                 Self.NV,
@@ -1463,11 +1463,11 @@ struct HopperGC[
             obs[env, 4] = states[env, QPOS_OFF + 5]  # foot
 
             # Velocity observations (6D): qvel[0:6]
-            obs[env, 5] = states[env, QVEL_OFF + 0]   # x_vel
-            obs[env, 6] = states[env, QVEL_OFF + 1]   # z_vel
-            obs[env, 7] = states[env, QVEL_OFF + 2]   # y_angvel
-            obs[env, 8] = states[env, QVEL_OFF + 3]   # thigh_vel
-            obs[env, 9] = states[env, QVEL_OFF + 4]   # leg_vel
+            obs[env, 5] = states[env, QVEL_OFF + 0]  # x_vel
+            obs[env, 6] = states[env, QVEL_OFF + 1]  # z_vel
+            obs[env, 7] = states[env, QVEL_OFF + 2]  # y_angvel
+            obs[env, 8] = states[env, QVEL_OFF + 3]  # thigh_vel
+            obs[env, 9] = states[env, QVEL_OFF + 4]  # leg_vel
             obs[env, 10] = states[env, QVEL_OFF + 5]  # foot_vel
 
         ctx.enqueue_function[extract_gc_obs, extract_gc_obs](
@@ -1863,7 +1863,7 @@ struct HopperGC[
         Self._init_model_gpu(ctx, model_buf)
 
         # Then update curriculum params
-        from physics3d_v2.gpu.constants import (
+        from physics3d.gpu.constants import (
             gc_model_curriculum_offset,
             GC_CURRICULUM_IDX_MIN_HEIGHT,
             GC_CURRICULUM_IDX_MAX_PITCH,
@@ -2027,7 +2027,7 @@ struct HopperGC[
         Uses position-based velocity (x_after - x_before) / dt for reward,
         matching Gymnasium Hopper v5 behavior.
         """
-        from physics3d_v2.gpu.constants import (
+        from physics3d.gpu.constants import (
             gc_model_curriculum_offset,
             GC_CURRICULUM_IDX_MIN_HEIGHT,
             GC_CURRICULUM_IDX_MAX_PITCH,
@@ -2070,7 +2070,9 @@ struct HopperGC[
         ]()
         # Effective dt = DT * FRAME_SKIP (matching Gymnasium self.dt)
         comptime FRAME_SKIP = HopperGCConstants[gpu_dtype].FRAME_SKIP
-        comptime EFFECTIVE_DT: Scalar[gpu_dtype] = Scalar[gpu_dtype](0.002) * FRAME_SKIP
+        comptime EFFECTIVE_DT: Scalar[gpu_dtype] = Scalar[gpu_dtype](
+            0.002
+        ) * FRAME_SKIP
 
         @always_inline
         fn extract_kernel(

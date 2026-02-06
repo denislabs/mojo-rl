@@ -21,7 +21,7 @@ from deep_agents.ppo import DeepPPOContinuousAgent
 from envs.hopper_gc import HopperGC
 from envs.hopper_gc.constants_gc import HopperGCConstantsGPU
 from deep_rl import dtype as gpu_dtype
-from physics3d_v2.gpu.constants import (
+from physics3d.gpu.constants import (
     gc_qpos_offset,
     gc_qvel_offset,
     gc_qacc_offset,
@@ -205,7 +205,7 @@ fn main() raises:
     cpu_env.current_step = 0
 
     # Run forward kinematics to update xpos/xquat
-    from physics3d_v2.kinematics.forward_kinematics import forward_kinematics
+    from physics3d.kinematics.forward_kinematics import forward_kinematics
 
     forward_kinematics(cpu_env.model, cpu_env.data)
     cpu_env._update_cached_state()
@@ -241,14 +241,14 @@ fn main() raises:
 
     # Run forward kinematics on GPU to match CPU
     comptime MODEL_SIZE = HopperGC[DType.float64].STATE_SIZE  # Approximate
-    from physics3d_v2.gpu.constants import gc_model_size
+    from physics3d.gpu.constants import gc_model_size
 
     comptime ACTUAL_MODEL_SIZE = gc_model_size[4, 6]()  # 4 bodies, 6 joints
     var model_buf = ctx.enqueue_create_buffer[gpu_dtype](ACTUAL_MODEL_SIZE)
     HopperGC[DType.float64]._init_model_gpu(ctx, model_buf)
 
     # Run FK on GPU
-    from physics3d_v2.kinematics.forward_kinematics import (
+    from physics3d.kinematics.forward_kinematics import (
         forward_kinematics_gpu,
     )
     from layout import Layout, LayoutTensor

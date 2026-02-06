@@ -1,8 +1,8 @@
 """HalfCheetahGC Environment - MuJoCo-style Half Cheetah using Generalized Coordinates engine.
 
-This implementation uses the physics3d_v2 Generalized Coordinates (GC) engine:
+This implementation uses the physics3d Generalized Coordinates (GC) engine:
 - ModelGC/DataGC for joint-space physics (MuJoCo-style)
-- SemiImplicitEulerIntegrator for symplectic integration
+- ConstraintGcIntegrator for constraint-based contact solving
 - Joint-space state: qpos (positions), qvel (velocities)
 - Forward kinematics computes body positions (xpos, xquat)
 
@@ -34,14 +34,14 @@ from gpu import thread_idx, block_idx, block_dim
 from layout import Layout, LayoutTensor
 
 # Import GC physics engine
-from physics3d_v2.types import ModelGC, DataGC
-from physics3d_v2.integrator import SemiImplicitEulerIntegrator
-from physics3d_v2.kinematics.forward_kinematics import (
+from physics3d.types import ModelGC, DataGC
+from physics3d.integrator import ConstraintGcIntegrator
+from physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     forward_kinematics_gpu,
 )
-from physics3d_v2.joint_types import JNT_HINGE, JNT_SLIDE
-from physics3d_v2.gpu.constants import (
+from physics3d.joint_types import JNT_HINGE, JNT_SLIDE
+from physics3d.gpu.constants import (
     TPB,
     gc_state_size,
     gc_qpos_offset,
@@ -214,7 +214,9 @@ comptime Quat = QuatGeneric[DType.float64]
 # =============================================================================
 
 
-struct HalfCheetahGC[DTYPE: DType = DType.float64](
+struct HalfCheetahGC[
+    DTYPE: DType = DType.float64, TERMINATE_ON_UNHEALTHY: Bool = False
+](
     BoxContinuousActionEnv,
     GPUContinuousEnv,
     RenderableEnv,
@@ -1027,12 +1029,14 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
         self,
         x_velocity: Float64,
         action: HalfCheetahGCAction,
+        y_angle: Float64,
     ) -> Float64:
         """Compute reward for current state.
 
-        Reward = forward_reward - ctrl_cost
+        Reward = forward_reward - ctrl_cost - angle_penalty
         - forward_reward = forward_reward_weight * x_velocity
         - ctrl_cost = ctrl_cost_weight * sum(action^2)
+        - angle_penalty = angle_penalty_weight * abs(y_angle)
         """
         # Forward velocity reward
         var forward_reward = FORWARD_REWARD_WEIGHT * x_velocity
@@ -1040,7 +1044,12 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
         # Control cost (penalize large actions)
         var ctrl_cost = CTRL_COST_WEIGHT * action.squared_sum()
 
-        return forward_reward - ctrl_cost
+        # Angle penalty (discourages flipping)
+        comptime C = HalfCheetahGCConstants[DType.float64]
+        var abs_angle = y_angle if y_angle >= 0.0 else -y_angle
+        var angle_penalty = Float64(C.ANGLE_PENALTY_WEIGHT) * abs_angle
+
+        return forward_reward - ctrl_cost - angle_penalty
 
     # =========================================================================
     # BoxContinuousActionEnv Interface
@@ -1158,7 +1167,7 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
     ) -> Tuple[Self.StateType, Scalar[Self.dtype], Bool]:
         """Take an action and return (next_state, reward, done).
 
-        Note: Half Cheetah never terminates early - only truncates at max_steps.
+        When TERMINATE_ON_UNHEALTHY is True, terminates if |y_angle| > MAX_PITCH.
         """
         # Store previous x position for velocity calculation
         self.prev_x_position = self.data.qpos[JOINT_ROOTX]
@@ -1193,7 +1202,7 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
 
         # Physics step (with frame skip)
         for _ in range(self.frame_skip):
-            SemiImplicitEulerIntegrator.step(self.model, self.data)
+            ConstraintGcIntegrator.step(self.model, self.data)
             # Enforce joint limits after each physics step
             self._enforce_joint_limits()
 
@@ -1209,12 +1218,21 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
 
         # Compute reward (using clamped action for ctrl_cost)
         var clamped_action = action.clamp()
-        var reward = self._compute_reward(x_velocity, clamped_action)
+        var y_angle = Float64(self.data.qpos[JOINT_ROOTY])
+        var reward = self._compute_reward(x_velocity, clamped_action, y_angle)
 
-        # Half Cheetah never terminates, only truncates
+        # Health check and termination
+        var terminated = False
+
+        @parameter
+        if Self.TERMINATE_ON_UNHEALTHY:
+            comptime C = HalfCheetahGCConstants[DType.float64]
+            var abs_angle = y_angle if y_angle >= 0.0 else -y_angle
+            terminated = abs_angle > Float64(C.MAX_PITCH)
         var truncated = self.current_step >= self.max_steps
+        var done = terminated or truncated
 
-        return (self.cached_state, Scalar[Self.dtype](reward), truncated)
+        return (self.cached_state, Scalar[Self.dtype](reward), done)
 
     fn get_state(self) -> Self.StateType:
         """Get current state."""
@@ -1311,8 +1329,17 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
         return self.max_steps
 
     fn is_done(self) -> Bool:
-        """Check if episode is finished (truncated only, never terminates)."""
-        return self.current_step >= self.max_steps
+        """Check if episode is finished."""
+        var truncated = self.current_step >= self.max_steps
+
+        @parameter
+        if Self.TERMINATE_ON_UNHEALTHY:
+            comptime C = HalfCheetahGCConstants[DType.float64]
+            var y_angle = Float64(self.data.qpos[JOINT_ROOTY])
+            var abs_angle = y_angle if y_angle >= 0.0 else -y_angle
+            return truncated or abs_angle > Float64(C.MAX_PITCH)
+        else:
+            return truncated
 
     # =========================================================================
     # RenderableEnv Trait Implementation
@@ -1424,7 +1451,7 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
     ) raises:
         """Batched GPU step function using GC physics engine.
 
-        Uses SemiImplicitEulerIntegrator.step_gpu for physics.
+        Uses ConstraintGcIntegrator.step_gpu for physics.
         Runs FRAME_SKIP=5 sub-steps per env step with joint limit
         enforcement after each sub-step, matching CPU behavior.
         """
@@ -1439,6 +1466,31 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
         Self._init_model_gpu(ctx, model_buf)
         ctx.synchronize()
 
+        # Update curriculum params if non-default values provided
+        comptime CURRICULUM_OFF = gc_model_curriculum_offset[
+            HalfCheetahGC.NUM_BODIES, HalfCheetahGC.NUM_JOINTS
+        ]()
+
+        # Copy model to host, update curriculum, copy back
+        var model_host = List[Scalar[gpu_dtype]](capacity=MODEL_SIZE)
+        for _ in range(MODEL_SIZE):
+            model_host.append(Scalar[gpu_dtype](0.0))
+        ctx.enqueue_copy(model_host.unsafe_ptr(), model_buf)
+        ctx.synchronize()
+
+        model_host[CURRICULUM_OFF + GC_CURRICULUM_IDX_MIN_HEIGHT] = Scalar[
+            gpu_dtype
+        ](
+            0.0
+        )  # Not used for HalfCheetah
+        model_host[CURRICULUM_OFF + GC_CURRICULUM_IDX_MAX_PITCH] = (
+            curriculum_values[1] if len(curriculum_values)
+            > 1 else HalfCheetahGCConstants[gpu_dtype].MAX_PITCH
+        )
+
+        ctx.enqueue_copy(model_buf, model_host.unsafe_ptr())
+        ctx.synchronize()
+
         # Store prev_x_position before physics (for position-based velocity)
         Self._store_prev_x_gpu[BATCH_SIZE, STATE_SIZE_VAL](ctx, states_buf)
 
@@ -1450,7 +1502,7 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
         # Run FRAME_SKIP physics sub-steps with joint limit enforcement
         comptime C = HalfCheetahGCConstants[gpu_dtype]
         for _ in range(C.FRAME_SKIP):
-            SemiImplicitEulerIntegrator.step_gpu[
+            ConstraintGcIntegrator.step_gpu[
                 gpu_dtype,
                 Self.NQ,
                 Self.NV,
@@ -1710,8 +1762,8 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
             obs[env, 7] = states[env, QPOS_OFF + 8]  # ffoot
 
             # Velocity observations (9D): qvel[0:9] (excluding head)
-            obs[env, 8] = states[env, QVEL_OFF + 0]   # x_vel
-            obs[env, 9] = states[env, QVEL_OFF + 1]   # z_vel
+            obs[env, 8] = states[env, QVEL_OFF + 0]  # x_vel
+            obs[env, 9] = states[env, QVEL_OFF + 1]  # z_vel
             obs[env, 10] = states[env, QVEL_OFF + 2]  # y_angvel
             obs[env, 11] = states[env, QVEL_OFF + 3]  # bthigh_vel
             obs[env, 12] = states[env, QVEL_OFF + 4]  # bshin_vel
@@ -1826,7 +1878,9 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
         model_host[b0 + GC_BODY_IDX_QUAT_Z] = quat_90y_z
         model_host[b0 + GC_BODY_IDX_QUAT_W] = quat_90y_w
         model_host[b0 + GC_BODY_IDX_PARENT] = Scalar[gpu_dtype](-1)  # World
-        model_host[b0 + GC_BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](GC_GEOM_CAPSULE)
+        model_host[b0 + GC_BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](
+            GC_GEOM_CAPSULE
+        )
         model_host[b0 + GC_BODY_IDX_RADIUS] = capsule_radius
         model_host[b0 + GC_BODY_IDX_HALF_LENGTH] = torso_half
 
@@ -1864,7 +1918,9 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
         model_host[b1 + GC_BODY_IDX_QUAT_Z] = quat_neg90y_z
         model_host[b1 + GC_BODY_IDX_QUAT_W] = quat_neg90y_w
         model_host[b1 + GC_BODY_IDX_PARENT] = Scalar[gpu_dtype](0)  # Torso
-        model_host[b1 + GC_BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](GC_GEOM_CAPSULE)
+        model_host[b1 + GC_BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](
+            GC_GEOM_CAPSULE
+        )
         model_host[b1 + GC_BODY_IDX_RADIUS] = capsule_radius
         model_host[b1 + GC_BODY_IDX_HALF_LENGTH] = bthigh_half
 
@@ -1901,7 +1957,9 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
         model_host[b2 + GC_BODY_IDX_QUAT_Z] = Scalar[gpu_dtype](0.0)
         model_host[b2 + GC_BODY_IDX_QUAT_W] = Scalar[gpu_dtype](1.0)
         model_host[b2 + GC_BODY_IDX_PARENT] = Scalar[gpu_dtype](1)  # BThigh
-        model_host[b2 + GC_BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](GC_GEOM_CAPSULE)
+        model_host[b2 + GC_BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](
+            GC_GEOM_CAPSULE
+        )
         model_host[b2 + GC_BODY_IDX_RADIUS] = capsule_radius
         model_host[b2 + GC_BODY_IDX_HALF_LENGTH] = bshin_half
 
@@ -1938,7 +1996,9 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
         model_host[b3 + GC_BODY_IDX_QUAT_Z] = quat_90y_z
         model_host[b3 + GC_BODY_IDX_QUAT_W] = quat_90y_w
         model_host[b3 + GC_BODY_IDX_PARENT] = Scalar[gpu_dtype](2)  # BShin
-        model_host[b3 + GC_BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](GC_GEOM_CAPSULE)
+        model_host[b3 + GC_BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](
+            GC_GEOM_CAPSULE
+        )
         model_host[b3 + GC_BODY_IDX_RADIUS] = capsule_radius
         model_host[b3 + GC_BODY_IDX_HALF_LENGTH] = bfoot_half
 
@@ -1976,7 +2036,9 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
         model_host[b4 + GC_BODY_IDX_QUAT_Z] = quat_neg90y_z
         model_host[b4 + GC_BODY_IDX_QUAT_W] = quat_neg90y_w
         model_host[b4 + GC_BODY_IDX_PARENT] = Scalar[gpu_dtype](0)  # Torso
-        model_host[b4 + GC_BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](GC_GEOM_CAPSULE)
+        model_host[b4 + GC_BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](
+            GC_GEOM_CAPSULE
+        )
         model_host[b4 + GC_BODY_IDX_RADIUS] = capsule_radius
         model_host[b4 + GC_BODY_IDX_HALF_LENGTH] = fthigh_half
 
@@ -2013,7 +2075,9 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
         model_host[b5 + GC_BODY_IDX_QUAT_Z] = Scalar[gpu_dtype](0.0)
         model_host[b5 + GC_BODY_IDX_QUAT_W] = Scalar[gpu_dtype](1.0)
         model_host[b5 + GC_BODY_IDX_PARENT] = Scalar[gpu_dtype](4)  # FThigh
-        model_host[b5 + GC_BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](GC_GEOM_CAPSULE)
+        model_host[b5 + GC_BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](
+            GC_GEOM_CAPSULE
+        )
         model_host[b5 + GC_BODY_IDX_RADIUS] = capsule_radius
         model_host[b5 + GC_BODY_IDX_HALF_LENGTH] = fshin_half
 
@@ -2050,7 +2114,9 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
         model_host[b6 + GC_BODY_IDX_QUAT_Z] = quat_90y_z
         model_host[b6 + GC_BODY_IDX_QUAT_W] = quat_90y_w
         model_host[b6 + GC_BODY_IDX_PARENT] = Scalar[gpu_dtype](5)  # FShin
-        model_host[b6 + GC_BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](GC_GEOM_CAPSULE)
+        model_host[b6 + GC_BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](
+            GC_GEOM_CAPSULE
+        )
         model_host[b6 + GC_BODY_IDX_RADIUS] = capsule_radius
         model_host[b6 + GC_BODY_IDX_HALF_LENGTH] = ffoot_half
 
@@ -2095,7 +2161,9 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
         model_host[b7 + GC_BODY_IDX_QUAT_Z] = Scalar[gpu_dtype](0.0)
         model_host[b7 + GC_BODY_IDX_QUAT_W] = head_cos
         model_host[b7 + GC_BODY_IDX_PARENT] = Scalar[gpu_dtype](0)  # Torso
-        model_host[b7 + GC_BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](GC_GEOM_CAPSULE)
+        model_host[b7 + GC_BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](
+            GC_GEOM_CAPSULE
+        )
         model_host[b7 + GC_BODY_IDX_RADIUS] = capsule_radius
         model_host[b7 + GC_BODY_IDX_HALF_LENGTH] = head_half
 
@@ -2285,8 +2353,12 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
         var meta = gc_model_metadata_offset[
             HalfCheetahGC.NUM_BODIES, HalfCheetahGC.NUM_JOINTS
         ]()
-        model_host[meta + GC_MODEL_META_IDX_NBODY] = Scalar[gpu_dtype](C.NUM_BODIES)
-        model_host[meta + GC_MODEL_META_IDX_NJOINT] = Scalar[gpu_dtype](C.NUM_JOINTS)
+        model_host[meta + GC_MODEL_META_IDX_NBODY] = Scalar[gpu_dtype](
+            C.NUM_BODIES
+        )
+        model_host[meta + GC_MODEL_META_IDX_NJOINT] = Scalar[gpu_dtype](
+            C.NUM_JOINTS
+        )
         model_host[meta + GC_MODEL_META_IDX_GRAVITY_X] = Scalar[gpu_dtype](0.0)
         model_host[meta + GC_MODEL_META_IDX_GRAVITY_Y] = Scalar[gpu_dtype](0.0)
         model_host[meta + GC_MODEL_META_IDX_GRAVITY_Z] = C.GRAVITY_Z
@@ -2294,18 +2366,68 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
         model_host[meta + GC_MODEL_META_IDX_GROUND_Z] = Scalar[gpu_dtype](0.0)
         model_host[meta + GC_MODEL_META_IDX_FRICTION] = C.FRICTION
 
+        # =================================================================
+        # Curriculum Parameters (initialize to defaults)
+        # =================================================================
+        var curr = gc_model_curriculum_offset[
+            HalfCheetahGC.NUM_BODIES, HalfCheetahGC.NUM_JOINTS
+        ]()
+        model_host[curr + GC_CURRICULUM_IDX_MIN_HEIGHT] = Scalar[gpu_dtype](
+            0.0
+        )  # Not used for HalfCheetah
+        model_host[curr + GC_CURRICULUM_IDX_MAX_PITCH] = C.MAX_PITCH
+
         # Copy to GPU
+        ctx.enqueue_copy(model_buf, model_host.unsafe_ptr())
+
+    @staticmethod
+    fn init_model_gpu_with_curriculum(
+        ctx: DeviceContext,
+        mut model_buf: DeviceBuffer[gpu_dtype],
+        max_pitch: Scalar[gpu_dtype],
+    ) raises:
+        """Initialize model buffer with specified curriculum parameters.
+
+        Args:
+            ctx: GPU device context.
+            model_buf: Model buffer to initialize.
+            max_pitch: Maximum torso pitch angle for health check.
+        """
+        # First, initialize with default model data
+        Self._init_model_gpu(ctx, model_buf)
+
+        # Then update curriculum params
+        comptime MODEL_SIZE = gc_model_size[
+            HalfCheetahGC.NUM_BODIES, HalfCheetahGC.NUM_JOINTS
+        ]()
+        comptime CURRICULUM_OFF = gc_model_curriculum_offset[
+            HalfCheetahGC.NUM_BODIES, HalfCheetahGC.NUM_JOINTS
+        ]()
+
+        # Copy model buffer to host, update curriculum, copy back
+        var model_host = List[Scalar[gpu_dtype]](capacity=MODEL_SIZE)
+        for _ in range(MODEL_SIZE):
+            model_host.append(Scalar[gpu_dtype](0.0))
+
+        ctx.enqueue_copy(model_host.unsafe_ptr(), model_buf)
+        ctx.synchronize()
+
+        # Update curriculum params
+        model_host[CURRICULUM_OFF + GC_CURRICULUM_IDX_MIN_HEIGHT] = Scalar[
+            gpu_dtype
+        ](0.0)
+        model_host[CURRICULUM_OFF + GC_CURRICULUM_IDX_MAX_PITCH] = max_pitch
+
+        # Copy back to GPU
         ctx.enqueue_copy(model_buf, model_host.unsafe_ptr())
 
     @staticmethod
     fn _store_prev_x_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
-    ](
-        ctx: DeviceContext,
-        mut states_buf: DeviceBuffer[gpu_dtype],
-    ) raises:
-        """Store current rootx position into metadata for velocity computation."""
+    ](ctx: DeviceContext, mut states_buf: DeviceBuffer[gpu_dtype],) raises:
+        """Store current rootx position into metadata for velocity computation.
+        """
         var states = LayoutTensor[
             gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
         ](states_buf.unsafe_ptr())
@@ -2313,7 +2435,10 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
         comptime QPOS_OFF = gc_qpos_offset[HalfCheetahGC.NQ, HalfCheetahGC.NV]()
         comptime META_OFF = gc_metadata_offset[
-            HalfCheetahGC.NQ, HalfCheetahGC.NV, HalfCheetahGC.NUM_BODIES, HalfCheetahGC.MAX_CONTACTS
+            HalfCheetahGC.NQ,
+            HalfCheetahGC.NV,
+            HalfCheetahGC.NUM_BODIES,
+            HalfCheetahGC.MAX_CONTACTS,
         ]()
 
         @always_inline
@@ -2342,10 +2467,7 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
     fn _enforce_joint_limits_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
-    ](
-        ctx: DeviceContext,
-        mut states_buf: DeviceBuffer[gpu_dtype],
-    ) raises:
+    ](ctx: DeviceContext, mut states_buf: DeviceBuffer[gpu_dtype],) raises:
         """Enforce joint position limits on GPU, matching CPU behavior.
 
         Clamps actuated joint positions to their defined limits.
@@ -2564,7 +2686,8 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
     ) raises:
         """Extract observations, compute rewards, check termination.
 
-        Note: Half Cheetah never terminates early - only truncates at max_steps.
+        Includes angle penalty in reward and health-based termination
+        when TERMINATE_ON_UNHEALTHY is True.
         """
         var states = LayoutTensor[
             gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -2590,7 +2713,13 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
         comptime QPOS_OFF = gc_qpos_offset[HalfCheetahGC.NQ, HalfCheetahGC.NV]()
         comptime QVEL_OFF = gc_qvel_offset[HalfCheetahGC.NQ, HalfCheetahGC.NV]()
         comptime META_OFF = gc_metadata_offset[
-            HalfCheetahGC.NQ, HalfCheetahGC.NV, HalfCheetahGC.NUM_BODIES, HalfCheetahGC.MAX_CONTACTS
+            HalfCheetahGC.NQ,
+            HalfCheetahGC.NV,
+            HalfCheetahGC.NUM_BODIES,
+            HalfCheetahGC.MAX_CONTACTS,
+        ]()
+        comptime CURRICULUM_OFF = gc_model_curriculum_offset[
+            HalfCheetahGC.NUM_BODIES, HalfCheetahGC.NUM_JOINTS
         ]()
 
         @always_inline
@@ -2706,6 +2835,11 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
             elif ffoot_action < Scalar[gpu_dtype](-1.0):
                 ffoot_action = Scalar[gpu_dtype](-1.0)
 
+            # Read curriculum parameters from model buffer
+            var max_pitch = model[
+                0, CURRICULUM_OFF + GC_CURRICULUM_IDX_MAX_PITCH
+            ]
+
             # Compute velocity from position change (matching CPU)
             var x_position_after = states[env, QPOS_OFF + 0]  # rootx
             var prev_x = states[env, META_OFF + GC_META_IDX_PREV_X]
@@ -2727,13 +2861,30 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
                 + ffoot_action * ffoot_action
             )
 
-            var reward = forward_reward - ctrl_cost
+            # Angle penalty (discourages flipping)
+            var abs_y_angle = y_angle
+            if abs_y_angle < Scalar[gpu_dtype](0.0):
+                abs_y_angle = -abs_y_angle
+            var angle_penalty = C.ANGLE_PENALTY_WEIGHT * abs_y_angle
+
+            var reward = forward_reward - ctrl_cost - angle_penalty
             rewards[env] = reward
 
-            # Half Cheetah never terminates, only truncates
+            # Health check using curriculum bounds
+            var is_healthy = True
+            if y_angle > max_pitch or y_angle < -max_pitch:
+                is_healthy = False
+
+            # Determine termination
+            var terminated = False
             var truncated = step_count >= MAX_STEPS_VAL
 
-            if truncated:
+            @parameter
+            if Self.TERMINATE_ON_UNHEALTHY:
+                terminated = not is_healthy
+
+            # Set done flag (terminated OR truncated)
+            if terminated or truncated:
                 dones[env] = Scalar[gpu_dtype](1.0)
             else:
                 dones[env] = Scalar[gpu_dtype](0.0)
@@ -2791,16 +2942,36 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
             return Scalar[gpu_dtype](val * 2.0 - 1.0) * RESET_NOISE_SCALE
 
         # Reset qpos with noise (10 joints)
-        states[env, QPOS_OFF + 0] = Scalar[gpu_dtype](0.0) + to_noise(rand_qpos1[0])  # rootx
-        states[env, QPOS_OFF + 1] = C.INITIAL_Z + to_noise(rand_qpos1[1])  # rootz
-        states[env, QPOS_OFF + 2] = Scalar[gpu_dtype](0.0) + to_noise(rand_qpos1[2])  # rooty
-        states[env, QPOS_OFF + 3] = Scalar[gpu_dtype](0.0) + to_noise(rand_qpos1[3])  # bthigh
-        states[env, QPOS_OFF + 4] = Scalar[gpu_dtype](0.0) + to_noise(rand_qpos2[0])  # bshin
-        states[env, QPOS_OFF + 5] = Scalar[gpu_dtype](0.0) + to_noise(rand_qpos2[1])  # bfoot
-        states[env, QPOS_OFF + 6] = Scalar[gpu_dtype](0.0) + to_noise(rand_qpos2[2])  # fthigh
-        states[env, QPOS_OFF + 7] = Scalar[gpu_dtype](0.0) + to_noise(rand_qpos2[3])  # fshin
-        states[env, QPOS_OFF + 8] = Scalar[gpu_dtype](0.0) + to_noise(rand_qpos3[0])  # ffoot
-        states[env, QPOS_OFF + 9] = Scalar[gpu_dtype](0.0)  # head (fixed, no noise)
+        states[env, QPOS_OFF + 0] = Scalar[gpu_dtype](0.0) + to_noise(
+            rand_qpos1[0]
+        )  # rootx
+        states[env, QPOS_OFF + 1] = C.INITIAL_Z + to_noise(
+            rand_qpos1[1]
+        )  # rootz
+        states[env, QPOS_OFF + 2] = Scalar[gpu_dtype](0.0) + to_noise(
+            rand_qpos1[2]
+        )  # rooty
+        states[env, QPOS_OFF + 3] = Scalar[gpu_dtype](0.0) + to_noise(
+            rand_qpos1[3]
+        )  # bthigh
+        states[env, QPOS_OFF + 4] = Scalar[gpu_dtype](0.0) + to_noise(
+            rand_qpos2[0]
+        )  # bshin
+        states[env, QPOS_OFF + 5] = Scalar[gpu_dtype](0.0) + to_noise(
+            rand_qpos2[1]
+        )  # bfoot
+        states[env, QPOS_OFF + 6] = Scalar[gpu_dtype](0.0) + to_noise(
+            rand_qpos2[2]
+        )  # fthigh
+        states[env, QPOS_OFF + 7] = Scalar[gpu_dtype](0.0) + to_noise(
+            rand_qpos2[3]
+        )  # fshin
+        states[env, QPOS_OFF + 8] = Scalar[gpu_dtype](0.0) + to_noise(
+            rand_qpos3[0]
+        )  # ffoot
+        states[env, QPOS_OFF + 9] = Scalar[gpu_dtype](
+            0.0
+        )  # head (fixed, no noise)
 
         # Reset qvel with noise (10 joints)
         states[env, QVEL_OFF + 0] = to_noise(rand_qvel1[0])  # rootx vel
@@ -2821,7 +2992,10 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
 
         # Reset step counter to 0
         comptime META_OFF = gc_metadata_offset[
-            HalfCheetahGC.NQ, HalfCheetahGC.NV, HalfCheetahGC.NUM_BODIES, HalfCheetahGC.MAX_CONTACTS
+            HalfCheetahGC.NQ,
+            HalfCheetahGC.NV,
+            HalfCheetahGC.NUM_BODIES,
+            HalfCheetahGC.MAX_CONTACTS,
         ]()
         states[env, META_OFF + GC_META_IDX_STEP_COUNT] = Scalar[gpu_dtype](0.0)
         # Initialize prev_x to current rootx position

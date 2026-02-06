@@ -1,6 +1,6 @@
 """Hopper3D Environment Module.
 
-A 3D Hopper environment using the physics3d_v2 engine.
+A 3D Hopper environment using the physics3d engine.
 Implements BoxContinuousActionEnv and RenderableEnv traits.
 
 Example usage:
@@ -31,7 +31,11 @@ Example usage:
     env.close_renderer()
 """
 
-from .constants3d import Hopper3DConstants, Hopper3DConstantsCPU, Hopper3DConstantsGPU
+from .constants3d import (
+    Hopper3DConstants,
+    Hopper3DConstantsCPU,
+    Hopper3DConstantsGPU,
+)
 from .hopper_3d import Hopper3D
 from .renderer import Hopper3DRenderer, HopperColors
 from .state import Hopper3DState

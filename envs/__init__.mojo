@@ -30,12 +30,6 @@ from .car_racing import (
     CarRacingV2State,
     CarRacingV2Action,
 )
-from .half_cheetah_3d import (
-    HalfCheetah3D,
-    HalfCheetah3DState,
-    HalfCheetah3DAction,
-    HC3DConstants,
-)
 from .hopper_3d import (
     Hopper3D,
     Hopper3DState,

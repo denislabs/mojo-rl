@@ -12,7 +12,7 @@ from layout import Layout, LayoutTensor
 from envs.hopper_gc import HopperGC
 from envs.hopper_gc.constants_gc import HopperGCConstantsGPU
 from deep_rl import dtype as gpu_dtype
-from physics3d_v2.gpu.constants import (
+from physics3d.gpu.constants import (
     gc_state_size,
     gc_metadata_offset,
     GC_META_IDX_STEP_COUNT,

@@ -1,195 +1,107 @@
-"""3D Physics Engine for MuJoCo-style Environments.
+"""Physics3D v2 - Minimal physics engine rebuild.
 
-This module provides the core infrastructure for 3D rigid body physics
-simulation, supporting articulated body chains for locomotion environments.
+A MuJoCo-inspired physics engine with Model/Data separation.
+- Model: Static simulation configuration (parameterized by NUM_BODIES, MAX_JOINTS)
+- Data: Mutable simulation state
 
-Modules:
-    - constants: Body state layout, joint types, default parameters
-    - state: PhysicsState3D accessor for reading/writing body data
-    - layout: PhysicsLayout3D compile-time layout calculator
-    - body: Inertia tensor computation utilities
-    - traits: Integrator3D, ConstraintSolver3D interfaces
+Example usage:
+    from physics3d import Model, Data, ImpulseIntegrator
 
-Example:
-    ```mojo
-    from physics3d import PhysicsLayout3D, PhysicsState3D
-    from physics3d.body import compute_box_inertia
-
-    # Define layout for Hopper environment
-    comptime Layout = PhysicsLayout3D[
-        NUM_BODIES=4,
-        MAX_JOINTS=3,
-        OBS_DIM=11,
-    ]
-
-    # Initialize a body
-    var inertia = compute_box_inertia(mass=2.0, half_extents=Vec3(0.1, 0.05, 0.2))
-    PhysicsState3D[1, 4, Layout.STATE_SIZE, Layout.BODIES_OFFSET].init_body(
-        state, env=0, body=0,
-        position=Vec3(0, 0, 1.25),
-        orientation=Quat.identity(),
-        mass=2.0,
-        inertia=inertia,
+    # Create a 2-body system with max 10 contacts
+    var model = Model[DType.float64, 2, 10](
+        gravity_z=-9.81, restitution=0.6
     )
-    ```
+    model.set_body(0, mass=1.0, radius=0.1)
+    model.set_body(1, mass=1.0, radius=0.1)
+
+    var data = Data[DType.float64, 2, 10]()
+    data.set_body_position(0, 0, 0, 1.0)  # Body 0 at height 1m
+    data.set_body_position(1, 0, 0, 0.3)  # Body 1 at height 0.3m
+
+    # Simulate using ImpulseIntegrator (Bullet/Box2D style)
+    for i in range(100):
+        ImpulseIntegrator.step(model, data)
+        print("body0 z =", data.get_body_z(0))
+
+    # Or use PGSIntegrator (MuJoCo style)
+    from physics3d import PGSIntegrator
+    PGSIntegrator.step(model, data)
+
+Single body is just Model[DTYPE, 1, MAX_CONTACTS]:
+    var model = Model[DType.float64, 1, 5](gravity_z=-9.81)
+    model.set_body(0, mass=1.0, radius=0.1)
+
+With joints (pendulum example):
+    from physics3d import Model, Data, ImpulseIntegrator, HingeJoint
+
+    # MAX_JOINTS=1 as 4th parameter
+    var model = Model[DType.float64, 1, 5, 1](gravity_z=-9.81)
+    model.set_body(0, mass=1.0, radius=0.1)
+    model.add_hinge_joint(
+        parent=-1, child=0,  # -1 = world anchor
+        anchor_parent=(0.0, 0.0, 1.0),
+        anchor_child=(0.0, 0.0, 0.0),
+        axis=(0.0, 1.0, 0.0),  # Y-axis rotation
+    )
 """
 
-from .constants import (
-    dtype,
-    TILE,
-    TPB,
-    BODY_STATE_SIZE_3D,
-    IDX_PX,
-    IDX_PY,
-    IDX_PZ,
-    IDX_QW,
-    IDX_QX,
-    IDX_QY,
-    IDX_QZ,
-    IDX_VX,
-    IDX_VY,
-    IDX_VZ,
-    IDX_WX,
-    IDX_WY,
-    IDX_WZ,
-    IDX_FX,
-    IDX_FY,
-    IDX_FZ,
-    IDX_TX,
-    IDX_TY,
-    IDX_TZ,
-    IDX_MASS,
-    IDX_INV_MASS,
-    IDX_IXX,
-    IDX_IYY,
-    IDX_IZZ,
-    IDX_SHAPE_3D,
-    IDX_BODY_TYPE,
-    BODY_DYNAMIC,
-    BODY_KINEMATIC,
-    BODY_STATIC,
-    SHAPE_BOX,
-    SHAPE_SPHERE,
-    SHAPE_CAPSULE,
-    SHAPE_PLANE,
-    CONTACT_DATA_SIZE_3D,
-    JOINT_DATA_SIZE_3D,
-    # Joint field indices
-    JOINT3D_TYPE,
-    JOINT3D_BODY_A,
-    JOINT3D_BODY_B,
-    JOINT3D_ANCHOR_AX,
-    JOINT3D_ANCHOR_AY,
-    JOINT3D_ANCHOR_AZ,
-    JOINT3D_ANCHOR_BX,
-    JOINT3D_ANCHOR_BY,
-    JOINT3D_ANCHOR_BZ,
-    JOINT3D_AXIS_X,
-    JOINT3D_AXIS_Y,
-    JOINT3D_AXIS_Z,
-    JOINT3D_POSITION,
-    JOINT3D_VELOCITY,
-    JOINT3D_MOTOR_TARGET,
-    JOINT3D_MOTOR_KP,
-    JOINT3D_MOTOR_KD,
-    JOINT3D_MAX_FORCE,
-    JOINT3D_LOWER_LIMIT,
-    JOINT3D_UPPER_LIMIT,
-    JOINT3D_FLAGS,
-    JOINT3D_IMPULSE_X,
-    JOINT3D_IMPULSE_Y,
-    JOINT3D_IMPULSE_Z,
-    JOINT3D_MOTOR_IMPULSE,
-    # Passive dynamics indices
-    JOINT3D_STIFFNESS,
-    JOINT3D_DAMPING,
-    JOINT3D_ARMATURE,
-    JOINT3D_REFERENCE_POS,
-    # Soft constraint indices
-    JOINT3D_TIMECONST,
-    JOINT3D_DAMPRATIO,
-    JOINT3D_FLAG_LIMIT_ENABLED,
-    JOINT3D_FLAG_MOTOR_ENABLED,
-    # Joint types
-    JOINT_HINGE,
-    JOINT_BALL,
-    JOINT_FREE,
-    JOINT_FIXED,
-    DEFAULT_GRAVITY_Z_3D,
-    DEFAULT_DT_3D,
-    DEFAULT_VELOCITY_ITERATIONS_3D,
-    DEFAULT_POSITION_ITERATIONS_3D,
-    DEFAULT_FRICTION_3D,
-    DEFAULT_BAUMGARTE_3D,
-    DEFAULT_SLOP_3D,
-    PI,
-    TWO_PI,
-    DEG_TO_RAD,
-    RAD_TO_DEG,
+from .constants import TILE, TPB, PhysicsConstants
+from .constants import GEOM_PLANE, GEOM_SPHERE
+
+# Primary types (unified Model/Data with compile-time NUM_BODIES, MAX_JOINTS)
+from .types import Model, Data, ContactInfo
+
+# Joint types
+from .joints import HingeJoint
+
+# Traits
+from .traits import CollisionSystem, Integrator
+
+# Collision detection
+from .collision import CollisionDetector, sphere_sphere, sphere_plane
+
+# Constraint solvers
+from .solver import (
+    # Impulse solver (Bullet/Box2D style)
+    solve_velocity_constraints,
+    solve_position_constraints,
+    solve_resting_contacts,
+    # PGS solver (MuJoCo style)
+    solve_constraints_pgs,
+    correct_positions,
 )
 
-from .layout import (
-    PhysicsLayout3D,
-    HopperLayout3D,
-    Walker2dLayout3D,
-    HalfCheetahLayout3D,
-    AntLayout3D,
-    HumanoidLayout3D,
+# Joint solvers
+from .joints import (
+    solve_joint_velocity_constraints,
+    solve_joint_position_constraints,
 )
 
-from .state import PhysicsState3D
-
-from .body import (
-    compute_box_inertia,
-    compute_sphere_inertia,
-    compute_capsule_inertia,
-    compute_cylinder_inertia,
-    compute_ellipsoid_inertia,
-    parallel_axis_offset,
-    combine_inertias,
-    get_torso_inertia,
-    get_limb_inertia,
-    get_foot_inertia,
+# Integrators (primary API)
+from .integrator import (
+    ImpulseIntegrator,
+    PGSIntegrator,
+    SemiImplicitEulerIntegrator,
 )
 
-# Joints
-from .joints import Hinge3D, Ball3D, Motor3D, PDController
-
-# Collision
-from .collision import (
-    Contact3D,
-    ContactManifold,
-    SpherePlaneCollision,
-    SpherePlaneCollisionGPU,
-    CapsulePlaneCollision,
-    CapsulePlaneCollisionGPU,
+# Generalized Coordinates (GC) engine
+from .types import ModelGC, DataGC, ContactInfoGC, compute_capsule_inertia
+from .joint_types import JointDef, JNT_FREE, JNT_BALL, JNT_SLIDE, JNT_HINGE
+from .traits import GcIntegrator
+from .kinematics.forward_kinematics import (
+    forward_kinematics,
+    compute_body_velocities,
 )
-
-# Integrators
-from .integrators import (
-    SemiImplicitEuler3D,
-    SemiImplicitEuler3DGPU,
-    integrate_velocities_3d,
-    integrate_positions_3d,
-    integrate_quaternion,
+from .kinematics.quat_math import (
+    quat_mul,
+    quat_conjugate,
+    quat_rotate,
+    quat_normalize,
+    axis_angle_to_quat,
+    quat_integrate,
 )
+from .dynamics.mass_matrix import compute_mass_matrix, solve_linear_diagonal
+from .dynamics.bias_forces import compute_bias_forces
 
-# Solvers
-from .solvers import (
-    ContactSolver3D,
-    ImpulseSolver3DGPU,
-    solve_contact_velocity,
-    solve_contact_position,
-    JointSolver3D,
-    solve_hinge_velocity,
-    solve_hinge_position,
-)
-
-# Kernels / Physics World
-from .kernels import PhysicsWorld3D, Physics3DStepKernel
-
-# Passive joint dynamics
-from .passive import PassiveJointForces
-
-# Soft constraint compliance
-from .soft_constraint import SoftConstraint, AxisProjectedMass
+# Note: render modules are imported separately to avoid SDL2 dependency:
+#   from physics3d.render import Physics3DRenderer

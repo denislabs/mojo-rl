@@ -1,7 +1,7 @@
 """Pendulum Render Demo.
 
 Demonstrates the hinge joint constraint by rendering a swinging pendulum.
-Uses physics3d_v2 for physics simulation and render3d for visualization.
+Uses physics3d for physics simulation and render3d for visualization.
 
 Run with:
     cd mojo-rl
@@ -15,8 +15,8 @@ from render3d import (
     Color3D,
 )
 from math3d import Vec3, Quat
-from physics3d_v2.types import Model, Data
-from physics3d_v2.integrator import ImpulseIntegrator
+from physics3d.types import Model, Data
+from physics3d.integrator import ImpulseIntegrator
 
 # Physics configuration
 comptime NUM_BODIES: Int = 1
@@ -71,9 +71,17 @@ fn main() raises:
     _ = model.add_hinge_joint(
         parent=-1,  # World anchor
         child=0,
-        anchor_parent=(Scalar[DTYPE](pivot_x), Scalar[DTYPE](pivot_y), Scalar[DTYPE](pivot_z)),
+        anchor_parent=(
+            Scalar[DTYPE](pivot_x),
+            Scalar[DTYPE](pivot_y),
+            Scalar[DTYPE](pivot_z),
+        ),
         anchor_child=(Scalar[DTYPE](0.0), Scalar[DTYPE](0.0), Scalar[DTYPE](L)),
-        axis=(Scalar[DTYPE](0.0), Scalar[DTYPE](1.0), Scalar[DTYPE](0.0)),  # Y-axis rotation
+        axis=(
+            Scalar[DTYPE](0.0),
+            Scalar[DTYPE](1.0),
+            Scalar[DTYPE](0.0),
+        ),  # Y-axis rotation
     )
 
     # Initialize physics data
@@ -82,8 +90,12 @@ fn main() raises:
     # Calculate initial bob position (swung to initial_angle)
     var bob_x = L * sin(initial_angle)
     var bob_z = pivot_z - L * cos(initial_angle)
-    data.set_body_position(0, Scalar[DTYPE](bob_x), Scalar[DTYPE](0.0), Scalar[DTYPE](bob_z))
-    data.set_body_velocity(0, Scalar[DTYPE](0.0), Scalar[DTYPE](0.0), Scalar[DTYPE](0.0))
+    data.set_body_position(
+        0, Scalar[DTYPE](bob_x), Scalar[DTYPE](0.0), Scalar[DTYPE](bob_z)
+    )
+    data.set_body_velocity(
+        0, Scalar[DTYPE](0.0), Scalar[DTYPE](0.0), Scalar[DTYPE](0.0)
+    )
 
     # Set initial quaternion: rotation by -initial_angle around Y-axis
     # This aligns the anchor_child vector toward the pivot

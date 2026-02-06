@@ -11,7 +11,7 @@ from layout import Layout, LayoutTensor
 from deep_rl import dtype as gpu_dtype
 
 from envs.hopper_gc import HopperGC
-from physics3d_v2.gpu.constants import (
+from physics3d.gpu.constants import (
     gc_state_size,
     gc_qpos_offset,
     gc_qvel_offset,
@@ -131,8 +131,24 @@ fn main() raises:
     var cpu_qvel = env.get_qvel()
 
     print("\nInitial CPU state:")
-    print("qpos:", cpu_qpos[0], cpu_qpos[1], cpu_qpos[2], cpu_qpos[3], cpu_qpos[4], cpu_qpos[5])
-    print("qvel:", cpu_qvel[0], cpu_qvel[1], cpu_qvel[2], cpu_qvel[3], cpu_qvel[4], cpu_qvel[5])
+    print(
+        "qpos:",
+        cpu_qpos[0],
+        cpu_qpos[1],
+        cpu_qpos[2],
+        cpu_qpos[3],
+        cpu_qpos[4],
+        cpu_qpos[5],
+    )
+    print(
+        "qvel:",
+        cpu_qvel[0],
+        cpu_qvel[1],
+        cpu_qvel[2],
+        cpu_qvel[3],
+        cpu_qvel[4],
+        cpu_qvel[5],
+    )
 
     # Initialize GPU
     var ctx = DeviceContext()
@@ -143,8 +159,12 @@ fn main() raises:
     comptime ACTION_DIM = HopperGC[DType.float64].ACTION_DIM
 
     # Create GPU buffers
-    var states_buf = ctx.enqueue_create_buffer[gpu_dtype](BATCH_SIZE * STATE_SIZE)
-    var actions_buf = ctx.enqueue_create_buffer[gpu_dtype](BATCH_SIZE * ACTION_DIM)
+    var states_buf = ctx.enqueue_create_buffer[gpu_dtype](
+        BATCH_SIZE * STATE_SIZE
+    )
+    var actions_buf = ctx.enqueue_create_buffer[gpu_dtype](
+        BATCH_SIZE * ACTION_DIM
+    )
     var rewards_buf = ctx.enqueue_create_buffer[gpu_dtype](BATCH_SIZE)
     var dones_buf = ctx.enqueue_create_buffer[gpu_dtype](BATCH_SIZE)
     var obs_buf = ctx.enqueue_create_buffer[gpu_dtype](BATCH_SIZE * OBS_DIM)
@@ -169,12 +189,30 @@ fn main() raises:
     extract_gpu_qpos_qvel[STATE_SIZE](state_host, gpu_qpos, gpu_qvel)
 
     print("\nInitial GPU state (after copy from CPU):")
-    print("qpos:", gpu_qpos[0], gpu_qpos[1], gpu_qpos[2], gpu_qpos[3], gpu_qpos[4], gpu_qpos[5])
-    print("qvel:", gpu_qvel[0], gpu_qvel[1], gpu_qvel[2], gpu_qvel[3], gpu_qvel[4], gpu_qvel[5])
+    print(
+        "qpos:",
+        gpu_qpos[0],
+        gpu_qpos[1],
+        gpu_qpos[2],
+        gpu_qpos[3],
+        gpu_qpos[4],
+        gpu_qpos[5],
+    )
+    print(
+        "qvel:",
+        gpu_qvel[0],
+        gpu_qvel[1],
+        gpu_qvel[2],
+        gpu_qvel[3],
+        gpu_qvel[4],
+        gpu_qvel[5],
+    )
 
     # Test with specific actions
     var test_actions = List[
-        Tuple[Scalar[DType.float64], Scalar[DType.float64], Scalar[DType.float64]]
+        Tuple[
+            Scalar[DType.float64], Scalar[DType.float64], Scalar[DType.float64]
+        ]
     ]()
     # Various action sequences to test
     test_actions.append((0.0, 0.0, 0.0))  # No action
@@ -212,7 +250,9 @@ fn main() raises:
         cpu_qvel = env.get_qvel()
 
         # Step GPU
-        HopperGC[DType.float64].step_kernel_gpu[BATCH_SIZE, STATE_SIZE, OBS_DIM, ACTION_DIM](
+        HopperGC[DType.float64].step_kernel_gpu[
+            BATCH_SIZE, STATE_SIZE, OBS_DIM, ACTION_DIM
+        ](
             ctx,
             states_buf,
             actions_buf,
@@ -253,7 +293,9 @@ fn main() raises:
         _ = env.step_continuous_vec(cpu_action_zero)
 
         # Step GPU
-        HopperGC[DType.float64].step_kernel_gpu[BATCH_SIZE, STATE_SIZE, OBS_DIM, ACTION_DIM](
+        HopperGC[DType.float64].step_kernel_gpu[
+            BATCH_SIZE, STATE_SIZE, OBS_DIM, ACTION_DIM
+        ](
             ctx,
             states_buf,
             actions_buf,
@@ -273,19 +315,27 @@ fn main() raises:
 
             extract_gpu_qpos_qvel[STATE_SIZE](state_host, gpu_qpos, gpu_qvel)
 
-            print("\n--- After", step + 6, "total steps ---")  # +5 from initial + 1 for 1-indexing
+            print(
+                "\n--- After", step + 6, "total steps ---"
+            )  # +5 from initial + 1 for 1-indexing
             var max_qpos_diff: Float64 = 0.0
             var max_qvel_diff: Float64 = 0.0
             for i in range(6):
-                var qpos_diff = math_abs(Float64(cpu_qpos[i]) - Float64(gpu_qpos[i]))
-                var qvel_diff = math_abs(Float64(cpu_qvel[i]) - Float64(gpu_qvel[i]))
+                var qpos_diff = math_abs(
+                    Float64(cpu_qpos[i]) - Float64(gpu_qpos[i])
+                )
+                var qvel_diff = math_abs(
+                    Float64(cpu_qvel[i]) - Float64(gpu_qvel[i])
+                )
                 if qpos_diff > max_qpos_diff:
                     max_qpos_diff = qpos_diff
                 if qvel_diff > max_qvel_diff:
                     max_qvel_diff = qvel_diff
 
             print("CPU qpos[1] (z):", cpu_qpos[1], " GPU qpos[1]:", gpu_qpos[1])
-            print("CPU qvel[0] (vx):", cpu_qvel[0], " GPU qvel[0]:", gpu_qvel[0])
+            print(
+                "CPU qvel[0] (vx):", cpu_qvel[0], " GPU qvel[0]:", gpu_qvel[0]
+            )
             print("Max qpos diff:", max_qpos_diff)
             print("Max qvel diff:", max_qvel_diff)
 

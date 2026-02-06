@@ -1,6 +1,6 @@
 """Debug state size computation."""
 
-from physics3d_v2.gpu.constants import (
+from physics3d.gpu.constants import (
     compute_state_size,
     JOINT_STATE_SIZE,
     SLIDE_JOINT_STATE_SIZE,
@@ -46,8 +46,36 @@ fn main():
         + METADATA_SIZE
     )
     print("Manual calculation:", manual)
-    print("  Bodies: ", HopperEnv.NUM_BODIES, "*", BODY_STATE_SIZE, "=", HopperEnv.NUM_BODIES * BODY_STATE_SIZE)
-    print("  Contacts:", HopperEnv.MAX_CONTACTS, "*", CONTACT_STATE_SIZE, "=", HopperEnv.MAX_CONTACTS * CONTACT_STATE_SIZE)
-    print("  Hinge:  ", HopperEnv.NUM_HINGE_JOINTS, "*", JOINT_STATE_SIZE, "=", HopperEnv.NUM_HINGE_JOINTS * JOINT_STATE_SIZE)
-    print("  Slide:  ", HopperEnv.NUM_SLIDE_JOINTS, "*", SLIDE_JOINT_STATE_SIZE, "=", HopperEnv.NUM_SLIDE_JOINTS * SLIDE_JOINT_STATE_SIZE)
+    print(
+        "  Bodies: ",
+        HopperEnv.NUM_BODIES,
+        "*",
+        BODY_STATE_SIZE,
+        "=",
+        HopperEnv.NUM_BODIES * BODY_STATE_SIZE,
+    )
+    print(
+        "  Contacts:",
+        HopperEnv.MAX_CONTACTS,
+        "*",
+        CONTACT_STATE_SIZE,
+        "=",
+        HopperEnv.MAX_CONTACTS * CONTACT_STATE_SIZE,
+    )
+    print(
+        "  Hinge:  ",
+        HopperEnv.NUM_HINGE_JOINTS,
+        "*",
+        JOINT_STATE_SIZE,
+        "=",
+        HopperEnv.NUM_HINGE_JOINTS * JOINT_STATE_SIZE,
+    )
+    print(
+        "  Slide:  ",
+        HopperEnv.NUM_SLIDE_JOINTS,
+        "*",
+        SLIDE_JOINT_STATE_SIZE,
+        "=",
+        HopperEnv.NUM_SLIDE_JOINTS * SLIDE_JOINT_STATE_SIZE,
+    )
     print("  Meta:   ", METADATA_SIZE)

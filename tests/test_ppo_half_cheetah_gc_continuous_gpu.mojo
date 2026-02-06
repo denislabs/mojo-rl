@@ -26,7 +26,11 @@ from time import perf_counter_ns
 from gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.half_cheetah_gc import HalfCheetahGC, HalfCheetahGCConstants
+from envs.half_cheetah_gc import (
+    HalfCheetahGC,
+    HalfCheetahGCConstants,
+    HalfCheetahCurriculum,
+)
 
 
 # =============================================================================
@@ -130,8 +134,9 @@ fn main() raises:
         print("                       bthigh_vel, bshin_vel, bfoot_vel,")
         print("                       fthigh_vel, fshin_vel, ffoot_vel]")
         print("  - 6D continuous actions (joint torques with gear ratios)")
-        print("  - Reward: forward_velocity - ctrl_cost")
-        print("  - No termination (truncation only at max_steps)")
+        print("  - Reward: forward_velocity - ctrl_cost - angle_penalty")
+        print("  - Anti-flip: angle penalty + unhealthy termination")
+        print("  - Curriculum: max_pitch 3.0 → 1.0 rad")
         print()
         print("Expected rewards:")
         print("  - Random policy: ~-100 to -200")
@@ -150,7 +155,10 @@ fn main() raises:
         var start_time = perf_counter_ns()
 
         try:
-            var metrics = agent.train_gpu[HalfCheetahGC[dtype]](
+            var metrics = agent.train_gpu[
+                HalfCheetahGC[dtype, TERMINATE_ON_UNHEALTHY=True],
+                HalfCheetahCurriculum,
+            ](
                 ctx,
                 num_episodes=NUM_EPISODES,
                 verbose=True,

@@ -1,6 +1,6 @@
 """HalfCheetahGC Environment Package.
 
-MuJoCo-style Half Cheetah using the physics3d_v2 Generalized Coordinates engine.
+MuJoCo-style Half Cheetah using the physics3d Generalized Coordinates engine.
 
 The Half Cheetah is a 2D planar robot (movement in XZ plane, rotation around Y axis)
 consisting of a torso with two leg chains (front and back).
@@ -29,6 +29,7 @@ from .half_cheetah_gc import HalfCheetahGC
 from .state import HalfCheetahGCState
 from .action import HalfCheetahGCAction
 from .renderer import HalfCheetahGCRenderer, HalfCheetahGCColors
+from .curriculum import HalfCheetahCurriculum
 from .constants_gc import (
     # Physics parameters
     DT,

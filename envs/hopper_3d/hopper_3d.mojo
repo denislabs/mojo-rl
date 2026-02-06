@@ -1,11 +1,11 @@
-"""Hopper3D Environment - RL-compatible 4-body hopper using physics3d_v2.
+"""Hopper3D Environment - RL-compatible 4-body hopper using physics3d.
 
 This implementation embeds the physics directly and implements:
 - BoxContinuousActionEnv for continuous action RL algorithms
 - RenderableEnv for visualization
 - GPUContinuousEnv for GPU-accelerated batched simulation
 
-Physics based on physics3d_v2 engine with:
+Physics based on physics3d engine with:
 - Model/Data separation (MuJoCo-style)
 - PGS constraint solver
 - Capsule-plane collision
@@ -15,8 +15,7 @@ Physics based on physics3d_v2 engine with:
 
 from math import sqrt, sin, cos, atan2, asin
 
-from math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
-from physics3d.math_gpu import atan2_gpu
+from math3d import Vec3 as Vec3Generic, Quat as QuatGeneric, atan2_gpu
 
 from core import (
     BoxContinuousActionEnv,
@@ -34,10 +33,10 @@ from gpu import thread_idx, block_idx, block_dim
 from layout import Layout, LayoutTensor
 from random.philox import Random as PhiloxRandom
 
-# Import physics3d_v2 components
-from physics3d_v2 import Model, Data, PGSIntegrator
-from physics3d_v2.joints import get_joint_angle, get_joint_angular_velocity
-from physics3d_v2.gpu.constants import (
+# Import physics3d components
+from physics3d import Model, Data, PGSIntegrator
+from physics3d.joints import get_joint_angle, get_joint_angular_velocity
+from physics3d.gpu.constants import (
     compute_state_size,
     body_offset,
     joint_offset,
@@ -927,7 +926,7 @@ struct Hopper3D[DTYPE: DType = DType.float64](
         rng_seed: UInt64 = 0,
         curriculum_values: List[Scalar[gpu_dtype]] = [],
     ) raises:
-        """Batched GPU step function using physics3d_v2 PGS integrator.
+        """Batched GPU step function using physics3d PGS integrator.
 
         Uses the same physics engine as CPU with full feature parity.
         """
@@ -1074,9 +1073,12 @@ struct Hopper3D[DTYPE: DType = DType.float64](
         states_buf: DeviceBuffer[gpu_dtype],
         mut obs_buf: DeviceBuffer[gpu_dtype],
     ) raises:
-        """Extract observations from state buffer (trivial copy: obs = state[0:OBS_DIM])."""
+        """Extract observations from state buffer (trivial copy: obs = state[0:OBS_DIM]).
+        """
         var states = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL), MutAnyOrigin
+            gpu_dtype,
+            Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
+            MutAnyOrigin,
         ](states_buf.unsafe_ptr())
         var obs = LayoutTensor[
             gpu_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM_VAL), MutAnyOrigin
@@ -1087,10 +1089,14 @@ struct Hopper3D[DTYPE: DType = DType.float64](
         @always_inline
         fn extract_obs(
             states: LayoutTensor[
-                gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL), MutAnyOrigin
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
+                MutAnyOrigin,
             ],
             obs: LayoutTensor[
-                gpu_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM_VAL), MutAnyOrigin
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, OBS_DIM_VAL),
+                MutAnyOrigin,
             ],
         ):
             var i = Int(block_dim.x * block_idx.x + thread_idx.x)

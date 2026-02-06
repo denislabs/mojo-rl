@@ -223,7 +223,7 @@ comptime ACTION_DIM: Int = 6  # 6 actuated joints
 # GPU Layout Constants Import
 # ============================================================================
 
-from physics3d_v2.gpu.constants import (
+from physics3d.gpu.constants import (
     gc_state_size,
     gc_qpos_offset,
     gc_qvel_offset,
@@ -399,6 +399,29 @@ struct HalfCheetahGCConstants[DTYPE: DType = DType.float64]:
 
     comptime FORWARD_REWARD_WEIGHT: Scalar[Self.DTYPE] = 1.0
     comptime CTRL_COST_WEIGHT: Scalar[Self.DTYPE] = 0.1
+    comptime ANGLE_PENALTY_WEIGHT: Scalar[
+        Self.DTYPE
+    ] = 0.5  # Penalty for |y_angle|
+
+    # ==========================================================================
+    # Health Parameters (for TERMINATE_ON_UNHEALTHY mode)
+    # ==========================================================================
+
+    comptime MAX_PITCH: Scalar[
+        Self.DTYPE
+    ] = 1.0  # ~57 deg, terminate when |y_angle| > max_pitch
+
+    # ==========================================================================
+    # Curriculum Parameters
+    # ==========================================================================
+
+    # Initial (lenient) values for curriculum
+    comptime CURRICULUM_INITIAL_MAX_PITCH: Scalar[
+        Self.DTYPE
+    ] = 3.0  # Very lenient (~172 deg)
+
+    # Final (strict) values for curriculum
+    comptime CURRICULUM_FINAL_MAX_PITCH: Scalar[Self.DTYPE] = 1.0  # ~57 deg
 
     # ==========================================================================
     # Layout Constants
@@ -422,7 +445,7 @@ struct HalfCheetahGCConstants[DTYPE: DType = DType.float64]:
     comptime ACTION_DIM: Int = 6  # 6 actuated joints (not root or head)
 
     # ==========================================================================
-    # GPU Layout Constants (using physics3d_v2 GC layout)
+    # GPU Layout Constants (using physics3d GC layout)
     # ==========================================================================
 
     comptime STATE_SIZE: Int = gc_state_size[
@@ -493,7 +516,9 @@ struct HalfCheetahGCConstants[DTYPE: DType = DType.float64]:
     @always_inline
     fn get_metadata_offset() -> Int:
         """Get offset to metadata in state buffer."""
-        return gc_metadata_offset[Self.NQ, Self.NV, Self.NUM_BODIES, Self.MAX_CONTACTS]()
+        return gc_metadata_offset[
+            Self.NQ, Self.NV, Self.NUM_BODIES, Self.MAX_CONTACTS
+        ]()
 
     @staticmethod
     @always_inline

@@ -1,0 +1,541 @@
+"""Jacobian computation for Generalized Coordinates engine.
+
+Provides two key functions for constraint-based contact solving:
+
+1. compute_cdof() - Spatial motion axis per DOF (6 floats per DOF)
+   Maps a unit joint velocity to a spatial (angular, linear) velocity.
+   Reference: MuJoCo engine_core_smooth.c:298-349, engine_util_spatial.c:446-458
+
+2. compute_contact_jacobian_row() - One row of the contact Jacobian
+   Maps joint velocities to contact-normal velocity for a single contact.
+   Reference: MuJoCo engine_core_util.c:177-227
+
+Both have CPU and GPU variants.
+"""
+
+from math import sqrt
+from layout import LayoutTensor, Layout
+
+from ..types import ModelGC, DataGC, _max_one
+from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
+from ..kinematics.quat_math import quat_rotate
+
+
+# =============================================================================
+# CPU Functions
+# =============================================================================
+
+
+fn compute_cdof[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    CDOF_SIZE: Int,
+](
+    model: ModelGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    data: DataGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    mut cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
+):
+    """Compute spatial motion axis (cdof) for each DOF.
+
+    cdof[6*i : 6*i+6] = [ang_x, ang_y, ang_z, lin_x, lin_y, lin_z]
+
+    For HINGE: angular part = axis_world, linear part = axis_world x offset
+        where offset = xpos[body] - joint_anchor_world
+    For SLIDE: angular part = (0,0,0), linear part = axis_world
+    For FREE translation DOFs: angular = (0,0,0), linear = unit axis
+    For FREE rotation DOFs: angular = unit axis, linear = unit axis x offset
+
+    Reference: MuJoCo mju_dofCom() in engine_util_spatial.c:446-458
+
+    Args:
+        model: Static model configuration.
+        data: Current simulation state (xpos, xquat must be computed).
+        cdof: Output array of 6*NV spatial motion axes.
+    """
+    # Zero out
+    for i in range(CDOF_SIZE):
+        cdof[i] = Scalar[DTYPE](0)
+
+    for j in range(model.num_joints):
+        var joint = model.joints[j]
+        var body = joint.body_id
+        var dof_adr = joint.dof_adr
+        var parent = model.body_parent[body]
+
+        # Body world position (subtree root for computing offset)
+        var bx = data.xpos[body * 3 + 0]
+        var by = data.xpos[body * 3 + 1]
+        var bz = data.xpos[body * 3 + 2]
+
+        if joint.jnt_type == JNT_HINGE:
+            # Get joint axis and position in world frame
+            var axis_x = joint.axis_x
+            var axis_y = joint.axis_y
+            var axis_z = joint.axis_z
+
+            var jpos_x = joint.pos_x
+            var jpos_y = joint.pos_y
+            var jpos_z = joint.pos_z
+
+            if parent >= 0:
+                var pqx = data.xquat[parent * 4 + 0]
+                var pqy = data.xquat[parent * 4 + 1]
+                var pqz = data.xquat[parent * 4 + 2]
+                var pqw = data.xquat[parent * 4 + 3]
+
+                var axis_world = quat_rotate(pqx, pqy, pqz, pqw,
+                    axis_x, axis_y, axis_z)
+                axis_x = axis_world[0]
+                axis_y = axis_world[1]
+                axis_z = axis_world[2]
+
+                var ppx = data.xpos[parent * 3 + 0]
+                var ppy = data.xpos[parent * 3 + 1]
+                var ppz = data.xpos[parent * 3 + 2]
+
+                var jp = quat_rotate(pqx, pqy, pqz, pqw,
+                    jpos_x, jpos_y, jpos_z)
+                jpos_x = ppx + jp[0]
+                jpos_y = ppy + jp[1]
+                jpos_z = ppz + jp[2]
+
+            # offset = body_com - joint_anchor
+            var ox = bx - jpos_x
+            var oy = by - jpos_y
+            var oz = bz - jpos_z
+
+            # angular part = axis
+            cdof[dof_adr * 6 + 0] = axis_x
+            cdof[dof_adr * 6 + 1] = axis_y
+            cdof[dof_adr * 6 + 2] = axis_z
+            # linear part = axis x offset
+            cdof[dof_adr * 6 + 3] = axis_y * oz - axis_z * oy
+            cdof[dof_adr * 6 + 4] = axis_z * ox - axis_x * oz
+            cdof[dof_adr * 6 + 5] = axis_x * oy - axis_y * ox
+
+        elif joint.jnt_type == JNT_SLIDE:
+            # Get joint axis in world frame
+            var axis_x = joint.axis_x
+            var axis_y = joint.axis_y
+            var axis_z = joint.axis_z
+
+            if parent >= 0:
+                var pqx = data.xquat[parent * 4 + 0]
+                var pqy = data.xquat[parent * 4 + 1]
+                var pqz = data.xquat[parent * 4 + 2]
+                var pqw = data.xquat[parent * 4 + 3]
+
+                var axis_world = quat_rotate(pqx, pqy, pqz, pqw,
+                    axis_x, axis_y, axis_z)
+                axis_x = axis_world[0]
+                axis_y = axis_world[1]
+                axis_z = axis_world[2]
+
+            # angular part = 0
+            # linear part = axis
+            cdof[dof_adr * 6 + 3] = axis_x
+            cdof[dof_adr * 6 + 4] = axis_y
+            cdof[dof_adr * 6 + 5] = axis_z
+
+        elif joint.jnt_type == JNT_FREE:
+            # Translation DOFs (dof_adr + 0,1,2): pure linear motion
+            cdof[(dof_adr + 0) * 6 + 3] = Scalar[DTYPE](1)  # x translation
+            cdof[(dof_adr + 1) * 6 + 4] = Scalar[DTYPE](1)  # y translation
+            cdof[(dof_adr + 2) * 6 + 5] = Scalar[DTYPE](1)  # z translation
+
+            # Rotation DOFs (dof_adr + 3,4,5): angular + linear
+            # angular part = unit axes
+            cdof[(dof_adr + 3) * 6 + 0] = Scalar[DTYPE](1)  # x rotation
+            cdof[(dof_adr + 4) * 6 + 1] = Scalar[DTYPE](1)  # y rotation
+            cdof[(dof_adr + 5) * 6 + 2] = Scalar[DTYPE](1)  # z rotation
+
+            # For FREE joints, joint anchor is at body origin, so offset = 0
+            # linear part = axis x offset = 0
+
+
+fn compute_contact_jacobian_row[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    V_SIZE: Int,
+    CDOF_SIZE: Int,
+](
+    model: ModelGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    data: DataGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
+    contact_body: Int,
+    contact_pos_x: Scalar[DTYPE],
+    contact_pos_y: Scalar[DTYPE],
+    contact_pos_z: Scalar[DTYPE],
+    dir_x: Scalar[DTYPE],
+    dir_y: Scalar[DTYPE],
+    dir_z: Scalar[DTYPE],
+    mut J_row: InlineArray[Scalar[DTYPE], V_SIZE],
+):
+    """Compute one row of the contact Jacobian.
+
+    Maps joint velocities to contact velocity along a given direction
+    (normal or tangent) for the contacted body.
+
+    For each DOF i that affects the contact body:
+        J_trans[i] = cdof_lin[i] + cdof_ang[i] x (contact_point - body_com)
+        J_row[i] = J_trans[i] . direction
+
+    Reference: MuJoCo mj_jac() in engine_core_util.c:177-227
+
+    Args:
+        model: Static model configuration.
+        data: Current simulation state.
+        cdof: Spatial motion axes per DOF (from compute_cdof).
+        contact_body: Index of the body in contact.
+        contact_pos_x/y/z: Contact point in world frame.
+        dir_x/y/z: Direction vector (normal or tangent).
+        J_row: Output Jacobian row (NV entries).
+    """
+    for i in range(V_SIZE):
+        J_row[i] = Scalar[DTYPE](0)
+
+    for j in range(model.num_joints):
+        var joint = model.joints[j]
+        var dof_adr = joint.dof_adr
+
+        # Check if this joint affects the contacted body
+        if not _joint_affects_body(model, j, contact_body):
+            continue
+
+        var num_dof = 1
+        if joint.jnt_type == JNT_FREE:
+            num_dof = 6
+        elif joint.jnt_type == JNT_BALL:
+            num_dof = 3
+
+        # Reference body = joint's body (must match cdof computation)
+        # cdof_lin was computed as: axis × (xpos[joint.body_id] - anchor)
+        # so the cross product term must use the same reference point.
+        var ref_body = joint.body_id
+        var ref_x = data.xpos[ref_body * 3 + 0]
+        var ref_y = data.xpos[ref_body * 3 + 1]
+        var ref_z = data.xpos[ref_body * 3 + 2]
+
+        var rx = contact_pos_x - ref_x
+        var ry = contact_pos_y - ref_y
+        var rz = contact_pos_z - ref_z
+
+        for d in range(num_dof):
+            var dof_idx = dof_adr + d
+
+            # Get cdof components for this DOF
+            var ang_x = cdof[dof_idx * 6 + 0]
+            var ang_y = cdof[dof_idx * 6 + 1]
+            var ang_z = cdof[dof_idx * 6 + 2]
+            var lin_x = cdof[dof_idx * 6 + 3]
+            var lin_y = cdof[dof_idx * 6 + 4]
+            var lin_z = cdof[dof_idx * 6 + 5]
+
+            # ang x r
+            var cross_x = ang_y * rz - ang_z * ry
+            var cross_y = ang_z * rx - ang_x * rz
+            var cross_z = ang_x * ry - ang_y * rx
+
+            var jt_x = lin_x + cross_x
+            var jt_y = lin_y + cross_y
+            var jt_z = lin_z + cross_z
+
+            # Project onto direction
+            J_row[dof_idx] = jt_x * dir_x + jt_y * dir_y + jt_z * dir_z
+
+
+fn _joint_affects_body[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+](
+    model: ModelGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    joint_idx: Int,
+    body_idx: Int,
+) -> Bool:
+    """Check if a joint affects a body (body is the joint's body or a descendant)."""
+    var joint_body = model.joints[joint_idx].body_id
+
+    if body_idx == joint_body:
+        return True
+
+    var current = body_idx
+    while current >= 0:
+        if model.body_parent[current] == joint_body:
+            return True
+        current = model.body_parent[current]
+
+    return False
+
+
+# =============================================================================
+# GPU Functions
+# =============================================================================
+
+
+@always_inline
+fn compute_cdof_gpu[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    STATE_SIZE: Int,
+    MODEL_SIZE: Int,
+    CDOF_SIZE: Int,
+    BATCH: Int,
+](
+    env: Int,
+    state: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+    ],
+    model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+    mut cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
+):
+    """Compute spatial motion axis (cdof) for each DOF on GPU.
+
+    Same algorithm as CPU version but reads from GPU LayoutTensors.
+    """
+    from ..gpu.constants import (
+        gc_xpos_offset,
+        gc_xquat_offset,
+        gc_model_body_offset,
+        gc_model_joint_offset,
+        gc_model_metadata_offset,
+        GC_BODY_IDX_PARENT,
+        GC_JOINT_IDX_TYPE,
+        GC_JOINT_IDX_BODY_ID,
+        GC_JOINT_IDX_DOF_ADR,
+        GC_JOINT_IDX_POS_X,
+        GC_JOINT_IDX_POS_Y,
+        GC_JOINT_IDX_POS_Z,
+        GC_JOINT_IDX_AXIS_X,
+        GC_JOINT_IDX_AXIS_Y,
+        GC_JOINT_IDX_AXIS_Z,
+        GC_MODEL_META_IDX_NJOINT,
+        GC_JNT_FREE,
+        GC_JNT_HINGE,
+        GC_JNT_SLIDE,
+    )
+    from ..kinematics.quat_math import gpu_quat_rotate
+
+    # Zero out
+    for i in range(CDOF_SIZE):
+        cdof[i] = Scalar[DTYPE](0)
+
+    var xpos_off = gc_xpos_offset[NQ, NV, NBODY]()
+    var xquat_off = gc_xquat_offset[NQ, NV, NBODY]()
+    var model_meta_off = gc_model_metadata_offset[NBODY, NJOINT]()
+    var num_joints = Int(rebind[Scalar[DTYPE]](
+        model[0, model_meta_off + GC_MODEL_META_IDX_NJOINT]
+    ))
+
+    for j in range(num_joints):
+        var joint_off = gc_model_joint_offset[NBODY](j)
+        var jnt_type = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_TYPE]))
+        var body = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_BODY_ID]))
+        var dof_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_DOF_ADR]))
+
+        var body_off = gc_model_body_offset(body)
+        var parent = Int(rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_PARENT]))
+
+        var bx = rebind[Scalar[DTYPE]](state[env, xpos_off + body * 3 + 0])
+        var by = rebind[Scalar[DTYPE]](state[env, xpos_off + body * 3 + 1])
+        var bz = rebind[Scalar[DTYPE]](state[env, xpos_off + body * 3 + 2])
+
+        if jnt_type == GC_JNT_HINGE:
+            var axis_x = rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_AXIS_X])
+            var axis_y = rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_AXIS_Y])
+            var axis_z = rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_AXIS_Z])
+
+            var jpos_x = rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_POS_X])
+            var jpos_y = rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_POS_Y])
+            var jpos_z = rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_POS_Z])
+
+            if parent >= 0:
+                var pqx = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 0])
+                var pqy = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 1])
+                var pqz = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 2])
+                var pqw = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 3])
+
+                var a_w = gpu_quat_rotate(pqx, pqy, pqz, pqw, axis_x, axis_y, axis_z)
+                axis_x = a_w[0]
+                axis_y = a_w[1]
+                axis_z = a_w[2]
+
+                var ppx = rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 0])
+                var ppy = rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 1])
+                var ppz = rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 2])
+
+                var jp = gpu_quat_rotate(pqx, pqy, pqz, pqw, jpos_x, jpos_y, jpos_z)
+                jpos_x = ppx + jp[0]
+                jpos_y = ppy + jp[1]
+                jpos_z = ppz + jp[2]
+
+            var ox = bx - jpos_x
+            var oy = by - jpos_y
+            var oz = bz - jpos_z
+
+            cdof[dof_adr * 6 + 0] = axis_x
+            cdof[dof_adr * 6 + 1] = axis_y
+            cdof[dof_adr * 6 + 2] = axis_z
+            cdof[dof_adr * 6 + 3] = axis_y * oz - axis_z * oy
+            cdof[dof_adr * 6 + 4] = axis_z * ox - axis_x * oz
+            cdof[dof_adr * 6 + 5] = axis_x * oy - axis_y * ox
+
+        elif jnt_type == GC_JNT_SLIDE:
+            var axis_x = rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_AXIS_X])
+            var axis_y = rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_AXIS_Y])
+            var axis_z = rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_AXIS_Z])
+
+            if parent >= 0:
+                var pqx = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 0])
+                var pqy = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 1])
+                var pqz = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 2])
+                var pqw = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 3])
+
+                var a_w = gpu_quat_rotate(pqx, pqy, pqz, pqw, axis_x, axis_y, axis_z)
+                axis_x = a_w[0]
+                axis_y = a_w[1]
+                axis_z = a_w[2]
+
+            cdof[dof_adr * 6 + 3] = axis_x
+            cdof[dof_adr * 6 + 4] = axis_y
+            cdof[dof_adr * 6 + 5] = axis_z
+
+        elif jnt_type == GC_JNT_FREE:
+            cdof[(dof_adr + 0) * 6 + 3] = Scalar[DTYPE](1)
+            cdof[(dof_adr + 1) * 6 + 4] = Scalar[DTYPE](1)
+            cdof[(dof_adr + 2) * 6 + 5] = Scalar[DTYPE](1)
+            cdof[(dof_adr + 3) * 6 + 0] = Scalar[DTYPE](1)
+            cdof[(dof_adr + 4) * 6 + 1] = Scalar[DTYPE](1)
+            cdof[(dof_adr + 5) * 6 + 2] = Scalar[DTYPE](1)
+
+
+@always_inline
+fn compute_contact_jacobian_row_gpu[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    STATE_SIZE: Int,
+    MODEL_SIZE: Int,
+    V_SIZE: Int,
+    CDOF_SIZE: Int,
+    BATCH: Int,
+](
+    env: Int,
+    state: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+    ],
+    model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+    cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
+    contact_body: Int,
+    contact_pos_x: Scalar[DTYPE],
+    contact_pos_y: Scalar[DTYPE],
+    contact_pos_z: Scalar[DTYPE],
+    dir_x: Scalar[DTYPE],
+    dir_y: Scalar[DTYPE],
+    dir_z: Scalar[DTYPE],
+    mut J_row: InlineArray[Scalar[DTYPE], V_SIZE],
+):
+    """Compute one row of the contact Jacobian on GPU."""
+    from ..gpu.constants import (
+        gc_xpos_offset,
+        gc_model_body_offset,
+        gc_model_joint_offset,
+        gc_model_metadata_offset,
+        GC_BODY_IDX_PARENT,
+        GC_JOINT_IDX_TYPE,
+        GC_JOINT_IDX_BODY_ID,
+        GC_JOINT_IDX_DOF_ADR,
+        GC_MODEL_META_IDX_NJOINT,
+        GC_JNT_FREE,
+        GC_JNT_BALL,
+        GC_JNT_HINGE,
+        GC_JNT_SLIDE,
+    )
+
+    for i in range(V_SIZE):
+        J_row[i] = Scalar[DTYPE](0)
+
+    var xpos_off = gc_xpos_offset[NQ, NV, NBODY]()
+    var model_meta_off = gc_model_metadata_offset[NBODY, NJOINT]()
+    var num_joints = Int(rebind[Scalar[DTYPE]](
+        model[0, model_meta_off + GC_MODEL_META_IDX_NJOINT]
+    ))
+
+    for j_idx in range(num_joints):
+        var joint_off = gc_model_joint_offset[NBODY](j_idx)
+        var jnt_type = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_TYPE]))
+        var joint_body = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_BODY_ID]))
+        var dof_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_DOF_ADR]))
+
+        # Check if this joint affects the contacted body
+        var joint_affects = False
+        if contact_body == joint_body:
+            joint_affects = True
+        else:
+            var current = contact_body
+            while current >= 0:
+                var current_body_off = gc_model_body_offset(current)
+                var current_parent = Int(rebind[Scalar[DTYPE]](
+                    model[0, current_body_off + GC_BODY_IDX_PARENT]
+                ))
+                if current_parent == joint_body:
+                    joint_affects = True
+                    break
+                current = current_parent
+
+        if not joint_affects:
+            continue
+
+        var num_dof = 1
+        if jnt_type == GC_JNT_FREE:
+            num_dof = 6
+        elif jnt_type == GC_JNT_BALL:
+            num_dof = 3
+
+        # Reference body = joint's body (must match cdof computation)
+        var b_x = rebind[Scalar[DTYPE]](state[env, xpos_off + joint_body * 3 + 0])
+        var b_y = rebind[Scalar[DTYPE]](state[env, xpos_off + joint_body * 3 + 1])
+        var b_z = rebind[Scalar[DTYPE]](state[env, xpos_off + joint_body * 3 + 2])
+
+        var rx = contact_pos_x - b_x
+        var ry = contact_pos_y - b_y
+        var rz = contact_pos_z - b_z
+
+        for d in range(num_dof):
+            var dof_idx = dof_adr + d
+
+            var ang_x = cdof[dof_idx * 6 + 0]
+            var ang_y = cdof[dof_idx * 6 + 1]
+            var ang_z = cdof[dof_idx * 6 + 2]
+            var lin_x = cdof[dof_idx * 6 + 3]
+            var lin_y = cdof[dof_idx * 6 + 4]
+            var lin_z = cdof[dof_idx * 6 + 5]
+
+            # J_trans = cdof_lin + cdof_ang x r
+            var cross_x = ang_y * rz - ang_z * ry
+            var cross_y = ang_z * rx - ang_x * rz
+            var cross_z = ang_x * ry - ang_y * rx
+
+            var jt_x = lin_x + cross_x
+            var jt_y = lin_y + cross_y
+            var jt_z = lin_z + cross_z
+
+            J_row[dof_idx] = jt_x * dir_x + jt_y * dir_y + jt_z * dir_z

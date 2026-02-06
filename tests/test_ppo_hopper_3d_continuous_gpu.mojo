@@ -3,7 +3,7 @@
 This tests the GPU implementation of PPO with continuous actions using the
 Hopper3D environment with:
 - Parallel environments on GPU
-- Full 3D rigid body physics with physics3d_v2 engine
+- Full 3D rigid body physics with physics3d engine
 - 3D continuous action space (joint torques)
 - 11D observation (torso state + joint angles + velocities)
 
@@ -115,7 +115,7 @@ fn main() raises:
         print("    - Reward normalization: enabled")
         print()
         print("Hopper3D specifics:")
-        print("  - Full 3D physics with physics3d_v2 PGS solver")
+        print("  - Full 3D physics with physics3d PGS solver")
         print("  - 4-body articulated hopper (torso, thigh, leg, foot)")
         print("  - 11D observations: [torso_z, torso_pitch,")
         print("                       hip_angle, knee_angle, ankle_angle,")

@@ -1,8 +1,3 @@
-"""Traits for 3D physics components.
-
-Defines interfaces for integrators, solvers, and collision detectors
-that can be swapped for different implementations.
-"""
-
-from .integrator3d import Integrator3D
-from .solver3d import ConstraintSolver3D
+from .collision import CollisionSystem
+from .integrator import Integrator, GcIntegrator
+from .gc_solver import GcConstraintSolver

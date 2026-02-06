@@ -1,10 +1,10 @@
 """Constants for HopperGC environment using Generalized Coordinates engine.
 
 MuJoCo-style Hopper with joint-space dynamics.
-Uses SemiImplicitEulerIntegrator for physics.
+Uses ConstraintGcIntegrator for physics.
 """
 
-from physics3d_v2.gpu.constants import (
+from physics3d.gpu.constants import (
     gc_state_size,
     gc_qpos_offset,
     gc_qvel_offset,
@@ -56,7 +56,7 @@ struct HopperGCConstants[DTYPE: DType = DType.float64]:
     comptime GRAVITY_Z: Scalar[Self.DTYPE] = -9.81
 
     # Contact physics
-    comptime FRICTION: Scalar[Self.DTYPE] = 0.5
+    comptime FRICTION: Scalar[Self.DTYPE] = 1.0
 
     # ==========================================================================
     # Body Geometry (from MuJoCo Hopper XML)
@@ -100,8 +100,8 @@ struct HopperGCConstants[DTYPE: DType = DType.float64]:
     comptime JOINT_ROOTZ: Int = 1  # Slide along Z (body 0)
     comptime JOINT_ROOTY: Int = 2  # Hinge around Y (body 0)
     comptime JOINT_THIGH: Int = 3  # Hinge around Y (body 1)
-    comptime JOINT_LEG: Int = 4    # Hinge around Y (body 2)
-    comptime JOINT_FOOT: Int = 5   # Hinge around Y (body 3)
+    comptime JOINT_LEG: Int = 4  # Hinge around Y (body 2)
+    comptime JOINT_FOOT: Int = 5  # Hinge around Y (body 3)
 
     # ==========================================================================
     # Joint Space Dimensions
@@ -123,15 +123,15 @@ struct HopperGCConstants[DTYPE: DType = DType.float64]:
 
     # thigh_joint: range="-150 0" degrees
     comptime THIGH_JOINT_MIN: Scalar[Self.DTYPE] = -2.618  # -150 degrees
-    comptime THIGH_JOINT_MAX: Scalar[Self.DTYPE] = 0.0     # 0 degrees
+    comptime THIGH_JOINT_MAX: Scalar[Self.DTYPE] = 0.0  # 0 degrees
 
     # leg_joint: range="-150 0" degrees
-    comptime LEG_JOINT_MIN: Scalar[Self.DTYPE] = -2.618    # -150 degrees
-    comptime LEG_JOINT_MAX: Scalar[Self.DTYPE] = 0.0       # 0 degrees
+    comptime LEG_JOINT_MIN: Scalar[Self.DTYPE] = -2.618  # -150 degrees
+    comptime LEG_JOINT_MAX: Scalar[Self.DTYPE] = 0.0  # 0 degrees
 
     # foot_joint: range="-45 45" degrees
-    comptime FOOT_JOINT_MIN: Scalar[Self.DTYPE] = -0.785   # -45 degrees
-    comptime FOOT_JOINT_MAX: Scalar[Self.DTYPE] = 0.785    # 45 degrees
+    comptime FOOT_JOINT_MIN: Scalar[Self.DTYPE] = -0.785  # -45 degrees
+    comptime FOOT_JOINT_MAX: Scalar[Self.DTYPE] = 0.785  # 45 degrees
 
     # ==========================================================================
     # Termination Parameters (defaults - can be overridden by curriculum)
@@ -149,7 +149,9 @@ struct HopperGCConstants[DTYPE: DType = DType.float64]:
 
     # Initial (lenient) values for curriculum
     comptime CURRICULUM_INITIAL_MIN_HEIGHT: Scalar[Self.DTYPE] = 0.3
-    comptime CURRICULUM_INITIAL_MAX_PITCH: Scalar[Self.DTYPE] = 1.0  # ~57 degrees
+    comptime CURRICULUM_INITIAL_MAX_PITCH: Scalar[
+        Self.DTYPE
+    ] = 1.0  # ~57 degrees
 
     # Final (strict) values for curriculum (same as MuJoCo defaults)
     comptime CURRICULUM_FINAL_MIN_HEIGHT: Scalar[Self.DTYPE] = 0.7
@@ -166,7 +168,9 @@ struct HopperGCConstants[DTYPE: DType = DType.float64]:
     # ==========================================================================
 
     comptime FORWARD_REWARD_WEIGHT: Scalar[Self.DTYPE] = 1.0
-    comptime CTRL_COST_WEIGHT: Scalar[Self.DTYPE] = 0.001  # MuJoCo default (uses normalized actions [-1,1])
+    comptime CTRL_COST_WEIGHT: Scalar[
+        Self.DTYPE
+    ] = 0.001  # MuJoCo default (uses normalized actions [-1,1])
     comptime HEALTHY_REWARD: Scalar[Self.DTYPE] = 1.0
 
     # ==========================================================================
@@ -188,9 +192,12 @@ struct HopperGCConstants[DTYPE: DType = DType.float64]:
     # torso_z = thigh_z + THIGH_HALF_LENGTH + TORSO_HALF_LENGTH
     comptime INITIAL_Z: Scalar[Self.DTYPE] = (
         Self.FOOT_RADIUS
-        + Self.LEG_RADIUS + Self.LEG_HALF_LENGTH
-        + Self.LEG_HALF_LENGTH + Self.THIGH_HALF_LENGTH
-        + Self.THIGH_HALF_LENGTH + Self.TORSO_HALF_LENGTH
+        + Self.LEG_RADIUS
+        + Self.LEG_HALF_LENGTH
+        + Self.LEG_HALF_LENGTH
+        + Self.THIGH_HALF_LENGTH
+        + Self.THIGH_HALF_LENGTH
+        + Self.TORSO_HALF_LENGTH
     )
 
     # ==========================================================================
@@ -201,7 +208,7 @@ struct HopperGCConstants[DTYPE: DType = DType.float64]:
     comptime ACTION_DIM: Int = 3  # thigh, leg, foot (not root joints)
 
     # ==========================================================================
-    # GPU Layout Constants (using physics3d_v2 GC layout)
+    # GPU Layout Constants (using physics3d GC layout)
     # ==========================================================================
 
     # Compute state size for GPU buffer
@@ -274,7 +281,9 @@ struct HopperGCConstants[DTYPE: DType = DType.float64]:
     @always_inline
     fn get_metadata_offset() -> Int:
         """Get offset to metadata in state buffer."""
-        return gc_metadata_offset[Self.NQ, Self.NV, Self.NUM_BODIES, Self.MAX_CONTACTS]()
+        return gc_metadata_offset[
+            Self.NQ, Self.NV, Self.NUM_BODIES, Self.MAX_CONTACTS
+        ]()
 
     @staticmethod
     @always_inline

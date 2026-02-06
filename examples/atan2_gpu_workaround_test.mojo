@@ -10,7 +10,7 @@ from math import atan2 as atan2_cpu, pi
 from gpu import thread_idx, block_idx, block_dim
 from gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
-from physics3d.math_gpu import atan2_gpu
+from math3d import atan2_gpu
 
 
 fn main() raises:
@@ -32,21 +32,21 @@ fn main() raises:
 
     # Test cases covering all quadrants and special cases
     # (y, x) pairs
-    input_y_host.unsafe_ptr()[0] = 1.0   # Q1: (1, 1) -> pi/4
+    input_y_host.unsafe_ptr()[0] = 1.0  # Q1: (1, 1) -> pi/4
     input_x_host.unsafe_ptr()[0] = 1.0
-    input_y_host.unsafe_ptr()[1] = 1.0   # Q2: (1, -1) -> 3pi/4
+    input_y_host.unsafe_ptr()[1] = 1.0  # Q2: (1, -1) -> 3pi/4
     input_x_host.unsafe_ptr()[1] = -1.0
     input_y_host.unsafe_ptr()[2] = -1.0  # Q3: (-1, -1) -> -3pi/4
     input_x_host.unsafe_ptr()[2] = -1.0
     input_y_host.unsafe_ptr()[3] = -1.0  # Q4: (-1, 1) -> -pi/4
     input_x_host.unsafe_ptr()[3] = 1.0
-    input_y_host.unsafe_ptr()[4] = 1.0   # +Y axis: (1, 0) -> pi/2
+    input_y_host.unsafe_ptr()[4] = 1.0  # +Y axis: (1, 0) -> pi/2
     input_x_host.unsafe_ptr()[4] = 0.0
     input_y_host.unsafe_ptr()[5] = -1.0  # -Y axis: (-1, 0) -> -pi/2
     input_x_host.unsafe_ptr()[5] = 0.0
-    input_y_host.unsafe_ptr()[6] = 0.0   # +X axis: (0, 1) -> 0
+    input_y_host.unsafe_ptr()[6] = 0.0  # +X axis: (0, 1) -> 0
     input_x_host.unsafe_ptr()[6] = 1.0
-    input_y_host.unsafe_ptr()[7] = 0.0   # -X axis: (0, -1) -> pi
+    input_y_host.unsafe_ptr()[7] = 0.0  # -X axis: (0, -1) -> pi
     input_x_host.unsafe_ptr()[7] = -1.0
 
     # Compute expected values on CPU
@@ -121,7 +121,18 @@ fn main() raises:
             error = -error
         if error > max_error:
             max_error = error
-        print("  atan2(", y, ",", x, "): GPU=", gpu_result, " CPU=", expected, " err=", error)
+        print(
+            "  atan2(",
+            y,
+            ",",
+            x,
+            "): GPU=",
+            gpu_result,
+            " CPU=",
+            expected,
+            " err=",
+            error,
+        )
 
     print("\nMax error:", max_error, "radians")
     if max_error < 0.01:

@@ -17,7 +17,7 @@ from layout import Layout, LayoutTensor
 from envs.half_cheetah_gc import HalfCheetahGC, HalfCheetahGCConstants
 from deep_rl import dtype as gpu_dtype
 from deep_rl.constants import TPB
-from physics3d_v2.gpu.constants import (
+from physics3d.gpu.constants import (
     gc_qpos_offset,
     gc_qvel_offset,
     gc_metadata_offset,
@@ -105,10 +105,20 @@ fn main() raises:
     print()
     print("Raw CPU qpos after reset:")
     for i in range(10):
-        print("  qpos[" + String(i) + "] = " + String(Float64(cpu_env.data.qpos[i])))
+        print(
+            "  qpos["
+            + String(i)
+            + "] = "
+            + String(Float64(cpu_env.data.qpos[i]))
+        )
     print("Raw CPU qvel after reset:")
     for i in range(10):
-        print("  qvel[" + String(i) + "] = " + String(Float64(cpu_env.data.qvel[i])))
+        print(
+            "  qvel["
+            + String(i)
+            + "] = "
+            + String(Float64(cpu_env.data.qvel[i]))
+        )
 
     # Step with each action set
     for step in range(len(test_actions)):
@@ -134,13 +144,17 @@ fn main() raises:
         print("  Raw qpos after step:")
         for i in range(10):
             print(
-                "    qpos[" + String(i) + "] = "
+                "    qpos["
+                + String(i)
+                + "] = "
                 + String(Float64(cpu_env.data.qpos[i]))
             )
         print("  Raw qvel after step:")
         for i in range(10):
             print(
-                "    qvel[" + String(i) + "] = "
+                "    qvel["
+                + String(i)
+                + "] = "
                 + String(Float64(cpu_env.data.qvel[i]))
             )
 
@@ -216,13 +230,17 @@ fn main() raises:
         print("  GPU qpos:")
         for i in range(10):
             print(
-                "    qpos[" + String(i) + "] = "
+                "    qpos["
+                + String(i)
+                + "] = "
                 + String(Float64(read_state[QPOS_OFF + i]))
             )
         print("  GPU qvel:")
         for i in range(10):
             print(
-                "    qvel[" + String(i) + "] = "
+                "    qvel["
+                + String(i)
+                + "] = "
                 + String(Float64(read_state[QVEL_OFF + i]))
             )
 
@@ -232,9 +250,7 @@ fn main() raises:
             print("-" * 40)
             print("GPU Step", step, "with actions:", end="")
             for j in range(ACTION_DIM):
-                print(
-                    " " + String(Float64(test_actions[step][j]))[:6], end=""
-                )
+                print(" " + String(Float64(test_actions[step][j]))[:6], end="")
             print()
 
             # Reset state (matching CPU)
@@ -295,13 +311,17 @@ fn main() raises:
             print("  Raw qpos after step:")
             for i in range(10):
                 print(
-                    "    qpos[" + String(i) + "] = "
+                    "    qpos["
+                    + String(i)
+                    + "] = "
                     + String(Float64(read_state[QPOS_OFF + i]))
                 )
             print("  Raw qvel after step:")
             for i in range(10):
                 print(
-                    "    qvel[" + String(i) + "] = "
+                    "    qvel["
+                    + String(i)
+                    + "] = "
                     + String(Float64(read_state[QVEL_OFF + i]))
                 )
 
@@ -310,7 +330,10 @@ fn main() raises:
     # =====================================================
     print()
     print("=" * 70)
-    print("PART 3: Multi-step trajectory (10 steps, action=[0.5, -0.3, 0.1, -0.5, 0.3, -0.1])")
+    print(
+        "PART 3: Multi-step trajectory (10 steps, action=[0.5, -0.3, 0.1, -0.5,"
+        " 0.3, -0.1])"
+    )
     print("=" * 70)
 
     var multi_action = List[Scalar[dtype]]()
@@ -443,7 +466,5 @@ fn main() raises:
         " initial state"
     )
     print("and actions, the physics engines diverge.")
-    print(
-        "If they match, the issue is in how the evaluation pipeline feeds"
-    )
+    print("If they match, the issue is in how the evaluation pipeline feeds")
     print("observations to the network or applies actions.")

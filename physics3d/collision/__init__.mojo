@@ -1,12 +1,15 @@
-"""3D Collision Detection.
-
-This module provides collision detection for common shapes used
-in MuJoCo-style environments:
-- Sphere vs Plane (ground contact)
-- Capsule vs Plane (limb/foot contact)
-- Contact data structure for constraint solving
-"""
-
-from .contact3d import Contact3D, ContactManifold
-from .sphere_plane import SpherePlaneCollision, SpherePlaneCollisionGPU
-from .capsule_plane import CapsulePlaneCollision, CapsulePlaneCollisionGPU
+from .collision_primitives import (
+    sphere_sphere,
+    sphere_plane,
+    capsule_plane,
+    capsule_sphere,
+    capsule_capsule,
+    box_plane,
+    box_sphere,
+    box_capsule,
+    box_box,
+    compute_tangent_basis,
+    rotate_vector_by_quat,
+    rotate_vector_by_quat_inverse,
+)
+from .collision import CollisionDetector
