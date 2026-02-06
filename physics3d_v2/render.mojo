@@ -1,8 +1,8 @@
-"""Physics3D v2 Multi-Body Renderer using the render3d wireframe renderer.
+"""Physics3D v2 Multi-Body Renderer using the GPU-accelerated Renderer3D.
 
 Provides visualization of multi-body physics3d_v2 simulations with:
-- Multiple shaded spheres with distinct colors
-- Ground plane with chessboard pattern
+- GPU-rendered spheres, capsules, and boxes with Blinn-Phong lighting
+- Procedural checkerboard ground plane
 - Contact point indicators
 - Velocity indicators for each body
 
@@ -34,11 +34,8 @@ Example:
     renderer.close()
 """
 
-from math import cos, sin, pi
-
 from math3d import Vec3 as Vec3Generic, Quat
 from render3d import Renderer3D, Camera3D, Color3D
-from render3d.shapes3d import WireframeLine
 from .types import Model, Data
 from .gpu.constants import GEOM_SPHERE, GEOM_CAPSULE, GEOM_BOX
 
@@ -75,24 +72,9 @@ struct Physics3DColors:
             return Color3D(255, 150, 150)  # Light red
 
     @staticmethod
-    fn ground_light() -> Color3D:
-        """Ground light tile color."""
-        return Color3D(140, 140, 120)
-
-    @staticmethod
-    fn ground_dark() -> Color3D:
-        """Ground dark tile color."""
-        return Color3D(80, 80, 70)
-
-    @staticmethod
     fn velocity() -> Color3D:
         """Velocity indicator color - white."""
         return Color3D(255, 255, 255)
-
-    @staticmethod
-    fn shadow() -> Color3D:
-        """Shadow color."""
-        return Color3D(30, 30, 30)
 
     @staticmethod
     fn contact() -> Color3D:
@@ -123,14 +105,13 @@ struct Physics3DColors:
 struct Physics3DRenderer(Movable):
     """Renderer for multi-body Physics3D v2 simulations.
 
-    Renders multiple spheres with distinct colors, ground plane,
-    contact indicators, and velocity vectors.
+    Renders multiple spheres/capsules/boxes with distinct colors, ground plane,
+    contact indicators, and velocity vectors using GPU-accelerated rendering.
     """
 
     var renderer: Renderer3D
     var initialized: Bool
     var show_velocity: Bool
-    var show_shadows: Bool
     var show_contacts: Bool
 
     fn __init__(
@@ -138,7 +119,6 @@ struct Physics3DRenderer(Movable):
         width: Int = 1024,
         height: Int = 768,
         show_velocity: Bool = True,
-        show_shadows: Bool = True,
         show_contacts: Bool = True,
     ) raises:
         """Initialize the multi-body renderer.
@@ -147,7 +127,6 @@ struct Physics3DRenderer(Movable):
             width: Window width in pixels.
             height: Window height in pixels.
             show_velocity: Whether to show velocity indicators.
-            show_shadows: Whether to show shadows.
             show_contacts: Whether to show contact points.
         """
         # Camera setup - wider view for multiple bodies
@@ -172,7 +151,6 @@ struct Physics3DRenderer(Movable):
         )
         self.initialized = False
         self.show_velocity = show_velocity
-        self.show_shadows = show_shadows
         self.show_contacts = show_contacts
 
     fn __moveinit__(out self, deinit other: Self):
@@ -180,7 +158,6 @@ struct Physics3DRenderer(Movable):
         self.renderer = other.renderer^
         self.initialized = other.initialized
         self.show_velocity = other.show_velocity
-        self.show_shadows = other.show_shadows
         self.show_contacts = other.show_contacts
 
     fn init(mut self) raises -> None:
@@ -218,25 +195,11 @@ struct Physics3DRenderer(Movable):
         # Begin frame
         self.renderer.begin_frame()
 
-        # Draw ground (chessboard pattern)
-        self._draw_ground(Float64(model.ground_z))
+        # Draw ground (GPU shader checkerboard)
+        self.renderer.draw_ground_grid(0.0, 10.0, Float64(model.ground_z))
 
         # Draw coordinate axes
         self.renderer.draw_coordinate_axes(Vec3(0.0, 0.0, 0.01), 0.5)
-
-        # Draw shadows for all bodies
-        if self.show_shadows:
-            for i in range(NUM_BODIES):
-                self._draw_shadow_for_geom(
-                    Float64(data.positions[i * 3 + 0]),
-                    Float64(data.positions[i * 3 + 1]),
-                    model.geom_types[i],
-                    Float64(model.radii[i]),
-                    Float64(model.half_lengths[i]),
-                    Float64(model.half_x[i]),
-                    Float64(model.half_y[i]),
-                    Float64(model.ground_z),
-                )
 
         # Draw all bodies based on geometry type
         for i in range(NUM_BODIES):
@@ -289,114 +252,28 @@ struct Physics3DRenderer(Movable):
                 )
 
         # End frame
-        self.renderer.end_frame()
-
-    fn _draw_ground(self, ground_z: Float64):
-        """Draw chessboard ground pattern."""
-        var tile_size = 0.5
-        var num_tiles = 10
-
-        for i in range(-num_tiles, num_tiles):
-            for j in range(-num_tiles, num_tiles):
-                var x0 = Float64(i) * tile_size
-                var y0 = Float64(j) * tile_size
-                var x1 = x0 + tile_size
-                var y1 = y0 + tile_size
-
-                var is_light = (i + j) % 2 == 0
-                var color = (
-                    Physics3DColors.ground_light() if is_light else Physics3DColors.ground_dark()
-                )
-
-                self.renderer.draw_filled_quad_3d(
-                    Vec3(x0, y0, ground_z),
-                    Vec3(x1, y0, ground_z),
-                    Vec3(x1, y1, ground_z),
-                    Vec3(x0, y1, ground_z),
-                    color,
-                )
-
-    fn _draw_shadow(
-        self, pos_x: Float64, pos_y: Float64, radius: Float64, ground_z: Float64
-    ):
-        """Draw shadow on ground for a sphere."""
-        var shadow_z = ground_z + 0.001
-        var shadow_radius = radius * 1.2
-
-        var num_segments = 12
-        from math import cos, sin, pi
-
-        for i in range(num_segments):
-            var angle0 = 2.0 * pi * Float64(i) / Float64(num_segments)
-            var angle1 = 2.0 * pi * Float64(i + 1) / Float64(num_segments)
-
-            var x0 = pos_x + shadow_radius * cos(angle0)
-            var y0 = pos_y + shadow_radius * sin(angle0)
-            var x1 = pos_x + shadow_radius * cos(angle1)
-            var y1 = pos_y + shadow_radius * sin(angle1)
-
-            self.renderer.draw_filled_quad_3d(
-                Vec3(pos_x, pos_y, shadow_z),
-                Vec3(x0, y0, shadow_z),
-                Vec3(x1, y1, shadow_z),
-                Vec3(pos_x, pos_y, shadow_z),
-                Physics3DColors.shadow(),
-            )
+        try:
+            self.renderer.end_frame()
+        except:
+            pass
 
     fn _draw_sphere(
-        self,
+        mut self,
         pos_x: Float64,
         pos_y: Float64,
         pos_z: Float64,
         radius: Float64,
         color: Color3D,
     ):
-        """Draw a shaded sphere."""
-        var pos = Vec3(pos_x, pos_y, pos_z)
-
-        var screen_pos = self.renderer.camera.project_to_screen(pos)
-        if screen_pos[2]:  # Visible
-            var view_pos = (
-                self.renderer.camera.get_view_matrix().transform_point(pos)
-            )
-            var depth = -view_pos.z
-            if depth > 0.1:
-                var fov_scale = 1.0 / (depth * 0.7)
-                var screen_radius = Int(
-                    radius * Float64(self.renderer.height) * fov_scale
-                )
-                screen_radius = max(screen_radius, 3)
-
-                self.renderer.draw_shaded_sphere_2d(
-                    screen_pos[0],
-                    screen_pos[1],
-                    screen_radius,
-                    color,
-                )
-
-    fn _draw_capsule(
-        self,
-        pos_x: Float64,
-        pos_y: Float64,
-        pos_z: Float64,
-        radius: Float64,
-        half_length: Float64,
-        color: Color3D,
-    ):
-        """Draw a vertical capsule (cylinder + 2 hemisphere caps).
-
-        The capsule is oriented vertically (along Z-axis).
-        Total height = 2 * half_length + 2 * radius.
-        """
-        # Draw with identity quaternion (no rotation)
-        self._draw_capsule_rotated(
-            pos_x, pos_y, pos_z, radius, half_length,
-            0.0, 0.0, 0.0, 1.0,  # Identity quaternion (x, y, z, w)
-            color
+        """Draw a sphere in world space."""
+        self.renderer.draw_sphere(
+            center=Vec3(pos_x, pos_y, pos_z),
+            radius=radius,
+            color=color,
         )
 
     fn _draw_capsule_rotated(
-        self,
+        mut self,
         pos_x: Float64,
         pos_y: Float64,
         pos_z: Float64,
@@ -407,11 +284,8 @@ struct Physics3DRenderer(Movable):
         qz: Float64,
         qw: Float64,
         color: Color3D,
-    ):
+    ) raises:
         """Draw a capsule with arbitrary orientation using quaternion.
-
-        Uses the Renderer3D's draw_shaded_capsule_2d for high-quality rendering
-        with gradient shading that simulates lighting and 3D volume.
 
         The capsule's local axis is Z (pointing up in local frame).
         The quaternion rotates this local Z-axis to world frame.
@@ -427,9 +301,7 @@ struct Physics3DRenderer(Movable):
         var q = Quat[DType.float64](qw, qx, qy, qz)
         var center = Vec3(pos_x, pos_y, pos_z)
 
-        # Use the Renderer3D's shaded capsule drawing
-        # axis=2 means local Z-axis, which is rotated by the quaternion
-        self.renderer.draw_shaded_capsule_2d(
+        self.renderer.draw_capsule(
             center,
             q,
             radius,
@@ -439,7 +311,7 @@ struct Physics3DRenderer(Movable):
         )
 
     fn _draw_box(
-        self,
+        mut self,
         pos_x: Float64,
         pos_y: Float64,
         pos_z: Float64,
@@ -448,70 +320,18 @@ struct Physics3DRenderer(Movable):
         half_z: Float64,
         color: Color3D,
     ):
-        """Draw a wireframe box.
+        """Draw a solid box.
 
         Box is centered at (pos_x, pos_y, pos_z) with half-extents.
         """
-        # 8 corners of the box
-        var corners = List[Vec3]()
-        for dx in range(2):
-            for dy in range(2):
-                for dz in range(2):
-                    var x = pos_x + half_x * (2.0 * Float64(dx) - 1.0)
-                    var y = pos_y + half_y * (2.0 * Float64(dy) - 1.0)
-                    var z = pos_z + half_z * (2.0 * Float64(dz) - 1.0)
-                    corners.append(Vec3(x, y, z))
+        var center = Vec3(pos_x, pos_y, pos_z)
+        var identity = Quat[DType.float64](1.0, 0.0, 0.0, 0.0)
+        var half_extents = Vec3(half_x, half_y, half_z)
 
-        # 12 edges connecting corners
-        # Corner indices: 0=(-,-,-), 1=(-,-,+), 2=(-,+,-), 3=(-,+,+)
-        #                 4=(+,-,-), 5=(+,-,+), 6=(+,+,-), 7=(+,+,+)
-        var lines = List[WireframeLine]()
-        # Bottom face (z-)
-        lines.append(WireframeLine(corners[0], corners[2]))
-        lines.append(WireframeLine(corners[2], corners[6]))
-        lines.append(WireframeLine(corners[6], corners[4]))
-        lines.append(WireframeLine(corners[4], corners[0]))
-        # Top face (z+)
-        lines.append(WireframeLine(corners[1], corners[3]))
-        lines.append(WireframeLine(corners[3], corners[7]))
-        lines.append(WireframeLine(corners[7], corners[5]))
-        lines.append(WireframeLine(corners[5], corners[1]))
-        # Vertical edges
-        lines.append(WireframeLine(corners[0], corners[1]))
-        lines.append(WireframeLine(corners[2], corners[3]))
-        lines.append(WireframeLine(corners[4], corners[5]))
-        lines.append(WireframeLine(corners[6], corners[7]))
-
-        self.renderer.draw_lines_3d(lines, color)
-
-        # Draw filled faces for better visibility
-        # Front face (y-)
-        self.renderer.draw_filled_quad_3d(
-            corners[0], corners[1], corners[5], corners[4], color
-        )
-        # Back face (y+)
-        self.renderer.draw_filled_quad_3d(
-            corners[2], corners[3], corners[7], corners[6], color
-        )
-        # Left face (x-)
-        self.renderer.draw_filled_quad_3d(
-            corners[0], corners[1], corners[3], corners[2], color
-        )
-        # Right face (x+)
-        self.renderer.draw_filled_quad_3d(
-            corners[4], corners[5], corners[7], corners[6], color
-        )
-        # Top face (z+)
-        self.renderer.draw_filled_quad_3d(
-            corners[1], corners[3], corners[7], corners[5], color
-        )
-        # Bottom face (z-)
-        self.renderer.draw_filled_quad_3d(
-            corners[0], corners[2], corners[6], corners[4], color
-        )
+        self.renderer.draw_box(center, identity, half_extents, color)
 
     fn _draw_body[DTYPE: DType](
-        self,
+        mut self,
         index: Int,
         pos_x: Float64,
         pos_y: Float64,
@@ -530,79 +350,27 @@ struct Physics3DRenderer(Movable):
     ):
         """Draw a body based on its geometry type with optional rotation."""
         if geom_type == GEOM_CAPSULE:
-            self._draw_capsule_rotated(pos_x, pos_y, pos_z, radius, half_length, qx, qy, qz, qw, color)
+            try:
+                self._draw_capsule_rotated(pos_x, pos_y, pos_z, radius, half_length, qx, qy, qz, qw, color)
+            except:
+                pass
         elif geom_type == GEOM_BOX:
             self._draw_box(pos_x, pos_y, pos_z, half_x, half_y, half_z, color)
         else:  # GEOM_SPHERE or default
             self._draw_sphere(pos_x, pos_y, pos_z, radius, color)
 
-    fn _draw_shadow_for_geom(
-        self,
-        pos_x: Float64,
-        pos_y: Float64,
-        geom_type: Int,
-        radius: Float64,
-        half_length: Float64,
-        half_x: Float64,
-        half_y: Float64,
-        ground_z: Float64,
-    ):
-        """Draw shadow on ground based on geometry type."""
-        var shadow_z = ground_z + 0.001
-
-        if geom_type == GEOM_CAPSULE:
-            # Capsule shadow: elongated ellipse
-            var shadow_radius_x = radius * 1.2
-            var shadow_radius_y = radius * 1.2
-            var num_segments = 12
-
-            for i in range(num_segments):
-                var angle0 = 2.0 * pi * Float64(i) / Float64(num_segments)
-                var angle1 = 2.0 * pi * Float64(i + 1) / Float64(num_segments)
-
-                var x0 = pos_x + shadow_radius_x * cos(angle0)
-                var y0 = pos_y + shadow_radius_y * sin(angle0)
-                var x1 = pos_x + shadow_radius_x * cos(angle1)
-                var y1 = pos_y + shadow_radius_y * sin(angle1)
-
-                self.renderer.draw_filled_quad_3d(
-                    Vec3(pos_x, pos_y, shadow_z),
-                    Vec3(x0, y0, shadow_z),
-                    Vec3(x1, y1, shadow_z),
-                    Vec3(pos_x, pos_y, shadow_z),
-                    Physics3DColors.shadow(),
-                )
-
-        elif geom_type == GEOM_BOX:
-            # Box shadow: rectangle
-            self.renderer.draw_filled_quad_3d(
-                Vec3(pos_x - half_x, pos_y - half_y, shadow_z),
-                Vec3(pos_x + half_x, pos_y - half_y, shadow_z),
-                Vec3(pos_x + half_x, pos_y + half_y, shadow_z),
-                Vec3(pos_x - half_x, pos_y + half_y, shadow_z),
-                Physics3DColors.shadow(),
-            )
-
-        else:  # GEOM_SPHERE
-            self._draw_shadow(pos_x, pos_y, radius, ground_z)
-
     fn _draw_contact(
-        self, pos_x: Float64, pos_y: Float64, pos_z: Float64, color: Color3D
+        mut self, pos_x: Float64, pos_y: Float64, pos_z: Float64, color: Color3D
     ):
-        """Draw contact point indicator."""
-        var contact_pos = Vec3(pos_x, pos_y, pos_z + 0.02)
-
-        var screen_pos = self.renderer.camera.project_to_screen(contact_pos)
-        if screen_pos[2]:
-            self.renderer.draw_filled_circle_2d(
-                screen_pos[0],
-                screen_pos[1],
-                6,
-                color,
-            )
+        """Draw contact point indicator as a small sphere."""
+        self.renderer.draw_sphere(
+            center=Vec3(pos_x, pos_y, pos_z + 0.02),
+            radius=0.02,
+            color=color,
+        )
 
     fn _draw_velocity(
-        self,
+        mut self,
         pos_x: Float64,
         pos_y: Float64,
         pos_z: Float64,
@@ -621,16 +389,14 @@ struct Physics3DRenderer(Movable):
             pos_x + vel_x * scale, pos_y + vel_y * scale, pos_z + vel_z * scale
         )
 
-        from render3d.shapes3d import WireframeLine
-
-        var lines = List[WireframeLine]()
-        lines.append(WireframeLine(pos, arrow_end))
-
-        self.renderer.draw_lines_3d(lines, Physics3DColors.velocity())
+        self.renderer.draw_line_3d(pos, arrow_end, Physics3DColors.velocity())
 
     fn delay(self, ms: Int) -> None:
         """Delay for given milliseconds."""
-        self.renderer.delay(ms)
+        try:
+            self.renderer.delay_ms(ms)
+        except:
+            pass
 
     fn is_open(self) -> Bool:
         """Check if renderer window is still open."""
@@ -654,30 +420,14 @@ struct Physics3DRenderer(Movable):
         if not self.initialized:
             return
 
-        from render3d.shapes3d import WireframeLine
-
         # Begin frame
         self.renderer.begin_frame()
 
-        # Draw ground (chessboard pattern)
-        self._draw_ground(Float64(model.ground_z))
+        # Draw ground (GPU shader checkerboard)
+        self.renderer.draw_ground_grid(0.0, 10.0, Float64(model.ground_z))
 
         # Draw coordinate axes
         self.renderer.draw_coordinate_axes(Vec3(0.0, 0.0, 0.01), 0.5)
-
-        # Draw shadows for all bodies
-        if self.show_shadows:
-            for i in range(NUM_BODIES):
-                self._draw_shadow_for_geom(
-                    Float64(data.positions[i * 3 + 0]),
-                    Float64(data.positions[i * 3 + 1]),
-                    model.geom_types[i],
-                    Float64(model.radii[i]),
-                    Float64(model.half_lengths[i]),
-                    Float64(model.half_x[i]),
-                    Float64(model.half_y[i]),
-                    Float64(model.ground_z),
-                )
 
         # Draw joint links (lines between pivot and bodies)
         for j_idx in range(model.num_joints):
@@ -707,14 +457,11 @@ struct Physics3DRenderer(Movable):
                 parent_z = Float64(data.positions[parent_body * 3 + 2])
 
             # Draw link line
-            var lines = List[WireframeLine]()
-            lines.append(
-                WireframeLine(
-                    Vec3(parent_x, parent_y, parent_z),
-                    Vec3(child_x, child_y, child_z),
-                )
+            self.renderer.draw_line_3d(
+                Vec3(parent_x, parent_y, parent_z),
+                Vec3(child_x, child_y, child_z),
+                Physics3DColors.joint_link(),
             )
-            self.renderer.draw_lines_3d(lines, Physics3DColors.joint_link())
 
             # Draw pivot point if world-anchored
             if parent_body < 0:
@@ -771,17 +518,15 @@ struct Physics3DRenderer(Movable):
                 )
 
         # End frame
-        self.renderer.end_frame()
+        try:
+            self.renderer.end_frame()
+        except:
+            pass
 
-    fn _draw_pivot(self, pos_x: Float64, pos_y: Float64, pos_z: Float64):
-        """Draw pivot point indicator (small circle)."""
-        var pivot_pos = Vec3(pos_x, pos_y, pos_z)
-
-        var screen_pos = self.renderer.camera.project_to_screen(pivot_pos)
-        if screen_pos[2]:
-            self.renderer.draw_filled_circle_2d(
-                screen_pos[0],
-                screen_pos[1],
-                8,
-                Physics3DColors.pivot(),
-            )
+    fn _draw_pivot(mut self, pos_x: Float64, pos_y: Float64, pos_z: Float64):
+        """Draw pivot point indicator (small sphere)."""
+        self.renderer.draw_sphere(
+            center=Vec3(pos_x, pos_y, pos_z),
+            radius=0.03,
+            color=Physics3DColors.pivot(),
+        )

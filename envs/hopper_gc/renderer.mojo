@@ -1,9 +1,9 @@
-"""HopperGC Renderer using the render3d wireframe renderer.
+"""HopperGC Renderer using the GPU-accelerated Renderer3D.
 
 Provides visualization of the HopperGC environment with:
-- Capsule bodies for each body segment
+- GPU-rendered capsule bodies for each body segment
 - Color-coded body parts (torso, thigh, leg, foot)
-- Ground plane and coordinate axes
+- Procedural checkerboard ground plane
 - Orbital camera control for interactive viewing
 
 Implements EnvRenderer3D trait for integration with evaluation code.
@@ -15,7 +15,6 @@ body orientations but don't properly update body positions to account for
 rotation around joint pivots. The renderer itself is correct.
 """
 
-from math import cos, sin, pi
 from math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
 from render3d import Renderer3D, Camera3D, Color3D
 from core import EnvRenderer3D
@@ -53,11 +52,6 @@ struct HopperGCColors:
         return Color3D(220, 80, 80)
 
     @staticmethod
-    fn ground() -> Color3D:
-        """Ground grid color."""
-        return Color3D(60, 80, 60)
-
-    @staticmethod
     fn velocity() -> Color3D:
         """Velocity indicator color - cyan."""
         return Color3D(0, 255, 255)
@@ -71,7 +65,7 @@ struct HopperGCColors:
 struct HopperGCRenderer(EnvRenderer3D, Movable):
     """Renderer for HopperGC environment.
 
-    Uses filled capsules to visualize each body segment of the hopper.
+    Uses GPU-rendered capsules to visualize each body segment of the hopper.
     Supports interactive camera control for orbit, zoom, and pan.
 
     Implements EnvRenderer3D trait for integration with evaluation code.
@@ -81,7 +75,6 @@ struct HopperGCRenderer(EnvRenderer3D, Movable):
     var initialized: Bool
     var follow_hopper: Bool
     var show_velocity: Bool
-    var show_shadows: Bool
 
     # Body dimensions (matching physics - set in render call or use defaults)
     var torso_radius: Float64
@@ -102,7 +95,6 @@ struct HopperGCRenderer(EnvRenderer3D, Movable):
         height: Int = 576,
         follow_hopper: Bool = True,
         show_velocity: Bool = True,
-        show_shadows: Bool = True,
         # Body dimensions (matching MuJoCo Hopper defaults)
         torso_radius: Float64 = 0.05,
         torso_half_length: Float64 = 0.2,
@@ -120,7 +112,6 @@ struct HopperGCRenderer(EnvRenderer3D, Movable):
             height: Window height in pixels.
             follow_hopper: Whether camera follows the hopper's x position.
             show_velocity: Whether to show velocity indicator.
-            show_shadows: Whether to show shadows on ground.
             torso_radius: Torso capsule radius.
             torso_half_length: Torso capsule half-length.
             thigh_radius: Thigh capsule radius.
@@ -163,7 +154,6 @@ struct HopperGCRenderer(EnvRenderer3D, Movable):
         self.initialized = False
         self.follow_hopper = follow_hopper
         self.show_velocity = show_velocity
-        self.show_shadows = show_shadows
 
     fn __moveinit__(out self, deinit other: Self):
         """Move constructor - transfers ownership of renderer."""
@@ -171,7 +161,6 @@ struct HopperGCRenderer(EnvRenderer3D, Movable):
         self.initialized = other.initialized
         self.follow_hopper = other.follow_hopper
         self.show_velocity = other.show_velocity
-        self.show_shadows = other.show_shadows
         self.torso_radius = other.torso_radius
         self.torso_half_length = other.torso_half_length
         self.thigh_radius = other.thigh_radius
@@ -237,9 +226,9 @@ struct HopperGCRenderer(EnvRenderer3D, Movable):
         # Begin frame
         self.renderer.begin_frame()
 
-        # Draw ground grid (centered on hopper if following)
+        # Draw ground grid (GPU shader checkerboard)
         var grid_center_x = torso_pos.x if self.follow_hopper else 0.0
-        self._draw_ground_grid(grid_center_x)
+        self.renderer.draw_ground_grid(grid_center_x)
 
         # Draw coordinate axes
         if self.follow_hopper:
@@ -249,158 +238,28 @@ struct HopperGCRenderer(EnvRenderer3D, Movable):
         else:
             self.renderer.draw_coordinate_axes(Vec3(0.0, 0.0, 0.0), 0.2)
 
-        # Draw shadows first (under the hopper)
-        if self.show_shadows:
-            self._draw_shadows(torso_pos, thigh_pos, leg_pos, foot_pos)
-
         # Draw all body capsules
-        self._draw_torso(torso_pos, torso_quat)
-        self._draw_thigh(thigh_pos, thigh_quat)
-        self._draw_leg(leg_pos, leg_quat)
-        self._draw_foot(foot_pos, foot_quat)
+        try:
+            self._draw_torso(torso_pos, torso_quat)
+            self._draw_thigh(thigh_pos, thigh_quat)
+            self._draw_leg(leg_pos, leg_quat)
+            self._draw_foot(foot_pos, foot_quat)
+        except:
+            pass
 
         # Draw velocity indicator
         if self.show_velocity:
             self._draw_velocity_indicator(torso_pos, vel_x)
 
         # End frame
-        self.renderer.end_frame()
+        try:
+            self.renderer.end_frame()
+        except:
+            pass
 
-    fn _draw_ground_grid(self, center_x: Float64):
-        """Draw chessboard ground pattern centered at given x position."""
-        var tile_size = 0.4
-        var num_tiles_x = 16
-        var num_tiles_y = 8
-
-        var tile_center_x = Float64(Int(center_x / tile_size)) * tile_size
-
-        for i in range(-num_tiles_x // 2, num_tiles_x // 2):
-            for j in range(-num_tiles_y // 2, num_tiles_y // 2):
-                var x0 = tile_center_x + Float64(i) * tile_size
-                var y0 = Float64(j) * tile_size
-                var x1 = x0 + tile_size
-                var y1 = y0 + tile_size
-
-                var is_light = (i + j) % 2 == 0
-
-                if is_light:
-                    self.renderer.draw_filled_quad_3d(
-                        Vec3(x0, y0, 0.0),
-                        Vec3(x1, y0, 0.0),
-                        Vec3(x1, y1, 0.0),
-                        Vec3(x0, y1, 0.0),
-                        Color3D(140, 140, 120),
-                    )
-                else:
-                    self.renderer.draw_filled_quad_3d(
-                        Vec3(x0, y0, 0.0),
-                        Vec3(x1, y0, 0.0),
-                        Vec3(x1, y1, 0.0),
-                        Vec3(x0, y1, 0.0),
-                        Color3D(80, 80, 70),
-                    )
-
-    fn _draw_shadows(
-        self,
-        torso_pos: Vec3,
-        thigh_pos: Vec3,
-        leg_pos: Vec3,
-        foot_pos: Vec3,
-    ):
-        """Draw shadows on the ground for all body parts."""
-        var shadow_color = Color3D(30, 30, 30)
-        var ground_z = 0.001
-
-        # Torso shadow (elongated ellipse)
-        self._draw_ellipse_shadow(
-            torso_pos.x,
-            torso_pos.y,
-            ground_z,
-            self.torso_half_length + 0.02,
-            self.torso_radius * 2,
-            shadow_color,
-        )
-
-        # Thigh shadow
-        self._draw_circle_shadow(
-            thigh_pos.x, thigh_pos.y, ground_z, self.thigh_radius * 1.5, shadow_color
-        )
-
-        # Leg shadow
-        self._draw_circle_shadow(
-            leg_pos.x, leg_pos.y, ground_z, self.leg_radius * 1.5, shadow_color
-        )
-
-        # Foot shadow (elongated)
-        self._draw_ellipse_shadow(
-            foot_pos.x,
-            foot_pos.y,
-            ground_z,
-            self.foot_half_length + 0.02,
-            self.foot_radius * 2,
-            shadow_color,
-        )
-
-    fn _draw_circle_shadow(
-        self,
-        x: Float64,
-        y: Float64,
-        z: Float64,
-        radius: Float64,
-        color: Color3D,
-    ):
-        """Draw a circular shadow on the ground."""
-        var num_segments = 12
-
-        for i in range(num_segments):
-            var angle0 = 2.0 * pi * Float64(i) / Float64(num_segments)
-            var angle1 = 2.0 * pi * Float64(i + 1) / Float64(num_segments)
-
-            var x0 = x + radius * cos(angle0)
-            var y0 = y + radius * sin(angle0)
-            var x1 = x + radius * cos(angle1)
-            var y1 = y + radius * sin(angle1)
-
-            self.renderer.draw_filled_quad_3d(
-                Vec3(x, y, z),
-                Vec3(x0, y0, z),
-                Vec3(x1, y1, z),
-                Vec3(x, y, z),
-                color,
-            )
-
-    fn _draw_ellipse_shadow(
-        self,
-        x: Float64,
-        y: Float64,
-        z: Float64,
-        radius_x: Float64,
-        radius_y: Float64,
-        color: Color3D,
-    ):
-        """Draw an elliptical shadow on the ground."""
-        var num_segments = 16
-
-        for i in range(num_segments):
-            var angle0 = 2.0 * pi * Float64(i) / Float64(num_segments)
-            var angle1 = 2.0 * pi * Float64(i + 1) / Float64(num_segments)
-
-            var x0 = x + radius_x * cos(angle0)
-            var y0 = y + radius_y * sin(angle0)
-            var x1 = x + radius_x * cos(angle1)
-            var y1 = y + radius_y * sin(angle1)
-
-            self.renderer.draw_filled_quad_3d(
-                Vec3(x, y, z),
-                Vec3(x0, y0, z),
-                Vec3(x1, y1, z),
-                Vec3(x, y, z),
-                color,
-            )
-
-    fn _draw_torso(self, pos: Vec3, quat: Quat):
+    fn _draw_torso(mut self, pos: Vec3, quat: Quat) raises:
         """Draw the torso capsule (vertical)."""
-        self.renderer.draw_shaded_capsule_2d(
+        self.renderer.draw_capsule(
             center=pos,
             orientation=quat,
             radius=self.torso_radius * Self.VISUAL_RADIUS_SCALE,
@@ -409,9 +268,9 @@ struct HopperGCRenderer(EnvRenderer3D, Movable):
             color=HopperGCColors.torso(),
         )
 
-    fn _draw_thigh(self, pos: Vec3, quat: Quat):
+    fn _draw_thigh(mut self, pos: Vec3, quat: Quat) raises:
         """Draw the thigh capsule (vertical)."""
-        self.renderer.draw_shaded_capsule_2d(
+        self.renderer.draw_capsule(
             center=pos,
             orientation=quat,
             radius=self.thigh_radius * Self.VISUAL_RADIUS_SCALE,
@@ -420,9 +279,9 @@ struct HopperGCRenderer(EnvRenderer3D, Movable):
             color=HopperGCColors.thigh(),
         )
 
-    fn _draw_leg(self, pos: Vec3, quat: Quat):
+    fn _draw_leg(mut self, pos: Vec3, quat: Quat) raises:
         """Draw the leg capsule (vertical)."""
-        self.renderer.draw_shaded_capsule_2d(
+        self.renderer.draw_capsule(
             center=pos,
             orientation=quat,
             radius=self.leg_radius * Self.VISUAL_RADIUS_SCALE,
@@ -431,11 +290,9 @@ struct HopperGCRenderer(EnvRenderer3D, Movable):
             color=HopperGCColors.leg(),
         )
 
-    fn _draw_foot(self, pos: Vec3, quat: Quat):
+    fn _draw_foot(mut self, pos: Vec3, quat: Quat) raises:
         """Draw the foot capsule (horizontal, rotated 90 deg around Y)."""
-        # The foot is already rotated by the quaternion from physics
-        # So we just draw it along Z-axis and let the quat rotate it
-        self.renderer.draw_shaded_capsule_2d(
+        self.renderer.draw_capsule(
             center=pos,
             orientation=quat,
             radius=self.foot_radius * Self.VISUAL_RADIUS_SCALE,
@@ -444,7 +301,7 @@ struct HopperGCRenderer(EnvRenderer3D, Movable):
             color=HopperGCColors.foot(),
         )
 
-    fn _draw_velocity_indicator(self, torso_pos: Vec3, vel_x: Float64):
+    fn _draw_velocity_indicator(mut self, torso_pos: Vec3, vel_x: Float64):
         """Draw a velocity indicator arrow above the torso."""
         var arrow_start = Vec3(torso_pos.x, torso_pos.y, torso_pos.z + 0.25)
         var arrow_length = vel_x * 0.15
@@ -452,37 +309,31 @@ struct HopperGCRenderer(EnvRenderer3D, Movable):
             arrow_start.x + arrow_length, arrow_start.y, arrow_start.z
         )
 
-        from render3d.shapes3d import WireframeLine
-
-        var lines = List[WireframeLine]()
-        lines.append(WireframeLine(arrow_start, arrow_end))
+        # Main arrow line
+        self.renderer.draw_line_3d(arrow_start, arrow_end, HopperGCColors.velocity())
 
         # Add arrowhead if velocity is significant
         if abs(arrow_length) > 0.03:
             var head_size = 0.04
             var direction = 1.0 if arrow_length > 0 else -1.0
-            lines.append(
-                WireframeLine(
-                    arrow_end,
-                    Vec3(
-                        arrow_end.x - head_size * direction,
-                        arrow_end.y,
-                        arrow_end.z + head_size,
-                    ),
-                )
+            self.renderer.draw_line_3d(
+                arrow_end,
+                Vec3(
+                    arrow_end.x - head_size * direction,
+                    arrow_end.y,
+                    arrow_end.z + head_size,
+                ),
+                HopperGCColors.velocity(),
             )
-            lines.append(
-                WireframeLine(
-                    arrow_end,
-                    Vec3(
-                        arrow_end.x - head_size * direction,
-                        arrow_end.y,
-                        arrow_end.z - head_size,
-                    ),
-                )
+            self.renderer.draw_line_3d(
+                arrow_end,
+                Vec3(
+                    arrow_end.x - head_size * direction,
+                    arrow_end.y,
+                    arrow_end.z - head_size,
+                ),
+                HopperGCColors.velocity(),
             )
-
-        self.renderer.draw_lines_3d(lines, HopperGCColors.velocity())
 
     fn orbit_camera(mut self, delta_theta: Float64, delta_phi: Float64) -> None:
         """Orbit camera around target."""
@@ -494,7 +345,10 @@ struct HopperGCRenderer(EnvRenderer3D, Movable):
 
     fn delay(self, ms: Int) -> None:
         """Delay for given milliseconds."""
-        self.renderer.delay(ms)
+        try:
+            self.renderer.delay_ms(ms)
+        except:
+            pass
 
     # =========================================================================
     # EnvRenderer Trait Implementation

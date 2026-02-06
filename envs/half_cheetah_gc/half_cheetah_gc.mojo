@@ -1332,7 +1332,6 @@ struct HalfCheetahGC[DTYPE: DType = DType.float64](
             height=720,
             follow_cheetah=True,
             show_velocity=True,
-            show_shadows=True,
         )
         renderer.init()
 

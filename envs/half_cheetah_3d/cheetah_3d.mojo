@@ -1458,7 +1458,6 @@ struct HalfCheetah3D[DTYPE: DType = DType.float32](
             height=576,
             follow_cheetah=True,
             show_velocity=True,
-            show_shadows=True,
         )
         renderer.init()
 

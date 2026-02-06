@@ -82,7 +82,6 @@ fn main() raises:
         width=1024,
         height=768,
         show_velocity=True,
-        show_shadows=True,
         show_contacts=True,
     )
     renderer.init()

@@ -14,7 +14,6 @@ from render3d import (
     Camera3D,
     Color3D,
 )
-from render3d.shapes3d import WireframeLine
 from math3d import Vec3, Quat
 from physics3d_v2.types import Model, Data
 from physics3d_v2.integrator import ImpulseIntegrator
@@ -115,7 +114,7 @@ fn main() raises:
         draw_axes=True,
     )
 
-    # Initialize SDL2
+    # Initialize SDL
     var title = String("Pendulum Demo - Hinge Joint")
     renderer.init(title)
 
@@ -147,38 +146,21 @@ fn main() raises:
             center=Vec3(pivot_x, pivot_y, pivot_z),
             radius=0.05,
             color=Color3D.white(),
-            segments=8,
-            rings=6,
         )
 
         # Draw pendulum rod (line from pivot to bob)
-        var rod = WireframeLine(
+        renderer.draw_line_3d(
             Vec3(pivot_x, pivot_y, pivot_z),
             Vec3(pos_x, pos_y, pos_z),
+            Color3D.yellow(),
         )
-        renderer.draw_line_3d(rod, Color3D.yellow())
 
         # Draw bob (sphere)
         renderer.draw_sphere(
             center=Vec3(pos_x, pos_y, pos_z),
             radius=radius,
             color=Color3D.cyan(),
-            segments=16,
-            rings=12,
         )
-
-        # Draw a shadow on the ground (XY plane at z=0)
-        renderer.draw_sphere(
-            center=Vec3(pos_x, pos_y, 0.01),
-            radius=radius * 0.5,
-            color=Color3D(40, 40, 40),
-            segments=8,
-            rings=4,
-        )
-
-        # Draw trail effect (optional - shows motion history)
-        # We'll draw some ghost spheres at previous positions
-        # This is a simple way to show the pendulum's path
 
         # End frame
         renderer.end_frame()
@@ -186,7 +168,7 @@ fn main() raises:
         frame += 1
 
         # Delay to cap at ~60 FPS
-        renderer.delay(16)
+        renderer.delay_ms(16)
 
         # Print status periodically
         if frame % 120 == 0:

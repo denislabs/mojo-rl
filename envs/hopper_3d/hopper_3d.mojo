@@ -794,7 +794,6 @@ struct Hopper3D[DTYPE: DType = DType.float64](
             height=576,
             follow_hopper=True,
             show_velocity=True,
-            show_shadows=True,
         )
         renderer.init()
 

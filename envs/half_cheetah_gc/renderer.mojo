@@ -1,15 +1,14 @@
-"""HalfCheetahGC Renderer using the render3d wireframe renderer.
+"""HalfCheetahGC Renderer using the GPU-accelerated Renderer3D.
 
 Provides visualization of the HalfCheetahGC environment with:
-- Capsule bodies for each body segment (8 total: torso, head, and 6 leg segments)
+- GPU-rendered capsule bodies for each body segment (8 total: torso, head, and 6 leg segments)
 - Color-coded body parts (torso, head, back leg, front leg)
-- Ground plane and coordinate axes
+- Procedural checkerboard ground plane
 - Orbital camera control for interactive viewing
 
 Implements EnvRenderer3D trait for integration with evaluation code.
 """
 
-from math import cos, sin, pi
 from math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
 from render3d import Renderer3D, Camera3D, Color3D
 from core import EnvRenderer3D
@@ -92,11 +91,6 @@ struct HalfCheetahGCColors:
         return Color3D(230, 153, 153)
 
     @staticmethod
-    fn ground() -> Color3D:
-        """Ground grid color."""
-        return Color3D(60, 80, 60)
-
-    @staticmethod
     fn velocity() -> Color3D:
         """Velocity indicator color - cyan."""
         return Color3D(0, 255, 255)
@@ -110,7 +104,7 @@ struct HalfCheetahGCColors:
 struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
     """Renderer for HalfCheetahGC environment.
 
-    Uses filled capsules to visualize each body segment of the half cheetah.
+    Uses GPU-rendered capsules to visualize each body segment of the half cheetah.
     Supports interactive camera control for orbit, zoom, and pan.
 
     Implements EnvRenderer3D trait for integration with evaluation code.
@@ -120,7 +114,6 @@ struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
     var initialized: Bool
     var follow_cheetah: Bool
     var show_velocity: Bool
-    var show_shadows: Bool
 
     # Body dimensions (matching physics)
     var capsule_radius: Float64
@@ -142,7 +135,6 @@ struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
         height: Int = 720,
         follow_cheetah: Bool = True,
         show_velocity: Bool = True,
-        show_shadows: Bool = True,
         capsule_radius: Float64 = CAPSULE_RADIUS,
         torso_half_length: Float64 = TORSO_HALF_LENGTH,
         head_half_length: Float64 = HEAD_HALF_LENGTH,
@@ -160,7 +152,6 @@ struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
             height: Window height in pixels.
             follow_cheetah: Whether camera follows the cheetah's x position.
             show_velocity: Whether to show velocity indicator.
-            show_shadows: Whether to show shadows on ground.
             capsule_radius: Radius for all body capsules.
             torso_half_length: Torso capsule half-length.
             head_half_length: Head capsule half-length.
@@ -205,7 +196,6 @@ struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
         self.initialized = False
         self.follow_cheetah = follow_cheetah
         self.show_velocity = show_velocity
-        self.show_shadows = show_shadows
 
     fn __moveinit__(out self, deinit other: Self):
         """Move constructor - transfers ownership of renderer."""
@@ -213,7 +203,6 @@ struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
         self.initialized = other.initialized
         self.follow_cheetah = other.follow_cheetah
         self.show_velocity = other.show_velocity
-        self.show_shadows = other.show_shadows
         self.capsule_radius = other.capsule_radius
         self.torso_half_length = other.torso_half_length
         self.head_half_length = other.head_half_length
@@ -273,9 +262,9 @@ struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
         # Begin frame
         self.renderer.begin_frame()
 
-        # Draw ground grid (centered on cheetah if following)
+        # Draw ground grid (GPU shader checkerboard)
         var grid_center_x = torso_pos.x if self.follow_cheetah else 0.0
-        self._draw_ground_grid(grid_center_x)
+        self.renderer.draw_ground_grid(grid_center_x)
 
         # Draw coordinate axes
         if self.follow_cheetah:
@@ -285,195 +274,32 @@ struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
         else:
             self.renderer.draw_coordinate_axes(Vec3(0.0, 0.0, 0.0), 0.2)
 
-        # Draw shadows first (under the cheetah)
-        if self.show_shadows:
-            self._draw_shadows(positions)
-
         # Draw all body capsules
-        self._draw_torso(positions[BODY_TORSO], quaternions[BODY_TORSO])
-        self._draw_head(positions[BODY_HEAD], quaternions[BODY_HEAD])
-        self._draw_back_thigh(positions[BODY_BTHIGH], quaternions[BODY_BTHIGH])
-        self._draw_back_shin(positions[BODY_BSHIN], quaternions[BODY_BSHIN])
-        self._draw_back_foot(positions[BODY_BFOOT], quaternions[BODY_BFOOT])
-        self._draw_front_thigh(positions[BODY_FTHIGH], quaternions[BODY_FTHIGH])
-        self._draw_front_shin(positions[BODY_FSHIN], quaternions[BODY_FSHIN])
-        self._draw_front_foot(positions[BODY_FFOOT], quaternions[BODY_FFOOT])
+        try:
+            self._draw_torso(positions[BODY_TORSO], quaternions[BODY_TORSO])
+            self._draw_head(positions[BODY_HEAD], quaternions[BODY_HEAD])
+            self._draw_back_thigh(positions[BODY_BTHIGH], quaternions[BODY_BTHIGH])
+            self._draw_back_shin(positions[BODY_BSHIN], quaternions[BODY_BSHIN])
+            self._draw_back_foot(positions[BODY_BFOOT], quaternions[BODY_BFOOT])
+            self._draw_front_thigh(positions[BODY_FTHIGH], quaternions[BODY_FTHIGH])
+            self._draw_front_shin(positions[BODY_FSHIN], quaternions[BODY_FSHIN])
+            self._draw_front_foot(positions[BODY_FFOOT], quaternions[BODY_FFOOT])
+        except:
+            pass
 
         # Draw velocity indicator
         if self.show_velocity:
             self._draw_velocity_indicator(torso_pos, vel_x)
 
         # End frame
-        self.renderer.end_frame()
+        try:
+            self.renderer.end_frame()
+        except:
+            pass
 
-    fn _draw_ground_grid(self, center_x: Float64):
-        """Draw chessboard ground pattern centered at given x position."""
-        var tile_size = 0.5
-        var num_tiles_x = 20
-        var num_tiles_y = 8
-
-        var tile_center_x = Float64(Int(center_x / tile_size)) * tile_size
-
-        for i in range(-num_tiles_x // 2, num_tiles_x // 2):
-            for j in range(-num_tiles_y // 2, num_tiles_y // 2):
-                var x0 = tile_center_x + Float64(i) * tile_size
-                var y0 = Float64(j) * tile_size
-                var x1 = x0 + tile_size
-                var y1 = y0 + tile_size
-
-                var is_light = (i + j) % 2 == 0
-
-                if is_light:
-                    self.renderer.draw_filled_quad_3d(
-                        Vec3(x0, y0, 0.0),
-                        Vec3(x1, y0, 0.0),
-                        Vec3(x1, y1, 0.0),
-                        Vec3(x0, y1, 0.0),
-                        Color3D(140, 140, 120),
-                    )
-                else:
-                    self.renderer.draw_filled_quad_3d(
-                        Vec3(x0, y0, 0.0),
-                        Vec3(x1, y0, 0.0),
-                        Vec3(x1, y1, 0.0),
-                        Vec3(x0, y1, 0.0),
-                        Color3D(80, 80, 70),
-                    )
-
-    fn _draw_shadows(self, positions: List[Vec3]):
-        """Draw shadows on the ground for all body parts."""
-        var shadow_color = Color3D(30, 30, 30)
-        var ground_z = 0.001
-
-        # Torso shadow (elongated ellipse - horizontal along X)
-        self._draw_ellipse_shadow(
-            positions[BODY_TORSO].x,
-            positions[BODY_TORSO].y,
-            ground_z,
-            self.torso_half_length + 0.02,
-            self.capsule_radius * 2,
-            shadow_color,
-        )
-
-        # Head shadow (using actual head body position)
-        self._draw_ellipse_shadow(
-            positions[BODY_HEAD].x,
-            positions[BODY_HEAD].y,
-            ground_z,
-            self.head_half_length + 0.01,
-            self.capsule_radius * 1.5,
-            shadow_color,
-        )
-
-        # Back leg shadows
-        self._draw_circle_shadow(
-            positions[BODY_BTHIGH].x,
-            positions[BODY_BTHIGH].y,
-            ground_z,
-            self.capsule_radius * 1.5,
-            shadow_color,
-        )
-        self._draw_circle_shadow(
-            positions[BODY_BSHIN].x,
-            positions[BODY_BSHIN].y,
-            ground_z,
-            self.capsule_radius * 1.5,
-            shadow_color,
-        )
-        self._draw_ellipse_shadow(
-            positions[BODY_BFOOT].x,
-            positions[BODY_BFOOT].y,
-            ground_z,
-            self.bfoot_half_length + 0.01,
-            self.capsule_radius * 2,
-            shadow_color,
-        )
-
-        # Front leg shadows
-        self._draw_circle_shadow(
-            positions[BODY_FTHIGH].x,
-            positions[BODY_FTHIGH].y,
-            ground_z,
-            self.capsule_radius * 1.5,
-            shadow_color,
-        )
-        self._draw_circle_shadow(
-            positions[BODY_FSHIN].x,
-            positions[BODY_FSHIN].y,
-            ground_z,
-            self.capsule_radius * 1.5,
-            shadow_color,
-        )
-        self._draw_ellipse_shadow(
-            positions[BODY_FFOOT].x,
-            positions[BODY_FFOOT].y,
-            ground_z,
-            self.ffoot_half_length + 0.01,
-            self.capsule_radius * 2,
-            shadow_color,
-        )
-
-    fn _draw_circle_shadow(
-        self,
-        x: Float64,
-        y: Float64,
-        z: Float64,
-        radius: Float64,
-        color: Color3D,
-    ):
-        """Draw a circular shadow on the ground."""
-        var num_segments = 12
-
-        for i in range(num_segments):
-            var angle0 = 2.0 * pi * Float64(i) / Float64(num_segments)
-            var angle1 = 2.0 * pi * Float64(i + 1) / Float64(num_segments)
-
-            var x0 = x + radius * cos(angle0)
-            var y0 = y + radius * sin(angle0)
-            var x1 = x + radius * cos(angle1)
-            var y1 = y + radius * sin(angle1)
-
-            self.renderer.draw_filled_quad_3d(
-                Vec3(x, y, z),
-                Vec3(x0, y0, z),
-                Vec3(x1, y1, z),
-                Vec3(x, y, z),
-                color,
-            )
-
-    fn _draw_ellipse_shadow(
-        self,
-        x: Float64,
-        y: Float64,
-        z: Float64,
-        radius_x: Float64,
-        radius_y: Float64,
-        color: Color3D,
-    ):
-        """Draw an elliptical shadow on the ground."""
-        var num_segments = 16
-
-        for i in range(num_segments):
-            var angle0 = 2.0 * pi * Float64(i) / Float64(num_segments)
-            var angle1 = 2.0 * pi * Float64(i + 1) / Float64(num_segments)
-
-            var x0 = x + radius_x * cos(angle0)
-            var y0 = y + radius_y * sin(angle0)
-            var x1 = x + radius_x * cos(angle1)
-            var y1 = y + radius_y * sin(angle1)
-
-            self.renderer.draw_filled_quad_3d(
-                Vec3(x, y, z),
-                Vec3(x0, y0, z),
-                Vec3(x1, y1, z),
-                Vec3(x, y, z),
-                color,
-            )
-
-    fn _draw_torso(self, pos: Vec3, quat: Quat):
+    fn _draw_torso(mut self, pos: Vec3, quat: Quat) raises:
         """Draw the torso capsule (horizontal along X-axis)."""
-        # Torso is horizontal, so we draw along Z-axis and let the quat rotate it
-        self.renderer.draw_shaded_capsule_2d(
+        self.renderer.draw_capsule(
             center=pos,
             orientation=quat,
             radius=self.capsule_radius * Self.VISUAL_RADIUS_SCALE,
@@ -482,9 +308,9 @@ struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
             color=HalfCheetahGCColors.torso(),
         )
 
-    fn _draw_head(self, pos: Vec3, quat: Quat):
+    fn _draw_head(mut self, pos: Vec3, quat: Quat) raises:
         """Draw the head capsule using its physics position and orientation."""
-        self.renderer.draw_shaded_capsule_2d(
+        self.renderer.draw_capsule(
             center=pos,
             orientation=quat,
             radius=self.capsule_radius * Self.VISUAL_RADIUS_SCALE,
@@ -493,9 +319,9 @@ struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
             color=HalfCheetahGCColors.head(),
         )
 
-    fn _draw_back_thigh(self, pos: Vec3, quat: Quat):
+    fn _draw_back_thigh(mut self, pos: Vec3, quat: Quat) raises:
         """Draw the back thigh capsule (vertical)."""
-        self.renderer.draw_shaded_capsule_2d(
+        self.renderer.draw_capsule(
             center=pos,
             orientation=quat,
             radius=self.capsule_radius * Self.VISUAL_RADIUS_SCALE,
@@ -504,9 +330,9 @@ struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
             color=HalfCheetahGCColors.back_thigh(),
         )
 
-    fn _draw_back_shin(self, pos: Vec3, quat: Quat):
+    fn _draw_back_shin(mut self, pos: Vec3, quat: Quat) raises:
         """Draw the back shin capsule (vertical)."""
-        self.renderer.draw_shaded_capsule_2d(
+        self.renderer.draw_capsule(
             center=pos,
             orientation=quat,
             radius=self.capsule_radius * Self.VISUAL_RADIUS_SCALE,
@@ -515,9 +341,9 @@ struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
             color=HalfCheetahGCColors.back_shin(),
         )
 
-    fn _draw_back_foot(self, pos: Vec3, quat: Quat):
+    fn _draw_back_foot(mut self, pos: Vec3, quat: Quat) raises:
         """Draw the back foot capsule (horizontal)."""
-        self.renderer.draw_shaded_capsule_2d(
+        self.renderer.draw_capsule(
             center=pos,
             orientation=quat,
             radius=self.capsule_radius * Self.VISUAL_RADIUS_SCALE,
@@ -526,9 +352,9 @@ struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
             color=HalfCheetahGCColors.back_foot(),
         )
 
-    fn _draw_front_thigh(self, pos: Vec3, quat: Quat):
+    fn _draw_front_thigh(mut self, pos: Vec3, quat: Quat) raises:
         """Draw the front thigh capsule (vertical)."""
-        self.renderer.draw_shaded_capsule_2d(
+        self.renderer.draw_capsule(
             center=pos,
             orientation=quat,
             radius=self.capsule_radius * Self.VISUAL_RADIUS_SCALE,
@@ -537,9 +363,9 @@ struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
             color=HalfCheetahGCColors.front_thigh(),
         )
 
-    fn _draw_front_shin(self, pos: Vec3, quat: Quat):
+    fn _draw_front_shin(mut self, pos: Vec3, quat: Quat) raises:
         """Draw the front shin capsule (vertical)."""
-        self.renderer.draw_shaded_capsule_2d(
+        self.renderer.draw_capsule(
             center=pos,
             orientation=quat,
             radius=self.capsule_radius * Self.VISUAL_RADIUS_SCALE,
@@ -548,9 +374,9 @@ struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
             color=HalfCheetahGCColors.front_shin(),
         )
 
-    fn _draw_front_foot(self, pos: Vec3, quat: Quat):
+    fn _draw_front_foot(mut self, pos: Vec3, quat: Quat) raises:
         """Draw the front foot capsule (horizontal)."""
-        self.renderer.draw_shaded_capsule_2d(
+        self.renderer.draw_capsule(
             center=pos,
             orientation=quat,
             radius=self.capsule_radius * Self.VISUAL_RADIUS_SCALE,
@@ -559,7 +385,7 @@ struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
             color=HalfCheetahGCColors.front_foot(),
         )
 
-    fn _draw_velocity_indicator(self, torso_pos: Vec3, vel_x: Float64):
+    fn _draw_velocity_indicator(mut self, torso_pos: Vec3, vel_x: Float64):
         """Draw a velocity indicator arrow above the torso."""
         var arrow_start = Vec3(torso_pos.x, torso_pos.y, torso_pos.z + 0.15)
         var arrow_length = vel_x * 0.1  # Scale velocity for display
@@ -567,37 +393,31 @@ struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
             arrow_start.x + arrow_length, arrow_start.y, arrow_start.z
         )
 
-        from render3d.shapes3d import WireframeLine
-
-        var lines = List[WireframeLine]()
-        lines.append(WireframeLine(arrow_start, arrow_end))
+        # Main arrow line
+        self.renderer.draw_line_3d(arrow_start, arrow_end, HalfCheetahGCColors.velocity())
 
         # Add arrowhead if velocity is significant
         if abs(arrow_length) > 0.03:
             var head_size = 0.04
             var direction = 1.0 if arrow_length > 0 else -1.0
-            lines.append(
-                WireframeLine(
-                    arrow_end,
-                    Vec3(
-                        arrow_end.x - head_size * direction,
-                        arrow_end.y,
-                        arrow_end.z + head_size,
-                    ),
-                )
+            self.renderer.draw_line_3d(
+                arrow_end,
+                Vec3(
+                    arrow_end.x - head_size * direction,
+                    arrow_end.y,
+                    arrow_end.z + head_size,
+                ),
+                HalfCheetahGCColors.velocity(),
             )
-            lines.append(
-                WireframeLine(
-                    arrow_end,
-                    Vec3(
-                        arrow_end.x - head_size * direction,
-                        arrow_end.y,
-                        arrow_end.z - head_size,
-                    ),
-                )
+            self.renderer.draw_line_3d(
+                arrow_end,
+                Vec3(
+                    arrow_end.x - head_size * direction,
+                    arrow_end.y,
+                    arrow_end.z - head_size,
+                ),
+                HalfCheetahGCColors.velocity(),
             )
-
-        self.renderer.draw_lines_3d(lines, HalfCheetahGCColors.velocity())
 
     fn orbit_camera(mut self, delta_theta: Float64, delta_phi: Float64) -> None:
         """Orbit camera around target."""
@@ -609,7 +429,10 @@ struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
 
     fn delay(self, ms: Int) -> None:
         """Delay for given milliseconds."""
-        self.renderer.delay(ms)
+        try:
+            self.renderer.delay_ms(ms)
+        except:
+            pass
 
     # =========================================================================
     # EnvRenderer Trait Implementation
