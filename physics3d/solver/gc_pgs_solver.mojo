@@ -106,8 +106,10 @@ struct GcPGSSolver(GcConstraintSolver):
 
         # Contact body indices
         var contact_body = InlineArray[Int, MC](uninitialized=True)
+        var contact_body_b = InlineArray[Int, MC](uninitialized=True)
         for i in range(MC):
             contact_body[i] = 0
+            contact_body_b[i] = -1
 
         # Phase 1: Precompute contact data
         var J_row = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
@@ -122,6 +124,7 @@ struct GcPGSSolver(GcConstraintSolver):
 
             contact_dist[c] = contact.dist
             contact_body[c] = contact.body_a
+            contact_body_b[c] = contact.body_b
 
             # Compute normal Jacobian row
             compute_contact_jacobian_row[
@@ -129,6 +132,7 @@ struct GcPGSSolver(GcConstraintSolver):
             ](
                 model, data, cdof,
                 contact.body_a,
+                contact.body_b,
                 contact.pos_x, contact.pos_y, contact.pos_z,
                 contact.normal_x, contact.normal_y, contact.normal_z,
                 J_row,
@@ -277,6 +281,7 @@ struct GcPGSSolver(GcConstraintSolver):
             ](
                 model, data, cdof,
                 contact.body_a,
+                contact.body_b,
                 contact.pos_x, contact.pos_y, contact.pos_z,
                 t1_x, t1_y, t1_z,
                 J_t1_row,
@@ -286,6 +291,7 @@ struct GcPGSSolver(GcConstraintSolver):
             ](
                 model, data, cdof,
                 contact.body_a,
+                contact.body_b,
                 contact.pos_x, contact.pos_y, contact.pos_z,
                 t2_x, t2_y, t2_z,
                 J_t2_row,
@@ -419,6 +425,7 @@ struct GcPGSSolver(GcConstraintSolver):
             gc_model_metadata_offset,
             GC_CONTACT_SIZE,
             GC_CONTACT_IDX_BODY_A,
+            GC_CONTACT_IDX_BODY_B,
             GC_CONTACT_IDX_POS_X,
             GC_CONTACT_IDX_POS_Y,
             GC_CONTACT_IDX_POS_Z,
@@ -469,6 +476,7 @@ struct GcPGSSolver(GcConstraintSolver):
         var K_n = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
         var c_dist = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
         var c_body = InlineArray[Int, MC](uninitialized=True)
+        var c_body_b = InlineArray[Int, MC](uninitialized=True)
         var c_px = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
         var c_py = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
         var c_pz = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
@@ -481,6 +489,7 @@ struct GcPGSSolver(GcConstraintSolver):
             K_n[i] = Scalar[DTYPE](1)
             c_dist[i] = Scalar[DTYPE](0)
             c_body[i] = 0
+            c_body_b[i] = -1
             c_px[i] = Scalar[DTYPE](0)
             c_py[i] = Scalar[DTYPE](0)
             c_pz[i] = Scalar[DTYPE](0)
@@ -492,10 +501,12 @@ struct GcPGSSolver(GcConstraintSolver):
         for c in range(nc):
             var c_off = contacts_off + c * GC_CONTACT_SIZE
             var body = Int(rebind[Scalar[DTYPE]](state[env, c_off + GC_CONTACT_IDX_BODY_A]))
+            var body_b = Int(rebind[Scalar[DTYPE]](state[env, c_off + GC_CONTACT_IDX_BODY_B]))
             var dist = rebind[Scalar[DTYPE]](state[env, c_off + GC_CONTACT_IDX_DIST])
 
             c_dist[c] = dist
             c_body[c] = body
+            c_body_b[c] = body_b
 
             if dist >= Scalar[DTYPE](0):
                 continue
@@ -513,7 +524,7 @@ struct GcPGSSolver(GcConstraintSolver):
                 STATE_SIZE, MODEL_SIZE, V_SIZE, CDOF_SIZE, BATCH,
             ](
                 env, state, model, cdof,
-                body, c_px[c], c_py[c], c_pz[c],
+                body, body_b, c_px[c], c_py[c], c_pz[c],
                 c_nx[c], c_ny[c], c_nz[c],
                 J_row,
             )
@@ -545,7 +556,7 @@ struct GcPGSSolver(GcConstraintSolver):
                     STATE_SIZE, MODEL_SIZE, V_SIZE, CDOF_SIZE, BATCH,
                 ](
                     env, state, model, cdof,
-                    c_body[c], c_px[c], c_py[c], c_pz[c],
+                    c_body[c], c_body_b[c], c_px[c], c_py[c], c_pz[c],
                     c_nx[c], c_ny[c], c_nz[c],
                     J_row,
                 )
@@ -634,7 +645,7 @@ struct GcPGSSolver(GcConstraintSolver):
                 STATE_SIZE, MODEL_SIZE, V_SIZE, CDOF_SIZE, BATCH,
             ](
                 env, state, model, cdof,
-                c_body[c], c_px[c], c_py[c], c_pz[c],
+                c_body[c], c_body_b[c], c_px[c], c_py[c], c_pz[c],
                 t1x[c], t1y[c], t1z[c],
                 J_row,
             )
@@ -651,7 +662,7 @@ struct GcPGSSolver(GcConstraintSolver):
                 STATE_SIZE, MODEL_SIZE, V_SIZE, CDOF_SIZE, BATCH,
             ](
                 env, state, model, cdof,
-                c_body[c], c_px[c], c_py[c], c_pz[c],
+                c_body[c], c_body_b[c], c_px[c], c_py[c], c_pz[c],
                 t2x[c], t2y[c], t2z[c],
                 J_row,
             )
@@ -683,7 +694,7 @@ struct GcPGSSolver(GcConstraintSolver):
                     STATE_SIZE, MODEL_SIZE, V_SIZE, CDOF_SIZE, BATCH,
                 ](
                     env, state, model, cdof,
-                    c_body[c], c_px[c], c_py[c], c_pz[c],
+                    c_body[c], c_body_b[c], c_px[c], c_py[c], c_pz[c],
                     t1x[c], t1y[c], t1z[c],
                     J_t_row,
                 )
@@ -701,7 +712,7 @@ struct GcPGSSolver(GcConstraintSolver):
                     STATE_SIZE, MODEL_SIZE, V_SIZE, CDOF_SIZE, BATCH,
                 ](
                     env, state, model, cdof,
-                    c_body[c], c_px[c], c_py[c], c_pz[c],
+                    c_body[c], c_body_b[c], c_px[c], c_py[c], c_pz[c],
                     t2x[c], t2y[c], t2z[c],
                     J_t_row,
                 )
@@ -731,7 +742,7 @@ struct GcPGSSolver(GcConstraintSolver):
                     STATE_SIZE, MODEL_SIZE, V_SIZE, CDOF_SIZE, BATCH,
                 ](
                     env, state, model, cdof,
-                    c_body[c], c_px[c], c_py[c], c_pz[c],
+                    c_body[c], c_body_b[c], c_px[c], c_py[c], c_pz[c],
                     t1x[c], t1y[c], t1z[c],
                     J_row,
                 )
@@ -744,7 +755,7 @@ struct GcPGSSolver(GcConstraintSolver):
                     STATE_SIZE, MODEL_SIZE, V_SIZE, CDOF_SIZE, BATCH,
                 ](
                     env, state, model, cdof,
-                    c_body[c], c_px[c], c_py[c], c_pz[c],
+                    c_body[c], c_body_b[c], c_px[c], c_py[c], c_pz[c],
                     t2x[c], t2y[c], t2z[c],
                     J_t_row,
                 )

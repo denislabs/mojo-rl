@@ -44,10 +44,11 @@ from ..dynamics.mass_matrix import (
     compute_M_inv_from_ldl,
     solve_linear_diagonal,
 )
-from ..dynamics.bias_forces import compute_bias_forces
+from ..dynamics.bias_forces import compute_bias_forces, compute_bias_forces_rne
 from ..dynamics.jacobian import compute_cdof, compute_composite_inertia
 from ..solver.semi_implicit_euler_solver import (
     detect_ground_contacts,
+    detect_body_body_contacts_gc,
     normalize_qpos_quaternions,
     enforce_joint_limits,
 )
@@ -116,6 +117,7 @@ struct ConstraintGcIntegratorWith[SOLVER: GcConstraintSolver](GcIntegrator):
 
         # 2. Collision detection
         detect_ground_contacts(model, data)
+        detect_body_body_contacts_gc(model, data)
 
         # 3. Compute cdof (spatial motion axes per DOF) - needed for full M
         var cdof = InlineArray[Scalar[DTYPE], CDOF_SIZE](uninitialized=True)
@@ -167,8 +169,8 @@ struct ConstraintGcIntegratorWith[SOLVER: GcConstraintSolver](GcIntegrator):
         var bias = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
         for i in range(V_SIZE):
             bias[i] = Scalar[DTYPE](0)
-        compute_bias_forces[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE](
-            model, data, bias
+        compute_bias_forces_rne[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, CDOF_SIZE](
+            model, data, cdof, bias
         )
 
         var f_net = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)

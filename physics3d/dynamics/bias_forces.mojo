@@ -13,17 +13,23 @@ Reference: Featherstone, "Rigid Body Dynamics Algorithms"
 from math import sin, cos
 from layout import LayoutTensor, Layout
 
-from ..types import ModelGC, DataGC
+from ..types import ModelGC, DataGC, _max_one
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
 from ..kinematics.quat_math import quat_rotate, gpu_quat_rotate
 from ..gpu.constants import (
     gc_xpos_offset,
     gc_xquat_offset,
+    gc_xvel_offset,
+    gc_xangvel_offset,
+    gc_qvel_offset,
     gc_model_body_offset,
     gc_model_joint_offset,
     gc_model_metadata_offset,
     GC_BODY_IDX_PARENT,
     GC_BODY_IDX_MASS,
+    GC_BODY_IDX_IXX,
+    GC_BODY_IDX_IYY,
+    GC_BODY_IDX_IZZ,
     GC_JOINT_IDX_TYPE,
     GC_JOINT_IDX_BODY_ID,
     GC_JOINT_IDX_DOF_ADR,
@@ -34,6 +40,8 @@ from ..gpu.constants import (
     GC_JOINT_IDX_AXIS_Y,
     GC_JOINT_IDX_AXIS_Z,
     GC_MODEL_META_IDX_NJOINT,
+    GC_MODEL_META_IDX_GRAVITY_X,
+    GC_MODEL_META_IDX_GRAVITY_Y,
     GC_MODEL_META_IDX_GRAVITY_Z,
     GC_JNT_FREE,
     GC_JNT_BALL,
@@ -509,3 +517,587 @@ fn compute_bias_forces_gpu[
                     var desc_mass = rebind[Scalar[DTYPE]](model[0, desc_body_off + GC_BODY_IDX_MASS])
                     total_mass = total_mass + desc_mass
             bias[dof_adr + 2] = bias[dof_adr + 2] - total_mass * gravity_z
+
+
+# =============================================================================
+# Full RNE Bias Forces (Gravity + Coriolis + Centrifugal) - CPU
+# =============================================================================
+
+
+fn compute_bias_forces_rne[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    V_SIZE: Int,
+    CDOF_SIZE: Int,
+](
+    model: ModelGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    data: DataGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
+    mut bias: InlineArray[Scalar[DTYPE], V_SIZE],
+):
+    """Compute bias forces using full Recursive Newton-Euler Algorithm.
+
+    Computes b(q, qvel) = C(q, qvel)*qvel + g(q) including:
+    - Gravitational forces/torques
+    - Coriolis forces (velocity-dependent coupling between joints)
+    - Centrifugal forces (velocity-dependent self-terms)
+
+    Algorithm (MuJoCo-style, world frame):
+    1. Compute world-frame inertia tensors per body
+    2. Forward pass: propagate spatial accelerations (gravity + cdof_dot*qvel)
+    3. Compute spatial forces: cfrc = I*cacc + cvel x* (I*cvel)
+    4. Backward pass: accumulate forces to parents (with moment transfer)
+    5. Project to joint space: bias[d] = cdof[d] . cfrc[body_of_dof[d]]
+
+    Reference: Featherstone "Rigid Body Dynamics Algorithms", Chapter 5
+    Reference: MuJoCo engine_core_smooth.c mj_rne()
+
+    Args:
+        model: Static model configuration.
+        data: Current state (xpos, xquat, xvel, xangvel from FK + body velocities).
+        cdof: Spatial motion axes per DOF (6*NV elements, from compute_cdof).
+        bias: Output bias force vector (NV elements).
+    """
+    # Initialize output
+    for i in range(NV):
+        bias[i] = Scalar[DTYPE](0)
+
+    # Get gravity
+    var gx = model.gravity[0]
+    var gy = model.gravity[1]
+    var gz = model.gravity[2]
+
+    # Per-body spatial acceleration [angular(3), linear(3)]
+    comptime BODY6_SIZE = _max_one[NBODY * 6]()
+    var cacc = InlineArray[Scalar[DTYPE], BODY6_SIZE](uninitialized=True)
+    for i in range(BODY6_SIZE):
+        cacc[i] = Scalar[DTYPE](0)
+
+    # Per-body spatial force [torque(3), force(3)]
+    var cfrc = InlineArray[Scalar[DTYPE], BODY6_SIZE](uninitialized=True)
+    for i in range(BODY6_SIZE):
+        cfrc[i] = Scalar[DTYPE](0)
+
+    # Per-body world-frame inertia tensor (symmetric: Ixx, Iyy, Izz, Ixy, Ixz, Iyz)
+    var I_world = InlineArray[Scalar[DTYPE], BODY6_SIZE](uninitialized=True)
+    for i in range(BODY6_SIZE):
+        I_world[i] = Scalar[DTYPE](0)
+
+    # =========================================================================
+    # Step 0: Compute world-frame inertia tensors for each body
+    # =========================================================================
+    for b in range(NBODY):
+        var Ixx_local = model.body_inertia[b * 3 + 0]
+        var Iyy_local = model.body_inertia[b * 3 + 1]
+        var Izz_local = model.body_inertia[b * 3 + 2]
+
+        var qx = data.xquat[b * 4 + 0]
+        var qy = data.xquat[b * 4 + 1]
+        var qz = data.xquat[b * 4 + 2]
+        var qw = data.xquat[b * 4 + 3]
+
+        # Rotation matrix from quaternion
+        var r00 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qy * qy + qz * qz)
+        var r10 = Scalar[DTYPE](2) * (qx * qy + qw * qz)
+        var r20 = Scalar[DTYPE](2) * (qx * qz - qw * qy)
+        var r01 = Scalar[DTYPE](2) * (qx * qy - qw * qz)
+        var r11 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qx * qx + qz * qz)
+        var r21 = Scalar[DTYPE](2) * (qy * qz + qw * qx)
+        var r02 = Scalar[DTYPE](2) * (qx * qz + qw * qy)
+        var r12 = Scalar[DTYPE](2) * (qy * qz - qw * qx)
+        var r22 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qx * qx + qy * qy)
+
+        # I_world = R @ diag(Ixx, Iyy, Izz) @ R^T
+        I_world[b * 6 + 0] = Ixx_local * r00 * r00 + Iyy_local * r01 * r01 + Izz_local * r02 * r02  # Ixx
+        I_world[b * 6 + 1] = Ixx_local * r10 * r10 + Iyy_local * r11 * r11 + Izz_local * r12 * r12  # Iyy
+        I_world[b * 6 + 2] = Ixx_local * r20 * r20 + Iyy_local * r21 * r21 + Izz_local * r22 * r22  # Izz
+        I_world[b * 6 + 3] = Ixx_local * r00 * r10 + Iyy_local * r01 * r11 + Izz_local * r02 * r12  # Ixy
+        I_world[b * 6 + 4] = Ixx_local * r00 * r20 + Iyy_local * r01 * r21 + Izz_local * r02 * r22  # Ixz
+        I_world[b * 6 + 5] = Ixx_local * r10 * r20 + Iyy_local * r11 * r21 + Izz_local * r12 * r22  # Iyz
+
+    # =========================================================================
+    # Step 1: Forward pass - compute spatial accelerations (root to leaves)
+    #   cacc[body] = cacc[parent] + sum(cdof_dot[d] * qvel[d])
+    #   where cdof_dot[d] = cvel[parent] x_motion cdof[d]
+    # =========================================================================
+    for b in range(NBODY):
+        var parent = model.body_parent[b]
+
+        if parent < 0:
+            # Root body: gravity as fictitious acceleration
+            # cacc = [0, 0, 0, -gx, -gy, -gz]
+            cacc[b * 6 + 3] = -gx
+            cacc[b * 6 + 4] = -gy
+            cacc[b * 6 + 5] = -gz
+        else:
+            # Copy parent's acceleration
+            for k in range(6):
+                cacc[b * 6 + k] = cacc[parent * 6 + k]
+
+        # Get parent velocity (zero for root bodies)
+        var wp_x: Scalar[DTYPE] = 0
+        var wp_y: Scalar[DTYPE] = 0
+        var wp_z: Scalar[DTYPE] = 0
+        var vp_x: Scalar[DTYPE] = 0
+        var vp_y: Scalar[DTYPE] = 0
+        var vp_z: Scalar[DTYPE] = 0
+        if parent >= 0:
+            wp_x = data.xangvel[parent * 3 + 0]
+            wp_y = data.xangvel[parent * 3 + 1]
+            wp_z = data.xangvel[parent * 3 + 2]
+            vp_x = data.xvel[parent * 3 + 0]
+            vp_y = data.xvel[parent * 3 + 1]
+            vp_z = data.xvel[parent * 3 + 2]
+
+        # Add velocity-dependent acceleration for each DOF of this body
+        # cdof_dot[d] = cvel[parent] x_motion cdof[d]
+        # (MuJoCo: engine_core_smooth.c mj_comVel, crossMotion)
+        for j in range(model.num_joints):
+            var joint = model.joints[j]
+            if joint.body_id != b:
+                continue
+
+            var dof_adr = joint.dof_adr
+            var num_dof = 1
+            if joint.jnt_type == JNT_FREE:
+                num_dof = 6
+            elif joint.jnt_type == JNT_BALL:
+                num_dof = 3
+
+            for d in range(num_dof):
+                var dof = dof_adr + d
+                var qdot = data.qvel[dof]
+
+                # cdof components
+                var s_ang_x = cdof[dof * 6 + 0]
+                var s_ang_y = cdof[dof * 6 + 1]
+                var s_ang_z = cdof[dof * 6 + 2]
+                var s_lin_x = cdof[dof * 6 + 3]
+                var s_lin_y = cdof[dof * 6 + 4]
+                var s_lin_z = cdof[dof * 6 + 5]
+
+                # Spatial motion cross: cvel_parent x_m cdof
+                # cdot_ang = w_p x s_ang
+                var cdot_ang_x = wp_y * s_ang_z - wp_z * s_ang_y
+                var cdot_ang_y = wp_z * s_ang_x - wp_x * s_ang_z
+                var cdot_ang_z = wp_x * s_ang_y - wp_y * s_ang_x
+
+                # cdot_lin = w_p x s_lin + v_p x s_ang
+                var cdot_lin_x = (wp_y * s_lin_z - wp_z * s_lin_y) + (vp_y * s_ang_z - vp_z * s_ang_y)
+                var cdot_lin_y = (wp_z * s_lin_x - wp_x * s_lin_z) + (vp_z * s_ang_x - vp_x * s_ang_z)
+                var cdot_lin_z = (wp_x * s_lin_y - wp_y * s_lin_x) + (vp_x * s_ang_y - vp_y * s_ang_x)
+
+                # Accumulate: cacc += cdof_dot * qvel
+                cacc[b * 6 + 0] = cacc[b * 6 + 0] + cdot_ang_x * qdot
+                cacc[b * 6 + 1] = cacc[b * 6 + 1] + cdot_ang_y * qdot
+                cacc[b * 6 + 2] = cacc[b * 6 + 2] + cdot_ang_z * qdot
+                cacc[b * 6 + 3] = cacc[b * 6 + 3] + cdot_lin_x * qdot
+                cacc[b * 6 + 4] = cacc[b * 6 + 4] + cdot_lin_y * qdot
+                cacc[b * 6 + 5] = cacc[b * 6 + 5] + cdot_lin_z * qdot
+
+    # =========================================================================
+    # Step 2: Compute spatial forces per body
+    #   cfrc = I * cacc + cvel x* (I * cvel)
+    #
+    #   At CoM (offset=0):
+    #   - I*v: angular = I_world @ w, linear = mass * v
+    #   - v x* (I*v): angular = w x (I_world*w), linear = w x (mass*v)
+    # =========================================================================
+    for b in range(NBODY):
+        var mass = model.body_mass[b]
+
+        # Body velocities
+        var wx = data.xangvel[b * 3 + 0]
+        var wy = data.xangvel[b * 3 + 1]
+        var wz = data.xangvel[b * 3 + 2]
+        var vx = data.xvel[b * 3 + 0]
+        var vy = data.xvel[b * 3 + 1]
+        var vz = data.xvel[b * 3 + 2]
+
+        # Spatial acceleration
+        var a_ang_x = cacc[b * 6 + 0]
+        var a_ang_y = cacc[b * 6 + 1]
+        var a_ang_z = cacc[b * 6 + 2]
+        var a_lin_x = cacc[b * 6 + 3]
+        var a_lin_y = cacc[b * 6 + 4]
+        var a_lin_z = cacc[b * 6 + 5]
+
+        # World-frame inertia tensor (symmetric)
+        var Ixx = I_world[b * 6 + 0]
+        var Iyy = I_world[b * 6 + 1]
+        var Izz = I_world[b * 6 + 2]
+        var Ixy = I_world[b * 6 + 3]
+        var Ixz = I_world[b * 6 + 4]
+        var Iyz = I_world[b * 6 + 5]
+
+        # I * cacc (at CoM, offset=0)
+        var Ia_ang_x = Ixx * a_ang_x + Ixy * a_ang_y + Ixz * a_ang_z
+        var Ia_ang_y = Ixy * a_ang_x + Iyy * a_ang_y + Iyz * a_ang_z
+        var Ia_ang_z = Ixz * a_ang_x + Iyz * a_ang_y + Izz * a_ang_z
+        var Ia_lin_x = mass * a_lin_x
+        var Ia_lin_y = mass * a_lin_y
+        var Ia_lin_z = mass * a_lin_z
+
+        # I * cvel
+        var Iw_x = Ixx * wx + Ixy * wy + Ixz * wz
+        var Iw_y = Ixy * wx + Iyy * wy + Iyz * wz
+        var Iw_z = Ixz * wx + Iyz * wy + Izz * wz
+
+        # cvel x* (I * cvel) = [w x (I*w), w x (m*v)]
+        # (v x (m*v) = 0 since v x v = 0)
+        var xf_ang_x = wy * Iw_z - wz * Iw_y
+        var xf_ang_y = wz * Iw_x - wx * Iw_z
+        var xf_ang_z = wx * Iw_y - wy * Iw_x
+
+        var xf_lin_x = wy * (mass * vz) - wz * (mass * vy)
+        var xf_lin_y = wz * (mass * vx) - wx * (mass * vz)
+        var xf_lin_z = wx * (mass * vy) - wy * (mass * vx)
+
+        # cfrc = I*cacc + cvel x* (I*cvel)
+        cfrc[b * 6 + 0] = Ia_ang_x + xf_ang_x
+        cfrc[b * 6 + 1] = Ia_ang_y + xf_ang_y
+        cfrc[b * 6 + 2] = Ia_ang_z + xf_ang_z
+        cfrc[b * 6 + 3] = Ia_lin_x + xf_lin_x
+        cfrc[b * 6 + 4] = Ia_lin_y + xf_lin_y
+        cfrc[b * 6 + 5] = Ia_lin_z + xf_lin_z
+
+    # =========================================================================
+    # Step 3: Backward pass - accumulate forces to parents
+    #   When transferring force wrench from child CoM to parent CoM:
+    #   tau_parent += tau_child + r x f_child
+    #   f_parent += f_child
+    #   where r = xpos[child] - xpos[parent]
+    # =========================================================================
+    for b in range(NBODY - 1, 0, -1):
+        var parent = model.body_parent[b]
+        if parent < 0:
+            continue
+
+        # Offset from parent CoM to child CoM
+        var rx = data.xpos[b * 3 + 0] - data.xpos[parent * 3 + 0]
+        var ry = data.xpos[b * 3 + 1] - data.xpos[parent * 3 + 1]
+        var rz = data.xpos[b * 3 + 2] - data.xpos[parent * 3 + 2]
+
+        # Child force wrench
+        var child_tau_x = cfrc[b * 6 + 0]
+        var child_tau_y = cfrc[b * 6 + 1]
+        var child_tau_z = cfrc[b * 6 + 2]
+        var child_f_x = cfrc[b * 6 + 3]
+        var child_f_y = cfrc[b * 6 + 4]
+        var child_f_z = cfrc[b * 6 + 5]
+
+        # Transfer: tau_parent += tau_child + r x f_child
+        cfrc[parent * 6 + 0] = cfrc[parent * 6 + 0] + child_tau_x + (ry * child_f_z - rz * child_f_y)
+        cfrc[parent * 6 + 1] = cfrc[parent * 6 + 1] + child_tau_y + (rz * child_f_x - rx * child_f_z)
+        cfrc[parent * 6 + 2] = cfrc[parent * 6 + 2] + child_tau_z + (rx * child_f_y - ry * child_f_x)
+        # Transfer: f_parent += f_child
+        cfrc[parent * 6 + 3] = cfrc[parent * 6 + 3] + child_f_x
+        cfrc[parent * 6 + 4] = cfrc[parent * 6 + 4] + child_f_y
+        cfrc[parent * 6 + 5] = cfrc[parent * 6 + 5] + child_f_z
+
+    # =========================================================================
+    # Step 4: Project to joint space
+    #   bias[d] = cdof[d] . cfrc[body_of_dof[d]]
+    #   6D dot product: angular . torque + linear . force
+    # =========================================================================
+    for j in range(model.num_joints):
+        var joint = model.joints[j]
+        var body = joint.body_id
+        var dof_adr = joint.dof_adr
+        var num_dof = 1
+        if joint.jnt_type == JNT_FREE:
+            num_dof = 6
+        elif joint.jnt_type == JNT_BALL:
+            num_dof = 3
+
+        for d in range(num_dof):
+            var dof = dof_adr + d
+            bias[dof] = Scalar[DTYPE](0)
+            for k in range(6):
+                bias[dof] = bias[dof] + cdof[dof * 6 + k] * cfrc[body * 6 + k]
+
+
+# =============================================================================
+# Full RNE Bias Forces (Gravity + Coriolis + Centrifugal) - GPU
+# =============================================================================
+
+
+@always_inline
+fn compute_bias_forces_rne_gpu[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    STATE_SIZE: Int,
+    MODEL_SIZE: Int,
+    V_SIZE: Int,
+    CDOF_SIZE: Int,
+    BATCH: Int,
+](
+    env: Int,
+    state: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+    ],
+    model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+    cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
+    mut bias: InlineArray[Scalar[DTYPE], V_SIZE],
+):
+    """Compute bias forces using full RNE algorithm (GPU version).
+
+    Same algorithm as compute_bias_forces_rne but reads from GPU LayoutTensors.
+    Computes b(q, qvel) = C(q, qvel)*qvel + g(q).
+    """
+    # Initialize output
+    for i in range(NV):
+        bias[i] = Scalar[DTYPE](0)
+
+    # Get gravity from model metadata
+    var model_meta_off = gc_model_metadata_offset[NBODY, NJOINT]()
+    var gx = rebind[Scalar[DTYPE]](model[0, model_meta_off + GC_MODEL_META_IDX_GRAVITY_X])
+    var gy = rebind[Scalar[DTYPE]](model[0, model_meta_off + GC_MODEL_META_IDX_GRAVITY_Y])
+    var gz = rebind[Scalar[DTYPE]](model[0, model_meta_off + GC_MODEL_META_IDX_GRAVITY_Z])
+
+    # State buffer offsets
+    var xpos_off = gc_xpos_offset[NQ, NV, NBODY]()
+    var xquat_off = gc_xquat_offset[NQ, NV, NBODY]()
+    var xvel_off = gc_xvel_offset[NQ, NV, NBODY]()
+    var xangvel_off = gc_xangvel_offset[NQ, NV, NBODY]()
+    var qvel_off = gc_qvel_offset[NQ, NV]()
+
+    # Per-body arrays: spatial acceleration, force, world-frame inertia
+    comptime BODY6_SIZE = _max_one[NBODY * 6]()
+    var cacc = InlineArray[Scalar[DTYPE], BODY6_SIZE](uninitialized=True)
+    for i in range(BODY6_SIZE):
+        cacc[i] = Scalar[DTYPE](0)
+    var cfrc = InlineArray[Scalar[DTYPE], BODY6_SIZE](uninitialized=True)
+    for i in range(BODY6_SIZE):
+        cfrc[i] = Scalar[DTYPE](0)
+    var I_world = InlineArray[Scalar[DTYPE], BODY6_SIZE](uninitialized=True)
+    for i in range(BODY6_SIZE):
+        I_world[i] = Scalar[DTYPE](0)
+
+    # =========================================================================
+    # Step 0: Compute world-frame inertia tensors
+    # =========================================================================
+    for b in range(NBODY):
+        var body_off = gc_model_body_offset(b)
+        var Ixx_local = rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_IXX])
+        var Iyy_local = rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_IYY])
+        var Izz_local = rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_IZZ])
+
+        var qx = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 0])
+        var qy = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 1])
+        var qz = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 2])
+        var qw = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 3])
+
+        # Rotation matrix from quaternion
+        var r00 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qy * qy + qz * qz)
+        var r10 = Scalar[DTYPE](2) * (qx * qy + qw * qz)
+        var r20 = Scalar[DTYPE](2) * (qx * qz - qw * qy)
+        var r01 = Scalar[DTYPE](2) * (qx * qy - qw * qz)
+        var r11 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qx * qx + qz * qz)
+        var r21 = Scalar[DTYPE](2) * (qy * qz + qw * qx)
+        var r02 = Scalar[DTYPE](2) * (qx * qz + qw * qy)
+        var r12 = Scalar[DTYPE](2) * (qy * qz - qw * qx)
+        var r22 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qx * qx + qy * qy)
+
+        # I_world = R @ diag(Ixx, Iyy, Izz) @ R^T
+        I_world[b * 6 + 0] = Ixx_local * r00 * r00 + Iyy_local * r01 * r01 + Izz_local * r02 * r02  # Ixx
+        I_world[b * 6 + 1] = Ixx_local * r10 * r10 + Iyy_local * r11 * r11 + Izz_local * r12 * r12  # Iyy
+        I_world[b * 6 + 2] = Ixx_local * r20 * r20 + Iyy_local * r21 * r21 + Izz_local * r22 * r22  # Izz
+        I_world[b * 6 + 3] = Ixx_local * r00 * r10 + Iyy_local * r01 * r11 + Izz_local * r02 * r12  # Ixy
+        I_world[b * 6 + 4] = Ixx_local * r00 * r20 + Iyy_local * r01 * r21 + Izz_local * r02 * r22  # Ixz
+        I_world[b * 6 + 5] = Ixx_local * r10 * r20 + Iyy_local * r11 * r21 + Izz_local * r12 * r22  # Iyz
+
+    # =========================================================================
+    # Step 1: Forward pass - spatial accelerations (root to leaves)
+    # =========================================================================
+    for b in range(NBODY):
+        var body_off = gc_model_body_offset(b)
+        var parent = Int(rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_PARENT]))
+
+        if parent < 0:
+            # Root body: gravity as fictitious acceleration
+            cacc[b * 6 + 3] = -gx
+            cacc[b * 6 + 4] = -gy
+            cacc[b * 6 + 5] = -gz
+        else:
+            for k in range(6):
+                cacc[b * 6 + k] = cacc[parent * 6 + k]
+
+        # Get parent velocity
+        var wp_x: Scalar[DTYPE] = 0
+        var wp_y: Scalar[DTYPE] = 0
+        var wp_z: Scalar[DTYPE] = 0
+        var vp_x: Scalar[DTYPE] = 0
+        var vp_y: Scalar[DTYPE] = 0
+        var vp_z: Scalar[DTYPE] = 0
+        if parent >= 0:
+            wp_x = rebind[Scalar[DTYPE]](state[env, xangvel_off + parent * 3 + 0])
+            wp_y = rebind[Scalar[DTYPE]](state[env, xangvel_off + parent * 3 + 1])
+            wp_z = rebind[Scalar[DTYPE]](state[env, xangvel_off + parent * 3 + 2])
+            vp_x = rebind[Scalar[DTYPE]](state[env, xvel_off + parent * 3 + 0])
+            vp_y = rebind[Scalar[DTYPE]](state[env, xvel_off + parent * 3 + 1])
+            vp_z = rebind[Scalar[DTYPE]](state[env, xvel_off + parent * 3 + 2])
+
+        # Add cdof_dot * qvel for each DOF of this body
+        for j in range(NJOINT):
+            var joint_off = gc_model_joint_offset[NBODY](j)
+            var jnt_body = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_BODY_ID]))
+            if jnt_body != b:
+                continue
+
+            var jnt_type = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_TYPE]))
+            var dof_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_DOF_ADR]))
+            var num_dof = 1
+            if jnt_type == GC_JNT_FREE:
+                num_dof = 6
+            elif jnt_type == GC_JNT_BALL:
+                num_dof = 3
+
+            for d in range(num_dof):
+                var dof = dof_adr + d
+                var qdot = rebind[Scalar[DTYPE]](state[env, qvel_off + dof])
+
+                # cdof components
+                var s_ang_x = cdof[dof * 6 + 0]
+                var s_ang_y = cdof[dof * 6 + 1]
+                var s_ang_z = cdof[dof * 6 + 2]
+                var s_lin_x = cdof[dof * 6 + 3]
+                var s_lin_y = cdof[dof * 6 + 4]
+                var s_lin_z = cdof[dof * 6 + 5]
+
+                # Spatial motion cross: cvel_parent x_m cdof
+                var cdot_ang_x = wp_y * s_ang_z - wp_z * s_ang_y
+                var cdot_ang_y = wp_z * s_ang_x - wp_x * s_ang_z
+                var cdot_ang_z = wp_x * s_ang_y - wp_y * s_ang_x
+
+                var cdot_lin_x = (wp_y * s_lin_z - wp_z * s_lin_y) + (vp_y * s_ang_z - vp_z * s_ang_y)
+                var cdot_lin_y = (wp_z * s_lin_x - wp_x * s_lin_z) + (vp_z * s_ang_x - vp_x * s_ang_z)
+                var cdot_lin_z = (wp_x * s_lin_y - wp_y * s_lin_x) + (vp_x * s_ang_y - vp_y * s_ang_x)
+
+                # Accumulate: cacc += cdof_dot * qvel
+                cacc[b * 6 + 0] = cacc[b * 6 + 0] + cdot_ang_x * qdot
+                cacc[b * 6 + 1] = cacc[b * 6 + 1] + cdot_ang_y * qdot
+                cacc[b * 6 + 2] = cacc[b * 6 + 2] + cdot_ang_z * qdot
+                cacc[b * 6 + 3] = cacc[b * 6 + 3] + cdot_lin_x * qdot
+                cacc[b * 6 + 4] = cacc[b * 6 + 4] + cdot_lin_y * qdot
+                cacc[b * 6 + 5] = cacc[b * 6 + 5] + cdot_lin_z * qdot
+
+    # =========================================================================
+    # Step 2: Compute spatial forces per body
+    #   cfrc = I * cacc + cvel x* (I * cvel)
+    # =========================================================================
+    for b in range(NBODY):
+        var body_off = gc_model_body_offset(b)
+        var mass = rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_MASS])
+
+        # Body velocities from state buffer
+        var wx = rebind[Scalar[DTYPE]](state[env, xangvel_off + b * 3 + 0])
+        var wy = rebind[Scalar[DTYPE]](state[env, xangvel_off + b * 3 + 1])
+        var wz = rebind[Scalar[DTYPE]](state[env, xangvel_off + b * 3 + 2])
+        var vx = rebind[Scalar[DTYPE]](state[env, xvel_off + b * 3 + 0])
+        var vy = rebind[Scalar[DTYPE]](state[env, xvel_off + b * 3 + 1])
+        var vz = rebind[Scalar[DTYPE]](state[env, xvel_off + b * 3 + 2])
+
+        # Spatial acceleration
+        var a_ang_x = cacc[b * 6 + 0]
+        var a_ang_y = cacc[b * 6 + 1]
+        var a_ang_z = cacc[b * 6 + 2]
+        var a_lin_x = cacc[b * 6 + 3]
+        var a_lin_y = cacc[b * 6 + 4]
+        var a_lin_z = cacc[b * 6 + 5]
+
+        # World-frame inertia (symmetric)
+        var Ixx = I_world[b * 6 + 0]
+        var Iyy = I_world[b * 6 + 1]
+        var Izz = I_world[b * 6 + 2]
+        var Ixy = I_world[b * 6 + 3]
+        var Ixz = I_world[b * 6 + 4]
+        var Iyz = I_world[b * 6 + 5]
+
+        # I * cacc
+        var Ia_ang_x = Ixx * a_ang_x + Ixy * a_ang_y + Ixz * a_ang_z
+        var Ia_ang_y = Ixy * a_ang_x + Iyy * a_ang_y + Iyz * a_ang_z
+        var Ia_ang_z = Ixz * a_ang_x + Iyz * a_ang_y + Izz * a_ang_z
+        var Ia_lin_x = mass * a_lin_x
+        var Ia_lin_y = mass * a_lin_y
+        var Ia_lin_z = mass * a_lin_z
+
+        # I * cvel
+        var Iw_x = Ixx * wx + Ixy * wy + Ixz * wz
+        var Iw_y = Ixy * wx + Iyy * wy + Iyz * wz
+        var Iw_z = Ixz * wx + Iyz * wy + Izz * wz
+
+        # cvel x* (I * cvel) = [w x (I*w), w x (m*v)]
+        var xf_ang_x = wy * Iw_z - wz * Iw_y
+        var xf_ang_y = wz * Iw_x - wx * Iw_z
+        var xf_ang_z = wx * Iw_y - wy * Iw_x
+        var xf_lin_x = wy * (mass * vz) - wz * (mass * vy)
+        var xf_lin_y = wz * (mass * vx) - wx * (mass * vz)
+        var xf_lin_z = wx * (mass * vy) - wy * (mass * vx)
+
+        # cfrc = I*cacc + cvel x* (I*cvel)
+        cfrc[b * 6 + 0] = Ia_ang_x + xf_ang_x
+        cfrc[b * 6 + 1] = Ia_ang_y + xf_ang_y
+        cfrc[b * 6 + 2] = Ia_ang_z + xf_ang_z
+        cfrc[b * 6 + 3] = Ia_lin_x + xf_lin_x
+        cfrc[b * 6 + 4] = Ia_lin_y + xf_lin_y
+        cfrc[b * 6 + 5] = Ia_lin_z + xf_lin_z
+
+    # =========================================================================
+    # Step 3: Backward pass - accumulate forces to parents
+    # =========================================================================
+    for b in range(NBODY - 1, 0, -1):
+        var body_off = gc_model_body_offset(b)
+        var parent = Int(rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_PARENT]))
+        if parent < 0:
+            continue
+
+        # Offset from parent CoM to child CoM
+        var rx = rebind[Scalar[DTYPE]](state[env, xpos_off + b * 3 + 0]) - rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 0])
+        var ry = rebind[Scalar[DTYPE]](state[env, xpos_off + b * 3 + 1]) - rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 1])
+        var rz = rebind[Scalar[DTYPE]](state[env, xpos_off + b * 3 + 2]) - rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 2])
+
+        var child_tau_x = cfrc[b * 6 + 0]
+        var child_tau_y = cfrc[b * 6 + 1]
+        var child_tau_z = cfrc[b * 6 + 2]
+        var child_f_x = cfrc[b * 6 + 3]
+        var child_f_y = cfrc[b * 6 + 4]
+        var child_f_z = cfrc[b * 6 + 5]
+
+        # Transfer: tau_parent += tau_child + r x f_child
+        cfrc[parent * 6 + 0] = cfrc[parent * 6 + 0] + child_tau_x + (ry * child_f_z - rz * child_f_y)
+        cfrc[parent * 6 + 1] = cfrc[parent * 6 + 1] + child_tau_y + (rz * child_f_x - rx * child_f_z)
+        cfrc[parent * 6 + 2] = cfrc[parent * 6 + 2] + child_tau_z + (rx * child_f_y - ry * child_f_x)
+        # Transfer: f_parent += f_child
+        cfrc[parent * 6 + 3] = cfrc[parent * 6 + 3] + child_f_x
+        cfrc[parent * 6 + 4] = cfrc[parent * 6 + 4] + child_f_y
+        cfrc[parent * 6 + 5] = cfrc[parent * 6 + 5] + child_f_z
+
+    # =========================================================================
+    # Step 4: Project to joint space
+    #   bias[d] = cdof[d] . cfrc[body_of_dof[d]]
+    # =========================================================================
+    for j in range(NJOINT):
+        var joint_off = gc_model_joint_offset[NBODY](j)
+        var jnt_type = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_TYPE]))
+        var body = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_BODY_ID]))
+        var dof_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_DOF_ADR]))
+        var num_dof = 1
+        if jnt_type == GC_JNT_FREE:
+            num_dof = 6
+        elif jnt_type == GC_JNT_BALL:
+            num_dof = 3
+
+        for d in range(num_dof):
+            var dof = dof_adr + d
+            bias[dof] = Scalar[DTYPE](0)
+            for k in range(6):
+                bias[dof] = bias[dof] + cdof[dof * 6 + k] * cfrc[body * 6 + k]

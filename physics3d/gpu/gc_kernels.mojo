@@ -30,7 +30,7 @@ from ..dynamics.mass_matrix import (
     ldl_solve_gpu,
     compute_M_inv_from_ldl_gpu,
 )
-from ..dynamics.bias_forces import compute_bias_forces_gpu
+from ..dynamics.bias_forces import compute_bias_forces_gpu, compute_bias_forces_rne_gpu
 from ..dynamics.jacobian import (
     compute_cdof_gpu,
     compute_contact_jacobian_row_gpu,
@@ -76,6 +76,10 @@ from .constants import (
     GC_BODY_IDX_PARENT,
     GC_BODY_IDX_RADIUS,
     GC_BODY_IDX_HALF_LENGTH,
+    GC_BODY_IDX_GEOM_TYPE,
+    GC_BODY_IDX_HALF_X,
+    GC_BODY_IDX_HALF_Y,
+    GC_BODY_IDX_HALF_Z,
     GC_JOINT_IDX_TYPE,
     GC_JOINT_IDX_BODY_ID,
     GC_JOINT_IDX_QPOS_ADR,
@@ -230,6 +234,193 @@ fn detect_ground_contacts_gpu[
                 state[env, c_off + GC_CONTACT_IDX_NY] = Scalar[DTYPE](0)
                 state[env, c_off + GC_CONTACT_IDX_NZ] = Scalar[DTYPE](1)
                 state[env, c_off + GC_CONTACT_IDX_DIST] = dist2
+                num_contacts += 1
+
+    state[env, meta_off + GC_META_IDX_NUM_CONTACTS] = Scalar[DTYPE](num_contacts)
+
+
+# =============================================================================
+# Body-Body Contact Detection Kernel
+# =============================================================================
+
+
+@always_inline
+fn detect_body_body_contacts_gpu[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    STATE_SIZE: Int,
+    MODEL_SIZE: Int,
+    BATCH: Int,
+](
+    env: Int,
+    state: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+    ],
+    model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+):
+    """Detect body-body contacts and append to existing contact list.
+
+    Reads current num_contacts (set by ground detection) and appends.
+    O(N^2) pair iteration, skipping parent-child pairs.
+    """
+    from ..constants import GEOM_SPHERE, GEOM_CAPSULE, GEOM_BOX
+    from ..collision.collision_primitives import (
+        sphere_sphere,
+        capsule_sphere,
+        capsule_capsule,
+        box_sphere,
+        box_capsule,
+    )
+
+    var xpos_off = gc_xpos_offset[NQ, NV, NBODY]()
+    var xquat_off = gc_xquat_offset[NQ, NV, NBODY]()
+    var contacts_off = gc_contacts_offset[NQ, NV, NBODY]()
+    var meta_off = gc_metadata_offset[NQ, NV, NBODY, MAX_CONTACTS]()
+
+    var num_contacts = Int(rebind[Scalar[DTYPE]](
+        state[env, meta_off + GC_META_IDX_NUM_CONTACTS]
+    ))
+
+    for i in range(NBODY):
+        for j in range(i + 1, NBODY):
+            if num_contacts >= MAX_CONTACTS:
+                state[env, meta_off + GC_META_IDX_NUM_CONTACTS] = Scalar[DTYPE](num_contacts)
+                return
+
+            # Skip parent-child pairs
+            var body_off_i = gc_model_body_offset(i)
+            var body_off_j = gc_model_body_offset(j)
+            var parent_i = Int(rebind[Scalar[DTYPE]](model[0, body_off_i + GC_BODY_IDX_PARENT]))
+            var parent_j = Int(rebind[Scalar[DTYPE]](model[0, body_off_j + GC_BODY_IDX_PARENT]))
+            if parent_j == i or parent_i == j:
+                continue
+
+            var gi = Int(rebind[Scalar[DTYPE]](model[0, body_off_i + GC_BODY_IDX_GEOM_TYPE]))
+            var gj = Int(rebind[Scalar[DTYPE]](model[0, body_off_j + GC_BODY_IDX_GEOM_TYPE]))
+
+            # Get positions
+            var pi_x = rebind[Scalar[DTYPE]](state[env, xpos_off + i * 3 + 0])
+            var pi_y = rebind[Scalar[DTYPE]](state[env, xpos_off + i * 3 + 1])
+            var pi_z = rebind[Scalar[DTYPE]](state[env, xpos_off + i * 3 + 2])
+            var pj_x = rebind[Scalar[DTYPE]](state[env, xpos_off + j * 3 + 0])
+            var pj_y = rebind[Scalar[DTYPE]](state[env, xpos_off + j * 3 + 1])
+            var pj_z = rebind[Scalar[DTYPE]](state[env, xpos_off + j * 3 + 2])
+
+            # Get quaternions
+            var qi_x = rebind[Scalar[DTYPE]](state[env, xquat_off + i * 4 + 0])
+            var qi_y = rebind[Scalar[DTYPE]](state[env, xquat_off + i * 4 + 1])
+            var qi_z = rebind[Scalar[DTYPE]](state[env, xquat_off + i * 4 + 2])
+            var qi_w = rebind[Scalar[DTYPE]](state[env, xquat_off + i * 4 + 3])
+            var qj_x = rebind[Scalar[DTYPE]](state[env, xquat_off + j * 4 + 0])
+            var qj_y = rebind[Scalar[DTYPE]](state[env, xquat_off + j * 4 + 1])
+            var qj_z = rebind[Scalar[DTYPE]](state[env, xquat_off + j * 4 + 2])
+            var qj_w = rebind[Scalar[DTYPE]](state[env, xquat_off + j * 4 + 3])
+
+            # Get geometry parameters
+            var ri = rebind[Scalar[DTYPE]](model[0, body_off_i + GC_BODY_IDX_RADIUS])
+            var rj = rebind[Scalar[DTYPE]](model[0, body_off_j + GC_BODY_IDX_RADIUS])
+            var hli = rebind[Scalar[DTYPE]](model[0, body_off_i + GC_BODY_IDX_HALF_LENGTH])
+            var hlj = rebind[Scalar[DTYPE]](model[0, body_off_j + GC_BODY_IDX_HALF_LENGTH])
+            var hxi = rebind[Scalar[DTYPE]](model[0, body_off_i + GC_BODY_IDX_HALF_X])
+            var hyi = rebind[Scalar[DTYPE]](model[0, body_off_i + GC_BODY_IDX_HALF_Y])
+            var hzi = rebind[Scalar[DTYPE]](model[0, body_off_i + GC_BODY_IDX_HALF_Z])
+            var hxj = rebind[Scalar[DTYPE]](model[0, body_off_j + GC_BODY_IDX_HALF_X])
+            var hyj = rebind[Scalar[DTYPE]](model[0, body_off_j + GC_BODY_IDX_HALF_Y])
+            var hzj = rebind[Scalar[DTYPE]](model[0, body_off_j + GC_BODY_IDX_HALF_Z])
+
+            var dist: Scalar[DTYPE] = 1.0
+            var cx: Scalar[DTYPE] = 0
+            var cy: Scalar[DTYPE] = 0
+            var cz: Scalar[DTYPE] = 0
+            var nx: Scalar[DTYPE] = 0
+            var ny: Scalar[DTYPE] = 0
+            var nz: Scalar[DTYPE] = 1
+            var body_a = i
+            var body_b = j
+
+            # Dispatch based on geometry pair
+            if gi == GEOM_SPHERE and gj == GEOM_SPHERE:
+                var result = sphere_sphere[DTYPE](
+                    pi_x, pi_y, pi_z, ri, pj_x, pj_y, pj_z, rj,
+                )
+                dist = result[0]; cx = result[1]; cy = result[2]; cz = result[3]
+                nx = result[4]; ny = result[5]; nz = result[6]
+
+            elif gi == GEOM_CAPSULE and gj == GEOM_SPHERE:
+                var result = capsule_sphere[DTYPE](
+                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
+                    pj_x, pj_y, pj_z, rj,
+                )
+                dist = result[0]; cx = result[1]; cy = result[2]; cz = result[3]
+                nx = result[4]; ny = result[5]; nz = result[6]
+
+            elif gi == GEOM_SPHERE and gj == GEOM_CAPSULE:
+                var result = capsule_sphere[DTYPE](
+                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
+                    pi_x, pi_y, pi_z, ri,
+                )
+                dist = result[0]; cx = result[1]; cy = result[2]; cz = result[3]
+                nx = -result[4]; ny = -result[5]; nz = -result[6]
+                body_a = j; body_b = i
+
+            elif gi == GEOM_CAPSULE and gj == GEOM_CAPSULE:
+                var result = capsule_capsule[DTYPE](
+                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
+                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
+                )
+                dist = result[0]; cx = result[1]; cy = result[2]; cz = result[3]
+                nx = result[4]; ny = result[5]; nz = result[6]
+
+            elif gi == GEOM_BOX and gj == GEOM_SPHERE:
+                var result = box_sphere[DTYPE](
+                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hxi, hyi, hzi,
+                    pj_x, pj_y, pj_z, rj,
+                )
+                dist = result[0]; cx = result[1]; cy = result[2]; cz = result[3]
+                nx = result[4]; ny = result[5]; nz = result[6]
+
+            elif gi == GEOM_SPHERE and gj == GEOM_BOX:
+                var result = box_sphere[DTYPE](
+                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hxj, hyj, hzj,
+                    pi_x, pi_y, pi_z, ri,
+                )
+                dist = result[0]; cx = result[1]; cy = result[2]; cz = result[3]
+                nx = -result[4]; ny = -result[5]; nz = -result[6]
+                body_a = j; body_b = i
+
+            elif gi == GEOM_BOX and gj == GEOM_CAPSULE:
+                var result = box_capsule[DTYPE](
+                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hxi, hyi, hzi,
+                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
+                )
+                dist = result[0]; cx = result[1]; cy = result[2]; cz = result[3]
+                nx = result[4]; ny = result[5]; nz = result[6]
+
+            elif gi == GEOM_CAPSULE and gj == GEOM_BOX:
+                var result = box_capsule[DTYPE](
+                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hxj, hyj, hzj,
+                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
+                )
+                dist = result[0]; cx = result[1]; cy = result[2]; cz = result[3]
+                nx = -result[4]; ny = -result[5]; nz = -result[6]
+                body_a = j; body_b = i
+
+            # Store contact if penetrating
+            if dist < Scalar[DTYPE](0) and num_contacts < MAX_CONTACTS:
+                var c_off = contacts_off + num_contacts * GC_CONTACT_SIZE
+                state[env, c_off + GC_CONTACT_IDX_BODY_A] = Scalar[DTYPE](body_a)
+                state[env, c_off + GC_CONTACT_IDX_BODY_B] = Scalar[DTYPE](body_b)
+                state[env, c_off + GC_CONTACT_IDX_POS_X] = cx
+                state[env, c_off + GC_CONTACT_IDX_POS_Y] = cy
+                state[env, c_off + GC_CONTACT_IDX_POS_Z] = cz
+                state[env, c_off + GC_CONTACT_IDX_NX] = nx
+                state[env, c_off + GC_CONTACT_IDX_NY] = ny
+                state[env, c_off + GC_CONTACT_IDX_NZ] = nz
+                state[env, c_off + GC_CONTACT_IDX_DIST] = dist
                 num_contacts += 1
 
     state[env, meta_off + GC_META_IDX_NUM_CONTACTS] = Scalar[DTYPE](num_contacts)
@@ -676,6 +867,9 @@ fn step_gc_kernel[
     detect_ground_contacts_gpu[
         DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH
     ](env, state, model)
+    detect_body_body_contacts_gpu[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH
+    ](env, state, model)
 
     # 4. Compute mass matrix diagonal
     compute_mass_matrix_diagonal_gpu[
@@ -773,8 +967,11 @@ fn step_gc_constraint_kernel_with_solver[
         DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH
     ](env, state, model)
 
-    # 3. Detect ground contacts
+    # 3. Detect ground contacts + body-body contacts
     detect_ground_contacts_gpu[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH
+    ](env, state, model)
+    detect_body_body_contacts_gpu[
         DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH
     ](env, state, model)
 
@@ -831,10 +1028,10 @@ fn step_gc_constraint_kernel_with_solver[
         M_inv[i] = Scalar[DTYPE](0)
     compute_M_inv_from_ldl_gpu[DTYPE, NV, M_SIZE, V_SIZE](L, D, M_inv)
 
-    # 8. Compute bias forces
-    compute_bias_forces_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, V_SIZE, BATCH
-    ](env, state, model, bias)
+    # 8. Compute bias forces (full RNE: gravity + Coriolis + centrifugal)
+    compute_bias_forces_rne_gpu[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, V_SIZE, CDOF_SIZE, BATCH
+    ](env, state, model, cdof, bias)
 
     # 9. Compute unconstrained acceleration via LDL solve
     var qvel_off = gc_qvel_offset[NQ, NV]()

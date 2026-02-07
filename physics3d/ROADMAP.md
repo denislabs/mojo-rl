@@ -45,19 +45,23 @@ Reference material:
 
 ### What We Have (working well)
 - **GC engine** with qpos/qvel state, forward kinematics, body velocities
+- **Full mass matrix (CRBA)** with LDL factorization, armature, implicit damping, stiffness (Phase 1.1 DONE)
+- **Full RNE bias forces** with gravity + Coriolis + centrifugal terms, CPU + GPU (Phase 1.2 DONE)
 - **Three constraint solvers**: PGS (30 iter), CG (projected), Newton (active-set + line search)
-- **Contact Jacobians**: correct spatial algebra, CPU + GPU
+- **Contact Jacobians**: bilateral spatial algebra (body_a - body_b), CPU + GPU
 - **Joint types**: FREE, BALL, HINGE, SLIDE with correct cdof computation
-- **Collision primitives**: sphere, capsule, box (ground-plane + body-body in Cartesian engine)
+- **Collision primitives**: sphere, capsule, box (ground-plane + body-body in both GC and Cartesian engines) (Phase 1.3 DONE)
 - **GPU support**: all solvers, kinematics, dynamics have GPU kernels
+- **Passive forces**: armature (rotor inertia), implicit damping (MuJoCo implicitfast-style), stiffness (spring)
+- **Physics stability**: Baumgarte penetration cap (0.01m), velocity clamping (MAX_QVEL=20)
 
 ### What We're Missing (by impact)
 
 | Gap | Impact | Phase |
 |-----|--------|-------|
-| Diagonal-only mass matrix | High - wrong coupled dynamics | 1 |
-| No Coriolis/centrifugal in bias forces | High - wrong at speed | 1 |
-| GC engine: ground contacts only | High - can't touch objects | 1 |
+| ~~Diagonal-only mass matrix~~ | ~~High~~ | ~~1~~ DONE |
+| ~~No Coriolis/centrifugal in bias forces~~ | ~~High~~ | ~~1~~ DONE |
+| ~~GC engine: ground contacts only~~ | ~~High~~ | ~~1~~ DONE |
 | Joint limits via post-clamping | Medium - energy injection | 1 |
 | No implicit integrators | Medium - stability for damped systems | 2 |
 | No RK4 integrator | Medium - energy conservation | 2 |
@@ -68,15 +72,19 @@ Reference material:
 | No broadphase | Low - performance for many bodies | 4 |
 | No warmstart | Low - more solver iterations | 5 |
 | No solver islands | Low - parallelism optimization | 5 |
-| No passive forces / actuators / tendons | Low - feature completeness | 5 |
+| No actuators / tendons | Low - feature completeness | 5 |
 
 ---
 
 ## Phase 1: Core Physics Correctness
 
-### 1.1 Full Mass Matrix (off-diagonal terms)
+### 1.1 Full Mass Matrix (off-diagonal terms) — DONE
 
-**Problem**: We only compute diagonal `M[i,i]`. Off-diagonal coupling terms `M[i,j]`
+**Status**: COMPLETE. Implemented full CRBA mass matrix with LDL factorization,
+armature, implicit damping (`M[i,i] += dt * damping`), and stiffness. Both CPU and GPU.
+Dense storage (Option A) for NV <= 9. See `dynamics/mass_matrix.mojo` and `dynamics/jacobian.mojo`.
+
+**Problem** (original): We only compute diagonal `M[i,i]`. Off-diagonal coupling terms `M[i,j]`
 are zero, meaning each DOF is treated as independent. For articulated bodies (robot arms,
 legs), moving one joint affects forces at other joints through inertial coupling. Without
 off-diagonal terms, dynamics are incorrect for multi-joint systems.
@@ -230,9 +238,22 @@ parallelized across the BATCH dimension.
 
 ---
 
-### 1.2 Full RNE Bias Forces (Coriolis + centrifugal)
+### 1.2 Full RNE Bias Forces (Coriolis + centrifugal) — DONE
 
-**Problem**: We only compute gravitational torques. At any non-trivial velocity,
+**Status**: COMPLETE. Implemented full Recursive Newton-Euler Algorithm computing
+b(q,qvel) = C(q,qvel)*qvel + g(q) including gravity, Coriolis, and centrifugal forces.
+Both CPU (`compute_bias_forces_rne`) and GPU (`compute_bias_forces_rne_gpu`) versions.
+Old gravity-only functions kept for backward compatibility with non-constraint integrators.
+See `dynamics/bias_forces.mojo`.
+
+Algorithm: 5-step RNE in world frame:
+1. World-frame inertia tensors (R @ diag(I) @ R^T)
+2. Forward pass: spatial accelerations with gravity + cdof_dot*qvel
+3. Body forces: I*cacc + cvel x* (I*cvel) — gyroscopic + centripetal
+4. Backward pass: force accumulation with moment transfer (r x f)
+5. Projection to joint space: bias[d] = cdof[d] . cfrc[body]
+
+**Problem** (original): We only compute gravitational torques. At any non-trivial velocity,
 Coriolis and centrifugal forces are significant. A spinning body or fast-moving
 robot will have wrong dynamics without them.
 
@@ -358,20 +379,23 @@ For diagonal inertia `I = diag(Ixx, Iyy, Izz)`:
 
 ---
 
-### 1.3 Body-Body Collision in GC Engine
+### 1.3 Body-Body Collision in GC Engine — DONE
 
-**Problem**: The GC engine (`ConstraintGcIntegrator`) only calls `detect_ground_contacts()`
-from `semi_implicit_euler_solver.mojo`, which only checks bodies against the ground plane.
-There is no body-body collision detection in the GC pipeline. This means a robot cannot
-interact with objects, and self-collision is impossible.
+**Status**: COMPLETE. Implemented body-body collision detection and bilateral contact
+Jacobians for the GC engine. Both CPU and GPU. All three solvers (PGS, CG, Newton)
+updated to pass `body_b` through all Jacobian calls. Detection dispatches to existing
+collision primitives (sphere-sphere, capsule-sphere, capsule-capsule, box-sphere,
+box-capsule) with parent-child pair filtering. Backward-compatible: ground contacts
+have `body_b = -1`, reducing bilateral Jacobian to original unilateral form.
 
-**Files to modify**:
-- `collision/collision.mojo` (adapt `CollisionDetector` for GC)
-- `integrator/constraint_gc_integrator.mojo` (call body-body detection)
-- `types.mojo` (ensure `ContactInfoGC` supports body-body)
+**Files modified**:
+- `constants.mojo` (added `GEOM_CAPSULE`, `GEOM_BOX` constants)
+- `dynamics/jacobian.mojo` (bilateral Jacobian: `J_row[d] += J_a - J_b`, CPU + GPU)
 - `solver/gc_pgs_solver.mojo`, `gc_cg_solver.mojo`, `gc_newton_solver.mojo`
-  (handle body-body contact Jacobians)
-- `gpu/gc_kernels.mojo` (GPU body-body collision)
+  (pass `body_b` through all Jacobian calls, CPU + GPU)
+- `solver/semi_implicit_euler_solver.mojo` (added `detect_body_body_contacts_gc`)
+- `gpu/gc_kernels.mojo` (added `detect_body_body_contacts_gpu`, wired into step kernels)
+- `integrator/constraint_gc_integrator.mojo` (calls body-body detection after ground detection)
 
 #### What Needs to Happen
 
@@ -1309,16 +1333,16 @@ For RL training (locomotion, manipulation):
 
 ```
 Sprint 1 (Core correctness):
-  1.1 Full mass matrix          ← biggest physics accuracy improvement
-  1.2 Full RNE bias forces      ← required for fast-moving systems
+  1.1 Full mass matrix          ✅ DONE (CRBA + LDL + armature + implicit damping + stiffness)
+  1.2 Full RNE bias forces      ✅ DONE (gravity + Coriolis + centrifugal, CPU + GPU)
   1.4 Joint limits as constraints ← smoother dynamics at limits
 
 Sprint 2 (Stability):
-  2.1 Implicit-fast integrator  ← recommended default, stability boost
-  5.3 Passive forces            ← needed for damped joints (common in MJCF models)
+  2.1 Implicit-fast integrator  ← recommended default, stability boost (partially done via implicit damping in M)
+  5.3 Passive forces            ← partially done (armature/damping/stiffness implemented; missing frictionloss/springref)
 
 Sprint 3 (Interaction):
-  1.3 Body-body collision in GC ← enables object manipulation tasks
+  1.3 Body-body collision in GC ✅ DONE (bilateral Jacobians, O(N^2) detection, all primitives, CPU + GPU)
   3.1 Unified constraint rows   ← architecture for all below
 
 Sprint 4 (Polish):

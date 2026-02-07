@@ -19,6 +19,8 @@ struct PhysicsConstants[DTYPE: DType]:
 # Geometry types (Phase 2)
 comptime GEOM_PLANE: Int = 0
 comptime GEOM_SPHERE: Int = 1
+comptime GEOM_CAPSULE: Int = 2
+comptime GEOM_BOX: Int = 3
 
 # ==============================================================================
 # Phase 3: Multi-body layout constants

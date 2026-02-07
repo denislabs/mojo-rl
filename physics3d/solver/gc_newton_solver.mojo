@@ -113,8 +113,10 @@ struct GcNewtonSolver(GcConstraintSolver):
 
         # Contact body indices
         var contact_body = InlineArray[Int, MC](uninitialized=True)
+        var contact_body_b = InlineArray[Int, MC](uninitialized=True)
         for i in range(MC):
             contact_body[i] = 0
+            contact_body_b[i] = -1
 
         # RHS vector
         var rhs = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
@@ -140,6 +142,7 @@ struct GcNewtonSolver(GcConstraintSolver):
 
             contact_dist[c] = contact.dist
             contact_body[c] = contact.body_a
+            contact_body_b[c] = contact.body_b
 
             # Compute normal Jacobian row
             compute_contact_jacobian_row[
@@ -147,6 +150,7 @@ struct GcNewtonSolver(GcConstraintSolver):
             ](
                 model, data, cdof,
                 contact.body_a,
+                contact.body_b,
                 contact.pos_x, contact.pos_y, contact.pos_z,
                 contact.normal_x, contact.normal_y, contact.normal_z,
                 J_row,
@@ -373,7 +377,7 @@ struct GcNewtonSolver(GcConstraintSolver):
         # Phase 3: Friction (Coulomb cone) via PGS
         _solve_friction_pgs_cpu[
             DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, M_SIZE, CDOF_SIZE
-        ](model, data, cdof, M_inv, J_n, lambda_n, contact_dist, nc, qvel)
+        ](model, data, cdof, M_inv, J_n, lambda_n, contact_dist, contact_body_b, nc, qvel)
 
     @staticmethod
     fn solve_gpu[
@@ -409,6 +413,7 @@ struct GcNewtonSolver(GcConstraintSolver):
             gc_model_metadata_offset,
             GC_CONTACT_SIZE,
             GC_CONTACT_IDX_BODY_A,
+            GC_CONTACT_IDX_BODY_B,
             GC_CONTACT_IDX_POS_X,
             GC_CONTACT_IDX_POS_Y,
             GC_CONTACT_IDX_POS_Z,
@@ -464,6 +469,7 @@ struct GcNewtonSolver(GcConstraintSolver):
         var K_n = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
         var c_dist = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
         var c_body = InlineArray[Int, MC](uninitialized=True)
+        var c_body_b = InlineArray[Int, MC](uninitialized=True)
         var c_px = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
         var c_py = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
         var c_pz = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
@@ -477,6 +483,7 @@ struct GcNewtonSolver(GcConstraintSolver):
             K_n[i] = Scalar[DTYPE](1)
             c_dist[i] = Scalar[DTYPE](0)
             c_body[i] = 0
+            c_body_b[i] = -1
             c_px[i] = Scalar[DTYPE](0)
             c_py[i] = Scalar[DTYPE](0)
             c_pz[i] = Scalar[DTYPE](0)
@@ -489,10 +496,12 @@ struct GcNewtonSolver(GcConstraintSolver):
         for c in range(nc):
             var c_off = contacts_off + c * GC_CONTACT_SIZE
             var body = Int(rebind[Scalar[DTYPE]](state[env, c_off + GC_CONTACT_IDX_BODY_A]))
+            var body_b = Int(rebind[Scalar[DTYPE]](state[env, c_off + GC_CONTACT_IDX_BODY_B]))
             var dist = rebind[Scalar[DTYPE]](state[env, c_off + GC_CONTACT_IDX_DIST])
 
             c_dist[c] = dist
             c_body[c] = body
+            c_body_b[c] = body_b
 
             if dist >= Scalar[DTYPE](0):
                 continue
@@ -509,7 +518,7 @@ struct GcNewtonSolver(GcConstraintSolver):
                 STATE_SIZE, MODEL_SIZE, V_SIZE, CDOF_SIZE, BATCH,
             ](
                 env, state, model, cdof,
-                body, c_px[c], c_py[c], c_pz[c],
+                body, body_b, c_px[c], c_py[c], c_pz[c],
                 c_nx[c], c_ny[c], c_nz[c],
                 J_row,
             )
@@ -709,6 +718,6 @@ struct GcNewtonSolver(GcConstraintSolver):
             STATE_SIZE, MODEL_SIZE, V_SIZE, M_SIZE, CDOF_SIZE, BATCH,
         ](
             env, state, model, cdof, M_inv,
-            lambda_n, c_dist, c_body, c_px, c_py, c_pz, c_nx, c_ny, c_nz,
+            lambda_n, c_dist, c_body, c_body_b, c_px, c_py, c_pz, c_nx, c_ny, c_nz,
             nc, friction_coef, contacts_off, qvel,
         )

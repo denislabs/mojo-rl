@@ -205,6 +205,172 @@ fn detect_ground_contacts[
                     data.num_contacts += 1
 
 
+fn detect_body_body_contacts_gc[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+](
+    model: ModelGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    mut data: DataGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+):
+    """Detect body-body contacts and append to existing contact list.
+
+    Does NOT reset num_contacts — appends to contacts from ground detection.
+    O(N^2) pair iteration, skipping parent-child pairs.
+    Dispatches to collision primitives based on geometry types.
+    """
+    from ..constants import GEOM_SPHERE, GEOM_CAPSULE, GEOM_BOX
+    from ..collision.collision_primitives import (
+        sphere_sphere,
+        capsule_sphere,
+        capsule_capsule,
+        box_sphere,
+        box_capsule,
+    )
+
+    for i in range(NBODY):
+        for j in range(i + 1, NBODY):
+            # Skip parent-child pairs (connected bodies)
+            if model.body_parent[j] == i or model.body_parent[i] == j:
+                continue
+
+            # Skip if already at max contacts
+            if data.num_contacts >= MAX_CONTACTS:
+                return
+
+            var gi = model.body_geom_type[i]
+            var gj = model.body_geom_type[j]
+
+            # Get positions
+            var pi_x = data.xpos[i * 3 + 0]
+            var pi_y = data.xpos[i * 3 + 1]
+            var pi_z = data.xpos[i * 3 + 2]
+            var pj_x = data.xpos[j * 3 + 0]
+            var pj_y = data.xpos[j * 3 + 1]
+            var pj_z = data.xpos[j * 3 + 2]
+
+            # Get quaternions
+            var qi_x = data.xquat[i * 4 + 0]
+            var qi_y = data.xquat[i * 4 + 1]
+            var qi_z = data.xquat[i * 4 + 2]
+            var qi_w = data.xquat[i * 4 + 3]
+            var qj_x = data.xquat[j * 4 + 0]
+            var qj_y = data.xquat[j * 4 + 1]
+            var qj_z = data.xquat[j * 4 + 2]
+            var qj_w = data.xquat[j * 4 + 3]
+
+            var dist: Scalar[DTYPE] = 1.0  # Default: no contact
+            var cx: Scalar[DTYPE] = 0
+            var cy: Scalar[DTYPE] = 0
+            var cz: Scalar[DTYPE] = 0
+            var nx: Scalar[DTYPE] = 0
+            var ny: Scalar[DTYPE] = 0
+            var nz: Scalar[DTYPE] = 1
+            var swap = False  # Whether we swapped body order for the primitive
+
+            # Dispatch based on geometry pair
+            if gi == GEOM_SPHERE and gj == GEOM_SPHERE:
+                var result = sphere_sphere[DTYPE](
+                    pi_x, pi_y, pi_z, model.body_radius[i],
+                    pj_x, pj_y, pj_z, model.body_radius[j],
+                )
+                dist = result[0]; cx = result[1]; cy = result[2]; cz = result[3]
+                nx = result[4]; ny = result[5]; nz = result[6]
+
+            elif gi == GEOM_CAPSULE and gj == GEOM_SPHERE:
+                var result = capsule_sphere[DTYPE](
+                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
+                    model.body_half_length[i], model.body_radius[i],
+                    pj_x, pj_y, pj_z, model.body_radius[j],
+                )
+                dist = result[0]; cx = result[1]; cy = result[2]; cz = result[3]
+                nx = result[4]; ny = result[5]; nz = result[6]
+
+            elif gi == GEOM_SPHERE and gj == GEOM_CAPSULE:
+                # Swap: call capsule_sphere with j as capsule, negate normal
+                var result = capsule_sphere[DTYPE](
+                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
+                    model.body_half_length[j], model.body_radius[j],
+                    pi_x, pi_y, pi_z, model.body_radius[i],
+                )
+                dist = result[0]; cx = result[1]; cy = result[2]; cz = result[3]
+                nx = -result[4]; ny = -result[5]; nz = -result[6]
+                swap = True
+
+            elif gi == GEOM_CAPSULE and gj == GEOM_CAPSULE:
+                var result = capsule_capsule[DTYPE](
+                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
+                    model.body_half_length[i], model.body_radius[i],
+                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
+                    model.body_half_length[j], model.body_radius[j],
+                )
+                dist = result[0]; cx = result[1]; cy = result[2]; cz = result[3]
+                nx = result[4]; ny = result[5]; nz = result[6]
+
+            elif gi == GEOM_BOX and gj == GEOM_SPHERE:
+                var result = box_sphere[DTYPE](
+                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
+                    model.body_half_x[i], model.body_half_y[i], model.body_half_z[i],
+                    pj_x, pj_y, pj_z, model.body_radius[j],
+                )
+                dist = result[0]; cx = result[1]; cy = result[2]; cz = result[3]
+                nx = result[4]; ny = result[5]; nz = result[6]
+
+            elif gi == GEOM_SPHERE and gj == GEOM_BOX:
+                # Swap: call box_sphere with j as box, negate normal
+                var result = box_sphere[DTYPE](
+                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
+                    model.body_half_x[j], model.body_half_y[j], model.body_half_z[j],
+                    pi_x, pi_y, pi_z, model.body_radius[i],
+                )
+                dist = result[0]; cx = result[1]; cy = result[2]; cz = result[3]
+                nx = -result[4]; ny = -result[5]; nz = -result[6]
+                swap = True
+
+            elif gi == GEOM_BOX and gj == GEOM_CAPSULE:
+                var result = box_capsule[DTYPE](
+                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
+                    model.body_half_x[i], model.body_half_y[i], model.body_half_z[i],
+                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
+                    model.body_half_length[j], model.body_radius[j],
+                )
+                dist = result[0]; cx = result[1]; cy = result[2]; cz = result[3]
+                nx = result[4]; ny = result[5]; nz = result[6]
+
+            elif gi == GEOM_CAPSULE and gj == GEOM_BOX:
+                # Swap: call box_capsule with j as box, negate normal
+                var result = box_capsule[DTYPE](
+                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
+                    model.body_half_x[j], model.body_half_y[j], model.body_half_z[j],
+                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
+                    model.body_half_length[i], model.body_radius[i],
+                )
+                dist = result[0]; cx = result[1]; cy = result[2]; cz = result[3]
+                nx = -result[4]; ny = -result[5]; nz = -result[6]
+                swap = True
+
+            # Store contact if penetrating
+            if dist < Scalar[DTYPE](0) and data.num_contacts < MAX_CONTACTS:
+                var idx = data.num_contacts
+                if swap:
+                    data.contacts[idx].body_a = j
+                    data.contacts[idx].body_b = i
+                else:
+                    data.contacts[idx].body_a = i
+                    data.contacts[idx].body_b = j
+                data.contacts[idx].pos_x = cx
+                data.contacts[idx].pos_y = cy
+                data.contacts[idx].pos_z = cz
+                data.contacts[idx].normal_x = nx
+                data.contacts[idx].normal_y = ny
+                data.contacts[idx].normal_z = nz
+                data.contacts[idx].dist = dist
+                data.num_contacts += 1
+
+
 fn compute_contact_forces[
     DTYPE: DType,
     NQ: Int,

@@ -170,7 +170,8 @@ fn compute_contact_jacobian_row[
     model: ModelGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     data: DataGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
-    contact_body: Int,
+    contact_body_a: Int,
+    contact_body_b: Int,
     contact_pos_x: Scalar[DTYPE],
     contact_pos_y: Scalar[DTYPE],
     contact_pos_z: Scalar[DTYPE],
@@ -182,11 +183,14 @@ fn compute_contact_jacobian_row[
     """Compute one row of the contact Jacobian.
 
     Maps joint velocities to contact velocity along a given direction
-    (normal or tangent) for the contacted body.
+    (normal or tangent) for a contact between body_a and body_b.
 
-    For each DOF i that affects the contact body:
-        J_trans[i] = cdof_lin[i] + cdof_ang[i] x (contact_point - body_com)
-        J_row[i] = J_trans[i] . direction
+    For body-body contacts (body_b >= 0), the Jacobian is bilateral:
+    J_row[i] = J_a[i] - J_b[i], where J_a and J_b are the contributions
+    from body_a and body_b respectively. When a joint affects both bodies
+    (shared ancestor), the contributions cancel — physically correct.
+
+    For ground contacts (body_b = -1), only body_a contributes.
 
     Reference: MuJoCo mj_jac() in engine_core_util.c:177-227
 
@@ -194,7 +198,8 @@ fn compute_contact_jacobian_row[
         model: Static model configuration.
         data: Current simulation state.
         cdof: Spatial motion axes per DOF (from compute_cdof).
-        contact_body: Index of the body in contact.
+        contact_body_a: Index of body A in contact.
+        contact_body_b: Index of body B (-1 for ground).
         contact_pos_x/y/z: Contact point in world frame.
         dir_x/y/z: Direction vector (normal or tangent).
         J_row: Output Jacobian row (NV entries).
@@ -206,8 +211,11 @@ fn compute_contact_jacobian_row[
         var joint = model.joints[j]
         var dof_adr = joint.dof_adr
 
-        # Check if this joint affects the contacted body
-        if not _joint_affects_body(model, j, contact_body):
+        # Check if this joint affects either contact body
+        var affects_a = _joint_affects_body(model, j, contact_body_a)
+        var affects_b = (contact_body_b >= 0) and _joint_affects_body(model, j, contact_body_b)
+
+        if not affects_a and not affects_b:
             continue
 
         var num_dof = 1
@@ -217,8 +225,6 @@ fn compute_contact_jacobian_row[
             num_dof = 3
 
         # Reference body = joint's body (must match cdof computation)
-        # cdof_lin was computed as: axis × (xpos[joint.body_id] - anchor)
-        # so the cross product term must use the same reference point.
         var ref_body = joint.body_id
         var ref_x = data.xpos[ref_body * 3 + 0]
         var ref_y = data.xpos[ref_body * 3 + 1]
@@ -249,7 +255,13 @@ fn compute_contact_jacobian_row[
             var jt_z = lin_z + cross_z
 
             # Project onto direction
-            J_row[dof_idx] = jt_x * dir_x + jt_y * dir_y + jt_z * dir_z
+            var val = jt_x * dir_x + jt_y * dir_y + jt_z * dir_z
+
+            # Body A contributes positively, body B negatively
+            if affects_a:
+                J_row[dof_idx] = J_row[dof_idx] + val
+            if affects_b:
+                J_row[dof_idx] = J_row[dof_idx] - val
 
 
 fn _joint_affects_body[
@@ -775,7 +787,8 @@ fn compute_contact_jacobian_row_gpu[
     ],
     model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
     cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
-    contact_body: Int,
+    contact_body_a: Int,
+    contact_body_b: Int,
     contact_pos_x: Scalar[DTYPE],
     contact_pos_y: Scalar[DTYPE],
     contact_pos_z: Scalar[DTYPE],
@@ -784,7 +797,11 @@ fn compute_contact_jacobian_row_gpu[
     dir_z: Scalar[DTYPE],
     mut J_row: InlineArray[Scalar[DTYPE], V_SIZE],
 ):
-    """Compute one row of the contact Jacobian on GPU."""
+    """Compute one row of the contact Jacobian on GPU.
+
+    Bilateral: J_row[i] = J_a[i] - J_b[i] for body-body contacts.
+    For ground contacts (body_b = -1), only body_a contributes.
+    """
     from ..gpu.constants import (
         gc_xpos_offset,
         gc_model_body_offset,
@@ -816,23 +833,40 @@ fn compute_contact_jacobian_row_gpu[
         var joint_body = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_BODY_ID]))
         var dof_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_DOF_ADR]))
 
-        # Check if this joint affects the contacted body
-        var joint_affects = False
-        if contact_body == joint_body:
-            joint_affects = True
+        # Check if this joint affects body_a
+        var affects_a = False
+        if contact_body_a == joint_body:
+            affects_a = True
         else:
-            var current = contact_body
+            var current = contact_body_a
             while current >= 0:
                 var current_body_off = gc_model_body_offset(current)
                 var current_parent = Int(rebind[Scalar[DTYPE]](
                     model[0, current_body_off + GC_BODY_IDX_PARENT]
                 ))
                 if current_parent == joint_body:
-                    joint_affects = True
+                    affects_a = True
                     break
                 current = current_parent
 
-        if not joint_affects:
+        # Check if this joint affects body_b (only if body_b >= 0)
+        var affects_b = False
+        if contact_body_b >= 0:
+            if contact_body_b == joint_body:
+                affects_b = True
+            else:
+                var current_b = contact_body_b
+                while current_b >= 0:
+                    var current_body_off_b = gc_model_body_offset(current_b)
+                    var current_parent_b = Int(rebind[Scalar[DTYPE]](
+                        model[0, current_body_off_b + GC_BODY_IDX_PARENT]
+                    ))
+                    if current_parent_b == joint_body:
+                        affects_b = True
+                        break
+                    current_b = current_parent_b
+
+        if not affects_a and not affects_b:
             continue
 
         var num_dof = 1
@@ -869,4 +903,10 @@ fn compute_contact_jacobian_row_gpu[
             var jt_y = lin_y + cross_y
             var jt_z = lin_z + cross_z
 
-            J_row[dof_idx] = jt_x * dir_x + jt_y * dir_y + jt_z * dir_z
+            var val = jt_x * dir_x + jt_y * dir_y + jt_z * dir_z
+
+            # Body A contributes positively, body B negatively
+            if affects_a:
+                J_row[dof_idx] = J_row[dof_idx] + val
+            if affects_b:
+                J_row[dof_idx] = J_row[dof_idx] - val
