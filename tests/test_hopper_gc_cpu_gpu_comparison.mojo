@@ -12,12 +12,12 @@ from deep_rl import dtype as gpu_dtype
 
 from envs.hopper_gc import HopperGC
 from physics3d.gpu.constants import (
-    gc_state_size,
-    gc_qpos_offset,
-    gc_qvel_offset,
-    gc_qacc_offset,
-    gc_qfrc_offset,
-    gc_xpos_offset,
+    state_size,
+    qpos_offset,
+    qvel_offset,
+    qacc_offset,
+    qfrc_offset,
+    xpos_offset,
 )
 
 
@@ -70,10 +70,10 @@ fn initialize_gpu_state_from_cpu[
     cpu_qvel: InlineArray[Scalar[DType.float64], 6],
 ):
     """Initialize GPU state buffer from CPU state (no noise)."""
-    comptime QPOS_OFF = gc_qpos_offset[6, 6]()
-    comptime QVEL_OFF = gc_qvel_offset[6, 6]()
-    comptime QACC_OFF = gc_qacc_offset[6, 6]()
-    comptime QFRC_OFF = gc_qfrc_offset[6, 6]()
+    comptime QPOS_OFF = qpos_offset[6, 6]()
+    comptime QVEL_OFF = qvel_offset[6, 6]()
+    comptime QACC_OFF = qacc_offset[6, 6]()
+    comptime QFRC_OFF = qfrc_offset[6, 6]()
 
     # Copy qpos
     for i in range(6):
@@ -97,8 +97,8 @@ fn extract_gpu_qpos_qvel[
     mut out_qvel: List[Scalar[gpu_dtype]],
 ):
     """Extract qpos and qvel from GPU state buffer."""
-    comptime QPOS_OFF = gc_qpos_offset[6, 6]()
-    comptime QVEL_OFF = gc_qvel_offset[6, 6]()
+    comptime QPOS_OFF = qpos_offset[6, 6]()
+    comptime QVEL_OFF = qvel_offset[6, 6]()
 
     out_qpos.clear()
     out_qvel.clear()

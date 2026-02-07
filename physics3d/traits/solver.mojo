@@ -1,6 +1,6 @@
 """Constraint solver trait for Generalized Coordinates (GC) engine.
 
-GcConstraintSolver defines the interface for constraint-based contact solving
+ConstraintSolver defines the interface for constraint-based contact solving
 in joint space. Implementations receive the predicted (unconstrained) velocity
 and modify it in-place to satisfy contact constraints.
 
@@ -11,10 +11,10 @@ solve for contact impulses.
 
 from layout import LayoutTensor, Layout
 
-from ..types import ModelGC, DataGC
+from ..types import Model, Data
 
 
-trait GcConstraintSolver(Movable & ImplicitlyCopyable):
+trait ConstraintSolver(Movable & ImplicitlyCopyable):
     """Trait for constraint-based contact solvers in GC engine.
 
     Solvers modify the predicted velocity in-place to satisfy contact
@@ -40,8 +40,8 @@ trait GcConstraintSolver(Movable & ImplicitlyCopyable):
         M_SIZE: Int,
         CDOF_SIZE: Int,
     ](
-        model: ModelGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
-        data: DataGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+        model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         M_inv: InlineArray[Scalar[DTYPE], M_SIZE],
         cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
         mut qvel: InlineArray[Scalar[DTYPE], V_SIZE],

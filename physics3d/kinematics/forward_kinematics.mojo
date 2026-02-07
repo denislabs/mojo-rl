@@ -33,42 +33,42 @@ from .quat_math import (
     gpu_quat_normalize,
     gpu_axis_angle_to_quat,
 )
-from ..types import ModelGC, DataGC
+from ..types import Model, Data
 from ..joint_types import JNT_FREE, JNT_BALL, JNT_SLIDE, JNT_HINGE
 from ..gpu.constants import (
-    gc_qpos_offset,
-    gc_qvel_offset,
-    gc_xpos_offset,
-    gc_xquat_offset,
-    gc_xvel_offset,
-    gc_xangvel_offset,
-    gc_model_body_offset,
-    gc_model_joint_offset,
-    gc_model_metadata_offset,
-    GC_BODY_IDX_PARENT,
-    GC_BODY_IDX_POS_X,
-    GC_BODY_IDX_POS_Y,
-    GC_BODY_IDX_POS_Z,
-    GC_BODY_IDX_QUAT_X,
-    GC_BODY_IDX_QUAT_Y,
-    GC_BODY_IDX_QUAT_Z,
-    GC_BODY_IDX_QUAT_W,
-    GC_BODY_IDX_HALF_LENGTH,
-    GC_JOINT_IDX_TYPE,
-    GC_JOINT_IDX_BODY_ID,
-    GC_JOINT_IDX_QPOS_ADR,
-    GC_JOINT_IDX_DOF_ADR,
-    GC_JOINT_IDX_POS_X,
-    GC_JOINT_IDX_POS_Y,
-    GC_JOINT_IDX_POS_Z,
-    GC_JOINT_IDX_AXIS_X,
-    GC_JOINT_IDX_AXIS_Y,
-    GC_JOINT_IDX_AXIS_Z,
-    GC_MODEL_META_IDX_NJOINT,
-    GC_JNT_FREE,
-    GC_JNT_BALL,
-    GC_JNT_SLIDE,
-    GC_JNT_HINGE,
+    qpos_offset,
+    qvel_offset,
+    xpos_offset,
+    xquat_offset,
+    xvel_offset,
+    xangvel_offset,
+    model_body_offset,
+    model_joint_offset,
+    model_metadata_offset,
+    BODY_IDX_PARENT,
+    BODY_IDX_POS_X,
+    BODY_IDX_POS_Y,
+    BODY_IDX_POS_Z,
+    BODY_IDX_QUAT_X,
+    BODY_IDX_QUAT_Y,
+    BODY_IDX_QUAT_Z,
+    BODY_IDX_QUAT_W,
+    BODY_IDX_HALF_LENGTH,
+    JOINT_IDX_TYPE,
+    JOINT_IDX_BODY_ID,
+    JOINT_IDX_QPOS_ADR,
+    JOINT_IDX_DOF_ADR,
+    JOINT_IDX_POS_X,
+    JOINT_IDX_POS_Y,
+    JOINT_IDX_POS_Z,
+    JOINT_IDX_AXIS_X,
+    JOINT_IDX_AXIS_Y,
+    JOINT_IDX_AXIS_Z,
+    MODEL_META_IDX_NJOINT,
+    JNT_FREE,
+    JNT_BALL,
+    JNT_SLIDE,
+    JNT_HINGE,
 )
 
 
@@ -85,8 +85,8 @@ fn forward_kinematics[
     NJOINT: Int,
     MAX_CONTACTS: Int,
 ](
-    model: ModelGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
-    mut data: DataGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
 ):
     """Compute body world positions from joint positions.
 
@@ -371,8 +371,8 @@ fn compute_body_velocities[
     NJOINT: Int,
     MAX_CONTACTS: Int,
 ](
-    model: ModelGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
-    mut data: DataGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
 ):
     """Compute body world velocities from joint velocities.
 
@@ -546,25 +546,25 @@ fn forward_kinematics_gpu[
     IMPORTANT: This iterates per-body (not per-joint) to properly accumulate
     transformations for bodies with multiple joints (e.g., rootx + rootz + rooty).
     """
-    var qpos_off = gc_qpos_offset[NQ, NV]()
-    var xpos_off = gc_xpos_offset[NQ, NV, NBODY]()
-    var xquat_off = gc_xquat_offset[NQ, NV, NBODY]()
+    var qpos_off = qpos_offset[NQ, NV]()
+    var xpos_off = xpos_offset[NQ, NV, NBODY]()
+    var xquat_off = xquat_offset[NQ, NV, NBODY]()
 
-    var meta_off = gc_model_metadata_offset[NBODY, NJOINT]()
-    var num_joints = Int(rebind[Scalar[DTYPE]](model[0, meta_off + GC_MODEL_META_IDX_NJOINT]))
+    var meta_off = model_metadata_offset[NBODY, NJOINT]()
+    var num_joints = Int(rebind[Scalar[DTYPE]](model[0, meta_off + MODEL_META_IDX_NJOINT]))
 
     # Process each body in order (assuming topological ordering)
     for body in range(NBODY):
-        var body_off = gc_model_body_offset(body)
-        var parent = Int(rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_PARENT]))
+        var body_off = model_body_offset(body)
+        var parent = Int(rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT]))
 
-        var body_pos_x = rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_POS_X])
-        var body_pos_y = rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_POS_Y])
-        var body_pos_z = rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_POS_Z])
-        var body_quat_x = rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_QUAT_X])
-        var body_quat_y = rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_QUAT_Y])
-        var body_quat_z = rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_QUAT_Z])
-        var body_quat_w = rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_QUAT_W])
+        var body_pos_x = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_POS_X])
+        var body_pos_y = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_POS_Y])
+        var body_pos_z = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_POS_Z])
+        var body_quat_x = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_QUAT_X])
+        var body_quat_y = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_QUAT_Y])
+        var body_quat_z = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_QUAT_Z])
+        var body_quat_w = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_QUAT_W])
 
         # Start with parent's world pose (or identity for world)
         var cur_px: Scalar[DTYPE] = 0
@@ -587,8 +587,8 @@ fn forward_kinematics_gpu[
         # Count joints for this body
         var has_joint = False
         for j in range(num_joints):
-            var joint_off = gc_model_joint_offset[NBODY](j)
-            var joint_body = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_BODY_ID]))
+            var joint_off = model_joint_offset[NBODY](j)
+            var joint_body = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID]))
             if joint_body == body:
                 has_joint = True
                 break
@@ -635,12 +635,12 @@ fn forward_kinematics_gpu[
             var joint_pos_y: Scalar[DTYPE] = 0
             var joint_pos_z: Scalar[DTYPE] = 0
             for j in range(num_joints):
-                var jnt_off = gc_model_joint_offset[NBODY](j)
-                var jnt_body = Int(rebind[Scalar[DTYPE]](model[0, jnt_off + GC_JOINT_IDX_BODY_ID]))
+                var jnt_off = model_joint_offset[NBODY](j)
+                var jnt_body = Int(rebind[Scalar[DTYPE]](model[0, jnt_off + JOINT_IDX_BODY_ID]))
                 if jnt_body == body:
-                    joint_pos_x = rebind[Scalar[DTYPE]](model[0, jnt_off + GC_JOINT_IDX_POS_X])
-                    joint_pos_y = rebind[Scalar[DTYPE]](model[0, jnt_off + GC_JOINT_IDX_POS_Y])
-                    joint_pos_z = rebind[Scalar[DTYPE]](model[0, jnt_off + GC_JOINT_IDX_POS_Z])
+                    joint_pos_x = rebind[Scalar[DTYPE]](model[0, jnt_off + JOINT_IDX_POS_X])
+                    joint_pos_y = rebind[Scalar[DTYPE]](model[0, jnt_off + JOINT_IDX_POS_Y])
+                    joint_pos_z = rebind[Scalar[DTYPE]](model[0, jnt_off + JOINT_IDX_POS_Z])
                     break
 
             # Compute offset from parent center to joint pivot (in world frame)
@@ -657,19 +657,19 @@ fn forward_kinematics_gpu[
 
             # Process all joints for this body in order
             for j in range(num_joints):
-                var joint_off = gc_model_joint_offset[NBODY](j)
-                var joint_body = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_BODY_ID]))
+                var joint_off = model_joint_offset[NBODY](j)
+                var joint_body = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID]))
 
                 if joint_body != body:
                     continue
 
-                var jnt_type = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_TYPE]))
-                var qpos_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_QPOS_ADR]))
-                var axis_x = rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_AXIS_X])
-                var axis_y = rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_AXIS_Y])
-                var axis_z = rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_AXIS_Z])
+                var jnt_type = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE]))
+                var qpos_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_QPOS_ADR]))
+                var axis_x = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_AXIS_X])
+                var axis_y = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_AXIS_Y])
+                var axis_z = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_AXIS_Z])
 
-                if jnt_type == GC_JNT_FREE:
+                if jnt_type == JNT_FREE:
                     # FREE joint: position and orientation directly from qpos
                     cur_px = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr + 0])
                     cur_py = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr + 1])
@@ -685,7 +685,7 @@ fn forward_kinematics_gpu[
                     cur_qz = normalized[2]
                     cur_qw = normalized[3]
 
-                elif jnt_type == GC_JNT_HINGE:
+                elif jnt_type == JNT_HINGE:
                     # HINGE joint: rotation around axis at current pivot
                     # Only orientation changes, position stays at pivot
                     var angle = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr])
@@ -711,7 +711,7 @@ fn forward_kinematics_gpu[
                     cur_qz = new_quat[2]
                     cur_qw = new_quat[3]
 
-                elif jnt_type == GC_JNT_SLIDE:
+                elif jnt_type == JNT_SLIDE:
                     # SLIDE joint: translate along axis
                     var displacement = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr])
 
@@ -726,7 +726,7 @@ fn forward_kinematics_gpu[
                     cur_py = cur_py + axis_world[1] * displacement
                     cur_pz = cur_pz + axis_world[2] * displacement
 
-                elif jnt_type == GC_JNT_BALL:
+                elif jnt_type == JNT_BALL:
                     # BALL joint: rotation from quaternion (position unchanged)
                     var ball_qx = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr + 0])
                     var ball_qy = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr + 1])
@@ -802,14 +802,14 @@ fn compute_body_velocities_gpu[
     IMPORTANT: This iterates per-body (not per-joint) to properly accumulate
     velocities for bodies with multiple joints.
     """
-    var qvel_off = gc_qvel_offset[NQ, NV]()
-    var xpos_off = gc_xpos_offset[NQ, NV, NBODY]()
-    var xquat_off = gc_xquat_offset[NQ, NV, NBODY]()
-    var xvel_off = gc_xvel_offset[NQ, NV, NBODY]()
-    var xangvel_off = gc_xangvel_offset[NQ, NV, NBODY]()
+    var qvel_off = qvel_offset[NQ, NV]()
+    var xpos_off = xpos_offset[NQ, NV, NBODY]()
+    var xquat_off = xquat_offset[NQ, NV, NBODY]()
+    var xvel_off = xvel_offset[NQ, NV, NBODY]()
+    var xangvel_off = xangvel_offset[NQ, NV, NBODY]()
 
-    var meta_off = gc_model_metadata_offset[NBODY, NJOINT]()
-    var num_joints = Int(rebind[Scalar[DTYPE]](model[0, meta_off + GC_MODEL_META_IDX_NJOINT]))
+    var meta_off = model_metadata_offset[NBODY, NJOINT]()
+    var num_joints = Int(rebind[Scalar[DTYPE]](model[0, meta_off + MODEL_META_IDX_NJOINT]))
 
     # Initialize velocities to zero
     for body in range(NBODY):
@@ -822,8 +822,8 @@ fn compute_body_velocities_gpu[
 
     # Process each body in order
     for body in range(NBODY):
-        var body_off = gc_model_body_offset(body)
-        var parent = Int(rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_PARENT]))
+        var body_off = model_body_offset(body)
+        var parent = Int(rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT]))
 
         # Start with parent's velocity (if any)
         var vx: Scalar[DTYPE] = 0
@@ -860,19 +860,19 @@ fn compute_body_velocities_gpu[
 
         # Apply joint velocities - accumulate for all joints on this body
         for j in range(num_joints):
-            var joint_off = gc_model_joint_offset[NBODY](j)
-            var joint_body = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_BODY_ID]))
+            var joint_off = model_joint_offset[NBODY](j)
+            var joint_body = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID]))
 
             if joint_body != body:
                 continue
 
-            var jnt_type = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_TYPE]))
-            var dof_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_DOF_ADR]))
-            var axis_x = rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_AXIS_X])
-            var axis_y = rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_AXIS_Y])
-            var axis_z = rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_AXIS_Z])
+            var jnt_type = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE]))
+            var dof_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR]))
+            var axis_x = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_AXIS_X])
+            var axis_y = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_AXIS_Y])
+            var axis_z = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_AXIS_Z])
 
-            if jnt_type == GC_JNT_FREE:
+            if jnt_type == JNT_FREE:
                 # FREE joint: direct velocity from qvel
                 vx = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + 0])
                 vy = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + 1])
@@ -881,13 +881,13 @@ fn compute_body_velocities_gpu[
                 wy = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + 4])
                 wz = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + 5])
 
-            elif jnt_type == GC_JNT_BALL:
+            elif jnt_type == JNT_BALL:
                 # BALL joint: add angular velocity from qvel
                 wx = wx + rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + 0])
                 wy = wy + rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + 1])
                 wz = wz + rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + 2])
 
-            elif jnt_type == GC_JNT_SLIDE:
+            elif jnt_type == JNT_SLIDE:
                 # SLIDE joint: add velocity along axis
                 var vel = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr])
 
@@ -910,7 +910,7 @@ fn compute_body_velocities_gpu[
                 vy = vy + world_axis_y * vel
                 vz = vz + world_axis_z * vel
 
-            elif jnt_type == GC_JNT_HINGE:
+            elif jnt_type == JNT_HINGE:
                 # HINGE joint: add angular velocity around axis
                 var omega = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr])
 

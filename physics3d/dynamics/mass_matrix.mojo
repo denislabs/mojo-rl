@@ -15,34 +15,34 @@ Reference: Featherstone, "Rigid Body Dynamics Algorithms"
 from math import sqrt
 from layout import LayoutTensor, Layout
 
-from ..types import ModelGC, DataGC
+from ..types import Model, Data
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
 from ..kinematics.quat_math import quat_rotate, gpu_quat_rotate
 from ..gpu.constants import (
-    gc_xpos_offset,
-    gc_xquat_offset,
-    gc_model_body_offset,
-    gc_model_joint_offset,
-    gc_model_metadata_offset,
-    GC_BODY_IDX_PARENT,
-    GC_BODY_IDX_MASS,
-    GC_BODY_IDX_IXX,
-    GC_BODY_IDX_IYY,
-    GC_BODY_IDX_IZZ,
-    GC_JOINT_IDX_TYPE,
-    GC_JOINT_IDX_BODY_ID,
-    GC_JOINT_IDX_DOF_ADR,
-    GC_JOINT_IDX_POS_X,
-    GC_JOINT_IDX_POS_Y,
-    GC_JOINT_IDX_POS_Z,
-    GC_JOINT_IDX_AXIS_X,
-    GC_JOINT_IDX_AXIS_Y,
-    GC_JOINT_IDX_AXIS_Z,
-    GC_MODEL_META_IDX_NJOINT,
-    GC_JNT_FREE,
-    GC_JNT_BALL,
-    GC_JNT_SLIDE,
-    GC_JNT_HINGE,
+    xpos_offset,
+    xquat_offset,
+    model_body_offset,
+    model_joint_offset,
+    model_metadata_offset,
+    BODY_IDX_PARENT,
+    BODY_IDX_MASS,
+    BODY_IDX_IXX,
+    BODY_IDX_IYY,
+    BODY_IDX_IZZ,
+    JOINT_IDX_TYPE,
+    JOINT_IDX_BODY_ID,
+    JOINT_IDX_DOF_ADR,
+    JOINT_IDX_POS_X,
+    JOINT_IDX_POS_Y,
+    JOINT_IDX_POS_Z,
+    JOINT_IDX_AXIS_X,
+    JOINT_IDX_AXIS_Y,
+    JOINT_IDX_AXIS_Z,
+    MODEL_META_IDX_NJOINT,
+    JNT_FREE,
+    JNT_BALL,
+    JNT_SLIDE,
+    JNT_HINGE,
 )
 
 
@@ -61,7 +61,7 @@ fn _is_descendant[
     NJOINT: Int,
     MAX_CONTACTS: Int,
 ](
-    model: ModelGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     body: Int,
     ancestor: Int,
 ) -> Bool:
@@ -91,8 +91,8 @@ fn compute_mass_matrix[
     MAX_CONTACTS: Int,
     M_SIZE: Int,
 ](
-    model: ModelGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
-    data: DataGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     mut M: InlineArray[Scalar[DTYPE], M_SIZE],
 ):
     """Compute the joint-space mass matrix M(q).
@@ -303,8 +303,8 @@ fn compute_mass_matrix_full[
     CDOF_SIZE: Int,
     CRB_SIZE: Int,
 ](
-    model: ModelGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
-    data: DataGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
     crb: InlineArray[Scalar[DTYPE], CRB_SIZE],
     mut M: InlineArray[Scalar[DTYPE], M_SIZE],
@@ -602,9 +602,9 @@ fn compute_mass_matrix_full_gpu[
     mut M: InlineArray[Scalar[DTYPE], M_SIZE],
 ):
     """Compute full NV×NV mass matrix on GPU using direct body summation."""
-    var model_meta_off = gc_model_metadata_offset[NBODY, NJOINT]()
+    var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
     var num_joints = Int(rebind[Scalar[DTYPE]](
-        model[0, model_meta_off + GC_MODEL_META_IDX_NJOINT]
+        model[0, model_meta_off + MODEL_META_IDX_NJOINT]
     ))
 
     for i in range(NV * NV):
@@ -616,30 +616,30 @@ fn compute_mass_matrix_full_gpu[
         dof_body[i] = 0
 
     for j in range(num_joints):
-        var joint_off = gc_model_joint_offset[NBODY](j)
-        var jnt_type = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_TYPE]))
-        var body_id = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_BODY_ID]))
-        var dof_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_DOF_ADR]))
+        var joint_off = model_joint_offset[NBODY](j)
+        var jnt_type = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE]))
+        var body_id = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID]))
+        var dof_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR]))
 
         var ndof = 1
-        if jnt_type == GC_JNT_FREE:
+        if jnt_type == JNT_FREE:
             ndof = 6
-        elif jnt_type == GC_JNT_BALL:
+        elif jnt_type == JNT_BALL:
             ndof = 3
         for d in range(ndof):
             dof_body[dof_adr + d] = body_id
 
-    var xpos_off = gc_xpos_offset[NQ, NV, NBODY]()
-    var xquat_off = gc_xquat_offset[NQ, NV, NBODY]()
+    var xpos_off = xpos_offset[NQ, NV, NBODY]()
+    var xquat_off = xquat_offset[NQ, NV, NBODY]()
 
     # Pre-compute per-body world-frame inertia tensor
     comptime I_WORLD_SIZE = _ensure_positive[NBODY * 6]()
     var I_world = InlineArray[Scalar[DTYPE], I_WORLD_SIZE](uninitialized=True)
     for b in range(NBODY):
-        var body_off = gc_model_body_offset(b)
-        var Ixx_l = rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_IXX])
-        var Iyy_l = rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_IYY])
-        var Izz_l = rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_IZZ])
+        var body_off = model_body_offset(b)
+        var Ixx_l = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IXX])
+        var Iyy_l = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IYY])
+        var Izz_l = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IZZ])
 
         var qx = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 0])
         var qy = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 1])
@@ -692,8 +692,8 @@ fn compute_mass_matrix_full_gpu[
                 if not in_subtree_j:
                     continue
 
-                var body_off_k = gc_model_body_offset(k)
-                var mk = rebind[Scalar[DTYPE]](model[0, body_off_k + GC_BODY_IDX_MASS])
+                var body_off_k = model_body_offset(k)
+                var mk = rebind[Scalar[DTYPE]](model[0, body_off_k + BODY_IDX_MASS])
                 var pk0 = rebind[Scalar[DTYPE]](state[env, xpos_off + k * 3 + 0])
                 var pk1 = rebind[Scalar[DTYPE]](state[env, xpos_off + k * 3 + 1])
                 var pk2 = rebind[Scalar[DTYPE]](state[env, xpos_off + k * 3 + 2])
@@ -887,8 +887,8 @@ fn _is_descendant_gpu[
     """GPU-compatible check if body is a descendant of ancestor."""
     var current = body
     while current >= 0:
-        var body_off = gc_model_body_offset(current)
-        var parent = Int(rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_PARENT]))
+        var body_off = model_body_offset(current)
+        var parent = Int(rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT]))
         if parent == ancestor:
             return True
         current = parent
@@ -919,39 +919,39 @@ fn compute_mass_matrix_diagonal_gpu[
 
     For efficiency on GPU, we compute only diagonal elements.
     """
-    var xpos_off = gc_xpos_offset[NQ, NV, NBODY]()
-    var xquat_off = gc_xquat_offset[NQ, NV, NBODY]()
+    var xpos_off = xpos_offset[NQ, NV, NBODY]()
+    var xquat_off = xquat_offset[NQ, NV, NBODY]()
 
-    var model_meta_off = gc_model_metadata_offset[NBODY, NJOINT]()
-    var num_joints = Int(rebind[Scalar[DTYPE]](model[0, model_meta_off + GC_MODEL_META_IDX_NJOINT]))
+    var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
+    var num_joints = Int(rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_NJOINT]))
 
     # Initialize to zero
     for i in range(NV):
         M_diag[i] = Scalar[DTYPE](0)
 
     for j in range(num_joints):
-        var joint_off = gc_model_joint_offset[NBODY](j)
+        var joint_off = model_joint_offset[NBODY](j)
 
-        var jnt_type = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_TYPE]))
-        var body_id = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_BODY_ID]))
-        var dof_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_DOF_ADR]))
+        var jnt_type = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE]))
+        var body_id = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID]))
+        var dof_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR]))
 
-        var body_off = gc_model_body_offset(body_id)
-        var parent = Int(rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_PARENT]))
-        var mass = rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_MASS])
-        var I_xx = rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_IXX])
-        var I_yy = rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_IYY])
-        var I_zz = rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_IZZ])
+        var body_off = model_body_offset(body_id)
+        var parent = Int(rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT]))
+        var mass = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_MASS])
+        var I_xx = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IXX])
+        var I_yy = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IYY])
+        var I_zz = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IZZ])
         var I_avg = (I_xx + I_yy + I_zz) / Scalar[DTYPE](3)
 
-        var jpos_x = rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_POS_X])
-        var jpos_y = rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_POS_Y])
-        var jpos_z = rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_POS_Z])
-        var axis_x = rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_AXIS_X])
-        var axis_y = rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_AXIS_Y])
-        var axis_z = rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_AXIS_Z])
+        var jpos_x = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_POS_X])
+        var jpos_y = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_POS_Y])
+        var jpos_z = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_POS_Z])
+        var axis_x = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_AXIS_X])
+        var axis_y = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_AXIS_Y])
+        var axis_z = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_AXIS_Z])
 
-        if jnt_type == GC_JNT_HINGE:
+        if jnt_type == JNT_HINGE:
             var jpos_world_x = jpos_x
             var jpos_world_y = jpos_y
             var jpos_world_z = jpos_z
@@ -1002,11 +1002,11 @@ fn compute_mass_matrix_diagonal_gpu[
             # Add contributions from ALL descendant bodies (matching CPU version)
             for desc_body in range(body_id + 1, NBODY):
                 if _is_descendant_gpu[DTYPE, NBODY, MODEL_SIZE](model, desc_body, body_id):
-                    var desc_body_off = gc_model_body_offset(desc_body)
-                    var desc_mass = rebind[Scalar[DTYPE]](model[0, desc_body_off + GC_BODY_IDX_MASS])
-                    var desc_I_xx = rebind[Scalar[DTYPE]](model[0, desc_body_off + GC_BODY_IDX_IXX])
-                    var desc_I_yy = rebind[Scalar[DTYPE]](model[0, desc_body_off + GC_BODY_IDX_IYY])
-                    var desc_I_zz = rebind[Scalar[DTYPE]](model[0, desc_body_off + GC_BODY_IDX_IZZ])
+                    var desc_body_off = model_body_offset(desc_body)
+                    var desc_mass = rebind[Scalar[DTYPE]](model[0, desc_body_off + BODY_IDX_MASS])
+                    var desc_I_xx = rebind[Scalar[DTYPE]](model[0, desc_body_off + BODY_IDX_IXX])
+                    var desc_I_yy = rebind[Scalar[DTYPE]](model[0, desc_body_off + BODY_IDX_IYY])
+                    var desc_I_zz = rebind[Scalar[DTYPE]](model[0, desc_body_off + BODY_IDX_IZZ])
                     var desc_I_avg = (desc_I_xx + desc_I_yy + desc_I_zz) / Scalar[DTYPE](3)
 
                     var desc_px = rebind[Scalar[DTYPE]](state[env, xpos_off + desc_body * 3 + 0])
@@ -1027,17 +1027,17 @@ fn compute_mass_matrix_diagonal_gpu[
 
             M_diag[dof_adr] = m_effective
 
-        elif jnt_type == GC_JNT_SLIDE:
+        elif jnt_type == JNT_SLIDE:
             # Accumulate mass from body and ALL descendants
             var total_mass = mass
             for desc_body in range(body_id + 1, NBODY):
                 if _is_descendant_gpu[DTYPE, NBODY, MODEL_SIZE](model, desc_body, body_id):
-                    var desc_body_off = gc_model_body_offset(desc_body)
-                    var desc_mass = rebind[Scalar[DTYPE]](model[0, desc_body_off + GC_BODY_IDX_MASS])
+                    var desc_body_off = model_body_offset(desc_body)
+                    var desc_mass = rebind[Scalar[DTYPE]](model[0, desc_body_off + BODY_IDX_MASS])
                     total_mass = total_mass + desc_mass
             M_diag[dof_adr] = total_mass
 
-        elif jnt_type == GC_JNT_FREE:
+        elif jnt_type == JNT_FREE:
             M_diag[dof_adr + 0] = mass
             M_diag[dof_adr + 1] = mass
             M_diag[dof_adr + 2] = mass
@@ -1045,7 +1045,7 @@ fn compute_mass_matrix_diagonal_gpu[
             M_diag[dof_adr + 4] = I_yy
             M_diag[dof_adr + 5] = I_zz
 
-        elif jnt_type == GC_JNT_BALL:
+        elif jnt_type == JNT_BALL:
             M_diag[dof_adr + 0] = I_xx
             M_diag[dof_adr + 1] = I_yy
             M_diag[dof_adr + 2] = I_zz

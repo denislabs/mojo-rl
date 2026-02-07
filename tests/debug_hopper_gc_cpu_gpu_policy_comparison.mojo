@@ -22,10 +22,10 @@ from envs.hopper_gc import HopperGC
 from envs.hopper_gc.constants_gc import HopperGCConstantsGPU
 from deep_rl import dtype as gpu_dtype
 from physics3d.gpu.constants import (
-    gc_qpos_offset,
-    gc_qvel_offset,
-    gc_qacc_offset,
-    gc_qfrc_offset,
+    qpos_offset,
+    qvel_offset,
+    qacc_offset,
+    qfrc_offset,
 )
 
 
@@ -54,10 +54,10 @@ fn copy_cpu_state_to_gpu[
     cpu_qvel: InlineArray[Scalar[DType.float64], 6],
 ) raises:
     """Copy CPU state to GPU state buffer (single environment at index 0)."""
-    comptime QPOS_OFF = gc_qpos_offset[NQ, NV]()
-    comptime QVEL_OFF = gc_qvel_offset[NQ, NV]()
-    comptime QACC_OFF = gc_qacc_offset[NQ, NV]()
-    comptime QFRC_OFF = gc_qfrc_offset[NQ, NV]()
+    comptime QPOS_OFF = qpos_offset[NQ, NV]()
+    comptime QVEL_OFF = qvel_offset[NQ, NV]()
+    comptime QACC_OFF = qacc_offset[NQ, NV]()
+    comptime QFRC_OFF = qfrc_offset[NQ, NV]()
 
     var state_host = List[Scalar[gpu_dtype]](capacity=STATE_SIZE)
     for _ in range(STATE_SIZE):
@@ -90,8 +90,8 @@ fn extract_gpu_state[
     InlineArray[Scalar[gpu_dtype], 6],
 ]:
     """Extract qpos and qvel from GPU state buffer."""
-    comptime QPOS_OFF = gc_qpos_offset[NQ, NV]()
-    comptime QVEL_OFF = gc_qvel_offset[NQ, NV]()
+    comptime QPOS_OFF = qpos_offset[NQ, NV]()
+    comptime QVEL_OFF = qvel_offset[NQ, NV]()
 
     var state_host = List[Scalar[gpu_dtype]](capacity=STATE_SIZE)
     for _ in range(STATE_SIZE):
@@ -241,9 +241,9 @@ fn main() raises:
 
     # Run forward kinematics on GPU to match CPU
     comptime MODEL_SIZE = HopperGC[DType.float64].STATE_SIZE  # Approximate
-    from physics3d.gpu.constants import gc_model_size
+    from physics3d.gpu.constants import model_size
 
-    comptime ACTUAL_MODEL_SIZE = gc_model_size[4, 6]()  # 4 bodies, 6 joints
+    comptime ACTUAL_MODEL_SIZE = model_size[4, 6]()  # 4 bodies, 6 joints
     var model_buf = ctx.enqueue_create_buffer[gpu_dtype](ACTUAL_MODEL_SIZE)
     HopperGC[DType.float64]._init_model_gpu(ctx, model_buf)
 

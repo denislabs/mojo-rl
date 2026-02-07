@@ -11,7 +11,7 @@ Run with:
 
 from math import sqrt, pi
 from builtin.math import abs
-from physics3d.types import ModelGC, DataGC
+from physics3d.types import Model, Data
 from physics3d.kinematics.forward_kinematics import forward_kinematics
 from physics3d.kinematics.quat_math import quat_rotate
 
@@ -22,7 +22,7 @@ fn test_fk_identity() -> Bool:
 
     # Create a single body with a hinge joint
     # NQ=1, NV=1, NBODY=1, NJOINT=1, MAX_CONTACTS=5
-    var model = ModelGC[DType.float64, 1, 1, 1, 1, 5]()
+    var model = Model[DType.float64, 1, 1, 1, 1, 5]()
 
     # Set body with world as parent
     model.set_body(0, mass=1.0, inertia=(0.1, 0.1, 0.1), radius=0.1)
@@ -40,7 +40,7 @@ fn test_fk_identity() -> Bool:
     )
 
     # Create data with qpos=0
-    var data = DataGC[DType.float64, 1, 1, 1, 1, 5]()
+    var data = Data[DType.float64, 1, 1, 1, 1, 5]()
     data.qpos[0] = Float64(0.0)  # Zero angle
 
     # Run forward kinematics
@@ -79,7 +79,7 @@ fn test_fk_hinge_90deg() -> Bool:
 
     # Pendulum: body at (0, 0, -1) relative to pivot at (0, 0, 1)
     # When rotated 90deg around Y axis, body should be at (1, 0, 1)
-    var model = ModelGC[DType.float64, 1, 1, 1, 1, 5]()
+    var model = Model[DType.float64, 1, 1, 1, 1, 5]()
 
     model.set_body(0, mass=1.0, inertia=(0.1, 0.1, 0.1), radius=0.1)
     model.set_body_parent(0, -1)
@@ -94,7 +94,7 @@ fn test_fk_hinge_90deg() -> Bool:
         axis=(0.0, 1.0, 0.0),  # Rotate around Y
     )
 
-    var data = DataGC[DType.float64, 1, 1, 1, 1, 5]()
+    var data = Data[DType.float64, 1, 1, 1, 1, 5]()
     data.qpos[0] = pi / 2.0  # 90 degrees
 
     forward_kinematics(model, data)
@@ -156,7 +156,7 @@ fn test_fk_double_pendulum() -> Bool:
     #           The joint is at body 0's frame, so relative to body 0
 
     # NQ=2, NV=2, NBODY=2, NJOINT=2
-    var model = ModelGC[DType.float64, 2, 2, 2, 2, 5]()
+    var model = Model[DType.float64, 2, 2, 2, 2, 5]()
 
     # Body 0: CoM at offset -0.5 below its joint pivot
     model.set_body(0, mass=1.0, inertia=(0.1, 0.1, 0.1), radius=0.1)
@@ -184,7 +184,7 @@ fn test_fk_double_pendulum() -> Bool:
         axis=(0.0, 1.0, 0.0),
     )
 
-    var data = DataGC[DType.float64, 2, 2, 2, 2, 5]()
+    var data = Data[DType.float64, 2, 2, 2, 2, 5]()
     data.qpos[0] = Float64(0.0)  # First joint angle
     data.qpos[1] = Float64(0.0)  # Second joint angle
 

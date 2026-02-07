@@ -15,18 +15,18 @@ Run with:
 from math import sqrt, sin, cos, pi
 from gpu.host import DeviceContext, DeviceBuffer
 
-from physics3d.types import ModelGC, DataGC
-from physics3d.integrator import SemiImplicitEulerIntegrator
+from physics3d.types import Model, Data
+from physics3d.integrator import DefaultIntegrator
 from physics3d.gpu.constants import (
-    gc_state_size,
-    gc_model_size,
-    gc_qpos_offset,
-    gc_qvel_offset,
-    gc_xpos_offset,
+    state_size,
+    model_size,
+    qpos_offset,
+    qvel_offset,
+    xpos_offset,
 )
 from physics3d.gpu.buffer_utils import (
-    create_gc_state_buffer,
-    create_gc_model_buffer,
+    create_state_buffer,
+    create_model_buffer,
     copy_model_to_buffer,
     copy_data_to_buffer,
 )
@@ -77,15 +77,15 @@ fn main() raises:
     print()
 
     # Compute buffer sizes
-    comptime STATE_SIZE = gc_state_size[NQ, NV, NBODY, MAX_CONTACTS]()
-    comptime MODEL_SIZE = gc_model_size[NBODY, NJOINT]()
+    comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS]()
+    comptime MODEL_SIZE = model_size[NBODY, NJOINT]()
     print("Buffer sizes:")
     print("  State size:", STATE_SIZE, "floats")
     print("  Model size:", MODEL_SIZE, "floats")
     print()
 
     # Create CPU model and data first
-    var model = ModelGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS](
+    var model = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS](
         gravity_z=Scalar[DTYPE](-g),
         timestep=Scalar[DTYPE](dt),
         ground_z=Scalar[DTYPE](ground_z),
@@ -112,7 +112,7 @@ fn main() raises:
     )
 
     # Initialize data
-    var data = DataGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
+    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
     data.qpos[0] = Scalar[DTYPE](initial_angle)
     data.qvel[0] = Scalar[DTYPE](0.0)
 
@@ -121,10 +121,10 @@ fn main() raises:
     print("GPU device initialized")
 
     # Create host buffers
-    var state_host = create_gc_state_buffer[
+    var state_host = create_state_buffer[
         DTYPE, NQ, NV, NBODY, MAX_CONTACTS, BATCH
     ](ctx)
-    var model_host = create_gc_model_buffer[DTYPE, NBODY, NJOINT](ctx)
+    var model_host = create_model_buffer[DTYPE, NBODY, NJOINT](ctx)
 
     # Copy model and data to host buffers
     copy_model_to_buffer[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS](
@@ -167,7 +167,7 @@ fn main() raises:
 
     for step in range(num_steps):
         # Run one step on GPU
-        SemiImplicitEulerIntegrator.step_gpu[
+        DefaultIntegrator.step_gpu[
             DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, BATCH
         ](
             ctx,
@@ -185,9 +185,9 @@ fn main() raises:
             ctx.enqueue_copy(state_host.unsafe_ptr(), state_buf)
             ctx.synchronize()
 
-            var qpos_off = gc_qpos_offset[NQ, NV]()
-            var qvel_off = gc_qvel_offset[NQ, NV]()
-            var xpos_off = gc_xpos_offset[NQ, NV, NBODY]()
+            var qpos_off = qpos_offset[NQ, NV]()
+            var qvel_off = qvel_offset[NQ, NV]()
+            var xpos_off = xpos_offset[NQ, NV, NBODY]()
 
             var qpos = Float32(state_host[qpos_off])
             var qvel = Float32(state_host[qvel_off])
@@ -224,8 +224,8 @@ fn main() raises:
             ctx.enqueue_copy(state_host.unsafe_ptr(), state_buf)
             ctx.synchronize()
 
-            var qpos_off = gc_qpos_offset[NQ, NV]()
-            var xpos_off = gc_xpos_offset[NQ, NV, NBODY]()
+            var qpos_off = qpos_offset[NQ, NV]()
+            var xpos_off = xpos_offset[NQ, NV, NBODY]()
 
             var qpos = Float32(state_host[qpos_off])
             var body_x = Float32(state_host[xpos_off + 0])

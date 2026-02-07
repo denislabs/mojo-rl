@@ -1,7 +1,7 @@
 """HopperGC - MuJoCo-style Hopper using Generalized Coordinates physics.
 
 This environment uses the physics3d Generalized Coordinates engine with
-ConstraintGcIntegrator for constraint-based contact solving.
+DefaultIntegrator for constraint-based contact solving.
 
 Usage:
     from envs.hopper_gc import HopperGC, HopperGCState, HopperGCAction

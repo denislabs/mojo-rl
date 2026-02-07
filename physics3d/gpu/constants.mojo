@@ -1,39 +1,20 @@
-"""Physics3D v2 GPU constants - Multi-body flat buffer layout.
+"""Physics3D GPU constants - Flat buffer layout for GPU kernels.
 
-GPU kernels require flat buffer layouts. This file defines:
-1. Per-body state layout (positions, velocities, etc.)
-2. Per-contact layout (body indices, normal, depth, etc.)
-3. Per-joint layout (body indices, anchors, axis, impulses, actuation, free DOF)
-4. Total buffer size computation
+Primary state is qpos/qvel (joint space). Body positions (xpos, xquat)
+are computed via forward kinematics and stored for collision detection.
 
-Buffer layout for multi-body:
-  [BATCH, NUM_BODIES * BODY_STATE_SIZE + MAX_CONTACTS * CONTACT_STATE_SIZE + MAX_JOINTS * JOINT_STATE_SIZE + METADATA_SIZE]
-
-Where:
-  - BODY_STATE_SIZE = 22 floats per body
-  - CONTACT_STATE_SIZE = 12 floats per contact
-  - JOINT_STATE_SIZE = 21 floats per joint (including actuation and free DOF)
-  - SLIDE_JOINT_STATE_SIZE = 21 floats per slide joint
-  - METADATA_SIZE = 4 floats (num_contacts, num_joints, padding)
-
-
-GPU buffer layout constants for Generalized Coordinates engine.
-
-GPU kernels require flat buffer layouts. This file defines the state buffer
-layout for the GC engine, which differs from the Cartesian engine:
-- Primary state is qpos/qvel (joint space) not body positions/velocities
-- Body positions (xpos, xquat) are computed values, stored for collision detection
-
-Buffer layout per environment:
+State buffer layout per environment:
   [qpos: NQ | qvel: NV | qacc: NV | qfrc: NV |
    xpos: NBODY*3 | xquat: NBODY*4 | xvel: NBODY*3 | xangvel: NBODY*3 |
-   contacts: MAX_CONTACTS*12 | metadata: 4]
+   contacts: MAX_CONTACTS*CONTACT_SIZE | metadata: METADATA_SIZE]
 
 Model buffer (static, same for all environments):
-  Per body: [mass, inv_mass, inertia(3), inv_inertia(3), pos(3), quat(4),
-             parent, geom_type, radius, half_length, half_x, half_y, half_z]
-  Per joint: [jnt_type, body_id, qpos_adr, dof_adr, pos(3), axis(3), tau_limit]
-  Metadata: [NBODY, NJOINT, gravity(4), timestep, ground_z, friction]
+  Per body (MODEL_BODY_SIZE=22): [mass, inv_mass, inertia(3), inv_inertia(3),
+    pos(3), quat(4), parent, geom_type, radius, half_length, half_x/y/z]
+  Per joint (MODEL_JOINT_SIZE=16): [type, body_id, qpos_adr, dof_adr,
+    pos(3), axis(3), tau_limit, range_min/max, armature, damping, stiffness]
+  Metadata (MODEL_META_SIZE=8): [NBODY, NJOINT, gravity(3), timestep, ground_z, friction]
+  Curriculum (MODEL_CURRICULUM_SIZE=8): [up to 8 curriculum parameters]
 """
 
 # =============================================================================
@@ -43,294 +24,6 @@ Model buffer (static, same for all environments):
 comptime TPB: Int = 256  # Threads per block (optimal for most GPUs)
 comptime TILE: Int = 16  # Tile size for 2D operations
 
-
-comptime MODEL_BODY_SIZE: Int = 14
-comptime MODEL_IDX_MASS: Int = 0
-comptime MODEL_IDX_INV_MASS: Int = 1
-comptime MODEL_IDX_RADIUS: Int = 2
-comptime MODEL_IDX_IXX: Int = 3
-comptime MODEL_IDX_IYY: Int = 4
-comptime MODEL_IDX_IZZ: Int = 5
-comptime MODEL_IDX_INV_IXX: Int = 6
-comptime MODEL_IDX_INV_IYY: Int = 7
-comptime MODEL_IDX_INV_IZZ: Int = 8
-comptime MODEL_IDX_GEOM_TYPE: Int = 9  # Geometry type (GEOM_SPHERE, GEOM_CAPSULE, GEOM_BOX)
-comptime MODEL_IDX_HALF_LENGTH: Int = 10  # Half-length for capsules (0 for spheres)
-comptime MODEL_IDX_HALF_X: Int = 11  # Phase 9: Box half-extent X
-comptime MODEL_IDX_HALF_Y: Int = 12  # Phase 9: Box half-extent Y
-comptime MODEL_IDX_HALF_Z: Int = 13  # Phase 9: Box half-extent Z
-# =============================================================================
-# Per-Body State Layout (22 floats per body)
-# =============================================================================
-
-# Position (3 floats)
-comptime BODY_POS_OFFSET: Int = 0
-comptime BODY_IDX_PX: Int = 0
-comptime BODY_IDX_PY: Int = 1
-comptime BODY_IDX_PZ: Int = 2
-
-# Quaternion (4 floats) [qx, qy, qz, qw]
-comptime BODY_QUAT_OFFSET: Int = 3
-comptime BODY_IDX_QX: Int = 3
-comptime BODY_IDX_QY: Int = 4
-comptime BODY_IDX_QZ: Int = 5
-comptime BODY_IDX_QW: Int = 6
-
-# Linear velocity (3 floats)
-comptime BODY_VEL_OFFSET: Int = 7
-comptime BODY_IDX_VX: Int = 7
-comptime BODY_IDX_VY: Int = 8
-comptime BODY_IDX_VZ: Int = 9
-
-# Angular velocity (3 floats)
-comptime BODY_ANGVEL_OFFSET: Int = 10
-comptime BODY_IDX_WX: Int = 10
-comptime BODY_IDX_WY: Int = 11
-comptime BODY_IDX_WZ: Int = 12
-
-# Linear acceleration (3 floats)
-comptime BODY_ACC_OFFSET: Int = 13
-comptime BODY_IDX_AX: Int = 13
-comptime BODY_IDX_AY: Int = 14
-comptime BODY_IDX_AZ: Int = 15
-
-# Angular acceleration (3 floats)
-comptime BODY_ANGACC_OFFSET: Int = 16
-comptime BODY_IDX_ALPHA_X: Int = 16
-comptime BODY_IDX_ALPHA_Y: Int = 17
-comptime BODY_IDX_ALPHA_Z: Int = 18
-
-# Applied forces (3 floats) - for external forces
-comptime BODY_FORCE_OFFSET: Int = 19
-comptime BODY_IDX_FX: Int = 19
-comptime BODY_IDX_FY: Int = 20
-comptime BODY_IDX_FZ: Int = 21
-
-# Total body state size
-comptime BODY_STATE_SIZE: Int = 22
-
-
-# =============================================================================
-# Per-Contact State Layout (12 floats per contact)
-# =============================================================================
-
-# Body indices (2 floats - stored as floats for GPU compatibility)
-comptime CONTACT_IDX_BODY_A: Int = 0  # First body index
-comptime CONTACT_IDX_BODY_B: Int = 1  # Second body index (-1 for ground)
-
-# Contact position (3 floats)
-comptime CONTACT_IDX_POS_X: Int = 2
-comptime CONTACT_IDX_POS_Y: Int = 3
-comptime CONTACT_IDX_POS_Z: Int = 4
-
-# Contact normal (3 floats) - points from A to B
-comptime CONTACT_IDX_NX: Int = 5
-comptime CONTACT_IDX_NY: Int = 6
-comptime CONTACT_IDX_NZ: Int = 7
-
-# Signed distance (1 float) - negative = penetration
-comptime CONTACT_IDX_DIST: Int = 8
-
-# Impulses for warm starting (3 floats)
-comptime CONTACT_IDX_IMPULSE_N: Int = 9  # Normal impulse
-comptime CONTACT_IDX_IMPULSE_T1: Int = 10  # Tangent impulse 1
-comptime CONTACT_IDX_IMPULSE_T2: Int = 11  # Tangent impulse 2
-
-# Total contact state size
-comptime CONTACT_STATE_SIZE: Int = 12
-
-
-# =============================================================================
-# Per-Joint State Layout (18 floats per joint)
-# =============================================================================
-
-# Body indices (2 floats - stored as floats for GPU compatibility)
-comptime JOINT_IDX_PARENT: Int = 0  # Parent body index (-1 for world)
-comptime JOINT_IDX_CHILD: Int = 1  # Child body index
-
-# Anchor point on parent (3 floats) - local frame or world if parent=-1
-comptime JOINT_IDX_ANCHOR_PX: Int = 2
-comptime JOINT_IDX_ANCHOR_PY: Int = 3
-comptime JOINT_IDX_ANCHOR_PZ: Int = 4
-
-# Anchor point on child (3 floats) - local frame
-comptime JOINT_IDX_ANCHOR_CX: Int = 5
-comptime JOINT_IDX_ANCHOR_CY: Int = 6
-comptime JOINT_IDX_ANCHOR_CZ: Int = 7
-
-# Hinge axis (3 floats) - in parent's local frame or world if parent=-1
-comptime JOINT_IDX_AXIS_X: Int = 8
-comptime JOINT_IDX_AXIS_Y: Int = 9
-comptime JOINT_IDX_AXIS_Z: Int = 10
-
-# Accumulated impulses for warm starting (5 floats)
-comptime JOINT_IDX_IMPULSE_LX: Int = 11  # Linear impulse X
-comptime JOINT_IDX_IMPULSE_LY: Int = 12  # Linear impulse Y
-comptime JOINT_IDX_IMPULSE_LZ: Int = 13  # Linear impulse Z
-comptime JOINT_IDX_IMPULSE_AX: Int = 14  # Angular impulse 1
-comptime JOINT_IDX_IMPULSE_AY: Int = 15  # Angular impulse 2
-
-# Actuation (Phase 7)
-comptime JOINT_IDX_TARGET_TORQUE: Int = 16  # Control input torque (N·m)
-comptime JOINT_IDX_TORQUE_LIMIT: Int = 17  # Maximum torque magnitude
-
-# Free DOF mode (Phase 11f)
-comptime JOINT_IDX_IS_FREE_DOF: Int = 18  # 1.0 if free DOF, 0.0 otherwise
-comptime JOINT_IDX_QPOS: Int = 19  # Tracked joint position (angle in radians)
-comptime JOINT_IDX_QVEL: Int = 20  # Tracked joint velocity (rad/s)
-
-# Total joint state size
-comptime JOINT_STATE_SIZE: Int = 21
-
-
-# =============================================================================
-# Per-Slide-Joint State Layout (18 floats per slide joint)
-# =============================================================================
-
-# Body indices (2 floats - stored as floats for GPU compatibility)
-comptime SLIDE_IDX_PARENT: Int = 0  # Parent body index (-1 for world)
-comptime SLIDE_IDX_CHILD: Int = 1  # Child body index
-
-# Anchor point on parent (3 floats) - local frame or world if parent=-1
-comptime SLIDE_IDX_ANCHOR_PX: Int = 2
-comptime SLIDE_IDX_ANCHOR_PY: Int = 3
-comptime SLIDE_IDX_ANCHOR_PZ: Int = 4
-
-# Anchor point on child (3 floats) - local frame
-comptime SLIDE_IDX_ANCHOR_CX: Int = 5
-comptime SLIDE_IDX_ANCHOR_CY: Int = 6
-comptime SLIDE_IDX_ANCHOR_CZ: Int = 7
-
-# Slide axis (3 floats) - in parent's local frame or world if parent=-1
-comptime SLIDE_IDX_AXIS_X: Int = 8
-comptime SLIDE_IDX_AXIS_Y: Int = 9
-comptime SLIDE_IDX_AXIS_Z: Int = 10
-
-# Accumulated impulses for warm starting (5 floats)
-comptime SLIDE_IDX_IMPULSE_P1: Int = 11  # Perpendicular impulse 1
-comptime SLIDE_IDX_IMPULSE_P2: Int = 12  # Perpendicular impulse 2
-comptime SLIDE_IDX_IMPULSE_AX: Int = 13  # Angular impulse X
-comptime SLIDE_IDX_IMPULSE_AY: Int = 14  # Angular impulse Y
-comptime SLIDE_IDX_IMPULSE_AZ: Int = 15  # Angular impulse Z
-
-# Actuation
-comptime SLIDE_IDX_TARGET_FORCE: Int = 16  # Control input force (N)
-comptime SLIDE_IDX_FORCE_LIMIT: Int = 17  # Maximum force magnitude
-
-# Free DOF mode (Phase 11f)
-comptime SLIDE_IDX_IS_FREE_DOF: Int = 18  # 1.0 if free DOF, 0.0 otherwise
-comptime SLIDE_IDX_QPOS: Int = 19  # Tracked joint position (meters along axis)
-comptime SLIDE_IDX_QVEL: Int = 20  # Tracked joint velocity (m/s along axis)
-
-# Total slide joint state size
-comptime SLIDE_JOINT_STATE_SIZE: Int = 21
-
-
-# =============================================================================
-# Metadata Layout (4 floats)
-# =============================================================================
-
-comptime META_IDX_NUM_CONTACTS: Int = 0  # Current number of active contacts
-comptime META_IDX_NUM_JOINTS: Int = 1  # Current number of active joints
-comptime META_IDX_PADDING_2: Int = 2
-comptime META_IDX_PADDING_3: Int = 3
-
-comptime METADATA_SIZE: Int = 4
-
-
-# =============================================================================
-# Helper Functions for Computing Offsets
-# =============================================================================
-
-
-fn compute_state_size[
-    NUM_BODIES: Int,
-    MAX_CONTACTS: Int,
-    MAX_JOINTS: Int = 0,
-    MAX_SLIDE_JOINTS: Int = 0,
-]() -> Int:
-    """Compute total state buffer size per environment.
-
-    Args:
-        NUM_BODIES: Number of bodies in the simulation.
-        MAX_CONTACTS: Maximum number of contacts.
-        MAX_JOINTS: Maximum number of hinge joints (default 0).
-        MAX_SLIDE_JOINTS: Maximum number of slide joints (default 0).
-
-    Returns:
-        Total buffer size in number of scalars.
-    """
-    return (
-        NUM_BODIES * BODY_STATE_SIZE
-        + MAX_CONTACTS * CONTACT_STATE_SIZE
-        + MAX_JOINTS * JOINT_STATE_SIZE
-        + MAX_SLIDE_JOINTS * SLIDE_JOINT_STATE_SIZE
-        + METADATA_SIZE
-    )
-
-
-fn body_offset[
-    NUM_BODIES: Int,
-    MAX_CONTACTS: Int,
-    MAX_JOINTS: Int = 0,
-    MAX_SLIDE_JOINTS: Int = 0,
-](body_idx: Int) -> Int:
-    """Get offset to start of body state within environment state."""
-    return body_idx * BODY_STATE_SIZE
-
-
-fn contact_offset[
-    NUM_BODIES: Int,
-    MAX_CONTACTS: Int,
-    MAX_JOINTS: Int = 0,
-    MAX_SLIDE_JOINTS: Int = 0,
-](contact_idx: Int) -> Int:
-    """Get offset to start of contact state within environment state."""
-    return NUM_BODIES * BODY_STATE_SIZE + contact_idx * CONTACT_STATE_SIZE
-
-
-fn joint_offset[
-    NUM_BODIES: Int,
-    MAX_CONTACTS: Int,
-    MAX_JOINTS: Int = 0,
-    MAX_SLIDE_JOINTS: Int = 0,
-](joint_idx: Int) -> Int:
-    """Get offset to start of hinge joint state within environment state."""
-    return (
-        NUM_BODIES * BODY_STATE_SIZE
-        + MAX_CONTACTS * CONTACT_STATE_SIZE
-        + joint_idx * JOINT_STATE_SIZE
-    )
-
-
-fn slide_joint_offset[
-    NUM_BODIES: Int,
-    MAX_CONTACTS: Int,
-    MAX_JOINTS: Int = 0,
-    MAX_SLIDE_JOINTS: Int = 0,
-](slide_joint_idx: Int) -> Int:
-    """Get offset to start of slide joint state within environment state."""
-    return (
-        NUM_BODIES * BODY_STATE_SIZE
-        + MAX_CONTACTS * CONTACT_STATE_SIZE
-        + MAX_JOINTS * JOINT_STATE_SIZE
-        + slide_joint_idx * SLIDE_JOINT_STATE_SIZE
-    )
-
-
-fn metadata_offset[
-    NUM_BODIES: Int,
-    MAX_CONTACTS: Int,
-    MAX_JOINTS: Int = 0,
-    MAX_SLIDE_JOINTS: Int = 0,
-]() -> Int:
-    """Get offset to metadata within environment state."""
-    return (
-        NUM_BODIES * BODY_STATE_SIZE
-        + MAX_CONTACTS * CONTACT_STATE_SIZE
-        + MAX_JOINTS * JOINT_STATE_SIZE
-        + MAX_SLIDE_JOINTS * SLIDE_JOINT_STATE_SIZE
-    )
 
 
 # =============================================================================
@@ -355,53 +48,6 @@ comptime DEFAULT_SLOP: Float32 = 0.001
 
 
 # =============================================================================
-# Legacy Single-Body Layout (for backward compatibility)
-# =============================================================================
-
-# Old STATE_SIZE for single body (36 floats)
-# Keeping for reference, but new code should use multi-body layout
-comptime LEGACY_STATE_SIZE: Int = 36
-
-# Old field indices (single body)
-comptime IDX_X: Int = 0
-comptime IDX_Y: Int = 1
-comptime IDX_Z: Int = 2
-comptime IDX_QX: Int = 3
-comptime IDX_QY: Int = 4
-comptime IDX_QZ: Int = 5
-comptime IDX_QW: Int = 6
-comptime IDX_VX: Int = 7
-comptime IDX_VY: Int = 8
-comptime IDX_VZ: Int = 9
-comptime IDX_WX: Int = 10
-comptime IDX_WY: Int = 11
-comptime IDX_WZ: Int = 12
-comptime IDX_AX: Int = 13
-comptime IDX_AY: Int = 14
-comptime IDX_AZ: Int = 15
-comptime IDX_ALPHA_X: Int = 16
-comptime IDX_ALPHA_Y: Int = 17
-comptime IDX_ALPHA_Z: Int = 18
-comptime IDX_FX: Int = 19
-comptime IDX_FY: Int = 20
-comptime IDX_FZ: Int = 21
-comptime IDX_TAU_X: Int = 22
-comptime IDX_TAU_Y: Int = 23
-comptime IDX_TAU_Z: Int = 24
-comptime IDX_XPOS_X: Int = 25
-comptime IDX_XPOS_Y: Int = 26
-comptime IDX_XPOS_Z: Int = 27
-comptime IDX_CONTACT_ACTIVE: Int = 28
-comptime IDX_CONTACT_DEPTH: Int = 29
-comptime IDX_CONTACT_NX: Int = 30
-comptime IDX_CONTACT_NY: Int = 31
-comptime IDX_CONTACT_NZ: Int = 32
-comptime IDX_CONTACT_PX: Int = 33
-comptime IDX_CONTACT_PY: Int = 34
-comptime IDX_CONTACT_PZ: Int = 35
-
-
-# =============================================================================
 # State Buffer Layout - Joint Space (qpos, qvel, qacc, qfrc)
 # =============================================================================
 
@@ -414,22 +60,22 @@ comptime IDX_CONTACT_PZ: Int = 35
 #   qfrc: [NQ + 2*NV, NQ + 3*NV)
 
 
-fn gc_qpos_offset[NQ: Int, NV: Int]() -> Int:
+fn qpos_offset[NQ: Int, NV: Int]() -> Int:
     """Offset to qpos array (always 0)."""
     return 0
 
 
-fn gc_qvel_offset[NQ: Int, NV: Int]() -> Int:
+fn qvel_offset[NQ: Int, NV: Int]() -> Int:
     """Offset to qvel array."""
     return NQ
 
 
-fn gc_qacc_offset[NQ: Int, NV: Int]() -> Int:
+fn qacc_offset[NQ: Int, NV: Int]() -> Int:
     """Offset to qacc array."""
     return NQ + NV
 
 
-fn gc_qfrc_offset[NQ: Int, NV: Int]() -> Int:
+fn qfrc_offset[NQ: Int, NV: Int]() -> Int:
     """Offset to qfrc array."""
     return NQ + 2 * NV
 
@@ -439,22 +85,22 @@ fn gc_qfrc_offset[NQ: Int, NV: Int]() -> Int:
 # =============================================================================
 
 
-fn gc_xpos_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
+fn xpos_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
     """Offset to xpos array (body world positions)."""
     return NQ + 3 * NV
 
 
-fn gc_xquat_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
+fn xquat_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
     """Offset to xquat array (body world orientations)."""
     return NQ + 3 * NV + NBODY * 3
 
 
-fn gc_xvel_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
+fn xvel_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
     """Offset to xvel array (body world linear velocities)."""
     return NQ + 3 * NV + NBODY * 3 + NBODY * 4
 
 
-fn gc_xangvel_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
+fn xangvel_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
     """Offset to xangvel array (body world angular velocities)."""
     return NQ + 3 * NV + NBODY * 3 + NBODY * 4 + NBODY * 3
 
@@ -464,47 +110,47 @@ fn gc_xangvel_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
 # =============================================================================
 
 # Contact layout (same as Cartesian engine: 12 floats per contact)
-comptime GC_CONTACT_SIZE: Int = 12
+comptime CONTACT_SIZE: Int = 12
 
-comptime GC_CONTACT_IDX_BODY_A: Int = 0
-comptime GC_CONTACT_IDX_BODY_B: Int = 1
-comptime GC_CONTACT_IDX_POS_X: Int = 2
-comptime GC_CONTACT_IDX_POS_Y: Int = 3
-comptime GC_CONTACT_IDX_POS_Z: Int = 4
-comptime GC_CONTACT_IDX_NX: Int = 5
-comptime GC_CONTACT_IDX_NY: Int = 6
-comptime GC_CONTACT_IDX_NZ: Int = 7
-comptime GC_CONTACT_IDX_DIST: Int = 8
-comptime GC_CONTACT_IDX_IMPULSE_N: Int = 9
-comptime GC_CONTACT_IDX_IMPULSE_T1: Int = 10
-comptime GC_CONTACT_IDX_IMPULSE_T2: Int = 11
+comptime CONTACT_IDX_BODY_A: Int = 0
+comptime CONTACT_IDX_BODY_B: Int = 1
+comptime CONTACT_IDX_POS_X: Int = 2
+comptime CONTACT_IDX_POS_Y: Int = 3
+comptime CONTACT_IDX_POS_Z: Int = 4
+comptime CONTACT_IDX_NX: Int = 5
+comptime CONTACT_IDX_NY: Int = 6
+comptime CONTACT_IDX_NZ: Int = 7
+comptime CONTACT_IDX_DIST: Int = 8
+comptime CONTACT_IDX_IMPULSE_N: Int = 9
+comptime CONTACT_IDX_IMPULSE_T1: Int = 10
+comptime CONTACT_IDX_IMPULSE_T2: Int = 11
 
 
-fn gc_contacts_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
+fn contacts_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
     """Offset to contacts array."""
     return NQ + 3 * NV + NBODY * 3 + NBODY * 4 + NBODY * 3 + NBODY * 3
 
 
-fn gc_contact_offset[NQ: Int, NV: Int, NBODY: Int](contact_idx: Int) -> Int:
+fn contact_offset[NQ: Int, NV: Int, NBODY: Int](contact_idx: Int) -> Int:
     """Offset to a specific contact."""
-    return gc_contacts_offset[NQ, NV, NBODY]() + contact_idx * GC_CONTACT_SIZE
+    return contacts_offset[NQ, NV, NBODY]() + contact_idx * CONTACT_SIZE
 
 
 # =============================================================================
 # State Buffer Layout - Metadata
 # =============================================================================
 
-comptime GC_METADATA_SIZE: Int = 4
+comptime METADATA_SIZE: Int = 4
 
-comptime GC_META_IDX_NUM_CONTACTS: Int = 0
-comptime GC_META_IDX_STEP_COUNT: Int = 1  # Episode step counter for truncation
-comptime GC_META_IDX_PREV_X: Int = 2  # Previous x position for velocity computation
-comptime GC_META_IDX_PADDING_3: Int = 3
+comptime META_IDX_NUM_CONTACTS: Int = 0
+comptime META_IDX_STEP_COUNT: Int = 1  # Episode step counter for truncation
+comptime META_IDX_PREV_X: Int = 2  # Previous x position for velocity computation
+comptime META_IDX_PADDING_3: Int = 3
 
 
-fn gc_metadata_offset[NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int]() -> Int:
+fn metadata_offset[NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int]() -> Int:
     """Offset to metadata."""
-    return gc_contacts_offset[NQ, NV, NBODY]() + MAX_CONTACTS * GC_CONTACT_SIZE
+    return contacts_offset[NQ, NV, NBODY]() + MAX_CONTACTS * CONTACT_SIZE
 
 
 # =============================================================================
@@ -512,7 +158,7 @@ fn gc_metadata_offset[NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int]() -> Int:
 # =============================================================================
 
 
-fn gc_state_size[NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int]() -> Int:
+fn state_size[NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int]() -> Int:
     """Compute total state buffer size per environment.
 
     Returns:
@@ -525,8 +171,8 @@ fn gc_state_size[NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int]() -> Int:
         + NBODY * 4  # xquat
         + NBODY * 3  # xvel
         + NBODY * 3  # xangvel
-        + MAX_CONTACTS * GC_CONTACT_SIZE
-        + GC_METADATA_SIZE
+        + MAX_CONTACTS * CONTACT_SIZE
+        + METADATA_SIZE
     )
 
 
@@ -534,85 +180,85 @@ fn gc_state_size[NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int]() -> Int:
 # Model Buffer Layout - Per Body
 # =============================================================================
 
-comptime GC_MODEL_BODY_SIZE: Int = 22
+comptime MODEL_BODY_SIZE: Int = 22
 
-comptime GC_BODY_IDX_MASS: Int = 0
-comptime GC_BODY_IDX_INV_MASS: Int = 1
-comptime GC_BODY_IDX_IXX: Int = 2
-comptime GC_BODY_IDX_IYY: Int = 3
-comptime GC_BODY_IDX_IZZ: Int = 4
-comptime GC_BODY_IDX_INV_IXX: Int = 5
-comptime GC_BODY_IDX_INV_IYY: Int = 6
-comptime GC_BODY_IDX_INV_IZZ: Int = 7
-comptime GC_BODY_IDX_POS_X: Int = 8  # Local position in parent frame
-comptime GC_BODY_IDX_POS_Y: Int = 9
-comptime GC_BODY_IDX_POS_Z: Int = 10
-comptime GC_BODY_IDX_QUAT_X: Int = 11  # Local orientation in parent frame
-comptime GC_BODY_IDX_QUAT_Y: Int = 12
-comptime GC_BODY_IDX_QUAT_Z: Int = 13
-comptime GC_BODY_IDX_QUAT_W: Int = 14
-comptime GC_BODY_IDX_PARENT: Int = 15  # Parent body index (-1 for world)
-comptime GC_BODY_IDX_GEOM_TYPE: Int = 16
-comptime GC_BODY_IDX_RADIUS: Int = 17
-comptime GC_BODY_IDX_HALF_LENGTH: Int = 18
-comptime GC_BODY_IDX_HALF_X: Int = 19
-comptime GC_BODY_IDX_HALF_Y: Int = 20
-comptime GC_BODY_IDX_HALF_Z: Int = 21
+comptime BODY_IDX_MASS: Int = 0
+comptime BODY_IDX_INV_MASS: Int = 1
+comptime BODY_IDX_IXX: Int = 2
+comptime BODY_IDX_IYY: Int = 3
+comptime BODY_IDX_IZZ: Int = 4
+comptime BODY_IDX_INV_IXX: Int = 5
+comptime BODY_IDX_INV_IYY: Int = 6
+comptime BODY_IDX_INV_IZZ: Int = 7
+comptime BODY_IDX_POS_X: Int = 8  # Local position in parent frame
+comptime BODY_IDX_POS_Y: Int = 9
+comptime BODY_IDX_POS_Z: Int = 10
+comptime BODY_IDX_QUAT_X: Int = 11  # Local orientation in parent frame
+comptime BODY_IDX_QUAT_Y: Int = 12
+comptime BODY_IDX_QUAT_Z: Int = 13
+comptime BODY_IDX_QUAT_W: Int = 14
+comptime BODY_IDX_PARENT: Int = 15  # Parent body index (-1 for world)
+comptime BODY_IDX_GEOM_TYPE: Int = 16
+comptime BODY_IDX_RADIUS: Int = 17
+comptime BODY_IDX_HALF_LENGTH: Int = 18
+comptime BODY_IDX_HALF_X: Int = 19
+comptime BODY_IDX_HALF_Y: Int = 20
+comptime BODY_IDX_HALF_Z: Int = 21
 
 
-fn gc_model_body_offset(body_idx: Int) -> Int:
+fn model_body_offset(body_idx: Int) -> Int:
     """Offset to a specific body in model buffer."""
-    return body_idx * GC_MODEL_BODY_SIZE
+    return body_idx * MODEL_BODY_SIZE
 
 
 # =============================================================================
 # Model Buffer Layout - Per Joint
 # =============================================================================
 
-comptime GC_MODEL_JOINT_SIZE: Int = 16  # Extended to include range limits + armature + damping + stiffness
+comptime MODEL_JOINT_SIZE: Int = 16  # Extended to include range limits + armature + damping + stiffness
 
-comptime GC_JOINT_IDX_TYPE: Int = 0  # JNT_FREE, JNT_BALL, JNT_SLIDE, JNT_HINGE
-comptime GC_JOINT_IDX_BODY_ID: Int = 1
-comptime GC_JOINT_IDX_QPOS_ADR: Int = 2
-comptime GC_JOINT_IDX_DOF_ADR: Int = 3
-comptime GC_JOINT_IDX_POS_X: Int = 4
-comptime GC_JOINT_IDX_POS_Y: Int = 5
-comptime GC_JOINT_IDX_POS_Z: Int = 6
-comptime GC_JOINT_IDX_AXIS_X: Int = 7
-comptime GC_JOINT_IDX_AXIS_Y: Int = 8
-comptime GC_JOINT_IDX_AXIS_Z: Int = 9
-comptime GC_JOINT_IDX_TAU_LIMIT: Int = 10
-comptime GC_JOINT_IDX_RANGE_MIN: Int = 11  # Minimum position (radians for hinge, meters for slide)
-comptime GC_JOINT_IDX_RANGE_MAX: Int = 12  # Maximum position
-comptime GC_JOINT_IDX_ARMATURE: Int = 13  # Rotor inertia (added to M diagonal)
-comptime GC_JOINT_IDX_DAMPING: Int = 14  # Passive joint damping
-comptime GC_JOINT_IDX_STIFFNESS: Int = 15  # Passive joint stiffness (spring)
+comptime JOINT_IDX_TYPE: Int = 0  # JNT_FREE, JNT_BALL, JNT_SLIDE, JNT_HINGE
+comptime JOINT_IDX_BODY_ID: Int = 1
+comptime JOINT_IDX_QPOS_ADR: Int = 2
+comptime JOINT_IDX_DOF_ADR: Int = 3
+comptime JOINT_IDX_POS_X: Int = 4
+comptime JOINT_IDX_POS_Y: Int = 5
+comptime JOINT_IDX_POS_Z: Int = 6
+comptime JOINT_IDX_AXIS_X: Int = 7
+comptime JOINT_IDX_AXIS_Y: Int = 8
+comptime JOINT_IDX_AXIS_Z: Int = 9
+comptime JOINT_IDX_TAU_LIMIT: Int = 10
+comptime JOINT_IDX_RANGE_MIN: Int = 11  # Minimum position (radians for hinge, meters for slide)
+comptime JOINT_IDX_RANGE_MAX: Int = 12  # Maximum position
+comptime JOINT_IDX_ARMATURE: Int = 13  # Rotor inertia (added to M diagonal)
+comptime JOINT_IDX_DAMPING: Int = 14  # Passive joint damping
+comptime JOINT_IDX_STIFFNESS: Int = 15  # Passive joint stiffness (spring)
 
 
-fn gc_model_joint_offset[NBODY: Int](joint_idx: Int) -> Int:
+fn model_joint_offset[NBODY: Int](joint_idx: Int) -> Int:
     """Offset to a specific joint in model buffer."""
-    return NBODY * GC_MODEL_BODY_SIZE + joint_idx * GC_MODEL_JOINT_SIZE
+    return NBODY * MODEL_BODY_SIZE + joint_idx * MODEL_JOINT_SIZE
 
 
 # =============================================================================
 # Model Buffer Layout - Global Metadata
 # =============================================================================
 
-comptime GC_MODEL_META_SIZE: Int = 8
+comptime MODEL_META_SIZE: Int = 8
 
-comptime GC_MODEL_META_IDX_NBODY: Int = 0
-comptime GC_MODEL_META_IDX_NJOINT: Int = 1
-comptime GC_MODEL_META_IDX_GRAVITY_X: Int = 2
-comptime GC_MODEL_META_IDX_GRAVITY_Y: Int = 3
-comptime GC_MODEL_META_IDX_GRAVITY_Z: Int = 4
-comptime GC_MODEL_META_IDX_TIMESTEP: Int = 5
-comptime GC_MODEL_META_IDX_GROUND_Z: Int = 6
-comptime GC_MODEL_META_IDX_FRICTION: Int = 7
+comptime MODEL_META_IDX_NBODY: Int = 0
+comptime MODEL_META_IDX_NJOINT: Int = 1
+comptime MODEL_META_IDX_GRAVITY_X: Int = 2
+comptime MODEL_META_IDX_GRAVITY_Y: Int = 3
+comptime MODEL_META_IDX_GRAVITY_Z: Int = 4
+comptime MODEL_META_IDX_TIMESTEP: Int = 5
+comptime MODEL_META_IDX_GROUND_Z: Int = 6
+comptime MODEL_META_IDX_FRICTION: Int = 7
 
 
-fn gc_model_metadata_offset[NBODY: Int, NJOINT: Int]() -> Int:
+fn model_metadata_offset[NBODY: Int, NJOINT: Int]() -> Int:
     """Offset to model metadata."""
-    return NBODY * GC_MODEL_BODY_SIZE + NJOINT * GC_MODEL_JOINT_SIZE
+    return NBODY * MODEL_BODY_SIZE + NJOINT * MODEL_JOINT_SIZE
 
 
 # =============================================================================
@@ -620,53 +266,43 @@ fn gc_model_metadata_offset[NBODY: Int, NJOINT: Int]() -> Int:
 # =============================================================================
 
 # Fixed-size curriculum section (environments use what they need)
-comptime GC_MODEL_CURRICULUM_SIZE: Int = 8  # Up to 8 curriculum parameters
+comptime MODEL_CURRICULUM_SIZE: Int = 8  # Up to 8 curriculum parameters
 
 # Common curriculum parameter indices (environments can define their own)
-comptime GC_CURRICULUM_IDX_MIN_HEIGHT: Int = 0
-comptime GC_CURRICULUM_IDX_MAX_PITCH: Int = 1
-comptime GC_CURRICULUM_IDX_PARAM_2: Int = 2
-comptime GC_CURRICULUM_IDX_PARAM_3: Int = 3
-comptime GC_CURRICULUM_IDX_PARAM_4: Int = 4
-comptime GC_CURRICULUM_IDX_PARAM_5: Int = 5
-comptime GC_CURRICULUM_IDX_PARAM_6: Int = 6
-comptime GC_CURRICULUM_IDX_PARAM_7: Int = 7
+comptime CURRICULUM_IDX_MIN_HEIGHT: Int = 0
+comptime CURRICULUM_IDX_MAX_PITCH: Int = 1
+comptime CURRICULUM_IDX_PARAM_2: Int = 2
+comptime CURRICULUM_IDX_PARAM_3: Int = 3
+comptime CURRICULUM_IDX_PARAM_4: Int = 4
+comptime CURRICULUM_IDX_PARAM_5: Int = 5
+comptime CURRICULUM_IDX_PARAM_6: Int = 6
+comptime CURRICULUM_IDX_PARAM_7: Int = 7
 
 
-fn gc_model_curriculum_offset[NBODY: Int, NJOINT: Int]() -> Int:
+fn model_curriculum_offset[NBODY: Int, NJOINT: Int]() -> Int:
     """Offset to curriculum parameters in model buffer."""
     return (
-        NBODY * GC_MODEL_BODY_SIZE
-        + NJOINT * GC_MODEL_JOINT_SIZE
-        + GC_MODEL_META_SIZE
+        NBODY * MODEL_BODY_SIZE
+        + NJOINT * MODEL_JOINT_SIZE
+        + MODEL_META_SIZE
     )
 
 
-fn gc_model_size[NBODY: Int, NJOINT: Int]() -> Int:
+fn model_size[NBODY: Int, NJOINT: Int]() -> Int:
     """Total model buffer size."""
     return (
-        NBODY * GC_MODEL_BODY_SIZE
-        + NJOINT * GC_MODEL_JOINT_SIZE
-        + GC_MODEL_META_SIZE
-        + GC_MODEL_CURRICULUM_SIZE
+        NBODY * MODEL_BODY_SIZE
+        + NJOINT * MODEL_JOINT_SIZE
+        + MODEL_META_SIZE
+        + MODEL_CURRICULUM_SIZE
     )
 
 
 # =============================================================================
-# Geometry Types (same as Cartesian engine)
+# Joint Types (duplicated from joint_types.mojo for GPU code)
 # =============================================================================
 
-comptime GC_GEOM_PLANE: Int = 0
-comptime GC_GEOM_SPHERE: Int = 1
-comptime GC_GEOM_CAPSULE: Int = 2
-comptime GC_GEOM_BOX: Int = 3
-
-
-# =============================================================================
-# Joint Types (same as joint_types.mojo but duplicated for GPU code)
-# =============================================================================
-
-comptime GC_JNT_FREE: Int = 0
-comptime GC_JNT_BALL: Int = 1
-comptime GC_JNT_SLIDE: Int = 2
-comptime GC_JNT_HINGE: Int = 3
+comptime JNT_FREE: Int = 0
+comptime JNT_BALL: Int = 1
+comptime JNT_SLIDE: Int = 2
+comptime JNT_HINGE: Int = 3

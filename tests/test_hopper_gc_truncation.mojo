@@ -13,9 +13,9 @@ from envs.hopper_gc import HopperGC
 from envs.hopper_gc.constants_gc import HopperGCConstantsGPU
 from deep_rl import dtype as gpu_dtype
 from physics3d.gpu.constants import (
-    gc_state_size,
-    gc_metadata_offset,
-    GC_META_IDX_STEP_COUNT,
+    state_size,
+    metadata_offset,
+    META_IDX_STEP_COUNT,
 )
 
 
@@ -27,7 +27,7 @@ fn main() raises:
     print()
 
     comptime BATCH_SIZE = 4
-    comptime STATE_SIZE = gc_state_size[
+    comptime STATE_SIZE = state_size[
         HopperGC[gpu_dtype].NQ,
         HopperGC[gpu_dtype].NV,
         HopperGC[gpu_dtype].NUM_BODIES,
@@ -35,7 +35,7 @@ fn main() raises:
     ]()
     comptime OBS_DIM = HopperGCConstantsGPU.OBS_DIM
     comptime ACTION_DIM = HopperGCConstantsGPU.ACTION_DIM
-    comptime META_OFF = gc_metadata_offset[
+    comptime META_OFF = metadata_offset[
         HopperGC[gpu_dtype].NQ,
         HopperGC[gpu_dtype].NV,
         HopperGC[gpu_dtype].NUM_BODIES,
@@ -101,7 +101,7 @@ fn main() raises:
             for i in range(BATCH_SIZE):
                 step_counts[i] = Int(
                     states_host[
-                        i * STATE_SIZE + META_OFF + GC_META_IDX_STEP_COUNT
+                        i * STATE_SIZE + META_OFF + META_IDX_STEP_COUNT
                     ]
                 )
 
@@ -131,7 +131,7 @@ fn main() raises:
         print("\nFinal step counts after 25 steps with resets:")
         for i in range(BATCH_SIZE):
             var step_count = Int(
-                states_host[i * STATE_SIZE + META_OFF + GC_META_IDX_STEP_COUNT]
+                states_host[i * STATE_SIZE + META_OFF + META_IDX_STEP_COUNT]
             )
             print("  Env", i, ": step_count =", step_count, "(should be 5)")
         print()

@@ -1,8 +1,8 @@
 """HopperGC Environment - MuJoCo-style Hopper using Generalized Coordinates engine.
 
 This implementation uses the physics3d Generalized Coordinates (GC) engine:
-- ModelGC/DataGC for joint-space physics (MuJoCo-style)
-- ConstraintGcIntegrator for constraint-based contact solving
+- Model/Data for joint-space physics (MuJoCo-style)
+- DefaultIntegrator for constraint-based contact solving
 - Joint-space state: qpos (positions), qvel (velocities)
 - Forward kinematics computes body positions (xpos, xquat)
 
@@ -32,8 +32,8 @@ from gpu import thread_idx, block_idx, block_dim
 from layout import Layout, LayoutTensor
 
 # Import GC physics engine
-from physics3d.types import ModelGC, DataGC, compute_capsule_inertia
-from physics3d.integrator import ConstraintGcIntegrator
+from physics3d.types import Model, Data, compute_capsule_inertia
+from physics3d.integrator import DefaultIntegrator
 from physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     forward_kinematics_gpu,
@@ -41,72 +41,72 @@ from physics3d.kinematics.forward_kinematics import (
 from physics3d.joint_types import JNT_HINGE, JNT_SLIDE
 from physics3d.gpu.constants import (
     TPB,
-    gc_state_size,
-    gc_qpos_offset,
-    gc_qvel_offset,
-    gc_qacc_offset,
-    gc_qfrc_offset,
-    gc_xpos_offset,
-    gc_metadata_offset,
-    gc_model_size,
-    GC_GEOM_CAPSULE,
-    GC_META_IDX_NUM_CONTACTS,
-    GC_META_IDX_STEP_COUNT,
-    gc_model_curriculum_offset,
-    GC_CURRICULUM_IDX_MIN_HEIGHT,
-    GC_CURRICULUM_IDX_MAX_PITCH,
-    GC_MODEL_BODY_SIZE,
-    GC_MODEL_JOINT_SIZE,
-    GC_MODEL_META_SIZE,
-    GC_BODY_IDX_MASS,
-    GC_BODY_IDX_INV_MASS,
-    GC_BODY_IDX_IXX,
-    GC_BODY_IDX_IYY,
-    GC_BODY_IDX_IZZ,
-    GC_BODY_IDX_INV_IXX,
-    GC_BODY_IDX_INV_IYY,
-    GC_BODY_IDX_INV_IZZ,
-    GC_BODY_IDX_POS_X,
-    GC_BODY_IDX_POS_Y,
-    GC_BODY_IDX_POS_Z,
-    GC_BODY_IDX_QUAT_X,
-    GC_BODY_IDX_QUAT_Y,
-    GC_BODY_IDX_QUAT_Z,
-    GC_BODY_IDX_QUAT_W,
-    GC_BODY_IDX_PARENT,
-    GC_BODY_IDX_GEOM_TYPE,
-    GC_BODY_IDX_RADIUS,
-    GC_BODY_IDX_HALF_LENGTH,
-    GC_JOINT_IDX_TYPE,
-    GC_JOINT_IDX_BODY_ID,
-    GC_JOINT_IDX_QPOS_ADR,
-    GC_JOINT_IDX_DOF_ADR,
-    GC_JOINT_IDX_POS_X,
-    GC_JOINT_IDX_POS_Y,
-    GC_JOINT_IDX_POS_Z,
-    GC_JOINT_IDX_AXIS_X,
-    GC_JOINT_IDX_AXIS_Y,
-    GC_JOINT_IDX_AXIS_Z,
-    GC_JOINT_IDX_TAU_LIMIT,
-    GC_JOINT_IDX_RANGE_MIN,
-    GC_JOINT_IDX_RANGE_MAX,
-    GC_JOINT_IDX_ARMATURE,
-    GC_JOINT_IDX_DAMPING,
-    GC_JOINT_IDX_STIFFNESS,
-    GC_MODEL_META_IDX_NBODY,
-    GC_MODEL_META_IDX_NJOINT,
-    GC_MODEL_META_IDX_GRAVITY_X,
-    GC_MODEL_META_IDX_GRAVITY_Y,
-    GC_MODEL_META_IDX_GRAVITY_Z,
-    GC_MODEL_META_IDX_TIMESTEP,
-    GC_MODEL_META_IDX_GROUND_Z,
-    GC_MODEL_META_IDX_FRICTION,
-    gc_model_body_offset,
-    gc_model_joint_offset,
-    gc_model_metadata_offset,
-    GC_JNT_SLIDE,
-    GC_JNT_HINGE,
-    GC_GEOM_CAPSULE,
+    state_size,
+    qpos_offset,
+    qvel_offset,
+    qacc_offset,
+    qfrc_offset,
+    xpos_offset,
+    metadata_offset,
+    model_size,
+    GEOM_CAPSULE,
+    META_IDX_NUM_CONTACTS,
+    META_IDX_STEP_COUNT,
+    model_curriculum_offset,
+    CURRICULUM_IDX_MIN_HEIGHT,
+    CURRICULUM_IDX_MAX_PITCH,
+    MODEL_BODY_SIZE,
+    MODEL_JOINT_SIZE,
+    MODEL_META_SIZE,
+    BODY_IDX_MASS,
+    BODY_IDX_INV_MASS,
+    BODY_IDX_IXX,
+    BODY_IDX_IYY,
+    BODY_IDX_IZZ,
+    BODY_IDX_INV_IXX,
+    BODY_IDX_INV_IYY,
+    BODY_IDX_INV_IZZ,
+    BODY_IDX_POS_X,
+    BODY_IDX_POS_Y,
+    BODY_IDX_POS_Z,
+    BODY_IDX_QUAT_X,
+    BODY_IDX_QUAT_Y,
+    BODY_IDX_QUAT_Z,
+    BODY_IDX_QUAT_W,
+    BODY_IDX_PARENT,
+    BODY_IDX_GEOM_TYPE,
+    BODY_IDX_RADIUS,
+    BODY_IDX_HALF_LENGTH,
+    JOINT_IDX_TYPE,
+    JOINT_IDX_BODY_ID,
+    JOINT_IDX_QPOS_ADR,
+    JOINT_IDX_DOF_ADR,
+    JOINT_IDX_POS_X,
+    JOINT_IDX_POS_Y,
+    JOINT_IDX_POS_Z,
+    JOINT_IDX_AXIS_X,
+    JOINT_IDX_AXIS_Y,
+    JOINT_IDX_AXIS_Z,
+    JOINT_IDX_TAU_LIMIT,
+    JOINT_IDX_RANGE_MIN,
+    JOINT_IDX_RANGE_MAX,
+    JOINT_IDX_ARMATURE,
+    JOINT_IDX_DAMPING,
+    JOINT_IDX_STIFFNESS,
+    MODEL_META_IDX_NBODY,
+    MODEL_META_IDX_NJOINT,
+    MODEL_META_IDX_GRAVITY_X,
+    MODEL_META_IDX_GRAVITY_Y,
+    MODEL_META_IDX_GRAVITY_Z,
+    MODEL_META_IDX_TIMESTEP,
+    MODEL_META_IDX_GROUND_Z,
+    MODEL_META_IDX_FRICTION,
+    model_body_offset,
+    model_joint_offset,
+    model_metadata_offset,
+    JNT_SLIDE,
+    JNT_HINGE,
+    GEOM_CAPSULE,
 )
 
 from .constants_gc import HopperGCConstants
@@ -184,12 +184,12 @@ struct HopperGC[
     comptime MAX_CONTACTS: Int = 10
 
     # GPU state size
-    comptime STATE_SIZE: Int = gc_state_size[
+    comptime STATE_SIZE: Int = state_size[
         Self.NQ, Self.NV, Self.NUM_BODIES, Self.MAX_CONTACTS
     ]()
 
     # Physics model and data
-    var model: ModelGC[
+    var model: Model[
         Self.DTYPE,
         Self.NQ,
         Self.NV,
@@ -197,7 +197,7 @@ struct HopperGC[
         Self.NUM_JOINTS,
         Self.MAX_CONTACTS,
     ]
-    var data: DataGC[
+    var data: Data[
         Self.DTYPE,
         Self.NQ,
         Self.NV,
@@ -290,7 +290,7 @@ struct HopperGC[
         self.initial_z = Scalar[Self.DTYPE](C.INITIAL_Z)
 
         # Initialize GC model
-        self.model = ModelGC[
+        self.model = Model[
             Self.DTYPE,
             Self.NQ,
             Self.NV,
@@ -312,7 +312,7 @@ struct HopperGC[
             0, mass=torso_mass, inertia=torso_inertia, radius=torso_radius
         )
         self.model.set_body_parent(0, -1)  # World is parent
-        self.model.body_geom_type[0] = GC_GEOM_CAPSULE
+        self.model.body_geom_type[0] = GEOM_CAPSULE
         self.model.body_half_length[0] = torso_half_length
 
         # Body 1: Thigh
@@ -323,7 +323,7 @@ struct HopperGC[
             1, mass=thigh_mass, inertia=thigh_inertia, radius=thigh_radius
         )
         self.model.set_body_parent(1, 0)  # Torso is parent
-        self.model.body_geom_type[1] = GC_GEOM_CAPSULE
+        self.model.body_geom_type[1] = GEOM_CAPSULE
         self.model.body_half_length[1] = thigh_half_length
         # Local frame: offset below torso
         self.model.set_body_local_frame(
@@ -343,7 +343,7 @@ struct HopperGC[
             2, mass=leg_mass, inertia=leg_inertia, radius=leg_radius
         )
         self.model.set_body_parent(2, 1)  # Thigh is parent
-        self.model.body_geom_type[2] = GC_GEOM_CAPSULE
+        self.model.body_geom_type[2] = GEOM_CAPSULE
         self.model.body_half_length[2] = leg_half_length
         # Local frame: offset below thigh
         self.model.set_body_local_frame(
@@ -363,7 +363,7 @@ struct HopperGC[
             3, mass=foot_mass, inertia=foot_inertia, radius=foot_radius
         )
         self.model.set_body_parent(3, 2)  # Leg is parent
-        self.model.body_geom_type[3] = GC_GEOM_CAPSULE
+        self.model.body_geom_type[3] = GEOM_CAPSULE
         self.model.body_half_length[3] = foot_half_length
         # Local frame: offset below leg, horizontal orientation
         self.model.set_body_local_frame(
@@ -494,7 +494,7 @@ struct HopperGC[
         )
 
         # Initialize data
-        self.data = DataGC[
+        self.data = Data[
             Self.DTYPE,
             Self.NQ,
             Self.NV,
@@ -733,7 +733,7 @@ struct HopperGC[
 
         # Physics step with frame_skip (matching Gymnasium do_simulation)
         for _ in range(self.frame_skip):
-            ConstraintGcIntegrator.step(self.model, self.data)
+            DefaultIntegrator.step(self.model, self.data)
 
         self.current_step += 1
 
@@ -809,7 +809,7 @@ struct HopperGC[
 
         # Physics step with frame_skip (matching Gymnasium do_simulation)
         for _ in range(self.frame_skip):
-            ConstraintGcIntegrator.step(self.model, self.data)
+            DefaultIntegrator.step(self.model, self.data)
 
         self.current_step += 1
         self._update_cached_state()
@@ -1164,12 +1164,12 @@ struct HopperGC[
     ) raises:
         """Batched GPU step function using GC physics engine.
 
-        Uses ConstraintGcIntegrator.step_gpu for physics.
+        Uses DefaultIntegrator.step_gpu for physics.
 
         """
 
         # Create model buffer on GPU
-        comptime MODEL_SIZE = gc_model_size[
+        comptime MODEL_SIZE = model_size[
             HopperGC.NUM_BODIES, HopperGC.NUM_JOINTS
         ]()
         var model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
@@ -1179,7 +1179,7 @@ struct HopperGC[
         ctx.synchronize()
 
         # Update curriculum params if non-default values provided
-        comptime CURRICULUM_OFF = gc_model_curriculum_offset[
+        comptime CURRICULUM_OFF = model_curriculum_offset[
             HopperGC.NUM_BODIES, HopperGC.NUM_JOINTS
         ]()
 
@@ -1190,11 +1190,11 @@ struct HopperGC[
         ctx.enqueue_copy(model_host.unsafe_ptr(), model_buf)
         ctx.synchronize()
 
-        model_host[CURRICULUM_OFF + GC_CURRICULUM_IDX_MIN_HEIGHT] = (
+        model_host[CURRICULUM_OFF + CURRICULUM_IDX_MIN_HEIGHT] = (
             curriculum_values[0] if len(curriculum_values)
             > 0 else HopperGCConstants[gpu_dtype].MIN_HEIGHT
         )
-        model_host[CURRICULUM_OFF + GC_CURRICULUM_IDX_MAX_PITCH] = (
+        model_host[CURRICULUM_OFF + CURRICULUM_IDX_MAX_PITCH] = (
             curriculum_values[1] if len(curriculum_values)
             > 1 else HopperGCConstants[gpu_dtype].MAX_PITCH
         )
@@ -1216,7 +1216,7 @@ struct HopperGC[
         # Run GC physics step with frame_skip (matching Gymnasium do_simulation)
         comptime FRAME_SKIP = HopperGCConstants[gpu_dtype].FRAME_SKIP
         for _ in range(FRAME_SKIP):
-            ConstraintGcIntegrator.step_gpu[
+            DefaultIntegrator.step_gpu[
                 gpu_dtype,
                 Self.NQ,
                 Self.NV,
@@ -1233,7 +1233,7 @@ struct HopperGC[
                 ground_z=Scalar[gpu_dtype](0.0),
             )
 
-        # Note: Joint limits are enforced by the physics engine in step_gc_kernel
+        # Note: Joint limits are enforced by the physics engine in step_constraint_kernel
 
         # Extract observations, compute rewards, check termination
         Self._extract_obs_rewards_dones_gpu[
@@ -1296,7 +1296,7 @@ struct HopperGC[
         )
 
         # Run forward kinematics to compute xpos/xquat (matching CPU behavior)
-        comptime MODEL_SIZE = gc_model_size[Self.NUM_BODIES, Self.NUM_JOINTS]()
+        comptime MODEL_SIZE = model_size[Self.NUM_BODIES, Self.NUM_JOINTS]()
         var model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
         Self._init_model_gpu(ctx, model_buf)
 
@@ -1363,7 +1363,7 @@ struct HopperGC[
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
         # Create model buffer for FK
-        comptime MODEL_SIZE = gc_model_size[Self.NUM_BODIES, Self.NUM_JOINTS]()
+        comptime MODEL_SIZE = model_size[Self.NUM_BODIES, Self.NUM_JOINTS]()
         var model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
         Self._init_model_gpu(ctx, model_buf)
 
@@ -1444,8 +1444,8 @@ struct HopperGC[
         ](obs_buf.unsafe_ptr())
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
-        comptime QPOS_OFF = gc_qpos_offset[HopperGC.NQ, HopperGC.NV]()
-        comptime QVEL_OFF = gc_qvel_offset[HopperGC.NQ, HopperGC.NV]()
+        comptime QPOS_OFF = qpos_offset[HopperGC.NQ, HopperGC.NV]()
+        comptime QVEL_OFF = qvel_offset[HopperGC.NQ, HopperGC.NV]()
 
         @always_inline
         fn extract_gc_obs(
@@ -1502,7 +1502,7 @@ struct HopperGC[
         # Use constants for all parameters
         comptime C = HopperGCConstants[gpu_dtype]
 
-        comptime MODEL_SIZE = gc_model_size[
+        comptime MODEL_SIZE = model_size[
             HopperGC.NUM_BODIES, HopperGC.NUM_JOINTS
         ]()
 
@@ -1530,332 +1530,332 @@ struct HopperGC[
         # =================================================================
         # Body 0: Torso (root body, parent = -1)
         # =================================================================
-        var b0 = gc_model_body_offset(0)
+        var b0 = model_body_offset(0)
         var torso_inertia = compute_capsule_inertia(
             torso_mass, torso_radius, torso_half_length
         )
 
-        model_host[b0 + GC_BODY_IDX_MASS] = torso_mass
-        model_host[b0 + GC_BODY_IDX_INV_MASS] = (
+        model_host[b0 + BODY_IDX_MASS] = torso_mass
+        model_host[b0 + BODY_IDX_INV_MASS] = (
             Scalar[gpu_dtype](1.0) / torso_mass
         )
-        model_host[b0 + GC_BODY_IDX_IXX] = torso_inertia[0]
-        model_host[b0 + GC_BODY_IDX_IYY] = torso_inertia[1]
-        model_host[b0 + GC_BODY_IDX_IZZ] = torso_inertia[2]
-        model_host[b0 + GC_BODY_IDX_INV_IXX] = (
+        model_host[b0 + BODY_IDX_IXX] = torso_inertia[0]
+        model_host[b0 + BODY_IDX_IYY] = torso_inertia[1]
+        model_host[b0 + BODY_IDX_IZZ] = torso_inertia[2]
+        model_host[b0 + BODY_IDX_INV_IXX] = (
             Scalar[gpu_dtype](1.0) / torso_inertia[0]
         )
-        model_host[b0 + GC_BODY_IDX_INV_IYY] = (
+        model_host[b0 + BODY_IDX_INV_IYY] = (
             Scalar[gpu_dtype](1.0) / torso_inertia[1]
         )
-        model_host[b0 + GC_BODY_IDX_INV_IZZ] = (
+        model_host[b0 + BODY_IDX_INV_IZZ] = (
             Scalar[gpu_dtype](1.0) / torso_inertia[2]
         )
         # Local frame: at origin (torso is root)
-        model_host[b0 + GC_BODY_IDX_POS_X] = Scalar[gpu_dtype](0.0)
-        model_host[b0 + GC_BODY_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
-        model_host[b0 + GC_BODY_IDX_POS_Z] = Scalar[gpu_dtype](0.0)
-        model_host[b0 + GC_BODY_IDX_QUAT_X] = Scalar[gpu_dtype](0.0)
-        model_host[b0 + GC_BODY_IDX_QUAT_Y] = Scalar[gpu_dtype](0.0)
-        model_host[b0 + GC_BODY_IDX_QUAT_Z] = Scalar[gpu_dtype](0.0)
-        model_host[b0 + GC_BODY_IDX_QUAT_W] = Scalar[gpu_dtype](1.0)
-        model_host[b0 + GC_BODY_IDX_PARENT] = Scalar[gpu_dtype](-1)  # World
-        model_host[b0 + GC_BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](
-            GC_GEOM_CAPSULE
+        model_host[b0 + BODY_IDX_POS_X] = Scalar[gpu_dtype](0.0)
+        model_host[b0 + BODY_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
+        model_host[b0 + BODY_IDX_POS_Z] = Scalar[gpu_dtype](0.0)
+        model_host[b0 + BODY_IDX_QUAT_X] = Scalar[gpu_dtype](0.0)
+        model_host[b0 + BODY_IDX_QUAT_Y] = Scalar[gpu_dtype](0.0)
+        model_host[b0 + BODY_IDX_QUAT_Z] = Scalar[gpu_dtype](0.0)
+        model_host[b0 + BODY_IDX_QUAT_W] = Scalar[gpu_dtype](1.0)
+        model_host[b0 + BODY_IDX_PARENT] = Scalar[gpu_dtype](-1)  # World
+        model_host[b0 + BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](
+            GEOM_CAPSULE
         )
-        model_host[b0 + GC_BODY_IDX_RADIUS] = torso_radius
-        model_host[b0 + GC_BODY_IDX_HALF_LENGTH] = torso_half_length
+        model_host[b0 + BODY_IDX_RADIUS] = torso_radius
+        model_host[b0 + BODY_IDX_HALF_LENGTH] = torso_half_length
 
         # =================================================================
         # Body 1: Thigh (parent = torso)
         # =================================================================
-        var b1 = gc_model_body_offset(1)
+        var b1 = model_body_offset(1)
         var thigh_inertia = compute_capsule_inertia(
             thigh_mass, thigh_radius, thigh_half_length
         )
 
-        model_host[b1 + GC_BODY_IDX_MASS] = thigh_mass
-        model_host[b1 + GC_BODY_IDX_INV_MASS] = (
+        model_host[b1 + BODY_IDX_MASS] = thigh_mass
+        model_host[b1 + BODY_IDX_INV_MASS] = (
             Scalar[gpu_dtype](1.0) / thigh_mass
         )
-        model_host[b1 + GC_BODY_IDX_IXX] = thigh_inertia[0]
-        model_host[b1 + GC_BODY_IDX_IYY] = thigh_inertia[1]
-        model_host[b1 + GC_BODY_IDX_IZZ] = thigh_inertia[2]
-        model_host[b1 + GC_BODY_IDX_INV_IXX] = (
+        model_host[b1 + BODY_IDX_IXX] = thigh_inertia[0]
+        model_host[b1 + BODY_IDX_IYY] = thigh_inertia[1]
+        model_host[b1 + BODY_IDX_IZZ] = thigh_inertia[2]
+        model_host[b1 + BODY_IDX_INV_IXX] = (
             Scalar[gpu_dtype](1.0) / thigh_inertia[0]
         )
-        model_host[b1 + GC_BODY_IDX_INV_IYY] = (
+        model_host[b1 + BODY_IDX_INV_IYY] = (
             Scalar[gpu_dtype](1.0) / thigh_inertia[1]
         )
-        model_host[b1 + GC_BODY_IDX_INV_IZZ] = (
+        model_host[b1 + BODY_IDX_INV_IZZ] = (
             Scalar[gpu_dtype](1.0) / thigh_inertia[2]
         )
         # Local frame: offset below torso
-        model_host[b1 + GC_BODY_IDX_POS_X] = Scalar[gpu_dtype](0.0)
-        model_host[b1 + GC_BODY_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
-        model_host[b1 + GC_BODY_IDX_POS_Z] = -(
+        model_host[b1 + BODY_IDX_POS_X] = Scalar[gpu_dtype](0.0)
+        model_host[b1 + BODY_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
+        model_host[b1 + BODY_IDX_POS_Z] = -(
             torso_half_length + thigh_half_length
         )
-        model_host[b1 + GC_BODY_IDX_QUAT_X] = Scalar[gpu_dtype](0.0)
-        model_host[b1 + GC_BODY_IDX_QUAT_Y] = Scalar[gpu_dtype](0.0)
-        model_host[b1 + GC_BODY_IDX_QUAT_Z] = Scalar[gpu_dtype](0.0)
-        model_host[b1 + GC_BODY_IDX_QUAT_W] = Scalar[gpu_dtype](1.0)
-        model_host[b1 + GC_BODY_IDX_PARENT] = Scalar[gpu_dtype](0)  # Torso
-        model_host[b1 + GC_BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](
-            GC_GEOM_CAPSULE
+        model_host[b1 + BODY_IDX_QUAT_X] = Scalar[gpu_dtype](0.0)
+        model_host[b1 + BODY_IDX_QUAT_Y] = Scalar[gpu_dtype](0.0)
+        model_host[b1 + BODY_IDX_QUAT_Z] = Scalar[gpu_dtype](0.0)
+        model_host[b1 + BODY_IDX_QUAT_W] = Scalar[gpu_dtype](1.0)
+        model_host[b1 + BODY_IDX_PARENT] = Scalar[gpu_dtype](0)  # Torso
+        model_host[b1 + BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](
+            GEOM_CAPSULE
         )
-        model_host[b1 + GC_BODY_IDX_RADIUS] = thigh_radius
-        model_host[b1 + GC_BODY_IDX_HALF_LENGTH] = thigh_half_length
+        model_host[b1 + BODY_IDX_RADIUS] = thigh_radius
+        model_host[b1 + BODY_IDX_HALF_LENGTH] = thigh_half_length
 
         # =================================================================
         # Body 2: Leg (parent = thigh)
         # =================================================================
-        var b2 = gc_model_body_offset(2)
+        var b2 = model_body_offset(2)
         var leg_inertia = compute_capsule_inertia(
             leg_mass, leg_radius, leg_half_length
         )
 
-        model_host[b2 + GC_BODY_IDX_MASS] = leg_mass
-        model_host[b2 + GC_BODY_IDX_INV_MASS] = (
+        model_host[b2 + BODY_IDX_MASS] = leg_mass
+        model_host[b2 + BODY_IDX_INV_MASS] = (
             Scalar[gpu_dtype](1.0) / leg_mass
         )
-        model_host[b2 + GC_BODY_IDX_IXX] = leg_inertia[0]
-        model_host[b2 + GC_BODY_IDX_IYY] = leg_inertia[1]
-        model_host[b2 + GC_BODY_IDX_IZZ] = leg_inertia[2]
-        model_host[b2 + GC_BODY_IDX_INV_IXX] = (
+        model_host[b2 + BODY_IDX_IXX] = leg_inertia[0]
+        model_host[b2 + BODY_IDX_IYY] = leg_inertia[1]
+        model_host[b2 + BODY_IDX_IZZ] = leg_inertia[2]
+        model_host[b2 + BODY_IDX_INV_IXX] = (
             Scalar[gpu_dtype](1.0) / leg_inertia[0]
         )
-        model_host[b2 + GC_BODY_IDX_INV_IYY] = (
+        model_host[b2 + BODY_IDX_INV_IYY] = (
             Scalar[gpu_dtype](1.0) / leg_inertia[1]
         )
-        model_host[b2 + GC_BODY_IDX_INV_IZZ] = (
+        model_host[b2 + BODY_IDX_INV_IZZ] = (
             Scalar[gpu_dtype](1.0) / leg_inertia[2]
         )
         # Local frame: offset below thigh
-        model_host[b2 + GC_BODY_IDX_POS_X] = Scalar[gpu_dtype](0.0)
-        model_host[b2 + GC_BODY_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
-        model_host[b2 + GC_BODY_IDX_POS_Z] = -(
+        model_host[b2 + BODY_IDX_POS_X] = Scalar[gpu_dtype](0.0)
+        model_host[b2 + BODY_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
+        model_host[b2 + BODY_IDX_POS_Z] = -(
             thigh_half_length + leg_half_length
         )
-        model_host[b2 + GC_BODY_IDX_QUAT_X] = Scalar[gpu_dtype](0.0)
-        model_host[b2 + GC_BODY_IDX_QUAT_Y] = Scalar[gpu_dtype](0.0)
-        model_host[b2 + GC_BODY_IDX_QUAT_Z] = Scalar[gpu_dtype](0.0)
-        model_host[b2 + GC_BODY_IDX_QUAT_W] = Scalar[gpu_dtype](1.0)
-        model_host[b2 + GC_BODY_IDX_PARENT] = Scalar[gpu_dtype](1)  # Thigh
-        model_host[b2 + GC_BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](
-            GC_GEOM_CAPSULE
+        model_host[b2 + BODY_IDX_QUAT_X] = Scalar[gpu_dtype](0.0)
+        model_host[b2 + BODY_IDX_QUAT_Y] = Scalar[gpu_dtype](0.0)
+        model_host[b2 + BODY_IDX_QUAT_Z] = Scalar[gpu_dtype](0.0)
+        model_host[b2 + BODY_IDX_QUAT_W] = Scalar[gpu_dtype](1.0)
+        model_host[b2 + BODY_IDX_PARENT] = Scalar[gpu_dtype](1)  # Thigh
+        model_host[b2 + BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](
+            GEOM_CAPSULE
         )
-        model_host[b2 + GC_BODY_IDX_RADIUS] = leg_radius
-        model_host[b2 + GC_BODY_IDX_HALF_LENGTH] = leg_half_length
+        model_host[b2 + BODY_IDX_RADIUS] = leg_radius
+        model_host[b2 + BODY_IDX_HALF_LENGTH] = leg_half_length
 
         # =================================================================
         # Body 3: Foot (parent = leg, horizontal orientation)
         # =================================================================
-        var b3 = gc_model_body_offset(3)
+        var b3 = model_body_offset(3)
         var foot_inertia = compute_capsule_inertia(
             foot_mass, foot_radius, foot_half_length
         )
 
-        model_host[b3 + GC_BODY_IDX_MASS] = foot_mass
-        model_host[b3 + GC_BODY_IDX_INV_MASS] = (
+        model_host[b3 + BODY_IDX_MASS] = foot_mass
+        model_host[b3 + BODY_IDX_INV_MASS] = (
             Scalar[gpu_dtype](1.0) / foot_mass
         )
-        model_host[b3 + GC_BODY_IDX_IXX] = foot_inertia[0]
-        model_host[b3 + GC_BODY_IDX_IYY] = foot_inertia[1]
-        model_host[b3 + GC_BODY_IDX_IZZ] = foot_inertia[2]
-        model_host[b3 + GC_BODY_IDX_INV_IXX] = (
+        model_host[b3 + BODY_IDX_IXX] = foot_inertia[0]
+        model_host[b3 + BODY_IDX_IYY] = foot_inertia[1]
+        model_host[b3 + BODY_IDX_IZZ] = foot_inertia[2]
+        model_host[b3 + BODY_IDX_INV_IXX] = (
             Scalar[gpu_dtype](1.0) / foot_inertia[0]
         )
-        model_host[b3 + GC_BODY_IDX_INV_IYY] = (
+        model_host[b3 + BODY_IDX_INV_IYY] = (
             Scalar[gpu_dtype](1.0) / foot_inertia[1]
         )
-        model_host[b3 + GC_BODY_IDX_INV_IZZ] = (
+        model_host[b3 + BODY_IDX_INV_IZZ] = (
             Scalar[gpu_dtype](1.0) / foot_inertia[2]
         )
         # Local frame: offset below leg, 90° rotation around Y for horizontal
-        model_host[b3 + GC_BODY_IDX_POS_X] = Scalar[gpu_dtype](0.0)
-        model_host[b3 + GC_BODY_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
-        model_host[b3 + GC_BODY_IDX_POS_Z] = -leg_half_length
-        model_host[b3 + GC_BODY_IDX_QUAT_X] = Scalar[gpu_dtype](0.0)
-        model_host[b3 + GC_BODY_IDX_QUAT_Y] = Scalar[gpu_dtype](
+        model_host[b3 + BODY_IDX_POS_X] = Scalar[gpu_dtype](0.0)
+        model_host[b3 + BODY_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
+        model_host[b3 + BODY_IDX_POS_Z] = -leg_half_length
+        model_host[b3 + BODY_IDX_QUAT_X] = Scalar[gpu_dtype](0.0)
+        model_host[b3 + BODY_IDX_QUAT_Y] = Scalar[gpu_dtype](
             0.70710678
         )  # sin(π/4)
-        model_host[b3 + GC_BODY_IDX_QUAT_Z] = Scalar[gpu_dtype](0.0)
-        model_host[b3 + GC_BODY_IDX_QUAT_W] = Scalar[gpu_dtype](
+        model_host[b3 + BODY_IDX_QUAT_Z] = Scalar[gpu_dtype](0.0)
+        model_host[b3 + BODY_IDX_QUAT_W] = Scalar[gpu_dtype](
             0.70710678
         )  # cos(π/4)
-        model_host[b3 + GC_BODY_IDX_PARENT] = Scalar[gpu_dtype](2)  # Leg
-        model_host[b3 + GC_BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](
-            GC_GEOM_CAPSULE
+        model_host[b3 + BODY_IDX_PARENT] = Scalar[gpu_dtype](2)  # Leg
+        model_host[b3 + BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](
+            GEOM_CAPSULE
         )
-        model_host[b3 + GC_BODY_IDX_RADIUS] = foot_radius
-        model_host[b3 + GC_BODY_IDX_HALF_LENGTH] = foot_half_length
+        model_host[b3 + BODY_IDX_RADIUS] = foot_radius
+        model_host[b3 + BODY_IDX_HALF_LENGTH] = foot_half_length
 
         # =================================================================
         # Joint 0: RootX - Slide joint, X-axis translation (body 0)
         # =================================================================
-        var j0 = gc_model_joint_offset[HopperGC.NUM_BODIES](0)
-        model_host[j0 + GC_JOINT_IDX_TYPE] = Scalar[gpu_dtype](GC_JNT_SLIDE)
-        model_host[j0 + GC_JOINT_IDX_BODY_ID] = Scalar[gpu_dtype](0)
-        model_host[j0 + GC_JOINT_IDX_QPOS_ADR] = Scalar[gpu_dtype](0)  # qpos[0]
-        model_host[j0 + GC_JOINT_IDX_DOF_ADR] = Scalar[gpu_dtype](0)  # qvel[0]
-        model_host[j0 + GC_JOINT_IDX_POS_X] = Scalar[gpu_dtype](0.0)
-        model_host[j0 + GC_JOINT_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
-        model_host[j0 + GC_JOINT_IDX_POS_Z] = Scalar[gpu_dtype](0.0)
-        model_host[j0 + GC_JOINT_IDX_AXIS_X] = Scalar[gpu_dtype](1.0)
-        model_host[j0 + GC_JOINT_IDX_AXIS_Y] = Scalar[gpu_dtype](0.0)
-        model_host[j0 + GC_JOINT_IDX_AXIS_Z] = Scalar[gpu_dtype](0.0)
-        model_host[j0 + GC_JOINT_IDX_TAU_LIMIT] = Scalar[gpu_dtype](
+        var j0 = model_joint_offset[HopperGC.NUM_BODIES](0)
+        model_host[j0 + JOINT_IDX_TYPE] = Scalar[gpu_dtype](JNT_SLIDE)
+        model_host[j0 + JOINT_IDX_BODY_ID] = Scalar[gpu_dtype](0)
+        model_host[j0 + JOINT_IDX_QPOS_ADR] = Scalar[gpu_dtype](0)  # qpos[0]
+        model_host[j0 + JOINT_IDX_DOF_ADR] = Scalar[gpu_dtype](0)  # qvel[0]
+        model_host[j0 + JOINT_IDX_POS_X] = Scalar[gpu_dtype](0.0)
+        model_host[j0 + JOINT_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
+        model_host[j0 + JOINT_IDX_POS_Z] = Scalar[gpu_dtype](0.0)
+        model_host[j0 + JOINT_IDX_AXIS_X] = Scalar[gpu_dtype](1.0)
+        model_host[j0 + JOINT_IDX_AXIS_Y] = Scalar[gpu_dtype](0.0)
+        model_host[j0 + JOINT_IDX_AXIS_Z] = Scalar[gpu_dtype](0.0)
+        model_host[j0 + JOINT_IDX_TAU_LIMIT] = Scalar[gpu_dtype](
             0.0
         )  # Not actuated
-        model_host[j0 + GC_JOINT_IDX_RANGE_MIN] = Scalar[gpu_dtype](
+        model_host[j0 + JOINT_IDX_RANGE_MIN] = Scalar[gpu_dtype](
             -1e10
         )  # Unlimited
-        model_host[j0 + GC_JOINT_IDX_RANGE_MAX] = Scalar[gpu_dtype](1e10)
-        model_host[j0 + GC_JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](0.0)
-        model_host[j0 + GC_JOINT_IDX_DAMPING] = Scalar[gpu_dtype](0.0)
-        model_host[j0 + GC_JOINT_IDX_STIFFNESS] = Scalar[gpu_dtype](0.0)
+        model_host[j0 + JOINT_IDX_RANGE_MAX] = Scalar[gpu_dtype](1e10)
+        model_host[j0 + JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](0.0)
+        model_host[j0 + JOINT_IDX_DAMPING] = Scalar[gpu_dtype](0.0)
+        model_host[j0 + JOINT_IDX_STIFFNESS] = Scalar[gpu_dtype](0.0)
 
         # =================================================================
         # Joint 1: RootZ - Slide joint, Z-axis translation (body 0)
         # =================================================================
-        var j1 = gc_model_joint_offset[HopperGC.NUM_BODIES](1)
-        model_host[j1 + GC_JOINT_IDX_TYPE] = Scalar[gpu_dtype](GC_JNT_SLIDE)
-        model_host[j1 + GC_JOINT_IDX_BODY_ID] = Scalar[gpu_dtype](0)
-        model_host[j1 + GC_JOINT_IDX_QPOS_ADR] = Scalar[gpu_dtype](1)  # qpos[1]
-        model_host[j1 + GC_JOINT_IDX_DOF_ADR] = Scalar[gpu_dtype](1)  # qvel[1]
-        model_host[j1 + GC_JOINT_IDX_POS_X] = Scalar[gpu_dtype](0.0)
-        model_host[j1 + GC_JOINT_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
-        model_host[j1 + GC_JOINT_IDX_POS_Z] = Scalar[gpu_dtype](0.0)
-        model_host[j1 + GC_JOINT_IDX_AXIS_X] = Scalar[gpu_dtype](0.0)
-        model_host[j1 + GC_JOINT_IDX_AXIS_Y] = Scalar[gpu_dtype](0.0)
-        model_host[j1 + GC_JOINT_IDX_AXIS_Z] = Scalar[gpu_dtype](1.0)
-        model_host[j1 + GC_JOINT_IDX_TAU_LIMIT] = Scalar[gpu_dtype](
+        var j1 = model_joint_offset[HopperGC.NUM_BODIES](1)
+        model_host[j1 + JOINT_IDX_TYPE] = Scalar[gpu_dtype](JNT_SLIDE)
+        model_host[j1 + JOINT_IDX_BODY_ID] = Scalar[gpu_dtype](0)
+        model_host[j1 + JOINT_IDX_QPOS_ADR] = Scalar[gpu_dtype](1)  # qpos[1]
+        model_host[j1 + JOINT_IDX_DOF_ADR] = Scalar[gpu_dtype](1)  # qvel[1]
+        model_host[j1 + JOINT_IDX_POS_X] = Scalar[gpu_dtype](0.0)
+        model_host[j1 + JOINT_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
+        model_host[j1 + JOINT_IDX_POS_Z] = Scalar[gpu_dtype](0.0)
+        model_host[j1 + JOINT_IDX_AXIS_X] = Scalar[gpu_dtype](0.0)
+        model_host[j1 + JOINT_IDX_AXIS_Y] = Scalar[gpu_dtype](0.0)
+        model_host[j1 + JOINT_IDX_AXIS_Z] = Scalar[gpu_dtype](1.0)
+        model_host[j1 + JOINT_IDX_TAU_LIMIT] = Scalar[gpu_dtype](
             0.0
         )  # Not actuated
-        model_host[j1 + GC_JOINT_IDX_RANGE_MIN] = Scalar[gpu_dtype](
+        model_host[j1 + JOINT_IDX_RANGE_MIN] = Scalar[gpu_dtype](
             -1e10
         )  # Unlimited
-        model_host[j1 + GC_JOINT_IDX_RANGE_MAX] = Scalar[gpu_dtype](1e10)
-        model_host[j1 + GC_JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](0.0)
-        model_host[j1 + GC_JOINT_IDX_DAMPING] = Scalar[gpu_dtype](0.0)
-        model_host[j1 + GC_JOINT_IDX_STIFFNESS] = Scalar[gpu_dtype](0.0)
+        model_host[j1 + JOINT_IDX_RANGE_MAX] = Scalar[gpu_dtype](1e10)
+        model_host[j1 + JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](0.0)
+        model_host[j1 + JOINT_IDX_DAMPING] = Scalar[gpu_dtype](0.0)
+        model_host[j1 + JOINT_IDX_STIFFNESS] = Scalar[gpu_dtype](0.0)
 
         # =================================================================
         # Joint 2: RootY - Hinge joint, Y-axis rotation (body 0)
         # =================================================================
-        var j2 = gc_model_joint_offset[HopperGC.NUM_BODIES](2)
-        model_host[j2 + GC_JOINT_IDX_TYPE] = Scalar[gpu_dtype](GC_JNT_HINGE)
-        model_host[j2 + GC_JOINT_IDX_BODY_ID] = Scalar[gpu_dtype](0)
-        model_host[j2 + GC_JOINT_IDX_QPOS_ADR] = Scalar[gpu_dtype](2)  # qpos[2]
-        model_host[j2 + GC_JOINT_IDX_DOF_ADR] = Scalar[gpu_dtype](2)  # qvel[2]
-        model_host[j2 + GC_JOINT_IDX_POS_X] = Scalar[gpu_dtype](0.0)
-        model_host[j2 + GC_JOINT_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
-        model_host[j2 + GC_JOINT_IDX_POS_Z] = Scalar[gpu_dtype](0.0)
-        model_host[j2 + GC_JOINT_IDX_AXIS_X] = Scalar[gpu_dtype](0.0)
-        model_host[j2 + GC_JOINT_IDX_AXIS_Y] = Scalar[gpu_dtype](1.0)
-        model_host[j2 + GC_JOINT_IDX_AXIS_Z] = Scalar[gpu_dtype](0.0)
-        model_host[j2 + GC_JOINT_IDX_TAU_LIMIT] = Scalar[gpu_dtype](
+        var j2 = model_joint_offset[HopperGC.NUM_BODIES](2)
+        model_host[j2 + JOINT_IDX_TYPE] = Scalar[gpu_dtype](JNT_HINGE)
+        model_host[j2 + JOINT_IDX_BODY_ID] = Scalar[gpu_dtype](0)
+        model_host[j2 + JOINT_IDX_QPOS_ADR] = Scalar[gpu_dtype](2)  # qpos[2]
+        model_host[j2 + JOINT_IDX_DOF_ADR] = Scalar[gpu_dtype](2)  # qvel[2]
+        model_host[j2 + JOINT_IDX_POS_X] = Scalar[gpu_dtype](0.0)
+        model_host[j2 + JOINT_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
+        model_host[j2 + JOINT_IDX_POS_Z] = Scalar[gpu_dtype](0.0)
+        model_host[j2 + JOINT_IDX_AXIS_X] = Scalar[gpu_dtype](0.0)
+        model_host[j2 + JOINT_IDX_AXIS_Y] = Scalar[gpu_dtype](1.0)
+        model_host[j2 + JOINT_IDX_AXIS_Z] = Scalar[gpu_dtype](0.0)
+        model_host[j2 + JOINT_IDX_TAU_LIMIT] = Scalar[gpu_dtype](
             0.0
         )  # Not actuated
-        model_host[j2 + GC_JOINT_IDX_RANGE_MIN] = Scalar[gpu_dtype](
+        model_host[j2 + JOINT_IDX_RANGE_MIN] = Scalar[gpu_dtype](
             -1e10
         )  # Unlimited (torso pitch)
-        model_host[j2 + GC_JOINT_IDX_RANGE_MAX] = Scalar[gpu_dtype](1e10)
-        model_host[j2 + GC_JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](0.0)
-        model_host[j2 + GC_JOINT_IDX_DAMPING] = Scalar[gpu_dtype](0.0)
-        model_host[j2 + GC_JOINT_IDX_STIFFNESS] = Scalar[gpu_dtype](0.0)
+        model_host[j2 + JOINT_IDX_RANGE_MAX] = Scalar[gpu_dtype](1e10)
+        model_host[j2 + JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](0.0)
+        model_host[j2 + JOINT_IDX_DAMPING] = Scalar[gpu_dtype](0.0)
+        model_host[j2 + JOINT_IDX_STIFFNESS] = Scalar[gpu_dtype](0.0)
 
         # =================================================================
         # Joint 3: Thigh - Hinge joint, Y-axis rotation (body 1)
         # =================================================================
-        var j3 = gc_model_joint_offset[HopperGC.NUM_BODIES](3)
-        model_host[j3 + GC_JOINT_IDX_TYPE] = Scalar[gpu_dtype](GC_JNT_HINGE)
-        model_host[j3 + GC_JOINT_IDX_BODY_ID] = Scalar[gpu_dtype](1)
-        model_host[j3 + GC_JOINT_IDX_QPOS_ADR] = Scalar[gpu_dtype](3)
-        model_host[j3 + GC_JOINT_IDX_DOF_ADR] = Scalar[gpu_dtype](3)
-        model_host[j3 + GC_JOINT_IDX_POS_X] = Scalar[gpu_dtype](0.0)
-        model_host[j3 + GC_JOINT_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
-        model_host[j3 + GC_JOINT_IDX_POS_Z] = -torso_half_length
-        model_host[j3 + GC_JOINT_IDX_AXIS_X] = Scalar[gpu_dtype](0.0)
-        model_host[j3 + GC_JOINT_IDX_AXIS_Y] = Scalar[gpu_dtype](1.0)
-        model_host[j3 + GC_JOINT_IDX_AXIS_Z] = Scalar[gpu_dtype](0.0)
-        model_host[j3 + GC_JOINT_IDX_TAU_LIMIT] = C.TORQUE_LIMIT
-        model_host[j3 + GC_JOINT_IDX_RANGE_MIN] = C.THIGH_JOINT_MIN
-        model_host[j3 + GC_JOINT_IDX_RANGE_MAX] = C.THIGH_JOINT_MAX
-        model_host[j3 + GC_JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](1.0)
-        model_host[j3 + GC_JOINT_IDX_DAMPING] = Scalar[gpu_dtype](1.0)
-        model_host[j3 + GC_JOINT_IDX_STIFFNESS] = Scalar[gpu_dtype](0.0)
+        var j3 = model_joint_offset[HopperGC.NUM_BODIES](3)
+        model_host[j3 + JOINT_IDX_TYPE] = Scalar[gpu_dtype](JNT_HINGE)
+        model_host[j3 + JOINT_IDX_BODY_ID] = Scalar[gpu_dtype](1)
+        model_host[j3 + JOINT_IDX_QPOS_ADR] = Scalar[gpu_dtype](3)
+        model_host[j3 + JOINT_IDX_DOF_ADR] = Scalar[gpu_dtype](3)
+        model_host[j3 + JOINT_IDX_POS_X] = Scalar[gpu_dtype](0.0)
+        model_host[j3 + JOINT_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
+        model_host[j3 + JOINT_IDX_POS_Z] = -torso_half_length
+        model_host[j3 + JOINT_IDX_AXIS_X] = Scalar[gpu_dtype](0.0)
+        model_host[j3 + JOINT_IDX_AXIS_Y] = Scalar[gpu_dtype](1.0)
+        model_host[j3 + JOINT_IDX_AXIS_Z] = Scalar[gpu_dtype](0.0)
+        model_host[j3 + JOINT_IDX_TAU_LIMIT] = C.TORQUE_LIMIT
+        model_host[j3 + JOINT_IDX_RANGE_MIN] = C.THIGH_JOINT_MIN
+        model_host[j3 + JOINT_IDX_RANGE_MAX] = C.THIGH_JOINT_MAX
+        model_host[j3 + JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](1.0)
+        model_host[j3 + JOINT_IDX_DAMPING] = Scalar[gpu_dtype](1.0)
+        model_host[j3 + JOINT_IDX_STIFFNESS] = Scalar[gpu_dtype](0.0)
 
         # =================================================================
         # Joint 4: Leg - Hinge joint, Y-axis rotation (body 2)
         # =================================================================
-        var j4 = gc_model_joint_offset[HopperGC.NUM_BODIES](4)
-        model_host[j4 + GC_JOINT_IDX_TYPE] = Scalar[gpu_dtype](GC_JNT_HINGE)
-        model_host[j4 + GC_JOINT_IDX_BODY_ID] = Scalar[gpu_dtype](2)
-        model_host[j4 + GC_JOINT_IDX_QPOS_ADR] = Scalar[gpu_dtype](4)
-        model_host[j4 + GC_JOINT_IDX_DOF_ADR] = Scalar[gpu_dtype](4)
-        model_host[j4 + GC_JOINT_IDX_POS_X] = Scalar[gpu_dtype](0.0)
-        model_host[j4 + GC_JOINT_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
-        model_host[j4 + GC_JOINT_IDX_POS_Z] = -thigh_half_length
-        model_host[j4 + GC_JOINT_IDX_AXIS_X] = Scalar[gpu_dtype](0.0)
-        model_host[j4 + GC_JOINT_IDX_AXIS_Y] = Scalar[gpu_dtype](1.0)
-        model_host[j4 + GC_JOINT_IDX_AXIS_Z] = Scalar[gpu_dtype](0.0)
-        model_host[j4 + GC_JOINT_IDX_TAU_LIMIT] = C.TORQUE_LIMIT
-        model_host[j4 + GC_JOINT_IDX_RANGE_MIN] = C.LEG_JOINT_MIN
-        model_host[j4 + GC_JOINT_IDX_RANGE_MAX] = C.LEG_JOINT_MAX
-        model_host[j4 + GC_JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](1.0)
-        model_host[j4 + GC_JOINT_IDX_DAMPING] = Scalar[gpu_dtype](1.0)
-        model_host[j4 + GC_JOINT_IDX_STIFFNESS] = Scalar[gpu_dtype](0.0)
+        var j4 = model_joint_offset[HopperGC.NUM_BODIES](4)
+        model_host[j4 + JOINT_IDX_TYPE] = Scalar[gpu_dtype](JNT_HINGE)
+        model_host[j4 + JOINT_IDX_BODY_ID] = Scalar[gpu_dtype](2)
+        model_host[j4 + JOINT_IDX_QPOS_ADR] = Scalar[gpu_dtype](4)
+        model_host[j4 + JOINT_IDX_DOF_ADR] = Scalar[gpu_dtype](4)
+        model_host[j4 + JOINT_IDX_POS_X] = Scalar[gpu_dtype](0.0)
+        model_host[j4 + JOINT_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
+        model_host[j4 + JOINT_IDX_POS_Z] = -thigh_half_length
+        model_host[j4 + JOINT_IDX_AXIS_X] = Scalar[gpu_dtype](0.0)
+        model_host[j4 + JOINT_IDX_AXIS_Y] = Scalar[gpu_dtype](1.0)
+        model_host[j4 + JOINT_IDX_AXIS_Z] = Scalar[gpu_dtype](0.0)
+        model_host[j4 + JOINT_IDX_TAU_LIMIT] = C.TORQUE_LIMIT
+        model_host[j4 + JOINT_IDX_RANGE_MIN] = C.LEG_JOINT_MIN
+        model_host[j4 + JOINT_IDX_RANGE_MAX] = C.LEG_JOINT_MAX
+        model_host[j4 + JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](1.0)
+        model_host[j4 + JOINT_IDX_DAMPING] = Scalar[gpu_dtype](1.0)
+        model_host[j4 + JOINT_IDX_STIFFNESS] = Scalar[gpu_dtype](0.0)
 
         # =================================================================
         # Joint 5: Foot - Hinge joint, Y-axis rotation (body 3)
         # =================================================================
-        var j5 = gc_model_joint_offset[HopperGC.NUM_BODIES](5)
-        model_host[j5 + GC_JOINT_IDX_TYPE] = Scalar[gpu_dtype](GC_JNT_HINGE)
-        model_host[j5 + GC_JOINT_IDX_BODY_ID] = Scalar[gpu_dtype](3)
-        model_host[j5 + GC_JOINT_IDX_QPOS_ADR] = Scalar[gpu_dtype](5)
-        model_host[j5 + GC_JOINT_IDX_DOF_ADR] = Scalar[gpu_dtype](5)
-        model_host[j5 + GC_JOINT_IDX_POS_X] = Scalar[gpu_dtype](0.0)
-        model_host[j5 + GC_JOINT_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
-        model_host[j5 + GC_JOINT_IDX_POS_Z] = -leg_half_length
-        model_host[j5 + GC_JOINT_IDX_AXIS_X] = Scalar[gpu_dtype](0.0)
-        model_host[j5 + GC_JOINT_IDX_AXIS_Y] = Scalar[gpu_dtype](1.0)
-        model_host[j5 + GC_JOINT_IDX_AXIS_Z] = Scalar[gpu_dtype](0.0)
-        model_host[j5 + GC_JOINT_IDX_TAU_LIMIT] = C.TORQUE_LIMIT
-        model_host[j5 + GC_JOINT_IDX_RANGE_MIN] = C.FOOT_JOINT_MIN
-        model_host[j5 + GC_JOINT_IDX_RANGE_MAX] = C.FOOT_JOINT_MAX
-        model_host[j5 + GC_JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](1.0)
-        model_host[j5 + GC_JOINT_IDX_DAMPING] = Scalar[gpu_dtype](1.0)
-        model_host[j5 + GC_JOINT_IDX_STIFFNESS] = Scalar[gpu_dtype](0.0)
+        var j5 = model_joint_offset[HopperGC.NUM_BODIES](5)
+        model_host[j5 + JOINT_IDX_TYPE] = Scalar[gpu_dtype](JNT_HINGE)
+        model_host[j5 + JOINT_IDX_BODY_ID] = Scalar[gpu_dtype](3)
+        model_host[j5 + JOINT_IDX_QPOS_ADR] = Scalar[gpu_dtype](5)
+        model_host[j5 + JOINT_IDX_DOF_ADR] = Scalar[gpu_dtype](5)
+        model_host[j5 + JOINT_IDX_POS_X] = Scalar[gpu_dtype](0.0)
+        model_host[j5 + JOINT_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
+        model_host[j5 + JOINT_IDX_POS_Z] = -leg_half_length
+        model_host[j5 + JOINT_IDX_AXIS_X] = Scalar[gpu_dtype](0.0)
+        model_host[j5 + JOINT_IDX_AXIS_Y] = Scalar[gpu_dtype](1.0)
+        model_host[j5 + JOINT_IDX_AXIS_Z] = Scalar[gpu_dtype](0.0)
+        model_host[j5 + JOINT_IDX_TAU_LIMIT] = C.TORQUE_LIMIT
+        model_host[j5 + JOINT_IDX_RANGE_MIN] = C.FOOT_JOINT_MIN
+        model_host[j5 + JOINT_IDX_RANGE_MAX] = C.FOOT_JOINT_MAX
+        model_host[j5 + JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](1.0)
+        model_host[j5 + JOINT_IDX_DAMPING] = Scalar[gpu_dtype](1.0)
+        model_host[j5 + JOINT_IDX_STIFFNESS] = Scalar[gpu_dtype](0.0)
 
         # =================================================================
         # Model Metadata
         # =================================================================
-        var meta = gc_model_metadata_offset[
+        var meta = model_metadata_offset[
             HopperGC.NUM_BODIES, HopperGC.NUM_JOINTS
         ]()
-        model_host[meta + GC_MODEL_META_IDX_NBODY] = Scalar[gpu_dtype](
+        model_host[meta + MODEL_META_IDX_NBODY] = Scalar[gpu_dtype](
             C.NUM_BODIES
         )
-        model_host[meta + GC_MODEL_META_IDX_NJOINT] = Scalar[gpu_dtype](
+        model_host[meta + MODEL_META_IDX_NJOINT] = Scalar[gpu_dtype](
             C.NUM_JOINTS
         )
-        model_host[meta + GC_MODEL_META_IDX_GRAVITY_X] = Scalar[gpu_dtype](0.0)
-        model_host[meta + GC_MODEL_META_IDX_GRAVITY_Y] = Scalar[gpu_dtype](0.0)
-        model_host[meta + GC_MODEL_META_IDX_GRAVITY_Z] = C.GRAVITY_Z
-        model_host[meta + GC_MODEL_META_IDX_TIMESTEP] = C.DT
-        model_host[meta + GC_MODEL_META_IDX_GROUND_Z] = Scalar[gpu_dtype](0.0)
-        model_host[meta + GC_MODEL_META_IDX_FRICTION] = C.FRICTION
+        model_host[meta + MODEL_META_IDX_GRAVITY_X] = Scalar[gpu_dtype](0.0)
+        model_host[meta + MODEL_META_IDX_GRAVITY_Y] = Scalar[gpu_dtype](0.0)
+        model_host[meta + MODEL_META_IDX_GRAVITY_Z] = C.GRAVITY_Z
+        model_host[meta + MODEL_META_IDX_TIMESTEP] = C.DT
+        model_host[meta + MODEL_META_IDX_GROUND_Z] = Scalar[gpu_dtype](0.0)
+        model_host[meta + MODEL_META_IDX_FRICTION] = C.FRICTION
 
         # =================================================================
         # Curriculum Parameters (initialize to MuJoCo defaults)
         # =================================================================
-        var curr = gc_model_curriculum_offset[
+        var curr = model_curriculum_offset[
             HopperGC.NUM_BODIES, HopperGC.NUM_JOINTS
         ]()
-        model_host[curr + GC_CURRICULUM_IDX_MIN_HEIGHT] = C.MIN_HEIGHT
-        model_host[curr + GC_CURRICULUM_IDX_MAX_PITCH] = C.MAX_PITCH
+        model_host[curr + CURRICULUM_IDX_MIN_HEIGHT] = C.MIN_HEIGHT
+        model_host[curr + CURRICULUM_IDX_MAX_PITCH] = C.MAX_PITCH
 
         # Copy to GPU
         ctx.enqueue_copy(model_buf, model_host.unsafe_ptr())
@@ -1891,15 +1891,15 @@ struct HopperGC[
 
         # Then update curriculum params
         from physics3d.gpu.constants import (
-            gc_model_curriculum_offset,
-            GC_CURRICULUM_IDX_MIN_HEIGHT,
-            GC_CURRICULUM_IDX_MAX_PITCH,
+            model_curriculum_offset,
+            CURRICULUM_IDX_MIN_HEIGHT,
+            CURRICULUM_IDX_MAX_PITCH,
         )
 
-        comptime MODEL_SIZE = gc_model_size[
+        comptime MODEL_SIZE = model_size[
             HopperGC.NUM_BODIES, HopperGC.NUM_JOINTS
         ]()
-        comptime CURRICULUM_OFF = gc_model_curriculum_offset[
+        comptime CURRICULUM_OFF = model_curriculum_offset[
             HopperGC.NUM_BODIES, HopperGC.NUM_JOINTS
         ]()
 
@@ -1912,8 +1912,8 @@ struct HopperGC[
         ctx.synchronize()
 
         # Update curriculum params
-        model_host[CURRICULUM_OFF + GC_CURRICULUM_IDX_MIN_HEIGHT] = min_height
-        model_host[CURRICULUM_OFF + GC_CURRICULUM_IDX_MAX_PITCH] = max_pitch
+        model_host[CURRICULUM_OFF + CURRICULUM_IDX_MIN_HEIGHT] = min_height
+        model_host[CURRICULUM_OFF + CURRICULUM_IDX_MAX_PITCH] = max_pitch
 
         # Copy back to GPU
         ctx.enqueue_copy(model_buf, model_host.unsafe_ptr())
@@ -1938,7 +1938,7 @@ struct HopperGC[
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
         comptime TORQUE_LIMIT: Scalar[gpu_dtype] = 200.0
-        comptime QFRC_OFF = gc_qfrc_offset[HopperGC.NQ, HopperGC.NV]()
+        comptime QFRC_OFF = qfrc_offset[HopperGC.NQ, HopperGC.NV]()
 
         @always_inline
         fn apply_actions_kernel(
@@ -2007,7 +2007,7 @@ struct HopperGC[
         ](x_before_buf.unsafe_ptr())
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
-        comptime QPOS_OFF = gc_qpos_offset[HopperGC.NQ, HopperGC.NV]()
+        comptime QPOS_OFF = qpos_offset[HopperGC.NQ, HopperGC.NV]()
 
         @always_inline
         fn save_x_kernel(
@@ -2055,9 +2055,9 @@ struct HopperGC[
         matching Gymnasium Hopper v5 behavior.
         """
         from physics3d.gpu.constants import (
-            gc_model_curriculum_offset,
-            GC_CURRICULUM_IDX_MIN_HEIGHT,
-            GC_CURRICULUM_IDX_MAX_PITCH,
+            model_curriculum_offset,
+            CURRICULUM_IDX_MIN_HEIGHT,
+            CURRICULUM_IDX_MAX_PITCH,
         )
 
         var states = LayoutTensor[
@@ -2086,13 +2086,13 @@ struct HopperGC[
         comptime CTRL_COST_WEIGHT: Scalar[gpu_dtype] = 0.001
         comptime HEALTHY_REWARD: Scalar[gpu_dtype] = 1.0
         comptime TORQUE_LIMIT: Scalar[gpu_dtype] = 200.0
-        comptime QPOS_OFF = gc_qpos_offset[HopperGC.NQ, HopperGC.NV]()
-        comptime QVEL_OFF = gc_qvel_offset[HopperGC.NQ, HopperGC.NV]()
-        comptime META_OFF = gc_metadata_offset[
+        comptime QPOS_OFF = qpos_offset[HopperGC.NQ, HopperGC.NV]()
+        comptime QVEL_OFF = qvel_offset[HopperGC.NQ, HopperGC.NV]()
+        comptime META_OFF = metadata_offset[
             HopperGC.NQ, HopperGC.NV, HopperGC.NUM_BODIES, HopperGC.MAX_CONTACTS
         ]()
         # Curriculum offset in model buffer
-        comptime CURRICULUM_OFF = gc_model_curriculum_offset[
+        comptime CURRICULUM_OFF = model_curriculum_offset[
             HopperGC.NUM_BODIES, HopperGC.NUM_JOINTS
         ]()
         # Effective dt = DT * FRAME_SKIP (matching Gymnasium self.dt)
@@ -2133,20 +2133,20 @@ struct HopperGC[
 
             # Read curriculum parameters from model buffer
             var min_height = model[
-                0, CURRICULUM_OFF + GC_CURRICULUM_IDX_MIN_HEIGHT
+                0, CURRICULUM_OFF + CURRICULUM_IDX_MIN_HEIGHT
             ]
             var max_pitch = model[
-                0, CURRICULUM_OFF + GC_CURRICULUM_IDX_MAX_PITCH
+                0, CURRICULUM_OFF + CURRICULUM_IDX_MAX_PITCH
             ]
 
             # Increment step counter
             var step_count = Int(
                 rebind[Scalar[gpu_dtype]](
-                    states[env, META_OFF + GC_META_IDX_STEP_COUNT]
+                    states[env, META_OFF + META_IDX_STEP_COUNT]
                 )
             )
             step_count += 1
-            states[env, META_OFF + GC_META_IDX_STEP_COUNT] = Scalar[gpu_dtype](
+            states[env, META_OFF + META_IDX_STEP_COUNT] = Scalar[gpu_dtype](
                 step_count
             )
 
@@ -2267,10 +2267,10 @@ struct HopperGC[
         """
         # Use constants
         comptime C = HopperGCConstants[gpu_dtype]
-        comptime QPOS_OFF = gc_qpos_offset[HopperGC.NQ, HopperGC.NV]()
-        comptime QVEL_OFF = gc_qvel_offset[HopperGC.NQ, HopperGC.NV]()
-        comptime QACC_OFF = gc_qacc_offset[HopperGC.NQ, HopperGC.NV]()
-        comptime QFRC_OFF = gc_qfrc_offset[HopperGC.NQ, HopperGC.NV]()
+        comptime QPOS_OFF = qpos_offset[HopperGC.NQ, HopperGC.NV]()
+        comptime QVEL_OFF = qvel_offset[HopperGC.NQ, HopperGC.NV]()
+        comptime QACC_OFF = qacc_offset[HopperGC.NQ, HopperGC.NV]()
+        comptime QFRC_OFF = qfrc_offset[HopperGC.NQ, HopperGC.NV]()
 
         # Reset noise scale (matching Gymnasium Hopper)
         comptime RESET_NOISE_SCALE: Scalar[gpu_dtype] = 0.005
@@ -2324,7 +2324,7 @@ struct HopperGC[
             states[env, QFRC_OFF + i] = Scalar[gpu_dtype](0.0)
 
         # Reset step counter to 0
-        comptime META_OFF = gc_metadata_offset[
+        comptime META_OFF = metadata_offset[
             HopperGC.NQ, HopperGC.NV, HopperGC.NUM_BODIES, HopperGC.MAX_CONTACTS
         ]()
-        states[env, META_OFF + GC_META_IDX_STEP_COUNT] = Scalar[gpu_dtype](0.0)
+        states[env, META_OFF + META_IDX_STEP_COUNT] = Scalar[gpu_dtype](0.0)

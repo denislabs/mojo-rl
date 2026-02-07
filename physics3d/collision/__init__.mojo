@@ -12,4 +12,8 @@ from .collision_primitives import (
     rotate_vector_by_quat,
     rotate_vector_by_quat_inverse,
 )
-from .collision import CollisionDetector
+from .contact_detection import (
+    detect_ground_contacts,
+    detect_body_body_contacts,
+    normalize_qpos_quaternions,
+)

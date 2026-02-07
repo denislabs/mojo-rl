@@ -1,18 +1,13 @@
-"""Semi-implicit Euler solver for Generalized Coordinates engine.
+"""Contact detection for physics engine.
 
-
+Provides ground contact detection, body-body contact detection,
+and quaternion normalization utilities.
 """
 
 from math import sqrt
-from ..types import ModelGC, DataGC, _max_one
+from ..types import Model, Data, _max_one
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
-from ..kinematics.forward_kinematics import (
-    forward_kinematics,
-    compute_body_velocities,
-)
-from ..kinematics.quat_math import quat_normalize, quat_integrate, quat_rotate
-from ..dynamics.mass_matrix import compute_mass_matrix, solve_linear_diagonal
-from ..dynamics.bias_forces import compute_bias_forces
+from ..kinematics.quat_math import quat_normalize, quat_rotate
 
 
 fn normalize_qpos_quaternions[
@@ -23,8 +18,8 @@ fn normalize_qpos_quaternions[
     NJOINT: Int,
     MAX_CONTACTS: Int,
 ](
-    model: ModelGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
-    mut data: DataGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
 ):
     """Normalize quaternions in qpos for BALL and FREE joints."""
     for j in range(model.num_joints):
@@ -58,52 +53,6 @@ fn normalize_qpos_quaternions[
             data.qpos[qpos_adr + 3] = normalized[3]
 
 
-fn enforce_joint_limits[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    MAX_CONTACTS: Int,
-](
-    model: ModelGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
-    mut data: DataGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
-):
-    """Enforce joint position limits for HINGE and SLIDE joints.
-
-    When a joint exceeds its limit:
-    1. Clamp position to the limit
-    2. Zero velocity if moving further into the limit
-
-    This provides hard constraint behavior similar to MuJoCo's joint limits.
-    """
-    for j in range(model.num_joints):
-        var joint = model.joints[j]
-        var qpos_adr = joint.qpos_adr
-        var dof_adr = joint.dof_adr
-
-        # Only enforce limits for HINGE and SLIDE joints
-        if joint.jnt_type == JNT_HINGE or joint.jnt_type == JNT_SLIDE:
-            var pos = data.qpos[qpos_adr]
-            var vel = data.qvel[dof_adr]
-            var range_min = joint.range_min
-            var range_max = joint.range_max
-
-            # Check lower limit
-            if pos < range_min:
-                data.qpos[qpos_adr] = range_min
-                # Zero velocity if moving into the limit
-                if vel < Scalar[DTYPE](0):
-                    data.qvel[dof_adr] = Scalar[DTYPE](0)
-
-            # Check upper limit
-            elif pos > range_max:
-                data.qpos[qpos_adr] = range_max
-                # Zero velocity if moving into the limit
-                if vel > Scalar[DTYPE](0):
-                    data.qvel[dof_adr] = Scalar[DTYPE](0)
-
-
 fn detect_ground_contacts[
     DTYPE: DType,
     NQ: Int,
@@ -112,8 +61,8 @@ fn detect_ground_contacts[
     NJOINT: Int,
     MAX_CONTACTS: Int,
 ](
-    model: ModelGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
-    mut data: DataGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
 ):
     """Detect contacts between bodies and ground plane.
 
@@ -205,7 +154,7 @@ fn detect_ground_contacts[
                     data.num_contacts += 1
 
 
-fn detect_body_body_contacts_gc[
+fn detect_body_body_contacts[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -213,8 +162,8 @@ fn detect_body_body_contacts_gc[
     NJOINT: Int,
     MAX_CONTACTS: Int,
 ](
-    model: ModelGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
-    mut data: DataGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
 ):
     """Detect body-body contacts and append to existing contact list.
 
@@ -369,218 +318,3 @@ fn detect_body_body_contacts_gc[
                 data.contacts[idx].normal_z = nz
                 data.contacts[idx].dist = dist
                 data.num_contacts += 1
-
-
-fn compute_contact_forces[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    MAX_CONTACTS: Int,
-    V_SIZE: Int,
-](
-    model: ModelGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
-    data: DataGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
-    mut qfrc_contact: InlineArray[Scalar[DTYPE], V_SIZE],
-):
-    """Compute joint-space contact forces from Cartesian contacts.
-
-    Uses a simplified spring-damper model for ground contacts.
-    Includes Coulomb friction for tangential forces.
-    Forces are projected into joint space using the Jacobian transpose.
-    """
-    var stiffness = Scalar[DTYPE](5000.0)  # Ground stiffness
-    var damping = Scalar[DTYPE](100.0)  # Ground damping
-    var friction_coef = model.friction  # Friction coefficient
-
-    for c in range(data.num_contacts):
-        var contact = data.contacts[c]
-        var body = contact.body_a
-
-        if contact.dist >= Scalar[DTYPE](0):
-            continue  # No penetration
-
-        # Penetration depth (positive)
-        var depth = -contact.dist
-
-        # Body velocity at contact point
-        var vx = data.xvel[body * 3 + 0]
-        var vy = data.xvel[body * 3 + 1]
-        var vz = data.xvel[body * 3 + 2]
-
-        # Spring-damper normal force (in world z direction for ground)
-        var normal_force = stiffness * depth - damping * vz
-        if normal_force < Scalar[DTYPE](0):
-            normal_force = Scalar[DTYPE](0)
-
-        # Tangential velocity (in XY plane for ground contact)
-        var v_tangent_x = vx
-        var v_tangent_y = vy
-        var v_tangent_mag = sqrt(v_tangent_x * v_tangent_x + v_tangent_y * v_tangent_y)
-
-        # Coulomb friction force (opposes tangential velocity)
-        var max_friction = friction_coef * normal_force
-        var friction_x: Scalar[DTYPE] = Scalar[DTYPE](0)
-        var friction_y: Scalar[DTYPE] = Scalar[DTYPE](0)
-
-        if v_tangent_mag > Scalar[DTYPE](1e-6):
-            # Kinetic friction: F = -mu * N * v_hat
-            friction_x = -max_friction * (v_tangent_x / v_tangent_mag)
-            friction_y = -max_friction * (v_tangent_y / v_tangent_mag)
-
-        # Total contact force in world frame
-        var total_fx = friction_x
-        var total_fy = friction_y
-        var total_fz = normal_force
-
-        # Project to joint space using Jacobian transpose
-        # For each joint affecting this body, compute torque/force contribution
-
-        for j in range(model.num_joints):
-            var joint = model.joints[j]
-
-            # Check if this joint affects the contacted body
-            if not _joint_affects_body(model, j, body):
-                continue
-
-            var dof_idx = joint.dof_adr
-
-            if joint.jnt_type == JNT_HINGE:
-                # Compute torque: tau = r x F, projected onto joint axis
-                # r = contact position - joint position
-                var parent = model.body_parent[joint.body_id]
-
-                # Get joint position in world
-                var jpos_x = joint.pos_x
-                var jpos_y = joint.pos_y
-                var jpos_z = joint.pos_z
-
-                if parent >= 0:
-                    var parent_px = data.xpos[parent * 3 + 0]
-                    var parent_py = data.xpos[parent * 3 + 1]
-                    var parent_pz = data.xpos[parent * 3 + 2]
-                    var parent_qx = data.xquat[parent * 4 + 0]
-                    var parent_qy = data.xquat[parent * 4 + 1]
-                    var parent_qz = data.xquat[parent * 4 + 2]
-                    var parent_qw = data.xquat[parent * 4 + 3]
-
-                    var rotated = quat_rotate(
-                        parent_qx,
-                        parent_qy,
-                        parent_qz,
-                        parent_qw,
-                        jpos_x,
-                        jpos_y,
-                        jpos_z,
-                    )
-                    jpos_x = parent_px + rotated[0]
-                    jpos_y = parent_py + rotated[1]
-                    jpos_z = parent_pz + rotated[2]
-
-                # Lever arm from joint to contact
-                var rx = contact.pos_x - jpos_x
-                var ry = contact.pos_y - jpos_y
-                var rz = contact.pos_z - jpos_z
-
-                # Torque = r x F (using total force with friction)
-                var tau_x = ry * total_fz - rz * total_fy
-                var tau_y = rz * total_fx - rx * total_fz
-                var tau_z = rx * total_fy - ry * total_fx
-
-                # Get joint axis in world frame
-                var axis_x = joint.axis_x
-                var axis_y = joint.axis_y
-                var axis_z = joint.axis_z
-
-                if parent >= 0:
-                    var parent_qx = data.xquat[parent * 4 + 0]
-                    var parent_qy = data.xquat[parent * 4 + 1]
-                    var parent_qz = data.xquat[parent * 4 + 2]
-                    var parent_qw = data.xquat[parent * 4 + 3]
-                    var axis_world = quat_rotate(
-                        parent_qx,
-                        parent_qy,
-                        parent_qz,
-                        parent_qw,
-                        axis_x,
-                        axis_y,
-                        axis_z,
-                    )
-                    axis_x = axis_world[0]
-                    axis_y = axis_world[1]
-                    axis_z = axis_world[2]
-
-                # Project torque onto axis
-                var tau_joint = tau_x * axis_x + tau_y * axis_y + tau_z * axis_z
-                qfrc_contact[dof_idx] = qfrc_contact[dof_idx] + tau_joint
-
-            elif joint.jnt_type == JNT_SLIDE:
-                # Force along axis (now includes friction)
-                var axis_x = joint.axis_x
-                var axis_y = joint.axis_y
-                var axis_z = joint.axis_z
-
-                var parent = model.body_parent[joint.body_id]
-                if parent >= 0:
-                    var parent_qx = data.xquat[parent * 4 + 0]
-                    var parent_qy = data.xquat[parent * 4 + 1]
-                    var parent_qz = data.xquat[parent * 4 + 2]
-                    var parent_qw = data.xquat[parent * 4 + 3]
-                    var axis_world = quat_rotate(
-                        parent_qx,
-                        parent_qy,
-                        parent_qz,
-                        parent_qw,
-                        axis_x,
-                        axis_y,
-                        axis_z,
-                    )
-                    axis_x = axis_world[0]
-                    axis_y = axis_world[1]
-                    axis_z = axis_world[2]
-
-                # Project total force (with friction) onto axis
-                var f_joint = total_fx * axis_x + total_fy * axis_y + total_fz * axis_z
-                qfrc_contact[dof_idx] = qfrc_contact[dof_idx] + f_joint
-
-            elif joint.jnt_type == JNT_FREE:
-                # Direct force and torque (with friction)
-                qfrc_contact[dof_idx + 0] = (
-                    qfrc_contact[dof_idx + 0] + total_fx
-                )
-                qfrc_contact[dof_idx + 1] = (
-                    qfrc_contact[dof_idx + 1] + total_fy
-                )
-                qfrc_contact[dof_idx + 2] = (
-                    qfrc_contact[dof_idx + 2] + total_fz
-                )
-
-
-fn _joint_affects_body[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    MAX_CONTACTS: Int,
-](
-    model: ModelGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
-    joint_idx: Int,
-    body_idx: Int,
-) -> Bool:
-    """Check if a joint affects a body (body is the joint's body or a descendant).
-    """
-    var joint_body = model.joints[joint_idx].body_id
-
-    if body_idx == joint_body:
-        return True
-
-    # Check if body_idx is a descendant of joint_body
-    var current = body_idx
-    while current >= 0:
-        if model.body_parent[current] == joint_body:
-            return True
-        current = model.body_parent[current]
-
-    return False

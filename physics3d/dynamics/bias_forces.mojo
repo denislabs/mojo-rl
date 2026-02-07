@@ -13,40 +13,40 @@ Reference: Featherstone, "Rigid Body Dynamics Algorithms"
 from math import sin, cos
 from layout import LayoutTensor, Layout
 
-from ..types import ModelGC, DataGC, _max_one
+from ..types import Model, Data, _max_one
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
 from ..kinematics.quat_math import quat_rotate, gpu_quat_rotate
 from ..gpu.constants import (
-    gc_xpos_offset,
-    gc_xquat_offset,
-    gc_xvel_offset,
-    gc_xangvel_offset,
-    gc_qvel_offset,
-    gc_model_body_offset,
-    gc_model_joint_offset,
-    gc_model_metadata_offset,
-    GC_BODY_IDX_PARENT,
-    GC_BODY_IDX_MASS,
-    GC_BODY_IDX_IXX,
-    GC_BODY_IDX_IYY,
-    GC_BODY_IDX_IZZ,
-    GC_JOINT_IDX_TYPE,
-    GC_JOINT_IDX_BODY_ID,
-    GC_JOINT_IDX_DOF_ADR,
-    GC_JOINT_IDX_POS_X,
-    GC_JOINT_IDX_POS_Y,
-    GC_JOINT_IDX_POS_Z,
-    GC_JOINT_IDX_AXIS_X,
-    GC_JOINT_IDX_AXIS_Y,
-    GC_JOINT_IDX_AXIS_Z,
-    GC_MODEL_META_IDX_NJOINT,
-    GC_MODEL_META_IDX_GRAVITY_X,
-    GC_MODEL_META_IDX_GRAVITY_Y,
-    GC_MODEL_META_IDX_GRAVITY_Z,
-    GC_JNT_FREE,
-    GC_JNT_BALL,
-    GC_JNT_SLIDE,
-    GC_JNT_HINGE,
+    xpos_offset,
+    xquat_offset,
+    xvel_offset,
+    xangvel_offset,
+    qvel_offset,
+    model_body_offset,
+    model_joint_offset,
+    model_metadata_offset,
+    BODY_IDX_PARENT,
+    BODY_IDX_MASS,
+    BODY_IDX_IXX,
+    BODY_IDX_IYY,
+    BODY_IDX_IZZ,
+    JOINT_IDX_TYPE,
+    JOINT_IDX_BODY_ID,
+    JOINT_IDX_DOF_ADR,
+    JOINT_IDX_POS_X,
+    JOINT_IDX_POS_Y,
+    JOINT_IDX_POS_Z,
+    JOINT_IDX_AXIS_X,
+    JOINT_IDX_AXIS_Y,
+    JOINT_IDX_AXIS_Z,
+    MODEL_META_IDX_NJOINT,
+    MODEL_META_IDX_GRAVITY_X,
+    MODEL_META_IDX_GRAVITY_Y,
+    MODEL_META_IDX_GRAVITY_Z,
+    JNT_FREE,
+    JNT_BALL,
+    JNT_SLIDE,
+    JNT_HINGE,
 )
 
 
@@ -68,8 +68,8 @@ fn _is_descendant_gpu[
     """GPU-compatible check if body is a descendant of ancestor."""
     var current = body
     while current >= 0:
-        var body_off = gc_model_body_offset(current)
-        var parent = Int(rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_PARENT]))
+        var body_off = model_body_offset(current)
+        var parent = Int(rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT]))
         if parent == ancestor:
             return True
         current = parent
@@ -90,8 +90,8 @@ fn compute_bias_forces[
     MAX_CONTACTS: Int,
     V_SIZE: Int,
 ](
-    model: ModelGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
-    data: DataGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     mut bias: InlineArray[Scalar[DTYPE], V_SIZE],
 ):
     """Compute bias forces b(q, qvel) = C(q, qvel) + g(q).
@@ -296,7 +296,7 @@ fn _is_descendant[
     NJOINT: Int,
     MAX_CONTACTS: Int,
 ](
-    model: ModelGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     body: Int,
     ancestor: Int,
 ) -> Bool:
@@ -322,8 +322,8 @@ fn compute_coriolis_forces[
     NJOINT: Int,
     MAX_CONTACTS: Int,
 ](
-    model: ModelGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
-    data: DataGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     mut coriolis: InlineArray[Scalar[DTYPE], NV],
 ):
     """Compute Coriolis and centrifugal forces.
@@ -376,12 +376,12 @@ fn compute_bias_forces_gpu[
 
     For simple systems (HINGE-only chains), this is primarily gravity torques.
     """
-    var xpos_off = gc_xpos_offset[NQ, NV, NBODY]()
-    var xquat_off = gc_xquat_offset[NQ, NV, NBODY]()
+    var xpos_off = xpos_offset[NQ, NV, NBODY]()
+    var xquat_off = xquat_offset[NQ, NV, NBODY]()
 
-    var model_meta_off = gc_model_metadata_offset[NBODY, NJOINT]()
-    var num_joints = Int(rebind[Scalar[DTYPE]](model[0, model_meta_off + GC_MODEL_META_IDX_NJOINT]))
-    var gravity_z = rebind[Scalar[DTYPE]](model[0, model_meta_off + GC_MODEL_META_IDX_GRAVITY_Z])
+    var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
+    var num_joints = Int(rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_NJOINT]))
+    var gravity_z = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_GRAVITY_Z])
 
     # Initialize bias to zero
     for i in range(NV):
@@ -389,24 +389,24 @@ fn compute_bias_forces_gpu[
 
     # Compute gravity torques for each joint
     for j in range(num_joints):
-        var joint_off = gc_model_joint_offset[NBODY](j)
+        var joint_off = model_joint_offset[NBODY](j)
 
-        var jnt_type = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_TYPE]))
-        var body_id = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_BODY_ID]))
-        var dof_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_DOF_ADR]))
+        var jnt_type = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE]))
+        var body_id = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID]))
+        var dof_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR]))
 
-        var body_off = gc_model_body_offset(body_id)
-        var parent = Int(rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_PARENT]))
-        var mass = rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_MASS])
+        var body_off = model_body_offset(body_id)
+        var parent = Int(rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT]))
+        var mass = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_MASS])
 
-        var jpos_x = rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_POS_X])
-        var jpos_y = rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_POS_Y])
-        var jpos_z = rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_POS_Z])
-        var axis_x = rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_AXIS_X])
-        var axis_y = rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_AXIS_Y])
-        var axis_z = rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_AXIS_Z])
+        var jpos_x = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_POS_X])
+        var jpos_y = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_POS_Y])
+        var jpos_z = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_POS_Z])
+        var axis_x = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_AXIS_X])
+        var axis_y = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_AXIS_Y])
+        var axis_z = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_AXIS_Z])
 
-        if jnt_type == GC_JNT_HINGE:
+        if jnt_type == JNT_HINGE:
             var jpos_world_x = jpos_x
             var jpos_world_y = jpos_y
             var jpos_world_z = jpos_z
@@ -463,8 +463,8 @@ fn compute_bias_forces_gpu[
             # Add contributions from descendant bodies
             for desc_body in range(body_id + 1, NBODY):
                 if _is_descendant_gpu[DTYPE, NBODY, MODEL_SIZE](model, desc_body, body_id):
-                    var desc_body_off = gc_model_body_offset(desc_body)
-                    var desc_mass = rebind[Scalar[DTYPE]](model[0, desc_body_off + GC_BODY_IDX_MASS])
+                    var desc_body_off = model_body_offset(desc_body)
+                    var desc_mass = rebind[Scalar[DTYPE]](model[0, desc_body_off + BODY_IDX_MASS])
 
                     var desc_px = rebind[Scalar[DTYPE]](state[env, xpos_off + desc_body * 3 + 0])
                     var desc_py = rebind[Scalar[DTYPE]](state[env, xpos_off + desc_body * 3 + 1])
@@ -482,7 +482,7 @@ fn compute_bias_forces_gpu[
 
             bias[dof_adr] = bias[dof_adr] - tau_gravity
 
-        elif jnt_type == GC_JNT_SLIDE:
+        elif jnt_type == JNT_SLIDE:
             var axis_world_x = axis_x
             var axis_world_y = axis_y
             var axis_world_z = axis_z
@@ -500,21 +500,21 @@ fn compute_bias_forces_gpu[
             var total_mass = mass
             for desc_body in range(body_id + 1, NBODY):
                 if _is_descendant_gpu[DTYPE, NBODY, MODEL_SIZE](model, desc_body, body_id):
-                    var desc_body_off = gc_model_body_offset(desc_body)
-                    var desc_mass = rebind[Scalar[DTYPE]](model[0, desc_body_off + GC_BODY_IDX_MASS])
+                    var desc_body_off = model_body_offset(desc_body)
+                    var desc_mass = rebind[Scalar[DTYPE]](model[0, desc_body_off + BODY_IDX_MASS])
                     total_mass = total_mass + desc_mass
 
             # Gravity force component along axis (gravity is [0, 0, gravity_z])
             var f_gravity = total_mass * gravity_z * axis_world_z
             bias[dof_adr] = bias[dof_adr] - f_gravity
 
-        elif jnt_type == GC_JNT_FREE:
+        elif jnt_type == JNT_FREE:
             # Accumulate total mass from body and ALL descendants
             var total_mass = mass
             for desc_body in range(body_id + 1, NBODY):
                 if _is_descendant_gpu[DTYPE, NBODY, MODEL_SIZE](model, desc_body, body_id):
-                    var desc_body_off = gc_model_body_offset(desc_body)
-                    var desc_mass = rebind[Scalar[DTYPE]](model[0, desc_body_off + GC_BODY_IDX_MASS])
+                    var desc_body_off = model_body_offset(desc_body)
+                    var desc_mass = rebind[Scalar[DTYPE]](model[0, desc_body_off + BODY_IDX_MASS])
                     total_mass = total_mass + desc_mass
             bias[dof_adr + 2] = bias[dof_adr + 2] - total_mass * gravity_z
 
@@ -534,8 +534,8 @@ fn compute_bias_forces_rne[
     V_SIZE: Int,
     CDOF_SIZE: Int,
 ](
-    model: ModelGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
-    data: DataGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
     mut bias: InlineArray[Scalar[DTYPE], V_SIZE],
 ):
@@ -858,17 +858,17 @@ fn compute_bias_forces_rne_gpu[
         bias[i] = Scalar[DTYPE](0)
 
     # Get gravity from model metadata
-    var model_meta_off = gc_model_metadata_offset[NBODY, NJOINT]()
-    var gx = rebind[Scalar[DTYPE]](model[0, model_meta_off + GC_MODEL_META_IDX_GRAVITY_X])
-    var gy = rebind[Scalar[DTYPE]](model[0, model_meta_off + GC_MODEL_META_IDX_GRAVITY_Y])
-    var gz = rebind[Scalar[DTYPE]](model[0, model_meta_off + GC_MODEL_META_IDX_GRAVITY_Z])
+    var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
+    var gx = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_GRAVITY_X])
+    var gy = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_GRAVITY_Y])
+    var gz = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_GRAVITY_Z])
 
     # State buffer offsets
-    var xpos_off = gc_xpos_offset[NQ, NV, NBODY]()
-    var xquat_off = gc_xquat_offset[NQ, NV, NBODY]()
-    var xvel_off = gc_xvel_offset[NQ, NV, NBODY]()
-    var xangvel_off = gc_xangvel_offset[NQ, NV, NBODY]()
-    var qvel_off = gc_qvel_offset[NQ, NV]()
+    var xpos_off = xpos_offset[NQ, NV, NBODY]()
+    var xquat_off = xquat_offset[NQ, NV, NBODY]()
+    var xvel_off = xvel_offset[NQ, NV, NBODY]()
+    var xangvel_off = xangvel_offset[NQ, NV, NBODY]()
+    var qvel_off = qvel_offset[NQ, NV]()
 
     # Per-body arrays: spatial acceleration, force, world-frame inertia
     comptime BODY6_SIZE = _max_one[NBODY * 6]()
@@ -886,10 +886,10 @@ fn compute_bias_forces_rne_gpu[
     # Step 0: Compute world-frame inertia tensors
     # =========================================================================
     for b in range(NBODY):
-        var body_off = gc_model_body_offset(b)
-        var Ixx_local = rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_IXX])
-        var Iyy_local = rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_IYY])
-        var Izz_local = rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_IZZ])
+        var body_off = model_body_offset(b)
+        var Ixx_local = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IXX])
+        var Iyy_local = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IYY])
+        var Izz_local = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IZZ])
 
         var qx = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 0])
         var qy = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 1])
@@ -919,8 +919,8 @@ fn compute_bias_forces_rne_gpu[
     # Step 1: Forward pass - spatial accelerations (root to leaves)
     # =========================================================================
     for b in range(NBODY):
-        var body_off = gc_model_body_offset(b)
-        var parent = Int(rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_PARENT]))
+        var body_off = model_body_offset(b)
+        var parent = Int(rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT]))
 
         if parent < 0:
             # Root body: gravity as fictitious acceleration
@@ -948,17 +948,17 @@ fn compute_bias_forces_rne_gpu[
 
         # Add cdof_dot * qvel for each DOF of this body
         for j in range(NJOINT):
-            var joint_off = gc_model_joint_offset[NBODY](j)
-            var jnt_body = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_BODY_ID]))
+            var joint_off = model_joint_offset[NBODY](j)
+            var jnt_body = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID]))
             if jnt_body != b:
                 continue
 
-            var jnt_type = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_TYPE]))
-            var dof_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_DOF_ADR]))
+            var jnt_type = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE]))
+            var dof_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR]))
             var num_dof = 1
-            if jnt_type == GC_JNT_FREE:
+            if jnt_type == JNT_FREE:
                 num_dof = 6
-            elif jnt_type == GC_JNT_BALL:
+            elif jnt_type == JNT_BALL:
                 num_dof = 3
 
             for d in range(num_dof):
@@ -995,8 +995,8 @@ fn compute_bias_forces_rne_gpu[
     #   cfrc = I * cacc + cvel x* (I * cvel)
     # =========================================================================
     for b in range(NBODY):
-        var body_off = gc_model_body_offset(b)
-        var mass = rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_MASS])
+        var body_off = model_body_offset(b)
+        var mass = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_MASS])
 
         # Body velocities from state buffer
         var wx = rebind[Scalar[DTYPE]](state[env, xangvel_off + b * 3 + 0])
@@ -1055,8 +1055,8 @@ fn compute_bias_forces_rne_gpu[
     # Step 3: Backward pass - accumulate forces to parents
     # =========================================================================
     for b in range(NBODY - 1, 0, -1):
-        var body_off = gc_model_body_offset(b)
-        var parent = Int(rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_PARENT]))
+        var body_off = model_body_offset(b)
+        var parent = Int(rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT]))
         if parent < 0:
             continue
 
@@ -1086,14 +1086,14 @@ fn compute_bias_forces_rne_gpu[
     #   bias[d] = cdof[d] . cfrc[body_of_dof[d]]
     # =========================================================================
     for j in range(NJOINT):
-        var joint_off = gc_model_joint_offset[NBODY](j)
-        var jnt_type = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_TYPE]))
-        var body = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_BODY_ID]))
-        var dof_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_DOF_ADR]))
+        var joint_off = model_joint_offset[NBODY](j)
+        var jnt_type = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE]))
+        var body = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID]))
+        var dof_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR]))
         var num_dof = 1
-        if jnt_type == GC_JNT_FREE:
+        if jnt_type == JNT_FREE:
             num_dof = 6
-        elif jnt_type == GC_JNT_BALL:
+        elif jnt_type == JNT_BALL:
             num_dof = 3
 
         for d in range(num_dof):

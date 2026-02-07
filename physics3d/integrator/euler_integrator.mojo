@@ -29,7 +29,7 @@ from gpu.host import DeviceContext, DeviceBuffer
 from gpu import thread_idx, block_idx, block_dim
 from layout import LayoutTensor, Layout
 
-from ..types import ModelGC, DataGC, _max_one
+from ..types import Model, Data, _max_one
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
 from ..kinematics.forward_kinematics import (
     forward_kinematics,
@@ -46,40 +46,40 @@ from ..dynamics.mass_matrix import (
 )
 from ..dynamics.bias_forces import compute_bias_forces, compute_bias_forces_rne
 from ..dynamics.jacobian import compute_cdof, compute_composite_inertia
-from ..solver.semi_implicit_euler_solver import (
+from ..collision.contact_detection import (
     detect_ground_contacts,
-    detect_body_body_contacts_gc,
+    detect_body_body_contacts,
     normalize_qpos_quaternions,
 )
-from ..solver.gc_pgs_solver import GcPGSSolver
-from ..traits.integrator import GcIntegrator
-from ..traits.gc_solver import GcConstraintSolver
+from ..solver.pgs_solver import PGSSolver
+from ..traits.integrator import Integrator
+from ..traits.solver import ConstraintSolver
 from ..gpu.constants import (
     TPB,
-    gc_state_size,
-    gc_model_size,
+    state_size,
+    model_size,
 )
-from ..gpu.gc_kernels import (
-    step_gc_constraint_kernel,
-    step_gc_constraint_kernel_with_solver,
+from ..gpu.kernels import (
+    step_constraint_kernel,
+    step_constraint_kernel_with_solver,
 )
 
 
-struct ConstraintGcIntegratorWith[SOLVER: GcConstraintSolver](GcIntegrator):
+struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
     """GC integrator with configurable constraint-based contact solving.
 
-    Parametrized by SOLVER type (GcPGSSolver, GcCGSolver, or GcNewtonSolver).
+    Parametrized by SOLVER type (PGSSolver, CGSolver, or NewtonSolver).
     Uses the specified solver for contact constraints instead of penalty springs.
 
     Usage:
         # PGS (default, backward-compatible):
-        alias PGSIntegrator = ConstraintGcIntegratorWith[GcPGSSolver]
+        alias PGSIntegrator = EulerIntegrator[PGSSolver]
 
         # Conjugate Gradient:
-        alias CGIntegrator = ConstraintGcIntegratorWith[GcCGSolver]
+        alias CGIntegrator = EulerIntegrator[CGSolver]
 
         # Newton:
-        alias NewtonIntegrator = ConstraintGcIntegratorWith[GcNewtonSolver]
+        alias NewtonIntegrator = EulerIntegrator[NewtonSolver]
     """
 
     # =========================================================================
@@ -95,8 +95,8 @@ struct ConstraintGcIntegratorWith[SOLVER: GcConstraintSolver](GcIntegrator):
         NJOINT: Int,
         MAX_CONTACTS: Int,
     ](
-        model: ModelGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
-        mut data: DataGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+        model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+        mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     ):
         """Execute one simulation step with constraint-based contacts.
 
@@ -116,7 +116,7 @@ struct ConstraintGcIntegratorWith[SOLVER: GcConstraintSolver](GcIntegrator):
 
         # 2. Collision detection
         detect_ground_contacts(model, data)
-        detect_body_body_contacts_gc(model, data)
+        detect_body_body_contacts(model, data)
 
         # 3. Compute cdof (spatial motion axes per DOF) - needed for full M
         var cdof = InlineArray[Scalar[DTYPE], CDOF_SIZE](uninitialized=True)
@@ -252,8 +252,8 @@ struct ConstraintGcIntegratorWith[SOLVER: GcConstraintSolver](GcIntegrator):
         NJOINT: Int,
         MAX_CONTACTS: Int,
     ](
-        model: ModelGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
-        mut data: DataGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+        model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+        mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         num_steps: Int,
     ):
         """Run simulation for multiple steps on CPU."""
@@ -285,8 +285,8 @@ struct ConstraintGcIntegratorWith[SOLVER: GcConstraintSolver](GcIntegrator):
 
         Uses the parametrized SOLVER for contact constraint resolution.
         """
-        comptime STATE_SIZE = gc_state_size[NQ, NV, NBODY, MAX_CONTACTS]()
-        comptime MODEL_SIZE = gc_model_size[NBODY, NJOINT]()
+        comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS]()
+        comptime MODEL_SIZE = model_size[NBODY, NJOINT]()
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
         var state = LayoutTensor[
@@ -310,7 +310,7 @@ struct ConstraintGcIntegratorWith[SOLVER: GcConstraintSolver](GcIntegrator):
             if env >= BATCH:
                 return
 
-            step_gc_constraint_kernel_with_solver[
+            step_constraint_kernel_with_solver[
                 DTYPE,
                 NQ,
                 NV,
@@ -356,4 +356,4 @@ struct ConstraintGcIntegratorWith[SOLVER: GcConstraintSolver](GcIntegrator):
 
 
 # Backward-compatible alias: uses PGS solver by default
-comptime ConstraintGcIntegrator = ConstraintGcIntegratorWith[GcPGSSolver]
+comptime DefaultIntegrator = EulerIntegrator[PGSSolver]

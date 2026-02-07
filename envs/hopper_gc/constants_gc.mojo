@@ -1,33 +1,33 @@
 """Constants for HopperGC environment using Generalized Coordinates engine.
 
 MuJoCo-style Hopper with joint-space dynamics.
-Uses ConstraintGcIntegrator for physics.
+Uses DefaultIntegrator for physics.
 """
 
 from physics3d.gpu.constants import (
-    gc_state_size,
-    gc_qpos_offset,
-    gc_qvel_offset,
-    gc_qacc_offset,
-    gc_qfrc_offset,
-    gc_xpos_offset,
-    gc_xquat_offset,
-    gc_xvel_offset,
-    gc_xangvel_offset,
-    gc_contacts_offset,
-    gc_metadata_offset,
-    gc_model_size,
-    gc_model_body_offset,
-    gc_model_joint_offset,
-    gc_model_metadata_offset,
-    gc_model_curriculum_offset,
-    GC_MODEL_BODY_SIZE,
-    GC_MODEL_JOINT_SIZE,
-    GC_MODEL_META_SIZE,
-    GC_MODEL_CURRICULUM_SIZE,
-    GC_CONTACT_SIZE,
-    GC_CURRICULUM_IDX_MIN_HEIGHT,
-    GC_CURRICULUM_IDX_MAX_PITCH,
+    state_size,
+    qpos_offset,
+    qvel_offset,
+    qacc_offset,
+    qfrc_offset,
+    xpos_offset,
+    xquat_offset,
+    xvel_offset,
+    xangvel_offset,
+    contacts_offset,
+    metadata_offset,
+    model_size,
+    model_body_offset,
+    model_joint_offset,
+    model_metadata_offset,
+    model_curriculum_offset,
+    MODEL_BODY_SIZE,
+    MODEL_JOINT_SIZE,
+    MODEL_META_SIZE,
+    MODEL_CURRICULUM_SIZE,
+    CONTACT_SIZE,
+    CURRICULUM_IDX_MIN_HEIGHT,
+    CURRICULUM_IDX_MAX_PITCH,
 )
 
 
@@ -212,12 +212,12 @@ struct HopperGCConstants[DTYPE: DType = DType.float64]:
     # ==========================================================================
 
     # Compute state size for GPU buffer
-    comptime STATE_SIZE: Int = gc_state_size[
+    comptime STATE_SIZE: Int = state_size[
         Self.NQ, Self.NV, Self.NUM_BODIES, Self.MAX_CONTACTS
     ]()
 
     # Model buffer size
-    comptime MODEL_SIZE: Int = gc_model_size[Self.NUM_BODIES, Self.NUM_JOINTS]()
+    comptime MODEL_SIZE: Int = model_size[Self.NUM_BODIES, Self.NUM_JOINTS]()
 
     # ==========================================================================
     # GPU Layout Helper Methods
@@ -227,61 +227,61 @@ struct HopperGCConstants[DTYPE: DType = DType.float64]:
     @always_inline
     fn get_qpos_offset() -> Int:
         """Get offset to qpos array in state buffer."""
-        return gc_qpos_offset[Self.NQ, Self.NV]()
+        return qpos_offset[Self.NQ, Self.NV]()
 
     @staticmethod
     @always_inline
     fn get_qvel_offset() -> Int:
         """Get offset to qvel array in state buffer."""
-        return gc_qvel_offset[Self.NQ, Self.NV]()
+        return qvel_offset[Self.NQ, Self.NV]()
 
     @staticmethod
     @always_inline
     fn get_qacc_offset() -> Int:
         """Get offset to qacc array in state buffer."""
-        return gc_qacc_offset[Self.NQ, Self.NV]()
+        return qacc_offset[Self.NQ, Self.NV]()
 
     @staticmethod
     @always_inline
     fn get_qfrc_offset() -> Int:
         """Get offset to qfrc array in state buffer."""
-        return gc_qfrc_offset[Self.NQ, Self.NV]()
+        return qfrc_offset[Self.NQ, Self.NV]()
 
     @staticmethod
     @always_inline
     fn get_xpos_offset() -> Int:
         """Get offset to xpos array in state buffer."""
-        return gc_xpos_offset[Self.NQ, Self.NV, Self.NUM_BODIES]()
+        return xpos_offset[Self.NQ, Self.NV, Self.NUM_BODIES]()
 
     @staticmethod
     @always_inline
     fn get_xquat_offset() -> Int:
         """Get offset to xquat array in state buffer."""
-        return gc_xquat_offset[Self.NQ, Self.NV, Self.NUM_BODIES]()
+        return xquat_offset[Self.NQ, Self.NV, Self.NUM_BODIES]()
 
     @staticmethod
     @always_inline
     fn get_xvel_offset() -> Int:
         """Get offset to xvel array in state buffer."""
-        return gc_xvel_offset[Self.NQ, Self.NV, Self.NUM_BODIES]()
+        return xvel_offset[Self.NQ, Self.NV, Self.NUM_BODIES]()
 
     @staticmethod
     @always_inline
     fn get_xangvel_offset() -> Int:
         """Get offset to xangvel array in state buffer."""
-        return gc_xangvel_offset[Self.NQ, Self.NV, Self.NUM_BODIES]()
+        return xangvel_offset[Self.NQ, Self.NV, Self.NUM_BODIES]()
 
     @staticmethod
     @always_inline
     fn get_contacts_offset() -> Int:
         """Get offset to contacts array in state buffer."""
-        return gc_contacts_offset[Self.NQ, Self.NV, Self.NUM_BODIES]()
+        return contacts_offset[Self.NQ, Self.NV, Self.NUM_BODIES]()
 
     @staticmethod
     @always_inline
     fn get_metadata_offset() -> Int:
         """Get offset to metadata in state buffer."""
-        return gc_metadata_offset[
+        return metadata_offset[
             Self.NQ, Self.NV, Self.NUM_BODIES, Self.MAX_CONTACTS
         ]()
 
@@ -289,25 +289,25 @@ struct HopperGCConstants[DTYPE: DType = DType.float64]:
     @always_inline
     fn get_model_body_offset(body_idx: Int) -> Int:
         """Get offset to body data in model buffer."""
-        return gc_model_body_offset(body_idx)
+        return model_body_offset(body_idx)
 
     @staticmethod
     @always_inline
     fn get_model_joint_offset(joint_idx: Int) -> Int:
         """Get offset to joint data in model buffer."""
-        return gc_model_joint_offset[Self.NUM_BODIES](joint_idx)
+        return model_joint_offset[Self.NUM_BODIES](joint_idx)
 
     @staticmethod
     @always_inline
     fn get_model_metadata_offset() -> Int:
         """Get offset to metadata in model buffer."""
-        return gc_model_metadata_offset[Self.NUM_BODIES, Self.NUM_JOINTS]()
+        return model_metadata_offset[Self.NUM_BODIES, Self.NUM_JOINTS]()
 
     @staticmethod
     @always_inline
     fn get_model_curriculum_offset() -> Int:
         """Get offset to curriculum parameters in model buffer."""
-        return gc_model_curriculum_offset[Self.NUM_BODIES, Self.NUM_JOINTS]()
+        return model_curriculum_offset[Self.NUM_BODIES, Self.NUM_JOINTS]()
 
 
 # Type aliases for convenience

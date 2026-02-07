@@ -18,12 +18,12 @@ from envs.half_cheetah_gc import HalfCheetahGC, HalfCheetahGCConstants
 from deep_rl import dtype as gpu_dtype
 from deep_rl.constants import TPB
 from physics3d.gpu.constants import (
-    gc_qpos_offset,
-    gc_qvel_offset,
-    gc_metadata_offset,
-    gc_state_size,
-    GC_META_IDX_STEP_COUNT,
-    GC_META_IDX_PREV_X,
+    qpos_offset,
+    qvel_offset,
+    metadata_offset,
+    state_size,
+    META_IDX_STEP_COUNT,
+    META_IDX_PREV_X,
 )
 
 comptime C = HalfCheetahGCConstants[DType.float32]
@@ -182,13 +182,13 @@ fn main() raises:
         ctx.synchronize()
 
         # Manually set initial state (matching CPU reset - NO noise)
-        comptime QPOS_OFF = gc_qpos_offset[
+        comptime QPOS_OFF = qpos_offset[
             HalfCheetahGC[dtype].NQ, HalfCheetahGC[dtype].NV
         ]()
-        comptime QVEL_OFF = gc_qvel_offset[
+        comptime QVEL_OFF = qvel_offset[
             HalfCheetahGC[dtype].NQ, HalfCheetahGC[dtype].NV
         ]()
-        comptime META_OFF = gc_metadata_offset[
+        comptime META_OFF = metadata_offset[
             HalfCheetahGC[dtype].NQ,
             HalfCheetahGC[dtype].NV,
             HalfCheetahGC[dtype].NUM_BODIES,
@@ -211,8 +211,8 @@ fn main() raises:
             state_host[QVEL_OFF + i] = Scalar[gpu_dtype](0.0)
 
         # step_count = 0, prev_x = 0
-        state_host[META_OFF + GC_META_IDX_STEP_COUNT] = Scalar[gpu_dtype](0.0)
-        state_host[META_OFF + GC_META_IDX_PREV_X] = Scalar[gpu_dtype](0.0)
+        state_host[META_OFF + META_IDX_STEP_COUNT] = Scalar[gpu_dtype](0.0)
+        state_host[META_OFF + META_IDX_PREV_X] = Scalar[gpu_dtype](0.0)
 
         # Copy to GPU
         ctx.enqueue_copy(states_buf, state_host.unsafe_ptr())
@@ -258,10 +258,10 @@ fn main() raises:
                 state_host[i] = Scalar[gpu_dtype](0.0)
             state_host[QPOS_OFF + 0] = Scalar[gpu_dtype](0.0)
             state_host[QPOS_OFF + 1] = C.INITIAL_Z
-            state_host[META_OFF + GC_META_IDX_STEP_COUNT] = Scalar[gpu_dtype](
+            state_host[META_OFF + META_IDX_STEP_COUNT] = Scalar[gpu_dtype](
                 0.0
             )
-            state_host[META_OFF + GC_META_IDX_PREV_X] = Scalar[gpu_dtype](0.0)
+            state_host[META_OFF + META_IDX_PREV_X] = Scalar[gpu_dtype](0.0)
             ctx.enqueue_copy(states_buf, state_host.unsafe_ptr())
             ctx.synchronize()
 
@@ -386,13 +386,13 @@ fn main() raises:
         var actions_buf = ctx.enqueue_create_buffer[gpu_dtype](ACTION_DIM)
 
         # Initialize state (matching CPU reset - NO noise)
-        comptime QPOS_OFF = gc_qpos_offset[
+        comptime QPOS_OFF = qpos_offset[
             HalfCheetahGC[dtype].NQ, HalfCheetahGC[dtype].NV
         ]()
-        comptime QVEL_OFF = gc_qvel_offset[
+        comptime QVEL_OFF = qvel_offset[
             HalfCheetahGC[dtype].NQ, HalfCheetahGC[dtype].NV
         ]()
-        comptime META_OFF = gc_metadata_offset[
+        comptime META_OFF = metadata_offset[
             HalfCheetahGC[dtype].NQ,
             HalfCheetahGC[dtype].NV,
             HalfCheetahGC[dtype].NUM_BODIES,
