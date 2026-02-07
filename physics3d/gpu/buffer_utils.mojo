@@ -129,6 +129,9 @@ from .constants import (
     GC_JOINT_IDX_TAU_LIMIT,
     GC_JOINT_IDX_RANGE_MIN,
     GC_JOINT_IDX_RANGE_MAX,
+    GC_JOINT_IDX_ARMATURE,
+    GC_JOINT_IDX_DAMPING,
+    GC_JOINT_IDX_STIFFNESS,
     GC_MODEL_META_IDX_NBODY,
     GC_MODEL_META_IDX_NJOINT,
     GC_MODEL_META_IDX_GRAVITY_X,
@@ -721,6 +724,9 @@ fn copy_model_to_buffer[
         buffer[offset + GC_JOINT_IDX_TAU_LIMIT] = joint.tau_limit
         buffer[offset + GC_JOINT_IDX_RANGE_MIN] = joint.range_min
         buffer[offset + GC_JOINT_IDX_RANGE_MAX] = joint.range_max
+        buffer[offset + GC_JOINT_IDX_ARMATURE] = joint.armature
+        buffer[offset + GC_JOINT_IDX_DAMPING] = joint.damping
+        buffer[offset + GC_JOINT_IDX_STIFFNESS] = joint.stiffness
 
     # Copy metadata
     var meta_offset = gc_model_metadata_offset[NBODY, NJOINT]()

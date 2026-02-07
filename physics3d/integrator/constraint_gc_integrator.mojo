@@ -1,19 +1,24 @@
-"""Constraint-based GC integrator with MuJoCo-style contact solving.
+"""Constraint-based GC integrator with configurable contact solver.
 
-Replaces penalty-spring contacts with Projected Gauss-Seidel (PGS) constraint
-solving. The new pipeline:
+Supports three solver types (mirroring MuJoCo's solver options):
+- PGS (Projected Gauss-Seidel): Fast, reliable, default choice
+- CG (Conjugate Gradient): Faster convergence for well-conditioned problems
+- Newton: Quadratic convergence, most accurate for stiff contacts
 
+Pipeline:
 1. Forward kinematics (qpos -> xpos, xquat)
 2. Compute body velocities (qvel -> xvel, xangvel)
 3. Detect ground contacts
-4. Compute mass matrix diagonal
-5. Compute bias forces
-6. Compute cdof (spatial motion axes per DOF)
-7. Compute unconstrained acceleration: qacc = M^-1 * (qfrc - bias)
-8. Predict velocity: qvel_pred = qvel + qacc * dt
-9. PGS constraint solve: modify qvel_pred to satisfy contacts
-10. qpos += qvel_pred * dt
-11. Normalize quaternions, enforce joint limits
+4. Compute cdof (spatial motion axes per DOF)
+5. Compute composite rigid body inertia (CRBA)
+6. Compute full mass matrix M(q) using CRBA
+7. LDL factorize M, compute M_inv
+8. Compute bias forces
+9. Compute unconstrained acceleration: qacc = M^-1 * (qfrc - bias) via LDL solve
+10. Predict velocity: qvel_pred = qvel + qacc * dt
+11. Constraint solve (PGS/CG/Newton): modify qvel_pred using full M_inv
+12. qpos += qvel_pred * dt
+13. Normalize quaternions, enforce joint limits
 
 This produces bounded, physically correct contact forces instead of
 unbounded spring forces that can launch bodies into the sky.
@@ -31,9 +36,16 @@ from ..kinematics.forward_kinematics import (
     compute_body_velocities,
 )
 from ..kinematics.quat_math import quat_normalize, quat_integrate, quat_rotate
-from ..dynamics.mass_matrix import compute_mass_matrix, solve_linear_diagonal
+from ..dynamics.mass_matrix import (
+    compute_mass_matrix,
+    compute_mass_matrix_full,
+    ldl_factor,
+    ldl_solve,
+    compute_M_inv_from_ldl,
+    solve_linear_diagonal,
+)
 from ..dynamics.bias_forces import compute_bias_forces
-from ..dynamics.jacobian import compute_cdof
+from ..dynamics.jacobian import compute_cdof, compute_composite_inertia
 from ..solver.semi_implicit_euler_solver import (
     detect_ground_contacts,
     normalize_qpos_quaternions,
@@ -41,20 +53,33 @@ from ..solver.semi_implicit_euler_solver import (
 )
 from ..solver.gc_pgs_solver import GcPGSSolver
 from ..traits.integrator import GcIntegrator
+from ..traits.gc_solver import GcConstraintSolver
 from ..gpu.constants import (
     TPB,
     gc_state_size,
     gc_model_size,
 )
-from ..gpu.gc_kernels import step_gc_constraint_kernel
+from ..gpu.gc_kernels import (
+    step_gc_constraint_kernel,
+    step_gc_constraint_kernel_with_solver,
+)
 
 
-struct ConstraintGcIntegrator(GcIntegrator):
-    """GC integrator with MuJoCo-style constraint-based contact solving.
+struct ConstraintGcIntegratorWith[SOLVER: GcConstraintSolver](GcIntegrator):
+    """GC integrator with configurable constraint-based contact solving.
 
-    Uses PGS to solve contact constraints instead of penalty springs.
-    This produces bounded contact forces and prevents bodies from being
-    launched by deep penetration.
+    Parametrized by SOLVER type (GcPGSSolver, GcCGSolver, or GcNewtonSolver).
+    Uses the specified solver for contact constraints instead of penalty springs.
+
+    Usage:
+        # PGS (default, backward-compatible):
+        alias PGSIntegrator = ConstraintGcIntegratorWith[GcPGSSolver]
+
+        # Conjugate Gradient:
+        alias CGIntegrator = ConstraintGcIntegratorWith[GcCGSolver]
+
+        # Newton:
+        alias NewtonIntegrator = ConstraintGcIntegratorWith[GcNewtonSolver]
     """
 
     # =========================================================================
@@ -83,6 +108,7 @@ struct ConstraintGcIntegrator(GcIntegrator):
         comptime M_SIZE = _max_one[NV * NV]()
         comptime V_SIZE = _max_one[NV]()
         comptime CDOF_SIZE = _max_one[NV * 6]()
+        comptime CRB_SIZE = _max_one[NBODY * 10]()
 
         # 1. Forward kinematics
         forward_kinematics(model, data)
@@ -91,13 +117,52 @@ struct ConstraintGcIntegrator(GcIntegrator):
         # 2. Collision detection
         detect_ground_contacts(model, data)
 
-        # 3. Compute dynamics
+        # 3. Compute cdof (spatial motion axes per DOF) - needed for full M
+        var cdof = InlineArray[Scalar[DTYPE], CDOF_SIZE](uninitialized=True)
+        compute_cdof[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CDOF_SIZE](
+            model, data, cdof
+        )
+
+        # 4. Compute composite rigid body inertia
+        var crb = InlineArray[Scalar[DTYPE], CRB_SIZE](uninitialized=True)
+        for i in range(CRB_SIZE):
+            crb[i] = Scalar[DTYPE](0)
+        compute_composite_inertia[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CRB_SIZE
+        ](model, data, crb)
+
+        # 5. Compute full mass matrix using CRBA
         var M = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
         for i in range(M_SIZE):
             M[i] = Scalar[DTYPE](0)
-        compute_mass_matrix[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, M_SIZE](
-            model, data, M
-        )
+        compute_mass_matrix_full[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, M_SIZE, CDOF_SIZE, CRB_SIZE
+        ](model, data, cdof, crb, M)
+
+        # 5b. Add armature + implicit damping to mass matrix diagonal
+        # MuJoCo implicitfast: M_eff[i,i] += armature[i] + dt * damping[i]
+        # Implicit damping: instead of explicit f -= D*qvel, we add dt*D
+        # to the mass matrix. This provides unconditional stability for damping
+        # and correctly damps the NEW velocity (semi-implicit treatment).
+        for j in range(model.num_joints):
+            var joint = model.joints[j]
+            var dof_adr = joint.dof_adr
+            var arm = joint.armature
+            var damp = joint.damping
+            var diag_add = arm + dt * damp
+            if joint.jnt_type == JNT_FREE:
+                for d in range(6):
+                    M[(dof_adr + d) * NV + (dof_adr + d)] = M[(dof_adr + d) * NV + (dof_adr + d)] + diag_add
+            elif joint.jnt_type == JNT_BALL:
+                for d in range(3):
+                    M[(dof_adr + d) * NV + (dof_adr + d)] = M[(dof_adr + d) * NV + (dof_adr + d)] + diag_add
+            else:
+                M[dof_adr * NV + dof_adr] = M[dof_adr * NV + dof_adr] + diag_add
+
+        # 6. LDL factorize M and solve for qacc
+        var L = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
+        var D = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        ldl_factor[DTYPE, NV, M_SIZE, V_SIZE](M, L, D)
 
         var bias = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
         for i in range(V_SIZE):
@@ -106,44 +171,66 @@ struct ConstraintGcIntegrator(GcIntegrator):
             model, data, bias
         )
 
-        # 4. Extract diagonal of mass matrix
-        var M_diag = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-        for i in range(NV):
-            M_diag[i] = M[i * NV + i]
-
-        # 5. Compute cdof (spatial motion axes per DOF)
-        var cdof = InlineArray[Scalar[DTYPE], CDOF_SIZE](uninitialized=True)
-        compute_cdof[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CDOF_SIZE](
-            model, data, cdof
-        )
-
-        # 6. Compute unconstrained acceleration: qacc = M^-1 * (qfrc - bias)
         var f_net = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
         for i in range(NV):
             f_net[i] = data.qfrc[i] - bias[i]
 
+        # 6b. Apply passive joint forces: stiffness only
+        # Damping is handled implicitly via M_eff (step 5b).
+        # Stiffness: f -= stiffness * (qpos - springref), springref=0
+        for j in range(model.num_joints):
+            var joint = model.joints[j]
+            var dof_adr = joint.dof_adr
+            var qpos_adr = joint.qpos_adr
+            var stiff = joint.stiffness
+            if stiff > Scalar[DTYPE](0):
+                if joint.jnt_type == JNT_FREE:
+                    for d in range(6):
+                        # For free joints: stiffness on position DOFs
+                        f_net[dof_adr + d] = f_net[dof_adr + d] - stiff * data.qpos[qpos_adr + d]
+                elif joint.jnt_type == JNT_BALL:
+                    for d in range(3):
+                        f_net[dof_adr + d] = f_net[dof_adr + d] - stiff * data.qpos[qpos_adr + d]
+                else:
+                    # Hinge/slide: f = -stiffness * qpos
+                    f_net[dof_adr] = f_net[dof_adr] - stiff * data.qpos[qpos_adr]
+
+        # qacc = M^-1 * f_net via LDL solve
         var qacc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
         for i in range(NV):
-            if M_diag[i] > Scalar[DTYPE](1e-10):
-                qacc[i] = f_net[i] / M_diag[i]
-            else:
-                qacc[i] = Scalar[DTYPE](0)
+            qacc[i] = Scalar[DTYPE](0)
+        ldl_solve[DTYPE, NV, M_SIZE, V_SIZE](L, D, f_net, qacc)
 
-        # 7. Predict velocity: qvel_pred = qvel + qacc * dt
+        # 7. Compute full M_inv from LDL factors for constraint solver
+        var M_inv = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
+        for i in range(M_SIZE):
+            M_inv[i] = Scalar[DTYPE](0)
+        compute_M_inv_from_ldl[DTYPE, NV, M_SIZE, V_SIZE](L, D, M_inv)
+
+        # 8. Predict velocity: qvel_pred = qvel + qacc * dt
         var qvel_pred = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
         for i in range(NV):
             qvel_pred[i] = data.qvel[i] + qacc[i] * dt
 
-        # 8. PGS constraint solve (modifies qvel_pred in-place)
-        GcPGSSolver.solve[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, CDOF_SIZE
-        ](model, data, M_diag, cdof, qvel_pred, dt)
+        # 9. Constraint solve (modifies qvel_pred in-place)
+        Self.SOLVER.solve[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, M_SIZE, CDOF_SIZE
+        ](model, data, M_inv, cdof, qvel_pred, dt)
 
         # 9. Write back constrained velocity and integrate position
         for i in range(NV):
             # qacc = (constrained_vel - old_vel) / dt
             data.qacc[i] = (qvel_pred[i] - data.qvel[i]) / dt
             data.qvel[i] = qvel_pred[i]
+
+        # 9b. Clamp velocities to prevent divergence
+        # MuJoCo uses ~10-50 depending on model; 20 is reasonable for walking robots
+        comptime MAX_QVEL: Scalar[DTYPE] = 20.0
+        for i in range(NV):
+            if data.qvel[i] > MAX_QVEL:
+                data.qvel[i] = MAX_QVEL
+            elif data.qvel[i] < -MAX_QVEL:
+                data.qvel[i] = -MAX_QVEL
 
         for i in range(NQ):
             if i < NV:
@@ -195,7 +282,7 @@ struct ConstraintGcIntegrator(GcIntegrator):
     ) raises:
         """Perform one physics simulation step on GPU with constraint solving.
 
-        Uses step_gc_constraint_kernel which replaces penalty springs with PGS.
+        Uses the parametrized SOLVER for contact constraint resolution.
         """
         comptime STATE_SIZE = gc_state_size[NQ, NV, NBODY, MAX_CONTACTS]()
         comptime MODEL_SIZE = gc_model_size[NBODY, NJOINT]()
@@ -222,7 +309,7 @@ struct ConstraintGcIntegrator(GcIntegrator):
             if env >= BATCH:
                 return
 
-            step_gc_constraint_kernel[
+            step_gc_constraint_kernel_with_solver[
                 DTYPE,
                 NQ,
                 NV,
@@ -232,6 +319,7 @@ struct ConstraintGcIntegrator(GcIntegrator):
                 STATE_SIZE,
                 MODEL_SIZE,
                 BATCH,
+                Self.SOLVER,
             ](env, state, model)
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
@@ -264,3 +352,7 @@ struct ConstraintGcIntegrator(GcIntegrator):
             Self.step_gpu[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, BATCH](
                 ctx, state_buf, model_buf, dt, gravity_z, ground_z
             )
+
+
+# Backward-compatible alias: uses PGS solver by default
+comptime ConstraintGcIntegrator = ConstraintGcIntegratorWith[GcPGSSolver]

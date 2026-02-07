@@ -22,7 +22,7 @@ trait GcConstraintSolver(Movable & ImplicitlyCopyable):
 
     The solve() method receives:
     - model/data: physics model and current state (with contacts detected)
-    - M_diag: diagonal mass matrix
+    - M_inv: full dense inverse mass matrix (NV×NV)
     - cdof: spatial motion axes per DOF (6 * NV floats)
     - qvel: predicted velocity (modified in-place to be constrained)
     - dt: timestep
@@ -37,11 +37,12 @@ trait GcConstraintSolver(Movable & ImplicitlyCopyable):
         NJOINT: Int,
         MAX_CONTACTS: Int,
         V_SIZE: Int,
+        M_SIZE: Int,
         CDOF_SIZE: Int,
     ](
         model: ModelGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         data: DataGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
-        M_diag: InlineArray[Scalar[DTYPE], V_SIZE],
+        M_inv: InlineArray[Scalar[DTYPE], M_SIZE],
         cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
         mut qvel: InlineArray[Scalar[DTYPE], V_SIZE],
         dt: Scalar[DTYPE],
@@ -51,7 +52,7 @@ trait GcConstraintSolver(Movable & ImplicitlyCopyable):
         Args:
             model: Static model configuration.
             data: Simulation state with contacts already detected.
-            M_diag: Diagonal mass matrix (NV entries).
+            M_inv: Full dense inverse mass matrix (NV×NV, row-major).
             cdof: Spatial motion axes per DOF (6*NV entries).
             qvel: Predicted velocity, modified in-place to satisfy constraints.
             dt: Timestep for Baumgarte stabilization.
@@ -69,6 +70,7 @@ trait GcConstraintSolver(Movable & ImplicitlyCopyable):
         STATE_SIZE: Int,
         MODEL_SIZE: Int,
         V_SIZE: Int,
+        M_SIZE: Int,
         CDOF_SIZE: Int,
         BATCH: Int,
     ](
@@ -79,7 +81,7 @@ trait GcConstraintSolver(Movable & ImplicitlyCopyable):
         model: LayoutTensor[
             DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
         ],
-        M_diag: InlineArray[Scalar[DTYPE], V_SIZE],
+        M_inv: InlineArray[Scalar[DTYPE], M_SIZE],
         cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
         mut qvel: InlineArray[Scalar[DTYPE], V_SIZE],
         dt: Scalar[DTYPE],
@@ -90,7 +92,7 @@ trait GcConstraintSolver(Movable & ImplicitlyCopyable):
             env: Environment index within the batch.
             state: GPU state buffer for all environments.
             model: GPU model buffer.
-            M_diag: Diagonal mass matrix (NV entries).
+            M_inv: Full dense inverse mass matrix (NV×NV, row-major).
             cdof: Spatial motion axes per DOF (6*NV entries).
             qvel: Predicted velocity, modified in-place to satisfy constraints.
             dt: Timestep for Baumgarte stabilization.

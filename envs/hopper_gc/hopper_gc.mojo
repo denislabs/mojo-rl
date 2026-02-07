@@ -90,6 +90,9 @@ from physics3d.gpu.constants import (
     GC_JOINT_IDX_TAU_LIMIT,
     GC_JOINT_IDX_RANGE_MIN,
     GC_JOINT_IDX_RANGE_MAX,
+    GC_JOINT_IDX_ARMATURE,
+    GC_JOINT_IDX_DAMPING,
+    GC_JOINT_IDX_STIFFNESS,
     GC_MODEL_META_IDX_NBODY,
     GC_MODEL_META_IDX_NJOINT,
     GC_MODEL_META_IDX_GRAVITY_X,
@@ -444,6 +447,8 @@ struct HopperGC[
             tau_limit=torque_limit,
             range_min=C.THIGH_JOINT_MIN,
             range_max=C.THIGH_JOINT_MAX,
+            armature=Scalar[Self.DTYPE](1.0),
+            damping=Scalar[Self.DTYPE](1.0),
         )
 
         # Joint 4: leg - hinge around Y (body 2)
@@ -463,6 +468,8 @@ struct HopperGC[
             tau_limit=torque_limit,
             range_min=C.LEG_JOINT_MIN,
             range_max=C.LEG_JOINT_MAX,
+            armature=Scalar[Self.DTYPE](1.0),
+            damping=Scalar[Self.DTYPE](1.0),
         )
 
         # Joint 5: foot - hinge around Y (body 3)
@@ -482,6 +489,8 @@ struct HopperGC[
             tau_limit=torque_limit,
             range_min=C.FOOT_JOINT_MIN,
             range_max=C.FOOT_JOINT_MAX,
+            armature=Scalar[Self.DTYPE](1.0),
+            damping=Scalar[Self.DTYPE](1.0),
         )
 
         # Initialize data
@@ -1703,6 +1712,9 @@ struct HopperGC[
             -1e10
         )  # Unlimited
         model_host[j0 + GC_JOINT_IDX_RANGE_MAX] = Scalar[gpu_dtype](1e10)
+        model_host[j0 + GC_JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](0.0)
+        model_host[j0 + GC_JOINT_IDX_DAMPING] = Scalar[gpu_dtype](0.0)
+        model_host[j0 + GC_JOINT_IDX_STIFFNESS] = Scalar[gpu_dtype](0.0)
 
         # =================================================================
         # Joint 1: RootZ - Slide joint, Z-axis translation (body 0)
@@ -1725,6 +1737,9 @@ struct HopperGC[
             -1e10
         )  # Unlimited
         model_host[j1 + GC_JOINT_IDX_RANGE_MAX] = Scalar[gpu_dtype](1e10)
+        model_host[j1 + GC_JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](0.0)
+        model_host[j1 + GC_JOINT_IDX_DAMPING] = Scalar[gpu_dtype](0.0)
+        model_host[j1 + GC_JOINT_IDX_STIFFNESS] = Scalar[gpu_dtype](0.0)
 
         # =================================================================
         # Joint 2: RootY - Hinge joint, Y-axis rotation (body 0)
@@ -1747,6 +1762,9 @@ struct HopperGC[
             -1e10
         )  # Unlimited (torso pitch)
         model_host[j2 + GC_JOINT_IDX_RANGE_MAX] = Scalar[gpu_dtype](1e10)
+        model_host[j2 + GC_JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](0.0)
+        model_host[j2 + GC_JOINT_IDX_DAMPING] = Scalar[gpu_dtype](0.0)
+        model_host[j2 + GC_JOINT_IDX_STIFFNESS] = Scalar[gpu_dtype](0.0)
 
         # =================================================================
         # Joint 3: Thigh - Hinge joint, Y-axis rotation (body 1)
@@ -1765,6 +1783,9 @@ struct HopperGC[
         model_host[j3 + GC_JOINT_IDX_TAU_LIMIT] = C.TORQUE_LIMIT
         model_host[j3 + GC_JOINT_IDX_RANGE_MIN] = C.THIGH_JOINT_MIN
         model_host[j3 + GC_JOINT_IDX_RANGE_MAX] = C.THIGH_JOINT_MAX
+        model_host[j3 + GC_JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](1.0)
+        model_host[j3 + GC_JOINT_IDX_DAMPING] = Scalar[gpu_dtype](1.0)
+        model_host[j3 + GC_JOINT_IDX_STIFFNESS] = Scalar[gpu_dtype](0.0)
 
         # =================================================================
         # Joint 4: Leg - Hinge joint, Y-axis rotation (body 2)
@@ -1783,6 +1804,9 @@ struct HopperGC[
         model_host[j4 + GC_JOINT_IDX_TAU_LIMIT] = C.TORQUE_LIMIT
         model_host[j4 + GC_JOINT_IDX_RANGE_MIN] = C.LEG_JOINT_MIN
         model_host[j4 + GC_JOINT_IDX_RANGE_MAX] = C.LEG_JOINT_MAX
+        model_host[j4 + GC_JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](1.0)
+        model_host[j4 + GC_JOINT_IDX_DAMPING] = Scalar[gpu_dtype](1.0)
+        model_host[j4 + GC_JOINT_IDX_STIFFNESS] = Scalar[gpu_dtype](0.0)
 
         # =================================================================
         # Joint 5: Foot - Hinge joint, Y-axis rotation (body 3)
@@ -1801,6 +1825,9 @@ struct HopperGC[
         model_host[j5 + GC_JOINT_IDX_TAU_LIMIT] = C.TORQUE_LIMIT
         model_host[j5 + GC_JOINT_IDX_RANGE_MIN] = C.FOOT_JOINT_MIN
         model_host[j5 + GC_JOINT_IDX_RANGE_MAX] = C.FOOT_JOINT_MAX
+        model_host[j5 + GC_JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](1.0)
+        model_host[j5 + GC_JOINT_IDX_DAMPING] = Scalar[gpu_dtype](1.0)
+        model_host[j5 + GC_JOINT_IDX_STIFFNESS] = Scalar[gpu_dtype](0.0)
 
         # =================================================================
         # Model Metadata

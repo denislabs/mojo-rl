@@ -35,7 +35,8 @@ from layout import Layout, LayoutTensor
 
 # Import GC physics engine
 from physics3d.types import ModelGC, DataGC
-from physics3d.integrator import ConstraintGcIntegrator
+from physics3d.integrator import ConstraintGcIntegratorWith
+from physics3d.solver import GcNewtonSolver
 from physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     forward_kinematics_gpu,
@@ -93,6 +94,9 @@ from physics3d.gpu.constants import (
     GC_JOINT_IDX_TAU_LIMIT,
     GC_JOINT_IDX_RANGE_MIN,
     GC_JOINT_IDX_RANGE_MAX,
+    GC_JOINT_IDX_ARMATURE,
+    GC_JOINT_IDX_DAMPING,
+    GC_JOINT_IDX_STIFFNESS,
     GC_MODEL_META_IDX_NBODY,
     GC_MODEL_META_IDX_NJOINT,
     GC_MODEL_META_IDX_GRAVITY_X,
@@ -175,6 +179,20 @@ from .constants_gc import (
     FTHIGH_GEAR,
     FSHIN_GEAR,
     FFOOT_GEAR,
+    # Joint damping
+    BTHIGH_DAMPING,
+    BSHIN_DAMPING,
+    BFOOT_DAMPING,
+    FTHIGH_DAMPING,
+    FSHIN_DAMPING,
+    FFOOT_DAMPING,
+    # Joint stiffness
+    BTHIGH_STIFFNESS,
+    BSHIN_STIFFNESS,
+    BFOOT_STIFFNESS,
+    FTHIGH_STIFFNESS,
+    FSHIN_STIFFNESS,
+    FFOOT_STIFFNESS,
     # Reward
     FORWARD_REWARD_WEIGHT,
     CTRL_COST_WEIGHT,
@@ -742,6 +760,9 @@ struct HalfCheetahGC[
             tau_limit=Scalar[Self.DTYPE](BTHIGH_GEAR),
             range_min=Scalar[Self.DTYPE](BTHIGH_LOWER),
             range_max=Scalar[Self.DTYPE](BTHIGH_UPPER),
+            armature=Scalar[Self.DTYPE](0.1),
+            damping=Scalar[Self.DTYPE](BTHIGH_DAMPING),
+            stiffness=Scalar[Self.DTYPE](BTHIGH_STIFFNESS),
         )
 
         # =====================================================================
@@ -763,6 +784,9 @@ struct HalfCheetahGC[
             tau_limit=Scalar[Self.DTYPE](BSHIN_GEAR),
             range_min=Scalar[Self.DTYPE](BSHIN_LOWER),
             range_max=Scalar[Self.DTYPE](BSHIN_UPPER),
+            armature=Scalar[Self.DTYPE](0.1),
+            damping=Scalar[Self.DTYPE](BSHIN_DAMPING),
+            stiffness=Scalar[Self.DTYPE](BSHIN_STIFFNESS),
         )
 
         # =====================================================================
@@ -784,6 +808,9 @@ struct HalfCheetahGC[
             tau_limit=Scalar[Self.DTYPE](BFOOT_GEAR),
             range_min=Scalar[Self.DTYPE](BFOOT_LOWER),
             range_max=Scalar[Self.DTYPE](BFOOT_UPPER),
+            armature=Scalar[Self.DTYPE](0.1),
+            damping=Scalar[Self.DTYPE](BFOOT_DAMPING),
+            stiffness=Scalar[Self.DTYPE](BFOOT_STIFFNESS),
         )
 
         # =====================================================================
@@ -805,6 +832,9 @@ struct HalfCheetahGC[
             tau_limit=Scalar[Self.DTYPE](FTHIGH_GEAR),
             range_min=Scalar[Self.DTYPE](FTHIGH_LOWER),
             range_max=Scalar[Self.DTYPE](FTHIGH_UPPER),
+            armature=Scalar[Self.DTYPE](0.1),
+            damping=Scalar[Self.DTYPE](FTHIGH_DAMPING),
+            stiffness=Scalar[Self.DTYPE](FTHIGH_STIFFNESS),
         )
 
         # =====================================================================
@@ -826,6 +856,9 @@ struct HalfCheetahGC[
             tau_limit=Scalar[Self.DTYPE](FSHIN_GEAR),
             range_min=Scalar[Self.DTYPE](FSHIN_LOWER),
             range_max=Scalar[Self.DTYPE](FSHIN_UPPER),
+            armature=Scalar[Self.DTYPE](0.1),
+            damping=Scalar[Self.DTYPE](FSHIN_DAMPING),
+            stiffness=Scalar[Self.DTYPE](FSHIN_STIFFNESS),
         )
 
         # =====================================================================
@@ -847,6 +880,9 @@ struct HalfCheetahGC[
             tau_limit=Scalar[Self.DTYPE](FFOOT_GEAR),
             range_min=Scalar[Self.DTYPE](FFOOT_LOWER),
             range_max=Scalar[Self.DTYPE](FFOOT_UPPER),
+            armature=Scalar[Self.DTYPE](0.1),
+            damping=Scalar[Self.DTYPE](FFOOT_DAMPING),
+            stiffness=Scalar[Self.DTYPE](FFOOT_STIFFNESS),
         )
 
         # =====================================================================
@@ -870,6 +906,9 @@ struct HalfCheetahGC[
             tau_limit=Scalar[Self.DTYPE](0.0),  # Not actuated
             range_min=Scalar[Self.DTYPE](HEAD_LOWER),
             range_max=Scalar[Self.DTYPE](HEAD_UPPER),
+            armature=Scalar[Self.DTYPE](0.1),
+            damping=Scalar[Self.DTYPE](0.01),  # MuJoCo default
+            stiffness=Scalar[Self.DTYPE](8.0),  # MuJoCo default
         )
 
     # =========================================================================
@@ -1202,7 +1241,9 @@ struct HalfCheetahGC[
 
         # Physics step (with frame skip)
         for _ in range(self.frame_skip):
-            ConstraintGcIntegrator.step(self.model, self.data)
+            ConstraintGcIntegratorWith[SOLVER=GcNewtonSolver].step(
+                self.model, self.data
+            )
             # Enforce joint limits after each physics step
             self._enforce_joint_limits()
 
@@ -1502,7 +1543,7 @@ struct HalfCheetahGC[
         # Run FRAME_SKIP physics sub-steps with joint limit enforcement
         comptime C = HalfCheetahGCConstants[gpu_dtype]
         for _ in range(C.FRAME_SKIP):
-            ConstraintGcIntegrator.step_gpu[
+            ConstraintGcIntegratorWith[SOLVER=GcNewtonSolver].step_gpu[
                 gpu_dtype,
                 Self.NQ,
                 Self.NV,
@@ -2184,6 +2225,9 @@ struct HalfCheetahGC[
         model_host[j0 + GC_JOINT_IDX_TAU_LIMIT] = Scalar[gpu_dtype](0.0)
         model_host[j0 + GC_JOINT_IDX_RANGE_MIN] = Scalar[gpu_dtype](-1e10)
         model_host[j0 + GC_JOINT_IDX_RANGE_MAX] = Scalar[gpu_dtype](1e10)
+        model_host[j0 + GC_JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](0.0)
+        model_host[j0 + GC_JOINT_IDX_DAMPING] = Scalar[gpu_dtype](0.0)
+        model_host[j0 + GC_JOINT_IDX_STIFFNESS] = Scalar[gpu_dtype](0.0)
 
         # =================================================================
         # Joint 1: RootZ - Slide joint, Z-axis translation (body 0)
@@ -2202,6 +2246,9 @@ struct HalfCheetahGC[
         model_host[j1 + GC_JOINT_IDX_TAU_LIMIT] = Scalar[gpu_dtype](0.0)
         model_host[j1 + GC_JOINT_IDX_RANGE_MIN] = Scalar[gpu_dtype](-1e10)
         model_host[j1 + GC_JOINT_IDX_RANGE_MAX] = Scalar[gpu_dtype](1e10)
+        model_host[j1 + GC_JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](0.0)
+        model_host[j1 + GC_JOINT_IDX_DAMPING] = Scalar[gpu_dtype](0.0)
+        model_host[j1 + GC_JOINT_IDX_STIFFNESS] = Scalar[gpu_dtype](0.0)
 
         # =================================================================
         # Joint 2: RootY - Hinge joint, Y-axis rotation (body 0)
@@ -2220,6 +2267,9 @@ struct HalfCheetahGC[
         model_host[j2 + GC_JOINT_IDX_TAU_LIMIT] = Scalar[gpu_dtype](0.0)
         model_host[j2 + GC_JOINT_IDX_RANGE_MIN] = Scalar[gpu_dtype](-1e10)
         model_host[j2 + GC_JOINT_IDX_RANGE_MAX] = Scalar[gpu_dtype](1e10)
+        model_host[j2 + GC_JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](0.0)
+        model_host[j2 + GC_JOINT_IDX_DAMPING] = Scalar[gpu_dtype](0.0)
+        model_host[j2 + GC_JOINT_IDX_STIFFNESS] = Scalar[gpu_dtype](0.0)
 
         # =================================================================
         # Joint 3: BThigh - Hinge joint, Y-axis rotation (body 1)
@@ -2238,6 +2288,9 @@ struct HalfCheetahGC[
         model_host[j3 + GC_JOINT_IDX_TAU_LIMIT] = C.BTHIGH_GEAR
         model_host[j3 + GC_JOINT_IDX_RANGE_MIN] = C.BTHIGH_JOINT_MIN
         model_host[j3 + GC_JOINT_IDX_RANGE_MAX] = C.BTHIGH_JOINT_MAX
+        model_host[j3 + GC_JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](0.1)
+        model_host[j3 + GC_JOINT_IDX_DAMPING] = C.BTHIGH_DAMPING
+        model_host[j3 + GC_JOINT_IDX_STIFFNESS] = C.BTHIGH_STIFFNESS
 
         # =================================================================
         # Joint 4: BShin - Hinge joint, Y-axis rotation (body 2)
@@ -2256,6 +2309,9 @@ struct HalfCheetahGC[
         model_host[j4 + GC_JOINT_IDX_TAU_LIMIT] = C.BSHIN_GEAR
         model_host[j4 + GC_JOINT_IDX_RANGE_MIN] = C.BSHIN_JOINT_MIN
         model_host[j4 + GC_JOINT_IDX_RANGE_MAX] = C.BSHIN_JOINT_MAX
+        model_host[j4 + GC_JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](0.1)
+        model_host[j4 + GC_JOINT_IDX_DAMPING] = C.BSHIN_DAMPING
+        model_host[j4 + GC_JOINT_IDX_STIFFNESS] = C.BSHIN_STIFFNESS
 
         # =================================================================
         # Joint 5: BFoot - Hinge joint, Y-axis rotation (body 3)
@@ -2274,6 +2330,9 @@ struct HalfCheetahGC[
         model_host[j5 + GC_JOINT_IDX_TAU_LIMIT] = C.BFOOT_GEAR
         model_host[j5 + GC_JOINT_IDX_RANGE_MIN] = C.BFOOT_JOINT_MIN
         model_host[j5 + GC_JOINT_IDX_RANGE_MAX] = C.BFOOT_JOINT_MAX
+        model_host[j5 + GC_JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](0.1)
+        model_host[j5 + GC_JOINT_IDX_DAMPING] = C.BFOOT_DAMPING
+        model_host[j5 + GC_JOINT_IDX_STIFFNESS] = C.BFOOT_STIFFNESS
 
         # =================================================================
         # Joint 6: FThigh - Hinge joint, Y-axis rotation (body 4)
@@ -2292,6 +2351,9 @@ struct HalfCheetahGC[
         model_host[j6 + GC_JOINT_IDX_TAU_LIMIT] = C.FTHIGH_GEAR
         model_host[j6 + GC_JOINT_IDX_RANGE_MIN] = C.FTHIGH_JOINT_MIN
         model_host[j6 + GC_JOINT_IDX_RANGE_MAX] = C.FTHIGH_JOINT_MAX
+        model_host[j6 + GC_JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](0.1)
+        model_host[j6 + GC_JOINT_IDX_DAMPING] = C.FTHIGH_DAMPING
+        model_host[j6 + GC_JOINT_IDX_STIFFNESS] = C.FTHIGH_STIFFNESS
 
         # =================================================================
         # Joint 7: FShin - Hinge joint, Y-axis rotation (body 5)
@@ -2310,6 +2372,9 @@ struct HalfCheetahGC[
         model_host[j7 + GC_JOINT_IDX_TAU_LIMIT] = C.FSHIN_GEAR
         model_host[j7 + GC_JOINT_IDX_RANGE_MIN] = C.FSHIN_JOINT_MIN
         model_host[j7 + GC_JOINT_IDX_RANGE_MAX] = C.FSHIN_JOINT_MAX
+        model_host[j7 + GC_JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](0.1)
+        model_host[j7 + GC_JOINT_IDX_DAMPING] = C.FSHIN_DAMPING
+        model_host[j7 + GC_JOINT_IDX_STIFFNESS] = C.FSHIN_STIFFNESS
 
         # =================================================================
         # Joint 8: FFoot - Hinge joint, Y-axis rotation (body 6)
@@ -2328,6 +2393,9 @@ struct HalfCheetahGC[
         model_host[j8 + GC_JOINT_IDX_TAU_LIMIT] = C.FFOOT_GEAR
         model_host[j8 + GC_JOINT_IDX_RANGE_MIN] = C.FFOOT_JOINT_MIN
         model_host[j8 + GC_JOINT_IDX_RANGE_MAX] = C.FFOOT_JOINT_MAX
+        model_host[j8 + GC_JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](0.1)
+        model_host[j8 + GC_JOINT_IDX_DAMPING] = C.FFOOT_DAMPING
+        model_host[j8 + GC_JOINT_IDX_STIFFNESS] = C.FFOOT_STIFFNESS
 
         # =================================================================
         # Joint 9: Head - Hinge joint, Y-axis rotation (body 7, fixed)
@@ -2346,6 +2414,9 @@ struct HalfCheetahGC[
         model_host[j9 + GC_JOINT_IDX_TAU_LIMIT] = Scalar[gpu_dtype](0.0)
         model_host[j9 + GC_JOINT_IDX_RANGE_MIN] = C.HEAD_JOINT_MIN
         model_host[j9 + GC_JOINT_IDX_RANGE_MAX] = C.HEAD_JOINT_MAX
+        model_host[j9 + GC_JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](0.1)
+        model_host[j9 + GC_JOINT_IDX_DAMPING] = Scalar[gpu_dtype](0.01)
+        model_host[j9 + GC_JOINT_IDX_STIFFNESS] = Scalar[gpu_dtype](8.0)
 
         # =================================================================
         # Model Metadata

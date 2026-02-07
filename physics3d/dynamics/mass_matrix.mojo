@@ -288,6 +288,549 @@ fn compute_mass_matrix[
 
 
 # =============================================================================
+# Full Mass Matrix via CRBA (Composite Rigid Body Algorithm)
+# =============================================================================
+
+
+fn compute_mass_matrix_full[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    M_SIZE: Int,
+    CDOF_SIZE: Int,
+    CRB_SIZE: Int,
+](
+    model: ModelGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    data: DataGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
+    crb: InlineArray[Scalar[DTYPE], CRB_SIZE],
+    mut M: InlineArray[Scalar[DTYPE], M_SIZE],
+):
+    """Compute the full NV×NV mass matrix using direct sum over bodies.
+
+    M[i,j] = sum over bodies k in subtree of deeper(body_i, body_j):
+        m_k * (v_k_i · v_k_j) + omega_i · I_k_world · omega_j
+
+    where v_k_i is the linear velocity of body k's CoM due to unit DOF i velocity,
+    computed as: v_k_i = cdof_i_lin + cdof_i_ang × (pos_k - pos_body_i)
+
+    This direct formulation avoids reference-point transformation issues.
+
+    Args:
+        model: Static model configuration.
+        data: Current simulation state.
+        cdof: Spatial motion axes per DOF (6*NV), from compute_cdof().
+        crb: Composite rigid body inertia per body (10*NBODY), from compute_composite_inertia().
+              Only the per-body inertia is used (not the accumulated composite).
+        M: Output mass matrix (NV×NV, stored row-major).
+    """
+    # Zero M
+    for i in range(NV * NV):
+        M[i] = Scalar[DTYPE](0)
+
+    # Build dof_to_body mapping
+    comptime NV_SAFE = _ensure_positive[NV]()
+    var dof_body = InlineArray[Int, NV_SAFE](uninitialized=True)
+    for i in range(NV):
+        dof_body[i] = 0
+
+    for j in range(model.num_joints):
+        var joint = model.joints[j]
+        var body = joint.body_id
+        var dof_adr = joint.dof_adr
+        var ndof = 1
+        if joint.jnt_type == JNT_FREE:
+            ndof = 6
+        elif joint.jnt_type == JNT_BALL:
+            ndof = 3
+        for d in range(ndof):
+            dof_body[dof_adr + d] = body
+
+    # Pre-compute per-body world-frame inertia tensor (just 3x3 rotational inertia)
+    # Using body quaternions to rotate from local diagonal to world frame
+    comptime NB_SAFE = _ensure_positive[NBODY]()
+    comptime I_WORLD_SIZE = _ensure_positive[NBODY * 6]()
+    var I_world = InlineArray[Scalar[DTYPE], I_WORLD_SIZE](uninitialized=True)
+    for b in range(NBODY):
+        var Ixx_l = model.body_inertia[b * 3 + 0]
+        var Iyy_l = model.body_inertia[b * 3 + 1]
+        var Izz_l = model.body_inertia[b * 3 + 2]
+
+        var qx = data.xquat[b * 4 + 0]
+        var qy = data.xquat[b * 4 + 1]
+        var qz = data.xquat[b * 4 + 2]
+        var qw = data.xquat[b * 4 + 3]
+
+        var r00 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qy * qy + qz * qz)
+        var r10 = Scalar[DTYPE](2) * (qx * qy + qw * qz)
+        var r20 = Scalar[DTYPE](2) * (qx * qz - qw * qy)
+        var r01 = Scalar[DTYPE](2) * (qx * qy - qw * qz)
+        var r11 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qx * qx + qz * qz)
+        var r21 = Scalar[DTYPE](2) * (qy * qz + qw * qx)
+        var r02 = Scalar[DTYPE](2) * (qx * qz + qw * qy)
+        var r12 = Scalar[DTYPE](2) * (qy * qz - qw * qx)
+        var r22 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qx * qx + qy * qy)
+
+        # I_world = R @ diag(Ixx, Iyy, Izz) @ R^T, store [xx, yy, zz, xy, xz, yz]
+        I_world[b * 6 + 0] = Ixx_l * r00 * r00 + Iyy_l * r01 * r01 + Izz_l * r02 * r02
+        I_world[b * 6 + 1] = Ixx_l * r10 * r10 + Iyy_l * r11 * r11 + Izz_l * r12 * r12
+        I_world[b * 6 + 2] = Ixx_l * r20 * r20 + Iyy_l * r21 * r21 + Izz_l * r22 * r22
+        I_world[b * 6 + 3] = Ixx_l * r00 * r10 + Iyy_l * r01 * r11 + Izz_l * r02 * r12
+        I_world[b * 6 + 4] = Ixx_l * r00 * r20 + Iyy_l * r01 * r21 + Izz_l * r02 * r22
+        I_world[b * 6 + 5] = Ixx_l * r10 * r20 + Iyy_l * r11 * r21 + Izz_l * r12 * r22
+
+    # Compute M[i,j] for all pairs using direct body summation
+    for i in range(NV):
+        var body_i = dof_body[i]
+        var ai0 = cdof[i * 6 + 0]
+        var ai1 = cdof[i * 6 + 1]
+        var ai2 = cdof[i * 6 + 2]
+        var li0 = cdof[i * 6 + 3]
+        var li1 = cdof[i * 6 + 4]
+        var li2 = cdof[i * 6 + 5]
+
+        for j in range(i, NV):
+            var body_j = dof_body[j]
+            var aj0 = cdof[j * 6 + 0]
+            var aj1 = cdof[j * 6 + 1]
+            var aj2 = cdof[j * 6 + 2]
+            var lj0 = cdof[j * 6 + 3]
+            var lj1 = cdof[j * 6 + 4]
+            var lj2 = cdof[j * 6 + 5]
+
+            # Determine common subtree: bodies affected by BOTH DOF i and DOF j
+            # A body k is affected by DOF i if k == body_i or k is a descendant of body_i
+            # For M[i,j], we sum over all bodies in the intersection of both subtrees
+            var mij = Scalar[DTYPE](0)
+
+            for k in range(NBODY):
+                # Check if body k is in the subtree of body_i
+                var in_subtree_i = (k == body_i) or _is_descendant(model, k, body_i)
+                if not in_subtree_i:
+                    continue
+
+                # Check if body k is in the subtree of body_j
+                var in_subtree_j = (k == body_j) or _is_descendant(model, k, body_j)
+                if not in_subtree_j:
+                    continue
+
+                var mk = model.body_mass[k]
+                var pk0 = data.xpos[k * 3 + 0]
+                var pk1 = data.xpos[k * 3 + 1]
+                var pk2 = data.xpos[k * 3 + 2]
+
+                # Velocity of body k due to DOF i:
+                # v_k_i = cdof_i_lin + cdof_i_ang × (pos_k - pos_body_i)
+                var di0 = pk0 - data.xpos[body_i * 3 + 0]
+                var di1 = pk1 - data.xpos[body_i * 3 + 1]
+                var di2 = pk2 - data.xpos[body_i * 3 + 2]
+                var vki0 = li0 + ai1 * di2 - ai2 * di1
+                var vki1 = li1 + ai2 * di0 - ai0 * di2
+                var vki2 = li2 + ai0 * di1 - ai1 * di0
+
+                # Velocity of body k due to DOF j:
+                var dj0 = pk0 - data.xpos[body_j * 3 + 0]
+                var dj1 = pk1 - data.xpos[body_j * 3 + 1]
+                var dj2 = pk2 - data.xpos[body_j * 3 + 2]
+                var vkj0 = lj0 + aj1 * dj2 - aj2 * dj1
+                var vkj1 = lj1 + aj2 * dj0 - aj0 * dj2
+                var vkj2 = lj2 + aj0 * dj1 - aj1 * dj0
+
+                # Linear momentum contribution: m_k * v_k_i · v_k_j
+                mij = mij + mk * (vki0 * vkj0 + vki1 * vkj1 + vki2 * vkj2)
+
+                # Rotational inertia contribution: omega_i · I_k_world · omega_j
+                var Ik_xx = I_world[k * 6 + 0]
+                var Ik_yy = I_world[k * 6 + 1]
+                var Ik_zz = I_world[k * 6 + 2]
+                var Ik_xy = I_world[k * 6 + 3]
+                var Ik_xz = I_world[k * 6 + 4]
+                var Ik_yz = I_world[k * 6 + 5]
+
+                # I_k @ omega_j
+                var Iaj0 = Ik_xx * aj0 + Ik_xy * aj1 + Ik_xz * aj2
+                var Iaj1 = Ik_xy * aj0 + Ik_yy * aj1 + Ik_yz * aj2
+                var Iaj2 = Ik_xz * aj0 + Ik_yz * aj1 + Ik_zz * aj2
+
+                mij = mij + ai0 * Iaj0 + ai1 * Iaj1 + ai2 * Iaj2
+
+            M[i * NV + j] = mij
+            if i != j:
+                M[j * NV + i] = mij
+
+
+# =============================================================================
+# LDL Factorization and Solve for SPD matrices
+# =============================================================================
+
+
+fn ldl_factor[
+    DTYPE: DType,
+    NV: Int,
+    M_SIZE: Int,
+    V_SIZE: Int,
+](
+    M: InlineArray[Scalar[DTYPE], M_SIZE],
+    mut L: InlineArray[Scalar[DTYPE], M_SIZE],
+    mut D: InlineArray[Scalar[DTYPE], V_SIZE],
+):
+    """In-place LDL factorization of NV×NV SPD matrix M.
+
+    Computes M = L * D * L^T where:
+    - L is unit lower triangular (L[i,i] = 1)
+    - D is diagonal
+
+    Args:
+        M: Input NV×NV matrix (row-major).
+        L: Output lower triangular matrix (row-major).
+        D: Output diagonal vector (NV entries).
+    """
+    for i in range(NV * NV):
+        L[i] = Scalar[DTYPE](0)
+    for i in range(NV):
+        D[i] = Scalar[DTYPE](0)
+        L[i * NV + i] = Scalar[DTYPE](1)
+
+    for j in range(NV):
+        var d_j = M[j * NV + j]
+        for k in range(j):
+            d_j = d_j - L[j * NV + k] * L[j * NV + k] * D[k]
+        D[j] = d_j
+
+        if d_j > Scalar[DTYPE](1e-14) or d_j < Scalar[DTYPE](-1e-14):
+            for i in range(j + 1, NV):
+                var l_ij = M[i * NV + j]
+                for k in range(j):
+                    l_ij = l_ij - L[i * NV + k] * L[j * NV + k] * D[k]
+                L[i * NV + j] = l_ij / d_j
+
+
+fn ldl_solve[
+    DTYPE: DType,
+    NV: Int,
+    M_SIZE: Int,
+    V_SIZE: Int,
+](
+    L: InlineArray[Scalar[DTYPE], M_SIZE],
+    D: InlineArray[Scalar[DTYPE], V_SIZE],
+    b: InlineArray[Scalar[DTYPE], V_SIZE],
+    mut x: InlineArray[Scalar[DTYPE], V_SIZE],
+):
+    """Solve M * x = b using precomputed LDL factors.
+
+    Solves L * D * L^T * x = b in three steps:
+    1. Forward substitution: L * y = b
+    2. Diagonal solve: D * z = y
+    3. Backward substitution: L^T * x = z
+    """
+    var y = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    for i in range(NV):
+        var s = b[i]
+        for j in range(i):
+            s = s - L[i * NV + j] * y[j]
+        y[i] = s
+
+    var z = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    for i in range(NV):
+        if D[i] > Scalar[DTYPE](1e-14) or D[i] < Scalar[DTYPE](-1e-14):
+            z[i] = y[i] / D[i]
+        else:
+            z[i] = Scalar[DTYPE](0)
+
+    for i in range(NV - 1, -1, -1):
+        var s = z[i]
+        for j in range(i + 1, NV):
+            s = s - L[j * NV + i] * x[j]
+        x[i] = s
+
+
+fn compute_M_inv_from_ldl[
+    DTYPE: DType,
+    NV: Int,
+    M_SIZE: Int,
+    V_SIZE: Int,
+](
+    L: InlineArray[Scalar[DTYPE], M_SIZE],
+    D: InlineArray[Scalar[DTYPE], V_SIZE],
+    mut M_inv: InlineArray[Scalar[DTYPE], M_SIZE],
+):
+    """Compute full dense M^-1 from LDL factors by solving M * col = e_j."""
+    var e = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var col = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+
+    for j in range(NV):
+        for i in range(NV):
+            e[i] = Scalar[DTYPE](0)
+        e[j] = Scalar[DTYPE](1)
+
+        ldl_solve[DTYPE, NV, M_SIZE, V_SIZE](L, D, e, col)
+
+        for i in range(NV):
+            M_inv[i * NV + j] = col[i]
+
+
+# =============================================================================
+# GPU: Full Mass Matrix + LDL
+# =============================================================================
+
+
+@always_inline
+fn compute_mass_matrix_full_gpu[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    STATE_SIZE: Int,
+    MODEL_SIZE: Int,
+    M_SIZE: Int,
+    CDOF_SIZE: Int,
+    CRB_SIZE: Int,
+    BATCH: Int,
+](
+    env: Int,
+    state: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+    ],
+    model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+    cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
+    crb: InlineArray[Scalar[DTYPE], CRB_SIZE],
+    mut M: InlineArray[Scalar[DTYPE], M_SIZE],
+):
+    """Compute full NV×NV mass matrix on GPU using direct body summation."""
+    var model_meta_off = gc_model_metadata_offset[NBODY, NJOINT]()
+    var num_joints = Int(rebind[Scalar[DTYPE]](
+        model[0, model_meta_off + GC_MODEL_META_IDX_NJOINT]
+    ))
+
+    for i in range(NV * NV):
+        M[i] = Scalar[DTYPE](0)
+
+    comptime NV_SAFE = _ensure_positive[NV]()
+    var dof_body = InlineArray[Int, NV_SAFE](uninitialized=True)
+    for i in range(NV):
+        dof_body[i] = 0
+
+    for j in range(num_joints):
+        var joint_off = gc_model_joint_offset[NBODY](j)
+        var jnt_type = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_TYPE]))
+        var body_id = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_BODY_ID]))
+        var dof_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + GC_JOINT_IDX_DOF_ADR]))
+
+        var ndof = 1
+        if jnt_type == GC_JNT_FREE:
+            ndof = 6
+        elif jnt_type == GC_JNT_BALL:
+            ndof = 3
+        for d in range(ndof):
+            dof_body[dof_adr + d] = body_id
+
+    var xpos_off = gc_xpos_offset[NQ, NV, NBODY]()
+    var xquat_off = gc_xquat_offset[NQ, NV, NBODY]()
+
+    # Pre-compute per-body world-frame inertia tensor
+    comptime I_WORLD_SIZE = _ensure_positive[NBODY * 6]()
+    var I_world = InlineArray[Scalar[DTYPE], I_WORLD_SIZE](uninitialized=True)
+    for b in range(NBODY):
+        var body_off = gc_model_body_offset(b)
+        var Ixx_l = rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_IXX])
+        var Iyy_l = rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_IYY])
+        var Izz_l = rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_IZZ])
+
+        var qx = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 0])
+        var qy = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 1])
+        var qz = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 2])
+        var qw = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 3])
+
+        var r00 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qy * qy + qz * qz)
+        var r10 = Scalar[DTYPE](2) * (qx * qy + qw * qz)
+        var r20 = Scalar[DTYPE](2) * (qx * qz - qw * qy)
+        var r01 = Scalar[DTYPE](2) * (qx * qy - qw * qz)
+        var r11 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qx * qx + qz * qz)
+        var r21 = Scalar[DTYPE](2) * (qy * qz + qw * qx)
+        var r02 = Scalar[DTYPE](2) * (qx * qz + qw * qy)
+        var r12 = Scalar[DTYPE](2) * (qy * qz - qw * qx)
+        var r22 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qx * qx + qy * qy)
+
+        I_world[b * 6 + 0] = Ixx_l * r00 * r00 + Iyy_l * r01 * r01 + Izz_l * r02 * r02
+        I_world[b * 6 + 1] = Ixx_l * r10 * r10 + Iyy_l * r11 * r11 + Izz_l * r12 * r12
+        I_world[b * 6 + 2] = Ixx_l * r20 * r20 + Iyy_l * r21 * r21 + Izz_l * r22 * r22
+        I_world[b * 6 + 3] = Ixx_l * r00 * r10 + Iyy_l * r01 * r11 + Izz_l * r02 * r12
+        I_world[b * 6 + 4] = Ixx_l * r00 * r20 + Iyy_l * r01 * r21 + Izz_l * r02 * r22
+        I_world[b * 6 + 5] = Ixx_l * r10 * r20 + Iyy_l * r11 * r21 + Izz_l * r12 * r22
+
+    # Compute M[i,j] using direct body summation
+    for i in range(NV):
+        var body_i = dof_body[i]
+        var ai0 = cdof[i * 6 + 0]
+        var ai1 = cdof[i * 6 + 1]
+        var ai2 = cdof[i * 6 + 2]
+        var li0 = cdof[i * 6 + 3]
+        var li1 = cdof[i * 6 + 4]
+        var li2 = cdof[i * 6 + 5]
+
+        for j in range(i, NV):
+            var body_j = dof_body[j]
+            var aj0 = cdof[j * 6 + 0]
+            var aj1 = cdof[j * 6 + 1]
+            var aj2 = cdof[j * 6 + 2]
+            var lj0 = cdof[j * 6 + 3]
+            var lj1 = cdof[j * 6 + 4]
+            var lj2 = cdof[j * 6 + 5]
+
+            var mij = Scalar[DTYPE](0)
+
+            for k in range(NBODY):
+                var in_subtree_i = (k == body_i) or _is_descendant_gpu[DTYPE, NBODY, MODEL_SIZE](model, k, body_i)
+                if not in_subtree_i:
+                    continue
+                var in_subtree_j = (k == body_j) or _is_descendant_gpu[DTYPE, NBODY, MODEL_SIZE](model, k, body_j)
+                if not in_subtree_j:
+                    continue
+
+                var body_off_k = gc_model_body_offset(k)
+                var mk = rebind[Scalar[DTYPE]](model[0, body_off_k + GC_BODY_IDX_MASS])
+                var pk0 = rebind[Scalar[DTYPE]](state[env, xpos_off + k * 3 + 0])
+                var pk1 = rebind[Scalar[DTYPE]](state[env, xpos_off + k * 3 + 1])
+                var pk2 = rebind[Scalar[DTYPE]](state[env, xpos_off + k * 3 + 2])
+
+                var pi0 = rebind[Scalar[DTYPE]](state[env, xpos_off + body_i * 3 + 0])
+                var pi1 = rebind[Scalar[DTYPE]](state[env, xpos_off + body_i * 3 + 1])
+                var pi2 = rebind[Scalar[DTYPE]](state[env, xpos_off + body_i * 3 + 2])
+                var di0 = pk0 - pi0
+                var di1 = pk1 - pi1
+                var di2 = pk2 - pi2
+                var vki0 = li0 + ai1 * di2 - ai2 * di1
+                var vki1 = li1 + ai2 * di0 - ai0 * di2
+                var vki2 = li2 + ai0 * di1 - ai1 * di0
+
+                var pj0 = rebind[Scalar[DTYPE]](state[env, xpos_off + body_j * 3 + 0])
+                var pj1 = rebind[Scalar[DTYPE]](state[env, xpos_off + body_j * 3 + 1])
+                var pj2 = rebind[Scalar[DTYPE]](state[env, xpos_off + body_j * 3 + 2])
+                var dj0 = pk0 - pj0
+                var dj1 = pk1 - pj1
+                var dj2 = pk2 - pj2
+                var vkj0 = lj0 + aj1 * dj2 - aj2 * dj1
+                var vkj1 = lj1 + aj2 * dj0 - aj0 * dj2
+                var vkj2 = lj2 + aj0 * dj1 - aj1 * dj0
+
+                mij = mij + mk * (vki0 * vkj0 + vki1 * vkj1 + vki2 * vkj2)
+
+                var Ik_xx = I_world[k * 6 + 0]
+                var Ik_yy = I_world[k * 6 + 1]
+                var Ik_zz = I_world[k * 6 + 2]
+                var Ik_xy = I_world[k * 6 + 3]
+                var Ik_xz = I_world[k * 6 + 4]
+                var Ik_yz = I_world[k * 6 + 5]
+
+                var Iaj0 = Ik_xx * aj0 + Ik_xy * aj1 + Ik_xz * aj2
+                var Iaj1 = Ik_xy * aj0 + Ik_yy * aj1 + Ik_yz * aj2
+                var Iaj2 = Ik_xz * aj0 + Ik_yz * aj1 + Ik_zz * aj2
+
+                mij = mij + ai0 * Iaj0 + ai1 * Iaj1 + ai2 * Iaj2
+
+            M[i * NV + j] = mij
+            if i != j:
+                M[j * NV + i] = mij
+
+
+@always_inline
+fn ldl_factor_gpu[
+    DTYPE: DType,
+    NV: Int,
+    M_SIZE: Int,
+    V_SIZE: Int,
+](
+    M: InlineArray[Scalar[DTYPE], M_SIZE],
+    mut L: InlineArray[Scalar[DTYPE], M_SIZE],
+    mut D: InlineArray[Scalar[DTYPE], V_SIZE],
+):
+    """LDL factorization (GPU-compatible, same algorithm as CPU)."""
+    for i in range(NV * NV):
+        L[i] = Scalar[DTYPE](0)
+    for i in range(NV):
+        D[i] = Scalar[DTYPE](0)
+        L[i * NV + i] = Scalar[DTYPE](1)
+
+    for j in range(NV):
+        var d_j = M[j * NV + j]
+        for k in range(j):
+            d_j = d_j - L[j * NV + k] * L[j * NV + k] * D[k]
+        D[j] = d_j
+
+        if d_j > Scalar[DTYPE](1e-14) or d_j < Scalar[DTYPE](-1e-14):
+            for i in range(j + 1, NV):
+                var l_ij = M[i * NV + j]
+                for k in range(j):
+                    l_ij = l_ij - L[i * NV + k] * L[j * NV + k] * D[k]
+                L[i * NV + j] = l_ij / d_j
+
+
+@always_inline
+fn ldl_solve_gpu[
+    DTYPE: DType,
+    NV: Int,
+    M_SIZE: Int,
+    V_SIZE: Int,
+](
+    L: InlineArray[Scalar[DTYPE], M_SIZE],
+    D: InlineArray[Scalar[DTYPE], V_SIZE],
+    b: InlineArray[Scalar[DTYPE], V_SIZE],
+    mut x: InlineArray[Scalar[DTYPE], V_SIZE],
+):
+    """LDL solve (GPU-compatible, same algorithm as CPU)."""
+    var y = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    for i in range(NV):
+        var s = b[i]
+        for j in range(i):
+            s = s - L[i * NV + j] * y[j]
+        y[i] = s
+
+    var z = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    for i in range(NV):
+        if D[i] > Scalar[DTYPE](1e-14) or D[i] < Scalar[DTYPE](-1e-14):
+            z[i] = y[i] / D[i]
+        else:
+            z[i] = Scalar[DTYPE](0)
+
+    for i in range(NV - 1, -1, -1):
+        var s = z[i]
+        for j in range(i + 1, NV):
+            s = s - L[j * NV + i] * x[j]
+        x[i] = s
+
+
+@always_inline
+fn compute_M_inv_from_ldl_gpu[
+    DTYPE: DType,
+    NV: Int,
+    M_SIZE: Int,
+    V_SIZE: Int,
+](
+    L: InlineArray[Scalar[DTYPE], M_SIZE],
+    D: InlineArray[Scalar[DTYPE], V_SIZE],
+    mut M_inv: InlineArray[Scalar[DTYPE], M_SIZE],
+):
+    """Compute full dense M^-1 from LDL factors (GPU-compatible)."""
+    var e = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var col = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+
+    for j in range(NV):
+        for i in range(NV):
+            e[i] = Scalar[DTYPE](0)
+        e[j] = Scalar[DTYPE](1)
+
+        ldl_solve_gpu[DTYPE, NV, M_SIZE, V_SIZE](L, D, e, col)
+
+        for i in range(NV):
+            M_inv[i * NV + j] = col[i]
+
+
+# =============================================================================
 # Helper: Solve M * x = b (for small matrices)
 # =============================================================================
 

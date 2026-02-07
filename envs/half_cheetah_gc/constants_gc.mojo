@@ -363,6 +363,28 @@ struct HalfCheetahGCConstants[DTYPE: DType = DType.float64]:
     comptime FFOOT_GEAR: Scalar[Self.DTYPE] = 30.0
 
     # ==========================================================================
+    # Joint Damping (from MuJoCo half_cheetah.xml)
+    # ==========================================================================
+
+    comptime BTHIGH_DAMPING: Scalar[Self.DTYPE] = 6.0
+    comptime BSHIN_DAMPING: Scalar[Self.DTYPE] = 4.5
+    comptime BFOOT_DAMPING: Scalar[Self.DTYPE] = 3.0
+    comptime FTHIGH_DAMPING: Scalar[Self.DTYPE] = 4.5
+    comptime FSHIN_DAMPING: Scalar[Self.DTYPE] = 3.0
+    comptime FFOOT_DAMPING: Scalar[Self.DTYPE] = 1.5
+
+    # ==========================================================================
+    # Joint Stiffness (from MuJoCo half_cheetah.xml)
+    # ==========================================================================
+
+    comptime BTHIGH_STIFFNESS: Scalar[Self.DTYPE] = 240.0
+    comptime BSHIN_STIFFNESS: Scalar[Self.DTYPE] = 180.0
+    comptime BFOOT_STIFFNESS: Scalar[Self.DTYPE] = 120.0
+    comptime FTHIGH_STIFFNESS: Scalar[Self.DTYPE] = 180.0
+    comptime FSHIN_STIFFNESS: Scalar[Self.DTYPE] = 120.0
+    comptime FFOOT_STIFFNESS: Scalar[Self.DTYPE] = 60.0
+
+    # ==========================================================================
     # Joint Limits (from MuJoCo half_cheetah.xml)
     # ==========================================================================
 

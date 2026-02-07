@@ -569,7 +569,7 @@ fn gc_model_body_offset(body_idx: Int) -> Int:
 # Model Buffer Layout - Per Joint
 # =============================================================================
 
-comptime GC_MODEL_JOINT_SIZE: Int = 13  # Extended to include range limits
+comptime GC_MODEL_JOINT_SIZE: Int = 16  # Extended to include range limits + armature + damping + stiffness
 
 comptime GC_JOINT_IDX_TYPE: Int = 0  # JNT_FREE, JNT_BALL, JNT_SLIDE, JNT_HINGE
 comptime GC_JOINT_IDX_BODY_ID: Int = 1
@@ -584,6 +584,9 @@ comptime GC_JOINT_IDX_AXIS_Z: Int = 9
 comptime GC_JOINT_IDX_TAU_LIMIT: Int = 10
 comptime GC_JOINT_IDX_RANGE_MIN: Int = 11  # Minimum position (radians for hinge, meters for slide)
 comptime GC_JOINT_IDX_RANGE_MAX: Int = 12  # Maximum position
+comptime GC_JOINT_IDX_ARMATURE: Int = 13  # Rotor inertia (added to M diagonal)
+comptime GC_JOINT_IDX_DAMPING: Int = 14  # Passive joint damping
+comptime GC_JOINT_IDX_STIFFNESS: Int = 15  # Passive joint stiffness (spring)
 
 
 fn gc_model_joint_offset[NBODY: Int](joint_idx: Int) -> Int:

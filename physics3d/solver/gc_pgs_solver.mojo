@@ -49,11 +49,12 @@ struct GcPGSSolver(GcConstraintSolver):
         NJOINT: Int,
         MAX_CONTACTS: Int,
         V_SIZE: Int,
+        M_SIZE: Int,
         CDOF_SIZE: Int,
     ](
         model: ModelGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         data: DataGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
-        M_diag: InlineArray[Scalar[DTYPE], V_SIZE],
+        M_inv: InlineArray[Scalar[DTYPE], M_SIZE],
         cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
         mut qvel: InlineArray[Scalar[DTYPE], V_SIZE],
         dt: Scalar[DTYPE],
@@ -108,14 +109,6 @@ struct GcPGSSolver(GcConstraintSolver):
         for i in range(MC):
             contact_body[i] = 0
 
-        # Precompute inverse mass diagonal
-        var M_inv = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-        for i in range(NV):
-            if M_diag[i] > Scalar[DTYPE](1e-10):
-                M_inv[i] = Scalar[DTYPE](1) / M_diag[i]
-            else:
-                M_inv[i] = Scalar[DTYPE](0)
-
         # Phase 1: Precompute contact data
         var J_row = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
 
@@ -141,11 +134,14 @@ struct GcPGSSolver(GcConstraintSolver):
                 J_row,
             )
 
-            # Store and compute effective mass
+            # Store and compute effective mass: K = J @ M_inv @ J^T
             var k: Scalar[DTYPE] = 0
             for i in range(NV):
                 J_n[c * NV + i] = J_row[i]
-                k += J_row[i] * J_row[i] * M_inv[i]
+                var mi_j_sum: Scalar[DTYPE] = 0
+                for j_idx in range(NV):
+                    mi_j_sum += M_inv[i * NV + j_idx] * J_row[j_idx]
+                k += J_row[i] * mi_j_sum
 
             if k < Scalar[DTYPE](1e-10):
                 k = Scalar[DTYPE](1e-10)
@@ -154,13 +150,16 @@ struct GcPGSSolver(GcConstraintSolver):
             # Warm start from stored impulses
             lambda_n[c] = contact.impulse_n
 
-        # Apply warm start impulses
+        # Apply warm start impulses: qvel += M_inv @ J^T * lambda
         for c in range(nc):
             if contact_dist[c] >= Scalar[DTYPE](0):
                 continue
             if lambda_n[c] > Scalar[DTYPE](0):
                 for i in range(NV):
-                    qvel[i] += M_inv[i] * J_n[c * NV + i] * lambda_n[c]
+                    var mi_j_sum: Scalar[DTYPE] = 0
+                    for j_idx in range(NV):
+                        mi_j_sum += M_inv[i * NV + j_idx] * J_n[c * NV + j_idx]
+                    qvel[i] += mi_j_sum * lambda_n[c]
 
         # Phase 2: PGS iterations for normal constraints
         var baumgarte_coef = Scalar[DTYPE](BAUMGARTE)
@@ -180,7 +179,10 @@ struct GcPGSSolver(GcConstraintSolver):
                 # Standard formulation: b = (beta/h) * C where C = dist < 0
                 # for penetration, so b < 0. This makes the solver require
                 # outward velocity to resolve penetration.
+                # Cap penetration to prevent bounce amplification from large depths
                 var penetration = -contact_dist[c]
+                if penetration > Scalar[DTYPE](0.01):
+                    penetration = Scalar[DTYPE](0.01)  # Max 1cm correction per step
                 var correction = penetration - slop_val
                 if correction < Scalar[DTYPE](0):
                     correction = Scalar[DTYPE](0)
@@ -198,9 +200,12 @@ struct GcPGSSolver(GcConstraintSolver):
 
                 var actual_delta = lambda_n[c] - old_lambda
 
-                # Apply velocity correction: qvel += M^-1 * J^T * delta
+                # Apply velocity correction: qvel += M_inv @ J^T * delta
                 for i in range(NV):
-                    qvel[i] += M_inv[i] * J_n[c * NV + i] * actual_delta
+                    var mi_j_sum: Scalar[DTYPE] = 0
+                    for j_idx in range(NV):
+                        mi_j_sum += M_inv[i * NV + j_idx] * J_n[c * NV + j_idx]
+                    qvel[i] += mi_j_sum * actual_delta
 
         # Phase 3: Friction (Coulomb cone)
         var friction_coef = model.friction
@@ -291,8 +296,13 @@ struct GcPGSSolver(GcConstraintSolver):
             for i in range(NV):
                 J_t1_all[c * NV + i] = J_t1_row[i]
                 J_t2_all[c * NV + i] = J_t2_row[i]
-                k1 += J_t1_row[i] * J_t1_row[i] * M_inv[i]
-                k2 += J_t2_row[i] * J_t2_row[i] * M_inv[i]
+                var mi_j_sum1: Scalar[DTYPE] = 0
+                var mi_j_sum2: Scalar[DTYPE] = 0
+                for j_idx in range(NV):
+                    mi_j_sum1 += M_inv[i * NV + j_idx] * J_t1_row[j_idx]
+                    mi_j_sum2 += M_inv[i * NV + j_idx] * J_t2_row[j_idx]
+                k1 += J_t1_row[i] * mi_j_sum1
+                k2 += J_t2_row[i] * mi_j_sum2
 
             if k1 < Scalar[DTYPE](1e-10):
                 k1 = Scalar[DTYPE](1e-10)
@@ -311,10 +321,13 @@ struct GcPGSSolver(GcConstraintSolver):
                 continue
             if lambda_t1[c] != Scalar[DTYPE](0) or lambda_t2[c] != Scalar[DTYPE](0):
                 for i in range(NV):
-                    qvel[i] += M_inv[i] * (
-                        J_t1_all[c * NV + i] * lambda_t1[c]
-                        + J_t2_all[c * NV + i] * lambda_t2[c]
-                    )
+                    var mi_j_sum: Scalar[DTYPE] = 0
+                    for j_idx in range(NV):
+                        mi_j_sum += M_inv[i * NV + j_idx] * (
+                            J_t1_all[c * NV + j_idx] * lambda_t1[c]
+                            + J_t2_all[c * NV + j_idx] * lambda_t2[c]
+                        )
+                    qvel[i] += mi_j_sum
 
         # Friction PGS iterations
         for _ in range(PGS_ITERATIONS):
@@ -355,10 +368,13 @@ struct GcPGSSolver(GcConstraintSolver):
                 var actual_delta_t2 = lambda_t2[c] - old_t2
 
                 for i in range(NV):
-                    qvel[i] += M_inv[i] * (
-                        J_t1_all[c * NV + i] * actual_delta_t1
-                        + J_t2_all[c * NV + i] * actual_delta_t2
-                    )
+                    var mi_j_sum: Scalar[DTYPE] = 0
+                    for j_idx in range(NV):
+                        mi_j_sum += M_inv[i * NV + j_idx] * (
+                            J_t1_all[c * NV + j_idx] * actual_delta_t1
+                            + J_t2_all[c * NV + j_idx] * actual_delta_t2
+                        )
+                    qvel[i] += mi_j_sum
 
         # Store impulses back for warm-starting next step
         # Note: data is not mutable here, so warm-start storage happens
@@ -375,6 +391,7 @@ struct GcPGSSolver(GcConstraintSolver):
         STATE_SIZE: Int,
         MODEL_SIZE: Int,
         V_SIZE: Int,
+        M_SIZE: Int,
         CDOF_SIZE: Int,
         BATCH: Int,
     ](
@@ -385,7 +402,7 @@ struct GcPGSSolver(GcConstraintSolver):
         model: LayoutTensor[
             DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
         ],
-        M_diag: InlineArray[Scalar[DTYPE], V_SIZE],
+        M_inv: InlineArray[Scalar[DTYPE], M_SIZE],
         cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
         mut qvel: InlineArray[Scalar[DTYPE], V_SIZE],
         dt: Scalar[DTYPE],
@@ -434,13 +451,10 @@ struct GcPGSSolver(GcConstraintSolver):
         if nc > MAX_CONTACTS:
             nc = MAX_CONTACTS
 
-        # Precompute inverse mass diagonal
-        var M_inv = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        # Extract inverse mass diagonal from full M_inv matrix
+        var M_inv_diag = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
         for i in range(NV):
-            if M_diag[i] > Scalar[DTYPE](1e-10):
-                M_inv[i] = Scalar[DTYPE](1) / M_diag[i]
-            else:
-                M_inv[i] = Scalar[DTYPE](0)
+            M_inv_diag[i] = M_inv[i * NV + i]
 
         var baumgarte_coef = Scalar[DTYPE](BAUMGARTE)
         var slop_val = Scalar[DTYPE](SLOP)
@@ -506,7 +520,7 @@ struct GcPGSSolver(GcConstraintSolver):
 
             var k: Scalar[DTYPE] = 0
             for i in range(NV):
-                k += J_row[i] * J_row[i] * M_inv[i]
+                k += J_row[i] * J_row[i] * M_inv_diag[i]
             if k < Scalar[DTYPE](1e-10):
                 k = Scalar[DTYPE](1e-10)
             K_n[c] = k
@@ -517,7 +531,7 @@ struct GcPGSSolver(GcConstraintSolver):
             # Apply warm start
             if lambda_n[c] > Scalar[DTYPE](0):
                 for i in range(NV):
-                    qvel[i] += M_inv[i] * J_row[i] * lambda_n[c]
+                    qvel[i] += M_inv_diag[i] * J_row[i] * lambda_n[c]
 
         # Phase 2: PGS normal iterations
         for _ in range(PGS_ITERATIONS):
@@ -540,7 +554,10 @@ struct GcPGSSolver(GcConstraintSolver):
                 for i in range(NV):
                     v_n += J_row[i] * qvel[i]
 
+                # Cap penetration to prevent bounce amplification
                 var penetration = -c_dist[c]
+                if penetration > Scalar[DTYPE](0.01):
+                    penetration = Scalar[DTYPE](0.01)
                 var correction = penetration - slop_val
                 if correction < Scalar[DTYPE](0):
                     correction = Scalar[DTYPE](0)
@@ -554,7 +571,7 @@ struct GcPGSSolver(GcConstraintSolver):
 
                 var actual_delta = lambda_n[c] - old_lambda
                 for i in range(NV):
-                    qvel[i] += M_inv[i] * J_row[i] * actual_delta
+                    qvel[i] += M_inv_diag[i] * J_row[i] * actual_delta
 
         # Phase 3: Friction
         var lambda_t1 = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
@@ -623,7 +640,7 @@ struct GcPGSSolver(GcConstraintSolver):
             )
             var k1: Scalar[DTYPE] = 0
             for i in range(NV):
-                k1 += J_row[i] * J_row[i] * M_inv[i]
+                k1 += J_row[i] * J_row[i] * M_inv_diag[i]
             if k1 < Scalar[DTYPE](1e-10):
                 k1 = Scalar[DTYPE](1e-10)
             K_t1[c] = k1
@@ -640,7 +657,7 @@ struct GcPGSSolver(GcConstraintSolver):
             )
             var k2: Scalar[DTYPE] = 0
             for i in range(NV):
-                k2 += J_row[i] * J_row[i] * M_inv[i]
+                k2 += J_row[i] * J_row[i] * M_inv_diag[i]
             if k2 < Scalar[DTYPE](1e-10):
                 k2 = Scalar[DTYPE](1e-10)
             K_t2[c] = k2
@@ -719,7 +736,7 @@ struct GcPGSSolver(GcConstraintSolver):
                     J_row,
                 )
                 for i in range(NV):
-                    qvel[i] += M_inv[i] * J_row[i] * actual_t1
+                    qvel[i] += M_inv_diag[i] * J_row[i] * actual_t1
 
                 # Apply tangent 2 correction
                 compute_contact_jacobian_row_gpu[
@@ -732,7 +749,7 @@ struct GcPGSSolver(GcConstraintSolver):
                     J_t_row,
                 )
                 for i in range(NV):
-                    qvel[i] += M_inv[i] * J_t_row[i] * actual_t2
+                    qvel[i] += M_inv_diag[i] * J_t_row[i] * actual_t2
 
         # Store impulses back to state buffer for warm-starting
         for c in range(nc):

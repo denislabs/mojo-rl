@@ -1,0 +1,1364 @@
+# Physics3D Engine Roadmap: Closing the Gap with MuJoCo
+
+This document details every difference between our GC physics engine and MuJoCo,
+with exact algorithms, formulas, data structure changes, and file-level implementation
+plans so that each item can be picked up and implemented directly.
+
+Reference material:
+- MuJoCo docs: https://mujoco.readthedocs.io/en/stable/computation/index.html
+- MuJoCo C source: `/mujoco-main/src/engine/`
+- MuJoCo Warp source: `/mujoco_warp-main/mujoco_warp/_src/`
+
+---
+
+## Table of Contents
+
+- [Current State Summary](#current-state-summary)
+- [Phase 1: Core Physics Correctness](#phase-1-core-physics-correctness)
+  - [1.1 Full Mass Matrix (off-diagonal terms)](#11-full-mass-matrix-off-diagonal-terms)
+  - [1.2 Full RNE Bias Forces (Coriolis + centrifugal)](#12-full-rne-bias-forces-coriolis--centrifugal)
+  - [1.3 Body-Body Collision in GC Engine](#13-body-body-collision-in-gc-engine)
+  - [1.4 Joint Limits as Constraints](#14-joint-limits-as-constraints)
+- [Phase 2: Integrator Improvements](#phase-2-integrator-improvements)
+  - [2.1 Implicit-fast Integrator](#21-implicit-fast-integrator)
+  - [2.2 Implicit Integrator (full)](#22-implicit-integrator-full)
+  - [2.3 RK4 Integrator](#23-rk4-integrator)
+- [Phase 3: Constraint System](#phase-3-constraint-system)
+  - [3.1 Unified Constraint Representation](#31-unified-constraint-representation)
+  - [3.2 Friction Cone Models (pyramidal + elliptic)](#32-friction-cone-models-pyramidal--elliptic)
+  - [3.3 Equality Constraints (weld + connect)](#33-equality-constraints-weld--connect)
+  - [3.4 Per-Contact Solver Parameters (solref/solimp)](#34-per-contact-solver-parameters-solrefsolimp)
+- [Phase 4: Collision Pipeline](#phase-4-collision-pipeline)
+  - [4.1 Broadphase Collision (bounding sphere)](#41-broadphase-collision-bounding-sphere)
+  - [4.2 Broadphase Collision (AABB/SAP)](#42-broadphase-collision-aabbsap)
+- [Phase 5: Advanced Features](#phase-5-advanced-features)
+  - [5.1 Solver Warmstart](#51-solver-warmstart)
+  - [5.2 Solver Islands](#52-solver-islands)
+  - [5.3 Passive Forces (spring/damper per joint)](#53-passive-forces-springdamper-per-joint)
+  - [5.4 Actuator Dynamics](#54-actuator-dynamics)
+  - [5.5 Tendon System](#55-tendon-system)
+  - [5.6 No-Slip Friction Post-Solver](#56-no-slip-friction-post-solver)
+
+---
+
+## Current State Summary
+
+### What We Have (working well)
+- **GC engine** with qpos/qvel state, forward kinematics, body velocities
+- **Three constraint solvers**: PGS (30 iter), CG (projected), Newton (active-set + line search)
+- **Contact Jacobians**: correct spatial algebra, CPU + GPU
+- **Joint types**: FREE, BALL, HINGE, SLIDE with correct cdof computation
+- **Collision primitives**: sphere, capsule, box (ground-plane + body-body in Cartesian engine)
+- **GPU support**: all solvers, kinematics, dynamics have GPU kernels
+
+### What We're Missing (by impact)
+
+| Gap | Impact | Phase |
+|-----|--------|-------|
+| Diagonal-only mass matrix | High - wrong coupled dynamics | 1 |
+| No Coriolis/centrifugal in bias forces | High - wrong at speed | 1 |
+| GC engine: ground contacts only | High - can't touch objects | 1 |
+| Joint limits via post-clamping | Medium - energy injection | 1 |
+| No implicit integrators | Medium - stability for damped systems | 2 |
+| No RK4 integrator | Medium - energy conservation | 2 |
+| No unified constraint rows | Medium - blocks friction cones/equality | 3 |
+| Simple Coulomb friction only | Medium - no torsional/rolling | 3 |
+| No equality constraints | Medium - can't model welds/connects | 3 |
+| No per-contact solref/solimp | Low - less tunability | 3 |
+| No broadphase | Low - performance for many bodies | 4 |
+| No warmstart | Low - more solver iterations | 5 |
+| No solver islands | Low - parallelism optimization | 5 |
+| No passive forces / actuators / tendons | Low - feature completeness | 5 |
+
+---
+
+## Phase 1: Core Physics Correctness
+
+### 1.1 Full Mass Matrix (off-diagonal terms)
+
+**Problem**: We only compute diagonal `M[i,i]`. Off-diagonal coupling terms `M[i,j]`
+are zero, meaning each DOF is treated as independent. For articulated bodies (robot arms,
+legs), moving one joint affects forces at other joints through inertial coupling. Without
+off-diagonal terms, dynamics are incorrect for multi-joint systems.
+
+**Files to modify**:
+- `dynamics/mass_matrix.mojo` (main implementation)
+- `types.mojo` (add sparse storage fields to DataGC if needed)
+- `integrator/constraint_gc_integrator.mojo` (use full M solve instead of diagonal inverse)
+- `gpu/gc_kernels.mojo` (GPU kernel changes)
+- `gpu/constants.mojo` (state buffer layout if M is stored)
+
+#### Algorithm: Composite Rigid Body Algorithm (CRBA)
+
+MuJoCo reference: `engine_core_smooth.c` lines 1888-2015.
+
+```
+1. Initialize: crb[i] = body_inertia[i] for each body i
+
+2. Backward pass (leaves to root):
+   for i = NBODY-1 down to 1:
+     parent = body_parent[i]
+     crb[parent] += transform(crb[i], body_pos[i], body_quat[i])
+
+3. Compute M entries:
+   for each DOF i:
+     body_i = dof_body[i]
+     // Diagonal
+     buf = crb[body_i] @ cdof[i]     // inertia * motion vector
+     M[i,i] = cdof[i] . buf + armature[i]
+
+     // Off-diagonal: walk up ancestors
+     j = dof_parent[i]
+     while j >= 0:
+       M[i,j] = cdof[j] . buf
+       M[j,i] = M[i,j]              // symmetry
+       j = dof_parent[j]
+```
+
+Where `crb @ cdof` is the spatial inertia times spatial motion vector (6D):
+```
+Given crb as (mass, I_3x3, com_offset):
+  buf_angular = I @ cdof_angular + mass * (com × cdof_linear)
+  buf_linear  = mass * cdof_linear - mass * (com × cdof_angular)
+```
+
+MuJoCo stores the composite inertia as a 10-element vector `cinert`:
+`[mass, Ixx, Iyy, Izz, Ixy, Ixz, Iyz, cx, cy, cz]`
+
+For our engine, we can use a simpler representation since we already have
+`body_inertia[3]` (diagonal) and `body_mass`.
+
+#### Storage Format
+
+**Option A (dense, simpler)**: Store full `M[NV][NV]` array.
+- Pro: simple indexing, works for small NV (< 30 DOFs)
+- Con: O(NV^2) memory and solve time
+- Good for: HalfCheetah (NV=9), Hopper (NV=6), Walker (NV=9)
+
+**Option B (sparse LDL, MuJoCo-style)**: Store lower triangle in CSR format.
+- Pro: O(NV * tree_depth) memory and solve
+- Con: more complex implementation
+- Good for: Humanoid (NV=27+), complex robots
+
+**Recommendation**: Start with Option A (dense). Our environments have NV <= 9.
+Add sparse later if needed for humanoids.
+
+#### Data Structure Changes
+
+In `DataGC`, add:
+```mojo
+# Full mass matrix (dense, NV x NV)
+var M_full: InlineArray[Scalar[DTYPE], NV * NV]
+
+# LDL factorization storage
+var M_L: InlineArray[Scalar[DTYPE], NV * NV]   # lower triangle L
+var M_D: InlineArray[Scalar[DTYPE], NV]         # diagonal D
+```
+
+Or pass as local variables in the integrator (avoids state bloat).
+
+#### LDL Factorization
+
+MuJoCo reference: `engine_core_smooth.c` lines 1991-2015 (`mj_factorI`).
+
+```
+Input: Symmetric positive-definite M (NV x NV, stored lower triangle)
+Output: L (unit lower triangular), D (diagonal) such that M = L * D * L^T
+
+Algorithm (backward elimination):
+  for k = NV-1 down to 0:
+    D[k] = M[k,k]
+    for j = 0 to k-1:
+      L[k,j] = M[k,j] / D[k]
+    for j = 0 to k-1:
+      for i = 0 to j:
+        M[j,i] -= L[k,j] * D[k] * L[k,i]
+```
+
+#### LDL Solve (M x = b)
+
+MuJoCo reference: `engine_core_smooth.c` lines 2131-2215 (`mj_solveLD`).
+
+```
+Given M = L * D * L^T, solve M * x = b:
+
+Step 1: Forward substitution (solve L^T * y1 = b):
+  for k = NV-1 down to 0:
+    x[k] = b[k]
+    for j = k+1 to NV-1:
+      x[j] -= L[j,k] * x[k]
+
+Step 2: Diagonal solve (y2 = D^-1 * y1):
+  for k = 0 to NV-1:
+    x[k] /= D[k]
+
+Step 3: Backward substitution (solve L * x = y2):
+  for k = 0 to NV-1:
+    for j = 0 to k-1:
+      x[k] -= L[k,j] * x[j]
+```
+
+#### Changes to Integrator
+
+In `constraint_gc_integrator.mojo`, replace:
+```mojo
+# OLD: diagonal solve
+if M_diag[i] > 1e-10:
+    qacc[i] = f_net[i] / M_diag[i]
+```
+
+With:
+```mojo
+# NEW: full M solve via LDL
+compute_mass_matrix_full(model, data, M_full)
+ldl_factor(M_full, L, D, NV)
+ldl_solve(L, D, f_net, qacc, NV)
+```
+
+#### GPU Considerations
+
+For GPU, the full M can be stored in registers/local memory for small NV.
+For NV <= 9 (HalfCheetah), a 9x9 matrix fits in registers easily.
+The LDL factorization and solve are sequential per environment but
+parallelized across the BATCH dimension.
+
+#### Testing
+
+- Compare M_full vs M_diag for double pendulum (2 DOF) - should see coupling
+- Compare dynamics with MuJoCo for HalfCheetah: apply same qfrc, compare qacc
+- Energy conservation test: free-falling articulated body should conserve energy
+
+---
+
+### 1.2 Full RNE Bias Forces (Coriolis + centrifugal)
+
+**Problem**: We only compute gravitational torques. At any non-trivial velocity,
+Coriolis and centrifugal forces are significant. A spinning body or fast-moving
+robot will have wrong dynamics without them.
+
+**Files to modify**:
+- `dynamics/bias_forces.mojo` (main implementation)
+- `gpu/gc_kernels.mojo` (GPU version)
+
+#### Algorithm: Recursive Newton-Euler (RNE)
+
+MuJoCo reference: `engine_core_smooth.c` lines 2425-2486 (`mj_rne`).
+
+The RNE computes `bias = M * 0 + C(q, qvel)` by setting qacc=0:
+
+```
+FORWARD PASS (root to leaves):
+  // World body "acceleration" = -gravity (handles gravity uniformly)
+  cacc[0] = [0, 0, 0, -gx, -gy, -gz]  // 6D spatial acceleration
+
+  for each body i (in topological order, skip world):
+    parent = body_parent[i]
+
+    // Spatial acceleration of body i:
+    // cacc[i] = cacc[parent] + cdof_dot[i] * qvel[i]
+    // (cdof_dot captures velocity-dependent acceleration = Coriolis/centrifugal)
+    cacc[i] = cacc[parent]
+    for each DOF d of body i:
+      cacc[i] += cdof_dot[d] * qvel[d]
+
+    // Body force = inertia * acceleration + velocity x (inertia * velocity)
+    // The cross product term is the Coriolis/centrifugal contribution
+    cfrc[i] = I[i] @ cacc[i] + cvel[i] x* (I[i] @ cvel[i])
+
+BACKWARD PASS (leaves to root):
+  for each body i (in reverse topological order):
+    parent = body_parent[i]
+    if parent > 0:
+      cfrc[parent] += cfrc[i]    // accumulate child forces to parent
+
+PROJECTION (body forces to joint torques):
+  for each DOF d:
+    bias[d] = cdof[d] . cfrc[body_of_dof[d]]    // dot product of motion axis with force
+```
+
+Where:
+- `cacc` = 6D spatial acceleration per body (angular[3], linear[3])
+- `cvel` = 6D spatial velocity per body (already computed in `compute_body_velocities`)
+- `cfrc` = 6D spatial force per body (torque[3], force[3])
+- `cdof` = 6D spatial motion axis per DOF (already computed)
+- `cdof_dot` = time derivative of cdof (velocity-dependent, NEW)
+- `x*` = spatial cross-force product
+
+#### New: cdof_dot Computation
+
+`cdof_dot` captures how the motion axis changes with velocity. For each joint type:
+
+```
+HINGE:
+  // Axis rotates with parent body angular velocity
+  cdof_dot_angular = parent_angvel x axis_world
+  cdof_dot_linear  = parent_angvel x (axis_world x offset) + axis_world x vel_at_joint
+
+SLIDE:
+  cdof_dot_angular = [0, 0, 0]
+  cdof_dot_linear  = parent_angvel x axis_world
+
+FREE:
+  cdof_dot = [0, 0, 0, 0, 0, 0]  // world-fixed axes don't change
+
+BALL:
+  cdof_dot_angular = parent_angvel x axis_world  (for each of the 3 axes)
+  cdof_dot_linear  = [0, 0, 0]
+```
+
+#### Spatial Cross-Force Product
+
+The `x*` operation (spatial cross-force, also called `crossForce`):
+```
+Given v = [w, v_lin] (spatial velocity) and f = [tau, f_lin] (spatial force):
+  v x* f = [w x tau + v_lin x f_lin, w x f_lin]
+
+In components:
+  result_angular = cross(w, tau) + cross(v_lin, f_lin)
+  result_linear  = cross(w, f_lin)
+```
+
+#### Spatial Inertia-Vector Product
+
+The `I @ v` operation (inertia times spatial vector):
+```
+Given I = (mass, I_3x3, com_offset) and v = [w, v_lin]:
+  result_angular = I_3x3 @ w + mass * (com x v_lin)
+  result_linear  = mass * v_lin - mass * (com x w)
+```
+
+For diagonal inertia `I = diag(Ixx, Iyy, Izz)`:
+```
+  result_angular = [Ixx*wx, Iyy*wy, Izz*wz] + mass * cross(com, v_lin)
+  result_linear  = mass * v_lin - mass * cross(com, w)
+```
+
+#### Implementation Plan
+
+1. Add `cdof_dot` computation to `jacobian.mojo`:
+   ```mojo
+   fn compute_cdof_dot[...](model, data, cdof, mut cdof_dot):
+   ```
+
+2. Rewrite `compute_bias_forces` in `bias_forces.mojo`:
+   - Forward pass: compute `cacc[i]` and `cfrc[i]` per body
+   - Backward pass: accumulate `cfrc` up the tree
+   - Project: `bias[d] = cdof[d] . cfrc[body[d]]`
+
+3. Update GPU kernel in `gc_kernels.mojo`
+
+4. Keep the old gravity-only version as a fast path option (compile-time flag)
+
+#### Testing
+
+- Zero-velocity test: RNE with qvel=0 should match current gravity-only bias
+- Spinning body test: single body rotating fast, check centrifugal force
+- Compare with MuJoCo: same qpos/qvel, compare bias force output
+- Double pendulum at speed: verify energy drift is reduced
+
+---
+
+### 1.3 Body-Body Collision in GC Engine
+
+**Problem**: The GC engine (`ConstraintGcIntegrator`) only calls `detect_ground_contacts()`
+from `semi_implicit_euler_solver.mojo`, which only checks bodies against the ground plane.
+There is no body-body collision detection in the GC pipeline. This means a robot cannot
+interact with objects, and self-collision is impossible.
+
+**Files to modify**:
+- `collision/collision.mojo` (adapt `CollisionDetector` for GC)
+- `integrator/constraint_gc_integrator.mojo` (call body-body detection)
+- `types.mojo` (ensure `ContactInfoGC` supports body-body)
+- `solver/gc_pgs_solver.mojo`, `gc_cg_solver.mojo`, `gc_newton_solver.mojo`
+  (handle body-body contact Jacobians)
+- `gpu/gc_kernels.mojo` (GPU body-body collision)
+
+#### What Needs to Happen
+
+1. **Detection**: For each pair of bodies (i, j) where i != j:
+   - Get world positions and geometry from `data.xpos`, `data.xquat`, `model.body_geom_type`
+   - Dispatch to appropriate primitive: `sphere_sphere`, `capsule_capsule`, `box_sphere`, etc.
+   - Output: `ContactInfoGC` with `body_a = i`, `body_b = j`, contact point, normal, distance
+
+2. **Jacobian**: For body-body contacts, the contact Jacobian has contributions from
+   both bodies (unlike ground contacts where body_b = -1):
+   ```
+   J_contact[d] = J_body_a[d] . normal - J_body_b[d] . normal
+   ```
+   Where `J_body_x` is the velocity Jacobian mapping DOF d to the contact point on body x.
+
+3. **Solver Integration**: The solvers already handle the Jacobian correctly if it's
+   computed correctly. The key change is in `compute_contact_jacobian_row`:
+   - Currently: `J_row[d] = J_trans_a . direction` (ground contacts only)
+   - New: `J_row[d] = J_trans_a . direction - J_trans_b . direction`
+
+#### Implementation Steps
+
+**Step 1**: Add `detect_body_body_contacts_gc` function:
+```mojo
+fn detect_body_body_contacts_gc[...](model: ModelGC, mut data: DataGC):
+    """Detect contacts between all body pairs using world-space geometry."""
+    for i in range(NBODY):
+        for j in range(i + 1, NBODY):
+            # Skip parent-child pairs (they share a joint)
+            if model.body_parent[j] == i or model.body_parent[i] == j:
+                continue
+
+            # Get world positions and orientations from FK results
+            pos_i = (data.xpos[3*i], data.xpos[3*i+1], data.xpos[3*i+2])
+            pos_j = (data.xpos[3*j], data.xpos[3*j+1], data.xpos[3*j+2])
+            # ... dispatch to collision primitives based on geom_type ...
+
+            if dist < margin:
+                var contact = ContactInfoGC[DTYPE]()
+                contact.body_a = i
+                contact.body_b = j
+                contact.normal_x = normal.x
+                # ... fill contact ...
+                data.contacts[data.num_contacts] = contact
+                data.num_contacts += 1
+```
+
+**Step 2**: Modify `compute_contact_jacobian_row` in `jacobian.mojo`:
+```mojo
+# Add body_b parameter (currently not used for ground contacts)
+fn compute_contact_jacobian_row_gc[...](
+    model, data, cdof,
+    body_a: Int, body_b: Int,  # body_b = -1 for ground
+    contact_pos, direction,
+    mut J_row
+):
+    # Contribution from body_a (existing code)
+    for d in range(NV):
+        if _joint_affects_body(model, d, body_a):
+            J_row[d] += compute_J_at_point(cdof, d, contact_pos, body_a) . direction
+
+    # NEW: Contribution from body_b (subtract because relative velocity)
+    if body_b >= 0:
+        for d in range(NV):
+            if _joint_affects_body(model, d, body_b):
+                J_row[d] -= compute_J_at_point(cdof, d, contact_pos, body_b) . direction
+```
+
+**Step 3**: Call both detection functions in the integrator:
+```mojo
+# In constraint_gc_integrator.mojo step():
+detect_ground_contacts(model, data)
+detect_body_body_contacts_gc(model, data)  # NEW
+```
+
+#### Testing
+
+- Two spheres dropping onto each other (no ground): should bounce
+- Robot touching a box on the ground: contact forces on both
+- Self-collision: two links of a chain hitting each other
+- Compare contact forces with Cartesian engine (ImpulseIntegrator) for same scenario
+
+---
+
+### 1.4 Joint Limits as Constraints
+
+**Problem**: We enforce joint limits by clamping qpos after integration and zeroing
+velocity. This is discontinuous: it can inject energy (sudden velocity change) and
+doesn't produce smooth constraint forces. MuJoCo treats limits as inequality
+constraints in the solver, producing bounded, smooth forces.
+
+**Files to modify**:
+- `solver/gc_pgs_solver.mojo`, `gc_cg_solver.mojo`, `gc_newton_solver.mojo`
+  (add limit constraint rows)
+- `integrator/constraint_gc_integrator.mojo` (remove post-clamping, add limit detection)
+- `solver/semi_implicit_euler_solver.mojo` (keep `enforce_joint_limits` for backward compat)
+
+#### MuJoCo's Approach
+
+Reference: `engine_core_constraint.c` lines 756-903 (`mj_instantiateLimit`).
+
+For each HINGE/SLIDE joint with limits `[q_min, q_max]`:
+```
+For side in {lower, upper}:
+  q_limit = q_min if lower, q_max if upper
+  dist = side * (q_limit - q_current)    // positive = inside limits
+
+  if dist < margin:  // approaching or past limit
+    // Create constraint row:
+    J[dof_adr] = -side   // Jacobian is +1 or -1 at the joint's DOF
+    // All other J entries = 0
+
+    // Constraint position: dist (negative = violated)
+    // Reference acceleration: from impedance model (solref/solimp)
+    aref = -k * imp * dist - b * vel[dof_adr]
+```
+
+For BALL joints:
+```
+angle = ||axis_angle(quat)||
+dist = max_angle - angle
+
+if dist < margin:
+  J[dof_adr:dof_adr+3] = -axis  // 3D Jacobian along rotation axis
+  aref = -k * imp * dist - b * (axis . angvel)
+```
+
+#### Implementation
+
+**Step 1**: Add limit detection before the solver call:
+```mojo
+fn detect_joint_limits[...](model, data, mut limit_contacts, mut num_limits):
+    for j in range(NJOINT):
+        var jnt = model.joints[j]
+        if jnt.type == JNT_HINGE or jnt.type == JNT_SLIDE:
+            var q = data.qpos[jnt.qpos_adr]
+            var margin = Scalar[DTYPE](0.01)  # activation margin
+
+            # Lower limit
+            var dist_lo = q - jnt.range_min
+            if dist_lo < margin:
+                # Add constraint: J[dof_adr] = +1, pos = dist_lo
+                limit_contacts[num_limits] = LimitConstraint(
+                    dof=jnt.dof_adr, sign=1, dist=dist_lo
+                )
+                num_limits += 1
+
+            # Upper limit
+            var dist_hi = jnt.range_max - q
+            if dist_hi < margin:
+                limit_contacts[num_limits] = LimitConstraint(
+                    dof=jnt.dof_adr, sign=-1, dist=dist_hi
+                )
+                num_limits += 1
+```
+
+**Step 2**: In the solver, handle limit constraints alongside contact constraints.
+Limit constraints are simpler than contacts (1D Jacobian, single DOF):
+```
+For each limit constraint:
+  velocity_error = sign * qvel[dof]
+  K = 1.0 / M_diag[dof]  // or M_inv[dof,dof] with full M
+  bias = BAUMGARTE * min(dist, 0) / dt
+  delta_lambda = -(velocity_error + bias) / K
+  lambda = max(lambda + delta_lambda, 0)  // inequality: push away from limit
+  qvel[dof] += sign * delta_lambda * M_inv[dof]
+```
+
+**Step 3**: Remove post-clamping from the integrator pipeline (or make it optional).
+
+#### Testing
+
+- Pendulum at joint limit: should bounce smoothly, not stick
+- Energy test: repeated bouncing off limits should not gain energy
+- Compare with MuJoCo: same model, hit limit, compare qvel trajectory
+
+---
+
+## Phase 2: Integrator Improvements
+
+### 2.1 Implicit-fast Integrator
+
+**Problem**: Our semi-implicit Euler (`qvel += qacc*dt, qpos += qvel*dt`) treats all
+forces explicitly. For systems with damping, springs, or stiff contacts, this can be
+unstable or require very small timesteps. MuJoCo's `implicitfast` is their recommended
+default - it has the same computational cost as Euler but much better stability.
+
+**Files to create/modify**:
+- `integrator/implicit_fast_integrator.mojo` (NEW)
+- `dynamics/velocity_derivatives.mojo` (NEW - compute dqfrc/dqvel)
+- `traits/integrator.mojo` (ensure trait compatibility)
+
+#### Algorithm
+
+MuJoCo reference: `engine_forward.c` lines 1140-1163 (implicitfast path).
+
+Instead of solving `M * qacc = f`, solve:
+```
+(M - dt * dF/dv) * qacc = f_total
+
+Where:
+  M         = mass matrix
+  dt        = timestep
+  dF/dv     = derivative of velocity-dependent forces w.r.t. velocity
+  f_total   = qfrc_smooth + qfrc_constraint
+  qacc      = resulting acceleration
+```
+
+The key insight: `dF/dv` captures how forces change with velocity. For damping
+`F = -b * v`, the derivative is `dF/dv = -b`, so the system becomes
+`(M + dt*b) * qacc = f`, which is unconditionally stable for any damping.
+
+#### What Goes Into dF/dv
+
+MuJoCo reference: `engine_derivative.c` lines 1536-1556 (`mjd_smooth_vel`).
+
+For `implicitfast` (flg_bias=0, skips Coriolis derivative):
+```
+dF/dv = dF_passive/dv + dF_actuator/dv
+
+Where:
+  dF_passive/dv:
+    - Joint damping: dF/dv[i,i] = -damping[i]   (diagonal)
+    - Joint friction: dF/dv[i,i] -= friction_loss[i] * sign(v[i])  (diagonal)
+
+  dF_actuator/dv:
+    - Velocity-dependent actuators (motors with velocity feedback)
+    - Usually zero for simple torque control
+```
+
+For simple damped joints (the common case), `dF/dv` is diagonal:
+```
+dF_dv[i] = -joint_damping[i]
+```
+
+#### Implementation
+
+**Step 1**: Add damping to `ModelGC`:
+```mojo
+# In types.mojo, ModelGC:
+var joint_damping: InlineArray[Scalar[DTYPE], NV]  # per-DOF damping coefficient
+```
+
+**Step 2**: Create `dynamics/velocity_derivatives.mojo`:
+```mojo
+fn compute_velocity_derivative_diag[...](
+    model: ModelGC, data: DataGC, mut dFdv_diag: InlineArray[Scalar[DTYPE], NV]
+):
+    """Compute diagonal of dF/dv (implicitfast: skip Coriolis)."""
+    for i in range(NV):
+        dFdv_diag[i] = -model.joint_damping[i]
+```
+
+**Step 3**: Create `integrator/implicit_fast_integrator.mojo`:
+```mojo
+struct ImplicitFastGcIntegrator(GcIntegrator):
+    @staticmethod
+    fn step[...](model, mut data):
+        # 1-5: Same as ConstraintGcIntegrator (FK, contacts, M, bias, cdof)
+
+        # 6: Compute velocity derivative
+        var dFdv_diag = InlineArray[Scalar[DTYPE], V_SIZE](0)
+        compute_velocity_derivative_diag(model, data, dFdv_diag)
+
+        # 7: Build modified mass matrix: M_hat = M - dt * dF/dv
+        # For diagonal case:
+        var M_hat_diag = InlineArray[Scalar[DTYPE], V_SIZE](0)
+        for i in range(NV):
+            M_hat_diag[i] = M_diag[i] - dt * dFdv_diag[i]
+
+        # 8: Solve M_hat * qacc = f_net (instead of M * qacc = f_net)
+        for i in range(NV):
+            if M_hat_diag[i] > 1e-10:
+                qacc[i] = f_net[i] / M_hat_diag[i]
+
+        # 9-11: Same as before (predict vel, constraint solve, integrate, normalize)
+```
+
+With full mass matrix (Phase 1.1):
+```mojo
+# Build M_hat = M_full - dt * dF/dv
+for i in range(NV):
+    for j in range(NV):
+        M_hat[i * NV + j] = M_full[i * NV + j]
+    M_hat[i * NV + i] -= dt * dFdv_diag[i]  # only diagonal dF/dv
+
+# Factor and solve
+ldl_factor(M_hat, L, D, NV)
+ldl_solve(L, D, f_net, qacc, NV)
+```
+
+#### Adding Damping Forces to Bias
+
+The damping force itself needs to be included in `f_net`:
+```mojo
+# In the step function, add damping to applied forces:
+for i in range(NV):
+    f_net[i] = data.qfrc[i] - bias[i] - model.joint_damping[i] * data.qvel[i]
+```
+
+#### Testing
+
+- Damped pendulum: should decay smoothly without oscillation
+- Stiff spring: compare stability at various timesteps vs explicit Euler
+- HalfCheetah with damping: verify training still works, check stability
+
+---
+
+### 2.2 Implicit Integrator (full)
+
+**Problem**: `implicitfast` skips the Coriolis derivative. For systems with significant
+gyroscopic effects (rapidly spinning objects, robot arms at high speed), the full
+implicit integrator includes `d(bias)/d(qvel)` for better accuracy.
+
+**Files to create/modify**:
+- `integrator/implicit_gc_integrator.mojo` (NEW)
+- `dynamics/velocity_derivatives.mojo` (add RNE velocity derivative)
+
+#### Additional Computation: RNE Velocity Derivative
+
+MuJoCo reference: `engine_derivative.c` lines 596-700 (`mjd_rne_vel`).
+
+This computes `d(C(q,v))/dv` where C is the Coriolis/centrifugal term from RNE.
+The derivative is generally non-symmetric, requiring LU factorization instead of
+Cholesky/LDL:
+
+```
+dF/dv_full = dF_passive/dv + dF_actuator/dv - d(bias)/dv
+
+Modified system: (M - dt * dF/dv_full) * qacc = f_total
+Factorize via LU (not LDL, because dF/dv_full is not symmetric)
+```
+
+**Implementation**: Same as implicitfast but:
+1. Compute full `dF/dv` matrix (NV x NV), including `d(bias)/dv`
+2. Use LU factorization instead of LDL
+3. More expensive but more stable for gyroscopic systems
+
+**Recommendation**: Implement after implicitfast. Most robotics tasks don't need this.
+
+---
+
+### 2.3 RK4 Integrator
+
+**Problem**: For systems that should conserve energy (pendulums, mechanical systems
+without damping), semi-implicit Euler drifts energy over time. RK4 provides 4th-order
+accuracy and much better energy conservation.
+
+**Files to create**:
+- `integrator/rk4_gc_integrator.mojo` (NEW)
+
+#### Algorithm
+
+MuJoCo reference: `engine_forward.c` lines 1005-1090 (`mj_RungeKutta`).
+
+```
+RK4 Butcher tableau:
+  c = [0, 1/2, 1/2, 1]
+  A = [[0,   0,   0,   0],
+       [1/2, 0,   0,   0],
+       [0,   1/2, 0,   0],
+       [0,   0,   1,   0]]
+  b = [1/6, 1/3, 1/3, 1/6]
+
+Algorithm:
+  Save initial state: q0, v0
+
+  // Stage 1: evaluate at (q0, v0)
+  a1 = forward_dynamics(q0, v0)
+  k1_v = a1, k1_q = v0
+
+  // Stage 2: evaluate at (q0 + dt/2 * k1_q, v0 + dt/2 * k1_v)
+  q2 = integrate_pos(q0, k1_q, dt/2)
+  v2 = v0 + dt/2 * k1_v
+  a2 = forward_dynamics(q2, v2)
+  k2_v = a2, k2_q = v2
+
+  // Stage 3: evaluate at (q0 + dt/2 * k2_q, v0 + dt/2 * k2_v)
+  q3 = integrate_pos(q0, k2_q, dt/2)
+  v3 = v0 + dt/2 * k2_v
+  a3 = forward_dynamics(q3, v3)
+  k3_v = a3, k3_q = v3
+
+  // Stage 4: evaluate at (q0 + dt * k3_q, v0 + dt * k3_v)
+  q4 = integrate_pos(q0, k3_q, dt)
+  v4 = v0 + dt * k3_v
+  a4 = forward_dynamics(q4, v4)
+  k4_v = a4, k4_q = v4
+
+  // Combine
+  v_new = v0 + dt/6 * (k1_v + 2*k2_v + 2*k3_v + k4_v)
+  q_new = integrate_pos(q0, (k1_q + 2*k2_q + 2*k3_q + k4_q)/6, dt)
+```
+
+**Key points**:
+- Requires 4 forward dynamics evaluations per step (4x cost)
+- `integrate_pos` must handle quaternions correctly (not simple addition)
+- Constraint solving should happen at each stage (expensive) or only at the final
+  stage (cheaper but less accurate)
+
+**Recommendation**: Implement as a quality option. Not needed for RL training
+(where fast iteration matters more than accuracy), but useful for validation
+and high-fidelity simulation.
+
+#### Position Integration with Quaternions
+
+For FREE and BALL joints, position integration is not `q += v*dt` because
+quaternion space is not Euclidean:
+```
+For HINGE/SLIDE: q_new = q + v * dt  (standard)
+
+For BALL (quaternion):
+  dq = axis_angle_to_quat(angvel * dt)
+  q_new = quat_mul(q, dq)
+  q_new = quat_normalize(q_new)
+
+For FREE:
+  pos_new = pos + vel * dt
+  dq = axis_angle_to_quat(angvel * dt)
+  quat_new = quat_mul(quat, dq)
+  quat_new = quat_normalize(quat_new)
+```
+
+---
+
+## Phase 3: Constraint System
+
+### 3.1 Unified Constraint Representation
+
+**Problem**: Currently, contact constraints are handled directly inside each solver
+with inline Jacobian computation. Adding new constraint types (limits, friction cones,
+equality) requires modifying every solver. MuJoCo uses a unified constraint array
+that all solvers consume.
+
+**Files to create/modify**:
+- `types.mojo` (add `ConstraintRow` struct, `ConstraintData`)
+- `constraint/constraint_builder.mojo` (NEW - builds constraint rows from contacts/limits)
+- All three solvers (consume `ConstraintData` instead of raw contacts)
+- `traits/gc_solver.mojo` (update trait to take constraint data)
+
+#### Data Structure
+
+MuJoCo reference: constraint arrays in `mjdata.h`.
+
+```mojo
+struct ConstraintRow[DTYPE: DType, NV: Int]:
+    """Single row of the constraint system."""
+    var type: Int           # CONTACT_NORMAL, CONTACT_FRICTION, LIMIT, EQUALITY
+    var id: Int             # source object (contact index, joint index, etc.)
+    var J: InlineArray[Scalar[DTYPE], NV]   # Jacobian row (1 x NV)
+    var pos: Scalar[DTYPE]  # constraint position error
+    var vel: Scalar[DTYPE]  # constraint velocity (J @ qvel)
+    var aref: Scalar[DTYPE] # reference acceleration
+    var D: Scalar[DTYPE]    # effective mass (1 / (J @ M_inv @ J^T))
+    var R: Scalar[DTYPE]    # regularization
+    var lo: Scalar[DTYPE]   # force lower bound (0 for contacts, -inf for equality)
+    var hi: Scalar[DTYPE]   # force upper bound (+inf for contacts)
+    var force: Scalar[DTYPE] # computed constraint force (output)
+
+# Constraint types
+alias CNSTR_CONTACT_NORMAL = 0
+alias CNSTR_CONTACT_FRICTION = 1
+alias CNSTR_LIMIT_JOINT = 2
+alias CNSTR_EQUALITY_CONNECT = 3
+alias CNSTR_EQUALITY_WELD = 4
+
+struct ConstraintData[DTYPE: DType, NV: Int, MAX_ROWS: Int]:
+    """All constraint rows for one simulation step."""
+    var rows: InlineArray[ConstraintRow[DTYPE, NV], MAX_ROWS]
+    var num_rows: Int
+    var ne: Int   # number of equality constraints (come first)
+    var nf: Int   # number of friction constraints
+    var ni: Int   # number of inequality constraints (contacts + limits)
+```
+
+#### Builder Pattern
+
+```mojo
+fn build_constraints[...](
+    model, data, M_inv, cdof,
+    mut cdata: ConstraintData
+):
+    cdata.num_rows = 0
+
+    # 1. Equality constraints (come first in MuJoCo)
+    build_equality_constraints(model, data, cdof, cdata)
+    cdata.ne = cdata.num_rows
+
+    # 2. Joint limit constraints
+    build_limit_constraints(model, data, cdof, cdata)
+
+    # 3. Contact constraints (normal)
+    build_contact_normal_constraints(model, data, M_inv, cdof, cdata)
+
+    # 4. Contact friction constraints (after normal)
+    build_contact_friction_constraints(model, data, M_inv, cdof, cdata)
+    cdata.nf = cdata.num_rows - cdata.ne - ni_before_friction
+```
+
+#### Solver Changes
+
+All three solvers would consume `ConstraintData` uniformly:
+```mojo
+trait GcConstraintSolver:
+    @staticmethod
+    fn solve[...](
+        model, data, M_diag,  # or M_full + L, D
+        mut cdata: ConstraintData,
+        mut qvel: InlineArray[...],
+        dt: Scalar[DTYPE],
+    ):
+        ...
+```
+
+---
+
+### 3.2 Friction Cone Models (pyramidal + elliptic)
+
+**Problem**: We use simple Coulomb clamping: `|f_tangent| <= mu * f_normal`.
+MuJoCo supports two friction cone models that handle multi-dimensional friction
+(tangent1, tangent2, torsional, rolling).
+
+**Files to create/modify**:
+- `constraint/friction_cone.mojo` (NEW - cone projection functions)
+- `constraint/constraint_builder.mojo` (friction row generation)
+- Solvers (friction projection step)
+
+#### Pyramidal Friction Cone
+
+MuJoCo reference: `engine_core_constraint.c` lines 1050-1068.
+
+Instead of one friction constraint, create pairs of pyramid edges:
+```
+For each tangent direction k (k = 1 to condim-1):
+  Edge+: J_edge = J_normal + mu_k * J_tangent[k]
+  Edge-: J_edge = J_normal - mu_k * J_tangent[k]
+
+  Both edges have: force >= 0 (inequality constraint)
+```
+
+The pyramid approximates the friction cone with linear constraints.
+For 3D contact (condim=3): 1 normal + 2 pairs = 5 constraint rows.
+
+**Advantages**: All constraints are simple inequalities (lambda >= 0).
+**Disadvantages**: Approximation of the true cone, can allow sliding at pyramid edges.
+
+#### Elliptic Friction Cone
+
+MuJoCo reference: `engine_core_constraint.c` lines 1070-1075, solver lines 268-307.
+
+Uses the true elliptic cone constraint:
+```
+sum((f_tangent[k] / (mu_k * f_normal))^2) <= 1
+```
+
+This requires the QCQP solver for the friction subproblem:
+```
+minimize:   0.5 * f_t^T * A * f_t + b^T * f_t
+subject to: sum((f_t[k] / mu_k)^2) <= f_normal^2
+```
+
+The QCQP solver uses Newton's method on the Lagrangian (augmented with the
+elliptic constraint). For 2D friction (the common case), this is the QCQP2
+solver with closed-form Newton steps.
+
+#### QCQP Solver
+
+MuJoCo reference: `engine_util_solve.c` lines 986-1052 (`mju_QCQP2`).
+
+```
+Input: A (2x2 Hessian), b (2D gradient), d (2D scaling), r (radius = f_normal)
+Output: x (2D optimal friction force)
+
+Algorithm:
+1. Scale A and b so constraint becomes ||x||^2 <= r^2
+2. Newton iteration on dual variable lambda:
+   - Solve (A + lambda*I) * x = -b
+   - Check ||x||^2 <= r^2
+   - If violated: lambda += -(||x||^2 - r^2) / deriv
+3. Unscale result
+```
+
+#### Implementation Plan
+
+1. Start with pyramidal (simpler, compatible with existing PGS solver)
+2. Add elliptic later with QCQP solver
+3. Add `condim` parameter to contacts (1=frictionless, 3=standard, 4=torsional, 6=rolling)
+
+---
+
+### 3.3 Equality Constraints (weld + connect)
+
+**Problem**: We cannot model fixed attachments between bodies or ball-joint connections
+that aren't part of the kinematic tree. MuJoCo's equality constraints allow welding
+two bodies together or connecting them at a point.
+
+**Files to create**:
+- `constraint/equality_constraints.mojo` (NEW)
+
+#### Connect Constraint (ball joint)
+
+MuJoCo reference: `engine_core_constraint.c` lines 428-457.
+
+```
+Position error (3D): e = world_pos(body_a, anchor_a) - world_pos(body_b, anchor_b)
+Jacobian (3 x NV): J = J_pos(body_a, anchor_a) - J_pos(body_b, anchor_b)
+Constraint: e = 0 (equality, bounds = [-inf, +inf])
+```
+
+This creates 3 constraint rows.
+
+#### Weld Constraint (fixed attachment)
+
+MuJoCo reference: `engine_core_constraint.c` lines 459-533.
+
+```
+Position error (3D): e_pos = world_pos(body_a, anchor_a) - world_pos(body_b, anchor_b)
+Orientation error (3D): e_rot = 0.5 * imag(inv(quat_b) * quat_a * relpose)
+
+Jacobian position (3 x NV): J_pos = J_pos(body_a) - J_pos(body_b)
+Jacobian rotation (3 x NV): J_rot = 0.5 * corrected_quaternion_jacobian
+
+Constraint: [e_pos; e_rot] = 0 (6D equality)
+```
+
+This creates 6 constraint rows.
+
+#### Data Structure
+
+Add to `ModelGC`:
+```mojo
+struct EqualityConstraint[DTYPE: DType]:
+    var type: Int          # EQ_CONNECT or EQ_WELD
+    var body_a: Int
+    var body_b: Int
+    var anchor_a: SIMD[DTYPE, 4]  # local anchor on body_a
+    var anchor_b: SIMD[DTYPE, 4]  # local anchor on body_b
+    var relpose: SIMD[DTYPE, 4]   # relative quaternion (for weld)
+    var solref: SIMD[DTYPE, 2]    # solver reference parameters
+    var solimp: SIMD[DTYPE, 4]    # solver impedance parameters
+```
+
+---
+
+### 3.4 Per-Contact Solver Parameters (solref/solimp)
+
+**Problem**: All contacts share global stiffness/damping parameters. MuJoCo allows
+per-contact `solref` (time constant + damping ratio) and `solimp` (impedance curve)
+for fine-grained tuning.
+
+**Files to modify**:
+- `types.mojo` (add solref/solimp to contact or geom)
+- `constraint/constraint_builder.mojo` (compute per-contact aref and D)
+
+#### MuJoCo Impedance Model
+
+MuJoCo reference: `constraint.py` lines 57-126 (MuJoCo Warp `_update_efc_row`).
+
+```
+Parameters:
+  solref = [timeconst, dampratio]
+  solimp = [dmin, dmax, width, mid, power]
+
+Stiffness and damping from solref:
+  k = 1 / (dmax^2 * timeconst^2 * dampratio^2)
+  b = 2 / (dmax * timeconst)
+
+Position-dependent impedance from solimp:
+  imp_x = |penetration| / width
+  if imp_x < mid:
+    imp = dmin + (imp_x/mid)^power * (dmax - dmin)
+  else:
+    imp = dmin + (1 - ((1-imp_x)/(1-mid))^power) * (dmax - dmin)
+  imp = clamp(imp, dmin, dmax)
+
+Effective mass:
+  D = 1 / (invweight * (1 - imp) / imp)
+
+Reference acceleration:
+  aref = -k * imp * penetration - b * velocity
+```
+
+Where `invweight` is the inverse of the effective mass at the contact point:
+`invweight = J @ M_inv @ J^T` (scalar for 1D contact).
+
+**Implementation**: Store `solref[2]` and `solimp[5]` per geom or per contact pair
+in the model, then use these in the constraint builder to compute `aref` and `D`
+per constraint row.
+
+---
+
+## Phase 4: Collision Pipeline
+
+### 4.1 Broadphase Collision (bounding sphere)
+
+**Problem**: O(N^2) body-body collision is expensive for many bodies. A bounding
+sphere pre-filter eliminates most pairs cheaply.
+
+**Files to modify**:
+- `collision/collision.mojo` (add broadphase filter)
+- `types.mojo` (add bounding radius per body)
+
+#### Algorithm
+
+MuJoCo Warp reference: `collision_driver.py` lines 271-318.
+
+```
+For each pair (i, j):
+  bound = rbound[i] + rbound[j] + max(margin[i], margin[j])
+  dist_sq = |xpos[i] - xpos[j]|^2
+  if dist_sq > bound^2:
+    skip pair  // bounding spheres don't overlap
+  else:
+    proceed to narrowphase
+```
+
+Where `rbound` is the maximum extent of the geometry from its center:
+- Sphere: `rbound = radius`
+- Capsule: `rbound = half_length + radius`
+- Box: `rbound = sqrt(hx^2 + hy^2 + hz^2)`
+
+**Implementation**: Add `body_rbound[NBODY]` to ModelGC (computed once at init).
+Filter pairs before calling narrowphase primitives.
+
+---
+
+### 4.2 Broadphase Collision (AABB/SAP)
+
+**Problem**: Bounding spheres are O(N^2) in pair count. For scenes with many bodies,
+sweep-and-prune (SAP) on axis-aligned bounding boxes reduces this to O(N log N).
+
+**Files to create**:
+- `collision/broadphase.mojo` (NEW - SAP implementation)
+
+#### Algorithm: Sweep-and-Prune
+
+```
+1. Project each body's AABB onto the sweep axis (e.g., X axis)
+2. Sort intervals by their lower bound: O(N log N)
+3. Sweep through sorted list:
+   - Maintain active set of overlapping intervals
+   - For each new interval, check overlap with all active intervals
+   - Add overlapping pairs to candidate list
+   - Remove intervals whose upper bound is passed
+4. For candidate pairs, verify overlap on Y and Z axes
+```
+
+MuJoCo uses the principal eigenvector of the geom covariance matrix as the
+sweep axis (adapts to the scene geometry).
+
+**Recommendation**: Implement after bounding sphere filter. Only needed for
+scenes with 50+ bodies.
+
+---
+
+## Phase 5: Advanced Features
+
+### 5.1 Solver Warmstart
+
+**Problem**: Each step, solvers start from zero (or a basic initial guess).
+MuJoCo warmstarts from the previous step's constraint forces, reducing
+iteration count significantly (often 2-3 iterations instead of 30).
+
+**Files to modify**:
+- `types.mojo` (add warmstart storage to DataGC)
+- All three solvers (initialize from warmstart)
+- `integrator/constraint_gc_integrator.mojo` (save result for next step)
+
+#### Implementation
+
+```mojo
+# In DataGC:
+var qacc_warmstart: InlineArray[Scalar[DTYPE], NV]
+var lambda_warmstart: InlineArray[Scalar[DTYPE], MAX_CONSTRAINTS]
+
+# In solver, at start:
+if use_warmstart:
+    for i in range(num_constraints):
+        lambda[i] = data.lambda_warmstart[i]
+else:
+    for i in range(num_constraints):
+        lambda[i] = 0
+
+# After solver converges:
+for i in range(num_constraints):
+    data.lambda_warmstart[i] = lambda[i]
+data.qacc_warmstart = qacc
+```
+
+MuJoCo also compares the warmstart cost with the cold start cost and picks
+the better one (reference: `engine_forward.c` line 630 `warmstart()` function).
+
+---
+
+### 5.2 Solver Islands
+
+**Problem**: In scenes with multiple disconnected contact groups (e.g., two robots
+not touching each other), solving all constraints together wastes computation.
+Islands identify independent subproblems that can be solved in parallel.
+
+**Files to create**:
+- `solver/island_detection.mojo` (NEW)
+
+#### Algorithm
+
+```
+1. Build constraint graph:
+   - Nodes = bodies
+   - Edges = contacts and joints connecting bodies
+2. Find connected components (BFS/DFS or union-find)
+3. Each component = one island
+4. Solve each island independently (potentially in parallel)
+```
+
+**Benefits**:
+- Unconstrained bodies (flying in air) cost zero solver time
+- Multiple contact groups solve in parallel
+- Smaller systems converge faster
+
+**Recommendation**: Implement after the unified constraint system (Phase 3.1).
+Most useful for multi-agent scenarios.
+
+---
+
+### 5.3 Passive Forces (spring/damper per joint)
+
+**Problem**: MuJoCo supports per-joint passive forces (springs with rest position,
+velocity damping, dry friction). Our engine only has user-applied `qfrc`.
+
+**Files to modify**:
+- `types.mojo` (add spring/damper fields to ModelGC joints)
+- `dynamics/passive_forces.mojo` (NEW)
+- `integrator/constraint_gc_integrator.mojo` (add passive forces to f_net)
+
+#### Implementation
+
+```mojo
+# Per-joint parameters (in JointDef or ModelGC):
+var stiffness: Scalar[DTYPE]      # spring constant k
+var springref: Scalar[DTYPE]      # rest position q0
+var damping: Scalar[DTYPE]        # damping coefficient b
+var frictionloss: Scalar[DTYPE]   # dry friction torque
+
+fn compute_passive_forces[...](model, data, mut qfrc_passive):
+    for j in range(NJOINT):
+        var jnt = model.joints[j]
+        var dof = jnt.dof_adr
+        var q = data.qpos[jnt.qpos_adr]
+        var v = data.qvel[dof]
+
+        # Spring: F = -k * (q - q0)
+        qfrc_passive[dof] += -jnt.stiffness * (q - jnt.springref)
+
+        # Damping: F = -b * v
+        qfrc_passive[dof] += -jnt.damping * v
+
+        # Dry friction: F = -f * sign(v)
+        if abs(v) > 1e-10:
+            qfrc_passive[dof] += -jnt.frictionloss * sign(v)
+```
+
+Then in the integrator:
+```mojo
+compute_passive_forces(model, data, qfrc_passive)
+for i in range(NV):
+    f_net[i] = data.qfrc[i] + qfrc_passive[i] - bias[i]
+```
+
+---
+
+### 5.4 Actuator Dynamics
+
+**Problem**: MuJoCo has a full actuator system with activation dynamics, gain/bias
+computation, force limits, and multiple transmission types. Our engine applies
+torques directly via `qfrc`.
+
+**Files to create**:
+- `actuator/actuator.mojo` (NEW)
+- `types.mojo` (add actuator definitions)
+
+#### MuJoCo Actuator Pipeline
+
+```
+1. Activation dynamics: act_dot = f(act, ctrl)
+   - INTEGRATOR: act_dot = ctrl
+   - FILTER: act_dot = (ctrl - act) / tau
+   - MUSCLE: Hill muscle model
+
+2. Gain: g = gain(act, vel, ...)
+   - FIXED: g = gainprm[0]
+   - AFFINE: g = gainprm[0] + gainprm[1] * act
+
+3. Bias: b = bias(act, vel, ...)
+   - NONE: b = 0
+   - AFFINE: b = biasprm[0] + biasprm[1] * act + biasprm[2] * vel
+
+4. Force: f = g * ctrl + b
+5. Clamping: f = clamp(f, forcerange)
+6. Transmission: qfrc += J_actuator^T * f
+```
+
+**Recommendation**: Start with simple position/velocity actuators (PD control).
+Add muscle dynamics later if needed for biomechanics applications.
+
+---
+
+### 5.5 Tendon System
+
+**Problem**: MuJoCo supports tendons (cables that span multiple joints), useful
+for modeling muscles, transmission systems, and mechanical advantage.
+
+**Complexity**: High. Requires routing tendons through via-points, computing
+tendon lengths and Jacobians, and adding tendon forces to the dynamics.
+
+**Recommendation**: Low priority. Only needed for biomechanics/musculoskeletal models.
+
+---
+
+### 5.6 No-Slip Friction Post-Solver
+
+**Problem**: After the main constraint solver converges, friction forces may
+allow small slip. MuJoCo offers an optional post-processing pass that
+enforces zero slip for contacts that should be stuck.
+
+MuJoCo reference: `engine_solver.c` line 537 (`mj_solNoSlip`).
+
+**Recommendation**: Low priority. Current friction handling is sufficient for
+locomotion and manipulation tasks.
+
+---
+
+## Implementation Priority Order
+
+For RL training (locomotion, manipulation):
+
+```
+Sprint 1 (Core correctness):
+  1.1 Full mass matrix          ← biggest physics accuracy improvement
+  1.2 Full RNE bias forces      ← required for fast-moving systems
+  1.4 Joint limits as constraints ← smoother dynamics at limits
+
+Sprint 2 (Stability):
+  2.1 Implicit-fast integrator  ← recommended default, stability boost
+  5.3 Passive forces            ← needed for damped joints (common in MJCF models)
+
+Sprint 3 (Interaction):
+  1.3 Body-body collision in GC ← enables object manipulation tasks
+  3.1 Unified constraint rows   ← architecture for all below
+
+Sprint 4 (Polish):
+  3.4 Per-contact solref/solimp ← MuJoCo model compatibility
+  5.1 Solver warmstart          ← performance (fewer iterations)
+  3.2 Friction cone models      ← better friction physics
+  4.1 Broadphase (spheres)      ← performance for many bodies
+
+Sprint 5 (Advanced):
+  3.3 Equality constraints      ← weld/connect
+  2.3 RK4 integrator            ← energy conservation option
+  2.2 Implicit integrator       ← gyroscopic stability
+  5.2 Solver islands            ← multi-agent parallelism
+  5.4 Actuator dynamics         ← MuJoCo model compatibility
+```
+
+---
+
+## Validation Strategy
+
+For each feature, validate against MuJoCo:
+
+1. **Unit test**: Isolated component test (e.g., mass matrix values match MuJoCo)
+2. **Integration test**: Full step comparison (same initial state, compare next state)
+3. **Trajectory test**: Multi-step rollout, compare trajectory divergence
+4. **RL test**: Train agent, compare learning curves and final performance
+
+Tools:
+- Use `mujoco` Python package to generate reference values
+- Export qpos/qvel/qacc from MuJoCo, import into our engine, compare
+- Use HalfCheetah as the standard benchmark (NV=9, well-studied)
+
+```python
+# Example: generate reference mass matrix from MuJoCo
+import mujoco
+model = mujoco.MjModel.from_xml_path("half_cheetah.xml")
+data = mujoco.MjData(model)
+mujoco.mj_forward(model, data)
+M = np.zeros((model.nv, model.nv))
+mujoco.mj_fullM(model, M, data.qM)
+print("Mass matrix:\n", M)
+print("Bias forces:", data.qfrc_bias)
+```

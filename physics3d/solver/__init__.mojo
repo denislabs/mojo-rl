@@ -40,5 +40,7 @@ from .pgs_solver import (
     DEFAULT_IMPEDANCE,
 )
 
-# GC PGS solver (constraint-based contacts for GC engine)
+# GC constraint solvers (constraint-based contacts for GC engine)
 from .gc_pgs_solver import GcPGSSolver
+from .gc_cg_solver import GcCGSolver
+from .gc_newton_solver import GcNewtonSolver

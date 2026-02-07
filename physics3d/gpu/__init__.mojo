@@ -163,5 +163,12 @@ from ..kinematics.forward_kinematics import (
     forward_kinematics_gpu,
     compute_body_velocities_gpu,
 )
-from ..dynamics.mass_matrix import compute_mass_matrix_diagonal_gpu
+from ..dynamics.mass_matrix import (
+    compute_mass_matrix_diagonal_gpu,
+    compute_mass_matrix_full_gpu,
+    ldl_factor_gpu,
+    ldl_solve_gpu,
+    compute_M_inv_from_ldl_gpu,
+)
 from ..dynamics.bias_forces import compute_bias_forces_gpu
+from ..dynamics.jacobian import compute_composite_inertia_gpu

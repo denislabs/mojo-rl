@@ -102,6 +102,8 @@ fn main() raises:
             obs_noise_std=0.0,
         )
 
+        # agent.load_checkpoint("ppo_half_cheetah_gc.ckpt")
+
         print("Environment: HalfCheetahGC Continuous (GPU)")
         print("Agent: PPO Continuous (GPU) - CleanRL hyperparams")
         print("  Observation dim: " + String(OBS_DIM))

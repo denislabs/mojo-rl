@@ -72,6 +72,18 @@ struct JointDef[DTYPE: DType](ImplicitlyCopyable, Movable):
     var range_min: Scalar[Self.DTYPE]
     var range_max: Scalar[Self.DTYPE]
 
+    # Armature (rotor inertia) - added to mass matrix diagonal for regularization
+    # MuJoCo: M[i,i] += armature[i]. Stabilizes the mass matrix for LDL solve.
+    var armature: Scalar[Self.DTYPE]
+
+    # Joint damping - passive velocity-dependent force: f_damping = -damping * qvel
+    # MuJoCo: qfrc_passive[i] = -damping[i] * qvel[i]. Dissipates energy.
+    var damping: Scalar[Self.DTYPE]
+
+    # Joint stiffness - passive position-dependent force: f_spring = -stiffness * (qpos - ref)
+    # MuJoCo: qfrc_passive[i] += -stiffness[i] * (qpos[i] - springref[i]). Restoring spring.
+    var stiffness: Scalar[Self.DTYPE]
+
     @staticmethod
     fn empty() -> Self:
         """Create an empty/default joint definition."""
@@ -89,6 +101,9 @@ struct JointDef[DTYPE: DType](ImplicitlyCopyable, Movable):
             tau_limit=Scalar[Self.DTYPE](1000.0),
             range_min=Scalar[Self.DTYPE](-1e10),  # Effectively unlimited
             range_max=Scalar[Self.DTYPE](1e10),   # Effectively unlimited
+            armature=Scalar[Self.DTYPE](0),
+            damping=Scalar[Self.DTYPE](0),
+            stiffness=Scalar[Self.DTYPE](0),
         )
 
     @staticmethod
@@ -101,6 +116,9 @@ struct JointDef[DTYPE: DType](ImplicitlyCopyable, Movable):
         tau_limit: Scalar[Self.DTYPE] = 1000.0,
         range_min: Scalar[Self.DTYPE] = -1e10,
         range_max: Scalar[Self.DTYPE] = 1e10,
+        armature: Scalar[Self.DTYPE] = 0.0,
+        damping: Scalar[Self.DTYPE] = 0.0,
+        stiffness: Scalar[Self.DTYPE] = 0.0,
     ) -> Self:
         """Create a hinge (revolute) joint.
 
@@ -141,6 +159,9 @@ struct JointDef[DTYPE: DType](ImplicitlyCopyable, Movable):
             tau_limit=tau_limit,
             range_min=range_min,
             range_max=range_max,
+            armature=armature,
+            damping=damping,
+            stiffness=stiffness,
         )
 
     @staticmethod
@@ -153,6 +174,9 @@ struct JointDef[DTYPE: DType](ImplicitlyCopyable, Movable):
         force_limit: Scalar[Self.DTYPE] = 1000.0,
         range_min: Scalar[Self.DTYPE] = -1e10,
         range_max: Scalar[Self.DTYPE] = 1e10,
+        armature: Scalar[Self.DTYPE] = 0.0,
+        damping: Scalar[Self.DTYPE] = 0.0,
+        stiffness: Scalar[Self.DTYPE] = 0.0,
     ) -> Self:
         """Create a slide (prismatic) joint.
 
@@ -193,6 +217,9 @@ struct JointDef[DTYPE: DType](ImplicitlyCopyable, Movable):
             tau_limit=force_limit,
             range_min=range_min,
             range_max=range_max,
+            armature=armature,
+            damping=damping,
+            stiffness=stiffness,
         )
 
     @staticmethod
@@ -231,6 +258,9 @@ struct JointDef[DTYPE: DType](ImplicitlyCopyable, Movable):
             tau_limit=tau_limit,
             range_min=Scalar[Self.DTYPE](-1e10),  # Not used for ball joints
             range_max=Scalar[Self.DTYPE](1e10),
+            armature=Scalar[Self.DTYPE](0),
+            damping=Scalar[Self.DTYPE](0),
+            stiffness=Scalar[Self.DTYPE](0),
         )
 
     @staticmethod
@@ -265,6 +295,9 @@ struct JointDef[DTYPE: DType](ImplicitlyCopyable, Movable):
             tau_limit=Scalar[Self.DTYPE](0),  # No limit for free joint
             range_min=Scalar[Self.DTYPE](-1e10),  # Not used for free joints
             range_max=Scalar[Self.DTYPE](1e10),
+            armature=Scalar[Self.DTYPE](0),
+            damping=Scalar[Self.DTYPE](0),
+            stiffness=Scalar[Self.DTYPE](0),
         )
 
     fn qpos_size(self) -> Int:

@@ -280,6 +280,337 @@ fn _joint_affects_body[
 
 
 # =============================================================================
+# Composite Rigid Body Inertia (CRBA helper)
+# =============================================================================
+
+
+fn compute_composite_inertia[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    CRB_SIZE: Int,
+](
+    model: ModelGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    data: DataGC[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    mut crb: InlineArray[Scalar[DTYPE], CRB_SIZE],
+):
+    """Compute composite rigid body inertia for each body.
+
+    Each body's composite inertia is initialized from its own spatial inertia,
+    then accumulated bottom-up: crb[parent] += transform(crb[child]).
+
+    Storage: 10 floats per body:
+        [mass, cx, cy, cz, Ixx, Iyy, Izz, Ixy, Ixz, Iyz]
+    where (cx, cy, cz) is the CoM offset from the body frame origin,
+    and Ixx..Iyz is the rotational inertia about the CoM.
+
+    For the CRBA, the spatial inertia encodes:
+    - mass: total mass of the composite body
+    - CoM offset: mass-weighted center relative to body frame origin
+    - Inertia: rotational inertia about CoM
+
+    Args:
+        model: Static model configuration.
+        data: Current state (xpos, xquat from forward kinematics).
+        crb: Output composite inertia (10 * NBODY floats).
+    """
+    # Initialize each body's own spatial inertia
+    # The inertia tensor must be rotated from body-local to world frame
+    # since cdof vectors are in world frame.
+    for b in range(NBODY):
+        var mass = model.body_mass[b]
+        # CoM offset is 0 since xpos is already the body CoM
+        crb[b * 10 + 0] = mass
+        crb[b * 10 + 1] = Scalar[DTYPE](0)  # cx
+        crb[b * 10 + 2] = Scalar[DTYPE](0)  # cy
+        crb[b * 10 + 3] = Scalar[DTYPE](0)  # cz
+
+        # Rotate inertia tensor from body-local to world frame:
+        # I_world = R @ diag(Ixx, Iyy, Izz) @ R^T
+        # where R columns are body basis vectors in world frame.
+        var Ixx_local = model.body_inertia[b * 3 + 0]
+        var Iyy_local = model.body_inertia[b * 3 + 1]
+        var Izz_local = model.body_inertia[b * 3 + 2]
+
+        # Get body quaternion (world orientation)
+        var qx = data.xquat[b * 4 + 0]
+        var qy = data.xquat[b * 4 + 1]
+        var qz = data.xquat[b * 4 + 2]
+        var qw = data.xquat[b * 4 + 3]
+
+        # Compute rotation matrix columns from quaternion
+        # col0 = R @ [1,0,0], col1 = R @ [0,1,0], col2 = R @ [0,0,1]
+        var r00 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qy * qy + qz * qz)
+        var r10 = Scalar[DTYPE](2) * (qx * qy + qw * qz)
+        var r20 = Scalar[DTYPE](2) * (qx * qz - qw * qy)
+
+        var r01 = Scalar[DTYPE](2) * (qx * qy - qw * qz)
+        var r11 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qx * qx + qz * qz)
+        var r21 = Scalar[DTYPE](2) * (qy * qz + qw * qx)
+
+        var r02 = Scalar[DTYPE](2) * (qx * qz + qw * qy)
+        var r12 = Scalar[DTYPE](2) * (qy * qz - qw * qx)
+        var r22 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qx * qx + qy * qy)
+
+        # I_world[a,b] = Ixx * col0[a]*col0[b] + Iyy * col1[a]*col1[b] + Izz * col2[a]*col2[b]
+        crb[b * 10 + 4] = Ixx_local * r00 * r00 + Iyy_local * r01 * r01 + Izz_local * r02 * r02  # Ixx_world
+        crb[b * 10 + 5] = Ixx_local * r10 * r10 + Iyy_local * r11 * r11 + Izz_local * r12 * r12  # Iyy_world
+        crb[b * 10 + 6] = Ixx_local * r20 * r20 + Iyy_local * r21 * r21 + Izz_local * r22 * r22  # Izz_world
+        crb[b * 10 + 7] = Ixx_local * r00 * r10 + Iyy_local * r01 * r11 + Izz_local * r02 * r12  # Ixy_world
+        crb[b * 10 + 8] = Ixx_local * r00 * r20 + Iyy_local * r01 * r21 + Izz_local * r02 * r22  # Ixz_world
+        crb[b * 10 + 9] = Ixx_local * r10 * r20 + Iyy_local * r11 * r21 + Izz_local * r12 * r22  # Iyz_world
+
+    # Bottom-up accumulation: for each body (from leaves to root),
+    # add its composite inertia to its parent.
+    # We need to transform the child's spatial inertia to the parent frame.
+    for b in range(NBODY - 1, 0, -1):
+        var parent = model.body_parent[b]
+        if parent < 0:
+            continue
+
+        var child_mass = crb[b * 10 + 0]
+        if child_mass < Scalar[DTYPE](1e-20):
+            continue
+
+        var child_cx = crb[b * 10 + 1]
+        var child_cy = crb[b * 10 + 2]
+        var child_cz = crb[b * 10 + 3]
+        var child_Ixx = crb[b * 10 + 4]
+        var child_Iyy = crb[b * 10 + 5]
+        var child_Izz = crb[b * 10 + 6]
+        var child_Ixy = crb[b * 10 + 7]
+        var child_Ixz = crb[b * 10 + 8]
+        var child_Iyz = crb[b * 10 + 9]
+
+        # The offset from parent's origin to child's origin (in world frame)
+        var dx = data.xpos[b * 3 + 0] - data.xpos[parent * 3 + 0]
+        var dy = data.xpos[b * 3 + 1] - data.xpos[parent * 3 + 1]
+        var dz = data.xpos[b * 3 + 2] - data.xpos[parent * 3 + 2]
+
+        # Total offset from parent origin to child's composite CoM
+        var total_cx = dx + child_cx
+        var total_cy = dy + child_cy
+        var total_cz = dz + child_cz
+
+        var parent_mass = crb[parent * 10 + 0]
+        var parent_cx = crb[parent * 10 + 1]
+        var parent_cy = crb[parent * 10 + 2]
+        var parent_cz = crb[parent * 10 + 3]
+
+        # New combined mass
+        var new_mass = parent_mass + child_mass
+
+        # New combined CoM (mass-weighted average)
+        var new_cx = Scalar[DTYPE](0)
+        var new_cy = Scalar[DTYPE](0)
+        var new_cz = Scalar[DTYPE](0)
+        if new_mass > Scalar[DTYPE](1e-20):
+            new_cx = (parent_mass * parent_cx + child_mass * total_cx) / new_mass
+            new_cy = (parent_mass * parent_cy + child_mass * total_cy) / new_mass
+            new_cz = (parent_mass * parent_cz + child_mass * total_cz) / new_mass
+
+        # Parallel axis theorem for combining inertias
+        # I_combined = I_parent_about_new_com + I_child_about_new_com
+        # For each sub-body: I_about_new_com = I_about_own_com + m * ||d||^2 * I3 - m * d⊗d
+        # where d is the vector from new CoM to sub-body CoM.
+
+        # Parent contribution: offset from new CoM to parent CoM
+        var dp_x = parent_cx - new_cx
+        var dp_y = parent_cy - new_cy
+        var dp_z = parent_cz - new_cz
+        var dp_sq = dp_x * dp_x + dp_y * dp_y + dp_z * dp_z
+
+        var new_Ixx = crb[parent * 10 + 4] + parent_mass * (dp_sq - dp_x * dp_x)
+        var new_Iyy = crb[parent * 10 + 5] + parent_mass * (dp_sq - dp_y * dp_y)
+        var new_Izz = crb[parent * 10 + 6] + parent_mass * (dp_sq - dp_z * dp_z)
+        var new_Ixy = crb[parent * 10 + 7] - parent_mass * dp_x * dp_y
+        var new_Ixz = crb[parent * 10 + 8] - parent_mass * dp_x * dp_z
+        var new_Iyz = crb[parent * 10 + 9] - parent_mass * dp_y * dp_z
+
+        # Child contribution: offset from new CoM to child composite CoM
+        var dc_x = total_cx - new_cx
+        var dc_y = total_cy - new_cy
+        var dc_z = total_cz - new_cz
+        var dc_sq = dc_x * dc_x + dc_y * dc_y + dc_z * dc_z
+
+        new_Ixx = new_Ixx + child_Ixx + child_mass * (dc_sq - dc_x * dc_x)
+        new_Iyy = new_Iyy + child_Iyy + child_mass * (dc_sq - dc_y * dc_y)
+        new_Izz = new_Izz + child_Izz + child_mass * (dc_sq - dc_z * dc_z)
+        new_Ixy = new_Ixy + child_Ixy - child_mass * dc_x * dc_y
+        new_Ixz = new_Ixz + child_Ixz - child_mass * dc_x * dc_z
+        new_Iyz = new_Iyz + child_Iyz - child_mass * dc_y * dc_z
+
+        # Store combined
+        crb[parent * 10 + 0] = new_mass
+        crb[parent * 10 + 1] = new_cx
+        crb[parent * 10 + 2] = new_cy
+        crb[parent * 10 + 3] = new_cz
+        crb[parent * 10 + 4] = new_Ixx
+        crb[parent * 10 + 5] = new_Iyy
+        crb[parent * 10 + 6] = new_Izz
+        crb[parent * 10 + 7] = new_Ixy
+        crb[parent * 10 + 8] = new_Ixz
+        crb[parent * 10 + 9] = new_Iyz
+
+
+@always_inline
+fn compute_composite_inertia_gpu[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    STATE_SIZE: Int,
+    MODEL_SIZE: Int,
+    CRB_SIZE: Int,
+    BATCH: Int,
+](
+    env: Int,
+    state: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+    ],
+    model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+    mut crb: InlineArray[Scalar[DTYPE], CRB_SIZE],
+):
+    """Compute composite rigid body inertia on GPU. Same algorithm as CPU."""
+    from ..gpu.constants import (
+        gc_xpos_offset,
+        gc_xquat_offset,
+        gc_model_body_offset,
+        GC_BODY_IDX_PARENT,
+        GC_BODY_IDX_MASS,
+        GC_BODY_IDX_IXX,
+        GC_BODY_IDX_IYY,
+        GC_BODY_IDX_IZZ,
+    )
+
+    var xpos_off = gc_xpos_offset[NQ, NV, NBODY]()
+    var xquat_off = gc_xquat_offset[NQ, NV, NBODY]()
+
+    # Initialize each body's own spatial inertia (rotated to world frame)
+    for b in range(NBODY):
+        var body_off = gc_model_body_offset(b)
+        var mass = rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_MASS])
+        var Ixx_local = rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_IXX])
+        var Iyy_local = rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_IYY])
+        var Izz_local = rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_IZZ])
+
+        # Get body quaternion (world orientation)
+        var qx = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 0])
+        var qy = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 1])
+        var qz = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 2])
+        var qw = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 3])
+
+        # Rotation matrix columns from quaternion
+        var r00 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qy * qy + qz * qz)
+        var r10 = Scalar[DTYPE](2) * (qx * qy + qw * qz)
+        var r20 = Scalar[DTYPE](2) * (qx * qz - qw * qy)
+
+        var r01 = Scalar[DTYPE](2) * (qx * qy - qw * qz)
+        var r11 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qx * qx + qz * qz)
+        var r21 = Scalar[DTYPE](2) * (qy * qz + qw * qx)
+
+        var r02 = Scalar[DTYPE](2) * (qx * qz + qw * qy)
+        var r12 = Scalar[DTYPE](2) * (qy * qz - qw * qx)
+        var r22 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qx * qx + qy * qy)
+
+        crb[b * 10 + 0] = mass
+        crb[b * 10 + 1] = Scalar[DTYPE](0)
+        crb[b * 10 + 2] = Scalar[DTYPE](0)
+        crb[b * 10 + 3] = Scalar[DTYPE](0)
+        # I_world = R @ diag(Ixx, Iyy, Izz) @ R^T
+        crb[b * 10 + 4] = Ixx_local * r00 * r00 + Iyy_local * r01 * r01 + Izz_local * r02 * r02
+        crb[b * 10 + 5] = Ixx_local * r10 * r10 + Iyy_local * r11 * r11 + Izz_local * r12 * r12
+        crb[b * 10 + 6] = Ixx_local * r20 * r20 + Iyy_local * r21 * r21 + Izz_local * r22 * r22
+        crb[b * 10 + 7] = Ixx_local * r00 * r10 + Iyy_local * r01 * r11 + Izz_local * r02 * r12
+        crb[b * 10 + 8] = Ixx_local * r00 * r20 + Iyy_local * r01 * r21 + Izz_local * r02 * r22
+        crb[b * 10 + 9] = Ixx_local * r10 * r20 + Iyy_local * r11 * r21 + Izz_local * r12 * r22
+
+    # Bottom-up accumulation
+    for b in range(NBODY - 1, 0, -1):
+        var body_off = gc_model_body_offset(b)
+        var parent = Int(rebind[Scalar[DTYPE]](model[0, body_off + GC_BODY_IDX_PARENT]))
+        if parent < 0:
+            continue
+
+        var child_mass = crb[b * 10 + 0]
+        if child_mass < Scalar[DTYPE](1e-20):
+            continue
+
+        var child_cx = crb[b * 10 + 1]
+        var child_cy = crb[b * 10 + 2]
+        var child_cz = crb[b * 10 + 3]
+        var child_Ixx = crb[b * 10 + 4]
+        var child_Iyy = crb[b * 10 + 5]
+        var child_Izz = crb[b * 10 + 6]
+        var child_Ixy = crb[b * 10 + 7]
+        var child_Ixz = crb[b * 10 + 8]
+        var child_Iyz = crb[b * 10 + 9]
+
+        var dx = rebind[Scalar[DTYPE]](state[env, xpos_off + b * 3 + 0]) - rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 0])
+        var dy = rebind[Scalar[DTYPE]](state[env, xpos_off + b * 3 + 1]) - rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 1])
+        var dz = rebind[Scalar[DTYPE]](state[env, xpos_off + b * 3 + 2]) - rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 2])
+
+        var total_cx = dx + child_cx
+        var total_cy = dy + child_cy
+        var total_cz = dz + child_cz
+
+        var parent_mass = crb[parent * 10 + 0]
+        var parent_cx = crb[parent * 10 + 1]
+        var parent_cy = crb[parent * 10 + 2]
+        var parent_cz = crb[parent * 10 + 3]
+
+        var new_mass = parent_mass + child_mass
+
+        var new_cx = Scalar[DTYPE](0)
+        var new_cy = Scalar[DTYPE](0)
+        var new_cz = Scalar[DTYPE](0)
+        if new_mass > Scalar[DTYPE](1e-20):
+            new_cx = (parent_mass * parent_cx + child_mass * total_cx) / new_mass
+            new_cy = (parent_mass * parent_cy + child_mass * total_cy) / new_mass
+            new_cz = (parent_mass * parent_cz + child_mass * total_cz) / new_mass
+
+        var dp_x = parent_cx - new_cx
+        var dp_y = parent_cy - new_cy
+        var dp_z = parent_cz - new_cz
+        var dp_sq = dp_x * dp_x + dp_y * dp_y + dp_z * dp_z
+
+        var new_Ixx = crb[parent * 10 + 4] + parent_mass * (dp_sq - dp_x * dp_x)
+        var new_Iyy = crb[parent * 10 + 5] + parent_mass * (dp_sq - dp_y * dp_y)
+        var new_Izz = crb[parent * 10 + 6] + parent_mass * (dp_sq - dp_z * dp_z)
+        var new_Ixy = crb[parent * 10 + 7] - parent_mass * dp_x * dp_y
+        var new_Ixz = crb[parent * 10 + 8] - parent_mass * dp_x * dp_z
+        var new_Iyz = crb[parent * 10 + 9] - parent_mass * dp_y * dp_z
+
+        var dc_x = total_cx - new_cx
+        var dc_y = total_cy - new_cy
+        var dc_z = total_cz - new_cz
+        var dc_sq = dc_x * dc_x + dc_y * dc_y + dc_z * dc_z
+
+        new_Ixx = new_Ixx + child_Ixx + child_mass * (dc_sq - dc_x * dc_x)
+        new_Iyy = new_Iyy + child_Iyy + child_mass * (dc_sq - dc_y * dc_y)
+        new_Izz = new_Izz + child_Izz + child_mass * (dc_sq - dc_z * dc_z)
+        new_Ixy = new_Ixy + child_Ixy - child_mass * dc_x * dc_y
+        new_Ixz = new_Ixz + child_Ixz - child_mass * dc_x * dc_z
+        new_Iyz = new_Iyz + child_Iyz - child_mass * dc_y * dc_z
+
+        crb[parent * 10 + 0] = new_mass
+        crb[parent * 10 + 1] = new_cx
+        crb[parent * 10 + 2] = new_cy
+        crb[parent * 10 + 3] = new_cz
+        crb[parent * 10 + 4] = new_Ixx
+        crb[parent * 10 + 5] = new_Iyy
+        crb[parent * 10 + 6] = new_Izz
+        crb[parent * 10 + 7] = new_Ixy
+        crb[parent * 10 + 8] = new_Ixz
+        crb[parent * 10 + 9] = new_Iyz
+
+
+# =============================================================================
 # GPU Functions
 # =============================================================================
 

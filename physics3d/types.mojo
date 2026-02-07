@@ -1042,6 +1042,9 @@ struct ModelGC[
         tau_limit: Scalar[Self.DTYPE] = 1000.0,
         range_min: Scalar[Self.DTYPE] = -1e10,
         range_max: Scalar[Self.DTYPE] = 1e10,
+        armature: Scalar[Self.DTYPE] = 0.0,
+        damping: Scalar[Self.DTYPE] = 0.0,
+        stiffness: Scalar[Self.DTYPE] = 0.0,
     ) -> Int:
         """Add a hinge joint to a body.
 
@@ -1076,6 +1079,9 @@ struct ModelGC[
             tau_limit,
             range_min,
             range_max,
+            armature,
+            damping,
+            stiffness,
         )
         self.num_joints += 1
         return joint_idx
@@ -1088,6 +1094,9 @@ struct ModelGC[
         force_limit: Scalar[Self.DTYPE] = 1000.0,
         range_min: Scalar[Self.DTYPE] = -1e10,
         range_max: Scalar[Self.DTYPE] = 1e10,
+        armature: Scalar[Self.DTYPE] = 0.0,
+        damping: Scalar[Self.DTYPE] = 0.0,
+        stiffness: Scalar[Self.DTYPE] = 0.0,
     ) -> Int:
         """Add a slide joint to a body.
 
@@ -1122,6 +1131,9 @@ struct ModelGC[
             force_limit,
             range_min,
             range_max,
+            armature,
+            damping,
+            stiffness,
         )
         self.num_joints += 1
         return joint_idx
