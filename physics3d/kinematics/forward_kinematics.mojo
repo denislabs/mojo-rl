@@ -158,8 +158,13 @@ fn forward_kinematics[
             var local_pz = model.body_pos[body * 3 + 2]
 
             var rotated_local = quat_rotate(
-                parent_qx, parent_qy, parent_qz, parent_qw,
-                local_px, local_py, local_pz
+                parent_qx,
+                parent_qy,
+                parent_qz,
+                parent_qw,
+                local_px,
+                local_py,
+                local_pz,
             )
             px = parent_px + rotated_local[0]
             py = parent_py + rotated_local[1]
@@ -171,8 +176,14 @@ fn forward_kinematics[
             var local_qw = model.body_quat[body * 4 + 3]
 
             var combined = quat_mul(
-                parent_qx, parent_qy, parent_qz, parent_qw,
-                local_qx, local_qy, local_qz, local_qw
+                parent_qx,
+                parent_qy,
+                parent_qz,
+                parent_qw,
+                local_qx,
+                local_qy,
+                local_qz,
+                local_qw,
             )
             qx = combined[0]
             qy = combined[1]
@@ -210,8 +221,13 @@ fn forward_kinematics[
             # Compute offset from parent center to joint pivot (in world frame)
             # Uses the joint's pos attribute which specifies anchor in parent frame
             var to_joint = quat_rotate(
-                parent_qx, parent_qy, parent_qz, parent_qw,
-                joint_pos_x, joint_pos_y, joint_pos_z
+                parent_qx,
+                parent_qy,
+                parent_qz,
+                parent_qw,
+                joint_pos_x,
+                joint_pos_y,
+                joint_pos_z,
             )
 
             # Start at joint pivot position (parent + offset to joint)
@@ -243,7 +259,9 @@ fn forward_kinematics[
                     cur_qw = data.qpos[qpos_adr + 6]
 
                     # Normalize quaternion
-                    var normalized = quat_normalize(cur_qx, cur_qy, cur_qz, cur_qw)
+                    var normalized = quat_normalize(
+                        cur_qx, cur_qy, cur_qz, cur_qw
+                    )
                     cur_qx = normalized[0]
                     cur_qy = normalized[1]
                     cur_qz = normalized[2]
@@ -261,8 +279,7 @@ fn forward_kinematics[
 
                     # Transform axis to world using current orientation
                     var axis_world = quat_rotate(
-                        cur_qx, cur_qy, cur_qz, cur_qw,
-                        axis_x, axis_y, axis_z
+                        cur_qx, cur_qy, cur_qz, cur_qw, axis_x, axis_y, axis_z
                     )
 
                     # Create rotation quaternion from axis-angle
@@ -272,8 +289,14 @@ fn forward_kinematics[
 
                     # Compose rotation: cur_quat = hinge_quat * cur_quat
                     var new_quat = quat_mul(
-                        hinge_quat[0], hinge_quat[1], hinge_quat[2], hinge_quat[3],
-                        cur_qx, cur_qy, cur_qz, cur_qw
+                        hinge_quat[0],
+                        hinge_quat[1],
+                        hinge_quat[2],
+                        hinge_quat[3],
+                        cur_qx,
+                        cur_qy,
+                        cur_qz,
+                        cur_qw,
                     )
                     cur_qx = new_quat[0]
                     cur_qy = new_quat[1]
@@ -291,8 +314,7 @@ fn forward_kinematics[
 
                     # Transform axis to world using current orientation
                     var axis_world = quat_rotate(
-                        cur_qx, cur_qy, cur_qz, cur_qw,
-                        axis_x, axis_y, axis_z
+                        cur_qx, cur_qy, cur_qz, cur_qw, axis_x, axis_y, axis_z
                     )
 
                     # Add displacement along world axis
@@ -308,7 +330,9 @@ fn forward_kinematics[
                     var ball_qw = data.qpos[qpos_adr + 3]
 
                     # Normalize
-                    var normalized = quat_normalize(ball_qx, ball_qy, ball_qz, ball_qw)
+                    var normalized = quat_normalize(
+                        ball_qx, ball_qy, ball_qz, ball_qw
+                    )
                     ball_qx = normalized[0]
                     ball_qy = normalized[1]
                     ball_qz = normalized[2]
@@ -316,8 +340,14 @@ fn forward_kinematics[
 
                     # Compose rotation
                     var new_quat = quat_mul(
-                        ball_qx, ball_qy, ball_qz, ball_qw,
-                        cur_qx, cur_qy, cur_qz, cur_qw
+                        ball_qx,
+                        ball_qy,
+                        ball_qz,
+                        ball_qw,
+                        cur_qx,
+                        cur_qy,
+                        cur_qz,
+                        cur_qw,
                     )
                     cur_qx = new_quat[0]
                     cur_qy = new_quat[1]
@@ -327,8 +357,13 @@ fn forward_kinematics[
             # After all joints, apply offset from joint pivot to body center
             # This is body.pos - joint.pos, rotated by accumulated orientation
             var from_joint = quat_rotate(
-                cur_qx, cur_qy, cur_qz, cur_qw,
-                local_px - joint_pos_x, local_py - joint_pos_y, local_pz - joint_pos_z
+                cur_qx,
+                cur_qy,
+                cur_qz,
+                cur_qw,
+                local_px - joint_pos_x,
+                local_py - joint_pos_y,
+                local_pz - joint_pos_z,
             )
             px = cur_px + from_joint[0]
             py = cur_py + from_joint[1]
@@ -340,8 +375,14 @@ fn forward_kinematics[
             var local_qw = model.body_quat[body * 4 + 3]
 
             var combined = quat_mul(
-                cur_qx, cur_qy, cur_qz, cur_qw,
-                local_qx, local_qy, local_qz, local_qw
+                cur_qx,
+                cur_qy,
+                cur_qz,
+                cur_qw,
+                local_qx,
+                local_qy,
+                local_qz,
+                local_qw,
             )
             qx = combined[0]
             qy = combined[1]
@@ -448,7 +489,9 @@ fn compute_body_velocities[
                 var local_wy = data.qvel[dof_adr + 1]
                 var local_wz = data.qvel[dof_adr + 2]
 
-                var world_w = quat_rotate(qbx, qby, qbz, qbw, local_wx, local_wy, local_wz)
+                var world_w = quat_rotate(
+                    qbx, qby, qbz, qbw, local_wx, local_wy, local_wz
+                )
                 wx = wx + world_w[0]
                 wy = wy + world_w[1]
                 wz = wz + world_w[2]
@@ -468,8 +511,13 @@ fn compute_body_velocities[
                     var parent_qz = data.xquat[parent * 4 + 2]
                     var parent_qw = data.xquat[parent * 4 + 3]
                     var axis_world = quat_rotate(
-                        parent_qx, parent_qy, parent_qz, parent_qw,
-                        axis_x, axis_y, axis_z
+                        parent_qx,
+                        parent_qy,
+                        parent_qz,
+                        parent_qw,
+                        axis_x,
+                        axis_y,
+                        axis_z,
                     )
                     vx = vx + axis_world[0] * vel
                     vy = vy + axis_world[1] * vel
@@ -495,8 +543,13 @@ fn compute_body_velocities[
                     var parent_qz = data.xquat[parent * 4 + 2]
                     var parent_qw = data.xquat[parent * 4 + 3]
                     var axis_world = quat_rotate(
-                        parent_qx, parent_qy, parent_qz, parent_qw,
-                        axis_x, axis_y, axis_z
+                        parent_qx,
+                        parent_qy,
+                        parent_qz,
+                        parent_qw,
+                        axis_x,
+                        axis_y,
+                        axis_z,
                     )
                     wx = wx + axis_world[0] * omega
                     wy = wy + axis_world[1] * omega
@@ -551,20 +604,38 @@ fn forward_kinematics_gpu[
     var xquat_off = xquat_offset[NQ, NV, NBODY]()
 
     var meta_off = model_metadata_offset[NBODY, NJOINT]()
-    var num_joints = Int(rebind[Scalar[DTYPE]](model[0, meta_off + MODEL_META_IDX_NJOINT]))
+    var num_joints = Int(
+        rebind[Scalar[DTYPE]](model[0, meta_off + MODEL_META_IDX_NJOINT])
+    )
 
     # Process each body in order (assuming topological ordering)
     for body in range(NBODY):
         var body_off = model_body_offset(body)
-        var parent = Int(rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT]))
+        var parent = Int(
+            rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT])
+        )
 
-        var body_pos_x = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_POS_X])
-        var body_pos_y = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_POS_Y])
-        var body_pos_z = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_POS_Z])
-        var body_quat_x = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_QUAT_X])
-        var body_quat_y = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_QUAT_Y])
-        var body_quat_z = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_QUAT_Z])
-        var body_quat_w = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_QUAT_W])
+        var body_pos_x = rebind[Scalar[DTYPE]](
+            model[0, body_off + BODY_IDX_POS_X]
+        )
+        var body_pos_y = rebind[Scalar[DTYPE]](
+            model[0, body_off + BODY_IDX_POS_Y]
+        )
+        var body_pos_z = rebind[Scalar[DTYPE]](
+            model[0, body_off + BODY_IDX_POS_Z]
+        )
+        var body_quat_x = rebind[Scalar[DTYPE]](
+            model[0, body_off + BODY_IDX_QUAT_X]
+        )
+        var body_quat_y = rebind[Scalar[DTYPE]](
+            model[0, body_off + BODY_IDX_QUAT_Y]
+        )
+        var body_quat_z = rebind[Scalar[DTYPE]](
+            model[0, body_off + BODY_IDX_QUAT_Z]
+        )
+        var body_quat_w = rebind[Scalar[DTYPE]](
+            model[0, body_off + BODY_IDX_QUAT_W]
+        )
 
         # Start with parent's world pose (or identity for world)
         var cur_px: Scalar[DTYPE] = 0
@@ -576,19 +647,35 @@ fn forward_kinematics_gpu[
         var cur_qw: Scalar[DTYPE] = 1
 
         if parent >= 0:
-            cur_px = rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 0])
-            cur_py = rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 1])
-            cur_pz = rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 2])
-            cur_qx = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 0])
-            cur_qy = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 1])
-            cur_qz = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 2])
-            cur_qw = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 3])
+            cur_px = rebind[Scalar[DTYPE]](
+                state[env, xpos_off + parent * 3 + 0]
+            )
+            cur_py = rebind[Scalar[DTYPE]](
+                state[env, xpos_off + parent * 3 + 1]
+            )
+            cur_pz = rebind[Scalar[DTYPE]](
+                state[env, xpos_off + parent * 3 + 2]
+            )
+            cur_qx = rebind[Scalar[DTYPE]](
+                state[env, xquat_off + parent * 4 + 0]
+            )
+            cur_qy = rebind[Scalar[DTYPE]](
+                state[env, xquat_off + parent * 4 + 1]
+            )
+            cur_qz = rebind[Scalar[DTYPE]](
+                state[env, xquat_off + parent * 4 + 2]
+            )
+            cur_qw = rebind[Scalar[DTYPE]](
+                state[env, xquat_off + parent * 4 + 3]
+            )
 
         # Count joints for this body
         var has_joint = False
         for j in range(num_joints):
             var joint_off = model_joint_offset[NBODY](j)
-            var joint_body = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID]))
+            var joint_body = Int(
+                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID])
+            )
             if joint_body == body:
                 has_joint = True
                 break
@@ -597,18 +684,31 @@ fn forward_kinematics_gpu[
             # No joint - body is rigidly attached to parent
             # Just apply the body's local transform
             var rotated_local = gpu_quat_rotate(
-                cur_qx, cur_qy, cur_qz, cur_qw,
-                body_pos_x, body_pos_y, body_pos_z
+                cur_qx,
+                cur_qy,
+                cur_qz,
+                cur_qw,
+                body_pos_x,
+                body_pos_y,
+                body_pos_z,
             )
             var world_px = cur_px + rotated_local[0]
             var world_py = cur_py + rotated_local[1]
             var world_pz = cur_pz + rotated_local[2]
 
             var combined = gpu_quat_mul(
-                cur_qx, cur_qy, cur_qz, cur_qw,
-                body_quat_x, body_quat_y, body_quat_z, body_quat_w
+                cur_qx,
+                cur_qy,
+                cur_qz,
+                cur_qw,
+                body_quat_x,
+                body_quat_y,
+                body_quat_z,
+                body_quat_w,
             )
-            var norm_q = gpu_quat_normalize(combined[0], combined[1], combined[2], combined[3])
+            var norm_q = gpu_quat_normalize(
+                combined[0], combined[1], combined[2], combined[3]
+            )
 
             state[env, xpos_off + body * 3 + 0] = world_px
             state[env, xpos_off + body * 3 + 1] = world_py
@@ -636,18 +736,31 @@ fn forward_kinematics_gpu[
             var joint_pos_z: Scalar[DTYPE] = 0
             for j in range(num_joints):
                 var jnt_off = model_joint_offset[NBODY](j)
-                var jnt_body = Int(rebind[Scalar[DTYPE]](model[0, jnt_off + JOINT_IDX_BODY_ID]))
+                var jnt_body = Int(
+                    rebind[Scalar[DTYPE]](model[0, jnt_off + JOINT_IDX_BODY_ID])
+                )
                 if jnt_body == body:
-                    joint_pos_x = rebind[Scalar[DTYPE]](model[0, jnt_off + JOINT_IDX_POS_X])
-                    joint_pos_y = rebind[Scalar[DTYPE]](model[0, jnt_off + JOINT_IDX_POS_Y])
-                    joint_pos_z = rebind[Scalar[DTYPE]](model[0, jnt_off + JOINT_IDX_POS_Z])
+                    joint_pos_x = rebind[Scalar[DTYPE]](
+                        model[0, jnt_off + JOINT_IDX_POS_X]
+                    )
+                    joint_pos_y = rebind[Scalar[DTYPE]](
+                        model[0, jnt_off + JOINT_IDX_POS_Y]
+                    )
+                    joint_pos_z = rebind[Scalar[DTYPE]](
+                        model[0, jnt_off + JOINT_IDX_POS_Z]
+                    )
                     break
 
             # Compute offset from parent center to joint pivot (in world frame)
             # Uses the joint's pos attribute which specifies anchor in parent frame
             var to_joint = gpu_quat_rotate(
-                cur_qx, cur_qy, cur_qz, cur_qw,
-                joint_pos_x, joint_pos_y, joint_pos_z
+                cur_qx,
+                cur_qy,
+                cur_qz,
+                cur_qw,
+                joint_pos_x,
+                joint_pos_y,
+                joint_pos_z,
             )
 
             # Start at joint pivot position (parent + offset to joint)
@@ -658,28 +771,60 @@ fn forward_kinematics_gpu[
             # Process all joints for this body in order
             for j in range(num_joints):
                 var joint_off = model_joint_offset[NBODY](j)
-                var joint_body = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID]))
+                var joint_body = Int(
+                    rebind[Scalar[DTYPE]](
+                        model[0, joint_off + JOINT_IDX_BODY_ID]
+                    )
+                )
 
                 if joint_body != body:
                     continue
 
-                var jnt_type = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE]))
-                var qpos_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_QPOS_ADR]))
-                var axis_x = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_AXIS_X])
-                var axis_y = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_AXIS_Y])
-                var axis_z = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_AXIS_Z])
+                var jnt_type = Int(
+                    rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
+                )
+                var qpos_adr = Int(
+                    rebind[Scalar[DTYPE]](
+                        model[0, joint_off + JOINT_IDX_QPOS_ADR]
+                    )
+                )
+                var axis_x = rebind[Scalar[DTYPE]](
+                    model[0, joint_off + JOINT_IDX_AXIS_X]
+                )
+                var axis_y = rebind[Scalar[DTYPE]](
+                    model[0, joint_off + JOINT_IDX_AXIS_Y]
+                )
+                var axis_z = rebind[Scalar[DTYPE]](
+                    model[0, joint_off + JOINT_IDX_AXIS_Z]
+                )
 
                 if jnt_type == JNT_FREE:
                     # FREE joint: position and orientation directly from qpos
-                    cur_px = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr + 0])
-                    cur_py = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr + 1])
-                    cur_pz = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr + 2])
-                    cur_qx = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr + 3])
-                    cur_qy = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr + 4])
-                    cur_qz = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr + 5])
-                    cur_qw = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr + 6])
+                    cur_px = rebind[Scalar[DTYPE]](
+                        state[env, qpos_off + qpos_adr + 0]
+                    )
+                    cur_py = rebind[Scalar[DTYPE]](
+                        state[env, qpos_off + qpos_adr + 1]
+                    )
+                    cur_pz = rebind[Scalar[DTYPE]](
+                        state[env, qpos_off + qpos_adr + 2]
+                    )
+                    cur_qx = rebind[Scalar[DTYPE]](
+                        state[env, qpos_off + qpos_adr + 3]
+                    )
+                    cur_qy = rebind[Scalar[DTYPE]](
+                        state[env, qpos_off + qpos_adr + 4]
+                    )
+                    cur_qz = rebind[Scalar[DTYPE]](
+                        state[env, qpos_off + qpos_adr + 5]
+                    )
+                    cur_qw = rebind[Scalar[DTYPE]](
+                        state[env, qpos_off + qpos_adr + 6]
+                    )
 
-                    var normalized = gpu_quat_normalize(cur_qx, cur_qy, cur_qz, cur_qw)
+                    var normalized = gpu_quat_normalize(
+                        cur_qx, cur_qy, cur_qz, cur_qw
+                    )
                     cur_qx = normalized[0]
                     cur_qy = normalized[1]
                     cur_qz = normalized[2]
@@ -688,12 +833,13 @@ fn forward_kinematics_gpu[
                 elif jnt_type == JNT_HINGE:
                     # HINGE joint: rotation around axis at current pivot
                     # Only orientation changes, position stays at pivot
-                    var angle = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr])
+                    var angle = rebind[Scalar[DTYPE]](
+                        state[env, qpos_off + qpos_adr]
+                    )
 
                     # Transform axis to world using current orientation
                     var axis_world = gpu_quat_rotate(
-                        cur_qx, cur_qy, cur_qz, cur_qw,
-                        axis_x, axis_y, axis_z
+                        cur_qx, cur_qy, cur_qz, cur_qw, axis_x, axis_y, axis_z
                     )
 
                     # Create rotation quaternion from axis-angle
@@ -703,8 +849,14 @@ fn forward_kinematics_gpu[
 
                     # Compose rotation: cur_quat = hinge_quat * cur_quat
                     var new_quat = gpu_quat_mul(
-                        hinge_quat[0], hinge_quat[1], hinge_quat[2], hinge_quat[3],
-                        cur_qx, cur_qy, cur_qz, cur_qw
+                        hinge_quat[0],
+                        hinge_quat[1],
+                        hinge_quat[2],
+                        hinge_quat[3],
+                        cur_qx,
+                        cur_qy,
+                        cur_qz,
+                        cur_qw,
                     )
                     cur_qx = new_quat[0]
                     cur_qy = new_quat[1]
@@ -713,12 +865,13 @@ fn forward_kinematics_gpu[
 
                 elif jnt_type == JNT_SLIDE:
                     # SLIDE joint: translate along axis
-                    var displacement = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr])
+                    var displacement = rebind[Scalar[DTYPE]](
+                        state[env, qpos_off + qpos_adr]
+                    )
 
                     # Transform axis to world using current orientation
                     var axis_world = gpu_quat_rotate(
-                        cur_qx, cur_qy, cur_qz, cur_qw,
-                        axis_x, axis_y, axis_z
+                        cur_qx, cur_qy, cur_qz, cur_qw, axis_x, axis_y, axis_z
                     )
 
                     # Add displacement along world axis
@@ -728,12 +881,22 @@ fn forward_kinematics_gpu[
 
                 elif jnt_type == JNT_BALL:
                     # BALL joint: rotation from quaternion (position unchanged)
-                    var ball_qx = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr + 0])
-                    var ball_qy = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr + 1])
-                    var ball_qz = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr + 2])
-                    var ball_qw = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr + 3])
+                    var ball_qx = rebind[Scalar[DTYPE]](
+                        state[env, qpos_off + qpos_adr + 0]
+                    )
+                    var ball_qy = rebind[Scalar[DTYPE]](
+                        state[env, qpos_off + qpos_adr + 1]
+                    )
+                    var ball_qz = rebind[Scalar[DTYPE]](
+                        state[env, qpos_off + qpos_adr + 2]
+                    )
+                    var ball_qw = rebind[Scalar[DTYPE]](
+                        state[env, qpos_off + qpos_adr + 3]
+                    )
 
-                    var normalized = gpu_quat_normalize(ball_qx, ball_qy, ball_qz, ball_qw)
+                    var normalized = gpu_quat_normalize(
+                        ball_qx, ball_qy, ball_qz, ball_qw
+                    )
                     ball_qx = normalized[0]
                     ball_qy = normalized[1]
                     ball_qz = normalized[2]
@@ -741,8 +904,14 @@ fn forward_kinematics_gpu[
 
                     # Compose rotation
                     var new_quat = gpu_quat_mul(
-                        ball_qx, ball_qy, ball_qz, ball_qw,
-                        cur_qx, cur_qy, cur_qz, cur_qw
+                        ball_qx,
+                        ball_qy,
+                        ball_qz,
+                        ball_qw,
+                        cur_qx,
+                        cur_qy,
+                        cur_qz,
+                        cur_qw,
                     )
                     cur_qx = new_quat[0]
                     cur_qy = new_quat[1]
@@ -752,18 +921,31 @@ fn forward_kinematics_gpu[
             # After all joints, apply offset from joint pivot to body center
             # This is body_pos - joint_pos, rotated by accumulated orientation
             var from_joint = gpu_quat_rotate(
-                cur_qx, cur_qy, cur_qz, cur_qw,
-                body_pos_x - joint_pos_x, body_pos_y - joint_pos_y, body_pos_z - joint_pos_z
+                cur_qx,
+                cur_qy,
+                cur_qz,
+                cur_qw,
+                body_pos_x - joint_pos_x,
+                body_pos_y - joint_pos_y,
+                body_pos_z - joint_pos_z,
             )
             var world_px = cur_px + from_joint[0]
             var world_py = cur_py + from_joint[1]
             var world_pz = cur_pz + from_joint[2]
 
             var combined = gpu_quat_mul(
-                cur_qx, cur_qy, cur_qz, cur_qw,
-                body_quat_x, body_quat_y, body_quat_z, body_quat_w
+                cur_qx,
+                cur_qy,
+                cur_qz,
+                cur_qw,
+                body_quat_x,
+                body_quat_y,
+                body_quat_z,
+                body_quat_w,
             )
-            var norm_q = gpu_quat_normalize(combined[0], combined[1], combined[2], combined[3])
+            var norm_q = gpu_quat_normalize(
+                combined[0], combined[1], combined[2], combined[3]
+            )
 
             state[env, xpos_off + body * 3 + 0] = world_px
             state[env, xpos_off + body * 3 + 1] = world_py
@@ -809,7 +991,9 @@ fn compute_body_velocities_gpu[
     var xangvel_off = xangvel_offset[NQ, NV, NBODY]()
 
     var meta_off = model_metadata_offset[NBODY, NJOINT]()
-    var num_joints = Int(rebind[Scalar[DTYPE]](model[0, meta_off + MODEL_META_IDX_NJOINT]))
+    var num_joints = Int(
+        rebind[Scalar[DTYPE]](model[0, meta_off + MODEL_META_IDX_NJOINT])
+    )
 
     # Initialize velocities to zero
     for body in range(NBODY):
@@ -823,7 +1007,9 @@ fn compute_body_velocities_gpu[
     # Process each body in order
     for body in range(NBODY):
         var body_off = model_body_offset(body)
-        var parent = Int(rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT]))
+        var parent = Int(
+            rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT])
+        )
 
         # Start with parent's velocity (if any)
         var vx: Scalar[DTYPE] = 0
@@ -842,12 +1028,24 @@ fn compute_body_velocities_gpu[
             wz = rebind[Scalar[DTYPE]](state[env, xangvel_off + parent * 3 + 2])
 
             # Add velocity from parent's rotation about this body's offset
-            var body_px = rebind[Scalar[DTYPE]](state[env, xpos_off + body * 3 + 0])
-            var body_py = rebind[Scalar[DTYPE]](state[env, xpos_off + body * 3 + 1])
-            var body_pz = rebind[Scalar[DTYPE]](state[env, xpos_off + body * 3 + 2])
-            var parent_px = rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 0])
-            var parent_py = rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 1])
-            var parent_pz = rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 2])
+            var body_px = rebind[Scalar[DTYPE]](
+                state[env, xpos_off + body * 3 + 0]
+            )
+            var body_py = rebind[Scalar[DTYPE]](
+                state[env, xpos_off + body * 3 + 1]
+            )
+            var body_pz = rebind[Scalar[DTYPE]](
+                state[env, xpos_off + body * 3 + 2]
+            )
+            var parent_px = rebind[Scalar[DTYPE]](
+                state[env, xpos_off + parent * 3 + 0]
+            )
+            var parent_py = rebind[Scalar[DTYPE]](
+                state[env, xpos_off + parent * 3 + 1]
+            )
+            var parent_pz = rebind[Scalar[DTYPE]](
+                state[env, xpos_off + parent * 3 + 2]
+            )
 
             var rx = body_px - parent_px
             var ry = body_py - parent_py
@@ -861,16 +1059,28 @@ fn compute_body_velocities_gpu[
         # Apply joint velocities - accumulate for all joints on this body
         for j in range(num_joints):
             var joint_off = model_joint_offset[NBODY](j)
-            var joint_body = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID]))
+            var joint_body = Int(
+                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID])
+            )
 
             if joint_body != body:
                 continue
 
-            var jnt_type = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE]))
-            var dof_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR]))
-            var axis_x = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_AXIS_X])
-            var axis_y = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_AXIS_Y])
-            var axis_z = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_AXIS_Z])
+            var jnt_type = Int(
+                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
+            )
+            var dof_adr = Int(
+                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
+            )
+            var axis_x = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_AXIS_X]
+            )
+            var axis_y = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_AXIS_Y]
+            )
+            var axis_z = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_AXIS_Z]
+            )
 
             if jnt_type == JNT_FREE:
                 # FREE joint: direct velocity from qvel
@@ -883,9 +1093,15 @@ fn compute_body_velocities_gpu[
 
             elif jnt_type == JNT_BALL:
                 # BALL joint: add angular velocity from qvel
-                wx = wx + rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + 0])
-                wy = wy + rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + 1])
-                wz = wz + rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + 2])
+                wx = wx + rebind[Scalar[DTYPE]](
+                    state[env, qvel_off + dof_adr + 0]
+                )
+                wy = wy + rebind[Scalar[DTYPE]](
+                    state[env, qvel_off + dof_adr + 1]
+                )
+                wz = wz + rebind[Scalar[DTYPE]](
+                    state[env, qvel_off + dof_adr + 2]
+                )
 
             elif jnt_type == JNT_SLIDE:
                 # SLIDE joint: add velocity along axis
@@ -897,11 +1113,21 @@ fn compute_body_velocities_gpu[
                 var world_axis_z = axis_z
 
                 if parent >= 0:
-                    var pqx = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 0])
-                    var pqy = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 1])
-                    var pqz = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 2])
-                    var pqw = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 3])
-                    var rotated = gpu_quat_rotate(pqx, pqy, pqz, pqw, axis_x, axis_y, axis_z)
+                    var pqx = rebind[Scalar[DTYPE]](
+                        state[env, xquat_off + parent * 4 + 0]
+                    )
+                    var pqy = rebind[Scalar[DTYPE]](
+                        state[env, xquat_off + parent * 4 + 1]
+                    )
+                    var pqz = rebind[Scalar[DTYPE]](
+                        state[env, xquat_off + parent * 4 + 2]
+                    )
+                    var pqw = rebind[Scalar[DTYPE]](
+                        state[env, xquat_off + parent * 4 + 3]
+                    )
+                    var rotated = gpu_quat_rotate(
+                        pqx, pqy, pqz, pqw, axis_x, axis_y, axis_z
+                    )
                     world_axis_x = rotated[0]
                     world_axis_y = rotated[1]
                     world_axis_z = rotated[2]
@@ -912,7 +1138,9 @@ fn compute_body_velocities_gpu[
 
             elif jnt_type == JNT_HINGE:
                 # HINGE joint: add angular velocity around axis
-                var omega = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr])
+                var omega = rebind[Scalar[DTYPE]](
+                    state[env, qvel_off + dof_adr]
+                )
 
                 # Get world-space axis (using parent's orientation if applicable)
                 var world_axis_x = axis_x
@@ -920,11 +1148,21 @@ fn compute_body_velocities_gpu[
                 var world_axis_z = axis_z
 
                 if parent >= 0:
-                    var pqx = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 0])
-                    var pqy = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 1])
-                    var pqz = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 2])
-                    var pqw = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 3])
-                    var rotated = gpu_quat_rotate(pqx, pqy, pqz, pqw, axis_x, axis_y, axis_z)
+                    var pqx = rebind[Scalar[DTYPE]](
+                        state[env, xquat_off + parent * 4 + 0]
+                    )
+                    var pqy = rebind[Scalar[DTYPE]](
+                        state[env, xquat_off + parent * 4 + 1]
+                    )
+                    var pqz = rebind[Scalar[DTYPE]](
+                        state[env, xquat_off + parent * 4 + 2]
+                    )
+                    var pqw = rebind[Scalar[DTYPE]](
+                        state[env, xquat_off + parent * 4 + 3]
+                    )
+                    var rotated = gpu_quat_rotate(
+                        pqx, pqy, pqz, pqw, axis_x, axis_y, axis_z
+                    )
                     world_axis_x = rotated[0]
                     world_axis_y = rotated[1]
                     world_axis_z = rotated[2]

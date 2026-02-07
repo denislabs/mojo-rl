@@ -87,8 +87,9 @@ fn compute_cdof[
                 var pqz = data.xquat[parent * 4 + 2]
                 var pqw = data.xquat[parent * 4 + 3]
 
-                var axis_world = quat_rotate(pqx, pqy, pqz, pqw,
-                    axis_x, axis_y, axis_z)
+                var axis_world = quat_rotate(
+                    pqx, pqy, pqz, pqw, axis_x, axis_y, axis_z
+                )
                 axis_x = axis_world[0]
                 axis_y = axis_world[1]
                 axis_z = axis_world[2]
@@ -97,8 +98,7 @@ fn compute_cdof[
                 var ppy = data.xpos[parent * 3 + 1]
                 var ppz = data.xpos[parent * 3 + 2]
 
-                var jp = quat_rotate(pqx, pqy, pqz, pqw,
-                    jpos_x, jpos_y, jpos_z)
+                var jp = quat_rotate(pqx, pqy, pqz, pqw, jpos_x, jpos_y, jpos_z)
                 jpos_x = ppx + jp[0]
                 jpos_y = ppy + jp[1]
                 jpos_z = ppz + jp[2]
@@ -129,8 +129,9 @@ fn compute_cdof[
                 var pqz = data.xquat[parent * 4 + 2]
                 var pqw = data.xquat[parent * 4 + 3]
 
-                var axis_world = quat_rotate(pqx, pqy, pqz, pqw,
-                    axis_x, axis_y, axis_z)
+                var axis_world = quat_rotate(
+                    pqx, pqy, pqz, pqw, axis_x, axis_y, axis_z
+                )
                 axis_x = axis_world[0]
                 axis_y = axis_world[1]
                 axis_z = axis_world[2]
@@ -213,7 +214,9 @@ fn compute_contact_jacobian_row[
 
         # Check if this joint affects either contact body
         var affects_a = _joint_affects_body(model, j, contact_body_a)
-        var affects_b = (contact_body_b >= 0) and _joint_affects_body(model, j, contact_body_b)
+        var affects_b = (contact_body_b >= 0) and _joint_affects_body(
+            model, j, contact_body_b
+        )
 
         if not affects_a and not affects_b:
             continue
@@ -276,7 +279,8 @@ fn _joint_affects_body[
     joint_idx: Int,
     body_idx: Int,
 ) -> Bool:
-    """Check if a joint affects a body (body is the joint's body or a descendant)."""
+    """Check if a joint affects a body (body is the joint's body or a descendant).
+    """
     var joint_body = model.joints[joint_idx].body_id
 
     if body_idx == joint_body:
@@ -368,12 +372,36 @@ fn compute_composite_inertia[
         var r22 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qx * qx + qy * qy)
 
         # I_world[a,b] = Ixx * col0[a]*col0[b] + Iyy * col1[a]*col1[b] + Izz * col2[a]*col2[b]
-        crb[b * 10 + 4] = Ixx_local * r00 * r00 + Iyy_local * r01 * r01 + Izz_local * r02 * r02  # Ixx_world
-        crb[b * 10 + 5] = Ixx_local * r10 * r10 + Iyy_local * r11 * r11 + Izz_local * r12 * r12  # Iyy_world
-        crb[b * 10 + 6] = Ixx_local * r20 * r20 + Iyy_local * r21 * r21 + Izz_local * r22 * r22  # Izz_world
-        crb[b * 10 + 7] = Ixx_local * r00 * r10 + Iyy_local * r01 * r11 + Izz_local * r02 * r12  # Ixy_world
-        crb[b * 10 + 8] = Ixx_local * r00 * r20 + Iyy_local * r01 * r21 + Izz_local * r02 * r22  # Ixz_world
-        crb[b * 10 + 9] = Ixx_local * r10 * r20 + Iyy_local * r11 * r21 + Izz_local * r12 * r22  # Iyz_world
+        crb[b * 10 + 4] = (
+            Ixx_local * r00 * r00
+            + Iyy_local * r01 * r01
+            + Izz_local * r02 * r02
+        )  # Ixx_world
+        crb[b * 10 + 5] = (
+            Ixx_local * r10 * r10
+            + Iyy_local * r11 * r11
+            + Izz_local * r12 * r12
+        )  # Iyy_world
+        crb[b * 10 + 6] = (
+            Ixx_local * r20 * r20
+            + Iyy_local * r21 * r21
+            + Izz_local * r22 * r22
+        )  # Izz_world
+        crb[b * 10 + 7] = (
+            Ixx_local * r00 * r10
+            + Iyy_local * r01 * r11
+            + Izz_local * r02 * r12
+        )  # Ixy_world
+        crb[b * 10 + 8] = (
+            Ixx_local * r00 * r20
+            + Iyy_local * r01 * r21
+            + Izz_local * r02 * r22
+        )  # Ixz_world
+        crb[b * 10 + 9] = (
+            Ixx_local * r10 * r20
+            + Iyy_local * r11 * r21
+            + Izz_local * r12 * r22
+        )  # Iyz_world
 
     # Bottom-up accumulation: for each body (from leaves to root),
     # add its composite inertia to its parent.
@@ -420,9 +448,15 @@ fn compute_composite_inertia[
         var new_cy = Scalar[DTYPE](0)
         var new_cz = Scalar[DTYPE](0)
         if new_mass > Scalar[DTYPE](1e-20):
-            new_cx = (parent_mass * parent_cx + child_mass * total_cx) / new_mass
-            new_cy = (parent_mass * parent_cy + child_mass * total_cy) / new_mass
-            new_cz = (parent_mass * parent_cz + child_mass * total_cz) / new_mass
+            new_cx = (
+                parent_mass * parent_cx + child_mass * total_cx
+            ) / new_mass
+            new_cy = (
+                parent_mass * parent_cy + child_mass * total_cy
+            ) / new_mass
+            new_cz = (
+                parent_mass * parent_cz + child_mass * total_cz
+            ) / new_mass
 
         # Parallel axis theorem for combining inertias
         # I_combined = I_parent_about_new_com + I_child_about_new_com
@@ -535,17 +569,43 @@ fn compute_composite_inertia_gpu[
         crb[b * 10 + 2] = Scalar[DTYPE](0)
         crb[b * 10 + 3] = Scalar[DTYPE](0)
         # I_world = R @ diag(Ixx, Iyy, Izz) @ R^T
-        crb[b * 10 + 4] = Ixx_local * r00 * r00 + Iyy_local * r01 * r01 + Izz_local * r02 * r02
-        crb[b * 10 + 5] = Ixx_local * r10 * r10 + Iyy_local * r11 * r11 + Izz_local * r12 * r12
-        crb[b * 10 + 6] = Ixx_local * r20 * r20 + Iyy_local * r21 * r21 + Izz_local * r22 * r22
-        crb[b * 10 + 7] = Ixx_local * r00 * r10 + Iyy_local * r01 * r11 + Izz_local * r02 * r12
-        crb[b * 10 + 8] = Ixx_local * r00 * r20 + Iyy_local * r01 * r21 + Izz_local * r02 * r22
-        crb[b * 10 + 9] = Ixx_local * r10 * r20 + Iyy_local * r11 * r21 + Izz_local * r12 * r22
+        crb[b * 10 + 4] = (
+            Ixx_local * r00 * r00
+            + Iyy_local * r01 * r01
+            + Izz_local * r02 * r02
+        )
+        crb[b * 10 + 5] = (
+            Ixx_local * r10 * r10
+            + Iyy_local * r11 * r11
+            + Izz_local * r12 * r12
+        )
+        crb[b * 10 + 6] = (
+            Ixx_local * r20 * r20
+            + Iyy_local * r21 * r21
+            + Izz_local * r22 * r22
+        )
+        crb[b * 10 + 7] = (
+            Ixx_local * r00 * r10
+            + Iyy_local * r01 * r11
+            + Izz_local * r02 * r12
+        )
+        crb[b * 10 + 8] = (
+            Ixx_local * r00 * r20
+            + Iyy_local * r01 * r21
+            + Izz_local * r02 * r22
+        )
+        crb[b * 10 + 9] = (
+            Ixx_local * r10 * r20
+            + Iyy_local * r11 * r21
+            + Izz_local * r12 * r22
+        )
 
     # Bottom-up accumulation
     for b in range(NBODY - 1, 0, -1):
         var body_off = model_body_offset(b)
-        var parent = Int(rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT]))
+        var parent = Int(
+            rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT])
+        )
         if parent < 0:
             continue
 
@@ -563,9 +623,15 @@ fn compute_composite_inertia_gpu[
         var child_Ixz = crb[b * 10 + 8]
         var child_Iyz = crb[b * 10 + 9]
 
-        var dx = rebind[Scalar[DTYPE]](state[env, xpos_off + b * 3 + 0]) - rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 0])
-        var dy = rebind[Scalar[DTYPE]](state[env, xpos_off + b * 3 + 1]) - rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 1])
-        var dz = rebind[Scalar[DTYPE]](state[env, xpos_off + b * 3 + 2]) - rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 2])
+        var dx = rebind[Scalar[DTYPE]](
+            state[env, xpos_off + b * 3 + 0]
+        ) - rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 0])
+        var dy = rebind[Scalar[DTYPE]](
+            state[env, xpos_off + b * 3 + 1]
+        ) - rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 1])
+        var dz = rebind[Scalar[DTYPE]](
+            state[env, xpos_off + b * 3 + 2]
+        ) - rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 2])
 
         var total_cx = dx + child_cx
         var total_cy = dy + child_cy
@@ -582,9 +648,15 @@ fn compute_composite_inertia_gpu[
         var new_cy = Scalar[DTYPE](0)
         var new_cz = Scalar[DTYPE](0)
         if new_mass > Scalar[DTYPE](1e-20):
-            new_cx = (parent_mass * parent_cx + child_mass * total_cx) / new_mass
-            new_cy = (parent_mass * parent_cy + child_mass * total_cy) / new_mass
-            new_cz = (parent_mass * parent_cz + child_mass * total_cz) / new_mass
+            new_cx = (
+                parent_mass * parent_cx + child_mass * total_cx
+            ) / new_mass
+            new_cy = (
+                parent_mass * parent_cy + child_mass * total_cy
+            ) / new_mass
+            new_cz = (
+                parent_mass * parent_cz + child_mass * total_cz
+            ) / new_mass
 
         var dp_x = parent_cx - new_cx
         var dp_y = parent_cy - new_cy
@@ -681,48 +753,86 @@ fn compute_cdof_gpu[
     var xpos_off = xpos_offset[NQ, NV, NBODY]()
     var xquat_off = xquat_offset[NQ, NV, NBODY]()
     var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
-    var num_joints = Int(rebind[Scalar[DTYPE]](
-        model[0, model_meta_off + MODEL_META_IDX_NJOINT]
-    ))
+    var num_joints = Int(
+        rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_NJOINT])
+    )
 
     for j in range(num_joints):
         var joint_off = model_joint_offset[NBODY](j)
-        var jnt_type = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE]))
-        var body = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID]))
-        var dof_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR]))
+        var jnt_type = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
+        )
+        var body = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID])
+        )
+        var dof_adr = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
+        )
 
         var body_off = model_body_offset(body)
-        var parent = Int(rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT]))
+        var parent = Int(
+            rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT])
+        )
 
         var bx = rebind[Scalar[DTYPE]](state[env, xpos_off + body * 3 + 0])
         var by = rebind[Scalar[DTYPE]](state[env, xpos_off + body * 3 + 1])
         var bz = rebind[Scalar[DTYPE]](state[env, xpos_off + body * 3 + 2])
 
         if jnt_type == JNT_HINGE:
-            var axis_x = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_AXIS_X])
-            var axis_y = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_AXIS_Y])
-            var axis_z = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_AXIS_Z])
+            var axis_x = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_AXIS_X]
+            )
+            var axis_y = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_AXIS_Y]
+            )
+            var axis_z = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_AXIS_Z]
+            )
 
-            var jpos_x = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_POS_X])
-            var jpos_y = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_POS_Y])
-            var jpos_z = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_POS_Z])
+            var jpos_x = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_POS_X]
+            )
+            var jpos_y = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_POS_Y]
+            )
+            var jpos_z = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_POS_Z]
+            )
 
             if parent >= 0:
-                var pqx = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 0])
-                var pqy = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 1])
-                var pqz = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 2])
-                var pqw = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 3])
+                var pqx = rebind[Scalar[DTYPE]](
+                    state[env, xquat_off + parent * 4 + 0]
+                )
+                var pqy = rebind[Scalar[DTYPE]](
+                    state[env, xquat_off + parent * 4 + 1]
+                )
+                var pqz = rebind[Scalar[DTYPE]](
+                    state[env, xquat_off + parent * 4 + 2]
+                )
+                var pqw = rebind[Scalar[DTYPE]](
+                    state[env, xquat_off + parent * 4 + 3]
+                )
 
-                var a_w = gpu_quat_rotate(pqx, pqy, pqz, pqw, axis_x, axis_y, axis_z)
+                var a_w = gpu_quat_rotate(
+                    pqx, pqy, pqz, pqw, axis_x, axis_y, axis_z
+                )
                 axis_x = a_w[0]
                 axis_y = a_w[1]
                 axis_z = a_w[2]
 
-                var ppx = rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 0])
-                var ppy = rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 1])
-                var ppz = rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 2])
+                var ppx = rebind[Scalar[DTYPE]](
+                    state[env, xpos_off + parent * 3 + 0]
+                )
+                var ppy = rebind[Scalar[DTYPE]](
+                    state[env, xpos_off + parent * 3 + 1]
+                )
+                var ppz = rebind[Scalar[DTYPE]](
+                    state[env, xpos_off + parent * 3 + 2]
+                )
 
-                var jp = gpu_quat_rotate(pqx, pqy, pqz, pqw, jpos_x, jpos_y, jpos_z)
+                var jp = gpu_quat_rotate(
+                    pqx, pqy, pqz, pqw, jpos_x, jpos_y, jpos_z
+                )
                 jpos_x = ppx + jp[0]
                 jpos_y = ppy + jp[1]
                 jpos_z = ppz + jp[2]
@@ -739,17 +849,33 @@ fn compute_cdof_gpu[
             cdof[dof_adr * 6 + 5] = axis_x * oy - axis_y * ox
 
         elif jnt_type == JNT_SLIDE:
-            var axis_x = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_AXIS_X])
-            var axis_y = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_AXIS_Y])
-            var axis_z = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_AXIS_Z])
+            var axis_x = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_AXIS_X]
+            )
+            var axis_y = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_AXIS_Y]
+            )
+            var axis_z = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_AXIS_Z]
+            )
 
             if parent >= 0:
-                var pqx = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 0])
-                var pqy = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 1])
-                var pqz = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 2])
-                var pqw = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 3])
+                var pqx = rebind[Scalar[DTYPE]](
+                    state[env, xquat_off + parent * 4 + 0]
+                )
+                var pqy = rebind[Scalar[DTYPE]](
+                    state[env, xquat_off + parent * 4 + 1]
+                )
+                var pqz = rebind[Scalar[DTYPE]](
+                    state[env, xquat_off + parent * 4 + 2]
+                )
+                var pqw = rebind[Scalar[DTYPE]](
+                    state[env, xquat_off + parent * 4 + 3]
+                )
 
-                var a_w = gpu_quat_rotate(pqx, pqy, pqz, pqw, axis_x, axis_y, axis_z)
+                var a_w = gpu_quat_rotate(
+                    pqx, pqy, pqz, pqw, axis_x, axis_y, axis_z
+                )
                 axis_x = a_w[0]
                 axis_y = a_w[1]
                 axis_z = a_w[2]
@@ -823,15 +949,21 @@ fn compute_contact_jacobian_row_gpu[
 
     var xpos_off = xpos_offset[NQ, NV, NBODY]()
     var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
-    var num_joints = Int(rebind[Scalar[DTYPE]](
-        model[0, model_meta_off + MODEL_META_IDX_NJOINT]
-    ))
+    var num_joints = Int(
+        rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_NJOINT])
+    )
 
     for j_idx in range(num_joints):
         var joint_off = model_joint_offset[NBODY](j_idx)
-        var jnt_type = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE]))
-        var joint_body = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID]))
-        var dof_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR]))
+        var jnt_type = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
+        )
+        var joint_body = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID])
+        )
+        var dof_adr = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
+        )
 
         # Check if this joint affects body_a
         var affects_a = False
@@ -841,9 +973,11 @@ fn compute_contact_jacobian_row_gpu[
             var current = contact_body_a
             while current >= 0:
                 var current_body_off = model_body_offset(current)
-                var current_parent = Int(rebind[Scalar[DTYPE]](
-                    model[0, current_body_off + BODY_IDX_PARENT]
-                ))
+                var current_parent = Int(
+                    rebind[Scalar[DTYPE]](
+                        model[0, current_body_off + BODY_IDX_PARENT]
+                    )
+                )
                 if current_parent == joint_body:
                     affects_a = True
                     break
@@ -858,9 +992,11 @@ fn compute_contact_jacobian_row_gpu[
                 var current_b = contact_body_b
                 while current_b >= 0:
                     var current_body_off_b = model_body_offset(current_b)
-                    var current_parent_b = Int(rebind[Scalar[DTYPE]](
-                        model[0, current_body_off_b + BODY_IDX_PARENT]
-                    ))
+                    var current_parent_b = Int(
+                        rebind[Scalar[DTYPE]](
+                            model[0, current_body_off_b + BODY_IDX_PARENT]
+                        )
+                    )
                     if current_parent_b == joint_body:
                         affects_b = True
                         break
@@ -876,9 +1012,15 @@ fn compute_contact_jacobian_row_gpu[
             num_dof = 3
 
         # Reference body = joint's body (must match cdof computation)
-        var b_x = rebind[Scalar[DTYPE]](state[env, xpos_off + joint_body * 3 + 0])
-        var b_y = rebind[Scalar[DTYPE]](state[env, xpos_off + joint_body * 3 + 1])
-        var b_z = rebind[Scalar[DTYPE]](state[env, xpos_off + joint_body * 3 + 2])
+        var b_x = rebind[Scalar[DTYPE]](
+            state[env, xpos_off + joint_body * 3 + 0]
+        )
+        var b_y = rebind[Scalar[DTYPE]](
+            state[env, xpos_off + joint_body * 3 + 1]
+        )
+        var b_z = rebind[Scalar[DTYPE]](
+            state[env, xpos_off + joint_body * 3 + 2]
+        )
 
         var rx = contact_pos_x - b_x
         var ry = contact_pos_y - b_y

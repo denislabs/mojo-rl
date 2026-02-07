@@ -25,7 +25,6 @@ comptime TPB: Int = 256  # Threads per block (optimal for most GPUs)
 comptime TILE: Int = 16  # Tile size for 2D operations
 
 
-
 # =============================================================================
 # Geometry Types (same as CPU)
 # =============================================================================
@@ -281,11 +280,7 @@ comptime CURRICULUM_IDX_PARAM_7: Int = 7
 
 fn model_curriculum_offset[NBODY: Int, NJOINT: Int]() -> Int:
     """Offset to curriculum parameters in model buffer."""
-    return (
-        NBODY * MODEL_BODY_SIZE
-        + NJOINT * MODEL_JOINT_SIZE
-        + MODEL_META_SIZE
-    )
+    return NBODY * MODEL_BODY_SIZE + NJOINT * MODEL_JOINT_SIZE + MODEL_META_SIZE
 
 
 fn model_size[NBODY: Int, NJOINT: Int]() -> Int:

@@ -69,7 +69,9 @@ fn _is_descendant_gpu[
     var current = body
     while current >= 0:
         var body_off = model_body_offset(current)
-        var parent = Int(rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT]))
+        var parent = Int(
+            rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT])
+        )
         if parent == ancestor:
             return True
         current = parent
@@ -145,8 +147,13 @@ fn compute_bias_forces[
                 var parent_qw = data.xquat[parent * 4 + 3]
 
                 var rotated = quat_rotate(
-                    parent_qx, parent_qy, parent_qz, parent_qw,
-                    joint_pos_x, joint_pos_y, joint_pos_z
+                    parent_qx,
+                    parent_qy,
+                    parent_qz,
+                    parent_qw,
+                    joint_pos_x,
+                    joint_pos_y,
+                    joint_pos_z,
                 )
                 jpos_world_x = parent_px + rotated[0]
                 jpos_world_y = parent_py + rotated[1]
@@ -163,8 +170,13 @@ fn compute_bias_forces[
                 var parent_qz = data.xquat[parent * 4 + 2]
                 var parent_qw = data.xquat[parent * 4 + 3]
                 var axis_world = quat_rotate(
-                    parent_qx, parent_qy, parent_qz, parent_qw,
-                    axis_x, axis_y, axis_z
+                    parent_qx,
+                    parent_qy,
+                    parent_qz,
+                    parent_qw,
+                    axis_x,
+                    axis_y,
+                    axis_z,
                 )
                 axis_x = axis_world[0]
                 axis_y = axis_world[1]
@@ -195,7 +207,9 @@ fn compute_bias_forces[
             var tau_z = r_x * fg_y - r_y * fg_x
 
             # Project onto joint axis
-            tau_gravity = tau_gravity + (tau_x * axis_x + tau_y * axis_y + tau_z * axis_z)
+            tau_gravity = tau_gravity + (
+                tau_x * axis_x + tau_y * axis_y + tau_z * axis_z
+            )
 
             # Add contributions from descendant bodies
             for desc_body in range(body + 1, NBODY):
@@ -218,7 +232,9 @@ fn compute_bias_forces[
                     var desc_tau_z = desc_r_x * desc_fg_y - desc_r_y * desc_fg_x
 
                     tau_gravity = tau_gravity + (
-                        desc_tau_x * axis_x + desc_tau_y * axis_y + desc_tau_z * axis_z
+                        desc_tau_x * axis_x
+                        + desc_tau_y * axis_y
+                        + desc_tau_z * axis_z
                     )
 
             # Store bias force (note: sign convention - bias opposes motion)
@@ -239,8 +255,13 @@ fn compute_bias_forces[
                 var parent_qz = data.xquat[parent * 4 + 2]
                 var parent_qw = data.xquat[parent * 4 + 3]
                 var axis_world = quat_rotate(
-                    parent_qx, parent_qy, parent_qz, parent_qw,
-                    axis_x, axis_y, axis_z
+                    parent_qx,
+                    parent_qy,
+                    parent_qz,
+                    parent_qw,
+                    axis_x,
+                    axis_y,
+                    axis_z,
                 )
                 axis_x = axis_world[0]
                 axis_y = axis_world[1]
@@ -253,7 +274,9 @@ fn compute_bias_forces[
                     total_mass = total_mass + model.body_mass[desc_body]
 
             # Gravity force component along axis
-            var fg_dot_axis = total_mass * (gx * axis_x + gy * axis_y + gz * axis_z)
+            var fg_dot_axis = total_mass * (
+                gx * axis_x + gy * axis_y + gz * axis_z
+            )
 
             bias[dof_idx] = -fg_dot_axis
 
@@ -380,8 +403,12 @@ fn compute_bias_forces_gpu[
     var xquat_off = xquat_offset[NQ, NV, NBODY]()
 
     var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
-    var num_joints = Int(rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_NJOINT]))
-    var gravity_z = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_GRAVITY_Z])
+    var num_joints = Int(
+        rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_NJOINT])
+    )
+    var gravity_z = rebind[Scalar[DTYPE]](
+        model[0, model_meta_off + MODEL_META_IDX_GRAVITY_Z]
+    )
 
     # Initialize bias to zero
     for i in range(NV):
@@ -391,20 +418,40 @@ fn compute_bias_forces_gpu[
     for j in range(num_joints):
         var joint_off = model_joint_offset[NBODY](j)
 
-        var jnt_type = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE]))
-        var body_id = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID]))
-        var dof_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR]))
+        var jnt_type = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
+        )
+        var body_id = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID])
+        )
+        var dof_adr = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
+        )
 
         var body_off = model_body_offset(body_id)
-        var parent = Int(rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT]))
+        var parent = Int(
+            rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT])
+        )
         var mass = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_MASS])
 
-        var jpos_x = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_POS_X])
-        var jpos_y = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_POS_Y])
-        var jpos_z = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_POS_Z])
-        var axis_x = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_AXIS_X])
-        var axis_y = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_AXIS_Y])
-        var axis_z = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_AXIS_Z])
+        var jpos_x = rebind[Scalar[DTYPE]](
+            model[0, joint_off + JOINT_IDX_POS_X]
+        )
+        var jpos_y = rebind[Scalar[DTYPE]](
+            model[0, joint_off + JOINT_IDX_POS_Y]
+        )
+        var jpos_z = rebind[Scalar[DTYPE]](
+            model[0, joint_off + JOINT_IDX_POS_Z]
+        )
+        var axis_x = rebind[Scalar[DTYPE]](
+            model[0, joint_off + JOINT_IDX_AXIS_X]
+        )
+        var axis_y = rebind[Scalar[DTYPE]](
+            model[0, joint_off + JOINT_IDX_AXIS_Y]
+        )
+        var axis_z = rebind[Scalar[DTYPE]](
+            model[0, joint_off + JOINT_IDX_AXIS_Z]
+        )
 
         if jnt_type == JNT_HINGE:
             var jpos_world_x = jpos_x
@@ -412,15 +459,31 @@ fn compute_bias_forces_gpu[
             var jpos_world_z = jpos_z
 
             if parent >= 0:
-                var ppx = rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 0])
-                var ppy = rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 1])
-                var ppz = rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 2])
-                var pqx = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 0])
-                var pqy = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 1])
-                var pqz = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 2])
-                var pqw = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 3])
+                var ppx = rebind[Scalar[DTYPE]](
+                    state[env, xpos_off + parent * 3 + 0]
+                )
+                var ppy = rebind[Scalar[DTYPE]](
+                    state[env, xpos_off + parent * 3 + 1]
+                )
+                var ppz = rebind[Scalar[DTYPE]](
+                    state[env, xpos_off + parent * 3 + 2]
+                )
+                var pqx = rebind[Scalar[DTYPE]](
+                    state[env, xquat_off + parent * 4 + 0]
+                )
+                var pqy = rebind[Scalar[DTYPE]](
+                    state[env, xquat_off + parent * 4 + 1]
+                )
+                var pqz = rebind[Scalar[DTYPE]](
+                    state[env, xquat_off + parent * 4 + 2]
+                )
+                var pqw = rebind[Scalar[DTYPE]](
+                    state[env, xquat_off + parent * 4 + 3]
+                )
 
-                var rotated = gpu_quat_rotate(pqx, pqy, pqz, pqw, jpos_x, jpos_y, jpos_z)
+                var rotated = gpu_quat_rotate(
+                    pqx, pqy, pqz, pqw, jpos_x, jpos_y, jpos_z
+                )
                 jpos_world_x = ppx + rotated[0]
                 jpos_world_y = ppy + rotated[1]
                 jpos_world_z = ppz + rotated[2]
@@ -429,11 +492,21 @@ fn compute_bias_forces_gpu[
             var axis_world_y = axis_y
             var axis_world_z = axis_z
             if parent >= 0:
-                var pqx = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 0])
-                var pqy = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 1])
-                var pqz = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 2])
-                var pqw = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 3])
-                var rotated = gpu_quat_rotate(pqx, pqy, pqz, pqw, axis_x, axis_y, axis_z)
+                var pqx = rebind[Scalar[DTYPE]](
+                    state[env, xquat_off + parent * 4 + 0]
+                )
+                var pqy = rebind[Scalar[DTYPE]](
+                    state[env, xquat_off + parent * 4 + 1]
+                )
+                var pqz = rebind[Scalar[DTYPE]](
+                    state[env, xquat_off + parent * 4 + 2]
+                )
+                var pqw = rebind[Scalar[DTYPE]](
+                    state[env, xquat_off + parent * 4 + 3]
+                )
+                var rotated = gpu_quat_rotate(
+                    pqx, pqy, pqz, pqw, axis_x, axis_y, axis_z
+                )
                 axis_world_x = rotated[0]
                 axis_world_y = rotated[1]
                 axis_world_z = rotated[2]
@@ -442,9 +515,15 @@ fn compute_bias_forces_gpu[
             var tau_gravity: Scalar[DTYPE] = 0
 
             # Body contribution
-            var body_px = rebind[Scalar[DTYPE]](state[env, xpos_off + body_id * 3 + 0])
-            var body_py = rebind[Scalar[DTYPE]](state[env, xpos_off + body_id * 3 + 1])
-            var body_pz = rebind[Scalar[DTYPE]](state[env, xpos_off + body_id * 3 + 2])
+            var body_px = rebind[Scalar[DTYPE]](
+                state[env, xpos_off + body_id * 3 + 0]
+            )
+            var body_py = rebind[Scalar[DTYPE]](
+                state[env, xpos_off + body_id * 3 + 1]
+            )
+            var body_pz = rebind[Scalar[DTYPE]](
+                state[env, xpos_off + body_id * 3 + 2]
+            )
 
             var rx = body_px - jpos_world_x
             var ry = body_py - jpos_world_y
@@ -458,27 +537,43 @@ fn compute_bias_forces_gpu[
             # tau_z = 0 (rx*0 - ry*0)
 
             # Project onto joint axis
-            tau_gravity = tau_gravity + (tau_x * axis_world_x + tau_y * axis_world_y)
+            tau_gravity = tau_gravity + (
+                tau_x * axis_world_x + tau_y * axis_world_y
+            )
 
             # Add contributions from descendant bodies
             for desc_body in range(body_id + 1, NBODY):
-                if _is_descendant_gpu[DTYPE, NBODY, MODEL_SIZE](model, desc_body, body_id):
+                if _is_descendant_gpu[DTYPE, NBODY, MODEL_SIZE](
+                    model, desc_body, body_id
+                ):
                     var desc_body_off = model_body_offset(desc_body)
-                    var desc_mass = rebind[Scalar[DTYPE]](model[0, desc_body_off + BODY_IDX_MASS])
+                    var desc_mass = rebind[Scalar[DTYPE]](
+                        model[0, desc_body_off + BODY_IDX_MASS]
+                    )
 
-                    var desc_px = rebind[Scalar[DTYPE]](state[env, xpos_off + desc_body * 3 + 0])
-                    var desc_py = rebind[Scalar[DTYPE]](state[env, xpos_off + desc_body * 3 + 1])
-                    var desc_pz = rebind[Scalar[DTYPE]](state[env, xpos_off + desc_body * 3 + 2])
+                    var desc_px = rebind[Scalar[DTYPE]](
+                        state[env, xpos_off + desc_body * 3 + 0]
+                    )
+                    var desc_py = rebind[Scalar[DTYPE]](
+                        state[env, xpos_off + desc_body * 3 + 1]
+                    )
+                    var desc_pz = rebind[Scalar[DTYPE]](
+                        state[env, xpos_off + desc_body * 3 + 2]
+                    )
 
                     var desc_rx = desc_px - jpos_world_x
                     var desc_ry = desc_py - jpos_world_y
-                    _ = desc_pz - jpos_world_z  # desc_rz not needed for torque calc
+                    _ = (
+                        desc_pz - jpos_world_z
+                    )  # desc_rz not needed for torque calc
 
                     var desc_fz = desc_mass * gravity_z
                     var desc_tau_x = desc_ry * desc_fz
                     var desc_tau_y = -desc_rx * desc_fz
 
-                    tau_gravity = tau_gravity + (desc_tau_x * axis_world_x + desc_tau_y * axis_world_y)
+                    tau_gravity = tau_gravity + (
+                        desc_tau_x * axis_world_x + desc_tau_y * axis_world_y
+                    )
 
             bias[dof_adr] = bias[dof_adr] - tau_gravity
 
@@ -487,11 +582,21 @@ fn compute_bias_forces_gpu[
             var axis_world_y = axis_y
             var axis_world_z = axis_z
             if parent >= 0:
-                var pqx = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 0])
-                var pqy = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 1])
-                var pqz = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 2])
-                var pqw = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 3])
-                var rotated = gpu_quat_rotate(pqx, pqy, pqz, pqw, axis_x, axis_y, axis_z)
+                var pqx = rebind[Scalar[DTYPE]](
+                    state[env, xquat_off + parent * 4 + 0]
+                )
+                var pqy = rebind[Scalar[DTYPE]](
+                    state[env, xquat_off + parent * 4 + 1]
+                )
+                var pqz = rebind[Scalar[DTYPE]](
+                    state[env, xquat_off + parent * 4 + 2]
+                )
+                var pqw = rebind[Scalar[DTYPE]](
+                    state[env, xquat_off + parent * 4 + 3]
+                )
+                var rotated = gpu_quat_rotate(
+                    pqx, pqy, pqz, pqw, axis_x, axis_y, axis_z
+                )
                 axis_world_x = rotated[0]
                 axis_world_y = rotated[1]
                 axis_world_z = rotated[2]
@@ -499,9 +604,13 @@ fn compute_bias_forces_gpu[
             # Accumulate total mass from body and ALL descendants (matching CPU)
             var total_mass = mass
             for desc_body in range(body_id + 1, NBODY):
-                if _is_descendant_gpu[DTYPE, NBODY, MODEL_SIZE](model, desc_body, body_id):
+                if _is_descendant_gpu[DTYPE, NBODY, MODEL_SIZE](
+                    model, desc_body, body_id
+                ):
                     var desc_body_off = model_body_offset(desc_body)
-                    var desc_mass = rebind[Scalar[DTYPE]](model[0, desc_body_off + BODY_IDX_MASS])
+                    var desc_mass = rebind[Scalar[DTYPE]](
+                        model[0, desc_body_off + BODY_IDX_MASS]
+                    )
                     total_mass = total_mass + desc_mass
 
             # Gravity force component along axis (gravity is [0, 0, gravity_z])
@@ -512,9 +621,13 @@ fn compute_bias_forces_gpu[
             # Accumulate total mass from body and ALL descendants
             var total_mass = mass
             for desc_body in range(body_id + 1, NBODY):
-                if _is_descendant_gpu[DTYPE, NBODY, MODEL_SIZE](model, desc_body, body_id):
+                if _is_descendant_gpu[DTYPE, NBODY, MODEL_SIZE](
+                    model, desc_body, body_id
+                ):
                     var desc_body_off = model_body_offset(desc_body)
-                    var desc_mass = rebind[Scalar[DTYPE]](model[0, desc_body_off + BODY_IDX_MASS])
+                    var desc_mass = rebind[Scalar[DTYPE]](
+                        model[0, desc_body_off + BODY_IDX_MASS]
+                    )
                     total_mass = total_mass + desc_mass
             bias[dof_adr + 2] = bias[dof_adr + 2] - total_mass * gravity_z
 
@@ -612,12 +725,36 @@ fn compute_bias_forces_rne[
         var r22 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qx * qx + qy * qy)
 
         # I_world = R @ diag(Ixx, Iyy, Izz) @ R^T
-        I_world[b * 6 + 0] = Ixx_local * r00 * r00 + Iyy_local * r01 * r01 + Izz_local * r02 * r02  # Ixx
-        I_world[b * 6 + 1] = Ixx_local * r10 * r10 + Iyy_local * r11 * r11 + Izz_local * r12 * r12  # Iyy
-        I_world[b * 6 + 2] = Ixx_local * r20 * r20 + Iyy_local * r21 * r21 + Izz_local * r22 * r22  # Izz
-        I_world[b * 6 + 3] = Ixx_local * r00 * r10 + Iyy_local * r01 * r11 + Izz_local * r02 * r12  # Ixy
-        I_world[b * 6 + 4] = Ixx_local * r00 * r20 + Iyy_local * r01 * r21 + Izz_local * r02 * r22  # Ixz
-        I_world[b * 6 + 5] = Ixx_local * r10 * r20 + Iyy_local * r11 * r21 + Izz_local * r12 * r22  # Iyz
+        I_world[b * 6 + 0] = (
+            Ixx_local * r00 * r00
+            + Iyy_local * r01 * r01
+            + Izz_local * r02 * r02
+        )  # Ixx
+        I_world[b * 6 + 1] = (
+            Ixx_local * r10 * r10
+            + Iyy_local * r11 * r11
+            + Izz_local * r12 * r12
+        )  # Iyy
+        I_world[b * 6 + 2] = (
+            Ixx_local * r20 * r20
+            + Iyy_local * r21 * r21
+            + Izz_local * r22 * r22
+        )  # Izz
+        I_world[b * 6 + 3] = (
+            Ixx_local * r00 * r10
+            + Iyy_local * r01 * r11
+            + Izz_local * r02 * r12
+        )  # Ixy
+        I_world[b * 6 + 4] = (
+            Ixx_local * r00 * r20
+            + Iyy_local * r01 * r21
+            + Izz_local * r02 * r22
+        )  # Ixz
+        I_world[b * 6 + 5] = (
+            Ixx_local * r10 * r20
+            + Iyy_local * r11 * r21
+            + Izz_local * r12 * r22
+        )  # Iyz
 
     # =========================================================================
     # Step 1: Forward pass - compute spatial accelerations (root to leaves)
@@ -687,9 +824,15 @@ fn compute_bias_forces_rne[
                 var cdot_ang_z = wp_x * s_ang_y - wp_y * s_ang_x
 
                 # cdot_lin = w_p x s_lin + v_p x s_ang
-                var cdot_lin_x = (wp_y * s_lin_z - wp_z * s_lin_y) + (vp_y * s_ang_z - vp_z * s_ang_y)
-                var cdot_lin_y = (wp_z * s_lin_x - wp_x * s_lin_z) + (vp_z * s_ang_x - vp_x * s_ang_z)
-                var cdot_lin_z = (wp_x * s_lin_y - wp_y * s_lin_x) + (vp_x * s_ang_y - vp_y * s_ang_x)
+                var cdot_lin_x = (wp_y * s_lin_z - wp_z * s_lin_y) + (
+                    vp_y * s_ang_z - vp_z * s_ang_y
+                )
+                var cdot_lin_y = (wp_z * s_lin_x - wp_x * s_lin_z) + (
+                    vp_z * s_ang_x - vp_x * s_ang_z
+                )
+                var cdot_lin_z = (wp_x * s_lin_y - wp_y * s_lin_x) + (
+                    vp_x * s_ang_y - vp_y * s_ang_x
+                )
 
                 # Accumulate: cacc += cdof_dot * qvel
                 cacc[b * 6 + 0] = cacc[b * 6 + 0] + cdot_ang_x * qdot
@@ -791,9 +934,21 @@ fn compute_bias_forces_rne[
         var child_f_z = cfrc[b * 6 + 5]
 
         # Transfer: tau_parent += tau_child + r x f_child
-        cfrc[parent * 6 + 0] = cfrc[parent * 6 + 0] + child_tau_x + (ry * child_f_z - rz * child_f_y)
-        cfrc[parent * 6 + 1] = cfrc[parent * 6 + 1] + child_tau_y + (rz * child_f_x - rx * child_f_z)
-        cfrc[parent * 6 + 2] = cfrc[parent * 6 + 2] + child_tau_z + (rx * child_f_y - ry * child_f_x)
+        cfrc[parent * 6 + 0] = (
+            cfrc[parent * 6 + 0]
+            + child_tau_x
+            + (ry * child_f_z - rz * child_f_y)
+        )
+        cfrc[parent * 6 + 1] = (
+            cfrc[parent * 6 + 1]
+            + child_tau_y
+            + (rz * child_f_x - rx * child_f_z)
+        )
+        cfrc[parent * 6 + 2] = (
+            cfrc[parent * 6 + 2]
+            + child_tau_z
+            + (rx * child_f_y - ry * child_f_x)
+        )
         # Transfer: f_parent += f_child
         cfrc[parent * 6 + 3] = cfrc[parent * 6 + 3] + child_f_x
         cfrc[parent * 6 + 4] = cfrc[parent * 6 + 4] + child_f_y
@@ -859,9 +1014,15 @@ fn compute_bias_forces_rne_gpu[
 
     # Get gravity from model metadata
     var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
-    var gx = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_GRAVITY_X])
-    var gy = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_GRAVITY_Y])
-    var gz = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_GRAVITY_Z])
+    var gx = rebind[Scalar[DTYPE]](
+        model[0, model_meta_off + MODEL_META_IDX_GRAVITY_X]
+    )
+    var gy = rebind[Scalar[DTYPE]](
+        model[0, model_meta_off + MODEL_META_IDX_GRAVITY_Y]
+    )
+    var gz = rebind[Scalar[DTYPE]](
+        model[0, model_meta_off + MODEL_META_IDX_GRAVITY_Z]
+    )
 
     # State buffer offsets
     var xpos_off = xpos_offset[NQ, NV, NBODY]()
@@ -908,19 +1069,45 @@ fn compute_bias_forces_rne_gpu[
         var r22 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qx * qx + qy * qy)
 
         # I_world = R @ diag(Ixx, Iyy, Izz) @ R^T
-        I_world[b * 6 + 0] = Ixx_local * r00 * r00 + Iyy_local * r01 * r01 + Izz_local * r02 * r02  # Ixx
-        I_world[b * 6 + 1] = Ixx_local * r10 * r10 + Iyy_local * r11 * r11 + Izz_local * r12 * r12  # Iyy
-        I_world[b * 6 + 2] = Ixx_local * r20 * r20 + Iyy_local * r21 * r21 + Izz_local * r22 * r22  # Izz
-        I_world[b * 6 + 3] = Ixx_local * r00 * r10 + Iyy_local * r01 * r11 + Izz_local * r02 * r12  # Ixy
-        I_world[b * 6 + 4] = Ixx_local * r00 * r20 + Iyy_local * r01 * r21 + Izz_local * r02 * r22  # Ixz
-        I_world[b * 6 + 5] = Ixx_local * r10 * r20 + Iyy_local * r11 * r21 + Izz_local * r12 * r22  # Iyz
+        I_world[b * 6 + 0] = (
+            Ixx_local * r00 * r00
+            + Iyy_local * r01 * r01
+            + Izz_local * r02 * r02
+        )  # Ixx
+        I_world[b * 6 + 1] = (
+            Ixx_local * r10 * r10
+            + Iyy_local * r11 * r11
+            + Izz_local * r12 * r12
+        )  # Iyy
+        I_world[b * 6 + 2] = (
+            Ixx_local * r20 * r20
+            + Iyy_local * r21 * r21
+            + Izz_local * r22 * r22
+        )  # Izz
+        I_world[b * 6 + 3] = (
+            Ixx_local * r00 * r10
+            + Iyy_local * r01 * r11
+            + Izz_local * r02 * r12
+        )  # Ixy
+        I_world[b * 6 + 4] = (
+            Ixx_local * r00 * r20
+            + Iyy_local * r01 * r21
+            + Izz_local * r02 * r22
+        )  # Ixz
+        I_world[b * 6 + 5] = (
+            Ixx_local * r10 * r20
+            + Iyy_local * r11 * r21
+            + Izz_local * r12 * r22
+        )  # Iyz
 
     # =========================================================================
     # Step 1: Forward pass - spatial accelerations (root to leaves)
     # =========================================================================
     for b in range(NBODY):
         var body_off = model_body_offset(b)
-        var parent = Int(rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT]))
+        var parent = Int(
+            rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT])
+        )
 
         if parent < 0:
             # Root body: gravity as fictitious acceleration
@@ -939,9 +1126,15 @@ fn compute_bias_forces_rne_gpu[
         var vp_y: Scalar[DTYPE] = 0
         var vp_z: Scalar[DTYPE] = 0
         if parent >= 0:
-            wp_x = rebind[Scalar[DTYPE]](state[env, xangvel_off + parent * 3 + 0])
-            wp_y = rebind[Scalar[DTYPE]](state[env, xangvel_off + parent * 3 + 1])
-            wp_z = rebind[Scalar[DTYPE]](state[env, xangvel_off + parent * 3 + 2])
+            wp_x = rebind[Scalar[DTYPE]](
+                state[env, xangvel_off + parent * 3 + 0]
+            )
+            wp_y = rebind[Scalar[DTYPE]](
+                state[env, xangvel_off + parent * 3 + 1]
+            )
+            wp_z = rebind[Scalar[DTYPE]](
+                state[env, xangvel_off + parent * 3 + 2]
+            )
             vp_x = rebind[Scalar[DTYPE]](state[env, xvel_off + parent * 3 + 0])
             vp_y = rebind[Scalar[DTYPE]](state[env, xvel_off + parent * 3 + 1])
             vp_z = rebind[Scalar[DTYPE]](state[env, xvel_off + parent * 3 + 2])
@@ -949,12 +1142,18 @@ fn compute_bias_forces_rne_gpu[
         # Add cdof_dot * qvel for each DOF of this body
         for j in range(NJOINT):
             var joint_off = model_joint_offset[NBODY](j)
-            var jnt_body = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID]))
+            var jnt_body = Int(
+                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID])
+            )
             if jnt_body != b:
                 continue
 
-            var jnt_type = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE]))
-            var dof_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR]))
+            var jnt_type = Int(
+                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
+            )
+            var dof_adr = Int(
+                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
+            )
             var num_dof = 1
             if jnt_type == JNT_FREE:
                 num_dof = 6
@@ -978,9 +1177,15 @@ fn compute_bias_forces_rne_gpu[
                 var cdot_ang_y = wp_z * s_ang_x - wp_x * s_ang_z
                 var cdot_ang_z = wp_x * s_ang_y - wp_y * s_ang_x
 
-                var cdot_lin_x = (wp_y * s_lin_z - wp_z * s_lin_y) + (vp_y * s_ang_z - vp_z * s_ang_y)
-                var cdot_lin_y = (wp_z * s_lin_x - wp_x * s_lin_z) + (vp_z * s_ang_x - vp_x * s_ang_z)
-                var cdot_lin_z = (wp_x * s_lin_y - wp_y * s_lin_x) + (vp_x * s_ang_y - vp_y * s_ang_x)
+                var cdot_lin_x = (wp_y * s_lin_z - wp_z * s_lin_y) + (
+                    vp_y * s_ang_z - vp_z * s_ang_y
+                )
+                var cdot_lin_y = (wp_z * s_lin_x - wp_x * s_lin_z) + (
+                    vp_z * s_ang_x - vp_x * s_ang_z
+                )
+                var cdot_lin_z = (wp_x * s_lin_y - wp_y * s_lin_x) + (
+                    vp_x * s_ang_y - vp_y * s_ang_x
+                )
 
                 # Accumulate: cacc += cdof_dot * qvel
                 cacc[b * 6 + 0] = cacc[b * 6 + 0] + cdot_ang_x * qdot
@@ -1056,14 +1261,22 @@ fn compute_bias_forces_rne_gpu[
     # =========================================================================
     for b in range(NBODY - 1, 0, -1):
         var body_off = model_body_offset(b)
-        var parent = Int(rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT]))
+        var parent = Int(
+            rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT])
+        )
         if parent < 0:
             continue
 
         # Offset from parent CoM to child CoM
-        var rx = rebind[Scalar[DTYPE]](state[env, xpos_off + b * 3 + 0]) - rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 0])
-        var ry = rebind[Scalar[DTYPE]](state[env, xpos_off + b * 3 + 1]) - rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 1])
-        var rz = rebind[Scalar[DTYPE]](state[env, xpos_off + b * 3 + 2]) - rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 2])
+        var rx = rebind[Scalar[DTYPE]](
+            state[env, xpos_off + b * 3 + 0]
+        ) - rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 0])
+        var ry = rebind[Scalar[DTYPE]](
+            state[env, xpos_off + b * 3 + 1]
+        ) - rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 1])
+        var rz = rebind[Scalar[DTYPE]](
+            state[env, xpos_off + b * 3 + 2]
+        ) - rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 2])
 
         var child_tau_x = cfrc[b * 6 + 0]
         var child_tau_y = cfrc[b * 6 + 1]
@@ -1073,9 +1286,21 @@ fn compute_bias_forces_rne_gpu[
         var child_f_z = cfrc[b * 6 + 5]
 
         # Transfer: tau_parent += tau_child + r x f_child
-        cfrc[parent * 6 + 0] = cfrc[parent * 6 + 0] + child_tau_x + (ry * child_f_z - rz * child_f_y)
-        cfrc[parent * 6 + 1] = cfrc[parent * 6 + 1] + child_tau_y + (rz * child_f_x - rx * child_f_z)
-        cfrc[parent * 6 + 2] = cfrc[parent * 6 + 2] + child_tau_z + (rx * child_f_y - ry * child_f_x)
+        cfrc[parent * 6 + 0] = (
+            cfrc[parent * 6 + 0]
+            + child_tau_x
+            + (ry * child_f_z - rz * child_f_y)
+        )
+        cfrc[parent * 6 + 1] = (
+            cfrc[parent * 6 + 1]
+            + child_tau_y
+            + (rz * child_f_x - rx * child_f_z)
+        )
+        cfrc[parent * 6 + 2] = (
+            cfrc[parent * 6 + 2]
+            + child_tau_z
+            + (rx * child_f_y - ry * child_f_x)
+        )
         # Transfer: f_parent += f_child
         cfrc[parent * 6 + 3] = cfrc[parent * 6 + 3] + child_f_x
         cfrc[parent * 6 + 4] = cfrc[parent * 6 + 4] + child_f_y
@@ -1087,9 +1312,15 @@ fn compute_bias_forces_rne_gpu[
     # =========================================================================
     for j in range(NJOINT):
         var joint_off = model_joint_offset[NBODY](j)
-        var jnt_type = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE]))
-        var body = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID]))
-        var dof_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR]))
+        var jnt_type = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
+        )
+        var body = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID])
+        )
+        var dof_adr = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
+        )
         var num_dof = 1
         if jnt_type == JNT_FREE:
             num_dof = 6

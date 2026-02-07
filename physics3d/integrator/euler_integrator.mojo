@@ -137,7 +137,15 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         for i in range(M_SIZE):
             M[i] = Scalar[DTYPE](0)
         compute_mass_matrix_full[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, M_SIZE, CDOF_SIZE, CRB_SIZE
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            M_SIZE,
+            CDOF_SIZE,
+            CRB_SIZE,
         ](model, data, cdof, crb, M)
 
         # 5b. Add armature + implicit damping to mass matrix diagonal
@@ -153,10 +161,14 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             var diag_add = arm + dt * damp
             if joint.jnt_type == JNT_FREE:
                 for d in range(6):
-                    M[(dof_adr + d) * NV + (dof_adr + d)] = M[(dof_adr + d) * NV + (dof_adr + d)] + diag_add
+                    M[(dof_adr + d) * NV + (dof_adr + d)] = (
+                        M[(dof_adr + d) * NV + (dof_adr + d)] + diag_add
+                    )
             elif joint.jnt_type == JNT_BALL:
                 for d in range(3):
-                    M[(dof_adr + d) * NV + (dof_adr + d)] = M[(dof_adr + d) * NV + (dof_adr + d)] + diag_add
+                    M[(dof_adr + d) * NV + (dof_adr + d)] = (
+                        M[(dof_adr + d) * NV + (dof_adr + d)] + diag_add
+                    )
             else:
                 M[dof_adr * NV + dof_adr] = M[dof_adr * NV + dof_adr] + diag_add
 
@@ -168,9 +180,9 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         var bias = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
         for i in range(V_SIZE):
             bias[i] = Scalar[DTYPE](0)
-        compute_bias_forces_rne[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, CDOF_SIZE](
-            model, data, cdof, bias
-        )
+        compute_bias_forces_rne[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, CDOF_SIZE
+        ](model, data, cdof, bias)
 
         var f_net = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
         for i in range(NV):
@@ -188,13 +200,19 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                 if joint.jnt_type == JNT_FREE:
                     for d in range(6):
                         # For free joints: stiffness on position DOFs
-                        f_net[dof_adr + d] = f_net[dof_adr + d] - stiff * data.qpos[qpos_adr + d]
+                        f_net[dof_adr + d] = (
+                            f_net[dof_adr + d] - stiff * data.qpos[qpos_adr + d]
+                        )
                 elif joint.jnt_type == JNT_BALL:
                     for d in range(3):
-                        f_net[dof_adr + d] = f_net[dof_adr + d] - stiff * data.qpos[qpos_adr + d]
+                        f_net[dof_adr + d] = (
+                            f_net[dof_adr + d] - stiff * data.qpos[qpos_adr + d]
+                        )
                 else:
                     # Hinge/slide: f = -stiffness * qpos
-                    f_net[dof_adr] = f_net[dof_adr] - stiff * data.qpos[qpos_adr]
+                    f_net[dof_adr] = (
+                        f_net[dof_adr] - stiff * data.qpos[qpos_adr]
+                    )
 
         # qacc = M^-1 * f_net via LDL solve
         var qacc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
@@ -215,7 +233,15 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
 
         # 9. Constraint solve (modifies qvel_pred in-place)
         Self.SOLVER.solve[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, M_SIZE, CDOF_SIZE
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            V_SIZE,
+            M_SIZE,
+            CDOF_SIZE,
         ](model, data, M_inv, cdof, qvel_pred, dt)
 
         # 9. Write back constrained velocity and integrate position

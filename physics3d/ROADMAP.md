@@ -92,9 +92,9 @@ off-diagonal terms, dynamics are incorrect for multi-joint systems.
 
 **Files to modify**:
 - `dynamics/mass_matrix.mojo` (main implementation)
-- `types.mojo` (add sparse storage fields to DataGC if needed)
-- `integrator/constraint_gc_integrator.mojo` (use full M solve instead of diagonal inverse)
-- `gpu/gc_kernels.mojo` (GPU kernel changes)
+- `types.mojo` (add sparse storage fields to Data if needed)
+- `integrator/euler_integrator.mojo` (use full M solve instead of diagonal inverse)
+- `gpu/kernels.mojo` (GPU kernel changes)
 - `gpu/constants.mojo` (state buffer layout if M is stored)
 
 #### Algorithm: Composite Rigid Body Algorithm (CRBA)
@@ -154,7 +154,7 @@ Add sparse later if needed for humanoids.
 
 #### Data Structure Changes
 
-In `DataGC`, add:
+In `Data`, add:
 ```mojo
 # Full mass matrix (dense, NV x NV)
 var M_full: InlineArray[Scalar[DTYPE], NV * NV]
@@ -209,7 +209,7 @@ Step 3: Backward substitution (solve L * x = y2):
 
 #### Changes to Integrator
 
-In `constraint_gc_integrator.mojo`, replace:
+In `euler_integrator.mojo`, replace:
 ```mojo
 # OLD: diagonal solve
 if M_diag[i] > 1e-10:
@@ -244,7 +244,6 @@ parallelized across the BATCH dimension.
 **Status**: COMPLETE. Implemented full Recursive Newton-Euler Algorithm computing
 b(q,qvel) = C(q,qvel)*qvel + g(q) including gravity, Coriolis, and centrifugal forces.
 Both CPU (`compute_bias_forces_rne`) and GPU (`compute_bias_forces_rne_gpu`) versions.
-Old gravity-only functions kept for backward compatibility with non-constraint integrators.
 See `dynamics/bias_forces.mojo`.
 
 Algorithm: 5-step RNE in world frame:
@@ -260,7 +259,7 @@ robot will have wrong dynamics without them.
 
 **Files to modify**:
 - `dynamics/bias_forces.mojo` (main implementation)
-- `gpu/gc_kernels.mojo` (GPU version)
+- `gpu/kernels.mojo` (GPU version)
 
 #### Algorithm: Recursive Newton-Euler (RNE)
 
@@ -367,7 +366,7 @@ For diagonal inertia `I = diag(Ixx, Iyy, Izz)`:
    - Backward pass: accumulate `cfrc` up the tree
    - Project: `bias[d] = cdof[d] . cfrc[body[d]]`
 
-3. Update GPU kernel in `gc_kernels.mojo`
+3. Update GPU kernel in `kernels.mojo`
 
 4. Keep the old gravity-only version as a fast path option (compile-time flag)
 
@@ -392,18 +391,18 @@ have `body_b = -1`, reducing bilateral Jacobian to original unilateral form.
 **Files modified**:
 - `constants.mojo` (added `GEOM_CAPSULE`, `GEOM_BOX` constants)
 - `dynamics/jacobian.mojo` (bilateral Jacobian: `J_row[d] += J_a - J_b`, CPU + GPU)
-- `solver/gc_pgs_solver.mojo`, `gc_cg_solver.mojo`, `gc_newton_solver.mojo`
+- `solver/pgs_solver.mojo`, `solver/cg_solver.mojo`, `solver/newton_solver.mojo`
   (pass `body_b` through all Jacobian calls, CPU + GPU)
-- `solver/semi_implicit_euler_solver.mojo` (added `detect_body_body_contacts_gc`)
-- `gpu/gc_kernels.mojo` (added `detect_body_body_contacts_gpu`, wired into step kernels)
-- `integrator/constraint_gc_integrator.mojo` (calls body-body detection after ground detection)
+- `collision/contact_detection.mojo` (`detect_body_body_contacts`)
+- `gpu/kernels.mojo` (added `detect_body_body_contacts_gpu`, wired into step kernels)
+- `integrator/euler_integrator.mojo` (calls body-body detection after ground detection)
 
 #### What Needs to Happen
 
 1. **Detection**: For each pair of bodies (i, j) where i != j:
    - Get world positions and geometry from `data.xpos`, `data.xquat`, `model.body_geom_type`
    - Dispatch to appropriate primitive: `sphere_sphere`, `capsule_capsule`, `box_sphere`, etc.
-   - Output: `ContactInfoGC` with `body_a = i`, `body_b = j`, contact point, normal, distance
+   - Output: `ContactInfo` with `body_a = i`, `body_b = j`, contact point, normal, distance
 
 2. **Jacobian**: For body-body contacts, the contact Jacobian has contributions from
    both bodies (unlike ground contacts where body_b = -1):
@@ -419,9 +418,9 @@ have `body_b = -1`, reducing bilateral Jacobian to original unilateral form.
 
 #### Implementation Steps
 
-**Step 1**: Add `detect_body_body_contacts_gc` function:
+**Step 1**: Add `detect_body_body_contacts` function:
 ```mojo
-fn detect_body_body_contacts_gc[...](model: ModelGC, mut data: DataGC):
+fn detect_body_body_contacts[...](model: Model, mut data: Data):
     """Detect contacts between all body pairs using world-space geometry."""
     for i in range(NBODY):
         for j in range(i + 1, NBODY):
@@ -435,7 +434,7 @@ fn detect_body_body_contacts_gc[...](model: ModelGC, mut data: DataGC):
             # ... dispatch to collision primitives based on geom_type ...
 
             if dist < margin:
-                var contact = ContactInfoGC[DTYPE]()
+                var contact = ContactInfo[DTYPE]()
                 contact.body_a = i
                 contact.body_b = j
                 contact.normal_x = normal.x
@@ -467,9 +466,9 @@ fn compute_contact_jacobian_row_gc[...](
 
 **Step 3**: Call both detection functions in the integrator:
 ```mojo
-# In constraint_gc_integrator.mojo step():
+# In euler_integrator.mojo step():
 detect_ground_contacts(model, data)
-detect_body_body_contacts_gc(model, data)  # NEW
+detect_body_body_contacts(model, data)  # NEW
 ```
 
 #### Testing
@@ -485,9 +484,7 @@ detect_body_body_contacts_gc(model, data)  # NEW
 
 **Status**: COMPLETE. Joint limits are now enforced as unilateral inequality constraints
 inside all three constraint solvers (PGS, CG, Newton) on both CPU and GPU. Post-step
-clamping removed from the constraint-based integrator and GPU kernel. Legacy integrators
-(`semi_implicit_euler_integrator`, `step_gc_kernel`) retain `enforce_joint_limits` for
-backward compatibility.
+clamping removed from the integrator and GPU kernel.
 
 Each solver detects active limits (within 0.01 margin) for HINGE/SLIDE joints with
 finite ranges, then solves them via PGS iterations using the 1D Jacobian (J[dof] = ±1)
@@ -496,12 +493,11 @@ prevents energy injection. CPU solvers use full M_inv column for velocity correc
 GPU solvers use diagonal M_inv approximation (consistent with GPU contact solving).
 
 **Files modified**:
-- `solver/gc_pgs_solver.mojo` (limit detection + PGS in CPU `solve` and GPU `solve_gpu`)
-- `solver/gc_cg_solver.mojo` (same pattern, CPU + GPU)
-- `solver/gc_newton_solver.mojo` (same pattern, CPU + GPU)
-- `integrator/constraint_gc_integrator.mojo` (removed `enforce_joint_limits` call)
-- `gpu/gc_kernels.mojo` (removed `enforce_joint_limits_gpu` call in `step_gc_constraint_kernel_with_solver`)
-- `solver/semi_implicit_euler_solver.mojo` (kept `enforce_joint_limits` for backward compat)
+- `solver/pgs_solver.mojo` (limit detection + PGS in CPU `solve` and GPU `solve_gpu`)
+- `solver/cg_solver.mojo` (same pattern, CPU + GPU)
+- `solver/newton_solver.mojo` (same pattern, CPU + GPU)
+- `integrator/euler_integrator.mojo` (removed `enforce_joint_limits` call)
+- `gpu/kernels.mojo` (removed `enforce_joint_limits_gpu` call in `step_constraint_kernel_with_solver`)
 
 #### MuJoCo's Approach
 
@@ -643,16 +639,16 @@ dF_dv[i] = -joint_damping[i]
 
 #### Implementation
 
-**Step 1**: Add damping to `ModelGC`:
+**Step 1**: Add damping to `Model`:
 ```mojo
-# In types.mojo, ModelGC:
+# In types.mojo, Model:
 var joint_damping: InlineArray[Scalar[DTYPE], NV]  # per-DOF damping coefficient
 ```
 
 **Step 2**: Create `dynamics/velocity_derivatives.mojo`:
 ```mojo
 fn compute_velocity_derivative_diag[...](
-    model: ModelGC, data: DataGC, mut dFdv_diag: InlineArray[Scalar[DTYPE], NV]
+    model: Model, data: Data, mut dFdv_diag: InlineArray[Scalar[DTYPE], NV]
 ):
     """Compute diagonal of dF/dv (implicitfast: skip Coriolis)."""
     for i in range(NV):
@@ -661,10 +657,10 @@ fn compute_velocity_derivative_diag[...](
 
 **Step 3**: Create `integrator/implicit_fast_integrator.mojo`:
 ```mojo
-struct ImplicitFastGcIntegrator(GcIntegrator):
+struct ImplicitFastIntegrator(Integrator):
     @staticmethod
     fn step[...](model, mut data):
-        # 1-5: Same as ConstraintGcIntegrator (FK, contacts, M, bias, cdof)
+        # 1-5: Same as ConstraintIntegrator (FK, contacts, M, bias, cdof)
 
         # 6: Compute velocity derivative
         var dFdv_diag = InlineArray[Scalar[DTYPE], V_SIZE](0)
@@ -721,7 +717,7 @@ gyroscopic effects (rapidly spinning objects, robot arms at high speed), the ful
 implicit integrator includes `d(bias)/d(qvel)` for better accuracy.
 
 **Files to create/modify**:
-- `integrator/implicit_gc_integrator.mojo` (NEW)
+- `integrator/implicit_integrator.mojo` (NEW)
 - `dynamics/velocity_derivatives.mojo` (add RNE velocity derivative)
 
 #### Additional Computation: RNE Velocity Derivative
@@ -755,7 +751,7 @@ without damping), semi-implicit Euler drifts energy over time. RK4 provides 4th-
 accuracy and much better energy conservation.
 
 **Files to create**:
-- `integrator/rk4_gc_integrator.mojo` (NEW)
+- `integrator/rk4_integrator.mojo` (NEW)
 
 #### Algorithm
 
@@ -844,7 +840,7 @@ that all solvers consume.
 - `types.mojo` (add `ConstraintRow` struct, `ConstraintData`)
 - `constraint/constraint_builder.mojo` (NEW - builds constraint rows from contacts/limits)
 - All three solvers (consume `ConstraintData` instead of raw contacts)
-- `traits/gc_solver.mojo` (update trait to take constraint data)
+- `traits/solver.mojo` (update trait to take constraint data)
 
 #### Data Structure
 
@@ -909,7 +905,7 @@ fn build_constraints[...](
 
 All three solvers would consume `ConstraintData` uniformly:
 ```mojo
-trait GcConstraintSolver:
+trait ConstraintSolver:
     @staticmethod
     fn solve[...](
         model, data, M_diag,  # or M_full + L, D
@@ -1035,7 +1031,7 @@ This creates 6 constraint rows.
 
 #### Data Structure
 
-Add to `ModelGC`:
+Add to `Model`:
 ```mojo
 struct EqualityConstraint[DTYPE: DType]:
     var type: Int          # EQ_CONNECT or EQ_WELD
@@ -1127,7 +1123,7 @@ Where `rbound` is the maximum extent of the geometry from its center:
 - Capsule: `rbound = half_length + radius`
 - Box: `rbound = sqrt(hx^2 + hy^2 + hz^2)`
 
-**Implementation**: Add `body_rbound[NBODY]` to ModelGC (computed once at init).
+**Implementation**: Add `body_rbound[NBODY]` to Model (computed once at init).
 Filter pairs before calling narrowphase primitives.
 
 ---
@@ -1170,14 +1166,14 @@ MuJoCo warmstarts from the previous step's constraint forces, reducing
 iteration count significantly (often 2-3 iterations instead of 30).
 
 **Files to modify**:
-- `types.mojo` (add warmstart storage to DataGC)
+- `types.mojo` (add warmstart storage to Data)
 - All three solvers (initialize from warmstart)
-- `integrator/constraint_gc_integrator.mojo` (save result for next step)
+- `integrator/euler_integrator.mojo` (save result for next step)
 
 #### Implementation
 
 ```mojo
-# In DataGC:
+# In Data:
 var qacc_warmstart: InlineArray[Scalar[DTYPE], NV]
 var lambda_warmstart: InlineArray[Scalar[DTYPE], MAX_CONSTRAINTS]
 
@@ -1236,14 +1232,14 @@ Most useful for multi-agent scenarios.
 velocity damping, dry friction). Our engine only has user-applied `qfrc`.
 
 **Files to modify**:
-- `types.mojo` (add spring/damper fields to ModelGC joints)
+- `types.mojo` (add spring/damper fields to Model joints)
 - `dynamics/passive_forces.mojo` (NEW)
-- `integrator/constraint_gc_integrator.mojo` (add passive forces to f_net)
+- `integrator/euler_integrator.mojo` (add passive forces to f_net)
 
 #### Implementation
 
 ```mojo
-# Per-joint parameters (in JointDef or ModelGC):
+# Per-joint parameters (in JointDef or Model):
 var stiffness: Scalar[DTYPE]      # spring constant k
 var springref: Scalar[DTYPE]      # rest position q0
 var damping: Scalar[DTYPE]        # damping coefficient b

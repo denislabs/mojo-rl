@@ -30,7 +30,10 @@ from ..dynamics.mass_matrix import (
     ldl_solve_gpu,
     compute_M_inv_from_ldl_gpu,
 )
-from ..dynamics.bias_forces import compute_bias_forces_gpu, compute_bias_forces_rne_gpu
+from ..dynamics.bias_forces import (
+    compute_bias_forces_gpu,
+    compute_bias_forces_rne_gpu,
+)
 from ..dynamics.jacobian import (
     compute_cdof_gpu,
     compute_contact_jacobian_row_gpu,
@@ -152,14 +155,18 @@ fn detect_ground_contacts_gpu[
     var meta_off = metadata_offset[NQ, NV, NBODY, MAX_CONTACTS]()
 
     var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
-    var ground_z = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_GROUND_Z])
+    var ground_z = rebind[Scalar[DTYPE]](
+        model[0, model_meta_off + MODEL_META_IDX_GROUND_Z]
+    )
 
     var num_contacts = 0
 
     for body in range(NBODY):
         var body_off = model_body_offset(body)
         var radius = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_RADIUS])
-        var half_length = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_HALF_LENGTH])
+        var half_length = rebind[Scalar[DTYPE]](
+            model[0, body_off + BODY_IDX_HALF_LENGTH]
+        )
 
         var px = rebind[Scalar[DTYPE]](state[env, xpos_off + body * 3 + 0])
         var py = rebind[Scalar[DTYPE]](state[env, xpos_off + body * 3 + 1])
@@ -173,8 +180,9 @@ fn detect_ground_contacts_gpu[
 
         # Capsule axis in local frame is (0, 0, 1) - along Z
         # Transform to world frame
-        var axis_world = gpu_quat_rotate(qx, qy, qz, qw,
-            Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](1))
+        var axis_world = gpu_quat_rotate(
+            qx, qy, qz, qw, Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](1)
+        )
         var axis_x = axis_world[0]
         var axis_y = axis_world[1]
         var axis_z = axis_world[2]
@@ -281,26 +289,36 @@ fn detect_body_body_contacts_gpu[
     var contacts_off = contacts_offset[NQ, NV, NBODY]()
     var meta_off = metadata_offset[NQ, NV, NBODY, MAX_CONTACTS]()
 
-    var num_contacts = Int(rebind[Scalar[DTYPE]](
-        state[env, meta_off + META_IDX_NUM_CONTACTS]
-    ))
+    var num_contacts = Int(
+        rebind[Scalar[DTYPE]](state[env, meta_off + META_IDX_NUM_CONTACTS])
+    )
 
     for i in range(NBODY):
         for j in range(i + 1, NBODY):
             if num_contacts >= MAX_CONTACTS:
-                state[env, meta_off + META_IDX_NUM_CONTACTS] = Scalar[DTYPE](num_contacts)
+                state[env, meta_off + META_IDX_NUM_CONTACTS] = Scalar[DTYPE](
+                    num_contacts
+                )
                 return
 
             # Skip parent-child pairs
             var body_off_i = model_body_offset(i)
             var body_off_j = model_body_offset(j)
-            var parent_i = Int(rebind[Scalar[DTYPE]](model[0, body_off_i + BODY_IDX_PARENT]))
-            var parent_j = Int(rebind[Scalar[DTYPE]](model[0, body_off_j + BODY_IDX_PARENT]))
+            var parent_i = Int(
+                rebind[Scalar[DTYPE]](model[0, body_off_i + BODY_IDX_PARENT])
+            )
+            var parent_j = Int(
+                rebind[Scalar[DTYPE]](model[0, body_off_j + BODY_IDX_PARENT])
+            )
             if parent_j == i or parent_i == j:
                 continue
 
-            var gi = Int(rebind[Scalar[DTYPE]](model[0, body_off_i + BODY_IDX_GEOM_TYPE]))
-            var gj = Int(rebind[Scalar[DTYPE]](model[0, body_off_j + BODY_IDX_GEOM_TYPE]))
+            var gi = Int(
+                rebind[Scalar[DTYPE]](model[0, body_off_i + BODY_IDX_GEOM_TYPE])
+            )
+            var gj = Int(
+                rebind[Scalar[DTYPE]](model[0, body_off_j + BODY_IDX_GEOM_TYPE])
+            )
 
             # Get positions
             var pi_x = rebind[Scalar[DTYPE]](state[env, xpos_off + i * 3 + 0])
@@ -321,16 +339,36 @@ fn detect_body_body_contacts_gpu[
             var qj_w = rebind[Scalar[DTYPE]](state[env, xquat_off + j * 4 + 3])
 
             # Get geometry parameters
-            var ri = rebind[Scalar[DTYPE]](model[0, body_off_i + BODY_IDX_RADIUS])
-            var rj = rebind[Scalar[DTYPE]](model[0, body_off_j + BODY_IDX_RADIUS])
-            var hli = rebind[Scalar[DTYPE]](model[0, body_off_i + BODY_IDX_HALF_LENGTH])
-            var hlj = rebind[Scalar[DTYPE]](model[0, body_off_j + BODY_IDX_HALF_LENGTH])
-            var hxi = rebind[Scalar[DTYPE]](model[0, body_off_i + BODY_IDX_HALF_X])
-            var hyi = rebind[Scalar[DTYPE]](model[0, body_off_i + BODY_IDX_HALF_Y])
-            var hzi = rebind[Scalar[DTYPE]](model[0, body_off_i + BODY_IDX_HALF_Z])
-            var hxj = rebind[Scalar[DTYPE]](model[0, body_off_j + BODY_IDX_HALF_X])
-            var hyj = rebind[Scalar[DTYPE]](model[0, body_off_j + BODY_IDX_HALF_Y])
-            var hzj = rebind[Scalar[DTYPE]](model[0, body_off_j + BODY_IDX_HALF_Z])
+            var ri = rebind[Scalar[DTYPE]](
+                model[0, body_off_i + BODY_IDX_RADIUS]
+            )
+            var rj = rebind[Scalar[DTYPE]](
+                model[0, body_off_j + BODY_IDX_RADIUS]
+            )
+            var hli = rebind[Scalar[DTYPE]](
+                model[0, body_off_i + BODY_IDX_HALF_LENGTH]
+            )
+            var hlj = rebind[Scalar[DTYPE]](
+                model[0, body_off_j + BODY_IDX_HALF_LENGTH]
+            )
+            var hxi = rebind[Scalar[DTYPE]](
+                model[0, body_off_i + BODY_IDX_HALF_X]
+            )
+            var hyi = rebind[Scalar[DTYPE]](
+                model[0, body_off_i + BODY_IDX_HALF_Y]
+            )
+            var hzi = rebind[Scalar[DTYPE]](
+                model[0, body_off_i + BODY_IDX_HALF_Z]
+            )
+            var hxj = rebind[Scalar[DTYPE]](
+                model[0, body_off_j + BODY_IDX_HALF_X]
+            )
+            var hyj = rebind[Scalar[DTYPE]](
+                model[0, body_off_j + BODY_IDX_HALF_Y]
+            )
+            var hzj = rebind[Scalar[DTYPE]](
+                model[0, body_off_j + BODY_IDX_HALF_Z]
+            )
 
             var dist: Scalar[DTYPE] = 1.0
             var cx: Scalar[DTYPE] = 0
@@ -345,69 +383,215 @@ fn detect_body_body_contacts_gpu[
             # Dispatch based on geometry pair
             if gi == GEOM_SPHERE and gj == GEOM_SPHERE:
                 var result = sphere_sphere[DTYPE](
-                    pi_x, pi_y, pi_z, ri, pj_x, pj_y, pj_z, rj,
+                    pi_x,
+                    pi_y,
+                    pi_z,
+                    ri,
+                    pj_x,
+                    pj_y,
+                    pj_z,
+                    rj,
                 )
-                dist = result[0]; cx = result[1]; cy = result[2]; cz = result[3]
-                nx = result[4]; ny = result[5]; nz = result[6]
+                dist = result[0]
+                cx = result[1]
+                cy = result[2]
+                cz = result[3]
+                nx = result[4]
+                ny = result[5]
+                nz = result[6]
 
             elif gi == GEOM_CAPSULE and gj == GEOM_SPHERE:
                 var result = capsule_sphere[DTYPE](
-                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
-                    pj_x, pj_y, pj_z, rj,
+                    pi_x,
+                    pi_y,
+                    pi_z,
+                    qi_x,
+                    qi_y,
+                    qi_z,
+                    qi_w,
+                    hli,
+                    ri,
+                    pj_x,
+                    pj_y,
+                    pj_z,
+                    rj,
                 )
-                dist = result[0]; cx = result[1]; cy = result[2]; cz = result[3]
-                nx = result[4]; ny = result[5]; nz = result[6]
+                dist = result[0]
+                cx = result[1]
+                cy = result[2]
+                cz = result[3]
+                nx = result[4]
+                ny = result[5]
+                nz = result[6]
 
             elif gi == GEOM_SPHERE and gj == GEOM_CAPSULE:
                 var result = capsule_sphere[DTYPE](
-                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
-                    pi_x, pi_y, pi_z, ri,
+                    pj_x,
+                    pj_y,
+                    pj_z,
+                    qj_x,
+                    qj_y,
+                    qj_z,
+                    qj_w,
+                    hlj,
+                    rj,
+                    pi_x,
+                    pi_y,
+                    pi_z,
+                    ri,
                 )
-                dist = result[0]; cx = result[1]; cy = result[2]; cz = result[3]
-                nx = -result[4]; ny = -result[5]; nz = -result[6]
-                body_a = j; body_b = i
+                dist = result[0]
+                cx = result[1]
+                cy = result[2]
+                cz = result[3]
+                nx = -result[4]
+                ny = -result[5]
+                nz = -result[6]
+                body_a = j
+                body_b = i
 
             elif gi == GEOM_CAPSULE and gj == GEOM_CAPSULE:
                 var result = capsule_capsule[DTYPE](
-                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
-                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
+                    pi_x,
+                    pi_y,
+                    pi_z,
+                    qi_x,
+                    qi_y,
+                    qi_z,
+                    qi_w,
+                    hli,
+                    ri,
+                    pj_x,
+                    pj_y,
+                    pj_z,
+                    qj_x,
+                    qj_y,
+                    qj_z,
+                    qj_w,
+                    hlj,
+                    rj,
                 )
-                dist = result[0]; cx = result[1]; cy = result[2]; cz = result[3]
-                nx = result[4]; ny = result[5]; nz = result[6]
+                dist = result[0]
+                cx = result[1]
+                cy = result[2]
+                cz = result[3]
+                nx = result[4]
+                ny = result[5]
+                nz = result[6]
 
             elif gi == GEOM_BOX and gj == GEOM_SPHERE:
                 var result = box_sphere[DTYPE](
-                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hxi, hyi, hzi,
-                    pj_x, pj_y, pj_z, rj,
+                    pi_x,
+                    pi_y,
+                    pi_z,
+                    qi_x,
+                    qi_y,
+                    qi_z,
+                    qi_w,
+                    hxi,
+                    hyi,
+                    hzi,
+                    pj_x,
+                    pj_y,
+                    pj_z,
+                    rj,
                 )
-                dist = result[0]; cx = result[1]; cy = result[2]; cz = result[3]
-                nx = result[4]; ny = result[5]; nz = result[6]
+                dist = result[0]
+                cx = result[1]
+                cy = result[2]
+                cz = result[3]
+                nx = result[4]
+                ny = result[5]
+                nz = result[6]
 
             elif gi == GEOM_SPHERE and gj == GEOM_BOX:
                 var result = box_sphere[DTYPE](
-                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hxj, hyj, hzj,
-                    pi_x, pi_y, pi_z, ri,
+                    pj_x,
+                    pj_y,
+                    pj_z,
+                    qj_x,
+                    qj_y,
+                    qj_z,
+                    qj_w,
+                    hxj,
+                    hyj,
+                    hzj,
+                    pi_x,
+                    pi_y,
+                    pi_z,
+                    ri,
                 )
-                dist = result[0]; cx = result[1]; cy = result[2]; cz = result[3]
-                nx = -result[4]; ny = -result[5]; nz = -result[6]
-                body_a = j; body_b = i
+                dist = result[0]
+                cx = result[1]
+                cy = result[2]
+                cz = result[3]
+                nx = -result[4]
+                ny = -result[5]
+                nz = -result[6]
+                body_a = j
+                body_b = i
 
             elif gi == GEOM_BOX and gj == GEOM_CAPSULE:
                 var result = box_capsule[DTYPE](
-                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hxi, hyi, hzi,
-                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
+                    pi_x,
+                    pi_y,
+                    pi_z,
+                    qi_x,
+                    qi_y,
+                    qi_z,
+                    qi_w,
+                    hxi,
+                    hyi,
+                    hzi,
+                    pj_x,
+                    pj_y,
+                    pj_z,
+                    qj_x,
+                    qj_y,
+                    qj_z,
+                    qj_w,
+                    hlj,
+                    rj,
                 )
-                dist = result[0]; cx = result[1]; cy = result[2]; cz = result[3]
-                nx = result[4]; ny = result[5]; nz = result[6]
+                dist = result[0]
+                cx = result[1]
+                cy = result[2]
+                cz = result[3]
+                nx = result[4]
+                ny = result[5]
+                nz = result[6]
 
             elif gi == GEOM_CAPSULE and gj == GEOM_BOX:
                 var result = box_capsule[DTYPE](
-                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hxj, hyj, hzj,
-                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
+                    pj_x,
+                    pj_y,
+                    pj_z,
+                    qj_x,
+                    qj_y,
+                    qj_z,
+                    qj_w,
+                    hxj,
+                    hyj,
+                    hzj,
+                    pi_x,
+                    pi_y,
+                    pi_z,
+                    qi_x,
+                    qi_y,
+                    qi_z,
+                    qi_w,
+                    hli,
+                    ri,
                 )
-                dist = result[0]; cx = result[1]; cy = result[2]; cz = result[3]
-                nx = -result[4]; ny = -result[5]; nz = -result[6]
-                body_a = j; body_b = i
+                dist = result[0]
+                cx = result[1]
+                cy = result[2]
+                cz = result[3]
+                nx = -result[4]
+                ny = -result[5]
+                nz = -result[6]
+                body_a = j
+                body_b = i
 
             # Store contact if penetrating
             if dist < Scalar[DTYPE](0) and num_contacts < MAX_CONTACTS:
@@ -460,11 +644,17 @@ fn integrate_gc_gpu[
     var qfrc_off = qfrc_offset[NQ, NV]()
 
     var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
-    var dt = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_TIMESTEP])
+    var dt = rebind[Scalar[DTYPE]](
+        model[0, model_meta_off + MODEL_META_IDX_TIMESTEP]
+    )
 
     # Solve M * qacc = qfrc + qfrc_contact - bias
     for i in range(NV):
-        var f_net = rebind[Scalar[DTYPE]](state[env, qfrc_off + i]) + qfrc_contact[i] - bias[i]
+        var f_net = (
+            rebind[Scalar[DTYPE]](state[env, qfrc_off + i])
+            + qfrc_contact[i]
+            - bias[i]
+        )
         var m_ii = M_diag[i]
         var qacc: Scalar[DTYPE] = 0
         if m_ii > Scalar[DTYPE](1e-10):
@@ -512,12 +702,18 @@ fn normalize_qpos_quaternions_gpu[
     var qpos_off = qpos_offset[NQ, NV]()
 
     var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
-    var num_joints = Int(rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_NJOINT]))
+    var num_joints = Int(
+        rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_NJOINT])
+    )
 
     for j in range(num_joints):
         var joint_off = model_joint_offset[NBODY](j)
-        var jnt_type = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE]))
-        var qpos_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_QPOS_ADR]))
+        var jnt_type = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
+        )
+        var qpos_adr = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_QPOS_ADR])
+        )
 
         if jnt_type == JNT_FREE:
             var qx = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr + 3])
@@ -601,25 +797,66 @@ fn step_constraint_kernel_with_solver[
 
     # 1. Forward kinematics
     forward_kinematics_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
     ](env, state, model)
 
     # 2. Compute body velocities
     compute_body_velocities_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
     ](env, state, model)
 
     # 3. Detect ground contacts + body-body contacts
     detect_ground_contacts_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
     ](env, state, model)
     detect_body_body_contacts_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
     ](env, state, model)
 
     # 4. Compute cdof (spatial motion axes per DOF)
     compute_cdof_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, CDOF_SIZE, BATCH
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        CDOF_SIZE,
+        BATCH,
     ](env, state, model, cdof)
 
     # 5. Compute composite rigid body inertia
@@ -627,8 +864,16 @@ fn step_constraint_kernel_with_solver[
     for i in range(CRB_SIZE):
         crb[i] = Scalar[DTYPE](0)
     compute_composite_inertia_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        STATE_SIZE, MODEL_SIZE, CRB_SIZE, BATCH,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        CRB_SIZE,
+        BATCH,
     ](env, state, model, crb)
 
     # 6. Compute full mass matrix using CRBA
@@ -636,27 +881,51 @@ fn step_constraint_kernel_with_solver[
     for i in range(M_SIZE):
         M[i] = Scalar[DTYPE](0)
     compute_mass_matrix_full_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        STATE_SIZE, MODEL_SIZE, M_SIZE, CDOF_SIZE, CRB_SIZE, BATCH,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        M_SIZE,
+        CDOF_SIZE,
+        CRB_SIZE,
+        BATCH,
     ](env, state, model, cdof, crb, M)
 
     # 6b. Add armature + implicit damping to mass matrix diagonal
     # MuJoCo implicitfast: M_eff[i,i] += armature[i] + dt * damping[i]
     var model_meta_off_arm = model_metadata_offset[NBODY, NJOINT]()
-    var dt_arm = rebind[Scalar[DTYPE]](model[0, model_meta_off_arm + MODEL_META_IDX_TIMESTEP])
+    var dt_arm = rebind[Scalar[DTYPE]](
+        model[0, model_meta_off_arm + MODEL_META_IDX_TIMESTEP]
+    )
     for j in range(NJOINT):
         var joint_off = model_joint_offset[NBODY](j)
-        var jnt_type = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE]))
-        var dof_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR]))
-        var arm = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_ARMATURE])
-        var damp = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DAMPING])
+        var jnt_type = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
+        )
+        var dof_adr = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
+        )
+        var arm = rebind[Scalar[DTYPE]](
+            model[0, joint_off + JOINT_IDX_ARMATURE]
+        )
+        var damp = rebind[Scalar[DTYPE]](
+            model[0, joint_off + JOINT_IDX_DAMPING]
+        )
         var diag_add = arm + dt_arm * damp
         if jnt_type == JNT_FREE:
             for d in range(6):
-                M[(dof_adr + d) * NV + (dof_adr + d)] = M[(dof_adr + d) * NV + (dof_adr + d)] + diag_add
+                M[(dof_adr + d) * NV + (dof_adr + d)] = (
+                    M[(dof_adr + d) * NV + (dof_adr + d)] + diag_add
+                )
         elif jnt_type == JNT_BALL:
             for d in range(3):
-                M[(dof_adr + d) * NV + (dof_adr + d)] = M[(dof_adr + d) * NV + (dof_adr + d)] + diag_add
+                M[(dof_adr + d) * NV + (dof_adr + d)] = (
+                    M[(dof_adr + d) * NV + (dof_adr + d)] + diag_add
+                )
         else:
             M[dof_adr * NV + dof_adr] = M[dof_adr * NV + dof_adr] + diag_add
 
@@ -672,7 +941,17 @@ fn step_constraint_kernel_with_solver[
 
     # 8. Compute bias forces (full RNE: gravity + Coriolis + centrifugal)
     compute_bias_forces_rne_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, V_SIZE, CDOF_SIZE, BATCH
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        V_SIZE,
+        CDOF_SIZE,
+        BATCH,
     ](env, state, model, cdof, bias)
 
     # 9. Compute unconstrained acceleration via LDL solve
@@ -680,7 +959,9 @@ fn step_constraint_kernel_with_solver[
     var qacc_off = qacc_offset[NQ, NV]()
     var qfrc_off = qfrc_offset[NQ, NV]()
     var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
-    var dt = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_TIMESTEP])
+    var dt = rebind[Scalar[DTYPE]](
+        model[0, model_meta_off + MODEL_META_IDX_TIMESTEP]
+    )
 
     var f_net = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
     for i in range(NV):
@@ -692,22 +973,36 @@ fn step_constraint_kernel_with_solver[
     var qpos_off_stiff = qpos_offset[NQ, NV]()
     for j in range(NJOINT):
         var joint_off = model_joint_offset[NBODY](j)
-        var jnt_type = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE]))
-        var dof_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR]))
-        var qpos_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_QPOS_ADR]))
-        var stiff = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_STIFFNESS])
+        var jnt_type = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
+        )
+        var dof_adr = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
+        )
+        var qpos_adr = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_QPOS_ADR])
+        )
+        var stiff = rebind[Scalar[DTYPE]](
+            model[0, joint_off + JOINT_IDX_STIFFNESS]
+        )
         if stiff > Scalar[DTYPE](0):
             if jnt_type == JNT_FREE:
                 for d in range(6):
-                    var qpos_d = rebind[Scalar[DTYPE]](state[env, qpos_off_stiff + qpos_adr + d])
+                    var qpos_d = rebind[Scalar[DTYPE]](
+                        state[env, qpos_off_stiff + qpos_adr + d]
+                    )
                     f_net[dof_adr + d] = f_net[dof_adr + d] - stiff * qpos_d
             elif jnt_type == JNT_BALL:
                 for d in range(3):
-                    var qpos_d = rebind[Scalar[DTYPE]](state[env, qpos_off_stiff + qpos_adr + d])
+                    var qpos_d = rebind[Scalar[DTYPE]](
+                        state[env, qpos_off_stiff + qpos_adr + d]
+                    )
                     f_net[dof_adr + d] = f_net[dof_adr + d] - stiff * qpos_d
             else:
                 # Hinge/slide: f = -stiffness * qpos
-                var qpos_d = rebind[Scalar[DTYPE]](state[env, qpos_off_stiff + qpos_adr])
+                var qpos_d = rebind[Scalar[DTYPE]](
+                    state[env, qpos_off_stiff + qpos_adr]
+                )
                 f_net[dof_adr] = f_net[dof_adr] - stiff * qpos_d
 
     var qacc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
@@ -726,8 +1021,18 @@ fn step_constraint_kernel_with_solver[
 
     # 11. Constraint solve using parametrized solver with full M_inv
     SOLVER.solve_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        STATE_SIZE, MODEL_SIZE, V_SIZE, M_SIZE, CDOF_SIZE, BATCH,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        V_SIZE,
+        M_SIZE,
+        CDOF_SIZE,
+        BATCH,
     ](env, state, model, M_inv, cdof, qvel_pred, dt)
 
     # 9. Write back constrained velocity and integrate position
@@ -753,7 +1058,15 @@ fn step_constraint_kernel_with_solver[
 
     # 10. Normalize quaternions
     normalize_qpos_quaternions_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
     ](env, state, model)
 
     # 11. Joint limits now enforced as constraints inside the solver
@@ -781,6 +1094,14 @@ fn step_constraint_kernel[
 ):
     """Complete GC physics step with PGS constraint solving (default)."""
     step_constraint_kernel_with_solver[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        STATE_SIZE, MODEL_SIZE, BATCH, PGSSolver,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        BATCH,
+        PGSSolver,
     ](env, state, model)

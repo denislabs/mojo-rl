@@ -104,8 +104,8 @@ fn create_state_buffer[
     Returns:
         Pointer to allocated buffer.
     """
-    comptime state_size = state_size[NQ, NV, NBODY, MAX_CONTACTS]()
-    var total_size = state_size * BATCH
+    comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS]()
+    var total_size = STATE_SIZE * BATCH
     var buffer = ctx.enqueue_create_host_buffer[DTYPE](total_size)
 
     # Initialize to zero
@@ -127,11 +127,11 @@ fn create_model_buffer[
     Returns:
         Pointer to allocated buffer.
     """
-    comptime model_size = model_size[NBODY, NJOINT]()
-    var buffer = ctx.enqueue_create_host_buffer[DTYPE](model_size)
+    comptime MODEL_SIZE = model_size[NBODY, NJOINT]()
+    var buffer = ctx.enqueue_create_host_buffer[DTYPE](MODEL_SIZE)
 
     # Initialize to zero
-    for i in range(model_size):
+    for i in range(MODEL_SIZE):
         buffer[i] = Scalar[DTYPE](0)
 
     return buffer
@@ -167,15 +167,9 @@ fn copy_model_to_buffer[
         buffer[offset + BODY_IDX_IXX] = model.body_inertia[body * 3 + 0]
         buffer[offset + BODY_IDX_IYY] = model.body_inertia[body * 3 + 1]
         buffer[offset + BODY_IDX_IZZ] = model.body_inertia[body * 3 + 2]
-        buffer[offset + BODY_IDX_INV_IXX] = model.body_inv_inertia[
-            body * 3 + 0
-        ]
-        buffer[offset + BODY_IDX_INV_IYY] = model.body_inv_inertia[
-            body * 3 + 1
-        ]
-        buffer[offset + BODY_IDX_INV_IZZ] = model.body_inv_inertia[
-            body * 3 + 2
-        ]
+        buffer[offset + BODY_IDX_INV_IXX] = model.body_inv_inertia[body * 3 + 0]
+        buffer[offset + BODY_IDX_INV_IYY] = model.body_inv_inertia[body * 3 + 1]
+        buffer[offset + BODY_IDX_INV_IZZ] = model.body_inv_inertia[body * 3 + 2]
         buffer[offset + BODY_IDX_POS_X] = model.body_pos[body * 3 + 0]
         buffer[offset + BODY_IDX_POS_Y] = model.body_pos[body * 3 + 1]
         buffer[offset + BODY_IDX_POS_Z] = model.body_pos[body * 3 + 2]
@@ -254,8 +248,8 @@ fn copy_data_to_buffer[
         buffer: Destination buffer.
         env_idx: Environment index in buffer.
     """
-    comptime state_size = state_size[NQ, NV, NBODY, MAX_CONTACTS]()
-    var base = env_idx * state_size
+    comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS]()
+    var base = env_idx * STATE_SIZE
 
     # Copy qpos
     for i in range(NQ):
@@ -313,8 +307,8 @@ fn copy_buffer_to_data[
         data: Destination data.
         env_idx: Environment index in buffer.
     """
-    comptime state_size = state_size[NQ, NV, NBODY, MAX_CONTACTS]()
-    var base = env_idx * state_size
+    comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS]()
+    var base = env_idx * STATE_SIZE
 
     # Copy qpos
     for i in range(NQ):
