@@ -50,7 +50,6 @@ from ..solver.semi_implicit_euler_solver import (
     detect_ground_contacts,
     detect_body_body_contacts_gc,
     normalize_qpos_quaternions,
-    enforce_joint_limits,
 )
 from ..solver.gc_pgs_solver import GcPGSSolver
 from ..traits.integrator import GcIntegrator
@@ -241,8 +240,8 @@ struct ConstraintGcIntegratorWith[SOLVER: GcConstraintSolver](GcIntegrator):
         # 10. Normalize quaternions
         normalize_qpos_quaternions(model, data)
 
-        # 11. Enforce joint limits
-        enforce_joint_limits(model, data)
+        # 11. Joint limits now enforced as constraints inside the solver
+        # (no post-step clamping needed)
 
     @staticmethod
     fn simulate[

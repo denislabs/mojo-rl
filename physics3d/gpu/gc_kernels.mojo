@@ -1114,10 +1114,8 @@ fn step_gc_constraint_kernel_with_solver[
         DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH
     ](env, state, model)
 
-    # 11. Enforce joint limits
-    enforce_joint_limits_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH
-    ](env, state, model)
+    # 11. Joint limits now enforced as constraints inside the solver
+    # (no post-step clamping needed)
 
 
 # Backward-compatible alias: uses PGS solver by default

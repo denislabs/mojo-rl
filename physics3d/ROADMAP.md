@@ -53,6 +53,7 @@ Reference material:
 - **Collision primitives**: sphere, capsule, box (ground-plane + body-body in both GC and Cartesian engines) (Phase 1.3 DONE)
 - **GPU support**: all solvers, kinematics, dynamics have GPU kernels
 - **Passive forces**: armature (rotor inertia), implicit damping (MuJoCo implicitfast-style), stiffness (spring)
+- **Joint limits as constraints**: unilateral inequality constraints in all 3 solvers, CPU + GPU (Phase 1.4 DONE)
 - **Physics stability**: Baumgarte penetration cap (0.01m), velocity clamping (MAX_QVEL=20)
 
 ### What We're Missing (by impact)
@@ -62,7 +63,7 @@ Reference material:
 | ~~Diagonal-only mass matrix~~ | ~~High~~ | ~~1~~ DONE |
 | ~~No Coriolis/centrifugal in bias forces~~ | ~~High~~ | ~~1~~ DONE |
 | ~~GC engine: ground contacts only~~ | ~~High~~ | ~~1~~ DONE |
-| Joint limits via post-clamping | Medium - energy injection | 1 |
+| ~~Joint limits via post-clamping~~ | ~~Medium - energy injection~~ | ~~1~~ DONE |
 | No implicit integrators | Medium - stability for damped systems | 2 |
 | No RK4 integrator | Medium - energy conservation | 2 |
 | No unified constraint rows | Medium - blocks friction cones/equality | 3 |
@@ -480,18 +481,27 @@ detect_body_body_contacts_gc(model, data)  # NEW
 
 ---
 
-### 1.4 Joint Limits as Constraints
+### 1.4 Joint Limits as Constraints — DONE
 
-**Problem**: We enforce joint limits by clamping qpos after integration and zeroing
-velocity. This is discontinuous: it can inject energy (sudden velocity change) and
-doesn't produce smooth constraint forces. MuJoCo treats limits as inequality
-constraints in the solver, producing bounded, smooth forces.
+**Status**: COMPLETE. Joint limits are now enforced as unilateral inequality constraints
+inside all three constraint solvers (PGS, CG, Newton) on both CPU and GPU. Post-step
+clamping removed from the constraint-based integrator and GPU kernel. Legacy integrators
+(`semi_implicit_euler_integrator`, `step_gc_kernel`) retain `enforce_joint_limits` for
+backward compatibility.
 
-**Files to modify**:
-- `solver/gc_pgs_solver.mojo`, `gc_cg_solver.mojo`, `gc_newton_solver.mojo`
-  (add limit constraint rows)
-- `integrator/constraint_gc_integrator.mojo` (remove post-clamping, add limit detection)
-- `solver/semi_implicit_euler_solver.mojo` (keep `enforce_joint_limits` for backward compat)
+Each solver detects active limits (within 0.01 margin) for HINGE/SLIDE joints with
+finite ranges, then solves them via PGS iterations using the 1D Jacobian (J[dof] = ±1)
+and effective mass K = M_inv[dof,dof]. Baumgarte correction with penetration cap (0.01)
+prevents energy injection. CPU solvers use full M_inv column for velocity correction;
+GPU solvers use diagonal M_inv approximation (consistent with GPU contact solving).
+
+**Files modified**:
+- `solver/gc_pgs_solver.mojo` (limit detection + PGS in CPU `solve` and GPU `solve_gpu`)
+- `solver/gc_cg_solver.mojo` (same pattern, CPU + GPU)
+- `solver/gc_newton_solver.mojo` (same pattern, CPU + GPU)
+- `integrator/constraint_gc_integrator.mojo` (removed `enforce_joint_limits` call)
+- `gpu/gc_kernels.mojo` (removed `enforce_joint_limits_gpu` call in `step_gc_constraint_kernel_with_solver`)
+- `solver/semi_implicit_euler_solver.mojo` (kept `enforce_joint_limits` for backward compat)
 
 #### MuJoCo's Approach
 
@@ -1335,7 +1345,7 @@ For RL training (locomotion, manipulation):
 Sprint 1 (Core correctness):
   1.1 Full mass matrix          ✅ DONE (CRBA + LDL + armature + implicit damping + stiffness)
   1.2 Full RNE bias forces      ✅ DONE (gravity + Coriolis + centrifugal, CPU + GPU)
-  1.4 Joint limits as constraints ← smoother dynamics at limits
+  1.4 Joint limits as constraints ✅ DONE (unilateral constraints in all 3 solvers, CPU + GPU)
 
 Sprint 2 (Stability):
   2.1 Implicit-fast integrator  ← recommended default, stability boost (partially done via implicit damping in M)

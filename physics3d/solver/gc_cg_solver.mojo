@@ -72,7 +72,51 @@ struct GcCGSolver(GcConstraintSolver):
         """Solve contact constraints using Projected CG on CPU."""
         var num_contacts = data.num_contacts
 
-        if num_contacts == 0:
+        # Detect joint limits
+        comptime MAX_LIMITS = _max_one[2 * NJOINT]()
+        var limit_dof = InlineArray[Int, MAX_LIMITS](uninitialized=True)
+        var limit_sign = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
+        var limit_dist_arr = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
+        var K_limit = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
+        var lambda_limit = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
+        for i in range(MAX_LIMITS):
+            limit_dof[i] = 0
+            limit_sign[i] = Scalar[DTYPE](0)
+            limit_dist_arr[i] = Scalar[DTYPE](0)
+            K_limit[i] = Scalar[DTYPE](1)
+            lambda_limit[i] = Scalar[DTYPE](0)
+
+        var num_limits = 0
+        for j in range(model.num_joints):
+            var joint = model.joints[j]
+            if joint.jnt_type != JNT_HINGE and joint.jnt_type != JNT_SLIDE:
+                continue
+            var dof = joint.dof_adr
+            var pos = data.qpos[joint.qpos_adr]
+            var rmin = joint.range_min
+            var rmax = joint.range_max
+            if rmin < Scalar[DTYPE](-1e9) or rmax > Scalar[DTYPE](1e9):
+                continue
+            var dist_lo = pos - rmin
+            if dist_lo < Scalar[DTYPE](0.01) and num_limits < MAX_LIMITS:
+                limit_dof[num_limits] = dof
+                limit_sign[num_limits] = Scalar[DTYPE](1)
+                limit_dist_arr[num_limits] = dist_lo
+                K_limit[num_limits] = M_inv[dof * NV + dof]
+                if K_limit[num_limits] < Scalar[DTYPE](1e-10):
+                    K_limit[num_limits] = Scalar[DTYPE](1e-10)
+                num_limits += 1
+            var dist_hi = rmax - pos
+            if dist_hi < Scalar[DTYPE](0.01) and num_limits < MAX_LIMITS:
+                limit_dof[num_limits] = dof
+                limit_sign[num_limits] = Scalar[DTYPE](-1)
+                limit_dist_arr[num_limits] = dist_hi
+                K_limit[num_limits] = M_inv[dof * NV + dof]
+                if K_limit[num_limits] < Scalar[DTYPE](1e-10):
+                    K_limit[num_limits] = Scalar[DTYPE](1e-10)
+                num_limits += 1
+
+        if num_contacts == 0 and num_limits == 0:
             return
 
         var nc = num_contacts
@@ -339,6 +383,31 @@ struct GcCGSolver(GcConstraintSolver):
                         mi_j_sum += M_inv[i * NV + j_idx] * J_n[c * NV + j_idx]
                     qvel[i] += mi_j_sum * lambda_n[c]
 
+        # Phase 2b: Joint limit constraints (PGS)
+        if num_limits > 0:
+            for _ in range(CG_ITERATIONS):
+                for l in range(num_limits):
+                    var dof = limit_dof[l]
+                    var sign = limit_sign[l]
+                    var v_limit = sign * qvel[dof]
+                    var penetration = -limit_dist_arr[l]
+                    if penetration < Scalar[DTYPE](0):
+                        penetration = Scalar[DTYPE](0)
+                    if penetration > Scalar[DTYPE](0.01):
+                        penetration = Scalar[DTYPE](0.01)
+                    var correction = penetration - slop_val
+                    if correction < Scalar[DTYPE](0):
+                        correction = Scalar[DTYPE](0)
+                    var bias = -baumgarte_coef * correction / dt
+                    var delta_l = -(v_limit + bias) / K_limit[l]
+                    var old_lam = lambda_limit[l]
+                    lambda_limit[l] = lambda_limit[l] + delta_l
+                    if lambda_limit[l] < Scalar[DTYPE](0):
+                        lambda_limit[l] = Scalar[DTYPE](0)
+                    var actual = lambda_limit[l] - old_lam
+                    for i in range(NV):
+                        qvel[i] += M_inv[i * NV + dof] * sign * actual
+
         # Phase 3: Friction (Coulomb cone) - using PGS iterations
         _solve_friction_pgs_cpu[
             DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, M_SIZE, CDOF_SIZE
@@ -376,6 +445,7 @@ struct GcCGSolver(GcConstraintSolver):
             gc_contacts_offset,
             gc_metadata_offset,
             gc_model_metadata_offset,
+            gc_model_joint_offset,
             GC_CONTACT_SIZE,
             GC_CONTACT_IDX_BODY_A,
             GC_CONTACT_IDX_BODY_B,
@@ -391,6 +461,14 @@ struct GcCGSolver(GcConstraintSolver):
             GC_CONTACT_IDX_IMPULSE_T2,
             GC_META_IDX_NUM_CONTACTS,
             GC_MODEL_META_IDX_FRICTION,
+            GC_MODEL_JOINT_SIZE,
+            GC_JOINT_IDX_TYPE,
+            GC_JOINT_IDX_QPOS_ADR,
+            GC_JOINT_IDX_DOF_ADR,
+            GC_JOINT_IDX_RANGE_MIN,
+            GC_JOINT_IDX_RANGE_MAX,
+            GC_JNT_HINGE,
+            GC_JNT_SLIDE,
         )
 
         var contacts_off = gc_contacts_offset[NQ, NV, NBODY]()
@@ -404,7 +482,54 @@ struct GcCGSolver(GcConstraintSolver):
             model[0, model_meta_off + GC_MODEL_META_IDX_FRICTION]
         )
 
-        if num_contacts == 0:
+        # Detect joint limits from model/state buffers
+        comptime MAX_LIMITS = _max_one[2 * NJOINT]()
+        var limit_dof = InlineArray[Int, MAX_LIMITS](uninitialized=True)
+        var limit_sign = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
+        var limit_dist_arr = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
+        var K_limit = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
+        var lambda_limit = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
+        for i in range(MAX_LIMITS):
+            limit_dof[i] = 0
+            limit_sign[i] = Scalar[DTYPE](0)
+            limit_dist_arr[i] = Scalar[DTYPE](0)
+            K_limit[i] = Scalar[DTYPE](1)
+            lambda_limit[i] = Scalar[DTYPE](0)
+
+        var num_limits = 0
+        var qpos_off_lim = 0
+        for j in range(NJOINT):
+            var j_off = gc_model_joint_offset[NBODY](j)
+            var jtype = Int(rebind[Scalar[DTYPE]](model[0, j_off + GC_JOINT_IDX_TYPE]))
+            if jtype != GC_JNT_HINGE and jtype != GC_JNT_SLIDE:
+                continue
+            var dof = Int(rebind[Scalar[DTYPE]](model[0, j_off + GC_JOINT_IDX_DOF_ADR]))
+            var qpos_adr = Int(rebind[Scalar[DTYPE]](model[0, j_off + GC_JOINT_IDX_QPOS_ADR]))
+            var rmin = rebind[Scalar[DTYPE]](model[0, j_off + GC_JOINT_IDX_RANGE_MIN])
+            var rmax = rebind[Scalar[DTYPE]](model[0, j_off + GC_JOINT_IDX_RANGE_MAX])
+            if rmin < Scalar[DTYPE](-1e9) or rmax > Scalar[DTYPE](1e9):
+                continue
+            var pos = rebind[Scalar[DTYPE]](state[env, qpos_off_lim + qpos_adr])
+            var dist_lo = pos - rmin
+            if dist_lo < Scalar[DTYPE](0.01) and num_limits < MAX_LIMITS:
+                limit_dof[num_limits] = dof
+                limit_sign[num_limits] = Scalar[DTYPE](1)
+                limit_dist_arr[num_limits] = dist_lo
+                K_limit[num_limits] = M_inv[dof * NV + dof]
+                if K_limit[num_limits] < Scalar[DTYPE](1e-10):
+                    K_limit[num_limits] = Scalar[DTYPE](1e-10)
+                num_limits += 1
+            var dist_hi = rmax - pos
+            if dist_hi < Scalar[DTYPE](0.01) and num_limits < MAX_LIMITS:
+                limit_dof[num_limits] = dof
+                limit_sign[num_limits] = Scalar[DTYPE](-1)
+                limit_dist_arr[num_limits] = dist_hi
+                K_limit[num_limits] = M_inv[dof * NV + dof]
+                if K_limit[num_limits] < Scalar[DTYPE](1e-10):
+                    K_limit[num_limits] = Scalar[DTYPE](1e-10)
+                num_limits += 1
+
+        if num_contacts == 0 and num_limits == 0:
             return
 
         var nc = num_contacts
@@ -657,6 +782,33 @@ struct GcCGSolver(GcConstraintSolver):
                     for j_idx in range(NV):
                         mi_j_sum += M_inv[i * NV + j_idx] * J_n[c * NV + j_idx]
                     qvel[i] += mi_j_sum * lambda_n[c]
+
+        # Phase 2b: Joint limit constraints (PGS)
+        if num_limits > 0:
+            var baumgarte_lim = Scalar[DTYPE](BAUMGARTE_CG)
+            var slop_lim = Scalar[DTYPE](SLOP_CG)
+            for _ in range(CG_ITERATIONS):
+                for l in range(num_limits):
+                    var dof = limit_dof[l]
+                    var sign = limit_sign[l]
+                    var v_limit = sign * qvel[dof]
+                    var penetration = -limit_dist_arr[l]
+                    if penetration < Scalar[DTYPE](0):
+                        penetration = Scalar[DTYPE](0)
+                    if penetration > Scalar[DTYPE](0.01):
+                        penetration = Scalar[DTYPE](0.01)
+                    var correction = penetration - slop_lim
+                    if correction < Scalar[DTYPE](0):
+                        correction = Scalar[DTYPE](0)
+                    var bias = -baumgarte_lim * correction / dt
+                    var delta_l = -(v_limit + bias) / K_limit[l]
+                    var old_lam = lambda_limit[l]
+                    lambda_limit[l] = lambda_limit[l] + delta_l
+                    if lambda_limit[l] < Scalar[DTYPE](0):
+                        lambda_limit[l] = Scalar[DTYPE](0)
+                    var actual_l = lambda_limit[l] - old_lam
+                    # Use diagonal M_inv for correction (consistent with GPU)
+                    qvel[dof] += M_inv[dof * NV + dof] * sign * actual_l
 
         # Phase 3: Friction via PGS
         _solve_friction_pgs_gpu[
