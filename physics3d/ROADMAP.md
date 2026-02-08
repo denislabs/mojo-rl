@@ -54,7 +54,8 @@ Reference material:
 - **GPU support**: all solvers, kinematics, dynamics have GPU kernels
 - **Passive forces**: armature (rotor inertia), implicit damping (MuJoCo implicitfast-style), stiffness (spring)
 - **Joint limits as constraints**: unilateral inequality constraints in all 3 solvers, CPU + GPU (Phase 1.4 DONE)
-- **Physics stability**: Baumgarte penetration cap (0.01m), velocity clamping (MAX_QVEL=20)
+- **Physics stability**: MuJoCo solref/solimp impedance model (replaced Baumgarte), penetration cap (0.05m), velocity clamping (MAX_QVEL=20)
+- **Constraint solver parameters**: per-model solref/solimp for contacts and joint limits, Hermite smoothstep impedance, all 3 solvers, CPU + GPU (Phase 3.4 DONE)
 
 ### What We're Missing (by impact)
 
@@ -69,7 +70,7 @@ Reference material:
 | No unified constraint rows | Medium - blocks friction cones/equality | 3 |
 | Simple Coulomb friction only | Medium - no torsional/rolling | 3 |
 | No equality constraints | Medium - can't model welds/connects | 3 |
-| No per-contact solref/solimp | Low - less tunability | 3 |
+| ~~No per-contact solref/solimp~~ | ~~Low - less tunability~~ | ~~3~~ DONE |
 | No broadphase | Low - performance for many bodies | 4 |
 | No warmstart | Low - more solver iterations | 5 |
 | No solver islands | Low - parallelism optimization | 5 |
@@ -1040,50 +1041,46 @@ struct EqualityConstraint[DTYPE: DType]:
 
 ---
 
-### 3.4 Per-Contact Solver Parameters (solref/solimp)
+### 3.4 Per-Contact Solver Parameters (solref/solimp) — DONE
 
-**Problem**: All contacts share global stiffness/damping parameters. MuJoCo allows
-per-contact `solref` (time constant + damping ratio) and `solimp` (impedance curve)
-for fine-grained tuning.
+**Implemented**: MuJoCo-style impedance model replacing Baumgarte stabilization.
+Global `solref` (time constant + damping ratio) and `solimp` (impedance curve)
+parameters stored per model, used by all three solvers (PGS, CG, Newton) on CPU and GPU.
 
-**Files to modify**:
-- `types.mojo` (add solref/solimp to contact or geom)
-- `constraint/constraint_builder.mojo` (compute per-contact aref and D)
+**Files modified**:
+- `types.mojo` — added `solref_contact/solimp_contact/solref_limit/solimp_limit` to Model
+- `gpu/constants.mojo` — added `MODEL_META_IDX_SOLREF_*` / `MODEL_META_IDX_SOLIMP_*` (10 indices)
+- `gpu/buffer_utils.mojo` — writes solref/solimp to GPU model buffer
+- `solver/pgs_solver.mojo`, `solver/cg_solver.mojo`, `solver/newton_solver.mojo` — impedance bias in all 12 sections (3 solvers × 2 platforms × 2 constraint types)
+- `envs/half_cheetah_gc/` and `envs/hopper_gc/` — environment-specific solref/solimp from XML
 
-#### MuJoCo Impedance Model
+#### Implementation Details
 
-MuJoCo reference: `constraint.py` lines 57-126 (MuJoCo Warp `_update_efc_row`).
-
+**Impedance model** (simplified Hermite smoothstep, MuJoCo-compatible):
 ```
-Parameters:
-  solref = [timeconst, dampratio]
-  solimp = [dmin, dmax, width, mid, power]
-
-Stiffness and damping from solref:
-  k = 1 / (dmax^2 * timeconst^2 * dampratio^2)
-  b = 2 / (dmax * timeconst)
-
-Position-dependent impedance from solimp:
-  imp_x = |penetration| / width
-  if imp_x < mid:
-    imp = dmin + (imp_x/mid)^power * (dmax - dmin)
-  else:
-    imp = dmin + (1 - ((1-imp_x)/(1-mid))^power) * (dmax - dmin)
-  imp = clamp(imp, dmin, dmax)
-
-Effective mass:
-  D = 1 / (invweight * (1 - imp) / imp)
-
-Reference acceleration:
-  aref = -k * imp * penetration - b * velocity
+x = min(penetration / width, 1.0)
+imp = dmin + (3x² - 2x³) * (dmax - dmin)
+imp = max(imp, 0.2)  # floor prevents zero-force contacts
 ```
 
-Where `invweight` is the inverse of the effective mass at the contact point:
-`invweight = J @ M_inv @ J^T` (scalar for 1D contact).
+**Velocity-level bias** (adapted from MuJoCo's acceleration-level formulation):
+```
+inv_tc_dr = 1 / (timeconst * dampratio)
+b_vel_coef = 2 * dampratio * dt / (dmax * timeconst)
+bias = -imp * penetration * inv_tc_dr - b_vel_coef * v_n
+delta = -(v_n + bias) / (K / imp)
+```
 
-**Implementation**: Store `solref[2]` and `solimp[5]` per geom or per contact pair
-in the model, then use these in the constraint builder to compute `aref` and `D`
-per constraint row.
+Key insight: MuJoCo's `aref = -k*imp*pen - b*v_n` is acceleration-level. Our PGS/CG/Newton
+solvers work at velocity level, so naively multiplying by `dt` gives O(dt²) position recovery
+(~50x too weak at dt=0.002). The velocity-level formulation derives Baumgarte-equivalent
+coefficients directly from solref parameters.
+
+**Parameters** (from half_cheetah.xml / hopper.xml):
+- `solref = [0.02, 1.0]` — 20ms time constant, critical damping
+- `solimp_contact = [0.0, 0.8, 0.01]` — soft at surface, firm at depth
+- `solimp_limit = [0.0, 0.8, 0.03]` — wider transition for joint limits
+- Penetration capped at 0.05m for safety
 
 ---
 
@@ -1346,7 +1343,7 @@ Sprint 3 (Interaction):
   3.1 Unified constraint rows   ← architecture for all below
 
 Sprint 4 (Polish):
-  3.4 Per-contact solref/solimp ← MuJoCo model compatibility
+  3.4 Per-contact solref/solimp ✅ DONE (impedance model replacing Baumgarte, all 3 solvers, CPU + GPU)
   5.1 Solver warmstart          ← performance (fewer iterations)
   3.2 Friction cone models      ← better friction physics
   4.1 Broadphase (spheres)      ← performance for many bodies

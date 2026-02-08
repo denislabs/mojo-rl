@@ -33,8 +33,8 @@ comptime GPU_MINIBATCH_SIZE = 2048
 comptime dtype = DType.float32
 
 # Training configuration
-comptime TOTAL_EPISODES = 50_000
-comptime EVAL_EVERY = 2000  # Evaluate every N episodes
+comptime TOTAL_EPISODES = 10_000
+comptime EVAL_EVERY = 1000  # Evaluate every N episodes
 comptime EVAL_EPISODES = 50
 comptime MAX_STEPS = 1000  # HalfCheetah episodes
 
@@ -136,7 +136,9 @@ fn main() raises:
                 EVAL_EVERY, TOTAL_EPISODES - episodes_trained
             )
 
-            var metrics = agent.train_gpu[HalfCheetahGC[gpu_dtype]](
+            var metrics = agent.train_gpu[
+                HalfCheetahGC[gpu_dtype, TERMINATE_ON_UNHEALTHY=False]
+            ](
                 ctx,
                 num_episodes=episodes_this_round,
                 verbose=False,

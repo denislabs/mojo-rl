@@ -51,7 +51,7 @@ comptime N_ENVS = 256  # Good GPU parallelism
 comptime GPU_MINIBATCH_SIZE = 2048  # Efficient GPU batch size
 
 # Training duration
-comptime NUM_EPISODES = 50_000
+comptime NUM_EPISODES = 1_000
 
 comptime dtype = DType.float32
 
@@ -158,7 +158,7 @@ fn main() raises:
 
         try:
             var metrics = agent.train_gpu[
-                HalfCheetahGC[dtype, TERMINATE_ON_UNHEALTHY=True],
+                HalfCheetahGC[dtype, TERMINATE_ON_UNHEALTHY=False],
                 HalfCheetahCurriculum,
             ](
                 ctx,

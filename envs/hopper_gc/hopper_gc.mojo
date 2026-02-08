@@ -49,7 +49,6 @@ from physics3d.gpu.constants import (
     xpos_offset,
     metadata_offset,
     model_size,
-    GEOM_CAPSULE,
     META_IDX_NUM_CONTACTS,
     META_IDX_STEP_COUNT,
     model_curriculum_offset,
@@ -114,10 +113,10 @@ from physics3d.gpu.constants import (
     model_body_offset,
     model_joint_offset,
     model_metadata_offset,
-    JNT_SLIDE,
-    JNT_HINGE,
-    GEOM_CAPSULE,
 )
+from physics3d.constants import GEOM_CAPSULE
+from physics3d.joint_types import JNT_SLIDE, JNT_HINGE
+
 
 from .constants_gc import HopperGCConstants
 from .state import HopperGCState
@@ -1190,39 +1189,21 @@ struct HopperGC[
 
         """
 
-        # Create model buffer on GPU
+        # Create model buffer on GPU with curriculum values set directly
         comptime MODEL_SIZE = model_size[
             HopperGC.NUM_BODIES, HopperGC.NUM_JOINTS
         ]()
         var model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
 
-        # Initialize model buffer with default physics params
-        Self._init_model_gpu(ctx, model_buf)
-        ctx.synchronize()
-
-        # Update curriculum params if non-default values provided
-        comptime CURRICULUM_OFF = model_curriculum_offset[
-            HopperGC.NUM_BODIES, HopperGC.NUM_JOINTS
-        ]()
-
-        # Copy model to host, update curriculum, copy back
-        var model_host = List[Scalar[gpu_dtype]](capacity=MODEL_SIZE)
-        for _ in range(MODEL_SIZE):
-            model_host.append(Scalar[gpu_dtype](0.0))
-        ctx.enqueue_copy(model_host.unsafe_ptr(), model_buf)
-        ctx.synchronize()
-
-        model_host[CURRICULUM_OFF + CURRICULUM_IDX_MIN_HEIGHT] = (
+        var min_height = (
             curriculum_values[0] if len(curriculum_values)
             > 0 else HopperGCConstants[gpu_dtype].MIN_HEIGHT
         )
-        model_host[CURRICULUM_OFF + CURRICULUM_IDX_MAX_PITCH] = (
+        var max_pitch = (
             curriculum_values[1] if len(curriculum_values)
             > 1 else HopperGCConstants[gpu_dtype].MAX_PITCH
         )
-
-        ctx.enqueue_copy(model_buf, model_host.unsafe_ptr())
-        ctx.synchronize()
+        Self._init_model_gpu(ctx, model_buf, min_height, max_pitch)
 
         # Apply actions to qfrc in state buffer
         Self._apply_actions_gpu[BATCH_SIZE, STATE_SIZE_VAL, ACTION_DIM_VAL](
@@ -1516,10 +1497,19 @@ struct HopperGC[
     fn _init_model_gpu(
         ctx: DeviceContext,
         mut model_buf: DeviceBuffer[gpu_dtype],
+        min_height: Scalar[gpu_dtype] = HopperGCConstants[gpu_dtype].MIN_HEIGHT,
+        max_pitch: Scalar[gpu_dtype] = HopperGCConstants[gpu_dtype].MAX_PITCH,
     ) raises:
         """Initialize model buffer with HopperGC parameters for GC physics engine.
 
         Uses HopperGCConstants for all body dimensions and joint limits.
+        Curriculum parameters can be set directly to avoid GPU↔CPU round-trips.
+
+        Args:
+            ctx: GPU device context.
+            model_buf: Model buffer to initialize.
+            min_height: Minimum torso height for health check.
+            max_pitch: Maximum torso pitch angle for health check.
         """
         # Use constants for all parameters
         comptime C = HopperGCConstants[gpu_dtype]
@@ -1558,9 +1548,7 @@ struct HopperGC[
         )
 
         model_host[b0 + BODY_IDX_MASS] = torso_mass
-        model_host[b0 + BODY_IDX_INV_MASS] = (
-            Scalar[gpu_dtype](1.0) / torso_mass
-        )
+        model_host[b0 + BODY_IDX_INV_MASS] = Scalar[gpu_dtype](1.0) / torso_mass
         model_host[b0 + BODY_IDX_IXX] = torso_inertia[0]
         model_host[b0 + BODY_IDX_IYY] = torso_inertia[1]
         model_host[b0 + BODY_IDX_IZZ] = torso_inertia[2]
@@ -1582,9 +1570,7 @@ struct HopperGC[
         model_host[b0 + BODY_IDX_QUAT_Z] = Scalar[gpu_dtype](0.0)
         model_host[b0 + BODY_IDX_QUAT_W] = Scalar[gpu_dtype](1.0)
         model_host[b0 + BODY_IDX_PARENT] = Scalar[gpu_dtype](-1)  # World
-        model_host[b0 + BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](
-            GEOM_CAPSULE
-        )
+        model_host[b0 + BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](GEOM_CAPSULE)
         model_host[b0 + BODY_IDX_RADIUS] = torso_radius
         model_host[b0 + BODY_IDX_HALF_LENGTH] = torso_half_length
 
@@ -1597,9 +1583,7 @@ struct HopperGC[
         )
 
         model_host[b1 + BODY_IDX_MASS] = thigh_mass
-        model_host[b1 + BODY_IDX_INV_MASS] = (
-            Scalar[gpu_dtype](1.0) / thigh_mass
-        )
+        model_host[b1 + BODY_IDX_INV_MASS] = Scalar[gpu_dtype](1.0) / thigh_mass
         model_host[b1 + BODY_IDX_IXX] = thigh_inertia[0]
         model_host[b1 + BODY_IDX_IYY] = thigh_inertia[1]
         model_host[b1 + BODY_IDX_IZZ] = thigh_inertia[2]
@@ -1623,9 +1607,7 @@ struct HopperGC[
         model_host[b1 + BODY_IDX_QUAT_Z] = Scalar[gpu_dtype](0.0)
         model_host[b1 + BODY_IDX_QUAT_W] = Scalar[gpu_dtype](1.0)
         model_host[b1 + BODY_IDX_PARENT] = Scalar[gpu_dtype](0)  # Torso
-        model_host[b1 + BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](
-            GEOM_CAPSULE
-        )
+        model_host[b1 + BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](GEOM_CAPSULE)
         model_host[b1 + BODY_IDX_RADIUS] = thigh_radius
         model_host[b1 + BODY_IDX_HALF_LENGTH] = thigh_half_length
 
@@ -1638,9 +1620,7 @@ struct HopperGC[
         )
 
         model_host[b2 + BODY_IDX_MASS] = leg_mass
-        model_host[b2 + BODY_IDX_INV_MASS] = (
-            Scalar[gpu_dtype](1.0) / leg_mass
-        )
+        model_host[b2 + BODY_IDX_INV_MASS] = Scalar[gpu_dtype](1.0) / leg_mass
         model_host[b2 + BODY_IDX_IXX] = leg_inertia[0]
         model_host[b2 + BODY_IDX_IYY] = leg_inertia[1]
         model_host[b2 + BODY_IDX_IZZ] = leg_inertia[2]
@@ -1656,17 +1636,13 @@ struct HopperGC[
         # Local frame: offset below thigh
         model_host[b2 + BODY_IDX_POS_X] = Scalar[gpu_dtype](0.0)
         model_host[b2 + BODY_IDX_POS_Y] = Scalar[gpu_dtype](0.0)
-        model_host[b2 + BODY_IDX_POS_Z] = -(
-            thigh_half_length + leg_half_length
-        )
+        model_host[b2 + BODY_IDX_POS_Z] = -(thigh_half_length + leg_half_length)
         model_host[b2 + BODY_IDX_QUAT_X] = Scalar[gpu_dtype](0.0)
         model_host[b2 + BODY_IDX_QUAT_Y] = Scalar[gpu_dtype](0.0)
         model_host[b2 + BODY_IDX_QUAT_Z] = Scalar[gpu_dtype](0.0)
         model_host[b2 + BODY_IDX_QUAT_W] = Scalar[gpu_dtype](1.0)
         model_host[b2 + BODY_IDX_PARENT] = Scalar[gpu_dtype](1)  # Thigh
-        model_host[b2 + BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](
-            GEOM_CAPSULE
-        )
+        model_host[b2 + BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](GEOM_CAPSULE)
         model_host[b2 + BODY_IDX_RADIUS] = leg_radius
         model_host[b2 + BODY_IDX_HALF_LENGTH] = leg_half_length
 
@@ -1679,9 +1655,7 @@ struct HopperGC[
         )
 
         model_host[b3 + BODY_IDX_MASS] = foot_mass
-        model_host[b3 + BODY_IDX_INV_MASS] = (
-            Scalar[gpu_dtype](1.0) / foot_mass
-        )
+        model_host[b3 + BODY_IDX_INV_MASS] = Scalar[gpu_dtype](1.0) / foot_mass
         model_host[b3 + BODY_IDX_IXX] = foot_inertia[0]
         model_host[b3 + BODY_IDX_IYY] = foot_inertia[1]
         model_host[b3 + BODY_IDX_IZZ] = foot_inertia[2]
@@ -1707,9 +1681,7 @@ struct HopperGC[
             0.70710678
         )  # cos(π/4)
         model_host[b3 + BODY_IDX_PARENT] = Scalar[gpu_dtype](2)  # Leg
-        model_host[b3 + BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](
-            GEOM_CAPSULE
-        )
+        model_host[b3 + BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](GEOM_CAPSULE)
         model_host[b3 + BODY_IDX_RADIUS] = foot_radius
         model_host[b3 + BODY_IDX_HALF_LENGTH] = foot_half_length
 
@@ -1888,8 +1860,8 @@ struct HopperGC[
         var curr = model_curriculum_offset[
             HopperGC.NUM_BODIES, HopperGC.NUM_JOINTS
         ]()
-        model_host[curr + CURRICULUM_IDX_MIN_HEIGHT] = C.MIN_HEIGHT
-        model_host[curr + CURRICULUM_IDX_MAX_PITCH] = C.MAX_PITCH
+        model_host[curr + CURRICULUM_IDX_MIN_HEIGHT] = min_height
+        model_host[curr + CURRICULUM_IDX_MAX_PITCH] = max_pitch
 
         # Copy to GPU
         ctx.enqueue_copy(model_buf, model_host.unsafe_ptr())
@@ -1903,54 +1875,13 @@ struct HopperGC[
     ) raises:
         """Initialize model buffer with specified curriculum parameters.
 
-        Use this instead of _init_model_gpu when you want to set custom
-        curriculum bounds (for curriculum learning).
-
         Args:
             ctx: GPU device context.
             model_buf: Model buffer to initialize.
-            min_height: Minimum torso height for health check (e.g., 0.3 for lenient, 0.7 for strict).
-            max_pitch: Maximum torso pitch angle for health check (e.g., 1.0 for lenient, 0.2 for strict).
-
-        Example:
-            # In training loop:
-            var progress = Float32(iteration) / Float32(total_iterations)
-            var scheduler = HopperCurriculum()
-            var params = scheduler.get_params(progress)
-            var model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
-            HopperGC.init_model_gpu_with_curriculum(ctx, model_buf, params[0], params[1])
+            min_height: Minimum torso height for health check.
+            max_pitch: Maximum torso pitch angle for health check.
         """
-        # First, initialize with default model data
-        Self._init_model_gpu(ctx, model_buf)
-
-        # Then update curriculum params
-        from physics3d.gpu.constants import (
-            model_curriculum_offset,
-            CURRICULUM_IDX_MIN_HEIGHT,
-            CURRICULUM_IDX_MAX_PITCH,
-        )
-
-        comptime MODEL_SIZE = model_size[
-            HopperGC.NUM_BODIES, HopperGC.NUM_JOINTS
-        ]()
-        comptime CURRICULUM_OFF = model_curriculum_offset[
-            HopperGC.NUM_BODIES, HopperGC.NUM_JOINTS
-        ]()
-
-        # Copy model buffer to host, update curriculum, copy back
-        var model_host = List[Scalar[gpu_dtype]](capacity=MODEL_SIZE)
-        for _ in range(MODEL_SIZE):
-            model_host.append(Scalar[gpu_dtype](0.0))
-
-        ctx.enqueue_copy(model_host.unsafe_ptr(), model_buf)
-        ctx.synchronize()
-
-        # Update curriculum params
-        model_host[CURRICULUM_OFF + CURRICULUM_IDX_MIN_HEIGHT] = min_height
-        model_host[CURRICULUM_OFF + CURRICULUM_IDX_MAX_PITCH] = max_pitch
-
-        # Copy back to GPU
-        ctx.enqueue_copy(model_buf, model_host.unsafe_ptr())
+        Self._init_model_gpu(ctx, model_buf, min_height, max_pitch)
 
     @staticmethod
     fn _apply_actions_gpu[
@@ -2169,9 +2100,7 @@ struct HopperGC[
             var min_height = model[
                 0, CURRICULUM_OFF + CURRICULUM_IDX_MIN_HEIGHT
             ]
-            var max_pitch = model[
-                0, CURRICULUM_OFF + CURRICULUM_IDX_MAX_PITCH
-            ]
+            var max_pitch = model[0, CURRICULUM_OFF + CURRICULUM_IDX_MAX_PITCH]
 
             # Increment step counter
             var step_count = Int(

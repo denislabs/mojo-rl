@@ -2669,6 +2669,14 @@ struct DeepPPOContinuousAgent[
         var total_phase2_ns: UInt = 0
         var total_phase3_ns: UInt = 0
 
+        # Phase 1 sub-timers
+        var total_p1_nn_forward_ns: UInt = 0
+        var total_p1_sample_store_ns: UInt = 0
+        var total_p1_env_step_ns: UInt = 0
+        var total_p1_post_step_ns: UInt = 0
+        var total_p1_episode_sync_ns: UInt = 0
+        var total_p1_reset_ns: UInt = 0
+
         # Phase 3 sub-timers
         var total_shuffle_ns: UInt = 0
         var total_indices_ns: UInt = 0
@@ -2706,6 +2714,9 @@ struct DeepPPOContinuousAgent[
             for t in range(Self.rollout_len):
                 var rng_seed = UInt32(total_steps * 2654435761 + t * 7919)
 
+                # --- Sub-timer: NN forward ---
+                var p1_nn_start = perf_counter_ns()
+
                 # Forward actor on GPU to get mean and log_std
                 Self.ActorNetwork.MODEL.forward_gpu_no_cache[Self.n_envs](
                     ctx,
@@ -2723,6 +2734,13 @@ struct DeepPPOContinuousAgent[
                     critic_params_buf,
                     critic_env_workspace_buf,
                 )
+                ctx.synchronize()
+                total_p1_nn_forward_ns += UInt(
+                    perf_counter_ns() - p1_nn_start
+                )
+
+                # --- Sub-timer: Sample + store ---
+                var p1_sample_start = perf_counter_ns()
 
                 # Sample continuous actions on GPU (unbounded Gaussian)
                 ctx.enqueue_function[
@@ -2774,6 +2792,13 @@ struct DeepPPOContinuousAgent[
                     grid_dim=(ENV_BLOCKS,),
                     block_dim=(TPB,),
                 )
+                ctx.synchronize()
+                total_p1_sample_store_ns += UInt(
+                    perf_counter_ns() - p1_sample_start
+                )
+
+                # --- Sub-timer: Env step ---
+                var p1_env_step_start = perf_counter_ns()
 
                 # Step all environments on GPU with continuous actions
                 var env_step_seed = UInt64(total_steps * 1103515245 + t * 12345)
@@ -2805,6 +2830,13 @@ struct DeepPPOContinuousAgent[
                         grid_dim=(ENV_BLOCKS,),
                         block_dim=(TPB,),
                     )
+                ctx.synchronize()
+                total_p1_env_step_ns += UInt(
+                    perf_counter_ns() - p1_env_step_start
+                )
+
+                # --- Sub-timer: Post-step ---
+                var p1_post_start = perf_counter_ns()
 
                 # Store rewards and dones
                 var rollout_rewards_t = LayoutTensor[
@@ -2855,6 +2887,13 @@ struct DeepPPOContinuousAgent[
                     grid_dim=(ENV_BLOCKS,),
                     block_dim=(TPB,),
                 )
+                ctx.synchronize()
+                total_p1_post_step_ns += UInt(
+                    perf_counter_ns() - p1_post_start
+                )
+
+                # --- Sub-timer: Episode sync + logging ---
+                var p1_sync_start = perf_counter_ns()
 
                 # Copy to CPU and process
                 ctx.enqueue_copy(completed_rewards_host, completed_rewards_buf)
@@ -2898,6 +2937,12 @@ struct DeepPPOContinuousAgent[
                                     completed_episodes,
                                     "]",
                                 )
+                total_p1_episode_sync_ns += UInt(
+                    perf_counter_ns() - p1_sync_start
+                )
+
+                # --- Sub-timer: Reset ---
+                var p1_reset_start = perf_counter_ns()
 
                 # Reset episode tracking for done environments
                 ctx.enqueue_function[
@@ -2924,6 +2969,10 @@ struct DeepPPOContinuousAgent[
                 EnvType.extract_obs_kernel_gpu[
                     Self.n_envs, EnvType.STATE_SIZE, Self.OBS
                 ](ctx, states_buf, obs_buf)
+                ctx.synchronize()
+                total_p1_reset_ns += UInt(
+                    perf_counter_ns() - p1_reset_start
+                )
 
             # Early exit if we've reached target episodes
             if completed_episodes >= num_episodes:
@@ -3489,6 +3538,38 @@ struct DeepPPOContinuousAgent[
                 "s (",
                 String(p3_pct)[:4],
                 "%)",
+            )
+            print()
+            print("  Phase 1 breakdown:")
+            print(
+                "    NN forward:         ",
+                String(Float64(total_p1_nn_forward_ns) / 1e6)[:8],
+                "ms",
+            )
+            print(
+                "    Sample+store:       ",
+                String(Float64(total_p1_sample_store_ns) / 1e6)[:8],
+                "ms",
+            )
+            print(
+                "    Env step:           ",
+                String(Float64(total_p1_env_step_ns) / 1e6)[:8],
+                "ms",
+            )
+            print(
+                "    Post-step:          ",
+                String(Float64(total_p1_post_step_ns) / 1e6)[:8],
+                "ms",
+            )
+            print(
+                "    Episode sync:       ",
+                String(Float64(total_p1_episode_sync_ns) / 1e6)[:8],
+                "ms",
+            )
+            print(
+                "    Reset:              ",
+                String(Float64(total_p1_reset_ns) / 1e6)[:8],
+                "ms",
             )
             print()
             print("  Phase 3 breakdown:")

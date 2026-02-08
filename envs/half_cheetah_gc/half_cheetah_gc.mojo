@@ -1517,40 +1517,17 @@ struct HalfCheetahGC[
         enforcement after each sub-step, matching CPU behavior.
         """
 
-        # Create model buffer on GPU
+        # Create model buffer on GPU with curriculum values set directly
         comptime MODEL_SIZE = model_size[
             HalfCheetahGC.NUM_BODIES, HalfCheetahGC.NUM_JOINTS
         ]()
         var model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
 
-        # Initialize model buffer with default physics params
-        Self._init_model_gpu(ctx, model_buf)
-        ctx.synchronize()
-
-        # Update curriculum params if non-default values provided
-        comptime CURRICULUM_OFF = model_curriculum_offset[
-            HalfCheetahGC.NUM_BODIES, HalfCheetahGC.NUM_JOINTS
-        ]()
-
-        # Copy model to host, update curriculum, copy back
-        var model_host = List[Scalar[gpu_dtype]](capacity=MODEL_SIZE)
-        for _ in range(MODEL_SIZE):
-            model_host.append(Scalar[gpu_dtype](0.0))
-        ctx.enqueue_copy(model_host.unsafe_ptr(), model_buf)
-        ctx.synchronize()
-
-        model_host[CURRICULUM_OFF + CURRICULUM_IDX_MIN_HEIGHT] = Scalar[
-            gpu_dtype
-        ](
-            0.0
-        )  # Not used for HalfCheetah
-        model_host[CURRICULUM_OFF + CURRICULUM_IDX_MAX_PITCH] = (
+        var max_pitch = (
             curriculum_values[1] if len(curriculum_values)
             > 1 else HalfCheetahGCConstants[gpu_dtype].MAX_PITCH
         )
-
-        ctx.enqueue_copy(model_buf, model_host.unsafe_ptr())
-        ctx.synchronize()
+        Self._init_model_gpu(ctx, model_buf, max_pitch)
 
         # Store prev_x_position before physics (for position-based velocity)
         Self._store_prev_x_gpu[BATCH_SIZE, STATE_SIZE_VAL](ctx, states_buf)
@@ -1848,10 +1825,17 @@ struct HalfCheetahGC[
     fn _init_model_gpu(
         ctx: DeviceContext,
         mut model_buf: DeviceBuffer[gpu_dtype],
+        max_pitch: Scalar[gpu_dtype] = HalfCheetahGCConstants[gpu_dtype].MAX_PITCH,
     ) raises:
         """Initialize model buffer with HalfCheetahGC parameters for GC physics engine.
 
         Uses HalfCheetahGCConstants for all body dimensions and joint limits.
+        Curriculum parameters can be set directly to avoid GPU↔CPU round-trips.
+
+        Args:
+            ctx: GPU device context.
+            model_buf: Model buffer to initialize.
+            max_pitch: Maximum torso pitch angle for health check.
         """
         comptime C = HalfCheetahGCConstants[gpu_dtype]
 
@@ -2450,7 +2434,7 @@ struct HalfCheetahGC[
         model_host[curr + CURRICULUM_IDX_MIN_HEIGHT] = Scalar[gpu_dtype](
             0.0
         )  # Not used for HalfCheetah
-        model_host[curr + CURRICULUM_IDX_MAX_PITCH] = C.MAX_PITCH
+        model_host[curr + CURRICULUM_IDX_MAX_PITCH] = max_pitch
 
         # Copy to GPU
         ctx.enqueue_copy(model_buf, model_host.unsafe_ptr())
@@ -2468,33 +2452,7 @@ struct HalfCheetahGC[
             model_buf: Model buffer to initialize.
             max_pitch: Maximum torso pitch angle for health check.
         """
-        # First, initialize with default model data
-        Self._init_model_gpu(ctx, model_buf)
-
-        # Then update curriculum params
-        comptime MODEL_SIZE = model_size[
-            HalfCheetahGC.NUM_BODIES, HalfCheetahGC.NUM_JOINTS
-        ]()
-        comptime CURRICULUM_OFF = model_curriculum_offset[
-            HalfCheetahGC.NUM_BODIES, HalfCheetahGC.NUM_JOINTS
-        ]()
-
-        # Copy model buffer to host, update curriculum, copy back
-        var model_host = List[Scalar[gpu_dtype]](capacity=MODEL_SIZE)
-        for _ in range(MODEL_SIZE):
-            model_host.append(Scalar[gpu_dtype](0.0))
-
-        ctx.enqueue_copy(model_host.unsafe_ptr(), model_buf)
-        ctx.synchronize()
-
-        # Update curriculum params
-        model_host[CURRICULUM_OFF + CURRICULUM_IDX_MIN_HEIGHT] = Scalar[
-            gpu_dtype
-        ](0.0)
-        model_host[CURRICULUM_OFF + CURRICULUM_IDX_MAX_PITCH] = max_pitch
-
-        # Copy back to GPU
-        ctx.enqueue_copy(model_buf, model_host.unsafe_ptr())
+        Self._init_model_gpu(ctx, model_buf, max_pitch)
 
     @staticmethod
     fn _store_prev_x_gpu[
