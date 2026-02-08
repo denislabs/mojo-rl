@@ -638,11 +638,6 @@ struct PGSSolver(ConstraintSolver):
         if nc > MAX_CONTACTS:
             nc = MAX_CONTACTS
 
-        # Extract inverse mass diagonal from full M_inv matrix
-        var M_inv_diag = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-        for i in range(NV):
-            M_inv_diag[i] = M_inv[i * NV + i]
-
         var baumgarte_coef = Scalar[DTYPE](BAUMGARTE)
         var slop_val = Scalar[DTYPE](SLOP)
 
@@ -739,9 +734,13 @@ struct PGSSolver(ConstraintSolver):
                 J_row,
             )
 
+            # Compute effective mass: K = J @ M_inv @ J^T
             var k: Scalar[DTYPE] = 0
             for i in range(NV):
-                k += J_row[i] * J_row[i] * M_inv_diag[i]
+                var mi_j_sum: Scalar[DTYPE] = 0
+                for j_idx in range(NV):
+                    mi_j_sum += M_inv[i * NV + j_idx] * J_row[j_idx]
+                k += J_row[i] * mi_j_sum
             if k < Scalar[DTYPE](1e-10):
                 k = Scalar[DTYPE](1e-10)
             K_n[c] = k
@@ -751,10 +750,13 @@ struct PGSSolver(ConstraintSolver):
                 state[env, c_off + CONTACT_IDX_IMPULSE_N]
             )
 
-            # Apply warm start
+            # Apply warm start: qvel += M_inv @ J^T * lambda
             if lambda_n[c] > Scalar[DTYPE](0):
                 for i in range(NV):
-                    qvel[i] += M_inv_diag[i] * J_row[i] * lambda_n[c]
+                    var mi_j_sum: Scalar[DTYPE] = 0
+                    for j_idx in range(NV):
+                        mi_j_sum += M_inv[i * NV + j_idx] * J_row[j_idx]
+                    qvel[i] += mi_j_sum * lambda_n[c]
 
         # Phase 2: PGS normal iterations
         for _ in range(PGS_ITERATIONS):
@@ -811,8 +813,12 @@ struct PGSSolver(ConstraintSolver):
                     lambda_n[c] = Scalar[DTYPE](0)
 
                 var actual_delta = lambda_n[c] - old_lambda
+                # Apply velocity correction: qvel += M_inv @ J^T * delta
                 for i in range(NV):
-                    qvel[i] += M_inv_diag[i] * J_row[i] * actual_delta
+                    var mi_j_sum: Scalar[DTYPE] = 0
+                    for j_idx in range(NV):
+                        mi_j_sum += M_inv[i * NV + j_idx] * J_row[j_idx]
+                    qvel[i] += mi_j_sum * actual_delta
 
         # Phase 2b: Joint limit constraints (PGS)
         if num_limits > 0:
@@ -838,8 +844,9 @@ struct PGSSolver(ConstraintSolver):
                     if lambda_limit[l] < Scalar[DTYPE](0):
                         lambda_limit[l] = Scalar[DTYPE](0)
                     var actual_l = lambda_limit[l] - old_lam
-                    # Diagonal M_inv approximation (consistent with GPU PGS)
-                    qvel[dof] += M_inv_diag[dof] * sign * actual_l
+                    # Apply: qvel[i] += M_inv[i, dof] * sign * actual
+                    for i in range(NV):
+                        qvel[i] += M_inv[i * NV + dof] * sign * actual_l
 
         # Phase 3: Friction
         var lambda_t1 = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
@@ -928,7 +935,10 @@ struct PGSSolver(ConstraintSolver):
             )
             var k1: Scalar[DTYPE] = 0
             for i in range(NV):
-                k1 += J_row[i] * J_row[i] * M_inv_diag[i]
+                var mi_j_sum: Scalar[DTYPE] = 0
+                for j_idx in range(NV):
+                    mi_j_sum += M_inv[i * NV + j_idx] * J_row[j_idx]
+                k1 += J_row[i] * mi_j_sum
             if k1 < Scalar[DTYPE](1e-10):
                 k1 = Scalar[DTYPE](1e-10)
             K_t1[c] = k1
@@ -963,7 +973,10 @@ struct PGSSolver(ConstraintSolver):
             )
             var k2: Scalar[DTYPE] = 0
             for i in range(NV):
-                k2 += J_row[i] * J_row[i] * M_inv_diag[i]
+                var mi_j_sum: Scalar[DTYPE] = 0
+                for j_idx in range(NV):
+                    mi_j_sum += M_inv[i * NV + j_idx] * J_row[j_idx]
+                k2 += J_row[i] * mi_j_sum
             if k2 < Scalar[DTYPE](1e-10):
                 k2 = Scalar[DTYPE](1e-10)
             K_t2[c] = k2
@@ -1071,7 +1084,7 @@ struct PGSSolver(ConstraintSolver):
                 var actual_t1 = lambda_t1[c] - old_t1
                 var actual_t2 = lambda_t2[c] - old_t2
 
-                # Apply tangent 1 correction
+                # Apply tangent 1 correction: qvel += M_inv @ J_t1^T * delta
                 compute_contact_jacobian_row_gpu[
                     DTYPE,
                     NQ,
@@ -1100,9 +1113,12 @@ struct PGSSolver(ConstraintSolver):
                     J_row,
                 )
                 for i in range(NV):
-                    qvel[i] += M_inv_diag[i] * J_row[i] * actual_t1
+                    var mi_j_sum: Scalar[DTYPE] = 0
+                    for j_idx in range(NV):
+                        mi_j_sum += M_inv[i * NV + j_idx] * J_row[j_idx]
+                    qvel[i] += mi_j_sum * actual_t1
 
-                # Apply tangent 2 correction
+                # Apply tangent 2 correction: qvel += M_inv @ J_t2^T * delta
                 compute_contact_jacobian_row_gpu[
                     DTYPE,
                     NQ,
@@ -1131,7 +1147,10 @@ struct PGSSolver(ConstraintSolver):
                     J_t_row,
                 )
                 for i in range(NV):
-                    qvel[i] += M_inv_diag[i] * J_t_row[i] * actual_t2
+                    var mi_j_sum: Scalar[DTYPE] = 0
+                    for j_idx in range(NV):
+                        mi_j_sum += M_inv[i * NV + j_idx] * J_t_row[j_idx]
+                    qvel[i] += mi_j_sum * actual_t2
 
         # Store impulses back to state buffer for warm-starting
         for c in range(nc):

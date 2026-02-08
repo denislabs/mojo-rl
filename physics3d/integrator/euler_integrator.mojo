@@ -613,9 +613,12 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             BATCH,
         ](env, state, model, M_inv, cdof, qvel_pred, dt)
 
-        # 9. Write back constrained velocity and integrate position
+        # 9. Write back constrained velocity and update qacc
         var qpos_off = qpos_offset[NQ, NV]()
         for i in range(NV):
+            # qacc = (constrained_vel - old_vel) / dt
+            var old_qvel = rebind[Scalar[DTYPE]](state[env, qvel_off + i])
+            state[env, qacc_off + i] = (qvel_pred[i] - old_qvel) / dt
             state[env, qvel_off + i] = qvel_pred[i]
 
         # 9b. Clamp velocities to prevent divergence

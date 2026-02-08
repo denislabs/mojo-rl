@@ -972,8 +972,9 @@ struct NewtonSolver(ConstraintSolver):
                     if lambda_limit[l] < Scalar[DTYPE](0):
                         lambda_limit[l] = Scalar[DTYPE](0)
                     var actual_l = lambda_limit[l] - old_lam
-                    # Use diagonal M_inv for correction (consistent with GPU)
-                    qvel[dof_l] += M_inv[dof_l * NV + dof_l] * sign * actual_l
+                    # Apply: qvel[i] += M_inv[i, dof] * sign * actual
+                    for i in range(NV):
+                        qvel[i] += M_inv[i * NV + dof_l] * sign * actual_l
 
         # Phase 3: Friction via PGS
         _solve_friction_pgs_gpu[
