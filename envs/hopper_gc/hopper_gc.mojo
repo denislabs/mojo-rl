@@ -34,6 +34,7 @@ from layout import Layout, LayoutTensor
 # Import GC physics engine
 from physics3d.types import Model, Data, compute_capsule_inertia
 from physics3d.integrator import DefaultIntegrator
+from physics3d.solver import PGSSolver
 from physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     forward_kinematics_gpu,
@@ -1218,6 +1219,10 @@ struct HopperGC[
 
         # Run GC physics step with frame_skip (matching Gymnasium do_simulation)
         comptime FRAME_SKIP = HopperGCConstants[gpu_dtype].FRAME_SKIP
+        comptime WS_SIZE = Self.NV * Self.NV + PGSSolver.solver_workspace_size[Self.NV, Self.MAX_CONTACTS]()
+        var workspace_buf = ctx.enqueue_create_buffer[gpu_dtype](
+            BATCH_SIZE * WS_SIZE
+        )
         for _ in range(FRAME_SKIP):
             DefaultIntegrator.step_gpu[
                 gpu_dtype,
@@ -1231,6 +1236,7 @@ struct HopperGC[
                 ctx,
                 states_buf,
                 model_buf,
+                workspace_buf,
                 dt=Scalar[gpu_dtype](0.002),
                 gravity_z=Scalar[gpu_dtype](-9.81),
                 ground_z=Scalar[gpu_dtype](0.0),

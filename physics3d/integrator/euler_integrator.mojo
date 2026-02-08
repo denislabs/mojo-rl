@@ -93,6 +93,7 @@ from ..gpu.constants import (
     JOINT_IDX_STIFFNESS,
     JOINT_IDX_DAMPING,
     MODEL_META_IDX_TIMESTEP,
+    ws_m_inv_offset,
 )
 
 
@@ -333,6 +334,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         STATE_SIZE: Int,
         MODEL_SIZE: Int,
         BATCH: Int,
+        WS_SIZE: Int,
     ](
         env: Int,
         state: LayoutTensor[
@@ -340,6 +342,9 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         ],
         model: LayoutTensor[
             DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+        ],
+        workspace: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
         ],
     ):
         """Complete GC physics step with configurable constraint solver.
@@ -512,10 +517,16 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         var D = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
         ldl_factor_gpu[DTYPE, NV, M_SIZE, V_SIZE](M, L, D)
 
+        # Compute M_inv into InlineArray, then copy to workspace (device memory)
         var M_inv = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
         for i in range(M_SIZE):
             M_inv[i] = Scalar[DTYPE](0)
         compute_M_inv_from_ldl_gpu[DTYPE, NV, M_SIZE, V_SIZE](L, D, M_inv)
+
+        # Copy M_inv to workspace so solvers read from device memory
+        var ws_m_off = ws_m_inv_offset()
+        for i in range(NV * NV):
+            workspace[env, ws_m_off + i] = M_inv[i]
 
         # 8. Compute bias forces (full RNE: gravity + Coriolis + centrifugal)
         compute_bias_forces_rne_gpu[
@@ -597,7 +608,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             var qvel = rebind[Scalar[DTYPE]](state[env, qvel_off + i])
             qvel_pred[i] = qvel + qacc[i] * dt
 
-        # 11. Constraint solve using parametrized solver with full M_inv
+        # 11. Constraint solve using parametrized solver with full M_inv (in workspace)
         Self.SOLVER.solve_gpu[
             DTYPE,
             NQ,
@@ -611,7 +622,8 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             M_SIZE,
             CDOF_SIZE,
             BATCH,
-        ](env, state, model, M_inv, cdof, qvel_pred, dt)
+            WS_SIZE,
+        ](env, state, model, workspace, cdof, qvel_pred, dt)
 
         # 9. Write back constrained velocity and update qacc
         var qpos_off = qpos_offset[NQ, NV]()
@@ -666,6 +678,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],
         mut model_buf: DeviceBuffer[DTYPE],
+        mut workspace_buf: DeviceBuffer[DTYPE],
         dt: Scalar[DTYPE],
         gravity_z: Scalar[DTYPE],
         ground_z: Scalar[DTYPE],
@@ -676,6 +689,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         """
         comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS]()
         comptime MODEL_SIZE = model_size[NBODY, NJOINT]()
+        comptime WS_SIZE = NV * NV + Self.SOLVER.solver_workspace_size[NV, MAX_CONTACTS]()
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
         var state = LayoutTensor[
@@ -686,6 +700,10 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
         ](model_buf.unsafe_ptr())
 
+        var workspace = LayoutTensor[
+            DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+        ](workspace_buf.unsafe_ptr())
+
         @always_inline
         fn kernel_wrapper(
             state: LayoutTensor[
@@ -693,6 +711,9 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             ],
             model: LayoutTensor[
                 DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+            ],
+            workspace: LayoutTensor[
+                DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
             ],
         ):
             var env = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -709,11 +730,13 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                 STATE_SIZE,
                 MODEL_SIZE,
                 BATCH,
-            ](env, state, model)
+                WS_SIZE,
+            ](env, state, model, workspace)
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             state,
             model,
+            workspace,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )
@@ -731,6 +754,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],
         mut model_buf: DeviceBuffer[DTYPE],
+        mut workspace_buf: DeviceBuffer[DTYPE],
         num_steps: Int,
         dt: Scalar[DTYPE],
         gravity_z: Scalar[DTYPE],
@@ -739,7 +763,13 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         """Run simulation for multiple steps on GPU."""
         for _ in range(num_steps):
             Self.step_gpu[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, BATCH](
-                ctx, state_buf, model_buf, dt, gravity_z, ground_z
+                ctx,
+                state_buf,
+                model_buf,
+                workspace_buf,
+                dt,
+                gravity_z,
+                ground_z,
             )
 
 

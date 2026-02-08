@@ -53,6 +53,8 @@ comptime H_NJOINT: Int = 6
 comptime H_MAX_CONTACTS: Int = 10
 comptime H_STATE_SIZE = state_size[H_NQ, H_NV, H_NBODY, H_MAX_CONTACTS]()
 comptime H_MODEL_SIZE = model_size[H_NBODY, H_NJOINT]()
+# Use Newton (largest) workspace size since all 3 solvers share the buffer
+comptime H_WS_SIZE = H_NV * H_NV + NewtonSolver.solver_workspace_size[H_NV, H_MAX_CONTACTS]()
 
 
 # =============================================================================
@@ -65,6 +67,7 @@ comptime C_NJOINT: Int = 10
 comptime C_MAX_CONTACTS: Int = 20
 comptime C_STATE_SIZE = state_size[C_NQ, C_NV, C_NBODY, C_MAX_CONTACTS]()
 comptime C_MODEL_SIZE = model_size[C_NBODY, C_NJOINT]()
+comptime C_WS_SIZE = C_NV * C_NV + NewtonSolver.solver_workspace_size[C_NV, C_MAX_CONTACTS]()
 
 
 comptime DTYPE = DType.float32
@@ -78,80 +81,86 @@ comptime DTYPE = DType.float32
 fn hopper_pgs_kernel(
     state: LayoutTensor[DTYPE, Layout.row_major(BATCH, H_STATE_SIZE), MutAnyOrigin],
     model: LayoutTensor[DTYPE, Layout.row_major(1, H_MODEL_SIZE), MutAnyOrigin],
+    workspace: LayoutTensor[DTYPE, Layout.row_major(BATCH, H_WS_SIZE), MutAnyOrigin],
 ):
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
     EulerIntegrator[PGSSolver].step_constraint_kernel[
         DTYPE, H_NQ, H_NV, H_NBODY, H_NJOINT, H_MAX_CONTACTS,
-        H_STATE_SIZE, H_MODEL_SIZE, BATCH,
-    ](env, state, model)
+        H_STATE_SIZE, H_MODEL_SIZE, BATCH, H_WS_SIZE,
+    ](env, state, model, workspace)
 
 @always_inline
 fn hopper_cg_kernel(
     state: LayoutTensor[DTYPE, Layout.row_major(BATCH, H_STATE_SIZE), MutAnyOrigin],
     model: LayoutTensor[DTYPE, Layout.row_major(1, H_MODEL_SIZE), MutAnyOrigin],
+    workspace: LayoutTensor[DTYPE, Layout.row_major(BATCH, H_WS_SIZE), MutAnyOrigin],
 ):
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
     EulerIntegrator[CGSolver].step_constraint_kernel[
         DTYPE, H_NQ, H_NV, H_NBODY, H_NJOINT, H_MAX_CONTACTS,
-        H_STATE_SIZE, H_MODEL_SIZE, BATCH,
-    ](env, state, model)
+        H_STATE_SIZE, H_MODEL_SIZE, BATCH, H_WS_SIZE,
+    ](env, state, model, workspace)
 
 @always_inline
 fn hopper_newton_kernel(
     state: LayoutTensor[DTYPE, Layout.row_major(BATCH, H_STATE_SIZE), MutAnyOrigin],
     model: LayoutTensor[DTYPE, Layout.row_major(1, H_MODEL_SIZE), MutAnyOrigin],
+    workspace: LayoutTensor[DTYPE, Layout.row_major(BATCH, H_WS_SIZE), MutAnyOrigin],
 ):
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
     EulerIntegrator[NewtonSolver].step_constraint_kernel[
         DTYPE, H_NQ, H_NV, H_NBODY, H_NJOINT, H_MAX_CONTACTS,
-        H_STATE_SIZE, H_MODEL_SIZE, BATCH,
-    ](env, state, model)
+        H_STATE_SIZE, H_MODEL_SIZE, BATCH, H_WS_SIZE,
+    ](env, state, model, workspace)
 
 
 @always_inline
 fn cheetah_pgs_kernel(
     state: LayoutTensor[DTYPE, Layout.row_major(BATCH, C_STATE_SIZE), MutAnyOrigin],
     model: LayoutTensor[DTYPE, Layout.row_major(1, C_MODEL_SIZE), MutAnyOrigin],
+    workspace: LayoutTensor[DTYPE, Layout.row_major(BATCH, C_WS_SIZE), MutAnyOrigin],
 ):
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
     EulerIntegrator[PGSSolver].step_constraint_kernel[
         DTYPE, C_NQ, C_NV, C_NBODY, C_NJOINT, C_MAX_CONTACTS,
-        C_STATE_SIZE, C_MODEL_SIZE, BATCH,
-    ](env, state, model)
+        C_STATE_SIZE, C_MODEL_SIZE, BATCH, C_WS_SIZE,
+    ](env, state, model, workspace)
 
 @always_inline
 fn cheetah_cg_kernel(
     state: LayoutTensor[DTYPE, Layout.row_major(BATCH, C_STATE_SIZE), MutAnyOrigin],
     model: LayoutTensor[DTYPE, Layout.row_major(1, C_MODEL_SIZE), MutAnyOrigin],
+    workspace: LayoutTensor[DTYPE, Layout.row_major(BATCH, C_WS_SIZE), MutAnyOrigin],
 ):
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
     EulerIntegrator[CGSolver].step_constraint_kernel[
         DTYPE, C_NQ, C_NV, C_NBODY, C_NJOINT, C_MAX_CONTACTS,
-        C_STATE_SIZE, C_MODEL_SIZE, BATCH,
-    ](env, state, model)
+        C_STATE_SIZE, C_MODEL_SIZE, BATCH, C_WS_SIZE,
+    ](env, state, model, workspace)
 
 @always_inline
 fn cheetah_newton_kernel(
     state: LayoutTensor[DTYPE, Layout.row_major(BATCH, C_STATE_SIZE), MutAnyOrigin],
     model: LayoutTensor[DTYPE, Layout.row_major(1, C_MODEL_SIZE), MutAnyOrigin],
+    workspace: LayoutTensor[DTYPE, Layout.row_major(BATCH, C_WS_SIZE), MutAnyOrigin],
 ):
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
     EulerIntegrator[NewtonSolver].step_constraint_kernel[
         DTYPE, C_NQ, C_NV, C_NBODY, C_NJOINT, C_MAX_CONTACTS,
-        C_STATE_SIZE, C_MODEL_SIZE, BATCH,
-    ](env, state, model)
+        C_STATE_SIZE, C_MODEL_SIZE, BATCH, C_WS_SIZE,
+    ](env, state, model, workspace)
 
 
 # =============================================================================
@@ -416,6 +425,8 @@ fn main() raises:
 
     var h_st = LayoutTensor[DTYPE, Layout.row_major(BATCH, H_STATE_SIZE), MutAnyOrigin](h_state_buf.unsafe_ptr())
     var h_md = LayoutTensor[DTYPE, Layout.row_major(1, H_MODEL_SIZE), MutAnyOrigin](h_model_buf.unsafe_ptr())
+    var h_ws_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * H_WS_SIZE)
+    var h_ws = LayoutTensor[DTYPE, Layout.row_major(BATCH, H_WS_SIZE), MutAnyOrigin](h_ws_buf.unsafe_ptr())
 
     # =========================================================================
     # Setup HalfCheetah
@@ -460,6 +471,8 @@ fn main() raises:
 
     var c_st = LayoutTensor[DTYPE, Layout.row_major(BATCH, C_STATE_SIZE), MutAnyOrigin](c_state_buf.unsafe_ptr())
     var c_md = LayoutTensor[DTYPE, Layout.row_major(1, C_MODEL_SIZE), MutAnyOrigin](c_model_buf.unsafe_ptr())
+    var c_ws_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * C_WS_SIZE)
+    var c_ws = LayoutTensor[DTYPE, Layout.row_major(BATCH, C_WS_SIZE), MutAnyOrigin](c_ws_buf.unsafe_ptr())
 
     comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
@@ -475,12 +488,12 @@ fn main() raises:
     ctx.synchronize()
     for _ in range(WARMUP):
         ctx.enqueue_function[hopper_pgs_kernel, hopper_pgs_kernel](
-            h_st, h_md, grid_dim=(BLOCKS,), block_dim=(TPB,))
+            h_st, h_md, h_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
     ctx.synchronize()
     var t0 = perf_counter_ns()
     for _ in range(ITERS):
         ctx.enqueue_function[hopper_pgs_kernel, hopper_pgs_kernel](
-            h_st, h_md, grid_dim=(BLOCKS,), block_dim=(TPB,))
+            h_st, h_md, h_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
     ctx.synchronize()
     var h_pgs_us = Float64(perf_counter_ns() - t0) / Float64(ITERS) / 1000.0
     print("  PGS:    ", h_pgs_us, " us/step")
@@ -490,12 +503,12 @@ fn main() raises:
     ctx.synchronize()
     for _ in range(WARMUP):
         ctx.enqueue_function[hopper_cg_kernel, hopper_cg_kernel](
-            h_st, h_md, grid_dim=(BLOCKS,), block_dim=(TPB,))
+            h_st, h_md, h_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
     ctx.synchronize()
     t0 = perf_counter_ns()
     for _ in range(ITERS):
         ctx.enqueue_function[hopper_cg_kernel, hopper_cg_kernel](
-            h_st, h_md, grid_dim=(BLOCKS,), block_dim=(TPB,))
+            h_st, h_md, h_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
     ctx.synchronize()
     var h_cg_us = Float64(perf_counter_ns() - t0) / Float64(ITERS) / 1000.0
     print("  CG:     ", h_cg_us, " us/step")
@@ -505,12 +518,12 @@ fn main() raises:
     ctx.synchronize()
     for _ in range(WARMUP):
         ctx.enqueue_function[hopper_newton_kernel, hopper_newton_kernel](
-            h_st, h_md, grid_dim=(BLOCKS,), block_dim=(TPB,))
+            h_st, h_md, h_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
     ctx.synchronize()
     t0 = perf_counter_ns()
     for _ in range(ITERS):
         ctx.enqueue_function[hopper_newton_kernel, hopper_newton_kernel](
-            h_st, h_md, grid_dim=(BLOCKS,), block_dim=(TPB,))
+            h_st, h_md, h_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
     ctx.synchronize()
     var h_newton_us = Float64(perf_counter_ns() - t0) / Float64(ITERS) / 1000.0
     print("  Newton: ", h_newton_us, " us/step")
@@ -528,12 +541,12 @@ fn main() raises:
     ctx.synchronize()
     for _ in range(WARMUP):
         ctx.enqueue_function[cheetah_pgs_kernel, cheetah_pgs_kernel](
-            c_st, c_md, grid_dim=(BLOCKS,), block_dim=(TPB,))
+            c_st, c_md, c_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
     ctx.synchronize()
     t0 = perf_counter_ns()
     for _ in range(ITERS):
         ctx.enqueue_function[cheetah_pgs_kernel, cheetah_pgs_kernel](
-            c_st, c_md, grid_dim=(BLOCKS,), block_dim=(TPB,))
+            c_st, c_md, c_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
     ctx.synchronize()
     var c_pgs_us = Float64(perf_counter_ns() - t0) / Float64(ITERS) / 1000.0
     print("  PGS:    ", c_pgs_us, " us/step")
@@ -543,12 +556,12 @@ fn main() raises:
     ctx.synchronize()
     for _ in range(WARMUP):
         ctx.enqueue_function[cheetah_cg_kernel, cheetah_cg_kernel](
-            c_st, c_md, grid_dim=(BLOCKS,), block_dim=(TPB,))
+            c_st, c_md, c_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
     ctx.synchronize()
     t0 = perf_counter_ns()
     for _ in range(ITERS):
         ctx.enqueue_function[cheetah_cg_kernel, cheetah_cg_kernel](
-            c_st, c_md, grid_dim=(BLOCKS,), block_dim=(TPB,))
+            c_st, c_md, c_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
     ctx.synchronize()
     var c_cg_us = Float64(perf_counter_ns() - t0) / Float64(ITERS) / 1000.0
     print("  CG:     ", c_cg_us, " us/step")
@@ -558,12 +571,12 @@ fn main() raises:
     ctx.synchronize()
     for _ in range(WARMUP):
         ctx.enqueue_function[cheetah_newton_kernel, cheetah_newton_kernel](
-            c_st, c_md, grid_dim=(BLOCKS,), block_dim=(TPB,))
+            c_st, c_md, c_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
     ctx.synchronize()
     t0 = perf_counter_ns()
     for _ in range(ITERS):
         ctx.enqueue_function[cheetah_newton_kernel, cheetah_newton_kernel](
-            c_st, c_md, grid_dim=(BLOCKS,), block_dim=(TPB,))
+            c_st, c_md, c_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
     ctx.synchronize()
     var c_newton_us = Float64(perf_counter_ns() - t0) / Float64(ITERS) / 1000.0
     print("  Newton: ", c_newton_us, " us/step")

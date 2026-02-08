@@ -913,6 +913,35 @@ fn compute_M_inv_from_ldl_gpu[
             M_inv[i * NV + j] = col[i]
 
 
+@always_inline
+@always_inline
+fn compute_M_inv_from_ldl_gpu_ptr[
+    DTYPE: DType,
+    NV: Int,
+    M_SIZE: Int,
+    V_SIZE: Int,
+](
+    L: InlineArray[Scalar[DTYPE], M_SIZE],
+    D: InlineArray[Scalar[DTYPE], V_SIZE],
+    M_inv_ptr: UnsafePointer[Scalar[DTYPE]],
+):
+    """Compute full dense M^-1 from LDL factors, writing to device memory pointer."""
+    var ptr = M_inv_ptr
+    var e = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var col = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+
+    for j in range(NV):
+        for i in range(NV):
+            e[i] = Scalar[DTYPE](0)
+        e[j] = Scalar[DTYPE](1)
+
+        ldl_solve_gpu[DTYPE, NV, M_SIZE, V_SIZE](L, D, e, col)
+
+        for i in range(NV):
+            var p = ptr + i * NV + j
+            p[] = col[i]
+
+
 # =============================================================================
 # Helper: Solve M * x = b (for small matrices)
 # =============================================================================

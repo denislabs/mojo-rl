@@ -87,6 +87,7 @@ trait Integrator(Movable & ImplicitlyCopyable):
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],
         mut model_buf: DeviceBuffer[DTYPE],
+        mut workspace_buf: DeviceBuffer[DTYPE],
         dt: Scalar[DTYPE],
         gravity_z: Scalar[DTYPE],
         ground_z: Scalar[DTYPE],
@@ -100,6 +101,8 @@ trait Integrator(Movable & ImplicitlyCopyable):
             state_buf: Device buffer containing joint-space state for all environments.
                 Layout: [BATCH, STATE_SIZE] where STATE_SIZE = NQ + NV + NV + NBODY*7.
             model_buf: Device buffer containing per-body model data.
+            workspace_buf: Device buffer for solver workspace (M_inv, J_n, A).
+                Layout: [BATCH, WS_SIZE].
             dt: Timestep.
             gravity_z: Z-component of gravity.
             ground_z: Ground plane height.
@@ -119,6 +122,7 @@ trait Integrator(Movable & ImplicitlyCopyable):
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],
         mut model_buf: DeviceBuffer[DTYPE],
+        mut workspace_buf: DeviceBuffer[DTYPE],
         num_steps: Int,
         dt: Scalar[DTYPE],
         gravity_z: Scalar[DTYPE],
@@ -130,6 +134,7 @@ trait Integrator(Movable & ImplicitlyCopyable):
             ctx: GPU device context.
             state_buf: Device buffer containing joint-space state for all environments.
             model_buf: Device buffer containing per-body model data.
+            workspace_buf: Device buffer for solver workspace (M_inv, J_n, A).
             num_steps: Number of simulation steps to run.
             dt: Timestep.
             gravity_z: Z-component of gravity.

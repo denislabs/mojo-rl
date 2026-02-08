@@ -292,3 +292,25 @@ fn model_size[NBODY: Int, NJOINT: Int]() -> Int:
         + MODEL_META_SIZE
         + MODEL_CURRICULUM_SIZE
     )
+
+
+# =============================================================================
+# Workspace Buffer Layout (per-environment scratch space for GPU kernels)
+# =============================================================================
+# Moves large arrays from InlineArrays (register pressure) to device memory.
+# Layout per environment:
+#   [M_inv: NV*NV | solver workspace: SOLVER.solver_workspace_size() ]
+#
+# The integrator always writes M_inv at offset 0. Each solver declares its
+# own workspace size via the solver_workspace_size trait method. The solver
+# workspace starts at offset NV*NV.
+
+
+fn ws_m_inv_offset() -> Int:
+    """Offset to M_inv (NV*NV) in workspace buffer."""
+    return 0
+
+
+fn ws_solver_offset[NV: Int]() -> Int:
+    """Offset to solver workspace (after M_inv)."""
+    return NV * NV

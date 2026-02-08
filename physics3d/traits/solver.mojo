@@ -29,6 +29,16 @@ trait ConstraintSolver(Movable & ImplicitlyCopyable):
     """
 
     @staticmethod
+    fn solver_workspace_size[NV: Int, MAX_CONTACTS: Int]() -> Int:
+        """Solver-specific workspace size in floats per environment.
+
+        This workspace is allocated after M_inv (NV*NV) in the per-environment
+        workspace buffer. Each solver declares how much device memory it needs
+        for its MC-sized arrays (moved out of registers to reduce spilling).
+        """
+        ...
+
+    @staticmethod
     fn solve[
         DTYPE: DType,
         NQ: Int,
@@ -73,6 +83,7 @@ trait ConstraintSolver(Movable & ImplicitlyCopyable):
         M_SIZE: Int,
         CDOF_SIZE: Int,
         BATCH: Int,
+        WS_SIZE: Int,
     ](
         env: Int,
         state: LayoutTensor[
@@ -81,7 +92,9 @@ trait ConstraintSolver(Movable & ImplicitlyCopyable):
         model: LayoutTensor[
             DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
         ],
-        M_inv: InlineArray[Scalar[DTYPE], M_SIZE],
+        workspace: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+        ],
         cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
         mut qvel: InlineArray[Scalar[DTYPE], V_SIZE],
         dt: Scalar[DTYPE],
@@ -92,9 +105,10 @@ trait ConstraintSolver(Movable & ImplicitlyCopyable):
             env: Environment index within the batch.
             state: GPU state buffer for all environments.
             model: GPU model buffer.
-            M_inv: Full dense inverse mass matrix (NV×NV, row-major).
+            workspace: Device memory workspace [BATCH, WS_SIZE] containing
+                M_inv, J_n, A arrays per environment.
             cdof: Spatial motion axes per DOF (6*NV entries).
             qvel: Predicted velocity, modified in-place to satisfy constraints.
-            dt: Timestep for Baumgarte stabilization.
+            dt: Timestep.
         """
         ...

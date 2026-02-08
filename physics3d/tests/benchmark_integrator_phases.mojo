@@ -86,6 +86,8 @@ comptime MAX_CONTACTS: Int = 10
 
 comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS]()
 comptime MODEL_SIZE = model_size[NBODY, NJOINT]()
+# Use Newton (largest) workspace size since all 3 solvers share the buffer
+comptime WS_SIZE = NV * NV + NewtonSolver.solver_workspace_size[NV, MAX_CONTACTS]()
 comptime V_SIZE: Int = 6
 comptime M_SIZE: Int = 36
 comptime CDOF_SIZE: Int = 36
@@ -104,6 +106,7 @@ comptime ITERS: Int = 200
 fn no_solver_kernel[BATCH: Int](
     state: LayoutTensor[DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
     model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+    workspace: LayoutTensor[DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin],
 ):
     """Full integrator step minus the constraint solver.
 
@@ -261,39 +264,42 @@ fn no_solver_kernel[BATCH: Int](
 fn full_step_pgs_kernel[BATCH: Int](
     state: LayoutTensor[DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
     model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+    workspace: LayoutTensor[DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin],
 ):
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
     EulerIntegrator[PGSSolver].step_constraint_kernel[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH,
-    ](env, state, model)
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+    ](env, state, model, workspace)
 
 
 @always_inline
 fn full_step_cg_kernel[BATCH: Int](
     state: LayoutTensor[DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
     model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+    workspace: LayoutTensor[DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin],
 ):
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
     EulerIntegrator[CGSolver].step_constraint_kernel[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH,
-    ](env, state, model)
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+    ](env, state, model, workspace)
 
 
 @always_inline
 fn full_step_newton_kernel[BATCH: Int](
     state: LayoutTensor[DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
     model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+    workspace: LayoutTensor[DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin],
 ):
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
     EulerIntegrator[NewtonSolver].step_constraint_kernel[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH,
-    ](env, state, model)
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+    ](env, state, model, workspace)
 
 
 # =============================================================================
@@ -305,6 +311,7 @@ fn time_kernel[
     KFn: fn (
         LayoutTensor[DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
         LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+        LayoutTensor[DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin],
     ) -> None,
 ](
     ctx: DeviceContext,
@@ -312,6 +319,7 @@ fn time_kernel[
     state_host: HostBuffer[DTYPE],
     st: LayoutTensor[DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
     md: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+    ws: LayoutTensor[DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin],
     name: String,
 ) raises -> Float64:
     comptime BLOCKS = (BATCH + TPB - 1) // TPB
@@ -323,7 +331,7 @@ fn time_kernel[
     # Warmup
     for _ in range(WARMUP):
         ctx.enqueue_function[KFn, KFn](
-            st, md, grid_dim=(BLOCKS,), block_dim=(TPB,),
+            st, md, ws, grid_dim=(BLOCKS,), block_dim=(TPB,),
         )
     ctx.synchronize()
 
@@ -331,7 +339,7 @@ fn time_kernel[
     var start = perf_counter_ns()
     for _ in range(ITERS):
         ctx.enqueue_function[KFn, KFn](
-            st, md, grid_dim=(BLOCKS,), block_dim=(TPB,),
+            st, md, ws, grid_dim=(BLOCKS,), block_dim=(TPB,),
         )
     ctx.synchronize()
     var end = perf_counter_ns()
@@ -374,19 +382,23 @@ fn run_benchmark[BATCH: Int](
     var md = LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin](
         model_buf.unsafe_ptr()
     )
+    var ws_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
+    var ws = LayoutTensor[DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin](
+        ws_buf.unsafe_ptr()
+    )
 
     # --- Run benchmarks ---
     var t_no_solver = time_kernel[BATCH, no_solver_kernel[BATCH]](
-        ctx, state_buf, state_host, st, md, "No-solver (phases 1-10,13)",
+        ctx, state_buf, state_host, st, md, ws, "No-solver (phases 1-10,13)",
     )
     var t_pgs = time_kernel[BATCH, full_step_pgs_kernel[BATCH]](
-        ctx, state_buf, state_host, st, md, "Full step [PGS]           ",
+        ctx, state_buf, state_host, st, md, ws, "Full step [PGS]           ",
     )
     var t_cg = time_kernel[BATCH, full_step_cg_kernel[BATCH]](
-        ctx, state_buf, state_host, st, md, "Full step [CG]            ",
+        ctx, state_buf, state_host, st, md, ws, "Full step [CG]            ",
     )
     var t_newton = time_kernel[BATCH, full_step_newton_kernel[BATCH]](
-        ctx, state_buf, state_host, st, md, "Full step [Newton]        ",
+        ctx, state_buf, state_host, st, md, ws, "Full step [Newton]        ",
     )
 
     # --- Derived metrics ---

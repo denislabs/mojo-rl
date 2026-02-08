@@ -24,6 +24,7 @@ from physics3d.gpu.constants import (
     qvel_offset,
     xpos_offset,
 )
+from physics3d.solver import PGSSolver
 from physics3d.gpu.buffer_utils import (
     create_state_buffer,
     create_model_buffer,
@@ -135,8 +136,10 @@ fn main() raises:
     )
 
     # Create GPU buffers
+    comptime WS_SIZE = NV * NV + PGSSolver.solver_workspace_size[NV, MAX_CONTACTS]()
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
+    var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)
 
     # Copy to GPU
     ctx.enqueue_copy(state_buf, state_host.unsafe_ptr())
@@ -173,6 +176,7 @@ fn main() raises:
             ctx,
             state_buf,
             model_buf,
+            workspace_buf,
             Scalar[DTYPE](dt),
             Scalar[DTYPE](-g),
             Scalar[DTYPE](ground_z),

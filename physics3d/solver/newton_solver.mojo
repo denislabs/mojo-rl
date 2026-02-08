@@ -33,6 +33,8 @@ from ..gpu.constants import (
     metadata_offset,
     model_metadata_offset,
     model_joint_offset,
+    ws_m_inv_offset,
+    ws_solver_offset,
     CONTACT_SIZE,
     CONTACT_IDX_BODY_A,
     CONTACT_IDX_BODY_B,
@@ -98,6 +100,24 @@ struct NewtonSolver(ConstraintSolver):
     - Most expensive per iteration (solves linear system)
     - Requires forming and solving the reduced Hessian
     """
+
+    @staticmethod
+    fn solver_workspace_size[NV: Int, MAX_CONTACTS: Int]() -> Int:
+        """Newton solver workspace: 26*MC + MC*NV + MC*MC floats.
+
+        Layout (offsets relative to solver workspace start):
+          [0..11*MC)                              Common contact block
+          [11*MC..12*MC)                          rhs
+          [12*MC..12*MC+MC*NV)                    J_n (normal Jacobian)
+          [12*MC+MC*NV..12*MC+MC*NV+MC*MC)        A (Delassus matrix)
+          [12*MC+MC*NV+MC*MC..13*MC+MC*NV+MC*MC)  grad
+          [13*MC+MC*NV+MC*MC..14*MC+MC*NV+MC*MC)  d (Newton direction)
+          [14*MC+MC*NV+MC*MC..15*MC+MC*NV+MC*MC)  lambda_trial
+          [15*MC+MC*NV+MC*MC..16*MC+MC*NV+MC*MC)  free_map (Float)
+          [16*MC+MC*NV+MC*MC..26*MC+MC*NV+MC*MC)  Friction block (10 arrays)
+        """
+        comptime MC = _max_one[MAX_CONTACTS]()
+        return 26 * MC + MC * NV + MC * MC
 
     @staticmethod
     fn solve[
@@ -286,7 +306,9 @@ struct NewtonSolver(ConstraintSolver):
             var x = penetration / si_width
             if x > Scalar[DTYPE](1.0):
                 x = Scalar[DTYPE](1.0)
-            var imp = si_dmin + (Scalar[DTYPE](3.0) * x * x - Scalar[DTYPE](2.0) * x * x * x) * (si_dmax - si_dmin)
+            var imp = si_dmin + (
+                Scalar[DTYPE](3.0) * x * x - Scalar[DTYPE](2.0) * x * x * x
+            ) * (si_dmax - si_dmin)
             if imp < Scalar[DTYPE](0.2):
                 imp = Scalar[DTYPE](0.2)
             var bias = -imp * penetration * inv_tc_dr - b_vel_coef * v_n
@@ -510,7 +532,9 @@ struct NewtonSolver(ConstraintSolver):
             if li_dmax < Scalar[DTYPE](1e-4):
                 li_dmax = Scalar[DTYPE](1e-4)
             var l_inv_tc_dr = Scalar[DTYPE](1.0) / (lr_tc * lr_dr)
-            var l_b_vel_coef = Scalar[DTYPE](2.0) * lr_dr * dt / (li_dmax * lr_tc)
+            var l_b_vel_coef = (
+                Scalar[DTYPE](2.0) * lr_dr * dt / (li_dmax * lr_tc)
+            )
 
             for _ in range(NEWTON_ITERATIONS):
                 for l in range(num_limits):
@@ -525,10 +549,16 @@ struct NewtonSolver(ConstraintSolver):
                     var x_lim = penetration / li_width
                     if x_lim > Scalar[DTYPE](1.0):
                         x_lim = Scalar[DTYPE](1.0)
-                    var imp_lim = li_dmin + (Scalar[DTYPE](3.0) * x_lim * x_lim - Scalar[DTYPE](2.0) * x_lim * x_lim * x_lim) * (li_dmax - li_dmin)
+                    var imp_lim = li_dmin + (
+                        Scalar[DTYPE](3.0) * x_lim * x_lim
+                        - Scalar[DTYPE](2.0) * x_lim * x_lim * x_lim
+                    ) * (li_dmax - li_dmin)
                     if imp_lim < Scalar[DTYPE](0.2):
                         imp_lim = Scalar[DTYPE](0.2)
-                    var bias = -imp_lim * penetration * l_inv_tc_dr - l_b_vel_coef * v_limit
+                    var bias = (
+                        -imp_lim * penetration * l_inv_tc_dr
+                        - l_b_vel_coef * v_limit
+                    )
                     var delta_l = -(v_limit + bias) / (K_limit[l] / imp_lim)
                     var old_lam = lambda_limit[l]
                     lambda_limit[l] = lambda_limit[l] + delta_l
@@ -577,6 +607,7 @@ struct NewtonSolver(ConstraintSolver):
         M_SIZE: Int,
         CDOF_SIZE: Int,
         BATCH: Int,
+        WS_SIZE: Int,
     ](
         env: Int,
         state: LayoutTensor[
@@ -585,21 +616,89 @@ struct NewtonSolver(ConstraintSolver):
         model: LayoutTensor[
             DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
         ],
-        M_inv: InlineArray[Scalar[DTYPE], M_SIZE],
+        workspace: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+        ],
         cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
         mut qvel: InlineArray[Scalar[DTYPE], V_SIZE],
         dt: Scalar[DTYPE],
     ):
-        """Solve contact constraints using Projected Newton on GPU (per-environment).
+        """Solve contact constraints using Projected Newton on GPU.
+
+        All MC-sized arrays live in workspace (device memory).
         """
 
-        var contacts_off = contacts_offset[NQ, NV, NBODY]()
-        var meta_off = metadata_offset[NQ, NV, NBODY, MAX_CONTACTS]()
-        var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
+        var M_inv = workspace.ptr + env * WS_SIZE + ws_m_inv_offset()
+        comptime solver_ws_idx = ws_solver_offset[NV]()
 
-        var num_contacts = Int(
-            rebind[Scalar[DTYPE]](state[env, meta_off + META_IDX_NUM_CONTACTS])
-        )
+        comptime MC = _max_one[MAX_CONTACTS]()
+
+        # Common contact block (11*MC)
+        comptime ws_lambda_n_idx = solver_ws_idx + 0 * MC
+        comptime ws_K_n_idx = solver_ws_idx + 1 * MC
+        comptime ws_c_dist_idx = solver_ws_idx + 2 * MC
+        comptime ws_c_body_idx = solver_ws_idx + 3 * MC
+        comptime ws_c_body_b_idx = solver_ws_idx + 4 * MC
+        comptime ws_c_px_idx = solver_ws_idx + 5 * MC
+        comptime ws_c_py_idx = solver_ws_idx + 6 * MC
+        comptime ws_c_pz_idx = solver_ws_idx + 7 * MC
+        comptime ws_c_nx_idx = solver_ws_idx + 8 * MC
+        comptime ws_c_ny_idx = solver_ws_idx + 9 * MC
+        comptime ws_c_nz_idx = solver_ws_idx + 10 * MC
+
+        # Newton-specific
+        comptime ws_rhs_idx = solver_ws_idx + 11 * MC
+        comptime ws_J_n_idx = solver_ws_idx + 12 * MC
+        comptime ws_A_idx = solver_ws_idx + 12 * MC + MC * NV
+        comptime ws_grad_idx = solver_ws_idx + 12 * MC + MC * NV + MC * MC
+        comptime ws_d_idx = solver_ws_idx + 13 * MC + MC * NV + MC * MC
+        comptime ws_ltrial_idx = solver_ws_idx + 14 * MC + MC * NV + MC * MC
+        comptime ws_fmap_idx = solver_ws_idx + 15 * MC + MC * NV + MC * MC
+        comptime ws_t2x_idx = solver_ws_idx + 23 * MC + MC * NV + MC * MC
+        comptime ws_t2y_idx = solver_ws_idx + 24 * MC + MC * NV + MC * MC
+        comptime ws_t2z_idx = solver_ws_idx + 25 * MC + MC * NV + MC * MC
+
+        # Initialize workspace
+        for i in range(MC):
+            workspace[env, ws_lambda_n_idx + i] = Scalar[DTYPE](0)
+            workspace[env, ws_K_n_idx + i] = Scalar[DTYPE](1)
+            workspace[env, ws_c_dist_idx + i] = Scalar[DTYPE](0)
+            workspace[env, ws_c_body_idx + i] = Scalar[DTYPE](0)
+            workspace[env, ws_c_body_b_idx + i] = Scalar[DTYPE](-1)
+            workspace[env, ws_c_px_idx + i] = Scalar[DTYPE](0)
+            workspace[env, ws_c_py_idx + i] = Scalar[DTYPE](0)
+            workspace[env, ws_c_pz_idx + i] = Scalar[DTYPE](0)
+            workspace[env, ws_c_nx_idx + i] = Scalar[DTYPE](0)
+            workspace[env, ws_c_ny_idx + i] = Scalar[DTYPE](0)
+            workspace[env, ws_c_nz_idx + i] = Scalar[DTYPE](1)
+            workspace[env, ws_rhs_idx + i] = Scalar[DTYPE](0)
+            workspace[env, ws_grad_idx + i] = Scalar[DTYPE](0)
+            workspace[env, ws_d_idx + i] = Scalar[DTYPE](0)
+            workspace[env, ws_ltrial_idx + i] = Scalar[DTYPE](0)
+            workspace[env, ws_fmap_idx + i] = Scalar[DTYPE](-1)
+            workspace[env, ws_c_body_idx + i] = Scalar[DTYPE](0)
+            workspace[env, ws_c_body_b_idx + i] = Scalar[DTYPE](-1)
+            workspace[env, ws_c_px_idx + i] = Scalar[DTYPE](0)
+            workspace[env, ws_c_py_idx + i] = Scalar[DTYPE](0)
+            workspace[env, ws_c_pz_idx + i] = Scalar[DTYPE](0)
+            workspace[env, ws_c_nx_idx + i] = Scalar[DTYPE](0)
+            workspace[env, ws_c_ny_idx + i] = Scalar[DTYPE](0)
+            workspace[env, ws_c_nz_idx + i] = Scalar[DTYPE](1)
+            workspace[env, ws_rhs_idx + i] = Scalar[DTYPE](0)
+            workspace[env, ws_grad_idx + i] = Scalar[DTYPE](0)
+            workspace[env, ws_d_idx + i] = Scalar[DTYPE](0)
+            workspace[env, ws_ltrial_idx + i] = Scalar[DTYPE](0)
+            workspace[env, ws_fmap_idx + i] = Scalar[DTYPE](-1)
+        for i in range(MC * NV):
+            workspace[env, ws_J_n_idx + i] = Scalar[DTYPE](0)
+        for i in range(MC * MC):
+            workspace[env, ws_A_idx + i] = Scalar[DTYPE](0)
+
+        comptime contacts_off = contacts_offset[NQ, NV, NBODY]()
+        comptime meta_off = metadata_offset[NQ, NV, NBODY, MAX_CONTACTS]()
+        comptime model_meta_off = model_metadata_offset[NBODY, NJOINT]()
+
+        var num_contacts = Int(state[env, meta_off + META_IDX_NUM_CONTACTS])
         var friction_coef = rebind[Scalar[DTYPE]](
             model[0, model_meta_off + MODEL_META_IDX_FRICTION]
         )
@@ -628,14 +727,10 @@ struct NewtonSolver(ConstraintSolver):
         var qpos_off_lim = 0
         for j in range(NJOINT):
             var j_off = model_joint_offset[NBODY](j)
-            var jtype = Int(
-                rebind[Scalar[DTYPE]](model[0, j_off + JOINT_IDX_TYPE])
-            )
+            var jtype = Int(model[0, j_off + JOINT_IDX_TYPE])
             if jtype != JNT_HINGE and jtype != JNT_SLIDE:
                 continue
-            var dof = Int(
-                rebind[Scalar[DTYPE]](model[0, j_off + JOINT_IDX_DOF_ADR])
-            )
+            var dof = Int(model[0, j_off + JOINT_IDX_DOF_ADR])
             var qpos_adr = Int(
                 rebind[Scalar[DTYPE]](model[0, j_off + JOINT_IDX_QPOS_ADR])
             )
@@ -653,7 +748,7 @@ struct NewtonSolver(ConstraintSolver):
                 limit_dof[num_limits] = dof
                 limit_sign[num_limits] = Scalar[DTYPE](1)
                 limit_dist_arr[num_limits] = dist_lo
-                K_limit[num_limits] = M_inv[dof * NV + dof]
+                K_limit[num_limits] = (M_inv + dof * NV + dof)[]
                 if K_limit[num_limits] < Scalar[DTYPE](1e-10):
                     K_limit[num_limits] = Scalar[DTYPE](1e-10)
                 num_limits += 1
@@ -662,7 +757,7 @@ struct NewtonSolver(ConstraintSolver):
                 limit_dof[num_limits] = dof
                 limit_sign[num_limits] = Scalar[DTYPE](-1)
                 limit_dist_arr[num_limits] = dist_hi
-                K_limit[num_limits] = M_inv[dof * NV + dof]
+                K_limit[num_limits] = (M_inv + dof * NV + dof)[]
                 if K_limit[num_limits] < Scalar[DTYPE](1e-10):
                     K_limit[num_limits] = Scalar[DTYPE](1e-10)
                 num_limits += 1
@@ -675,11 +770,21 @@ struct NewtonSolver(ConstraintSolver):
             nc = MAX_CONTACTS
 
         # Read solref/solimp contact from model buffer
-        var sr_tc = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_SOLREF_CONTACT_0])
-        var sr_dr = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_SOLREF_CONTACT_1])
-        var si_dmin = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_0])
-        var si_dmax = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_1])
-        var si_width = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_2])
+        var sr_tc = rebind[Scalar[DTYPE]](
+            model[0, model_meta_off + MODEL_META_IDX_SOLREF_CONTACT_0]
+        )
+        var sr_dr = rebind[Scalar[DTYPE]](
+            model[0, model_meta_off + MODEL_META_IDX_SOLREF_CONTACT_1]
+        )
+        var si_dmin = rebind[Scalar[DTYPE]](
+            model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_0]
+        )
+        var si_dmax = rebind[Scalar[DTYPE]](
+            model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_1]
+        )
+        var si_width = rebind[Scalar[DTYPE]](
+            model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_2]
+        )
         if si_width < Scalar[DTYPE](1e-6):
             si_width = Scalar[DTYPE](1e-6)
         if si_dmax < Scalar[DTYPE](1e-4):
@@ -687,48 +792,7 @@ struct NewtonSolver(ConstraintSolver):
         var inv_tc_dr = Scalar[DTYPE](1.0) / (sr_tc * sr_dr)
         var b_vel_coef = Scalar[DTYPE](2.0) * sr_dr * dt / (si_dmax * sr_tc)
 
-        comptime MC = _max_one[MAX_CONTACTS]()
-        comptime JN_SIZE = _max_one[MAX_CONTACTS * NV]()
-        comptime A_SIZE = _max_one[MAX_CONTACTS * MAX_CONTACTS]()
-
-        # Store full Jacobian and Delassus matrix
-        var J_n = InlineArray[Scalar[DTYPE], JN_SIZE](uninitialized=True)
-        for i in range(JN_SIZE):
-            J_n[i] = Scalar[DTYPE](0)
-
-        var A = InlineArray[Scalar[DTYPE], A_SIZE](uninitialized=True)
-        for i in range(A_SIZE):
-            A[i] = Scalar[DTYPE](0)
-
         var J_row = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-
-        # Per-contact data
-        var lambda_n = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-        var K_n = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-        var c_dist = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-        var c_body = InlineArray[Int, MC](uninitialized=True)
-        var c_body_b = InlineArray[Int, MC](uninitialized=True)
-        var c_px = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-        var c_py = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-        var c_pz = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-        var c_nx = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-        var c_ny = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-        var c_nz = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-        var rhs = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-
-        for i in range(MC):
-            lambda_n[i] = Scalar[DTYPE](0)
-            K_n[i] = Scalar[DTYPE](1)
-            c_dist[i] = Scalar[DTYPE](0)
-            c_body[i] = 0
-            c_body_b[i] = -1
-            c_px[i] = Scalar[DTYPE](0)
-            c_py[i] = Scalar[DTYPE](0)
-            c_pz[i] = Scalar[DTYPE](0)
-            c_nx[i] = Scalar[DTYPE](0)
-            c_ny[i] = Scalar[DTYPE](0)
-            c_nz[i] = Scalar[DTYPE](1)
-            rhs[i] = Scalar[DTYPE](0)
 
         # Phase 1: Read contact data and build Delassus matrix
         for c in range(nc):
@@ -743,25 +807,31 @@ struct NewtonSolver(ConstraintSolver):
                 state[env, c_off + CONTACT_IDX_DIST]
             )
 
-            c_dist[c] = dist
-            c_body[c] = body
-            c_body_b[c] = body_b
+            workspace[env, ws_c_dist_idx + c] = dist
+            workspace[env, ws_c_body_idx + c] = Scalar[DTYPE](body)
+            workspace[env, ws_c_body_b_idx + c] = Scalar[DTYPE](body_b)
 
             if dist >= Scalar[DTYPE](0):
                 continue
 
-            c_px[c] = rebind[Scalar[DTYPE]](
+            workspace[env, ws_c_px_idx + c] = rebind[Scalar[DTYPE]](
                 state[env, c_off + CONTACT_IDX_POS_X]
             )
-            c_py[c] = rebind[Scalar[DTYPE]](
+            workspace[env, ws_c_py_idx + c] = rebind[Scalar[DTYPE]](
                 state[env, c_off + CONTACT_IDX_POS_Y]
             )
-            c_pz[c] = rebind[Scalar[DTYPE]](
+            workspace[env, ws_c_pz_idx + c] = rebind[Scalar[DTYPE]](
                 state[env, c_off + CONTACT_IDX_POS_Z]
             )
-            c_nx[c] = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_NX])
-            c_ny[c] = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_NY])
-            c_nz[c] = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_NZ])
+            workspace[env, ws_c_nx_idx + c] = rebind[Scalar[DTYPE]](
+                state[env, c_off + CONTACT_IDX_NX]
+            )
+            workspace[env, ws_c_ny_idx + c] = rebind[Scalar[DTYPE]](
+                state[env, c_off + CONTACT_IDX_NY]
+            )
+            workspace[env, ws_c_nz_idx + c] = rebind[Scalar[DTYPE]](
+                state[env, c_off + CONTACT_IDX_NZ]
+            )
 
             compute_contact_jacobian_row_gpu[
                 DTYPE,
@@ -782,27 +852,27 @@ struct NewtonSolver(ConstraintSolver):
                 cdof,
                 body,
                 body_b,
-                c_px[c],
-                c_py[c],
-                c_pz[c],
-                c_nx[c],
-                c_ny[c],
-                c_nz[c],
+                rebind[Scalar[DTYPE]](workspace[env, ws_c_px_idx + c]),
+                rebind[Scalar[DTYPE]](workspace[env, ws_c_py_idx + c]),
+                rebind[Scalar[DTYPE]](workspace[env, ws_c_pz_idx + c]),
+                rebind[Scalar[DTYPE]](workspace[env, ws_c_nx_idx + c]),
+                rebind[Scalar[DTYPE]](workspace[env, ws_c_ny_idx + c]),
+                rebind[Scalar[DTYPE]](workspace[env, ws_c_nz_idx + c]),
                 J_row,
             )
 
             var k: Scalar[DTYPE] = 0
             var v_n: Scalar[DTYPE] = 0
             for i in range(NV):
-                J_n[c * NV + i] = J_row[i]
+                workspace[env, ws_J_n_idx + c * NV + i] = J_row[i]
                 var mi_j_sum: Scalar[DTYPE] = 0
                 for j_idx in range(NV):
-                    mi_j_sum += M_inv[i * NV + j_idx] * J_row[j_idx]
+                    mi_j_sum += (M_inv + i * NV + j_idx)[] * J_row[j_idx]
                 k += J_row[i] * mi_j_sum
                 v_n += J_row[i] * qvel[i]
             if k < Scalar[DTYPE](1e-10):
                 k = Scalar[DTYPE](1e-10)
-            K_n[c] = k
+            workspace[env, ws_K_n_idx + c] = k
 
             # MuJoCo impedance model for RHS
             var penetration = -dist
@@ -811,71 +881,74 @@ struct NewtonSolver(ConstraintSolver):
             var x = penetration / si_width
             if x > Scalar[DTYPE](1.0):
                 x = Scalar[DTYPE](1.0)
-            var imp = si_dmin + (Scalar[DTYPE](3.0) * x * x - Scalar[DTYPE](2.0) * x * x * x) * (si_dmax - si_dmin)
+            var imp = si_dmin + (
+                Scalar[DTYPE](3.0) * x * x - Scalar[DTYPE](2.0) * x * x * x
+            ) * (si_dmax - si_dmin)
             if imp < Scalar[DTYPE](0.2):
                 imp = Scalar[DTYPE](0.2)
             var bias = -imp * penetration * inv_tc_dr - b_vel_coef * v_n
-            rhs[c] = v_n + bias
+            workspace[env, ws_rhs_idx + c] = v_n + bias
 
-            lambda_n[c] = rebind[Scalar[DTYPE]](
+            workspace[env, ws_lambda_n_idx + c] = rebind[Scalar[DTYPE]](
                 state[env, c_off + CONTACT_IDX_IMPULSE_N]
             )
 
-            if lambda_n[c] > Scalar[DTYPE](0):
+            if workspace[env, ws_lambda_n_idx + c] > Scalar[DTYPE](0):
                 for i in range(NV):
-                    var mi_j_sum: Scalar[DTYPE] = 0
+                    var mi_j_sum: workspace.element_type = 0
                     for j_idx in range(NV):
-                        mi_j_sum += M_inv[i * NV + j_idx] * J_row[j_idx]
-                    qvel[i] += mi_j_sum * lambda_n[c]
+                        mi_j_sum += (M_inv + i * NV + j_idx)[] * J_row[j_idx]
+                    qvel[i] += rebind[Scalar[DTYPE]](mi_j_sum) * rebind[
+                        Scalar[DTYPE]
+                    ](workspace[env, ws_lambda_n_idx + c])
 
         # Build full Delassus matrix
         for c1 in range(nc):
-            if c_dist[c1] >= Scalar[DTYPE](0):
+            if workspace[env, ws_c_dist_idx + c1] >= Scalar[DTYPE](0):
                 continue
             for c2 in range(nc):
-                if c_dist[c2] >= Scalar[DTYPE](0):
+                if workspace[env, ws_c_dist_idx + c2] >= Scalar[DTYPE](0):
                     continue
-                var a_val: Scalar[DTYPE] = 0
+                var a_val: workspace.element_type = 0
                 for i in range(NV):
-                    var mi_j_sum: Scalar[DTYPE] = 0
+                    var mi_j_sum: workspace.element_type = 0
                     for j_idx in range(NV):
-                        mi_j_sum += M_inv[i * NV + j_idx] * J_n[c2 * NV + j_idx]
-                    a_val += J_n[c1 * NV + i] * mi_j_sum
-                A[c1 * MAX_CONTACTS + c2] = a_val
+                        mi_j_sum += (M_inv + i * NV + j_idx)[] * (
+                            workspace[env, ws_J_n_idx + c2 * NV + j_idx]
+                        )
+                    a_val += workspace[env, ws_J_n_idx + c1 * NV + i] * mi_j_sum
+                workspace[env, ws_A_idx + c1 * MAX_CONTACTS + c2] = a_val
 
         # Phase 2: Projected Newton iterations
-        var grad = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-        var d = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-        var lambda_trial = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-        var free_map = InlineArray[Int, MC](uninitialized=True)
-
-        for i in range(MC):
-            grad[i] = Scalar[DTYPE](0)
-            d[i] = Scalar[DTYPE](0)
-            lambda_trial[i] = Scalar[DTYPE](0)
-            free_map[i] = -1
-
         for _ in range(NEWTON_ITERATIONS):
             # Compute gradient: g = A * lambda + rhs
-            var grad_norm: Scalar[DTYPE]
+            var grad_norm: workspace.element_type = 0
             for c in range(nc):
-                if c_dist[c] >= Scalar[DTYPE](0):
-                    grad[c] = Scalar[DTYPE](0)
+                if workspace[env, ws_c_dist_idx + c] >= Scalar[DTYPE](0):
+                    workspace[env, ws_grad_idx + c] = Scalar[DTYPE](0)
                     continue
-                var g: Scalar[DTYPE] = rhs[c]
+                var g: workspace.element_type = workspace[env, ws_rhs_idx + c]
                 for c2 in range(nc):
-                    if c_dist[c2] >= Scalar[DTYPE](0):
+                    if workspace[env, ws_c_dist_idx + c2] >= Scalar[DTYPE](0):
                         continue
-                    g += A[c * MAX_CONTACTS + c2] * lambda_n[c2]
-                grad[c] = g
+                    g += (
+                        workspace[env, ws_A_idx + c * MAX_CONTACTS + c2]
+                        * workspace[env, ws_lambda_n_idx + c2]
+                    )
+                workspace[env, ws_grad_idx + c] = g
 
             # Projected gradient norm
-            grad_norm = Scalar[DTYPE](0)
+            grad_norm = 0
             for c in range(nc):
-                if c_dist[c] >= Scalar[DTYPE](0):
+                if workspace[env, ws_c_dist_idx + c] >= Scalar[DTYPE](0):
                     continue
-                if lambda_n[c] > Scalar[DTYPE](0) or grad[c] < Scalar[DTYPE](0):
-                    grad_norm += grad[c] * grad[c]
+                if workspace[env, ws_lambda_n_idx + c] > Scalar[DTYPE](0) or (
+                    workspace[env, ws_grad_idx + c]
+                ) < Scalar[DTYPE](0):
+                    grad_norm += (
+                        workspace[env, ws_grad_idx + c]
+                        * workspace[env, ws_grad_idx + c]
+                    )
 
             if grad_norm < Scalar[DTYPE](NEWTON_TOLERANCE):
                 break
@@ -883,11 +956,13 @@ struct NewtonSolver(ConstraintSolver):
             # Identify free set
             var free_count = 0
             for c in range(nc):
-                free_map[c] = -1
-                if c_dist[c] >= Scalar[DTYPE](0):
+                workspace[env, ws_fmap_idx + c] = Scalar[DTYPE](-1)
+                if workspace[env, ws_c_dist_idx + c] >= Scalar[DTYPE](0):
                     continue
-                if lambda_n[c] > Scalar[DTYPE](0) or grad[c] < Scalar[DTYPE](0):
-                    free_map[c] = free_count
+                if workspace[env, ws_lambda_n_idx + c] > Scalar[DTYPE](0) or (
+                    workspace[env, ws_grad_idx + c]
+                ) < Scalar[DTYPE](0):
+                    workspace[env, ws_fmap_idx + c] = Scalar[DTYPE](free_count)
                     free_count += 1
 
             if free_count == 0:
@@ -895,48 +970,60 @@ struct NewtonSolver(ConstraintSolver):
 
             # Solve reduced system with Jacobi + GS refinement
             for c in range(nc):
-                d[c] = Scalar[DTYPE](0)
+                workspace[env, ws_d_idx + c] = Scalar[DTYPE](0)
 
             for c in range(nc):
-                if free_map[c] < 0:
+                if workspace[env, ws_fmap_idx + c] < Scalar[DTYPE](0):
                     continue
-                if K_n[c] > Scalar[DTYPE](1e-14):
-                    d[c] = -grad[c] / K_n[c]
+                if workspace[env, ws_K_n_idx + c] > Scalar[DTYPE](1e-14):
+                    workspace[env, ws_d_idx + c] = (
+                        -(workspace[env, ws_grad_idx + c])
+                        / workspace[env, ws_K_n_idx + c]
+                    )
 
             for _ in range(5):
                 for c in range(nc):
-                    if free_map[c] < 0:
+                    if workspace[env, ws_fmap_idx + c] < Scalar[DTYPE](0):
                         continue
-                    var sum_off_diag: Scalar[DTYPE] = 0
+                    var sum_off_diag: workspace.element_type = 0
                     for c2 in range(nc):
                         if c2 == c:
                             continue
-                        if free_map[c2] < 0:
+                        if workspace[env, ws_fmap_idx + c2] < Scalar[DTYPE](0):
                             continue
-                        sum_off_diag += A[c * MAX_CONTACTS + c2] * d[c2]
-                    d[c] = (-grad[c] - sum_off_diag) / A[c * MAX_CONTACTS + c]
+                        sum_off_diag += workspace[
+                            env, ws_A_idx + c * MAX_CONTACTS + c2
+                        ] * (workspace[env, ws_d_idx + c2])
+                    workspace[env, ws_d_idx + c] = (
+                        -(workspace[env, ws_grad_idx + c]) - sum_off_diag
+                    ) / (workspace[env, ws_A_idx + c * MAX_CONTACTS + c])
 
             # Line search with Armijo condition
-            var f_current: Scalar[DTYPE] = 0
+            var f_current: workspace.element_type = 0
             for c in range(nc):
-                if c_dist[c] >= Scalar[DTYPE](0):
+                if workspace[env, ws_c_dist_idx + c] >= Scalar[DTYPE](0):
                     continue
-                f_current += rhs[c] * lambda_n[c]
+                f_current += (
+                    workspace[env, ws_rhs_idx + c]
+                    * workspace[env, ws_lambda_n_idx + c]
+                )
                 for c2 in range(nc):
-                    if c_dist[c2] >= Scalar[DTYPE](0):
+                    if workspace[env, ws_c_dist_idx + c2] >= Scalar[DTYPE](0):
                         continue
                     f_current += (
                         Scalar[DTYPE](0.5)
-                        * lambda_n[c]
-                        * A[c * MAX_CONTACTS + c2]
-                        * lambda_n[c2]
+                        * workspace[env, ws_lambda_n_idx + c]
+                        * workspace[env, ws_A_idx + c * MAX_CONTACTS + c2]
+                        * workspace[env, ws_lambda_n_idx + c2]
                     )
 
-            var gtd: Scalar[DTYPE] = 0
+            var gtd: workspace.element_type = 0
             for c in range(nc):
-                if free_map[c] < 0:
+                if workspace[env, ws_fmap_idx + c] < Scalar[DTYPE](0):
                     continue
-                gtd += grad[c] * d[c]
+                gtd += (workspace[env, ws_grad_idx + c]) * (
+                    workspace[env, ws_d_idx + c]
+                )
 
             var step = Scalar[DTYPE](1.0)
             var armijo = Scalar[DTYPE](LINESEARCH_ARMIJO)
@@ -944,25 +1031,34 @@ struct NewtonSolver(ConstraintSolver):
 
             for _ in range(LINESEARCH_ITERATIONS):
                 for c in range(nc):
-                    lambda_trial[c] = lambda_n[c]
-                    if free_map[c] >= 0:
-                        lambda_trial[c] = lambda_n[c] + step * d[c]
-                    if lambda_trial[c] < Scalar[DTYPE](0):
-                        lambda_trial[c] = Scalar[DTYPE](0)
+                    workspace[env, ws_ltrial_idx + c] = workspace[
+                        env, ws_lambda_n_idx + c
+                    ]
+                    if workspace[env, ws_fmap_idx + c] >= Scalar[DTYPE](0):
+                        workspace[env, ws_ltrial_idx + c] = workspace[
+                            env, ws_lambda_n_idx + c
+                        ] + step * (workspace[env, ws_d_idx + c])
+                    if workspace[env, ws_ltrial_idx + c] < Scalar[DTYPE](0):
+                        workspace[env, ws_ltrial_idx + c] = Scalar[DTYPE](0)
 
-                var f_trial: Scalar[DTYPE] = 0
+                var f_trial: workspace.element_type = 0
                 for c in range(nc):
-                    if c_dist[c] >= Scalar[DTYPE](0):
+                    if workspace[env, ws_c_dist_idx + c] >= Scalar[DTYPE](0):
                         continue
-                    f_trial += rhs[c] * lambda_trial[c]
+                    f_trial += (
+                        workspace[env, ws_rhs_idx + c]
+                        * workspace[env, ws_ltrial_idx + c]
+                    )
                     for c2 in range(nc):
-                        if c_dist[c2] >= Scalar[DTYPE](0):
+                        if workspace[env, ws_c_dist_idx + c2] >= Scalar[DTYPE](
+                            0
+                        ):
                             continue
                         f_trial += (
                             Scalar[DTYPE](0.5)
-                            * lambda_trial[c]
-                            * A[c * MAX_CONTACTS + c2]
-                            * lambda_trial[c2]
+                            * workspace[env, ws_ltrial_idx + c]
+                            * workspace[env, ws_A_idx + c * MAX_CONTACTS + c2]
+                            * workspace[env, ws_ltrial_idx + c2]
                         )
 
                 if f_trial <= f_current + armijo * step * gtd:
@@ -971,11 +1067,13 @@ struct NewtonSolver(ConstraintSolver):
                 step = step * beta
 
             for c in range(nc):
-                lambda_n[c] = lambda_trial[c]
+                workspace[env, ws_lambda_n_idx + c] = workspace[
+                    env, ws_ltrial_idx + c
+                ]
 
         # Remove warm-start and apply final solved impulses
         for c in range(nc):
-            if c_dist[c] >= Scalar[DTYPE](0):
+            if workspace[env, ws_c_dist_idx + c] >= Scalar[DTYPE](0):
                 continue
             var c_off = contacts_off + c * CONTACT_SIZE
             var warm = rebind[Scalar[DTYPE]](
@@ -983,34 +1081,54 @@ struct NewtonSolver(ConstraintSolver):
             )
             if warm > Scalar[DTYPE](0):
                 for i in range(NV):
-                    var mi_j_sum: Scalar[DTYPE] = 0
+                    var mi_j_sum: workspace.element_type = 0
                     for j_idx in range(NV):
-                        mi_j_sum += M_inv[i * NV + j_idx] * J_n[c * NV + j_idx]
-                    qvel[i] -= mi_j_sum * warm
+                        mi_j_sum += (M_inv + i * NV + j_idx)[] * (
+                            workspace[env, ws_J_n_idx + c * NV + j_idx]
+                        )
+                    qvel[i] -= rebind[Scalar[DTYPE]](mi_j_sum) * rebind[
+                        Scalar[DTYPE]
+                    ](warm)
 
         for c in range(nc):
-            if c_dist[c] >= Scalar[DTYPE](0):
+            if workspace[env, ws_c_dist_idx + c] >= Scalar[DTYPE](0):
                 continue
-            if lambda_n[c] > Scalar[DTYPE](0):
+            if workspace[env, ws_lambda_n_idx + c] > Scalar[DTYPE](0):
                 for i in range(NV):
-                    var mi_j_sum: Scalar[DTYPE] = 0
+                    var mi_j_sum: workspace.element_type = 0
                     for j_idx in range(NV):
-                        mi_j_sum += M_inv[i * NV + j_idx] * J_n[c * NV + j_idx]
-                    qvel[i] += mi_j_sum * lambda_n[c]
+                        mi_j_sum += (M_inv + i * NV + j_idx)[] * (
+                            workspace[env, ws_J_n_idx + c * NV + j_idx]
+                        )
+                    qvel[i] += rebind[Scalar[DTYPE]](mi_j_sum) * rebind[
+                        Scalar[DTYPE]
+                    ](workspace[env, ws_lambda_n_idx + c])
 
         # Phase 2b: Joint limit constraints (PGS)
         if num_limits > 0:
-            var lr_tc = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_SOLREF_LIMIT_0])
-            var lr_dr = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_SOLREF_LIMIT_1])
-            var li_dmin = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_SOLIMP_LIMIT_0])
-            var li_dmax = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_SOLIMP_LIMIT_1])
-            var li_width = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_SOLIMP_LIMIT_2])
+            var lr_tc = rebind[Scalar[DTYPE]](
+                model[0, model_meta_off + MODEL_META_IDX_SOLREF_LIMIT_0]
+            )
+            var lr_dr = rebind[Scalar[DTYPE]](
+                model[0, model_meta_off + MODEL_META_IDX_SOLREF_LIMIT_1]
+            )
+            var li_dmin = rebind[Scalar[DTYPE]](
+                model[0, model_meta_off + MODEL_META_IDX_SOLIMP_LIMIT_0]
+            )
+            var li_dmax = rebind[Scalar[DTYPE]](
+                model[0, model_meta_off + MODEL_META_IDX_SOLIMP_LIMIT_1]
+            )
+            var li_width = rebind[Scalar[DTYPE]](
+                model[0, model_meta_off + MODEL_META_IDX_SOLIMP_LIMIT_2]
+            )
             if li_width < Scalar[DTYPE](1e-6):
                 li_width = Scalar[DTYPE](1e-6)
             if li_dmax < Scalar[DTYPE](1e-4):
                 li_dmax = Scalar[DTYPE](1e-4)
             var l_inv_tc_dr = Scalar[DTYPE](1.0) / (lr_tc * lr_dr)
-            var l_b_vel_coef = Scalar[DTYPE](2.0) * lr_dr * dt / (li_dmax * lr_tc)
+            var l_b_vel_coef = (
+                Scalar[DTYPE](2.0) * lr_dr * dt / (li_dmax * lr_tc)
+            )
 
             for _ in range(NEWTON_ITERATIONS):
                 for l in range(num_limits):
@@ -1025,10 +1143,16 @@ struct NewtonSolver(ConstraintSolver):
                     var x_lim = penetration / li_width
                     if x_lim > Scalar[DTYPE](1.0):
                         x_lim = Scalar[DTYPE](1.0)
-                    var imp_lim = li_dmin + (Scalar[DTYPE](3.0) * x_lim * x_lim - Scalar[DTYPE](2.0) * x_lim * x_lim * x_lim) * (li_dmax - li_dmin)
+                    var imp_lim = li_dmin + (
+                        Scalar[DTYPE](3.0) * x_lim * x_lim
+                        - Scalar[DTYPE](2.0) * x_lim * x_lim * x_lim
+                    ) * (li_dmax - li_dmin)
                     if imp_lim < Scalar[DTYPE](0.2):
                         imp_lim = Scalar[DTYPE](0.2)
-                    var bias = -imp_lim * penetration * l_inv_tc_dr - l_b_vel_coef * v_limit
+                    var bias = (
+                        -imp_lim * penetration * l_inv_tc_dr
+                        - l_b_vel_coef * v_limit
+                    )
                     var delta_l = -(v_limit + bias) / (K_limit[l] / imp_lim)
                     var old_lam = lambda_limit[l]
                     lambda_limit[l] = lambda_limit[l] + delta_l
@@ -1036,7 +1160,7 @@ struct NewtonSolver(ConstraintSolver):
                         lambda_limit[l] = Scalar[DTYPE](0)
                     var actual_l = lambda_limit[l] - old_lam
                     for i in range(NV):
-                        qvel[i] += M_inv[i * NV + dof_l] * sign * actual_l
+                        qvel[i] += (M_inv + i * NV + dof_l)[] * sign * actual_l
 
         # Phase 3: Friction via PGS
         _solve_friction_pgs_gpu[
@@ -1052,22 +1176,19 @@ struct NewtonSolver(ConstraintSolver):
             M_SIZE,
             CDOF_SIZE,
             BATCH,
+            WS_SIZE,
         ](
             env,
             state,
             model,
+            workspace,
             cdof,
-            M_inv,
-            lambda_n,
-            c_dist,
-            c_body,
-            c_body_b,
-            c_px,
-            c_py,
-            c_pz,
-            c_nx,
-            c_ny,
-            c_nz,
+            ws_m_inv_offset(),
+            ws_solver_offset[NV](),  # contact block
+            ws_solver_offset[NV]()
+            + 16 * MC
+            + MC * NV
+            + MC * MC,  # friction block
             nc,
             friction_coef,
             contacts_off,

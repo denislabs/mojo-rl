@@ -1539,6 +1539,10 @@ struct HalfCheetahGC[
 
         # Run FRAME_SKIP physics sub-steps with joint limit enforcement
         comptime C = HalfCheetahGCConstants[gpu_dtype]
+        comptime WS_SIZE = Self.NV * Self.NV + NewtonSolver.solver_workspace_size[Self.NV, Self.MAX_CONTACTS]()
+        var workspace_buf = ctx.enqueue_create_buffer[gpu_dtype](
+            BATCH_SIZE * WS_SIZE
+        )
         for _ in range(C.FRAME_SKIP):
             EulerIntegrator[SOLVER=NewtonSolver].step_gpu[
                 gpu_dtype,
@@ -1552,6 +1556,7 @@ struct HalfCheetahGC[
                 ctx,
                 states_buf,
                 model_buf,
+                workspace_buf,
                 dt=Scalar[gpu_dtype](C.DT),
                 gravity_z=Scalar[gpu_dtype](-9.81),
                 ground_z=Scalar[gpu_dtype](0.0),
