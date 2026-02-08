@@ -26,7 +26,7 @@ from ..dynamics.jacobian import (
 )
 
 # Import shared friction solver
-from .cg_solver import _solve_friction_pgs_cpu, _solve_friction_pgs_gpu
+from .friction_solver import _solve_friction_pgs_cpu, _solve_friction_pgs_gpu
 
 from ..gpu.constants import (
     contacts_offset,
@@ -628,7 +628,7 @@ struct NewtonSolver(ConstraintSolver):
         All MC-sized arrays live in workspace (device memory).
         """
 
-        var M_inv = workspace.ptr + env * WS_SIZE + ws_m_inv_offset()
+        comptime M_inv_idx = ws_m_inv_offset()
         comptime solver_ws_idx = ws_solver_offset[NV]()
 
         comptime MC = _max_one[MAX_CONTACTS]()
@@ -660,39 +660,26 @@ struct NewtonSolver(ConstraintSolver):
 
         # Initialize workspace
         for i in range(MC):
-            workspace[env, ws_lambda_n_idx + i] = Scalar[DTYPE](0)
-            workspace[env, ws_K_n_idx + i] = Scalar[DTYPE](1)
-            workspace[env, ws_c_dist_idx + i] = Scalar[DTYPE](0)
-            workspace[env, ws_c_body_idx + i] = Scalar[DTYPE](0)
-            workspace[env, ws_c_body_b_idx + i] = Scalar[DTYPE](-1)
-            workspace[env, ws_c_px_idx + i] = Scalar[DTYPE](0)
-            workspace[env, ws_c_py_idx + i] = Scalar[DTYPE](0)
-            workspace[env, ws_c_pz_idx + i] = Scalar[DTYPE](0)
-            workspace[env, ws_c_nx_idx + i] = Scalar[DTYPE](0)
-            workspace[env, ws_c_ny_idx + i] = Scalar[DTYPE](0)
-            workspace[env, ws_c_nz_idx + i] = Scalar[DTYPE](1)
-            workspace[env, ws_rhs_idx + i] = Scalar[DTYPE](0)
-            workspace[env, ws_grad_idx + i] = Scalar[DTYPE](0)
-            workspace[env, ws_d_idx + i] = Scalar[DTYPE](0)
-            workspace[env, ws_ltrial_idx + i] = Scalar[DTYPE](0)
-            workspace[env, ws_fmap_idx + i] = Scalar[DTYPE](-1)
-            workspace[env, ws_c_body_idx + i] = Scalar[DTYPE](0)
-            workspace[env, ws_c_body_b_idx + i] = Scalar[DTYPE](-1)
-            workspace[env, ws_c_px_idx + i] = Scalar[DTYPE](0)
-            workspace[env, ws_c_py_idx + i] = Scalar[DTYPE](0)
-            workspace[env, ws_c_pz_idx + i] = Scalar[DTYPE](0)
-            workspace[env, ws_c_nx_idx + i] = Scalar[DTYPE](0)
-            workspace[env, ws_c_ny_idx + i] = Scalar[DTYPE](0)
-            workspace[env, ws_c_nz_idx + i] = Scalar[DTYPE](1)
-            workspace[env, ws_rhs_idx + i] = Scalar[DTYPE](0)
-            workspace[env, ws_grad_idx + i] = Scalar[DTYPE](0)
-            workspace[env, ws_d_idx + i] = Scalar[DTYPE](0)
-            workspace[env, ws_ltrial_idx + i] = Scalar[DTYPE](0)
-            workspace[env, ws_fmap_idx + i] = Scalar[DTYPE](-1)
+            workspace[env, ws_lambda_n_idx + i] = 0
+            workspace[env, ws_K_n_idx + i] = 1
+            workspace[env, ws_c_dist_idx + i] = 0
+            workspace[env, ws_c_body_idx + i] = 0
+            workspace[env, ws_c_body_b_idx + i] = -1
+            workspace[env, ws_c_px_idx + i] = 0
+            workspace[env, ws_c_py_idx + i] = 0
+            workspace[env, ws_c_pz_idx + i] = 0
+            workspace[env, ws_c_nx_idx + i] = 0
+            workspace[env, ws_c_ny_idx + i] = 0
+            workspace[env, ws_c_nz_idx + i] = 1
+            workspace[env, ws_rhs_idx + i] = 0
+            workspace[env, ws_grad_idx + i] = 0
+            workspace[env, ws_d_idx + i] = 0
+            workspace[env, ws_ltrial_idx + i] = 0
+            workspace[env, ws_fmap_idx + i] = -1
         for i in range(MC * NV):
-            workspace[env, ws_J_n_idx + i] = Scalar[DTYPE](0)
+            workspace[env, ws_J_n_idx + i] = 0
         for i in range(MC * MC):
-            workspace[env, ws_A_idx + i] = Scalar[DTYPE](0)
+            workspace[env, ws_A_idx + i] = 0
 
         comptime contacts_off = contacts_offset[NQ, NV, NBODY]()
         comptime meta_off = metadata_offset[NQ, NV, NBODY, MAX_CONTACTS]()
@@ -712,7 +699,9 @@ struct NewtonSolver(ConstraintSolver):
         var limit_dist_arr = InlineArray[Scalar[DTYPE], MAX_LIMITS](
             uninitialized=True
         )
-        var K_limit = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
+        var K_limit = InlineArray[workspace.element_type, MAX_LIMITS](
+            uninitialized=True
+        )
         var lambda_limit = InlineArray[Scalar[DTYPE], MAX_LIMITS](
             uninitialized=True
         )
@@ -748,7 +737,7 @@ struct NewtonSolver(ConstraintSolver):
                 limit_dof[num_limits] = dof
                 limit_sign[num_limits] = Scalar[DTYPE](1)
                 limit_dist_arr[num_limits] = dist_lo
-                K_limit[num_limits] = (M_inv + dof * NV + dof)[]
+                K_limit[num_limits] = workspace[env, M_inv_idx + dof * NV + dof]
                 if K_limit[num_limits] < Scalar[DTYPE](1e-10):
                     K_limit[num_limits] = Scalar[DTYPE](1e-10)
                 num_limits += 1
@@ -757,7 +746,7 @@ struct NewtonSolver(ConstraintSolver):
                 limit_dof[num_limits] = dof
                 limit_sign[num_limits] = Scalar[DTYPE](-1)
                 limit_dist_arr[num_limits] = dist_hi
-                K_limit[num_limits] = (M_inv + dof * NV + dof)[]
+                K_limit[num_limits] = workspace[env, M_inv_idx + dof * NV + dof]
                 if K_limit[num_limits] < Scalar[DTYPE](1e-10):
                     K_limit[num_limits] = Scalar[DTYPE](1e-10)
                 num_limits += 1
@@ -861,13 +850,16 @@ struct NewtonSolver(ConstraintSolver):
                 J_row,
             )
 
-            var k: Scalar[DTYPE] = 0
+            var k: workspace.element_type = 0
             var v_n: Scalar[DTYPE] = 0
             for i in range(NV):
                 workspace[env, ws_J_n_idx + c * NV + i] = J_row[i]
-                var mi_j_sum: Scalar[DTYPE] = 0
+                var mi_j_sum: workspace.element_type = 0
                 for j_idx in range(NV):
-                    mi_j_sum += (M_inv + i * NV + j_idx)[] * J_row[j_idx]
+                    mi_j_sum += (
+                        workspace[env, M_inv_idx + i * NV + j_idx]
+                        * J_row[j_idx]
+                    )
                 k += J_row[i] * mi_j_sum
                 v_n += J_row[i] * qvel[i]
             if k < Scalar[DTYPE](1e-10):
@@ -897,7 +889,10 @@ struct NewtonSolver(ConstraintSolver):
                 for i in range(NV):
                     var mi_j_sum: workspace.element_type = 0
                     for j_idx in range(NV):
-                        mi_j_sum += (M_inv + i * NV + j_idx)[] * J_row[j_idx]
+                        mi_j_sum += (
+                            workspace[env, M_inv_idx + i * NV + j_idx]
+                            * J_row[j_idx]
+                        )
                     qvel[i] += rebind[Scalar[DTYPE]](mi_j_sum) * rebind[
                         Scalar[DTYPE]
                     ](workspace[env, ws_lambda_n_idx + c])
@@ -913,9 +908,9 @@ struct NewtonSolver(ConstraintSolver):
                 for i in range(NV):
                     var mi_j_sum: workspace.element_type = 0
                     for j_idx in range(NV):
-                        mi_j_sum += (M_inv + i * NV + j_idx)[] * (
-                            workspace[env, ws_J_n_idx + c2 * NV + j_idx]
-                        )
+                        mi_j_sum += 
+                            workspace[env, M_inv_idx + i * NV + j_idx]
+                         * workspace[env, ws_J_n_idx + c2 * NV + j_idx]
                     a_val += workspace[env, ws_J_n_idx + c1 * NV + i] * mi_j_sum
                 workspace[env, ws_A_idx + c1 * MAX_CONTACTS + c2] = a_val
 
@@ -1083,7 +1078,7 @@ struct NewtonSolver(ConstraintSolver):
                 for i in range(NV):
                     var mi_j_sum: workspace.element_type = 0
                     for j_idx in range(NV):
-                        mi_j_sum += (M_inv + i * NV + j_idx)[] * (
+                        mi_j_sum += (workspace[env, M_inv_idx + i * NV + j_idx]) * (
                             workspace[env, ws_J_n_idx + c * NV + j_idx]
                         )
                     qvel[i] -= rebind[Scalar[DTYPE]](mi_j_sum) * rebind[
@@ -1097,7 +1092,7 @@ struct NewtonSolver(ConstraintSolver):
                 for i in range(NV):
                     var mi_j_sum: workspace.element_type = 0
                     for j_idx in range(NV):
-                        mi_j_sum += (M_inv + i * NV + j_idx)[] * (
+                        mi_j_sum += (workspace[env, M_inv_idx + i * NV + j_idx]) * (
                             workspace[env, ws_J_n_idx + c * NV + j_idx]
                         )
                     qvel[i] += rebind[Scalar[DTYPE]](mi_j_sum) * rebind[
@@ -1155,12 +1150,12 @@ struct NewtonSolver(ConstraintSolver):
                     )
                     var delta_l = -(v_limit + bias) / (K_limit[l] / imp_lim)
                     var old_lam = lambda_limit[l]
-                    lambda_limit[l] = lambda_limit[l] + delta_l
+                    lambda_limit[l] +=  rebind[Scalar[DTYPE]](delta_l)
                     if lambda_limit[l] < Scalar[DTYPE](0):
                         lambda_limit[l] = Scalar[DTYPE](0)
                     var actual_l = lambda_limit[l] - old_lam
                     for i in range(NV):
-                        qvel[i] += (M_inv + i * NV + dof_l)[] * sign * actual_l
+                        qvel[i] += rebind[Scalar[DTYPE]](workspace[env, M_inv_idx + i * NV + dof_l]) * sign * actual_l
 
         # Phase 3: Friction via PGS
         _solve_friction_pgs_gpu[
@@ -1177,18 +1172,13 @@ struct NewtonSolver(ConstraintSolver):
             CDOF_SIZE,
             BATCH,
             WS_SIZE,
+            FRICTION_WS_OFFSET= 16 * MC + MC * NV + MC * MC,
         ](
             env,
             state,
             model,
             workspace,
             cdof,
-            ws_m_inv_offset(),
-            ws_solver_offset[NV](),  # contact block
-            ws_solver_offset[NV]()
-            + 16 * MC
-            + MC * NV
-            + MC * MC,  # friction block
             nc,
             friction_coef,
             contacts_off,
