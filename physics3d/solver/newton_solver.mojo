@@ -527,6 +527,7 @@ struct NewtonSolver(ConstraintSolver):
         )
 
     @staticmethod
+    @always_inline
     fn solve_gpu[
         DTYPE: DType,
         NQ: Int,
@@ -806,7 +807,7 @@ struct NewtonSolver(ConstraintSolver):
 
         for _ in range(NEWTON_ITERATIONS):
             # Compute gradient: g = A * lambda + rhs
-            var grad_norm: Scalar[DTYPE] = 0
+            var grad_norm: Scalar[DTYPE]
             for c in range(nc):
                 if c_dist[c] >= Scalar[DTYPE](0):
                     grad[c] = Scalar[DTYPE](0)

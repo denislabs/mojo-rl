@@ -6,7 +6,10 @@ and quaternion normalization utilities.
 
 from math import sqrt
 from layout import LayoutTensor, Layout
-from ..types import Model, Data, _max_one
+from ..types import (
+    Model,
+    Data,
+)
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
 
 from ..kinematics.quat_math import (

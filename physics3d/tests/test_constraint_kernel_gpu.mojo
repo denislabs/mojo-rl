@@ -54,7 +54,7 @@ from physics3d.gpu.constants import (
     JOINT_IDX_STIFFNESS,
 )
 
-from ..joint_types import (
+from physics3d.joint_types import (
     JNT_SLIDE,
     JNT_HINGE,
 )
@@ -555,11 +555,20 @@ fn main() raises:
             var qvel = rebind[Scalar[DTYPE]](state[env, qvel_off + i])
             qvel_pred[i] = qvel + qacc[i] * dt
 
-        # PGS solve (DISABLED to test if rest compiles)
-        # PGSSolver.solve_gpu[
-        #     DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-        #     STATE_SIZE, MODEL_SIZE, V_SIZE, M_SIZE, CDOF_SIZE, BATCH,
-        # ](env, state, model, M_inv, cdof, qvel_pred, dt)
+        PGSSolver.solve_gpu[
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            V_SIZE,
+            M_SIZE,
+            CDOF_SIZE,
+            BATCH,
+        ](env, state, model, M_inv, cdof, qvel_pred, dt)
         _ = M_inv
         _ = cdof
         _ = qvel_pred

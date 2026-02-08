@@ -481,6 +481,7 @@ struct CGSolver(ConstraintSolver):
         )
 
     @staticmethod
+    @always_inline
     fn solve_gpu[
         DTYPE: DType,
         NQ: Int,
@@ -1155,6 +1156,7 @@ fn _solve_friction_pgs_cpu[
 # =============================================================================
 
 
+@always_inline
 fn _solve_friction_pgs_gpu[
     DTYPE: DType,
     NQ: Int,

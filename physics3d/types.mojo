@@ -27,6 +27,7 @@ from .joint_types import get_joint_qpos_size, get_joint_qvel_size
 
 
 # Helper to compute max(1, n) at compile time for array sizing
+@always_inline
 fn _max_one[n: Int]() -> Int:
     if n > 0:
         return n

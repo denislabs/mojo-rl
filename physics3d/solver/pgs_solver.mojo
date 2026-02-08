@@ -521,6 +521,7 @@ struct PGSSolver(ConstraintSolver):
         # in the integrator which has mutable access to data.
 
     @staticmethod
+    @always_inline
     fn solve_gpu[
         DTYPE: DType,
         NQ: Int,
