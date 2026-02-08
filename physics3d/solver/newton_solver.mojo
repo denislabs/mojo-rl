@@ -28,13 +28,46 @@ from ..dynamics.jacobian import (
 # Import shared friction solver
 from .cg_solver import _solve_friction_pgs_cpu, _solve_friction_pgs_gpu
 
+from ..gpu.constants import (
+    contacts_offset,
+    metadata_offset,
+    model_metadata_offset,
+    model_joint_offset,
+    CONTACT_SIZE,
+    CONTACT_IDX_BODY_A,
+    CONTACT_IDX_BODY_B,
+    CONTACT_IDX_POS_X,
+    CONTACT_IDX_POS_Y,
+    CONTACT_IDX_POS_Z,
+    CONTACT_IDX_NX,
+    CONTACT_IDX_NY,
+    CONTACT_IDX_NZ,
+    CONTACT_IDX_DIST,
+    CONTACT_IDX_IMPULSE_N,
+    CONTACT_IDX_IMPULSE_T1,
+    CONTACT_IDX_IMPULSE_T2,
+    META_IDX_NUM_CONTACTS,
+    MODEL_META_IDX_FRICTION,
+    MODEL_JOINT_SIZE,
+    JOINT_IDX_TYPE,
+    JOINT_IDX_QPOS_ADR,
+    JOINT_IDX_DOF_ADR,
+    JOINT_IDX_RANGE_MIN,
+    JOINT_IDX_RANGE_MAX,
+)
+
+from ..joint_types import (
+    JNT_HINGE,
+    JNT_SLIDE,
+)
+
 
 # Newton solver parameters
 comptime NEWTON_ITERATIONS: Int = 30
 comptime NEWTON_TOLERANCE: Float64 = 1e-8
 comptime LINESEARCH_ITERATIONS: Int = 20
-comptime LINESEARCH_BETA: Float64 = 0.5     # Step shrink factor
-comptime LINESEARCH_ARMIJO: Float64 = 1e-4   # Armijo sufficient decrease
+comptime LINESEARCH_BETA: Float64 = 0.5  # Step shrink factor
+comptime LINESEARCH_ARMIJO: Float64 = 1e-4  # Armijo sufficient decrease
 comptime BAUMGARTE_NEWTON: Float64 = 0.8
 comptime SLOP_NEWTON: Float64 = 0.0001
 # Friction uses PGS iterations
@@ -82,10 +115,16 @@ struct NewtonSolver(ConstraintSolver):
         # Detect joint limits
         comptime MAX_LIMITS = _max_one[2 * NJOINT]()
         var limit_dof = InlineArray[Int, MAX_LIMITS](uninitialized=True)
-        var limit_sign = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
-        var limit_dist_arr = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
+        var limit_sign = InlineArray[Scalar[DTYPE], MAX_LIMITS](
+            uninitialized=True
+        )
+        var limit_dist_arr = InlineArray[Scalar[DTYPE], MAX_LIMITS](
+            uninitialized=True
+        )
         var K_limit = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
-        var lambda_limit = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
+        var lambda_limit = InlineArray[Scalar[DTYPE], MAX_LIMITS](
+            uninitialized=True
+        )
         for i in range(MAX_LIMITS):
             limit_dof[i] = 0
             limit_sign[i] = Scalar[DTYPE](0)
@@ -192,11 +231,17 @@ struct NewtonSolver(ConstraintSolver):
             compute_contact_jacobian_row[
                 DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, CDOF_SIZE
             ](
-                model, data, cdof,
+                model,
+                data,
+                cdof,
                 contact.body_a,
                 contact.body_b,
-                contact.pos_x, contact.pos_y, contact.pos_z,
-                contact.normal_x, contact.normal_y, contact.normal_z,
+                contact.pos_x,
+                contact.pos_y,
+                contact.pos_z,
+                contact.normal_x,
+                contact.normal_y,
+                contact.normal_z,
                 J_row,
             )
 
@@ -256,7 +301,9 @@ struct NewtonSolver(ConstraintSolver):
         # Phase 2: Projected Newton for normal constraints
         # Minimize: f(x) = 0.5 * x^T * A * x + rhs^T * x subject to x >= 0
         var grad = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-        var d = InlineArray[Scalar[DTYPE], MC](uninitialized=True)      # Newton direction
+        var d = InlineArray[Scalar[DTYPE], MC](
+            uninitialized=True
+        )  # Newton direction
         var lambda_trial = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
 
         for i in range(MC):
@@ -350,7 +397,12 @@ struct NewtonSolver(ConstraintSolver):
                 for c2 in range(nc):
                     if contact_dist[c2] >= Scalar[DTYPE](0):
                         continue
-                    f_current += Scalar[DTYPE](0.5) * lambda_n[c] * A[c * MAX_CONTACTS + c2] * lambda_n[c2]
+                    f_current += (
+                        Scalar[DTYPE](0.5)
+                        * lambda_n[c]
+                        * A[c * MAX_CONTACTS + c2]
+                        * lambda_n[c2]
+                    )
 
             # Directional derivative: g^T * d
             var gtd: Scalar[DTYPE] = 0
@@ -382,7 +434,12 @@ struct NewtonSolver(ConstraintSolver):
                     for c2 in range(nc):
                         if contact_dist[c2] >= Scalar[DTYPE](0):
                             continue
-                        f_trial += Scalar[DTYPE](0.5) * lambda_trial[c] * A[c * MAX_CONTACTS + c2] * lambda_trial[c2]
+                        f_trial += (
+                            Scalar[DTYPE](0.5)
+                            * lambda_trial[c]
+                            * A[c * MAX_CONTACTS + c2]
+                            * lambda_trial[c2]
+                        )
 
                 # Armijo condition: f(trial) <= f(current) + armijo * step * g^T * d
                 if f_trial <= f_current + armijo * step * gtd:
@@ -447,8 +504,27 @@ struct NewtonSolver(ConstraintSolver):
 
         # Phase 3: Friction (Coulomb cone) via PGS
         _solve_friction_pgs_cpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, M_SIZE, CDOF_SIZE
-        ](model, data, cdof, M_inv, J_n, lambda_n, contact_dist, contact_body_b, nc, qvel)
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            V_SIZE,
+            M_SIZE,
+            CDOF_SIZE,
+        ](
+            model,
+            data,
+            cdof,
+            M_inv,
+            J_n,
+            lambda_n,
+            contact_dist,
+            contact_body_b,
+            nc,
+            qvel,
+        )
 
     @staticmethod
     fn solve_gpu[
@@ -477,44 +553,16 @@ struct NewtonSolver(ConstraintSolver):
         mut qvel: InlineArray[Scalar[DTYPE], V_SIZE],
         dt: Scalar[DTYPE],
     ):
-        """Solve contact constraints using Projected Newton on GPU (per-environment)."""
-        from ..gpu.constants import (
-            contacts_offset,
-            metadata_offset,
-            model_metadata_offset,
-            model_joint_offset,
-            CONTACT_SIZE,
-            CONTACT_IDX_BODY_A,
-            CONTACT_IDX_BODY_B,
-            CONTACT_IDX_POS_X,
-            CONTACT_IDX_POS_Y,
-            CONTACT_IDX_POS_Z,
-            CONTACT_IDX_NX,
-            CONTACT_IDX_NY,
-            CONTACT_IDX_NZ,
-            CONTACT_IDX_DIST,
-            CONTACT_IDX_IMPULSE_N,
-            CONTACT_IDX_IMPULSE_T1,
-            CONTACT_IDX_IMPULSE_T2,
-            META_IDX_NUM_CONTACTS,
-            MODEL_META_IDX_FRICTION,
-            MODEL_JOINT_SIZE,
-            JOINT_IDX_TYPE,
-            JOINT_IDX_QPOS_ADR,
-            JOINT_IDX_DOF_ADR,
-            JOINT_IDX_RANGE_MIN,
-            JOINT_IDX_RANGE_MAX,
-            JNT_HINGE,
-            JNT_SLIDE,
-        )
+        """Solve contact constraints using Projected Newton on GPU (per-environment).
+        """
 
         var contacts_off = contacts_offset[NQ, NV, NBODY]()
         var meta_off = metadata_offset[NQ, NV, NBODY, MAX_CONTACTS]()
         var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
 
-        var num_contacts = Int(rebind[Scalar[DTYPE]](
-            state[env, meta_off + META_IDX_NUM_CONTACTS]
-        ))
+        var num_contacts = Int(
+            rebind[Scalar[DTYPE]](state[env, meta_off + META_IDX_NUM_CONTACTS])
+        )
         var friction_coef = rebind[Scalar[DTYPE]](
             model[0, model_meta_off + MODEL_META_IDX_FRICTION]
         )
@@ -522,10 +570,16 @@ struct NewtonSolver(ConstraintSolver):
         # Detect joint limits from model/state buffers
         comptime MAX_LIMITS = _max_one[2 * NJOINT]()
         var limit_dof = InlineArray[Int, MAX_LIMITS](uninitialized=True)
-        var limit_sign = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
-        var limit_dist_arr = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
+        var limit_sign = InlineArray[Scalar[DTYPE], MAX_LIMITS](
+            uninitialized=True
+        )
+        var limit_dist_arr = InlineArray[Scalar[DTYPE], MAX_LIMITS](
+            uninitialized=True
+        )
         var K_limit = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
-        var lambda_limit = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
+        var lambda_limit = InlineArray[Scalar[DTYPE], MAX_LIMITS](
+            uninitialized=True
+        )
         for i in range(MAX_LIMITS):
             limit_dof[i] = 0
             limit_sign[i] = Scalar[DTYPE](0)
@@ -537,13 +591,23 @@ struct NewtonSolver(ConstraintSolver):
         var qpos_off_lim = 0
         for j in range(NJOINT):
             var j_off = model_joint_offset[NBODY](j)
-            var jtype = Int(rebind[Scalar[DTYPE]](model[0, j_off + JOINT_IDX_TYPE]))
+            var jtype = Int(
+                rebind[Scalar[DTYPE]](model[0, j_off + JOINT_IDX_TYPE])
+            )
             if jtype != JNT_HINGE and jtype != JNT_SLIDE:
                 continue
-            var dof = Int(rebind[Scalar[DTYPE]](model[0, j_off + JOINT_IDX_DOF_ADR]))
-            var qpos_adr = Int(rebind[Scalar[DTYPE]](model[0, j_off + JOINT_IDX_QPOS_ADR]))
-            var rmin = rebind[Scalar[DTYPE]](model[0, j_off + JOINT_IDX_RANGE_MIN])
-            var rmax = rebind[Scalar[DTYPE]](model[0, j_off + JOINT_IDX_RANGE_MAX])
+            var dof = Int(
+                rebind[Scalar[DTYPE]](model[0, j_off + JOINT_IDX_DOF_ADR])
+            )
+            var qpos_adr = Int(
+                rebind[Scalar[DTYPE]](model[0, j_off + JOINT_IDX_QPOS_ADR])
+            )
+            var rmin = rebind[Scalar[DTYPE]](
+                model[0, j_off + JOINT_IDX_RANGE_MIN]
+            )
+            var rmax = rebind[Scalar[DTYPE]](
+                model[0, j_off + JOINT_IDX_RANGE_MAX]
+            )
             if rmin < Scalar[DTYPE](-1e9) or rmax > Scalar[DTYPE](1e9):
                 continue
             var pos = rebind[Scalar[DTYPE]](state[env, qpos_off_lim + qpos_adr])
@@ -622,9 +686,15 @@ struct NewtonSolver(ConstraintSolver):
         # Phase 1: Read contact data and build Delassus matrix
         for c in range(nc):
             var c_off = contacts_off + c * CONTACT_SIZE
-            var body = Int(rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_BODY_A]))
-            var body_b = Int(rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_BODY_B]))
-            var dist = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_DIST])
+            var body = Int(
+                rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_BODY_A])
+            )
+            var body_b = Int(
+                rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_BODY_B])
+            )
+            var dist = rebind[Scalar[DTYPE]](
+                state[env, c_off + CONTACT_IDX_DIST]
+            )
 
             c_dist[c] = dist
             c_body[c] = body
@@ -633,20 +703,44 @@ struct NewtonSolver(ConstraintSolver):
             if dist >= Scalar[DTYPE](0):
                 continue
 
-            c_px[c] = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_POS_X])
-            c_py[c] = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_POS_Y])
-            c_pz[c] = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_POS_Z])
+            c_px[c] = rebind[Scalar[DTYPE]](
+                state[env, c_off + CONTACT_IDX_POS_X]
+            )
+            c_py[c] = rebind[Scalar[DTYPE]](
+                state[env, c_off + CONTACT_IDX_POS_Y]
+            )
+            c_pz[c] = rebind[Scalar[DTYPE]](
+                state[env, c_off + CONTACT_IDX_POS_Z]
+            )
             c_nx[c] = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_NX])
             c_ny[c] = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_NY])
             c_nz[c] = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_NZ])
 
             compute_contact_jacobian_row_gpu[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-                STATE_SIZE, MODEL_SIZE, V_SIZE, CDOF_SIZE, BATCH,
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                STATE_SIZE,
+                MODEL_SIZE,
+                V_SIZE,
+                CDOF_SIZE,
+                BATCH,
             ](
-                env, state, model, cdof,
-                body, body_b, c_px[c], c_py[c], c_pz[c],
-                c_nx[c], c_ny[c], c_nz[c],
+                env,
+                state,
+                model,
+                cdof,
+                body,
+                body_b,
+                c_px[c],
+                c_py[c],
+                c_pz[c],
+                c_nx[c],
+                c_ny[c],
+                c_nz[c],
                 J_row,
             )
 
@@ -672,7 +766,9 @@ struct NewtonSolver(ConstraintSolver):
             var bias = -baumgarte_coef * correction / dt
             rhs[c] = v_n + bias
 
-            lambda_n[c] = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_IMPULSE_N])
+            lambda_n[c] = rebind[Scalar[DTYPE]](
+                state[env, c_off + CONTACT_IDX_IMPULSE_N]
+            )
 
             if lambda_n[c] > Scalar[DTYPE](0):
                 for i in range(NV):
@@ -778,7 +874,12 @@ struct NewtonSolver(ConstraintSolver):
                 for c2 in range(nc):
                     if c_dist[c2] >= Scalar[DTYPE](0):
                         continue
-                    f_current += Scalar[DTYPE](0.5) * lambda_n[c] * A[c * MAX_CONTACTS + c2] * lambda_n[c2]
+                    f_current += (
+                        Scalar[DTYPE](0.5)
+                        * lambda_n[c]
+                        * A[c * MAX_CONTACTS + c2]
+                        * lambda_n[c2]
+                    )
 
             var gtd: Scalar[DTYPE] = 0
             for c in range(nc):
@@ -806,7 +907,12 @@ struct NewtonSolver(ConstraintSolver):
                     for c2 in range(nc):
                         if c_dist[c2] >= Scalar[DTYPE](0):
                             continue
-                        f_trial += Scalar[DTYPE](0.5) * lambda_trial[c] * A[c * MAX_CONTACTS + c2] * lambda_trial[c2]
+                        f_trial += (
+                            Scalar[DTYPE](0.5)
+                            * lambda_trial[c]
+                            * A[c * MAX_CONTACTS + c2]
+                            * lambda_trial[c2]
+                        )
 
                 if f_trial <= f_current + armijo * step * gtd:
                     break
@@ -821,7 +927,9 @@ struct NewtonSolver(ConstraintSolver):
             if c_dist[c] >= Scalar[DTYPE](0):
                 continue
             var c_off = contacts_off + c * CONTACT_SIZE
-            var warm = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_IMPULSE_N])
+            var warm = rebind[Scalar[DTYPE]](
+                state[env, c_off + CONTACT_IDX_IMPULSE_N]
+            )
             if warm > Scalar[DTYPE](0):
                 for i in range(NV):
                     var mi_j_sum: Scalar[DTYPE] = 0
@@ -868,10 +976,36 @@ struct NewtonSolver(ConstraintSolver):
 
         # Phase 3: Friction via PGS
         _solve_friction_pgs_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, V_SIZE, M_SIZE, CDOF_SIZE, BATCH,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            V_SIZE,
+            M_SIZE,
+            CDOF_SIZE,
+            BATCH,
         ](
-            env, state, model, cdof, M_inv,
-            lambda_n, c_dist, c_body, c_body_b, c_px, c_py, c_pz, c_nx, c_ny, c_nz,
-            nc, friction_coef, contacts_off, qvel,
+            env,
+            state,
+            model,
+            cdof,
+            M_inv,
+            lambda_n,
+            c_dist,
+            c_body,
+            c_body_b,
+            c_px,
+            c_py,
+            c_pz,
+            c_nx,
+            c_ny,
+            c_nz,
+            nc,
+            friction_coef,
+            contacts_off,
+            qvel,
         )

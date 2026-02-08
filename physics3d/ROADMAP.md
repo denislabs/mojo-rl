@@ -94,7 +94,6 @@ off-diagonal terms, dynamics are incorrect for multi-joint systems.
 - `dynamics/mass_matrix.mojo` (main implementation)
 - `types.mojo` (add sparse storage fields to Data if needed)
 - `integrator/euler_integrator.mojo` (use full M solve instead of diagonal inverse)
-- `gpu/kernels.mojo` (GPU kernel changes)
 - `gpu/constants.mojo` (state buffer layout if M is stored)
 
 #### Algorithm: Composite Rigid Body Algorithm (CRBA)
@@ -259,7 +258,6 @@ robot will have wrong dynamics without them.
 
 **Files to modify**:
 - `dynamics/bias_forces.mojo` (main implementation)
-- `gpu/kernels.mojo` (GPU version)
 
 #### Algorithm: Recursive Newton-Euler (RNE)
 
@@ -366,9 +364,7 @@ For diagonal inertia `I = diag(Ixx, Iyy, Izz)`:
    - Backward pass: accumulate `cfrc` up the tree
    - Project: `bias[d] = cdof[d] . cfrc[body[d]]`
 
-3. Update GPU kernel in `kernels.mojo`
-
-4. Keep the old gravity-only version as a fast path option (compile-time flag)
+3. Keep the old gravity-only version as a fast path option (compile-time flag)
 
 #### Testing
 
@@ -393,8 +389,7 @@ have `body_b = -1`, reducing bilateral Jacobian to original unilateral form.
 - `dynamics/jacobian.mojo` (bilateral Jacobian: `J_row[d] += J_a - J_b`, CPU + GPU)
 - `solver/pgs_solver.mojo`, `solver/cg_solver.mojo`, `solver/newton_solver.mojo`
   (pass `body_b` through all Jacobian calls, CPU + GPU)
-- `collision/contact_detection.mojo` (`detect_body_body_contacts`)
-- `gpu/kernels.mojo` (added `detect_body_body_contacts_gpu`, wired into step kernels)
+- `collision/contact_detection.mojo` (`detect_body_body_contacts` and `detect_body_body_contacts_gpu`)
 - `integrator/euler_integrator.mojo` (calls body-body detection after ground detection)
 
 #### What Needs to Happen
@@ -497,7 +492,6 @@ GPU solvers use diagonal M_inv approximation (consistent with GPU contact solvin
 - `solver/cg_solver.mojo` (same pattern, CPU + GPU)
 - `solver/newton_solver.mojo` (same pattern, CPU + GPU)
 - `integrator/euler_integrator.mojo` (removed `enforce_joint_limits` call)
-- `gpu/kernels.mojo` (removed `enforce_joint_limits_gpu` call in `step_constraint_kernel_with_solver`)
 
 #### MuJoCo's Approach
 

@@ -34,6 +34,7 @@ from gpu import thread_idx, block_idx, block_dim
 from layout import Layout, LayoutTensor
 
 # Import GC physics engine
+from physics3d.constants import GEOM_CAPSULE
 from physics3d.types import Model, Data
 from physics3d.integrator import EulerIntegrator
 from physics3d.solver import NewtonSolver
@@ -52,7 +53,6 @@ from physics3d.gpu.constants import (
     xpos_offset,
     metadata_offset,
     model_size,
-    GEOM_CAPSULE,
     META_IDX_NUM_CONTACTS,
     META_IDX_STEP_COUNT,
     META_IDX_PREV_X,
@@ -108,9 +108,8 @@ from physics3d.gpu.constants import (
     model_body_offset,
     model_joint_offset,
     model_metadata_offset,
-    JNT_SLIDE,
-    JNT_HINGE,
 )
+
 
 from .constants_gc import (
     # Physics
@@ -1241,9 +1240,7 @@ struct HalfCheetahGC[
 
         # Physics step (with frame skip)
         for _ in range(self.frame_skip):
-            EulerIntegrator[SOLVER=NewtonSolver].step(
-                self.model, self.data
-            )
+            EulerIntegrator[SOLVER=NewtonSolver].step(self.model, self.data)
             # Enforce joint limits after each physics step
             self._enforce_joint_limits()
 
@@ -1896,9 +1893,7 @@ struct HalfCheetahGC[
         )
 
         model_host[b0 + BODY_IDX_MASS] = torso_mass
-        model_host[b0 + BODY_IDX_INV_MASS] = (
-            Scalar[gpu_dtype](1.0) / torso_mass
-        )
+        model_host[b0 + BODY_IDX_INV_MASS] = Scalar[gpu_dtype](1.0) / torso_mass
         model_host[b0 + BODY_IDX_IXX] = torso_inertia[0]
         model_host[b0 + BODY_IDX_IYY] = torso_inertia[1]
         model_host[b0 + BODY_IDX_IZZ] = torso_inertia[2]
@@ -1919,9 +1914,7 @@ struct HalfCheetahGC[
         model_host[b0 + BODY_IDX_QUAT_Z] = quat_90y_z
         model_host[b0 + BODY_IDX_QUAT_W] = quat_90y_w
         model_host[b0 + BODY_IDX_PARENT] = Scalar[gpu_dtype](-1)  # World
-        model_host[b0 + BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](
-            GEOM_CAPSULE
-        )
+        model_host[b0 + BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](GEOM_CAPSULE)
         model_host[b0 + BODY_IDX_RADIUS] = capsule_radius
         model_host[b0 + BODY_IDX_HALF_LENGTH] = torso_half
 
@@ -1959,9 +1952,7 @@ struct HalfCheetahGC[
         model_host[b1 + BODY_IDX_QUAT_Z] = quat_neg90y_z
         model_host[b1 + BODY_IDX_QUAT_W] = quat_neg90y_w
         model_host[b1 + BODY_IDX_PARENT] = Scalar[gpu_dtype](0)  # Torso
-        model_host[b1 + BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](
-            GEOM_CAPSULE
-        )
+        model_host[b1 + BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](GEOM_CAPSULE)
         model_host[b1 + BODY_IDX_RADIUS] = capsule_radius
         model_host[b1 + BODY_IDX_HALF_LENGTH] = bthigh_half
 
@@ -1975,9 +1966,7 @@ struct HalfCheetahGC[
         )
 
         model_host[b2 + BODY_IDX_MASS] = bshin_mass
-        model_host[b2 + BODY_IDX_INV_MASS] = (
-            Scalar[gpu_dtype](1.0) / bshin_mass
-        )
+        model_host[b2 + BODY_IDX_INV_MASS] = Scalar[gpu_dtype](1.0) / bshin_mass
         model_host[b2 + BODY_IDX_IXX] = bshin_inertia[0]
         model_host[b2 + BODY_IDX_IYY] = bshin_inertia[1]
         model_host[b2 + BODY_IDX_IZZ] = bshin_inertia[2]
@@ -1998,9 +1987,7 @@ struct HalfCheetahGC[
         model_host[b2 + BODY_IDX_QUAT_Z] = Scalar[gpu_dtype](0.0)
         model_host[b2 + BODY_IDX_QUAT_W] = Scalar[gpu_dtype](1.0)
         model_host[b2 + BODY_IDX_PARENT] = Scalar[gpu_dtype](1)  # BThigh
-        model_host[b2 + BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](
-            GEOM_CAPSULE
-        )
+        model_host[b2 + BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](GEOM_CAPSULE)
         model_host[b2 + BODY_IDX_RADIUS] = capsule_radius
         model_host[b2 + BODY_IDX_HALF_LENGTH] = bshin_half
 
@@ -2014,9 +2001,7 @@ struct HalfCheetahGC[
         )
 
         model_host[b3 + BODY_IDX_MASS] = bfoot_mass
-        model_host[b3 + BODY_IDX_INV_MASS] = (
-            Scalar[gpu_dtype](1.0) / bfoot_mass
-        )
+        model_host[b3 + BODY_IDX_INV_MASS] = Scalar[gpu_dtype](1.0) / bfoot_mass
         model_host[b3 + BODY_IDX_IXX] = bfoot_inertia[0]
         model_host[b3 + BODY_IDX_IYY] = bfoot_inertia[1]
         model_host[b3 + BODY_IDX_IZZ] = bfoot_inertia[2]
@@ -2037,9 +2022,7 @@ struct HalfCheetahGC[
         model_host[b3 + BODY_IDX_QUAT_Z] = quat_90y_z
         model_host[b3 + BODY_IDX_QUAT_W] = quat_90y_w
         model_host[b3 + BODY_IDX_PARENT] = Scalar[gpu_dtype](2)  # BShin
-        model_host[b3 + BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](
-            GEOM_CAPSULE
-        )
+        model_host[b3 + BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](GEOM_CAPSULE)
         model_host[b3 + BODY_IDX_RADIUS] = capsule_radius
         model_host[b3 + BODY_IDX_HALF_LENGTH] = bfoot_half
 
@@ -2077,9 +2060,7 @@ struct HalfCheetahGC[
         model_host[b4 + BODY_IDX_QUAT_Z] = quat_neg90y_z
         model_host[b4 + BODY_IDX_QUAT_W] = quat_neg90y_w
         model_host[b4 + BODY_IDX_PARENT] = Scalar[gpu_dtype](0)  # Torso
-        model_host[b4 + BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](
-            GEOM_CAPSULE
-        )
+        model_host[b4 + BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](GEOM_CAPSULE)
         model_host[b4 + BODY_IDX_RADIUS] = capsule_radius
         model_host[b4 + BODY_IDX_HALF_LENGTH] = fthigh_half
 
@@ -2093,9 +2074,7 @@ struct HalfCheetahGC[
         )
 
         model_host[b5 + BODY_IDX_MASS] = fshin_mass
-        model_host[b5 + BODY_IDX_INV_MASS] = (
-            Scalar[gpu_dtype](1.0) / fshin_mass
-        )
+        model_host[b5 + BODY_IDX_INV_MASS] = Scalar[gpu_dtype](1.0) / fshin_mass
         model_host[b5 + BODY_IDX_IXX] = fshin_inertia[0]
         model_host[b5 + BODY_IDX_IYY] = fshin_inertia[1]
         model_host[b5 + BODY_IDX_IZZ] = fshin_inertia[2]
@@ -2116,9 +2095,7 @@ struct HalfCheetahGC[
         model_host[b5 + BODY_IDX_QUAT_Z] = Scalar[gpu_dtype](0.0)
         model_host[b5 + BODY_IDX_QUAT_W] = Scalar[gpu_dtype](1.0)
         model_host[b5 + BODY_IDX_PARENT] = Scalar[gpu_dtype](4)  # FThigh
-        model_host[b5 + BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](
-            GEOM_CAPSULE
-        )
+        model_host[b5 + BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](GEOM_CAPSULE)
         model_host[b5 + BODY_IDX_RADIUS] = capsule_radius
         model_host[b5 + BODY_IDX_HALF_LENGTH] = fshin_half
 
@@ -2132,9 +2109,7 @@ struct HalfCheetahGC[
         )
 
         model_host[b6 + BODY_IDX_MASS] = ffoot_mass
-        model_host[b6 + BODY_IDX_INV_MASS] = (
-            Scalar[gpu_dtype](1.0) / ffoot_mass
-        )
+        model_host[b6 + BODY_IDX_INV_MASS] = Scalar[gpu_dtype](1.0) / ffoot_mass
         model_host[b6 + BODY_IDX_IXX] = ffoot_inertia[0]
         model_host[b6 + BODY_IDX_IYY] = ffoot_inertia[1]
         model_host[b6 + BODY_IDX_IZZ] = ffoot_inertia[2]
@@ -2155,9 +2130,7 @@ struct HalfCheetahGC[
         model_host[b6 + BODY_IDX_QUAT_Z] = quat_90y_z
         model_host[b6 + BODY_IDX_QUAT_W] = quat_90y_w
         model_host[b6 + BODY_IDX_PARENT] = Scalar[gpu_dtype](5)  # FShin
-        model_host[b6 + BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](
-            GEOM_CAPSULE
-        )
+        model_host[b6 + BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](GEOM_CAPSULE)
         model_host[b6 + BODY_IDX_RADIUS] = capsule_radius
         model_host[b6 + BODY_IDX_HALF_LENGTH] = ffoot_half
 
@@ -2171,9 +2144,7 @@ struct HalfCheetahGC[
         )
 
         model_host[b7 + BODY_IDX_MASS] = head_mass
-        model_host[b7 + BODY_IDX_INV_MASS] = (
-            Scalar[gpu_dtype](1.0) / head_mass
-        )
+        model_host[b7 + BODY_IDX_INV_MASS] = Scalar[gpu_dtype](1.0) / head_mass
         model_host[b7 + BODY_IDX_IXX] = head_inertia[0]
         model_host[b7 + BODY_IDX_IYY] = head_inertia[1]
         model_host[b7 + BODY_IDX_IZZ] = head_inertia[2]
@@ -2202,9 +2173,7 @@ struct HalfCheetahGC[
         model_host[b7 + BODY_IDX_QUAT_Z] = Scalar[gpu_dtype](0.0)
         model_host[b7 + BODY_IDX_QUAT_W] = head_cos
         model_host[b7 + BODY_IDX_PARENT] = Scalar[gpu_dtype](0)  # Torso
-        model_host[b7 + BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](
-            GEOM_CAPSULE
-        )
+        model_host[b7 + BODY_IDX_GEOM_TYPE] = Scalar[gpu_dtype](GEOM_CAPSULE)
         model_host[b7 + BODY_IDX_RADIUS] = capsule_radius
         model_host[b7 + BODY_IDX_HALF_LENGTH] = head_half
 
@@ -2524,9 +2493,7 @@ struct HalfCheetahGC[
             if env >= BATCH_SIZE:
                 return
             # Store current rootx into metadata prev_x slot
-            states[env, META_OFF + META_IDX_PREV_X] = states[
-                env, QPOS_OFF + 0
-            ]
+            states[env, META_OFF + META_IDX_PREV_X] = states[env, QPOS_OFF + 0]
 
         ctx.enqueue_function[store_prev_x_kernel, store_prev_x_kernel](
             states,
@@ -2907,9 +2874,7 @@ struct HalfCheetahGC[
                 ffoot_action = Scalar[gpu_dtype](-1.0)
 
             # Read curriculum parameters from model buffer
-            var max_pitch = model[
-                0, CURRICULUM_OFF + CURRICULUM_IDX_MAX_PITCH
-            ]
+            var max_pitch = model[0, CURRICULUM_OFF + CURRICULUM_IDX_MAX_PITCH]
 
             # Compute velocity from position change (matching CPU)
             var x_position_after = states[env, QPOS_OFF + 0]  # rootx

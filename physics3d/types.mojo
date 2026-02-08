@@ -21,7 +21,7 @@ Example usage:
     data.qvel[0] = 0.0  # Initial angular velocity
 """
 
-from .gpu.constants import GEOM_SPHERE, GEOM_CAPSULE, GEOM_BOX
+
 from .joint_types import JointDef, JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
 from .joint_types import get_joint_qpos_size, get_joint_qvel_size
 
@@ -31,8 +31,6 @@ fn _max_one[n: Int]() -> Int:
     if n > 0:
         return n
     return 1
-
-
 
 
 # =============================================================================

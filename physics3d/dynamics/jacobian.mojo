@@ -19,7 +19,24 @@ from layout import LayoutTensor, Layout
 from ..types import Model, Data, _max_one
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
 from ..kinematics.quat_math import quat_rotate
+from ..gpu.constants import (
+    xpos_offset,
+    model_body_offset,
+    model_joint_offset,
+    model_metadata_offset,
+    BODY_IDX_PARENT,
+    JOINT_IDX_TYPE,
+    JOINT_IDX_BODY_ID,
+    JOINT_IDX_DOF_ADR,
+    MODEL_META_IDX_NJOINT,
+)
 
+from ..joint_types import (
+    JNT_FREE,
+    JNT_BALL,
+    JNT_HINGE,
+    JNT_SLIDE,
+)
 
 # =============================================================================
 # CPU Functions
@@ -740,6 +757,8 @@ fn compute_cdof_gpu[
         JOINT_IDX_AXIS_Y,
         JOINT_IDX_AXIS_Z,
         MODEL_META_IDX_NJOINT,
+    )
+    from ..joint_types import (
         JNT_FREE,
         JNT_HINGE,
         JNT_SLIDE,
@@ -928,21 +947,6 @@ fn compute_contact_jacobian_row_gpu[
     Bilateral: J_row[i] = J_a[i] - J_b[i] for body-body contacts.
     For ground contacts (body_b = -1), only body_a contributes.
     """
-    from ..gpu.constants import (
-        xpos_offset,
-        model_body_offset,
-        model_joint_offset,
-        model_metadata_offset,
-        BODY_IDX_PARENT,
-        JOINT_IDX_TYPE,
-        JOINT_IDX_BODY_ID,
-        JOINT_IDX_DOF_ADR,
-        MODEL_META_IDX_NJOINT,
-        JNT_FREE,
-        JNT_BALL,
-        JNT_HINGE,
-        JNT_SLIDE,
-    )
 
     for i in range(V_SIZE):
         J_row[i] = Scalar[DTYPE](0)

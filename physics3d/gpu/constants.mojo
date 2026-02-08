@@ -22,17 +22,7 @@ Model buffer (static, same for all environments):
 # =============================================================================
 
 comptime TPB: Int = 256  # Threads per block (optimal for most GPUs)
-comptime TILE: Int = 16  # Tile size for 2D operations
-
-
-# =============================================================================
-# Geometry Types (same as CPU)
-# =============================================================================
-
-comptime GEOM_PLANE: Int = 0
-comptime GEOM_SPHERE: Int = 1
-comptime GEOM_CAPSULE: Int = 2
-comptime GEOM_BOX: Int = 3  # Reserved for Phase 9
+comptime TILE: Int = 8  # Tile size for 2D operations
 
 
 # =============================================================================
@@ -291,13 +281,3 @@ fn model_size[NBODY: Int, NJOINT: Int]() -> Int:
         + MODEL_META_SIZE
         + MODEL_CURRICULUM_SIZE
     )
-
-
-# =============================================================================
-# Joint Types (duplicated from joint_types.mojo for GPU code)
-# =============================================================================
-
-comptime JNT_FREE: Int = 0
-comptime JNT_BALL: Int = 1
-comptime JNT_SLIDE: Int = 2
-comptime JNT_HINGE: Int = 3

@@ -27,16 +27,6 @@ from .constants import (
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
     MODEL_META_SIZE,
-    # Geometry types
-    GEOM_PLANE,
-    GEOM_SPHERE,
-    GEOM_CAPSULE,
-    GEOM_BOX,
-    # Joint types
-    JNT_FREE,
-    JNT_BALL,
-    JNT_SLIDE,
-    JNT_HINGE,
     # Physics defaults
     DEFAULT_GRAVITY_Z,
     DEFAULT_TIMESTEP,
@@ -54,15 +44,6 @@ from .buffer_utils import (
     copy_buffer_to_data,
 )
 
-# GPU kernels
-from .kernels import (
-    detect_ground_contacts_gpu,
-    detect_body_body_contacts_gpu,
-    integrate_gc_gpu,
-    normalize_qpos_quaternions_gpu,
-    step_constraint_kernel_with_solver,
-    step_constraint_kernel,
-)
 
 # GPU kernels colocated with CPU implementations
 from ..kinematics.quat_math import (

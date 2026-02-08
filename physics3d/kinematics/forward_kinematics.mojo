@@ -65,6 +65,9 @@ from ..gpu.constants import (
     JOINT_IDX_AXIS_Y,
     JOINT_IDX_AXIS_Z,
     MODEL_META_IDX_NJOINT,
+)
+
+from ..joint_types import (
     JNT_FREE,
     JNT_BALL,
     JNT_SLIDE,

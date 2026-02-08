@@ -93,13 +93,16 @@ fn create_state_buffer[
 ](ctx: DeviceContext) raises -> HostBuffer[DTYPE]:
     """Allocate host buffer for GC state.
 
-    Args:
+    Parameters:
         DTYPE: Data type (float32 or float64).
         NQ: Total qpos dimension.
         NV: Total qvel dimension.
         NBODY: Number of bodies.
         MAX_CONTACTS: Maximum contacts.
         BATCH: Number of environments.
+
+    Args:
+        ctx: Device context.
 
     Returns:
         Pointer to allocated buffer.

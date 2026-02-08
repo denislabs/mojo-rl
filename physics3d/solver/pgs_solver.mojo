@@ -25,7 +25,37 @@ from ..dynamics.jacobian import (
     compute_contact_jacobian_row,
     compute_contact_jacobian_row_gpu,
 )
-
+from ..gpu.constants import (
+    contacts_offset,
+    metadata_offset,
+    model_metadata_offset,
+    model_joint_offset,
+    CONTACT_SIZE,
+    CONTACT_IDX_BODY_A,
+    CONTACT_IDX_BODY_B,
+    CONTACT_IDX_POS_X,
+    CONTACT_IDX_POS_Y,
+    CONTACT_IDX_POS_Z,
+    CONTACT_IDX_NX,
+    CONTACT_IDX_NY,
+    CONTACT_IDX_NZ,
+    CONTACT_IDX_DIST,
+    CONTACT_IDX_IMPULSE_N,
+    CONTACT_IDX_IMPULSE_T1,
+    CONTACT_IDX_IMPULSE_T2,
+    META_IDX_NUM_CONTACTS,
+    MODEL_META_IDX_FRICTION,
+    MODEL_JOINT_SIZE,
+    JOINT_IDX_TYPE,
+    JOINT_IDX_QPOS_ADR,
+    JOINT_IDX_DOF_ADR,
+    JOINT_IDX_RANGE_MIN,
+    JOINT_IDX_RANGE_MAX,
+)
+from ..joint_types import (
+    JNT_HINGE,
+    JNT_SLIDE,
+)
 
 # PGS solver parameters
 comptime PGS_ITERATIONS: Int = 30
@@ -130,11 +160,17 @@ struct PGSSolver(ConstraintSolver):
             compute_contact_jacobian_row[
                 DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, CDOF_SIZE
             ](
-                model, data, cdof,
+                model,
+                data,
+                cdof,
                 contact.body_a,
                 contact.body_b,
-                contact.pos_x, contact.pos_y, contact.pos_z,
-                contact.normal_x, contact.normal_y, contact.normal_z,
+                contact.pos_x,
+                contact.pos_y,
+                contact.pos_z,
+                contact.normal_x,
+                contact.normal_y,
+                contact.normal_z,
                 J_row,
             )
 
@@ -186,7 +222,9 @@ struct PGSSolver(ConstraintSolver):
                 # Cap penetration to prevent bounce amplification from large depths
                 var penetration = -contact_dist[c]
                 if penetration > Scalar[DTYPE](0.01):
-                    penetration = Scalar[DTYPE](0.01)  # Max 1cm correction per step
+                    penetration = Scalar[DTYPE](
+                        0.01
+                    )  # Max 1cm correction per step
                 var correction = penetration - slop_val
                 if correction < Scalar[DTYPE](0):
                     correction = Scalar[DTYPE](0)
@@ -215,10 +253,16 @@ struct PGSSolver(ConstraintSolver):
         # Detect active joint limits and solve as unilateral constraints
         comptime MAX_LIMITS = _max_one[2 * NJOINT]()
         var limit_dof = InlineArray[Int, MAX_LIMITS](uninitialized=True)
-        var limit_sign = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
-        var limit_dist = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
+        var limit_sign = InlineArray[Scalar[DTYPE], MAX_LIMITS](
+            uninitialized=True
+        )
+        var limit_dist = InlineArray[Scalar[DTYPE], MAX_LIMITS](
+            uninitialized=True
+        )
         var K_limit = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
-        var lambda_limit = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
+        var lambda_limit = InlineArray[Scalar[DTYPE], MAX_LIMITS](
+            uninitialized=True
+        )
         for i in range(MAX_LIMITS):
             limit_dof[i] = 0
             limit_sign[i] = Scalar[DTYPE](0)
@@ -355,21 +399,33 @@ struct PGSSolver(ConstraintSolver):
             compute_contact_jacobian_row[
                 DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, CDOF_SIZE
             ](
-                model, data, cdof,
+                model,
+                data,
+                cdof,
                 contact.body_a,
                 contact.body_b,
-                contact.pos_x, contact.pos_y, contact.pos_z,
-                t1_x, t1_y, t1_z,
+                contact.pos_x,
+                contact.pos_y,
+                contact.pos_z,
+                t1_x,
+                t1_y,
+                t1_z,
                 J_t1_row,
             )
             compute_contact_jacobian_row[
                 DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, CDOF_SIZE
             ](
-                model, data, cdof,
+                model,
+                data,
+                cdof,
                 contact.body_a,
                 contact.body_b,
-                contact.pos_x, contact.pos_y, contact.pos_z,
-                t2_x, t2_y, t2_z,
+                contact.pos_x,
+                contact.pos_y,
+                contact.pos_z,
+                t2_x,
+                t2_y,
+                t2_z,
                 J_t2_row,
             )
 
@@ -401,7 +457,9 @@ struct PGSSolver(ConstraintSolver):
         for c in range(nc):
             if lambda_n[c] <= Scalar[DTYPE](0):
                 continue
-            if lambda_t1[c] != Scalar[DTYPE](0) or lambda_t2[c] != Scalar[DTYPE](0):
+            if lambda_t1[c] != Scalar[DTYPE](0) or lambda_t2[c] != Scalar[
+                DTYPE
+            ](0):
                 for i in range(NV):
                     var mi_j_sum: Scalar[DTYPE] = 0
                     for j_idx in range(NV):
@@ -495,43 +553,14 @@ struct PGSSolver(ConstraintSolver):
         Designed to work with small NV (e.g. 6 for hopper) so all data
         fits in registers/local memory.
         """
-        from ..gpu.constants import (
-            contacts_offset,
-            metadata_offset,
-            model_metadata_offset,
-            model_joint_offset,
-            CONTACT_SIZE,
-            CONTACT_IDX_BODY_A,
-            CONTACT_IDX_BODY_B,
-            CONTACT_IDX_POS_X,
-            CONTACT_IDX_POS_Y,
-            CONTACT_IDX_POS_Z,
-            CONTACT_IDX_NX,
-            CONTACT_IDX_NY,
-            CONTACT_IDX_NZ,
-            CONTACT_IDX_DIST,
-            CONTACT_IDX_IMPULSE_N,
-            CONTACT_IDX_IMPULSE_T1,
-            CONTACT_IDX_IMPULSE_T2,
-            META_IDX_NUM_CONTACTS,
-            MODEL_META_IDX_FRICTION,
-            MODEL_JOINT_SIZE,
-            JOINT_IDX_TYPE,
-            JOINT_IDX_QPOS_ADR,
-            JOINT_IDX_DOF_ADR,
-            JOINT_IDX_RANGE_MIN,
-            JOINT_IDX_RANGE_MAX,
-            JNT_HINGE,
-            JNT_SLIDE,
-        )
 
         var contacts_off = contacts_offset[NQ, NV, NBODY]()
         var meta_off = metadata_offset[NQ, NV, NBODY, MAX_CONTACTS]()
         var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
 
-        var num_contacts = Int(rebind[Scalar[DTYPE]](
-            state[env, meta_off + META_IDX_NUM_CONTACTS]
-        ))
+        var num_contacts = Int(
+            rebind[Scalar[DTYPE]](state[env, meta_off + META_IDX_NUM_CONTACTS])
+        )
         var friction_coef = rebind[Scalar[DTYPE]](
             model[0, model_meta_off + MODEL_META_IDX_FRICTION]
         )
@@ -539,10 +568,16 @@ struct PGSSolver(ConstraintSolver):
         # Detect joint limits from model/state buffers
         comptime MAX_LIMITS = _max_one[2 * NJOINT]()
         var limit_dof = InlineArray[Int, MAX_LIMITS](uninitialized=True)
-        var limit_sign = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
-        var limit_dist_arr = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
+        var limit_sign = InlineArray[Scalar[DTYPE], MAX_LIMITS](
+            uninitialized=True
+        )
+        var limit_dist_arr = InlineArray[Scalar[DTYPE], MAX_LIMITS](
+            uninitialized=True
+        )
         var K_limit = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
-        var lambda_limit = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
+        var lambda_limit = InlineArray[Scalar[DTYPE], MAX_LIMITS](
+            uninitialized=True
+        )
         for i in range(MAX_LIMITS):
             limit_dof[i] = 0
             limit_sign[i] = Scalar[DTYPE](0)
@@ -554,13 +589,23 @@ struct PGSSolver(ConstraintSolver):
         var qpos_off = 0  # qpos starts at offset 0 in state buffer
         for j in range(NJOINT):
             var j_off = model_joint_offset[NBODY](j)
-            var jtype = Int(rebind[Scalar[DTYPE]](model[0, j_off + JOINT_IDX_TYPE]))
+            var jtype = Int(
+                rebind[Scalar[DTYPE]](model[0, j_off + JOINT_IDX_TYPE])
+            )
             if jtype != JNT_HINGE and jtype != JNT_SLIDE:
                 continue
-            var dof = Int(rebind[Scalar[DTYPE]](model[0, j_off + JOINT_IDX_DOF_ADR]))
-            var qpos_adr = Int(rebind[Scalar[DTYPE]](model[0, j_off + JOINT_IDX_QPOS_ADR]))
-            var rmin = rebind[Scalar[DTYPE]](model[0, j_off + JOINT_IDX_RANGE_MIN])
-            var rmax = rebind[Scalar[DTYPE]](model[0, j_off + JOINT_IDX_RANGE_MAX])
+            var dof = Int(
+                rebind[Scalar[DTYPE]](model[0, j_off + JOINT_IDX_DOF_ADR])
+            )
+            var qpos_adr = Int(
+                rebind[Scalar[DTYPE]](model[0, j_off + JOINT_IDX_QPOS_ADR])
+            )
+            var rmin = rebind[Scalar[DTYPE]](
+                model[0, j_off + JOINT_IDX_RANGE_MIN]
+            )
+            var rmax = rebind[Scalar[DTYPE]](
+                model[0, j_off + JOINT_IDX_RANGE_MAX]
+            )
             if rmin < Scalar[DTYPE](-1e9) or rmax > Scalar[DTYPE](1e9):
                 continue
             var pos = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr])
@@ -634,9 +679,15 @@ struct PGSSolver(ConstraintSolver):
         # Phase 1: Read contact data and precompute K_n
         for c in range(nc):
             var c_off = contacts_off + c * CONTACT_SIZE
-            var body = Int(rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_BODY_A]))
-            var body_b = Int(rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_BODY_B]))
-            var dist = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_DIST])
+            var body = Int(
+                rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_BODY_A])
+            )
+            var body_b = Int(
+                rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_BODY_B])
+            )
+            var dist = rebind[Scalar[DTYPE]](
+                state[env, c_off + CONTACT_IDX_DIST]
+            )
 
             c_dist[c] = dist
             c_body[c] = body
@@ -645,21 +696,45 @@ struct PGSSolver(ConstraintSolver):
             if dist >= Scalar[DTYPE](0):
                 continue
 
-            c_px[c] = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_POS_X])
-            c_py[c] = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_POS_Y])
-            c_pz[c] = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_POS_Z])
+            c_px[c] = rebind[Scalar[DTYPE]](
+                state[env, c_off + CONTACT_IDX_POS_X]
+            )
+            c_py[c] = rebind[Scalar[DTYPE]](
+                state[env, c_off + CONTACT_IDX_POS_Y]
+            )
+            c_pz[c] = rebind[Scalar[DTYPE]](
+                state[env, c_off + CONTACT_IDX_POS_Z]
+            )
             c_nx[c] = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_NX])
             c_ny[c] = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_NY])
             c_nz[c] = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_NZ])
 
             # Compute normal Jacobian and effective mass
             compute_contact_jacobian_row_gpu[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-                STATE_SIZE, MODEL_SIZE, V_SIZE, CDOF_SIZE, BATCH,
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                STATE_SIZE,
+                MODEL_SIZE,
+                V_SIZE,
+                CDOF_SIZE,
+                BATCH,
             ](
-                env, state, model, cdof,
-                body, body_b, c_px[c], c_py[c], c_pz[c],
-                c_nx[c], c_ny[c], c_nz[c],
+                env,
+                state,
+                model,
+                cdof,
+                body,
+                body_b,
+                c_px[c],
+                c_py[c],
+                c_pz[c],
+                c_nx[c],
+                c_ny[c],
+                c_nz[c],
                 J_row,
             )
 
@@ -671,7 +746,9 @@ struct PGSSolver(ConstraintSolver):
             K_n[c] = k
 
             # Warm start
-            lambda_n[c] = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_IMPULSE_N])
+            lambda_n[c] = rebind[Scalar[DTYPE]](
+                state[env, c_off + CONTACT_IDX_IMPULSE_N]
+            )
 
             # Apply warm start
             if lambda_n[c] > Scalar[DTYPE](0):
@@ -686,12 +763,30 @@ struct PGSSolver(ConstraintSolver):
 
                 # Recompute J_row on-the-fly
                 compute_contact_jacobian_row_gpu[
-                    DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-                    STATE_SIZE, MODEL_SIZE, V_SIZE, CDOF_SIZE, BATCH,
+                    DTYPE,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    MAX_CONTACTS,
+                    STATE_SIZE,
+                    MODEL_SIZE,
+                    V_SIZE,
+                    CDOF_SIZE,
+                    BATCH,
                 ](
-                    env, state, model, cdof,
-                    c_body[c], c_body_b[c], c_px[c], c_py[c], c_pz[c],
-                    c_nx[c], c_ny[c], c_nz[c],
+                    env,
+                    state,
+                    model,
+                    cdof,
+                    c_body[c],
+                    c_body_b[c],
+                    c_px[c],
+                    c_py[c],
+                    c_pz[c],
+                    c_nx[c],
+                    c_ny[c],
+                    c_nz[c],
                     J_row,
                 )
 
@@ -790,7 +885,9 @@ struct PGSSolver(ConstraintSolver):
                 t1y[c] = Scalar[DTYPE](0)
                 t1z[c] = -nx
 
-            var t1_mag = sqrt(t1x[c] * t1x[c] + t1y[c] * t1y[c] + t1z[c] * t1z[c])
+            var t1_mag = sqrt(
+                t1x[c] * t1x[c] + t1y[c] * t1y[c] + t1z[c] * t1z[c]
+            )
             if t1_mag > Scalar[DTYPE](1e-10):
                 t1x[c] = t1x[c] / t1_mag
                 t1y[c] = t1y[c] / t1_mag
@@ -802,12 +899,30 @@ struct PGSSolver(ConstraintSolver):
 
             # Compute K_t1
             compute_contact_jacobian_row_gpu[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-                STATE_SIZE, MODEL_SIZE, V_SIZE, CDOF_SIZE, BATCH,
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                STATE_SIZE,
+                MODEL_SIZE,
+                V_SIZE,
+                CDOF_SIZE,
+                BATCH,
             ](
-                env, state, model, cdof,
-                c_body[c], c_body_b[c], c_px[c], c_py[c], c_pz[c],
-                t1x[c], t1y[c], t1z[c],
+                env,
+                state,
+                model,
+                cdof,
+                c_body[c],
+                c_body_b[c],
+                c_px[c],
+                c_py[c],
+                c_pz[c],
+                t1x[c],
+                t1y[c],
+                t1z[c],
                 J_row,
             )
             var k1: Scalar[DTYPE] = 0
@@ -819,12 +934,30 @@ struct PGSSolver(ConstraintSolver):
 
             # Compute K_t2
             compute_contact_jacobian_row_gpu[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-                STATE_SIZE, MODEL_SIZE, V_SIZE, CDOF_SIZE, BATCH,
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                STATE_SIZE,
+                MODEL_SIZE,
+                V_SIZE,
+                CDOF_SIZE,
+                BATCH,
             ](
-                env, state, model, cdof,
-                c_body[c], c_body_b[c], c_px[c], c_py[c], c_pz[c],
-                t2x[c], t2y[c], t2z[c],
+                env,
+                state,
+                model,
+                cdof,
+                c_body[c],
+                c_body_b[c],
+                c_px[c],
+                c_py[c],
+                c_pz[c],
+                t2x[c],
+                t2y[c],
+                t2z[c],
                 J_row,
             )
             var k2: Scalar[DTYPE] = 0
@@ -836,8 +969,12 @@ struct PGSSolver(ConstraintSolver):
 
             # Warm start tangent impulses
             var c_off = contacts_off + c * CONTACT_SIZE
-            lambda_t1[c] = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_IMPULSE_T1])
-            lambda_t2[c] = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_IMPULSE_T2])
+            lambda_t1[c] = rebind[Scalar[DTYPE]](
+                state[env, c_off + CONTACT_IDX_IMPULSE_T1]
+            )
+            lambda_t2[c] = rebind[Scalar[DTYPE]](
+                state[env, c_off + CONTACT_IDX_IMPULSE_T2]
+            )
 
         # Friction PGS iterations
         var J_t_row = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
@@ -851,12 +988,30 @@ struct PGSSolver(ConstraintSolver):
 
                 # Tangent 1
                 compute_contact_jacobian_row_gpu[
-                    DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-                    STATE_SIZE, MODEL_SIZE, V_SIZE, CDOF_SIZE, BATCH,
+                    DTYPE,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    MAX_CONTACTS,
+                    STATE_SIZE,
+                    MODEL_SIZE,
+                    V_SIZE,
+                    CDOF_SIZE,
+                    BATCH,
                 ](
-                    env, state, model, cdof,
-                    c_body[c], c_body_b[c], c_px[c], c_py[c], c_pz[c],
-                    t1x[c], t1y[c], t1z[c],
+                    env,
+                    state,
+                    model,
+                    cdof,
+                    c_body[c],
+                    c_body_b[c],
+                    c_px[c],
+                    c_py[c],
+                    c_pz[c],
+                    t1x[c],
+                    t1y[c],
+                    t1z[c],
                     J_t_row,
                 )
                 var v_t1: Scalar[DTYPE] = 0
@@ -869,12 +1024,30 @@ struct PGSSolver(ConstraintSolver):
 
                 # Tangent 2
                 compute_contact_jacobian_row_gpu[
-                    DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-                    STATE_SIZE, MODEL_SIZE, V_SIZE, CDOF_SIZE, BATCH,
+                    DTYPE,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    MAX_CONTACTS,
+                    STATE_SIZE,
+                    MODEL_SIZE,
+                    V_SIZE,
+                    CDOF_SIZE,
+                    BATCH,
                 ](
-                    env, state, model, cdof,
-                    c_body[c], c_body_b[c], c_px[c], c_py[c], c_pz[c],
-                    t2x[c], t2y[c], t2z[c],
+                    env,
+                    state,
+                    model,
+                    cdof,
+                    c_body[c],
+                    c_body_b[c],
+                    c_px[c],
+                    c_py[c],
+                    c_pz[c],
+                    t2x[c],
+                    t2y[c],
+                    t2z[c],
                     J_t_row,
                 )
                 var v_t2: Scalar[DTYPE] = 0
@@ -899,12 +1072,30 @@ struct PGSSolver(ConstraintSolver):
 
                 # Apply tangent 1 correction
                 compute_contact_jacobian_row_gpu[
-                    DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-                    STATE_SIZE, MODEL_SIZE, V_SIZE, CDOF_SIZE, BATCH,
+                    DTYPE,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    MAX_CONTACTS,
+                    STATE_SIZE,
+                    MODEL_SIZE,
+                    V_SIZE,
+                    CDOF_SIZE,
+                    BATCH,
                 ](
-                    env, state, model, cdof,
-                    c_body[c], c_body_b[c], c_px[c], c_py[c], c_pz[c],
-                    t1x[c], t1y[c], t1z[c],
+                    env,
+                    state,
+                    model,
+                    cdof,
+                    c_body[c],
+                    c_body_b[c],
+                    c_px[c],
+                    c_py[c],
+                    c_pz[c],
+                    t1x[c],
+                    t1y[c],
+                    t1z[c],
                     J_row,
                 )
                 for i in range(NV):
@@ -912,12 +1103,30 @@ struct PGSSolver(ConstraintSolver):
 
                 # Apply tangent 2 correction
                 compute_contact_jacobian_row_gpu[
-                    DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-                    STATE_SIZE, MODEL_SIZE, V_SIZE, CDOF_SIZE, BATCH,
+                    DTYPE,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    MAX_CONTACTS,
+                    STATE_SIZE,
+                    MODEL_SIZE,
+                    V_SIZE,
+                    CDOF_SIZE,
+                    BATCH,
                 ](
-                    env, state, model, cdof,
-                    c_body[c], c_body_b[c], c_px[c], c_py[c], c_pz[c],
-                    t2x[c], t2y[c], t2z[c],
+                    env,
+                    state,
+                    model,
+                    cdof,
+                    c_body[c],
+                    c_body_b[c],
+                    c_px[c],
+                    c_py[c],
+                    c_pz[c],
+                    t2x[c],
+                    t2y[c],
+                    t2z[c],
                     J_t_row,
                 )
                 for i in range(NV):

@@ -43,6 +43,9 @@ from ..gpu.constants import (
     MODEL_META_IDX_GRAVITY_X,
     MODEL_META_IDX_GRAVITY_Y,
     MODEL_META_IDX_GRAVITY_Z,
+)
+
+from ..joint_types import (
     JNT_FREE,
     JNT_BALL,
     JNT_SLIDE,

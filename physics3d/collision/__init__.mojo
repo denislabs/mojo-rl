@@ -14,6 +14,9 @@ from .collision_primitives import (
 )
 from .contact_detection import (
     detect_ground_contacts,
+    detect_ground_contacts_gpu,
     detect_body_body_contacts,
+    detect_body_body_contacts_gpu,
     normalize_qpos_quaternions,
+    normalize_qpos_quaternions_gpu,
 )

@@ -11,7 +11,7 @@ from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from gpu import thread_idx, block_idx, block_dim
 from layout import Layout, LayoutTensor
 
-from physics3d.gpu.kernels import (
+from physics3d.collision.contact_detection import (
     detect_ground_contacts_gpu,
     normalize_qpos_quaternions_gpu,
 )
@@ -52,6 +52,9 @@ from physics3d.gpu.constants import (
     JOINT_IDX_ARMATURE,
     JOINT_IDX_DAMPING,
     JOINT_IDX_STIFFNESS,
+)
+
+from ..joint_types import (
     JNT_SLIDE,
     JNT_HINGE,
 )
@@ -111,12 +114,16 @@ fn setup_minimal_model(model_host: HostBuffer[DTYPE]):
         model_host[off + BODY_IDX_IZZ] = Float32(0.01)
         model_host[off + BODY_IDX_RADIUS] = Float32(0.046)
         model_host[off + BODY_IDX_HALF_LENGTH] = Float32(0.1)
-        model_host[off + BODY_IDX_PARENT] = Float32(-1) if b == 0 else Float32(0)
+        model_host[off + BODY_IDX_PARENT] = Float32(-1) if b == 0 else Float32(
+            0
+        )
         model_host[off + BODY_IDX_QUAT_W] = Float32(1.0)
 
     for j in range(NJOINT):
         var off = model_joint_offset[NBODY](j)
-        model_host[off + JOINT_IDX_BODY_ID] = Float32(0) if j < 3 else Float32(j - 2)
+        model_host[off + JOINT_IDX_BODY_ID] = Float32(0) if j < 3 else Float32(
+            j - 2
+        )
         model_host[off + JOINT_IDX_QPOS_ADR] = Float32(j)
         model_host[off + JOINT_IDX_DOF_ADR] = Float32(j)
         if j < 2:  # slides
@@ -171,24 +178,51 @@ fn main() raises:
     # Test 1: FK + body velocities (simple GPU functions)
     # =====================================================
     print("\nTest 1: Forward kinematics GPU kernel...")
+
     @always_inline
     fn fk_kernel(
-        state: LayoutTensor[DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
-        model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+        state: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+        ],
+        model: LayoutTensor[
+            DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+        ],
     ):
         var env = Int(block_dim.x * block_idx.x + thread_idx.x)
         if env >= BATCH:
             return
         forward_kinematics_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
         ](env, state, model)
         compute_body_velocities_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
         ](env, state, model)
 
-    var st = LayoutTensor[DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin](state_buf.unsafe_ptr())
-    var md = LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin](model_buf.unsafe_ptr())
-    ctx.enqueue_function[fk_kernel, fk_kernel](st, md, grid_dim=(1,), block_dim=(1,))
+    var st = LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+    ](state_buf.unsafe_ptr())
+    var md = LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin](
+        model_buf.unsafe_ptr()
+    )
+    ctx.enqueue_function[fk_kernel, fk_kernel](
+        st, md, grid_dim=(1,), block_dim=(1,)
+    )
     ctx.synchronize()
     print("  PASSED")
 
@@ -196,21 +230,40 @@ fn main() raises:
     # Test 2: Contact detection
     # =====================================================
     print("Test 2: Contact detection GPU kernel...")
+
     @always_inline
     fn contact_kernel(
-        state: LayoutTensor[DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
-        model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+        state: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+        ],
+        model: LayoutTensor[
+            DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+        ],
     ):
         var env = Int(block_dim.x * block_idx.x + thread_idx.x)
         if env >= BATCH:
             return
         detect_ground_contacts_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
         ](env, state, model)
 
-    st = LayoutTensor[DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin](state_buf.unsafe_ptr())
-    md = LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin](model_buf.unsafe_ptr())
-    ctx.enqueue_function[contact_kernel, contact_kernel](st, md, grid_dim=(1,), block_dim=(1,))
+    st = LayoutTensor[DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin](
+        state_buf.unsafe_ptr()
+    )
+    md = LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin](
+        model_buf.unsafe_ptr()
+    )
+    ctx.enqueue_function[contact_kernel, contact_kernel](
+        st, md, grid_dim=(1,), block_dim=(1,)
+    )
     ctx.synchronize()
     print("  PASSED")
 
@@ -218,10 +271,15 @@ fn main() raises:
     # Test 3: Mass matrix (CRBA + LDL)
     # =====================================================
     print("Test 3: Mass matrix (CRBA + LDL) GPU kernel...")
+
     @always_inline
     fn mass_kernel(
-        state: LayoutTensor[DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
-        model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+        state: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+        ],
+        model: LayoutTensor[
+            DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+        ],
     ):
         var env = Int(block_dim.x * block_idx.x + thread_idx.x)
         if env >= BATCH:
@@ -232,24 +290,50 @@ fn main() raises:
             cdof[i] = Scalar[DTYPE](0)
 
         compute_cdof_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, CDOF_SIZE, BATCH
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            CDOF_SIZE,
+            BATCH,
         ](env, state, model, cdof)
 
         var crb = InlineArray[Scalar[DTYPE], CRB_SIZE](uninitialized=True)
         for i in range(CRB_SIZE):
             crb[i] = Scalar[DTYPE](0)
         compute_composite_inertia_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, CRB_SIZE, BATCH,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            CRB_SIZE,
+            BATCH,
         ](env, state, model, crb)
 
         var M = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
         for i in range(M_SIZE):
             M[i] = Scalar[DTYPE](0)
         compute_mass_matrix_full_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, M_SIZE, CDOF_SIZE, CRB_SIZE, BATCH,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            M_SIZE,
+            CDOF_SIZE,
+            CRB_SIZE,
+            BATCH,
         ](env, state, model, cdof, crb, M)
 
         # LDL factorize
@@ -263,9 +347,15 @@ fn main() raises:
             M_inv[i] = Scalar[DTYPE](0)
         compute_M_inv_from_ldl_gpu[DTYPE, NV, M_SIZE, V_SIZE](L, D, M_inv)
 
-    st = LayoutTensor[DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin](state_buf.unsafe_ptr())
-    md = LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin](model_buf.unsafe_ptr())
-    ctx.enqueue_function[mass_kernel, mass_kernel](st, md, grid_dim=(1,), block_dim=(1,))
+    st = LayoutTensor[DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin](
+        state_buf.unsafe_ptr()
+    )
+    md = LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin](
+        model_buf.unsafe_ptr()
+    )
+    ctx.enqueue_function[mass_kernel, mass_kernel](
+        st, md, grid_dim=(1,), block_dim=(1,)
+    )
     ctx.synchronize()
     print("  PASSED")
 
@@ -274,10 +364,15 @@ fn main() raises:
     # (The full pipeline in step_constraint_kernel_with_solver)
     # =====================================================
     print("Test 4: Combined pipeline (M + armature + bias + LDL + PGS)...")
+
     @always_inline
     fn combined_kernel(
-        state: LayoutTensor[DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
-        model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+        state: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+        ],
+        model: LayoutTensor[
+            DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+        ],
     ):
         var env = Int(block_dim.x * block_idx.x + thread_idx.x)
         if env >= BATCH:
@@ -293,21 +388,53 @@ fn main() raises:
 
         # FK
         forward_kinematics_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
         ](env, state, model)
         compute_body_velocities_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
         ](env, state, model)
 
         # Contacts
         detect_ground_contacts_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
         ](env, state, model)
 
         # Cdof
         compute_cdof_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, CDOF_SIZE, BATCH
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            CDOF_SIZE,
+            BATCH,
         ](env, state, model, cdof)
 
         # CRB
@@ -315,8 +442,16 @@ fn main() raises:
         for i in range(CRB_SIZE):
             crb[i] = Scalar[DTYPE](0)
         compute_composite_inertia_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, CRB_SIZE, BATCH,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            CRB_SIZE,
+            BATCH,
         ](env, state, model, crb)
 
         # Full M
@@ -324,19 +459,39 @@ fn main() raises:
         for i in range(M_SIZE):
             M[i] = Scalar[DTYPE](0)
         compute_mass_matrix_full_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, M_SIZE, CDOF_SIZE, CRB_SIZE, BATCH,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            M_SIZE,
+            CDOF_SIZE,
+            CRB_SIZE,
+            BATCH,
         ](env, state, model, cdof, crb, M)
 
         # Armature + implicit damping
         var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
-        var dt = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_TIMESTEP])
+        var dt = rebind[Scalar[DTYPE]](
+            model[0, model_meta_off + MODEL_META_IDX_TIMESTEP]
+        )
         for j in range(NJOINT):
             var joint_off = model_joint_offset[NBODY](j)
-            var dof_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR]))
-            var arm = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_ARMATURE])
-            var damp = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DAMPING])
-            M[dof_adr * NV + dof_adr] = M[dof_adr * NV + dof_adr] + arm + dt * damp
+            var dof_adr = Int(
+                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
+            )
+            var arm = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_ARMATURE]
+            )
+            var damp = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_DAMPING]
+            )
+            M[dof_adr * NV + dof_adr] = (
+                M[dof_adr * NV + dof_adr] + arm + dt * damp
+            )
 
         # LDL
         var L = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
@@ -351,7 +506,16 @@ fn main() raises:
 
         # Bias forces
         compute_bias_forces_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, V_SIZE, BATCH
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            V_SIZE,
+            BATCH,
         ](env, state, model, bias)
 
         # f_net + stiffness
@@ -363,11 +527,19 @@ fn main() raises:
 
         for j in range(NJOINT):
             var joint_off = model_joint_offset[NBODY](j)
-            var dof_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR]))
-            var qpos_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_QPOS_ADR]))
-            var stiff = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_STIFFNESS])
+            var dof_adr = Int(
+                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
+            )
+            var qpos_adr = Int(
+                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_QPOS_ADR])
+            )
+            var stiff = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_STIFFNESS]
+            )
             if stiff > Scalar[DTYPE](0):
-                var qpos_d = rebind[Scalar[DTYPE]](state[env, qpos_off2 + qpos_adr])
+                var qpos_d = rebind[Scalar[DTYPE]](
+                    state[env, qpos_off2 + qpos_adr]
+                )
                 f_net[dof_adr] = f_net[dof_adr] - stiff * qpos_d
 
         # LDL solve for qacc
@@ -392,18 +564,29 @@ fn main() raises:
         _ = cdof
         _ = qvel_pred
 
-    st = LayoutTensor[DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin](state_buf.unsafe_ptr())
-    md = LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin](model_buf.unsafe_ptr())
-    ctx.enqueue_function[combined_kernel, combined_kernel](st, md, grid_dim=(1,), block_dim=(1,))
+    st = LayoutTensor[DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin](
+        state_buf.unsafe_ptr()
+    )
+    md = LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin](
+        model_buf.unsafe_ptr()
+    )
+    ctx.enqueue_function[combined_kernel, combined_kernel](
+        st, md, grid_dim=(1,), block_dim=(1,)
+    )
     ctx.synchronize()
     print("  PASSED")
 
     # Test 5: PGS solver alone
     print("Test 5: PGS solver alone (separate kernel)...")
+
     @always_inline
     fn pgs_only_kernel(
-        state: LayoutTensor[DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
-        model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+        state: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+        ],
+        model: LayoutTensor[
+            DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+        ],
     ):
         var env = Int(block_dim.x * block_idx.x + thread_idx.x)
         if env >= BATCH:
@@ -425,16 +608,34 @@ fn main() raises:
             qvel_pred[i] = Scalar[DTYPE](0)
 
         var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
-        var dt = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_TIMESTEP])
+        var dt = rebind[Scalar[DTYPE]](
+            model[0, model_meta_off + MODEL_META_IDX_TIMESTEP]
+        )
 
         PGSSolver.solve_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, V_SIZE, M_SIZE, CDOF_SIZE, BATCH,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            V_SIZE,
+            M_SIZE,
+            CDOF_SIZE,
+            BATCH,
         ](env, state, model, M_inv, cdof, qvel_pred, dt)
 
-    st = LayoutTensor[DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin](state_buf.unsafe_ptr())
-    md = LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin](model_buf.unsafe_ptr())
-    ctx.enqueue_function[pgs_only_kernel, pgs_only_kernel](st, md, grid_dim=(1,), block_dim=(1,))
+    st = LayoutTensor[DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin](
+        state_buf.unsafe_ptr()
+    )
+    md = LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin](
+        model_buf.unsafe_ptr()
+    )
+    ctx.enqueue_function[pgs_only_kernel, pgs_only_kernel](
+        st, md, grid_dim=(1,), block_dim=(1,)
+    )
     ctx.synchronize()
     print("  PASSED")
 
