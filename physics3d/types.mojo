@@ -112,6 +112,13 @@ struct Model[
     var ground_z: Scalar[Self.DTYPE]
     var friction: Scalar[Self.DTYPE]
 
+    # MuJoCo solref/solimp impedance parameters (contact)
+    var solref_contact: InlineArray[Scalar[Self.DTYPE], 2]  # [timeconst, dampratio]
+    var solimp_contact: InlineArray[Scalar[Self.DTYPE], 3]  # [dmin, dmax, width]
+    # MuJoCo solref/solimp impedance parameters (joint limits)
+    var solref_limit: InlineArray[Scalar[Self.DTYPE], 2]  # [timeconst, dampratio]
+    var solimp_limit: InlineArray[Scalar[Self.DTYPE], 3]  # [dmin, dmax, width]
+
     # Per-body properties
     var body_mass: InlineArray[Scalar[Self.DTYPE], Self.NBODY]
     var body_inv_mass: InlineArray[Scalar[Self.DTYPE], Self.NBODY]
@@ -153,6 +160,22 @@ struct Model[
         self.timestep = timestep
         self.ground_z = ground_z
         self.friction = friction
+
+        # MuJoCo global defaults: solref=[0.02, 1.0], solimp=[0.9, 0.95, 0.001]
+        self.solref_contact = InlineArray[Scalar[Self.DTYPE], 2](uninitialized=True)
+        self.solref_contact[0] = Scalar[Self.DTYPE](0.02)
+        self.solref_contact[1] = Scalar[Self.DTYPE](1.0)
+        self.solimp_contact = InlineArray[Scalar[Self.DTYPE], 3](uninitialized=True)
+        self.solimp_contact[0] = Scalar[Self.DTYPE](0.9)
+        self.solimp_contact[1] = Scalar[Self.DTYPE](0.95)
+        self.solimp_contact[2] = Scalar[Self.DTYPE](0.001)
+        self.solref_limit = InlineArray[Scalar[Self.DTYPE], 2](uninitialized=True)
+        self.solref_limit[0] = Scalar[Self.DTYPE](0.02)
+        self.solref_limit[1] = Scalar[Self.DTYPE](1.0)
+        self.solimp_limit = InlineArray[Scalar[Self.DTYPE], 3](uninitialized=True)
+        self.solimp_limit[0] = Scalar[Self.DTYPE](0.9)
+        self.solimp_limit[1] = Scalar[Self.DTYPE](0.95)
+        self.solimp_limit[2] = Scalar[Self.DTYPE](0.001)
 
         # Initialize body arrays
         self.body_mass = InlineArray[Scalar[Self.DTYPE], Self.NBODY](

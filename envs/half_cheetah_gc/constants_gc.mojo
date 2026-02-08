@@ -282,6 +282,18 @@ struct HalfCheetahGCConstants[DTYPE: DType = DType.float64]:
     # Contact physics
     comptime FRICTION: Scalar[Self.DTYPE] = 0.9
 
+    # MuJoCo solref/solimp (from half_cheetah.xml)
+    comptime SOLREF_CONTACT_0: Scalar[Self.DTYPE] = 0.02  # timeconst
+    comptime SOLREF_CONTACT_1: Scalar[Self.DTYPE] = 1.0   # dampratio
+    comptime SOLIMP_CONTACT_0: Scalar[Self.DTYPE] = 0.0   # dmin
+    comptime SOLIMP_CONTACT_1: Scalar[Self.DTYPE] = 0.8   # dmax
+    comptime SOLIMP_CONTACT_2: Scalar[Self.DTYPE] = 0.01  # width
+    comptime SOLREF_LIMIT_0: Scalar[Self.DTYPE] = 0.02    # timeconst
+    comptime SOLREF_LIMIT_1: Scalar[Self.DTYPE] = 1.0     # dampratio
+    comptime SOLIMP_LIMIT_0: Scalar[Self.DTYPE] = 0.0     # dmin
+    comptime SOLIMP_LIMIT_1: Scalar[Self.DTYPE] = 0.8     # dmax
+    comptime SOLIMP_LIMIT_2: Scalar[Self.DTYPE] = 0.03    # width
+
     # ==========================================================================
     # Body Geometry (from MuJoCo Half Cheetah XML)
     # ==========================================================================

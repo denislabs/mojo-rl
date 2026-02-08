@@ -101,6 +101,16 @@ from physics3d.gpu.constants import (
     MODEL_META_IDX_TIMESTEP,
     MODEL_META_IDX_GROUND_Z,
     MODEL_META_IDX_FRICTION,
+    MODEL_META_IDX_SOLREF_CONTACT_0,
+    MODEL_META_IDX_SOLREF_CONTACT_1,
+    MODEL_META_IDX_SOLIMP_CONTACT_0,
+    MODEL_META_IDX_SOLIMP_CONTACT_1,
+    MODEL_META_IDX_SOLIMP_CONTACT_2,
+    MODEL_META_IDX_SOLREF_LIMIT_0,
+    MODEL_META_IDX_SOLREF_LIMIT_1,
+    MODEL_META_IDX_SOLIMP_LIMIT_0,
+    MODEL_META_IDX_SOLIMP_LIMIT_1,
+    MODEL_META_IDX_SOLIMP_LIMIT_2,
     model_body_offset,
     model_joint_offset,
     model_metadata_offset,
@@ -303,6 +313,18 @@ struct HopperGC[
             ground_z=Scalar[Self.DTYPE](0.0),
             friction=friction,
         )
+
+        # Set solref/solimp from MuJoCo hopper.xml
+        self.model.solref_contact[0] = C.SOLREF_CONTACT_0
+        self.model.solref_contact[1] = C.SOLREF_CONTACT_1
+        self.model.solimp_contact[0] = C.SOLIMP_CONTACT_0
+        self.model.solimp_contact[1] = C.SOLIMP_CONTACT_1
+        self.model.solimp_contact[2] = C.SOLIMP_CONTACT_2
+        self.model.solref_limit[0] = C.SOLREF_LIMIT_0
+        self.model.solref_limit[1] = C.SOLREF_LIMIT_1
+        self.model.solimp_limit[0] = C.SOLIMP_LIMIT_0
+        self.model.solimp_limit[1] = C.SOLIMP_LIMIT_1
+        self.model.solimp_limit[2] = C.SOLIMP_LIMIT_2
 
         # Body 0: Torso
         var torso_inertia = compute_capsule_inertia(
@@ -1847,6 +1869,18 @@ struct HopperGC[
         model_host[meta + MODEL_META_IDX_TIMESTEP] = C.DT
         model_host[meta + MODEL_META_IDX_GROUND_Z] = Scalar[gpu_dtype](0.0)
         model_host[meta + MODEL_META_IDX_FRICTION] = C.FRICTION
+        # solref/solimp contact
+        model_host[meta + MODEL_META_IDX_SOLREF_CONTACT_0] = C.SOLREF_CONTACT_0
+        model_host[meta + MODEL_META_IDX_SOLREF_CONTACT_1] = C.SOLREF_CONTACT_1
+        model_host[meta + MODEL_META_IDX_SOLIMP_CONTACT_0] = C.SOLIMP_CONTACT_0
+        model_host[meta + MODEL_META_IDX_SOLIMP_CONTACT_1] = C.SOLIMP_CONTACT_1
+        model_host[meta + MODEL_META_IDX_SOLIMP_CONTACT_2] = C.SOLIMP_CONTACT_2
+        # solref/solimp limit
+        model_host[meta + MODEL_META_IDX_SOLREF_LIMIT_0] = C.SOLREF_LIMIT_0
+        model_host[meta + MODEL_META_IDX_SOLREF_LIMIT_1] = C.SOLREF_LIMIT_1
+        model_host[meta + MODEL_META_IDX_SOLIMP_LIMIT_0] = C.SOLIMP_LIMIT_0
+        model_host[meta + MODEL_META_IDX_SOLIMP_LIMIT_1] = C.SOLIMP_LIMIT_1
+        model_host[meta + MODEL_META_IDX_SOLIMP_LIMIT_2] = C.SOLIMP_LIMIT_2
 
         # =================================================================
         # Curriculum Parameters (initialize to MuJoCo defaults)

@@ -48,6 +48,17 @@ from ..gpu.constants import (
     CONTACT_IDX_IMPULSE_T2,
     META_IDX_NUM_CONTACTS,
     MODEL_META_IDX_FRICTION,
+    MODEL_META_IDX_TIMESTEP,
+    MODEL_META_IDX_SOLREF_CONTACT_0,
+    MODEL_META_IDX_SOLREF_CONTACT_1,
+    MODEL_META_IDX_SOLIMP_CONTACT_0,
+    MODEL_META_IDX_SOLIMP_CONTACT_1,
+    MODEL_META_IDX_SOLIMP_CONTACT_2,
+    MODEL_META_IDX_SOLREF_LIMIT_0,
+    MODEL_META_IDX_SOLREF_LIMIT_1,
+    MODEL_META_IDX_SOLIMP_LIMIT_0,
+    MODEL_META_IDX_SOLIMP_LIMIT_1,
+    MODEL_META_IDX_SOLIMP_LIMIT_2,
     MODEL_JOINT_SIZE,
     JOINT_IDX_TYPE,
     JOINT_IDX_QPOS_ADR,
@@ -68,8 +79,6 @@ comptime NEWTON_TOLERANCE: Float64 = 1e-8
 comptime LINESEARCH_ITERATIONS: Int = 20
 comptime LINESEARCH_BETA: Float64 = 0.5  # Step shrink factor
 comptime LINESEARCH_ARMIJO: Float64 = 1e-4  # Armijo sufficient decrease
-comptime BAUMGARTE_NEWTON: Float64 = 0.8
-comptime SLOP_NEWTON: Float64 = 0.0001
 # Friction uses PGS iterations
 comptime FRICTION_PGS_ITERATIONS_NEWTON: Int = 30
 
@@ -213,8 +222,19 @@ struct NewtonSolver(ConstraintSolver):
 
         # Phase 1: Precompute contact data
         var J_row = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-        var baumgarte_coef = Scalar[DTYPE](BAUMGARTE_NEWTON)
-        var slop_val = Scalar[DTYPE](SLOP_NEWTON)
+
+        # MuJoCo solref/solimp impedance model for contacts
+        var sr_tc = model.solref_contact[0]
+        var sr_dr = model.solref_contact[1]
+        var si_dmin = model.solimp_contact[0]
+        var si_dmax = model.solimp_contact[1]
+        var si_width = model.solimp_contact[2]
+        if si_width < Scalar[DTYPE](1e-6):
+            si_width = Scalar[DTYPE](1e-6)
+        if si_dmax < Scalar[DTYPE](1e-4):
+            si_dmax = Scalar[DTYPE](1e-4)
+        var inv_tc_dr = Scalar[DTYPE](1.0) / (sr_tc * sr_dr)
+        var b_vel_coef = Scalar[DTYPE](2.0) * sr_dr * dt / (si_dmax * sr_tc)
 
         for c in range(nc):
             var contact = data.contacts[c]
@@ -259,14 +279,17 @@ struct NewtonSolver(ConstraintSolver):
                 k = Scalar[DTYPE](1e-10)
             K_n[c] = k
 
-            # RHS: velocity + Baumgarte bias
+            # MuJoCo impedance model for RHS
             var penetration = -contact.dist
-            if penetration > Scalar[DTYPE](0.01):
-                penetration = Scalar[DTYPE](0.01)
-            var correction = penetration - slop_val
-            if correction < Scalar[DTYPE](0):
-                correction = Scalar[DTYPE](0)
-            var bias = -baumgarte_coef * correction / dt
+            if penetration > Scalar[DTYPE](0.05):
+                penetration = Scalar[DTYPE](0.05)
+            var x = penetration / si_width
+            if x > Scalar[DTYPE](1.0):
+                x = Scalar[DTYPE](1.0)
+            var imp = si_dmin + (Scalar[DTYPE](3.0) * x * x - Scalar[DTYPE](2.0) * x * x * x) * (si_dmax - si_dmin)
+            if imp < Scalar[DTYPE](0.2):
+                imp = Scalar[DTYPE](0.2)
+            var bias = -imp * penetration * inv_tc_dr - b_vel_coef * v_n
             rhs[c] = v_n + bias
 
             # Warm start
@@ -477,8 +500,18 @@ struct NewtonSolver(ConstraintSolver):
 
         # Phase 2b: Joint limit constraints (PGS)
         if num_limits > 0:
-            var baumgarte_lim = Scalar[DTYPE](BAUMGARTE_NEWTON)
-            var slop_lim = Scalar[DTYPE](SLOP_NEWTON)
+            var lr_tc = model.solref_limit[0]
+            var lr_dr = model.solref_limit[1]
+            var li_dmin = model.solimp_limit[0]
+            var li_dmax = model.solimp_limit[1]
+            var li_width = model.solimp_limit[2]
+            if li_width < Scalar[DTYPE](1e-6):
+                li_width = Scalar[DTYPE](1e-6)
+            if li_dmax < Scalar[DTYPE](1e-4):
+                li_dmax = Scalar[DTYPE](1e-4)
+            var l_inv_tc_dr = Scalar[DTYPE](1.0) / (lr_tc * lr_dr)
+            var l_b_vel_coef = Scalar[DTYPE](2.0) * lr_dr * dt / (li_dmax * lr_tc)
+
             for _ in range(NEWTON_ITERATIONS):
                 for l in range(num_limits):
                     var dof_l = limit_dof[l]
@@ -487,13 +520,16 @@ struct NewtonSolver(ConstraintSolver):
                     var penetration = -limit_dist_arr[l]
                     if penetration < Scalar[DTYPE](0):
                         penetration = Scalar[DTYPE](0)
-                    if penetration > Scalar[DTYPE](0.01):
-                        penetration = Scalar[DTYPE](0.01)
-                    var correction = penetration - slop_lim
-                    if correction < Scalar[DTYPE](0):
-                        correction = Scalar[DTYPE](0)
-                    var bias = -baumgarte_lim * correction / dt
-                    var delta_l = -(v_limit + bias) / K_limit[l]
+                    if penetration > Scalar[DTYPE](0.05):
+                        penetration = Scalar[DTYPE](0.05)
+                    var x_lim = penetration / li_width
+                    if x_lim > Scalar[DTYPE](1.0):
+                        x_lim = Scalar[DTYPE](1.0)
+                    var imp_lim = li_dmin + (Scalar[DTYPE](3.0) * x_lim * x_lim - Scalar[DTYPE](2.0) * x_lim * x_lim * x_lim) * (li_dmax - li_dmin)
+                    if imp_lim < Scalar[DTYPE](0.2):
+                        imp_lim = Scalar[DTYPE](0.2)
+                    var bias = -imp_lim * penetration * l_inv_tc_dr - l_b_vel_coef * v_limit
+                    var delta_l = -(v_limit + bias) / (K_limit[l] / imp_lim)
                     var old_lam = lambda_limit[l]
                     lambda_limit[l] = lambda_limit[l] + delta_l
                     if lambda_limit[l] < Scalar[DTYPE](0):
@@ -638,8 +674,18 @@ struct NewtonSolver(ConstraintSolver):
         if nc > MAX_CONTACTS:
             nc = MAX_CONTACTS
 
-        var baumgarte_coef = Scalar[DTYPE](BAUMGARTE_NEWTON)
-        var slop_val = Scalar[DTYPE](SLOP_NEWTON)
+        # Read solref/solimp contact from model buffer
+        var sr_tc = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_SOLREF_CONTACT_0])
+        var sr_dr = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_SOLREF_CONTACT_1])
+        var si_dmin = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_0])
+        var si_dmax = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_1])
+        var si_width = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_2])
+        if si_width < Scalar[DTYPE](1e-6):
+            si_width = Scalar[DTYPE](1e-6)
+        if si_dmax < Scalar[DTYPE](1e-4):
+            si_dmax = Scalar[DTYPE](1e-4)
+        var inv_tc_dr = Scalar[DTYPE](1.0) / (sr_tc * sr_dr)
+        var b_vel_coef = Scalar[DTYPE](2.0) * sr_dr * dt / (si_dmax * sr_tc)
 
         comptime MC = _max_one[MAX_CONTACTS]()
         comptime JN_SIZE = _max_one[MAX_CONTACTS * NV]()
@@ -758,13 +804,17 @@ struct NewtonSolver(ConstraintSolver):
                 k = Scalar[DTYPE](1e-10)
             K_n[c] = k
 
+            # MuJoCo impedance model for RHS
             var penetration = -dist
-            if penetration > Scalar[DTYPE](0.01):
-                penetration = Scalar[DTYPE](0.01)
-            var correction = penetration - slop_val
-            if correction < Scalar[DTYPE](0):
-                correction = Scalar[DTYPE](0)
-            var bias = -baumgarte_coef * correction / dt
+            if penetration > Scalar[DTYPE](0.05):
+                penetration = Scalar[DTYPE](0.05)
+            var x = penetration / si_width
+            if x > Scalar[DTYPE](1.0):
+                x = Scalar[DTYPE](1.0)
+            var imp = si_dmin + (Scalar[DTYPE](3.0) * x * x - Scalar[DTYPE](2.0) * x * x * x) * (si_dmax - si_dmin)
+            if imp < Scalar[DTYPE](0.2):
+                imp = Scalar[DTYPE](0.2)
+            var bias = -imp * penetration * inv_tc_dr - b_vel_coef * v_n
             rhs[c] = v_n + bias
 
             lambda_n[c] = rebind[Scalar[DTYPE]](
@@ -950,8 +1000,18 @@ struct NewtonSolver(ConstraintSolver):
 
         # Phase 2b: Joint limit constraints (PGS)
         if num_limits > 0:
-            var baumgarte_lim = Scalar[DTYPE](BAUMGARTE_NEWTON)
-            var slop_lim = Scalar[DTYPE](SLOP_NEWTON)
+            var lr_tc = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_SOLREF_LIMIT_0])
+            var lr_dr = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_SOLREF_LIMIT_1])
+            var li_dmin = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_SOLIMP_LIMIT_0])
+            var li_dmax = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_SOLIMP_LIMIT_1])
+            var li_width = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_SOLIMP_LIMIT_2])
+            if li_width < Scalar[DTYPE](1e-6):
+                li_width = Scalar[DTYPE](1e-6)
+            if li_dmax < Scalar[DTYPE](1e-4):
+                li_dmax = Scalar[DTYPE](1e-4)
+            var l_inv_tc_dr = Scalar[DTYPE](1.0) / (lr_tc * lr_dr)
+            var l_b_vel_coef = Scalar[DTYPE](2.0) * lr_dr * dt / (li_dmax * lr_tc)
+
             for _ in range(NEWTON_ITERATIONS):
                 for l in range(num_limits):
                     var dof_l = limit_dof[l]
@@ -960,19 +1020,21 @@ struct NewtonSolver(ConstraintSolver):
                     var penetration = -limit_dist_arr[l]
                     if penetration < Scalar[DTYPE](0):
                         penetration = Scalar[DTYPE](0)
-                    if penetration > Scalar[DTYPE](0.01):
-                        penetration = Scalar[DTYPE](0.01)
-                    var correction = penetration - slop_lim
-                    if correction < Scalar[DTYPE](0):
-                        correction = Scalar[DTYPE](0)
-                    var bias = -baumgarte_lim * correction / dt
-                    var delta_l = -(v_limit + bias) / K_limit[l]
+                    if penetration > Scalar[DTYPE](0.05):
+                        penetration = Scalar[DTYPE](0.05)
+                    var x_lim = penetration / li_width
+                    if x_lim > Scalar[DTYPE](1.0):
+                        x_lim = Scalar[DTYPE](1.0)
+                    var imp_lim = li_dmin + (Scalar[DTYPE](3.0) * x_lim * x_lim - Scalar[DTYPE](2.0) * x_lim * x_lim * x_lim) * (li_dmax - li_dmin)
+                    if imp_lim < Scalar[DTYPE](0.2):
+                        imp_lim = Scalar[DTYPE](0.2)
+                    var bias = -imp_lim * penetration * l_inv_tc_dr - l_b_vel_coef * v_limit
+                    var delta_l = -(v_limit + bias) / (K_limit[l] / imp_lim)
                     var old_lam = lambda_limit[l]
                     lambda_limit[l] = lambda_limit[l] + delta_l
                     if lambda_limit[l] < Scalar[DTYPE](0):
                         lambda_limit[l] = Scalar[DTYPE](0)
                     var actual_l = lambda_limit[l] - old_lam
-                    # Apply: qvel[i] += M_inv[i, dof] * sign * actual
                     for i in range(NV):
                         qvel[i] += M_inv[i * NV + dof_l] * sign * actual_l
 

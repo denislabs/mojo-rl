@@ -13,7 +13,8 @@ Model buffer (static, same for all environments):
     pos(3), quat(4), parent, geom_type, radius, half_length, half_x/y/z]
   Per joint (MODEL_JOINT_SIZE=16): [type, body_id, qpos_adr, dof_adr,
     pos(3), axis(3), tau_limit, range_min/max, armature, damping, stiffness]
-  Metadata (MODEL_META_SIZE=8): [NBODY, NJOINT, gravity(3), timestep, ground_z, friction]
+  Metadata (MODEL_META_SIZE=18): [NBODY, NJOINT, gravity(3), timestep, ground_z, friction,
+    solref_contact(2), solimp_contact(3), solref_limit(2), solimp_limit(3)]
   Curriculum (MODEL_CURRICULUM_SIZE=8): [up to 8 curriculum parameters]
 """
 
@@ -32,8 +33,6 @@ comptime TILE: Int = 8  # Tile size for 2D operations
 comptime DEFAULT_GRAVITY_Z: Float32 = -9.81
 comptime DEFAULT_TIMESTEP: Float32 = 0.01
 comptime DEFAULT_RESTITUTION: Float32 = 0.0
-comptime DEFAULT_BAUMGARTE: Float32 = 0.2
-comptime DEFAULT_SLOP: Float32 = 0.001
 
 
 # =============================================================================
@@ -233,7 +232,7 @@ fn model_joint_offset[NBODY: Int](joint_idx: Int) -> Int:
 # Model Buffer Layout - Global Metadata
 # =============================================================================
 
-comptime MODEL_META_SIZE: Int = 8
+comptime MODEL_META_SIZE: Int = 18
 
 comptime MODEL_META_IDX_NBODY: Int = 0
 comptime MODEL_META_IDX_NJOINT: Int = 1
@@ -243,6 +242,18 @@ comptime MODEL_META_IDX_GRAVITY_Z: Int = 4
 comptime MODEL_META_IDX_TIMESTEP: Int = 5
 comptime MODEL_META_IDX_GROUND_Z: Int = 6
 comptime MODEL_META_IDX_FRICTION: Int = 7
+# solref/solimp contact parameters (MuJoCo impedance model)
+comptime MODEL_META_IDX_SOLREF_CONTACT_0: Int = 8   # timeconst
+comptime MODEL_META_IDX_SOLREF_CONTACT_1: Int = 9   # dampratio
+comptime MODEL_META_IDX_SOLIMP_CONTACT_0: Int = 10  # dmin
+comptime MODEL_META_IDX_SOLIMP_CONTACT_1: Int = 11  # dmax
+comptime MODEL_META_IDX_SOLIMP_CONTACT_2: Int = 12  # width
+# solref/solimp limit parameters (MuJoCo impedance model)
+comptime MODEL_META_IDX_SOLREF_LIMIT_0: Int = 13    # timeconst
+comptime MODEL_META_IDX_SOLREF_LIMIT_1: Int = 14    # dampratio
+comptime MODEL_META_IDX_SOLIMP_LIMIT_0: Int = 15    # dmin
+comptime MODEL_META_IDX_SOLIMP_LIMIT_1: Int = 16    # dmax
+comptime MODEL_META_IDX_SOLIMP_LIMIT_2: Int = 17    # width
 
 
 fn model_metadata_offset[NBODY: Int, NJOINT: Int]() -> Int:
