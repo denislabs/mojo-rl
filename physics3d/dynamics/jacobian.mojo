@@ -30,7 +30,31 @@ from ..gpu.constants import (
     JOINT_IDX_DOF_ADR,
     MODEL_META_IDX_NJOINT,
 )
-
+from ..gpu.constants import (
+    xpos_offset,
+    xquat_offset,
+    model_body_offset,
+    model_joint_offset,
+    model_metadata_offset,
+    ws_cdof_offset,
+    BODY_IDX_PARENT,
+    JOINT_IDX_TYPE,
+    JOINT_IDX_BODY_ID,
+    JOINT_IDX_DOF_ADR,
+    JOINT_IDX_POS_X,
+    JOINT_IDX_POS_Y,
+    JOINT_IDX_POS_Z,
+    JOINT_IDX_AXIS_X,
+    JOINT_IDX_AXIS_Y,
+    JOINT_IDX_AXIS_Z,
+    MODEL_META_IDX_NJOINT,
+)
+from ..joint_types import (
+    JNT_FREE,
+    JNT_HINGE,
+    JNT_SLIDE,
+)
+from ..kinematics.quat_math import gpu_quat_rotate
 from ..joint_types import (
     JNT_FREE,
     JNT_BALL,
@@ -555,7 +579,7 @@ fn compute_composite_inertia_gpu[
     )
 
     # Derive crb pointer from workspace (MutAnyOrigin)
-    var crb_ptr = workspace.ptr + env * WS_SIZE + ws_crb_offset[NV]()
+    comptime crb_idx = ws_crb_offset[NV]()
 
     var xpos_off = xpos_offset[NQ, NV, NBODY]()
     var xquat_off = xquat_offset[NQ, NV, NBODY]()
@@ -563,61 +587,61 @@ fn compute_composite_inertia_gpu[
     # Initialize each body's own spatial inertia (rotated to world frame)
     for b in range(NBODY):
         var body_off = model_body_offset(b)
-        var mass = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_MASS])
-        var Ixx_local = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IXX])
-        var Iyy_local = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IYY])
-        var Izz_local = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IZZ])
+        var mass = model[0, body_off + BODY_IDX_MASS]
+        var Ixx_local = model[0, body_off + BODY_IDX_IXX]
+        var Iyy_local = model[0, body_off + BODY_IDX_IYY]
+        var Izz_local = model[0, body_off + BODY_IDX_IZZ]
 
         # Get body quaternion (world orientation)
-        var qx = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 0])
-        var qy = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 1])
-        var qz = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 2])
-        var qw = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 3])
+        var qx = state[env, xquat_off + b * 4 + 0]
+        var qy = state[env, xquat_off + b * 4 + 1]
+        var qz = state[env, xquat_off + b * 4 + 2]
+        var qw = state[env, xquat_off + b * 4 + 3]
 
         # Rotation matrix columns from quaternion
-        var r00 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qy * qy + qz * qz)
-        var r10 = Scalar[DTYPE](2) * (qx * qy + qw * qz)
-        var r20 = Scalar[DTYPE](2) * (qx * qz - qw * qy)
+        var r00 = 1 - 2 * (qy * qy + qz * qz)
+        var r10 = 2 * (qx * qy + qw * qz)
+        var r20 = 2 * (qx * qz - qw * qy)
 
-        var r01 = Scalar[DTYPE](2) * (qx * qy - qw * qz)
-        var r11 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qx * qx + qz * qz)
-        var r21 = Scalar[DTYPE](2) * (qy * qz + qw * qx)
+        var r01 = 2 * (qx * qy - qw * qz)
+        var r11 = 1 - 2 * (qx * qx + qz * qz)
+        var r21 = 2 * (qy * qz + qw * qx)
 
-        var r02 = Scalar[DTYPE](2) * (qx * qz + qw * qy)
-        var r12 = Scalar[DTYPE](2) * (qy * qz - qw * qx)
-        var r22 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qx * qx + qy * qy)
+        var r02 = 2 * (qx * qz + qw * qy)
+        var r12 = 2 * (qy * qz - qw * qx)
+        var r22 = 1 - 2 * (qx * qx + qy * qy)
 
-        (crb_ptr + b * 10 + 0)[] = mass
-        (crb_ptr + b * 10 + 1)[] = Scalar[DTYPE](0)
-        (crb_ptr + b * 10 + 2)[] = Scalar[DTYPE](0)
-        (crb_ptr + b * 10 + 3)[] = Scalar[DTYPE](0)
+        workspace[env, crb_idx + b * 10 + 0] = mass
+        workspace[env, crb_idx + b * 10 + 1] = 0
+        workspace[env, crb_idx + b * 10 + 2] = 0
+        workspace[env, crb_idx + b * 10 + 3] = 0
         # I_world = R @ diag(Ixx, Iyy, Izz) @ R^T
-        (crb_ptr + b * 10 + 4)[] = (
+        workspace[env, crb_idx + b * 10 + 4] = (
             Ixx_local * r00 * r00
             + Iyy_local * r01 * r01
             + Izz_local * r02 * r02
         )
-        (crb_ptr + b * 10 + 5)[] = (
+        workspace[env, crb_idx + b * 10 + 5] = (
             Ixx_local * r10 * r10
             + Iyy_local * r11 * r11
             + Izz_local * r12 * r12
         )
-        (crb_ptr + b * 10 + 6)[] = (
+        workspace[env, crb_idx + b * 10 + 6] = (
             Ixx_local * r20 * r20
             + Iyy_local * r21 * r21
             + Izz_local * r22 * r22
         )
-        (crb_ptr + b * 10 + 7)[] = (
+        workspace[env, crb_idx + b * 10 + 7] = (
             Ixx_local * r00 * r10
             + Iyy_local * r01 * r11
             + Izz_local * r02 * r12
         )
-        (crb_ptr + b * 10 + 8)[] = (
+        workspace[env, crb_idx + b * 10 + 8] = (
             Ixx_local * r00 * r20
             + Iyy_local * r01 * r21
             + Izz_local * r02 * r22
         )
-        (crb_ptr + b * 10 + 9)[] = (
+        workspace[env, crb_idx + b * 10 + 9] = (
             Ixx_local * r10 * r20
             + Iyy_local * r11 * r21
             + Izz_local * r12 * r22
@@ -626,51 +650,52 @@ fn compute_composite_inertia_gpu[
     # Bottom-up accumulation
     for b in range(NBODY - 1, 0, -1):
         var body_off = model_body_offset(b)
-        var parent = Int(
-            rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT])
-        )
+        var parent = Int(model[0, body_off + BODY_IDX_PARENT])
         if parent < 0:
             continue
 
-        var child_mass = (crb_ptr + b * 10 + 0)[]
-        if child_mass < Scalar[DTYPE](1e-20):
+        var child_mass = workspace[env, crb_idx + b * 10 + 0]
+        if child_mass < 1e-20:
             continue
 
-        var child_cx = (crb_ptr + b * 10 + 1)[]
-        var child_cy = (crb_ptr + b * 10 + 2)[]
-        var child_cz = (crb_ptr + b * 10 + 3)[]
-        var child_Ixx = (crb_ptr + b * 10 + 4)[]
-        var child_Iyy = (crb_ptr + b * 10 + 5)[]
-        var child_Izz = (crb_ptr + b * 10 + 6)[]
-        var child_Ixy = (crb_ptr + b * 10 + 7)[]
-        var child_Ixz = (crb_ptr + b * 10 + 8)[]
-        var child_Iyz = (crb_ptr + b * 10 + 9)[]
+        var child_cx = workspace[env, crb_idx + b * 10 + 1]
+        var child_cy = workspace[env, crb_idx + b * 10 + 2]
+        var child_cz = workspace[env, crb_idx + b * 10 + 3]
+        var child_Ixx = workspace[env, crb_idx + b * 10 + 4]
+        var child_Iyy = workspace[env, crb_idx + b * 10 + 5]
+        var child_Izz = workspace[env, crb_idx + b * 10 + 6]
+        var child_Ixy = workspace[env, crb_idx + b * 10 + 7]
+        var child_Ixz = workspace[env, crb_idx + b * 10 + 8]
+        var child_Iyz = workspace[env, crb_idx + b * 10 + 9]
 
-        var dx = rebind[Scalar[DTYPE]](
+        var dx = (
             state[env, xpos_off + b * 3 + 0]
-        ) - rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 0])
-        var dy = rebind[Scalar[DTYPE]](
+            - state[env, xpos_off + parent * 3 + 0]
+        )
+        var dy = (
             state[env, xpos_off + b * 3 + 1]
-        ) - rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 1])
-        var dz = rebind[Scalar[DTYPE]](
+            - state[env, xpos_off + parent * 3 + 1]
+        )
+        var dz = (
             state[env, xpos_off + b * 3 + 2]
-        ) - rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 2])
+            - state[env, xpos_off + parent * 3 + 2]
+        )
 
         var total_cx = dx + child_cx
         var total_cy = dy + child_cy
         var total_cz = dz + child_cz
 
-        var parent_mass = (crb_ptr + parent * 10 + 0)[]
-        var parent_cx = (crb_ptr + parent * 10 + 1)[]
-        var parent_cy = (crb_ptr + parent * 10 + 2)[]
-        var parent_cz = (crb_ptr + parent * 10 + 3)[]
+        var parent_mass = workspace[env, crb_idx + parent * 10 + 0]
+        var parent_cx = workspace[env, crb_idx + parent * 10 + 1]
+        var parent_cy = workspace[env, crb_idx + parent * 10 + 2]
+        var parent_cz = workspace[env, crb_idx + parent * 10 + 3]
 
         var new_mass = parent_mass + child_mass
 
-        var new_cx = Scalar[DTYPE](0)
-        var new_cy = Scalar[DTYPE](0)
-        var new_cz = Scalar[DTYPE](0)
-        if new_mass > Scalar[DTYPE](1e-20):
+        var new_cx: workspace.element_type = 0
+        var new_cy: workspace.element_type = 0
+        var new_cz: workspace.element_type = 0
+        if new_mass > 1e-20:
             new_cx = (
                 parent_mass * parent_cx + child_mass * total_cx
             ) / new_mass
@@ -686,18 +711,27 @@ fn compute_composite_inertia_gpu[
         var dp_z = parent_cz - new_cz
         var dp_sq = dp_x * dp_x + dp_y * dp_y + dp_z * dp_z
 
-        var new_Ixx = (crb_ptr + parent * 10 + 4)[] + parent_mass * (
-            dp_sq - dp_x * dp_x
+        var new_Ixx = workspace[
+            env, crb_idx + parent * 10 + 4
+        ] + parent_mass * (dp_sq - dp_x * dp_x)
+        var new_Iyy = workspace[
+            env, crb_idx + parent * 10 + 5
+        ] + parent_mass * (dp_sq - dp_y * dp_y)
+        var new_Izz = workspace[
+            env, crb_idx + parent * 10 + 6
+        ] + parent_mass * (dp_sq - dp_z * dp_z)
+        var new_Ixy = (
+            workspace[env, crb_idx + parent * 10 + 7]
+            - parent_mass * dp_x * dp_y
         )
-        var new_Iyy = (crb_ptr + parent * 10 + 5)[] + parent_mass * (
-            dp_sq - dp_y * dp_y
+        var new_Ixz = (
+            workspace[env, crb_idx + parent * 10 + 8]
+            - parent_mass * dp_x * dp_z
         )
-        var new_Izz = (crb_ptr + parent * 10 + 6)[] + parent_mass * (
-            dp_sq - dp_z * dp_z
+        var new_Iyz = (
+            workspace[env, crb_idx + parent * 10 + 9]
+            - parent_mass * dp_y * dp_z
         )
-        var new_Ixy = (crb_ptr + parent * 10 + 7)[] - parent_mass * dp_x * dp_y
-        var new_Ixz = (crb_ptr + parent * 10 + 8)[] - parent_mass * dp_x * dp_z
-        var new_Iyz = (crb_ptr + parent * 10 + 9)[] - parent_mass * dp_y * dp_z
 
         var dc_x = total_cx - new_cx
         var dc_y = total_cy - new_cy
@@ -711,16 +745,16 @@ fn compute_composite_inertia_gpu[
         new_Ixz = new_Ixz + child_Ixz - child_mass * dc_x * dc_z
         new_Iyz = new_Iyz + child_Iyz - child_mass * dc_y * dc_z
 
-        (crb_ptr + parent * 10 + 0)[] = new_mass
-        (crb_ptr + parent * 10 + 1)[] = new_cx
-        (crb_ptr + parent * 10 + 2)[] = new_cy
-        (crb_ptr + parent * 10 + 3)[] = new_cz
-        (crb_ptr + parent * 10 + 4)[] = new_Ixx
-        (crb_ptr + parent * 10 + 5)[] = new_Iyy
-        (crb_ptr + parent * 10 + 6)[] = new_Izz
-        (crb_ptr + parent * 10 + 7)[] = new_Ixy
-        (crb_ptr + parent * 10 + 8)[] = new_Ixz
-        (crb_ptr + parent * 10 + 9)[] = new_Iyz
+        workspace[env, crb_idx + parent * 10 + 0] = new_mass
+        workspace[env, crb_idx + parent * 10 + 1] = new_cx
+        workspace[env, crb_idx + parent * 10 + 2] = new_cy
+        workspace[env, crb_idx + parent * 10 + 3] = new_cz
+        workspace[env, crb_idx + parent * 10 + 4] = new_Ixx
+        workspace[env, crb_idx + parent * 10 + 5] = new_Iyy
+        workspace[env, crb_idx + parent * 10 + 6] = new_Izz
+        workspace[env, crb_idx + parent * 10 + 7] = new_Ixy
+        workspace[env, crb_idx + parent * 10 + 8] = new_Ixz
+        workspace[env, crb_idx + parent * 10 + 9] = new_Iyz
 
 
 # =============================================================================
@@ -754,67 +788,29 @@ fn compute_cdof_gpu[
 
     Writes cdof to workspace buffer instead of InlineArray.
     """
-    from ..gpu.constants import (
-        xpos_offset,
-        xquat_offset,
-        model_body_offset,
-        model_joint_offset,
-        model_metadata_offset,
-        ws_cdof_offset,
-        BODY_IDX_PARENT,
-        JOINT_IDX_TYPE,
-        JOINT_IDX_BODY_ID,
-        JOINT_IDX_DOF_ADR,
-        JOINT_IDX_POS_X,
-        JOINT_IDX_POS_Y,
-        JOINT_IDX_POS_Z,
-        JOINT_IDX_AXIS_X,
-        JOINT_IDX_AXIS_Y,
-        JOINT_IDX_AXIS_Z,
-        MODEL_META_IDX_NJOINT,
-    )
-    from ..joint_types import (
-        JNT_FREE,
-        JNT_HINGE,
-        JNT_SLIDE,
-    )
-    from ..kinematics.quat_math import gpu_quat_rotate
 
     # Derive cdof pointer from workspace (MutAnyOrigin)
-    var cdof_ptr = workspace.ptr + env * WS_SIZE + ws_cdof_offset()
+    comptime cdof_idx = ws_cdof_offset()
 
     # Zero out
     for i in range(NV * 6):
-        (cdof_ptr + i)[] = Scalar[DTYPE](0)
+        workspace[env, cdof_idx + i] = 0
 
     var xpos_off = xpos_offset[NQ, NV, NBODY]()
     var xquat_off = xquat_offset[NQ, NV, NBODY]()
     var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
-    var num_joints = Int(
-        rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_NJOINT])
-    )
+    var num_joints = Int(model[0, model_meta_off + MODEL_META_IDX_NJOINT])
 
     for j in range(num_joints):
         var joint_off = model_joint_offset[NBODY](j)
-        var jnt_type = Int(
-            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
-        )
-        var body = Int(
-            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID])
-        )
-        var dof_adr = Int(
-            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
-        )
-
+        var jnt_type = Int(model[0, joint_off + JOINT_IDX_TYPE])
+        var body = Int(model[0, joint_off + JOINT_IDX_BODY_ID])
+        var dof_adr = Int(model[0, joint_off + JOINT_IDX_DOF_ADR])
         var body_off = model_body_offset(body)
-        var parent = Int(
-            rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT])
-        )
-
-        var bx = rebind[Scalar[DTYPE]](state[env, xpos_off + body * 3 + 0])
-        var by = rebind[Scalar[DTYPE]](state[env, xpos_off + body * 3 + 1])
-        var bz = rebind[Scalar[DTYPE]](state[env, xpos_off + body * 3 + 2])
-
+        var parent = Int(model[0, body_off + BODY_IDX_PARENT])
+        var bx = state[env, xpos_off + body * 3 + 0]
+        var by = state[env, xpos_off + body * 3 + 1]
+        var bz = state[env, xpos_off + body * 3 + 2]
         if jnt_type == JNT_HINGE:
             var axis_x = rebind[Scalar[DTYPE]](
                 model[0, joint_off + JOINT_IDX_AXIS_X]
@@ -878,12 +874,18 @@ fn compute_cdof_gpu[
             var oy = by - jpos_y
             var oz = bz - jpos_z
 
-            (cdof_ptr + dof_adr * 6 + 0)[] = axis_x
-            (cdof_ptr + dof_adr * 6 + 1)[] = axis_y
-            (cdof_ptr + dof_adr * 6 + 2)[] = axis_z
-            (cdof_ptr + dof_adr * 6 + 3)[] = axis_y * oz - axis_z * oy
-            (cdof_ptr + dof_adr * 6 + 4)[] = axis_z * ox - axis_x * oz
-            (cdof_ptr + dof_adr * 6 + 5)[] = axis_x * oy - axis_y * ox
+            workspace[env, cdof_idx + dof_adr * 6 + 0] = axis_x
+            workspace[env, cdof_idx + dof_adr * 6 + 1] = axis_y
+            workspace[env, cdof_idx + dof_adr * 6 + 2] = axis_z
+            workspace[env, cdof_idx + dof_adr * 6 + 3] = (
+                axis_y * oz - axis_z * oy
+            )
+            workspace[env, cdof_idx + dof_adr * 6 + 4] = (
+                axis_z * ox - axis_x * oz
+            )
+            workspace[env, cdof_idx + dof_adr * 6 + 5] = (
+                axis_x * oy - axis_y * ox
+            )
 
         elif jnt_type == JNT_SLIDE:
             var axis_x = rebind[Scalar[DTYPE]](
@@ -917,17 +919,17 @@ fn compute_cdof_gpu[
                 axis_y = a_w[1]
                 axis_z = a_w[2]
 
-            (cdof_ptr + dof_adr * 6 + 3)[] = axis_x
-            (cdof_ptr + dof_adr * 6 + 4)[] = axis_y
-            (cdof_ptr + dof_adr * 6 + 5)[] = axis_z
+            workspace[env, cdof_idx + dof_adr * 6 + 3] = axis_x
+            workspace[env, cdof_idx + dof_adr * 6 + 4] = axis_y
+            workspace[env, cdof_idx + dof_adr * 6 + 5] = axis_z
 
         elif jnt_type == JNT_FREE:
-            (cdof_ptr + (dof_adr + 0) * 6 + 3)[] = Scalar[DTYPE](1)
-            (cdof_ptr + (dof_adr + 1) * 6 + 4)[] = Scalar[DTYPE](1)
-            (cdof_ptr + (dof_adr + 2) * 6 + 5)[] = Scalar[DTYPE](1)
-            (cdof_ptr + (dof_adr + 3) * 6 + 0)[] = Scalar[DTYPE](1)
-            (cdof_ptr + (dof_adr + 4) * 6 + 1)[] = Scalar[DTYPE](1)
-            (cdof_ptr + (dof_adr + 5) * 6 + 2)[] = Scalar[DTYPE](1)
+            workspace[env, cdof_idx + (dof_adr + 0) * 6 + 3] = Scalar[DTYPE](1)
+            workspace[env, cdof_idx + (dof_adr + 1) * 6 + 4] = Scalar[DTYPE](1)
+            workspace[env, cdof_idx + (dof_adr + 2) * 6 + 5] = Scalar[DTYPE](1)
+            workspace[env, cdof_idx + (dof_adr + 3) * 6 + 0] = Scalar[DTYPE](1)
+            workspace[env, cdof_idx + (dof_adr + 4) * 6 + 1] = Scalar[DTYPE](1)
+            workspace[env, cdof_idx + (dof_adr + 5) * 6 + 2] = Scalar[DTYPE](1)
 
 
 @always_inline

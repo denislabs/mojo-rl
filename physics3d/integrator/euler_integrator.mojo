@@ -479,35 +479,26 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         # 6b. Add armature + implicit damping to mass matrix diagonal
         # MuJoCo implicitfast: M_eff[i,i] += armature[i] + dt * damping[i]
         var model_meta_off_arm = model_metadata_offset[NBODY, NJOINT]()
-        var dt_arm = rebind[Scalar[DTYPE]](
-            model[0, model_meta_off_arm + MODEL_META_IDX_TIMESTEP]
-        )
+        var dt_arm = model[0, model_meta_off_arm + MODEL_META_IDX_TIMESTEP]
+
         for j in range(NJOINT):
             var joint_off = model_joint_offset[NBODY](j)
-            var jnt_type = Int(
-                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
-            )
-            var dof_adr = Int(
-                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
-            )
-            var arm = rebind[Scalar[DTYPE]](
-                model[0, joint_off + JOINT_IDX_ARMATURE]
-            )
-            var damp = rebind[Scalar[DTYPE]](
-                model[0, joint_off + JOINT_IDX_DAMPING]
-            )
+            var jnt_type = Int(model[0, joint_off + JOINT_IDX_TYPE])
+            var dof_adr = Int(model[0, joint_off + JOINT_IDX_DOF_ADR])
+            var arm = model[0, joint_off + JOINT_IDX_ARMATURE]
+            var damp = model[0, joint_off + JOINT_IDX_DAMPING]
             var diag_add = arm + dt_arm * damp
             if jnt_type == JNT_FREE:
                 for d in range(6):
                     var idx = M_idx + (dof_adr + d) * NV + (dof_adr + d)
-                    workspace[env, idx] = workspace[env, idx] + diag_add
+                    workspace[env, idx] += diag_add
             elif jnt_type == JNT_BALL:
                 for d in range(3):
                     var idx = M_idx + (dof_adr + d) * NV + (dof_adr + d)
-                    workspace[env, idx] = workspace[env, idx] + diag_add
+                    workspace[env, idx] += diag_add
             else:
                 var idx = M_idx + dof_adr * NV + dof_adr
-                workspace[env, idx] = workspace[env, idx] + diag_add
+                workspace[env, idx] += diag_add
 
         # 7. LDL factorize (reads M, writes L/D in workspace)
         ldl_factor_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](env, workspace)

@@ -24,6 +24,10 @@ from ..gpu.constants import (
     model_body_offset,
     model_joint_offset,
     model_metadata_offset,
+    ws_cdof_offset,
+    ws_L_offset,
+    ws_M_offset,
+    ws_D_offset,
     BODY_IDX_PARENT,
     BODY_IDX_MASS,
     BODY_IDX_IXX,
@@ -642,7 +646,6 @@ fn compute_mass_matrix_full_gpu[
 ):
     """Compute full NV×NV mass matrix on GPU. Reads cdof, writes M to workspace.
     """
-    from ..gpu.constants import ws_cdof_offset, ws_M_offset
 
     # Derive pointers from workspace (MutAnyOrigin)
     comptime cdof_idx = ws_cdof_offset()
@@ -840,7 +843,6 @@ fn ldl_factor_gpu[
     ],
 ):
     """LDL factorization on GPU. Reads M, writes L and D to workspace."""
-    from ..gpu.constants import ws_M_offset, ws_L_offset, ws_D_offset
 
     comptime M_idx = ws_M_offset[NV, NBODY]()
     comptime L_idx = ws_L_offset[NV, NBODY]()
@@ -863,7 +865,7 @@ fn ldl_factor_gpu[
             )
         workspace[env, D_idx + j] = d_j
 
-        if d_j > Scalar[DTYPE](1e-14) or d_j < Scalar[DTYPE](-1e-14):
+        if d_j > 1e-14 or d_j < -1e-14:
             for i in range(j + 1, NV):
                 var l_ij = workspace[env, M_idx + i * NV + j]
                 for k in range(j):

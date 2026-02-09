@@ -1389,11 +1389,9 @@ Benchmarking:
  HalfCheetah Env step:
   - Without constraint solver: 18s for 256 episodes
   - Newton not optimized : 257s for 256 episodes
-  - PGS with 3 kernels : 20s for 256 episodes
-  - Newton with 3 kernels : 19s for 256 episodes
 
 After optimizations:
   - Without constraint solver : 80s for 1024 episodes
   - PGS with 3 kernels : 110s for 1024 episodes
-  - Newton with 3 kernels : 555s for 1024 episodes
-  - CG with 3 kernels : 167s for 1024 episodes
+  - Newton with 3 kernels : 150s for 1024 episodes
+  - CG with 3 kernels : 169s for 1024 episodes
