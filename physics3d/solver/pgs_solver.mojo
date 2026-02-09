@@ -17,7 +17,7 @@ Reference: MuJoCo's constraint solver + existing Cartesian PGS in pgs_solver.moj
 
 from math import sqrt
 from layout import LayoutTensor, Layout
-from gpu import thread_idx, block_idx, block_dim
+from gpu import thread_idx, block_idx, block_dim, barrier
 from ..types import Model, Data, _max_one
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
 from ..traits.solver import ConstraintSolver
@@ -618,7 +618,7 @@ struct PGSSolver(ConstraintSolver):
         NJOINT: Int,
         MAX_CONTACTS: Int,
     ]() -> Int:
-        return 1
+        return _max_one[MAX_CONTACTS]()
 
     @staticmethod
     @always_inline
@@ -645,21 +645,17 @@ struct PGSSolver(ConstraintSolver):
             DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
         ],
     ):
-        """Solve contact constraints using PGS on GPU (per-environment).
+        """Solve contact constraints using PGS on GPU with 2D threading.
 
-        All MC-sized arrays live in workspace (device memory) to minimize
-        register spilling. Only J_row/J_t_row (NV-sized, temporary) stay
-        as InlineArrays.
+        Uses thread_x for environment index, thread_y for contact index.
+        Precompute phases (Phase 1, Phase 3) are parallelized across contacts.
+        PGS iterations are sequential on thread_y==0 (Gauss-Seidel dependency).
+        All threads must hit all barriers (no early returns).
         """
 
         var env = Int(block_dim.x * block_idx.x + thread_idx.x)
-        if env >= BATCH:
-            return
-
-        var thread_idx = Int(block_dim.y * block_idx.y + thread_idx.y)
-
-        if thread_idx > 0:
-            return
+        var contact_tid = Int(thread_idx.y)
+        var valid_env = env < BATCH
 
         # Workspace pointers
         comptime qvel_idx = ws_qvel_pred_offset[NV, NBODY]()
@@ -669,19 +665,17 @@ struct PGSSolver(ConstraintSolver):
         comptime MC = _max_one[MAX_CONTACTS]()
 
         # Solver workspace layout: 23 * MC + 6 * MC * NV floats
-        # Common contact block (11*MC)
         comptime ws_lambda_n = solver_idx + 0 * MC
         comptime ws_K_n = solver_idx + 1 * MC
         comptime ws_c_dist = solver_idx + 2 * MC
-        comptime ws_c_body = solver_idx + 3 * MC  # body A as Float
-        comptime ws_c_body_b = solver_idx + 4 * MC  # body B as Float
+        comptime ws_c_body = solver_idx + 3 * MC
+        comptime ws_c_body_b = solver_idx + 4 * MC
         comptime ws_c_px = solver_idx + 5 * MC
         comptime ws_c_py = solver_idx + 6 * MC
         comptime ws_c_pz = solver_idx + 7 * MC
         comptime ws_c_nx = solver_idx + 8 * MC
         comptime ws_c_ny = solver_idx + 9 * MC
         comptime ws_c_nz = solver_idx + 10 * MC
-        # Friction block (10*MC)
         comptime ws_lambda_t1 = solver_idx + 11 * MC
         comptime ws_lambda_t2 = solver_idx + 12 * MC
         comptime ws_K_t1 = solver_idx + 13 * MC
@@ -692,158 +686,96 @@ struct PGSSolver(ConstraintSolver):
         comptime ws_t2x = solver_idx + 18 * MC
         comptime ws_t2y = solver_idx + 19 * MC
         comptime ws_t2z = solver_idx + 20 * MC
-        # Jacobian storage (3 * MC * NV) — precomputed once, read in PGS iters
         comptime ws_J_n = solver_idx + 21 * MC
         comptime ws_J_t1 = solver_idx + 21 * MC + MC * NV
         comptime ws_J_t2 = solver_idx + 21 * MC + 2 * MC * NV
-        # Precomputed M_inv @ J^T (3 * MC * NV) — eliminates NV² inner loop
         comptime ws_MinvJn = solver_idx + 21 * MC + 3 * MC * NV
         comptime ws_MinvJt1 = solver_idx + 21 * MC + 4 * MC * NV
         comptime ws_MinvJt2 = solver_idx + 21 * MC + 5 * MC * NV
-        # Precomputed impedance (2 * MC) — eliminates Hermite from inner loop
         comptime ws_pos_bias = solver_idx + 21 * MC + 6 * MC * NV
         comptime ws_inv_K_imp = solver_idx + 22 * MC + 6 * MC * NV
 
-        # Initialize workspace
-        for i in range(MC):
-            workspace[env, ws_lambda_n + i] = 0
-            workspace[env, ws_K_n + i] = 1
-            workspace[env, ws_c_dist + i] = 0
-            workspace[env, ws_c_body + i] = 0
-            workspace[env, ws_c_body_b + i] = -1
-            workspace[env, ws_c_px + i] = 0
-            workspace[env, ws_c_py + i] = 0
-            workspace[env, ws_c_pz + i] = 0
-            workspace[env, ws_c_nx + i] = 0
-            workspace[env, ws_c_ny + i] = 0
-            workspace[env, ws_c_nz + i] = 1
-            workspace[env, ws_lambda_t1 + i] = 0
-            workspace[env, ws_lambda_t2 + i] = 0
-            workspace[env, ws_K_t1 + i] = 1
-            workspace[env, ws_K_t2 + i] = 1
-            workspace[env, ws_t1x + i] = 0
-            workspace[env, ws_t1y + i] = 0
-            workspace[env, ws_t1z + i] = 0
-            workspace[env, ws_t2x + i] = 0
-            workspace[env, ws_t2y + i] = 0
-            workspace[env, ws_t2z + i] = 0
+        # === PARALLEL: Initialize workspace (each thread handles one slot) ===
+        if valid_env:
+            workspace[env, ws_lambda_n + contact_tid] = 0
+            workspace[env, ws_K_n + contact_tid] = 1
+            workspace[env, ws_c_dist + contact_tid] = 0
+            workspace[env, ws_c_body + contact_tid] = 0
+            workspace[env, ws_c_body_b + contact_tid] = -1
+            workspace[env, ws_c_px + contact_tid] = 0
+            workspace[env, ws_c_py + contact_tid] = 0
+            workspace[env, ws_c_pz + contact_tid] = 0
+            workspace[env, ws_c_nx + contact_tid] = 0
+            workspace[env, ws_c_ny + contact_tid] = 0
+            workspace[env, ws_c_nz + contact_tid] = 1
+            workspace[env, ws_lambda_t1 + contact_tid] = 0
+            workspace[env, ws_lambda_t2 + contact_tid] = 0
+            workspace[env, ws_K_t1 + contact_tid] = 1
+            workspace[env, ws_K_t2 + contact_tid] = 1
+            workspace[env, ws_t1x + contact_tid] = 0
+            workspace[env, ws_t1y + contact_tid] = 0
+            workspace[env, ws_t1z + contact_tid] = 0
+            workspace[env, ws_t2x + contact_tid] = 0
+            workspace[env, ws_t2y + contact_tid] = 0
+            workspace[env, ws_t2z + contact_tid] = 0
 
+        # All threads read metadata independently
         var contacts_off = contacts_offset[NQ, NV, NBODY]()
         var meta_off = metadata_offset[NQ, NV, NBODY, MAX_CONTACTS]()
         var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
-        var dt = rebind[Scalar[DTYPE]](
-            model[0, model_meta_off + MODEL_META_IDX_TIMESTEP]
-        )
-        var num_contacts = Int(
-            rebind[Scalar[DTYPE]](state[env, meta_off + META_IDX_NUM_CONTACTS])
-        )
-        var friction_coef = rebind[Scalar[DTYPE]](
-            model[0, model_meta_off + MODEL_META_IDX_FRICTION]
-        )
 
-        # Detect joint limits from model/state buffers
-        comptime MAX_LIMITS = _max_one[2 * NJOINT]()
-        var limit_dof = InlineArray[Int, MAX_LIMITS](uninitialized=True)
-        var limit_sign = InlineArray[Scalar[DTYPE], MAX_LIMITS](
-            uninitialized=True
-        )
-        var limit_dist_arr = InlineArray[Scalar[DTYPE], MAX_LIMITS](
-            uninitialized=True
-        )
-        var K_limit = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
-        var lambda_limit = InlineArray[Scalar[DTYPE], MAX_LIMITS](
-            uninitialized=True
-        )
-        for i in range(MAX_LIMITS):
-            limit_dof[i] = 0
-            limit_sign[i] = Scalar[DTYPE](0)
-            limit_dist_arr[i] = Scalar[DTYPE](0)
-            K_limit[i] = Scalar[DTYPE](1)
-            lambda_limit[i] = Scalar[DTYPE](0)
+        var nc = 0
+        var dt: Scalar[DTYPE] = 0
+        var friction_coef: Scalar[DTYPE] = 0
+        var inv_tc_dr: Scalar[DTYPE] = 0
+        var b_vel_coef: Scalar[DTYPE] = 0
+        var si_dmin: Scalar[DTYPE] = 0
+        var si_dmax: Scalar[DTYPE] = 0
+        var si_width: Scalar[DTYPE] = 1
 
-        var num_limits = 0
-        var qpos_off = 0  # qpos starts at offset 0 in state buffer
-        for j in range(NJOINT):
-            var j_off = model_joint_offset[NBODY](j)
-            var jtype = Int(
-                rebind[Scalar[DTYPE]](model[0, j_off + JOINT_IDX_TYPE])
+        if valid_env:
+            dt = rebind[Scalar[DTYPE]](
+                model[0, model_meta_off + MODEL_META_IDX_TIMESTEP]
             )
-            if jtype != JNT_HINGE and jtype != JNT_SLIDE:
-                continue
-            var dof = Int(
-                rebind[Scalar[DTYPE]](model[0, j_off + JOINT_IDX_DOF_ADR])
+            nc = Int(rebind[Scalar[DTYPE]](
+                state[env, meta_off + META_IDX_NUM_CONTACTS]
+            ))
+            friction_coef = rebind[Scalar[DTYPE]](
+                model[0, model_meta_off + MODEL_META_IDX_FRICTION]
             )
-            var qpos_adr = Int(
-                rebind[Scalar[DTYPE]](model[0, j_off + JOINT_IDX_QPOS_ADR])
+            if nc > MAX_CONTACTS:
+                nc = MAX_CONTACTS
+
+            # Read solref/solimp for impedance precompute
+            var sr_tc = rebind[Scalar[DTYPE]](
+                model[0, model_meta_off + MODEL_META_IDX_SOLREF_CONTACT_0]
             )
-            var rmin = rebind[Scalar[DTYPE]](
-                model[0, j_off + JOINT_IDX_RANGE_MIN]
+            var sr_dr = rebind[Scalar[DTYPE]](
+                model[0, model_meta_off + MODEL_META_IDX_SOLREF_CONTACT_1]
             )
-            var rmax = rebind[Scalar[DTYPE]](
-                model[0, j_off + JOINT_IDX_RANGE_MAX]
+            si_dmin = rebind[Scalar[DTYPE]](
+                model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_0]
             )
-            if rmin < Scalar[DTYPE](-1e9) or rmax > Scalar[DTYPE](1e9):
-                continue
-            var pos = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr])
-            # Lower limit
-            var dist_lo = pos - rmin
-            if dist_lo < Scalar[DTYPE](0.01) and num_limits < MAX_LIMITS:
-                limit_dof[num_limits] = dof
-                limit_sign[num_limits] = Scalar[DTYPE](1)
-                limit_dist_arr[num_limits] = dist_lo
-                K_limit[num_limits] = rebind[Scalar[DTYPE]](
-                    workspace[env, M_inv_idx + dof * NV + dof]
-                )
-                if K_limit[num_limits] < Scalar[DTYPE](1e-10):
-                    K_limit[num_limits] = Scalar[DTYPE](1e-10)
-                num_limits += 1
-            # Upper limit
-            var dist_hi = rmax - pos
-            if dist_hi < Scalar[DTYPE](0.01) and num_limits < MAX_LIMITS:
-                limit_dof[num_limits] = dof
-                limit_sign[num_limits] = Scalar[DTYPE](-1)
-                limit_dist_arr[num_limits] = dist_hi
-                K_limit[num_limits] = rebind[Scalar[DTYPE]](
-                    workspace[env, M_inv_idx + dof * NV + dof]
-                )
-                if K_limit[num_limits] < Scalar[DTYPE](1e-10):
-                    K_limit[num_limits] = Scalar[DTYPE](1e-10)
-                num_limits += 1
+            si_dmax = rebind[Scalar[DTYPE]](
+                model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_1]
+            )
+            si_width = rebind[Scalar[DTYPE]](
+                model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_2]
+            )
+            if si_width < Scalar[DTYPE](1e-6):
+                si_width = Scalar[DTYPE](1e-6)
+            if si_dmax < Scalar[DTYPE](1e-4):
+                si_dmax = Scalar[DTYPE](1e-4)
+            inv_tc_dr = Scalar[DTYPE](1.0) / (sr_tc * sr_dr)
+            b_vel_coef = Scalar[DTYPE](2.0) * sr_dr * dt / (si_dmax * sr_tc)
 
-        if num_contacts == 0 and num_limits == 0:
-            return
-
-        var nc = num_contacts
-        if nc > MAX_CONTACTS:
-            nc = MAX_CONTACTS
-
-        # Read solref/solimp contact from model buffer
-        var sr_tc = rebind[Scalar[DTYPE]](
-            model[0, model_meta_off + MODEL_META_IDX_SOLREF_CONTACT_0]
-        )
-        var sr_dr = rebind[Scalar[DTYPE]](
-            model[0, model_meta_off + MODEL_META_IDX_SOLREF_CONTACT_1]
-        )
-        var si_dmin = rebind[Scalar[DTYPE]](
-            model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_0]
-        )
-        var si_dmax = rebind[Scalar[DTYPE]](
-            model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_1]
-        )
-        var si_width = rebind[Scalar[DTYPE]](
-            model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_2]
-        )
-        if si_width < Scalar[DTYPE](1e-6):
-            si_width = Scalar[DTYPE](1e-6)
-        if si_dmax < Scalar[DTYPE](1e-4):
-            si_dmax = Scalar[DTYPE](1e-4)
-        var inv_tc_dr = Scalar[DTYPE](1.0) / (sr_tc * sr_dr)
-        var b_vel_coef = Scalar[DTYPE](2.0) * sr_dr * dt / (si_dmax * sr_tc)
-
+        # === PARALLEL PHASE 1: Each thread precomputes one contact ===
         var J_row = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        for i in range(V_SIZE):
+            J_row[i] = 0
 
-        # Phase 1: Read contact data and precompute K_n
-        for c in range(nc):
+        if valid_env and contact_tid < nc:
+            var c = contact_tid
             var c_off = contacts_off + c * CONTACT_SIZE
             var body = Int(
                 rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_BODY_A])
@@ -859,446 +791,537 @@ struct PGSSolver(ConstraintSolver):
             workspace[env, ws_c_body + c] = Scalar[DTYPE](body)
             workspace[env, ws_c_body_b + c] = Scalar[DTYPE](body_b)
 
-            if dist >= Scalar[DTYPE](0):
-                continue
+            if dist < Scalar[DTYPE](0):
+                workspace[env, ws_c_px + c] = state[
+                    env, c_off + CONTACT_IDX_POS_X
+                ]
+                workspace[env, ws_c_py + c] = state[
+                    env, c_off + CONTACT_IDX_POS_Y
+                ]
+                workspace[env, ws_c_pz + c] = state[
+                    env, c_off + CONTACT_IDX_POS_Z
+                ]
+                workspace[env, ws_c_nx + c] = state[
+                    env, c_off + CONTACT_IDX_NX
+                ]
+                workspace[env, ws_c_ny + c] = state[
+                    env, c_off + CONTACT_IDX_NY
+                ]
+                workspace[env, ws_c_nz + c] = state[
+                    env, c_off + CONTACT_IDX_NZ
+                ]
 
-            workspace[env, ws_c_px + c] = state[env, c_off + CONTACT_IDX_POS_X]
-            workspace[env, ws_c_py + c] = state[env, c_off + CONTACT_IDX_POS_Y]
-            workspace[env, ws_c_pz + c] = state[env, c_off + CONTACT_IDX_POS_Z]
-            workspace[env, ws_c_nx + c] = state[env, c_off + CONTACT_IDX_NX]
-            workspace[env, ws_c_ny + c] = state[env, c_off + CONTACT_IDX_NY]
-            workspace[env, ws_c_nz + c] = state[env, c_off + CONTACT_IDX_NZ]
+                # Compute normal Jacobian
+                compute_contact_jacobian_row_gpu[
+                    DTYPE,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    MAX_CONTACTS,
+                    STATE_SIZE,
+                    MODEL_SIZE,
+                    V_SIZE,
+                    BATCH,
+                    WS_SIZE,
+                ](
+                    env,
+                    state,
+                    model,
+                    workspace,
+                    body,
+                    body_b,
+                    rebind[Scalar[DTYPE]](workspace[env, ws_c_px + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_c_py + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_c_pz + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_c_nx + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_c_ny + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_c_nz + c]),
+                    J_row,
+                )
 
-            # Compute normal Jacobian and effective mass
-            compute_contact_jacobian_row_gpu[
-                DTYPE,
-                NQ,
-                NV,
-                NBODY,
-                NJOINT,
-                MAX_CONTACTS,
-                STATE_SIZE,
-                MODEL_SIZE,
-                V_SIZE,
-                BATCH,
-                WS_SIZE,
-            ](
-                env,
-                state,
-                model,
-                workspace,
-                body,
-                body_b,
-                rebind[Scalar[DTYPE]](workspace[env, ws_c_px + c]),
-                rebind[Scalar[DTYPE]](workspace[env, ws_c_py + c]),
-                rebind[Scalar[DTYPE]](workspace[env, ws_c_pz + c]),
-                rebind[Scalar[DTYPE]](workspace[env, ws_c_nx + c]),
-                rebind[Scalar[DTYPE]](workspace[env, ws_c_ny + c]),
-                rebind[Scalar[DTYPE]](workspace[env, ws_c_nz + c]),
-                J_row,
-            )
-
-            # Store J_n and MinvJn, compute K = J @ M_inv @ J^T
-            var k: workspace.element_type = 0
-            for i in range(NV):
-                workspace[env, ws_J_n + c * NV + i] = J_row[i]
-                var mi_j_sum: workspace.element_type = 0
-                for j_idx in range(NV):
-                    mi_j_sum += (
-                        workspace[env, M_inv_idx + i * NV + j_idx]
-                        * J_row[j_idx]
-                    )
-                workspace[env, ws_MinvJn + c * NV + i] = mi_j_sum
-                k += J_row[i] * mi_j_sum
-            if k < Scalar[DTYPE](1e-10):
-                k = Scalar[DTYPE](1e-10)
-            workspace[env, ws_K_n + c] = k
-
-            # Precompute impedance coefficients for PGS iterations
-            var penetration = -dist
-            if penetration > Scalar[DTYPE](0.05):
-                penetration = Scalar[DTYPE](0.05)
-            var x = penetration / si_width
-            if x > Scalar[DTYPE](1.0):
-                x = Scalar[DTYPE](1.0)
-            var imp = si_dmin + (
-                Scalar[DTYPE](3.0) * x * x - Scalar[DTYPE](2.0) * x * x * x
-            ) * (si_dmax - si_dmin)
-            if imp < Scalar[DTYPE](0.2):
-                imp = Scalar[DTYPE](0.2)
-            workspace[env, ws_pos_bias + c] = imp * penetration * inv_tc_dr
-            workspace[env, ws_inv_K_imp + c] = imp / k
-
-            # Warm start
-            workspace[env, ws_lambda_n + c] = state[
-                env, c_off + CONTACT_IDX_IMPULSE_N
-            ]
-
-            # Apply warm start: qvel += MinvJn * lambda
-            if workspace[env, ws_lambda_n + c] > Scalar[DTYPE](0):
+                # Store J_n, compute MinvJn and K_n
+                var k: workspace.element_type = 0
                 for i in range(NV):
-                    workspace[env, qvel_idx + i] += (
-                        workspace[env, ws_MinvJn + c * NV + i]
-                        * workspace[env, ws_lambda_n + c]
-                    )
+                    workspace[env, ws_J_n + c * NV + i] = J_row[i]
+                    var mi_j_sum: workspace.element_type = 0
+                    for j_idx in range(NV):
+                        mi_j_sum += (
+                            workspace[env, M_inv_idx + i * NV + j_idx]
+                            * J_row[j_idx]
+                        )
+                    workspace[env, ws_MinvJn + c * NV + i] = mi_j_sum
+                    k += J_row[i] * mi_j_sum
+                if k < Scalar[DTYPE](1e-10):
+                    k = Scalar[DTYPE](1e-10)
+                workspace[env, ws_K_n + c] = k
 
-        # Phase 2: PGS normal iterations (precomputed impedance + early exit)
-        var vel_factor = Scalar[DTYPE](1.0) - b_vel_coef
-        for _ in range(PGS_ITERATIONS):
-            var max_delta: workspace.element_type = 0
+                # Precompute impedance coefficients
+                var penetration = -dist
+                if penetration > Scalar[DTYPE](0.05):
+                    penetration = Scalar[DTYPE](0.05)
+                var x = penetration / si_width
+                if x > Scalar[DTYPE](1.0):
+                    x = Scalar[DTYPE](1.0)
+                var imp = si_dmin + (
+                    Scalar[DTYPE](3.0) * x * x
+                    - Scalar[DTYPE](2.0) * x * x * x
+                ) * (si_dmax - si_dmin)
+                if imp < Scalar[DTYPE](0.2):
+                    imp = Scalar[DTYPE](0.2)
+                workspace[env, ws_pos_bias + c] = (
+                    imp * penetration * inv_tc_dr
+                )
+                workspace[env, ws_inv_K_imp + c] = imp / k
+
+                # Store warm start lambda (applied by thread 0 after barrier)
+                workspace[env, ws_lambda_n + c] = state[
+                    env, c_off + CONTACT_IDX_IMPULSE_N
+                ]
+
+        # All threads must hit this barrier
+        barrier()
+
+        # === SEQUENTIAL: Warm start + PGS normal + joint limits (thread 0) ===
+        if valid_env and contact_tid == 0:
+            # Apply warm start: qvel += MinvJn * lambda
             for c in range(nc):
                 if workspace[env, ws_c_dist + c] >= Scalar[DTYPE](0):
                     continue
-
-                # Contact-normal velocity: v_n = J_n . qvel
-                var v_n: workspace.element_type = 0
-                for i in range(NV):
-                    v_n += (
-                        workspace[env, ws_J_n + c * NV + i]
-                        * workspace[env, qvel_idx + i]
-                    )
-
-                # delta = -(v_n*(1-b_vel_coef) - pos_bias) * (imp/K_n)
-                var delta = -(
-                    v_n * vel_factor
-                    - workspace[env, ws_pos_bias + c]
-                ) * workspace[env, ws_inv_K_imp + c]
-                var old_lambda = workspace[env, ws_lambda_n + c]
-                workspace[env, ws_lambda_n + c] = (
-                    workspace[env, ws_lambda_n + c] + delta
-                )
-                if workspace[env, ws_lambda_n + c] < Scalar[DTYPE](0):
-                    workspace[env, ws_lambda_n + c] = Scalar[DTYPE](0)
-
-                var actual_delta = workspace[env, ws_lambda_n + c] - old_lambda
-                # Track convergence
-                var abs_delta = abs(actual_delta)
-                if abs_delta > max_delta:
-                    max_delta = abs_delta
-                # Apply velocity correction: qvel += MinvJn * delta
-                for i in range(NV):
-                    workspace[env, qvel_idx + i] += (
-                        workspace[env, ws_MinvJn + c * NV + i]
-                        * actual_delta
-                    )
-            # Early exit when converged
-            if max_delta < Scalar[DTYPE](1e-4):
-                break
-
-        # Phase 2b: Joint limit constraints (PGS, precomputed impedance + early exit)
-        if num_limits > 0:
-            # Read solref/solimp limit from model buffer
-            var lr_tc = rebind[Scalar[DTYPE]](
-                model[0, model_meta_off + MODEL_META_IDX_SOLREF_LIMIT_0]
-            )
-            var lr_dr = rebind[Scalar[DTYPE]](
-                model[0, model_meta_off + MODEL_META_IDX_SOLREF_LIMIT_1]
-            )
-            var li_dmin = rebind[Scalar[DTYPE]](
-                model[0, model_meta_off + MODEL_META_IDX_SOLIMP_LIMIT_0]
-            )
-            var li_dmax = rebind[Scalar[DTYPE]](
-                model[0, model_meta_off + MODEL_META_IDX_SOLIMP_LIMIT_1]
-            )
-            var li_width = rebind[Scalar[DTYPE]](
-                model[0, model_meta_off + MODEL_META_IDX_SOLIMP_LIMIT_2]
-            )
-            if li_width < Scalar[DTYPE](1e-6):
-                li_width = Scalar[DTYPE](1e-6)
-            if li_dmax < Scalar[DTYPE](1e-4):
-                li_dmax = Scalar[DTYPE](1e-4)
-            var l_inv_tc_dr = Scalar[DTYPE](1.0) / (lr_tc * lr_dr)
-            var l_b_vel_coef = (
-                Scalar[DTYPE](2.0) * lr_dr * dt / (li_dmax * lr_tc)
-            )
-            var l_vel_factor = Scalar[DTYPE](1.0) - l_b_vel_coef
-
-            # Precompute impedance and MinvJ per limit
-            var lim_pos_bias = InlineArray[Scalar[DTYPE], MAX_LIMITS](
-                uninitialized=True
-            )
-            var lim_inv_K_imp = InlineArray[Scalar[DTYPE], MAX_LIMITS](
-                uninitialized=True
-            )
-            comptime MINVJ_LIM_SIZE = _max_one[2 * NJOINT * NV]()
-            var lim_MinvJ = InlineArray[Scalar[DTYPE], MINVJ_LIM_SIZE](
-                uninitialized=True
-            )
-            for l in range(num_limits):
-                var penetration = -limit_dist_arr[l]
-                if penetration < Scalar[DTYPE](0):
-                    penetration = Scalar[DTYPE](0)
-                if penetration > Scalar[DTYPE](0.05):
-                    penetration = Scalar[DTYPE](0.05)
-                var x_lim = penetration / li_width
-                if x_lim > Scalar[DTYPE](1.0):
-                    x_lim = Scalar[DTYPE](1.0)
-                var imp_lim = li_dmin + (
-                    Scalar[DTYPE](3.0) * x_lim * x_lim
-                    - Scalar[DTYPE](2.0) * x_lim * x_lim * x_lim
-                ) * (li_dmax - li_dmin)
-                if imp_lim < Scalar[DTYPE](0.2):
-                    imp_lim = Scalar[DTYPE](0.2)
-                lim_pos_bias[l] = imp_lim * penetration * l_inv_tc_dr
-                lim_inv_K_imp[l] = imp_lim / K_limit[l]
-                # Precompute M_inv[:, dof] * sign
-                var dof = limit_dof[l]
-                var sign = limit_sign[l]
-                for i in range(NV):
-                    lim_MinvJ[l * NV + i] = rebind[Scalar[DTYPE]](
-                        workspace[env, M_inv_idx + i * NV + dof]
-                    ) * sign
-
-            for _ in range(PGS_ITERATIONS):
-                var max_lim_delta: Scalar[DTYPE] = 0
-                for l in range(num_limits):
-                    var v_limit = (
-                        limit_sign[l]
-                        * workspace[env, qvel_idx + limit_dof[l]]
-                    )
-                    var delta_l = -(
-                        v_limit * l_vel_factor - lim_pos_bias[l]
-                    ) * lim_inv_K_imp[l]
-                    var old_lam = lambda_limit[l]
-                    lambda_limit[l] = lambda_limit[l] + rebind[
-                        Scalar[DTYPE]
-                    ](delta_l)
-                    if lambda_limit[l] < Scalar[DTYPE](0):
-                        lambda_limit[l] = Scalar[DTYPE](0)
-                    var actual_l = lambda_limit[l] - old_lam
-                    var abs_l = abs(actual_l)
-                    if abs_l > max_lim_delta:
-                        max_lim_delta = abs_l
+                if workspace[env, ws_lambda_n + c] > Scalar[DTYPE](0):
                     for i in range(NV):
                         workspace[env, qvel_idx + i] += (
-                            lim_MinvJ[l * NV + i] * actual_l
+                            workspace[env, ws_MinvJn + c * NV + i]
+                            * workspace[env, ws_lambda_n + c]
                         )
-                if max_lim_delta < Scalar[DTYPE](1e-4):
+
+            # Phase 2: PGS normal iterations
+            var vel_factor = Scalar[DTYPE](1.0) - b_vel_coef
+            for _ in range(PGS_ITERATIONS):
+                var max_delta: workspace.element_type = 0
+                for c in range(nc):
+                    if workspace[env, ws_c_dist + c] >= Scalar[DTYPE](0):
+                        continue
+                    var v_n: workspace.element_type = 0
+                    for i in range(NV):
+                        v_n += (
+                            workspace[env, ws_J_n + c * NV + i]
+                            * workspace[env, qvel_idx + i]
+                        )
+                    var delta = -(
+                        v_n * vel_factor
+                        - workspace[env, ws_pos_bias + c]
+                    ) * workspace[env, ws_inv_K_imp + c]
+                    var old_lambda = workspace[env, ws_lambda_n + c]
+                    workspace[env, ws_lambda_n + c] = (
+                        workspace[env, ws_lambda_n + c] + delta
+                    )
+                    if workspace[env, ws_lambda_n + c] < Scalar[DTYPE](0):
+                        workspace[env, ws_lambda_n + c] = Scalar[DTYPE](0)
+                    var actual_delta = (
+                        workspace[env, ws_lambda_n + c] - old_lambda
+                    )
+                    var abs_delta = abs(actual_delta)
+                    if abs_delta > max_delta:
+                        max_delta = abs_delta
+                    for i in range(NV):
+                        workspace[env, qvel_idx + i] += (
+                            workspace[env, ws_MinvJn + c * NV + i]
+                            * actual_delta
+                        )
+                if max_delta < Scalar[DTYPE](1e-4):
                     break
 
-        # Phase 3: Friction
-        # Precompute tangent basis and K_t for active contacts
-        for c in range(nc):
-            if workspace[env, ws_lambda_n + c] <= 0:
-                continue
-
-            var nx = workspace[env, ws_c_nx + c]
-            var ny = workspace[env, ws_c_ny + c]
-            var nz = workspace[env, ws_c_nz + c]
-
-            # Tangent basis
-            if abs(nx) < 0.9:
-                workspace[env, ws_t1x + c] = 0
-                workspace[env, ws_t1y + c] = -nz
-                workspace[env, ws_t1z + c] = ny
-            else:
-                workspace[env, ws_t1x + c] = nz
-                workspace[env, ws_t1y + c] = 0
-                workspace[env, ws_t1z + c] = -nx
-
-            var t1_mag = sqrt(
-                workspace[env, ws_t1x + c] * workspace[env, ws_t1x + c]
-                + workspace[env, ws_t1y + c] * workspace[env, ws_t1y + c]
-                + workspace[env, ws_t1z + c] * workspace[env, ws_t1z + c]
+            # Phase 2b: Joint limit constraints
+            comptime MAX_LIMITS = _max_one[2 * NJOINT]()
+            var limit_dof = InlineArray[Int, MAX_LIMITS](uninitialized=True)
+            var limit_sign = InlineArray[Scalar[DTYPE], MAX_LIMITS](
+                uninitialized=True
             )
-            if t1_mag > Scalar[DTYPE](1e-10):
-                workspace[env, ws_t1x + c] /= t1_mag
-                workspace[env, ws_t1y + c] /= t1_mag
-                workspace[env, ws_t1z + c] /= t1_mag
+            var limit_dist_arr = InlineArray[Scalar[DTYPE], MAX_LIMITS](
+                uninitialized=True
+            )
+            var K_limit = InlineArray[Scalar[DTYPE], MAX_LIMITS](
+                uninitialized=True
+            )
+            var lambda_limit = InlineArray[Scalar[DTYPE], MAX_LIMITS](
+                uninitialized=True
+            )
+            for i in range(MAX_LIMITS):
+                limit_dof[i] = 0
+                limit_sign[i] = Scalar[DTYPE](0)
+                limit_dist_arr[i] = Scalar[DTYPE](0)
+                K_limit[i] = Scalar[DTYPE](1)
+                lambda_limit[i] = Scalar[DTYPE](0)
 
-            workspace[env, ws_t2x + c] = (
-                ny * workspace[env, ws_t1z + c]
-                - nz * workspace[env, ws_t1y + c]
-            )
-            workspace[env, ws_t2y + c] = (
-                nz * workspace[env, ws_t1x + c]
-                - nx * workspace[env, ws_t1z + c]
-            )
-            workspace[env, ws_t2z + c] = (
-                nx * workspace[env, ws_t1y + c]
-                - ny * workspace[env, ws_t1x + c]
-            )
-
-            # Compute K_t1 and store J_t1 in workspace
-            compute_contact_jacobian_row_gpu[
-                DTYPE,
-                NQ,
-                NV,
-                NBODY,
-                NJOINT,
-                MAX_CONTACTS,
-                STATE_SIZE,
-                MODEL_SIZE,
-                V_SIZE,
-                BATCH,
-                WS_SIZE,
-            ](
-                env,
-                state,
-                model,
-                workspace,
-                Int(workspace[env, ws_c_body + c]),
-                Int(workspace[env, ws_c_body_b + c]),
-                rebind[Scalar[DTYPE]](workspace[env, ws_c_px + c]),
-                rebind[Scalar[DTYPE]](workspace[env, ws_c_py + c]),
-                rebind[Scalar[DTYPE]](workspace[env, ws_c_pz + c]),
-                rebind[Scalar[DTYPE]](workspace[env, ws_t1x + c]),
-                rebind[Scalar[DTYPE]](workspace[env, ws_t1y + c]),
-                rebind[Scalar[DTYPE]](workspace[env, ws_t1z + c]),
-                J_row,
-            )
-            var k1: workspace.element_type = 0
-            for i in range(NV):
-                workspace[env, ws_J_t1 + c * NV + i] = J_row[i]
-                var mi_j_sum: workspace.element_type = 0
-                for j_idx in range(NV):
-                    mi_j_sum += (
-                        workspace[env, M_inv_idx + i * NV + j_idx]
-                        * J_row[j_idx]
-                    )
-                workspace[env, ws_MinvJt1 + c * NV + i] = mi_j_sum
-                k1 += J_row[i] * mi_j_sum
-            if k1 < Scalar[DTYPE](1e-10):
-                k1 = Scalar[DTYPE](1e-10)
-            workspace[env, ws_K_t1 + c] = k1
-
-            # Compute K_t2 and store J_t2, MinvJt2 in workspace
-            compute_contact_jacobian_row_gpu[
-                DTYPE,
-                NQ,
-                NV,
-                NBODY,
-                NJOINT,
-                MAX_CONTACTS,
-                STATE_SIZE,
-                MODEL_SIZE,
-                V_SIZE,
-                BATCH,
-                WS_SIZE,
-            ](
-                env,
-                state,
-                model,
-                workspace,
-                Int(workspace[env, ws_c_body + c]),
-                Int(workspace[env, ws_c_body_b + c]),
-                rebind[Scalar[DTYPE]](workspace[env, ws_c_px + c]),
-                rebind[Scalar[DTYPE]](workspace[env, ws_c_py + c]),
-                rebind[Scalar[DTYPE]](workspace[env, ws_c_pz + c]),
-                rebind[Scalar[DTYPE]](workspace[env, ws_t2x + c]),
-                rebind[Scalar[DTYPE]](workspace[env, ws_t2y + c]),
-                rebind[Scalar[DTYPE]](workspace[env, ws_t2z + c]),
-                J_row,
-            )
-            var k2: workspace.element_type = 0
-            for i in range(NV):
-                workspace[env, ws_J_t2 + c * NV + i] = J_row[i]
-                var mi_j_sum: workspace.element_type = 0
-                for j_idx in range(NV):
-                    mi_j_sum += (
-                        workspace[env, M_inv_idx + i * NV + j_idx]
-                        * J_row[j_idx]
-                    )
-                workspace[env, ws_MinvJt2 + c * NV + i] = mi_j_sum
-                k2 += J_row[i] * mi_j_sum
-            if k2 < Scalar[DTYPE](1e-10):
-                k2 = Scalar[DTYPE](1e-10)
-            workspace[env, ws_K_t2 + c] = k2
-
-            # Warm start tangent impulses
-            var c_off = contacts_off + c * CONTACT_SIZE
-            workspace[env, ws_lambda_t1 + c] = rebind[Scalar[DTYPE]](
-                state[env, c_off + CONTACT_IDX_IMPULSE_T1]
-            )
-            workspace[env, ws_lambda_t2 + c] = rebind[Scalar[DTYPE]](
-                state[env, c_off + CONTACT_IDX_IMPULSE_T2]
-            )
-
-        # Friction PGS iterations (reads J_t1/J_t2 from workspace, early exit)
-        for _ in range(PGS_ITERATIONS):
-            var max_fric_delta: workspace.element_type = 0
-            for c in range(nc):
-                if workspace[env, ws_lambda_n + c] <= Scalar[DTYPE](0):
+            var num_limits = 0
+            var qpos_off = 0
+            for j in range(NJOINT):
+                var j_off = model_joint_offset[NBODY](j)
+                var jtype = Int(
+                    rebind[Scalar[DTYPE]](model[0, j_off + JOINT_IDX_TYPE])
+                )
+                if jtype != JNT_HINGE and jtype != JNT_SLIDE:
                     continue
+                var dof = Int(
+                    rebind[Scalar[DTYPE]](
+                        model[0, j_off + JOINT_IDX_DOF_ADR]
+                    )
+                )
+                var qpos_adr = Int(
+                    rebind[Scalar[DTYPE]](
+                        model[0, j_off + JOINT_IDX_QPOS_ADR]
+                    )
+                )
+                var rmin = rebind[Scalar[DTYPE]](
+                    model[0, j_off + JOINT_IDX_RANGE_MIN]
+                )
+                var rmax = rebind[Scalar[DTYPE]](
+                    model[0, j_off + JOINT_IDX_RANGE_MAX]
+                )
+                if rmin < Scalar[DTYPE](-1e9) or rmax > Scalar[DTYPE](1e9):
+                    continue
+                var pos = rebind[Scalar[DTYPE]](
+                    state[env, qpos_off + qpos_adr]
+                )
+                var dist_lo = pos - rmin
+                if dist_lo < Scalar[DTYPE](0.01) and num_limits < MAX_LIMITS:
+                    limit_dof[num_limits] = dof
+                    limit_sign[num_limits] = Scalar[DTYPE](1)
+                    limit_dist_arr[num_limits] = dist_lo
+                    K_limit[num_limits] = rebind[Scalar[DTYPE]](
+                        workspace[env, M_inv_idx + dof * NV + dof]
+                    )
+                    if K_limit[num_limits] < Scalar[DTYPE](1e-10):
+                        K_limit[num_limits] = Scalar[DTYPE](1e-10)
+                    num_limits += 1
+                var dist_hi = rmax - pos
+                if dist_hi < Scalar[DTYPE](0.01) and num_limits < MAX_LIMITS:
+                    limit_dof[num_limits] = dof
+                    limit_sign[num_limits] = Scalar[DTYPE](-1)
+                    limit_dist_arr[num_limits] = dist_hi
+                    K_limit[num_limits] = rebind[Scalar[DTYPE]](
+                        workspace[env, M_inv_idx + dof * NV + dof]
+                    )
+                    if K_limit[num_limits] < Scalar[DTYPE](1e-10):
+                        K_limit[num_limits] = Scalar[DTYPE](1e-10)
+                    num_limits += 1
 
-                var max_friction = (
-                    friction_coef * workspace[env, ws_lambda_n + c]
+            if num_limits > 0:
+                var lr_tc = rebind[Scalar[DTYPE]](
+                    model[0, model_meta_off + MODEL_META_IDX_SOLREF_LIMIT_0]
+                )
+                var lr_dr = rebind[Scalar[DTYPE]](
+                    model[0, model_meta_off + MODEL_META_IDX_SOLREF_LIMIT_1]
+                )
+                var li_dmin = rebind[Scalar[DTYPE]](
+                    model[0, model_meta_off + MODEL_META_IDX_SOLIMP_LIMIT_0]
+                )
+                var li_dmax = rebind[Scalar[DTYPE]](
+                    model[0, model_meta_off + MODEL_META_IDX_SOLIMP_LIMIT_1]
+                )
+                var li_width = rebind[Scalar[DTYPE]](
+                    model[0, model_meta_off + MODEL_META_IDX_SOLIMP_LIMIT_2]
+                )
+                if li_width < Scalar[DTYPE](1e-6):
+                    li_width = Scalar[DTYPE](1e-6)
+                if li_dmax < Scalar[DTYPE](1e-4):
+                    li_dmax = Scalar[DTYPE](1e-4)
+                var l_inv_tc_dr = Scalar[DTYPE](1.0) / (lr_tc * lr_dr)
+                var l_b_vel_coef = (
+                    Scalar[DTYPE](2.0) * lr_dr * dt / (li_dmax * lr_tc)
+                )
+                var l_vel_factor = Scalar[DTYPE](1.0) - l_b_vel_coef
+
+                var lim_pos_bias = InlineArray[Scalar[DTYPE], MAX_LIMITS](
+                    uninitialized=True
+                )
+                var lim_inv_K_imp = InlineArray[Scalar[DTYPE], MAX_LIMITS](
+                    uninitialized=True
+                )
+                comptime MINVJ_LIM_SIZE = _max_one[2 * NJOINT * NV]()
+                var lim_MinvJ = InlineArray[
+                    Scalar[DTYPE], MINVJ_LIM_SIZE
+                ](uninitialized=True)
+                for l in range(num_limits):
+                    var penetration = -limit_dist_arr[l]
+                    if penetration < Scalar[DTYPE](0):
+                        penetration = Scalar[DTYPE](0)
+                    if penetration > Scalar[DTYPE](0.05):
+                        penetration = Scalar[DTYPE](0.05)
+                    var x_lim = penetration / li_width
+                    if x_lim > Scalar[DTYPE](1.0):
+                        x_lim = Scalar[DTYPE](1.0)
+                    var imp_lim = li_dmin + (
+                        Scalar[DTYPE](3.0) * x_lim * x_lim
+                        - Scalar[DTYPE](2.0) * x_lim * x_lim * x_lim
+                    ) * (li_dmax - li_dmin)
+                    if imp_lim < Scalar[DTYPE](0.2):
+                        imp_lim = Scalar[DTYPE](0.2)
+                    lim_pos_bias[l] = imp_lim * penetration * l_inv_tc_dr
+                    lim_inv_K_imp[l] = imp_lim / K_limit[l]
+                    var ldof = limit_dof[l]
+                    var lsign = limit_sign[l]
+                    for i in range(NV):
+                        lim_MinvJ[l * NV + i] = rebind[Scalar[DTYPE]](
+                            workspace[env, M_inv_idx + i * NV + ldof]
+                        ) * lsign
+
+                for _ in range(PGS_ITERATIONS):
+                    var max_lim_delta: Scalar[DTYPE] = 0
+                    for l in range(num_limits):
+                        var v_limit = (
+                            limit_sign[l]
+                            * workspace[env, qvel_idx + limit_dof[l]]
+                        )
+                        var delta_l = -(
+                            v_limit * l_vel_factor - lim_pos_bias[l]
+                        ) * lim_inv_K_imp[l]
+                        var old_lam = lambda_limit[l]
+                        lambda_limit[l] = lambda_limit[l] + rebind[
+                            Scalar[DTYPE]
+                        ](delta_l)
+                        if lambda_limit[l] < Scalar[DTYPE](0):
+                            lambda_limit[l] = Scalar[DTYPE](0)
+                        var actual_l = lambda_limit[l] - old_lam
+                        var abs_l = abs(actual_l)
+                        if abs_l > max_lim_delta:
+                            max_lim_delta = abs_l
+                        for i in range(NV):
+                            workspace[env, qvel_idx + i] += (
+                                lim_MinvJ[l * NV + i] * actual_l
+                            )
+                    if max_lim_delta < Scalar[DTYPE](1e-4):
+                        break
+
+        # All threads must hit this barrier
+        barrier()
+
+        # === PARALLEL PHASE 3: Each thread precomputes tangent for one contact ===
+        if valid_env and contact_tid < nc:
+            var c = contact_tid
+            if workspace[env, ws_lambda_n + c] > 0:
+                var nx = workspace[env, ws_c_nx + c]
+                var ny = workspace[env, ws_c_ny + c]
+                var nz = workspace[env, ws_c_nz + c]
+
+                # Tangent basis
+                if abs(nx) < 0.9:
+                    workspace[env, ws_t1x + c] = 0
+                    workspace[env, ws_t1y + c] = -nz
+                    workspace[env, ws_t1z + c] = ny
+                else:
+                    workspace[env, ws_t1x + c] = nz
+                    workspace[env, ws_t1y + c] = 0
+                    workspace[env, ws_t1z + c] = -nx
+
+                var t1_mag = sqrt(
+                    workspace[env, ws_t1x + c] * workspace[env, ws_t1x + c]
+                    + workspace[env, ws_t1y + c] * workspace[env, ws_t1y + c]
+                    + workspace[env, ws_t1z + c] * workspace[env, ws_t1z + c]
+                )
+                if t1_mag > Scalar[DTYPE](1e-10):
+                    workspace[env, ws_t1x + c] /= t1_mag
+                    workspace[env, ws_t1y + c] /= t1_mag
+                    workspace[env, ws_t1z + c] /= t1_mag
+
+                workspace[env, ws_t2x + c] = (
+                    ny * workspace[env, ws_t1z + c]
+                    - nz * workspace[env, ws_t1y + c]
+                )
+                workspace[env, ws_t2y + c] = (
+                    nz * workspace[env, ws_t1x + c]
+                    - nx * workspace[env, ws_t1z + c]
+                )
+                workspace[env, ws_t2z + c] = (
+                    nx * workspace[env, ws_t1y + c]
+                    - ny * workspace[env, ws_t1x + c]
                 )
 
-                # Tangent 1 velocity from stored J_t1
-                var v_t1: workspace.element_type = 0
+                # Compute J_t1, K_t1, MinvJt1
+                compute_contact_jacobian_row_gpu[
+                    DTYPE,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    MAX_CONTACTS,
+                    STATE_SIZE,
+                    MODEL_SIZE,
+                    V_SIZE,
+                    BATCH,
+                    WS_SIZE,
+                ](
+                    env,
+                    state,
+                    model,
+                    workspace,
+                    Int(workspace[env, ws_c_body + c]),
+                    Int(workspace[env, ws_c_body_b + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_c_px + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_c_py + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_c_pz + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_t1x + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_t1y + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_t1z + c]),
+                    J_row,
+                )
+                var k1: workspace.element_type = 0
                 for i in range(NV):
-                    v_t1 += (
-                        workspace[env, ws_J_t1 + c * NV + i]
-                        * workspace[env, qvel_idx + i]
+                    workspace[env, ws_J_t1 + c * NV + i] = J_row[i]
+                    var mi_j_sum: workspace.element_type = 0
+                    for j_idx in range(NV):
+                        mi_j_sum += (
+                            workspace[env, M_inv_idx + i * NV + j_idx]
+                            * J_row[j_idx]
+                        )
+                    workspace[env, ws_MinvJt1 + c * NV + i] = mi_j_sum
+                    k1 += J_row[i] * mi_j_sum
+                if k1 < Scalar[DTYPE](1e-10):
+                    k1 = Scalar[DTYPE](1e-10)
+                workspace[env, ws_K_t1 + c] = k1
+
+                # Compute J_t2, K_t2, MinvJt2
+                compute_contact_jacobian_row_gpu[
+                    DTYPE,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    MAX_CONTACTS,
+                    STATE_SIZE,
+                    MODEL_SIZE,
+                    V_SIZE,
+                    BATCH,
+                    WS_SIZE,
+                ](
+                    env,
+                    state,
+                    model,
+                    workspace,
+                    Int(workspace[env, ws_c_body + c]),
+                    Int(workspace[env, ws_c_body_b + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_c_px + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_c_py + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_c_pz + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_t2x + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_t2y + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_t2z + c]),
+                    J_row,
+                )
+                var k2: workspace.element_type = 0
+                for i in range(NV):
+                    workspace[env, ws_J_t2 + c * NV + i] = J_row[i]
+                    var mi_j_sum: workspace.element_type = 0
+                    for j_idx in range(NV):
+                        mi_j_sum += (
+                            workspace[env, M_inv_idx + i * NV + j_idx]
+                            * J_row[j_idx]
+                        )
+                    workspace[env, ws_MinvJt2 + c * NV + i] = mi_j_sum
+                    k2 += J_row[i] * mi_j_sum
+                if k2 < Scalar[DTYPE](1e-10):
+                    k2 = Scalar[DTYPE](1e-10)
+                workspace[env, ws_K_t2 + c] = k2
+
+                # Store warm start tangent impulses
+                var c_off = contacts_off + c * CONTACT_SIZE
+                workspace[env, ws_lambda_t1 + c] = rebind[Scalar[DTYPE]](
+                    state[env, c_off + CONTACT_IDX_IMPULSE_T1]
+                )
+                workspace[env, ws_lambda_t2 + c] = rebind[Scalar[DTYPE]](
+                    state[env, c_off + CONTACT_IDX_IMPULSE_T2]
+                )
+
+        # All threads must hit this barrier
+        barrier()
+
+        # === SEQUENTIAL: Friction PGS + impulse store (thread 0 only) ===
+        if valid_env and contact_tid == 0:
+            # Friction PGS iterations
+            for _ in range(PGS_ITERATIONS):
+                var max_fric_delta: workspace.element_type = 0
+                for c in range(nc):
+                    if workspace[env, ws_lambda_n + c] <= Scalar[DTYPE](0):
+                        continue
+
+                    var max_friction = (
+                        friction_coef * workspace[env, ws_lambda_n + c]
                     )
 
-                var delta_t1 = -v_t1 / workspace[env, ws_K_t1 + c]
-                var old_t1 = workspace[env, ws_lambda_t1 + c]
-                workspace[env, ws_lambda_t1 + c] = (
-                    workspace[env, ws_lambda_t1 + c] + delta_t1
-                )
-
-                # Tangent 2 velocity from stored J_t2
-                var v_t2: workspace.element_type = 0
-                for i in range(NV):
-                    v_t2 += (
-                        workspace[env, ws_J_t2 + c * NV + i]
-                        * workspace[env, qvel_idx + i]
-                    )
-
-                var delta_t2 = -v_t2 / workspace[env, ws_K_t2 + c]
-                var old_t2 = workspace[env, ws_lambda_t2 + c]
-                workspace[env, ws_lambda_t2 + c] = (
-                    workspace[env, ws_lambda_t2 + c] + delta_t2
-                )
-
-                # Coulomb cone clamping
-                var t_mag = sqrt(
-                    workspace[env, ws_lambda_t1 + c]
-                    * workspace[env, ws_lambda_t1 + c]
-                    + workspace[env, ws_lambda_t2 + c]
-                    * workspace[env, ws_lambda_t2 + c]
-                )
-                if t_mag > max_friction:
-                    var scale = max_friction / t_mag
+                    var v_t1: workspace.element_type = 0
+                    for i in range(NV):
+                        v_t1 += (
+                            workspace[env, ws_J_t1 + c * NV + i]
+                            * workspace[env, qvel_idx + i]
+                        )
+                    var delta_t1 = -v_t1 / workspace[env, ws_K_t1 + c]
+                    var old_t1 = workspace[env, ws_lambda_t1 + c]
                     workspace[env, ws_lambda_t1 + c] = (
-                        workspace[env, ws_lambda_t1 + c] * scale
+                        workspace[env, ws_lambda_t1 + c] + delta_t1
                     )
+
+                    var v_t2: workspace.element_type = 0
+                    for i in range(NV):
+                        v_t2 += (
+                            workspace[env, ws_J_t2 + c * NV + i]
+                            * workspace[env, qvel_idx + i]
+                        )
+                    var delta_t2 = -v_t2 / workspace[env, ws_K_t2 + c]
+                    var old_t2 = workspace[env, ws_lambda_t2 + c]
                     workspace[env, ws_lambda_t2 + c] = (
-                        workspace[env, ws_lambda_t2 + c] * scale
+                        workspace[env, ws_lambda_t2 + c] + delta_t2
                     )
 
-                var actual_t1 = workspace[env, ws_lambda_t1 + c] - old_t1
-                var actual_t2 = workspace[env, ws_lambda_t2 + c] - old_t2
-
-                # Track convergence
-                var abs_t1 = abs(actual_t1)
-                var abs_t2 = abs(actual_t2)
-                if abs_t1 > max_fric_delta:
-                    max_fric_delta = abs_t1
-                if abs_t2 > max_fric_delta:
-                    max_fric_delta = abs_t2
-
-                # Apply tangent corrections: qvel += MinvJt1*dt1 + MinvJt2*dt2
-                for i in range(NV):
-                    workspace[env, qvel_idx + i] += (
-                        workspace[env, ws_MinvJt1 + c * NV + i] * actual_t1
-                        + workspace[env, ws_MinvJt2 + c * NV + i] * actual_t2
+                    # Coulomb cone clamping
+                    var t_mag = sqrt(
+                        workspace[env, ws_lambda_t1 + c]
+                        * workspace[env, ws_lambda_t1 + c]
+                        + workspace[env, ws_lambda_t2 + c]
+                        * workspace[env, ws_lambda_t2 + c]
                     )
-            # Early exit when converged
-            if max_fric_delta < Scalar[DTYPE](1e-4):
-                break
+                    if t_mag > max_friction:
+                        var scale = max_friction / t_mag
+                        workspace[env, ws_lambda_t1 + c] = (
+                            workspace[env, ws_lambda_t1 + c] * scale
+                        )
+                        workspace[env, ws_lambda_t2 + c] = (
+                            workspace[env, ws_lambda_t2 + c] * scale
+                        )
 
-        # Store impulses back to state buffer for warm-starting
-        for c in range(nc):
-            var c_off = contacts_off + c * CONTACT_SIZE
-            state[env, c_off + CONTACT_IDX_IMPULSE_N] = workspace[
-                env, ws_lambda_n + c
-            ]
-            state[env, c_off + CONTACT_IDX_IMPULSE_T1] = workspace[
-                env, ws_lambda_t1 + c
-            ]
-            state[env, c_off + CONTACT_IDX_IMPULSE_T2] = workspace[
-                env, ws_lambda_t2 + c
-            ]
+                    var actual_t1 = (
+                        workspace[env, ws_lambda_t1 + c] - old_t1
+                    )
+                    var actual_t2 = (
+                        workspace[env, ws_lambda_t2 + c] - old_t2
+                    )
+
+                    var abs_t1 = abs(actual_t1)
+                    var abs_t2 = abs(actual_t2)
+                    if abs_t1 > max_fric_delta:
+                        max_fric_delta = abs_t1
+                    if abs_t2 > max_fric_delta:
+                        max_fric_delta = abs_t2
+
+                    for i in range(NV):
+                        workspace[env, qvel_idx + i] += (
+                            workspace[env, ws_MinvJt1 + c * NV + i]
+                            * actual_t1
+                            + workspace[env, ws_MinvJt2 + c * NV + i]
+                            * actual_t2
+                        )
+                if max_fric_delta < Scalar[DTYPE](1e-4):
+                    break
+
+            # Store impulses back to state buffer for warm-starting
+            for c in range(nc):
+                var c_off = contacts_off + c * CONTACT_SIZE
+                state[env, c_off + CONTACT_IDX_IMPULSE_N] = workspace[
+                    env, ws_lambda_n + c
+                ]
+                state[env, c_off + CONTACT_IDX_IMPULSE_T1] = workspace[
+                    env, ws_lambda_t1 + c
+                ]
+                state[env, c_off + CONTACT_IDX_IMPULSE_T2] = workspace[
+                    env, ws_lambda_t2 + c
+                ]

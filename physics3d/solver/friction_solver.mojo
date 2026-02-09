@@ -342,6 +342,11 @@ fn _solve_friction_pgs_gpu[
     comptime _t2x = friction_ws_off + 7 * MC
     comptime _t2y = friction_ws_off + 8 * MC
     comptime _t2z = friction_ws_off + 9 * MC
+    # Cached Jacobians and precomputed M_inv @ J^T (4 * MC * NV)
+    comptime ws_J_t1 = friction_ws_off + 10 * MC
+    comptime ws_J_t2 = friction_ws_off + 10 * MC + MC * NV
+    comptime ws_MinvJt1 = friction_ws_off + 10 * MC + 2 * MC * NV
+    comptime ws_MinvJt2 = friction_ws_off + 10 * MC + 3 * MC * NV
 
     # Initialize friction workspace
     for i in range(MC):
@@ -396,7 +401,7 @@ fn _solve_friction_pgs_gpu[
             nx * workspace[env, _t1y + c] - ny * workspace[env, _t1x + c]
         )
 
-        # Compute K_t1
+        # Compute K_t1, cache J_t1 and MinvJt1
         compute_contact_jacobian_row_gpu[
             DTYPE,
             NQ,
@@ -427,17 +432,19 @@ fn _solve_friction_pgs_gpu[
 
         var k1: workspace.element_type = 0
         for i in range(NV):
+            workspace[env, ws_J_t1 + c * NV + i] = J_row[i]
             var mi_j_sum: workspace.element_type = 0
             for j_idx in range(NV):
                 mi_j_sum += (
                     workspace[env, M_inv + i * NV + j_idx] * J_row[j_idx]
                 )
+            workspace[env, ws_MinvJt1 + c * NV + i] = mi_j_sum
             k1 += J_row[i] * mi_j_sum
         if k1 < Scalar[DTYPE](1e-10):
             k1 = Scalar[DTYPE](1e-10)
         workspace[env, kt1 + c] = k1
 
-        # Compute K_t2
+        # Compute K_t2, cache J_t2 and MinvJt2
         compute_contact_jacobian_row_gpu[
             DTYPE,
             NQ,
@@ -467,11 +474,13 @@ fn _solve_friction_pgs_gpu[
         )
         var k2: workspace.element_type = 0
         for i in range(NV):
+            workspace[env, ws_J_t2 + c * NV + i] = J_row[i]
             var mi_j_sum: workspace.element_type = 0
             for j_idx in range(NV):
                 mi_j_sum += (
                     workspace[env, M_inv + i * NV + j_idx] * J_row[j_idx]
                 )
+            workspace[env, ws_MinvJt2 + c * NV + i] = mi_j_sum
             k2 += J_row[i] * mi_j_sum
         if k2 < Scalar[DTYPE](1e-10):
             k2 = Scalar[DTYPE](1e-10)
@@ -486,83 +495,28 @@ fn _solve_friction_pgs_gpu[
             state[env, c_off + CONTACT_IDX_IMPULSE_T2]
         )
 
-    # Friction PGS iterations
-    var J_t_row = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-
+    # Friction PGS iterations (using cached J_t1/J_t2 and MinvJt1/MinvJt2)
     for _ in range(FRICTION_PGS_ITERATIONS):
+        var max_delta: workspace.element_type = 0
         for c in range(nc):
             if workspace[env, ws_lambda_n + c] <= Scalar[DTYPE](0):
                 continue
 
             var max_friction = friction_coef * workspace[env, ws_lambda_n + c]
 
-            # Tangent 1
-            compute_contact_jacobian_row_gpu[
-                DTYPE,
-                NQ,
-                NV,
-                NBODY,
-                NJOINT,
-                MAX_CONTACTS,
-                STATE_SIZE,
-                MODEL_SIZE,
-                V_SIZE,
-                BATCH,
-                WS_SIZE,
-            ](
-                env,
-                state,
-                model,
-                workspace,
-                Int(workspace[env, ws_c_body + c]),
-                Int(workspace[env, ws_c_body_b + c]),
-                rebind[Scalar[DTYPE]](workspace[env, ws_c_px + c]),
-                rebind[Scalar[DTYPE]](workspace[env, ws_c_py + c]),
-                rebind[Scalar[DTYPE]](workspace[env, ws_c_pz + c]),
-                rebind[Scalar[DTYPE]](workspace[env, _t1x + c]),
-                rebind[Scalar[DTYPE]](workspace[env, _t1y + c]),
-                rebind[Scalar[DTYPE]](workspace[env, _t1z + c]),
-                J_t_row,
-            )
+            # Tangent 1: v_t1 = J_t1[c] . qvel
             var v_t1: workspace.element_type = 0
             for i in range(NV):
-                v_t1 += J_t_row[i] * workspace[env, qvel_idx + i]
+                v_t1 += workspace[env, ws_J_t1 + c * NV + i] * workspace[env, qvel_idx + i]
 
             var delta_t1 = -v_t1 / workspace[env, kt1 + c]
             var old_t1 = workspace[env, lt1 + c]
             workspace[env, lt1 + c] = workspace[env, lt1 + c] + delta_t1
 
-            # Tangent 2
-            compute_contact_jacobian_row_gpu[
-                DTYPE,
-                NQ,
-                NV,
-                NBODY,
-                NJOINT,
-                MAX_CONTACTS,
-                STATE_SIZE,
-                MODEL_SIZE,
-                V_SIZE,
-                BATCH,
-                WS_SIZE,
-            ](
-                env,
-                state,
-                model,
-                workspace,
-                Int(workspace[env, ws_c_body + c]),
-                Int(workspace[env, ws_c_body_b + c]),
-                rebind[Scalar[DTYPE]](workspace[env, ws_c_px + c]),
-                rebind[Scalar[DTYPE]](workspace[env, ws_c_py + c]),
-                rebind[Scalar[DTYPE]](workspace[env, ws_c_pz + c]),
-                rebind[Scalar[DTYPE]](workspace[env, _t2x + c]),
-                rebind[Scalar[DTYPE]](workspace[env, _t2y + c]),
-                rebind[Scalar[DTYPE]](workspace[env, _t2z + c]),
-                J_t_row,
-            )
+            # Tangent 2: v_t2 = J_t2[c] . qvel
             var v_t2: workspace.element_type = 0
             for i in range(NV):
-                v_t2 += J_t_row[i] * workspace[env, qvel_idx + i]
+                v_t2 += workspace[env, ws_J_t2 + c * NV + i] * workspace[env, qvel_idx + i]
 
             var delta_t2 = -v_t2 / workspace[env, kt2 + c]
             var old_t2 = workspace[env, lt2 + c]
@@ -581,77 +535,24 @@ fn _solve_friction_pgs_gpu[
             var actual_t1 = workspace[env, lt1 + c] - old_t1
             var actual_t2 = workspace[env, lt2 + c] - old_t2
 
-            # Apply tangent 1 correction
-            compute_contact_jacobian_row_gpu[
-                DTYPE,
-                NQ,
-                NV,
-                NBODY,
-                NJOINT,
-                MAX_CONTACTS,
-                STATE_SIZE,
-                MODEL_SIZE,
-                V_SIZE,
-                BATCH,
-                WS_SIZE,
-            ](
-                env,
-                state,
-                model,
-                workspace,
-                Int(workspace[env, ws_c_body + c]),
-                Int(workspace[env, ws_c_body_b + c]),
-                rebind[Scalar[DTYPE]](workspace[env, ws_c_px + c]),
-                rebind[Scalar[DTYPE]](workspace[env, ws_c_py + c]),
-                rebind[Scalar[DTYPE]](workspace[env, ws_c_pz + c]),
-                rebind[Scalar[DTYPE]](workspace[env, _t1x + c]),
-                rebind[Scalar[DTYPE]](workspace[env, _t1y + c]),
-                rebind[Scalar[DTYPE]](workspace[env, _t1z + c]),
-                J_row,
-            )
-            for i in range(NV):
-                var mi_j_sum: workspace.element_type = 0
-                for j_idx in range(NV):
-                    mi_j_sum += (
-                        workspace[env, M_inv + i * NV + j_idx] * J_row[j_idx]
-                    )
-                workspace[env, qvel_idx + i] += mi_j_sum * actual_t1
+            # Track max delta for early exit
+            var abs_t1 = abs(actual_t1)
+            var abs_t2 = abs(actual_t2)
+            if abs_t1 > max_delta:
+                max_delta = abs_t1
+            if abs_t2 > max_delta:
+                max_delta = abs_t2
 
-            # Apply tangent 2 correction
-            compute_contact_jacobian_row_gpu[
-                DTYPE,
-                NQ,
-                NV,
-                NBODY,
-                NJOINT,
-                MAX_CONTACTS,
-                STATE_SIZE,
-                MODEL_SIZE,
-                V_SIZE,
-                BATCH,
-                WS_SIZE,
-            ](
-                env,
-                state,
-                model,
-                workspace,
-                Int(workspace[env, ws_c_body + c]),
-                Int(workspace[env, ws_c_body_b + c]),
-                rebind[Scalar[DTYPE]](workspace[env, ws_c_px + c]),
-                rebind[Scalar[DTYPE]](workspace[env, ws_c_py + c]),
-                rebind[Scalar[DTYPE]](workspace[env, ws_c_pz + c]),
-                rebind[Scalar[DTYPE]](workspace[env, _t2x + c]),
-                rebind[Scalar[DTYPE]](workspace[env, _t2y + c]),
-                rebind[Scalar[DTYPE]](workspace[env, _t2z + c]),
-                J_t_row,
-            )
+            # Apply velocity correction: qvel += MinvJt1 * actual_t1 + MinvJt2 * actual_t2
             for i in range(NV):
-                var mi_j_sum: workspace.element_type = 0
-                for j_idx in range(NV):
-                    mi_j_sum += (
-                        workspace[env, M_inv + i * NV + j_idx] * J_t_row[j_idx]
-                    )
-                workspace[env, qvel_idx + i] += mi_j_sum * actual_t2
+                workspace[env, qvel_idx + i] += (
+                    workspace[env, ws_MinvJt1 + c * NV + i] * actual_t1
+                    + workspace[env, ws_MinvJt2 + c * NV + i] * actual_t2
+                )
+
+        # Early exit if converged
+        if max_delta < Scalar[DTYPE](1e-4):
+            break
 
     # Store impulses back for warm-starting
     for c in range(nc):

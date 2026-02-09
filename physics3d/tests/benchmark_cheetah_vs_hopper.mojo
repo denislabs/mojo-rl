@@ -1,15 +1,14 @@
 """Benchmark: HalfCheetah vs Hopper GPU physics to measure scaling impact.
 
-Compares the physics step kernel at two model complexities to understand
-register pressure and O(N²) scaling effects with InlineArrays.
+Compares the 3-phase physics step pipeline (step_kernel + solve_gpu +
+step_finalize_kernel) at two model complexities to understand register
+pressure and O(N²) scaling effects.
 
 Each iteration runs STEPS (100) consecutive physics steps to simulate a
 realistic rollout, with state reset between iterations.
 
 HalfCheetah: NBODY=8, NJOINT=10, NQ=10, NV=10, MAX_CONTACTS=20
-  → InlineArray register pressure: ~1654 floats/thread (with Newton)
 Hopper:      NBODY=4, NJOINT=6,  NQ=6,  NV=6,  MAX_CONTACTS=10
-  → InlineArray register pressure: ~664 floats/thread (with Newton)
 
 Run with:
     cd mojo-rl
@@ -76,96 +75,6 @@ comptime C_WS_SIZE = integrator_workspace_size[C_NV, C_NBODY]() + C_NV * C_NV + 
 
 
 comptime DTYPE = DType.float32
-
-
-# =============================================================================
-# Solver step kernels (parametric)
-# =============================================================================
-
-@always_inline
-fn hopper_pgs_kernel(
-    state: LayoutTensor[DTYPE, Layout.row_major(BATCH, H_STATE_SIZE), MutAnyOrigin],
-    model: LayoutTensor[DTYPE, Layout.row_major(1, H_MODEL_SIZE), MutAnyOrigin],
-    workspace: LayoutTensor[DTYPE, Layout.row_major(BATCH, H_WS_SIZE), MutAnyOrigin],
-):
-    var env = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if env >= BATCH:
-        return
-    EulerIntegrator[PGSSolver].step_constraint_kernel[
-        DTYPE, H_NQ, H_NV, H_NBODY, H_NJOINT, H_MAX_CONTACTS,
-        H_STATE_SIZE, H_MODEL_SIZE, BATCH, H_WS_SIZE,
-    ](env, state, model, workspace)
-
-@always_inline
-fn hopper_cg_kernel(
-    state: LayoutTensor[DTYPE, Layout.row_major(BATCH, H_STATE_SIZE), MutAnyOrigin],
-    model: LayoutTensor[DTYPE, Layout.row_major(1, H_MODEL_SIZE), MutAnyOrigin],
-    workspace: LayoutTensor[DTYPE, Layout.row_major(BATCH, H_WS_SIZE), MutAnyOrigin],
-):
-    var env = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if env >= BATCH:
-        return
-    EulerIntegrator[CGSolver].step_constraint_kernel[
-        DTYPE, H_NQ, H_NV, H_NBODY, H_NJOINT, H_MAX_CONTACTS,
-        H_STATE_SIZE, H_MODEL_SIZE, BATCH, H_WS_SIZE,
-    ](env, state, model, workspace)
-
-@always_inline
-fn hopper_newton_kernel(
-    state: LayoutTensor[DTYPE, Layout.row_major(BATCH, H_STATE_SIZE), MutAnyOrigin],
-    model: LayoutTensor[DTYPE, Layout.row_major(1, H_MODEL_SIZE), MutAnyOrigin],
-    workspace: LayoutTensor[DTYPE, Layout.row_major(BATCH, H_WS_SIZE), MutAnyOrigin],
-):
-    var env = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if env >= BATCH:
-        return
-    EulerIntegrator[NewtonSolver].step_constraint_kernel[
-        DTYPE, H_NQ, H_NV, H_NBODY, H_NJOINT, H_MAX_CONTACTS,
-        H_STATE_SIZE, H_MODEL_SIZE, BATCH, H_WS_SIZE,
-    ](env, state, model, workspace)
-
-
-@always_inline
-fn cheetah_pgs_kernel(
-    state: LayoutTensor[DTYPE, Layout.row_major(BATCH, C_STATE_SIZE), MutAnyOrigin],
-    model: LayoutTensor[DTYPE, Layout.row_major(1, C_MODEL_SIZE), MutAnyOrigin],
-    workspace: LayoutTensor[DTYPE, Layout.row_major(BATCH, C_WS_SIZE), MutAnyOrigin],
-):
-    var env = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if env >= BATCH:
-        return
-    EulerIntegrator[PGSSolver].step_constraint_kernel[
-        DTYPE, C_NQ, C_NV, C_NBODY, C_NJOINT, C_MAX_CONTACTS,
-        C_STATE_SIZE, C_MODEL_SIZE, BATCH, C_WS_SIZE,
-    ](env, state, model, workspace)
-
-@always_inline
-fn cheetah_cg_kernel(
-    state: LayoutTensor[DTYPE, Layout.row_major(BATCH, C_STATE_SIZE), MutAnyOrigin],
-    model: LayoutTensor[DTYPE, Layout.row_major(1, C_MODEL_SIZE), MutAnyOrigin],
-    workspace: LayoutTensor[DTYPE, Layout.row_major(BATCH, C_WS_SIZE), MutAnyOrigin],
-):
-    var env = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if env >= BATCH:
-        return
-    EulerIntegrator[CGSolver].step_constraint_kernel[
-        DTYPE, C_NQ, C_NV, C_NBODY, C_NJOINT, C_MAX_CONTACTS,
-        C_STATE_SIZE, C_MODEL_SIZE, BATCH, C_WS_SIZE,
-    ](env, state, model, workspace)
-
-@always_inline
-fn cheetah_newton_kernel(
-    state: LayoutTensor[DTYPE, Layout.row_major(BATCH, C_STATE_SIZE), MutAnyOrigin],
-    model: LayoutTensor[DTYPE, Layout.row_major(1, C_MODEL_SIZE), MutAnyOrigin],
-    workspace: LayoutTensor[DTYPE, Layout.row_major(BATCH, C_WS_SIZE), MutAnyOrigin],
-):
-    var env = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if env >= BATCH:
-        return
-    EulerIntegrator[NewtonSolver].step_constraint_kernel[
-        DTYPE, C_NQ, C_NV, C_NBODY, C_NJOINT, C_MAX_CONTACTS,
-        C_STATE_SIZE, C_MODEL_SIZE, BATCH, C_WS_SIZE,
-    ](env, state, model, workspace)
 
 
 # =============================================================================
@@ -383,11 +292,11 @@ fn main() raises:
     print()
     print("Hopper:      NBODY=4, NJOINT=6,  NQ=6,  NV=6,  MAX_CONTACTS=10")
     print("  STATE_SIZE:", H_STATE_SIZE, " MODEL_SIZE:", H_MODEL_SIZE)
-    print("  M_SIZE=36,  InlineArray floats/thread: ~664 (with Newton)")
+    print("  M_SIZE=36")
     print()
     print("HalfCheetah: NBODY=8, NJOINT=10, NQ=10, NV=10, MAX_CONTACTS=20")
     print("  STATE_SIZE:", C_STATE_SIZE, " MODEL_SIZE:", C_MODEL_SIZE)
-    print("  M_SIZE=100, InlineArray floats/thread: ~1654 (with Newton)")
+    print("  M_SIZE=100")
     print()
     print("BATCH:", BATCH, " Warmup:", WARMUP, " Iters:", ITERS, " Steps/iter:", STEPS)
     print()
@@ -482,6 +391,89 @@ fn main() raises:
     comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
     # =========================================================================
+    # 3-phase kernel references
+    # =========================================================================
+
+    # Step/finalize kernels (solver-independent)
+    comptime h_step_fn = EulerIntegrator[PGSSolver].step_kernel[
+        DTYPE, H_NQ, H_NV, H_NBODY, H_NJOINT, H_MAX_CONTACTS,
+        H_STATE_SIZE, H_MODEL_SIZE, BATCH, H_WS_SIZE,
+    ]
+    comptime h_fin_fn = EulerIntegrator[PGSSolver].step_finalize_kernel[
+        DTYPE, H_NQ, H_NV, H_NBODY, H_NJOINT, H_MAX_CONTACTS,
+        H_STATE_SIZE, H_MODEL_SIZE, BATCH, H_WS_SIZE,
+    ]
+    comptime c_step_fn = EulerIntegrator[PGSSolver].step_kernel[
+        DTYPE, C_NQ, C_NV, C_NBODY, C_NJOINT, C_MAX_CONTACTS,
+        C_STATE_SIZE, C_MODEL_SIZE, BATCH, C_WS_SIZE,
+    ]
+    comptime c_fin_fn = EulerIntegrator[PGSSolver].step_finalize_kernel[
+        DTYPE, C_NQ, C_NV, C_NBODY, C_NJOINT, C_MAX_CONTACTS,
+        C_STATE_SIZE, C_MODEL_SIZE, BATCH, C_WS_SIZE,
+    ]
+
+    # Solver kernels
+    comptime H_SV = _max_one[H_NV]()
+    comptime C_SV = _max_one[C_NV]()
+
+    comptime h_pgs_solve = PGSSolver.solve_gpu[
+        DTYPE, H_NQ, H_NV, H_NBODY, H_NJOINT, H_MAX_CONTACTS,
+        H_STATE_SIZE, H_MODEL_SIZE, H_SV, BATCH, H_WS_SIZE,
+    ]
+    comptime h_cg_solve = CGSolver.solve_gpu[
+        DTYPE, H_NQ, H_NV, H_NBODY, H_NJOINT, H_MAX_CONTACTS,
+        H_STATE_SIZE, H_MODEL_SIZE, H_SV, BATCH, H_WS_SIZE,
+    ]
+    comptime h_nwt_solve = NewtonSolver.solve_gpu[
+        DTYPE, H_NQ, H_NV, H_NBODY, H_NJOINT, H_MAX_CONTACTS,
+        H_STATE_SIZE, H_MODEL_SIZE, H_SV, BATCH, H_WS_SIZE,
+    ]
+    comptime c_pgs_solve = PGSSolver.solve_gpu[
+        DTYPE, C_NQ, C_NV, C_NBODY, C_NJOINT, C_MAX_CONTACTS,
+        C_STATE_SIZE, C_MODEL_SIZE, C_SV, BATCH, C_WS_SIZE,
+    ]
+    comptime c_cg_solve = CGSolver.solve_gpu[
+        DTYPE, C_NQ, C_NV, C_NBODY, C_NJOINT, C_MAX_CONTACTS,
+        C_STATE_SIZE, C_MODEL_SIZE, C_SV, BATCH, C_WS_SIZE,
+    ]
+    comptime c_nwt_solve = NewtonSolver.solve_gpu[
+        DTYPE, C_NQ, C_NV, C_NBODY, C_NJOINT, C_MAX_CONTACTS,
+        C_STATE_SIZE, C_MODEL_SIZE, C_SV, BATCH, C_WS_SIZE,
+    ]
+
+    # Solver grid/block dims — Hopper
+    comptime H_PGS_TH = PGSSolver.solver_threads[H_NQ, H_NV, H_NBODY, H_NJOINT, H_MAX_CONTACTS]()
+    comptime H_PGS_ETPB = TPB // H_PGS_TH
+    comptime H_PGS_EB = (BATCH + H_PGS_ETPB - 1) // H_PGS_ETPB
+    comptime H_PGS_TB = (H_PGS_TH + H_PGS_TH - 1) // H_PGS_TH
+
+    comptime H_CG_TH = CGSolver.solver_threads[H_NQ, H_NV, H_NBODY, H_NJOINT, H_MAX_CONTACTS]()
+    comptime H_CG_ETPB = TPB // H_CG_TH
+    comptime H_CG_EB = (BATCH + H_CG_ETPB - 1) // H_CG_ETPB
+    comptime H_CG_TB = (H_CG_TH + H_CG_TH - 1) // H_CG_TH
+
+    comptime H_NWT_TH = NewtonSolver.solver_threads[H_NQ, H_NV, H_NBODY, H_NJOINT, H_MAX_CONTACTS]()
+    comptime H_NWT_ETPB = TPB // H_NWT_TH
+    comptime H_NWT_EB = (BATCH + H_NWT_ETPB - 1) // H_NWT_ETPB
+    comptime H_NWT_TB = (H_NWT_TH + H_NWT_TH - 1) // H_NWT_TH
+
+    # Solver grid/block dims — HalfCheetah
+    comptime C_PGS_TH = PGSSolver.solver_threads[C_NQ, C_NV, C_NBODY, C_NJOINT, C_MAX_CONTACTS]()
+    comptime C_PGS_ETPB = TPB // C_PGS_TH
+    comptime C_PGS_EB = (BATCH + C_PGS_ETPB - 1) // C_PGS_ETPB
+    comptime C_PGS_TB = (C_PGS_TH + C_PGS_TH - 1) // C_PGS_TH
+
+    comptime C_CG_TH = CGSolver.solver_threads[C_NQ, C_NV, C_NBODY, C_NJOINT, C_MAX_CONTACTS]()
+    comptime C_CG_ETPB = TPB // C_CG_TH
+    comptime C_CG_EB = (BATCH + C_CG_ETPB - 1) // C_CG_ETPB
+    comptime C_CG_TB = (C_CG_TH + C_CG_TH - 1) // C_CG_TH
+
+    comptime C_NWT_TH = NewtonSolver.solver_threads[C_NQ, C_NV, C_NBODY, C_NJOINT, C_MAX_CONTACTS]()
+    comptime C_NWT_ETPB = TPB // C_NWT_TH
+    comptime C_NWT_EB = (BATCH + C_NWT_ETPB - 1) // C_NWT_ETPB
+    comptime C_NWT_TB = (C_NWT_TH + C_NWT_TH - 1) // C_NWT_TH
+
+    # =========================================================================
     # Benchmark Hopper
     # =========================================================================
     print("=" * 70)
@@ -493,14 +485,24 @@ fn main() raises:
     ctx.synchronize()
     for _ in range(WARMUP):
         for _ in range(STEPS):
-            ctx.enqueue_function[hopper_pgs_kernel, hopper_pgs_kernel](
+            ctx.enqueue_function[h_step_fn, h_step_fn](
+                h_st, h_md, h_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
+            ctx.enqueue_function[h_pgs_solve, h_pgs_solve](
+                h_st, h_md, h_ws,
+                grid_dim=(H_PGS_EB, H_PGS_TB), block_dim=(H_PGS_ETPB, H_PGS_TH))
+            ctx.enqueue_function[h_fin_fn, h_fin_fn](
                 h_st, h_md, h_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
     ctx.synchronize()
     var t0 = perf_counter_ns()
     for _ in range(ITERS):
         ctx.enqueue_copy(h_state_buf, h_state_host.unsafe_ptr())
         for _ in range(STEPS):
-            ctx.enqueue_function[hopper_pgs_kernel, hopper_pgs_kernel](
+            ctx.enqueue_function[h_step_fn, h_step_fn](
+                h_st, h_md, h_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
+            ctx.enqueue_function[h_pgs_solve, h_pgs_solve](
+                h_st, h_md, h_ws,
+                grid_dim=(H_PGS_EB, H_PGS_TB), block_dim=(H_PGS_ETPB, H_PGS_TH))
+            ctx.enqueue_function[h_fin_fn, h_fin_fn](
                 h_st, h_md, h_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
     ctx.synchronize()
     var h_pgs_us = Float64(perf_counter_ns() - t0) / Float64(ITERS) / 1000.0
@@ -511,14 +513,24 @@ fn main() raises:
     ctx.synchronize()
     for _ in range(WARMUP):
         for _ in range(STEPS):
-            ctx.enqueue_function[hopper_cg_kernel, hopper_cg_kernel](
+            ctx.enqueue_function[h_step_fn, h_step_fn](
+                h_st, h_md, h_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
+            ctx.enqueue_function[h_cg_solve, h_cg_solve](
+                h_st, h_md, h_ws,
+                grid_dim=(H_CG_EB, H_CG_TB), block_dim=(H_CG_ETPB, H_CG_TH))
+            ctx.enqueue_function[h_fin_fn, h_fin_fn](
                 h_st, h_md, h_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
     ctx.synchronize()
     t0 = perf_counter_ns()
     for _ in range(ITERS):
         ctx.enqueue_copy(h_state_buf, h_state_host.unsafe_ptr())
         for _ in range(STEPS):
-            ctx.enqueue_function[hopper_cg_kernel, hopper_cg_kernel](
+            ctx.enqueue_function[h_step_fn, h_step_fn](
+                h_st, h_md, h_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
+            ctx.enqueue_function[h_cg_solve, h_cg_solve](
+                h_st, h_md, h_ws,
+                grid_dim=(H_CG_EB, H_CG_TB), block_dim=(H_CG_ETPB, H_CG_TH))
+            ctx.enqueue_function[h_fin_fn, h_fin_fn](
                 h_st, h_md, h_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
     ctx.synchronize()
     var h_cg_us = Float64(perf_counter_ns() - t0) / Float64(ITERS) / 1000.0
@@ -529,14 +541,24 @@ fn main() raises:
     ctx.synchronize()
     for _ in range(WARMUP):
         for _ in range(STEPS):
-            ctx.enqueue_function[hopper_newton_kernel, hopper_newton_kernel](
+            ctx.enqueue_function[h_step_fn, h_step_fn](
+                h_st, h_md, h_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
+            ctx.enqueue_function[h_nwt_solve, h_nwt_solve](
+                h_st, h_md, h_ws,
+                grid_dim=(H_NWT_EB, H_NWT_TB), block_dim=(H_NWT_ETPB, H_NWT_TH))
+            ctx.enqueue_function[h_fin_fn, h_fin_fn](
                 h_st, h_md, h_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
     ctx.synchronize()
     t0 = perf_counter_ns()
     for _ in range(ITERS):
         ctx.enqueue_copy(h_state_buf, h_state_host.unsafe_ptr())
         for _ in range(STEPS):
-            ctx.enqueue_function[hopper_newton_kernel, hopper_newton_kernel](
+            ctx.enqueue_function[h_step_fn, h_step_fn](
+                h_st, h_md, h_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
+            ctx.enqueue_function[h_nwt_solve, h_nwt_solve](
+                h_st, h_md, h_ws,
+                grid_dim=(H_NWT_EB, H_NWT_TB), block_dim=(H_NWT_ETPB, H_NWT_TH))
+            ctx.enqueue_function[h_fin_fn, h_fin_fn](
                 h_st, h_md, h_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
     ctx.synchronize()
     var h_newton_us = Float64(perf_counter_ns() - t0) / Float64(ITERS) / 1000.0
@@ -555,14 +577,24 @@ fn main() raises:
     ctx.synchronize()
     for _ in range(WARMUP):
         for _ in range(STEPS):
-            ctx.enqueue_function[cheetah_pgs_kernel, cheetah_pgs_kernel](
+            ctx.enqueue_function[c_step_fn, c_step_fn](
+                c_st, c_md, c_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
+            ctx.enqueue_function[c_pgs_solve, c_pgs_solve](
+                c_st, c_md, c_ws,
+                grid_dim=(C_PGS_EB, C_PGS_TB), block_dim=(C_PGS_ETPB, C_PGS_TH))
+            ctx.enqueue_function[c_fin_fn, c_fin_fn](
                 c_st, c_md, c_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
     ctx.synchronize()
     t0 = perf_counter_ns()
     for _ in range(ITERS):
         ctx.enqueue_copy(c_state_buf, c_state_host.unsafe_ptr())
         for _ in range(STEPS):
-            ctx.enqueue_function[cheetah_pgs_kernel, cheetah_pgs_kernel](
+            ctx.enqueue_function[c_step_fn, c_step_fn](
+                c_st, c_md, c_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
+            ctx.enqueue_function[c_pgs_solve, c_pgs_solve](
+                c_st, c_md, c_ws,
+                grid_dim=(C_PGS_EB, C_PGS_TB), block_dim=(C_PGS_ETPB, C_PGS_TH))
+            ctx.enqueue_function[c_fin_fn, c_fin_fn](
                 c_st, c_md, c_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
     ctx.synchronize()
     var c_pgs_us = Float64(perf_counter_ns() - t0) / Float64(ITERS) / 1000.0
@@ -573,14 +605,24 @@ fn main() raises:
     ctx.synchronize()
     for _ in range(WARMUP):
         for _ in range(STEPS):
-            ctx.enqueue_function[cheetah_cg_kernel, cheetah_cg_kernel](
+            ctx.enqueue_function[c_step_fn, c_step_fn](
+                c_st, c_md, c_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
+            ctx.enqueue_function[c_cg_solve, c_cg_solve](
+                c_st, c_md, c_ws,
+                grid_dim=(C_CG_EB, C_CG_TB), block_dim=(C_CG_ETPB, C_CG_TH))
+            ctx.enqueue_function[c_fin_fn, c_fin_fn](
                 c_st, c_md, c_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
     ctx.synchronize()
     t0 = perf_counter_ns()
     for _ in range(ITERS):
         ctx.enqueue_copy(c_state_buf, c_state_host.unsafe_ptr())
         for _ in range(STEPS):
-            ctx.enqueue_function[cheetah_cg_kernel, cheetah_cg_kernel](
+            ctx.enqueue_function[c_step_fn, c_step_fn](
+                c_st, c_md, c_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
+            ctx.enqueue_function[c_cg_solve, c_cg_solve](
+                c_st, c_md, c_ws,
+                grid_dim=(C_CG_EB, C_CG_TB), block_dim=(C_CG_ETPB, C_CG_TH))
+            ctx.enqueue_function[c_fin_fn, c_fin_fn](
                 c_st, c_md, c_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
     ctx.synchronize()
     var c_cg_us = Float64(perf_counter_ns() - t0) / Float64(ITERS) / 1000.0
@@ -591,14 +633,24 @@ fn main() raises:
     ctx.synchronize()
     for _ in range(WARMUP):
         for _ in range(STEPS):
-            ctx.enqueue_function[cheetah_newton_kernel, cheetah_newton_kernel](
+            ctx.enqueue_function[c_step_fn, c_step_fn](
+                c_st, c_md, c_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
+            ctx.enqueue_function[c_nwt_solve, c_nwt_solve](
+                c_st, c_md, c_ws,
+                grid_dim=(C_NWT_EB, C_NWT_TB), block_dim=(C_NWT_ETPB, C_NWT_TH))
+            ctx.enqueue_function[c_fin_fn, c_fin_fn](
                 c_st, c_md, c_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
     ctx.synchronize()
     t0 = perf_counter_ns()
     for _ in range(ITERS):
         ctx.enqueue_copy(c_state_buf, c_state_host.unsafe_ptr())
         for _ in range(STEPS):
-            ctx.enqueue_function[cheetah_newton_kernel, cheetah_newton_kernel](
+            ctx.enqueue_function[c_step_fn, c_step_fn](
+                c_st, c_md, c_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
+            ctx.enqueue_function[c_nwt_solve, c_nwt_solve](
+                c_st, c_md, c_ws,
+                grid_dim=(C_NWT_EB, C_NWT_TB), block_dim=(C_NWT_ETPB, C_NWT_TH))
+            ctx.enqueue_function[c_fin_fn, c_fin_fn](
                 c_st, c_md, c_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
     ctx.synchronize()
     var c_newton_us = Float64(perf_counter_ns() - t0) / Float64(ITERS) / 1000.0

@@ -118,9 +118,9 @@ fn no_solver_kernel[BATCH: Int](
 ):
     """Full integrator step minus the constraint solver.
 
-    Reproduces the EXACT same work as step_constraint_kernel except:
-    - Skips Self.SOLVER.solve_gpu (phase 11)
-    - All InlineArray allocations and computation are identical
+    Reproduces the same phases as step_kernel + step_finalize_kernel:
+    - Skips the solver phase (phase 11)
+    - All computation is identical, but fused into a single kernel
     """
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
@@ -251,49 +251,76 @@ fn no_solver_kernel[BATCH: Int](
 
 
 # =============================================================================
-# Full step kernels for each solver
+# 3-phase timing helper (step_kernel + solve_gpu + step_finalize_kernel)
 # =============================================================================
 
-@always_inline
-fn full_step_pgs_kernel[BATCH: Int](
-    state: LayoutTensor[DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
-    model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
-    workspace: LayoutTensor[DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin],
-):
-    var env = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if env >= BATCH:
-        return
-    EulerIntegrator[PGSSolver].step_constraint_kernel[
+fn time_full_step[
+    BATCH: Int,
+    solve_fn: fn (
+        LayoutTensor[DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
+        LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+        LayoutTensor[DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin],
+    ) -> None,
+    SOLVER_ENV_BLOCKS: Int,
+    SOLVER_TH_BLOCKS: Int,
+    SOLVER_ENV_TPB: Int,
+    SOLVER_THREADS: Int,
+](
+    ctx: DeviceContext,
+    state_buf: DeviceBuffer[DTYPE],
+    state_host: HostBuffer[DTYPE],
+    st: LayoutTensor[DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
+    md: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+    ws: LayoutTensor[DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin],
+    name: String,
+) raises -> Float64:
+    comptime BLOCKS = (BATCH + TPB - 1) // TPB
+    comptime step_fn = EulerIntegrator[PGSSolver].step_kernel[
         DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
-    ](env, state, model, workspace)
-
-
-@always_inline
-fn full_step_cg_kernel[BATCH: Int](
-    state: LayoutTensor[DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
-    model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
-    workspace: LayoutTensor[DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin],
-):
-    var env = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if env >= BATCH:
-        return
-    EulerIntegrator[CGSolver].step_constraint_kernel[
+    ]
+    comptime finalize_fn = EulerIntegrator[PGSSolver].step_finalize_kernel[
         DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
-    ](env, state, model, workspace)
+    ]
 
+    # Reset state
+    ctx.enqueue_copy(state_buf, state_host.unsafe_ptr())
+    ctx.synchronize()
 
-@always_inline
-fn full_step_newton_kernel[BATCH: Int](
-    state: LayoutTensor[DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin],
-    model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
-    workspace: LayoutTensor[DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin],
-):
-    var env = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if env >= BATCH:
-        return
-    EulerIntegrator[NewtonSolver].step_constraint_kernel[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
-    ](env, state, model, workspace)
+    # Warmup
+    for _ in range(WARMUP):
+        ctx.enqueue_function[step_fn, step_fn](
+            st, md, ws, grid_dim=(BLOCKS,), block_dim=(TPB,),
+        )
+        ctx.enqueue_function[solve_fn, solve_fn](
+            st, md, ws,
+            grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_TH_BLOCKS),
+            block_dim=(SOLVER_ENV_TPB, SOLVER_THREADS),
+        )
+        ctx.enqueue_function[finalize_fn, finalize_fn](
+            st, md, ws, grid_dim=(BLOCKS,), block_dim=(TPB,),
+        )
+    ctx.synchronize()
+
+    # Timed
+    var start = perf_counter_ns()
+    for _ in range(ITERS):
+        ctx.enqueue_function[step_fn, step_fn](
+            st, md, ws, grid_dim=(BLOCKS,), block_dim=(TPB,),
+        )
+        ctx.enqueue_function[solve_fn, solve_fn](
+            st, md, ws,
+            grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_TH_BLOCKS),
+            block_dim=(SOLVER_ENV_TPB, SOLVER_THREADS),
+        )
+        ctx.enqueue_function[finalize_fn, finalize_fn](
+            st, md, ws, grid_dim=(BLOCKS,), block_dim=(TPB,),
+        )
+    ctx.synchronize()
+    var end = perf_counter_ns()
+
+    var us = Float64(end - start) / Float64(ITERS) / 1000.0
+    print("  ", name, ": ", us, " us/iter")
+    return us
 
 
 # =============================================================================
@@ -385,15 +412,40 @@ fn run_benchmark[BATCH: Int](
     var t_no_solver = time_kernel[BATCH, no_solver_kernel[BATCH]](
         ctx, state_buf, state_host, st, md, ws, "No-solver (phases 1-10,13)",
     )
-    var t_pgs = time_kernel[BATCH, full_step_pgs_kernel[BATCH]](
-        ctx, state_buf, state_host, st, md, ws, "Full step [PGS]           ",
-    )
-    var t_cg = time_kernel[BATCH, full_step_cg_kernel[BATCH]](
-        ctx, state_buf, state_host, st, md, ws, "Full step [CG]            ",
-    )
-    var t_newton = time_kernel[BATCH, full_step_newton_kernel[BATCH]](
-        ctx, state_buf, state_host, st, md, ws, "Full step [Newton]        ",
-    )
+
+    # Solver grid/block dimensions for 3-phase pipeline
+    comptime SV = _max_one[NV]()
+
+    comptime PGS_TH = PGSSolver.solver_threads[NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
+    comptime PGS_ETPB = TPB // PGS_TH
+    comptime PGS_EB = (BATCH + PGS_ETPB - 1) // PGS_ETPB
+    comptime PGS_TB = (PGS_TH + PGS_TH - 1) // PGS_TH
+
+    comptime CG_TH = CGSolver.solver_threads[NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
+    comptime CG_ETPB = TPB // CG_TH
+    comptime CG_EB = (BATCH + CG_ETPB - 1) // CG_ETPB
+    comptime CG_TB = (CG_TH + CG_TH - 1) // CG_TH
+
+    comptime NWT_TH = NewtonSolver.solver_threads[NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
+    comptime NWT_ETPB = TPB // NWT_TH
+    comptime NWT_EB = (BATCH + NWT_ETPB - 1) // NWT_ETPB
+    comptime NWT_TB = (NWT_TH + NWT_TH - 1) // NWT_TH
+
+    var t_pgs = time_full_step[
+        BATCH,
+        PGSSolver.solve_gpu[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, SV, BATCH, WS_SIZE],
+        PGS_EB, PGS_TB, PGS_ETPB, PGS_TH,
+    ](ctx, state_buf, state_host, st, md, ws, "Full step [PGS]           ")
+    var t_cg = time_full_step[
+        BATCH,
+        CGSolver.solve_gpu[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, SV, BATCH, WS_SIZE],
+        CG_EB, CG_TB, CG_ETPB, CG_TH,
+    ](ctx, state_buf, state_host, st, md, ws, "Full step [CG]            ")
+    var t_newton = time_full_step[
+        BATCH,
+        NewtonSolver.solve_gpu[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, SV, BATCH, WS_SIZE],
+        NWT_EB, NWT_TB, NWT_ETPB, NWT_TH,
+    ](ctx, state_buf, state_host, st, md, ws, "Full step [Newton]        ")
 
     # --- Derived metrics ---
     var s_pgs = t_pgs - t_no_solver
