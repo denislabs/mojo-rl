@@ -713,9 +713,11 @@ struct NewtonSolver(ConstraintSolver):
             dt = rebind[Scalar[DTYPE]](
                 model[0, model_meta_off + MODEL_META_IDX_TIMESTEP]
             )
-            nc = Int(rebind[Scalar[DTYPE]](
-                state[env, meta_off + META_IDX_NUM_CONTACTS]
-            ))
+            nc = Int(
+                rebind[Scalar[DTYPE]](
+                    state[env, meta_off + META_IDX_NUM_CONTACTS]
+                )
+            )
             friction_coef = rebind[Scalar[DTYPE]](
                 model[0, model_meta_off + MODEL_META_IDX_FRICTION]
             )
@@ -787,11 +789,24 @@ struct NewtonSolver(ConstraintSolver):
                 )
 
                 compute_contact_jacobian_row_gpu[
-                    DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-                    STATE_SIZE, MODEL_SIZE, V_SIZE, BATCH, WS_SIZE,
+                    DTYPE,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    MAX_CONTACTS,
+                    STATE_SIZE,
+                    MODEL_SIZE,
+                    V_SIZE,
+                    BATCH,
+                    WS_SIZE,
                 ](
-                    env, state, model, workspace,
-                    body, body_b,
+                    env,
+                    state,
+                    model,
+                    workspace,
+                    body,
+                    body_b,
                     rebind[Scalar[DTYPE]](workspace[env, ws_c_px_idx + c]),
                     rebind[Scalar[DTYPE]](workspace[env, ws_c_py_idx + c]),
                     rebind[Scalar[DTYPE]](workspace[env, ws_c_pz_idx + c]),
@@ -852,7 +867,9 @@ struct NewtonSolver(ConstraintSolver):
                             workspace[env, ws_J_n_idx + contact_tid * NV + i]
                             * workspace[env, ws_MinvJn_idx + c2 * NV + i]
                         )
-                    workspace[env, ws_A_idx + contact_tid * MAX_CONTACTS + c2] = a_val
+                    workspace[
+                        env, ws_A_idx + contact_tid * MAX_CONTACTS + c2
+                    ] = a_val
 
         barrier()
 

@@ -737,9 +737,11 @@ struct PGSSolver(ConstraintSolver):
             dt = rebind[Scalar[DTYPE]](
                 model[0, model_meta_off + MODEL_META_IDX_TIMESTEP]
             )
-            nc = Int(rebind[Scalar[DTYPE]](
-                state[env, meta_off + META_IDX_NUM_CONTACTS]
-            ))
+            nc = Int(
+                rebind[Scalar[DTYPE]](
+                    state[env, meta_off + META_IDX_NUM_CONTACTS]
+                )
+            )
             friction_coef = rebind[Scalar[DTYPE]](
                 model[0, model_meta_off + MODEL_META_IDX_FRICTION]
             )
@@ -801,15 +803,9 @@ struct PGSSolver(ConstraintSolver):
                 workspace[env, ws_c_pz + c] = state[
                     env, c_off + CONTACT_IDX_POS_Z
                 ]
-                workspace[env, ws_c_nx + c] = state[
-                    env, c_off + CONTACT_IDX_NX
-                ]
-                workspace[env, ws_c_ny + c] = state[
-                    env, c_off + CONTACT_IDX_NY
-                ]
-                workspace[env, ws_c_nz + c] = state[
-                    env, c_off + CONTACT_IDX_NZ
-                ]
+                workspace[env, ws_c_nx + c] = state[env, c_off + CONTACT_IDX_NX]
+                workspace[env, ws_c_ny + c] = state[env, c_off + CONTACT_IDX_NY]
+                workspace[env, ws_c_nz + c] = state[env, c_off + CONTACT_IDX_NZ]
 
                 # Compute normal Jacobian
                 compute_contact_jacobian_row_gpu[
@@ -864,14 +860,11 @@ struct PGSSolver(ConstraintSolver):
                 if x > Scalar[DTYPE](1.0):
                     x = Scalar[DTYPE](1.0)
                 var imp = si_dmin + (
-                    Scalar[DTYPE](3.0) * x * x
-                    - Scalar[DTYPE](2.0) * x * x * x
+                    Scalar[DTYPE](3.0) * x * x - Scalar[DTYPE](2.0) * x * x * x
                 ) * (si_dmax - si_dmin)
                 if imp < Scalar[DTYPE](0.2):
                     imp = Scalar[DTYPE](0.2)
-                workspace[env, ws_pos_bias + c] = (
-                    imp * penetration * inv_tc_dr
-                )
+                workspace[env, ws_pos_bias + c] = imp * penetration * inv_tc_dr
                 workspace[env, ws_inv_K_imp + c] = imp / k
 
                 # Store warm start lambda (applied by thread 0 after barrier)
@@ -908,10 +901,10 @@ struct PGSSolver(ConstraintSolver):
                             workspace[env, ws_J_n + c * NV + i]
                             * workspace[env, qvel_idx + i]
                         )
-                    var delta = -(
-                        v_n * vel_factor
-                        - workspace[env, ws_pos_bias + c]
-                    ) * workspace[env, ws_inv_K_imp + c]
+                    var delta = (
+                        -(v_n * vel_factor - workspace[env, ws_pos_bias + c])
+                        * workspace[env, ws_inv_K_imp + c]
+                    )
                     var old_lambda = workspace[env, ws_lambda_n + c]
                     workspace[env, ws_lambda_n + c] = (
                         workspace[env, ws_lambda_n + c] + delta
@@ -964,14 +957,10 @@ struct PGSSolver(ConstraintSolver):
                 if jtype != JNT_HINGE and jtype != JNT_SLIDE:
                     continue
                 var dof = Int(
-                    rebind[Scalar[DTYPE]](
-                        model[0, j_off + JOINT_IDX_DOF_ADR]
-                    )
+                    rebind[Scalar[DTYPE]](model[0, j_off + JOINT_IDX_DOF_ADR])
                 )
                 var qpos_adr = Int(
-                    rebind[Scalar[DTYPE]](
-                        model[0, j_off + JOINT_IDX_QPOS_ADR]
-                    )
+                    rebind[Scalar[DTYPE]](model[0, j_off + JOINT_IDX_QPOS_ADR])
                 )
                 var rmin = rebind[Scalar[DTYPE]](
                     model[0, j_off + JOINT_IDX_RANGE_MIN]
@@ -981,9 +970,7 @@ struct PGSSolver(ConstraintSolver):
                 )
                 if rmin < Scalar[DTYPE](-1e9) or rmax > Scalar[DTYPE](1e9):
                     continue
-                var pos = rebind[Scalar[DTYPE]](
-                    state[env, qpos_off + qpos_adr]
-                )
+                var pos = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr])
                 var dist_lo = pos - rmin
                 if dist_lo < Scalar[DTYPE](0.01) and num_limits < MAX_LIMITS:
                     limit_dof[num_limits] = dof
@@ -1040,9 +1027,9 @@ struct PGSSolver(ConstraintSolver):
                     uninitialized=True
                 )
                 comptime MINVJ_LIM_SIZE = _max_one[2 * NJOINT * NV]()
-                var lim_MinvJ = InlineArray[
-                    Scalar[DTYPE], MINVJ_LIM_SIZE
-                ](uninitialized=True)
+                var lim_MinvJ = InlineArray[Scalar[DTYPE], MINVJ_LIM_SIZE](
+                    uninitialized=True
+                )
                 for l in range(num_limits):
                     var penetration = -limit_dist_arr[l]
                     if penetration < Scalar[DTYPE](0):
@@ -1063,9 +1050,12 @@ struct PGSSolver(ConstraintSolver):
                     var ldof = limit_dof[l]
                     var lsign = limit_sign[l]
                     for i in range(NV):
-                        lim_MinvJ[l * NV + i] = rebind[Scalar[DTYPE]](
-                            workspace[env, M_inv_idx + i * NV + ldof]
-                        ) * lsign
+                        lim_MinvJ[l * NV + i] = (
+                            rebind[Scalar[DTYPE]](
+                                workspace[env, M_inv_idx + i * NV + ldof]
+                            )
+                            * lsign
+                        )
 
                 for _ in range(PGS_ITERATIONS):
                     var max_lim_delta: Scalar[DTYPE] = 0
@@ -1074,9 +1064,10 @@ struct PGSSolver(ConstraintSolver):
                             limit_sign[l]
                             * workspace[env, qvel_idx + limit_dof[l]]
                         )
-                        var delta_l = -(
-                            v_limit * l_vel_factor - lim_pos_bias[l]
-                        ) * lim_inv_K_imp[l]
+                        var delta_l = (
+                            -(v_limit * l_vel_factor - lim_pos_bias[l])
+                            * lim_inv_K_imp[l]
+                        )
                         var old_lam = lambda_limit[l]
                         lambda_limit[l] = lambda_limit[l] + rebind[
                             Scalar[DTYPE]
@@ -1289,12 +1280,8 @@ struct PGSSolver(ConstraintSolver):
                             workspace[env, ws_lambda_t2 + c] * scale
                         )
 
-                    var actual_t1 = (
-                        workspace[env, ws_lambda_t1 + c] - old_t1
-                    )
-                    var actual_t2 = (
-                        workspace[env, ws_lambda_t2 + c] - old_t2
-                    )
+                    var actual_t1 = workspace[env, ws_lambda_t1 + c] - old_t1
+                    var actual_t2 = workspace[env, ws_lambda_t2 + c] - old_t2
 
                     var abs_t1 = abs(actual_t1)
                     var abs_t2 = abs(actual_t2)
@@ -1305,8 +1292,7 @@ struct PGSSolver(ConstraintSolver):
 
                     for i in range(NV):
                         workspace[env, qvel_idx + i] += (
-                            workspace[env, ws_MinvJt1 + c * NV + i]
-                            * actual_t1
+                            workspace[env, ws_MinvJt1 + c * NV + i] * actual_t1
                             + workspace[env, ws_MinvJt2 + c * NV + i]
                             * actual_t2
                         )

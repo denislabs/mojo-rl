@@ -65,7 +65,7 @@ trait ConstraintSolver(Movable & ImplicitlyCopyable):
         CDOF_SIZE: Int,
     ](
         model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
-        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+        mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         M_inv: InlineArray[Scalar[DTYPE], M_SIZE],
         cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
         mut qvel: InlineArray[Scalar[DTYPE], V_SIZE],
@@ -75,7 +75,8 @@ trait ConstraintSolver(Movable & ImplicitlyCopyable):
 
         Args:
             model: Static model configuration.
-            data: Simulation state with contacts already detected.
+            data: Mutable simulation state with contacts already detected.
+                  Impulses are stored back for warm-starting next step.
             M_inv: Full dense inverse mass matrix (NV×NV, row-major).
             cdof: Spatial motion axes per DOF (6*NV entries).
             qvel: Predicted velocity, modified in-place to satisfy constraints.

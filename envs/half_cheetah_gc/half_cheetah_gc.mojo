@@ -37,7 +37,7 @@ from layout import Layout, LayoutTensor
 from physics3d.constants import GEOM_CAPSULE
 from physics3d.types import Model, Data
 from physics3d.integrator import EulerIntegrator
-from physics3d.solver import CGSolver
+from physics3d.solver import NewtonSolver
 from physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     forward_kinematics_gpu,
@@ -321,7 +321,7 @@ struct HalfCheetahGC[
     comptime STEP_WS_SHARED: Int = model_size[NBODY, NJOINT]()
     comptime STEP_WS_PER_ENV: Int = integrator_workspace_size[
         NV, NBODY
-    ]() + NV * NV + CGSolver.solver_workspace_size[NV, MAX_CONTACTS]()
+    ]() + NV * NV + NewtonSolver.solver_workspace_size[NV, MAX_CONTACTS]()
 
     # Physics model and data
     var model: Model[
@@ -1270,7 +1270,7 @@ struct HalfCheetahGC[
 
         # Physics step (with frame skip)
         for _ in range(self.frame_skip):
-            EulerIntegrator[SOLVER=CGSolver].step(self.model, self.data)
+            EulerIntegrator[SOLVER=NewtonSolver].step(self.model, self.data)
             # Enforce joint limits after each physics step
             self._enforce_joint_limits()
 
@@ -1538,7 +1538,7 @@ struct HalfCheetahGC[
         comptime C = HalfCheetahGCConstants[gpu_dtype]
         comptime WS_SIZE = integrator_workspace_size[
             Self.NV, Self.NUM_BODIES
-        ]() + Self.NV * Self.NV + CGSolver.solver_workspace_size[
+        ]() + Self.NV * Self.NV + NewtonSolver.solver_workspace_size[
             Self.NV, Self.MAX_CONTACTS
         ]()
 
@@ -1581,7 +1581,7 @@ struct HalfCheetahGC[
 
         # Run FRAME_SKIP physics sub-steps with joint limit enforcement
         for _ in range(C.FRAME_SKIP):
-            EulerIntegrator[SOLVER=CGSolver].step_gpu[
+            EulerIntegrator[SOLVER=NewtonSolver].step_gpu[
                 gpu_dtype,
                 Self.NQ,
                 Self.NV,

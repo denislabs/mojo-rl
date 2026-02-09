@@ -597,10 +597,7 @@ struct CGSolver(ConstraintSolver):
         var contact_tid = Int(thread_idx.y)
         var valid_env = env < BATCH
 
-        var qvel_ptr = (
-            workspace.ptr + env * WS_SIZE + ws_qvel_pred_offset[NV, NBODY]()
-        )
-
+        comptime qvel_idx = ws_qvel_pred_offset[NV, NBODY]()
         comptime M_inv_idx = ws_m_inv_offset[NV, NBODY]()
         comptime solver_ws_idx = ws_solver_offset[NV, NBODY]()
 
@@ -668,9 +665,11 @@ struct CGSolver(ConstraintSolver):
             dt = rebind[Scalar[DTYPE]](
                 model[0, model_meta_off + MODEL_META_IDX_TIMESTEP]
             )
-            nc = Int(rebind[Scalar[DTYPE]](
-                state[env, meta_off + META_IDX_NUM_CONTACTS]
-            ))
+            nc = Int(
+                rebind[Scalar[DTYPE]](
+                    state[env, meta_off + META_IDX_NUM_CONTACTS]
+                )
+            )
             friction_coef = rebind[Scalar[DTYPE]](
                 model[0, model_meta_off + MODEL_META_IDX_FRICTION]
             )
@@ -742,11 +741,24 @@ struct CGSolver(ConstraintSolver):
                 )
 
                 compute_contact_jacobian_row_gpu[
-                    DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-                    STATE_SIZE, MODEL_SIZE, V_SIZE, BATCH, WS_SIZE,
+                    DTYPE,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    MAX_CONTACTS,
+                    STATE_SIZE,
+                    MODEL_SIZE,
+                    V_SIZE,
+                    BATCH,
+                    WS_SIZE,
                 ](
-                    env, state, model, workspace,
-                    body, body_b,
+                    env,
+                    state,
+                    model,
+                    workspace,
+                    body,
+                    body_b,
                     rebind[Scalar[DTYPE]](workspace[env, ws_c_px_idx + c]),
                     rebind[Scalar[DTYPE]](workspace[env, ws_c_py_idx + c]),
                     rebind[Scalar[DTYPE]](workspace[env, ws_c_pz_idx + c]),
@@ -757,7 +769,7 @@ struct CGSolver(ConstraintSolver):
                 )
 
                 var k: workspace.element_type = 0
-                var v_n: Scalar[DTYPE] = 0
+                var v_n: workspace.element_type = 0
                 for i in range(NV):
                     workspace[env, ws_J_n_idx + c * NV + i] = J_row[i]
                     var mi_j_sum: workspace.element_type = 0
@@ -768,7 +780,7 @@ struct CGSolver(ConstraintSolver):
                         )
                     workspace[env, ws_MinvJn_idx + c * NV + i] = mi_j_sum
                     k += J_row[i] * mi_j_sum
-                    v_n += J_row[i] * (qvel_ptr + i)[]
+                    v_n += J_row[i] * workspace[env, qvel_idx + i]
                 if k < Scalar[DTYPE](1e-10):
                     k = Scalar[DTYPE](1e-10)
                 workspace[env, ws_K_n_idx + c] = k
@@ -807,7 +819,9 @@ struct CGSolver(ConstraintSolver):
                             workspace[env, ws_J_n_idx + contact_tid * NV + i]
                             * workspace[env, ws_MinvJn_idx + c2 * NV + i]
                         )
-                    workspace[env, ws_A_idx + contact_tid * MAX_CONTACTS + c2] = a_val
+                    workspace[
+                        env, ws_A_idx + contact_tid * MAX_CONTACTS + c2
+                    ] = a_val
 
         barrier()
 
@@ -821,8 +835,9 @@ struct CGSolver(ConstraintSolver):
                 continue
             if workspace[env, ws_lambda_n_idx + c] > Scalar[DTYPE](0):
                 for i in range(NV):
-                    (qvel_ptr + i)[] = (qvel_ptr + i)[] + rebind[Scalar[DTYPE]](
-                        workspace[env, ws_MinvJn_idx + c * NV + i] * workspace[env, ws_lambda_n_idx + c]
+                    workspace[env, qvel_idx + i] += (
+                        workspace[env, ws_MinvJn_idx + c * NV + i]
+                        * workspace[env, ws_lambda_n_idx + c]
                     )
 
         # Phase 2: Projected CG for normal constraints
@@ -834,7 +849,10 @@ struct CGSolver(ConstraintSolver):
             for c2 in range(nc):
                 if workspace[env, ws_c_dist_idx + c2] >= Scalar[DTYPE](0):
                     continue
-                ax += workspace[env, ws_A_idx + c * MAX_CONTACTS + c2] * workspace[env, ws_lambda_n_idx + c2]
+                ax += (
+                    workspace[env, ws_A_idx + c * MAX_CONTACTS + c2]
+                    * workspace[env, ws_lambda_n_idx + c2]
+                )
             workspace[env, ws_r_idx + c] = -workspace[env, ws_rhs_idx + c] - ax
 
         # Project residual
@@ -905,7 +923,10 @@ struct CGSolver(ConstraintSolver):
                 for c2 in range(nc):
                     if workspace[env, ws_c_dist_idx + c2] >= Scalar[DTYPE](0):
                         continue
-                    ax += workspace[env, ws_A_idx + c * MAX_CONTACTS + c2] * workspace[env, ws_lambda_n_idx + c2]
+                    ax += (
+                        workspace[env, ws_A_idx + c * MAX_CONTACTS + c2]
+                        * workspace[env, ws_lambda_n_idx + c2]
+                    )
                 workspace[env, ws_r_idx + c] = (
                     -workspace[env, ws_rhs_idx + c] - ax
                 )
@@ -947,7 +968,7 @@ struct CGSolver(ConstraintSolver):
             )
             if warm > Scalar[DTYPE](0):
                 for i in range(NV):
-                    (qvel_ptr + i)[] = (qvel_ptr + i)[] - rebind[Scalar[DTYPE]](
+                    workspace[env, qvel_idx + i] -= rebind[Scalar[DTYPE]](
                         workspace[env, ws_MinvJn_idx + c * NV + i] * warm
                     )
 
@@ -956,8 +977,9 @@ struct CGSolver(ConstraintSolver):
                 continue
             if workspace[env, ws_lambda_n_idx + c] > Scalar[DTYPE](0):
                 for i in range(NV):
-                    (qvel_ptr + i)[] = (qvel_ptr + i)[] + rebind[Scalar[DTYPE]](
-                        workspace[env, ws_MinvJn_idx + c * NV + i] * workspace[env, ws_lambda_n_idx + c]
+                    workspace[env, qvel_idx + i] += rebind[Scalar[DTYPE]](
+                        workspace[env, ws_MinvJn_idx + c * NV + i]
+                        * workspace[env, ws_lambda_n_idx + c]
                     )
 
         # Phase 2b: Joint limit constraints (PGS) with impedance precompute + early exit
@@ -1061,9 +1083,9 @@ struct CGSolver(ConstraintSolver):
                 uninitialized=True
             )
             comptime MINVJ_LIM_SIZE = _max_one[2 * NJOINT * NV]()
-            var lim_MinvJ = InlineArray[
-                Scalar[DTYPE], MINVJ_LIM_SIZE
-            ](uninitialized=True)
+            var lim_MinvJ = InlineArray[Scalar[DTYPE], MINVJ_LIM_SIZE](
+                uninitialized=True
+            )
             for l in range(num_limits):
                 var penetration = -limit_dist_arr[l]
                 if penetration < Scalar[DTYPE](0):
@@ -1084,24 +1106,27 @@ struct CGSolver(ConstraintSolver):
                 var ldof = limit_dof[l]
                 var lsign = limit_sign[l]
                 for i in range(NV):
-                    lim_MinvJ[l * NV + i] = rebind[Scalar[DTYPE]](
-                        workspace[env, M_inv_idx + i * NV + ldof]
-                    ) * lsign
+                    lim_MinvJ[l * NV + i] = (
+                        rebind[Scalar[DTYPE]](
+                            workspace[env, M_inv_idx + i * NV + ldof]
+                        )
+                        * lsign
+                    )
 
             for _ in range(CG_ITERATIONS):
                 var max_lim_delta: Scalar[DTYPE] = 0
                 for l in range(num_limits):
                     var v_limit = (
-                        limit_sign[l]
-                        * (qvel_ptr + limit_dof[l])[]
+                        limit_sign[l] * workspace[env, qvel_idx + limit_dof[l]]
                     )
-                    var delta_l = -(
-                        v_limit * l_vel_factor - lim_pos_bias[l]
-                    ) * lim_inv_K_imp[l]
+                    var delta_l = (
+                        -(v_limit * l_vel_factor - lim_pos_bias[l])
+                        * lim_inv_K_imp[l]
+                    )
                     var old_lam = lambda_limit[l]
-                    lambda_limit[l] = lambda_limit[l] + rebind[
-                        Scalar[DTYPE]
-                    ](delta_l)
+                    lambda_limit[l] = lambda_limit[l] + rebind[Scalar[DTYPE]](
+                        delta_l
+                    )
                     if lambda_limit[l] < Scalar[DTYPE](0):
                         lambda_limit[l] = Scalar[DTYPE](0)
                     var actual_l = lambda_limit[l] - old_lam
@@ -1109,7 +1134,7 @@ struct CGSolver(ConstraintSolver):
                     if abs_l > max_lim_delta:
                         max_lim_delta = abs_l
                     for i in range(NV):
-                        (qvel_ptr + i)[] = (qvel_ptr + i)[] + (
+                        workspace[env, qvel_idx + i] += (
                             lim_MinvJ[l * NV + i] * actual_l
                         )
                 if max_lim_delta < Scalar[DTYPE](1e-4):
