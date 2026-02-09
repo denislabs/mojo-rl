@@ -85,9 +85,10 @@ struct PGSSolver(ConstraintSolver):
 
     @staticmethod
     fn solver_workspace_size[NV: Int, MAX_CONTACTS: Int]() -> Int:
-        """PGS solver workspace: 21 * MC + 3 * MC * NV floats.
+        """PGS solver workspace: 23 * MC + 6 * MC * NV floats.
 
         Layout (offsets relative to solver workspace start):
+          Scalars (21 * MC):
           [0*MC..1*MC)                   lambda_n   Normal impulse accumulators
           [1*MC..2*MC)                   K_n        Effective mass (diagonal)
           [2*MC..3*MC)                   c_dist     Contact distance
@@ -109,12 +110,20 @@ struct PGSSolver(ConstraintSolver):
           [18*MC..19*MC)                 t2x        Tangent 2 direction X
           [19*MC..20*MC)                 t2y        Tangent 2 direction Y
           [20*MC..21*MC)                 t2z        Tangent 2 direction Z
+          Jacobians (3 * MC * NV):
           [21*MC..21*MC+MC*NV)           J_n        Normal Jacobian (MC x NV)
           [21*MC+MC*NV..21*MC+2*MC*NV)   J_t1       Tangent 1 Jacobian (MC x NV)
           [21*MC+2*MC*NV..21*MC+3*MC*NV) J_t2       Tangent 2 Jacobian (MC x NV)
+          Precomputed M_inv @ J^T (3 * MC * NV):
+          [21*MC+3*MC*NV..21*MC+4*MC*NV) MinvJn     M_inv @ J_n^T (MC x NV)
+          [21*MC+4*MC*NV..21*MC+5*MC*NV) MinvJt1    M_inv @ J_t1^T (MC x NV)
+          [21*MC+5*MC*NV..21*MC+6*MC*NV) MinvJt2    M_inv @ J_t2^T (MC x NV)
+          Precomputed impedance (2 * MC):
+          [21*MC+6*MC*NV..22*MC+6*MC*NV) pos_bias   imp*pen*inv_tc_dr per contact
+          [22*MC+6*MC*NV..23*MC+6*MC*NV) inv_K_imp  imp/K_n per contact
         """
         comptime MC = _max_one[MAX_CONTACTS]()
-        return 21 * MC + 3 * MC * NV
+        return 23 * MC + 6 * MC * NV
 
     @staticmethod
     fn solve[
@@ -659,7 +668,7 @@ struct PGSSolver(ConstraintSolver):
 
         comptime MC = _max_one[MAX_CONTACTS]()
 
-        # Solver workspace layout: 21 * MC + 3 * MC * NV floats
+        # Solver workspace layout: 23 * MC + 6 * MC * NV floats
         # Common contact block (11*MC)
         comptime ws_lambda_n = solver_idx + 0 * MC
         comptime ws_K_n = solver_idx + 1 * MC
@@ -687,6 +696,13 @@ struct PGSSolver(ConstraintSolver):
         comptime ws_J_n = solver_idx + 21 * MC
         comptime ws_J_t1 = solver_idx + 21 * MC + MC * NV
         comptime ws_J_t2 = solver_idx + 21 * MC + 2 * MC * NV
+        # Precomputed M_inv @ J^T (3 * MC * NV) — eliminates NV² inner loop
+        comptime ws_MinvJn = solver_idx + 21 * MC + 3 * MC * NV
+        comptime ws_MinvJt1 = solver_idx + 21 * MC + 4 * MC * NV
+        comptime ws_MinvJt2 = solver_idx + 21 * MC + 5 * MC * NV
+        # Precomputed impedance (2 * MC) — eliminates Hermite from inner loop
+        comptime ws_pos_bias = solver_idx + 21 * MC + 6 * MC * NV
+        comptime ws_inv_K_imp = solver_idx + 22 * MC + 6 * MC * NV
 
         # Initialize workspace
         for i in range(MC):
@@ -882,7 +898,7 @@ struct PGSSolver(ConstraintSolver):
                 J_row,
             )
 
-            # Store J_row in workspace and compute K = J @ M_inv @ J^T
+            # Store J_n and MinvJn, compute K = J @ M_inv @ J^T
             var k: workspace.element_type = 0
             for i in range(NV):
                 workspace[env, ws_J_n + c * NV + i] = J_row[i]
@@ -892,31 +908,44 @@ struct PGSSolver(ConstraintSolver):
                         workspace[env, M_inv_idx + i * NV + j_idx]
                         * J_row[j_idx]
                     )
+                workspace[env, ws_MinvJn + c * NV + i] = mi_j_sum
                 k += J_row[i] * mi_j_sum
             if k < Scalar[DTYPE](1e-10):
                 k = Scalar[DTYPE](1e-10)
             workspace[env, ws_K_n + c] = k
+
+            # Precompute impedance coefficients for PGS iterations
+            var penetration = -dist
+            if penetration > Scalar[DTYPE](0.05):
+                penetration = Scalar[DTYPE](0.05)
+            var x = penetration / si_width
+            if x > Scalar[DTYPE](1.0):
+                x = Scalar[DTYPE](1.0)
+            var imp = si_dmin + (
+                Scalar[DTYPE](3.0) * x * x - Scalar[DTYPE](2.0) * x * x * x
+            ) * (si_dmax - si_dmin)
+            if imp < Scalar[DTYPE](0.2):
+                imp = Scalar[DTYPE](0.2)
+            workspace[env, ws_pos_bias + c] = imp * penetration * inv_tc_dr
+            workspace[env, ws_inv_K_imp + c] = imp / k
 
             # Warm start
             workspace[env, ws_lambda_n + c] = state[
                 env, c_off + CONTACT_IDX_IMPULSE_N
             ]
 
-            # Apply warm start: qvel += M_inv @ J^T * lambda
+            # Apply warm start: qvel += MinvJn * lambda
             if workspace[env, ws_lambda_n + c] > Scalar[DTYPE](0):
                 for i in range(NV):
-                    var mi_j_sum: workspace.element_type = 0
-                    for j_idx in range(NV):
-                        mi_j_sum += (
-                            workspace[env, M_inv_idx + i * NV + j_idx]
-                            * J_row[j_idx]
-                        )
                     workspace[env, qvel_idx + i] += (
-                        mi_j_sum * workspace[env, ws_lambda_n + c]
+                        workspace[env, ws_MinvJn + c * NV + i]
+                        * workspace[env, ws_lambda_n + c]
                     )
 
-        # Phase 2: PGS normal iterations (reads J_n from workspace)
+        # Phase 2: PGS normal iterations (precomputed impedance + early exit)
+        var vel_factor = Scalar[DTYPE](1.0) - b_vel_coef
         for _ in range(PGS_ITERATIONS):
+            var max_delta: workspace.element_type = 0
             for c in range(nc):
                 if workspace[env, ws_c_dist + c] >= Scalar[DTYPE](0):
                     continue
@@ -929,21 +958,11 @@ struct PGSSolver(ConstraintSolver):
                         * workspace[env, qvel_idx + i]
                     )
 
-                # MuJoCo impedance model
-                var penetration = -workspace[env, ws_c_dist + c]
-                if penetration > Scalar[DTYPE](0.05):
-                    penetration = Scalar[DTYPE](0.05)
-                var x = penetration / si_width
-                if x > Scalar[DTYPE](1.0):
-                    x = Scalar[DTYPE](1.0)
-                var imp = si_dmin + (
-                    Scalar[DTYPE](3.0) * x * x - Scalar[DTYPE](2.0) * x * x * x
-                ) * (si_dmax - si_dmin)
-                if imp < Scalar[DTYPE](0.2):
-                    imp = Scalar[DTYPE](0.2)
-                var bias = -imp * penetration * inv_tc_dr - b_vel_coef * v_n
-
-                var delta = -(v_n + bias) / (workspace[env, ws_K_n + c] / imp)
+                # delta = -(v_n*(1-b_vel_coef) - pos_bias) * (imp/K_n)
+                var delta = -(
+                    v_n * vel_factor
+                    - workspace[env, ws_pos_bias + c]
+                ) * workspace[env, ws_inv_K_imp + c]
                 var old_lambda = workspace[env, ws_lambda_n + c]
                 workspace[env, ws_lambda_n + c] = (
                     workspace[env, ws_lambda_n + c] + delta
@@ -952,17 +971,21 @@ struct PGSSolver(ConstraintSolver):
                     workspace[env, ws_lambda_n + c] = Scalar[DTYPE](0)
 
                 var actual_delta = workspace[env, ws_lambda_n + c] - old_lambda
-                # Apply velocity correction: qvel += M_inv @ J_n^T * delta
+                # Track convergence
+                var abs_delta = abs(actual_delta)
+                if abs_delta > max_delta:
+                    max_delta = abs_delta
+                # Apply velocity correction: qvel += MinvJn * delta
                 for i in range(NV):
-                    var mi_j_sum: workspace.element_type = 0
-                    for j_idx in range(NV):
-                        mi_j_sum += (
-                            workspace[env, M_inv_idx + i * NV + j_idx]
-                            * workspace[env, ws_J_n + c * NV + j_idx]
-                        )
-                    workspace[env, qvel_idx + i] += mi_j_sum * actual_delta
+                    workspace[env, qvel_idx + i] += (
+                        workspace[env, ws_MinvJn + c * NV + i]
+                        * actual_delta
+                    )
+            # Early exit when converged
+            if max_delta < Scalar[DTYPE](1e-4):
+                break
 
-        # Phase 2b: Joint limit constraints (PGS)
+        # Phase 2b: Joint limit constraints (PGS, precomputed impedance + early exit)
         if num_limits > 0:
             # Read solref/solimp limit from model buffer
             var lr_tc = rebind[Scalar[DTYPE]](
@@ -988,44 +1011,70 @@ struct PGSSolver(ConstraintSolver):
             var l_b_vel_coef = (
                 Scalar[DTYPE](2.0) * lr_dr * dt / (li_dmax * lr_tc)
             )
+            var l_vel_factor = Scalar[DTYPE](1.0) - l_b_vel_coef
+
+            # Precompute impedance and MinvJ per limit
+            var lim_pos_bias = InlineArray[Scalar[DTYPE], MAX_LIMITS](
+                uninitialized=True
+            )
+            var lim_inv_K_imp = InlineArray[Scalar[DTYPE], MAX_LIMITS](
+                uninitialized=True
+            )
+            comptime MINVJ_LIM_SIZE = _max_one[2 * NJOINT * NV]()
+            var lim_MinvJ = InlineArray[Scalar[DTYPE], MINVJ_LIM_SIZE](
+                uninitialized=True
+            )
+            for l in range(num_limits):
+                var penetration = -limit_dist_arr[l]
+                if penetration < Scalar[DTYPE](0):
+                    penetration = Scalar[DTYPE](0)
+                if penetration > Scalar[DTYPE](0.05):
+                    penetration = Scalar[DTYPE](0.05)
+                var x_lim = penetration / li_width
+                if x_lim > Scalar[DTYPE](1.0):
+                    x_lim = Scalar[DTYPE](1.0)
+                var imp_lim = li_dmin + (
+                    Scalar[DTYPE](3.0) * x_lim * x_lim
+                    - Scalar[DTYPE](2.0) * x_lim * x_lim * x_lim
+                ) * (li_dmax - li_dmin)
+                if imp_lim < Scalar[DTYPE](0.2):
+                    imp_lim = Scalar[DTYPE](0.2)
+                lim_pos_bias[l] = imp_lim * penetration * l_inv_tc_dr
+                lim_inv_K_imp[l] = imp_lim / K_limit[l]
+                # Precompute M_inv[:, dof] * sign
+                var dof = limit_dof[l]
+                var sign = limit_sign[l]
+                for i in range(NV):
+                    lim_MinvJ[l * NV + i] = rebind[Scalar[DTYPE]](
+                        workspace[env, M_inv_idx + i * NV + dof]
+                    ) * sign
 
             for _ in range(PGS_ITERATIONS):
+                var max_lim_delta: Scalar[DTYPE] = 0
                 for l in range(num_limits):
-                    var dof = limit_dof[l]
-                    var sign = limit_sign[l]
-                    var v_limit = sign * workspace[env, qvel_idx + dof]
-                    var penetration = -limit_dist_arr[l]
-                    if penetration < Scalar[DTYPE](0):
-                        penetration = Scalar[DTYPE](0)
-                    if penetration > Scalar[DTYPE](0.05):
-                        penetration = Scalar[DTYPE](0.05)
-                    var x_lim = penetration / li_width
-                    if x_lim > Scalar[DTYPE](1.0):
-                        x_lim = Scalar[DTYPE](1.0)
-                    var imp_lim = li_dmin + (
-                        Scalar[DTYPE](3.0) * x_lim * x_lim
-                        - Scalar[DTYPE](2.0) * x_lim * x_lim * x_lim
-                    ) * (li_dmax - li_dmin)
-                    if imp_lim < Scalar[DTYPE](0.2):
-                        imp_lim = Scalar[DTYPE](0.2)
-                    var bias = (
-                        -imp_lim * penetration * l_inv_tc_dr
-                        - l_b_vel_coef * v_limit
+                    var v_limit = (
+                        limit_sign[l]
+                        * workspace[env, qvel_idx + limit_dof[l]]
                     )
-                    var delta_l = -(v_limit + bias) / (K_limit[l] / imp_lim)
+                    var delta_l = -(
+                        v_limit * l_vel_factor - lim_pos_bias[l]
+                    ) * lim_inv_K_imp[l]
                     var old_lam = lambda_limit[l]
-                    lambda_limit[l] = lambda_limit[l] + rebind[Scalar[DTYPE]](
-                        delta_l
-                    )
+                    lambda_limit[l] = lambda_limit[l] + rebind[
+                        Scalar[DTYPE]
+                    ](delta_l)
                     if lambda_limit[l] < Scalar[DTYPE](0):
                         lambda_limit[l] = Scalar[DTYPE](0)
                     var actual_l = lambda_limit[l] - old_lam
+                    var abs_l = abs(actual_l)
+                    if abs_l > max_lim_delta:
+                        max_lim_delta = abs_l
                     for i in range(NV):
                         workspace[env, qvel_idx + i] += (
-                            workspace[env, M_inv_idx + i * NV + dof]
-                            * sign
-                            * actual_l
+                            lim_MinvJ[l * NV + i] * actual_l
                         )
+                if max_lim_delta < Scalar[DTYPE](1e-4):
+                    break
 
         # Phase 3: Friction
         # Precompute tangent basis and K_t for active contacts
@@ -1107,12 +1156,13 @@ struct PGSSolver(ConstraintSolver):
                         workspace[env, M_inv_idx + i * NV + j_idx]
                         * J_row[j_idx]
                     )
+                workspace[env, ws_MinvJt1 + c * NV + i] = mi_j_sum
                 k1 += J_row[i] * mi_j_sum
             if k1 < Scalar[DTYPE](1e-10):
                 k1 = Scalar[DTYPE](1e-10)
             workspace[env, ws_K_t1 + c] = k1
 
-            # Compute K_t2 and store J_t2 in workspace
+            # Compute K_t2 and store J_t2, MinvJt2 in workspace
             compute_contact_jacobian_row_gpu[
                 DTYPE,
                 NQ,
@@ -1149,6 +1199,7 @@ struct PGSSolver(ConstraintSolver):
                         workspace[env, M_inv_idx + i * NV + j_idx]
                         * J_row[j_idx]
                     )
+                workspace[env, ws_MinvJt2 + c * NV + i] = mi_j_sum
                 k2 += J_row[i] * mi_j_sum
             if k2 < Scalar[DTYPE](1e-10):
                 k2 = Scalar[DTYPE](1e-10)
@@ -1163,8 +1214,9 @@ struct PGSSolver(ConstraintSolver):
                 state[env, c_off + CONTACT_IDX_IMPULSE_T2]
             )
 
-        # Friction PGS iterations (reads J_t1/J_t2 from workspace)
+        # Friction PGS iterations (reads J_t1/J_t2 from workspace, early exit)
         for _ in range(PGS_ITERATIONS):
+            var max_fric_delta: workspace.element_type = 0
             for c in range(nc):
                 if workspace[env, ws_lambda_n + c] <= Scalar[DTYPE](0):
                     continue
@@ -1220,19 +1272,23 @@ struct PGSSolver(ConstraintSolver):
                 var actual_t1 = workspace[env, ws_lambda_t1 + c] - old_t1
                 var actual_t2 = workspace[env, ws_lambda_t2 + c] - old_t2
 
-                # Apply tangent corrections: qvel += M_inv @ (J_t1^T*dt1 + J_t2^T*dt2)
+                # Track convergence
+                var abs_t1 = abs(actual_t1)
+                var abs_t2 = abs(actual_t2)
+                if abs_t1 > max_fric_delta:
+                    max_fric_delta = abs_t1
+                if abs_t2 > max_fric_delta:
+                    max_fric_delta = abs_t2
+
+                # Apply tangent corrections: qvel += MinvJt1*dt1 + MinvJt2*dt2
                 for i in range(NV):
-                    var mi_j_sum: workspace.element_type = 0
-                    for j_idx in range(NV):
-                        mi_j_sum += workspace[
-                            env, M_inv_idx + i * NV + j_idx
-                        ] * (
-                            workspace[env, ws_J_t1 + c * NV + j_idx]
-                            * actual_t1
-                            + workspace[env, ws_J_t2 + c * NV + j_idx]
-                            * actual_t2
-                        )
-                    workspace[env, qvel_idx + i] += mi_j_sum
+                    workspace[env, qvel_idx + i] += (
+                        workspace[env, ws_MinvJt1 + c * NV + i] * actual_t1
+                        + workspace[env, ws_MinvJt2 + c * NV + i] * actual_t2
+                    )
+            # Early exit when converged
+            if max_fric_delta < Scalar[DTYPE](1e-4):
+                break
 
         # Store impulses back to state buffer for warm-starting
         for c in range(nc):

@@ -639,6 +639,10 @@ struct NewtonSolver(ConstraintSolver):
 
         var thread_idx = Int(block_dim.y * block_idx.y + thread_idx.y)
 
+
+        if(thread_idx >= 1):
+            return
+
         comptime qvel_idx = ws_qvel_pred_offset[NV, NBODY]()
 
         comptime M_inv_idx = ws_m_inv_offset[NV, NBODY]()
@@ -672,33 +676,27 @@ struct NewtonSolver(ConstraintSolver):
         comptime ws_t2z_idx = solver_ws_idx + 25 * MC + MC * NV + MC * MC
 
         # Initialize workspace
-        if(thread_idx < MC):
-            workspace[env, ws_lambda_n_idx + thread_idx] = 0
-            workspace[env, ws_K_n_idx + thread_idx] = 1
-            workspace[env, ws_c_dist_idx + thread_idx] = 0
-            workspace[env, ws_c_body_idx + thread_idx] = 0
-            workspace[env, ws_c_body_b_idx + thread_idx] = -1
-            workspace[env, ws_c_px_idx + thread_idx] = 0
-            workspace[env, ws_c_py_idx + thread_idx] = 0
-            workspace[env, ws_c_pz_idx + thread_idx] = 0
-            workspace[env, ws_c_nx_idx + thread_idx] = 0
-            workspace[env, ws_c_ny_idx + thread_idx] = 0
-            workspace[env, ws_c_nz_idx + thread_idx] = 1
-            workspace[env, ws_rhs_idx + thread_idx] = 0
-            workspace[env, ws_grad_idx + thread_idx] = 0
-            workspace[env, ws_d_idx + thread_idx] = 0
-            workspace[env, ws_ltrial_idx + thread_idx] = 0
-            workspace[env, ws_fmap_idx + thread_idx] = -1
-
-        if(thread_idx < MC * NV):
-            workspace[env, ws_J_n_idx + thread_idx] = 0
-        if(thread_idx < MC * MC):
-            workspace[env, ws_A_idx + thread_idx] = 0
-
-        barrier()
-
-        if(thread_idx >= 1):
-            return
+        for i in range(MC):
+            workspace[env, ws_lambda_n_idx + i] = 0
+            workspace[env, ws_K_n_idx + i] = 1
+            workspace[env, ws_c_dist_idx + i] = 0
+            workspace[env, ws_c_body_idx + i] = 0
+            workspace[env, ws_c_body_b_idx + i] = -1
+            workspace[env, ws_c_px_idx + i] = 0
+            workspace[env, ws_c_py_idx + i] = 0
+            workspace[env, ws_c_pz_idx + i] = 0
+            workspace[env, ws_c_nx_idx + i] = 0
+            workspace[env, ws_c_ny_idx + i] = 0
+            workspace[env, ws_c_nz_idx + i] = 1
+            workspace[env, ws_rhs_idx + i] = 0
+            workspace[env, ws_grad_idx + i] = 0
+            workspace[env, ws_d_idx + i] = 0
+            workspace[env, ws_ltrial_idx + i] = 0
+            workspace[env, ws_fmap_idx + i] = -1
+        for i in range(MC * NV):
+            workspace[env, ws_J_n_idx + i] = 0
+        for i in range(MC * MC):
+            workspace[env, ws_A_idx + i] = 0
 
         comptime contacts_off = contacts_offset[NQ, NV, NBODY]()
         comptime meta_off = metadata_offset[NQ, NV, NBODY, MAX_CONTACTS]()
