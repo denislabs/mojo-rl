@@ -25,6 +25,8 @@ from ..gpu.constants import (
     model_body_offset,
     model_joint_offset,
     model_metadata_offset,
+    ws_cdof_offset,
+    ws_bias_offset,
     BODY_IDX_PARENT,
     BODY_IDX_MASS,
     BODY_IDX_IXX,
@@ -994,26 +996,31 @@ fn compute_bias_forces_rne_gpu[
     MAX_CONTACTS: Int,
     STATE_SIZE: Int,
     MODEL_SIZE: Int,
-    V_SIZE: Int,
-    CDOF_SIZE: Int,
     BATCH: Int,
+    WS_SIZE: Int,
 ](
     env: Int,
     state: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
     ],
     model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
-    cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
-    mut bias: InlineArray[Scalar[DTYPE], V_SIZE],
+    workspace: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+    ],
 ):
     """Compute bias forces using full RNE algorithm (GPU version).
 
     Same algorithm as compute_bias_forces_rne but reads from GPU LayoutTensors.
     Computes b(q, qvel) = C(q, qvel)*qvel + g(q).
+    Reads cdof from workspace, writes bias to workspace.
     """
+    # Derive workspace pointers
+    comptime cdof_idx = ws_cdof_offset()
+    comptime bias_idx = ws_bias_offset[NV, NBODY]()
+
     # Initialize output
     for i in range(NV):
-        bias[i] = Scalar[DTYPE](0)
+        workspace[env, bias_idx + i] = 0
 
     # Get gravity from model metadata
     var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
@@ -1167,13 +1174,13 @@ fn compute_bias_forces_rne_gpu[
                 var dof = dof_adr + d
                 var qdot = rebind[Scalar[DTYPE]](state[env, qvel_off + dof])
 
-                # cdof components
-                var s_ang_x = cdof[dof * 6 + 0]
-                var s_ang_y = cdof[dof * 6 + 1]
-                var s_ang_z = cdof[dof * 6 + 2]
-                var s_lin_x = cdof[dof * 6 + 3]
-                var s_lin_y = cdof[dof * 6 + 4]
-                var s_lin_z = cdof[dof * 6 + 5]
+                # cdof components (read from workspace)
+                var s_ang_x = workspace[env, cdof_idx + dof * 6 + 0]
+                var s_ang_y = workspace[env, cdof_idx + dof * 6 + 1]
+                var s_ang_z = workspace[env, cdof_idx + dof * 6 + 2]
+                var s_lin_x = workspace[env, cdof_idx + dof * 6 + 3]
+                var s_lin_y = workspace[env, cdof_idx + dof * 6 + 4]
+                var s_lin_z = workspace[env, cdof_idx + dof * 6 + 5]
 
                 # Spatial motion cross: cvel_parent x_m cdof
                 var cdot_ang_x = wp_y * s_ang_z - wp_z * s_ang_y
@@ -1191,12 +1198,24 @@ fn compute_bias_forces_rne_gpu[
                 )
 
                 # Accumulate: cacc += cdof_dot * qvel
-                cacc[b * 6 + 0] = cacc[b * 6 + 0] + cdot_ang_x * qdot
-                cacc[b * 6 + 1] = cacc[b * 6 + 1] + cdot_ang_y * qdot
-                cacc[b * 6 + 2] = cacc[b * 6 + 2] + cdot_ang_z * qdot
-                cacc[b * 6 + 3] = cacc[b * 6 + 3] + cdot_lin_x * qdot
-                cacc[b * 6 + 4] = cacc[b * 6 + 4] + cdot_lin_y * qdot
-                cacc[b * 6 + 5] = cacc[b * 6 + 5] + cdot_lin_z * qdot
+                cacc[b * 6 + 0] = cacc[b * 6 + 0] + rebind[Scalar[DTYPE]](
+                    cdot_ang_x
+                ) * rebind[Scalar[DTYPE]](qdot)
+                cacc[b * 6 + 1] = cacc[b * 6 + 1] + rebind[Scalar[DTYPE]](
+                    cdot_ang_y
+                ) * rebind[Scalar[DTYPE]](qdot)
+                cacc[b * 6 + 2] = cacc[b * 6 + 2] + rebind[Scalar[DTYPE]](
+                    cdot_ang_z
+                ) * rebind[Scalar[DTYPE]](qdot)
+                cacc[b * 6 + 3] = cacc[b * 6 + 3] + rebind[Scalar[DTYPE]](
+                    cdot_lin_x
+                ) * rebind[Scalar[DTYPE]](qdot)
+                cacc[b * 6 + 4] = cacc[b * 6 + 4] + rebind[Scalar[DTYPE]](
+                    cdot_lin_y
+                ) * rebind[Scalar[DTYPE]](qdot)
+                cacc[b * 6 + 5] = cacc[b * 6 + 5] + rebind[Scalar[DTYPE]](
+                    cdot_lin_z
+                ) * rebind[Scalar[DTYPE]](qdot)
 
     # =========================================================================
     # Step 2: Compute spatial forces per body
@@ -1332,6 +1351,10 @@ fn compute_bias_forces_rne_gpu[
 
         for d in range(num_dof):
             var dof = dof_adr + d
-            bias[dof] = Scalar[DTYPE](0)
+            workspace[env, bias_idx + dof] = 0
             for k in range(6):
-                bias[dof] = bias[dof] + cdof[dof * 6 + k] * cfrc[body * 6 + k]
+                workspace[env, bias_idx + dof] = (
+                    workspace[env, bias_idx + dof]
+                    + workspace[env, cdof_idx + dof * 6 + k]
+                    * cfrc[body * 6 + k]
+                )

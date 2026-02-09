@@ -39,6 +39,14 @@ trait ConstraintSolver(Movable & ImplicitlyCopyable):
         ...
 
     @staticmethod
+    fn solver_threads[NV: Int, MAX_CONTACTS: Int]() -> Int:
+        """Number of threads for parallelization.
+
+        This is the maximum number of threads that can be used for parallelization.
+        """
+        ...
+
+    @staticmethod
     fn solve[
         DTYPE: DType,
         NQ: Int,
@@ -80,12 +88,9 @@ trait ConstraintSolver(Movable & ImplicitlyCopyable):
         STATE_SIZE: Int,
         MODEL_SIZE: Int,
         V_SIZE: Int,
-        M_SIZE: Int,
-        CDOF_SIZE: Int,
         BATCH: Int,
         WS_SIZE: Int,
     ](
-        env: Int,
         state: LayoutTensor[
             DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
         ],
@@ -95,20 +100,17 @@ trait ConstraintSolver(Movable & ImplicitlyCopyable):
         workspace: LayoutTensor[
             DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
         ],
-        cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
-        mut qvel: InlineArray[Scalar[DTYPE], V_SIZE],
         dt: Scalar[DTYPE],
     ):
         """Solve contact constraints on GPU (per-environment).
 
         Args:
-            env: Environment index within the batch.
             state: GPU state buffer for all environments.
             model: GPU model buffer.
             workspace: Device memory workspace [BATCH, WS_SIZE] containing
-                M_inv, J_n, A arrays per environment.
-            cdof: Spatial motion axes per DOF (6*NV entries).
-            qvel: Predicted velocity, modified in-place to satisfy constraints.
+                integrator temps, M_inv, and solver arrays per environment.
+                Reads cdof and qvel_pred from workspace, modifies qvel_pred
+                in-place to satisfy constraints.
             dt: Timestep.
         """
         ...

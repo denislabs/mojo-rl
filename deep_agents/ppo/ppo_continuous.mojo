@@ -864,6 +864,12 @@ struct DeepPPOContinuousAgent[
             ctx, env_states_buf
         )
 
+        # Pre-allocate step workspace for eval
+        comptime EVAL_TOTAL_WS = EnvType.STEP_WS_SHARED + Self.n_envs * EnvType.STEP_WS_PER_ENV
+        comptime EVAL_WS_ALLOC = EVAL_TOTAL_WS if EVAL_TOTAL_WS > 0 else 1
+        var eval_ws_buf = ctx.enqueue_create_buffer[dtype](EVAL_WS_ALLOC)
+        EnvType.init_step_workspace_gpu[Self.n_envs](ctx, eval_ws_buf)
+
         # Extract initial observations using environment-specific kernel
         comptime ENV_BLOCKS = (Self.n_envs + TPB - 1) // TPB
 
@@ -963,17 +969,33 @@ struct DeepPPOContinuousAgent[
                 )
 
             # Step all environments
-            EnvType.step_kernel_gpu[
-                Self.n_envs, EnvType.STATE_SIZE, Self.OBS, Self.ACTIONS
-            ](
-                ctx,
-                env_states_buf,
-                actions_buf,
-                rewards_buf,
-                dones_buf,
-                obs_buf,
-                UInt64(step),  # rng_seed
-            )
+            @parameter
+            if EVAL_TOTAL_WS > 0:
+                EnvType.step_kernel_gpu[
+                    Self.n_envs, EnvType.STATE_SIZE, Self.OBS, Self.ACTIONS
+                ](
+                    ctx,
+                    env_states_buf,
+                    actions_buf,
+                    rewards_buf,
+                    dones_buf,
+                    obs_buf,
+                    UInt64(step),
+                    List[Scalar[dtype]](),
+                    eval_ws_buf.unsafe_ptr(),
+                )
+            else:
+                EnvType.step_kernel_gpu[
+                    Self.n_envs, EnvType.STATE_SIZE, Self.OBS, Self.ACTIONS
+                ](
+                    ctx,
+                    env_states_buf,
+                    actions_buf,
+                    rewards_buf,
+                    dones_buf,
+                    obs_buf,
+                    UInt64(step),
+                )
             ctx.synchronize()
 
             # Copy rewards and dones to CPU
@@ -2627,6 +2649,15 @@ struct DeepPPOContinuousAgent[
         )
         ctx.synchronize()
 
+        # Pre-allocate step workspace to avoid per-step GPU buffer allocations
+        # For envs with STEP_WS_SHARED > 0 (GC physics), this eliminates
+        # ~1024 buffer allocations + 512 model copies per rollout.
+        comptime TOTAL_WS = EnvType.STEP_WS_SHARED + Self.n_envs * EnvType.STEP_WS_PER_ENV
+        comptime WS_ALLOC = TOTAL_WS if TOTAL_WS > 0 else 1
+        var step_ws_buf = ctx.enqueue_create_buffer[dtype](WS_ALLOC)
+        EnvType.init_step_workspace_gpu[Self.n_envs](ctx, step_ws_buf)
+        ctx.synchronize()
+
         # Extract observations from state buffer using env-specific kernel
         EnvType.extract_obs_kernel_gpu[
             Self.n_envs, EnvType.STATE_SIZE, Self.OBS
@@ -2705,6 +2736,19 @@ struct DeepPPOContinuousAgent[
         while completed_episodes < num_episodes:
             var rollout_start_episodes = completed_episodes
             rollout_count += 1
+
+            # Update curriculum in pre-allocated workspace once per rollout
+            @parameter
+            if TOTAL_WS > 0:
+                var rollout_progress = Scalar[dtype](
+                    total_steps / annealing_target_steps
+                )
+                var rollout_curriculum = CurriculumType.get_params(
+                    rollout_progress
+                )
+                EnvType.update_curriculum_gpu(
+                    ctx, step_ws_buf, rollout_curriculum
+                )
 
             # =================================================================
             # Phase 1: Collect rollout (rollout_len steps across n_envs envs)
@@ -2803,22 +2847,40 @@ struct DeepPPOContinuousAgent[
                 # Step all environments on GPU with continuous actions
                 var env_step_seed = UInt64(total_steps * 1103515245 + t * 12345)
 
-                var progress = Scalar[dtype](
-                    total_steps / annealing_target_steps
-                )
-                var curriculum_values = CurriculumType.get_params(progress)
-                EnvType.step_kernel_gpu[
-                    Self.n_envs, EnvType.STATE_SIZE, Self.OBS, Self.ACTIONS
-                ](
-                    ctx,
-                    states_buf,
-                    actions_buf,
-                    rewards_buf,
-                    dones_buf,
-                    obs_buf,
-                    env_step_seed,
-                    curriculum_values,
-                )
+                @parameter
+                if TOTAL_WS > 0:
+                    # Use pre-allocated workspace (curriculum updated per rollout above)
+                    EnvType.step_kernel_gpu[
+                        Self.n_envs, EnvType.STATE_SIZE, Self.OBS, Self.ACTIONS
+                    ](
+                        ctx,
+                        states_buf,
+                        actions_buf,
+                        rewards_buf,
+                        dones_buf,
+                        obs_buf,
+                        env_step_seed,
+                        List[Scalar[dtype]](),
+                        step_ws_buf.unsafe_ptr(),
+                    )
+                else:
+                    # Fallback: per-step allocation (for non-GC envs)
+                    var progress = Scalar[dtype](
+                        total_steps / annealing_target_steps
+                    )
+                    var curriculum_values = CurriculumType.get_params(progress)
+                    EnvType.step_kernel_gpu[
+                        Self.n_envs, EnvType.STATE_SIZE, Self.OBS, Self.ACTIONS
+                    ](
+                        ctx,
+                        states_buf,
+                        actions_buf,
+                        rewards_buf,
+                        dones_buf,
+                        obs_buf,
+                        env_step_seed,
+                        curriculum_values,
+                    )
 
                 # Add observation noise for domain randomization (if enabled)
                 if self.obs_noise_std > 0.0:

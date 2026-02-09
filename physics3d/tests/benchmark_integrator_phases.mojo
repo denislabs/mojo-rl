@@ -32,6 +32,7 @@ from physics3d.dynamics.mass_matrix import (
     compute_mass_matrix_full_gpu,
     ldl_factor_gpu,
     ldl_solve_gpu,
+    ldl_solve_workspace_gpu,
     compute_M_inv_from_ldl_gpu,
 )
 from physics3d.dynamics.bias_forces import compute_bias_forces_rne_gpu
@@ -53,6 +54,7 @@ from physics3d.gpu.constants import (
     TPB,
     state_size,
     model_size,
+    integrator_workspace_size,
     qpos_offset,
     qvel_offset,
     qacc_offset,
@@ -66,6 +68,12 @@ from physics3d.gpu.constants import (
     JOINT_IDX_DAMPING,
     JOINT_IDX_STIFFNESS,
     MODEL_META_IDX_TIMESTEP,
+    ws_M_offset,
+    ws_bias_offset,
+    ws_fnet_offset,
+    ws_qacc_ws_offset,
+    ws_qvel_pred_offset,
+    ws_m_inv_offset,
 )
 from physics3d.gpu.buffer_utils import (
     copy_model_to_buffer,
@@ -87,7 +95,7 @@ comptime MAX_CONTACTS: Int = 10
 comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS]()
 comptime MODEL_SIZE = model_size[NBODY, NJOINT]()
 # Use Newton (largest) workspace size since all 3 solvers share the buffer
-comptime WS_SIZE = NV * NV + NewtonSolver.solver_workspace_size[NV, MAX_CONTACTS]()
+comptime WS_SIZE = integrator_workspace_size[NV, NBODY]() + NV * NV + NewtonSolver.solver_workspace_size[NV, MAX_CONTACTS]()
 comptime V_SIZE: Int = 6
 comptime M_SIZE: Int = 36
 comptime CDOF_SIZE: Int = 36
@@ -136,32 +144,23 @@ fn no_solver_kernel[BATCH: Int](
         DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH,
     ](env, state, model)
 
-    # Phase 4: CDOF
-    var cdof = InlineArray[Scalar[DTYPE], CDOF_SIZE](uninitialized=True)
-    for i in range(CDOF_SIZE):
-        cdof[i] = Scalar[DTYPE](0)
+    # Phase 4: CDOF (writes to workspace)
     compute_cdof_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, CDOF_SIZE, BATCH,
-    ](env, state, model, cdof)
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+    ](env, state, model, workspace)
 
-    # Phase 5: Composite inertia
-    var crb = InlineArray[Scalar[DTYPE], CRB_SIZE](uninitialized=True)
-    for i in range(CRB_SIZE):
-        crb[i] = Scalar[DTYPE](0)
+    # Phase 5: Composite inertia (writes to workspace)
     compute_composite_inertia_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, CRB_SIZE, BATCH,
-    ](env, state, model, crb)
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+    ](env, state, model, workspace)
 
-    # Phase 6: Mass matrix (CRBA)
-    var M = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-    for i in range(M_SIZE):
-        M[i] = Scalar[DTYPE](0)
+    # Phase 6: Mass matrix (reads cdof/crb, writes M in workspace)
     compute_mass_matrix_full_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE,
-        M_SIZE, CDOF_SIZE, CRB_SIZE, BATCH,
-    ](env, state, model, cdof, crb, M)
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+    ](env, state, model, workspace)
 
     # Phase 6b: Armature + implicit damping
+    comptime M_idx = ws_M_offset[NV, NBODY]()
     var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
     var dt = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_TIMESTEP])
     for j in range(NJOINT):
@@ -172,34 +171,27 @@ fn no_solver_kernel[BATCH: Int](
         var damp = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DAMPING])
         var diag_add = arm + dt * damp
         if jnt_type == JNT_SLIDE or jnt_type == JNT_HINGE:
-            M[dof_adr * NV + dof_adr] = M[dof_adr * NV + dof_adr] + diag_add
+            var idx = M_idx + dof_adr * NV + dof_adr
+            workspace[env, idx] = workspace[env, idx] + diag_add
 
-    # Phase 7: LDL factorization + M_inv
-    var L = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-    var D_ldl = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    ldl_factor_gpu[DTYPE, NV, M_SIZE, V_SIZE](M, L, D_ldl)
+    # Phase 7: LDL factorization + M_inv (all in workspace)
+    ldl_factor_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](env, workspace)
+    compute_M_inv_from_ldl_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](env, workspace)
 
-    var M_inv = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-    for i in range(M_SIZE):
-        M_inv[i] = Scalar[DTYPE](0)
-    compute_M_inv_from_ldl_gpu[DTYPE, NV, M_SIZE, V_SIZE](L, D_ldl, M_inv)
-
-    # Phase 8: Bias forces
-    var bias = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    for i in range(V_SIZE):
-        bias[i] = Scalar[DTYPE](0)
+    # Phase 8: Bias forces (reads cdof, writes bias in workspace)
     compute_bias_forces_rne_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE,
-        V_SIZE, CDOF_SIZE, BATCH,
-    ](env, state, model, cdof, bias)
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+    ](env, state, model, workspace)
 
-    # Phase 9: Net forces + stiffness
+    # Phase 9: Net forces + stiffness (writes f_net in workspace)
+    comptime bias_idx = ws_bias_offset[NV, NBODY]()
+    comptime fnet_idx = ws_fnet_offset[NV, NBODY]()
     var qfrc_off = qfrc_offset[NQ, NV]()
     var qpos_off_stiff = qpos_offset[NQ, NV]()
-    var f_net = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
     for i in range(NV):
         var qfrc = rebind[Scalar[DTYPE]](state[env, qfrc_off + i])
-        f_net[i] = qfrc - bias[i]
+        var bias_val = rebind[Scalar[DTYPE]](workspace[env, bias_idx + i])
+        workspace[env, fnet_idx + i] = qfrc - bias_val
 
     for j in range(NJOINT):
         var joint_off = model_joint_offset[NBODY](j)
@@ -210,23 +202,24 @@ fn no_solver_kernel[BATCH: Int](
         if stiff > Scalar[DTYPE](0):
             if jnt_type == JNT_SLIDE or jnt_type == JNT_HINGE:
                 var qpos_d = rebind[Scalar[DTYPE]](state[env, qpos_off_stiff + qpos_adr])
-                f_net[dof_adr] = f_net[dof_adr] - stiff * qpos_d
+                var cur = rebind[Scalar[DTYPE]](workspace[env, fnet_idx + dof_adr])
+                workspace[env, fnet_idx + dof_adr] = cur - stiff * qpos_d
 
-    # Phase 10: Unconstrained accel + predicted velocity
-    var qacc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    for i in range(NV):
-        qacc[i] = Scalar[DTYPE](0)
-    ldl_solve_gpu[DTYPE, NV, M_SIZE, V_SIZE](L, D_ldl, f_net, qacc)
+    # Phase 10: Unconstrained accel + predicted velocity (all in workspace)
+    comptime qacc_ws_idx = ws_qacc_ws_offset[NV, NBODY]()
+    comptime qvel_pred_idx = ws_qvel_pred_offset[NV, NBODY]()
+    ldl_solve_workspace_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](env, workspace)
 
     var qacc_off = qacc_offset[NQ, NV]()
     for i in range(NV):
-        state[env, qacc_off + i] = qacc[i]
+        var qacc_val = rebind[Scalar[DTYPE]](workspace[env, qacc_ws_idx + i])
+        state[env, qacc_off + i] = qacc_val
 
     var qvel_off = qvel_offset[NQ, NV]()
-    var qvel_pred = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
     for i in range(NV):
         var qvel = rebind[Scalar[DTYPE]](state[env, qvel_off + i])
-        qvel_pred[i] = qvel + qacc[i] * dt
+        var qacc_val = rebind[Scalar[DTYPE]](workspace[env, qacc_ws_idx + i])
+        workspace[env, qvel_pred_idx + i] = qvel + qacc_val * dt
 
     # *** SOLVER SKIPPED (phase 11) ***
 
@@ -234,8 +227,9 @@ fn no_solver_kernel[BATCH: Int](
     var qpos_off = qpos_offset[NQ, NV]()
     for i in range(NV):
         var old_qvel = rebind[Scalar[DTYPE]](state[env, qvel_off + i])
-        state[env, qacc_off + i] = (qvel_pred[i] - old_qvel) / dt
-        state[env, qvel_off + i] = qvel_pred[i]
+        var constrained_vel = rebind[Scalar[DTYPE]](workspace[env, qvel_pred_idx + i])
+        state[env, qacc_off + i] = (constrained_vel - old_qvel) / dt
+        state[env, qvel_off + i] = constrained_vel
 
     comptime MAX_QVEL: Scalar[DTYPE] = 20.0
     for i in range(NV):

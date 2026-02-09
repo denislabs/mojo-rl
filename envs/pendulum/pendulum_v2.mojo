@@ -93,6 +93,8 @@ struct PendulumV2[DTYPE: DType](
     comptime STATE_SIZE: Int = PConstants.STATE_SIZE  # 6
     comptime OBS_DIM: Int = PConstants.OBS_DIM  # 3
     comptime ACTION_DIM: Int = PConstants.ACTION_DIM  # 1
+    comptime STEP_WS_SHARED: Int = 0
+    comptime STEP_WS_PER_ENV: Int = 0
 
     # DiscreteEnv trait requirement
     comptime NUM_ACTIONS: Int = 3  # left, none, right
@@ -215,6 +217,7 @@ struct PendulumV2[DTYPE: DType](
         mut obs: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
         curriculum_values: List[Scalar[dtype]] = [],
+        workspace_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
     ) raises:
         """Perform one environment step with continuous actions (GPUContinuousEnv trait).
 
@@ -440,6 +443,22 @@ struct PendulumV2[DTYPE: DType](
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )
+
+    @staticmethod
+    fn init_step_workspace_gpu[
+        BATCH_SIZE: Int,
+    ](ctx: DeviceContext, mut workspace_buf: DeviceBuffer[dtype]) raises:
+        """No-op: Pendulum doesn't need pre-allocated workspace."""
+        pass
+
+    @staticmethod
+    fn update_curriculum_gpu(
+        ctx: DeviceContext,
+        mut workspace_buf: DeviceBuffer[dtype],
+        curriculum_values: List[Scalar[dtype]],
+    ) raises:
+        """No-op: Pendulum doesn't use curriculum."""
+        pass
 
     # =========================================================================
     # GPU Helper Methods (Static, Inline)

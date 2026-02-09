@@ -14,7 +14,7 @@ from physics_legacy.shape import (
     CircleShape,
     EdgeShape,
 )
-from physics.body import Body, Transform
+from physics_legacys.body import Body, Transform
 
 
 # ===== Collision Filtering =====

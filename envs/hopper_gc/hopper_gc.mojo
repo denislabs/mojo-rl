@@ -50,6 +50,7 @@ from physics3d.gpu.constants import (
     xpos_offset,
     metadata_offset,
     model_size,
+    integrator_workspace_size,
     META_IDX_NUM_CONTACTS,
     META_IDX_STEP_COUNT,
     model_curriculum_offset,
@@ -197,6 +198,11 @@ struct HopperGC[
     comptime STATE_SIZE: Int = state_size[
         Self.NQ, Self.NV, Self.NUM_BODIES, Self.MAX_CONTACTS
     ]()
+
+    # Pre-allocated workspace sizes for step_kernel_gpu
+    # Per-env: 1 (x_before) + physics workspace
+    comptime STEP_WS_SHARED: Int = model_size[4, 6]()  # NUM_BODIES=4, NUM_JOINTS=6
+    comptime STEP_WS_PER_ENV: Int = 1 + integrator_workspace_size[6, 4]() + 6 * 6 + PGSSolver.solver_workspace_size[6, 10]()  # NV=6, NUM_BODIES=4, MAX_CONTACTS=10
 
     # Physics model and data
     var model: Model[
@@ -1183,28 +1189,60 @@ struct HopperGC[
         mut obs_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64 = 0,
         curriculum_values: List[Scalar[gpu_dtype]] = [],
+        workspace_ptr: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin] = UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin](),
     ) raises:
         """Batched GPU step function using GC physics engine.
 
         Uses DefaultIntegrator.step_gpu for physics.
 
+        When workspace_ptr is non-null, uses pre-allocated buffers to avoid
+        per-step GPU buffer allocation. Layout:
+            [model: MODEL_SIZE | per_env: BATCH_SIZE * (1 + PHYSICS_WS_SIZE)]
+        where per-env is [x_before(1) | physics_ws(PHYSICS_WS_SIZE)] * BATCH_SIZE.
         """
 
-        # Create model buffer on GPU with curriculum values set directly
         comptime MODEL_SIZE = model_size[
             HopperGC.NUM_BODIES, HopperGC.NUM_JOINTS
         ]()
-        var model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
+        comptime FRAME_SKIP = HopperGCConstants[gpu_dtype].FRAME_SKIP
+        comptime PHYSICS_WS_SIZE = integrator_workspace_size[Self.NV, Self.NUM_BODIES]() + Self.NV * Self.NV + PGSSolver.solver_workspace_size[Self.NV, Self.MAX_CONTACTS]()
 
-        var min_height = (
-            curriculum_values[0] if len(curriculum_values)
-            > 0 else HopperGCConstants[gpu_dtype].MIN_HEIGHT
-        )
-        var max_pitch = (
-            curriculum_values[1] if len(curriculum_values)
-            > 1 else HopperGCConstants[gpu_dtype].MAX_PITCH
-        )
-        Self._init_model_gpu(ctx, model_buf, min_height, max_pitch)
+        var model_buf: DeviceBuffer[gpu_dtype]
+        var x_before_buf: DeviceBuffer[gpu_dtype]
+        var workspace_buf: DeviceBuffer[gpu_dtype]
+
+        if workspace_ptr:
+            # Use pre-allocated workspace — model already initialized
+            model_buf = DeviceBuffer[gpu_dtype](
+                ctx, workspace_ptr, MODEL_SIZE, owning=False,
+            )
+            # Per-env region starts after model: [x_before: BATCH | physics_ws: BATCH * PHYSICS_WS_SIZE]
+            var per_env_ptr = workspace_ptr + MODEL_SIZE
+            x_before_buf = DeviceBuffer[gpu_dtype](
+                ctx, per_env_ptr, BATCH_SIZE, owning=False,
+            )
+            workspace_buf = DeviceBuffer[gpu_dtype](
+                ctx,
+                per_env_ptr + BATCH_SIZE,
+                BATCH_SIZE * PHYSICS_WS_SIZE,
+                owning=False,
+            )
+        else:
+            # Fallback: allocate per-step (backward compatible)
+            model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
+            var min_height = (
+                curriculum_values[0] if len(curriculum_values)
+                > 0 else HopperGCConstants[gpu_dtype].MIN_HEIGHT
+            )
+            var max_pitch = (
+                curriculum_values[1] if len(curriculum_values)
+                > 1 else HopperGCConstants[gpu_dtype].MAX_PITCH
+            )
+            Self._init_model_gpu(ctx, model_buf, min_height, max_pitch)
+            x_before_buf = ctx.enqueue_create_buffer[gpu_dtype](BATCH_SIZE)
+            workspace_buf = ctx.enqueue_create_buffer[gpu_dtype](
+                BATCH_SIZE * PHYSICS_WS_SIZE
+            )
 
         # Apply actions to qfrc in state buffer
         Self._apply_actions_gpu[BATCH_SIZE, STATE_SIZE_VAL, ACTION_DIM_VAL](
@@ -1212,17 +1250,11 @@ struct HopperGC[
         )
 
         # Save x_position_before for each env (for position-based velocity)
-        var x_before_buf = ctx.enqueue_create_buffer[gpu_dtype](BATCH_SIZE)
         Self._save_x_positions_gpu[BATCH_SIZE, STATE_SIZE_VAL](
             ctx, states_buf, x_before_buf
         )
 
         # Run GC physics step with frame_skip (matching Gymnasium do_simulation)
-        comptime FRAME_SKIP = HopperGCConstants[gpu_dtype].FRAME_SKIP
-        comptime WS_SIZE = Self.NV * Self.NV + PGSSolver.solver_workspace_size[Self.NV, Self.MAX_CONTACTS]()
-        var workspace_buf = ctx.enqueue_create_buffer[gpu_dtype](
-            BATCH_SIZE * WS_SIZE
-        )
         for _ in range(FRAME_SKIP):
             DefaultIntegrator.step_gpu[
                 gpu_dtype,
@@ -1888,6 +1920,54 @@ struct HopperGC[
             max_pitch: Maximum torso pitch angle for health check.
         """
         Self._init_model_gpu(ctx, model_buf, min_height, max_pitch)
+
+    @staticmethod
+    fn init_step_workspace_gpu[
+        BATCH_SIZE: Int,
+    ](
+        ctx: DeviceContext,
+        mut workspace_buf: DeviceBuffer[gpu_dtype],
+    ) raises:
+        """Initialize pre-allocated step workspace buffer (call once at setup).
+
+        Initializes the model portion with default curriculum values.
+
+        Layout: [model: MODEL_SIZE | x_before: BATCH | physics_ws: BATCH * PHYSICS_WS]
+        """
+        comptime MODEL_SIZE = model_size[
+            HopperGC.NUM_BODIES, HopperGC.NUM_JOINTS
+        ]()
+        var model_view = DeviceBuffer[gpu_dtype](
+            ctx, workspace_buf.unsafe_ptr(), MODEL_SIZE, owning=False,
+        )
+        Self._init_model_gpu(ctx, model_view)
+
+    @staticmethod
+    fn update_curriculum_gpu(
+        ctx: DeviceContext,
+        mut workspace_buf: DeviceBuffer[gpu_dtype],
+        curriculum_values: List[Scalar[gpu_dtype]],
+    ) raises:
+        """Update only the curriculum parameters in a pre-allocated workspace.
+
+        Much cheaper than _init_model_gpu — copies only 2 floats.
+
+        curriculum_values layout: [min_height, max_pitch]
+        """
+        if len(curriculum_values) < 2:
+            return
+        var curr_offset = model_curriculum_offset[
+            HopperGC.NUM_BODIES, HopperGC.NUM_JOINTS
+        ]()
+        var curriculum_host = InlineArray[Scalar[gpu_dtype], 2](
+            curriculum_values[0],  # min_height
+            curriculum_values[1],  # max_pitch
+        )
+        ctx.enqueue_copy(
+            workspace_buf.unsafe_ptr() + curr_offset,
+            curriculum_host.unsafe_ptr(),
+            2,
+        )
 
     @staticmethod
     fn _apply_actions_gpu[

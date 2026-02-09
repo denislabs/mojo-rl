@@ -297,20 +297,72 @@ fn model_size[NBODY: Int, NJOINT: Int]() -> Int:
 # =============================================================================
 # Workspace Buffer Layout (per-environment scratch space for GPU kernels)
 # =============================================================================
-# Moves large arrays from InlineArrays (register pressure) to device memory.
-# Layout per environment:
-#   [M_inv: NV*NV | solver workspace: SOLVER.solver_workspace_size() ]
+# Moves all integrator temporaries and solver arrays from InlineArrays
+# (register pressure) to device memory.
 #
-# The integrator always writes M_inv at offset 0. Each solver declares its
-# own workspace size via the solver_workspace_size trait method. The solver
-# workspace starts at offset NV*NV.
+# Layout per environment:
+#   [integrator_temps | M_inv: NV*NV | solver workspace: SOLVER.solver_workspace_size()]
+#
+# Integrator temps section:
+#   [cdof: NV*6 | crb: NBODY*10 | M: NV*NV | L: NV*NV | D: NV |
+#    bias: NV | f_net: NV | qacc_ws: NV | qvel_pred: NV]
 
 
-fn ws_m_inv_offset() -> Int:
-    """Offset to M_inv (NV*NV) in workspace buffer."""
+fn integrator_workspace_size[NV: Int, NBODY: Int]() -> Int:
+    """Total integrator temporaries size per environment."""
+    return NV * 6 + NBODY * 10 + 2 * NV * NV + 5 * NV
+
+
+fn ws_cdof_offset() -> Int:
+    """Offset to cdof (NV*6) in workspace buffer."""
     return 0
 
 
-fn ws_solver_offset[NV: Int]() -> Int:
-    """Offset to solver workspace (after M_inv)."""
-    return NV * NV
+fn ws_crb_offset[NV: Int]() -> Int:
+    """Offset to crb (NBODY*10) in workspace buffer."""
+    return NV * 6
+
+
+fn ws_M_offset[NV: Int, NBODY: Int]() -> Int:
+    """Offset to mass matrix M (NV*NV) in workspace buffer."""
+    return NV * 6 + NBODY * 10
+
+
+fn ws_L_offset[NV: Int, NBODY: Int]() -> Int:
+    """Offset to LDL factor L (NV*NV) in workspace buffer."""
+    return NV * 6 + NBODY * 10 + NV * NV
+
+
+fn ws_D_offset[NV: Int, NBODY: Int]() -> Int:
+    """Offset to LDL factor D (NV) in workspace buffer."""
+    return NV * 6 + NBODY * 10 + 2 * NV * NV
+
+
+fn ws_bias_offset[NV: Int, NBODY: Int]() -> Int:
+    """Offset to bias forces (NV) in workspace buffer."""
+    return NV * 6 + NBODY * 10 + 2 * NV * NV + NV
+
+
+fn ws_fnet_offset[NV: Int, NBODY: Int]() -> Int:
+    """Offset to f_net (NV) in workspace buffer."""
+    return NV * 6 + NBODY * 10 + 2 * NV * NV + 2 * NV
+
+
+fn ws_qacc_ws_offset[NV: Int, NBODY: Int]() -> Int:
+    """Offset to qacc workspace (NV) in workspace buffer."""
+    return NV * 6 + NBODY * 10 + 2 * NV * NV + 3 * NV
+
+
+fn ws_qvel_pred_offset[NV: Int, NBODY: Int]() -> Int:
+    """Offset to qvel_pred (NV) in workspace buffer."""
+    return NV * 6 + NBODY * 10 + 2 * NV * NV + 4 * NV
+
+
+fn ws_m_inv_offset[NV: Int, NBODY: Int]() -> Int:
+    """Offset to M_inv (NV*NV) in workspace buffer (after integrator temps)."""
+    return integrator_workspace_size[NV, NBODY]()
+
+
+fn ws_solver_offset[NV: Int, NBODY: Int]() -> Int:
+    """Offset to solver workspace (after integrator temps + M_inv)."""
+    return integrator_workspace_size[NV, NBODY]() + NV * NV

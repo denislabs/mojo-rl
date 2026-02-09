@@ -9,6 +9,8 @@ from ..gpu.constants import (
     metadata_offset,
     model_metadata_offset,
     model_joint_offset,
+    ws_cdof_offset,
+    ws_qvel_pred_offset,
     ws_m_inv_offset,
     ws_solver_offset,
     CONTACT_SIZE,
@@ -285,8 +287,6 @@ fn _solve_friction_pgs_gpu[
     STATE_SIZE: Int,
     MODEL_SIZE: Int,
     V_SIZE: Int,
-    M_SIZE: Int,
-    CDOF_SIZE: Int,
     BATCH: Int,
     WS_SIZE: Int,
     FRICTION_WS_OFFSET: Int,
@@ -299,12 +299,10 @@ fn _solve_friction_pgs_gpu[
     workspace: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
     ],
-    cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
     # Offsets into workspace (absolute from env row start)
     nc: Int,
     friction_coef: Scalar[DTYPE],
     contacts_off: Int,
-    mut qvel: InlineArray[Scalar[DTYPE], V_SIZE],
 ):
     """Friction solver using PGS on GPU (shared by CG and Newton solvers).
 
@@ -312,13 +310,15 @@ fn _solve_friction_pgs_gpu[
     Contact data is read-only, friction data is read-write.
     """
 
-    comptime contact_ws_off = ws_solver_offset[NV]()
+    comptime qvel_idx = ws_qvel_pred_offset[NV, NBODY]()
+
+    comptime contact_ws_off = ws_solver_offset[NV, NBODY]()
     comptime friction_ws_off = contact_ws_off + FRICTION_WS_OFFSET
     comptime MC = _max_one[MAX_CONTACTS]()
 
     # Derive ALL pointers from workspace.ptr for mutable writes
 
-    comptime M_inv = ws_m_inv_offset()
+    comptime M_inv = ws_m_inv_offset[NV, NBODY]()
 
     # Contact block (read-only)
     comptime ws_lambda_n = contact_ws_off + 0 * MC
@@ -407,13 +407,13 @@ fn _solve_friction_pgs_gpu[
             STATE_SIZE,
             MODEL_SIZE,
             V_SIZE,
-            CDOF_SIZE,
             BATCH,
+            WS_SIZE,
         ](
             env,
             state,
             model,
-            cdof,
+            workspace,
             Int(workspace[env, ws_c_body + c]),
             Int(workspace[env, ws_c_body_b + c]),
             rebind[Scalar[DTYPE]](workspace[env, ws_c_px + c]),
@@ -448,13 +448,13 @@ fn _solve_friction_pgs_gpu[
             STATE_SIZE,
             MODEL_SIZE,
             V_SIZE,
-            CDOF_SIZE,
             BATCH,
+            WS_SIZE,
         ](
             env,
             state,
             model,
-            cdof,
+            workspace,
             Int(workspace[env, ws_c_body + c]),
             Int(workspace[env, ws_c_body_b + c]),
             rebind[Scalar[DTYPE]](workspace[env, ws_c_px + c]),
@@ -507,13 +507,13 @@ fn _solve_friction_pgs_gpu[
                 STATE_SIZE,
                 MODEL_SIZE,
                 V_SIZE,
-                CDOF_SIZE,
                 BATCH,
+                WS_SIZE,
             ](
                 env,
                 state,
                 model,
-                cdof,
+                workspace,
                 Int(workspace[env, ws_c_body + c]),
                 Int(workspace[env, ws_c_body_b + c]),
                 rebind[Scalar[DTYPE]](workspace[env, ws_c_px + c]),
@@ -524,9 +524,9 @@ fn _solve_friction_pgs_gpu[
                 rebind[Scalar[DTYPE]](workspace[env, _t1z + c]),
                 J_t_row,
             )
-            var v_t1: Scalar[DTYPE] = 0
+            var v_t1: workspace.element_type = 0
             for i in range(NV):
-                v_t1 += J_t_row[i] * qvel[i]
+                v_t1 += J_t_row[i] * workspace[env, qvel_idx + i]
 
             var delta_t1 = -v_t1 / workspace[env, kt1 + c]
             var old_t1 = workspace[env, lt1 + c]
@@ -543,13 +543,13 @@ fn _solve_friction_pgs_gpu[
                 STATE_SIZE,
                 MODEL_SIZE,
                 V_SIZE,
-                CDOF_SIZE,
                 BATCH,
+                WS_SIZE,
             ](
                 env,
                 state,
                 model,
-                cdof,
+                workspace,
                 Int(workspace[env, ws_c_body + c]),
                 Int(workspace[env, ws_c_body_b + c]),
                 rebind[Scalar[DTYPE]](workspace[env, ws_c_px + c]),
@@ -560,9 +560,9 @@ fn _solve_friction_pgs_gpu[
                 rebind[Scalar[DTYPE]](workspace[env, _t2z + c]),
                 J_t_row,
             )
-            var v_t2: Scalar[DTYPE] = 0
+            var v_t2: workspace.element_type = 0
             for i in range(NV):
-                v_t2 += J_t_row[i] * qvel[i]
+                v_t2 += J_t_row[i] * workspace[env, qvel_idx + i]
 
             var delta_t2 = -v_t2 / workspace[env, kt2 + c]
             var old_t2 = workspace[env, lt2 + c]
@@ -592,13 +592,13 @@ fn _solve_friction_pgs_gpu[
                 STATE_SIZE,
                 MODEL_SIZE,
                 V_SIZE,
-                CDOF_SIZE,
                 BATCH,
+                WS_SIZE,
             ](
                 env,
                 state,
                 model,
-                cdof,
+                workspace,
                 Int(workspace[env, ws_c_body + c]),
                 Int(workspace[env, ws_c_body_b + c]),
                 rebind[Scalar[DTYPE]](workspace[env, ws_c_px + c]),
@@ -615,9 +615,7 @@ fn _solve_friction_pgs_gpu[
                     mi_j_sum += (
                         workspace[env, M_inv + i * NV + j_idx] * J_row[j_idx]
                     )
-                qvel[i] += rebind[Scalar[DTYPE]](mi_j_sum) * rebind[
-                    Scalar[DTYPE]
-                ](actual_t1)
+                workspace[env, qvel_idx + i] += mi_j_sum * actual_t1
 
             # Apply tangent 2 correction
             compute_contact_jacobian_row_gpu[
@@ -630,13 +628,13 @@ fn _solve_friction_pgs_gpu[
                 STATE_SIZE,
                 MODEL_SIZE,
                 V_SIZE,
-                CDOF_SIZE,
                 BATCH,
+                WS_SIZE,
             ](
                 env,
                 state,
                 model,
-                cdof,
+                workspace,
                 Int(workspace[env, ws_c_body + c]),
                 Int(workspace[env, ws_c_body_b + c]),
                 rebind[Scalar[DTYPE]](workspace[env, ws_c_px + c]),
@@ -653,9 +651,7 @@ fn _solve_friction_pgs_gpu[
                     mi_j_sum += (
                         workspace[env, M_inv + i * NV + j_idx] * J_t_row[j_idx]
                     )
-                qvel[i] += rebind[Scalar[DTYPE]](mi_j_sum) * rebind[
-                    Scalar[DTYPE]
-                ](actual_t2)
+                workspace[env, qvel_idx + i] += mi_j_sum * actual_t2
 
     # Store impulses back for warm-starting
     for c in range(nc):

@@ -171,7 +171,7 @@ fn main() raises:
             eval_cpu_rewards.append(eval_cpu_avg)
             eval_gpu_rewards.append(eval_gpu_avg)
             checkpoints.append(episodes_trained)
-            log_std_values.append(current_log_std.copy())
+            log_std_values.append(current_log_std^)
 
             # Print results
             print(

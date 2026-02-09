@@ -132,6 +132,8 @@ struct HalfCheetahPlanar[DTYPE: DType = DType.float64](
     comptime STATE_SIZE: Int = HCConstants.STATE_SIZE_VAL
     comptime OBS_DIM: Int = HCConstants.OBS_DIM_VAL
     comptime ACTION_DIM: Int = HCConstants.ACTION_DIM_VAL
+    comptime STEP_WS_SHARED: Int = 0
+    comptime STEP_WS_PER_ENV: Int = 0
 
     # Required for BoxContinuousActionEnv trait
     comptime dtype = Self.DTYPE
@@ -1069,6 +1071,7 @@ struct HalfCheetahPlanar[DTYPE: DType = DType.float64](
         mut obs_buf: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
         curriculum_values: List[Scalar[dtype]] = [],
+        workspace_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
     ) raises:
         """GPU step kernel for batched continuous actions."""
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
@@ -1252,6 +1255,22 @@ struct HalfCheetahPlanar[DTYPE: DType = DType.float64](
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )
+
+    @staticmethod
+    fn init_step_workspace_gpu[
+        BATCH_SIZE: Int,
+    ](ctx: DeviceContext, mut workspace_buf: DeviceBuffer[dtype]) raises:
+        """No-op: CheetahPlanar doesn't need pre-allocated workspace."""
+        pass
+
+    @staticmethod
+    fn update_curriculum_gpu(
+        ctx: DeviceContext,
+        mut workspace_buf: DeviceBuffer[dtype],
+        curriculum_values: List[Scalar[dtype]],
+    ) raises:
+        """No-op: CheetahPlanar doesn't use curriculum."""
+        pass
 
     # =========================================================================
     # GPU Helper Functions

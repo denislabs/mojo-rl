@@ -53,6 +53,7 @@ from physics3d.gpu.constants import (
     xpos_offset,
     metadata_offset,
     model_size,
+    integrator_workspace_size,
     META_IDX_NUM_CONTACTS,
     META_IDX_STEP_COUNT,
     META_IDX_PREV_X,
@@ -315,6 +316,12 @@ struct HalfCheetahGC[
     comptime STATE_SIZE: Int = state_size[
         Self.NQ, Self.NV, Self.NUM_BODIES, Self.MAX_CONTACTS
     ]()
+
+    # Pre-allocated workspace sizes for step_kernel_gpu
+    comptime STEP_WS_SHARED: Int = model_size[NBODY, NJOINT]()
+    comptime STEP_WS_PER_ENV: Int = integrator_workspace_size[
+        NV, NBODY
+    ]() + NV * NV + NewtonSolver.solver_workspace_size[NV, MAX_CONTACTS]()
 
     # Physics model and data
     var model: Model[
@@ -1509,25 +1516,60 @@ struct HalfCheetahGC[
         mut obs_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64 = 0,
         curriculum_values: List[Scalar[gpu_dtype]] = [],
+        workspace_ptr: UnsafePointer[
+            Scalar[gpu_dtype], MutAnyOrigin
+        ] = UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin](),
     ) raises:
         """Batched GPU step function using GC physics engine.
 
         Uses DefaultIntegrator.step_gpu for physics.
         Runs FRAME_SKIP=5 sub-steps per env step with joint limit
         enforcement after each sub-step, matching CPU behavior.
+
+        When workspace_ptr is non-null, uses pre-allocated buffers to avoid
+        per-step GPU buffer allocation. Layout:
+            [model: MODEL_SIZE | physics_ws: BATCH_SIZE * WS_SIZE]
+        The model portion must be initialized via init_step_workspace_gpu().
         """
 
-        # Create model buffer on GPU with curriculum values set directly
         comptime MODEL_SIZE = model_size[
             HalfCheetahGC.NUM_BODIES, HalfCheetahGC.NUM_JOINTS
         ]()
-        var model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
+        comptime C = HalfCheetahGCConstants[gpu_dtype]
+        comptime WS_SIZE = integrator_workspace_size[
+            Self.NV, Self.NUM_BODIES
+        ]() + Self.NV * Self.NV + NewtonSolver.solver_workspace_size[
+            Self.NV, Self.MAX_CONTACTS
+        ]()
 
-        var max_pitch = (
-            curriculum_values[1] if len(curriculum_values)
-            > 1 else HalfCheetahGCConstants[gpu_dtype].MAX_PITCH
-        )
-        Self._init_model_gpu(ctx, model_buf, max_pitch)
+        var model_buf: DeviceBuffer[gpu_dtype]
+        var workspace_buf: DeviceBuffer[gpu_dtype]
+
+        if workspace_ptr:
+            # Use pre-allocated workspace — model already initialized
+            model_buf = DeviceBuffer[gpu_dtype](
+                ctx,
+                workspace_ptr,
+                MODEL_SIZE,
+                owning=False,
+            )
+            workspace_buf = DeviceBuffer[gpu_dtype](
+                ctx,
+                workspace_ptr + MODEL_SIZE,
+                BATCH_SIZE * WS_SIZE,
+                owning=False,
+            )
+        else:
+            # Fallback: allocate per-step (backward compatible)
+            model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
+            var max_pitch = (
+                curriculum_values[1] if len(curriculum_values)
+                > 1 else C.MAX_PITCH
+            )
+            Self._init_model_gpu(ctx, model_buf, max_pitch)
+            workspace_buf = ctx.enqueue_create_buffer[gpu_dtype](
+                BATCH_SIZE * WS_SIZE
+            )
 
         # Store prev_x_position before physics (for position-based velocity)
         Self._store_prev_x_gpu[BATCH_SIZE, STATE_SIZE_VAL](ctx, states_buf)
@@ -1538,11 +1580,6 @@ struct HalfCheetahGC[
         )
 
         # Run FRAME_SKIP physics sub-steps with joint limit enforcement
-        comptime C = HalfCheetahGCConstants[gpu_dtype]
-        comptime WS_SIZE = Self.NV * Self.NV + NewtonSolver.solver_workspace_size[Self.NV, Self.MAX_CONTACTS]()
-        var workspace_buf = ctx.enqueue_create_buffer[gpu_dtype](
-            BATCH_SIZE * WS_SIZE
-        )
         for _ in range(C.FRAME_SKIP):
             EulerIntegrator[SOLVER=NewtonSolver].step_gpu[
                 gpu_dtype,
@@ -1830,7 +1867,9 @@ struct HalfCheetahGC[
     fn _init_model_gpu(
         ctx: DeviceContext,
         mut model_buf: DeviceBuffer[gpu_dtype],
-        max_pitch: Scalar[gpu_dtype] = HalfCheetahGCConstants[gpu_dtype].MAX_PITCH,
+        max_pitch: Scalar[gpu_dtype] = HalfCheetahGCConstants[
+            gpu_dtype
+        ].MAX_PITCH,
     ) raises:
         """Initialize model buffer with HalfCheetahGC parameters for GC physics engine.
 
@@ -2458,6 +2497,56 @@ struct HalfCheetahGC[
             max_pitch: Maximum torso pitch angle for health check.
         """
         Self._init_model_gpu(ctx, model_buf, max_pitch)
+
+    @staticmethod
+    fn init_step_workspace_gpu[
+        BATCH_SIZE: Int,
+    ](ctx: DeviceContext, mut workspace_buf: DeviceBuffer[gpu_dtype],) raises:
+        """Initialize pre-allocated step workspace buffer (call once at setup).
+
+        Initializes the model portion of the workspace with default curriculum.
+        The physics workspace portion doesn't need initialization.
+
+        Layout: [model: MODEL_SIZE | physics_ws: BATCH_SIZE * WS_SIZE]
+        """
+        comptime MODEL_SIZE = model_size[
+            HalfCheetahGC.NUM_BODIES, HalfCheetahGC.NUM_JOINTS
+        ]()
+        var model_view = DeviceBuffer[gpu_dtype](
+            ctx,
+            workspace_buf.unsafe_ptr(),
+            MODEL_SIZE,
+            owning=False,
+        )
+        Self._init_model_gpu(ctx, model_view)
+
+    @staticmethod
+    fn update_curriculum_gpu(
+        ctx: DeviceContext,
+        mut workspace_buf: DeviceBuffer[gpu_dtype],
+        curriculum_values: List[Scalar[gpu_dtype]],
+    ) raises:
+        """Update only the curriculum parameters in a pre-allocated workspace.
+
+        Much cheaper than _init_model_gpu — copies only 2 floats instead of
+        rebuilding the entire ~362-element model buffer.
+
+        curriculum_values layout: [min_height(unused), max_pitch]
+        """
+        if len(curriculum_values) < 2:
+            return
+        var curr_offset = model_curriculum_offset[
+            HalfCheetahGC.NUM_BODIES, HalfCheetahGC.NUM_JOINTS
+        ]()
+        var curriculum_host = InlineArray[Scalar[gpu_dtype], 2](
+            curriculum_values[0],  # MIN_HEIGHT (unused for HalfCheetah)
+            curriculum_values[1],  # MAX_PITCH
+        )
+        ctx.enqueue_copy(
+            workspace_buf.unsafe_ptr() + curr_offset,
+            curriculum_host.unsafe_ptr(),
+            2,
+        )
 
     @staticmethod
     fn _store_prev_x_gpu[

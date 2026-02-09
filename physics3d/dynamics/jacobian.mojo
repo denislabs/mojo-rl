@@ -15,7 +15,7 @@ Both have CPU and GPU variants.
 
 from math import sqrt
 from layout import LayoutTensor, Layout
-
+from ..gpu.constants import ws_cdof_offset
 from ..types import Model, Data, _max_one
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
 from ..kinematics.quat_math import quat_rotate
@@ -529,27 +529,33 @@ fn compute_composite_inertia_gpu[
     MAX_CONTACTS: Int,
     STATE_SIZE: Int,
     MODEL_SIZE: Int,
-    CRB_SIZE: Int,
     BATCH: Int,
+    WS_SIZE: Int,
 ](
     env: Int,
     state: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
     ],
     model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
-    mut crb: InlineArray[Scalar[DTYPE], CRB_SIZE],
+    workspace: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+    ],
 ):
-    """Compute composite rigid body inertia on GPU. Same algorithm as CPU."""
+    """Compute composite rigid body inertia on GPU. Writes crb to workspace."""
     from ..gpu.constants import (
         xpos_offset,
         xquat_offset,
         model_body_offset,
+        ws_crb_offset,
         BODY_IDX_PARENT,
         BODY_IDX_MASS,
         BODY_IDX_IXX,
         BODY_IDX_IYY,
         BODY_IDX_IZZ,
     )
+
+    # Derive crb pointer from workspace (MutAnyOrigin)
+    var crb_ptr = workspace.ptr + env * WS_SIZE + ws_crb_offset[NV]()
 
     var xpos_off = xpos_offset[NQ, NV, NBODY]()
     var xquat_off = xquat_offset[NQ, NV, NBODY]()
@@ -581,37 +587,37 @@ fn compute_composite_inertia_gpu[
         var r12 = Scalar[DTYPE](2) * (qy * qz - qw * qx)
         var r22 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qx * qx + qy * qy)
 
-        crb[b * 10 + 0] = mass
-        crb[b * 10 + 1] = Scalar[DTYPE](0)
-        crb[b * 10 + 2] = Scalar[DTYPE](0)
-        crb[b * 10 + 3] = Scalar[DTYPE](0)
+        (crb_ptr + b * 10 + 0)[] = mass
+        (crb_ptr + b * 10 + 1)[] = Scalar[DTYPE](0)
+        (crb_ptr + b * 10 + 2)[] = Scalar[DTYPE](0)
+        (crb_ptr + b * 10 + 3)[] = Scalar[DTYPE](0)
         # I_world = R @ diag(Ixx, Iyy, Izz) @ R^T
-        crb[b * 10 + 4] = (
+        (crb_ptr + b * 10 + 4)[] = (
             Ixx_local * r00 * r00
             + Iyy_local * r01 * r01
             + Izz_local * r02 * r02
         )
-        crb[b * 10 + 5] = (
+        (crb_ptr + b * 10 + 5)[] = (
             Ixx_local * r10 * r10
             + Iyy_local * r11 * r11
             + Izz_local * r12 * r12
         )
-        crb[b * 10 + 6] = (
+        (crb_ptr + b * 10 + 6)[] = (
             Ixx_local * r20 * r20
             + Iyy_local * r21 * r21
             + Izz_local * r22 * r22
         )
-        crb[b * 10 + 7] = (
+        (crb_ptr + b * 10 + 7)[] = (
             Ixx_local * r00 * r10
             + Iyy_local * r01 * r11
             + Izz_local * r02 * r12
         )
-        crb[b * 10 + 8] = (
+        (crb_ptr + b * 10 + 8)[] = (
             Ixx_local * r00 * r20
             + Iyy_local * r01 * r21
             + Izz_local * r02 * r22
         )
-        crb[b * 10 + 9] = (
+        (crb_ptr + b * 10 + 9)[] = (
             Ixx_local * r10 * r20
             + Iyy_local * r11 * r21
             + Izz_local * r12 * r22
@@ -626,19 +632,19 @@ fn compute_composite_inertia_gpu[
         if parent < 0:
             continue
 
-        var child_mass = crb[b * 10 + 0]
+        var child_mass = (crb_ptr + b * 10 + 0)[]
         if child_mass < Scalar[DTYPE](1e-20):
             continue
 
-        var child_cx = crb[b * 10 + 1]
-        var child_cy = crb[b * 10 + 2]
-        var child_cz = crb[b * 10 + 3]
-        var child_Ixx = crb[b * 10 + 4]
-        var child_Iyy = crb[b * 10 + 5]
-        var child_Izz = crb[b * 10 + 6]
-        var child_Ixy = crb[b * 10 + 7]
-        var child_Ixz = crb[b * 10 + 8]
-        var child_Iyz = crb[b * 10 + 9]
+        var child_cx = (crb_ptr + b * 10 + 1)[]
+        var child_cy = (crb_ptr + b * 10 + 2)[]
+        var child_cz = (crb_ptr + b * 10 + 3)[]
+        var child_Ixx = (crb_ptr + b * 10 + 4)[]
+        var child_Iyy = (crb_ptr + b * 10 + 5)[]
+        var child_Izz = (crb_ptr + b * 10 + 6)[]
+        var child_Ixy = (crb_ptr + b * 10 + 7)[]
+        var child_Ixz = (crb_ptr + b * 10 + 8)[]
+        var child_Iyz = (crb_ptr + b * 10 + 9)[]
 
         var dx = rebind[Scalar[DTYPE]](
             state[env, xpos_off + b * 3 + 0]
@@ -654,10 +660,10 @@ fn compute_composite_inertia_gpu[
         var total_cy = dy + child_cy
         var total_cz = dz + child_cz
 
-        var parent_mass = crb[parent * 10 + 0]
-        var parent_cx = crb[parent * 10 + 1]
-        var parent_cy = crb[parent * 10 + 2]
-        var parent_cz = crb[parent * 10 + 3]
+        var parent_mass = (crb_ptr + parent * 10 + 0)[]
+        var parent_cx = (crb_ptr + parent * 10 + 1)[]
+        var parent_cy = (crb_ptr + parent * 10 + 2)[]
+        var parent_cz = (crb_ptr + parent * 10 + 3)[]
 
         var new_mass = parent_mass + child_mass
 
@@ -680,12 +686,18 @@ fn compute_composite_inertia_gpu[
         var dp_z = parent_cz - new_cz
         var dp_sq = dp_x * dp_x + dp_y * dp_y + dp_z * dp_z
 
-        var new_Ixx = crb[parent * 10 + 4] + parent_mass * (dp_sq - dp_x * dp_x)
-        var new_Iyy = crb[parent * 10 + 5] + parent_mass * (dp_sq - dp_y * dp_y)
-        var new_Izz = crb[parent * 10 + 6] + parent_mass * (dp_sq - dp_z * dp_z)
-        var new_Ixy = crb[parent * 10 + 7] - parent_mass * dp_x * dp_y
-        var new_Ixz = crb[parent * 10 + 8] - parent_mass * dp_x * dp_z
-        var new_Iyz = crb[parent * 10 + 9] - parent_mass * dp_y * dp_z
+        var new_Ixx = (crb_ptr + parent * 10 + 4)[] + parent_mass * (
+            dp_sq - dp_x * dp_x
+        )
+        var new_Iyy = (crb_ptr + parent * 10 + 5)[] + parent_mass * (
+            dp_sq - dp_y * dp_y
+        )
+        var new_Izz = (crb_ptr + parent * 10 + 6)[] + parent_mass * (
+            dp_sq - dp_z * dp_z
+        )
+        var new_Ixy = (crb_ptr + parent * 10 + 7)[] - parent_mass * dp_x * dp_y
+        var new_Ixz = (crb_ptr + parent * 10 + 8)[] - parent_mass * dp_x * dp_z
+        var new_Iyz = (crb_ptr + parent * 10 + 9)[] - parent_mass * dp_y * dp_z
 
         var dc_x = total_cx - new_cx
         var dc_y = total_cy - new_cy
@@ -699,16 +711,16 @@ fn compute_composite_inertia_gpu[
         new_Ixz = new_Ixz + child_Ixz - child_mass * dc_x * dc_z
         new_Iyz = new_Iyz + child_Iyz - child_mass * dc_y * dc_z
 
-        crb[parent * 10 + 0] = new_mass
-        crb[parent * 10 + 1] = new_cx
-        crb[parent * 10 + 2] = new_cy
-        crb[parent * 10 + 3] = new_cz
-        crb[parent * 10 + 4] = new_Ixx
-        crb[parent * 10 + 5] = new_Iyy
-        crb[parent * 10 + 6] = new_Izz
-        crb[parent * 10 + 7] = new_Ixy
-        crb[parent * 10 + 8] = new_Ixz
-        crb[parent * 10 + 9] = new_Iyz
+        (crb_ptr + parent * 10 + 0)[] = new_mass
+        (crb_ptr + parent * 10 + 1)[] = new_cx
+        (crb_ptr + parent * 10 + 2)[] = new_cy
+        (crb_ptr + parent * 10 + 3)[] = new_cz
+        (crb_ptr + parent * 10 + 4)[] = new_Ixx
+        (crb_ptr + parent * 10 + 5)[] = new_Iyy
+        (crb_ptr + parent * 10 + 6)[] = new_Izz
+        (crb_ptr + parent * 10 + 7)[] = new_Ixy
+        (crb_ptr + parent * 10 + 8)[] = new_Ixz
+        (crb_ptr + parent * 10 + 9)[] = new_Iyz
 
 
 # =============================================================================
@@ -726,19 +738,21 @@ fn compute_cdof_gpu[
     MAX_CONTACTS: Int,
     STATE_SIZE: Int,
     MODEL_SIZE: Int,
-    CDOF_SIZE: Int,
     BATCH: Int,
+    WS_SIZE: Int,
 ](
     env: Int,
     state: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
     ],
     model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
-    mut cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
+    workspace: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+    ],
 ):
     """Compute spatial motion axis (cdof) for each DOF on GPU.
 
-    Same algorithm as CPU version but reads from GPU LayoutTensors.
+    Writes cdof to workspace buffer instead of InlineArray.
     """
     from ..gpu.constants import (
         xpos_offset,
@@ -746,6 +760,7 @@ fn compute_cdof_gpu[
         model_body_offset,
         model_joint_offset,
         model_metadata_offset,
+        ws_cdof_offset,
         BODY_IDX_PARENT,
         JOINT_IDX_TYPE,
         JOINT_IDX_BODY_ID,
@@ -765,9 +780,12 @@ fn compute_cdof_gpu[
     )
     from ..kinematics.quat_math import gpu_quat_rotate
 
+    # Derive cdof pointer from workspace (MutAnyOrigin)
+    var cdof_ptr = workspace.ptr + env * WS_SIZE + ws_cdof_offset()
+
     # Zero out
-    for i in range(CDOF_SIZE):
-        cdof[i] = Scalar[DTYPE](0)
+    for i in range(NV * 6):
+        (cdof_ptr + i)[] = Scalar[DTYPE](0)
 
     var xpos_off = xpos_offset[NQ, NV, NBODY]()
     var xquat_off = xquat_offset[NQ, NV, NBODY]()
@@ -860,12 +878,12 @@ fn compute_cdof_gpu[
             var oy = by - jpos_y
             var oz = bz - jpos_z
 
-            cdof[dof_adr * 6 + 0] = axis_x
-            cdof[dof_adr * 6 + 1] = axis_y
-            cdof[dof_adr * 6 + 2] = axis_z
-            cdof[dof_adr * 6 + 3] = axis_y * oz - axis_z * oy
-            cdof[dof_adr * 6 + 4] = axis_z * ox - axis_x * oz
-            cdof[dof_adr * 6 + 5] = axis_x * oy - axis_y * ox
+            (cdof_ptr + dof_adr * 6 + 0)[] = axis_x
+            (cdof_ptr + dof_adr * 6 + 1)[] = axis_y
+            (cdof_ptr + dof_adr * 6 + 2)[] = axis_z
+            (cdof_ptr + dof_adr * 6 + 3)[] = axis_y * oz - axis_z * oy
+            (cdof_ptr + dof_adr * 6 + 4)[] = axis_z * ox - axis_x * oz
+            (cdof_ptr + dof_adr * 6 + 5)[] = axis_x * oy - axis_y * ox
 
         elif jnt_type == JNT_SLIDE:
             var axis_x = rebind[Scalar[DTYPE]](
@@ -899,17 +917,17 @@ fn compute_cdof_gpu[
                 axis_y = a_w[1]
                 axis_z = a_w[2]
 
-            cdof[dof_adr * 6 + 3] = axis_x
-            cdof[dof_adr * 6 + 4] = axis_y
-            cdof[dof_adr * 6 + 5] = axis_z
+            (cdof_ptr + dof_adr * 6 + 3)[] = axis_x
+            (cdof_ptr + dof_adr * 6 + 4)[] = axis_y
+            (cdof_ptr + dof_adr * 6 + 5)[] = axis_z
 
         elif jnt_type == JNT_FREE:
-            cdof[(dof_adr + 0) * 6 + 3] = Scalar[DTYPE](1)
-            cdof[(dof_adr + 1) * 6 + 4] = Scalar[DTYPE](1)
-            cdof[(dof_adr + 2) * 6 + 5] = Scalar[DTYPE](1)
-            cdof[(dof_adr + 3) * 6 + 0] = Scalar[DTYPE](1)
-            cdof[(dof_adr + 4) * 6 + 1] = Scalar[DTYPE](1)
-            cdof[(dof_adr + 5) * 6 + 2] = Scalar[DTYPE](1)
+            (cdof_ptr + (dof_adr + 0) * 6 + 3)[] = Scalar[DTYPE](1)
+            (cdof_ptr + (dof_adr + 1) * 6 + 4)[] = Scalar[DTYPE](1)
+            (cdof_ptr + (dof_adr + 2) * 6 + 5)[] = Scalar[DTYPE](1)
+            (cdof_ptr + (dof_adr + 3) * 6 + 0)[] = Scalar[DTYPE](1)
+            (cdof_ptr + (dof_adr + 4) * 6 + 1)[] = Scalar[DTYPE](1)
+            (cdof_ptr + (dof_adr + 5) * 6 + 2)[] = Scalar[DTYPE](1)
 
 
 @always_inline
@@ -923,15 +941,17 @@ fn compute_contact_jacobian_row_gpu[
     STATE_SIZE: Int,
     MODEL_SIZE: Int,
     V_SIZE: Int,
-    CDOF_SIZE: Int,
     BATCH: Int,
+    WS_SIZE: Int,
 ](
     env: Int,
     state: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
     ],
     model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
-    cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
+    workspace: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+    ],
     contact_body_a: Int,
     contact_body_b: Int,
     contact_pos_x: Scalar[DTYPE],
@@ -944,12 +964,16 @@ fn compute_contact_jacobian_row_gpu[
 ):
     """Compute one row of the contact Jacobian on GPU.
 
+    Reads cdof from workspace. J_row remains InlineArray (small, V_SIZE).
     Bilateral: J_row[i] = J_a[i] - J_b[i] for body-body contacts.
     For ground contacts (body_b = -1), only body_a contributes.
     """
 
+    # Derive cdof pointer from workspace (read-only)
+    comptime cdof_idx = ws_cdof_offset()
+
     for i in range(V_SIZE):
-        J_row[i] = Scalar[DTYPE](0)
+        J_row[i] = 0
 
     var xpos_off = xpos_offset[NQ, NV, NBODY]()
     var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
@@ -1033,12 +1057,12 @@ fn compute_contact_jacobian_row_gpu[
         for d in range(num_dof):
             var dof_idx = dof_adr + d
 
-            var ang_x = cdof[dof_idx * 6 + 0]
-            var ang_y = cdof[dof_idx * 6 + 1]
-            var ang_z = cdof[dof_idx * 6 + 2]
-            var lin_x = cdof[dof_idx * 6 + 3]
-            var lin_y = cdof[dof_idx * 6 + 4]
-            var lin_z = cdof[dof_idx * 6 + 5]
+            var ang_x = workspace[env, cdof_idx + dof_idx * 6 + 0]
+            var ang_y = workspace[env, cdof_idx + dof_idx * 6 + 1]
+            var ang_z = workspace[env, cdof_idx + dof_idx * 6 + 2]
+            var lin_x = workspace[env, cdof_idx + dof_idx * 6 + 3]
+            var lin_y = workspace[env, cdof_idx + dof_idx * 6 + 4]
+            var lin_z = workspace[env, cdof_idx + dof_idx * 6 + 5]
 
             # J_trans = cdof_lin + cdof_ang x r
             var cross_x = ang_y * rz - ang_z * ry
@@ -1053,6 +1077,6 @@ fn compute_contact_jacobian_row_gpu[
 
             # Body A contributes positively, body B negatively
             if affects_a:
-                J_row[dof_idx] = J_row[dof_idx] + val
+                J_row[dof_idx] += rebind[Scalar[DTYPE]](val)
             if affects_b:
-                J_row[dof_idx] = J_row[dof_idx] - val
+                J_row[dof_idx] -= rebind[Scalar[DTYPE]](val)

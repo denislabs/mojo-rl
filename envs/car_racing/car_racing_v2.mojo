@@ -116,6 +116,8 @@ struct CarRacingV2[DTYPE: DType](
     comptime STATE_SIZE: Int = CRConstants.STATE_SIZE
     comptime OBS_DIM: Int = CRConstants.OBS_DIM
     comptime ACTION_DIM: Int = CRConstants.ACTION_DIM
+    comptime STEP_WS_SHARED: Int = 0
+    comptime STEP_WS_PER_ENV: Int = 0
     comptime StateType = CarRacingV2State[Self.DTYPE]
     comptime ActionType = CarRacingV2Action[Self.DTYPE]
 
@@ -958,6 +960,7 @@ struct CarRacingV2[DTYPE: DType](
         mut obs: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
         curriculum_values: List[Scalar[dtype]] = [],
+        workspace_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
     ) raises:
         """Perform one environment step with embedded track (GPUContinuousEnv trait).
 
@@ -1188,6 +1191,22 @@ struct CarRacingV2[DTYPE: DType](
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )
+
+    @staticmethod
+    fn init_step_workspace_gpu[
+        BATCH_SIZE: Int,
+    ](ctx: DeviceContext, mut workspace_buf: DeviceBuffer[dtype]) raises:
+        """No-op: CarRacing doesn't need pre-allocated workspace."""
+        pass
+
+    @staticmethod
+    fn update_curriculum_gpu(
+        ctx: DeviceContext,
+        mut workspace_buf: DeviceBuffer[dtype],
+        curriculum_values: List[Scalar[dtype]],
+    ) raises:
+        """No-op: CarRacing doesn't use curriculum."""
+        pass
 
     # =========================================================================
     # GPU Reset Helper (Embedded Track)

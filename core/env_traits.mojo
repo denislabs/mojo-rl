@@ -333,6 +333,10 @@ trait GPUDiscreteEnv:
     comptime OBS_DIM: Int
     comptime NUM_ACTIONS: Int
 
+    # Pre-allocated workspace sizes (0 = no pre-allocation needed)
+    comptime STEP_WS_SHARED: Int  # Shared buffer (e.g. model) — same across envs
+    comptime STEP_WS_PER_ENV: Int  # Per-env buffer (e.g. physics workspace)
+
     @staticmethod
     fn step_kernel_gpu[
         BATCH_SIZE: Int,
@@ -346,6 +350,7 @@ trait GPUDiscreteEnv:
         mut dones: DeviceBuffer[dtype],
         mut obs: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
+        workspace_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
     ) raises:
         """Perform one environment step and extract observations.
 
@@ -357,6 +362,10 @@ trait GPUDiscreteEnv:
             dones: Done flags buffer on GPU (output).
             obs: Observations buffer on GPU (output).
             rng_seed: Optional random seed for physics (e.g., engine dispersion).
+            workspace_ptr: Optional pre-allocated workspace pointer.
+                          When non-null, avoids per-step GPU buffer allocation.
+                          Layout: [shared: STEP_WS_SHARED | per_env: BATCH * STEP_WS_PER_ENV].
+                          When null, allocates internally (backward compatible).
         """
         ...
 
@@ -403,6 +412,31 @@ trait GPUDiscreteEnv:
         """
         ...
 
+    @staticmethod
+    fn init_step_workspace_gpu[
+        BATCH_SIZE: Int,
+    ](
+        ctx: DeviceContext,
+        mut workspace_buf: DeviceBuffer[dtype],
+    ) raises:
+        """Initialize pre-allocated step workspace (call once at setup).
+
+        No-op for environments with STEP_WS_SHARED == 0.
+        """
+        ...
+
+    @staticmethod
+    fn update_curriculum_gpu(
+        ctx: DeviceContext,
+        mut workspace_buf: DeviceBuffer[dtype],
+        curriculum_values: List[Scalar[dtype]],
+    ) raises:
+        """Update curriculum parameters in pre-allocated workspace.
+
+        No-op for environments with STEP_WS_SHARED == 0.
+        """
+        ...
+
 
 trait GPUContinuousEnv:
     """Trait for GPU-compatible continuous action environments.
@@ -419,6 +453,10 @@ trait GPUContinuousEnv:
     comptime OBS_DIM: Int
     comptime ACTION_DIM: Int
 
+    # Pre-allocated workspace sizes (0 = no pre-allocation needed)
+    comptime STEP_WS_SHARED: Int  # Shared buffer (e.g. model) — same across envs
+    comptime STEP_WS_PER_ENV: Int  # Per-env buffer (e.g. physics workspace)
+
     @staticmethod
     fn step_kernel_gpu[
         BATCH_SIZE: Int,
@@ -434,6 +472,7 @@ trait GPUContinuousEnv:
         mut obs: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
         curriculum_values: List[Scalar[dtype]] = [],
+        workspace_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
     ) raises:
         """Perform one environment step with continuous actions.
 
@@ -447,6 +486,10 @@ trait GPUContinuousEnv:
             rng_seed: Optional random seed for physics.
             curriculum_values: Environment-specific curriculum parameters.
                               Empty list uses default (strict) bounds.
+            workspace_ptr: Optional pre-allocated workspace pointer.
+                          When non-null, avoids per-step GPU buffer allocation.
+                          Layout: [shared: STEP_WS_SHARED | per_env: BATCH * STEP_WS_PER_ENV].
+                          When null, allocates internally (backward compatible).
         """
         ...
 
@@ -518,6 +561,47 @@ trait GPUContinuousEnv:
             ctx: GPU device context.
             states: State buffer on GPU [BATCH_SIZE * STATE_SIZE].
             obs: Observations buffer on GPU (output) [BATCH_SIZE * OBS_DIM].
+        """
+        ...
+
+    @staticmethod
+    fn init_step_workspace_gpu[
+        BATCH_SIZE: Int,
+    ](
+        ctx: DeviceContext,
+        mut workspace_buf: DeviceBuffer[dtype],
+    ) raises:
+        """Initialize pre-allocated step workspace (call once at setup).
+
+        For environments with STEP_WS_SHARED > 0, this initializes the shared
+        portion (e.g. physics model) of the workspace buffer. The per-env
+        portion doesn't need initialization.
+
+        No-op for environments with STEP_WS_SHARED == 0.
+
+        Args:
+            ctx: GPU device context.
+            workspace_buf: Buffer of size STEP_WS_SHARED + BATCH_SIZE * STEP_WS_PER_ENV.
+        """
+        ...
+
+    @staticmethod
+    fn update_curriculum_gpu(
+        ctx: DeviceContext,
+        mut workspace_buf: DeviceBuffer[dtype],
+        curriculum_values: List[Scalar[dtype]],
+    ) raises:
+        """Update curriculum parameters in pre-allocated workspace.
+
+        Much cheaper than full model initialization — patches only curriculum
+        floats instead of rebuilding the entire model buffer.
+
+        No-op for environments with STEP_WS_SHARED == 0.
+
+        Args:
+            ctx: GPU device context.
+            workspace_buf: Pre-allocated workspace (model at offset 0).
+            curriculum_values: Environment-specific curriculum parameters.
         """
         ...
 

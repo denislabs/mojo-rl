@@ -152,6 +152,8 @@ struct LunarLanderV2[
     comptime OBS_DIM: Int = LLConstants.OBS_DIM_VAL
     comptime NUM_ACTIONS: Int = LLConstants.NUM_ACTIONS_VAL
     comptime ACTION_DIM: Int = LLConstants.ACTION_DIM_VAL  # For GPUContinuousEnv
+    comptime STEP_WS_SHARED: Int = 0
+    comptime STEP_WS_PER_ENV: Int = 0
     comptime dtype = Self.DTYPE
     comptime StateType = LunarLanderState[Self.dtype]
     comptime ActionType = LunarLanderAction
@@ -1462,6 +1464,7 @@ struct LunarLanderV2[
         mut dones_buf: DeviceBuffer[dtype],
         mut obs_buf: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
+        workspace_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
     ) raises:
         """Optimized GPU step kernel with fused obs extraction.
 
@@ -1530,6 +1533,8 @@ struct LunarLanderV2[
         mut dones_buf: DeviceBuffer[dtype],
         mut obs_buf: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
+        curriculum_values: List[Scalar[dtype]] = [],
+        workspace_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
     ) raises:
         """GPU step kernel for continuous actions (GPUContinuousEnv trait).
 
@@ -1741,6 +1746,22 @@ struct LunarLanderV2[
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )
+
+    @staticmethod
+    fn init_step_workspace_gpu[
+        BATCH_SIZE: Int,
+    ](ctx: DeviceContext, mut workspace_buf: DeviceBuffer[dtype]) raises:
+        """No-op: LunarLander doesn't need pre-allocated workspace."""
+        pass
+
+    @staticmethod
+    fn update_curriculum_gpu(
+        ctx: DeviceContext,
+        mut workspace_buf: DeviceBuffer[dtype],
+        curriculum_values: List[Scalar[dtype]],
+    ) raises:
+        """No-op: LunarLander doesn't use curriculum."""
+        pass
 
     # =========================================================================
     # Helper Functions - GPU

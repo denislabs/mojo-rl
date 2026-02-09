@@ -1932,6 +1932,13 @@ struct DeepPPOAgent[
         )
         ctx.synchronize()
 
+        # Pre-allocate step workspace to avoid per-step GPU buffer allocations
+        comptime TOTAL_WS = EnvType.STEP_WS_SHARED + Self.n_envs * EnvType.STEP_WS_PER_ENV
+        comptime WS_ALLOC = TOTAL_WS if TOTAL_WS > 0 else 1
+        var step_ws_buf = ctx.enqueue_create_buffer[dtype](WS_ALLOC)
+        EnvType.init_step_workspace_gpu[Self.n_envs](ctx, step_ws_buf)
+        ctx.synchronize()
+
         # Extract observations from state buffer for neural network input
         ctx.enqueue_function[extract_obs_wrapper, extract_obs_wrapper](
             obs_tensor,
@@ -2132,17 +2139,32 @@ struct DeepPPOAgent[
                 # Step all environments + extract observations (fused kernel)
                 # Use a different multiplier to get independent seed from action sampling
                 var env_step_seed = UInt64(total_steps * 1103515245 + t * 12345)
-                EnvType.step_kernel_gpu[
-                    Self.n_envs, EnvType.STATE_SIZE, Self.OBS
-                ](
-                    ctx,
-                    states_buf,
-                    actions_buf,
-                    rewards_buf,
-                    dones_buf,
-                    obs_buf,
-                    env_step_seed,
-                )
+                @parameter
+                if TOTAL_WS > 0:
+                    EnvType.step_kernel_gpu[
+                        Self.n_envs, EnvType.STATE_SIZE, Self.OBS
+                    ](
+                        ctx,
+                        states_buf,
+                        actions_buf,
+                        rewards_buf,
+                        dones_buf,
+                        obs_buf,
+                        env_step_seed,
+                        step_ws_buf.unsafe_ptr(),
+                    )
+                else:
+                    EnvType.step_kernel_gpu[
+                        Self.n_envs, EnvType.STATE_SIZE, Self.OBS
+                    ](
+                        ctx,
+                        states_buf,
+                        actions_buf,
+                        rewards_buf,
+                        dones_buf,
+                        obs_buf,
+                        env_step_seed,
+                    )
                 # No sync needed - obs extraction is fused into step kernel
 
                 # Store rewards and dones

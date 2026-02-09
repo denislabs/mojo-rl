@@ -46,6 +46,7 @@ from ..dynamics.mass_matrix import (
     ldl_factor_gpu,
     ldl_solve,
     ldl_solve_gpu,
+    ldl_solve_workspace_gpu,
     compute_M_inv_from_ldl,
     compute_M_inv_from_ldl_gpu,
     solve_linear_diagonal,
@@ -93,6 +94,12 @@ from ..gpu.constants import (
     JOINT_IDX_STIFFNESS,
     JOINT_IDX_DAMPING,
     MODEL_META_IDX_TIMESTEP,
+    integrator_workspace_size,
+    ws_M_offset,
+    ws_bias_offset,
+    ws_fnet_offset,
+    ws_qacc_ws_offset,
+    ws_qvel_pred_offset,
     ws_m_inv_offset,
 )
 
@@ -366,17 +373,12 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         14. Enforce joint limits
         """
         comptime V_SIZE = _max_one[NV]()
-        comptime M_SIZE = _max_one[NV * NV]()
-        comptime CDOF_SIZE = _max_one[NV * 6]()
-        comptime CRB_SIZE = _max_one[NBODY * 10]()
-
-        var bias = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-        var cdof = InlineArray[Scalar[DTYPE], CDOF_SIZE](uninitialized=True)
-
-        for i in range(V_SIZE):
-            bias[i] = Scalar[DTYPE](0)
-        for i in range(CDOF_SIZE):
-            cdof[i] = Scalar[DTYPE](0)
+        comptime M_idx = ws_M_offset[NV, NBODY]()
+        comptime bias_idx = ws_bias_offset[NV, NBODY]()
+        comptime fnet_idx = ws_fnet_offset[NV, NBODY]()
+        comptime qacc_ws_idx = ws_qacc_ws_offset[NV, NBODY]()
+        comptime qvel_pred_idx = ws_qvel_pred_offset[NV, NBODY]()
+        comptime m_inv_idx = ws_m_inv_offset[NV, NBODY]()
 
         # 1. Forward kinematics
         forward_kinematics_gpu[
@@ -428,7 +430,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             BATCH,
         ](env, state, model)
 
-        # 4. Compute cdof (spatial motion axes per DOF)
+        # 4. Compute cdof (writes to workspace at ws_cdof_offset)
         compute_cdof_gpu[
             DTYPE,
             NQ,
@@ -438,14 +440,11 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             MAX_CONTACTS,
             STATE_SIZE,
             MODEL_SIZE,
-            CDOF_SIZE,
             BATCH,
-        ](env, state, model, cdof)
+            WS_SIZE,
+        ](env, state, model, workspace)
 
-        # 5. Compute composite rigid body inertia
-        var crb = InlineArray[Scalar[DTYPE], CRB_SIZE](uninitialized=True)
-        for i in range(CRB_SIZE):
-            crb[i] = Scalar[DTYPE](0)
+        # 5. Compute composite rigid body inertia (writes to workspace at ws_crb_offset)
         compute_composite_inertia_gpu[
             DTYPE,
             NQ,
@@ -455,14 +454,11 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             MAX_CONTACTS,
             STATE_SIZE,
             MODEL_SIZE,
-            CRB_SIZE,
             BATCH,
-        ](env, state, model, crb)
+            WS_SIZE,
+        ](env, state, model, workspace)
 
-        # 6. Compute full mass matrix using CRBA
-        var M = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-        for i in range(M_SIZE):
-            M[i] = Scalar[DTYPE](0)
+        # 6. Compute full mass matrix using CRBA (reads cdof/crb, writes M in workspace)
         compute_mass_matrix_full_gpu[
             DTYPE,
             NQ,
@@ -472,11 +468,9 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             MAX_CONTACTS,
             STATE_SIZE,
             MODEL_SIZE,
-            M_SIZE,
-            CDOF_SIZE,
-            CRB_SIZE,
             BATCH,
-        ](env, state, model, cdof, crb, M)
+            WS_SIZE,
+        ](env, state, model, workspace)
 
         # 6b. Add armature + implicit damping to mass matrix diagonal
         # MuJoCo implicitfast: M_eff[i,i] += armature[i] + dt * damping[i]
@@ -501,34 +495,25 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             var diag_add = arm + dt_arm * damp
             if jnt_type == JNT_FREE:
                 for d in range(6):
-                    M[(dof_adr + d) * NV + (dof_adr + d)] = (
-                        M[(dof_adr + d) * NV + (dof_adr + d)] + diag_add
-                    )
+                    var idx = M_idx + (dof_adr + d) * NV + (dof_adr + d)
+                    workspace[env, idx] = workspace[env, idx] + diag_add
             elif jnt_type == JNT_BALL:
                 for d in range(3):
-                    M[(dof_adr + d) * NV + (dof_adr + d)] = (
-                        M[(dof_adr + d) * NV + (dof_adr + d)] + diag_add
-                    )
+                    var idx = M_idx + (dof_adr + d) * NV + (dof_adr + d)
+                    workspace[env, idx] = workspace[env, idx] + diag_add
             else:
-                M[dof_adr * NV + dof_adr] = M[dof_adr * NV + dof_adr] + diag_add
+                var idx = M_idx + dof_adr * NV + dof_adr
+                workspace[env, idx] = workspace[env, idx] + diag_add
 
-        # 7. LDL factorize and compute M_inv
-        var L = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-        var D = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-        ldl_factor_gpu[DTYPE, NV, M_SIZE, V_SIZE](M, L, D)
+        # 7. LDL factorize (reads M, writes L/D in workspace)
+        ldl_factor_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](env, workspace)
 
-        # Compute M_inv into InlineArray, then copy to workspace (device memory)
-        var M_inv = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-        for i in range(M_SIZE):
-            M_inv[i] = Scalar[DTYPE](0)
-        compute_M_inv_from_ldl_gpu[DTYPE, NV, M_SIZE, V_SIZE](L, D, M_inv)
+        # Compute M_inv in workspace (reads L/D, writes M_inv in workspace)
+        compute_M_inv_from_ldl_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
+            env, workspace
+        )
 
-        # Copy M_inv to workspace so solvers read from device memory
-        var ws_m_off = ws_m_inv_offset()
-        for i in range(NV * NV):
-            workspace[env, ws_m_off + i] = M_inv[i]
-
-        # 8. Compute bias forces (full RNE: gravity + Coriolis + centrifugal)
+        # 8. Compute bias forces (reads cdof from workspace, writes bias to workspace)
         compute_bias_forces_rne_gpu[
             DTYPE,
             NQ,
@@ -538,10 +523,9 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             MAX_CONTACTS,
             STATE_SIZE,
             MODEL_SIZE,
-            V_SIZE,
-            CDOF_SIZE,
             BATCH,
-        ](env, state, model, cdof, bias)
+            WS_SIZE,
+        ](env, state, model, workspace)
 
         # 9. Compute unconstrained acceleration via LDL solve
         var qvel_off = qvel_offset[NQ, NV]()
@@ -552,10 +536,11 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             model[0, model_meta_off + MODEL_META_IDX_TIMESTEP]
         )
 
-        var f_net = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        # f_net = qfrc - bias (write to workspace fnet region)
         for i in range(NV):
             var qfrc = rebind[Scalar[DTYPE]](state[env, qfrc_off + i])
-            f_net[i] = qfrc - bias[i]
+            var bias_val = rebind[Scalar[DTYPE]](workspace[env, bias_idx + i])
+            workspace[env, fnet_idx + i] = qfrc - bias_val
 
         # 8b. Apply passive joint forces: stiffness only
         # Damping is handled implicitly via M_eff (step 6b).
@@ -580,33 +565,51 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                         var qpos_d = rebind[Scalar[DTYPE]](
                             state[env, qpos_off_stiff + qpos_adr + d]
                         )
-                        f_net[dof_adr + d] = f_net[dof_adr + d] - stiff * qpos_d
+                        var cur = rebind[Scalar[DTYPE]](
+                            workspace[env, fnet_idx + dof_adr + d]
+                        )
+                        workspace[env, fnet_idx + dof_adr + d] = (
+                            cur - stiff * qpos_d
+                        )
                 elif jnt_type == JNT_BALL:
                     for d in range(3):
                         var qpos_d = rebind[Scalar[DTYPE]](
                             state[env, qpos_off_stiff + qpos_adr + d]
                         )
-                        f_net[dof_adr + d] = f_net[dof_adr + d] - stiff * qpos_d
+                        var cur = rebind[Scalar[DTYPE]](
+                            workspace[env, fnet_idx + dof_adr + d]
+                        )
+                        workspace[env, fnet_idx + dof_adr + d] = (
+                            cur - stiff * qpos_d
+                        )
                 else:
                     # Hinge/slide: f = -stiffness * qpos
                     var qpos_d = rebind[Scalar[DTYPE]](
                         state[env, qpos_off_stiff + qpos_adr]
                     )
-                    f_net[dof_adr] = f_net[dof_adr] - stiff * qpos_d
+                    var cur = rebind[Scalar[DTYPE]](
+                        workspace[env, fnet_idx + dof_adr]
+                    )
+                    workspace[env, fnet_idx + dof_adr] = cur - stiff * qpos_d
 
-        var qacc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        # LDL solve: reads L, D, f_net from workspace, writes qacc to workspace
+        ldl_solve_workspace_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
+            env, workspace
+        )
+
         for i in range(NV):
-            qacc[i] = Scalar[DTYPE](0)
-        ldl_solve_gpu[DTYPE, NV, M_SIZE, V_SIZE](L, D, f_net, qacc)
+            var qacc_val = rebind[Scalar[DTYPE]](
+                workspace[env, qacc_ws_idx + i]
+            )
+            state[env, qacc_off + i] = qacc_val
 
-        for i in range(NV):
-            state[env, qacc_off + i] = qacc[i]
-
-        # 10. Predict velocity
-        var qvel_pred = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        # 10. Predict velocity (write to workspace qvel_pred region)
         for i in range(NV):
             var qvel = rebind[Scalar[DTYPE]](state[env, qvel_off + i])
-            qvel_pred[i] = qvel + qacc[i] * dt
+            var qacc_val = rebind[Scalar[DTYPE]](
+                workspace[env, qacc_ws_idx + i]
+            )
+            workspace[env, qvel_pred_idx + i] = qvel + qacc_val * dt
 
         # 11. Constraint solve using parametrized solver with full M_inv (in workspace)
         Self.SOLVER.solve_gpu[
@@ -619,19 +622,20 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             STATE_SIZE,
             MODEL_SIZE,
             V_SIZE,
-            M_SIZE,
-            CDOF_SIZE,
             BATCH,
             WS_SIZE,
-        ](env, state, model, workspace, cdof, qvel_pred, dt)
+        ](state, model, workspace, dt)
 
         # 9. Write back constrained velocity and update qacc
         var qpos_off = qpos_offset[NQ, NV]()
         for i in range(NV):
             # qacc = (constrained_vel - old_vel) / dt
             var old_qvel = rebind[Scalar[DTYPE]](state[env, qvel_off + i])
-            state[env, qacc_off + i] = (qvel_pred[i] - old_qvel) / dt
-            state[env, qvel_off + i] = qvel_pred[i]
+            var constrained_vel = rebind[Scalar[DTYPE]](
+                workspace[env, qvel_pred_idx + i]
+            )
+            state[env, qacc_off + i] = (constrained_vel - old_qvel) / dt
+            state[env, qvel_off + i] = constrained_vel
 
         # 9b. Clamp velocities to prevent divergence
         # MuJoCo uses ~10-50 depending on model; 20 is reasonable for walking robots
@@ -689,7 +693,9 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         """
         comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS]()
         comptime MODEL_SIZE = model_size[NBODY, NJOINT]()
-        comptime WS_SIZE = NV * NV + Self.SOLVER.solver_workspace_size[NV, MAX_CONTACTS]()
+        comptime WS_SIZE = integrator_workspace_size[
+            NV, NBODY
+        ]() + NV * NV + Self.SOLVER.solver_workspace_size[NV, MAX_CONTACTS]()
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
         var state = LayoutTensor[

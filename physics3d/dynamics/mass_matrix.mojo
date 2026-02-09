@@ -628,28 +628,33 @@ fn compute_mass_matrix_full_gpu[
     MAX_CONTACTS: Int,
     STATE_SIZE: Int,
     MODEL_SIZE: Int,
-    M_SIZE: Int,
-    CDOF_SIZE: Int,
-    CRB_SIZE: Int,
     BATCH: Int,
+    WS_SIZE: Int,
 ](
     env: Int,
     state: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
     ],
     model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
-    cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
-    crb: InlineArray[Scalar[DTYPE], CRB_SIZE],
-    mut M: InlineArray[Scalar[DTYPE], M_SIZE],
+    workspace: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+    ],
 ):
-    """Compute full NV×NV mass matrix on GPU using direct body summation."""
+    """Compute full NV×NV mass matrix on GPU. Reads cdof, writes M to workspace.
+    """
+    from ..gpu.constants import ws_cdof_offset, ws_M_offset
+
+    # Derive pointers from workspace (MutAnyOrigin)
+    comptime cdof_idx = ws_cdof_offset()
+    comptime M_idx = ws_M_offset[NV, NBODY]()
+
     var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
     var num_joints = Int(
         rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_NJOINT])
     )
 
     for i in range(NV * NV):
-        M[i] = Scalar[DTYPE](0)
+        workspace[env, M_idx + i] = 0
 
     comptime NV_SAFE = _ensure_positive[NV]()
     var dof_body = InlineArray[Int, NV_SAFE](uninitialized=True)
@@ -725,23 +730,23 @@ fn compute_mass_matrix_full_gpu[
     # Compute M[i,j] using direct body summation
     for i in range(NV):
         var body_i = dof_body[i]
-        var ai0 = cdof[i * 6 + 0]
-        var ai1 = cdof[i * 6 + 1]
-        var ai2 = cdof[i * 6 + 2]
-        var li0 = cdof[i * 6 + 3]
-        var li1 = cdof[i * 6 + 4]
-        var li2 = cdof[i * 6 + 5]
+        var ai0 = workspace[env, cdof_idx + i * 6 + 0]
+        var ai1 = workspace[env, cdof_idx + i * 6 + 1]
+        var ai2 = workspace[env, cdof_idx + i * 6 + 2]
+        var li0 = workspace[env, cdof_idx + i * 6 + 3]
+        var li1 = workspace[env, cdof_idx + i * 6 + 4]
+        var li2 = workspace[env, cdof_idx + i * 6 + 5]
 
         for j in range(i, NV):
             var body_j = dof_body[j]
-            var aj0 = cdof[j * 6 + 0]
-            var aj1 = cdof[j * 6 + 1]
-            var aj2 = cdof[j * 6 + 2]
-            var lj0 = cdof[j * 6 + 3]
-            var lj1 = cdof[j * 6 + 4]
-            var lj2 = cdof[j * 6 + 5]
+            var aj0 = workspace[env, cdof_idx + j * 6 + 0]
+            var aj1 = workspace[env, cdof_idx + j * 6 + 1]
+            var aj2 = workspace[env, cdof_idx + j * 6 + 2]
+            var lj0 = workspace[env, cdof_idx + j * 6 + 3]
+            var lj1 = workspace[env, cdof_idx + j * 6 + 4]
+            var lj2 = workspace[env, cdof_idx + j * 6 + 5]
 
-            var mij = Scalar[DTYPE](0)
+            var mij: workspace.element_type = 0
 
             for k in range(NBODY):
                 var in_subtree_i = (k == body_i) or _is_descendant_gpu[
@@ -816,41 +821,59 @@ fn compute_mass_matrix_full_gpu[
 
                 mij = mij + ai0 * Iaj0 + ai1 * Iaj1 + ai2 * Iaj2
 
-            M[i * NV + j] = mij
+            workspace[env, M_idx + i * NV + j] = mij
             if i != j:
-                M[j * NV + i] = mij
+                workspace[env, M_idx + j * NV + i] = mij
 
 
 @always_inline
 fn ldl_factor_gpu[
     DTYPE: DType,
     NV: Int,
-    M_SIZE: Int,
-    V_SIZE: Int,
+    NBODY: Int,
+    BATCH: Int,
+    WS_SIZE: Int,
 ](
-    M: InlineArray[Scalar[DTYPE], M_SIZE],
-    mut L: InlineArray[Scalar[DTYPE], M_SIZE],
-    mut D: InlineArray[Scalar[DTYPE], V_SIZE],
+    env: Int,
+    workspace: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+    ],
 ):
-    """LDL factorization (GPU-compatible, same algorithm as CPU)."""
+    """LDL factorization on GPU. Reads M, writes L and D to workspace."""
+    from ..gpu.constants import ws_M_offset, ws_L_offset, ws_D_offset
+
+    comptime M_idx = ws_M_offset[NV, NBODY]()
+    comptime L_idx = ws_L_offset[NV, NBODY]()
+    comptime D_idx = ws_D_offset[NV, NBODY]()
+
     for i in range(NV * NV):
-        L[i] = Scalar[DTYPE](0)
+        workspace[env, L_idx + i] = 0
     for i in range(NV):
-        D[i] = Scalar[DTYPE](0)
-        L[i * NV + i] = Scalar[DTYPE](1)
+        workspace[env, D_idx + i] = 0
+        workspace[env, L_idx + i * NV + i] = 1
 
     for j in range(NV):
-        var d_j = M[j * NV + j]
+        var d_j = workspace[env, M_idx + j * NV + j]
         for k in range(j):
-            d_j = d_j - L[j * NV + k] * L[j * NV + k] * D[k]
-        D[j] = d_j
+            d_j = (
+                d_j
+                - workspace[env, L_idx + j * NV + k]
+                * workspace[env, L_idx + j * NV + k]
+                * workspace[env, D_idx + k]
+            )
+        workspace[env, D_idx + j] = d_j
 
         if d_j > Scalar[DTYPE](1e-14) or d_j < Scalar[DTYPE](-1e-14):
             for i in range(j + 1, NV):
-                var l_ij = M[i * NV + j]
+                var l_ij = workspace[env, M_idx + i * NV + j]
                 for k in range(j):
-                    l_ij = l_ij - L[i * NV + k] * L[j * NV + k] * D[k]
-                L[i * NV + j] = l_ij / d_j
+                    l_ij = (
+                        l_ij
+                        - workspace[env, L_idx + i * NV + k]
+                        * workspace[env, L_idx + j * NV + k]
+                        * workspace[env, D_idx + k]
+                    )
+                workspace[env, L_idx + i * NV + j] = l_ij / d_j
 
 
 @always_inline
@@ -888,58 +911,120 @@ fn ldl_solve_gpu[
 
 
 @always_inline
+fn ldl_solve_workspace_gpu[
+    DTYPE: DType,
+    NV: Int,
+    NBODY: Int,
+    BATCH: Int,
+    WS_SIZE: Int,
+](
+    env: Int,
+    workspace: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+    ],
+):
+    """LDL solve on GPU. Reads L, D, f_net from workspace, writes qacc to workspace.
+    """
+    from ..gpu.constants import (
+        ws_L_offset,
+        ws_D_offset,
+        ws_fnet_offset,
+        ws_qacc_ws_offset,
+    )
+
+    comptime L_idx = ws_L_offset[NV, NBODY]()
+    comptime D_idx = ws_D_offset[NV, NBODY]()
+    comptime b_idx = ws_fnet_offset[NV, NBODY]()
+    comptime x_idx = ws_qacc_ws_offset[NV, NBODY]()
+
+    # Forward substitution: y = L^(-1) * b
+    comptime V_SIZE = _ensure_positive[NV]()
+    var y = InlineArray[workspace.element_type, V_SIZE](uninitialized=True)
+    for i in range(NV):
+        var s = workspace[env, b_idx + i]
+        for j in range(i):
+            s = s - workspace[env, L_idx + i * NV + j] * y[j]
+        y[i] = s
+
+    # Diagonal solve: z = D^(-1) * y
+    var z = InlineArray[workspace.element_type, V_SIZE](uninitialized=True)
+    for i in range(NV):
+        var d_i = workspace[env, D_idx + i]
+        if d_i > 1e-14 or d_i < -1e-14:
+            z[i] = y[i] / d_i
+        else:
+            z[i] = 0
+
+    # Backward substitution: x = L^(-T) * z
+    for i in range(NV - 1, -1, -1):
+        var s = z[i]
+        for j in range(i + 1, NV):
+            s = (
+                s
+                - workspace[env, L_idx + j * NV + i] * workspace[env, x_idx + j]
+            )
+        workspace[env, x_idx + i] = s
+
+
+@always_inline
 fn compute_M_inv_from_ldl_gpu[
     DTYPE: DType,
     NV: Int,
-    M_SIZE: Int,
-    V_SIZE: Int,
+    NBODY: Int,
+    BATCH: Int,
+    WS_SIZE: Int,
 ](
-    L: InlineArray[Scalar[DTYPE], M_SIZE],
-    D: InlineArray[Scalar[DTYPE], V_SIZE],
-    mut M_inv: InlineArray[Scalar[DTYPE], M_SIZE],
+    env: Int,
+    workspace: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+    ],
 ):
-    """Compute full dense M^-1 from LDL factors (GPU-compatible)."""
-    var e = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    var col = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    """Compute full dense M^-1 from LDL factors in workspace.
+
+    Reads L, D from workspace. Writes M_inv to workspace.
+    Uses small local InlineArrays (e, col) for the column solve.
+    """
+    from ..gpu.constants import ws_L_offset, ws_D_offset, ws_m_inv_offset
+
+    comptime L_idx = ws_L_offset[NV, NBODY]()
+    comptime D_idx = ws_D_offset[NV, NBODY]()
+    comptime M_inv_idx = ws_m_inv_offset[NV, NBODY]()
+
+    comptime V_SIZE = _ensure_positive[NV]()
+    var e = InlineArray[workspace.element_type, V_SIZE](uninitialized=True)
+    var col = InlineArray[workspace.element_type, V_SIZE](uninitialized=True)
 
     for j in range(NV):
         for i in range(NV):
-            e[i] = Scalar[DTYPE](0)
-        e[j] = Scalar[DTYPE](1)
+            e[i] = 0
+        e[j] = 1
 
-        ldl_solve_gpu[DTYPE, NV, M_SIZE, V_SIZE](L, D, e, col)
+        # Forward substitution: y = L^(-1) * e
+        var y = InlineArray[workspace.element_type, V_SIZE](uninitialized=True)
+        for i in range(NV):
+            var s = e[i]
+            for k in range(i):
+                s = s - workspace[env, L_idx + i * NV + k] * y[k]
+            y[i] = s
+
+        # Diagonal solve: z = D^(-1) * y
+        var z = InlineArray[workspace.element_type, V_SIZE](uninitialized=True)
+        for i in range(NV):
+            var d_i = workspace[env, D_idx + i]
+            if d_i > 1e-14 or d_i < -1e-14:
+                z[i] = y[i] / d_i
+            else:
+                z[i] = 0
+
+        # Backward substitution: col = L^(-T) * z
+        for i in range(NV - 1, -1, -1):
+            var s = z[i]
+            for k in range(i + 1, NV):
+                s = s - workspace[env, L_idx + k * NV + i] * col[k]
+            col[i] = s
 
         for i in range(NV):
-            M_inv[i * NV + j] = col[i]
-
-
-@always_inline
-@always_inline
-fn compute_M_inv_from_ldl_gpu_ptr[
-    DTYPE: DType,
-    NV: Int,
-    M_SIZE: Int,
-    V_SIZE: Int,
-](
-    L: InlineArray[Scalar[DTYPE], M_SIZE],
-    D: InlineArray[Scalar[DTYPE], V_SIZE],
-    M_inv_ptr: UnsafePointer[Scalar[DTYPE]],
-):
-    """Compute full dense M^-1 from LDL factors, writing to device memory pointer."""
-    var ptr = M_inv_ptr
-    var e = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    var col = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-
-    for j in range(NV):
-        for i in range(NV):
-            e[i] = Scalar[DTYPE](0)
-        e[j] = Scalar[DTYPE](1)
-
-        ldl_solve_gpu[DTYPE, NV, M_SIZE, V_SIZE](L, D, e, col)
-
-        for i in range(NV):
-            var p = ptr + i * NV + j
-            p[] = col[i]
+            workspace[env, M_inv_idx + i * NV + j] = col[i]
 
 
 # =============================================================================

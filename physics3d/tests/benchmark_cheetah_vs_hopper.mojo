@@ -3,6 +3,9 @@
 Compares the physics step kernel at two model complexities to understand
 register pressure and O(N²) scaling effects with InlineArrays.
 
+Each iteration runs STEPS (100) consecutive physics steps to simulate a
+realistic rollout, with state reset between iterations.
+
 HalfCheetah: NBODY=8, NJOINT=10, NQ=10, NV=10, MAX_CONTACTS=20
   → InlineArray register pressure: ~1654 floats/thread (with Newton)
 Hopper:      NBODY=4, NJOINT=6,  NQ=6,  NV=6,  MAX_CONTACTS=10
@@ -30,6 +33,7 @@ from physics3d.gpu.constants import (
     TPB,
     state_size,
     model_size,
+    integrator_workspace_size,
 )
 from physics3d.gpu.buffer_utils import (
     copy_model_to_buffer,
@@ -38,8 +42,9 @@ from physics3d.gpu.buffer_utils import (
 
 
 # Benchmark config
-comptime WARMUP: Int = 30
-comptime ITERS: Int = 100
+comptime WARMUP: Int = 10
+comptime ITERS: Int = 50
+comptime STEPS: Int = 100  # Physics steps per iteration (simulates a rollout)
 comptime BATCH: Int = 256
 
 
@@ -54,7 +59,7 @@ comptime H_MAX_CONTACTS: Int = 10
 comptime H_STATE_SIZE = state_size[H_NQ, H_NV, H_NBODY, H_MAX_CONTACTS]()
 comptime H_MODEL_SIZE = model_size[H_NBODY, H_NJOINT]()
 # Use Newton (largest) workspace size since all 3 solvers share the buffer
-comptime H_WS_SIZE = H_NV * H_NV + NewtonSolver.solver_workspace_size[H_NV, H_MAX_CONTACTS]()
+comptime H_WS_SIZE = integrator_workspace_size[H_NV, H_NBODY]() + H_NV * H_NV + NewtonSolver.solver_workspace_size[H_NV, H_MAX_CONTACTS]()
 
 
 # =============================================================================
@@ -67,7 +72,7 @@ comptime C_NJOINT: Int = 10
 comptime C_MAX_CONTACTS: Int = 20
 comptime C_STATE_SIZE = state_size[C_NQ, C_NV, C_NBODY, C_MAX_CONTACTS]()
 comptime C_MODEL_SIZE = model_size[C_NBODY, C_NJOINT]()
-comptime C_WS_SIZE = C_NV * C_NV + NewtonSolver.solver_workspace_size[C_NV, C_MAX_CONTACTS]()
+comptime C_WS_SIZE = integrator_workspace_size[C_NV, C_NBODY]() + C_NV * C_NV + NewtonSolver.solver_workspace_size[C_NV, C_MAX_CONTACTS]()
 
 
 comptime DTYPE = DType.float32
@@ -384,7 +389,7 @@ fn main() raises:
     print("  STATE_SIZE:", C_STATE_SIZE, " MODEL_SIZE:", C_MODEL_SIZE)
     print("  M_SIZE=100, InlineArray floats/thread: ~1654 (with Newton)")
     print()
-    print("BATCH:", BATCH, " Warmup:", WARMUP, " Iters:", ITERS)
+    print("BATCH:", BATCH, " Warmup:", WARMUP, " Iters:", ITERS, " Steps/iter:", STEPS)
     print()
 
     var ctx = DeviceContext()
@@ -487,46 +492,55 @@ fn main() raises:
     ctx.enqueue_copy(h_state_buf, h_state_host.unsafe_ptr())
     ctx.synchronize()
     for _ in range(WARMUP):
-        ctx.enqueue_function[hopper_pgs_kernel, hopper_pgs_kernel](
-            h_st, h_md, h_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
+        for _ in range(STEPS):
+            ctx.enqueue_function[hopper_pgs_kernel, hopper_pgs_kernel](
+                h_st, h_md, h_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
     ctx.synchronize()
     var t0 = perf_counter_ns()
     for _ in range(ITERS):
-        ctx.enqueue_function[hopper_pgs_kernel, hopper_pgs_kernel](
-            h_st, h_md, h_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
+        ctx.enqueue_copy(h_state_buf, h_state_host.unsafe_ptr())
+        for _ in range(STEPS):
+            ctx.enqueue_function[hopper_pgs_kernel, hopper_pgs_kernel](
+                h_st, h_md, h_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
     ctx.synchronize()
     var h_pgs_us = Float64(perf_counter_ns() - t0) / Float64(ITERS) / 1000.0
-    print("  PGS:    ", h_pgs_us, " us/step")
+    print("  PGS:     ", h_pgs_us, " us/rollout (", h_pgs_us / STEPS, " us/step)")
 
     # --- CG ---
     ctx.enqueue_copy(h_state_buf, h_state_host.unsafe_ptr())
     ctx.synchronize()
     for _ in range(WARMUP):
-        ctx.enqueue_function[hopper_cg_kernel, hopper_cg_kernel](
-            h_st, h_md, h_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
+        for _ in range(STEPS):
+            ctx.enqueue_function[hopper_cg_kernel, hopper_cg_kernel](
+                h_st, h_md, h_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
     ctx.synchronize()
     t0 = perf_counter_ns()
     for _ in range(ITERS):
-        ctx.enqueue_function[hopper_cg_kernel, hopper_cg_kernel](
-            h_st, h_md, h_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
+        ctx.enqueue_copy(h_state_buf, h_state_host.unsafe_ptr())
+        for _ in range(STEPS):
+            ctx.enqueue_function[hopper_cg_kernel, hopper_cg_kernel](
+                h_st, h_md, h_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
     ctx.synchronize()
     var h_cg_us = Float64(perf_counter_ns() - t0) / Float64(ITERS) / 1000.0
-    print("  CG:     ", h_cg_us, " us/step")
+    print("  CG:      ", h_cg_us, " us/rollout (", h_cg_us / STEPS, " us/step)")
 
     # --- Newton ---
     ctx.enqueue_copy(h_state_buf, h_state_host.unsafe_ptr())
     ctx.synchronize()
     for _ in range(WARMUP):
-        ctx.enqueue_function[hopper_newton_kernel, hopper_newton_kernel](
-            h_st, h_md, h_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
+        for _ in range(STEPS):
+            ctx.enqueue_function[hopper_newton_kernel, hopper_newton_kernel](
+                h_st, h_md, h_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
     ctx.synchronize()
     t0 = perf_counter_ns()
     for _ in range(ITERS):
-        ctx.enqueue_function[hopper_newton_kernel, hopper_newton_kernel](
-            h_st, h_md, h_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
+        ctx.enqueue_copy(h_state_buf, h_state_host.unsafe_ptr())
+        for _ in range(STEPS):
+            ctx.enqueue_function[hopper_newton_kernel, hopper_newton_kernel](
+                h_st, h_md, h_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
     ctx.synchronize()
     var h_newton_us = Float64(perf_counter_ns() - t0) / Float64(ITERS) / 1000.0
-    print("  Newton: ", h_newton_us, " us/step")
+    print("  Newton:  ", h_newton_us, " us/rollout (", h_newton_us / STEPS, " us/step)")
 
     # =========================================================================
     # Benchmark HalfCheetah
@@ -540,77 +554,101 @@ fn main() raises:
     ctx.enqueue_copy(c_state_buf, c_state_host.unsafe_ptr())
     ctx.synchronize()
     for _ in range(WARMUP):
-        ctx.enqueue_function[cheetah_pgs_kernel, cheetah_pgs_kernel](
-            c_st, c_md, c_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
+        for _ in range(STEPS):
+            ctx.enqueue_function[cheetah_pgs_kernel, cheetah_pgs_kernel](
+                c_st, c_md, c_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
     ctx.synchronize()
     t0 = perf_counter_ns()
     for _ in range(ITERS):
-        ctx.enqueue_function[cheetah_pgs_kernel, cheetah_pgs_kernel](
-            c_st, c_md, c_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
+        ctx.enqueue_copy(c_state_buf, c_state_host.unsafe_ptr())
+        for _ in range(STEPS):
+            ctx.enqueue_function[cheetah_pgs_kernel, cheetah_pgs_kernel](
+                c_st, c_md, c_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
     ctx.synchronize()
     var c_pgs_us = Float64(perf_counter_ns() - t0) / Float64(ITERS) / 1000.0
-    print("  PGS:    ", c_pgs_us, " us/step")
+    print("  PGS:     ", c_pgs_us, " us/rollout (", c_pgs_us / STEPS, " us/step)")
 
     # --- CG ---
     ctx.enqueue_copy(c_state_buf, c_state_host.unsafe_ptr())
     ctx.synchronize()
     for _ in range(WARMUP):
-        ctx.enqueue_function[cheetah_cg_kernel, cheetah_cg_kernel](
-            c_st, c_md, c_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
+        for _ in range(STEPS):
+            ctx.enqueue_function[cheetah_cg_kernel, cheetah_cg_kernel](
+                c_st, c_md, c_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
     ctx.synchronize()
     t0 = perf_counter_ns()
     for _ in range(ITERS):
-        ctx.enqueue_function[cheetah_cg_kernel, cheetah_cg_kernel](
-            c_st, c_md, c_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
+        ctx.enqueue_copy(c_state_buf, c_state_host.unsafe_ptr())
+        for _ in range(STEPS):
+            ctx.enqueue_function[cheetah_cg_kernel, cheetah_cg_kernel](
+                c_st, c_md, c_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
     ctx.synchronize()
     var c_cg_us = Float64(perf_counter_ns() - t0) / Float64(ITERS) / 1000.0
-    print("  CG:     ", c_cg_us, " us/step")
+    print("  CG:      ", c_cg_us, " us/rollout (", c_cg_us / STEPS, " us/step)")
 
     # --- Newton ---
     ctx.enqueue_copy(c_state_buf, c_state_host.unsafe_ptr())
     ctx.synchronize()
     for _ in range(WARMUP):
-        ctx.enqueue_function[cheetah_newton_kernel, cheetah_newton_kernel](
-            c_st, c_md, c_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
+        for _ in range(STEPS):
+            ctx.enqueue_function[cheetah_newton_kernel, cheetah_newton_kernel](
+                c_st, c_md, c_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
     ctx.synchronize()
     t0 = perf_counter_ns()
     for _ in range(ITERS):
-        ctx.enqueue_function[cheetah_newton_kernel, cheetah_newton_kernel](
-            c_st, c_md, c_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
+        ctx.enqueue_copy(c_state_buf, c_state_host.unsafe_ptr())
+        for _ in range(STEPS):
+            ctx.enqueue_function[cheetah_newton_kernel, cheetah_newton_kernel](
+                c_st, c_md, c_ws, grid_dim=(BLOCKS,), block_dim=(TPB,))
     ctx.synchronize()
     var c_newton_us = Float64(perf_counter_ns() - t0) / Float64(ITERS) / 1000.0
-    print("  Newton: ", c_newton_us, " us/step")
+    print("  Newton:  ", c_newton_us, " us/rollout (", c_newton_us / STEPS, " us/step)")
 
     # =========================================================================
     # Comparison
     # =========================================================================
-    print()
-    print("=" * 70)
-    print("SCALING: HalfCheetah / Hopper")
-    print("=" * 70)
-    if h_pgs_us > 0:
-        print("  PGS:    ", c_pgs_us / h_pgs_us, "x slower")
-    if h_cg_us > 0:
-        print("  CG:     ", c_cg_us / h_cg_us, "x slower")
-    if h_newton_us > 0:
-        print("  Newton: ", c_newton_us / h_newton_us, "x slower")
+    # Per-step averages (rollout time / STEPS)
+    var h_pgs_step = h_pgs_us / STEPS
+    var h_cg_step = h_cg_us / STEPS
+    var h_newton_step = h_newton_us / STEPS
+    var c_pgs_step = c_pgs_us / STEPS
+    var c_cg_step = c_cg_us / STEPS
+    var c_newton_step = c_newton_us / STEPS
 
     print()
-    print("Per-env time (us/env):")
-    print("  Hopper  PGS:", h_pgs_us / BATCH, "  CG:", h_cg_us / BATCH, "  Newton:", h_newton_us / BATCH)
-    print("  Cheetah PGS:", c_pgs_us / BATCH, "  CG:", c_cg_us / BATCH, "  Newton:", c_newton_us / BATCH)
+    print("=" * 70)
+    print("SCALING: HalfCheetah / Hopper (per-step)")
+    print("=" * 70)
+    if h_pgs_step > 0:
+        print("  PGS:    ", c_pgs_step / h_pgs_step, "x slower")
+    if h_cg_step > 0:
+        print("  CG:     ", c_cg_step / h_cg_step, "x slower")
+    if h_newton_step > 0:
+        print("  Newton: ", c_newton_step / h_newton_step, "x slower")
+
+    print()
+    print("Per-env per-step time (us/env/step):")
+    print("  Hopper  PGS:", h_pgs_step / BATCH, "  CG:", h_cg_step / BATCH, "  Newton:", h_newton_step / BATCH)
+    print("  Cheetah PGS:", c_pgs_step / BATCH, "  CG:", c_cg_step / BATCH, "  Newton:", c_newton_step / BATCH)
+
+    print()
+    print("Rollout time (", STEPS, " steps × ", BATCH, " envs):")
+    print("  Hopper  PGS:", h_pgs_us / 1000.0, " ms  CG:", h_cg_us / 1000.0, " ms  Newton:", h_newton_us / 1000.0, " ms")
+    print("  Cheetah PGS:", c_pgs_us / 1000.0, " ms  CG:", c_cg_us / 1000.0, " ms  Newton:", c_newton_us / 1000.0, " ms")
 
     print()
     print("Expected scaling (O(N²) of NV):", Float64(C_NV * C_NV) / Float64(H_NV * H_NV), "x")
     print("Expected scaling (O(N³) of NV):", Float64(C_NV * C_NV * C_NV) / Float64(H_NV * H_NV * H_NV), "x")
 
-    # Training estimate: 512 steps × 5 frame_skip = 2560 physics steps per rollout
+    # Training estimate: 512 steps/env × 256 envs = 131072 total steps per rollout
+    # Each kernel dispatch handles all BATCH envs in parallel → 512 dispatches
+    comptime ROLLOUT_STEPS: Int = 512
     print()
-    print("Training estimate (512 rollout × 5 frame_skip = 2560 physics steps):")
-    print("  Hopper  PGS:   ", h_pgs_us * 2560.0 / 1e6, "s/rollout")
-    print("  Hopper  Newton:", h_newton_us * 2560.0 / 1e6, "s/rollout")
-    print("  Cheetah PGS:   ", c_pgs_us * 2560.0 / 1e6, "s/rollout")
-    print("  Cheetah Newton:", c_newton_us * 2560.0 / 1e6, "s/rollout")
+    print("Training estimate (", ROLLOUT_STEPS, " steps/env × ", BATCH, " envs = ", ROLLOUT_STEPS * BATCH, " total steps/rollout):")
+    print("  Hopper  PGS:   ", h_pgs_step * ROLLOUT_STEPS / 1e6, "s/rollout")
+    print("  Hopper  Newton:", h_newton_step * ROLLOUT_STEPS / 1e6, "s/rollout")
+    print("  Cheetah PGS:   ", c_pgs_step * ROLLOUT_STEPS / 1e6, "s/rollout")
+    print("  Cheetah Newton:", c_newton_step * ROLLOUT_STEPS / 1e6, "s/rollout")
 
     print()
     print("Done.")

@@ -23,6 +23,7 @@ from physics3d.gpu.constants import (
     qpos_offset,
     qvel_offset,
     xpos_offset,
+    integrator_workspace_size,
 )
 from physics3d.solver import PGSSolver
 from physics3d.gpu.buffer_utils import (
@@ -136,7 +137,7 @@ fn main() raises:
     )
 
     # Create GPU buffers
-    comptime WS_SIZE = NV * NV + PGSSolver.solver_workspace_size[NV, MAX_CONTACTS]()
+    comptime WS_SIZE = integrator_workspace_size[NV, NBODY]() + NV * NV + PGSSolver.solver_workspace_size[NV, MAX_CONTACTS]()
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)

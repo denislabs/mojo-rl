@@ -150,6 +150,8 @@ struct CartPoleEnv[DTYPE: DType](
     comptime STATE_SIZE: Int = 4  # [x, x_dot, theta, theta_dot]
     comptime OBS_DIM: Int = 4  # Same as state for CartPole
     comptime NUM_ACTIONS: Int = 2  # Left (0) or Right (1)
+    comptime STEP_WS_SHARED: Int = 0
+    comptime STEP_WS_PER_ENV: Int = 0
 
     # Current state
     var x: Scalar[Self.dtype]  # Cart position
@@ -929,6 +931,7 @@ struct CartPoleEnv[DTYPE: DType](
         mut dones_buf: DeviceBuffer[gpu_dtype],
         mut obs_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64 = 0,
+        workspace_ptr: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin] = UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin](),
     ) raises:
         """Launch step kernel on GPU with fused obs extraction.
 
@@ -1105,3 +1108,19 @@ struct CartPoleEnv[DTYPE: DType](
             grid_dim=(BLOCKS,),
             block_dim=(Self.TPB,),
         )
+
+    @staticmethod
+    fn init_step_workspace_gpu[
+        BATCH_SIZE: Int,
+    ](ctx: DeviceContext, mut workspace_buf: DeviceBuffer[gpu_dtype]) raises:
+        """No-op: CartPole doesn't need pre-allocated workspace."""
+        pass
+
+    @staticmethod
+    fn update_curriculum_gpu(
+        ctx: DeviceContext,
+        mut workspace_buf: DeviceBuffer[gpu_dtype],
+        curriculum_values: List[Scalar[gpu_dtype]],
+    ) raises:
+        """No-op: CartPole doesn't use curriculum."""
+        pass

@@ -1383,3 +1383,8 @@ mujoco.mj_fullM(model, M, data.qM)
 print("Mass matrix:\n", M)
 print("Bias forces:", data.qfrc_bias)
 ```
+
+
+Benchmarking:
+ HalfCheetah Env step:
+  - Newton not optimized : 257s for 256 episodes
