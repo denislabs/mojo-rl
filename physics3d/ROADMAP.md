@@ -1387,4 +1387,5 @@ print("Bias forces:", data.qfrc_bias)
 
 Benchmarking:
  HalfCheetah Env step:
+  - Without constraint solver: 18s for 256 episodes
   - Newton not optimized : 257s for 256 episodes

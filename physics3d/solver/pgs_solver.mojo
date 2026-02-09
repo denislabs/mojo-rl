@@ -599,7 +599,13 @@ struct PGSSolver(ConstraintSolver):
         # in the integrator which has mutable access to data.
 
     @staticmethod
-    fn solver_threads[NV: Int, MAX_CONTACTS: Int]() -> Int:
+    fn solver_threads[
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
+    ]() -> Int:
         return 1
 
     @staticmethod
@@ -626,7 +632,6 @@ struct PGSSolver(ConstraintSolver):
         workspace: LayoutTensor[
             DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
         ],
-        dt: Scalar[DTYPE],
     ):
         """Solve contact constraints using PGS on GPU (per-environment).
 
@@ -639,70 +644,73 @@ struct PGSSolver(ConstraintSolver):
         if env >= BATCH:
             return
 
+        var thread_idx = Int(block_dim.y * block_idx.y + thread_idx.y)
+
+        if thread_idx > 0:
+            return
+
         # Workspace pointers
-        var qvel_ptr = (
-            workspace.ptr + env * WS_SIZE + ws_qvel_pred_offset[NV, NBODY]()
-        )
-        var M_inv = workspace.ptr + env * WS_SIZE + ws_m_inv_offset[NV, NBODY]()
-        var solver_ws = (
-            workspace.ptr + env * WS_SIZE + ws_solver_offset[NV, NBODY]()
-        )
+        comptime qvel_idx = ws_qvel_pred_offset[NV, NBODY]()
+        comptime M_inv_idx = ws_m_inv_offset[NV, NBODY]()
+        comptime solver_idx = ws_solver_offset[NV, NBODY]()
 
         comptime MC = _max_one[MAX_CONTACTS]()
 
         # Solver workspace layout: 21 * MC floats
         # Common contact block (11*MC)
-        var ws_lambda_n = solver_ws + 0 * MC
-        var ws_K_n = solver_ws + 1 * MC
-        var ws_c_dist = solver_ws + 2 * MC
-        var ws_c_body = solver_ws + 3 * MC  # body A as Float
-        var ws_c_body_b = solver_ws + 4 * MC  # body B as Float
-        var ws_c_px = solver_ws + 5 * MC
-        var ws_c_py = solver_ws + 6 * MC
-        var ws_c_pz = solver_ws + 7 * MC
-        var ws_c_nx = solver_ws + 8 * MC
-        var ws_c_ny = solver_ws + 9 * MC
-        var ws_c_nz = solver_ws + 10 * MC
+        comptime ws_lambda_n = solver_idx + 0 * MC
+        comptime ws_K_n = solver_idx + 1 * MC
+        comptime ws_c_dist = solver_idx + 2 * MC
+        comptime ws_c_body = solver_idx + 3 * MC  # body A as Float
+        comptime ws_c_body_b = solver_idx + 4 * MC  # body B as Float
+        comptime ws_c_px = solver_idx + 5 * MC
+        comptime ws_c_py = solver_idx + 6 * MC
+        comptime ws_c_pz = solver_idx + 7 * MC
+        comptime ws_c_nx = solver_idx + 8 * MC
+        comptime ws_c_ny = solver_idx + 9 * MC
+        comptime ws_c_nz = solver_idx + 10 * MC
         # Friction block (10*MC)
-        var ws_lambda_t1 = solver_ws + 11 * MC
-        var ws_lambda_t2 = solver_ws + 12 * MC
-        var ws_K_t1 = solver_ws + 13 * MC
-        var ws_K_t2 = solver_ws + 14 * MC
-        var ws_t1x = solver_ws + 15 * MC
-        var ws_t1y = solver_ws + 16 * MC
-        var ws_t1z = solver_ws + 17 * MC
-        var ws_t2x = solver_ws + 18 * MC
-        var ws_t2y = solver_ws + 19 * MC
-        var ws_t2z = solver_ws + 20 * MC
+        comptime ws_lambda_t1 = solver_idx + 11 * MC
+        comptime ws_lambda_t2 = solver_idx + 12 * MC
+        comptime ws_K_t1 = solver_idx + 13 * MC
+        comptime ws_K_t2 = solver_idx + 14 * MC
+        comptime ws_t1x = solver_idx + 15 * MC
+        comptime ws_t1y = solver_idx + 16 * MC
+        comptime ws_t1z = solver_idx + 17 * MC
+        comptime ws_t2x = solver_idx + 18 * MC
+        comptime ws_t2y = solver_idx + 19 * MC
+        comptime ws_t2z = solver_idx + 20 * MC
 
         # Initialize workspace
         for i in range(MC):
-            (ws_lambda_n + i)[] = Scalar[DTYPE](0)
-            (ws_K_n + i)[] = Scalar[DTYPE](1)
-            (ws_c_dist + i)[] = Scalar[DTYPE](0)
-            (ws_c_body + i)[] = Scalar[DTYPE](0)
-            (ws_c_body_b + i)[] = Scalar[DTYPE](-1)
-            (ws_c_px + i)[] = Scalar[DTYPE](0)
-            (ws_c_py + i)[] = Scalar[DTYPE](0)
-            (ws_c_pz + i)[] = Scalar[DTYPE](0)
-            (ws_c_nx + i)[] = Scalar[DTYPE](0)
-            (ws_c_ny + i)[] = Scalar[DTYPE](0)
-            (ws_c_nz + i)[] = Scalar[DTYPE](1)
-            (ws_lambda_t1 + i)[] = Scalar[DTYPE](0)
-            (ws_lambda_t2 + i)[] = Scalar[DTYPE](0)
-            (ws_K_t1 + i)[] = Scalar[DTYPE](1)
-            (ws_K_t2 + i)[] = Scalar[DTYPE](1)
-            (ws_t1x + i)[] = Scalar[DTYPE](0)
-            (ws_t1y + i)[] = Scalar[DTYPE](0)
-            (ws_t1z + i)[] = Scalar[DTYPE](0)
-            (ws_t2x + i)[] = Scalar[DTYPE](0)
-            (ws_t2y + i)[] = Scalar[DTYPE](0)
-            (ws_t2z + i)[] = Scalar[DTYPE](0)
+            workspace[env, ws_lambda_n + i] = 0
+            workspace[env, ws_K_n + i] = 1
+            workspace[env, ws_c_dist + i] = 0
+            workspace[env, ws_c_body + i] = 0
+            workspace[env, ws_c_body_b + i] = -1
+            workspace[env, ws_c_px + i] = 0
+            workspace[env, ws_c_py + i] = 0
+            workspace[env, ws_c_pz + i] = 0
+            workspace[env, ws_c_nx + i] = 0
+            workspace[env, ws_c_ny + i] = 0
+            workspace[env, ws_c_nz + i] = 1
+            workspace[env, ws_lambda_t1 + i] = 0
+            workspace[env, ws_lambda_t2 + i] = 0
+            workspace[env, ws_K_t1 + i] = 1
+            workspace[env, ws_K_t2 + i] = 1
+            workspace[env, ws_t1x + i] = 0
+            workspace[env, ws_t1y + i] = 0
+            workspace[env, ws_t1z + i] = 0
+            workspace[env, ws_t2x + i] = 0
+            workspace[env, ws_t2y + i] = 0
+            workspace[env, ws_t2z + i] = 0
 
         var contacts_off = contacts_offset[NQ, NV, NBODY]()
         var meta_off = metadata_offset[NQ, NV, NBODY, MAX_CONTACTS]()
         var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
-
+        var dt = rebind[Scalar[DTYPE]](
+            model[0, model_meta_off + MODEL_META_IDX_TIMESTEP]
+        )
         var num_contacts = Int(
             rebind[Scalar[DTYPE]](state[env, meta_off + META_IDX_NUM_CONTACTS])
         )
@@ -760,7 +768,9 @@ struct PGSSolver(ConstraintSolver):
                 limit_dof[num_limits] = dof
                 limit_sign[num_limits] = Scalar[DTYPE](1)
                 limit_dist_arr[num_limits] = dist_lo
-                K_limit[num_limits] = M_inv[dof * NV + dof]
+                K_limit[num_limits] = rebind[Scalar[DTYPE]](
+                    workspace[env, M_inv_idx + dof * NV + dof]
+                )
                 if K_limit[num_limits] < Scalar[DTYPE](1e-10):
                     K_limit[num_limits] = Scalar[DTYPE](1e-10)
                 num_limits += 1
@@ -770,7 +780,9 @@ struct PGSSolver(ConstraintSolver):
                 limit_dof[num_limits] = dof
                 limit_sign[num_limits] = Scalar[DTYPE](-1)
                 limit_dist_arr[num_limits] = dist_hi
-                K_limit[num_limits] = M_inv[dof * NV + dof]
+                K_limit[num_limits] = rebind[Scalar[DTYPE]](
+                    workspace[env, M_inv_idx + dof * NV + dof]
+                )
                 if K_limit[num_limits] < Scalar[DTYPE](1e-10):
                     K_limit[num_limits] = Scalar[DTYPE](1e-10)
                 num_limits += 1
@@ -820,31 +832,19 @@ struct PGSSolver(ConstraintSolver):
                 state[env, c_off + CONTACT_IDX_DIST]
             )
 
-            (ws_c_dist + c)[] = dist
-            (ws_c_body + c)[] = Scalar[DTYPE](body)
-            (ws_c_body_b + c)[] = Scalar[DTYPE](body_b)
+            workspace[env, ws_c_dist + c] = dist
+            workspace[env, ws_c_body + c] = Scalar[DTYPE](body)
+            workspace[env, ws_c_body_b + c] = Scalar[DTYPE](body_b)
 
             if dist >= Scalar[DTYPE](0):
                 continue
 
-            (ws_c_px + c)[] = rebind[Scalar[DTYPE]](
-                state[env, c_off + CONTACT_IDX_POS_X]
-            )
-            (ws_c_py + c)[] = rebind[Scalar[DTYPE]](
-                state[env, c_off + CONTACT_IDX_POS_Y]
-            )
-            (ws_c_pz + c)[] = rebind[Scalar[DTYPE]](
-                state[env, c_off + CONTACT_IDX_POS_Z]
-            )
-            (ws_c_nx + c)[] = rebind[Scalar[DTYPE]](
-                state[env, c_off + CONTACT_IDX_NX]
-            )
-            (ws_c_ny + c)[] = rebind[Scalar[DTYPE]](
-                state[env, c_off + CONTACT_IDX_NY]
-            )
-            (ws_c_nz + c)[] = rebind[Scalar[DTYPE]](
-                state[env, c_off + CONTACT_IDX_NZ]
-            )
+            workspace[env, ws_c_px + c] = state[env, c_off + CONTACT_IDX_POS_X]
+            workspace[env, ws_c_py + c] = state[env, c_off + CONTACT_IDX_POS_Y]
+            workspace[env, ws_c_pz + c] = state[env, c_off + CONTACT_IDX_POS_Z]
+            workspace[env, ws_c_nx + c] = state[env, c_off + CONTACT_IDX_NX]
+            workspace[env, ws_c_ny + c] = state[env, c_off + CONTACT_IDX_NY]
+            workspace[env, ws_c_nz + c] = state[env, c_off + CONTACT_IDX_NZ]
 
             # Compute normal Jacobian and effective mass
             compute_contact_jacobian_row_gpu[
@@ -866,45 +866,51 @@ struct PGSSolver(ConstraintSolver):
                 workspace,
                 body,
                 body_b,
-                (ws_c_px + c)[],
-                (ws_c_py + c)[],
-                (ws_c_pz + c)[],
-                (ws_c_nx + c)[],
-                (ws_c_ny + c)[],
-                (ws_c_nz + c)[],
+                rebind[Scalar[DTYPE]](workspace[env, ws_c_px + c]),
+                rebind[Scalar[DTYPE]](workspace[env, ws_c_py + c]),
+                rebind[Scalar[DTYPE]](workspace[env, ws_c_pz + c]),
+                rebind[Scalar[DTYPE]](workspace[env, ws_c_nx + c]),
+                rebind[Scalar[DTYPE]](workspace[env, ws_c_ny + c]),
+                rebind[Scalar[DTYPE]](workspace[env, ws_c_nz + c]),
                 J_row,
             )
 
             # Compute effective mass: K = J @ M_inv @ J^T
-            var k: Scalar[DTYPE] = 0
+            var k: workspace.element_type = 0
             for i in range(NV):
-                var mi_j_sum: Scalar[DTYPE] = 0
+                var mi_j_sum: workspace.element_type = 0
                 for j_idx in range(NV):
-                    mi_j_sum += M_inv[i * NV + j_idx] * J_row[j_idx]
+                    mi_j_sum += (
+                        workspace[env, M_inv_idx + i * NV + j_idx]
+                        * J_row[j_idx]
+                    )
                 k += J_row[i] * mi_j_sum
             if k < Scalar[DTYPE](1e-10):
                 k = Scalar[DTYPE](1e-10)
-            (ws_K_n + c)[] = k
+            workspace[env, ws_K_n + c] = k
 
             # Warm start
-            (ws_lambda_n + c)[] = rebind[Scalar[DTYPE]](
-                state[env, c_off + CONTACT_IDX_IMPULSE_N]
-            )
+            workspace[env, ws_lambda_n + c] = state[
+                env, c_off + CONTACT_IDX_IMPULSE_N
+            ]
 
             # Apply warm start: qvel += M_inv @ J^T * lambda
-            if (ws_lambda_n + c)[] > Scalar[DTYPE](0):
+            if workspace[env, ws_lambda_n + c] > Scalar[DTYPE](0):
                 for i in range(NV):
-                    var mi_j_sum: Scalar[DTYPE] = 0
+                    var mi_j_sum: workspace.element_type = 0
                     for j_idx in range(NV):
-                        mi_j_sum += M_inv[i * NV + j_idx] * J_row[j_idx]
-                    (qvel_ptr + i)[] = (qvel_ptr + i)[] + mi_j_sum * (
-                        ws_lambda_n + c
-                    )[]
+                        mi_j_sum += (
+                            workspace[env, M_inv_idx + i * NV + j_idx]
+                            * J_row[j_idx]
+                        )
+                    workspace[env, qvel_idx + i] += (
+                        mi_j_sum * workspace[env, ws_lambda_n + c]
+                    )
 
         # Phase 2: PGS normal iterations
         for _ in range(PGS_ITERATIONS):
             for c in range(nc):
-                if (ws_c_dist + c)[] >= Scalar[DTYPE](0):
+                if workspace[env, ws_c_dist + c] >= Scalar[DTYPE](0):
                     continue
 
                 # Recompute J_row on-the-fly
@@ -925,23 +931,23 @@ struct PGSSolver(ConstraintSolver):
                     state,
                     model,
                     workspace,
-                    Int((ws_c_body + c)[]),
-                    Int((ws_c_body_b + c)[]),
-                    (ws_c_px + c)[],
-                    (ws_c_py + c)[],
-                    (ws_c_pz + c)[],
-                    (ws_c_nx + c)[],
-                    (ws_c_ny + c)[],
-                    (ws_c_nz + c)[],
+                    Int(workspace[env, ws_c_body + c]),
+                    Int(workspace[env, ws_c_body_b + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_c_px + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_c_py + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_c_pz + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_c_nx + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_c_ny + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_c_nz + c]),
                     J_row,
                 )
 
-                var v_n: Scalar[DTYPE] = 0
+                var v_n: workspace.element_type = 0
                 for i in range(NV):
-                    v_n += J_row[i] * (qvel_ptr + i)[]
+                    v_n += J_row[i] * workspace[env, qvel_idx + i]
 
                 # MuJoCo impedance model
-                var penetration = -(ws_c_dist + c)[]
+                var penetration = -workspace[env, ws_c_dist + c]
                 if penetration > Scalar[DTYPE](0.05):
                     penetration = Scalar[DTYPE](0.05)
                 var x = penetration / si_width
@@ -954,21 +960,24 @@ struct PGSSolver(ConstraintSolver):
                     imp = Scalar[DTYPE](0.2)
                 var bias = -imp * penetration * inv_tc_dr - b_vel_coef * v_n
 
-                var delta = -(v_n + bias) / ((ws_K_n + c)[] / imp)
-                var old_lambda = (ws_lambda_n + c)[]
-                (ws_lambda_n + c)[] = (ws_lambda_n + c)[] + delta
-                if (ws_lambda_n + c)[] < Scalar[DTYPE](0):
-                    (ws_lambda_n + c)[] = Scalar[DTYPE](0)
+                var delta = -(v_n + bias) / (workspace[env, ws_K_n + c] / imp)
+                var old_lambda = workspace[env, ws_lambda_n + c]
+                workspace[env, ws_lambda_n + c] = (
+                    workspace[env, ws_lambda_n + c] + delta
+                )
+                if workspace[env, ws_lambda_n + c] < Scalar[DTYPE](0):
+                    workspace[env, ws_lambda_n + c] = Scalar[DTYPE](0)
 
-                var actual_delta = (ws_lambda_n + c)[] - old_lambda
+                var actual_delta = workspace[env, ws_lambda_n + c] - old_lambda
                 # Apply velocity correction: qvel += M_inv @ J^T * delta
                 for i in range(NV):
-                    var mi_j_sum: Scalar[DTYPE] = 0
+                    var mi_j_sum: workspace.element_type = 0
                     for j_idx in range(NV):
-                        mi_j_sum += M_inv[i * NV + j_idx] * J_row[j_idx]
-                    (qvel_ptr + i)[] = (
-                        qvel_ptr + i
-                    )[] + mi_j_sum * actual_delta
+                        mi_j_sum += (
+                            workspace[env, M_inv_idx + i * NV + j_idx]
+                            * J_row[j_idx]
+                        )
+                    workspace[env, qvel_idx + i] += mi_j_sum * actual_delta
 
         # Phase 2b: Joint limit constraints (PGS)
         if num_limits > 0:
@@ -1001,7 +1010,7 @@ struct PGSSolver(ConstraintSolver):
                 for l in range(num_limits):
                     var dof = limit_dof[l]
                     var sign = limit_sign[l]
-                    var v_limit = sign * (qvel_ptr + dof)[]
+                    var v_limit = sign * workspace[env, qvel_idx + dof]
                     var penetration = -limit_dist_arr[l]
                     if penetration < Scalar[DTYPE](0):
                         penetration = Scalar[DTYPE](0)
@@ -1022,48 +1031,61 @@ struct PGSSolver(ConstraintSolver):
                     )
                     var delta_l = -(v_limit + bias) / (K_limit[l] / imp_lim)
                     var old_lam = lambda_limit[l]
-                    lambda_limit[l] = lambda_limit[l] + delta_l
+                    lambda_limit[l] = lambda_limit[l] + rebind[Scalar[DTYPE]](
+                        delta_l
+                    )
                     if lambda_limit[l] < Scalar[DTYPE](0):
                         lambda_limit[l] = Scalar[DTYPE](0)
                     var actual_l = lambda_limit[l] - old_lam
                     for i in range(NV):
-                        (qvel_ptr + i)[] = (qvel_ptr + i)[] + M_inv[
-                            i * NV + dof
-                        ] * sign * actual_l
+                        workspace[env, qvel_idx + i] += (
+                            workspace[env, M_inv_idx + i * NV + dof]
+                            * sign
+                            * actual_l
+                        )
 
         # Phase 3: Friction
         # Precompute tangent basis and K_t for active contacts
         for c in range(nc):
-            if (ws_lambda_n + c)[] <= Scalar[DTYPE](0):
+            if workspace[env, ws_lambda_n + c] <= 0:
                 continue
 
-            var nx = (ws_c_nx + c)[]
-            var ny = (ws_c_ny + c)[]
-            var nz = (ws_c_nz + c)[]
+            var nx = workspace[env, ws_c_nx + c]
+            var ny = workspace[env, ws_c_ny + c]
+            var nz = workspace[env, ws_c_nz + c]
 
             # Tangent basis
-            if abs(nx) < Scalar[DTYPE](0.9):
-                (ws_t1x + c)[] = Scalar[DTYPE](0)
-                (ws_t1y + c)[] = -nz
-                (ws_t1z + c)[] = ny
+            if abs(nx) < 0.9:
+                workspace[env, ws_t1x + c] = 0
+                workspace[env, ws_t1y + c] = -nz
+                workspace[env, ws_t1z + c] = ny
             else:
-                (ws_t1x + c)[] = nz
-                (ws_t1y + c)[] = Scalar[DTYPE](0)
-                (ws_t1z + c)[] = -nx
+                workspace[env, ws_t1x + c] = nz
+                workspace[env, ws_t1y + c] = 0
+                workspace[env, ws_t1z + c] = -nx
 
             var t1_mag = sqrt(
-                (ws_t1x + c)[] * (ws_t1x + c)[]
-                + (ws_t1y + c)[] * (ws_t1y + c)[]
-                + (ws_t1z + c)[] * (ws_t1z + c)[]
+                workspace[env, ws_t1x + c] * workspace[env, ws_t1x + c]
+                + workspace[env, ws_t1y + c] * workspace[env, ws_t1y + c]
+                + workspace[env, ws_t1z + c] * workspace[env, ws_t1z + c]
             )
             if t1_mag > Scalar[DTYPE](1e-10):
-                (ws_t1x + c)[] = (ws_t1x + c)[] / t1_mag
-                (ws_t1y + c)[] = (ws_t1y + c)[] / t1_mag
-                (ws_t1z + c)[] = (ws_t1z + c)[] / t1_mag
+                workspace[env, ws_t1x + c] /= t1_mag
+                workspace[env, ws_t1y + c] /= t1_mag
+                workspace[env, ws_t1z + c] /= t1_mag
 
-            (ws_t2x + c)[] = ny * (ws_t1z + c)[] - nz * (ws_t1y + c)[]
-            (ws_t2y + c)[] = nz * (ws_t1x + c)[] - nx * (ws_t1z + c)[]
-            (ws_t2z + c)[] = nx * (ws_t1y + c)[] - ny * (ws_t1x + c)[]
+            workspace[env, ws_t2x + c] = (
+                ny * workspace[env, ws_t1z + c]
+                - nz * workspace[env, ws_t1y + c]
+            )
+            workspace[env, ws_t2y + c] = (
+                nz * workspace[env, ws_t1x + c]
+                - nx * workspace[env, ws_t1z + c]
+            )
+            workspace[env, ws_t2z + c] = (
+                nx * workspace[env, ws_t1y + c]
+                - ny * workspace[env, ws_t1x + c]
+            )
 
             # Compute K_t1
             compute_contact_jacobian_row_gpu[
@@ -1083,25 +1105,28 @@ struct PGSSolver(ConstraintSolver):
                 state,
                 model,
                 workspace,
-                Int((ws_c_body + c)[]),
-                Int((ws_c_body_b + c)[]),
-                (ws_c_px + c)[],
-                (ws_c_py + c)[],
-                (ws_c_pz + c)[],
-                (ws_t1x + c)[],
-                (ws_t1y + c)[],
-                (ws_t1z + c)[],
+                Int(workspace[env, ws_c_body + c]),
+                Int(workspace[env, ws_c_body_b + c]),
+                rebind[Scalar[DTYPE]](workspace[env, ws_c_px + c]),
+                rebind[Scalar[DTYPE]](workspace[env, ws_c_py + c]),
+                rebind[Scalar[DTYPE]](workspace[env, ws_c_pz + c]),
+                rebind[Scalar[DTYPE]](workspace[env, ws_t1x + c]),
+                rebind[Scalar[DTYPE]](workspace[env, ws_t1y + c]),
+                rebind[Scalar[DTYPE]](workspace[env, ws_t1z + c]),
                 J_row,
             )
-            var k1: Scalar[DTYPE] = 0
+            var k1: workspace.element_type = 0
             for i in range(NV):
-                var mi_j_sum: Scalar[DTYPE] = 0
+                var mi_j_sum: workspace.element_type = 0
                 for j_idx in range(NV):
-                    mi_j_sum += M_inv[i * NV + j_idx] * J_row[j_idx]
+                    mi_j_sum += (
+                        workspace[env, M_inv_idx + i * NV + j_idx]
+                        * J_row[j_idx]
+                    )
                 k1 += J_row[i] * mi_j_sum
             if k1 < Scalar[DTYPE](1e-10):
                 k1 = Scalar[DTYPE](1e-10)
-            (ws_K_t1 + c)[] = k1
+            workspace[env, ws_K_t1 + c] = k1
 
             # Compute K_t2
             compute_contact_jacobian_row_gpu[
@@ -1121,32 +1146,35 @@ struct PGSSolver(ConstraintSolver):
                 state,
                 model,
                 workspace,
-                Int((ws_c_body + c)[]),
-                Int((ws_c_body_b + c)[]),
-                (ws_c_px + c)[],
-                (ws_c_py + c)[],
-                (ws_c_pz + c)[],
-                (ws_t2x + c)[],
-                (ws_t2y + c)[],
-                (ws_t2z + c)[],
+                Int(workspace[env, ws_c_body + c]),
+                Int(workspace[env, ws_c_body_b + c]),
+                rebind[Scalar[DTYPE]](workspace[env, ws_c_px + c]),
+                rebind[Scalar[DTYPE]](workspace[env, ws_c_py + c]),
+                rebind[Scalar[DTYPE]](workspace[env, ws_c_pz + c]),
+                rebind[Scalar[DTYPE]](workspace[env, ws_t2x + c]),
+                rebind[Scalar[DTYPE]](workspace[env, ws_t2y + c]),
+                rebind[Scalar[DTYPE]](workspace[env, ws_t2z + c]),
                 J_row,
             )
-            var k2: Scalar[DTYPE] = 0
+            var k2: workspace.element_type = 0
             for i in range(NV):
-                var mi_j_sum: Scalar[DTYPE] = 0
+                var mi_j_sum: workspace.element_type = 0
                 for j_idx in range(NV):
-                    mi_j_sum += M_inv[i * NV + j_idx] * J_row[j_idx]
+                    mi_j_sum += (
+                        workspace[env, M_inv_idx + i * NV + j_idx]
+                        * J_row[j_idx]
+                    )
                 k2 += J_row[i] * mi_j_sum
             if k2 < Scalar[DTYPE](1e-10):
                 k2 = Scalar[DTYPE](1e-10)
-            (ws_K_t2 + c)[] = k2
+            workspace[env, ws_K_t2 + c] = k2
 
             # Warm start tangent impulses
             var c_off = contacts_off + c * CONTACT_SIZE
-            (ws_lambda_t1 + c)[] = rebind[Scalar[DTYPE]](
+            workspace[env, ws_lambda_t1 + c] = rebind[Scalar[DTYPE]](
                 state[env, c_off + CONTACT_IDX_IMPULSE_T1]
             )
-            (ws_lambda_t2 + c)[] = rebind[Scalar[DTYPE]](
+            workspace[env, ws_lambda_t2 + c] = rebind[Scalar[DTYPE]](
                 state[env, c_off + CONTACT_IDX_IMPULSE_T2]
             )
 
@@ -1155,10 +1183,12 @@ struct PGSSolver(ConstraintSolver):
 
         for _ in range(PGS_ITERATIONS):
             for c in range(nc):
-                if (ws_lambda_n + c)[] <= Scalar[DTYPE](0):
+                if workspace[env, ws_lambda_n + c] <= Scalar[DTYPE](0):
                     continue
 
-                var max_friction = friction_coef * (ws_lambda_n + c)[]
+                var max_friction = (
+                    friction_coef * workspace[env, ws_lambda_n + c]
+                )
 
                 # Tangent 1
                 compute_contact_jacobian_row_gpu[
@@ -1178,23 +1208,25 @@ struct PGSSolver(ConstraintSolver):
                     state,
                     model,
                     workspace,
-                    Int((ws_c_body + c)[]),
-                    Int((ws_c_body_b + c)[]),
-                    (ws_c_px + c)[],
-                    (ws_c_py + c)[],
-                    (ws_c_pz + c)[],
-                    (ws_t1x + c)[],
-                    (ws_t1y + c)[],
-                    (ws_t1z + c)[],
+                    Int(workspace[env, ws_c_body + c]),
+                    Int(workspace[env, ws_c_body_b + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_c_px + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_c_py + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_c_pz + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_t1x + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_t1y + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_t1z + c]),
                     J_t_row,
                 )
-                var v_t1: Scalar[DTYPE] = 0
+                var v_t1: workspace.element_type = 0
                 for i in range(NV):
-                    v_t1 += J_t_row[i] * (qvel_ptr + i)[]
+                    v_t1 += J_t_row[i] * workspace[env, qvel_idx + i]
 
-                var delta_t1 = -v_t1 / (ws_K_t1 + c)[]
-                var old_t1 = (ws_lambda_t1 + c)[]
-                (ws_lambda_t1 + c)[] = (ws_lambda_t1 + c)[] + delta_t1
+                var delta_t1 = -v_t1 / workspace[env, ws_K_t1 + c]
+                var old_t1 = workspace[env, ws_lambda_t1 + c]
+                workspace[env, ws_lambda_t1 + c] = (
+                    workspace[env, ws_lambda_t1 + c] + delta_t1
+                )
 
                 # Tangent 2
                 compute_contact_jacobian_row_gpu[
@@ -1214,36 +1246,44 @@ struct PGSSolver(ConstraintSolver):
                     state,
                     model,
                     workspace,
-                    Int((ws_c_body + c)[]),
-                    Int((ws_c_body_b + c)[]),
-                    (ws_c_px + c)[],
-                    (ws_c_py + c)[],
-                    (ws_c_pz + c)[],
-                    (ws_t2x + c)[],
-                    (ws_t2y + c)[],
-                    (ws_t2z + c)[],
+                    Int(workspace[env, ws_c_body + c]),
+                    Int(workspace[env, ws_c_body_b + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_c_px + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_c_py + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_c_pz + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_t2x + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_t2y + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_t2z + c]),
                     J_t_row,
                 )
-                var v_t2: Scalar[DTYPE] = 0
+                var v_t2: workspace.element_type = 0
                 for i in range(NV):
-                    v_t2 += J_t_row[i] * (qvel_ptr + i)[]
+                    v_t2 += J_t_row[i] * workspace[env, qvel_idx + i]
 
-                var delta_t2 = -v_t2 / (ws_K_t2 + c)[]
-                var old_t2 = (ws_lambda_t2 + c)[]
-                (ws_lambda_t2 + c)[] = (ws_lambda_t2 + c)[] + delta_t2
+                var delta_t2 = -v_t2 / workspace[env, ws_K_t2 + c]
+                var old_t2 = workspace[env, ws_lambda_t2 + c]
+                workspace[env, ws_lambda_t2 + c] = (
+                    workspace[env, ws_lambda_t2 + c] + delta_t2
+                )
 
                 # Coulomb cone clamping
                 var t_mag = sqrt(
-                    (ws_lambda_t1 + c)[] * (ws_lambda_t1 + c)[]
-                    + (ws_lambda_t2 + c)[] * (ws_lambda_t2 + c)[]
+                    workspace[env, ws_lambda_t1 + c]
+                    * workspace[env, ws_lambda_t1 + c]
+                    + workspace[env, ws_lambda_t2 + c]
+                    * workspace[env, ws_lambda_t2 + c]
                 )
                 if t_mag > max_friction:
                     var scale = max_friction / t_mag
-                    (ws_lambda_t1 + c)[] = (ws_lambda_t1 + c)[] * scale
-                    (ws_lambda_t2 + c)[] = (ws_lambda_t2 + c)[] * scale
+                    workspace[env, ws_lambda_t1 + c] = (
+                        workspace[env, ws_lambda_t1 + c] * scale
+                    )
+                    workspace[env, ws_lambda_t2 + c] = (
+                        workspace[env, ws_lambda_t2 + c] * scale
+                    )
 
-                var actual_t1 = (ws_lambda_t1 + c)[] - old_t1
-                var actual_t2 = (ws_lambda_t2 + c)[] - old_t2
+                var actual_t1 = workspace[env, ws_lambda_t1 + c] - old_t1
+                var actual_t2 = workspace[env, ws_lambda_t2 + c] - old_t2
 
                 # Apply tangent 1 correction
                 compute_contact_jacobian_row_gpu[
@@ -1263,21 +1303,24 @@ struct PGSSolver(ConstraintSolver):
                     state,
                     model,
                     workspace,
-                    Int((ws_c_body + c)[]),
-                    Int((ws_c_body_b + c)[]),
-                    (ws_c_px + c)[],
-                    (ws_c_py + c)[],
-                    (ws_c_pz + c)[],
-                    (ws_t1x + c)[],
-                    (ws_t1y + c)[],
-                    (ws_t1z + c)[],
+                    Int(workspace[env, ws_c_body + c]),
+                    Int(workspace[env, ws_c_body_b + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_c_px + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_c_py + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_c_pz + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_t1x + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_t1y + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_t1z + c]),
                     J_row,
                 )
                 for i in range(NV):
-                    var mi_j_sum: Scalar[DTYPE] = 0
+                    var mi_j_sum: workspace.element_type = 0
                     for j_idx in range(NV):
-                        mi_j_sum += M_inv[i * NV + j_idx] * J_row[j_idx]
-                    (qvel_ptr + i)[] = (qvel_ptr + i)[] + mi_j_sum * actual_t1
+                        mi_j_sum += (
+                            workspace[env, M_inv_idx + i * NV + j_idx]
+                            * J_row[j_idx]
+                        )
+                    workspace[env, qvel_idx + i] += mi_j_sum * actual_t1
 
                 # Apply tangent 2 correction
                 compute_contact_jacobian_row_gpu[
@@ -1297,25 +1340,34 @@ struct PGSSolver(ConstraintSolver):
                     state,
                     model,
                     workspace,
-                    Int((ws_c_body + c)[]),
-                    Int((ws_c_body_b + c)[]),
-                    (ws_c_px + c)[],
-                    (ws_c_py + c)[],
-                    (ws_c_pz + c)[],
-                    (ws_t2x + c)[],
-                    (ws_t2y + c)[],
-                    (ws_t2z + c)[],
+                    Int(workspace[env, ws_c_body + c]),
+                    Int(workspace[env, ws_c_body_b + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_c_px + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_c_py + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_c_pz + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_t2x + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_t2y + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, ws_t2z + c]),
                     J_t_row,
                 )
                 for i in range(NV):
-                    var mi_j_sum: Scalar[DTYPE] = 0
+                    var mi_j_sum: workspace.element_type = 0
                     for j_idx in range(NV):
-                        mi_j_sum += M_inv[i * NV + j_idx] * J_t_row[j_idx]
-                    (qvel_ptr + i)[] = (qvel_ptr + i)[] + mi_j_sum * actual_t2
+                        mi_j_sum += (
+                            workspace[env, M_inv_idx + i * NV + j_idx]
+                            * J_t_row[j_idx]
+                        )
+                    workspace[env, qvel_idx + i] += mi_j_sum * actual_t2
 
         # Store impulses back to state buffer for warm-starting
         for c in range(nc):
             var c_off = contacts_off + c * CONTACT_SIZE
-            state[env, c_off + CONTACT_IDX_IMPULSE_N] = (ws_lambda_n + c)[]
-            state[env, c_off + CONTACT_IDX_IMPULSE_T1] = (ws_lambda_t1 + c)[]
-            state[env, c_off + CONTACT_IDX_IMPULSE_T2] = (ws_lambda_t2 + c)[]
+            state[env, c_off + CONTACT_IDX_IMPULSE_N] = workspace[
+                env, ws_lambda_n + c
+            ]
+            state[env, c_off + CONTACT_IDX_IMPULSE_T1] = workspace[
+                env, ws_lambda_t1 + c
+            ]
+            state[env, c_off + CONTACT_IDX_IMPULSE_T2] = workspace[
+                env, ws_lambda_t2 + c
+            ]

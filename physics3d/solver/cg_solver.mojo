@@ -117,7 +117,13 @@ struct CGSolver(ConstraintSolver):
         return 25 * MC + MC * NV
 
     @staticmethod
-    fn solver_threads[NV: Int, MAX_CONTACTS: Int]() -> Int:
+    fn solver_threads[
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
+    ]() -> Int:
         return 1
 
     @staticmethod
@@ -583,7 +589,6 @@ struct CGSolver(ConstraintSolver):
         workspace: LayoutTensor[
             DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
         ],
-        dt: Scalar[DTYPE],
     ):
         """Solve contact constraints using Projected CG on GPU (per-environment).
 
@@ -592,6 +597,11 @@ struct CGSolver(ConstraintSolver):
 
         var env = Int(block_dim.x * block_idx.x + thread_idx.x)
         if env >= BATCH:
+            return
+
+        var thread_idx = Int(block_dim.y * block_idx.y + thread_idx.y)
+
+        if thread_idx > 0:
             return
 
         var qvel_ptr = (
@@ -645,7 +655,11 @@ struct CGSolver(ConstraintSolver):
         comptime contacts_off = contacts_offset[NQ, NV, NBODY]()
         comptime meta_off = metadata_offset[NQ, NV, NBODY, MAX_CONTACTS]()
         comptime model_meta_off = model_metadata_offset[NBODY, NJOINT]()
-
+        var dt = rebind[
+            Scalar[DTYPE]
+        ](  # global vars are not supported in comptime
+            model[0, model_meta_off + MODEL_META_IDX_TIMESTEP]
+        )
         var num_contacts = Int(
             rebind[Scalar[DTYPE]](state[env, meta_off + META_IDX_NUM_CONTACTS])
         )

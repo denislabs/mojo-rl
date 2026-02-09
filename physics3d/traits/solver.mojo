@@ -39,7 +39,13 @@ trait ConstraintSolver(Movable & ImplicitlyCopyable):
         ...
 
     @staticmethod
-    fn solver_threads[NV: Int, MAX_CONTACTS: Int]() -> Int:
+    fn solver_threads[
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
+    ]() -> Int:
         """Number of threads for parallelization.
 
         This is the maximum number of threads that can be used for parallelization.
@@ -100,7 +106,6 @@ trait ConstraintSolver(Movable & ImplicitlyCopyable):
         workspace: LayoutTensor[
             DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
         ],
-        dt: Scalar[DTYPE],
     ):
         """Solve contact constraints on GPU (per-environment).
 
@@ -111,6 +116,5 @@ trait ConstraintSolver(Movable & ImplicitlyCopyable):
                 integrator temps, M_inv, and solver arrays per environment.
                 Reads cdof and qvel_pred from workspace, modifies qvel_pred
                 in-place to satisfy constraints.
-            dt: Timestep.
         """
         ...

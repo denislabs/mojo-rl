@@ -594,8 +594,12 @@ struct NewtonSolver(ConstraintSolver):
         )
 
     @staticmethod
-    fn solver_threads[NV: Int, MAX_CONTACTS: Int]() -> Int:
-        return max(_max_one[MAX_CONTACTS](), NV)
+    fn solver_threads[NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,]() -> Int:
+        return max(_max_one[MAX_CONTACTS](), NV, 2 * NJOINT)
 
     @staticmethod
     @always_inline
@@ -621,7 +625,6 @@ struct NewtonSolver(ConstraintSolver):
         workspace: LayoutTensor[
             DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
         ],
-        dt: Scalar[DTYPE],
     ):
         """Solve contact constraints using Projected Newton on GPU.
 
@@ -632,8 +635,8 @@ struct NewtonSolver(ConstraintSolver):
         if env >= BATCH:
             return
 
-        comptime THREADS = Self.solver_threads[NV, MAX_CONTACTS]()
-        
+        comptime THREADS = Self.solver_threads[NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
+
         var thread_idx = Int(block_dim.y * block_idx.y + thread_idx.y)
 
         comptime qvel_idx = ws_qvel_pred_offset[NV, NBODY]()
@@ -694,10 +697,15 @@ struct NewtonSolver(ConstraintSolver):
 
         barrier()
 
+        if(thread_idx >= 1):
+            return
+
         comptime contacts_off = contacts_offset[NQ, NV, NBODY]()
         comptime meta_off = metadata_offset[NQ, NV, NBODY, MAX_CONTACTS]()
         comptime model_meta_off = model_metadata_offset[NBODY, NJOINT]()
-
+        var dt = rebind[Scalar[DTYPE]](  # global vars are not supported in comptime
+            model[0, model_meta_off + MODEL_META_IDX_TIMESTEP]
+        )
         var num_contacts = Int(state[env, meta_off + META_IDX_NUM_CONTACTS])
         var friction_coef = rebind[Scalar[DTYPE]](
             model[0, model_meta_off + MODEL_META_IDX_FRICTION]
