@@ -1074,7 +1074,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         ]()
         comptime ENV_BLOCKS = (BATCH + TPB - 1) // TPB
         comptime SOLVER_THREADS_BLOCKS = (THREADS + THREADS - 1) // THREADS
-        comptime SOLVER_ENV_TPB = 256 // THREADS
+        comptime SOLVER_ENV_TPB = TPB // THREADS
         comptime SOLVER_ENV_BLOCKS = (
             BATCH + SOLVER_ENV_TPB - 1
         ) // SOLVER_ENV_TPB
