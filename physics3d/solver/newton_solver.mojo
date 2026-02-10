@@ -68,6 +68,7 @@ from ..gpu.constants import (
     JOINT_IDX_DOF_ADR,
     JOINT_IDX_RANGE_MIN,
     JOINT_IDX_RANGE_MAX,
+    MAX_POS_CORRECTION_VEL,
 )
 
 from ..joint_types import (
@@ -303,8 +304,6 @@ struct NewtonSolver(ConstraintSolver):
 
             # MuJoCo impedance model for RHS
             var penetration = -contact.dist
-            if penetration > Scalar[DTYPE](0.05):
-                penetration = Scalar[DTYPE](0.05)
             var x = penetration / si_width
             if x > Scalar[DTYPE](1.0):
                 x = Scalar[DTYPE](1.0)
@@ -313,7 +312,10 @@ struct NewtonSolver(ConstraintSolver):
             ) * (si_dmax - si_dmin)
             if imp < Scalar[DTYPE](0.2):
                 imp = Scalar[DTYPE](0.2)
-            var bias = -imp * penetration * inv_tc_dr - b_vel_coef * v_n
+            var pos_correction = imp * penetration * inv_tc_dr
+            if pos_correction > Scalar[DTYPE](MAX_POS_CORRECTION_VEL):
+                pos_correction = Scalar[DTYPE](MAX_POS_CORRECTION_VEL)
+            var bias = -pos_correction - b_vel_coef * v_n
             rhs[c] = v_n + bias
 
             # Warm start
@@ -546,8 +548,6 @@ struct NewtonSolver(ConstraintSolver):
                     var penetration = -limit_dist_arr[l]
                     if penetration < Scalar[DTYPE](0):
                         penetration = Scalar[DTYPE](0)
-                    if penetration > Scalar[DTYPE](0.05):
-                        penetration = Scalar[DTYPE](0.05)
                     var x_lim = penetration / li_width
                     if x_lim > Scalar[DTYPE](1.0):
                         x_lim = Scalar[DTYPE](1.0)
@@ -557,10 +557,10 @@ struct NewtonSolver(ConstraintSolver):
                     ) * (li_dmax - li_dmin)
                     if imp_lim < Scalar[DTYPE](0.2):
                         imp_lim = Scalar[DTYPE](0.2)
-                    var bias = (
-                        -imp_lim * penetration * l_inv_tc_dr
-                        - l_b_vel_coef * v_limit
-                    )
+                    var lim_pos_corr = imp_lim * penetration * l_inv_tc_dr
+                    if lim_pos_corr > Scalar[DTYPE](MAX_POS_CORRECTION_VEL):
+                        lim_pos_corr = Scalar[DTYPE](MAX_POS_CORRECTION_VEL)
+                    var bias = -lim_pos_corr - l_b_vel_coef * v_limit
                     var delta_l = -(v_limit + bias) / (K_limit[l] / imp_lim)
                     var old_lam = lambda_limit[l]
                     lambda_limit[l] = lambda_limit[l] + delta_l
@@ -835,8 +835,6 @@ struct NewtonSolver(ConstraintSolver):
 
                 # MuJoCo impedance model for RHS
                 var penetration = -dist
-                if penetration > Scalar[DTYPE](0.05):
-                    penetration = Scalar[DTYPE](0.05)
                 var x = penetration / si_width
                 if x > Scalar[DTYPE](1.0):
                     x = Scalar[DTYPE](1.0)
@@ -845,7 +843,10 @@ struct NewtonSolver(ConstraintSolver):
                 ) * (si_dmax - si_dmin)
                 if imp < Scalar[DTYPE](0.2):
                     imp = Scalar[DTYPE](0.2)
-                var bias = -imp * penetration * inv_tc_dr - b_vel_coef * v_n
+                var pos_correction = imp * penetration * inv_tc_dr
+                if pos_correction > Scalar[DTYPE](MAX_POS_CORRECTION_VEL):
+                    pos_correction = Scalar[DTYPE](MAX_POS_CORRECTION_VEL)
+                var bias = -pos_correction - b_vel_coef * v_n
                 workspace[env, ws_rhs_idx + c] = v_n + bias
 
                 workspace[env, ws_lambda_n_idx + c] = rebind[Scalar[DTYPE]](
@@ -1178,8 +1179,6 @@ struct NewtonSolver(ConstraintSolver):
                 var penetration = -limit_dist_arr[l]
                 if penetration < Scalar[DTYPE](0):
                     penetration = Scalar[DTYPE](0)
-                if penetration > Scalar[DTYPE](0.05):
-                    penetration = Scalar[DTYPE](0.05)
                 var x_lim = penetration / li_width
                 if x_lim > Scalar[DTYPE](1.0):
                     x_lim = Scalar[DTYPE](1.0)
@@ -1189,7 +1188,10 @@ struct NewtonSolver(ConstraintSolver):
                 ) * (li_dmax - li_dmin)
                 if imp_lim < Scalar[DTYPE](0.2):
                     imp_lim = Scalar[DTYPE](0.2)
-                lim_pos_bias[l] = imp_lim * penetration * l_inv_tc_dr
+                var lim_pos_corr = imp_lim * penetration * l_inv_tc_dr
+                if lim_pos_corr > Scalar[DTYPE](MAX_POS_CORRECTION_VEL):
+                    lim_pos_corr = Scalar[DTYPE](MAX_POS_CORRECTION_VEL)
+                lim_pos_bias[l] = lim_pos_corr
                 lim_inv_K_imp[l] = rebind[Scalar[DTYPE]](imp_lim / K_limit[l])
                 var ldof = limit_dof[l]
                 var lsign = limit_sign[l]

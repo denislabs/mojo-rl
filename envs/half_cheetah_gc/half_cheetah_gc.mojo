@@ -1278,6 +1278,13 @@ struct HalfCheetahGC[
             EulerIntegrator[SOLVER=NewtonSolver].step(self.model, self.data)
             # Enforce joint limits after each physics step
             self._enforce_joint_limits()
+            # Ground safety clamp: prevent rootz from going deeply underground
+            # (velocity-level solver can't fully prevent penetration at high velocities)
+            comptime MIN_ROOTZ: Scalar[Self.DTYPE] = -0.3
+            if self.data.qpos[JOINT_ROOTZ] < MIN_ROOTZ:
+                self.data.qpos[JOINT_ROOTZ] = MIN_ROOTZ
+                if self.data.qvel[JOINT_ROOTZ] < Scalar[Self.DTYPE](0):
+                    self.data.qvel[JOINT_ROOTZ] = Scalar[Self.DTYPE](0)
 
         self.current_step += 1
 
@@ -1605,6 +1612,10 @@ struct HalfCheetahGC[
             )
             # Enforce joint limits after each sub-step (matching CPU)
             Self._enforce_joint_limits_gpu[BATCH_SIZE, STATE_SIZE_VAL](
+                ctx, states_buf
+            )
+            # Ground safety clamp (matching CPU)
+            Self._ground_clamp_gpu[BATCH_SIZE, STATE_SIZE_VAL](
                 ctx, states_buf
             )
 
@@ -2700,6 +2711,47 @@ struct HalfCheetahGC[
                     states[env, QVEL_OFF + 8] = Scalar[gpu_dtype](0)
 
         ctx.enqueue_function[enforce_limits_kernel, enforce_limits_kernel](
+            states,
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+    @staticmethod
+    fn _ground_clamp_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+    ](ctx: DeviceContext, mut states_buf: DeviceBuffer[gpu_dtype]) raises:
+        """Clamp rootz to prevent catastrophic ground penetration on GPU."""
+        var states = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ](states_buf.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
+        comptime QPOS_OFF = qpos_offset[HalfCheetahGC.NQ, HalfCheetahGC.NV]()
+        comptime QVEL_OFF = qvel_offset[HalfCheetahGC.NQ, HalfCheetahGC.NV]()
+        comptime MIN_ROOTZ: Scalar[gpu_dtype] = -0.3
+
+        @always_inline
+        fn ground_clamp_kernel(
+            states: LayoutTensor[
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                MutAnyOrigin,
+            ],
+        ):
+            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if env >= BATCH_SIZE:
+                return
+
+            # JOINT_ROOTZ = 1 (rootz is qpos index 1, qvel index 1)
+            var rootz = states[env, QPOS_OFF + 1]
+            if rootz < MIN_ROOTZ:
+                states[env, QPOS_OFF + 1] = MIN_ROOTZ
+                var vz = states[env, QVEL_OFF + 1]
+                if vz < Scalar[gpu_dtype](0):
+                    states[env, QVEL_OFF + 1] = Scalar[gpu_dtype](0)
+
+        ctx.enqueue_function[ground_clamp_kernel, ground_clamp_kernel](
             states,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),

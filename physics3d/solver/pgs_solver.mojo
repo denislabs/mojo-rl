@@ -66,6 +66,7 @@ from ..gpu.constants import (
     JOINT_IDX_DOF_ADR,
     JOINT_IDX_RANGE_MIN,
     JOINT_IDX_RANGE_MAX,
+    MAX_POS_CORRECTION_VEL,
 )
 from ..joint_types import (
     JNT_HINGE,
@@ -284,8 +285,6 @@ struct PGSSolver(ConstraintSolver):
 
                 # MuJoCo impedance model
                 var penetration = -contact_dist[c]
-                if penetration > Scalar[DTYPE](0.05):
-                    penetration = Scalar[DTYPE](0.05)
                 # Impedance (Hermite smoothstep)
                 var x = penetration / si_width
                 if x > Scalar[DTYPE](1.0):
@@ -296,7 +295,10 @@ struct PGSSolver(ConstraintSolver):
                 if imp < Scalar[DTYPE](0.2):
                     imp = Scalar[DTYPE](0.2)
                 # Velocity-level bias: position correction + velocity damping
-                var bias = -imp * penetration * inv_tc_dr - b_vel_coef * v_n
+                var pos_correction = imp * penetration * inv_tc_dr
+                if pos_correction > Scalar[DTYPE](MAX_POS_CORRECTION_VEL):
+                    pos_correction = Scalar[DTYPE](MAX_POS_CORRECTION_VEL)
+                var bias = -pos_correction - b_vel_coef * v_n
 
                 # PGS update with impedance-scaled effective mass
                 var delta = -(v_n + bias) / (K_n[c] / imp)
@@ -395,8 +397,6 @@ struct PGSSolver(ConstraintSolver):
                     var penetration = -limit_dist[l]
                     if penetration < Scalar[DTYPE](0):
                         penetration = Scalar[DTYPE](0)
-                    if penetration > Scalar[DTYPE](0.05):
-                        penetration = Scalar[DTYPE](0.05)
                     var x_lim = penetration / li_width
                     if x_lim > Scalar[DTYPE](1.0):
                         x_lim = Scalar[DTYPE](1.0)
@@ -406,10 +406,10 @@ struct PGSSolver(ConstraintSolver):
                     ) * (li_dmax - li_dmin)
                     if imp_lim < Scalar[DTYPE](0.2):
                         imp_lim = Scalar[DTYPE](0.2)
-                    var bias = (
-                        -imp_lim * penetration * l_inv_tc_dr
-                        - l_b_vel_coef * v_limit
-                    )
+                    var lim_pos_corr = imp_lim * penetration * l_inv_tc_dr
+                    if lim_pos_corr > Scalar[DTYPE](MAX_POS_CORRECTION_VEL):
+                        lim_pos_corr = Scalar[DTYPE](MAX_POS_CORRECTION_VEL)
+                    var bias = -lim_pos_corr - l_b_vel_coef * v_limit
                     # PGS update
                     var delta = -(v_limit + bias) / (K_limit[l] / imp_lim)
                     var old_lambda = lambda_limit[l]
@@ -856,8 +856,6 @@ struct PGSSolver(ConstraintSolver):
 
                 # Precompute impedance coefficients
                 var penetration = -dist
-                if penetration > Scalar[DTYPE](0.05):
-                    penetration = Scalar[DTYPE](0.05)
                 var x = penetration / si_width
                 if x > Scalar[DTYPE](1.0):
                     x = Scalar[DTYPE](1.0)
@@ -866,7 +864,10 @@ struct PGSSolver(ConstraintSolver):
                 ) * (si_dmax - si_dmin)
                 if imp < Scalar[DTYPE](0.2):
                     imp = Scalar[DTYPE](0.2)
-                workspace[env, ws_pos_bias + c] = imp * penetration * inv_tc_dr
+                var pos_correction = imp * penetration * inv_tc_dr
+                if pos_correction > Scalar[DTYPE](MAX_POS_CORRECTION_VEL):
+                    pos_correction = Scalar[DTYPE](MAX_POS_CORRECTION_VEL)
+                workspace[env, ws_pos_bias + c] = pos_correction
                 workspace[env, ws_inv_K_imp + c] = imp / k
 
                 # Store warm start lambda (applied by thread 0 after barrier)
@@ -1036,8 +1037,6 @@ struct PGSSolver(ConstraintSolver):
                     var penetration = -limit_dist_arr[l]
                     if penetration < Scalar[DTYPE](0):
                         penetration = Scalar[DTYPE](0)
-                    if penetration > Scalar[DTYPE](0.05):
-                        penetration = Scalar[DTYPE](0.05)
                     var x_lim = penetration / li_width
                     if x_lim > Scalar[DTYPE](1.0):
                         x_lim = Scalar[DTYPE](1.0)
@@ -1047,7 +1046,10 @@ struct PGSSolver(ConstraintSolver):
                     ) * (li_dmax - li_dmin)
                     if imp_lim < Scalar[DTYPE](0.2):
                         imp_lim = Scalar[DTYPE](0.2)
-                    lim_pos_bias[l] = imp_lim * penetration * l_inv_tc_dr
+                    var lim_pos_corr = imp_lim * penetration * l_inv_tc_dr
+                    if lim_pos_corr > Scalar[DTYPE](MAX_POS_CORRECTION_VEL):
+                        lim_pos_corr = Scalar[DTYPE](MAX_POS_CORRECTION_VEL)
+                    lim_pos_bias[l] = lim_pos_corr
                     lim_inv_K_imp[l] = imp_lim / K_limit[l]
                     var ldof = limit_dof[l]
                     var lsign = limit_sign[l]

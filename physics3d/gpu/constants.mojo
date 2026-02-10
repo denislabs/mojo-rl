@@ -33,6 +33,7 @@ comptime TILE: Int = 8  # Tile size for 2D operations
 comptime DEFAULT_GRAVITY_Z: Float32 = -9.81
 comptime DEFAULT_TIMESTEP: Float32 = 0.01
 comptime DEFAULT_RESTITUTION: Float32 = 0.0
+comptime MAX_POS_CORRECTION_VEL: Float32 = 10.0  # Cap position correction velocity (safe with pre-solver velocity clamp)
 
 
 # =============================================================================

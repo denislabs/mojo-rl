@@ -266,9 +266,15 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         compute_M_inv_from_ldl[DTYPE, NV, M_SIZE, V_SIZE](L, D, M_inv)
 
         # 8. Predict velocity: qvel_pred = qvel + qacc * dt
+        comptime MAX_QVEL: Scalar[DTYPE] = 10.0
         var qvel_pred = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
         for i in range(NV):
             qvel_pred[i] = data.qvel[i] + qacc[i] * dt
+            # Clamp predicted velocity before solver to prevent runaway
+            if qvel_pred[i] > MAX_QVEL:
+                qvel_pred[i] = MAX_QVEL
+            elif qvel_pred[i] < -MAX_QVEL:
+                qvel_pred[i] = -MAX_QVEL
 
         # 9. Constraint solve (modifies qvel_pred in-place)
         Self.SOLVER.solve[
@@ -290,8 +296,6 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             data.qvel[i] = qvel_pred[i]
 
         # 9b. Clamp velocities to prevent divergence
-        # MuJoCo uses ~10-50 depending on model; 20 is reasonable for walking robots
-        comptime MAX_QVEL: Scalar[DTYPE] = 20.0
         for i in range(NV):
             if data.qvel[i] > MAX_QVEL:
                 data.qvel[i] = MAX_QVEL
@@ -599,12 +603,19 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             state[env, qacc_off + i] = qacc_val
 
         # 10. Predict velocity (write to workspace qvel_pred region)
+        comptime MAX_QVEL: Scalar[DTYPE] = 10.0
         for i in range(NV):
             var qvel = rebind[Scalar[DTYPE]](state[env, qvel_off + i])
             var qacc_val = rebind[Scalar[DTYPE]](
                 workspace[env, qacc_ws_idx + i]
             )
-            workspace[env, qvel_pred_idx + i] = qvel + qacc_val * dt
+            var vpred = qvel + qacc_val * dt
+            # Clamp predicted velocity before solver to prevent runaway
+            if vpred > MAX_QVEL:
+                vpred = MAX_QVEL
+            elif vpred < -MAX_QVEL:
+                vpred = -MAX_QVEL
+            workspace[env, qvel_pred_idx + i] = vpred
 
     @always_inline
     @staticmethod
@@ -661,8 +672,8 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             state[env, qvel_off + i] = constrained_vel
 
         # 9b. Clamp velocities to prevent divergence
-        # MuJoCo uses ~10-50 depending on model; 20 is reasonable for walking robots
-        comptime MAX_QVEL: Scalar[DTYPE] = 20.0
+        # MuJoCo uses ~10-50 depending on model; 10 prevents catastrophic penetration
+        comptime MAX_QVEL: Scalar[DTYPE] = 10.0
         for i in range(NV):
             var v = rebind[Scalar[DTYPE]](state[env, qvel_off + i])
             if v > MAX_QVEL:
