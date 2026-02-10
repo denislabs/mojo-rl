@@ -47,7 +47,7 @@ from deep_rl.model import (
     ReLU,
     LinearReLU,
     LinearTanh,
-    Seq3,
+    Sequential,
     StochasticActor,
 )
 from deep_rl.optimizer import Adam
@@ -182,7 +182,7 @@ struct DeepPPOContinuousAgent[
 
     # Actor network: obs -> hidden (ReLU) -> hidden (ReLU) -> StochasticActor (mean, log_std)
     comptime ActorNetwork = Network[
-        Seq3[
+        Sequential[
             LinearTanh[Self.OBS, Self.HIDDEN],
             LinearTanh[Self.HIDDEN, Self.HIDDEN],
             StochasticActor[Self.HIDDEN, Self.ACTIONS],
@@ -194,7 +194,7 @@ struct DeepPPOContinuousAgent[
 
     # Critic network: obs -> hidden (ReLU) -> hidden (ReLU) -> value
     comptime CriticNetwork = Network[
-        Seq3[
+        Sequential[
             LinearTanh[Self.OBS, Self.HIDDEN],
             LinearTanh[Self.HIDDEN, Self.HIDDEN],
             Linear[Self.HIDDEN, 1],
@@ -873,9 +873,9 @@ struct DeepPPOContinuousAgent[
         # Extract initial observations using environment-specific kernel
         comptime ENV_BLOCKS = (Self.n_envs + TPB - 1) // TPB
 
-        EnvType.extract_obs_kernel_gpu[Self.n_envs, EnvType.STATE_SIZE, Self.OBS](
-            ctx, env_states_buf, obs_buf
-        )
+        EnvType.extract_obs_kernel_gpu[
+            Self.n_envs, EnvType.STATE_SIZE, Self.OBS
+        ](ctx, env_states_buf, obs_buf)
         ctx.synchronize()
 
         if verbose:
@@ -2779,9 +2779,7 @@ struct DeepPPOContinuousAgent[
                     critic_env_workspace_buf,
                 )
                 ctx.synchronize()
-                total_p1_nn_forward_ns += UInt(
-                    perf_counter_ns() - p1_nn_start
-                )
+                total_p1_nn_forward_ns += UInt(perf_counter_ns() - p1_nn_start)
 
                 # --- Sub-timer: Sample + store ---
                 var p1_sample_start = perf_counter_ns()
@@ -2950,9 +2948,7 @@ struct DeepPPOContinuousAgent[
                     block_dim=(TPB,),
                 )
                 ctx.synchronize()
-                total_p1_post_step_ns += UInt(
-                    perf_counter_ns() - p1_post_start
-                )
+                total_p1_post_step_ns += UInt(perf_counter_ns() - p1_post_start)
 
                 # --- Sub-timer: Episode sync + logging ---
                 var p1_sync_start = perf_counter_ns()
@@ -3032,9 +3028,7 @@ struct DeepPPOContinuousAgent[
                     Self.n_envs, EnvType.STATE_SIZE, Self.OBS
                 ](ctx, states_buf, obs_buf)
                 ctx.synchronize()
-                total_p1_reset_ns += UInt(
-                    perf_counter_ns() - p1_reset_start
-                )
+                total_p1_reset_ns += UInt(perf_counter_ns() - p1_reset_start)
 
             # Early exit if we've reached target episodes
             if completed_episodes >= num_episodes:

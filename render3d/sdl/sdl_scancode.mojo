@@ -32,8 +32,7 @@ https://wiki.libsdl.org/SDL3/BestKeyboardPractices
 """
 
 
-@register_passable("trivial")
-struct Scancode(Indexer, Intable):
+struct Scancode(Indexer, Intable, TrivialRegisterPassable):
     """The SDL keyboard scancode representation.
 
     An SDL scancode is the physical representation of a key on the keyboard,

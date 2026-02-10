@@ -32,8 +32,7 @@ both are abstract interfaces to read/write data.
 """
 
 
-@register_passable("trivial")
-struct IOStatus(Indexer, Intable):
+struct IOStatus(Indexer, Intable, TrivialRegisterPassable):
     """SDL_IOStream status, set by a read or write operation.
 
     Docs: https://wiki.libsdl.org/SDL3/SDL_IOStatus.
@@ -71,8 +70,7 @@ struct IOStatus(Indexer, Intable):
     """Tried to read a write-only buffer."""
 
 
-@register_passable("trivial")
-struct IOWhence(Indexer, Intable):
+struct IOWhence(Indexer, Intable, TrivialRegisterPassable):
     """Possible `whence` values for SDL_IOStream seeking.
 
     These map to the same "whence" concept that `fseek` or `lseek` use in the
@@ -124,18 +122,27 @@ struct IOStreamInterface(ImplicitlyCopyable, Movable):
     var version: UInt32
     """The version of this interface."""
 
-    var size: fn (userdata: Ptr[NoneType, AnyOrigin[True]]) -> Int64
+    var size: fn(userdata: Ptr[NoneType, AnyOrigin[True]]) -> Int64
     """Return the number of bytes in this SDL_IOStream.
     
      \\return the total size of the data stream, or -1 on error."""
 
-    var seek: fn (userdata: Ptr[NoneType, AnyOrigin[True]], offset: Int64, whence: IOWhence) -> Int64
+    var seek: fn(
+        userdata: Ptr[NoneType, AnyOrigin[True]],
+        offset: Int64,
+        whence: IOWhence,
+    ) -> Int64
     """Seek to `offset` relative to `whence`, one of stdio's whence values:
      SDL_IO_SEEK_SET, SDL_IO_SEEK_CUR, SDL_IO_SEEK_END.
     
      \\return the final offset in the data stream, or -1 on error."""
 
-    var read: fn (userdata: Ptr[NoneType, AnyOrigin[True]], ptr: Ptr[NoneType, AnyOrigin[True]], size: c_size_t, status: Ptr[IOStatus, AnyOrigin[True]]) -> c_size_t
+    var read: fn(
+        userdata: Ptr[NoneType, AnyOrigin[True]],
+        ptr: Ptr[NoneType, AnyOrigin[True]],
+        size: c_size_t,
+        status: Ptr[IOStatus, AnyOrigin[True]],
+    ) -> c_size_t
     """Read up to `size` bytes from the data stream to the area pointed
      at by `ptr`.
     
@@ -145,7 +152,12 @@ struct IOStreamInterface(ImplicitlyCopyable, Movable):
     
      \\return the number of bytes read"""
 
-    var write: fn (userdata: Ptr[NoneType, AnyOrigin[True]], ptr: Ptr[NoneType, AnyOrigin[False]], size: c_size_t, status: Ptr[IOStatus, AnyOrigin[True]]) -> c_size_t
+    var write: fn(
+        userdata: Ptr[NoneType, AnyOrigin[True]],
+        ptr: Ptr[NoneType, AnyOrigin[False]],
+        size: c_size_t,
+        status: Ptr[IOStatus, AnyOrigin[True]],
+    ) -> c_size_t
     """Write exactly `size` bytes from the area pointed at by `ptr`
      to data stream.
     
@@ -155,7 +167,10 @@ struct IOStreamInterface(ImplicitlyCopyable, Movable):
     
      \\return the number of bytes written"""
 
-    var flush: fn (userdata: Ptr[NoneType, AnyOrigin[True]], status: Ptr[IOStatus, AnyOrigin[True]]) -> Bool
+    var flush: fn(
+        userdata: Ptr[NoneType, AnyOrigin[True]],
+        status: Ptr[IOStatus, AnyOrigin[True]],
+    ) -> Bool
     """If the stream is buffering, make sure the data is written out.
     
      On failure, you should set `*status` to a value from the
@@ -164,7 +179,7 @@ struct IOStreamInterface(ImplicitlyCopyable, Movable):
     
      \\return true if successful or false on write error when flushing data."""
 
-    var close: fn (userdata: Ptr[NoneType, AnyOrigin[True]]) -> Bool
+    var close: fn(userdata: Ptr[NoneType, AnyOrigin[True]]) -> Bool
     """Close and free any allocated resources.
     
      This does not guarantee file writes will sync to physical media; they
@@ -191,7 +206,9 @@ struct IOStream(ImplicitlyCopyable, Movable):
     pass
 
 
-fn io_from_file(var file: String, var mode: String) raises -> Ptr[IOStream, AnyOrigin[True]]:
+fn io_from_file(
+    var file: String, var mode: String
+) raises -> Ptr[IOStream, AnyOrigin[True]]:
     """Use this function to create a new SDL_IOStream structure for reading from
     and/or writing to a named file.
 
@@ -271,10 +288,24 @@ fn io_from_file(var file: String, var mode: String) raises -> Ptr[IOStream, AnyO
     Docs: https://wiki.libsdl.org/SDL3/SDL_IOFromFile.
     """
 
-    return _get_dylib_function[lib, "SDL_IOFromFile", fn (file: Ptr[c_char, AnyOrigin[False]], mode: Ptr[c_char, AnyOrigin[False]]) -> Ptr[IOStream, AnyOrigin[True]]]()(file.as_c_string_slice().unsafe_ptr(), mode.as_c_string_slice().unsafe_ptr())
+    return _get_dylib_function[
+        lib,
+        "SDL_IOFromFile",
+        fn(
+            file: Ptr[c_char, AnyOrigin[False]],
+            mode: Ptr[c_char, AnyOrigin[False]],
+        ) -> Ptr[IOStream, AnyOrigin[True]],
+    ]()(
+        file.as_c_string_slice().unsafe_ptr(),
+        mode.as_c_string_slice().unsafe_ptr(),
+    )
 
 
-fn io_from_mem(mem: Ptr[NoneType, AnyOrigin[True]], size: c_size_t, out ret: Ptr[IOStream, AnyOrigin[True]]) raises:
+fn io_from_mem(
+    mem: Ptr[NoneType, AnyOrigin[True]],
+    size: c_size_t,
+    out ret: Ptr[IOStream, AnyOrigin[True]],
+) raises:
     """Use this function to prepare a read-write memory buffer for use with
     SDL_IOStream.
 
@@ -310,12 +341,22 @@ fn io_from_mem(mem: Ptr[NoneType, AnyOrigin[True]], size: c_size_t, out ret: Ptr
     Docs: https://wiki.libsdl.org/SDL3/SDL_IOFromMem.
     """
 
-    ret = _get_dylib_function[lib, "SDL_IOFromMem", fn (mem: Ptr[NoneType, AnyOrigin[True]], size: c_size_t) -> Ptr[IOStream, AnyOrigin[True]]]()(mem, size)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_IOFromMem",
+        fn(
+            mem: Ptr[NoneType, AnyOrigin[True]], size: c_size_t
+        ) -> Ptr[IOStream, AnyOrigin[True]],
+    ]()(mem, size)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn io_from_const_mem(mem: Ptr[NoneType, AnyOrigin[False]], size: c_size_t, out ret: Ptr[IOStream, AnyOrigin[True]]) raises:
+fn io_from_const_mem(
+    mem: Ptr[NoneType, AnyOrigin[False]],
+    size: c_size_t,
+    out ret: Ptr[IOStream, AnyOrigin[True]],
+) raises:
     """Use this function to prepare a read-only memory buffer for use with
     SDL_IOStream.
 
@@ -353,7 +394,13 @@ fn io_from_const_mem(mem: Ptr[NoneType, AnyOrigin[False]], size: c_size_t, out r
     Docs: https://wiki.libsdl.org/SDL3/SDL_IOFromConstMem.
     """
 
-    ret = _get_dylib_function[lib, "SDL_IOFromConstMem", fn (mem: Ptr[NoneType, AnyOrigin[False]], size: c_size_t) -> Ptr[IOStream, AnyOrigin[True]]]()(mem, size)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_IOFromConstMem",
+        fn(
+            mem: Ptr[NoneType, AnyOrigin[False]], size: c_size_t
+        ) -> Ptr[IOStream, AnyOrigin[True]],
+    ]()(mem, size)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -383,12 +430,18 @@ fn io_from_dynamic_mem(out ret: Ptr[IOStream, AnyOrigin[True]]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_IOFromDynamicMem.
     """
 
-    ret = _get_dylib_function[lib, "SDL_IOFromDynamicMem", fn () -> Ptr[IOStream, AnyOrigin[True]]]()()
+    ret = _get_dylib_function[
+        lib, "SDL_IOFromDynamicMem", fn() -> Ptr[IOStream, AnyOrigin[True]]
+    ]()()
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn open_io(iface: Ptr[IOStreamInterface, AnyOrigin[False]], userdata: Ptr[NoneType, AnyOrigin[True]], out ret: Ptr[IOStream, AnyOrigin[True]]) raises:
+fn open_io(
+    iface: Ptr[IOStreamInterface, AnyOrigin[False]],
+    userdata: Ptr[NoneType, AnyOrigin[True]],
+    out ret: Ptr[IOStream, AnyOrigin[True]],
+) raises:
     """Create a custom SDL_IOStream.
 
     Applications do not need to use this function unless they are providing
@@ -414,7 +467,14 @@ fn open_io(iface: Ptr[IOStreamInterface, AnyOrigin[False]], userdata: Ptr[NoneTy
     Docs: https://wiki.libsdl.org/SDL3/SDL_OpenIO.
     """
 
-    ret = _get_dylib_function[lib, "SDL_OpenIO", fn (iface: Ptr[IOStreamInterface, AnyOrigin[False]], userdata: Ptr[NoneType, AnyOrigin[True]]) -> Ptr[IOStream, AnyOrigin[True]]]()(iface, userdata)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_OpenIO",
+        fn(
+            iface: Ptr[IOStreamInterface, AnyOrigin[False]],
+            userdata: Ptr[NoneType, AnyOrigin[True]],
+        ) -> Ptr[IOStream, AnyOrigin[True]],
+    ]()(iface, userdata)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -452,12 +512,16 @@ fn close_io(context: Ptr[IOStream, AnyOrigin[True]]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_CloseIO.
     """
 
-    ret = _get_dylib_function[lib, "SDL_CloseIO", fn (context: Ptr[IOStream, AnyOrigin[True]]) -> Bool]()(context)
+    ret = _get_dylib_function[
+        lib, "SDL_CloseIO", fn(context: Ptr[IOStream, AnyOrigin[True]]) -> Bool
+    ]()(context)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_io_properties(context: Ptr[IOStream, AnyOrigin[True]]) raises -> PropertiesID:
+fn get_io_properties(
+    context: Ptr[IOStream, AnyOrigin[True]]
+) raises -> PropertiesID:
     """Get the properties associated with an SDL_IOStream.
 
     Args:
@@ -473,7 +537,11 @@ fn get_io_properties(context: Ptr[IOStream, AnyOrigin[True]]) raises -> Properti
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetIOProperties.
     """
 
-    return _get_dylib_function[lib, "SDL_GetIOProperties", fn (context: Ptr[IOStream, AnyOrigin[True]]) -> PropertiesID]()(context)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetIOProperties",
+        fn(context: Ptr[IOStream, AnyOrigin[True]]) -> PropertiesID,
+    ]()(context)
 
 
 fn get_io_status(context: Ptr[IOStream, AnyOrigin[True]]) raises -> IOStatus:
@@ -499,7 +567,11 @@ fn get_io_status(context: Ptr[IOStream, AnyOrigin[True]]) raises -> IOStatus:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetIOStatus.
     """
 
-    return _get_dylib_function[lib, "SDL_GetIOStatus", fn (context: Ptr[IOStream, AnyOrigin[True]]) -> IOStatus]()(context)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetIOStatus",
+        fn(context: Ptr[IOStream, AnyOrigin[True]]) -> IOStatus,
+    ]()(context)
 
 
 fn get_io_size(context: Ptr[IOStream, AnyOrigin[True]]) raises -> Int64:
@@ -519,10 +591,16 @@ fn get_io_size(context: Ptr[IOStream, AnyOrigin[True]]) raises -> Int64:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetIOSize.
     """
 
-    return _get_dylib_function[lib, "SDL_GetIOSize", fn (context: Ptr[IOStream, AnyOrigin[True]]) -> Int64]()(context)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetIOSize",
+        fn(context: Ptr[IOStream, AnyOrigin[True]]) -> Int64,
+    ]()(context)
 
 
-fn seek_io(context: Ptr[IOStream, AnyOrigin[True]], offset: Int64, whence: IOWhence) raises -> Int64:
+fn seek_io(
+    context: Ptr[IOStream, AnyOrigin[True]], offset: Int64, whence: IOWhence
+) raises -> Int64:
     """Seek within an SDL_IOStream data stream.
 
     This function seeks to byte `offset`, relative to `whence`.
@@ -552,7 +630,15 @@ fn seek_io(context: Ptr[IOStream, AnyOrigin[True]], offset: Int64, whence: IOWhe
     Docs: https://wiki.libsdl.org/SDL3/SDL_SeekIO.
     """
 
-    return _get_dylib_function[lib, "SDL_SeekIO", fn (context: Ptr[IOStream, AnyOrigin[True]], offset: Int64, whence: IOWhence) -> Int64]()(context, offset, whence)
+    return _get_dylib_function[
+        lib,
+        "SDL_SeekIO",
+        fn(
+            context: Ptr[IOStream, AnyOrigin[True]],
+            offset: Int64,
+            whence: IOWhence,
+        ) -> Int64,
+    ]()(context, offset, whence)
 
 
 fn tell_io(context: Ptr[IOStream, AnyOrigin[True]]) raises -> Int64:
@@ -576,10 +662,16 @@ fn tell_io(context: Ptr[IOStream, AnyOrigin[True]]) raises -> Int64:
     Docs: https://wiki.libsdl.org/SDL3/SDL_TellIO.
     """
 
-    return _get_dylib_function[lib, "SDL_TellIO", fn (context: Ptr[IOStream, AnyOrigin[True]]) -> Int64]()(context)
+    return _get_dylib_function[
+        lib, "SDL_TellIO", fn(context: Ptr[IOStream, AnyOrigin[True]]) -> Int64
+    ]()(context)
 
 
-fn read_io(context: Ptr[IOStream, AnyOrigin[True]], ptr: Ptr[NoneType, AnyOrigin[True]], size: c_size_t) raises -> c_size_t:
+fn read_io(
+    context: Ptr[IOStream, AnyOrigin[True]],
+    ptr: Ptr[NoneType, AnyOrigin[True]],
+    size: c_size_t,
+) raises -> c_size_t:
     """Read from a data source.
 
     This function reads up `size` bytes from the data source to the area
@@ -605,10 +697,22 @@ fn read_io(context: Ptr[IOStream, AnyOrigin[True]], ptr: Ptr[NoneType, AnyOrigin
     Docs: https://wiki.libsdl.org/SDL3/SDL_ReadIO.
     """
 
-    return _get_dylib_function[lib, "SDL_ReadIO", fn (context: Ptr[IOStream, AnyOrigin[True]], ptr: Ptr[NoneType, AnyOrigin[True]], size: c_size_t) -> c_size_t]()(context, ptr, size)
+    return _get_dylib_function[
+        lib,
+        "SDL_ReadIO",
+        fn(
+            context: Ptr[IOStream, AnyOrigin[True]],
+            ptr: Ptr[NoneType, AnyOrigin[True]],
+            size: c_size_t,
+        ) -> c_size_t,
+    ]()(context, ptr, size)
 
 
-fn write_io(context: Ptr[IOStream, AnyOrigin[True]], ptr: Ptr[NoneType, AnyOrigin[False]], size: c_size_t) raises -> c_size_t:
+fn write_io(
+    context: Ptr[IOStream, AnyOrigin[True]],
+    ptr: Ptr[NoneType, AnyOrigin[False]],
+    size: c_size_t,
+) raises -> c_size_t:
     """Write to an SDL_IOStream data stream.
 
     This function writes exactly `size` bytes from the area pointed at by `ptr`
@@ -637,7 +741,15 @@ fn write_io(context: Ptr[IOStream, AnyOrigin[True]], ptr: Ptr[NoneType, AnyOrigi
     Docs: https://wiki.libsdl.org/SDL3/SDL_WriteIO.
     """
 
-    return _get_dylib_function[lib, "SDL_WriteIO", fn (context: Ptr[IOStream, AnyOrigin[True]], ptr: Ptr[NoneType, AnyOrigin[False]], size: c_size_t) -> c_size_t]()(context, ptr, size)
+    return _get_dylib_function[
+        lib,
+        "SDL_WriteIO",
+        fn(
+            context: Ptr[IOStream, AnyOrigin[True]],
+            ptr: Ptr[NoneType, AnyOrigin[False]],
+            size: c_size_t,
+        ) -> c_size_t,
+    ]()(context, ptr, size)
 
 
 fn flush_io(context: Ptr[IOStream, AnyOrigin[True]]) raises:
@@ -660,12 +772,19 @@ fn flush_io(context: Ptr[IOStream, AnyOrigin[True]]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_FlushIO.
     """
 
-    ret = _get_dylib_function[lib, "SDL_FlushIO", fn (context: Ptr[IOStream, AnyOrigin[True]]) -> Bool]()(context)
+    ret = _get_dylib_function[
+        lib, "SDL_FlushIO", fn(context: Ptr[IOStream, AnyOrigin[True]]) -> Bool
+    ]()(context)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn load_file_io(src: Ptr[IOStream, AnyOrigin[True]], datasize: Ptr[c_size_t, AnyOrigin[True]], closeio: Bool, out ret: Ptr[NoneType, AnyOrigin[True]]) raises:
+fn load_file_io(
+    src: Ptr[IOStream, AnyOrigin[True]],
+    datasize: Ptr[c_size_t, AnyOrigin[True]],
+    closeio: Bool,
+    out ret: Ptr[NoneType, AnyOrigin[True]],
+) raises:
     """Load all the data from an SDL data stream.
 
     The data is allocated with a zero byte at the end (null terminated) for
@@ -691,12 +810,24 @@ fn load_file_io(src: Ptr[IOStream, AnyOrigin[True]], datasize: Ptr[c_size_t, Any
     Docs: https://wiki.libsdl.org/SDL3/SDL_LoadFile_IO.
     """
 
-    ret = _get_dylib_function[lib, "SDL_LoadFile_IO", fn (src: Ptr[IOStream, AnyOrigin[True]], datasize: Ptr[c_size_t, AnyOrigin[True]], closeio: Bool) -> Ptr[NoneType, AnyOrigin[True]]]()(src, datasize, closeio)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_LoadFile_IO",
+        fn(
+            src: Ptr[IOStream, AnyOrigin[True]],
+            datasize: Ptr[c_size_t, AnyOrigin[True]],
+            closeio: Bool,
+        ) -> Ptr[NoneType, AnyOrigin[True]],
+    ]()(src, datasize, closeio)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn load_file(var file: String, datasize: Ptr[c_size_t, AnyOrigin[True]], out ret: Ptr[NoneType, AnyOrigin[True]]) raises:
+fn load_file(
+    var file: String,
+    datasize: Ptr[c_size_t, AnyOrigin[True]],
+    out ret: Ptr[NoneType, AnyOrigin[True]],
+) raises:
     """Load all the data from a file path.
 
     The data is allocated with a zero byte at the end (null terminated) for
@@ -719,12 +850,24 @@ fn load_file(var file: String, datasize: Ptr[c_size_t, AnyOrigin[True]], out ret
     Docs: https://wiki.libsdl.org/SDL3/SDL_LoadFile.
     """
 
-    ret = _get_dylib_function[lib, "SDL_LoadFile", fn (file: Ptr[c_char, AnyOrigin[False]], datasize: Ptr[c_size_t, AnyOrigin[True]]) -> Ptr[NoneType, AnyOrigin[True]]]()(file.as_c_string_slice().unsafe_ptr(), datasize)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_LoadFile",
+        fn(
+            file: Ptr[c_char, AnyOrigin[False]],
+            datasize: Ptr[c_size_t, AnyOrigin[True]],
+        ) -> Ptr[NoneType, AnyOrigin[True]],
+    ]()(file.as_c_string_slice().unsafe_ptr(), datasize)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn save_file_io(src: Ptr[IOStream, AnyOrigin[True]], data: Ptr[NoneType, AnyOrigin[False]], datasize: c_size_t, closeio: Bool) raises:
+fn save_file_io(
+    src: Ptr[IOStream, AnyOrigin[True]],
+    data: Ptr[NoneType, AnyOrigin[False]],
+    datasize: c_size_t,
+    closeio: Bool,
+) raises:
     """Save all the data into an SDL data stream.
 
     Args:
@@ -745,12 +888,23 @@ fn save_file_io(src: Ptr[IOStream, AnyOrigin[True]], data: Ptr[NoneType, AnyOrig
     Docs: https://wiki.libsdl.org/SDL3/SDL_SaveFile_IO.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SaveFile_IO", fn (src: Ptr[IOStream, AnyOrigin[True]], data: Ptr[NoneType, AnyOrigin[False]], datasize: c_size_t, closeio: Bool) -> Bool]()(src, data, datasize, closeio)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SaveFile_IO",
+        fn(
+            src: Ptr[IOStream, AnyOrigin[True]],
+            data: Ptr[NoneType, AnyOrigin[False]],
+            datasize: c_size_t,
+            closeio: Bool,
+        ) -> Bool,
+    ]()(src, data, datasize, closeio)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn save_file(var file: String, data: Ptr[NoneType, AnyOrigin[False]], datasize: c_size_t) raises:
+fn save_file(
+    var file: String, data: Ptr[NoneType, AnyOrigin[False]], datasize: c_size_t
+) raises:
     """Save all the data into a file path.
 
     Args:
@@ -769,12 +923,22 @@ fn save_file(var file: String, data: Ptr[NoneType, AnyOrigin[False]], datasize: 
     Docs: https://wiki.libsdl.org/SDL3/SDL_SaveFile.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SaveFile", fn (file: Ptr[c_char, AnyOrigin[False]], data: Ptr[NoneType, AnyOrigin[False]], datasize: c_size_t) -> Bool]()(file.as_c_string_slice().unsafe_ptr(), data, datasize)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SaveFile",
+        fn(
+            file: Ptr[c_char, AnyOrigin[False]],
+            data: Ptr[NoneType, AnyOrigin[False]],
+            datasize: c_size_t,
+        ) -> Bool,
+    ]()(file.as_c_string_slice().unsafe_ptr(), data, datasize)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn read_u8(src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[UInt8, AnyOrigin[True]]) raises:
+fn read_u8(
+    src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[UInt8, AnyOrigin[True]]
+) raises:
     """Use this function to read a byte from an SDL_IOStream.
 
     This function will return false when the data stream is completely read,
@@ -796,12 +960,21 @@ fn read_u8(src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[UInt8, AnyOrigin[True
     Docs: https://wiki.libsdl.org/SDL3/SDL_ReadU8.
     """
 
-    ret = _get_dylib_function[lib, "SDL_ReadU8", fn (src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[UInt8, AnyOrigin[True]]) -> Bool]()(src, value)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_ReadU8",
+        fn(
+            src: Ptr[IOStream, AnyOrigin[True]],
+            value: Ptr[UInt8, AnyOrigin[True]],
+        ) -> Bool,
+    ]()(src, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn read_s8(src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[Int8, AnyOrigin[True]]) raises:
+fn read_s8(
+    src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[Int8, AnyOrigin[True]]
+) raises:
     """Use this function to read a signed byte from an SDL_IOStream.
 
     This function will return false when the data stream is completely read,
@@ -823,12 +996,21 @@ fn read_s8(src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[Int8, AnyOrigin[True]
     Docs: https://wiki.libsdl.org/SDL3/SDL_ReadS8.
     """
 
-    ret = _get_dylib_function[lib, "SDL_ReadS8", fn (src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[Int8, AnyOrigin[True]]) -> Bool]()(src, value)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_ReadS8",
+        fn(
+            src: Ptr[IOStream, AnyOrigin[True]],
+            value: Ptr[Int8, AnyOrigin[True]],
+        ) -> Bool,
+    ]()(src, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn read_u16_le(src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[UInt16, AnyOrigin[True]]) raises:
+fn read_u16_le(
+    src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[UInt16, AnyOrigin[True]]
+) raises:
     """Use this function to read 16 bits of little-endian data from an
     SDL_IOStream and return in native format.
 
@@ -854,12 +1036,21 @@ fn read_u16_le(src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[UInt16, AnyOrigin
     Docs: https://wiki.libsdl.org/SDL3/SDL_ReadU16LE.
     """
 
-    ret = _get_dylib_function[lib, "SDL_ReadU16LE", fn (src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[UInt16, AnyOrigin[True]]) -> Bool]()(src, value)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_ReadU16LE",
+        fn(
+            src: Ptr[IOStream, AnyOrigin[True]],
+            value: Ptr[UInt16, AnyOrigin[True]],
+        ) -> Bool,
+    ]()(src, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn read_s16_le(src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[Int16, AnyOrigin[True]]) raises:
+fn read_s16_le(
+    src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[Int16, AnyOrigin[True]]
+) raises:
     """Use this function to read 16 bits of little-endian data from an
     SDL_IOStream and return in native format.
 
@@ -885,12 +1076,21 @@ fn read_s16_le(src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[Int16, AnyOrigin[
     Docs: https://wiki.libsdl.org/SDL3/SDL_ReadS16LE.
     """
 
-    ret = _get_dylib_function[lib, "SDL_ReadS16LE", fn (src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[Int16, AnyOrigin[True]]) -> Bool]()(src, value)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_ReadS16LE",
+        fn(
+            src: Ptr[IOStream, AnyOrigin[True]],
+            value: Ptr[Int16, AnyOrigin[True]],
+        ) -> Bool,
+    ]()(src, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn read_u16_be(src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[UInt16, AnyOrigin[True]]) raises:
+fn read_u16_be(
+    src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[UInt16, AnyOrigin[True]]
+) raises:
     """Use this function to read 16 bits of big-endian data from an SDL_IOStream
     and return in native format.
 
@@ -916,12 +1116,21 @@ fn read_u16_be(src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[UInt16, AnyOrigin
     Docs: https://wiki.libsdl.org/SDL3/SDL_ReadU16BE.
     """
 
-    ret = _get_dylib_function[lib, "SDL_ReadU16BE", fn (src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[UInt16, AnyOrigin[True]]) -> Bool]()(src, value)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_ReadU16BE",
+        fn(
+            src: Ptr[IOStream, AnyOrigin[True]],
+            value: Ptr[UInt16, AnyOrigin[True]],
+        ) -> Bool,
+    ]()(src, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn read_s16_be(src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[Int16, AnyOrigin[True]]) raises:
+fn read_s16_be(
+    src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[Int16, AnyOrigin[True]]
+) raises:
     """Use this function to read 16 bits of big-endian data from an SDL_IOStream
     and return in native format.
 
@@ -947,12 +1156,21 @@ fn read_s16_be(src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[Int16, AnyOrigin[
     Docs: https://wiki.libsdl.org/SDL3/SDL_ReadS16BE.
     """
 
-    ret = _get_dylib_function[lib, "SDL_ReadS16BE", fn (src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[Int16, AnyOrigin[True]]) -> Bool]()(src, value)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_ReadS16BE",
+        fn(
+            src: Ptr[IOStream, AnyOrigin[True]],
+            value: Ptr[Int16, AnyOrigin[True]],
+        ) -> Bool,
+    ]()(src, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn read_u32_le(src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[UInt32, AnyOrigin[True]]) raises:
+fn read_u32_le(
+    src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[UInt32, AnyOrigin[True]]
+) raises:
     """Use this function to read 32 bits of little-endian data from an
     SDL_IOStream and return in native format.
 
@@ -978,12 +1196,21 @@ fn read_u32_le(src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[UInt32, AnyOrigin
     Docs: https://wiki.libsdl.org/SDL3/SDL_ReadU32LE.
     """
 
-    ret = _get_dylib_function[lib, "SDL_ReadU32LE", fn (src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[UInt32, AnyOrigin[True]]) -> Bool]()(src, value)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_ReadU32LE",
+        fn(
+            src: Ptr[IOStream, AnyOrigin[True]],
+            value: Ptr[UInt32, AnyOrigin[True]],
+        ) -> Bool,
+    ]()(src, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn read_s32_le(src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[Int32, AnyOrigin[True]]) raises:
+fn read_s32_le(
+    src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[Int32, AnyOrigin[True]]
+) raises:
     """Use this function to read 32 bits of little-endian data from an
     SDL_IOStream and return in native format.
 
@@ -1009,12 +1236,21 @@ fn read_s32_le(src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[Int32, AnyOrigin[
     Docs: https://wiki.libsdl.org/SDL3/SDL_ReadS32LE.
     """
 
-    ret = _get_dylib_function[lib, "SDL_ReadS32LE", fn (src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[Int32, AnyOrigin[True]]) -> Bool]()(src, value)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_ReadS32LE",
+        fn(
+            src: Ptr[IOStream, AnyOrigin[True]],
+            value: Ptr[Int32, AnyOrigin[True]],
+        ) -> Bool,
+    ]()(src, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn read_u32_be(src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[UInt32, AnyOrigin[True]]) raises:
+fn read_u32_be(
+    src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[UInt32, AnyOrigin[True]]
+) raises:
     """Use this function to read 32 bits of big-endian data from an SDL_IOStream
     and return in native format.
 
@@ -1040,12 +1276,21 @@ fn read_u32_be(src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[UInt32, AnyOrigin
     Docs: https://wiki.libsdl.org/SDL3/SDL_ReadU32BE.
     """
 
-    ret = _get_dylib_function[lib, "SDL_ReadU32BE", fn (src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[UInt32, AnyOrigin[True]]) -> Bool]()(src, value)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_ReadU32BE",
+        fn(
+            src: Ptr[IOStream, AnyOrigin[True]],
+            value: Ptr[UInt32, AnyOrigin[True]],
+        ) -> Bool,
+    ]()(src, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn read_s32_be(src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[Int32, AnyOrigin[True]]) raises:
+fn read_s32_be(
+    src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[Int32, AnyOrigin[True]]
+) raises:
     """Use this function to read 32 bits of big-endian data from an SDL_IOStream
     and return in native format.
 
@@ -1071,12 +1316,21 @@ fn read_s32_be(src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[Int32, AnyOrigin[
     Docs: https://wiki.libsdl.org/SDL3/SDL_ReadS32BE.
     """
 
-    ret = _get_dylib_function[lib, "SDL_ReadS32BE", fn (src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[Int32, AnyOrigin[True]]) -> Bool]()(src, value)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_ReadS32BE",
+        fn(
+            src: Ptr[IOStream, AnyOrigin[True]],
+            value: Ptr[Int32, AnyOrigin[True]],
+        ) -> Bool,
+    ]()(src, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn read_u64_le(src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[UInt64, AnyOrigin[True]]) raises:
+fn read_u64_le(
+    src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[UInt64, AnyOrigin[True]]
+) raises:
     """Use this function to read 64 bits of little-endian data from an
     SDL_IOStream and return in native format.
 
@@ -1102,12 +1356,21 @@ fn read_u64_le(src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[UInt64, AnyOrigin
     Docs: https://wiki.libsdl.org/SDL3/SDL_ReadU64LE.
     """
 
-    ret = _get_dylib_function[lib, "SDL_ReadU64LE", fn (src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[UInt64, AnyOrigin[True]]) -> Bool]()(src, value)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_ReadU64LE",
+        fn(
+            src: Ptr[IOStream, AnyOrigin[True]],
+            value: Ptr[UInt64, AnyOrigin[True]],
+        ) -> Bool,
+    ]()(src, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn read_s64_le(src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[Int64, AnyOrigin[True]]) raises:
+fn read_s64_le(
+    src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[Int64, AnyOrigin[True]]
+) raises:
     """Use this function to read 64 bits of little-endian data from an
     SDL_IOStream and return in native format.
 
@@ -1133,12 +1396,21 @@ fn read_s64_le(src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[Int64, AnyOrigin[
     Docs: https://wiki.libsdl.org/SDL3/SDL_ReadS64LE.
     """
 
-    ret = _get_dylib_function[lib, "SDL_ReadS64LE", fn (src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[Int64, AnyOrigin[True]]) -> Bool]()(src, value)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_ReadS64LE",
+        fn(
+            src: Ptr[IOStream, AnyOrigin[True]],
+            value: Ptr[Int64, AnyOrigin[True]],
+        ) -> Bool,
+    ]()(src, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn read_u64_be(src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[UInt64, AnyOrigin[True]]) raises:
+fn read_u64_be(
+    src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[UInt64, AnyOrigin[True]]
+) raises:
     """Use this function to read 64 bits of big-endian data from an SDL_IOStream
     and return in native format.
 
@@ -1164,12 +1436,21 @@ fn read_u64_be(src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[UInt64, AnyOrigin
     Docs: https://wiki.libsdl.org/SDL3/SDL_ReadU64BE.
     """
 
-    ret = _get_dylib_function[lib, "SDL_ReadU64BE", fn (src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[UInt64, AnyOrigin[True]]) -> Bool]()(src, value)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_ReadU64BE",
+        fn(
+            src: Ptr[IOStream, AnyOrigin[True]],
+            value: Ptr[UInt64, AnyOrigin[True]],
+        ) -> Bool,
+    ]()(src, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn read_s64_be(src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[Int64, AnyOrigin[True]]) raises:
+fn read_s64_be(
+    src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[Int64, AnyOrigin[True]]
+) raises:
     """Use this function to read 64 bits of big-endian data from an SDL_IOStream
     and return in native format.
 
@@ -1195,7 +1476,14 @@ fn read_s64_be(src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[Int64, AnyOrigin[
     Docs: https://wiki.libsdl.org/SDL3/SDL_ReadS64BE.
     """
 
-    ret = _get_dylib_function[lib, "SDL_ReadS64BE", fn (src: Ptr[IOStream, AnyOrigin[True]], value: Ptr[Int64, AnyOrigin[True]]) -> Bool]()(src, value)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_ReadS64BE",
+        fn(
+            src: Ptr[IOStream, AnyOrigin[True]],
+            value: Ptr[Int64, AnyOrigin[True]],
+        ) -> Bool,
+    ]()(src, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -1217,7 +1505,11 @@ fn write_u8(dst: Ptr[IOStream, AnyOrigin[True]], value: UInt8) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_WriteU8.
     """
 
-    ret = _get_dylib_function[lib, "SDL_WriteU8", fn (dst: Ptr[IOStream, AnyOrigin[True]], value: UInt8) -> Bool]()(dst, value)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_WriteU8",
+        fn(dst: Ptr[IOStream, AnyOrigin[True]], value: UInt8) -> Bool,
+    ]()(dst, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -1239,7 +1531,11 @@ fn write_s8(dst: Ptr[IOStream, AnyOrigin[True]], value: Int8) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_WriteS8.
     """
 
-    ret = _get_dylib_function[lib, "SDL_WriteS8", fn (dst: Ptr[IOStream, AnyOrigin[True]], value: Int8) -> Bool]()(dst, value)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_WriteS8",
+        fn(dst: Ptr[IOStream, AnyOrigin[True]], value: Int8) -> Bool,
+    ]()(dst, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -1266,7 +1562,11 @@ fn write_u16_le(dst: Ptr[IOStream, AnyOrigin[True]], value: UInt16) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_WriteU16LE.
     """
 
-    ret = _get_dylib_function[lib, "SDL_WriteU16LE", fn (dst: Ptr[IOStream, AnyOrigin[True]], value: UInt16) -> Bool]()(dst, value)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_WriteU16LE",
+        fn(dst: Ptr[IOStream, AnyOrigin[True]], value: UInt16) -> Bool,
+    ]()(dst, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -1293,7 +1593,11 @@ fn write_s16_le(dst: Ptr[IOStream, AnyOrigin[True]], value: Int16) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_WriteS16LE.
     """
 
-    ret = _get_dylib_function[lib, "SDL_WriteS16LE", fn (dst: Ptr[IOStream, AnyOrigin[True]], value: Int16) -> Bool]()(dst, value)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_WriteS16LE",
+        fn(dst: Ptr[IOStream, AnyOrigin[True]], value: Int16) -> Bool,
+    ]()(dst, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -1319,7 +1623,11 @@ fn write_u16_be(dst: Ptr[IOStream, AnyOrigin[True]], value: UInt16) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_WriteU16BE.
     """
 
-    ret = _get_dylib_function[lib, "SDL_WriteU16BE", fn (dst: Ptr[IOStream, AnyOrigin[True]], value: UInt16) -> Bool]()(dst, value)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_WriteU16BE",
+        fn(dst: Ptr[IOStream, AnyOrigin[True]], value: UInt16) -> Bool,
+    ]()(dst, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -1345,7 +1653,11 @@ fn write_s16_be(dst: Ptr[IOStream, AnyOrigin[True]], value: Int16) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_WriteS16BE.
     """
 
-    ret = _get_dylib_function[lib, "SDL_WriteS16BE", fn (dst: Ptr[IOStream, AnyOrigin[True]], value: Int16) -> Bool]()(dst, value)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_WriteS16BE",
+        fn(dst: Ptr[IOStream, AnyOrigin[True]], value: Int16) -> Bool,
+    ]()(dst, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -1372,7 +1684,11 @@ fn write_u32_le(dst: Ptr[IOStream, AnyOrigin[True]], value: UInt32) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_WriteU32LE.
     """
 
-    ret = _get_dylib_function[lib, "SDL_WriteU32LE", fn (dst: Ptr[IOStream, AnyOrigin[True]], value: UInt32) -> Bool]()(dst, value)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_WriteU32LE",
+        fn(dst: Ptr[IOStream, AnyOrigin[True]], value: UInt32) -> Bool,
+    ]()(dst, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -1399,7 +1715,11 @@ fn write_s32_le(dst: Ptr[IOStream, AnyOrigin[True]], value: Int32) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_WriteS32LE.
     """
 
-    ret = _get_dylib_function[lib, "SDL_WriteS32LE", fn (dst: Ptr[IOStream, AnyOrigin[True]], value: Int32) -> Bool]()(dst, value)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_WriteS32LE",
+        fn(dst: Ptr[IOStream, AnyOrigin[True]], value: Int32) -> Bool,
+    ]()(dst, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -1425,7 +1745,11 @@ fn write_u32_be(dst: Ptr[IOStream, AnyOrigin[True]], value: UInt32) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_WriteU32BE.
     """
 
-    ret = _get_dylib_function[lib, "SDL_WriteU32BE", fn (dst: Ptr[IOStream, AnyOrigin[True]], value: UInt32) -> Bool]()(dst, value)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_WriteU32BE",
+        fn(dst: Ptr[IOStream, AnyOrigin[True]], value: UInt32) -> Bool,
+    ]()(dst, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -1451,7 +1775,11 @@ fn write_s32_be(dst: Ptr[IOStream, AnyOrigin[True]], value: Int32) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_WriteS32BE.
     """
 
-    ret = _get_dylib_function[lib, "SDL_WriteS32BE", fn (dst: Ptr[IOStream, AnyOrigin[True]], value: Int32) -> Bool]()(dst, value)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_WriteS32BE",
+        fn(dst: Ptr[IOStream, AnyOrigin[True]], value: Int32) -> Bool,
+    ]()(dst, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -1478,7 +1806,11 @@ fn write_u64_le(dst: Ptr[IOStream, AnyOrigin[True]], value: UInt64) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_WriteU64LE.
     """
 
-    ret = _get_dylib_function[lib, "SDL_WriteU64LE", fn (dst: Ptr[IOStream, AnyOrigin[True]], value: UInt64) -> Bool]()(dst, value)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_WriteU64LE",
+        fn(dst: Ptr[IOStream, AnyOrigin[True]], value: UInt64) -> Bool,
+    ]()(dst, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -1505,7 +1837,11 @@ fn write_s64_le(dst: Ptr[IOStream, AnyOrigin[True]], value: Int64) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_WriteS64LE.
     """
 
-    ret = _get_dylib_function[lib, "SDL_WriteS64LE", fn (dst: Ptr[IOStream, AnyOrigin[True]], value: Int64) -> Bool]()(dst, value)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_WriteS64LE",
+        fn(dst: Ptr[IOStream, AnyOrigin[True]], value: Int64) -> Bool,
+    ]()(dst, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -1531,7 +1867,11 @@ fn write_u64_be(dst: Ptr[IOStream, AnyOrigin[True]], value: UInt64) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_WriteU64BE.
     """
 
-    ret = _get_dylib_function[lib, "SDL_WriteU64BE", fn (dst: Ptr[IOStream, AnyOrigin[True]], value: UInt64) -> Bool]()(dst, value)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_WriteU64BE",
+        fn(dst: Ptr[IOStream, AnyOrigin[True]], value: UInt64) -> Bool,
+    ]()(dst, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -1557,6 +1897,10 @@ fn write_s64_be(dst: Ptr[IOStream, AnyOrigin[True]], value: Int64) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_WriteS64BE.
     """
 
-    ret = _get_dylib_function[lib, "SDL_WriteS64BE", fn (dst: Ptr[IOStream, AnyOrigin[True]], value: Int64) -> Bool]()(dst, value)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_WriteS64BE",
+        fn(dst: Ptr[IOStream, AnyOrigin[True]], value: Int64) -> Bool,
+    ]()(dst, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))

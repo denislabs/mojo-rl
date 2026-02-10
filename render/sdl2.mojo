@@ -1,4 +1,4 @@
-from sys.ffi import OwnedDLHandle
+from ffi import OwnedDLHandle
 from memory import UnsafePointer
 from sys import info
 
@@ -104,8 +104,7 @@ struct SDL_Color(ImplicitlyCopyable, Movable):
     var a: UInt8
 
 
-@register_passable("trivial")
-struct SDL_Event:
+struct SDL_Event(TrivialRegisterPassable):
     """SDL event structure (simplified - just captures type)."""
 
     var type: UInt32
@@ -163,7 +162,7 @@ struct SDL2(Movable):
         Returns:
             True if initialization succeeded.
         """
-        var init_fn = self.handle.get_function[fn (UInt32) -> Int32]("SDL_Init")
+        var init_fn = self.handle.get_function[fn(UInt32) -> Int32]("SDL_Init")
         var result = init_fn(SDL_INIT_VIDEO | SDL_INIT_EVENTS)
         self.initialized = result == 0
         return self.initialized
@@ -174,7 +173,7 @@ struct SDL2(Movable):
         Returns:
             True if initialization succeeded.
         """
-        var ttf_init_fn = self.ttf_handle.get_function[fn () -> Int32](
+        var ttf_init_fn = self.ttf_handle.get_function[fn() -> Int32](
             "TTF_Init"
         )
         var result = ttf_init_fn()
@@ -198,7 +197,7 @@ struct SDL2(Movable):
             Window handle (NULL on failure).
         """
         var create_fn = self.handle.get_function[
-            fn (
+            fn(
                 UnsafePointer[UInt8, ImmutAnyOrigin],
                 Int32,
                 Int32,
@@ -231,7 +230,7 @@ struct SDL2(Movable):
             Renderer handle (NULL on failure).
         """
         var create_fn = self.handle.get_function[
-            fn (
+            fn(
                 UnsafePointer[UInt8, MutAnyOrigin], Int32, UInt32
             ) -> UnsafePointer[UInt8, MutAnyOrigin]
         ]("SDL_CreateRenderer")
@@ -254,7 +253,7 @@ struct SDL2(Movable):
             a: Alpha component (0-255), default fully opaque.
         """
         var set_fn = self.handle.get_function[
-            fn (
+            fn(
                 UnsafePointer[UInt8, MutAnyOrigin],
                 UInt8,
                 UInt8,
@@ -267,14 +266,14 @@ struct SDL2(Movable):
     fn clear(self):
         """Clear the renderer with the current draw color."""
         var clear_fn = self.handle.get_function[
-            fn (UnsafePointer[UInt8, MutAnyOrigin]) -> Int32
+            fn(UnsafePointer[UInt8, MutAnyOrigin]) -> Int32
         ]("SDL_RenderClear")
         _ = clear_fn(self.renderer.ptr)
 
     fn present(self):
         """Present the rendered content to the screen."""
         var present_fn = self.handle.get_function[
-            fn (UnsafePointer[UInt8, MutAnyOrigin]) -> None
+            fn(UnsafePointer[UInt8, MutAnyOrigin]) -> None
         ]("SDL_RenderPresent")
         present_fn(self.renderer.ptr)
 
@@ -294,7 +293,7 @@ struct SDL2(Movable):
             y2: End Y coordinate.
         """
         var draw_fn = self.handle.get_function[
-            fn (
+            fn(
                 UnsafePointer[UInt8, MutAnyOrigin],
                 Int32,
                 Int32,
@@ -354,7 +353,7 @@ struct SDL2(Movable):
             y: Y coordinate.
         """
         var draw_fn = self.handle.get_function[
-            fn (UnsafePointer[UInt8, MutAnyOrigin], Int32, Int32) -> Int32
+            fn(UnsafePointer[UInt8, MutAnyOrigin], Int32, Int32) -> Int32
         ]("SDL_RenderDrawPoint")
         _ = draw_fn(self.renderer.ptr, Int32(x), Int32(y))
 
@@ -507,7 +506,7 @@ struct SDL2(Movable):
             True if an event was available.
         """
         var poll_fn = self.handle.get_function[
-            fn (UnsafePointer[UInt8, MutAnyOrigin]) -> Int32
+            fn(UnsafePointer[UInt8, MutAnyOrigin]) -> Int32
         ]("SDL_PollEvent")
         var event_ptr = UnsafePointer(to=event)
         return (
@@ -523,9 +522,7 @@ struct SDL2(Movable):
         Args:
             ms: Milliseconds to wait.
         """
-        var delay_fn = self.handle.get_function[fn (UInt32) -> None](
-            "SDL_Delay"
-        )
+        var delay_fn = self.handle.get_function[fn(UInt32) -> None]("SDL_Delay")
         delay_fn(ms)
 
     fn get_ticks(self) -> UInt32:
@@ -534,7 +531,7 @@ struct SDL2(Movable):
         Returns:
             Milliseconds since SDL_Init.
         """
-        var ticks_fn = self.handle.get_function[fn () -> UInt32]("SDL_GetTicks")
+        var ticks_fn = self.handle.get_function[fn() -> UInt32]("SDL_GetTicks")
         return ticks_fn()
 
     fn open_font(mut self, path: String, size: Int) -> SDLHandle:
@@ -548,7 +545,7 @@ struct SDL2(Movable):
             Font handle (NULL on failure).
         """
         var open_fn = self.ttf_handle.get_function[
-            fn (
+            fn(
                 UnsafePointer[UInt8, ImmutAnyOrigin], Int32
             ) -> UnsafePointer[UInt8, MutAnyOrigin]
         ]("TTF_OpenFont")
@@ -572,7 +569,7 @@ struct SDL2(Movable):
             Font handle (NULL on failure).
         """
         var open_fn = self.ttf_handle.get_function[
-            fn (
+            fn(
                 UnsafePointer[UInt8, ImmutAnyOrigin], Int32
             ) -> UnsafePointer[UInt8, MutAnyOrigin]
         ]("TTF_OpenFont")
@@ -600,7 +597,7 @@ struct SDL2(Movable):
             Surface handle (NULL on failure).
         """
         var render_fn = self.ttf_handle.get_function[
-            fn (
+            fn(
                 UnsafePointer[UInt8, MutAnyOrigin],
                 UnsafePointer[UInt8, ImmutAnyOrigin],
                 SDL_Color,
@@ -631,7 +628,7 @@ struct SDL2(Movable):
         if not self.large_font:
             return SDLHandle()
         var render_fn = self.ttf_handle.get_function[
-            fn (
+            fn(
                 UnsafePointer[UInt8, MutAnyOrigin],
                 UnsafePointer[UInt8, ImmutAnyOrigin],
                 SDL_Color,
@@ -658,7 +655,7 @@ struct SDL2(Movable):
             Texture handle (NULL on failure).
         """
         var create_fn = self.handle.get_function[
-            fn (
+            fn(
                 UnsafePointer[UInt8, MutAnyOrigin],
                 UnsafePointer[UInt8, MutAnyOrigin],
             ) -> UnsafePointer[UInt8, MutAnyOrigin]
@@ -684,7 +681,7 @@ struct SDL2(Movable):
         var h: Int32 = 0
 
         var query_fn = self.handle.get_function[
-            fn (
+            fn(
                 UnsafePointer[UInt8, MutAnyOrigin],
                 UnsafePointer[UInt8, MutAnyOrigin],
                 UnsafePointer[UInt8, MutAnyOrigin],
@@ -733,7 +730,7 @@ struct SDL2(Movable):
         )
 
         var copy_fn = self.handle.get_function[
-            fn (
+            fn(
                 UnsafePointer[UInt8, MutAnyOrigin],
                 UnsafePointer[UInt8, MutAnyOrigin],
                 UnsafePointer[UInt8, MutAnyOrigin],
@@ -757,14 +754,14 @@ struct SDL2(Movable):
     fn free_surface(self, surface: SDLHandle):
         """Free a surface."""
         var free_fn = self.handle.get_function[
-            fn (UnsafePointer[UInt8, MutAnyOrigin]) -> None
+            fn(UnsafePointer[UInt8, MutAnyOrigin]) -> None
         ]("SDL_FreeSurface")
         free_fn(surface.ptr)
 
     fn destroy_texture(self, texture: SDLHandle):
         """Destroy a texture."""
         var destroy_fn = self.handle.get_function[
-            fn (UnsafePointer[UInt8, MutAnyOrigin]) -> None
+            fn(UnsafePointer[UInt8, MutAnyOrigin]) -> None
         ]("SDL_DestroyTexture")
         destroy_fn(texture.ptr)
 
@@ -772,7 +769,7 @@ struct SDL2(Movable):
         """Close the stored font."""
         if self.font:
             var close_fn = self.ttf_handle.get_function[
-                fn (UnsafePointer[UInt8, MutAnyOrigin]) -> None
+                fn(UnsafePointer[UInt8, MutAnyOrigin]) -> None
             ]("TTF_CloseFont")
             close_fn(self.font.ptr)
             self.font = SDLHandle()
@@ -781,7 +778,7 @@ struct SDL2(Movable):
         """Destroy the stored renderer."""
         if self.renderer:
             var destroy_fn = self.handle.get_function[
-                fn (UnsafePointer[UInt8, MutAnyOrigin]) -> None
+                fn(UnsafePointer[UInt8, MutAnyOrigin]) -> None
             ]("SDL_DestroyRenderer")
             destroy_fn(self.renderer.ptr)
             self.renderer = SDLHandle()
@@ -790,7 +787,7 @@ struct SDL2(Movable):
         """Destroy the stored window."""
         if self.window:
             var destroy_fn = self.handle.get_function[
-                fn (UnsafePointer[UInt8, MutAnyOrigin]) -> None
+                fn(UnsafePointer[UInt8, MutAnyOrigin]) -> None
             ]("SDL_DestroyWindow")
             destroy_fn(self.window.ptr)
             self.window = SDLHandle()
@@ -798,15 +795,13 @@ struct SDL2(Movable):
     fn quit_ttf(mut self):
         """Quit SDL2_ttf."""
         if self.ttf_initialized:
-            var quit_fn = self.ttf_handle.get_function[fn () -> None](
-                "TTF_Quit"
-            )
+            var quit_fn = self.ttf_handle.get_function[fn() -> None]("TTF_Quit")
             quit_fn()
             self.ttf_initialized = False
 
     fn quit(mut self):
         """Quit SDL2."""
         if self.initialized:
-            var quit_fn = self.handle.get_function[fn () -> None]("SDL_Quit")
+            var quit_fn = self.handle.get_function[fn() -> None]("SDL_Quit")
             quit_fn()
             self.initialized = False

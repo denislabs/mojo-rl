@@ -245,7 +245,8 @@ comptime Quat = QuatGeneric[DType.float64]
 
 
 struct HalfCheetahGC[
-    DTYPE: DType = DType.float64, TERMINATE_ON_UNHEALTHY: Bool = False
+    DTYPE: DType where DTYPE.is_floating_point() = DType.float64,
+    TERMINATE_ON_UNHEALTHY: Bool = False,
 ](
     BoxContinuousActionEnv,
     GPUContinuousEnv,
@@ -302,6 +303,8 @@ struct HalfCheetahGC[
     comptime dtype = Self.DTYPE
     comptime StateType = HalfCheetahGCState
     comptime ActionType = HalfCheetahGCAction
+
+    comptime MAX_STEPS_VAL: Int = 1000
 
     # Layout constants
     comptime OBS_DIM: Int = OBS_DIM
@@ -1277,7 +1280,9 @@ struct HalfCheetahGC[
 
         # Physics step (with frame skip)
         for _ in range(self.frame_skip):
-            ImplicitFastIntegrator[SOLVER=NewtonSolver].step(self.model, self.data)
+            ImplicitFastIntegrator[SOLVER=NewtonSolver].step(
+                self.model, self.data
+            )
             # Enforce joint limits after each physics step
             self._enforce_joint_limits()
             # Ground safety clamp: prevent rootz from going deeply underground
@@ -1520,7 +1525,6 @@ struct HalfCheetahGC[
         STATE_SIZE_VAL: Int,
         OBS_DIM_VAL: Int,
         ACTION_DIM_VAL: Int,
-        MAX_STEPS_VAL: Int = 1000,
     ](
         ctx: DeviceContext,
         mut states_buf: DeviceBuffer[gpu_dtype],
@@ -1617,9 +1621,7 @@ struct HalfCheetahGC[
                 ctx, states_buf
             )
             # Ground safety clamp (matching CPU)
-            Self._ground_clamp_gpu[BATCH_SIZE, STATE_SIZE_VAL](
-                ctx, states_buf
-            )
+            Self._ground_clamp_gpu[BATCH_SIZE, STATE_SIZE_VAL](ctx, states_buf)
 
         # Extract observations, compute rewards, check termination
         Self._extract_obs_rewards_dones_gpu[
@@ -1627,7 +1629,7 @@ struct HalfCheetahGC[
             STATE_SIZE_VAL,
             MODEL_SIZE,
             OBS_DIM_VAL,
-            MAX_STEPS_VAL,
+            Self.MAX_STEPS_VAL,
         ](
             ctx,
             states_buf,
@@ -2577,8 +2579,10 @@ struct HalfCheetahGC[
             HalfCheetahGC.NUM_BODIES, HalfCheetahGC.NUM_JOINTS
         ]()
         var curriculum_host = InlineArray[Scalar[gpu_dtype], 2](
-            curriculum_values[0],  # MIN_HEIGHT (unused for HalfCheetah)
-            curriculum_values[1],  # MAX_PITCH
+            fill=[
+                curriculum_values[0],  # MIN_HEIGHT (unused for HalfCheetah)
+                curriculum_values[1],  # MAX_PITCH
+            ]
         )
         ctx.enqueue_copy(
             workspace_buf.unsafe_ptr() + curr_offset,

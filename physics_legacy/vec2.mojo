@@ -8,8 +8,9 @@ Uses SIMD[Scalar[dtype], 2] for hardware acceleration.
 from math import sqrt, sin, cos
 
 
-@register_passable("trivial")
-struct Vec2[dtype: DType](Copyable, Movable, Stringable):
+struct Vec2[dtype: DType](
+    Copyable, Movable, Stringable, TrivialRegisterPassable
+):
     """2D vector using SIMD for performance."""
 
     var x: Scalar[Self.dtype]

@@ -79,8 +79,7 @@ The matrix coefficients are used to convert between YCbCr and RGB colors.
 """
 
 
-@register_passable("trivial")
-struct PixelType(Indexer, Intable):
+struct PixelType(Indexer, Intable, TrivialRegisterPassable):
     """Pixel type.
 
     Docs: https://wiki.libsdl.org/SDL3/SDL_PixelType.
@@ -120,8 +119,7 @@ struct PixelType(Indexer, Intable):
     comptime PIXELTYPE_INDEX2 = Self(12)
 
 
-@register_passable("trivial")
-struct BitmapOrder(Indexer, Intable):
+struct BitmapOrder(Indexer, Intable, TrivialRegisterPassable):
     """Bitmap pixel order, high bit -> low bit.
 
     Docs: https://wiki.libsdl.org/SDL3/SDL_BitmapOrder.
@@ -150,8 +148,7 @@ struct BitmapOrder(Indexer, Intable):
     comptime BITMAPORDER_1234 = Self(2)
 
 
-@register_passable("trivial")
-struct PackedOrder(Indexer, Intable):
+struct PackedOrder(Indexer, Intable, TrivialRegisterPassable):
     """Packed component order, high bit -> low bit.
 
     Docs: https://wiki.libsdl.org/SDL3/SDL_PackedOrder.
@@ -186,8 +183,7 @@ struct PackedOrder(Indexer, Intable):
     comptime PACKEDORDER_BGRA = Self(8)
 
 
-@register_passable("trivial")
-struct ArrayOrder(Indexer, Intable):
+struct ArrayOrder(Indexer, Intable, TrivialRegisterPassable):
     """Array component order, low byte -> high byte.
 
     Docs: https://wiki.libsdl.org/SDL3/SDL_ArrayOrder.
@@ -220,8 +216,7 @@ struct ArrayOrder(Indexer, Intable):
     comptime ARRAYORDER_ABGR = Self(6)
 
 
-@register_passable("trivial")
-struct PackedLayout(Indexer, Intable):
+struct PackedLayout(Indexer, Intable, TrivialRegisterPassable):
     """Packed component layout.
 
     Docs: https://wiki.libsdl.org/SDL3/SDL_PackedLayout.
@@ -256,8 +251,7 @@ struct PackedLayout(Indexer, Intable):
     comptime PACKEDLAYOUT_1010102 = Self(8)
 
 
-@register_passable("trivial")
-struct PixelFormat(Indexer, Intable):
+struct PixelFormat(Indexer, Intable, TrivialRegisterPassable):
     """Pixel format.
 
     SDL's pixel formats have the following naming convention:
@@ -466,8 +460,7 @@ struct PixelFormat(Indexer, Intable):
     comptime PIXELFORMAT_XBGR32 = Self.PIXELFORMAT_XBGR8888 if is_big_endian() else Self.PIXELFORMAT_RGBX8888
 
 
-@register_passable("trivial")
-struct ColorType(Indexer, Intable):
+struct ColorType(Indexer, Intable, TrivialRegisterPassable):
     """Colorspace color type.
 
     Docs: https://wiki.libsdl.org/SDL3/SDL_ColorType.
@@ -496,8 +489,7 @@ struct ColorType(Indexer, Intable):
     comptime COLOR_TYPE_YCBCR = Self(2)
 
 
-@register_passable("trivial")
-struct ColorRange(Indexer, Intable):
+struct ColorRange(Indexer, Intable, TrivialRegisterPassable):
     """Colorspace color range, as described by
     https://www.itu.int/rec/R-REC-BT.2100-2-201807-I/en.
 
@@ -529,8 +521,7 @@ struct ColorRange(Indexer, Intable):
     """Full range, e.g. 0-255 for 8-bit RGB and luma, and 1-255 for 8-bit chroma."""
 
 
-@register_passable("trivial")
-struct ColorPrimaries(Indexer, Intable):
+struct ColorPrimaries(Indexer, Intable, TrivialRegisterPassable):
     """Colorspace color primaries, as described by
     https://www.itu.int/rec/T-REC-H.273-201612-S/en.
 
@@ -582,8 +573,7 @@ struct ColorPrimaries(Indexer, Intable):
     comptime COLOR_PRIMARIES_CUSTOM = Self(31)
 
 
-@register_passable("trivial")
-struct TransferCharacteristics(Indexer, Intable):
+struct TransferCharacteristics(Indexer, Intable, TrivialRegisterPassable):
     """Colorspace transfer characteristics.
 
     These are as described by https://www.itu.int/rec/T-REC-H.273-201612-S/en
@@ -643,8 +633,7 @@ struct TransferCharacteristics(Indexer, Intable):
     comptime TRANSFER_CHARACTERISTICS_CUSTOM = Self(31)
 
 
-@register_passable("trivial")
-struct MatrixCoefficients(Indexer, Intable):
+struct MatrixCoefficients(Indexer, Intable, TrivialRegisterPassable):
     """Colorspace matrix coefficients.
 
     These are as described by https://www.itu.int/rec/T-REC-H.273-201612-S/en
@@ -696,8 +685,7 @@ struct MatrixCoefficients(Indexer, Intable):
     comptime MATRIX_COEFFICIENTS_CUSTOM = Self(31)
 
 
-@register_passable("trivial")
-struct ChromaLocation(Indexer, Intable):
+struct ChromaLocation(Indexer, Intable, TrivialRegisterPassable):
     """Colorspace chroma sample location.
 
     Docs: https://wiki.libsdl.org/SDL3/SDL_ChromaLocation.
@@ -731,8 +719,7 @@ struct ChromaLocation(Indexer, Intable):
     """In HEVC for BT.2020 and BT.2100 content (in particular on Blu-rays), Cb and Cr are sampled at the same location as the group's top-left Y pixel ("co-sited", "co-located")."""
 
 
-@register_passable("trivial")
-struct Colorspace(Indexer, Intable):
+struct Colorspace(Indexer, Intable, TrivialRegisterPassable):
     """Colorspace definitions.
 
     Since similar colorspaces may vary in their details (matrix, transfer
@@ -880,7 +867,7 @@ struct Color(ImplicitlyCopyable, Movable):
 
 
 @fieldwise_init
-struct FColor(ImplicitlyCopyable, Movable):
+struct FColor(Copyable, ImplicitlyCopyable, Movable):
     """The bits of this structure can be directly reinterpreted as a float-packed
     color which uses the SDL_PIXELFORMAT_RGBA128_FLOAT format.
 
@@ -935,7 +922,9 @@ struct PixelFormatDetails(ImplicitlyCopyable, Movable):
     var ashift: UInt8
 
 
-fn get_pixel_format_name(format: PixelFormat) raises -> Ptr[c_char, AnyOrigin[False]]:
+fn get_pixel_format_name(
+    format: PixelFormat,
+) raises -> Ptr[c_char, AnyOrigin[False]]:
     """Get the human readable name of a pixel format.
 
     Args:
@@ -951,10 +940,21 @@ fn get_pixel_format_name(format: PixelFormat) raises -> Ptr[c_char, AnyOrigin[Fa
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetPixelFormatName.
     """
 
-    return _get_dylib_function[lib, "SDL_GetPixelFormatName", fn (format: PixelFormat) -> Ptr[c_char, AnyOrigin[False]]]()(format)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetPixelFormatName",
+        fn(format: PixelFormat) -> Ptr[c_char, AnyOrigin[False]],
+    ]()(format)
 
 
-fn get_masks_for_pixel_format(format: PixelFormat, bpp: Ptr[c_int, AnyOrigin[True]], rmask: Ptr[UInt32, AnyOrigin[True]], gmask: Ptr[UInt32, AnyOrigin[True]], bmask: Ptr[UInt32, AnyOrigin[True]], amask: Ptr[UInt32, AnyOrigin[True]]) raises:
+fn get_masks_for_pixel_format(
+    format: PixelFormat,
+    bpp: Ptr[c_int, AnyOrigin[True]],
+    rmask: Ptr[UInt32, AnyOrigin[True]],
+    gmask: Ptr[UInt32, AnyOrigin[True]],
+    bmask: Ptr[UInt32, AnyOrigin[True]],
+    amask: Ptr[UInt32, AnyOrigin[True]],
+) raises:
     """Convert one of the enumerated pixel formats to a bpp value and RGBA masks.
 
     Args:
@@ -975,12 +975,25 @@ fn get_masks_for_pixel_format(format: PixelFormat, bpp: Ptr[c_int, AnyOrigin[Tru
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetMasksForPixelFormat.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GetMasksForPixelFormat", fn (format: PixelFormat, bpp: Ptr[c_int, AnyOrigin[True]], rmask: Ptr[UInt32, AnyOrigin[True]], gmask: Ptr[UInt32, AnyOrigin[True]], bmask: Ptr[UInt32, AnyOrigin[True]], amask: Ptr[UInt32, AnyOrigin[True]]) -> Bool]()(format, bpp, rmask, gmask, bmask, amask)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_GetMasksForPixelFormat",
+        fn(
+            format: PixelFormat,
+            bpp: Ptr[c_int, AnyOrigin[True]],
+            rmask: Ptr[UInt32, AnyOrigin[True]],
+            gmask: Ptr[UInt32, AnyOrigin[True]],
+            bmask: Ptr[UInt32, AnyOrigin[True]],
+            amask: Ptr[UInt32, AnyOrigin[True]],
+        ) -> Bool,
+    ]()(format, bpp, rmask, gmask, bmask, amask)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_pixel_format_for_masks(bpp: c_int, rmask: UInt32, gmask: UInt32, bmask: UInt32, amask: UInt32) raises -> PixelFormat:
+fn get_pixel_format_for_masks(
+    bpp: c_int, rmask: UInt32, gmask: UInt32, bmask: UInt32, amask: UInt32
+) raises -> PixelFormat:
     """Convert a bpp value and RGBA masks to an enumerated pixel format.
 
     This will return `SDL_PIXELFORMAT_UNKNOWN` if the conversion wasn't
@@ -1003,10 +1016,22 @@ fn get_pixel_format_for_masks(bpp: c_int, rmask: UInt32, gmask: UInt32, bmask: U
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetPixelFormatForMasks.
     """
 
-    return _get_dylib_function[lib, "SDL_GetPixelFormatForMasks", fn (bpp: c_int, rmask: UInt32, gmask: UInt32, bmask: UInt32, amask: UInt32) -> PixelFormat]()(bpp, rmask, gmask, bmask, amask)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetPixelFormatForMasks",
+        fn(
+            bpp: c_int,
+            rmask: UInt32,
+            gmask: UInt32,
+            bmask: UInt32,
+            amask: UInt32,
+        ) -> PixelFormat,
+    ]()(bpp, rmask, gmask, bmask, amask)
 
 
-fn get_pixel_format_details(format: PixelFormat) raises -> Ptr[PixelFormatDetails, AnyOrigin[False]]:
+fn get_pixel_format_details(
+    format: PixelFormat,
+) raises -> Ptr[PixelFormatDetails, AnyOrigin[False]]:
     """Create an SDL_PixelFormatDetails structure corresponding to a pixel format.
 
     Returned structure may come from a shared global cache (i.e. not newly
@@ -1026,7 +1051,11 @@ fn get_pixel_format_details(format: PixelFormat) raises -> Ptr[PixelFormatDetail
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetPixelFormatDetails.
     """
 
-    return _get_dylib_function[lib, "SDL_GetPixelFormatDetails", fn (format: PixelFormat) -> Ptr[PixelFormatDetails, AnyOrigin[False]]]()(format)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetPixelFormatDetails",
+        fn(format: PixelFormat) -> Ptr[PixelFormatDetails, AnyOrigin[False]],
+    ]()(format)
 
 
 fn create_palette(ncolors: c_int) raises -> Ptr[Palette, AnyOrigin[True]]:
@@ -1048,10 +1077,19 @@ fn create_palette(ncolors: c_int) raises -> Ptr[Palette, AnyOrigin[True]]:
     Docs: https://wiki.libsdl.org/SDL3/SDL_CreatePalette.
     """
 
-    return _get_dylib_function[lib, "SDL_CreatePalette", fn (ncolors: c_int) -> Ptr[Palette, AnyOrigin[True]]]()(ncolors)
+    return _get_dylib_function[
+        lib,
+        "SDL_CreatePalette",
+        fn(ncolors: c_int) -> Ptr[Palette, AnyOrigin[True]],
+    ]()(ncolors)
 
 
-fn set_palette_colors(palette: Ptr[Palette, AnyOrigin[True]], colors: Ptr[Color, AnyOrigin[False]], firstcolor: c_int, ncolors: c_int) raises:
+fn set_palette_colors(
+    palette: Ptr[Palette, AnyOrigin[True]],
+    colors: Ptr[Color, AnyOrigin[False]],
+    firstcolor: c_int,
+    ncolors: c_int,
+) raises:
     """Set a range of colors in a palette.
 
     Args:
@@ -1071,7 +1109,16 @@ fn set_palette_colors(palette: Ptr[Palette, AnyOrigin[True]], colors: Ptr[Color,
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetPaletteColors.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SetPaletteColors", fn (palette: Ptr[Palette, AnyOrigin[True]], colors: Ptr[Color, AnyOrigin[False]], firstcolor: c_int, ncolors: c_int) -> Bool]()(palette, colors, firstcolor, ncolors)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SetPaletteColors",
+        fn(
+            palette: Ptr[Palette, AnyOrigin[True]],
+            colors: Ptr[Color, AnyOrigin[False]],
+            firstcolor: c_int,
+            ncolors: c_int,
+        ) -> Bool,
+    ]()(palette, colors, firstcolor, ncolors)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -1089,10 +1136,20 @@ fn destroy_palette(palette: Ptr[Palette, AnyOrigin[True]]) raises -> None:
     Docs: https://wiki.libsdl.org/SDL3/SDL_DestroyPalette.
     """
 
-    return _get_dylib_function[lib, "SDL_DestroyPalette", fn (palette: Ptr[Palette, AnyOrigin[True]]) -> None]()(palette)
+    return _get_dylib_function[
+        lib,
+        "SDL_DestroyPalette",
+        fn(palette: Ptr[Palette, AnyOrigin[True]]) -> None,
+    ]()(palette)
 
 
-fn map_rgb(format: Ptr[PixelFormatDetails, AnyOrigin[False]], palette: Ptr[Palette, AnyOrigin[False]], r: UInt8, g: UInt8, b: UInt8) raises -> UInt32:
+fn map_rgb(
+    format: Ptr[PixelFormatDetails, AnyOrigin[False]],
+    palette: Ptr[Palette, AnyOrigin[False]],
+    r: UInt8,
+    g: UInt8,
+    b: UInt8,
+) raises -> UInt32:
     """Map an RGB triple to an opaque pixel value for a given pixel format.
 
     This function maps the RGB color value to the specified pixel format and
@@ -1128,10 +1185,27 @@ fn map_rgb(format: Ptr[PixelFormatDetails, AnyOrigin[False]], palette: Ptr[Palet
     Docs: https://wiki.libsdl.org/SDL3/SDL_MapRGB.
     """
 
-    return _get_dylib_function[lib, "SDL_MapRGB", fn (format: Ptr[PixelFormatDetails, AnyOrigin[False]], palette: Ptr[Palette, AnyOrigin[False]], r: UInt8, g: UInt8, b: UInt8) -> UInt32]()(format, palette, r, g, b)
+    return _get_dylib_function[
+        lib,
+        "SDL_MapRGB",
+        fn(
+            format: Ptr[PixelFormatDetails, AnyOrigin[False]],
+            palette: Ptr[Palette, AnyOrigin[False]],
+            r: UInt8,
+            g: UInt8,
+            b: UInt8,
+        ) -> UInt32,
+    ]()(format, palette, r, g, b)
 
 
-fn map_rgba(format: Ptr[PixelFormatDetails, AnyOrigin[False]], palette: Ptr[Palette, AnyOrigin[False]], r: UInt8, g: UInt8, b: UInt8, a: UInt8) raises -> UInt32:
+fn map_rgba(
+    format: Ptr[PixelFormatDetails, AnyOrigin[False]],
+    palette: Ptr[Palette, AnyOrigin[False]],
+    r: UInt8,
+    g: UInt8,
+    b: UInt8,
+    a: UInt8,
+) raises -> UInt32:
     """Map an RGBA quadruple to a pixel value for a given pixel format.
 
     This function maps the RGBA color value to the specified pixel format and
@@ -1168,10 +1242,28 @@ fn map_rgba(format: Ptr[PixelFormatDetails, AnyOrigin[False]], palette: Ptr[Pale
     Docs: https://wiki.libsdl.org/SDL3/SDL_MapRGBA.
     """
 
-    return _get_dylib_function[lib, "SDL_MapRGBA", fn (format: Ptr[PixelFormatDetails, AnyOrigin[False]], palette: Ptr[Palette, AnyOrigin[False]], r: UInt8, g: UInt8, b: UInt8, a: UInt8) -> UInt32]()(format, palette, r, g, b, a)
+    return _get_dylib_function[
+        lib,
+        "SDL_MapRGBA",
+        fn(
+            format: Ptr[PixelFormatDetails, AnyOrigin[False]],
+            palette: Ptr[Palette, AnyOrigin[False]],
+            r: UInt8,
+            g: UInt8,
+            b: UInt8,
+            a: UInt8,
+        ) -> UInt32,
+    ]()(format, palette, r, g, b, a)
 
 
-fn get_rgb(pixel: UInt32, format: Ptr[PixelFormatDetails, AnyOrigin[False]], palette: Ptr[Palette, AnyOrigin[False]], r: Ptr[UInt8, AnyOrigin[True]], g: Ptr[UInt8, AnyOrigin[True]], b: Ptr[UInt8, AnyOrigin[True]]) raises -> None:
+fn get_rgb(
+    pixel: UInt32,
+    format: Ptr[PixelFormatDetails, AnyOrigin[False]],
+    palette: Ptr[Palette, AnyOrigin[False]],
+    r: Ptr[UInt8, AnyOrigin[True]],
+    g: Ptr[UInt8, AnyOrigin[True]],
+    b: Ptr[UInt8, AnyOrigin[True]],
+) raises -> None:
     """Get RGB values from a pixel in the specified format.
 
     This function uses the entire 8-bit [0..255] range when converting color
@@ -1195,10 +1287,29 @@ fn get_rgb(pixel: UInt32, format: Ptr[PixelFormatDetails, AnyOrigin[False]], pal
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetRGB.
     """
 
-    return _get_dylib_function[lib, "SDL_GetRGB", fn (pixel: UInt32, format: Ptr[PixelFormatDetails, AnyOrigin[False]], palette: Ptr[Palette, AnyOrigin[False]], r: Ptr[UInt8, AnyOrigin[True]], g: Ptr[UInt8, AnyOrigin[True]], b: Ptr[UInt8, AnyOrigin[True]]) -> None]()(pixel, format, palette, r, g, b)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetRGB",
+        fn(
+            pixel: UInt32,
+            format: Ptr[PixelFormatDetails, AnyOrigin[False]],
+            palette: Ptr[Palette, AnyOrigin[False]],
+            r: Ptr[UInt8, AnyOrigin[True]],
+            g: Ptr[UInt8, AnyOrigin[True]],
+            b: Ptr[UInt8, AnyOrigin[True]],
+        ) -> None,
+    ]()(pixel, format, palette, r, g, b)
 
 
-fn get_rgba(pixel: UInt32, format: Ptr[PixelFormatDetails, AnyOrigin[False]], palette: Ptr[Palette, AnyOrigin[False]], r: Ptr[UInt8, AnyOrigin[True]], g: Ptr[UInt8, AnyOrigin[True]], b: Ptr[UInt8, AnyOrigin[True]], a: Ptr[UInt8, AnyOrigin[True]]) raises -> None:
+fn get_rgba(
+    pixel: UInt32,
+    format: Ptr[PixelFormatDetails, AnyOrigin[False]],
+    palette: Ptr[Palette, AnyOrigin[False]],
+    r: Ptr[UInt8, AnyOrigin[True]],
+    g: Ptr[UInt8, AnyOrigin[True]],
+    b: Ptr[UInt8, AnyOrigin[True]],
+    a: Ptr[UInt8, AnyOrigin[True]],
+) raises -> None:
     """Get RGBA values from a pixel in the specified format.
 
     This function uses the entire 8-bit [0..255] range when converting color
@@ -1226,4 +1337,16 @@ fn get_rgba(pixel: UInt32, format: Ptr[PixelFormatDetails, AnyOrigin[False]], pa
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetRGBA.
     """
 
-    return _get_dylib_function[lib, "SDL_GetRGBA", fn (pixel: UInt32, format: Ptr[PixelFormatDetails, AnyOrigin[False]], palette: Ptr[Palette, AnyOrigin[False]], r: Ptr[UInt8, AnyOrigin[True]], g: Ptr[UInt8, AnyOrigin[True]], b: Ptr[UInt8, AnyOrigin[True]], a: Ptr[UInt8, AnyOrigin[True]]) -> None]()(pixel, format, palette, r, g, b, a)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetRGBA",
+        fn(
+            pixel: UInt32,
+            format: Ptr[PixelFormatDetails, AnyOrigin[False]],
+            palette: Ptr[Palette, AnyOrigin[False]],
+            r: Ptr[UInt8, AnyOrigin[True]],
+            g: Ptr[UInt8, AnyOrigin[True]],
+            b: Ptr[UInt8, AnyOrigin[True]],
+            a: Ptr[UInt8, AnyOrigin[True]],
+        ) -> None,
+    ]()(pixel, format, palette, r, g, b, a)

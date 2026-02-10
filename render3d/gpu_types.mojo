@@ -16,8 +16,7 @@ comptime Quat = QuatGeneric[DType.float64]
 # --- Vertex format ---
 
 
-@register_passable("trivial")
-struct GPUVertex:
+struct GPUVertex(TrivialRegisterPassable):
     """32-byte vertex: position (3), normal (3), uv (2)."""
 
     var px: Float32
@@ -268,7 +267,8 @@ struct CapsuleCacheEntry(Copyable, Movable):
         self.mesh = other.mesh^
 
     fn matches(self, radius: Float32, half_height: Float32) -> Bool:
-        """Check if this entry matches the given dimensions (within tolerance)."""
+        """Check if this entry matches the given dimensions (within tolerance).
+        """
         var eps = Float32(0.001)
         return (
             abs(self.radius - radius) < eps
@@ -423,9 +423,12 @@ fn make_identity_f32() -> InlineArray[Float32, 16]:
 
 
 fn ortho_metal(
-    left: Float64, right: Float64,
-    bottom: Float64, top: Float64,
-    near: Float64, far: Float64,
+    left: Float64,
+    right: Float64,
+    bottom: Float64,
+    top: Float64,
+    near: Float64,
+    far: Float64,
 ) -> Mat4:
     """Metal-compatible orthographic projection with Z in [0, 1].
 

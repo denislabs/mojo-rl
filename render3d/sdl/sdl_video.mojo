@@ -48,8 +48,7 @@ events, so start with SDL_CreateWindow() and SDL_PollEvent().
 """
 
 
-@register_passable("trivial")
-struct DisplayID(Intable):
+struct DisplayID(Intable, TrivialRegisterPassable):
     """This is a unique ID for a display for the time it is connected to the
     system, and is never reused for the lifetime of the application.
 
@@ -75,8 +74,7 @@ struct DisplayID(Intable):
         return Self(lhs.value | rhs.value)
 
 
-@register_passable("trivial")
-struct WindowID(Intable):
+struct WindowID(Intable, TrivialRegisterPassable):
     """This is a unique ID for a window.
 
     The value 0 is an invalid ID.
@@ -99,8 +97,7 @@ struct WindowID(Intable):
         return Self(lhs.value | rhs.value)
 
 
-@register_passable("trivial")
-struct SystemTheme(Indexer, Intable):
+struct SystemTheme(Indexer, Intable, TrivialRegisterPassable):
     """System theme.
 
     Docs: https://wiki.libsdl.org/SDL3/SDL_SystemTheme.
@@ -172,8 +169,7 @@ struct DisplayMode(ImplicitlyCopyable, Movable):
     """Private."""
 
 
-@register_passable("trivial")
-struct DisplayOrientation(Indexer, Intable):
+struct DisplayOrientation(Indexer, Intable, TrivialRegisterPassable):
     """Display orientation values; the way a display is rotated.
 
     Docs: https://wiki.libsdl.org/SDL3/SDL_DisplayOrientation.
@@ -219,8 +215,7 @@ struct Window(ImplicitlyCopyable, Movable):
     pass
 
 
-@register_passable("trivial")
-struct WindowFlags(Intable):
+struct WindowFlags(Intable, TrivialRegisterPassable):
     """The flags on a window.
 
     These cover a lot of true/false, or on/off, window state. Some of it is
@@ -297,8 +292,7 @@ struct WindowFlags(Intable):
     """Window should not be focusable."""
 
 
-@register_passable("trivial")
-struct FlashOperation(Indexer, Intable):
+struct FlashOperation(Indexer, Intable, TrivialRegisterPassable):
     """Window flash operation.
 
     Docs: https://wiki.libsdl.org/SDL3/SDL_FlashOperation.
@@ -353,8 +347,7 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_EGLSurface.
 """
 
 
-@register_passable("trivial")
-struct EGLAttrib(Intable):
+struct EGLAttrib(Intable, TrivialRegisterPassable):
     """An EGL attribute, used when creating an EGL context.
 
     Docs: https://wiki.libsdl.org/SDL3/SDL_EGLAttrib.
@@ -375,8 +368,7 @@ struct EGLAttrib(Intable):
         return Self(lhs.value | rhs.value)
 
 
-@register_passable("trivial")
-struct EGLint(Intable):
+struct EGLint(Intable, TrivialRegisterPassable):
     """An EGL integer attribute, used when creating an EGL surface.
 
     Docs: https://wiki.libsdl.org/SDL3/SDL_EGLint.
@@ -397,7 +389,9 @@ struct EGLint(Intable):
         return Self(lhs.value | rhs.value)
 
 
-comptime EGLAttribArrayCallback = Ptr[fn (userdata: Ptr[NoneType, AnyOrigin[True]]) -> EGLAttrib, AnyOrigin[True]]
+comptime EGLAttribArrayCallback = Ptr[
+    fn(userdata: Ptr[NoneType, AnyOrigin[True]]) -> EGLAttrib, AnyOrigin[True]
+]
 """EGL platform attribute initialization callback.
     
     This is called when SDL is attempting to create an EGL context, to let the
@@ -423,7 +417,13 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_EGLAttribArrayCallback.
 """
 
 
-comptime EGLIntArrayCallback = Ptr[fn (userdata: Ptr[NoneType, AnyOrigin[True]], display: EGLDisplay, config: EGLConfig) -> EGLint, AnyOrigin[True]]
+comptime EGLIntArrayCallback = Ptr[
+    fn(
+        userdata: Ptr[NoneType, AnyOrigin[True]],
+        display: EGLDisplay,
+        config: EGLConfig,
+    ) -> EGLint, AnyOrigin[True]
+]
 """EGL surface/context attribute initialization callback types.
     
     This is called when SDL is attempting to create an EGL surface, to let the
@@ -455,8 +455,7 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_EGLIntArrayCallback.
 """
 
 
-@register_passable("trivial")
-struct GLAttr(Indexer, Intable):
+struct GLAttr(Indexer, Intable, TrivialRegisterPassable):
     """An enumeration of OpenGL configuration attributes.
 
     While you can set most OpenGL attributes normally, the attributes listed
@@ -547,8 +546,7 @@ struct GLAttr(Indexer, Intable):
     comptime GL_EGL_PLATFORM = Self(27)
 
 
-@register_passable("trivial")
-struct GLProfile(Intable):
+struct GLProfile(Intable, TrivialRegisterPassable):
     """Possible values to be set for the SDL_GL_CONTEXT_PROFILE_MASK attribute.
 
     Docs: https://wiki.libsdl.org/SDL3/SDL_GLProfile.
@@ -576,8 +574,7 @@ struct GLProfile(Intable):
     """GLX_CONTEXT_ES2_PROFILE_BIT_EXT."""
 
 
-@register_passable("trivial")
-struct GLContextFlag(Intable):
+struct GLContextFlag(Intable, TrivialRegisterPassable):
     """Possible flags to be set for the SDL_GL_CONTEXT_FLAGS attribute.
 
     Docs: https://wiki.libsdl.org/SDL3/SDL_GLContextFlag.
@@ -603,8 +600,7 @@ struct GLContextFlag(Intable):
     comptime GL_CONTEXT_RESET_ISOLATION_FLAG = Self(0x0008)
 
 
-@register_passable("trivial")
-struct GLContextReleaseFlag(Intable):
+struct GLContextReleaseFlag(Intable, TrivialRegisterPassable):
     """Possible values to be set for the SDL_GL_CONTEXT_RELEASE_BEHAVIOR
     attribute.
 
@@ -629,8 +625,7 @@ struct GLContextReleaseFlag(Intable):
     comptime GL_CONTEXT_RELEASE_BEHAVIOR_FLUSH = Self(0x0001)
 
 
-@register_passable("trivial")
-struct GLContextResetNotification(Intable):
+struct GLContextResetNotification(Intable, TrivialRegisterPassable):
     """Possible values to be set SDL_GL_CONTEXT_RESET_NOTIFICATION attribute.
 
     Docs: https://wiki.libsdl.org/SDL3/SDL_GLContextResetNotification.
@@ -666,7 +661,7 @@ fn get_num_video_drivers() raises -> c_int:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetNumVideoDrivers.
     """
 
-    return _get_dylib_function[lib, "SDL_GetNumVideoDrivers", fn () -> c_int]()()
+    return _get_dylib_function[lib, "SDL_GetNumVideoDrivers", fn() -> c_int]()()
 
 
 fn get_video_driver(index: c_int) raises -> Ptr[c_char, AnyOrigin[False]]:
@@ -691,7 +686,11 @@ fn get_video_driver(index: c_int) raises -> Ptr[c_char, AnyOrigin[False]]:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetVideoDriver.
     """
 
-    return _get_dylib_function[lib, "SDL_GetVideoDriver", fn (index: c_int) -> Ptr[c_char, AnyOrigin[False]]]()(index)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetVideoDriver",
+        fn(index: c_int) -> Ptr[c_char, AnyOrigin[False]],
+    ]()(index)
 
 
 fn get_current_video_driver() raises -> Ptr[c_char, AnyOrigin[False]]:
@@ -711,7 +710,9 @@ fn get_current_video_driver() raises -> Ptr[c_char, AnyOrigin[False]]:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetCurrentVideoDriver.
     """
 
-    return _get_dylib_function[lib, "SDL_GetCurrentVideoDriver", fn () -> Ptr[c_char, AnyOrigin[False]]]()()
+    return _get_dylib_function[
+        lib, "SDL_GetCurrentVideoDriver", fn() -> Ptr[c_char, AnyOrigin[False]]
+    ]()()
 
 
 fn get_system_theme() raises -> SystemTheme:
@@ -726,10 +727,14 @@ fn get_system_theme() raises -> SystemTheme:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetSystemTheme.
     """
 
-    return _get_dylib_function[lib, "SDL_GetSystemTheme", fn () -> SystemTheme]()()
+    return _get_dylib_function[
+        lib, "SDL_GetSystemTheme", fn() -> SystemTheme
+    ]()()
 
 
-fn get_displays(count: Ptr[c_int, AnyOrigin[True]], out ret: Ptr[DisplayID, AnyOrigin[True]]) raises:
+fn get_displays(
+    count: Ptr[c_int, AnyOrigin[True]], out ret: Ptr[DisplayID, AnyOrigin[True]]
+) raises:
     """Get a list of currently connected displays.
 
     Args:
@@ -747,7 +752,13 @@ fn get_displays(count: Ptr[c_int, AnyOrigin[True]], out ret: Ptr[DisplayID, AnyO
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetDisplays.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GetDisplays", fn (count: Ptr[c_int, AnyOrigin[True]]) -> Ptr[DisplayID, AnyOrigin[True]]]()(count)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_GetDisplays",
+        fn(
+            count: Ptr[c_int, AnyOrigin[True]]
+        ) -> Ptr[DisplayID, AnyOrigin[True]],
+    ]()(count)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -765,7 +776,9 @@ fn get_primary_display() raises -> DisplayID:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetPrimaryDisplay.
     """
 
-    return _get_dylib_function[lib, "SDL_GetPrimaryDisplay", fn () -> DisplayID]()()
+    return _get_dylib_function[
+        lib, "SDL_GetPrimaryDisplay", fn() -> DisplayID
+    ]()()
 
 
 fn get_display_properties(display_id: DisplayID) raises -> PropertiesID:
@@ -799,10 +812,16 @@ fn get_display_properties(display_id: DisplayID) raises -> PropertiesID:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetDisplayProperties.
     """
 
-    return _get_dylib_function[lib, "SDL_GetDisplayProperties", fn (display_id: DisplayID) -> PropertiesID]()(display_id)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetDisplayProperties",
+        fn(display_id: DisplayID) -> PropertiesID,
+    ]()(display_id)
 
 
-fn get_display_name(display_id: DisplayID, out ret: Ptr[c_char, AnyOrigin[False]]) raises:
+fn get_display_name(
+    display_id: DisplayID, out ret: Ptr[c_char, AnyOrigin[False]]
+) raises:
     """Get the name of a display in UTF-8 encoding.
 
     Args:
@@ -818,12 +837,18 @@ fn get_display_name(display_id: DisplayID, out ret: Ptr[c_char, AnyOrigin[False]
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetDisplayName.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GetDisplayName", fn (display_id: DisplayID) -> Ptr[c_char, AnyOrigin[False]]]()(display_id)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_GetDisplayName",
+        fn(display_id: DisplayID) -> Ptr[c_char, AnyOrigin[False]],
+    ]()(display_id)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_display_bounds(display_id: DisplayID, rect: Ptr[Rect, AnyOrigin[True]]) raises:
+fn get_display_bounds(
+    display_id: DisplayID, rect: Ptr[Rect, AnyOrigin[True]]
+) raises:
     """Get the desktop area represented by a display.
 
     The primary display is often located at (0,0), but may be placed at a
@@ -843,12 +868,18 @@ fn get_display_bounds(display_id: DisplayID, rect: Ptr[Rect, AnyOrigin[True]]) r
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetDisplayBounds.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GetDisplayBounds", fn (display_id: DisplayID, rect: Ptr[Rect, AnyOrigin[True]]) -> Bool]()(display_id, rect)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_GetDisplayBounds",
+        fn(display_id: DisplayID, rect: Ptr[Rect, AnyOrigin[True]]) -> Bool,
+    ]()(display_id, rect)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_display_usable_bounds(display_id: DisplayID, rect: Ptr[Rect, AnyOrigin[True]]) raises:
+fn get_display_usable_bounds(
+    display_id: DisplayID, rect: Ptr[Rect, AnyOrigin[True]]
+) raises:
     """Get the usable desktop area represented by a display, in screen
     coordinates.
 
@@ -874,12 +905,18 @@ fn get_display_usable_bounds(display_id: DisplayID, rect: Ptr[Rect, AnyOrigin[Tr
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetDisplayUsableBounds.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GetDisplayUsableBounds", fn (display_id: DisplayID, rect: Ptr[Rect, AnyOrigin[True]]) -> Bool]()(display_id, rect)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_GetDisplayUsableBounds",
+        fn(display_id: DisplayID, rect: Ptr[Rect, AnyOrigin[True]]) -> Bool,
+    ]()(display_id, rect)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_natural_display_orientation(display_id: DisplayID) raises -> DisplayOrientation:
+fn get_natural_display_orientation(
+    display_id: DisplayID,
+) raises -> DisplayOrientation:
     """Get the orientation of a display when it is unrotated.
 
     Args:
@@ -895,10 +932,16 @@ fn get_natural_display_orientation(display_id: DisplayID) raises -> DisplayOrien
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetNaturalDisplayOrientation.
     """
 
-    return _get_dylib_function[lib, "SDL_GetNaturalDisplayOrientation", fn (display_id: DisplayID) -> DisplayOrientation]()(display_id)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetNaturalDisplayOrientation",
+        fn(display_id: DisplayID) -> DisplayOrientation,
+    ]()(display_id)
 
 
-fn get_current_display_orientation(display_id: DisplayID) raises -> DisplayOrientation:
+fn get_current_display_orientation(
+    display_id: DisplayID,
+) raises -> DisplayOrientation:
     """Get the orientation of a display.
 
     Args:
@@ -914,7 +957,11 @@ fn get_current_display_orientation(display_id: DisplayID) raises -> DisplayOrien
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetCurrentDisplayOrientation.
     """
 
-    return _get_dylib_function[lib, "SDL_GetCurrentDisplayOrientation", fn (display_id: DisplayID) -> DisplayOrientation]()(display_id)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetCurrentDisplayOrientation",
+        fn(display_id: DisplayID) -> DisplayOrientation,
+    ]()(display_id)
 
 
 fn get_display_content_scale(display_id: DisplayID) raises -> c_float:
@@ -944,10 +991,14 @@ fn get_display_content_scale(display_id: DisplayID) raises -> c_float:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetDisplayContentScale.
     """
 
-    return _get_dylib_function[lib, "SDL_GetDisplayContentScale", fn (display_id: DisplayID) -> c_float]()(display_id)
+    return _get_dylib_function[
+        lib, "SDL_GetDisplayContentScale", fn(display_id: DisplayID) -> c_float
+    ]()(display_id)
 
 
-fn get_fullscreen_display_modes(display_id: DisplayID, count: Ptr[c_int, AnyOrigin[True]]) raises -> Ptr[Ptr[DisplayMode, AnyOrigin[True]], AnyOrigin[True]]:
+fn get_fullscreen_display_modes(
+    display_id: DisplayID, count: Ptr[c_int, AnyOrigin[True]]
+) raises -> Ptr[Ptr[DisplayMode, AnyOrigin[True]], AnyOrigin[True]]:
     """Get a list of fullscreen display modes available on a display.
 
     The display modes are sorted in this priority:
@@ -976,10 +1027,23 @@ fn get_fullscreen_display_modes(display_id: DisplayID, count: Ptr[c_int, AnyOrig
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetFullscreenDisplayModes.
     """
 
-    return _get_dylib_function[lib, "SDL_GetFullscreenDisplayModes", fn (display_id: DisplayID, count: Ptr[c_int, AnyOrigin[True]]) -> Ptr[Ptr[DisplayMode, AnyOrigin[True]], AnyOrigin[True]]]()(display_id, count)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetFullscreenDisplayModes",
+        fn(
+            display_id: DisplayID, count: Ptr[c_int, AnyOrigin[True]]
+        ) -> Ptr[Ptr[DisplayMode, AnyOrigin[True]], AnyOrigin[True]],
+    ]()(display_id, count)
 
 
-fn get_closest_fullscreen_display_mode(display_id: DisplayID, w: c_int, h: c_int, refresh_rate: c_float, include_high_density_modes: Bool, closest: Ptr[DisplayMode, AnyOrigin[True]]) raises:
+fn get_closest_fullscreen_display_mode(
+    display_id: DisplayID,
+    w: c_int,
+    h: c_int,
+    refresh_rate: c_float,
+    include_high_density_modes: Bool,
+    closest: Ptr[DisplayMode, AnyOrigin[True]],
+) raises:
     """Get the closest match to the requested display mode.
 
     The available display modes are scanned and `closest` is filled in with the
@@ -1010,12 +1074,25 @@ fn get_closest_fullscreen_display_mode(display_id: DisplayID, w: c_int, h: c_int
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetClosestFullscreenDisplayMode.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GetClosestFullscreenDisplayMode", fn (display_id: DisplayID, w: c_int, h: c_int, refresh_rate: c_float, include_high_density_modes: Bool, closest: Ptr[DisplayMode, AnyOrigin[True]]) -> Bool]()(display_id, w, h, refresh_rate, include_high_density_modes, closest)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_GetClosestFullscreenDisplayMode",
+        fn(
+            display_id: DisplayID,
+            w: c_int,
+            h: c_int,
+            refresh_rate: c_float,
+            include_high_density_modes: Bool,
+            closest: Ptr[DisplayMode, AnyOrigin[True]],
+        ) -> Bool,
+    ]()(display_id, w, h, refresh_rate, include_high_density_modes, closest)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_desktop_display_mode(display_id: DisplayID, out ret: Ptr[DisplayMode, AnyOrigin[False]]) raises:
+fn get_desktop_display_mode(
+    display_id: DisplayID, out ret: Ptr[DisplayMode, AnyOrigin[False]]
+) raises:
     """Get information about the desktop's display mode.
 
     There's a difference between this function and SDL_GetCurrentDisplayMode()
@@ -1036,12 +1113,18 @@ fn get_desktop_display_mode(display_id: DisplayID, out ret: Ptr[DisplayMode, Any
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetDesktopDisplayMode.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GetDesktopDisplayMode", fn (display_id: DisplayID) -> Ptr[DisplayMode, AnyOrigin[False]]]()(display_id)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_GetDesktopDisplayMode",
+        fn(display_id: DisplayID) -> Ptr[DisplayMode, AnyOrigin[False]],
+    ]()(display_id)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_current_display_mode(display_id: DisplayID, out ret: Ptr[DisplayMode, AnyOrigin[False]]) raises:
+fn get_current_display_mode(
+    display_id: DisplayID, out ret: Ptr[DisplayMode, AnyOrigin[False]]
+) raises:
     """Get information about the current display mode.
 
     There's a difference between this function and SDL_GetDesktopDisplayMode()
@@ -1062,12 +1145,18 @@ fn get_current_display_mode(display_id: DisplayID, out ret: Ptr[DisplayMode, Any
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetCurrentDisplayMode.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GetCurrentDisplayMode", fn (display_id: DisplayID) -> Ptr[DisplayMode, AnyOrigin[False]]]()(display_id)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_GetCurrentDisplayMode",
+        fn(display_id: DisplayID) -> Ptr[DisplayMode, AnyOrigin[False]],
+    ]()(display_id)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_display_for_point(point: Ptr[Point, AnyOrigin[False]]) raises -> DisplayID:
+fn get_display_for_point(
+    point: Ptr[Point, AnyOrigin[False]]
+) raises -> DisplayID:
     """Get the display containing a point.
 
     Args:
@@ -1083,7 +1172,11 @@ fn get_display_for_point(point: Ptr[Point, AnyOrigin[False]]) raises -> DisplayI
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetDisplayForPoint.
     """
 
-    return _get_dylib_function[lib, "SDL_GetDisplayForPoint", fn (point: Ptr[Point, AnyOrigin[False]]) -> DisplayID]()(point)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetDisplayForPoint",
+        fn(point: Ptr[Point, AnyOrigin[False]]) -> DisplayID,
+    ]()(point)
 
 
 fn get_display_for_rect(rect: Ptr[Rect, AnyOrigin[False]]) raises -> DisplayID:
@@ -1103,10 +1196,16 @@ fn get_display_for_rect(rect: Ptr[Rect, AnyOrigin[False]]) raises -> DisplayID:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetDisplayForRect.
     """
 
-    return _get_dylib_function[lib, "SDL_GetDisplayForRect", fn (rect: Ptr[Rect, AnyOrigin[False]]) -> DisplayID]()(rect)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetDisplayForRect",
+        fn(rect: Ptr[Rect, AnyOrigin[False]]) -> DisplayID,
+    ]()(rect)
 
 
-fn get_display_for_window(window: Ptr[Window, AnyOrigin[True]]) raises -> DisplayID:
+fn get_display_for_window(
+    window: Ptr[Window, AnyOrigin[True]]
+) raises -> DisplayID:
     """Get the display associated with a window.
 
     Args:
@@ -1123,10 +1222,16 @@ fn get_display_for_window(window: Ptr[Window, AnyOrigin[True]]) raises -> Displa
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetDisplayForWindow.
     """
 
-    return _get_dylib_function[lib, "SDL_GetDisplayForWindow", fn (window: Ptr[Window, AnyOrigin[True]]) -> DisplayID]()(window)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetDisplayForWindow",
+        fn(window: Ptr[Window, AnyOrigin[True]]) -> DisplayID,
+    ]()(window)
 
 
-fn get_window_pixel_density(window: Ptr[Window, AnyOrigin[True]]) raises -> c_float:
+fn get_window_pixel_density(
+    window: Ptr[Window, AnyOrigin[True]]
+) raises -> c_float:
     """Get the pixel density of a window.
 
     This is a ratio of pixel size to window size. For example, if the window is
@@ -1146,10 +1251,16 @@ fn get_window_pixel_density(window: Ptr[Window, AnyOrigin[True]]) raises -> c_fl
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetWindowPixelDensity.
     """
 
-    return _get_dylib_function[lib, "SDL_GetWindowPixelDensity", fn (window: Ptr[Window, AnyOrigin[True]]) -> c_float]()(window)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetWindowPixelDensity",
+        fn(window: Ptr[Window, AnyOrigin[True]]) -> c_float,
+    ]()(window)
 
 
-fn get_window_display_scale(window: Ptr[Window, AnyOrigin[True]]) raises -> c_float:
+fn get_window_display_scale(
+    window: Ptr[Window, AnyOrigin[True]]
+) raises -> c_float:
     """Get the content display scale relative to a window's pixel size.
 
     This is a combination of the window pixel density and the display content
@@ -1176,10 +1287,17 @@ fn get_window_display_scale(window: Ptr[Window, AnyOrigin[True]]) raises -> c_fl
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetWindowDisplayScale.
     """
 
-    return _get_dylib_function[lib, "SDL_GetWindowDisplayScale", fn (window: Ptr[Window, AnyOrigin[True]]) -> c_float]()(window)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetWindowDisplayScale",
+        fn(window: Ptr[Window, AnyOrigin[True]]) -> c_float,
+    ]()(window)
 
 
-fn set_window_fullscreen_mode(window: Ptr[Window, AnyOrigin[True]], mode: Ptr[DisplayMode, AnyOrigin[False]]) raises:
+fn set_window_fullscreen_mode(
+    window: Ptr[Window, AnyOrigin[True]],
+    mode: Ptr[DisplayMode, AnyOrigin[False]],
+) raises:
     """Set the display mode to use when a window is visible and fullscreen.
 
     This only affects the display mode used when the window is fullscreen. To
@@ -1213,12 +1331,21 @@ fn set_window_fullscreen_mode(window: Ptr[Window, AnyOrigin[True]], mode: Ptr[Di
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowFullscreenMode.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SetWindowFullscreenMode", fn (window: Ptr[Window, AnyOrigin[True]], mode: Ptr[DisplayMode, AnyOrigin[False]]) -> Bool]()(window, mode)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SetWindowFullscreenMode",
+        fn(
+            window: Ptr[Window, AnyOrigin[True]],
+            mode: Ptr[DisplayMode, AnyOrigin[False]],
+        ) -> Bool,
+    ]()(window, mode)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_window_fullscreen_mode(window: Ptr[Window, AnyOrigin[True]]) raises -> Ptr[DisplayMode, AnyOrigin[False]]:
+fn get_window_fullscreen_mode(
+    window: Ptr[Window, AnyOrigin[True]]
+) raises -> Ptr[DisplayMode, AnyOrigin[False]]:
     """Query the display mode to use when a window is visible at fullscreen.
 
     Args:
@@ -1234,10 +1361,20 @@ fn get_window_fullscreen_mode(window: Ptr[Window, AnyOrigin[True]]) raises -> Pt
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetWindowFullscreenMode.
     """
 
-    return _get_dylib_function[lib, "SDL_GetWindowFullscreenMode", fn (window: Ptr[Window, AnyOrigin[True]]) -> Ptr[DisplayMode, AnyOrigin[False]]]()(window)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetWindowFullscreenMode",
+        fn(
+            window: Ptr[Window, AnyOrigin[True]]
+        ) -> Ptr[DisplayMode, AnyOrigin[False]],
+    ]()(window)
 
 
-fn get_window_icc_profile(window: Ptr[Window, AnyOrigin[True]], size: Ptr[c_size_t, AnyOrigin[True]], out ret: Ptr[NoneType, AnyOrigin[True]]) raises:
+fn get_window_icc_profile(
+    window: Ptr[Window, AnyOrigin[True]],
+    size: Ptr[c_size_t, AnyOrigin[True]],
+    out ret: Ptr[NoneType, AnyOrigin[True]],
+) raises:
     """Get the raw ICC profile data for the screen the window is currently on.
 
     Args:
@@ -1255,12 +1392,21 @@ fn get_window_icc_profile(window: Ptr[Window, AnyOrigin[True]], size: Ptr[c_size
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetWindowICCProfile.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GetWindowICCProfile", fn (window: Ptr[Window, AnyOrigin[True]], size: Ptr[c_size_t, AnyOrigin[True]]) -> Ptr[NoneType, AnyOrigin[True]]]()(window, size)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_GetWindowICCProfile",
+        fn(
+            window: Ptr[Window, AnyOrigin[True]],
+            size: Ptr[c_size_t, AnyOrigin[True]],
+        ) -> Ptr[NoneType, AnyOrigin[True]],
+    ]()(window, size)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_window_pixel_format(window: Ptr[Window, AnyOrigin[True]]) raises -> PixelFormat:
+fn get_window_pixel_format(
+    window: Ptr[Window, AnyOrigin[True]]
+) raises -> PixelFormat:
     """Get the pixel format associated with the window.
 
     Args:
@@ -1277,10 +1423,17 @@ fn get_window_pixel_format(window: Ptr[Window, AnyOrigin[True]]) raises -> Pixel
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetWindowPixelFormat.
     """
 
-    return _get_dylib_function[lib, "SDL_GetWindowPixelFormat", fn (window: Ptr[Window, AnyOrigin[True]]) -> PixelFormat]()(window)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetWindowPixelFormat",
+        fn(window: Ptr[Window, AnyOrigin[True]]) -> PixelFormat,
+    ]()(window)
 
 
-fn get_windows(count: Ptr[c_int, AnyOrigin[True]], out ret: Ptr[Ptr[Window, AnyOrigin[True]], AnyOrigin[True]]) raises:
+fn get_windows(
+    count: Ptr[c_int, AnyOrigin[True]],
+    out ret: Ptr[Ptr[Window, AnyOrigin[True]], AnyOrigin[True]],
+) raises:
     """Get a list of valid windows.
 
     Args:
@@ -1299,12 +1452,24 @@ fn get_windows(count: Ptr[c_int, AnyOrigin[True]], out ret: Ptr[Ptr[Window, AnyO
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetWindows.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GetWindows", fn (count: Ptr[c_int, AnyOrigin[True]]) -> Ptr[Ptr[Window, AnyOrigin[True]], AnyOrigin[True]]]()(count)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_GetWindows",
+        fn(
+            count: Ptr[c_int, AnyOrigin[True]]
+        ) -> Ptr[Ptr[Window, AnyOrigin[True]], AnyOrigin[True]],
+    ]()(count)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn create_window(var title: String, w: c_int, h: c_int, flags: WindowFlags, out ret: Ptr[Window, AnyOrigin[True]]) raises:
+fn create_window(
+    var title: String,
+    w: c_int,
+    h: c_int,
+    flags: WindowFlags,
+    out ret: Ptr[Window, AnyOrigin[True]],
+) raises:
     """Create a window with the specified dimensions and flags.
 
     The window size is a request and may be different than expected based on
@@ -1392,12 +1557,29 @@ fn create_window(var title: String, w: c_int, h: c_int, flags: WindowFlags, out 
     Docs: https://wiki.libsdl.org/SDL3/SDL_CreateWindow.
     """
 
-    ret = _get_dylib_function[lib, "SDL_CreateWindow", fn (title: Ptr[c_char, AnyOrigin[False]], w: c_int, h: c_int, flags: WindowFlags) -> Ptr[Window, AnyOrigin[True]]]()(title.as_c_string_slice().unsafe_ptr(), w, h, flags)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_CreateWindow",
+        fn(
+            title: Ptr[c_char, AnyOrigin[False]],
+            w: c_int,
+            h: c_int,
+            flags: WindowFlags,
+        ) -> Ptr[Window, AnyOrigin[True]],
+    ]()(title.as_c_string_slice().unsafe_ptr(), w, h, flags)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn create_popup_window(parent: Ptr[Window, AnyOrigin[True]], offset_x: c_int, offset_y: c_int, w: c_int, h: c_int, flags: WindowFlags, out ret: Ptr[Window, AnyOrigin[True]]) raises:
+fn create_popup_window(
+    parent: Ptr[Window, AnyOrigin[True]],
+    offset_x: c_int,
+    offset_y: c_int,
+    w: c_int,
+    h: c_int,
+    flags: WindowFlags,
+    out ret: Ptr[Window, AnyOrigin[True]],
+) raises:
     """Create a child popup window of the specified parent window.
 
     The window size is a request and may be different than expected based on
@@ -1470,12 +1652,25 @@ fn create_popup_window(parent: Ptr[Window, AnyOrigin[True]], offset_x: c_int, of
     Docs: https://wiki.libsdl.org/SDL3/SDL_CreatePopupWindow.
     """
 
-    ret = _get_dylib_function[lib, "SDL_CreatePopupWindow", fn (parent: Ptr[Window, AnyOrigin[True]], offset_x: c_int, offset_y: c_int, w: c_int, h: c_int, flags: WindowFlags) -> Ptr[Window, AnyOrigin[True]]]()(parent, offset_x, offset_y, w, h, flags)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_CreatePopupWindow",
+        fn(
+            parent: Ptr[Window, AnyOrigin[True]],
+            offset_x: c_int,
+            offset_y: c_int,
+            w: c_int,
+            h: c_int,
+            flags: WindowFlags,
+        ) -> Ptr[Window, AnyOrigin[True]],
+    ]()(parent, offset_x, offset_y, w, h, flags)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn create_window_with_properties(props: PropertiesID, out ret: Ptr[Window, AnyOrigin[True]]) raises:
+fn create_window_with_properties(
+    props: PropertiesID, out ret: Ptr[Window, AnyOrigin[True]]
+) raises:
     """Create a window with the specified properties.
 
     The window size is a request and may be different than expected based on
@@ -1602,7 +1797,11 @@ fn create_window_with_properties(props: PropertiesID, out ret: Ptr[Window, AnyOr
     Docs: https://wiki.libsdl.org/SDL3/SDL_CreateWindowWithProperties.
     """
 
-    ret = _get_dylib_function[lib, "SDL_CreateWindowWithProperties", fn (props: PropertiesID) -> Ptr[Window, AnyOrigin[True]]]()(props)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_CreateWindowWithProperties",
+        fn(props: PropertiesID) -> Ptr[Window, AnyOrigin[True]],
+    ]()(props)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -1626,7 +1825,11 @@ fn get_window_id(window: Ptr[Window, AnyOrigin[True]]) raises -> WindowID:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetWindowID.
     """
 
-    return _get_dylib_function[lib, "SDL_GetWindowID", fn (window: Ptr[Window, AnyOrigin[True]]) -> WindowID]()(window)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetWindowID",
+        fn(window: Ptr[Window, AnyOrigin[True]]) -> WindowID,
+    ]()(window)
 
 
 fn get_window_from_id(id: WindowID) raises -> Ptr[Window, AnyOrigin[True]]:
@@ -1648,10 +1851,16 @@ fn get_window_from_id(id: WindowID) raises -> Ptr[Window, AnyOrigin[True]]:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetWindowFromID.
     """
 
-    return _get_dylib_function[lib, "SDL_GetWindowFromID", fn (id: WindowID) -> Ptr[Window, AnyOrigin[True]]]()(id)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetWindowFromID",
+        fn(id: WindowID) -> Ptr[Window, AnyOrigin[True]],
+    ]()(id)
 
 
-fn get_window_parent(window: Ptr[Window, AnyOrigin[True]]) raises -> Ptr[Window, AnyOrigin[True]]:
+fn get_window_parent(
+    window: Ptr[Window, AnyOrigin[True]]
+) raises -> Ptr[Window, AnyOrigin[True]]:
     """Get parent of a window.
 
     Args:
@@ -1667,10 +1876,18 @@ fn get_window_parent(window: Ptr[Window, AnyOrigin[True]]) raises -> Ptr[Window,
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetWindowParent.
     """
 
-    return _get_dylib_function[lib, "SDL_GetWindowParent", fn (window: Ptr[Window, AnyOrigin[True]]) -> Ptr[Window, AnyOrigin[True]]]()(window)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetWindowParent",
+        fn(
+            window: Ptr[Window, AnyOrigin[True]]
+        ) -> Ptr[Window, AnyOrigin[True]],
+    ]()(window)
 
 
-fn get_window_properties(window: Ptr[Window, AnyOrigin[True]]) raises -> PropertiesID:
+fn get_window_properties(
+    window: Ptr[Window, AnyOrigin[True]]
+) raises -> PropertiesID:
     """Get the properties associated with a window.
 
     The following read-only properties are provided by SDL:
@@ -1795,7 +2012,11 @@ fn get_window_properties(window: Ptr[Window, AnyOrigin[True]]) raises -> Propert
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetWindowProperties.
     """
 
-    return _get_dylib_function[lib, "SDL_GetWindowProperties", fn (window: Ptr[Window, AnyOrigin[True]]) -> PropertiesID]()(window)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetWindowProperties",
+        fn(window: Ptr[Window, AnyOrigin[True]]) -> PropertiesID,
+    ]()(window)
 
 
 fn get_window_flags(window: Ptr[Window, AnyOrigin[True]]) raises -> WindowFlags:
@@ -1813,10 +2034,16 @@ fn get_window_flags(window: Ptr[Window, AnyOrigin[True]]) raises -> WindowFlags:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetWindowFlags.
     """
 
-    return _get_dylib_function[lib, "SDL_GetWindowFlags", fn (window: Ptr[Window, AnyOrigin[True]]) -> WindowFlags]()(window)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetWindowFlags",
+        fn(window: Ptr[Window, AnyOrigin[True]]) -> WindowFlags,
+    ]()(window)
 
 
-fn set_window_title(window: Ptr[Window, AnyOrigin[True]], var title: String) raises:
+fn set_window_title(
+    window: Ptr[Window, AnyOrigin[True]], var title: String
+) raises:
     """Set the title of a window.
 
     This string is expected to be in UTF-8 encoding.
@@ -1835,12 +2062,21 @@ fn set_window_title(window: Ptr[Window, AnyOrigin[True]], var title: String) rai
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowTitle.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SetWindowTitle", fn (window: Ptr[Window, AnyOrigin[True]], title: Ptr[c_char, AnyOrigin[False]]) -> Bool]()(window, title.as_c_string_slice().unsafe_ptr())
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SetWindowTitle",
+        fn(
+            window: Ptr[Window, AnyOrigin[True]],
+            title: Ptr[c_char, AnyOrigin[False]],
+        ) -> Bool,
+    ]()(window, title.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_window_title(window: Ptr[Window, AnyOrigin[True]]) raises -> Ptr[c_char, AnyOrigin[False]]:
+fn get_window_title(
+    window: Ptr[Window, AnyOrigin[True]]
+) raises -> Ptr[c_char, AnyOrigin[False]]:
     """Get the title of a window.
 
     Args:
@@ -1856,10 +2092,18 @@ fn get_window_title(window: Ptr[Window, AnyOrigin[True]]) raises -> Ptr[c_char, 
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetWindowTitle.
     """
 
-    return _get_dylib_function[lib, "SDL_GetWindowTitle", fn (window: Ptr[Window, AnyOrigin[True]]) -> Ptr[c_char, AnyOrigin[False]]]()(window)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetWindowTitle",
+        fn(
+            window: Ptr[Window, AnyOrigin[True]]
+        ) -> Ptr[c_char, AnyOrigin[False]],
+    ]()(window)
 
 
-fn set_window_icon(window: Ptr[Window, AnyOrigin[True]], icon: Ptr[Surface, AnyOrigin[True]]) raises:
+fn set_window_icon(
+    window: Ptr[Window, AnyOrigin[True]], icon: Ptr[Surface, AnyOrigin[True]]
+) raises:
     """Set the icon for a window.
 
     If this function is passed a surface with alternate representations, the
@@ -1886,12 +2130,21 @@ fn set_window_icon(window: Ptr[Window, AnyOrigin[True]], icon: Ptr[Surface, AnyO
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowIcon.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SetWindowIcon", fn (window: Ptr[Window, AnyOrigin[True]], icon: Ptr[Surface, AnyOrigin[True]]) -> Bool]()(window, icon)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SetWindowIcon",
+        fn(
+            window: Ptr[Window, AnyOrigin[True]],
+            icon: Ptr[Surface, AnyOrigin[True]],
+        ) -> Bool,
+    ]()(window, icon)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_window_position(window: Ptr[Window, AnyOrigin[True]], x: c_int, y: c_int) raises:
+fn set_window_position(
+    window: Ptr[Window, AnyOrigin[True]], x: c_int, y: c_int
+) raises:
     """Request that the window's position be set.
 
     If the window is in an exclusive fullscreen or maximized state, this
@@ -1932,12 +2185,20 @@ fn set_window_position(window: Ptr[Window, AnyOrigin[True]], x: c_int, y: c_int)
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowPosition.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SetWindowPosition", fn (window: Ptr[Window, AnyOrigin[True]], x: c_int, y: c_int) -> Bool]()(window, x, y)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SetWindowPosition",
+        fn(window: Ptr[Window, AnyOrigin[True]], x: c_int, y: c_int) -> Bool,
+    ]()(window, x, y)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_window_position(window: Ptr[Window, AnyOrigin[True]], x: Ptr[c_int, AnyOrigin[True]], y: Ptr[c_int, AnyOrigin[True]]) raises:
+fn get_window_position(
+    window: Ptr[Window, AnyOrigin[True]],
+    x: Ptr[c_int, AnyOrigin[True]],
+    y: Ptr[c_int, AnyOrigin[True]],
+) raises:
     """Get the position of a window.
 
     This is the current position of the window as last reported by the
@@ -1963,12 +2224,22 @@ fn get_window_position(window: Ptr[Window, AnyOrigin[True]], x: Ptr[c_int, AnyOr
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetWindowPosition.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GetWindowPosition", fn (window: Ptr[Window, AnyOrigin[True]], x: Ptr[c_int, AnyOrigin[True]], y: Ptr[c_int, AnyOrigin[True]]) -> Bool]()(window, x, y)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_GetWindowPosition",
+        fn(
+            window: Ptr[Window, AnyOrigin[True]],
+            x: Ptr[c_int, AnyOrigin[True]],
+            y: Ptr[c_int, AnyOrigin[True]],
+        ) -> Bool,
+    ]()(window, x, y)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_window_size(window: Ptr[Window, AnyOrigin[True]], w: c_int, h: c_int) raises:
+fn set_window_size(
+    window: Ptr[Window, AnyOrigin[True]], w: c_int, h: c_int
+) raises:
     """Request that the size of a window's client area be set.
 
     If the window is in a fullscreen or maximized state, this request has no
@@ -2004,12 +2275,20 @@ fn set_window_size(window: Ptr[Window, AnyOrigin[True]], w: c_int, h: c_int) rai
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowSize.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SetWindowSize", fn (window: Ptr[Window, AnyOrigin[True]], w: c_int, h: c_int) -> Bool]()(window, w, h)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SetWindowSize",
+        fn(window: Ptr[Window, AnyOrigin[True]], w: c_int, h: c_int) -> Bool,
+    ]()(window, w, h)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_window_size(window: Ptr[Window, AnyOrigin[True]], w: Ptr[c_int, AnyOrigin[True]], h: Ptr[c_int, AnyOrigin[True]]) raises:
+fn get_window_size(
+    window: Ptr[Window, AnyOrigin[True]],
+    w: Ptr[c_int, AnyOrigin[True]],
+    h: Ptr[c_int, AnyOrigin[True]],
+) raises:
     """Get the size of a window's client area.
 
     The window pixel size may differ from its window coordinate size if the
@@ -2031,12 +2310,22 @@ fn get_window_size(window: Ptr[Window, AnyOrigin[True]], w: Ptr[c_int, AnyOrigin
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetWindowSize.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GetWindowSize", fn (window: Ptr[Window, AnyOrigin[True]], w: Ptr[c_int, AnyOrigin[True]], h: Ptr[c_int, AnyOrigin[True]]) -> Bool]()(window, w, h)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_GetWindowSize",
+        fn(
+            window: Ptr[Window, AnyOrigin[True]],
+            w: Ptr[c_int, AnyOrigin[True]],
+            h: Ptr[c_int, AnyOrigin[True]],
+        ) -> Bool,
+    ]()(window, w, h)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_window_safe_area(window: Ptr[Window, AnyOrigin[True]], rect: Ptr[Rect, AnyOrigin[True]]) raises:
+fn get_window_safe_area(
+    window: Ptr[Window, AnyOrigin[True]], rect: Ptr[Rect, AnyOrigin[True]]
+) raises:
     """Get the safe area for this window.
 
     Some devices have portions of the screen which are partially obscured or
@@ -2061,12 +2350,23 @@ fn get_window_safe_area(window: Ptr[Window, AnyOrigin[True]], rect: Ptr[Rect, An
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetWindowSafeArea.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GetWindowSafeArea", fn (window: Ptr[Window, AnyOrigin[True]], rect: Ptr[Rect, AnyOrigin[True]]) -> Bool]()(window, rect)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_GetWindowSafeArea",
+        fn(
+            window: Ptr[Window, AnyOrigin[True]],
+            rect: Ptr[Rect, AnyOrigin[True]],
+        ) -> Bool,
+    ]()(window, rect)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_window_aspect_ratio(window: Ptr[Window, AnyOrigin[True]], min_aspect: c_float, max_aspect: c_float) raises:
+fn set_window_aspect_ratio(
+    window: Ptr[Window, AnyOrigin[True]],
+    min_aspect: c_float,
+    max_aspect: c_float,
+) raises:
     """Request that the aspect ratio of a window's client area be set.
 
     The aspect ratio is the ratio of width divided by height, e.g. 2560x1600
@@ -2107,12 +2407,24 @@ fn set_window_aspect_ratio(window: Ptr[Window, AnyOrigin[True]], min_aspect: c_f
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowAspectRatio.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SetWindowAspectRatio", fn (window: Ptr[Window, AnyOrigin[True]], min_aspect: c_float, max_aspect: c_float) -> Bool]()(window, min_aspect, max_aspect)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SetWindowAspectRatio",
+        fn(
+            window: Ptr[Window, AnyOrigin[True]],
+            min_aspect: c_float,
+            max_aspect: c_float,
+        ) -> Bool,
+    ]()(window, min_aspect, max_aspect)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_window_aspect_ratio(window: Ptr[Window, AnyOrigin[True]], min_aspect: Ptr[c_float, AnyOrigin[True]], max_aspect: Ptr[c_float, AnyOrigin[True]]) raises:
+fn get_window_aspect_ratio(
+    window: Ptr[Window, AnyOrigin[True]],
+    min_aspect: Ptr[c_float, AnyOrigin[True]],
+    max_aspect: Ptr[c_float, AnyOrigin[True]],
+) raises:
     """Get the size of a window's client area.
 
     Args:
@@ -2132,12 +2444,26 @@ fn get_window_aspect_ratio(window: Ptr[Window, AnyOrigin[True]], min_aspect: Ptr
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetWindowAspectRatio.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GetWindowAspectRatio", fn (window: Ptr[Window, AnyOrigin[True]], min_aspect: Ptr[c_float, AnyOrigin[True]], max_aspect: Ptr[c_float, AnyOrigin[True]]) -> Bool]()(window, min_aspect, max_aspect)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_GetWindowAspectRatio",
+        fn(
+            window: Ptr[Window, AnyOrigin[True]],
+            min_aspect: Ptr[c_float, AnyOrigin[True]],
+            max_aspect: Ptr[c_float, AnyOrigin[True]],
+        ) -> Bool,
+    ]()(window, min_aspect, max_aspect)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_window_borders_size(window: Ptr[Window, AnyOrigin[True]], top: Ptr[c_int, AnyOrigin[True]], left: Ptr[c_int, AnyOrigin[True]], bottom: Ptr[c_int, AnyOrigin[True]], right: Ptr[c_int, AnyOrigin[True]]) raises:
+fn get_window_borders_size(
+    window: Ptr[Window, AnyOrigin[True]],
+    top: Ptr[c_int, AnyOrigin[True]],
+    left: Ptr[c_int, AnyOrigin[True]],
+    bottom: Ptr[c_int, AnyOrigin[True]],
+    right: Ptr[c_int, AnyOrigin[True]],
+) raises:
     """Get the size of a window's borders (decorations) around the client area.
 
     Note: If this function fails (returns false), the size values will be
@@ -2175,12 +2501,26 @@ fn get_window_borders_size(window: Ptr[Window, AnyOrigin[True]], top: Ptr[c_int,
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetWindowBordersSize.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GetWindowBordersSize", fn (window: Ptr[Window, AnyOrigin[True]], top: Ptr[c_int, AnyOrigin[True]], left: Ptr[c_int, AnyOrigin[True]], bottom: Ptr[c_int, AnyOrigin[True]], right: Ptr[c_int, AnyOrigin[True]]) -> Bool]()(window, top, left, bottom, right)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_GetWindowBordersSize",
+        fn(
+            window: Ptr[Window, AnyOrigin[True]],
+            top: Ptr[c_int, AnyOrigin[True]],
+            left: Ptr[c_int, AnyOrigin[True]],
+            bottom: Ptr[c_int, AnyOrigin[True]],
+            right: Ptr[c_int, AnyOrigin[True]],
+        ) -> Bool,
+    ]()(window, top, left, bottom, right)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_window_size_in_pixels(window: Ptr[Window, AnyOrigin[True]], w: Ptr[c_int, AnyOrigin[True]], h: Ptr[c_int, AnyOrigin[True]]) raises:
+fn get_window_size_in_pixels(
+    window: Ptr[Window, AnyOrigin[True]],
+    w: Ptr[c_int, AnyOrigin[True]],
+    h: Ptr[c_int, AnyOrigin[True]],
+) raises:
     """Get the size of a window's client area, in pixels.
 
     Args:
@@ -2200,12 +2540,22 @@ fn get_window_size_in_pixels(window: Ptr[Window, AnyOrigin[True]], w: Ptr[c_int,
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetWindowSizeInPixels.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GetWindowSizeInPixels", fn (window: Ptr[Window, AnyOrigin[True]], w: Ptr[c_int, AnyOrigin[True]], h: Ptr[c_int, AnyOrigin[True]]) -> Bool]()(window, w, h)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_GetWindowSizeInPixels",
+        fn(
+            window: Ptr[Window, AnyOrigin[True]],
+            w: Ptr[c_int, AnyOrigin[True]],
+            h: Ptr[c_int, AnyOrigin[True]],
+        ) -> Bool,
+    ]()(window, w, h)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_window_minimum_size(window: Ptr[Window, AnyOrigin[True]], min_w: c_int, min_h: c_int) raises:
+fn set_window_minimum_size(
+    window: Ptr[Window, AnyOrigin[True]], min_w: c_int, min_h: c_int
+) raises:
     """Set the minimum size of a window's client area.
 
     Args:
@@ -2223,12 +2573,22 @@ fn set_window_minimum_size(window: Ptr[Window, AnyOrigin[True]], min_w: c_int, m
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowMinimumSize.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SetWindowMinimumSize", fn (window: Ptr[Window, AnyOrigin[True]], min_w: c_int, min_h: c_int) -> Bool]()(window, min_w, min_h)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SetWindowMinimumSize",
+        fn(
+            window: Ptr[Window, AnyOrigin[True]], min_w: c_int, min_h: c_int
+        ) -> Bool,
+    ]()(window, min_w, min_h)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_window_minimum_size(window: Ptr[Window, AnyOrigin[True]], w: Ptr[c_int, AnyOrigin[True]], h: Ptr[c_int, AnyOrigin[True]]) raises:
+fn get_window_minimum_size(
+    window: Ptr[Window, AnyOrigin[True]],
+    w: Ptr[c_int, AnyOrigin[True]],
+    h: Ptr[c_int, AnyOrigin[True]],
+) raises:
     """Get the minimum size of a window's client area.
 
     Args:
@@ -2248,12 +2608,22 @@ fn get_window_minimum_size(window: Ptr[Window, AnyOrigin[True]], w: Ptr[c_int, A
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetWindowMinimumSize.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GetWindowMinimumSize", fn (window: Ptr[Window, AnyOrigin[True]], w: Ptr[c_int, AnyOrigin[True]], h: Ptr[c_int, AnyOrigin[True]]) -> Bool]()(window, w, h)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_GetWindowMinimumSize",
+        fn(
+            window: Ptr[Window, AnyOrigin[True]],
+            w: Ptr[c_int, AnyOrigin[True]],
+            h: Ptr[c_int, AnyOrigin[True]],
+        ) -> Bool,
+    ]()(window, w, h)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_window_maximum_size(window: Ptr[Window, AnyOrigin[True]], max_w: c_int, max_h: c_int) raises:
+fn set_window_maximum_size(
+    window: Ptr[Window, AnyOrigin[True]], max_w: c_int, max_h: c_int
+) raises:
     """Set the maximum size of a window's client area.
 
     Args:
@@ -2271,12 +2641,22 @@ fn set_window_maximum_size(window: Ptr[Window, AnyOrigin[True]], max_w: c_int, m
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowMaximumSize.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SetWindowMaximumSize", fn (window: Ptr[Window, AnyOrigin[True]], max_w: c_int, max_h: c_int) -> Bool]()(window, max_w, max_h)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SetWindowMaximumSize",
+        fn(
+            window: Ptr[Window, AnyOrigin[True]], max_w: c_int, max_h: c_int
+        ) -> Bool,
+    ]()(window, max_w, max_h)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_window_maximum_size(window: Ptr[Window, AnyOrigin[True]], w: Ptr[c_int, AnyOrigin[True]], h: Ptr[c_int, AnyOrigin[True]]) raises:
+fn get_window_maximum_size(
+    window: Ptr[Window, AnyOrigin[True]],
+    w: Ptr[c_int, AnyOrigin[True]],
+    h: Ptr[c_int, AnyOrigin[True]],
+) raises:
     """Get the maximum size of a window's client area.
 
     Args:
@@ -2296,12 +2676,22 @@ fn get_window_maximum_size(window: Ptr[Window, AnyOrigin[True]], w: Ptr[c_int, A
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetWindowMaximumSize.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GetWindowMaximumSize", fn (window: Ptr[Window, AnyOrigin[True]], w: Ptr[c_int, AnyOrigin[True]], h: Ptr[c_int, AnyOrigin[True]]) -> Bool]()(window, w, h)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_GetWindowMaximumSize",
+        fn(
+            window: Ptr[Window, AnyOrigin[True]],
+            w: Ptr[c_int, AnyOrigin[True]],
+            h: Ptr[c_int, AnyOrigin[True]],
+        ) -> Bool,
+    ]()(window, w, h)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_window_bordered(window: Ptr[Window, AnyOrigin[True]], bordered: Bool) raises:
+fn set_window_bordered(
+    window: Ptr[Window, AnyOrigin[True]], bordered: Bool
+) raises:
     """Set the border state of a window.
 
     This will add or remove the window's `SDL_WINDOW_BORDERLESS` flag and add
@@ -2324,12 +2714,18 @@ fn set_window_bordered(window: Ptr[Window, AnyOrigin[True]], bordered: Bool) rai
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowBordered.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SetWindowBordered", fn (window: Ptr[Window, AnyOrigin[True]], bordered: Bool) -> Bool]()(window, bordered)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SetWindowBordered",
+        fn(window: Ptr[Window, AnyOrigin[True]], bordered: Bool) -> Bool,
+    ]()(window, bordered)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_window_resizable(window: Ptr[Window, AnyOrigin[True]], resizable: Bool) raises:
+fn set_window_resizable(
+    window: Ptr[Window, AnyOrigin[True]], resizable: Bool
+) raises:
     """Set the user-resizable state of a window.
 
     This will add or remove the window's `SDL_WINDOW_RESIZABLE` flag and
@@ -2352,12 +2748,18 @@ fn set_window_resizable(window: Ptr[Window, AnyOrigin[True]], resizable: Bool) r
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowResizable.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SetWindowResizable", fn (window: Ptr[Window, AnyOrigin[True]], resizable: Bool) -> Bool]()(window, resizable)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SetWindowResizable",
+        fn(window: Ptr[Window, AnyOrigin[True]], resizable: Bool) -> Bool,
+    ]()(window, resizable)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_window_always_on_top(window: Ptr[Window, AnyOrigin[True]], on_top: Bool) raises:
+fn set_window_always_on_top(
+    window: Ptr[Window, AnyOrigin[True]], on_top: Bool
+) raises:
     """Set the window to always be above the others.
 
     This will add or remove the window's `SDL_WINDOW_ALWAYS_ON_TOP` flag. This
@@ -2377,7 +2779,11 @@ fn set_window_always_on_top(window: Ptr[Window, AnyOrigin[True]], on_top: Bool) 
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowAlwaysOnTop.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SetWindowAlwaysOnTop", fn (window: Ptr[Window, AnyOrigin[True]], on_top: Bool) -> Bool]()(window, on_top)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SetWindowAlwaysOnTop",
+        fn(window: Ptr[Window, AnyOrigin[True]], on_top: Bool) -> Bool,
+    ]()(window, on_top)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -2398,7 +2804,9 @@ fn show_window(window: Ptr[Window, AnyOrigin[True]]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_ShowWindow.
     """
 
-    ret = _get_dylib_function[lib, "SDL_ShowWindow", fn (window: Ptr[Window, AnyOrigin[True]]) -> Bool]()(window)
+    ret = _get_dylib_function[
+        lib, "SDL_ShowWindow", fn(window: Ptr[Window, AnyOrigin[True]]) -> Bool
+    ]()(window)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -2419,7 +2827,9 @@ fn hide_window(window: Ptr[Window, AnyOrigin[True]]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_HideWindow.
     """
 
-    ret = _get_dylib_function[lib, "SDL_HideWindow", fn (window: Ptr[Window, AnyOrigin[True]]) -> Bool]()(window)
+    ret = _get_dylib_function[
+        lib, "SDL_HideWindow", fn(window: Ptr[Window, AnyOrigin[True]]) -> Bool
+    ]()(window)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -2447,7 +2857,9 @@ fn raise_window(window: Ptr[Window, AnyOrigin[True]]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_RaiseWindow.
     """
 
-    ret = _get_dylib_function[lib, "SDL_RaiseWindow", fn (window: Ptr[Window, AnyOrigin[True]]) -> Bool]()(window)
+    ret = _get_dylib_function[
+        lib, "SDL_RaiseWindow", fn(window: Ptr[Window, AnyOrigin[True]]) -> Bool
+    ]()(window)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -2485,7 +2897,11 @@ fn maximize_window(window: Ptr[Window, AnyOrigin[True]]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_MaximizeWindow.
     """
 
-    ret = _get_dylib_function[lib, "SDL_MaximizeWindow", fn (window: Ptr[Window, AnyOrigin[True]]) -> Bool]()(window)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_MaximizeWindow",
+        fn(window: Ptr[Window, AnyOrigin[True]]) -> Bool,
+    ]()(window)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -2518,7 +2934,11 @@ fn minimize_window(window: Ptr[Window, AnyOrigin[True]]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_MinimizeWindow.
     """
 
-    ret = _get_dylib_function[lib, "SDL_MinimizeWindow", fn (window: Ptr[Window, AnyOrigin[True]]) -> Bool]()(window)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_MinimizeWindow",
+        fn(window: Ptr[Window, AnyOrigin[True]]) -> Bool,
+    ]()(window)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -2552,12 +2972,18 @@ fn restore_window(window: Ptr[Window, AnyOrigin[True]]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_RestoreWindow.
     """
 
-    ret = _get_dylib_function[lib, "SDL_RestoreWindow", fn (window: Ptr[Window, AnyOrigin[True]]) -> Bool]()(window)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_RestoreWindow",
+        fn(window: Ptr[Window, AnyOrigin[True]]) -> Bool,
+    ]()(window)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_window_fullscreen(window: Ptr[Window, AnyOrigin[True]], fullscreen: Bool) raises:
+fn set_window_fullscreen(
+    window: Ptr[Window, AnyOrigin[True]], fullscreen: Bool
+) raises:
     """Request that the window's fullscreen state be changed.
 
     By default a window in fullscreen state uses borderless fullscreen desktop
@@ -2587,7 +3013,11 @@ fn set_window_fullscreen(window: Ptr[Window, AnyOrigin[True]], fullscreen: Bool)
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowFullscreen.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SetWindowFullscreen", fn (window: Ptr[Window, AnyOrigin[True]], fullscreen: Bool) -> Bool]()(window, fullscreen)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SetWindowFullscreen",
+        fn(window: Ptr[Window, AnyOrigin[True]], fullscreen: Bool) -> Bool,
+    ]()(window, fullscreen)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -2618,7 +3048,9 @@ fn sync_window(window: Ptr[Window, AnyOrigin[True]]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_SyncWindow.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SyncWindow", fn (window: Ptr[Window, AnyOrigin[True]]) -> Bool]()(window)
+    ret = _get_dylib_function[
+        lib, "SDL_SyncWindow", fn(window: Ptr[Window, AnyOrigin[True]]) -> Bool
+    ]()(window)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -2639,10 +3071,16 @@ fn window_has_surface(window: Ptr[Window, AnyOrigin[True]]) raises -> Bool:
     Docs: https://wiki.libsdl.org/SDL3/SDL_WindowHasSurface.
     """
 
-    return _get_dylib_function[lib, "SDL_WindowHasSurface", fn (window: Ptr[Window, AnyOrigin[True]]) -> Bool]()(window)
+    return _get_dylib_function[
+        lib,
+        "SDL_WindowHasSurface",
+        fn(window: Ptr[Window, AnyOrigin[True]]) -> Bool,
+    ]()(window)
 
 
-fn get_window_surface(window: Ptr[Window, AnyOrigin[True]], out ret: Ptr[Surface, AnyOrigin[True]]) raises:
+fn get_window_surface(
+    window: Ptr[Window, AnyOrigin[True]], out ret: Ptr[Surface, AnyOrigin[True]]
+) raises:
     """Get the SDL surface associated with the window.
 
     A new surface will be created with the optimal format for the window, if
@@ -2669,12 +3107,20 @@ fn get_window_surface(window: Ptr[Window, AnyOrigin[True]], out ret: Ptr[Surface
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetWindowSurface.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GetWindowSurface", fn (window: Ptr[Window, AnyOrigin[True]]) -> Ptr[Surface, AnyOrigin[True]]]()(window)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_GetWindowSurface",
+        fn(
+            window: Ptr[Window, AnyOrigin[True]]
+        ) -> Ptr[Surface, AnyOrigin[True]],
+    ]()(window)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_window_surface_vsync(window: Ptr[Window, AnyOrigin[True]], vsync: c_int) raises:
+fn set_window_surface_vsync(
+    window: Ptr[Window, AnyOrigin[True]], vsync: c_int
+) raises:
     """Toggle VSync for the window surface.
 
     When a window surface is created, vsync defaults to
@@ -2701,12 +3147,18 @@ fn set_window_surface_vsync(window: Ptr[Window, AnyOrigin[True]], vsync: c_int) 
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowSurfaceVSync.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SetWindowSurfaceVSync", fn (window: Ptr[Window, AnyOrigin[True]], vsync: c_int) -> Bool]()(window, vsync)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SetWindowSurfaceVSync",
+        fn(window: Ptr[Window, AnyOrigin[True]], vsync: c_int) -> Bool,
+    ]()(window, vsync)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_window_surface_vsync(window: Ptr[Window, AnyOrigin[True]], vsync: Ptr[c_int, AnyOrigin[True]]) raises:
+fn get_window_surface_vsync(
+    window: Ptr[Window, AnyOrigin[True]], vsync: Ptr[c_int, AnyOrigin[True]]
+) raises:
     """Get VSync for the window surface.
 
     Args:
@@ -2724,7 +3176,14 @@ fn get_window_surface_vsync(window: Ptr[Window, AnyOrigin[True]], vsync: Ptr[c_i
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetWindowSurfaceVSync.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GetWindowSurfaceVSync", fn (window: Ptr[Window, AnyOrigin[True]], vsync: Ptr[c_int, AnyOrigin[True]]) -> Bool]()(window, vsync)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_GetWindowSurfaceVSync",
+        fn(
+            window: Ptr[Window, AnyOrigin[True]],
+            vsync: Ptr[c_int, AnyOrigin[True]],
+        ) -> Bool,
+    ]()(window, vsync)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -2750,12 +3209,20 @@ fn update_window_surface(window: Ptr[Window, AnyOrigin[True]]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_UpdateWindowSurface.
     """
 
-    ret = _get_dylib_function[lib, "SDL_UpdateWindowSurface", fn (window: Ptr[Window, AnyOrigin[True]]) -> Bool]()(window)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_UpdateWindowSurface",
+        fn(window: Ptr[Window, AnyOrigin[True]]) -> Bool,
+    ]()(window)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn update_window_surface_rects(window: Ptr[Window, AnyOrigin[True]], rects: Ptr[Rect, AnyOrigin[False]], numrects: c_int) raises:
+fn update_window_surface_rects(
+    window: Ptr[Window, AnyOrigin[True]],
+    rects: Ptr[Rect, AnyOrigin[False]],
+    numrects: c_int,
+) raises:
     """Copy areas of the window surface to the screen.
 
     This is the function you use to reflect changes to portions of the surface
@@ -2784,7 +3251,15 @@ fn update_window_surface_rects(window: Ptr[Window, AnyOrigin[True]], rects: Ptr[
     Docs: https://wiki.libsdl.org/SDL3/SDL_UpdateWindowSurfaceRects.
     """
 
-    ret = _get_dylib_function[lib, "SDL_UpdateWindowSurfaceRects", fn (window: Ptr[Window, AnyOrigin[True]], rects: Ptr[Rect, AnyOrigin[False]], numrects: c_int) -> Bool]()(window, rects, numrects)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_UpdateWindowSurfaceRects",
+        fn(
+            window: Ptr[Window, AnyOrigin[True]],
+            rects: Ptr[Rect, AnyOrigin[False]],
+            numrects: c_int,
+        ) -> Bool,
+    ]()(window, rects, numrects)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -2805,12 +3280,18 @@ fn destroy_window_surface(window: Ptr[Window, AnyOrigin[True]]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_DestroyWindowSurface.
     """
 
-    ret = _get_dylib_function[lib, "SDL_DestroyWindowSurface", fn (window: Ptr[Window, AnyOrigin[True]]) -> Bool]()(window)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_DestroyWindowSurface",
+        fn(window: Ptr[Window, AnyOrigin[True]]) -> Bool,
+    ]()(window)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_window_keyboard_grab(window: Ptr[Window, AnyOrigin[True]], grabbed: Bool) raises:
+fn set_window_keyboard_grab(
+    window: Ptr[Window, AnyOrigin[True]], grabbed: Bool
+) raises:
     """Set a window's keyboard grab mode.
 
     Keyboard grab enables capture of system keyboard shortcuts like Alt+Tab or
@@ -2843,12 +3324,18 @@ fn set_window_keyboard_grab(window: Ptr[Window, AnyOrigin[True]], grabbed: Bool)
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowKeyboardGrab.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SetWindowKeyboardGrab", fn (window: Ptr[Window, AnyOrigin[True]], grabbed: Bool) -> Bool]()(window, grabbed)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SetWindowKeyboardGrab",
+        fn(window: Ptr[Window, AnyOrigin[True]], grabbed: Bool) -> Bool,
+    ]()(window, grabbed)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_window_mouse_grab(window: Ptr[Window, AnyOrigin[True]], grabbed: Bool) raises:
+fn set_window_mouse_grab(
+    window: Ptr[Window, AnyOrigin[True]], grabbed: Bool
+) raises:
     """Set a window's mouse grab mode.
 
     Mouse grab confines the mouse cursor to the window.
@@ -2867,12 +3354,18 @@ fn set_window_mouse_grab(window: Ptr[Window, AnyOrigin[True]], grabbed: Bool) ra
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowMouseGrab.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SetWindowMouseGrab", fn (window: Ptr[Window, AnyOrigin[True]], grabbed: Bool) -> Bool]()(window, grabbed)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SetWindowMouseGrab",
+        fn(window: Ptr[Window, AnyOrigin[True]], grabbed: Bool) -> Bool,
+    ]()(window, grabbed)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_window_keyboard_grab(window: Ptr[Window, AnyOrigin[True]]) raises -> Bool:
+fn get_window_keyboard_grab(
+    window: Ptr[Window, AnyOrigin[True]]
+) raises -> Bool:
     """Get a window's keyboard grab mode.
 
     Args:
@@ -2887,7 +3380,11 @@ fn get_window_keyboard_grab(window: Ptr[Window, AnyOrigin[True]]) raises -> Bool
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetWindowKeyboardGrab.
     """
 
-    return _get_dylib_function[lib, "SDL_GetWindowKeyboardGrab", fn (window: Ptr[Window, AnyOrigin[True]]) -> Bool]()(window)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetWindowKeyboardGrab",
+        fn(window: Ptr[Window, AnyOrigin[True]]) -> Bool,
+    ]()(window)
 
 
 fn get_window_mouse_grab(window: Ptr[Window, AnyOrigin[True]]) raises -> Bool:
@@ -2905,7 +3402,11 @@ fn get_window_mouse_grab(window: Ptr[Window, AnyOrigin[True]]) raises -> Bool:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetWindowMouseGrab.
     """
 
-    return _get_dylib_function[lib, "SDL_GetWindowMouseGrab", fn (window: Ptr[Window, AnyOrigin[True]]) -> Bool]()(window)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetWindowMouseGrab",
+        fn(window: Ptr[Window, AnyOrigin[True]]) -> Bool,
+    ]()(window)
 
 
 fn get_grabbed_window() raises -> Ptr[Window, AnyOrigin[True]]:
@@ -2920,10 +3421,14 @@ fn get_grabbed_window() raises -> Ptr[Window, AnyOrigin[True]]:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGrabbedWindow.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGrabbedWindow", fn () -> Ptr[Window, AnyOrigin[True]]]()()
+    return _get_dylib_function[
+        lib, "SDL_GetGrabbedWindow", fn() -> Ptr[Window, AnyOrigin[True]]
+    ]()()
 
 
-fn set_window_mouse_rect(window: Ptr[Window, AnyOrigin[True]], rect: Ptr[Rect, AnyOrigin[False]]) raises:
+fn set_window_mouse_rect(
+    window: Ptr[Window, AnyOrigin[True]], rect: Ptr[Rect, AnyOrigin[False]]
+) raises:
     """Confines the cursor to the specified area of a window.
 
     Note that this does NOT grab the cursor, it only defines the area a cursor
@@ -2944,12 +3449,21 @@ fn set_window_mouse_rect(window: Ptr[Window, AnyOrigin[True]], rect: Ptr[Rect, A
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowMouseRect.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SetWindowMouseRect", fn (window: Ptr[Window, AnyOrigin[True]], rect: Ptr[Rect, AnyOrigin[False]]) -> Bool]()(window, rect)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SetWindowMouseRect",
+        fn(
+            window: Ptr[Window, AnyOrigin[True]],
+            rect: Ptr[Rect, AnyOrigin[False]],
+        ) -> Bool,
+    ]()(window, rect)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_window_mouse_rect(window: Ptr[Window, AnyOrigin[True]]) raises -> Ptr[Rect, AnyOrigin[False]]:
+fn get_window_mouse_rect(
+    window: Ptr[Window, AnyOrigin[True]]
+) raises -> Ptr[Rect, AnyOrigin[False]]:
     """Get the mouse confinement rectangle of a window.
 
     Args:
@@ -2965,10 +3479,16 @@ fn get_window_mouse_rect(window: Ptr[Window, AnyOrigin[True]]) raises -> Ptr[Rec
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetWindowMouseRect.
     """
 
-    return _get_dylib_function[lib, "SDL_GetWindowMouseRect", fn (window: Ptr[Window, AnyOrigin[True]]) -> Ptr[Rect, AnyOrigin[False]]]()(window)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetWindowMouseRect",
+        fn(window: Ptr[Window, AnyOrigin[True]]) -> Ptr[Rect, AnyOrigin[False]],
+    ]()(window)
 
 
-fn set_window_opacity(window: Ptr[Window, AnyOrigin[True]], opacity: c_float) raises:
+fn set_window_opacity(
+    window: Ptr[Window, AnyOrigin[True]], opacity: c_float
+) raises:
     """Set the opacity for a window.
 
     The parameter `opacity` will be clamped internally between 0.0f
@@ -2990,7 +3510,11 @@ fn set_window_opacity(window: Ptr[Window, AnyOrigin[True]], opacity: c_float) ra
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowOpacity.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SetWindowOpacity", fn (window: Ptr[Window, AnyOrigin[True]], opacity: c_float) -> Bool]()(window, opacity)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SetWindowOpacity",
+        fn(window: Ptr[Window, AnyOrigin[True]], opacity: c_float) -> Bool,
+    ]()(window, opacity)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -3014,10 +3538,16 @@ fn get_window_opacity(window: Ptr[Window, AnyOrigin[True]]) raises -> c_float:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetWindowOpacity.
     """
 
-    return _get_dylib_function[lib, "SDL_GetWindowOpacity", fn (window: Ptr[Window, AnyOrigin[True]]) -> c_float]()(window)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetWindowOpacity",
+        fn(window: Ptr[Window, AnyOrigin[True]]) -> c_float,
+    ]()(window)
 
 
-fn set_window_parent(window: Ptr[Window, AnyOrigin[True]], parent: Ptr[Window, AnyOrigin[True]]) raises:
+fn set_window_parent(
+    window: Ptr[Window, AnyOrigin[True]], parent: Ptr[Window, AnyOrigin[True]]
+) raises:
     """Set the window as a child of a parent window.
 
     If the window is already the child of an existing window, it will be
@@ -3052,7 +3582,14 @@ fn set_window_parent(window: Ptr[Window, AnyOrigin[True]], parent: Ptr[Window, A
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowParent.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SetWindowParent", fn (window: Ptr[Window, AnyOrigin[True]], parent: Ptr[Window, AnyOrigin[True]]) -> Bool]()(window, parent)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SetWindowParent",
+        fn(
+            window: Ptr[Window, AnyOrigin[True]],
+            parent: Ptr[Window, AnyOrigin[True]],
+        ) -> Bool,
+    ]()(window, parent)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -3077,12 +3614,18 @@ fn set_window_modal(window: Ptr[Window, AnyOrigin[True]], modal: Bool) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowModal.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SetWindowModal", fn (window: Ptr[Window, AnyOrigin[True]], modal: Bool) -> Bool]()(window, modal)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SetWindowModal",
+        fn(window: Ptr[Window, AnyOrigin[True]], modal: Bool) -> Bool,
+    ]()(window, modal)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_window_focusable(window: Ptr[Window, AnyOrigin[True]], focusable: Bool) raises:
+fn set_window_focusable(
+    window: Ptr[Window, AnyOrigin[True]], focusable: Bool
+) raises:
     """Set whether the window may have input focus.
 
     Args:
@@ -3099,12 +3642,18 @@ fn set_window_focusable(window: Ptr[Window, AnyOrigin[True]], focusable: Bool) r
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowFocusable.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SetWindowFocusable", fn (window: Ptr[Window, AnyOrigin[True]], focusable: Bool) -> Bool]()(window, focusable)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SetWindowFocusable",
+        fn(window: Ptr[Window, AnyOrigin[True]], focusable: Bool) -> Bool,
+    ]()(window, focusable)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn show_window_system_menu(window: Ptr[Window, AnyOrigin[True]], x: c_int, y: c_int) raises:
+fn show_window_system_menu(
+    window: Ptr[Window, AnyOrigin[True]], x: c_int, y: c_int
+) raises:
     """Display the system-level window menu.
 
     This default window menu is provided by the system and on some platforms
@@ -3132,13 +3681,16 @@ fn show_window_system_menu(window: Ptr[Window, AnyOrigin[True]], x: c_int, y: c_
     Docs: https://wiki.libsdl.org/SDL3/SDL_ShowWindowSystemMenu.
     """
 
-    ret = _get_dylib_function[lib, "SDL_ShowWindowSystemMenu", fn (window: Ptr[Window, AnyOrigin[True]], x: c_int, y: c_int) -> Bool]()(window, x, y)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_ShowWindowSystemMenu",
+        fn(window: Ptr[Window, AnyOrigin[True]], x: c_int, y: c_int) -> Bool,
+    ]()(window, x, y)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-@register_passable("trivial")
-struct HitTestResult(Indexer, Intable):
+struct HitTestResult(Indexer, Intable, TrivialRegisterPassable):
     """Possible return values from the SDL_HitTest callback.
 
     Safety:
@@ -3187,7 +3739,11 @@ struct HitTestResult(Indexer, Intable):
     """Region is the resizable left border."""
 
 
-comptime HitTest = fn (win: Ptr[Window, AnyOrigin[True]], area: Ptr[Point, AnyOrigin[False]], data: Ptr[NoneType, AnyOrigin[True]]) -> HitTestResult
+comptime HitTest = fn(
+    win: Ptr[Window, AnyOrigin[True]],
+    area: Ptr[Point, AnyOrigin[False]],
+    data: Ptr[NoneType, AnyOrigin[True]],
+) -> HitTestResult
 """Callback used for hit-testing.
     
     Args:
@@ -3202,7 +3758,11 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_HitTest.
 """
 
 
-fn set_window_hit_test(window: Ptr[Window, AnyOrigin[True]], callback: HitTest, callback_data: Ptr[NoneType, AnyOrigin[True]]) raises:
+fn set_window_hit_test(
+    window: Ptr[Window, AnyOrigin[True]],
+    callback: HitTest,
+    callback_data: Ptr[NoneType, AnyOrigin[True]],
+) raises:
     """Provide a callback that decides if a window region has special properties.
 
     Normally windows are dragged and resized by decorations provided by the
@@ -3249,12 +3809,22 @@ fn set_window_hit_test(window: Ptr[Window, AnyOrigin[True]], callback: HitTest, 
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowHitTest.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SetWindowHitTest", fn (window: Ptr[Window, AnyOrigin[True]], callback: HitTest, callback_data: Ptr[NoneType, AnyOrigin[True]]) -> Bool]()(window, callback, callback_data)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SetWindowHitTest",
+        fn(
+            window: Ptr[Window, AnyOrigin[True]],
+            callback: HitTest,
+            callback_data: Ptr[NoneType, AnyOrigin[True]],
+        ) -> Bool,
+    ]()(window, callback, callback_data)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_window_shape(window: Ptr[Window, AnyOrigin[True]], shape: Ptr[Surface, AnyOrigin[True]]) raises:
+fn set_window_shape(
+    window: Ptr[Window, AnyOrigin[True]], shape: Ptr[Surface, AnyOrigin[True]]
+) raises:
     """Set the shape of a transparent window.
 
     This sets the alpha channel of a transparent window and any fully
@@ -3285,12 +3855,21 @@ fn set_window_shape(window: Ptr[Window, AnyOrigin[True]], shape: Ptr[Surface, An
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowShape.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SetWindowShape", fn (window: Ptr[Window, AnyOrigin[True]], shape: Ptr[Surface, AnyOrigin[True]]) -> Bool]()(window, shape)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SetWindowShape",
+        fn(
+            window: Ptr[Window, AnyOrigin[True]],
+            shape: Ptr[Surface, AnyOrigin[True]],
+        ) -> Bool,
+    ]()(window, shape)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn flash_window(window: Ptr[Window, AnyOrigin[True]], operation: FlashOperation) raises:
+fn flash_window(
+    window: Ptr[Window, AnyOrigin[True]], operation: FlashOperation
+) raises:
     """Request a window to demand attention from the user.
 
     Args:
@@ -3307,7 +3886,13 @@ fn flash_window(window: Ptr[Window, AnyOrigin[True]], operation: FlashOperation)
     Docs: https://wiki.libsdl.org/SDL3/SDL_FlashWindow.
     """
 
-    ret = _get_dylib_function[lib, "SDL_FlashWindow", fn (window: Ptr[Window, AnyOrigin[True]], operation: FlashOperation) -> Bool]()(window, operation)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_FlashWindow",
+        fn(
+            window: Ptr[Window, AnyOrigin[True]], operation: FlashOperation
+        ) -> Bool,
+    ]()(window, operation)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -3331,7 +3916,11 @@ fn destroy_window(window: Ptr[Window, AnyOrigin[True]]) raises -> None:
     Docs: https://wiki.libsdl.org/SDL3/SDL_DestroyWindow.
     """
 
-    return _get_dylib_function[lib, "SDL_DestroyWindow", fn (window: Ptr[Window, AnyOrigin[True]]) -> None]()(window)
+    return _get_dylib_function[
+        lib,
+        "SDL_DestroyWindow",
+        fn(window: Ptr[Window, AnyOrigin[True]]) -> None,
+    ]()(window)
 
 
 fn screen_saver_enabled() raises -> Bool:
@@ -3350,7 +3939,7 @@ fn screen_saver_enabled() raises -> Bool:
     Docs: https://wiki.libsdl.org/SDL3/SDL_ScreenSaverEnabled.
     """
 
-    return _get_dylib_function[lib, "SDL_ScreenSaverEnabled", fn () -> Bool]()()
+    return _get_dylib_function[lib, "SDL_ScreenSaverEnabled", fn() -> Bool]()()
 
 
 fn enable_screen_saver() raises:
@@ -3366,7 +3955,7 @@ fn enable_screen_saver() raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_EnableScreenSaver.
     """
 
-    ret = _get_dylib_function[lib, "SDL_EnableScreenSaver", fn () -> Bool]()()
+    ret = _get_dylib_function[lib, "SDL_EnableScreenSaver", fn() -> Bool]()()
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -3390,7 +3979,7 @@ fn disable_screen_saver() raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_DisableScreenSaver.
     """
 
-    ret = _get_dylib_function[lib, "SDL_DisableScreenSaver", fn () -> Bool]()()
+    ret = _get_dylib_function[lib, "SDL_DisableScreenSaver", fn() -> Bool]()()
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -3419,12 +4008,16 @@ fn gl_load_library(var path: String) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GL_LoadLibrary.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GL_LoadLibrary", fn (path: Ptr[c_char, AnyOrigin[False]]) -> Bool]()(path.as_c_string_slice().unsafe_ptr())
+    ret = _get_dylib_function[
+        lib,
+        "SDL_GL_LoadLibrary",
+        fn(path: Ptr[c_char, AnyOrigin[False]]) -> Bool,
+    ]()(path.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn gl_get_proc_address(var proc: String) raises -> fn () -> None:
+fn gl_get_proc_address(var proc: String) raises -> fn() -> None:
     """Get an OpenGL function by name.
 
     If the GL library is loaded at runtime with SDL_GL_LoadLibrary(), then all
@@ -3478,10 +4071,14 @@ fn gl_get_proc_address(var proc: String) raises -> fn () -> None:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GL_GetProcAddress.
     """
 
-    return _get_dylib_function[lib, "SDL_GL_GetProcAddress", fn (proc: Ptr[c_char, AnyOrigin[False]]) -> fn () -> None]()(proc.as_c_string_slice().unsafe_ptr())
+    return _get_dylib_function[
+        lib,
+        "SDL_GL_GetProcAddress",
+        fn(proc: Ptr[c_char, AnyOrigin[False]]) -> fn() -> None,
+    ]()(proc.as_c_string_slice().unsafe_ptr())
 
 
-fn egl_get_proc_address(var proc: String) raises -> fn () -> None:
+fn egl_get_proc_address(var proc: String) raises -> fn() -> None:
     """Get an EGL library function by name.
 
     If an EGL library is loaded, this function allows applications to get entry
@@ -3501,7 +4098,11 @@ fn egl_get_proc_address(var proc: String) raises -> fn () -> None:
     Docs: https://wiki.libsdl.org/SDL3/SDL_EGL_GetProcAddress.
     """
 
-    return _get_dylib_function[lib, "SDL_EGL_GetProcAddress", fn (proc: Ptr[c_char, AnyOrigin[False]]) -> fn () -> None]()(proc.as_c_string_slice().unsafe_ptr())
+    return _get_dylib_function[
+        lib,
+        "SDL_EGL_GetProcAddress",
+        fn(proc: Ptr[c_char, AnyOrigin[False]]) -> fn() -> None,
+    ]()(proc.as_c_string_slice().unsafe_ptr())
 
 
 fn gl_unload_library() raises -> None:
@@ -3513,7 +4114,7 @@ fn gl_unload_library() raises -> None:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GL_UnloadLibrary.
     """
 
-    return _get_dylib_function[lib, "SDL_GL_UnloadLibrary", fn () -> None]()()
+    return _get_dylib_function[lib, "SDL_GL_UnloadLibrary", fn() -> None]()()
 
 
 fn gl_extension_supported(var extension: String) raises -> Bool:
@@ -3542,7 +4143,11 @@ fn gl_extension_supported(var extension: String) raises -> Bool:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GL_ExtensionSupported.
     """
 
-    return _get_dylib_function[lib, "SDL_GL_ExtensionSupported", fn (extension: Ptr[c_char, AnyOrigin[False]]) -> Bool]()(extension.as_c_string_slice().unsafe_ptr())
+    return _get_dylib_function[
+        lib,
+        "SDL_GL_ExtensionSupported",
+        fn(extension: Ptr[c_char, AnyOrigin[False]]) -> Bool,
+    ]()(extension.as_c_string_slice().unsafe_ptr())
 
 
 fn gl_reset_attributes() raises -> None:
@@ -3554,7 +4159,7 @@ fn gl_reset_attributes() raises -> None:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GL_ResetAttributes.
     """
 
-    return _get_dylib_function[lib, "SDL_GL_ResetAttributes", fn () -> None]()()
+    return _get_dylib_function[lib, "SDL_GL_ResetAttributes", fn() -> None]()()
 
 
 fn gl_set_attribute(attr: GLAttr, value: c_int) raises:
@@ -3580,7 +4185,9 @@ fn gl_set_attribute(attr: GLAttr, value: c_int) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GL_SetAttribute.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GL_SetAttribute", fn (attr: GLAttr, value: c_int) -> Bool]()(attr, value)
+    ret = _get_dylib_function[
+        lib, "SDL_GL_SetAttribute", fn(attr: GLAttr, value: c_int) -> Bool
+    ]()(attr, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -3603,7 +4210,11 @@ fn gl_get_attribute(attr: GLAttr, value: Ptr[c_int, AnyOrigin[True]]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GL_GetAttribute.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GL_GetAttribute", fn (attr: GLAttr, value: Ptr[c_int, AnyOrigin[True]]) -> Bool]()(attr, value)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_GL_GetAttribute",
+        fn(attr: GLAttr, value: Ptr[c_int, AnyOrigin[True]]) -> Bool,
+    ]()(attr, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -3632,10 +4243,16 @@ fn gl_create_context(window: Ptr[Window, AnyOrigin[True]]) raises -> GLContext:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GL_CreateContext.
     """
 
-    return _get_dylib_function[lib, "SDL_GL_CreateContext", fn (window: Ptr[Window, AnyOrigin[True]]) -> GLContext]()(window)
+    return _get_dylib_function[
+        lib,
+        "SDL_GL_CreateContext",
+        fn(window: Ptr[Window, AnyOrigin[True]]) -> GLContext,
+    ]()(window)
 
 
-fn gl_make_current(window: Ptr[Window, AnyOrigin[True]], context: GLContext) raises:
+fn gl_make_current(
+    window: Ptr[Window, AnyOrigin[True]], context: GLContext
+) raises:
     """Set up an OpenGL context for rendering into an OpenGL window.
 
     The context must have been created with a compatible window.
@@ -3654,7 +4271,11 @@ fn gl_make_current(window: Ptr[Window, AnyOrigin[True]], context: GLContext) rai
     Docs: https://wiki.libsdl.org/SDL3/SDL_GL_MakeCurrent.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GL_MakeCurrent", fn (window: Ptr[Window, AnyOrigin[True]], context: GLContext) -> Bool]()(window, context)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_GL_MakeCurrent",
+        fn(window: Ptr[Window, AnyOrigin[True]], context: GLContext) -> Bool,
+    ]()(window, context)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -3672,7 +4293,9 @@ fn gl_get_current_window(out ret: Ptr[Window, AnyOrigin[True]]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GL_GetCurrentWindow.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GL_GetCurrentWindow", fn () -> Ptr[Window, AnyOrigin[True]]]()()
+    ret = _get_dylib_function[
+        lib, "SDL_GL_GetCurrentWindow", fn() -> Ptr[Window, AnyOrigin[True]]
+    ]()()
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -3690,7 +4313,9 @@ fn gl_get_current_context() raises -> GLContext:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GL_GetCurrentContext.
     """
 
-    return _get_dylib_function[lib, "SDL_GL_GetCurrentContext", fn () -> GLContext]()()
+    return _get_dylib_function[
+        lib, "SDL_GL_GetCurrentContext", fn() -> GLContext
+    ]()()
 
 
 fn egl_get_current_display() raises -> EGLDisplay:
@@ -3706,7 +4331,9 @@ fn egl_get_current_display() raises -> EGLDisplay:
     Docs: https://wiki.libsdl.org/SDL3/SDL_EGL_GetCurrentDisplay.
     """
 
-    return _get_dylib_function[lib, "SDL_EGL_GetCurrentDisplay", fn () -> EGLDisplay]()()
+    return _get_dylib_function[
+        lib, "SDL_EGL_GetCurrentDisplay", fn() -> EGLDisplay
+    ]()()
 
 
 fn egl_get_current_config() raises -> EGLConfig:
@@ -3722,10 +4349,14 @@ fn egl_get_current_config() raises -> EGLConfig:
     Docs: https://wiki.libsdl.org/SDL3/SDL_EGL_GetCurrentConfig.
     """
 
-    return _get_dylib_function[lib, "SDL_EGL_GetCurrentConfig", fn () -> EGLConfig]()()
+    return _get_dylib_function[
+        lib, "SDL_EGL_GetCurrentConfig", fn() -> EGLConfig
+    ]()()
 
 
-fn egl_get_window_surface(window: Ptr[Window, AnyOrigin[True]]) raises -> EGLSurface:
+fn egl_get_window_surface(
+    window: Ptr[Window, AnyOrigin[True]]
+) raises -> EGLSurface:
     """Get the EGL surface associated with the window.
 
     Args:
@@ -3741,10 +4372,19 @@ fn egl_get_window_surface(window: Ptr[Window, AnyOrigin[True]]) raises -> EGLSur
     Docs: https://wiki.libsdl.org/SDL3/SDL_EGL_GetWindowSurface.
     """
 
-    return _get_dylib_function[lib, "SDL_EGL_GetWindowSurface", fn (window: Ptr[Window, AnyOrigin[True]]) -> EGLSurface]()(window)
+    return _get_dylib_function[
+        lib,
+        "SDL_EGL_GetWindowSurface",
+        fn(window: Ptr[Window, AnyOrigin[True]]) -> EGLSurface,
+    ]()(window)
 
 
-fn egl_set_attribute_callbacks(platform_attrib_callback: EGLAttribArrayCallback, surface_attrib_callback: EGLIntArrayCallback, context_attrib_callback: EGLIntArrayCallback, userdata: Ptr[NoneType, AnyOrigin[True]]) raises -> None:
+fn egl_set_attribute_callbacks(
+    platform_attrib_callback: EGLAttribArrayCallback,
+    surface_attrib_callback: EGLIntArrayCallback,
+    context_attrib_callback: EGLIntArrayCallback,
+    userdata: Ptr[NoneType, AnyOrigin[True]],
+) raises -> None:
     """Sets the callbacks for defining custom EGLAttrib arrays for EGL
     initialization.
 
@@ -3767,7 +4407,21 @@ fn egl_set_attribute_callbacks(platform_attrib_callback: EGLAttribArrayCallback,
     Docs: https://wiki.libsdl.org/SDL3/SDL_EGL_SetAttributeCallbacks.
     """
 
-    return _get_dylib_function[lib, "SDL_EGL_SetAttributeCallbacks", fn (platform_attrib_callback: EGLAttribArrayCallback, surface_attrib_callback: EGLIntArrayCallback, context_attrib_callback: EGLIntArrayCallback, userdata: Ptr[NoneType, AnyOrigin[True]]) -> None]()(platform_attrib_callback, surface_attrib_callback, context_attrib_callback, userdata)
+    return _get_dylib_function[
+        lib,
+        "SDL_EGL_SetAttributeCallbacks",
+        fn(
+            platform_attrib_callback: EGLAttribArrayCallback,
+            surface_attrib_callback: EGLIntArrayCallback,
+            context_attrib_callback: EGLIntArrayCallback,
+            userdata: Ptr[NoneType, AnyOrigin[True]],
+        ) -> None,
+    ]()(
+        platform_attrib_callback,
+        surface_attrib_callback,
+        context_attrib_callback,
+        userdata,
+    )
 
 
 fn gl_set_swap_interval(interval: c_int) raises:
@@ -3802,7 +4456,9 @@ fn gl_set_swap_interval(interval: c_int) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GL_SetSwapInterval.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GL_SetSwapInterval", fn (interval: c_int) -> Bool]()(interval)
+    ret = _get_dylib_function[
+        lib, "SDL_GL_SetSwapInterval", fn(interval: c_int) -> Bool
+    ]()(interval)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -3829,7 +4485,11 @@ fn gl_get_swap_interval(interval: Ptr[c_int, AnyOrigin[True]]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GL_GetSwapInterval.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GL_GetSwapInterval", fn (interval: Ptr[c_int, AnyOrigin[True]]) -> Bool]()(interval)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_GL_GetSwapInterval",
+        fn(interval: Ptr[c_int, AnyOrigin[True]]) -> Bool,
+    ]()(interval)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -3857,7 +4517,11 @@ fn gl_swap_window(window: Ptr[Window, AnyOrigin[True]]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GL_SwapWindow.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GL_SwapWindow", fn (window: Ptr[Window, AnyOrigin[True]]) -> Bool]()(window)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_GL_SwapWindow",
+        fn(window: Ptr[Window, AnyOrigin[True]]) -> Bool,
+    ]()(window)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -3878,6 +4542,8 @@ fn gl_destroy_context(context: GLContext) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GL_DestroyContext.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GL_DestroyContext", fn (context: GLContext) -> Bool]()(context)
+    ret = _get_dylib_function[
+        lib, "SDL_GL_DestroyContext", fn(context: GLContext) -> Bool
+    ]()(context)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))

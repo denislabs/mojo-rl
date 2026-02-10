@@ -83,8 +83,7 @@ struct Gamepad(ImplicitlyCopyable, Movable):
     pass
 
 
-@register_passable("trivial")
-struct GamepadType(Indexer, Intable):
+struct GamepadType(Indexer, Intable, TrivialRegisterPassable):
     """Standard gamepad types.
 
     This type does not necessarily map to first-party controllers from
@@ -128,8 +127,7 @@ struct GamepadType(Indexer, Intable):
     comptime GAMEPAD_TYPE_COUNT = Self(11)
 
 
-@register_passable("trivial")
-struct GamepadButton(Indexer, Intable):
+struct GamepadButton(Indexer, Intable, TrivialRegisterPassable):
     """The list of buttons available on a gamepad.
 
     For controllers that use a diamond pattern for the face buttons, the
@@ -216,8 +214,7 @@ struct GamepadButton(Indexer, Intable):
     comptime GAMEPAD_BUTTON_COUNT = Self(26)
 
 
-@register_passable("trivial")
-struct GamepadButtonLabel(Indexer, Intable):
+struct GamepadButtonLabel(Indexer, Intable, TrivialRegisterPassable):
     """The set of gamepad button labels.
 
     This isn't a complete set, just the face buttons to make it easy to show
@@ -258,8 +255,7 @@ struct GamepadButtonLabel(Indexer, Intable):
     comptime GAMEPAD_BUTTON_LABEL_TRIANGLE = Self(8)
 
 
-@register_passable("trivial")
-struct GamepadAxis(Indexer, Intable):
+struct GamepadAxis(Indexer, Intable, TrivialRegisterPassable):
     """The list of axes available on a gamepad.
 
     Thumbstick axis values range from SDL_JOYSTICK_AXIS_MIN to
@@ -302,8 +298,7 @@ struct GamepadAxis(Indexer, Intable):
     comptime GAMEPAD_AXIS_COUNT = Self(6)
 
 
-@register_passable("trivial")
-struct GamepadBindingType(Indexer, Intable):
+struct GamepadBindingType(Indexer, Intable, TrivialRegisterPassable):
     """Types of gamepad control bindings.
 
     A gamepad is a collection of bindings that map arbitrary joystick buttons,
@@ -339,59 +334,71 @@ struct GamepadBindingType(Indexer, Intable):
 
 
 @fieldwise_init
-@register_passable("trivial")
-struct GamepadBindingInputAxis(ImplicitlyCopyable, Movable):
+struct GamepadBindingInputAxis(
+    ImplicitlyCopyable, Movable, TrivialRegisterPassable
+):
     var axis: c_int
     var axis_min: c_int
     var axis_max: c_int
 
 
 @fieldwise_init
-@register_passable("trivial")
-struct GamepadBindingInputHat(ImplicitlyCopyable, Movable):
+struct GamepadBindingInputHat(
+    ImplicitlyCopyable, Movable, TrivialRegisterPassable
+):
     var hat: c_int
     var hat_mask: c_int
 
 
 @fieldwise_init
-@register_passable("trivial")
-struct GamepadBindingInput(ImplicitlyCopyable, Movable):
-    comptime _mlir_type = __mlir_type[`!pop.union<`, GamepadBindingInputAxis, `, `, GamepadBindingInputHat, `>`]
+struct GamepadBindingInput(
+    ImplicitlyCopyable, Movable, TrivialRegisterPassable
+):
+    comptime _mlir_type = __mlir_type[
+        `!pop.union<`,
+        GamepadBindingInputAxis,
+        `, `,
+        GamepadBindingInputHat,
+        `>`,
+    ]
     var _impl: Self._mlir_type
 
     @implicit
     fn __init__[T: AnyType](out self, value: T):
         self._impl = rebind[Self._mlir_type](value)
 
-    fn __getitem__[T: AnyType](ref self) -> ref [self._impl] T:
+    fn __getitem__[T: AnyType](ref self) -> ref[self._impl] T:
         return rebind[Ptr[T, origin_of(self._impl)]](Ptr(to=self._impl))[]
 
 
 @fieldwise_init
-@register_passable("trivial")
-struct GamepadBindingOutputAxis(ImplicitlyCopyable, Movable):
+struct GamepadBindingOutputAxis(
+    ImplicitlyCopyable, Movable, TrivialRegisterPassable
+):
     var axis: GamepadAxis
     var axis_min: c_int
     var axis_max: c_int
 
 
 @fieldwise_init
-@register_passable("trivial")
-struct GamepadBindingOutput(ImplicitlyCopyable, Movable):
-    comptime _mlir_type = __mlir_type[`!pop.union<`, GamepadButton, `, `, GamepadBindingOutputAxis, `>`]
+struct GamepadBindingOutput(
+    ImplicitlyCopyable, Movable, TrivialRegisterPassable
+):
+    comptime _mlir_type = __mlir_type[
+        `!pop.union<`, GamepadButton, `, `, GamepadBindingOutputAxis, `>`
+    ]
     var _impl: Self._mlir_type
 
     @implicit
     fn __init__[T: AnyType](out self, value: T):
         self._impl = rebind[Self._mlir_type](value)
 
-    fn __getitem__[T: AnyType](ref self) -> ref [self._impl] T:
+    fn __getitem__[T: AnyType](ref self) -> ref[self._impl] T:
         return rebind[Ptr[T, origin_of(self._impl)]](Ptr(to=self._impl))[]
 
 
 @fieldwise_init
-@register_passable("trivial")
-struct GamepadBinding(ImplicitlyCopyable, Movable):
+struct GamepadBinding(ImplicitlyCopyable, Movable, TrivialRegisterPassable):
     """A mapping between one joystick input to a gamepad control.
 
     A gamepad has a collection of several bindings, to say, for example, when
@@ -450,10 +457,16 @@ fn add_gamepad_mapping(var mapping: String) raises -> c_int:
     Docs: https://wiki.libsdl.org/SDL3/SDL_AddGamepadMapping.
     """
 
-    return _get_dylib_function[lib, "SDL_AddGamepadMapping", fn (mapping: Ptr[c_char, AnyOrigin[False]]) -> c_int]()(mapping.as_c_string_slice().unsafe_ptr())
+    return _get_dylib_function[
+        lib,
+        "SDL_AddGamepadMapping",
+        fn(mapping: Ptr[c_char, AnyOrigin[False]]) -> c_int,
+    ]()(mapping.as_c_string_slice().unsafe_ptr())
 
 
-fn add_gamepad_mappings_from_io(src: Ptr[IOStream, AnyOrigin[True]], closeio: Bool) raises -> c_int:
+fn add_gamepad_mappings_from_io(
+    src: Ptr[IOStream, AnyOrigin[True]], closeio: Bool
+) raises -> c_int:
     """Load a set of gamepad mappings from an SDL_IOStream.
 
     You can call this function several times, if needed, to load different
@@ -488,7 +501,11 @@ fn add_gamepad_mappings_from_io(src: Ptr[IOStream, AnyOrigin[True]], closeio: Bo
     Docs: https://wiki.libsdl.org/SDL3/SDL_AddGamepadMappingsFromIO.
     """
 
-    return _get_dylib_function[lib, "SDL_AddGamepadMappingsFromIO", fn (src: Ptr[IOStream, AnyOrigin[True]], closeio: Bool) -> c_int]()(src, closeio)
+    return _get_dylib_function[
+        lib,
+        "SDL_AddGamepadMappingsFromIO",
+        fn(src: Ptr[IOStream, AnyOrigin[True]], closeio: Bool) -> c_int,
+    ]()(src, closeio)
 
 
 fn add_gamepad_mappings_from_file(var file: String) raises -> c_int:
@@ -520,7 +537,11 @@ fn add_gamepad_mappings_from_file(var file: String) raises -> c_int:
     Docs: https://wiki.libsdl.org/SDL3/SDL_AddGamepadMappingsFromFile.
     """
 
-    return _get_dylib_function[lib, "SDL_AddGamepadMappingsFromFile", fn (file: Ptr[c_char, AnyOrigin[False]]) -> c_int]()(file.as_c_string_slice().unsafe_ptr())
+    return _get_dylib_function[
+        lib,
+        "SDL_AddGamepadMappingsFromFile",
+        fn(file: Ptr[c_char, AnyOrigin[False]]) -> c_int,
+    ]()(file.as_c_string_slice().unsafe_ptr())
 
 
 fn reload_gamepad_mappings() raises:
@@ -535,12 +556,16 @@ fn reload_gamepad_mappings() raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_ReloadGamepadMappings.
     """
 
-    ret = _get_dylib_function[lib, "SDL_ReloadGamepadMappings", fn () -> Bool]()()
+    ret = _get_dylib_function[
+        lib, "SDL_ReloadGamepadMappings", fn() -> Bool
+    ]()()
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_gamepad_mappings(count: Ptr[c_int, AnyOrigin[True]]) raises -> Ptr[Ptr[c_char, AnyOrigin[True]], AnyOrigin[True]]:
+fn get_gamepad_mappings(
+    count: Ptr[c_int, AnyOrigin[True]]
+) raises -> Ptr[Ptr[c_char, AnyOrigin[True]], AnyOrigin[True]]:
     """Get the current gamepad mappings.
 
     Args:
@@ -556,10 +581,18 @@ fn get_gamepad_mappings(count: Ptr[c_int, AnyOrigin[True]]) raises -> Ptr[Ptr[c_
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadMappings.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadMappings", fn (count: Ptr[c_int, AnyOrigin[True]]) -> Ptr[Ptr[c_char, AnyOrigin[True]], AnyOrigin[True]]]()(count)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetGamepadMappings",
+        fn(
+            count: Ptr[c_int, AnyOrigin[True]]
+        ) -> Ptr[Ptr[c_char, AnyOrigin[True]], AnyOrigin[True]],
+    ]()(count)
 
 
-fn get_gamepad_mapping_for_guid(guid: GUID, out ret: Ptr[c_char, AnyOrigin[True]]) raises:
+fn get_gamepad_mapping_for_guid(
+    guid: GUID, out ret: Ptr[c_char, AnyOrigin[True]]
+) raises:
     """Get the gamepad mapping string for a given GUID.
 
     Args:
@@ -573,12 +606,18 @@ fn get_gamepad_mapping_for_guid(guid: GUID, out ret: Ptr[c_char, AnyOrigin[True]
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadMappingForGUID.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GetGamepadMappingForGUID", fn (guid: GUID) -> Ptr[c_char, AnyOrigin[True]]]()(guid)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_GetGamepadMappingForGUID",
+        fn(guid: GUID) -> Ptr[c_char, AnyOrigin[True]],
+    ]()(guid)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_gamepad_mapping(gamepad: Ptr[Gamepad, AnyOrigin[True]]) raises -> Ptr[c_char, AnyOrigin[True]]:
+fn get_gamepad_mapping(
+    gamepad: Ptr[Gamepad, AnyOrigin[True]]
+) raises -> Ptr[c_char, AnyOrigin[True]]:
     """Get the current mapping of a gamepad.
 
     Details about mappings are discussed with SDL_AddGamepadMapping().
@@ -594,7 +633,13 @@ fn get_gamepad_mapping(gamepad: Ptr[Gamepad, AnyOrigin[True]]) raises -> Ptr[c_c
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadMapping.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadMapping", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]]) -> Ptr[c_char, AnyOrigin[True]]]()(gamepad)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetGamepadMapping",
+        fn(
+            gamepad: Ptr[Gamepad, AnyOrigin[True]]
+        ) -> Ptr[c_char, AnyOrigin[True]],
+    ]()(gamepad)
 
 
 fn set_gamepad_mapping(instance_id: JoystickID, var mapping: String) raises:
@@ -614,7 +659,13 @@ fn set_gamepad_mapping(instance_id: JoystickID, var mapping: String) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetGamepadMapping.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SetGamepadMapping", fn (instance_id: JoystickID, mapping: Ptr[c_char, AnyOrigin[False]]) -> Bool]()(instance_id, mapping.as_c_string_slice().unsafe_ptr())
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SetGamepadMapping",
+        fn(
+            instance_id: JoystickID, mapping: Ptr[c_char, AnyOrigin[False]]
+        ) -> Bool,
+    ]()(instance_id, mapping.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -628,10 +679,13 @@ fn has_gamepad() raises -> Bool:
     Docs: https://wiki.libsdl.org/SDL3/SDL_HasGamepad.
     """
 
-    return _get_dylib_function[lib, "SDL_HasGamepad", fn () -> Bool]()()
+    return _get_dylib_function[lib, "SDL_HasGamepad", fn() -> Bool]()()
 
 
-fn get_gamepads(count: Ptr[c_int, AnyOrigin[True]], out ret: Ptr[JoystickID, AnyOrigin[True]]) raises:
+fn get_gamepads(
+    count: Ptr[c_int, AnyOrigin[True]],
+    out ret: Ptr[JoystickID, AnyOrigin[True]],
+) raises:
     """Get a list of currently connected gamepads.
 
     Args:
@@ -646,7 +700,13 @@ fn get_gamepads(count: Ptr[c_int, AnyOrigin[True]], out ret: Ptr[JoystickID, Any
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepads.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GetGamepads", fn (count: Ptr[c_int, AnyOrigin[True]]) -> Ptr[JoystickID, AnyOrigin[True]]]()(count)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_GetGamepads",
+        fn(
+            count: Ptr[c_int, AnyOrigin[True]]
+        ) -> Ptr[JoystickID, AnyOrigin[True]],
+    ]()(count)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -664,10 +724,14 @@ fn is_gamepad(instance_id: JoystickID) raises -> Bool:
     Docs: https://wiki.libsdl.org/SDL3/SDL_IsGamepad.
     """
 
-    return _get_dylib_function[lib, "SDL_IsGamepad", fn (instance_id: JoystickID) -> Bool]()(instance_id)
+    return _get_dylib_function[
+        lib, "SDL_IsGamepad", fn(instance_id: JoystickID) -> Bool
+    ]()(instance_id)
 
 
-fn get_gamepad_name_for_id(instance_id: JoystickID) raises -> Ptr[c_char, AnyOrigin[False]]:
+fn get_gamepad_name_for_id(
+    instance_id: JoystickID,
+) raises -> Ptr[c_char, AnyOrigin[False]]:
     """Get the implementation dependent name of a gamepad.
 
     This can be called before any gamepads are opened.
@@ -682,10 +746,16 @@ fn get_gamepad_name_for_id(instance_id: JoystickID) raises -> Ptr[c_char, AnyOri
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadNameForID.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadNameForID", fn (instance_id: JoystickID) -> Ptr[c_char, AnyOrigin[False]]]()(instance_id)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetGamepadNameForID",
+        fn(instance_id: JoystickID) -> Ptr[c_char, AnyOrigin[False]],
+    ]()(instance_id)
 
 
-fn get_gamepad_path_for_id(instance_id: JoystickID) raises -> Ptr[c_char, AnyOrigin[False]]:
+fn get_gamepad_path_for_id(
+    instance_id: JoystickID,
+) raises -> Ptr[c_char, AnyOrigin[False]]:
     """Get the implementation dependent path of a gamepad.
 
     This can be called before any gamepads are opened.
@@ -700,7 +770,11 @@ fn get_gamepad_path_for_id(instance_id: JoystickID) raises -> Ptr[c_char, AnyOri
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadPathForID.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadPathForID", fn (instance_id: JoystickID) -> Ptr[c_char, AnyOrigin[False]]]()(instance_id)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetGamepadPathForID",
+        fn(instance_id: JoystickID) -> Ptr[c_char, AnyOrigin[False]],
+    ]()(instance_id)
 
 
 fn get_gamepad_player_index_for_id(instance_id: JoystickID) raises -> c_int:
@@ -717,7 +791,11 @@ fn get_gamepad_player_index_for_id(instance_id: JoystickID) raises -> c_int:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadPlayerIndexForID.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadPlayerIndexForID", fn (instance_id: JoystickID) -> c_int]()(instance_id)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetGamepadPlayerIndexForID",
+        fn(instance_id: JoystickID) -> c_int,
+    ]()(instance_id)
 
 
 fn get_gamepad_guid_for_id(instance_id: JoystickID) raises -> GUID:
@@ -735,7 +813,9 @@ fn get_gamepad_guid_for_id(instance_id: JoystickID) raises -> GUID:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadGUIDForID.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadGUIDForID", fn (instance_id: JoystickID) -> GUID]()(instance_id)
+    return _get_dylib_function[
+        lib, "SDL_GetGamepadGUIDForID", fn(instance_id: JoystickID) -> GUID
+    ]()(instance_id)
 
 
 fn get_gamepad_vendor_for_id(instance_id: JoystickID) raises -> UInt16:
@@ -754,7 +834,9 @@ fn get_gamepad_vendor_for_id(instance_id: JoystickID) raises -> UInt16:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadVendorForID.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadVendorForID", fn (instance_id: JoystickID) -> UInt16]()(instance_id)
+    return _get_dylib_function[
+        lib, "SDL_GetGamepadVendorForID", fn(instance_id: JoystickID) -> UInt16
+    ]()(instance_id)
 
 
 fn get_gamepad_product_for_id(instance_id: JoystickID) raises -> UInt16:
@@ -773,7 +855,9 @@ fn get_gamepad_product_for_id(instance_id: JoystickID) raises -> UInt16:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadProductForID.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadProductForID", fn (instance_id: JoystickID) -> UInt16]()(instance_id)
+    return _get_dylib_function[
+        lib, "SDL_GetGamepadProductForID", fn(instance_id: JoystickID) -> UInt16
+    ]()(instance_id)
 
 
 fn get_gamepad_product_version_for_id(instance_id: JoystickID) raises -> UInt16:
@@ -792,7 +876,11 @@ fn get_gamepad_product_version_for_id(instance_id: JoystickID) raises -> UInt16:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadProductVersionForID.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadProductVersionForID", fn (instance_id: JoystickID) -> UInt16]()(instance_id)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetGamepadProductVersionForID",
+        fn(instance_id: JoystickID) -> UInt16,
+    ]()(instance_id)
 
 
 fn get_gamepad_type_for_id(instance_id: JoystickID) raises -> GamepadType:
@@ -809,7 +897,11 @@ fn get_gamepad_type_for_id(instance_id: JoystickID) raises -> GamepadType:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadTypeForID.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadTypeForID", fn (instance_id: JoystickID) -> GamepadType]()(instance_id)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetGamepadTypeForID",
+        fn(instance_id: JoystickID) -> GamepadType,
+    ]()(instance_id)
 
 
 fn get_real_gamepad_type_for_id(instance_id: JoystickID) raises -> GamepadType:
@@ -826,10 +918,16 @@ fn get_real_gamepad_type_for_id(instance_id: JoystickID) raises -> GamepadType:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetRealGamepadTypeForID.
     """
 
-    return _get_dylib_function[lib, "SDL_GetRealGamepadTypeForID", fn (instance_id: JoystickID) -> GamepadType]()(instance_id)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetRealGamepadTypeForID",
+        fn(instance_id: JoystickID) -> GamepadType,
+    ]()(instance_id)
 
 
-fn get_gamepad_mapping_for_id(instance_id: JoystickID) raises -> Ptr[c_char, AnyOrigin[True]]:
+fn get_gamepad_mapping_for_id(
+    instance_id: JoystickID,
+) raises -> Ptr[c_char, AnyOrigin[True]]:
     """Get the mapping of a gamepad.
 
     This can be called before any gamepads are opened.
@@ -844,10 +942,16 @@ fn get_gamepad_mapping_for_id(instance_id: JoystickID) raises -> Ptr[c_char, Any
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadMappingForID.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadMappingForID", fn (instance_id: JoystickID) -> Ptr[c_char, AnyOrigin[True]]]()(instance_id)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetGamepadMappingForID",
+        fn(instance_id: JoystickID) -> Ptr[c_char, AnyOrigin[True]],
+    ]()(instance_id)
 
 
-fn open_gamepad(instance_id: JoystickID) raises -> Ptr[Gamepad, AnyOrigin[True]]:
+fn open_gamepad(
+    instance_id: JoystickID,
+) raises -> Ptr[Gamepad, AnyOrigin[True]]:
     """Open a gamepad for use.
 
     Args:
@@ -860,10 +964,16 @@ fn open_gamepad(instance_id: JoystickID) raises -> Ptr[Gamepad, AnyOrigin[True]]
     Docs: https://wiki.libsdl.org/SDL3/SDL_OpenGamepad.
     """
 
-    return _get_dylib_function[lib, "SDL_OpenGamepad", fn (instance_id: JoystickID) -> Ptr[Gamepad, AnyOrigin[True]]]()(instance_id)
+    return _get_dylib_function[
+        lib,
+        "SDL_OpenGamepad",
+        fn(instance_id: JoystickID) -> Ptr[Gamepad, AnyOrigin[True]],
+    ]()(instance_id)
 
 
-fn get_gamepad_from_id(instance_id: JoystickID) raises -> Ptr[Gamepad, AnyOrigin[True]]:
+fn get_gamepad_from_id(
+    instance_id: JoystickID,
+) raises -> Ptr[Gamepad, AnyOrigin[True]]:
     """Get the SDL_Gamepad associated with a joystick instance ID, if it has been
     opened.
 
@@ -877,10 +987,16 @@ fn get_gamepad_from_id(instance_id: JoystickID) raises -> Ptr[Gamepad, AnyOrigin
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadFromID.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadFromID", fn (instance_id: JoystickID) -> Ptr[Gamepad, AnyOrigin[True]]]()(instance_id)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetGamepadFromID",
+        fn(instance_id: JoystickID) -> Ptr[Gamepad, AnyOrigin[True]],
+    ]()(instance_id)
 
 
-fn get_gamepad_from_player_index(player_index: c_int) raises -> Ptr[Gamepad, AnyOrigin[True]]:
+fn get_gamepad_from_player_index(
+    player_index: c_int,
+) raises -> Ptr[Gamepad, AnyOrigin[True]]:
     """Get the SDL_Gamepad associated with a player index.
 
     Args:
@@ -892,10 +1008,16 @@ fn get_gamepad_from_player_index(player_index: c_int) raises -> Ptr[Gamepad, Any
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadFromPlayerIndex.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadFromPlayerIndex", fn (player_index: c_int) -> Ptr[Gamepad, AnyOrigin[True]]]()(player_index)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetGamepadFromPlayerIndex",
+        fn(player_index: c_int) -> Ptr[Gamepad, AnyOrigin[True]],
+    ]()(player_index)
 
 
-fn get_gamepad_properties(gamepad: Ptr[Gamepad, AnyOrigin[True]]) raises -> PropertiesID:
+fn get_gamepad_properties(
+    gamepad: Ptr[Gamepad, AnyOrigin[True]]
+) raises -> PropertiesID:
     """Get the properties associated with an opened gamepad.
 
     These properties are shared with the underlying joystick object.
@@ -924,7 +1046,11 @@ fn get_gamepad_properties(gamepad: Ptr[Gamepad, AnyOrigin[True]]) raises -> Prop
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadProperties.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadProperties", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]]) -> PropertiesID]()(gamepad)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetGamepadProperties",
+        fn(gamepad: Ptr[Gamepad, AnyOrigin[True]]) -> PropertiesID,
+    ]()(gamepad)
 
 
 fn get_gamepad_id(gamepad: Ptr[Gamepad, AnyOrigin[True]]) raises -> JoystickID:
@@ -941,10 +1067,16 @@ fn get_gamepad_id(gamepad: Ptr[Gamepad, AnyOrigin[True]]) raises -> JoystickID:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadID.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadID", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]]) -> JoystickID]()(gamepad)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetGamepadID",
+        fn(gamepad: Ptr[Gamepad, AnyOrigin[True]]) -> JoystickID,
+    ]()(gamepad)
 
 
-fn get_gamepad_name(gamepad: Ptr[Gamepad, AnyOrigin[True]]) raises -> Ptr[c_char, AnyOrigin[False]]:
+fn get_gamepad_name(
+    gamepad: Ptr[Gamepad, AnyOrigin[True]]
+) raises -> Ptr[c_char, AnyOrigin[False]]:
     """Get the implementation-dependent name for an opened gamepad.
 
     Args:
@@ -958,10 +1090,18 @@ fn get_gamepad_name(gamepad: Ptr[Gamepad, AnyOrigin[True]]) raises -> Ptr[c_char
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadName.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadName", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]]) -> Ptr[c_char, AnyOrigin[False]]]()(gamepad)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetGamepadName",
+        fn(
+            gamepad: Ptr[Gamepad, AnyOrigin[True]]
+        ) -> Ptr[c_char, AnyOrigin[False]],
+    ]()(gamepad)
 
 
-fn get_gamepad_path(gamepad: Ptr[Gamepad, AnyOrigin[True]]) raises -> Ptr[c_char, AnyOrigin[False]]:
+fn get_gamepad_path(
+    gamepad: Ptr[Gamepad, AnyOrigin[True]]
+) raises -> Ptr[c_char, AnyOrigin[False]]:
     """Get the implementation-dependent path for an opened gamepad.
 
     Args:
@@ -975,10 +1115,18 @@ fn get_gamepad_path(gamepad: Ptr[Gamepad, AnyOrigin[True]]) raises -> Ptr[c_char
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadPath.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadPath", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]]) -> Ptr[c_char, AnyOrigin[False]]]()(gamepad)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetGamepadPath",
+        fn(
+            gamepad: Ptr[Gamepad, AnyOrigin[True]]
+        ) -> Ptr[c_char, AnyOrigin[False]],
+    ]()(gamepad)
 
 
-fn get_gamepad_type(gamepad: Ptr[Gamepad, AnyOrigin[True]]) raises -> GamepadType:
+fn get_gamepad_type(
+    gamepad: Ptr[Gamepad, AnyOrigin[True]]
+) raises -> GamepadType:
     """Get the type of an opened gamepad.
 
     Args:
@@ -991,10 +1139,16 @@ fn get_gamepad_type(gamepad: Ptr[Gamepad, AnyOrigin[True]]) raises -> GamepadTyp
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadType.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadType", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]]) -> GamepadType]()(gamepad)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetGamepadType",
+        fn(gamepad: Ptr[Gamepad, AnyOrigin[True]]) -> GamepadType,
+    ]()(gamepad)
 
 
-fn get_real_gamepad_type(gamepad: Ptr[Gamepad, AnyOrigin[True]]) raises -> GamepadType:
+fn get_real_gamepad_type(
+    gamepad: Ptr[Gamepad, AnyOrigin[True]]
+) raises -> GamepadType:
     """Get the type of an opened gamepad, ignoring any mapping override.
 
     Args:
@@ -1007,10 +1161,16 @@ fn get_real_gamepad_type(gamepad: Ptr[Gamepad, AnyOrigin[True]]) raises -> Gamep
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetRealGamepadType.
     """
 
-    return _get_dylib_function[lib, "SDL_GetRealGamepadType", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]]) -> GamepadType]()(gamepad)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetRealGamepadType",
+        fn(gamepad: Ptr[Gamepad, AnyOrigin[True]]) -> GamepadType,
+    ]()(gamepad)
 
 
-fn get_gamepad_player_index(gamepad: Ptr[Gamepad, AnyOrigin[True]]) raises -> c_int:
+fn get_gamepad_player_index(
+    gamepad: Ptr[Gamepad, AnyOrigin[True]]
+) raises -> c_int:
     """Get the player index of an opened gamepad.
 
     For XInput gamepads this returns the XInput user index.
@@ -1024,10 +1184,16 @@ fn get_gamepad_player_index(gamepad: Ptr[Gamepad, AnyOrigin[True]]) raises -> c_
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadPlayerIndex.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadPlayerIndex", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]]) -> c_int]()(gamepad)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetGamepadPlayerIndex",
+        fn(gamepad: Ptr[Gamepad, AnyOrigin[True]]) -> c_int,
+    ]()(gamepad)
 
 
-fn set_gamepad_player_index(gamepad: Ptr[Gamepad, AnyOrigin[True]], player_index: c_int) raises:
+fn set_gamepad_player_index(
+    gamepad: Ptr[Gamepad, AnyOrigin[True]], player_index: c_int
+) raises:
     """Set the player index of an opened gamepad.
 
     Args:
@@ -1042,7 +1208,11 @@ fn set_gamepad_player_index(gamepad: Ptr[Gamepad, AnyOrigin[True]], player_index
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetGamepadPlayerIndex.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SetGamepadPlayerIndex", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]], player_index: c_int) -> Bool]()(gamepad, player_index)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SetGamepadPlayerIndex",
+        fn(gamepad: Ptr[Gamepad, AnyOrigin[True]], player_index: c_int) -> Bool,
+    ]()(gamepad, player_index)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -1061,7 +1231,11 @@ fn get_gamepad_vendor(gamepad: Ptr[Gamepad, AnyOrigin[True]]) raises -> UInt16:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadVendor.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadVendor", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]]) -> UInt16]()(gamepad)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetGamepadVendor",
+        fn(gamepad: Ptr[Gamepad, AnyOrigin[True]]) -> UInt16,
+    ]()(gamepad)
 
 
 fn get_gamepad_product(gamepad: Ptr[Gamepad, AnyOrigin[True]]) raises -> UInt16:
@@ -1078,10 +1252,16 @@ fn get_gamepad_product(gamepad: Ptr[Gamepad, AnyOrigin[True]]) raises -> UInt16:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadProduct.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadProduct", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]]) -> UInt16]()(gamepad)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetGamepadProduct",
+        fn(gamepad: Ptr[Gamepad, AnyOrigin[True]]) -> UInt16,
+    ]()(gamepad)
 
 
-fn get_gamepad_product_version(gamepad: Ptr[Gamepad, AnyOrigin[True]]) raises -> UInt16:
+fn get_gamepad_product_version(
+    gamepad: Ptr[Gamepad, AnyOrigin[True]]
+) raises -> UInt16:
     """Get the product version of an opened gamepad, if available.
 
     If the product version isn't available this function returns 0.
@@ -1095,10 +1275,16 @@ fn get_gamepad_product_version(gamepad: Ptr[Gamepad, AnyOrigin[True]]) raises ->
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadProductVersion.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadProductVersion", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]]) -> UInt16]()(gamepad)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetGamepadProductVersion",
+        fn(gamepad: Ptr[Gamepad, AnyOrigin[True]]) -> UInt16,
+    ]()(gamepad)
 
 
-fn get_gamepad_firmware_version(gamepad: Ptr[Gamepad, AnyOrigin[True]]) raises -> UInt16:
+fn get_gamepad_firmware_version(
+    gamepad: Ptr[Gamepad, AnyOrigin[True]]
+) raises -> UInt16:
     """Get the firmware version of an opened gamepad, if available.
 
     If the firmware version isn't available this function returns 0.
@@ -1112,10 +1298,16 @@ fn get_gamepad_firmware_version(gamepad: Ptr[Gamepad, AnyOrigin[True]]) raises -
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadFirmwareVersion.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadFirmwareVersion", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]]) -> UInt16]()(gamepad)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetGamepadFirmwareVersion",
+        fn(gamepad: Ptr[Gamepad, AnyOrigin[True]]) -> UInt16,
+    ]()(gamepad)
 
 
-fn get_gamepad_serial(gamepad: Ptr[Gamepad, AnyOrigin[True]]) raises -> Ptr[c_char, AnyOrigin[False]]:
+fn get_gamepad_serial(
+    gamepad: Ptr[Gamepad, AnyOrigin[True]]
+) raises -> Ptr[c_char, AnyOrigin[False]]:
     """Get the serial number of an opened gamepad, if available.
 
     Returns the serial number of the gamepad, or NULL if it is not available.
@@ -1129,10 +1321,18 @@ fn get_gamepad_serial(gamepad: Ptr[Gamepad, AnyOrigin[True]]) raises -> Ptr[c_ch
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadSerial.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadSerial", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]]) -> Ptr[c_char, AnyOrigin[False]]]()(gamepad)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetGamepadSerial",
+        fn(
+            gamepad: Ptr[Gamepad, AnyOrigin[True]]
+        ) -> Ptr[c_char, AnyOrigin[False]],
+    ]()(gamepad)
 
 
-fn get_gamepad_steam_handle(gamepad: Ptr[Gamepad, AnyOrigin[True]]) raises -> UInt64:
+fn get_gamepad_steam_handle(
+    gamepad: Ptr[Gamepad, AnyOrigin[True]]
+) raises -> UInt64:
     """Get the Steam Input handle of an opened gamepad, if available.
 
     Returns an InputHandle_t for the gamepad that can be used with Steam Input
@@ -1147,10 +1347,16 @@ fn get_gamepad_steam_handle(gamepad: Ptr[Gamepad, AnyOrigin[True]]) raises -> UI
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadSteamHandle.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadSteamHandle", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]]) -> UInt64]()(gamepad)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetGamepadSteamHandle",
+        fn(gamepad: Ptr[Gamepad, AnyOrigin[True]]) -> UInt64,
+    ]()(gamepad)
 
 
-fn get_gamepad_connection_state(gamepad: Ptr[Gamepad, AnyOrigin[True]]) raises -> JoystickConnectionState:
+fn get_gamepad_connection_state(
+    gamepad: Ptr[Gamepad, AnyOrigin[True]]
+) raises -> JoystickConnectionState:
     """Get the connection state of a gamepad.
 
     Args:
@@ -1164,10 +1370,16 @@ fn get_gamepad_connection_state(gamepad: Ptr[Gamepad, AnyOrigin[True]]) raises -
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadConnectionState.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadConnectionState", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]]) -> JoystickConnectionState]()(gamepad)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetGamepadConnectionState",
+        fn(gamepad: Ptr[Gamepad, AnyOrigin[True]]) -> JoystickConnectionState,
+    ]()(gamepad)
 
 
-fn get_gamepad_power_info(gamepad: Ptr[Gamepad, AnyOrigin[True]], percent: Ptr[c_int, AnyOrigin[True]]) raises -> PowerState:
+fn get_gamepad_power_info(
+    gamepad: Ptr[Gamepad, AnyOrigin[True]], percent: Ptr[c_int, AnyOrigin[True]]
+) raises -> PowerState:
     """Get the battery state of a gamepad.
 
     You should never take a battery status as absolute truth. Batteries
@@ -1189,7 +1401,14 @@ fn get_gamepad_power_info(gamepad: Ptr[Gamepad, AnyOrigin[True]], percent: Ptr[c
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadPowerInfo.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadPowerInfo", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]], percent: Ptr[c_int, AnyOrigin[True]]) -> PowerState]()(gamepad, percent)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetGamepadPowerInfo",
+        fn(
+            gamepad: Ptr[Gamepad, AnyOrigin[True]],
+            percent: Ptr[c_int, AnyOrigin[True]],
+        ) -> PowerState,
+    ]()(gamepad, percent)
 
 
 fn gamepad_connected(gamepad: Ptr[Gamepad, AnyOrigin[True]]) raises -> Bool:
@@ -1206,10 +1425,17 @@ fn gamepad_connected(gamepad: Ptr[Gamepad, AnyOrigin[True]]) raises -> Bool:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GamepadConnected.
     """
 
-    return _get_dylib_function[lib, "SDL_GamepadConnected", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]]) -> Bool]()(gamepad)
+    return _get_dylib_function[
+        lib,
+        "SDL_GamepadConnected",
+        fn(gamepad: Ptr[Gamepad, AnyOrigin[True]]) -> Bool,
+    ]()(gamepad)
 
 
-fn get_gamepad_joystick(gamepad: Ptr[Gamepad, AnyOrigin[True]], out ret: Ptr[Joystick, AnyOrigin[True]]) raises:
+fn get_gamepad_joystick(
+    gamepad: Ptr[Gamepad, AnyOrigin[True]],
+    out ret: Ptr[Joystick, AnyOrigin[True]],
+) raises:
     """Get the underlying joystick from a gamepad.
 
     This function will give you a SDL_Joystick object, which allows you to use
@@ -1231,7 +1457,13 @@ fn get_gamepad_joystick(gamepad: Ptr[Gamepad, AnyOrigin[True]], out ret: Ptr[Joy
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadJoystick.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GetGamepadJoystick", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]]) -> Ptr[Joystick, AnyOrigin[True]]]()(gamepad)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_GetGamepadJoystick",
+        fn(
+            gamepad: Ptr[Gamepad, AnyOrigin[True]]
+        ) -> Ptr[Joystick, AnyOrigin[True]],
+    ]()(gamepad)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -1248,7 +1480,9 @@ fn set_gamepad_events_enabled(enabled: Bool) raises -> None:
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetGamepadEventsEnabled.
     """
 
-    return _get_dylib_function[lib, "SDL_SetGamepadEventsEnabled", fn (enabled: Bool) -> None]()(enabled)
+    return _get_dylib_function[
+        lib, "SDL_SetGamepadEventsEnabled", fn(enabled: Bool) -> None
+    ]()(enabled)
 
 
 fn gamepad_events_enabled() raises -> Bool:
@@ -1263,10 +1497,14 @@ fn gamepad_events_enabled() raises -> Bool:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GamepadEventsEnabled.
     """
 
-    return _get_dylib_function[lib, "SDL_GamepadEventsEnabled", fn () -> Bool]()()
+    return _get_dylib_function[
+        lib, "SDL_GamepadEventsEnabled", fn() -> Bool
+    ]()()
 
 
-fn get_gamepad_bindings(gamepad: Ptr[Gamepad, AnyOrigin[True]], count: Ptr[c_int, AnyOrigin[True]]) raises -> Ptr[Ptr[GamepadBinding, AnyOrigin[True]], AnyOrigin[True]]:
+fn get_gamepad_bindings(
+    gamepad: Ptr[Gamepad, AnyOrigin[True]], count: Ptr[c_int, AnyOrigin[True]]
+) raises -> Ptr[Ptr[GamepadBinding, AnyOrigin[True]], AnyOrigin[True]]:
     """Get the SDL joystick layer bindings for a gamepad.
 
     Args:
@@ -1282,7 +1520,14 @@ fn get_gamepad_bindings(gamepad: Ptr[Gamepad, AnyOrigin[True]], count: Ptr[c_int
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadBindings.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadBindings", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]], count: Ptr[c_int, AnyOrigin[True]]) -> Ptr[Ptr[GamepadBinding, AnyOrigin[True]], AnyOrigin[True]]]()(gamepad, count)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetGamepadBindings",
+        fn(
+            gamepad: Ptr[Gamepad, AnyOrigin[True]],
+            count: Ptr[c_int, AnyOrigin[True]],
+        ) -> Ptr[Ptr[GamepadBinding, AnyOrigin[True]], AnyOrigin[True]],
+    ]()(gamepad, count)
 
 
 fn update_gamepads() raises -> None:
@@ -1295,7 +1540,7 @@ fn update_gamepads() raises -> None:
     Docs: https://wiki.libsdl.org/SDL3/SDL_UpdateGamepads.
     """
 
-    return _get_dylib_function[lib, "SDL_UpdateGamepads", fn () -> None]()()
+    return _get_dylib_function[lib, "SDL_UpdateGamepads", fn() -> None]()()
 
 
 fn get_gamepad_type_from_string(var str: String) raises -> GamepadType:
@@ -1316,10 +1561,16 @@ fn get_gamepad_type_from_string(var str: String) raises -> GamepadType:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadTypeFromString.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadTypeFromString", fn (str: Ptr[c_char, AnyOrigin[False]]) -> GamepadType]()(str.as_c_string_slice().unsafe_ptr())
+    return _get_dylib_function[
+        lib,
+        "SDL_GetGamepadTypeFromString",
+        fn(str: Ptr[c_char, AnyOrigin[False]]) -> GamepadType,
+    ]()(str.as_c_string_slice().unsafe_ptr())
 
 
-fn get_gamepad_string_for_type(type: GamepadType) raises -> Ptr[c_char, AnyOrigin[False]]:
+fn get_gamepad_string_for_type(
+    type: GamepadType,
+) raises -> Ptr[c_char, AnyOrigin[False]]:
     """Convert from an SDL_GamepadType enum to a string.
 
     Args:
@@ -1333,7 +1584,11 @@ fn get_gamepad_string_for_type(type: GamepadType) raises -> Ptr[c_char, AnyOrigi
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadStringForType.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadStringForType", fn (type: GamepadType) -> Ptr[c_char, AnyOrigin[False]]]()(type)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetGamepadStringForType",
+        fn(type: GamepadType) -> Ptr[c_char, AnyOrigin[False]],
+    ]()(type)
 
 
 fn get_gamepad_axis_from_string(var str: String) raises -> GamepadAxis:
@@ -1358,10 +1613,16 @@ fn get_gamepad_axis_from_string(var str: String) raises -> GamepadAxis:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadAxisFromString.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadAxisFromString", fn (str: Ptr[c_char, AnyOrigin[False]]) -> GamepadAxis]()(str.as_c_string_slice().unsafe_ptr())
+    return _get_dylib_function[
+        lib,
+        "SDL_GetGamepadAxisFromString",
+        fn(str: Ptr[c_char, AnyOrigin[False]]) -> GamepadAxis,
+    ]()(str.as_c_string_slice().unsafe_ptr())
 
 
-fn get_gamepad_string_for_axis(axis: GamepadAxis) raises -> Ptr[c_char, AnyOrigin[False]]:
+fn get_gamepad_string_for_axis(
+    axis: GamepadAxis,
+) raises -> Ptr[c_char, AnyOrigin[False]]:
     """Convert from an SDL_GamepadAxis enum to a string.
 
     Args:
@@ -1375,10 +1636,16 @@ fn get_gamepad_string_for_axis(axis: GamepadAxis) raises -> Ptr[c_char, AnyOrigi
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadStringForAxis.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadStringForAxis", fn (axis: GamepadAxis) -> Ptr[c_char, AnyOrigin[False]]]()(axis)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetGamepadStringForAxis",
+        fn(axis: GamepadAxis) -> Ptr[c_char, AnyOrigin[False]],
+    ]()(axis)
 
 
-fn gamepad_has_axis(gamepad: Ptr[Gamepad, AnyOrigin[True]], axis: GamepadAxis) raises -> Bool:
+fn gamepad_has_axis(
+    gamepad: Ptr[Gamepad, AnyOrigin[True]], axis: GamepadAxis
+) raises -> Bool:
     """Query whether a gamepad has a given axis.
 
     This merely reports whether the gamepad's mapping defined this axis, as
@@ -1394,10 +1661,16 @@ fn gamepad_has_axis(gamepad: Ptr[Gamepad, AnyOrigin[True]], axis: GamepadAxis) r
     Docs: https://wiki.libsdl.org/SDL3/SDL_GamepadHasAxis.
     """
 
-    return _get_dylib_function[lib, "SDL_GamepadHasAxis", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]], axis: GamepadAxis) -> Bool]()(gamepad, axis)
+    return _get_dylib_function[
+        lib,
+        "SDL_GamepadHasAxis",
+        fn(gamepad: Ptr[Gamepad, AnyOrigin[True]], axis: GamepadAxis) -> Bool,
+    ]()(gamepad, axis)
 
 
-fn get_gamepad_axis(gamepad: Ptr[Gamepad, AnyOrigin[True]], axis: GamepadAxis) raises -> Int16:
+fn get_gamepad_axis(
+    gamepad: Ptr[Gamepad, AnyOrigin[True]], axis: GamepadAxis
+) raises -> Int16:
     """Get the current state of an axis control on a gamepad.
 
     The axis indices start at index 0.
@@ -1420,7 +1693,11 @@ fn get_gamepad_axis(gamepad: Ptr[Gamepad, AnyOrigin[True]], axis: GamepadAxis) r
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadAxis.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadAxis", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]], axis: GamepadAxis) -> Int16]()(gamepad, axis)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetGamepadAxis",
+        fn(gamepad: Ptr[Gamepad, AnyOrigin[True]], axis: GamepadAxis) -> Int16,
+    ]()(gamepad, axis)
 
 
 fn get_gamepad_button_from_string(var str: String) raises -> GamepadButton:
@@ -1441,10 +1718,16 @@ fn get_gamepad_button_from_string(var str: String) raises -> GamepadButton:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadButtonFromString.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadButtonFromString", fn (str: Ptr[c_char, AnyOrigin[False]]) -> GamepadButton]()(str.as_c_string_slice().unsafe_ptr())
+    return _get_dylib_function[
+        lib,
+        "SDL_GetGamepadButtonFromString",
+        fn(str: Ptr[c_char, AnyOrigin[False]]) -> GamepadButton,
+    ]()(str.as_c_string_slice().unsafe_ptr())
 
 
-fn get_gamepad_string_for_button(button: GamepadButton) raises -> Ptr[c_char, AnyOrigin[False]]:
+fn get_gamepad_string_for_button(
+    button: GamepadButton,
+) raises -> Ptr[c_char, AnyOrigin[False]]:
     """Convert from an SDL_GamepadButton enum to a string.
 
     Args:
@@ -1458,10 +1741,16 @@ fn get_gamepad_string_for_button(button: GamepadButton) raises -> Ptr[c_char, An
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadStringForButton.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadStringForButton", fn (button: GamepadButton) -> Ptr[c_char, AnyOrigin[False]]]()(button)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetGamepadStringForButton",
+        fn(button: GamepadButton) -> Ptr[c_char, AnyOrigin[False]],
+    ]()(button)
 
 
-fn gamepad_has_button(gamepad: Ptr[Gamepad, AnyOrigin[True]], button: GamepadButton) raises -> Bool:
+fn gamepad_has_button(
+    gamepad: Ptr[Gamepad, AnyOrigin[True]], button: GamepadButton
+) raises -> Bool:
     """Query whether a gamepad has a given button.
 
     This merely reports whether the gamepad's mapping defined this button, as
@@ -1477,10 +1766,18 @@ fn gamepad_has_button(gamepad: Ptr[Gamepad, AnyOrigin[True]], button: GamepadBut
     Docs: https://wiki.libsdl.org/SDL3/SDL_GamepadHasButton.
     """
 
-    return _get_dylib_function[lib, "SDL_GamepadHasButton", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]], button: GamepadButton) -> Bool]()(gamepad, button)
+    return _get_dylib_function[
+        lib,
+        "SDL_GamepadHasButton",
+        fn(
+            gamepad: Ptr[Gamepad, AnyOrigin[True]], button: GamepadButton
+        ) -> Bool,
+    ]()(gamepad, button)
 
 
-fn get_gamepad_button(gamepad: Ptr[Gamepad, AnyOrigin[True]], button: GamepadButton) raises -> Bool:
+fn get_gamepad_button(
+    gamepad: Ptr[Gamepad, AnyOrigin[True]], button: GamepadButton
+) raises -> Bool:
     """Get the current state of a button on a gamepad.
 
     Args:
@@ -1493,10 +1790,18 @@ fn get_gamepad_button(gamepad: Ptr[Gamepad, AnyOrigin[True]], button: GamepadBut
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadButton.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadButton", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]], button: GamepadButton) -> Bool]()(gamepad, button)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetGamepadButton",
+        fn(
+            gamepad: Ptr[Gamepad, AnyOrigin[True]], button: GamepadButton
+        ) -> Bool,
+    ]()(gamepad, button)
 
 
-fn get_gamepad_button_label_for_type(type: GamepadType, button: GamepadButton) raises -> GamepadButtonLabel:
+fn get_gamepad_button_label_for_type(
+    type: GamepadType, button: GamepadButton
+) raises -> GamepadButtonLabel:
     """Get the label of a button on a gamepad.
 
     Args:
@@ -1509,10 +1814,16 @@ fn get_gamepad_button_label_for_type(type: GamepadType, button: GamepadButton) r
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadButtonLabelForType.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadButtonLabelForType", fn (type: GamepadType, button: GamepadButton) -> GamepadButtonLabel]()(type, button)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetGamepadButtonLabelForType",
+        fn(type: GamepadType, button: GamepadButton) -> GamepadButtonLabel,
+    ]()(type, button)
 
 
-fn get_gamepad_button_label(gamepad: Ptr[Gamepad, AnyOrigin[True]], button: GamepadButton) raises -> GamepadButtonLabel:
+fn get_gamepad_button_label(
+    gamepad: Ptr[Gamepad, AnyOrigin[True]], button: GamepadButton
+) raises -> GamepadButtonLabel:
     """Get the label of a button on a gamepad.
 
     Args:
@@ -1525,10 +1836,18 @@ fn get_gamepad_button_label(gamepad: Ptr[Gamepad, AnyOrigin[True]], button: Game
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadButtonLabel.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadButtonLabel", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]], button: GamepadButton) -> GamepadButtonLabel]()(gamepad, button)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetGamepadButtonLabel",
+        fn(
+            gamepad: Ptr[Gamepad, AnyOrigin[True]], button: GamepadButton
+        ) -> GamepadButtonLabel,
+    ]()(gamepad, button)
 
 
-fn get_num_gamepad_touchpads(gamepad: Ptr[Gamepad, AnyOrigin[True]]) raises -> c_int:
+fn get_num_gamepad_touchpads(
+    gamepad: Ptr[Gamepad, AnyOrigin[True]]
+) raises -> c_int:
     """Get the number of touchpads on a gamepad.
 
     Args:
@@ -1540,10 +1859,16 @@ fn get_num_gamepad_touchpads(gamepad: Ptr[Gamepad, AnyOrigin[True]]) raises -> c
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetNumGamepadTouchpads.
     """
 
-    return _get_dylib_function[lib, "SDL_GetNumGamepadTouchpads", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]]) -> c_int]()(gamepad)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetNumGamepadTouchpads",
+        fn(gamepad: Ptr[Gamepad, AnyOrigin[True]]) -> c_int,
+    ]()(gamepad)
 
 
-fn get_num_gamepad_touchpad_fingers(gamepad: Ptr[Gamepad, AnyOrigin[True]], touchpad: c_int) raises -> c_int:
+fn get_num_gamepad_touchpad_fingers(
+    gamepad: Ptr[Gamepad, AnyOrigin[True]], touchpad: c_int
+) raises -> c_int:
     """Get the number of supported simultaneous fingers on a touchpad on a game
     gamepad.
 
@@ -1557,10 +1882,22 @@ fn get_num_gamepad_touchpad_fingers(gamepad: Ptr[Gamepad, AnyOrigin[True]], touc
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetNumGamepadTouchpadFingers.
     """
 
-    return _get_dylib_function[lib, "SDL_GetNumGamepadTouchpadFingers", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]], touchpad: c_int) -> c_int]()(gamepad, touchpad)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetNumGamepadTouchpadFingers",
+        fn(gamepad: Ptr[Gamepad, AnyOrigin[True]], touchpad: c_int) -> c_int,
+    ]()(gamepad, touchpad)
 
 
-fn get_gamepad_touchpad_finger(gamepad: Ptr[Gamepad, AnyOrigin[True]], touchpad: c_int, finger: c_int, down: Ptr[Bool, AnyOrigin[True]], x: Ptr[c_float, AnyOrigin[True]], y: Ptr[c_float, AnyOrigin[True]], pressure: Ptr[c_float, AnyOrigin[True]]) raises:
+fn get_gamepad_touchpad_finger(
+    gamepad: Ptr[Gamepad, AnyOrigin[True]],
+    touchpad: c_int,
+    finger: c_int,
+    down: Ptr[Bool, AnyOrigin[True]],
+    x: Ptr[c_float, AnyOrigin[True]],
+    y: Ptr[c_float, AnyOrigin[True]],
+    pressure: Ptr[c_float, AnyOrigin[True]],
+) raises:
     """Get the current state of a finger on a touchpad on a gamepad.
 
     Args:
@@ -1582,12 +1919,26 @@ fn get_gamepad_touchpad_finger(gamepad: Ptr[Gamepad, AnyOrigin[True]], touchpad:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadTouchpadFinger.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GetGamepadTouchpadFinger", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]], touchpad: c_int, finger: c_int, down: Ptr[Bool, AnyOrigin[True]], x: Ptr[c_float, AnyOrigin[True]], y: Ptr[c_float, AnyOrigin[True]], pressure: Ptr[c_float, AnyOrigin[True]]) -> Bool]()(gamepad, touchpad, finger, down, x, y, pressure)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_GetGamepadTouchpadFinger",
+        fn(
+            gamepad: Ptr[Gamepad, AnyOrigin[True]],
+            touchpad: c_int,
+            finger: c_int,
+            down: Ptr[Bool, AnyOrigin[True]],
+            x: Ptr[c_float, AnyOrigin[True]],
+            y: Ptr[c_float, AnyOrigin[True]],
+            pressure: Ptr[c_float, AnyOrigin[True]],
+        ) -> Bool,
+    ]()(gamepad, touchpad, finger, down, x, y, pressure)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn gamepad_has_sensor(gamepad: Ptr[Gamepad, AnyOrigin[True]], type: SensorType) raises -> Bool:
+fn gamepad_has_sensor(
+    gamepad: Ptr[Gamepad, AnyOrigin[True]], type: SensorType
+) raises -> Bool:
     """Return whether a gamepad has a particular sensor.
 
     Args:
@@ -1600,10 +1951,16 @@ fn gamepad_has_sensor(gamepad: Ptr[Gamepad, AnyOrigin[True]], type: SensorType) 
     Docs: https://wiki.libsdl.org/SDL3/SDL_GamepadHasSensor.
     """
 
-    return _get_dylib_function[lib, "SDL_GamepadHasSensor", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]], type: SensorType) -> Bool]()(gamepad, type)
+    return _get_dylib_function[
+        lib,
+        "SDL_GamepadHasSensor",
+        fn(gamepad: Ptr[Gamepad, AnyOrigin[True]], type: SensorType) -> Bool,
+    ]()(gamepad, type)
 
 
-fn set_gamepad_sensor_enabled(gamepad: Ptr[Gamepad, AnyOrigin[True]], type: SensorType, enabled: Bool) raises:
+fn set_gamepad_sensor_enabled(
+    gamepad: Ptr[Gamepad, AnyOrigin[True]], type: SensorType, enabled: Bool
+) raises:
     """Set whether data reporting for a gamepad sensor is enabled.
 
     Args:
@@ -1618,12 +1975,22 @@ fn set_gamepad_sensor_enabled(gamepad: Ptr[Gamepad, AnyOrigin[True]], type: Sens
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetGamepadSensorEnabled.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SetGamepadSensorEnabled", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]], type: SensorType, enabled: Bool) -> Bool]()(gamepad, type, enabled)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SetGamepadSensorEnabled",
+        fn(
+            gamepad: Ptr[Gamepad, AnyOrigin[True]],
+            type: SensorType,
+            enabled: Bool,
+        ) -> Bool,
+    ]()(gamepad, type, enabled)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn gamepad_sensor_enabled(gamepad: Ptr[Gamepad, AnyOrigin[True]], type: SensorType) raises -> Bool:
+fn gamepad_sensor_enabled(
+    gamepad: Ptr[Gamepad, AnyOrigin[True]], type: SensorType
+) raises -> Bool:
     """Query whether sensor data reporting is enabled for a gamepad.
 
     Args:
@@ -1636,10 +2003,16 @@ fn gamepad_sensor_enabled(gamepad: Ptr[Gamepad, AnyOrigin[True]], type: SensorTy
     Docs: https://wiki.libsdl.org/SDL3/SDL_GamepadSensorEnabled.
     """
 
-    return _get_dylib_function[lib, "SDL_GamepadSensorEnabled", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]], type: SensorType) -> Bool]()(gamepad, type)
+    return _get_dylib_function[
+        lib,
+        "SDL_GamepadSensorEnabled",
+        fn(gamepad: Ptr[Gamepad, AnyOrigin[True]], type: SensorType) -> Bool,
+    ]()(gamepad, type)
 
 
-fn get_gamepad_sensor_data_rate(gamepad: Ptr[Gamepad, AnyOrigin[True]], type: SensorType) raises -> c_float:
+fn get_gamepad_sensor_data_rate(
+    gamepad: Ptr[Gamepad, AnyOrigin[True]], type: SensorType
+) raises -> c_float:
     """Get the data rate (number of events per second) of a gamepad sensor.
 
     Args:
@@ -1652,10 +2025,19 @@ fn get_gamepad_sensor_data_rate(gamepad: Ptr[Gamepad, AnyOrigin[True]], type: Se
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadSensorDataRate.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadSensorDataRate", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]], type: SensorType) -> c_float]()(gamepad, type)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetGamepadSensorDataRate",
+        fn(gamepad: Ptr[Gamepad, AnyOrigin[True]], type: SensorType) -> c_float,
+    ]()(gamepad, type)
 
 
-fn get_gamepad_sensor_data(gamepad: Ptr[Gamepad, AnyOrigin[True]], type: SensorType, data: Ptr[c_float, AnyOrigin[True]], num_values: c_int) raises:
+fn get_gamepad_sensor_data(
+    gamepad: Ptr[Gamepad, AnyOrigin[True]],
+    type: SensorType,
+    data: Ptr[c_float, AnyOrigin[True]],
+    num_values: c_int,
+) raises:
     """Get the current state of a gamepad sensor.
 
     The number of values and interpretation of the data is sensor dependent.
@@ -1674,12 +2056,26 @@ fn get_gamepad_sensor_data(gamepad: Ptr[Gamepad, AnyOrigin[True]], type: SensorT
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadSensorData.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GetGamepadSensorData", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]], type: SensorType, data: Ptr[c_float, AnyOrigin[True]], num_values: c_int) -> Bool]()(gamepad, type, data, num_values)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_GetGamepadSensorData",
+        fn(
+            gamepad: Ptr[Gamepad, AnyOrigin[True]],
+            type: SensorType,
+            data: Ptr[c_float, AnyOrigin[True]],
+            num_values: c_int,
+        ) -> Bool,
+    ]()(gamepad, type, data, num_values)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn rumble_gamepad(gamepad: Ptr[Gamepad, AnyOrigin[True]], low_frequency_rumble: UInt16, high_frequency_rumble: UInt16, duration_ms: UInt32) raises:
+fn rumble_gamepad(
+    gamepad: Ptr[Gamepad, AnyOrigin[True]],
+    low_frequency_rumble: UInt16,
+    high_frequency_rumble: UInt16,
+    duration_ms: UInt32,
+) raises:
     """Start a rumble effect on a gamepad.
 
     Each call to this function cancels any previous rumble effect, and calling
@@ -1703,12 +2099,26 @@ fn rumble_gamepad(gamepad: Ptr[Gamepad, AnyOrigin[True]], low_frequency_rumble: 
     Docs: https://wiki.libsdl.org/SDL3/SDL_RumbleGamepad.
     """
 
-    ret = _get_dylib_function[lib, "SDL_RumbleGamepad", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]], low_frequency_rumble: UInt16, high_frequency_rumble: UInt16, duration_ms: UInt32) -> Bool]()(gamepad, low_frequency_rumble, high_frequency_rumble, duration_ms)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_RumbleGamepad",
+        fn(
+            gamepad: Ptr[Gamepad, AnyOrigin[True]],
+            low_frequency_rumble: UInt16,
+            high_frequency_rumble: UInt16,
+            duration_ms: UInt32,
+        ) -> Bool,
+    ]()(gamepad, low_frequency_rumble, high_frequency_rumble, duration_ms)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn rumble_gamepad_triggers(gamepad: Ptr[Gamepad, AnyOrigin[True]], left_rumble: UInt16, right_rumble: UInt16, duration_ms: UInt32) raises:
+fn rumble_gamepad_triggers(
+    gamepad: Ptr[Gamepad, AnyOrigin[True]],
+    left_rumble: UInt16,
+    right_rumble: UInt16,
+    duration_ms: UInt32,
+) raises:
     """Start a rumble effect in the gamepad's triggers.
 
     Each call to this function cancels any previous trigger rumble effect, and
@@ -1736,12 +2146,26 @@ fn rumble_gamepad_triggers(gamepad: Ptr[Gamepad, AnyOrigin[True]], left_rumble: 
     Docs: https://wiki.libsdl.org/SDL3/SDL_RumbleGamepadTriggers.
     """
 
-    ret = _get_dylib_function[lib, "SDL_RumbleGamepadTriggers", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]], left_rumble: UInt16, right_rumble: UInt16, duration_ms: UInt32) -> Bool]()(gamepad, left_rumble, right_rumble, duration_ms)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_RumbleGamepadTriggers",
+        fn(
+            gamepad: Ptr[Gamepad, AnyOrigin[True]],
+            left_rumble: UInt16,
+            right_rumble: UInt16,
+            duration_ms: UInt32,
+        ) -> Bool,
+    ]()(gamepad, left_rumble, right_rumble, duration_ms)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_gamepad_led(gamepad: Ptr[Gamepad, AnyOrigin[True]], red: UInt8, green: UInt8, blue: UInt8) raises:
+fn set_gamepad_led(
+    gamepad: Ptr[Gamepad, AnyOrigin[True]],
+    red: UInt8,
+    green: UInt8,
+    blue: UInt8,
+) raises:
     """Update a gamepad's LED color.
 
     An example of a joystick LED is the light on the back of a PlayStation 4's
@@ -1763,12 +2187,25 @@ fn set_gamepad_led(gamepad: Ptr[Gamepad, AnyOrigin[True]], red: UInt8, green: UI
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetGamepadLED.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SetGamepadLED", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]], red: UInt8, green: UInt8, blue: UInt8) -> Bool]()(gamepad, red, green, blue)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SetGamepadLED",
+        fn(
+            gamepad: Ptr[Gamepad, AnyOrigin[True]],
+            red: UInt8,
+            green: UInt8,
+            blue: UInt8,
+        ) -> Bool,
+    ]()(gamepad, red, green, blue)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn send_gamepad_effect(gamepad: Ptr[Gamepad, AnyOrigin[True]], data: Ptr[NoneType, AnyOrigin[False]], size: c_int) raises:
+fn send_gamepad_effect(
+    gamepad: Ptr[Gamepad, AnyOrigin[True]],
+    data: Ptr[NoneType, AnyOrigin[False]],
+    size: c_int,
+) raises:
     """Send a gamepad specific effect packet.
 
     Args:
@@ -1783,7 +2220,15 @@ fn send_gamepad_effect(gamepad: Ptr[Gamepad, AnyOrigin[True]], data: Ptr[NoneTyp
     Docs: https://wiki.libsdl.org/SDL3/SDL_SendGamepadEffect.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SendGamepadEffect", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]], data: Ptr[NoneType, AnyOrigin[False]], size: c_int) -> Bool]()(gamepad, data, size)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SendGamepadEffect",
+        fn(
+            gamepad: Ptr[Gamepad, AnyOrigin[True]],
+            data: Ptr[NoneType, AnyOrigin[False]],
+            size: c_int,
+        ) -> Bool,
+    ]()(gamepad, data, size)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -1798,10 +2243,16 @@ fn close_gamepad(gamepad: Ptr[Gamepad, AnyOrigin[True]]) raises -> None:
     Docs: https://wiki.libsdl.org/SDL3/SDL_CloseGamepad.
     """
 
-    return _get_dylib_function[lib, "SDL_CloseGamepad", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]]) -> None]()(gamepad)
+    return _get_dylib_function[
+        lib,
+        "SDL_CloseGamepad",
+        fn(gamepad: Ptr[Gamepad, AnyOrigin[True]]) -> None,
+    ]()(gamepad)
 
 
-fn get_gamepad_apple_sf_symbols_name_for_button(gamepad: Ptr[Gamepad, AnyOrigin[True]], button: GamepadButton) raises -> Ptr[c_char, AnyOrigin[False]]:
+fn get_gamepad_apple_sf_symbols_name_for_button(
+    gamepad: Ptr[Gamepad, AnyOrigin[True]], button: GamepadButton
+) raises -> Ptr[c_char, AnyOrigin[False]]:
     """Return the sfSymbolsName for a given button on a gamepad on Apple
     platforms.
 
@@ -1815,10 +2266,18 @@ fn get_gamepad_apple_sf_symbols_name_for_button(gamepad: Ptr[Gamepad, AnyOrigin[
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadAppleSFSymbolsNameForButton.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadAppleSFSymbolsNameForButton", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]], button: GamepadButton) -> Ptr[c_char, AnyOrigin[False]]]()(gamepad, button)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetGamepadAppleSFSymbolsNameForButton",
+        fn(
+            gamepad: Ptr[Gamepad, AnyOrigin[True]], button: GamepadButton
+        ) -> Ptr[c_char, AnyOrigin[False]],
+    ]()(gamepad, button)
 
 
-fn get_gamepad_apple_sf_symbols_name_for_axis(gamepad: Ptr[Gamepad, AnyOrigin[True]], axis: GamepadAxis) raises -> Ptr[c_char, AnyOrigin[False]]:
+fn get_gamepad_apple_sf_symbols_name_for_axis(
+    gamepad: Ptr[Gamepad, AnyOrigin[True]], axis: GamepadAxis
+) raises -> Ptr[c_char, AnyOrigin[False]]:
     """Return the sfSymbolsName for a given axis on a gamepad on Apple platforms.
 
     Args:
@@ -1831,4 +2290,10 @@ fn get_gamepad_apple_sf_symbols_name_for_axis(gamepad: Ptr[Gamepad, AnyOrigin[Tr
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetGamepadAppleSFSymbolsNameForAxis.
     """
 
-    return _get_dylib_function[lib, "SDL_GetGamepadAppleSFSymbolsNameForAxis", fn (gamepad: Ptr[Gamepad, AnyOrigin[True]], axis: GamepadAxis) -> Ptr[c_char, AnyOrigin[False]]]()(gamepad, axis)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetGamepadAppleSFSymbolsNameForAxis",
+        fn(
+            gamepad: Ptr[Gamepad, AnyOrigin[True]], axis: GamepadAxis
+        ) -> Ptr[c_char, AnyOrigin[False]],
+    ]()(gamepad, axis)

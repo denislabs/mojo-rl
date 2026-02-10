@@ -69,8 +69,7 @@ when logging from multiple threads.
 """
 
 
-@register_passable("trivial")
-struct LogCategory(Indexer, Intable):
+struct LogCategory(Indexer, Intable, TrivialRegisterPassable):
     """The predefined log categories.
 
     By default the application and gpu categories are enabled at the INFO
@@ -130,8 +129,7 @@ struct LogCategory(Indexer, Intable):
     comptime LOG_CATEGORY_CUSTOM = Self(19)
 
 
-@register_passable("trivial")
-struct LogPriority(Indexer, Intable):
+struct LogPriority(Indexer, Intable, TrivialRegisterPassable):
     """The predefined log priorities.
 
     Docs: https://wiki.libsdl.org/SDL3/SDL_LogPriority.
@@ -178,7 +176,9 @@ fn set_log_priorities(priority: LogPriority) raises -> None:
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetLogPriorities.
     """
 
-    return _get_dylib_function[lib, "SDL_SetLogPriorities", fn (priority: LogPriority) -> None]()(priority)
+    return _get_dylib_function[
+        lib, "SDL_SetLogPriorities", fn(priority: LogPriority) -> None
+    ]()(priority)
 
 
 fn set_log_priority(category: c_int, priority: LogPriority) raises -> None:
@@ -194,7 +194,11 @@ fn set_log_priority(category: c_int, priority: LogPriority) raises -> None:
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetLogPriority.
     """
 
-    return _get_dylib_function[lib, "SDL_SetLogPriority", fn (category: c_int, priority: LogPriority) -> None]()(category, priority)
+    return _get_dylib_function[
+        lib,
+        "SDL_SetLogPriority",
+        fn(category: c_int, priority: LogPriority) -> None,
+    ]()(category, priority)
 
 
 fn get_log_priority(category: c_int) raises -> LogPriority:
@@ -212,7 +216,9 @@ fn get_log_priority(category: c_int) raises -> LogPriority:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetLogPriority.
     """
 
-    return _get_dylib_function[lib, "SDL_GetLogPriority", fn (category: c_int) -> LogPriority]()(category)
+    return _get_dylib_function[
+        lib, "SDL_GetLogPriority", fn(category: c_int) -> LogPriority
+    ]()(category)
 
 
 fn reset_log_priorities() raises -> None:
@@ -226,7 +232,7 @@ fn reset_log_priorities() raises -> None:
     Docs: https://wiki.libsdl.org/SDL3/SDL_ResetLogPriorities.
     """
 
-    return _get_dylib_function[lib, "SDL_ResetLogPriorities", fn () -> None]()()
+    return _get_dylib_function[lib, "SDL_ResetLogPriorities", fn() -> None]()()
 
 
 fn set_log_priority_prefix(priority: LogPriority, var prefix: String) raises:
@@ -251,12 +257,23 @@ fn set_log_priority_prefix(priority: LogPriority, var prefix: String) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetLogPriorityPrefix.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SetLogPriorityPrefix", fn (priority: LogPriority, prefix: Ptr[c_char, AnyOrigin[False]]) -> Bool]()(priority, prefix.as_c_string_slice().unsafe_ptr())
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SetLogPriorityPrefix",
+        fn(
+            priority: LogPriority, prefix: Ptr[c_char, AnyOrigin[False]]
+        ) -> Bool,
+    ]()(priority, prefix.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-comptime LogOutputFunction = fn (userdata: Ptr[NoneType, AnyOrigin[True]], category: c_int, priority: LogPriority, message: Ptr[c_char, AnyOrigin[False]]) -> None
+comptime LogOutputFunction = fn(
+    userdata: Ptr[NoneType, AnyOrigin[True]],
+    category: c_int,
+    priority: LogPriority,
+    message: Ptr[c_char, AnyOrigin[False]],
+) -> None
 """The prototype for the log output callback function.
     
     This function is called by SDL when there is new text to be logged. A mutex
@@ -286,10 +303,15 @@ fn get_default_log_output_function() raises -> LogOutputFunction:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetDefaultLogOutputFunction.
     """
 
-    return _get_dylib_function[lib, "SDL_GetDefaultLogOutputFunction", fn () -> LogOutputFunction]()()
+    return _get_dylib_function[
+        lib, "SDL_GetDefaultLogOutputFunction", fn() -> LogOutputFunction
+    ]()()
 
 
-fn get_log_output_function(callback: Ptr[LogOutputFunction, AnyOrigin[True]], userdata: Ptr[Ptr[NoneType, AnyOrigin[True]], AnyOrigin[True]]) raises -> None:
+fn get_log_output_function(
+    callback: Ptr[LogOutputFunction, AnyOrigin[True]],
+    userdata: Ptr[Ptr[NoneType, AnyOrigin[True]], AnyOrigin[True]],
+) raises -> None:
     """Get the current log output function.
 
     Args:
@@ -304,10 +326,19 @@ fn get_log_output_function(callback: Ptr[LogOutputFunction, AnyOrigin[True]], us
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetLogOutputFunction.
     """
 
-    return _get_dylib_function[lib, "SDL_GetLogOutputFunction", fn (callback: Ptr[LogOutputFunction, AnyOrigin[True]], userdata: Ptr[Ptr[NoneType, AnyOrigin[True]], AnyOrigin[True]]) -> None]()(callback, userdata)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetLogOutputFunction",
+        fn(
+            callback: Ptr[LogOutputFunction, AnyOrigin[True]],
+            userdata: Ptr[Ptr[NoneType, AnyOrigin[True]], AnyOrigin[True]],
+        ) -> None,
+    ]()(callback, userdata)
 
 
-fn set_log_output_function(callback: LogOutputFunction, userdata: Ptr[NoneType, AnyOrigin[True]]) raises -> None:
+fn set_log_output_function(
+    callback: LogOutputFunction, userdata: Ptr[NoneType, AnyOrigin[True]]
+) raises -> None:
     """Replace the default log output function with one of your own.
 
     Args:
@@ -320,4 +351,11 @@ fn set_log_output_function(callback: LogOutputFunction, userdata: Ptr[NoneType, 
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetLogOutputFunction.
     """
 
-    return _get_dylib_function[lib, "SDL_SetLogOutputFunction", fn (callback: LogOutputFunction, userdata: Ptr[NoneType, AnyOrigin[True]]) -> None]()(callback, userdata)
+    return _get_dylib_function[
+        lib,
+        "SDL_SetLogOutputFunction",
+        fn(
+            callback: LogOutputFunction,
+            userdata: Ptr[NoneType, AnyOrigin[True]],
+        ) -> None,
+    ]()(callback, userdata)

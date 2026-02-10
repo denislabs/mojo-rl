@@ -32,8 +32,7 @@ https://wiki.libsdl.org/SDL3/BestKeyboardPractices
 """
 
 
-@register_passable("trivial")
-struct Keycode(Intable):
+struct Keycode(Intable, TrivialRegisterPassable):
     """The SDL virtual key representation.
 
     Values of this type are used to represent keyboard keys using the current
@@ -586,8 +585,7 @@ struct Keycode(Intable):
     """Extended key Right Hyper."""
 
 
-@register_passable("trivial")
-struct Keymod(Intable):
+struct Keymod(Intable, TrivialRegisterPassable):
     """Valid key modifiers (possibly OR'd together).
 
     Docs: https://wiki.libsdl.org/SDL3/SDL_Keymod.

@@ -1,8 +1,7 @@
 # ===== Particle for engine flames =====
 
 
-@register_passable("trivial")
-struct Particle[dtype: DType]:
+struct Particle[dtype: DType](TrivialRegisterPassable):
     """Simple particle for engine flame effects."""
 
     var x: Scalar[Self.dtype]

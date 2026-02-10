@@ -29,8 +29,7 @@ dictating what sort of math to do on what color components.
 """
 
 
-@register_passable("trivial")
-struct BlendMode(Intable):
+struct BlendMode(Intable, TrivialRegisterPassable):
     """A set of blend modes used in drawing operations.
 
     These predefined blend modes are supported everywhere.
@@ -71,8 +70,7 @@ struct BlendMode(Intable):
     comptime BLENDMODE_INVALID = Self(0x7FFFFFFF)
 
 
-@register_passable("trivial")
-struct BlendOperation(Indexer, Intable):
+struct BlendOperation(Indexer, Intable, TrivialRegisterPassable):
     """The blend operation used when combining source and destination pixel
     components.
 
@@ -109,8 +107,7 @@ struct BlendOperation(Indexer, Intable):
     """Max(dst, src) : supported by D3D, OpenGL, OpenGLES, and Vulkan."""
 
 
-@register_passable("trivial")
-struct BlendFactor(Indexer, Intable):
+struct BlendFactor(Indexer, Intable, TrivialRegisterPassable):
     """The normalized factor used to multiply pixel components.
 
     The blend factors are multiplied with the pixels from a drawing operation
@@ -161,7 +158,14 @@ struct BlendFactor(Indexer, Intable):
     """1-dstA, 1-dstA, 1-dstA, 1-dstA."""
 
 
-fn compose_custom_blend_mode(src_color_factor: BlendFactor, dst_color_factor: BlendFactor, color_operation: BlendOperation, src_alpha_factor: BlendFactor, dst_alpha_factor: BlendFactor, alpha_operation: BlendOperation) raises -> BlendMode:
+fn compose_custom_blend_mode(
+    src_color_factor: BlendFactor,
+    dst_color_factor: BlendFactor,
+    color_operation: BlendOperation,
+    src_alpha_factor: BlendFactor,
+    dst_alpha_factor: BlendFactor,
+    alpha_operation: BlendOperation,
+) raises -> BlendMode:
     """Compose a custom blend mode for renderers.
 
     The functions SDL_SetRenderDrawBlendMode and SDL_SetTextureBlendMode accept
@@ -248,4 +252,22 @@ fn compose_custom_blend_mode(src_color_factor: BlendFactor, dst_color_factor: Bl
     Docs: https://wiki.libsdl.org/SDL3/SDL_ComposeCustomBlendMode.
     """
 
-    return _get_dylib_function[lib, "SDL_ComposeCustomBlendMode", fn (src_color_factor: BlendFactor, dst_color_factor: BlendFactor, color_operation: BlendOperation, src_alpha_factor: BlendFactor, dst_alpha_factor: BlendFactor, alpha_operation: BlendOperation) -> BlendMode]()(src_color_factor, dst_color_factor, color_operation, src_alpha_factor, dst_alpha_factor, alpha_operation)
+    return _get_dylib_function[
+        lib,
+        "SDL_ComposeCustomBlendMode",
+        fn(
+            src_color_factor: BlendFactor,
+            dst_color_factor: BlendFactor,
+            color_operation: BlendOperation,
+            src_alpha_factor: BlendFactor,
+            dst_alpha_factor: BlendFactor,
+            alpha_operation: BlendOperation,
+        ) -> BlendMode,
+    ]()(
+        src_color_factor,
+        dst_color_factor,
+        color_operation,
+        src_alpha_factor,
+        dst_alpha_factor,
+        alpha_operation,
+    )

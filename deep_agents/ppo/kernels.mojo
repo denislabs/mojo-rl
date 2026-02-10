@@ -25,7 +25,7 @@ fn _sample_continuous_actions_kernel[
     log_probs: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     # Random seed
     rng_seed: Scalar[DType.uint32],
-):
+) where dtype.is_floating_point():
     """Sample continuous actions from unbounded Gaussian policy on GPU (CleanRL-style).
 
     Actor output layout: [mean (ACTION_DIM) | log_std (ACTION_DIM)]
@@ -63,7 +63,9 @@ fn _sample_continuous_actions_kernel[
 
         # Sample Gaussian noise using Box-Muller transform with PhiloxRandom
         # Each (i, j) pair gets unique seed and offset for independent random streams
-        var philox = PhiloxRandom(seed=Int(rng_seed) + i * ACTION_DIM + j, offset=0)
+        var philox = PhiloxRandom(
+            seed=Int(rng_seed) + i * ACTION_DIM + j, offset=0
+        )
         var rand_vals = philox.step_uniform()
         var u1 = rand_vals[0]
         var u2 = rand_vals[1]
@@ -90,7 +92,9 @@ fn _sample_continuous_actions_kernel[
 
         var neg_half: Scalar[dtype] = -0.5
         var log_gaussian = neg_half * (
-            LOG_2PI + Scalar[dtype](2.0) * log_std + action_normalized * action_normalized
+            LOG_2PI
+            + Scalar[dtype](2.0) * log_std
+            + action_normalized * action_normalized
         )
 
         total_log_prob = total_log_prob + log_gaussian
@@ -253,7 +257,7 @@ fn ppo_continuous_actor_grad_kernel[
     clip_epsilon: Scalar[dtype],
     entropy_coef: Scalar[dtype],
     batch_size: Int,
-):
+) where dtype.is_floating_point():
     """Compute gradient for PPO actor with unbounded Gaussian policy (CleanRL-style).
 
     For unbounded Gaussian policy (no tanh squashing):
@@ -289,7 +293,9 @@ fn ppo_continuous_actor_grad_kernel[
     var entropy_sum: Scalar[dtype] = 0.0
 
     # Arrays to store intermediate values for gradient computation
-    var action_vals = InlineArray[Scalar[dtype], ACTION_DIM](fill=Scalar[dtype](0.0))
+    var action_vals = InlineArray[Scalar[dtype], ACTION_DIM](
+        fill=Scalar[dtype](0.0)
+    )
     var mean_vals = InlineArray[Scalar[dtype], ACTION_DIM](
         fill=Scalar[dtype](0.0)
     )
@@ -382,7 +388,9 @@ fn ppo_continuous_actor_grad_kernel[
             var d_log_prob_d_mean = action_normalized / (std + eps)
 
             # d_log_prob/d_log_std = (action_normalized^2 - 1)
-            var d_log_prob_d_log_std = action_normalized * action_normalized - one
+            var d_log_prob_d_log_std = (
+                action_normalized * action_normalized - one
+            )
 
             # Entropy gradient: d_entropy/d_log_std = 1
             var d_entropy_d_log_std: Scalar[dtype] = 1.0
@@ -844,9 +852,7 @@ fn clamp_log_std_params_kernel[
     PARAM_SIZE: Int,
     LOG_STD_OFFSET: Int,
     ACTION_DIM: Int,
-](
-    params: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
-):
+](params: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],):
     """Clamp log_std parameters to valid range [-5.0, 2.0].
 
     This kernel should be called after each optimizer step to prevent
@@ -911,7 +917,9 @@ fn add_obs_noise_kernel[
     # Add noise to each observation dimension
     for d in range(OBS_DIM):
         # Create unique seed per (env, dim) for independent random streams
-        var philox = PhiloxRandom(seed=Int(rng_seed) + i * OBS_DIM + d, offset=0)
+        var philox = PhiloxRandom(
+            seed=Int(rng_seed) + i * OBS_DIM + d, offset=0
+        )
         var rand_vals = philox.step_uniform()
         var u1 = rand_vals[0]
         var u2 = rand_vals[1]
@@ -919,7 +927,9 @@ fn add_obs_noise_kernel[
         # Box-Muller transform for standard normal
         var u1_safe = Float32(u1) + Float32(1e-8)
         var mag = sqrt(-2.0 * log(u1_safe))
-        var noise = Scalar[dtype](mag * cos(Float32(u2) * Float32(6.283185307179586)))
+        var noise = Scalar[dtype](
+            mag * cos(Float32(u2) * Float32(6.283185307179586))
+        )
 
         # Add scaled noise to observation
         obs[i, d] = obs[i, d] + noise * noise_std

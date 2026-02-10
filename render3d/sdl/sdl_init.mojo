@@ -48,8 +48,7 @@ SDL_SetAppMetadataProperty().
 """
 
 
-@register_passable("trivial")
-struct InitFlags(Intable):
+struct InitFlags(Intable, TrivialRegisterPassable):
     """Initialization flags for SDL_Init and/or SDL_InitSubSystem.
 
     These are the flags which may be passed to SDL_Init(). You should specify
@@ -88,8 +87,7 @@ struct InitFlags(Intable):
     """`SDL_INIT_CAMERA` implies `SDL_INIT_EVENTS`."""
 
 
-@register_passable("trivial")
-struct AppResult(Indexer, Intable):
+struct AppResult(Indexer, Intable, TrivialRegisterPassable):
     """Return values for optional main callbacks.
 
     Returning SDL_APP_SUCCESS or SDL_APP_FAILURE from SDL_AppInit,
@@ -136,7 +134,11 @@ struct AppResult(Indexer, Intable):
     """Value that requests termination with error from the main callbacks."""
 
 
-comptime AppInit_func = fn (appstate: Ptr[Ptr[NoneType, AnyOrigin[True]], AnyOrigin[True]], argc: c_int, argv: Ptr[c_char, AnyOrigin[True]]) -> AppResult
+comptime AppInit_func = fn(
+    appstate: Ptr[Ptr[NoneType, AnyOrigin[True]], AnyOrigin[True]],
+    argc: c_int,
+    argv: Ptr[c_char, AnyOrigin[True]],
+) -> AppResult
 """Function pointer typedef for SDL_AppInit.
     
     These are used by SDL_EnterAppMainCallbacks. This mechanism operates behind
@@ -158,7 +160,9 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_AppInit_func.
 """
 
 
-comptime AppIterate_func = fn (appstate: Ptr[NoneType, AnyOrigin[True]]) -> AppResult
+comptime AppIterate_func = fn(
+    appstate: Ptr[NoneType, AnyOrigin[True]]
+) -> AppResult
 """Function pointer typedef for SDL_AppIterate.
     
     These are used by SDL_EnterAppMainCallbacks. This mechanism operates behind
@@ -176,7 +180,9 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_AppIterate_func.
 """
 
 
-comptime AppEvent_func = fn (appstate: Ptr[NoneType, AnyOrigin[True]], event: Ptr[Event, AnyOrigin[True]]) -> AppResult
+comptime AppEvent_func = fn(
+    appstate: Ptr[NoneType, AnyOrigin[True]], event: Ptr[Event, AnyOrigin[True]]
+) -> AppResult
 """Function pointer typedef for SDL_AppEvent.
     
     These are used by SDL_EnterAppMainCallbacks. This mechanism operates behind
@@ -195,7 +201,9 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_AppEvent_func.
 """
 
 
-comptime AppQuit_func = fn (appstate: Ptr[NoneType, AnyOrigin[True]], result: AppResult) -> None
+comptime AppQuit_func = fn(
+    appstate: Ptr[NoneType, AnyOrigin[True]], result: AppResult
+) -> None
 """Function pointer typedef for SDL_AppQuit.
     
     These are used by SDL_EnterAppMainCallbacks. This mechanism operates behind
@@ -262,7 +270,9 @@ fn init(flags: InitFlags) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_Init.
     """
 
-    ret = _get_dylib_function[lib, "SDL_Init", fn (flags: InitFlags) -> Bool]()(flags)
+    ret = _get_dylib_function[lib, "SDL_Init", fn(flags: InitFlags) -> Bool]()(
+        flags
+    )
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -282,7 +292,9 @@ fn init_sub_system(flags: InitFlags) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_InitSubSystem.
     """
 
-    ret = _get_dylib_function[lib, "SDL_InitSubSystem", fn (flags: InitFlags) -> Bool]()(flags)
+    ret = _get_dylib_function[
+        lib, "SDL_InitSubSystem", fn(flags: InitFlags) -> Bool
+    ]()(flags)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -299,7 +311,9 @@ fn quit_sub_system(flags: InitFlags) raises -> None:
     Docs: https://wiki.libsdl.org/SDL3/SDL_QuitSubSystem.
     """
 
-    return _get_dylib_function[lib, "SDL_QuitSubSystem", fn (flags: InitFlags) -> None]()(flags)
+    return _get_dylib_function[
+        lib, "SDL_QuitSubSystem", fn(flags: InitFlags) -> None
+    ]()(flags)
 
 
 fn was_init(flags: InitFlags) raises -> InitFlags:
@@ -315,7 +329,9 @@ fn was_init(flags: InitFlags) raises -> InitFlags:
     Docs: https://wiki.libsdl.org/SDL3/SDL_WasInit.
     """
 
-    return _get_dylib_function[lib, "SDL_WasInit", fn (flags: InitFlags) -> InitFlags]()(flags)
+    return _get_dylib_function[
+        lib, "SDL_WasInit", fn(flags: InitFlags) -> InitFlags
+    ]()(flags)
 
 
 fn quit() raises -> None:
@@ -332,7 +348,7 @@ fn quit() raises -> None:
     Docs: https://wiki.libsdl.org/SDL3/SDL_Quit.
     """
 
-    return _get_dylib_function[lib, "SDL_Quit", fn () -> None]()()
+    return _get_dylib_function[lib, "SDL_Quit", fn() -> None]()()
 
 
 fn is_main_thread() raises -> Bool:
@@ -354,10 +370,12 @@ fn is_main_thread() raises -> Bool:
     Docs: https://wiki.libsdl.org/SDL3/SDL_IsMainThread.
     """
 
-    return _get_dylib_function[lib, "SDL_IsMainThread", fn () -> Bool]()()
+    return _get_dylib_function[lib, "SDL_IsMainThread", fn() -> Bool]()()
 
 
-comptime MainThreadCallback = fn (userdata: Ptr[NoneType, AnyOrigin[True]]) -> None
+comptime MainThreadCallback = fn(
+    userdata: Ptr[NoneType, AnyOrigin[True]]
+) -> None
 """Callback run on the main thread.
     
     Args:
@@ -367,7 +385,11 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_MainThreadCallback.
 """
 
 
-fn run_on_main_thread(callback: MainThreadCallback, userdata: Ptr[NoneType, AnyOrigin[True]], wait_complete: Bool) raises:
+fn run_on_main_thread(
+    callback: MainThreadCallback,
+    userdata: Ptr[NoneType, AnyOrigin[True]],
+    wait_complete: Bool,
+) raises:
     """Call a function on the main thread during event processing.
 
     If this is called on the main thread, the callback is executed immediately.
@@ -394,12 +416,22 @@ fn run_on_main_thread(callback: MainThreadCallback, userdata: Ptr[NoneType, AnyO
     Docs: https://wiki.libsdl.org/SDL3/SDL_RunOnMainThread.
     """
 
-    ret = _get_dylib_function[lib, "SDL_RunOnMainThread", fn (callback: MainThreadCallback, userdata: Ptr[NoneType, AnyOrigin[True]], wait_complete: Bool) -> Bool]()(callback, userdata, wait_complete)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_RunOnMainThread",
+        fn(
+            callback: MainThreadCallback,
+            userdata: Ptr[NoneType, AnyOrigin[True]],
+            wait_complete: Bool,
+        ) -> Bool,
+    ]()(callback, userdata, wait_complete)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_app_metadata(var appname: String, var appversion: String, var appidentifier: String) raises:
+fn set_app_metadata(
+    var appname: String, var appversion: String, var appidentifier: String
+) raises:
     """Specify basic metadata about your app.
 
     You can optionally provide metadata about your app to SDL. This is not
@@ -438,7 +470,19 @@ fn set_app_metadata(var appname: String, var appversion: String, var appidentifi
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetAppMetadata.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SetAppMetadata", fn (appname: Ptr[c_char, AnyOrigin[False]], appversion: Ptr[c_char, AnyOrigin[False]], appidentifier: Ptr[c_char, AnyOrigin[False]]) -> Bool]()(appname.as_c_string_slice().unsafe_ptr(), appversion.as_c_string_slice().unsafe_ptr(), appidentifier.as_c_string_slice().unsafe_ptr())
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SetAppMetadata",
+        fn(
+            appname: Ptr[c_char, AnyOrigin[False]],
+            appversion: Ptr[c_char, AnyOrigin[False]],
+            appidentifier: Ptr[c_char, AnyOrigin[False]],
+        ) -> Bool,
+    ]()(
+        appname.as_c_string_slice().unsafe_ptr(),
+        appversion.as_c_string_slice().unsafe_ptr(),
+        appidentifier.as_c_string_slice().unsafe_ptr(),
+    )
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -506,12 +550,24 @@ fn set_app_metadata_property(var name: String, var value: String) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetAppMetadataProperty.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SetAppMetadataProperty", fn (name: Ptr[c_char, AnyOrigin[False]], value: Ptr[c_char, AnyOrigin[False]]) -> Bool]()(name.as_c_string_slice().unsafe_ptr(), value.as_c_string_slice().unsafe_ptr())
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SetAppMetadataProperty",
+        fn(
+            name: Ptr[c_char, AnyOrigin[False]],
+            value: Ptr[c_char, AnyOrigin[False]],
+        ) -> Bool,
+    ]()(
+        name.as_c_string_slice().unsafe_ptr(),
+        value.as_c_string_slice().unsafe_ptr(),
+    )
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_app_metadata_property(var name: String) raises -> Ptr[c_char, AnyOrigin[False]]:
+fn get_app_metadata_property(
+    var name: String,
+) raises -> Ptr[c_char, AnyOrigin[False]]:
     """Get metadata about your app.
 
     This returns metadata previously set using SDL_SetAppMetadata() or
@@ -534,4 +590,10 @@ fn get_app_metadata_property(var name: String) raises -> Ptr[c_char, AnyOrigin[F
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetAppMetadataProperty.
     """
 
-    return _get_dylib_function[lib, "SDL_GetAppMetadataProperty", fn (name: Ptr[c_char, AnyOrigin[False]]) -> Ptr[c_char, AnyOrigin[False]]]()(name.as_c_string_slice().unsafe_ptr())
+    return _get_dylib_function[
+        lib,
+        "SDL_GetAppMetadataProperty",
+        fn(
+            name: Ptr[c_char, AnyOrigin[False]]
+        ) -> Ptr[c_char, AnyOrigin[False]],
+    ]()(name.as_c_string_slice().unsafe_ptr())

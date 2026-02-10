@@ -38,8 +38,7 @@ such as pressure, tilt, rotation, etc.
 """
 
 
-@register_passable("trivial")
-struct PenID(Intable):
+struct PenID(Intable, TrivialRegisterPassable):
     """SDL pen instance IDs.
 
     Zero is used to signify an invalid/null device.
@@ -66,8 +65,7 @@ struct PenID(Intable):
         return Self(lhs.value | rhs.value)
 
 
-@register_passable("trivial")
-struct PenInputFlags(Intable):
+struct PenInputFlags(Intable, TrivialRegisterPassable):
     """Pen input flags, as reported by various pen events' `pen_state` field.
 
     Docs: https://wiki.libsdl.org/SDL3/SDL_PenInputFlags.
@@ -103,8 +101,7 @@ struct PenInputFlags(Intable):
     """Eraser tip is used."""
 
 
-@register_passable("trivial")
-struct PenAxis(Indexer, Intable):
+struct PenAxis(Indexer, Intable, TrivialRegisterPassable):
     """Pen axis indices.
 
     These are the valid values for the `axis` field in SDL_PenAxisEvent. All

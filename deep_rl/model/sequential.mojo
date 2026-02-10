@@ -3,91 +3,117 @@ from .model import Model
 from layout import LayoutTensor, Layout
 from gpu import thread_idx, block_idx, block_dim
 from gpu.host import DeviceContext, DeviceBuffer
+from std.builtin.variadics import Variadic
 
 # =============================================================================
-# Sequential Containers
+# Variadic Sequential Container
 # =============================================================================
 #
-# NOTE: A truly variadic Sequential[*Types: Model] is not yet possible in Mojo
-# because:
-# 1. InlineArray[Model, N] can't work - Model is a trait, not a concrete type
-#    with known size. Each layer (Linear, ReLU, etc.) has different memory layout.
-# 2. Mojo doesn't support storing heterogeneous variadic types as struct fields.
-#    There's no Tuple[*Types] or similar construct for variadic packs.
-# 3. PARAM_SIZE would need compile-time sum across variadic types.
+# Sequential[*LAYERS: Model] handles any number of layers directly using
+# Variadic.types + @parameter for with index-based access for compile-time
+# iteration over heterogeneous type parameter packs.
 #
-# SOLUTION: We define only Seq2 and compose larger sequences by nesting:
-#   - Seq3 = Seq2[Seq2[L0, L1], L2]
-#   - Seq4 = Seq2[Seq2[Seq2[L0, L1], L2], L3]
-#   - etc.
+# Usage:
+#     var model = seq(Linear[2, 64](), ReLU[64](), Linear[64, 1]())
+#     # Creates Sequential[Linear[2, 64], ReLU[64], Linear[64, 1]]
 #
-# Since Seq2 implements Model, it can be nested indefinitely. The seq() helper
-# functions handle the composition automatically:
-#
-#     var model = seq(Linear[2, 16, 4](), ReLU[16, 4](), Linear[16, 1, 4]())
-#
-# Benefits:
-#   - Only one Sequential struct to maintain
-#   - PARAM_SIZE composes correctly: Seq2[A, B].PARAM_SIZE = A + B
-#   - Dimensions chain correctly: IN_DIM = first.IN_DIM, OUT_DIM = last.OUT_DIM
-#   - Full compile-time type safety preserved
+# Cache layout: [L0 cache | L1 cache | ... | L_{N-1} cache]
+# GPU workspace layout: [inter_bufs | L0 ws | L1 ws | ... | L_{N-1} ws]
 # =============================================================================
-
-
-# fn sum_params[*models: Model]() -> Int:
-#     comptime list = VariadicList(models)
-#     var sum = 0
-
-#     @parameter
-#     for model in list:
-#         sum += model.PARAM_SIZE
-#     return sum
-
-
-# struct Seq[*Layers: Model](Model):
-#     """Sequential container for multiple layers."""
-
-#     comptime IN_DIM: Int = Self.Layers[0].IN_DIM
-#     comptime OUT_DIM: Int = Self.Layers[-1].OUT_DIM
-#     comptime PARAM_SIZE: Int = sum_params[*Self.Layers]()
-#     comptime CACHE_SIZE: Int = sum(
-#         layer.CACHE_SIZE for layer in VariadicList(Self.Layers)
-#     )
-#     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = sum(
-#         layer.WORKSPACE_SIZE_PER_SAMPLE for layer in VariadicList(Self.Layers)
-#     )
 
 
 @fieldwise_init
-struct Seq2[L0: Model, L1: Model](Model):
-    """Sequential container for 2 layers.
+struct Sequential[*LAYERS: Model](Model):
+    """Variadic sequential container for N layers.
 
-    Composes two modules where L0.OUT_DIM == L1.IN_DIM (enforced at instantiation).
-
-    Cache layout: [L0's cache | L1's cache]
-    CACHE_SIZE = L0.CACHE_SIZE + L1.CACHE_SIZE
-
-    Workspace layout (GPU only): [inter_buf | L0's workspace | L1's workspace]
-    - inter_buf: L0.OUT_DIM elements per sample (holds L0 output / L1 input)
-    - Reused for both forward (intermediate activation) and backward (gradient intermediate)
-    WORKSPACE_SIZE_PER_SAMPLE = L0.OUT_DIM + L0.WORKSPACE_SIZE_PER_SAMPLE + L1.WORKSPACE_SIZE_PER_SAMPLE
-
-    Usage:
-        var model = seq(Linear[2, 16](), ReLU[16]())
-        # or with explicit types:
-        var model = Seq2[Linear[2, 16], ReLU[16]](layer0, layer1)
+    Composes N layers where layer[i].OUT_DIM == layer[i+1].IN_DIM.
+    Uses Variadic.types + @parameter for to iterate at compile time.
     """
 
-    comptime IN_DIM: Int = Self.L0.IN_DIM
-    comptime OUT_DIM: Int = Self.L1.OUT_DIM
-    comptime PARAM_SIZE: Int = Self.L0.PARAM_SIZE + Self.L1.PARAM_SIZE
-    comptime CACHE_SIZE: Int = Self.L0.CACHE_SIZE + Self.L1.CACHE_SIZE
-    # Workspace: intermediate buffer + nested workspaces
-    comptime WORKSPACE_SIZE_PER_SAMPLE: Int = (
-        Self.L0.OUT_DIM
-        + Self.L0.WORKSPACE_SIZE_PER_SAMPLE
-        + Self.L1.WORKSPACE_SIZE_PER_SAMPLE
-    )
+    comptime model_types = Variadic.types[T=Model, *Self.LAYERS]
+    comptime N = Variadic.size(Self.model_types)
+
+    comptime IN_DIM: Int = Self.model_types[0].IN_DIM
+    comptime OUT_DIM: Int = Self.model_types[Self.N - 1].OUT_DIM
+
+    # --- Sum helpers ---
+
+    @staticmethod
+    fn _sum_param_size() -> Int:
+        var total = 0
+        @parameter
+        for i in range(Self.N):
+            total += Self.model_types[i].PARAM_SIZE
+        return total
+
+    @staticmethod
+    fn _sum_cache_size() -> Int:
+        var total = 0
+        @parameter
+        for i in range(Self.N):
+            total += Self.model_types[i].CACHE_SIZE
+        return total
+
+    @staticmethod
+    fn _total_inter() -> Int:
+        """Per-sample intermediate buffer size (sum of OUT_DIM for layers 0..N-2)."""
+        var total = 0
+        @parameter
+        for i in range(Self.N - 1):
+            total += Self.model_types[i].OUT_DIM
+        return total
+
+    @staticmethod
+    fn _sum_ws() -> Int:
+        var total = 0
+        @parameter
+        for i in range(Self.N):
+            total += Self.model_types[i].WORKSPACE_SIZE_PER_SAMPLE
+        return total
+
+    comptime PARAM_SIZE: Int = Self._sum_param_size()
+    comptime CACHE_SIZE: Int = Self._sum_cache_size()
+    comptime WORKSPACE_SIZE_PER_SAMPLE: Int = Self._total_inter() + Self._sum_ws()
+
+    # --- Offset helpers (all per-sample) ---
+
+    @staticmethod
+    fn _param_offset[idx: Int]() -> Int:
+        var total = 0
+        @parameter
+        for j in range(idx):
+            total += Self.model_types[j].PARAM_SIZE
+        return total
+
+    @staticmethod
+    fn _cache_offset[idx: Int]() -> Int:
+        var total = 0
+        @parameter
+        for j in range(idx):
+            total += Self.model_types[j].CACHE_SIZE
+        return total
+
+    @staticmethod
+    fn _inter_offset[idx: Int]() -> Int:
+        """Offset of intermediate slot idx (per sample)."""
+        var total = 0
+        @parameter
+        for j in range(idx):
+            total += Self.model_types[j].OUT_DIM
+        return total
+
+    @staticmethod
+    fn _ws_layer_offset[idx: Int]() -> Int:
+        """Offset for layer idx's workspace (per sample), after all inter buffers."""
+        var total = Self._total_inter()
+        @parameter
+        for j in range(idx):
+            total += Self.model_types[j].WORKSPACE_SIZE_PER_SAMPLE
+        return total
+
+    # =========================================================================
+    # CPU Forward (with cache)
+    # =========================================================================
 
     @staticmethod
     fn forward[
@@ -106,48 +132,104 @@ struct Seq2[L0: Model, L1: Model](Model):
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
     ):
-        """Forward pass through all layers (all zero-copy views).
+        @parameter
+        if Self.N == 1:
+            var in_v = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.model_types[0].IN_DIM),
+                MutAnyOrigin,
+            ](input.ptr)
+            var out_v = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.model_types[0].OUT_DIM),
+                MutAnyOrigin,
+            ](output.ptr)
+            var p_v = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.model_types[0].PARAM_SIZE),
+                MutAnyOrigin,
+            ](params.ptr)
+            var c_v = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.model_types[0].CACHE_SIZE),
+                MutAnyOrigin,
+            ](cache.ptr)
+            Self.model_types[0].forward[BATCH](in_v, out_v, p_v, c_v)
+        else:
+            # Flat intermediate buffer for all N-1 inter-layer activations
+            var inter_storage = List[Scalar[dtype]](
+                capacity=BATCH * Self._total_inter()
+            )
+            for _ in range(BATCH * Self._total_inter()):
+                inter_storage.append(0)
+            var inter_ptr = inter_storage.unsafe_ptr()
 
-        Cache layout (blocked): [L0's cache | L1's cache]
-        Params layout: [L0's params | L1's params]
-        """
-        # Intermediate buffer for L0 output / L1 input (heap-allocated to avoid stack overflow)
-        comptime INTER_SIZE = BATCH * Self.L0.OUT_DIM
-        var buffer0_storage = List[Scalar[dtype]](capacity=INTER_SIZE)
-        for _ in range(INTER_SIZE):
-            buffer0_storage.append(0)
-        var buffer0 = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.L0.OUT_DIM), MutAnyOrigin
-        ](buffer0_storage.unsafe_ptr())
+            @parameter
+            for i in range(Self.N):
+                var li_p = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.model_types[i].PARAM_SIZE),
+                    MutAnyOrigin,
+                ](params.ptr + Self._param_offset[i]())
+                var li_c = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.model_types[i].CACHE_SIZE),
+                    MutAnyOrigin,
+                ](cache.ptr + BATCH * Self._cache_offset[i]())
 
-        # Create zero-copy views using pointer offsets
-        var params_ptr = params.ptr
-        var l1_params_ptr = params_ptr + Self.L0.PARAM_SIZE
-        var l0_params = LayoutTensor[
-            dtype, Layout.row_major(Self.L0.PARAM_SIZE), MutAnyOrigin
-        ](params_ptr)
-        var l1_params = LayoutTensor[
-            dtype, Layout.row_major(Self.L1.PARAM_SIZE), MutAnyOrigin
-        ](l1_params_ptr)
+                @parameter
+                if i == 0:
+                    var li_in = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.model_types[i].IN_DIM),
+                        MutAnyOrigin,
+                    ](input.ptr)
+                    var li_out = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
+                        MutAnyOrigin,
+                    ](inter_ptr)
+                    Self.model_types[i].forward[BATCH](
+                        li_in, li_out, li_p, li_c
+                    )
+                elif i == Self.N - 1:
+                    var li_in = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.model_types[i].IN_DIM),
+                        MutAnyOrigin,
+                    ](
+                        inter_ptr
+                        + BATCH * Self._inter_offset[i - 1]()
+                    )
+                    var li_out = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
+                        MutAnyOrigin,
+                    ](output.ptr)
+                    Self.model_types[i].forward[BATCH](
+                        li_in, li_out, li_p, li_c
+                    )
+                else:
+                    var li_in = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.model_types[i].IN_DIM),
+                        MutAnyOrigin,
+                    ](
+                        inter_ptr
+                        + BATCH * Self._inter_offset[i - 1]()
+                    )
+                    var li_out = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
+                        MutAnyOrigin,
+                    ](inter_ptr + BATCH * Self._inter_offset[i]())
+                    Self.model_types[i].forward[BATCH](
+                        li_in, li_out, li_p, li_c
+                    )
 
-        var cache_ptr = cache.ptr
-        var l0_cache = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.L0.CACHE_SIZE), MutAnyOrigin
-        ](cache_ptr)
-        var l1_cache_ptr = cache_ptr + BATCH * Self.L0.CACHE_SIZE
-        var l1_cache = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.L1.CACHE_SIZE), MutAnyOrigin
-        ](l1_cache_ptr)
-
-        # L0: input -> buffer0
-        Self.L0.forward[BATCH](input, buffer0, l0_params, l0_cache)
-
-        # L1: buffer0 -> output
-        # Rebind buffer0 to L1's input type (dimensions match since L0.OUT_DIM == L1.IN_DIM)
-        var l1_input = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.L1.IN_DIM), MutAnyOrigin
-        ](buffer0.ptr)
-        Self.L1.forward[BATCH](l1_input, output, l1_params, l1_cache)
+    # =========================================================================
+    # CPU Forward (no cache)
+    # =========================================================================
 
     @staticmethod
     fn forward[
@@ -163,34 +245,93 @@ struct Seq2[L0: Model, L1: Model](Model):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        """Forward pass without caching (for inference)."""
-        # Intermediate buffer for L0 output / L1 input (heap-allocated to avoid stack overflow)
-        comptime INTER_SIZE = BATCH * Self.L0.OUT_DIM
-        var buffer0_storage = List[Scalar[dtype]](capacity=INTER_SIZE)
-        for _ in range(INTER_SIZE):
-            buffer0_storage.append(0)
-        var buffer0 = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.L0.OUT_DIM), MutAnyOrigin
-        ](buffer0_storage.unsafe_ptr())
+        @parameter
+        if Self.N == 1:
+            var in_v = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.model_types[0].IN_DIM),
+                MutAnyOrigin,
+            ](input.ptr)
+            var out_v = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.model_types[0].OUT_DIM),
+                MutAnyOrigin,
+            ](output.ptr)
+            var p_v = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.model_types[0].PARAM_SIZE),
+                MutAnyOrigin,
+            ](params.ptr)
+            Self.model_types[0].forward[BATCH](in_v, out_v, p_v)
+        else:
+            var inter_storage = List[Scalar[dtype]](
+                capacity=BATCH * Self._total_inter()
+            )
+            for _ in range(BATCH * Self._total_inter()):
+                inter_storage.append(0)
+            var inter_ptr = inter_storage.unsafe_ptr()
 
-        # Create zero-copy views using pointer offsets
-        var params_ptr = params.ptr
-        var l0_params = LayoutTensor[
-            dtype, Layout.row_major(Self.L0.PARAM_SIZE), MutAnyOrigin
-        ](params_ptr)
-        var l1_params_ptr = params_ptr + Self.L0.PARAM_SIZE
-        var l1_params = LayoutTensor[
-            dtype, Layout.row_major(Self.L1.PARAM_SIZE), MutAnyOrigin
-        ](l1_params_ptr)
+            @parameter
+            for i in range(Self.N):
+                var li_p = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.model_types[i].PARAM_SIZE),
+                    MutAnyOrigin,
+                ](params.ptr + Self._param_offset[i]())
 
-        # L0: input -> buffer0
-        Self.L0.forward[BATCH](input, buffer0, l0_params)
+                @parameter
+                if i == 0:
+                    var li_in = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.model_types[i].IN_DIM),
+                        MutAnyOrigin,
+                    ](input.ptr)
+                    var li_out = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
+                        MutAnyOrigin,
+                    ](inter_ptr)
+                    Self.model_types[i].forward[BATCH](
+                        li_in, li_out, li_p
+                    )
+                elif i == Self.N - 1:
+                    var li_in = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.model_types[i].IN_DIM),
+                        MutAnyOrigin,
+                    ](
+                        inter_ptr
+                        + BATCH * Self._inter_offset[i - 1]()
+                    )
+                    var li_out = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
+                        MutAnyOrigin,
+                    ](output.ptr)
+                    Self.model_types[i].forward[BATCH](
+                        li_in, li_out, li_p
+                    )
+                else:
+                    var li_in = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.model_types[i].IN_DIM),
+                        MutAnyOrigin,
+                    ](
+                        inter_ptr
+                        + BATCH * Self._inter_offset[i - 1]()
+                    )
+                    var li_out = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
+                        MutAnyOrigin,
+                    ](inter_ptr + BATCH * Self._inter_offset[i]())
+                    Self.model_types[i].forward[BATCH](
+                        li_in, li_out, li_p
+                    )
 
-        # L1: buffer0 -> output
-        var l1_input = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.L1.IN_DIM), MutAnyOrigin
-        ](buffer0.ptr)
-        Self.L1.forward[BATCH](l1_input, output, l1_params)
+    # =========================================================================
+    # CPU Backward
+    # =========================================================================
 
     @staticmethod
     fn backward[
@@ -212,84 +353,133 @@ struct Seq2[L0: Model, L1: Model](Model):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        """Backward pass in reverse order (all zero-copy views).
+        @parameter
+        if Self.N == 1:
+            var go_v = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.model_types[0].OUT_DIM),
+                MutAnyOrigin,
+            ](grad_output.ptr)
+            var gi_v = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.model_types[0].IN_DIM),
+                MutAnyOrigin,
+            ](grad_input.ptr)
+            var p_v = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.model_types[0].PARAM_SIZE),
+                MutAnyOrigin,
+            ](params.ptr)
+            var c_v = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.model_types[0].CACHE_SIZE),
+                MutAnyOrigin,
+            ](cache.ptr)
+            var g_v = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.model_types[0].PARAM_SIZE),
+                MutAnyOrigin,
+            ](grads.ptr)
+            Self.model_types[0].backward[BATCH](
+                go_v, gi_v, p_v, c_v, g_v
+            )
+        else:
+            # Gradient intermediate buffer (same layout as forward inter)
+            var grad_inter_storage = List[Scalar[dtype]](
+                capacity=BATCH * Self._total_inter()
+            )
+            for _ in range(BATCH * Self._total_inter()):
+                grad_inter_storage.append(0)
+            var gi_ptr = grad_inter_storage.unsafe_ptr()
 
-        Cache layout (blocked): [L0's cache | L1's cache]
-        Params layout: [L0's params | L1's params]
-        Grads layout: [L0's grads | L1's grads]
-        """
-        # Create zero-copy views using pointer offsets
-        var params_ptr = params.ptr
-        var l0_params = LayoutTensor[
-            dtype, Layout.row_major(Self.L0.PARAM_SIZE), MutAnyOrigin
-        ](params_ptr)
-        var l1_params_ptr = params_ptr + Self.L0.PARAM_SIZE
-        var l1_params = LayoutTensor[
-            dtype, Layout.row_major(Self.L1.PARAM_SIZE), MutAnyOrigin
-        ](l1_params_ptr)
+            # Reverse iteration
+            @parameter
+            for _ri in range(Self.N):
+                comptime i = Self.N - 1 - _ri
 
-        var grads_ptr = grads.ptr
-        var l0_grads = LayoutTensor[
-            dtype, Layout.row_major(Self.L0.PARAM_SIZE), MutAnyOrigin
-        ](grads_ptr)
-        var l1_grads_ptr = grads_ptr + Self.L0.PARAM_SIZE
-        var l1_grads = LayoutTensor[
-            dtype, Layout.row_major(Self.L1.PARAM_SIZE), MutAnyOrigin
-        ](l1_grads_ptr)
+                var li_p = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.model_types[i].PARAM_SIZE),
+                    MutAnyOrigin,
+                ](params.ptr + Self._param_offset[i]())
+                var li_c = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.model_types[i].CACHE_SIZE),
+                    MutAnyOrigin,
+                ](cache.ptr + BATCH * Self._cache_offset[i]())
+                var li_g = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.model_types[i].PARAM_SIZE),
+                    MutAnyOrigin,
+                ](grads.ptr + Self._param_offset[i]())
 
-        var cache_ptr = cache.ptr
-        var l0_cache = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.L0.CACHE_SIZE), MutAnyOrigin
-        ](cache_ptr)
-        var l1_cache_ptr = cache_ptr + BATCH * Self.L0.CACHE_SIZE
-        var l1_cache = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.L1.CACHE_SIZE), MutAnyOrigin
-        ](l1_cache_ptr)
-
-        # Intermediate buffer for gradient at buffer0 (heap-allocated to avoid stack overflow)
-        comptime INTER_SIZE = BATCH * Self.L0.OUT_DIM
-        var grad_buffer0_storage = List[Scalar[dtype]](capacity=INTER_SIZE)
-        for _ in range(INTER_SIZE):
-            grad_buffer0_storage.append(0)
-        var grad_buffer0 = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.L0.OUT_DIM), MutAnyOrigin
-        ](grad_buffer0_storage.unsafe_ptr())
-
-        # L1 backward: grad_output -> grad_buffer0
-        # Rebind grad_output to L1's output type
-        var l1_grad_output = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.L1.OUT_DIM), MutAnyOrigin
-        ](grad_output.ptr)
-        var l1_grad_input = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.L1.IN_DIM), MutAnyOrigin
-        ](grad_buffer0.ptr)
-        Self.L1.backward[BATCH](
-            l1_grad_output,
-            l1_grad_input,
-            l1_params,
-            l1_cache,
-            l1_grads,
-        )
-
-        # L0 backward: grad_buffer0 -> grad_input
-        Self.L0.backward[BATCH](
-            grad_buffer0,
-            grad_input,
-            l0_params,
-            l0_cache,
-            l0_grads,
-        )
-        # No copy-back needed - grads views modify the original in-place
+                @parameter
+                if i == Self.N - 1:
+                    # Last layer: Sequential grad_output -> grad_inter[i-1]
+                    var li_go = LayoutTensor[
+                        dtype,
+                        Layout.row_major(
+                            BATCH, Self.model_types[i].OUT_DIM
+                        ),
+                        MutAnyOrigin,
+                    ](grad_output.ptr)
+                    var li_gi = LayoutTensor[
+                        dtype,
+                        Layout.row_major(
+                            BATCH, Self.model_types[i].IN_DIM
+                        ),
+                        MutAnyOrigin,
+                    ](
+                        gi_ptr
+                        + BATCH * Self._inter_offset[i - 1]()
+                    )
+                    Self.model_types[i].backward[BATCH](
+                        li_go, li_gi, li_p, li_c, li_g
+                    )
+                elif i == 0:
+                    # First layer: grad_inter[0] -> Sequential grad_input
+                    var li_go = LayoutTensor[
+                        dtype,
+                        Layout.row_major(
+                            BATCH, Self.model_types[i].OUT_DIM
+                        ),
+                        MutAnyOrigin,
+                    ](gi_ptr)
+                    var li_gi = LayoutTensor[
+                        dtype,
+                        Layout.row_major(
+                            BATCH, Self.model_types[i].IN_DIM
+                        ),
+                        MutAnyOrigin,
+                    ](grad_input.ptr)
+                    Self.model_types[i].backward[BATCH](
+                        li_go, li_gi, li_p, li_c, li_g
+                    )
+                else:
+                    # Middle: grad_inter[i] -> grad_inter[i-1]
+                    var li_go = LayoutTensor[
+                        dtype,
+                        Layout.row_major(
+                            BATCH, Self.model_types[i].OUT_DIM
+                        ),
+                        MutAnyOrigin,
+                    ](gi_ptr + BATCH * Self._inter_offset[i]())
+                    var li_gi = LayoutTensor[
+                        dtype,
+                        Layout.row_major(
+                            BATCH, Self.model_types[i].IN_DIM
+                        ),
+                        MutAnyOrigin,
+                    ](
+                        gi_ptr
+                        + BATCH * Self._inter_offset[i - 1]()
+                    )
+                    Self.model_types[i].backward[BATCH](
+                        li_go, li_gi, li_p, li_c, li_g
+                    )
 
     # =========================================================================
-    # GPU Methods with Pre-allocated Workspace (avoids internal allocation)
-    # =========================================================================
-    #
-    # These methods use pre-allocated workspace buffers instead of allocating
-    # intermediate buffers internally. This is much faster for repeated calls.
-    #
-    # Workspace layout: [inter_buf | L0's workspace | L1's workspace]
-    # Total size: BATCH * WORKSPACE_SIZE_PER_SAMPLE
+    # GPU Forward (with cache)
     # =========================================================================
 
     @staticmethod
@@ -303,100 +493,110 @@ struct Seq2[L0: Model, L1: Model](Model):
         cache_buf: DeviceBuffer[dtype],
         workspace_buf: DeviceBuffer[dtype],
     ) raises:
-        """GPU forward pass using pre-allocated workspace (no internal allocation).
+        """GPU forward pass using pre-allocated workspace.
 
-        Workspace layout: [inter_buf (BATCH * L0.OUT_DIM) | L0 workspace | L1 workspace]
-
-        Args:
-            ctx: GPU device context.
-            output_buf: Output buffer [BATCH * OUT_DIM].
-            input_buf: Input buffer [BATCH * IN_DIM].
-            params_buf: Parameters buffer [PARAM_SIZE] = [L0 params | L1 params].
-            cache_buf: Cache buffer [BATCH * CACHE_SIZE] = [L0 cache | L1 cache].
-            workspace_buf: Pre-allocated workspace [BATCH * WORKSPACE_SIZE_PER_SAMPLE].
+        Workspace layout: [inter_bufs (N-1 buffers) | L0 ws | L1 ws | ... | L_{N-1} ws]
         """
-        # Compute workspace offsets
-        comptime INTER_SIZE = BATCH * Self.L0.OUT_DIM
-        comptime L0_WS_SIZE = BATCH * Self.L0.WORKSPACE_SIZE_PER_SAMPLE
-        comptime L1_WS_SIZE = BATCH * Self.L1.WORKSPACE_SIZE_PER_SAMPLE
+        @parameter
+        if Self.N == 1:
+            Self.model_types[0].forward_gpu[BATCH](
+                ctx,
+                output_buf,
+                input_buf,
+                params_buf,
+                cache_buf,
+                workspace_buf,
+            )
+        else:
+            var ws_ptr = workspace_buf.unsafe_ptr()
+            var p_ptr = params_buf.unsafe_ptr()
+            var c_ptr = cache_buf.unsafe_ptr()
 
-        # Create views into workspace_buf
-        var inter_buf = DeviceBuffer[dtype](
-            ctx,
-            workspace_buf.unsafe_ptr(),
-            INTER_SIZE,
-            owning=False,
-        )
+            @parameter
+            for i in range(Self.N):
+                # Params view
+                var li_params = DeviceBuffer[dtype](
+                    ctx,
+                    p_ptr + Self._param_offset[i](),
+                    Self.model_types[i].PARAM_SIZE,
+                    owning=False,
+                )
+                # Cache view
+                var li_cache = DeviceBuffer[dtype](
+                    ctx,
+                    c_ptr + BATCH * Self._cache_offset[i](),
+                    BATCH * Self.model_types[i].CACHE_SIZE,
+                    owning=False,
+                )
+                # Layer workspace view
+                var li_ws_size = BATCH * Self.model_types[
+                    i
+                ].WORKSPACE_SIZE_PER_SAMPLE
+                var li_ws = DeviceBuffer[dtype](
+                    ctx,
+                    ws_ptr + BATCH * Self._ws_layer_offset[i](),
+                    li_ws_size if li_ws_size > 0 else 1,
+                    owning=False,
+                )
 
-        # L0 workspace (may be empty for leaf layers)
-        var l0_workspace_ptr = workspace_buf.unsafe_ptr() + INTER_SIZE
-        var l0_workspace_buf = DeviceBuffer[dtype](
-            ctx,
-            l0_workspace_ptr,
-            L0_WS_SIZE if L0_WS_SIZE > 0 else 1,
-            owning=False,
-        )
+                @parameter
+                if i == 0:
+                    var inter_out = DeviceBuffer[dtype](
+                        ctx,
+                        ws_ptr,
+                        BATCH * Self.model_types[i].OUT_DIM,
+                        owning=False,
+                    )
+                    Self.model_types[i].forward_gpu[BATCH](
+                        ctx,
+                        inter_out,
+                        input_buf,
+                        li_params,
+                        li_cache,
+                        li_ws,
+                    )
+                elif i == Self.N - 1:
+                    var inter_in = DeviceBuffer[dtype](
+                        ctx,
+                        ws_ptr
+                        + BATCH * Self._inter_offset[i - 1](),
+                        BATCH * Self.model_types[i].IN_DIM,
+                        owning=False,
+                    )
+                    Self.model_types[i].forward_gpu[BATCH](
+                        ctx,
+                        output_buf,
+                        inter_in,
+                        li_params,
+                        li_cache,
+                        li_ws,
+                    )
+                else:
+                    var inter_in = DeviceBuffer[dtype](
+                        ctx,
+                        ws_ptr
+                        + BATCH * Self._inter_offset[i - 1](),
+                        BATCH * Self.model_types[i].IN_DIM,
+                        owning=False,
+                    )
+                    var inter_out = DeviceBuffer[dtype](
+                        ctx,
+                        ws_ptr + BATCH * Self._inter_offset[i](),
+                        BATCH * Self.model_types[i].OUT_DIM,
+                        owning=False,
+                    )
+                    Self.model_types[i].forward_gpu[BATCH](
+                        ctx,
+                        inter_out,
+                        inter_in,
+                        li_params,
+                        li_cache,
+                        li_ws,
+                    )
 
-        # L1 workspace (may be empty for leaf layers)
-        var l1_workspace_ptr = l0_workspace_ptr + L0_WS_SIZE
-        var l1_workspace_buf = DeviceBuffer[dtype](
-            ctx,
-            l1_workspace_ptr,
-            L1_WS_SIZE if L1_WS_SIZE > 0 else 1,
-            owning=False,
-        )
-
-        # Create views into params_buf for each layer
-        var l0_params_ptr = params_buf.unsafe_ptr()
-        var l0_params_buf = DeviceBuffer[dtype](
-            ctx,
-            l0_params_ptr,
-            Self.L0.PARAM_SIZE,
-            owning=False,
-        )
-        var l1_params_ptr = l0_params_ptr + Self.L0.PARAM_SIZE
-        var l1_params_buf = DeviceBuffer[dtype](
-            ctx,
-            l1_params_ptr,
-            Self.L1.PARAM_SIZE,
-            owning=False,
-        )
-
-        # Create views into cache_buf for each layer
-        var l0_cache_ptr = cache_buf.unsafe_ptr()
-        var l0_cache_buf = DeviceBuffer[dtype](
-            ctx,
-            l0_cache_ptr,
-            BATCH * Self.L0.CACHE_SIZE,
-            owning=False,
-        )
-        var l1_cache_ptr = l0_cache_ptr + BATCH * Self.L0.CACHE_SIZE
-        var l1_cache_buf = DeviceBuffer[dtype](
-            ctx,
-            l1_cache_ptr,
-            BATCH * Self.L1.CACHE_SIZE,
-            owning=False,
-        )
-
-        # L0: input -> inter_buf (using workspace)
-        Self.L0.forward_gpu[BATCH](
-            ctx,
-            inter_buf,
-            input_buf,
-            l0_params_buf,
-            l0_cache_buf,
-            l0_workspace_buf,
-        )
-
-        # L1: inter_buf -> output (using workspace)
-        Self.L1.forward_gpu[BATCH](
-            ctx,
-            output_buf,
-            inter_buf,
-            l1_params_buf,
-            l1_cache_buf,
-            l1_workspace_buf,
-        )
+    # =========================================================================
+    # GPU Forward (no cache)
+    # =========================================================================
 
     @staticmethod
     fn forward_gpu_no_cache[
@@ -408,77 +608,76 @@ struct Seq2[L0: Model, L1: Model](Model):
         params_buf: DeviceBuffer[dtype],
         workspace_buf: DeviceBuffer[dtype],
     ) raises:
-        """GPU forward pass without caching, using pre-allocated workspace.
+        @parameter
+        if Self.N == 1:
+            Self.model_types[0].forward_gpu_no_cache[BATCH](
+                ctx, output_buf, input_buf, params_buf, workspace_buf
+            )
+        else:
+            var ws_ptr = workspace_buf.unsafe_ptr()
+            var p_ptr = params_buf.unsafe_ptr()
 
-        Args:
-            ctx: GPU device context.
-            output_buf: Output buffer [BATCH * OUT_DIM].
-            input_buf: Input buffer [BATCH * IN_DIM].
-            params_buf: Parameters buffer [PARAM_SIZE] = [L0 params | L1 params].
-            workspace_buf: Pre-allocated workspace [BATCH * WORKSPACE_SIZE_PER_SAMPLE].
-        """
-        # Compute workspace offsets
-        comptime INTER_SIZE = BATCH * Self.L0.OUT_DIM
-        comptime L0_WS_SIZE = BATCH * Self.L0.WORKSPACE_SIZE_PER_SAMPLE
-        comptime L1_WS_SIZE = BATCH * Self.L1.WORKSPACE_SIZE_PER_SAMPLE
+            @parameter
+            for i in range(Self.N):
+                var li_params = DeviceBuffer[dtype](
+                    ctx,
+                    p_ptr + Self._param_offset[i](),
+                    Self.model_types[i].PARAM_SIZE,
+                    owning=False,
+                )
+                var li_ws_size = BATCH * Self.model_types[
+                    i
+                ].WORKSPACE_SIZE_PER_SAMPLE
+                var li_ws = DeviceBuffer[dtype](
+                    ctx,
+                    ws_ptr + BATCH * Self._ws_layer_offset[i](),
+                    li_ws_size if li_ws_size > 0 else 1,
+                    owning=False,
+                )
 
-        # Create views into workspace_buf
-        var inter_buf = DeviceBuffer[dtype](
-            ctx,
-            workspace_buf.unsafe_ptr(),
-            INTER_SIZE,
-            owning=False,
-        )
+                @parameter
+                if i == 0:
+                    var inter_out = DeviceBuffer[dtype](
+                        ctx,
+                        ws_ptr,
+                        BATCH * Self.model_types[i].OUT_DIM,
+                        owning=False,
+                    )
+                    Self.model_types[i].forward_gpu_no_cache[BATCH](
+                        ctx, inter_out, input_buf, li_params, li_ws
+                    )
+                elif i == Self.N - 1:
+                    var inter_in = DeviceBuffer[dtype](
+                        ctx,
+                        ws_ptr
+                        + BATCH * Self._inter_offset[i - 1](),
+                        BATCH * Self.model_types[i].IN_DIM,
+                        owning=False,
+                    )
+                    Self.model_types[i].forward_gpu_no_cache[BATCH](
+                        ctx, output_buf, inter_in, li_params, li_ws
+                    )
+                else:
+                    var inter_in = DeviceBuffer[dtype](
+                        ctx,
+                        ws_ptr
+                        + BATCH * Self._inter_offset[i - 1](),
+                        BATCH * Self.model_types[i].IN_DIM,
+                        owning=False,
+                    )
+                    var inter_out = DeviceBuffer[dtype](
+                        ctx,
+                        ws_ptr + BATCH * Self._inter_offset[i](),
+                        BATCH * Self.model_types[i].OUT_DIM,
+                        owning=False,
+                    )
+                    Self.model_types[i].forward_gpu_no_cache[BATCH](
+                        ctx, inter_out, inter_in, li_params, li_ws
+                    )
 
-        var l0_workspace_ptr = workspace_buf.unsafe_ptr() + INTER_SIZE
-        var l0_workspace_buf = DeviceBuffer[dtype](
-            ctx,
-            l0_workspace_ptr,
-            L0_WS_SIZE if L0_WS_SIZE > 0 else 1,
-            owning=False,
-        )
-
-        var l1_workspace_ptr = l0_workspace_ptr + L0_WS_SIZE
-        var l1_workspace_buf = DeviceBuffer[dtype](
-            ctx,
-            l1_workspace_ptr,
-            L1_WS_SIZE if L1_WS_SIZE > 0 else 1,
-            owning=False,
-        )
-
-        # Create views into params_buf
-        var l0_params_ptr = params_buf.unsafe_ptr()
-        var l0_params_buf = DeviceBuffer[dtype](
-            ctx,
-            l0_params_ptr,
-            Self.L0.PARAM_SIZE,
-            owning=False,
-        )
-        var l1_params_ptr = l0_params_ptr + Self.L0.PARAM_SIZE
-        var l1_params_buf = DeviceBuffer[dtype](
-            ctx,
-            l1_params_ptr,
-            Self.L1.PARAM_SIZE,
-            owning=False,
-        )
-
-        # L0: input -> inter_buf
-        Self.L0.forward_gpu_no_cache[BATCH](
-            ctx,
-            inter_buf,
-            input_buf,
-            l0_params_buf,
-            l0_workspace_buf,
-        )
-
-        # L1: inter_buf -> output
-        Self.L1.forward_gpu_no_cache[BATCH](
-            ctx,
-            output_buf,
-            inter_buf,
-            l1_params_buf,
-            l1_workspace_buf,
-        )
+    # =========================================================================
+    # GPU Backward
+    # =========================================================================
 
     @staticmethod
     fn backward_gpu[
@@ -492,150 +691,143 @@ struct Seq2[L0: Model, L1: Model](Model):
         grads_buf: DeviceBuffer[dtype],
         workspace_buf: DeviceBuffer[dtype],
     ) raises:
-        """GPU backward pass using pre-allocated workspace (no internal allocation).
+        """GPU backward pass. Workspace inter region reused for gradient intermediates."""
+        @parameter
+        if Self.N == 1:
+            Self.model_types[0].backward_gpu[BATCH](
+                ctx,
+                grad_input_buf,
+                grad_output_buf,
+                params_buf,
+                cache_buf,
+                grads_buf,
+                workspace_buf,
+            )
+        else:
+            var ws_ptr = workspace_buf.unsafe_ptr()
+            var p_ptr = params_buf.unsafe_ptr()
+            var c_ptr = cache_buf.unsafe_ptr()
+            var g_ptr = grads_buf.unsafe_ptr()
 
-        Workspace layout: [grad_inter_buf (BATCH * L0.OUT_DIM) | L0 workspace | L1 workspace]
-        Note: The same workspace layout as forward - the inter_buf region is reused.
+            # Reverse iteration
+            @parameter
+            for _ri in range(Self.N):
+                comptime i = Self.N - 1 - _ri
 
-        Args:
-            ctx: GPU device context.
-            grad_input_buf: Gradient w.r.t. input [BATCH * IN_DIM] (written).
-            grad_output_buf: Gradient w.r.t. output [BATCH * OUT_DIM].
-            params_buf: Parameters buffer [PARAM_SIZE] = [L0 params | L1 params].
-            cache_buf: Cache buffer [BATCH * CACHE_SIZE] = [L0 cache | L1 cache].
-            grads_buf: Parameter gradients [PARAM_SIZE] = [L0 grads | L1 grads] (written).
-            workspace_buf: Pre-allocated workspace [BATCH * WORKSPACE_SIZE_PER_SAMPLE].
-        """
-        # Compute workspace offsets (same as forward)
-        comptime INTER_SIZE = BATCH * Self.L0.OUT_DIM
-        comptime L0_WS_SIZE = BATCH * Self.L0.WORKSPACE_SIZE_PER_SAMPLE
-        comptime L1_WS_SIZE = BATCH * Self.L1.WORKSPACE_SIZE_PER_SAMPLE
+                var li_params = DeviceBuffer[dtype](
+                    ctx,
+                    p_ptr + Self._param_offset[i](),
+                    Self.model_types[i].PARAM_SIZE,
+                    owning=False,
+                )
+                var li_cache = DeviceBuffer[dtype](
+                    ctx,
+                    c_ptr + BATCH * Self._cache_offset[i](),
+                    BATCH * Self.model_types[i].CACHE_SIZE,
+                    owning=False,
+                )
+                var li_grads = DeviceBuffer[dtype](
+                    ctx,
+                    g_ptr + Self._param_offset[i](),
+                    Self.model_types[i].PARAM_SIZE,
+                    owning=False,
+                )
+                var li_ws_size = BATCH * Self.model_types[
+                    i
+                ].WORKSPACE_SIZE_PER_SAMPLE
+                var li_ws = DeviceBuffer[dtype](
+                    ctx,
+                    ws_ptr + BATCH * Self._ws_layer_offset[i](),
+                    li_ws_size if li_ws_size > 0 else 1,
+                    owning=False,
+                )
 
-        # Create views into workspace_buf (grad_inter_buf reuses same space as forward's inter_buf)
-        var grad_inter_ptr = workspace_buf.unsafe_ptr()
-        var grad_inter_buf = DeviceBuffer[dtype](
-            ctx,
-            grad_inter_ptr,
-            INTER_SIZE,
-            owning=False,
-        )
-
-        var l0_workspace_ptr = grad_inter_ptr + INTER_SIZE
-        var l0_workspace_buf = DeviceBuffer[dtype](
-            ctx,
-            l0_workspace_ptr,
-            L0_WS_SIZE if L0_WS_SIZE > 0 else 1,
-            owning=False,
-        )
-
-        var l1_workspace_ptr = l0_workspace_ptr + L0_WS_SIZE
-        var l1_workspace_buf = DeviceBuffer[dtype](
-            ctx,
-            l1_workspace_ptr,
-            L1_WS_SIZE if L1_WS_SIZE > 0 else 1,
-            owning=False,
-        )
-
-        # Create views into params_buf
-        var l0_params_ptr = params_buf.unsafe_ptr()
-        var l0_params_buf = DeviceBuffer[dtype](
-            ctx,
-            l0_params_ptr,
-            Self.L0.PARAM_SIZE,
-            owning=False,
-        )
-        var l1_params_ptr = l0_params_ptr + Self.L0.PARAM_SIZE
-        var l1_params_buf = DeviceBuffer[dtype](
-            ctx,
-            l1_params_ptr,
-            Self.L1.PARAM_SIZE,
-            owning=False,
-        )
-
-        # Create views into cache_buf
-        var l0_cache_ptr = cache_buf.unsafe_ptr()
-        var l0_cache_buf = DeviceBuffer[dtype](
-            ctx,
-            l0_cache_ptr,
-            BATCH * Self.L0.CACHE_SIZE,
-            owning=False,
-        )
-        var l1_cache_ptr = l0_cache_ptr + BATCH * Self.L0.CACHE_SIZE
-        var l1_cache_buf = DeviceBuffer[dtype](
-            ctx,
-            l1_cache_ptr,
-            BATCH * Self.L1.CACHE_SIZE,
-            owning=False,
-        )
-
-        # Create views into grads_buf
-        var l0_grads_buf = DeviceBuffer[dtype](
-            ctx,
-            grads_buf.unsafe_ptr(),
-            Self.L0.PARAM_SIZE,
-            owning=False,
-        )
-        var grads_ptr = grads_buf.unsafe_ptr()
-        var l1_grads_ptr = grads_ptr + Self.L0.PARAM_SIZE
-        var l1_grads_buf = DeviceBuffer[dtype](
-            ctx,
-            l1_grads_ptr,
-            Self.L1.PARAM_SIZE,
-            owning=False,
-        )
-
-        # L1 backward: grad_output -> grad_inter
-        Self.L1.backward_gpu[BATCH](
-            ctx,
-            grad_inter_buf,
-            grad_output_buf,
-            l1_params_buf,
-            l1_cache_buf,
-            l1_grads_buf,
-            l1_workspace_buf,
-        )
-
-        # L0 backward: grad_inter -> grad_input
-        Self.L0.backward_gpu[BATCH](
-            ctx,
-            grad_input_buf,
-            grad_inter_buf,
-            l0_params_buf,
-            l0_cache_buf,
-            l0_grads_buf,
-            l0_workspace_buf,
-        )
+                @parameter
+                if i == Self.N - 1:
+                    # Last layer: grad_output -> grad_inter[i-1]
+                    var gi_buf = DeviceBuffer[dtype](
+                        ctx,
+                        ws_ptr
+                        + BATCH * Self._inter_offset[i - 1](),
+                        BATCH * Self.model_types[i].IN_DIM,
+                        owning=False,
+                    )
+                    Self.model_types[i].backward_gpu[BATCH](
+                        ctx,
+                        gi_buf,
+                        grad_output_buf,
+                        li_params,
+                        li_cache,
+                        li_grads,
+                        li_ws,
+                    )
+                elif i == 0:
+                    # First layer: grad_inter[0] -> grad_input
+                    var go_buf = DeviceBuffer[dtype](
+                        ctx,
+                        ws_ptr,
+                        BATCH * Self.model_types[i].OUT_DIM,
+                        owning=False,
+                    )
+                    Self.model_types[i].backward_gpu[BATCH](
+                        ctx,
+                        grad_input_buf,
+                        go_buf,
+                        li_params,
+                        li_cache,
+                        li_grads,
+                        li_ws,
+                    )
+                else:
+                    # Middle: grad_inter[i] -> grad_inter[i-1]
+                    var go_buf = DeviceBuffer[dtype](
+                        ctx,
+                        ws_ptr + BATCH * Self._inter_offset[i](),
+                        BATCH * Self.model_types[i].OUT_DIM,
+                        owning=False,
+                    )
+                    var gi_buf = DeviceBuffer[dtype](
+                        ctx,
+                        ws_ptr
+                        + BATCH * Self._inter_offset[i - 1](),
+                        BATCH * Self.model_types[i].IN_DIM,
+                        owning=False,
+                    )
+                    Self.model_types[i].backward_gpu[BATCH](
+                        ctx,
+                        gi_buf,
+                        go_buf,
+                        li_params,
+                        li_cache,
+                        li_grads,
+                        li_ws,
+                    )
 
 
 # =============================================================================
-# Sequential Helper Functions (composing with Seq2)
-# =============================================================================
-#
-# Instead of separate Seq3, Seq4, ... structs, we compose using Seq2:
-#   Seq3 = Seq2[Seq2[L0, L1], L2]
-#   Seq4 = Seq2[Seq2[Seq2[L0, L1], L2], L3]
-#
-# This works because Seq2 implements Model, so it can be nested.
-# Benefits:
-#   - Only one Sequential struct to maintain
-#   - PARAM_SIZE composes correctly
-#   - Dimensions chain correctly
+# Backward Compatibility Aliases
 # =============================================================================
 
-
-comptime Seq3[L0: Model, L1: Model, L2: Model] = Seq2[Seq2[L0, L1], L2]
-comptime Seq4[L0: Model, L1: Model, L2: Model, L3: Model] = Seq2[
-    Seq2[Seq2[L0, L1], L2], L3
+comptime Seq2[L0: Model, L1: Model] = Sequential[L0, L1]
+comptime Seq3[L0: Model, L1: Model, L2: Model] = Sequential[L0, L1, L2]
+comptime Seq4[L0: Model, L1: Model, L2: Model, L3: Model] = Sequential[
+    L0, L1, L2, L3
 ]
-comptime Seq5[L0: Model, L1: Model, L2: Model, L3: Model, L4: Model] = Seq2[
-    Seq2[Seq2[Seq2[L0, L1], L2], L3], L4
-]
+comptime Seq5[
+    L0: Model, L1: Model, L2: Model, L3: Model, L4: Model
+] = Sequential[L0, L1, L2, L3, L4]
 comptime Seq6[
     L0: Model, L1: Model, L2: Model, L3: Model, L4: Model, L5: Model
-] = Seq2[Seq2[Seq2[Seq2[Seq2[L0, L1], L2], L3], L4], L5]
+] = Sequential[L0, L1, L2, L3, L4, L5]
 comptime Seq7[
-    L0: Model, L1: Model, L2: Model, L3: Model, L4: Model, L5: Model, L6: Model
-] = Seq2[Seq2[Seq2[Seq2[Seq2[Seq2[L0, L1], L2], L3], L4], L5], L6]
+    L0: Model,
+    L1: Model,
+    L2: Model,
+    L3: Model,
+    L4: Model,
+    L5: Model,
+    L6: Model,
+] = Sequential[L0, L1, L2, L3, L4, L5, L6]
 comptime Seq8[
     L0: Model,
     L1: Model,
@@ -645,66 +837,69 @@ comptime Seq8[
     L5: Model,
     L6: Model,
     L7: Model,
-] = Seq2[Seq2[Seq2[Seq2[Seq2[Seq2[Seq2[L0, L1], L2], L3], L4], L5], L6], L7]
+] = Sequential[L0, L1, L2, L3, L4, L5, L6, L7]
 
 
-fn seq[L0: Model, L1: Model](l0: L0, l1: L1) -> Seq2[L0, L1]:
-    """Create a 2-layer sequential model.
+# =============================================================================
+# Helper Functions
+# =============================================================================
 
-    Usage:
-        var model = seq(Linear[2, 16, 4](), ReLU[16, 4]())
-    """
+
+fn seq[L0: Model, L1: Model](l0: L0, l1: L1) -> Sequential[L0, L1]:
+    """Create a 2-layer sequential model."""
     _ = l0
     _ = l1
-    return Seq2[L0, L1]()
+    return Sequential[L0, L1]()
 
 
 fn seq[
     L0: Model, L1: Model, L2: Model
-](l0: L0, l1: L1, l2: L2) -> Seq2[Seq2[L0, L1], L2]:
-    """Create a 3-layer sequential model (composed from Seq2)."""
+](l0: L0, l1: L1, l2: L2) -> Sequential[L0, L1, L2]:
+    """Create a 3-layer sequential model."""
     _ = l0
     _ = l1
     _ = l2
-    return Seq3[L0, L1, L2]()
+    return Sequential[L0, L1, L2]()
 
 
 fn seq[
     L0: Model, L1: Model, L2: Model, L3: Model
-](l0: L0, l1: L1, l2: L2, l3: L3) -> Seq4[L0, L1, L2, L3]:
-    """Create a 4-layer sequential model (composed from Seq2)."""
+](l0: L0, l1: L1, l2: L2, l3: L3) -> Sequential[L0, L1, L2, L3]:
+    """Create a 4-layer sequential model."""
     _ = l0
     _ = l1
     _ = l2
     _ = l3
-    return Seq4[L0, L1, L2, L3]()
+    return Sequential[L0, L1, L2, L3]()
 
 
 fn seq[
     L0: Model, L1: Model, L2: Model, L3: Model, L4: Model
-](l0: L0, l1: L1, l2: L2, l3: L3, l4: L4) -> Seq5[L0, L1, L2, L3, L4]:
-    """Create a 5-layer sequential model (composed from Seq2)."""
+](
+    l0: L0, l1: L1, l2: L2, l3: L3, l4: L4
+) -> Sequential[L0, L1, L2, L3, L4]:
+    """Create a 5-layer sequential model."""
     _ = l0
     _ = l1
     _ = l2
     _ = l3
     _ = l4
-    return Seq5[L0, L1, L2, L3, L4]()
+    return Sequential[L0, L1, L2, L3, L4]()
 
 
 fn seq[
     L0: Model, L1: Model, L2: Model, L3: Model, L4: Model, L5: Model
-](l0: L0, l1: L1, l2: L2, l3: L3, l4: L4, l5: L5) -> Seq6[
-    L0, L1, L2, L3, L4, L5
-]:
-    """Create a 6-layer sequential model (composed from Seq2)."""
+](
+    l0: L0, l1: L1, l2: L2, l3: L3, l4: L4, l5: L5
+) -> Sequential[L0, L1, L2, L3, L4, L5]:
+    """Create a 6-layer sequential model."""
     _ = l0
     _ = l1
     _ = l2
     _ = l3
     _ = l4
     _ = l5
-    return Seq6[L0, L1, L2, L3, L4, L5]()
+    return Sequential[L0, L1, L2, L3, L4, L5]()
 
 
 fn seq[
@@ -715,10 +910,10 @@ fn seq[
     L4: Model,
     L5: Model,
     L6: Model,
-](l0: L0, l1: L1, l2: L2, l3: L3, l4: L4, l5: L5, l6: L6) -> Seq7[
-    L0, L1, L2, L3, L4, L5, L6
-]:
-    """Create a 7-layer sequential model (composed from Seq2)."""
+](
+    l0: L0, l1: L1, l2: L2, l3: L3, l4: L4, l5: L5, l6: L6
+) -> Sequential[L0, L1, L2, L3, L4, L5, L6]:
+    """Create a 7-layer sequential model."""
     _ = l0
     _ = l1
     _ = l2
@@ -726,7 +921,7 @@ fn seq[
     _ = l4
     _ = l5
     _ = l6
-    return Seq7[L0, L1, L2, L3, L4, L5, L6]()
+    return Sequential[L0, L1, L2, L3, L4, L5, L6]()
 
 
 fn seq[
@@ -738,6 +933,6 @@ fn seq[
     L5: Model,
     L6: Model,
     L7: Model,
-]() -> Seq8[L0, L1, L2, L3, L4, L5, L6, L7]:
-    """Create an 8-layer sequential model (composed from Seq2)."""
-    return Seq8[L0, L1, L2, L3, L4, L5, L6, L7]()
+]() -> Sequential[L0, L1, L2, L3, L4, L5, L6, L7]:
+    """Create an 8-layer sequential model."""
+    return Sequential[L0, L1, L2, L3, L4, L5, L6, L7]()

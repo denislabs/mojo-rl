@@ -269,7 +269,7 @@ struct Mat4[DTYPE: DType](ImplicitlyCopyable, Movable, Stringable):
     # =========================================================================
 
     @staticmethod
-    fn rotation_x(angle: Scalar[Self.DTYPE]) -> Self:
+    fn rotation_x(angle: Scalar[Self.DTYPE]) -> Self where Self.DTYPE.is_floating_point():
         """Create rotation matrix around X axis."""
         var c = cos(angle)
         var s = sin(angle)
@@ -293,7 +293,7 @@ struct Mat4[DTYPE: DType](ImplicitlyCopyable, Movable, Stringable):
         )
 
     @staticmethod
-    fn rotation_y(angle: Scalar[Self.DTYPE]) -> Self:
+    fn rotation_y(angle: Scalar[Self.DTYPE]) -> Self where Self.DTYPE.is_floating_point():
         """Create rotation matrix around Y axis."""
         var c = cos(angle)
         var s = sin(angle)
@@ -317,7 +317,7 @@ struct Mat4[DTYPE: DType](ImplicitlyCopyable, Movable, Stringable):
         )
 
     @staticmethod
-    fn rotation_z(angle: Scalar[Self.DTYPE]) -> Self:
+    fn rotation_z(angle: Scalar[Self.DTYPE]) -> Self where Self.DTYPE.is_floating_point():
         """Create rotation matrix around Z axis."""
         var c = cos(angle)
         var s = sin(angle)
@@ -341,7 +341,7 @@ struct Mat4[DTYPE: DType](ImplicitlyCopyable, Movable, Stringable):
         )
 
     @staticmethod
-    fn rotation_axis(axis: Vec3[Self.DTYPE], angle: Scalar[Self.DTYPE]) -> Self:
+    fn rotation_axis(axis: Vec3[Self.DTYPE], angle: Scalar[Self.DTYPE]) -> Self where Self.DTYPE.is_floating_point():
         """Create rotation matrix around arbitrary axis."""
         return Self.from_rotation(Mat3.rotation_axis(axis, angle))
 
@@ -350,7 +350,7 @@ struct Mat4[DTYPE: DType](ImplicitlyCopyable, Movable, Stringable):
     # =========================================================================
 
     @staticmethod
-    fn look_at(eye: Vec3[Self.DTYPE], target: Vec3[Self.DTYPE], up: Vec3[Self.DTYPE]) -> Self:
+    fn look_at(eye: Vec3[Self.DTYPE], target: Vec3[Self.DTYPE], up: Vec3[Self.DTYPE]) -> Self where Self.DTYPE.is_floating_point():
         """Create a view matrix looking from eye toward target.
 
         Args:
@@ -385,7 +385,7 @@ struct Mat4[DTYPE: DType](ImplicitlyCopyable, Movable, Stringable):
         )
 
     @staticmethod
-    fn perspective(fov_y: Scalar[Self.DTYPE], aspect: Scalar[Self.DTYPE], near: Scalar[Self.DTYPE], far: Scalar[Self.DTYPE]) -> Self:
+    fn perspective(fov_y: Scalar[Self.DTYPE], aspect: Scalar[Self.DTYPE], near: Scalar[Self.DTYPE], far: Scalar[Self.DTYPE]) -> Self where Self.DTYPE.is_floating_point():
         """Create a perspective projection matrix.
 
         Args:
@@ -487,7 +487,7 @@ struct Mat4[DTYPE: DType](ImplicitlyCopyable, Movable, Stringable):
             self.m22,
         )
 
-    fn get_scale(self) -> Vec3[Self.DTYPE]:
+    fn get_scale(self) -> Vec3[Self.DTYPE] where Self.DTYPE.is_floating_point():
         """Extract scale from the matrix (assuming no shear)."""
         return Vec3(
             Vec3(self.m00, self.m10, self.m20).length(),
@@ -659,7 +659,7 @@ struct Mat4[DTYPE: DType](ImplicitlyCopyable, Movable, Stringable):
             self.m20 * v.x + self.m21 * v.y + self.m22 * v.z,
         )
 
-    fn transform_normal(self, n: Vec3[Self.DTYPE]) -> Vec3[Self.DTYPE]:
+    fn transform_normal(self, n: Vec3[Self.DTYPE]) -> Vec3[Self.DTYPE] where Self.DTYPE.is_floating_point():
         """Transform a normal vector.
 
         Normals transform by the inverse transpose of the upper 3x3.
@@ -960,11 +960,11 @@ fn mat4_translation[DTYPE: DType](t: Vec3[DTYPE]) -> Mat4[DTYPE]:
     return Mat4[DTYPE].from_translation(t)
 
 
-fn mat4_look_at[DTYPE: DType](eye: Vec3[DTYPE], target: Vec3[DTYPE], up: Vec3[DTYPE]) -> Mat4[DTYPE]:
+fn mat4_look_at[DTYPE: DType](eye: Vec3[DTYPE], target: Vec3[DTYPE], up: Vec3[DTYPE]) -> Mat4[DTYPE] where DTYPE.is_floating_point():
     """Create view matrix."""
     return Mat4.look_at(eye, target, up)
 
 
-fn mat4_perspective[DTYPE: DType](fov_y: Scalar[DTYPE], aspect: Scalar[DTYPE], near: Scalar[DTYPE], far: Scalar[DTYPE]) -> Mat4[DTYPE]:
+fn mat4_perspective[DTYPE: DType](fov_y: Scalar[DTYPE], aspect: Scalar[DTYPE], near: Scalar[DTYPE], far: Scalar[DTYPE]) -> Mat4[DTYPE] where DTYPE.is_floating_point():
     """Create perspective projection matrix."""
     return Mat4[DTYPE].perspective(fov_y, aspect, near, far)

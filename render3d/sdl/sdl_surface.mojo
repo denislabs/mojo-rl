@@ -39,8 +39,7 @@ https://github.com/libsdl-org/SDL_image
 """
 
 
-@register_passable("trivial")
-struct SurfaceFlags(Intable):
+struct SurfaceFlags(Intable, TrivialRegisterPassable):
     """The flags on an SDL_Surface.
 
     These are generally considered read-only.
@@ -72,8 +71,7 @@ struct SurfaceFlags(Intable):
     """Surface uses pixel memory allocated with SDL_aligned_alloc()."""
 
 
-@register_passable("trivial")
-struct ScaleMode(Indexer, Intable):
+struct ScaleMode(Indexer, Intable, TrivialRegisterPassable):
     """The scaling mode.
 
     Docs: https://wiki.libsdl.org/SDL3/SDL_ScaleMode.
@@ -104,8 +102,7 @@ struct ScaleMode(Indexer, Intable):
     """Linear filtering."""
 
 
-@register_passable("trivial")
-struct FlipMode(Indexer, Intable):
+struct FlipMode(Indexer, Intable, TrivialRegisterPassable):
     """The flip mode.
 
     Docs: https://wiki.libsdl.org/SDL3/SDL_FlipMode.
@@ -184,7 +181,12 @@ struct Surface(ImplicitlyCopyable, Movable):
     """Reserved for internal use."""
 
 
-fn create_surface(width: c_int, height: c_int, format: PixelFormat, out ret: Ptr[Surface, AnyOrigin[True]]) raises:
+fn create_surface(
+    width: c_int,
+    height: c_int,
+    format: PixelFormat,
+    out ret: Ptr[Surface, AnyOrigin[True]],
+) raises:
     """Allocate a new surface with a specific pixel format.
 
     The pixels of the new surface are initialized to zero.
@@ -204,12 +206,25 @@ fn create_surface(width: c_int, height: c_int, format: PixelFormat, out ret: Ptr
     Docs: https://wiki.libsdl.org/SDL3/SDL_CreateSurface.
     """
 
-    ret = _get_dylib_function[lib, "SDL_CreateSurface", fn (width: c_int, height: c_int, format: PixelFormat) -> Ptr[Surface, AnyOrigin[True]]]()(width, height, format)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_CreateSurface",
+        fn(
+            width: c_int, height: c_int, format: PixelFormat
+        ) -> Ptr[Surface, AnyOrigin[True]],
+    ]()(width, height, format)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn create_surface_from(width: c_int, height: c_int, format: PixelFormat, pixels: Ptr[NoneType, AnyOrigin[True]], pitch: c_int, out ret: Ptr[Surface, AnyOrigin[True]]) raises:
+fn create_surface_from(
+    width: c_int,
+    height: c_int,
+    format: PixelFormat,
+    pixels: Ptr[NoneType, AnyOrigin[True]],
+    pitch: c_int,
+    out ret: Ptr[Surface, AnyOrigin[True]],
+) raises:
     """Allocate a new surface with a specific pixel format and existing pixel
     data.
 
@@ -239,7 +254,17 @@ fn create_surface_from(width: c_int, height: c_int, format: PixelFormat, pixels:
     Docs: https://wiki.libsdl.org/SDL3/SDL_CreateSurfaceFrom.
     """
 
-    ret = _get_dylib_function[lib, "SDL_CreateSurfaceFrom", fn (width: c_int, height: c_int, format: PixelFormat, pixels: Ptr[NoneType, AnyOrigin[True]], pitch: c_int) -> Ptr[Surface, AnyOrigin[True]]]()(width, height, format, pixels, pitch)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_CreateSurfaceFrom",
+        fn(
+            width: c_int,
+            height: c_int,
+            format: PixelFormat,
+            pixels: Ptr[NoneType, AnyOrigin[True]],
+            pitch: c_int,
+        ) -> Ptr[Surface, AnyOrigin[True]],
+    ]()(width, height, format, pixels, pitch)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -258,10 +283,16 @@ fn destroy_surface(surface: Ptr[Surface, AnyOrigin[True]]) raises -> None:
     Docs: https://wiki.libsdl.org/SDL3/SDL_DestroySurface.
     """
 
-    return _get_dylib_function[lib, "SDL_DestroySurface", fn (surface: Ptr[Surface, AnyOrigin[True]]) -> None]()(surface)
+    return _get_dylib_function[
+        lib,
+        "SDL_DestroySurface",
+        fn(surface: Ptr[Surface, AnyOrigin[True]]) -> None,
+    ]()(surface)
 
 
-fn get_surface_properties(surface: Ptr[Surface, AnyOrigin[True]]) raises -> PropertiesID:
+fn get_surface_properties(
+    surface: Ptr[Surface, AnyOrigin[True]]
+) raises -> PropertiesID:
     """Get the properties associated with a surface.
 
     The following properties are understood by SDL:
@@ -298,10 +329,16 @@ fn get_surface_properties(surface: Ptr[Surface, AnyOrigin[True]]) raises -> Prop
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetSurfaceProperties.
     """
 
-    return _get_dylib_function[lib, "SDL_GetSurfaceProperties", fn (surface: Ptr[Surface, AnyOrigin[True]]) -> PropertiesID]()(surface)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetSurfaceProperties",
+        fn(surface: Ptr[Surface, AnyOrigin[True]]) -> PropertiesID,
+    ]()(surface)
 
 
-fn set_surface_colorspace(surface: Ptr[Surface, AnyOrigin[True]], colorspace: Colorspace) raises:
+fn set_surface_colorspace(
+    surface: Ptr[Surface, AnyOrigin[True]], colorspace: Colorspace
+) raises:
     """Set the colorspace used by a surface.
 
     Setting the colorspace doesn't change the pixels, only how they are
@@ -322,12 +359,20 @@ fn set_surface_colorspace(surface: Ptr[Surface, AnyOrigin[True]], colorspace: Co
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetSurfaceColorspace.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SetSurfaceColorspace", fn (surface: Ptr[Surface, AnyOrigin[True]], colorspace: Colorspace) -> Bool]()(surface, colorspace)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SetSurfaceColorspace",
+        fn(
+            surface: Ptr[Surface, AnyOrigin[True]], colorspace: Colorspace
+        ) -> Bool,
+    ]()(surface, colorspace)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_surface_colorspace(surface: Ptr[Surface, AnyOrigin[True]]) raises -> Colorspace:
+fn get_surface_colorspace(
+    surface: Ptr[Surface, AnyOrigin[True]]
+) raises -> Colorspace:
     """Get the colorspace used by a surface.
 
     The colorspace defaults to SDL_COLORSPACE_SRGB_LINEAR for floating point
@@ -347,10 +392,16 @@ fn get_surface_colorspace(surface: Ptr[Surface, AnyOrigin[True]]) raises -> Colo
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetSurfaceColorspace.
     """
 
-    return _get_dylib_function[lib, "SDL_GetSurfaceColorspace", fn (surface: Ptr[Surface, AnyOrigin[True]]) -> Colorspace]()(surface)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetSurfaceColorspace",
+        fn(surface: Ptr[Surface, AnyOrigin[True]]) -> Colorspace,
+    ]()(surface)
 
 
-fn create_surface_palette(surface: Ptr[Surface, AnyOrigin[True]]) raises -> Ptr[Palette, AnyOrigin[True]]:
+fn create_surface_palette(
+    surface: Ptr[Surface, AnyOrigin[True]]
+) raises -> Ptr[Palette, AnyOrigin[True]]:
     """Create a palette and associate it with a surface.
 
     This function creates a palette compatible with the provided surface. The
@@ -381,10 +432,19 @@ fn create_surface_palette(surface: Ptr[Surface, AnyOrigin[True]]) raises -> Ptr[
     Docs: https://wiki.libsdl.org/SDL3/SDL_CreateSurfacePalette.
     """
 
-    return _get_dylib_function[lib, "SDL_CreateSurfacePalette", fn (surface: Ptr[Surface, AnyOrigin[True]]) -> Ptr[Palette, AnyOrigin[True]]]()(surface)
+    return _get_dylib_function[
+        lib,
+        "SDL_CreateSurfacePalette",
+        fn(
+            surface: Ptr[Surface, AnyOrigin[True]]
+        ) -> Ptr[Palette, AnyOrigin[True]],
+    ]()(surface)
 
 
-fn set_surface_palette(surface: Ptr[Surface, AnyOrigin[True]], palette: Ptr[Palette, AnyOrigin[True]]) raises:
+fn set_surface_palette(
+    surface: Ptr[Surface, AnyOrigin[True]],
+    palette: Ptr[Palette, AnyOrigin[True]],
+) raises:
     """Set the palette used by a surface.
 
     A single palette can be shared with many surfaces.
@@ -403,12 +463,21 @@ fn set_surface_palette(surface: Ptr[Surface, AnyOrigin[True]], palette: Ptr[Pale
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetSurfacePalette.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SetSurfacePalette", fn (surface: Ptr[Surface, AnyOrigin[True]], palette: Ptr[Palette, AnyOrigin[True]]) -> Bool]()(surface, palette)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SetSurfacePalette",
+        fn(
+            surface: Ptr[Surface, AnyOrigin[True]],
+            palette: Ptr[Palette, AnyOrigin[True]],
+        ) -> Bool,
+    ]()(surface, palette)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_surface_palette(surface: Ptr[Surface, AnyOrigin[True]]) raises -> Ptr[Palette, AnyOrigin[True]]:
+fn get_surface_palette(
+    surface: Ptr[Surface, AnyOrigin[True]]
+) raises -> Ptr[Palette, AnyOrigin[True]]:
     """Get the palette used by a surface.
 
     Args:
@@ -424,10 +493,18 @@ fn get_surface_palette(surface: Ptr[Surface, AnyOrigin[True]]) raises -> Ptr[Pal
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetSurfacePalette.
     """
 
-    return _get_dylib_function[lib, "SDL_GetSurfacePalette", fn (surface: Ptr[Surface, AnyOrigin[True]]) -> Ptr[Palette, AnyOrigin[True]]]()(surface)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetSurfacePalette",
+        fn(
+            surface: Ptr[Surface, AnyOrigin[True]]
+        ) -> Ptr[Palette, AnyOrigin[True]],
+    ]()(surface)
 
 
-fn add_surface_alternate_image(surface: Ptr[Surface, AnyOrigin[True]], image: Ptr[Surface, AnyOrigin[True]]) raises:
+fn add_surface_alternate_image(
+    surface: Ptr[Surface, AnyOrigin[True]], image: Ptr[Surface, AnyOrigin[True]]
+) raises:
     """Add an alternate version of a surface.
 
     This function adds an alternate version of this surface, usually used for
@@ -453,12 +530,21 @@ fn add_surface_alternate_image(surface: Ptr[Surface, AnyOrigin[True]], image: Pt
     Docs: https://wiki.libsdl.org/SDL3/SDL_AddSurfaceAlternateImage.
     """
 
-    ret = _get_dylib_function[lib, "SDL_AddSurfaceAlternateImage", fn (surface: Ptr[Surface, AnyOrigin[True]], image: Ptr[Surface, AnyOrigin[True]]) -> Bool]()(surface, image)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_AddSurfaceAlternateImage",
+        fn(
+            surface: Ptr[Surface, AnyOrigin[True]],
+            image: Ptr[Surface, AnyOrigin[True]],
+        ) -> Bool,
+    ]()(surface, image)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn surface_has_alternate_images(surface: Ptr[Surface, AnyOrigin[True]]) raises -> Bool:
+fn surface_has_alternate_images(
+    surface: Ptr[Surface, AnyOrigin[True]]
+) raises -> Bool:
     """Return whether a surface has alternate versions available.
 
     Args:
@@ -473,10 +559,16 @@ fn surface_has_alternate_images(surface: Ptr[Surface, AnyOrigin[True]]) raises -
     Docs: https://wiki.libsdl.org/SDL3/SDL_SurfaceHasAlternateImages.
     """
 
-    return _get_dylib_function[lib, "SDL_SurfaceHasAlternateImages", fn (surface: Ptr[Surface, AnyOrigin[True]]) -> Bool]()(surface)
+    return _get_dylib_function[
+        lib,
+        "SDL_SurfaceHasAlternateImages",
+        fn(surface: Ptr[Surface, AnyOrigin[True]]) -> Bool,
+    ]()(surface)
 
 
-fn get_surface_images(surface: Ptr[Surface, AnyOrigin[True]], count: Ptr[c_int, AnyOrigin[True]]) raises -> Ptr[Ptr[Surface, AnyOrigin[True]], AnyOrigin[True]]:
+fn get_surface_images(
+    surface: Ptr[Surface, AnyOrigin[True]], count: Ptr[c_int, AnyOrigin[True]]
+) raises -> Ptr[Ptr[Surface, AnyOrigin[True]], AnyOrigin[True]]:
     """Get an array including all versions of a surface.
 
     This returns all versions of a surface, with the surface being queried as
@@ -502,10 +594,19 @@ fn get_surface_images(surface: Ptr[Surface, AnyOrigin[True]], count: Ptr[c_int, 
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetSurfaceImages.
     """
 
-    return _get_dylib_function[lib, "SDL_GetSurfaceImages", fn (surface: Ptr[Surface, AnyOrigin[True]], count: Ptr[c_int, AnyOrigin[True]]) -> Ptr[Ptr[Surface, AnyOrigin[True]], AnyOrigin[True]]]()(surface, count)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetSurfaceImages",
+        fn(
+            surface: Ptr[Surface, AnyOrigin[True]],
+            count: Ptr[c_int, AnyOrigin[True]],
+        ) -> Ptr[Ptr[Surface, AnyOrigin[True]], AnyOrigin[True]],
+    ]()(surface, count)
 
 
-fn remove_surface_alternate_images(surface: Ptr[Surface, AnyOrigin[True]]) raises -> None:
+fn remove_surface_alternate_images(
+    surface: Ptr[Surface, AnyOrigin[True]]
+) raises -> None:
     """Remove all alternate versions of a surface.
 
     This function removes a reference from all the alternative versions,
@@ -520,7 +621,11 @@ fn remove_surface_alternate_images(surface: Ptr[Surface, AnyOrigin[True]]) raise
     Docs: https://wiki.libsdl.org/SDL3/SDL_RemoveSurfaceAlternateImages.
     """
 
-    return _get_dylib_function[lib, "SDL_RemoveSurfaceAlternateImages", fn (surface: Ptr[Surface, AnyOrigin[True]]) -> None]()(surface)
+    return _get_dylib_function[
+        lib,
+        "SDL_RemoveSurfaceAlternateImages",
+        fn(surface: Ptr[Surface, AnyOrigin[True]]) -> None,
+    ]()(surface)
 
 
 fn lock_surface(surface: Ptr[Surface, AnyOrigin[True]]) raises:
@@ -550,7 +655,11 @@ fn lock_surface(surface: Ptr[Surface, AnyOrigin[True]]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_LockSurface.
     """
 
-    ret = _get_dylib_function[lib, "SDL_LockSurface", fn (surface: Ptr[Surface, AnyOrigin[True]]) -> Bool]()(surface)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_LockSurface",
+        fn(surface: Ptr[Surface, AnyOrigin[True]]) -> Bool,
+    ]()(surface)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -569,10 +678,18 @@ fn unlock_surface(surface: Ptr[Surface, AnyOrigin[True]]) raises -> None:
     Docs: https://wiki.libsdl.org/SDL3/SDL_UnlockSurface.
     """
 
-    return _get_dylib_function[lib, "SDL_UnlockSurface", fn (surface: Ptr[Surface, AnyOrigin[True]]) -> None]()(surface)
+    return _get_dylib_function[
+        lib,
+        "SDL_UnlockSurface",
+        fn(surface: Ptr[Surface, AnyOrigin[True]]) -> None,
+    ]()(surface)
 
 
-fn load_bmp_io(src: Ptr[IOStream, AnyOrigin[True]], closeio: Bool, out ret: Ptr[Surface, AnyOrigin[True]]) raises:
+fn load_bmp_io(
+    src: Ptr[IOStream, AnyOrigin[True]],
+    closeio: Bool,
+    out ret: Ptr[Surface, AnyOrigin[True]],
+) raises:
     """Load a BMP image from a seekable SDL data stream.
 
     The new surface should be freed with SDL_DestroySurface(). Not doing so
@@ -593,7 +710,13 @@ fn load_bmp_io(src: Ptr[IOStream, AnyOrigin[True]], closeio: Bool, out ret: Ptr[
     Docs: https://wiki.libsdl.org/SDL3/SDL_LoadBMP_IO.
     """
 
-    ret = _get_dylib_function[lib, "SDL_LoadBMP_IO", fn (src: Ptr[IOStream, AnyOrigin[True]], closeio: Bool) -> Ptr[Surface, AnyOrigin[True]]]()(src, closeio)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_LoadBMP_IO",
+        fn(
+            src: Ptr[IOStream, AnyOrigin[True]], closeio: Bool
+        ) -> Ptr[Surface, AnyOrigin[True]],
+    ]()(src, closeio)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -617,12 +740,22 @@ fn load_bmp(var file: String, out ret: Ptr[Surface, AnyOrigin[True]]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_LoadBMP.
     """
 
-    ret = _get_dylib_function[lib, "SDL_LoadBMP", fn (file: Ptr[c_char, AnyOrigin[False]]) -> Ptr[Surface, AnyOrigin[True]]]()(file.as_c_string_slice().unsafe_ptr())
+    ret = _get_dylib_function[
+        lib,
+        "SDL_LoadBMP",
+        fn(
+            file: Ptr[c_char, AnyOrigin[False]]
+        ) -> Ptr[Surface, AnyOrigin[True]],
+    ]()(file.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn save_bmp_io(surface: Ptr[Surface, AnyOrigin[True]], dst: Ptr[IOStream, AnyOrigin[True]], closeio: Bool) raises:
+fn save_bmp_io(
+    surface: Ptr[Surface, AnyOrigin[True]],
+    dst: Ptr[IOStream, AnyOrigin[True]],
+    closeio: Bool,
+) raises:
     """Save a surface to a seekable SDL data stream in BMP format.
 
     Surfaces with a 24-bit, 32-bit and paletted 8-bit format get saved in the
@@ -647,7 +780,15 @@ fn save_bmp_io(surface: Ptr[Surface, AnyOrigin[True]], dst: Ptr[IOStream, AnyOri
     Docs: https://wiki.libsdl.org/SDL3/SDL_SaveBMP_IO.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SaveBMP_IO", fn (surface: Ptr[Surface, AnyOrigin[True]], dst: Ptr[IOStream, AnyOrigin[True]], closeio: Bool) -> Bool]()(surface, dst, closeio)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SaveBMP_IO",
+        fn(
+            surface: Ptr[Surface, AnyOrigin[True]],
+            dst: Ptr[IOStream, AnyOrigin[True]],
+            closeio: Bool,
+        ) -> Bool,
+    ]()(surface, dst, closeio)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -675,12 +816,21 @@ fn save_bmp(surface: Ptr[Surface, AnyOrigin[True]], var file: String) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_SaveBMP.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SaveBMP", fn (surface: Ptr[Surface, AnyOrigin[True]], file: Ptr[c_char, AnyOrigin[False]]) -> Bool]()(surface, file.as_c_string_slice().unsafe_ptr())
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SaveBMP",
+        fn(
+            surface: Ptr[Surface, AnyOrigin[True]],
+            file: Ptr[c_char, AnyOrigin[False]],
+        ) -> Bool,
+    ]()(surface, file.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_surface_rle(surface: Ptr[Surface, AnyOrigin[True]], enabled: Bool) raises:
+fn set_surface_rle(
+    surface: Ptr[Surface, AnyOrigin[True]], enabled: Bool
+) raises:
     """Set the RLE acceleration hint for a surface.
 
     If RLE is enabled, color key and alpha blending blits are much faster, but
@@ -700,7 +850,11 @@ fn set_surface_rle(surface: Ptr[Surface, AnyOrigin[True]], enabled: Bool) raises
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetSurfaceRLE.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SetSurfaceRLE", fn (surface: Ptr[Surface, AnyOrigin[True]], enabled: Bool) -> Bool]()(surface, enabled)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SetSurfaceRLE",
+        fn(surface: Ptr[Surface, AnyOrigin[True]], enabled: Bool) -> Bool,
+    ]()(surface, enabled)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -722,10 +876,16 @@ fn surface_has_rle(surface: Ptr[Surface, AnyOrigin[True]]) raises -> Bool:
     Docs: https://wiki.libsdl.org/SDL3/SDL_SurfaceHasRLE.
     """
 
-    return _get_dylib_function[lib, "SDL_SurfaceHasRLE", fn (surface: Ptr[Surface, AnyOrigin[True]]) -> Bool]()(surface)
+    return _get_dylib_function[
+        lib,
+        "SDL_SurfaceHasRLE",
+        fn(surface: Ptr[Surface, AnyOrigin[True]]) -> Bool,
+    ]()(surface)
 
 
-fn set_surface_color_key(surface: Ptr[Surface, AnyOrigin[True]], enabled: Bool, key: UInt32) raises:
+fn set_surface_color_key(
+    surface: Ptr[Surface, AnyOrigin[True]], enabled: Bool, key: UInt32
+) raises:
     """Set the color key (transparent pixel) in a surface.
 
     The color key defines a pixel value that will be treated as transparent in
@@ -750,7 +910,13 @@ fn set_surface_color_key(surface: Ptr[Surface, AnyOrigin[True]], enabled: Bool, 
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetSurfaceColorKey.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SetSurfaceColorKey", fn (surface: Ptr[Surface, AnyOrigin[True]], enabled: Bool, key: UInt32) -> Bool]()(surface, enabled, key)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SetSurfaceColorKey",
+        fn(
+            surface: Ptr[Surface, AnyOrigin[True]], enabled: Bool, key: UInt32
+        ) -> Bool,
+    ]()(surface, enabled, key)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -772,10 +938,16 @@ fn surface_has_color_key(surface: Ptr[Surface, AnyOrigin[True]]) raises -> Bool:
     Docs: https://wiki.libsdl.org/SDL3/SDL_SurfaceHasColorKey.
     """
 
-    return _get_dylib_function[lib, "SDL_SurfaceHasColorKey", fn (surface: Ptr[Surface, AnyOrigin[True]]) -> Bool]()(surface)
+    return _get_dylib_function[
+        lib,
+        "SDL_SurfaceHasColorKey",
+        fn(surface: Ptr[Surface, AnyOrigin[True]]) -> Bool,
+    ]()(surface)
 
 
-fn get_surface_color_key(surface: Ptr[Surface, AnyOrigin[True]], key: Ptr[UInt32, AnyOrigin[True]]) raises:
+fn get_surface_color_key(
+    surface: Ptr[Surface, AnyOrigin[True]], key: Ptr[UInt32, AnyOrigin[True]]
+) raises:
     """Get the color key (transparent pixel) for a surface.
 
     The color key is a pixel of the format used by the surface, as generated by
@@ -797,12 +969,21 @@ fn get_surface_color_key(surface: Ptr[Surface, AnyOrigin[True]], key: Ptr[UInt32
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetSurfaceColorKey.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GetSurfaceColorKey", fn (surface: Ptr[Surface, AnyOrigin[True]], key: Ptr[UInt32, AnyOrigin[True]]) -> Bool]()(surface, key)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_GetSurfaceColorKey",
+        fn(
+            surface: Ptr[Surface, AnyOrigin[True]],
+            key: Ptr[UInt32, AnyOrigin[True]],
+        ) -> Bool,
+    ]()(surface, key)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_surface_color_mod(surface: Ptr[Surface, AnyOrigin[True]], r: UInt8, g: UInt8, b: UInt8) raises:
+fn set_surface_color_mod(
+    surface: Ptr[Surface, AnyOrigin[True]], r: UInt8, g: UInt8, b: UInt8
+) raises:
     """Set an additional color value multiplied into blit operations.
 
     When this surface is blitted, during the blit operation each source color
@@ -827,12 +1008,23 @@ fn set_surface_color_mod(surface: Ptr[Surface, AnyOrigin[True]], r: UInt8, g: UI
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetSurfaceColorMod.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SetSurfaceColorMod", fn (surface: Ptr[Surface, AnyOrigin[True]], r: UInt8, g: UInt8, b: UInt8) -> Bool]()(surface, r, g, b)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SetSurfaceColorMod",
+        fn(
+            surface: Ptr[Surface, AnyOrigin[True]], r: UInt8, g: UInt8, b: UInt8
+        ) -> Bool,
+    ]()(surface, r, g, b)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_surface_color_mod(surface: Ptr[Surface, AnyOrigin[True]], r: Ptr[UInt8, AnyOrigin[True]], g: Ptr[UInt8, AnyOrigin[True]], b: Ptr[UInt8, AnyOrigin[True]]) raises:
+fn get_surface_color_mod(
+    surface: Ptr[Surface, AnyOrigin[True]],
+    r: Ptr[UInt8, AnyOrigin[True]],
+    g: Ptr[UInt8, AnyOrigin[True]],
+    b: Ptr[UInt8, AnyOrigin[True]],
+) raises:
     """Get the additional color value multiplied into blit operations.
 
     Args:
@@ -851,12 +1043,23 @@ fn get_surface_color_mod(surface: Ptr[Surface, AnyOrigin[True]], r: Ptr[UInt8, A
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetSurfaceColorMod.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GetSurfaceColorMod", fn (surface: Ptr[Surface, AnyOrigin[True]], r: Ptr[UInt8, AnyOrigin[True]], g: Ptr[UInt8, AnyOrigin[True]], b: Ptr[UInt8, AnyOrigin[True]]) -> Bool]()(surface, r, g, b)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_GetSurfaceColorMod",
+        fn(
+            surface: Ptr[Surface, AnyOrigin[True]],
+            r: Ptr[UInt8, AnyOrigin[True]],
+            g: Ptr[UInt8, AnyOrigin[True]],
+            b: Ptr[UInt8, AnyOrigin[True]],
+        ) -> Bool,
+    ]()(surface, r, g, b)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_surface_alpha_mod(surface: Ptr[Surface, AnyOrigin[True]], alpha: UInt8) raises:
+fn set_surface_alpha_mod(
+    surface: Ptr[Surface, AnyOrigin[True]], alpha: UInt8
+) raises:
     """Set an additional alpha value used in blit operations.
 
     When this surface is blitted, during the blit operation the source alpha
@@ -878,12 +1081,18 @@ fn set_surface_alpha_mod(surface: Ptr[Surface, AnyOrigin[True]], alpha: UInt8) r
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetSurfaceAlphaMod.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SetSurfaceAlphaMod", fn (surface: Ptr[Surface, AnyOrigin[True]], alpha: UInt8) -> Bool]()(surface, alpha)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SetSurfaceAlphaMod",
+        fn(surface: Ptr[Surface, AnyOrigin[True]], alpha: UInt8) -> Bool,
+    ]()(surface, alpha)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_surface_alpha_mod(surface: Ptr[Surface, AnyOrigin[True]], alpha: Ptr[UInt8, AnyOrigin[True]]) raises:
+fn get_surface_alpha_mod(
+    surface: Ptr[Surface, AnyOrigin[True]], alpha: Ptr[UInt8, AnyOrigin[True]]
+) raises:
     """Get the additional alpha value used in blit operations.
 
     Args:
@@ -900,12 +1109,21 @@ fn get_surface_alpha_mod(surface: Ptr[Surface, AnyOrigin[True]], alpha: Ptr[UInt
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetSurfaceAlphaMod.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GetSurfaceAlphaMod", fn (surface: Ptr[Surface, AnyOrigin[True]], alpha: Ptr[UInt8, AnyOrigin[True]]) -> Bool]()(surface, alpha)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_GetSurfaceAlphaMod",
+        fn(
+            surface: Ptr[Surface, AnyOrigin[True]],
+            alpha: Ptr[UInt8, AnyOrigin[True]],
+        ) -> Bool,
+    ]()(surface, alpha)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_surface_blend_mode(surface: Ptr[Surface, AnyOrigin[True]], blend_mode: BlendMode) raises:
+fn set_surface_blend_mode(
+    surface: Ptr[Surface, AnyOrigin[True]], blend_mode: BlendMode
+) raises:
     """Set the blend mode used for blit operations.
 
     To copy a surface to another surface (or texture) without blending with the
@@ -926,12 +1144,21 @@ fn set_surface_blend_mode(surface: Ptr[Surface, AnyOrigin[True]], blend_mode: Bl
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetSurfaceBlendMode.
     """
 
-    ret = _get_dylib_function[lib, "SDL_SetSurfaceBlendMode", fn (surface: Ptr[Surface, AnyOrigin[True]], blend_mode: BlendMode) -> Bool]()(surface, blend_mode)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_SetSurfaceBlendMode",
+        fn(
+            surface: Ptr[Surface, AnyOrigin[True]], blend_mode: BlendMode
+        ) -> Bool,
+    ]()(surface, blend_mode)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_surface_blend_mode(surface: Ptr[Surface, AnyOrigin[True]], blend_mode: Ptr[BlendMode, AnyOrigin[True]]) raises:
+fn get_surface_blend_mode(
+    surface: Ptr[Surface, AnyOrigin[True]],
+    blend_mode: Ptr[BlendMode, AnyOrigin[True]],
+) raises:
     """Get the blend mode used for blit operations.
 
     Args:
@@ -948,12 +1175,21 @@ fn get_surface_blend_mode(surface: Ptr[Surface, AnyOrigin[True]], blend_mode: Pt
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetSurfaceBlendMode.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GetSurfaceBlendMode", fn (surface: Ptr[Surface, AnyOrigin[True]], blend_mode: Ptr[BlendMode, AnyOrigin[True]]) -> Bool]()(surface, blend_mode)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_GetSurfaceBlendMode",
+        fn(
+            surface: Ptr[Surface, AnyOrigin[True]],
+            blend_mode: Ptr[BlendMode, AnyOrigin[True]],
+        ) -> Bool,
+    ]()(surface, blend_mode)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_surface_clip_rect(surface: Ptr[Surface, AnyOrigin[True]], rect: Ptr[Rect, AnyOrigin[False]]) raises -> Bool:
+fn set_surface_clip_rect(
+    surface: Ptr[Surface, AnyOrigin[True]], rect: Ptr[Rect, AnyOrigin[False]]
+) raises -> Bool:
     """Set the clipping rectangle for a surface.
 
     When `surface` is the destination of a blit, only the area within the clip
@@ -977,10 +1213,19 @@ fn set_surface_clip_rect(surface: Ptr[Surface, AnyOrigin[True]], rect: Ptr[Rect,
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetSurfaceClipRect.
     """
 
-    return _get_dylib_function[lib, "SDL_SetSurfaceClipRect", fn (surface: Ptr[Surface, AnyOrigin[True]], rect: Ptr[Rect, AnyOrigin[False]]) -> Bool]()(surface, rect)
+    return _get_dylib_function[
+        lib,
+        "SDL_SetSurfaceClipRect",
+        fn(
+            surface: Ptr[Surface, AnyOrigin[True]],
+            rect: Ptr[Rect, AnyOrigin[False]],
+        ) -> Bool,
+    ]()(surface, rect)
 
 
-fn get_surface_clip_rect(surface: Ptr[Surface, AnyOrigin[True]], rect: Ptr[Rect, AnyOrigin[True]]) raises:
+fn get_surface_clip_rect(
+    surface: Ptr[Surface, AnyOrigin[True]], rect: Ptr[Rect, AnyOrigin[True]]
+) raises:
     """Get the clipping rectangle for a surface.
 
     When `surface` is the destination of a blit, only the area within the clip
@@ -1002,7 +1247,14 @@ fn get_surface_clip_rect(surface: Ptr[Surface, AnyOrigin[True]], rect: Ptr[Rect,
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetSurfaceClipRect.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GetSurfaceClipRect", fn (surface: Ptr[Surface, AnyOrigin[True]], rect: Ptr[Rect, AnyOrigin[True]]) -> Bool]()(surface, rect)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_GetSurfaceClipRect",
+        fn(
+            surface: Ptr[Surface, AnyOrigin[True]],
+            rect: Ptr[Rect, AnyOrigin[True]],
+        ) -> Bool,
+    ]()(surface, rect)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -1024,12 +1276,19 @@ fn flip_surface(surface: Ptr[Surface, AnyOrigin[True]], flip: FlipMode) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_FlipSurface.
     """
 
-    ret = _get_dylib_function[lib, "SDL_FlipSurface", fn (surface: Ptr[Surface, AnyOrigin[True]], flip: FlipMode) -> Bool]()(surface, flip)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_FlipSurface",
+        fn(surface: Ptr[Surface, AnyOrigin[True]], flip: FlipMode) -> Bool,
+    ]()(surface, flip)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn duplicate_surface(surface: Ptr[Surface, AnyOrigin[True]], out ret: Ptr[Surface, AnyOrigin[True]]) raises:
+fn duplicate_surface(
+    surface: Ptr[Surface, AnyOrigin[True]],
+    out ret: Ptr[Surface, AnyOrigin[True]],
+) raises:
     """Creates a new surface identical to the existing surface.
 
     If the original surface has alternate images, the new surface will have a
@@ -1050,12 +1309,24 @@ fn duplicate_surface(surface: Ptr[Surface, AnyOrigin[True]], out ret: Ptr[Surfac
     Docs: https://wiki.libsdl.org/SDL3/SDL_DuplicateSurface.
     """
 
-    ret = _get_dylib_function[lib, "SDL_DuplicateSurface", fn (surface: Ptr[Surface, AnyOrigin[True]]) -> Ptr[Surface, AnyOrigin[True]]]()(surface)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_DuplicateSurface",
+        fn(
+            surface: Ptr[Surface, AnyOrigin[True]]
+        ) -> Ptr[Surface, AnyOrigin[True]],
+    ]()(surface)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn scale_surface(surface: Ptr[Surface, AnyOrigin[True]], width: c_int, height: c_int, scale_mode: ScaleMode, out ret: Ptr[Surface, AnyOrigin[True]]) raises:
+fn scale_surface(
+    surface: Ptr[Surface, AnyOrigin[True]],
+    width: c_int,
+    height: c_int,
+    scale_mode: ScaleMode,
+    out ret: Ptr[Surface, AnyOrigin[True]],
+) raises:
     """Creates a new surface identical to the existing surface, scaled to the
     desired size.
 
@@ -1077,12 +1348,25 @@ fn scale_surface(surface: Ptr[Surface, AnyOrigin[True]], width: c_int, height: c
     Docs: https://wiki.libsdl.org/SDL3/SDL_ScaleSurface.
     """
 
-    ret = _get_dylib_function[lib, "SDL_ScaleSurface", fn (surface: Ptr[Surface, AnyOrigin[True]], width: c_int, height: c_int, scale_mode: ScaleMode) -> Ptr[Surface, AnyOrigin[True]]]()(surface, width, height, scale_mode)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_ScaleSurface",
+        fn(
+            surface: Ptr[Surface, AnyOrigin[True]],
+            width: c_int,
+            height: c_int,
+            scale_mode: ScaleMode,
+        ) -> Ptr[Surface, AnyOrigin[True]],
+    ]()(surface, width, height, scale_mode)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn convert_surface(surface: Ptr[Surface, AnyOrigin[True]], format: PixelFormat, out ret: Ptr[Surface, AnyOrigin[True]]) raises:
+fn convert_surface(
+    surface: Ptr[Surface, AnyOrigin[True]],
+    format: PixelFormat,
+    out ret: Ptr[Surface, AnyOrigin[True]],
+) raises:
     """Copy an existing surface to a new surface of the specified format.
 
     This function is used to optimize images for faster *repeat* blitting. This
@@ -1110,12 +1394,25 @@ fn convert_surface(surface: Ptr[Surface, AnyOrigin[True]], format: PixelFormat, 
     Docs: https://wiki.libsdl.org/SDL3/SDL_ConvertSurface.
     """
 
-    ret = _get_dylib_function[lib, "SDL_ConvertSurface", fn (surface: Ptr[Surface, AnyOrigin[True]], format: PixelFormat) -> Ptr[Surface, AnyOrigin[True]]]()(surface, format)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_ConvertSurface",
+        fn(
+            surface: Ptr[Surface, AnyOrigin[True]], format: PixelFormat
+        ) -> Ptr[Surface, AnyOrigin[True]],
+    ]()(surface, format)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn convert_surface_and_colorspace(surface: Ptr[Surface, AnyOrigin[True]], format: PixelFormat, palette: Ptr[Palette, AnyOrigin[True]], colorspace: Colorspace, props: PropertiesID, out ret: Ptr[Surface, AnyOrigin[True]]) raises:
+fn convert_surface_and_colorspace(
+    surface: Ptr[Surface, AnyOrigin[True]],
+    format: PixelFormat,
+    palette: Ptr[Palette, AnyOrigin[True]],
+    colorspace: Colorspace,
+    props: PropertiesID,
+    out ret: Ptr[Surface, AnyOrigin[True]],
+) raises:
     """Copy an existing surface to a new surface of the specified format and
     colorspace.
 
@@ -1143,12 +1440,31 @@ fn convert_surface_and_colorspace(surface: Ptr[Surface, AnyOrigin[True]], format
     Docs: https://wiki.libsdl.org/SDL3/SDL_ConvertSurfaceAndColorspace.
     """
 
-    ret = _get_dylib_function[lib, "SDL_ConvertSurfaceAndColorspace", fn (surface: Ptr[Surface, AnyOrigin[True]], format: PixelFormat, palette: Ptr[Palette, AnyOrigin[True]], colorspace: Colorspace, props: PropertiesID) -> Ptr[Surface, AnyOrigin[True]]]()(surface, format, palette, colorspace, props)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_ConvertSurfaceAndColorspace",
+        fn(
+            surface: Ptr[Surface, AnyOrigin[True]],
+            format: PixelFormat,
+            palette: Ptr[Palette, AnyOrigin[True]],
+            colorspace: Colorspace,
+            props: PropertiesID,
+        ) -> Ptr[Surface, AnyOrigin[True]],
+    ]()(surface, format, palette, colorspace, props)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn convert_pixels(width: c_int, height: c_int, src_format: PixelFormat, src: Ptr[NoneType, AnyOrigin[False]], src_pitch: c_int, dst_format: PixelFormat, dst: Ptr[NoneType, AnyOrigin[True]], dst_pitch: c_int) raises:
+fn convert_pixels(
+    width: c_int,
+    height: c_int,
+    src_format: PixelFormat,
+    src: Ptr[NoneType, AnyOrigin[False]],
+    src_pitch: c_int,
+    dst_format: PixelFormat,
+    dst: Ptr[NoneType, AnyOrigin[True]],
+    dst_pitch: c_int,
+) raises:
     """Copy a block of pixels of one format to another format.
 
     Args:
@@ -1173,12 +1489,38 @@ fn convert_pixels(width: c_int, height: c_int, src_format: PixelFormat, src: Ptr
     Docs: https://wiki.libsdl.org/SDL3/SDL_ConvertPixels.
     """
 
-    ret = _get_dylib_function[lib, "SDL_ConvertPixels", fn (width: c_int, height: c_int, src_format: PixelFormat, src: Ptr[NoneType, AnyOrigin[False]], src_pitch: c_int, dst_format: PixelFormat, dst: Ptr[NoneType, AnyOrigin[True]], dst_pitch: c_int) -> Bool]()(width, height, src_format, src, src_pitch, dst_format, dst, dst_pitch)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_ConvertPixels",
+        fn(
+            width: c_int,
+            height: c_int,
+            src_format: PixelFormat,
+            src: Ptr[NoneType, AnyOrigin[False]],
+            src_pitch: c_int,
+            dst_format: PixelFormat,
+            dst: Ptr[NoneType, AnyOrigin[True]],
+            dst_pitch: c_int,
+        ) -> Bool,
+    ]()(width, height, src_format, src, src_pitch, dst_format, dst, dst_pitch)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn convert_pixels_and_colorspace(width: c_int, height: c_int, src_format: PixelFormat, src_colorspace: Colorspace, src_properties: PropertiesID, src: Ptr[NoneType, AnyOrigin[False]], src_pitch: c_int, dst_format: PixelFormat, dst_colorspace: Colorspace, dst_properties: PropertiesID, dst: Ptr[NoneType, AnyOrigin[True]], dst_pitch: c_int) raises:
+fn convert_pixels_and_colorspace(
+    width: c_int,
+    height: c_int,
+    src_format: PixelFormat,
+    src_colorspace: Colorspace,
+    src_properties: PropertiesID,
+    src: Ptr[NoneType, AnyOrigin[False]],
+    src_pitch: c_int,
+    dst_format: PixelFormat,
+    dst_colorspace: Colorspace,
+    dst_properties: PropertiesID,
+    dst: Ptr[NoneType, AnyOrigin[True]],
+    dst_pitch: c_int,
+) raises:
     """Copy a block of pixels of one format and colorspace to another format and
     colorspace.
 
@@ -1212,12 +1554,52 @@ fn convert_pixels_and_colorspace(width: c_int, height: c_int, src_format: PixelF
     Docs: https://wiki.libsdl.org/SDL3/SDL_ConvertPixelsAndColorspace.
     """
 
-    ret = _get_dylib_function[lib, "SDL_ConvertPixelsAndColorspace", fn (width: c_int, height: c_int, src_format: PixelFormat, src_colorspace: Colorspace, src_properties: PropertiesID, src: Ptr[NoneType, AnyOrigin[False]], src_pitch: c_int, dst_format: PixelFormat, dst_colorspace: Colorspace, dst_properties: PropertiesID, dst: Ptr[NoneType, AnyOrigin[True]], dst_pitch: c_int) -> Bool]()(width, height, src_format, src_colorspace, src_properties, src, src_pitch, dst_format, dst_colorspace, dst_properties, dst, dst_pitch)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_ConvertPixelsAndColorspace",
+        fn(
+            width: c_int,
+            height: c_int,
+            src_format: PixelFormat,
+            src_colorspace: Colorspace,
+            src_properties: PropertiesID,
+            src: Ptr[NoneType, AnyOrigin[False]],
+            src_pitch: c_int,
+            dst_format: PixelFormat,
+            dst_colorspace: Colorspace,
+            dst_properties: PropertiesID,
+            dst: Ptr[NoneType, AnyOrigin[True]],
+            dst_pitch: c_int,
+        ) -> Bool,
+    ]()(
+        width,
+        height,
+        src_format,
+        src_colorspace,
+        src_properties,
+        src,
+        src_pitch,
+        dst_format,
+        dst_colorspace,
+        dst_properties,
+        dst,
+        dst_pitch,
+    )
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn premultiply_alpha(width: c_int, height: c_int, src_format: PixelFormat, src: Ptr[NoneType, AnyOrigin[False]], src_pitch: c_int, dst_format: PixelFormat, dst: Ptr[NoneType, AnyOrigin[True]], dst_pitch: c_int, linear: Bool) raises:
+fn premultiply_alpha(
+    width: c_int,
+    height: c_int,
+    src_format: PixelFormat,
+    src: Ptr[NoneType, AnyOrigin[False]],
+    src_pitch: c_int,
+    dst_format: PixelFormat,
+    dst: Ptr[NoneType, AnyOrigin[True]],
+    dst_pitch: c_int,
+    linear: Bool,
+) raises:
     """Premultiply the alpha on a block of pixels.
 
     This is safe to use with src == dst, but not for other overlapping areas.
@@ -1246,12 +1628,38 @@ fn premultiply_alpha(width: c_int, height: c_int, src_format: PixelFormat, src: 
     Docs: https://wiki.libsdl.org/SDL3/SDL_PremultiplyAlpha.
     """
 
-    ret = _get_dylib_function[lib, "SDL_PremultiplyAlpha", fn (width: c_int, height: c_int, src_format: PixelFormat, src: Ptr[NoneType, AnyOrigin[False]], src_pitch: c_int, dst_format: PixelFormat, dst: Ptr[NoneType, AnyOrigin[True]], dst_pitch: c_int, linear: Bool) -> Bool]()(width, height, src_format, src, src_pitch, dst_format, dst, dst_pitch, linear)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_PremultiplyAlpha",
+        fn(
+            width: c_int,
+            height: c_int,
+            src_format: PixelFormat,
+            src: Ptr[NoneType, AnyOrigin[False]],
+            src_pitch: c_int,
+            dst_format: PixelFormat,
+            dst: Ptr[NoneType, AnyOrigin[True]],
+            dst_pitch: c_int,
+            linear: Bool,
+        ) -> Bool,
+    ]()(
+        width,
+        height,
+        src_format,
+        src,
+        src_pitch,
+        dst_format,
+        dst,
+        dst_pitch,
+        linear,
+    )
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn premultiply_surface_alpha(surface: Ptr[Surface, AnyOrigin[True]], linear: Bool) raises:
+fn premultiply_surface_alpha(
+    surface: Ptr[Surface, AnyOrigin[True]], linear: Bool
+) raises:
     """Premultiply the alpha in a surface.
 
     This is safe to use with src == dst, but not for other overlapping areas.
@@ -1271,12 +1679,22 @@ fn premultiply_surface_alpha(surface: Ptr[Surface, AnyOrigin[True]], linear: Boo
     Docs: https://wiki.libsdl.org/SDL3/SDL_PremultiplySurfaceAlpha.
     """
 
-    ret = _get_dylib_function[lib, "SDL_PremultiplySurfaceAlpha", fn (surface: Ptr[Surface, AnyOrigin[True]], linear: Bool) -> Bool]()(surface, linear)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_PremultiplySurfaceAlpha",
+        fn(surface: Ptr[Surface, AnyOrigin[True]], linear: Bool) -> Bool,
+    ]()(surface, linear)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn clear_surface(surface: Ptr[Surface, AnyOrigin[True]], r: c_float, g: c_float, b: c_float, a: c_float) raises:
+fn clear_surface(
+    surface: Ptr[Surface, AnyOrigin[True]],
+    r: c_float,
+    g: c_float,
+    b: c_float,
+    a: c_float,
+) raises:
     """Clear a surface with a specific color, with floating point precision.
 
     This function handles all surface formats, and ignores any clip rectangle.
@@ -1301,12 +1719,26 @@ fn clear_surface(surface: Ptr[Surface, AnyOrigin[True]], r: c_float, g: c_float,
     Docs: https://wiki.libsdl.org/SDL3/SDL_ClearSurface.
     """
 
-    ret = _get_dylib_function[lib, "SDL_ClearSurface", fn (surface: Ptr[Surface, AnyOrigin[True]], r: c_float, g: c_float, b: c_float, a: c_float) -> Bool]()(surface, r, g, b, a)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_ClearSurface",
+        fn(
+            surface: Ptr[Surface, AnyOrigin[True]],
+            r: c_float,
+            g: c_float,
+            b: c_float,
+            a: c_float,
+        ) -> Bool,
+    ]()(surface, r, g, b, a)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn fill_surface_rect(dst: Ptr[Surface, AnyOrigin[True]], rect: Ptr[Rect, AnyOrigin[False]], color: UInt32) raises:
+fn fill_surface_rect(
+    dst: Ptr[Surface, AnyOrigin[True]],
+    rect: Ptr[Rect, AnyOrigin[False]],
+    color: UInt32,
+) raises:
     """Perform a fast fill of a rectangle with a specific color.
 
     `color` should be a pixel of the format used by the surface, and can be
@@ -1334,12 +1766,25 @@ fn fill_surface_rect(dst: Ptr[Surface, AnyOrigin[True]], rect: Ptr[Rect, AnyOrig
     Docs: https://wiki.libsdl.org/SDL3/SDL_FillSurfaceRect.
     """
 
-    ret = _get_dylib_function[lib, "SDL_FillSurfaceRect", fn (dst: Ptr[Surface, AnyOrigin[True]], rect: Ptr[Rect, AnyOrigin[False]], color: UInt32) -> Bool]()(dst, rect, color)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_FillSurfaceRect",
+        fn(
+            dst: Ptr[Surface, AnyOrigin[True]],
+            rect: Ptr[Rect, AnyOrigin[False]],
+            color: UInt32,
+        ) -> Bool,
+    ]()(dst, rect, color)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn fill_surface_rects(dst: Ptr[Surface, AnyOrigin[True]], rects: Ptr[Rect, AnyOrigin[False]], count: c_int, color: UInt32) raises:
+fn fill_surface_rects(
+    dst: Ptr[Surface, AnyOrigin[True]],
+    rects: Ptr[Rect, AnyOrigin[False]],
+    count: c_int,
+    color: UInt32,
+) raises:
     """Perform a fast fill of a set of rectangles with a specific color.
 
     `color` should be a pixel of the format used by the surface, and can be
@@ -1367,12 +1812,26 @@ fn fill_surface_rects(dst: Ptr[Surface, AnyOrigin[True]], rects: Ptr[Rect, AnyOr
     Docs: https://wiki.libsdl.org/SDL3/SDL_FillSurfaceRects.
     """
 
-    ret = _get_dylib_function[lib, "SDL_FillSurfaceRects", fn (dst: Ptr[Surface, AnyOrigin[True]], rects: Ptr[Rect, AnyOrigin[False]], count: c_int, color: UInt32) -> Bool]()(dst, rects, count, color)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_FillSurfaceRects",
+        fn(
+            dst: Ptr[Surface, AnyOrigin[True]],
+            rects: Ptr[Rect, AnyOrigin[False]],
+            count: c_int,
+            color: UInt32,
+        ) -> Bool,
+    ]()(dst, rects, count, color)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn blit_surface(src: Ptr[Surface, AnyOrigin[True]], srcrect: Ptr[Rect, AnyOrigin[False]], dst: Ptr[Surface, AnyOrigin[True]], dstrect: Ptr[Rect, AnyOrigin[False]]) raises:
+fn blit_surface(
+    src: Ptr[Surface, AnyOrigin[True]],
+    srcrect: Ptr[Rect, AnyOrigin[False]],
+    dst: Ptr[Surface, AnyOrigin[True]],
+    dstrect: Ptr[Rect, AnyOrigin[False]],
+) raises:
     """Performs a fast blit from the source surface to the destination surface
     with clipping.
 
@@ -1446,12 +1905,26 @@ fn blit_surface(src: Ptr[Surface, AnyOrigin[True]], srcrect: Ptr[Rect, AnyOrigin
     Docs: https://wiki.libsdl.org/SDL3/SDL_BlitSurface.
     """
 
-    ret = _get_dylib_function[lib, "SDL_BlitSurface", fn (src: Ptr[Surface, AnyOrigin[True]], srcrect: Ptr[Rect, AnyOrigin[False]], dst: Ptr[Surface, AnyOrigin[True]], dstrect: Ptr[Rect, AnyOrigin[False]]) -> Bool]()(src, srcrect, dst, dstrect)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_BlitSurface",
+        fn(
+            src: Ptr[Surface, AnyOrigin[True]],
+            srcrect: Ptr[Rect, AnyOrigin[False]],
+            dst: Ptr[Surface, AnyOrigin[True]],
+            dstrect: Ptr[Rect, AnyOrigin[False]],
+        ) -> Bool,
+    ]()(src, srcrect, dst, dstrect)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn blit_surface_unchecked(src: Ptr[Surface, AnyOrigin[True]], srcrect: Ptr[Rect, AnyOrigin[False]], dst: Ptr[Surface, AnyOrigin[True]], dstrect: Ptr[Rect, AnyOrigin[False]]) raises:
+fn blit_surface_unchecked(
+    src: Ptr[Surface, AnyOrigin[True]],
+    srcrect: Ptr[Rect, AnyOrigin[False]],
+    dst: Ptr[Surface, AnyOrigin[True]],
+    dstrect: Ptr[Rect, AnyOrigin[False]],
+) raises:
     """Perform low-level surface blitting only.
 
     This is a semi-private blit function and it performs low-level surface
@@ -1476,12 +1949,27 @@ fn blit_surface_unchecked(src: Ptr[Surface, AnyOrigin[True]], srcrect: Ptr[Rect,
     Docs: https://wiki.libsdl.org/SDL3/SDL_BlitSurfaceUnchecked.
     """
 
-    ret = _get_dylib_function[lib, "SDL_BlitSurfaceUnchecked", fn (src: Ptr[Surface, AnyOrigin[True]], srcrect: Ptr[Rect, AnyOrigin[False]], dst: Ptr[Surface, AnyOrigin[True]], dstrect: Ptr[Rect, AnyOrigin[False]]) -> Bool]()(src, srcrect, dst, dstrect)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_BlitSurfaceUnchecked",
+        fn(
+            src: Ptr[Surface, AnyOrigin[True]],
+            srcrect: Ptr[Rect, AnyOrigin[False]],
+            dst: Ptr[Surface, AnyOrigin[True]],
+            dstrect: Ptr[Rect, AnyOrigin[False]],
+        ) -> Bool,
+    ]()(src, srcrect, dst, dstrect)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn blit_surface_scaled(src: Ptr[Surface, AnyOrigin[True]], srcrect: Ptr[Rect, AnyOrigin[False]], dst: Ptr[Surface, AnyOrigin[True]], dstrect: Ptr[Rect, AnyOrigin[False]], scale_mode: ScaleMode) raises:
+fn blit_surface_scaled(
+    src: Ptr[Surface, AnyOrigin[True]],
+    srcrect: Ptr[Rect, AnyOrigin[False]],
+    dst: Ptr[Surface, AnyOrigin[True]],
+    dstrect: Ptr[Rect, AnyOrigin[False]],
+    scale_mode: ScaleMode,
+) raises:
     """Perform a scaled blit to a destination surface, which may be of a different
     format.
 
@@ -1506,12 +1994,28 @@ fn blit_surface_scaled(src: Ptr[Surface, AnyOrigin[True]], srcrect: Ptr[Rect, An
     Docs: https://wiki.libsdl.org/SDL3/SDL_BlitSurfaceScaled.
     """
 
-    ret = _get_dylib_function[lib, "SDL_BlitSurfaceScaled", fn (src: Ptr[Surface, AnyOrigin[True]], srcrect: Ptr[Rect, AnyOrigin[False]], dst: Ptr[Surface, AnyOrigin[True]], dstrect: Ptr[Rect, AnyOrigin[False]], scale_mode: ScaleMode) -> Bool]()(src, srcrect, dst, dstrect, scale_mode)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_BlitSurfaceScaled",
+        fn(
+            src: Ptr[Surface, AnyOrigin[True]],
+            srcrect: Ptr[Rect, AnyOrigin[False]],
+            dst: Ptr[Surface, AnyOrigin[True]],
+            dstrect: Ptr[Rect, AnyOrigin[False]],
+            scale_mode: ScaleMode,
+        ) -> Bool,
+    ]()(src, srcrect, dst, dstrect, scale_mode)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn blit_surface_unchecked_scaled(src: Ptr[Surface, AnyOrigin[True]], srcrect: Ptr[Rect, AnyOrigin[False]], dst: Ptr[Surface, AnyOrigin[True]], dstrect: Ptr[Rect, AnyOrigin[False]], scale_mode: ScaleMode) raises:
+fn blit_surface_unchecked_scaled(
+    src: Ptr[Surface, AnyOrigin[True]],
+    srcrect: Ptr[Rect, AnyOrigin[False]],
+    dst: Ptr[Surface, AnyOrigin[True]],
+    dstrect: Ptr[Rect, AnyOrigin[False]],
+    scale_mode: ScaleMode,
+) raises:
     """Perform low-level surface scaled blitting only.
 
     This is a semi-private function and it performs low-level surface blitting,
@@ -1537,12 +2041,28 @@ fn blit_surface_unchecked_scaled(src: Ptr[Surface, AnyOrigin[True]], srcrect: Pt
     Docs: https://wiki.libsdl.org/SDL3/SDL_BlitSurfaceUncheckedScaled.
     """
 
-    ret = _get_dylib_function[lib, "SDL_BlitSurfaceUncheckedScaled", fn (src: Ptr[Surface, AnyOrigin[True]], srcrect: Ptr[Rect, AnyOrigin[False]], dst: Ptr[Surface, AnyOrigin[True]], dstrect: Ptr[Rect, AnyOrigin[False]], scale_mode: ScaleMode) -> Bool]()(src, srcrect, dst, dstrect, scale_mode)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_BlitSurfaceUncheckedScaled",
+        fn(
+            src: Ptr[Surface, AnyOrigin[True]],
+            srcrect: Ptr[Rect, AnyOrigin[False]],
+            dst: Ptr[Surface, AnyOrigin[True]],
+            dstrect: Ptr[Rect, AnyOrigin[False]],
+            scale_mode: ScaleMode,
+        ) -> Bool,
+    ]()(src, srcrect, dst, dstrect, scale_mode)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn stretch_surface(src: Ptr[Surface, AnyOrigin[True]], srcrect: Ptr[Rect, AnyOrigin[False]], dst: Ptr[Surface, AnyOrigin[True]], dstrect: Ptr[Rect, AnyOrigin[False]], scale_mode: ScaleMode) raises:
+fn stretch_surface(
+    src: Ptr[Surface, AnyOrigin[True]],
+    srcrect: Ptr[Rect, AnyOrigin[False]],
+    dst: Ptr[Surface, AnyOrigin[True]],
+    dstrect: Ptr[Rect, AnyOrigin[False]],
+    scale_mode: ScaleMode,
+) raises:
     """Perform a stretched pixel copy from one surface to another.
 
     Args:
@@ -1566,12 +2086,27 @@ fn stretch_surface(src: Ptr[Surface, AnyOrigin[True]], srcrect: Ptr[Rect, AnyOri
     Docs: https://wiki.libsdl.org/SDL3/SDL_StretchSurface.
     """
 
-    ret = _get_dylib_function[lib, "SDL_StretchSurface", fn (src: Ptr[Surface, AnyOrigin[True]], srcrect: Ptr[Rect, AnyOrigin[False]], dst: Ptr[Surface, AnyOrigin[True]], dstrect: Ptr[Rect, AnyOrigin[False]], scale_mode: ScaleMode) -> Bool]()(src, srcrect, dst, dstrect, scale_mode)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_StretchSurface",
+        fn(
+            src: Ptr[Surface, AnyOrigin[True]],
+            srcrect: Ptr[Rect, AnyOrigin[False]],
+            dst: Ptr[Surface, AnyOrigin[True]],
+            dstrect: Ptr[Rect, AnyOrigin[False]],
+            scale_mode: ScaleMode,
+        ) -> Bool,
+    ]()(src, srcrect, dst, dstrect, scale_mode)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn blit_surface_tiled(src: Ptr[Surface, AnyOrigin[True]], srcrect: Ptr[Rect, AnyOrigin[False]], dst: Ptr[Surface, AnyOrigin[True]], dstrect: Ptr[Rect, AnyOrigin[False]]) raises:
+fn blit_surface_tiled(
+    src: Ptr[Surface, AnyOrigin[True]],
+    srcrect: Ptr[Rect, AnyOrigin[False]],
+    dst: Ptr[Surface, AnyOrigin[True]],
+    dstrect: Ptr[Rect, AnyOrigin[False]],
+) raises:
     """Perform a tiled blit to a destination surface, which may be of a different
     format.
 
@@ -1597,12 +2132,28 @@ fn blit_surface_tiled(src: Ptr[Surface, AnyOrigin[True]], srcrect: Ptr[Rect, Any
     Docs: https://wiki.libsdl.org/SDL3/SDL_BlitSurfaceTiled.
     """
 
-    ret = _get_dylib_function[lib, "SDL_BlitSurfaceTiled", fn (src: Ptr[Surface, AnyOrigin[True]], srcrect: Ptr[Rect, AnyOrigin[False]], dst: Ptr[Surface, AnyOrigin[True]], dstrect: Ptr[Rect, AnyOrigin[False]]) -> Bool]()(src, srcrect, dst, dstrect)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_BlitSurfaceTiled",
+        fn(
+            src: Ptr[Surface, AnyOrigin[True]],
+            srcrect: Ptr[Rect, AnyOrigin[False]],
+            dst: Ptr[Surface, AnyOrigin[True]],
+            dstrect: Ptr[Rect, AnyOrigin[False]],
+        ) -> Bool,
+    ]()(src, srcrect, dst, dstrect)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn blit_surface_tiled_with_scale(src: Ptr[Surface, AnyOrigin[True]], srcrect: Ptr[Rect, AnyOrigin[False]], scale: c_float, scale_mode: ScaleMode, dst: Ptr[Surface, AnyOrigin[True]], dstrect: Ptr[Rect, AnyOrigin[False]]) raises:
+fn blit_surface_tiled_with_scale(
+    src: Ptr[Surface, AnyOrigin[True]],
+    srcrect: Ptr[Rect, AnyOrigin[False]],
+    scale: c_float,
+    scale_mode: ScaleMode,
+    dst: Ptr[Surface, AnyOrigin[True]],
+    dstrect: Ptr[Rect, AnyOrigin[False]],
+) raises:
     """Perform a scaled and tiled blit to a destination surface, which may be of a
     different format.
 
@@ -1632,12 +2183,34 @@ fn blit_surface_tiled_with_scale(src: Ptr[Surface, AnyOrigin[True]], srcrect: Pt
     Docs: https://wiki.libsdl.org/SDL3/SDL_BlitSurfaceTiledWithScale.
     """
 
-    ret = _get_dylib_function[lib, "SDL_BlitSurfaceTiledWithScale", fn (src: Ptr[Surface, AnyOrigin[True]], srcrect: Ptr[Rect, AnyOrigin[False]], scale: c_float, scale_mode: ScaleMode, dst: Ptr[Surface, AnyOrigin[True]], dstrect: Ptr[Rect, AnyOrigin[False]]) -> Bool]()(src, srcrect, scale, scale_mode, dst, dstrect)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_BlitSurfaceTiledWithScale",
+        fn(
+            src: Ptr[Surface, AnyOrigin[True]],
+            srcrect: Ptr[Rect, AnyOrigin[False]],
+            scale: c_float,
+            scale_mode: ScaleMode,
+            dst: Ptr[Surface, AnyOrigin[True]],
+            dstrect: Ptr[Rect, AnyOrigin[False]],
+        ) -> Bool,
+    ]()(src, srcrect, scale, scale_mode, dst, dstrect)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn blit_surface_9grid(src: Ptr[Surface, AnyOrigin[True]], srcrect: Ptr[Rect, AnyOrigin[False]], left_width: c_int, right_width: c_int, top_height: c_int, bottom_height: c_int, scale: c_float, scale_mode: ScaleMode, dst: Ptr[Surface, AnyOrigin[True]], dstrect: Ptr[Rect, AnyOrigin[False]]) raises:
+fn blit_surface_9grid(
+    src: Ptr[Surface, AnyOrigin[True]],
+    srcrect: Ptr[Rect, AnyOrigin[False]],
+    left_width: c_int,
+    right_width: c_int,
+    top_height: c_int,
+    bottom_height: c_int,
+    scale: c_float,
+    scale_mode: ScaleMode,
+    dst: Ptr[Surface, AnyOrigin[True]],
+    dstrect: Ptr[Rect, AnyOrigin[False]],
+) raises:
     """Perform a scaled blit using the 9-grid algorithm to a destination surface,
     which may be of a different format.
 
@@ -1674,12 +2247,40 @@ fn blit_surface_9grid(src: Ptr[Surface, AnyOrigin[True]], srcrect: Ptr[Rect, Any
     Docs: https://wiki.libsdl.org/SDL3/SDL_BlitSurface9Grid.
     """
 
-    ret = _get_dylib_function[lib, "SDL_BlitSurface9Grid", fn (src: Ptr[Surface, AnyOrigin[True]], srcrect: Ptr[Rect, AnyOrigin[False]], left_width: c_int, right_width: c_int, top_height: c_int, bottom_height: c_int, scale: c_float, scale_mode: ScaleMode, dst: Ptr[Surface, AnyOrigin[True]], dstrect: Ptr[Rect, AnyOrigin[False]]) -> Bool]()(src, srcrect, left_width, right_width, top_height, bottom_height, scale, scale_mode, dst, dstrect)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_BlitSurface9Grid",
+        fn(
+            src: Ptr[Surface, AnyOrigin[True]],
+            srcrect: Ptr[Rect, AnyOrigin[False]],
+            left_width: c_int,
+            right_width: c_int,
+            top_height: c_int,
+            bottom_height: c_int,
+            scale: c_float,
+            scale_mode: ScaleMode,
+            dst: Ptr[Surface, AnyOrigin[True]],
+            dstrect: Ptr[Rect, AnyOrigin[False]],
+        ) -> Bool,
+    ]()(
+        src,
+        srcrect,
+        left_width,
+        right_width,
+        top_height,
+        bottom_height,
+        scale,
+        scale_mode,
+        dst,
+        dstrect,
+    )
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn map_surface_rgb(surface: Ptr[Surface, AnyOrigin[True]], r: UInt8, g: UInt8, b: UInt8) raises -> UInt32:
+fn map_surface_rgb(
+    surface: Ptr[Surface, AnyOrigin[True]], r: UInt8, g: UInt8, b: UInt8
+) raises -> UInt32:
     """Map an RGB triple to an opaque pixel value for a surface.
 
     This function maps the RGB color value to the specified pixel format and
@@ -1712,10 +2313,22 @@ fn map_surface_rgb(surface: Ptr[Surface, AnyOrigin[True]], r: UInt8, g: UInt8, b
     Docs: https://wiki.libsdl.org/SDL3/SDL_MapSurfaceRGB.
     """
 
-    return _get_dylib_function[lib, "SDL_MapSurfaceRGB", fn (surface: Ptr[Surface, AnyOrigin[True]], r: UInt8, g: UInt8, b: UInt8) -> UInt32]()(surface, r, g, b)
+    return _get_dylib_function[
+        lib,
+        "SDL_MapSurfaceRGB",
+        fn(
+            surface: Ptr[Surface, AnyOrigin[True]], r: UInt8, g: UInt8, b: UInt8
+        ) -> UInt32,
+    ]()(surface, r, g, b)
 
 
-fn map_surface_rgba(surface: Ptr[Surface, AnyOrigin[True]], r: UInt8, g: UInt8, b: UInt8, a: UInt8) raises -> UInt32:
+fn map_surface_rgba(
+    surface: Ptr[Surface, AnyOrigin[True]],
+    r: UInt8,
+    g: UInt8,
+    b: UInt8,
+    a: UInt8,
+) raises -> UInt32:
     """Map an RGBA quadruple to a pixel value for a surface.
 
     This function maps the RGBA color value to the specified pixel format and
@@ -1749,10 +2362,28 @@ fn map_surface_rgba(surface: Ptr[Surface, AnyOrigin[True]], r: UInt8, g: UInt8, 
     Docs: https://wiki.libsdl.org/SDL3/SDL_MapSurfaceRGBA.
     """
 
-    return _get_dylib_function[lib, "SDL_MapSurfaceRGBA", fn (surface: Ptr[Surface, AnyOrigin[True]], r: UInt8, g: UInt8, b: UInt8, a: UInt8) -> UInt32]()(surface, r, g, b, a)
+    return _get_dylib_function[
+        lib,
+        "SDL_MapSurfaceRGBA",
+        fn(
+            surface: Ptr[Surface, AnyOrigin[True]],
+            r: UInt8,
+            g: UInt8,
+            b: UInt8,
+            a: UInt8,
+        ) -> UInt32,
+    ]()(surface, r, g, b, a)
 
 
-fn read_surface_pixel(surface: Ptr[Surface, AnyOrigin[True]], x: c_int, y: c_int, r: Ptr[UInt8, AnyOrigin[True]], g: Ptr[UInt8, AnyOrigin[True]], b: Ptr[UInt8, AnyOrigin[True]], a: Ptr[UInt8, AnyOrigin[True]]) raises:
+fn read_surface_pixel(
+    surface: Ptr[Surface, AnyOrigin[True]],
+    x: c_int,
+    y: c_int,
+    r: Ptr[UInt8, AnyOrigin[True]],
+    g: Ptr[UInt8, AnyOrigin[True]],
+    b: Ptr[UInt8, AnyOrigin[True]],
+    a: Ptr[UInt8, AnyOrigin[True]],
+) raises:
     """Retrieves a single pixel from a surface.
 
     This function prioritizes correctness over speed: it is suitable for unit
@@ -1784,12 +2415,32 @@ fn read_surface_pixel(surface: Ptr[Surface, AnyOrigin[True]], x: c_int, y: c_int
     Docs: https://wiki.libsdl.org/SDL3/SDL_ReadSurfacePixel.
     """
 
-    ret = _get_dylib_function[lib, "SDL_ReadSurfacePixel", fn (surface: Ptr[Surface, AnyOrigin[True]], x: c_int, y: c_int, r: Ptr[UInt8, AnyOrigin[True]], g: Ptr[UInt8, AnyOrigin[True]], b: Ptr[UInt8, AnyOrigin[True]], a: Ptr[UInt8, AnyOrigin[True]]) -> Bool]()(surface, x, y, r, g, b, a)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_ReadSurfacePixel",
+        fn(
+            surface: Ptr[Surface, AnyOrigin[True]],
+            x: c_int,
+            y: c_int,
+            r: Ptr[UInt8, AnyOrigin[True]],
+            g: Ptr[UInt8, AnyOrigin[True]],
+            b: Ptr[UInt8, AnyOrigin[True]],
+            a: Ptr[UInt8, AnyOrigin[True]],
+        ) -> Bool,
+    ]()(surface, x, y, r, g, b, a)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn read_surface_pixel_float(surface: Ptr[Surface, AnyOrigin[True]], x: c_int, y: c_int, r: Ptr[c_float, AnyOrigin[True]], g: Ptr[c_float, AnyOrigin[True]], b: Ptr[c_float, AnyOrigin[True]], a: Ptr[c_float, AnyOrigin[True]]) raises:
+fn read_surface_pixel_float(
+    surface: Ptr[Surface, AnyOrigin[True]],
+    x: c_int,
+    y: c_int,
+    r: Ptr[c_float, AnyOrigin[True]],
+    g: Ptr[c_float, AnyOrigin[True]],
+    b: Ptr[c_float, AnyOrigin[True]],
+    a: Ptr[c_float, AnyOrigin[True]],
+) raises:
     """Retrieves a single pixel from a surface.
 
     This function prioritizes correctness over speed: it is suitable for unit
@@ -1818,12 +2469,32 @@ fn read_surface_pixel_float(surface: Ptr[Surface, AnyOrigin[True]], x: c_int, y:
     Docs: https://wiki.libsdl.org/SDL3/SDL_ReadSurfacePixelFloat.
     """
 
-    ret = _get_dylib_function[lib, "SDL_ReadSurfacePixelFloat", fn (surface: Ptr[Surface, AnyOrigin[True]], x: c_int, y: c_int, r: Ptr[c_float, AnyOrigin[True]], g: Ptr[c_float, AnyOrigin[True]], b: Ptr[c_float, AnyOrigin[True]], a: Ptr[c_float, AnyOrigin[True]]) -> Bool]()(surface, x, y, r, g, b, a)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_ReadSurfacePixelFloat",
+        fn(
+            surface: Ptr[Surface, AnyOrigin[True]],
+            x: c_int,
+            y: c_int,
+            r: Ptr[c_float, AnyOrigin[True]],
+            g: Ptr[c_float, AnyOrigin[True]],
+            b: Ptr[c_float, AnyOrigin[True]],
+            a: Ptr[c_float, AnyOrigin[True]],
+        ) -> Bool,
+    ]()(surface, x, y, r, g, b, a)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn write_surface_pixel(surface: Ptr[Surface, AnyOrigin[True]], x: c_int, y: c_int, r: UInt8, g: UInt8, b: UInt8, a: UInt8) raises:
+fn write_surface_pixel(
+    surface: Ptr[Surface, AnyOrigin[True]],
+    x: c_int,
+    y: c_int,
+    r: UInt8,
+    g: UInt8,
+    b: UInt8,
+    a: UInt8,
+) raises:
     """Writes a single pixel to a surface.
 
     This function prioritizes correctness over speed: it is suitable for unit
@@ -1851,12 +2522,32 @@ fn write_surface_pixel(surface: Ptr[Surface, AnyOrigin[True]], x: c_int, y: c_in
     Docs: https://wiki.libsdl.org/SDL3/SDL_WriteSurfacePixel.
     """
 
-    ret = _get_dylib_function[lib, "SDL_WriteSurfacePixel", fn (surface: Ptr[Surface, AnyOrigin[True]], x: c_int, y: c_int, r: UInt8, g: UInt8, b: UInt8, a: UInt8) -> Bool]()(surface, x, y, r, g, b, a)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_WriteSurfacePixel",
+        fn(
+            surface: Ptr[Surface, AnyOrigin[True]],
+            x: c_int,
+            y: c_int,
+            r: UInt8,
+            g: UInt8,
+            b: UInt8,
+            a: UInt8,
+        ) -> Bool,
+    ]()(surface, x, y, r, g, b, a)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn write_surface_pixel_float(surface: Ptr[Surface, AnyOrigin[True]], x: c_int, y: c_int, r: c_float, g: c_float, b: c_float, a: c_float) raises:
+fn write_surface_pixel_float(
+    surface: Ptr[Surface, AnyOrigin[True]],
+    x: c_int,
+    y: c_int,
+    r: c_float,
+    g: c_float,
+    b: c_float,
+    a: c_float,
+) raises:
     """Writes a single pixel to a surface.
 
     This function prioritizes correctness over speed: it is suitable for unit
@@ -1881,6 +2572,18 @@ fn write_surface_pixel_float(surface: Ptr[Surface, AnyOrigin[True]], x: c_int, y
     Docs: https://wiki.libsdl.org/SDL3/SDL_WriteSurfacePixelFloat.
     """
 
-    ret = _get_dylib_function[lib, "SDL_WriteSurfacePixelFloat", fn (surface: Ptr[Surface, AnyOrigin[True]], x: c_int, y: c_int, r: c_float, g: c_float, b: c_float, a: c_float) -> Bool]()(surface, x, y, r, g, b, a)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_WriteSurfacePixelFloat",
+        fn(
+            surface: Ptr[Surface, AnyOrigin[True]],
+            x: c_int,
+            y: c_int,
+            r: c_float,
+            g: c_float,
+            b: c_float,
+            a: c_float,
+        ) -> Bool,
+    ]()(surface, x, y, r, g, b, a)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))

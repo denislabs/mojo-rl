@@ -26,8 +26,7 @@ comptime CATEGORY_LEG: UInt16 = 0x0020
 comptime CATEGORY_PARTICLE: UInt16 = 0x0100
 
 
-@register_passable("trivial")
-struct Filter(Copyable, Movable):
+struct Filter(Copyable, Movable, TrivialRegisterPassable):
     """Collision filter using category/mask bits.
 
     Two fixtures collide if:
@@ -74,8 +73,7 @@ struct Filter(Copyable, Movable):
 # ===== AABB for Broad Phase =====
 
 
-@register_passable("trivial")
-struct AABB[dtype: DType](Copyable, Movable):
+struct AABB[dtype: DType](Copyable, Movable, TrivialRegisterPassable):
     """Axis-Aligned Bounding Box for broad phase collision detection."""
 
     var lower: Vec2[Self.dtype]

@@ -39,7 +39,7 @@ struct Quat[DTYPE: DType](ImplicitlyCopyable, Movable, Stringable):
     @staticmethod
     fn from_axis_angle(
         axis: Vec3[Self.DTYPE], angle: Scalar[Self.DTYPE]
-    ) -> Self:
+    ) -> Self where Self.DTYPE.is_floating_point():
         """Create quaternion from axis-angle representation.
 
         Args:
@@ -58,7 +58,7 @@ struct Quat[DTYPE: DType](ImplicitlyCopyable, Movable, Stringable):
     @staticmethod
     fn from_euler_xyz(
         x: Scalar[Self.DTYPE], y: Scalar[Self.DTYPE], z: Scalar[Self.DTYPE]
-    ) -> Self:
+    ) -> Self where Self.DTYPE.is_floating_point():
         """Create quaternion from Euler angles (XYZ rotation order).
 
         Args:
@@ -86,7 +86,7 @@ struct Quat[DTYPE: DType](ImplicitlyCopyable, Movable, Stringable):
     @staticmethod
     fn from_euler_zyx(
         z: Scalar[Self.DTYPE], y: Scalar[Self.DTYPE], x: Scalar[Self.DTYPE]
-    ) -> Self:
+    ) -> Self where Self.DTYPE.is_floating_point():
         """Create quaternion from Euler angles (ZYX rotation order).
 
         Common in robotics and aviation (yaw-pitch-roll).
@@ -116,7 +116,7 @@ struct Quat[DTYPE: DType](ImplicitlyCopyable, Movable, Stringable):
     @staticmethod
     fn from_two_vectors(
         from_vec: Vec3[Self.DTYPE], to_vec: Vec3[Self.DTYPE]
-    ) -> Self:
+    ) -> Self where Self.DTYPE.is_floating_point():
         """Create quaternion that rotates from_vec to to_vec.
 
         Args:
@@ -208,11 +208,11 @@ struct Quat[DTYPE: DType](ImplicitlyCopyable, Movable, Stringable):
             + self.z * self.z
         )
 
-    fn length(self) -> Scalar[Self.DTYPE]:
+    fn length(self) -> Scalar[Self.DTYPE] where Self.DTYPE.is_floating_point():
         """Norm of quaternion (should be 1 for unit quaternion)."""
         return sqrt(self.length_squared())
 
-    fn normalized(self) -> Self:
+    fn normalized(self) -> Self where Self.DTYPE.is_floating_point():
         """Return normalized quaternion (unit length)."""
         var len = self.length()
         if len > 1e-10:
@@ -220,7 +220,7 @@ struct Quat[DTYPE: DType](ImplicitlyCopyable, Movable, Stringable):
             return Self(self.w * inv, self.x * inv, self.y * inv, self.z * inv)
         return Self.identity()
 
-    fn normalize(mut self):
+    fn normalize(mut self) where Self.DTYPE.is_floating_point():
         """Normalize in place."""
         var len = self.length()
         if len > 1e-10:
@@ -269,7 +269,7 @@ struct Quat[DTYPE: DType](ImplicitlyCopyable, Movable, Stringable):
     # Conversion to Other Representations
     # =========================================================================
 
-    fn to_axis_angle(self) -> Tuple[Vec3[Self.DTYPE], Scalar[Self.DTYPE]]:
+    fn to_axis_angle(self) -> Tuple[Vec3[Self.DTYPE], Scalar[Self.DTYPE]] where Self.DTYPE.is_floating_point():
         """Convert to axis-angle representation.
 
         Returns:
@@ -288,7 +288,7 @@ struct Quat[DTYPE: DType](ImplicitlyCopyable, Movable, Stringable):
 
         return (axis, angle)
 
-    fn to_euler_xyz(self) -> Vec3[Self.DTYPE]:
+    fn to_euler_xyz(self) -> Vec3[Self.DTYPE] where Self.DTYPE.is_floating_point():
         """Convert to Euler angles (XYZ rotation order).
 
         Returns:
@@ -334,7 +334,7 @@ struct Quat[DTYPE: DType](ImplicitlyCopyable, Movable, Stringable):
     # Interpolation
     # =========================================================================
 
-    fn slerp(self, other: Self, t: Scalar[Self.DTYPE]) -> Self:
+    fn slerp(self, other: Self, t: Scalar[Self.DTYPE]) -> Self where Self.DTYPE.is_floating_point():
         """Spherical linear interpolation.
 
         Interpolates smoothly between two rotations.
@@ -383,7 +383,7 @@ struct Quat[DTYPE: DType](ImplicitlyCopyable, Movable, Stringable):
             self.z * s0 + other_adj.z * s1,
         )
 
-    fn nlerp(self, other: Self, t: Scalar[Self.DTYPE]) -> Self:
+    fn nlerp(self, other: Self, t: Scalar[Self.DTYPE]) -> Self where Self.DTYPE.is_floating_point():
         """Normalized linear interpolation.
 
         Faster than slerp but not constant velocity.
@@ -474,13 +474,13 @@ fn quat_identity[DTYPE: DType]() -> Quat[DTYPE]:
 
 fn quat_from_axis_angle[
     DTYPE: DType
-](axis: Vec3[DTYPE], angle: Scalar[DTYPE]) -> Quat[DTYPE]:
+](axis: Vec3[DTYPE], angle: Scalar[DTYPE]) -> Quat[DTYPE] where DTYPE.is_floating_point():
     """Create quaternion from axis-angle."""
     return Quat.from_axis_angle(axis, angle)
 
 
 fn slerp[
     DTYPE: DType
-](a: Quat[DTYPE], b: Quat[DTYPE], t: Scalar[DTYPE]) -> Quat[DTYPE]:
+](a: Quat[DTYPE], b: Quat[DTYPE], t: Scalar[DTYPE]) -> Quat[DTYPE] where DTYPE.is_floating_point():
     """Spherical linear interpolation."""
     return a.slerp(b, t)

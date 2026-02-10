@@ -72,7 +72,7 @@ fn normalize_qpos_quaternions[
 ](
     model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
-):
+) where DTYPE.is_floating_point():
     """Normalize quaternions in qpos for BALL and FREE joints."""
     for j in range(model.num_joints):
         var joint = model.joints[j]
@@ -233,9 +233,7 @@ fn detect_body_body_contacts[
 
             # MuJoCo contype/conaffinity filtering:
             # collide if (contype_i & conaffinity_j) || (contype_j & conaffinity_i)
-            if (
-                model.body_contype[i] & model.body_conaffinity[j]
-            ) == 0 and (
+            if (model.body_contype[i] & model.body_conaffinity[j]) == 0 and (
                 model.body_contype[j] & model.body_conaffinity[i]
             ) == 0:
                 continue

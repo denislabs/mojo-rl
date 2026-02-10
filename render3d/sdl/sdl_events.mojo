@@ -51,8 +51,7 @@ parts of the system.
 """
 
 
-@register_passable("trivial")
-struct EventType(Indexer, Intable):
+struct EventType(Indexer, Intable, TrivialRegisterPassable):
     """The types of events that can be delivered.
 
     Docs: https://wiki.libsdl.org/SDL3/SDL_EventType.
@@ -1260,14 +1259,94 @@ struct UserEvent(ImplicitlyCopyable, Movable):
 
 
 struct Event:
-    comptime _mlir_type = __mlir_type[`!pop.union<`, UInt32, `, `, CommonEvent, `, `, DisplayEvent, `, `, WindowEvent, `, `, KeyboardDeviceEvent, `, `, KeyboardEvent, `, `, TextEditingEvent, `, `, TextEditingCandidatesEvent, `, `, TextInputEvent, `, `, MouseDeviceEvent, `, `, MouseMotionEvent, `, `, MouseButtonEvent, `, `, MouseWheelEvent, `, `, JoyDeviceEvent, `, `, JoyAxisEvent, `, `, JoyBallEvent, `, `, JoyHatEvent, `, `, JoyButtonEvent, `, `, JoyBatteryEvent, `, `, GamepadDeviceEvent, `, `, GamepadAxisEvent, `, `, GamepadButtonEvent, `, `, GamepadTouchpadEvent, `, `, GamepadSensorEvent, `, `, AudioDeviceEvent, `, `, CameraDeviceEvent, `, `, SensorEvent, `, `, QuitEvent, `, `, UserEvent, `, `, TouchFingerEvent, `, `, PenProximityEvent, `, `, PenTouchEvent, `, `, PenMotionEvent, `, `, PenButtonEvent, `, `, PenAxisEvent, `, `, RenderEvent, `, `, DropEvent, `, `, ClipboardEvent, `, `, InlineArray[UInt8, 128], `>`]
+    comptime _mlir_type = __mlir_type[
+        `!pop.union<`,
+        UInt32,
+        `, `,
+        CommonEvent,
+        `, `,
+        DisplayEvent,
+        `, `,
+        WindowEvent,
+        `, `,
+        KeyboardDeviceEvent,
+        `, `,
+        KeyboardEvent,
+        `, `,
+        TextEditingEvent,
+        `, `,
+        TextEditingCandidatesEvent,
+        `, `,
+        TextInputEvent,
+        `, `,
+        MouseDeviceEvent,
+        `, `,
+        MouseMotionEvent,
+        `, `,
+        MouseButtonEvent,
+        `, `,
+        MouseWheelEvent,
+        `, `,
+        JoyDeviceEvent,
+        `, `,
+        JoyAxisEvent,
+        `, `,
+        JoyBallEvent,
+        `, `,
+        JoyHatEvent,
+        `, `,
+        JoyButtonEvent,
+        `, `,
+        JoyBatteryEvent,
+        `, `,
+        GamepadDeviceEvent,
+        `, `,
+        GamepadAxisEvent,
+        `, `,
+        GamepadButtonEvent,
+        `, `,
+        GamepadTouchpadEvent,
+        `, `,
+        GamepadSensorEvent,
+        `, `,
+        AudioDeviceEvent,
+        `, `,
+        CameraDeviceEvent,
+        `, `,
+        SensorEvent,
+        `, `,
+        QuitEvent,
+        `, `,
+        UserEvent,
+        `, `,
+        TouchFingerEvent,
+        `, `,
+        PenProximityEvent,
+        `, `,
+        PenTouchEvent,
+        `, `,
+        PenMotionEvent,
+        `, `,
+        PenButtonEvent,
+        `, `,
+        PenAxisEvent,
+        `, `,
+        RenderEvent,
+        `, `,
+        DropEvent,
+        `, `,
+        ClipboardEvent,
+        `, `,
+        InlineArray[UInt8, 128],
+        `>`,
+    ]
     var _impl: Self._mlir_type
 
     @implicit
     fn __init__[T: AnyType](out self, value: T):
         self._impl = rebind[Self._mlir_type](value)
 
-    fn __getitem__[T: AnyType](ref self) -> ref [self._impl] T:
+    fn __getitem__[T: AnyType](ref self) -> ref[self._impl] T:
         return rebind[Ptr[T, origin_of(self._impl)]](Ptr(to=self._impl))[]
 
 
@@ -1290,11 +1369,10 @@ fn pump_events() raises -> None:
     Docs: https://wiki.libsdl.org/SDL3/SDL_PumpEvents.
     """
 
-    return _get_dylib_function[lib, "SDL_PumpEvents", fn () -> None]()()
+    return _get_dylib_function[lib, "SDL_PumpEvents", fn() -> None]()()
 
 
-@register_passable("trivial")
-struct EventAction(Indexer, Intable):
+struct EventAction(Indexer, Intable, TrivialRegisterPassable):
     """The type of action to request from SDL_PeepEvents().
 
     Docs: https://wiki.libsdl.org/SDL3/SDL_EventAction.
@@ -1326,7 +1404,13 @@ struct EventAction(Indexer, Intable):
     """Retrieve/remove events from the front of the queue."""
 
 
-fn peep_events(events: Ptr[Event, AnyOrigin[True]], numevents: c_int, action: EventAction, min_type: UInt32, max_type: UInt32) raises -> c_int:
+fn peep_events(
+    events: Ptr[Event, AnyOrigin[True]],
+    numevents: c_int,
+    action: EventAction,
+    min_type: UInt32,
+    max_type: UInt32,
+) raises -> c_int:
     """Check the event queue for messages and optionally return them.
 
     `action` may be any of the following:
@@ -1369,7 +1453,17 @@ fn peep_events(events: Ptr[Event, AnyOrigin[True]], numevents: c_int, action: Ev
     Docs: https://wiki.libsdl.org/SDL3/SDL_PeepEvents.
     """
 
-    return _get_dylib_function[lib, "SDL_PeepEvents", fn (events: Ptr[Event, AnyOrigin[True]], numevents: c_int, action: EventAction, min_type: UInt32, max_type: UInt32) -> c_int]()(events, numevents, action, min_type, max_type)
+    return _get_dylib_function[
+        lib,
+        "SDL_PeepEvents",
+        fn(
+            events: Ptr[Event, AnyOrigin[True]],
+            numevents: c_int,
+            action: EventAction,
+            min_type: UInt32,
+            max_type: UInt32,
+        ) -> c_int,
+    ]()(events, numevents, action, min_type, max_type)
 
 
 fn has_event(type: UInt32) raises -> Bool:
@@ -1391,7 +1485,9 @@ fn has_event(type: UInt32) raises -> Bool:
     Docs: https://wiki.libsdl.org/SDL3/SDL_HasEvent.
     """
 
-    return _get_dylib_function[lib, "SDL_HasEvent", fn (type: UInt32) -> Bool]()(type)
+    return _get_dylib_function[lib, "SDL_HasEvent", fn(type: UInt32) -> Bool]()(
+        type
+    )
 
 
 fn has_events(min_type: UInt32, max_type: UInt32) raises -> Bool:
@@ -1415,7 +1511,9 @@ fn has_events(min_type: UInt32, max_type: UInt32) raises -> Bool:
     Docs: https://wiki.libsdl.org/SDL3/SDL_HasEvents.
     """
 
-    return _get_dylib_function[lib, "SDL_HasEvents", fn (min_type: UInt32, max_type: UInt32) -> Bool]()(min_type, max_type)
+    return _get_dylib_function[
+        lib, "SDL_HasEvents", fn(min_type: UInt32, max_type: UInt32) -> Bool
+    ]()(min_type, max_type)
 
 
 fn flush_event(type: UInt32) raises -> None:
@@ -1445,7 +1543,9 @@ fn flush_event(type: UInt32) raises -> None:
     Docs: https://wiki.libsdl.org/SDL3/SDL_FlushEvent.
     """
 
-    return _get_dylib_function[lib, "SDL_FlushEvent", fn (type: UInt32) -> None]()(type)
+    return _get_dylib_function[
+        lib, "SDL_FlushEvent", fn(type: UInt32) -> None
+    ]()(type)
 
 
 fn flush_events(min_type: UInt32, max_type: UInt32) raises -> None:
@@ -1474,7 +1574,9 @@ fn flush_events(min_type: UInt32, max_type: UInt32) raises -> None:
     Docs: https://wiki.libsdl.org/SDL3/SDL_FlushEvents.
     """
 
-    return _get_dylib_function[lib, "SDL_FlushEvents", fn (min_type: UInt32, max_type: UInt32) -> None]()(min_type, max_type)
+    return _get_dylib_function[
+        lib, "SDL_FlushEvents", fn(min_type: UInt32, max_type: UInt32) -> None
+    ]()(min_type, max_type)
 
 
 fn poll_event(event: Ptr[Event, AnyOrigin[True]]) raises -> Bool:
@@ -1522,7 +1624,9 @@ fn poll_event(event: Ptr[Event, AnyOrigin[True]]) raises -> Bool:
     Docs: https://wiki.libsdl.org/SDL3/SDL_PollEvent.
     """
 
-    return _get_dylib_function[lib, "SDL_PollEvent", fn (event: Ptr[Event, AnyOrigin[True]]) -> Bool]()(event)
+    return _get_dylib_function[
+        lib, "SDL_PollEvent", fn(event: Ptr[Event, AnyOrigin[True]]) -> Bool
+    ]()(event)
 
 
 fn wait_event(event: Ptr[Event, AnyOrigin[True]]) raises:
@@ -1548,12 +1652,16 @@ fn wait_event(event: Ptr[Event, AnyOrigin[True]]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_WaitEvent.
     """
 
-    ret = _get_dylib_function[lib, "SDL_WaitEvent", fn (event: Ptr[Event, AnyOrigin[True]]) -> Bool]()(event)
+    ret = _get_dylib_function[
+        lib, "SDL_WaitEvent", fn(event: Ptr[Event, AnyOrigin[True]]) -> Bool
+    ]()(event)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn wait_event_timeout(event: Ptr[Event, AnyOrigin[True]], timeout_ms: Int32) raises -> Bool:
+fn wait_event_timeout(
+    event: Ptr[Event, AnyOrigin[True]], timeout_ms: Int32
+) raises -> Bool:
     """Wait until the specified timeout (in milliseconds) for the next available
     event.
 
@@ -1582,7 +1690,11 @@ fn wait_event_timeout(event: Ptr[Event, AnyOrigin[True]], timeout_ms: Int32) rai
     Docs: https://wiki.libsdl.org/SDL3/SDL_WaitEventTimeout.
     """
 
-    return _get_dylib_function[lib, "SDL_WaitEventTimeout", fn (event: Ptr[Event, AnyOrigin[True]], timeout_ms: Int32) -> Bool]()(event, timeout_ms)
+    return _get_dylib_function[
+        lib,
+        "SDL_WaitEventTimeout",
+        fn(event: Ptr[Event, AnyOrigin[True]], timeout_ms: Int32) -> Bool,
+    ]()(event, timeout_ms)
 
 
 fn push_event(event: Ptr[Event, AnyOrigin[True]]) raises:
@@ -1618,12 +1730,16 @@ fn push_event(event: Ptr[Event, AnyOrigin[True]]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_PushEvent.
     """
 
-    ret = _get_dylib_function[lib, "SDL_PushEvent", fn (event: Ptr[Event, AnyOrigin[True]]) -> Bool]()(event)
+    ret = _get_dylib_function[
+        lib, "SDL_PushEvent", fn(event: Ptr[Event, AnyOrigin[True]]) -> Bool
+    ]()(event)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-comptime EventFilter = fn (userdata: Ptr[NoneType, AnyOrigin[True]], event: Ptr[Event, AnyOrigin[True]]) -> Bool
+comptime EventFilter = fn(
+    userdata: Ptr[NoneType, AnyOrigin[True]], event: Ptr[Event, AnyOrigin[True]]
+) -> Bool
 """A function pointer used for callbacks that watch the event queue.
     
     Args:
@@ -1645,7 +1761,9 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_EventFilter.
 """
 
 
-fn set_event_filter(filter: EventFilter, userdata: Ptr[NoneType, AnyOrigin[True]]) raises -> None:
+fn set_event_filter(
+    filter: EventFilter, userdata: Ptr[NoneType, AnyOrigin[True]]
+) raises -> None:
     """Set up a filter to process all events before they are added to the internal
     event queue.
 
@@ -1681,10 +1799,19 @@ fn set_event_filter(filter: EventFilter, userdata: Ptr[NoneType, AnyOrigin[True]
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetEventFilter.
     """
 
-    return _get_dylib_function[lib, "SDL_SetEventFilter", fn (filter: EventFilter, userdata: Ptr[NoneType, AnyOrigin[True]]) -> None]()(filter, userdata)
+    return _get_dylib_function[
+        lib,
+        "SDL_SetEventFilter",
+        fn(
+            filter: EventFilter, userdata: Ptr[NoneType, AnyOrigin[True]]
+        ) -> None,
+    ]()(filter, userdata)
 
 
-fn get_event_filter(filter: Ptr[EventFilter, AnyOrigin[True]], userdata: Ptr[Ptr[NoneType, AnyOrigin[True]], AnyOrigin[True]]) raises:
+fn get_event_filter(
+    filter: Ptr[EventFilter, AnyOrigin[True]],
+    userdata: Ptr[Ptr[NoneType, AnyOrigin[True]], AnyOrigin[True]],
+) raises:
     """Query the current event filter.
 
     This function can be used to "chain" filters, by saving the existing filter
@@ -1704,12 +1831,21 @@ fn get_event_filter(filter: Ptr[EventFilter, AnyOrigin[True]], userdata: Ptr[Ptr
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetEventFilter.
     """
 
-    ret = _get_dylib_function[lib, "SDL_GetEventFilter", fn (filter: Ptr[EventFilter, AnyOrigin[True]], userdata: Ptr[Ptr[NoneType, AnyOrigin[True]], AnyOrigin[True]]) -> Bool]()(filter, userdata)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_GetEventFilter",
+        fn(
+            filter: Ptr[EventFilter, AnyOrigin[True]],
+            userdata: Ptr[Ptr[NoneType, AnyOrigin[True]], AnyOrigin[True]],
+        ) -> Bool,
+    ]()(filter, userdata)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn add_event_watch(filter: EventFilter, userdata: Ptr[NoneType, AnyOrigin[True]]) raises:
+fn add_event_watch(
+    filter: EventFilter, userdata: Ptr[NoneType, AnyOrigin[True]]
+) raises:
     """Add a callback to be triggered when an event is added to the event queue.
 
     `filter` will be called when an event happens, and its return value is
@@ -1741,12 +1877,20 @@ fn add_event_watch(filter: EventFilter, userdata: Ptr[NoneType, AnyOrigin[True]]
     Docs: https://wiki.libsdl.org/SDL3/SDL_AddEventWatch.
     """
 
-    ret = _get_dylib_function[lib, "SDL_AddEventWatch", fn (filter: EventFilter, userdata: Ptr[NoneType, AnyOrigin[True]]) -> Bool]()(filter, userdata)
+    ret = _get_dylib_function[
+        lib,
+        "SDL_AddEventWatch",
+        fn(
+            filter: EventFilter, userdata: Ptr[NoneType, AnyOrigin[True]]
+        ) -> Bool,
+    ]()(filter, userdata)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn remove_event_watch(filter: EventFilter, userdata: Ptr[NoneType, AnyOrigin[True]]) raises -> None:
+fn remove_event_watch(
+    filter: EventFilter, userdata: Ptr[NoneType, AnyOrigin[True]]
+) raises -> None:
     """Remove an event watch callback added with SDL_AddEventWatch().
 
     This function takes the same input as SDL_AddEventWatch() to identify and
@@ -1762,10 +1906,18 @@ fn remove_event_watch(filter: EventFilter, userdata: Ptr[NoneType, AnyOrigin[Tru
     Docs: https://wiki.libsdl.org/SDL3/SDL_RemoveEventWatch.
     """
 
-    return _get_dylib_function[lib, "SDL_RemoveEventWatch", fn (filter: EventFilter, userdata: Ptr[NoneType, AnyOrigin[True]]) -> None]()(filter, userdata)
+    return _get_dylib_function[
+        lib,
+        "SDL_RemoveEventWatch",
+        fn(
+            filter: EventFilter, userdata: Ptr[NoneType, AnyOrigin[True]]
+        ) -> None,
+    ]()(filter, userdata)
 
 
-fn filter_events(filter: EventFilter, userdata: Ptr[NoneType, AnyOrigin[True]]) raises -> None:
+fn filter_events(
+    filter: EventFilter, userdata: Ptr[NoneType, AnyOrigin[True]]
+) raises -> None:
     """Run a specific filter function on the current event queue, removing any
     events for which the filter returns false.
 
@@ -1783,7 +1935,13 @@ fn filter_events(filter: EventFilter, userdata: Ptr[NoneType, AnyOrigin[True]]) 
     Docs: https://wiki.libsdl.org/SDL3/SDL_FilterEvents.
     """
 
-    return _get_dylib_function[lib, "SDL_FilterEvents", fn (filter: EventFilter, userdata: Ptr[NoneType, AnyOrigin[True]]) -> None]()(filter, userdata)
+    return _get_dylib_function[
+        lib,
+        "SDL_FilterEvents",
+        fn(
+            filter: EventFilter, userdata: Ptr[NoneType, AnyOrigin[True]]
+        ) -> None,
+    ]()(filter, userdata)
 
 
 fn set_event_enabled(type: UInt32, enabled: Bool) raises -> None:
@@ -1799,7 +1957,9 @@ fn set_event_enabled(type: UInt32, enabled: Bool) raises -> None:
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetEventEnabled.
     """
 
-    return _get_dylib_function[lib, "SDL_SetEventEnabled", fn (type: UInt32, enabled: Bool) -> None]()(type, enabled)
+    return _get_dylib_function[
+        lib, "SDL_SetEventEnabled", fn(type: UInt32, enabled: Bool) -> None
+    ]()(type, enabled)
 
 
 fn event_enabled(type: UInt32) raises -> Bool:
@@ -1817,7 +1977,9 @@ fn event_enabled(type: UInt32) raises -> Bool:
     Docs: https://wiki.libsdl.org/SDL3/SDL_EventEnabled.
     """
 
-    return _get_dylib_function[lib, "SDL_EventEnabled", fn (type: UInt32) -> Bool]()(type)
+    return _get_dylib_function[
+        lib, "SDL_EventEnabled", fn(type: UInt32) -> Bool
+    ]()(type)
 
 
 fn register_events(numevents: c_int) raises -> UInt32:
@@ -1837,10 +1999,14 @@ fn register_events(numevents: c_int) raises -> UInt32:
     Docs: https://wiki.libsdl.org/SDL3/SDL_RegisterEvents.
     """
 
-    return _get_dylib_function[lib, "SDL_RegisterEvents", fn (numevents: c_int) -> UInt32]()(numevents)
+    return _get_dylib_function[
+        lib, "SDL_RegisterEvents", fn(numevents: c_int) -> UInt32
+    ]()(numevents)
 
 
-fn get_window_from_event(event: Ptr[Event, AnyOrigin[False]]) raises -> Ptr[Window, AnyOrigin[True]]:
+fn get_window_from_event(
+    event: Ptr[Event, AnyOrigin[False]]
+) raises -> Ptr[Window, AnyOrigin[True]]:
     """Get window associated with an event.
 
     Args:
@@ -1855,4 +2021,8 @@ fn get_window_from_event(event: Ptr[Event, AnyOrigin[False]]) raises -> Ptr[Wind
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetWindowFromEvent.
     """
 
-    return _get_dylib_function[lib, "SDL_GetWindowFromEvent", fn (event: Ptr[Event, AnyOrigin[False]]) -> Ptr[Window, AnyOrigin[True]]]()(event)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetWindowFromEvent",
+        fn(event: Ptr[Event, AnyOrigin[False]]) -> Ptr[Window, AnyOrigin[True]],
+    ]()(event)

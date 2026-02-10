@@ -140,7 +140,8 @@ comptime Quat = QuatGeneric[DType.float64]
 
 
 struct HopperGC[
-    DTYPE: DType = DType.float64, TERMINATE_ON_UNHEALTHY: Bool = False
+    DTYPE: DType where DTYPE.is_floating_point() = DType.float64,
+    TERMINATE_ON_UNHEALTHY: Bool = False,
 ](
     BoxContinuousActionEnv,
     GPUContinuousEnv,
@@ -184,7 +185,7 @@ struct HopperGC[
     comptime dtype = Self.DTYPE
     comptime StateType = HopperGCState[Self.DTYPE]
     comptime ActionType = HopperGCAction[Self.DTYPE]
-
+    comptime MAX_STEPS: Int = 1000
     # Layout constants
     comptime OBS_DIM: Int = 11
     comptime ACTION_DIM: Int = 3
@@ -203,8 +204,14 @@ struct HopperGC[
 
     # Pre-allocated workspace sizes for step_kernel_gpu
     # Per-env: 1 (x_before) + physics workspace
-    comptime STEP_WS_SHARED: Int = model_size[4, 6]()  # NUM_BODIES=4, NUM_JOINTS=6
-    comptime STEP_WS_PER_ENV: Int = 1 + integrator_workspace_size[6, 4]() + 6 * 6 + PGSSolver.solver_workspace_size[6, 10]()  # NV=6, NUM_BODIES=4, MAX_CONTACTS=10
+    comptime STEP_WS_SHARED: Int = model_size[
+        4, 6
+    ]()  # NUM_BODIES=4, NUM_JOINTS=6
+    comptime STEP_WS_PER_ENV: Int = 1 + integrator_workspace_size[
+        6, 4
+    ]() + 6 * 6 + PGSSolver.solver_workspace_size[
+        6, 10
+    ]()  # NV=6, NUM_BODIES=4, MAX_CONTACTS=10
 
     # Physics model and data
     var model: Model[
@@ -1181,7 +1188,6 @@ struct HopperGC[
         STATE_SIZE_VAL: Int,
         OBS_DIM_VAL: Int,
         ACTION_DIM_VAL: Int,
-        MAX_STEPS: Int = 1000,
     ](
         ctx: DeviceContext,
         mut states_buf: DeviceBuffer[gpu_dtype],
@@ -1191,7 +1197,9 @@ struct HopperGC[
         mut obs_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64 = 0,
         curriculum_values: List[Scalar[gpu_dtype]] = [],
-        workspace_ptr: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin] = UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin](),
+        workspace_ptr: UnsafePointer[
+            Scalar[gpu_dtype], MutAnyOrigin
+        ] = UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin](),
     ) raises:
         """Batched GPU step function using GC physics engine.
 
@@ -1207,7 +1215,11 @@ struct HopperGC[
             HopperGC.NUM_BODIES, HopperGC.NUM_JOINTS
         ]()
         comptime FRAME_SKIP = HopperGCConstants[gpu_dtype].FRAME_SKIP
-        comptime PHYSICS_WS_SIZE = integrator_workspace_size[Self.NV, Self.NUM_BODIES]() + Self.NV * Self.NV + PGSSolver.solver_workspace_size[Self.NV, Self.MAX_CONTACTS]()
+        comptime PHYSICS_WS_SIZE = integrator_workspace_size[
+            Self.NV, Self.NUM_BODIES
+        ]() + Self.NV * Self.NV + PGSSolver.solver_workspace_size[
+            Self.NV, Self.MAX_CONTACTS
+        ]()
 
         var model_buf: DeviceBuffer[gpu_dtype]
         var x_before_buf: DeviceBuffer[gpu_dtype]
@@ -1216,12 +1228,18 @@ struct HopperGC[
         if workspace_ptr:
             # Use pre-allocated workspace — model already initialized
             model_buf = DeviceBuffer[gpu_dtype](
-                ctx, workspace_ptr, MODEL_SIZE, owning=False,
+                ctx,
+                workspace_ptr,
+                MODEL_SIZE,
+                owning=False,
             )
             # Per-env region starts after model: [x_before: BATCH | physics_ws: BATCH * PHYSICS_WS_SIZE]
             var per_env_ptr = workspace_ptr + MODEL_SIZE
             x_before_buf = DeviceBuffer[gpu_dtype](
-                ctx, per_env_ptr, BATCH_SIZE, owning=False,
+                ctx,
+                per_env_ptr,
+                BATCH_SIZE,
+                owning=False,
             )
             workspace_buf = DeviceBuffer[gpu_dtype](
                 ctx,
@@ -1257,24 +1275,24 @@ struct HopperGC[
         )
 
         # Run GC physics step with frame_skip (matching Gymnasium do_simulation)
-        for _ in range(FRAME_SKIP):
-            DefaultIntegrator.step_gpu[
-                gpu_dtype,
-                Self.NQ,
-                Self.NV,
-                Self.NUM_BODIES,
-                Self.NUM_JOINTS,
-                Self.MAX_CONTACTS,
-                BATCH_SIZE,
-            ](
-                ctx,
-                states_buf,
-                model_buf,
-                workspace_buf,
-                dt=Scalar[gpu_dtype](0.002),
-                gravity_z=Scalar[gpu_dtype](-9.81),
-                ground_z=Scalar[gpu_dtype](0.0),
-            )
+        # for _ in range(FRAME_SKIP):
+        #     DefaultIntegrator.step_gpu[
+        #         gpu_dtype,
+        #         Self.NQ,
+        #         Self.NV,
+        #         Self.NUM_BODIES,
+        #         Self.NUM_JOINTS,
+        #         Self.MAX_CONTACTS,
+        #         BATCH_SIZE,
+        #     ](
+        #         ctx,
+        #         states_buf,
+        #         model_buf,
+        #         workspace_buf,
+        #         dt=Scalar[gpu_dtype](0.002),
+        #         gravity_z=Scalar[gpu_dtype](-9.81),
+        #         ground_z=Scalar[gpu_dtype](0.0),
+        #     )
 
         # Note: Joint limits are enforced by the physics engine in step_constraint_kernel
 
@@ -1284,7 +1302,7 @@ struct HopperGC[
             STATE_SIZE_VAL,
             MODEL_SIZE,
             OBS_DIM_VAL,
-            MAX_STEPS,
+            Self.MAX_STEPS,
         ](
             ctx,
             states_buf,
@@ -1938,10 +1956,7 @@ struct HopperGC[
     @staticmethod
     fn init_step_workspace_gpu[
         BATCH_SIZE: Int,
-    ](
-        ctx: DeviceContext,
-        mut workspace_buf: DeviceBuffer[gpu_dtype],
-    ) raises:
+    ](ctx: DeviceContext, mut workspace_buf: DeviceBuffer[gpu_dtype],) raises:
         """Initialize pre-allocated step workspace buffer (call once at setup).
 
         Initializes the model portion with default curriculum values.
@@ -1952,7 +1967,10 @@ struct HopperGC[
             HopperGC.NUM_BODIES, HopperGC.NUM_JOINTS
         ]()
         var model_view = DeviceBuffer[gpu_dtype](
-            ctx, workspace_buf.unsafe_ptr(), MODEL_SIZE, owning=False,
+            ctx,
+            workspace_buf.unsafe_ptr(),
+            MODEL_SIZE,
+            owning=False,
         )
         Self._init_model_gpu(ctx, model_view)
 
@@ -1974,8 +1992,10 @@ struct HopperGC[
             HopperGC.NUM_BODIES, HopperGC.NUM_JOINTS
         ]()
         var curriculum_host = InlineArray[Scalar[gpu_dtype], 2](
-            curriculum_values[0],  # min_height
-            curriculum_values[1],  # max_pitch
+            fill=[
+                curriculum_values[0],  # min_height
+                curriculum_values[1],  # max_pitch
+            ],
         )
         ctx.enqueue_copy(
             workspace_buf.unsafe_ptr() + curr_offset,

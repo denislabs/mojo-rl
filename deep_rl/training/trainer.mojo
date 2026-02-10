@@ -111,13 +111,13 @@ struct Trainer[
 
         # Initialize grads to zero (heap-allocated)
         self.grads = List[Scalar[dtype]](capacity=Self.MODEL.PARAM_SIZE)
-        for i in range(Self.MODEL.PARAM_SIZE):
+        for _ in range(Self.MODEL.PARAM_SIZE):
             self.grads.append(0)
 
         # Initialize optimizer state to zero (heap-allocated)
         comptime STATE_SIZE = Self.MODEL.PARAM_SIZE * Self.OPTIMIZER.STATE_PER_PARAM
         self.optimizer_state = List[Scalar[dtype]](capacity=STATE_SIZE)
-        for i in range(STATE_SIZE):
+        for _ in range(STATE_SIZE):
             self.optimizer_state.append(0)
 
     fn train[

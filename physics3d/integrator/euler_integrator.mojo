@@ -140,7 +140,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
     ](
         model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
-    ):
+    ) where DTYPE.is_floating_point():
         """Execute one simulation step with constraint-based contacts.
 
         Args:
@@ -244,12 +244,14 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                 if joint_d.jnt_type == JNT_FREE:
                     for d in range(6):
                         f_net[dof_adr_d + d] = (
-                            f_net[dof_adr_d + d] - damp_d * data.qvel[dof_adr_d + d]
+                            f_net[dof_adr_d + d]
+                            - damp_d * data.qvel[dof_adr_d + d]
                         )
                 elif joint_d.jnt_type == JNT_BALL:
                     for d in range(3):
                         f_net[dof_adr_d + d] = (
-                            f_net[dof_adr_d + d] - damp_d * data.qvel[dof_adr_d + d]
+                            f_net[dof_adr_d + d]
+                            - damp_d * data.qvel[dof_adr_d + d]
                         )
                 else:
                     f_net[dof_adr_d] = (
@@ -268,17 +270,17 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             if stiff > Scalar[DTYPE](0):
                 if joint.jnt_type == JNT_FREE:
                     for d in range(6):
-                        f_net[dof_adr + d] = (
-                            f_net[dof_adr + d] - stiff * (data.qpos[qpos_adr + d] - sref)
+                        f_net[dof_adr + d] = f_net[dof_adr + d] - stiff * (
+                            data.qpos[qpos_adr + d] - sref
                         )
                 elif joint.jnt_type == JNT_BALL:
                     for d in range(3):
-                        f_net[dof_adr + d] = (
-                            f_net[dof_adr + d] - stiff * (data.qpos[qpos_adr + d] - sref)
+                        f_net[dof_adr + d] = f_net[dof_adr + d] - stiff * (
+                            data.qpos[qpos_adr + d] - sref
                         )
                 else:
-                    f_net[dof_adr] = (
-                        f_net[dof_adr] - stiff * (data.qpos[qpos_adr] - sref)
+                    f_net[dof_adr] = f_net[dof_adr] - stiff * (
+                        data.qpos[qpos_adr] - sref
                     )
             if floss > Scalar[DTYPE](0):
                 comptime VEL_THRESH: Scalar[DTYPE] = 1e-4
@@ -330,8 +332,16 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         comptime MAX_ROWS = 3 * MAX_CONTACTS + 2 * NJOINT
         var constraints = ConstraintData[DTYPE, MAX_ROWS, NV]()
         build_constraints[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, MAX_ROWS,
-            V_SIZE, M_SIZE, CDOF_SIZE,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            MAX_ROWS,
+            V_SIZE,
+            M_SIZE,
+            CDOF_SIZE,
         ](model, data, cdof, M_inv, qvel_pred, dt, constraints)
 
         Self.SOLVER.solve[
@@ -347,7 +357,13 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         ](model, data, M_inv, constraints, qvel_pred, dt)
 
         writeback_impulses[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, MAX_ROWS,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            MAX_ROWS,
         ](constraints, data)
 
         # 9. Write back constrained velocity and integrate position
@@ -385,7 +401,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         num_steps: Int,
-    ):
+    ) where DTYPE.is_floating_point():
         """Run simulation for multiple steps on CPU."""
         for _ in range(num_steps):
             Self.step(model, data)
@@ -618,20 +634,30 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             if damp_d > Scalar[DTYPE](0):
                 if jnt_type_d == JNT_FREE:
                     for d in range(6):
-                        var v = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr_d + d])
+                        var v = rebind[Scalar[DTYPE]](
+                            state[env, qvel_off + dof_adr_d + d]
+                        )
                         var cur = rebind[Scalar[DTYPE]](
                             workspace[env, fnet_idx + dof_adr_d + d]
                         )
-                        workspace[env, fnet_idx + dof_adr_d + d] = cur - damp_d * v
+                        workspace[env, fnet_idx + dof_adr_d + d] = (
+                            cur - damp_d * v
+                        )
                 elif jnt_type_d == JNT_BALL:
                     for d in range(3):
-                        var v = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr_d + d])
+                        var v = rebind[Scalar[DTYPE]](
+                            state[env, qvel_off + dof_adr_d + d]
+                        )
                         var cur = rebind[Scalar[DTYPE]](
                             workspace[env, fnet_idx + dof_adr_d + d]
                         )
-                        workspace[env, fnet_idx + dof_adr_d + d] = cur - damp_d * v
+                        workspace[env, fnet_idx + dof_adr_d + d] = (
+                            cur - damp_d * v
+                        )
                 else:
-                    var v = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr_d])
+                    var v = rebind[Scalar[DTYPE]](
+                        state[env, qvel_off + dof_adr_d]
+                    )
                     var cur = rebind[Scalar[DTYPE]](
                         workspace[env, fnet_idx + dof_adr_d]
                     )
@@ -669,8 +695,8 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                         var cur = rebind[Scalar[DTYPE]](
                             workspace[env, fnet_idx + dof_adr + d]
                         )
-                        workspace[env, fnet_idx + dof_adr + d] = (
-                            cur - stiff * (qpos_d - sref)
+                        workspace[env, fnet_idx + dof_adr + d] = cur - stiff * (
+                            qpos_d - sref
                         )
                 elif jnt_type == JNT_BALL:
                     for d in range(3):
@@ -680,8 +706,8 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                         var cur = rebind[Scalar[DTYPE]](
                             workspace[env, fnet_idx + dof_adr + d]
                         )
-                        workspace[env, fnet_idx + dof_adr + d] = (
-                            cur - stiff * (qpos_d - sref)
+                        workspace[env, fnet_idx + dof_adr + d] = cur - stiff * (
+                            qpos_d - sref
                         )
                 else:
                     var qpos_d = rebind[Scalar[DTYPE]](
@@ -690,29 +716,43 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                     var cur = rebind[Scalar[DTYPE]](
                         workspace[env, fnet_idx + dof_adr]
                     )
-                    workspace[env, fnet_idx + dof_adr] = cur - stiff * (qpos_d - sref)
+                    workspace[env, fnet_idx + dof_adr] = cur - stiff * (
+                        qpos_d - sref
+                    )
             # Frictionloss: f -= frictionloss * sign(qvel)
             if floss > Scalar[DTYPE](0):
                 comptime VEL_THRESH: Scalar[DTYPE] = 1e-4
                 if jnt_type == JNT_FREE:
                     for d in range(6):
-                        var v = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + d])
-                        var cur = rebind[Scalar[DTYPE]](workspace[env, fnet_idx + dof_adr + d])
+                        var v = rebind[Scalar[DTYPE]](
+                            state[env, qvel_off + dof_adr + d]
+                        )
+                        var cur = rebind[Scalar[DTYPE]](
+                            workspace[env, fnet_idx + dof_adr + d]
+                        )
                         if v > VEL_THRESH:
                             workspace[env, fnet_idx + dof_adr + d] = cur - floss
                         elif v < -VEL_THRESH:
                             workspace[env, fnet_idx + dof_adr + d] = cur + floss
                 elif jnt_type == JNT_BALL:
                     for d in range(3):
-                        var v = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + d])
-                        var cur = rebind[Scalar[DTYPE]](workspace[env, fnet_idx + dof_adr + d])
+                        var v = rebind[Scalar[DTYPE]](
+                            state[env, qvel_off + dof_adr + d]
+                        )
+                        var cur = rebind[Scalar[DTYPE]](
+                            workspace[env, fnet_idx + dof_adr + d]
+                        )
                         if v > VEL_THRESH:
                             workspace[env, fnet_idx + dof_adr + d] = cur - floss
                         elif v < -VEL_THRESH:
                             workspace[env, fnet_idx + dof_adr + d] = cur + floss
                 else:
-                    var v = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr])
-                    var cur = rebind[Scalar[DTYPE]](workspace[env, fnet_idx + dof_adr])
+                    var v = rebind[Scalar[DTYPE]](
+                        state[env, qvel_off + dof_adr]
+                    )
+                    var cur = rebind[Scalar[DTYPE]](
+                        workspace[env, fnet_idx + dof_adr]
+                    )
                     if v > VEL_THRESH:
                         workspace[env, fnet_idx + dof_adr] = cur - floss
                     elif v < -VEL_THRESH:

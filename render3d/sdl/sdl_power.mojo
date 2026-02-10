@@ -36,8 +36,7 @@ they can save their game.
 """
 
 
-@register_passable("trivial")
-struct PowerState(Indexer, Intable):
+struct PowerState(Indexer, Intable, TrivialRegisterPassable):
     """The basic state for the system's power supply.
 
     These are results returned by SDL_GetPowerInfo().
@@ -77,7 +76,9 @@ struct PowerState(Indexer, Intable):
     """Plugged in, battery charged."""
 
 
-fn get_power_info(seconds: Ptr[c_int, AnyOrigin[True]], percent: Ptr[c_int, AnyOrigin[True]]) raises -> PowerState:
+fn get_power_info(
+    seconds: Ptr[c_int, AnyOrigin[True]], percent: Ptr[c_int, AnyOrigin[True]]
+) raises -> PowerState:
     """Get the current power supply details.
 
     You should never take a battery status as absolute truth. Batteries
@@ -113,4 +114,11 @@ fn get_power_info(seconds: Ptr[c_int, AnyOrigin[True]], percent: Ptr[c_int, AnyO
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetPowerInfo.
     """
 
-    return _get_dylib_function[lib, "SDL_GetPowerInfo", fn (seconds: Ptr[c_int, AnyOrigin[True]], percent: Ptr[c_int, AnyOrigin[True]]) -> PowerState]()(seconds, percent)
+    return _get_dylib_function[
+        lib,
+        "SDL_GetPowerInfo",
+        fn(
+            seconds: Ptr[c_int, AnyOrigin[True]],
+            percent: Ptr[c_int, AnyOrigin[True]],
+        ) -> PowerState,
+    ]()(seconds, percent)

@@ -113,13 +113,13 @@ struct Network[
 
         # Initialize grads to zero
         self.grads = List[Scalar[dtype]](capacity=Self.MODEL.PARAM_SIZE)
-        for i in range(Self.MODEL.PARAM_SIZE):
+        for _ in range(Self.MODEL.PARAM_SIZE):
             self.grads.append(Scalar[dtype](0))
 
         # Initialize optimizer state to zero
         comptime STATE_SIZE = Self.MODEL.PARAM_SIZE * Self.OPTIMIZER.STATE_PER_PARAM
         self.optimizer_state = List[Scalar[dtype]](capacity=STATE_SIZE)
-        for i in range(STATE_SIZE):
+        for _ in range(STATE_SIZE):
             self.optimizer_state.append(Scalar[dtype](0))
 
     # =========================================================================

@@ -25,8 +25,7 @@ from physics_legacy.utils import clamp
 comptime MAX_MANIFOLD_POINTS: Int = 2
 
 
-@register_passable("trivial")
-struct ContactPoint[dtype: DType](Copyable, Movable):
+struct ContactPoint[dtype: DType](Copyable, Movable, TrivialRegisterPassable):
     """Single contact point."""
 
     var point: Vec2[Self.dtype]  # World space contact point
@@ -60,7 +59,7 @@ struct ContactManifold[dtype: DType](Copyable, Movable):
     fn __init__(out self):
         self.points = InlineArray[
             ContactPoint[Self.dtype], MAX_MANIFOLD_POINTS
-        ](ContactPoint[Self.dtype]())
+        ](fill=ContactPoint[Self.dtype]())
         self.count = 0
         self.fixture_a_idx = -1
         self.fixture_b_idx = -1
@@ -133,7 +132,7 @@ fn collide_edge_polygon[
     var edge_dir = (v2 - v1).normalize()
 
     # Find polygon vertices in world space
-    var poly_verts = InlineArray[Vec2[dtype], 8](Vec2[dtype].zero())
+    var poly_verts = InlineArray[Vec2[dtype], 8](fill=Vec2[dtype].zero())
     for i in range(polygon.count):
         poly_verts[i] = xf_polygon.apply(polygon.vertices[i])
 
@@ -285,8 +284,8 @@ fn collide_polygon_polygon[
         return manifold^
 
     # Transform polygon vertices to world space
-    var verts_a = InlineArray[Vec2[dtype], 8](Vec2[dtype].zero())
-    var verts_b = InlineArray[Vec2[dtype], 8](Vec2[dtype].zero())
+    var verts_a = InlineArray[Vec2[dtype], 8](fill=Vec2[dtype].zero())
+    var verts_b = InlineArray[Vec2[dtype], 8](fill=Vec2[dtype].zero())
 
     for i in range(poly_a.count):
         verts_a[i] = xf_a.apply(poly_a.vertices[i])
@@ -354,17 +353,17 @@ fn collide_polygon_polygon[
     if sep_a > sep_b * RELATIVE_TOL + ABSOLUTE_TOL:
         # Use poly_a face as reference
         contact_normal = xf_a.apply_rotation(poly_a.normals[best_idx_a])
-        ref_verts = verts_a
+        ref_verts = verts_a.copy()
         ref_count = poly_a.count
-        inc_verts = verts_b
+        inc_verts = verts_b.copy()
         inc_count = poly_b.count
         flip = False
     else:
         # Use poly_b face as reference
         contact_normal = xf_b.apply_rotation(poly_b.normals[best_idx_b])
-        ref_verts = verts_b
+        ref_verts = verts_b.copy()
         ref_count = poly_b.count
-        inc_verts = verts_a
+        inc_verts = verts_a.copy()
         inc_count = poly_a.count
         flip = True
 

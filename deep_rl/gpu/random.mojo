@@ -91,7 +91,7 @@ fn gaussian_noise_pair() -> Tuple[Float64, Float64]:
 @always_inline
 fn gaussian_noise_gpu[
     dtype: DType
-](rng: Scalar[DType.uint32]) -> Tuple[Scalar[dtype], Scalar[DType.uint32]]:
+](rng: Scalar[DType.uint32]) -> Tuple[Scalar[dtype], Scalar[DType.uint32]] where dtype.is_floating_point():
     """Generate standard Gaussian noise on GPU using Box-Muller transform.
 
     GPU-friendly version that maintains RNG state for deterministic sequences.
@@ -132,7 +132,7 @@ fn gaussian_noise_pair_gpu[
     dtype: DType
 ](rng: Scalar[DType.uint32]) -> Tuple[
     Scalar[dtype], Scalar[dtype], Scalar[DType.uint32]
-]:
+] where dtype.is_floating_point():
     """Generate two independent Gaussian samples on GPU using Box-Muller.
 
     More efficient when you need multiple samples per thread.

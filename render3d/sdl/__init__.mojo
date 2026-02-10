@@ -47,7 +47,7 @@ comptime Ptr = UnsafePointer
 
 
 from sys import CompilationTarget, is_little_endian, is_big_endian
-from sys.ffi import (
+from ffi import (
     _Global,
     OwnedDLHandle,
     _get_dylib_function,
