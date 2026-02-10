@@ -33,7 +33,7 @@ from .dynamics.mass_matrix import compute_mass_matrix, solve_linear_diagonal
 from .dynamics.bias_forces import compute_bias_forces
 
 # Integrator
-from .integrator import DefaultIntegrator, EulerIntegrator
+from .integrator import DefaultIntegrator, EulerIntegrator, ImplicitFastIntegrator
 
 # Solvers
 from .solver import PGSSolver, CGSolver, NewtonSolver

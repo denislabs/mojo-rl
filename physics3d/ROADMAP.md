@@ -54,6 +54,7 @@ Reference material:
 - **GPU support**: all solvers, kinematics, dynamics have GPU kernels
 - **Passive forces**: armature (rotor inertia), implicit damping (MuJoCo implicitfast-style), stiffness with springref (configurable rest position), frictionloss (dry friction) (Phase 5.3 DONE)
 - **Joint limits as constraints**: unilateral inequality constraints in all 3 solvers, CPU + GPU (Phase 1.4 DONE)
+- **Two integrators**: EulerIntegrator (M + arm + dt*diag(damping)) and ImplicitFastIntegrator (M + arm - dt*qDeriv, extensible for actuators), both with explicit damping force f_net -= D*v, CPU + GPU (Phase 2.1 DONE)
 - **Physics stability**: MuJoCo solref/solimp impedance model (replaced Baumgarte), penetration cap (0.05m), velocity clamping (MAX_QVEL=20)
 - **Constraint solver parameters**: per-model solref/solimp for contacts and joint limits, Hermite smoothstep impedance, all 3 solvers, CPU + GPU (Phase 3.4 DONE)
 
@@ -65,7 +66,7 @@ Reference material:
 | ~~No Coriolis/centrifugal in bias forces~~ | ~~High~~ | ~~1~~ DONE |
 | ~~GC engine: ground contacts only~~ | ~~High~~ | ~~1~~ DONE |
 | ~~Joint limits via post-clamping~~ | ~~Medium - energy injection~~ | ~~1~~ DONE |
-| No implicit integrators | Medium - stability for damped systems | 2 |
+| ~~No implicit integrators~~ | ~~Medium - stability for damped systems~~ | ~~2~~ DONE |
 | No RK4 integrator | Medium - energy conservation | 2 |
 | No unified constraint rows | Medium - blocks friction cones/equality | 3 |
 | Simple Coulomb friction only | Medium - no torsional/rolling | 3 |
@@ -577,131 +578,55 @@ For each limit constraint:
 
 ## Phase 2: Integrator Improvements
 
-### 2.1 Implicit-fast Integrator
+### 2.1 Implicit-fast Integrator — DONE
 
-**Problem**: Our semi-implicit Euler (`qvel += qacc*dt, qpos += qvel*dt`) treats all
-forces explicitly. For systems with damping, springs, or stiff contacts, this can be
-unstable or require very small timesteps. MuJoCo's `implicitfast` is their recommended
-default - it has the same computational cost as Euler but much better stability.
+**Status**: COMPLETE. Two MuJoCo-matching integrators implemented with correct damping
+treatment (both implicit mass matrix modification AND explicit damping force).
 
-**Files to create/modify**:
-- `integrator/implicit_fast_integrator.mojo` (NEW)
-- `dynamics/velocity_derivatives.mojo` (NEW - compute dqfrc/dqvel)
-- `traits/integrator.mojo` (ensure trait compatibility)
+**Files created/modified**:
+- `integrator/implicit_fast_integrator.mojo` (NEW — qDeriv-based mass matrix modification)
+- `integrator/euler_integrator.mojo` (fixed damping bug: added explicit `f_net -= D*v`)
+- `integrator/__init__.mojo` (exports both, DefaultIntegrator = ImplicitFastIntegrator[PGSSolver])
+- `envs/half_cheetah_gc/half_cheetah_gc.mojo` (switched to ImplicitFastIntegrator[NewtonSolver])
+
+#### What Was Implemented
+
+**Critical damping bug fixed**: Both integrators were only modifying the mass matrix
+diagonal (`M[i,i] += dt * damping`), but the explicit damping force `f_net -= damping * qvel`
+was missing. MuJoCo requires BOTH:
+1. Mass matrix: `M_hat = M + arm + dt*damping` (implicit part — damps the NEW velocity)
+2. Force: `f_net -= damping * qvel` (explicit part — applies force from CURRENT velocity)
+
+Without (2), there was essentially zero velocity decay from damping when no external
+forces act. This is mathematically wrong and means physics under-damps significantly.
+
+**Two integrators**:
+- **EulerIntegrator[SOLVER]**: `M_hat = M + arm + dt*diag(damping)`, simple diagonal treatment
+- **ImplicitFastIntegrator[SOLVER]**: `M_hat = M + arm - dt*qDeriv` where `qDeriv[i,i] = -damping[i]`
+  - Currently identical results (no actuators), but extensible for actuator velocity derivatives
+  - `qDeriv` will later include `gainprm[2]`, `biasprm[2]`, tendon damping
+
+**DefaultIntegrator** = `ImplicitFastIntegrator[PGSSolver]` (was `EulerIntegrator[PGSSolver]`).
+HalfCheetahGC uses `ImplicitFastIntegrator[NewtonSolver]`. HopperGC uses DefaultIntegrator.
+
+Both CPU and GPU paths updated in all integrators, all joint types (FREE, BALL, HINGE, SLIDE).
 
 #### Algorithm
 
 MuJoCo reference: `engine_forward.c` lines 1140-1163 (implicitfast path).
 
-Instead of solving `M * qacc = f`, solve:
 ```
-(M - dt * dF/dv) * qacc = f_total
+Solve: (M + armature - dt * qDeriv) * qacc = f_net
 
 Where:
-  M         = mass matrix
-  dt        = timestep
-  dF/dv     = derivative of velocity-dependent forces w.r.t. velocity
-  f_total   = qfrc_smooth + qfrc_constraint
-  qacc      = resulting acceleration
+  qDeriv[i,i] = d(forces)/d(qvel_i) = -damping[i]  (passive only)
+  f_net = qfrc - bias - damping * qvel - stiffness * (qpos - springref) - frictionloss * sign(qvel)
 ```
 
-The key insight: `dF/dv` captures how forces change with velocity. For damping
-`F = -b * v`, the derivative is `dF/dv = -b`, so the system becomes
-`(M + dt*b) * qacc = f`, which is unconditionally stable for any damping.
-
-#### What Goes Into dF/dv
-
-MuJoCo reference: `engine_derivative.c` lines 1536-1556 (`mjd_smooth_vel`).
-
-For `implicitfast` (flg_bias=0, skips Coriolis derivative):
+Future extension for actuators:
 ```
-dF/dv = dF_passive/dv + dF_actuator/dv
-
-Where:
-  dF_passive/dv:
-    - Joint damping: dF/dv[i,i] = -damping[i]   (diagonal)
-    - Joint friction: dF/dv[i,i] -= friction_loss[i] * sign(v[i])  (diagonal)
-
-  dF_actuator/dv:
-    - Velocity-dependent actuators (motors with velocity feedback)
-    - Usually zero for simple torque control
+qDeriv[i,i] += d(actuator_force)/d(qvel_i)  (gainprm[2], biasprm[2])
 ```
-
-For simple damped joints (the common case), `dF/dv` is diagonal:
-```
-dF_dv[i] = -joint_damping[i]
-```
-
-#### Implementation
-
-**Step 1**: Add damping to `Model`:
-```mojo
-# In types.mojo, Model:
-var joint_damping: InlineArray[Scalar[DTYPE], NV]  # per-DOF damping coefficient
-```
-
-**Step 2**: Create `dynamics/velocity_derivatives.mojo`:
-```mojo
-fn compute_velocity_derivative_diag[...](
-    model: Model, data: Data, mut dFdv_diag: InlineArray[Scalar[DTYPE], NV]
-):
-    """Compute diagonal of dF/dv (implicitfast: skip Coriolis)."""
-    for i in range(NV):
-        dFdv_diag[i] = -model.joint_damping[i]
-```
-
-**Step 3**: Create `integrator/implicit_fast_integrator.mojo`:
-```mojo
-struct ImplicitFastIntegrator(Integrator):
-    @staticmethod
-    fn step[...](model, mut data):
-        # 1-5: Same as ConstraintIntegrator (FK, contacts, M, bias, cdof)
-
-        # 6: Compute velocity derivative
-        var dFdv_diag = InlineArray[Scalar[DTYPE], V_SIZE](0)
-        compute_velocity_derivative_diag(model, data, dFdv_diag)
-
-        # 7: Build modified mass matrix: M_hat = M - dt * dF/dv
-        # For diagonal case:
-        var M_hat_diag = InlineArray[Scalar[DTYPE], V_SIZE](0)
-        for i in range(NV):
-            M_hat_diag[i] = M_diag[i] - dt * dFdv_diag[i]
-
-        # 8: Solve M_hat * qacc = f_net (instead of M * qacc = f_net)
-        for i in range(NV):
-            if M_hat_diag[i] > 1e-10:
-                qacc[i] = f_net[i] / M_hat_diag[i]
-
-        # 9-11: Same as before (predict vel, constraint solve, integrate, normalize)
-```
-
-With full mass matrix (Phase 1.1):
-```mojo
-# Build M_hat = M_full - dt * dF/dv
-for i in range(NV):
-    for j in range(NV):
-        M_hat[i * NV + j] = M_full[i * NV + j]
-    M_hat[i * NV + i] -= dt * dFdv_diag[i]  # only diagonal dF/dv
-
-# Factor and solve
-ldl_factor(M_hat, L, D, NV)
-ldl_solve(L, D, f_net, qacc, NV)
-```
-
-#### Adding Damping Forces to Bias
-
-The damping force itself needs to be included in `f_net`:
-```mojo
-# In the step function, add damping to applied forces:
-for i in range(NV):
-    f_net[i] = data.qfrc[i] - bias[i] - model.joint_damping[i] * data.qvel[i]
-```
-
-#### Testing
-
-- Damped pendulum: should decay smoothly without oscillation
-- Stiff spring: compare stability at various timesteps vs explicit Euler
-- HalfCheetah with damping: verify training still works, check stability
 
 ---
 
@@ -1237,7 +1162,7 @@ All passive forces work on CPU and GPU, for all joint types (FREE, BALL, HINGE, 
 - `envs/hopper_gc/hopper_gc.mojo` — all 6 joints write springref=0, frictionloss=0
 
 **Implementation details**:
-- Damping is handled implicitly via `M_eff` (not as an explicit force), following MuJoCo implicitfast
+- Damping uses BOTH implicit (`M[i,i] += dt*damping`) AND explicit (`f_net -= damping * qvel`) treatment, matching MuJoCo
 - Stiffness and frictionloss are applied as explicit forces in `f_net` before the LDL solve
 - Frictionloss uses `sign(qvel)` with a 1e-4 velocity dead zone to avoid chatter at zero velocity
 
@@ -1315,7 +1240,7 @@ Sprint 1 (Core correctness):
   1.4 Joint limits as constraints ✅ DONE (unilateral constraints in all 3 solvers, CPU + GPU)
 
 Sprint 2 (Stability):
-  2.1 Implicit-fast integrator  ← recommended default, stability boost (partially done via implicit damping in M)
+  2.1 Implicit-fast integrator  ✅ DONE (EulerIntegrator + ImplicitFastIntegrator, damping bug fixed, CPU + GPU)
   5.3 Passive forces            ✅ DONE (armature, implicit damping, stiffness+springref, frictionloss — all joint types, CPU + GPU)
 
 Sprint 3 (Interaction):

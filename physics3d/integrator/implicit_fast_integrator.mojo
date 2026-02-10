@@ -1,27 +1,23 @@
-"""Constraint-based GC integrator with configurable contact solver.
+"""Implicit-fast integrator matching MuJoCo's implicitfast integration scheme.
 
-Supports three solver types (mirroring MuJoCo's solver options):
-- PGS (Projected Gauss-Seidel): Fast, reliable, default choice
-- CG (Conjugate Gradient): Faster convergence for well-conditioned problems
-- Newton: Quadratic convergence, most accurate for stiff contacts
+Like EulerIntegrator, but uses the qDeriv (velocity derivative) formulation
+for mass matrix modification:
 
-Pipeline:
-1. Forward kinematics (qpos -> xpos, xquat)
-2. Compute body velocities (qvel -> xvel, xangvel)
-3. Detect ground contacts
-4. Compute cdof (spatial motion axes per DOF)
-5. Compute composite rigid body inertia (CRBA)
-6. Compute full mass matrix M(q) using CRBA
-7. LDL factorize M, compute M_inv
-8. Compute bias forces
-9. Compute unconstrained acceleration: qacc = M^-1 * (qfrc - bias) via LDL solve
-10. Predict velocity: qvel_pred = qvel + qacc * dt
-11. Constraint solve (PGS/CG/Newton): modify qvel_pred using full M_inv
-12. qpos += qvel_pred * dt
-13. Normalize quaternions, enforce joint limits
+  M_hat = M + armature - dt * qDeriv
 
-This produces bounded, physically correct contact forces instead of
-unbounded spring forces that can launch bodies into the sky.
+where qDeriv = d(passive_forces + actuator_forces) / d(qvel).
+
+Currently (without actuators): qDeriv[i,i] = -damping[i], so:
+  M_hat = M + armature + dt * damping  (same as Euler)
+
+When actuators are added, qDeriv will also include:
+  - Actuator velocity derivatives (gainprm[2], biasprm[2])
+  - Tendon damping derivatives
+
+This produces identical results to EulerIntegrator for passive systems,
+but has the architecture to correctly handle actuator dynamics.
+
+Pipeline matches EulerIntegrator exactly (see euler_integrator.mojo).
 """
 
 from math import sqrt
@@ -106,21 +102,20 @@ from ..gpu.constants import (
 )
 
 
-struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
-    """GC integrator with configurable constraint-based contact solving.
+struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
+    """Implicit-fast integrator with qDeriv-based mass matrix modification.
+
+    Uses M_hat = M + armature - dt * qDeriv where qDeriv = d(forces)/d(qvel).
+    Currently qDeriv only includes passive damping; extensible for actuators.
 
     Parametrized by SOLVER type (PGSSolver, CGSolver, or NewtonSolver).
-    Uses the specified solver for contact constraints instead of penalty springs.
 
     Usage:
-        # PGS (default, backward-compatible):
-        alias PGSIntegrator = EulerIntegrator[PGSSolver]
+        # PGS (default):
+        alias PGSImplicitFast = ImplicitFastIntegrator[PGSSolver]
 
-        # Conjugate Gradient:
-        alias CGIntegrator = EulerIntegrator[CGSolver]
-
-        # Newton:
-        alias NewtonIntegrator = EulerIntegrator[NewtonSolver]
+        # Newton (most accurate):
+        alias NewtonImplicitFast = ImplicitFastIntegrator[NewtonSolver]
     """
 
     # =========================================================================
@@ -139,7 +134,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     ):
-        """Execute one simulation step with constraint-based contacts.
+        """Execute one simulation step with implicit-fast integration.
 
         Args:
             model: Static model configuration.
@@ -189,16 +184,20 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             CRB_SIZE,
         ](model, data, cdof, crb, M)
 
-        # 5b. Add armature + implicit damping to mass matrix diagonal
-        # MuJoCo implicitfast: M_eff[i,i] += armature[i] + dt * damping[i]
-        # Implicit damping: instead of explicit f -= D*qvel, we add dt*D
-        # to the mass matrix. This provides unconditional stability for damping
-        # and correctly damps the NEW velocity (semi-implicit treatment).
+        # 5b. Compute qDeriv and modify mass matrix
+        # M_hat = M + armature - dt * qDeriv
+        # qDeriv[i,i] = d(force_i)/d(qvel_i)
+        # For passive damping: qDeriv[i,i] = -damping[i]
+        # So: M_hat[i,i] += armature[i] - dt * (-damping[i])
+        #                  = armature[i] + dt * damping[i]
+        # Future: qDeriv will also include actuator velocity derivatives
         for j in range(model.num_joints):
             var joint = model.joints[j]
             var dof_adr = joint.dof_adr
             var arm = joint.armature
             var damp = joint.damping
+            # qDeriv_diag = -damp (damping force derivative w.r.t. velocity)
+            # M_hat += arm - dt * qDeriv_diag = arm + dt * damp
             var diag_add = arm + dt * damp
             if joint.jnt_type == JNT_FREE:
                 for d in range(6):
@@ -231,9 +230,8 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
 
         # 6b. Apply passive joint forces: damping + stiffness + frictionloss
         # Damping force: f -= damping * qvel (explicit part)
-        # The implicit part (dt*damping added to M) handles the NEW velocity component.
-        # Both are needed: MuJoCo Euler uses M_hat = M + arm + dt*diag(damping)
-        # AND f_net -= damping * qvel.
+        # The implicit part (dt*damping added to M via qDeriv) handles the
+        # NEW velocity component. Both are needed for MuJoCo-matching behavior.
         for j in range(model.num_joints):
             var joint_d = model.joints[j]
             var dof_adr_d = joint_d.dof_adr
@@ -405,23 +403,12 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
         ],
     ):
-        """Complete GC physics step with configurable constraint solver.
+        """Complete implicit-fast physics step kernel (pre-solver).
 
         Pipeline:
-        1. Forward kinematics (qpos -> xpos, xquat)
-        2. Compute body velocities (qvel -> xvel, xangvel)
-        3. Detect ground contacts
-        4. Compute cdof (spatial motion axes per DOF)
-        5. Compute composite rigid body inertia (CRBA)
-        6. Compute full mass matrix M(q)
-        7. LDL factorize M, compute M_inv
-        8. Compute bias forces
-        9. Compute unconstrained acceleration via LDL solve
-        10. Predict velocity
-        11. Constraint solve using SOLVER with full M_inv
-        12. Write back constrained velocity, integrate position
-        13. Normalize quaternions
-        14. Enforce joint limits
+        1-6. Same as EulerIntegrator (FK, contacts, CRBA, mass matrix)
+        6b. qDeriv-based mass matrix modification
+        7-10. LDL factorize, bias forces, f_net with damping, predict velocity
         """
 
         var env = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -528,8 +515,10 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             WS_SIZE,
         ](env, state, model, workspace)
 
-        # 6b. Add armature + implicit damping to mass matrix diagonal
-        # MuJoCo implicitfast: M_eff[i,i] += armature[i] + dt * damping[i]
+        # 6b. Compute qDeriv and modify mass matrix
+        # M_hat = M + armature - dt * qDeriv
+        # qDeriv[i,i] = -damping[i] (passive only; extensible for actuators)
+        # Result: M_hat[i,i] += armature[i] + dt * damping[i]
         var model_meta_off_arm = model_metadata_offset[NBODY, NJOINT]()
         var dt_arm = model[0, model_meta_off_arm + MODEL_META_IDX_TIMESTEP]
 
@@ -539,6 +528,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             var dof_adr = Int(model[0, joint_off + JOINT_IDX_DOF_ADR])
             var arm = model[0, joint_off + JOINT_IDX_ARMATURE]
             var damp = model[0, joint_off + JOINT_IDX_DAMPING]
+            # qDeriv_diag = -damp => M_hat += arm - dt * (-damp) = arm + dt * damp
             var diag_add = arm + dt_arm * damp
             if jnt_type == JNT_FREE:
                 for d in range(6):
@@ -755,7 +745,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
         ],
     ):
-        """Complete GC physics step with configurable constraint solver.
+        """Finalize physics step: write back velocity, integrate position.
 
         Pipeline:
         9. Write back constrained velocity, integrate position
@@ -786,7 +776,6 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             state[env, qvel_off + i] = constrained_vel
 
         # 9b. Clamp velocities to prevent divergence
-        # MuJoCo uses ~10-50 depending on model; 10 prevents catastrophic penetration
         comptime MAX_QVEL: Scalar[DTYPE] = 10.0
         for i in range(NV):
             var v = rebind[Scalar[DTYPE]](state[env, qvel_off + i])
@@ -835,7 +824,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         gravity_z: Scalar[DTYPE],
         ground_z: Scalar[DTYPE],
     ) raises:
-        """Perform one physics simulation step on GPU with constraint solving.
+        """Perform one physics simulation step on GPU with implicit-fast integration.
 
         Uses the parametrized SOLVER for contact constraint resolution.
         """
@@ -963,7 +952,3 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                 gravity_z,
                 ground_z,
             )
-
-
-# Backward-compatible alias: uses PGS solver by default
-comptime EulerDefaultIntegrator = EulerIntegrator[PGSSolver]

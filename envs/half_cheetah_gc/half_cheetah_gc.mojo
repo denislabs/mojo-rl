@@ -36,7 +36,7 @@ from layout import Layout, LayoutTensor
 # Import GC physics engine
 from physics3d.constants import GEOM_CAPSULE
 from physics3d.types import Model, Data
-from physics3d.integrator import EulerIntegrator
+from physics3d.integrator import ImplicitFastIntegrator
 from physics3d.solver import NewtonSolver
 from physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
@@ -1277,7 +1277,7 @@ struct HalfCheetahGC[
 
         # Physics step (with frame skip)
         for _ in range(self.frame_skip):
-            EulerIntegrator[SOLVER=NewtonSolver].step(self.model, self.data)
+            ImplicitFastIntegrator[SOLVER=NewtonSolver].step(self.model, self.data)
             # Enforce joint limits after each physics step
             self._enforce_joint_limits()
             # Ground safety clamp: prevent rootz from going deeply underground
@@ -1595,7 +1595,7 @@ struct HalfCheetahGC[
 
         # Run FRAME_SKIP physics sub-steps with joint limit enforcement
         for _ in range(C.FRAME_SKIP):
-            EulerIntegrator[SOLVER=NewtonSolver].step_gpu[
+            ImplicitFastIntegrator[SOLVER=NewtonSolver].step_gpu[
                 gpu_dtype,
                 Self.NQ,
                 Self.NV,
