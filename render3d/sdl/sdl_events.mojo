@@ -1342,9 +1342,11 @@ struct Event:
     ]
     var _impl: Self._mlir_type
 
-    @implicit
-    fn __init__[T: AnyType](out self, value: T):
-        self._impl = rebind[Self._mlir_type](value)
+    fn __init__(out self):
+        """Initialize event for polling."""
+        __mlir_op.`lit.ownership.mark_initialized`(
+            __get_mvalue_as_litref(self)
+        )
 
     fn __getitem__[T: AnyType](ref self) -> ref[self._impl] T:
         return rebind[Ptr[T, origin_of(self._impl)]](Ptr(to=self._impl))[]

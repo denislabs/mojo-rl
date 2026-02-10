@@ -1873,7 +1873,7 @@ struct Renderer3D(Movable):
         Returns:
             True if quit event detected.
         """
-        var event = Event(UInt32(0))
+        var event = Event()
 
         try:
             while poll_event(Ptr(to=event)):
