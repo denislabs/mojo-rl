@@ -84,6 +84,14 @@ struct JointDef[DTYPE: DType](ImplicitlyCopyable, Movable):
     # MuJoCo: qfrc_passive[i] += -stiffness[i] * (qpos[i] - springref[i]). Restoring spring.
     var stiffness: Scalar[Self.DTYPE]
 
+    # Spring reference position - rest position for stiffness spring
+    # MuJoCo: springref[i]. Default 0.0 (spring pulls toward zero).
+    var springref: Scalar[Self.DTYPE]
+
+    # Dry friction loss - velocity-independent friction torque opposing motion
+    # MuJoCo: qfrc_passive[i] += -frictionloss[i] * sign(qvel[i]). Coulomb friction.
+    var frictionloss: Scalar[Self.DTYPE]
+
     @staticmethod
     fn empty() -> Self:
         """Create an empty/default joint definition."""
@@ -104,6 +112,8 @@ struct JointDef[DTYPE: DType](ImplicitlyCopyable, Movable):
             armature=Scalar[Self.DTYPE](0),
             damping=Scalar[Self.DTYPE](0),
             stiffness=Scalar[Self.DTYPE](0),
+            springref=Scalar[Self.DTYPE](0),
+            frictionloss=Scalar[Self.DTYPE](0),
         )
 
     @staticmethod
@@ -119,6 +129,8 @@ struct JointDef[DTYPE: DType](ImplicitlyCopyable, Movable):
         armature: Scalar[Self.DTYPE] = 0.0,
         damping: Scalar[Self.DTYPE] = 0.0,
         stiffness: Scalar[Self.DTYPE] = 0.0,
+        springref: Scalar[Self.DTYPE] = 0.0,
+        frictionloss: Scalar[Self.DTYPE] = 0.0,
     ) -> Self:
         """Create a hinge (revolute) joint.
 
@@ -162,6 +174,8 @@ struct JointDef[DTYPE: DType](ImplicitlyCopyable, Movable):
             armature=armature,
             damping=damping,
             stiffness=stiffness,
+            springref=springref,
+            frictionloss=frictionloss,
         )
 
     @staticmethod
@@ -177,6 +191,8 @@ struct JointDef[DTYPE: DType](ImplicitlyCopyable, Movable):
         armature: Scalar[Self.DTYPE] = 0.0,
         damping: Scalar[Self.DTYPE] = 0.0,
         stiffness: Scalar[Self.DTYPE] = 0.0,
+        springref: Scalar[Self.DTYPE] = 0.0,
+        frictionloss: Scalar[Self.DTYPE] = 0.0,
     ) -> Self:
         """Create a slide (prismatic) joint.
 
@@ -220,6 +236,8 @@ struct JointDef[DTYPE: DType](ImplicitlyCopyable, Movable):
             armature=armature,
             damping=damping,
             stiffness=stiffness,
+            springref=springref,
+            frictionloss=frictionloss,
         )
 
     @staticmethod
@@ -261,6 +279,8 @@ struct JointDef[DTYPE: DType](ImplicitlyCopyable, Movable):
             armature=Scalar[Self.DTYPE](0),
             damping=Scalar[Self.DTYPE](0),
             stiffness=Scalar[Self.DTYPE](0),
+            springref=Scalar[Self.DTYPE](0),
+            frictionloss=Scalar[Self.DTYPE](0),
         )
 
     @staticmethod
@@ -298,6 +318,8 @@ struct JointDef[DTYPE: DType](ImplicitlyCopyable, Movable):
             armature=Scalar[Self.DTYPE](0),
             damping=Scalar[Self.DTYPE](0),
             stiffness=Scalar[Self.DTYPE](0),
+            springref=Scalar[Self.DTYPE](0),
+            frictionloss=Scalar[Self.DTYPE](0),
         )
 
     fn qpos_size(self) -> Int:

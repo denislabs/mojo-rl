@@ -353,6 +353,8 @@ struct Model[
         armature: Scalar[Self.DTYPE] = 0.0,
         damping: Scalar[Self.DTYPE] = 0.0,
         stiffness: Scalar[Self.DTYPE] = 0.0,
+        springref: Scalar[Self.DTYPE] = 0.0,
+        frictionloss: Scalar[Self.DTYPE] = 0.0,
     ) -> Int:
         """Add a hinge joint to a body.
 
@@ -390,6 +392,8 @@ struct Model[
             armature,
             damping,
             stiffness,
+            springref,
+            frictionloss,
         )
         self.num_joints += 1
         return joint_idx
@@ -405,6 +409,8 @@ struct Model[
         armature: Scalar[Self.DTYPE] = 0.0,
         damping: Scalar[Self.DTYPE] = 0.0,
         stiffness: Scalar[Self.DTYPE] = 0.0,
+        springref: Scalar[Self.DTYPE] = 0.0,
+        frictionloss: Scalar[Self.DTYPE] = 0.0,
     ) -> Int:
         """Add a slide joint to a body.
 
@@ -442,6 +448,8 @@ struct Model[
             armature,
             damping,
             stiffness,
+            springref,
+            frictionloss,
         )
         self.num_joints += 1
         return joint_idx

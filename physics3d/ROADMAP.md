@@ -52,7 +52,7 @@ Reference material:
 - **Joint types**: FREE, BALL, HINGE, SLIDE with correct cdof computation
 - **Collision primitives**: sphere, capsule, box (ground-plane + body-body in both GC and Cartesian engines) (Phase 1.3 DONE)
 - **GPU support**: all solvers, kinematics, dynamics have GPU kernels
-- **Passive forces**: armature (rotor inertia), implicit damping (MuJoCo implicitfast-style), stiffness (spring)
+- **Passive forces**: armature (rotor inertia), implicit damping (MuJoCo implicitfast-style), stiffness with springref (configurable rest position), frictionloss (dry friction) (Phase 5.3 DONE)
 - **Joint limits as constraints**: unilateral inequality constraints in all 3 solvers, CPU + GPU (Phase 1.4 DONE)
 - **Physics stability**: MuJoCo solref/solimp impedance model (replaced Baumgarte), penetration cap (0.05m), velocity clamping (MAX_QVEL=20)
 - **Constraint solver parameters**: per-model solref/solimp for contacts and joint limits, Hermite smoothstep impedance, all 3 solvers, CPU + GPU (Phase 3.4 DONE)
@@ -1217,49 +1217,29 @@ Most useful for multi-agent scenarios.
 
 ---
 
-### 5.3 Passive Forces (spring/damper per joint)
+### 5.3 Passive Forces (spring/damper per joint) — DONE
 
-**Problem**: MuJoCo supports per-joint passive forces (springs with rest position,
-velocity damping, dry friction). Our engine only has user-applied `qfrc`.
+**Status**: COMPLETE. All four MuJoCo passive force types implemented per joint:
+- **Armature**: `M[i,i] += armature` (rotor inertia regularization)
+- **Implicit damping**: `M[i,i] += dt * damping` (unconditionally stable, MuJoCo implicitfast-style)
+- **Stiffness with springref**: `f -= stiffness * (qpos - springref)` (restoring spring to configurable rest position)
+- **Frictionloss**: `f -= frictionloss * sign(qvel)` (dry/Coulomb friction with 1e-4 velocity threshold)
 
-**Files to modify**:
-- `types.mojo` (add spring/damper fields to Model joints)
-- `dynamics/passive_forces.mojo` (NEW)
-- `integrator/euler_integrator.mojo` (add passive forces to f_net)
+All passive forces work on CPU and GPU, for all joint types (FREE, BALL, HINGE, SLIDE).
 
-#### Implementation
+**Files modified**:
+- `joint_types.mojo` — added `springref` and `frictionloss` fields to `JointDef`
+- `types.mojo` — `add_hinge_joint()` and `add_slide_joint()` accept `springref`/`frictionloss` params
+- `gpu/constants.mojo` — `MODEL_JOINT_SIZE` 16→18, added `JOINT_IDX_SPRINGREF=16`, `JOINT_IDX_FRICTIONLOSS=17`
+- `gpu/buffer_utils.mojo` — packs springref/frictionloss into GPU model buffer
+- `integrator/euler_integrator.mojo` — CPU `step()` and GPU `step_kernel()` apply springref offset and frictionloss
+- `envs/half_cheetah_gc/half_cheetah_gc.mojo` — all 10 joints write springref=0, frictionloss=0
+- `envs/hopper_gc/hopper_gc.mojo` — all 6 joints write springref=0, frictionloss=0
 
-```mojo
-# Per-joint parameters (in JointDef or Model):
-var stiffness: Scalar[DTYPE]      # spring constant k
-var springref: Scalar[DTYPE]      # rest position q0
-var damping: Scalar[DTYPE]        # damping coefficient b
-var frictionloss: Scalar[DTYPE]   # dry friction torque
-
-fn compute_passive_forces[...](model, data, mut qfrc_passive):
-    for j in range(NJOINT):
-        var jnt = model.joints[j]
-        var dof = jnt.dof_adr
-        var q = data.qpos[jnt.qpos_adr]
-        var v = data.qvel[dof]
-
-        # Spring: F = -k * (q - q0)
-        qfrc_passive[dof] += -jnt.stiffness * (q - jnt.springref)
-
-        # Damping: F = -b * v
-        qfrc_passive[dof] += -jnt.damping * v
-
-        # Dry friction: F = -f * sign(v)
-        if abs(v) > 1e-10:
-            qfrc_passive[dof] += -jnt.frictionloss * sign(v)
-```
-
-Then in the integrator:
-```mojo
-compute_passive_forces(model, data, qfrc_passive)
-for i in range(NV):
-    f_net[i] = data.qfrc[i] + qfrc_passive[i] - bias[i]
-```
+**Implementation details**:
+- Damping is handled implicitly via `M_eff` (not as an explicit force), following MuJoCo implicitfast
+- Stiffness and frictionloss are applied as explicit forces in `f_net` before the LDL solve
+- Frictionloss uses `sign(qvel)` with a 1e-4 velocity dead zone to avoid chatter at zero velocity
 
 ---
 
@@ -1336,7 +1316,7 @@ Sprint 1 (Core correctness):
 
 Sprint 2 (Stability):
   2.1 Implicit-fast integrator  ← recommended default, stability boost (partially done via implicit damping in M)
-  5.3 Passive forces            ← partially done (armature/damping/stiffness implemented; missing frictionloss/springref)
+  5.3 Passive forces            ✅ DONE (armature, implicit damping, stiffness+springref, frictionloss — all joint types, CPU + GPU)
 
 Sprint 3 (Interaction):
   1.3 Body-body collision in GC ✅ DONE (bilateral Jacobians, O(N^2) detection, all primitives, CPU + GPU)

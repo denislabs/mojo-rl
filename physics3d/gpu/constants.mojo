@@ -11,8 +11,8 @@ State buffer layout per environment:
 Model buffer (static, same for all environments):
   Per body (MODEL_BODY_SIZE=22): [mass, inv_mass, inertia(3), inv_inertia(3),
     pos(3), quat(4), parent, geom_type, radius, half_length, half_x/y/z]
-  Per joint (MODEL_JOINT_SIZE=16): [type, body_id, qpos_adr, dof_adr,
-    pos(3), axis(3), tau_limit, range_min/max, armature, damping, stiffness]
+  Per joint (MODEL_JOINT_SIZE=18): [type, body_id, qpos_adr, dof_adr,
+    pos(3), axis(3), tau_limit, range_min/max, armature, damping, stiffness, springref, frictionloss]
   Metadata (MODEL_META_SIZE=18): [NBODY, NJOINT, gravity(3), timestep, ground_z, friction,
     solref_contact(2), solimp_contact(3), solref_limit(2), solimp_limit(3)]
   Curriculum (MODEL_CURRICULUM_SIZE=8): [up to 8 curriculum parameters]
@@ -206,7 +206,7 @@ fn model_body_offset(body_idx: Int) -> Int:
 # Model Buffer Layout - Per Joint
 # =============================================================================
 
-comptime MODEL_JOINT_SIZE: Int = 16  # Extended to include range limits + armature + damping + stiffness
+comptime MODEL_JOINT_SIZE: Int = 18  # Extended to include range limits + armature + damping + stiffness + springref + frictionloss
 
 comptime JOINT_IDX_TYPE: Int = 0  # JNT_FREE, JNT_BALL, JNT_SLIDE, JNT_HINGE
 comptime JOINT_IDX_BODY_ID: Int = 1
@@ -224,6 +224,8 @@ comptime JOINT_IDX_RANGE_MAX: Int = 12  # Maximum position
 comptime JOINT_IDX_ARMATURE: Int = 13  # Rotor inertia (added to M diagonal)
 comptime JOINT_IDX_DAMPING: Int = 14  # Passive joint damping
 comptime JOINT_IDX_STIFFNESS: Int = 15  # Passive joint stiffness (spring)
+comptime JOINT_IDX_SPRINGREF: Int = 16  # Spring reference position (rest position)
+comptime JOINT_IDX_FRICTIONLOSS: Int = 17  # Dry friction loss (Coulomb friction)
 
 
 fn model_joint_offset[NBODY: Int](joint_idx: Int) -> Int:

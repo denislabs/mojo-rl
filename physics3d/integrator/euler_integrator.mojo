@@ -93,6 +93,8 @@ from ..gpu.constants import (
     JOINT_IDX_ARMATURE,
     JOINT_IDX_STIFFNESS,
     JOINT_IDX_DAMPING,
+    JOINT_IDX_SPRINGREF,
+    JOINT_IDX_FRICTIONLOSS,
     MODEL_META_IDX_TIMESTEP,
     integrator_workspace_size,
     ws_M_offset,
@@ -227,31 +229,54 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         for i in range(NV):
             f_net[i] = data.qfrc[i] - bias[i]
 
-        # 6b. Apply passive joint forces: stiffness only
+        # 6b. Apply passive joint forces: stiffness + frictionloss
         # Damping is handled implicitly via M_eff (step 5b).
-        # Stiffness: f -= stiffness * (qpos - springref), springref=0
+        # Stiffness: f -= stiffness * (qpos - springref)
+        # Frictionloss: f -= frictionloss * sign(qvel)
         for j in range(model.num_joints):
             var joint = model.joints[j]
             var dof_adr = joint.dof_adr
             var qpos_adr = joint.qpos_adr
             var stiff = joint.stiffness
+            var sref = joint.springref
+            var floss = joint.frictionloss
             if stiff > Scalar[DTYPE](0):
                 if joint.jnt_type == JNT_FREE:
                     for d in range(6):
-                        # For free joints: stiffness on position DOFs
                         f_net[dof_adr + d] = (
-                            f_net[dof_adr + d] - stiff * data.qpos[qpos_adr + d]
+                            f_net[dof_adr + d] - stiff * (data.qpos[qpos_adr + d] - sref)
                         )
                 elif joint.jnt_type == JNT_BALL:
                     for d in range(3):
                         f_net[dof_adr + d] = (
-                            f_net[dof_adr + d] - stiff * data.qpos[qpos_adr + d]
+                            f_net[dof_adr + d] - stiff * (data.qpos[qpos_adr + d] - sref)
                         )
                 else:
-                    # Hinge/slide: f = -stiffness * qpos
                     f_net[dof_adr] = (
-                        f_net[dof_adr] - stiff * data.qpos[qpos_adr]
+                        f_net[dof_adr] - stiff * (data.qpos[qpos_adr] - sref)
                     )
+            if floss > Scalar[DTYPE](0):
+                comptime VEL_THRESH: Scalar[DTYPE] = 1e-4
+                if joint.jnt_type == JNT_FREE:
+                    for d in range(6):
+                        var v = data.qvel[dof_adr + d]
+                        if v > VEL_THRESH:
+                            f_net[dof_adr + d] = f_net[dof_adr + d] - floss
+                        elif v < -VEL_THRESH:
+                            f_net[dof_adr + d] = f_net[dof_adr + d] + floss
+                elif joint.jnt_type == JNT_BALL:
+                    for d in range(3):
+                        var v = data.qvel[dof_adr + d]
+                        if v > VEL_THRESH:
+                            f_net[dof_adr + d] = f_net[dof_adr + d] - floss
+                        elif v < -VEL_THRESH:
+                            f_net[dof_adr + d] = f_net[dof_adr + d] + floss
+                else:
+                    var v = data.qvel[dof_adr]
+                    if v > VEL_THRESH:
+                        f_net[dof_adr] = f_net[dof_adr] - floss
+                    elif v < -VEL_THRESH:
+                        f_net[dof_adr] = f_net[dof_adr] + floss
 
         # qacc = M^-1 * f_net via LDL solve
         var qacc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
@@ -541,7 +566,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             var bias_val = rebind[Scalar[DTYPE]](workspace[env, bias_idx + i])
             workspace[env, fnet_idx + i] = qfrc - bias_val
 
-        # 8b. Apply passive joint forces: stiffness only
+        # 8b. Apply passive joint forces: stiffness + frictionloss
         # Damping is handled implicitly via M_eff (step 6b).
         var qpos_off_stiff = qpos_offset[NQ, NV]()
         for j in range(NJOINT):
@@ -558,6 +583,13 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             var stiff = rebind[Scalar[DTYPE]](
                 model[0, joint_off + JOINT_IDX_STIFFNESS]
             )
+            var sref = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_SPRINGREF]
+            )
+            var floss = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_FRICTIONLOSS]
+            )
+            # Stiffness: f -= stiffness * (qpos - springref)
             if stiff > Scalar[DTYPE](0):
                 if jnt_type == JNT_FREE:
                     for d in range(6):
@@ -568,7 +600,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                             workspace[env, fnet_idx + dof_adr + d]
                         )
                         workspace[env, fnet_idx + dof_adr + d] = (
-                            cur - stiff * qpos_d
+                            cur - stiff * (qpos_d - sref)
                         )
                 elif jnt_type == JNT_BALL:
                     for d in range(3):
@@ -579,17 +611,42 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                             workspace[env, fnet_idx + dof_adr + d]
                         )
                         workspace[env, fnet_idx + dof_adr + d] = (
-                            cur - stiff * qpos_d
+                            cur - stiff * (qpos_d - sref)
                         )
                 else:
-                    # Hinge/slide: f = -stiffness * qpos
                     var qpos_d = rebind[Scalar[DTYPE]](
                         state[env, qpos_off_stiff + qpos_adr]
                     )
                     var cur = rebind[Scalar[DTYPE]](
                         workspace[env, fnet_idx + dof_adr]
                     )
-                    workspace[env, fnet_idx + dof_adr] = cur - stiff * qpos_d
+                    workspace[env, fnet_idx + dof_adr] = cur - stiff * (qpos_d - sref)
+            # Frictionloss: f -= frictionloss * sign(qvel)
+            if floss > Scalar[DTYPE](0):
+                comptime VEL_THRESH: Scalar[DTYPE] = 1e-4
+                if jnt_type == JNT_FREE:
+                    for d in range(6):
+                        var v = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + d])
+                        var cur = rebind[Scalar[DTYPE]](workspace[env, fnet_idx + dof_adr + d])
+                        if v > VEL_THRESH:
+                            workspace[env, fnet_idx + dof_adr + d] = cur - floss
+                        elif v < -VEL_THRESH:
+                            workspace[env, fnet_idx + dof_adr + d] = cur + floss
+                elif jnt_type == JNT_BALL:
+                    for d in range(3):
+                        var v = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + d])
+                        var cur = rebind[Scalar[DTYPE]](workspace[env, fnet_idx + dof_adr + d])
+                        if v > VEL_THRESH:
+                            workspace[env, fnet_idx + dof_adr + d] = cur - floss
+                        elif v < -VEL_THRESH:
+                            workspace[env, fnet_idx + dof_adr + d] = cur + floss
+                else:
+                    var v = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr])
+                    var cur = rebind[Scalar[DTYPE]](workspace[env, fnet_idx + dof_adr])
+                    if v > VEL_THRESH:
+                        workspace[env, fnet_idx + dof_adr] = cur - floss
+                    elif v < -VEL_THRESH:
+                        workspace[env, fnet_idx + dof_adr] = cur + floss
 
         # LDL solve: reads L, D, f_net from workspace, writes qacc to workspace
         ldl_solve_workspace_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](

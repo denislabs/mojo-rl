@@ -69,6 +69,8 @@ from .constants import (
     JOINT_IDX_ARMATURE,
     JOINT_IDX_DAMPING,
     JOINT_IDX_STIFFNESS,
+    JOINT_IDX_SPRINGREF,
+    JOINT_IDX_FRICTIONLOSS,
     MODEL_META_IDX_NBODY,
     MODEL_META_IDX_NJOINT,
     MODEL_META_IDX_GRAVITY_X,
@@ -230,6 +232,8 @@ fn copy_model_to_buffer[
         buffer[offset + JOINT_IDX_ARMATURE] = joint.armature
         buffer[offset + JOINT_IDX_DAMPING] = joint.damping
         buffer[offset + JOINT_IDX_STIFFNESS] = joint.stiffness
+        buffer[offset + JOINT_IDX_SPRINGREF] = joint.springref
+        buffer[offset + JOINT_IDX_FRICTIONLOSS] = joint.frictionloss
 
     # Copy metadata
     var meta_offset = model_metadata_offset[NBODY, NJOINT]()

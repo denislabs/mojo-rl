@@ -94,6 +94,8 @@ from physics3d.gpu.constants import (
     JOINT_IDX_ARMATURE,
     JOINT_IDX_DAMPING,
     JOINT_IDX_STIFFNESS,
+    JOINT_IDX_SPRINGREF,
+    JOINT_IDX_FRICTIONLOSS,
     MODEL_META_IDX_NBODY,
     MODEL_META_IDX_NJOINT,
     MODEL_META_IDX_GRAVITY_X,
@@ -1747,6 +1749,8 @@ struct HopperGC[
         model_host[j0 + JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](0.0)
         model_host[j0 + JOINT_IDX_DAMPING] = Scalar[gpu_dtype](0.0)
         model_host[j0 + JOINT_IDX_STIFFNESS] = Scalar[gpu_dtype](0.0)
+        model_host[j0 + JOINT_IDX_SPRINGREF] = Scalar[gpu_dtype](0.0)
+        model_host[j0 + JOINT_IDX_FRICTIONLOSS] = Scalar[gpu_dtype](0.0)
 
         # =================================================================
         # Joint 1: RootZ - Slide joint, Z-axis translation (body 0)
@@ -1772,6 +1776,8 @@ struct HopperGC[
         model_host[j1 + JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](0.0)
         model_host[j1 + JOINT_IDX_DAMPING] = Scalar[gpu_dtype](0.0)
         model_host[j1 + JOINT_IDX_STIFFNESS] = Scalar[gpu_dtype](0.0)
+        model_host[j1 + JOINT_IDX_SPRINGREF] = Scalar[gpu_dtype](0.0)
+        model_host[j1 + JOINT_IDX_FRICTIONLOSS] = Scalar[gpu_dtype](0.0)
 
         # =================================================================
         # Joint 2: RootY - Hinge joint, Y-axis rotation (body 0)
@@ -1797,6 +1803,8 @@ struct HopperGC[
         model_host[j2 + JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](0.0)
         model_host[j2 + JOINT_IDX_DAMPING] = Scalar[gpu_dtype](0.0)
         model_host[j2 + JOINT_IDX_STIFFNESS] = Scalar[gpu_dtype](0.0)
+        model_host[j2 + JOINT_IDX_SPRINGREF] = Scalar[gpu_dtype](0.0)
+        model_host[j2 + JOINT_IDX_FRICTIONLOSS] = Scalar[gpu_dtype](0.0)
 
         # =================================================================
         # Joint 3: Thigh - Hinge joint, Y-axis rotation (body 1)
@@ -1818,6 +1826,8 @@ struct HopperGC[
         model_host[j3 + JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](1.0)
         model_host[j3 + JOINT_IDX_DAMPING] = Scalar[gpu_dtype](1.0)
         model_host[j3 + JOINT_IDX_STIFFNESS] = Scalar[gpu_dtype](0.0)
+        model_host[j3 + JOINT_IDX_SPRINGREF] = Scalar[gpu_dtype](0.0)
+        model_host[j3 + JOINT_IDX_FRICTIONLOSS] = Scalar[gpu_dtype](0.0)
 
         # =================================================================
         # Joint 4: Leg - Hinge joint, Y-axis rotation (body 2)
@@ -1839,6 +1849,8 @@ struct HopperGC[
         model_host[j4 + JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](1.0)
         model_host[j4 + JOINT_IDX_DAMPING] = Scalar[gpu_dtype](1.0)
         model_host[j4 + JOINT_IDX_STIFFNESS] = Scalar[gpu_dtype](0.0)
+        model_host[j4 + JOINT_IDX_SPRINGREF] = Scalar[gpu_dtype](0.0)
+        model_host[j4 + JOINT_IDX_FRICTIONLOSS] = Scalar[gpu_dtype](0.0)
 
         # =================================================================
         # Joint 5: Foot - Hinge joint, Y-axis rotation (body 3)
@@ -1860,6 +1872,8 @@ struct HopperGC[
         model_host[j5 + JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](1.0)
         model_host[j5 + JOINT_IDX_DAMPING] = Scalar[gpu_dtype](1.0)
         model_host[j5 + JOINT_IDX_STIFFNESS] = Scalar[gpu_dtype](0.0)
+        model_host[j5 + JOINT_IDX_SPRINGREF] = Scalar[gpu_dtype](0.0)
+        model_host[j5 + JOINT_IDX_FRICTIONLOSS] = Scalar[gpu_dtype](0.0)
 
         # =================================================================
         # Model Metadata

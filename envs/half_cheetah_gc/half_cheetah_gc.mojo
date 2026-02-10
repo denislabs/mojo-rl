@@ -98,6 +98,8 @@ from physics3d.gpu.constants import (
     JOINT_IDX_ARMATURE,
     JOINT_IDX_DAMPING,
     JOINT_IDX_STIFFNESS,
+    JOINT_IDX_SPRINGREF,
+    JOINT_IDX_FRICTIONLOSS,
     MODEL_META_IDX_NBODY,
     MODEL_META_IDX_NJOINT,
     MODEL_META_IDX_GRAVITY_X,
@@ -2264,6 +2266,8 @@ struct HalfCheetahGC[
         model_host[j0 + JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](0.0)
         model_host[j0 + JOINT_IDX_DAMPING] = Scalar[gpu_dtype](0.0)
         model_host[j0 + JOINT_IDX_STIFFNESS] = Scalar[gpu_dtype](0.0)
+        model_host[j0 + JOINT_IDX_SPRINGREF] = Scalar[gpu_dtype](0.0)
+        model_host[j0 + JOINT_IDX_FRICTIONLOSS] = Scalar[gpu_dtype](0.0)
 
         # =================================================================
         # Joint 1: RootZ - Slide joint, Z-axis translation (body 0)
@@ -2285,6 +2289,8 @@ struct HalfCheetahGC[
         model_host[j1 + JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](0.0)
         model_host[j1 + JOINT_IDX_DAMPING] = Scalar[gpu_dtype](0.0)
         model_host[j1 + JOINT_IDX_STIFFNESS] = Scalar[gpu_dtype](0.0)
+        model_host[j1 + JOINT_IDX_SPRINGREF] = Scalar[gpu_dtype](0.0)
+        model_host[j1 + JOINT_IDX_FRICTIONLOSS] = Scalar[gpu_dtype](0.0)
 
         # =================================================================
         # Joint 2: RootY - Hinge joint, Y-axis rotation (body 0)
@@ -2306,6 +2312,8 @@ struct HalfCheetahGC[
         model_host[j2 + JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](0.0)
         model_host[j2 + JOINT_IDX_DAMPING] = Scalar[gpu_dtype](0.0)
         model_host[j2 + JOINT_IDX_STIFFNESS] = Scalar[gpu_dtype](0.0)
+        model_host[j2 + JOINT_IDX_SPRINGREF] = Scalar[gpu_dtype](0.0)
+        model_host[j2 + JOINT_IDX_FRICTIONLOSS] = Scalar[gpu_dtype](0.0)
 
         # =================================================================
         # Joint 3: BThigh - Hinge joint, Y-axis rotation (body 1)
@@ -2327,6 +2335,8 @@ struct HalfCheetahGC[
         model_host[j3 + JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](0.1)
         model_host[j3 + JOINT_IDX_DAMPING] = C.BTHIGH_DAMPING
         model_host[j3 + JOINT_IDX_STIFFNESS] = C.BTHIGH_STIFFNESS
+        model_host[j3 + JOINT_IDX_SPRINGREF] = Scalar[gpu_dtype](0.0)
+        model_host[j3 + JOINT_IDX_FRICTIONLOSS] = Scalar[gpu_dtype](0.0)
 
         # =================================================================
         # Joint 4: BShin - Hinge joint, Y-axis rotation (body 2)
@@ -2348,6 +2358,8 @@ struct HalfCheetahGC[
         model_host[j4 + JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](0.1)
         model_host[j4 + JOINT_IDX_DAMPING] = C.BSHIN_DAMPING
         model_host[j4 + JOINT_IDX_STIFFNESS] = C.BSHIN_STIFFNESS
+        model_host[j4 + JOINT_IDX_SPRINGREF] = Scalar[gpu_dtype](0.0)
+        model_host[j4 + JOINT_IDX_FRICTIONLOSS] = Scalar[gpu_dtype](0.0)
 
         # =================================================================
         # Joint 5: BFoot - Hinge joint, Y-axis rotation (body 3)
@@ -2369,6 +2381,8 @@ struct HalfCheetahGC[
         model_host[j5 + JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](0.1)
         model_host[j5 + JOINT_IDX_DAMPING] = C.BFOOT_DAMPING
         model_host[j5 + JOINT_IDX_STIFFNESS] = C.BFOOT_STIFFNESS
+        model_host[j5 + JOINT_IDX_SPRINGREF] = Scalar[gpu_dtype](0.0)
+        model_host[j5 + JOINT_IDX_FRICTIONLOSS] = Scalar[gpu_dtype](0.0)
 
         # =================================================================
         # Joint 6: FThigh - Hinge joint, Y-axis rotation (body 4)
@@ -2390,6 +2404,8 @@ struct HalfCheetahGC[
         model_host[j6 + JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](0.1)
         model_host[j6 + JOINT_IDX_DAMPING] = C.FTHIGH_DAMPING
         model_host[j6 + JOINT_IDX_STIFFNESS] = C.FTHIGH_STIFFNESS
+        model_host[j6 + JOINT_IDX_SPRINGREF] = Scalar[gpu_dtype](0.0)
+        model_host[j6 + JOINT_IDX_FRICTIONLOSS] = Scalar[gpu_dtype](0.0)
 
         # =================================================================
         # Joint 7: FShin - Hinge joint, Y-axis rotation (body 5)
@@ -2411,6 +2427,8 @@ struct HalfCheetahGC[
         model_host[j7 + JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](0.1)
         model_host[j7 + JOINT_IDX_DAMPING] = C.FSHIN_DAMPING
         model_host[j7 + JOINT_IDX_STIFFNESS] = C.FSHIN_STIFFNESS
+        model_host[j7 + JOINT_IDX_SPRINGREF] = Scalar[gpu_dtype](0.0)
+        model_host[j7 + JOINT_IDX_FRICTIONLOSS] = Scalar[gpu_dtype](0.0)
 
         # =================================================================
         # Joint 8: FFoot - Hinge joint, Y-axis rotation (body 6)
@@ -2432,6 +2450,8 @@ struct HalfCheetahGC[
         model_host[j8 + JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](0.1)
         model_host[j8 + JOINT_IDX_DAMPING] = C.FFOOT_DAMPING
         model_host[j8 + JOINT_IDX_STIFFNESS] = C.FFOOT_STIFFNESS
+        model_host[j8 + JOINT_IDX_SPRINGREF] = Scalar[gpu_dtype](0.0)
+        model_host[j8 + JOINT_IDX_FRICTIONLOSS] = Scalar[gpu_dtype](0.0)
 
         # =================================================================
         # Joint 9: Head - Hinge joint, Y-axis rotation (body 7, fixed)
@@ -2453,6 +2473,8 @@ struct HalfCheetahGC[
         model_host[j9 + JOINT_IDX_ARMATURE] = Scalar[gpu_dtype](0.1)
         model_host[j9 + JOINT_IDX_DAMPING] = Scalar[gpu_dtype](0.01)
         model_host[j9 + JOINT_IDX_STIFFNESS] = Scalar[gpu_dtype](8.0)
+        model_host[j9 + JOINT_IDX_SPRINGREF] = Scalar[gpu_dtype](0.0)
+        model_host[j9 + JOINT_IDX_FRICTIONLOSS] = Scalar[gpu_dtype](0.0)
 
         # =================================================================
         # Model Metadata
