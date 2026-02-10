@@ -41,6 +41,7 @@ struct Sequential[*LAYERS: Model](Model):
     @staticmethod
     fn _sum_param_size() -> Int:
         var total = 0
+
         @parameter
         for i in range(Self.N):
             total += Self.model_types[i].PARAM_SIZE
@@ -49,6 +50,7 @@ struct Sequential[*LAYERS: Model](Model):
     @staticmethod
     fn _sum_cache_size() -> Int:
         var total = 0
+
         @parameter
         for i in range(Self.N):
             total += Self.model_types[i].CACHE_SIZE
@@ -56,8 +58,10 @@ struct Sequential[*LAYERS: Model](Model):
 
     @staticmethod
     fn _total_inter() -> Int:
-        """Per-sample intermediate buffer size (sum of OUT_DIM for layers 0..N-2)."""
+        """Per-sample intermediate buffer size (sum of OUT_DIM for layers 0..N-2).
+        """
         var total = 0
+
         @parameter
         for i in range(Self.N - 1):
             total += Self.model_types[i].OUT_DIM
@@ -66,6 +70,7 @@ struct Sequential[*LAYERS: Model](Model):
     @staticmethod
     fn _sum_ws() -> Int:
         var total = 0
+
         @parameter
         for i in range(Self.N):
             total += Self.model_types[i].WORKSPACE_SIZE_PER_SAMPLE
@@ -80,6 +85,7 @@ struct Sequential[*LAYERS: Model](Model):
     @staticmethod
     fn _param_offset[idx: Int]() -> Int:
         var total = 0
+
         @parameter
         for j in range(idx):
             total += Self.model_types[j].PARAM_SIZE
@@ -88,6 +94,7 @@ struct Sequential[*LAYERS: Model](Model):
     @staticmethod
     fn _cache_offset[idx: Int]() -> Int:
         var total = 0
+
         @parameter
         for j in range(idx):
             total += Self.model_types[j].CACHE_SIZE
@@ -97,6 +104,7 @@ struct Sequential[*LAYERS: Model](Model):
     fn _inter_offset[idx: Int]() -> Int:
         """Offset of intermediate slot idx (per sample)."""
         var total = 0
+
         @parameter
         for j in range(idx):
             total += Self.model_types[j].OUT_DIM
@@ -104,8 +112,10 @@ struct Sequential[*LAYERS: Model](Model):
 
     @staticmethod
     fn _ws_layer_offset[idx: Int]() -> Int:
-        """Offset for layer idx's workspace (per sample), after all inter buffers."""
+        """Offset for layer idx's workspace (per sample), after all inter buffers.
+        """
         var total = Self._total_inter()
+
         @parameter
         for j in range(idx):
             total += Self.model_types[j].WORKSPACE_SIZE_PER_SAMPLE
@@ -197,10 +207,7 @@ struct Sequential[*LAYERS: Model](Model):
                         dtype,
                         Layout.row_major(BATCH, Self.model_types[i].IN_DIM),
                         MutAnyOrigin,
-                    ](
-                        inter_ptr
-                        + BATCH * Self._inter_offset[i - 1]()
-                    )
+                    ](inter_ptr + BATCH * Self._inter_offset[i - 1]())
                     var li_out = LayoutTensor[
                         dtype,
                         Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
@@ -214,10 +221,7 @@ struct Sequential[*LAYERS: Model](Model):
                         dtype,
                         Layout.row_major(BATCH, Self.model_types[i].IN_DIM),
                         MutAnyOrigin,
-                    ](
-                        inter_ptr
-                        + BATCH * Self._inter_offset[i - 1]()
-                    )
+                    ](inter_ptr + BATCH * Self._inter_offset[i - 1]())
                     var li_out = LayoutTensor[
                         dtype,
                         Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
@@ -291,43 +295,31 @@ struct Sequential[*LAYERS: Model](Model):
                         Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
                         MutAnyOrigin,
                     ](inter_ptr)
-                    Self.model_types[i].forward[BATCH](
-                        li_in, li_out, li_p
-                    )
+                    Self.model_types[i].forward[BATCH](li_in, li_out, li_p)
                 elif i == Self.N - 1:
                     var li_in = LayoutTensor[
                         dtype,
                         Layout.row_major(BATCH, Self.model_types[i].IN_DIM),
                         MutAnyOrigin,
-                    ](
-                        inter_ptr
-                        + BATCH * Self._inter_offset[i - 1]()
-                    )
+                    ](inter_ptr + BATCH * Self._inter_offset[i - 1]())
                     var li_out = LayoutTensor[
                         dtype,
                         Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
                         MutAnyOrigin,
                     ](output.ptr)
-                    Self.model_types[i].forward[BATCH](
-                        li_in, li_out, li_p
-                    )
+                    Self.model_types[i].forward[BATCH](li_in, li_out, li_p)
                 else:
                     var li_in = LayoutTensor[
                         dtype,
                         Layout.row_major(BATCH, Self.model_types[i].IN_DIM),
                         MutAnyOrigin,
-                    ](
-                        inter_ptr
-                        + BATCH * Self._inter_offset[i - 1]()
-                    )
+                    ](inter_ptr + BATCH * Self._inter_offset[i - 1]())
                     var li_out = LayoutTensor[
                         dtype,
                         Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
                         MutAnyOrigin,
                     ](inter_ptr + BATCH * Self._inter_offset[i]())
-                    Self.model_types[i].forward[BATCH](
-                        li_in, li_out, li_p
-                    )
+                    Self.model_types[i].forward[BATCH](li_in, li_out, li_p)
 
     # =========================================================================
     # CPU Backward
@@ -380,9 +372,7 @@ struct Sequential[*LAYERS: Model](Model):
                 Layout.row_major(Self.model_types[0].PARAM_SIZE),
                 MutAnyOrigin,
             ](grads.ptr)
-            Self.model_types[0].backward[BATCH](
-                go_v, gi_v, p_v, c_v, g_v
-            )
+            Self.model_types[0].backward[BATCH](go_v, gi_v, p_v, c_v, g_v)
         else:
             # Gradient intermediate buffer (same layout as forward inter)
             var grad_inter_storage = List[Scalar[dtype]](
@@ -418,21 +408,14 @@ struct Sequential[*LAYERS: Model](Model):
                     # Last layer: Sequential grad_output -> grad_inter[i-1]
                     var li_go = LayoutTensor[
                         dtype,
-                        Layout.row_major(
-                            BATCH, Self.model_types[i].OUT_DIM
-                        ),
+                        Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
                         MutAnyOrigin,
                     ](grad_output.ptr)
                     var li_gi = LayoutTensor[
                         dtype,
-                        Layout.row_major(
-                            BATCH, Self.model_types[i].IN_DIM
-                        ),
+                        Layout.row_major(BATCH, Self.model_types[i].IN_DIM),
                         MutAnyOrigin,
-                    ](
-                        gi_ptr
-                        + BATCH * Self._inter_offset[i - 1]()
-                    )
+                    ](gi_ptr + BATCH * Self._inter_offset[i - 1]())
                     Self.model_types[i].backward[BATCH](
                         li_go, li_gi, li_p, li_c, li_g
                     )
@@ -440,16 +423,12 @@ struct Sequential[*LAYERS: Model](Model):
                     # First layer: grad_inter[0] -> Sequential grad_input
                     var li_go = LayoutTensor[
                         dtype,
-                        Layout.row_major(
-                            BATCH, Self.model_types[i].OUT_DIM
-                        ),
+                        Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
                         MutAnyOrigin,
                     ](gi_ptr)
                     var li_gi = LayoutTensor[
                         dtype,
-                        Layout.row_major(
-                            BATCH, Self.model_types[i].IN_DIM
-                        ),
+                        Layout.row_major(BATCH, Self.model_types[i].IN_DIM),
                         MutAnyOrigin,
                     ](grad_input.ptr)
                     Self.model_types[i].backward[BATCH](
@@ -459,21 +438,14 @@ struct Sequential[*LAYERS: Model](Model):
                     # Middle: grad_inter[i] -> grad_inter[i-1]
                     var li_go = LayoutTensor[
                         dtype,
-                        Layout.row_major(
-                            BATCH, Self.model_types[i].OUT_DIM
-                        ),
+                        Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
                         MutAnyOrigin,
                     ](gi_ptr + BATCH * Self._inter_offset[i]())
                     var li_gi = LayoutTensor[
                         dtype,
-                        Layout.row_major(
-                            BATCH, Self.model_types[i].IN_DIM
-                        ),
+                        Layout.row_major(BATCH, Self.model_types[i].IN_DIM),
                         MutAnyOrigin,
-                    ](
-                        gi_ptr
-                        + BATCH * Self._inter_offset[i - 1]()
-                    )
+                    ](gi_ptr + BATCH * Self._inter_offset[i - 1]())
                     Self.model_types[i].backward[BATCH](
                         li_go, li_gi, li_p, li_c, li_g
                     )
@@ -497,6 +469,7 @@ struct Sequential[*LAYERS: Model](Model):
 
         Workspace layout: [inter_bufs (N-1 buffers) | L0 ws | L1 ws | ... | L_{N-1} ws]
         """
+
         @parameter
         if Self.N == 1:
             Self.model_types[0].forward_gpu[BATCH](
@@ -529,9 +502,9 @@ struct Sequential[*LAYERS: Model](Model):
                     owning=False,
                 )
                 # Layer workspace view
-                var li_ws_size = BATCH * Self.model_types[
-                    i
-                ].WORKSPACE_SIZE_PER_SAMPLE
+                var li_ws_size = (
+                    BATCH * Self.model_types[i].WORKSPACE_SIZE_PER_SAMPLE
+                )
                 var li_ws = DeviceBuffer[dtype](
                     ctx,
                     ws_ptr + BATCH * Self._ws_layer_offset[i](),
@@ -558,8 +531,7 @@ struct Sequential[*LAYERS: Model](Model):
                 elif i == Self.N - 1:
                     var inter_in = DeviceBuffer[dtype](
                         ctx,
-                        ws_ptr
-                        + BATCH * Self._inter_offset[i - 1](),
+                        ws_ptr + BATCH * Self._inter_offset[i - 1](),
                         BATCH * Self.model_types[i].IN_DIM,
                         owning=False,
                     )
@@ -574,8 +546,7 @@ struct Sequential[*LAYERS: Model](Model):
                 else:
                     var inter_in = DeviceBuffer[dtype](
                         ctx,
-                        ws_ptr
-                        + BATCH * Self._inter_offset[i - 1](),
+                        ws_ptr + BATCH * Self._inter_offset[i - 1](),
                         BATCH * Self.model_types[i].IN_DIM,
                         owning=False,
                     )
@@ -625,9 +596,9 @@ struct Sequential[*LAYERS: Model](Model):
                     Self.model_types[i].PARAM_SIZE,
                     owning=False,
                 )
-                var li_ws_size = BATCH * Self.model_types[
-                    i
-                ].WORKSPACE_SIZE_PER_SAMPLE
+                var li_ws_size = (
+                    BATCH * Self.model_types[i].WORKSPACE_SIZE_PER_SAMPLE
+                )
                 var li_ws = DeviceBuffer[dtype](
                     ctx,
                     ws_ptr + BATCH * Self._ws_layer_offset[i](),
@@ -649,8 +620,7 @@ struct Sequential[*LAYERS: Model](Model):
                 elif i == Self.N - 1:
                     var inter_in = DeviceBuffer[dtype](
                         ctx,
-                        ws_ptr
-                        + BATCH * Self._inter_offset[i - 1](),
+                        ws_ptr + BATCH * Self._inter_offset[i - 1](),
                         BATCH * Self.model_types[i].IN_DIM,
                         owning=False,
                     )
@@ -660,8 +630,7 @@ struct Sequential[*LAYERS: Model](Model):
                 else:
                     var inter_in = DeviceBuffer[dtype](
                         ctx,
-                        ws_ptr
-                        + BATCH * Self._inter_offset[i - 1](),
+                        ws_ptr + BATCH * Self._inter_offset[i - 1](),
                         BATCH * Self.model_types[i].IN_DIM,
                         owning=False,
                     )
@@ -691,7 +660,9 @@ struct Sequential[*LAYERS: Model](Model):
         grads_buf: DeviceBuffer[dtype],
         workspace_buf: DeviceBuffer[dtype],
     ) raises:
-        """GPU backward pass. Workspace inter region reused for gradient intermediates."""
+        """GPU backward pass. Workspace inter region reused for gradient intermediates.
+        """
+
         @parameter
         if Self.N == 1:
             Self.model_types[0].backward_gpu[BATCH](
@@ -732,9 +703,9 @@ struct Sequential[*LAYERS: Model](Model):
                     Self.model_types[i].PARAM_SIZE,
                     owning=False,
                 )
-                var li_ws_size = BATCH * Self.model_types[
-                    i
-                ].WORKSPACE_SIZE_PER_SAMPLE
+                var li_ws_size = (
+                    BATCH * Self.model_types[i].WORKSPACE_SIZE_PER_SAMPLE
+                )
                 var li_ws = DeviceBuffer[dtype](
                     ctx,
                     ws_ptr + BATCH * Self._ws_layer_offset[i](),
@@ -747,8 +718,7 @@ struct Sequential[*LAYERS: Model](Model):
                     # Last layer: grad_output -> grad_inter[i-1]
                     var gi_buf = DeviceBuffer[dtype](
                         ctx,
-                        ws_ptr
-                        + BATCH * Self._inter_offset[i - 1](),
+                        ws_ptr + BATCH * Self._inter_offset[i - 1](),
                         BATCH * Self.model_types[i].IN_DIM,
                         owning=False,
                     )
@@ -788,8 +758,7 @@ struct Sequential[*LAYERS: Model](Model):
                     )
                     var gi_buf = DeviceBuffer[dtype](
                         ctx,
-                        ws_ptr
-                        + BATCH * Self._inter_offset[i - 1](),
+                        ws_ptr + BATCH * Self._inter_offset[i - 1](),
                         BATCH * Self.model_types[i].IN_DIM,
                         owning=False,
                     )
@@ -802,137 +771,3 @@ struct Sequential[*LAYERS: Model](Model):
                         li_grads,
                         li_ws,
                     )
-
-
-# =============================================================================
-# Backward Compatibility Aliases
-# =============================================================================
-
-comptime Seq2[L0: Model, L1: Model] = Sequential[L0, L1]
-comptime Seq3[L0: Model, L1: Model, L2: Model] = Sequential[L0, L1, L2]
-comptime Seq4[L0: Model, L1: Model, L2: Model, L3: Model] = Sequential[
-    L0, L1, L2, L3
-]
-comptime Seq5[
-    L0: Model, L1: Model, L2: Model, L3: Model, L4: Model
-] = Sequential[L0, L1, L2, L3, L4]
-comptime Seq6[
-    L0: Model, L1: Model, L2: Model, L3: Model, L4: Model, L5: Model
-] = Sequential[L0, L1, L2, L3, L4, L5]
-comptime Seq7[
-    L0: Model,
-    L1: Model,
-    L2: Model,
-    L3: Model,
-    L4: Model,
-    L5: Model,
-    L6: Model,
-] = Sequential[L0, L1, L2, L3, L4, L5, L6]
-comptime Seq8[
-    L0: Model,
-    L1: Model,
-    L2: Model,
-    L3: Model,
-    L4: Model,
-    L5: Model,
-    L6: Model,
-    L7: Model,
-] = Sequential[L0, L1, L2, L3, L4, L5, L6, L7]
-
-
-# =============================================================================
-# Helper Functions
-# =============================================================================
-
-
-fn seq[L0: Model, L1: Model](l0: L0, l1: L1) -> Sequential[L0, L1]:
-    """Create a 2-layer sequential model."""
-    _ = l0
-    _ = l1
-    return Sequential[L0, L1]()
-
-
-fn seq[
-    L0: Model, L1: Model, L2: Model
-](l0: L0, l1: L1, l2: L2) -> Sequential[L0, L1, L2]:
-    """Create a 3-layer sequential model."""
-    _ = l0
-    _ = l1
-    _ = l2
-    return Sequential[L0, L1, L2]()
-
-
-fn seq[
-    L0: Model, L1: Model, L2: Model, L3: Model
-](l0: L0, l1: L1, l2: L2, l3: L3) -> Sequential[L0, L1, L2, L3]:
-    """Create a 4-layer sequential model."""
-    _ = l0
-    _ = l1
-    _ = l2
-    _ = l3
-    return Sequential[L0, L1, L2, L3]()
-
-
-fn seq[
-    L0: Model, L1: Model, L2: Model, L3: Model, L4: Model
-](
-    l0: L0, l1: L1, l2: L2, l3: L3, l4: L4
-) -> Sequential[L0, L1, L2, L3, L4]:
-    """Create a 5-layer sequential model."""
-    _ = l0
-    _ = l1
-    _ = l2
-    _ = l3
-    _ = l4
-    return Sequential[L0, L1, L2, L3, L4]()
-
-
-fn seq[
-    L0: Model, L1: Model, L2: Model, L3: Model, L4: Model, L5: Model
-](
-    l0: L0, l1: L1, l2: L2, l3: L3, l4: L4, l5: L5
-) -> Sequential[L0, L1, L2, L3, L4, L5]:
-    """Create a 6-layer sequential model."""
-    _ = l0
-    _ = l1
-    _ = l2
-    _ = l3
-    _ = l4
-    _ = l5
-    return Sequential[L0, L1, L2, L3, L4, L5]()
-
-
-fn seq[
-    L0: Model,
-    L1: Model,
-    L2: Model,
-    L3: Model,
-    L4: Model,
-    L5: Model,
-    L6: Model,
-](
-    l0: L0, l1: L1, l2: L2, l3: L3, l4: L4, l5: L5, l6: L6
-) -> Sequential[L0, L1, L2, L3, L4, L5, L6]:
-    """Create a 7-layer sequential model."""
-    _ = l0
-    _ = l1
-    _ = l2
-    _ = l3
-    _ = l4
-    _ = l5
-    _ = l6
-    return Sequential[L0, L1, L2, L3, L4, L5, L6]()
-
-
-fn seq[
-    L0: Model,
-    L1: Model,
-    L2: Model,
-    L3: Model,
-    L4: Model,
-    L5: Model,
-    L6: Model,
-    L7: Model,
-]() -> Sequential[L0, L1, L2, L3, L4, L5, L6, L7]:
-    """Create an 8-layer sequential model."""
-    return Sequential[L0, L1, L2, L3, L4, L5, L6, L7]()

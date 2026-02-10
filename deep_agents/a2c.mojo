@@ -35,7 +35,7 @@ from random import random_float64, seed
 from layout import Layout, LayoutTensor
 
 from deep_rl.constants import dtype, TILE, TPB
-from deep_rl.model import Linear, ReLU, seq
+from deep_rl.model import Linear, ReLU, Sequential
 from deep_rl.optimizer import Adam
 from deep_rl.initializer import Xavier
 from deep_rl.training import Network
@@ -95,30 +95,26 @@ struct DeepA2CAgent[
 
     # Actor network: obs -> hidden (ReLU) -> hidden (ReLU) -> action logits
     var actor: Network[
-        type_of(
-            seq(
-                Linear[Self.OBS, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, Self.ACTIONS](),
-            )
-        ),
+        Sequential[
+            Linear[Self.OBS, Self.HIDDEN],
+            ReLU[Self.HIDDEN],
+            Linear[Self.HIDDEN, Self.HIDDEN],
+            ReLU[Self.HIDDEN],
+            Linear[Self.HIDDEN, Self.ACTIONS],
+        ],
         Adam,
         Xavier,
     ]
 
     # Critic network: obs -> hidden (ReLU) -> hidden (ReLU) -> value
     var critic: Network[
-        type_of(
-            seq(
-                Linear[Self.OBS, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, 1](),
-            )
-        ),
+        Sequential[
+            Linear[Self.OBS, Self.HIDDEN],
+            ReLU[Self.HIDDEN],
+            Linear[Self.HIDDEN, Self.HIDDEN],
+            ReLU[Self.HIDDEN],
+            Linear[Self.HIDDEN, 1],
+        ],
         Adam,
         Xavier,
     ]

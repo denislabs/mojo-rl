@@ -38,7 +38,7 @@ from gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 
 from deep_rl.constants import dtype, TILE, TPB
-from deep_rl.model import Linear, Seq3, LinearReLU
+from deep_rl.model import Linear, Sequential, LinearReLU
 from deep_rl.optimizer import Adam
 from deep_rl.initializer import Kaiming
 from deep_rl.training import Network
@@ -257,7 +257,7 @@ struct DQNAgent[
         + Self.ACTIONS
     )
 
-    comptime Q_Model = Seq3[
+    comptime Q_Model = Sequential[
         LinearReLU[Self.OBS, Self.HIDDEN],
         LinearReLU[Self.HIDDEN, Self.HIDDEN],
         Linear[Self.HIDDEN, Self.ACTIONS],
@@ -405,7 +405,9 @@ struct DQNAgent[
             obs_arr[i] = Scalar[dtype](obs[i])
             next_obs_arr[i] = Scalar[dtype](next_obs[i])
 
-        var action_arr = InlineArray[Scalar[dtype], 1](Scalar[dtype](action))
+        var action_arr = InlineArray[Scalar[dtype], 1](
+            fill=Scalar[dtype](action)
+        )
 
         self.buffer.add(
             obs_arr, action_arr, Scalar[dtype](reward), next_obs_arr, done

@@ -42,7 +42,7 @@ from gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 
 from deep_rl.constants import dtype, TILE, TPB
-from deep_rl.model import Linear, ReLU, LinearReLU, Seq3
+from deep_rl.model import Linear, ReLU, LinearReLU, Sequential
 from deep_rl.optimizer import Adam
 from deep_rl.initializer import Xavier
 from deep_rl.training import Network
@@ -193,7 +193,7 @@ fn ppo_gather_minibatch_kernel[
 
 @always_inline
 fn ppo_actor_grad_kernel[
-    dtype: DType,
+    dtype: DType where dtype.is_floating_point(),
     BATCH_SIZE: Int,
     NUM_ACTIONS: Int,
 ](
@@ -283,7 +283,7 @@ fn ppo_actor_grad_kernel[
 
 @always_inline
 fn ppo_actor_grad_with_kl_kernel[
-    dtype: DType,
+    dtype: DType where dtype.is_floating_point(),
     BATCH_SIZE: Int,
     NUM_ACTIONS: Int,
 ](
@@ -807,7 +807,7 @@ struct DeepPPOAgent[
 
     # Actor network: obs -> hidden (ReLU) -> hidden (ReLU) -> action logits
     comptime ActorNetwork = Network[
-        Seq3[
+        Sequential[
             LinearReLU[Self.OBS, Self.HIDDEN],
             LinearReLU[Self.HIDDEN, Self.HIDDEN],
             Linear[Self.HIDDEN, Self.ACTIONS],
@@ -819,7 +819,7 @@ struct DeepPPOAgent[
 
     # Critic network: obs -> hidden (ReLU) -> hidden (ReLU) -> value
     comptime CriticNetwork = Network[
-        Seq3[
+        Sequential[
             LinearReLU[Self.OBS, Self.HIDDEN],
             LinearReLU[Self.HIDDEN, Self.HIDDEN],
             Linear[Self.HIDDEN, 1],
@@ -2139,6 +2139,7 @@ struct DeepPPOAgent[
                 # Step all environments + extract observations (fused kernel)
                 # Use a different multiplier to get independent seed from action sampling
                 var env_step_seed = UInt64(total_steps * 1103515245 + t * 12345)
+
                 @parameter
                 if TOTAL_WS > 0:
                     EnvType.step_kernel_gpu[
