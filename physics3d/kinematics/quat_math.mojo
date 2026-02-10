@@ -163,8 +163,9 @@ fn axis_angle_to_quat[
         Quaternion [x, y, z, w] = [sin(θ/2)*axis, cos(θ/2)].
     """
     var half_angle = angle * Scalar[DTYPE](0.5)
-    var s = sin(half_angle)
-    var c = cos(half_angle)
+    var ha = Float64(half_angle)
+    var s = Scalar[DTYPE](sin(ha))
+    var c = Scalar[DTYPE](cos(ha))
 
     return (ax * s, ay * s, az * s, c)
 
@@ -323,8 +324,9 @@ fn gpu_axis_angle_to_quat[
 ) -> InlineArray[Scalar[DTYPE], 4]:
     """Convert axis-angle to quaternion (GPU version)."""
     var half_angle = angle * Scalar[DTYPE](0.5)
-    var s = sin(half_angle)
-    var c = cos(half_angle)
+    var ha = Float64(half_angle)
+    var s = Scalar[DTYPE](sin(ha))
+    var c = Scalar[DTYPE](cos(ha))
 
     # Normalize axis
     var len_sq = axis_x * axis_x + axis_y * axis_y + axis_z * axis_z

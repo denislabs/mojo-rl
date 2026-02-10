@@ -57,6 +57,7 @@ Reference material:
 - **Two integrators**: EulerIntegrator (M + arm + dt*diag(damping)) and ImplicitFastIntegrator (M + arm - dt*qDeriv, extensible for actuators), both with explicit damping force f_net -= D*v, CPU + GPU (Phase 2.1 DONE)
 - **Physics stability**: MuJoCo solref/solimp impedance model (replaced Baumgarte), penetration cap (0.05m), velocity clamping (MAX_QVEL=20)
 - **Constraint solver parameters**: per-model solref/solimp for contacts and joint limits, Hermite smoothstep impedance, all 3 solvers, CPU + GPU (Phase 3.4 DONE)
+- **Unified constraint representation**: ConstraintData/ConstraintRow structs with single builder, all 3 CPU solvers consume pre-built constraints (Phase 3.1 DONE)
 
 ### What We're Missing (by impact)
 
@@ -68,7 +69,7 @@ Reference material:
 | ~~Joint limits via post-clamping~~ | ~~Medium - energy injection~~ | ~~1~~ DONE |
 | ~~No implicit integrators~~ | ~~Medium - stability for damped systems~~ | ~~2~~ DONE |
 | No RK4 integrator | Medium - energy conservation | 2 |
-| No unified constraint rows | Medium - blocks friction cones/equality | 3 |
+| ~~No unified constraint rows~~ | ~~Medium - blocks friction cones/equality~~ | ~~3~~ DONE |
 | Simple Coulomb friction only | Medium - no torsional/rolling | 3 |
 | No equality constraints | Medium - can't model welds/connects | 3 |
 | ~~No per-contact solref/solimp~~ | ~~Low - less tunability~~ | ~~3~~ DONE |
@@ -749,18 +750,38 @@ For FREE:
 
 ## Phase 3: Constraint System
 
-### 3.1 Unified Constraint Representation
+### 3.1 Unified Constraint Representation — DONE
 
-**Problem**: Currently, contact constraints are handled directly inside each solver
-with inline Jacobian computation. Adding new constraint types (limits, friction cones,
-equality) requires modifying every solver. MuJoCo uses a unified constraint array
-that all solvers consume.
+**Status**: COMPLETE. Extracted duplicated constraint setup code from all 3 CPU solvers
+(PGS, CG, Newton) into a single constraint builder. Solvers now consume pre-built
+`ConstraintData` instead of computing Jacobians, impedance, and limits inline.
+Adding a new constraint type is now a 1-file change (constraint_builder.mojo).
+GPU paths unchanged (deferred to follow-up).
 
-**Files to create/modify**:
-- `types.mojo` (add `ConstraintRow` struct, `ConstraintData`)
-- `constraint/constraint_builder.mojo` (NEW - builds constraint rows from contacts/limits)
-- All three solvers (consume `ConstraintData` instead of raw contacts)
-- `traits/solver.mojo` (update trait to take constraint data)
+**Files created**:
+- `solver/constraint_data.mojo` — `ConstraintRow[DTYPE]` and `ConstraintData[DTYPE, MAX_ROWS, NV]` structs
+- `solver/constraint_builder.mojo` — `build_constraints()` (contacts + limits + friction) and `writeback_impulses()`
+
+**Files modified**:
+- `traits/solver.mojo` — `solve()` signature: removed `CDOF_SIZE`/`cdof`, added `MAX_ROWS`/`ConstraintData`
+- `solver/pgs_solver.mojo` — CPU `solve()` iterates ConstraintData rows (normals, limits, friction)
+- `solver/cg_solver.mojo` — CPU `solve()` builds Delassus matrix from precomputed J/MinvJT
+- `solver/newton_solver.mojo` — CPU `solve()` uses ConstraintData for projected Newton
+- `solver/friction_solver.mojo` — Removed `_solve_friction_pgs_cpu` (dead code), GPU unchanged
+- `solver/__init__.mojo` — Exports ConstraintData, ConstraintRow, build_constraints, writeback_impulses
+- `integrator/euler_integrator.mojo` — Calls `build_constraints()` before solver, `writeback_impulses()` after
+- `integrator/implicit_fast_integrator.mojo` — Same as euler_integrator
+
+**Key design**:
+- `MAX_ROWS = 3 * MAX_CONTACTS + 2 * NJOINT` (normal + 2 tangents per contact + 2 limits per joint)
+- Constraint ordering: normals [0..num_normals), friction [num_normals..num_normals+num_friction), limits [num_normals+num_friction..num_rows)
+- Builder precomputes J, MinvJT, K, impedance bias per row — solvers just iterate
+- Friction rows have `friction_parent` pointing to their normal row for Coulomb cone clamping
+
+**TODO — GPU refactor**:
+- GPU `solve_gpu()` methods in all 3 solvers still inline contact/limit/friction setup using workspace arrays
+- Need GPU-side `build_constraints_gpu()` writing constraint rows to workspace, and GPU solvers consuming them
+- Complex due to workspace layout (LayoutTensor offsets, no InlineArrays on GPU) — separate follow-up task
 
 #### Data Structure
 
@@ -1245,7 +1266,7 @@ Sprint 2 (Stability):
 
 Sprint 3 (Interaction):
   1.3 Body-body collision in GC ✅ DONE (bilateral Jacobians, O(N^2) detection, all primitives, CPU + GPU)
-  3.1 Unified constraint rows   ← architecture for all below
+  3.1 Unified constraint rows   ✅ DONE (ConstraintData/ConstraintRow structs, constraint_builder, all 3 CPU solvers refactored)
 
 Sprint 4 (Polish):
   3.4 Per-contact solref/solimp ✅ DONE (impedance model replacing Baumgarte, all 3 solvers, CPU + GPU)

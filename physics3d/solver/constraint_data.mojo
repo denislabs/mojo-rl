@@ -94,11 +94,11 @@ struct ConstraintData[DTYPE: DType, MAX_ROWS: Int, NV: Int]:
         comptime MR = _max_one[Self.MAX_ROWS]()
         comptime JSize = _max_one[Self.MAX_ROWS * Self.NV]()
         self.rows = InlineArray[ConstraintRow[Self.DTYPE], MR](
-            ConstraintRow[Self.DTYPE]()
+            fill=ConstraintRow[Self.DTYPE]()
         )
-        self.J = InlineArray[Scalar[Self.DTYPE], JSize](Scalar[Self.DTYPE](0))
+        self.J = InlineArray[Scalar[Self.DTYPE], JSize](fill=Scalar[Self.DTYPE](0))
         self.MinvJT = InlineArray[Scalar[Self.DTYPE], JSize](
-            Scalar[Self.DTYPE](0)
+            fill=Scalar[Self.DTYPE](0)
         )
         self.num_rows = 0
         self.num_normals = 0
