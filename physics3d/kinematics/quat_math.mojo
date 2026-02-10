@@ -126,7 +126,9 @@ fn quat_normalize[
     qy: Scalar[DTYPE],
     qz: Scalar[DTYPE],
     qw: Scalar[DTYPE],
-) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]] where DTYPE.is_floating_point():
+) -> Tuple[
+    Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]
+] where DTYPE.is_floating_point():
     """Normalize a quaternion to unit length.
 
     Args:
@@ -146,7 +148,7 @@ fn quat_normalize[
 
 
 fn axis_angle_to_quat[
-    DTYPE: DType
+    DTYPE: DType where DTYPE.is_floating_point()
 ](
     ax: Scalar[DTYPE],
     ay: Scalar[DTYPE],
@@ -163,9 +165,8 @@ fn axis_angle_to_quat[
         Quaternion [x, y, z, w] = [sin(θ/2)*axis, cos(θ/2)].
     """
     var half_angle = angle * Scalar[DTYPE](0.5)
-    var ha = Float64(half_angle)
-    var s = Scalar[DTYPE](sin(ha))
-    var c = Scalar[DTYPE](cos(ha))
+    var s = Scalar[DTYPE](sin(half_angle))
+    var c = Scalar[DTYPE](cos(half_angle))
 
     return (ax * s, ay * s, az * s, c)
 
@@ -182,7 +183,9 @@ fn quat_to_axis_angle[
     qy: Scalar[DTYPE],
     qz: Scalar[DTYPE],
     qw: Scalar[DTYPE],
-) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]] where DTYPE.is_floating_point():
+) -> Tuple[
+    Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]
+] where DTYPE.is_floating_point():
     """Convert quaternion to axis-angle representation.
 
     Args:
@@ -229,7 +232,9 @@ fn quat_integrate[
     wy: Scalar[DTYPE],
     wz: Scalar[DTYPE],
     dt: Scalar[DTYPE],
-) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]] where DTYPE.is_floating_point():
+) -> Tuple[
+    Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]
+] where DTYPE.is_floating_point():
     """Integrate quaternion with angular velocity.
 
     Uses first-order approximation: q(t+dt) = q(t) + 0.5 * dt * omega * q(t)
@@ -315,7 +320,7 @@ fn gpu_quat_rotate[
 
 @always_inline
 fn gpu_axis_angle_to_quat[
-    DTYPE: DType
+    DTYPE: DType where DTYPE.is_floating_point()
 ](
     axis_x: Scalar[DTYPE],
     axis_y: Scalar[DTYPE],
@@ -324,13 +329,11 @@ fn gpu_axis_angle_to_quat[
 ) -> InlineArray[Scalar[DTYPE], 4]:
     """Convert axis-angle to quaternion (GPU version)."""
     var half_angle = angle * Scalar[DTYPE](0.5)
-    var ha = Float64(half_angle)
-    var s = Scalar[DTYPE](sin(ha))
-    var c = Scalar[DTYPE](cos(ha))
+    var s = Scalar[DTYPE](sin(half_angle))
+    var c = Scalar[DTYPE](cos(half_angle))
 
-    # Normalize axis (cast to Float64 for sqrt to avoid where clause on GPU)
     var len_sq = axis_x * axis_x + axis_y * axis_y + axis_z * axis_z
-    var inv_len = Scalar[DTYPE](1.0 / sqrt(Float64(len_sq) + 1e-10))
+    var inv_len = Scalar[DTYPE](1.0 / sqrt(len_sq + 1e-10))
 
     var result = InlineArray[Scalar[DTYPE], 4](uninitialized=True)
     result[0] = axis_x * inv_len * s
@@ -351,8 +354,7 @@ fn gpu_quat_normalize[
 ) -> InlineArray[Scalar[DTYPE], 4]:
     """Normalize quaternion (GPU version)."""
     var norm_sq = qx * qx + qy * qy + qz * qz + qw * qw
-    # Cast to Float64 for sqrt to avoid where clause on GPU path
-    var inv_norm = Scalar[DTYPE](1.0 / sqrt(Float64(norm_sq) + 1e-10))
+    var inv_norm = Scalar[DTYPE](1.0 / sqrt(norm_sq + 1e-10))
 
     var result = InlineArray[Scalar[DTYPE], 4](uninitialized=True)
     result[0] = qx * inv_norm

@@ -1275,24 +1275,24 @@ struct HopperGC[
         )
 
         # Run GC physics step with frame_skip (matching Gymnasium do_simulation)
-        # for _ in range(FRAME_SKIP):
-        #     DefaultIntegrator.step_gpu[
-        #         gpu_dtype,
-        #         Self.NQ,
-        #         Self.NV,
-        #         Self.NUM_BODIES,
-        #         Self.NUM_JOINTS,
-        #         Self.MAX_CONTACTS,
-        #         BATCH_SIZE,
-        #     ](
-        #         ctx,
-        #         states_buf,
-        #         model_buf,
-        #         workspace_buf,
-        #         dt=Scalar[gpu_dtype](0.002),
-        #         gravity_z=Scalar[gpu_dtype](-9.81),
-        #         ground_z=Scalar[gpu_dtype](0.0),
-        #     )
+        for _ in range(FRAME_SKIP):
+            DefaultIntegrator.step_gpu[
+                gpu_dtype,
+                Self.NQ,
+                Self.NV,
+                Self.NUM_BODIES,
+                Self.NUM_JOINTS,
+                Self.MAX_CONTACTS,
+                BATCH_SIZE,
+            ](
+                ctx,
+                states_buf,
+                model_buf,
+                workspace_buf,
+                dt=Scalar[gpu_dtype](0.002),
+                gravity_z=Scalar[gpu_dtype](-9.81),
+                ground_z=Scalar[gpu_dtype](0.0),
+            )
 
         # Note: Joint limits are enforced by the physics engine in step_constraint_kernel
 
