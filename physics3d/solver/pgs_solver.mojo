@@ -1,16 +1,15 @@
 """Projected Gauss-Seidel (PGS) constraint solver for Generalized Coordinates engine.
 
-Implements MuJoCo-style constraint-based contact solving in joint space:
-1. For each contact, compute the contact Jacobian row (J_n, J_t1, J_t2)
-2. Compute effective constraint mass K = sum(J[i]^2 / M[i])
-3. Iteratively solve for contact impulses using PGS
-4. Apply impulses to modify predicted velocity: qvel += M^-1 * J^T * delta_lambda
+Implements MuJoCo-style constraint-based contact solving in joint space.
+The solver receives pre-built ConstraintData from the constraint builder
+and iterates to find impulses satisfying all constraints.
 
 Key features:
 - Unilateral normal constraints (lambda_n >= 0)
 - Coulomb friction cone clamping
 - MuJoCo solref/solimp impedance model for position stabilization
 - Warm-starting from previous timestep impulses
+- Joint limit constraints
 
 Reference: MuJoCo's constraint solver + existing Cartesian PGS in pgs_solver.mojo
 """
@@ -24,6 +23,13 @@ from ..traits.solver import ConstraintSolver
 from ..dynamics.jacobian import (
     compute_contact_jacobian_row,
     compute_contact_jacobian_row_gpu,
+)
+from .constraint_data import (
+    ConstraintData,
+    CNSTR_NORMAL,
+    CNSTR_FRICTION_T1,
+    CNSTR_FRICTION_T2,
+    CNSTR_LIMIT,
 )
 from ..gpu.constants import (
     contacts_offset,
@@ -81,7 +87,7 @@ struct PGSSolver(ConstraintSolver):
     """PGS constraint solver for Generalized Coordinates engine.
 
     Modifies the predicted (unconstrained) velocity in-place to satisfy
-    contact constraints (non-penetration + Coulomb friction).
+    contact constraints (non-penetration + Coulomb friction) and joint limits.
     """
 
     @staticmethod
@@ -134,483 +140,163 @@ struct PGSSolver(ConstraintSolver):
         NBODY: Int,
         NJOINT: Int,
         MAX_CONTACTS: Int,
+        MAX_ROWS: Int,
         V_SIZE: Int,
         M_SIZE: Int,
-        CDOF_SIZE: Int,
     ](
         model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         M_inv: InlineArray[Scalar[DTYPE], M_SIZE],
-        cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
+        mut constraints: ConstraintData[DTYPE, MAX_ROWS, NV],
         mut qvel: InlineArray[Scalar[DTYPE], V_SIZE],
         dt: Scalar[DTYPE],
     ):
-        """Solve contact constraints using PGS on CPU.
+        """Solve constraints using PGS on CPU.
 
-        Algorithm:
-        1. For each contact, compute J_n (normal Jacobian row) and K_n (effective mass)
-        2. For PGS_ITERATIONS:
-           a. For each contact: compute velocity error, solve for impulse correction
-           b. Clamp normal impulse >= 0 (unilateral)
-           c. Apply velocity correction: qvel += M^-1 * J^T * delta
-        3. Friction pass: similar PGS for tangent directions with cone clamping
+        Iterates over pre-built ConstraintData:
+        1. Apply warm-start impulses for normals and friction
+        2. PGS iterations for normal constraints (with impedance)
+        3. PGS iterations for joint limit constraints (with impedance)
+        4. PGS iterations for friction (with Coulomb cone clamping)
         """
-        var num_contacts = data.num_contacts
-
-        if num_contacts == 0:
+        if constraints.num_rows == 0:
             return
 
-        # Cap to MAX_CONTACTS
-        var nc = num_contacts
-        if nc > MAX_CONTACTS:
-            nc = MAX_CONTACTS
+        var num_normals = constraints.num_normals
+        var num_friction = constraints.num_friction
+        var num_limits = constraints.num_limits
+        var friction_start = num_normals
+        var limits_start = num_normals + num_friction
 
-        # Per-contact data (stored in flat arrays, indexed by contact)
-        # We use InlineArrays sized to MAX_CONTACTS
-        comptime MC = _max_one[MAX_CONTACTS]()
-
-        # Normal Jacobian rows - stored flat: J_n[c * NV + i]
-        comptime JN_SIZE = _max_one[MAX_CONTACTS * NV]()
-        var J_n = InlineArray[Scalar[DTYPE], JN_SIZE](uninitialized=True)
-        for i in range(JN_SIZE):
-            J_n[i] = Scalar[DTYPE](0)
-
-        # Effective mass per contact (diagonal approx)
-        var K_n = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-        for i in range(MC):
-            K_n[i] = Scalar[DTYPE](0)
-
-        # Normal impulse accumulators
-        var lambda_n = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-        for i in range(MC):
-            lambda_n[i] = Scalar[DTYPE](0)
-
-        # Contact distances (for impedance model)
-        var contact_dist = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-        for i in range(MC):
-            contact_dist[i] = Scalar[DTYPE](0)
-
-        # Contact body indices
-        var contact_body = InlineArray[Int, MC](uninitialized=True)
-        var contact_body_b = InlineArray[Int, MC](uninitialized=True)
-        for i in range(MC):
-            contact_body[i] = 0
-            contact_body_b[i] = -1
-
-        # Phase 1: Precompute contact data
-        var J_row = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-
-        for c in range(nc):
-            var contact = data.contacts[c]
-
-            if contact.dist >= Scalar[DTYPE](0):
-                # No penetration - skip
-                K_n[c] = Scalar[DTYPE](1)  # Avoid div by zero
-                continue
-
-            contact_dist[c] = contact.dist
-            contact_body[c] = contact.body_a
-            contact_body_b[c] = contact.body_b
-
-            # Compute normal Jacobian row
-            compute_contact_jacobian_row[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, CDOF_SIZE
-            ](
-                model,
-                data,
-                cdof,
-                contact.body_a,
-                contact.body_b,
-                contact.pos_x,
-                contact.pos_y,
-                contact.pos_z,
-                contact.normal_x,
-                contact.normal_y,
-                contact.normal_z,
-                J_row,
-            )
-
-            # Store and compute effective mass: K = J @ M_inv @ J^T
-            var k: Scalar[DTYPE] = 0
-            for i in range(NV):
-                J_n[c * NV + i] = J_row[i]
-                var mi_j_sum: Scalar[DTYPE] = 0
-                for j_idx in range(NV):
-                    mi_j_sum += M_inv[i * NV + j_idx] * J_row[j_idx]
-                k += J_row[i] * mi_j_sum
-
-            if k < Scalar[DTYPE](1e-10):
-                k = Scalar[DTYPE](1e-10)
-            K_n[c] = k
-
-            # Warm start from stored impulses
-            lambda_n[c] = contact.impulse_n
-
-        # Apply warm start impulses: qvel += M_inv @ J^T * lambda
-        for c in range(nc):
-            if contact_dist[c] >= Scalar[DTYPE](0):
-                continue
-            if lambda_n[c] > Scalar[DTYPE](0):
+        # =====================================================================
+        # Phase 1: Apply warm-start impulses (normals)
+        # =====================================================================
+        for r in range(num_normals):
+            if constraints.rows[r].lambda_val > Scalar[DTYPE](0):
                 for i in range(NV):
-                    var mi_j_sum: Scalar[DTYPE] = 0
-                    for j_idx in range(NV):
-                        mi_j_sum += M_inv[i * NV + j_idx] * J_n[c * NV + j_idx]
-                    qvel[i] += mi_j_sum * lambda_n[c]
+                    qvel[i] += (
+                        constraints.MinvJT[r * NV + i]
+                        * constraints.rows[r].lambda_val
+                    )
 
-        # Phase 2: PGS iterations for normal constraints
-        # MuJoCo solref/solimp impedance model
-        var sr_tc = model.solref_contact[0]
-        var sr_dr = model.solref_contact[1]
-        var si_dmin = model.solimp_contact[0]
-        var si_dmax = model.solimp_contact[1]
-        var si_width = model.solimp_contact[2]
-        if si_width < Scalar[DTYPE](1e-6):
-            si_width = Scalar[DTYPE](1e-6)
-        if si_dmax < Scalar[DTYPE](1e-4):
-            si_dmax = Scalar[DTYPE](1e-4)
-
-        # Precompute velocity-level correction coefficients from solref
-        var inv_tc_dr = Scalar[DTYPE](1.0) / (sr_tc * sr_dr)
-        var b_vel_coef = Scalar[DTYPE](2.0) * sr_dr * dt / (si_dmax * sr_tc)
-
+        # =====================================================================
+        # Phase 2: PGS normal iterations
+        # =====================================================================
         for _ in range(PGS_ITERATIONS):
-            for c in range(nc):
-                if contact_dist[c] >= Scalar[DTYPE](0):
-                    continue
-
-                # Compute current contact-normal velocity: v_n = J_n . qvel
-                var v_n: Scalar[DTYPE] = 0
+            for r in range(num_normals):
+                # Compute constraint velocity: v = J . qvel
+                var v: Scalar[DTYPE] = 0
                 for i in range(NV):
-                    v_n += J_n[c * NV + i] * qvel[i]
+                    v += constraints.J[r * NV + i] * qvel[i]
 
-                # MuJoCo impedance model
-                var penetration = -contact_dist[c]
-                # Impedance (Hermite smoothstep)
-                var x = penetration / si_width
-                if x > Scalar[DTYPE](1.0):
-                    x = Scalar[DTYPE](1.0)
-                var imp = si_dmin + (
-                    Scalar[DTYPE](3.0) * x * x - Scalar[DTYPE](2.0) * x * x * x
-                ) * (si_dmax - si_dmin)
-                if imp < Scalar[DTYPE](0.2):
-                    imp = Scalar[DTYPE](0.2)
-                # Velocity-level bias: position correction + velocity damping
-                var pos_correction = imp * penetration * inv_tc_dr
-                if pos_correction > Scalar[DTYPE](MAX_POS_CORRECTION_VEL):
-                    pos_correction = Scalar[DTYPE](MAX_POS_CORRECTION_VEL)
-                var bias = -pos_correction - b_vel_coef * v_n
+                # PGS update with impedance: delta = -(v + bias) * inv_K_imp
+                var delta = -(v + constraints.rows[r].bias) * constraints.rows[r].inv_K_imp
+                var old_lambda = constraints.rows[r].lambda_val
+                constraints.rows[r].lambda_val = constraints.rows[r].lambda_val + delta
 
-                # PGS update with impedance-scaled effective mass
-                var delta = -(v_n + bias) / (K_n[c] / imp)
-                var old_lambda = lambda_n[c]
-                lambda_n[c] = lambda_n[c] + delta
+                # Unilateral clamp: lambda >= 0
+                if constraints.rows[r].lambda_val < Scalar[DTYPE](0):
+                    constraints.rows[r].lambda_val = Scalar[DTYPE](0)
 
-                # Unilateral clamp: lambda_n >= 0
-                if lambda_n[c] < Scalar[DTYPE](0):
-                    lambda_n[c] = Scalar[DTYPE](0)
+                var actual_delta = constraints.rows[r].lambda_val - old_lambda
 
-                var actual_delta = lambda_n[c] - old_lambda
-
-                # Apply velocity correction: qvel += M_inv @ J^T * delta
+                # Apply velocity correction: qvel += MinvJT * delta
                 for i in range(NV):
-                    var mi_j_sum: Scalar[DTYPE] = 0
-                    for j_idx in range(NV):
-                        mi_j_sum += M_inv[i * NV + j_idx] * J_n[c * NV + j_idx]
-                    qvel[i] += mi_j_sum * actual_delta
+                    qvel[i] += constraints.MinvJT[r * NV + i] * actual_delta
 
-        # Phase 2b: Joint limit constraints (PGS)
-        # Detect active joint limits and solve as unilateral constraints
-        comptime MAX_LIMITS = _max_one[2 * NJOINT]()
-        var limit_dof = InlineArray[Int, MAX_LIMITS](uninitialized=True)
-        var limit_sign = InlineArray[Scalar[DTYPE], MAX_LIMITS](
-            uninitialized=True
-        )
-        var limit_dist = InlineArray[Scalar[DTYPE], MAX_LIMITS](
-            uninitialized=True
-        )
-        var K_limit = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
-        var lambda_limit = InlineArray[Scalar[DTYPE], MAX_LIMITS](
-            uninitialized=True
-        )
-        for i in range(MAX_LIMITS):
-            limit_dof[i] = 0
-            limit_sign[i] = Scalar[DTYPE](0)
-            limit_dist[i] = Scalar[DTYPE](0)
-            K_limit[i] = Scalar[DTYPE](1)
-            lambda_limit[i] = Scalar[DTYPE](0)
-
-        var num_limits = 0
-        for j in range(model.num_joints):
-            var joint = model.joints[j]
-            if joint.jnt_type != JNT_HINGE and joint.jnt_type != JNT_SLIDE:
-                continue
-            var dof = joint.dof_adr
-            var pos = data.qpos[joint.qpos_adr]
-            var rmin = joint.range_min
-            var rmax = joint.range_max
-            # Skip joints with default (unlimited) ranges
-            if rmin < Scalar[DTYPE](-1e9) or rmax > Scalar[DTYPE](1e9):
-                continue
-            # Lower limit: q >= range_min → constraint dist = q - range_min
-            var dist_lo = pos - rmin
-            if dist_lo < Scalar[DTYPE](0.01) and num_limits < MAX_LIMITS:
-                limit_dof[num_limits] = dof
-                limit_sign[num_limits] = Scalar[DTYPE](1)  # J[dof] = +1
-                limit_dist[num_limits] = dist_lo
-                K_limit[num_limits] = M_inv[dof * NV + dof]
-                if K_limit[num_limits] < Scalar[DTYPE](1e-10):
-                    K_limit[num_limits] = Scalar[DTYPE](1e-10)
-                num_limits += 1
-            # Upper limit: q <= range_max → constraint dist = range_max - q
-            var dist_hi = rmax - pos
-            if dist_hi < Scalar[DTYPE](0.01) and num_limits < MAX_LIMITS:
-                limit_dof[num_limits] = dof
-                limit_sign[num_limits] = Scalar[DTYPE](-1)  # J[dof] = -1
-                limit_dist[num_limits] = dist_hi
-                K_limit[num_limits] = M_inv[dof * NV + dof]
-                if K_limit[num_limits] < Scalar[DTYPE](1e-10):
-                    K_limit[num_limits] = Scalar[DTYPE](1e-10)
-                num_limits += 1
-
+        # =====================================================================
+        # Phase 2b: PGS joint limit iterations
+        # =====================================================================
         if num_limits > 0:
-            # MuJoCo solref/solimp for joint limits
-            var lr_tc = model.solref_limit[0]
-            var lr_dr = model.solref_limit[1]
-            var li_dmin = model.solimp_limit[0]
-            var li_dmax = model.solimp_limit[1]
-            var li_width = model.solimp_limit[2]
-            if li_width < Scalar[DTYPE](1e-6):
-                li_width = Scalar[DTYPE](1e-6)
-            if li_dmax < Scalar[DTYPE](1e-4):
-                li_dmax = Scalar[DTYPE](1e-4)
-            var l_inv_tc_dr = Scalar[DTYPE](1.0) / (lr_tc * lr_dr)
-            var l_b_vel_coef = (
-                Scalar[DTYPE](2.0) * lr_dr * dt / (li_dmax * lr_tc)
-            )
-
             for _ in range(PGS_ITERATIONS):
-                for l in range(num_limits):
-                    var dof = limit_dof[l]
-                    var sign = limit_sign[l]
+                for r_off in range(num_limits):
+                    var r = limits_start + r_off
+                    var dof = constraints.rows[r].source_dof
+                    var sign = constraints.rows[r].limit_sign
                     var v_limit = sign * qvel[dof]
-                    # MuJoCo impedance model for limits
-                    var penetration = -limit_dist[l]
-                    if penetration < Scalar[DTYPE](0):
-                        penetration = Scalar[DTYPE](0)
-                    var x_lim = penetration / li_width
-                    if x_lim > Scalar[DTYPE](1.0):
-                        x_lim = Scalar[DTYPE](1.0)
-                    var imp_lim = li_dmin + (
-                        Scalar[DTYPE](3.0) * x_lim * x_lim
-                        - Scalar[DTYPE](2.0) * x_lim * x_lim * x_lim
-                    ) * (li_dmax - li_dmin)
-                    if imp_lim < Scalar[DTYPE](0.2):
-                        imp_lim = Scalar[DTYPE](0.2)
-                    var lim_pos_corr = imp_lim * penetration * l_inv_tc_dr
-                    if lim_pos_corr > Scalar[DTYPE](MAX_POS_CORRECTION_VEL):
-                        lim_pos_corr = Scalar[DTYPE](MAX_POS_CORRECTION_VEL)
-                    var bias = -lim_pos_corr - l_b_vel_coef * v_limit
-                    # PGS update
-                    var delta = -(v_limit + bias) / (K_limit[l] / imp_lim)
-                    var old_lambda = lambda_limit[l]
-                    lambda_limit[l] = lambda_limit[l] + delta
-                    if lambda_limit[l] < Scalar[DTYPE](0):
-                        lambda_limit[l] = Scalar[DTYPE](0)
-                    var actual = lambda_limit[l] - old_lambda
-                    # Apply: qvel[i] += M_inv[i, dof] * sign * actual
+
+                    var delta = -(v_limit + constraints.rows[r].bias) * constraints.rows[r].inv_K_imp
+                    var old_lambda = constraints.rows[r].lambda_val
+                    constraints.rows[r].lambda_val = constraints.rows[r].lambda_val + delta
+
+                    if constraints.rows[r].lambda_val < Scalar[DTYPE](0):
+                        constraints.rows[r].lambda_val = Scalar[DTYPE](0)
+
+                    var actual = constraints.rows[r].lambda_val - old_lambda
+
+                    # Apply: qvel += MinvJT * actual
                     for i in range(NV):
-                        qvel[i] += M_inv[i * NV + dof] * sign * actual
+                        qvel[i] += constraints.MinvJT[r * NV + i] * actual
 
-        # Phase 3: Friction (Coulomb cone)
-        var friction_coef = model.friction
+        # =====================================================================
+        # Phase 3: Friction PGS with Coulomb cone
+        # =====================================================================
+        if num_friction == 0:
+            return
 
-        # Tangent Jacobian rows (computed on-the-fly per iteration)
-        var J_t1_row = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-        var J_t2_row = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-
-        var lambda_t1 = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-        var lambda_t2 = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-        for i in range(MC):
-            lambda_t1[i] = Scalar[DTYPE](0)
-            lambda_t2[i] = Scalar[DTYPE](0)
-
-        # Pre-compute tangent directions and their Jacobians for active contacts
-        comptime JT_SIZE = _max_one[MAX_CONTACTS * NV]()
-        var J_t1_all = InlineArray[Scalar[DTYPE], JT_SIZE](uninitialized=True)
-        var J_t2_all = InlineArray[Scalar[DTYPE], JT_SIZE](uninitialized=True)
-        var K_t1 = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-        var K_t2 = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-
-        for i in range(JT_SIZE):
-            J_t1_all[i] = Scalar[DTYPE](0)
-            J_t2_all[i] = Scalar[DTYPE](0)
-        for i in range(MC):
-            K_t1[i] = Scalar[DTYPE](1)
-            K_t2[i] = Scalar[DTYPE](1)
-
-        for c in range(nc):
-            if lambda_n[c] <= Scalar[DTYPE](0):
-                continue
-
-            var contact = data.contacts[c]
-            var nx = contact.normal_x
-            var ny = contact.normal_y
-            var nz = contact.normal_z
-
-            # Compute tangent basis
-            var t1_x: Scalar[DTYPE]
-            var t1_y: Scalar[DTYPE]
-            var t1_z: Scalar[DTYPE]
-
-            # Choose a vector not parallel to normal
-            if abs(nx) < Scalar[DTYPE](0.9):
-                # t1 = normalize(cross((1,0,0), normal))
-                t1_x = Scalar[DTYPE](0)
-                t1_y = -nz
-                t1_z = ny
-            else:
-                # t1 = normalize(cross((0,1,0), normal))
-                t1_x = nz
-                t1_y = Scalar[DTYPE](0)
-                t1_z = -nx
-
-            var t1_mag = sqrt(t1_x * t1_x + t1_y * t1_y + t1_z * t1_z)
-            if t1_mag > Scalar[DTYPE](1e-10):
-                t1_x = t1_x / t1_mag
-                t1_y = t1_y / t1_mag
-                t1_z = t1_z / t1_mag
-
-            # t2 = normal x t1
-            var t2_x = ny * t1_z - nz * t1_y
-            var t2_y = nz * t1_x - nx * t1_z
-            var t2_z = nx * t1_y - ny * t1_x
-
-            # Compute tangent Jacobian rows
-            compute_contact_jacobian_row[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, CDOF_SIZE
-            ](
-                model,
-                data,
-                cdof,
-                contact.body_a,
-                contact.body_b,
-                contact.pos_x,
-                contact.pos_y,
-                contact.pos_z,
-                t1_x,
-                t1_y,
-                t1_z,
-                J_t1_row,
-            )
-            compute_contact_jacobian_row[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, CDOF_SIZE
-            ](
-                model,
-                data,
-                cdof,
-                contact.body_a,
-                contact.body_b,
-                contact.pos_x,
-                contact.pos_y,
-                contact.pos_z,
-                t2_x,
-                t2_y,
-                t2_z,
-                J_t2_row,
-            )
-
-            var k1: Scalar[DTYPE] = 0
-            var k2: Scalar[DTYPE] = 0
-            for i in range(NV):
-                J_t1_all[c * NV + i] = J_t1_row[i]
-                J_t2_all[c * NV + i] = J_t2_row[i]
-                var mi_j_sum1: Scalar[DTYPE] = 0
-                var mi_j_sum2: Scalar[DTYPE] = 0
-                for j_idx in range(NV):
-                    mi_j_sum1 += M_inv[i * NV + j_idx] * J_t1_row[j_idx]
-                    mi_j_sum2 += M_inv[i * NV + j_idx] * J_t2_row[j_idx]
-                k1 += J_t1_row[i] * mi_j_sum1
-                k2 += J_t2_row[i] * mi_j_sum2
-
-            if k1 < Scalar[DTYPE](1e-10):
-                k1 = Scalar[DTYPE](1e-10)
-            if k2 < Scalar[DTYPE](1e-10):
-                k2 = Scalar[DTYPE](1e-10)
-            K_t1[c] = k1
-            K_t2[c] = k2
-
-            # Warm start tangent impulses
-            lambda_t1[c] = contact.impulse_t1
-            lambda_t2[c] = contact.impulse_t2
-
-        # Apply tangent warm start
-        for c in range(nc):
-            if lambda_n[c] <= Scalar[DTYPE](0):
-                continue
-            if lambda_t1[c] != Scalar[DTYPE](0) or lambda_t2[c] != Scalar[
-                DTYPE
-            ](0):
+        # Apply friction warm-start
+        for r_off in range(num_friction):
+            var r = friction_start + r_off
+            if constraints.rows[r].lambda_val != Scalar[DTYPE](0):
                 for i in range(NV):
-                    var mi_j_sum: Scalar[DTYPE] = 0
-                    for j_idx in range(NV):
-                        mi_j_sum += M_inv[i * NV + j_idx] * (
-                            J_t1_all[c * NV + j_idx] * lambda_t1[c]
-                            + J_t2_all[c * NV + j_idx] * lambda_t2[c]
-                        )
-                    qvel[i] += mi_j_sum
+                    qvel[i] += (
+                        constraints.MinvJT[r * NV + i]
+                        * constraints.rows[r].lambda_val
+                    )
 
-        # Friction PGS iterations
+        # Friction PGS iterations (t1 and t2 are consecutive pairs)
         for _ in range(PGS_ITERATIONS):
-            for c in range(nc):
-                if lambda_n[c] <= Scalar[DTYPE](0):
+            # Process friction pairs (t1, t2 are consecutive)
+            var pair_idx = 0
+            while pair_idx < num_friction:
+                var r_t1 = friction_start + pair_idx
+                var r_t2 = friction_start + pair_idx + 1
+                var normal_row = constraints.rows[r_t1].friction_parent
+                var mu = constraints.rows[r_t1].friction_coef
+                var lambda_n = constraints.rows[normal_row].lambda_val
+
+                if lambda_n <= Scalar[DTYPE](0):
+                    pair_idx += 2
                     continue
 
-                var max_friction = friction_coef * lambda_n[c]
+                var max_friction = mu * lambda_n
 
                 # Tangent 1
                 var v_t1: Scalar[DTYPE] = 0
                 for i in range(NV):
-                    v_t1 += J_t1_all[c * NV + i] * qvel[i]
-
-                var delta_t1 = -v_t1 / K_t1[c]
-                var old_t1 = lambda_t1[c]
-                lambda_t1[c] = lambda_t1[c] + delta_t1
+                    v_t1 += constraints.J[r_t1 * NV + i] * qvel[i]
+                var delta_t1 = -v_t1 / constraints.rows[r_t1].K
+                var old_t1 = constraints.rows[r_t1].lambda_val
+                constraints.rows[r_t1].lambda_val = constraints.rows[r_t1].lambda_val + delta_t1
 
                 # Tangent 2
                 var v_t2: Scalar[DTYPE] = 0
                 for i in range(NV):
-                    v_t2 += J_t2_all[c * NV + i] * qvel[i]
-
-                var delta_t2 = -v_t2 / K_t2[c]
-                var old_t2 = lambda_t2[c]
-                lambda_t2[c] = lambda_t2[c] + delta_t2
+                    v_t2 += constraints.J[r_t2 * NV + i] * qvel[i]
+                var delta_t2 = -v_t2 / constraints.rows[r_t2].K
+                var old_t2 = constraints.rows[r_t2].lambda_val
+                constraints.rows[r_t2].lambda_val = constraints.rows[r_t2].lambda_val + delta_t2
 
                 # Coulomb cone clamping: |lambda_t| <= mu * lambda_n
                 var t_mag = sqrt(
-                    lambda_t1[c] * lambda_t1[c] + lambda_t2[c] * lambda_t2[c]
+                    constraints.rows[r_t1].lambda_val * constraints.rows[r_t1].lambda_val
+                    + constraints.rows[r_t2].lambda_val * constraints.rows[r_t2].lambda_val
                 )
                 if t_mag > max_friction:
                     var scale = max_friction / t_mag
-                    lambda_t1[c] = lambda_t1[c] * scale
-                    lambda_t2[c] = lambda_t2[c] * scale
+                    constraints.rows[r_t1].lambda_val = constraints.rows[r_t1].lambda_val * scale
+                    constraints.rows[r_t2].lambda_val = constraints.rows[r_t2].lambda_val * scale
 
-                var actual_delta_t1 = lambda_t1[c] - old_t1
-                var actual_delta_t2 = lambda_t2[c] - old_t2
+                var actual_t1 = constraints.rows[r_t1].lambda_val - old_t1
+                var actual_t2 = constraints.rows[r_t2].lambda_val - old_t2
 
                 for i in range(NV):
-                    var mi_j_sum: Scalar[DTYPE] = 0
-                    for j_idx in range(NV):
-                        mi_j_sum += M_inv[i * NV + j_idx] * (
-                            J_t1_all[c * NV + j_idx] * actual_delta_t1
-                            + J_t2_all[c * NV + j_idx] * actual_delta_t2
-                        )
-                    qvel[i] += mi_j_sum
+                    qvel[i] += (
+                        constraints.MinvJT[r_t1 * NV + i] * actual_t1
+                        + constraints.MinvJT[r_t2 * NV + i] * actual_t2
+                    )
 
-        # Store impulses back for warm-starting next step
-        for c in range(nc):
-            data.contacts[c].impulse_n = lambda_n[c]
-            data.contacts[c].impulse_t1 = lambda_t1[c]
-            data.contacts[c].impulse_t2 = lambda_t2[c]
+                pair_idx += 2
 
     @staticmethod
     fn solver_threads[
@@ -653,6 +339,9 @@ struct PGSSolver(ConstraintSolver):
         Precompute phases (Phase 1, Phase 3) are parallelized across contacts.
         PGS iterations are sequential on thread_y==0 (Gauss-Seidel dependency).
         All threads must hit all barriers (no early returns).
+
+        NOTE: GPU path is unchanged — still uses inline setup. GPU refactor
+        is deferred to a follow-up.
         """
 
         var env = Int(block_dim.x * block_idx.x + thread_idx.x)

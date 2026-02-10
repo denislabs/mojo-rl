@@ -71,6 +71,8 @@ from ..collision.contact_detection import (
     normalize_qpos_quaternions_gpu,
 )
 from ..solver.pgs_solver import PGSSolver
+from ..solver.constraint_data import ConstraintData
+from ..solver.constraint_builder import build_constraints, writeback_impulses
 from ..traits.integrator import Integrator
 from ..traits.solver import ConstraintSolver
 from ..gpu.constants import (
@@ -324,7 +326,14 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             elif qvel_pred[i] < -MAX_QVEL:
                 qvel_pred[i] = -MAX_QVEL
 
-        # 9. Constraint solve (modifies qvel_pred in-place)
+        # 9. Build constraints and solve (modifies qvel_pred in-place)
+        comptime MAX_ROWS = 3 * MAX_CONTACTS + 2 * NJOINT
+        var constraints = ConstraintData[DTYPE, MAX_ROWS, NV]()
+        build_constraints[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, MAX_ROWS,
+            V_SIZE, M_SIZE, CDOF_SIZE,
+        ](model, data, cdof, M_inv, qvel_pred, dt, constraints)
+
         Self.SOLVER.solve[
             DTYPE,
             NQ,
@@ -332,10 +341,14 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             NBODY,
             NJOINT,
             MAX_CONTACTS,
+            MAX_ROWS,
             V_SIZE,
             M_SIZE,
-            CDOF_SIZE,
-        ](model, data, M_inv, cdof, qvel_pred, dt)
+        ](model, data, M_inv, constraints, qvel_pred, dt)
+
+        writeback_impulses[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, MAX_ROWS,
+        ](constraints, data)
 
         # 9. Write back constrained velocity and integrate position
         for i in range(NV):

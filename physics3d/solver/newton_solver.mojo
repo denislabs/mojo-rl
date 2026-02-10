@@ -24,9 +24,16 @@ from ..dynamics.jacobian import (
     compute_contact_jacobian_row,
     compute_contact_jacobian_row_gpu,
 )
+from .constraint_data import (
+    ConstraintData,
+    CNSTR_NORMAL,
+    CNSTR_FRICTION_T1,
+    CNSTR_FRICTION_T2,
+    CNSTR_LIMIT,
+)
 
-# Import shared friction solver
-from .friction_solver import _solve_friction_pgs_cpu, _solve_friction_pgs_gpu
+# Import shared friction solver (GPU only now — CPU friction uses ConstraintData)
+from .friction_solver import _solve_friction_pgs_gpu
 
 from ..gpu.constants import (
     contacts_offset,
@@ -130,469 +137,319 @@ struct NewtonSolver(ConstraintSolver):
         NBODY: Int,
         NJOINT: Int,
         MAX_CONTACTS: Int,
+        MAX_ROWS: Int,
         V_SIZE: Int,
         M_SIZE: Int,
-        CDOF_SIZE: Int,
     ](
         model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         M_inv: InlineArray[Scalar[DTYPE], M_SIZE],
-        cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
+        mut constraints: ConstraintData[DTYPE, MAX_ROWS, NV],
         mut qvel: InlineArray[Scalar[DTYPE], V_SIZE],
         dt: Scalar[DTYPE],
     ):
-        """Solve contact constraints using Projected Newton on CPU."""
-        var num_contacts = data.num_contacts
+        """Solve constraints using Projected Newton on CPU.
 
-        # Detect joint limits
-        comptime MAX_LIMITS = _max_one[2 * NJOINT]()
-        var limit_dof = InlineArray[Int, MAX_LIMITS](uninitialized=True)
-        var limit_sign = InlineArray[Scalar[DTYPE], MAX_LIMITS](
-            uninitialized=True
-        )
-        var limit_dist_arr = InlineArray[Scalar[DTYPE], MAX_LIMITS](
-            uninitialized=True
-        )
-        var K_limit = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
-        var lambda_limit = InlineArray[Scalar[DTYPE], MAX_LIMITS](
-            uninitialized=True
-        )
-        for i in range(MAX_LIMITS):
-            limit_dof[i] = 0
-            limit_sign[i] = Scalar[DTYPE](0)
-            limit_dist_arr[i] = Scalar[DTYPE](0)
-            K_limit[i] = Scalar[DTYPE](1)
-            lambda_limit[i] = Scalar[DTYPE](0)
-
-        var num_limits = 0
-        for j in range(model.num_joints):
-            var joint = model.joints[j]
-            if joint.jnt_type != JNT_HINGE and joint.jnt_type != JNT_SLIDE:
-                continue
-            var dof = joint.dof_adr
-            var pos = data.qpos[joint.qpos_adr]
-            var rmin = joint.range_min
-            var rmax = joint.range_max
-            if rmin < Scalar[DTYPE](-1e9) or rmax > Scalar[DTYPE](1e9):
-                continue
-            var dist_lo = pos - rmin
-            if dist_lo < Scalar[DTYPE](0.01) and num_limits < MAX_LIMITS:
-                limit_dof[num_limits] = dof
-                limit_sign[num_limits] = Scalar[DTYPE](1)
-                limit_dist_arr[num_limits] = dist_lo
-                K_limit[num_limits] = M_inv[dof * NV + dof]
-                if K_limit[num_limits] < Scalar[DTYPE](1e-10):
-                    K_limit[num_limits] = Scalar[DTYPE](1e-10)
-                num_limits += 1
-            var dist_hi = rmax - pos
-            if dist_hi < Scalar[DTYPE](0.01) and num_limits < MAX_LIMITS:
-                limit_dof[num_limits] = dof
-                limit_sign[num_limits] = Scalar[DTYPE](-1)
-                limit_dist_arr[num_limits] = dist_hi
-                K_limit[num_limits] = M_inv[dof * NV + dof]
-                if K_limit[num_limits] < Scalar[DTYPE](1e-10):
-                    K_limit[num_limits] = Scalar[DTYPE](1e-10)
-                num_limits += 1
-
-        if num_contacts == 0 and num_limits == 0:
+        Iterates over pre-built ConstraintData:
+        1. Build Delassus matrix from normal constraint rows
+        2. Projected Newton with Armijo line search for normals
+        3. PGS for joint limit constraints
+        4. PGS for friction (with Coulomb cone clamping)
+        """
+        if constraints.num_rows == 0:
             return
 
-        var nc = num_contacts
-        if nc > MAX_CONTACTS:
-            nc = MAX_CONTACTS
+        var num_normals = constraints.num_normals
+        var num_friction = constraints.num_friction
+        var num_limits = constraints.num_limits
+        var friction_start = num_normals
+        var limits_start = num_normals + num_friction
 
-        comptime MC = _max_one[MAX_CONTACTS]()
-        comptime JN_SIZE = _max_one[MAX_CONTACTS * NV]()
-        # Delassus matrix A (nc x nc, stored flat)
-        comptime A_SIZE = _max_one[MAX_CONTACTS * MAX_CONTACTS]()
+        comptime MR = _max_one[MAX_ROWS]()
+        comptime A_SIZE = _max_one[MAX_ROWS * MAX_ROWS]()
 
-        # Normal Jacobian rows: J_n[c * NV + i]
-        var J_n = InlineArray[Scalar[DTYPE], JN_SIZE](uninitialized=True)
-        for i in range(JN_SIZE):
-            J_n[i] = Scalar[DTYPE](0)
-
-        # Diagonal of Delassus matrix (for preconditioning/fallback)
-        var K_n = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-        for i in range(MC):
-            K_n[i] = Scalar[DTYPE](0)
-
-        # Normal impulse accumulators
-        var lambda_n = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-        for i in range(MC):
-            lambda_n[i] = Scalar[DTYPE](0)
-
-        # Contact distances
-        var contact_dist = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-        for i in range(MC):
-            contact_dist[i] = Scalar[DTYPE](0)
-
-        # Contact body indices
-        var contact_body = InlineArray[Int, MC](uninitialized=True)
-        var contact_body_b = InlineArray[Int, MC](uninitialized=True)
-        for i in range(MC):
-            contact_body[i] = 0
-            contact_body_b[i] = -1
-
-        # RHS vector
-        var rhs = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-        for i in range(MC):
+        # RHS for Newton: rhs[r] = v_n + bias
+        var rhs = InlineArray[Scalar[DTYPE], MR](uninitialized=True)
+        for i in range(MR):
             rhs[i] = Scalar[DTYPE](0)
 
-        # Delassus matrix A[c1 * MAX_CONTACTS + c2]
+        # Compute RHS for normal rows and apply warm-start
+        for r in range(num_normals):
+            var v_n: Scalar[DTYPE] = 0
+            for i in range(NV):
+                v_n += constraints.J[r * NV + i] * qvel[i]
+            rhs[r] = v_n + constraints.rows[r].bias
+
+            # Apply warm-start
+            if constraints.rows[r].lambda_val > Scalar[DTYPE](0):
+                for i in range(NV):
+                    qvel[i] += (
+                        constraints.MinvJT[r * NV + i]
+                        * constraints.rows[r].lambda_val
+                    )
+
+        # Build Delassus matrix A[c1,c2] = J[c1] . MinvJT[c2]
         var A = InlineArray[Scalar[DTYPE], A_SIZE](uninitialized=True)
         for i in range(A_SIZE):
             A[i] = Scalar[DTYPE](0)
-
-        # Phase 1: Precompute contact data
-        var J_row = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-
-        # MuJoCo solref/solimp impedance model for contacts
-        var sr_tc = model.solref_contact[0]
-        var sr_dr = model.solref_contact[1]
-        var si_dmin = model.solimp_contact[0]
-        var si_dmax = model.solimp_contact[1]
-        var si_width = model.solimp_contact[2]
-        if si_width < Scalar[DTYPE](1e-6):
-            si_width = Scalar[DTYPE](1e-6)
-        if si_dmax < Scalar[DTYPE](1e-4):
-            si_dmax = Scalar[DTYPE](1e-4)
-        var inv_tc_dr = Scalar[DTYPE](1.0) / (sr_tc * sr_dr)
-        var b_vel_coef = Scalar[DTYPE](2.0) * sr_dr * dt / (si_dmax * sr_tc)
-
-        for c in range(nc):
-            var contact = data.contacts[c]
-
-            if contact.dist >= Scalar[DTYPE](0):
-                K_n[c] = Scalar[DTYPE](1)
-                continue
-
-            contact_dist[c] = contact.dist
-            contact_body[c] = contact.body_a
-            contact_body_b[c] = contact.body_b
-
-            # Compute normal Jacobian row
-            compute_contact_jacobian_row[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, CDOF_SIZE
-            ](
-                model,
-                data,
-                cdof,
-                contact.body_a,
-                contact.body_b,
-                contact.pos_x,
-                contact.pos_y,
-                contact.pos_z,
-                contact.normal_x,
-                contact.normal_y,
-                contact.normal_z,
-                J_row,
-            )
-
-            var k: Scalar[DTYPE] = 0
-            var v_n: Scalar[DTYPE] = 0
-            for i in range(NV):
-                J_n[c * NV + i] = J_row[i]
-                var mi_j_sum: Scalar[DTYPE] = 0
-                for j_idx in range(NV):
-                    mi_j_sum += M_inv[i * NV + j_idx] * J_row[j_idx]
-                k += J_row[i] * mi_j_sum
-                v_n += J_row[i] * qvel[i]
-
-            if k < Scalar[DTYPE](1e-10):
-                k = Scalar[DTYPE](1e-10)
-            K_n[c] = k
-
-            # MuJoCo impedance model for RHS
-            var penetration = -contact.dist
-            var x = penetration / si_width
-            if x > Scalar[DTYPE](1.0):
-                x = Scalar[DTYPE](1.0)
-            var imp = si_dmin + (
-                Scalar[DTYPE](3.0) * x * x - Scalar[DTYPE](2.0) * x * x * x
-            ) * (si_dmax - si_dmin)
-            if imp < Scalar[DTYPE](0.2):
-                imp = Scalar[DTYPE](0.2)
-            var pos_correction = imp * penetration * inv_tc_dr
-            if pos_correction > Scalar[DTYPE](MAX_POS_CORRECTION_VEL):
-                pos_correction = Scalar[DTYPE](MAX_POS_CORRECTION_VEL)
-            var bias = -pos_correction - b_vel_coef * v_n
-            rhs[c] = v_n + bias
-
-            # Warm start
-            lambda_n[c] = contact.impulse_n
-
-        # Build full Delassus matrix A[c1,c2] = J[c1] * M^-1 * J[c2]^T
-        for c1 in range(nc):
-            if contact_dist[c1] >= Scalar[DTYPE](0):
-                continue
-            for c2 in range(nc):
-                if contact_dist[c2] >= Scalar[DTYPE](0):
-                    continue
+        for c1 in range(num_normals):
+            for c2 in range(num_normals):
                 var a_val: Scalar[DTYPE] = 0
                 for i in range(NV):
-                    var mi_j_sum: Scalar[DTYPE] = 0
-                    for j_idx in range(NV):
-                        mi_j_sum += M_inv[i * NV + j_idx] * J_n[c2 * NV + j_idx]
-                    a_val += J_n[c1 * NV + i] * mi_j_sum
-                A[c1 * MAX_CONTACTS + c2] = a_val
+                    a_val += (
+                        constraints.J[c1 * NV + i]
+                        * constraints.MinvJT[c2 * NV + i]
+                    )
+                A[c1 * num_normals + c2] = a_val
 
-        # Apply warm start impulses to velocity
-        for c in range(nc):
-            if contact_dist[c] >= Scalar[DTYPE](0):
-                continue
-            if lambda_n[c] > Scalar[DTYPE](0):
-                for i in range(NV):
-                    var mi_j_sum: Scalar[DTYPE] = 0
-                    for j_idx in range(NV):
-                        mi_j_sum += M_inv[i * NV + j_idx] * J_n[c * NV + j_idx]
-                    qvel[i] += mi_j_sum * lambda_n[c]
-
+        # =====================================================================
         # Phase 2: Projected Newton for normal constraints
         # Minimize: f(x) = 0.5 * x^T * A * x + rhs^T * x subject to x >= 0
-        var grad = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-        var d = InlineArray[Scalar[DTYPE], MC](
-            uninitialized=True
-        )  # Newton direction
-        var lambda_trial = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
+        # =====================================================================
+        var grad = InlineArray[Scalar[DTYPE], MR](uninitialized=True)
+        var d = InlineArray[Scalar[DTYPE], MR](uninitialized=True)
+        var lambda_trial = InlineArray[Scalar[DTYPE], MR](uninitialized=True)
 
-        for i in range(MC):
+        for i in range(MR):
             grad[i] = Scalar[DTYPE](0)
             d[i] = Scalar[DTYPE](0)
             lambda_trial[i] = Scalar[DTYPE](0)
 
         for _ in range(NEWTON_ITERATIONS):
             # Compute gradient: g = A * lambda + rhs
-            for c in range(nc):
-                if contact_dist[c] >= Scalar[DTYPE](0):
-                    grad[c] = Scalar[DTYPE](0)
-                    continue
+            for c in range(num_normals):
                 var g: Scalar[DTYPE] = rhs[c]
-                for c2 in range(nc):
-                    if contact_dist[c2] >= Scalar[DTYPE](0):
-                        continue
-                    g += A[c * MAX_CONTACTS + c2] * lambda_n[c2]
+                for c2 in range(num_normals):
+                    g += (
+                        A[c * num_normals + c2]
+                        * constraints.rows[c2].lambda_val
+                    )
                 grad[c] = g
 
-            # Compute projected gradient norm (convergence check)
-            # For active constraints (lambda=0, grad>=0), gradient is zero
+            # Projected gradient norm
             var grad_norm: Scalar[DTYPE] = 0
-            for c in range(nc):
-                if contact_dist[c] >= Scalar[DTYPE](0):
-                    continue
-                if lambda_n[c] > Scalar[DTYPE](0) or grad[c] < Scalar[DTYPE](0):
+            for c in range(num_normals):
+                if constraints.rows[c].lambda_val > Scalar[DTYPE](0) or grad[
+                    c
+                ] < Scalar[DTYPE](0):
                     grad_norm += grad[c] * grad[c]
 
             if grad_norm < Scalar[DTYPE](NEWTON_TOLERANCE):
                 break
 
-            # Identify free set: constraints where lambda > 0 or gradient < 0
-            # For free variables, solve A_FF * d_F = -g_F
-            # For active variables (lambda=0, grad>=0), d = 0
-
-            # Count free variables and map indices
+            # Identify free set
             var free_count = 0
-            var free_map = InlineArray[Int, MC](uninitialized=True)
-            for i in range(MC):
+            var free_map = InlineArray[Int, MR](uninitialized=True)
+            for i in range(MR):
                 free_map[i] = -1
 
-            for c in range(nc):
-                if contact_dist[c] >= Scalar[DTYPE](0):
-                    continue
-                if lambda_n[c] > Scalar[DTYPE](0) or grad[c] < Scalar[DTYPE](0):
+            for c in range(num_normals):
+                if constraints.rows[c].lambda_val > Scalar[DTYPE](0) or grad[
+                    c
+                ] < Scalar[DTYPE](0):
                     free_map[c] = free_count
                     free_count += 1
 
             if free_count == 0:
                 break
 
-            # Solve the reduced Newton system: A_FF * d_F = -g_F
-            # For small nc, use direct solve via Gauss elimination
-            # Build reduced system in d array (reusing memory)
-            for c in range(nc):
+            # Jacobi initial guess + Gauss-Seidel refinement
+            for c in range(num_normals):
                 d[c] = Scalar[DTYPE](0)
 
-            # Use diagonal preconditioning (Jacobi) as a simple approach
-            # For each free variable: d[c] = -grad[c] / A[c,c]
-            # Then refine with a few Gauss-Seidel sweeps on the reduced system
-            for c in range(nc):
+            for c in range(num_normals):
                 if free_map[c] < 0:
                     continue
-                if K_n[c] > Scalar[DTYPE](1e-14):
-                    d[c] = -grad[c] / K_n[c]
+                if constraints.rows[c].K > Scalar[DTYPE](1e-14):
+                    d[c] = -grad[c] / constraints.rows[c].K
 
-            # Gauss-Seidel refinement on the reduced system (5 sweeps)
             for _ in range(5):
-                for c in range(nc):
+                for c in range(num_normals):
                     if free_map[c] < 0:
                         continue
-                    # Compute residual for this row: r_c = -g_c - sum_{c2!=c} A[c,c2] * d[c2]
                     var sum_off_diag: Scalar[DTYPE] = 0
-                    for c2 in range(nc):
+                    for c2 in range(num_normals):
                         if c2 == c:
                             continue
                         if free_map[c2] < 0:
                             continue
-                        sum_off_diag += A[c * MAX_CONTACTS + c2] * d[c2]
-                    d[c] = (-grad[c] - sum_off_diag) / A[c * MAX_CONTACTS + c]
+                        sum_off_diag += A[c * num_normals + c2] * d[c2]
+                    d[c] = (-grad[c] - sum_off_diag) / A[c * num_normals + c]
 
             # Line search with Armijo condition
-            # f(x) = 0.5 * x^T * A * x + rhs^T * x
-            # Compute f(lambda)
             var f_current: Scalar[DTYPE] = 0
-            for c in range(nc):
-                if contact_dist[c] >= Scalar[DTYPE](0):
-                    continue
-                f_current += rhs[c] * lambda_n[c]
-                for c2 in range(nc):
-                    if contact_dist[c2] >= Scalar[DTYPE](0):
-                        continue
+            for c in range(num_normals):
+                f_current += rhs[c] * constraints.rows[c].lambda_val
+                for c2 in range(num_normals):
                     f_current += (
                         Scalar[DTYPE](0.5)
-                        * lambda_n[c]
-                        * A[c * MAX_CONTACTS + c2]
-                        * lambda_n[c2]
+                        * constraints.rows[c].lambda_val
+                        * A[c * num_normals + c2]
+                        * constraints.rows[c2].lambda_val
                     )
 
-            # Directional derivative: g^T * d
             var gtd: Scalar[DTYPE] = 0
-            for c in range(nc):
+            for c in range(num_normals):
                 if free_map[c] < 0:
                     continue
                 gtd += grad[c] * d[c]
 
-            # Line search
             var step = Scalar[DTYPE](1.0)
             var armijo = Scalar[DTYPE](LINESEARCH_ARMIJO)
             var beta = Scalar[DTYPE](LINESEARCH_BETA)
 
             for _ in range(LINESEARCH_ITERATIONS):
-                # Trial point: lambda_trial = project(lambda + step * d)
-                for c in range(nc):
-                    lambda_trial[c] = lambda_n[c]
+                for c in range(num_normals):
+                    lambda_trial[c] = constraints.rows[c].lambda_val
                     if free_map[c] >= 0:
-                        lambda_trial[c] = lambda_n[c] + step * d[c]
+                        lambda_trial[c] = (
+                            constraints.rows[c].lambda_val + step * d[c]
+                        )
                     if lambda_trial[c] < Scalar[DTYPE](0):
                         lambda_trial[c] = Scalar[DTYPE](0)
 
-                # Compute f(lambda_trial)
                 var f_trial: Scalar[DTYPE] = 0
-                for c in range(nc):
-                    if contact_dist[c] >= Scalar[DTYPE](0):
-                        continue
+                for c in range(num_normals):
                     f_trial += rhs[c] * lambda_trial[c]
-                    for c2 in range(nc):
-                        if contact_dist[c2] >= Scalar[DTYPE](0):
-                            continue
+                    for c2 in range(num_normals):
                         f_trial += (
                             Scalar[DTYPE](0.5)
                             * lambda_trial[c]
-                            * A[c * MAX_CONTACTS + c2]
+                            * A[c * num_normals + c2]
                             * lambda_trial[c2]
                         )
 
-                # Armijo condition: f(trial) <= f(current) + armijo * step * g^T * d
                 if f_trial <= f_current + armijo * step * gtd:
                     break
 
                 step = step * beta
 
-            # Apply step
-            for c in range(nc):
-                lambda_n[c] = lambda_trial[c]
+            for c in range(num_normals):
+                constraints.rows[c].lambda_val = lambda_trial[c]
 
-        # Apply solved impulses to velocity
-        # Remove warm-start contribution
-        for c in range(nc):
-            if contact_dist[c] >= Scalar[DTYPE](0):
-                continue
-            var warm = data.contacts[c].impulse_n
+        # Apply solved impulses: remove warm-start, apply final
+        for c in range(num_normals):
+            var warm = data.contacts[
+                constraints.rows[c].source_contact_idx
+            ].impulse_n
             if warm > Scalar[DTYPE](0):
                 for i in range(NV):
-                    var mi_j_sum: Scalar[DTYPE] = 0
-                    for j_idx in range(NV):
-                        mi_j_sum += M_inv[i * NV + j_idx] * J_n[c * NV + j_idx]
-                    qvel[i] -= mi_j_sum * warm
+                    qvel[i] -= constraints.MinvJT[c * NV + i] * warm
 
-        # Apply final solved impulses
-        for c in range(nc):
-            if contact_dist[c] >= Scalar[DTYPE](0):
-                continue
-            if lambda_n[c] > Scalar[DTYPE](0):
+        for c in range(num_normals):
+            if constraints.rows[c].lambda_val > Scalar[DTYPE](0):
                 for i in range(NV):
-                    var mi_j_sum: Scalar[DTYPE] = 0
-                    for j_idx in range(NV):
-                        mi_j_sum += M_inv[i * NV + j_idx] * J_n[c * NV + j_idx]
-                    qvel[i] += mi_j_sum * lambda_n[c]
+                    qvel[i] += (
+                        constraints.MinvJT[c * NV + i]
+                        * constraints.rows[c].lambda_val
+                    )
 
-        # Phase 2b: Joint limit constraints (PGS)
+        # =====================================================================
+        # Phase 2b: PGS joint limit iterations
+        # =====================================================================
         if num_limits > 0:
-            var lr_tc = model.solref_limit[0]
-            var lr_dr = model.solref_limit[1]
-            var li_dmin = model.solimp_limit[0]
-            var li_dmax = model.solimp_limit[1]
-            var li_width = model.solimp_limit[2]
-            if li_width < Scalar[DTYPE](1e-6):
-                li_width = Scalar[DTYPE](1e-6)
-            if li_dmax < Scalar[DTYPE](1e-4):
-                li_dmax = Scalar[DTYPE](1e-4)
-            var l_inv_tc_dr = Scalar[DTYPE](1.0) / (lr_tc * lr_dr)
-            var l_b_vel_coef = (
-                Scalar[DTYPE](2.0) * lr_dr * dt / (li_dmax * lr_tc)
-            )
-
             for _ in range(NEWTON_ITERATIONS):
-                for l in range(num_limits):
-                    var dof_l = limit_dof[l]
-                    var sign = limit_sign[l]
-                    var v_limit = sign * qvel[dof_l]
-                    var penetration = -limit_dist_arr[l]
-                    if penetration < Scalar[DTYPE](0):
-                        penetration = Scalar[DTYPE](0)
-                    var x_lim = penetration / li_width
-                    if x_lim > Scalar[DTYPE](1.0):
-                        x_lim = Scalar[DTYPE](1.0)
-                    var imp_lim = li_dmin + (
-                        Scalar[DTYPE](3.0) * x_lim * x_lim
-                        - Scalar[DTYPE](2.0) * x_lim * x_lim * x_lim
-                    ) * (li_dmax - li_dmin)
-                    if imp_lim < Scalar[DTYPE](0.2):
-                        imp_lim = Scalar[DTYPE](0.2)
-                    var lim_pos_corr = imp_lim * penetration * l_inv_tc_dr
-                    if lim_pos_corr > Scalar[DTYPE](MAX_POS_CORRECTION_VEL):
-                        lim_pos_corr = Scalar[DTYPE](MAX_POS_CORRECTION_VEL)
-                    var bias = -lim_pos_corr - l_b_vel_coef * v_limit
-                    var delta_l = -(v_limit + bias) / (K_limit[l] / imp_lim)
-                    var old_lam = lambda_limit[l]
-                    lambda_limit[l] = lambda_limit[l] + delta_l
-                    if lambda_limit[l] < Scalar[DTYPE](0):
-                        lambda_limit[l] = Scalar[DTYPE](0)
-                    var actual = lambda_limit[l] - old_lam
-                    for i in range(NV):
-                        qvel[i] += M_inv[i * NV + dof_l] * sign * actual
+                for r_off in range(num_limits):
+                    var r = limits_start + r_off
+                    var dof = constraints.rows[r].source_dof
+                    var sign = constraints.rows[r].limit_sign
+                    var v_limit = sign * qvel[dof]
 
-        # Phase 3: Friction (Coulomb cone) via PGS
-        _solve_friction_pgs_cpu[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            V_SIZE,
-            M_SIZE,
-            CDOF_SIZE,
-        ](
-            model,
-            data,
-            cdof,
-            M_inv,
-            J_n,
-            lambda_n,
-            contact_dist,
-            contact_body_b,
-            nc,
-            qvel,
-        )
+                    var delta = (
+                        -(v_limit + constraints.rows[r].bias)
+                        * constraints.rows[r].inv_K_imp
+                    )
+                    var old_lambda = constraints.rows[r].lambda_val
+                    constraints.rows[r].lambda_val = (
+                        constraints.rows[r].lambda_val + delta
+                    )
+
+                    if constraints.rows[r].lambda_val < Scalar[DTYPE](0):
+                        constraints.rows[r].lambda_val = Scalar[DTYPE](0)
+
+                    var actual = constraints.rows[r].lambda_val - old_lambda
+
+                    for i in range(NV):
+                        qvel[i] += constraints.MinvJT[r * NV + i] * actual
+
+        # =====================================================================
+        # Phase 3: Friction PGS with Coulomb cone
+        # =====================================================================
+        if num_friction == 0:
+            return
+
+        # Apply friction warm-start
+        for r_off in range(num_friction):
+            var r = friction_start + r_off
+            if constraints.rows[r].lambda_val != Scalar[DTYPE](0):
+                for i in range(NV):
+                    qvel[i] += (
+                        constraints.MinvJT[r * NV + i]
+                        * constraints.rows[r].lambda_val
+                    )
+
+        # Friction PGS iterations (t1 and t2 are consecutive pairs)
+        for _ in range(FRICTION_PGS_ITERATIONS_NEWTON):
+            var pair_idx = 0
+            while pair_idx < num_friction:
+                var r_t1 = friction_start + pair_idx
+                var r_t2 = friction_start + pair_idx + 1
+                var normal_row = constraints.rows[r_t1].friction_parent
+                var mu = constraints.rows[r_t1].friction_coef
+                var lambda_n = constraints.rows[normal_row].lambda_val
+
+                if lambda_n <= Scalar[DTYPE](0):
+                    pair_idx += 2
+                    continue
+
+                var max_friction = mu * lambda_n
+
+                # Tangent 1
+                var v_t1: Scalar[DTYPE] = 0
+                for i in range(NV):
+                    v_t1 += constraints.J[r_t1 * NV + i] * qvel[i]
+                var delta_t1 = -v_t1 / constraints.rows[r_t1].K
+                var old_t1 = constraints.rows[r_t1].lambda_val
+                constraints.rows[r_t1].lambda_val = (
+                    constraints.rows[r_t1].lambda_val + delta_t1
+                )
+
+                # Tangent 2
+                var v_t2: Scalar[DTYPE] = 0
+                for i in range(NV):
+                    v_t2 += constraints.J[r_t2 * NV + i] * qvel[i]
+                var delta_t2 = -v_t2 / constraints.rows[r_t2].K
+                var old_t2 = constraints.rows[r_t2].lambda_val
+                constraints.rows[r_t2].lambda_val = (
+                    constraints.rows[r_t2].lambda_val + delta_t2
+                )
+
+                # Coulomb cone clamping
+                var t_mag = sqrt(
+                    constraints.rows[r_t1].lambda_val
+                    * constraints.rows[r_t1].lambda_val
+                    + constraints.rows[r_t2].lambda_val
+                    * constraints.rows[r_t2].lambda_val
+                )
+                if t_mag > max_friction:
+                    var scale = max_friction / t_mag
+                    constraints.rows[r_t1].lambda_val = (
+                        constraints.rows[r_t1].lambda_val * scale
+                    )
+                    constraints.rows[r_t2].lambda_val = (
+                        constraints.rows[r_t2].lambda_val * scale
+                    )
+
+                var actual_t1 = constraints.rows[r_t1].lambda_val - old_t1
+                var actual_t2 = constraints.rows[r_t2].lambda_val - old_t2
+
+                for i in range(NV):
+                    qvel[i] += (
+                        constraints.MinvJT[r_t1 * NV + i] * actual_t1
+                        + constraints.MinvJT[r_t2 * NV + i] * actual_t2
+                    )
+
+                pair_idx += 2
 
     @staticmethod
     fn solver_threads[

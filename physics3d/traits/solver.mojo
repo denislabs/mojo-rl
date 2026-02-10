@@ -1,29 +1,29 @@
 """Constraint solver trait for Generalized Coordinates (GC) engine.
 
 ConstraintSolver defines the interface for constraint-based contact solving
-in joint space. Implementations receive the predicted (unconstrained) velocity
-and modify it in-place to satisfy contact constraints.
+in joint space. Implementations receive pre-built ConstraintData and modify
+the predicted velocity in-place to satisfy constraints.
 
-This follows MuJoCo's approach: detect contacts in Cartesian space, compute
-contact Jacobians via cdof (spatial motion axes per DOF), then iteratively
-solve for contact impulses.
+The constraint builder populates ConstraintData (normals, friction, limits)
+before the solver is called. Solvers are pure iterative algorithms.
 """
 
 from layout import LayoutTensor, Layout
 
 from ..types import Model, Data
+from ..solver.constraint_data import ConstraintData
 
 
 trait ConstraintSolver(Movable & ImplicitlyCopyable):
     """Trait for constraint-based contact solvers in GC engine.
 
     Solvers modify the predicted velocity in-place to satisfy contact
-    constraints (non-penetration + friction).
+    constraints (non-penetration + friction) and joint limits.
 
     The solve() method receives:
-    - model/data: physics model and current state (with contacts detected)
+    - model/data: physics model and current state (for impulse writeback)
     - M_inv: full dense inverse mass matrix (NV×NV)
-    - cdof: spatial motion axes per DOF (6 * NV floats)
+    - constraints: pre-built ConstraintData with all constraints
     - qvel: predicted velocity (modified in-place to be constrained)
     - dt: timestep
     """
@@ -60,27 +60,26 @@ trait ConstraintSolver(Movable & ImplicitlyCopyable):
         NBODY: Int,
         NJOINT: Int,
         MAX_CONTACTS: Int,
+        MAX_ROWS: Int,
         V_SIZE: Int,
         M_SIZE: Int,
-        CDOF_SIZE: Int,
     ](
         model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         M_inv: InlineArray[Scalar[DTYPE], M_SIZE],
-        cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
+        mut constraints: ConstraintData[DTYPE, MAX_ROWS, NV],
         mut qvel: InlineArray[Scalar[DTYPE], V_SIZE],
         dt: Scalar[DTYPE],
     ):
-        """Solve contact constraints on CPU.
+        """Solve constraints on CPU.
 
         Args:
             model: Static model configuration.
-            data: Mutable simulation state with contacts already detected.
-                  Impulses are stored back for warm-starting next step.
+            data: Mutable simulation state. Impulses written back for warm-starting.
             M_inv: Full dense inverse mass matrix (NV×NV, row-major).
-            cdof: Spatial motion axes per DOF (6*NV entries).
+            constraints: Pre-built constraint data (normals, friction, limits).
             qvel: Predicted velocity, modified in-place to satisfy constraints.
-            dt: Timestep for Baumgarte stabilization.
+            dt: Timestep.
         """
         ...
 
