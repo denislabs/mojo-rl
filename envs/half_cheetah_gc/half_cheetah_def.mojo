@@ -152,6 +152,7 @@ comptime RootZ = SlideJoint[
     axis_x=0.0,
     axis_y=0.0,
     axis_z=1.0,
+    init_qpos=0.7,  # INIT_HEIGHT (MuJoCo qpos0)
 ]
 
 # Joint 2: rooty — Hinge around Y (body 0, unactuated)

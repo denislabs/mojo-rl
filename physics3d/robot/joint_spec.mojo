@@ -43,6 +43,7 @@ trait JointSpec(TrivialRegisterPassable):
     comptime STIFFNESS: Float64  # Position-dependent spring
     comptime SPRINGREF: Float64  # Spring reference position
     comptime FRICTIONLOSS: Float64  # Dry friction torque
+    comptime INIT_QPOS: Float64  # Initial joint position (qpos0)
 
 
 # =============================================================================
@@ -67,6 +68,7 @@ struct HingeJoint[
     stiffness: Float64 = 0.0,
     springref: Float64 = 0.0,
     frictionloss: Float64 = 0.0,
+    init_qpos: Float64 = 0.0,
 ](JointSpec):
     """Revolute (hinge) joint: 1 DOF rotation around axis.
 
@@ -91,6 +93,7 @@ struct HingeJoint[
     comptime STIFFNESS: Float64 = Self.stiffness
     comptime SPRINGREF: Float64 = Self.springref
     comptime FRICTIONLOSS: Float64 = Self.frictionloss
+    comptime INIT_QPOS: Float64 = Self.init_qpos
 
 
 # =============================================================================
@@ -115,6 +118,7 @@ struct SlideJoint[
     stiffness: Float64 = 0.0,
     springref: Float64 = 0.0,
     frictionloss: Float64 = 0.0,
+    init_qpos: Float64 = 0.0,
 ](JointSpec):
     """Prismatic (slide) joint: 1 DOF translation along axis.
 
@@ -139,3 +143,4 @@ struct SlideJoint[
     comptime STIFFNESS: Float64 = Self.stiffness
     comptime SPRINGREF: Float64 = Self.springref
     comptime FRICTIONLOSS: Float64 = Self.frictionloss
+    comptime INIT_QPOS: Float64 = Self.init_qpos

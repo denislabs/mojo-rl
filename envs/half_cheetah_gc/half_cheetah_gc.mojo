@@ -69,7 +69,6 @@ from .constants_gc import (
     GRAVITY_Z,
     GROUND_Z,
     MAX_STEPS,
-    INIT_HEIGHT,
     FRICTION,
     # Dimensions
     NQ,
@@ -348,26 +347,7 @@ struct HalfCheetahGC[
 
     fn _reset_state(mut self):
         """Reset to initial standing position."""
-        # Reset qpos
-        self.data.qpos[JOINT_ROOTX] = Scalar[Self.DTYPE](0.0)  # rootx
-        self.data.qpos[JOINT_ROOTZ] = Scalar[Self.DTYPE](INIT_HEIGHT)  # rootz
-        self.data.qpos[JOINT_ROOTY] = Scalar[Self.DTYPE](0.0)  # rooty
-        self.data.qpos[JOINT_BTHIGH] = Scalar[Self.DTYPE](0.0)  # bthigh
-        self.data.qpos[JOINT_BSHIN] = Scalar[Self.DTYPE](0.0)  # bshin
-        self.data.qpos[JOINT_BFOOT] = Scalar[Self.DTYPE](0.0)  # bfoot
-        self.data.qpos[JOINT_FTHIGH] = Scalar[Self.DTYPE](0.0)  # fthigh
-        self.data.qpos[JOINT_FSHIN] = Scalar[Self.DTYPE](0.0)  # fshin
-        self.data.qpos[JOINT_FFOOT] = Scalar[Self.DTYPE](0.0)  # ffoot
-        self.data.qpos[JOINT_HEAD] = Scalar[Self.DTYPE](0.0)  # head (fixed)
-
-        # Reset qvel
-        for i in range(Self.NV):
-            self.data.qvel[i] = Scalar[Self.DTYPE](0.0)
-
-        # Reset qacc and qfrc
-        for i in range(Self.NV):
-            self.data.qacc[i] = Scalar[Self.DTYPE](0.0)
-            self.data.qfrc[i] = Scalar[Self.DTYPE](0.0)
+        HalfCheetahJoints.reset_data(self.data)
 
         # Run forward kinematics to compute xpos/xquat
         forward_kinematics(self.model, self.data)

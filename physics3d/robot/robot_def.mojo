@@ -23,7 +23,7 @@ Usage:
 from std.builtin.variadics import Variadic
 from .body_spec import BodySpec
 from .joint_spec import JointSpec
-from ..types import Model
+from ..types import Model, Data
 from ..joint_types import JNT_HINGE, JNT_SLIDE
 
 
@@ -160,6 +160,30 @@ struct Joints[*J: JointSpec]:
         for j in range(idx):
             total += Self.joint_types[j].NV
         return total
+
+    @staticmethod
+    fn reset_data[
+        DTYPE: DType,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        MAX_CONTACTS: Int,
+    ](mut data: Data[DTYPE, NQ, NV, NBODY, Self.N, MAX_CONTACTS]):
+        """Reset qpos to initial joint positions (qpos0), zero qvel/qacc/qfrc.
+
+        Sets each joint's qpos to its INIT_QPOS value and zeros all velocity,
+        acceleration, and force arrays. Does NOT run forward kinematics.
+        """
+
+        @parameter
+        for i in range(Self.N):
+            comptime J = Self.joint_types[i]
+            comptime offset = Self._qpos_offset[i]()
+            data.qpos[offset] = Scalar[DTYPE](J.INIT_QPOS)
+        for i in range(NV):
+            data.qvel[i] = Scalar[DTYPE](0)
+            data.qacc[i] = Scalar[DTYPE](0)
+            data.qfrc[i] = Scalar[DTYPE](0)
 
     @staticmethod
     fn setup_model[
