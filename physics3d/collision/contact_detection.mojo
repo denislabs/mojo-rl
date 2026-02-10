@@ -27,6 +27,8 @@ from ..gpu.constants import (
     BODY_IDX_HALF_Z,
     BODY_IDX_PARENT,
     BODY_IDX_GEOM_TYPE,
+    BODY_IDX_CONTYPE,
+    BODY_IDX_CONAFFINITY,
     CONTACT_SIZE,
     CONTACT_IDX_BODY_A,
     CONTACT_IDX_BODY_B,
@@ -227,6 +229,15 @@ fn detect_body_body_contacts[
         for j in range(i + 1, NBODY):
             # Skip parent-child pairs (connected bodies)
             if model.body_parent[j] == i or model.body_parent[i] == j:
+                continue
+
+            # MuJoCo contype/conaffinity filtering:
+            # collide if (contype_i & conaffinity_j) || (contype_j & conaffinity_i)
+            if (
+                model.body_contype[i] & model.body_conaffinity[j]
+            ) == 0 and (
+                model.body_contype[j] & model.body_conaffinity[i]
+            ) == 0:
                 continue
 
             # Skip if already at max contacts
@@ -685,6 +696,28 @@ fn detect_body_body_contacts_gpu[
                 rebind[Scalar[DTYPE]](model[0, body_off_j + BODY_IDX_PARENT])
             )
             if parent_j == i or parent_i == j:
+                continue
+
+            # MuJoCo contype/conaffinity filtering
+            var contype_i = Int(
+                rebind[Scalar[DTYPE]](model[0, body_off_i + BODY_IDX_CONTYPE])
+            )
+            var conaffinity_i = Int(
+                rebind[Scalar[DTYPE]](
+                    model[0, body_off_i + BODY_IDX_CONAFFINITY]
+                )
+            )
+            var contype_j = Int(
+                rebind[Scalar[DTYPE]](model[0, body_off_j + BODY_IDX_CONTYPE])
+            )
+            var conaffinity_j = Int(
+                rebind[Scalar[DTYPE]](
+                    model[0, body_off_j + BODY_IDX_CONAFFINITY]
+                )
+            )
+            if (contype_i & conaffinity_j) == 0 and (
+                contype_j & conaffinity_i
+            ) == 0:
                 continue
 
             var gi = Int(

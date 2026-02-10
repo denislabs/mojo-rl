@@ -51,6 +51,8 @@ from .constants import (
     BODY_IDX_HALF_X,
     BODY_IDX_HALF_Y,
     BODY_IDX_HALF_Z,
+    BODY_IDX_CONTYPE,
+    BODY_IDX_CONAFFINITY,
     JOINT_IDX_TYPE,
     JOINT_IDX_BODY_ID,
     JOINT_IDX_QPOS_ADR,
@@ -201,6 +203,12 @@ fn copy_model_to_buffer[
         buffer[offset + BODY_IDX_HALF_X] = model.body_half_x[body]
         buffer[offset + BODY_IDX_HALF_Y] = model.body_half_y[body]
         buffer[offset + BODY_IDX_HALF_Z] = model.body_half_z[body]
+        buffer[offset + BODY_IDX_CONTYPE] = Scalar[DTYPE](
+            model.body_contype[body]
+        )
+        buffer[offset + BODY_IDX_CONAFFINITY] = Scalar[DTYPE](
+            model.body_conaffinity[body]
+        )
 
     # Copy joint data
     for j in range(model.num_joints):

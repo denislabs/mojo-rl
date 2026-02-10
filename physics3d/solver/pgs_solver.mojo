@@ -138,7 +138,7 @@ struct PGSSolver(ConstraintSolver):
         CDOF_SIZE: Int,
     ](
         model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
-        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+        mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         M_inv: InlineArray[Scalar[DTYPE], M_SIZE],
         cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
         mut qvel: InlineArray[Scalar[DTYPE], V_SIZE],
@@ -607,8 +607,10 @@ struct PGSSolver(ConstraintSolver):
                     qvel[i] += mi_j_sum
 
         # Store impulses back for warm-starting next step
-        # Note: data is not mutable here, so warm-start storage happens
-        # in the integrator which has mutable access to data.
+        for c in range(nc):
+            data.contacts[c].impulse_n = lambda_n[c]
+            data.contacts[c].impulse_t1 = lambda_t1[c]
+            data.contacts[c].impulse_t2 = lambda_t2[c]
 
     @staticmethod
     fn solver_threads[

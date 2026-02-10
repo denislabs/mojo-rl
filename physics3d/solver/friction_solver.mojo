@@ -78,7 +78,7 @@ fn _solve_friction_pgs_cpu[
     CDOF_SIZE: Int,
 ](
     model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
-    data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
     M_inv: InlineArray[Scalar[DTYPE], M_SIZE],
     J_n: InlineArray[Scalar[DTYPE], _max_one[MAX_CONTACTS * NV]()],
@@ -269,6 +269,12 @@ fn _solve_friction_pgs_cpu[
                 qvel[i] += (
                     mi_j_sum1 * actual_delta_t1 + mi_j_sum2 * actual_delta_t2
                 )
+
+    # Store impulses back for warm-starting next step
+    for c in range(nc):
+        data.contacts[c].impulse_n = lambda_n[c]
+        data.contacts[c].impulse_t1 = lambda_t1[c]
+        data.contacts[c].impulse_t2 = lambda_t2[c]
 
 
 # =============================================================================

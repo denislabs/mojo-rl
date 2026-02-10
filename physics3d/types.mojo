@@ -144,6 +144,11 @@ struct Model[
     var body_half_y: InlineArray[Scalar[Self.DTYPE], Self.NBODY]
     var body_half_z: InlineArray[Scalar[Self.DTYPE], Self.NBODY]
 
+    # Collision filtering (MuJoCo contype/conaffinity)
+    # Two geoms collide if (contype_a & conaffinity_b) || (contype_b & conaffinity_a) != 0
+    var body_contype: InlineArray[Int, Self.NBODY]
+    var body_conaffinity: InlineArray[Int, Self.NBODY]
+
     # Joint definitions
     var joints: InlineArray[JointDef[Self.DTYPE], _max_one[Self.NJOINT]()]
     var num_joints: Int
@@ -215,6 +220,10 @@ struct Model[
         self.body_half_z = InlineArray[Scalar[Self.DTYPE], Self.NBODY](
             uninitialized=True
         )
+        self.body_contype = InlineArray[Int, Self.NBODY](uninitialized=True)
+        self.body_conaffinity = InlineArray[Int, Self.NBODY](
+            uninitialized=True
+        )
 
         # Initialize with defaults
         for i in range(Self.NBODY):
@@ -227,6 +236,8 @@ struct Model[
             self.body_half_x[i] = Scalar[Self.DTYPE](0)
             self.body_half_y[i] = Scalar[Self.DTYPE](0)
             self.body_half_z[i] = Scalar[Self.DTYPE](0)
+            self.body_contype[i] = 1  # MuJoCo default
+            self.body_conaffinity[i] = 1  # MuJoCo default
 
             # Default body position: origin in parent frame
             self.body_pos[i * 3 + 0] = Scalar[Self.DTYPE](0)

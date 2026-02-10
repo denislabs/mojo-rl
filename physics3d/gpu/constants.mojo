@@ -168,7 +168,7 @@ fn state_size[NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int]() -> Int:
 # Model Buffer Layout - Per Body
 # =============================================================================
 
-comptime MODEL_BODY_SIZE: Int = 22
+comptime MODEL_BODY_SIZE: Int = 24
 
 comptime BODY_IDX_MASS: Int = 0
 comptime BODY_IDX_INV_MASS: Int = 1
@@ -192,6 +192,8 @@ comptime BODY_IDX_HALF_LENGTH: Int = 18
 comptime BODY_IDX_HALF_X: Int = 19
 comptime BODY_IDX_HALF_Y: Int = 20
 comptime BODY_IDX_HALF_Z: Int = 21
+comptime BODY_IDX_CONTYPE: Int = 22
+comptime BODY_IDX_CONAFFINITY: Int = 23
 
 
 fn model_body_offset(body_idx: Int) -> Int:

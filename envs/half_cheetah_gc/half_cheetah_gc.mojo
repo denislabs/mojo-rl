@@ -410,6 +410,11 @@ struct HalfCheetahGC[
         self.model.solimp_limit[1] = CC.SOLIMP_LIMIT_1
         self.model.solimp_limit[2] = CC.SOLIMP_LIMIT_2
 
+        # MuJoCo half_cheetah.xml: all body geoms have conaffinity="0"
+        # This disables body-body self-collision (only ground collision)
+        for b in range(Self.NUM_BODIES):
+            self.model.body_conaffinity[b] = 0
+
         # Initialize data (must be done before any method calls)
         self.data = Data[
             Self.DTYPE,
