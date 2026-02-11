@@ -11,7 +11,7 @@ before the solver is called. Solvers are pure iterative algorithms.
 from layout import LayoutTensor, Layout
 
 from ..types import Model, Data
-from ..solver.constraint_data import ConstraintData
+from ..constraints.constraint_data import ConstraintData
 
 
 trait ConstraintSolver(Movable & ImplicitlyCopyable):

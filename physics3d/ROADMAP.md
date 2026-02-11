@@ -759,8 +759,8 @@ Adding a new constraint type is now a 1-file change (constraint_builder.mojo).
 GPU paths unchanged (deferred to follow-up).
 
 **Files created**:
-- `solver/constraint_data.mojo` — `ConstraintRow[DTYPE]` and `ConstraintData[DTYPE, MAX_ROWS, NV]` structs
-- `solver/constraint_builder.mojo` — `build_constraints()` (contacts + limits + friction) and `writeback_impulses()`
+- `constraints/constraint_data.mojo` — `ConstraintRow[DTYPE]` and `ConstraintData[DTYPE, MAX_ROWS, NV]` structs
+- `constraints/constraint_builder.mojo` — `build_constraints()` (contacts + limits + friction) and `writeback_impulses()`
 
 **Files modified**:
 - `traits/solver.mojo` — `solve()` signature: removed `CDOF_SIZE`/`cdof`, added `MAX_ROWS`/`ConstraintData`

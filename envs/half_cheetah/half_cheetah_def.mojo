@@ -15,7 +15,7 @@ robot definition. Replaces the former constants.mojo.
 from physics3d.robot.body_spec import CapsuleBody
 from physics3d.robot.joint_spec import HingeJoint, SlideJoint
 from physics3d.robot.robot_def import Bodies, Joints, RobotDef
-
+from render3d import Color3D
 from physics3d.gpu.constants import (
     state_size,
     model_size,
@@ -64,6 +64,7 @@ comptime Torso = CapsuleBody[
     quat_y=_Q90Y_Y,
     quat_w=_Q90Y_W,
     conaffinity=0,  # No self-collision (MuJoCo XML)
+    color = Color3D(204, 153, 102),
 ]
 
 # Body 1: Back Thigh — vertical capsule at back of torso
@@ -79,6 +80,7 @@ comptime BThigh = CapsuleBody[
     quat_y= -_Q90Y_Y,
     quat_w=_Q90Y_W,
     conaffinity=0,
+    color = Color3D(204, 153, 102),
 ]
 
 # Body 2: Back Shin — vertical capsule below bthigh
@@ -90,6 +92,7 @@ comptime BShin = CapsuleBody[
     half_length=0.15,
     pos_z= -0.295,  # -(0.145 + 0.15)
     conaffinity=0,
+    color = Color3D(230, 153, 153),
 ]
 
 # Body 3: Back Foot — horizontal capsule (90deg Y rotation)
@@ -103,6 +106,7 @@ comptime BFoot = CapsuleBody[
     quat_y=_Q90Y_Y,
     quat_w=_Q90Y_W,
     conaffinity=0,
+    color=Color3D(230, 153, 153),
 ]
 
 # Body 4: Front Thigh — vertical capsule at front of torso
@@ -117,6 +121,7 @@ comptime FThigh = CapsuleBody[
     quat_y= -_Q90Y_Y,
     quat_w=_Q90Y_W,
     conaffinity=0,
+    color=Color3D(204, 153, 102),
 ]
 
 # Body 5: Front Shin — vertical capsule below fthigh
@@ -128,6 +133,7 @@ comptime FShin = CapsuleBody[
     half_length=0.106,
     pos_z= -0.239,  # -(0.133 + 0.106)
     conaffinity=0,
+    color=Color3D(230, 153, 153),
 ]
 
 # Body 6: Front Foot — horizontal capsule (90deg Y rotation)
@@ -141,6 +147,7 @@ comptime FFoot = CapsuleBody[
     quat_y=_Q90Y_Y,
     quat_w=_Q90Y_W,
     conaffinity=0,
+    color=Color3D(230, 153, 153),
 ]
 
 # Body 7: Head — tilted capsule at front of torso
@@ -161,6 +168,7 @@ comptime Head = CapsuleBody[
     quat_y=_HEAD_SIN_HALF,
     quat_w=_HEAD_COS_HALF,
     conaffinity=0,
+    color=Color3D(204, 153, 102),
 ]
 
 

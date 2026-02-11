@@ -21,7 +21,7 @@ from ..types import Model, Data, _max_one
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
 from ..traits.solver import ConstraintSolver
 from ..dynamics.jacobian import compute_contact_jacobian_row
-from .constraint_data import (
+from ..constraints.constraint_data import (
     ConstraintData,
     CNSTR_NORMAL,
     CNSTR_FRICTION_T1,
@@ -51,7 +51,7 @@ from ..gpu.constants import (
     MODEL_META_IDX_SOLIMP_CONTACT_2,
 )
 
-from .constraint_builder_gpu import (
+from ..constraints.constraint_builder_gpu import (
     init_common_normal_workspace_gpu,
     precompute_contact_normal_gpu,
     warmstart_normals_gpu,
@@ -495,7 +495,12 @@ struct NewtonSolver(ConstraintSolver):
         # === PARALLEL: Initialize workspace ===
         if valid_env:
             init_common_normal_workspace_gpu[
-                DTYPE, NV, NBODY, MAX_CONTACTS, WS_SIZE, BATCH,
+                DTYPE,
+                NV,
+                NBODY,
+                MAX_CONTACTS,
+                WS_SIZE,
+                BATCH,
             ](env, contact_tid, workspace)
             # Init Newton-specific
             workspace[env, ws_rhs_idx + contact_tid] = 0
@@ -559,12 +564,31 @@ struct NewtonSolver(ConstraintSolver):
         # === PARALLEL PHASE 1: Each thread precomputes one contact ===
         if valid_env:
             precompute_contact_normal_gpu[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-                STATE_SIZE, MODEL_SIZE, V_SIZE, BATCH, WS_SIZE,
-                COMPUTE_RHS=True, RHS_IDX=ws_rhs_idx,
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                STATE_SIZE,
+                MODEL_SIZE,
+                V_SIZE,
+                BATCH,
+                WS_SIZE,
+                COMPUTE_RHS=True,
+                RHS_IDX=ws_rhs_idx,
             ](
-                env, contact_tid, nc, state, model, workspace,
-                inv_tc_dr, b_vel_coef, si_dmin, si_dmax, si_width,
+                env,
+                contact_tid,
+                nc,
+                state,
+                model,
+                workspace,
+                inv_tc_dr,
+                b_vel_coef,
+                si_dmin,
+                si_dmax,
+                si_width,
             )
 
         barrier()
@@ -592,7 +616,12 @@ struct NewtonSolver(ConstraintSolver):
             return
 
         warmstart_normals_gpu[
-            DTYPE, NV, NBODY, MAX_CONTACTS, WS_SIZE, BATCH,
+            DTYPE,
+            NV,
+            NBODY,
+            MAX_CONTACTS,
+            WS_SIZE,
+            BATCH,
         ](env, nc, workspace)
 
         # Phase 2: Projected Newton iterations
@@ -749,13 +778,29 @@ struct NewtonSolver(ConstraintSolver):
 
         # Apply solved normals (remove warm-start, apply final)
         apply_solved_normals_gpu[
-            DTYPE, NQ, NV, NBODY, MAX_CONTACTS, STATE_SIZE, WS_SIZE, BATCH,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            WS_SIZE,
+            BATCH,
         ](env, nc, state, workspace)
 
         # Joint limits
         detect_and_solve_limits_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, WS_SIZE, BATCH, NEWTON_ITERATIONS,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            WS_SIZE,
+            BATCH,
+            NEWTON_ITERATIONS,
         ](env, dt, state, model, workspace)
 
         # Friction via PGS

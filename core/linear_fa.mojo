@@ -29,17 +29,24 @@ References:
 """
 
 from math import sqrt
+from random import random_float64
 
 
 trait FeatureExtractor:
     """Trait for feature extractors that convert continuous states to feature vectors.
     """
 
-    fn get_features_simd4(self, state: SIMD[DType.float64, 4]) -> List[Float64]:
+    comptime DTYPE: DType
+
+    fn get_features_simd4(
+        self, state: SIMD[Self.DTYPE, 4]
+    ) -> List[Scalar[Self.DTYPE]]:
         """Extract features from 4D SIMD state (e.g., CartPole)."""
         ...
 
-    fn get_features(self, state: List[Float64]) -> List[Float64]:
+    fn get_features(
+        self, state: List[Scalar[Self.DTYPE]]
+    ) -> List[Scalar[Self.DTYPE]]:
         """Extract features from state."""
         ...
 
@@ -48,7 +55,7 @@ trait FeatureExtractor:
         ...
 
 
-struct LinearWeights:
+struct LinearWeights[DTYPE: DType]:
     """Weight storage for linear function approximation.
 
     Stores a weight vector for each action. Q-values are computed as:
@@ -60,7 +67,7 @@ struct LinearWeights:
     dense real-valued feature vectors.
     """
 
-    var weights: List[List[Float64]]  # [action][feature]
+    var weights: List[List[Scalar[Self.DTYPE]]]  # [action][feature]
     var num_actions: Int
     var num_features: Int
 
@@ -68,71 +75,77 @@ struct LinearWeights:
         out self,
         num_features: Int,
         num_actions: Int,
-        init_std: Float64 = 0.01,
+        init_std: Scalar[Self.DTYPE] = 0.01,
     ):
         """Initialize weights with small random values.
 
         Args:
-            num_features: Dimensionality of feature vectors
-            num_actions: Number of discrete actions
-            init_std: Standard deviation for weight initialization (use 0.0 for zero init)
+            num_features: Dimensionality of feature vectors.
+            num_actions: Number of discrete actions.
+            init_std: Standard deviation for weight initialization (use 0.0 for zero init).
         """
         self.num_features = num_features
         self.num_actions = num_actions
-        self.weights = List[List[Float64]]()
-
-        from random import random_float64
+        self.weights = List[List[Scalar[Self.DTYPE]]]()
 
         for _ in range(num_actions):
-            var action_weights = List[Float64]()
+            var action_weights = List[Scalar[Self.DTYPE]]()
             for _ in range(num_features):
                 if init_std > 0.0:
                     # Small random initialization centered at 0
-                    var rand_val = (random_float64() - 0.5) * 2.0 * init_std
+                    var rand_val = (
+                        Scalar[Self.DTYPE](random_float64() - 0.5)
+                        * 2.0
+                        * init_std
+                    )
                     action_weights.append(rand_val)
                 else:
                     action_weights.append(0.0)
             self.weights.append(action_weights^)
 
-    fn get_value(self, features: List[Float64], action: Int) -> Float64:
+    fn get_value(
+        self, features: List[Scalar[Self.DTYPE]], action: Int
+    ) -> Scalar[Self.DTYPE]:
         """Compute Q-value for a state-action pair.
 
         Q(s, a) = w[a]^T * φ(s) = Σ w[a][i] * features[i]
 
         Args:
-            features: Feature vector φ(s) for the state
-            action: Action index
+            features: Feature vector φ(s) for the state.
+            action: Action index.
 
         Returns:
-            Q(s, a) as the dot product of weights and features
+            Q(s, a) as the dot product of weights and features.
         """
-        var value: Float64 = 0.0
+        var value: Scalar[Self.DTYPE] = 0.0
         for i in range(self.num_features):
             value += self.weights[action][i] * features[i]
         return value
 
-    fn get_all_values(self, features: List[Float64]) -> List[Float64]:
+    fn get_all_values(
+        self, features: List[Scalar[Self.DTYPE]]
+    ) -> List[Scalar[Self.DTYPE]]:
         """Compute Q-values for all actions given a state.
 
         Args:
-            features: Feature vector φ(s)
+            features: Feature vector φ(s).
 
         Returns:
-            List of Q(s, a) for all actions
+            List of Q(s, a) for all actions.
         """
-        var values = List[Float64]()
+        var values = List[Scalar[Self.DTYPE]]()
         for a in range(self.num_actions):
             values.append(self.get_value(features, a))
         return values^
 
-    fn get_best_action(self, features: List[Float64]) -> Int:
+    fn get_best_action(self, features: List[Scalar[Self.DTYPE]]) -> Int:
         """Get action with highest Q-value.
 
         Args:
-            features: Feature vector φ(s)
+            features: Feature vector φ(s).
 
         Returns:
-            Action index with highest Q-value
+            Action index with highest Q-value.
         """
         var best_action = 0
         var best_value = self.get_value(features, 0)
@@ -145,24 +158,26 @@ struct LinearWeights:
 
         return best_action
 
-    fn get_max_value(self, features: List[Float64]) -> Float64:
+    fn get_max_value(
+        self, features: List[Scalar[Self.DTYPE]]
+    ) -> Scalar[Self.DTYPE]:
         """Get maximum Q-value over all actions.
 
         Args:
-            features: Feature vector φ(s)
+            features: Feature vector φ(s).
 
         Returns:
-            max_a Q(s, a)
+            Max_a Q(s, a).
         """
         var best_action = self.get_best_action(features)
         return self.get_value(features, best_action)
 
     fn update(
         mut self,
-        features: List[Float64],
+        features: List[Scalar[Self.DTYPE]],
         action: Int,
-        target: Float64,
-        learning_rate: Float64,
+        target: Scalar[Self.DTYPE],
+        learning_rate: Scalar[Self.DTYPE],
     ):
         """Update weights using gradient descent.
 
@@ -176,41 +191,43 @@ struct LinearWeights:
         similar to how tile coding divides by the number of active tiles.
 
         Args:
-            features: Feature vector φ(s)
-            action: Action taken
-            target: TD target (e.g., r + γ * max_a' Q(s', a'))
-            learning_rate: Learning rate α
+            features: Feature vector φ(s).
+            action: Action taken.
+            target: TD target (e.g., r + γ * max_a' Q(s', a')).
+            learning_rate: Learning rate α.
         """
         var current_value = self.get_value(features, action)
         var td_error = target - current_value
 
         # Divide learning rate by number of features (like tile coding)
-        var step_size = learning_rate / Float64(self.num_features)
+        var step_size = learning_rate / Scalar[Self.DTYPE](self.num_features)
 
         for i in range(self.num_features):
             self.weights[action][i] += step_size * td_error * features[i]
 
     fn update_with_eligibility(
         mut self,
-        traces: List[List[Float64]],
-        td_error: Float64,
-        learning_rate: Float64,
+        traces: List[List[Scalar[Self.DTYPE]]],
+        td_error: Scalar[Self.DTYPE],
+        learning_rate: Scalar[Self.DTYPE],
     ):
         """Update weights using eligibility traces.
 
         w[a][i] += α * δ * e[a][i]
 
         Args:
-            traces: Eligibility trace values [action][feature]
-            td_error: TD error δ
-            learning_rate: Learning rate α
+            traces: Eligibility trace values [action][feature].
+            td_error: TD error δ.
+            learning_rate: Learning rate α.
         """
         for a in range(self.num_actions):
             for i in range(self.num_features):
                 self.weights[a][i] += learning_rate * td_error * traces[a][i]
 
 
-struct PolynomialFeatures(FeatureExtractor):
+struct PolynomialFeatures[dtype: DType where dtype.is_floating_point()](
+    FeatureExtractor
+):
     """Polynomial feature extractor for continuous state spaces.
 
     Generates polynomial features up to a specified degree with state normalization.
@@ -224,12 +241,14 @@ struct PolynomialFeatures(FeatureExtractor):
     polynomial combinations of state variables can capture value function structure.
     """
 
+    comptime DTYPE = Self.dtype
+
     var state_dim: Int
     var degree: Int
     var num_features: Int
     var include_bias: Bool
-    var state_low: List[Float64]
-    var state_high: List[Float64]
+    var state_low: List[Scalar[Self.DTYPE]]
+    var state_high: List[Scalar[Self.DTYPE]]
     var normalize: Bool
 
     fn __init__(
@@ -237,8 +256,8 @@ struct PolynomialFeatures(FeatureExtractor):
         state_dim: Int,
         degree: Int = 2,
         include_bias: Bool = True,
-        var state_low: List[Float64] = List[Float64](),
-        var state_high: List[Float64] = List[Float64](),
+        var state_low: List[Scalar[Self.DTYPE]] = List[Scalar[Self.DTYPE]](),
+        var state_high: List[Scalar[Self.DTYPE]] = List[Scalar[Self.DTYPE]](),
     ):
         """Initialize polynomial feature extractor.
 
@@ -285,9 +304,11 @@ struct PolynomialFeatures(FeatureExtractor):
 
         self.num_features = count
 
-    fn _normalize_state(self, state: List[Float64]) -> List[Float64]:
+    fn _normalize_state(
+        self, state: List[Scalar[Self.DTYPE]]
+    ) -> List[Scalar[Self.DTYPE]]:
         """Normalize state to [-1, 1] range."""
-        var normalized = List[Float64]()
+        var normalized = List[Scalar[Self.DTYPE]]()
         if self.normalize:
             for i in range(self.state_dim):
                 var range_size = self.state_high[i] - self.state_low[i]
@@ -309,19 +330,21 @@ struct PolynomialFeatures(FeatureExtractor):
                 normalized.append(state[i])
         return normalized^
 
-    fn get_features(self, state: List[Float64]) -> List[Float64]:
+    fn get_features(
+        self, state: List[Scalar[Self.DTYPE]]
+    ) -> List[Scalar[Self.DTYPE]]:
         """Extract polynomial features from state.
 
         Args:
-            state: Raw state vector (will be normalized if bounds provided)
+            state: Raw state vector (will be normalized if bounds provided).
 
         Returns:
-            Polynomial feature vector
+            Polynomial feature vector.
         """
         # Normalize state first if bounds are provided
         var norm_state = self._normalize_state(state)
 
-        var features = List[Float64]()
+        var features = List[Scalar[Self.DTYPE]]()
 
         # Bias term
         if self.include_bias:
@@ -330,7 +353,7 @@ struct PolynomialFeatures(FeatureExtractor):
         if self.state_dim == 1:
             # 1D case: [x, x², x³, ...]
             var x = norm_state[0]
-            var power: Float64 = x
+            var power: Scalar[Self.DTYPE] = x
             for _ in range(self.degree):
                 features.append(power)
                 power *= x
@@ -389,16 +412,20 @@ struct PolynomialFeatures(FeatureExtractor):
 
         return features^
 
-    fn get_features_simd2(self, state: SIMD[DType.float64, 2]) -> List[Float64]:
+    fn get_features_simd2(
+        self, state: SIMD[Self.DTYPE, 2]
+    ) -> List[Scalar[Self.DTYPE]]:
         """Extract features from 2D SIMD state (e.g., MountainCar)."""
-        var state_list = List[Float64]()
+        var state_list = List[Scalar[Self.DTYPE]]()
         state_list.append(state[0])
         state_list.append(state[1])
         return self.get_features(state_list^)
 
-    fn get_features_simd4(self, state: SIMD[DType.float64, 4]) -> List[Float64]:
+    fn get_features_simd4(
+        self, state: SIMD[Self.DTYPE, 4]
+    ) -> List[Scalar[Self.DTYPE]]:
         """Extract features from 4D SIMD state (e.g., CartPole)."""
-        var state_list = List[Float64]()
+        var state_list = List[Scalar[Self.DTYPE]]()
         state_list.append(state[0])
         state_list.append(state[1])
         state_list.append(state[2])
@@ -410,17 +437,17 @@ struct PolynomialFeatures(FeatureExtractor):
         return self.num_features
 
     @staticmethod
-    fn _power(x: Float64, n: Int) -> Float64:
+    fn _power(x: Scalar[Self.DTYPE], n: Int) -> Scalar[Self.DTYPE]:
         """Compute x^n."""
         if n == 0:
             return 1.0
-        var result: Float64 = 1.0
+        var result: Scalar[Self.DTYPE] = 1.0
         for _ in range(n):
             result *= x
         return result
 
 
-struct RBFFeatures(FeatureExtractor):
+struct RBFFeatures[dtype: DType](FeatureExtractor):
     """Radial Basis Function (RBF) feature extractor.
 
     Creates features based on distance to fixed centers:
@@ -430,15 +457,17 @@ struct RBFFeatures(FeatureExtractor):
     continuous state spaces where locality matters.
     """
 
-    var centers: List[List[Float64]]  # [center_idx][dim]
-    var sigma: Float64
+    comptime DTYPE = Self.dtype
+
+    var centers: List[List[Scalar[Self.DTYPE]]]  # [center_idx][dim]
+    var sigma: Scalar[Self.DTYPE]
     var num_features: Int
     var state_dim: Int
 
     fn __init__(
         out self,
-        var centers: List[List[Float64]],
-        sigma: Float64 = 1.0,
+        var centers: List[List[Scalar[Self.DTYPE]]],
+        sigma: Scalar[Self.DTYPE] = 1.0,
     ):
         """Initialize RBF feature extractor.
 
@@ -454,7 +483,9 @@ struct RBFFeatures(FeatureExtractor):
             self.state_dim = 0
         self.centers = centers^
 
-    fn get_features(self, state: List[Float64]) -> List[Float64]:
+    fn get_features(
+        self, state: List[Scalar[Self.DTYPE]]
+    ) -> List[Scalar[Self.DTYPE]]:
         """Extract RBF features from state.
 
         Args:
@@ -463,12 +494,12 @@ struct RBFFeatures(FeatureExtractor):
         Returns:
             RBF feature vector with one feature per center
         """
-        var features = List[Float64]()
+        var features = List[Scalar[Self.DTYPE]]()
         var two_sigma_sq = 2.0 * self.sigma * self.sigma
 
         for c in range(self.num_features):
             # Compute squared distance to center
-            var dist_sq: Float64 = 0.0
+            var dist_sq: Scalar[Self.DTYPE] = 0.0
             for d in range(self.state_dim):
                 var diff = state[d] - self.centers[c][d]
                 dist_sq += diff * diff
@@ -479,16 +510,20 @@ struct RBFFeatures(FeatureExtractor):
 
         return features^
 
-    fn get_features_simd2(self, state: SIMD[DType.float64, 2]) -> List[Float64]:
+    fn get_features_simd2(
+        self, state: SIMD[Self.DTYPE, 2]
+    ) -> List[Scalar[Self.DTYPE]]:
         """Extract features from 2D SIMD state."""
-        var state_list = List[Float64]()
+        var state_list = List[Scalar[Self.DTYPE]]()
         state_list.append(state[0])
         state_list.append(state[1])
         return self.get_features(state_list^)
 
-    fn get_features_simd4(self, state: SIMD[DType.float64, 4]) -> List[Float64]:
+    fn get_features_simd4(
+        self, state: SIMD[Self.DTYPE, 4]
+    ) -> List[Scalar[Self.DTYPE]]:
         """Extract features from 4D SIMD state."""
-        var state_list = List[Float64]()
+        var state_list = List[Scalar[Self.DTYPE]]()
         state_list.append(state[0])
         state_list.append(state[1])
         state_list.append(state[2])
@@ -500,7 +535,7 @@ struct RBFFeatures(FeatureExtractor):
         return self.num_features
 
     @staticmethod
-    fn _exp(x: Float64) -> Float64:
+    fn _exp(x: Scalar[Self.DTYPE]) -> Scalar[Self.DTYPE]:
         """Compute e^x using Taylor series approximation."""
         # For x < 0 (which is always the case for RBF), we can use
         # exp(x) ≈ 1 + x + x²/2 + x³/6 + x⁴/24 + x⁵/120
@@ -510,11 +545,13 @@ struct RBFFeatures(FeatureExtractor):
         return exp(x)
 
 
-fn make_grid_rbf_centers(
-    state_low: List[Float64],
-    state_high: List[Float64],
+fn make_grid_rbf_centers[
+    DTYPE: DType
+](
+    state_low: List[Scalar[DTYPE]],
+    state_high: List[Scalar[DTYPE]],
     num_centers_per_dim: Int,
-) -> List[List[Float64]]:
+) -> List[List[Scalar[DTYPE]]]:
     """Create a grid of RBF centers covering the state space.
 
     Args:
@@ -526,14 +563,14 @@ fn make_grid_rbf_centers(
         List of center positions
     """
     var state_dim = len(state_low)
-    var centers = List[List[Float64]]()
+    var centers = List[List[Scalar[DTYPE]]]()
 
     if state_dim == 1:
         for i in range(num_centers_per_dim):
-            var c = List[Float64]()
+            var c = List[Scalar[DTYPE]]()
             var t = (
-                Float64(i)
-                / Float64(num_centers_per_dim - 1) if num_centers_per_dim
+                Scalar[DTYPE](i)
+                / Scalar[DTYPE](num_centers_per_dim - 1) if num_centers_per_dim
                 > 1 else 0.5
             )
             c.append(state_low[0] + t * (state_high[0] - state_low[0]))
@@ -542,15 +579,19 @@ fn make_grid_rbf_centers(
     elif state_dim == 2:
         for i in range(num_centers_per_dim):
             for j in range(num_centers_per_dim):
-                var c = List[Float64]()
+                var c = List[Scalar[DTYPE]]()
                 var ti = (
-                    Float64(i)
-                    / Float64(num_centers_per_dim - 1) if num_centers_per_dim
+                    Scalar[DTYPE](i)
+                    / Scalar[DTYPE](
+                        num_centers_per_dim - 1
+                    ) if num_centers_per_dim
                     > 1 else 0.5
                 )
                 var tj = (
-                    Float64(j)
-                    / Float64(num_centers_per_dim - 1) if num_centers_per_dim
+                    Scalar[DTYPE](j)
+                    / Scalar[DTYPE](
+                        num_centers_per_dim - 1
+                    ) if num_centers_per_dim
                     > 1 else 0.5
                 )
                 c.append(state_low[0] + ti * (state_high[0] - state_low[0]))
@@ -561,24 +602,24 @@ fn make_grid_rbf_centers(
         for i in range(num_centers_per_dim):
             for j in range(num_centers_per_dim):
                 for k in range(num_centers_per_dim):
-                    var c = List[Float64]()
+                    var c = List[Scalar[DTYPE]]()
                     var ti = (
-                        Float64(i)
-                        / Float64(
+                        Scalar[DTYPE](i)
+                        / Scalar[DTYPE](
                             num_centers_per_dim - 1
                         ) if num_centers_per_dim
                         > 1 else 0.5
                     )
                     var tj = (
-                        Float64(j)
-                        / Float64(
+                        Scalar[DTYPE](j)
+                        / Scalar[DTYPE](
                             num_centers_per_dim - 1
                         ) if num_centers_per_dim
                         > 1 else 0.5
                     )
                     var tk = (
-                        Float64(k)
-                        / Float64(
+                        Scalar[DTYPE](k)
+                        / Scalar[DTYPE](
                             num_centers_per_dim - 1
                         ) if num_centers_per_dim
                         > 1 else 0.5
@@ -595,11 +636,23 @@ fn make_grid_rbf_centers(
             for j in range(n):
                 for k in range(n):
                     for l in range(n):
-                        var c = List[Float64]()
-                        var ti = Float64(i) / Float64(n - 1) if n > 1 else 0.5
-                        var tj = Float64(j) / Float64(n - 1) if n > 1 else 0.5
-                        var tk = Float64(k) / Float64(n - 1) if n > 1 else 0.5
-                        var tl = Float64(l) / Float64(n - 1) if n > 1 else 0.5
+                        var c = List[Scalar[DTYPE]]()
+                        var ti = (
+                            Scalar[DTYPE](i) / Scalar[DTYPE](n - 1) if n
+                            > 1 else 0.5
+                        )
+                        var tj = (
+                            Scalar[DTYPE](j) / Scalar[DTYPE](n - 1) if n
+                            > 1 else 0.5
+                        )
+                        var tk = (
+                            Scalar[DTYPE](k) / Scalar[DTYPE](n - 1) if n
+                            > 1 else 0.5
+                        )
+                        var tl = (
+                            Scalar[DTYPE](l) / Scalar[DTYPE](n - 1) if n
+                            > 1 else 0.5
+                        )
                         c.append(
                             state_low[0] + ti * (state_high[0] - state_low[0])
                         )
@@ -617,7 +670,9 @@ fn make_grid_rbf_centers(
     return centers^
 
 
-fn make_mountain_car_poly_features(degree: Int = 3) -> PolynomialFeatures:
+fn make_mountain_car_poly_features[
+    DTYPE: DType
+](degree: Int = 3) -> PolynomialFeatures[DTYPE]:
     """Create polynomial features for MountainCar (2D state) with normalization.
 
     MountainCar state: [position, velocity]
@@ -625,20 +680,20 @@ fn make_mountain_car_poly_features(degree: Int = 3) -> PolynomialFeatures:
     - velocity: [-0.07, 0.07]
 
     Args:
-        degree: Maximum polynomial degree
+        degree: Maximum polynomial degree.
 
     Returns:
-        PolynomialFeatures extractor configured for MountainCar with normalization
+        PolynomialFeatures extractor configured for MountainCar with normalization.
     """
-    var state_low = List[Float64]()
+    var state_low = List[Scalar[DTYPE]]()
     state_low.append(-1.2)  # position min
     state_low.append(-0.07)  # velocity min
 
-    var state_high = List[Float64]()
+    var state_high = List[Scalar[DTYPE]]()
     state_high.append(0.6)  # position max
     state_high.append(0.07)  # velocity max
 
-    return PolynomialFeatures(
+    return PolynomialFeatures[DTYPE](
         state_dim=2,
         degree=degree,
         include_bias=True,

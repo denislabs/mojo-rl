@@ -24,7 +24,7 @@ from ..dynamics.jacobian import (
     compute_contact_jacobian_row,
     compute_contact_jacobian_row_gpu,
 )
-from .constraint_data import (
+from ..constraints import (
     ConstraintData,
     CNSTR_NORMAL,
     CNSTR_FRICTION_T1,
@@ -50,7 +50,7 @@ from ..gpu.constants import (
     MODEL_META_IDX_SOLIMP_CONTACT_2,
 )
 
-from .constraint_builder_gpu import (
+from ..constraints.constraint_builder_gpu import (
     init_common_normal_workspace_gpu,
     precompute_contact_normal_gpu,
     warmstart_normals_gpu,
@@ -174,7 +174,10 @@ struct CGSolver(ConstraintSolver):
             for c2 in range(num_normals):
                 var a_val: Scalar[DTYPE] = 0
                 for i in range(NV):
-                    a_val += constraints.J[c1 * NV + i] * constraints.MinvJT[c2 * NV + i]
+                    a_val += (
+                        constraints.J[c1 * NV + i]
+                        * constraints.MinvJT[c2 * NV + i]
+                    )
                 A[c1 * num_normals + c2] = a_val
 
         # =====================================================================
@@ -199,7 +202,9 @@ struct CGSolver(ConstraintSolver):
 
         # Project residual
         for c in range(num_normals):
-            if constraints.rows[c].lambda_val <= Scalar[DTYPE](0) and r_vec[c] < Scalar[DTYPE](0):
+            if constraints.rows[c].lambda_val <= Scalar[DTYPE](0) and r_vec[
+                c
+            ] < Scalar[DTYPE](0):
                 r_vec[c] = Scalar[DTYPE](0)
 
         for c in range(num_normals):
@@ -230,7 +235,9 @@ struct CGSolver(ConstraintSolver):
 
             var projected = False
             for c in range(num_normals):
-                constraints.rows[c].lambda_val = constraints.rows[c].lambda_val + alpha * p[c]
+                constraints.rows[c].lambda_val = (
+                    constraints.rows[c].lambda_val + alpha * p[c]
+                )
                 if constraints.rows[c].lambda_val < Scalar[DTYPE](0):
                     constraints.rows[c].lambda_val = Scalar[DTYPE](0)
                     projected = True
@@ -239,11 +246,16 @@ struct CGSolver(ConstraintSolver):
             for c in range(num_normals):
                 var ax: Scalar[DTYPE] = 0
                 for c2 in range(num_normals):
-                    ax += A[c * num_normals + c2] * constraints.rows[c2].lambda_val
+                    ax += (
+                        A[c * num_normals + c2]
+                        * constraints.rows[c2].lambda_val
+                    )
                 r_vec[c] = -rhs[c] - ax
 
             for c in range(num_normals):
-                if constraints.rows[c].lambda_val <= Scalar[DTYPE](0) and r_vec[c] < Scalar[DTYPE](0):
+                if constraints.rows[c].lambda_val <= Scalar[DTYPE](0) and r_vec[
+                    c
+                ] < Scalar[DTYPE](0):
                     r_vec[c] = Scalar[DTYPE](0)
 
             var rr_new: Scalar[DTYPE] = 0
@@ -262,7 +274,9 @@ struct CGSolver(ConstraintSolver):
 
         # Apply solved impulses: remove warm-start, apply final
         for c in range(num_normals):
-            var warm = data.contacts[constraints.rows[c].source_contact_idx].impulse_n
+            var warm = data.contacts[
+                constraints.rows[c].source_contact_idx
+            ].impulse_n
             if warm > Scalar[DTYPE](0):
                 for i in range(NV):
                     qvel[i] -= constraints.MinvJT[c * NV + i] * warm
@@ -270,7 +284,10 @@ struct CGSolver(ConstraintSolver):
         for c in range(num_normals):
             if constraints.rows[c].lambda_val > Scalar[DTYPE](0):
                 for i in range(NV):
-                    qvel[i] += constraints.MinvJT[c * NV + i] * constraints.rows[c].lambda_val
+                    qvel[i] += (
+                        constraints.MinvJT[c * NV + i]
+                        * constraints.rows[c].lambda_val
+                    )
 
         # =====================================================================
         # Phase 2b: PGS joint limit iterations
@@ -283,9 +300,14 @@ struct CGSolver(ConstraintSolver):
                     var sign = constraints.rows[r].limit_sign
                     var v_limit = sign * qvel[dof]
 
-                    var delta = -(v_limit + constraints.rows[r].bias) * constraints.rows[r].inv_K_imp
+                    var delta = (
+                        -(v_limit + constraints.rows[r].bias)
+                        * constraints.rows[r].inv_K_imp
+                    )
                     var old_lambda = constraints.rows[r].lambda_val
-                    constraints.rows[r].lambda_val = constraints.rows[r].lambda_val + delta
+                    constraints.rows[r].lambda_val = (
+                        constraints.rows[r].lambda_val + delta
+                    )
 
                     if constraints.rows[r].lambda_val < Scalar[DTYPE](0):
                         constraints.rows[r].lambda_val = Scalar[DTYPE](0)
@@ -333,7 +355,9 @@ struct CGSolver(ConstraintSolver):
                     v_t1 += constraints.J[r_t1 * NV + i] * qvel[i]
                 var delta_t1 = -v_t1 / constraints.rows[r_t1].K
                 var old_t1 = constraints.rows[r_t1].lambda_val
-                constraints.rows[r_t1].lambda_val = constraints.rows[r_t1].lambda_val + delta_t1
+                constraints.rows[r_t1].lambda_val = (
+                    constraints.rows[r_t1].lambda_val + delta_t1
+                )
 
                 # Tangent 2
                 var v_t2: Scalar[DTYPE] = 0
@@ -341,17 +365,25 @@ struct CGSolver(ConstraintSolver):
                     v_t2 += constraints.J[r_t2 * NV + i] * qvel[i]
                 var delta_t2 = -v_t2 / constraints.rows[r_t2].K
                 var old_t2 = constraints.rows[r_t2].lambda_val
-                constraints.rows[r_t2].lambda_val = constraints.rows[r_t2].lambda_val + delta_t2
+                constraints.rows[r_t2].lambda_val = (
+                    constraints.rows[r_t2].lambda_val + delta_t2
+                )
 
                 # Coulomb cone clamping
                 var t_mag = sqrt(
-                    constraints.rows[r_t1].lambda_val * constraints.rows[r_t1].lambda_val
-                    + constraints.rows[r_t2].lambda_val * constraints.rows[r_t2].lambda_val
+                    constraints.rows[r_t1].lambda_val
+                    * constraints.rows[r_t1].lambda_val
+                    + constraints.rows[r_t2].lambda_val
+                    * constraints.rows[r_t2].lambda_val
                 )
                 if t_mag > max_friction:
                     var scale = max_friction / t_mag
-                    constraints.rows[r_t1].lambda_val = constraints.rows[r_t1].lambda_val * scale
-                    constraints.rows[r_t2].lambda_val = constraints.rows[r_t2].lambda_val * scale
+                    constraints.rows[r_t1].lambda_val = (
+                        constraints.rows[r_t1].lambda_val * scale
+                    )
+                    constraints.rows[r_t2].lambda_val = (
+                        constraints.rows[r_t2].lambda_val * scale
+                    )
 
                 var actual_t1 = constraints.rows[r_t1].lambda_val - old_t1
                 var actual_t2 = constraints.rows[r_t2].lambda_val - old_t2
@@ -422,7 +454,12 @@ struct CGSolver(ConstraintSolver):
         # === PARALLEL: Initialize workspace ===
         if valid_env:
             init_common_normal_workspace_gpu[
-                DTYPE, NV, NBODY, MAX_CONTACTS, WS_SIZE, BATCH,
+                DTYPE,
+                NV,
+                NBODY,
+                MAX_CONTACTS,
+                WS_SIZE,
+                BATCH,
             ](env, contact_tid, workspace)
             # Init CG-specific
             workspace[env, ws_rhs_idx + contact_tid] = 0
@@ -485,12 +522,31 @@ struct CGSolver(ConstraintSolver):
         # === PARALLEL PHASE 1: Each thread precomputes one contact ===
         if valid_env:
             precompute_contact_normal_gpu[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-                STATE_SIZE, MODEL_SIZE, V_SIZE, BATCH, WS_SIZE,
-                COMPUTE_RHS=True, RHS_IDX=ws_rhs_idx,
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                STATE_SIZE,
+                MODEL_SIZE,
+                V_SIZE,
+                BATCH,
+                WS_SIZE,
+                COMPUTE_RHS=True,
+                RHS_IDX=ws_rhs_idx,
             ](
-                env, contact_tid, nc, state, model, workspace,
-                inv_tc_dr, b_vel_coef, si_dmin, si_dmax, si_width,
+                env,
+                contact_tid,
+                nc,
+                state,
+                model,
+                workspace,
+                inv_tc_dr,
+                b_vel_coef,
+                si_dmin,
+                si_dmax,
+                si_width,
             )
 
         barrier()
@@ -518,7 +574,12 @@ struct CGSolver(ConstraintSolver):
             return
 
         warmstart_normals_gpu[
-            DTYPE, NV, NBODY, MAX_CONTACTS, WS_SIZE, BATCH,
+            DTYPE,
+            NV,
+            NBODY,
+            MAX_CONTACTS,
+            WS_SIZE,
+            BATCH,
         ](env, nc, workspace)
 
         # Phase 2: Projected CG for normal constraints
@@ -639,18 +700,43 @@ struct CGSolver(ConstraintSolver):
 
         # Apply solved normals (remove warm-start, apply final)
         apply_solved_normals_gpu[
-            DTYPE, NQ, NV, NBODY, MAX_CONTACTS, STATE_SIZE, WS_SIZE, BATCH,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            WS_SIZE,
+            BATCH,
         ](env, nc, state, workspace)
 
         # Joint limits
         detect_and_solve_limits_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, WS_SIZE, BATCH, CG_ITERATIONS,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            WS_SIZE,
+            BATCH,
+            CG_ITERATIONS,
         ](env, dt, state, model, workspace)
 
         # Friction via PGS
         _solve_friction_pgs_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, V_SIZE, BATCH, WS_SIZE,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            V_SIZE,
+            BATCH,
+            WS_SIZE,
             FRICTION_WS_OFFSET = 17 * MC + 2 * MC * NV + MC * MC,
         ](env, state, model, workspace, nc, friction_coef, contacts_off)

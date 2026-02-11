@@ -47,7 +47,7 @@ Example usage:
         agent.update(batch)
 """
 
-from math import exp, tanh, sqrt
+from math import exp, tanh, sqrt, cos
 from random import random_float64
 from core.continuous_replay_buffer import (
     ContinuousTransition,
@@ -253,10 +253,10 @@ struct DDPGAgent(Copyable, Movable):
         a = μ(s) + N(0, σ²)
 
         Args:
-            features: State feature vector φ(s)
+            features: State feature vector φ(s).
 
         Returns:
-            Noisy action clipped to [-action_scale, action_scale]
+            Noisy action clipped to [-action_scale, action_scale].
         """
         var action = self.select_action(features)
 
@@ -266,7 +266,7 @@ struct DDPGAgent(Copyable, Movable):
         # Avoid log(0)
         if u1 < 1e-10:
             u1 = 1e-10
-        var noise = sqrt(-2.0 * _log(u1)) * _cos(2.0 * 3.141592653589793 * u2)
+        var noise = sqrt(-2.0 * _log(u1)) * cos(2.0 * 3.141592653589793 * u2)
         noise *= self.noise_std * self.action_scale
 
         action += noise
@@ -539,8 +539,8 @@ struct DDPGAgent(Copyable, Movable):
     ](
         mut self,
         mut env: E,
-        features: PolynomialFeatures,
-        mut buffer: ContinuousReplayBuffer,
+        features: PolynomialFeatures[E.dtype],
+        mut buffer: ContinuousReplayBuffer[E.dtype],
         num_episodes: Int,
         max_steps_per_episode: Int = 200,
         batch_size: Int = 64,
@@ -618,7 +618,9 @@ struct DDPGAgent(Copyable, Movable):
 
                 # Store transition in replay buffer with scaled reward
                 var scaled_reward = reward * self.reward_scale
-                buffer.push(state_features, action, scaled_reward, next_features, done)
+                buffer.push(
+                    state_features, action, scaled_reward, next_features, done
+                )
 
                 # Update agent if we have enough samples
                 if (
@@ -743,9 +745,7 @@ fn _log(x: Float64) -> Float64:
     return log(x)
 
 
-
-
-fn _list_to_simd4(obs: List[Float64]) -> SIMD[DType.float64, 4]:
+fn _list_to_simd4[DTYPE: DType](obs: List[Scalar[DTYPE]]) -> SIMD[DTYPE, 4]:
     """Convert a List[Float64] to SIMD[DType.float64, 4].
 
     Pads with zeros if the list has fewer than 4 elements.

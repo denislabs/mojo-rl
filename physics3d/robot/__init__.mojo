@@ -8,3 +8,4 @@ RobotDef compositor for composing full robot definitions.
 from .body_spec import BodySpec, CapsuleBody, SphereBody, BoxBody
 from .joint_spec import JointSpec, HingeJoint, SlideJoint
 from .robot_def import Bodies, Joints, RobotDef
+from .robot_renderer import RobotRenderer

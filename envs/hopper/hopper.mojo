@@ -1075,81 +1075,24 @@ struct Hopper[
         if not self._renderer[].is_open():
             return
 
-        # Extract body positions
-        var torso_pos_tuple = self.get_torso_position()
-        var thigh_pos_tuple = self.get_thigh_position()
-        var leg_pos_tuple = self.get_leg_position()
-        var foot_pos_tuple = self.get_foot_position()
+        var positions = List[Vec3](capacity=4)
+        var quaternions = List[Quat](capacity=4)
 
-        # Convert to Vec3
-        var torso_pos = Vec3(
-            Float64(torso_pos_tuple[0]),
-            Float64(torso_pos_tuple[1]),
-            Float64(torso_pos_tuple[2]),
-        )
-        var thigh_pos = Vec3(
-            Float64(thigh_pos_tuple[0]),
-            Float64(thigh_pos_tuple[1]),
-            Float64(thigh_pos_tuple[2]),
-        )
-        var leg_pos = Vec3(
-            Float64(leg_pos_tuple[0]),
-            Float64(leg_pos_tuple[1]),
-            Float64(leg_pos_tuple[2]),
-        )
-        var foot_pos = Vec3(
-            Float64(foot_pos_tuple[0]),
-            Float64(foot_pos_tuple[1]),
-            Float64(foot_pos_tuple[2]),
-        )
+        # Build position/quaternion lists from xpos/xquat data
+        for i in range(4):
+            var px = Float64(self.data.xpos[i * 3 + 0])
+            var py = Float64(self.data.xpos[i * 3 + 1])
+            var pz = Float64(self.data.xpos[i * 3 + 2])
+            positions.append(Vec3(px, py, pz))
 
-        # Get quaternions
-        var torso_quat_tuple = self.get_torso_quaternion()
-        var thigh_quat_tuple = self.get_thigh_quaternion()
-        var leg_quat_tuple = self.get_leg_quaternion()
-        var foot_quat_tuple = self.get_foot_quaternion()
+            var qx = Float64(self.data.xquat[i * 4 + 0])
+            var qy = Float64(self.data.xquat[i * 4 + 1])
+            var qz = Float64(self.data.xquat[i * 4 + 2])
+            var qw = Float64(self.data.xquat[i * 4 + 3])
+            quaternions.append(Quat(qw, qx, qy, qz))
 
-        # Convert to Quat (w, x, y, z order for math3d Quat)
-        var torso_quat = Quat(
-            Float64(torso_quat_tuple[3]),  # w
-            Float64(torso_quat_tuple[0]),  # x
-            Float64(torso_quat_tuple[1]),  # y
-            Float64(torso_quat_tuple[2]),  # z
-        )
-        var thigh_quat = Quat(
-            Float64(thigh_quat_tuple[3]),  # w
-            Float64(thigh_quat_tuple[0]),  # x
-            Float64(thigh_quat_tuple[1]),  # y
-            Float64(thigh_quat_tuple[2]),  # z
-        )
-        var leg_quat = Quat(
-            Float64(leg_quat_tuple[3]),  # w
-            Float64(leg_quat_tuple[0]),  # x
-            Float64(leg_quat_tuple[1]),  # y
-            Float64(leg_quat_tuple[2]),  # z
-        )
-        var foot_quat = Quat(
-            Float64(foot_quat_tuple[3]),  # w
-            Float64(foot_quat_tuple[0]),  # x
-            Float64(foot_quat_tuple[1]),  # y
-            Float64(foot_quat_tuple[2]),  # z
-        )
-
-        # Get velocity
         var vel_x = Float64(self.get_x_velocity())
-
-        # Render
-        self._renderer[].render(
-            torso_pos,
-            torso_quat,
-            thigh_pos,
-            thigh_quat,
-            leg_pos,
-            leg_quat,
-            foot_pos,
-            foot_quat,
-            vel_x,
-        )
+        self._renderer[].render(positions, quaternions, vel_x)
 
     fn close_renderer(mut self) raises -> None:
         """Close the internal renderer."""

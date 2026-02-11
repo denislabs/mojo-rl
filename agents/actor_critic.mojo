@@ -164,10 +164,10 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
         """Get action probabilities π(·|s).
 
         Args:
-            tiles: Active tile indices
+            tiles: Active tile indices.
 
         Returns:
-            Probability distribution over actions
+            Probability distribution over actions.
         """
         var prefs = self._get_action_preferences(tiles)
         return softmax(prefs^)
@@ -176,10 +176,10 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
         """Get state value estimate V(s).
 
         Args:
-            tiles: Active tile indices
+            tiles: Active tile indices.
 
         Returns:
-            Estimated state value
+            Estimated state value.
         """
         var value: Float64 = 0.0
         for i in range(len(tiles)):
@@ -190,10 +190,10 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
         """Sample action from policy π(a|s).
 
         Args:
-            tiles: Active tile indices
+            tiles: Active tile indices.
 
         Returns:
-            Sampled action index
+            Sampled action index.
         """
         var probs = self.get_action_probs(tiles)
         return sample_from_probs(probs)
@@ -202,10 +202,10 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
         """Get greedy action (highest probability).
 
         Args:
-            tiles: Active tile indices
+            tiles: Active tile indices.
 
         Returns:
-            Action with highest probability
+            Action with highest probability.
         """
         var probs = self.get_action_probs(tiles)
         return argmax_probs(probs)
@@ -225,11 +225,11 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
         Actor:  θ += α_a * δ * ∇log π(a|s)
 
         Args:
-            tiles: Active tiles for current state
-            action: Action taken
-            reward: Reward received
-            next_tiles: Active tiles for next state
-            done: Whether episode terminated
+            tiles: Active tiles for current state.
+            action: Action taken.
+            reward: Reward received.
+            next_tiles: Active tiles for next state.
+            done: Whether episode terminated.
         """
         # Compute TD error (advantage estimate)
         var current_value = self.get_value(tiles)
@@ -281,10 +281,10 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
         """Compute policy entropy at given state.
 
         Args:
-            tiles: Active tile indices
+            tiles: Active tile indices.
 
         Returns:
-            Policy entropy (in nats)
+            Policy entropy (in nats).
         """
         var probs = self.get_action_probs(tiles)
         var entropy: Float64 = 0.0
@@ -453,14 +453,14 @@ struct ActorCriticLambdaAgent(Copyable, ImplicitlyCopyable, Movable):
         """Initialize Actor-Critic(λ) agent.
 
         Args:
-            tile_coding: TileCoding instance
-            num_actions: Number of discrete actions
-            actor_lr: Actor learning rate
-            critic_lr: Critic learning rate
-            discount_factor: Discount factor γ
-            lambda_: Eligibility trace decay (0=TD(0), 1=MC)
-            entropy_coef: Entropy bonus coefficient
-            init_value: Initial parameter value
+            tile_coding: TileCoding instance.
+            num_actions: Number of discrete actions.
+            actor_lr: Actor learning rate.
+            critic_lr: Critic learning rate.
+            discount_factor: Discount factor γ.
+            lambda_: Eligibility trace decay (0=TD(0), 1=MC).
+            entropy_coef: Entropy bonus coefficient.
+            init_value: Initial parameter value.
         """
         self.num_actions = num_actions
         self.num_tiles = tile_coding.get_num_tiles()
@@ -609,11 +609,11 @@ struct ActorCriticLambdaAgent(Copyable, ImplicitlyCopyable, Movable):
         w += α * δ * e
 
         Args:
-            tiles: Active tiles for current state
-            action: Action taken
-            reward: Reward received
-            next_tiles: Active tiles for next state
-            done: Whether episode terminated
+            tiles: Active tiles for current state.
+            action: Action taken.
+            reward: Reward received.
+            next_tiles: Active tiles for next state.
+            done: Whether episode terminated.
         """
         # Compute TD error
         var current_value = self.get_value(tiles)
@@ -867,14 +867,14 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
         """Initialize A2C agent.
 
         Args:
-            tile_coding: TileCoding instance
-            num_actions: Number of discrete actions
-            actor_lr: Actor learning rate
-            critic_lr: Critic learning rate
-            discount_factor: Discount factor γ
-            n_steps: Number of steps for n-step returns
-            entropy_coef: Entropy bonus coefficient
-            init_value: Initial parameter value
+            tile_coding: TileCoding instance.
+            num_actions: Number of discrete actions.
+            actor_lr: Actor learning rate.
+            critic_lr: Critic learning rate.
+            discount_factor: Discount factor γ.
+            n_steps: Number of steps for n-step returns.
+            entropy_coef: Entropy bonus coefficient.
+            init_value: Initial parameter value.
         """
         self.num_actions = num_actions
         self.num_tiles = tile_coding.get_num_tiles()
@@ -1053,8 +1053,8 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
         """Update when buffer is full or episode ends.
 
         Args:
-            next_tiles: Tiles for next state (for bootstrap)
-            done: Whether episode terminated
+            next_tiles: Tiles for next state (for bootstrap).
+            done: Whether episode terminated.
         """
         var buffer_len = len(self.buffer_tiles)
 

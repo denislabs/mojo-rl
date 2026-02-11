@@ -67,8 +67,11 @@ from ..collision.contact_detection import (
     normalize_qpos_quaternions_gpu,
 )
 from ..solver.pgs_solver import PGSSolver
-from ..solver.constraint_data import ConstraintData
-from ..solver.constraint_builder import build_constraints, writeback_impulses
+from ..constraints.constraint_data import ConstraintData
+from ..constraints.constraint_builder import (
+    build_constraints,
+    writeback_impulses,
+)
 from ..traits.integrator import Integrator
 from ..traits.solver import ConstraintSolver
 from ..gpu.constants import (

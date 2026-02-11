@@ -8,7 +8,7 @@ Geometry types reuse constants from physics3d/constants.mojo:
 """
 
 from ..constants import GEOM_CAPSULE, GEOM_SPHERE, GEOM_BOX
-
+from render3d import Color3D
 
 # =============================================================================
 # BodySpec Trait
@@ -49,6 +49,9 @@ trait BodySpec:
     comptime CONTYPE: Int
     comptime CONAFFINITY: Int
 
+    # Visual properties
+    comptime COLOR: Color3D
+
     # Auto-computed inertia from geometry + mass
     @staticmethod
     fn ixx() -> Float64:
@@ -83,6 +86,7 @@ struct CapsuleBody[
     quat_w: Float64 = 1.0,
     contype: Int = 1,
     conaffinity: Int = 1,
+    color: Color3D = Color3D(204, 153, 102),
 ](BodySpec):
     """Capsule body with auto-computed inertia.
 
@@ -109,6 +113,7 @@ struct CapsuleBody[
     comptime QUAT_W: Float64 = Self.quat_w
     comptime CONTYPE: Int = Self.contype
     comptime CONAFFINITY: Int = Self.conaffinity
+    comptime COLOR: Color3D = Self.color
 
     @staticmethod
     fn _total_length() -> Float64:
@@ -151,6 +156,7 @@ struct SphereBody[
     quat_w: Float64 = 1.0,
     contype: Int = 1,
     conaffinity: Int = 1,
+    color: Color3D = Color3D(204, 153, 102),
 ](BodySpec):
     """Sphere body with auto-computed inertia.
 
@@ -174,6 +180,7 @@ struct SphereBody[
     comptime QUAT_W: Float64 = Self.quat_w
     comptime CONTYPE: Int = Self.contype
     comptime CONAFFINITY: Int = Self.conaffinity
+    comptime COLOR: Color3D = Self.color
 
     @staticmethod
     fn ixx() -> Float64:
@@ -210,6 +217,7 @@ struct BoxBody[
     quat_w: Float64 = 1.0,
     contype: Int = 1,
     conaffinity: Int = 1,
+    color: Color3D = Color3D(204, 153, 102),
 ](BodySpec):
     """Box body with auto-computed inertia.
 
@@ -234,6 +242,7 @@ struct BoxBody[
     comptime QUAT_W: Float64 = Self.quat_w
     comptime CONTYPE: Int = Self.contype
     comptime CONAFFINITY: Int = Self.conaffinity
+    comptime COLOR: Color3D = Self.color
 
     @staticmethod
     fn ixx() -> Float64:

@@ -24,7 +24,7 @@ from ..dynamics.jacobian import (
     compute_contact_jacobian_row,
     compute_contact_jacobian_row_gpu,
 )
-from .constraint_data import (
+from ..constraints.constraint_data import (
     ConstraintData,
     CNSTR_NORMAL,
     CNSTR_FRICTION_T1,
@@ -51,7 +51,7 @@ from ..gpu.constants import (
     MODEL_META_IDX_SOLIMP_CONTACT_1,
     MODEL_META_IDX_SOLIMP_CONTACT_2,
 )
-from .constraint_builder_gpu import (
+from ..constraints.constraint_builder_gpu import (
     init_common_normal_workspace_gpu,
     precompute_contact_normal_gpu,
     warmstart_normals_gpu,
@@ -145,9 +145,14 @@ struct PGSSolver(ConstraintSolver):
                     v += constraints.J[r * NV + i] * qvel[i]
 
                 # PGS update with impedance: delta = -(v + bias) * inv_K_imp
-                var delta = -(v + constraints.rows[r].bias) * constraints.rows[r].inv_K_imp
+                var delta = (
+                    -(v + constraints.rows[r].bias)
+                    * constraints.rows[r].inv_K_imp
+                )
                 var old_lambda = constraints.rows[r].lambda_val
-                constraints.rows[r].lambda_val = constraints.rows[r].lambda_val + delta
+                constraints.rows[r].lambda_val = (
+                    constraints.rows[r].lambda_val + delta
+                )
 
                 # Unilateral clamp: lambda >= 0
                 if constraints.rows[r].lambda_val < Scalar[DTYPE](0):
@@ -170,9 +175,14 @@ struct PGSSolver(ConstraintSolver):
                     var sign = constraints.rows[r].limit_sign
                     var v_limit = sign * qvel[dof]
 
-                    var delta = -(v_limit + constraints.rows[r].bias) * constraints.rows[r].inv_K_imp
+                    var delta = (
+                        -(v_limit + constraints.rows[r].bias)
+                        * constraints.rows[r].inv_K_imp
+                    )
                     var old_lambda = constraints.rows[r].lambda_val
-                    constraints.rows[r].lambda_val = constraints.rows[r].lambda_val + delta
+                    constraints.rows[r].lambda_val = (
+                        constraints.rows[r].lambda_val + delta
+                    )
 
                     if constraints.rows[r].lambda_val < Scalar[DTYPE](0):
                         constraints.rows[r].lambda_val = Scalar[DTYPE](0)
@@ -222,7 +232,9 @@ struct PGSSolver(ConstraintSolver):
                     v_t1 += constraints.J[r_t1 * NV + i] * qvel[i]
                 var delta_t1 = -v_t1 / constraints.rows[r_t1].K
                 var old_t1 = constraints.rows[r_t1].lambda_val
-                constraints.rows[r_t1].lambda_val = constraints.rows[r_t1].lambda_val + delta_t1
+                constraints.rows[r_t1].lambda_val = (
+                    constraints.rows[r_t1].lambda_val + delta_t1
+                )
 
                 # Tangent 2
                 var v_t2: Scalar[DTYPE] = 0
@@ -230,17 +242,25 @@ struct PGSSolver(ConstraintSolver):
                     v_t2 += constraints.J[r_t2 * NV + i] * qvel[i]
                 var delta_t2 = -v_t2 / constraints.rows[r_t2].K
                 var old_t2 = constraints.rows[r_t2].lambda_val
-                constraints.rows[r_t2].lambda_val = constraints.rows[r_t2].lambda_val + delta_t2
+                constraints.rows[r_t2].lambda_val = (
+                    constraints.rows[r_t2].lambda_val + delta_t2
+                )
 
                 # Coulomb cone clamping: |lambda_t| <= mu * lambda_n
                 var t_mag = sqrt(
-                    constraints.rows[r_t1].lambda_val * constraints.rows[r_t1].lambda_val
-                    + constraints.rows[r_t2].lambda_val * constraints.rows[r_t2].lambda_val
+                    constraints.rows[r_t1].lambda_val
+                    * constraints.rows[r_t1].lambda_val
+                    + constraints.rows[r_t2].lambda_val
+                    * constraints.rows[r_t2].lambda_val
                 )
                 if t_mag > max_friction:
                     var scale = max_friction / t_mag
-                    constraints.rows[r_t1].lambda_val = constraints.rows[r_t1].lambda_val * scale
-                    constraints.rows[r_t2].lambda_val = constraints.rows[r_t2].lambda_val * scale
+                    constraints.rows[r_t1].lambda_val = (
+                        constraints.rows[r_t1].lambda_val * scale
+                    )
+                    constraints.rows[r_t2].lambda_val = (
+                        constraints.rows[r_t2].lambda_val * scale
+                    )
 
                 var actual_t1 = constraints.rows[r_t1].lambda_val - old_t1
                 var actual_t2 = constraints.rows[r_t2].lambda_val - old_t2
@@ -341,7 +361,12 @@ struct PGSSolver(ConstraintSolver):
         # === PARALLEL: Initialize workspace ===
         if valid_env:
             init_common_normal_workspace_gpu[
-                DTYPE, NV, NBODY, MAX_CONTACTS, WS_SIZE, BATCH,
+                DTYPE,
+                NV,
+                NBODY,
+                MAX_CONTACTS,
+                WS_SIZE,
+                BATCH,
             ](env, contact_tid, workspace)
             # Init PGS friction workspace
             workspace[env, ws_lambda_t1 + contact_tid] = 0
@@ -408,11 +433,29 @@ struct PGSSolver(ConstraintSolver):
         # === PARALLEL PHASE 1: Each thread precomputes one contact ===
         if valid_env:
             precompute_contact_normal_gpu[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-                STATE_SIZE, MODEL_SIZE, V_SIZE, BATCH, WS_SIZE,
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                STATE_SIZE,
+                MODEL_SIZE,
+                V_SIZE,
+                BATCH,
+                WS_SIZE,
             ](
-                env, contact_tid, nc, state, model, workspace,
-                inv_tc_dr, b_vel_coef, si_dmin, si_dmax, si_width,
+                env,
+                contact_tid,
+                nc,
+                state,
+                model,
+                workspace,
+                inv_tc_dr,
+                b_vel_coef,
+                si_dmin,
+                si_dmax,
+                si_width,
             )
 
         barrier()
@@ -420,7 +463,12 @@ struct PGSSolver(ConstraintSolver):
         # === SEQUENTIAL: Warm start + PGS normal + joint limits (thread 0) ===
         if valid_env and contact_tid == 0:
             warmstart_normals_gpu[
-                DTYPE, NV, NBODY, MAX_CONTACTS, WS_SIZE, BATCH,
+                DTYPE,
+                NV,
+                NBODY,
+                MAX_CONTACTS,
+                WS_SIZE,
+                BATCH,
             ](env, nc, workspace)
 
             # PGS normal iterations
@@ -462,8 +510,17 @@ struct PGSSolver(ConstraintSolver):
 
             # Joint limits
             detect_and_solve_limits_gpu[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-                STATE_SIZE, MODEL_SIZE, WS_SIZE, BATCH, PGS_ITERATIONS,
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                STATE_SIZE,
+                MODEL_SIZE,
+                WS_SIZE,
+                BATCH,
+                PGS_ITERATIONS,
             ](env, dt, state, model, workspace)
 
         barrier()

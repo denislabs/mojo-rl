@@ -42,4 +42,8 @@ from .constants import (
     HopperConstantsGPU,
 )
 from .renderer import HopperRenderer, HopperColors
+from .hopper_def import (
+    HopperTorso, HopperThigh, HopperLeg, HopperFoot,
+    HopperBodies, HopperJoints, HopperRobot,
+)
 from .curriculum import HopperCurriculum

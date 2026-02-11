@@ -4,7 +4,7 @@ This module provides replay buffer infrastructure for algorithms that work
 with continuous states and actions, such as DDPG, TD3, and SAC.
 
 The key difference from the standard ReplayBuffer is that states and actions
-are stored as feature vectors (List[Float64]) rather than discrete indices (Int).
+are stored as feature vectors (List[Scalar[Self.DTYPE]]) rather than discrete indices (Int).
 
 Key components:
 - ContinuousTransition: Stores (features, action, reward, next_features, done)
@@ -30,7 +30,9 @@ from random import random_si64, random_float64
 from .sum_tree import SumTree
 
 
-struct ContinuousTransition(Copyable, ImplicitlyCopyable, Movable):
+struct ContinuousTransition[DTYPE: DType](
+    Copyable, ImplicitlyCopyable, Movable
+):
     """Single transition tuple with continuous state features and action.
 
     Stores:
@@ -41,18 +43,20 @@ struct ContinuousTransition(Copyable, ImplicitlyCopyable, Movable):
     - done: Episode termination flag
     """
 
-    var state: List[Float64]
-    var action: Float64  # Single continuous action (for 1D action space)
-    var reward: Float64
-    var next_state: List[Float64]
+    var state: List[Scalar[Self.DTYPE]]
+    var action: Scalar[
+        Self.DTYPE
+    ]  # Single continuous action (for 1D action space)
+    var reward: Scalar[Self.DTYPE]
+    var next_state: List[Scalar[Self.DTYPE]]
     var done: Bool
 
     fn __init__(
         out self,
-        var state: List[Float64],
-        action: Float64,
-        reward: Float64,
-        var next_state: List[Float64],
+        var state: List[Scalar[Self.DTYPE]],
+        action: Scalar[Self.DTYPE],
+        reward: Scalar[Self.DTYPE],
+        var next_state: List[Scalar[Self.DTYPE]],
         done: Bool,
     ):
         self.state = state^
@@ -76,7 +80,7 @@ struct ContinuousTransition(Copyable, ImplicitlyCopyable, Movable):
         self.done = existing.done
 
 
-struct ContinuousReplayBuffer:
+struct ContinuousReplayBuffer[DTYPE: DType]:
     """Fixed-size circular buffer for continuous state/action experience replay.
 
     Unlike the standard ReplayBuffer which stores discrete state indices,
@@ -104,10 +108,10 @@ struct ContinuousReplayBuffer:
     """
 
     # Storage for transitions (parallel arrays for efficiency)
-    var states: List[List[Float64]]
-    var actions: List[Float64]
-    var rewards: List[Float64]
-    var next_states: List[List[Float64]]
+    var states: List[List[Scalar[Self.DTYPE]]]
+    var actions: List[Scalar[Self.DTYPE]]
+    var rewards: List[Scalar[Self.DTYPE]]
+    var next_states: List[List[Scalar[Self.DTYPE]]]
     var dones: List[Bool]
 
     var capacity: Int
@@ -128,18 +132,18 @@ struct ContinuousReplayBuffer:
         self.position = 0
 
         # Pre-allocate storage
-        self.states = List[List[Float64]]()
-        self.actions = List[Float64]()
-        self.rewards = List[Float64]()
-        self.next_states = List[List[Float64]]()
+        self.states = List[List[Scalar[Self.DTYPE]]]()
+        self.actions = List[Scalar[Self.DTYPE]]()
+        self.rewards = List[Scalar[Self.DTYPE]]()
+        self.next_states = List[List[Scalar[Self.DTYPE]]]()
         self.dones = List[Bool]()
 
         for _ in range(capacity):
             # Create empty feature vectors (will be overwritten on push)
-            var empty_features = List[Float64]()
+            var empty_features = List[Scalar[Self.DTYPE]]()
             for _ in range(feature_dim):
                 empty_features.append(0.0)
-            var empty_features_copy = List[Float64]()
+            var empty_features_copy = List[Scalar[Self.DTYPE]]()
             for _ in range(feature_dim):
                 empty_features_copy.append(0.0)
 
@@ -151,20 +155,20 @@ struct ContinuousReplayBuffer:
 
     fn push(
         mut self,
-        state: List[Float64],
-        action: Float64,
-        reward: Float64,
-        next_state: List[Float64],
+        state: List[Scalar[Self.DTYPE]],
+        action: Scalar[Self.DTYPE],
+        reward: Scalar[Self.DTYPE],
+        next_state: List[Scalar[Self.DTYPE]],
         done: Bool,
     ):
         """Add a transition to the buffer.
 
         Args:
-            state: Feature vector for current state
-            action: Continuous action taken
-            reward: Reward received
-            next_state: Feature vector for next state
-            done: Whether episode terminated
+            state: Feature vector for current state.
+            action: Continuous action taken.
+            reward: Reward received.
+            next_state: Feature vector for next state.
+            done: Whether episode terminated.
         """
         # Copy state features
         for i in range(min(len(state), self.feature_dim)):
@@ -183,7 +187,7 @@ struct ContinuousReplayBuffer:
         if self.size < self.capacity:
             self.size += 1
 
-    fn sample(self, batch_size: Int) -> List[ContinuousTransition]:
+    fn sample(self, batch_size: Int) -> List[ContinuousTransition[Self.DTYPE]]:
         """Sample a random batch of transitions.
 
         Args:
@@ -193,7 +197,7 @@ struct ContinuousReplayBuffer:
             List of ContinuousTransition objects.
             Returns empty list if buffer has fewer transitions than batch_size.
         """
-        var batch = List[ContinuousTransition]()
+        var batch = List[ContinuousTransition[Self.DTYPE]]()
 
         if self.size < batch_size:
             return batch^
@@ -203,12 +207,12 @@ struct ContinuousReplayBuffer:
             var idx = Int(random_si64(0, self.size - 1))
 
             # Copy state features
-            var state_copy = List[Float64]()
+            var state_copy = List[Scalar[Self.DTYPE]]()
             for i in range(self.feature_dim):
                 state_copy.append(self.states[idx][i])
 
             # Copy next_state features
-            var next_state_copy = List[Float64]()
+            var next_state_copy = List[Scalar[Self.DTYPE]]()
             for i in range(self.feature_dim):
                 next_state_copy.append(self.next_states[idx][i])
 
@@ -245,7 +249,7 @@ struct ContinuousReplayBuffer:
 
         return indices^
 
-    fn get(self, idx: Int) -> ContinuousTransition:
+    fn get(self, idx: Int) -> ContinuousTransition[Self.DTYPE]:
         """Get transition at index.
 
         Args:
@@ -255,12 +259,12 @@ struct ContinuousReplayBuffer:
             ContinuousTransition at the given index
         """
         # Copy state features
-        var state_copy = List[Float64]()
+        var state_copy = List[Scalar[Self.DTYPE]]()
         for i in range(self.feature_dim):
             state_copy.append(self.states[idx][i])
 
         # Copy next_state features
-        var next_state_copy = List[Float64]()
+        var next_state_copy = List[Scalar[Self.DTYPE]]()
         for i in range(self.feature_dim):
             next_state_copy.append(self.next_states[idx][i])
 
@@ -272,39 +276,39 @@ struct ContinuousReplayBuffer:
             self.dones[idx],
         )
 
-    fn get_state(self, idx: Int) -> List[Float64]:
+    fn get_state(self, idx: Int) -> List[Scalar[Self.DTYPE]]:
         """Get state features at index (without copying next_state).
 
         Args:
-            idx: Index into the buffer
+            idx: Index into the buffer.
 
         Returns:
-            State feature vector at the given index
+            State feature vector at the given index.
         """
-        var state_copy = List[Float64]()
+        var state_copy = List[Scalar[Self.DTYPE]]()
         for i in range(self.feature_dim):
             state_copy.append(self.states[idx][i])
         return state_copy^
 
-    fn get_next_state(self, idx: Int) -> List[Float64]:
+    fn get_next_state(self, idx: Int) -> List[Scalar[Self.DTYPE]]:
         """Get next_state features at index.
 
         Args:
-            idx: Index into the buffer
+            idx: Index into the buffer.
 
         Returns:
-            Next state feature vector at the given index
+            Next state feature vector at the given index.
         """
-        var next_state_copy = List[Float64]()
+        var next_state_copy = List[Scalar[Self.DTYPE]]()
         for i in range(self.feature_dim):
             next_state_copy.append(self.next_states[idx][i])
         return next_state_copy^
 
-    fn get_action(self, idx: Int) -> Float64:
+    fn get_action(self, idx: Int) -> Scalar[Self.DTYPE]:
         """Get action at index."""
         return self.actions[idx]
 
-    fn get_reward(self, idx: Int) -> Float64:
+    fn get_reward(self, idx: Int) -> Scalar[Self.DTYPE]:
         """Get reward at index."""
         return self.rewards[idx]
 
@@ -326,7 +330,9 @@ struct ContinuousReplayBuffer:
         self.position = 0
 
 
-struct PrioritizedContinuousTransition(Copyable, ImplicitlyCopyable, Movable):
+struct PrioritizedContinuousTransition[DTYPE: DType](
+    Copyable, ImplicitlyCopyable, Movable
+):
     """Continuous transition with importance sampling weight for PER.
 
     Stores:
@@ -338,21 +344,21 @@ struct PrioritizedContinuousTransition(Copyable, ImplicitlyCopyable, Movable):
     - weight: Importance sampling weight for bias correction
     """
 
-    var state: List[Float64]
-    var action: Float64
-    var reward: Float64
-    var next_state: List[Float64]
+    var state: List[Scalar[Self.DTYPE]]
+    var action: Scalar[Self.DTYPE]
+    var reward: Scalar[Self.DTYPE]
+    var next_state: List[Scalar[Self.DTYPE]]
     var done: Bool
-    var weight: Float64
+    var weight: Scalar[Self.DTYPE]
 
     fn __init__(
         out self,
-        var state: List[Float64],
-        action: Float64,
-        reward: Float64,
-        var next_state: List[Float64],
+        var state: List[Scalar[Self.DTYPE]],
+        action: Scalar[Self.DTYPE],
+        reward: Scalar[Self.DTYPE],
+        var next_state: List[Scalar[Self.DTYPE]],
         done: Bool,
-        weight: Float64 = 1.0,
+        weight: Scalar[Self.DTYPE] = 1.0,
     ):
         self.state = state^
         self.action = action
@@ -378,7 +384,7 @@ struct PrioritizedContinuousTransition(Copyable, ImplicitlyCopyable, Movable):
         self.weight = existing.weight
 
 
-struct PrioritizedContinuousReplayBuffer:
+struct PrioritizedContinuousReplayBuffer[DTYPE: DType]:
     """Prioritized Experience Replay for continuous state/action spaces.
 
     Uses sum-tree for O(log n) sampling and importance sampling weights
@@ -420,10 +426,10 @@ struct PrioritizedContinuousReplayBuffer:
     Reference: Schaul et al., "Prioritized Experience Replay" (2015)
     """
 
-    var states: List[List[Float64]]
-    var actions: List[Float64]
-    var rewards: List[Float64]
-    var next_states: List[List[Float64]]
+    var states: List[List[Scalar[Self.DTYPE]]]
+    var actions: List[Scalar[Self.DTYPE]]
+    var rewards: List[Scalar[Self.DTYPE]]
+    var next_states: List[List[Scalar[Self.DTYPE]]]
     var dones: List[Bool]
     var tree: SumTree
 
@@ -431,27 +437,27 @@ struct PrioritizedContinuousReplayBuffer:
     var feature_dim: Int
     var size: Int
     var position: Int
-    var alpha: Float64
-    var beta: Float64
-    var epsilon: Float64
-    var max_priority: Float64
+    var alpha: Scalar[Self.DTYPE]
+    var beta: Scalar[Self.DTYPE]
+    var epsilon: Scalar[Self.DTYPE]
+    var max_priority: Scalar[Self.DTYPE]
 
     fn __init__(
         out self,
         capacity: Int,
         feature_dim: Int,
-        alpha: Float64 = 0.6,
-        beta: Float64 = 0.4,
-        epsilon: Float64 = 1e-6,
+        alpha: Scalar[Self.DTYPE] = 0.6,
+        beta: Scalar[Self.DTYPE] = 0.4,
+        epsilon: Scalar[Self.DTYPE] = 1e-6,
     ):
         """Initialize prioritized buffer for continuous spaces.
 
         Args:
-            capacity: Maximum number of transitions to store
-            feature_dim: Dimensionality of state feature vectors
-            alpha: Priority exponent (0 = uniform, 1 = full prioritization)
-            beta: Initial IS exponent (should be annealed to 1)
-            epsilon: Small constant for non-zero priority
+            capacity: Maximum number of transitions to store.
+            feature_dim: Dimensionality of state feature vectors.
+            alpha: Priority exponent (0 = uniform, 1 = full prioritization).
+            beta: Initial IS exponent (should be annealed to 1).
+            epsilon: Small constant for non-zero priority.
         """
         self.capacity = capacity
         self.feature_dim = feature_dim
@@ -465,17 +471,17 @@ struct PrioritizedContinuousReplayBuffer:
         self.tree = SumTree(capacity)
 
         # Pre-allocate storage
-        self.states = List[List[Float64]]()
-        self.actions = List[Float64]()
-        self.rewards = List[Float64]()
-        self.next_states = List[List[Float64]]()
+        self.states = List[List[Scalar[Self.DTYPE]]]()
+        self.actions = List[Scalar[Self.DTYPE]]()
+        self.rewards = List[Scalar[Self.DTYPE]]()
+        self.next_states = List[List[Scalar[Self.DTYPE]]]()
         self.dones = List[Bool]()
 
         for _ in range(capacity):
-            var empty_features = List[Float64]()
+            var empty_features = List[Scalar[Self.DTYPE]]()
             for _ in range(feature_dim):
                 empty_features.append(0.0)
-            var empty_features_copy = List[Float64]()
+            var empty_features_copy = List[Scalar[Self.DTYPE]]()
             for _ in range(feature_dim):
                 empty_features_copy.append(0.0)
 
@@ -485,7 +491,9 @@ struct PrioritizedContinuousReplayBuffer:
             self.next_states.append(empty_features_copy^)
             self.dones.append(False)
 
-    fn _compute_priority(self, td_error: Float64) -> Float64:
+    fn _compute_priority(
+        self, td_error: Scalar[Self.DTYPE]
+    ) -> Scalar[Self.DTYPE]:
         """Compute priority from TD error: (|δ| + ε)^α."""
         var abs_error = td_error if td_error > 0 else -td_error
         var p = abs_error + self.epsilon
@@ -493,10 +501,10 @@ struct PrioritizedContinuousReplayBuffer:
 
     fn push(
         mut self,
-        state: List[Float64],
-        action: Float64,
-        reward: Float64,
-        next_state: List[Float64],
+        state: List[Scalar[Self.DTYPE]],
+        action: Scalar[Self.DTYPE],
+        reward: Scalar[Self.DTYPE],
+        next_state: List[Scalar[Self.DTYPE]],
         done: Bool,
     ):
         """Add a transition with max priority.
@@ -525,12 +533,12 @@ struct PrioritizedContinuousReplayBuffer:
         if self.size < self.capacity:
             self.size += 1
 
-    fn update_priority(mut self, idx: Int, td_error: Float64):
+    fn update_priority(mut self, idx: Int, td_error: Scalar[Self.DTYPE]):
         """Update priority for a transition after computing TD error.
 
         Args:
-            idx: Buffer index returned from sample()
-            td_error: TD error for this transition
+            idx: Buffer index returned from sample().
+            td_error: TD error for this transition.
         """
         var priority = self._compute_priority(td_error)
         self.tree.update(idx, priority)
@@ -540,14 +548,16 @@ struct PrioritizedContinuousReplayBuffer:
         if raw_priority > self.max_priority:
             self.max_priority = raw_priority
 
-    fn update_priorities(mut self, indices: List[Int], td_errors: List[Float64]):
+    fn update_priorities(
+        mut self, indices: List[Int], td_errors: List[Scalar[Self.DTYPE]]
+    ):
         """Batch update priorities for multiple transitions."""
         for i in range(len(indices)):
             self.update_priority(indices[i], td_errors[i])
 
     fn sample(
-        self, batch_size: Int, beta: Float64 = -1.0
-    ) -> Tuple[List[Int], List[PrioritizedContinuousTransition]]:
+        self, batch_size: Int, beta: Scalar[Self.DTYPE] = -1.0
+    ) -> Tuple[List[Int], List[PrioritizedContinuousTransition[Self.DTYPE]]]:
         """Sample batch with importance sampling weights.
 
         Uses stratified sampling for better coverage.
@@ -560,7 +570,7 @@ struct PrioritizedContinuousReplayBuffer:
             (indices, transitions) where transitions include IS weights.
         """
         var indices = List[Int]()
-        var batch = List[PrioritizedContinuousTransition]()
+        var batch = List[PrioritizedContinuousTransition[Self.DTYPE]]()
 
         if self.size < batch_size:
             return (indices^, batch^)
@@ -568,16 +578,18 @@ struct PrioritizedContinuousReplayBuffer:
         var use_beta = beta if beta >= 0 else self.beta
 
         var total_priority = self.tree.total_sum()
-        var segment_size = total_priority / Float64(batch_size)
+        var segment_size = total_priority / Scalar[Self.DTYPE](batch_size)
 
         # Compute min probability for weight normalization
         var min_prob = self.tree.min_priority() / total_priority
-        var max_weight = (Float64(self.size) * min_prob) ** (-use_beta)
+        var max_weight = (Scalar[Self.DTYPE](self.size) * min_prob) ** (
+            -use_beta
+        )
 
         # Stratified sampling
         for i in range(batch_size):
-            var low = segment_size * Float64(i)
-            var high = segment_size * Float64(i + 1)
+            var low = segment_size * Scalar[Self.DTYPE](i)
+            var high = segment_size * Scalar[Self.DTYPE](i + 1)
             var target = low + random_float64() * (high - low)
 
             var idx = self.tree.sample(target)
@@ -586,14 +598,16 @@ struct PrioritizedContinuousReplayBuffer:
             # Compute IS weight
             var priority = self.tree.get(idx)
             var prob = priority / total_priority
-            var weight = ((Float64(self.size) * prob) ** (-use_beta)) / max_weight
+            var weight = (
+                (Scalar[Self.DTYPE](self.size) * prob) ** (-use_beta)
+            ) / max_weight
 
             # Copy features
-            var state_copy = List[Float64]()
+            var state_copy = List[Scalar[Self.DTYPE]]()
             for j in range(self.feature_dim):
                 state_copy.append(self.states[idx][j])
 
-            var next_state_copy = List[Float64]()
+            var next_state_copy = List[Scalar[Self.DTYPE]]()
             for j in range(self.feature_dim):
                 next_state_copy.append(self.next_states[idx][j])
 
@@ -610,11 +624,15 @@ struct PrioritizedContinuousReplayBuffer:
 
         return (indices^, batch^)
 
-    fn set_beta(mut self, beta: Float64):
+    fn set_beta(mut self, beta: Scalar[Self.DTYPE]):
         """Set IS exponent (should be annealed from initial to 1.0)."""
         self.beta = beta
 
-    fn anneal_beta(mut self, progress: Float64, beta_start: Float64 = 0.4):
+    fn anneal_beta(
+        mut self,
+        progress: Scalar[Self.DTYPE],
+        beta_start: Scalar[Self.DTYPE] = 0.4,
+    ):
         """Anneal beta from beta_start to 1.0 based on training progress.
 
         Args:

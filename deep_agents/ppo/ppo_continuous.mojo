@@ -733,7 +733,7 @@ struct DeepPPOContinuousAgent[
             var episode_reward: Float64 = 0.0
             var episode_steps = 0
 
-            for step in range(max_steps):
+            for _ in range(max_steps):
                 # stochastic=True samples from policy, False uses mean
                 var action_result = self.select_action(obs, training=stochastic)
                 var actions = action_result[0].copy()
