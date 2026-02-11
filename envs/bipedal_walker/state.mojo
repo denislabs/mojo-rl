@@ -1,5 +1,5 @@
 from core import State
-from .constants import BipedalWalkerConstants
+from .constants import BWConstants
 
 
 struct BipedalWalkerState[DTYPE: DType](
@@ -7,7 +7,7 @@ struct BipedalWalkerState[DTYPE: DType](
 ):
     """Observation state for BipedalWalker (24D continuous observation)."""
 
-    comptime NUM_LIDAR: Int = BipedalWalkerConstants[Self.DTYPE].NUM_LIDAR
+    comptime NUM_LIDAR: Int = BWConstants.NUM_LIDAR
 
     # Hull state (4)
     var hull_angle: Scalar[Self.DTYPE]

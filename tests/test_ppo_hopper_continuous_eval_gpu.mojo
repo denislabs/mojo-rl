@@ -1,11 +1,11 @@
-"""Quick GPU-only evaluation to verify continuous PPO checkpoint works on Hopper3D.
+"""Quick GPU-only evaluation to verify continuous PPO checkpoint works on Hopper.
 
 This tests that the trained continuous PPO model performs well on the GPU environment
 it was trained on.
 
 Run with:
-    pixi run -e apple mojo run tests/test_ppo_hopper_3d_continuous_eval_gpu.mojo
-    pixi run -e nvidia mojo run tests/test_ppo_hopper_3d_continuous_eval_gpu.mojo
+    pixi run -e apple mojo run tests/test_ppo_hopper_continuous_eval_gpu.mojo
+    pixi run -e nvidia mojo run tests/test_ppo_hopper_continuous_eval_gpu.mojo
 """
 
 from random import seed
@@ -14,8 +14,8 @@ from time import perf_counter_ns
 from gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.hopper_3d import Hopper3D
-from envs.hopper_3d.constants3d import Hopper3DConstantsGPU
+from envs.hopper import Hopper
+from envs.hopper.constants import HopperConstantsGPU
 from deep_rl import dtype as gpu_dtype
 
 
@@ -23,8 +23,8 @@ from deep_rl import dtype as gpu_dtype
 # Constants (must match training configuration)
 # =============================================================================
 
-comptime OBS_DIM = Hopper3DConstantsGPU.OBS_DIM  # 11
-comptime ACTION_DIM = Hopper3DConstantsGPU.ACTION_DIM  # 3
+comptime OBS_DIM = HopperConstantsGPU.OBS_DIM  # 11
+comptime ACTION_DIM = HopperConstantsGPU.ACTION_DIM  # 3
 # Must match training configuration!
 comptime HIDDEN_DIM = 256
 comptime ROLLOUT_LEN = 512
@@ -33,7 +33,7 @@ comptime GPU_MINIBATCH_SIZE = 2048
 
 # Evaluation settings
 comptime EVAL_EPISODES = 100
-comptime MAX_STEPS = 1000  # Hopper3D MAX_STEPS
+comptime MAX_STEPS = 1000  # Hopper MAX_STEPS
 
 
 # =============================================================================
@@ -44,7 +44,7 @@ comptime MAX_STEPS = 1000  # Hopper3D MAX_STEPS
 fn main() raises:
     seed(42)
     print("=" * 70)
-    print("PPO Continuous Agent GPU Evaluation on Hopper3D")
+    print("PPO Continuous Agent GPU Evaluation on Hopper")
     print("=" * 70)
     print()
 
@@ -73,20 +73,20 @@ fn main() raises:
             target_total_steps=0,
             norm_adv_per_minibatch=True,
             checkpoint_every=1000,
-            checkpoint_path="ppo_hopper_3d.ckpt",
+            checkpoint_path="ppo_hopper.ckpt",
             normalize_rewards=True,
         )
 
         print("Loading checkpoint...")
         try:
-            agent.load_checkpoint("ppo_hopper_3d.ckpt")
+            agent.load_checkpoint("ppo_hopper.ckpt")
             print("Checkpoint loaded successfully!")
         except:
             print("Error loading checkpoint!")
             print("Make sure you have trained the agent first:")
             print(
                 "  pixi run -e apple mojo run"
-                " tests/test_ppo_hopper_3d_continuous_gpu.mojo"
+                " tests/test_ppo_hopper_continuous_gpu.mojo"
             )
             return
 
@@ -123,7 +123,7 @@ fn main() raises:
 
         var start_time = perf_counter_ns()
 
-        var stochastic_reward = agent.evaluate_gpu[Hopper3D[gpu_dtype]](
+        var stochastic_reward = agent.evaluate_gpu[Hopper[gpu_dtype]](
             ctx,
             num_episodes=EVAL_EPISODES,
             max_steps=MAX_STEPS,
@@ -140,7 +140,7 @@ fn main() raises:
 
         start_time = perf_counter_ns()
 
-        var deterministic_reward = agent.evaluate_gpu[Hopper3D[gpu_dtype]](
+        var deterministic_reward = agent.evaluate_gpu[Hopper[gpu_dtype]](
             ctx,
             num_episodes=EVAL_EPISODES,
             max_steps=MAX_STEPS,
@@ -156,7 +156,7 @@ fn main() raises:
 
         print()
         print("=" * 70)
-        print("GPU EVALUATION SUMMARY - Hopper3D")
+        print("GPU EVALUATION SUMMARY - Hopper")
         print("=" * 70)
         print()
         print("Stochastic policy (sampling from distribution):")
@@ -168,7 +168,7 @@ fn main() raises:
         print("  Time:", String(Float64(deterministic_time) / 1e9)[:6] + "s")
         print()
 
-        print("Hopper3D expected rewards:")
+        print("Hopper expected rewards:")
         print("  Random policy: ~-500 to -100")
         print("  Learning policy: > 0")
         print("  Good policy: > 500")

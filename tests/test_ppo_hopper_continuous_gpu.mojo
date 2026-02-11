@@ -1,7 +1,7 @@
-"""Test PPO Continuous Agent GPU Training on HopperGC.
+"""Test PPO Continuous Agent GPU Training on Hopper.
 
 This tests the GPU implementation of PPO with continuous actions using the
-HopperGC environment with:
+Hopper environment with:
 - Parallel environments on GPU
 - Generalized Coordinates physics with SemiImplicitEulerIntegrator
 - 3D continuous action space (joint torques)
@@ -13,8 +13,8 @@ Action space (3D continuous):
 - action[2]: foot torque (-1.0 to 1.0)
 
 Run with:
-    pixi run -e apple mojo run tests/test_ppo_hopper_gc_continuous_gpu.mojo    # Apple Silicon
-    pixi run -e nvidia mojo run tests/test_ppo_hopper_gc_continuous_gpu.mojo   # NVIDIA GPU
+    pixi run -e apple mojo run tests/test_ppo_hopper_continuous_gpu.mojo    # Apple Silicon
+    pixi run -e nvidia mojo run tests/test_ppo_hopper_continuous_gpu.mojo   # NVIDIA GPU
 """
 
 from random import seed
@@ -23,17 +23,17 @@ from time import perf_counter_ns
 from gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.hopper_gc import HopperGC, HopperCurriculum
-from envs.hopper_gc.constants_gc import HopperGCConstantsGPU
+from envs.hopper import Hopper, HopperCurriculum
+from envs.hopper.constants import HopperConstantsGPU
 
 
 # =============================================================================
 # Constants
 # =============================================================================
 
-# HopperGC: 11D observation, 3D continuous action
-comptime OBS_DIM = HopperGCConstantsGPU.OBS_DIM  # 11
-comptime ACTION_DIM = HopperGCConstantsGPU.ACTION_DIM  # 3
+# Hopper: 11D observation, 3D continuous action
+comptime OBS_DIM = HopperConstantsGPU.OBS_DIM  # 11
+comptime ACTION_DIM = HopperConstantsGPU.ACTION_DIM  # 3
 
 # Network architecture (scaled for GPU)
 comptime HIDDEN_DIM = 256  # Larger network for GPU efficiency
@@ -57,7 +57,7 @@ comptime dtype = DType.float32
 fn main() raises:
     seed(42)
     print("=" * 70)
-    print("PPO Continuous Agent GPU Test on HopperGC")
+    print("PPO Continuous Agent GPU Test on Hopper")
     print("=" * 70)
     print()
 
@@ -90,14 +90,14 @@ fn main() raises:
             target_total_steps=0,  # Auto-calculate
             norm_adv_per_minibatch=True,
             checkpoint_every=1_000,
-            checkpoint_path="ppo_hopper_gc.ckpt",
+            checkpoint_path="ppo_hopper.ckpt",
             normalize_rewards=True,
             obs_noise_std=0.0,
         )
 
-        # agent.load_checkpoint("ppo_hopper_gc.ckpt")
+        # agent.load_checkpoint("ppo_hopper.ckpt")
 
-        print("Environment: HopperGC Continuous (GPU)")
+        print("Environment: Hopper Continuous (GPU)")
         print("Agent: PPO Continuous (GPU) - CleanRL hyperparams")
         print("  Observation dim: " + String(OBS_DIM))
         print("  Action dim: " + String(ACTION_DIM))
@@ -118,7 +118,7 @@ fn main() raises:
         print("    - Reward normalization: enabled")
         print("    - Reset noise: enabled (±0.005 on qpos/qvel)")
         print()
-        print("HopperGC specifics:")
+        print("Hopper specifics:")
         print("  - Generalized Coordinates physics (MuJoCo-style)")
         print("  - SemiImplicitEulerIntegrator (symplectic, energy-conserving)")
         print("  - 4-body articulated hopper (torso, thigh, leg, foot)")
@@ -149,7 +149,7 @@ fn main() raises:
 
         try:
             var metrics = agent.train_gpu[
-                HopperGC[dtype, TERMINATE_ON_UNHEALTHY=True], HopperCurriculum
+                Hopper[dtype, TERMINATE_ON_UNHEALTHY=True], HopperCurriculum
             ](
                 ctx,
                 num_episodes=NUM_EPISODES,

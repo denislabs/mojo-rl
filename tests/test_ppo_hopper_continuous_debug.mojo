@@ -3,14 +3,14 @@
 from random import seed
 
 from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.hopper_gc import HopperGC
-from envs.hopper_gc.constants_gc import HopperGCConstantsGPU
+from envs.hopper import Hopper
+from envs.hopper.constants import HopperConstantsGPU
 from deep_rl import dtype as agent_dtype
 
 
 # Constants (must match training)
-comptime OBS_DIM = HopperGCConstantsGPU.OBS_DIM  # 11
-comptime ACTION_DIM = HopperGCConstantsGPU.ACTION_DIM  # 3
+comptime OBS_DIM = HopperConstantsGPU.OBS_DIM  # 11
+comptime ACTION_DIM = HopperConstantsGPU.ACTION_DIM  # 3
 comptime HIDDEN_DIM = 256
 comptime ROLLOUT_LEN = 512
 comptime N_ENVS = 256
@@ -49,22 +49,27 @@ fn main() raises:
 
     # Load checkpoint
     print("Loading checkpoint...")
-    agent.load_checkpoint("ppo_hopper_gc.ckpt")
+    agent.load_checkpoint("ppo_hopper.ckpt")
     print("Checkpoint loaded!")
     print()
 
     # Show log_std values (important for understanding action distribution)
     var log_std_offset = len(agent.actor.params) - ACTION_DIM
-    print("log_std params:",
-          agent.actor.params[log_std_offset],
-          agent.actor.params[log_std_offset + 1],
-          agent.actor.params[log_std_offset + 2])
-    print("  std values:",
-          "exp(-4.72)≈0.009" if agent.actor.params[log_std_offset] < -4.0 else "normal")
+    print(
+        "log_std params:",
+        agent.actor.params[log_std_offset],
+        agent.actor.params[log_std_offset + 1],
+        agent.actor.params[log_std_offset + 2],
+    )
+    print(
+        "  std values:",
+        "exp(-4.72)≈0.009" if agent.actor.params[log_std_offset]
+        < -4.0 else "normal",
+    )
     print()
 
     # Create CPU environment (float64)
-    var env = HopperGC()
+    var env = Hopper()
 
     # Reset and get initial observation
     var obs_list = env.reset_obs_list()
@@ -94,10 +99,18 @@ fn main() raises:
         # Clip (should be identity if network outputs in [-1,1])
         if action_val > 1.0:
             action_val = 1.0
-            print("  WARNING: action[" + String(j) + "] clipped from", actions[j], "to 1.0")
+            print(
+                "  WARNING: action[" + String(j) + "] clipped from",
+                actions[j],
+                "to 1.0",
+            )
         elif action_val < -1.0:
             action_val = -1.0
-            print("  WARNING: action[" + String(j) + "] clipped from", actions[j], "to -1.0")
+            print(
+                "  WARNING: action[" + String(j) + "] clipped from",
+                actions[j],
+                "to -1.0",
+            )
         action_list.append(Scalar[agent_dtype](action_val))
 
     print("Computing torques (action * 200):")
@@ -133,8 +146,10 @@ fn main() raises:
     print("  forward_vel (inferred):", inferred_forward_vel)
     print("  healthy_reward:", healthy_reward)
     print("  ctrl_cost:", ctrl_cost)
-    print("  reward = forward_vel + healthy - ctrl_cost =",
-          inferred_forward_vel + healthy_reward - ctrl_cost)
+    print(
+        "  reward = forward_vel + healthy - ctrl_cost =",
+        inferred_forward_vel + healthy_reward - ctrl_cost,
+    )
     print()
 
     # Run a few more steps to see pattern
@@ -166,8 +181,16 @@ fn main() raises:
         done = result[2]
         total_reward += Float64(reward)
 
-        print("  Step", step + 1, "| reward:", String(reward)[:8],
-              "| actions:", String(actions[0])[:6], String(actions[1])[:6], String(actions[2])[:6])
+        print(
+            "  Step",
+            step + 1,
+            "| reward:",
+            String(reward)[:8],
+            "| actions:",
+            String(actions[0])[:6],
+            String(actions[1])[:6],
+            String(actions[2])[:6],
+        )
 
         if done:
             print("  Episode terminated at step", step + 1)

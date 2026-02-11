@@ -1,26 +1,26 @@
-"""CPU evaluation with 3D rendering for continuous PPO on Hopper3D.
+"""CPU evaluation with 3D rendering for continuous PPO on Hopper.
 
 This tests the trained continuous PPO model using CPU evaluation
 with optional 3D visualization using the RenderableEnv trait.
 
 Run with:
-    pixi run mojo run tests/test_ppo_hopper_3d_continuous_eval_cpu.mojo
+    pixi run mojo run tests/test_ppo_hopper_continuous_eval_cpu.mojo
 """
 
 from random import seed
 from time import perf_counter_ns
 
 from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.hopper_3d import Hopper3D
-from envs.hopper_3d.constants3d import Hopper3DConstantsGPU
+from envs.hopper import Hopper
+from envs.hopper.constants import HopperConstantsGPU
 
 
 # =============================================================================
 # Constants (must match training configuration)
 # =============================================================================
 
-comptime OBS_DIM = Hopper3DConstantsGPU.OBS_DIM  # 11
-comptime ACTION_DIM = Hopper3DConstantsGPU.ACTION_DIM  # 3
+comptime OBS_DIM = HopperConstantsGPU.OBS_DIM  # 11
+comptime ACTION_DIM = HopperConstantsGPU.ACTION_DIM  # 3
 # Must match training configuration!
 comptime HIDDEN_DIM = 256
 comptime ROLLOUT_LEN = 512
@@ -29,7 +29,7 @@ comptime GPU_MINIBATCH_SIZE = 2048
 
 # Evaluation settings
 comptime NUM_EPISODES = 10
-comptime MAX_STEPS = 1000  # Hopper3D episodes run for max 1000 steps
+comptime MAX_STEPS = 1000  # Hopper episodes run for max 1000 steps
 comptime RENDER = True  # Set to False for headless evaluation
 
 
@@ -77,14 +77,14 @@ fn main() raises:
 
     print("Loading checkpoint...")
     try:
-        agent.load_checkpoint("ppo_hopper_3d.ckpt")
+        agent.load_checkpoint("ppo_hopper.ckpt")
         print("Checkpoint loaded successfully!")
     except:
         print("Error loading checkpoint!")
         print("Make sure you have trained the agent first:")
         print(
             "  pixi run -e apple mojo run"
-            " tests/test_ppo_hopper_3d_continuous_gpu.mojo"
+            " tests/test_ppo_hopper_continuous_gpu.mojo"
         )
         return
 
@@ -94,7 +94,7 @@ fn main() raises:
     # Create environment and evaluate using RenderableEnv trait
     # =========================================================================
 
-    var env = Hopper3D()
+    var env = Hopper[DType.float64, TERMINATE_ON_UNHEALTHY=False]()
 
     print("Running CPU evaluation...")
     print("  Episodes:", NUM_EPISODES)

@@ -1,4 +1,4 @@
-"""HalfCheetahGC Environment - MuJoCo-style Half Cheetah using Generalized Coordinates engine.
+"""HalfCheetah Environment - MuJoCo-style Half Cheetah using Generalized Coordinates engine.
 
 This implementation uses the physics3d Generalized Coordinates (GC) engine:
 - Model/Data for joint-space physics (MuJoCo-style)
@@ -85,7 +85,7 @@ from .half_cheetah_def import (
     CTRL_COST_WEIGHT,
     RESET_NOISE_SCALE,
 )
-from .renderer import HalfCheetahGCRenderer
+from .renderer import HalfCheetahRenderer
 
 # Math types for renderer
 from math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
@@ -95,11 +95,11 @@ comptime Quat = QuatGeneric[DType.float64]
 
 
 # =============================================================================
-# HalfCheetahGC Environment
+# HalfCheetah Environment
 # =============================================================================
 
 
-struct HalfCheetahGC[
+struct HalfCheetah[
     DTYPE: DType where DTYPE.is_floating_point() = DType.float64,
     TERMINATE_ON_UNHEALTHY: Bool = False,
 ](
@@ -107,7 +107,7 @@ struct HalfCheetahGC[
     GPUContinuousEnv,
     RenderableEnv,
 ):
-    """HalfCheetahGC environment using Generalized Coordinates physics.
+    """HalfCheetah environment using Generalized Coordinates physics.
 
     Uses generic ObsState[17] and ContAction[6] types instead of per-env structs.
     Observation extraction, action application, and joint limit enforcement
@@ -170,7 +170,7 @@ struct HalfCheetahGC[
     var prev_x_position: Scalar[Self.DTYPE]
 
     # Renderer (optional)
-    var _renderer: UnsafePointer[HalfCheetahGCRenderer, MutAnyOrigin]
+    var _renderer: UnsafePointer[HalfCheetahRenderer, MutAnyOrigin]
     var _renderer_initialized: Bool
 
     # =========================================================================
@@ -184,12 +184,12 @@ struct HalfCheetahGC[
         timestep: Scalar[Self.DTYPE] = 0.002,
         friction: Scalar[Self.DTYPE] = 0.9,
     ):
-        """Initialize the HalfCheetahGC environment."""
+        """Initialize the HalfCheetah environment."""
         self.max_steps = max_steps
         self.current_step = 0
         self.frame_skip = frame_skip
         self.prev_x_position = Scalar[Self.DTYPE](0.0)
-        self._renderer = UnsafePointer[HalfCheetahGCRenderer, MutAnyOrigin]()
+        self._renderer = UnsafePointer[HalfCheetahRenderer, MutAnyOrigin]()
         self._renderer_initialized = False
 
         # Initialize GC model
@@ -316,7 +316,8 @@ struct HalfCheetahGC[
     ](mut self, action: List[Scalar[DTYPE2]]) -> Tuple[
         List[Scalar[DTYPE2]], Scalar[DTYPE2], Bool
     ]:
-        """Take multi-dimensional continuous action and return (obs, reward, done)."""
+        """Take multi-dimensional continuous action and return (obs, reward, done).
+        """
         # Convert to ContAction
         var act = ContAction[ACTION_DIM]()
         for i in range(min(ACTION_DIM, len(action))):
@@ -491,9 +492,9 @@ struct HalfCheetahGC[
 
         from memory import alloc
 
-        self._renderer = alloc[HalfCheetahGCRenderer](1)
+        self._renderer = alloc[HalfCheetahRenderer](1)
 
-        var renderer = HalfCheetahGCRenderer(
+        var renderer = HalfCheetahRenderer(
             width=1280,
             height=720,
             follow_cheetah=True,
@@ -583,7 +584,7 @@ struct HalfCheetahGC[
         """Batched GPU step function using GC physics engine."""
 
         comptime MODEL_SIZE = model_size[
-            HalfCheetahGC.NUM_BODIES, HalfCheetahGC.NUM_JOINTS
+            HalfCheetah.NUM_BODIES, HalfCheetah.NUM_JOINTS
         ]()
         comptime P = HalfCheetahParams[gpu_dtype]
         comptime WS_SIZE = integrator_workspace_size[
@@ -835,7 +836,8 @@ struct HalfCheetahGC[
         states_buf: DeviceBuffer[gpu_dtype],
         mut obs_buf: DeviceBuffer[gpu_dtype],
     ) raises:
-        """Extract observations from GC state buffer using generic Joints method."""
+        """Extract observations from GC state buffer using generic Joints method.
+        """
         HalfCheetahJoints.extract_obs_kernel_gpu[
             gpu_dtype, BATCH_SIZE, STATE_SIZE_VAL, OBS_DIM_VAL
         ](ctx, states_buf, obs_buf)
@@ -848,20 +850,18 @@ struct HalfCheetahGC[
     fn _init_model_gpu(
         ctx: DeviceContext,
         mut model_buf: DeviceBuffer[gpu_dtype],
-        max_pitch: Scalar[gpu_dtype] = HalfCheetahParams[
-            gpu_dtype
-        ].MAX_PITCH,
+        max_pitch: Scalar[gpu_dtype] = HalfCheetahParams[gpu_dtype].MAX_PITCH,
     ) raises:
-        """Initialize model buffer with HalfCheetahGC parameters."""
+        """Initialize model buffer with HalfCheetah parameters."""
         comptime P = HalfCheetahParams[gpu_dtype]
 
         var model = Model[
             gpu_dtype,
-            HalfCheetahGC.NQ,
-            HalfCheetahGC.NV,
-            HalfCheetahGC.NUM_BODIES,
-            HalfCheetahGC.NUM_JOINTS,
-            HalfCheetahGC.MAX_CONTACTS,
+            HalfCheetah.NQ,
+            HalfCheetah.NV,
+            HalfCheetah.NUM_BODIES,
+            HalfCheetah.NUM_JOINTS,
+            HalfCheetah.MAX_CONTACTS,
         ](
             gravity_z=P.GRAVITY_Z,
             timestep=P.DT,
@@ -884,12 +884,12 @@ struct HalfCheetahGC[
         HalfCheetahJoints.setup_model(model)
 
         var host_buf = create_model_buffer[
-            gpu_dtype, HalfCheetahGC.NUM_BODIES, HalfCheetahGC.NUM_JOINTS
+            gpu_dtype, HalfCheetah.NUM_BODIES, HalfCheetah.NUM_JOINTS
         ](ctx)
         copy_model_to_buffer(model, host_buf)
 
         var curr = model_curriculum_offset[
-            HalfCheetahGC.NUM_BODIES, HalfCheetahGC.NUM_JOINTS
+            HalfCheetah.NUM_BODIES, HalfCheetah.NUM_JOINTS
         ]()
         host_buf[curr + CURRICULUM_IDX_MIN_HEIGHT] = Scalar[gpu_dtype](0.0)
         host_buf[curr + CURRICULUM_IDX_MAX_PITCH] = max_pitch
@@ -910,7 +910,7 @@ struct HalfCheetahGC[
     ](ctx: DeviceContext, mut workspace_buf: DeviceBuffer[gpu_dtype],) raises:
         """Initialize pre-allocated step workspace buffer."""
         comptime MODEL_SIZE = model_size[
-            HalfCheetahGC.NUM_BODIES, HalfCheetahGC.NUM_JOINTS
+            HalfCheetah.NUM_BODIES, HalfCheetah.NUM_JOINTS
         ]()
         var model_view = DeviceBuffer[gpu_dtype](
             ctx,
@@ -926,11 +926,12 @@ struct HalfCheetahGC[
         mut workspace_buf: DeviceBuffer[gpu_dtype],
         curriculum_values: List[Scalar[gpu_dtype]],
     ) raises:
-        """Update only the curriculum parameters in a pre-allocated workspace."""
+        """Update only the curriculum parameters in a pre-allocated workspace.
+        """
         if len(curriculum_values) < 2:
             return
         var curr_offset = model_curriculum_offset[
-            HalfCheetahGC.NUM_BODIES, HalfCheetahGC.NUM_JOINTS
+            HalfCheetah.NUM_BODIES, HalfCheetah.NUM_JOINTS
         ]()
         var curriculum_host = InlineArray[Scalar[gpu_dtype], 2](
             fill=[
@@ -949,18 +950,19 @@ struct HalfCheetahGC[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](ctx: DeviceContext, mut states_buf: DeviceBuffer[gpu_dtype],) raises:
-        """Store current rootx position into metadata for velocity computation."""
+        """Store current rootx position into metadata for velocity computation.
+        """
         var states = LayoutTensor[
             gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
         ](states_buf.unsafe_ptr())
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
-        comptime QPOS_OFF = qpos_offset[HalfCheetahGC.NQ, HalfCheetahGC.NV]()
+        comptime QPOS_OFF = qpos_offset[HalfCheetah.NQ, HalfCheetah.NV]()
         comptime META_OFF = metadata_offset[
-            HalfCheetahGC.NQ,
-            HalfCheetahGC.NV,
-            HalfCheetahGC.NUM_BODIES,
-            HalfCheetahGC.MAX_CONTACTS,
+            HalfCheetah.NQ,
+            HalfCheetah.NV,
+            HalfCheetah.NUM_BODIES,
+            HalfCheetah.MAX_CONTACTS,
         ]()
 
         @always_inline
@@ -993,8 +995,8 @@ struct HalfCheetahGC[
         ](states_buf.unsafe_ptr())
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
-        comptime QPOS_OFF = qpos_offset[HalfCheetahGC.NQ, HalfCheetahGC.NV]()
-        comptime QVEL_OFF = qvel_offset[HalfCheetahGC.NQ, HalfCheetahGC.NV]()
+        comptime QPOS_OFF = qpos_offset[HalfCheetah.NQ, HalfCheetah.NV]()
+        comptime QVEL_OFF = qvel_offset[HalfCheetah.NQ, HalfCheetah.NV]()
         comptime MIN_ROOTZ: Scalar[gpu_dtype] = -0.3
 
         @always_inline
@@ -1060,15 +1062,15 @@ struct HalfCheetahGC[
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
         comptime P = HalfCheetahParams[gpu_dtype]
-        comptime QPOS_OFF = qpos_offset[HalfCheetahGC.NQ, HalfCheetahGC.NV]()
+        comptime QPOS_OFF = qpos_offset[HalfCheetah.NQ, HalfCheetah.NV]()
         comptime META_OFF = metadata_offset[
-            HalfCheetahGC.NQ,
-            HalfCheetahGC.NV,
-            HalfCheetahGC.NUM_BODIES,
-            HalfCheetahGC.MAX_CONTACTS,
+            HalfCheetah.NQ,
+            HalfCheetah.NV,
+            HalfCheetah.NUM_BODIES,
+            HalfCheetah.MAX_CONTACTS,
         ]()
         comptime CURRICULUM_OFF = model_curriculum_offset[
-            HalfCheetahGC.NUM_BODIES, HalfCheetahGC.NUM_JOINTS
+            HalfCheetah.NUM_BODIES, HalfCheetah.NUM_JOINTS
         ]()
 
         @always_inline
@@ -1091,7 +1093,9 @@ struct HalfCheetahGC[
                 gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
             ],
             obs: LayoutTensor[
-                gpu_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM_VAL), MutAnyOrigin
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, OBS_DIM_VAL),
+                MutAnyOrigin,
             ],
         ):
             var env = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -1195,11 +1199,11 @@ struct HalfCheetahGC[
 
         # Reset step counter and prev_x
         comptime META_OFF = metadata_offset[
-            HalfCheetahGC.NQ,
-            HalfCheetahGC.NV,
-            HalfCheetahGC.NUM_BODIES,
-            HalfCheetahGC.MAX_CONTACTS,
+            HalfCheetah.NQ,
+            HalfCheetah.NV,
+            HalfCheetah.NUM_BODIES,
+            HalfCheetah.MAX_CONTACTS,
         ]()
-        comptime QPOS_OFF = qpos_offset[HalfCheetahGC.NQ, HalfCheetahGC.NV]()
+        comptime QPOS_OFF = qpos_offset[HalfCheetah.NQ, HalfCheetah.NV]()
         states[env, META_OFF + META_IDX_STEP_COUNT] = Scalar[gpu_dtype](0.0)
         states[env, META_OFF + META_IDX_PREV_X] = states[env, QPOS_OFF + 0]

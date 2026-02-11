@@ -1,4 +1,4 @@
-"""HopperGC Environment - MuJoCo-style Hopper using Generalized Coordinates engine.
+"""Hopper Environment - MuJoCo-style Hopper using Generalized Coordinates engine.
 
 This implementation uses the physics3d Generalized Coordinates (GC) engine:
 - Model/Data for joint-space physics (MuJoCo-style)
@@ -122,10 +122,10 @@ from physics3d.constants import GEOM_CAPSULE
 from physics3d.joint_types import JNT_SLIDE, JNT_HINGE
 
 
-from .constants_gc import HopperGCConstants
-from .state import HopperGCState
-from .action import HopperGCAction
-from .renderer import HopperGCRenderer
+from .constants import HopperConstants
+from .state import HopperState
+from .action import HopperAction
+from .renderer import HopperRenderer
 
 # Math types for renderer
 from math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
@@ -135,11 +135,11 @@ comptime Quat = QuatGeneric[DType.float64]
 
 
 # =============================================================================
-# HopperGC Environment
+# Hopper Environment
 # =============================================================================
 
 
-struct HopperGC[
+struct Hopper[
     DTYPE: DType where DTYPE.is_floating_point() = DType.float64,
     TERMINATE_ON_UNHEALTHY: Bool = False,
 ](
@@ -147,7 +147,7 @@ struct HopperGC[
     GPUContinuousEnv,
     RenderableEnv,
 ):
-    """HopperGC environment using Generalized Coordinates physics.
+    """Hopper environment using Generalized Coordinates physics.
 
     Physical Configuration (matching MuJoCo Hopper):
         - Body 0 (Torso): Vertical capsule
@@ -183,8 +183,8 @@ struct HopperGC[
 
     # Trait type aliases
     comptime dtype = Self.DTYPE
-    comptime StateType = HopperGCState[Self.DTYPE]
-    comptime ActionType = HopperGCAction[Self.DTYPE]
+    comptime StateType = HopperState[Self.DTYPE]
+    comptime ActionType = HopperAction[Self.DTYPE]
     comptime MAX_STEPS: Int = 1000
     # Layout constants
     comptime OBS_DIM: Int = 11
@@ -246,10 +246,10 @@ struct HopperGC[
     var initial_z: Scalar[Self.DTYPE]
 
     # Cached observation state
-    var cached_state: HopperGCState[Self.DTYPE]
+    var cached_state: HopperState[Self.DTYPE]
 
     # Renderer (optional)
-    var _renderer: UnsafePointer[HopperGCRenderer, MutAnyOrigin]
+    var _renderer: UnsafePointer[HopperRenderer, MutAnyOrigin]
     var _renderer_initialized: Bool
 
     # Reset noise (matching Gymnasium Hopper reset_noise_scale=0.005)
@@ -269,7 +269,7 @@ struct HopperGC[
         timestep: Scalar[Self.DTYPE] = 0.002,
         friction: Scalar[Self.DTYPE] = 0.5,
     ):
-        """Initialize the HopperGC environment.
+        """Initialize the Hopper environment.
 
         Args:
             torque_limit: Maximum joint torque in N·m (default 200.0).
@@ -281,7 +281,7 @@ struct HopperGC[
             friction: Ground friction coefficient (default 0.5).
         """
         # Use constants for all body parameters
-        comptime C = HopperGCConstants[Self.DTYPE]
+        comptime C = HopperConstants[Self.DTYPE]
 
         self.torque_limit = torque_limit
         self.min_height = min_height
@@ -290,7 +290,7 @@ struct HopperGC[
         self.current_step = 0
         self.frame_skip = frame_skip
         self.prev_x_position = Scalar[Self.DTYPE](0.0)
-        self._renderer = UnsafePointer[HopperGCRenderer, MutAnyOrigin]()
+        self._renderer = UnsafePointer[HopperRenderer, MutAnyOrigin]()
         self._renderer_initialized = False
         self._reset_seed = 0
 
@@ -541,7 +541,7 @@ struct HopperGC[
         ]()
 
         # Initialize cached state
-        self.cached_state = HopperGCState[Self.DTYPE]()
+        self.cached_state = HopperState[Self.DTYPE]()
 
         # Reset to initial state
         self._reset_state()
@@ -780,7 +780,7 @@ struct HopperGC[
         # Compute velocity from position change (matching Gymnasium Hopper)
         var x_position_after = self.data.qpos[0]
         var dt = Scalar[Self.DTYPE](
-            HopperGCConstants[Self.DTYPE].DT * self.frame_skip
+            HopperConstants[Self.DTYPE].DT * self.frame_skip
         )
         var x_velocity = (x_position_after - x_position_before) / dt
 
@@ -854,7 +854,7 @@ struct HopperGC[
         # Compute velocity from position change (matching Gymnasium Hopper)
         var x_position_after = self.data.qpos[0]
         var dt = Scalar[Self.DTYPE](
-            HopperGCConstants[Self.DTYPE].DT * self.frame_skip
+            HopperConstants[Self.DTYPE].DT * self.frame_skip
         )
         var x_velocity = (x_position_after - x_position_before) / dt
 
@@ -1053,9 +1053,9 @@ struct HopperGC[
         if self._renderer_initialized:
             return True
 
-        self._renderer = alloc[HopperGCRenderer](1)
+        self._renderer = alloc[HopperRenderer](1)
 
-        var renderer = HopperGCRenderer(
+        var renderer = HopperRenderer(
             width=1024,
             height=576,
             follow_hopper=True,
@@ -1211,10 +1211,8 @@ struct HopperGC[
         where per-env is [x_before(1) | physics_ws(PHYSICS_WS_SIZE)] * BATCH_SIZE.
         """
 
-        comptime MODEL_SIZE = model_size[
-            HopperGC.NUM_BODIES, HopperGC.NUM_JOINTS
-        ]()
-        comptime FRAME_SKIP = HopperGCConstants[gpu_dtype].FRAME_SKIP
+        comptime MODEL_SIZE = model_size[Hopper.NUM_BODIES, Hopper.NUM_JOINTS]()
+        comptime FRAME_SKIP = HopperConstants[gpu_dtype].FRAME_SKIP
         comptime PHYSICS_WS_SIZE = integrator_workspace_size[
             Self.NV, Self.NUM_BODIES
         ]() + Self.NV * Self.NV + PGSSolver.solver_workspace_size[
@@ -1252,11 +1250,11 @@ struct HopperGC[
             model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
             var min_height = (
                 curriculum_values[0] if len(curriculum_values)
-                > 0 else HopperGCConstants[gpu_dtype].MIN_HEIGHT
+                > 0 else HopperConstants[gpu_dtype].MIN_HEIGHT
             )
             var max_pitch = (
                 curriculum_values[1] if len(curriculum_values)
-                > 1 else HopperGCConstants[gpu_dtype].MAX_PITCH
+                > 1 else HopperConstants[gpu_dtype].MAX_PITCH
             )
             Self._init_model_gpu(ctx, model_buf, min_height, max_pitch)
             x_before_buf = ctx.enqueue_create_buffer[gpu_dtype](BATCH_SIZE)
@@ -1505,8 +1503,8 @@ struct HopperGC[
         ](obs_buf.unsafe_ptr())
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
-        comptime QPOS_OFF = qpos_offset[HopperGC.NQ, HopperGC.NV]()
-        comptime QVEL_OFF = qvel_offset[HopperGC.NQ, HopperGC.NV]()
+        comptime QPOS_OFF = qpos_offset[Hopper.NQ, Hopper.NV]()
+        comptime QVEL_OFF = qvel_offset[Hopper.NQ, Hopper.NV]()
 
         @always_inline
         fn extract_gc_obs(
@@ -1555,12 +1553,12 @@ struct HopperGC[
     fn _init_model_gpu(
         ctx: DeviceContext,
         mut model_buf: DeviceBuffer[gpu_dtype],
-        min_height: Scalar[gpu_dtype] = HopperGCConstants[gpu_dtype].MIN_HEIGHT,
-        max_pitch: Scalar[gpu_dtype] = HopperGCConstants[gpu_dtype].MAX_PITCH,
+        min_height: Scalar[gpu_dtype] = HopperConstants[gpu_dtype].MIN_HEIGHT,
+        max_pitch: Scalar[gpu_dtype] = HopperConstants[gpu_dtype].MAX_PITCH,
     ) raises:
-        """Initialize model buffer with HopperGC parameters for GC physics engine.
+        """Initialize model buffer with Hopper parameters for GC physics engine.
 
-        Uses HopperGCConstants for all body dimensions and joint limits.
+        Uses HopperConstants for all body dimensions and joint limits.
         Curriculum parameters can be set directly to avoid GPU↔CPU round-trips.
 
         Args:
@@ -1570,11 +1568,9 @@ struct HopperGC[
             max_pitch: Maximum torso pitch angle for health check.
         """
         # Use constants for all parameters
-        comptime C = HopperGCConstants[gpu_dtype]
+        comptime C = HopperConstants[gpu_dtype]
 
-        comptime MODEL_SIZE = model_size[
-            HopperGC.NUM_BODIES, HopperGC.NUM_JOINTS
-        ]()
+        comptime MODEL_SIZE = model_size[Hopper.NUM_BODIES, Hopper.NUM_JOINTS]()
 
         var model_host = List[Scalar[gpu_dtype]](capacity=MODEL_SIZE)
         for _ in range(MODEL_SIZE):
@@ -1746,7 +1742,7 @@ struct HopperGC[
         # =================================================================
         # Joint 0: RootX - Slide joint, X-axis translation (body 0)
         # =================================================================
-        var j0 = model_joint_offset[HopperGC.NUM_BODIES](0)
+        var j0 = model_joint_offset[Hopper.NUM_BODIES](0)
         model_host[j0 + JOINT_IDX_TYPE] = Scalar[gpu_dtype](JNT_SLIDE)
         model_host[j0 + JOINT_IDX_BODY_ID] = Scalar[gpu_dtype](0)
         model_host[j0 + JOINT_IDX_QPOS_ADR] = Scalar[gpu_dtype](0)  # qpos[0]
@@ -1773,7 +1769,7 @@ struct HopperGC[
         # =================================================================
         # Joint 1: RootZ - Slide joint, Z-axis translation (body 0)
         # =================================================================
-        var j1 = model_joint_offset[HopperGC.NUM_BODIES](1)
+        var j1 = model_joint_offset[Hopper.NUM_BODIES](1)
         model_host[j1 + JOINT_IDX_TYPE] = Scalar[gpu_dtype](JNT_SLIDE)
         model_host[j1 + JOINT_IDX_BODY_ID] = Scalar[gpu_dtype](0)
         model_host[j1 + JOINT_IDX_QPOS_ADR] = Scalar[gpu_dtype](1)  # qpos[1]
@@ -1800,7 +1796,7 @@ struct HopperGC[
         # =================================================================
         # Joint 2: RootY - Hinge joint, Y-axis rotation (body 0)
         # =================================================================
-        var j2 = model_joint_offset[HopperGC.NUM_BODIES](2)
+        var j2 = model_joint_offset[Hopper.NUM_BODIES](2)
         model_host[j2 + JOINT_IDX_TYPE] = Scalar[gpu_dtype](JNT_HINGE)
         model_host[j2 + JOINT_IDX_BODY_ID] = Scalar[gpu_dtype](0)
         model_host[j2 + JOINT_IDX_QPOS_ADR] = Scalar[gpu_dtype](2)  # qpos[2]
@@ -1827,7 +1823,7 @@ struct HopperGC[
         # =================================================================
         # Joint 3: Thigh - Hinge joint, Y-axis rotation (body 1)
         # =================================================================
-        var j3 = model_joint_offset[HopperGC.NUM_BODIES](3)
+        var j3 = model_joint_offset[Hopper.NUM_BODIES](3)
         model_host[j3 + JOINT_IDX_TYPE] = Scalar[gpu_dtype](JNT_HINGE)
         model_host[j3 + JOINT_IDX_BODY_ID] = Scalar[gpu_dtype](1)
         model_host[j3 + JOINT_IDX_QPOS_ADR] = Scalar[gpu_dtype](3)
@@ -1850,7 +1846,7 @@ struct HopperGC[
         # =================================================================
         # Joint 4: Leg - Hinge joint, Y-axis rotation (body 2)
         # =================================================================
-        var j4 = model_joint_offset[HopperGC.NUM_BODIES](4)
+        var j4 = model_joint_offset[Hopper.NUM_BODIES](4)
         model_host[j4 + JOINT_IDX_TYPE] = Scalar[gpu_dtype](JNT_HINGE)
         model_host[j4 + JOINT_IDX_BODY_ID] = Scalar[gpu_dtype](2)
         model_host[j4 + JOINT_IDX_QPOS_ADR] = Scalar[gpu_dtype](4)
@@ -1873,7 +1869,7 @@ struct HopperGC[
         # =================================================================
         # Joint 5: Foot - Hinge joint, Y-axis rotation (body 3)
         # =================================================================
-        var j5 = model_joint_offset[HopperGC.NUM_BODIES](5)
+        var j5 = model_joint_offset[Hopper.NUM_BODIES](5)
         model_host[j5 + JOINT_IDX_TYPE] = Scalar[gpu_dtype](JNT_HINGE)
         model_host[j5 + JOINT_IDX_BODY_ID] = Scalar[gpu_dtype](3)
         model_host[j5 + JOINT_IDX_QPOS_ADR] = Scalar[gpu_dtype](5)
@@ -1896,9 +1892,7 @@ struct HopperGC[
         # =================================================================
         # Model Metadata
         # =================================================================
-        var meta = model_metadata_offset[
-            HopperGC.NUM_BODIES, HopperGC.NUM_JOINTS
-        ]()
+        var meta = model_metadata_offset[Hopper.NUM_BODIES, Hopper.NUM_JOINTS]()
         model_host[meta + MODEL_META_IDX_NBODY] = Scalar[gpu_dtype](
             C.NUM_BODIES
         )
@@ -1928,7 +1922,7 @@ struct HopperGC[
         # Curriculum Parameters (initialize to MuJoCo defaults)
         # =================================================================
         var curr = model_curriculum_offset[
-            HopperGC.NUM_BODIES, HopperGC.NUM_JOINTS
+            Hopper.NUM_BODIES, Hopper.NUM_JOINTS
         ]()
         model_host[curr + CURRICULUM_IDX_MIN_HEIGHT] = min_height
         model_host[curr + CURRICULUM_IDX_MAX_PITCH] = max_pitch
@@ -1963,9 +1957,7 @@ struct HopperGC[
 
         Layout: [model: MODEL_SIZE | x_before: BATCH | physics_ws: BATCH * PHYSICS_WS]
         """
-        comptime MODEL_SIZE = model_size[
-            HopperGC.NUM_BODIES, HopperGC.NUM_JOINTS
-        ]()
+        comptime MODEL_SIZE = model_size[Hopper.NUM_BODIES, Hopper.NUM_JOINTS]()
         var model_view = DeviceBuffer[gpu_dtype](
             ctx,
             workspace_buf.unsafe_ptr(),
@@ -1989,7 +1981,7 @@ struct HopperGC[
         if len(curriculum_values) < 2:
             return
         var curr_offset = model_curriculum_offset[
-            HopperGC.NUM_BODIES, HopperGC.NUM_JOINTS
+            Hopper.NUM_BODIES, Hopper.NUM_JOINTS
         ]()
         var curriculum_host = InlineArray[Scalar[gpu_dtype], 2](
             fill=[
@@ -2023,7 +2015,7 @@ struct HopperGC[
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
         comptime TORQUE_LIMIT: Scalar[gpu_dtype] = 200.0
-        comptime QFRC_OFF = qfrc_offset[HopperGC.NQ, HopperGC.NV]()
+        comptime QFRC_OFF = qfrc_offset[Hopper.NQ, Hopper.NV]()
 
         @always_inline
         fn apply_actions_kernel(
@@ -2092,7 +2084,7 @@ struct HopperGC[
         ](x_before_buf.unsafe_ptr())
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
-        comptime QPOS_OFF = qpos_offset[HopperGC.NQ, HopperGC.NV]()
+        comptime QPOS_OFF = qpos_offset[Hopper.NQ, Hopper.NV]()
 
         @always_inline
         fn save_x_kernel(
@@ -2171,17 +2163,17 @@ struct HopperGC[
         comptime CTRL_COST_WEIGHT: Scalar[gpu_dtype] = 0.001
         comptime HEALTHY_REWARD: Scalar[gpu_dtype] = 1.0
         comptime TORQUE_LIMIT: Scalar[gpu_dtype] = 200.0
-        comptime QPOS_OFF = qpos_offset[HopperGC.NQ, HopperGC.NV]()
-        comptime QVEL_OFF = qvel_offset[HopperGC.NQ, HopperGC.NV]()
+        comptime QPOS_OFF = qpos_offset[Hopper.NQ, Hopper.NV]()
+        comptime QVEL_OFF = qvel_offset[Hopper.NQ, Hopper.NV]()
         comptime META_OFF = metadata_offset[
-            HopperGC.NQ, HopperGC.NV, HopperGC.NUM_BODIES, HopperGC.MAX_CONTACTS
+            Hopper.NQ, Hopper.NV, Hopper.NUM_BODIES, Hopper.MAX_CONTACTS
         ]()
         # Curriculum offset in model buffer
         comptime CURRICULUM_OFF = model_curriculum_offset[
-            HopperGC.NUM_BODIES, HopperGC.NUM_JOINTS
+            Hopper.NUM_BODIES, Hopper.NUM_JOINTS
         ]()
         # Effective dt = DT * FRAME_SKIP (matching Gymnasium self.dt)
-        comptime FRAME_SKIP = HopperGCConstants[gpu_dtype].FRAME_SKIP
+        comptime FRAME_SKIP = HopperConstants[gpu_dtype].FRAME_SKIP
         comptime EFFECTIVE_DT: Scalar[gpu_dtype] = Scalar[gpu_dtype](
             0.002
         ) * FRAME_SKIP
@@ -2349,11 +2341,11 @@ struct HopperGC[
         Gymnasium's Hopper reset_noise_scale=0.005.
         """
         # Use constants
-        comptime C = HopperGCConstants[gpu_dtype]
-        comptime QPOS_OFF = qpos_offset[HopperGC.NQ, HopperGC.NV]()
-        comptime QVEL_OFF = qvel_offset[HopperGC.NQ, HopperGC.NV]()
-        comptime QACC_OFF = qacc_offset[HopperGC.NQ, HopperGC.NV]()
-        comptime QFRC_OFF = qfrc_offset[HopperGC.NQ, HopperGC.NV]()
+        comptime C = HopperConstants[gpu_dtype]
+        comptime QPOS_OFF = qpos_offset[Hopper.NQ, Hopper.NV]()
+        comptime QVEL_OFF = qvel_offset[Hopper.NQ, Hopper.NV]()
+        comptime QACC_OFF = qacc_offset[Hopper.NQ, Hopper.NV]()
+        comptime QFRC_OFF = qfrc_offset[Hopper.NQ, Hopper.NV]()
 
         # Reset noise scale (matching Gymnasium Hopper)
         comptime RESET_NOISE_SCALE: Scalar[gpu_dtype] = 0.005
@@ -2402,12 +2394,12 @@ struct HopperGC[
         states[env, QVEL_OFF + 5] = to_noise(rand_qvel2[1])  # foot vel
 
         # Reset qacc, qfrc to zero
-        for i in range(HopperGC.NV):
+        for i in range(Hopper.NV):
             states[env, QACC_OFF + i] = Scalar[gpu_dtype](0.0)
             states[env, QFRC_OFF + i] = Scalar[gpu_dtype](0.0)
 
         # Reset step counter to 0
         comptime META_OFF = metadata_offset[
-            HopperGC.NQ, HopperGC.NV, HopperGC.NUM_BODIES, HopperGC.MAX_CONTACTS
+            Hopper.NQ, Hopper.NV, Hopper.NUM_BODIES, Hopper.MAX_CONTACTS
         ]()
         states[env, META_OFF + META_IDX_STEP_COUNT] = Scalar[gpu_dtype](0.0)

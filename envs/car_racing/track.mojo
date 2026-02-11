@@ -1,4 +1,4 @@
-"""Track generation for CarRacing V2.
+"""Track generation for CarRacing.
 
 This module provides procedural track generation for the CarRacing environment.
 The track is represented as a list of quad tiles that define the road surface.
@@ -144,7 +144,7 @@ struct Checkpoint[DTYPE: DType](Copyable, ImplicitlyCopyable, Movable):
         self.y = other.y
 
 
-struct TrackTileV2[DTYPE: DType](Copyable, ImplicitlyCopyable, Movable):
+struct TrackTile[DTYPE: DType](Copyable, ImplicitlyCopyable, Movable):
     """A single track tile with quad vertices and friction.
 
     The tile is stored as 4 vertices in CCW order forming a convex quad.
@@ -247,11 +247,11 @@ struct TrackGenerator[DTYPE: DType](Copyable, Movable):
     Uses Bezier smoothing for natural-looking curves.
     """
 
-    var track: List[TrackTileV2[Self.DTYPE]]
+    var track: List[TrackTile[Self.DTYPE]]
     var track_length: Int
 
     fn __init__(out self):
-        self.track = List[TrackTileV2[Self.DTYPE]]()
+        self.track = List[TrackTile[Self.DTYPE]]()
         self.track_length = 0
 
     fn __copyinit__(out self, other: Self):
@@ -291,7 +291,7 @@ struct TrackGenerator[DTYPE: DType](Copyable, Movable):
             var y2 = rad * sin(alpha2)
 
             # Create quad tile
-            var tile = TrackTileV2[Self.DTYPE]()
+            var tile = TrackTile[Self.DTYPE]()
 
             # Inner edge
             tile.v0_x = x1 - width * cos(alpha1)
@@ -607,7 +607,7 @@ struct TrackGenerator[DTYPE: DType](Copyable, Movable):
             var p2 = track_points[idx2]
 
             # Create tile with vertices offset by track width
-            var tile = TrackTileV2[Self.DTYPE]()
+            var tile = TrackTile[Self.DTYPE]()
 
             # Left edge (inner)
             tile.v0_x = p1.x - track_width * cos(p1.beta)

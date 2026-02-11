@@ -1,39 +1,41 @@
-"""Curriculum learning scheduler for HalfCheetahGC environment.
+"""Curriculum learning scheduler for Hopper environment.
 
 Provides progressive difficulty adjustment during training:
-- Starts with very lenient pitch bounds (basically no constraint)
-- Gradually tightens bounds to prevent somersaulting
+- Starts with lenient health bounds (easy to stay alive)
+- Gradually tightens bounds toward MuJoCo defaults
 
 Usage:
-    var scheduler = HalfCheetahCurriculum()
+    var scheduler = HopperCurriculum()
 
     # In training loop:
     var progress = Float64(iteration) / Float64(total_iterations)
     var params = scheduler.get_params(progress)
-    HalfCheetahGC.init_model_gpu_with_curriculum(ctx, model_buf, params[1])
+    Hopper.update_curriculum_gpu(ctx, model_buf, params)
 """
 
-from .half_cheetah_def import HalfCheetahParams
+from .constants_gc import HopperConstants
 from core.env_traits import CurriculumScheduler
 
 
 @fieldwise_init
-struct HalfCheetahCurriculum(CurriculumScheduler):
-    """Curriculum scheduler for HalfCheetah environment.
+struct HopperCurriculum(CurriculumScheduler):
+    """Curriculum scheduler for Hopper environment.
 
-    Linearly interpolates max_pitch from lenient initial value
-    to strict final value based on training progress.
+    Linearly interpolates health bounds from lenient initial values
+    to strict final values (MuJoCo defaults) based on training progress.
 
-    Index 0 (min_height) is unused for HalfCheetah — always 0.0.
-    Index 1 (max_pitch) interpolates from ~172 deg to ~57 deg.
     """
 
-    comptime initial_max_pitch: Scalar[DType.float64] = Scalar[DType.float64](
-        3.0
+    comptime initial_min_height: Scalar[DType.float64] = Scalar[DType.float64](
+        0.3
     )
-    comptime final_max_pitch: Scalar[DType.float64] = Scalar[DType.float64](
+    comptime final_min_height: Scalar[DType.float64] = Scalar[DType.float64](
+        0.7
+    )
+    comptime initial_max_pitch: Scalar[DType.float64] = Scalar[DType.float64](
         1.0
     )
+    comptime final_max_pitch: Scalar[DType.float64] = Scalar[DType.float64](0.2)
 
     @staticmethod
     fn get_params[DTYPE: DType](progress: Scalar[DTYPE]) -> List[Scalar[DTYPE]]:
@@ -46,7 +48,7 @@ struct HalfCheetahCurriculum(CurriculumScheduler):
                      Values outside [0, 1] are clamped.
 
         Returns:
-            List with [min_height (unused, 0.0), max_pitch].
+            List with [min_height, max_pitch].
         """
         # Clamp progress to [0, 1]
         var p = progress
@@ -57,10 +59,11 @@ struct HalfCheetahCurriculum(CurriculumScheduler):
 
         var params = List[Scalar[DTYPE]](capacity=2)
 
-        # Index 0: min_height (unused for HalfCheetah)
-        params[0] = Scalar[DTYPE](0.0)
-
-        # Index 1: max_pitch - linear interpolation
+        # Linear interpolation: initial + progress * (final - initial)
+        params[0] = Scalar[DTYPE](Self.initial_min_height) + p * (
+            Scalar[DTYPE](Self.final_min_height)
+            - Scalar[DTYPE](Self.initial_min_height)
+        )
         params[1] = Scalar[DTYPE](Self.initial_max_pitch) + p * (
             Scalar[DTYPE](Self.final_max_pitch)
             - Scalar[DTYPE](Self.initial_max_pitch)
@@ -85,4 +88,4 @@ struct HalfCheetahCurriculum(CurriculumScheduler):
         elif progress < Scalar[DTYPE](0.75):
             return "Stage 3/4: Moderate"
         else:
-            return "Stage 4/4: Strict"
+            return "Stage 4/4: Strict (MuJoCo)"

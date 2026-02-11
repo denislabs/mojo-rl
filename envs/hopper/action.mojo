@@ -1,10 +1,10 @@
-"""HopperGC Action struct for continuous control."""
+"""Hopper Action struct for continuous control."""
 
 from core import Action
 
 
-struct HopperGCAction[DTYPE: DType = DType.float64](Copyable, Movable, Action):
-    """Action for HopperGC (3D continuous).
+struct HopperAction[DTYPE: DType = DType.float64](Action, Copyable, Movable):
+    """Action for Hopper (3D continuous).
 
     Actions control torques for the three actuated joints:
         [0]: thigh joint torque
@@ -59,9 +59,9 @@ struct HopperGCAction[DTYPE: DType = DType.float64](Copyable, Movable, Action):
         return lst^
 
     @staticmethod
-    fn from_list(actions: List[Scalar[DTYPE]]) -> HopperGCAction[DTYPE]:
+    fn from_list(actions: List[Scalar[DTYPE]]) -> HopperAction[DTYPE]:
         """Create action from list."""
-        var action = HopperGCAction[DTYPE]()
+        var action = HopperAction[DTYPE]()
         if len(actions) >= 3:
             action.thigh = actions[0]
             action.leg = actions[1]

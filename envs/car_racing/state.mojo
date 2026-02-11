@@ -1,4 +1,4 @@
-"""CarRacing V2 state struct.
+"""CarRacing  state struct.
 
 This module defines the state representation for the GPU-enabled CarRacing environment.
 """
@@ -9,10 +9,10 @@ from core import State
 
 
 @fieldwise_init
-struct CarRacingV2State[DTYPE: DType](
+struct CarRacingState[DTYPE: DType](
     Copyable, ImplicitlyCopyable, Movable, State
 ):
-    """State for CarRacing V2 environment.
+    """State for CarRacing  environment.
 
     Observation format (13 values, normalized for neural networks):
     - [0-1]: Position (x, y) normalized by PLAYFIELD
@@ -129,17 +129,20 @@ struct CarRacingV2State[DTYPE: DType](
 
     @staticmethod
     fn from_buffer[
-        BATCH: Int, STATE_SIZE: Int, OBS_OFFSET: Int, OBS_DIM: Int,
+        BATCH: Int,
+        STATE_SIZE: Int,
+        OBS_OFFSET: Int,
+        OBS_DIM: Int,
     ](
         state: LayoutTensor[
             DType.float32, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
         ],
         env: Int,
-    ) -> CarRacingV2State[Self.DTYPE]:
+    ) -> CarRacingState[Self.DTYPE]:
         """Create state from GPU buffer."""
         from layout import Layout, LayoutTensor
 
-        var result = CarRacingV2State[Self.DTYPE]()
+        var result = CarRacingState[Self.DTYPE]()
         result.x = Scalar[Self.DTYPE](state[env, OBS_OFFSET + 0])
         result.y = Scalar[Self.DTYPE](state[env, OBS_OFFSET + 1])
         result.angle = Scalar[Self.DTYPE](state[env, OBS_OFFSET + 2])

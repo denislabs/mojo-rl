@@ -12,37 +12,29 @@ from .pendulum import (
 )
 from .acrobot import AcrobotEnv, AcrobotState, AcrobotAction
 from .lunar_lander import (
-    LunarLanderEnv,
     LunarLanderState,
     LunarLanderAction,
-    LunarLanderV2,
+    LunarLander,
 )
 from .bipedal_walker import (
-    BipedalWalkerEnv,
+    BipedalWalker,
     BipedalWalkerState,
     BipedalWalkerAction,
 )
 from .car_racing import (
-    CarRacingEnv,
+    CarRacing,
     CarRacingState,
     CarRacingAction,
-    CarRacingV2,
-    CarRacingV2State,
-    CarRacingV2Action,
+    CarRacingState,
+    CarRacingAction,
 )
-from .hopper_3d import (
-    Hopper3D,
-    Hopper3DState,
-    Hopper3DAction,
-    Hopper3DConstants,
+from .hopper import (
+    Hopper,
+    HopperState,
+    HopperAction,
+    HopperConstants,
 )
-from .hopper_gc import (
-    HopperGC,
-    HopperGCState,
-    HopperGCAction,
-    HopperGCConstants,
-)
-from .half_cheetah_gc import (
-    HalfCheetahGC,
-    HalfCheetahGCRenderer,
+from .half_cheetah import (
+    HalfCheetah,
+    HalfCheetahRenderer,
 )

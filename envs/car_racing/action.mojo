@@ -1,4 +1,4 @@
-"""CarRacing V2 action struct.
+"""CarRacing  action struct.
 
 This module defines the action representation for the GPU-enabled CarRacing environment.
 """
@@ -6,10 +6,10 @@ This module defines the action representation for the GPU-enabled CarRacing envi
 from core import Action
 
 
-struct CarRacingV2Action[DTYPE: DType](
+struct CarRacingAction[DTYPE: DType](
     Action, Copyable, ImplicitlyCopyable, Movable
 ):
-    """Continuous action for CarRacing V2: [steering, gas, brake].
+    """Continuous action for CarRacing : [steering, gas, brake].
 
     All values are in [-1, 1] range:
     - steering: -1 (left) to +1 (right)
@@ -20,15 +20,20 @@ struct CarRacingV2Action[DTYPE: DType](
     """
 
     var steering: Scalar[Self.DTYPE]  # -1 (left) to +1 (right)
-    var gas: Scalar[Self.DTYPE]       # -1 to +1 (mapped to [0, 1])
-    var brake: Scalar[Self.DTYPE]     # -1 to +1 (mapped to [0, 1])
+    var gas: Scalar[Self.DTYPE]  # -1 to +1 (mapped to [0, 1])
+    var brake: Scalar[Self.DTYPE]  # -1 to +1 (mapped to [0, 1])
 
     fn __init__(out self):
         self.steering = 0.0
         self.gas = 0.0
         self.brake = 0.0
 
-    fn __init__(out self, steering: Scalar[Self.DTYPE], gas: Scalar[Self.DTYPE], brake: Scalar[Self.DTYPE]):
+    fn __init__(
+        out self,
+        steering: Scalar[Self.DTYPE],
+        gas: Scalar[Self.DTYPE],
+        brake: Scalar[Self.DTYPE],
+    ):
         self.steering = steering
         self.gas = gas
         self.brake = brake
@@ -44,9 +49,11 @@ struct CarRacingV2Action[DTYPE: DType](
         self.brake = existing.brake
 
     @staticmethod
-    fn from_list(values: List[Scalar[Self.DTYPE]]) -> CarRacingV2Action[Self.DTYPE]:
+    fn from_list(
+        values: List[Scalar[Self.DTYPE]],
+    ) -> CarRacingAction[Self.DTYPE]:
         """Create action from list."""
-        var action = CarRacingV2Action[Self.DTYPE]()
+        var action = CarRacingAction[Self.DTYPE]()
         if len(values) > 0:
             action.steering = values[0]
         if len(values) > 1:
@@ -64,7 +71,7 @@ struct CarRacingV2Action[DTYPE: DType](
         return result^
 
     @staticmethod
-    fn from_discrete(action_idx: Int) -> CarRacingV2Action[Self.DTYPE]:
+    fn from_discrete(action_idx: Int) -> CarRacingAction[Self.DTYPE]:
         """Create action from discrete action index.
 
         Discrete actions:
@@ -74,7 +81,7 @@ struct CarRacingV2Action[DTYPE: DType](
         3: Gas
         4: Brake
         """
-        var action = CarRacingV2Action[Self.DTYPE]()
+        var action = CarRacingAction[Self.DTYPE]()
         if action_idx == 1:
             action.steering = -0.6
         elif action_idx == 2:

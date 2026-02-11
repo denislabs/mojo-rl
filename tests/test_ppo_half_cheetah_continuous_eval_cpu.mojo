@@ -1,7 +1,10 @@
-"""CPU evaluation with rendering for continuous PPO on HalfCheetah V2.
+"""CPU evaluation with 3D rendering for continuous PPO on HalfCheetah.
 
-This tests the trained continuous PPO model using the CPU evaluate method
-with optional rendering to visualize the agent's behavior.
+This tests the trained continuous PPO model using CPU evaluation
+with optional 3D visualization using the RenderableEnv trait.
+
+The HalfCheetah environment uses the Generalized Coordinates (GC) physics
+engine which provides MuJoCo-style joint-space dynamics.
 
 Run with:
     pixi run mojo run tests/test_ppo_half_cheetah_continuous_eval_cpu.mojo
@@ -9,20 +12,18 @@ Run with:
 
 from random import seed
 from time import perf_counter_ns
-from memory import UnsafePointer
 
 from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.half_cheetah import HalfCheetahPlanarV2, HCConstants
-from render import RendererBase
-from deep_rl import dtype
+from envs.half_cheetah import HalfCheetah, HalfCheetahConstants
 
 
 # =============================================================================
 # Constants (must match training configuration)
 # =============================================================================
 
-comptime OBS_DIM = HCConstants.OBS_DIM_VAL  # 17
-comptime ACTION_DIM = HCConstants.ACTION_DIM_VAL  # 6
+comptime C = HalfCheetahConstants[DType.float32]
+comptime OBS_DIM = C.OBS_DIM  # 17
+comptime ACTION_DIM = C.ACTION_DIM  # 6
 # Must match training configuration!
 comptime HIDDEN_DIM = 256
 comptime ROLLOUT_LEN = 512
@@ -43,7 +44,8 @@ comptime RENDER = True  # Set to False for headless evaluation
 fn main() raises:
     seed(42)
     print("=" * 70)
-    print("PPO Continuous Agent CPU Evaluation with Rendering")
+    print("PPO Continuous Agent CPU Evaluation with 3D Rendering")
+    print("HalfCheetah (Generalized Coordinates Physics)")
     print("=" * 70)
     print()
 
@@ -64,8 +66,8 @@ fn main() raises:
         gae_lambda=0.95,
         clip_epsilon=0.2,
         actor_lr=0.0003,
-        critic_lr=0.001,
-        entropy_coef=0.01,
+        critic_lr=0.0003,
+        entropy_coef=0.0,
         value_loss_coef=0.5,
         num_epochs=10,
         target_kl=0.0,
@@ -79,7 +81,7 @@ fn main() raises:
 
     print("Loading checkpoint...")
     try:
-        agent.load_checkpoint("ppo_half_cheetah_cleanrl.ckpt")
+        agent.load_checkpoint("ppo_half_cheetah.ckpt")
         print("Checkpoint loaded successfully!")
     except:
         print("Error loading checkpoint!")
@@ -93,110 +95,61 @@ fn main() raises:
     print()
 
     # =========================================================================
-    # Create environment and renderer
+    # Create environment and evaluate using RenderableEnv trait
     # =========================================================================
 
-    # Create CPU environment
-    var env = HalfCheetahPlanarV2[dtype]()
+    var env = HalfCheetah()
 
-    # Create renderer if enabled
+    print("Running CPU evaluation...")
+    print("  Episodes:", NUM_EPISODES)
+    print("  Max steps per episode:", MAX_STEPS)
+    print("  Rendering:", RENDER)
+    print()
+    print("HalfCheetah Physics:")
+    print("  - Generalized Coordinates (GC) engine")
+    print("  - MuJoCo-style joint-space dynamics")
+    print("  - Semi-implicit Euler integration")
+    print("  - 8 bodies, 10 joints (6 actuated)")
+
     @parameter
     if RENDER:
-        var renderer = RendererBase(
-            width=800,
-            height=400,
-            title="PPO HalfCheetah V2 Continuous - CPU Eval",
-        )
+        print("  Controls: Close window to exit")
+    print()
+    print("-" * 70)
 
-        print("Running CPU evaluation with rendering...")
-        print("  Episodes:", NUM_EPISODES)
-        print("  Max steps per episode:", MAX_STEPS)
-        print()
-        print(
-            "----------------------------------------------------------------------"
-        )
+    var start_time = perf_counter_ns()
 
-        var start_time = perf_counter_ns()
+    # Use the new evaluate_renderable method that leverages RenderableEnv trait
+    # The environment handles its own 3D renderer internally
+    var avg_reward = agent.evaluate_renderable(
+        env,
+        num_episodes=NUM_EPISODES,
+        max_steps=MAX_STEPS,
+        verbose=True,
+        stochastic=False,  # Use deterministic policy for evaluation
+        render=RENDER,
+        frame_delay_ms=20,  # ~50 FPS
+    )
 
-        # Run evaluation with rendering
-        var avg_reward = agent.evaluate[HalfCheetahPlanarV2[dtype]](
-            env,
-            num_episodes=NUM_EPISODES,
-            max_steps=MAX_STEPS,
-            verbose=True,
-            stochastic=True,  # Use sampling like training (set False for deterministic)
-            renderer=UnsafePointer(to=renderer),
-        )
+    var elapsed_ms = (perf_counter_ns() - start_time) / 1_000_000
 
-        var elapsed_ms = (perf_counter_ns() - start_time) / 1_000_000
+    print()
+    print("-" * 70)
+    print("CPU EVALUATION SUMMARY - HalfCheetah")
+    print("-" * 70)
+    print("Episodes:", NUM_EPISODES)
+    print("Average reward:", avg_reward)
+    print("Evaluation time:", elapsed_ms / 1000, "seconds")
+    print()
 
-        print()
-        print(
-            "----------------------------------------------------------------------"
-        )
-        print("CPU EVALUATION SUMMARY (with rendering)")
-        print(
-            "----------------------------------------------------------------------"
-        )
-        print("Episodes completed:", NUM_EPISODES)
-        print("Average reward:", avg_reward)
-        print("Evaluation time:", elapsed_ms / 1000, "seconds")
-        print()
-
-        if avg_reward > 1000:
-            print("Result: EXCELLENT - Agent is running fast!")
-        elif avg_reward > 500:
-            print("Result: GOOD - Agent learned to run!")
-        elif avg_reward > 0:
-            print("Result: OKAY - Model is learning but not optimal")
-        else:
-            print("Result: POOR - Model needs more training")
-
-        renderer.close()
-
+    if avg_reward > 1000:
+        print("Result: EXCELLENT - Agent is running fast!")
+    elif avg_reward > 500:
+        print("Result: GOOD - Agent learned to run!")
+    elif avg_reward > 0:
+        print("Result: OKAY - Model is learning but not optimal")
     else:
-        print("Running CPU evaluation (headless)...")
-        print("  Episodes:", NUM_EPISODES)
-        print("  Max steps per episode:", MAX_STEPS)
-        print()
-        print(
-            "----------------------------------------------------------------------"
-        )
-
-        var start_time = perf_counter_ns()
-
-        # Run evaluation without rendering (stochastic to match training)
-        var avg_reward = agent.evaluate[HalfCheetahPlanarV2[dtype]](
-            env,
-            num_episodes=NUM_EPISODES,
-            max_steps=MAX_STEPS,
-            verbose=True,
-            stochastic=True,  # Use sampling like training
-        )
-
-        var elapsed_ms = (perf_counter_ns() - start_time) / 1_000_000
-
-        print()
-        print(
-            "----------------------------------------------------------------------"
-        )
-        print("CPU EVALUATION SUMMARY (headless)")
-        print(
-            "----------------------------------------------------------------------"
-        )
-        print("Episodes completed:", NUM_EPISODES)
-        print("Average reward:", avg_reward)
-        print("Evaluation time:", elapsed_ms / 1000, "seconds")
-        print()
-
-        if avg_reward > 1000:
-            print("Result: EXCELLENT - Agent is running fast!")
-        elif avg_reward > 500:
-            print("Result: GOOD - Agent learned to run!")
-        elif avg_reward > 0:
-            print("Result: OKAY - Model is learning but not optimal")
-        else:
-            print("Result: POOR - Model needs more training")
+        print("Result: POOR - Model needs more training")
 
     print()
     print(">>> CPU Evaluation completed <<<")

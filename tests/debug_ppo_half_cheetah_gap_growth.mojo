@@ -4,8 +4,8 @@ This script trains with periodic evaluation to see when/how the gap appears.
 It also tracks log_std parameters to detect drift.
 
 Run with:
-    pixi run -e apple mojo run tests/debug_ppo_half_cheetah_gap_growth.mojo
-    pixi run -e nvidia mojo run tests/debug_ppo_half_cheetah_gap_growth.mojo
+    pixi run -e apple mojo run tests/debug_ppo_half_cheetah_gc_gap_growth.mojo
+    pixi run -e nvidia mojo run tests/debug_ppo_half_cheetah_gc_gap_growth.mojo
 """
 
 from random import seed
@@ -14,16 +14,17 @@ from time import perf_counter_ns
 from gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.half_cheetah import HalfCheetahPlanarV2, HCConstants
+from envs.half_cheetah import HalfCheetah, HalfCheetahConstants
 from deep_rl import dtype as gpu_dtype
 
 
 # =============================================================================
-# Constants (matching test_ppo_half_cheetah_continuous_gpu.mojo)
+# Constants (matching test_ppo_half_cheetah_gc_continuous_gpu.mojo)
 # =============================================================================
 
-comptime OBS_DIM = HCConstants.OBS_DIM_VAL  # 17
-comptime ACTION_DIM = HCConstants.ACTION_DIM_VAL  # 6
+comptime C = HalfCheetahConstants[DType.float32]
+comptime OBS_DIM = C.OBS_DIM  # 17
+comptime ACTION_DIM = C.ACTION_DIM  # 6
 comptime HIDDEN_DIM = 256
 comptime ROLLOUT_LEN = 512
 comptime N_ENVS = 256
@@ -32,8 +33,8 @@ comptime GPU_MINIBATCH_SIZE = 2048
 comptime dtype = DType.float32
 
 # Training configuration
-comptime TOTAL_EPISODES = 20_000
-comptime EVAL_EVERY = 500  # Evaluate every N episodes
+comptime TOTAL_EPISODES = 10_000
+comptime EVAL_EVERY = 1000  # Evaluate every N episodes
 comptime EVAL_EPISODES = 50
 comptime MAX_STEPS = 1000  # HalfCheetah episodes
 
@@ -54,10 +55,18 @@ fn main() raises:
     print("  OBS_DIM:", OBS_DIM)
     print("  ACTION_DIM:", ACTION_DIM)
     print("  HIDDEN_DIM:", HIDDEN_DIM)
-    print("  entropy_coef: 0.0 (CleanRL MuJoCo setting)")
+    print("  entropy_coef: 0.0 (MuJoCo standard)")
     print("  target_kl: 0.0 (disabled)")
     print("  anneal_lr: True")
+    print("  anneal_entropy: False")
     print("  normalize_rewards: True")
+    print()
+    print("HalfCheetah specifics:")
+    print("  - Generalized Coordinates physics (MuJoCo-style)")
+    print("  - SemiImplicitEulerIntegrator (symplectic, energy-conserving)")
+    print("  - 8-body articulated cheetah (torso, head, 2 legs)")
+    print("  - 17D observations")
+    print("  - 6D continuous actions (joint torques with gear ratios)")
     print()
 
     with DeviceContext() as ctx:
@@ -75,13 +84,13 @@ fn main() raises:
             clip_epsilon=0.2,
             actor_lr=0.0003,
             critic_lr=0.0003,  # Same as actor (CleanRL style)
-            entropy_coef=0.0,  # CleanRL: 0 for MuJoCo
+            entropy_coef=0.0,  # MuJoCo standard
             value_loss_coef=0.5,
             num_epochs=10,
             target_kl=0.0,  # KL early stopping disabled
             max_grad_norm=0.5,
             anneal_lr=True,  # CleanRL uses LR annealing
-            anneal_entropy=False,
+            anneal_entropy=False,  # No entropy annealing for MuJoCo
             target_total_steps=0,
             norm_adv_per_minibatch=True,
             checkpoint_every=0,  # Disable auto checkpoints
@@ -127,7 +136,9 @@ fn main() raises:
                 EVAL_EVERY, TOTAL_EPISODES - episodes_trained
             )
 
-            var metrics = agent.train_gpu[HalfCheetahPlanarV2[gpu_dtype]](
+            var metrics = agent.train_gpu[
+                HalfCheetah[gpu_dtype, TERMINATE_ON_UNHEALTHY=False]
+            ](
                 ctx,
                 num_episodes=episodes_this_round,
                 verbose=False,
@@ -147,9 +158,7 @@ fn main() raises:
                 )
 
             # Evaluate on GPU (stochastic)
-            var eval_gpu_avg = agent.evaluate_gpu[
-                HalfCheetahPlanarV2[gpu_dtype]
-            ](
+            var eval_gpu_avg = agent.evaluate_gpu[HalfCheetah[gpu_dtype]](
                 ctx,
                 num_episodes=EVAL_EPISODES,
                 max_steps=MAX_STEPS,
@@ -158,7 +167,7 @@ fn main() raises:
             )
 
             # Evaluate on CPU (stochastic)
-            var env = HalfCheetahPlanarV2[dtype]()
+            var env = HalfCheetah[dtype]()
             var eval_cpu_avg = agent.evaluate(
                 env,
                 num_episodes=EVAL_EPISODES,
@@ -208,7 +217,7 @@ fn main() raises:
         # Final summary
         print()
         print("=" * 130)
-        print("GAP GROWTH ANALYSIS")
+        print("GAP GROWTH ANALYSIS (HalfCheetah)")
         print("=" * 130)
         print()
 
@@ -217,7 +226,7 @@ fn main() raises:
             " Gap(GPU) | log_std[0] | log_std[1] | log_std[2] |"
             " log_std[3] | log_std[4] | log_std[5]"
         )
-        print("-" * 150)
+        print("-" * 140)
         for i in range(len(checkpoints)):
             var gap_cpu = train_rewards[i] - eval_cpu_rewards[i]
             var gap_gpu = train_rewards[i] - eval_gpu_rewards[i]
@@ -345,4 +354,4 @@ fn main() raises:
         print()
         print("=" * 130)
 
-    print(">>> Gap growth analysis completed <<<")
+    print(">>> Gap growth analysis completed (HalfCheetah) <<<")

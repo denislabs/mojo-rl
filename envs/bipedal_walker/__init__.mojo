@@ -1,9 +1,4 @@
-from .bipedal_walker_v1 import (
-    BipedalWalkerEnv,
-    BipedalWalkerState,
-    BipedalWalkerAction,
-)
-
-# v2: GPU-compatible version using physics2d
-from .bipedal_walker_v2 import BipedalWalkerV2
-from .constants_v2 import BWConstants
+from .bipedal_walker import BipedalWalker
+from .constants import BWConstants
+from .action import BipedalWalkerAction
+from .state import BipedalWalkerState

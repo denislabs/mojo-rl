@@ -1,11 +1,11 @@
-"""HopperGC State struct for RL observations."""
+"""Hopper State struct for RL observations."""
 
 from core import State
-from .constants_gc import HopperGCConstants
+from .constants import HopperConstants
 
 
-struct HopperGCState[DTYPE: DType = DType.float64](Copyable, Movable, State):
-    """State observation for HopperGC (11D).
+struct HopperState[DTYPE: DType = DType.float64](Copyable, Movable, State):
+    """State observation for Hopper (11D).
 
     Observation layout (matching MuJoCo Hopper):
         [0]: z position (rootz qpos) - height of torso
@@ -25,15 +25,15 @@ struct HopperGCState[DTYPE: DType = DType.float64](Copyable, Movable, State):
     """
 
     # Position observations (5D)
-    var z_position: Scalar[Self.DTYPE]     # rootz qpos
-    var y_angle: Scalar[Self.DTYPE]        # rooty qpos (pitch)
-    var thigh_angle: Scalar[Self.DTYPE]    # thigh qpos
-    var leg_angle: Scalar[Self.DTYPE]      # leg qpos
-    var foot_angle: Scalar[Self.DTYPE]     # foot qpos
+    var z_position: Scalar[Self.DTYPE]  # rootz qpos
+    var y_angle: Scalar[Self.DTYPE]  # rooty qpos (pitch)
+    var thigh_angle: Scalar[Self.DTYPE]  # thigh qpos
+    var leg_angle: Scalar[Self.DTYPE]  # leg qpos
+    var foot_angle: Scalar[Self.DTYPE]  # foot qpos
 
     # Velocity observations (6D)
-    var x_velocity: Scalar[Self.DTYPE]     # rootx qvel
-    var z_velocity: Scalar[Self.DTYPE]     # rootz qvel
+    var x_velocity: Scalar[Self.DTYPE]  # rootx qvel
+    var z_velocity: Scalar[Self.DTYPE]  # rootz qvel
     var y_angular_velocity: Scalar[Self.DTYPE]  # rooty qvel
     var thigh_angular_velocity: Scalar[Self.DTYPE]
     var leg_angular_velocity: Scalar[Self.DTYPE]
@@ -109,9 +109,9 @@ struct HopperGCState[DTYPE: DType = DType.float64](Copyable, Movable, State):
         return obs^
 
     @staticmethod
-    fn from_list(obs: List[Scalar[DTYPE]]) -> HopperGCState[DTYPE]:
+    fn from_list(obs: List[Scalar[DTYPE]]) -> HopperState[DTYPE]:
         """Create state from observation list."""
-        var state = HopperGCState[DTYPE]()
+        var state = HopperState[DTYPE]()
         if len(obs) >= 11:
             state.z_position = obs[0]
             state.y_angle = obs[1]

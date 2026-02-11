@@ -1,6 +1,6 @@
-"""HalfCheetahGC Renderer using the GPU-accelerated Renderer3D.
+"""HalfCheetah Renderer using the GPU-accelerated Renderer3D.
 
-Provides visualization of the HalfCheetahGC environment with:
+Provides visualization of the HalfCheetah environment with:
 - GPU-rendered capsule bodies for each body segment (8 total: torso, head, and 6 leg segments)
 - Color-coded body parts (torso, head, back leg, front leg)
 - Procedural checkerboard ground plane
@@ -43,12 +43,12 @@ comptime Quat = QuatGeneric[DType.float64]
 
 
 # =============================================================================
-# Color Scheme for HalfCheetahGC
+# Color Scheme for HalfCheetah
 # =============================================================================
 
 
-struct HalfCheetahGCColors:
-    """Color scheme for HalfCheetahGC visualization."""
+struct HalfCheetahColors:
+    """Color scheme for HalfCheetah visualization."""
 
     @staticmethod
     fn torso() -> Color3D:
@@ -97,12 +97,12 @@ struct HalfCheetahGCColors:
 
 
 # =============================================================================
-# HalfCheetahGC Renderer
+# HalfCheetah Renderer
 # =============================================================================
 
 
-struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
-    """Renderer for HalfCheetahGC environment.
+struct HalfCheetahRenderer(EnvRenderer3D, Movable):
+    """Renderer for HalfCheetah environment.
 
     Uses GPU-rendered capsules to visualize each body segment of the half cheetah.
     Supports interactive camera control for orbit, zoom, and pan.
@@ -145,7 +145,7 @@ struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
         fshin_half_length: Float64 = FSHIN_HALF_LENGTH,
         ffoot_half_length: Float64 = FFOOT_HALF_LENGTH,
     ) raises:
-        """Initialize the HalfCheetahGC renderer.
+        """Initialize the HalfCheetah renderer.
 
         Args:
             width: Window width in pixels.
@@ -215,7 +215,7 @@ struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
 
     fn init(mut self) raises -> None:
         """Initialize the renderer window."""
-        var title = String("HalfCheetahGC Environment")
+        var title = String("HalfCheetah Environment")
         self.renderer.init(title)
         self.initialized = True
 
@@ -239,7 +239,7 @@ struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
         quaternions: List[Quat],
         vel_x: Float64 = 0.0,
     ):
-        """Render the HalfCheetahGC state.
+        """Render the HalfCheetah state.
 
         Args:
             positions: List of 8 body positions (torso, bthigh, bshin, bfoot, fthigh, fshin, ffoot, head).
@@ -265,7 +265,9 @@ struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
         # Draw ground grid (GPU shader checkerboard)
         # Offset ground slightly below z=0 to account for visual radius scaling
         # (visual capsule bottom extends below physics contact point)
-        var ground_offset = -self.capsule_radius * (Self.VISUAL_RADIUS_SCALE - 1.0)
+        var ground_offset = -self.capsule_radius * (
+            Self.VISUAL_RADIUS_SCALE - 1.0
+        )
         var grid_center_x = torso_pos.x if self.follow_cheetah else 0.0
         self.renderer.draw_ground_grid(grid_center_x, height=ground_offset)
 
@@ -281,12 +283,20 @@ struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
         try:
             self._draw_torso(positions[BODY_TORSO], quaternions[BODY_TORSO])
             self._draw_head(positions[BODY_HEAD], quaternions[BODY_HEAD])
-            self._draw_back_thigh(positions[BODY_BTHIGH], quaternions[BODY_BTHIGH])
+            self._draw_back_thigh(
+                positions[BODY_BTHIGH], quaternions[BODY_BTHIGH]
+            )
             self._draw_back_shin(positions[BODY_BSHIN], quaternions[BODY_BSHIN])
             self._draw_back_foot(positions[BODY_BFOOT], quaternions[BODY_BFOOT])
-            self._draw_front_thigh(positions[BODY_FTHIGH], quaternions[BODY_FTHIGH])
-            self._draw_front_shin(positions[BODY_FSHIN], quaternions[BODY_FSHIN])
-            self._draw_front_foot(positions[BODY_FFOOT], quaternions[BODY_FFOOT])
+            self._draw_front_thigh(
+                positions[BODY_FTHIGH], quaternions[BODY_FTHIGH]
+            )
+            self._draw_front_shin(
+                positions[BODY_FSHIN], quaternions[BODY_FSHIN]
+            )
+            self._draw_front_foot(
+                positions[BODY_FFOOT], quaternions[BODY_FFOOT]
+            )
         except:
             pass
 
@@ -308,7 +318,7 @@ struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
             radius=self.capsule_radius * Self.VISUAL_RADIUS_SCALE,
             half_height=self.torso_half_length,
             axis=2,  # Z-axis, will be rotated by quat to lie along X
-            color=HalfCheetahGCColors.torso(),
+            color=HalfCheetahColors.torso(),
         )
 
     fn _draw_head(mut self, pos: Vec3, quat: Quat) raises:
@@ -319,7 +329,7 @@ struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
             radius=self.capsule_radius * Self.VISUAL_RADIUS_SCALE,
             half_height=self.head_half_length,
             axis=2,  # Z-axis, will be rotated by quat
-            color=HalfCheetahGCColors.head(),
+            color=HalfCheetahColors.head(),
         )
 
     fn _draw_back_thigh(mut self, pos: Vec3, quat: Quat) raises:
@@ -330,7 +340,7 @@ struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
             radius=self.capsule_radius * Self.VISUAL_RADIUS_SCALE,
             half_height=self.bthigh_half_length,
             axis=2,  # Z-axis (vertical)
-            color=HalfCheetahGCColors.back_thigh(),
+            color=HalfCheetahColors.back_thigh(),
         )
 
     fn _draw_back_shin(mut self, pos: Vec3, quat: Quat) raises:
@@ -341,7 +351,7 @@ struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
             radius=self.capsule_radius * Self.VISUAL_RADIUS_SCALE,
             half_height=self.bshin_half_length,
             axis=2,  # Z-axis (vertical)
-            color=HalfCheetahGCColors.back_shin(),
+            color=HalfCheetahColors.back_shin(),
         )
 
     fn _draw_back_foot(mut self, pos: Vec3, quat: Quat) raises:
@@ -352,7 +362,7 @@ struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
             radius=self.capsule_radius * Self.VISUAL_RADIUS_SCALE,
             half_height=self.bfoot_half_length,
             axis=2,  # Z-axis, will be rotated by quat to lie along X
-            color=HalfCheetahGCColors.back_foot(),
+            color=HalfCheetahColors.back_foot(),
         )
 
     fn _draw_front_thigh(mut self, pos: Vec3, quat: Quat) raises:
@@ -363,7 +373,7 @@ struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
             radius=self.capsule_radius * Self.VISUAL_RADIUS_SCALE,
             half_height=self.fthigh_half_length,
             axis=2,  # Z-axis (vertical)
-            color=HalfCheetahGCColors.front_thigh(),
+            color=HalfCheetahColors.front_thigh(),
         )
 
     fn _draw_front_shin(mut self, pos: Vec3, quat: Quat) raises:
@@ -374,7 +384,7 @@ struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
             radius=self.capsule_radius * Self.VISUAL_RADIUS_SCALE,
             half_height=self.fshin_half_length,
             axis=2,  # Z-axis (vertical)
-            color=HalfCheetahGCColors.front_shin(),
+            color=HalfCheetahColors.front_shin(),
         )
 
     fn _draw_front_foot(mut self, pos: Vec3, quat: Quat) raises:
@@ -385,7 +395,7 @@ struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
             radius=self.capsule_radius * Self.VISUAL_RADIUS_SCALE,
             half_height=self.ffoot_half_length,
             axis=2,  # Z-axis, will be rotated by quat to lie along X
-            color=HalfCheetahGCColors.front_foot(),
+            color=HalfCheetahColors.front_foot(),
         )
 
     fn _draw_velocity_indicator(mut self, torso_pos: Vec3, vel_x: Float64):
@@ -397,7 +407,9 @@ struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
         )
 
         # Main arrow line
-        self.renderer.draw_line_3d(arrow_start, arrow_end, HalfCheetahGCColors.velocity())
+        self.renderer.draw_line_3d(
+            arrow_start, arrow_end, HalfCheetahColors.velocity()
+        )
 
         # Add arrowhead if velocity is significant
         if abs(arrow_length) > 0.03:
@@ -410,7 +422,7 @@ struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
                     arrow_end.y,
                     arrow_end.z + head_size,
                 ),
-                HalfCheetahGCColors.velocity(),
+                HalfCheetahColors.velocity(),
             )
             self.renderer.draw_line_3d(
                 arrow_end,
@@ -419,7 +431,7 @@ struct HalfCheetahGCRenderer(EnvRenderer3D, Movable):
                     arrow_end.y,
                     arrow_end.z - head_size,
                 ),
-                HalfCheetahGCColors.velocity(),
+                HalfCheetahColors.velocity(),
             )
 
     fn orbit_camera(mut self, delta_theta: Float64, delta_phi: Float64) -> None:

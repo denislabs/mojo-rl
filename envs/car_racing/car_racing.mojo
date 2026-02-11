@@ -1,4 +1,4 @@
-"""CarRacing V2 GPU environment using the physics2d/car/ module.
+"""CarRacing  GPU environment using the physics2d/car/ module.
 
 This implementation uses the modular car physics components:
 - CarRacingLayout for compile-time layout computation
@@ -32,10 +32,10 @@ from render import (
     rgb,
 )
 
-from .state import CarRacingV2State
-from .action import CarRacingV2Action
+from .state import CarRacingState
+from .action import CarRacingAction
 from .constants import CRConstants
-from .track import TrackTileV2, TrackGenerator
+from .track import TrackTile, TrackGenerator
 
 from physics2d import dtype, TPB
 from physics2d.car import (
@@ -83,11 +83,11 @@ from physics2d.car.layout import (
 
 
 # =============================================================================
-# CarRacingV2 Environment
+# CarRacing Environment
 # =============================================================================
 
 
-struct CarRacingV2[DTYPE: DType](
+struct CarRacing[DTYPE: DType](
     BoxContinuousActionEnv, Copyable, GPUContinuousEnv, Movable
 ):
     """CarRacing environment with GPU-accelerated physics.
@@ -103,7 +103,7 @@ struct CarRacingV2[DTYPE: DType](
 
     CPU Mode:
     - Uses CarDynamics.step_single_env() for physics
-    - Track stored in List[TrackTileV2]
+    - Track stored in List[TrackTile]
 
     GPU Mode (batch):
     - Uses CarPhysicsKernel.step_gpu() for batched physics
@@ -118,8 +118,8 @@ struct CarRacingV2[DTYPE: DType](
     comptime ACTION_DIM: Int = CRConstants.ACTION_DIM
     comptime STEP_WS_SHARED: Int = 0
     comptime STEP_WS_PER_ENV: Int = 0
-    comptime StateType = CarRacingV2State[Self.DTYPE]
-    comptime ActionType = CarRacingV2Action[Self.DTYPE]
+    comptime StateType = CarRacingState[Self.DTYPE]
+    comptime ActionType = CarRacingAction[Self.DTYPE]
 
     # Track generator (Float64 for precision)
     var track: TrackGenerator[DType.float64]
@@ -143,7 +143,7 @@ struct CarRacingV2[DTYPE: DType](
     var domain_randomize: Bool
 
     # Cached state
-    var cached_state: CarRacingV2State[Self.dtype]
+    var cached_state: CarRacingState[Self.dtype]
 
     # =========================================================================
     # Initialization
@@ -155,7 +155,7 @@ struct CarRacingV2[DTYPE: DType](
         lap_complete_percent: Float64 = CRConstants.LAP_COMPLETE_PERCENT,
         domain_randomize: Bool = False,
     ):
-        """Initialize the CarRacing V2 environment.
+        """Initialize the CarRacing environment.
 
         Args:
             max_steps: Maximum steps per episode (0 = unlimited).
@@ -189,7 +189,7 @@ struct CarRacingV2[DTYPE: DType](
         self.domain_randomize = domain_randomize
 
         # Cached state
-        self.cached_state = CarRacingV2State[Self.dtype]()
+        self.cached_state = CarRacingState[Self.dtype]()
 
     fn __copyinit__(out self, other: Self):
         self.track = TrackGenerator[DType.float64]()
@@ -659,7 +659,7 @@ struct CarRacingV2[DTYPE: DType](
         mut self, action: Scalar[Self.dtype]
     ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
         """Step with single action (applies to steering only)."""
-        var act = CarRacingV2Action[Self.dtype](action, 0.0, 0.0)
+        var act = CarRacingAction[Self.dtype](action, 0.0, 0.0)
         var result = self.step(act)
         return (
             result[0].to_list_typed[Self.dtype](),
@@ -676,7 +676,7 @@ struct CarRacingV2[DTYPE: DType](
         var typed_action = List[Scalar[Self.dtype]]()
         for i in range(len(action)):
             typed_action.append(Scalar[Self.dtype](action[i]))
-        var act = CarRacingV2Action[Self.dtype].from_list(typed_action)
+        var act = CarRacingAction[Self.dtype].from_list(typed_action)
         var result = self.step(act)
         return (
             result[0].to_list_typed[DTYPE_VEC](),
@@ -960,7 +960,9 @@ struct CarRacingV2[DTYPE: DType](
         mut obs: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
         curriculum_values: List[Scalar[dtype]] = [],
-        workspace_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
+        workspace_ptr: UnsafePointer[
+            Scalar[dtype], MutAnyOrigin
+        ] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
     ) raises:
         """Perform one environment step with embedded track (GPUContinuousEnv trait).
 
@@ -1024,7 +1026,7 @@ struct CarRacingV2[DTYPE: DType](
             var env = Int(block_dim.x * block_idx.x + thread_idx.x)
             if env >= BATCH_SIZE:
                 return
-            CarRacingV2[Self.dtype]._step_env_gpu_embedded[
+            CarRacing[Self.dtype]._step_env_gpu_embedded[
                 BATCH_SIZE, STATE_SIZE, OBS_DIM, ACTION_DIM
             ](env, states, actions, rewards, dones, obs)
 
@@ -1077,7 +1079,7 @@ struct CarRacingV2[DTYPE: DType](
                 return
             # Combine seed with env index using prime multiplier for good distribution
             var combined_seed = Int(seed) * 2654435761 + env * 12345
-            CarRacingV2[Self.dtype]._reset_env_gpu[BATCH_SIZE, STATE_SIZE](
+            CarRacing[Self.dtype]._reset_env_gpu[BATCH_SIZE, STATE_SIZE](
                 states, env, combined_seed
             )
 
@@ -1137,7 +1139,7 @@ struct CarRacingV2[DTYPE: DType](
             if rebind[Scalar[dtype]](dones[env]) > Scalar[dtype](0.5):
                 # Combine seed with env index using prime multiplier for good distribution
                 var combined_seed = Int(seed) * 2654435761 + env * 12345
-                CarRacingV2[Self.dtype]._reset_env_gpu[BATCH_SIZE, STATE_SIZE](
+                CarRacing[Self.dtype]._reset_env_gpu[BATCH_SIZE, STATE_SIZE](
                     states, env, combined_seed
                 )
                 dones[env] = Scalar[dtype](0.0)
@@ -1160,7 +1162,8 @@ struct CarRacingV2[DTYPE: DType](
         states_buf: DeviceBuffer[dtype],
         mut obs_buf: DeviceBuffer[dtype],
     ) raises:
-        """Extract observations from state buffer (trivial copy: obs = state[0:OBS_DIM])."""
+        """Extract observations from state buffer (trivial copy: obs = state[0:OBS_DIM]).
+        """
         var states = LayoutTensor[
             dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL), MutAnyOrigin
         ](states_buf.unsafe_ptr())
@@ -1173,7 +1176,9 @@ struct CarRacingV2[DTYPE: DType](
         @always_inline
         fn extract_obs(
             states: LayoutTensor[
-                dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL), MutAnyOrigin
+                dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
+                MutAnyOrigin,
             ],
             obs: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE, OBS_DIM_VAL), MutAnyOrigin
@@ -1243,7 +1248,7 @@ struct CarRacingV2[DTYPE: DType](
             states[env, i] = Scalar[dtype](0.0)
 
         # Generate random track and get number of tiles
-        var num_tiles = CarRacingV2[Self.dtype]._generate_random_track_gpu[
+        var num_tiles = CarRacing[Self.dtype]._generate_random_track_gpu[
             BATCH_SIZE, STATE_SIZE
         ](states, env, rng)
 

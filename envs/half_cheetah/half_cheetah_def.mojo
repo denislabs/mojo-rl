@@ -315,7 +315,7 @@ comptime HalfCheetahRobot = RobotDef[
 struct HalfCheetahParams[DTYPE: DType = DType.float64]:
     """Environment-specific parameters not derivable from the robot definition.
 
-    Replaces the former HalfCheetahGCConstants struct. Everything about body
+    Replaces the former HalfCheetahConstants struct. Everything about body
     geometry, joint limits, gear ratios, damping, stiffness, and indices is
     now in the robot definition (BodySpec/JointSpec).
 
@@ -440,9 +440,9 @@ comptime HalfCheetahParamsCPU = HalfCheetahParams[DType.float64]
 comptime HalfCheetahParamsGPU = HalfCheetahParams[DType.float32]
 
 # Backward-compatibility aliases (old name → new name)
-comptime HalfCheetahGCConstants = HalfCheetahParams
-comptime HalfCheetahGCConstantsCPU = HalfCheetahParamsCPU
-comptime HalfCheetahGCConstantsGPU = HalfCheetahParamsGPU
+comptime HalfCheetahConstants = HalfCheetahParams
+comptime HalfCheetahConstantsCPU = HalfCheetahParamsCPU
+comptime HalfCheetahConstantsGPU = HalfCheetahParamsGPU
 
 
 # =============================================================================

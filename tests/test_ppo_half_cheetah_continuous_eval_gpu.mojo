@@ -1,7 +1,7 @@
-"""Quick GPU-only evaluation to verify continuous PPO checkpoint works on HalfCheetah V2.
+"""Quick GPU-only evaluation to verify continuous PPO checkpoint works on HalfCheetah.
 
 This tests that the trained continuous PPO model performs well on the GPU environment
-it was trained on.
+it was trained on using the Generalized Coordinates (GC) physics engine.
 
 Run with:
     pixi run -e apple mojo run tests/test_ppo_half_cheetah_continuous_eval_gpu.mojo
@@ -14,7 +14,7 @@ from time import perf_counter_ns
 from gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.half_cheetah import HalfCheetahPlanarV2, HCConstants
+from envs.half_cheetah import HalfCheetah, HalfCheetahConstants
 from deep_rl import dtype as gpu_dtype
 
 
@@ -22,8 +22,9 @@ from deep_rl import dtype as gpu_dtype
 # Constants (must match training configuration)
 # =============================================================================
 
-comptime OBS_DIM = HCConstants.OBS_DIM_VAL  # 17
-comptime ACTION_DIM = HCConstants.ACTION_DIM_VAL  # 6
+comptime C = HalfCheetahConstants[gpu_dtype]
+comptime OBS_DIM = C.OBS_DIM  # 17
+comptime ACTION_DIM = C.ACTION_DIM  # 6
 # Must match training configuration!
 comptime HIDDEN_DIM = 256
 comptime ROLLOUT_LEN = 512
@@ -43,7 +44,7 @@ comptime MAX_STEPS = 1000  # HalfCheetah MAX_STEPS
 fn main() raises:
     seed(42)
     print("=" * 70)
-    print("PPO Continuous Agent GPU Evaluation on HalfCheetah V2")
+    print("PPO Continuous Agent GPU Evaluation on HalfCheetah")
     print("=" * 70)
     print()
 
@@ -61,24 +62,24 @@ fn main() raises:
             gae_lambda=0.95,
             clip_epsilon=0.2,
             actor_lr=0.0003,
-            critic_lr=0.001,
-            entropy_coef=0.01,  # Match training
+            critic_lr=0.0003,
+            entropy_coef=0.0,
             value_loss_coef=0.5,
             num_epochs=10,
-            target_kl=0.0,  # Match training
+            target_kl=0.0,
             max_grad_norm=0.5,
-            anneal_lr=False,  # Match training
+            anneal_lr=False,
             anneal_entropy=False,
             target_total_steps=0,
             norm_adv_per_minibatch=True,
             checkpoint_every=1000,
-            checkpoint_path="ppo_half_cheetah_cleanrl.ckpt",
-            normalize_rewards=True,  # Match training
+            checkpoint_path="ppo_half_cheetah.ckpt",
+            normalize_rewards=True,
         )
 
         print("Loading checkpoint...")
         try:
-            agent.load_checkpoint("ppo_half_cheetah_cleanrl.ckpt")
+            agent.load_checkpoint("ppo_half_cheetah.ckpt")
             print("Checkpoint loaded successfully!")
         except:
             print("Error loading checkpoint!")
@@ -125,9 +126,7 @@ fn main() raises:
 
         var start_time = perf_counter_ns()
 
-        var stochastic_reward = agent.evaluate_gpu[
-            HalfCheetahPlanarV2[gpu_dtype]
-        ](
+        var stochastic_reward = agent.evaluate_gpu[HalfCheetah[gpu_dtype]](
             ctx,
             num_episodes=EVAL_EPISODES,
             max_steps=MAX_STEPS,
@@ -144,9 +143,7 @@ fn main() raises:
 
         start_time = perf_counter_ns()
 
-        var deterministic_reward = agent.evaluate_gpu[
-            HalfCheetahPlanarV2[gpu_dtype]
-        ](
+        var deterministic_reward = agent.evaluate_gpu[HalfCheetah[gpu_dtype]](
             ctx,
             num_episodes=EVAL_EPISODES,
             max_steps=MAX_STEPS,
@@ -162,7 +159,7 @@ fn main() raises:
 
         print()
         print("=" * 70)
-        print("GPU EVALUATION SUMMARY")
+        print("GPU EVALUATION SUMMARY - HalfCheetah")
         print("=" * 70)
         print()
         print("Stochastic policy (sampling from distribution):")

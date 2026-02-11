@@ -1,4 +1,4 @@
-"""BipedalWalker v2 GPU environment using the physics2d modular architecture.
+"""BipedalWalker GPU environment using the physics2d modular architecture.
 
 This implementation uses the new modular physics components:
 - BipedalWalkerLayout for compile-time layout computation
@@ -40,7 +40,7 @@ from render import (
 
 from .state import BipedalWalkerState
 from .action import BipedalWalkerAction
-from .constants_v2 import BWConstants
+from .constants import BWConstants
 
 from physics2d.integrators.euler import SemiImplicitEuler
 from physics2d.collision.edge_terrain import EdgeTerrainCollision
@@ -96,17 +96,19 @@ from physics2d import (
 
 
 # =============================================================================
-# BipedalWalkerV2 Environment
+# BipedalWalker Environment
 # =============================================================================
 
 
-struct BipedalWalkerV2[DTYPE: DType,](
+struct BipedalWalker[
+    DTYPE: DType,
+](
     BoxContinuousActionEnv,
     Copyable,
     GPUContinuousEnv,
     Movable,
 ):
-    """BipedalWalker v2 environment with GPU-compatible physics.
+    """BipedalWalker  environment with GPU-compatible physics.
 
     Uses physics2d architecture for efficient batched simulation:
     - PhysicsState for accessing physics data in flat layout
@@ -1391,7 +1393,9 @@ struct BipedalWalkerV2[DTYPE: DType,](
         mut obs_buf: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
         curriculum_values: List[Scalar[dtype]] = [],
-        workspace_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
+        workspace_ptr: UnsafePointer[
+            Scalar[dtype], MutAnyOrigin
+        ] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
     ) raises:
         """GPU step kernel for batched continuous actions."""
         # Allocate workspace buffers
@@ -1406,10 +1410,10 @@ struct BipedalWalkerV2[DTYPE: DType,](
         var joint_counts_buf = ctx.enqueue_create_buffer[dtype](BATCH_SIZE)
 
         # Initialize shapes
-        BipedalWalkerV2[Self.dtype]._init_shapes_gpu(ctx, shapes_buf)
+        BipedalWalker[Self.dtype]._init_shapes_gpu(ctx, shapes_buf)
 
         # Fused step kernel
-        BipedalWalkerV2[Self.dtype]._fused_step_gpu[
+        BipedalWalker[Self.dtype]._fused_step_gpu[
             BATCH_SIZE, OBS_DIM, ACTION_DIM
         ](
             ctx,
@@ -1452,7 +1456,7 @@ struct BipedalWalkerV2[DTYPE: DType,](
             if i >= BATCH_SIZE:
                 return
             var combined_seed = Int(seed) * 2654435761 + (i + 1) * 12345
-            BipedalWalkerV2[Self.dtype]._reset_env_gpu[BATCH_SIZE, STATE_SIZE](
+            BipedalWalker[Self.dtype]._reset_env_gpu[BATCH_SIZE, STATE_SIZE](
                 states, i, combined_seed
             )
 
@@ -1500,7 +1504,7 @@ struct BipedalWalkerV2[DTYPE: DType,](
             var done_val = dones[i]
             if done_val > Scalar[dtype](0.5):
                 var combined_seed = Int(seed) * 2654435761 + (i + 1) * 12345
-                BipedalWalkerV2[Self.dtype]._reset_env_gpu[
+                BipedalWalker[Self.dtype]._reset_env_gpu[
                     BATCH_SIZE, STATE_SIZE
                 ](states, i, combined_seed)
                 # Clear done flag after reset
@@ -1524,7 +1528,8 @@ struct BipedalWalkerV2[DTYPE: DType,](
         states_buf: DeviceBuffer[dtype],
         mut obs_buf: DeviceBuffer[dtype],
     ) raises:
-        """Extract observations from state buffer (trivial copy: obs = state[0:OBS_DIM])."""
+        """Extract observations from state buffer (trivial copy: obs = state[0:OBS_DIM]).
+        """
         var states = LayoutTensor[
             dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL), MutAnyOrigin
         ](states_buf.unsafe_ptr())
@@ -1537,7 +1542,9 @@ struct BipedalWalkerV2[DTYPE: DType,](
         @always_inline
         fn extract_obs(
             states: LayoutTensor[
-                dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL), MutAnyOrigin
+                dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
+                MutAnyOrigin,
             ],
             obs: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE, OBS_DIM_VAL), MutAnyOrigin
@@ -1787,7 +1794,7 @@ struct BipedalWalkerV2[DTYPE: DType,](
             states[env, force_off + 2] = Scalar[dtype](0)
 
         # Compute initial observation (matches CPU _update_cached_state)
-        BipedalWalkerV2[Self.dtype]._compute_initial_obs_reset_gpu[
+        BipedalWalker[Self.dtype]._compute_initial_obs_reset_gpu[
             BATCH_SIZE, STATE_SIZE
         ](states, env)
 
@@ -2158,7 +2165,7 @@ struct BipedalWalkerV2[DTYPE: DType,](
                 return
 
             # Apply motor actions to joints
-            BipedalWalkerV2[Self.dtype]._apply_motor_actions_gpu[
+            BipedalWalker[Self.dtype]._apply_motor_actions_gpu[
                 BATCH_SIZE, STATE_SIZE, ACTION_DIM
             ](env, states, actions)
 
@@ -2282,12 +2289,12 @@ struct BipedalWalkerV2[DTYPE: DType,](
             ] = hull_contact
 
             # Step 8: Compute lidar (10 rays from hull)
-            BipedalWalkerV2[Self.dtype]._compute_lidar_gpu[
+            BipedalWalker[Self.dtype]._compute_lidar_gpu[
                 BATCH_SIZE, STATE_SIZE, OBS_DIM
             ](env, states, obs)
 
             # Extract observation (non-lidar parts)
-            BipedalWalkerV2[Self.dtype]._extract_obs_gpu[
+            BipedalWalker[Self.dtype]._extract_obs_gpu[
                 BATCH_SIZE, STATE_SIZE, OBS_DIM
             ](env, states, obs)
 

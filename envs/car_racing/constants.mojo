@@ -1,4 +1,4 @@
-"""CarRacing V2 environment constants.
+"""CarRacing environment constants.
 
 These constants define the environment configuration, using physics constants
 from physics2d/car/ for consistency with the GPU physics implementation.

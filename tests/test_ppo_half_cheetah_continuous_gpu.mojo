@@ -1,19 +1,19 @@
-"""Test PPO Continuous Agent GPU Training on HalfCheetah V2.
+"""Test PPO Continuous Agent GPU Training on HalfCheetah.
 
 This tests the GPU implementation of PPO with continuous actions using the
-HalfCheetahPlanarV2 environment with:
+HalfCheetah environment with:
 - Parallel environments on GPU
-- Full rigid body physics with motor-enabled joints (physics2d modular)
-- 6D continuous action space (back/front leg joint torques)
-- 17D observation (torso state + joint angles + velocities)
+- Generalized Coordinates (GC) physics engine (MuJoCo-style)
+- 6D continuous action space (joint torques)
+- 17D observation (qpos + qvel excluding rootx and head)
 
 Action space (6D continuous):
-- action[0]: back thigh (hip) torque (-1.0 to 1.0)
-- action[1]: back shin (knee) torque (-1.0 to 1.0)
-- action[2]: back foot (ankle) torque (-1.0 to 1.0)
-- action[3]: front thigh (hip) torque (-1.0 to 1.0)
-- action[4]: front shin (knee) torque (-1.0 to 1.0)
-- action[5]: front foot (ankle) torque (-1.0 to 1.0)
+- action[0]: back thigh (hip) torque (-1.0 to 1.0) * gear=120
+- action[1]: back shin (knee) torque (-1.0 to 1.0) * gear=90
+- action[2]: back foot (ankle) torque (-1.0 to 1.0) * gear=60
+- action[3]: front thigh (hip) torque (-1.0 to 1.0) * gear=120
+- action[4]: front shin (knee) torque (-1.0 to 1.0) * gear=60
+- action[5]: front foot (ankle) torque (-1.0 to 1.0) * gear=30
 
 Run with:
     pixi run -e apple mojo run tests/test_ppo_half_cheetah_continuous_gpu.mojo    # Apple Silicon
@@ -26,7 +26,11 @@ from time import perf_counter_ns
 from gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.half_cheetah import HalfCheetahPlanarV2, HCConstants
+from envs.half_cheetah import (
+    HalfCheetah,
+    HalfCheetahConstants,
+    HalfCheetahCurriculum,
+)
 
 
 # =============================================================================
@@ -34,20 +38,19 @@ from envs.half_cheetah import HalfCheetahPlanarV2, HCConstants
 # =============================================================================
 
 # HalfCheetah: 17D observation, 6D continuous action
-comptime OBS_DIM = HCConstants.OBS_DIM_VAL  # 17: torso state + joint angles/velocities
-comptime ACTION_DIM = HCConstants.ACTION_DIM_VAL  # 6: [bthigh, bshin, bfoot, fthigh, fshin, ffoot]
+comptime C = HalfCheetahConstants[DType.float32]
+comptime OBS_DIM = C.OBS_DIM  # 17
+comptime ACTION_DIM = C.ACTION_DIM  # 6
 
 # Network architecture (scaled for GPU)
 comptime HIDDEN_DIM = 256  # Larger network for GPU efficiency
 
 # GPU training parameters (GPU-optimized with CleanRL ratios)
-# CleanRL uses 2048 steps * 1 env = 2048 batch, 32 minibatches = 64 per minibatch
-# Scaled for GPU: 256 envs * 512 steps = 131072 batch, ~64 minibatches = 2048 per minibatch
-comptime ROLLOUT_LEN = 512  # Longer than before for better GAE
+comptime ROLLOUT_LEN = 512  # Longer rollouts for better GAE
 comptime N_ENVS = 256  # Good GPU parallelism
 comptime GPU_MINIBATCH_SIZE = 2048  # Efficient GPU batch size
 
-# Training duration (HalfCheetah needs many episodes to learn running)
+# Training duration
 comptime NUM_EPISODES = 50_000
 
 comptime dtype = DType.float32
@@ -61,7 +64,7 @@ comptime dtype = DType.float32
 fn main() raises:
     seed(42)
     print("=" * 70)
-    print("PPO Continuous Agent GPU Test on HalfCheetah V2")
+    print("PPO Continuous Agent GPU Test on HalfCheetah")
     print("=" * 70)
     print()
 
@@ -82,12 +85,11 @@ fn main() raises:
             gamma=0.99,  # Standard discount
             gae_lambda=0.95,  # Standard GAE lambda
             clip_epsilon=0.2,  # Standard clipping
-            actor_lr=0.0003,  # CleanRL: 3e-4 (same for actor and critic)
-            critic_lr=0.0003,  # CleanRL: 3e-4 (same as actor!)
-            entropy_coef=0.0,  # CleanRL: 0 for MuJoCo (CRITICAL!)
+            actor_lr=0.0003,  # CleanRL: 3e-4
+            critic_lr=0.0003,  # CleanRL: 3e-4
+            entropy_coef=0.0,  # CleanRL: 0 for MuJoCo
             value_loss_coef=0.5,
-            num_epochs=10,  # CleanRL default (was 4)
-            # Advanced hyperparameters
+            num_epochs=10,  # CleanRL default
             target_kl=0.0,  # KL early stopping disabled
             max_grad_norm=0.5,
             anneal_lr=True,  # CleanRL uses LR annealing
@@ -95,20 +97,15 @@ fn main() raises:
             target_total_steps=0,  # Auto-calculate
             norm_adv_per_minibatch=True,
             checkpoint_every=1_000,
-            checkpoint_path="ppo_half_cheetah_cleanrl.ckpt",
-            # Reward normalization (CleanRL-style)
+            checkpoint_path="ppo_half_cheetah.ckpt",
             normalize_rewards=True,
-            # No observation noise (CleanRL doesn't use this)
             obs_noise_std=0.0,
         )
 
-        # Checkpoint disabled - architecture changed to CleanRL-style
-        # agent.load_checkpoint("ppo_half_cheetah_cleanrl.ckpt")
+        # agent.load_checkpoint("ppo_half_cheetah.ckpt")
 
-        print("Environment: HalfCheetah V2 Continuous (GPU)")
-        print(
-            "Agent: PPO Continuous (GPU) - CleanRL hyperparams, GPU-optimized"
-        )
+        print("Environment: HalfCheetah Continuous (GPU)")
+        print("Agent: PPO Continuous (GPU) - CleanRL hyperparams")
         print("  Observation dim: " + String(OBS_DIM))
         print("  Action dim: " + String(ACTION_DIM))
         print("  Hidden dim: " + String(HIDDEN_DIM))
@@ -118,30 +115,30 @@ fn main() raises:
         print(
             "  Total transitions per rollout: " + String(ROLLOUT_LEN * N_ENVS)
         )
-        print("  Key CleanRL hyperparameters (GPU-scaled):")
+        print("  Key hyperparameters:")
         print("    - Learning rate: 3e-4 (same for actor & critic)")
-        print("    - Entropy coef: 0.0 (CRITICAL for MuJoCo)")
+        print("    - Entropy coef: 0.0 (MuJoCo standard)")
         print("    - Update epochs: 10")
         print("    - LR annealing: enabled")
         print("    - Gradient clipping: max_grad_norm=0.5")
         print("    - Reward normalization: enabled")
         print()
-        print("HalfCheetah V2 specifics:")
-        print("  - 17D observations: [torso_z, torso_angle,")
-        print("                       bthigh_angle, bshin_angle, bfoot_angle,")
-        print("                       fthigh_angle, fshin_angle, ffoot_angle,")
-        print("                       vel_x, vel_z, torso_omega,")
-        print("                       bthigh_omega, bshin_omega, bfoot_omega,")
-        print("                       fthigh_omega, fshin_omega, ffoot_omega]")
-        print("  - 6D continuous actions:")
-        print("      action[0]: back thigh (hip) torque (-1.0 to 1.0)")
-        print("      action[1]: back shin (knee) torque (-1.0 to 1.0)")
-        print("      action[2]: back foot (ankle) torque (-1.0 to 1.0)")
-        print("      action[3]: front thigh (hip) torque (-1.0 to 1.0)")
-        print("      action[4]: front shin (knee) torque (-1.0 to 1.0)")
-        print("      action[5]: front foot (ankle) torque (-1.0 to 1.0)")
-        print("  - Reward: forward_velocity - ctrl_cost")
-        print("  - No termination on falling (runs for MAX_STEPS)")
+        print("HalfCheetah specifics:")
+        print("  - Generalized Coordinates (GC) physics engine")
+        print("  - MuJoCo-style joint-space dynamics")
+        print("  - Semi-implicit Euler integration (symplectic)")
+        print("  - 8 bodies: torso, 2 legs (thigh+shin+foot), head")
+        print("  - 10 joints: 3 root DOFs + 6 actuated + 1 fixed head")
+        print("  - 17D observations: [z_pos, y_angle,")
+        print("                       bthigh, bshin, bfoot,")
+        print("                       fthigh, fshin, ffoot,")
+        print("                       vel_x, vel_z, y_angvel,")
+        print("                       bthigh_vel, bshin_vel, bfoot_vel,")
+        print("                       fthigh_vel, fshin_vel, ffoot_vel]")
+        print("  - 6D continuous actions (joint torques with gear ratios)")
+        print("  - Reward: forward_velocity - ctrl_cost - angle_penalty")
+        print("  - Anti-flip: angle penalty + unhealthy termination")
+        print("  - Curriculum: max_pitch 3.0 → 1.0 rad")
         print()
         print("Expected rewards:")
         print("  - Random policy: ~-100 to -200")
@@ -160,7 +157,10 @@ fn main() raises:
         var start_time = perf_counter_ns()
 
         try:
-            var metrics = agent.train_gpu[HalfCheetahPlanarV2[dtype]](
+            var metrics = agent.train_gpu[
+                HalfCheetah[dtype, TERMINATE_ON_UNHEALTHY=True],
+                HalfCheetahCurriculum,
+            ](
                 ctx,
                 num_episodes=NUM_EPISODES,
                 verbose=True,

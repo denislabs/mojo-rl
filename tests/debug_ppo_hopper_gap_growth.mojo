@@ -1,11 +1,11 @@
-"""Debug script to track train-eval gap growth over time for HalfCheetahGC.
+"""Debug script to track train-eval gap growth over time for Hopper.
 
 This script trains with periodic evaluation to see when/how the gap appears.
 It also tracks log_std parameters to detect drift.
 
 Run with:
-    pixi run -e apple mojo run tests/debug_ppo_half_cheetah_gc_gap_growth.mojo
-    pixi run -e nvidia mojo run tests/debug_ppo_half_cheetah_gc_gap_growth.mojo
+    pixi run -e apple mojo run tests/debug_ppo_hopper_gap_growth.mojo
+    pixi run -e nvidia mojo run tests/debug_ppo_hopper_gap_growth.mojo
 """
 
 from random import seed
@@ -14,17 +14,17 @@ from time import perf_counter_ns
 from gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.half_cheetah_gc import HalfCheetahGC, HalfCheetahGCConstants
+from envs.hopper import Hopper
+from envs.hopper.constants import HopperConstantsGPU
 from deep_rl import dtype as gpu_dtype
 
 
 # =============================================================================
-# Constants (matching test_ppo_half_cheetah_gc_continuous_gpu.mojo)
+# Constants (matching test_ppo_hopper_gc_continuous_gpu.mojo)
 # =============================================================================
 
-comptime C = HalfCheetahGCConstants[DType.float32]
-comptime OBS_DIM = C.OBS_DIM  # 17
-comptime ACTION_DIM = C.ACTION_DIM  # 6
+comptime OBS_DIM = HopperConstantsGPU.OBS_DIM  # 11
+comptime ACTION_DIM = HopperConstantsGPU.ACTION_DIM  # 3
 comptime HIDDEN_DIM = 256
 comptime ROLLOUT_LEN = 512
 comptime N_ENVS = 256
@@ -33,16 +33,16 @@ comptime GPU_MINIBATCH_SIZE = 2048
 comptime dtype = DType.float32
 
 # Training configuration
-comptime TOTAL_EPISODES = 10_000
-comptime EVAL_EVERY = 1000  # Evaluate every N episodes
+comptime TOTAL_EPISODES = 50_000
+comptime EVAL_EVERY = 2000  # Evaluate every N episodes
 comptime EVAL_EPISODES = 50
-comptime MAX_STEPS = 1000  # HalfCheetah episodes
+comptime MAX_STEPS = 1000  # Hopper episodes
 
 
 fn main() raises:
     seed(42)
     print("=" * 70)
-    print("DEBUG: Tracking Train-Eval Gap Growth Over Time (HalfCheetahGC)")
+    print("DEBUG: Tracking Train-Eval Gap Growth Over Time (Hopper)")
     print("=" * 70)
     print()
     print("Configuration:")
@@ -55,18 +55,18 @@ fn main() raises:
     print("  OBS_DIM:", OBS_DIM)
     print("  ACTION_DIM:", ACTION_DIM)
     print("  HIDDEN_DIM:", HIDDEN_DIM)
-    print("  entropy_coef: 0.0 (MuJoCo standard)")
+    print("  entropy_coef: 0.05 (with annealing)")
     print("  target_kl: 0.0 (disabled)")
     print("  anneal_lr: True")
-    print("  anneal_entropy: False")
+    print("  anneal_entropy: True")
     print("  normalize_rewards: True")
     print()
-    print("HalfCheetahGC specifics:")
+    print("Hopper specifics:")
     print("  - Generalized Coordinates physics (MuJoCo-style)")
     print("  - SemiImplicitEulerIntegrator (symplectic, energy-conserving)")
-    print("  - 8-body articulated cheetah (torso, head, 2 legs)")
-    print("  - 17D observations")
-    print("  - 6D continuous actions (joint torques with gear ratios)")
+    print("  - 4-body articulated hopper (torso, thigh, leg, foot)")
+    print("  - 11D observations")
+    print("  - 3D continuous actions (thigh, leg, foot torques)")
     print()
 
     with DeviceContext() as ctx:
@@ -84,13 +84,13 @@ fn main() raises:
             clip_epsilon=0.2,
             actor_lr=0.0003,
             critic_lr=0.0003,  # Same as actor (CleanRL style)
-            entropy_coef=0.0,  # MuJoCo standard
+            entropy_coef=0.05,  # Small entropy for exploration
             value_loss_coef=0.5,
             num_epochs=10,
             target_kl=0.0,  # KL early stopping disabled
             max_grad_norm=0.5,
             anneal_lr=True,  # CleanRL uses LR annealing
-            anneal_entropy=False,  # No entropy annealing for MuJoCo
+            anneal_entropy=True,  # Anneal entropy to 0 over training
             target_total_steps=0,
             norm_adv_per_minibatch=True,
             checkpoint_every=0,  # Disable auto checkpoints
@@ -122,13 +122,12 @@ fn main() raises:
             )
         print()
 
-        print("=" * 130)
+        print("=" * 110)
         print(
             "Episode  | Train Avg | CPU Eval | GPU Eval | Gap(CPU) |"
-            " Gap(GPU) | log_std[0] | log_std[1] | log_std[2] |"
-            " log_std[3] | log_std[4] | log_std[5]"
+            " Gap(GPU) | log_std[0] | log_std[1] | log_std[2]"
         )
-        print("=" * 130)
+        print("=" * 110)
 
         while episodes_trained < TOTAL_EPISODES:
             # Train for EVAL_EVERY episodes
@@ -136,9 +135,7 @@ fn main() raises:
                 EVAL_EVERY, TOTAL_EPISODES - episodes_trained
             )
 
-            var metrics = agent.train_gpu[
-                HalfCheetahGC[gpu_dtype, TERMINATE_ON_UNHEALTHY=False]
-            ](
+            var metrics = agent.train_gpu[Hopper[gpu_dtype]](
                 ctx,
                 num_episodes=episodes_this_round,
                 verbose=False,
@@ -158,7 +155,7 @@ fn main() raises:
                 )
 
             # Evaluate on GPU (stochastic)
-            var eval_gpu_avg = agent.evaluate_gpu[HalfCheetahGC[gpu_dtype]](
+            var eval_gpu_avg = agent.evaluate_gpu[Hopper[gpu_dtype]](
                 ctx,
                 num_episodes=EVAL_EPISODES,
                 max_steps=MAX_STEPS,
@@ -167,7 +164,7 @@ fn main() raises:
             )
 
             # Evaluate on CPU (stochastic)
-            var env = HalfCheetahGC[dtype]()
+            var env = Hopper[dtype]()
             var eval_cpu_avg = agent.evaluate(
                 env,
                 num_episodes=EVAL_EPISODES,
@@ -203,30 +200,23 @@ fn main() raises:
                 "|",
                 String(current_log_std[1])[:10].ljust(10),
                 "|",
-                String(current_log_std[2])[:10].ljust(10),
-                "|",
-                String(current_log_std[3])[:10].ljust(10),
-                "|",
-                String(current_log_std[4])[:10].ljust(10),
-                "|",
-                String(current_log_std[5])[:10],
+                String(current_log_std[2])[:10],
             )
 
             checkpoint_num += 1
 
         # Final summary
         print()
-        print("=" * 130)
-        print("GAP GROWTH ANALYSIS (HalfCheetahGC)")
-        print("=" * 130)
+        print("=" * 110)
+        print("GAP GROWTH ANALYSIS (Hopper)")
+        print("=" * 110)
         print()
 
         print(
             "Chkpt | Episodes | Training | CPU Eval | GPU Eval | Gap(CPU) |"
-            " Gap(GPU) | log_std[0] | log_std[1] | log_std[2] |"
-            " log_std[3] | log_std[4] | log_std[5]"
+            " Gap(GPU) | log_std[0] | log_std[1] | log_std[2]"
         )
-        print("-" * 140)
+        print("-" * 120)
         for i in range(len(checkpoints)):
             var gap_cpu = train_rewards[i] - eval_cpu_rewards[i]
             var gap_gpu = train_rewards[i] - eval_gpu_rewards[i]
@@ -250,12 +240,6 @@ fn main() raises:
                 String(log_std_values[i][1])[:10].rjust(10),
                 "|",
                 String(log_std_values[i][2])[:10].rjust(10),
-                "|",
-                String(log_std_values[i][3])[:10].rjust(10),
-                "|",
-                String(log_std_values[i][4])[:10].rjust(10),
-                "|",
-                String(log_std_values[i][5])[:10].rjust(10),
             )
 
         print()
@@ -352,6 +336,6 @@ fn main() raises:
                 print("  This may indicate environment physics differences.")
 
         print()
-        print("=" * 130)
+        print("=" * 110)
 
-    print(">>> Gap growth analysis completed (HalfCheetahGC) <<<")
+    print(">>> Gap growth analysis completed (Hopper) <<<")

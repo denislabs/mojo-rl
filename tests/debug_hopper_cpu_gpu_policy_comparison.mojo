@@ -1,4 +1,4 @@
-"""Debug script to compare CPU and GPU HopperGC with trained policy.
+"""Debug script to compare CPU and GPU Hopper with trained policy.
 
 This script runs the SAME trained policy on both CPU and GPU environments
 starting from identical initial states to pinpoint where they diverge.
@@ -18,8 +18,8 @@ from gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.hopper_gc import HopperGC
-from envs.hopper_gc.constants_gc import HopperGCConstantsGPU
+from envs.hopper import Hopper
+from envs.hopper.constants_gc import HopperConstantsGPU
 from deep_rl import dtype as gpu_dtype
 from physics3d.gpu.constants import (
     qpos_offset,
@@ -33,8 +33,8 @@ from physics3d.gpu.constants import (
 # Constants (must match training configuration)
 # =============================================================================
 
-comptime OBS_DIM = HopperGCConstantsGPU.OBS_DIM  # 11
-comptime ACTION_DIM = HopperGCConstantsGPU.ACTION_DIM  # 3
+comptime OBS_DIM = HopperConstantsGPU.OBS_DIM  # 11
+comptime ACTION_DIM = HopperConstantsGPU.ACTION_DIM  # 3
 comptime HIDDEN_DIM = 256
 comptime ROLLOUT_LEN = 512
 comptime N_ENVS = 256
@@ -113,7 +113,7 @@ fn extract_gpu_state[
 fn main() raises:
     seed(42)
     print("=" * 80)
-    print("DEBUG: CPU vs GPU Policy Comparison for HopperGC")
+    print("DEBUG: CPU vs GPU Policy Comparison for Hopper")
     print("=" * 80)
     print()
 
@@ -158,7 +158,7 @@ fn main() raises:
     # Create environments
     # =========================================================================
 
-    var cpu_env = HopperGC[DType.float64](
+    var cpu_env = Hopper[DType.float64](
         torque_limit=200.0,
         min_height=0.7,
         max_pitch=0.2,
@@ -169,7 +169,7 @@ fn main() raises:
 
     var ctx = DeviceContext()
 
-    comptime STATE_SIZE = HopperGC[DType.float64].STATE_SIZE
+    comptime STATE_SIZE = Hopper[DType.float64].STATE_SIZE
     comptime BATCH_SIZE = 1
 
     # Create GPU buffers
@@ -240,12 +240,12 @@ fn main() raises:
     copy_cpu_state_to_gpu[STATE_SIZE](ctx, states_buf, cpu_qpos, cpu_qvel)
 
     # Run forward kinematics on GPU to match CPU
-    comptime MODEL_SIZE = HopperGC[DType.float64].STATE_SIZE  # Approximate
+    comptime MODEL_SIZE = Hopper[DType.float64].STATE_SIZE  # Approximate
     from physics3d.gpu.constants import model_size
 
     comptime ACTUAL_MODEL_SIZE = model_size[4, 6]()  # 4 bodies, 6 joints
     var model_buf = ctx.enqueue_create_buffer[gpu_dtype](ACTUAL_MODEL_SIZE)
-    HopperGC[DType.float64]._init_model_gpu(ctx, model_buf)
+    Hopper[DType.float64]._init_model_gpu(ctx, model_buf)
 
     # Run FK on GPU
     from physics3d.kinematics.forward_kinematics import (
@@ -378,7 +378,7 @@ fn main() raises:
         ctx.synchronize()
 
         if not gpu_done:
-            HopperGC[DType.float64].step_kernel_gpu[
+            Hopper[DType.float64].step_kernel_gpu[
                 BATCH_SIZE, STATE_SIZE, OBS_DIM, ACTION_DIM
             ](
                 ctx,

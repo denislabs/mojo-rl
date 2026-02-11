@@ -1,6 +1,6 @@
-"""HopperGC Renderer using the GPU-accelerated Renderer3D.
+"""Hopper Renderer using the GPU-accelerated Renderer3D.
 
-Provides visualization of the HopperGC environment with:
+Provides visualization of the Hopper environment with:
 - GPU-rendered capsule bodies for each body segment
 - Color-coded body parts (torso, thigh, leg, foot)
 - Procedural checkerboard ground plane
@@ -24,12 +24,12 @@ comptime Quat = QuatGeneric[DType.float64]
 
 
 # =============================================================================
-# Color Scheme for HopperGC
+# Color Scheme for Hopper
 # =============================================================================
 
 
-struct HopperGCColors:
-    """Color scheme for HopperGC visualization."""
+struct HopperColors:
+    """Color scheme for Hopper visualization."""
 
     @staticmethod
     fn torso() -> Color3D:
@@ -58,12 +58,12 @@ struct HopperGCColors:
 
 
 # =============================================================================
-# HopperGC Renderer
+# Hopper Renderer
 # =============================================================================
 
 
-struct HopperGCRenderer(EnvRenderer3D, Movable):
-    """Renderer for HopperGC environment.
+struct HopperRenderer(EnvRenderer3D, Movable):
+    """Renderer for Hopper environment.
 
     Uses GPU-rendered capsules to visualize each body segment of the hopper.
     Supports interactive camera control for orbit, zoom, and pan.
@@ -105,7 +105,7 @@ struct HopperGCRenderer(EnvRenderer3D, Movable):
         foot_radius: Float64 = 0.06,
         foot_half_length: Float64 = 0.195,
     ) raises:
-        """Initialize the HopperGC renderer.
+        """Initialize the Hopper renderer.
 
         Args:
             width: Window width in pixels.
@@ -172,7 +172,7 @@ struct HopperGCRenderer(EnvRenderer3D, Movable):
 
     fn init(mut self) raises -> None:
         """Initialize the renderer window."""
-        var title = String("HopperGC Environment")
+        var title = String("Hopper Environment")
         self.renderer.init(title)
         self.initialized = True
 
@@ -202,7 +202,7 @@ struct HopperGCRenderer(EnvRenderer3D, Movable):
         foot_quat: Quat,
         vel_x: Float64 = 0.0,
     ):
-        """Render the HopperGC state.
+        """Render the Hopper state.
 
         Args:
             torso_pos: Torso position.
@@ -267,7 +267,7 @@ struct HopperGCRenderer(EnvRenderer3D, Movable):
             radius=self.torso_radius * Self.VISUAL_RADIUS_SCALE,
             half_height=self.torso_half_length,
             axis=2,  # Z-axis (vertical)
-            color=HopperGCColors.torso(),
+            color=HopperColors.torso(),
         )
 
     fn _draw_thigh(mut self, pos: Vec3, quat: Quat) raises:
@@ -278,7 +278,7 @@ struct HopperGCRenderer(EnvRenderer3D, Movable):
             radius=self.thigh_radius * Self.VISUAL_RADIUS_SCALE,
             half_height=self.thigh_half_length,
             axis=2,  # Z-axis (vertical)
-            color=HopperGCColors.thigh(),
+            color=HopperColors.thigh(),
         )
 
     fn _draw_leg(mut self, pos: Vec3, quat: Quat) raises:
@@ -289,7 +289,7 @@ struct HopperGCRenderer(EnvRenderer3D, Movable):
             radius=self.leg_radius * Self.VISUAL_RADIUS_SCALE,
             half_height=self.leg_half_length,
             axis=2,  # Z-axis (vertical)
-            color=HopperGCColors.leg(),
+            color=HopperColors.leg(),
         )
 
     fn _draw_foot(mut self, pos: Vec3, quat: Quat) raises:
@@ -300,7 +300,7 @@ struct HopperGCRenderer(EnvRenderer3D, Movable):
             radius=self.foot_radius * Self.VISUAL_RADIUS_SCALE,
             half_height=self.foot_half_length,
             axis=2,  # Z-axis, will be rotated by quat
-            color=HopperGCColors.foot(),
+            color=HopperColors.foot(),
         )
 
     fn _draw_velocity_indicator(mut self, torso_pos: Vec3, vel_x: Float64):
@@ -312,7 +312,9 @@ struct HopperGCRenderer(EnvRenderer3D, Movable):
         )
 
         # Main arrow line
-        self.renderer.draw_line_3d(arrow_start, arrow_end, HopperGCColors.velocity())
+        self.renderer.draw_line_3d(
+            arrow_start, arrow_end, HopperColors.velocity()
+        )
 
         # Add arrowhead if velocity is significant
         if abs(arrow_length) > 0.03:
@@ -325,7 +327,7 @@ struct HopperGCRenderer(EnvRenderer3D, Movable):
                     arrow_end.y,
                     arrow_end.z + head_size,
                 ),
-                HopperGCColors.velocity(),
+                HopperColors.velocity(),
             )
             self.renderer.draw_line_3d(
                 arrow_end,
@@ -334,7 +336,7 @@ struct HopperGCRenderer(EnvRenderer3D, Movable):
                     arrow_end.y,
                     arrow_end.z - head_size,
                 ),
-                HopperGCColors.velocity(),
+                HopperColors.velocity(),
             )
 
     fn orbit_camera(mut self, delta_theta: Float64, delta_phi: Float64) -> None:
