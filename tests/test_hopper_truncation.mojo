@@ -1,7 +1,7 @@
-"""Test script to verify HopperGC truncation and TERMINATE_ON_UNHEALTHY flag.
+"""Test script to verify Hopper truncation and TERMINATE_ON_UNHEALTHY flag.
 
 Run with:
-    pixi run -e apple mojo run tests/test_hopper_gc_truncation.mojo
+    pixi run -e apple mojo run tests/test_hopper_truncation.mojo
 """
 
 from random import seed
@@ -9,8 +9,8 @@ from random import seed
 from gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
-from envs.hopper_gc import HopperGC
-from envs.hopper_gc.constants_gc import HopperGCConstantsGPU
+from envs.hopper import Hopper
+from envs.hopper.constants import HopperConstantsGPU
 from deep_rl import dtype as gpu_dtype
 from physics3d.gpu.constants import (
     state_size,
@@ -22,24 +22,24 @@ from physics3d.gpu.constants import (
 fn main() raises:
     seed(42)
     print("=" * 70)
-    print("TEST: HopperGC Truncation and Health Termination Flags")
+    print("TEST: Hopper Truncation and Health Termination Flags")
     print("=" * 70)
     print()
 
     comptime BATCH_SIZE = 4
     comptime STATE_SIZE = state_size[
-        HopperGC[gpu_dtype].NQ,
-        HopperGC[gpu_dtype].NV,
-        HopperGC[gpu_dtype].NUM_BODIES,
-        HopperGC[gpu_dtype].MAX_CONTACTS,
+        Hopper[gpu_dtype].NQ,
+        Hopper[gpu_dtype].NV,
+        Hopper[gpu_dtype].NUM_BODIES,
+        Hopper[gpu_dtype].MAX_CONTACTS,
     ]()
-    comptime OBS_DIM = HopperGCConstantsGPU.OBS_DIM
-    comptime ACTION_DIM = HopperGCConstantsGPU.ACTION_DIM
+    comptime OBS_DIM = HopperConstantsGPU.OBS_DIM
+    comptime ACTION_DIM = HopperConstantsGPU.ACTION_DIM
     comptime META_OFF = metadata_offset[
-        HopperGC[gpu_dtype].NQ,
-        HopperGC[gpu_dtype].NV,
-        HopperGC[gpu_dtype].NUM_BODIES,
-        HopperGC[gpu_dtype].MAX_CONTACTS,
+        Hopper[gpu_dtype].NQ,
+        Hopper[gpu_dtype].NV,
+        Hopper[gpu_dtype].NUM_BODIES,
+        Hopper[gpu_dtype].MAX_CONTACTS,
     ]()
 
     with DeviceContext() as ctx:
@@ -61,7 +61,7 @@ fn main() raises:
         print("-" * 50)
 
         # Reset all environments
-        HopperGC[gpu_dtype].reset_kernel_gpu[BATCH_SIZE, STATE_SIZE](
+        Hopper[gpu_dtype].reset_kernel_gpu[BATCH_SIZE, STATE_SIZE](
             ctx, states_buf, rng_seed=42
         )
         ctx.synchronize()
@@ -81,7 +81,7 @@ fn main() raises:
         ](uninitialized=True)
 
         for step in range(25):
-            HopperGC[gpu_dtype, TERMINATE_ON_UNHEALTHY=True].step_kernel_gpu[
+            Hopper[gpu_dtype, TERMINATE_ON_UNHEALTHY=True].step_kernel_gpu[
                 BATCH_SIZE, STATE_SIZE, OBS_DIM, ACTION_DIM, 10
             ](ctx, states_buf, actions_buf, rewards_buf, dones_buf, obs_buf)
             ctx.synchronize()
@@ -100,9 +100,7 @@ fn main() raises:
             var step_counts = InlineArray[Int, BATCH_SIZE](uninitialized=True)
             for i in range(BATCH_SIZE):
                 step_counts[i] = Int(
-                    states_host[
-                        i * STATE_SIZE + META_OFF + META_IDX_STEP_COUNT
-                    ]
+                    states_host[i * STATE_SIZE + META_OFF + META_IDX_STEP_COUNT]
                 )
 
             if step in (9, 10, 19, 20):
@@ -120,7 +118,7 @@ fn main() raises:
 
             # Selective reset done environments
             if num_done > 0:
-                HopperGC[gpu_dtype].selective_reset_kernel_gpu[
+                Hopper[gpu_dtype].selective_reset_kernel_gpu[
                     BATCH_SIZE, STATE_SIZE
                 ](ctx, states_buf, dones_buf, UInt64(step))
                 ctx.synchronize()
@@ -155,14 +153,14 @@ fn main() raises:
 
         # Run with TERMINATE_ON_UNHEALTHY=True
         print("\n  With TERMINATE_ON_UNHEALTHY=True (MAX_STEPS=1000):")
-        HopperGC[gpu_dtype].reset_kernel_gpu[BATCH_SIZE, STATE_SIZE](
+        Hopper[gpu_dtype].reset_kernel_gpu[BATCH_SIZE, STATE_SIZE](
             ctx, states_buf, rng_seed=999
         )
         ctx.synchronize()
 
         var terminated_at_with_health = -1
         for step in range(200):
-            HopperGC[gpu_dtype, TERMINATE_ON_UNHEALTHY=True].step_kernel_gpu[
+            Hopper[gpu_dtype, TERMINATE_ON_UNHEALTHY=True].step_kernel_gpu[
                 BATCH_SIZE, STATE_SIZE, OBS_DIM, ACTION_DIM, 1000
             ](ctx, states_buf, actions_buf, rewards_buf, dones_buf, obs_buf)
             ctx.synchronize()
@@ -181,14 +179,14 @@ fn main() raises:
 
         # Run with TERMINATE_ON_UNHEALTHY=False
         print("\n  With TERMINATE_ON_UNHEALTHY=False (MAX_STEPS=1000):")
-        HopperGC[gpu_dtype].reset_kernel_gpu[BATCH_SIZE, STATE_SIZE](
+        Hopper[gpu_dtype].reset_kernel_gpu[BATCH_SIZE, STATE_SIZE](
             ctx, states_buf, rng_seed=999
         )
         ctx.synchronize()
 
         var terminated_at_no_health = -1
         for step in range(200):
-            HopperGC[gpu_dtype, TERMINATE_ON_UNHEALTHY=False].step_kernel_gpu[
+            Hopper[gpu_dtype, TERMINATE_ON_UNHEALTHY=False].step_kernel_gpu[
                 BATCH_SIZE, STATE_SIZE, OBS_DIM, ACTION_DIM, 1000
             ](ctx, states_buf, actions_buf, rewards_buf, dones_buf, obs_buf)
             ctx.synchronize()
@@ -214,14 +212,14 @@ fn main() raises:
         )
         print("-" * 50)
 
-        HopperGC[gpu_dtype].reset_kernel_gpu[BATCH_SIZE, STATE_SIZE](
+        Hopper[gpu_dtype].reset_kernel_gpu[BATCH_SIZE, STATE_SIZE](
             ctx, states_buf, rng_seed=12345
         )
         ctx.synchronize()
 
         var truncated_at = -1
         for step in range(100):
-            HopperGC[gpu_dtype, TERMINATE_ON_UNHEALTHY=False].step_kernel_gpu[
+            Hopper[gpu_dtype, TERMINATE_ON_UNHEALTHY=False].step_kernel_gpu[
                 BATCH_SIZE, STATE_SIZE, OBS_DIM, ACTION_DIM, 50
             ](ctx, states_buf, actions_buf, rewards_buf, dones_buf, obs_buf)
             ctx.synchronize()
@@ -242,7 +240,7 @@ fn main() raises:
         print("-" * 50)
 
         # Test with terminate_on_unhealthy=True (default)
-        var env_with_health = HopperGC[
+        var env_with_health = Hopper[
             DType.float64, TERMINATE_ON_UNHEALTHY=True
         ](max_steps=100)
         _ = env_with_health.reset()
@@ -250,7 +248,7 @@ fn main() raises:
         var cpu_done_with_health = -1
         for step in range(100):
             var result = env_with_health.step(
-                HopperGC[DType.float64].ActionType(0.8, 0.5, -0.8)
+                Hopper[DType.float64].ActionType(0.8, 0.5, -0.8)
             )
             if result[2]:  # done
                 cpu_done_with_health = step + 1
@@ -263,15 +261,15 @@ fn main() raises:
             print("    Env terminated at step:", cpu_done_with_health)
 
         # Test with terminate_on_unhealthy=False
-        var env_no_health = HopperGC[
-            DType.float64, TERMINATE_ON_UNHEALTHY=False
-        ](max_steps=50)
+        var env_no_health = Hopper[DType.float64, TERMINATE_ON_UNHEALTHY=False](
+            max_steps=50
+        )
         _ = env_no_health.reset()
 
         var cpu_done_no_health = -1
         for step in range(100):
             var result = env_no_health.step(
-                HopperGC[DType.float64].ActionType(0.8, 0.5, -0.8)
+                Hopper[DType.float64].ActionType(0.8, 0.5, -0.8)
             )
             if result[2]:  # done
                 cpu_done_no_health = step + 1

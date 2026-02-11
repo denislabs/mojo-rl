@@ -14,7 +14,7 @@ from time import perf_counter_ns
 from gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.lunar_lander import LunarLanderV2, LLConstants
+from envs.lunar_lander import LunarLander, LLConstants
 from deep_rl import dtype as gpu_dtype
 
 
@@ -83,13 +83,22 @@ fn main() raises:
         print()
         print("Actor param diagnostics:")
         print("  Total params:", len(agent.actor.params))
-        print("  First 5:", agent.actor.params[0], agent.actor.params[1],
-              agent.actor.params[2], agent.actor.params[3], agent.actor.params[4])
+        print(
+            "  First 5:",
+            agent.actor.params[0],
+            agent.actor.params[1],
+            agent.actor.params[2],
+            agent.actor.params[3],
+            agent.actor.params[4],
+        )
 
         # log_std params are the last ACTION_DIM params
         var log_std_offset = len(agent.actor.params) - ACTION_DIM
-        print("  log_std params:", agent.actor.params[log_std_offset],
-              agent.actor.params[log_std_offset + 1])
+        print(
+            "  log_std params:",
+            agent.actor.params[log_std_offset],
+            agent.actor.params[log_std_offset + 1],
+        )
         print()
 
         # =====================================================================
@@ -102,7 +111,7 @@ fn main() raises:
 
         var start_time = perf_counter_ns()
 
-        var stochastic_reward = agent.evaluate_gpu[LunarLanderV2[gpu_dtype]](
+        var stochastic_reward = agent.evaluate_gpu[LunarLander[gpu_dtype]](
             ctx,
             num_episodes=EVAL_EPISODES,
             max_steps=MAX_STEPS,
@@ -119,7 +128,7 @@ fn main() raises:
 
         start_time = perf_counter_ns()
 
-        var deterministic_reward = agent.evaluate_gpu[LunarLanderV2[gpu_dtype]](
+        var deterministic_reward = agent.evaluate_gpu[LunarLander[gpu_dtype]](
             ctx,
             num_episodes=EVAL_EPISODES,
             max_steps=MAX_STEPS,

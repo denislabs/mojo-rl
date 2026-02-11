@@ -1,18 +1,18 @@
-"""HopperGC Demo - Test the HopperGC environment with random actions.
+"""Hopper Demo - Test the Hopper environment with random actions.
 
 This demo shows:
-- Creating a HopperGC environment (using Generalized Coordinates physics)
+- Creating a Hopper environment (using Generalized Coordinates physics)
 - Running episodes with random actions
 - Optional rendering with the 3D renderer
 """
 
 from random import random_float64
 
-from envs.hopper_gc import HopperGC
+from envs.hopper import Hopper
 
 
 fn run_episode(
-    mut env: HopperGC, render: Bool = False, max_steps: Int = 500
+    mut env: Hopper, render: Bool = False, max_steps: Int = 500
 ) raises -> Float64:
     """Run a single episode with random actions.
 
@@ -55,7 +55,7 @@ fn run_episode(
 
 
 fn main() raises:
-    print("=== HopperGC Environment Demo ===")
+    print("=== Hopper Environment Demo ===")
     print()
     print(
         "This environment uses Generalized Coordinates physics (MuJoCo-style)"
@@ -64,7 +64,7 @@ fn main() raises:
     print()
 
     # Create environment
-    var env = HopperGC()
+    var env = Hopper()
 
     print("Environment created:")
     print("  Observation dim:", env.obs_dim())

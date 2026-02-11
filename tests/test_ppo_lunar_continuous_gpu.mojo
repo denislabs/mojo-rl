@@ -1,7 +1,7 @@
 """Test PPO Continuous Agent GPU Training on LunarLander.
 
 This tests the GPU implementation of PPO with continuous actions using the
-LunarLanderV2 environment with:
+LunarLander environment with:
 - Parallel environments on GPU
 - Full rigid body physics with joints
 - 2D continuous action space (main throttle + side control)
@@ -24,7 +24,7 @@ from time import perf_counter_ns
 from gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.lunar_lander import LunarLanderV2, LLConstants
+from envs.lunar_lander import LunarLander, LLConstants
 
 
 # =============================================================================
@@ -151,7 +151,7 @@ fn main() raises:
         var start_time = perf_counter_ns()
 
         try:
-            var metrics = agent.train_gpu[LunarLanderV2[dtype]](
+            var metrics = agent.train_gpu[LunarLander[dtype]](
                 ctx,
                 num_episodes=NUM_EPISODES,
                 verbose=True,

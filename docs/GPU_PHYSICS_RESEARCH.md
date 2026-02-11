@@ -481,7 +481,7 @@ for body in range(NUM_BODIES):  # NUM_BODIES is comptime
 4. [x] Implement `EdgeTerrainCollision` for varying terrain heights
 5. [x] Implement contact impulse solver with friction
 6. [x] Create `PhysicsState` orchestrator with CPU/GPU sync
-7. [x] Create LunarLanderV2 with new physics
+7. [x] Create LunarLander with new physics
 8. [x] Add `RevoluteJoint` constraint with:
    - [x] Point-to-point constraint
    - [x] Spring stiffness and damping

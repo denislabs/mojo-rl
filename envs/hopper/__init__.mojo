@@ -4,7 +4,7 @@ This environment uses the physics3d Generalized Coordinates engine with
 DefaultIntegrator for constraint-based contact solving.
 
 Usage:
-    from envs.hopper_gc import Hopper, HopperState, HopperAction
+    from envs.hopper import Hopper, HopperState, HopperAction
 
     var env = Hopper()
     var state = env.reset()
@@ -13,7 +13,7 @@ Usage:
     var result = env.step(action)
 
 Rendering:
-    from envs.hopper_gc import Hopper, HopperRenderer
+    from envs.hopper import Hopper, HopperRenderer
     from math3d import Vec3, Quat
 
     var env = Hopper()

@@ -1507,7 +1507,7 @@ struct Hopper[
         comptime QVEL_OFF = qvel_offset[Hopper.NQ, Hopper.NV]()
 
         @always_inline
-        fn extract_gc_obs(
+        fn extract_obs(
             states: LayoutTensor[
                 gpu_dtype,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
@@ -1538,7 +1538,7 @@ struct Hopper[
             obs[env, 9] = states[env, QVEL_OFF + 4]  # leg_vel
             obs[env, 10] = states[env, QVEL_OFF + 5]  # foot_vel
 
-        ctx.enqueue_function[extract_gc_obs, extract_gc_obs](
+        ctx.enqueue_function[extract_obs, extract_obs](
             states,
             obs,
             grid_dim=(BLOCKS,),

@@ -12,7 +12,7 @@ from gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 from random import seed as set_seed
 
-from envs.lunar_lander import LunarLanderV2
+from envs.lunar_lander import LunarLander
 from envs.lunar_lander.constants import LLConstants
 from physics2d import (
     dtype,
@@ -274,13 +274,13 @@ fn test_reset_comparison(ctx: DeviceContext) raises -> Bool:
     var test_seed: UInt64 = 12345
 
     # CPU environment
-    var cpu_env = LunarLanderV2[dtype](seed=test_seed)
+    var cpu_env = LunarLander[dtype](seed=test_seed)
 
     # GPU state buffer
     var gpu_states = ctx.enqueue_create_buffer[dtype](N_ENVS * STATE_SIZE)
 
     # Reset GPU with same seed
-    LunarLanderV2[dtype].reset_kernel_gpu[N_ENVS, STATE_SIZE](
+    LunarLander[dtype].reset_kernel_gpu[N_ENVS, STATE_SIZE](
         ctx, gpu_states, test_seed
     )
     ctx.synchronize()
@@ -357,7 +357,7 @@ fn test_step_comparison(ctx: DeviceContext) raises -> Bool:
     var test_seed: UInt64 = 42
 
     # CPU environment
-    var cpu_env = LunarLanderV2[dtype](seed=test_seed)
+    var cpu_env = LunarLander[dtype](seed=test_seed)
 
     # GPU buffers
     var gpu_states = ctx.enqueue_create_buffer[dtype](N_ENVS * STATE_SIZE)
@@ -372,7 +372,7 @@ fn test_step_comparison(ctx: DeviceContext) raises -> Bool:
     var dones_host = ctx.enqueue_create_host_buffer[dtype](1)
 
     # Reset both
-    LunarLanderV2[dtype].reset_kernel_gpu[N_ENVS, STATE_SIZE](
+    LunarLander[dtype].reset_kernel_gpu[N_ENVS, STATE_SIZE](
         ctx, gpu_states, test_seed
     )
     ctx.synchronize()
@@ -432,7 +432,7 @@ fn test_step_comparison(ctx: DeviceContext) raises -> Bool:
             actions_host[i] = test_actions[step].copy()[i]
         ctx.enqueue_copy(gpu_actions, actions_host)
 
-        LunarLanderV2[dtype].step_kernel_gpu[
+        LunarLander[dtype].step_kernel_gpu[
             N_ENVS, STATE_SIZE, OBS_DIM, ACTION_DIM
         ](
             ctx,
@@ -541,7 +541,7 @@ fn test_flat_terrain_comparison(ctx: DeviceContext) raises -> Bool:
     var test_seed: UInt64 = 999
 
     # CPU environment
-    var cpu_env = LunarLanderV2[dtype](seed=test_seed)
+    var cpu_env = LunarLander[dtype](seed=test_seed)
 
     # GPU buffers
     var gpu_states = ctx.enqueue_create_buffer[dtype](N_ENVS * STATE_SIZE)
@@ -553,7 +553,7 @@ fn test_flat_terrain_comparison(ctx: DeviceContext) raises -> Bool:
     var actions_host = ctx.enqueue_create_host_buffer[dtype](ACTION_DIM)
 
     # Reset both
-    LunarLanderV2[dtype].reset_kernel_gpu[N_ENVS, STATE_SIZE](
+    LunarLander[dtype].reset_kernel_gpu[N_ENVS, STATE_SIZE](
         ctx, gpu_states, test_seed
     )
     ctx.synchronize()
@@ -580,7 +580,7 @@ fn test_flat_terrain_comparison(ctx: DeviceContext) raises -> Bool:
         var cpu_done = cpu_result[2]
 
         # GPU step
-        LunarLanderV2[dtype].step_kernel_gpu[
+        LunarLander[dtype].step_kernel_gpu[
             N_ENVS, STATE_SIZE, OBS_DIM, ACTION_DIM
         ](
             ctx,
@@ -634,7 +634,7 @@ fn test_flat_terrain_comparison(ctx: DeviceContext) raises -> Bool:
         var cpu_done = cpu_result[2]
 
         # GPU step
-        LunarLanderV2[dtype].step_kernel_gpu[
+        LunarLander[dtype].step_kernel_gpu[
             N_ENVS, STATE_SIZE, OBS_DIM, ACTION_DIM
         ](
             ctx,
@@ -675,7 +675,7 @@ fn test_reward_accumulation(ctx: DeviceContext) raises -> Bool:
     var test_seed: UInt64 = 77777
 
     # CPU environment
-    var cpu_env = LunarLanderV2[dtype](seed=test_seed)
+    var cpu_env = LunarLander[dtype](seed=test_seed)
 
     # GPU buffers
     var gpu_states = ctx.enqueue_create_buffer[dtype](N_ENVS * STATE_SIZE)
@@ -688,7 +688,7 @@ fn test_reward_accumulation(ctx: DeviceContext) raises -> Bool:
     var rewards_host = ctx.enqueue_create_host_buffer[dtype](1)
 
     # Reset both
-    LunarLanderV2[dtype].reset_kernel_gpu[N_ENVS, STATE_SIZE](
+    LunarLander[dtype].reset_kernel_gpu[N_ENVS, STATE_SIZE](
         ctx, gpu_states, test_seed
     )
     ctx.synchronize()
@@ -744,7 +744,7 @@ fn test_reward_accumulation(ctx: DeviceContext) raises -> Bool:
         var cpu_done = cpu_result[2]
 
         # GPU step
-        LunarLanderV2[dtype].step_kernel_gpu[
+        LunarLander[dtype].step_kernel_gpu[
             N_ENVS, STATE_SIZE, OBS_DIM, ACTION_DIM
         ](
             ctx,
@@ -821,7 +821,7 @@ fn test_contact_detection(ctx: DeviceContext) raises -> Bool:
     var test_seed: UInt64 = 54321
 
     # CPU environment
-    var cpu_env = LunarLanderV2[dtype](seed=test_seed)
+    var cpu_env = LunarLander[dtype](seed=test_seed)
 
     # GPU buffers
     var gpu_states = ctx.enqueue_create_buffer[dtype](N_ENVS * STATE_SIZE)
@@ -834,7 +834,7 @@ fn test_contact_detection(ctx: DeviceContext) raises -> Bool:
     var dones_host = ctx.enqueue_create_host_buffer[dtype](1)
 
     # Reset both
-    LunarLanderV2[dtype].reset_kernel_gpu[N_ENVS, STATE_SIZE](
+    LunarLander[dtype].reset_kernel_gpu[N_ENVS, STATE_SIZE](
         ctx, gpu_states, test_seed
     )
     ctx.synchronize()
@@ -891,7 +891,7 @@ fn test_contact_detection(ctx: DeviceContext) raises -> Bool:
         var cpu_done = cpu_result[2]
 
         # GPU step
-        LunarLanderV2[dtype].step_kernel_gpu[
+        LunarLander[dtype].step_kernel_gpu[
             N_ENVS, STATE_SIZE, OBS_DIM, ACTION_DIM
         ](
             ctx,
@@ -1073,7 +1073,7 @@ fn test_deterministic_physics(ctx: DeviceContext) raises -> Bool:
     var test_seed: UInt64 = 42
 
     # CPU environment - this will be our "source of truth"
-    var cpu_env = LunarLanderV2[dtype](seed=test_seed)
+    var cpu_env = LunarLander[dtype](seed=test_seed)
 
     # GPU buffers
     var gpu_states = ctx.enqueue_create_buffer[dtype](N_ENVS * STATE_SIZE)
@@ -1087,7 +1087,7 @@ fn test_deterministic_physics(ctx: DeviceContext) raises -> Bool:
     var dones_host = ctx.enqueue_create_host_buffer[dtype](1)
 
     # Reset GPU first (we'll overwrite it)
-    LunarLanderV2[dtype].reset_kernel_gpu[N_ENVS, STATE_SIZE](
+    LunarLander[dtype].reset_kernel_gpu[N_ENVS, STATE_SIZE](
         ctx, gpu_states, test_seed
     )
     ctx.synchronize()
@@ -1338,7 +1338,7 @@ fn test_deterministic_physics(ctx: DeviceContext) raises -> Bool:
         var cpu_done = cpu_result[2]
 
         # GPU step
-        LunarLanderV2[dtype].step_kernel_gpu[
+        LunarLander[dtype].step_kernel_gpu[
             N_ENVS, STATE_SIZE, OBS_DIM, ACTION_DIM
         ](
             ctx,
@@ -1473,7 +1473,7 @@ fn test_gravity_only(ctx: DeviceContext) raises -> Bool:
     var test_seed: UInt64 = 42
 
     # CPU environment
-    var cpu_env = LunarLanderV2[dtype](seed=test_seed)
+    var cpu_env = LunarLander[dtype](seed=test_seed)
 
     # GPU buffers
     var gpu_states = ctx.enqueue_create_buffer[dtype](N_ENVS * STATE_SIZE)
@@ -1486,7 +1486,7 @@ fn test_gravity_only(ctx: DeviceContext) raises -> Bool:
     var rewards_host = ctx.enqueue_create_host_buffer[dtype](1)
 
     # Reset GPU
-    LunarLanderV2[dtype].reset_kernel_gpu[N_ENVS, STATE_SIZE](
+    LunarLander[dtype].reset_kernel_gpu[N_ENVS, STATE_SIZE](
         ctx, gpu_states, test_seed
     )
     ctx.synchronize()
@@ -1622,7 +1622,7 @@ fn test_gravity_only(ctx: DeviceContext) raises -> Bool:
         var cpu_done = cpu_result[2]
 
         # GPU step
-        LunarLanderV2[dtype].step_kernel_gpu[
+        LunarLander[dtype].step_kernel_gpu[
             N_ENVS, STATE_SIZE, OBS_DIM, ACTION_DIM
         ](
             ctx,
@@ -1734,7 +1734,7 @@ fn test_reward_deep_dive(ctx: DeviceContext) raises -> Bool:
     var test_seed: UInt64 = 42
 
     # CPU environment
-    var cpu_env = LunarLanderV2[dtype](seed=test_seed)
+    var cpu_env = LunarLander[dtype](seed=test_seed)
 
     # GPU buffers
     var gpu_states = ctx.enqueue_create_buffer[dtype](N_ENVS * STATE_SIZE)
@@ -1747,7 +1747,7 @@ fn test_reward_deep_dive(ctx: DeviceContext) raises -> Bool:
     var rewards_host = ctx.enqueue_create_host_buffer[dtype](1)
 
     # Reset GPU
-    LunarLanderV2[dtype].reset_kernel_gpu[N_ENVS, STATE_SIZE](
+    LunarLander[dtype].reset_kernel_gpu[N_ENVS, STATE_SIZE](
         ctx, gpu_states, test_seed
     )
     ctx.synchronize()
@@ -1954,9 +1954,9 @@ fn test_reward_deep_dive(ctx: DeviceContext) raises -> Bool:
     var cpu_reward = cpu_result[1]
 
     # GPU step
-    LunarLanderV2[dtype].step_kernel_gpu[
-        N_ENVS, STATE_SIZE, OBS_DIM, ACTION_DIM
-    ](ctx, gpu_states, gpu_actions, gpu_rewards, gpu_dones, gpu_obs, UInt64(0))
+    LunarLander[dtype].step_kernel_gpu[N_ENVS, STATE_SIZE, OBS_DIM, ACTION_DIM](
+        ctx, gpu_states, gpu_actions, gpu_rewards, gpu_dones, gpu_obs, UInt64(0)
+    )
     ctx.synchronize()
 
     ctx.enqueue_copy(rewards_host, gpu_rewards)
@@ -2051,7 +2051,7 @@ fn test_synchronized_contact_detection(ctx: DeviceContext) raises -> Bool:
     var test_seed: UInt64 = 99999
 
     # CPU environment
-    var cpu_env = LunarLanderV2[dtype](seed=test_seed)
+    var cpu_env = LunarLander[dtype](seed=test_seed)
 
     # GPU buffers
     var gpu_states = ctx.enqueue_create_buffer[dtype](N_ENVS * STATE_SIZE)
@@ -2065,7 +2065,7 @@ fn test_synchronized_contact_detection(ctx: DeviceContext) raises -> Bool:
     var rewards_host = ctx.enqueue_create_host_buffer[dtype](1)
 
     # Reset GPU first
-    LunarLanderV2[dtype].reset_kernel_gpu[N_ENVS, STATE_SIZE](
+    LunarLander[dtype].reset_kernel_gpu[N_ENVS, STATE_SIZE](
         ctx, gpu_states, test_seed
     )
     ctx.synchronize()
@@ -2213,7 +2213,7 @@ fn test_synchronized_contact_detection(ctx: DeviceContext) raises -> Bool:
         cpu_total_reward += Float64(cpu_reward)
 
         # GPU step
-        LunarLanderV2[dtype].step_kernel_gpu[
+        LunarLander[dtype].step_kernel_gpu[
             N_ENVS, STATE_SIZE, OBS_DIM, ACTION_DIM
         ](
             ctx,
@@ -2424,7 +2424,7 @@ fn test_synchronized_contact_detection(ctx: DeviceContext) raises -> Bool:
 
 fn main() raises:
     print_header("LUNAR LANDER CPU vs GPU COMPARISON TEST SUITE")
-    print("Testing LunarLanderV2 implementation consistency...")
+    print("Testing LunarLander implementation consistency...")
     print("Using dtype:", dtype)
     print()
 

@@ -18,7 +18,7 @@ from time import perf_counter_ns
 from gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOAgent
-from envs.lunar_lander import LunarLanderV2
+from envs.lunar_lander import LunarLander
 
 
 # =============================================================================
@@ -126,7 +126,7 @@ fn main() raises:
         var start_time = perf_counter_ns()
 
         try:
-            var metrics = agent.train_gpu[LunarLanderV2[dtype]](
+            var metrics = agent.train_gpu[LunarLander[dtype]](
                 ctx,
                 num_episodes=NUM_EPISODES,
                 verbose=True,

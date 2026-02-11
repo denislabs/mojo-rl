@@ -20,7 +20,7 @@ from gpu.host import DeviceContext, DeviceBuffer
 from random import random_float64, seed
 from time import perf_counter
 
-from envs.bipedal_walker import BipedalWalkerV2, BWConstants
+from envs.bipedal_walker import BipedalWalker, BWConstants
 from physics2d import dtype
 
 
@@ -62,7 +62,7 @@ fn main() raises:
     print("Resetting", BATCH_SIZE, "environments...")
     var start = perf_counter()
 
-    BipedalWalkerV2[DType.float32].reset_kernel_gpu[BATCH_SIZE, STATE_SIZE](
+    BipedalWalker[DType.float32].reset_kernel_gpu[BATCH_SIZE, STATE_SIZE](
         ctx, states_buf, rng_seed=42
     )
     ctx.synchronize()
@@ -87,7 +87,7 @@ fn main() raises:
     start = perf_counter()
 
     for step in range(num_steps):
-        BipedalWalkerV2[DType.float32].step_kernel_gpu[
+        BipedalWalker[DType.float32].step_kernel_gpu[
             BATCH_SIZE, STATE_SIZE, OBS_DIM, ACTION_DIM
         ](
             ctx,
@@ -101,7 +101,7 @@ fn main() raises:
 
         # Selective reset done environments every 10 steps
         if step % 10 == 9:
-            BipedalWalkerV2[DType.float32].selective_reset_kernel_gpu[
+            BipedalWalker[DType.float32].selective_reset_kernel_gpu[
                 BATCH_SIZE, STATE_SIZE
             ](ctx, states_buf, dones_buf, rng_seed=UInt64(step + 100))
 

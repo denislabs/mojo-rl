@@ -12,7 +12,7 @@ from random import seed, random_float64
 
 from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
-from envs.lunar_lander import LunarLanderEnv, LunarLanderV2, LLConstants
+from envs.lunar_lander import LunarLanderEnv, LunarLander, LLConstants
 
 
 # Constants for comparison
@@ -73,7 +73,7 @@ fn run_gpu_single_step(
     ctx.enqueue_copy(dones_buf, host_dones)
     ctx.synchronize()
 
-    LunarLanderV2.step_kernel_gpu[BATCH_SIZE, STATE_SIZE](
+    LunarLander.step_kernel_gpu[BATCH_SIZE, STATE_SIZE](
         ctx, states_buf, actions_buf, rewards_buf, dones_buf, UInt64(step_seed)
     )
     ctx.synchronize()

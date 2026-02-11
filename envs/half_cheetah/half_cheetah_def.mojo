@@ -5,11 +5,11 @@ composed into HalfCheetahRobot via RobotDef. Validates that compile-time
 dimensions match the existing environment (NQ=10, NV=10, NBODY=8, NJOINT=10).
 
 Body/joint values match MuJoCo half_cheetah.xml and the existing
-envs/half_cheetah_gc/ implementation.
+envs/half_cheetah/ implementation.
 
 Also defines HalfCheetahParams — the environment-specific parameters
 (physics, reward, termination, curriculum) that are NOT derivable from the
-robot definition. Replaces the former constants_gc.mojo.
+robot definition. Replaces the former constants.mojo.
 """
 
 from physics3d.robot.body_spec import CapsuleBody

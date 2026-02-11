@@ -1,4 +1,4 @@
-"""Test LunarLanderV2 environment using CPU kernels.
+"""Test LunarLander environment using CPU kernels.
 
 This tests the GPU environment implementation using the CPU fallback kernels
 to verify the physics and state layout are correct.
@@ -12,21 +12,21 @@ from random import seed
 
 from layout import Layout, LayoutTensor
 
-from envs.lunar_lander import LunarLanderV2
+from envs.lunar_lander import LunarLander
 from physics2d import dtype
 
 
 comptime BATCH_SIZE: Int = 8
-comptime STATE_SIZE: Int = LunarLanderV2.STATE_SIZE
-comptime OBS_DIM: Int = LunarLanderV2.OBS_DIM
-comptime NUM_ACTIONS: Int = LunarLanderV2.NUM_ACTIONS
+comptime STATE_SIZE: Int = LunarLander.STATE_SIZE
+comptime OBS_DIM: Int = LunarLander.OBS_DIM
+comptime NUM_ACTIONS: Int = LunarLander.NUM_ACTIONS
 
 
 fn main() raises:
     seed(42)
 
     print("=" * 70)
-    print("LunarLanderV2 CPU Test")
+    print("LunarLander CPU Test")
     print("=" * 70)
     print()
     print("Configuration:")
@@ -72,7 +72,7 @@ fn main() raises:
 
     # Reset all environments
     print("1. Resetting all environments...")
-    LunarLanderV2.reset_kernel[BATCH_SIZE, STATE_SIZE](states)
+    LunarLander.reset_kernel[BATCH_SIZE, STATE_SIZE](states)
 
     # Print initial states
     print()
@@ -103,7 +103,7 @@ fn main() raises:
             actions_data[i] = Scalar[dtype](action)
 
         # Step all environments
-        LunarLanderV2.step_kernel[BATCH_SIZE, STATE_SIZE](
+        LunarLander.step_kernel[BATCH_SIZE, STATE_SIZE](
             states,
             LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), ImmutAnyOrigin](
                 actions_data.unsafe_ptr()

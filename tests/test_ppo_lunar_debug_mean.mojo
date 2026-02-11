@@ -13,7 +13,7 @@ from time import perf_counter_ns
 from gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.lunar_lander import LunarLanderV2, LLConstants
+from envs.lunar_lander import LunarLander, LLConstants
 from deep_rl import dtype
 
 
@@ -75,12 +75,20 @@ fn main() raises:
         # Helper function to compute mean action for a test observation
         fn get_mean_action(
             agent: DeepPPOContinuousAgent[
-                OBS_DIM, ACTION_DIM, HIDDEN_DIM, ROLLOUT_LEN, N_ENVS, GPU_MINIBATCH_SIZE, True
+                OBS_DIM,
+                ACTION_DIM,
+                HIDDEN_DIM,
+                ROLLOUT_LEN,
+                N_ENVS,
+                GPU_MINIBATCH_SIZE,
+                True,
             ]
         ) -> Tuple[Scalar[dtype], Scalar[dtype]]:
             """Get mean action for a typical initial observation."""
             # Typical initial obs: lander at top center
-            var test_obs = InlineArray[Scalar[dtype], OBS_DIM](fill=Scalar[dtype](0))
+            var test_obs = InlineArray[Scalar[dtype], OBS_DIM](
+                fill=Scalar[dtype](0)
+            )
             test_obs[1] = Scalar[dtype](1.4)  # y position (high)
 
             var result = agent.select_action(test_obs, training=False)
@@ -90,7 +98,12 @@ fn main() raises:
         # Print initial mean action
         var initial_action = get_mean_action(agent)
         print("Initial mean action (before training):")
-        print("  action[0] (throttle):", initial_action[0], "-> throttle =", (Float64(initial_action[0]) + 1.0) * 0.5)
+        print(
+            "  action[0] (throttle):",
+            initial_action[0],
+            "-> throttle =",
+            (Float64(initial_action[0]) + 1.0) * 0.5,
+        )
         print("  action[1] (side):", initial_action[1])
         print()
 
@@ -100,7 +113,7 @@ fn main() raises:
         var start_time = perf_counter_ns()
 
         # Train with periodic mean action checks
-        var metrics = agent.train_gpu[LunarLanderV2[dtype]](
+        var metrics = agent.train_gpu[LunarLander[dtype]](
             ctx,
             num_episodes=NUM_EPISODES,
             verbose=True,
@@ -116,13 +129,18 @@ fn main() raises:
         # Need to copy params from GPU first
         var final_action = get_mean_action(agent)
         print("Final mean action (after training):")
-        print("  action[0] (throttle):", final_action[0], "-> throttle =", (Float64(final_action[0]) + 1.0) * 0.5)
+        print(
+            "  action[0] (throttle):",
+            final_action[0],
+            "-> throttle =",
+            (Float64(final_action[0]) + 1.0) * 0.5,
+        )
         print("  action[1] (side):", final_action[1])
         print()
 
         # Run quick evaluation
         print("Quick GPU evaluation with deterministic mean:")
-        var eval_reward = agent.evaluate_gpu[LunarLanderV2[dtype]](
+        var eval_reward = agent.evaluate_gpu[LunarLander[dtype]](
             ctx, num_episodes=50, max_steps=1000, verbose=False
         )
         print("  Deterministic eval reward:", eval_reward)

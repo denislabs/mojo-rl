@@ -13,7 +13,7 @@ from time import perf_counter_ns
 from gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.lunar_lander import LunarLanderV2, LLConstants
+from envs.lunar_lander import LunarLander, LLConstants
 from deep_rl import dtype as gpu_dtype
 
 
@@ -102,7 +102,7 @@ fn main() raises:
         print("TRAINING for", TRAIN_EPISODES, "episodes...")
         print("-" * 70)
 
-        var metrics = agent.train_gpu[LunarLanderV2[gpu_dtype]](
+        var metrics = agent.train_gpu[LunarLander[gpu_dtype]](
             ctx,
             num_episodes=TRAIN_EPISODES,
             verbose=True,
@@ -191,7 +191,7 @@ fn main() raises:
         # that mirrors what evaluate_gpu does but with more logging.
 
         # For simplicity, use the built-in method first
-        var gpu_eval_avg = agent.evaluate_gpu[LunarLanderV2[gpu_dtype]](
+        var gpu_eval_avg = agent.evaluate_gpu[LunarLander[gpu_dtype]](
             ctx,
             num_episodes=EVAL_EPISODES,
             max_steps=MAX_STEPS,
@@ -209,7 +209,7 @@ fn main() raises:
         print("CPU EVALUATION for", EVAL_EPISODES, "episodes...")
         print("-" * 70)
 
-        var env = LunarLanderV2[dtype]()
+        var env = LunarLander[dtype]()
 
         var cpu_great = 0
         var cpu_ok = 0
@@ -318,18 +318,49 @@ fn main() raises:
 
         print("Distribution comparison:")
         print("                 Train   CPU-Eval")
-        print("  GREAT_LAND    ", String(train_great).rjust(5), " ", String(cpu_great).rjust(5))
-        print("  OK_LAND       ", String(train_ok).rjust(5), " ", String(cpu_ok).rjust(5))
-        print("  HOVER         ", String(train_hover).rjust(5), " ", String(cpu_hover).rjust(5))
-        print("  CRASH         ", String(train_crash).rjust(5), " ", String(cpu_crash).rjust(5))
-        print("  BAD_CRASH     ", String(train_bad).rjust(5), " ", String(cpu_bad).rjust(5))
+        print(
+            "  GREAT_LAND    ",
+            String(train_great).rjust(5),
+            " ",
+            String(cpu_great).rjust(5),
+        )
+        print(
+            "  OK_LAND       ",
+            String(train_ok).rjust(5),
+            " ",
+            String(cpu_ok).rjust(5),
+        )
+        print(
+            "  HOVER         ",
+            String(train_hover).rjust(5),
+            " ",
+            String(cpu_hover).rjust(5),
+        )
+        print(
+            "  CRASH         ",
+            String(train_crash).rjust(5),
+            " ",
+            String(cpu_crash).rjust(5),
+        )
+        print(
+            "  BAD_CRASH     ",
+            String(train_bad).rjust(5),
+            " ",
+            String(cpu_bad).rjust(5),
+        )
         print()
 
         if train_great > cpu_great * 2:
-            print("OBSERVATION: Training reports many more GREAT_LAND episodes than eval!")
+            print(
+                "OBSERVATION: Training reports many more GREAT_LAND episodes"
+                " than eval!"
+            )
             print("This suggests training rewards may be inflated.")
         elif cpu_crash > train_crash * 2:
-            print("OBSERVATION: CPU eval has many more CRASH episodes than training!")
+            print(
+                "OBSERVATION: CPU eval has many more CRASH episodes than"
+                " training!"
+            )
             print("This suggests training may not be logging crashes properly.")
         else:
             print("OBSERVATION: Distributions are similar, gap source unclear.")

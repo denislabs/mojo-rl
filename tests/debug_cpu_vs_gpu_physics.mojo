@@ -1,4 +1,4 @@
-"""Diagnostic: Compare CPU vs GPU HalfCheetahGC physics step-by-step.
+"""Diagnostic: Compare CPU vs GPU HalfCheetah physics step-by-step.
 
 This script runs both CPU and GPU envs from identical initial states
 with identical actions, printing observations and rewards to pinpoint
@@ -14,7 +14,7 @@ from collections import InlineArray
 from gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
-from envs.half_cheetah_gc import HalfCheetahGC, HalfCheetahGCConstants
+from envs.half_cheetah import HalfCheetah, HalfCheetahConstants
 from deep_rl import dtype as gpu_dtype
 from deep_rl.constants import TPB
 from physics3d.gpu.constants import (
@@ -26,7 +26,7 @@ from physics3d.gpu.constants import (
     META_IDX_PREV_X,
 )
 
-comptime C = HalfCheetahGCConstants[DType.float32]
+comptime C = HalfCheetahConstants[DType.float32]
 comptime OBS_DIM = C.OBS_DIM  # 17
 comptime ACTION_DIM = C.ACTION_DIM  # 6
 comptime dtype = DType.float32
@@ -59,7 +59,7 @@ fn print_obs(name: String, obs: List[Scalar[dtype]]):
 fn main() raises:
     seed(42)
     print("=" * 70)
-    print("DIAGNOSTIC: CPU vs GPU HalfCheetahGC Physics Comparison")
+    print("DIAGNOSTIC: CPU vs GPU HalfCheetah Physics Comparison")
     print("=" * 70)
 
     # Fixed actions for testing
@@ -92,10 +92,10 @@ fn main() raises:
     # =====================================================
     print()
     print("=" * 70)
-    print("PART 1: CPU ENVIRONMENT (HalfCheetahGC[float32])")
+    print("PART 1: CPU ENVIRONMENT (HalfCheetah[float32])")
     print("=" * 70)
 
-    var cpu_env = HalfCheetahGC[dtype]()
+    var cpu_env = HalfCheetah[dtype]()
     var cpu_obs = cpu_env.reset_obs_list()
 
     print()
@@ -167,8 +167,8 @@ fn main() raises:
     print("=" * 70)
 
     with DeviceContext() as ctx:
-        comptime STATE_SIZE = HalfCheetahGC[dtype].STATE_SIZE
-        comptime MODEL_SIZE = HalfCheetahGC[dtype].MODEL_SIZE
+        comptime STATE_SIZE = HalfCheetah[dtype].STATE_SIZE
+        comptime MODEL_SIZE = HalfCheetah[dtype].MODEL_SIZE
         comptime N_ENVS = 1
 
         var states_buf = ctx.enqueue_create_buffer[gpu_dtype](STATE_SIZE)
@@ -183,16 +183,16 @@ fn main() raises:
 
         # Manually set initial state (matching CPU reset - NO noise)
         comptime QPOS_OFF = qpos_offset[
-            HalfCheetahGC[dtype].NQ, HalfCheetahGC[dtype].NV
+            HalfCheetah[dtype].NQ, HalfCheetah[dtype].NV
         ]()
         comptime QVEL_OFF = qvel_offset[
-            HalfCheetahGC[dtype].NQ, HalfCheetahGC[dtype].NV
+            HalfCheetah[dtype].NQ, HalfCheetah[dtype].NV
         ]()
         comptime META_OFF = metadata_offset[
-            HalfCheetahGC[dtype].NQ,
-            HalfCheetahGC[dtype].NV,
-            HalfCheetahGC[dtype].NUM_BODIES,
-            HalfCheetahGC[dtype].MAX_CONTACTS,
+            HalfCheetah[dtype].NQ,
+            HalfCheetah[dtype].NV,
+            HalfCheetah[dtype].NUM_BODIES,
+            HalfCheetah[dtype].MAX_CONTACTS,
         ]()
 
         # Set initial qpos on host
@@ -258,9 +258,7 @@ fn main() raises:
                 state_host[i] = Scalar[gpu_dtype](0.0)
             state_host[QPOS_OFF + 0] = Scalar[gpu_dtype](0.0)
             state_host[QPOS_OFF + 1] = C.INITIAL_Z
-            state_host[META_OFF + META_IDX_STEP_COUNT] = Scalar[gpu_dtype](
-                0.0
-            )
+            state_host[META_OFF + META_IDX_STEP_COUNT] = Scalar[gpu_dtype](0.0)
             state_host[META_OFF + META_IDX_PREV_X] = Scalar[gpu_dtype](0.0)
             ctx.enqueue_copy(states_buf, state_host.unsafe_ptr())
             ctx.synchronize()
@@ -273,7 +271,7 @@ fn main() raises:
             ctx.synchronize()
 
             # Step the GPU env
-            HalfCheetahGC[dtype].step_kernel_gpu[
+            HalfCheetah[dtype].step_kernel_gpu[
                 N_ENVS, STATE_SIZE, OBS_DIM, ACTION_DIM
             ](
                 ctx,
@@ -347,7 +345,7 @@ fn main() raises:
     # CPU multi-step
     print()
     print("CPU trajectory:")
-    var cpu_env2 = HalfCheetahGC[dtype]()
+    var cpu_env2 = HalfCheetah[dtype]()
     _ = cpu_env2.reset_obs_list()
     var cpu_total_reward: Float64 = 0.0
 
@@ -376,7 +374,7 @@ fn main() raises:
     print()
     print("GPU trajectory:")
     with DeviceContext() as ctx:
-        comptime STATE_SIZE = HalfCheetahGC[dtype].STATE_SIZE
+        comptime STATE_SIZE = HalfCheetah[dtype].STATE_SIZE
         comptime N_ENVS = 1
 
         var states_buf = ctx.enqueue_create_buffer[gpu_dtype](STATE_SIZE)
@@ -387,16 +385,16 @@ fn main() raises:
 
         # Initialize state (matching CPU reset - NO noise)
         comptime QPOS_OFF = qpos_offset[
-            HalfCheetahGC[dtype].NQ, HalfCheetahGC[dtype].NV
+            HalfCheetah[dtype].NQ, HalfCheetah[dtype].NV
         ]()
         comptime QVEL_OFF = qvel_offset[
-            HalfCheetahGC[dtype].NQ, HalfCheetahGC[dtype].NV
+            HalfCheetah[dtype].NQ, HalfCheetah[dtype].NV
         ]()
         comptime META_OFF = metadata_offset[
-            HalfCheetahGC[dtype].NQ,
-            HalfCheetahGC[dtype].NV,
-            HalfCheetahGC[dtype].NUM_BODIES,
-            HalfCheetahGC[dtype].MAX_CONTACTS,
+            HalfCheetah[dtype].NQ,
+            HalfCheetah[dtype].NV,
+            HalfCheetah[dtype].NUM_BODIES,
+            HalfCheetah[dtype].MAX_CONTACTS,
         ]()
 
         var state_host = List[Scalar[gpu_dtype]](capacity=STATE_SIZE)
@@ -416,7 +414,7 @@ fn main() raises:
         var gpu_total_reward: Float64 = 0.0
 
         for step in range(10):
-            HalfCheetahGC[dtype].step_kernel_gpu[
+            HalfCheetah[dtype].step_kernel_gpu[
                 N_ENVS, STATE_SIZE, OBS_DIM, ACTION_DIM
             ](
                 ctx,

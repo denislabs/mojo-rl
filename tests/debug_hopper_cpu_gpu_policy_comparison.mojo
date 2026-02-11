@@ -9,7 +9,7 @@ Key diagnostics:
 3. Step-by-step comparison of state, reward, and done
 
 Run with:
-    pixi run -e apple mojo run tests/debug_hopper_gc_cpu_gpu_policy_comparison.mojo
+    pixi run -e apple mojo run tests/debug_hopper_cpu_gpu_policy_comparison.mojo
 """
 
 from random import seed
@@ -19,7 +19,7 @@ from layout import Layout, LayoutTensor
 
 from deep_agents.ppo import DeepPPOContinuousAgent
 from envs.hopper import Hopper
-from envs.hopper.constants_gc import HopperConstantsGPU
+from envs.hopper.constants import HopperConstantsGPU
 from deep_rl import dtype as gpu_dtype
 from physics3d.gpu.constants import (
     qpos_offset,
@@ -145,7 +145,7 @@ fn main() raises:
 
     print("Loading checkpoint...")
     try:
-        agent.load_checkpoint("ppo_hopper_gc.ckpt")
+        agent.load_checkpoint("ppo_hopper.ckpt")
         print("Checkpoint loaded successfully!")
     except:
         print("Error loading checkpoint!")

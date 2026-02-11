@@ -28,7 +28,7 @@ The GPU physics engine is **fully functional** with the following features imple
 | **Contact Impulse Solver** | ✅ Done | Sequential impulse with friction and position correction |
 | **Revolute Joints** | ✅ Done | Point-to-point constraints with springs and angle limits |
 
-### LunarLanderV2 Environment (`envs/lunar_lander_v2.mojo`)
+### LunarLander Environment (`envs/lunar_lander_v2.mojo`)
 
 | Feature | Status | Description |
 |---------|--------|-------------|
@@ -44,7 +44,7 @@ The GPU physics engine is **fully functional** with the following features imple
 
 ### Comparison with Gymnasium LunarLander
 
-| Feature | Gymnasium | LunarLanderV2 | Notes |
+| Feature | Gymnasium | LunarLander | Notes |
 |---------|-----------|---------------|-------|
 | Physics engine | Box2D | Custom GPU | Equivalent behavior |
 | Bodies | 3 | 3 | Lander + 2 legs |
@@ -68,10 +68,10 @@ Create a **modular physics engine** that:
 
 ```mojo
 from physics2d import PhysicsLayout, PhysicsKernel, PhysicsState
-from envs.lunar_lander_v2 import LunarLanderV2
+from envs.lunar_lander_v2 import LunarLander
 
 # Create environment with batched physics
-var env = LunarLanderV2[BATCH=256](seed=42)
+var env = LunarLander[BATCH=256](seed=42)
 
 # Reset all environments
 env.reset_all()

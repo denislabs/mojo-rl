@@ -14,7 +14,7 @@ from time import perf_counter_ns
 from gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.lunar_lander import LunarLanderV2, LLConstants
+from envs.lunar_lander import LunarLander, LLConstants
 from deep_rl import dtype as gpu_dtype
 
 
@@ -124,7 +124,7 @@ fn main() raises:
                 EVAL_EVERY, TOTAL_EPISODES - episodes_trained
             )
 
-            var metrics = agent.train_gpu[LunarLanderV2[gpu_dtype]](
+            var metrics = agent.train_gpu[LunarLander[gpu_dtype]](
                 ctx,
                 num_episodes=episodes_this_round,
                 verbose=False,
@@ -141,7 +141,7 @@ fn main() raises:
             var log_std_1 = Float64(agent.actor.params[log_std_offset + 1])
 
             # Evaluate on GPU (stochastic)
-            var eval_gpu_avg = agent.evaluate_gpu[LunarLanderV2[gpu_dtype]](
+            var eval_gpu_avg = agent.evaluate_gpu[LunarLander[gpu_dtype]](
                 ctx,
                 num_episodes=EVAL_EPISODES,
                 max_steps=MAX_STEPS,
@@ -150,7 +150,7 @@ fn main() raises:
             )
 
             # Evaluate on CPU (stochastic)
-            var env = LunarLanderV2[dtype]()
+            var env = LunarLander[dtype]()
             var eval_cpu_avg = agent.evaluate(
                 env,
                 num_episodes=EVAL_EPISODES,

@@ -4,8 +4,8 @@ This script trains with periodic evaluation to see when/how the gap appears.
 It also tracks log_std parameters to detect drift.
 
 Run with:
-    pixi run -e apple mojo run tests/debug_ppo_half_cheetah_gc_gap_growth.mojo
-    pixi run -e nvidia mojo run tests/debug_ppo_half_cheetah_gc_gap_growth.mojo
+    pixi run -e apple mojo run tests/debug_ppo_half_cheetah_gap_growth.mojo
+    pixi run -e nvidia mojo run tests/debug_ppo_half_cheetah_gap_growth.mojo
 """
 
 from random import seed
@@ -19,7 +19,7 @@ from deep_rl import dtype as gpu_dtype
 
 
 # =============================================================================
-# Constants (matching test_ppo_half_cheetah_gc_continuous_gpu.mojo)
+# Constants (matching test_ppo_half_cheetah_continuous_gpu.mojo)
 # =============================================================================
 
 comptime C = HalfCheetahConstants[DType.float32]

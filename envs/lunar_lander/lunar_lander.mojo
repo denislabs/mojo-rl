@@ -754,14 +754,16 @@ struct LunarLander[
             right_contact = Scalar[Self.dtype](1.0)
 
         return InlineArray[Scalar[Self.dtype], LLConstants.OBS_DIM_VAL](
-            Scalar[Self.dtype](pos_norm[0]),
-            Scalar[Self.dtype](pos_norm[1]),
-            Scalar[Self.dtype](vel_norm[0]),
-            Scalar[Self.dtype](vel_norm[1]),
-            Scalar[Self.dtype](angle),
-            Scalar[Self.dtype](omega_norm),
-            left_contact,
-            right_contact,
+            fill=[
+                Scalar[Self.dtype](pos_norm[0]),
+                Scalar[Self.dtype](pos_norm[1]),
+                Scalar[Self.dtype](vel_norm[0]),
+                Scalar[Self.dtype](vel_norm[1]),
+                Scalar[Self.dtype](angle),
+                Scalar[Self.dtype](omega_norm),
+                left_contact,
+                right_contact,
+            ]
         )
 
     fn _get_terrain_height(self, x: Float64) -> Float64:

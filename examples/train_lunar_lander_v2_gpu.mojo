@@ -1,6 +1,6 @@
-"""Training script for LunarLanderV2 GPU environment.
+"""Training script for LunarLander GPU environment.
 
-This demonstrates the LunarLanderV2 environment which implements GPUDiscreteEnv
+This demonstrates the LunarLander environment which implements GPUDiscreteEnv
 trait and uses the physics2d architecture with GPU methods for full physics
 simulation on GPU.
 
@@ -15,15 +15,15 @@ from math import exp, sqrt
 from gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
-from envs.lunar_lander import LunarLanderV2
+from envs.lunar_lander import LunarLander
 from physics2d import dtype, TPB
 
 
 # Training hyperparameters
 comptime BATCH_SIZE: Int = 32  # Number of parallel environments (reduced for testing)
-comptime STATE_SIZE: Int = LunarLanderV2.STATE_SIZE
-comptime OBS_DIM: Int = LunarLanderV2.OBS_DIM
-comptime NUM_ACTIONS: Int = LunarLanderV2.NUM_ACTIONS
+comptime STATE_SIZE: Int = LunarLander.STATE_SIZE
+comptime OBS_DIM: Int = LunarLander.OBS_DIM
+comptime NUM_ACTIONS: Int = LunarLander.NUM_ACTIONS
 
 # REINFORCE hyperparameters
 comptime HIDDEN_DIM: Int = 64
@@ -47,7 +47,7 @@ fn main() raises:
     seed(42)
 
     print("=" * 70)
-    print("LunarLanderV2 GPU Training - REINFORCE")
+    print("LunarLander GPU Training - REINFORCE")
     print("=" * 70)
     print()
     print("Configuration:")
@@ -79,7 +79,7 @@ fn main() raises:
 
         # Reset all environments
         print("Resetting all environments...")
-        LunarLanderV2.reset_kernel_gpu[BATCH_SIZE, STATE_SIZE](ctx, states_buf)
+        LunarLander.reset_kernel_gpu[BATCH_SIZE, STATE_SIZE](ctx, states_buf)
         ctx.synchronize()
 
         # Training statistics
@@ -109,15 +109,15 @@ fn main() raises:
                         actions_host[i] = Scalar[dtype](action)
 
                 # Step all environments
-                LunarLanderV2.step_kernel_gpu[BATCH_SIZE, STATE_SIZE](
+                LunarLander.step_kernel_gpu[BATCH_SIZE, STATE_SIZE](
                     ctx, states_buf, actions_buf, rewards_buf, dones_buf
                 )
 
                 # Selective reset for done environments
                 rng_state = xorshift32(rng_state)
-                LunarLanderV2.selective_reset_kernel_gpu[
-                    BATCH_SIZE, STATE_SIZE
-                ](ctx, states_buf, dones_buf, UInt64(rng_state))
+                LunarLander.selective_reset_kernel_gpu[BATCH_SIZE, STATE_SIZE](
+                    ctx, states_buf, dones_buf, UInt64(rng_state)
+                )
 
                 ctx.synchronize()
 
@@ -187,7 +187,7 @@ fn main() raises:
         print("Running final test episodes...")
 
         # Reset for test
-        LunarLanderV2.reset_kernel_gpu[BATCH_SIZE, STATE_SIZE](ctx, states_buf)
+        LunarLander.reset_kernel_gpu[BATCH_SIZE, STATE_SIZE](ctx, states_buf)
         ctx.synchronize()
 
         var test_rewards = List[Float64]()
@@ -204,11 +204,11 @@ fn main() raises:
                     var action = Int(rng_state % NUM_ACTIONS)
                     actions_host[i] = Scalar[dtype](action)
 
-            LunarLanderV2.step_kernel_gpu[BATCH_SIZE, STATE_SIZE](
+            LunarLander.step_kernel_gpu[BATCH_SIZE, STATE_SIZE](
                 ctx, states_buf, actions_buf, rewards_buf, dones_buf
             )
 
-            LunarLanderV2.selective_reset_kernel_gpu[BATCH_SIZE, STATE_SIZE](
+            LunarLander.selective_reset_kernel_gpu[BATCH_SIZE, STATE_SIZE](
                 ctx, states_buf, dones_buf, UInt64(rng_state)
             )
 

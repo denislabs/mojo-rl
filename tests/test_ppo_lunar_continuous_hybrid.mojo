@@ -1,7 +1,7 @@
 """Test PPO Continuous Agent Hybrid GPU+CPU Training on LunarLander.
 
 This tests the hybrid GPU+CPU implementation of PPO with continuous actions using the
-LunarLanderV2 environment with:
+LunarLander environment with:
 - Neural network computations on GPU (forward/backward passes)
 - Environment physics on CPU (accurate Box2D-style simulation)
 - 2D continuous action space (main throttle + side control)
@@ -24,7 +24,7 @@ from time import perf_counter_ns
 from gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.lunar_lander import LunarLanderV2, LLConstants
+from envs.lunar_lander import LunarLander, LLConstants
 
 
 # =============================================================================
@@ -66,9 +66,9 @@ fn main() raises:
     # =========================================================================
 
     print("Creating " + String(N_ENVS) + " CPU environments...")
-    var envs = List[LunarLanderV2[dtype]]()
+    var envs = List[LunarLander[dtype]]()
     for i in range(N_ENVS):
-        var env = LunarLanderV2[dtype](
+        var env = LunarLander[dtype](
             enable_wind=True,
             wind_power=15.0,
             turbulence_power=1.5,

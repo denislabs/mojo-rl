@@ -6,7 +6,7 @@ Tests:
 3. Basic dynamics (gravity causes swinging)
 
 Run with:
-    pixi run mojo run physics3d/generalized/tests/test_pendulum_gc.mojo
+    pixi run mojo run physics3d/generalized/tests/test_pendulum.mojo
 """
 
 from math import sqrt, pi, sin, cos
@@ -243,7 +243,7 @@ fn test_gravity_swinging() -> Bool:
 
 
 fn main():
-    print("=== Pendulum GC Tests ===\n")
+    print("=== Pendulum Tests ===\n")
 
     var all_pass = True
 

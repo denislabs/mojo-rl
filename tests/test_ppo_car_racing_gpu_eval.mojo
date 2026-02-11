@@ -1,6 +1,6 @@
 """Test PPO Agent Evaluation on CarRacing (CPU).
 
-This evaluates a PPO agent trained on GPU using the CPU CarRacingV2 environment.
+This evaluates a PPO agent trained on GPU using the CPU CarRacing environment.
 Includes debug output to diagnose any issues with the transfer.
 
 Run with:
@@ -15,14 +15,14 @@ from time import perf_counter_ns
 from gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.car_racing import CarRacingV2, CarRacingV2Action
+from envs.car_racing import CarRacing, CarRacingAction
 from render import RendererBase
 
 # =============================================================================
 # Constants
 # =============================================================================
 
-# CarRacingV2: 13D observation, 3 continuous actions
+# CarRacing: 13D observation, 3 continuous actions
 comptime OBS_DIM = 13
 comptime NUM_ACTIONS = 3
 
@@ -119,8 +119,8 @@ fn main() raises:
     with DeviceContext() as ctx:
         # Initialize with same action biases as training
         var action_mean_biases = List[Float64]()
-        action_mean_biases.append(0.0)   # steering: centered
-        action_mean_biases.append(0.5)   # gas: slight forward bias
+        action_mean_biases.append(0.0)  # steering: centered
+        action_mean_biases.append(0.5)  # gas: slight forward bias
         action_mean_biases.append(-0.5)  # brake: slight no-brake bias
 
         var agent = DeepPPOContinuousAgent[
@@ -164,7 +164,7 @@ fn main() raises:
         print("-" * 70)
         print()
 
-        var env = CarRacingV2[dtype]()
+        var env = CarRacing[dtype]()
 
         try:
             # Reset environment
@@ -210,7 +210,7 @@ fn main() raises:
                 var brake = Scalar[dtype](tanh(Float64(means[2])))
 
                 # Create action
-                var action = CarRacingV2Action[dtype](steering, gas, brake)
+                var action = CarRacingAction[dtype](steering, gas, brake)
 
                 # Step environment
                 var result = env.step(action)
@@ -232,7 +232,9 @@ fn main() raises:
                         "Step "
                         + String(i)
                         + ": "
-                        + format_action(Float32(steering), Float32(gas), Float32(brake))
+                        + format_action(
+                            Float32(steering), Float32(gas), Float32(brake)
+                        )
                         + " reward="
                         + String(reward)[:7]
                         + " total="

@@ -1,4 +1,4 @@
-"""Test to compare CPU and GPU HopperGC implementations.
+"""Test to compare CPU and GPU Hopper implementations.
 
 This test identifies differences between CPU and GPU physics by:
 1. Starting from identical initial states (no noise)
@@ -10,7 +10,7 @@ from gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 from deep_rl import dtype as gpu_dtype
 
-from envs.hopper_gc import HopperGC
+from envs.hopper import Hopper
 from physics3d.gpu.constants import (
     state_size,
     qpos_offset,
@@ -110,11 +110,11 @@ fn extract_gpu_qpos_qvel[
 
 fn main() raises:
     print("=" * 60)
-    print("HopperGC CPU vs GPU Comparison Test")
+    print("Hopper CPU vs GPU Comparison Test")
     print("=" * 60)
 
     # Create CPU environment
-    var env = HopperGC[DType.float64](
+    var env = Hopper[DType.float64](
         torque_limit=200.0,
         min_height=0.7,
         max_pitch=0.2,
@@ -153,10 +153,10 @@ fn main() raises:
     # Initialize GPU
     var ctx = DeviceContext()
 
-    comptime STATE_SIZE = HopperGC[DType.float64].STATE_SIZE
+    comptime STATE_SIZE = Hopper[DType.float64].STATE_SIZE
     comptime BATCH_SIZE = 1
-    comptime OBS_DIM = HopperGC[DType.float64].OBS_DIM
-    comptime ACTION_DIM = HopperGC[DType.float64].ACTION_DIM
+    comptime OBS_DIM = Hopper[DType.float64].OBS_DIM
+    comptime ACTION_DIM = Hopper[DType.float64].ACTION_DIM
 
     # Create GPU buffers
     var states_buf = ctx.enqueue_create_buffer[gpu_dtype](
@@ -250,7 +250,7 @@ fn main() raises:
         cpu_qvel = env.get_qvel()
 
         # Step GPU
-        HopperGC[DType.float64].step_kernel_gpu[
+        Hopper[DType.float64].step_kernel_gpu[
             BATCH_SIZE, STATE_SIZE, OBS_DIM, ACTION_DIM
         ](
             ctx,
@@ -293,7 +293,7 @@ fn main() raises:
         _ = env.step_continuous_vec(cpu_action_zero)
 
         # Step GPU
-        HopperGC[DType.float64].step_kernel_gpu[
+        Hopper[DType.float64].step_kernel_gpu[
             BATCH_SIZE, STATE_SIZE, OBS_DIM, ACTION_DIM
         ](
             ctx,

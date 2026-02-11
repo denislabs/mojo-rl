@@ -1,4 +1,4 @@
-"""Diagnostic: Test CPU evaluation pipeline for HalfCheetahGC.
+"""Diagnostic: Test CPU evaluation pipeline for HalfCheetah.
 
 Tests whether the CPU actor forward pass produces sensible actions
 for known observations, and compares with a manual GPU forward pass.
@@ -15,11 +15,11 @@ from gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.half_cheetah_gc import HalfCheetahGC, HalfCheetahGCConstants
+from envs.half_cheetah import HalfCheetah, HalfCheetahConstants
 from deep_rl import dtype as gpu_dtype
 from deep_rl.constants import dtype, TPB, TILE
 
-comptime C = HalfCheetahGCConstants[DType.float32]
+comptime C = HalfCheetahConstants[DType.float32]
 comptime OBS_DIM = C.OBS_DIM  # 17
 comptime ACTION_DIM = C.ACTION_DIM  # 6
 comptime HIDDEN_DIM = 256
@@ -66,7 +66,12 @@ fn main() raises:
 
         print()
         print("Agent created. Actor param count:", len(agent.actor.params))
-        print("Action scale:", agent.action_scale, "Action bias:", agent.action_bias)
+        print(
+            "Action scale:",
+            agent.action_scale,
+            "Action bias:",
+            agent.action_bias,
+        )
         print()
 
         # ================================================================
@@ -76,21 +81,33 @@ fn main() raises:
         print("TEST 1: CPU forward pass with zero observation (untrained)")
         print("=" * 70)
 
-        var zero_obs = InlineArray[Scalar[dtype], OBS_DIM](fill=Scalar[dtype](0.0))
+        var zero_obs = InlineArray[Scalar[dtype], OBS_DIM](
+            fill=Scalar[dtype](0.0)
+        )
 
         var action_result = agent.select_action(zero_obs, training=False)
         var actions_det = action_result[0].copy()
 
         print("Deterministic actions from zero obs:")
         for j in range(ACTION_DIM):
-            print("  action[" + String(j) + "] = " + String(Float64(actions_det[j])))
+            print(
+                "  action["
+                + String(j)
+                + "] = "
+                + String(Float64(actions_det[j]))
+            )
 
         var action_result_stoch = agent.select_action(zero_obs, training=True)
         var actions_stoch = action_result_stoch[0].copy()
 
         print("Stochastic actions from zero obs:")
         for j in range(ACTION_DIM):
-            print("  action[" + String(j) + "] = " + String(Float64(actions_stoch[j])))
+            print(
+                "  action["
+                + String(j)
+                + "] = "
+                + String(Float64(actions_stoch[j]))
+            )
 
         # ================================================================
         # Test 2: Forward pass with realistic observation (after reset)
@@ -101,7 +118,9 @@ fn main() raises:
         print("=" * 70)
 
         # Create a realistic observation: rootz=0.7, rest=0, qvel=0
-        var real_obs = InlineArray[Scalar[dtype], OBS_DIM](fill=Scalar[dtype](0.0))
+        var real_obs = InlineArray[Scalar[dtype], OBS_DIM](
+            fill=Scalar[dtype](0.0)
+        )
         real_obs[0] = Scalar[dtype](0.7)  # z_position = rootz
 
         var action_result2 = agent.select_action(real_obs, training=False)
@@ -109,7 +128,12 @@ fn main() raises:
 
         print("Deterministic actions from realistic obs (z=0.7):")
         for j in range(ACTION_DIM):
-            print("  action[" + String(j) + "] = " + String(Float64(actions_det2[j])))
+            print(
+                "  action["
+                + String(j)
+                + "] = "
+                + String(Float64(actions_det2[j]))
+            )
 
         # ================================================================
         # Test 3: Manual CPU forward pass (layer by layer)
@@ -122,7 +146,12 @@ fn main() raises:
         # Print first few weights of linear layer 1
         print("First 5 weights of actor (linear layer 1):")
         for i in range(5):
-            print("  params[" + String(i) + "] = " + String(Float64(agent.actor.params[i])))
+            print(
+                "  params["
+                + String(i)
+                + "] = "
+                + String(Float64(agent.actor.params[i]))
+            )
 
         # Compute linear layer 1 manually: output = tanh(obs @ W1 + b1)
         # W1 is at offset 0 (17 * 256 = 4352 elements)
@@ -133,14 +162,27 @@ fn main() raises:
 
         print()
         print("Layer 1 (LinearTanh[17, 256]):")
-        print("  W1 size:", W1_SIZE, "B1 offset:", B1_OFFSET, "Total L1 params:", L1_PARAM_SIZE)
+        print(
+            "  W1 size:",
+            W1_SIZE,
+            "B1 offset:",
+            B1_OFFSET,
+            "Total L1 params:",
+            L1_PARAM_SIZE,
+        )
 
         # Compute first hidden output manually
-        var hidden1 = InlineArray[Scalar[dtype], HIDDEN_DIM](fill=Scalar[dtype](0.0))
+        var hidden1 = InlineArray[Scalar[dtype], HIDDEN_DIM](
+            fill=Scalar[dtype](0.0)
+        )
         for j in range(HIDDEN_DIM):
-            var acc: Float64 = Float64(agent.actor.params[B1_OFFSET + j])  # bias
+            var acc: Float64 = Float64(
+                agent.actor.params[B1_OFFSET + j]
+            )  # bias
             for i in range(OBS_DIM):
-                acc += Float64(real_obs[i]) * Float64(agent.actor.params[i * HIDDEN_DIM + j])
+                acc += Float64(real_obs[i]) * Float64(
+                    agent.actor.params[i * HIDDEN_DIM + j]
+                )
             hidden1[j] = Scalar[dtype](tanh(acc))
 
         print("  First 5 hidden1 values (manual):")
@@ -149,7 +191,9 @@ fn main() raises:
 
         # Compare with actor forward pass output
         # The actor output is [mean(6), log_std(6)] = 12 values
-        var actor_output = InlineArray[Scalar[dtype], ACTION_DIM * 2](uninitialized=True)
+        var actor_output = InlineArray[Scalar[dtype], ACTION_DIM * 2](
+            uninitialized=True
+        )
         for i in range(ACTION_DIM * 2):
             actor_output[i] = Scalar[dtype](0.0)
         agent.actor.forward[1](real_obs, actor_output)
@@ -157,7 +201,10 @@ fn main() raises:
         print()
         print("Actor forward pass output (12 values):")
         for i in range(ACTION_DIM * 2):
-            var label = "mean[" + String(i) + "]" if i < ACTION_DIM else "log_std[" + String(i - ACTION_DIM) + "]"
+            var label = (
+                "mean[" + String(i) + "]" if i
+                < ACTION_DIM else "log_std[" + String(i - ACTION_DIM) + "]"
+            )
             print("  " + label + " = " + String(Float64(actor_output[i])))
 
         # ================================================================
@@ -172,7 +219,9 @@ fn main() raises:
         comptime ACTOR_OUT = agent.ACTOR_OUT
         comptime WORKSPACE_PER_SAMPLE = 4 * HIDDEN_DIM
 
-        var actor_params_buf = ctx.enqueue_create_buffer[dtype](ACTOR_PARAM_SIZE)
+        var actor_params_buf = ctx.enqueue_create_buffer[dtype](
+            ACTOR_PARAM_SIZE
+        )
         ctx.enqueue_copy(actor_params_buf, agent.actor.params.unsafe_ptr())
 
         var obs_buf = ctx.enqueue_create_buffer[dtype](OBS_DIM)
@@ -183,7 +232,9 @@ fn main() raises:
         ctx.enqueue_copy(obs_buf, obs_host.unsafe_ptr())
 
         var actor_out_buf = ctx.enqueue_create_buffer[dtype](ACTOR_OUT)
-        var workspace_buf = ctx.enqueue_create_buffer[dtype](WORKSPACE_PER_SAMPLE)
+        var workspace_buf = ctx.enqueue_create_buffer[dtype](
+            WORKSPACE_PER_SAMPLE
+        )
         ctx.synchronize()
 
         # Run GPU forward pass
@@ -205,7 +256,10 @@ fn main() raises:
 
         print("GPU actor forward pass output (12 values):")
         for i in range(ACTOR_OUT):
-            var label = "mean[" + String(i) + "]" if i < ACTION_DIM else "log_std[" + String(i - ACTION_DIM) + "]"
+            var label = (
+                "mean[" + String(i) + "]" if i
+                < ACTION_DIM else "log_std[" + String(i - ACTION_DIM) + "]"
+            )
             print("  " + label + " = " + String(Float64(gpu_actor_out[i])))
 
         # Compare CPU vs GPU
@@ -216,7 +270,10 @@ fn main() raises:
             var diff = abs(Float64(actor_output[i]) - Float64(gpu_actor_out[i]))
             if diff > max_diff:
                 max_diff = diff
-            var label = "mean[" + String(i) + "]" if i < ACTION_DIM else "log_std[" + String(i - ACTION_DIM) + "]"
+            var label = (
+                "mean[" + String(i) + "]" if i
+                < ACTION_DIM else "log_std[" + String(i - ACTION_DIM) + "]"
+            )
             print(
                 "  " + label,
                 "CPU:" + String(Float64(actor_output[i]))[:12].ljust(12),
@@ -226,7 +283,9 @@ fn main() raises:
         print("Max CPU/GPU difference:", max_diff)
 
         if max_diff > 0.01:
-            print("WARNING: Significant CPU/GPU forward pass difference detected!")
+            print(
+                "WARNING: Significant CPU/GPU forward pass difference detected!"
+            )
             print("This is likely the root cause of the eval gap.")
         else:
             print("CPU and GPU forward passes match well.")
@@ -239,16 +298,21 @@ fn main() raises:
         print("TEST 5: Train 2000 episodes, then compare CPU/GPU forward")
         print("=" * 70)
 
-        var metrics = agent.train_gpu[HalfCheetahGC[gpu_dtype]](
+        var metrics = agent.train_gpu[HalfCheetah[gpu_dtype]](
             ctx,
             num_episodes=2000,
             verbose=False,
             print_every=0,
         )
-        print("Training done. Mean reward (last 100):", metrics.mean_reward_last_n(100))
+        print(
+            "Training done. Mean reward (last 100):",
+            metrics.mean_reward_last_n(100),
+        )
 
         # Check CPU forward pass with same obs
-        var actor_output_trained = InlineArray[Scalar[dtype], ACTION_DIM * 2](uninitialized=True)
+        var actor_output_trained = InlineArray[Scalar[dtype], ACTION_DIM * 2](
+            uninitialized=True
+        )
         for i in range(ACTION_DIM * 2):
             actor_output_trained[i] = Scalar[dtype](0.0)
         agent.actor.forward[1](real_obs, actor_output_trained)
@@ -274,13 +338,19 @@ fn main() raises:
         print("After training - CPU vs GPU actor output:")
         var max_diff_trained: Float64 = 0.0
         for i in range(ACTOR_OUT):
-            var diff = abs(Float64(actor_output_trained[i]) - Float64(gpu_actor_out[i]))
+            var diff = abs(
+                Float64(actor_output_trained[i]) - Float64(gpu_actor_out[i])
+            )
             if diff > max_diff_trained:
                 max_diff_trained = diff
-            var label = "mean[" + String(i) + "]" if i < ACTION_DIM else "log_std[" + String(i - ACTION_DIM) + "]"
+            var label = (
+                "mean[" + String(i) + "]" if i
+                < ACTION_DIM else "log_std[" + String(i - ACTION_DIM) + "]"
+            )
             print(
                 "  " + label,
-                "CPU:" + String(Float64(actor_output_trained[i]))[:12].ljust(12),
+                "CPU:"
+                + String(Float64(actor_output_trained[i]))[:12].ljust(12),
                 "GPU:" + String(Float64(gpu_actor_out[i]))[:12].ljust(12),
                 "diff:" + String(diff)[:12],
             )
@@ -288,10 +358,16 @@ fn main() raises:
 
         if max_diff_trained > 0.01:
             print("WARNING: CPU/GPU forward pass diverged after training!")
-            print("The CPU evaluation uses different actions than GPU -> root cause found!")
+            print(
+                "The CPU evaluation uses different actions than GPU -> root"
+                " cause found!"
+            )
         else:
             print("CPU and GPU forward passes still match.")
-            print("The issue may be elsewhere (e.g., stochastic sampling or env interface).")
+            print(
+                "The issue may be elsewhere (e.g., stochastic sampling or env"
+                " interface)."
+            )
 
         # ================================================================
         # Test 6: Run CPU eval with verbose first episode
@@ -301,7 +377,7 @@ fn main() raises:
         print("TEST 6: CPU evaluation - first 5 steps of first episode")
         print("=" * 70)
 
-        var env = HalfCheetahGC[dtype]()
+        var env = HalfCheetah[dtype]()
         var obs_list = env.reset_obs_list()
         var obs = InlineArray[Scalar[dtype], OBS_DIM](uninitialized=True)
         for i in range(OBS_DIM):
@@ -334,15 +410,30 @@ fn main() raises:
 
             print("  Clipped actions (sent to env):")
             for j in range(ACTION_DIM):
-                print("    a_clip[" + String(j) + "] = " + String(Float64(action_list[j])))
+                print(
+                    "    a_clip["
+                    + String(j)
+                    + "] = "
+                    + String(Float64(action_list[j]))
+                )
 
             var result = env.step_continuous_vec(action_list)
             var next_obs = result[0].copy()
             var reward = result[1]
 
             print("  Reward:", Float64(reward))
-            print("  Next obs[0:3]:", Float64(next_obs[0]), Float64(next_obs[1]), Float64(next_obs[2]))
-            print("  rootx:", Float64(env.data.qpos[0]), "x_vel:", Float64(env.data.qvel[0]))
+            print(
+                "  Next obs[0:3]:",
+                Float64(next_obs[0]),
+                Float64(next_obs[1]),
+                Float64(next_obs[2]),
+            )
+            print(
+                "  rootx:",
+                Float64(env.data.qpos[0]),
+                "x_vel:",
+                Float64(env.data.qvel[0]),
+            )
 
             for i in range(OBS_DIM):
                 obs[i] = next_obs[i]

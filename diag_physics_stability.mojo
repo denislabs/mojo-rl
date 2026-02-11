@@ -5,16 +5,23 @@ to distinguish between a physics bug and a policy mismatch issue.
 """
 
 from random import seed
-from envs.half_cheetah_gc import HalfCheetahGC
-from envs.half_cheetah_gc.half_cheetah_def import (
-    JOINT_ROOTX, JOINT_ROOTZ, JOINT_ROOTY,
-    JOINT_BTHIGH, JOINT_BSHIN, JOINT_BFOOT,
-    JOINT_FTHIGH, JOINT_FSHIN, JOINT_FFOOT,
-    NQ, NV,
+from envs.half_cheetah import HalfCheetah
+from envs.half_cheetah.half_cheetah_def import (
+    JOINT_ROOTX,
+    JOINT_ROOTZ,
+    JOINT_ROOTY,
+    JOINT_BTHIGH,
+    JOINT_BSHIN,
+    JOINT_BFOOT,
+    JOINT_FTHIGH,
+    JOINT_FSHIN,
+    JOINT_FFOOT,
+    NQ,
+    NV,
 )
 
 
-fn print_state(env: HalfCheetahGC, step: Int):
+fn print_state(env: HalfCheetah, step: Int):
     """Print key state variables."""
     print("Step", step, end="")
     print("  rootx=", env.data.qpos[JOINT_ROOTX], end="")
@@ -50,7 +57,7 @@ fn test_constant_actions(action_val: Float64, label: String):
     print("Test:", label, "  action_value=", action_val)
     print("=" * 70)
 
-    var env = HalfCheetahGC()
+    var env = HalfCheetah()
     _ = env.reset()
 
     var action = env.ActionType()
@@ -71,7 +78,7 @@ fn test_alternating_actions():
     print("Test: Alternating +1/-1 actions (resonance test)")
     print("=" * 70)
 
-    var env = HalfCheetahGC()
+    var env = HalfCheetah()
     _ = env.reset()
 
     print_state(env, 0)
@@ -92,7 +99,7 @@ fn test_extreme_single_joint():
     print("Test: Max torque on bthigh only (coupling test)")
     print("=" * 70)
 
-    var env = HalfCheetahGC()
+    var env = HalfCheetah()
     _ = env.reset()
 
     print_state(env, 0)
@@ -107,7 +114,7 @@ fn test_extreme_single_joint():
 
 fn main():
     seed(42)
-    print("HalfCheetahGC Physics Stability Diagnostic")
+    print("HalfCheetah Physics Stability Diagnostic")
     print("NQ=", NQ, "NV=", NV)
     print("Tests whether physics diverges with extreme actions\n")
 

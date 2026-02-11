@@ -444,7 +444,7 @@ fn detect_body_body_contacts[...](model: Model, mut data: Data):
 **Step 2**: Modify `compute_contact_jacobian_row` in `jacobian.mojo`:
 ```mojo
 # Add body_b parameter (currently not used for ground contacts)
-fn compute_contact_jacobian_row_gc[...](
+fn compute_contact_jacobian_row[...](
     model, data, cdof,
     body_a: Int, body_b: Int,  # body_b = -1 for ground
     contact_pos, direction,
@@ -588,7 +588,7 @@ treatment (both implicit mass matrix modification AND explicit damping force).
 - `integrator/implicit_fast_integrator.mojo` (NEW — qDeriv-based mass matrix modification)
 - `integrator/euler_integrator.mojo` (fixed damping bug: added explicit `f_net -= D*v`)
 - `integrator/__init__.mojo` (exports both, DefaultIntegrator = ImplicitFastIntegrator[PGSSolver])
-- `envs/half_cheetah_gc/half_cheetah_gc.mojo` (switched to ImplicitFastIntegrator[NewtonSolver])
+- `envs/half_cheetah/half_cheetah.mojo` (switched to ImplicitFastIntegrator[NewtonSolver])
 
 #### What Was Implemented
 
@@ -608,7 +608,7 @@ forces act. This is mathematically wrong and means physics under-damps significa
   - `qDeriv` will later include `gainprm[2]`, `biasprm[2]`, tendon damping
 
 **DefaultIntegrator** = `ImplicitFastIntegrator[PGSSolver]` (was `EulerIntegrator[PGSSolver]`).
-HalfCheetahGC uses `ImplicitFastIntegrator[NewtonSolver]`. HopperGC uses DefaultIntegrator.
+HalfCheetah uses `ImplicitFastIntegrator[NewtonSolver]`. Hopper uses DefaultIntegrator.
 
 Both CPU and GPU paths updated in all integrators, all joint types (FREE, BALL, HINGE, SLIDE).
 
@@ -998,7 +998,7 @@ parameters stored per model, used by all three solvers (PGS, CG, Newton) on CPU 
 - `gpu/constants.mojo` — added `MODEL_META_IDX_SOLREF_*` / `MODEL_META_IDX_SOLIMP_*` (10 indices)
 - `gpu/buffer_utils.mojo` — writes solref/solimp to GPU model buffer
 - `solver/pgs_solver.mojo`, `solver/cg_solver.mojo`, `solver/newton_solver.mojo` — impedance bias in all 12 sections (3 solvers × 2 platforms × 2 constraint types)
-- `envs/half_cheetah_gc/` and `envs/hopper_gc/` — environment-specific solref/solimp from XML
+- `envs/half_cheetah/` and `envs/hopper/` — environment-specific solref/solimp from XML
 
 #### Implementation Details
 
@@ -1179,8 +1179,8 @@ All passive forces work on CPU and GPU, for all joint types (FREE, BALL, HINGE, 
 - `gpu/constants.mojo` — `MODEL_JOINT_SIZE` 16→18, added `JOINT_IDX_SPRINGREF=16`, `JOINT_IDX_FRICTIONLOSS=17`
 - `gpu/buffer_utils.mojo` — packs springref/frictionloss into GPU model buffer
 - `integrator/euler_integrator.mojo` — CPU `step()` and GPU `step_kernel()` apply springref offset and frictionloss
-- `envs/half_cheetah_gc/half_cheetah_gc.mojo` — all 10 joints write springref=0, frictionloss=0
-- `envs/hopper_gc/hopper_gc.mojo` — all 6 joints write springref=0, frictionloss=0
+- `envs/half_cheetah/half_cheetah.mojo` — all 10 joints write springref=0, frictionloss=0
+- `envs/hopper/hopper.mojo` — all 6 joints write springref=0, frictionloss=0
 
 **Implementation details**:
 - Damping uses BOTH implicit (`M[i,i] += dt*damping`) AND explicit (`f_net -= damping * qvel`) treatment, matching MuJoCo

@@ -1,4 +1,4 @@
-"""Constants for HopperGC environment using Generalized Coordinates engine.
+"""Constants for Hopper environment using Generalized Coordinates engine.
 
 MuJoCo-style Hopper with joint-space dynamics.
 Uses DefaultIntegrator for physics.
@@ -31,8 +31,8 @@ from physics3d.gpu.constants import (
 )
 
 
-struct HopperGCConstants[DTYPE: DType = DType.float64]:
-    """Constants for HopperGC environment using Generalized Coordinates.
+struct HopperConstants[DTYPE: DType = DType.float64]:
+    """Constants for Hopper environment using Generalized Coordinates.
 
     MuJoCo Hopper configuration:
     - 4 bodies: torso, thigh, leg, foot
@@ -60,15 +60,15 @@ struct HopperGCConstants[DTYPE: DType = DType.float64]:
 
     # MuJoCo solref/solimp (from hopper.xml)
     comptime SOLREF_CONTACT_0: Scalar[Self.DTYPE] = 0.02  # timeconst
-    comptime SOLREF_CONTACT_1: Scalar[Self.DTYPE] = 1.0   # dampratio
-    comptime SOLIMP_CONTACT_0: Scalar[Self.DTYPE] = 0.0   # dmin
-    comptime SOLIMP_CONTACT_1: Scalar[Self.DTYPE] = 0.8   # dmax
+    comptime SOLREF_CONTACT_1: Scalar[Self.DTYPE] = 1.0  # dampratio
+    comptime SOLIMP_CONTACT_0: Scalar[Self.DTYPE] = 0.0  # dmin
+    comptime SOLIMP_CONTACT_1: Scalar[Self.DTYPE] = 0.8  # dmax
     comptime SOLIMP_CONTACT_2: Scalar[Self.DTYPE] = 0.01  # width
-    comptime SOLREF_LIMIT_0: Scalar[Self.DTYPE] = 0.02    # timeconst
-    comptime SOLREF_LIMIT_1: Scalar[Self.DTYPE] = 1.0     # dampratio
-    comptime SOLIMP_LIMIT_0: Scalar[Self.DTYPE] = 0.0     # dmin
-    comptime SOLIMP_LIMIT_1: Scalar[Self.DTYPE] = 0.8     # dmax
-    comptime SOLIMP_LIMIT_2: Scalar[Self.DTYPE] = 0.03    # width
+    comptime SOLREF_LIMIT_0: Scalar[Self.DTYPE] = 0.02  # timeconst
+    comptime SOLREF_LIMIT_1: Scalar[Self.DTYPE] = 1.0  # dampratio
+    comptime SOLIMP_LIMIT_0: Scalar[Self.DTYPE] = 0.0  # dmin
+    comptime SOLIMP_LIMIT_1: Scalar[Self.DTYPE] = 0.8  # dmax
+    comptime SOLIMP_LIMIT_2: Scalar[Self.DTYPE] = 0.03  # width
 
     # ==========================================================================
     # Body Geometry (from MuJoCo Hopper XML)
@@ -323,5 +323,5 @@ struct HopperGCConstants[DTYPE: DType = DType.float64]:
 
 
 # Type aliases for convenience
-comptime HopperGCConstantsCPU = HopperGCConstants[DType.float64]
-comptime HopperGCConstantsGPU = HopperGCConstants[DType.float32]
+comptime HopperConstantsCPU = HopperConstants[DType.float64]
+comptime HopperConstantsGPU = HopperConstants[DType.float32]

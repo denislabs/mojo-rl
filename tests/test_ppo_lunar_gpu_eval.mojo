@@ -15,7 +15,7 @@ from time import perf_counter_ns
 from gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOAgent
-from envs.lunar_lander import LunarLanderEnv, LunarLanderV2
+from envs.lunar_lander import LunarLanderEnv, LunarLander
 from render import RendererBase
 
 # =============================================================================
@@ -152,7 +152,7 @@ fn main() raises:
         print("-" * 70)
         print()
 
-        var env = LunarLanderV2[DType.float32]()
+        var env = LunarLander[DType.float32]()
 
         try:
             # Reset environment

@@ -10,8 +10,8 @@ Run with:
 from math import sqrt, pi
 from builtin.math import abs
 
-from envs.half_cheetah_gc import HalfCheetahGC
-from envs.half_cheetah_gc.half_cheetah_def import (
+from envs.half_cheetah import HalfCheetah
+from envs.half_cheetah.half_cheetah_def import (
     NQ,
     NV,
     NBODY,
@@ -77,13 +77,27 @@ fn run_test(label: String, actions: InlineArray[Float64, 6]):
     print("=" * 80)
     print(label)
     print("=" * 80)
-    print("Actions (pre-gear):", actions[0], actions[1], actions[2], actions[3], actions[4], actions[5])
-    print("Torques (post-gear):",
-        actions[0] * BTHIGH_GEAR, actions[1] * BSHIN_GEAR, actions[2] * BFOOT_GEAR,
-        actions[3] * FTHIGH_GEAR, actions[4] * FSHIN_GEAR, actions[5] * FFOOT_GEAR)
+    print(
+        "Actions (pre-gear):",
+        actions[0],
+        actions[1],
+        actions[2],
+        actions[3],
+        actions[4],
+        actions[5],
+    )
+    print(
+        "Torques (post-gear):",
+        actions[0] * BTHIGH_GEAR,
+        actions[1] * BSHIN_GEAR,
+        actions[2] * BFOOT_GEAR,
+        actions[3] * FTHIGH_GEAR,
+        actions[4] * FSHIN_GEAR,
+        actions[5] * FFOOT_GEAR,
+    )
     print("")
 
-    var env = HalfCheetahGC[DType.float64, False]()
+    var env = HalfCheetah[DType.float64, False]()
     _ = env.reset()
 
     var max_pen = Float64(0.0)
@@ -97,17 +111,32 @@ fn run_test(label: String, actions: InlineArray[Float64, 6]):
     var env_steps = 200
     var physics_steps_per_env = FRAME_SKIP
 
-    print("  step | rootz    | vz       | rooty    | bfoot_z  | ffoot_z  | contacts | max_pen  | max_imp_n | qvel_max")
+    print(
+        "  step | rootz    | vz       | rooty    | bfoot_z  | ffoot_z  |"
+        " contacts | max_pen  | max_imp_n | qvel_max"
+    )
     print("  " + "-" * 120)
 
     for step in range(env_steps):
         # Apply actions (like the environment does)
-        env.data.qfrc[JOINT_BTHIGH] = Scalar[DType.float64](actions[0] * BTHIGH_GEAR)
-        env.data.qfrc[JOINT_BSHIN] = Scalar[DType.float64](actions[1] * BSHIN_GEAR)
-        env.data.qfrc[JOINT_BFOOT] = Scalar[DType.float64](actions[2] * BFOOT_GEAR)
-        env.data.qfrc[JOINT_FTHIGH] = Scalar[DType.float64](actions[3] * FTHIGH_GEAR)
-        env.data.qfrc[JOINT_FSHIN] = Scalar[DType.float64](actions[4] * FSHIN_GEAR)
-        env.data.qfrc[JOINT_FFOOT] = Scalar[DType.float64](actions[5] * FFOOT_GEAR)
+        env.data.qfrc[JOINT_BTHIGH] = Scalar[DType.float64](
+            actions[0] * BTHIGH_GEAR
+        )
+        env.data.qfrc[JOINT_BSHIN] = Scalar[DType.float64](
+            actions[1] * BSHIN_GEAR
+        )
+        env.data.qfrc[JOINT_BFOOT] = Scalar[DType.float64](
+            actions[2] * BFOOT_GEAR
+        )
+        env.data.qfrc[JOINT_FTHIGH] = Scalar[DType.float64](
+            actions[3] * FTHIGH_GEAR
+        )
+        env.data.qfrc[JOINT_FSHIN] = Scalar[DType.float64](
+            actions[4] * FSHIN_GEAR
+        )
+        env.data.qfrc[JOINT_FFOOT] = Scalar[DType.float64](
+            actions[5] * FFOOT_GEAR
+        )
 
         # Physics sub-steps (matching env.step)
         for _ in range(physics_steps_per_env):

@@ -1,7 +1,7 @@
 """Test PPO Continuous Agent GPU Training on BipedalWalker.
 
 This tests the GPU implementation of PPO with continuous actions using the
-BipedalWalkerV2 environment with:
+BipedalWalker environment with:
 - Parallel environments on GPU
 - Full rigid body physics with motor-enabled joints
 - 4D continuous action space (hip and knee torques)
@@ -24,7 +24,7 @@ from time import perf_counter_ns
 from gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.bipedal_walker import BipedalWalkerV2, BWConstants
+from envs.bipedal_walker import BipedalWalker, BWConstants
 
 
 # =============================================================================
@@ -154,7 +154,7 @@ fn main() raises:
         var start_time = perf_counter_ns()
 
         try:
-            var metrics = agent.train_gpu[BipedalWalkerV2[dtype]](
+            var metrics = agent.train_gpu[BipedalWalker[dtype]](
                 ctx,
                 num_episodes=NUM_EPISODES,
                 verbose=True,

@@ -1,12 +1,20 @@
 """Diagnostic: compare diagonal vs LDL solve for HalfCheetah mass matrix."""
 
 from physics3d.types import Model, Data, _max_one
-from physics3d.dynamics.mass_matrix import compute_mass_matrix, compute_mass_matrix_full, ldl_factor, ldl_solve
+from physics3d.dynamics.mass_matrix import (
+    compute_mass_matrix,
+    compute_mass_matrix_full,
+    ldl_factor,
+    ldl_solve,
+)
 from physics3d.dynamics.bias_forces import compute_bias_forces
 from physics3d.dynamics.jacobian import compute_cdof, compute_composite_inertia
-from physics3d.kinematics.forward_kinematics import forward_kinematics, compute_body_velocities
+from physics3d.kinematics.forward_kinematics import (
+    forward_kinematics,
+    compute_body_velocities,
+)
 from physics3d.joint_types import JNT_FREE, JNT_BALL
-from envs.half_cheetah_gc import HalfCheetahGC
+from envs.half_cheetah import HalfCheetah
 from builtin.math import abs
 
 comptime NQ = 10
@@ -15,13 +23,14 @@ comptime NBODY = 8
 comptime NJOINT = 10
 comptime MAX_CONTACTS = 20
 
+
 fn main():
     print("=" * 60)
     print("HalfCheetah Mass Matrix Diagnostic")
     print("=" * 60)
 
     # Create HalfCheetah environment
-    var env = HalfCheetahGC()
+    var env = HalfCheetah()
     var state = env.reset()
 
     # Use model/data via env reference
@@ -37,33 +46,43 @@ fn main():
     var M_old = InlineArray[Scalar[DType.float64], M_SIZE2](uninitialized=True)
     for i in range(M_SIZE2):
         M_old[i] = Scalar[DType.float64](0)
-    compute_mass_matrix[DType.float64, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, M_SIZE2](
-        env.model, env.data, M_old
-    )
+    compute_mass_matrix[
+        DType.float64, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, M_SIZE2
+    ](env.model, env.data, M_old)
 
     print("\nOLD diagonal mass matrix:")
     for i in range(NV):
         print("  M_old[", i, ",", i, "] =", M_old[i * NV + i])
 
     # New full mass matrix
-    var cdof = InlineArray[Scalar[DType.float64], CDOF_SIZE2](uninitialized=True)
-    compute_cdof[DType.float64, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CDOF_SIZE2](
-        env.model, env.data, cdof
+    var cdof = InlineArray[Scalar[DType.float64], CDOF_SIZE2](
+        uninitialized=True
     )
+    compute_cdof[
+        DType.float64, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CDOF_SIZE2
+    ](env.model, env.data, cdof)
 
     var crb = InlineArray[Scalar[DType.float64], CRB_SIZE2](uninitialized=True)
     for i in range(CRB_SIZE2):
         crb[i] = Scalar[DType.float64](0)
-    compute_composite_inertia[DType.float64, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CRB_SIZE2](
-        env.model, env.data, crb
-    )
+    compute_composite_inertia[
+        DType.float64, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CRB_SIZE2
+    ](env.model, env.data, crb)
 
     var M_new = InlineArray[Scalar[DType.float64], M_SIZE2](uninitialized=True)
     for i in range(M_SIZE2):
         M_new[i] = Scalar[DType.float64](0)
-    compute_mass_matrix_full[DType.float64, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, M_SIZE2, CDOF_SIZE2, CRB_SIZE2](
-        env.model, env.data, cdof, crb, M_new
-    )
+    compute_mass_matrix_full[
+        DType.float64,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        M_SIZE2,
+        CDOF_SIZE2,
+        CRB_SIZE2,
+    ](env.model, env.data, cdof, crb, M_new)
 
     print("\nNEW full mass matrix (diagonal):")
     for i in range(NV):
@@ -86,15 +105,22 @@ fn main():
             min_d = d
         if d > max_d:
             max_d = d
-    print("  Min:", min_d, "Max:", max_d, "Ratio:", max_d / min_d if min_d > 1e-20 else Float64(0))
+    print(
+        "  Min:",
+        min_d,
+        "Max:",
+        max_d,
+        "Ratio:",
+        max_d / min_d if min_d > 1e-20 else Float64(0),
+    )
 
     # Bias forces
     var bias = InlineArray[Scalar[DType.float64], V_SIZE2](uninitialized=True)
     for i in range(V_SIZE2):
         bias[i] = Scalar[DType.float64](0)
-    compute_bias_forces[DType.float64, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE2](
-        env.model, env.data, bias
-    )
+    compute_bias_forces[
+        DType.float64, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE2
+    ](env.model, env.data, bias)
 
     var f_net = InlineArray[Scalar[DType.float64], V_SIZE2](uninitialized=True)
     for i in range(NV):
@@ -114,10 +140,14 @@ fn main():
             print("  joint", j, "dof_adr=", dof_adr, "armature=", arm)
         if joint.jnt_type == JNT_FREE:
             for d in range(6):
-                M_new[(dof_adr + d) * NV + (dof_adr + d)] = M_new[(dof_adr + d) * NV + (dof_adr + d)] + arm
+                M_new[(dof_adr + d) * NV + (dof_adr + d)] = (
+                    M_new[(dof_adr + d) * NV + (dof_adr + d)] + arm
+                )
         elif joint.jnt_type == JNT_BALL:
             for d in range(3):
-                M_new[(dof_adr + d) * NV + (dof_adr + d)] = M_new[(dof_adr + d) * NV + (dof_adr + d)] + arm
+                M_new[(dof_adr + d) * NV + (dof_adr + d)] = (
+                    M_new[(dof_adr + d) * NV + (dof_adr + d)] + arm
+                )
         else:
             M_new[dof_adr * NV + dof_adr] = M_new[dof_adr * NV + dof_adr] + arm
 
@@ -134,7 +164,9 @@ fn main():
     for i in range(NV):
         print("  D[", i, "] =", D[i])
 
-    var qacc_ldl = InlineArray[Scalar[DType.float64], V_SIZE2](uninitialized=True)
+    var qacc_ldl = InlineArray[Scalar[DType.float64], V_SIZE2](
+        uninitialized=True
+    )
     for i in range(NV):
         qacc_ldl[i] = Scalar[DType.float64](0)
     ldl_solve[DType.float64, NV, M_SIZE2, V_SIZE2](L, D, f_net, qacc_ldl)
@@ -156,4 +188,3 @@ fn main():
         if err > max_err:
             max_err = err
     print("  Max error:", max_err)
-

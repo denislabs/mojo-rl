@@ -1,129 +1,109 @@
-"""
-CarRacing Demo: Native Mojo Implementation
+"""CarRacing V2 Demo - Test rendering and basic functionality.
 
-Demonstrates the CarRacing environment with a simple control policy.
+This demo creates a CarRacing environment and runs it with keyboard controls
+or random actions to test the rendering system.
 
-The car will drive forward and steer automatically based on its
-position relative to the track center. This demo shows the
-environment rendering and physics working correctly.
-
-Run with:
-    pixi run mojo run examples/car_racing_demo.mojo
+Usage:
+    pixi run mojo run examples/car_racing_v2_demo.mojo
 """
 
+from time import sleep
 from random import random_float64
-from envs.car_racing import CarRacingEnv, CarRacingAction
+
+from envs.car_racing import CarRacing, CarRacingAction
+from envs.car_racing.constants import CRConstants
 from render import RendererBase
 
 
 fn main() raises:
-    print("CarRacing Demo - Native Mojo Implementation")
-    print("============================================")
-    print("")
-    print("Running autonomous demo with simple control policy...")
-    print("The car will steer based on the waypoint direction.")
-    print("")
+    print("=== CarRacing V2 Demo ===")
+    print("Testing GPU-accelerated CarRacing environment with rendering")
+    print()
 
-    var env = CarRacingEnv(continuous=True)
-    var renderer = RendererBase(1000, 800, 50, "CarRacing")
+    # Create environment
+    var env = CarRacing[DType.float32](max_steps=500)
+    print("Environment created")
+    print("  Observation dim:", env.obs_dim())
+    print("  Action dim:", env.action_dim())
+    print("  Track tiles:", env.track.track_length)
+    print()
+
+    # Create renderer
+    var renderer = RendererBase(
+        CRConstants.WINDOW_W,
+        CRConstants.WINDOW_H,
+        CRConstants.FPS,
+        "CarRacing V2 Demo",
+    )
+    print("Renderer created:", CRConstants.WINDOW_W, "x", CRConstants.WINDOW_H)
+    print()
+
+    # Reset environment
     var state = env.reset()
+    print("Environment reset")
+    print("  Initial position: (", state.x, ",", state.y, ")")
+    print("  Initial angle:", state.angle)
+    print()
 
-    var total_reward: Float64 = 0.0
-    var episode: Int = 1
-    var step_count: Int = 0
-    var max_episodes: Int = 3
-    var max_steps_per_episode: Int = 1000
+    print("Running demo with random actions...")
+    print("Press Ctrl+C to stop")
+    print()
 
-    print("Episode", episode, "started")
-    print("Track has", env.track_length, "tiles")
+    var total_reward: Float32 = 0.0
+    var step = 0
+    var done = False
 
-    while episode <= max_episodes:
-        # Simple control policy:
-        # - Steer towards waypoint direction
-        # - Apply gas to maintain speed
-        # - Brake on sharp turns
+    while not done and step < 500:
+        # Generate random action (with slight gas bias to move forward)
+        var steering = Float32(random_float64()) * 2.0 - 1.0  # [-1, 1]
+        var gas = Float32(random_float64()) * 0.8  # [0, 0.8] - mostly forward
+        var brake = (
+            Float32(random_float64()) * 0.2
+        )  # [0, 0.2] - occasional brake
 
-        # Get state observation
-        var obs = state.to_list()
+        # Remap to [-1, 1] range expected by environment
+        gas = gas * 2.0 - 1.0  # Now [-1, 0.6]
+        brake = brake * 2.0 - 1.0  # Now [-1, -0.6]
 
-        # Waypoint direction from state (indices 11, 12)
-        var waypoint_dx: Float64 = 0.0
-        if len(obs) > 11:
-            waypoint_dx = obs[11]
-            # Note: obs[12] is waypoint_dy, unused in simple steering
+        var action = CarRacingAction[DType.float32](steering, gas, brake)
 
-        # Simple steering: steer in waypoint direction
-        # Use waypoint_dx as steering input (negative = turn left)
-        var steering = -waypoint_dx * 2.0  # Amplify steering
-        steering = clamp(steering, -1.0, 1.0)
-
-        # Gas: accelerate more when heading straight
-        var gas: Float64 = 0.5 + 0.3 * (1.0 - abs_f64(steering))
-
-        # Brake: light braking on sharp turns
-        var brake: Float64 = 0.0
-        if abs_f64(steering) > 0.6:
-            brake = 0.3
-
-        # Create and apply action
-        var action = CarRacingAction(steering, gas, brake)
+        # Step environment
         var result = env.step(action)
         state = result[0]
         var reward = result[1]
-        var done = result[2]
+        done = result[2]
 
         total_reward += reward
-        step_count += 1
+        step += 1
 
         # Render
         env.render(renderer)
 
-        # Print progress periodically
-        if step_count % 100 == 0:
-            var progress = env.tile_visited_count * 100 / max(env.track_length, 1)
+        # Print progress every 50 steps
+        if step % 50 == 0:
             print(
-                "Step", step_count,
-                "| Reward:", Int(total_reward),
-                "| Progress:", progress, "%",
-                "| Speed:", Int(sqrt(state.vx * state.vx + state.vy * state.vy) * 100.0)
+                "Step",
+                step,
+                "| Reward:",
+                reward,
+                "| Total:",
+                total_reward,
+                "| Tiles:",
+                env.tiles_visited,
+                "/",
+                env.track.track_length,
             )
 
-        if done or step_count >= max_steps_per_episode:
-            print("\n=== Episode", episode, "finished ===")
-            print("Total Reward:", Int(total_reward))
-            print("Tiles visited:", env.tile_visited_count, "/", env.track_length)
-            print("Steps:", step_count)
+        # Small delay for visualization (50 FPS)
+        sleep(0.02)
 
-            # Reset for next episode
-            state = env.reset()
-            total_reward = 0.0
-            step_count = 0
-            episode += 1
+    print()
+    print("=== Demo Complete ===")
+    print("Total steps:", step)
+    print("Total reward:", total_reward)
+    print("Tiles visited:", env.tiles_visited, "/", env.track.track_length)
 
-            if episode <= max_episodes:
-                print("\nEpisode", episode, "started")
-                print("Track has", env.track_length, "tiles")
-
-    renderer.close()
-    print("\nDemo finished!")
-
-
-fn clamp(x: Float64, low: Float64, high: Float64) -> Float64:
-    if x < low:
-        return low
-    if x > high:
-        return high
-    return x
-
-
-fn abs_f64(x: Float64) -> Float64:
-    return x if x >= 0.0 else -x
-
-
-fn max(a: Int, b: Int) -> Int:
-    return a if a > b else b
-
-
-fn sqrt(x: Float64) -> Float64:
-    from math import sqrt as math_sqrt
-    return math_sqrt(x)
+    # Keep window open for a moment
+    print()
+    print("Closing in 2 seconds...")
+    sleep(2.0)

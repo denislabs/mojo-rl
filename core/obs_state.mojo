@@ -1,7 +1,7 @@
 """Generic observation state for GC environments.
 
 ObsState[N] wraps an InlineArray[Float64, N] and implements the State trait.
-Replaces per-environment state structs like HalfCheetahGCState.
+Replaces per-environment state structs like HalfCheetahState.
 """
 
 from collections import InlineArray

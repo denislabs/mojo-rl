@@ -1,7 +1,7 @@
 """Generic continuous action for GC environments.
 
 ContAction[N] wraps an InlineArray[Float64, N] and implements the Action trait.
-Replaces per-environment action structs like HalfCheetahGCAction.
+Replaces per-environment action structs like HalfCheetahAction.
 """
 
 from collections import InlineArray

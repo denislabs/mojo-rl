@@ -1,7 +1,7 @@
 """
-Compare LunarLanderV2 CPU path vs GPU path
+Compare LunarLander CPU path vs GPU path
 
-The CPU path works correctly (verified against LunarLanderV2).
+The CPU path works correctly (verified against LunarLander).
 This test identifies differences in the GPU path.
 
 Run with:
@@ -12,7 +12,7 @@ from math import sqrt
 from gpu.host import DeviceContext
 
 from envs.lunar_lander_v2_gpu import (
-    LunarLanderV2,
+    LunarLander,
     STATE_SIZE_VAL,
     OBS_OFFSET,
     BODIES_OFFSET,
@@ -34,11 +34,11 @@ fn print_separator():
 fn test_free_fall_cpu_vs_gpu() raises:
     """Compare free fall between CPU and GPU paths."""
     print_separator()
-    print("LunarLanderV2: CPU vs GPU Free Fall (5 steps)")
+    print("LunarLander: CPU vs GPU Free Fall (5 steps)")
     print_separator()
 
     # CPU environment
-    var cpu_env = LunarLanderV2[DType.float32](enable_wind=False)
+    var cpu_env = LunarLander[DType.float32](enable_wind=False)
     _ = cpu_env.reset()
 
     # Set CPU to known state
@@ -71,7 +71,7 @@ fn test_free_fall_cpu_vs_gpu() raises:
         var host_actions = ctx.enqueue_create_host_buffer[gpu_dtype](1)
 
         # Reset GPU env
-        LunarLanderV2[DType.float32].reset_kernel_gpu[BATCH_SIZE, STATE_SIZE](
+        LunarLander[DType.float32].reset_kernel_gpu[BATCH_SIZE, STATE_SIZE](
             ctx, states_buf
         )
         ctx.synchronize()
@@ -94,9 +94,9 @@ fn test_free_fall_cpu_vs_gpu() raises:
             ctx.enqueue_copy(actions_buf, host_actions)
             ctx.synchronize()
 
-            LunarLanderV2[DType.float32].step_kernel_gpu[
-                BATCH_SIZE, STATE_SIZE
-            ](ctx, states_buf, actions_buf, rewards_buf, dones_buf)
+            LunarLander[DType.float32].step_kernel_gpu[BATCH_SIZE, STATE_SIZE](
+                ctx, states_buf, actions_buf, rewards_buf, dones_buf
+            )
             ctx.synchronize()
 
             ctx.enqueue_copy(host_states, states_buf)
@@ -136,10 +136,10 @@ fn test_free_fall_cpu_vs_gpu() raises:
 fn test_main_engine_cpu_vs_gpu() raises:
     """Compare main engine between CPU and GPU paths."""
     print_separator()
-    print("LunarLanderV2: CPU vs GPU Main Engine (5 steps)")
+    print("LunarLander: CPU vs GPU Main Engine (5 steps)")
     print_separator()
 
-    var cpu_env = LunarLanderV2[DType.float32](enable_wind=False)
+    var cpu_env = LunarLander[DType.float32](enable_wind=False)
     _ = cpu_env.reset()
 
     cpu_env.physics.set_body_position(0, 0, 10.0, 8.0)
@@ -168,7 +168,7 @@ fn test_main_engine_cpu_vs_gpu() raises:
         var host_states = ctx.enqueue_create_host_buffer[gpu_dtype](STATE_SIZE)
         var host_actions = ctx.enqueue_create_host_buffer[gpu_dtype](1)
 
-        LunarLanderV2[DType.float32].reset_kernel_gpu[BATCH_SIZE, STATE_SIZE](
+        LunarLander[DType.float32].reset_kernel_gpu[BATCH_SIZE, STATE_SIZE](
             ctx, states_buf
         )
         ctx.synchronize()
@@ -190,9 +190,9 @@ fn test_main_engine_cpu_vs_gpu() raises:
             ctx.enqueue_copy(actions_buf, host_actions)
             ctx.synchronize()
 
-            LunarLanderV2[DType.float32].step_kernel_gpu[
-                BATCH_SIZE, STATE_SIZE
-            ](ctx, states_buf, actions_buf, rewards_buf, dones_buf)
+            LunarLander[DType.float32].step_kernel_gpu[BATCH_SIZE, STATE_SIZE](
+                ctx, states_buf, actions_buf, rewards_buf, dones_buf
+            )
             ctx.synchronize()
 
             ctx.enqueue_copy(host_states, states_buf)
@@ -248,7 +248,7 @@ fn test_read_raw_gpu_velocity() raises:
         var host_states = ctx.enqueue_create_host_buffer[gpu_dtype](STATE_SIZE)
         var host_actions = ctx.enqueue_create_host_buffer[gpu_dtype](1)
 
-        LunarLanderV2[DType.float32].reset_kernel_gpu[BATCH_SIZE, STATE_SIZE](
+        LunarLander[DType.float32].reset_kernel_gpu[BATCH_SIZE, STATE_SIZE](
             ctx, states_buf
         )
         ctx.synchronize()
@@ -283,7 +283,7 @@ fn test_read_raw_gpu_velocity() raises:
         ctx.enqueue_copy(actions_buf, host_actions)
         ctx.synchronize()
 
-        LunarLanderV2[DType.float32].step_kernel_gpu[BATCH_SIZE, STATE_SIZE](
+        LunarLander[DType.float32].step_kernel_gpu[BATCH_SIZE, STATE_SIZE](
             ctx, states_buf, actions_buf, rewards_buf, dones_buf
         )
         ctx.synchronize()
@@ -306,7 +306,7 @@ fn test_read_raw_gpu_velocity() raises:
 fn main() raises:
     print()
     print("=" * 70)
-    print("    LunarLanderV2: CPU vs GPU PATH COMPARISON")
+    print("    LunarLander: CPU vs GPU PATH COMPARISON")
     print("=" * 70)
     print()
 

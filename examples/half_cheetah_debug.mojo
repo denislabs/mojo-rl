@@ -3,8 +3,8 @@
 Prints the computed xpos/xquat values after reset to verify FK is working correctly.
 """
 
-from envs.half_cheetah_gc import HalfCheetahGC
-from envs.half_cheetah_gc.half_cheetah_def import (
+from envs.half_cheetah import HalfCheetah
+from envs.half_cheetah.half_cheetah_def import (
     BODY_TORSO,
     BODY_BTHIGH,
     BODY_BSHIN,
@@ -23,7 +23,7 @@ fn main() raises:
     print("=" * 60)
 
     # Create environment
-    var env = HalfCheetahGC()
+    var env = HalfCheetah()
     print("\nEnvironment created.")
 
     # Reset to initial state
@@ -194,11 +194,11 @@ fn main() raises:
 
     print("\n--- Running 100 steps with random-ish action ---")
     var action = ContAction[6]()
-    action[0] = 0.5   # bthigh
+    action[0] = 0.5  # bthigh
     action[1] = -0.3  # bshin
-    action[2] = 0.2   # bfoot
+    action[2] = 0.2  # bfoot
     action[3] = -0.5  # fthigh
-    action[4] = 0.3   # fshin
+    action[4] = 0.3  # fshin
     action[5] = -0.2  # ffoot
 
     for step in range(100):

@@ -485,7 +485,7 @@ trait BackpropagablePhysics:
 
 ### Phase 2: LunarLander Validation ✅ COMPLETED
 
-- [x] Create LunarLanderV2 with new physics framework
+- [x] Create LunarLander with new physics framework
 - [x] Implement 3-body physics (lander + 2 legs)
 - [x] Validate GPU matches CPU (<0.01 max error)
 - [x] Implement discrete and continuous actions
@@ -593,7 +593,7 @@ mojo-rl/
 │       └── revolute.mojo            # RevoluteJointSolver - springs + angle limits
 │
 ├── envs/
-│   ├── lunar_lander_v2.mojo         # LunarLanderV2 using physics2d
+│   ├── lunar_lander_v2.mojo         # LunarLander using physics2d
 │   │                                  # - 3 bodies (lander + 2 legs)
 │   │                                  # - 2 revolute joints with springs/limits
 │   │                                  # - Terrain smoothing

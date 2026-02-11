@@ -524,10 +524,12 @@ struct CarDynamics:
         # friction_limits = [fl, fr, rl, rr] all set to FRICTION_LIMIT * ROAD_FRICTION
         var default_friction = Scalar[dtype](FRICTION_LIMIT * ROAD_FRICTION)
         var friction_limits = InlineArray[Scalar[dtype], NUM_WHEELS](
-            default_friction,
-            default_friction,
-            default_friction,
-            default_friction,
+            fill=[
+                default_friction,
+                default_friction,
+                default_friction,
+                default_friction,
+            ]
         )
 
         # Step 3: Compute wheel forces (also updates wheel omegas)
@@ -688,7 +690,7 @@ struct CarDynamics:
         ](env, rr_x, rr_y, state, num_active_tiles)
 
         return InlineArray[Scalar[dtype], NUM_WHEELS](
-            fl_limit, fr_limit, rl_limit, rr_limit
+            fill=[fl_limit, fr_limit, rl_limit, rr_limit]
         )
 
     # =========================================================================

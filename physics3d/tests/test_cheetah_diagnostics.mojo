@@ -11,8 +11,8 @@ Run with:
 from math import sqrt, pi
 from builtin.math import abs
 
-from envs.half_cheetah_gc import HalfCheetahGC
-from envs.half_cheetah_gc.half_cheetah_def import (
+from envs.half_cheetah import HalfCheetah
+from envs.half_cheetah.half_cheetah_def import (
     NQ,
     NV,
     NBODY,
@@ -66,13 +66,21 @@ fn main():
     print("")
 
     # Create the real HalfCheetah environment
-    var env = HalfCheetahGC[DType.float64, False]()
+    var env = HalfCheetah[DType.float64, False]()
     _ = env.reset()
 
     var dt = Float64(env.model.timestep)
     var num_steps = 500  # 1 second at 500Hz
 
-    print("Physics dt =", dt, "s, running", num_steps, "steps (", Float64(num_steps) * dt, "s)")
+    print(
+        "Physics dt =",
+        dt,
+        "s, running",
+        num_steps,
+        "steps (",
+        Float64(num_steps) * dt,
+        "s)",
+    )
     print("Initial torso z (qpos[ROOTZ]) =", env.data.qpos[JOINT_ROOTZ])
     print("Capsule radius =", CAPSULE_RADIUS)
     print("")
@@ -91,7 +99,10 @@ fn main():
         print("    ", body_name(b), ": z =", bz)
     print("")
 
-    print("  step | time   | rootz    | vz       | torso_z  | bfoot_z  | ffoot_z  | contacts | max_pen  | max_imp_n")
+    print(
+        "  step | time   | rootz    | vz       | torso_z  | bfoot_z  | ffoot_z "
+        " | contacts | max_pen  | max_imp_n"
+    )
     print("  " + "-" * 105)
 
     var max_pen_ever = Float64(0.0)
@@ -139,7 +150,11 @@ fn main():
         var print_step = False
         if i < 10:
             print_step = True
-        elif first_contact_step > 0 and i + 1 >= first_contact_step - 2 and i + 1 <= first_contact_step + 50:
+        elif (
+            first_contact_step > 0
+            and i + 1 >= first_contact_step - 2
+            and i + 1 <= first_contact_step + 50
+        ):
             print_step = True
         elif (i + 1) % 25 == 0:
             print_step = True
@@ -170,7 +185,13 @@ fn main():
 
     print("")
     print("  SUMMARY Part 1:")
-    print("    First contact at step:", first_contact_step, "(t =", Float64(first_contact_step) * dt, "s)")
+    print(
+        "    First contact at step:",
+        first_contact_step,
+        "(t =",
+        Float64(first_contact_step) * dt,
+        "s)",
+    )
     print("    Max penetration ever:", max_pen_ever, "m")
     print("    Max bounce velocity:", max_bounce_vel, "m/s")
     print("    Final rootz:", env.data.qpos[JOINT_ROOTZ])
@@ -180,7 +201,10 @@ fn main():
     # =========================================================================
     # Part 2: Detailed contact log around first contact
     # =========================================================================
-    print("--- PART 2: Detailed contact info — fresh run, first 50 steps after contact ---")
+    print(
+        "--- PART 2: Detailed contact info — fresh run, first 50 steps after"
+        " contact ---"
+    )
     print("")
 
     _ = env.reset()
@@ -196,13 +220,33 @@ fn main():
 
         if nc > 0 and not contact_started:
             contact_started = True
-            print("  First contact at step", i + 1, "(t =", Float64(i + 1) * dt, "s)")
-            print("  rootz =", env.data.qpos[JOINT_ROOTZ], "vz =", env.data.qvel[JOINT_ROOTZ])
+            print(
+                "  First contact at step",
+                i + 1,
+                "(t =",
+                Float64(i + 1) * dt,
+                "s)",
+            )
+            print(
+                "  rootz =",
+                env.data.qpos[JOINT_ROOTZ],
+                "vz =",
+                env.data.qvel[JOINT_ROOTZ],
+            )
             print("")
 
         if contact_started and contact_steps_logged < 30:
             contact_steps_logged += 1
-            print("  Step", i + 1, ": contacts =", nc, "rootz =", env.data.qpos[JOINT_ROOTZ], "vz =", env.data.qvel[JOINT_ROOTZ])
+            print(
+                "  Step",
+                i + 1,
+                ": contacts =",
+                nc,
+                "rootz =",
+                env.data.qpos[JOINT_ROOTZ],
+                "vz =",
+                env.data.qvel[JOINT_ROOTZ],
+            )
             for c in range(nc):
                 var ct = env.data.contacts[c]
                 print(
@@ -251,7 +295,12 @@ fn main():
         print("  Step 0 (t=0):")
         for b in range(NBODY):
             print("    ", body_name(b), ": z =", env.data.xpos[b * 3 + 2])
-        print("    rootz =", env.data.qpos[JOINT_ROOTZ], "rooty =", env.data.qpos[JOINT_ROOTY])
+        print(
+            "    rootz =",
+            env.data.qpos[JOINT_ROOTZ],
+            "rooty =",
+            env.data.qpos[JOINT_ROOTY],
+        )
         print("    contacts:", env.data.num_contacts)
         print("")
         log_idx += 1
@@ -271,13 +320,37 @@ fn main():
                     marker = " (near ground)"
                 print("    ", body_name(b), ": z =", bz, marker)
 
-            print("    rootz =", env.data.qpos[JOINT_ROOTZ], "vz =", env.data.qvel[JOINT_ROOTZ])
-            print("    rooty =", env.data.qpos[JOINT_ROOTY], "vy =", env.data.qvel[JOINT_ROOTY])
+            print(
+                "    rootz =",
+                env.data.qpos[JOINT_ROOTZ],
+                "vz =",
+                env.data.qvel[JOINT_ROOTZ],
+            )
+            print(
+                "    rooty =",
+                env.data.qpos[JOINT_ROOTY],
+                "vy =",
+                env.data.qvel[JOINT_ROOTY],
+            )
             print("    contacts:", env.data.num_contacts)
 
             # Log joint angles
-            print("    joint angles: bthigh=", env.data.qpos[3], "bshin=", env.data.qpos[4], "bfoot=", env.data.qpos[5])
-            print("                  fthigh=", env.data.qpos[6], "fshin=", env.data.qpos[7], "ffoot=", env.data.qpos[8])
+            print(
+                "    joint angles: bthigh=",
+                env.data.qpos[3],
+                "bshin=",
+                env.data.qpos[4],
+                "bfoot=",
+                env.data.qpos[5],
+            )
+            print(
+                "                  fthigh=",
+                env.data.qpos[6],
+                "fshin=",
+                env.data.qpos[7],
+                "ffoot=",
+                env.data.qpos[8],
+            )
             print("")
             log_idx += 1
 

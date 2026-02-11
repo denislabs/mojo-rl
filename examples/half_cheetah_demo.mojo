@@ -1,116 +1,114 @@
-"""HalfCheetah Demo - Test rendering and basic functionality.
+"""Half Cheetah Demo - Test the HalfCheetah environment.
 
-This demo creates a HalfCheetahPlanar environment and runs it with random actions
-to test the rendering system.
+This demo runs the Half Cheetah environment with random actions
+and optionally renders the visualization.
 
 Usage:
     pixi run mojo run examples/half_cheetah_demo.mojo
 """
 
-from time import sleep
+from envs.half_cheetah import HalfCheetah
+from core import ContAction, ObsState
 from random import random_float64
-
-from envs.half_cheetah import HalfCheetahPlanarV2, HalfCheetahPlanarAction
-from envs.half_cheetah.constants import HCConstants
-from render import RendererBase
 
 
 fn main() raises:
-    print("=== HalfCheetah Planar Demo ===")
-    print("Testing HalfCheetah environment with rendering")
-    print()
+    print("=" * 60)
+    print("HalfCheetah Environment Demo")
+    print("=" * 60)
 
     # Create environment
-    var env = HalfCheetahPlanarV2[DType.float64]()
-    print("Environment created")
-    print("  Observation dim:", HCConstants.OBS_DIM_VAL)
-    print("  Action dim:", HCConstants.ACTION_DIM_VAL)
-    print("  Max steps:", HCConstants.MAX_STEPS)
-    print()
-
-    # Create renderer (wider window to see horizontal movement)
-    var renderer = RendererBase(
-        800,  # width
-        400,  # height
-        30,  # fps
-        "HalfCheetah Planar Demo",
-    )
-    print("Renderer created: 800 x 400")
-    print()
+    var env = HalfCheetah()
+    print("\nEnvironment created successfully!")
+    print("  Observation dim:", env.obs_dim())
+    print("  Action dim:", env.action_dim())
+    print("  Max steps:", env.get_max_steps())
 
     # Reset environment
     var state = env.reset()
-    print("Environment reset")
-    print("  Initial torso height:", state.torso_z)
-    print("  Initial torso angle:", state.torso_angle)
-    print()
+    print("\nInitial state:")
+    # obs[0]=rootz, obs[1]=rooty(pitch), obs[8]=rootx_vel
+    print("  z_position:", state[0])
+    print("  y_angle:", state[1])
+    print("  x_velocity:", state[8])
 
-    print("Running demo with random actions...")
-    print("Press Ctrl+C to stop or close the window")
-    print()
+    # Try to initialize renderer
+    var use_render = False
+    try:
+        if env.init_renderer():
+            use_render = True
+            print("\n3D Renderer initialized successfully!")
+            print("Press window close button to exit.")
+    except e:
+        print("\nCould not initialize renderer:", e)
+        print("Running without visualization.")
 
-    var total_reward: Float64 = 0.0
-    var step = 0
-    var done = False
+    # Run a few episodes
+    var num_episodes = 3 if not use_render else 1
+    var steps_per_episode = 100 if not use_render else 1000
 
-    while not done and step < 500:
-        # Generate random actions for all 6 joints
-        # Actions are in [-1, 1] range
-        var bthigh = Scalar[DType.float64](random_float64() * 2.0 - 1.0)
-        var bshin = Scalar[DType.float64](random_float64() * 2.0 - 1.0)
-        var bfoot = Scalar[DType.float64](random_float64() * 2.0 - 1.0)
-        var fthigh = Scalar[DType.float64](random_float64() * 2.0 - 1.0)
-        var fshin = Scalar[DType.float64](random_float64() * 2.0 - 1.0)
-        var ffoot = Scalar[DType.float64](random_float64() * 2.0 - 1.0)
+    for episode in range(num_episodes):
+        state = env.reset()
+        var total_reward: Float64 = 0.0
 
-        var action = HalfCheetahPlanarAction[DType.float64](
-            bthigh, bshin, bfoot, fthigh, fshin, ffoot
-        )
+        print("\n--- Episode", episode + 1, "---")
 
-        # Step environment
-        var result = env.step(action)
-        state = result[0]
-        var reward = result[1]
-        done = result[2]
+        for step in range(steps_per_episode):
+            # Random action in [-1, 1]
+            var action = ContAction[6]()
+            for ai in range(6):
+                action[ai] = random_float64() * 2.0 - 1.0
 
-        total_reward += Float64(reward)
-        step += 1
+            # Step environment
+            var result = env.step(action)
+            state = result[0]
+            var reward = Float64(result[1])
+            var done = result[2]
 
-        # Render
-        env.render(renderer)
+            total_reward += reward
 
-        # Check if window was closed
-        if renderer.get_should_quit():
-            print("Window closed by user")
-            break
+            # Render if available
+            if use_render:
+                try:
+                    env.render_frame()
+                    if env.check_renderer_quit():
+                        print("User closed window.")
+                        env.close_renderer()
+                        env.close()
+                        return
+                    env.renderer_delay(10)  # ~100 FPS
+                except:
+                    pass
 
-        # Print progress every 50 steps
-        if step % 50 == 0:
-            print(
-                "Step",
-                step,
-                "| Reward:",
-                String(Float64(reward))[:7],
-                "| Total:",
-                String(total_reward)[:8],
-                "| X:",
-                String(Float64(state.torso_z))[:6],
-                "| Vel:",
-                String(Float64(state.vel_x))[:6],
-            )
+            # Print progress every 100 steps
+            if (step + 1) % 100 == 0:
+                print(
+                    "  Step",
+                    step + 1,
+                    ": x_pos =",
+                    env.get_x_position(),
+                    ", x_vel =",
+                    state[8],
+                    ", reward =",
+                    reward,
+                )
 
-        # Small delay for visualization
-        sleep(0.02)
+            if done:
+                break
 
-    print()
-    print("=== Demo Complete ===")
-    print("Total steps:", step)
-    print("Total reward:", total_reward)
+        print("Episode", episode + 1, "finished:")
+        print("  Total reward:", total_reward)
+        print("  Final x position:", env.get_x_position())
+        print("  Steps taken:", env.get_current_step())
 
-    # Keep window open for a moment
-    print()
-    print("Closing in 2 seconds...")
-    sleep(2.0)
+    # Cleanup
+    if use_render:
+        try:
+            env.close_renderer()
+        except:
+            pass
+    env.close()
 
-    # Clean up
-    renderer.close()
+    print("\n" + "=" * 60)
+    print("Demo complete!")
+    print("=" * 60)

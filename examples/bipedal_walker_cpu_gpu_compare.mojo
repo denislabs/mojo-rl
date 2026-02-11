@@ -12,7 +12,7 @@ from gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 from random import seed as set_seed
 
-from envs.bipedal_walker import BipedalWalkerV2, BWConstants
+from envs.bipedal_walker import BipedalWalker, BWConstants
 from envs.bipedal_walker.action import BipedalWalkerAction
 from physics2d import (
     dtype,
@@ -273,13 +273,13 @@ fn test_reset_comparison(ctx: DeviceContext) raises -> Bool:
     var test_seed: UInt64 = 12345
 
     # CPU environment
-    var cpu_env = BipedalWalkerV2[dtype](seed=test_seed)
+    var cpu_env = BipedalWalker[dtype](seed=test_seed)
 
     # GPU state buffer
     var gpu_states = ctx.enqueue_create_buffer[dtype](N_ENVS * STATE_SIZE)
 
     # Reset GPU with same seed
-    BipedalWalkerV2[dtype].reset_kernel_gpu[N_ENVS, STATE_SIZE](
+    BipedalWalker[dtype].reset_kernel_gpu[N_ENVS, STATE_SIZE](
         ctx, gpu_states, test_seed
     )
     ctx.synchronize()
@@ -306,15 +306,25 @@ fn test_reset_comparison(ctx: DeviceContext) raises -> Bool:
     )
 
     var body_match = True
-    body_match = compare_scalar("x", cpu_hull_x, gpu_body[0], 1e-2) and body_match
-    body_match = compare_scalar("y", cpu_hull_y, gpu_body[1], 1e-2) and body_match
     body_match = (
-        compare_scalar("angle", cpu_hull_angle, gpu_body[2], 1e-2) and body_match
+        compare_scalar("x", cpu_hull_x, gpu_body[0], 1e-2) and body_match
     )
-    body_match = compare_scalar("vx", cpu_hull_vx, gpu_body[3], 1e-2) and body_match
-    body_match = compare_scalar("vy", cpu_hull_vy, gpu_body[4], 1e-2) and body_match
     body_match = (
-        compare_scalar("omega", cpu_hull_omega, gpu_body[5], 1e-2) and body_match
+        compare_scalar("y", cpu_hull_y, gpu_body[1], 1e-2) and body_match
+    )
+    body_match = (
+        compare_scalar("angle", cpu_hull_angle, gpu_body[2], 1e-2)
+        and body_match
+    )
+    body_match = (
+        compare_scalar("vx", cpu_hull_vx, gpu_body[3], 1e-2) and body_match
+    )
+    body_match = (
+        compare_scalar("vy", cpu_hull_vy, gpu_body[4], 1e-2) and body_match
+    )
+    body_match = (
+        compare_scalar("omega", cpu_hull_omega, gpu_body[5], 1e-2)
+        and body_match
     )
 
     # Compare metadata
@@ -346,7 +356,7 @@ fn test_step_comparison(ctx: DeviceContext) raises -> Bool:
     var test_seed: UInt64 = 42
 
     # CPU environment
-    var cpu_env = BipedalWalkerV2[dtype](seed=test_seed)
+    var cpu_env = BipedalWalker[dtype](seed=test_seed)
 
     # GPU buffers
     var gpu_states = ctx.enqueue_create_buffer[dtype](N_ENVS * STATE_SIZE)
@@ -361,7 +371,7 @@ fn test_step_comparison(ctx: DeviceContext) raises -> Bool:
     var dones_host = ctx.enqueue_create_host_buffer[dtype](1)
 
     # Reset both
-    BipedalWalkerV2[dtype].reset_kernel_gpu[N_ENVS, STATE_SIZE](
+    BipedalWalker[dtype].reset_kernel_gpu[N_ENVS, STATE_SIZE](
         ctx, gpu_states, test_seed
     )
     ctx.synchronize()
@@ -433,7 +443,7 @@ fn test_step_comparison(ctx: DeviceContext) raises -> Bool:
             actions_host[i] = test_actions[step].copy()[i]
         ctx.enqueue_copy(gpu_actions, actions_host)
 
-        BipedalWalkerV2[dtype].step_kernel_gpu[
+        BipedalWalker[dtype].step_kernel_gpu[
             N_ENVS, STATE_SIZE, OBS_DIM, ACTION_DIM
         ](
             ctx,
@@ -530,7 +540,7 @@ fn test_physics_divergence(ctx: DeviceContext) raises -> Bool:
     var test_seed: UInt64 = 42
 
     # CPU environment
-    var cpu_env = BipedalWalkerV2[dtype](seed=test_seed)
+    var cpu_env = BipedalWalker[dtype](seed=test_seed)
 
     # GPU buffers
     var gpu_states = ctx.enqueue_create_buffer[dtype](N_ENVS * STATE_SIZE)
@@ -544,7 +554,7 @@ fn test_physics_divergence(ctx: DeviceContext) raises -> Bool:
     var dones_host = ctx.enqueue_create_host_buffer[dtype](1)
 
     # Reset both
-    BipedalWalkerV2[dtype].reset_kernel_gpu[N_ENVS, STATE_SIZE](
+    BipedalWalker[dtype].reset_kernel_gpu[N_ENVS, STATE_SIZE](
         ctx, gpu_states, test_seed
     )
     ctx.synchronize()
@@ -578,7 +588,7 @@ fn test_physics_divergence(ctx: DeviceContext) raises -> Bool:
         var cpu_done = cpu_result[2]
 
         # GPU step
-        BipedalWalkerV2[dtype].step_kernel_gpu[
+        BipedalWalker[dtype].step_kernel_gpu[
             N_ENVS, STATE_SIZE, OBS_DIM, ACTION_DIM
         ](
             ctx,
@@ -659,7 +669,9 @@ fn test_physics_divergence(ctx: DeviceContext) raises -> Bool:
     var total_diff = abs_f64(cpu_total_reward - gpu_total_reward)
     var acceptable = total_diff < 50.0  # Allow some divergence
 
-    print("\n[PHYSICS DIVERGENCE TEST RESULT]:", "PASS" if acceptable else "FAIL")
+    print(
+        "\n[PHYSICS DIVERGENCE TEST RESULT]:", "PASS" if acceptable else "FAIL"
+    )
     return acceptable
 
 
@@ -690,7 +702,7 @@ fn test_termination_conditions(ctx: DeviceContext) raises -> Bool:
 
     # Run a test to verify angle termination
     var test_seed: UInt64 = 999
-    var cpu_env = BipedalWalkerV2[dtype](seed=test_seed)
+    var cpu_env = BipedalWalker[dtype](seed=test_seed)
 
     # GPU buffers
     var gpu_states = ctx.enqueue_create_buffer[dtype](N_ENVS * STATE_SIZE)
@@ -702,7 +714,7 @@ fn test_termination_conditions(ctx: DeviceContext) raises -> Bool:
     var actions_host = ctx.enqueue_create_host_buffer[dtype](ACTION_DIM)
     var dones_host = ctx.enqueue_create_host_buffer[dtype](1)
 
-    BipedalWalkerV2[dtype].reset_kernel_gpu[N_ENVS, STATE_SIZE](
+    BipedalWalker[dtype].reset_kernel_gpu[N_ENVS, STATE_SIZE](
         ctx, gpu_states, test_seed
     )
     ctx.synchronize()
@@ -734,10 +746,16 @@ fn test_termination_conditions(ctx: DeviceContext) raises -> Bool:
         cpu_done = cpu_result[2]
 
         # GPU step
-        BipedalWalkerV2[dtype].step_kernel_gpu[
+        BipedalWalker[dtype].step_kernel_gpu[
             N_ENVS, STATE_SIZE, OBS_DIM, ACTION_DIM
         ](
-            ctx, gpu_states, gpu_actions, gpu_rewards, gpu_dones, gpu_obs, UInt64(step)
+            ctx,
+            gpu_states,
+            gpu_actions,
+            gpu_rewards,
+            gpu_dones,
+            gpu_obs,
+            UInt64(step),
         )
         ctx.synchronize()
 
@@ -776,7 +794,10 @@ fn test_termination_conditions(ctx: DeviceContext) raises -> Bool:
     print("\n[Termination Analysis]")
     print("  CPU terminated at angle:", cpu_angle_at_term, "rad")
     print("  GPU terminated at angle:", gpu_angle_at_term, "rad")
-    print("  NOTE: Both CPU and GPU now terminate on hull contact (no angle threshold)")
+    print(
+        "  NOTE: Both CPU and GPU now terminate on hull contact (no angle"
+        " threshold)"
+    )
 
     print("\n[TERMINATION TEST RESULT]: Analysis complete")
     return True
@@ -790,14 +811,18 @@ fn test_reward_formula(ctx: DeviceContext) raises -> Bool:
     print("  1. shaping = 130.0 * hull_x / SCALE")
     print("  2. reward = new_shaping - prev_shaping")
     print("  3. reward -= 5.0 * abs(hull_angle)  # angle penalty")
-    print("  4. reward -= 0.00035 * MOTORS_TORQUE * sum(abs(actions))  # energy")
+    print(
+        "  4. reward -= 0.00035 * MOTORS_TORQUE * sum(abs(actions))  # energy"
+    )
     print("  5. If crash: reward = -100")
     print()
     print("[GPU Reward Formula (FIXED to match CPU)]")
     print("  1. forward_progress = hull_x - prev_x")
     print("  2. reward = 130.0 / SCALE * forward_progress")
     print("  3. reward -= 5.0 * abs(hull_angle)  # angle penalty")
-    print("  4. reward -= 0.00035 * MOTORS_TORQUE * sum(abs(actions))  # energy")
+    print(
+        "  4. reward -= 0.00035 * MOTORS_TORQUE * sum(abs(actions))  # energy"
+    )
     print("  5. If crash: reward = -100")
     print()
     print("[Observation]")
@@ -822,27 +847,34 @@ fn test_lidar_comparison(ctx: DeviceContext) raises -> Bool:
     var test_seed: UInt64 = 42
 
     # CPU environment
-    var cpu_env = BipedalWalkerV2[dtype](seed=test_seed)
+    var cpu_env = BipedalWalker[dtype](seed=test_seed)
 
     # GPU state buffer
     var gpu_states = ctx.enqueue_create_buffer[dtype](N_ENVS * STATE_SIZE)
 
-    BipedalWalkerV2[dtype].reset_kernel_gpu[N_ENVS, STATE_SIZE](
+    BipedalWalker[dtype].reset_kernel_gpu[N_ENVS, STATE_SIZE](
         ctx, gpu_states, test_seed
     )
     ctx.synchronize()
 
     print("[Lidar Values After Reset]")
     var cpu_obs = cpu_env.get_obs_list()
-    var gpu_obs = extract_gpu_observation[N_ENVS, STATE_SIZE](gpu_states, ctx, 0)
+    var gpu_obs = extract_gpu_observation[N_ENVS, STATE_SIZE](
+        gpu_states, ctx, 0
+    )
 
     print("\n  Lidar index | CPU value | GPU value | Status")
     print("  " + "-" * 50)
 
     for i in range(10):
-        var cpu_lidar = cpu_obs[14 + i] if 14 + i < len(cpu_obs) else Scalar[dtype](0)
+        var cpu_lidar = cpu_obs[14 + i] if 14 + i < len(cpu_obs) else Scalar[
+            dtype
+        ](0)
         var gpu_lidar = gpu_obs[14 + i]
-        var match_str = "OK" if abs_f64(Float64(cpu_lidar - gpu_lidar)) < 0.01 else "MISMATCH"
+        var match_str = (
+            "OK" if abs_f64(Float64(cpu_lidar - gpu_lidar))
+            < 0.01 else "MISMATCH"
+        )
         print(
             "  Lidar",
             i,
@@ -854,7 +886,10 @@ fn test_lidar_comparison(ctx: DeviceContext) raises -> Bool:
             match_str,
         )
 
-    print("\n  Note: GPU obs are 0 after reset because lidar is computed during step")
+    print(
+        "\n  Note: GPU obs are 0 after reset because lidar is computed during"
+        " step"
+    )
 
     # Now test after a step
     comptime OBS_DIM = BWConstants.OBS_DIM_VAL
@@ -866,7 +901,9 @@ fn test_lidar_comparison(ctx: DeviceContext) raises -> Bool:
     var gpu_actions = ctx.enqueue_create_buffer[dtype](N_ENVS * ACTION_DIM)
 
     # Set zero actions
-    var actions_host = ctx.enqueue_create_host_buffer[dtype](N_ENVS * ACTION_DIM)
+    var actions_host = ctx.enqueue_create_host_buffer[dtype](
+        N_ENVS * ACTION_DIM
+    )
     for i in range(N_ENVS * ACTION_DIM):
         actions_host[i] = Scalar[dtype](0)
     ctx.enqueue_copy(gpu_actions, actions_host)
@@ -878,23 +915,38 @@ fn test_lidar_comparison(ctx: DeviceContext) raises -> Bool:
     action_list.append(Scalar[dtype](0))
     action_list.append(Scalar[dtype](0))
     _ = cpu_env.step_continuous_vec(action_list)
-    BipedalWalkerV2[dtype].step_kernel_gpu[N_ENVS, STATE_SIZE, OBS_DIM, ACTION_DIM](
-        ctx, gpu_states, gpu_actions, gpu_rewards, gpu_dones, gpu_obs_buf, test_seed
+    BipedalWalker[dtype].step_kernel_gpu[
+        N_ENVS, STATE_SIZE, OBS_DIM, ACTION_DIM
+    ](
+        ctx,
+        gpu_states,
+        gpu_actions,
+        gpu_rewards,
+        gpu_dones,
+        gpu_obs_buf,
+        test_seed,
     )
     ctx.synchronize()
 
     print("\n[Lidar Values After 1 Step]")
     var cpu_obs_step = cpu_env.get_obs_list()
-    var gpu_obs_step = extract_gpu_observation[N_ENVS, STATE_SIZE](gpu_states, ctx, 0)
+    var gpu_obs_step = extract_gpu_observation[N_ENVS, STATE_SIZE](
+        gpu_states, ctx, 0
+    )
 
     print("\n  Lidar index | CPU value | GPU value | Status")
     print("  " + "-" * 50)
 
     var lidar_match = True
     for i in range(10):
-        var cpu_lidar = cpu_obs_step[14 + i] if 14 + i < len(cpu_obs_step) else Scalar[dtype](0)
+        var cpu_lidar = cpu_obs_step[14 + i] if 14 + i < len(
+            cpu_obs_step
+        ) else Scalar[dtype](0)
         var gpu_lidar = gpu_obs_step[14 + i]
-        var match_str = "OK" if abs_f64(Float64(cpu_lidar - gpu_lidar)) < 0.1 else "MISMATCH"
+        var match_str = (
+            "OK" if abs_f64(Float64(cpu_lidar - gpu_lidar))
+            < 0.1 else "MISMATCH"
+        )
         if match_str == "MISMATCH":
             lidar_match = False
         print(
@@ -913,7 +965,10 @@ fn test_lidar_comparison(ctx: DeviceContext) raises -> Bool:
         print("  -> GPU lidar now computes raycast against terrain (FIXED)")
     else:
         print("  -> GPU lidar values differ from CPU")
-        print("  -> Some numerical differences are expected due to physics divergence")
+        print(
+            "  -> Some numerical differences are expected due to physics"
+            " divergence"
+        )
 
     print("\n[LIDAR TEST RESULT]:", "PASS" if lidar_match else "PARTIAL MATCH")
     return lidar_match
@@ -922,7 +977,9 @@ fn test_lidar_comparison(ctx: DeviceContext) raises -> Bool:
 fn main() raises:
     print_header("BipedalWalker CPU vs GPU Comparison")
     print()
-    print("This script compares the CPU and GPU implementations of BipedalWalker")
+    print(
+        "This script compares the CPU and GPU implementations of BipedalWalker"
+    )
     print("to identify discrepancies in physics, observations, and rewards.")
     print()
 
@@ -961,7 +1018,9 @@ fn main() raises:
         print("   - GPU: SAME (uses single-env solver methods)")
         print()
         print("2. TERMINATION CONDITIONS:")
-        print("   - CPU & GPU: hull contact, x < 0, x > terrain_end, step >= 2000")
+        print(
+            "   - CPU & GPU: hull contact, x < 0, x > terrain_end, step >= 2000"
+        )
         print()
         print("3. LIDAR:")
         print("   - CPU: Computes raycast against terrain")
@@ -969,9 +1028,14 @@ fn main() raises:
         print("   - Note: Policy can still learn from other 14 observations")
         print()
         print("4. JOINT CONSTRAINTS:")
-        print("   - CPU & GPU: Use proper revolute joint solver with iterations")
+        print(
+            "   - CPU & GPU: Use proper revolute joint solver with iterations"
+        )
         print()
         print("REMAINING DIFFERENCES:")
-        print("  - Numerical precision differences cause gradual physics divergence")
+        print(
+            "  - Numerical precision differences cause gradual physics"
+            " divergence"
+        )
         print("  - This is expected behavior for physics simulations")
         print("  - Step-by-step rewards match closely (see Test 2)")

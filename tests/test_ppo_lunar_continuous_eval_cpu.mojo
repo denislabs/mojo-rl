@@ -12,7 +12,7 @@ from time import perf_counter_ns
 from memory import UnsafePointer
 
 from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.lunar_lander import LunarLanderV2, LLConstants
+from envs.lunar_lander import LunarLander, LLConstants
 from render import RendererBase
 from deep_rl import dtype
 
@@ -95,8 +95,8 @@ fn main() raises:
     # Create environment and renderer
     # =========================================================================
 
-    # Create CPU environment (LunarLanderV2 supports both discrete and continuous)
-    var env = LunarLanderV2[dtype]()
+    # Create CPU environment (LunarLander supports both discrete and continuous)
+    var env = LunarLander[dtype]()
 
     # Create renderer if enabled
     @parameter
@@ -116,7 +116,7 @@ fn main() raises:
         var start_time = perf_counter_ns()
 
         # Run evaluation with rendering
-        var avg_reward = agent.evaluate[LunarLanderV2[dtype]](
+        var avg_reward = agent.evaluate[LunarLander[dtype]](
             env,
             num_episodes=NUM_EPISODES,
             max_steps=MAX_STEPS,
@@ -161,7 +161,7 @@ fn main() raises:
         var start_time = perf_counter_ns()
 
         # Run evaluation without rendering (stochastic to match training)
-        var avg_reward = agent.evaluate[LunarLanderV2[dtype]](
+        var avg_reward = agent.evaluate[LunarLander[dtype]](
             env,
             num_episodes=NUM_EPISODES,
             max_steps=MAX_STEPS,

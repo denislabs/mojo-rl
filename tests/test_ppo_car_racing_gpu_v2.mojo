@@ -1,7 +1,7 @@
 """Test PPO Agent GPU Training on CarRacing.
 
 This tests the GPU implementation of PPO using the GPU-compatible
-CarRacingV2 environment with:
+CarRacing environment with:
 - Parallel environments on GPU
 - 2D car physics simulation
 - Track generation and collision detection
@@ -18,14 +18,14 @@ from time import perf_counter_ns
 from gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.car_racing import CarRacingV2
+from envs.car_racing import CarRacing
 
 
 # =============================================================================
 # Constants
 # =============================================================================
 
-# CarRacingV2: 13D observation, 3 continuous actions
+# CarRacing: 13D observation, 3 continuous actions
 comptime OBS_DIM = 13
 comptime NUM_ACTIONS = 3
 
@@ -101,7 +101,7 @@ fn main() raises:
 
         # agent.load_checkpoint("ppo_car_racing_gpu_v2.ckpt")
 
-        print("Environment: CarRacingV2 (GPU)")
+        print("Environment: CarRacing (GPU)")
         print("Agent: PPO (GPU)")
         print("  Hidden dim: " + String(HIDDEN_DIM))
         print("  Rollout length: " + String(ROLLOUT_LEN))
@@ -115,7 +115,7 @@ fn main() raises:
         print("    - KL early stopping: DISABLED (debugging)")
         print("    - Gradient clipping: max_grad_norm=0.5")
         print()
-        print("CarRacingV2 specifics:")
+        print("CarRacing specifics:")
         print(
             "  - 13D observations: [x, y, angle, vx, vy, ang_vel,"
             " wheel_angles(2), wheel_omegas(4), speed]"
@@ -135,7 +135,7 @@ fn main() raises:
 
         try:
             # Use specialized CarRacing training with full track support
-            var metrics = agent.train_gpu[CarRacingV2[dtype]](
+            var metrics = agent.train_gpu[CarRacing[dtype]](
                 ctx,
                 num_episodes=NUM_EPISODES,
                 verbose=True,

@@ -20,7 +20,7 @@ from deep_rl import dtype as gpu_dtype
 
 
 # =============================================================================
-# Constants (matching test_ppo_hopper_gc_continuous_gpu.mojo)
+# Constants (matching test_ppo_hopper_continuous_gpu.mojo)
 # =============================================================================
 
 comptime OBS_DIM = HopperConstantsGPU.OBS_DIM  # 11

@@ -12,7 +12,7 @@ from random import seed
 from gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.lunar_lander import LunarLanderV2, LLConstants
+from envs.lunar_lander import LunarLander, LLConstants
 from deep_rl import dtype as gpu_dtype
 
 
@@ -89,7 +89,7 @@ fn main() raises:
         print("Test 1: Built-in evaluate_gpu (GPU forward pass)")
         print("-" * 70)
 
-        var avg_reward_gpu = agent.evaluate_gpu[LunarLanderV2[gpu_dtype]](
+        var avg_reward_gpu = agent.evaluate_gpu[LunarLander[gpu_dtype]](
             ctx,
             num_episodes=100,
             max_steps=1000,
@@ -107,8 +107,8 @@ fn main() raises:
         print("Test 2: CPU evaluate (CPU forward pass via select_action)")
         print("-" * 70)
 
-        var env = LunarLanderV2[gpu_dtype]()
-        var avg_reward_cpu = agent.evaluate[LunarLanderV2[gpu_dtype]](
+        var env = LunarLander[gpu_dtype]()
+        var avg_reward_cpu = agent.evaluate[LunarLander[gpu_dtype]](
             env,
             num_episodes=10,  # Fewer episodes since CPU is slower
             max_steps=1000,
@@ -131,7 +131,10 @@ fn main() raises:
 
         if avg_reward_gpu > 100 and avg_reward_cpu < 0:
             print("DIAGNOSIS: GPU forward works, CPU forward fails")
-            print("  -> There's likely a mismatch between CPU and GPU forward pass")
+            print(
+                "  -> There's likely a mismatch between CPU and GPU forward"
+                " pass"
+            )
         elif avg_reward_gpu < 0 and avg_reward_cpu < 0:
             print("DIAGNOSIS: Both fail - the trained mean action is bad")
             print("  -> Training relies on exploration noise for success")

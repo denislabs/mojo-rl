@@ -14,8 +14,8 @@ from random import seed
 
 from deep_agents.ppo import DeepPPOContinuousAgent
 from deep_rl.constants import dtype
-from envs.half_cheetah_gc import HalfCheetahGC, HalfCheetahGCConstants
-from envs.half_cheetah_gc.half_cheetah_def import (
+from envs.half_cheetah import HalfCheetah, HalfCheetahConstants
+from envs.half_cheetah.half_cheetah_def import (
     NQ,
     NV,
     NBODY,
@@ -54,7 +54,7 @@ from envs.half_cheetah_gc.half_cheetah_def import (
 # Constants (must match training configuration)
 # =============================================================================
 
-comptime C = HalfCheetahGCConstants[DType.float32]
+comptime C = HalfCheetahConstants[DType.float32]
 comptime OBS_DIM = C.OBS_DIM  # 17
 comptime ACTION_DIM = C.ACTION_DIM  # 6
 comptime HIDDEN_DIM = 256
@@ -66,7 +66,7 @@ comptime GPU_MINIBATCH_SIZE = 2048
 comptime NUM_EPISODES = 3
 comptime MAX_STEPS = 1000
 comptime DETERMINISTIC = True  # Use mean policy (no sampling noise)
-comptime CHECKPOINT_PATH = "ppo_half_cheetah_gc.ckpt"
+comptime CHECKPOINT_PATH = "ppo_half_cheetah.ckpt"
 
 
 fn main() raises:
@@ -114,7 +114,7 @@ fn main() raises:
         print("Train first with:")
         print(
             "  pixi run -e apple mojo run"
-            " tests/test_ppo_half_cheetah_gc_continuous_gpu.mojo"
+            " tests/test_ppo_half_cheetah_continuous_gpu.mojo"
         )
         return
 
@@ -124,7 +124,7 @@ fn main() raises:
     # Run episodes
     # =========================================================================
 
-    var env = HalfCheetahGC[DType.float64, False]()
+    var env = HalfCheetah[DType.float64, False]()
 
     for episode in range(NUM_EPISODES):
         print()
@@ -166,9 +166,7 @@ fn main() raises:
             var raw_actions = action_result[0].copy()
 
             # Clip actions to [-1, 1] (matching eval code)
-            var actions = InlineArray[Float64, 6](
-                uninitialized=True
-            )
+            var actions = InlineArray[Float64, 6](uninitialized=True)
             for j in range(ACTION_DIM):
                 var a = Float64(raw_actions[j])
                 if a > 1.0:

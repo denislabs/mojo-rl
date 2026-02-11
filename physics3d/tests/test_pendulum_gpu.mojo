@@ -9,7 +9,7 @@ Verifies:
 
 Run with:
     cd mojo-rl
-    pixi run -e apple mojo run physics3d/tests/test_pendulum_gc_gpu.mojo
+    pixi run -e apple mojo run physics3d/tests/test_pendulum_gpu.mojo
 """
 
 from math import sqrt, sin, cos, pi
@@ -46,7 +46,7 @@ comptime BATCH: Int = 1
 
 fn main() raises:
     print("=" * 60)
-    print("    GPU GC Pendulum Test")
+    print("    GPU Pendulum Test")
     print("=" * 60)
     print()
 
@@ -137,7 +137,9 @@ fn main() raises:
     )
 
     # Create GPU buffers
-    comptime WS_SIZE = integrator_workspace_size[NV, NBODY]() + NV * NV + PGSSolver.solver_workspace_size[NV, MAX_CONTACTS]()
+    comptime WS_SIZE = integrator_workspace_size[
+        NV, NBODY
+    ]() + NV * NV + PGSSolver.solver_workspace_size[NV, MAX_CONTACTS]()
     var state_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * STATE_SIZE)
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[DTYPE](BATCH * WS_SIZE)

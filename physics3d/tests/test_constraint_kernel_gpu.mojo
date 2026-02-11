@@ -78,7 +78,7 @@ from physics3d.dynamics.jacobian import (
 from physics3d.solver.pgs_solver import PGSSolver
 
 
-# HalfCheetahGC dimensions
+# HalfCheetah dimensions
 comptime DTYPE = DType.float32
 comptime NQ: Int = 10
 comptime NV: Int = 10
@@ -147,7 +147,7 @@ fn setup_minimal_model(model_host: HostBuffer[DTYPE]):
 fn main() raises:
     print("=" * 60)
     print("    Metal GPU Compilation Isolation Test")
-    print("    HalfCheetahGC dims: NQ=10, NV=10, NBODY=8")
+    print("    HalfCheetah dims: NQ=10, NV=10, NBODY=8")
     print("=" * 60)
     print()
 

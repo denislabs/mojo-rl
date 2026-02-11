@@ -12,7 +12,7 @@ Components:
 - HalfCheetahRenderer: 3D visualization using render3d
 
 Example usage:
-    from envs.half_cheetah_gc import HalfCheetah
+    from envs.half_cheetah import HalfCheetah
     from core import ContAction
 
     var env = HalfCheetah()
