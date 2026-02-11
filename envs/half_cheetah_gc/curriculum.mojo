@@ -13,7 +13,7 @@ Usage:
     HalfCheetahGC.init_model_gpu_with_curriculum(ctx, model_buf, params[1])
 """
 
-from .constants_gc import HalfCheetahGCConstants
+from .half_cheetah_def import HalfCheetahParams
 from core.env_traits import CurriculumScheduler
 
 

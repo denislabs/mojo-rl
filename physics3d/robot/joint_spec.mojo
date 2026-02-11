@@ -45,6 +45,12 @@ trait JointSpec(TrivialRegisterPassable):
     comptime FRICTIONLOSS: Float64  # Dry friction torque
     comptime INIT_QPOS: Float64  # Initial joint position (qpos0)
 
+    # Observation/actuation flags (for generic env infrastructure)
+    comptime EXCLUDE_OBS_QPOS: Bool  # Skip qpos from observation
+    comptime EXCLUDE_OBS_QVEL: Bool  # Skip qvel from observation
+    comptime IS_ACTUATED: Bool  # Has motor (for action mapping)
+    comptime HAS_LIMITS: Bool  # Has meaningful position limits
+
 
 # =============================================================================
 # HingeJoint
@@ -69,6 +75,10 @@ struct HingeJoint[
     springref: Float64 = 0.0,
     frictionloss: Float64 = 0.0,
     init_qpos: Float64 = 0.0,
+    exclude_obs_qpos: Bool = False,
+    exclude_obs_qvel: Bool = False,
+    is_actuated: Bool = True,
+    has_limits: Bool = True,
 ](JointSpec):
     """Revolute (hinge) joint: 1 DOF rotation around axis.
 
@@ -94,6 +104,10 @@ struct HingeJoint[
     comptime SPRINGREF: Float64 = Self.springref
     comptime FRICTIONLOSS: Float64 = Self.frictionloss
     comptime INIT_QPOS: Float64 = Self.init_qpos
+    comptime EXCLUDE_OBS_QPOS: Bool = Self.exclude_obs_qpos
+    comptime EXCLUDE_OBS_QVEL: Bool = Self.exclude_obs_qvel
+    comptime IS_ACTUATED: Bool = Self.is_actuated
+    comptime HAS_LIMITS: Bool = Self.has_limits
 
 
 # =============================================================================
@@ -119,6 +133,10 @@ struct SlideJoint[
     springref: Float64 = 0.0,
     frictionloss: Float64 = 0.0,
     init_qpos: Float64 = 0.0,
+    exclude_obs_qpos: Bool = False,
+    exclude_obs_qvel: Bool = False,
+    is_actuated: Bool = False,
+    has_limits: Bool = False,
 ](JointSpec):
     """Prismatic (slide) joint: 1 DOF translation along axis.
 
@@ -139,6 +157,10 @@ struct SlideJoint[
     comptime RANGE_MIN: Float64 = Self.range_min
     comptime RANGE_MAX: Float64 = Self.range_max
     comptime ARMATURE: Float64 = Self.armature
+    comptime EXCLUDE_OBS_QPOS: Bool = Self.exclude_obs_qpos
+    comptime EXCLUDE_OBS_QVEL: Bool = Self.exclude_obs_qvel
+    comptime IS_ACTUATED: Bool = Self.is_actuated
+    comptime HAS_LIMITS: Bool = Self.has_limits
     comptime DAMPING: Float64 = Self.damping
     comptime STIFFNESS: Float64 = Self.stiffness
     comptime SPRINGREF: Float64 = Self.springref

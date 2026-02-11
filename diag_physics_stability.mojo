@@ -6,7 +6,7 @@ to distinguish between a physics bug and a policy mismatch issue.
 
 from random import seed
 from envs.half_cheetah_gc import HalfCheetahGC
-from envs.half_cheetah_gc.constants_gc import (
+from envs.half_cheetah_gc.half_cheetah_def import (
     JOINT_ROOTX, JOINT_ROOTZ, JOINT_ROOTY,
     JOINT_BTHIGH, JOINT_BSHIN, JOINT_BFOOT,
     JOINT_FTHIGH, JOINT_FSHIN, JOINT_FFOOT,
@@ -53,14 +53,9 @@ fn test_constant_actions(action_val: Float64, label: String):
     var env = HalfCheetahGC()
     _ = env.reset()
 
-    var action = env.ActionType(
-        bthigh=action_val,
-        bshin=action_val,
-        bfoot=action_val,
-        fthigh=action_val,
-        fshin=action_val,
-        ffoot=action_val,
-    )
+    var action = env.ActionType()
+    for i in range(6):
+        action[i] = action_val
 
     print_state(env, 0)
 
@@ -83,14 +78,9 @@ fn test_alternating_actions():
 
     for step in range(1, 201):
         var sign = Float64(1.0) if step % 2 == 0 else Float64(-1.0)
-        var action = env.ActionType(
-            bthigh=sign,
-            bshin=sign,
-            bfoot=sign,
-            fthigh=sign,
-            fshin=sign,
-            ffoot=sign,
-        )
+        var action = env.ActionType()
+        for i in range(6):
+            action[i] = sign
         _ = env.step(action)
         if step <= 10 or step % 20 == 0:
             print_state(env, step)
@@ -108,14 +98,8 @@ fn test_extreme_single_joint():
     print_state(env, 0)
 
     for step in range(1, 201):
-        var action = env.ActionType(
-            bthigh=1.0,
-            bshin=0.0,
-            bfoot=0.0,
-            fthigh=0.0,
-            fshin=0.0,
-            ffoot=0.0,
-        )
+        var action = env.ActionType()
+        action[0] = 1.0  # bthigh only
         _ = env.step(action)
         if step <= 10 or step % 20 == 0:
             print_state(env, step)

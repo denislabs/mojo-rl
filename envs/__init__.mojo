@@ -44,7 +44,5 @@ from .hopper_gc import (
 )
 from .half_cheetah_gc import (
     HalfCheetahGC,
-    HalfCheetahGCState,
-    HalfCheetahGCAction,
     HalfCheetahGCRenderer,
 )

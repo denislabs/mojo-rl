@@ -7,48 +7,38 @@ consisting of a torso with two leg chains (front and back).
 
 Components:
 - HalfCheetahGC: Main environment struct implementing BoxContinuousActionEnv
-- HalfCheetahGCState: 17D observation state (8 qpos + 9 qvel)
-- HalfCheetahGCAction: 6D continuous action (joint torques)
+- ObsState[17]: 17D observation state (8 qpos + 9 qvel) — from core
+- ContAction[6]: 6D continuous action (joint torques) — from core
 - HalfCheetahGCRenderer: 3D visualization using render3d
 
 Example usage:
-    from envs.half_cheetah_gc import HalfCheetahGC, HalfCheetahGCAction
+    from envs.half_cheetah_gc import HalfCheetahGC
+    from core import ContAction
 
     var env = HalfCheetahGC()
     var state = env.reset()
 
-    # Random action
-    var action = HalfCheetahGCAction(0.5, -0.3, 0.1, 0.2, -0.4, 0.0)
+    # Random action (6D)
+    var action = ContAction[6]()
     var result = env.step(action)
-    var next_state = result[0]
-    var reward = result[1]
-    var done = result[2]
 """
 
 from .half_cheetah_gc import HalfCheetahGC
-from .state import HalfCheetahGCState
-from .action import HalfCheetahGCAction
 from .renderer import HalfCheetahGCRenderer, HalfCheetahGCColors
 from .curriculum import HalfCheetahCurriculum
-from .constants_gc import (
-    # Physics parameters
-    DT,
-    FRAME_SKIP,
-    EFFECTIVE_DT,
-    GRAVITY_Z,
-    GROUND_Z,
-    MAX_STEPS,
-    INIT_HEIGHT,
-    FRICTION,
-    RESTITUTION,
-    # GC dimensions
-    NQ,
-    NV,
-    NBODY,
-    NJOINT,
-    MAX_CONTACTS,
-    OBS_DIM,
-    ACTION_DIM,
+from .half_cheetah_def import (
+    # Robot definition
+    HalfCheetahRobot,
+    HalfCheetahBodies,
+    HalfCheetahJoints,
+    # Params struct (new name)
+    HalfCheetahParams,
+    HalfCheetahParamsCPU,
+    HalfCheetahParamsGPU,
+    # Backward-compat aliases
+    HalfCheetahGCConstants,
+    HalfCheetahGCConstantsCPU,
+    HalfCheetahGCConstantsGPU,
     # Body indices
     BODY_TORSO,
     BODY_BTHIGH,
@@ -57,6 +47,7 @@ from .constants_gc import (
     BODY_FTHIGH,
     BODY_FSHIN,
     BODY_FFOOT,
+    BODY_HEAD,
     # Joint indices
     JOINT_ROOTX,
     JOINT_ROOTZ,
@@ -67,9 +58,15 @@ from .constants_gc import (
     JOINT_FTHIGH,
     JOINT_FSHIN,
     JOINT_FFOOT,
+    JOINT_HEAD,
     # Body geometry
     CAPSULE_RADIUS,
     TORSO_HALF_LENGTH,
+    HEAD_HALF_LENGTH,
+    HEAD_POS_X,
+    HEAD_POS_Y,
+    HEAD_POS_Z,
+    HEAD_AXIS_ANGLE,
     BTHIGH_HALF_LENGTH,
     BSHIN_HALF_LENGTH,
     BFOOT_HALF_LENGTH,
@@ -84,6 +81,29 @@ from .constants_gc import (
     FTHIGH_MASS,
     FSHIN_MASS,
     FFOOT_MASS,
+    # Dimensions
+    NQ,
+    NV,
+    NBODY,
+    NJOINT,
+    MAX_CONTACTS,
+    OBS_DIM,
+    ACTION_DIM,
+    # Physics parameters
+    DT,
+    FRAME_SKIP,
+    EFFECTIVE_DT,
+    GRAVITY_Z,
+    GROUND_Z,
+    MAX_STEPS,
+    INIT_HEIGHT,
+    FRICTION,
+    RESTITUTION,
+    # Reward parameters
+    FORWARD_REWARD_WEIGHT,
+    CTRL_COST_WEIGHT,
+    # Reset
+    RESET_NOISE_SCALE,
     # Gear ratios
     BTHIGH_GEAR,
     BSHIN_GEAR,
@@ -104,13 +124,4 @@ from .constants_gc import (
     FSHIN_UPPER,
     FFOOT_LOWER,
     FFOOT_UPPER,
-    # Reward parameters
-    FORWARD_REWARD_WEIGHT,
-    CTRL_COST_WEIGHT,
-    # Reset
-    RESET_NOISE_SCALE,
-    # GPU constants struct
-    HalfCheetahGCConstants,
-    HalfCheetahGCConstantsCPU,
-    HalfCheetahGCConstantsGPU,
 )

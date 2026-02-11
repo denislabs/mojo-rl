@@ -1,5 +1,7 @@
 from .state import State
 from .action import Action
+from .obs_state import ObsState
+from .cont_action import ContAction
 from .env import Env
 from .env_renderer import EnvRenderer, EnvRenderer3D, NoRenderer
 from .env_traits import (

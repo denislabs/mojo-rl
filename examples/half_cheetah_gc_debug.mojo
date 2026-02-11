@@ -4,7 +4,7 @@ Prints the computed xpos/xquat values after reset to verify FK is working correc
 """
 
 from envs.half_cheetah_gc import HalfCheetahGC
-from envs.half_cheetah_gc.constants_gc import (
+from envs.half_cheetah_gc.half_cheetah_def import (
     BODY_TORSO,
     BODY_BTHIGH,
     BODY_BSHIN,
@@ -143,16 +143,9 @@ fn main() raises:
 
     # Run a few simulation steps with zero action and check connectivity
     print("\n--- Running 10 simulation steps with zero action ---")
-    from envs.half_cheetah_gc import HalfCheetahGCAction
+    from core import ContAction
 
-    var zero_action = HalfCheetahGCAction(
-        bthigh=0.0,
-        bshin=0.0,
-        bfoot=0.0,
-        fthigh=0.0,
-        fshin=0.0,
-        ffoot=0.0,
-    )
+    var zero_action = ContAction[6]()  # All zeros
 
     for step in range(10):
         _ = env.step(zero_action)
@@ -200,14 +193,13 @@ fn main() raises:
             print("  FThigh:", ft_pos[0], ft_pos[1], ft_pos[2])
 
     print("\n--- Running 100 steps with random-ish action ---")
-    var action = HalfCheetahGCAction(
-        bthigh=0.5,
-        bshin=-0.3,
-        bfoot=0.2,
-        fthigh=-0.5,
-        fshin=0.3,
-        ffoot=-0.2,
-    )
+    var action = ContAction[6]()
+    action[0] = 0.5   # bthigh
+    action[1] = -0.3  # bshin
+    action[2] = 0.2   # bfoot
+    action[3] = -0.5  # fthigh
+    action[4] = 0.3   # fshin
+    action[5] = -0.2  # ffoot
 
     for step in range(100):
         _ = env.step(action)

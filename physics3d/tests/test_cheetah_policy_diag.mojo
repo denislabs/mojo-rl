@@ -15,7 +15,7 @@ from random import seed
 from deep_agents.ppo import DeepPPOContinuousAgent
 from deep_rl.constants import dtype
 from envs.half_cheetah_gc import HalfCheetahGC, HalfCheetahGCConstants
-from envs.half_cheetah_gc.constants_gc import (
+from envs.half_cheetah_gc.half_cheetah_def import (
     NQ,
     NV,
     NBODY,

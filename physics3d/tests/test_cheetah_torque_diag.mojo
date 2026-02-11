@@ -11,7 +11,7 @@ from math import sqrt, pi
 from builtin.math import abs
 
 from envs.half_cheetah_gc import HalfCheetahGC
-from envs.half_cheetah_gc.constants_gc import (
+from envs.half_cheetah_gc.half_cheetah_def import (
     NQ,
     NV,
     NBODY,

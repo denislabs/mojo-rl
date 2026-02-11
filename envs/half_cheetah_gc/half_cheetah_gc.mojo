@@ -23,6 +23,8 @@ from core import (
     RenderableEnv,
     State,
     Action,
+    ObsState,
+    ContAction,
 )
 from render import RendererBase
 from deep_rl import dtype as gpu_dtype
@@ -41,7 +43,6 @@ from physics3d.kinematics.forward_kinematics import (
     forward_kinematics_gpu,
 )
 from physics3d.gpu.buffer_utils import copy_model_to_buffer, create_model_buffer
-from .half_cheetah_def import HalfCheetahBodies, HalfCheetahJoints
 from physics3d.gpu.constants import (
     TPB,
     state_size,
@@ -61,16 +62,14 @@ from physics3d.gpu.constants import (
     CURRICULUM_IDX_MAX_PITCH,
 )
 
-
-from .constants_gc import (
-    # Physics
-    DT,
-    FRAME_SKIP,
-    GRAVITY_Z,
-    GROUND_Z,
-    MAX_STEPS,
-    FRICTION,
-    # Dimensions
+from .half_cheetah_def import (
+    HalfCheetahBodies,
+    HalfCheetahJoints,
+    HalfCheetahParams,
+    BODY_TORSO,
+    JOINT_ROOTX,
+    JOINT_ROOTZ,
+    JOINT_ROOTY,
     NQ,
     NV,
     NBODY,
@@ -78,63 +77,14 @@ from .constants_gc import (
     MAX_CONTACTS,
     OBS_DIM,
     ACTION_DIM,
-    # Body indices
-    BODY_TORSO,
-    # Joint indices
-    JOINT_ROOTX,
-    JOINT_ROOTZ,
-    JOINT_ROOTY,
-    JOINT_BTHIGH,
-    JOINT_BSHIN,
-    JOINT_BFOOT,
-    JOINT_FTHIGH,
-    JOINT_FSHIN,
-    JOINT_FFOOT,
-    JOINT_HEAD,
-    # Gear ratios
-    BTHIGH_GEAR,
-    BSHIN_GEAR,
-    BFOOT_GEAR,
-    FTHIGH_GEAR,
-    FSHIN_GEAR,
-    FFOOT_GEAR,
-    # Joint damping
-    BTHIGH_DAMPING,
-    BSHIN_DAMPING,
-    BFOOT_DAMPING,
-    FTHIGH_DAMPING,
-    FSHIN_DAMPING,
-    FFOOT_DAMPING,
-    # Joint stiffness
-    BTHIGH_STIFFNESS,
-    BSHIN_STIFFNESS,
-    BFOOT_STIFFNESS,
-    FTHIGH_STIFFNESS,
-    FSHIN_STIFFNESS,
-    FFOOT_STIFFNESS,
-    # Reward
+    DT,
+    FRAME_SKIP,
+    GRAVITY_Z,
+    GROUND_Z,
     FORWARD_REWARD_WEIGHT,
     CTRL_COST_WEIGHT,
-    # Reset
     RESET_NOISE_SCALE,
-    # Joint limits
-    BTHIGH_LOWER,
-    BTHIGH_UPPER,
-    BSHIN_LOWER,
-    BSHIN_UPPER,
-    BFOOT_LOWER,
-    BFOOT_UPPER,
-    FTHIGH_LOWER,
-    FTHIGH_UPPER,
-    FSHIN_LOWER,
-    FSHIN_UPPER,
-    FFOOT_LOWER,
-    FFOOT_UPPER,
-    # GPU constants struct
-    HalfCheetahGCConstants,
 )
-from .state import HalfCheetahGCState
-from .action import HalfCheetahGCAction
 from .renderer import HalfCheetahGCRenderer
 
 # Math types for renderer
@@ -159,55 +109,15 @@ struct HalfCheetahGC[
 ):
     """HalfCheetahGC environment using Generalized Coordinates physics.
 
-    Physical Configuration (matching MuJoCo Half Cheetah):
-        - Body 0 (Torso): Horizontal capsule along X-axis
-        - Body 1 (BThigh): Back thigh, vertical capsule
-        - Body 2 (BShin): Back shin, vertical capsule
-        - Body 3 (BFoot): Back foot, horizontal capsule
-        - Body 4 (FThigh): Front thigh, vertical capsule
-        - Body 5 (FShin): Front shin, vertical capsule
-        - Body 6 (FFoot): Front foot, horizontal capsule
-        - Body 7 (Head): Tilted capsule at front of torso
-
-    Joint Configuration (MuJoCo style):
-        - Joint 0 (rootx): Slide joint, X-axis translation (body 0)
-        - Joint 1 (rootz): Slide joint, Z-axis translation (body 0)
-        - Joint 2 (rooty): Hinge joint, Y-axis rotation (body 0)
-        - Joint 3 (bthigh): Hinge joint, Y-axis rotation (body 1), range [-0.52, 1.05]
-        - Joint 4 (bshin): Hinge joint, Y-axis rotation (body 2), range [-0.785, 0.785]
-        - Joint 5 (bfoot): Hinge joint, Y-axis rotation (body 3), range [-0.4, 0.785]
-        - Joint 6 (fthigh): Hinge joint, Y-axis rotation (body 4), range [-1.0, 0.7]
-        - Joint 7 (fshin): Hinge joint, Y-axis rotation (body 5), range [-1.2, 0.87]
-        - Joint 8 (ffoot): Hinge joint, Y-axis rotation (body 6), range [-0.5, 0.5]
-        - Joint 9 (head): Hinge joint, Y-axis rotation (body 7), range [0, 0] (fixed)
-
-    State (qpos, qvel):
-        - qpos[0]: rootx (x position)
-        - qpos[1]: rootz (z position / height)
-        - qpos[2]: rooty (pitch angle)
-        - qpos[3-5]: back leg joint angles (bthigh, bshin, bfoot)
-        - qpos[6-8]: front leg joint angles (fthigh, fshin, ffoot)
-        - qpos[9]: head angle (fixed at 0)
-        - qvel[0:10]: corresponding velocities
-
-    Observation Space (17 dimensions):
-        Excludes qpos[0] (rootx) and head for translation invariance.
-        [0:8]: qpos[1:9] (z, rooty, 6 joint angles)
-        [8:17]: qvel[0:9] (all velocities excluding head)
-
-    Action Space (6 dimensions):
-        [0] bthigh torque (scaled by gear ratio 120)
-        [1] bshin torque (scaled by gear ratio 90)
-        [2] bfoot torque (scaled by gear ratio 60)
-        [3] fthigh torque (scaled by gear ratio 120)
-        [4] fshin torque (scaled by gear ratio 60)
-        [5] ffoot torque (scaled by gear ratio 30)
+    Uses generic ObsState[17] and ContAction[6] types instead of per-env structs.
+    Observation extraction, action application, and joint limit enforcement
+    are all handled by HalfCheetahJoints methods from the robot definition.
     """
 
     # Trait type aliases
     comptime dtype = Self.DTYPE
-    comptime StateType = HalfCheetahGCState
-    comptime ActionType = HalfCheetahGCAction
+    comptime StateType = ObsState[OBS_DIM]
+    comptime ActionType = ContAction[ACTION_DIM]
 
     comptime MAX_STEPS_VAL: Int = 1000
 
@@ -259,9 +169,6 @@ struct HalfCheetahGC[
     # Previous x position for velocity calculation
     var prev_x_position: Scalar[Self.DTYPE]
 
-    # Cached observation state
-    var cached_state: HalfCheetahGCState
-
     # Renderer (optional)
     var _renderer: UnsafePointer[HalfCheetahGCRenderer, MutAnyOrigin]
     var _renderer_initialized: Bool
@@ -277,14 +184,7 @@ struct HalfCheetahGC[
         timestep: Scalar[Self.DTYPE] = 0.002,
         friction: Scalar[Self.DTYPE] = 0.9,
     ):
-        """Initialize the HalfCheetahGC environment.
-
-        Args:
-            max_steps: Maximum episode length (default 1000).
-            frame_skip: Number of physics steps per environment step (default 5).
-            timestep: Physics timestep in seconds (default 0.002).
-            friction: Ground friction coefficient (default 0.9).
-        """
+        """Initialize the HalfCheetahGC environment."""
         self.max_steps = max_steps
         self.current_step = 0
         self.frame_skip = frame_skip
@@ -308,19 +208,19 @@ struct HalfCheetahGC[
         )
 
         # Set solref/solimp from MuJoCo half_cheetah.xml
-        comptime CC = HalfCheetahGCConstants[Self.DTYPE]
-        self.model.solref_contact[0] = CC.SOLREF_CONTACT_0
-        self.model.solref_contact[1] = CC.SOLREF_CONTACT_1
-        self.model.solimp_contact[0] = CC.SOLIMP_CONTACT_0
-        self.model.solimp_contact[1] = CC.SOLIMP_CONTACT_1
-        self.model.solimp_contact[2] = CC.SOLIMP_CONTACT_2
-        self.model.solref_limit[0] = CC.SOLREF_LIMIT_0
-        self.model.solref_limit[1] = CC.SOLREF_LIMIT_1
-        self.model.solimp_limit[0] = CC.SOLIMP_LIMIT_0
-        self.model.solimp_limit[1] = CC.SOLIMP_LIMIT_1
-        self.model.solimp_limit[2] = CC.SOLIMP_LIMIT_2
+        comptime P = HalfCheetahParams[Self.DTYPE]
+        self.model.solref_contact[0] = P.SOLREF_CONTACT_0
+        self.model.solref_contact[1] = P.SOLREF_CONTACT_1
+        self.model.solimp_contact[0] = P.SOLIMP_CONTACT_0
+        self.model.solimp_contact[1] = P.SOLIMP_CONTACT_1
+        self.model.solimp_contact[2] = P.SOLIMP_CONTACT_2
+        self.model.solref_limit[0] = P.SOLREF_LIMIT_0
+        self.model.solref_limit[1] = P.SOLREF_LIMIT_1
+        self.model.solimp_limit[0] = P.SOLIMP_LIMIT_0
+        self.model.solimp_limit[1] = P.SOLIMP_LIMIT_1
+        self.model.solimp_limit[2] = P.SOLIMP_LIMIT_2
 
-        # Initialize data (must be done before any method calls)
+        # Initialize data
         self.data = Data[
             Self.DTYPE,
             Self.NQ,
@@ -330,16 +230,12 @@ struct HalfCheetahGC[
             Self.MAX_CONTACTS,
         ]()
 
-        # Initialize cached state
-        self.cached_state = HalfCheetahGCState()
-
         # Configure bodies and joints from compile-time robot definition
         HalfCheetahBodies.setup_model(self.model)
         HalfCheetahJoints.setup_model(self.model)
 
         # Reset to initial state
         self._reset_state()
-        self._update_cached_state()
 
     # =========================================================================
     # Physics State Management
@@ -356,149 +252,27 @@ struct HalfCheetahGC[
         self.current_step = 0
         self.prev_x_position = self.data.qpos[JOINT_ROOTX]
 
-    fn _update_cached_state(mut self):
-        """Update cached state from physics data."""
-        # Position observations (exclude qpos[0] = rootx)
-        self.cached_state.z_position = Float64(self.data.qpos[JOINT_ROOTZ])
-        self.cached_state.y_angle = Float64(self.data.qpos[JOINT_ROOTY])
-        self.cached_state.bthigh_angle = Float64(self.data.qpos[JOINT_BTHIGH])
-        self.cached_state.bshin_angle = Float64(self.data.qpos[JOINT_BSHIN])
-        self.cached_state.bfoot_angle = Float64(self.data.qpos[JOINT_BFOOT])
-        self.cached_state.fthigh_angle = Float64(self.data.qpos[JOINT_FTHIGH])
-        self.cached_state.fshin_angle = Float64(self.data.qpos[JOINT_FSHIN])
-        self.cached_state.ffoot_angle = Float64(self.data.qpos[JOINT_FFOOT])
-
-        # Velocity observations (include all)
-        self.cached_state.x_velocity = Float64(self.data.qvel[JOINT_ROOTX])
-        self.cached_state.z_velocity = Float64(self.data.qvel[JOINT_ROOTZ])
-        self.cached_state.y_angular_velocity = Float64(
-            self.data.qvel[JOINT_ROOTY]
-        )
-        self.cached_state.bthigh_velocity = Float64(
-            self.data.qvel[JOINT_BTHIGH]
-        )
-        self.cached_state.bshin_velocity = Float64(self.data.qvel[JOINT_BSHIN])
-        self.cached_state.bfoot_velocity = Float64(self.data.qvel[JOINT_BFOOT])
-        self.cached_state.fthigh_velocity = Float64(
-            self.data.qvel[JOINT_FTHIGH]
-        )
-        self.cached_state.fshin_velocity = Float64(self.data.qvel[JOINT_FSHIN])
-        self.cached_state.ffoot_velocity = Float64(self.data.qvel[JOINT_FFOOT])
-
-    @always_inline
-    fn _clamp_action(self, action: Float64) -> Float64:
-        """Clamp action to [-1, 1]."""
-        if action > 1.0:
-            return 1.0
-        elif action < -1.0:
-            return -1.0
-        return action
-
-    fn _enforce_joint_limits(mut self):
-        """Enforce joint position limits to prevent unrealistic poses.
-
-        Clamps actuated joint positions to their defined limits.
-        Also zeros velocity when hitting a limit (simple contact model).
-        """
-
-        # Helper to clamp and handle limit contact
-        @always_inline
-        fn clamp_joint(
-            mut qpos: Scalar[Self.DTYPE],
-            mut qvel: Scalar[Self.DTYPE],
-            lower: Float64,
-            upper: Float64,
-        ) -> Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE]]:
-            if qpos < Scalar[Self.DTYPE](lower):
-                qpos = Scalar[Self.DTYPE](lower)
-                if qvel < Scalar[Self.DTYPE](0):
-                    qvel = Scalar[Self.DTYPE](0)  # Stop at limit
-            elif qpos > Scalar[Self.DTYPE](upper):
-                qpos = Scalar[Self.DTYPE](upper)
-                if qvel > Scalar[Self.DTYPE](0):
-                    qvel = Scalar[Self.DTYPE](0)  # Stop at limit
-            return (qpos, qvel)
-
-        # Clamp back leg joints
-        var bthigh = clamp_joint(
-            self.data.qpos[JOINT_BTHIGH],
-            self.data.qvel[JOINT_BTHIGH],
-            BTHIGH_LOWER,
-            BTHIGH_UPPER,
-        )
-        self.data.qpos[JOINT_BTHIGH] = bthigh[0]
-        self.data.qvel[JOINT_BTHIGH] = bthigh[1]
-
-        var bshin = clamp_joint(
-            self.data.qpos[JOINT_BSHIN],
-            self.data.qvel[JOINT_BSHIN],
-            BSHIN_LOWER,
-            BSHIN_UPPER,
-        )
-        self.data.qpos[JOINT_BSHIN] = bshin[0]
-        self.data.qvel[JOINT_BSHIN] = bshin[1]
-
-        var bfoot = clamp_joint(
-            self.data.qpos[JOINT_BFOOT],
-            self.data.qvel[JOINT_BFOOT],
-            BFOOT_LOWER,
-            BFOOT_UPPER,
-        )
-        self.data.qpos[JOINT_BFOOT] = bfoot[0]
-        self.data.qvel[JOINT_BFOOT] = bfoot[1]
-
-        # Clamp front leg joints
-        var fthigh = clamp_joint(
-            self.data.qpos[JOINT_FTHIGH],
-            self.data.qvel[JOINT_FTHIGH],
-            FTHIGH_LOWER,
-            FTHIGH_UPPER,
-        )
-        self.data.qpos[JOINT_FTHIGH] = fthigh[0]
-        self.data.qvel[JOINT_FTHIGH] = fthigh[1]
-
-        var fshin = clamp_joint(
-            self.data.qpos[JOINT_FSHIN],
-            self.data.qvel[JOINT_FSHIN],
-            FSHIN_LOWER,
-            FSHIN_UPPER,
-        )
-        self.data.qpos[JOINT_FSHIN] = fshin[0]
-        self.data.qvel[JOINT_FSHIN] = fshin[1]
-
-        var ffoot = clamp_joint(
-            self.data.qpos[JOINT_FFOOT],
-            self.data.qvel[JOINT_FFOOT],
-            FFOOT_LOWER,
-            FFOOT_UPPER,
-        )
-        self.data.qpos[JOINT_FFOOT] = ffoot[0]
-        self.data.qvel[JOINT_FFOOT] = ffoot[1]
+    fn _get_obs(self) -> ObsState[OBS_DIM]:
+        """Extract observation from current physics data."""
+        var obs_list = List[Scalar[Self.DTYPE]](capacity=OBS_DIM)
+        HalfCheetahJoints.extract_obs(self.data, obs_list)
+        var obs = ObsState[OBS_DIM]()
+        for i in range(OBS_DIM):
+            obs.data[i] = Float64(obs_list[i])
+        return obs^
 
     fn _compute_reward(
         self,
         x_velocity: Float64,
-        action: HalfCheetahGCAction,
+        action: ContAction[ACTION_DIM],
         y_angle: Float64,
     ) -> Float64:
-        """Compute reward for current state.
-
-        Reward = forward_reward - ctrl_cost - angle_penalty
-        - forward_reward = forward_reward_weight * x_velocity
-        - ctrl_cost = ctrl_cost_weight * sum(action^2)
-        - angle_penalty = angle_penalty_weight * abs(y_angle)
-        """
-        # Forward velocity reward
+        """Compute reward for current state."""
         var forward_reward = FORWARD_REWARD_WEIGHT * x_velocity
-
-        # Control cost (penalize large actions)
         var ctrl_cost = CTRL_COST_WEIGHT * action.squared_sum()
-
-        # Angle penalty (discourages flipping)
-        comptime C = HalfCheetahGCConstants[DType.float64]
+        comptime P = HalfCheetahParams[DType.float64]
         var abs_angle = y_angle if y_angle >= 0.0 else -y_angle
-        var angle_penalty = Float64(C.ANGLE_PENALTY_WEIGHT) * abs_angle
-
+        var angle_penalty = Float64(P.ANGLE_PENALTY_WEIGHT) * abs_angle
         return forward_reward - ctrl_cost - angle_penalty
 
     # =========================================================================
@@ -508,47 +282,24 @@ struct HalfCheetahGC[
     fn get_obs_list(self) -> List[Scalar[Self.dtype]]:
         """Return current continuous observation as a list."""
         var obs = List[Scalar[Self.dtype]](capacity=Self.OBS_DIM)
-        # Position observations (8D)
-        obs.append(Scalar[Self.dtype](self.cached_state.z_position))
-        obs.append(Scalar[Self.dtype](self.cached_state.y_angle))
-        obs.append(Scalar[Self.dtype](self.cached_state.bthigh_angle))
-        obs.append(Scalar[Self.dtype](self.cached_state.bshin_angle))
-        obs.append(Scalar[Self.dtype](self.cached_state.bfoot_angle))
-        obs.append(Scalar[Self.dtype](self.cached_state.fthigh_angle))
-        obs.append(Scalar[Self.dtype](self.cached_state.fshin_angle))
-        obs.append(Scalar[Self.dtype](self.cached_state.ffoot_angle))
-        # Velocity observations (9D)
-        obs.append(Scalar[Self.dtype](self.cached_state.x_velocity))
-        obs.append(Scalar[Self.dtype](self.cached_state.z_velocity))
-        obs.append(Scalar[Self.dtype](self.cached_state.y_angular_velocity))
-        obs.append(Scalar[Self.dtype](self.cached_state.bthigh_velocity))
-        obs.append(Scalar[Self.dtype](self.cached_state.bshin_velocity))
-        obs.append(Scalar[Self.dtype](self.cached_state.bfoot_velocity))
-        obs.append(Scalar[Self.dtype](self.cached_state.fthigh_velocity))
-        obs.append(Scalar[Self.dtype](self.cached_state.fshin_velocity))
-        obs.append(Scalar[Self.dtype](self.cached_state.ffoot_velocity))
+        HalfCheetahJoints.extract_obs(self.data, obs)
         return obs^
 
     fn reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
         """Reset environment and return initial continuous observation."""
         self._reset_state()
-        self._update_cached_state()
         return self.get_obs_list()
 
     fn obs_dim(self) -> Int:
-        """Return the dimension of the observation vector."""
         return Self.OBS_DIM
 
     fn action_dim(self) -> Int:
-        """Return the dimension of the action vector."""
         return Self.ACTION_DIM
 
     fn action_low(self) -> Scalar[Self.dtype]:
-        """Return the lower bound for action values."""
         return Scalar[Self.dtype](-1.0)
 
     fn action_high(self) -> Scalar[Self.dtype]:
-        """Return the upper bound for action values."""
         return Scalar[Self.dtype](1.0)
 
     fn step_continuous(
@@ -565,46 +316,21 @@ struct HalfCheetahGC[
     ](mut self, action: List[Scalar[DTYPE2]]) -> Tuple[
         List[Scalar[DTYPE2]], Scalar[DTYPE2], Bool
     ]:
-        """Take multi-dimensional continuous action and return (obs, reward, done).
-
-        Args:
-            action: List of 6 action values (joint torques normalized to [-1, 1]).
-
-        Returns:
-            Tuple of (observation_list, reward, done).
-        """
-        # Convert to HalfCheetahGCAction
-        var act = HalfCheetahGCAction(
-            bthigh=Float64(action[0] if len(action) > 0 else 0),
-            bshin=Float64(action[1] if len(action) > 1 else 0),
-            bfoot=Float64(action[2] if len(action) > 2 else 0),
-            fthigh=Float64(action[3] if len(action) > 3 else 0),
-            fshin=Float64(action[4] if len(action) > 4 else 0),
-            ffoot=Float64(action[5] if len(action) > 5 else 0),
-        )
+        """Take multi-dimensional continuous action and return (obs, reward, done)."""
+        # Convert to ContAction
+        var act = ContAction[ACTION_DIM]()
+        for i in range(min(ACTION_DIM, len(action))):
+            act.data[i] = Float64(action[i])
 
         # Take step
         var result = self.step(act)
 
         # Build observation list
+        var obs_list = List[Scalar[Self.DTYPE]](capacity=Self.OBS_DIM)
+        HalfCheetahJoints.extract_obs(self.data, obs_list)
         var obs = List[Scalar[DTYPE2]](capacity=Self.OBS_DIM)
-        obs.append(Scalar[DTYPE2](self.cached_state.z_position))
-        obs.append(Scalar[DTYPE2](self.cached_state.y_angle))
-        obs.append(Scalar[DTYPE2](self.cached_state.bthigh_angle))
-        obs.append(Scalar[DTYPE2](self.cached_state.bshin_angle))
-        obs.append(Scalar[DTYPE2](self.cached_state.bfoot_angle))
-        obs.append(Scalar[DTYPE2](self.cached_state.fthigh_angle))
-        obs.append(Scalar[DTYPE2](self.cached_state.fshin_angle))
-        obs.append(Scalar[DTYPE2](self.cached_state.ffoot_angle))
-        obs.append(Scalar[DTYPE2](self.cached_state.x_velocity))
-        obs.append(Scalar[DTYPE2](self.cached_state.z_velocity))
-        obs.append(Scalar[DTYPE2](self.cached_state.y_angular_velocity))
-        obs.append(Scalar[DTYPE2](self.cached_state.bthigh_velocity))
-        obs.append(Scalar[DTYPE2](self.cached_state.bshin_velocity))
-        obs.append(Scalar[DTYPE2](self.cached_state.bfoot_velocity))
-        obs.append(Scalar[DTYPE2](self.cached_state.fthigh_velocity))
-        obs.append(Scalar[DTYPE2](self.cached_state.fshin_velocity))
-        obs.append(Scalar[DTYPE2](self.cached_state.ffoot_velocity))
+        for i in range(Self.OBS_DIM):
+            obs.append(Scalar[DTYPE2](obs_list[i]))
 
         return (obs^, Scalar[DTYPE2](result[1]), result[2])
 
@@ -615,40 +341,12 @@ struct HalfCheetahGC[
     fn step(
         mut self, action: Self.ActionType
     ) -> Tuple[Self.StateType, Scalar[Self.dtype], Bool]:
-        """Take an action and return (next_state, reward, done).
-
-        When TERMINATE_ON_UNHEALTHY is True, terminates if |y_angle| > MAX_PITCH.
-        """
+        """Take an action and return (next_state, reward, done)."""
         # Store previous x position for velocity calculation
         self.prev_x_position = self.data.qpos[JOINT_ROOTX]
 
-        # Clamp actions and scale by gear ratios
-        var bthigh_torque = Scalar[Self.DTYPE](
-            self._clamp_action(action.bthigh) * BTHIGH_GEAR
-        )
-        var bshin_torque = Scalar[Self.DTYPE](
-            self._clamp_action(action.bshin) * BSHIN_GEAR
-        )
-        var bfoot_torque = Scalar[Self.DTYPE](
-            self._clamp_action(action.bfoot) * BFOOT_GEAR
-        )
-        var fthigh_torque = Scalar[Self.DTYPE](
-            self._clamp_action(action.fthigh) * FTHIGH_GEAR
-        )
-        var fshin_torque = Scalar[Self.DTYPE](
-            self._clamp_action(action.fshin) * FSHIN_GEAR
-        )
-        var ffoot_torque = Scalar[Self.DTYPE](
-            self._clamp_action(action.ffoot) * FFOOT_GEAR
-        )
-
-        # Apply torques to actuated joints (joints 3-8)
-        self.data.qfrc[JOINT_BTHIGH] = bthigh_torque
-        self.data.qfrc[JOINT_BSHIN] = bshin_torque
-        self.data.qfrc[JOINT_BFOOT] = bfoot_torque
-        self.data.qfrc[JOINT_FTHIGH] = fthigh_torque
-        self.data.qfrc[JOINT_FSHIN] = fshin_torque
-        self.data.qfrc[JOINT_FFOOT] = ffoot_torque
+        # Apply actions via generic Joints method
+        HalfCheetahJoints.apply_actions(self.data, action.to_list())
 
         # Physics step (with frame skip)
         for _ in range(self.frame_skip):
@@ -656,9 +354,8 @@ struct HalfCheetahGC[
                 self.model, self.data
             )
             # Enforce joint limits after each physics step
-            self._enforce_joint_limits()
-            # Ground safety clamp: prevent rootz from going deeply underground
-            # (velocity-level solver can't fully prevent penetration at high velocities)
+            HalfCheetahJoints.enforce_limits(self.data)
+            # Ground safety clamp
             comptime MIN_ROOTZ: Scalar[Self.DTYPE] = -0.3
             if self.data.qpos[JOINT_ROOTZ] < MIN_ROOTZ:
                 self.data.qpos[JOINT_ROOTZ] = MIN_ROOTZ
@@ -667,15 +364,12 @@ struct HalfCheetahGC[
 
         self.current_step += 1
 
-        # Update cached state
-        self._update_cached_state()
-
-        # Compute velocity from position change (more accurate than qvel)
+        # Compute velocity from position change
         var x_position_after = Float64(self.data.qpos[JOINT_ROOTX])
         var dt = Float64(DT * self.frame_skip)
         var x_velocity = (x_position_after - Float64(self.prev_x_position)) / dt
 
-        # Compute reward (using clamped action for ctrl_cost)
+        # Compute reward
         var clamped_action = action.clamp()
         var y_angle = Float64(self.data.qpos[JOINT_ROOTY])
         var reward = self._compute_reward(x_velocity, clamped_action, y_angle)
@@ -685,30 +379,27 @@ struct HalfCheetahGC[
 
         @parameter
         if Self.TERMINATE_ON_UNHEALTHY:
-            comptime C = HalfCheetahGCConstants[DType.float64]
+            comptime P = HalfCheetahParams[DType.float64]
             var abs_angle = y_angle if y_angle >= 0.0 else -y_angle
-            terminated = abs_angle > Float64(C.MAX_PITCH)
+            terminated = abs_angle > Float64(P.MAX_PITCH)
         var truncated = self.current_step >= self.max_steps
         var done = terminated or truncated
 
-        return (self.cached_state, Scalar[Self.dtype](reward), done)
+        return (self._get_obs(), Scalar[Self.dtype](reward), done)
 
     fn get_state(self) -> Self.StateType:
         """Get current state."""
-        return self.cached_state
+        return self._get_obs()
 
     fn reset(mut self) -> Self.StateType:
         """Reset and return initial state."""
         self._reset_state()
-        self._update_cached_state()
-        return self.cached_state
+        return self._get_obs()
 
     fn render(mut self, mut renderer: RendererBase):
-        """Render the environment using 2D renderer (not supported for 3D)."""
         pass
 
     fn close(mut self):
-        """Close the environment and release resources."""
         if self._renderer_initialized:
             try:
                 self._renderer[].close()
@@ -722,31 +413,26 @@ struct HalfCheetahGC[
     # =========================================================================
 
     fn get_qpos(self) -> InlineArray[Scalar[Self.DTYPE], 10]:
-        """Get full qpos array (10 DOFs including head)."""
         var qpos = InlineArray[Scalar[Self.DTYPE], 10](uninitialized=True)
         for i in range(10):
             qpos[i] = self.data.qpos[i]
         return qpos^
 
     fn get_qvel(self) -> InlineArray[Scalar[Self.DTYPE], 10]:
-        """Get full qvel array (10 DOFs including head)."""
         var qvel = InlineArray[Scalar[Self.DTYPE], 10](uninitialized=True)
         for i in range(10):
             qvel[i] = self.data.qvel[i]
         return qvel^
 
     fn get_x_position(self) -> Scalar[Self.DTYPE]:
-        """Get current x position (rootx qpos)."""
         return self.data.qpos[JOINT_ROOTX]
 
     fn get_x_velocity(self) -> Scalar[Self.DTYPE]:
-        """Get current x velocity (rootx qvel)."""
         return self.data.qvel[JOINT_ROOTX]
 
     fn get_torso_position(
         self,
     ) -> Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]]:
-        """Get torso world position from xpos."""
         return (
             self.data.xpos[BODY_TORSO * 3 + 0],
             self.data.xpos[BODY_TORSO * 3 + 1],
@@ -756,7 +442,6 @@ struct HalfCheetahGC[
     fn get_body_position(
         self, body_id: Int
     ) -> Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]]:
-        """Get body world position from xpos."""
         return (
             self.data.xpos[body_id * 3 + 0],
             self.data.xpos[body_id * 3 + 1],
@@ -771,7 +456,6 @@ struct HalfCheetahGC[
         Scalar[Self.DTYPE],
         Scalar[Self.DTYPE],
     ]:
-        """Get body world orientation quaternion (x, y, z, w) from xquat."""
         return (
             self.data.xquat[body_id * 4 + 0],
             self.data.xquat[body_id * 4 + 1],
@@ -780,23 +464,20 @@ struct HalfCheetahGC[
         )
 
     fn get_current_step(self) -> Int:
-        """Get current step count."""
         return self.current_step
 
     fn get_max_steps(self) -> Int:
-        """Get maximum steps per episode."""
         return self.max_steps
 
     fn is_done(self) -> Bool:
-        """Check if episode is finished."""
         var truncated = self.current_step >= self.max_steps
 
         @parameter
         if Self.TERMINATE_ON_UNHEALTHY:
-            comptime C = HalfCheetahGCConstants[DType.float64]
+            comptime P = HalfCheetahParams[DType.float64]
             var y_angle = Float64(self.data.qpos[JOINT_ROOTY])
             var abs_angle = y_angle if y_angle >= 0.0 else -y_angle
-            return truncated or abs_angle > Float64(C.MAX_PITCH)
+            return truncated or abs_angle > Float64(P.MAX_PITCH)
         else:
             return truncated
 
@@ -805,7 +486,6 @@ struct HalfCheetahGC[
     # =========================================================================
 
     fn init_renderer(mut self) raises -> Bool:
-        """Initialize the internal 3D renderer."""
         if self._renderer_initialized:
             return True
 
@@ -826,14 +506,12 @@ struct HalfCheetahGC[
         return True
 
     fn render_frame(mut self) raises -> None:
-        """Render the current state using the internal 3D renderer."""
         if not self._renderer_initialized:
             return
 
         if not self._renderer[].is_open():
             return
 
-        # Extract body positions and quaternions
         var positions = List[Vec3](capacity=Self.NUM_BODIES)
         var quaternions = List[Quat](capacity=Self.NUM_BODIES)
 
@@ -844,7 +522,6 @@ struct HalfCheetahGC[
             )
 
             var quat = self.get_body_quaternion(i)
-            # xyzw -> wxyz for math3d Quat
             quaternions.append(
                 Quat(
                     Float64(quat[3]),
@@ -854,14 +531,10 @@ struct HalfCheetahGC[
                 )
             )
 
-        # Get velocity
         var vel_x = Float64(self.get_x_velocity())
-
-        # Render
         self._renderer[].render(positions, quaternions, vel_x)
 
     fn close_renderer(mut self) raises -> None:
-        """Close the internal renderer."""
         if not self._renderer_initialized:
             return
 
@@ -870,19 +543,16 @@ struct HalfCheetahGC[
         self._renderer_initialized = False
 
     fn is_renderer_open(self) -> Bool:
-        """Check if the internal renderer is open."""
         if not self._renderer_initialized:
             return False
         return self._renderer[].is_open()
 
     fn check_renderer_quit(mut self) -> Bool:
-        """Check if user requested to close the renderer window."""
         if not self._renderer_initialized:
             return False
         return self._renderer[].check_quit()
 
     fn renderer_delay(self, ms: Int) -> None:
-        """Delay for specified milliseconds."""
         if not self._renderer_initialized:
             return
         self._renderer[].delay(ms)
@@ -910,22 +580,12 @@ struct HalfCheetahGC[
             Scalar[gpu_dtype], MutAnyOrigin
         ] = UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin](),
     ) raises:
-        """Batched GPU step function using GC physics engine.
-
-        Uses DefaultIntegrator.step_gpu for physics.
-        Runs FRAME_SKIP=5 sub-steps per env step with joint limit
-        enforcement after each sub-step, matching CPU behavior.
-
-        When workspace_ptr is non-null, uses pre-allocated buffers to avoid
-        per-step GPU buffer allocation. Layout:
-            [model: MODEL_SIZE | physics_ws: BATCH_SIZE * WS_SIZE]
-        The model portion must be initialized via init_step_workspace_gpu().
-        """
+        """Batched GPU step function using GC physics engine."""
 
         comptime MODEL_SIZE = model_size[
             HalfCheetahGC.NUM_BODIES, HalfCheetahGC.NUM_JOINTS
         ]()
-        comptime C = HalfCheetahGCConstants[gpu_dtype]
+        comptime P = HalfCheetahParams[gpu_dtype]
         comptime WS_SIZE = integrator_workspace_size[
             Self.NV, Self.NUM_BODIES
         ]() + Self.NV * Self.NV + NewtonSolver.solver_workspace_size[
@@ -936,7 +596,6 @@ struct HalfCheetahGC[
         var workspace_buf: DeviceBuffer[gpu_dtype]
 
         if workspace_ptr:
-            # Use pre-allocated workspace — model already initialized
             model_buf = DeviceBuffer[gpu_dtype](
                 ctx,
                 workspace_ptr,
@@ -950,27 +609,26 @@ struct HalfCheetahGC[
                 owning=False,
             )
         else:
-            # Fallback: allocate per-step (backward compatible)
             model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
             var max_pitch = (
                 curriculum_values[1] if len(curriculum_values)
-                > 1 else C.MAX_PITCH
+                > 1 else P.MAX_PITCH
             )
             Self._init_model_gpu(ctx, model_buf, max_pitch)
             workspace_buf = ctx.enqueue_create_buffer[gpu_dtype](
                 BATCH_SIZE * WS_SIZE
             )
 
-        # Store prev_x_position before physics (for position-based velocity)
+        # Store prev_x_position before physics
         Self._store_prev_x_gpu[BATCH_SIZE, STATE_SIZE_VAL](ctx, states_buf)
 
-        # Apply actions to qfrc in state buffer
-        Self._apply_actions_gpu[BATCH_SIZE, STATE_SIZE_VAL, ACTION_DIM_VAL](
-            ctx, states_buf, actions_buf
-        )
+        # Apply actions to qfrc via generic Joints method
+        HalfCheetahJoints.apply_actions_kernel_gpu[
+            gpu_dtype, BATCH_SIZE, STATE_SIZE_VAL, ACTION_DIM_VAL
+        ](ctx, states_buf, actions_buf)
 
         # Run FRAME_SKIP physics sub-steps with joint limit enforcement
-        for _ in range(C.FRAME_SKIP):
+        for _ in range(P.FRAME_SKIP):
             ImplicitFastIntegrator[SOLVER=NewtonSolver].step_gpu[
                 gpu_dtype,
                 Self.NQ,
@@ -984,15 +642,15 @@ struct HalfCheetahGC[
                 states_buf,
                 model_buf,
                 workspace_buf,
-                dt=Scalar[gpu_dtype](C.DT),
+                dt=Scalar[gpu_dtype](P.DT),
                 gravity_z=Scalar[gpu_dtype](-9.81),
                 ground_z=Scalar[gpu_dtype](0.0),
             )
-            # Enforce joint limits after each sub-step (matching CPU)
-            Self._enforce_joint_limits_gpu[BATCH_SIZE, STATE_SIZE_VAL](
-                ctx, states_buf
-            )
-            # Ground safety clamp (matching CPU)
+            # Enforce joint limits via generic Joints method
+            HalfCheetahJoints.enforce_limits_kernel_gpu[
+                gpu_dtype, BATCH_SIZE, STATE_SIZE_VAL
+            ](ctx, states_buf)
+            # Ground safety clamp
             Self._ground_clamp_gpu[BATCH_SIZE, STATE_SIZE_VAL](ctx, states_buf)
 
         # Extract observations, compute rewards, check termination
@@ -1021,10 +679,7 @@ struct HalfCheetahGC[
         mut states_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64 = 0,
     ) raises:
-        """Reset all environments on GPU.
-
-        Also runs forward kinematics to compute xpos/xquat, matching CPU behavior.
-        """
+        """Reset all environments on GPU."""
         var states = LayoutTensor[
             gpu_dtype,
             Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
@@ -1054,7 +709,7 @@ struct HalfCheetahGC[
             block_dim=(TPB,),
         )
 
-        # Run forward kinematics to compute xpos/xquat (matching CPU behavior)
+        # Run forward kinematics
         comptime MODEL_SIZE = model_size[Self.NUM_BODIES, Self.NUM_JOINTS]()
         var model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
         Self._init_model_gpu(ctx, model_buf)
@@ -1106,10 +761,7 @@ struct HalfCheetahGC[
         mut dones_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64,
     ) raises:
-        """Reset only done environments on GPU.
-
-        Also runs forward kinematics for reset environments, matching CPU behavior.
-        """
+        """Reset only done environments on GPU."""
         var states = LayoutTensor[
             gpu_dtype,
             Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
@@ -1121,7 +773,6 @@ struct HalfCheetahGC[
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
-        # Create model buffer for FK
         comptime MODEL_SIZE = model_size[Self.NUM_BODIES, Self.NUM_JOINTS]()
         var model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
         Self._init_model_gpu(ctx, model_buf)
@@ -1150,7 +801,6 @@ struct HalfCheetahGC[
                 return
             if dones[i] > Scalar[gpu_dtype](0.5):
                 Self._reset_env_gpu[BATCH_SIZE, STATE_SIZE_VAL](states, i, seed)
-                # Run FK for this environment to compute xpos/xquat
                 forward_kinematics_gpu[
                     gpu_dtype,
                     Self.NQ,
@@ -1185,71 +835,10 @@ struct HalfCheetahGC[
         states_buf: DeviceBuffer[gpu_dtype],
         mut obs_buf: DeviceBuffer[gpu_dtype],
     ) raises:
-        """Extract correct observations from GC state buffer.
-
-        For GC environments, observations are NOT at state[0:OBS_DIM].
-        The correct 17D observation is: qpos[1:9] (8 positions) + qvel[0:9] (9 velocities).
-        This excludes rootx (qpos[0]) and head (qpos[9]) from observations.
-        """
-        var states = LayoutTensor[
-            gpu_dtype,
-            Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
-            MutAnyOrigin,
-        ](states_buf.unsafe_ptr())
-        var obs = LayoutTensor[
-            gpu_dtype,
-            Layout.row_major(BATCH_SIZE, OBS_DIM_VAL),
-            MutAnyOrigin,
-        ](obs_buf.unsafe_ptr())
-
-        comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
-        comptime QPOS_OFF = qpos_offset[HalfCheetahGC.NQ, HalfCheetahGC.NV]()
-        comptime QVEL_OFF = qvel_offset[HalfCheetahGC.NQ, HalfCheetahGC.NV]()
-
-        @always_inline
-        fn extract_gc_obs(
-            states: LayoutTensor[
-                gpu_dtype,
-                Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
-                MutAnyOrigin,
-            ],
-            obs: LayoutTensor[
-                gpu_dtype,
-                Layout.row_major(BATCH_SIZE, OBS_DIM_VAL),
-                MutAnyOrigin,
-            ],
-        ):
-            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
-            if env >= BATCH_SIZE:
-                return
-
-            # Position observations (8D): qpos[1:9] (excluding rootx and head)
-            obs[env, 0] = states[env, QPOS_OFF + 1]  # rootz
-            obs[env, 1] = states[env, QPOS_OFF + 2]  # rooty
-            obs[env, 2] = states[env, QPOS_OFF + 3]  # bthigh
-            obs[env, 3] = states[env, QPOS_OFF + 4]  # bshin
-            obs[env, 4] = states[env, QPOS_OFF + 5]  # bfoot
-            obs[env, 5] = states[env, QPOS_OFF + 6]  # fthigh
-            obs[env, 6] = states[env, QPOS_OFF + 7]  # fshin
-            obs[env, 7] = states[env, QPOS_OFF + 8]  # ffoot
-
-            # Velocity observations (9D): qvel[0:9] (excluding head)
-            obs[env, 8] = states[env, QVEL_OFF + 0]  # x_vel
-            obs[env, 9] = states[env, QVEL_OFF + 1]  # z_vel
-            obs[env, 10] = states[env, QVEL_OFF + 2]  # y_angvel
-            obs[env, 11] = states[env, QVEL_OFF + 3]  # bthigh_vel
-            obs[env, 12] = states[env, QVEL_OFF + 4]  # bshin_vel
-            obs[env, 13] = states[env, QVEL_OFF + 5]  # bfoot_vel
-            obs[env, 14] = states[env, QVEL_OFF + 6]  # fthigh_vel
-            obs[env, 15] = states[env, QVEL_OFF + 7]  # fshin_vel
-            obs[env, 16] = states[env, QVEL_OFF + 8]  # ffoot_vel
-
-        ctx.enqueue_function[extract_gc_obs, extract_gc_obs](
-            states,
-            obs,
-            grid_dim=(BLOCKS,),
-            block_dim=(TPB,),
-        )
+        """Extract observations from GC state buffer using generic Joints method."""
+        HalfCheetahJoints.extract_obs_kernel_gpu[
+            gpu_dtype, BATCH_SIZE, STATE_SIZE_VAL, OBS_DIM_VAL
+        ](ctx, states_buf, obs_buf)
 
     # =========================================================================
     # GPU Helper Functions
@@ -1259,23 +848,13 @@ struct HalfCheetahGC[
     fn _init_model_gpu(
         ctx: DeviceContext,
         mut model_buf: DeviceBuffer[gpu_dtype],
-        max_pitch: Scalar[gpu_dtype] = HalfCheetahGCConstants[
+        max_pitch: Scalar[gpu_dtype] = HalfCheetahParams[
             gpu_dtype
         ].MAX_PITCH,
     ) raises:
-        """Initialize model buffer with HalfCheetahGC parameters for GC physics engine.
+        """Initialize model buffer with HalfCheetahGC parameters."""
+        comptime P = HalfCheetahParams[gpu_dtype]
 
-        Creates a CPU Model, populates it via HalfCheetahBodies/HalfCheetahJoints
-        setup_model(), then serializes to GPU buffer via copy_model_to_buffer().
-
-        Args:
-            ctx: GPU device context.
-            model_buf: Model buffer to initialize.
-            max_pitch: Maximum torso pitch angle for health check.
-        """
-        comptime C = HalfCheetahGCConstants[gpu_dtype]
-
-        # Build CPU model with physics params matching the CPU __init__
         var model = Model[
             gpu_dtype,
             HalfCheetahGC.NQ,
@@ -1284,42 +863,37 @@ struct HalfCheetahGC[
             HalfCheetahGC.NUM_JOINTS,
             HalfCheetahGC.MAX_CONTACTS,
         ](
-            gravity_z=C.GRAVITY_Z,
-            timestep=C.DT,
+            gravity_z=P.GRAVITY_Z,
+            timestep=P.DT,
             ground_z=Scalar[gpu_dtype](0.0),
-            friction=C.FRICTION,
+            friction=P.FRICTION,
         )
 
-        # Set solref/solimp
-        model.solref_contact[0] = C.SOLREF_CONTACT_0
-        model.solref_contact[1] = C.SOLREF_CONTACT_1
-        model.solimp_contact[0] = C.SOLIMP_CONTACT_0
-        model.solimp_contact[1] = C.SOLIMP_CONTACT_1
-        model.solimp_contact[2] = C.SOLIMP_CONTACT_2
-        model.solref_limit[0] = C.SOLREF_LIMIT_0
-        model.solref_limit[1] = C.SOLREF_LIMIT_1
-        model.solimp_limit[0] = C.SOLIMP_LIMIT_0
-        model.solimp_limit[1] = C.SOLIMP_LIMIT_1
-        model.solimp_limit[2] = C.SOLIMP_LIMIT_2
+        model.solref_contact[0] = P.SOLREF_CONTACT_0
+        model.solref_contact[1] = P.SOLREF_CONTACT_1
+        model.solimp_contact[0] = P.SOLIMP_CONTACT_0
+        model.solimp_contact[1] = P.SOLIMP_CONTACT_1
+        model.solimp_contact[2] = P.SOLIMP_CONTACT_2
+        model.solref_limit[0] = P.SOLREF_LIMIT_0
+        model.solref_limit[1] = P.SOLREF_LIMIT_1
+        model.solimp_limit[0] = P.SOLIMP_LIMIT_0
+        model.solimp_limit[1] = P.SOLIMP_LIMIT_1
+        model.solimp_limit[2] = P.SOLIMP_LIMIT_2
 
-        # Configure bodies and joints from compile-time robot definition
         HalfCheetahBodies.setup_model(model)
         HalfCheetahJoints.setup_model(model)
 
-        # Serialize to host buffer
         var host_buf = create_model_buffer[
             gpu_dtype, HalfCheetahGC.NUM_BODIES, HalfCheetahGC.NUM_JOINTS
         ](ctx)
         copy_model_to_buffer(model, host_buf)
 
-        # Write curriculum parameters
         var curr = model_curriculum_offset[
             HalfCheetahGC.NUM_BODIES, HalfCheetahGC.NUM_JOINTS
         ]()
         host_buf[curr + CURRICULUM_IDX_MIN_HEIGHT] = Scalar[gpu_dtype](0.0)
         host_buf[curr + CURRICULUM_IDX_MAX_PITCH] = max_pitch
 
-        # Copy to GPU
         ctx.enqueue_copy(model_buf, host_buf.unsafe_ptr())
 
     @staticmethod
@@ -1328,26 +902,13 @@ struct HalfCheetahGC[
         mut model_buf: DeviceBuffer[gpu_dtype],
         max_pitch: Scalar[gpu_dtype],
     ) raises:
-        """Initialize model buffer with specified curriculum parameters.
-
-        Args:
-            ctx: GPU device context.
-            model_buf: Model buffer to initialize.
-            max_pitch: Maximum torso pitch angle for health check.
-        """
         Self._init_model_gpu(ctx, model_buf, max_pitch)
 
     @staticmethod
     fn init_step_workspace_gpu[
         BATCH_SIZE: Int,
     ](ctx: DeviceContext, mut workspace_buf: DeviceBuffer[gpu_dtype],) raises:
-        """Initialize pre-allocated step workspace buffer (call once at setup).
-
-        Initializes the model portion of the workspace with default curriculum.
-        The physics workspace portion doesn't need initialization.
-
-        Layout: [model: MODEL_SIZE | physics_ws: BATCH_SIZE * WS_SIZE]
-        """
+        """Initialize pre-allocated step workspace buffer."""
         comptime MODEL_SIZE = model_size[
             HalfCheetahGC.NUM_BODIES, HalfCheetahGC.NUM_JOINTS
         ]()
@@ -1365,13 +926,7 @@ struct HalfCheetahGC[
         mut workspace_buf: DeviceBuffer[gpu_dtype],
         curriculum_values: List[Scalar[gpu_dtype]],
     ) raises:
-        """Update only the curriculum parameters in a pre-allocated workspace.
-
-        Much cheaper than _init_model_gpu — copies only 2 floats instead of
-        rebuilding the entire ~362-element model buffer.
-
-        curriculum_values layout: [min_height(unused), max_pitch]
-        """
+        """Update only the curriculum parameters in a pre-allocated workspace."""
         if len(curriculum_values) < 2:
             return
         var curr_offset = model_curriculum_offset[
@@ -1379,8 +934,8 @@ struct HalfCheetahGC[
         ]()
         var curriculum_host = InlineArray[Scalar[gpu_dtype], 2](
             fill=[
-                curriculum_values[0],  # MIN_HEIGHT (unused for HalfCheetah)
-                curriculum_values[1],  # MAX_PITCH
+                curriculum_values[0],
+                curriculum_values[1],
             ]
         )
         ctx.enqueue_copy(
@@ -1394,8 +949,7 @@ struct HalfCheetahGC[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](ctx: DeviceContext, mut states_buf: DeviceBuffer[gpu_dtype],) raises:
-        """Store current rootx position into metadata for velocity computation.
-        """
+        """Store current rootx position into metadata for velocity computation."""
         var states = LayoutTensor[
             gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
         ](states_buf.unsafe_ptr())
@@ -1420,122 +974,9 @@ struct HalfCheetahGC[
             var env = Int(block_dim.x * block_idx.x + thread_idx.x)
             if env >= BATCH_SIZE:
                 return
-            # Store current rootx into metadata prev_x slot
             states[env, META_OFF + META_IDX_PREV_X] = states[env, QPOS_OFF + 0]
 
         ctx.enqueue_function[store_prev_x_kernel, store_prev_x_kernel](
-            states,
-            grid_dim=(BLOCKS,),
-            block_dim=(TPB,),
-        )
-
-    @staticmethod
-    fn _enforce_joint_limits_gpu[
-        BATCH_SIZE: Int,
-        STATE_SIZE: Int,
-    ](ctx: DeviceContext, mut states_buf: DeviceBuffer[gpu_dtype],) raises:
-        """Enforce joint position limits on GPU, matching CPU behavior.
-
-        Clamps actuated joint positions to their defined limits.
-        Zeros velocity when hitting a limit (simple contact model).
-        """
-        var states = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
-
-        comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
-        comptime C = HalfCheetahGCConstants[gpu_dtype]
-        comptime QPOS_OFF = qpos_offset[HalfCheetahGC.NQ, HalfCheetahGC.NV]()
-        comptime QVEL_OFF = qvel_offset[HalfCheetahGC.NQ, HalfCheetahGC.NV]()
-
-        @always_inline
-        fn enforce_limits_kernel(
-            states: LayoutTensor[
-                gpu_dtype,
-                Layout.row_major(BATCH_SIZE, STATE_SIZE),
-                MutAnyOrigin,
-            ],
-        ):
-            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
-            if env >= BATCH_SIZE:
-                return
-
-            # Joint indices 3-8 are actuated (bthigh, bshin, bfoot, fthigh, fshin, ffoot)
-            # Clamp position and zero velocity at limits
-
-            # bthigh (joint 3)
-            var bthigh_pos = states[env, QPOS_OFF + 3]
-            var bthigh_vel = states[env, QVEL_OFF + 3]
-            if bthigh_pos < C.BTHIGH_JOINT_MIN:
-                states[env, QPOS_OFF + 3] = C.BTHIGH_JOINT_MIN
-                if bthigh_vel < Scalar[gpu_dtype](0):
-                    states[env, QVEL_OFF + 3] = Scalar[gpu_dtype](0)
-            elif bthigh_pos > C.BTHIGH_JOINT_MAX:
-                states[env, QPOS_OFF + 3] = C.BTHIGH_JOINT_MAX
-                if bthigh_vel > Scalar[gpu_dtype](0):
-                    states[env, QVEL_OFF + 3] = Scalar[gpu_dtype](0)
-
-            # bshin (joint 4)
-            var bshin_pos = states[env, QPOS_OFF + 4]
-            var bshin_vel = states[env, QVEL_OFF + 4]
-            if bshin_pos < C.BSHIN_JOINT_MIN:
-                states[env, QPOS_OFF + 4] = C.BSHIN_JOINT_MIN
-                if bshin_vel < Scalar[gpu_dtype](0):
-                    states[env, QVEL_OFF + 4] = Scalar[gpu_dtype](0)
-            elif bshin_pos > C.BSHIN_JOINT_MAX:
-                states[env, QPOS_OFF + 4] = C.BSHIN_JOINT_MAX
-                if bshin_vel > Scalar[gpu_dtype](0):
-                    states[env, QVEL_OFF + 4] = Scalar[gpu_dtype](0)
-
-            # bfoot (joint 5)
-            var bfoot_pos = states[env, QPOS_OFF + 5]
-            var bfoot_vel = states[env, QVEL_OFF + 5]
-            if bfoot_pos < C.BFOOT_JOINT_MIN:
-                states[env, QPOS_OFF + 5] = C.BFOOT_JOINT_MIN
-                if bfoot_vel < Scalar[gpu_dtype](0):
-                    states[env, QVEL_OFF + 5] = Scalar[gpu_dtype](0)
-            elif bfoot_pos > C.BFOOT_JOINT_MAX:
-                states[env, QPOS_OFF + 5] = C.BFOOT_JOINT_MAX
-                if bfoot_vel > Scalar[gpu_dtype](0):
-                    states[env, QVEL_OFF + 5] = Scalar[gpu_dtype](0)
-
-            # fthigh (joint 6)
-            var fthigh_pos = states[env, QPOS_OFF + 6]
-            var fthigh_vel = states[env, QVEL_OFF + 6]
-            if fthigh_pos < C.FTHIGH_JOINT_MIN:
-                states[env, QPOS_OFF + 6] = C.FTHIGH_JOINT_MIN
-                if fthigh_vel < Scalar[gpu_dtype](0):
-                    states[env, QVEL_OFF + 6] = Scalar[gpu_dtype](0)
-            elif fthigh_pos > C.FTHIGH_JOINT_MAX:
-                states[env, QPOS_OFF + 6] = C.FTHIGH_JOINT_MAX
-                if fthigh_vel > Scalar[gpu_dtype](0):
-                    states[env, QVEL_OFF + 6] = Scalar[gpu_dtype](0)
-
-            # fshin (joint 7)
-            var fshin_pos = states[env, QPOS_OFF + 7]
-            var fshin_vel = states[env, QVEL_OFF + 7]
-            if fshin_pos < C.FSHIN_JOINT_MIN:
-                states[env, QPOS_OFF + 7] = C.FSHIN_JOINT_MIN
-                if fshin_vel < Scalar[gpu_dtype](0):
-                    states[env, QVEL_OFF + 7] = Scalar[gpu_dtype](0)
-            elif fshin_pos > C.FSHIN_JOINT_MAX:
-                states[env, QPOS_OFF + 7] = C.FSHIN_JOINT_MAX
-                if fshin_vel > Scalar[gpu_dtype](0):
-                    states[env, QVEL_OFF + 7] = Scalar[gpu_dtype](0)
-
-            # ffoot (joint 8)
-            var ffoot_pos = states[env, QPOS_OFF + 8]
-            var ffoot_vel = states[env, QVEL_OFF + 8]
-            if ffoot_pos < C.FFOOT_JOINT_MIN:
-                states[env, QPOS_OFF + 8] = C.FFOOT_JOINT_MIN
-                if ffoot_vel < Scalar[gpu_dtype](0):
-                    states[env, QVEL_OFF + 8] = Scalar[gpu_dtype](0)
-            elif ffoot_pos > C.FFOOT_JOINT_MAX:
-                states[env, QPOS_OFF + 8] = C.FFOOT_JOINT_MAX
-                if ffoot_vel > Scalar[gpu_dtype](0):
-                    states[env, QVEL_OFF + 8] = Scalar[gpu_dtype](0)
-
-        ctx.enqueue_function[enforce_limits_kernel, enforce_limits_kernel](
             states,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
@@ -1568,7 +1009,6 @@ struct HalfCheetahGC[
             if env >= BATCH_SIZE:
                 return
 
-            # JOINT_ROOTZ = 1 (rootz is qpos index 1, qvel index 1)
             var rootz = states[env, QPOS_OFF + 1]
             if rootz < MIN_ROOTZ:
                 states[env, QPOS_OFF + 1] = MIN_ROOTZ
@@ -1583,104 +1023,11 @@ struct HalfCheetahGC[
         )
 
     @staticmethod
-    fn _apply_actions_gpu[
-        BATCH_SIZE: Int,
-        STATE_SIZE: Int,
-        ACTION_DIM: Int,
-    ](
-        ctx: DeviceContext,
-        mut states_buf: DeviceBuffer[gpu_dtype],
-        actions_buf: DeviceBuffer[gpu_dtype],
-    ) raises:
-        """Apply actions as joint torques to qfrc in state buffer."""
-        var states = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
-        var actions = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
-        ](actions_buf.unsafe_ptr())
-
-        comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
-        comptime C = HalfCheetahGCConstants[gpu_dtype]
-        comptime QFRC_OFF = qfrc_offset[HalfCheetahGC.NQ, HalfCheetahGC.NV]()
-
-        @always_inline
-        fn apply_actions_kernel(
-            states: LayoutTensor[
-                gpu_dtype,
-                Layout.row_major(BATCH_SIZE, STATE_SIZE),
-                MutAnyOrigin,
-            ],
-            actions: LayoutTensor[
-                gpu_dtype,
-                Layout.row_major(BATCH_SIZE, ACTION_DIM),
-                MutAnyOrigin,
-            ],
-        ):
-            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
-            if env >= BATCH_SIZE:
-                return
-
-            # Clamp and scale actions by gear ratios
-            var bthigh_action = actions[env, 0]
-            var bshin_action = actions[env, 1]
-            var bfoot_action = actions[env, 2]
-            var fthigh_action = actions[env, 3]
-            var fshin_action = actions[env, 4]
-            var ffoot_action = actions[env, 5]
-
-            # Clamp to [-1, 1]
-            if bthigh_action > Scalar[gpu_dtype](1.0):
-                bthigh_action = Scalar[gpu_dtype](1.0)
-            elif bthigh_action < Scalar[gpu_dtype](-1.0):
-                bthigh_action = Scalar[gpu_dtype](-1.0)
-
-            if bshin_action > Scalar[gpu_dtype](1.0):
-                bshin_action = Scalar[gpu_dtype](1.0)
-            elif bshin_action < Scalar[gpu_dtype](-1.0):
-                bshin_action = Scalar[gpu_dtype](-1.0)
-
-            if bfoot_action > Scalar[gpu_dtype](1.0):
-                bfoot_action = Scalar[gpu_dtype](1.0)
-            elif bfoot_action < Scalar[gpu_dtype](-1.0):
-                bfoot_action = Scalar[gpu_dtype](-1.0)
-
-            if fthigh_action > Scalar[gpu_dtype](1.0):
-                fthigh_action = Scalar[gpu_dtype](1.0)
-            elif fthigh_action < Scalar[gpu_dtype](-1.0):
-                fthigh_action = Scalar[gpu_dtype](-1.0)
-
-            if fshin_action > Scalar[gpu_dtype](1.0):
-                fshin_action = Scalar[gpu_dtype](1.0)
-            elif fshin_action < Scalar[gpu_dtype](-1.0):
-                fshin_action = Scalar[gpu_dtype](-1.0)
-
-            if ffoot_action > Scalar[gpu_dtype](1.0):
-                ffoot_action = Scalar[gpu_dtype](1.0)
-            elif ffoot_action < Scalar[gpu_dtype](-1.0):
-                ffoot_action = Scalar[gpu_dtype](-1.0)
-
-            # Apply torques to joints 3-8 (actuated joints)
-            states[env, QFRC_OFF + 3] = bthigh_action * C.BTHIGH_GEAR
-            states[env, QFRC_OFF + 4] = bshin_action * C.BSHIN_GEAR
-            states[env, QFRC_OFF + 5] = bfoot_action * C.BFOOT_GEAR
-            states[env, QFRC_OFF + 6] = fthigh_action * C.FTHIGH_GEAR
-            states[env, QFRC_OFF + 7] = fshin_action * C.FSHIN_GEAR
-            states[env, QFRC_OFF + 8] = ffoot_action * C.FFOOT_GEAR
-
-        ctx.enqueue_function[apply_actions_kernel, apply_actions_kernel](
-            states,
-            actions,
-            grid_dim=(BLOCKS,),
-            block_dim=(TPB,),
-        )
-
-    @staticmethod
     fn _extract_obs_rewards_dones_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
         MODEL_SIZE: Int,
-        OBS_DIM: Int,
+        OBS_DIM_VAL: Int,
         MAX_STEPS_VAL: Int = 1000,
     ](
         ctx: DeviceContext,
@@ -1691,11 +1038,7 @@ struct HalfCheetahGC[
         mut dones_buf: DeviceBuffer[gpu_dtype],
         mut obs_buf: DeviceBuffer[gpu_dtype],
     ) raises:
-        """Extract observations, compute rewards, check termination.
-
-        Includes angle penalty in reward and health-based termination
-        when TERMINATE_ON_UNHEALTHY is True.
-        """
+        """Extract observations, compute rewards, check termination."""
         var states = LayoutTensor[
             gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
         ](states_buf.unsafe_ptr())
@@ -1712,13 +1055,12 @@ struct HalfCheetahGC[
             gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
         ](dones_buf.unsafe_ptr())
         var obs = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+            gpu_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM_VAL), MutAnyOrigin
         ](obs_buf.unsafe_ptr())
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
-        comptime C = HalfCheetahGCConstants[gpu_dtype]
+        comptime P = HalfCheetahParams[gpu_dtype]
         comptime QPOS_OFF = qpos_offset[HalfCheetahGC.NQ, HalfCheetahGC.NV]()
-        comptime QVEL_OFF = qvel_offset[HalfCheetahGC.NQ, HalfCheetahGC.NV]()
         comptime META_OFF = metadata_offset[
             HalfCheetahGC.NQ,
             HalfCheetahGC.NV,
@@ -1749,7 +1091,7 @@ struct HalfCheetahGC[
                 gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
             ],
             obs: LayoutTensor[
-                gpu_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+                gpu_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM_VAL), MutAnyOrigin
             ],
         ):
             var env = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -1767,120 +1109,47 @@ struct HalfCheetahGC[
                 step_count
             )
 
-            # Extract qpos (skip qpos[0] = rootx and qpos[9] = head for observation)
-            var z_pos = states[env, QPOS_OFF + 1]  # rootz
-            var y_angle = states[env, QPOS_OFF + 2]  # rooty
-            var bthigh_angle = states[env, QPOS_OFF + 3]
-            var bshin_angle = states[env, QPOS_OFF + 4]
-            var bfoot_angle = states[env, QPOS_OFF + 5]
-            var fthigh_angle = states[env, QPOS_OFF + 6]
-            var fshin_angle = states[env, QPOS_OFF + 7]
-            var ffoot_angle = states[env, QPOS_OFF + 8]
-
-            # Extract qvel (skip qvel[9] = head for observation)
-            var x_vel = states[env, QVEL_OFF + 0]  # rootx vel
-            var z_vel = states[env, QVEL_OFF + 1]  # rootz vel
-            var y_angvel = states[env, QVEL_OFF + 2]  # rooty vel
-            var bthigh_angvel = states[env, QVEL_OFF + 3]
-            var bshin_angvel = states[env, QVEL_OFF + 4]
-            var bfoot_angvel = states[env, QVEL_OFF + 5]
-            var fthigh_angvel = states[env, QVEL_OFF + 6]
-            var fshin_angvel = states[env, QVEL_OFF + 7]
-            var ffoot_angvel = states[env, QVEL_OFF + 8]
-
-            # Build observation (17D)
-            # Position observations (8D): qpos[1:9] (excluding rootx and head)
-            obs[env, 0] = z_pos
-            obs[env, 1] = y_angle
-            obs[env, 2] = bthigh_angle
-            obs[env, 3] = bshin_angle
-            obs[env, 4] = bfoot_angle
-            obs[env, 5] = fthigh_angle
-            obs[env, 6] = fshin_angle
-            obs[env, 7] = ffoot_angle
-            # Velocity observations (9D): qvel[0:9] (excluding head)
-            obs[env, 8] = x_vel
-            obs[env, 9] = z_vel
-            obs[env, 10] = y_angvel
-            obs[env, 11] = bthigh_angvel
-            obs[env, 12] = bshin_angvel
-            obs[env, 13] = bfoot_angvel
-            obs[env, 14] = fthigh_angvel
-            obs[env, 15] = fshin_angvel
-            obs[env, 16] = ffoot_angvel
+            # Extract observations using generic Joints method
+            HalfCheetahJoints.extract_obs_gpu[
+                gpu_dtype, BATCH_SIZE, STATE_SIZE, OBS_DIM_VAL
+            ](states, obs, env)
 
             # Clamp actions for reward computation
-            var bthigh_action = actions[env, 0]
-            var bshin_action = actions[env, 1]
-            var bfoot_action = actions[env, 2]
-            var fthigh_action = actions[env, 3]
-            var fshin_action = actions[env, 4]
-            var ffoot_action = actions[env, 5]
+            var ctrl_cost_sum = Scalar[gpu_dtype](0.0)
+            for a_idx in range(6):
+                var a = rebind[Scalar[gpu_dtype]](actions[env, a_idx])
+                if a > Scalar[gpu_dtype](1.0):
+                    a = Scalar[gpu_dtype](1.0)
+                elif a < Scalar[gpu_dtype](-1.0):
+                    a = Scalar[gpu_dtype](-1.0)
+                ctrl_cost_sum += a * a
 
-            if bthigh_action > Scalar[gpu_dtype](1.0):
-                bthigh_action = Scalar[gpu_dtype](1.0)
-            elif bthigh_action < Scalar[gpu_dtype](-1.0):
-                bthigh_action = Scalar[gpu_dtype](-1.0)
-            if bshin_action > Scalar[gpu_dtype](1.0):
-                bshin_action = Scalar[gpu_dtype](1.0)
-            elif bshin_action < Scalar[gpu_dtype](-1.0):
-                bshin_action = Scalar[gpu_dtype](-1.0)
-            if bfoot_action > Scalar[gpu_dtype](1.0):
-                bfoot_action = Scalar[gpu_dtype](1.0)
-            elif bfoot_action < Scalar[gpu_dtype](-1.0):
-                bfoot_action = Scalar[gpu_dtype](-1.0)
-            if fthigh_action > Scalar[gpu_dtype](1.0):
-                fthigh_action = Scalar[gpu_dtype](1.0)
-            elif fthigh_action < Scalar[gpu_dtype](-1.0):
-                fthigh_action = Scalar[gpu_dtype](-1.0)
-            if fshin_action > Scalar[gpu_dtype](1.0):
-                fshin_action = Scalar[gpu_dtype](1.0)
-            elif fshin_action < Scalar[gpu_dtype](-1.0):
-                fshin_action = Scalar[gpu_dtype](-1.0)
-            if ffoot_action > Scalar[gpu_dtype](1.0):
-                ffoot_action = Scalar[gpu_dtype](1.0)
-            elif ffoot_action < Scalar[gpu_dtype](-1.0):
-                ffoot_action = Scalar[gpu_dtype](-1.0)
-
-            # Read curriculum parameters from model buffer
+            # Read curriculum parameters
             var max_pitch = model[0, CURRICULUM_OFF + CURRICULUM_IDX_MAX_PITCH]
 
-            # Compute velocity from position change (matching CPU)
-            var x_position_after = states[env, QPOS_OFF + 0]  # rootx
+            # Compute velocity from position change
+            var x_position_after = states[env, QPOS_OFF + 0]
             var prev_x = states[env, META_OFF + META_IDX_PREV_X]
-            # DT=0.002 * FRAME_SKIP=5 = 0.01
-            var effective_dt = C.DT * Scalar[gpu_dtype](C.FRAME_SKIP)
+            var effective_dt = P.DT * Scalar[gpu_dtype](P.FRAME_SKIP)
             var x_velocity = (x_position_after - prev_x) / effective_dt
 
             # Compute reward
-            # Forward reward = forward_reward_weight * x_velocity
-            var forward_reward = C.FORWARD_REWARD_WEIGHT * x_velocity
-
-            # Control cost = ctrl_cost_weight * sum(action^2)
-            var ctrl_cost = C.CTRL_COST_WEIGHT * (
-                bthigh_action * bthigh_action
-                + bshin_action * bshin_action
-                + bfoot_action * bfoot_action
-                + fthigh_action * fthigh_action
-                + fshin_action * fshin_action
-                + ffoot_action * ffoot_action
-            )
-
-            # Angle penalty (discourages flipping)
+            var forward_reward = P.FORWARD_REWARD_WEIGHT * x_velocity
+            var ctrl_cost = P.CTRL_COST_WEIGHT * ctrl_cost_sum
+            var y_angle = states[env, QPOS_OFF + 2]  # rooty
             var abs_y_angle = y_angle
             if abs_y_angle < Scalar[gpu_dtype](0.0):
                 abs_y_angle = -abs_y_angle
-            var angle_penalty = C.ANGLE_PENALTY_WEIGHT * abs_y_angle
+            var angle_penalty = P.ANGLE_PENALTY_WEIGHT * abs_y_angle
 
             var reward = forward_reward - ctrl_cost - angle_penalty
             rewards[env] = reward
 
-            # Health check using curriculum bounds
+            # Health check
             var is_healthy = True
             if y_angle > max_pitch or y_angle < -max_pitch:
                 is_healthy = False
 
-            # Determine termination
             var terminated = False
             var truncated = step_count >= MAX_STEPS_VAL
 
@@ -1888,7 +1157,6 @@ struct HalfCheetahGC[
             if Self.TERMINATE_ON_UNHEALTHY:
                 terminated = not is_healthy
 
-            # Set done flag (terminated OR truncated)
             if terminated or truncated:
                 dones[env] = Scalar[gpu_dtype](1.0)
             else:
@@ -1917,91 +1185,21 @@ struct HalfCheetahGC[
         env: Int,
         seed: Int = 0,
     ):
-        """Reset a single environment on GPU with random noise.
+        """Reset a single environment on GPU with random noise."""
+        comptime RESET_NOISE: Scalar[gpu_dtype] = 0.1
 
-        Adds random perturbations to initial qpos and qvel.
-        """
-        comptime C = HalfCheetahGCConstants[gpu_dtype]
-        comptime QPOS_OFF = qpos_offset[HalfCheetahGC.NQ, HalfCheetahGC.NV]()
-        comptime QVEL_OFF = qvel_offset[HalfCheetahGC.NQ, HalfCheetahGC.NV]()
-        comptime QACC_OFF = qacc_offset[HalfCheetahGC.NQ, HalfCheetahGC.NV]()
-        comptime QFRC_OFF = qfrc_offset[HalfCheetahGC.NQ, HalfCheetahGC.NV]()
+        # Use generic Joints reset
+        HalfCheetahJoints.reset_env_gpu[gpu_dtype, BATCH_SIZE, STATE_SIZE](
+            states, env, RESET_NOISE, seed
+        )
 
-        # Reset noise scale
-        comptime RESET_NOISE_SCALE: Scalar[gpu_dtype] = 0.1
-
-        # Create RNG with unique seed per environment
-        var rng = PhiloxRandom(seed=seed * 2654435761 + env * 12345, offset=0)
-
-        # Generate random noise for qpos and qvel
-        var rand_qpos1 = rng.step_uniform()  # 4 values
-        var rand_qpos2 = rng.step_uniform()  # 4 values
-        var rand_qpos3 = rng.step_uniform()  # 2 more values
-        var rand_qvel1 = rng.step_uniform()  # 4 values
-        var rand_qvel2 = rng.step_uniform()  # 4 values
-        var rand_qvel3 = rng.step_uniform()  # 2 more values
-
-        # Helper to convert uniform [0,1) to [-scale, scale)
-        @always_inline
-        fn to_noise(val: Scalar[DType.float32]) -> Scalar[gpu_dtype]:
-            return Scalar[gpu_dtype](val * 2.0 - 1.0) * RESET_NOISE_SCALE
-
-        # Reset qpos with noise (10 joints)
-        states[env, QPOS_OFF + 0] = Scalar[gpu_dtype](0.0) + to_noise(
-            rand_qpos1[0]
-        )  # rootx
-        states[env, QPOS_OFF + 1] = C.INITIAL_Z + to_noise(
-            rand_qpos1[1]
-        )  # rootz
-        states[env, QPOS_OFF + 2] = Scalar[gpu_dtype](0.0) + to_noise(
-            rand_qpos1[2]
-        )  # rooty
-        states[env, QPOS_OFF + 3] = Scalar[gpu_dtype](0.0) + to_noise(
-            rand_qpos1[3]
-        )  # bthigh
-        states[env, QPOS_OFF + 4] = Scalar[gpu_dtype](0.0) + to_noise(
-            rand_qpos2[0]
-        )  # bshin
-        states[env, QPOS_OFF + 5] = Scalar[gpu_dtype](0.0) + to_noise(
-            rand_qpos2[1]
-        )  # bfoot
-        states[env, QPOS_OFF + 6] = Scalar[gpu_dtype](0.0) + to_noise(
-            rand_qpos2[2]
-        )  # fthigh
-        states[env, QPOS_OFF + 7] = Scalar[gpu_dtype](0.0) + to_noise(
-            rand_qpos2[3]
-        )  # fshin
-        states[env, QPOS_OFF + 8] = Scalar[gpu_dtype](0.0) + to_noise(
-            rand_qpos3[0]
-        )  # ffoot
-        states[env, QPOS_OFF + 9] = Scalar[gpu_dtype](
-            0.0
-        )  # head (fixed, no noise)
-
-        # Reset qvel with noise (10 joints)
-        states[env, QVEL_OFF + 0] = to_noise(rand_qvel1[0])  # rootx vel
-        states[env, QVEL_OFF + 1] = to_noise(rand_qvel1[1])  # rootz vel
-        states[env, QVEL_OFF + 2] = to_noise(rand_qvel1[2])  # rooty vel
-        states[env, QVEL_OFF + 3] = to_noise(rand_qvel1[3])  # bthigh vel
-        states[env, QVEL_OFF + 4] = to_noise(rand_qvel2[0])  # bshin vel
-        states[env, QVEL_OFF + 5] = to_noise(rand_qvel2[1])  # bfoot vel
-        states[env, QVEL_OFF + 6] = to_noise(rand_qvel2[2])  # fthigh vel
-        states[env, QVEL_OFF + 7] = to_noise(rand_qvel2[3])  # fshin vel
-        states[env, QVEL_OFF + 8] = to_noise(rand_qvel3[0])  # ffoot vel
-        states[env, QVEL_OFF + 9] = Scalar[gpu_dtype](0.0)  # head vel (fixed)
-
-        # Reset qacc, qfrc to zero
-        for i in range(HalfCheetahGC.NV):
-            states[env, QACC_OFF + i] = Scalar[gpu_dtype](0.0)
-            states[env, QFRC_OFF + i] = Scalar[gpu_dtype](0.0)
-
-        # Reset step counter to 0
+        # Reset step counter and prev_x
         comptime META_OFF = metadata_offset[
             HalfCheetahGC.NQ,
             HalfCheetahGC.NV,
             HalfCheetahGC.NUM_BODIES,
             HalfCheetahGC.MAX_CONTACTS,
         ]()
+        comptime QPOS_OFF = qpos_offset[HalfCheetahGC.NQ, HalfCheetahGC.NV]()
         states[env, META_OFF + META_IDX_STEP_COUNT] = Scalar[gpu_dtype](0.0)
-        # Initialize prev_x to current rootx position
         states[env, META_OFF + META_IDX_PREV_X] = states[env, QPOS_OFF + 0]

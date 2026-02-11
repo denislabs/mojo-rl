@@ -20,11 +20,26 @@ Usage:
     ]
 """
 
+from collections import InlineArray
 from std.builtin.variadics import Variadic
+from random.philox import Random as PhiloxRandom
+
 from .body_spec import BodySpec
 from .joint_spec import JointSpec
 from ..types import Model, Data
 from ..joint_types import JNT_HINGE, JNT_SLIDE
+
+# GPU imports
+from gpu.host import DeviceContext, DeviceBuffer
+from gpu import thread_idx, block_idx, block_dim
+from layout import Layout, LayoutTensor
+from ..gpu.constants import (
+    TPB,
+    qpos_offset,
+    qvel_offset,
+    qacc_offset,
+    qfrc_offset,
+)
 
 
 # =============================================================================
@@ -184,6 +199,531 @@ struct Joints[*J: JointSpec]:
             data.qvel[i] = Scalar[DTYPE](0)
             data.qacc[i] = Scalar[DTYPE](0)
             data.qfrc[i] = Scalar[DTYPE](0)
+
+    # =========================================================================
+    # Dimension Helpers (observation / action)
+    # =========================================================================
+
+    @staticmethod
+    fn _obs_qpos_dim() -> Int:
+        """Count of qpos elements included in observation."""
+        var total = 0
+
+        @parameter
+        for i in range(Self.N):
+            comptime J = Self.joint_types[i]
+
+            @parameter
+            if not J.EXCLUDE_OBS_QPOS:
+                total += J.NQ
+        return total
+
+    @staticmethod
+    fn _obs_qvel_dim() -> Int:
+        """Count of qvel elements included in observation."""
+        var total = 0
+
+        @parameter
+        for i in range(Self.N):
+            comptime J = Self.joint_types[i]
+
+            @parameter
+            if not J.EXCLUDE_OBS_QVEL:
+                total += J.NV
+        return total
+
+    @staticmethod
+    fn _obs_dim() -> Int:
+        """Total observation dimension (included qpos + included qvel)."""
+        return Self._obs_qpos_dim() + Self._obs_qvel_dim()
+
+    @staticmethod
+    fn _action_dim() -> Int:
+        """Count of actuated DOFs (joints with IS_ACTUATED=True)."""
+        var total = 0
+
+        @parameter
+        for i in range(Self.N):
+            comptime J = Self.joint_types[i]
+
+            @parameter
+            if J.IS_ACTUATED:
+                total += J.NV
+        return total
+
+    # =========================================================================
+    # CPU Operations
+    # =========================================================================
+
+    @staticmethod
+    fn extract_obs[
+        DTYPE: DType,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        MAX_CONTACTS: Int,
+    ](data: Data[DTYPE, NQ, NV, NBODY, Self.N, MAX_CONTACTS], mut obs: List[Scalar[DTYPE]]):
+        """Extract observation from physics data into a list.
+
+        Appends included qpos then included qvel to the obs list.
+        """
+        # Included qpos
+        @parameter
+        for i in range(Self.N):
+            comptime J = Self.joint_types[i]
+
+            @parameter
+            if not J.EXCLUDE_OBS_QPOS:
+                comptime offset = Self._qpos_offset[i]()
+
+                @parameter
+                for k in range(J.NQ):
+                    obs.append(data.qpos[offset + k])
+
+        # Included qvel
+        @parameter
+        for i in range(Self.N):
+            comptime J = Self.joint_types[i]
+
+            @parameter
+            if not J.EXCLUDE_OBS_QVEL:
+                comptime offset = Self._qvel_offset[i]()
+
+                @parameter
+                for k in range(J.NV):
+                    obs.append(data.qvel[offset + k])
+
+    @staticmethod
+    fn apply_actions[
+        DTYPE: DType,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        MAX_CONTACTS: Int,
+    ](mut data: Data[DTYPE, NQ, NV, NBODY, Self.N, MAX_CONTACTS], actions: List[Float64]):
+        """Apply normalized actions to actuated joints.
+
+        Clamps each action to [-1, 1], scales by TAU_LIMIT, writes to qfrc.
+        actions[k] corresponds to the k-th actuated joint in declaration order.
+        """
+        var act_idx = 0
+
+        @parameter
+        for i in range(Self.N):
+            comptime J = Self.joint_types[i]
+
+            @parameter
+            if J.IS_ACTUATED:
+                comptime offset = Self._qvel_offset[i]()
+
+                @parameter
+                for k in range(J.NV):
+                    var a = actions[act_idx] if act_idx < len(actions) else 0.0
+                    # Clamp to [-1, 1]
+                    if a > 1.0:
+                        a = 1.0
+                    elif a < -1.0:
+                        a = -1.0
+                    data.qfrc[offset + k] = Scalar[DTYPE](a * J.TAU_LIMIT)
+                    act_idx += 1
+
+    @staticmethod
+    fn enforce_limits[
+        DTYPE: DType,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        MAX_CONTACTS: Int,
+    ](mut data: Data[DTYPE, NQ, NV, NBODY, Self.N, MAX_CONTACTS]):
+        """Enforce joint position limits. Zeros velocity at limits."""
+
+        @parameter
+        for i in range(Self.N):
+            comptime J = Self.joint_types[i]
+
+            @parameter
+            if J.HAS_LIMITS:
+                comptime qp_off = Self._qpos_offset[i]()
+                comptime qv_off = Self._qvel_offset[i]()
+
+                @parameter
+                for k in range(J.NQ):
+                    var qpos = data.qpos[qp_off + k]
+                    var qvel = data.qvel[qv_off + k]
+                    if qpos < Scalar[DTYPE](J.RANGE_MIN):
+                        data.qpos[qp_off + k] = Scalar[DTYPE](J.RANGE_MIN)
+                        if qvel < Scalar[DTYPE](0):
+                            data.qvel[qv_off + k] = Scalar[DTYPE](0)
+                    elif qpos > Scalar[DTYPE](J.RANGE_MAX):
+                        data.qpos[qp_off + k] = Scalar[DTYPE](J.RANGE_MAX)
+                        if qvel > Scalar[DTYPE](0):
+                            data.qvel[qv_off + k] = Scalar[DTYPE](0)
+
+    # =========================================================================
+    # GPU Operations — inline per-env (called from inside kernels)
+    # =========================================================================
+
+    @always_inline
+    @staticmethod
+    fn extract_obs_gpu[
+        GDTYPE: DType,
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        OBS_DIM: Int,
+    ](
+        states: LayoutTensor[
+            GDTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ],
+        obs: LayoutTensor[
+            GDTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+        ],
+        env: Int,
+    ):
+        """Extract observation for a single env on GPU."""
+        comptime NQ_VAL = Self._sum_nq()
+        comptime NV_VAL = Self._sum_nv()
+        comptime QPOS_OFF = qpos_offset[NQ_VAL, NV_VAL]()
+        comptime QVEL_OFF = qvel_offset[NQ_VAL, NV_VAL]()
+
+        var obs_idx = 0
+
+        # Included qpos
+        @parameter
+        for i in range(Self.N):
+            comptime J = Self.joint_types[i]
+
+            @parameter
+            if not J.EXCLUDE_OBS_QPOS:
+                comptime offset = Self._qpos_offset[i]()
+
+                @parameter
+                for k in range(J.NQ):
+                    obs[env, obs_idx] = states[env, QPOS_OFF + offset + k]
+                    obs_idx += 1
+
+        # Included qvel
+        @parameter
+        for i in range(Self.N):
+            comptime J = Self.joint_types[i]
+
+            @parameter
+            if not J.EXCLUDE_OBS_QVEL:
+                comptime offset = Self._qvel_offset[i]()
+
+                @parameter
+                for k in range(J.NV):
+                    obs[env, obs_idx] = states[env, QVEL_OFF + offset + k]
+                    obs_idx += 1
+
+    @always_inline
+    @staticmethod
+    fn apply_actions_gpu[
+        GDTYPE: DType,
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        ACTION_DIM: Int,
+    ](
+        states: LayoutTensor[
+            GDTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ],
+        actions: LayoutTensor[
+            GDTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+        ],
+        env: Int,
+    ):
+        """Apply actions for a single env on GPU."""
+        comptime NQ_VAL = Self._sum_nq()
+        comptime NV_VAL = Self._sum_nv()
+        comptime QFRC_OFF = qfrc_offset[NQ_VAL, NV_VAL]()
+
+        var act_idx = 0
+
+        @parameter
+        for i in range(Self.N):
+            comptime J = Self.joint_types[i]
+
+            @parameter
+            if J.IS_ACTUATED:
+                comptime offset = Self._qvel_offset[i]()
+
+                @parameter
+                for k in range(J.NV):
+                    var a = actions[env, act_idx]
+                    if a > Scalar[GDTYPE](1.0):
+                        a = Scalar[GDTYPE](1.0)
+                    elif a < Scalar[GDTYPE](-1.0):
+                        a = Scalar[GDTYPE](-1.0)
+                    states[env, QFRC_OFF + offset + k] = a * Scalar[GDTYPE](
+                        J.TAU_LIMIT
+                    )
+                    act_idx += 1
+
+    @always_inline
+    @staticmethod
+    fn enforce_limits_gpu[
+        GDTYPE: DType,
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+    ](
+        states: LayoutTensor[
+            GDTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ],
+        env: Int,
+    ):
+        """Enforce joint limits for a single env on GPU."""
+        comptime NQ_VAL = Self._sum_nq()
+        comptime NV_VAL = Self._sum_nv()
+        comptime QPOS_OFF = qpos_offset[NQ_VAL, NV_VAL]()
+        comptime QVEL_OFF = qvel_offset[NQ_VAL, NV_VAL]()
+
+        @parameter
+        for i in range(Self.N):
+            comptime J = Self.joint_types[i]
+
+            @parameter
+            if J.HAS_LIMITS:
+                comptime qp_off = Self._qpos_offset[i]()
+                comptime qv_off = Self._qvel_offset[i]()
+
+                @parameter
+                for k in range(J.NQ):
+                    var qpos = states[env, QPOS_OFF + qp_off + k]
+                    if qpos < Scalar[GDTYPE](J.RANGE_MIN):
+                        states[env, QPOS_OFF + qp_off + k] = Scalar[GDTYPE](
+                            J.RANGE_MIN
+                        )
+                        var qvel = states[env, QVEL_OFF + qv_off + k]
+                        if qvel < Scalar[GDTYPE](0):
+                            states[env, QVEL_OFF + qv_off + k] = Scalar[GDTYPE](
+                                0
+                            )
+                    elif qpos > Scalar[GDTYPE](J.RANGE_MAX):
+                        states[env, QPOS_OFF + qp_off + k] = Scalar[GDTYPE](
+                            J.RANGE_MAX
+                        )
+                        var qvel = states[env, QVEL_OFF + qv_off + k]
+                        if qvel > Scalar[GDTYPE](0):
+                            states[env, QVEL_OFF + qv_off + k] = Scalar[GDTYPE](
+                                0
+                            )
+
+    @always_inline
+    @staticmethod
+    fn reset_env_gpu[
+        GDTYPE: DType,
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+    ](
+        states: LayoutTensor[
+            GDTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ],
+        env: Int,
+        noise_scale: Scalar[GDTYPE],
+        seed: Int,
+    ):
+        """Reset a single env on GPU with random noise.
+
+        Sets qpos = INIT_QPOS + noise, qvel = noise, qacc/qfrc = 0.
+        """
+        comptime NQ_VAL = Self._sum_nq()
+        comptime NV_VAL = Self._sum_nv()
+        comptime QPOS_OFF = qpos_offset[NQ_VAL, NV_VAL]()
+        comptime QVEL_OFF = qvel_offset[NQ_VAL, NV_VAL]()
+        comptime QACC_OFF = qacc_offset[NQ_VAL, NV_VAL]()
+        comptime QFRC_OFF = qfrc_offset[NQ_VAL, NV_VAL]()
+
+        # Create RNG with unique seed per environment
+        var rng = PhiloxRandom(seed=seed * 2654435761 + env * 12345, offset=0)
+
+        # Generate noise batches (4 values at a time from Philox)
+        # We need NQ values for qpos + NV values for qvel
+        # Generate enough batches to cover all values
+        comptime TOTAL_VALS = NQ_VAL + NV_VAL
+        comptime NUM_BATCHES = (TOTAL_VALS + 3) // 4
+
+        var rand_vals = InlineArray[Scalar[DType.float32], NUM_BATCHES * 4](
+            fill=Scalar[DType.float32](0)
+        )
+        for b in range(NUM_BATCHES):
+            var batch = rng.step_uniform()
+            rand_vals[b * 4 + 0] = batch[0]
+            rand_vals[b * 4 + 1] = batch[1]
+            rand_vals[b * 4 + 2] = batch[2]
+            rand_vals[b * 4 + 3] = batch[3]
+
+        # Reset qpos with noise
+        @parameter
+        for i in range(Self.N):
+            comptime J = Self.joint_types[i]
+            comptime offset = Self._qpos_offset[i]()
+
+            @parameter
+            for k in range(J.NQ):
+                var noise = (
+                    Scalar[GDTYPE](rand_vals[offset + k] * 2.0 - 1.0)
+                    * noise_scale
+                )
+                states[env, QPOS_OFF + offset + k] = Scalar[GDTYPE](
+                    J.INIT_QPOS
+                ) + noise
+
+        # Reset qvel with noise
+        @parameter
+        for i in range(Self.N):
+            comptime J = Self.joint_types[i]
+            comptime offset = Self._qvel_offset[i]()
+
+            @parameter
+            for k in range(J.NV):
+                var noise = (
+                    Scalar[GDTYPE](rand_vals[NQ_VAL + offset + k] * 2.0 - 1.0)
+                    * noise_scale
+                )
+                states[env, QVEL_OFF + offset + k] = noise
+
+        # Reset qacc, qfrc to zero
+        for i in range(NV_VAL):
+            states[env, QACC_OFF + i] = Scalar[GDTYPE](0.0)
+            states[env, QFRC_OFF + i] = Scalar[GDTYPE](0.0)
+
+    # =========================================================================
+    # GPU Operations — kernel launchers
+    # =========================================================================
+
+    @staticmethod
+    fn extract_obs_kernel_gpu[
+        GDTYPE: DType,
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        OBS_DIM: Int,
+    ](
+        ctx: DeviceContext,
+        states_buf: DeviceBuffer[GDTYPE],
+        mut obs_buf: DeviceBuffer[GDTYPE],
+    ) raises:
+        """Launch kernel to extract observations for all envs."""
+        var states = LayoutTensor[
+            GDTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ](states_buf.unsafe_ptr())
+        var obs = LayoutTensor[
+            GDTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+        ](obs_buf.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
+
+        @always_inline
+        fn kernel(
+            states: LayoutTensor[
+                GDTYPE,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                MutAnyOrigin,
+            ],
+            obs: LayoutTensor[
+                GDTYPE,
+                Layout.row_major(BATCH_SIZE, OBS_DIM),
+                MutAnyOrigin,
+            ],
+        ):
+            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if env >= BATCH_SIZE:
+                return
+            Self.extract_obs_gpu[GDTYPE, BATCH_SIZE, STATE_SIZE, OBS_DIM](
+                states, obs, env
+            )
+
+        ctx.enqueue_function[kernel, kernel](
+            states,
+            obs,
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+    @staticmethod
+    fn apply_actions_kernel_gpu[
+        GDTYPE: DType,
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        ACTION_DIM: Int,
+    ](
+        ctx: DeviceContext,
+        mut states_buf: DeviceBuffer[GDTYPE],
+        actions_buf: DeviceBuffer[GDTYPE],
+    ) raises:
+        """Launch kernel to apply actions for all envs."""
+        var states = LayoutTensor[
+            GDTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ](states_buf.unsafe_ptr())
+        var actions = LayoutTensor[
+            GDTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+        ](actions_buf.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
+
+        @always_inline
+        fn kernel(
+            states: LayoutTensor[
+                GDTYPE,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                MutAnyOrigin,
+            ],
+            actions: LayoutTensor[
+                GDTYPE,
+                Layout.row_major(BATCH_SIZE, ACTION_DIM),
+                MutAnyOrigin,
+            ],
+        ):
+            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if env >= BATCH_SIZE:
+                return
+            Self.apply_actions_gpu[GDTYPE, BATCH_SIZE, STATE_SIZE, ACTION_DIM](
+                states, actions, env
+            )
+
+        ctx.enqueue_function[kernel, kernel](
+            states,
+            actions,
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+    @staticmethod
+    fn enforce_limits_kernel_gpu[
+        GDTYPE: DType,
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+    ](
+        ctx: DeviceContext,
+        mut states_buf: DeviceBuffer[GDTYPE],
+    ) raises:
+        """Launch kernel to enforce joint limits for all envs."""
+        var states = LayoutTensor[
+            GDTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ](states_buf.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
+
+        @always_inline
+        fn kernel(
+            states: LayoutTensor[
+                GDTYPE,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                MutAnyOrigin,
+            ],
+        ):
+            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if env >= BATCH_SIZE:
+                return
+            Self.enforce_limits_gpu[GDTYPE, BATCH_SIZE, STATE_SIZE](states, env)
+
+        ctx.enqueue_function[kernel, kernel](
+            states,
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+    # =========================================================================
+    # Model Setup
+    # =========================================================================
 
     @staticmethod
     fn setup_model[

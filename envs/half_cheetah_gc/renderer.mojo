@@ -13,7 +13,7 @@ from math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
 from render3d import Renderer3D, Camera3D, Color3D
 from core import EnvRenderer3D
 
-from .constants_gc import (
+from .half_cheetah_def import (
     BODY_TORSO,
     BODY_BTHIGH,
     BODY_BSHIN,

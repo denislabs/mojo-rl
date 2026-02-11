@@ -7,7 +7,8 @@ Usage:
     pixi run mojo run examples/half_cheetah_gc_demo.mojo
 """
 
-from envs.half_cheetah_gc import HalfCheetahGC, HalfCheetahGCAction
+from envs.half_cheetah_gc import HalfCheetahGC
+from core import ContAction, ObsState
 from random import random_float64
 
 
@@ -26,9 +27,10 @@ fn main() raises:
     # Reset environment
     var state = env.reset()
     print("\nInitial state:")
-    print("  z_position:", state.z_position)
-    print("  y_angle:", state.y_angle)
-    print("  x_velocity:", state.x_velocity)
+    # obs[0]=rootz, obs[1]=rooty(pitch), obs[8]=rootx_vel
+    print("  z_position:", state[0])
+    print("  y_angle:", state[1])
+    print("  x_velocity:", state[8])
 
     # Try to initialize renderer
     var use_render = False
@@ -53,14 +55,9 @@ fn main() raises:
 
         for step in range(steps_per_episode):
             # Random action in [-1, 1]
-            var action = HalfCheetahGCAction(
-                bthigh=random_float64() * 2.0 - 1.0,
-                bshin=random_float64() * 2.0 - 1.0,
-                bfoot=random_float64() * 2.0 - 1.0,
-                fthigh=random_float64() * 2.0 - 1.0,
-                fshin=random_float64() * 2.0 - 1.0,
-                ffoot=random_float64() * 2.0 - 1.0,
-            )
+            var action = ContAction[6]()
+            for ai in range(6):
+                action[ai] = random_float64() * 2.0 - 1.0
 
             # Step environment
             var result = env.step(action)
@@ -91,7 +88,7 @@ fn main() raises:
                     ": x_pos =",
                     env.get_x_position(),
                     ", x_vel =",
-                    state.x_velocity,
+                    state[8],
                     ", reward =",
                     reward,
                 )
