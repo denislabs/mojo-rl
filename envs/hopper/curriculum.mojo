@@ -13,7 +13,7 @@ Usage:
     Hopper.update_curriculum_gpu(ctx, model_buf, params)
 """
 
-from .constants import HopperConstants
+from .hopper_def import HopperParams
 from core.env_traits import CurriculumScheduler
 
 

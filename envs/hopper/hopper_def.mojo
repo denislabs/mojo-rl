@@ -1,14 +1,46 @@
-"""Hopper body and joint definitions as compile-time BodySpec/JointSpec types.
+"""Hopper as a compile-time robot definition.
 
-Defines 4 bodies and 6 joints matching MuJoCo hopper.xml. Used by
-RobotRenderer for automated rendering. Values match existing
-HopperConstants and hopper.mojo body setup code.
+Defines all 4 bodies and 6 joints as type aliases using BodySpec/JointSpec,
+composed into HopperRobot via RobotDef. Validates that compile-time
+dimensions match the existing environment (NQ=6, NV=6, NBODY=4, NJOINT=6).
+
+Body/joint values match MuJoCo hopper.xml and the existing
+envs/hopper/ implementation.
+
+Also defines HopperParams — the environment-specific parameters
+(physics, reward, termination, curriculum) that are NOT derivable from the
+robot definition. Replaces the former constants.mojo.
 """
 
 from physics3d.robot.body_spec import CapsuleBody
 from physics3d.robot.joint_spec import HingeJoint, SlideJoint
 from physics3d.robot.robot_def import Bodies, Joints, RobotDef
 from render3d import Color3D
+from physics3d.gpu.constants import (
+    state_size,
+    model_size,
+    qpos_offset,
+    qvel_offset,
+    qacc_offset,
+    qfrc_offset,
+    xpos_offset,
+    xquat_offset,
+    xvel_offset,
+    xangvel_offset,
+    contacts_offset,
+    metadata_offset,
+    model_body_offset,
+    model_joint_offset,
+    model_metadata_offset,
+    model_curriculum_offset,
+    MODEL_BODY_SIZE,
+    MODEL_JOINT_SIZE,
+    MODEL_META_SIZE,
+    MODEL_CURRICULUM_SIZE,
+    CONTACT_SIZE,
+    CURRICULUM_IDX_MIN_HEIGHT,
+    CURRICULUM_IDX_MAX_PITCH,
+)
 
 
 # =============================================================================
@@ -155,7 +187,150 @@ comptime HopperRobot = RobotDef[
 
 
 # =============================================================================
-# Body/Joint Index Constants
+# HopperParams — Environment-Specific Parameters
+# =============================================================================
+
+
+struct HopperParams[DTYPE: DType = DType.float64]:
+    """Environment-specific parameters not derivable from the robot definition.
+
+    Replaces the former HopperConstants struct. Everything about body
+    geometry, joint limits, gear ratios, damping, and indices is
+    now in the robot definition (BodySpec/JointSpec).
+
+    Type Parameters:
+        DTYPE: The floating point type for physics constants.
+    """
+
+    # Physics
+    comptime DT: Scalar[Self.DTYPE] = 0.002  # Physics timestep (500 Hz)
+    comptime FRAME_SKIP: Int = 4  # Number of physics steps per env step
+    comptime GRAVITY_Z: Scalar[Self.DTYPE] = -9.81
+    comptime FRICTION: Scalar[Self.DTYPE] = 1.0
+    comptime MAX_CONTACTS: Int = 10
+
+    # Solref/solimp (from hopper.xml)
+    comptime SOLREF_CONTACT_0: Scalar[Self.DTYPE] = 0.02  # timeconst
+    comptime SOLREF_CONTACT_1: Scalar[Self.DTYPE] = 1.0  # dampratio
+    comptime SOLIMP_CONTACT_0: Scalar[Self.DTYPE] = 0.0  # dmin
+    comptime SOLIMP_CONTACT_1: Scalar[Self.DTYPE] = 0.8  # dmax
+    comptime SOLIMP_CONTACT_2: Scalar[Self.DTYPE] = 0.01  # width
+    comptime SOLREF_LIMIT_0: Scalar[Self.DTYPE] = 0.02
+    comptime SOLREF_LIMIT_1: Scalar[Self.DTYPE] = 1.0
+    comptime SOLIMP_LIMIT_0: Scalar[Self.DTYPE] = 0.0
+    comptime SOLIMP_LIMIT_1: Scalar[Self.DTYPE] = 0.8
+    comptime SOLIMP_LIMIT_2: Scalar[Self.DTYPE] = 0.03
+
+    # Reward
+    comptime FORWARD_REWARD_WEIGHT: Scalar[Self.DTYPE] = 1.0
+    comptime CTRL_COST_WEIGHT: Scalar[Self.DTYPE] = 0.001
+    comptime HEALTHY_REWARD: Scalar[Self.DTYPE] = 1.0
+
+    # Termination
+    comptime MIN_HEIGHT: Scalar[Self.DTYPE] = 0.7
+    comptime MAX_PITCH: Scalar[Self.DTYPE] = 0.2  # ~11 deg
+    comptime MAX_STEPS: Int = 1000
+
+    # Curriculum
+    comptime CURRICULUM_INITIAL_MIN_HEIGHT: Scalar[Self.DTYPE] = 0.3
+    comptime CURRICULUM_INITIAL_MAX_PITCH: Scalar[Self.DTYPE] = 1.0
+    comptime CURRICULUM_FINAL_MIN_HEIGHT: Scalar[Self.DTYPE] = 0.7
+    comptime CURRICULUM_FINAL_MAX_PITCH: Scalar[Self.DTYPE] = 0.2
+
+    # Reset
+    comptime RESET_NOISE_SCALE: Scalar[Self.DTYPE] = 0.005
+
+    # Dimensions (derived from robot definition, for convenience)
+    comptime NQ: Int = HopperRobot.NQ
+    comptime NV: Int = HopperRobot.NV
+    comptime NUM_BODIES: Int = HopperRobot.NBODY
+    comptime NUM_JOINTS: Int = HopperRobot.NJOINT
+    comptime OBS_DIM: Int = 11
+    comptime ACTION_DIM: Int = 3
+
+    # Initial height (rootz init_qpos)
+    comptime INITIAL_Z: Scalar[Self.DTYPE] = 1.25
+
+    # Motor
+    comptime TORQUE_LIMIT: Scalar[Self.DTYPE] = 200.0
+
+    # GPU layout sizes
+    comptime STATE_SIZE: Int = state_size[
+        Self.NQ, Self.NV, Self.NUM_BODIES, Self.MAX_CONTACTS
+    ]()
+    comptime MODEL_SIZE: Int = model_size[Self.NUM_BODIES, Self.NUM_JOINTS]()
+
+    # GPU layout helper methods
+    @staticmethod
+    @always_inline
+    fn get_qpos_offset() -> Int:
+        return qpos_offset[Self.NQ, Self.NV]()
+
+    @staticmethod
+    @always_inline
+    fn get_qvel_offset() -> Int:
+        return qvel_offset[Self.NQ, Self.NV]()
+
+    @staticmethod
+    @always_inline
+    fn get_qacc_offset() -> Int:
+        return qacc_offset[Self.NQ, Self.NV]()
+
+    @staticmethod
+    @always_inline
+    fn get_qfrc_offset() -> Int:
+        return qfrc_offset[Self.NQ, Self.NV]()
+
+    @staticmethod
+    @always_inline
+    fn get_xpos_offset() -> Int:
+        return xpos_offset[Self.NQ, Self.NV, Self.NUM_BODIES]()
+
+    @staticmethod
+    @always_inline
+    fn get_xquat_offset() -> Int:
+        return xquat_offset[Self.NQ, Self.NV, Self.NUM_BODIES]()
+
+    @staticmethod
+    @always_inline
+    fn get_metadata_offset() -> Int:
+        return metadata_offset[
+            Self.NQ, Self.NV, Self.NUM_BODIES, Self.MAX_CONTACTS
+        ]()
+
+    @staticmethod
+    @always_inline
+    fn get_model_body_offset(body_idx: Int) -> Int:
+        return model_body_offset(body_idx)
+
+    @staticmethod
+    @always_inline
+    fn get_model_joint_offset(joint_idx: Int) -> Int:
+        return model_joint_offset[Self.NUM_BODIES](joint_idx)
+
+    @staticmethod
+    @always_inline
+    fn get_model_metadata_offset() -> Int:
+        return model_metadata_offset[Self.NUM_BODIES, Self.NUM_JOINTS]()
+
+    @staticmethod
+    @always_inline
+    fn get_model_curriculum_offset() -> Int:
+        return model_curriculum_offset[Self.NUM_BODIES, Self.NUM_JOINTS]()
+
+
+# Convenience type aliases
+comptime HopperParamsCPU = HopperParams[DType.float64]
+comptime HopperParamsGPU = HopperParams[DType.float32]
+
+# Backward-compatibility aliases (old name -> new name)
+comptime HopperConstants = HopperParams
+comptime HopperConstantsCPU = HopperParamsCPU
+comptime HopperConstantsGPU = HopperParamsGPU
+
+
+# =============================================================================
+# Body/Joint Index Constants (for backward compatibility)
 # =============================================================================
 
 comptime BODY_TORSO: Int = 0
@@ -163,4 +338,78 @@ comptime BODY_THIGH: Int = 1
 comptime BODY_LEG: Int = 2
 comptime BODY_FOOT: Int = 3
 
+comptime JOINT_ROOTX: Int = 0
+comptime JOINT_ROOTZ: Int = 1
+comptime JOINT_ROOTY: Int = 2
+comptime JOINT_THIGH: Int = 3
+comptime JOINT_LEG: Int = 4
+comptime JOINT_FOOT: Int = 5
+
+# Body geometry constants for renderer
+comptime TORSO_RADIUS: Float64 = 0.05
+comptime TORSO_HALF_LENGTH: Float64 = 0.2
+comptime THIGH_RADIUS: Float64 = 0.05
+comptime THIGH_HALF_LENGTH: Float64 = 0.225
+comptime LEG_RADIUS: Float64 = 0.04
+comptime LEG_HALF_LENGTH: Float64 = 0.25
+comptime FOOT_RADIUS: Float64 = 0.06
+comptime FOOT_HALF_LENGTH: Float64 = 0.195
+
+# Body mass constants for backward compatibility
+comptime TORSO_MASS: Float64 = 3.53429174
+comptime THIGH_MASS: Float64 = 3.92699082
+comptime LEG_MASS: Float64 = 2.71433605
+comptime FOOT_MASS: Float64 = 5.0893801
+
+# Dimension constants for backward compatibility
+comptime NQ: Int = HopperRobot.NQ
+comptime NV: Int = HopperRobot.NV
+comptime NBODY: Int = HopperRobot.NBODY
+comptime NJOINT: Int = HopperRobot.NJOINT
+comptime MAX_CONTACTS: Int = 10
+comptime OBS_DIM: Int = 11
+comptime ACTION_DIM: Int = 3
 comptime NUM_BODIES: Int = 4
+
+# Physics constants for backward compatibility
+comptime DT: Float64 = 0.002
+comptime FRAME_SKIP: Int = 4
+comptime EFFECTIVE_DT: Float64 = DT * FRAME_SKIP
+comptime GRAVITY_Z: Float64 = -9.81
+comptime GROUND_Z: Float64 = 0.0
+comptime MAX_STEPS: Int = 1000
+comptime INITIAL_Z: Float64 = 1.25
+comptime FRICTION: Float64 = 1.0
+comptime RESTITUTION: Float64 = 0.0
+comptime FORWARD_REWARD_WEIGHT: Float64 = 1.0
+comptime CTRL_COST_WEIGHT: Float64 = 0.001
+comptime HEALTHY_REWARD: Float64 = 1.0
+comptime RESET_NOISE_SCALE: Float64 = 0.005
+comptime TORQUE_LIMIT: Float64 = 200.0
+
+# Joint limits for backward compatibility
+comptime THIGH_JOINT_MIN: Float64 = -2.618
+comptime THIGH_JOINT_MAX: Float64 = 0.0
+comptime LEG_JOINT_MIN: Float64 = -2.618
+comptime LEG_JOINT_MAX: Float64 = 0.0
+comptime FOOT_JOINT_MIN: Float64 = -0.785
+comptime FOOT_JOINT_MAX: Float64 = 0.785
+
+
+# =============================================================================
+# Static Assertions — verify dimensions match existing environment
+# =============================================================================
+
+
+fn _static_assertions():
+    constrained[HopperRobot.NQ == 6, "Hopper NQ must be 6"]()
+    constrained[HopperRobot.NV == 6, "Hopper NV must be 6"]()
+    constrained[HopperRobot.NBODY == 4, "Hopper NBODY must be 4"]()
+    constrained[HopperRobot.NJOINT == 6, "Hopper NJOINT must be 6"]()
+    constrained[
+        HopperJoints._obs_dim() == 11, "Hopper OBS_DIM must be 11"
+    ]()
+    constrained[
+        HopperJoints._action_dim() == 3,
+        "Hopper ACTION_DIM must be 3",
+    ]()

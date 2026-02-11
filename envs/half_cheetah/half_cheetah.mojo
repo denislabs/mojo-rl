@@ -431,39 +431,6 @@ struct HalfCheetah[
     fn get_x_velocity(self) -> Scalar[Self.DTYPE]:
         return self.data.qvel[JOINT_ROOTX]
 
-    fn get_torso_position(
-        self,
-    ) -> Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]]:
-        return (
-            self.data.xpos[BODY_TORSO * 3 + 0],
-            self.data.xpos[BODY_TORSO * 3 + 1],
-            self.data.xpos[BODY_TORSO * 3 + 2],
-        )
-
-    fn get_body_position(
-        self, body_id: Int
-    ) -> Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]]:
-        return (
-            self.data.xpos[body_id * 3 + 0],
-            self.data.xpos[body_id * 3 + 1],
-            self.data.xpos[body_id * 3 + 2],
-        )
-
-    fn get_body_quaternion(
-        self, body_id: Int
-    ) -> Tuple[
-        Scalar[Self.DTYPE],
-        Scalar[Self.DTYPE],
-        Scalar[Self.DTYPE],
-        Scalar[Self.DTYPE],
-    ]:
-        return (
-            self.data.xquat[body_id * 4 + 0],
-            self.data.xquat[body_id * 4 + 1],
-            self.data.xquat[body_id * 4 + 2],
-            self.data.xquat[body_id * 4 + 3],
-        )
-
     fn get_current_step(self) -> Int:
         return self.current_step
 
@@ -517,12 +484,12 @@ struct HalfCheetah[
         var quaternions = List[Quat](capacity=Self.NUM_BODIES)
 
         for i in range(Self.NUM_BODIES):
-            var pos = self.get_body_position(i)
+            var pos = self.data.get_body_position(i)
             positions.append(
                 Vec3(Float64(pos[0]), Float64(pos[1]), Float64(pos[2]))
             )
 
-            var quat = self.get_body_quaternion(i)
+            var quat = self.data.get_body_quaternion(i)
             quaternions.append(
                 Quat(
                     Float64(quat[3]),

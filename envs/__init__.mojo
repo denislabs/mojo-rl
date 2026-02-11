@@ -28,12 +28,7 @@ from .car_racing import (
     CarRacingState,
     CarRacingAction,
 )
-from .hopper import (
-    Hopper,
-    HopperState,
-    HopperAction,
-    HopperConstants,
-)
+from .hopper import Hopper
 from .half_cheetah import (
     HalfCheetah,
     HalfCheetahRenderer,

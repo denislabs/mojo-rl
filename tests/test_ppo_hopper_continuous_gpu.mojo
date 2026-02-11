@@ -24,7 +24,7 @@ from gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOContinuousAgent
 from envs.hopper import Hopper, HopperCurriculum
-from envs.hopper.constants import HopperConstantsGPU
+from envs.hopper.hopper_def import HopperConstantsGPU
 
 
 # =============================================================================

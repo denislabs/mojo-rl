@@ -10,13 +10,23 @@ from gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from envs.hopper import Hopper
-from envs.hopper.constants import HopperConstantsGPU
+from envs.hopper.hopper_def import HopperConstantsGPU
+from core import ContAction
 from deep_rl import dtype as gpu_dtype
 from physics3d.gpu.constants import (
     state_size,
     metadata_offset,
     META_IDX_STEP_COUNT,
 )
+
+
+fn _make_test_action() -> ContAction[3]:
+    """Create test action (0.8, 0.5, -0.8)."""
+    var a = ContAction[3]()
+    a[0] = 0.8
+    a[1] = 0.5
+    a[2] = -0.8
+    return a^
 
 
 fn main() raises:
@@ -69,7 +79,7 @@ fn main() raises:
         # Initialize actions to zero (safe action)
         var actions_host = InlineArray[
             Scalar[gpu_dtype], BATCH_SIZE * ACTION_DIM
-        ](Scalar[gpu_dtype](0.0))
+        ](fill=Scalar[gpu_dtype](0.0))
         ctx.enqueue_copy(actions_buf, actions_host.unsafe_ptr())
 
         # Run 25 steps with MAX_STEPS=10, using selective reset
@@ -248,7 +258,7 @@ fn main() raises:
         var cpu_done_with_health = -1
         for step in range(100):
             var result = env_with_health.step(
-                Hopper[DType.float64].ActionType(0.8, 0.5, -0.8)
+                _make_test_action()
             )
             if result[2]:  # done
                 cpu_done_with_health = step + 1
@@ -269,7 +279,7 @@ fn main() raises:
         var cpu_done_no_health = -1
         for step in range(100):
             var result = env_no_health.step(
-                Hopper[DType.float64].ActionType(0.8, 0.5, -0.8)
+                _make_test_action()
             )
             if result[2]:  # done
                 cpu_done_no_health = step + 1
