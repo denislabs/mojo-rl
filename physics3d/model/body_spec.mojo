@@ -1,4 +1,4 @@
-"""BodySpec trait and concrete body types for compile-time robot definitions.
+"""BodySpec trait and concrete body types for compile-time model definitions.
 
 Defines body geometry, mass, kinematic tree, and collision properties as
 compile-time constants. Inertia is auto-computed from geometry and mass.
@@ -16,7 +16,7 @@ from render3d import Color3D
 
 
 trait BodySpec:
-    """Compile-time body specification for physics3d robot definitions.
+    """Compile-time body specification for physics3d model definitions.
 
     All properties are compile-time constants matching Model body fields
     and GPU buffer layout. Inertia is auto-computed from geometry + mass.

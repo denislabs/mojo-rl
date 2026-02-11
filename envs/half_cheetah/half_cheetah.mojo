@@ -6,7 +6,7 @@ This implementation uses the physics3d Generalized Coordinates (GC) engine:
 - Joint-space state: qpos (positions), qvel (velocities)
 - Forward kinematics computes body positions (xpos, xquat)
 
-The Half Cheetah is a 2D planar robot (movement in XZ plane, rotation around Y axis)
+The Half Cheetah is a 2D planar model (movement in XZ plane, rotation around Y axis)
 consisting of a torso with two leg chains (front and back) and a head, totaling:
 - 8 bodies: torso, bthigh, bshin, bfoot, fthigh, fshin, ffoot, head
 - 10 joints: 3 root DOFs (unactuated) + 6 leg joints (actuated) + 1 head (fixed)
@@ -63,6 +63,7 @@ from physics3d.gpu.constants import (
 )
 
 from .half_cheetah_def import (
+    HalfCheetahWorldBody,
     HalfCheetahBodies,
     HalfCheetahJoints,
     HalfCheetahParams,
@@ -80,7 +81,6 @@ from .half_cheetah_def import (
     DT,
     FRAME_SKIP,
     GRAVITY_Z,
-    GROUND_Z,
     FORWARD_REWARD_WEIGHT,
     CTRL_COST_WEIGHT,
     RESET_NOISE_SCALE,
@@ -111,7 +111,7 @@ struct HalfCheetah[
 
     Uses generic ObsState[17] and ContAction[6] types instead of per-env structs.
     Observation extraction, action application, and joint limit enforcement
-    are all handled by HalfCheetahJoints methods from the robot definition.
+    are all handled by HalfCheetahJoints methods from the model definition.
     """
 
     # Trait type aliases
@@ -182,7 +182,6 @@ struct HalfCheetah[
         max_steps: Int = 1000,
         frame_skip: Int = 5,
         timestep: Scalar[Self.DTYPE] = 0.002,
-        friction: Scalar[Self.DTYPE] = 0.9,
     ):
         """Initialize the HalfCheetah environment."""
         self.max_steps = max_steps
@@ -203,8 +202,6 @@ struct HalfCheetah[
         ](
             gravity_z=Scalar[Self.DTYPE](GRAVITY_Z),
             timestep=timestep,
-            ground_z=Scalar[Self.DTYPE](GROUND_Z),
-            friction=friction,
         )
 
         # Set solref/solimp from MuJoCo half_cheetah.xml
@@ -230,7 +227,8 @@ struct HalfCheetah[
             Self.MAX_CONTACTS,
         ]()
 
-        # Configure bodies and joints from compile-time robot definition
+        # Configure worldbody, bodies, and joints from compile-time model definition
+        HalfCheetahWorldBody.setup_model(self.model)
         HalfCheetahBodies.setup_model(self.model)
         HalfCheetahJoints.setup_model(self.model)
 
@@ -832,8 +830,6 @@ struct HalfCheetah[
         ](
             gravity_z=P.GRAVITY_Z,
             timestep=P.DT,
-            ground_z=Scalar[gpu_dtype](0.0),
-            friction=P.FRICTION,
         )
 
         model.solref_contact[0] = P.SOLREF_CONTACT_0
@@ -847,6 +843,7 @@ struct HalfCheetah[
         model.solimp_limit[1] = P.SOLIMP_LIMIT_1
         model.solimp_limit[2] = P.SOLIMP_LIMIT_2
 
+        HalfCheetahWorldBody.setup_model(model)
         HalfCheetahBodies.setup_model(model)
         HalfCheetahJoints.setup_model(model)
 

@@ -1,4 +1,4 @@
-"""JointSpec trait and concrete joint types for compile-time robot definitions.
+"""JointSpec trait and concrete joint types for compile-time model definitions.
 
 Defines joint type, DOF dimensions, anchor, axis, limits, and dynamics
 as compile-time constants. Joint types reuse constants from
@@ -14,7 +14,7 @@ from ..joint_types import JNT_HINGE, JNT_SLIDE
 
 
 trait JointSpec(TrivialRegisterPassable):
-    """Compile-time joint specification for physics3d robot definitions.
+    """Compile-time joint specification for physics3d model definitions.
 
     Properties match JointDef fields and GPU buffer layout.
     """
@@ -82,7 +82,7 @@ struct HingeJoint[
 ](JointSpec):
     """Revolute (hinge) joint: 1 DOF rotation around axis.
 
-    Default axis is Y (into-screen for 2D planar robots like HalfCheetah).
+    Default axis is Y (into-screen for 2D planar models like HalfCheetah).
     """
 
     comptime JNT_TYPE: Int = JNT_HINGE

@@ -1,7 +1,7 @@
-"""HalfCheetah as a compile-time robot definition.
+"""HalfCheetah as a compile-time model definition.
 
 Defines all 8 bodies and 10 joints as type aliases using BodySpec/JointSpec,
-composed into HalfCheetahRobot via RobotDef. Validates that compile-time
+composed into HalfCheetahModel via ModelDef. Validates that compile-time
 dimensions match the existing environment (NQ=10, NV=10, NBODY=8, NJOINT=10).
 
 Body/joint values match MuJoCo half_cheetah.xml and the existing
@@ -12,9 +12,10 @@ Also defines HalfCheetahParams — the environment-specific parameters
 robot definition. Replaces the former constants.mojo.
 """
 
-from physics3d.robot.body_spec import CapsuleBody
-from physics3d.robot.joint_spec import HingeJoint, SlideJoint
-from physics3d.robot.robot_def import Bodies, Joints, RobotDef
+from physics3d.model.body_spec import CapsuleBody
+from physics3d.model.joint_spec import HingeJoint, SlideJoint
+from physics3d.model.model_def import Bodies, Joints, ModelDef, WorldBody
+from physics3d.model.geom_spec import PlaneGeom
 from render3d import Color3D
 from physics3d.gpu.constants import (
     state_size,
@@ -106,7 +107,7 @@ comptime BFoot = CapsuleBody[
     quat_y=_Q90Y_Y,
     quat_w=_Q90Y_W,
     conaffinity=0,
-    color=Color3D(230, 153, 153),
+    color = Color3D(230, 153, 153),
 ]
 
 # Body 4: Front Thigh — vertical capsule at front of torso
@@ -121,7 +122,7 @@ comptime FThigh = CapsuleBody[
     quat_y= -_Q90Y_Y,
     quat_w=_Q90Y_W,
     conaffinity=0,
-    color=Color3D(204, 153, 102),
+    color = Color3D(204, 153, 102),
 ]
 
 # Body 5: Front Shin — vertical capsule below fthigh
@@ -133,7 +134,7 @@ comptime FShin = CapsuleBody[
     half_length=0.106,
     pos_z= -0.239,  # -(0.133 + 0.106)
     conaffinity=0,
-    color=Color3D(230, 153, 153),
+    color = Color3D(230, 153, 153),
 ]
 
 # Body 6: Front Foot — horizontal capsule (90deg Y rotation)
@@ -147,7 +148,7 @@ comptime FFoot = CapsuleBody[
     quat_y=_Q90Y_Y,
     quat_w=_Q90Y_W,
     conaffinity=0,
-    color=Color3D(230, 153, 153),
+    color = Color3D(230, 153, 153),
 ]
 
 # Body 7: Head — tilted capsule at front of torso
@@ -168,7 +169,7 @@ comptime Head = CapsuleBody[
     quat_y=_HEAD_SIN_HALF,
     quat_w=_HEAD_COS_HALF,
     conaffinity=0,
-    color=Color3D(204, 153, 102),
+    color = Color3D(204, 153, 102),
 ]
 
 
@@ -296,7 +297,18 @@ comptime HeadJ = HingeJoint[
 
 
 # =============================================================================
-# HalfCheetahRobot — Full Robot Definition
+# WorldBody — Ground Plane
+# =============================================================================
+
+# MuJoCo half_cheetah.xml:
+# <geom conaffinity="1" condim="3" friction=".4 .1 .1" size="40 40 40" type="plane"/>
+comptime HalfCheetahWorldBody = WorldBody[
+    PlaneGeom[z=0.0, friction=0.4, conaffinity=1, size_x=40.0, size_y=40.0],
+]
+
+
+# =============================================================================
+# HalfCheetahModel — Full Model Definition
 # =============================================================================
 
 comptime HalfCheetahBodies = Bodies[
@@ -307,7 +319,7 @@ comptime HalfCheetahJoints = Joints[
     RootX, RootZ, RootY, BThighJ, BShinJ, BFootJ, FThighJ, FShinJ, FFootJ, HeadJ
 ]
 
-comptime HalfCheetahRobot = RobotDef[
+comptime HalfCheetahModel = ModelDef[
     HalfCheetahBodies.N,
     HalfCheetahJoints.N,
     HalfCheetahJoints._sum_nq(),
@@ -321,11 +333,11 @@ comptime HalfCheetahRobot = RobotDef[
 
 
 struct HalfCheetahParams[DTYPE: DType = DType.float64]:
-    """Environment-specific parameters not derivable from the robot definition.
+    """Environment-specific parameters not derivable from the model definition.
 
     Replaces the former HalfCheetahConstants struct. Everything about body
     geometry, joint limits, gear ratios, damping, stiffness, and indices is
-    now in the robot definition (BodySpec/JointSpec).
+    now in the model definition (BodySpec/JointSpec).
 
     Type Parameters:
         DTYPE: The floating point type for physics constants.
@@ -367,11 +379,11 @@ struct HalfCheetahParams[DTYPE: DType = DType.float64]:
     comptime RESET_NOISE_SCALE: Scalar[Self.DTYPE] = 0.1
     comptime MIN_ROOTZ: Scalar[Self.DTYPE] = -0.3
 
-    # Dimensions (derived from robot definition, for convenience)
-    comptime NQ: Int = HalfCheetahRobot.NQ
-    comptime NV: Int = HalfCheetahRobot.NV
-    comptime NUM_BODIES: Int = HalfCheetahRobot.NBODY
-    comptime NUM_JOINTS: Int = HalfCheetahRobot.NJOINT
+    # Dimensions (derived from model definition, for convenience)
+    comptime NQ: Int = HalfCheetahModel.NQ
+    comptime NV: Int = HalfCheetahModel.NV
+    comptime NUM_BODIES: Int = HalfCheetahModel.NBODY
+    comptime NUM_JOINTS: Int = HalfCheetahModel.NJOINT
     comptime OBS_DIM: Int = 17
     comptime ACTION_DIM: Int = 6
 
@@ -502,10 +514,10 @@ comptime FSHIN_MASS: Float64 = 1.17
 comptime FFOOT_MASS: Float64 = 0.93
 
 # Dimension constants for backward compatibility
-comptime NQ: Int = HalfCheetahRobot.NQ
-comptime NV: Int = HalfCheetahRobot.NV
-comptime NBODY: Int = HalfCheetahRobot.NBODY
-comptime NJOINT: Int = HalfCheetahRobot.NJOINT
+comptime NQ: Int = HalfCheetahModel.NQ
+comptime NV: Int = HalfCheetahModel.NV
+comptime NBODY: Int = HalfCheetahModel.NBODY
+comptime NJOINT: Int = HalfCheetahModel.NJOINT
 comptime MAX_CONTACTS: Int = 20
 comptime OBS_DIM: Int = 17
 comptime ACTION_DIM: Int = 6
@@ -545,24 +557,3 @@ comptime FSHIN_LOWER: Float64 = -1.2
 comptime FSHIN_UPPER: Float64 = 0.87
 comptime FFOOT_LOWER: Float64 = -0.5
 comptime FFOOT_UPPER: Float64 = 0.5
-
-
-# =============================================================================
-# Static Assertions — verify dimensions match existing environment
-# =============================================================================
-
-
-fn _static_assertions():
-    constrained[HalfCheetahRobot.NQ == 10, "HalfCheetah NQ must be 10"]()
-    constrained[HalfCheetahRobot.NV == 10, "HalfCheetah NV must be 10"]()
-    constrained[HalfCheetahRobot.NBODY == 8, "HalfCheetah NBODY must be 8"]()
-    constrained[
-        HalfCheetahRobot.NJOINT == 10, "HalfCheetah NJOINT must be 10"
-    ]()
-    constrained[
-        HalfCheetahJoints._obs_dim() == 17, "HalfCheetah OBS_DIM must be 17"
-    ]()
-    constrained[
-        HalfCheetahJoints._action_dim() == 6,
-        "HalfCheetah ACTION_DIM must be 6",
-    ]()

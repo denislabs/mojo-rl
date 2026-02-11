@@ -8,7 +8,7 @@ This implementation uses the physics3d Generalized Coordinates (GC) engine:
 
 Uses generic ObsState[11] and ContAction[3] types instead of per-env structs.
 Observation extraction, action application, and joint limit enforcement
-are all handled by HopperJoints methods from the robot definition.
+are all handled by HopperJoints methods from the model definition.
 """
 
 from collections import InlineArray
@@ -60,6 +60,7 @@ from physics3d.gpu.constants import (
 )
 
 from .hopper_def import (
+    HopperWorldBody,
     HopperBodies,
     HopperJoints,
     HopperParams,
@@ -77,7 +78,6 @@ from .hopper_def import (
     DT,
     FRAME_SKIP,
     GRAVITY_Z,
-    GROUND_Z,
     FORWARD_REWARD_WEIGHT,
     CTRL_COST_WEIGHT,
     HEALTHY_REWARD,
@@ -109,7 +109,7 @@ struct Hopper[
 
     Uses generic ObsState[11] and ContAction[3] types instead of per-env structs.
     Observation extraction, action application, and joint limit enforcement
-    are all handled by HopperJoints methods from the robot definition.
+    are all handled by HopperJoints methods from the model definition.
     """
 
     # Trait type aliases
@@ -180,7 +180,6 @@ struct Hopper[
         max_steps: Int = 1000,
         frame_skip: Int = 4,
         timestep: Scalar[Self.DTYPE] = 0.002,
-        friction: Scalar[Self.DTYPE] = 0.5,
     ):
         """Initialize the Hopper environment."""
         self.max_steps = max_steps
@@ -201,8 +200,6 @@ struct Hopper[
         ](
             gravity_z=Scalar[Self.DTYPE](GRAVITY_Z),
             timestep=timestep,
-            ground_z=Scalar[Self.DTYPE](GROUND_Z),
-            friction=friction,
         )
 
         # Set solref/solimp from MuJoCo hopper.xml
@@ -228,7 +225,8 @@ struct Hopper[
             Self.MAX_CONTACTS,
         ]()
 
-        # Configure bodies and joints from compile-time robot definition
+        # Configure worldbody, bodies, and joints from compile-time model definition
+        HopperWorldBody.setup_model(self.model)
         HopperBodies.setup_model(self.model)
         HopperJoints.setup_model(self.model)
 
@@ -915,8 +913,6 @@ struct Hopper[
         ](
             gravity_z=P.GRAVITY_Z,
             timestep=P.DT,
-            ground_z=Scalar[gpu_dtype](0.0),
-            friction=P.FRICTION,
         )
 
         model.solref_contact[0] = P.SOLREF_CONTACT_0
@@ -930,6 +926,7 @@ struct Hopper[
         model.solimp_limit[1] = P.SOLIMP_LIMIT_1
         model.solimp_limit[2] = P.SOLIMP_LIMIT_2
 
+        HopperWorldBody.setup_model(model)
         HopperBodies.setup_model(model)
         HopperJoints.setup_model(model)
 

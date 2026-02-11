@@ -1,7 +1,7 @@
-"""HalfCheetah Renderer — thin wrapper around generic RobotRenderer.
+"""HalfCheetah Renderer — thin wrapper around generic ModelRenderer.
 
 Provides visualization of the HalfCheetah environment with color-coded
-body parts. All rendering logic is handled by RobotRenderer, which
+body parts. All rendering logic is handled by ModelRenderer, which
 reads geometry (RADIUS, HALF_LENGTH) from BodySpec at compile time.
 
 Implements EnvRenderer3D trait for integration with evaluation code.
@@ -10,7 +10,7 @@ Implements EnvRenderer3D trait for integration with evaluation code.
 from math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
 from render3d import Color3D
 from core import EnvRenderer3D
-from physics3d.robot.robot_renderer import RobotRenderer
+from physics3d.model.model_renderer import ModelRenderer
 
 from .half_cheetah_def import (
     Torso,
@@ -35,10 +35,10 @@ comptime Quat = QuatGeneric[DType.float64]
 struct HalfCheetahRenderer(EnvRenderer3D, Movable):
     """Renderer for HalfCheetah environment.
 
-    Thin wrapper around RobotRenderer parameterized by HalfCheetah body types.
+    Thin wrapper around ModelRenderer parameterized by HalfCheetah body types.
     """
 
-    var inner: RobotRenderer[
+    var inner: ModelRenderer[
         Torso, BThigh, BShin, BFoot, FThigh, FShin, FFoot, Head
     ]
 
@@ -49,7 +49,7 @@ struct HalfCheetahRenderer(EnvRenderer3D, Movable):
         follow_cheetah: Bool = True,
         show_velocity: Bool = True,
     ) raises:
-        self.inner = RobotRenderer[
+        self.inner = ModelRenderer[
             Torso, BThigh, BShin, BFoot, FThigh, FShin, FFoot, Head
         ](
             width=width,

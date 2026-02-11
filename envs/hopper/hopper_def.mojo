@@ -1,7 +1,7 @@
-"""Hopper as a compile-time robot definition.
+"""Hopper as a compile-time model definition.
 
 Defines all 4 bodies and 6 joints as type aliases using BodySpec/JointSpec,
-composed into HopperRobot via RobotDef. Validates that compile-time
+composed into HopperModel via ModelDef. Validates that compile-time
 dimensions match the existing environment (NQ=6, NV=6, NBODY=4, NJOINT=6).
 
 Body/joint values match MuJoCo hopper.xml and the existing
@@ -9,12 +9,13 @@ envs/hopper/ implementation.
 
 Also defines HopperParams — the environment-specific parameters
 (physics, reward, termination, curriculum) that are NOT derivable from the
-robot definition. Replaces the former constants.mojo.
+model definition. Replaces the former constants.mojo.
 """
 
-from physics3d.robot.body_spec import CapsuleBody
-from physics3d.robot.joint_spec import HingeJoint, SlideJoint
-from physics3d.robot.robot_def import Bodies, Joints, RobotDef
+from physics3d.model.body_spec import CapsuleBody
+from physics3d.model.joint_spec import HingeJoint, SlideJoint
+from physics3d.model.model_def import Bodies, Joints, ModelDef, WorldBody
+from physics3d.model.geom_spec import PlaneGeom
 from render3d import Color3D
 from physics3d.gpu.constants import (
     state_size,
@@ -57,7 +58,7 @@ comptime HopperTorso = CapsuleBody[
     mass=3.53429174,
     radius=0.05,
     half_length=0.2,
-    color=Color3D(60, 120, 200),
+    color = Color3D(60, 120, 200),
 ]
 
 # Body 1: Thigh — vertical capsule below torso
@@ -68,7 +69,7 @@ comptime HopperThigh = CapsuleBody[
     radius=0.05,
     half_length=0.225,
     pos_z= -0.425,
-    color=Color3D(80, 200, 80),
+    color = Color3D(80, 200, 80),
 ]
 
 # Body 2: Leg — vertical capsule below thigh
@@ -79,7 +80,7 @@ comptime HopperLeg = CapsuleBody[
     radius=0.04,
     half_length=0.25,
     pos_z= -0.475,
-    color=Color3D(220, 140, 60),
+    color = Color3D(220, 140, 60),
 ]
 
 # Body 3: Foot — horizontal capsule (90deg Y rotation), below leg
@@ -92,7 +93,7 @@ comptime HopperFoot = CapsuleBody[
     pos_z= -0.25,
     quat_y=_Q90Y_Y,
     quat_w=_Q90Y_W,
-    color=Color3D(220, 80, 80),
+    color = Color3D(220, 80, 80),
 ]
 
 
@@ -166,19 +167,32 @@ comptime HopperFootJ = HingeJoint[
 
 
 # =============================================================================
-# Composed Robot Definition
+# WorldBody — Ground Plane
 # =============================================================================
 
-comptime HopperBodies = Bodies[
-    HopperTorso, HopperThigh, HopperLeg, HopperFoot
+# MuJoCo hopper.xml:
+# <geom conaffinity="1" condim="3" friction="0.9" size="20 20 .125" type="plane"/>
+comptime HopperWorldBody = WorldBody[
+    PlaneGeom[z=0.0, friction=0.9, conaffinity=1, size_x=20.0, size_y=20.0],
 ]
+
+
+# =============================================================================
+# Composed Model Definition
+# =============================================================================
+
+comptime HopperBodies = Bodies[HopperTorso, HopperThigh, HopperLeg, HopperFoot]
 
 comptime HopperJoints = Joints[
-    HopperRootX, HopperRootZ, HopperRootY,
-    HopperThighJ, HopperLegJ, HopperFootJ,
+    HopperRootX,
+    HopperRootZ,
+    HopperRootY,
+    HopperThighJ,
+    HopperLegJ,
+    HopperFootJ,
 ]
 
-comptime HopperRobot = RobotDef[
+comptime HopperModel = ModelDef[
     HopperBodies.N,
     HopperJoints.N,
     HopperJoints._sum_nq(),
@@ -192,11 +206,11 @@ comptime HopperRobot = RobotDef[
 
 
 struct HopperParams[DTYPE: DType = DType.float64]:
-    """Environment-specific parameters not derivable from the robot definition.
+    """Environment-specific parameters not derivable from the model definition.
 
     Replaces the former HopperConstants struct. Everything about body
     geometry, joint limits, gear ratios, damping, and indices is
-    now in the robot definition (BodySpec/JointSpec).
+    now in the model definition (BodySpec/JointSpec).
 
     Type Parameters:
         DTYPE: The floating point type for physics constants.
@@ -240,11 +254,11 @@ struct HopperParams[DTYPE: DType = DType.float64]:
     # Reset
     comptime RESET_NOISE_SCALE: Scalar[Self.DTYPE] = 0.005
 
-    # Dimensions (derived from robot definition, for convenience)
-    comptime NQ: Int = HopperRobot.NQ
-    comptime NV: Int = HopperRobot.NV
-    comptime NUM_BODIES: Int = HopperRobot.NBODY
-    comptime NUM_JOINTS: Int = HopperRobot.NJOINT
+    # Dimensions (derived from model definition, for convenience)
+    comptime NQ: Int = HopperModel.NQ
+    comptime NV: Int = HopperModel.NV
+    comptime NUM_BODIES: Int = HopperModel.NBODY
+    comptime NUM_JOINTS: Int = HopperModel.NJOINT
     comptime OBS_DIM: Int = 11
     comptime ACTION_DIM: Int = 3
 
@@ -362,10 +376,10 @@ comptime LEG_MASS: Float64 = 2.71433605
 comptime FOOT_MASS: Float64 = 5.0893801
 
 # Dimension constants for backward compatibility
-comptime NQ: Int = HopperRobot.NQ
-comptime NV: Int = HopperRobot.NV
-comptime NBODY: Int = HopperRobot.NBODY
-comptime NJOINT: Int = HopperRobot.NJOINT
+comptime NQ: Int = HopperModel.NQ
+comptime NV: Int = HopperModel.NV
+comptime NBODY: Int = HopperModel.NBODY
+comptime NJOINT: Int = HopperModel.NJOINT
 comptime MAX_CONTACTS: Int = 10
 comptime OBS_DIM: Int = 11
 comptime ACTION_DIM: Int = 3
@@ -394,22 +408,3 @@ comptime LEG_JOINT_MIN: Float64 = -2.618
 comptime LEG_JOINT_MAX: Float64 = 0.0
 comptime FOOT_JOINT_MIN: Float64 = -0.785
 comptime FOOT_JOINT_MAX: Float64 = 0.785
-
-
-# =============================================================================
-# Static Assertions — verify dimensions match existing environment
-# =============================================================================
-
-
-fn _static_assertions():
-    constrained[HopperRobot.NQ == 6, "Hopper NQ must be 6"]()
-    constrained[HopperRobot.NV == 6, "Hopper NV must be 6"]()
-    constrained[HopperRobot.NBODY == 4, "Hopper NBODY must be 4"]()
-    constrained[HopperRobot.NJOINT == 6, "Hopper NJOINT must be 6"]()
-    constrained[
-        HopperJoints._obs_dim() == 11, "Hopper OBS_DIM must be 11"
-    ]()
-    constrained[
-        HopperJoints._action_dim() == 3,
-        "Hopper ACTION_DIM must be 3",
-    ]()

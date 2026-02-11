@@ -43,6 +43,8 @@ from ..gpu.constants import (
     JOINT_IDX_QPOS_ADR,
     META_IDX_NUM_CONTACTS,
     MODEL_META_IDX_GROUND_Z,
+    MODEL_META_IDX_GROUND_CONTYPE,
+    MODEL_META_IDX_GROUND_CONAFFINITY,
     MODEL_META_IDX_NJOINT,
     model_body_offset,
     model_joint_offset,
@@ -123,8 +125,16 @@ fn detect_ground_contacts[
     """
     data.num_contacts = 0
     var ground_z = model.ground_z
+    var ground_contype = model.ground_contype
+    var ground_conaffinity = model.ground_conaffinity
 
     for body in range(NBODY):
+        # MuJoCo contype/conaffinity filtering for ground
+        if (model.body_contype[body] & ground_conaffinity) == 0 and (
+            ground_contype & model.body_conaffinity[body]
+        ) == 0:
+            continue
+
         var px = data.xpos[body * 3 + 0]
         var py = data.xpos[body * 3 + 1]
         var pz = data.xpos[body * 3 + 2]
@@ -541,11 +551,34 @@ fn detect_ground_contacts_gpu[
     var ground_z = rebind[Scalar[DTYPE]](
         model[0, model_meta_off + MODEL_META_IDX_GROUND_Z]
     )
+    var ground_contype = Int(
+        rebind[Scalar[DTYPE]](
+            model[0, model_meta_off + MODEL_META_IDX_GROUND_CONTYPE]
+        )
+    )
+    var ground_conaffinity = Int(
+        rebind[Scalar[DTYPE]](
+            model[0, model_meta_off + MODEL_META_IDX_GROUND_CONAFFINITY]
+        )
+    )
 
     var num_contacts = 0
 
     for body in range(NBODY):
         var body_off = model_body_offset(body)
+
+        # MuJoCo contype/conaffinity filtering for ground
+        var body_contype = Int(
+            rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_CONTYPE])
+        )
+        var body_conaffinity = Int(
+            rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_CONAFFINITY])
+        )
+        if (body_contype & ground_conaffinity) == 0 and (
+            ground_contype & body_conaffinity
+        ) == 0:
+            continue
+
         var radius = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_RADIUS])
         var half_length = rebind[Scalar[DTYPE]](
             model[0, body_off + BODY_IDX_HALF_LENGTH]

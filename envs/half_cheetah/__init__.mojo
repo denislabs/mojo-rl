@@ -24,11 +24,14 @@ Example usage:
 """
 
 from .half_cheetah import HalfCheetah
-from .renderer import HalfCheetahRenderer, HalfCheetahColors
+from .renderer import (
+    HalfCheetahRenderer,
+)
 from .curriculum import HalfCheetahCurriculum
 from .half_cheetah_def import (
     # Robot definition
-    HalfCheetahRobot,
+    HalfCheetahWorldBody,
+    HalfCheetahModel,
     HalfCheetahBodies,
     HalfCheetahJoints,
     # Params struct (new name)

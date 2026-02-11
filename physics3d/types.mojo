@@ -149,6 +149,10 @@ struct Model[
     var body_contype: InlineArray[Int, Self.NBODY]
     var body_conaffinity: InlineArray[Int, Self.NBODY]
 
+    # Ground plane collision filtering
+    var ground_contype: Int
+    var ground_conaffinity: Int
+
     # Joint definitions
     var joints: InlineArray[JointDef[Self.DTYPE], _max_one[Self.NJOINT]()]
     var num_joints: Int
@@ -224,6 +228,8 @@ struct Model[
         self.body_conaffinity = InlineArray[Int, Self.NBODY](
             uninitialized=True
         )
+        self.ground_contype = 1  # MuJoCo default
+        self.ground_conaffinity = 1  # MuJoCo default
 
         # Initialize with defaults
         for i in range(Self.NBODY):

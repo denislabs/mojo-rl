@@ -13,8 +13,9 @@ Model buffer (static, same for all environments):
     pos(3), quat(4), parent, geom_type, radius, half_length, half_x/y/z]
   Per joint (MODEL_JOINT_SIZE=18): [type, body_id, qpos_adr, dof_adr,
     pos(3), axis(3), tau_limit, range_min/max, armature, damping, stiffness, springref, frictionloss]
-  Metadata (MODEL_META_SIZE=18): [NBODY, NJOINT, gravity(3), timestep, ground_z, friction,
-    solref_contact(2), solimp_contact(3), solref_limit(2), solimp_limit(3)]
+  Metadata (MODEL_META_SIZE=20): [NBODY, NJOINT, gravity(3), timestep, ground_z, friction,
+    solref_contact(2), solimp_contact(3), solref_limit(2), solimp_limit(3),
+    ground_contype, ground_conaffinity]
   Curriculum (MODEL_CURRICULUM_SIZE=8): [up to 8 curriculum parameters]
 """
 
@@ -237,7 +238,7 @@ fn model_joint_offset[NBODY: Int](joint_idx: Int) -> Int:
 # Model Buffer Layout - Global Metadata
 # =============================================================================
 
-comptime MODEL_META_SIZE: Int = 18
+comptime MODEL_META_SIZE: Int = 20
 
 comptime MODEL_META_IDX_NBODY: Int = 0
 comptime MODEL_META_IDX_NJOINT: Int = 1
@@ -259,6 +260,9 @@ comptime MODEL_META_IDX_SOLREF_LIMIT_1: Int = 14    # dampratio
 comptime MODEL_META_IDX_SOLIMP_LIMIT_0: Int = 15    # dmin
 comptime MODEL_META_IDX_SOLIMP_LIMIT_1: Int = 16    # dmax
 comptime MODEL_META_IDX_SOLIMP_LIMIT_2: Int = 17    # width
+# Ground collision filtering
+comptime MODEL_META_IDX_GROUND_CONTYPE: Int = 18
+comptime MODEL_META_IDX_GROUND_CONAFFINITY: Int = 19
 
 
 fn model_metadata_offset[NBODY: Int, NJOINT: Int]() -> Int:

@@ -89,6 +89,8 @@ from .constants import (
     MODEL_META_IDX_SOLIMP_LIMIT_0,
     MODEL_META_IDX_SOLIMP_LIMIT_1,
     MODEL_META_IDX_SOLIMP_LIMIT_2,
+    MODEL_META_IDX_GROUND_CONTYPE,
+    MODEL_META_IDX_GROUND_CONAFFINITY,
 )
 from ..types import Model, Data
 
@@ -259,6 +261,13 @@ fn copy_model_to_buffer[
     buffer[meta_offset + MODEL_META_IDX_SOLIMP_LIMIT_0] = model.solimp_limit[0]
     buffer[meta_offset + MODEL_META_IDX_SOLIMP_LIMIT_1] = model.solimp_limit[1]
     buffer[meta_offset + MODEL_META_IDX_SOLIMP_LIMIT_2] = model.solimp_limit[2]
+    # Ground collision filtering
+    buffer[meta_offset + MODEL_META_IDX_GROUND_CONTYPE] = Scalar[DTYPE](
+        model.ground_contype
+    )
+    buffer[meta_offset + MODEL_META_IDX_GROUND_CONAFFINITY] = Scalar[DTYPE](
+        model.ground_conaffinity
+    )
 
 
 # =============================================================================

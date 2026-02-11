@@ -27,8 +27,9 @@ from .hopper import Hopper
 from .renderer import HopperRenderer
 from .curriculum import HopperCurriculum
 from .hopper_def import (
-    # Robot definition
-    HopperRobot,
+    # Model definition
+    HopperWorldBody,
+    HopperModel,
     HopperBodies,
     HopperJoints,
     # Params struct (new name)

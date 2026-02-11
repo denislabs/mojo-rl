@@ -1,4 +1,4 @@
-"""Generic robot renderer that draws capsule bodies from BodySpec definitions.
+"""Generic model renderer that draws capsule bodies from BodySpec definitions.
 
 Parameterized by a variadic list of BodySpec types, iterates at compile time
 to draw all bodies automatically. Eliminates per-environment renderer boilerplate.
@@ -7,21 +7,21 @@ to draw all bodies automatically. Eliminates per-environment renderer boilerplat
 from math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
 from render3d import Renderer3D, Camera3D, Color3D
 from core import EnvRenderer3D
-from ..robot.body_spec import BodySpec
+from ..model.body_spec import BodySpec
 
 comptime Vec3 = Vec3Generic[DType.float64]
 comptime Quat = QuatGeneric[DType.float64]
 
 
 @fieldwise_init
-struct RobotRenderer[*B: BodySpec](EnvRenderer3D, Movable):
-    """Generic renderer for robots defined by BodySpec types.
+struct ModelRenderer[*B: BodySpec](EnvRenderer3D, Movable):
+    """Generic renderer for models defined by BodySpec types.
 
     Draws capsule bodies using compile-time geometry from BodySpec (RADIUS,
     HALF_LENGTH). Camera follows torso (body 0) with configurable offsets.
 
     Parameters:
-        B: Variadic list of BodySpec types defining the robot's bodies.
+        B: Variadic list of BodySpec types defining the model's bodies.
     """
 
     comptime body_types = Variadic.types[T=BodySpec, *Self.B]
@@ -58,7 +58,7 @@ struct RobotRenderer[*B: BodySpec](EnvRenderer3D, Movable):
         vel_color: Color3D = Color3D(0, 255, 255),
         follow: Bool = True,
         show_velocity: Bool = True,
-        title: String = String("Robot Environment"),
+        title: String = String("Model Environment"),
     ) raises:
         self.visual_radius_scale = visual_radius_scale
         self.cam_eye_y = cam_eye_y
@@ -107,7 +107,7 @@ struct RobotRenderer[*B: BodySpec](EnvRenderer3D, Movable):
         self.vel_color = other.vel_color
 
     fn init(mut self) raises -> None:
-        var title = String("Robot Environment")
+        var title = String("Model Environment")
         self.renderer.init(title)
         self.initialized = True
 
@@ -140,7 +140,7 @@ struct RobotRenderer[*B: BodySpec](EnvRenderer3D, Movable):
         quaternions: List[Quat],
         vel_x: Float64 = 0.0,
     ):
-        """Render all robot bodies.
+        """Render all model bodies.
 
         Args:
             positions: World positions for each body (len >= NUM_BODIES).

@@ -1,18 +1,18 @@
-"""RobotDef compositor for compile-time robot definitions.
+"""ModelDef compositor for compile-time model definitions.
 
-Composes Bodies and Joints into a RobotDef with auto-computed dimensions.
+Composes Bodies and Joints into a ModelDef with auto-computed dimensions.
 Uses Variadic.types + @parameter for to iterate at compile time, following
 the same pattern as Sequential[*LAYERS: Model] in deep_rl/model/sequential.mojo.
 
-Note: Bodies and Joints are standalone variadic containers. RobotDef takes
+Note: Bodies and Joints are standalone variadic containers. ModelDef takes
 concrete Int parameters because Mojo cannot resolve variadic type packs
-through multiple levels of nesting (accessing RobotDef.NQ would fail with
-"unbound parameter" if RobotDef contained Bodies/Joints directly).
+through multiple levels of nesting (accessing ModelDef.NQ would fail with
+"unbound parameter" if ModelDef contained Bodies/Joints directly).
 
 Usage:
     comptime HalfCheetahBodies = Bodies[Torso, BThigh, ...]
     comptime HalfCheetahJoints = Joints[RootX, RootZ, ...]
-    comptime HalfCheetahRobot = RobotDef[
+    comptime HalfCheetahModel = ModelDef[
         HalfCheetahBodies.N,
         HalfCheetahJoints.N,
         HalfCheetahJoints._sum_nq(),
@@ -26,8 +26,10 @@ from random.philox import Random as PhiloxRandom
 
 from .body_spec import BodySpec
 from .joint_spec import JointSpec
+from .geom_spec import GeomSpec
 from ..types import Model, Data
 from ..joint_types import JNT_HINGE, JNT_SLIDE
+from ..constants import GEOM_PLANE
 
 # GPU imports
 from gpu.host import DeviceContext, DeviceBuffer
@@ -40,6 +42,52 @@ from ..gpu.constants import (
     qacc_offset,
     qfrc_offset,
 )
+
+
+# =============================================================================
+# WorldBody — variadic list of static worldbody geoms
+# =============================================================================
+
+
+@fieldwise_init
+struct WorldBody[*G: GeomSpec]:
+    """Compile-time list of static worldbody geom specifications.
+
+    Mirrors MuJoCo <worldbody> element. Contains static geometry (ground plane,
+    obstacles) that exists outside the kinematic tree.
+
+    Phase 1: Only PlaneGeom is handled (writes ground_z, friction,
+    ground_contype, ground_conaffinity to Model).
+    """
+
+    comptime geom_types = Variadic.types[T=GeomSpec, *Self.G]
+    comptime N: Int = Variadic.size(Self.geom_types)
+
+    @staticmethod
+    fn setup_model[
+        DTYPE: DType,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
+    ](mut model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]):
+        """Populate model with worldbody geom properties.
+
+        Phase 1: Only PlaneGeom is handled — writes to ground_z, friction,
+        ground_contype, ground_conaffinity on the model.
+        """
+
+        @parameter
+        for i in range(Self.N):
+            comptime G = Self.geom_types[i]
+
+            @parameter
+            if G.GEOM_TYPE == GEOM_PLANE:
+                model.ground_z = Scalar[DTYPE](G.POS_Z)
+                model.friction = Scalar[DTYPE](G.FRICTION)
+                model.ground_contype = G.CONTYPE
+                model.ground_conaffinity = G.CONAFFINITY
 
 
 # =============================================================================
@@ -262,11 +310,15 @@ struct Joints[*J: JointSpec]:
         NV: Int,
         NBODY: Int,
         MAX_CONTACTS: Int,
-    ](data: Data[DTYPE, NQ, NV, NBODY, Self.N, MAX_CONTACTS], mut obs: List[Scalar[DTYPE]]):
+    ](
+        data: Data[DTYPE, NQ, NV, NBODY, Self.N, MAX_CONTACTS],
+        mut obs: List[Scalar[DTYPE]],
+    ):
         """Extract observation from physics data into a list.
 
         Appends included qpos then included qvel to the obs list.
         """
+
         # Included qpos
         @parameter
         for i in range(Self.N):
@@ -300,7 +352,10 @@ struct Joints[*J: JointSpec]:
         NV: Int,
         NBODY: Int,
         MAX_CONTACTS: Int,
-    ](mut data: Data[DTYPE, NQ, NV, NBODY, Self.N, MAX_CONTACTS], actions: List[Float64]):
+    ](
+        mut data: Data[DTYPE, NQ, NV, NBODY, Self.N, MAX_CONTACTS],
+        actions: List[Float64],
+    ):
         """Apply normalized actions to actuated joints.
 
         Clamps each action to [-1, 1], scales by TAU_LIMIT, writes to qfrc.
@@ -563,9 +618,9 @@ struct Joints[*J: JointSpec]:
                     Scalar[GDTYPE](rand_vals[offset + k] * 2.0 - 1.0)
                     * noise_scale
                 )
-                states[env, QPOS_OFF + offset + k] = Scalar[GDTYPE](
-                    J.INIT_QPOS
-                ) + noise
+                states[env, QPOS_OFF + offset + k] = (
+                    Scalar[GDTYPE](J.INIT_QPOS) + noise
+                )
 
         # Reset qvel with noise
         @parameter
@@ -691,10 +746,7 @@ struct Joints[*J: JointSpec]:
         GDTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
-    ](
-        ctx: DeviceContext,
-        mut states_buf: DeviceBuffer[GDTYPE],
-    ) raises:
+    ](ctx: DeviceContext, mut states_buf: DeviceBuffer[GDTYPE],) raises:
         """Launch kernel to enforce joint limits for all envs."""
         var states = LayoutTensor[
             GDTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -791,13 +843,13 @@ struct Joints[*J: JointSpec]:
 
 
 # =============================================================================
-# RobotDef — full robot compositor (concrete Int parameters)
+# ModelDef — full model compositor (concrete Int parameters)
 # =============================================================================
 
 
 @fieldwise_init
-struct RobotDef[nbody: Int, njoint: Int, nq: Int, nv: Int]:
-    """Compile-time robot definition with pre-computed dimensions.
+struct ModelDef[nbody: Int, njoint: Int, nq: Int, nv: Int]:
+    """Compile-time model definition with pre-computed dimensions.
 
     Takes concrete Int parameters rather than Bodies/Joints directly,
     because Mojo cannot resolve variadic type packs through nesting.
@@ -805,7 +857,7 @@ struct RobotDef[nbody: Int, njoint: Int, nq: Int, nv: Int]:
     Usage:
         comptime MyBodies = Bodies[...]
         comptime MyJoints = Joints[...]
-        comptime MyRobot = RobotDef[
+        comptime MyModel = ModelDef[
             MyBodies.N, MyJoints.N,
             MyJoints._sum_nq(), MyJoints._sum_nv(),
         ]

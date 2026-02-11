@@ -1,7 +1,7 @@
-"""Hopper Renderer — thin wrapper around generic RobotRenderer.
+"""Hopper Renderer — thin wrapper around generic ModelRenderer.
 
 Provides visualization of the Hopper environment with color-coded
-body parts. All rendering logic is handled by RobotRenderer, which
+body parts. All rendering logic is handled by ModelRenderer, which
 reads geometry (RADIUS, HALF_LENGTH) and COLOR from BodySpec at compile time.
 
 Implements EnvRenderer3D trait for integration with evaluation code.
@@ -16,7 +16,7 @@ rotation around joint pivots. The renderer itself is correct.
 from math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
 from render3d import Color3D
 from core import EnvRenderer3D
-from physics3d.robot.robot_renderer import RobotRenderer
+from physics3d.model.model_renderer import ModelRenderer
 
 from .hopper_def import HopperTorso, HopperThigh, HopperLeg, HopperFoot
 
@@ -32,11 +32,11 @@ comptime Quat = QuatGeneric[DType.float64]
 struct HopperRenderer(EnvRenderer3D, Movable):
     """Renderer for Hopper environment.
 
-    Thin wrapper around RobotRenderer parameterized by Hopper body types.
+    Thin wrapper around ModelRenderer parameterized by Hopper body types.
     Colors are defined on the BodySpec types in hopper_def.mojo.
     """
 
-    var inner: RobotRenderer[HopperTorso, HopperThigh, HopperLeg, HopperFoot]
+    var inner: ModelRenderer[HopperTorso, HopperThigh, HopperLeg, HopperFoot]
 
     fn __init__(
         out self,
@@ -45,7 +45,7 @@ struct HopperRenderer(EnvRenderer3D, Movable):
         follow_hopper: Bool = True,
         show_velocity: Bool = True,
     ) raises:
-        self.inner = RobotRenderer[
+        self.inner = ModelRenderer[
             HopperTorso, HopperThigh, HopperLeg, HopperFoot
         ](
             width=width,
