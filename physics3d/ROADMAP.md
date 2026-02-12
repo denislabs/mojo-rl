@@ -1,6 +1,6 @@
 # Physics3D Engine Roadmap: Closing the Gap with MuJoCo
 
-This document details every difference between our GC physics engine and MuJoCo,
+This document details every difference between our physics engine and MuJoCo,
 with exact algorithms, formulas, data structure changes, and file-level implementation
 plans so that each item can be picked up and implemented directly.
 
@@ -14,10 +14,16 @@ Reference material:
 ## Table of Contents
 
 - [Current State Summary](#current-state-summary)
+- [Phase 0: Model Definition & Scene Description](#phase-0-model-definition--scene-description)
+  - [0.1 Compile-Time Model Definition (BodySpec/JointSpec/GeomSpec)](#01-compile-time-model-definition-bodyspecjointspecgeomspec)
+  - [0.2 Unified Geom-Based Contact Detection](#02-unified-geom-based-contact-detection)
+  - [0.3 Contype/Conaffinity Collision Filtering](#03-contypeconaffinity-collision-filtering)
+  - [0.4 ModelRenderer (Geom-Based Visualization)](#04-modelrenderer-geom-based-visualization)
+  - [0.5 MJCF XML Parser](#05-mjcf-xml-parser)
 - [Phase 1: Core Physics Correctness](#phase-1-core-physics-correctness)
   - [1.1 Full Mass Matrix (off-diagonal terms)](#11-full-mass-matrix-off-diagonal-terms)
   - [1.2 Full RNE Bias Forces (Coriolis + centrifugal)](#12-full-rne-bias-forces-coriolis--centrifugal)
-  - [1.3 Body-Body Collision in GC Engine](#13-body-body-collision-in-gc-engine)
+  - [1.3 Unified Collision Detection (Geom-Based)](#13-unified-collision-detection-geom-based)
   - [1.4 Joint Limits as Constraints](#14-joint-limits-as-constraints)
 - [Phase 2: Integrator Improvements](#phase-2-integrator-improvements)
   - [2.1 Implicit-fast Integrator](#21-implicit-fast-integrator)
@@ -44,39 +50,268 @@ Reference material:
 ## Current State Summary
 
 ### What We Have (working well)
-- **GC engine** with qpos/qvel state, forward kinematics, body velocities
+
+**Model Definition (MuJoCo-aligned, Phase 0 DONE)**:
+- **Compile-time trait-based model definition**: `BodySpec`, `JointSpec`, `GeomSpec` traits with variadic containers (`Bodies`, `Joints`, `Geoms`) and `ModelDef` compositor
+- **Body specs**: `CapsuleBody`, `SphereBody`, `BoxBody` with auto-computed inertia from geometry + mass
+- **Joint specs**: `HingeJoint`, `SlideJoint` with all MuJoCo parameters (armature, damping, stiffness, springref, frictionloss, limits, axis, init_qpos)
+- **Geom specs**: Separate from bodies, mirroring MuJoCo's `<geom>` elements:
+  - Static (worldbody): `PlaneGeom`, `SphereGeom`, `BoxGeom`, `CapsuleGeom` (BODY_IDX=-1)
+  - Body-attached: `BodyCapsuleGeom`, `BodySphereGeom`, `BodyBoxGeom` (BODY_IDX>=0)
+  - Per-geom: friction, contype, conaffinity, local pos/quat offset
+- **Unified geom-based contact detection**: Single `detect_contacts` / `detect_contacts_gpu` function handles all geom pairs (plane-sphere, plane-capsule, sphere-sphere, capsule-sphere, capsule-capsule, box-sphere, box-capsule, box-box) with automatic world-frame transform, parent-child filtering, and contype/conaffinity filtering
+- **ModelRenderer**: Generic renderer parameterized by `GeomSpec` types, auto-draws all body-attached geoms with camera tracking
+
+**Physics Engine (Phases 1-3 DONE)**:
+- **Engine core**: qpos/qvel state, forward kinematics, body velocities
 - **Full mass matrix (CRBA)** with LDL factorization, armature, implicit damping, stiffness (Phase 1.1 DONE)
 - **Full RNE bias forces** with gravity + Coriolis + centrifugal terms, CPU + GPU (Phase 1.2 DONE)
 - **Three constraint solvers**: PGS (30 iter), CG (projected), Newton (active-set + line search)
 - **Contact Jacobians**: bilateral spatial algebra (body_a - body_b), CPU + GPU
 - **Joint types**: FREE, BALL, HINGE, SLIDE with correct cdof computation
-- **Collision primitives**: sphere, capsule, box (ground-plane + body-body in both GC and Cartesian engines) (Phase 1.3 DONE)
+- **Collision primitives**: sphere, capsule, box (all pair combinations + ground-plane) (Phase 1.3 DONE)
 - **GPU support**: all solvers, kinematics, dynamics have GPU kernels
-- **Passive forces**: armature (rotor inertia), implicit damping (MuJoCo implicitfast-style), stiffness with springref (configurable rest position), frictionloss (dry friction) (Phase 5.3 DONE)
+- **Passive forces**: armature, implicit damping, stiffness+springref, frictionloss (Phase 5.3 DONE)
 - **Joint limits as constraints**: unilateral inequality constraints in all 3 solvers, CPU + GPU (Phase 1.4 DONE)
-- **Two integrators**: EulerIntegrator (M + arm + dt*diag(damping)) and ImplicitFastIntegrator (M + arm - dt*qDeriv, extensible for actuators), both with explicit damping force f_net -= D*v, CPU + GPU (Phase 2.1 DONE)
-- **Physics stability**: MuJoCo solref/solimp impedance model (replaced Baumgarte), penetration cap (0.05m), velocity clamping (MAX_QVEL=20)
-- **Constraint solver parameters**: per-model solref/solimp for contacts and joint limits, Hermite smoothstep impedance, all 3 solvers, CPU + GPU (Phase 3.4 DONE)
-- **Unified constraint representation**: ConstraintData/ConstraintRow structs with single builder, all 3 CPU solvers consume pre-built constraints (Phase 3.1 DONE)
+- **Two integrators**: EulerIntegrator + ImplicitFastIntegrator, both with correct damping, CPU + GPU (Phase 2.1 DONE)
+- **Physics stability**: MuJoCo solref/solimp impedance model, velocity clamping (MAX_QVEL=10)
+- **Constraint solver parameters**: per-model solref/solimp for contacts and joint limits (Phase 3.4 DONE)
+- **Unified constraint representation**: ConstraintData/ConstraintRow structs with single builder (Phase 3.1 DONE)
 
 ### What We're Missing (by impact)
 
 | Gap | Impact | Phase |
 |-----|--------|-------|
+| ~~Hardcoded model definitions~~ | ~~High~~ | ~~0~~ DONE |
+| ~~Separate ground/body-body detection~~ | ~~High~~ | ~~0~~ DONE |
+| ~~No collision filtering~~ | ~~Medium~~ | ~~0~~ DONE |
+| No MJCF XML parser | Medium - manual model translation | 0 |
 | ~~Diagonal-only mass matrix~~ | ~~High~~ | ~~1~~ DONE |
 | ~~No Coriolis/centrifugal in bias forces~~ | ~~High~~ | ~~1~~ DONE |
-| ~~GC engine: ground contacts only~~ | ~~High~~ | ~~1~~ DONE |
-| ~~Joint limits via post-clamping~~ | ~~Medium - energy injection~~ | ~~1~~ DONE |
-| ~~No implicit integrators~~ | ~~Medium - stability for damped systems~~ | ~~2~~ DONE |
+| ~~Ground contacts only~~ | ~~High~~ | ~~1~~ DONE |
+| ~~Joint limits via post-clamping~~ | ~~Medium~~ | ~~1~~ DONE |
+| ~~No implicit integrators~~ | ~~Medium~~ | ~~2~~ DONE |
 | No RK4 integrator | Medium - energy conservation | 2 |
-| ~~No unified constraint rows~~ | ~~Medium - blocks friction cones/equality~~ | ~~3~~ DONE |
+| ~~No unified constraint rows~~ | ~~Medium~~ | ~~3~~ DONE |
 | Simple Coulomb friction only | Medium - no torsional/rolling | 3 |
 | No equality constraints | Medium - can't model welds/connects | 3 |
-| ~~No per-contact solref/solimp~~ | ~~Low - less tunability~~ | ~~3~~ DONE |
+| ~~No per-contact solref/solimp~~ | ~~Low~~ | ~~3~~ DONE |
 | No broadphase | Low - performance for many bodies | 4 |
 | No warmstart | Low - more solver iterations | 5 |
 | No solver islands | Low - parallelism optimization | 5 |
 | No actuators / tendons | Low - feature completeness | 5 |
+
+---
+
+## Phase 0: Model Definition & Scene Description
+
+### 0.1 Compile-Time Model Definition (BodySpec/JointSpec/GeomSpec) — DONE
+
+**Status**: COMPLETE. Trait-based compile-time model definition system that mirrors
+MuJoCo's XML scene description. Bodies, joints, and geoms are defined as separate
+compile-time specs, composed into variadic containers, and used to populate runtime
+Model/Data structs.
+
+**Files created**:
+- `model/body_spec.mojo` — `BodySpec` trait + `CapsuleBody`, `SphereBody`, `BoxBody` structs
+- `model/geom_spec.mojo` — `GeomSpec` trait + static geoms (`PlaneGeom`, `SphereGeom`, `BoxGeom`, `CapsuleGeom`) + body-attached geoms (`BodyCapsuleGeom`, `BodySphereGeom`, `BodyBoxGeom`)
+- `model/joint_spec.mojo` — `JointSpec` trait + `HingeJoint`, `SlideJoint` structs
+- `model/model_def.mojo` — `Bodies`, `Joints`, `Geoms` variadic containers + `ModelDef` compositor
+- `model/model_renderer.mojo` — Generic renderer parameterized by `GeomSpec` types
+- `model/__init__.mojo` — Module exports
+
+#### Architecture
+
+The system separates model description into three orthogonal concepts, matching MuJoCo XML:
+
+| MuJoCo XML | Mojo Trait | Concrete Types |
+|-----------|-----------|----------------|
+| `<body>` | `BodySpec` | `CapsuleBody`, `SphereBody`, `BoxBody` |
+| `<geom>` in worldbody | `GeomSpec` (BODY_IDX=-1) | `PlaneGeom`, `SphereGeom`, `BoxGeom`, `CapsuleGeom` |
+| `<geom>` in body | `GeomSpec` (BODY_IDX>=0) | `BodyCapsuleGeom`, `BodySphereGeom`, `BodyBoxGeom` |
+| `<joint>` | `JointSpec` | `HingeJoint`, `SlideJoint` |
+| `<compiler>`, `<option>` | `ModelDef` | Global params (gravity, timestep, solref/solimp) |
+
+**Key design decisions**:
+- **Inertia auto-computed from geometry**: `BodySpec` computes `ixx()`, `iyy()`, `izz()` from shape + mass, matching MuJoCo's `inertiafromgeom="true"` default
+- **Geoms separate from bodies**: A body can have zero, one, or multiple geoms. Static obstacles (worldbody geoms) are first-class citizens.
+- **Variadic containers**: `Bodies[*B: BodySpec]`, `Joints[*J: JointSpec]`, `Geoms[*G: GeomSpec]` use Mojo variadic generics for compile-time iteration
+- **`ModelDef` takes concrete ints**: Avoids Mojo's "variadic nesting causes unbound parameter" issue by computing `NQ`, `NV`, `NGEOM` etc. from containers before passing to `ModelDef`
+
+**Key methods on containers**:
+- `Bodies.setup_model()` — populates Model body arrays (mass, inertia, pos, quat, parent)
+- `Joints.reset_data()` — initializes Data with INIT_QPOS values
+- `Joints.extract_obs()` / `extract_obs_gpu()` — builds observation vector respecting EXCLUDE flags
+- `Joints.apply_actions()` / `apply_actions_gpu()` — maps normalized [-1,1] actions to qfrc via tau_limit
+- `Joints.enforce_limits()` / `enforce_limits_gpu()` — post-step position clamping
+- `Geoms.setup_model()` — populates Model geom arrays (type, body, pos, quat, radius, half-extents, friction, contype, conaffinity)
+
+#### Usage Example (HalfCheetah)
+
+```mojo
+# Bodies (kinematic tree)
+comptime Torso = CapsuleBody[parent=-1, mass=4.5, radius=0.046, half_length=0.09, conaffinity=0]
+comptime BThigh = CapsuleBody[parent=0, mass=0.9, radius=0.046, half_length=0.09, ...]
+# ... 7 more bodies ...
+
+# Joints (degrees of freedom)
+comptime RootX = SlideJoint[body_idx=0, axis_x=1.0, is_actuated=False]
+comptime RootZ = SlideJoint[body_idx=0, axis_z=1.0, is_actuated=False]
+comptime BThighJoint = HingeJoint[body_idx=1, range_min=-2.36, range_max=0.785, stiffness=240.0, ...]
+# ... 7 more joints ...
+
+# Geoms (collision geometry)
+comptime Ground = PlaneGeom[z=0.0, friction=0.4]
+comptime TorsoGeom = BodyCapsuleGeom[body_idx=0, radius=0.046, half_length=0.09, conaffinity=0]
+# ... 8 more body geoms ...
+
+# Compose
+comptime HalfCheetahBodies = Bodies[Torso, BThigh, BShin, FThigh, FShin, ...]
+comptime HalfCheetahJoints = Joints[RootX, RootZ, BThighJoint, BShinJoint, ...]
+comptime HalfCheetahGeoms = Geoms[Ground, TorsoGeom, BThighGeom, ...]
+
+comptime HalfCheetahModel = ModelDef[
+    HalfCheetahBodies.N, HalfCheetahJoints.N,
+    HalfCheetahJoints._sum_nq(), HalfCheetahJoints._sum_nv(),
+    HalfCheetahGeoms.N,
+]
+```
+
+---
+
+### 0.2 Unified Geom-Based Contact Detection — DONE
+
+**Status**: COMPLETE. Replaced the old two-pass approach (separate `detect_ground_contacts` +
+`detect_body_body_contacts`) with a single unified `detect_contacts` function that iterates
+over all geom pairs, handling both ground-plane contacts and body-body contacts uniformly.
+
+**Files modified**:
+- `collision/contact_detection.mojo` — Unified `detect_contacts` (CPU) and `detect_contacts_gpu` (GPU)
+- `collision/collision_primitives.mojo` — Narrowphase primitives (sphere-sphere, capsule-sphere, capsule-capsule, box-sphere, box-capsule, box-box)
+- `integrator/euler_integrator.mojo` — Single `detect_contacts()` call replaces two separate calls
+- `integrator/implicit_fast_integrator.mojo` — Same
+
+#### How It Works
+
+The unified detection iterates over all NGEOM*(NGEOM-1)/2 geom pairs:
+
+```
+for gi in range(NGEOM):
+    for gj in range(gi + 1, NGEOM):
+        # Skip static-static pairs
+        if gi is plane and gj has no body: continue
+        # Skip same-body geoms
+        if gi_body == gj_body: continue
+        # Skip parent-child body pairs (share a joint)
+        if parent(gj_body) == gi_body or parent(gi_body) == gj_body: continue
+        # Contype/conaffinity filter
+        if (contype_a & conaffinity_b) == 0 and (contype_b & conaffinity_a) == 0: continue
+
+        # Transform geom to world frame (body pos/quat + local offset)
+        world_pos_i, world_quat_i = geom_world_pos(gi)
+        world_pos_j, world_quat_j = geom_world_pos(gj)
+
+        # Dispatch to narrowphase based on geom types
+        if plane + capsule: two endpoint contacts
+        elif plane + sphere: single contact
+        elif sphere + sphere: sphere_sphere()
+        elif capsule + sphere: capsule_sphere()
+        # ... all 10 type combinations ...
+
+        # Store contact with body_a, body_b, normal, position, distance, friction
+```
+
+**Key improvements over the old approach**:
+- **Single code path** for ground and body-body contacts (no duplication)
+- **Geom local offsets** properly handled — geoms can be offset from body center via local pos/quat
+- **Multiple geoms per body** — a body can have separate collision and visual geometry
+- **Static obstacles** — worldbody geoms (boxes, spheres, capsules) participate in detection naturally
+- **Per-geom friction** — friction comes from the geom, not the body
+
+#### World Frame Transform
+
+For body-attached geoms with local offset:
+```
+world_pos = body_pos + quat_rotate(body_quat, local_pos)
+world_quat = quat_mul(body_quat, local_quat)
+```
+
+Identity optimization: if local pos/quat is zero/identity, skip the transform.
+
+---
+
+### 0.3 Contype/Conaffinity Collision Filtering — DONE
+
+**Status**: COMPLETE. MuJoCo-style collision filtering using per-geom bitmasks.
+
+**Implementation**:
+- Two geoms collide only if `(contype_a & conaffinity_b) || (contype_b & conaffinity_a) != 0`
+- Stored per-geom in `GeomSpec` traits and `Model.geom_contype[]` / `Model.geom_conaffinity[]`
+- GPU: `GEOM_IDX_CONTYPE` and `GEOM_IDX_CONAFFINITY` in the model geom buffer
+- Default: contype=1, conaffinity=1 (everything collides)
+
+**Usage examples**:
+- **HalfCheetah**: All body geoms have `conaffinity=0` (disables body-body self-collision, matching MuJoCo XML where all geoms have `conaffinity="0"`)
+- **Hopper**: Uses defaults (conaffinity=1, self-collision enabled, matches MuJoCo XML)
+
+**Files modified**:
+- `model/geom_spec.mojo` — `CONTYPE` and `CONAFFINITY` fields on all GeomSpec types
+- `types.mojo` — `Model.geom_contype[]`, `Model.geom_conaffinity[]` arrays
+- `collision/contact_detection.mojo` — filtering logic in both CPU and GPU paths
+- `gpu/constants.mojo` — `GEOM_IDX_CONTYPE`, `GEOM_IDX_CONAFFINITY`
+- `gpu/buffer_utils.mojo` — packs contype/conaffinity into GPU model buffer
+
+---
+
+### 0.4 ModelRenderer (Geom-Based Visualization) — DONE
+
+**Status**: COMPLETE. Generic renderer that draws all body-attached geoms using
+compile-time iteration over `GeomSpec` types.
+
+**Files created**:
+- `model/model_renderer.mojo` — `ModelRenderer` struct parameterized by variadic `GeomSpec` types
+
+**Features**:
+- Automatically renders capsule geoms at body world positions with local offset + rotation
+- Camera follows torso (body 0) with configurable offsets
+- Draws velocity indicator arrow
+- Skips static geoms (planes) — only renders body-attached geometry
+- Compile-time `@parameter` iteration over geom types (zero runtime overhead)
+
+---
+
+### 0.5 MJCF XML Parser
+
+**Status**: NOT STARTED. Currently, MuJoCo XML models are manually translated to
+compile-time trait definitions. An MJCF parser would automate this.
+
+**Problem**: Each new MuJoCo environment requires manually translating the XML
+into `BodySpec`, `JointSpec`, and `GeomSpec` definitions. This is tedious and
+error-prone (wrong inertia values, missed parameters, etc.).
+
+**Approach options**:
+
+**Option A (compile-time, recommended)**: Python script that reads MJCF XML and
+generates Mojo source code with the appropriate trait instantiations:
+```bash
+python mjcf_to_mojo.py half_cheetah.xml > envs/half_cheetah/model_def.mojo
+```
+- Pro: Zero runtime overhead, all parameters are compile-time constants
+- Pro: Generated code is readable and can be hand-tuned
+- Con: Requires regeneration when XML changes
+
+**Option B (runtime)**: Mojo MJCF parser that builds `Model` at runtime:
+- Pro: Direct XML loading, no code generation step
+- Con: All parameters become runtime values (can't use compile-time features)
+- Con: Requires XML parsing library in Mojo (doesn't exist yet)
+
+**Scope**: Parse `<worldbody>`, `<body>`, `<joint>`, `<geom>`, `<option>`, `<compiler>`,
+`<default>` elements. Handle `<default>` class inheritance. Extract solref/solimp,
+gravity, timestep, and all joint/body/geom parameters.
+
+**Files to create**:
+- `tools/mjcf_to_mojo.py` (Python code generator)
+- Or `model/mjcf_parser.mojo` (runtime parser, if Mojo XML parsing becomes available)
 
 ---
 
@@ -1034,44 +1269,39 @@ coefficients directly from solref parameters.
 
 ### 4.1 Broadphase Collision (bounding sphere)
 
-**Problem**: O(N^2) body-body collision is expensive for many bodies. A bounding
+**Problem**: O(N^2) geom-pair collision is expensive for many geoms. A bounding
 sphere pre-filter eliminates most pairs cheaply.
 
 **Files to modify**:
-- `collision/collision.mojo` (add broadphase filter)
-- `types.mojo` (add bounding radius per body)
+- `collision/contact_detection.mojo` (add broadphase filter before narrowphase)
+- `model/geom_spec.mojo` (add bounding radius computation per geom)
 
 #### Algorithm
 
 MuJoCo Warp reference: `collision_driver.py` lines 271-318.
 
 ```
-For each pair (i, j):
-  bound = rbound[i] + rbound[j] + max(margin[i], margin[j])
-  dist_sq = |xpos[i] - xpos[j]|^2
+For each geom pair (gi, gj):
+  bound = rbound[gi] + rbound[gj]
+  dist_sq = |world_pos[gi] - world_pos[gj]|^2
   if dist_sq > bound^2:
     skip pair  // bounding spheres don't overlap
-  else:
-    proceed to narrowphase
 ```
 
-Where `rbound` is the maximum extent of the geometry from its center:
+Where `rbound` is per-geom (not per-body):
 - Sphere: `rbound = radius`
 - Capsule: `rbound = half_length + radius`
 - Box: `rbound = sqrt(hx^2 + hy^2 + hz^2)`
 
-**Implementation**: Add `body_rbound[NBODY]` to Model (computed once at init).
-Filter pairs before calling narrowphase primitives.
+**Note**: With the unified geom-based detection, broadphase operates on geom pairs
+rather than body pairs, which is more natural and handles multiple geoms per body correctly.
 
 ---
 
 ### 4.2 Broadphase Collision (AABB/SAP)
 
-**Problem**: Bounding spheres are O(N^2) in pair count. For scenes with many bodies,
+**Problem**: Bounding spheres are O(N^2) in pair count. For scenes with many geoms,
 sweep-and-prune (SAP) on axis-aligned bounding boxes reduces this to O(N log N).
-
-**Files to create**:
-- `collision/broadphase.mojo` (NEW - SAP implementation)
 
 #### Algorithm: Sweep-and-Prune
 
@@ -1090,7 +1320,7 @@ MuJoCo uses the principal eigenvector of the geom covariance matrix as the
 sweep axis (adapts to the scene geometry).
 
 **Recommendation**: Implement after bounding sphere filter. Only needed for
-scenes with 50+ bodies.
+scenes with 50+ geoms.
 
 ---
 
@@ -1098,14 +1328,13 @@ scenes with 50+ bodies.
 
 ### 5.1 Solver Warmstart
 
-**Problem**: Each step, solvers start from zero (or a basic initial guess).
-MuJoCo warmstarts from the previous step's constraint forces, reducing
-iteration count significantly (often 2-3 iterations instead of 30).
+**Problem**: Each step, solvers start from zero. MuJoCo warmstarts from the
+previous step's constraint forces, reducing iteration count significantly.
 
 **Files to modify**:
 - `types.mojo` (add warmstart storage to Data)
 - All three solvers (initialize from warmstart)
-- `integrator/euler_integrator.mojo` (save result for next step)
+- Both integrators (save result for next step)
 
 #### Implementation
 
@@ -1135,12 +1364,8 @@ the better one (reference: `engine_forward.c` line 630 `warmstart()` function).
 
 ### 5.2 Solver Islands
 
-**Problem**: In scenes with multiple disconnected contact groups (e.g., two robots
-not touching each other), solving all constraints together wastes computation.
-Islands identify independent subproblems that can be solved in parallel.
-
-**Files to create**:
-- `solver/island_detection.mojo` (NEW)
+**Problem**: In scenes with multiple disconnected contact groups, solving all
+constraints together wastes computation. Islands identify independent subproblems.
 
 #### Algorithm
 
@@ -1167,20 +1392,11 @@ Most useful for multi-agent scenarios.
 
 **Status**: COMPLETE. All four MuJoCo passive force types implemented per joint:
 - **Armature**: `M[i,i] += armature` (rotor inertia regularization)
-- **Implicit damping**: `M[i,i] += dt * damping` (unconditionally stable, MuJoCo implicitfast-style)
-- **Stiffness with springref**: `f -= stiffness * (qpos - springref)` (restoring spring to configurable rest position)
-- **Frictionloss**: `f -= frictionloss * sign(qvel)` (dry/Coulomb friction with 1e-4 velocity threshold)
+- **Implicit damping**: `M[i,i] += dt * damping` (unconditionally stable)
+- **Stiffness with springref**: `f -= stiffness * (qpos - springref)` (restoring spring)
+- **Frictionloss**: `f -= frictionloss * sign(qvel)` (dry friction)
 
-All passive forces work on CPU and GPU, for all joint types (FREE, BALL, HINGE, SLIDE).
-
-**Files modified**:
-- `joint_types.mojo` — added `springref` and `frictionloss` fields to `JointDef`
-- `types.mojo` — `add_hinge_joint()` and `add_slide_joint()` accept `springref`/`frictionloss` params
-- `gpu/constants.mojo` — `MODEL_JOINT_SIZE` 16→18, added `JOINT_IDX_SPRINGREF=16`, `JOINT_IDX_FRICTIONLOSS=17`
-- `gpu/buffer_utils.mojo` — packs springref/frictionloss into GPU model buffer
-- `integrator/euler_integrator.mojo` — CPU `step()` and GPU `step_kernel()` apply springref offset and frictionloss
-- `envs/half_cheetah/half_cheetah.mojo` — all 10 joints write springref=0, frictionloss=0
-- `envs/hopper/hopper.mojo` — all 6 joints write springref=0, frictionloss=0
+All passive forces are defined per-joint via `JointSpec` traits and work on CPU + GPU.
 
 **Implementation details**:
 - Damping uses BOTH implicit (`M[i,i] += dt*damping`) AND explicit (`f_net -= damping * qvel`) treatment, matching MuJoCo
@@ -1193,11 +1409,17 @@ All passive forces work on CPU and GPU, for all joint types (FREE, BALL, HINGE, 
 
 **Problem**: MuJoCo has a full actuator system with activation dynamics, gain/bias
 computation, force limits, and multiple transmission types. Our engine applies
-torques directly via `qfrc`.
+torques directly via `qfrc` (mapped through `JointSpec.TAU_LIMIT`).
 
-**Files to create**:
-- `actuator/actuator.mojo` (NEW)
-- `types.mojo` (add actuator definitions)
+**Current state**: `Joints.apply_actions()` maps normalized [-1, 1] actions to
+`qfrc` via `tau_limit * action`, filtering by `IS_ACTUATED` flag. This is equivalent
+to MuJoCo's simplest actuator (motor with fixed gain = tau_limit).
+
+**Missing**:
+- Activation dynamics (INTEGRATOR, FILTER, MUSCLE)
+- Gain/bias functions (AFFINE with gainprm/biasprm)
+- Force clamping (forcerange)
+- Position/velocity actuators (PD control)
 
 #### MuJoCo Actuator Pipeline
 
@@ -1221,17 +1443,13 @@ torques directly via `qfrc`.
 ```
 
 **Recommendation**: Start with simple position/velocity actuators (PD control).
-Add muscle dynamics later if needed for biomechanics applications.
+Add muscle dynamics later if needed for biomechanics.
 
 ---
 
 ### 5.5 Tendon System
 
-**Problem**: MuJoCo supports tendons (cables that span multiple joints), useful
-for modeling muscles, transmission systems, and mechanical advantage.
-
-**Complexity**: High. Requires routing tendons through via-points, computing
-tendon lengths and Jacobians, and adding tendon forces to the dynamics.
+**Problem**: MuJoCo supports tendons (cables that span multiple joints).
 
 **Recommendation**: Low priority. Only needed for biomechanics/musculoskeletal models.
 
@@ -1240,10 +1458,7 @@ tendon lengths and Jacobians, and adding tendon forces to the dynamics.
 ### 5.6 No-Slip Friction Post-Solver
 
 **Problem**: After the main constraint solver converges, friction forces may
-allow small slip. MuJoCo offers an optional post-processing pass that
-enforces zero slip for contacts that should be stuck.
-
-MuJoCo reference: `engine_solver.c` line 537 (`mj_solNoSlip`).
+allow small slip.
 
 **Recommendation**: Low priority. Current friction handling is sufficient for
 locomotion and manipulation tasks.
@@ -1255,31 +1470,38 @@ locomotion and manipulation tasks.
 For RL training (locomotion, manipulation):
 
 ```
+Sprint 0 (Model definition):
+  0.1 Compile-time model def    DONE (BodySpec/JointSpec/GeomSpec traits, Bodies/Joints/Geoms containers)
+  0.2 Unified contact detection DONE (single detect_contacts for all geom pairs, CPU + GPU)
+  0.3 Collision filtering       DONE (contype/conaffinity per geom, MuJoCo-compatible)
+  0.4 ModelRenderer             DONE (geom-based visualization with camera tracking)
+  0.5 MJCF XML parser           <- automate model translation from MuJoCo XML
+
 Sprint 1 (Core correctness):
-  1.1 Full mass matrix          ✅ DONE (CRBA + LDL + armature + implicit damping + stiffness)
-  1.2 Full RNE bias forces      ✅ DONE (gravity + Coriolis + centrifugal, CPU + GPU)
-  1.4 Joint limits as constraints ✅ DONE (unilateral constraints in all 3 solvers, CPU + GPU)
+  1.1 Full mass matrix          DONE (CRBA + LDL + armature + implicit damping + stiffness)
+  1.2 Full RNE bias forces      DONE (gravity + Coriolis + centrifugal, CPU + GPU)
+  1.3 Unified collision         DONE (geom-based, all primitives, bilateral Jacobians, CPU + GPU)
+  1.4 Joint limits              DONE (unilateral constraints in all 3 solvers, CPU + GPU)
 
 Sprint 2 (Stability):
-  2.1 Implicit-fast integrator  ✅ DONE (EulerIntegrator + ImplicitFastIntegrator, damping bug fixed, CPU + GPU)
-  5.3 Passive forces            ✅ DONE (armature, implicit damping, stiffness+springref, frictionloss — all joint types, CPU + GPU)
+  2.1 Implicit-fast integrator  DONE (EulerIntegrator + ImplicitFastIntegrator, CPU + GPU)
+  5.3 Passive forces            DONE (armature, damping, stiffness+springref, frictionloss)
 
-Sprint 3 (Interaction):
-  1.3 Body-body collision in GC ✅ DONE (bilateral Jacobians, O(N^2) detection, all primitives, CPU + GPU)
-  3.1 Unified constraint rows   ✅ DONE (ConstraintData/ConstraintRow structs, constraint_builder, all 3 CPU solvers refactored)
+Sprint 3 (Constraint system):
+  3.1 Unified constraint rows   DONE (ConstraintData/ConstraintRow, constraint_builder)
+  3.4 Per-contact solref/solimp DONE (impedance model, all 3 solvers, CPU + GPU)
 
 Sprint 4 (Polish):
-  3.4 Per-contact solref/solimp ✅ DONE (impedance model replacing Baumgarte, all 3 solvers, CPU + GPU)
-  5.1 Solver warmstart          ← performance (fewer iterations)
-  3.2 Friction cone models      ← better friction physics
-  4.1 Broadphase (spheres)      ← performance for many bodies
+  5.1 Solver warmstart          <- performance (fewer iterations)
+  3.2 Friction cone models      <- better friction physics
+  4.1 Broadphase (spheres)      <- performance for many geoms
 
 Sprint 5 (Advanced):
-  3.3 Equality constraints      ← weld/connect
-  2.3 RK4 integrator            ← energy conservation option
-  2.2 Implicit integrator       ← gyroscopic stability
-  5.2 Solver islands            ← multi-agent parallelism
-  5.4 Actuator dynamics         ← MuJoCo model compatibility
+  3.3 Equality constraints      <- weld/connect
+  2.3 RK4 integrator            <- energy conservation option
+  2.2 Implicit integrator       <- gyroscopic stability
+  5.2 Solver islands            <- multi-agent parallelism
+  5.4 Actuator dynamics         <- MuJoCo model compatibility
 ```
 
 ---
