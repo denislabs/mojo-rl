@@ -58,6 +58,7 @@ struct ContactInfo[DTYPE: DType](ImplicitlyCopyable, Movable):
     var impulse_n: Scalar[Self.DTYPE]  # Normal impulse
     var impulse_t1: Scalar[Self.DTYPE]  # Tangent impulse 1
     var impulse_t2: Scalar[Self.DTYPE]  # Tangent impulse 2
+    var friction: Scalar[Self.DTYPE]  # Per-contact friction coefficient
 
     @staticmethod
     fn empty() -> Self:
@@ -75,6 +76,7 @@ struct ContactInfo[DTYPE: DType](ImplicitlyCopyable, Movable):
             impulse_n=Scalar[Self.DTYPE](0),
             impulse_t1=Scalar[Self.DTYPE](0),
             impulse_t2=Scalar[Self.DTYPE](0),
+            friction=Scalar[Self.DTYPE](0),
         )
 
 

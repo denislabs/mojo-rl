@@ -7,6 +7,6 @@ variadic containers (Bodies, Joints, WorldBody) plus a ModelDef compositor.
 
 from .body_spec import BodySpec, CapsuleBody, SphereBody, BoxBody
 from .joint_spec import JointSpec, HingeJoint, SlideJoint
-from .geom_spec import GeomSpec, PlaneGeom
-from .model_def import Bodies, Joints, WorldBody, ModelDef
+from .geom_spec import GeomSpec, PlaneGeom, SphereGeom, BoxGeom, CapsuleGeom
+from .model_def import Bodies, Joints, WorldBody, EmptyWorldBody, ModelDef
 from .model_renderer import ModelRenderer

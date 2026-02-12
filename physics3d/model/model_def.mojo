@@ -29,10 +29,18 @@ from .joint_spec import JointSpec
 from .geom_spec import GeomSpec
 from ..types import Model, Data
 from ..joint_types import JNT_HINGE, JNT_SLIDE
-from ..constants import GEOM_PLANE
+from ..constants import GEOM_PLANE, GEOM_SPHERE, GEOM_CAPSULE, GEOM_BOX
+from ..collision.collision_primitives import (
+    sphere_sphere,
+    capsule_sphere,
+    capsule_capsule,
+    box_sphere,
+    box_capsule,
+    box_box,
+)
 
 # GPU imports
-from gpu.host import DeviceContext, DeviceBuffer
+from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from gpu import thread_idx, block_idx, block_dim
 from layout import Layout, LayoutTensor
 from ..gpu.constants import (
@@ -41,6 +49,23 @@ from ..gpu.constants import (
     qvel_offset,
     qacc_offset,
     qfrc_offset,
+    model_wgeom_offset,
+    MODEL_WGEOM_SIZE,
+    WGEOM_IDX_TYPE,
+    WGEOM_IDX_POS_X,
+    WGEOM_IDX_POS_Y,
+    WGEOM_IDX_POS_Z,
+    WGEOM_IDX_QUAT_X,
+    WGEOM_IDX_QUAT_Y,
+    WGEOM_IDX_QUAT_Z,
+    WGEOM_IDX_QUAT_W,
+    WGEOM_IDX_SIZE_X,
+    WGEOM_IDX_SIZE_Y,
+    WGEOM_IDX_SIZE_Z,
+    WGEOM_IDX_RADIUS,
+    WGEOM_IDX_FRICTION,
+    WGEOM_IDX_CONTYPE,
+    WGEOM_IDX_CONAFFINITY,
 )
 
 
@@ -74,8 +99,8 @@ struct WorldBody[*G: GeomSpec]:
     ](mut model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]):
         """Populate model with worldbody geom properties.
 
-        Phase 1: Only PlaneGeom is handled — writes to ground_z, friction,
-        ground_contype, ground_conaffinity on the model.
+        PlaneGeom writes to ground_z, friction, ground_contype, ground_conaffinity.
+        Non-plane geoms are handled at compile time via WorldBody.detect_contacts.
         """
 
         @parameter
@@ -88,6 +113,253 @@ struct WorldBody[*G: GeomSpec]:
                 model.friction = Scalar[DTYPE](G.FRICTION)
                 model.ground_contype = G.CONTYPE
                 model.ground_conaffinity = G.CONAFFINITY
+
+    @staticmethod
+    fn copy_geoms_to_buffer[
+        DTYPE: DType,
+        NBODY: Int,
+        NJOINT: Int,
+    ](buffer: HostBuffer[DTYPE]):
+        """Copy worldbody geom data to GPU model buffer.
+
+        Writes each non-plane geom's properties to the wgeom section of the
+        model buffer. PlaneGeom data is already in the metadata section.
+
+        Args:
+            buffer: Host model buffer (must have room for NWGEOM geoms after joints).
+        """
+
+        @parameter
+        for i in range(Self.N):
+            comptime G = Self.geom_types[i]
+            var off = model_wgeom_offset[NBODY, NJOINT](i)
+            buffer[off + WGEOM_IDX_TYPE] = Scalar[DTYPE](G.GEOM_TYPE)
+            buffer[off + WGEOM_IDX_POS_X] = Scalar[DTYPE](G.POS_X)
+            buffer[off + WGEOM_IDX_POS_Y] = Scalar[DTYPE](G.POS_Y)
+            buffer[off + WGEOM_IDX_POS_Z] = Scalar[DTYPE](G.POS_Z)
+            buffer[off + WGEOM_IDX_QUAT_X] = Scalar[DTYPE](G.QUAT_X)
+            buffer[off + WGEOM_IDX_QUAT_Y] = Scalar[DTYPE](G.QUAT_Y)
+            buffer[off + WGEOM_IDX_QUAT_Z] = Scalar[DTYPE](G.QUAT_Z)
+            buffer[off + WGEOM_IDX_QUAT_W] = Scalar[DTYPE](G.QUAT_W)
+            buffer[off + WGEOM_IDX_SIZE_X] = Scalar[DTYPE](G.SIZE_X)
+            buffer[off + WGEOM_IDX_SIZE_Y] = Scalar[DTYPE](G.SIZE_Y)
+            buffer[off + WGEOM_IDX_SIZE_Z] = Scalar[DTYPE](G.SIZE_Z)
+            buffer[off + WGEOM_IDX_RADIUS] = Scalar[DTYPE](G.RADIUS)
+            buffer[off + WGEOM_IDX_FRICTION] = Scalar[DTYPE](G.FRICTION)
+            buffer[off + WGEOM_IDX_CONTYPE] = Scalar[DTYPE](G.CONTYPE)
+            buffer[off + WGEOM_IDX_CONAFFINITY] = Scalar[DTYPE](G.CONAFFINITY)
+
+    @staticmethod
+    fn detect_contacts[
+        DTYPE: DType,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
+    ](
+        model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+        mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    ):
+        """Detect contacts between bodies and static worldbody geoms.
+
+        Iterates worldbody geoms at compile time (zero runtime overhead for N=0).
+        Skips PlaneGeom (handled by detect_ground_contacts).
+        Dispatches body×wgeom collision based on geometry types.
+        """
+
+        @parameter
+        for wg in range(Self.N):
+            comptime G_item = Self.geom_types[wg]
+
+            @parameter
+            if G_item.GEOM_TYPE != GEOM_PLANE:
+                # Static geom properties (all compile-time)
+                comptime wg_px = Scalar[DTYPE](G_item.POS_X)
+                comptime wg_py = Scalar[DTYPE](G_item.POS_Y)
+                comptime wg_pz = Scalar[DTYPE](G_item.POS_Z)
+                comptime wg_qx = Scalar[DTYPE](G_item.QUAT_X)
+                comptime wg_qy = Scalar[DTYPE](G_item.QUAT_Y)
+                comptime wg_qz = Scalar[DTYPE](G_item.QUAT_Z)
+                comptime wg_qw = Scalar[DTYPE](G_item.QUAT_W)
+                comptime wg_radius = Scalar[DTYPE](G_item.RADIUS)
+                comptime wg_half_x = Scalar[DTYPE](G_item.SIZE_X)
+                comptime wg_half_y = Scalar[DTYPE](G_item.SIZE_Y)
+                comptime wg_half_z = Scalar[DTYPE](G_item.SIZE_Z)
+                comptime wg_friction = Scalar[DTYPE](G_item.FRICTION)
+                comptime wg_contype = G_item.CONTYPE
+                comptime wg_conaffinity = G_item.CONAFFINITY
+
+                for body in range(NBODY):
+                    # Contype/conaffinity check
+                    if (model.body_contype[body] & wg_conaffinity) == 0 and (
+                        wg_contype & model.body_conaffinity[body]
+                    ) == 0:
+                        continue
+
+                    if data.num_contacts >= MAX_CONTACTS:
+                        return
+
+                    var bpx = data.xpos[body * 3 + 0]
+                    var bpy = data.xpos[body * 3 + 1]
+                    var bpz = data.xpos[body * 3 + 2]
+                    var bqx = data.xquat[body * 4 + 0]
+                    var bqy = data.xquat[body * 4 + 1]
+                    var bqz = data.xquat[body * 4 + 2]
+                    var bqw = data.xquat[body * 4 + 3]
+                    var b_radius = model.body_radius[body]
+                    var b_half_length = model.body_half_length[body]
+                    var b_half_x = model.body_half_x[body]
+                    var b_half_y = model.body_half_y[body]
+                    var b_half_z = model.body_half_z[body]
+                    var gi = model.body_geom_type[body]
+
+                    var dist: Scalar[DTYPE] = 1.0
+                    var cx: Scalar[DTYPE] = 0
+                    var cy: Scalar[DTYPE] = 0
+                    var cz: Scalar[DTYPE] = 0
+                    var nx: Scalar[DTYPE] = 0
+                    var ny: Scalar[DTYPE] = 0
+                    var nz: Scalar[DTYPE] = 1
+
+                    # Dispatch: body_geom × wgeom_type
+                    @parameter
+                    if G_item.GEOM_TYPE == GEOM_SPHERE:
+                        if gi == GEOM_SPHERE:
+                            var result = sphere_sphere[DTYPE](
+                                bpx, bpy, bpz, b_radius,
+                                wg_px, wg_py, wg_pz, wg_radius,
+                            )
+                            dist = result[0]
+                            cx = result[1]; cy = result[2]; cz = result[3]
+                            nx = result[4]; ny = result[5]; nz = result[6]
+                        elif gi == GEOM_CAPSULE:
+                            var result = capsule_sphere[DTYPE](
+                                bpx, bpy, bpz, bqx, bqy, bqz, bqw,
+                                b_half_length, b_radius,
+                                wg_px, wg_py, wg_pz, wg_radius,
+                            )
+                            dist = result[0]
+                            cx = result[1]; cy = result[2]; cz = result[3]
+                            nx = result[4]; ny = result[5]; nz = result[6]
+                        elif gi == GEOM_BOX:
+                            var result = box_sphere[DTYPE](
+                                bpx, bpy, bpz, bqx, bqy, bqz, bqw,
+                                b_half_x, b_half_y, b_half_z,
+                                wg_px, wg_py, wg_pz, wg_radius,
+                            )
+                            dist = result[0]
+                            cx = result[1]; cy = result[2]; cz = result[3]
+                            nx = result[4]; ny = result[5]; nz = result[6]
+
+                    @parameter
+                    if G_item.GEOM_TYPE == GEOM_CAPSULE:
+                        if gi == GEOM_SPHERE:
+                            var result = capsule_sphere[DTYPE](
+                                wg_px, wg_py, wg_pz, wg_qx, wg_qy, wg_qz, wg_qw,
+                                wg_half_z, wg_radius,
+                                bpx, bpy, bpz, b_radius,
+                            )
+                            dist = result[0]
+                            cx = result[1]; cy = result[2]; cz = result[3]
+                            nx = -result[4]; ny = -result[5]; nz = -result[6]
+                        elif gi == GEOM_CAPSULE:
+                            var result = capsule_capsule[DTYPE](
+                                bpx, bpy, bpz, bqx, bqy, bqz, bqw,
+                                b_half_length, b_radius,
+                                wg_px, wg_py, wg_pz, wg_qx, wg_qy, wg_qz, wg_qw,
+                                wg_half_z, wg_radius,
+                            )
+                            dist = result[0]
+                            cx = result[1]; cy = result[2]; cz = result[3]
+                            nx = result[4]; ny = result[5]; nz = result[6]
+                        elif gi == GEOM_BOX:
+                            var result = box_capsule[DTYPE](
+                                bpx, bpy, bpz, bqx, bqy, bqz, bqw,
+                                b_half_x, b_half_y, b_half_z,
+                                wg_px, wg_py, wg_pz, wg_qx, wg_qy, wg_qz, wg_qw,
+                                wg_half_z, wg_radius,
+                            )
+                            dist = result[0]
+                            cx = result[1]; cy = result[2]; cz = result[3]
+                            nx = result[4]; ny = result[5]; nz = result[6]
+
+                    @parameter
+                    if G_item.GEOM_TYPE == GEOM_BOX:
+                        if gi == GEOM_SPHERE:
+                            var result = box_sphere[DTYPE](
+                                wg_px, wg_py, wg_pz, wg_qx, wg_qy, wg_qz, wg_qw,
+                                wg_half_x, wg_half_y, wg_half_z,
+                                bpx, bpy, bpz, b_radius,
+                            )
+                            dist = result[0]
+                            cx = result[1]; cy = result[2]; cz = result[3]
+                            nx = -result[4]; ny = -result[5]; nz = -result[6]
+                        elif gi == GEOM_CAPSULE:
+                            var result = box_capsule[DTYPE](
+                                wg_px, wg_py, wg_pz, wg_qx, wg_qy, wg_qz, wg_qw,
+                                wg_half_x, wg_half_y, wg_half_z,
+                                bpx, bpy, bpz, bqx, bqy, bqz, bqw,
+                                b_half_length, b_radius,
+                            )
+                            dist = result[0]
+                            cx = result[1]; cy = result[2]; cz = result[3]
+                            nx = -result[4]; ny = -result[5]; nz = -result[6]
+                        elif gi == GEOM_BOX:
+                            var result = box_box[DTYPE](
+                                bpx, bpy, bpz, bqx, bqy, bqz, bqw,
+                                b_half_x, b_half_y, b_half_z,
+                                wg_px, wg_py, wg_pz, wg_qx, wg_qy, wg_qz, wg_qw,
+                                wg_half_x, wg_half_y, wg_half_z,
+                            )
+                            dist = result[0]
+                            cx = result[1]; cy = result[2]; cz = result[3]
+                            nx = result[4]; ny = result[5]; nz = result[6]
+
+                    if dist < Scalar[DTYPE](0) and data.num_contacts < MAX_CONTACTS:
+                        var idx = data.num_contacts
+                        data.contacts[idx].body_a = body
+                        data.contacts[idx].body_b = -1
+                        data.contacts[idx].pos_x = cx
+                        data.contacts[idx].pos_y = cy
+                        data.contacts[idx].pos_z = cz
+                        data.contacts[idx].normal_x = nx
+                        data.contacts[idx].normal_y = ny
+                        data.contacts[idx].normal_z = nz
+                        data.contacts[idx].dist = dist
+                        data.contacts[idx].friction = wg_friction
+                        data.num_contacts += 1
+
+
+# =============================================================================
+# EmptyWorldBody — zero-geom WorldBody for backward compatibility
+# =============================================================================
+
+
+@fieldwise_init
+struct EmptyWorldBody:
+    """Zero-geom WorldBody placeholder.
+
+    Used as default when environments don't have static worldbody obstacles.
+    detect_contacts is a no-op.
+    """
+
+    comptime N: Int = 0
+
+    @staticmethod
+    fn detect_contacts[
+        DTYPE: DType,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
+    ](
+        model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+        mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    ):
+        """No-op: EmptyWorldBody has no geoms."""
+        pass
 
 
 # =============================================================================

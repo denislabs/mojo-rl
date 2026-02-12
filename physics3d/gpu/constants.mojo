@@ -100,7 +100,7 @@ fn xangvel_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
 # =============================================================================
 
 # Contact layout (same as Cartesian engine: 12 floats per contact)
-comptime CONTACT_SIZE: Int = 12
+comptime CONTACT_SIZE: Int = 13
 
 comptime CONTACT_IDX_BODY_A: Int = 0
 comptime CONTACT_IDX_BODY_B: Int = 1
@@ -114,6 +114,7 @@ comptime CONTACT_IDX_DIST: Int = 8
 comptime CONTACT_IDX_IMPULSE_N: Int = 9
 comptime CONTACT_IDX_IMPULSE_T1: Int = 10
 comptime CONTACT_IDX_IMPULSE_T2: Int = 11
+comptime CONTACT_IDX_FRICTION: Int = 12
 
 
 fn contacts_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
@@ -265,9 +266,37 @@ comptime MODEL_META_IDX_GROUND_CONTYPE: Int = 18
 comptime MODEL_META_IDX_GROUND_CONAFFINITY: Int = 19
 
 
-fn model_metadata_offset[NBODY: Int, NJOINT: Int]() -> Int:
+# =============================================================================
+# Model Buffer Layout - Worldbody Geoms (static obstacles)
+# =============================================================================
+
+comptime MODEL_WGEOM_SIZE: Int = 15  # Per worldbody geom
+
+comptime WGEOM_IDX_TYPE: Int = 0
+comptime WGEOM_IDX_POS_X: Int = 1
+comptime WGEOM_IDX_POS_Y: Int = 2
+comptime WGEOM_IDX_POS_Z: Int = 3
+comptime WGEOM_IDX_QUAT_X: Int = 4
+comptime WGEOM_IDX_QUAT_Y: Int = 5
+comptime WGEOM_IDX_QUAT_Z: Int = 6
+comptime WGEOM_IDX_QUAT_W: Int = 7
+comptime WGEOM_IDX_SIZE_X: Int = 8
+comptime WGEOM_IDX_SIZE_Y: Int = 9
+comptime WGEOM_IDX_SIZE_Z: Int = 10
+comptime WGEOM_IDX_RADIUS: Int = 11
+comptime WGEOM_IDX_FRICTION: Int = 12
+comptime WGEOM_IDX_CONTYPE: Int = 13
+comptime WGEOM_IDX_CONAFFINITY: Int = 14
+
+
+fn model_wgeom_offset[NBODY: Int, NJOINT: Int](wgeom_idx: Int) -> Int:
+    """Offset to a specific worldbody geom in model buffer."""
+    return NBODY * MODEL_BODY_SIZE + NJOINT * MODEL_JOINT_SIZE + wgeom_idx * MODEL_WGEOM_SIZE
+
+
+fn model_metadata_offset[NBODY: Int, NJOINT: Int, NWGEOM: Int = 0]() -> Int:
     """Offset to model metadata."""
-    return NBODY * MODEL_BODY_SIZE + NJOINT * MODEL_JOINT_SIZE
+    return NBODY * MODEL_BODY_SIZE + NJOINT * MODEL_JOINT_SIZE + NWGEOM * MODEL_WGEOM_SIZE
 
 
 # =============================================================================
@@ -288,19 +317,14 @@ comptime CURRICULUM_IDX_PARAM_6: Int = 6
 comptime CURRICULUM_IDX_PARAM_7: Int = 7
 
 
-fn model_curriculum_offset[NBODY: Int, NJOINT: Int]() -> Int:
+fn model_curriculum_offset[NBODY: Int, NJOINT: Int, NWGEOM: Int = 0]() -> Int:
     """Offset to curriculum parameters in model buffer."""
-    return NBODY * MODEL_BODY_SIZE + NJOINT * MODEL_JOINT_SIZE + MODEL_META_SIZE
+    return model_metadata_offset[NBODY, NJOINT, NWGEOM]() + MODEL_META_SIZE
 
 
-fn model_size[NBODY: Int, NJOINT: Int]() -> Int:
+fn model_size[NBODY: Int, NJOINT: Int, NWGEOM: Int = 0]() -> Int:
     """Total model buffer size."""
-    return (
-        NBODY * MODEL_BODY_SIZE
-        + NJOINT * MODEL_JOINT_SIZE
-        + MODEL_META_SIZE
-        + MODEL_CURRICULUM_SIZE
-    )
+    return model_metadata_offset[NBODY, NJOINT, NWGEOM]() + MODEL_META_SIZE + MODEL_CURRICULUM_SIZE
 
 
 # =============================================================================

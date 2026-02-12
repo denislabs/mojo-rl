@@ -39,15 +39,34 @@ from ..gpu.constants import (
     CONTACT_IDX_NY,
     CONTACT_IDX_NZ,
     CONTACT_IDX_DIST,
+    CONTACT_IDX_FRICTION,
     JOINT_IDX_TYPE,
     JOINT_IDX_QPOS_ADR,
     META_IDX_NUM_CONTACTS,
     MODEL_META_IDX_GROUND_Z,
+    MODEL_META_IDX_FRICTION,
     MODEL_META_IDX_GROUND_CONTYPE,
     MODEL_META_IDX_GROUND_CONAFFINITY,
     MODEL_META_IDX_NJOINT,
+    MODEL_WGEOM_SIZE,
+    WGEOM_IDX_TYPE,
+    WGEOM_IDX_POS_X,
+    WGEOM_IDX_POS_Y,
+    WGEOM_IDX_POS_Z,
+    WGEOM_IDX_QUAT_X,
+    WGEOM_IDX_QUAT_Y,
+    WGEOM_IDX_QUAT_Z,
+    WGEOM_IDX_QUAT_W,
+    WGEOM_IDX_SIZE_X,
+    WGEOM_IDX_SIZE_Y,
+    WGEOM_IDX_SIZE_Z,
+    WGEOM_IDX_RADIUS,
+    WGEOM_IDX_FRICTION,
+    WGEOM_IDX_CONTYPE,
+    WGEOM_IDX_CONAFFINITY,
     model_body_offset,
     model_joint_offset,
+    model_wgeom_offset,
     model_metadata_offset,
     qpos_offset,
     xpos_offset,
@@ -61,6 +80,7 @@ from ..collision.collision_primitives import (
     capsule_capsule,
     box_sphere,
     box_capsule,
+    box_box,
 )
 
 
@@ -127,6 +147,7 @@ fn detect_ground_contacts[
     var ground_z = model.ground_z
     var ground_contype = model.ground_contype
     var ground_conaffinity = model.ground_conaffinity
+    var ground_friction = model.friction
 
     for body in range(NBODY):
         # MuJoCo contype/conaffinity filtering for ground
@@ -171,6 +192,7 @@ fn detect_ground_contacts[
                     data.contacts[idx].normal_y = Scalar[DTYPE](0)
                     data.contacts[idx].normal_z = Scalar[DTYPE](1)
                     data.contacts[idx].dist = dist
+                    data.contacts[idx].friction = ground_friction
                     data.num_contacts += 1
         else:
             # Capsule: check both endpoints
@@ -199,6 +221,7 @@ fn detect_ground_contacts[
                     data.contacts[idx].normal_y = Scalar[DTYPE](0)
                     data.contacts[idx].normal_z = Scalar[DTYPE](1)
                     data.contacts[idx].dist = dist1
+                    data.contacts[idx].friction = ground_friction
                     data.num_contacts += 1
 
             # Check endpoint 2
@@ -214,6 +237,7 @@ fn detect_ground_contacts[
                     data.contacts[idx].normal_y = Scalar[DTYPE](0)
                     data.contacts[idx].normal_z = Scalar[DTYPE](1)
                     data.contacts[idx].dist = dist2
+                    data.contacts[idx].friction = ground_friction
                     data.num_contacts += 1
 
 
@@ -511,6 +535,7 @@ fn detect_body_body_contacts[
                 data.contacts[idx].normal_y = ny
                 data.contacts[idx].normal_z = nz
                 data.contacts[idx].dist = dist
+                data.contacts[idx].friction = model.friction
                 data.num_contacts += 1
 
 
@@ -550,6 +575,9 @@ fn detect_ground_contacts_gpu[
     var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
     var ground_z = rebind[Scalar[DTYPE]](
         model[0, model_meta_off + MODEL_META_IDX_GROUND_Z]
+    )
+    var ground_friction = rebind[Scalar[DTYPE]](
+        model[0, model_meta_off + MODEL_META_IDX_FRICTION]
     )
     var ground_contype = Int(
         rebind[Scalar[DTYPE]](
@@ -617,6 +645,7 @@ fn detect_ground_contacts_gpu[
                 state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
                 state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
                 state[env, c_off + CONTACT_IDX_DIST] = dist
+                state[env, c_off + CONTACT_IDX_FRICTION] = ground_friction
                 num_contacts += 1
         else:
             # Capsule: check both endpoints
@@ -644,6 +673,7 @@ fn detect_ground_contacts_gpu[
                 state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
                 state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
                 state[env, c_off + CONTACT_IDX_DIST] = dist1
+                state[env, c_off + CONTACT_IDX_FRICTION] = ground_friction
                 num_contacts += 1
 
             # Check endpoint 2
@@ -658,6 +688,7 @@ fn detect_ground_contacts_gpu[
                 state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
                 state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
                 state[env, c_off + CONTACT_IDX_DIST] = dist2
+                state[env, c_off + CONTACT_IDX_FRICTION] = ground_friction
                 num_contacts += 1
 
     state[env, meta_off + META_IDX_NUM_CONTACTS] = Scalar[DTYPE](num_contacts)
@@ -704,6 +735,10 @@ fn detect_body_body_contacts_gpu[
     var xquat_off = xquat_offset[NQ, NV, NBODY]()
     var contacts_off = contacts_offset[NQ, NV, NBODY]()
     var meta_off = metadata_offset[NQ, NV, NBODY, MAX_CONTACTS]()
+    var model_meta_off_bb = model_metadata_offset[NBODY, NJOINT]()
+    var bb_friction = rebind[Scalar[DTYPE]](
+        model[0, model_meta_off_bb + MODEL_META_IDX_FRICTION]
+    )
 
     var num_contacts = Int(
         rebind[Scalar[DTYPE]](state[env, meta_off + META_IDX_NUM_CONTACTS])
@@ -1043,6 +1078,7 @@ fn detect_body_body_contacts_gpu[
                 state[env, c_off + CONTACT_IDX_NY] = ny
                 state[env, c_off + CONTACT_IDX_NZ] = nz
                 state[env, c_off + CONTACT_IDX_DIST] = dist
+                state[env, c_off + CONTACT_IDX_FRICTION] = bb_friction
                 num_contacts += 1
 
     state[env, meta_off + META_IDX_NUM_CONTACTS] = Scalar[DTYPE](num_contacts)
@@ -1111,3 +1147,166 @@ fn normalize_qpos_quaternions_gpu[
             state[env, qpos_off + qpos_adr + 1] = normalized[1]
             state[env, qpos_off + qpos_adr + 2] = normalized[2]
             state[env, qpos_off + qpos_adr + 3] = normalized[3]
+
+
+# =============================================================================
+# Worldbody Geom Contact Detection (CPU)
+# NOTE: CPU worldbody detection is now a static method on WorldBody/EmptyWorldBody
+# in physics3d/model/model_def.mojo. The GPU version remains here since it reads
+# from the flat GPU model buffer and doesn't need compile-time type access.
+# =============================================================================
+
+
+# =============================================================================
+# Worldbody Geom Contact Detection (GPU)
+# =============================================================================
+
+
+@always_inline
+fn detect_worldbody_contacts_gpu[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    STATE_SIZE: Int,
+    MODEL_SIZE: Int,
+    BATCH: Int,
+    NWGEOM: Int,
+](
+    env: Int,
+    state: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+    ],
+    model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+):
+    """Detect contacts between bodies and static worldbody geoms on GPU.
+
+    Reads wgeom data from model buffer at runtime.
+    Skips GEOM_PLANE (handled by detect_ground_contacts_gpu).
+    Appends to existing contact count.
+    """
+    from ..constants import GEOM_PLANE, GEOM_SPHERE, GEOM_CAPSULE, GEOM_BOX
+    from ..collision.collision_primitives import (
+        sphere_sphere,
+        capsule_sphere,
+        capsule_capsule,
+        box_sphere,
+        box_capsule,
+        box_box,
+    )
+
+    @parameter
+    if NWGEOM == 0:
+        return
+
+    var xpos_off = xpos_offset[NQ, NV, NBODY]()
+    var xquat_off = xquat_offset[NQ, NV, NBODY]()
+    var contacts_off = contacts_offset[NQ, NV, NBODY]()
+    var meta_off = metadata_offset[NQ, NV, NBODY, MAX_CONTACTS]()
+
+    var num_contacts = Int(
+        rebind[Scalar[DTYPE]](state[env, meta_off + META_IDX_NUM_CONTACTS])
+    )
+
+    for wg in range(NWGEOM):
+        var wg_off = model_wgeom_offset[NBODY, NJOINT](wg)
+        var wg_type = Int(rebind[Scalar[DTYPE]](model[0, wg_off + WGEOM_IDX_TYPE]))
+        if wg_type == GEOM_PLANE:
+            continue
+
+        var wg_px = rebind[Scalar[DTYPE]](model[0, wg_off + WGEOM_IDX_POS_X])
+        var wg_py = rebind[Scalar[DTYPE]](model[0, wg_off + WGEOM_IDX_POS_Y])
+        var wg_pz = rebind[Scalar[DTYPE]](model[0, wg_off + WGEOM_IDX_POS_Z])
+        var wg_qx = rebind[Scalar[DTYPE]](model[0, wg_off + WGEOM_IDX_QUAT_X])
+        var wg_qy = rebind[Scalar[DTYPE]](model[0, wg_off + WGEOM_IDX_QUAT_Y])
+        var wg_qz = rebind[Scalar[DTYPE]](model[0, wg_off + WGEOM_IDX_QUAT_Z])
+        var wg_qw = rebind[Scalar[DTYPE]](model[0, wg_off + WGEOM_IDX_QUAT_W])
+        var wg_sx = rebind[Scalar[DTYPE]](model[0, wg_off + WGEOM_IDX_SIZE_X])
+        var wg_sy = rebind[Scalar[DTYPE]](model[0, wg_off + WGEOM_IDX_SIZE_Y])
+        var wg_sz = rebind[Scalar[DTYPE]](model[0, wg_off + WGEOM_IDX_SIZE_Z])
+        var wg_radius = rebind[Scalar[DTYPE]](model[0, wg_off + WGEOM_IDX_RADIUS])
+        var wg_friction = rebind[Scalar[DTYPE]](model[0, wg_off + WGEOM_IDX_FRICTION])
+        var wg_contype = Int(rebind[Scalar[DTYPE]](model[0, wg_off + WGEOM_IDX_CONTYPE]))
+        var wg_conaffinity = Int(rebind[Scalar[DTYPE]](model[0, wg_off + WGEOM_IDX_CONAFFINITY]))
+
+        for body in range(NBODY):
+            if num_contacts >= MAX_CONTACTS:
+                state[env, meta_off + META_IDX_NUM_CONTACTS] = Scalar[DTYPE](num_contacts)
+                return
+
+            var body_off = model_body_offset(body)
+            var body_contype = Int(rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_CONTYPE]))
+            var body_conaffinity = Int(rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_CONAFFINITY]))
+            if (body_contype & wg_conaffinity) == 0 and (wg_contype & body_conaffinity) == 0:
+                continue
+
+            var bpx = rebind[Scalar[DTYPE]](state[env, xpos_off + body * 3 + 0])
+            var bpy = rebind[Scalar[DTYPE]](state[env, xpos_off + body * 3 + 1])
+            var bpz = rebind[Scalar[DTYPE]](state[env, xpos_off + body * 3 + 2])
+            var bqx = rebind[Scalar[DTYPE]](state[env, xquat_off + body * 4 + 0])
+            var bqy = rebind[Scalar[DTYPE]](state[env, xquat_off + body * 4 + 1])
+            var bqz = rebind[Scalar[DTYPE]](state[env, xquat_off + body * 4 + 2])
+            var bqw = rebind[Scalar[DTYPE]](state[env, xquat_off + body * 4 + 3])
+            var b_radius = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_RADIUS])
+            var b_hl = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_HALF_LENGTH])
+            var b_hx = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_HALF_X])
+            var b_hy = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_HALF_Y])
+            var b_hz = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_HALF_Z])
+            var gi = Int(rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_GEOM_TYPE]))
+
+            var dist: Scalar[DTYPE] = 1.0
+            var cx: Scalar[DTYPE] = 0
+            var cy: Scalar[DTYPE] = 0
+            var cz: Scalar[DTYPE] = 0
+            var nx: Scalar[DTYPE] = 0
+            var ny: Scalar[DTYPE] = 0
+            var nz: Scalar[DTYPE] = 1
+
+            if wg_type == GEOM_SPHERE:
+                if gi == GEOM_SPHERE:
+                    var r = sphere_sphere[DTYPE](bpx, bpy, bpz, b_radius, wg_px, wg_py, wg_pz, wg_radius)
+                    dist = r[0]; cx = r[1]; cy = r[2]; cz = r[3]; nx = r[4]; ny = r[5]; nz = r[6]
+                elif gi == GEOM_CAPSULE:
+                    var r = capsule_sphere[DTYPE](bpx, bpy, bpz, bqx, bqy, bqz, bqw, b_hl, b_radius, wg_px, wg_py, wg_pz, wg_radius)
+                    dist = r[0]; cx = r[1]; cy = r[2]; cz = r[3]; nx = r[4]; ny = r[5]; nz = r[6]
+                elif gi == GEOM_BOX:
+                    var r = box_sphere[DTYPE](bpx, bpy, bpz, bqx, bqy, bqz, bqw, b_hx, b_hy, b_hz, wg_px, wg_py, wg_pz, wg_radius)
+                    dist = r[0]; cx = r[1]; cy = r[2]; cz = r[3]; nx = r[4]; ny = r[5]; nz = r[6]
+            elif wg_type == GEOM_CAPSULE:
+                if gi == GEOM_SPHERE:
+                    var r = capsule_sphere[DTYPE](wg_px, wg_py, wg_pz, wg_qx, wg_qy, wg_qz, wg_qw, wg_sz, wg_radius, bpx, bpy, bpz, b_radius)
+                    dist = r[0]; cx = r[1]; cy = r[2]; cz = r[3]; nx = -r[4]; ny = -r[5]; nz = -r[6]
+                elif gi == GEOM_CAPSULE:
+                    var r = capsule_capsule[DTYPE](bpx, bpy, bpz, bqx, bqy, bqz, bqw, b_hl, b_radius, wg_px, wg_py, wg_pz, wg_qx, wg_qy, wg_qz, wg_qw, wg_sz, wg_radius)
+                    dist = r[0]; cx = r[1]; cy = r[2]; cz = r[3]; nx = r[4]; ny = r[5]; nz = r[6]
+                elif gi == GEOM_BOX:
+                    var r = box_capsule[DTYPE](bpx, bpy, bpz, bqx, bqy, bqz, bqw, b_hx, b_hy, b_hz, wg_px, wg_py, wg_pz, wg_qx, wg_qy, wg_qz, wg_qw, wg_sz, wg_radius)
+                    dist = r[0]; cx = r[1]; cy = r[2]; cz = r[3]; nx = r[4]; ny = r[5]; nz = r[6]
+            elif wg_type == GEOM_BOX:
+                if gi == GEOM_SPHERE:
+                    var r = box_sphere[DTYPE](wg_px, wg_py, wg_pz, wg_qx, wg_qy, wg_qz, wg_qw, wg_sx, wg_sy, wg_sz, bpx, bpy, bpz, b_radius)
+                    dist = r[0]; cx = r[1]; cy = r[2]; cz = r[3]; nx = -r[4]; ny = -r[5]; nz = -r[6]
+                elif gi == GEOM_CAPSULE:
+                    var r = box_capsule[DTYPE](wg_px, wg_py, wg_pz, wg_qx, wg_qy, wg_qz, wg_qw, wg_sx, wg_sy, wg_sz, bpx, bpy, bpz, bqx, bqy, bqz, bqw, b_hl, b_radius)
+                    dist = r[0]; cx = r[1]; cy = r[2]; cz = r[3]; nx = -r[4]; ny = -r[5]; nz = -r[6]
+                elif gi == GEOM_BOX:
+                    var r = box_box[DTYPE](bpx, bpy, bpz, bqx, bqy, bqz, bqw, b_hx, b_hy, b_hz, wg_px, wg_py, wg_pz, wg_qx, wg_qy, wg_qz, wg_qw, wg_sx, wg_sy, wg_sz)
+                    dist = r[0]; cx = r[1]; cy = r[2]; cz = r[3]; nx = r[4]; ny = r[5]; nz = r[6]
+
+            if dist < Scalar[DTYPE](0) and num_contacts < MAX_CONTACTS:
+                var c_off = contacts_off + num_contacts * CONTACT_SIZE
+                state[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](body)
+                state[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](-1)
+                state[env, c_off + CONTACT_IDX_POS_X] = cx
+                state[env, c_off + CONTACT_IDX_POS_Y] = cy
+                state[env, c_off + CONTACT_IDX_POS_Z] = cz
+                state[env, c_off + CONTACT_IDX_NX] = nx
+                state[env, c_off + CONTACT_IDX_NY] = ny
+                state[env, c_off + CONTACT_IDX_NZ] = nz
+                state[env, c_off + CONTACT_IDX_DIST] = dist
+                state[env, c_off + CONTACT_IDX_FRICTION] = wg_friction
+                num_contacts += 1
+
+    state[env, meta_off + META_IDX_NUM_CONTACTS] = Scalar[DTYPE](num_contacts)

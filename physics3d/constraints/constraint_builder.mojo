@@ -105,7 +105,7 @@ fn build_constraints[
         si_dmax = Scalar[DTYPE](1e-4)
     var inv_tc_dr = Scalar[DTYPE](1.0) / (sr_tc * sr_dr)
     var b_vel_coef = Scalar[DTYPE](2.0) * sr_dr * dt / (si_dmax * sr_tc)
-    var friction_coef = model.friction
+    var default_friction = model.friction
 
     var row_idx = 0
     var J_row = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
@@ -168,6 +168,11 @@ fn build_constraints[
             penetration, si_dmin, si_dmax, si_width, inv_tc_dr, b_vel_coef, v_n, k
         )
 
+        # Per-contact friction: use contact's friction if set, else model default
+        var friction_coef = contact.friction
+        if friction_coef <= Scalar[DTYPE](0):
+            friction_coef = default_friction
+
         # Fill constraint row
         constraints.rows[row_idx].K = k
         constraints.rows[row_idx].bias = imp_result[0]
@@ -199,6 +204,10 @@ fn build_constraints[
 
         var contact = data.contacts[c]
         var normal_row = contact_normal_row[c]
+        # Per-contact friction for tangent rows
+        var friction_coef = contact.friction
+        if friction_coef <= Scalar[DTYPE](0):
+            friction_coef = default_friction
         var nx = contact.normal_x
         var ny = contact.normal_y
         var nz = contact.normal_z
