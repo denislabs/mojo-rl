@@ -11,7 +11,6 @@ from math import sqrt
 from ..types import Model, Data, _max_one
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
 from ..dynamics.jacobian import compute_contact_jacobian_row
-from ..gpu.constants import MAX_POS_CORRECTION_VEL
 from .constraint_data import (
     ConstraintRow,
     ConstraintData,
@@ -22,23 +21,27 @@ from .constraint_data import (
 )
 
 
-fn _compute_impedance[
+fn _compute_aref[
     DTYPE: DType,
 ](
     penetration: Scalar[DTYPE],
     si_dmin: Scalar[DTYPE],
     si_dmax: Scalar[DTYPE],
     si_width: Scalar[DTYPE],
-    inv_tc_dr: Scalar[DTYPE],
-    b_vel_coef: Scalar[DTYPE],
+    K_spring: Scalar[DTYPE],
+    B_damp: Scalar[DTYPE],
     v_n: Scalar[DTYPE],
     K: Scalar[DTYPE],
 ) -> Tuple[Scalar[DTYPE], Scalar[DTYPE]]:
-    """Compute MuJoCo impedance model bias and inv_K_imp.
+    """Compute acceleration-level constraint reference and inv_K.
 
-    Returns (bias, inv_K_imp) where:
-    - bias = -(pos_correction + vel_damping)
-    - inv_K_imp = imp / K (for PGS update: delta = -(v + bias) * inv_K_imp)
+    Returns (bias, inv_K) where:
+    - bias = -aref = -(K_spring * imp * penetration) + (B_damp * imp * v_n)
+    - inv_K = imp / K (MuJoCo regularizer: AR = K + R, R = (1-imp)/imp * K, so AR = K/imp)
+
+    MuJoCo formula: aref = K*d*pen - B*d*v_n  (both terms scaled by impedance d)
+    Both position and velocity terms push apart (positive aref for penetrating contact).
+    Stored negated as bias so PGS formula -(a + bias) * inv_K works.
     """
     var x = penetration / si_width
     if x > Scalar[DTYPE](1.0):
@@ -46,14 +49,14 @@ fn _compute_impedance[
     var imp = si_dmin + (
         Scalar[DTYPE](3.0) * x * x - Scalar[DTYPE](2.0) * x * x * x
     ) * (si_dmax - si_dmin)
+    # Impedance floor: 0.2 ensures firm contact from first touch
     if imp < Scalar[DTYPE](0.2):
         imp = Scalar[DTYPE](0.2)
-    var pos_correction = imp * penetration * inv_tc_dr
-    if pos_correction > Scalar[DTYPE](MAX_POS_CORRECTION_VEL):
-        pos_correction = Scalar[DTYPE](MAX_POS_CORRECTION_VEL)
-    var bias = -pos_correction - b_vel_coef * v_n
-    var inv_K_imp = imp / K
-    return (bias, inv_K_imp)
+    # aref = K*imp*pen - B*v_n (B term without imp for stronger damping)
+    var bias = -K_spring * imp * penetration + B_damp * v_n
+    # MuJoCo: AR[i,i] = K + (1-imp)/imp * K = K/imp, so inv = imp/K
+    var inv_K = imp / K
+    return (bias, inv_K)
 
 
 fn build_constraints[
@@ -80,12 +83,15 @@ fn build_constraints[
     """Build all constraints from contacts and joint limits.
 
     Populates constraints with:
-    1. Contact normal rows (with Jacobian, K, impedance bias, warm-start)
+    1. Contact normal rows (with Jacobian, K, aref bias, warm-start)
     2. Contact friction rows (t1, t2 per active normal, with Coulomb coupling)
     3. Joint limit rows (for active HINGE/SLIDE limits)
 
     After this call, solvers can iterate over constraints.rows without
     knowing anything about contacts, Jacobians, or impedance.
+
+    Note: qvel is the CURRENT velocity (not predicted), used for damping
+    in the acceleration-level aref computation.
     """
     var num_contacts = data.num_contacts
     var nc = num_contacts
@@ -104,8 +110,9 @@ fn build_constraints[
         si_width = Scalar[DTYPE](1e-6)
     if si_dmax < Scalar[DTYPE](1e-4):
         si_dmax = Scalar[DTYPE](1e-4)
-    var inv_tc_dr = Scalar[DTYPE](1.0) / (sr_tc * sr_dr)
-    var b_vel_coef = Scalar[DTYPE](2.0) * sr_dr * dt / (si_dmax * sr_tc)
+    # Acceleration-level spring/damper coefficients (dt-independent)
+    var K_spring = Scalar[DTYPE](1.0) / (si_dmax * si_dmax * sr_tc * sr_tc * sr_dr * sr_dr)
+    var B_damp = Scalar[DTYPE](2.0) / (si_dmax * sr_tc)
     var default_friction = model.friction
 
     var row_idx = 0
@@ -158,15 +165,16 @@ fn build_constraints[
                 mi_j_sum += M_inv[i * NV + j_idx] * J_row[j_idx]
             constraints.MinvJT[row_idx * NV + i] = mi_j_sum
             k += J_row[i] * mi_j_sum
-            v_n += J_row[i] * qvel[i]
+            # Use current velocity (not qacc) for damping in aref
+            v_n += J_row[i] * data.qvel[i]
 
         if k < Scalar[DTYPE](1e-10):
             k = Scalar[DTYPE](1e-10)
 
-        # Compute impedance
+        # Compute acceleration-level aref
         var penetration = -contact.dist
-        var imp_result = _compute_impedance[DTYPE](
-            penetration, si_dmin, si_dmax, si_width, inv_tc_dr, b_vel_coef, v_n, k
+        var imp_result = _compute_aref[DTYPE](
+            penetration, si_dmin, si_dmax, si_width, K_spring, B_damp, v_n, k
         )
 
         # Per-contact friction: use contact's friction if set, else model default
@@ -180,7 +188,7 @@ fn build_constraints[
         constraints.rows[row_idx].inv_K_imp = imp_result[1]
         constraints.rows[row_idx].lo = Scalar[DTYPE](0)
         constraints.rows[row_idx].hi = Scalar[DTYPE](1e20)
-        constraints.rows[row_idx].lambda_val = contact.impulse_n
+        constraints.rows[row_idx].lambda_val = contact.force_n
         constraints.rows[row_idx].constraint_type = CNSTR_NORMAL
         constraints.rows[row_idx].friction_parent = -1
         constraints.rows[row_idx].friction_coef = friction_coef
@@ -274,7 +282,7 @@ fn build_constraints[
         constraints.rows[row_idx].inv_K_imp = Scalar[DTYPE](0)
         constraints.rows[row_idx].lo = Scalar[DTYPE](-1e20)
         constraints.rows[row_idx].hi = Scalar[DTYPE](1e20)
-        constraints.rows[row_idx].lambda_val = contact.impulse_t1
+        constraints.rows[row_idx].lambda_val = contact.force_t1
         constraints.rows[row_idx].constraint_type = CNSTR_FRICTION_T1
         constraints.rows[row_idx].friction_parent = normal_row
         constraints.rows[row_idx].friction_coef = friction_coef
@@ -317,7 +325,7 @@ fn build_constraints[
         constraints.rows[row_idx].inv_K_imp = Scalar[DTYPE](0)
         constraints.rows[row_idx].lo = Scalar[DTYPE](-1e20)
         constraints.rows[row_idx].hi = Scalar[DTYPE](1e20)
-        constraints.rows[row_idx].lambda_val = contact.impulse_t2
+        constraints.rows[row_idx].lambda_val = contact.force_t2
         constraints.rows[row_idx].constraint_type = CNSTR_FRICTION_T2
         constraints.rows[row_idx].friction_parent = normal_row
         constraints.rows[row_idx].friction_coef = friction_coef
@@ -343,8 +351,9 @@ fn build_constraints[
         li_width = Scalar[DTYPE](1e-6)
     if li_dmax < Scalar[DTYPE](1e-4):
         li_dmax = Scalar[DTYPE](1e-4)
-    var l_inv_tc_dr = Scalar[DTYPE](1.0) / (lr_tc * lr_dr)
-    var l_b_vel_coef = Scalar[DTYPE](2.0) * lr_dr * dt / (li_dmax * lr_tc)
+    # Acceleration-level spring/damper for limits
+    var l_K_spring = Scalar[DTYPE](1.0) / (li_dmax * li_dmax * lr_tc * lr_tc * lr_dr * lr_dr)
+    var l_B_damp = Scalar[DTYPE](2.0) / (li_dmax * lr_tc)
 
     for j in range(model.num_joints):
         var joint = model.joints[j]
@@ -371,13 +380,14 @@ fn build_constraints[
                 constraints.MinvJT[row_idx * NV + i] = M_inv[i * NV + dof] * sign
             constraints.J[row_idx * NV + dof] = sign
 
-            # Impedance for limit
+            # Acceleration-level aref for limit
             var penetration = -dist_lo
             if penetration < Scalar[DTYPE](0):
                 penetration = Scalar[DTYPE](0)
-            var v_lim = sign * qvel[dof]
-            var imp_result = _compute_impedance[DTYPE](
-                penetration, li_dmin, li_dmax, li_width, l_inv_tc_dr, l_b_vel_coef, v_lim, K_lim
+            # Use current velocity for damping (not qacc)
+            var v_lim = sign * data.qvel[dof]
+            var imp_result = _compute_aref[DTYPE](
+                penetration, li_dmin, li_dmax, li_width, l_K_spring, l_B_damp, v_lim, K_lim
             )
 
             constraints.rows[row_idx].K = K_lim
@@ -410,9 +420,10 @@ fn build_constraints[
             var penetration = -dist_hi
             if penetration < Scalar[DTYPE](0):
                 penetration = Scalar[DTYPE](0)
-            var v_lim = sign * qvel[dof]
-            var imp_result = _compute_impedance[DTYPE](
-                penetration, li_dmin, li_dmax, li_width, l_inv_tc_dr, l_b_vel_coef, v_lim, K_lim
+            # Use current velocity for damping (not qacc)
+            var v_lim = sign * data.qvel[dof]
+            var imp_result = _compute_aref[DTYPE](
+                penetration, li_dmin, li_dmax, li_width, l_K_spring, l_B_damp, v_lim, K_lim
             )
 
             constraints.rows[row_idx].K = K_lim
@@ -433,7 +444,7 @@ fn build_constraints[
     constraints.num_rows = row_idx
 
 
-fn writeback_impulses[
+fn writeback_forces[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -445,10 +456,9 @@ fn writeback_impulses[
     constraints: ConstraintData[DTYPE, MAX_ROWS, NV],
     mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
 ):
-    """Write solved impulses back to data.contacts for warm-starting.
+    """Write solved constraint forces back to data.contacts for warm-starting.
 
-    This replaces per-solver impulse writeback code. Loops over all
-    constraint rows and writes impulse_n/t1/t2 based on constraint_type.
+    Loops over all constraint rows and writes force_n/t1/t2 based on constraint_type.
     """
     for r in range(constraints.num_rows):
         var row = constraints.rows[r]
@@ -457,8 +467,8 @@ fn writeback_impulses[
             continue
 
         if row.constraint_type == CNSTR_NORMAL:
-            data.contacts[c].impulse_n = row.lambda_val
+            data.contacts[c].force_n = row.lambda_val
         elif row.constraint_type == CNSTR_FRICTION_T1:
-            data.contacts[c].impulse_t1 = row.lambda_val
+            data.contacts[c].force_t1 = row.lambda_val
         elif row.constraint_type == CNSTR_FRICTION_T2:
-            data.contacts[c].impulse_t2 = row.lambda_val
+            data.contacts[c].force_t2 = row.lambda_val

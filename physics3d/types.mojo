@@ -55,9 +55,9 @@ struct ContactInfo[DTYPE: DType](ImplicitlyCopyable, Movable):
     var normal_y: Scalar[Self.DTYPE]
     var normal_z: Scalar[Self.DTYPE]
     var dist: Scalar[Self.DTYPE]  # Signed distance (negative = penetration)
-    var impulse_n: Scalar[Self.DTYPE]  # Normal impulse
-    var impulse_t1: Scalar[Self.DTYPE]  # Tangent impulse 1
-    var impulse_t2: Scalar[Self.DTYPE]  # Tangent impulse 2
+    var force_n: Scalar[Self.DTYPE]  # Normal constraint force
+    var force_t1: Scalar[Self.DTYPE]  # Tangent constraint force 1
+    var force_t2: Scalar[Self.DTYPE]  # Tangent constraint force 2
     var friction: Scalar[Self.DTYPE]  # Per-contact friction coefficient
 
     @staticmethod
@@ -73,9 +73,9 @@ struct ContactInfo[DTYPE: DType](ImplicitlyCopyable, Movable):
             normal_y=Scalar[Self.DTYPE](0),
             normal_z=Scalar[Self.DTYPE](1),
             dist=Scalar[Self.DTYPE](0),
-            impulse_n=Scalar[Self.DTYPE](0),
-            impulse_t1=Scalar[Self.DTYPE](0),
-            impulse_t2=Scalar[Self.DTYPE](0),
+            force_n=Scalar[Self.DTYPE](0),
+            force_t1=Scalar[Self.DTYPE](0),
+            force_t2=Scalar[Self.DTYPE](0),
             friction=Scalar[Self.DTYPE](0),
         )
 
@@ -103,6 +103,7 @@ struct Model[
         NBODY: Number of rigid bodies.
         NJOINT: Number of joints.
         MAX_CONTACTS: Maximum number of simultaneous contacts.
+        NGEOM: Number of geoms (0 = legacy mode, uses body geometry).
 
     The kinematic tree is defined by body_parent array:
     - body_parent[i] = index of parent body (-1 for world)
@@ -116,14 +117,21 @@ struct Model[
     var friction: Scalar[Self.DTYPE]
 
     # MuJoCo solref/solimp impedance parameters (contact)
-    var solref_contact: InlineArray[Scalar[Self.DTYPE], 2]  # [timeconst, dampratio]
-    var solimp_contact: InlineArray[Scalar[Self.DTYPE], 3]  # [dmin, dmax, width]
+    var solref_contact: InlineArray[
+        Scalar[Self.DTYPE], 2
+    ]  # [timeconst, dampratio]
+    var solimp_contact: InlineArray[
+        Scalar[Self.DTYPE], 3
+    ]  # [dmin, dmax, width]
     # MuJoCo solref/solimp impedance parameters (joint limits)
-    var solref_limit: InlineArray[Scalar[Self.DTYPE], 2]  # [timeconst, dampratio]
+    var solref_limit: InlineArray[
+        Scalar[Self.DTYPE], 2
+    ]  # [timeconst, dampratio]
     var solimp_limit: InlineArray[Scalar[Self.DTYPE], 3]  # [dmin, dmax, width]
 
     # Per-body properties
     var body_mass: InlineArray[Scalar[Self.DTYPE], Self.NBODY]
+    var body_name: InlineArray[String, Self.NBODY]
     var body_inv_mass: InlineArray[Scalar[Self.DTYPE], Self.NBODY]
     # Diagonal inertia tensor (Ixx, Iyy, Izz) per body
     var body_inertia: InlineArray[Scalar[Self.DTYPE], Self.NBODY * 3]
@@ -142,7 +150,9 @@ struct Model[
     var geom_pos: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM * 3]()]
     var geom_quat: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM * 4]()]
     var geom_radius: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM]()]
-    var geom_half_length: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM]()]
+    var geom_half_length: InlineArray[
+        Scalar[Self.DTYPE], _max_one[Self.NGEOM]()
+    ]
     var geom_half_x: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM]()]
     var geom_half_y: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM]()]
     var geom_half_z: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM]()]
@@ -168,17 +178,25 @@ struct Model[
         self.friction = friction
 
         # MuJoCo global defaults: solref=[0.02, 1.0], solimp=[0.9, 0.95, 0.001]
-        self.solref_contact = InlineArray[Scalar[Self.DTYPE], 2](uninitialized=True)
+        self.solref_contact = InlineArray[Scalar[Self.DTYPE], 2](
+            uninitialized=True
+        )
         self.solref_contact[0] = Scalar[Self.DTYPE](0.02)
         self.solref_contact[1] = Scalar[Self.DTYPE](1.0)
-        self.solimp_contact = InlineArray[Scalar[Self.DTYPE], 3](uninitialized=True)
+        self.solimp_contact = InlineArray[Scalar[Self.DTYPE], 3](
+            uninitialized=True
+        )
         self.solimp_contact[0] = Scalar[Self.DTYPE](0.9)
         self.solimp_contact[1] = Scalar[Self.DTYPE](0.95)
         self.solimp_contact[2] = Scalar[Self.DTYPE](0.001)
-        self.solref_limit = InlineArray[Scalar[Self.DTYPE], 2](uninitialized=True)
+        self.solref_limit = InlineArray[Scalar[Self.DTYPE], 2](
+            uninitialized=True
+        )
         self.solref_limit[0] = Scalar[Self.DTYPE](0.02)
         self.solref_limit[1] = Scalar[Self.DTYPE](1.0)
-        self.solimp_limit = InlineArray[Scalar[Self.DTYPE], 3](uninitialized=True)
+        self.solimp_limit = InlineArray[Scalar[Self.DTYPE], 3](
+            uninitialized=True
+        )
         self.solimp_limit[0] = Scalar[Self.DTYPE](0.9)
         self.solimp_limit[1] = Scalar[Self.DTYPE](0.95)
         self.solimp_limit[2] = Scalar[Self.DTYPE](0.001)
@@ -187,6 +205,7 @@ struct Model[
         self.body_mass = InlineArray[Scalar[Self.DTYPE], Self.NBODY](
             uninitialized=True
         )
+        self.body_name = InlineArray[String, Self.NBODY](uninitialized=True)
         self.body_inv_mass = InlineArray[Scalar[Self.DTYPE], Self.NBODY](
             uninitialized=True
         )
@@ -291,6 +310,7 @@ struct Model[
     fn set_body(
         mut self,
         body_id: Int,
+        name: String,
         mass: Scalar[Self.DTYPE],
         inertia: Tuple[
             Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]
@@ -300,10 +320,12 @@ struct Model[
 
         Args:
             body_id: Body index.
+            name: Body name.
             mass: Body mass.
             inertia: Diagonal inertia tensor (Ixx, Iyy, Izz).
         """
         self.body_mass[body_id] = mass
+        self.body_name[body_id] = name
         self.body_inv_mass[body_id] = Scalar[Self.DTYPE](1.0) / mass
 
         self.body_inertia[body_id * 3 + 0] = inertia[0]
@@ -318,6 +340,14 @@ struct Model[
         self.body_inv_inertia[body_id * 3 + 2] = (
             Scalar[Self.DTYPE](1.0) / inertia[2]
         )
+
+    fn get_body_name(self, body_id: Int) -> String:
+        """Get body name."""
+        if body_id >= Self.NBODY:
+            return ""
+        if body_id < 0:
+            return "world"
+        return self.body_name[body_id]
 
     fn set_body_parent(mut self, body_id: Int, parent_id: Int):
         """Set parent body for kinematic tree.
@@ -383,7 +413,11 @@ struct Model[
             tau_limit: Maximum torque.
             range_min: Minimum angle in radians (default: unlimited).
             range_max: Maximum angle in radians (default: unlimited).
-
+            armature: Armature (default: 0.0).
+            damping: Damping (default: 0.0).
+            stiffness: Stiffness (default: 0.0).
+            springref: Spring reference (default: 0.0).
+            frictionloss: Friction loss (default: 0.0).
         Returns:
             Joint index, or -1 if max joints exceeded.
         """
@@ -439,6 +473,11 @@ struct Model[
             force_limit: Maximum force.
             range_min: Minimum position in meters (default: unlimited).
             range_max: Maximum position in meters (default: unlimited).
+            armature: Armature (default: 0.0).
+            damping: Damping (default: 0.0).
+            stiffness: Stiffness (default: 0.0).
+            springref: Spring reference (default: 0.0).
+            frictionloss: Friction loss (default: 0.0).
 
         Returns:
             Joint index, or -1 if max joints exceeded.

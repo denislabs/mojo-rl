@@ -35,7 +35,7 @@ comptime TILE: Int = 8  # Tile size for 2D operations
 comptime DEFAULT_GRAVITY_Z: Float32 = -9.81
 comptime DEFAULT_TIMESTEP: Float32 = 0.01
 comptime DEFAULT_RESTITUTION: Float32 = 0.0
-comptime MAX_POS_CORRECTION_VEL: Float32 = 10.0  # Cap position correction velocity (safe with pre-solver velocity clamp)
+comptime MAX_POS_CORRECTION_VEL: Float32 = 10.0  # Legacy, unused after accel-level migration
 
 
 # =============================================================================
@@ -112,9 +112,9 @@ comptime CONTACT_IDX_NX: Int = 5
 comptime CONTACT_IDX_NY: Int = 6
 comptime CONTACT_IDX_NZ: Int = 7
 comptime CONTACT_IDX_DIST: Int = 8
-comptime CONTACT_IDX_IMPULSE_N: Int = 9
-comptime CONTACT_IDX_IMPULSE_T1: Int = 10
-comptime CONTACT_IDX_IMPULSE_T2: Int = 11
+comptime CONTACT_IDX_FORCE_N: Int = 9
+comptime CONTACT_IDX_FORCE_T1: Int = 10
+comptime CONTACT_IDX_FORCE_T2: Int = 11
 comptime CONTACT_IDX_FRICTION: Int = 12
 
 
@@ -337,7 +337,7 @@ fn model_size[NBODY: Int, NJOINT: Int, NGEOM: Int = 0]() -> Int:
 #
 # Integrator temps section:
 #   [cdof: NV*6 | crb: NBODY*10 | M: NV*NV | L: NV*NV | D: NV |
-#    bias: NV | f_net: NV | qacc_ws: NV | qvel_pred: NV]
+#    bias: NV | f_net: NV | qacc_ws: NV | qacc_constrained: NV]
 
 
 fn integrator_workspace_size[NV: Int, NBODY: Int]() -> Int:
@@ -385,8 +385,12 @@ fn ws_qacc_ws_offset[NV: Int, NBODY: Int]() -> Int:
     return NV * 6 + NBODY * 10 + 2 * NV * NV + 3 * NV
 
 
-fn ws_qvel_pred_offset[NV: Int, NBODY: Int]() -> Int:
-    """Offset to qvel_pred (NV) in workspace buffer."""
+fn ws_qacc_constrained_offset[NV: Int, NBODY: Int]() -> Int:
+    """Offset to qacc_constrained (NV) in workspace buffer.
+
+    This slot stores the acceleration vector that the constraint solver
+    modifies in-place (acceleration-level solving).
+    """
     return NV * 6 + NBODY * 10 + 2 * NV * NV + 4 * NV
 
 

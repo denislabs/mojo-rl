@@ -56,6 +56,7 @@ comptime _Q90Y_W: Float64 = 0.70710678
 comptime HopperTorso = CapsuleBody[
     parent= -1,
     mass=3.53429174,
+    name="torso",
     radius=0.05,
     half_length=0.2,
     color = Color3D(60, 120, 200),
@@ -66,6 +67,7 @@ comptime HopperTorso = CapsuleBody[
 comptime HopperThigh = CapsuleBody[
     parent=0,
     mass=3.92699082,
+    name="thigh",
     radius=0.05,
     half_length=0.225,
     pos_z= -0.425,
@@ -77,6 +79,7 @@ comptime HopperThigh = CapsuleBody[
 comptime HopperLeg = CapsuleBody[
     parent=1,
     mass=2.71433605,
+    name="leg",
     radius=0.04,
     half_length=0.25,
     pos_z= -0.475,
@@ -88,6 +91,7 @@ comptime HopperLeg = CapsuleBody[
 comptime HopperFoot = CapsuleBody[
     parent=2,
     mass=5.0893801,
+    name="foot",
     radius=0.06,
     half_length=0.195,
     pos_z= -0.25,
@@ -171,26 +175,41 @@ comptime HopperFootJ = HingeJoint[
 # =============================================================================
 
 # Geom 0: Ground plane
-comptime HopperGroundGeom = PlaneGeom[z=0.0, friction=0.9, conaffinity=1, size_x=20.0, size_y=20.0]
+comptime HopperGroundGeom = PlaneGeom[
+    z=0.0, friction=0.9, conaffinity=1, size_x=20.0, size_y=20.0
+]
 
 # Geom 1: Torso capsule (body 0) — conaffinity=1 (self-collision enabled, matches MuJoCo)
-comptime HopperTorsoGeom = BodyCapsuleGeom[body_idx=0, radius=0.05, half_length=0.2, color=Color3D(60, 120, 200)]
+comptime HopperTorsoGeom = BodyCapsuleGeom[
+    body_idx=0, radius=0.05, half_length=0.2, color = Color3D(60, 120, 200)
+]
 
 # Geom 2: Thigh capsule (body 1)
-comptime HopperThighGeom = BodyCapsuleGeom[body_idx=1, radius=0.05, half_length=0.225, color=Color3D(80, 200, 80)]
+comptime HopperThighGeom = BodyCapsuleGeom[
+    body_idx=1, radius=0.05, half_length=0.225, color = Color3D(80, 200, 80)
+]
 
 # Geom 3: Leg capsule (body 2)
-comptime HopperLegGeom = BodyCapsuleGeom[body_idx=2, radius=0.04, half_length=0.25, color=Color3D(220, 140, 60)]
+comptime HopperLegGeom = BodyCapsuleGeom[
+    body_idx=2, radius=0.04, half_length=0.25, color = Color3D(220, 140, 60)
+]
 
 # Geom 4: Foot capsule (body 3) — has local 90deg Y rotation
 comptime HopperFootGeom = BodyCapsuleGeom[
-    body_idx=3, radius=0.06, half_length=0.195,
-    quat_y=_Q90Y_Y, quat_w=_Q90Y_W,
-    color=Color3D(220, 80, 80),
+    body_idx=3,
+    radius=0.06,
+    half_length=0.195,
+    quat_y=_Q90Y_Y,
+    quat_w=_Q90Y_W,
+    color = Color3D(220, 80, 80),
 ]
 
 comptime HopperGeoms = Geoms[
-    HopperGroundGeom, HopperTorsoGeom, HopperThighGeom, HopperLegGeom, HopperFootGeom,
+    HopperGroundGeom,
+    HopperTorsoGeom,
+    HopperThighGeom,
+    HopperLegGeom,
+    HopperFootGeom,
 ]
 
 
@@ -291,7 +310,9 @@ struct HopperParams[DTYPE: DType = DType.float64]:
     comptime STATE_SIZE: Int = state_size[
         Self.NQ, Self.NV, Self.NUM_BODIES, Self.MAX_CONTACTS
     ]()
-    comptime MODEL_SIZE: Int = model_size[Self.NUM_BODIES, Self.NUM_JOINTS, Self.NGEOM]()
+    comptime MODEL_SIZE: Int = model_size[
+        Self.NUM_BODIES, Self.NUM_JOINTS, Self.NGEOM
+    ]()
 
     # GPU layout helper methods
     @staticmethod

@@ -754,7 +754,9 @@ struct DeepPPOContinuousAgent[
                     action_list.append(Scalar[dtype](action_val))
 
                 # Step environment with multi-dimensional actions
-                var result = env.step_continuous_vec[dtype](action_list)
+                var result = env.step_continuous_vec[dtype](
+                    action_list, verbose=verbose
+                )
                 var next_obs_list = result[0].copy()
                 var reward = result[1]
                 var done = result[2]

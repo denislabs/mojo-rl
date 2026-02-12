@@ -168,7 +168,7 @@ struct MountainCarEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
         return MountainCarState(index=self._discretize_obs())
 
     fn step(
-        mut self, action: MountainCarAction
+        mut self, action: MountainCarAction, verbose: Bool = False
     ) -> Tuple[MountainCarState, Scalar[Self.dtype], Bool]:
         """Take action and return (state, reward, done).
 
@@ -374,7 +374,9 @@ struct MountainCarEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
         var vel_f64 = Float64(self.velocity)
 
         # Rendering constants
-        var scale_x = Float64(renderer.screen_width) / (max_pos_f64 - min_pos_f64)
+        var scale_x = Float64(renderer.screen_width) / (
+            max_pos_f64 - min_pos_f64
+        )
         var scale_y = 200.0
         var ground_y = 300
 
@@ -444,12 +446,16 @@ struct MountainCarEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
             var screen_y = world_to_screen_y(height, ground_y, scale_y)
             outline_points.append(renderer.make_point(screen_x, screen_y))
         var outline_color = black()
-        renderer.draw_lines(outline_points, outline_color, closed=False, width=2)
+        renderer.draw_lines(
+            outline_points, outline_color, closed=False, width=2
+        )
 
         # Draw goal flag
         var flag_height_world = height_f64(goal_pos_f64)
         var flag_x = world_to_screen_x(goal_pos_f64, min_pos_f64, scale_x)
-        var flag_base_y = world_to_screen_y(flag_height_world, ground_y, scale_y)
+        var flag_base_y = world_to_screen_y(
+            flag_height_world, ground_y, scale_y
+        )
 
         # Flag pole
         renderer.draw_line(

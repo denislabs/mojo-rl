@@ -205,7 +205,7 @@ struct CartPoleEnv[DTYPE: DType](
         return CartPoleState(index=self._discretize_obs())
 
     fn step(
-        mut self, action: CartPoleAction
+        mut self, action: CartPoleAction, verbose: Bool = False
     ) -> Tuple[CartPoleState, Scalar[Self.dtype], Bool]:
         """Take action and return (state, reward, done).
 
@@ -931,7 +931,9 @@ struct CartPoleEnv[DTYPE: DType](
         mut dones_buf: DeviceBuffer[gpu_dtype],
         mut obs_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64 = 0,
-        workspace_ptr: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin] = UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin](),
+        workspace_ptr: UnsafePointer[
+            Scalar[gpu_dtype], MutAnyOrigin
+        ] = UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin](),
     ) raises:
         """Launch step kernel on GPU with fused obs extraction.
 

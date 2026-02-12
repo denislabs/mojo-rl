@@ -8,7 +8,7 @@ GC constraint solvers for constraint-based contacts:
 Unified constraint representation:
 - ConstraintData: Pre-built constraint rows consumed by solvers
 - build_constraints: Builds ConstraintData from contacts and joint limits
-- writeback_impulses: Writes solved impulses back for warm-starting
+- writeback_forces: Writes solved forces back for warm-starting
 """
 
 from .pgs_solver import PGSSolver

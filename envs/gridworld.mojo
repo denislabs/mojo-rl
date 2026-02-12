@@ -89,7 +89,7 @@ struct GridWorldEnv(DiscreteEnv):
         return 4
 
     fn step(
-        mut self, action: GridAction
+        mut self, action: GridAction, verbose: Bool = False
     ) -> Tuple[GridState, Scalar[Self.dtype], Bool]:
         """Take an action and return (next_state, reward, done)."""
         var new_x = self.state.x
@@ -121,7 +121,8 @@ struct GridWorldEnv(DiscreteEnv):
         return self.state
 
     fn render(mut self, mut renderer: RendererBase):
-        """Print the grid with agent position (text-based, renderer argument ignored)."""
+        """Print the grid with agent position (text-based, renderer argument ignored).
+        """
         _ = renderer
         for y in range(self.height - 1, -1, -1):
             var row = String("")

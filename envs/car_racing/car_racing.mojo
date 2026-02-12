@@ -258,7 +258,7 @@ struct CarRacing[DTYPE: DType](
         return self.cached_state
 
     fn step(
-        mut self, action: Self.ActionType
+        mut self, action: Self.ActionType, verbose: Bool = False
     ) -> Tuple[Self.StateType, Scalar[Self.dtype], Bool]:
         """Take action and return (next_state, reward, done)."""
         # Clamp and remap action inputs
@@ -669,9 +669,9 @@ struct CarRacing[DTYPE: DType](
 
     fn step_continuous_vec[
         DTYPE_VEC: DType
-    ](mut self, action: List[Scalar[DTYPE_VEC]]) -> Tuple[
-        List[Scalar[DTYPE_VEC]], Scalar[DTYPE_VEC], Bool
-    ]:
+    ](
+        mut self, action: List[Scalar[DTYPE_VEC]], verbose: Bool = False
+    ) -> Tuple[List[Scalar[DTYPE_VEC]], Scalar[DTYPE_VEC], Bool]:
         """Step with action vector (DTYPE convenience method)."""
         var typed_action = List[Scalar[Self.dtype]]()
         for i in range(len(action)):

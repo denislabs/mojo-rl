@@ -1151,9 +1151,9 @@ struct BipedalWalker[
 
     fn step_continuous_vec[
         DTYPE_VEC: DType
-    ](mut self, action: List[Scalar[DTYPE_VEC]]) -> Tuple[
-        List[Scalar[DTYPE_VEC]], Scalar[DTYPE_VEC], Bool
-    ]:
+    ](
+        mut self, action: List[Scalar[DTYPE_VEC]], verbose: Bool = False
+    ) -> Tuple[List[Scalar[DTYPE_VEC]], Scalar[DTYPE_VEC], Bool]:
         """Step with vector action."""
         var hip1 = Scalar[Self.dtype](action[0]) if len(action) > 0 else Scalar[
             Self.dtype

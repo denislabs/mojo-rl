@@ -110,7 +110,7 @@ struct CliffWalkingEnv(DiscreteEnv):
         return y == 0 and x > 0 and x < self.width - 1
 
     fn step(
-        mut self, action: CliffAction
+        mut self, action: CliffAction, verbose: Bool = False
     ) -> Tuple[CliffState, Scalar[Self.dtype], Bool]:
         """Take an action and return (next_state, reward, done).
 
@@ -154,7 +154,8 @@ struct CliffWalkingEnv(DiscreteEnv):
         return self.state
 
     fn render(mut self, mut renderer: RendererBase):
-        """Print the grid with agent position (text-based, renderer argument ignored)."""
+        """Print the grid with agent position (text-based, renderer argument ignored).
+        """
         _ = renderer
         for y in range(self.height - 1, -1, -1):
             var row = String("")

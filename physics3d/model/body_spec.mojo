@@ -23,6 +23,9 @@ trait BodySpec:
     concrete structs, not required by the trait).
     """
 
+    # Body name
+    comptime NAME: String
+
     # Mass
     comptime MASS: Float64
 
@@ -64,6 +67,7 @@ trait BodySpec:
 struct CapsuleBody[
     parent: Int = -1,
     mass: Float64 = 1.0,
+    name: String = "capsule",
     radius: Float64 = 0.05,
     half_length: Float64 = 0.1,
     pos_x: Float64 = 0.0,
@@ -103,6 +107,7 @@ struct CapsuleBody[
     comptime CONTYPE: Int = Self.contype
     comptime CONAFFINITY: Int = Self.conaffinity
     comptime COLOR: Color3D = Self.color
+    comptime NAME: String = Self.name
 
     @staticmethod
     fn _total_length() -> Float64:
@@ -135,6 +140,7 @@ struct CapsuleBody[
 struct SphereBody[
     parent: Int = -1,
     mass: Float64 = 1.0,
+    name: String = "sphere",
     radius: Float64 = 0.05,
     pos_x: Float64 = 0.0,
     pos_y: Float64 = 0.0,
@@ -170,6 +176,7 @@ struct SphereBody[
     comptime CONTYPE: Int = Self.contype
     comptime CONAFFINITY: Int = Self.conaffinity
     comptime COLOR: Color3D = Self.color
+    comptime NAME: String = Self.name
 
     @staticmethod
     fn ixx() -> Float64:
@@ -193,6 +200,7 @@ struct SphereBody[
 struct BoxBody[
     parent: Int = -1,
     mass: Float64 = 1.0,
+    name: String = "box",
     half_x: Float64 = 0.1,
     half_y: Float64 = 0.1,
     half_z: Float64 = 0.1,
@@ -232,6 +240,7 @@ struct BoxBody[
     comptime CONTYPE: Int = Self.contype
     comptime CONAFFINITY: Int = Self.conaffinity
     comptime COLOR: Color3D = Self.color
+    comptime NAME: String = Self.name
 
     @staticmethod
     fn ixx() -> Float64:

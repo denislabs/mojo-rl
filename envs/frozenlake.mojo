@@ -136,7 +136,7 @@ struct FrozenLakeEnv(DiscreteEnv):
         return row * self.size + col
 
     fn step(
-        mut self, action: FrozenAction
+        mut self, action: FrozenAction, verbose: Bool = False
     ) -> Tuple[FrozenState, Scalar[Self.dtype], Bool]:
         """Take an action and return (next_state, reward, done).
 

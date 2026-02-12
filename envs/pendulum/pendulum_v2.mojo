@@ -217,7 +217,9 @@ struct PendulumV2[DTYPE: DType](
         mut obs: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
         curriculum_values: List[Scalar[dtype]] = [],
-        workspace_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
+        workspace_ptr: UnsafePointer[
+            Scalar[dtype], MutAnyOrigin
+        ] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
     ) raises:
         """Perform one environment step with continuous actions (GPUContinuousEnv trait).
 
@@ -412,7 +414,8 @@ struct PendulumV2[DTYPE: DType](
         states_buf: DeviceBuffer[dtype],
         mut obs_buf: DeviceBuffer[dtype],
     ) raises:
-        """Extract observations from state buffer (trivial copy: obs = state[0:OBS_DIM])."""
+        """Extract observations from state buffer (trivial copy: obs = state[0:OBS_DIM]).
+        """
         var states = LayoutTensor[
             dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL), MutAnyOrigin
         ](states_buf.unsafe_ptr())
@@ -425,7 +428,9 @@ struct PendulumV2[DTYPE: DType](
         @always_inline
         fn extract_obs(
             states: LayoutTensor[
-                dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL), MutAnyOrigin
+                dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
+                MutAnyOrigin,
             ],
             obs: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE, OBS_DIM_VAL), MutAnyOrigin
@@ -701,9 +706,9 @@ struct PendulumV2[DTYPE: DType](
 
     fn step_continuous_vec[
         DTYPE_VEC: DType
-    ](mut self, action: List[Scalar[DTYPE_VEC]]) -> Tuple[
-        List[Scalar[DTYPE_VEC]], Scalar[DTYPE_VEC], Bool
-    ]:
+    ](
+        mut self, action: List[Scalar[DTYPE_VEC]], verbose: Bool = False
+    ) -> Tuple[List[Scalar[DTYPE_VEC]], Scalar[DTYPE_VEC], Bool]:
         """Take continuous action and return (obs, reward, done).
 
         Action is expected in [-1, 1] range (normalized).
@@ -764,7 +769,7 @@ struct PendulumV2[DTYPE: DType](
         return self.get_state()
 
     fn step(
-        mut self, action: PendulumV2Action[Self.dtype]
+        mut self, action: PendulumV2Action[Self.dtype], verbose: Bool = False
     ) -> Tuple[PendulumV2State[Self.dtype], Scalar[Self.dtype], Bool]:
         """Take action and return (state, reward, done)."""
         var torque = action.torque
@@ -990,17 +995,17 @@ struct PendulumV2[DTYPE: DType](
     fn make_tile_coding(
         num_tilings: Int = 8,
         tiles_per_dim: Int = 8,
-    ) -> TileCoding:
+    ) -> TileCoding[Self.dtype]:
         """Create tile coding configured for Pendulum environment.
 
         Pendulum observation: [cos(θ), sin(θ), θ_dot]
 
         Args:
-            num_tilings: Number of tilings (default 8)
-            tiles_per_dim: Tiles per dimension (default 8)
+            num_tilings: Number of tilings (default 8).
+            tiles_per_dim: Tiles per dimension (default 8).
 
         Returns:
-            TileCoding configured for Pendulum observation space
+            TileCoding[Self.dtype] configured for Pendulum observation space.
         """
         var tiles = List[Int]()
         tiles.append(tiles_per_dim)  # cos(θ)
@@ -1008,17 +1013,17 @@ struct PendulumV2[DTYPE: DType](
         tiles.append(tiles_per_dim)  # θ_dot
 
         # Observation bounds
-        var state_low = List[Float64]()
+        var state_low = List[Scalar[Self.dtype]]()
         state_low.append(-1.0)  # cos(θ) min
         state_low.append(-1.0)  # sin(θ) min
         state_low.append(-8.0)  # θ_dot min
 
-        var state_high = List[Float64]()
+        var state_high = List[Scalar[Self.dtype]]()
         state_high.append(1.0)  # cos(θ) max
         state_high.append(1.0)  # sin(θ) max
         state_high.append(8.0)  # θ_dot max
 
-        return TileCoding(
+        return TileCoding[Self.dtype](
             num_tilings=num_tilings,
             tiles_per_dim=tiles^,
             state_low=state_low^,
@@ -1026,14 +1031,14 @@ struct PendulumV2[DTYPE: DType](
         )
 
     @staticmethod
-    fn make_poly_features(degree: Int = 2) -> PolynomialFeatures:
+    fn make_poly_features(degree: Int = 2) -> PolynomialFeatures[Self.dtype]:
         """Create polynomial features for Pendulum (3D observation).
 
         Args:
-            degree: Maximum polynomial degree
+            degree: Maximum polynomial degree.
 
         Returns:
-            PolynomialFeatures extractor configured for Pendulum
+            PolynomialFeatures[Self.dtype] extractor configured for Pendulum.
         """
         var state_low = List[Float64]()
         state_low.append(-1.0)  # cos(θ)

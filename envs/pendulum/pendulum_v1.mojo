@@ -244,15 +244,15 @@ struct PendulumEnv[DTYPE: DType](
         return PendulumState(index=self._discretize_obs())
 
     fn step(
-        mut self, action: PendulumAction
+        mut self, action: PendulumAction, verbose: Bool = False
     ) -> Tuple[PendulumState, Scalar[Self.dtype], Bool]:
         """Take discrete action and return (state, reward, done).
 
         Args:
-            action: PendulumAction (direction 0=left, 1=none, 2=right)
+            action: PendulumAction (direction 0=left, 1=none, 2=right).
 
         Returns:
-            Tuple of (new_state, reward, done)
+            Tuple of (new_state, reward, done).
         """
         var torque = Scalar[Self.dtype](action.to_continuous())
         return self._step_with_torque(torque)
@@ -339,9 +339,9 @@ struct PendulumEnv[DTYPE: DType](
 
     fn step_continuous_vec[
         DTYPE_VEC: DType
-    ](mut self, action: List[Scalar[DTYPE_VEC]]) -> Tuple[
-        List[Scalar[DTYPE_VEC]], Scalar[DTYPE_VEC], Bool
-    ]:
+    ](
+        mut self, action: List[Scalar[DTYPE_VEC]], verbose: Bool = False
+    ) -> Tuple[List[Scalar[DTYPE_VEC]], Scalar[DTYPE_VEC], Bool]:
         """Take multi-dimensional continuous action (trait method).
 
         For Pendulum, only the first element is used as torque.

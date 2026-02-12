@@ -128,7 +128,7 @@ fn main():
         var max_imp = Float64(0.0)
         for c in range(nc):
             var pen = -Float64(env.data.contacts[c].dist)
-            var imp = Float64(env.data.contacts[c].impulse_n)
+            var imp = Float64(env.data.contacts[c].force_n)
             if pen > max_pen:
                 max_pen = pen
             if imp > max_imp:
@@ -262,7 +262,7 @@ fn main():
                     ct.normal_y,
                     ct.normal_z,
                     ") imp_n =",
-                    ct.impulse_n,
+                    ct.force_n,
                 )
             print("")
 

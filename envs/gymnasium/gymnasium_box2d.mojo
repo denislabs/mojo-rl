@@ -306,9 +306,7 @@ struct GymLunarLanderEnv(BoxDiscreteActionEnv & DiscreteEnv):
         """Return observation dimension (8)."""
         return 8
 
-    fn step_obs(
-        mut self, action: Int
-    ) -> Tuple[List[Float64], Float64, Bool]:
+    fn step_obs(mut self, action: Int) -> Tuple[List[Float64], Float64, Bool]:
         """Take action and return (continuous_obs, reward, done)."""
         var result = self.step(GymLunarLanderAction(action=action))
         return (self.get_obs_list(), result[1], result[2])
@@ -339,7 +337,8 @@ struct GymLunarLanderEnv(BoxDiscreteActionEnv & DiscreteEnv):
         return self.current_obs
 
     fn render(mut self, mut renderer: RendererBase):
-        """Render the environment (uses Gymnasium's renderer, renderer argument ignored)."""
+        """Render the environment (uses Gymnasium's renderer, renderer argument ignored).
+        """
         _ = renderer
         try:
             _ = self.env.render()
@@ -549,7 +548,7 @@ struct GymBipedalWalkerEnv(BoxContinuousActionEnv):
         return (self.get_obs_list(), result[1], result[2])
 
     fn step_continuous_vec(
-        mut self, action: List[Float64]
+        mut self, action: List[Float64], verbose: Bool = False
     ) -> Tuple[List[Float64], Float64, Bool]:
         """Take multi-dimensional continuous action (trait method).
 
@@ -623,7 +622,8 @@ struct GymBipedalWalkerEnv(BoxContinuousActionEnv):
             obs.append(self.current_obs[i])
 
     fn render(mut self, mut renderer: RendererBase):
-        """Render the environment (uses Gymnasium's renderer, renderer argument ignored)."""
+        """Render the environment (uses Gymnasium's renderer, renderer argument ignored).
+        """
         _ = renderer
         try:
             _ = self.env.render()
@@ -806,7 +806,7 @@ struct GymCarRacingEnv(BoxContinuousActionEnv):
         return (self.get_obs_list(), result[1], result[2])
 
     fn step_continuous_vec(
-        mut self, action: List[Float64]
+        mut self, action: List[Float64], verbose: Bool = False
     ) -> Tuple[List[Float64], Float64, Bool]:
         """Take multi-dimensional continuous action (trait method).
 
@@ -902,7 +902,8 @@ struct GymCarRacingEnv(BoxContinuousActionEnv):
         return obs
 
     fn render(mut self, mut renderer: RendererBase):
-        """Render the environment (uses Gymnasium's renderer, renderer argument ignored)."""
+        """Render the environment (uses Gymnasium's renderer, renderer argument ignored).
+        """
         _ = renderer
         try:
             _ = self.env.render()

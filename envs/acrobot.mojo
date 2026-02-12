@@ -157,8 +157,12 @@ struct AcrobotEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
     var link_length_2: Scalar[Self.dtype]  # Length of link 2 [m]
     var link_mass_1: Scalar[Self.dtype]  # Mass of link 1 [kg]
     var link_mass_2: Scalar[Self.dtype]  # Mass of link 2 [kg]
-    var link_com_pos_1: Scalar[Self.dtype]  # Position of center of mass of link 1 [m]
-    var link_com_pos_2: Scalar[Self.dtype]  # Position of center of mass of link 2 [m]
+    var link_com_pos_1: Scalar[
+        Self.dtype
+    ]  # Position of center of mass of link 1 [m]
+    var link_com_pos_2: Scalar[
+        Self.dtype
+    ]  # Position of center of mass of link 2 [m]
     var link_moi: Scalar[Self.dtype]  # Moments of inertia for both links
 
     var max_vel_1: Scalar[Self.dtype]  # Max angular velocity for joint 1
@@ -251,7 +255,7 @@ struct AcrobotEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
         return AcrobotState(index=self._discretize_obs())
 
     fn step(
-        mut self, action: AcrobotAction
+        mut self, action: AcrobotAction, verbose: Bool = False
     ) -> Tuple[AcrobotState, Scalar[Self.dtype], Bool]:
         """Take action and return (state, reward, done).
 
@@ -265,14 +269,21 @@ struct AcrobotEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
 
         # Add noise to torque if configured
         if self.torque_noise_max > Scalar[Self.dtype](0.0):
-            torque += Scalar[Self.dtype]((random_float64() - 0.5) * 2.0) * self.torque_noise_max
+            torque += (
+                Scalar[Self.dtype]((random_float64() - 0.5) * 2.0)
+                * self.torque_noise_max
+            )
 
         # Perform RK4 integration
         var ns = self._rk4_step(torque)
 
         # Wrap angles to [-pi, pi]
-        self.theta1 = self._wrap(ns[0], Scalar[Self.dtype](-pi), Scalar[Self.dtype](pi))
-        self.theta2 = self._wrap(ns[1], Scalar[Self.dtype](-pi), Scalar[Self.dtype](pi))
+        self.theta1 = self._wrap(
+            ns[0], Scalar[Self.dtype](-pi), Scalar[Self.dtype](pi)
+        )
+        self.theta2 = self._wrap(
+            ns[1], Scalar[Self.dtype](-pi), Scalar[Self.dtype](pi)
+        )
         # Bound velocities
         self.theta1_dot = self._bound(ns[2], -self.max_vel_1, self.max_vel_1)
         self.theta2_dot = self._bound(ns[3], -self.max_vel_2, self.max_vel_2)
@@ -286,7 +297,9 @@ struct AcrobotEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
         self.done = terminated or truncated
 
         # Reward: -1 for each step, 0 at terminal
-        var reward = Scalar[Self.dtype](0.0) if terminated else Scalar[Self.dtype](-1.0)
+        var reward = Scalar[Self.dtype](0.0) if terminated else Scalar[
+            Self.dtype
+        ](-1.0)
         self.total_reward += reward
 
         return (AcrobotState(index=self._discretize_obs()), reward, self.done)
@@ -307,7 +320,12 @@ struct AcrobotEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
     # Internal physics helpers
     # ========================================================================
 
-    fn _wrap(self, x: Scalar[Self.dtype], m: Scalar[Self.dtype], M: Scalar[Self.dtype]) -> Scalar[Self.dtype]:
+    fn _wrap(
+        self,
+        x: Scalar[Self.dtype],
+        m: Scalar[Self.dtype],
+        M: Scalar[Self.dtype],
+    ) -> Scalar[Self.dtype]:
         """Wraps x so m <= x <= M using modular arithmetic."""
         var diff = M - m
         var result = x
@@ -317,7 +335,12 @@ struct AcrobotEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
             result = result + diff
         return result
 
-    fn _bound(self, x: Scalar[Self.dtype], m: Scalar[Self.dtype], M: Scalar[Self.dtype]) -> Scalar[Self.dtype]:
+    fn _bound(
+        self,
+        x: Scalar[Self.dtype],
+        m: Scalar[Self.dtype],
+        M: Scalar[Self.dtype],
+    ) -> Scalar[Self.dtype]:
         """Clamps x to be within [m, M]."""
         if x < m:
             return m
@@ -358,16 +381,32 @@ struct AcrobotEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
 
         var d1 = (
             m1 * lc1 * lc1
-            + m2 * (l1 * l1 + lc2 * lc2 + Scalar[Self.dtype](2.0) * l1 * lc2 * Scalar[Self.dtype](cos_theta2))
+            + m2
+            * (
+                l1 * l1
+                + lc2 * lc2
+                + Scalar[Self.dtype](2.0)
+                * l1
+                * lc2
+                * Scalar[Self.dtype](cos_theta2)
+            )
             + I1
             + I2
         )
-        var d2 = m2 * (lc2 * lc2 + l1 * lc2 * Scalar[Self.dtype](cos_theta2)) + I2
+        var d2 = (
+            m2 * (lc2 * lc2 + l1 * lc2 * Scalar[Self.dtype](cos_theta2)) + I2
+        )
 
         var phi2 = m2 * lc2 * g * Scalar[Self.dtype](cos_t1_t2_pi2)
         var phi1 = (
             -m2 * l1 * lc2 * dtheta2 * dtheta2 * Scalar[Self.dtype](sin_theta2)
-            - Scalar[Self.dtype](2.0) * m2 * l1 * lc2 * dtheta2 * dtheta1 * Scalar[Self.dtype](sin_theta2)
+            - Scalar[Self.dtype](2.0)
+            * m2
+            * l1
+            * lc2
+            * dtheta2
+            * dtheta1
+            * Scalar[Self.dtype](sin_theta2)
             + (m1 * lc1 + m2 * l1) * g * Scalar[Self.dtype](cos_t1_pi2)
             + phi2
         )
@@ -383,7 +422,12 @@ struct AcrobotEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
             ddtheta2 = (
                 torque
                 + d2 / d1 * phi1
-                - m2 * l1 * lc2 * dtheta1 * dtheta1 * Scalar[Self.dtype](sin_theta2)
+                - m2
+                * l1
+                * lc2
+                * dtheta1
+                * dtheta1
+                * Scalar[Self.dtype](sin_theta2)
                 - phi2
             ) / (m2 * lc2 * lc2 + I2 - d2 * d2 / d1)
 
@@ -412,11 +456,19 @@ struct AcrobotEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
         var k3 = self._dsdt(y0 + dt2 * k2, torque)
         var k4 = self._dsdt(y0 + dt * k3, torque)
 
-        return y0 + dt / Scalar[Self.dtype](6.0) * (k1 + Scalar[Self.dtype](2.0) * k2 + Scalar[Self.dtype](2.0) * k3 + k4)
+        return y0 + dt / Scalar[Self.dtype](6.0) * (
+            k1
+            + Scalar[Self.dtype](2.0) * k2
+            + Scalar[Self.dtype](2.0) * k3
+            + k4
+        )
 
     fn _terminal(self) -> Bool:
         """Check if the free end has reached the target height."""
-        return -cos(Float64(self.theta1)) - cos(Float64(self.theta2 + self.theta1)) > 1.0
+        return (
+            -cos(Float64(self.theta1)) - cos(Float64(self.theta2 + self.theta1))
+            > 1.0
+        )
 
     # ========================================================================
     # Observation helpers
@@ -481,7 +533,9 @@ struct AcrobotEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
         var b3 = Int(n3 * Float64(n - 1))
 
         # theta1_dot: [-4*pi, 4*pi]
-        var n4 = (Float64(self.theta1_dot) + Float64(self.max_vel_1)) / (2.0 * Float64(self.max_vel_1))
+        var n4 = (Float64(self.theta1_dot) + Float64(self.max_vel_1)) / (
+            2.0 * Float64(self.max_vel_1)
+        )
         if n4 < 0.0:
             n4 = 0.0
         elif n4 > 1.0:
@@ -489,7 +543,9 @@ struct AcrobotEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
         var b4 = Int(n4 * Float64(n - 1))
 
         # theta2_dot: [-9*pi, 9*pi]
-        var n5 = (Float64(self.theta2_dot) + Float64(self.max_vel_2)) / (2.0 * Float64(self.max_vel_2))
+        var n5 = (Float64(self.theta2_dot) + Float64(self.max_vel_2)) / (
+            2.0 * Float64(self.max_vel_2)
+        )
         if n5 < 0.0:
             n5 = 0.0
         elif n5 > 1.0:
@@ -527,7 +583,9 @@ struct AcrobotEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
         _ = self.reset()
         return self.get_obs_list()
 
-    fn step_obs(mut self, action: Int) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
+    fn step_obs(
+        mut self, action: Int
+    ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
         """Take action and return (obs_list, reward, done) - trait method.
 
         This is the BoxDiscreteActionEnv trait method using List[Scalar[Self.dtype]].
@@ -572,14 +630,21 @@ struct AcrobotEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
 
         # Add noise to torque if configured
         if self.torque_noise_max > Scalar[Self.dtype](0.0):
-            torque += Scalar[Self.dtype]((random_float64() - 0.5) * 2.0) * self.torque_noise_max
+            torque += (
+                Scalar[Self.dtype]((random_float64() - 0.5) * 2.0)
+                * self.torque_noise_max
+            )
 
         # Perform RK4 integration
         var ns = self._rk4_step(torque)
 
         # Wrap angles to [-pi, pi]
-        self.theta1 = self._wrap(ns[0], Scalar[Self.dtype](-pi), Scalar[Self.dtype](pi))
-        self.theta2 = self._wrap(ns[1], Scalar[Self.dtype](-pi), Scalar[Self.dtype](pi))
+        self.theta1 = self._wrap(
+            ns[0], Scalar[Self.dtype](-pi), Scalar[Self.dtype](pi)
+        )
+        self.theta2 = self._wrap(
+            ns[1], Scalar[Self.dtype](-pi), Scalar[Self.dtype](pi)
+        )
         # Bound velocities
         self.theta1_dot = self._bound(ns[2], -self.max_vel_1, self.max_vel_1)
         self.theta2_dot = self._bound(ns[3], -self.max_vel_2, self.max_vel_2)
@@ -591,7 +656,9 @@ struct AcrobotEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
         var truncated = self.steps >= self.max_steps
         self.done = terminated or truncated
 
-        var reward = Scalar[Self.dtype](0.0) if terminated else Scalar[Self.dtype](-1.0)
+        var reward = Scalar[Self.dtype](0.0) if terminated else Scalar[
+            Self.dtype
+        ](-1.0)
         self.total_reward += reward
 
         return (self._get_obs(), reward, self.done)

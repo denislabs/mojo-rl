@@ -1,5 +1,5 @@
 from .constraint_data import ConstraintData, ConstraintRow
-from .constraint_builder import build_constraints, writeback_impulses
+from .constraint_builder import build_constraints, writeback_forces
 from .constraint_builder_gpu import (
     common_normal_size,
     init_common_normal_workspace_gpu,

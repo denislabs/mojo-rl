@@ -37,9 +37,9 @@ from ..gpu.constants import (
     model_metadata_offset,
     ws_m_inv_offset,
     ws_solver_offset,
-    ws_qvel_pred_offset,
+    ws_qacc_constrained_offset,
     CONTACT_SIZE,
-    CONTACT_IDX_IMPULSE_N,
+    CONTACT_IDX_FORCE_N,
     META_IDX_NUM_CONTACTS,
     MODEL_META_IDX_FRICTION,
     MODEL_META_IDX_TIMESTEP,
@@ -64,6 +64,8 @@ from .friction_solver import _solve_friction_pgs_gpu
 # CG solver parameters
 comptime CG_ITERATIONS: Int = 30
 comptime CG_TOLERANCE: Float64 = 1e-8
+# Minimum K for friction tangent rows — below this, direction is degenerate
+comptime FRICTION_K_MIN: Float64 = 1e-6
 
 
 struct CGSolver(ConstraintSolver):
@@ -124,10 +126,10 @@ struct CGSolver(ConstraintSolver):
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         M_inv: InlineArray[Scalar[DTYPE], M_SIZE],
         mut constraints: ConstraintData[DTYPE, MAX_ROWS, NV],
-        mut qvel: InlineArray[Scalar[DTYPE], V_SIZE],
+        mut qacc: InlineArray[Scalar[DTYPE], V_SIZE],
         dt: Scalar[DTYPE],
     ):
-        """Solve constraints using Projected CG on CPU.
+        """Solve constraints using Projected CG on CPU (acceleration-level).
 
         Iterates over pre-built ConstraintData:
         1. Build Delassus matrix from normal constraint rows
@@ -147,27 +149,29 @@ struct CGSolver(ConstraintSolver):
         comptime MR = _max_one[MAX_ROWS]()
         comptime A_SIZE = _max_one[MAX_ROWS * MAX_ROWS]()
 
-        # RHS for CG: rhs[r] = v_n + bias (computed from constraints)
+        # RHS for CG: rhs[r] = J[r] · qacc_unconstrained + bias[r]
+        # IMPORTANT: Compute ALL rhs from unconstrained qacc BEFORE warm-start
         var rhs = InlineArray[Scalar[DTYPE], MR](uninitialized=True)
         for i in range(MR):
             rhs[i] = Scalar[DTYPE](0)
 
-        # Compute RHS for normal rows and apply warm-start
         for r in range(num_normals):
-            var v_n: Scalar[DTYPE] = 0
+            var a_n: Scalar[DTYPE] = 0
             for i in range(NV):
-                v_n += constraints.J[r * NV + i] * qvel[i]
-            rhs[r] = v_n + constraints.rows[r].bias
+                a_n += constraints.J[r * NV + i] * qacc[i]
+            rhs[r] = a_n + constraints.rows[r].bias
 
-            # Apply warm-start
+        # Apply warm-start (after rhs is fully computed)
+        for r in range(num_normals):
             if constraints.rows[r].lambda_val > Scalar[DTYPE](0):
                 for i in range(NV):
-                    qvel[i] += (
+                    qacc[i] += (
                         constraints.MinvJT[r * NV + i]
                         * constraints.rows[r].lambda_val
                     )
 
         # Build Delassus matrix A[c1,c2] = J[c1] . MinvJT[c2]
+        # Then add regularizer R to diagonal: AR[c,c] = K + R where R = K/imp - K
         var A = InlineArray[Scalar[DTYPE], A_SIZE](uninitialized=True)
         for i in range(A_SIZE):
             A[i] = Scalar[DTYPE](0)
@@ -180,6 +184,11 @@ struct CGSolver(ConstraintSolver):
                         * constraints.MinvJT[c2 * NV + i]
                     )
                 A[c1 * num_normals + c2] = a_val
+
+        # Add MuJoCo regularizer R to diagonal: AR[c,c] = K/imp
+        for c in range(num_normals):
+            var R = Scalar[DTYPE](1.0) / constraints.rows[c].inv_K_imp - constraints.rows[c].K
+            A[c * num_normals + c] += R
 
         # =====================================================================
         # Phase 2: Projected CG for normal constraints
@@ -273,19 +282,19 @@ struct CGSolver(ConstraintSolver):
 
             rr = rr_new
 
-        # Apply solved impulses: remove warm-start, apply final
+        # Apply solved forces: remove warm-start, apply final
         for c in range(num_normals):
             var warm = data.contacts[
                 constraints.rows[c].source_contact_idx
-            ].impulse_n
+            ].force_n
             if warm > Scalar[DTYPE](0):
                 for i in range(NV):
-                    qvel[i] -= constraints.MinvJT[c * NV + i] * warm
+                    qacc[i] -= constraints.MinvJT[c * NV + i] * warm
 
         for c in range(num_normals):
             if constraints.rows[c].lambda_val > Scalar[DTYPE](0):
                 for i in range(NV):
-                    qvel[i] += (
+                    qacc[i] += (
                         constraints.MinvJT[c * NV + i]
                         * constraints.rows[c].lambda_val
                     )
@@ -299,12 +308,12 @@ struct CGSolver(ConstraintSolver):
                     var r = limits_start + r_off
                     var dof = constraints.rows[r].source_dof
                     var sign = constraints.rows[r].limit_sign
-                    var v_limit = sign * qvel[dof]
+                    var a_limit = sign * qacc[dof]
 
-                    var delta = (
-                        -(v_limit + constraints.rows[r].bias)
-                        * constraints.rows[r].inv_K_imp
-                    )
+                    # MuJoCo regularizer: R = K/imp - K
+                    var R_lim = Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp - constraints.rows[r].K
+                    var residual = a_limit + constraints.rows[r].bias + R_lim * constraints.rows[r].lambda_val
+                    var delta = -residual * constraints.rows[r].inv_K_imp
                     var old_lambda = constraints.rows[r].lambda_val
                     constraints.rows[r].lambda_val = (
                         constraints.rows[r].lambda_val + delta
@@ -316,7 +325,7 @@ struct CGSolver(ConstraintSolver):
                     var actual = constraints.rows[r].lambda_val - old_lambda
 
                     for i in range(NV):
-                        qvel[i] += constraints.MinvJT[r * NV + i] * actual
+                        qacc[i] += constraints.MinvJT[r * NV + i] * actual
 
         # =====================================================================
         # Phase 3: Friction PGS with Coulomb cone
@@ -324,12 +333,15 @@ struct CGSolver(ConstraintSolver):
         if num_friction == 0:
             return
 
-        # Apply friction warm-start
+        # Apply friction warm-start (skip degenerate tangent rows)
         for r_off in range(num_friction):
             var r = friction_start + r_off
+            if constraints.rows[r].K < Scalar[DTYPE](FRICTION_K_MIN):
+                constraints.rows[r].lambda_val = Scalar[DTYPE](0)
+                continue
             if constraints.rows[r].lambda_val != Scalar[DTYPE](0):
                 for i in range(NV):
-                    qvel[i] += (
+                    qacc[i] += (
                         constraints.MinvJT[r * NV + i]
                         * constraints.rows[r].lambda_val
                     )
@@ -350,25 +362,29 @@ struct CGSolver(ConstraintSolver):
 
                 var max_friction = mu * lambda_n
 
-                # Tangent 1
-                var v_t1: Scalar[DTYPE] = 0
-                for i in range(NV):
-                    v_t1 += constraints.J[r_t1 * NV + i] * qvel[i]
-                var delta_t1 = -v_t1 / constraints.rows[r_t1].K
+                # Tangent 1 — skip if degenerate
+                var a_t1: Scalar[DTYPE] = 0
+                var delta_t1: Scalar[DTYPE] = 0
                 var old_t1 = constraints.rows[r_t1].lambda_val
-                constraints.rows[r_t1].lambda_val = (
-                    constraints.rows[r_t1].lambda_val + delta_t1
-                )
+                if constraints.rows[r_t1].K >= Scalar[DTYPE](FRICTION_K_MIN):
+                    for i in range(NV):
+                        a_t1 += constraints.J[r_t1 * NV + i] * qacc[i]
+                    delta_t1 = -a_t1 / constraints.rows[r_t1].K
+                    constraints.rows[r_t1].lambda_val = (
+                        constraints.rows[r_t1].lambda_val + delta_t1
+                    )
 
-                # Tangent 2
-                var v_t2: Scalar[DTYPE] = 0
-                for i in range(NV):
-                    v_t2 += constraints.J[r_t2 * NV + i] * qvel[i]
-                var delta_t2 = -v_t2 / constraints.rows[r_t2].K
+                # Tangent 2 — skip if degenerate
+                var a_t2: Scalar[DTYPE] = 0
+                var delta_t2: Scalar[DTYPE] = 0
                 var old_t2 = constraints.rows[r_t2].lambda_val
-                constraints.rows[r_t2].lambda_val = (
-                    constraints.rows[r_t2].lambda_val + delta_t2
-                )
+                if constraints.rows[r_t2].K >= Scalar[DTYPE](FRICTION_K_MIN):
+                    for i in range(NV):
+                        a_t2 += constraints.J[r_t2 * NV + i] * qacc[i]
+                    delta_t2 = -a_t2 / constraints.rows[r_t2].K
+                    constraints.rows[r_t2].lambda_val = (
+                        constraints.rows[r_t2].lambda_val + delta_t2
+                    )
 
                 # Coulomb cone clamping
                 var t_mag = sqrt(
@@ -390,7 +406,7 @@ struct CGSolver(ConstraintSolver):
                 var actual_t2 = constraints.rows[r_t2].lambda_val - old_t2
 
                 for i in range(NV):
-                    qvel[i] += (
+                    qacc[i] += (
                         constraints.MinvJT[r_t1 * NV + i] * actual_t1
                         + constraints.MinvJT[r_t2 * NV + i] * actual_t2
                     )
@@ -434,12 +450,13 @@ struct CGSolver(ConstraintSolver):
         var contact_tid = Int(thread_idx.y)
         var valid_env = env < BATCH
 
-        comptime qvel_idx = ws_qvel_pred_offset[NV, NBODY]()
+        comptime qacc_idx = ws_qacc_constrained_offset[NV, NBODY]()
         comptime solver_ws_idx = ws_solver_offset[NV, NBODY]()
         comptime MC = _max_one[MAX_CONTACTS]()
 
         # Common normal block offsets
         comptime ws_lambda_n_idx = solver_ws_idx + 0 * MC
+        comptime ws_K_n_idx = solver_ws_idx + 1 * MC
         comptime ws_c_dist_idx = solver_ws_idx + 2 * MC
         comptime ws_J_n_idx = solver_ws_idx + 13 * MC
         comptime ws_MinvJn_idx = solver_ws_idx + 13 * MC + MC * NV
@@ -478,8 +495,8 @@ struct CGSolver(ConstraintSolver):
         var nc = 0
         var dt: Scalar[DTYPE] = 0
         var friction_coef: Scalar[DTYPE] = 0
-        var inv_tc_dr: Scalar[DTYPE] = 0
-        var b_vel_coef: Scalar[DTYPE] = 0
+        var K_spring: Scalar[DTYPE] = 0
+        var B_damp: Scalar[DTYPE] = 0
         var si_dmin: Scalar[DTYPE] = 0
         var si_dmax: Scalar[DTYPE] = 0
         var si_width: Scalar[DTYPE] = 1
@@ -517,8 +534,8 @@ struct CGSolver(ConstraintSolver):
                 si_width = Scalar[DTYPE](1e-6)
             if si_dmax < Scalar[DTYPE](1e-4):
                 si_dmax = Scalar[DTYPE](1e-4)
-            inv_tc_dr = Scalar[DTYPE](1.0) / (sr_tc * sr_dr)
-            b_vel_coef = Scalar[DTYPE](2.0) * sr_dr * dt / (si_dmax * sr_tc)
+            K_spring = Scalar[DTYPE](1.0) / (si_dmax * si_dmax * sr_tc * sr_tc * sr_dr * sr_dr)
+            B_damp = Scalar[DTYPE](2.0) / (si_dmax * sr_tc)
 
         # === PARALLEL PHASE 1: Each thread precomputes one contact ===
         if valid_env:
@@ -543,8 +560,8 @@ struct CGSolver(ConstraintSolver):
                 state,
                 model,
                 workspace,
-                inv_tc_dr,
-                b_vel_coef,
+                K_spring,
+                B_damp,
                 si_dmin,
                 si_dmax,
                 si_width,
@@ -553,6 +570,7 @@ struct CGSolver(ConstraintSolver):
         barrier()
 
         # === PARALLEL DELASSUS BUILD: Each thread computes one row of A ===
+        # Add regularizer R to diagonal: AR[c,c] = K + R = K/imp
         if valid_env and contact_tid < nc:
             if workspace[env, ws_c_dist_idx + contact_tid] < Scalar[DTYPE](0):
                 for c2 in range(nc):
@@ -567,6 +585,10 @@ struct CGSolver(ConstraintSolver):
                     workspace[
                         env, ws_A_idx + contact_tid * MAX_CONTACTS + c2
                     ] = a_val
+                # Add MuJoCo regularizer R to diagonal
+                comptime ws_inv_K_imp_cg = solver_ws_idx + 12 * MC
+                var R_c = Scalar[DTYPE](1.0) / workspace[env, ws_inv_K_imp_cg + contact_tid] - workspace[env, ws_K_n_idx + contact_tid]
+                workspace[env, ws_A_idx + contact_tid * MAX_CONTACTS + contact_tid] += R_c
 
         barrier()
 

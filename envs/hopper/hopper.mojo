@@ -39,7 +39,11 @@ from physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     forward_kinematics_gpu,
 )
-from physics3d.gpu.buffer_utils import copy_model_to_buffer, copy_geoms_to_buffer, create_model_buffer
+from physics3d.gpu.buffer_utils import (
+    copy_model_to_buffer,
+    copy_geoms_to_buffer,
+    create_model_buffer,
+)
 from physics3d.gpu.constants import (
     TPB,
     state_size,
@@ -334,7 +338,7 @@ struct Hopper[
 
     fn step_continuous_vec[
         DTYPE2: DType
-    ](mut self, action: List[Scalar[DTYPE2]]) -> Tuple[
+    ](mut self, action: List[Scalar[DTYPE2]], verbose: Bool = False) -> Tuple[
         List[Scalar[DTYPE2]], Scalar[DTYPE2], Bool
     ]:
         """Take multi-dimensional continuous action and return (obs, reward, done).
@@ -361,7 +365,7 @@ struct Hopper[
     # =========================================================================
 
     fn step(
-        mut self, action: Self.ActionType
+        mut self, action: Self.ActionType, verbose: Bool = False
     ) -> Tuple[Self.StateType, Scalar[Self.dtype], Bool]:
         """Take an action and return (next_state, reward, done)."""
         # Store previous x position for velocity calculation
@@ -639,7 +643,9 @@ struct Hopper[
     ) raises:
         """Batched GPU step function using GC physics engine."""
 
-        comptime MODEL_SIZE = model_size[Hopper.NUM_BODIES, Hopper.NUM_JOINTS, Hopper.NGEOM]()
+        comptime MODEL_SIZE = model_size[
+            Hopper.NUM_BODIES, Hopper.NUM_JOINTS, Hopper.NGEOM
+        ]()
         comptime P = HopperParams[gpu_dtype]
         comptime WS_SIZE = integrator_workspace_size[
             Self.NV, Self.NUM_BODIES
@@ -696,7 +702,7 @@ struct Hopper[
                 Self.NUM_JOINTS,
                 Self.MAX_CONTACTS,
                 BATCH_SIZE,
-                NGEOM=Self.NGEOM,
+                NGEOM = Self.NGEOM,
             ](
                 ctx,
                 states_buf,
@@ -763,7 +769,9 @@ struct Hopper[
         )
 
         # Run forward kinematics
-        comptime MODEL_SIZE = model_size[Self.NUM_BODIES, Self.NUM_JOINTS, Self.NGEOM]()
+        comptime MODEL_SIZE = model_size[
+            Self.NUM_BODIES, Self.NUM_JOINTS, Self.NGEOM
+        ]()
         var model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
         Self._init_model_gpu(ctx, model_buf)
 
@@ -826,7 +834,9 @@ struct Hopper[
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
-        comptime MODEL_SIZE = model_size[Self.NUM_BODIES, Self.NUM_JOINTS, Self.NGEOM]()
+        comptime MODEL_SIZE = model_size[
+            Self.NUM_BODIES, Self.NUM_JOINTS, Self.NGEOM
+        ]()
         var model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
         Self._init_model_gpu(ctx, model_buf)
 
@@ -964,7 +974,9 @@ struct Hopper[
         BATCH_SIZE: Int,
     ](ctx: DeviceContext, mut workspace_buf: DeviceBuffer[gpu_dtype],) raises:
         """Initialize pre-allocated step workspace buffer."""
-        comptime MODEL_SIZE = model_size[Hopper.NUM_BODIES, Hopper.NUM_JOINTS, Hopper.NGEOM]()
+        comptime MODEL_SIZE = model_size[
+            Hopper.NUM_BODIES, Hopper.NUM_JOINTS, Hopper.NGEOM
+        ]()
         var model_view = DeviceBuffer[gpu_dtype](
             ctx,
             workspace_buf.unsafe_ptr(),

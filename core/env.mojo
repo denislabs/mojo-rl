@@ -18,7 +18,7 @@ trait Env:
     comptime ActionType: Action
 
     fn step(
-        mut self, action: Self.ActionType
+        mut self, action: Self.ActionType, verbose: Bool = False
     ) -> Tuple[Self.StateType, Scalar[Self.dtype], Bool]:
         """Take an action and return (next_state, reward, done)."""
         ...

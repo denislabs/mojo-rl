@@ -299,7 +299,7 @@ trait BoxContinuousActionEnv(ContinuousActionEnv, ContinuousStateEnv):
 
     fn step_continuous_vec[
         DTYPE: DType
-    ](mut self, action: List[Scalar[DTYPE]]) -> Tuple[
+    ](mut self, action: List[Scalar[DTYPE]], verbose: Bool = False) -> Tuple[
         List[Scalar[DTYPE]], Scalar[DTYPE], Bool
     ]:
         """Take multi-dimensional continuous action and return (obs, reward, done).
@@ -350,7 +350,9 @@ trait GPUDiscreteEnv:
         mut dones: DeviceBuffer[dtype],
         mut obs: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
-        workspace_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
+        workspace_ptr: UnsafePointer[
+            Scalar[dtype], MutAnyOrigin
+        ] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
     ) raises:
         """Perform one environment step and extract observations.
 
@@ -415,10 +417,7 @@ trait GPUDiscreteEnv:
     @staticmethod
     fn init_step_workspace_gpu[
         BATCH_SIZE: Int,
-    ](
-        ctx: DeviceContext,
-        mut workspace_buf: DeviceBuffer[dtype],
-    ) raises:
+    ](ctx: DeviceContext, mut workspace_buf: DeviceBuffer[dtype],) raises:
         """Initialize pre-allocated step workspace (call once at setup).
 
         No-op for environments with STEP_WS_SHARED == 0.
@@ -472,7 +471,9 @@ trait GPUContinuousEnv:
         mut obs: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
         curriculum_values: List[Scalar[dtype]] = [],
-        workspace_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
+        workspace_ptr: UnsafePointer[
+            Scalar[dtype], MutAnyOrigin
+        ] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
     ) raises:
         """Perform one environment step with continuous actions.
 
@@ -567,10 +568,7 @@ trait GPUContinuousEnv:
     @staticmethod
     fn init_step_workspace_gpu[
         BATCH_SIZE: Int,
-    ](
-        ctx: DeviceContext,
-        mut workspace_buf: DeviceBuffer[dtype],
-    ) raises:
+    ](ctx: DeviceContext, mut workspace_buf: DeviceBuffer[dtype],) raises:
         """Initialize pre-allocated step workspace (call once at setup).
 
         For environments with STEP_WS_SHARED > 0, this initializes the shared

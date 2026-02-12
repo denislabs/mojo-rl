@@ -88,7 +88,8 @@ struct GymTaxiState(Copyable, ImplicitlyCopyable, Movable, State):
 
 @fieldwise_init
 struct GymTaxiAction(Action, Copyable, ImplicitlyCopyable, Movable):
-    """Action for Taxi: 0=South, 1=North, 2=East, 3=West, 4=Pickup, 5=Dropoff."""
+    """Action for Taxi: 0=South, 1=North, 2=East, 3=West, 4=Pickup, 5=Dropoff.
+    """
 
     var action: Int
 
@@ -180,7 +181,8 @@ struct GymCliffWalkingAction(Action, Copyable, ImplicitlyCopyable, Movable):
 
 @fieldwise_init
 struct GymBlackjackState(Copyable, ImplicitlyCopyable, Movable, State):
-    """State for Blackjack: encoded state index from (player_sum, dealer_card, usable_ace)."""
+    """State for Blackjack: encoded state index from (player_sum, dealer_card, usable_ace).
+    """
 
     var index: Int
 
@@ -308,7 +310,7 @@ struct GymFrozenLakeEnv(DiscreteEnv):
         return GymFrozenLakeState(index=self.current_state)
 
     fn step(
-        mut self, action: GymFrozenLakeAction
+        mut self, action: GymFrozenLakeAction, verbose: Bool = False
     ) -> Tuple[GymFrozenLakeState, Float64, Bool]:
         """Take action and return (state, reward, done)."""
         var reward: Float64 = 0.0
@@ -352,7 +354,8 @@ struct GymFrozenLakeEnv(DiscreteEnv):
     # ========================================================================
 
     fn render(mut self, mut renderer: RendererBase):
-        """Render the environment (uses Gymnasium's renderer, renderer argument ignored)."""
+        """Render the environment (uses Gymnasium's renderer, renderer argument ignored).
+        """
         _ = renderer
         try:
             _ = self.env.render()
@@ -417,7 +420,9 @@ struct GymTaxiEnv(DiscreteEnv):
         self.gym = Python.import_module("gymnasium")
 
         if render_mode == "human":
-            self.env = self.gym.make("Taxi-v3", render_mode=PythonObject("human"))
+            self.env = self.gym.make(
+                "Taxi-v3", render_mode=PythonObject("human")
+            )
         else:
             self.env = self.gym.make("Taxi-v3")
 
@@ -443,7 +448,9 @@ struct GymTaxiEnv(DiscreteEnv):
         self.episode_length = 0
         return GymTaxiState(index=self.current_state)
 
-    fn step(mut self, action: GymTaxiAction) -> Tuple[GymTaxiState, Float64, Bool]:
+    fn step(
+        mut self, action: GymTaxiAction, verbose: Bool = False
+    ) -> Tuple[GymTaxiState, Float64, Bool]:
         """Take action and return (state, reward, done)."""
         var reward: Float64 = 0.0
         try:
@@ -486,7 +493,8 @@ struct GymTaxiEnv(DiscreteEnv):
     # ========================================================================
 
     fn render(mut self, mut renderer: RendererBase):
-        """Render the environment (uses Gymnasium's renderer, renderer argument ignored)."""
+        """Render the environment (uses Gymnasium's renderer, renderer argument ignored).
+        """
         _ = renderer
         try:
             _ = self.env.render()
@@ -602,7 +610,7 @@ struct GymBlackjackEnv(DiscreteEnv):
         return GymBlackjackState(index=self.current_state)
 
     fn step(
-        mut self, action: GymBlackjackAction
+        mut self, action: GymBlackjackAction, verbose: Bool = False
     ) -> Tuple[GymBlackjackState, Float64, Bool]:
         """Take action and return (state, reward, done)."""
         var reward: Float64 = 0.0
@@ -658,7 +666,8 @@ struct GymBlackjackEnv(DiscreteEnv):
         return ps * 20 + dc * 2 + ua
 
     fn render(mut self, mut renderer: RendererBase):
-        """Render the environment (uses Gymnasium's renderer, renderer argument ignored)."""
+        """Render the environment (uses Gymnasium's renderer, renderer argument ignored).
+        """
         _ = renderer
         try:
             _ = self.env.render()
@@ -759,7 +768,7 @@ struct GymCliffWalkingEnv(DiscreteEnv):
         return GymCliffWalkingState(index=self.current_state)
 
     fn step(
-        mut self, action: GymCliffWalkingAction
+        mut self, action: GymCliffWalkingAction, verbose: Bool = False
     ) -> Tuple[GymCliffWalkingState, Float64, Bool]:
         """Take action and return (state, reward, done)."""
         var reward: Float64 = 0.0
@@ -776,7 +785,11 @@ struct GymCliffWalkingEnv(DiscreteEnv):
         self.episode_reward += reward
         self.episode_length += 1
 
-        return (GymCliffWalkingState(index=self.current_state), reward, self.done)
+        return (
+            GymCliffWalkingState(index=self.current_state),
+            reward,
+            self.done,
+        )
 
     fn get_state(self) -> GymCliffWalkingState:
         """Return current state."""
@@ -803,7 +816,8 @@ struct GymCliffWalkingEnv(DiscreteEnv):
     # ========================================================================
 
     fn render(mut self, mut renderer: RendererBase):
-        """Render the environment (uses Gymnasium's renderer, renderer argument ignored)."""
+        """Render the environment (uses Gymnasium's renderer, renderer argument ignored).
+        """
         _ = renderer
         try:
             _ = self.env.render()

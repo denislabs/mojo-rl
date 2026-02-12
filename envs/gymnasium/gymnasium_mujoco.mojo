@@ -33,7 +33,8 @@ from render import RendererBase
 
 @fieldwise_init
 struct GymMuJoCoState(Copyable, ImplicitlyCopyable, Movable, State):
-    """State for MuJoCo environments: placeholder index for trait conformance."""
+    """State for MuJoCo environments: placeholder index for trait conformance.
+    """
 
     var index: Int
 
@@ -49,7 +50,8 @@ struct GymMuJoCoState(Copyable, ImplicitlyCopyable, Movable, State):
 
 @fieldwise_init
 struct GymMuJoCoAction(Action, Copyable, ImplicitlyCopyable, Movable):
-    """Action for MuJoCo environments: placeholder index for trait conformance."""
+    """Action for MuJoCo environments: placeholder index for trait conformance.
+    """
 
     var index: Int
 
@@ -106,7 +108,9 @@ struct GymMuJoCoEnv(BoxContinuousActionEnv):
         self.env_name = env_name
 
         if render_mode == "human":
-            self.env = self.gym.make(env_name, render_mode=PythonObject("human"))
+            self.env = self.gym.make(
+                env_name, render_mode=PythonObject("human")
+            )
         else:
             self.env = self.gym.make(env_name)
 
@@ -158,9 +162,10 @@ struct GymMuJoCoEnv(BoxContinuousActionEnv):
         return GymMuJoCoState(index=0)
 
     fn step(
-        mut self, action: GymMuJoCoAction
+        mut self, action: GymMuJoCoAction, verbose: Bool = False
     ) -> Tuple[GymMuJoCoState, Float64, Bool]:
-        """Take action (placeholder - use step_continuous for actual control)."""
+        """Take action (placeholder - use step_continuous for actual control).
+        """
         return (GymMuJoCoState(index=0), 0.0, self.done)
 
     fn get_state(self) -> GymMuJoCoState:
@@ -188,7 +193,8 @@ struct GymMuJoCoEnv(BoxContinuousActionEnv):
         return self.current_obs_4d
 
     fn reset_obs_list(mut self) -> List[Float64]:
-        """Reset environment and return continuous observation as List (trait method)."""
+        """Reset environment and return continuous observation as List (trait method).
+        """
         _ = self.reset()
         return self.get_obs_list()
 
@@ -304,7 +310,8 @@ struct GymMuJoCoEnv(BoxContinuousActionEnv):
             obs.append(self.current_obs[i])
 
     fn render(mut self, mut renderer: RendererBase):
-        """Render the environment (uses Gymnasium's renderer, renderer argument ignored)."""
+        """Render the environment (uses Gymnasium's renderer, renderer argument ignored).
+        """
         _ = renderer
         try:
             _ = self.env.render()
@@ -409,7 +416,9 @@ fn make_inverted_pendulum(render_mode: String = "") raises -> GymMuJoCoEnv:
     return GymMuJoCoEnv("InvertedPendulum-v5", render_mode)
 
 
-fn make_inverted_double_pendulum(render_mode: String = "") raises -> GymMuJoCoEnv:
+fn make_inverted_double_pendulum(
+    render_mode: String = "",
+) raises -> GymMuJoCoEnv:
     """InvertedDoublePendulum-v5: Balance a double pendulum on a cart.
 
     Obs: 11 (positions and velocities)

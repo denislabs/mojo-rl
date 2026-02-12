@@ -65,10 +65,16 @@ from ..collision.contact_detection import (
     normalize_qpos_quaternions_gpu,
 )
 from ..solver.pgs_solver import PGSSolver
-from ..constraints.constraint_data import ConstraintData
+from ..constraints.constraint_data import (
+    ConstraintData,
+    CNSTR_NORMAL,
+    CNSTR_FRICTION_T1,
+    CNSTR_FRICTION_T2,
+    CNSTR_LIMIT,
+)
 from ..constraints.constraint_builder import (
     build_constraints,
-    writeback_impulses,
+    writeback_forces,
 )
 from ..traits.integrator import Integrator
 from ..traits.solver import ConstraintSolver
@@ -100,7 +106,7 @@ from ..gpu.constants import (
     ws_bias_offset,
     ws_fnet_offset,
     ws_qacc_ws_offset,
-    ws_qvel_pred_offset,
+    ws_qacc_constrained_offset,
     ws_m_inv_offset,
 )
 
@@ -137,12 +143,14 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
     ](
         model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+        verbose: Bool = False,
     ) where DTYPE.is_floating_point():
         """Execute one simulation step with implicit-fast integration.
 
         Args:
             model: Static model configuration.
             data: Mutable simulation state.
+            verbose: Whether to print debug information.
         """
         var dt = model.timestep
         comptime M_SIZE = _max_one[NV * NV]()
@@ -155,7 +163,38 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         compute_body_velocities(model, data)
 
         # 2. Collision detection
-        detect_contacts[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM](model, data)
+        detect_contacts[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM](
+            model, data
+        )
+
+        if verbose:
+            print("  [FK] contacts:", data.num_contacts)
+            for c in range(Int(data.num_contacts)):
+                var ct = data.contacts[c]
+                var ba = Int(ct.body_a)
+                var bb = Int(ct.body_b)
+                var ba_name = String("ground") if ba < 0 else String(
+                    model.get_body_name(ba)
+                )
+                var bb_name = String("ground") if bb < 0 else String(
+                    model.get_body_name(bb)
+                )
+                print(
+                    "    c",
+                    c,
+                    ": body_a=",
+                    ba_name,
+                    "(",
+                    ba,
+                    ") body_b=",
+                    bb_name,
+                    "(",
+                    bb,
+                    ") dist=",
+                    Float64(ct.dist),
+                    "pen=",
+                    -Float64(ct.dist),
+                )
 
         # 3. Compute cdof (spatial motion axes per DOF) - needed for full M
         var cdof = InlineArray[Scalar[DTYPE], CDOF_SIZE](uninitialized=True)
@@ -316,18 +355,30 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
             M_inv[i] = Scalar[DTYPE](0)
         compute_M_inv_from_ldl[DTYPE, NV, M_SIZE, V_SIZE](L, D, M_inv)
 
-        # 8. Predict velocity: qvel_pred = qvel + qacc * dt
-        comptime MAX_QVEL: Scalar[DTYPE] = 10.0
-        var qvel_pred = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-        for i in range(NV):
-            qvel_pred[i] = data.qvel[i] + qacc[i] * dt
-            # Clamp predicted velocity before solver to prevent runaway
-            if qvel_pred[i] > MAX_QVEL:
-                qvel_pred[i] = MAX_QVEL
-            elif qvel_pred[i] < -MAX_QVEL:
-                qvel_pred[i] = -MAX_QVEL
+        if verbose:
+            print("  [PRE-SOLVER]")
+            print("    qpos:", end="")
+            for i in range(NQ):
+                print(" ", Float64(data.qpos[i]), end="")
+            print("")
+            print("    qvel:", end="")
+            for i in range(NV):
+                print(" ", Float64(data.qvel[i]), end="")
+            print("")
+            print("    qacc_unconstrained:", end="")
+            for i in range(NV):
+                print(" ", Float64(qacc[i]), end="")
+            print("")
+            print("    f_net:", end="")
+            for i in range(NV):
+                print(" ", Float64(f_net[i]), end="")
+            print("")
+            print("    qfrc:", end="")
+            for i in range(NV):
+                print(" ", Float64(data.qfrc[i]), end="")
+            print("")
 
-        # 9. Build constraints and solve (modifies qvel_pred in-place)
+        # 8. Build constraints and solve (modifies qacc in-place)
         comptime MAX_ROWS = 3 * MAX_CONTACTS + 2 * NJOINT
         var constraints = ConstraintData[DTYPE, MAX_ROWS, NV]()
         build_constraints[
@@ -341,7 +392,84 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
             V_SIZE,
             M_SIZE,
             CDOF_SIZE,
-        ](model, data, cdof, M_inv, qvel_pred, dt, constraints)
+        ](model, data, cdof, M_inv, qacc, dt, constraints)
+
+        if verbose:
+            print(
+                "  [CONSTRAINTS] num_rows:",
+                constraints.num_rows,
+                "normals:",
+                constraints.num_normals,
+                "friction:",
+                constraints.num_friction,
+                "limits:",
+                constraints.num_limits,
+            )
+            for r in range(constraints.num_rows):
+                var row = constraints.rows[r]
+                var ct_name: String
+                if Int(row.constraint_type) == CNSTR_NORMAL:
+                    ct_name = "NORMAL"
+                elif Int(row.constraint_type) == CNSTR_FRICTION_T1:
+                    ct_name = "FRIC_T1"
+                elif Int(row.constraint_type) == CNSTR_FRICTION_T2:
+                    ct_name = "FRIC_T2"
+                elif Int(row.constraint_type) == CNSTR_LIMIT:
+                    ct_name = "LIMIT"
+                else:
+                    ct_name = "???"
+                print(
+                    "    row",
+                    r,
+                    ":",
+                    ct_name,
+                    " K=",
+                    Float64(row.K),
+                    " bias=",
+                    Float64(row.bias),
+                    " inv_K_imp=",
+                    Float64(row.inv_K_imp),
+                    " lambda=",
+                    Float64(row.lambda_val),
+                    " lo=",
+                    Float64(row.lo),
+                    " hi=",
+                    Float64(row.hi),
+                )
+                if Int(row.constraint_type) == CNSTR_NORMAL:
+                    var j_dot_qvel: Float64 = 0
+                    var j_dot_qacc: Float64 = 0
+                    for i in range(NV):
+                        j_dot_qvel += Float64(
+                            constraints.J[r * NV + i]
+                        ) * Float64(data.qvel[i])
+                        j_dot_qacc += Float64(
+                            constraints.J[r * NV + i]
+                        ) * Float64(qacc[i])
+                    print(
+                        "      J·qvel=",
+                        j_dot_qvel,
+                        " J·qacc=",
+                        j_dot_qacc,
+                        " (a_n + bias)=",
+                        j_dot_qacc + Float64(row.bias),
+                    )
+                    if Int(row.source_contact_idx) >= 0:
+                        var ci = Int(row.source_contact_idx)
+                        print(
+                            "      contact[",
+                            ci,
+                            "]: pen=",
+                            -Float64(data.contacts[ci].dist),
+                            " friction_coef=",
+                            Float64(row.friction_coef),
+                        )
+
+            print("  [SOLVING]")
+            print("    qacc before solve:", end="")
+            for i in range(NV):
+                print(" ", Float64(qacc[i]), end="")
+            print("")
 
         Self.SOLVER.solve[
             DTYPE,
@@ -353,9 +481,57 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
             MAX_ROWS,
             V_SIZE,
             M_SIZE,
-        ](model, data, M_inv, constraints, qvel_pred, dt)
+        ](model, data, M_inv, constraints, qacc, dt)
 
-        writeback_impulses[
+        if verbose:
+            print("    qacc after solve:", end="")
+            for i in range(NV):
+                print(" ", Float64(qacc[i]), end="")
+            print("")
+
+            # Show final constraint forces
+            print("    final lambdas:", end="")
+            for r in range(constraints.num_rows):
+                if Int(constraints.rows[r].constraint_type) == CNSTR_NORMAL:
+                    print(
+                        " n[",
+                        r,
+                        "]=",
+                        Float64(constraints.rows[r].lambda_val),
+                        end="",
+                    )
+            print("")
+
+            # Show J·qacc after solve with full KKT residual
+            # At convergence: a + bias + R*lambda = 0 for active contacts
+            for r in range(constraints.num_rows):
+                if Int(constraints.rows[r].constraint_type) == CNSTR_NORMAL:
+                    var j_dot_qacc_post: Float64 = 0
+                    for i in range(NV):
+                        j_dot_qacc_post += Float64(
+                            constraints.J[r * NV + i]
+                        ) * Float64(qacc[i])
+                    var lam = Float64(constraints.rows[r].lambda_val)
+                    var K_val = Float64(constraints.rows[r].K)
+                    var inv_Ki = Float64(constraints.rows[r].inv_K_imp)
+                    var R_val = 1.0 / inv_Ki - K_val if inv_Ki > 1e-14 else 0.0
+                    var kkt_residual = j_dot_qacc_post + Float64(
+                        constraints.rows[r].bias
+                    ) + R_val * lam
+                    print(
+                        "    row",
+                        r,
+                        ": lambda=",
+                        lam,
+                        " a+bias=",
+                        j_dot_qacc_post + Float64(constraints.rows[r].bias),
+                        " R*lam=",
+                        R_val * lam,
+                        " KKT=",
+                        kkt_residual,
+                    )
+
+        writeback_forces[
             DTYPE,
             NQ,
             NV,
@@ -365,11 +541,11 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
             MAX_ROWS,
         ](constraints, data)
 
-        # 9. Write back constrained velocity and integrate position
+        # 9. Integrate: qvel = old_qvel + constrained_qacc * dt
+        comptime MAX_QVEL: Scalar[DTYPE] = 100.0
         for i in range(NV):
-            # qacc = (constrained_vel - old_vel) / dt
-            data.qacc[i] = (qvel_pred[i] - data.qvel[i]) / dt
-            data.qvel[i] = qvel_pred[i]
+            data.qacc[i] = qacc[i]
+            data.qvel[i] = data.qvel[i] + qacc[i] * dt
 
         # 9b. Clamp velocities to prevent divergence
         for i in range(NV):
@@ -384,6 +560,17 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
 
         # 10. Normalize quaternions
         normalize_qpos_quaternions(model, data)
+
+        if verbose:
+            print("  [POST-INTEGRATION]")
+            print("    qvel_new:", end="")
+            for i in range(NV):
+                print(" ", Float64(data.qvel[i]), end="")
+            print("")
+            print("    qpos_new:", end="")
+            for i in range(NQ):
+                print(" ", Float64(data.qpos[i]), end="")
+            print("")
 
         # 11. Joint limits now enforced as constraints inside the solver
         # (no post-step clamping needed)
@@ -404,7 +591,9 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
     ) where DTYPE.is_floating_point():
         """Run simulation for multiple steps on CPU."""
         for _ in range(num_steps):
-            Self.step[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM](model, data)
+            Self.step[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM](
+                model, data
+            )
 
     # =========================================================================
     # GPU Methods
@@ -452,7 +641,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         comptime bias_idx = ws_bias_offset[NV, NBODY]()
         comptime fnet_idx = ws_fnet_offset[NV, NBODY]()
         comptime qacc_ws_idx = ws_qacc_ws_offset[NV, NBODY]()
-        comptime qvel_pred_idx = ws_qvel_pred_offset[NV, NBODY]()
+        comptime qacc_constrained_idx = ws_qacc_constrained_offset[NV, NBODY]()
         comptime m_inv_idx = ws_m_inv_offset[NV, NBODY]()
 
         # 1. Forward kinematics
@@ -483,8 +672,16 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
 
         # 3. Detect contacts
         detect_contacts_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, BATCH, NGEOM,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
+            NGEOM,
         ](env, state, model)
 
         # 4. Compute cdof (writes to workspace at ws_cdof_offset)
@@ -744,20 +941,12 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
             )
             state[env, qacc_off + i] = qacc_val
 
-        # 10. Predict velocity (write to workspace qvel_pred region)
-        comptime MAX_QVEL: Scalar[DTYPE] = 10.0
+        # 10. Write unconstrained qacc to workspace for constraint solver
         for i in range(NV):
-            var qvel = rebind[Scalar[DTYPE]](state[env, qvel_off + i])
             var qacc_val = rebind[Scalar[DTYPE]](
                 workspace[env, qacc_ws_idx + i]
             )
-            var vpred = qvel + qacc_val * dt
-            # Clamp predicted velocity before solver to prevent runaway
-            if vpred > MAX_QVEL:
-                vpred = MAX_QVEL
-            elif vpred < -MAX_QVEL:
-                vpred = -MAX_QVEL
-            workspace[env, qvel_pred_idx + i] = vpred
+            workspace[env, qacc_constrained_idx + i] = qacc_val
 
     @always_inline
     @staticmethod
@@ -797,30 +986,27 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
 
         var qvel_off = qvel_offset[NQ, NV]()
         var qacc_off = qacc_offset[NQ, NV]()
-        var qvel_pred_idx = ws_qvel_pred_offset[NV, NBODY]()
+        var qacc_constrained_idx = ws_qacc_constrained_offset[NV, NBODY]()
         var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
         var dt = rebind[Scalar[DTYPE]](
             model[0, model_meta_off + MODEL_META_IDX_TIMESTEP]
         )
-        # 9. Write back constrained velocity and update qacc
+        # 9. Integrate: qvel = old_qvel + constrained_qacc * dt
         var qpos_off = qpos_offset[NQ, NV]()
+        comptime MAX_QVEL: Scalar[DTYPE] = 100.0
         for i in range(NV):
-            # qacc = (constrained_vel - old_vel) / dt
             var old_qvel = rebind[Scalar[DTYPE]](state[env, qvel_off + i])
-            var constrained_vel = rebind[Scalar[DTYPE]](
-                workspace[env, qvel_pred_idx + i]
+            var constrained_qacc = rebind[Scalar[DTYPE]](
+                workspace[env, qacc_constrained_idx + i]
             )
-            state[env, qacc_off + i] = (constrained_vel - old_qvel) / dt
-            state[env, qvel_off + i] = constrained_vel
-
-        # 9b. Clamp velocities to prevent divergence
-        comptime MAX_QVEL: Scalar[DTYPE] = 10.0
-        for i in range(NV):
-            var v = rebind[Scalar[DTYPE]](state[env, qvel_off + i])
-            if v > MAX_QVEL:
-                state[env, qvel_off + i] = MAX_QVEL
-            elif v < -MAX_QVEL:
-                state[env, qvel_off + i] = -MAX_QVEL
+            state[env, qacc_off + i] = constrained_qacc
+            var new_qvel = old_qvel + constrained_qacc * dt
+            # Clamp velocity
+            if new_qvel > MAX_QVEL:
+                new_qvel = MAX_QVEL
+            elif new_qvel < -MAX_QVEL:
+                new_qvel = -MAX_QVEL
+            state[env, qvel_off + i] = new_qvel
 
         for i in range(NQ):
             if i < NV:
@@ -984,7 +1170,9 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
     ) raises:
         """Run simulation for multiple steps on GPU."""
         for _ in range(num_steps):
-            Self.step_gpu[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, BATCH, NGEOM](
+            Self.step_gpu[
+                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, BATCH, NGEOM
+            ](
                 ctx,
                 state_buf,
                 model_buf,

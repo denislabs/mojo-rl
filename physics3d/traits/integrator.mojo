@@ -40,12 +40,14 @@ trait Integrator(Movable & ImplicitlyCopyable):
     ](
         model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+        verbose: Bool = False,
     ) where DTYPE.is_floating_point():
         """Perform one physics simulation step on CPU.
 
         Args:
             model: Static model configuration.
             data: Mutable simulation state (will be modified).
+            verbose: Whether to print debug information.
         """
         ...
 

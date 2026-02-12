@@ -14,7 +14,11 @@ from time import perf_counter_ns
 from gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.half_cheetah import HalfCheetah, HalfCheetahParams
+from envs.half_cheetah import (
+    HalfCheetah,
+    HalfCheetahParams,
+    HalfCheetahCurriculum,
+)
 from deep_rl import dtype as gpu_dtype
 
 
@@ -137,7 +141,8 @@ fn main() raises:
             )
 
             var metrics = agent.train_gpu[
-                HalfCheetah[gpu_dtype, TERMINATE_ON_UNHEALTHY=False]
+                HalfCheetah[gpu_dtype, TERMINATE_ON_UNHEALTHY=True],
+                HalfCheetahCurriculum,
             ](
                 ctx,
                 num_episodes=episodes_this_round,
@@ -187,27 +192,27 @@ fn main() raises:
 
             # Print results
             print(
-                String(episodes_trained).rjust(8),
+                String(episodes_trained).ascii_rjust(8),
                 "|",
-                String(train_avg)[:9].ljust(9),
+                String(train_avg)[:9].ascii_ljust(9),
                 "|",
-                String(eval_cpu_avg)[:8].ljust(8),
+                String(eval_cpu_avg)[:8].ascii_ljust(8),
                 "|",
-                String(eval_gpu_avg)[:8].ljust(8),
+                String(eval_gpu_avg)[:8].ascii_ljust(8),
                 "|",
-                String(gap_cpu)[:8].ljust(8),
+                String(gap_cpu)[:8].ascii_ljust(8),
                 "|",
-                String(gap_gpu)[:8].ljust(8),
+                String(gap_gpu)[:8].ascii_ljust(8),
                 "|",
-                String(current_log_std[0])[:10].ljust(10),
+                String(current_log_std[0])[:10].ascii_ljust(10),
                 "|",
-                String(current_log_std[1])[:10].ljust(10),
+                String(current_log_std[1])[:10].ascii_ljust(10),
                 "|",
-                String(current_log_std[2])[:10].ljust(10),
+                String(current_log_std[2])[:10].ascii_ljust(10),
                 "|",
-                String(current_log_std[3])[:10].ljust(10),
+                String(current_log_std[3])[:10].ascii_ljust(10),
                 "|",
-                String(current_log_std[4])[:10].ljust(10),
+                String(current_log_std[4])[:10].ascii_ljust(10),
                 "|",
                 String(current_log_std[5])[:10],
             )
@@ -231,31 +236,31 @@ fn main() raises:
             var gap_cpu = train_rewards[i] - eval_cpu_rewards[i]
             var gap_gpu = train_rewards[i] - eval_gpu_rewards[i]
             print(
-                String(i + 1).rjust(5),
+                String(i + 1).ascii_rjust(5),
                 "|",
-                String(checkpoints[i]).rjust(8),
+                String(checkpoints[i]).ascii_rjust(8),
                 "|",
-                String(train_rewards[i])[:8].rjust(8),
+                String(train_rewards[i])[:8].ascii_rjust(8),
                 "|",
-                String(eval_cpu_rewards[i])[:8].rjust(8),
+                String(eval_cpu_rewards[i])[:8].ascii_rjust(8),
                 "|",
-                String(eval_gpu_rewards[i])[:8].rjust(8),
+                String(eval_gpu_rewards[i])[:8].ascii_rjust(8),
                 "|",
-                String(gap_cpu)[:8].rjust(8),
+                String(gap_cpu)[:8].ascii_rjust(8),
                 "|",
-                String(gap_gpu)[:8].rjust(8),
+                String(gap_gpu)[:8].ascii_rjust(8),
                 "|",
-                String(log_std_values[i][0])[:10].rjust(10),
+                String(log_std_values[i][0])[:10].ascii_rjust(10),
                 "|",
-                String(log_std_values[i][1])[:10].rjust(10),
+                String(log_std_values[i][1])[:10].ascii_rjust(10),
                 "|",
-                String(log_std_values[i][2])[:10].rjust(10),
+                String(log_std_values[i][2])[:10].ascii_rjust(10),
                 "|",
-                String(log_std_values[i][3])[:10].rjust(10),
+                String(log_std_values[i][3])[:10].ascii_rjust(10),
                 "|",
-                String(log_std_values[i][4])[:10].rjust(10),
+                String(log_std_values[i][4])[:10].ascii_rjust(10),
                 "|",
-                String(log_std_values[i][5])[:10].rjust(10),
+                String(log_std_values[i][5])[:10].ascii_rjust(10),
             )
 
         print()

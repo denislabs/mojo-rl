@@ -2,7 +2,7 @@
 
 ConstraintSolver defines the interface for constraint-based contact solving
 in joint space. Implementations receive pre-built ConstraintData and modify
-the predicted velocity in-place to satisfy constraints.
+the acceleration vector in-place to satisfy constraints (acceleration-level solving).
 
 The constraint builder populates ConstraintData (normals, friction, limits)
 before the solver is called. Solvers are pure iterative algorithms.
@@ -17,14 +17,14 @@ from ..constraints.constraint_data import ConstraintData
 trait ConstraintSolver(Movable & ImplicitlyCopyable):
     """Trait for constraint-based contact solvers in GC engine.
 
-    Solvers modify the predicted velocity in-place to satisfy contact
+    Solvers modify the acceleration vector in-place to satisfy contact
     constraints (non-penetration + friction) and joint limits.
 
     The solve() method receives:
-    - model/data: physics model and current state (for impulse writeback)
+    - model/data: physics model and current state (for force writeback)
     - M_inv: full dense inverse mass matrix (NV×NV)
     - constraints: pre-built ConstraintData with all constraints
-    - qvel: predicted velocity (modified in-place to be constrained)
+    - qacc: acceleration vector (modified in-place by solver)
     - dt: timestep
     """
 
@@ -69,17 +69,17 @@ trait ConstraintSolver(Movable & ImplicitlyCopyable):
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         M_inv: InlineArray[Scalar[DTYPE], M_SIZE],
         mut constraints: ConstraintData[DTYPE, MAX_ROWS, NV],
-        mut qvel: InlineArray[Scalar[DTYPE], V_SIZE],
+        mut qacc: InlineArray[Scalar[DTYPE], V_SIZE],
         dt: Scalar[DTYPE],
     ):
         """Solve constraints on CPU.
 
         Args:
             model: Static model configuration.
-            data: Mutable simulation state. Impulses written back for warm-starting.
+            data: Mutable simulation state. Forces written back for warm-starting.
             M_inv: Full dense inverse mass matrix (NV×NV, row-major).
             constraints: Pre-built constraint data (normals, friction, limits).
-            qvel: Predicted velocity, modified in-place to satisfy constraints.
+            qacc: Acceleration vector, modified in-place to satisfy constraints.
             dt: Timestep.
         """
         ...
@@ -115,7 +115,7 @@ trait ConstraintSolver(Movable & ImplicitlyCopyable):
             model: GPU model buffer.
             workspace: Device memory workspace [BATCH, WS_SIZE] containing
                 integrator temps, M_inv, and solver arrays per environment.
-                Reads cdof and qvel_pred from workspace, modifies qvel_pred
-                in-place to satisfy constraints.
+                Reads cdof and qacc from workspace, modifies qacc
+                in-place to satisfy constraints (acceleration-level).
         """
         ...

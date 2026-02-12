@@ -109,7 +109,7 @@ struct GymnasiumEnv:
         return obs
 
     fn step(
-        mut self, action: PythonObject
+        mut self, action: PythonObject, verbose: Bool = False
     ) raises -> Tuple[PythonObject, Float64, Bool]:
         """Take action and return (observation, reward, done).
 
@@ -151,7 +151,8 @@ struct GymnasiumEnv:
         _ = self.env.close()
 
     fn render(mut self, mut renderer: RendererBase) raises:
-        """Render the environment (uses Gymnasium's renderer, renderer argument ignored)."""
+        """Render the environment (uses Gymnasium's renderer, renderer argument ignored).
+        """
         _ = renderer
         _ = self.env.render()
 

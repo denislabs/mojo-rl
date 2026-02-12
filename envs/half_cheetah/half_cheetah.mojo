@@ -187,7 +187,7 @@ struct HalfCheetah[
         out self,
         max_steps: Int = 1000,
         frame_skip: Int = 5,
-        timestep: Scalar[Self.DTYPE] = 0.002,
+        timestep: Scalar[Self.DTYPE] = HalfCheetahParams[Self.DTYPE].DT,
     ):
         """Initialize the HalfCheetah environment."""
         self.max_steps = max_steps
@@ -320,7 +320,11 @@ struct HalfCheetah[
 
     fn step_continuous_vec[
         DTYPE2: DType
-    ](mut self, action: List[Scalar[DTYPE2]]) -> Tuple[
+    ](
+        mut self,
+        action: List[Scalar[DTYPE2]],
+        verbose: Bool = False,
+    ) -> Tuple[
         List[Scalar[DTYPE2]], Scalar[DTYPE2], Bool
     ]:
         """Take multi-dimensional continuous action and return (obs, reward, done).
@@ -347,7 +351,7 @@ struct HalfCheetah[
     # =========================================================================
 
     fn step(
-        mut self, action: Self.ActionType
+        mut self, action: Self.ActionType, verbose: Bool = False
     ) -> Tuple[Self.StateType, Scalar[Self.dtype], Bool]:
         """Take an action and return (next_state, reward, done)."""
         # Store previous x position for velocity calculation
@@ -360,7 +364,7 @@ struct HalfCheetah[
         for _ in range(self.frame_skip):
             ImplicitFastIntegrator[SOLVER=NewtonSolver].step[
                 NGEOM = Self.NGEOM
-            ](self.model, self.data)
+            ](self.model, self.data, verbose=verbose)
             # Enforce joint limits after each physics step
             HalfCheetahJoints.enforce_limits(self.data)
 

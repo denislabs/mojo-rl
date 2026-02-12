@@ -195,7 +195,7 @@ struct TaxiEnv(DiscreteEnv):
         return 6
 
     fn step(
-        mut self, action: TaxiAction
+        mut self, action: TaxiAction, verbose: Bool = False
     ) -> Tuple[TaxiState, Scalar[Self.dtype], Bool]:
         """Take an action and return (next_state, reward, done)."""
         var new_row = self.state.taxi_row

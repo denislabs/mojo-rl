@@ -72,7 +72,7 @@ from ..solver.pgs_solver import PGSSolver
 from ..constraints.constraint_data import ConstraintData
 from ..constraints.constraint_builder import (
     build_constraints,
-    writeback_impulses,
+    writeback_forces,
 )
 from ..traits.integrator import Integrator
 from ..traits.solver import ConstraintSolver
@@ -104,7 +104,7 @@ from ..gpu.constants import (
     ws_bias_offset,
     ws_fnet_offset,
     ws_qacc_ws_offset,
-    ws_qvel_pred_offset,
+    ws_qacc_constrained_offset,
     ws_m_inv_offset,
 )
 
@@ -142,12 +142,14 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
     ](
         model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+        verbose: Bool = False,
     ) where DTYPE.is_floating_point():
         """Execute one simulation step with constraint-based contacts.
 
         Args:
             model: Static model configuration.
             data: Mutable simulation state.
+            verbose: Whether to print debug information.
         """
         var dt = model.timestep
         comptime M_SIZE = _max_one[NV * NV]()
@@ -160,7 +162,9 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         compute_body_velocities(model, data)
 
         # 2. Collision detection
-        detect_contacts[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM](model, data)
+        detect_contacts[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM](
+            model, data
+        )
 
         # 3. Compute cdof (spatial motion axes per DOF) - needed for full M
         var cdof = InlineArray[Scalar[DTYPE], CDOF_SIZE](uninitialized=True)
@@ -318,18 +322,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             M_inv[i] = Scalar[DTYPE](0)
         compute_M_inv_from_ldl[DTYPE, NV, M_SIZE, V_SIZE](L, D, M_inv)
 
-        # 8. Predict velocity: qvel_pred = qvel + qacc * dt
-        comptime MAX_QVEL: Scalar[DTYPE] = 10.0
-        var qvel_pred = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-        for i in range(NV):
-            qvel_pred[i] = data.qvel[i] + qacc[i] * dt
-            # Clamp predicted velocity before solver to prevent runaway
-            if qvel_pred[i] > MAX_QVEL:
-                qvel_pred[i] = MAX_QVEL
-            elif qvel_pred[i] < -MAX_QVEL:
-                qvel_pred[i] = -MAX_QVEL
-
-        # 9. Build constraints and solve (modifies qvel_pred in-place)
+        # 8. Build constraints and solve (modifies qacc in-place)
         comptime MAX_ROWS = 3 * MAX_CONTACTS + 2 * NJOINT
         var constraints = ConstraintData[DTYPE, MAX_ROWS, NV]()
         build_constraints[
@@ -343,7 +336,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             V_SIZE,
             M_SIZE,
             CDOF_SIZE,
-        ](model, data, cdof, M_inv, qvel_pred, dt, constraints)
+        ](model, data, cdof, M_inv, qacc, dt, constraints)
 
         Self.SOLVER.solve[
             DTYPE,
@@ -355,9 +348,9 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             MAX_ROWS,
             V_SIZE,
             M_SIZE,
-        ](model, data, M_inv, constraints, qvel_pred, dt)
+        ](model, data, M_inv, constraints, qacc, dt)
 
-        writeback_impulses[
+        writeback_forces[
             DTYPE,
             NQ,
             NV,
@@ -367,11 +360,11 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             MAX_ROWS,
         ](constraints, data)
 
-        # 9. Write back constrained velocity and integrate position
+        # 9. Integrate: qvel = old_qvel + constrained_qacc * dt
+        comptime MAX_QVEL: Scalar[DTYPE] = 10.0
         for i in range(NV):
-            # qacc = (constrained_vel - old_vel) / dt
-            data.qacc[i] = (qvel_pred[i] - data.qvel[i]) / dt
-            data.qvel[i] = qvel_pred[i]
+            data.qacc[i] = qacc[i]
+            data.qvel[i] = data.qvel[i] + qacc[i] * dt
 
         # 9b. Clamp velocities to prevent divergence
         for i in range(NV):
@@ -406,7 +399,9 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
     ) where DTYPE.is_floating_point():
         """Run simulation for multiple steps on CPU."""
         for _ in range(num_steps):
-            Self.step[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM](model, data)
+            Self.step[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM](
+                model, data
+            )
 
     # =========================================================================
     # GPU Methods
@@ -465,7 +460,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         comptime bias_idx = ws_bias_offset[NV, NBODY]()
         comptime fnet_idx = ws_fnet_offset[NV, NBODY]()
         comptime qacc_ws_idx = ws_qacc_ws_offset[NV, NBODY]()
-        comptime qvel_pred_idx = ws_qvel_pred_offset[NV, NBODY]()
+        comptime qacc_constrained_idx = ws_qacc_constrained_offset[NV, NBODY]()
         comptime m_inv_idx = ws_m_inv_offset[NV, NBODY]()
 
         # 1. Forward kinematics
@@ -496,8 +491,16 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
 
         # 3. Detect contacts
         detect_contacts_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, BATCH, NGEOM,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
+            NGEOM,
         ](env, state, model)
 
         # 4. Compute cdof (writes to workspace at ws_cdof_offset)
@@ -754,20 +757,12 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             )
             state[env, qacc_off + i] = qacc_val
 
-        # 10. Predict velocity (write to workspace qvel_pred region)
-        comptime MAX_QVEL: Scalar[DTYPE] = 10.0
+        # 10. Write unconstrained qacc to workspace for constraint solver
         for i in range(NV):
-            var qvel = rebind[Scalar[DTYPE]](state[env, qvel_off + i])
             var qacc_val = rebind[Scalar[DTYPE]](
                 workspace[env, qacc_ws_idx + i]
             )
-            var vpred = qvel + qacc_val * dt
-            # Clamp predicted velocity before solver to prevent runaway
-            if vpred > MAX_QVEL:
-                vpred = MAX_QVEL
-            elif vpred < -MAX_QVEL:
-                vpred = -MAX_QVEL
-            workspace[env, qvel_pred_idx + i] = vpred
+            workspace[env, qacc_constrained_idx + i] = qacc_val
 
     @always_inline
     @staticmethod
@@ -807,31 +802,27 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
 
         var qvel_off = qvel_offset[NQ, NV]()
         var qacc_off = qacc_offset[NQ, NV]()
-        var qvel_pred_idx = ws_qvel_pred_offset[NV, NBODY]()
+        var qacc_constrained_idx = ws_qacc_constrained_offset[NV, NBODY]()
         var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
         var dt = rebind[Scalar[DTYPE]](
             model[0, model_meta_off + MODEL_META_IDX_TIMESTEP]
         )
-        # 9. Write back constrained velocity and update qacc
+        # 9. Integrate: qvel = old_qvel + constrained_qacc * dt
         var qpos_off = qpos_offset[NQ, NV]()
-        for i in range(NV):
-            # qacc = (constrained_vel - old_vel) / dt
-            var old_qvel = rebind[Scalar[DTYPE]](state[env, qvel_off + i])
-            var constrained_vel = rebind[Scalar[DTYPE]](
-                workspace[env, qvel_pred_idx + i]
-            )
-            state[env, qacc_off + i] = (constrained_vel - old_qvel) / dt
-            state[env, qvel_off + i] = constrained_vel
-
-        # 9b. Clamp velocities to prevent divergence
-        # MuJoCo uses ~10-50 depending on model; 10 prevents catastrophic penetration
         comptime MAX_QVEL: Scalar[DTYPE] = 10.0
         for i in range(NV):
-            var v = rebind[Scalar[DTYPE]](state[env, qvel_off + i])
-            if v > MAX_QVEL:
-                state[env, qvel_off + i] = MAX_QVEL
-            elif v < -MAX_QVEL:
-                state[env, qvel_off + i] = -MAX_QVEL
+            var old_qvel = rebind[Scalar[DTYPE]](state[env, qvel_off + i])
+            var constrained_qacc = rebind[Scalar[DTYPE]](
+                workspace[env, qacc_constrained_idx + i]
+            )
+            state[env, qacc_off + i] = constrained_qacc
+            var new_qvel = old_qvel + constrained_qacc * dt
+            # Clamp velocity
+            if new_qvel > MAX_QVEL:
+                new_qvel = MAX_QVEL
+            elif new_qvel < -MAX_QVEL:
+                new_qvel = -MAX_QVEL
+            state[env, qvel_off + i] = new_qvel
 
         for i in range(NQ):
             if i < NV:
@@ -995,7 +986,9 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
     ) raises:
         """Run simulation for multiple steps on GPU."""
         for _ in range(num_steps):
-            Self.step_gpu[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, BATCH, NGEOM](
+            Self.step_gpu[
+                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, BATCH, NGEOM
+            ](
                 ctx,
                 state_buf,
                 model_buf,

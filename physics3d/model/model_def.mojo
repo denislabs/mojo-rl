@@ -81,6 +81,7 @@ struct Bodies[*B: BodySpec]:
             # Mass, inertia
             model.set_body(
                 i,
+                name=B.NAME,
                 mass=Scalar[DTYPE](B.MASS),
                 inertia=(
                     Scalar[DTYPE](B.ixx()),
@@ -107,7 +108,6 @@ struct Bodies[*B: BodySpec]:
                     Scalar[DTYPE](B.QUAT_W),
                 ),
             )
-
 
 
 # =============================================================================
@@ -810,6 +810,7 @@ struct Geoms[*G: GeomSpec]:
 
         @parameter
         for i in range(Self.N):
+
             @parameter
             if Self.geom_types[i].BODY_IDX == -1:
                 total += 1
@@ -822,6 +823,7 @@ struct Geoms[*G: GeomSpec]:
 
         @parameter
         for i in range(Self.N):
+
             @parameter
             if Self.geom_types[i].GEOM_TYPE == GEOM_PLANE:
                 total += 1

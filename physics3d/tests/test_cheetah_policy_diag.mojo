@@ -190,7 +190,7 @@ fn main() raises:
             var step_max_imp = Float64(0.0)
             for c in range(nc):
                 var pen = -Float64(env.data.contacts[c].dist)
-                var imp = Float64(env.data.contacts[c].impulse_n)
+                var imp = Float64(env.data.contacts[c].force_n)
                 if pen > step_max_pen:
                     step_max_pen = pen
                 if imp > step_max_imp:
@@ -273,7 +273,7 @@ fn main() raises:
         )
         print("    RootZ range: [", min_rootz, ",", max_rootz, "]")
         print("    Vz range: [", min_vz, ",", max_vz, "]")
-        print("    Max impulse_n:", max_imp_n)
+        print("    Max force_n:", max_imp_n)
 
     print()
     print("=" * 80)

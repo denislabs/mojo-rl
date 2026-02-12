@@ -37,11 +37,11 @@ from ..gpu.constants import (
     model_metadata_offset,
     ws_m_inv_offset,
     ws_solver_offset,
-    ws_qvel_pred_offset,
+    ws_qacc_constrained_offset,
     CONTACT_SIZE,
-    CONTACT_IDX_IMPULSE_N,
-    CONTACT_IDX_IMPULSE_T1,
-    CONTACT_IDX_IMPULSE_T2,
+    CONTACT_IDX_FORCE_N,
+    CONTACT_IDX_FORCE_T1,
+    CONTACT_IDX_FORCE_T2,
     META_IDX_NUM_CONTACTS,
     MODEL_META_IDX_FRICTION,
     MODEL_META_IDX_TIMESTEP,
@@ -60,6 +60,8 @@ from ..constraints.constraint_builder_gpu import (
 
 # PGS solver parameters
 comptime PGS_ITERATIONS: Int = 30
+# Minimum K for friction tangent rows — below this, direction is degenerate
+comptime FRICTION_K_MIN: Float64 = 1e-6
 
 
 struct PGSSolver(ConstraintSolver):
@@ -104,15 +106,15 @@ struct PGSSolver(ConstraintSolver):
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         M_inv: InlineArray[Scalar[DTYPE], M_SIZE],
         mut constraints: ConstraintData[DTYPE, MAX_ROWS, NV],
-        mut qvel: InlineArray[Scalar[DTYPE], V_SIZE],
+        mut qacc: InlineArray[Scalar[DTYPE], V_SIZE],
         dt: Scalar[DTYPE],
     ):
-        """Solve constraints using PGS on CPU.
+        """Solve constraints using PGS on CPU (acceleration-level).
 
         Iterates over pre-built ConstraintData:
-        1. Apply warm-start impulses for normals and friction
-        2. PGS iterations for normal constraints (with impedance)
-        3. PGS iterations for joint limit constraints (with impedance)
+        1. Apply warm-start forces for normals and friction
+        2. PGS iterations for normal constraints (with aref)
+        3. PGS iterations for joint limit constraints (with aref)
         4. PGS iterations for friction (with Coulomb cone clamping)
         """
         if constraints.num_rows == 0:
@@ -125,31 +127,31 @@ struct PGSSolver(ConstraintSolver):
         var limits_start = num_normals + num_friction
 
         # =====================================================================
-        # Phase 1: Apply warm-start impulses (normals)
+        # Phase 1: Apply warm-start forces (normals)
         # =====================================================================
         for r in range(num_normals):
             if constraints.rows[r].lambda_val > Scalar[DTYPE](0):
                 for i in range(NV):
-                    qvel[i] += (
+                    qacc[i] += (
                         constraints.MinvJT[r * NV + i]
                         * constraints.rows[r].lambda_val
                     )
 
         # =====================================================================
-        # Phase 2: PGS normal iterations
+        # Phase 2: PGS normal iterations (acceleration-level)
         # =====================================================================
         for _ in range(PGS_ITERATIONS):
             for r in range(num_normals):
-                # Compute constraint velocity: v = J . qvel
-                var v: Scalar[DTYPE] = 0
+                # Compute constraint acceleration: a = J . qacc
+                var a: Scalar[DTYPE] = 0
                 for i in range(NV):
-                    v += constraints.J[r * NV + i] * qvel[i]
+                    a += constraints.J[r * NV + i] * qacc[i]
 
-                # PGS update with impedance: delta = -(v + bias) * inv_K_imp
-                var delta = (
-                    -(v + constraints.rows[r].bias)
-                    * constraints.rows[r].inv_K_imp
-                )
+                # MuJoCo regularizer: R = K/imp - K = 1/inv_K_imp - K
+                # Residual = a + bias + R * lambda (softens constraint)
+                var R = Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp - constraints.rows[r].K
+                var residual = a + constraints.rows[r].bias + R * constraints.rows[r].lambda_val
+                var delta = -residual * constraints.rows[r].inv_K_imp
                 var old_lambda = constraints.rows[r].lambda_val
                 constraints.rows[r].lambda_val = (
                     constraints.rows[r].lambda_val + delta
@@ -161,12 +163,12 @@ struct PGSSolver(ConstraintSolver):
 
                 var actual_delta = constraints.rows[r].lambda_val - old_lambda
 
-                # Apply velocity correction: qvel += MinvJT * delta
+                # Apply acceleration correction: qacc += MinvJT * delta
                 for i in range(NV):
-                    qvel[i] += constraints.MinvJT[r * NV + i] * actual_delta
+                    qacc[i] += constraints.MinvJT[r * NV + i] * actual_delta
 
         # =====================================================================
-        # Phase 2b: PGS joint limit iterations
+        # Phase 2b: PGS joint limit iterations (acceleration-level)
         # =====================================================================
         if num_limits > 0:
             for _ in range(PGS_ITERATIONS):
@@ -174,12 +176,12 @@ struct PGSSolver(ConstraintSolver):
                     var r = limits_start + r_off
                     var dof = constraints.rows[r].source_dof
                     var sign = constraints.rows[r].limit_sign
-                    var v_limit = sign * qvel[dof]
+                    var a_limit = sign * qacc[dof]
 
-                    var delta = (
-                        -(v_limit + constraints.rows[r].bias)
-                        * constraints.rows[r].inv_K_imp
-                    )
+                    # MuJoCo regularizer: R = K/imp - K
+                    var R_lim = Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp - constraints.rows[r].K
+                    var residual = a_limit + constraints.rows[r].bias + R_lim * constraints.rows[r].lambda_val
+                    var delta = -residual * constraints.rows[r].inv_K_imp
                     var old_lambda = constraints.rows[r].lambda_val
                     constraints.rows[r].lambda_val = (
                         constraints.rows[r].lambda_val + delta
@@ -190,22 +192,25 @@ struct PGSSolver(ConstraintSolver):
 
                     var actual = constraints.rows[r].lambda_val - old_lambda
 
-                    # Apply: qvel += MinvJT * actual
+                    # Apply: qacc += MinvJT * actual
                     for i in range(NV):
-                        qvel[i] += constraints.MinvJT[r * NV + i] * actual
+                        qacc[i] += constraints.MinvJT[r * NV + i] * actual
 
         # =====================================================================
-        # Phase 3: Friction PGS with Coulomb cone
+        # Phase 3: Friction PGS with Coulomb cone (acceleration-level)
         # =====================================================================
         if num_friction == 0:
             return
 
-        # Apply friction warm-start
+        # Apply friction warm-start (skip degenerate tangent rows)
         for r_off in range(num_friction):
             var r = friction_start + r_off
+            if constraints.rows[r].K < Scalar[DTYPE](FRICTION_K_MIN):
+                constraints.rows[r].lambda_val = Scalar[DTYPE](0)
+                continue
             if constraints.rows[r].lambda_val != Scalar[DTYPE](0):
                 for i in range(NV):
-                    qvel[i] += (
+                    qacc[i] += (
                         constraints.MinvJT[r * NV + i]
                         * constraints.rows[r].lambda_val
                     )
@@ -227,25 +232,29 @@ struct PGSSolver(ConstraintSolver):
 
                 var max_friction = mu * lambda_n
 
-                # Tangent 1
-                var v_t1: Scalar[DTYPE] = 0
-                for i in range(NV):
-                    v_t1 += constraints.J[r_t1 * NV + i] * qvel[i]
-                var delta_t1 = -v_t1 / constraints.rows[r_t1].K
+                # Tangent 1 — skip if degenerate
+                var a_t1: Scalar[DTYPE] = 0
+                var delta_t1: Scalar[DTYPE] = 0
                 var old_t1 = constraints.rows[r_t1].lambda_val
-                constraints.rows[r_t1].lambda_val = (
-                    constraints.rows[r_t1].lambda_val + delta_t1
-                )
+                if constraints.rows[r_t1].K >= Scalar[DTYPE](FRICTION_K_MIN):
+                    for i in range(NV):
+                        a_t1 += constraints.J[r_t1 * NV + i] * qacc[i]
+                    delta_t1 = -a_t1 / constraints.rows[r_t1].K
+                    constraints.rows[r_t1].lambda_val = (
+                        constraints.rows[r_t1].lambda_val + delta_t1
+                    )
 
-                # Tangent 2
-                var v_t2: Scalar[DTYPE] = 0
-                for i in range(NV):
-                    v_t2 += constraints.J[r_t2 * NV + i] * qvel[i]
-                var delta_t2 = -v_t2 / constraints.rows[r_t2].K
+                # Tangent 2 — skip if degenerate
+                var a_t2: Scalar[DTYPE] = 0
+                var delta_t2: Scalar[DTYPE] = 0
                 var old_t2 = constraints.rows[r_t2].lambda_val
-                constraints.rows[r_t2].lambda_val = (
-                    constraints.rows[r_t2].lambda_val + delta_t2
-                )
+                if constraints.rows[r_t2].K >= Scalar[DTYPE](FRICTION_K_MIN):
+                    for i in range(NV):
+                        a_t2 += constraints.J[r_t2 * NV + i] * qacc[i]
+                    delta_t2 = -a_t2 / constraints.rows[r_t2].K
+                    constraints.rows[r_t2].lambda_val = (
+                        constraints.rows[r_t2].lambda_val + delta_t2
+                    )
 
                 # Coulomb cone clamping: |lambda_t| <= mu * lambda_n
                 var t_mag = sqrt(
@@ -267,7 +276,7 @@ struct PGSSolver(ConstraintSolver):
                 var actual_t2 = constraints.rows[r_t2].lambda_val - old_t2
 
                 for i in range(NV):
-                    qvel[i] += (
+                    qacc[i] += (
                         constraints.MinvJT[r_t1 * NV + i] * actual_t1
                         + constraints.MinvJT[r_t2 * NV + i] * actual_t2
                     )
@@ -321,13 +330,14 @@ struct PGSSolver(ConstraintSolver):
         var contact_tid = Int(thread_idx.y)
         var valid_env = env < BATCH
 
-        comptime qvel_idx = ws_qvel_pred_offset[NV, NBODY]()
+        comptime qacc_idx = ws_qacc_constrained_offset[NV, NBODY]()
         comptime M_inv_idx = ws_m_inv_offset[NV, NBODY]()
         comptime solver_idx = ws_solver_offset[NV, NBODY]()
         comptime MC = _max_one[MAX_CONTACTS]()
 
         # Common normal block offsets (for PGS normal iterations)
         comptime ws_lambda_n = solver_idx + 0 * MC
+        comptime ws_K_n = solver_idx + 1 * MC
         comptime ws_c_dist = solver_idx + 2 * MC
         comptime ws_c_body = solver_idx + 3 * MC
         comptime ws_c_body_b = solver_idx + 4 * MC
@@ -389,8 +399,8 @@ struct PGSSolver(ConstraintSolver):
         var nc = 0
         var dt: Scalar[DTYPE] = 0
         var friction_coef: Scalar[DTYPE] = 0
-        var inv_tc_dr: Scalar[DTYPE] = 0
-        var b_vel_coef: Scalar[DTYPE] = 0
+        var K_spring: Scalar[DTYPE] = 0
+        var B_damp: Scalar[DTYPE] = 0
         var si_dmin: Scalar[DTYPE] = 0
         var si_dmax: Scalar[DTYPE] = 0
         var si_width: Scalar[DTYPE] = 1
@@ -428,8 +438,8 @@ struct PGSSolver(ConstraintSolver):
                 si_width = Scalar[DTYPE](1e-6)
             if si_dmax < Scalar[DTYPE](1e-4):
                 si_dmax = Scalar[DTYPE](1e-4)
-            inv_tc_dr = Scalar[DTYPE](1.0) / (sr_tc * sr_dr)
-            b_vel_coef = Scalar[DTYPE](2.0) * sr_dr * dt / (si_dmax * sr_tc)
+            K_spring = Scalar[DTYPE](1.0) / (si_dmax * si_dmax * sr_tc * sr_tc * sr_dr * sr_dr)
+            B_damp = Scalar[DTYPE](2.0) / (si_dmax * sr_tc)
 
         # === PARALLEL PHASE 1: Each thread precomputes one contact ===
         if valid_env:
@@ -452,8 +462,8 @@ struct PGSSolver(ConstraintSolver):
                 state,
                 model,
                 workspace,
-                inv_tc_dr,
-                b_vel_coef,
+                K_spring,
+                B_damp,
                 si_dmin,
                 si_dmax,
                 si_width,
@@ -472,23 +482,22 @@ struct PGSSolver(ConstraintSolver):
                 BATCH,
             ](env, nc, workspace)
 
-            # PGS normal iterations
-            var vel_factor = Scalar[DTYPE](1.0) - b_vel_coef
+            # PGS normal iterations (acceleration-level)
             for _ in range(PGS_ITERATIONS):
                 var max_delta: workspace.element_type = 0
                 for c in range(nc):
                     if workspace[env, ws_c_dist + c] >= Scalar[DTYPE](0):
                         continue
-                    var v_n: workspace.element_type = 0
+                    var a_n: workspace.element_type = 0
                     for i in range(NV):
-                        v_n += (
+                        a_n += (
                             workspace[env, ws_J_n + c * NV + i]
-                            * workspace[env, qvel_idx + i]
+                            * workspace[env, qacc_idx + i]
                         )
-                    var delta = (
-                        -(v_n * vel_factor - workspace[env, ws_pos_bias + c])
-                        * workspace[env, ws_inv_K_imp + c]
-                    )
+                    # MuJoCo regularizer: R = K/imp - K = 1/inv_K_imp - K
+                    var R_c = Scalar[DTYPE](1.0) / workspace[env, ws_inv_K_imp + c] - workspace[env, ws_K_n + c]
+                    var residual = a_n + workspace[env, ws_pos_bias + c] + R_c * workspace[env, ws_lambda_n + c]
+                    var delta = -residual * workspace[env, ws_inv_K_imp + c]
                     var old_lambda = workspace[env, ws_lambda_n + c]
                     workspace[env, ws_lambda_n + c] = (
                         workspace[env, ws_lambda_n + c] + delta
@@ -502,7 +511,7 @@ struct PGSSolver(ConstraintSolver):
                     if abs_delta > max_delta:
                         max_delta = abs_delta
                     for i in range(NV):
-                        workspace[env, qvel_idx + i] += (
+                        workspace[env, qacc_idx + i] += (
                             workspace[env, ws_MinvJn + c * NV + i]
                             * actual_delta
                         )
@@ -660,10 +669,10 @@ struct PGSSolver(ConstraintSolver):
                 # Store warm start tangent impulses
                 var c_off = contacts_off + c * CONTACT_SIZE
                 workspace[env, ws_lambda_t1 + c] = rebind[Scalar[DTYPE]](
-                    state[env, c_off + CONTACT_IDX_IMPULSE_T1]
+                    state[env, c_off + CONTACT_IDX_FORCE_T1]
                 )
                 workspace[env, ws_lambda_t2 + c] = rebind[Scalar[DTYPE]](
-                    state[env, c_off + CONTACT_IDX_IMPULSE_T2]
+                    state[env, c_off + CONTACT_IDX_FORCE_T2]
                 )
 
         # All threads must hit this barrier
@@ -686,7 +695,7 @@ struct PGSSolver(ConstraintSolver):
                     for i in range(NV):
                         v_t1 += (
                             workspace[env, ws_J_t1 + c * NV + i]
-                            * workspace[env, qvel_idx + i]
+                            * workspace[env, qacc_idx + i]
                         )
                     var delta_t1 = -v_t1 / workspace[env, ws_K_t1 + c]
                     var old_t1 = workspace[env, ws_lambda_t1 + c]
@@ -698,7 +707,7 @@ struct PGSSolver(ConstraintSolver):
                     for i in range(NV):
                         v_t2 += (
                             workspace[env, ws_J_t2 + c * NV + i]
-                            * workspace[env, qvel_idx + i]
+                            * workspace[env, qacc_idx + i]
                         )
                     var delta_t2 = -v_t2 / workspace[env, ws_K_t2 + c]
                     var old_t2 = workspace[env, ws_lambda_t2 + c]
@@ -733,7 +742,7 @@ struct PGSSolver(ConstraintSolver):
                         max_fric_delta = abs_t2
 
                     for i in range(NV):
-                        workspace[env, qvel_idx + i] += (
+                        workspace[env, qacc_idx + i] += (
                             workspace[env, ws_MinvJt1 + c * NV + i] * actual_t1
                             + workspace[env, ws_MinvJt2 + c * NV + i]
                             * actual_t2
@@ -744,12 +753,12 @@ struct PGSSolver(ConstraintSolver):
             # Store impulses back to state buffer for warm-starting
             for c in range(nc):
                 var c_off = contacts_off + c * CONTACT_SIZE
-                state[env, c_off + CONTACT_IDX_IMPULSE_N] = workspace[
+                state[env, c_off + CONTACT_IDX_FORCE_N] = workspace[
                     env, ws_lambda_n + c
                 ]
-                state[env, c_off + CONTACT_IDX_IMPULSE_T1] = workspace[
+                state[env, c_off + CONTACT_IDX_FORCE_T1] = workspace[
                     env, ws_lambda_t1 + c
                 ]
-                state[env, c_off + CONTACT_IDX_IMPULSE_T2] = workspace[
+                state[env, c_off + CONTACT_IDX_FORCE_T2] = workspace[
                     env, ws_lambda_t2 + c
                 ]

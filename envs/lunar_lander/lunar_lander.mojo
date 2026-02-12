@@ -1332,9 +1332,9 @@ struct LunarLander[
 
     fn step_continuous_vec[
         DTYPE_VEC: DType
-    ](mut self, action: List[Scalar[DTYPE_VEC]]) -> Tuple[
-        List[Scalar[DTYPE_VEC]], Scalar[DTYPE_VEC], Bool
-    ]:
+    ](
+        mut self, action: List[Scalar[DTYPE_VEC]], verbose: Bool = False
+    ) -> Tuple[List[Scalar[DTYPE_VEC]], Scalar[DTYPE_VEC], Bool]:
         """Take 2D continuous action and return (obs, reward, done).
 
         Action space:
