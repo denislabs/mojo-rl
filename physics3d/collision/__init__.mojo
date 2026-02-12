@@ -13,10 +13,8 @@ from .collision_primitives import (
     rotate_vector_by_quat_inverse,
 )
 from .contact_detection import (
-    detect_ground_contacts,
-    detect_ground_contacts_gpu,
-    detect_body_body_contacts,
-    detect_body_body_contacts_gpu,
+    detect_contacts,
+    detect_contacts_gpu,
     normalize_qpos_quaternions,
     normalize_qpos_quaternions_gpu,
 )

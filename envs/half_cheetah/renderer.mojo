@@ -2,7 +2,7 @@
 
 Provides visualization of the HalfCheetah environment with color-coded
 body parts. All rendering logic is handled by ModelRenderer, which
-reads geometry (RADIUS, HALF_LENGTH) from BodySpec at compile time.
+reads geometry (RADIUS, HALF_LENGTH) from GeomSpec at compile time.
 
 Implements EnvRenderer3D trait for integration with evaluation code.
 """
@@ -13,14 +13,15 @@ from core import EnvRenderer3D
 from physics3d.model.model_renderer import ModelRenderer
 
 from .half_cheetah_def import (
-    Torso,
-    BThigh,
-    BShin,
-    BFoot,
-    FThigh,
-    FShin,
-    FFoot,
-    Head,
+    GroundGeom,
+    TorsoGeom,
+    HeadGeom,
+    BThighGeom,
+    BShinGeom,
+    BFootGeom,
+    FThighGeom,
+    FShinGeom,
+    FFootGeom,
 )
 
 comptime Vec3 = Vec3Generic[DType.float64]
@@ -35,11 +36,12 @@ comptime Quat = QuatGeneric[DType.float64]
 struct HalfCheetahRenderer(EnvRenderer3D, Movable):
     """Renderer for HalfCheetah environment.
 
-    Thin wrapper around ModelRenderer parameterized by HalfCheetah body types.
+    Thin wrapper around ModelRenderer parameterized by HalfCheetah geom types.
     """
 
     var inner: ModelRenderer[
-        Torso, BThigh, BShin, BFoot, FThigh, FShin, FFoot, Head
+        GroundGeom, TorsoGeom, HeadGeom, BThighGeom, BShinGeom, BFootGeom,
+        FThighGeom, FShinGeom, FFootGeom,
     ]
 
     fn __init__(
@@ -50,7 +52,8 @@ struct HalfCheetahRenderer(EnvRenderer3D, Movable):
         show_velocity: Bool = True,
     ) raises:
         self.inner = ModelRenderer[
-            Torso, BThigh, BShin, BFoot, FThigh, FShin, FFoot, Head
+            GroundGeom, TorsoGeom, HeadGeom, BThighGeom, BShinGeom, BFootGeom,
+            FThighGeom, FShinGeom, FFootGeom,
         ](
             width=width,
             height=height,

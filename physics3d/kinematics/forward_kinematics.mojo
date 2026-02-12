@@ -53,7 +53,6 @@ from ..gpu.constants import (
     BODY_IDX_QUAT_Y,
     BODY_IDX_QUAT_Z,
     BODY_IDX_QUAT_W,
-    BODY_IDX_HALF_LENGTH,
     JOINT_IDX_TYPE,
     JOINT_IDX_BODY_ID,
     JOINT_IDX_QPOS_ADR,
@@ -87,8 +86,9 @@ fn forward_kinematics[
     NBODY: Int,
     NJOINT: Int,
     MAX_CONTACTS: Int,
+    NGEOM: Int = 0,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
     mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
 ) where DTYPE.is_floating_point():
     """Compute body world positions from joint positions.
@@ -414,8 +414,9 @@ fn compute_body_velocities[
     NBODY: Int,
     NJOINT: Int,
     MAX_CONTACTS: Int,
+    NGEOM: Int = 0,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
     mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
 ):
     """Compute body world velocities from joint velocities.

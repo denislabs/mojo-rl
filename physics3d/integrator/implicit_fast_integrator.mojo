@@ -59,10 +59,8 @@ from ..dynamics.jacobian import (
     compute_composite_inertia_gpu,
 )
 from ..collision.contact_detection import (
-    detect_ground_contacts,
-    detect_ground_contacts_gpu,
-    detect_body_body_contacts,
-    detect_body_body_contacts_gpu,
+    detect_contacts,
+    detect_contacts_gpu,
     normalize_qpos_quaternions,
     normalize_qpos_quaternions_gpu,
 )
@@ -135,8 +133,9 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         NBODY: Int,
         NJOINT: Int,
         MAX_CONTACTS: Int,
+        NGEOM: Int = 0,
     ](
-        model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+        model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     ) where DTYPE.is_floating_point():
         """Execute one simulation step with implicit-fast integration.
@@ -156,8 +155,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         compute_body_velocities(model, data)
 
         # 2. Collision detection
-        detect_ground_contacts(model, data)
-        detect_body_body_contacts(model, data)
+        detect_contacts[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM](model, data)
 
         # 3. Compute cdof (spatial motion axes per DOF) - needed for full M
         var cdof = InlineArray[Scalar[DTYPE], CDOF_SIZE](uninitialized=True)
@@ -398,14 +396,15 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         NBODY: Int,
         NJOINT: Int,
         MAX_CONTACTS: Int,
+        NGEOM: Int = 0,
     ](
-        model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+        model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         num_steps: Int,
     ) where DTYPE.is_floating_point():
         """Run simulation for multiple steps on CPU."""
         for _ in range(num_steps):
-            Self.step(model, data)
+            Self.step[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM](model, data)
 
     # =========================================================================
     # GPU Methods
@@ -424,6 +423,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         MODEL_SIZE: Int,
         BATCH: Int,
         WS_SIZE: Int,
+        NGEOM: Int = 0,
     ](
         state: LayoutTensor[
             DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
@@ -481,28 +481,10 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
             BATCH,
         ](env, state, model)
 
-        # 3. Detect ground contacts + body-body contacts
-        detect_ground_contacts_gpu[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            STATE_SIZE,
-            MODEL_SIZE,
-            BATCH,
-        ](env, state, model)
-        detect_body_body_contacts_gpu[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            STATE_SIZE,
-            MODEL_SIZE,
-            BATCH,
+        # 3. Detect contacts
+        detect_contacts_gpu[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+            STATE_SIZE, MODEL_SIZE, BATCH, NGEOM,
         ](env, state, model)
 
         # 4. Compute cdof (writes to workspace at ws_cdof_offset)
@@ -871,6 +853,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         NJOINT: Int,
         MAX_CONTACTS: Int,
         BATCH: Int,
+        NGEOM: Int = 0,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],
@@ -885,7 +868,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         Uses the parametrized SOLVER for contact constraint resolution.
         """
         comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS]()
-        comptime MODEL_SIZE = model_size[NBODY, NJOINT]()
+        comptime MODEL_SIZE = model_size[NBODY, NJOINT, NGEOM]()
         comptime WS_SIZE = integrator_workspace_size[
             NV, NBODY
         ]() + NV * NV + Self.SOLVER.solver_workspace_size[NV, MAX_CONTACTS]()
@@ -923,6 +906,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
             MODEL_SIZE,
             BATCH,
             WS_SIZE,
+            NGEOM,
         ]
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
@@ -987,6 +971,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         NJOINT: Int,
         MAX_CONTACTS: Int,
         BATCH: Int,
+        NGEOM: Int = 0,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],
@@ -999,7 +984,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
     ) raises:
         """Run simulation for multiple steps on GPU."""
         for _ in range(num_steps):
-            Self.step_gpu[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, BATCH](
+            Self.step_gpu[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, BATCH, NGEOM](
                 ctx,
                 state_buf,
                 model_buf,

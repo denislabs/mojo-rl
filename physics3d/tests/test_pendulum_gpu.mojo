@@ -87,7 +87,7 @@ fn main() raises:
     print()
 
     # Create CPU model and data first
-    var model = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS](
+    var model = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, 0](
         gravity_z=Scalar[DTYPE](-g),
         timestep=Scalar[DTYPE](dt),
         ground_z=Scalar[DTYPE](ground_z),

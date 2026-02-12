@@ -49,7 +49,6 @@ from .collision import (
     box_sphere,
     box_capsule,
     box_box,
-    detect_ground_contacts,
-    detect_body_body_contacts,
+    detect_contacts,
     normalize_qpos_quaternions,
 )

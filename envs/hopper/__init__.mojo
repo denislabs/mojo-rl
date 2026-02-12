@@ -28,7 +28,6 @@ from .renderer import HopperRenderer
 from .curriculum import HopperCurriculum
 from .hopper_def import (
     # Model definition
-    HopperWorldBody,
     HopperModel,
     HopperBodies,
     HopperJoints,

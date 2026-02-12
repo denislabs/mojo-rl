@@ -92,6 +92,7 @@ struct Model[
     NBODY: Int,  # Number of bodies
     NJOINT: Int,  # Number of joints
     MAX_CONTACTS: Int,  # Maximum number of contacts
+    NGEOM: Int = 0,  # Number of geoms (0 = legacy mode, uses body geometry)
 ]:
     """Static configuration for MuJoCo-style generalized coordinates simulation.
 
@@ -135,25 +136,19 @@ struct Model[
     # Kinematic tree structure
     var body_parent: InlineArray[Int, Self.NBODY]  # -1 for world
 
-    # Geometry for collision
-    var body_geom_type: InlineArray[Int, Self.NBODY]
-    var body_radius: InlineArray[Scalar[Self.DTYPE], Self.NBODY]
-    var body_half_length: InlineArray[
-        Scalar[Self.DTYPE], Self.NBODY
-    ]  # For capsules
-    # Box half-extents
-    var body_half_x: InlineArray[Scalar[Self.DTYPE], Self.NBODY]
-    var body_half_y: InlineArray[Scalar[Self.DTYPE], Self.NBODY]
-    var body_half_z: InlineArray[Scalar[Self.DTYPE], Self.NBODY]
-
-    # Collision filtering (MuJoCo contype/conaffinity)
-    # Two geoms collide if (contype_a & conaffinity_b) || (contype_b & conaffinity_a) != 0
-    var body_contype: InlineArray[Int, Self.NBODY]
-    var body_conaffinity: InlineArray[Int, Self.NBODY]
-
-    # Ground plane collision filtering
-    var ground_contype: Int
-    var ground_conaffinity: Int
+    # Unified geom arrays (NGEOM > 0)
+    var geom_type: InlineArray[Int, _max_one[Self.NGEOM]()]
+    var geom_body: InlineArray[Int, _max_one[Self.NGEOM]()]  # -1 for static
+    var geom_pos: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM * 3]()]
+    var geom_quat: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM * 4]()]
+    var geom_radius: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM]()]
+    var geom_half_length: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM]()]
+    var geom_half_x: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM]()]
+    var geom_half_y: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM]()]
+    var geom_half_z: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM]()]
+    var geom_friction: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM]()]
+    var geom_contype: InlineArray[Int, _max_one[Self.NGEOM]()]
+    var geom_conaffinity: InlineArray[Int, _max_one[Self.NGEOM]()]
 
     # Joint definitions
     var joints: InlineArray[JointDef[Self.DTYPE], _max_one[Self.NJOINT]()]
@@ -209,44 +204,64 @@ struct Model[
         )
         self.body_parent = InlineArray[Int, Self.NBODY](uninitialized=True)
 
-        # Initialize geometry arrays
-        self.body_geom_type = InlineArray[Int, Self.NBODY](uninitialized=True)
-        self.body_radius = InlineArray[Scalar[Self.DTYPE], Self.NBODY](
+        # Initialize geom arrays
+        self.geom_type = InlineArray[Int, _max_one[Self.NGEOM]()](
             uninitialized=True
         )
-        self.body_half_length = InlineArray[Scalar[Self.DTYPE], Self.NBODY](
+        self.geom_body = InlineArray[Int, _max_one[Self.NGEOM]()](
             uninitialized=True
         )
-        self.body_half_x = InlineArray[Scalar[Self.DTYPE], Self.NBODY](
+        self.geom_pos = InlineArray[
+            Scalar[Self.DTYPE], _max_one[Self.NGEOM * 3]()
+        ](uninitialized=True)
+        self.geom_quat = InlineArray[
+            Scalar[Self.DTYPE], _max_one[Self.NGEOM * 4]()
+        ](uninitialized=True)
+        self.geom_radius = InlineArray[
+            Scalar[Self.DTYPE], _max_one[Self.NGEOM]()
+        ](uninitialized=True)
+        self.geom_half_length = InlineArray[
+            Scalar[Self.DTYPE], _max_one[Self.NGEOM]()
+        ](uninitialized=True)
+        self.geom_half_x = InlineArray[
+            Scalar[Self.DTYPE], _max_one[Self.NGEOM]()
+        ](uninitialized=True)
+        self.geom_half_y = InlineArray[
+            Scalar[Self.DTYPE], _max_one[Self.NGEOM]()
+        ](uninitialized=True)
+        self.geom_half_z = InlineArray[
+            Scalar[Self.DTYPE], _max_one[Self.NGEOM]()
+        ](uninitialized=True)
+        self.geom_friction = InlineArray[
+            Scalar[Self.DTYPE], _max_one[Self.NGEOM]()
+        ](uninitialized=True)
+        self.geom_contype = InlineArray[Int, _max_one[Self.NGEOM]()](
             uninitialized=True
         )
-        self.body_half_y = InlineArray[Scalar[Self.DTYPE], Self.NBODY](
+        self.geom_conaffinity = InlineArray[Int, _max_one[Self.NGEOM]()](
             uninitialized=True
         )
-        self.body_half_z = InlineArray[Scalar[Self.DTYPE], Self.NBODY](
-            uninitialized=True
-        )
-        self.body_contype = InlineArray[Int, Self.NBODY](uninitialized=True)
-        self.body_conaffinity = InlineArray[Int, Self.NBODY](
-            uninitialized=True
-        )
-        self.ground_contype = 1  # MuJoCo default
-        self.ground_conaffinity = 1  # MuJoCo default
+        for i in range(_max_one[Self.NGEOM]()):
+            self.geom_type[i] = 0
+            self.geom_body[i] = -1
+            self.geom_radius[i] = Scalar[Self.DTYPE](0)
+            self.geom_half_length[i] = Scalar[Self.DTYPE](0)
+            self.geom_half_x[i] = Scalar[Self.DTYPE](0)
+            self.geom_half_y[i] = Scalar[Self.DTYPE](0)
+            self.geom_half_z[i] = Scalar[Self.DTYPE](0)
+            self.geom_friction[i] = Scalar[Self.DTYPE](0.5)
+            self.geom_contype[i] = 1
+            self.geom_conaffinity[i] = 1
+        for i in range(_max_one[Self.NGEOM * 3]()):
+            self.geom_pos[i] = Scalar[Self.DTYPE](0)
+        for i in range(_max_one[Self.NGEOM * 4]()):
+            self.geom_quat[i] = Scalar[Self.DTYPE](0)
 
         # Initialize with defaults
         for i in range(Self.NBODY):
             self.body_mass[i] = Scalar[Self.DTYPE](1.0)
             self.body_inv_mass[i] = Scalar[Self.DTYPE](1.0)
             self.body_parent[i] = -1  # Default: all bodies have world as parent
-            self.body_geom_type[i] = GEOM_SPHERE
-            self.body_radius[i] = Scalar[Self.DTYPE](0.1)
-            self.body_half_length[i] = Scalar[Self.DTYPE](0)
-            self.body_half_x[i] = Scalar[Self.DTYPE](0)
-            self.body_half_y[i] = Scalar[Self.DTYPE](0)
-            self.body_half_z[i] = Scalar[Self.DTYPE](0)
-            self.body_contype[i] = 1  # MuJoCo default
-            self.body_conaffinity[i] = 1  # MuJoCo default
-
             # Default body position: origin in parent frame
             self.body_pos[i * 3 + 0] = Scalar[Self.DTYPE](0)
             self.body_pos[i * 3 + 1] = Scalar[Self.DTYPE](0)
@@ -280,7 +295,6 @@ struct Model[
         inertia: Tuple[
             Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]
         ],
-        radius: Scalar[Self.DTYPE] = 0.1,
     ):
         """Set body properties.
 
@@ -288,7 +302,6 @@ struct Model[
             body_id: Body index.
             mass: Body mass.
             inertia: Diagonal inertia tensor (Ixx, Iyy, Izz).
-            radius: Collision radius (default sphere).
         """
         self.body_mass[body_id] = mass
         self.body_inv_mass[body_id] = Scalar[Self.DTYPE](1.0) / mass
@@ -305,9 +318,6 @@ struct Model[
         self.body_inv_inertia[body_id * 3 + 2] = (
             Scalar[Self.DTYPE](1.0) / inertia[2]
         )
-
-        self.body_radius[body_id] = radius
-        self.body_geom_type[body_id] = GEOM_SPHERE
 
     fn set_body_parent(mut self, body_id: Int, parent_id: Int):
         """Set parent body for kinematic tree.

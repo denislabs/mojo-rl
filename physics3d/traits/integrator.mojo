@@ -36,8 +36,9 @@ trait Integrator(Movable & ImplicitlyCopyable):
         NBODY: Int,
         NJOINT: Int,
         MAX_CONTACTS: Int,
+        NGEOM: Int = 0,
     ](
-        model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+        model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     ) where DTYPE.is_floating_point():
         """Perform one physics simulation step on CPU.
@@ -56,8 +57,9 @@ trait Integrator(Movable & ImplicitlyCopyable):
         NBODY: Int,
         NJOINT: Int,
         MAX_CONTACTS: Int,
+        NGEOM: Int = 0,
     ](
-        model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+        model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         num_steps: Int,
     ) where DTYPE.is_floating_point():
@@ -83,6 +85,7 @@ trait Integrator(Movable & ImplicitlyCopyable):
         NJOINT: Int,
         MAX_CONTACTS: Int,
         BATCH: Int,
+        NGEOM: Int = 0,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],
@@ -118,6 +121,7 @@ trait Integrator(Movable & ImplicitlyCopyable):
         NJOINT: Int,
         MAX_CONTACTS: Int,
         BATCH: Int,
+        NGEOM: Int = 0,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],

@@ -67,8 +67,9 @@ fn _is_descendant[
     NBODY: Int,
     NJOINT: Int,
     MAX_CONTACTS: Int,
+    NGEOM: Int = 0,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
     body: Int,
     ancestor: Int,
 ) -> Bool:
@@ -97,8 +98,9 @@ fn compute_mass_matrix[
     NJOINT: Int,
     MAX_CONTACTS: Int,
     M_SIZE: Int,
+    NGEOM: Int = 0,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     mut M: InlineArray[Scalar[DTYPE], M_SIZE],
 ):
@@ -331,8 +333,9 @@ fn compute_mass_matrix_full[
     M_SIZE: Int,
     CDOF_SIZE: Int,
     CRB_SIZE: Int,
+    NGEOM: Int = 0,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
     crb: InlineArray[Scalar[DTYPE], CRB_SIZE],

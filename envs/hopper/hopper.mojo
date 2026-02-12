@@ -39,7 +39,7 @@ from physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     forward_kinematics_gpu,
 )
-from physics3d.gpu.buffer_utils import copy_model_to_buffer, create_model_buffer
+from physics3d.gpu.buffer_utils import copy_model_to_buffer, copy_geoms_to_buffer, create_model_buffer
 from physics3d.gpu.constants import (
     TPB,
     state_size,
@@ -60,9 +60,9 @@ from physics3d.gpu.constants import (
 )
 
 from .hopper_def import (
-    HopperWorldBody,
     HopperBodies,
     HopperJoints,
+    HopperGeoms,
     HopperParams,
     BODY_TORSO,
     JOINT_ROOTX,
@@ -73,6 +73,7 @@ from .hopper_def import (
     NBODY,
     NJOINT,
     MAX_CONTACTS,
+    NGEOM,
     OBS_DIM,
     ACTION_DIM,
     DT,
@@ -129,6 +130,7 @@ struct Hopper[
     comptime NUM_BODIES: Int = NBODY
     comptime NUM_JOINTS: Int = NJOINT
     comptime MAX_CONTACTS: Int = MAX_CONTACTS
+    comptime NGEOM: Int = NGEOM
 
     # GPU state size
     comptime STATE_SIZE: Int = state_size[
@@ -136,7 +138,7 @@ struct Hopper[
     ]()
 
     # Pre-allocated workspace sizes for step_kernel_gpu
-    comptime STEP_WS_SHARED: Int = model_size[NBODY, NJOINT]()
+    comptime STEP_WS_SHARED: Int = model_size[NBODY, NJOINT, NGEOM]()
     comptime STEP_WS_PER_ENV: Int = integrator_workspace_size[
         NV, NBODY
     ]() + NV * NV + PGSSolver.solver_workspace_size[NV, MAX_CONTACTS]()
@@ -149,6 +151,7 @@ struct Hopper[
         Self.NUM_BODIES,
         Self.NUM_JOINTS,
         Self.MAX_CONTACTS,
+        Self.NGEOM,
     ]
     var data: Data[
         Self.DTYPE,
@@ -197,6 +200,7 @@ struct Hopper[
             Self.NUM_BODIES,
             Self.NUM_JOINTS,
             Self.MAX_CONTACTS,
+            Self.NGEOM,
         ](
             gravity_z=Scalar[Self.DTYPE](GRAVITY_Z),
             timestep=timestep,
@@ -225,10 +229,10 @@ struct Hopper[
             Self.MAX_CONTACTS,
         ]()
 
-        # Configure worldbody, bodies, and joints from compile-time model definition
-        HopperWorldBody.setup_model(self.model)
+        # Configure worldbody, bodies, joints, and geoms from compile-time model definition
         HopperBodies.setup_model(self.model)
         HopperJoints.setup_model(self.model)
+        HopperGeoms.setup_model(self.model)
 
         # Reset to initial state
         self._reset_state()
@@ -635,7 +639,7 @@ struct Hopper[
     ) raises:
         """Batched GPU step function using GC physics engine."""
 
-        comptime MODEL_SIZE = model_size[Hopper.NUM_BODIES, Hopper.NUM_JOINTS]()
+        comptime MODEL_SIZE = model_size[Hopper.NUM_BODIES, Hopper.NUM_JOINTS, Hopper.NGEOM]()
         comptime P = HopperParams[gpu_dtype]
         comptime WS_SIZE = integrator_workspace_size[
             Self.NV, Self.NUM_BODIES
@@ -692,6 +696,7 @@ struct Hopper[
                 Self.NUM_JOINTS,
                 Self.MAX_CONTACTS,
                 BATCH_SIZE,
+                NGEOM=Self.NGEOM,
             ](
                 ctx,
                 states_buf,
@@ -758,7 +763,7 @@ struct Hopper[
         )
 
         # Run forward kinematics
-        comptime MODEL_SIZE = model_size[Self.NUM_BODIES, Self.NUM_JOINTS]()
+        comptime MODEL_SIZE = model_size[Self.NUM_BODIES, Self.NUM_JOINTS, Self.NGEOM]()
         var model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
         Self._init_model_gpu(ctx, model_buf)
 
@@ -821,7 +826,7 @@ struct Hopper[
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
-        comptime MODEL_SIZE = model_size[Self.NUM_BODIES, Self.NUM_JOINTS]()
+        comptime MODEL_SIZE = model_size[Self.NUM_BODIES, Self.NUM_JOINTS, Self.NGEOM]()
         var model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
         Self._init_model_gpu(ctx, model_buf)
 
@@ -910,6 +915,7 @@ struct Hopper[
             Hopper.NUM_BODIES,
             Hopper.NUM_JOINTS,
             Hopper.MAX_CONTACTS,
+            Hopper.NGEOM,
         ](
             gravity_z=P.GRAVITY_Z,
             timestep=P.DT,
@@ -926,14 +932,15 @@ struct Hopper[
         model.solimp_limit[1] = P.SOLIMP_LIMIT_1
         model.solimp_limit[2] = P.SOLIMP_LIMIT_2
 
-        HopperWorldBody.setup_model(model)
         HopperBodies.setup_model(model)
         HopperJoints.setup_model(model)
+        HopperGeoms.setup_model(model)
 
         var host_buf = create_model_buffer[
-            gpu_dtype, Hopper.NUM_BODIES, Hopper.NUM_JOINTS
+            gpu_dtype, Hopper.NUM_BODIES, Hopper.NUM_JOINTS, Hopper.NGEOM
         ](ctx)
         copy_model_to_buffer(model, host_buf)
+        copy_geoms_to_buffer(model, host_buf)
 
         var curr = model_curriculum_offset[
             Hopper.NUM_BODIES, Hopper.NUM_JOINTS
@@ -957,7 +964,7 @@ struct Hopper[
         BATCH_SIZE: Int,
     ](ctx: DeviceContext, mut workspace_buf: DeviceBuffer[gpu_dtype],) raises:
         """Initialize pre-allocated step workspace buffer."""
-        comptime MODEL_SIZE = model_size[Hopper.NUM_BODIES, Hopper.NUM_JOINTS]()
+        comptime MODEL_SIZE = model_size[Hopper.NUM_BODIES, Hopper.NUM_JOINTS, Hopper.NGEOM]()
         var model_view = DeviceBuffer[gpu_dtype](
             ctx,
             workspace_buf.unsafe_ptr(),

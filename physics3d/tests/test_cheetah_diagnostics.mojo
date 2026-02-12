@@ -13,11 +13,7 @@ from builtin.math import abs
 
 from envs.half_cheetah import HalfCheetah
 from envs.half_cheetah.half_cheetah_def import (
-    NQ,
-    NV,
-    NBODY,
-    NJOINT,
-    MAX_CONTACTS,
+    HalfCheetahModel,
     BODY_TORSO,
     BODY_BTHIGH,
     BODY_BSHIN,
@@ -25,12 +21,13 @@ from envs.half_cheetah.half_cheetah_def import (
     BODY_FTHIGH,
     BODY_FSHIN,
     BODY_FFOOT,
-    BODY_HEAD,
     JOINT_ROOTX,
     JOINT_ROOTZ,
     JOINT_ROOTY,
-    CAPSULE_RADIUS,
 )
+
+comptime NBODY = HalfCheetahModel.NBODY
+comptime CAPSULE_RADIUS: Float64 = 0.046
 
 from physics3d.integrator.euler_integrator import EulerIntegrator
 from physics3d.solver.pgs_solver import PGSSolver

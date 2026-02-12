@@ -2,15 +2,9 @@
 
 Provides visualization of the Hopper environment with color-coded
 body parts. All rendering logic is handled by ModelRenderer, which
-reads geometry (RADIUS, HALF_LENGTH) and COLOR from BodySpec at compile time.
+reads geometry (RADIUS, HALF_LENGTH) and COLOR from GeomSpec at compile time.
 
 Implements EnvRenderer3D trait for integration with evaluation code.
-
-NOTE: This renderer faithfully displays the body positions computed by the
-physics engine. If body parts appear disconnected, this is due to a known issue
-in the forward_kinematics.mojo implementation where hinge joints only update
-body orientations but don't properly update body positions to account for
-rotation around joint pivots. The renderer itself is correct.
 """
 
 from math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
@@ -18,7 +12,13 @@ from render3d import Color3D
 from core import EnvRenderer3D
 from physics3d.model.model_renderer import ModelRenderer
 
-from .hopper_def import HopperTorso, HopperThigh, HopperLeg, HopperFoot
+from .hopper_def import (
+    HopperGroundGeom,
+    HopperTorsoGeom,
+    HopperThighGeom,
+    HopperLegGeom,
+    HopperFootGeom,
+)
 
 comptime Vec3 = Vec3Generic[DType.float64]
 comptime Quat = QuatGeneric[DType.float64]
@@ -32,11 +32,14 @@ comptime Quat = QuatGeneric[DType.float64]
 struct HopperRenderer(EnvRenderer3D, Movable):
     """Renderer for Hopper environment.
 
-    Thin wrapper around ModelRenderer parameterized by Hopper body types.
-    Colors are defined on the BodySpec types in hopper_def.mojo.
+    Thin wrapper around ModelRenderer parameterized by Hopper geom types.
+    Colors are defined on the GeomSpec types in hopper_def.mojo.
     """
 
-    var inner: ModelRenderer[HopperTorso, HopperThigh, HopperLeg, HopperFoot]
+    var inner: ModelRenderer[
+        HopperGroundGeom, HopperTorsoGeom, HopperThighGeom,
+        HopperLegGeom, HopperFootGeom,
+    ]
 
     fn __init__(
         out self,
@@ -46,7 +49,8 @@ struct HopperRenderer(EnvRenderer3D, Movable):
         show_velocity: Bool = True,
     ) raises:
         self.inner = ModelRenderer[
-            HopperTorso, HopperThigh, HopperLeg, HopperFoot
+            HopperGroundGeom, HopperTorsoGeom, HopperThighGeom,
+            HopperLegGeom, HopperFootGeom,
         ](
             width=width,
             height=height,

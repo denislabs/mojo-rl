@@ -7,6 +7,7 @@ to distinguish between a physics bug and a policy mismatch issue.
 from random import seed
 from envs.half_cheetah import HalfCheetah
 from envs.half_cheetah.half_cheetah_def import (
+    HalfCheetahModel,
     JOINT_ROOTX,
     JOINT_ROOTZ,
     JOINT_ROOTY,
@@ -16,9 +17,10 @@ from envs.half_cheetah.half_cheetah_def import (
     JOINT_FTHIGH,
     JOINT_FSHIN,
     JOINT_FFOOT,
-    NQ,
-    NV,
 )
+
+comptime NQ = HalfCheetahModel.NQ
+comptime NV = HalfCheetahModel.NV
 
 
 fn print_state(env: HalfCheetah, step: Int):

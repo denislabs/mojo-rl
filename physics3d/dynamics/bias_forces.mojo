@@ -96,8 +96,9 @@ fn compute_bias_forces[
     NJOINT: Int,
     MAX_CONTACTS: Int,
     V_SIZE: Int,
+    NGEOM: Int = 0,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     mut bias: InlineArray[Scalar[DTYPE], V_SIZE],
 ):
@@ -323,8 +324,9 @@ fn _is_descendant[
     NBODY: Int,
     NJOINT: Int,
     MAX_CONTACTS: Int,
+    NGEOM: Int = 0,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
     body: Int,
     ancestor: Int,
 ) -> Bool:
@@ -349,8 +351,9 @@ fn compute_coriolis_forces[
     NBODY: Int,
     NJOINT: Int,
     MAX_CONTACTS: Int,
+    NGEOM: Int = 0,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     mut coriolis: InlineArray[Scalar[DTYPE], NV],
 ):
@@ -651,8 +654,9 @@ fn compute_bias_forces_rne[
     MAX_CONTACTS: Int,
     V_SIZE: Int,
     CDOF_SIZE: Int,
+    NGEOM: Int = 0,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
     mut bias: InlineArray[Scalar[DTYPE], V_SIZE],

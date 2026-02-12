@@ -25,27 +25,10 @@ from .constants import (
     model_size,
     model_body_offset,
     model_joint_offset,
-    model_wgeom_offset,
     model_metadata_offset,
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
-    MODEL_WGEOM_SIZE,
     MODEL_META_SIZE,
-    WGEOM_IDX_TYPE,
-    WGEOM_IDX_POS_X,
-    WGEOM_IDX_POS_Y,
-    WGEOM_IDX_POS_Z,
-    WGEOM_IDX_QUAT_X,
-    WGEOM_IDX_QUAT_Y,
-    WGEOM_IDX_QUAT_Z,
-    WGEOM_IDX_QUAT_W,
-    WGEOM_IDX_SIZE_X,
-    WGEOM_IDX_SIZE_Y,
-    WGEOM_IDX_SIZE_Z,
-    WGEOM_IDX_RADIUS,
-    WGEOM_IDX_FRICTION,
-    WGEOM_IDX_CONTYPE,
-    WGEOM_IDX_CONAFFINITY,
     BODY_IDX_MASS,
     BODY_IDX_INV_MASS,
     BODY_IDX_IXX,
@@ -62,14 +45,6 @@ from .constants import (
     BODY_IDX_QUAT_Z,
     BODY_IDX_QUAT_W,
     BODY_IDX_PARENT,
-    BODY_IDX_GEOM_TYPE,
-    BODY_IDX_RADIUS,
-    BODY_IDX_HALF_LENGTH,
-    BODY_IDX_HALF_X,
-    BODY_IDX_HALF_Y,
-    BODY_IDX_HALF_Z,
-    BODY_IDX_CONTYPE,
-    BODY_IDX_CONAFFINITY,
     JOINT_IDX_TYPE,
     JOINT_IDX_BODY_ID,
     JOINT_IDX_QPOS_ADR,
@@ -106,8 +81,25 @@ from .constants import (
     MODEL_META_IDX_SOLIMP_LIMIT_0,
     MODEL_META_IDX_SOLIMP_LIMIT_1,
     MODEL_META_IDX_SOLIMP_LIMIT_2,
-    MODEL_META_IDX_GROUND_CONTYPE,
-    MODEL_META_IDX_GROUND_CONAFFINITY,
+    MODEL_GEOM_SIZE,
+    GEOM_IDX_TYPE,
+    GEOM_IDX_BODY,
+    GEOM_IDX_POS_X,
+    GEOM_IDX_POS_Y,
+    GEOM_IDX_POS_Z,
+    GEOM_IDX_QUAT_X,
+    GEOM_IDX_QUAT_Y,
+    GEOM_IDX_QUAT_Z,
+    GEOM_IDX_QUAT_W,
+    GEOM_IDX_RADIUS,
+    GEOM_IDX_HALF_LENGTH,
+    GEOM_IDX_HALF_X,
+    GEOM_IDX_HALF_Y,
+    GEOM_IDX_HALF_Z,
+    GEOM_IDX_FRICTION,
+    GEOM_IDX_CONTYPE,
+    GEOM_IDX_CONAFFINITY,
+    model_geom_offset,
 )
 from ..types import Model, Data
 
@@ -155,6 +147,7 @@ fn create_model_buffer[
     DTYPE: DType,
     NBODY: Int,
     NJOINT: Int,
+    NGEOM: Int = 0,
 ](ctx: DeviceContext) raises -> HostBuffer[DTYPE]:
     """Allocate host buffer for GC model.
 
@@ -163,7 +156,7 @@ fn create_model_buffer[
     Returns:
         Pointer to allocated buffer.
     """
-    comptime MODEL_SIZE = model_size[NBODY, NJOINT]()
+    comptime MODEL_SIZE = model_size[NBODY, NJOINT, NGEOM]()
     var buffer = ctx.enqueue_create_host_buffer[DTYPE](MODEL_SIZE)
 
     # Initialize to zero
@@ -185,8 +178,9 @@ fn copy_model_to_buffer[
     NBODY: Int,
     NJOINT: Int,
     MAX_CONTACTS: Int,
+    NGEOM: Int = 0,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
     buffer: HostBuffer[DTYPE],
 ):
     """Copy Model data to a flat buffer for GPU.
@@ -215,20 +209,6 @@ fn copy_model_to_buffer[
         buffer[offset + BODY_IDX_QUAT_W] = model.body_quat[body * 4 + 3]
         buffer[offset + BODY_IDX_PARENT] = Scalar[DTYPE](
             model.body_parent[body]
-        )
-        buffer[offset + BODY_IDX_GEOM_TYPE] = Scalar[DTYPE](
-            model.body_geom_type[body]
-        )
-        buffer[offset + BODY_IDX_RADIUS] = model.body_radius[body]
-        buffer[offset + BODY_IDX_HALF_LENGTH] = model.body_half_length[body]
-        buffer[offset + BODY_IDX_HALF_X] = model.body_half_x[body]
-        buffer[offset + BODY_IDX_HALF_Y] = model.body_half_y[body]
-        buffer[offset + BODY_IDX_HALF_Z] = model.body_half_z[body]
-        buffer[offset + BODY_IDX_CONTYPE] = Scalar[DTYPE](
-            model.body_contype[body]
-        )
-        buffer[offset + BODY_IDX_CONAFFINITY] = Scalar[DTYPE](
-            model.body_conaffinity[body]
         )
 
     # Copy joint data
@@ -278,13 +258,49 @@ fn copy_model_to_buffer[
     buffer[meta_offset + MODEL_META_IDX_SOLIMP_LIMIT_0] = model.solimp_limit[0]
     buffer[meta_offset + MODEL_META_IDX_SOLIMP_LIMIT_1] = model.solimp_limit[1]
     buffer[meta_offset + MODEL_META_IDX_SOLIMP_LIMIT_2] = model.solimp_limit[2]
-    # Ground collision filtering
-    buffer[meta_offset + MODEL_META_IDX_GROUND_CONTYPE] = Scalar[DTYPE](
-        model.ground_contype
-    )
-    buffer[meta_offset + MODEL_META_IDX_GROUND_CONAFFINITY] = Scalar[DTYPE](
-        model.ground_conaffinity
-    )
+
+
+fn copy_geoms_to_buffer[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    NGEOM: Int,
+](
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
+    buffer: HostBuffer[DTYPE],
+):
+    """Copy unified geom data from Model to GPU buffer.
+
+    Args:
+        model: Source model with geom arrays.
+        buffer: Destination buffer (must have room for NGEOM geoms).
+    """
+    for g in range(NGEOM):
+        var offset = model_geom_offset[NBODY, NJOINT](g)
+        buffer[offset + GEOM_IDX_TYPE] = Scalar[DTYPE](model.geom_type[g])
+        buffer[offset + GEOM_IDX_BODY] = Scalar[DTYPE](model.geom_body[g])
+        buffer[offset + GEOM_IDX_POS_X] = model.geom_pos[g * 3 + 0]
+        buffer[offset + GEOM_IDX_POS_Y] = model.geom_pos[g * 3 + 1]
+        buffer[offset + GEOM_IDX_POS_Z] = model.geom_pos[g * 3 + 2]
+        buffer[offset + GEOM_IDX_QUAT_X] = model.geom_quat[g * 4 + 0]
+        buffer[offset + GEOM_IDX_QUAT_Y] = model.geom_quat[g * 4 + 1]
+        buffer[offset + GEOM_IDX_QUAT_Z] = model.geom_quat[g * 4 + 2]
+        buffer[offset + GEOM_IDX_QUAT_W] = model.geom_quat[g * 4 + 3]
+        buffer[offset + GEOM_IDX_RADIUS] = model.geom_radius[g]
+        buffer[offset + GEOM_IDX_HALF_LENGTH] = model.geom_half_length[g]
+        buffer[offset + GEOM_IDX_HALF_X] = model.geom_half_x[g]
+        buffer[offset + GEOM_IDX_HALF_Y] = model.geom_half_y[g]
+        buffer[offset + GEOM_IDX_HALF_Z] = model.geom_half_z[g]
+        buffer[offset + GEOM_IDX_FRICTION] = model.geom_friction[g]
+        buffer[offset + GEOM_IDX_CONTYPE] = Scalar[DTYPE](
+            model.geom_contype[g]
+        )
+        buffer[offset + GEOM_IDX_CONAFFINITY] = Scalar[DTYPE](
+            model.geom_conaffinity[g]
+        )
 
 
 # =============================================================================

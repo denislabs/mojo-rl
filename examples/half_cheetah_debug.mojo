@@ -12,9 +12,11 @@ from envs.half_cheetah.half_cheetah_def import (
     BODY_FTHIGH,
     BODY_FSHIN,
     BODY_FFOOT,
-    TORSO_HALF_LENGTH,
-    INIT_HEIGHT,
+    HalfCheetahParams,
 )
+
+comptime TORSO_HALF_LENGTH: Float64 = 0.5
+comptime INIT_HEIGHT: Float64 = HalfCheetahParams[DType.float64].INITIAL_Z
 
 
 fn main() raises:

@@ -15,11 +15,11 @@ from gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.half_cheetah import HalfCheetah, HalfCheetahConstants
+from envs.half_cheetah import HalfCheetah, HalfCheetahParams
 from deep_rl import dtype as gpu_dtype
 from deep_rl.constants import dtype, TPB, TILE
 
-comptime C = HalfCheetahConstants[DType.float32]
+comptime C = HalfCheetahParams[DType.float32]
 comptime OBS_DIM = C.OBS_DIM  # 17
 comptime ACTION_DIM = C.ACTION_DIM  # 6
 comptime HIDDEN_DIM = 256

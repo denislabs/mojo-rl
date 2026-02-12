@@ -114,8 +114,9 @@ struct NewtonSolver(ConstraintSolver):
         MAX_ROWS: Int,
         V_SIZE: Int,
         M_SIZE: Int,
+        NGEOM: Int = 0,
     ](
-        model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+        model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         M_inv: InlineArray[Scalar[DTYPE], M_SIZE],
         mut constraints: ConstraintData[DTYPE, MAX_ROWS, NV],

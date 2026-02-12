@@ -14,14 +14,14 @@ from random import seed
 from time import perf_counter_ns
 
 from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.half_cheetah import HalfCheetah, HalfCheetahConstants
+from envs.half_cheetah import HalfCheetah, HalfCheetahParams
 
 
 # =============================================================================
 # Constants (must match training configuration)
 # =============================================================================
 
-comptime C = HalfCheetahConstants[DType.float32]
+comptime C = HalfCheetahParams[DType.float32]
 comptime OBS_DIM = C.OBS_DIM  # 17
 comptime ACTION_DIM = C.ACTION_DIM  # 6
 # Must match training configuration!

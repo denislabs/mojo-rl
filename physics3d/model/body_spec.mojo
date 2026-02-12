@@ -18,17 +18,10 @@ from render3d import Color3D
 trait BodySpec:
     """Compile-time body specification for physics3d model definitions.
 
-    All properties are compile-time constants matching Model body fields
-    and GPU buffer layout. Inertia is auto-computed from geometry + mass.
+    All properties are compile-time constants matching Model body fields.
+    Inertia is auto-computed from geometry + mass (geometry fields are on
+    concrete structs, not required by the trait).
     """
-
-    # Geometry
-    comptime GEOM_TYPE: Int  # GEOM_CAPSULE, GEOM_SPHERE, GEOM_BOX
-    comptime RADIUS: Float64  # Collision radius
-    comptime HALF_LENGTH: Float64  # Capsule half-length (0 for sphere/box)
-    comptime HALF_X: Float64  # Box half-extents (0 for capsule/sphere)
-    comptime HALF_Y: Float64
-    comptime HALF_Z: Float64
 
     # Mass
     comptime MASS: Float64
@@ -44,10 +37,6 @@ trait BodySpec:
     comptime QUAT_Y: Float64
     comptime QUAT_Z: Float64
     comptime QUAT_W: Float64
-
-    # Collision filtering (MuJoCo-style)
-    comptime CONTYPE: Int
-    comptime CONAFFINITY: Int
 
     # Visual properties
     comptime COLOR: Color3D

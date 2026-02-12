@@ -14,13 +14,9 @@ from random import seed
 
 from deep_agents.ppo import DeepPPOContinuousAgent
 from deep_rl.constants import dtype
-from envs.half_cheetah import HalfCheetah, HalfCheetahConstants
+from envs.half_cheetah import HalfCheetah, HalfCheetahParams
 from envs.half_cheetah.half_cheetah_def import (
-    NQ,
-    NV,
-    NBODY,
-    NJOINT,
-    MAX_CONTACTS,
+    HalfCheetahParams,
     BODY_TORSO,
     BODY_BTHIGH,
     BODY_BSHIN,
@@ -28,7 +24,6 @@ from envs.half_cheetah.half_cheetah_def import (
     BODY_FTHIGH,
     BODY_FSHIN,
     BODY_FFOOT,
-    BODY_HEAD,
     JOINT_ROOTX,
     JOINT_ROOTZ,
     JOINT_ROOTY,
@@ -38,15 +33,6 @@ from envs.half_cheetah.half_cheetah_def import (
     JOINT_FTHIGH,
     JOINT_FSHIN,
     JOINT_FFOOT,
-    CAPSULE_RADIUS,
-    BTHIGH_GEAR,
-    BSHIN_GEAR,
-    BFOOT_GEAR,
-    FTHIGH_GEAR,
-    FSHIN_GEAR,
-    FFOOT_GEAR,
-    FRAME_SKIP,
-    DT,
 )
 
 
@@ -54,7 +40,7 @@ from envs.half_cheetah.half_cheetah_def import (
 # Constants (must match training configuration)
 # =============================================================================
 
-comptime C = HalfCheetahConstants[DType.float32]
+comptime C = HalfCheetahParams[DType.float32]
 comptime OBS_DIM = C.OBS_DIM  # 17
 comptime ACTION_DIM = C.ACTION_DIM  # 6
 comptime HIDDEN_DIM = 256

@@ -9,14 +9,15 @@ State buffer layout per environment:
    contacts: MAX_CONTACTS*CONTACT_SIZE | metadata: METADATA_SIZE]
 
 Model buffer (static, same for all environments):
-  Per body (MODEL_BODY_SIZE=22): [mass, inv_mass, inertia(3), inv_inertia(3),
-    pos(3), quat(4), parent, geom_type, radius, half_length, half_x/y/z]
+  Per body (MODEL_BODY_SIZE=16): [mass, inv_mass, inertia(3), inv_inertia(3),
+    pos(3), quat(4), parent]
   Per joint (MODEL_JOINT_SIZE=18): [type, body_id, qpos_adr, dof_adr,
     pos(3), axis(3), tau_limit, range_min/max, armature, damping, stiffness, springref, frictionloss]
-  Metadata (MODEL_META_SIZE=20): [NBODY, NJOINT, gravity(3), timestep, ground_z, friction,
-    solref_contact(2), solimp_contact(3), solref_limit(2), solimp_limit(3),
-    ground_contype, ground_conaffinity]
+  Metadata (MODEL_META_SIZE=18): [NBODY, NJOINT, gravity(3), timestep, ground_z, friction,
+    solref_contact(2), solimp_contact(3), solref_limit(2), solimp_limit(3)]
   Curriculum (MODEL_CURRICULUM_SIZE=8): [up to 8 curriculum parameters]
+  Per geom (MODEL_GEOM_SIZE=17): [type, body, pos(3), quat(4), radius, half_length,
+    half_x/y/z, friction, contype, conaffinity]
 """
 
 # =============================================================================
@@ -171,7 +172,7 @@ fn state_size[NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int]() -> Int:
 # Model Buffer Layout - Per Body
 # =============================================================================
 
-comptime MODEL_BODY_SIZE: Int = 24
+comptime MODEL_BODY_SIZE: Int = 16
 
 comptime BODY_IDX_MASS: Int = 0
 comptime BODY_IDX_INV_MASS: Int = 1
@@ -189,14 +190,6 @@ comptime BODY_IDX_QUAT_Y: Int = 12
 comptime BODY_IDX_QUAT_Z: Int = 13
 comptime BODY_IDX_QUAT_W: Int = 14
 comptime BODY_IDX_PARENT: Int = 15  # Parent body index (-1 for world)
-comptime BODY_IDX_GEOM_TYPE: Int = 16
-comptime BODY_IDX_RADIUS: Int = 17
-comptime BODY_IDX_HALF_LENGTH: Int = 18
-comptime BODY_IDX_HALF_X: Int = 19
-comptime BODY_IDX_HALF_Y: Int = 20
-comptime BODY_IDX_HALF_Z: Int = 21
-comptime BODY_IDX_CONTYPE: Int = 22
-comptime BODY_IDX_CONAFFINITY: Int = 23
 
 
 fn model_body_offset(body_idx: Int) -> Int:
@@ -239,7 +232,7 @@ fn model_joint_offset[NBODY: Int](joint_idx: Int) -> Int:
 # Model Buffer Layout - Global Metadata
 # =============================================================================
 
-comptime MODEL_META_SIZE: Int = 20
+comptime MODEL_META_SIZE: Int = 18
 
 comptime MODEL_META_IDX_NBODY: Int = 0
 comptime MODEL_META_IDX_NJOINT: Int = 1
@@ -261,42 +254,45 @@ comptime MODEL_META_IDX_SOLREF_LIMIT_1: Int = 14    # dampratio
 comptime MODEL_META_IDX_SOLIMP_LIMIT_0: Int = 15    # dmin
 comptime MODEL_META_IDX_SOLIMP_LIMIT_1: Int = 16    # dmax
 comptime MODEL_META_IDX_SOLIMP_LIMIT_2: Int = 17    # width
-# Ground collision filtering
-comptime MODEL_META_IDX_GROUND_CONTYPE: Int = 18
-comptime MODEL_META_IDX_GROUND_CONAFFINITY: Int = 19
 
 
-# =============================================================================
-# Model Buffer Layout - Worldbody Geoms (static obstacles)
-# =============================================================================
-
-comptime MODEL_WGEOM_SIZE: Int = 15  # Per worldbody geom
-
-comptime WGEOM_IDX_TYPE: Int = 0
-comptime WGEOM_IDX_POS_X: Int = 1
-comptime WGEOM_IDX_POS_Y: Int = 2
-comptime WGEOM_IDX_POS_Z: Int = 3
-comptime WGEOM_IDX_QUAT_X: Int = 4
-comptime WGEOM_IDX_QUAT_Y: Int = 5
-comptime WGEOM_IDX_QUAT_Z: Int = 6
-comptime WGEOM_IDX_QUAT_W: Int = 7
-comptime WGEOM_IDX_SIZE_X: Int = 8
-comptime WGEOM_IDX_SIZE_Y: Int = 9
-comptime WGEOM_IDX_SIZE_Z: Int = 10
-comptime WGEOM_IDX_RADIUS: Int = 11
-comptime WGEOM_IDX_FRICTION: Int = 12
-comptime WGEOM_IDX_CONTYPE: Int = 13
-comptime WGEOM_IDX_CONAFFINITY: Int = 14
-
-
-fn model_wgeom_offset[NBODY: Int, NJOINT: Int](wgeom_idx: Int) -> Int:
-    """Offset to a specific worldbody geom in model buffer."""
-    return NBODY * MODEL_BODY_SIZE + NJOINT * MODEL_JOINT_SIZE + wgeom_idx * MODEL_WGEOM_SIZE
-
-
-fn model_metadata_offset[NBODY: Int, NJOINT: Int, NWGEOM: Int = 0]() -> Int:
+fn model_metadata_offset[NBODY: Int, NJOINT: Int]() -> Int:
     """Offset to model metadata."""
-    return NBODY * MODEL_BODY_SIZE + NJOINT * MODEL_JOINT_SIZE + NWGEOM * MODEL_WGEOM_SIZE
+    return NBODY * MODEL_BODY_SIZE + NJOINT * MODEL_JOINT_SIZE
+
+
+# =============================================================================
+# Model Buffer Layout - Unified Geoms (body-attached + static)
+# =============================================================================
+
+comptime MODEL_GEOM_SIZE: Int = 17  # Per unified geom
+
+comptime GEOM_IDX_TYPE: Int = 0
+comptime GEOM_IDX_BODY: Int = 1  # Body index (-1 for static)
+comptime GEOM_IDX_POS_X: Int = 2
+comptime GEOM_IDX_POS_Y: Int = 3
+comptime GEOM_IDX_POS_Z: Int = 4
+comptime GEOM_IDX_QUAT_X: Int = 5
+comptime GEOM_IDX_QUAT_Y: Int = 6
+comptime GEOM_IDX_QUAT_Z: Int = 7
+comptime GEOM_IDX_QUAT_W: Int = 8
+comptime GEOM_IDX_RADIUS: Int = 9
+comptime GEOM_IDX_HALF_LENGTH: Int = 10
+comptime GEOM_IDX_HALF_X: Int = 11
+comptime GEOM_IDX_HALF_Y: Int = 12
+comptime GEOM_IDX_HALF_Z: Int = 13
+comptime GEOM_IDX_FRICTION: Int = 14
+comptime GEOM_IDX_CONTYPE: Int = 15
+comptime GEOM_IDX_CONAFFINITY: Int = 16
+
+
+fn model_geom_offset[NBODY: Int, NJOINT: Int](geom_idx: Int) -> Int:
+    """Offset to a specific unified geom in model buffer.
+
+    Geoms are stored AFTER metadata+curriculum to avoid shifting metadata offsets.
+    Layout: [bodies | joints | metadata | curriculum | geoms]
+    """
+    return NBODY * MODEL_BODY_SIZE + NJOINT * MODEL_JOINT_SIZE + MODEL_META_SIZE + MODEL_CURRICULUM_SIZE + geom_idx * MODEL_GEOM_SIZE
 
 
 # =============================================================================
@@ -317,14 +313,17 @@ comptime CURRICULUM_IDX_PARAM_6: Int = 6
 comptime CURRICULUM_IDX_PARAM_7: Int = 7
 
 
-fn model_curriculum_offset[NBODY: Int, NJOINT: Int, NWGEOM: Int = 0]() -> Int:
+fn model_curriculum_offset[NBODY: Int, NJOINT: Int]() -> Int:
     """Offset to curriculum parameters in model buffer."""
-    return model_metadata_offset[NBODY, NJOINT, NWGEOM]() + MODEL_META_SIZE
+    return model_metadata_offset[NBODY, NJOINT]() + MODEL_META_SIZE
 
 
-fn model_size[NBODY: Int, NJOINT: Int, NWGEOM: Int = 0]() -> Int:
-    """Total model buffer size."""
-    return model_metadata_offset[NBODY, NJOINT, NWGEOM]() + MODEL_META_SIZE + MODEL_CURRICULUM_SIZE
+fn model_size[NBODY: Int, NJOINT: Int, NGEOM: Int = 0]() -> Int:
+    """Total model buffer size.
+
+    Layout: [bodies | joints | metadata | curriculum | geoms]
+    """
+    return NBODY * MODEL_BODY_SIZE + NJOINT * MODEL_JOINT_SIZE + MODEL_META_SIZE + MODEL_CURRICULUM_SIZE + NGEOM * MODEL_GEOM_SIZE
 
 
 # =============================================================================

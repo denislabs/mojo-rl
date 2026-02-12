@@ -14,8 +14,8 @@ robot definition. Replaces the former constants.mojo.
 
 from physics3d.model.body_spec import CapsuleBody
 from physics3d.model.joint_spec import HingeJoint, SlideJoint
-from physics3d.model.model_def import Bodies, Joints, ModelDef, WorldBody
-from physics3d.model.geom_spec import PlaneGeom
+from physics3d.model.model_def import Bodies, Joints, Geoms, ModelDef
+from physics3d.model.geom_spec import PlaneGeom, BodyCapsuleGeom
 from render3d import Color3D
 from physics3d.gpu.constants import (
     state_size,
@@ -151,26 +151,12 @@ comptime FFoot = CapsuleBody[
     color = Color3D(230, 153, 153),
 ]
 
-# Body 7: Head — tilted capsule at front of torso
-# MuJoCo XML: pos=".6 0 .1" axisangle="0 1 0 .87"
-# In torso local frame: px=-0.1, py=0, pz=0.6
-# Relative rotation: (0.87 - pi/2) rad Y ~ -0.7 rad Y
-# quat for -0.7 rad Y: (0, sin(-0.35), 0, cos(-0.35)) ~ (0, -0.3429, 0, 0.9394)
+# Body 7 (Head) removed — now a geom attached to torso (body 0)
+# See HeadGeom below in the Geoms section.
+
+# Head geometry constants (used by HeadGeom)
 comptime _HEAD_SIN_HALF: Float64 = -0.34290  # sin((0.87 - pi/2) / 2)
 comptime _HEAD_COS_HALF: Float64 = 0.93937  # cos((0.87 - pi/2) / 2)
-
-comptime Head = CapsuleBody[
-    parent=0,
-    mass=0.90,
-    radius=_R,
-    half_length=0.15,
-    pos_x= -0.1,  # -HEAD_POS_Z (world z -> -local x)
-    pos_z=0.6,  # HEAD_POS_X (world x -> local z)
-    quat_y=_HEAD_SIN_HALF,
-    quat_w=_HEAD_COS_HALF,
-    conaffinity=0,
-    color = Color3D(204, 153, 102),
-]
 
 
 # =============================================================================
@@ -277,34 +263,7 @@ comptime FFootJ = HingeJoint[
     stiffness=60.0,
 ]
 
-# Joint 9: head — Head hinge (body 7, fixed with zero range)
-# Joint pos in torso frame: (-0.1, 0, 0.6)
-# Excluded from obs and actions, no meaningful limits
-comptime HeadJ = HingeJoint[
-    body_idx=7,
-    pos_x= -0.1,
-    pos_z=0.6,
-    tau_limit=0.0,
-    range_min=0.0,
-    range_max=0.0,
-    damping=0.01,
-    stiffness=8.0,
-    exclude_obs_qpos=True,
-    exclude_obs_qvel=True,
-    is_actuated=False,
-    has_limits=False,
-]
-
-
-# =============================================================================
-# WorldBody — Ground Plane
-# =============================================================================
-
-# MuJoCo half_cheetah.xml:
-# <geom conaffinity="1" condim="3" friction=".4 .1 .1" size="40 40 40" type="plane"/>
-comptime HalfCheetahWorldBody = WorldBody[
-    PlaneGeom[z=0.0, friction=0.4, conaffinity=1, size_x=40.0, size_y=40.0],
-]
+# Joint 9 (HeadJ) removed — head is now a geom on the torso, no separate joint
 
 
 # =============================================================================
@@ -312,18 +271,107 @@ comptime HalfCheetahWorldBody = WorldBody[
 # =============================================================================
 
 comptime HalfCheetahBodies = Bodies[
-    Torso, BThigh, BShin, BFoot, FThigh, FShin, FFoot, Head
+    Torso, BThigh, BShin, BFoot, FThigh, FShin, FFoot
 ]
 
 comptime HalfCheetahJoints = Joints[
-    RootX, RootZ, RootY, BThighJ, BShinJ, BFootJ, FThighJ, FShinJ, FFootJ, HeadJ
+    RootX, RootZ, RootY, BThighJ, BShinJ, BFootJ, FThighJ, FShinJ, FFootJ
 ]
+
+
+# =============================================================================
+# Geoms — Unified geometry (replaces WorldBody + body-attached shapes)
+# =============================================================================
+
+# Ground plane
+comptime GroundGeom = PlaneGeom[
+    z=0.0, friction=0.4, conaffinity=1, size_x=40.0, size_y=40.0
+]
+
+# Body-centered capsule geoms (identity local offset — body FK provides world transform)
+comptime TorsoGeom = BodyCapsuleGeom[
+    body_idx=0,
+    radius=_R,
+    half_length=0.5,
+    conaffinity=0,
+    color = Color3D(204, 153, 102),
+]
+comptime BThighGeom = BodyCapsuleGeom[
+    body_idx=1,
+    radius=_R,
+    half_length=0.145,
+    conaffinity=0,
+    color = Color3D(204, 153, 102),
+]
+comptime BShinGeom = BodyCapsuleGeom[
+    body_idx=2,
+    radius=_R,
+    half_length=0.15,
+    conaffinity=0,
+    color = Color3D(230, 153, 153),
+]
+comptime BFootGeom = BodyCapsuleGeom[
+    body_idx=3,
+    radius=_R,
+    half_length=0.094,
+    conaffinity=0,
+    color = Color3D(230, 153, 153),
+]
+comptime FThighGeom = BodyCapsuleGeom[
+    body_idx=4,
+    radius=_R,
+    half_length=0.133,
+    conaffinity=0,
+    color = Color3D(204, 153, 102),
+]
+comptime FShinGeom = BodyCapsuleGeom[
+    body_idx=5,
+    radius=_R,
+    half_length=0.106,
+    conaffinity=0,
+    color = Color3D(230, 153, 153),
+]
+comptime FFootGeom = BodyCapsuleGeom[
+    body_idx=6,
+    radius=_R,
+    half_length=0.07,
+    conaffinity=0,
+    color = Color3D(230, 153, 153),
+]
+
+# Head geom — attached to torso (body 0) with local offset
+# Position in torso frame: (-0.1, 0, 0.6), orientation: tilted ~0.87 rad about Y
+comptime HeadGeom = BodyCapsuleGeom[
+    body_idx=0,
+    radius=_R,
+    half_length=0.15,
+    pos_x= -0.1,
+    pos_z=0.6,
+    quat_y=_HEAD_SIN_HALF,
+    quat_w=_HEAD_COS_HALF,
+    conaffinity=0,
+    color = Color3D(204, 153, 102),
+]
+
+comptime HalfCheetahGeoms = Geoms[
+    GroundGeom,
+    TorsoGeom,
+    HeadGeom,
+    BThighGeom,
+    BShinGeom,
+    BFootGeom,
+    FThighGeom,
+    FShinGeom,
+    FFootGeom,
+]
+
 
 comptime HalfCheetahModel = ModelDef[
     HalfCheetahBodies.N,
     HalfCheetahJoints.N,
     HalfCheetahJoints._sum_nq(),
     HalfCheetahJoints._sum_nv(),
+    HalfCheetahGeoms.N,
 ]
 
 
@@ -335,9 +383,8 @@ comptime HalfCheetahModel = ModelDef[
 struct HalfCheetahParams[DTYPE: DType = DType.float64]:
     """Environment-specific parameters not derivable from the model definition.
 
-    Replaces the former HalfCheetahConstants struct. Everything about body
-    geometry, joint limits, gear ratios, damping, stiffness, and indices is
-    now in the model definition (BodySpec/JointSpec).
+    Everything about body geometry, joint limits, gear ratios, damping, stiffness,
+    and indices is now in the model definition (BodySpec/JointSpec).
 
     Type Parameters:
         DTYPE: The floating point type for physics constants.
@@ -384,6 +431,7 @@ struct HalfCheetahParams[DTYPE: DType = DType.float64]:
     comptime NV: Int = HalfCheetahModel.NV
     comptime NUM_BODIES: Int = HalfCheetahModel.NBODY
     comptime NUM_JOINTS: Int = HalfCheetahModel.NJOINT
+    comptime NGEOM: Int = HalfCheetahModel.NGEOM
     comptime OBS_DIM: Int = 17
     comptime ACTION_DIM: Int = 6
 
@@ -394,7 +442,9 @@ struct HalfCheetahParams[DTYPE: DType = DType.float64]:
     comptime STATE_SIZE: Int = state_size[
         Self.NQ, Self.NV, Self.NUM_BODIES, Self.MAX_CONTACTS
     ]()
-    comptime MODEL_SIZE: Int = model_size[Self.NUM_BODIES, Self.NUM_JOINTS]()
+    comptime MODEL_SIZE: Int = model_size[
+        Self.NUM_BODIES, Self.NUM_JOINTS, Self.NGEOM
+    ]()
 
     # GPU layout helper methods
     @staticmethod
@@ -459,11 +509,6 @@ struct HalfCheetahParams[DTYPE: DType = DType.float64]:
 comptime HalfCheetahParamsCPU = HalfCheetahParams[DType.float64]
 comptime HalfCheetahParamsGPU = HalfCheetahParams[DType.float32]
 
-# Backward-compatibility aliases (old name → new name)
-comptime HalfCheetahConstants = HalfCheetahParams
-comptime HalfCheetahConstantsCPU = HalfCheetahParamsCPU
-comptime HalfCheetahConstantsGPU = HalfCheetahParamsGPU
-
 
 # =============================================================================
 # Body/Joint Index Constants (for backward compatibility with external consumers)
@@ -476,7 +521,6 @@ comptime BODY_BFOOT: Int = 3
 comptime BODY_FTHIGH: Int = 4
 comptime BODY_FSHIN: Int = 5
 comptime BODY_FFOOT: Int = 6
-comptime BODY_HEAD: Int = 7
 
 comptime JOINT_ROOTX: Int = 0
 comptime JOINT_ROOTZ: Int = 1
@@ -487,73 +531,3 @@ comptime JOINT_BFOOT: Int = 5
 comptime JOINT_FTHIGH: Int = 6
 comptime JOINT_FSHIN: Int = 7
 comptime JOINT_FFOOT: Int = 8
-comptime JOINT_HEAD: Int = 9
-
-# Geometry constants for renderer
-comptime CAPSULE_RADIUS: Float64 = _R
-comptime TORSO_HALF_LENGTH: Float64 = 0.5
-comptime HEAD_HALF_LENGTH: Float64 = 0.15
-comptime HEAD_POS_X: Float64 = 0.6
-comptime HEAD_POS_Y: Float64 = 0.0
-comptime HEAD_POS_Z: Float64 = 0.1
-comptime HEAD_AXIS_ANGLE: Float64 = 0.87
-comptime BTHIGH_HALF_LENGTH: Float64 = 0.145
-comptime BSHIN_HALF_LENGTH: Float64 = 0.15
-comptime BFOOT_HALF_LENGTH: Float64 = 0.094
-comptime FTHIGH_HALF_LENGTH: Float64 = 0.133
-comptime FSHIN_HALF_LENGTH: Float64 = 0.106
-comptime FFOOT_HALF_LENGTH: Float64 = 0.07
-
-# Body mass constants for backward compatibility
-comptime TORSO_MASS: Float64 = 6.25
-comptime BTHIGH_MASS: Float64 = 1.54
-comptime BSHIN_MASS: Float64 = 1.58
-comptime BFOOT_MASS: Float64 = 1.10
-comptime FTHIGH_MASS: Float64 = 1.43
-comptime FSHIN_MASS: Float64 = 1.17
-comptime FFOOT_MASS: Float64 = 0.93
-
-# Dimension constants for backward compatibility
-comptime NQ: Int = HalfCheetahModel.NQ
-comptime NV: Int = HalfCheetahModel.NV
-comptime NBODY: Int = HalfCheetahModel.NBODY
-comptime NJOINT: Int = HalfCheetahModel.NJOINT
-comptime MAX_CONTACTS: Int = 20
-comptime OBS_DIM: Int = 17
-comptime ACTION_DIM: Int = 6
-
-# Physics constants for backward compatibility
-comptime DT: Float64 = 0.002
-comptime FRAME_SKIP: Int = 5
-comptime EFFECTIVE_DT: Float64 = DT * FRAME_SKIP
-comptime GRAVITY_Z: Float64 = -9.81
-comptime GROUND_Z: Float64 = 0.0
-comptime MAX_STEPS: Int = 1000
-comptime INIT_HEIGHT: Float64 = 0.7
-comptime FRICTION: Float64 = 0.9
-comptime RESTITUTION: Float64 = 0.0
-comptime FORWARD_REWARD_WEIGHT: Float64 = 1.0
-comptime CTRL_COST_WEIGHT: Float64 = 0.1
-comptime RESET_NOISE_SCALE: Float64 = 0.1
-
-# Gear ratios for backward compatibility
-comptime BTHIGH_GEAR: Float64 = 120.0
-comptime BSHIN_GEAR: Float64 = 90.0
-comptime BFOOT_GEAR: Float64 = 60.0
-comptime FTHIGH_GEAR: Float64 = 120.0
-comptime FSHIN_GEAR: Float64 = 60.0
-comptime FFOOT_GEAR: Float64 = 30.0
-
-# Joint limits for backward compatibility
-comptime BTHIGH_LOWER: Float64 = -0.52
-comptime BTHIGH_UPPER: Float64 = 1.05
-comptime BSHIN_LOWER: Float64 = -0.785
-comptime BSHIN_UPPER: Float64 = 0.785
-comptime BFOOT_LOWER: Float64 = -0.4
-comptime BFOOT_UPPER: Float64 = 0.785
-comptime FTHIGH_LOWER: Float64 = -1.0
-comptime FTHIGH_UPPER: Float64 = 0.7
-comptime FSHIN_LOWER: Float64 = -1.2
-comptime FSHIN_UPPER: Float64 = 0.87
-comptime FFOOT_LOWER: Float64 = -0.5
-comptime FFOOT_UPPER: Float64 = 0.5

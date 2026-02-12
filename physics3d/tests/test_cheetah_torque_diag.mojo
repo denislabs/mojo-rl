@@ -12,11 +12,8 @@ from builtin.math import abs
 
 from envs.half_cheetah import HalfCheetah
 from envs.half_cheetah.half_cheetah_def import (
-    NQ,
-    NV,
-    NBODY,
-    NJOINT,
-    MAX_CONTACTS,
+    HalfCheetahModel,
+    HalfCheetahParams,
     BODY_TORSO,
     BODY_BTHIGH,
     BODY_BSHIN,
@@ -24,7 +21,6 @@ from envs.half_cheetah.half_cheetah_def import (
     BODY_FTHIGH,
     BODY_FSHIN,
     BODY_FFOOT,
-    BODY_HEAD,
     JOINT_ROOTX,
     JOINT_ROOTZ,
     JOINT_ROOTY,
@@ -34,21 +30,21 @@ from envs.half_cheetah.half_cheetah_def import (
     JOINT_FTHIGH,
     JOINT_FSHIN,
     JOINT_FFOOT,
-    CAPSULE_RADIUS,
-    BTHIGH_GEAR,
-    BSHIN_GEAR,
-    BFOOT_GEAR,
-    FTHIGH_GEAR,
-    FSHIN_GEAR,
-    FFOOT_GEAR,
-    FRAME_SKIP,
-    DT,
 )
 
 from physics3d.integrator.euler_integrator import EulerIntegrator
 from physics3d.solver.pgs_solver import PGSSolver
 from physics3d.solver.newton_solver import NewtonSolver
 from physics3d.kinematics.forward_kinematics import forward_kinematics
+
+comptime NV = HalfCheetahModel.NV
+comptime FRAME_SKIP = HalfCheetahParams[DType.float64].FRAME_SKIP
+comptime BTHIGH_GEAR: Float64 = 120.0
+comptime BSHIN_GEAR: Float64 = 90.0
+comptime BFOOT_GEAR: Float64 = 60.0
+comptime FTHIGH_GEAR: Float64 = 120.0
+comptime FSHIN_GEAR: Float64 = 60.0
+comptime FFOOT_GEAR: Float64 = 30.0
 
 
 fn body_name(id: Int) -> String:

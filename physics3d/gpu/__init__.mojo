@@ -42,6 +42,26 @@ from .constants import (
     MODEL_META_IDX_SOLIMP_LIMIT_0,
     MODEL_META_IDX_SOLIMP_LIMIT_1,
     MODEL_META_IDX_SOLIMP_LIMIT_2,
+    # Unified geom constants
+    MODEL_GEOM_SIZE,
+    GEOM_IDX_TYPE,
+    GEOM_IDX_BODY,
+    GEOM_IDX_POS_X,
+    GEOM_IDX_POS_Y,
+    GEOM_IDX_POS_Z,
+    GEOM_IDX_QUAT_X,
+    GEOM_IDX_QUAT_Y,
+    GEOM_IDX_QUAT_Z,
+    GEOM_IDX_QUAT_W,
+    GEOM_IDX_RADIUS,
+    GEOM_IDX_HALF_LENGTH,
+    GEOM_IDX_HALF_X,
+    GEOM_IDX_HALF_Y,
+    GEOM_IDX_HALF_Z,
+    GEOM_IDX_FRICTION,
+    GEOM_IDX_CONTYPE,
+    GEOM_IDX_CONAFFINITY,
+    model_geom_offset,
 )
 
 # Buffer utilities
@@ -49,6 +69,7 @@ from .buffer_utils import (
     create_state_buffer,
     create_model_buffer,
     copy_model_to_buffer,
+    copy_geoms_to_buffer,
     copy_data_to_buffer,
     copy_buffer_to_data,
 )

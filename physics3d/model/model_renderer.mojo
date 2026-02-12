@@ -1,31 +1,33 @@
-"""Generic model renderer that draws capsule bodies from BodySpec definitions.
+"""Generic model renderer that draws capsule geoms from GeomSpec definitions.
 
-Parameterized by a variadic list of BodySpec types, iterates at compile time
-to draw all bodies automatically. Eliminates per-environment renderer boilerplate.
+Parameterized by a variadic list of GeomSpec types, iterates at compile time
+to draw all visible geoms automatically. Eliminates per-environment renderer boilerplate.
 """
 
 from math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
 from render3d import Renderer3D, Camera3D, Color3D
 from core import EnvRenderer3D
-from ..model.body_spec import BodySpec
+from ..model.geom_spec import GeomSpec, GEOM_PLANE
 
 comptime Vec3 = Vec3Generic[DType.float64]
 comptime Quat = QuatGeneric[DType.float64]
 
 
 @fieldwise_init
-struct ModelRenderer[*B: BodySpec](EnvRenderer3D, Movable):
-    """Generic renderer for models defined by BodySpec types.
+struct ModelRenderer[*G: GeomSpec](EnvRenderer3D, Movable):
+    """Generic renderer for models defined by GeomSpec types.
 
-    Draws capsule bodies using compile-time geometry from BodySpec (RADIUS,
+    Draws capsule geoms using compile-time geometry from GeomSpec (RADIUS,
     HALF_LENGTH). Camera follows torso (body 0) with configurable offsets.
+    Plane geoms (BODY_IDX == -1) are skipped. Body-attached geoms use
+    body world position + local offset.
 
     Parameters:
-        B: Variadic list of BodySpec types defining the model's bodies.
+        G: Variadic list of GeomSpec types defining the model's geoms.
     """
 
-    comptime body_types = Variadic.types[T=BodySpec, *Self.B]
-    comptime NUM_BODIES: Int = Variadic.size(Self.body_types)
+    comptime geom_types = Variadic.types[T=GeomSpec, *Self.G]
+    comptime NUM_GEOMS: Int = Variadic.size(Self.geom_types)
 
     var renderer: Renderer3D
     var initialized: Bool
@@ -140,20 +142,14 @@ struct ModelRenderer[*B: BodySpec](EnvRenderer3D, Movable):
         quaternions: List[Quat],
         vel_x: Float64 = 0.0,
     ):
-        """Render all model bodies.
+        """Render all visible geoms.
 
         Args:
-            positions: World positions for each body (len >= NUM_BODIES).
-            quaternions: World orientations for each body (len >= NUM_BODIES).
+            positions: World positions for each body (indexed by BODY_IDX).
+            quaternions: World orientations for each body (indexed by BODY_IDX).
             vel_x: Forward velocity for indicator arrow.
         """
         if not self.initialized:
-            return
-
-        if (
-            len(positions) < Self.NUM_BODIES
-            or len(quaternions) < Self.NUM_BODIES
-        ):
             return
 
         var torso_pos = positions[0]
@@ -169,14 +165,16 @@ struct ModelRenderer[*B: BodySpec](EnvRenderer3D, Movable):
 
         self.renderer.begin_frame()
 
-        # Ground grid — offset by max radius across all bodies × (scale - 1)
+        # Ground grid — offset by max radius across all geoms × (scale - 1)
         var max_radius: Float64 = 0.0
 
         @parameter
-        for i in range(Self.NUM_BODIES):
-            comptime B = Self.body_types[i]
-            if B.RADIUS > max_radius:
-                max_radius = B.RADIUS
+        for i in range(Self.NUM_GEOMS):
+            comptime GG = Self.geom_types[i]
+            @parameter
+            if GG.BODY_IDX >= 0:
+                if GG.RADIUS > max_radius:
+                    max_radius = GG.RADIUS
 
         var ground_offset = -max_radius * (self.visual_radius_scale - 1.0)
         var grid_center_x = torso_pos.x if self.follow else 0.0
@@ -190,20 +188,73 @@ struct ModelRenderer[*B: BodySpec](EnvRenderer3D, Movable):
         else:
             self.renderer.draw_coordinate_axes(Vec3(0.0, 0.0, 0.0), 0.2)
 
-        # Draw all body capsules
+        # Draw all body-attached capsule geoms
         try:
 
             @parameter
-            for i in range(Self.NUM_BODIES):
-                comptime B = Self.body_types[i]
-                self.renderer.draw_capsule(
-                    center=positions[i],
-                    orientation=quaternions[i],
-                    radius=B.RADIUS * self.visual_radius_scale,
-                    half_height=B.HALF_LENGTH,
-                    axis=2,
-                    color=B.COLOR,
-                )
+            for i in range(Self.NUM_GEOMS):
+                comptime GG = Self.geom_types[i]
+
+                # Skip static geoms (planes, etc.)
+                @parameter
+                if GG.BODY_IDX >= 0:
+                    # Get body world position and orientation
+                    var body_pos = positions[GG.BODY_IDX]
+                    var body_quat = quaternions[GG.BODY_IDX]
+
+                    # Compute geom world position from body pos + local offset
+                    @parameter
+                    if GG.POS_X == 0.0 and GG.POS_Y == 0.0 and GG.POS_Z == 0.0:
+                        # Identity offset — use body pos directly
+                        var geom_pos = body_pos
+                        @parameter
+                        if GG.QUAT_X == 0.0 and GG.QUAT_Y == 0.0 and GG.QUAT_Z == 0.0 and GG.QUAT_W == 1.0:
+                            # Identity rotation — use body quat directly
+                            self.renderer.draw_capsule(
+                                center=geom_pos,
+                                orientation=body_quat,
+                                radius=GG.RADIUS * self.visual_radius_scale,
+                                half_height=GG.HALF_LENGTH,
+                                axis=2,
+                                color=GG.COLOR,
+                            )
+                        else:
+                            # Apply local rotation: geom_quat = body_quat * local_quat
+                            var local_quat = Quat(GG.QUAT_X, GG.QUAT_Y, GG.QUAT_Z, GG.QUAT_W)
+                            var geom_quat = body_quat * local_quat
+                            self.renderer.draw_capsule(
+                                center=geom_pos,
+                                orientation=geom_quat,
+                                radius=GG.RADIUS * self.visual_radius_scale,
+                                half_height=GG.HALF_LENGTH,
+                                axis=2,
+                                color=GG.COLOR,
+                            )
+                    else:
+                        # Apply local offset: geom_pos = body_pos + body_quat.rotate_vec(local_pos)
+                        var local_pos = Vec3(GG.POS_X, GG.POS_Y, GG.POS_Z)
+                        var geom_pos = body_pos + body_quat.rotate_vec(local_pos)
+                        @parameter
+                        if GG.QUAT_X == 0.0 and GG.QUAT_Y == 0.0 and GG.QUAT_Z == 0.0 and GG.QUAT_W == 1.0:
+                            self.renderer.draw_capsule(
+                                center=geom_pos,
+                                orientation=body_quat,
+                                radius=GG.RADIUS * self.visual_radius_scale,
+                                half_height=GG.HALF_LENGTH,
+                                axis=2,
+                                color=GG.COLOR,
+                            )
+                        else:
+                            var local_quat = Quat(GG.QUAT_X, GG.QUAT_Y, GG.QUAT_Z, GG.QUAT_W)
+                            var geom_quat = body_quat * local_quat
+                            self.renderer.draw_capsule(
+                                center=geom_pos,
+                                orientation=geom_quat,
+                                radius=GG.RADIUS * self.visual_radius_scale,
+                                half_height=GG.HALF_LENGTH,
+                                axis=2,
+                                color=GG.COLOR,
+                            )
         except:
             pass
 

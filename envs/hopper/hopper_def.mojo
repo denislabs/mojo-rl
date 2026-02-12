@@ -14,8 +14,8 @@ model definition. Replaces the former constants.mojo.
 
 from physics3d.model.body_spec import CapsuleBody
 from physics3d.model.joint_spec import HingeJoint, SlideJoint
-from physics3d.model.model_def import Bodies, Joints, ModelDef, WorldBody
-from physics3d.model.geom_spec import PlaneGeom
+from physics3d.model.model_def import Bodies, Joints, Geoms, ModelDef
+from physics3d.model.geom_spec import PlaneGeom, BodyCapsuleGeom
 from render3d import Color3D
 from physics3d.gpu.constants import (
     state_size,
@@ -167,13 +167,30 @@ comptime HopperFootJ = HingeJoint[
 
 
 # =============================================================================
-# WorldBody — Ground Plane
+# Geom Definitions (unified collision geometry)
 # =============================================================================
 
-# MuJoCo hopper.xml:
-# <geom conaffinity="1" condim="3" friction="0.9" size="20 20 .125" type="plane"/>
-comptime HopperWorldBody = WorldBody[
-    PlaneGeom[z=0.0, friction=0.9, conaffinity=1, size_x=20.0, size_y=20.0],
+# Geom 0: Ground plane
+comptime HopperGroundGeom = PlaneGeom[z=0.0, friction=0.9, conaffinity=1, size_x=20.0, size_y=20.0]
+
+# Geom 1: Torso capsule (body 0) — conaffinity=1 (self-collision enabled, matches MuJoCo)
+comptime HopperTorsoGeom = BodyCapsuleGeom[body_idx=0, radius=0.05, half_length=0.2, color=Color3D(60, 120, 200)]
+
+# Geom 2: Thigh capsule (body 1)
+comptime HopperThighGeom = BodyCapsuleGeom[body_idx=1, radius=0.05, half_length=0.225, color=Color3D(80, 200, 80)]
+
+# Geom 3: Leg capsule (body 2)
+comptime HopperLegGeom = BodyCapsuleGeom[body_idx=2, radius=0.04, half_length=0.25, color=Color3D(220, 140, 60)]
+
+# Geom 4: Foot capsule (body 3) — has local 90deg Y rotation
+comptime HopperFootGeom = BodyCapsuleGeom[
+    body_idx=3, radius=0.06, half_length=0.195,
+    quat_y=_Q90Y_Y, quat_w=_Q90Y_W,
+    color=Color3D(220, 80, 80),
+]
+
+comptime HopperGeoms = Geoms[
+    HopperGroundGeom, HopperTorsoGeom, HopperThighGeom, HopperLegGeom, HopperFootGeom,
 ]
 
 
@@ -197,6 +214,7 @@ comptime HopperModel = ModelDef[
     HopperJoints.N,
     HopperJoints._sum_nq(),
     HopperJoints._sum_nv(),
+    HopperGeoms.N,
 ]
 
 
@@ -259,6 +277,7 @@ struct HopperParams[DTYPE: DType = DType.float64]:
     comptime NV: Int = HopperModel.NV
     comptime NUM_BODIES: Int = HopperModel.NBODY
     comptime NUM_JOINTS: Int = HopperModel.NJOINT
+    comptime NGEOM: Int = HopperModel.NGEOM
     comptime OBS_DIM: Int = 11
     comptime ACTION_DIM: Int = 3
 
@@ -272,7 +291,7 @@ struct HopperParams[DTYPE: DType = DType.float64]:
     comptime STATE_SIZE: Int = state_size[
         Self.NQ, Self.NV, Self.NUM_BODIES, Self.MAX_CONTACTS
     ]()
-    comptime MODEL_SIZE: Int = model_size[Self.NUM_BODIES, Self.NUM_JOINTS]()
+    comptime MODEL_SIZE: Int = model_size[Self.NUM_BODIES, Self.NUM_JOINTS, Self.NGEOM]()
 
     # GPU layout helper methods
     @staticmethod
@@ -381,6 +400,7 @@ comptime NV: Int = HopperModel.NV
 comptime NBODY: Int = HopperModel.NBODY
 comptime NJOINT: Int = HopperModel.NJOINT
 comptime MAX_CONTACTS: Int = 10
+comptime NGEOM: Int = HopperModel.NGEOM
 comptime OBS_DIM: Int = 11
 comptime ACTION_DIM: Int = 3
 comptime NUM_BODIES: Int = 4

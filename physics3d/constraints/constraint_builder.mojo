@@ -67,8 +67,9 @@ fn build_constraints[
     V_SIZE: Int,
     M_SIZE: Int,
     CDOF_SIZE: Int,
+    NGEOM: Int = 0,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
     M_inv: InlineArray[Scalar[DTYPE], M_SIZE],

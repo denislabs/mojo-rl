@@ -7,10 +7,11 @@ This implementation uses the physics3d Generalized Coordinates (GC) engine:
 - Forward kinematics computes body positions (xpos, xquat)
 
 The Half Cheetah is a 2D planar model (movement in XZ plane, rotation around Y axis)
-consisting of a torso with two leg chains (front and back) and a head, totaling:
-- 8 bodies: torso, bthigh, bshin, bfoot, fthigh, fshin, ffoot, head
-- 10 joints: 3 root DOFs (unactuated) + 6 leg joints (actuated) + 1 head (fixed)
-- 17D observation: 8 qpos (excluding rootx and head) + 9 qvel (excluding head)
+consisting of a torso with two leg chains (front and back), totaling:
+- 7 bodies: torso, bthigh, bshin, bfoot, fthigh, fshin, ffoot
+- 9 geoms: 1 ground plane + 7 body capsules + 1 head capsule (on torso)
+- 9 joints: 3 root DOFs (unactuated) + 6 leg joints (actuated)
+- 17D observation: 8 qpos (excluding rootx) + 9 qvel
 - 6D action: torques for the 6 actuated leg joints
 """
 
@@ -42,7 +43,11 @@ from physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     forward_kinematics_gpu,
 )
-from physics3d.gpu.buffer_utils import copy_model_to_buffer, create_model_buffer
+from physics3d.gpu.buffer_utils import (
+    copy_model_to_buffer,
+    copy_geoms_to_buffer,
+    create_model_buffer,
+)
 from physics3d.gpu.constants import (
     TPB,
     state_size,
@@ -63,28 +68,26 @@ from physics3d.gpu.constants import (
 )
 
 from .half_cheetah_def import (
-    HalfCheetahWorldBody,
+    HalfCheetahModel,
     HalfCheetahBodies,
     HalfCheetahJoints,
+    HalfCheetahGeoms,
     HalfCheetahParams,
     BODY_TORSO,
     JOINT_ROOTX,
     JOINT_ROOTZ,
     JOINT_ROOTY,
-    NQ,
-    NV,
-    NBODY,
-    NJOINT,
-    MAX_CONTACTS,
-    OBS_DIM,
-    ACTION_DIM,
-    DT,
-    FRAME_SKIP,
-    GRAVITY_Z,
-    FORWARD_REWARD_WEIGHT,
-    CTRL_COST_WEIGHT,
-    RESET_NOISE_SCALE,
 )
+
+# Dimension constants from model definition
+comptime NQ = HalfCheetahModel.NQ
+comptime NV = HalfCheetahModel.NV
+comptime NBODY = HalfCheetahModel.NBODY
+comptime NJOINT = HalfCheetahModel.NJOINT
+comptime NGEOM = HalfCheetahModel.NGEOM
+comptime MAX_CONTACTS = HalfCheetahParams[DType.float64].MAX_CONTACTS
+comptime OBS_DIM = HalfCheetahParams[DType.float64].OBS_DIM
+comptime ACTION_DIM = HalfCheetahParams[DType.float64].ACTION_DIM
 from .renderer import HalfCheetahRenderer
 
 # Math types for renderer
@@ -137,8 +140,10 @@ struct HalfCheetah[
         Self.NQ, Self.NV, Self.NUM_BODIES, Self.MAX_CONTACTS
     ]()
 
+    comptime NGEOM: Int = NGEOM
+
     # Pre-allocated workspace sizes for step_kernel_gpu
-    comptime STEP_WS_SHARED: Int = model_size[NBODY, NJOINT]()
+    comptime STEP_WS_SHARED: Int = model_size[NBODY, NJOINT, NGEOM]()
     comptime STEP_WS_PER_ENV: Int = integrator_workspace_size[
         NV, NBODY
     ]() + NV * NV + NewtonSolver.solver_workspace_size[NV, MAX_CONTACTS]()
@@ -151,6 +156,7 @@ struct HalfCheetah[
         Self.NUM_BODIES,
         Self.NUM_JOINTS,
         Self.MAX_CONTACTS,
+        Self.NGEOM,
     ]
     var data: Data[
         Self.DTYPE,
@@ -199,8 +205,11 @@ struct HalfCheetah[
             Self.NUM_BODIES,
             Self.NUM_JOINTS,
             Self.MAX_CONTACTS,
+            Self.NGEOM,
         ](
-            gravity_z=Scalar[Self.DTYPE](GRAVITY_Z),
+            gravity_z=Scalar[Self.DTYPE](
+                HalfCheetahParams[Self.DTYPE].GRAVITY_Z
+            ),
             timestep=timestep,
         )
 
@@ -227,10 +236,10 @@ struct HalfCheetah[
             Self.MAX_CONTACTS,
         ]()
 
-        # Configure worldbody, bodies, and joints from compile-time model definition
-        HalfCheetahWorldBody.setup_model(self.model)
+        # Configure worldbody, bodies, joints, and geoms from compile-time model definition
         HalfCheetahBodies.setup_model(self.model)
         HalfCheetahJoints.setup_model(self.model)
+        HalfCheetahGeoms.setup_model(self.model)
 
         # Reset to initial state
         self._reset_state()
@@ -266,9 +275,9 @@ struct HalfCheetah[
         y_angle: Float64,
     ) -> Float64:
         """Compute reward for current state."""
-        var forward_reward = FORWARD_REWARD_WEIGHT * x_velocity
-        var ctrl_cost = CTRL_COST_WEIGHT * action.squared_sum()
         comptime P = HalfCheetahParams[DType.float64]
+        var forward_reward = Float64(P.FORWARD_REWARD_WEIGHT) * x_velocity
+        var ctrl_cost = Float64(P.CTRL_COST_WEIGHT) * action.squared_sum()
         var abs_angle = y_angle if y_angle >= 0.0 else -y_angle
         var angle_penalty = Float64(P.ANGLE_PENALTY_WEIGHT) * abs_angle
         return forward_reward - ctrl_cost - angle_penalty
@@ -349,23 +358,17 @@ struct HalfCheetah[
 
         # Physics step (with frame skip)
         for _ in range(self.frame_skip):
-            ImplicitFastIntegrator[SOLVER=NewtonSolver].step(
-                self.model, self.data
-            )
+            ImplicitFastIntegrator[SOLVER=NewtonSolver].step[
+                NGEOM = Self.NGEOM
+            ](self.model, self.data)
             # Enforce joint limits after each physics step
             HalfCheetahJoints.enforce_limits(self.data)
-            # Ground safety clamp
-            comptime MIN_ROOTZ: Scalar[Self.DTYPE] = -0.3
-            if self.data.qpos[JOINT_ROOTZ] < MIN_ROOTZ:
-                self.data.qpos[JOINT_ROOTZ] = MIN_ROOTZ
-                if self.data.qvel[JOINT_ROOTZ] < Scalar[Self.DTYPE](0):
-                    self.data.qvel[JOINT_ROOTZ] = Scalar[Self.DTYPE](0)
 
         self.current_step += 1
 
         # Compute velocity from position change
         var x_position_after = Float64(self.data.qpos[JOINT_ROOTX])
-        var dt = Float64(DT * self.frame_skip)
+        var dt = Float64(HalfCheetahParams[DType.float64].DT) * self.frame_skip
         var x_velocity = (x_position_after - Float64(self.prev_x_position)) / dt
 
         # Compute reward
@@ -411,15 +414,15 @@ struct HalfCheetah[
     # Position/State Accessors
     # =========================================================================
 
-    fn get_qpos(self) -> InlineArray[Scalar[Self.DTYPE], 10]:
-        var qpos = InlineArray[Scalar[Self.DTYPE], 10](uninitialized=True)
-        for i in range(10):
+    fn get_qpos(self) -> InlineArray[Scalar[Self.DTYPE], NQ]:
+        var qpos = InlineArray[Scalar[Self.DTYPE], NQ](uninitialized=True)
+        for i in range(NQ):
             qpos[i] = self.data.qpos[i]
         return qpos^
 
-    fn get_qvel(self) -> InlineArray[Scalar[Self.DTYPE], 10]:
-        var qvel = InlineArray[Scalar[Self.DTYPE], 10](uninitialized=True)
-        for i in range(10):
+    fn get_qvel(self) -> InlineArray[Scalar[Self.DTYPE], NV]:
+        var qvel = InlineArray[Scalar[Self.DTYPE], NV](uninitialized=True)
+        for i in range(NV):
             qvel[i] = self.data.qvel[i]
         return qvel^
 
@@ -549,7 +552,7 @@ struct HalfCheetah[
         """Batched GPU step function using GC physics engine."""
 
         comptime MODEL_SIZE = model_size[
-            HalfCheetah.NUM_BODIES, HalfCheetah.NUM_JOINTS
+            HalfCheetah.NUM_BODIES, HalfCheetah.NUM_JOINTS, HalfCheetah.NGEOM
         ]()
         comptime P = HalfCheetahParams[gpu_dtype]
         comptime WS_SIZE = integrator_workspace_size[
@@ -603,6 +606,7 @@ struct HalfCheetah[
                 Self.NUM_JOINTS,
                 Self.MAX_CONTACTS,
                 BATCH_SIZE,
+                NGEOM = Self.NGEOM,
             ](
                 ctx,
                 states_buf,
@@ -616,8 +620,6 @@ struct HalfCheetah[
             HalfCheetahJoints.enforce_limits_kernel_gpu[
                 gpu_dtype, BATCH_SIZE, STATE_SIZE_VAL
             ](ctx, states_buf)
-            # Ground safety clamp
-            Self._ground_clamp_gpu[BATCH_SIZE, STATE_SIZE_VAL](ctx, states_buf)
 
         # Extract observations, compute rewards, check termination
         Self._extract_obs_rewards_dones_gpu[
@@ -676,7 +678,9 @@ struct HalfCheetah[
         )
 
         # Run forward kinematics
-        comptime MODEL_SIZE = model_size[Self.NUM_BODIES, Self.NUM_JOINTS]()
+        comptime MODEL_SIZE = model_size[
+            Self.NUM_BODIES, Self.NUM_JOINTS, Self.NGEOM
+        ]()
         var model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
         Self._init_model_gpu(ctx, model_buf)
 
@@ -739,7 +743,9 @@ struct HalfCheetah[
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
-        comptime MODEL_SIZE = model_size[Self.NUM_BODIES, Self.NUM_JOINTS]()
+        comptime MODEL_SIZE = model_size[
+            Self.NUM_BODIES, Self.NUM_JOINTS, Self.NGEOM
+        ]()
         var model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
         Self._init_model_gpu(ctx, model_buf)
 
@@ -827,6 +833,7 @@ struct HalfCheetah[
             HalfCheetah.NUM_BODIES,
             HalfCheetah.NUM_JOINTS,
             HalfCheetah.MAX_CONTACTS,
+            HalfCheetah.NGEOM,
         ](
             gravity_z=P.GRAVITY_Z,
             timestep=P.DT,
@@ -843,14 +850,18 @@ struct HalfCheetah[
         model.solimp_limit[1] = P.SOLIMP_LIMIT_1
         model.solimp_limit[2] = P.SOLIMP_LIMIT_2
 
-        HalfCheetahWorldBody.setup_model(model)
         HalfCheetahBodies.setup_model(model)
         HalfCheetahJoints.setup_model(model)
+        HalfCheetahGeoms.setup_model(model)
 
         var host_buf = create_model_buffer[
-            gpu_dtype, HalfCheetah.NUM_BODIES, HalfCheetah.NUM_JOINTS
+            gpu_dtype,
+            HalfCheetah.NUM_BODIES,
+            HalfCheetah.NUM_JOINTS,
+            HalfCheetah.NGEOM,
         ](ctx)
         copy_model_to_buffer(model, host_buf)
+        copy_geoms_to_buffer(model, host_buf)
 
         var curr = model_curriculum_offset[
             HalfCheetah.NUM_BODIES, HalfCheetah.NUM_JOINTS
@@ -874,7 +885,7 @@ struct HalfCheetah[
     ](ctx: DeviceContext, mut workspace_buf: DeviceBuffer[gpu_dtype],) raises:
         """Initialize pre-allocated step workspace buffer."""
         comptime MODEL_SIZE = model_size[
-            HalfCheetah.NUM_BODIES, HalfCheetah.NUM_JOINTS
+            HalfCheetah.NUM_BODIES, HalfCheetah.NUM_JOINTS, HalfCheetah.NGEOM
         ]()
         var model_view = DeviceBuffer[gpu_dtype](
             ctx,
@@ -943,46 +954,6 @@ struct HalfCheetah[
             states[env, META_OFF + META_IDX_PREV_X] = states[env, QPOS_OFF + 0]
 
         ctx.enqueue_function[store_prev_x_kernel, store_prev_x_kernel](
-            states,
-            grid_dim=(BLOCKS,),
-            block_dim=(TPB,),
-        )
-
-    @staticmethod
-    fn _ground_clamp_gpu[
-        BATCH_SIZE: Int,
-        STATE_SIZE: Int,
-    ](ctx: DeviceContext, mut states_buf: DeviceBuffer[gpu_dtype]) raises:
-        """Clamp rootz to prevent catastrophic ground penetration on GPU."""
-        var states = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
-
-        comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
-        comptime QPOS_OFF = qpos_offset[HalfCheetah.NQ, HalfCheetah.NV]()
-        comptime QVEL_OFF = qvel_offset[HalfCheetah.NQ, HalfCheetah.NV]()
-        comptime MIN_ROOTZ: Scalar[gpu_dtype] = -0.3
-
-        @always_inline
-        fn ground_clamp_kernel(
-            states: LayoutTensor[
-                gpu_dtype,
-                Layout.row_major(BATCH_SIZE, STATE_SIZE),
-                MutAnyOrigin,
-            ],
-        ):
-            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
-            if env >= BATCH_SIZE:
-                return
-
-            var rootz = states[env, QPOS_OFF + 1]
-            if rootz < MIN_ROOTZ:
-                states[env, QPOS_OFF + 1] = MIN_ROOTZ
-                var vz = states[env, QVEL_OFF + 1]
-                if vz < Scalar[gpu_dtype](0):
-                    states[env, QVEL_OFF + 1] = Scalar[gpu_dtype](0)
-
-        ctx.enqueue_function[ground_clamp_kernel, ground_clamp_kernel](
             states,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),

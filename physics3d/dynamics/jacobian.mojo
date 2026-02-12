@@ -75,8 +75,9 @@ fn compute_cdof[
     NJOINT: Int,
     MAX_CONTACTS: Int,
     CDOF_SIZE: Int,
+    NGEOM: Int = 0,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     mut cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
 ):
@@ -208,8 +209,9 @@ fn compute_contact_jacobian_row[
     MAX_CONTACTS: Int,
     V_SIZE: Int,
     CDOF_SIZE: Int,
+    NGEOM: Int = 0,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
     contact_body_a: Int,
@@ -315,8 +317,9 @@ fn _joint_affects_body[
     NBODY: Int,
     NJOINT: Int,
     MAX_CONTACTS: Int,
+    NGEOM: Int = 0,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
     joint_idx: Int,
     body_idx: Int,
 ) -> Bool:
@@ -349,8 +352,9 @@ fn compute_composite_inertia[
     NJOINT: Int,
     MAX_CONTACTS: Int,
     CRB_SIZE: Int,
+    NGEOM: Int = 0,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     mut crb: InlineArray[Scalar[DTYPE], CRB_SIZE],
 ):
