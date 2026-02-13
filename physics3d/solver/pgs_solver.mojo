@@ -62,6 +62,7 @@ from ..gpu.constants import (
     MODEL_META_IDX_SOLIMP_CONTACT_0,
     MODEL_META_IDX_SOLIMP_CONTACT_1,
     MODEL_META_IDX_SOLIMP_CONTACT_2,
+    MODEL_META_IDX_IMPRATIO,
 )
 from ..constraints.constraint_builder_gpu import (
     init_common_normal_workspace_gpu,
@@ -86,18 +87,18 @@ struct PGSSolver(ConstraintSolver):
 
     @staticmethod
     fn solver_workspace_size[NV: Int, MAX_CONTACTS: Int]() -> Int:
-        """PGS solver workspace: 44*MC + 12*MC*NV floats.
+        """PGS solver workspace: 49*MC + 12*MC*NV floats.
 
         Layout (offsets relative to solver workspace start):
           Common normal block (13*MC + 2*MC*NV):
           [0..13*MC+2*MC*NV)             See constraint_builder_gpu.mojo
-          Friction block (31*MC + 10*MC*NV):
+          Friction block (36*MC + 10*MC*NV):
           [13*MC+2*MC*NV)                lambda_f[5*MC], K_f[5*MC], dir_f[15*MC],
-                                         fric_coef[5*MC], condim[MC],
+                                         fric_coef[5*MC], condim[MC], R_f[5*MC],
                                          J_f[5*MC*NV], MinvJ_f[5*MC*NV]
         """
         comptime MC = _max_one[MAX_CONTACTS]()
-        return 44 * MC + 12 * MC * NV
+        return 49 * MC + 12 * MC * NV
 
     @staticmethod
     fn solve[
@@ -216,7 +217,10 @@ struct PGSSolver(ConstraintSolver):
                         var a_f: Scalar[DTYPE] = 0
                         for i in range(NV):
                             a_f += constraints.J[r * NV + i] * qacc[i]
-                        constraints.rows[r].lambda_val = constraints.rows[r].lambda_val - a_f / constraints.rows[r].K
+                        var R_f = Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp - constraints.rows[r].K
+                        var residual_f = a_f + R_f * constraints.rows[r].lambda_val
+                        var delta_f = -residual_f * constraints.rows[r].inv_K_imp
+                        constraints.rows[r].lambda_val = constraints.rows[r].lambda_val + delta_f
 
                 # QCQP elliptic cone projection
                 if group_size == 2:
@@ -377,15 +381,16 @@ struct PGSSolver(ConstraintSolver):
         comptime ws_J_n = solver_idx + 13 * MC
         comptime ws_MinvJn = solver_idx + 13 * MC + MC * NV
 
-        # Friction workspace offsets (31*MC + 10*MC*NV, same layout as friction_solver.mojo)
+        # Friction workspace offsets (36*MC + 10*MC*NV, same layout as friction_solver.mojo)
         comptime fws = solver_idx + 13 * MC + 2 * MC * NV
         comptime ws_lf = fws + 0 * MC       # lambda_f[5*MC]
         comptime ws_kf = fws + 5 * MC       # K_f[5*MC]
         comptime ws_df = fws + 10 * MC      # dir_f[15*MC]
         comptime ws_fc = fws + 25 * MC      # fric_coef[5*MC]
         comptime ws_cd = fws + 30 * MC      # condim[MC]
-        comptime ws_jf = fws + 31 * MC      # J_f[5*MC*NV]
-        comptime ws_mj = fws + 31 * MC + 5 * MC * NV  # MinvJ_f[5*MC*NV]
+        comptime ws_rf = fws + 31 * MC      # R_f[5*MC] (friction regularizer)
+        comptime ws_jf = fws + 36 * MC      # J_f[5*MC*NV]
+        comptime ws_mj = fws + 36 * MC + 5 * MC * NV  # MinvJ_f[5*MC*NV]
 
         # === PARALLEL: Initialize workspace ===
         if valid_env:
@@ -402,6 +407,7 @@ struct PGSSolver(ConstraintSolver):
                 workspace[env, ws_lf + d * MC + contact_tid] = 0
                 workspace[env, ws_kf + d * MC + contact_tid] = 1
                 workspace[env, ws_fc + d * MC + contact_tid] = 0
+                workspace[env, ws_rf + d * MC + contact_tid] = 0
                 for axis in range(3):
                     workspace[env, ws_df + (d * 3 + axis) * MC + contact_tid] = 0
             workspace[env, ws_cd + contact_tid] = 3  # default condim=3
@@ -677,6 +683,20 @@ struct PGSSolver(ConstraintSolver):
                             k_d = Scalar[DTYPE](1e-10)
                         workspace[env, ws_kf + d * MC + c] = k_d
 
+                    # Compute friction regularizer R_f from parent normal's impedance
+                    var impratio_pgs = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_IMPRATIO])
+                    if impratio_pgs < Scalar[DTYPE](1e-6):
+                        impratio_pgs = Scalar[DTYPE](1.0)
+                    var imp_n_pgs = rebind[Scalar[DTYPE]](workspace[env, ws_inv_K_imp + c]) * rebind[Scalar[DTYPE]](workspace[env, ws_K_n + c])
+                    var R_base_pgs = (Scalar[DTYPE](1.0) - imp_n_pgs) / imp_n_pgs * rebind[Scalar[DTYPE]](workspace[env, ws_K_n + c]) / impratio_pgs
+                    for d in range(num_fric):
+                        var R_d_pgs = R_base_pgs
+                        if d >= 2:
+                            var mu_d_pgs = rebind[Scalar[DTYPE]](workspace[env, ws_fc + d * MC + c])
+                            if mu_d_pgs > Scalar[DTYPE](1e-12):
+                                R_d_pgs = R_base_pgs * mu_slide * mu_slide / (mu_d_pgs * mu_d_pgs)
+                        workspace[env, ws_rf + d * MC + c] = R_d_pgs
+
                     # Warm-start friction impulses
                     var warm_idx = InlineArray[Int, 5](uninitialized=True)
                     warm_idx[0] = CONTACT_IDX_FORCE_T1
@@ -735,13 +755,17 @@ struct PGSSolver(ConstraintSolver):
                     for d in range(num_fric):
                         old_vals[d] = rebind[Scalar[DTYPE]](workspace[env, ws_lf + d * MC + c])
 
-                    # GS update for each friction direction
+                    # GS update for each friction direction (regularized)
                     for d in range(num_fric):
                         if workspace[env, ws_kf + d * MC + c] >= Scalar[DTYPE](FRICTION_K_MIN):
                             var a_f: workspace.element_type = 0
                             for i in range(NV):
                                 a_f += workspace[env, ws_jf + d * MC * NV + c * NV + i] * workspace[env, qacc_idx + i]
-                            workspace[env, ws_lf + d * MC + c] = workspace[env, ws_lf + d * MC + c] - a_f / workspace[env, ws_kf + d * MC + c]
+                            var R_f_d = workspace[env, ws_rf + d * MC + c]
+                            var residual_f = a_f + R_f_d * workspace[env, ws_lf + d * MC + c]
+                            var inv_AR = Scalar[DTYPE](1.0) / (workspace[env, ws_kf + d * MC + c] + R_f_d)
+                            var delta_f = -residual_f * inv_AR
+                            workspace[env, ws_lf + d * MC + c] = workspace[env, ws_lf + d * MC + c] + delta_f
 
                     # QCQP elliptic cone projection
                     if num_fric == 2:

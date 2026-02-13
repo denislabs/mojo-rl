@@ -34,7 +34,7 @@ from layout import Layout, LayoutTensor
 # Import GC physics engine
 from physics3d.types import Model, Data
 from physics3d.integrator import DefaultIntegrator
-from physics3d.solver import PGSSolver
+from physics3d.solver import NewtonSolver
 from physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     forward_kinematics_gpu,
@@ -145,7 +145,7 @@ struct Hopper[
     comptime STEP_WS_SHARED: Int = model_size[NBODY, NJOINT, NGEOM]()
     comptime STEP_WS_PER_ENV: Int = integrator_workspace_size[
         NV, NBODY
-    ]() + NV * NV + PGSSolver.solver_workspace_size[NV, MAX_CONTACTS]()
+    ]() + NV * NV + NewtonSolver.solver_workspace_size[NV, MAX_CONTACTS]()
 
     # Physics model and data
     var model: Model[
@@ -649,7 +649,7 @@ struct Hopper[
         comptime P = HopperParams[gpu_dtype]
         comptime WS_SIZE = integrator_workspace_size[
             Self.NV, Self.NUM_BODIES
-        ]() + Self.NV * Self.NV + PGSSolver.solver_workspace_size[
+        ]() + Self.NV * Self.NV + NewtonSolver.solver_workspace_size[
             Self.NV, Self.MAX_CONTACTS
         ]()
 

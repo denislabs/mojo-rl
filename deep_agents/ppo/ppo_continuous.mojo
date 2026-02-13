@@ -689,6 +689,7 @@ struct DeepPPOContinuousAgent[
         num_episodes: Int = 10,
         max_steps: Int = 1000,
         verbose: Bool = False,
+        debug: Bool = False,
         stochastic: Bool = True,
         render: Bool = False,
         frame_delay_ms: Int = 16,
@@ -707,6 +708,7 @@ struct DeepPPOContinuousAgent[
             num_episodes: Number of evaluation episodes.
             max_steps: Maximum steps per episode.
             verbose: Whether to print per-episode results.
+            debug: Whether to print debug information.
             stochastic: If True (default), sample from policy; if False, use mean.
             render: If True, render each frame using the environment's renderer.
             frame_delay_ms: Delay between frames in milliseconds (default: 16 ~60fps).
@@ -755,7 +757,7 @@ struct DeepPPOContinuousAgent[
 
                 # Step environment with multi-dimensional actions
                 var result = env.step_continuous_vec[dtype](
-                    action_list, verbose=verbose
+                    action_list, verbose=debug
                 )
                 var next_obs_list = result[0].copy()
                 var reward = result[1]

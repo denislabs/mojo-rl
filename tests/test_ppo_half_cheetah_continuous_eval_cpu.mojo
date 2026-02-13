@@ -126,6 +126,7 @@ fn main() raises:
         num_episodes=NUM_EPISODES,
         max_steps=MAX_STEPS,
         verbose=True,
+        debug=True,
         stochastic=False,  # Use deterministic policy for evaluation
         render=RENDER,
         frame_delay_ms=20,  # ~50 FPS

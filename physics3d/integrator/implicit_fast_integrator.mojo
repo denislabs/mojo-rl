@@ -142,7 +142,9 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
     ](
-        model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
+        model: Model[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+        ],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         verbose: Bool = False,
     ) where DTYPE.is_floating_point():
@@ -554,9 +556,11 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
                     var K_val = Float64(constraints.rows[r].K)
                     var inv_Ki = Float64(constraints.rows[r].inv_K_imp)
                     var R_val = 1.0 / inv_Ki - K_val if inv_Ki > 1e-14 else 0.0
-                    var kkt_residual = j_dot_qacc_post + Float64(
-                        constraints.rows[r].bias
-                    ) + R_val * lam
+                    var kkt_residual = (
+                        j_dot_qacc_post
+                        + Float64(constraints.rows[r].bias)
+                        + R_val * lam
+                    )
                     print(
                         "    row",
                         r,
@@ -625,15 +629,17 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
     ](
-        model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
+        model: Model[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+        ],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         num_steps: Int,
     ) where DTYPE.is_floating_point():
         """Run simulation for multiple steps on CPU."""
         for _ in range(num_steps):
-            Self.step[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY](
-                model, data
-            )
+            Self.step[
+                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+            ](model, data)
 
     # =========================================================================
     # GPU Methods
@@ -1095,7 +1101,9 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         Uses the parametrized SOLVER for contact constraint resolution.
         """
         comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS]()
-        comptime MODEL_SIZE = model_size[NBODY, NJOINT, NGEOM, NEQUALITY=MAX_EQUALITY]()
+        comptime MODEL_SIZE = model_size[
+            NBODY, NJOINT, NGEOM, NEQUALITY=MAX_EQUALITY
+        ]()
         comptime WS_SIZE = integrator_workspace_size[
             NV, NBODY
         ]() + NV * NV + Self.SOLVER.solver_workspace_size[NV, MAX_CONTACTS]()

@@ -588,9 +588,15 @@ fn build_constraints[
         if k1 < Scalar[DTYPE](1e-10):
             k1 = Scalar[DTYPE](1e-10)
 
+        # Compute friction regularizer from parent normal's impedance
+        var imp_n = constraints.rows[normal_row].inv_K_imp * constraints.rows[normal_row].K
+        var R_n = (Scalar[DTYPE](1.0) - imp_n) / imp_n * constraints.rows[normal_row].K
+        var R_f1 = R_n / model.impratio
+        var inv_K_imp_f1 = Scalar[DTYPE](1.0) / (k1 + R_f1)
+
         constraints.rows[row_idx].K = k1
         constraints.rows[row_idx].bias = Scalar[DTYPE](0)
-        constraints.rows[row_idx].inv_K_imp = Scalar[DTYPE](0)
+        constraints.rows[row_idx].inv_K_imp = inv_K_imp_f1
         constraints.rows[row_idx].lo = Scalar[DTYPE](-1e20)
         constraints.rows[row_idx].hi = Scalar[DTYPE](1e20)
         constraints.rows[row_idx].lambda_val = contact.force_t1
@@ -631,9 +637,12 @@ fn build_constraints[
         if k2 < Scalar[DTYPE](1e-10):
             k2 = Scalar[DTYPE](1e-10)
 
+        var R_f2 = R_n / model.impratio
+        var inv_K_imp_f2 = Scalar[DTYPE](1.0) / (k2 + R_f2)
+
         constraints.rows[row_idx].K = k2
         constraints.rows[row_idx].bias = Scalar[DTYPE](0)
-        constraints.rows[row_idx].inv_K_imp = Scalar[DTYPE](0)
+        constraints.rows[row_idx].inv_K_imp = inv_K_imp_f2
         constraints.rows[row_idx].lo = Scalar[DTYPE](-1e20)
         constraints.rows[row_idx].hi = Scalar[DTYPE](1e20)
         constraints.rows[row_idx].lambda_val = contact.force_t2
@@ -672,15 +681,22 @@ fn build_constraints[
             if k3 < Scalar[DTYPE](1e-10):
                 k3 = Scalar[DTYPE](1e-10)
 
+            # Torsion regularizer: scale by mu_slide^2/mu_spin^2 (MuJoCo convention)
+            var mu_spin = contact.friction_spin
+            var R_f3 = R_n / model.impratio
+            if mu_spin > Scalar[DTYPE](1e-12):
+                R_f3 = R_f3 * friction_coef * friction_coef / (mu_spin * mu_spin)
+            var inv_K_imp_f3 = Scalar[DTYPE](1.0) / (k3 + R_f3)
+
             constraints.rows[row_idx].K = k3
             constraints.rows[row_idx].bias = Scalar[DTYPE](0)
-            constraints.rows[row_idx].inv_K_imp = Scalar[DTYPE](0)
+            constraints.rows[row_idx].inv_K_imp = inv_K_imp_f3
             constraints.rows[row_idx].lo = Scalar[DTYPE](-1e20)
             constraints.rows[row_idx].hi = Scalar[DTYPE](1e20)
             constraints.rows[row_idx].lambda_val = contact.force_torsion
             constraints.rows[row_idx].constraint_type = CNSTR_FRICTION_TORSION
             constraints.rows[row_idx].friction_parent = normal_row
-            constraints.rows[row_idx].friction_coef = contact.friction_spin
+            constraints.rows[row_idx].friction_coef = mu_spin
             constraints.rows[row_idx].source_contact_idx = c
             constraints.rows[row_idx].source_dof = -1
             constraints.rows[row_idx].limit_sign = Scalar[DTYPE](0)
@@ -715,15 +731,22 @@ fn build_constraints[
                 if k4 < Scalar[DTYPE](1e-10):
                     k4 = Scalar[DTYPE](1e-10)
 
+                # Roll regularizer: scale by mu_slide^2/mu_roll^2
+                var mu_roll1 = contact.friction_roll
+                var R_f4 = R_n / model.impratio
+                if mu_roll1 > Scalar[DTYPE](1e-12):
+                    R_f4 = R_f4 * friction_coef * friction_coef / (mu_roll1 * mu_roll1)
+                var inv_K_imp_f4 = Scalar[DTYPE](1.0) / (k4 + R_f4)
+
                 constraints.rows[row_idx].K = k4
                 constraints.rows[row_idx].bias = Scalar[DTYPE](0)
-                constraints.rows[row_idx].inv_K_imp = Scalar[DTYPE](0)
+                constraints.rows[row_idx].inv_K_imp = inv_K_imp_f4
                 constraints.rows[row_idx].lo = Scalar[DTYPE](-1e20)
                 constraints.rows[row_idx].hi = Scalar[DTYPE](1e20)
                 constraints.rows[row_idx].lambda_val = contact.force_roll1
                 constraints.rows[row_idx].constraint_type = CNSTR_FRICTION_ROLL1
                 constraints.rows[row_idx].friction_parent = normal_row
-                constraints.rows[row_idx].friction_coef = contact.friction_roll
+                constraints.rows[row_idx].friction_coef = mu_roll1
                 constraints.rows[row_idx].source_contact_idx = c
                 constraints.rows[row_idx].source_dof = -1
                 constraints.rows[row_idx].limit_sign = Scalar[DTYPE](0)
@@ -756,15 +779,21 @@ fn build_constraints[
                 if k5 < Scalar[DTYPE](1e-10):
                     k5 = Scalar[DTYPE](1e-10)
 
+                var mu_roll2 = contact.friction_roll
+                var R_f5 = R_n / model.impratio
+                if mu_roll2 > Scalar[DTYPE](1e-12):
+                    R_f5 = R_f5 * friction_coef * friction_coef / (mu_roll2 * mu_roll2)
+                var inv_K_imp_f5 = Scalar[DTYPE](1.0) / (k5 + R_f5)
+
                 constraints.rows[row_idx].K = k5
                 constraints.rows[row_idx].bias = Scalar[DTYPE](0)
-                constraints.rows[row_idx].inv_K_imp = Scalar[DTYPE](0)
+                constraints.rows[row_idx].inv_K_imp = inv_K_imp_f5
                 constraints.rows[row_idx].lo = Scalar[DTYPE](-1e20)
                 constraints.rows[row_idx].hi = Scalar[DTYPE](1e20)
                 constraints.rows[row_idx].lambda_val = contact.force_roll2
                 constraints.rows[row_idx].constraint_type = CNSTR_FRICTION_ROLL2
                 constraints.rows[row_idx].friction_parent = normal_row
-                constraints.rows[row_idx].friction_coef = contact.friction_roll
+                constraints.rows[row_idx].friction_coef = mu_roll2
                 constraints.rows[row_idx].source_contact_idx = c
                 constraints.rows[row_idx].source_dof = -1
                 constraints.rows[row_idx].limit_sign = Scalar[DTYPE](0)

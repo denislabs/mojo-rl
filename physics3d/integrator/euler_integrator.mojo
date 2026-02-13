@@ -141,7 +141,9 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
     ](
-        model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
+        model: Model[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+        ],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         verbose: Bool = False,
     ) where DTYPE.is_floating_point():
@@ -397,15 +399,17 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
     ](
-        model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
+        model: Model[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+        ],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         num_steps: Int,
     ) where DTYPE.is_floating_point():
         """Run simulation for multiple steps on CPU."""
         for _ in range(num_steps):
-            Self.step[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY](
-                model, data
-            )
+            Self.step[
+                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+            ](model, data)
 
     # =========================================================================
     # GPU Methods
@@ -875,7 +879,9 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         Uses the parametrized SOLVER for contact constraint resolution.
         """
         comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS]()
-        comptime MODEL_SIZE = model_size[NBODY, NJOINT, NGEOM, NEQUALITY=MAX_EQUALITY]()
+        comptime MODEL_SIZE = model_size[
+            NBODY, NJOINT, NGEOM, NEQUALITY=MAX_EQUALITY
+        ]()
         comptime WS_SIZE = integrator_workspace_size[
             NV, NBODY
         ]() + NV * NV + Self.SOLVER.solver_workspace_size[NV, MAX_CONTACTS]()

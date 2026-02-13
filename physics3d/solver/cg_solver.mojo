@@ -90,7 +90,7 @@ struct CGSolver(ConstraintSolver):
 
     @staticmethod
     fn solver_workspace_size[NV: Int, MAX_CONTACTS: Int]() -> Int:
-        """CG solver workspace: 48*MC + 12*MC*NV + MC*MC floats.
+        """CG solver workspace: 53*MC + 12*MC*NV + MC*MC floats.
 
         Layout (offsets relative to solver workspace start):
           [0..13*MC+2*MC*NV)                            Common normal block
@@ -99,10 +99,10 @@ struct CGSolver(ConstraintSolver):
           [14*MC+2*MC*NV+MC*MC..15*MC+2*MC*NV+MC*MC)    r (residual)
           [15*MC+2*MC*NV+MC*MC..16*MC+2*MC*NV+MC*MC)    p (search direction)
           [16*MC+2*MC*NV+MC*MC..17*MC+2*MC*NV+MC*MC)    Ap (A*p product)
-          [17*MC+2*MC*NV+MC*MC..48*MC+12*MC*NV+MC*MC)   Friction (31*MC + 10*MC*NV)
+          [17*MC+2*MC*NV+MC*MC..53*MC+12*MC*NV+MC*MC)   Friction (36*MC + 10*MC*NV)
         """
         comptime MC = _max_one[MAX_CONTACTS]()
-        return 48 * MC + 12 * MC * NV + MC * MC
+        return 53 * MC + 12 * MC * NV + MC * MC
 
     @staticmethod
     fn solver_threads[
@@ -375,7 +375,10 @@ struct CGSolver(ConstraintSolver):
                         var a_f: Scalar[DTYPE] = 0
                         for i in range(NV):
                             a_f += constraints.J[r * NV + i] * qacc[i]
-                        constraints.rows[r].lambda_val = constraints.rows[r].lambda_val - a_f / constraints.rows[r].K
+                        var R_f = Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp - constraints.rows[r].K
+                        var residual_f = a_f + R_f * constraints.rows[r].lambda_val
+                        var delta_f = -residual_f * constraints.rows[r].inv_K_imp
+                        constraints.rows[r].lambda_val = constraints.rows[r].lambda_val + delta_f
 
                 # QCQP elliptic cone projection
                 if group_size == 2:

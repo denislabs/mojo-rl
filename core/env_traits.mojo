@@ -309,6 +309,7 @@ trait BoxContinuousActionEnv(ContinuousActionEnv, ContinuousStateEnv):
 
         Args:
             action: List of action values, length should match action_dim().
+            verbose: Whether to print debug information.
 
         Returns:
             Tuple of (observation_list, reward, done).
