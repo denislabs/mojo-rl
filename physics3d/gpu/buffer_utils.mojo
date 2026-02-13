@@ -45,6 +45,14 @@ from .constants import (
     BODY_IDX_QUAT_Z,
     BODY_IDX_QUAT_W,
     BODY_IDX_PARENT,
+    BODY_IDX_IPOS_X,
+    BODY_IDX_IPOS_Y,
+    BODY_IDX_IPOS_Z,
+    BODY_IDX_IQUAT_X,
+    BODY_IDX_IQUAT_Y,
+    BODY_IDX_IQUAT_Z,
+    BODY_IDX_IQUAT_W,
+    xipos_offset,
     JOINT_IDX_TYPE,
     JOINT_IDX_BODY_ID,
     JOINT_IDX_QPOS_ADR,
@@ -210,6 +218,13 @@ fn copy_model_to_buffer[
         buffer[offset + BODY_IDX_PARENT] = Scalar[DTYPE](
             model.body_parent[body]
         )
+        buffer[offset + BODY_IDX_IPOS_X] = model.body_ipos[body * 3 + 0]
+        buffer[offset + BODY_IDX_IPOS_Y] = model.body_ipos[body * 3 + 1]
+        buffer[offset + BODY_IDX_IPOS_Z] = model.body_ipos[body * 3 + 2]
+        buffer[offset + BODY_IDX_IQUAT_X] = model.body_iquat[body * 4 + 0]
+        buffer[offset + BODY_IDX_IQUAT_Y] = model.body_iquat[body * 4 + 1]
+        buffer[offset + BODY_IDX_IQUAT_Z] = model.body_iquat[body * 4 + 2]
+        buffer[offset + BODY_IDX_IQUAT_W] = model.body_iquat[body * 4 + 3]
 
     # Copy joint data
     for j in range(model.num_joints):
@@ -354,6 +369,10 @@ fn copy_data_to_buffer[
     for i in range(NBODY * 4):
         buffer[base + xquat_offset[NQ, NV, NBODY]() + i] = data.xquat[i]
 
+    # Copy xipos
+    for i in range(NBODY * 3):
+        buffer[base + xipos_offset[NQ, NV, NBODY]() + i] = data.xipos[i]
+
     # Copy xvel
     for i in range(NBODY * 3):
         buffer[base + xvel_offset[NQ, NV, NBODY]() + i] = data.xvel[i]
@@ -412,6 +431,10 @@ fn copy_buffer_to_data[
     # Copy xquat
     for i in range(NBODY * 4):
         data.xquat[i] = buffer[base + xquat_offset[NQ, NV, NBODY]() + i]
+
+    # Copy xipos
+    for i in range(NBODY * 3):
+        data.xipos[i] = buffer[base + xipos_offset[NQ, NV, NBODY]() + i]
 
     # Copy xvel
     for i in range(NBODY * 3):

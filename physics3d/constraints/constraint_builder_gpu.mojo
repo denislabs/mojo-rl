@@ -269,10 +269,10 @@ fn precompute_contact_normal_gpu[
             var imp = si_dmin + (
                 Scalar[DTYPE](3.0) * x * x - Scalar[DTYPE](2.0) * x * x * x
             ) * (si_dmax - si_dmin)
-            # Impedance floor: 0.2 ensures firm contact from first touch
+            # Impedance floor prevents zero-force contacts at surface
             if imp < Scalar[DTYPE](0.2):
                 imp = Scalar[DTYPE](0.2)
-            # aref = K*imp*pen - B*v_n (B term without imp for stronger damping)
+            # aref = K*imp*pen - B*v_n, bias = -aref
             # Solver uses: delta = -(a_n + bias + R*lambda) * inv_K
             var bias = -K_spring * imp * penetration + B_damp * v_n
             workspace[env, ws_pos_bias + c] = bias
@@ -536,10 +536,10 @@ fn detect_and_solve_limits_gpu[
             Scalar[DTYPE](3.0) * x_lim * x_lim
             - Scalar[DTYPE](2.0) * x_lim * x_lim * x_lim
         ) * (li_dmax - li_dmin)
-        # Impedance floor: 0.2 ensures firm limit correction from first touch
+        # Impedance floor prevents zero-force limits at boundary
         if imp_lim < Scalar[DTYPE](0.2):
             imp_lim = Scalar[DTYPE](0.2)
-        # Use current VELOCITY for damping (MuJoCo: aref = K*d*pen - B*d*v)
+        # aref = K*imp*pen - B*v, bias = -aref
         comptime qvel_off_lim = qvel_offset[NQ, NV]()
         var v_limit = limit_sign[l] * rebind[Scalar[DTYPE]](
             state[env, qvel_off_lim + limit_dof[l]]

@@ -168,6 +168,34 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         )
 
         if verbose:
+            print("  [FK] body positions:")
+            for b in range(NBODY):
+                print(
+                    "    body",
+                    b,
+                    "(",
+                    model.get_body_name(b),
+                    "): x=",
+                    Float64(data.xpos[b * 3]),
+                    " y=",
+                    Float64(data.xpos[b * 3 + 1]),
+                    " z=",
+                    Float64(data.xpos[b * 3 + 2]),
+                )
+            print("  [FK] body CoM positions (xipos):")
+            for b in range(NBODY):
+                print(
+                    "    body",
+                    b,
+                    "(",
+                    model.get_body_name(b),
+                    "): x=",
+                    Float64(data.xipos[b * 3]),
+                    " y=",
+                    Float64(data.xipos[b * 3 + 1]),
+                    " z=",
+                    Float64(data.xipos[b * 3 + 2]),
+                )
             print("  [FK] contacts:", data.num_contacts)
             for c in range(Int(data.num_contacts)):
                 var ct = data.contacts[c]
@@ -365,6 +393,14 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
             for i in range(NV):
                 print(" ", Float64(data.qvel[i]), end="")
             print("")
+            print("    M_hat diagonal:", end="")
+            for i in range(NV):
+                print(" ", Float64(M[i * NV + i]), end="")
+            print("")
+            print("    bias (RNE):", end="")
+            for i in range(NV):
+                print(" ", Float64(bias[i]), end="")
+            print("")
             print("    qacc_unconstrained:", end="")
             for i in range(NV):
                 print(" ", Float64(qacc[i]), end="")
@@ -542,7 +578,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         ](constraints, data)
 
         # 9. Integrate: qvel = old_qvel + constrained_qacc * dt
-        comptime MAX_QVEL: Scalar[DTYPE] = 100.0
+        comptime MAX_QVEL: Scalar[DTYPE] = 10.0
         for i in range(NV):
             data.qacc[i] = qacc[i]
             data.qvel[i] = data.qvel[i] + qacc[i] * dt
@@ -993,7 +1029,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         )
         # 9. Integrate: qvel = old_qvel + constrained_qacc * dt
         var qpos_off = qpos_offset[NQ, NV]()
-        comptime MAX_QVEL: Scalar[DTYPE] = 100.0
+        comptime MAX_QVEL: Scalar[DTYPE] = 10.0
         for i in range(NV):
             var old_qvel = rebind[Scalar[DTYPE]](state[env, qvel_off + i])
             var constrained_qacc = rebind[Scalar[DTYPE]](

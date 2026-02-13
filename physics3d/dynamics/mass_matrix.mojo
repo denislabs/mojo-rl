@@ -17,10 +17,11 @@ from layout import LayoutTensor, Layout
 
 from ..types import Model, Data
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
-from ..kinematics.quat_math import quat_rotate, gpu_quat_rotate
+from ..kinematics.quat_math import quat_rotate, quat_mul, gpu_quat_rotate, gpu_quat_mul
 from ..gpu.constants import (
     xpos_offset,
     xquat_offset,
+    xipos_offset,
     model_body_offset,
     model_joint_offset,
     model_metadata_offset,
@@ -33,6 +34,13 @@ from ..gpu.constants import (
     BODY_IDX_IXX,
     BODY_IDX_IYY,
     BODY_IDX_IZZ,
+    BODY_IDX_IPOS_X,
+    BODY_IDX_IPOS_Y,
+    BODY_IDX_IPOS_Z,
+    BODY_IDX_IQUAT_X,
+    BODY_IDX_IQUAT_Y,
+    BODY_IDX_IQUAT_Z,
+    BODY_IDX_IQUAT_W,
     JOINT_IDX_TYPE,
     JOINT_IDX_BODY_ID,
     JOINT_IDX_DOF_ADR,
@@ -195,10 +203,10 @@ fn compute_mass_matrix[
                 jpos_world_y = parent_py + rotated[1]
                 jpos_world_z = parent_pz + rotated[2]
 
-            # Distance from joint to body CoM
-            var body_px = data.xpos[body * 3 + 0]
-            var body_py = data.xpos[body * 3 + 1]
-            var body_pz = data.xpos[body * 3 + 2]
+            # Distance from joint to body CoM (use xipos = CoM world position)
+            var body_px = data.xipos[body * 3 + 0]
+            var body_py = data.xipos[body * 3 + 1]
+            var body_pz = data.xipos[body * 3 + 2]
 
             var r_x = body_px - jpos_world_x
             var r_y = body_py - jpos_world_y
@@ -232,9 +240,9 @@ fn compute_mass_matrix[
                 if _is_descendant(model, desc_body, body):
                     # This body is in the subtree, include its contribution
                     var desc_mass = model.body_mass[desc_body]
-                    var desc_px = data.xpos[desc_body * 3 + 0]
-                    var desc_py = data.xpos[desc_body * 3 + 1]
-                    var desc_pz = data.xpos[desc_body * 3 + 2]
+                    var desc_px = data.xipos[desc_body * 3 + 0]
+                    var desc_py = data.xipos[desc_body * 3 + 1]
+                    var desc_pz = data.xipos[desc_body * 3 + 2]
 
                     var desc_r_x = desc_px - jpos_world_x
                     var desc_r_y = desc_py - jpos_world_y
@@ -391,10 +399,20 @@ fn compute_mass_matrix_full[
         var Iyy_l = model.body_inertia[b * 3 + 1]
         var Izz_l = model.body_inertia[b * 3 + 2]
 
-        var qx = data.xquat[b * 4 + 0]
-        var qy = data.xquat[b * 4 + 1]
-        var qz = data.xquat[b * 4 + 2]
-        var qw = data.xquat[b * 4 + 3]
+        # Compose xquat with body_iquat for inertia rotation
+        var bqx = data.xquat[b * 4 + 0]
+        var bqy = data.xquat[b * 4 + 1]
+        var bqz = data.xquat[b * 4 + 2]
+        var bqw = data.xquat[b * 4 + 3]
+        var iqx = model.body_iquat[b * 4 + 0]
+        var iqy = model.body_iquat[b * 4 + 1]
+        var iqz = model.body_iquat[b * 4 + 2]
+        var iqw = model.body_iquat[b * 4 + 3]
+        var iq = quat_mul(bqx, bqy, bqz, bqw, iqx, iqy, iqz, iqw)
+        var qx = iq[0]
+        var qy = iq[1]
+        var qz = iq[2]
+        var qw = iq[3]
 
         var r00 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qy * qy + qz * qz)
         var r10 = Scalar[DTYPE](2) * (qx * qy + qw * qz)
@@ -466,23 +484,23 @@ fn compute_mass_matrix_full[
                     continue
 
                 var mk = model.body_mass[k]
-                var pk0 = data.xpos[k * 3 + 0]
-                var pk1 = data.xpos[k * 3 + 1]
-                var pk2 = data.xpos[k * 3 + 2]
+                var pk0 = data.xipos[k * 3 + 0]
+                var pk1 = data.xipos[k * 3 + 1]
+                var pk2 = data.xipos[k * 3 + 2]
 
                 # Velocity of body k due to DOF i:
                 # v_k_i = cdof_i_lin + cdof_i_ang × (pos_k - pos_body_i)
-                var di0 = pk0 - data.xpos[body_i * 3 + 0]
-                var di1 = pk1 - data.xpos[body_i * 3 + 1]
-                var di2 = pk2 - data.xpos[body_i * 3 + 2]
+                var di0 = pk0 - data.xipos[body_i * 3 + 0]
+                var di1 = pk1 - data.xipos[body_i * 3 + 1]
+                var di2 = pk2 - data.xipos[body_i * 3 + 2]
                 var vki0 = li0 + ai1 * di2 - ai2 * di1
                 var vki1 = li1 + ai2 * di0 - ai0 * di2
                 var vki2 = li2 + ai0 * di1 - ai1 * di0
 
                 # Velocity of body k due to DOF j:
-                var dj0 = pk0 - data.xpos[body_j * 3 + 0]
-                var dj1 = pk1 - data.xpos[body_j * 3 + 1]
-                var dj2 = pk2 - data.xpos[body_j * 3 + 2]
+                var dj0 = pk0 - data.xipos[body_j * 3 + 0]
+                var dj1 = pk1 - data.xipos[body_j * 3 + 1]
+                var dj2 = pk2 - data.xipos[body_j * 3 + 2]
                 var vkj0 = lj0 + aj1 * dj2 - aj2 * dj1
                 var vkj1 = lj1 + aj2 * dj0 - aj0 * dj2
                 var vkj2 = lj2 + aj0 * dj1 - aj1 * dj0
@@ -689,6 +707,7 @@ fn compute_mass_matrix_full_gpu[
 
     var xpos_off = xpos_offset[NQ, NV, NBODY]()
     var xquat_off = xquat_offset[NQ, NV, NBODY]()
+    var xipos_off = xipos_offset[NQ, NV, NBODY]()
 
     # Pre-compute per-body world-frame inertia tensor
     comptime I_WORLD_SIZE = _ensure_positive[NBODY * 6]()
@@ -699,10 +718,20 @@ fn compute_mass_matrix_full_gpu[
         var Iyy_l = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IYY])
         var Izz_l = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IZZ])
 
-        var qx = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 0])
-        var qy = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 1])
-        var qz = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 2])
-        var qw = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 3])
+        # Compose xquat with body_iquat for inertia rotation
+        var bqx = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 0])
+        var bqy = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 1])
+        var bqz = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 2])
+        var bqw = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 3])
+        var iqx = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IQUAT_X])
+        var iqy = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IQUAT_Y])
+        var iqz = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IQUAT_Z])
+        var iqw = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IQUAT_W])
+        var iq = gpu_quat_mul(bqx, bqy, bqz, bqw, iqx, iqy, iqz, iqw)
+        var qx = iq[0]
+        var qy = iq[1]
+        var qz = iq[2]
+        var qw = iq[3]
 
         var r00 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qy * qy + qz * qz)
         var r10 = Scalar[DTYPE](2) * (qx * qy + qw * qz)
@@ -771,23 +800,23 @@ fn compute_mass_matrix_full_gpu[
                     model[0, body_off_k + BODY_IDX_MASS]
                 )
                 var pk0 = rebind[Scalar[DTYPE]](
-                    state[env, xpos_off + k * 3 + 0]
+                    state[env, xipos_off + k * 3 + 0]
                 )
                 var pk1 = rebind[Scalar[DTYPE]](
-                    state[env, xpos_off + k * 3 + 1]
+                    state[env, xipos_off + k * 3 + 1]
                 )
                 var pk2 = rebind[Scalar[DTYPE]](
-                    state[env, xpos_off + k * 3 + 2]
+                    state[env, xipos_off + k * 3 + 2]
                 )
 
                 var pi0 = rebind[Scalar[DTYPE]](
-                    state[env, xpos_off + body_i * 3 + 0]
+                    state[env, xipos_off + body_i * 3 + 0]
                 )
                 var pi1 = rebind[Scalar[DTYPE]](
-                    state[env, xpos_off + body_i * 3 + 1]
+                    state[env, xipos_off + body_i * 3 + 1]
                 )
                 var pi2 = rebind[Scalar[DTYPE]](
-                    state[env, xpos_off + body_i * 3 + 2]
+                    state[env, xipos_off + body_i * 3 + 2]
                 )
                 var di0 = pk0 - pi0
                 var di1 = pk1 - pi1
@@ -797,13 +826,13 @@ fn compute_mass_matrix_full_gpu[
                 var vki2 = li2 + ai0 * di1 - ai1 * di0
 
                 var pj0 = rebind[Scalar[DTYPE]](
-                    state[env, xpos_off + body_j * 3 + 0]
+                    state[env, xipos_off + body_j * 3 + 0]
                 )
                 var pj1 = rebind[Scalar[DTYPE]](
-                    state[env, xpos_off + body_j * 3 + 1]
+                    state[env, xipos_off + body_j * 3 + 1]
                 )
                 var pj2 = rebind[Scalar[DTYPE]](
-                    state[env, xpos_off + body_j * 3 + 2]
+                    state[env, xipos_off + body_j * 3 + 2]
                 )
                 var dj0 = pk0 - pj0
                 var dj1 = pk1 - pj1
@@ -1122,6 +1151,7 @@ fn compute_mass_matrix_diagonal_gpu[
     """
     var xpos_off = xpos_offset[NQ, NV, NBODY]()
     var xquat_off = xquat_offset[NQ, NV, NBODY]()
+    var xipos_off = xipos_offset[NQ, NV, NBODY]()
 
     var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
     var num_joints = Int(
@@ -1233,13 +1263,13 @@ fn compute_mass_matrix_diagonal_gpu[
                 axis_world_z = rotated[2]
 
             var body_px = rebind[Scalar[DTYPE]](
-                state[env, xpos_off + body_id * 3 + 0]
+                state[env, xipos_off + body_id * 3 + 0]
             )
             var body_py = rebind[Scalar[DTYPE]](
-                state[env, xpos_off + body_id * 3 + 1]
+                state[env, xipos_off + body_id * 3 + 1]
             )
             var body_pz = rebind[Scalar[DTYPE]](
-                state[env, xpos_off + body_id * 3 + 2]
+                state[env, xipos_off + body_id * 3 + 2]
             )
 
             var rx = body_px - jpos_world_x
@@ -1281,13 +1311,13 @@ fn compute_mass_matrix_diagonal_gpu[
                     ) / Scalar[DTYPE](3)
 
                     var desc_px = rebind[Scalar[DTYPE]](
-                        state[env, xpos_off + desc_body * 3 + 0]
+                        state[env, xipos_off + desc_body * 3 + 0]
                     )
                     var desc_py = rebind[Scalar[DTYPE]](
-                        state[env, xpos_off + desc_body * 3 + 1]
+                        state[env, xipos_off + desc_body * 3 + 1]
                     )
                     var desc_pz = rebind[Scalar[DTYPE]](
-                        state[env, xpos_off + desc_body * 3 + 2]
+                        state[env, xipos_off + desc_body * 3 + 2]
                     )
 
                     var desc_rx = desc_px - jpos_world_x

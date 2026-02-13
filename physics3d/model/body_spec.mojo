@@ -41,6 +41,17 @@ trait BodySpec:
     comptime QUAT_Z: Float64
     comptime QUAT_W: Float64
 
+    # CoM offset from body origin (body frame)
+    comptime IPOS_X: Float64
+    comptime IPOS_Y: Float64
+    comptime IPOS_Z: Float64
+
+    # Inertia frame quaternion [x, y, z, w] in body frame
+    comptime IQUAT_X: Float64
+    comptime IQUAT_Y: Float64
+    comptime IQUAT_Z: Float64
+    comptime IQUAT_W: Float64
+
     # Visual properties
     comptime COLOR: Color3D
 
@@ -77,6 +88,16 @@ struct CapsuleBody[
     quat_y: Float64 = 0.0,
     quat_z: Float64 = 0.0,
     quat_w: Float64 = 1.0,
+    ipos_x: Float64 = 0.0,
+    ipos_y: Float64 = 0.0,
+    ipos_z: Float64 = 0.0,
+    iquat_x: Float64 = 0.0,
+    iquat_y: Float64 = 0.0,
+    iquat_z: Float64 = 0.0,
+    iquat_w: Float64 = 1.0,
+    ixx_override: Float64 = 0.0,
+    iyy_override: Float64 = 0.0,
+    izz_override: Float64 = 0.0,
     contype: Int = 1,
     conaffinity: Int = 1,
     color: Color3D = Color3D(204, 153, 102),
@@ -104,6 +125,13 @@ struct CapsuleBody[
     comptime QUAT_Y: Float64 = Self.quat_y
     comptime QUAT_Z: Float64 = Self.quat_z
     comptime QUAT_W: Float64 = Self.quat_w
+    comptime IPOS_X: Float64 = Self.ipos_x
+    comptime IPOS_Y: Float64 = Self.ipos_y
+    comptime IPOS_Z: Float64 = Self.ipos_z
+    comptime IQUAT_X: Float64 = Self.iquat_x
+    comptime IQUAT_Y: Float64 = Self.iquat_y
+    comptime IQUAT_Z: Float64 = Self.iquat_z
+    comptime IQUAT_W: Float64 = Self.iquat_w
     comptime CONTYPE: Int = Self.contype
     comptime CONAFFINITY: Int = Self.conaffinity
     comptime COLOR: Color3D = Self.color
@@ -114,20 +142,30 @@ struct CapsuleBody[
         return 2.0 * Self.HALF_LENGTH + 2.0 * Self.RADIUS
 
     @staticmethod
-    fn ixx() -> Float64:
-        """Transverse inertia."""
+    fn _auto_ixx() -> Float64:
         var r2 = Self.RADIUS * Self.RADIUS
         var L = Self._total_length()
         return Self.MASS * (3.0 * r2 + L * L) / 12.0
 
     @staticmethod
+    fn ixx() -> Float64:
+        """Transverse inertia (override or auto-computed)."""
+        if Self.ixx_override != 0.0:
+            return Self.ixx_override
+        return Self._auto_ixx()
+
+    @staticmethod
     fn iyy() -> Float64:
-        """Transverse inertia (same as ixx for capsule)."""
-        return Self.ixx()
+        """Transverse inertia (override or auto-computed)."""
+        if Self.iyy_override != 0.0:
+            return Self.iyy_override
+        return Self._auto_ixx()
 
     @staticmethod
     fn izz() -> Float64:
-        """Axial inertia."""
+        """Axial inertia (override or auto-computed)."""
+        if Self.izz_override != 0.0:
+            return Self.izz_override
         return 0.5 * Self.MASS * Self.RADIUS * Self.RADIUS
 
 
@@ -149,6 +187,13 @@ struct SphereBody[
     quat_y: Float64 = 0.0,
     quat_z: Float64 = 0.0,
     quat_w: Float64 = 1.0,
+    ipos_x: Float64 = 0.0,
+    ipos_y: Float64 = 0.0,
+    ipos_z: Float64 = 0.0,
+    iquat_x: Float64 = 0.0,
+    iquat_y: Float64 = 0.0,
+    iquat_z: Float64 = 0.0,
+    iquat_w: Float64 = 1.0,
     contype: Int = 1,
     conaffinity: Int = 1,
     color: Color3D = Color3D(204, 153, 102),
@@ -173,6 +218,13 @@ struct SphereBody[
     comptime QUAT_Y: Float64 = Self.quat_y
     comptime QUAT_Z: Float64 = Self.quat_z
     comptime QUAT_W: Float64 = Self.quat_w
+    comptime IPOS_X: Float64 = Self.ipos_x
+    comptime IPOS_Y: Float64 = Self.ipos_y
+    comptime IPOS_Z: Float64 = Self.ipos_z
+    comptime IQUAT_X: Float64 = Self.iquat_x
+    comptime IQUAT_Y: Float64 = Self.iquat_y
+    comptime IQUAT_Z: Float64 = Self.iquat_z
+    comptime IQUAT_W: Float64 = Self.iquat_w
     comptime CONTYPE: Int = Self.contype
     comptime CONAFFINITY: Int = Self.conaffinity
     comptime COLOR: Color3D = Self.color
@@ -212,6 +264,13 @@ struct BoxBody[
     quat_y: Float64 = 0.0,
     quat_z: Float64 = 0.0,
     quat_w: Float64 = 1.0,
+    ipos_x: Float64 = 0.0,
+    ipos_y: Float64 = 0.0,
+    ipos_z: Float64 = 0.0,
+    iquat_x: Float64 = 0.0,
+    iquat_y: Float64 = 0.0,
+    iquat_z: Float64 = 0.0,
+    iquat_w: Float64 = 1.0,
     contype: Int = 1,
     conaffinity: Int = 1,
     color: Color3D = Color3D(204, 153, 102),
@@ -237,6 +296,13 @@ struct BoxBody[
     comptime QUAT_Y: Float64 = Self.quat_y
     comptime QUAT_Z: Float64 = Self.quat_z
     comptime QUAT_W: Float64 = Self.quat_w
+    comptime IPOS_X: Float64 = Self.ipos_x
+    comptime IPOS_Y: Float64 = Self.ipos_y
+    comptime IPOS_Z: Float64 = Self.ipos_z
+    comptime IQUAT_X: Float64 = Self.iquat_x
+    comptime IQUAT_Y: Float64 = Self.iquat_y
+    comptime IQUAT_Z: Float64 = Self.iquat_z
+    comptime IQUAT_W: Float64 = Self.iquat_w
     comptime CONTYPE: Int = Self.contype
     comptime CONAFFINITY: Int = Self.conaffinity
     comptime COLOR: Color3D = Self.color

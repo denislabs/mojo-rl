@@ -18,7 +18,7 @@ from layout import LayoutTensor, Layout
 from ..gpu.constants import ws_cdof_offset
 from ..types import Model, Data, _max_one
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
-from ..kinematics.quat_math import quat_rotate
+from ..kinematics.quat_math import quat_rotate, quat_mul
 from ..gpu.constants import (
     xpos_offset,
     model_body_offset,
@@ -33,11 +33,23 @@ from ..gpu.constants import (
 from ..gpu.constants import (
     xpos_offset,
     xquat_offset,
+    xipos_offset,
     model_body_offset,
     model_joint_offset,
     model_metadata_offset,
     ws_cdof_offset,
     BODY_IDX_PARENT,
+    BODY_IDX_MASS,
+    BODY_IDX_IXX,
+    BODY_IDX_IYY,
+    BODY_IDX_IZZ,
+    BODY_IDX_IPOS_X,
+    BODY_IDX_IPOS_Y,
+    BODY_IDX_IPOS_Z,
+    BODY_IDX_IQUAT_X,
+    BODY_IDX_IQUAT_Y,
+    BODY_IDX_IQUAT_Z,
+    BODY_IDX_IQUAT_W,
     JOINT_IDX_TYPE,
     JOINT_IDX_BODY_ID,
     JOINT_IDX_DOF_ADR,
@@ -54,7 +66,7 @@ from ..joint_types import (
     JNT_HINGE,
     JNT_SLIDE,
 )
-from ..kinematics.quat_math import gpu_quat_rotate
+from ..kinematics.quat_math import gpu_quat_rotate, gpu_quat_mul
 from ..joint_types import (
     JNT_FREE,
     JNT_BALL,
@@ -106,15 +118,13 @@ fn compute_cdof[
         var joint = model.joints[j]
         var body = joint.body_id
         var dof_adr = joint.dof_adr
-        var parent = model.body_parent[body]
-
-        # Body world position (subtree root for computing offset)
-        var bx = data.xpos[body * 3 + 0]
-        var by = data.xpos[body * 3 + 1]
-        var bz = data.xpos[body * 3 + 2]
+        # Body CoM world position (for computing offset from joint to CoM)
+        var bx = data.xipos[body * 3 + 0]
+        var by = data.xipos[body * 3 + 1]
+        var bz = data.xipos[body * 3 + 2]
 
         if joint.jnt_type == JNT_HINGE:
-            # Get joint axis and position in world frame
+            # Get joint axis and position (body-relative, MuJoCo convention)
             var axis_x = joint.axis_x
             var axis_y = joint.axis_y
             var axis_z = joint.axis_z
@@ -123,27 +133,29 @@ fn compute_cdof[
             var jpos_y = joint.pos_y
             var jpos_z = joint.pos_z
 
-            if parent >= 0:
-                var pqx = data.xquat[parent * 4 + 0]
-                var pqy = data.xquat[parent * 4 + 1]
-                var pqz = data.xquat[parent * 4 + 2]
-                var pqw = data.xquat[parent * 4 + 3]
+            # Use body's own xquat/xpos (MuJoCo convention: jnt_pos/axis relative to body)
+            var bqx = data.xquat[body * 4 + 0]
+            var bqy = data.xquat[body * 4 + 1]
+            var bqz = data.xquat[body * 4 + 2]
+            var bqw = data.xquat[body * 4 + 3]
 
-                var axis_world = quat_rotate(
-                    pqx, pqy, pqz, pqw, axis_x, axis_y, axis_z
-                )
-                axis_x = axis_world[0]
-                axis_y = axis_world[1]
-                axis_z = axis_world[2]
+            # Rotate axis to world frame using body orientation
+            var axis_world = quat_rotate(
+                bqx, bqy, bqz, bqw, axis_x, axis_y, axis_z
+            )
+            axis_x = axis_world[0]
+            axis_y = axis_world[1]
+            axis_z = axis_world[2]
 
-                var ppx = data.xpos[parent * 3 + 0]
-                var ppy = data.xpos[parent * 3 + 1]
-                var ppz = data.xpos[parent * 3 + 2]
+            # Joint anchor = body_xpos + rotate(jnt_pos, body_xquat)
+            var bpx = data.xpos[body * 3 + 0]
+            var bpy = data.xpos[body * 3 + 1]
+            var bpz = data.xpos[body * 3 + 2]
 
-                var jp = quat_rotate(pqx, pqy, pqz, pqw, jpos_x, jpos_y, jpos_z)
-                jpos_x = ppx + jp[0]
-                jpos_y = ppy + jp[1]
-                jpos_z = ppz + jp[2]
+            var jp = quat_rotate(bqx, bqy, bqz, bqw, jpos_x, jpos_y, jpos_z)
+            jpos_x = bpx + jp[0]
+            jpos_y = bpy + jp[1]
+            jpos_z = bpz + jp[2]
 
             # offset = body_com - joint_anchor
             var ox = bx - jpos_x
@@ -160,23 +172,23 @@ fn compute_cdof[
             cdof[dof_adr * 6 + 5] = axis_x * oy - axis_y * ox
 
         elif joint.jnt_type == JNT_SLIDE:
-            # Get joint axis in world frame
+            # Get joint axis (body-relative, MuJoCo convention)
             var axis_x = joint.axis_x
             var axis_y = joint.axis_y
             var axis_z = joint.axis_z
 
-            if parent >= 0:
-                var pqx = data.xquat[parent * 4 + 0]
-                var pqy = data.xquat[parent * 4 + 1]
-                var pqz = data.xquat[parent * 4 + 2]
-                var pqw = data.xquat[parent * 4 + 3]
+            # Rotate axis to world frame using body orientation
+            var bqx = data.xquat[body * 4 + 0]
+            var bqy = data.xquat[body * 4 + 1]
+            var bqz = data.xquat[body * 4 + 2]
+            var bqw = data.xquat[body * 4 + 3]
 
-                var axis_world = quat_rotate(
-                    pqx, pqy, pqz, pqw, axis_x, axis_y, axis_z
-                )
-                axis_x = axis_world[0]
-                axis_y = axis_world[1]
-                axis_z = axis_world[2]
+            var axis_world = quat_rotate(
+                bqx, bqy, bqz, bqw, axis_x, axis_y, axis_z
+            )
+            axis_x = axis_world[0]
+            axis_y = axis_world[1]
+            axis_z = axis_world[2]
 
             # angular part = 0
             # linear part = axis
@@ -270,11 +282,11 @@ fn compute_contact_jacobian_row[
         elif joint.jnt_type == JNT_BALL:
             num_dof = 3
 
-        # Reference body = joint's body (must match cdof computation)
+        # Reference body = joint's body CoM (must match cdof computation)
         var ref_body = joint.body_id
-        var ref_x = data.xpos[ref_body * 3 + 0]
-        var ref_y = data.xpos[ref_body * 3 + 1]
-        var ref_z = data.xpos[ref_body * 3 + 2]
+        var ref_x = data.xipos[ref_body * 3 + 0]
+        var ref_y = data.xipos[ref_body * 3 + 1]
+        var ref_z = data.xipos[ref_body * 3 + 2]
 
         var rx = contact_pos_x - ref_x
         var ry = contact_pos_y - ref_y
@@ -389,18 +401,27 @@ fn compute_composite_inertia[
         crb[b * 10 + 2] = Scalar[DTYPE](0)  # cy
         crb[b * 10 + 3] = Scalar[DTYPE](0)  # cz
 
-        # Rotate inertia tensor from body-local to world frame:
+        # Rotate inertia tensor from inertia frame to world frame:
         # I_world = R @ diag(Ixx, Iyy, Izz) @ R^T
-        # where R columns are body basis vectors in world frame.
+        # where R = xquat * body_iquat (inertia frame in world)
         var Ixx_local = model.body_inertia[b * 3 + 0]
         var Iyy_local = model.body_inertia[b * 3 + 1]
         var Izz_local = model.body_inertia[b * 3 + 2]
 
-        # Get body quaternion (world orientation)
-        var qx = data.xquat[b * 4 + 0]
-        var qy = data.xquat[b * 4 + 1]
-        var qz = data.xquat[b * 4 + 2]
-        var qw = data.xquat[b * 4 + 3]
+        # Compose xquat with body_iquat for inertia rotation
+        var bqx = data.xquat[b * 4 + 0]
+        var bqy = data.xquat[b * 4 + 1]
+        var bqz = data.xquat[b * 4 + 2]
+        var bqw = data.xquat[b * 4 + 3]
+        var iqx = model.body_iquat[b * 4 + 0]
+        var iqy = model.body_iquat[b * 4 + 1]
+        var iqz = model.body_iquat[b * 4 + 2]
+        var iqw = model.body_iquat[b * 4 + 3]
+        var iq = quat_mul(bqx, bqy, bqz, bqw, iqx, iqy, iqz, iqw)
+        var qx = iq[0]
+        var qy = iq[1]
+        var qz = iq[2]
+        var qw = iq[3]
 
         # Compute rotation matrix columns from quaternion
         # col0 = R @ [1,0,0], col1 = R @ [0,1,0], col2 = R @ [0,0,1]
@@ -470,10 +491,10 @@ fn compute_composite_inertia[
         var child_Ixz = crb[b * 10 + 8]
         var child_Iyz = crb[b * 10 + 9]
 
-        # The offset from parent's origin to child's origin (in world frame)
-        var dx = data.xpos[b * 3 + 0] - data.xpos[parent * 3 + 0]
-        var dy = data.xpos[b * 3 + 1] - data.xpos[parent * 3 + 1]
-        var dz = data.xpos[b * 3 + 2] - data.xpos[parent * 3 + 2]
+        # The offset from parent's CoM to child's CoM (in world frame)
+        var dx = data.xipos[b * 3 + 0] - data.xipos[parent * 3 + 0]
+        var dy = data.xipos[b * 3 + 1] - data.xipos[parent * 3 + 1]
+        var dz = data.xipos[b * 3 + 2] - data.xipos[parent * 3 + 2]
 
         # Total offset from parent origin to child's composite CoM
         var total_cx = dx + child_cx
@@ -596,11 +617,20 @@ fn compute_composite_inertia_gpu[
         var Iyy_local = model[0, body_off + BODY_IDX_IYY]
         var Izz_local = model[0, body_off + BODY_IDX_IZZ]
 
-        # Get body quaternion (world orientation)
-        var qx = state[env, xquat_off + b * 4 + 0]
-        var qy = state[env, xquat_off + b * 4 + 1]
-        var qz = state[env, xquat_off + b * 4 + 2]
-        var qw = state[env, xquat_off + b * 4 + 3]
+        # Compose xquat with body_iquat for inertia rotation
+        var bqx = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 0])
+        var bqy = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 1])
+        var bqz = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 2])
+        var bqw = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 3])
+        var iqx = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IQUAT_X])
+        var iqy = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IQUAT_Y])
+        var iqz = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IQUAT_Z])
+        var iqw = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IQUAT_W])
+        var iq = gpu_quat_mul(bqx, bqy, bqz, bqw, iqx, iqy, iqz, iqw)
+        var qx = iq[0]
+        var qy = iq[1]
+        var qz = iq[2]
+        var qw = iq[3]
 
         # Rotation matrix columns from quaternion
         var r00 = 1 - 2 * (qy * qy + qz * qz)
@@ -672,17 +702,18 @@ fn compute_composite_inertia_gpu[
         var child_Ixz = workspace[env, crb_idx + b * 10 + 8]
         var child_Iyz = workspace[env, crb_idx + b * 10 + 9]
 
+        var xipos_off = xipos_offset[NQ, NV, NBODY]()
         var dx = (
-            state[env, xpos_off + b * 3 + 0]
-            - state[env, xpos_off + parent * 3 + 0]
+            state[env, xipos_off + b * 3 + 0]
+            - state[env, xipos_off + parent * 3 + 0]
         )
         var dy = (
-            state[env, xpos_off + b * 3 + 1]
-            - state[env, xpos_off + parent * 3 + 1]
+            state[env, xipos_off + b * 3 + 1]
+            - state[env, xipos_off + parent * 3 + 1]
         )
         var dz = (
-            state[env, xpos_off + b * 3 + 2]
-            - state[env, xpos_off + parent * 3 + 2]
+            state[env, xipos_off + b * 3 + 2]
+            - state[env, xipos_off + parent * 3 + 2]
         )
 
         var total_cx = dx + child_cx
@@ -810,11 +841,10 @@ fn compute_cdof_gpu[
         var jnt_type = Int(model[0, joint_off + JOINT_IDX_TYPE])
         var body = Int(model[0, joint_off + JOINT_IDX_BODY_ID])
         var dof_adr = Int(model[0, joint_off + JOINT_IDX_DOF_ADR])
-        var body_off = model_body_offset(body)
-        var parent = Int(model[0, body_off + BODY_IDX_PARENT])
-        var bx = state[env, xpos_off + body * 3 + 0]
-        var by = state[env, xpos_off + body * 3 + 1]
-        var bz = state[env, xpos_off + body * 3 + 2]
+        var xipos_off = xipos_offset[NQ, NV, NBODY]()
+        var bx = state[env, xipos_off + body * 3 + 0]
+        var by = state[env, xipos_off + body * 3 + 1]
+        var bz = state[env, xipos_off + body * 3 + 2]
         if jnt_type == JNT_HINGE:
             var axis_x = rebind[Scalar[DTYPE]](
                 model[0, joint_off + JOINT_IDX_AXIS_X]
@@ -836,43 +866,45 @@ fn compute_cdof_gpu[
                 model[0, joint_off + JOINT_IDX_POS_Z]
             )
 
-            if parent >= 0:
-                var pqx = rebind[Scalar[DTYPE]](
-                    state[env, xquat_off + parent * 4 + 0]
-                )
-                var pqy = rebind[Scalar[DTYPE]](
-                    state[env, xquat_off + parent * 4 + 1]
-                )
-                var pqz = rebind[Scalar[DTYPE]](
-                    state[env, xquat_off + parent * 4 + 2]
-                )
-                var pqw = rebind[Scalar[DTYPE]](
-                    state[env, xquat_off + parent * 4 + 3]
-                )
+            # Use body's own xquat/xpos (MuJoCo convention: jnt_pos/axis relative to body)
+            var bqx = rebind[Scalar[DTYPE]](
+                state[env, xquat_off + body * 4 + 0]
+            )
+            var bqy = rebind[Scalar[DTYPE]](
+                state[env, xquat_off + body * 4 + 1]
+            )
+            var bqz = rebind[Scalar[DTYPE]](
+                state[env, xquat_off + body * 4 + 2]
+            )
+            var bqw = rebind[Scalar[DTYPE]](
+                state[env, xquat_off + body * 4 + 3]
+            )
 
-                var a_w = gpu_quat_rotate(
-                    pqx, pqy, pqz, pqw, axis_x, axis_y, axis_z
-                )
-                axis_x = a_w[0]
-                axis_y = a_w[1]
-                axis_z = a_w[2]
+            # Rotate axis to world frame using body orientation
+            var a_w = gpu_quat_rotate(
+                bqx, bqy, bqz, bqw, axis_x, axis_y, axis_z
+            )
+            axis_x = a_w[0]
+            axis_y = a_w[1]
+            axis_z = a_w[2]
 
-                var ppx = rebind[Scalar[DTYPE]](
-                    state[env, xpos_off + parent * 3 + 0]
-                )
-                var ppy = rebind[Scalar[DTYPE]](
-                    state[env, xpos_off + parent * 3 + 1]
-                )
-                var ppz = rebind[Scalar[DTYPE]](
-                    state[env, xpos_off + parent * 3 + 2]
-                )
+            # Joint anchor = body_xpos + rotate(jnt_pos, body_xquat)
+            var bpx = rebind[Scalar[DTYPE]](
+                state[env, xpos_off + body * 3 + 0]
+            )
+            var bpy = rebind[Scalar[DTYPE]](
+                state[env, xpos_off + body * 3 + 1]
+            )
+            var bpz = rebind[Scalar[DTYPE]](
+                state[env, xpos_off + body * 3 + 2]
+            )
 
-                var jp = gpu_quat_rotate(
-                    pqx, pqy, pqz, pqw, jpos_x, jpos_y, jpos_z
-                )
-                jpos_x = ppx + jp[0]
-                jpos_y = ppy + jp[1]
-                jpos_z = ppz + jp[2]
+            var jp = gpu_quat_rotate(
+                bqx, bqy, bqz, bqw, jpos_x, jpos_y, jpos_z
+            )
+            jpos_x = bpx + jp[0]
+            jpos_y = bpy + jp[1]
+            jpos_z = bpz + jp[2]
 
             var ox = bx - jpos_x
             var oy = by - jpos_y
@@ -902,26 +934,26 @@ fn compute_cdof_gpu[
                 model[0, joint_off + JOINT_IDX_AXIS_Z]
             )
 
-            if parent >= 0:
-                var pqx = rebind[Scalar[DTYPE]](
-                    state[env, xquat_off + parent * 4 + 0]
-                )
-                var pqy = rebind[Scalar[DTYPE]](
-                    state[env, xquat_off + parent * 4 + 1]
-                )
-                var pqz = rebind[Scalar[DTYPE]](
-                    state[env, xquat_off + parent * 4 + 2]
-                )
-                var pqw = rebind[Scalar[DTYPE]](
-                    state[env, xquat_off + parent * 4 + 3]
-                )
+            # Rotate axis to world frame using body orientation (MuJoCo convention)
+            var bqx = rebind[Scalar[DTYPE]](
+                state[env, xquat_off + body * 4 + 0]
+            )
+            var bqy = rebind[Scalar[DTYPE]](
+                state[env, xquat_off + body * 4 + 1]
+            )
+            var bqz = rebind[Scalar[DTYPE]](
+                state[env, xquat_off + body * 4 + 2]
+            )
+            var bqw = rebind[Scalar[DTYPE]](
+                state[env, xquat_off + body * 4 + 3]
+            )
 
-                var a_w = gpu_quat_rotate(
-                    pqx, pqy, pqz, pqw, axis_x, axis_y, axis_z
-                )
-                axis_x = a_w[0]
-                axis_y = a_w[1]
-                axis_z = a_w[2]
+            var a_w = gpu_quat_rotate(
+                bqx, bqy, bqz, bqw, axis_x, axis_y, axis_z
+            )
+            axis_x = a_w[0]
+            axis_y = a_w[1]
+            axis_z = a_w[2]
 
             workspace[env, cdof_idx + dof_adr * 6 + 3] = axis_x
             workspace[env, cdof_idx + dof_adr * 6 + 4] = axis_y
@@ -1045,15 +1077,16 @@ fn compute_contact_jacobian_row_gpu[
         elif jnt_type == JNT_BALL:
             num_dof = 3
 
-        # Reference body = joint's body (must match cdof computation)
+        # Reference body = joint's body CoM (must match cdof computation)
+        var xipos_off = xipos_offset[NQ, NV, NBODY]()
         var b_x = rebind[Scalar[DTYPE]](
-            state[env, xpos_off + joint_body * 3 + 0]
+            state[env, xipos_off + joint_body * 3 + 0]
         )
         var b_y = rebind[Scalar[DTYPE]](
-            state[env, xpos_off + joint_body * 3 + 1]
+            state[env, xipos_off + joint_body * 3 + 1]
         )
         var b_z = rebind[Scalar[DTYPE]](
-            state[env, xpos_off + joint_body * 3 + 2]
+            state[env, xipos_off + joint_body * 3 + 2]
         )
 
         var rx = contact_pos_x - b_x

@@ -141,6 +141,10 @@ struct Model[
     var body_pos: InlineArray[Scalar[Self.DTYPE], Self.NBODY * 3]
     var body_quat: InlineArray[Scalar[Self.DTYPE], Self.NBODY * 4]
 
+    # CoM offset from body origin (body frame) and inertia frame orientation
+    var body_ipos: InlineArray[Scalar[Self.DTYPE], Self.NBODY * 3]
+    var body_iquat: InlineArray[Scalar[Self.DTYPE], Self.NBODY * 4]
+
     # Kinematic tree structure
     var body_parent: InlineArray[Int, Self.NBODY]  # -1 for world
 
@@ -221,6 +225,12 @@ struct Model[
         self.body_quat = InlineArray[Scalar[Self.DTYPE], Self.NBODY * 4](
             uninitialized=True
         )
+        self.body_ipos = InlineArray[Scalar[Self.DTYPE], Self.NBODY * 3](
+            uninitialized=True
+        )
+        self.body_iquat = InlineArray[Scalar[Self.DTYPE], Self.NBODY * 4](
+            uninitialized=True
+        )
         self.body_parent = InlineArray[Int, Self.NBODY](uninitialized=True)
 
         # Initialize geom arrays
@@ -291,6 +301,17 @@ struct Model[
             self.body_quat[i * 4 + 1] = Scalar[Self.DTYPE](0)
             self.body_quat[i * 4 + 2] = Scalar[Self.DTYPE](0)
             self.body_quat[i * 4 + 3] = Scalar[Self.DTYPE](1)
+
+            # Default body ipos: zero (CoM at body origin)
+            self.body_ipos[i * 3 + 0] = Scalar[Self.DTYPE](0)
+            self.body_ipos[i * 3 + 1] = Scalar[Self.DTYPE](0)
+            self.body_ipos[i * 3 + 2] = Scalar[Self.DTYPE](0)
+
+            # Default body iquat: identity (inertia aligned with body frame)
+            self.body_iquat[i * 4 + 0] = Scalar[Self.DTYPE](0)
+            self.body_iquat[i * 4 + 1] = Scalar[Self.DTYPE](0)
+            self.body_iquat[i * 4 + 2] = Scalar[Self.DTYPE](0)
+            self.body_iquat[i * 4 + 3] = Scalar[Self.DTYPE](1)
 
         # Initialize inertia
         for i in range(Self.NBODY * 3):
@@ -389,6 +410,38 @@ struct Model[
         self.body_quat[body_id * 4 + 1] = quat[1]
         self.body_quat[body_id * 4 + 2] = quat[2]
         self.body_quat[body_id * 4 + 3] = quat[3]
+
+    fn set_body_ipos_iquat(
+        mut self,
+        body_id: Int,
+        ipos: Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]],
+        iquat: Tuple[
+            Scalar[Self.DTYPE],
+            Scalar[Self.DTYPE],
+            Scalar[Self.DTYPE],
+            Scalar[Self.DTYPE],
+        ] = (
+            Scalar[Self.DTYPE](0),
+            Scalar[Self.DTYPE](0),
+            Scalar[Self.DTYPE](0),
+            Scalar[Self.DTYPE](1),
+        ),
+    ):
+        """Set body's CoM offset and inertia frame orientation.
+
+        Args:
+            body_id: Body index.
+            ipos: CoM offset from body origin in body frame.
+            iquat: Inertia frame quaternion [x, y, z, w] in body frame.
+        """
+        self.body_ipos[body_id * 3 + 0] = ipos[0]
+        self.body_ipos[body_id * 3 + 1] = ipos[1]
+        self.body_ipos[body_id * 3 + 2] = ipos[2]
+
+        self.body_iquat[body_id * 4 + 0] = iquat[0]
+        self.body_iquat[body_id * 4 + 1] = iquat[1]
+        self.body_iquat[body_id * 4 + 2] = iquat[2]
+        self.body_iquat[body_id * 4 + 3] = iquat[3]
 
     fn add_hinge_joint(
         mut self,
@@ -561,6 +614,7 @@ struct Data[
     # Computed world-space state (via forward kinematics)
     var xpos: InlineArray[Scalar[Self.DTYPE], Self.NBODY * 3]
     var xquat: InlineArray[Scalar[Self.DTYPE], Self.NBODY * 4]
+    var xipos: InlineArray[Scalar[Self.DTYPE], Self.NBODY * 3]  # CoM world position
 
     # Computed world-space velocities (for collision response)
     var xvel: InlineArray[Scalar[Self.DTYPE], Self.NBODY * 3]  # Linear
@@ -618,6 +672,13 @@ struct Data[
             self.xquat[i * 4 + 1] = Scalar[Self.DTYPE](0)
             self.xquat[i * 4 + 2] = Scalar[Self.DTYPE](0)
             self.xquat[i * 4 + 3] = Scalar[Self.DTYPE](1)
+
+        # Initialize xipos to zero
+        self.xipos = InlineArray[Scalar[Self.DTYPE], Self.NBODY * 3](
+            uninitialized=True
+        )
+        for i in range(Self.NBODY * 3):
+            self.xipos[i] = Scalar[Self.DTYPE](0)
 
         # Initialize xvel to zero
         self.xvel = InlineArray[Scalar[Self.DTYPE], Self.NBODY * 3](

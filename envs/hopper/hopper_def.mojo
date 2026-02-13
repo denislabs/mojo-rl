@@ -45,58 +45,83 @@ from physics3d.gpu.constants import (
 
 
 # =============================================================================
-# Body Type Aliases
+# Body Type Aliases (MuJoCo-matching body frame convention)
+#
+# body_pos = MuJoCo body_pos (joint position relative to parent body origin)
+# body_quat = identity for ALL bodies (no capsule rotation in kinematic chain)
+# body_ipos = CoM offset from body origin in body frame
+# body_iquat = inertia frame orientation in body frame
+# Inertia overrides from MuJoCo (inertiafromgeom + settotalmass)
 # =============================================================================
 
-# Quaternion constants for 90deg Y rotation (foot orientation)
-comptime _Q90Y_Y: Float64 = 0.70710678
-comptime _Q90Y_W: Float64 = 0.70710678
-
 # Body 0: Torso — vertical capsule, root of kinematic tree
+# MuJoCo: body_pos=(0,0,1.25), but we use rootz init_qpos=1.25
 comptime HopperTorso = CapsuleBody[
     parent= -1,
-    mass=3.53429174,
+    mass=3.665191,
     name="torso",
     radius=0.05,
     half_length=0.2,
+    # ipos = (0, 0, 0), iquat = identity (defaults)
+    ixx_override=0.069246,
+    iyy_override=0.069246,
+    izz_override=0.004451,
     color = Color3D(60, 120, 200),
 ]
 
 # Body 1: Thigh — vertical capsule below torso
-# pos_z = -(torso_half + thigh_half) = -(0.2 + 0.225) = -0.425
+# MuJoCo: body_pos=(0, 0, -0.2) relative to torso
 comptime HopperThigh = CapsuleBody[
     parent=0,
-    mass=3.92699082,
+    mass=4.057891,
     name="thigh",
     radius=0.05,
     half_length=0.225,
-    pos_z= -0.425,
+    pos_z= -0.2,
+    # CoM is 0.225 below body origin (geom center)
+    ipos_z= -0.225,
+    ixx_override=0.093299,
+    iyy_override=0.093299,
+    izz_override=0.004941,
     color = Color3D(80, 200, 80),
 ]
 
 # Body 2: Leg — vertical capsule below thigh
-# pos_z = -(thigh_half + leg_half) = -(0.225 + 0.25) = -0.475
+# MuJoCo: body_pos=(0, 0, -0.7) relative to thigh
 comptime HopperLeg = CapsuleBody[
     parent=1,
-    mass=2.71433605,
+    mass=2.781357,
     name="leg",
     radius=0.04,
     half_length=0.25,
-    pos_z= -0.475,
+    pos_z= -0.7,
+    # ipos = (0, 0, 0), iquat = identity (defaults)
+    ixx_override=0.072303,
+    iyy_override=0.072303,
+    izz_override=0.002182,
     color = Color3D(220, 140, 60),
 ]
 
-# Body 3: Foot — horizontal capsule (90deg Y rotation), below leg
-# pos_z = -leg_half = -0.25
+# Body 3: Foot — horizontal capsule, below leg
+# MuJoCo: body_pos=(0.13, 0, -0.35) relative to leg
+# body_quat = identity (capsule rotation is in geom, not body frame)
 comptime HopperFoot = CapsuleBody[
     parent=2,
-    mass=5.0893801,
+    mass=5.315575,
     name="foot",
     radius=0.06,
     half_length=0.195,
-    pos_z= -0.25,
-    quat_y=_Q90Y_Y,
-    quat_w=_Q90Y_W,
+    pos_x=0.13,
+    pos_z= -0.35,
+    # CoM offset from body origin
+    ipos_x= -0.065,
+    ipos_z=0.1,
+    # Inertia frame orientation (90deg Y rotation for horizontal capsule)
+    iquat_y= -0.707107,
+    iquat_w=0.707107,
+    ixx_override=0.103523,
+    iyy_override=0.103523,
+    izz_override=0.009242,
     color = Color3D(220, 80, 80),
 ]
 
@@ -134,10 +159,9 @@ comptime HopperRootY = HingeJoint[
 ]
 
 # Joint 3: thigh — Hinge around Y (body 1)
-# Joint at bottom of torso: (0, 0, -torso_half)
+# MuJoCo: joint pos=(0,0,0) relative to body (joint at body origin)
 comptime HopperThighJ = HingeJoint[
     body_idx=1,
-    pos_z= -0.2,
     tau_limit=200.0,
     range_min= -2.618,
     range_max=0.0,
@@ -146,10 +170,10 @@ comptime HopperThighJ = HingeJoint[
 ]
 
 # Joint 4: leg — Hinge around Y (body 2)
-# Joint at bottom of thigh: (0, 0, -thigh_half)
+# MuJoCo: joint pos=(0, 0, 0.25) relative to body
 comptime HopperLegJ = HingeJoint[
     body_idx=2,
-    pos_z= -0.225,
+    pos_z=0.25,
     tau_limit=200.0,
     range_min= -2.618,
     range_max=0.0,
@@ -158,10 +182,11 @@ comptime HopperLegJ = HingeJoint[
 ]
 
 # Joint 5: foot — Hinge around Y (body 3)
-# Joint at bottom of leg: (0, 0, -leg_half)
+# MuJoCo: joint pos=(-0.13, 0, 0.1) relative to body
 comptime HopperFootJ = HingeJoint[
     body_idx=3,
-    pos_z= -0.25,
+    pos_x= -0.13,
+    pos_z=0.1,
     tau_limit=200.0,
     range_min= -0.785,
     range_max=0.785,
@@ -179,28 +204,32 @@ comptime HopperGroundGeom = PlaneGeom[
     z=0.0, friction=0.9, conaffinity=1, size_x=20.0, size_y=20.0
 ]
 
-# Geom 1: Torso capsule (body 0) — conaffinity=1 (self-collision enabled, matches MuJoCo)
+# Geom 1: Torso capsule (body 0) — at body origin, no local transform
 comptime HopperTorsoGeom = BodyCapsuleGeom[
     body_idx=0, radius=0.05, half_length=0.2, color = Color3D(60, 120, 200)
 ]
 
-# Geom 2: Thigh capsule (body 1)
+# Geom 2: Thigh capsule (body 1) — MuJoCo geom_pos=(0, 0, -0.225)
 comptime HopperThighGeom = BodyCapsuleGeom[
-    body_idx=1, radius=0.05, half_length=0.225, color = Color3D(80, 200, 80)
+    body_idx=1, radius=0.05, half_length=0.225,
+    pos_z= -0.225,
+    color = Color3D(80, 200, 80),
 ]
 
-# Geom 3: Leg capsule (body 2)
+# Geom 3: Leg capsule (body 2) — at body origin
 comptime HopperLegGeom = BodyCapsuleGeom[
     body_idx=2, radius=0.04, half_length=0.25, color = Color3D(220, 140, 60)
 ]
 
-# Geom 4: Foot capsule (body 3) — has local 90deg Y rotation
+# Geom 4: Foot capsule (body 3) — MuJoCo geom_pos=(-0.065, 0, 0.1), 90deg Y rotation
 comptime HopperFootGeom = BodyCapsuleGeom[
     body_idx=3,
     radius=0.06,
     half_length=0.195,
-    quat_y=_Q90Y_Y,
-    quat_w=_Q90Y_W,
+    pos_x= -0.065,
+    pos_z=0.1,
+    quat_y= -0.707107,
+    quat_w=0.707107,
     color = Color3D(220, 80, 80),
 ]
 
@@ -410,10 +439,10 @@ comptime FOOT_RADIUS: Float64 = 0.06
 comptime FOOT_HALF_LENGTH: Float64 = 0.195
 
 # Body mass constants for backward compatibility
-comptime TORSO_MASS: Float64 = 3.53429174
-comptime THIGH_MASS: Float64 = 3.92699082
-comptime LEG_MASS: Float64 = 2.71433605
-comptime FOOT_MASS: Float64 = 5.0893801
+comptime TORSO_MASS: Float64 = 3.665191
+comptime THIGH_MASS: Float64 = 4.057891
+comptime LEG_MASS: Float64 = 2.781357
+comptime FOOT_MASS: Float64 = 5.315575
 
 # Dimension constants for backward compatibility
 comptime NQ: Int = HopperModel.NQ

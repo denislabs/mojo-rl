@@ -49,10 +49,10 @@ fn _compute_aref[
     var imp = si_dmin + (
         Scalar[DTYPE](3.0) * x * x - Scalar[DTYPE](2.0) * x * x * x
     ) * (si_dmax - si_dmin)
-    # Impedance floor: 0.2 ensures firm contact from first touch
+    # Impedance floor prevents zero-force contacts at surface
     if imp < Scalar[DTYPE](0.2):
         imp = Scalar[DTYPE](0.2)
-    # aref = K*imp*pen - B*v_n (B term without imp for stronger damping)
+    # aref = K*imp*pen - B*v_n, bias = -aref
     var bias = -K_spring * imp * penetration + B_damp * v_n
     # MuJoCo: AR[i,i] = K + (1-imp)/imp * K = K/imp, so inv = imp/K
     var inv_K = imp / K

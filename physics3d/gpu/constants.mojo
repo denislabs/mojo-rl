@@ -1,16 +1,17 @@
 """Physics3D GPU constants - Flat buffer layout for GPU kernels.
 
-Primary state is qpos/qvel (joint space). Body positions (xpos, xquat)
+Primary state is qpos/qvel (joint space). Body positions (xpos, xquat, xipos)
 are computed via forward kinematics and stored for collision detection.
 
 State buffer layout per environment:
   [qpos: NQ | qvel: NV | qacc: NV | qfrc: NV |
-   xpos: NBODY*3 | xquat: NBODY*4 | xvel: NBODY*3 | xangvel: NBODY*3 |
+   xpos: NBODY*3 | xquat: NBODY*4 | xipos: NBODY*3 |
+   xvel: NBODY*3 | xangvel: NBODY*3 |
    contacts: MAX_CONTACTS*CONTACT_SIZE | metadata: METADATA_SIZE]
 
 Model buffer (static, same for all environments):
-  Per body (MODEL_BODY_SIZE=16): [mass, inv_mass, inertia(3), inv_inertia(3),
-    pos(3), quat(4), parent]
+  Per body (MODEL_BODY_SIZE=23): [mass, inv_mass, inertia(3), inv_inertia(3),
+    pos(3), quat(4), parent, ipos(3), iquat(4)]
   Per joint (MODEL_JOINT_SIZE=18): [type, body_id, qpos_adr, dof_adr,
     pos(3), axis(3), tau_limit, range_min/max, armature, damping, stiffness, springref, frictionloss]
   Metadata (MODEL_META_SIZE=18): [NBODY, NJOINT, gravity(3), timestep, ground_z, friction,
@@ -86,14 +87,19 @@ fn xquat_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
     return NQ + 3 * NV + NBODY * 3
 
 
+fn xipos_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
+    """Offset to xipos array (body CoM world positions)."""
+    return NQ + 3 * NV + NBODY * 3 + NBODY * 4
+
+
 fn xvel_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
     """Offset to xvel array (body world linear velocities)."""
-    return NQ + 3 * NV + NBODY * 3 + NBODY * 4
+    return NQ + 3 * NV + NBODY * 3 + NBODY * 4 + NBODY * 3
 
 
 fn xangvel_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
     """Offset to xangvel array (body world angular velocities)."""
-    return NQ + 3 * NV + NBODY * 3 + NBODY * 4 + NBODY * 3
+    return NQ + 3 * NV + NBODY * 3 + NBODY * 4 + NBODY * 3 + NBODY * 3
 
 
 # =============================================================================
@@ -120,7 +126,7 @@ comptime CONTACT_IDX_FRICTION: Int = 12
 
 fn contacts_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
     """Offset to contacts array."""
-    return NQ + 3 * NV + NBODY * 3 + NBODY * 4 + NBODY * 3 + NBODY * 3
+    return NQ + 3 * NV + NBODY * 3 + NBODY * 4 + NBODY * 3 + NBODY * 3 + NBODY * 3
 
 
 fn contact_offset[NQ: Int, NV: Int, NBODY: Int](contact_idx: Int) -> Int:
@@ -161,6 +167,7 @@ fn state_size[NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int]() -> Int:
         + 3 * NV  # qvel + qacc + qfrc
         + NBODY * 3  # xpos
         + NBODY * 4  # xquat
+        + NBODY * 3  # xipos (CoM world positions)
         + NBODY * 3  # xvel
         + NBODY * 3  # xangvel
         + MAX_CONTACTS * CONTACT_SIZE
@@ -172,7 +179,7 @@ fn state_size[NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int]() -> Int:
 # Model Buffer Layout - Per Body
 # =============================================================================
 
-comptime MODEL_BODY_SIZE: Int = 16
+comptime MODEL_BODY_SIZE: Int = 23
 
 comptime BODY_IDX_MASS: Int = 0
 comptime BODY_IDX_INV_MASS: Int = 1
@@ -190,6 +197,13 @@ comptime BODY_IDX_QUAT_Y: Int = 12
 comptime BODY_IDX_QUAT_Z: Int = 13
 comptime BODY_IDX_QUAT_W: Int = 14
 comptime BODY_IDX_PARENT: Int = 15  # Parent body index (-1 for world)
+comptime BODY_IDX_IPOS_X: Int = 16  # CoM offset from body origin (body frame)
+comptime BODY_IDX_IPOS_Y: Int = 17
+comptime BODY_IDX_IPOS_Z: Int = 18
+comptime BODY_IDX_IQUAT_X: Int = 19  # Inertia frame quaternion (body frame)
+comptime BODY_IDX_IQUAT_Y: Int = 20
+comptime BODY_IDX_IQUAT_Z: Int = 21
+comptime BODY_IDX_IQUAT_W: Int = 22
 
 
 fn model_body_offset(body_idx: Int) -> Int:

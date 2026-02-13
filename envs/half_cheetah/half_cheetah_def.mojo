@@ -45,125 +45,183 @@ from physics3d.gpu.constants import (
 
 
 # =============================================================================
-# Body Type Aliases
+# Body Type Aliases (MuJoCo-matching body frame convention)
 # =============================================================================
+#
+# body_pos = body origin in parent frame (joint position)
+# body_quat = identity for all bodies (no capsule rotation in kinematic chain)
+# body_ipos = CoM offset from body origin in body frame
+# body_iquat = inertia frame orientation in body frame
+# Inertia = MuJoCo values (from inertiafromgeom + settotalmass="14")
+#
+# MuJoCo quaternion order: (w,x,y,z). Our engine: (x,y,z,w).
+# Conversion: mujoco (w,x,y,z) → our (x,y,z,w)
 
 # Shared radius for all capsules
 comptime _R: Float64 = 0.046
 
-# Quaternion constants for body orientations
-comptime _Q90Y_Y: Float64 = 0.70710678  # sin(45deg) for 90deg Y rotation
-comptime _Q90Y_W: Float64 = 0.70710678  # cos(45deg) for 90deg Y rotation
-
-# Body 0: Torso — horizontal capsule (90deg Y rotation)
-# Root of kinematic tree, parent = -1
+# Body 0: Torso — root body, parent = -1
+# MuJoCo body_pos=(0,0,0.7) but we use body_pos=(0,0,0) + rootz init_qpos=0.7
 comptime Torso = CapsuleBody[
     parent= -1,
-    mass=6.25,
+    mass=6.250209,
     name="torso",
     radius=_R,
     half_length=0.5,
-    quat_y=_Q90Y_Y,
-    quat_w=_Q90Y_W,
-    conaffinity=0,  # No self-collision (MuJoCo XML)
+    # body_quat = identity (default)
+    ipos_x=0.152390,
+    ipos_y=0.0,
+    ipos_z=0.025398,
+    # MuJoCo iquat (w,x,y,z) = (0.52243, 0.476516, 0.476516, 0.52243)
+    # Our (x,y,z,w) = (0.476516, 0.476516, 0.52243, 0.52243)
+    iquat_x=0.476516,
+    iquat_y=0.476516,
+    iquat_z=0.522430,
+    iquat_w=0.522430,
+    ixx_override=0.897118,
+    iyy_override=0.885655,
+    izz_override=0.017961,
+    conaffinity=0,
     color = Color3D(204, 153, 102),
 ]
 
-# Body 1: Back Thigh — vertical capsule at back of torso
-# body_pos: (bthigh_half, 0, -torso_half) = (0.145, 0, -0.5)
-# body_quat: -90deg Y to counter-rotate torso
+# Body 1: Back Thigh
+# MuJoCo body_pos = (-0.5, 0, 0) relative to torso
 comptime BThigh = CapsuleBody[
     parent=0,
-    mass=1.54,
+    mass=1.543515,
     name="bthigh",
     radius=_R,
     half_length=0.145,
-    pos_x=0.145,
-    pos_z= -0.5,
-    quat_y= -_Q90Y_Y,
-    quat_w=_Q90Y_W,
+    pos_x= -0.5,
+    # body_quat = identity (default)
+    ipos_x=0.1,
+    ipos_z= -0.13,
+    # MuJoCo iquat (w,x,y,z) = (-0.32329, 0, -0.9463, 0)
+    # Our (x,y,z,w) = (0, -0.9463, 0, -0.32329)
+    iquat_y= -0.946300,
+    iquat_w= -0.323290,
+    ixx_override=0.016844,
+    iyy_override=0.016844,
+    izz_override=0.001576,
     conaffinity=0,
     color = Color3D(204, 153, 102),
 ]
 
-# Body 2: Back Shin — vertical capsule below bthigh
-# body_pos: (0, 0, -(bthigh_half + bshin_half)) = (0, 0, -0.295)
+# Body 2: Back Shin
+# MuJoCo body_pos = (0.16, 0, -0.25) relative to bthigh
 comptime BShin = CapsuleBody[
     parent=1,
-    mass=1.58,
+    mass=1.587448,
     name="bshin",
     radius=_R,
     half_length=0.15,
-    pos_z= -0.295,  # -(0.145 + 0.15)
+    pos_x=0.16,
+    pos_z= -0.25,
+    ipos_x= -0.14,
+    ipos_z= -0.07,
+    # MuJoCo iquat (w,x,y,z) = (0.52762, 0, -0.849481, 0)
+    # Our (x,y,z,w) = (0, -0.849481, 0, 0.52762)
+    iquat_y= -0.849481,
+    iquat_w=0.527620,
+    ixx_override=0.018267,
+    iyy_override=0.018267,
+    izz_override=0.001623,
     conaffinity=0,
     color = Color3D(230, 153, 153),
 ]
 
-# Body 3: Back Foot — horizontal capsule (90deg Y rotation)
-# body_pos: (0, 0, -bshin_half) = (0, 0, -0.15)
+# Body 3: Back Foot
+# MuJoCo body_pos = (-0.28, 0, -0.14) relative to bshin
 comptime BFoot = CapsuleBody[
     parent=2,
-    mass=1.10,
+    mass=1.095397,
     name="bfoot",
     radius=_R,
     half_length=0.094,
-    pos_z= -0.15,
-    quat_y=_Q90Y_Y,
-    quat_w=_Q90Y_W,
+    pos_x= -0.28,
+    pos_z= -0.14,
+    ipos_x=0.03,
+    ipos_z= -0.097,
+    # MuJoCo iquat (w,x,y,z) = (0.990901, 0, -0.13459, 0)
+    # Our (x,y,z,w) = (0, -0.13459, 0, 0.990901)
+    iquat_y= -0.134590,
+    iquat_w=0.990901,
+    ixx_override=0.006352,
+    iyy_override=0.006352,
+    izz_override=0.001102,
     conaffinity=0,
     color = Color3D(230, 153, 153),
 ]
 
-# Body 4: Front Thigh — vertical capsule at front of torso
-# body_pos: (fthigh_half, 0, +torso_half) = (0.133, 0, 0.5)
+# Body 4: Front Thigh
+# MuJoCo body_pos = (0.5, 0, 0) relative to torso
 comptime FThigh = CapsuleBody[
     parent=0,
-    mass=1.43,
+    mass=1.438075,
     name="fthigh",
     radius=_R,
     half_length=0.133,
-    pos_x=0.133,
-    pos_z=0.5,
-    quat_y= -_Q90Y_Y,
-    quat_w=_Q90Y_W,
+    pos_x=0.5,
+    # body_quat = identity (default)
+    ipos_x= -0.07,
+    ipos_z= -0.12,
+    # MuJoCo iquat (w,x,y,z) = (0.96639, 0, 0.257081, 0)
+    # Our (x,y,z,w) = (0, 0.257081, 0, 0.96639)
+    iquat_y=0.257081,
+    iquat_w=0.966390,
+    ixx_override=0.013740,
+    iyy_override=0.013740,
+    izz_override=0.001464,
     conaffinity=0,
     color = Color3D(204, 153, 102),
 ]
 
-# Body 5: Front Shin — vertical capsule below fthigh
-# body_pos: (0, 0, -(fthigh_half + fshin_half)) = (0, 0, -0.239)
+# Body 5: Front Shin
+# MuJoCo body_pos = (-0.14, 0, -0.24) relative to fthigh
 comptime FShin = CapsuleBody[
     parent=4,
-    mass=1.17,
+    mass=1.200837,
     name="fshin",
     radius=_R,
     half_length=0.106,
-    pos_z= -0.239,  # -(0.133 + 0.106)
+    pos_x= -0.14,
+    pos_z= -0.24,
+    ipos_x=0.065,
+    ipos_z= -0.09,
+    # MuJoCo iquat (w,x,y,z) = (0.955336, 0, -0.29552, 0)
+    # Our (x,y,z,w) = (0, -0.29552, 0, 0.955336)
+    iquat_y= -0.295520,
+    iquat_w=0.955336,
+    ixx_override=0.008222,
+    iyy_override=0.008222,
+    izz_override=0.001213,
     conaffinity=0,
     color = Color3D(230, 153, 153),
 ]
 
-# Body 6: Front Foot — horizontal capsule (90deg Y rotation)
-# body_pos: (0, 0, -fshin_half) = (0, 0, -0.106)
+# Body 6: Front Foot
+# MuJoCo body_pos = (0.13, 0, -0.18) relative to fshin
 comptime FFoot = CapsuleBody[
     parent=5,
-    mass=0.93,
+    mass=0.884519,
     name="ffoot",
     radius=_R,
     half_length=0.07,
-    pos_z= -0.106,
-    quat_y=_Q90Y_Y,
-    quat_w=_Q90Y_W,
+    pos_x=0.13,
+    pos_z= -0.18,
+    ipos_x=0.045,
+    ipos_z= -0.07,
+    # MuJoCo iquat (w,x,y,z) = (0.955336, 0, -0.29552, 0)
+    # Our (x,y,z,w) = (0, -0.29552, 0, 0.955336)
+    iquat_y= -0.295520,
+    iquat_w=0.955336,
+    ixx_override=0.003529,
+    iyy_override=0.003529,
+    izz_override=0.000879,
     conaffinity=0,
     color = Color3D(230, 153, 153),
 ]
-
-# Body 7 (Head) removed — now a geom attached to torso (body 0)
-# See HeadGeom below in the Geoms section.
-
-# Head geometry constants (used by HeadGeom)
-comptime _HEAD_SIN_HALF: Float64 = -0.34290  # sin((0.87 - pi/2) / 2)
-comptime _HEAD_COS_HALF: Float64 = 0.93937  # cos((0.87 - pi/2) / 2)
 
 
 # =============================================================================
@@ -199,10 +257,10 @@ comptime RootY = HingeJoint[
 ]
 
 # Joint 3: bthigh — Back thigh hinge (body 1)
-# Joint pos in torso frame: (0, 0, -torso_half) = (0, 0, -0.5)
+# MuJoCo joint pos = (0, 0, 0) — joint at body origin
 comptime BThighJ = HingeJoint[
     body_idx=1,
-    pos_z= -0.5,
+    # pos = (0,0,0) default — joint at body origin
     tau_limit=120.0,
     range_min= -0.52,
     range_max=1.05,
@@ -211,10 +269,8 @@ comptime BThighJ = HingeJoint[
 ]
 
 # Joint 4: bshin — Back shin hinge (body 2)
-# Joint pos in bthigh frame: (0, 0, -bthigh_half) = (0, 0, -0.145)
 comptime BShinJ = HingeJoint[
     body_idx=2,
-    pos_z= -0.145,
     tau_limit=90.0,
     range_min= -0.785,
     range_max=0.785,
@@ -223,10 +279,8 @@ comptime BShinJ = HingeJoint[
 ]
 
 # Joint 5: bfoot — Back foot hinge (body 3)
-# Joint pos in bshin frame: (0, 0, -bshin_half) = (0, 0, -0.15)
 comptime BFootJ = HingeJoint[
     body_idx=3,
-    pos_z= -0.15,
     tau_limit=60.0,
     range_min= -0.4,
     range_max=0.785,
@@ -235,10 +289,8 @@ comptime BFootJ = HingeJoint[
 ]
 
 # Joint 6: fthigh — Front thigh hinge (body 4)
-# Joint pos in torso frame: (0, 0, +torso_half) = (0, 0, 0.5)
 comptime FThighJ = HingeJoint[
     body_idx=4,
-    pos_z=0.5,
     tau_limit=120.0,
     range_min= -1.0,
     range_max=0.7,
@@ -247,10 +299,8 @@ comptime FThighJ = HingeJoint[
 ]
 
 # Joint 7: fshin — Front shin hinge (body 5)
-# Joint pos in fthigh frame: (0, 0, -fthigh_half) = (0, 0, -0.133)
 comptime FShinJ = HingeJoint[
     body_idx=5,
-    pos_z= -0.133,
     tau_limit=60.0,
     range_min= -1.2,
     range_max=0.87,
@@ -259,10 +309,8 @@ comptime FShinJ = HingeJoint[
 ]
 
 # Joint 8: ffoot — Front foot hinge (body 6)
-# Joint pos in fshin frame: (0, 0, -fshin_half) = (0, 0, -0.106)
 comptime FFootJ = HingeJoint[
     body_idx=6,
-    pos_z= -0.106,
     tau_limit=30.0,
     range_min= -0.5,
     range_max=0.5,
@@ -295,11 +343,16 @@ comptime GroundGeom = PlaneGeom[
     z=0.0, friction=0.4, conaffinity=1, size_x=40.0, size_y=40.0
 ]
 
-# Body-centered capsule geoms (identity local offset — body FK provides world transform)
+# Body capsule geoms with local pos/quat from MuJoCo
+# (body frames are now identity-oriented, so geoms need their own transforms)
+# MuJoCo geom quat is (w,x,y,z), our engine uses (x,y,z,w)
 comptime TorsoGeom = BodyCapsuleGeom[
     body_idx=0,
     radius=_R,
     half_length=0.5,
+    # MuJoCo geom pos=(0,0,0), quat=(0.707107, 0, -0.707107, 0) → 90°Y rotation
+    quat_y= -0.707107,
+    quat_w=0.707107,
     conaffinity=0,
     color = Color3D(204, 153, 102),
 ]
@@ -307,6 +360,11 @@ comptime BThighGeom = BodyCapsuleGeom[
     body_idx=1,
     radius=_R,
     half_length=0.145,
+    pos_x=0.1,
+    pos_z= -0.13,
+    # MuJoCo quat (w,x,y,z) = (-0.32329, 0, -0.9463, 0)
+    quat_y= -0.946300,
+    quat_w= -0.323290,
     conaffinity=0,
     color = Color3D(204, 153, 102),
 ]
@@ -314,6 +372,11 @@ comptime BShinGeom = BodyCapsuleGeom[
     body_idx=2,
     radius=_R,
     half_length=0.15,
+    pos_x= -0.14,
+    pos_z= -0.07,
+    # MuJoCo quat (w,x,y,z) = (0.52762, 0, -0.849481, 0)
+    quat_y= -0.849481,
+    quat_w=0.527620,
     conaffinity=0,
     color = Color3D(230, 153, 153),
 ]
@@ -321,6 +384,11 @@ comptime BFootGeom = BodyCapsuleGeom[
     body_idx=3,
     radius=_R,
     half_length=0.094,
+    pos_x=0.03,
+    pos_z= -0.097,
+    # MuJoCo quat (w,x,y,z) = (0.990901, 0, -0.13459, 0)
+    quat_y= -0.134590,
+    quat_w=0.990901,
     conaffinity=0,
     color = Color3D(230, 153, 153),
 ]
@@ -328,6 +396,11 @@ comptime FThighGeom = BodyCapsuleGeom[
     body_idx=4,
     radius=_R,
     half_length=0.133,
+    pos_x= -0.07,
+    pos_z= -0.12,
+    # MuJoCo quat (w,x,y,z) = (0.96639, 0, 0.257081, 0)
+    quat_y=0.257081,
+    quat_w=0.966390,
     conaffinity=0,
     color = Color3D(204, 153, 102),
 ]
@@ -335,6 +408,11 @@ comptime FShinGeom = BodyCapsuleGeom[
     body_idx=5,
     radius=_R,
     half_length=0.106,
+    pos_x=0.065,
+    pos_z= -0.09,
+    # MuJoCo quat (w,x,y,z) = (0.955336, 0, -0.29552, 0)
+    quat_y= -0.295520,
+    quat_w=0.955336,
     conaffinity=0,
     color = Color3D(230, 153, 153),
 ]
@@ -342,20 +420,26 @@ comptime FFootGeom = BodyCapsuleGeom[
     body_idx=6,
     radius=_R,
     half_length=0.07,
+    pos_x=0.045,
+    pos_z= -0.07,
+    # MuJoCo quat (w,x,y,z) = (0.955336, 0, -0.29552, 0)
+    quat_y= -0.295520,
+    quat_w=0.955336,
     conaffinity=0,
     color = Color3D(230, 153, 153),
 ]
 
 # Head geom — attached to torso (body 0) with local offset
-# Position in torso frame: (-0.1, 0, 0.6), orientation: tilted ~0.87 rad about Y
+# MuJoCo: pos=(0.6, 0, 0.1), quat=(0.90687, 0, 0.42141, 0)
 comptime HeadGeom = BodyCapsuleGeom[
     body_idx=0,
     radius=_R,
     half_length=0.15,
-    pos_x= -0.1,
-    pos_z=0.6,
-    quat_y=_HEAD_SIN_HALF,
-    quat_w=_HEAD_COS_HALF,
+    pos_x=0.6,
+    pos_z=0.1,
+    # MuJoCo quat (w,x,y,z) = (0.90687, 0, 0.42141, 0) → our (0, 0.42141, 0, 0.90687)
+    quat_y=0.421410,
+    quat_w=0.906870,
     conaffinity=0,
     color = Color3D(204, 153, 102),
 ]

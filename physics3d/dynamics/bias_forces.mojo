@@ -15,10 +15,11 @@ from layout import LayoutTensor, Layout
 
 from ..types import Model, Data, _max_one
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
-from ..kinematics.quat_math import quat_rotate, gpu_quat_rotate
+from ..kinematics.quat_math import quat_rotate, quat_mul, gpu_quat_rotate, gpu_quat_mul
 from ..gpu.constants import (
     xpos_offset,
     xquat_offset,
+    xipos_offset,
     xvel_offset,
     xangvel_offset,
     qvel_offset,
@@ -32,6 +33,10 @@ from ..gpu.constants import (
     BODY_IDX_IXX,
     BODY_IDX_IYY,
     BODY_IDX_IZZ,
+    BODY_IDX_IQUAT_X,
+    BODY_IDX_IQUAT_Y,
+    BODY_IDX_IQUAT_Z,
+    BODY_IDX_IQUAT_W,
     JOINT_IDX_TYPE,
     JOINT_IDX_BODY_ID,
     JOINT_IDX_DOF_ADR,
@@ -191,10 +196,10 @@ fn compute_bias_forces[
             # Compute gravitational torque from body and all descendants
             var tau_gravity = Scalar[DTYPE](0)
 
-            # Body contribution
-            var body_px = data.xpos[body * 3 + 0]
-            var body_py = data.xpos[body * 3 + 1]
-            var body_pz = data.xpos[body * 3 + 2]
+            # Body contribution (use xipos = CoM world position)
+            var body_px = data.xipos[body * 3 + 0]
+            var body_py = data.xipos[body * 3 + 1]
+            var body_pz = data.xipos[body * 3 + 2]
             var mass = model.body_mass[body]
 
             # Vector from joint to body CoM
@@ -220,9 +225,9 @@ fn compute_bias_forces[
             # Add contributions from descendant bodies
             for desc_body in range(body + 1, NBODY):
                 if _is_descendant(model, desc_body, body):
-                    var desc_px = data.xpos[desc_body * 3 + 0]
-                    var desc_py = data.xpos[desc_body * 3 + 1]
-                    var desc_pz = data.xpos[desc_body * 3 + 2]
+                    var desc_px = data.xipos[desc_body * 3 + 0]
+                    var desc_py = data.xipos[desc_body * 3 + 1]
+                    var desc_pz = data.xipos[desc_body * 3 + 2]
                     var desc_mass = model.body_mass[desc_body]
 
                     var desc_r_x = desc_px - jpos_world_x
@@ -522,15 +527,16 @@ fn compute_bias_forces_gpu[
             # Compute gravitational torque from body and all descendants (matching CPU)
             var tau_gravity: Scalar[DTYPE] = 0
 
-            # Body contribution
+            # Body contribution (use xipos = CoM world position)
+            var xipos_off = xipos_offset[NQ, NV, NBODY]()
             var body_px = rebind[Scalar[DTYPE]](
-                state[env, xpos_off + body_id * 3 + 0]
+                state[env, xipos_off + body_id * 3 + 0]
             )
             var body_py = rebind[Scalar[DTYPE]](
-                state[env, xpos_off + body_id * 3 + 1]
+                state[env, xipos_off + body_id * 3 + 1]
             )
             var body_pz = rebind[Scalar[DTYPE]](
-                state[env, xpos_off + body_id * 3 + 2]
+                state[env, xipos_off + body_id * 3 + 2]
             )
 
             var rx = body_px - jpos_world_x
@@ -560,13 +566,13 @@ fn compute_bias_forces_gpu[
                     )
 
                     var desc_px = rebind[Scalar[DTYPE]](
-                        state[env, xpos_off + desc_body * 3 + 0]
+                        state[env, xipos_off + desc_body * 3 + 0]
                     )
                     var desc_py = rebind[Scalar[DTYPE]](
-                        state[env, xpos_off + desc_body * 3 + 1]
+                        state[env, xipos_off + desc_body * 3 + 1]
                     )
                     var desc_pz = rebind[Scalar[DTYPE]](
-                        state[env, xpos_off + desc_body * 3 + 2]
+                        state[env, xipos_off + desc_body * 3 + 2]
                     )
 
                     var desc_rx = desc_px - jpos_world_x
@@ -717,10 +723,20 @@ fn compute_bias_forces_rne[
         var Iyy_local = model.body_inertia[b * 3 + 1]
         var Izz_local = model.body_inertia[b * 3 + 2]
 
-        var qx = data.xquat[b * 4 + 0]
-        var qy = data.xquat[b * 4 + 1]
-        var qz = data.xquat[b * 4 + 2]
-        var qw = data.xquat[b * 4 + 3]
+        # Compose xquat with body_iquat for inertia rotation
+        var bqx = data.xquat[b * 4 + 0]
+        var bqy = data.xquat[b * 4 + 1]
+        var bqz = data.xquat[b * 4 + 2]
+        var bqw = data.xquat[b * 4 + 3]
+        var iqx = model.body_iquat[b * 4 + 0]
+        var iqy = model.body_iquat[b * 4 + 1]
+        var iqz = model.body_iquat[b * 4 + 2]
+        var iqw = model.body_iquat[b * 4 + 3]
+        var iq = quat_mul(bqx, bqy, bqz, bqw, iqx, iqy, iqz, iqw)
+        var qx = iq[0]
+        var qy = iq[1]
+        var qz = iq[2]
+        var qw = iq[3]
 
         # Rotation matrix from quaternion
         var r00 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qy * qy + qz * qz)
@@ -930,9 +946,9 @@ fn compute_bias_forces_rne[
             continue
 
         # Offset from parent CoM to child CoM
-        var rx = data.xpos[b * 3 + 0] - data.xpos[parent * 3 + 0]
-        var ry = data.xpos[b * 3 + 1] - data.xpos[parent * 3 + 1]
-        var rz = data.xpos[b * 3 + 2] - data.xpos[parent * 3 + 2]
+        var rx = data.xipos[b * 3 + 0] - data.xipos[parent * 3 + 0]
+        var ry = data.xipos[b * 3 + 1] - data.xipos[parent * 3 + 1]
+        var rz = data.xipos[b * 3 + 2] - data.xipos[parent * 3 + 2]
 
         # Child force wrench
         var child_tau_x = cfrc[b * 6 + 0]
@@ -1066,10 +1082,20 @@ fn compute_bias_forces_rne_gpu[
         var Iyy_local = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IYY])
         var Izz_local = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IZZ])
 
-        var qx = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 0])
-        var qy = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 1])
-        var qz = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 2])
-        var qw = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 3])
+        # Compose xquat with body_iquat for inertia rotation
+        var bqx = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 0])
+        var bqy = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 1])
+        var bqz = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 2])
+        var bqw = rebind[Scalar[DTYPE]](state[env, xquat_off + b * 4 + 3])
+        var iqx = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IQUAT_X])
+        var iqy = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IQUAT_Y])
+        var iqz = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IQUAT_Z])
+        var iqw = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IQUAT_W])
+        var iq = gpu_quat_mul(bqx, bqy, bqz, bqw, iqx, iqy, iqz, iqw)
+        var qx = iq[0]
+        var qy = iq[1]
+        var qz = iq[2]
+        var qw = iq[3]
 
         # Rotation matrix from quaternion
         var r00 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qy * qy + qz * qz)
@@ -1293,16 +1319,17 @@ fn compute_bias_forces_rne_gpu[
         if parent < 0:
             continue
 
-        # Offset from parent CoM to child CoM
+        # Offset from parent CoM to child CoM (use xipos)
+        var xipos_off = xipos_offset[NQ, NV, NBODY]()
         var rx = rebind[Scalar[DTYPE]](
-            state[env, xpos_off + b * 3 + 0]
-        ) - rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 0])
+            state[env, xipos_off + b * 3 + 0]
+        ) - rebind[Scalar[DTYPE]](state[env, xipos_off + parent * 3 + 0])
         var ry = rebind[Scalar[DTYPE]](
-            state[env, xpos_off + b * 3 + 1]
-        ) - rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 1])
+            state[env, xipos_off + b * 3 + 1]
+        ) - rebind[Scalar[DTYPE]](state[env, xipos_off + parent * 3 + 1])
         var rz = rebind[Scalar[DTYPE]](
-            state[env, xpos_off + b * 3 + 2]
-        ) - rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 2])
+            state[env, xipos_off + b * 3 + 2]
+        ) - rebind[Scalar[DTYPE]](state[env, xipos_off + parent * 3 + 2])
 
         var child_tau_x = cfrc[b * 6 + 0]
         var child_tau_y = cfrc[b * 6 + 1]

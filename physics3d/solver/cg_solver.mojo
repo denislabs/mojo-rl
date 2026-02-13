@@ -300,40 +300,13 @@ struct CGSolver(ConstraintSolver):
                     )
 
         # =====================================================================
-        # Phase 2b: PGS joint limit iterations
+        # Phase 3: Coupled PGS (normals + friction + limits together)
+        # MuJoCo-style: iterate over ALL constraints in each pass.
         # =====================================================================
-        if num_limits > 0:
-            for _ in range(CG_ITERATIONS):
-                for r_off in range(num_limits):
-                    var r = limits_start + r_off
-                    var dof = constraints.rows[r].source_dof
-                    var sign = constraints.rows[r].limit_sign
-                    var a_limit = sign * qacc[dof]
-
-                    # MuJoCo regularizer: R = K/imp - K
-                    var R_lim = Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp - constraints.rows[r].K
-                    var residual = a_limit + constraints.rows[r].bias + R_lim * constraints.rows[r].lambda_val
-                    var delta = -residual * constraints.rows[r].inv_K_imp
-                    var old_lambda = constraints.rows[r].lambda_val
-                    constraints.rows[r].lambda_val = (
-                        constraints.rows[r].lambda_val + delta
-                    )
-
-                    if constraints.rows[r].lambda_val < Scalar[DTYPE](0):
-                        constraints.rows[r].lambda_val = Scalar[DTYPE](0)
-
-                    var actual = constraints.rows[r].lambda_val - old_lambda
-
-                    for i in range(NV):
-                        qacc[i] += constraints.MinvJT[r * NV + i] * actual
-
-        # =====================================================================
-        # Phase 3: Friction PGS with Coulomb cone
-        # =====================================================================
-        if num_friction == 0:
+        if num_friction == 0 and num_limits == 0:
             return
 
-        # Apply friction warm-start (skip degenerate tangent rows)
+        # Apply friction warm-start before coupled iterations
         for r_off in range(num_friction):
             var r = friction_start + r_off
             if constraints.rows[r].K < Scalar[DTYPE](FRICTION_K_MIN):
@@ -346,8 +319,25 @@ struct CGSolver(ConstraintSolver):
                         * constraints.rows[r].lambda_val
                     )
 
-        # Friction PGS iterations (t1 and t2 are consecutive pairs)
+        # Coupled PGS iterations
         for _ in range(CG_ITERATIONS):
+            # --- Normal constraints ---
+            for r in range(num_normals):
+                var a: Scalar[DTYPE] = 0
+                for i in range(NV):
+                    a += constraints.J[r * NV + i] * qacc[i]
+                var R = Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp - constraints.rows[r].K
+                var residual = a + constraints.rows[r].bias + R * constraints.rows[r].lambda_val
+                var delta = -residual * constraints.rows[r].inv_K_imp
+                var old_lambda = constraints.rows[r].lambda_val
+                constraints.rows[r].lambda_val = constraints.rows[r].lambda_val + delta
+                if constraints.rows[r].lambda_val < Scalar[DTYPE](0):
+                    constraints.rows[r].lambda_val = Scalar[DTYPE](0)
+                var actual = constraints.rows[r].lambda_val - old_lambda
+                for i in range(NV):
+                    qacc[i] += constraints.MinvJT[r * NV + i] * actual
+
+            # --- Friction constraints (paired t1/t2 with Coulomb cone) ---
             var pair_idx = 0
             while pair_idx < num_friction:
                 var r_t1 = friction_start + pair_idx
@@ -362,29 +352,19 @@ struct CGSolver(ConstraintSolver):
 
                 var max_friction = mu * lambda_n
 
-                # Tangent 1 — skip if degenerate
-                var a_t1: Scalar[DTYPE] = 0
-                var delta_t1: Scalar[DTYPE] = 0
                 var old_t1 = constraints.rows[r_t1].lambda_val
                 if constraints.rows[r_t1].K >= Scalar[DTYPE](FRICTION_K_MIN):
+                    var a_t1: Scalar[DTYPE] = 0
                     for i in range(NV):
                         a_t1 += constraints.J[r_t1 * NV + i] * qacc[i]
-                    delta_t1 = -a_t1 / constraints.rows[r_t1].K
-                    constraints.rows[r_t1].lambda_val = (
-                        constraints.rows[r_t1].lambda_val + delta_t1
-                    )
+                    constraints.rows[r_t1].lambda_val = old_t1 - a_t1 / constraints.rows[r_t1].K
 
-                # Tangent 2 — skip if degenerate
-                var a_t2: Scalar[DTYPE] = 0
-                var delta_t2: Scalar[DTYPE] = 0
                 var old_t2 = constraints.rows[r_t2].lambda_val
                 if constraints.rows[r_t2].K >= Scalar[DTYPE](FRICTION_K_MIN):
+                    var a_t2: Scalar[DTYPE] = 0
                     for i in range(NV):
                         a_t2 += constraints.J[r_t2 * NV + i] * qacc[i]
-                    delta_t2 = -a_t2 / constraints.rows[r_t2].K
-                    constraints.rows[r_t2].lambda_val = (
-                        constraints.rows[r_t2].lambda_val + delta_t2
-                    )
+                    constraints.rows[r_t2].lambda_val = old_t2 - a_t2 / constraints.rows[r_t2].K
 
                 # Coulomb cone clamping
                 var t_mag = sqrt(
@@ -395,12 +375,8 @@ struct CGSolver(ConstraintSolver):
                 )
                 if t_mag > max_friction:
                     var scale = max_friction / t_mag
-                    constraints.rows[r_t1].lambda_val = (
-                        constraints.rows[r_t1].lambda_val * scale
-                    )
-                    constraints.rows[r_t2].lambda_val = (
-                        constraints.rows[r_t2].lambda_val * scale
-                    )
+                    constraints.rows[r_t1].lambda_val = constraints.rows[r_t1].lambda_val * scale
+                    constraints.rows[r_t2].lambda_val = constraints.rows[r_t2].lambda_val * scale
 
                 var actual_t1 = constraints.rows[r_t1].lambda_val - old_t1
                 var actual_t2 = constraints.rows[r_t2].lambda_val - old_t2
@@ -412,6 +388,23 @@ struct CGSolver(ConstraintSolver):
                     )
 
                 pair_idx += 2
+
+            # --- Joint limit constraints ---
+            for r_off in range(num_limits):
+                var r = limits_start + r_off
+                var dof = constraints.rows[r].source_dof
+                var sign = constraints.rows[r].limit_sign
+                var a_limit = sign * qacc[dof]
+                var R_lim = Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp - constraints.rows[r].K
+                var residual = a_limit + constraints.rows[r].bias + R_lim * constraints.rows[r].lambda_val
+                var delta = -residual * constraints.rows[r].inv_K_imp
+                var old_lambda = constraints.rows[r].lambda_val
+                constraints.rows[r].lambda_val = constraints.rows[r].lambda_val + delta
+                if constraints.rows[r].lambda_val < Scalar[DTYPE](0):
+                    constraints.rows[r].lambda_val = Scalar[DTYPE](0)
+                var actual = constraints.rows[r].lambda_val - old_lambda
+                for i in range(NV):
+                    qacc[i] += constraints.MinvJT[r * NV + i] * actual
 
     @staticmethod
     @always_inline

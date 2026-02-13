@@ -109,6 +109,22 @@ struct Bodies[*B: BodySpec]:
                 ),
             )
 
+            # CoM offset and inertia frame
+            model.set_body_ipos_iquat(
+                i,
+                ipos=(
+                    Scalar[DTYPE](B.IPOS_X),
+                    Scalar[DTYPE](B.IPOS_Y),
+                    Scalar[DTYPE](B.IPOS_Z),
+                ),
+                iquat=(
+                    Scalar[DTYPE](B.IQUAT_X),
+                    Scalar[DTYPE](B.IQUAT_Y),
+                    Scalar[DTYPE](B.IQUAT_Z),
+                    Scalar[DTYPE](B.IQUAT_W),
+                ),
+            )
+
 
 # =============================================================================
 # Joints — variadic joint list with sum helpers
