@@ -17,5 +17,6 @@ from .geom_spec import (
     BodySphereGeom,
     BodyBoxGeom,
 )
-from .model_def import Bodies, Joints, Geoms, ModelDef
+from .equality_spec import EqualitySpec, ConnectConstraint, WeldConstraint
+from .model_def import Bodies, Joints, Geoms, Equalities, ModelDef
 from .model_renderer import ModelRenderer

@@ -32,7 +32,7 @@ Reference material:
 - [Phase 3: Constraint System](#phase-3-constraint-system)
   - [3.1 Unified Constraint Representation](#31-unified-constraint-representation)
   - [3.2 Friction Cone Models (pyramidal + elliptic) — DONE](#32-friction-cone-models-pyramidal--elliptic--done)
-  - [3.3 Equality Constraints (weld + connect)](#33-equality-constraints-weld--connect)
+  - [3.3 Equality Constraints (weld + connect) — DONE](#33-equality-constraints-weld--connect--done)
   - [3.4 Per-Contact Solver Parameters (solref/solimp)](#34-per-contact-solver-parameters-solrefsolimp)
 - [Phase 4: Collision Pipeline](#phase-4-collision-pipeline)
   - [4.1 Broadphase Collision (bounding sphere) — DONE](#41-broadphase-collision-bounding-sphere--done)
@@ -78,6 +78,7 @@ Reference material:
 - **Constraint solver parameters**: per-model solref/solimp for contacts and joint limits (Phase 3.4 DONE)
 - **Unified constraint representation**: ConstraintData/ConstraintRow structs with single builder (Phase 3.1 DONE)
 - **Friction cone models**: Pyramidal + elliptic cones with condim 1/3/4/6, QCQP solver, torsional/rolling friction, CPU + GPU (Phase 3.2 DONE)
+- **Equality constraints**: Connect (3-row ball joint) and weld (6-row rigid attachment) constraints with bilateral PGS, MuJoCo impedance, CPU + GPU (Phase 3.3 DONE)
 
 ### What We're Missing (by impact)
 
@@ -95,7 +96,7 @@ Reference material:
 | No RK4 integrator | Medium - energy conservation | 2 |
 | ~~No unified constraint rows~~ | ~~Medium~~ | ~~3~~ DONE |
 | ~~Simple Coulomb friction only~~ | ~~Medium~~ | ~~3~~ DONE |
-| No equality constraints | Medium - can't model welds/connects | 3 |
+| ~~No equality constraints~~ | ~~Medium - can't model welds/connects~~ | ~~3~~ DONE |
 | ~~No per-contact solref/solimp~~ | ~~Low~~ | ~~3~~ DONE |
 | ~~No broadphase~~ | ~~Low - performance for many bodies~~ | ~~4~~ DONE |
 | ~~No warmstart~~ | ~~Low~~ | ~~5~~ DONE |
@@ -1157,57 +1158,58 @@ elliptic cone with condim=3 (matching previous behavior).
 
 ---
 
-### 3.3 Equality Constraints (weld + connect)
+### 3.3 Equality Constraints (weld + connect) — DONE
 
-**Problem**: We cannot model fixed attachments between bodies or ball-joint connections
-that aren't part of the kinematic tree. MuJoCo's equality constraints allow welding
-two bodies together or connecting them at a point.
+**Status**: COMPLETE. Both connect (ball joint, 3 rows) and weld (rigid attachment, 6 rows)
+equality constraints implemented with bilateral PGS solving, MuJoCo impedance model,
+and full CPU + GPU support. Backward compatible: `MAX_EQUALITY` defaults to 0.
 
-**Files to create**:
-- `constraint/equality_constraints.mojo` (NEW)
+**Two constraint types**:
+- **Connect** (3 rows): Position-only ball joint. Error = `world_anchor_a - world_anchor_b`. Bilateral (`lo=-inf, hi=+inf`).
+- **Weld** (6 rows): Rigid attachment. 3 position rows + 3 orientation rows. Orientation error = `0.5 * imag(conj(quat_b) * quat_a * relpose)`. Bilateral.
 
-#### Connect Constraint (ball joint)
+**Implementation**:
+- `EqualityConstraintDef` struct on Model with per-constraint `solref`/`solimp`
+- `EqualitySpec` trait + `ConnectConstraint`/`WeldConstraint` compile-time specs
+- `Equalities` variadic container in `ModelDef` (mirrors `Bodies`/`Joints`/`Geoms` pattern)
+- `MAX_EQUALITY` parameter threaded through Model, integrators, solvers, and GPU paths
+- `MAX_ROWS` formula updated: `11 * MAX_CONTACTS + 2 * NJOINT + 6 * MAX_EQUALITY`
 
-MuJoCo reference: `engine_core_constraint.c` lines 428-457.
+**CPU implementation** (`constraint_builder.mojo`):
+- Phase 4 in builder: computes world anchors, position Jacobians (reuses `compute_contact_jacobian_row`),
+  angular Jacobians (reuses torsional friction pattern), MuJoCo impedance with smoothstep
+- Bilateral sign handling: `bias = -K*imp*pen + B*v_n`, flipped when error is negative
+- All 3 solvers (PGS, CG, Newton): bilateral PGS iteration block after limits (no `lambda >= 0` clamping)
 
-```
-Position error (3D): e = world_pos(body_a, anchor_a) - world_pos(body_b, anchor_b)
-Jacobian (3 x NV): J = J_pos(body_a, anchor_a) - J_pos(body_b, anchor_b)
-Constraint: e = 0 (equality, bounds = [-inf, +inf])
-```
+**GPU implementation** (`constraint_builder_gpu.mojo`):
+- `build_and_solve_equality_gpu()`: self-contained function (like `detect_and_solve_limits_gpu`)
+- Reads equality defs from GPU model buffer, computes world anchors, builds J + MinvJ, runs bilateral PGS
+- InlineArray-based (no workspace allocation needed — equality count is small)
+- Called from all 3 GPU solvers after limits, before friction
 
-This creates 3 constraint rows.
+**GPU buffer layout**:
+- `MODEL_EQ_SIZE = 18` floats per constraint (type, body_a, body_b, anchor_a xyz, anchor_b xyz, relpose xyzw, solref 2, solimp 3)
+- `MODEL_META_IDX_NEQUALITY = 20` in model metadata
+- `model_size` includes `+ NEQUALITY * MODEL_EQ_SIZE`
 
-#### Weld Constraint (fixed attachment)
+**Files created**:
+- `model/equality_spec.mojo` — `EqualitySpec` trait, `ConnectConstraint`, `WeldConstraint` structs
 
-MuJoCo reference: `engine_core_constraint.c` lines 459-533.
-
-```
-Position error (3D): e_pos = world_pos(body_a, anchor_a) - world_pos(body_b, anchor_b)
-Orientation error (3D): e_rot = 0.5 * imag(inv(quat_b) * quat_a * relpose)
-
-Jacobian position (3 x NV): J_pos = J_pos(body_a) - J_pos(body_b)
-Jacobian rotation (3 x NV): J_rot = 0.5 * corrected_quaternion_jacobian
-
-Constraint: [e_pos; e_rot] = 0 (6D equality)
-```
-
-This creates 6 constraint rows.
-
-#### Data Structure
-
-Add to `Model`:
-```mojo
-struct EqualityConstraint[DTYPE: DType]:
-    var type: Int          # EQ_CONNECT or EQ_WELD
-    var body_a: Int
-    var body_b: Int
-    var anchor_a: SIMD[DTYPE, 4]  # local anchor on body_a
-    var anchor_b: SIMD[DTYPE, 4]  # local anchor on body_b
-    var relpose: SIMD[DTYPE, 4]   # relative quaternion (for weld)
-    var solref: SIMD[DTYPE, 2]    # solver reference parameters
-    var solimp: SIMD[DTYPE, 4]    # solver impedance parameters
-```
+**Files modified**:
+- `types.mojo` — `EqualityConstraintDef`, `EQ_CONNECT`/`EQ_WELD` constants, `MAX_EQUALITY` param on Model
+- `model/model_def.mojo` — `Equalities` variadic container, `ModelDef` update
+- `constraints/constraint_data.mojo` — `CNSTR_EQUALITY_CONNECT=8`, `CNSTR_EQUALITY_WELD=9`, `num_equality`
+- `constraints/constraint_builder.mojo` — Phase 4: build equality rows (CPU)
+- `constraints/constraint_builder_gpu.mojo` — `build_and_solve_equality_gpu()` (GPU)
+- `solver/pgs_solver.mojo` — CPU: bilateral PGS block; GPU: call `build_and_solve_equality_gpu`
+- `solver/cg_solver.mojo` — Same pattern
+- `solver/newton_solver.mojo` — Same pattern
+- `integrator/euler_integrator.mojo` — `MAX_ROWS` formula, `MAX_EQUALITY` in `step`/`simulate`/`step_gpu`
+- `integrator/implicit_fast_integrator.mojo` — Same
+- `traits/solver.mojo` — `NGEOM`/`MAX_EQUALITY` on `solve_gpu`
+- `traits/integrator.mojo` — `MAX_EQUALITY` on `step_gpu`
+- `gpu/constants.mojo` — `MODEL_EQ_SIZE`, `EQ_IDX_*` constants, `MODEL_META_IDX_NEQUALITY`, `model_equality_offset`, `model_size` update
+- `gpu/buffer_utils.mojo` — `copy_equality_to_buffer()`, `NEQUALITY` param on `create_model_buffer`
 
 ---
 
@@ -1469,7 +1471,7 @@ Sprint 4 (Polish):
   4.1 Broadphase (spheres)      DONE (bounding sphere pre-filter, CPU + GPU)
 
 Sprint 5 (Advanced):
-  3.3 Equality constraints      <- weld/connect
+  3.3 Equality constraints      DONE (connect + weld, bilateral PGS, MuJoCo impedance, CPU + GPU)
   2.3 RK4 integrator            <- energy conservation option
   2.2 Implicit integrator       <- gyroscopic stability
   5.2 Solver islands            <- multi-agent parallelism

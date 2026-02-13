@@ -113,7 +113,28 @@ from .constants import (
     GEOM_IDX_RBOUND,
     MODEL_META_IDX_CONE_TYPE,
     MODEL_META_IDX_IMPRATIO,
+    MODEL_META_IDX_NEQUALITY,
     model_geom_offset,
+    MODEL_EQ_SIZE,
+    EQ_IDX_TYPE,
+    EQ_IDX_BODY_A,
+    EQ_IDX_BODY_B,
+    EQ_IDX_ANCHOR_AX,
+    EQ_IDX_ANCHOR_AY,
+    EQ_IDX_ANCHOR_AZ,
+    EQ_IDX_ANCHOR_BX,
+    EQ_IDX_ANCHOR_BY,
+    EQ_IDX_ANCHOR_BZ,
+    EQ_IDX_RELPOSE_X,
+    EQ_IDX_RELPOSE_Y,
+    EQ_IDX_RELPOSE_Z,
+    EQ_IDX_RELPOSE_W,
+    EQ_IDX_SOLREF_0,
+    EQ_IDX_SOLREF_1,
+    EQ_IDX_SOLIMP_0,
+    EQ_IDX_SOLIMP_1,
+    EQ_IDX_SOLIMP_2,
+    model_equality_offset,
 )
 from ..types import Model, Data
 
@@ -162,6 +183,7 @@ fn create_model_buffer[
     NBODY: Int,
     NJOINT: Int,
     NGEOM: Int = 0,
+    NEQUALITY: Int = 0,
 ](ctx: DeviceContext) raises -> HostBuffer[DTYPE]:
     """Allocate host buffer for GC model.
 
@@ -170,7 +192,7 @@ fn create_model_buffer[
     Returns:
         Pointer to allocated buffer.
     """
-    comptime MODEL_SIZE = model_size[NBODY, NJOINT, NGEOM]()
+    comptime MODEL_SIZE = model_size[NBODY, NJOINT, NGEOM, NEQUALITY]()
     var buffer = ctx.enqueue_create_host_buffer[DTYPE](MODEL_SIZE)
 
     # Initialize to zero
@@ -193,8 +215,9 @@ fn copy_model_to_buffer[
     NJOINT: Int,
     MAX_CONTACTS: Int,
     NGEOM: Int = 0,
+    MAX_EQUALITY: Int = 0,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
     buffer: HostBuffer[DTYPE],
 ):
     """Copy Model data to a flat buffer for GPU.
@@ -282,6 +305,8 @@ fn copy_model_to_buffer[
     # Friction cone model
     buffer[meta_offset + MODEL_META_IDX_CONE_TYPE] = Scalar[DTYPE](model.cone_type)
     buffer[meta_offset + MODEL_META_IDX_IMPRATIO] = model.impratio
+    # Equality constraints
+    buffer[meta_offset + MODEL_META_IDX_NEQUALITY] = Scalar[DTYPE](model.num_equality)
 
 
 fn copy_geoms_to_buffer[
@@ -292,8 +317,9 @@ fn copy_geoms_to_buffer[
     NJOINT: Int,
     MAX_CONTACTS: Int,
     NGEOM: Int,
+    MAX_EQUALITY: Int = 0,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
     buffer: HostBuffer[DTYPE],
 ):
     """Copy unified geom data from Model to GPU buffer.
@@ -331,6 +357,48 @@ fn copy_geoms_to_buffer[
         buffer[offset + GEOM_IDX_FRICTION_SPIN] = model.geom_friction_spin[g]
         buffer[offset + GEOM_IDX_FRICTION_ROLL] = model.geom_friction_roll[g]
         buffer[offset + GEOM_IDX_RBOUND] = model.geom_rbound[g]
+
+
+fn copy_equality_to_buffer[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    NGEOM: Int,
+    MAX_EQUALITY: Int = 0,
+](
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
+    buffer: HostBuffer[DTYPE],
+):
+    """Copy equality constraint data from Model to GPU buffer.
+
+    Args:
+        model: Source model with equality constraints.
+        buffer: Destination buffer (must have room for equality data).
+    """
+    for e in range(model.num_equality):
+        var eq = model.equality_constraints[e]
+        var offset = model_equality_offset[NBODY, NJOINT, NGEOM](e)
+        buffer[offset + EQ_IDX_TYPE] = Scalar[DTYPE](eq.eq_type)
+        buffer[offset + EQ_IDX_BODY_A] = Scalar[DTYPE](eq.body_a)
+        buffer[offset + EQ_IDX_BODY_B] = Scalar[DTYPE](eq.body_b)
+        buffer[offset + EQ_IDX_ANCHOR_AX] = eq.anchor_a_x
+        buffer[offset + EQ_IDX_ANCHOR_AY] = eq.anchor_a_y
+        buffer[offset + EQ_IDX_ANCHOR_AZ] = eq.anchor_a_z
+        buffer[offset + EQ_IDX_ANCHOR_BX] = eq.anchor_b_x
+        buffer[offset + EQ_IDX_ANCHOR_BY] = eq.anchor_b_y
+        buffer[offset + EQ_IDX_ANCHOR_BZ] = eq.anchor_b_z
+        buffer[offset + EQ_IDX_RELPOSE_X] = eq.relpose_x
+        buffer[offset + EQ_IDX_RELPOSE_Y] = eq.relpose_y
+        buffer[offset + EQ_IDX_RELPOSE_Z] = eq.relpose_z
+        buffer[offset + EQ_IDX_RELPOSE_W] = eq.relpose_w
+        buffer[offset + EQ_IDX_SOLREF_0] = eq.solref_0
+        buffer[offset + EQ_IDX_SOLREF_1] = eq.solref_1
+        buffer[offset + EQ_IDX_SOLIMP_0] = eq.solimp_0
+        buffer[offset + EQ_IDX_SOLIMP_1] = eq.solimp_1
+        buffer[offset + EQ_IDX_SOLIMP_2] = eq.solimp_2
 
 
 # =============================================================================

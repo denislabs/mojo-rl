@@ -9,6 +9,8 @@ from .constraint_data import (
     CNSTR_FRICTION_ROLL1,
     CNSTR_FRICTION_ROLL2,
     CNSTR_PYRAMID_EDGE,
+    CNSTR_EQUALITY_CONNECT,
+    CNSTR_EQUALITY_WELD,
 )
 from .constraint_builder import build_constraints, writeback_forces
 from .constraint_builder_gpu import (

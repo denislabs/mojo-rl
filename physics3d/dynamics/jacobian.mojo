@@ -88,8 +88,9 @@ fn compute_cdof[
     MAX_CONTACTS: Int,
     CDOF_SIZE: Int,
     NGEOM: Int = 0,
+    MAX_EQUALITY: Int = 0,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     mut cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
 ):
@@ -222,8 +223,9 @@ fn compute_contact_jacobian_row[
     V_SIZE: Int,
     CDOF_SIZE: Int,
     NGEOM: Int = 0,
+    MAX_EQUALITY: Int = 0,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
     contact_body_a: Int,
@@ -330,8 +332,9 @@ fn _joint_affects_body[
     NJOINT: Int,
     MAX_CONTACTS: Int,
     NGEOM: Int = 0,
+    MAX_EQUALITY: Int = 0,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
     joint_idx: Int,
     body_idx: Int,
 ) -> Bool:
@@ -365,8 +368,9 @@ fn compute_composite_inertia[
     MAX_CONTACTS: Int,
     CRB_SIZE: Int,
     NGEOM: Int = 0,
+    MAX_EQUALITY: Int = 0,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     mut crb: InlineArray[Scalar[DTYPE], CRB_SIZE],
 ):

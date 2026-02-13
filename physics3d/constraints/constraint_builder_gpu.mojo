@@ -24,15 +24,21 @@ Common normal workspace block layout (at solver_idx):
 
 from math import sqrt
 from layout import LayoutTensor, Layout
-from ..types import _max_one
+from ..types import _max_one, EQ_CONNECT, EQ_WELD
 from ..joint_types import JNT_HINGE, JNT_SLIDE
-from ..dynamics.jacobian import compute_contact_jacobian_row_gpu
+from ..dynamics.jacobian import (
+    compute_contact_jacobian_row_gpu,
+    compute_angular_jacobian_row_gpu,
+)
+from ..kinematics.quat_math import quat_mul, quat_conjugate, quat_rotate
 from ..gpu.constants import (
     contacts_offset,
     metadata_offset,
     model_metadata_offset,
     model_joint_offset,
     qvel_offset,
+    xpos_offset,
+    xquat_offset,
     ws_qacc_constrained_offset,
     ws_m_inv_offset,
     ws_solver_offset,
@@ -53,11 +59,32 @@ from ..gpu.constants import (
     MODEL_META_IDX_SOLIMP_LIMIT_0,
     MODEL_META_IDX_SOLIMP_LIMIT_1,
     MODEL_META_IDX_SOLIMP_LIMIT_2,
+    MODEL_META_IDX_NEQUALITY,
     JOINT_IDX_TYPE,
     JOINT_IDX_QPOS_ADR,
     JOINT_IDX_DOF_ADR,
     JOINT_IDX_RANGE_MIN,
     JOINT_IDX_RANGE_MAX,
+    MODEL_EQ_SIZE,
+    EQ_IDX_TYPE,
+    EQ_IDX_BODY_A,
+    EQ_IDX_BODY_B,
+    EQ_IDX_ANCHOR_AX,
+    EQ_IDX_ANCHOR_AY,
+    EQ_IDX_ANCHOR_AZ,
+    EQ_IDX_ANCHOR_BX,
+    EQ_IDX_ANCHOR_BY,
+    EQ_IDX_ANCHOR_BZ,
+    EQ_IDX_RELPOSE_X,
+    EQ_IDX_RELPOSE_Y,
+    EQ_IDX_RELPOSE_Z,
+    EQ_IDX_RELPOSE_W,
+    EQ_IDX_SOLREF_0,
+    EQ_IDX_SOLREF_1,
+    EQ_IDX_SOLIMP_0,
+    EQ_IDX_SOLIMP_1,
+    EQ_IDX_SOLIMP_2,
+    model_equality_offset,
 )
 
 
@@ -579,4 +606,328 @@ fn detect_and_solve_limits_gpu[
             for i in range(NV):
                 workspace[env, qacc_idx + i] += lim_MinvJ[l * NV + i] * actual_l
         if max_lim_delta < Scalar[DTYPE](1e-4):
+            break
+
+
+# =============================================================================
+# 6. build_and_solve_equality_gpu
+# =============================================================================
+
+
+@always_inline
+fn build_and_solve_equality_gpu[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    MAX_EQUALITY: Int,
+    NGEOM: Int,
+    STATE_SIZE: Int,
+    MODEL_SIZE: Int,
+    V_SIZE: Int,
+    WS_SIZE: Int,
+    BATCH: Int,
+    NUM_ITERATIONS: Int,
+](
+    env: Int,
+    state: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+    ],
+    model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+    workspace: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+    ],
+):
+    """Build and solve equality constraints (connect + weld) on GPU.
+
+    Called in SEQUENTIAL phase (thread 0 only). Reads equality constraint
+    definitions from model buffer, computes world anchors, Jacobians,
+    impedance, and runs bilateral PGS iterations.
+
+    Similar pattern to detect_and_solve_limits_gpu but for bilateral
+    equality constraints (no lambda >= 0 clamping).
+    """
+    @parameter
+    if MAX_EQUALITY == 0:
+        return
+
+    comptime qacc_idx = ws_qacc_constrained_offset[NV, NBODY]()
+    comptime M_inv_idx = ws_m_inv_offset[NV, NBODY]()
+    comptime model_meta_off = model_metadata_offset[NBODY, NJOINT]()
+    comptime xpos_off = xpos_offset[NQ, NV, NBODY]()
+    comptime xquat_off = xquat_offset[NQ, NV, NBODY]()
+    comptime qvel_off = qvel_offset[NQ, NV]()
+
+    # Read number of equality constraints from model metadata
+    var neq = Int(rebind[Scalar[DTYPE]](
+        model[0, model_meta_off + MODEL_META_IDX_NEQUALITY]
+    ))
+    if neq == 0:
+        return
+    if neq > MAX_EQUALITY:
+        neq = MAX_EQUALITY
+
+    # Max rows: 6 per constraint (3 connect + 3 weld orientation)
+    comptime MAX_EQ_ROWS = _max_one[6 * MAX_EQUALITY]()
+    comptime MINVJ_EQ_SIZE = _max_one[6 * MAX_EQUALITY * NV]()
+
+    var eq_K = InlineArray[Scalar[DTYPE], MAX_EQ_ROWS](fill=Scalar[DTYPE](1))
+    var eq_bias = InlineArray[Scalar[DTYPE], MAX_EQ_ROWS](fill=Scalar[DTYPE](0))
+    var eq_inv_K_imp = InlineArray[Scalar[DTYPE], MAX_EQ_ROWS](fill=Scalar[DTYPE](0))
+    var eq_lambda = InlineArray[Scalar[DTYPE], MAX_EQ_ROWS](fill=Scalar[DTYPE](0))
+    var eq_J = InlineArray[Scalar[DTYPE], MINVJ_EQ_SIZE](fill=Scalar[DTYPE](0))
+    var eq_MinvJ = InlineArray[Scalar[DTYPE], MINVJ_EQ_SIZE](fill=Scalar[DTYPE](0))
+
+    var J_row = InlineArray[Scalar[DTYPE], V_SIZE](fill=Scalar[DTYPE](0))
+
+    var num_eq_rows = 0
+
+    # Build rows for each equality constraint
+    for eq_i in range(neq):
+        var eq_off = model_equality_offset[NBODY, NJOINT, NGEOM](eq_i)
+        var eq_type = Int(rebind[Scalar[DTYPE]](model[0, eq_off + EQ_IDX_TYPE]))
+        var body_a = Int(rebind[Scalar[DTYPE]](model[0, eq_off + EQ_IDX_BODY_A]))
+        var body_b = Int(rebind[Scalar[DTYPE]](model[0, eq_off + EQ_IDX_BODY_B]))
+
+        # Read anchors
+        var anc_ax = rebind[Scalar[DTYPE]](model[0, eq_off + EQ_IDX_ANCHOR_AX])
+        var anc_ay = rebind[Scalar[DTYPE]](model[0, eq_off + EQ_IDX_ANCHOR_AY])
+        var anc_az = rebind[Scalar[DTYPE]](model[0, eq_off + EQ_IDX_ANCHOR_AZ])
+        var anc_bx = rebind[Scalar[DTYPE]](model[0, eq_off + EQ_IDX_ANCHOR_BX])
+        var anc_by = rebind[Scalar[DTYPE]](model[0, eq_off + EQ_IDX_ANCHOR_BY])
+        var anc_bz = rebind[Scalar[DTYPE]](model[0, eq_off + EQ_IDX_ANCHOR_BZ])
+
+        # Read solref/solimp
+        var sr_tc = rebind[Scalar[DTYPE]](model[0, eq_off + EQ_IDX_SOLREF_0])
+        var sr_dr = rebind[Scalar[DTYPE]](model[0, eq_off + EQ_IDX_SOLREF_1])
+        var si_dmin = rebind[Scalar[DTYPE]](model[0, eq_off + EQ_IDX_SOLIMP_0])
+        var si_dmax = rebind[Scalar[DTYPE]](model[0, eq_off + EQ_IDX_SOLIMP_1])
+        var si_width = rebind[Scalar[DTYPE]](model[0, eq_off + EQ_IDX_SOLIMP_2])
+        if si_width < Scalar[DTYPE](1e-6):
+            si_width = Scalar[DTYPE](1e-6)
+        if si_dmax < Scalar[DTYPE](1e-4):
+            si_dmax = Scalar[DTYPE](1e-4)
+        var eq_K_spring = Scalar[DTYPE](1.0) / (si_dmax * si_dmax * sr_tc * sr_tc * sr_dr * sr_dr)
+        var eq_B_damp = Scalar[DTYPE](2.0) / (si_dmax * sr_tc)
+
+        # Compute world anchor A: xpos[body_a] + quat_rotate(xquat[body_a], anchor_a)
+        var xpos_a_x = rebind[Scalar[DTYPE]](state[env, xpos_off + body_a * 3 + 0])
+        var xpos_a_y = rebind[Scalar[DTYPE]](state[env, xpos_off + body_a * 3 + 1])
+        var xpos_a_z = rebind[Scalar[DTYPE]](state[env, xpos_off + body_a * 3 + 2])
+        var xquat_a_x = rebind[Scalar[DTYPE]](state[env, xquat_off + body_a * 4 + 0])
+        var xquat_a_y = rebind[Scalar[DTYPE]](state[env, xquat_off + body_a * 4 + 1])
+        var xquat_a_z = rebind[Scalar[DTYPE]](state[env, xquat_off + body_a * 4 + 2])
+        var xquat_a_w = rebind[Scalar[DTYPE]](state[env, xquat_off + body_a * 4 + 3])
+        var rot_a = quat_rotate[DTYPE](xquat_a_x, xquat_a_y, xquat_a_z, xquat_a_w, anc_ax, anc_ay, anc_az)
+        var world_ax = xpos_a_x + rot_a[0]
+        var world_ay = xpos_a_y + rot_a[1]
+        var world_az = xpos_a_z + rot_a[2]
+
+        # Compute world anchor B
+        var world_bx: Scalar[DTYPE]
+        var world_by: Scalar[DTYPE]
+        var world_bz: Scalar[DTYPE]
+        if body_b >= 0:
+            var xpos_b_x = rebind[Scalar[DTYPE]](state[env, xpos_off + body_b * 3 + 0])
+            var xpos_b_y = rebind[Scalar[DTYPE]](state[env, xpos_off + body_b * 3 + 1])
+            var xpos_b_z = rebind[Scalar[DTYPE]](state[env, xpos_off + body_b * 3 + 2])
+            var xquat_b_x = rebind[Scalar[DTYPE]](state[env, xquat_off + body_b * 4 + 0])
+            var xquat_b_y = rebind[Scalar[DTYPE]](state[env, xquat_off + body_b * 4 + 1])
+            var xquat_b_z = rebind[Scalar[DTYPE]](state[env, xquat_off + body_b * 4 + 2])
+            var xquat_b_w = rebind[Scalar[DTYPE]](state[env, xquat_off + body_b * 4 + 3])
+            var rot_b = quat_rotate[DTYPE](xquat_b_x, xquat_b_y, xquat_b_z, xquat_b_w, anc_bx, anc_by, anc_bz)
+            world_bx = xpos_b_x + rot_b[0]
+            world_by = xpos_b_y + rot_b[1]
+            world_bz = xpos_b_z + rot_b[2]
+        else:
+            world_bx = anc_bx
+            world_by = anc_by
+            world_bz = anc_bz
+
+        var pos_err_x = world_ax - world_bx
+        var pos_err_y = world_ay - world_by
+        var pos_err_z = world_az - world_bz
+
+        # --- 3 position rows (connect + weld) ---
+        var dirs = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+        dirs[0] = Scalar[DTYPE](1)  # x-axis: (1,0,0)
+        dirs[4] = Scalar[DTYPE](1)  # y-axis: (0,1,0)
+        dirs[8] = Scalar[DTYPE](1)  # z-axis: (0,0,1)
+
+        var pos_errs = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+        pos_errs[0] = pos_err_x
+        pos_errs[1] = pos_err_y
+        pos_errs[2] = pos_err_z
+
+        for d in range(3):
+            if num_eq_rows >= MAX_EQ_ROWS:
+                break
+            var dx = dirs[d * 3 + 0]
+            var dy = dirs[d * 3 + 1]
+            var dz = dirs[d * 3 + 2]
+
+            # Compute Jacobian
+            for i in range(V_SIZE):
+                J_row[i] = 0
+            compute_contact_jacobian_row_gpu[
+                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+                STATE_SIZE, MODEL_SIZE, V_SIZE, BATCH, WS_SIZE,
+            ](env, state, model, workspace, body_a, body_b, world_ax, world_ay, world_az, dx, dy, dz, J_row)
+
+            # Compute K = J @ M_inv @ J^T, store J and MinvJ
+            var k: Scalar[DTYPE] = 0
+            var v_n: Scalar[DTYPE] = 0
+            for i in range(NV):
+                eq_J[num_eq_rows * NV + i] = J_row[i]
+                var mi_j_sum: Scalar[DTYPE] = 0
+                for j_idx in range(NV):
+                    mi_j_sum += rebind[Scalar[DTYPE]](workspace[env, M_inv_idx + i * NV + j_idx]) * J_row[j_idx]
+                eq_MinvJ[num_eq_rows * NV + i] = mi_j_sum
+                k += J_row[i] * mi_j_sum
+                v_n += J_row[i] * rebind[Scalar[DTYPE]](state[env, qvel_off + i])
+
+            if k < Scalar[DTYPE](1e-10):
+                k = Scalar[DTYPE](1e-10)
+            eq_K[num_eq_rows] = k
+
+            # Impedance
+            var err_d = pos_errs[d]
+            var penetration = abs(err_d)
+            var x = penetration / si_width
+            if x > Scalar[DTYPE](1.0):
+                x = Scalar[DTYPE](1.0)
+            var imp = si_dmin + (Scalar[DTYPE](3.0) * x * x - Scalar[DTYPE](2.0) * x * x * x) * (si_dmax - si_dmin)
+            if imp < Scalar[DTYPE](0.2):
+                imp = Scalar[DTYPE](0.2)
+
+            # bias = -K*imp*pen + B*v_n (bilateral: sign depends on error direction)
+            var bias = -eq_K_spring * imp * penetration + eq_B_damp * v_n
+            if err_d < Scalar[DTYPE](0):
+                bias = -bias
+            eq_bias[num_eq_rows] = bias
+            eq_inv_K_imp[num_eq_rows] = imp / k
+
+            num_eq_rows += 1
+
+        # --- 3 orientation rows (weld only) ---
+        if eq_type == EQ_WELD:
+            # Read relpose
+            var rp_x = rebind[Scalar[DTYPE]](model[0, eq_off + EQ_IDX_RELPOSE_X])
+            var rp_y = rebind[Scalar[DTYPE]](model[0, eq_off + EQ_IDX_RELPOSE_Y])
+            var rp_z = rebind[Scalar[DTYPE]](model[0, eq_off + EQ_IDX_RELPOSE_Z])
+            var rp_w = rebind[Scalar[DTYPE]](model[0, eq_off + EQ_IDX_RELPOSE_W])
+
+            # Compute orientation error: 0.5 * imag(conj(quat_b) * quat_a * relpose)
+            var qa_x = xquat_a_x
+            var qa_y = xquat_a_y
+            var qa_z = xquat_a_z
+            var qa_w = xquat_a_w
+
+            var qb_x: Scalar[DTYPE]
+            var qb_y: Scalar[DTYPE]
+            var qb_z: Scalar[DTYPE]
+            var qb_w: Scalar[DTYPE]
+            if body_b >= 0:
+                qb_x = rebind[Scalar[DTYPE]](state[env, xquat_off + body_b * 4 + 0])
+                qb_y = rebind[Scalar[DTYPE]](state[env, xquat_off + body_b * 4 + 1])
+                qb_z = rebind[Scalar[DTYPE]](state[env, xquat_off + body_b * 4 + 2])
+                qb_w = rebind[Scalar[DTYPE]](state[env, xquat_off + body_b * 4 + 3])
+            else:
+                qb_x = Scalar[DTYPE](0)
+                qb_y = Scalar[DTYPE](0)
+                qb_z = Scalar[DTYPE](0)
+                qb_w = Scalar[DTYPE](1)
+
+            # conj(qb) * qa
+            var cqb = quat_conjugate[DTYPE](qb_x, qb_y, qb_z, qb_w)
+            var temp = quat_mul[DTYPE](cqb[0], cqb[1], cqb[2], cqb[3], qa_x, qa_y, qa_z, qa_w)
+            # * relpose
+            var err_q = quat_mul[DTYPE](temp[0], temp[1], temp[2], temp[3], rp_x, rp_y, rp_z, rp_w)
+            # 0.5 * imaginary part
+            var rot_errs = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+            rot_errs[0] = Scalar[DTYPE](0.5) * err_q[0]
+            rot_errs[1] = Scalar[DTYPE](0.5) * err_q[1]
+            rot_errs[2] = Scalar[DTYPE](0.5) * err_q[2]
+
+            for d in range(3):
+                if num_eq_rows >= MAX_EQ_ROWS:
+                    break
+                var dx = dirs[d * 3 + 0]
+                var dy = dirs[d * 3 + 1]
+                var dz = dirs[d * 3 + 2]
+
+                # Angular Jacobian
+                for i in range(V_SIZE):
+                    J_row[i] = 0
+                compute_angular_jacobian_row_gpu[
+                    DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+                    STATE_SIZE, MODEL_SIZE, V_SIZE, BATCH, WS_SIZE,
+                ](env, state, model, workspace, body_a, body_b, dx, dy, dz, J_row)
+
+                # K, store J and MinvJ
+                var k: Scalar[DTYPE] = 0
+                var v_n: Scalar[DTYPE] = 0
+                for i in range(NV):
+                    eq_J[num_eq_rows * NV + i] = J_row[i]
+                    var mi_j_sum: Scalar[DTYPE] = 0
+                    for j_idx in range(NV):
+                        mi_j_sum += rebind[Scalar[DTYPE]](workspace[env, M_inv_idx + i * NV + j_idx]) * J_row[j_idx]
+                    eq_MinvJ[num_eq_rows * NV + i] = mi_j_sum
+                    k += J_row[i] * mi_j_sum
+                    v_n += J_row[i] * rebind[Scalar[DTYPE]](state[env, qvel_off + i])
+
+                if k < Scalar[DTYPE](1e-10):
+                    k = Scalar[DTYPE](1e-10)
+                eq_K[num_eq_rows] = k
+
+                # Impedance for orientation
+                var err_d = rot_errs[d]
+                var penetration = abs(err_d)
+                var x = penetration / si_width
+                if x > Scalar[DTYPE](1.0):
+                    x = Scalar[DTYPE](1.0)
+                var imp = si_dmin + (Scalar[DTYPE](3.0) * x * x - Scalar[DTYPE](2.0) * x * x * x) * (si_dmax - si_dmin)
+                if imp < Scalar[DTYPE](0.2):
+                    imp = Scalar[DTYPE](0.2)
+
+                var bias = -eq_K_spring * imp * penetration + eq_B_damp * v_n
+                if err_d < Scalar[DTYPE](0):
+                    bias = -bias
+                eq_bias[num_eq_rows] = bias
+                eq_inv_K_imp[num_eq_rows] = imp / k
+
+                num_eq_rows += 1
+
+    if num_eq_rows == 0:
+        return
+
+    # Bilateral PGS iterations (no clamping)
+    for _ in range(NUM_ITERATIONS):
+        var max_delta: Scalar[DTYPE] = 0
+        for r in range(num_eq_rows):
+            # a_eq = J @ qacc
+            var a_eq: Scalar[DTYPE] = 0
+            for i in range(NV):
+                a_eq += eq_J[r * NV + i] * rebind[Scalar[DTYPE]](workspace[env, qacc_idx + i])
+
+            # R = 1/inv_K_imp - K (MuJoCo regularizer)
+            var R_eq = Scalar[DTYPE](1.0) / eq_inv_K_imp[r] - eq_K[r]
+            var residual = a_eq + eq_bias[r] + R_eq * eq_lambda[r]
+            var delta = -residual * eq_inv_K_imp[r]
+            var old_lambda = eq_lambda[r]
+            eq_lambda[r] = eq_lambda[r] + delta
+            # Bilateral: no clamping (force can push or pull)
+            var actual = eq_lambda[r] - old_lambda
+            var abs_d = abs(actual)
+            if abs_d > max_delta:
+                max_delta = abs_d
+            # qacc += MinvJ * delta
+            for i in range(NV):
+                workspace[env, qacc_idx + i] = rebind[Scalar[DTYPE]](
+                    workspace[env, qacc_idx + i]
+                ) + eq_MinvJ[r * NV + i] * actual
+
+        if max_delta < Scalar[DTYPE](1e-4):
             break

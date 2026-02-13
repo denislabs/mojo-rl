@@ -14,8 +14,8 @@ Model buffer (static, same for all environments):
     pos(3), quat(4), parent, ipos(3), iquat(4)]
   Per joint (MODEL_JOINT_SIZE=18): [type, body_id, qpos_adr, dof_adr,
     pos(3), axis(3), tau_limit, range_min/max, armature, damping, stiffness, springref, frictionloss]
-  Metadata (MODEL_META_SIZE=20): [NBODY, NJOINT, gravity(3), timestep, ground_z, friction,
-    solref_contact(2), solimp_contact(3), solref_limit(2), solimp_limit(3), cone_type, impratio]
+  Metadata (MODEL_META_SIZE=21): [NBODY, NJOINT, gravity(3), timestep, ground_z, friction,
+    solref_contact(2), solimp_contact(3), solref_limit(2), solimp_limit(3), cone_type, impratio, nequality]
   Curriculum (MODEL_CURRICULUM_SIZE=8): [up to 8 curriculum parameters]
   Per geom (MODEL_GEOM_SIZE=21): [type, body, pos(3), quat(4), radius, half_length,
     half_x/y/z, friction, contype, conaffinity, condim, friction_spin, friction_roll, rbound]
@@ -253,7 +253,7 @@ fn model_joint_offset[NBODY: Int](joint_idx: Int) -> Int:
 # Model Buffer Layout - Global Metadata
 # =============================================================================
 
-comptime MODEL_META_SIZE: Int = 20
+comptime MODEL_META_SIZE: Int = 21
 
 comptime MODEL_META_IDX_NBODY: Int = 0
 comptime MODEL_META_IDX_NJOINT: Int = 1
@@ -278,6 +278,8 @@ comptime MODEL_META_IDX_SOLIMP_LIMIT_2: Int = 17    # width
 # Friction cone model
 comptime MODEL_META_IDX_CONE_TYPE: Int = 18    # 0=pyramidal, 1=elliptic
 comptime MODEL_META_IDX_IMPRATIO: Int = 19     # MuJoCo impratio
+# Equality constraints
+comptime MODEL_META_IDX_NEQUALITY: Int = 20    # Number of equality constraints
 
 
 fn model_metadata_offset[NBODY: Int, NJOINT: Int]() -> Int:
@@ -318,9 +320,44 @@ fn model_geom_offset[NBODY: Int, NJOINT: Int](geom_idx: Int) -> Int:
     """Offset to a specific unified geom in model buffer.
 
     Geoms are stored AFTER metadata+curriculum to avoid shifting metadata offsets.
-    Layout: [bodies | joints | metadata | curriculum | geoms]
+    Layout: [bodies | joints | metadata | curriculum | geoms | equality]
     """
     return NBODY * MODEL_BODY_SIZE + NJOINT * MODEL_JOINT_SIZE + MODEL_META_SIZE + MODEL_CURRICULUM_SIZE + geom_idx * MODEL_GEOM_SIZE
+
+
+# =============================================================================
+# Model Buffer Layout - Equality Constraints
+# =============================================================================
+
+comptime MODEL_EQ_SIZE: Int = 18  # Per equality constraint
+
+comptime EQ_IDX_TYPE: Int = 0       # EQ_CONNECT=0 or EQ_WELD=1
+comptime EQ_IDX_BODY_A: Int = 1
+comptime EQ_IDX_BODY_B: Int = 2     # -1 for world
+comptime EQ_IDX_ANCHOR_AX: Int = 3
+comptime EQ_IDX_ANCHOR_AY: Int = 4
+comptime EQ_IDX_ANCHOR_AZ: Int = 5
+comptime EQ_IDX_ANCHOR_BX: Int = 6
+comptime EQ_IDX_ANCHOR_BY: Int = 7
+comptime EQ_IDX_ANCHOR_BZ: Int = 8
+comptime EQ_IDX_RELPOSE_X: Int = 9
+comptime EQ_IDX_RELPOSE_Y: Int = 10
+comptime EQ_IDX_RELPOSE_Z: Int = 11
+comptime EQ_IDX_RELPOSE_W: Int = 12
+comptime EQ_IDX_SOLREF_0: Int = 13
+comptime EQ_IDX_SOLREF_1: Int = 14
+comptime EQ_IDX_SOLIMP_0: Int = 15
+comptime EQ_IDX_SOLIMP_1: Int = 16
+comptime EQ_IDX_SOLIMP_2: Int = 17
+
+
+fn model_equality_offset[NBODY: Int, NJOINT: Int, NGEOM: Int](eq_idx: Int) -> Int:
+    """Offset to a specific equality constraint in model buffer.
+
+    Equality stored AFTER geoms.
+    Layout: [bodies | joints | metadata | curriculum | geoms | equality]
+    """
+    return NBODY * MODEL_BODY_SIZE + NJOINT * MODEL_JOINT_SIZE + MODEL_META_SIZE + MODEL_CURRICULUM_SIZE + NGEOM * MODEL_GEOM_SIZE + eq_idx * MODEL_EQ_SIZE
 
 
 # =============================================================================
@@ -346,12 +383,12 @@ fn model_curriculum_offset[NBODY: Int, NJOINT: Int]() -> Int:
     return model_metadata_offset[NBODY, NJOINT]() + MODEL_META_SIZE
 
 
-fn model_size[NBODY: Int, NJOINT: Int, NGEOM: Int = 0]() -> Int:
+fn model_size[NBODY: Int, NJOINT: Int, NGEOM: Int = 0, NEQUALITY: Int = 0]() -> Int:
     """Total model buffer size.
 
-    Layout: [bodies | joints | metadata | curriculum | geoms]
+    Layout: [bodies | joints | metadata | curriculum | geoms | equality]
     """
-    return NBODY * MODEL_BODY_SIZE + NJOINT * MODEL_JOINT_SIZE + MODEL_META_SIZE + MODEL_CURRICULUM_SIZE + NGEOM * MODEL_GEOM_SIZE
+    return NBODY * MODEL_BODY_SIZE + NJOINT * MODEL_JOINT_SIZE + MODEL_META_SIZE + MODEL_CURRICULUM_SIZE + NGEOM * MODEL_GEOM_SIZE + NEQUALITY * MODEL_EQ_SIZE
 
 
 # =============================================================================

@@ -91,8 +91,9 @@ fn forward_kinematics[
     NJOINT: Int,
     MAX_CONTACTS: Int,
     NGEOM: Int = 0,
+    MAX_EQUALITY: Int = 0,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
     mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
 ) where DTYPE.is_floating_point():
     """Compute body world positions from joint positions.
@@ -448,8 +449,9 @@ fn compute_body_velocities[
     NJOINT: Int,
     MAX_CONTACTS: Int,
     NGEOM: Int = 0,
+    MAX_EQUALITY: Int = 0,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
     mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
 ):
     """Compute body world velocities from joint velocities.

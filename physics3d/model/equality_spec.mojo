@@ -1,0 +1,128 @@
+"""EqualitySpec trait and concrete equality constraint types.
+
+Supports two equality constraint types:
+  - ConnectConstraint: Point-to-point ball joint (3 DOF, position only)
+  - WeldConstraint: Rigid attachment (6 DOF, position + orientation)
+
+Usage:
+    from physics3d.model.equality_spec import EqualitySpec, ConnectConstraint, WeldConstraint
+
+    # Ball joint connecting body 0 and body 1 at their origins
+    comptime MyConnect = ConnectConstraint[body_a=0, body_b=1]
+
+    # Weld body 2 to body 3 at specified anchors
+    comptime MyWeld = WeldConstraint[body_a=2, body_b=3, anchor_a_z=0.1]
+"""
+
+from ..types import EQ_CONNECT, EQ_WELD
+
+
+trait EqualitySpec:
+    """Compile-time specification for an equality constraint."""
+
+    comptime EQ_TYPE: Int  # EQ_CONNECT or EQ_WELD
+    comptime BODY_A: Int  # First body index
+    comptime BODY_B: Int  # Second body index (-1 for world)
+    # Anchor point in body_a frame
+    comptime ANCHOR_A_X: Float64
+    comptime ANCHOR_A_Y: Float64
+    comptime ANCHOR_A_Z: Float64
+    # Anchor point in body_b frame (or world frame if BODY_B == -1)
+    comptime ANCHOR_B_X: Float64
+    comptime ANCHOR_B_Y: Float64
+    comptime ANCHOR_B_Z: Float64
+    # Relative orientation quaternion [x, y, z, w] (weld only)
+    comptime RELPOSE_X: Float64
+    comptime RELPOSE_Y: Float64
+    comptime RELPOSE_Z: Float64
+    comptime RELPOSE_W: Float64
+    # Impedance parameters
+    comptime SOLREF_0: Float64  # timeconst
+    comptime SOLREF_1: Float64  # dampratio
+    comptime SOLIMP_0: Float64  # dmin
+    comptime SOLIMP_1: Float64  # dmax
+    comptime SOLIMP_2: Float64  # width
+    # Number of constraint rows (3 for connect, 6 for weld)
+    comptime NUM_ROWS: Int
+
+
+@fieldwise_init
+struct ConnectConstraint[
+    body_a: Int,
+    body_b: Int = -1,
+    anchor_a_x: Float64 = 0.0,
+    anchor_a_y: Float64 = 0.0,
+    anchor_a_z: Float64 = 0.0,
+    anchor_b_x: Float64 = 0.0,
+    anchor_b_y: Float64 = 0.0,
+    anchor_b_z: Float64 = 0.0,
+    solref_0: Float64 = 0.02,
+    solref_1: Float64 = 1.0,
+    solimp_0: Float64 = 0.9,
+    solimp_1: Float64 = 0.95,
+    solimp_2: Float64 = 0.001,
+](EqualitySpec):
+    """Connect (ball joint) equality constraint — 3 position rows."""
+
+    comptime EQ_TYPE: Int = EQ_CONNECT
+    comptime BODY_A: Int = Self.body_a
+    comptime BODY_B: Int = Self.body_b
+    comptime ANCHOR_A_X: Float64 = Self.anchor_a_x
+    comptime ANCHOR_A_Y: Float64 = Self.anchor_a_y
+    comptime ANCHOR_A_Z: Float64 = Self.anchor_a_z
+    comptime ANCHOR_B_X: Float64 = Self.anchor_b_x
+    comptime ANCHOR_B_Y: Float64 = Self.anchor_b_y
+    comptime ANCHOR_B_Z: Float64 = Self.anchor_b_z
+    comptime RELPOSE_X: Float64 = 0.0
+    comptime RELPOSE_Y: Float64 = 0.0
+    comptime RELPOSE_Z: Float64 = 0.0
+    comptime RELPOSE_W: Float64 = 1.0
+    comptime SOLREF_0: Float64 = Self.solref_0
+    comptime SOLREF_1: Float64 = Self.solref_1
+    comptime SOLIMP_0: Float64 = Self.solimp_0
+    comptime SOLIMP_1: Float64 = Self.solimp_1
+    comptime SOLIMP_2: Float64 = Self.solimp_2
+    comptime NUM_ROWS: Int = 3
+
+
+@fieldwise_init
+struct WeldConstraint[
+    body_a: Int,
+    body_b: Int = -1,
+    anchor_a_x: Float64 = 0.0,
+    anchor_a_y: Float64 = 0.0,
+    anchor_a_z: Float64 = 0.0,
+    anchor_b_x: Float64 = 0.0,
+    anchor_b_y: Float64 = 0.0,
+    anchor_b_z: Float64 = 0.0,
+    relpose_x: Float64 = 0.0,
+    relpose_y: Float64 = 0.0,
+    relpose_z: Float64 = 0.0,
+    relpose_w: Float64 = 1.0,
+    solref_0: Float64 = 0.02,
+    solref_1: Float64 = 1.0,
+    solimp_0: Float64 = 0.9,
+    solimp_1: Float64 = 0.95,
+    solimp_2: Float64 = 0.001,
+](EqualitySpec):
+    """Weld (rigid attachment) equality constraint — 6 rows (3 position + 3 orientation)."""
+
+    comptime EQ_TYPE: Int = EQ_WELD
+    comptime BODY_A: Int = Self.body_a
+    comptime BODY_B: Int = Self.body_b
+    comptime ANCHOR_A_X: Float64 = Self.anchor_a_x
+    comptime ANCHOR_A_Y: Float64 = Self.anchor_a_y
+    comptime ANCHOR_A_Z: Float64 = Self.anchor_a_z
+    comptime ANCHOR_B_X: Float64 = Self.anchor_b_x
+    comptime ANCHOR_B_Y: Float64 = Self.anchor_b_y
+    comptime ANCHOR_B_Z: Float64 = Self.anchor_b_z
+    comptime RELPOSE_X: Float64 = Self.relpose_x
+    comptime RELPOSE_Y: Float64 = Self.relpose_y
+    comptime RELPOSE_Z: Float64 = Self.relpose_z
+    comptime RELPOSE_W: Float64 = Self.relpose_w
+    comptime SOLREF_0: Float64 = Self.solref_0
+    comptime SOLREF_1: Float64 = Self.solref_1
+    comptime SOLIMP_0: Float64 = Self.solimp_0
+    comptime SOLIMP_1: Float64 = Self.solimp_1
+    comptime SOLIMP_2: Float64 = Self.solimp_2
+    comptime NUM_ROWS: Int = 6

@@ -1,8 +1,8 @@
 """Unified constraint representation for physics3d solvers.
 
 ConstraintRow and ConstraintData provide a solver-agnostic representation
-of all constraint types (contact normals, friction, joint limits). The
-constraint builder populates this data, and solvers consume it as pure
+of all constraint types (contact normals, friction, joint limits, equality).
+The constraint builder populates this data, and solvers consume it as pure
 iterative algorithms.
 
 Constraint types:
@@ -14,6 +14,8 @@ Constraint types:
 - CNSTR_FRICTION_ROLL1 (5): Rolling friction 1 (condim == 6)
 - CNSTR_FRICTION_ROLL2 (6): Rolling friction 2 (condim == 6)
 - CNSTR_PYRAMID_EDGE (7): Pyramidal cone edge constraint (lambda >= 0)
+- CNSTR_EQUALITY_CONNECT (8): Equality connect constraint (bilateral, 3 rows)
+- CNSTR_EQUALITY_WELD (9): Equality weld constraint (bilateral, 6 rows)
 """
 
 from ..types import _max_one
@@ -27,6 +29,8 @@ comptime CNSTR_FRICTION_TORSION: Int = 4
 comptime CNSTR_FRICTION_ROLL1: Int = 5
 comptime CNSTR_FRICTION_ROLL2: Int = 6
 comptime CNSTR_PYRAMID_EDGE: Int = 7
+comptime CNSTR_EQUALITY_CONNECT: Int = 8
+comptime CNSTR_EQUALITY_WELD: Int = 9
 
 
 @fieldwise_init
@@ -83,7 +87,8 @@ struct ConstraintData[DTYPE: DType, MAX_ROWS: Int, NV: Int]:
     Layout:
     - rows[0..num_normals): contact normal constraints
     - rows[num_normals..num_normals+num_friction): friction constraints (paired t1/t2)
-    - rows[num_normals+num_friction..num_rows): joint limit constraints
+    - rows[num_normals+num_friction..+num_limits): joint limit constraints
+    - rows[..+num_equality): equality constraints (connect/weld, bilateral)
 
     J and MinvJT are stored row-major: row r spans [r*NV .. (r+1)*NV).
     """
@@ -97,6 +102,7 @@ struct ConstraintData[DTYPE: DType, MAX_ROWS: Int, NV: Int]:
     var num_normals: Int  # Normal contact constraints [0..num_normals)
     var num_friction: Int  # Friction rows [num_normals..num_normals+num_friction)
     var num_limits: Int  # Limit rows [num_normals+num_friction..)
+    var num_equality: Int  # Equality rows [after limits..)
 
     fn __init__(out self):
         comptime MR = _max_one[Self.MAX_ROWS]()
@@ -112,3 +118,4 @@ struct ConstraintData[DTYPE: DType, MAX_ROWS: Int, NV: Int]:
         self.num_normals = 0
         self.num_friction = 0
         self.num_limits = 0
+        self.num_equality = 0

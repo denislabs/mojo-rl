@@ -34,6 +34,63 @@ fn _max_one[n: Int]() -> Int:
     return 1
 
 
+# Equality constraint type constants
+comptime EQ_CONNECT: Int = 0  # Point-to-point ball joint (3 position rows)
+comptime EQ_WELD: Int = 1  # Rigid attachment (3 position + 3 orientation rows)
+
+
+@fieldwise_init
+struct EqualityConstraintDef[DTYPE: DType](Copyable, ImplicitlyCopyable, Movable):
+    """Definition of an equality constraint (connect or weld).
+
+    Connect: 3 rows enforcing world_anchor_a == world_anchor_b.
+    Weld: 6 rows enforcing position + orientation match.
+    """
+
+    var eq_type: Int  # EQ_CONNECT or EQ_WELD
+    var body_a: Int  # First body index
+    var body_b: Int  # Second body index (-1 for world)
+    var anchor_a_x: Scalar[Self.DTYPE]  # Anchor point in body_a frame
+    var anchor_a_y: Scalar[Self.DTYPE]
+    var anchor_a_z: Scalar[Self.DTYPE]
+    var anchor_b_x: Scalar[Self.DTYPE]  # Anchor point in body_b frame (or world)
+    var anchor_b_y: Scalar[Self.DTYPE]
+    var anchor_b_z: Scalar[Self.DTYPE]
+    var relpose_x: Scalar[Self.DTYPE]  # Relative orientation quat (weld only)
+    var relpose_y: Scalar[Self.DTYPE]
+    var relpose_z: Scalar[Self.DTYPE]
+    var relpose_w: Scalar[Self.DTYPE]
+    var solref_0: Scalar[Self.DTYPE]  # timeconst
+    var solref_1: Scalar[Self.DTYPE]  # dampratio
+    var solimp_0: Scalar[Self.DTYPE]  # dmin
+    var solimp_1: Scalar[Self.DTYPE]  # dmax
+    var solimp_2: Scalar[Self.DTYPE]  # width
+
+    @staticmethod
+    fn empty() -> Self:
+        """Create empty equality constraint."""
+        return Self(
+            eq_type=EQ_CONNECT,
+            body_a=-1,
+            body_b=-1,
+            anchor_a_x=Scalar[Self.DTYPE](0),
+            anchor_a_y=Scalar[Self.DTYPE](0),
+            anchor_a_z=Scalar[Self.DTYPE](0),
+            anchor_b_x=Scalar[Self.DTYPE](0),
+            anchor_b_y=Scalar[Self.DTYPE](0),
+            anchor_b_z=Scalar[Self.DTYPE](0),
+            relpose_x=Scalar[Self.DTYPE](0),
+            relpose_y=Scalar[Self.DTYPE](0),
+            relpose_z=Scalar[Self.DTYPE](0),
+            relpose_w=Scalar[Self.DTYPE](1),
+            solref_0=Scalar[Self.DTYPE](0.02),
+            solref_1=Scalar[Self.DTYPE](1.0),
+            solimp_0=Scalar[Self.DTYPE](0.9),
+            solimp_1=Scalar[Self.DTYPE](0.95),
+            solimp_2=Scalar[Self.DTYPE](0.001),
+        )
+
+
 # =============================================================================
 # ContactInfo - Contact information for GC engine
 # =============================================================================
@@ -105,6 +162,7 @@ struct Model[
     NJOINT: Int,  # Number of joints
     MAX_CONTACTS: Int,  # Maximum number of contacts
     NGEOM: Int = 0,  # Number of geoms (0 = legacy mode, uses body geometry)
+    MAX_EQUALITY: Int = 0,  # Maximum number of equality constraints
 ]:
     """Static configuration for MuJoCo-style generalized coordinates simulation.
 
@@ -116,6 +174,7 @@ struct Model[
         NJOINT: Number of joints.
         MAX_CONTACTS: Maximum number of simultaneous contacts.
         NGEOM: Number of geoms (0 = legacy mode, uses body geometry).
+        MAX_EQUALITY: Maximum number of equality constraints (0 = none).
 
     The kinematic tree is defined by body_parent array:
     - body_parent[i] = index of parent body (-1 for world)
@@ -187,6 +246,12 @@ struct Model[
     # Joint definitions
     var joints: InlineArray[JointDef[Self.DTYPE], _max_one[Self.NJOINT]()]
     var num_joints: Int
+
+    # Equality constraints (connect/weld)
+    var equality_constraints: InlineArray[
+        EqualityConstraintDef[Self.DTYPE], _max_one[Self.MAX_EQUALITY]()
+    ]
+    var num_equality: Int
 
     fn __init__(
         out self,
@@ -365,6 +430,14 @@ struct Model[
         for i in range(_max_one[Self.NJOINT]()):
             self.joints[i] = JointDef[Self.DTYPE].empty()
         self.num_joints = 0
+
+        # Initialize equality constraints
+        self.equality_constraints = InlineArray[
+            EqualityConstraintDef[Self.DTYPE], _max_one[Self.MAX_EQUALITY]()
+        ](uninitialized=True)
+        for i in range(_max_one[Self.MAX_EQUALITY]()):
+            self.equality_constraints[i] = EqualityConstraintDef[Self.DTYPE].empty()
+        self.num_equality = 0
 
     fn set_body(
         mut self,
@@ -601,6 +674,128 @@ struct Model[
         )
         self.num_joints += 1
         return joint_idx
+
+    fn add_connect_constraint(
+        mut self,
+        body_a: Int,
+        body_b: Int,
+        anchor_a: Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]],
+        anchor_b: Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]],
+        solref: Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE]] = (
+            Scalar[Self.DTYPE](0.02),
+            Scalar[Self.DTYPE](1.0),
+        ),
+        solimp: Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]] = (
+            Scalar[Self.DTYPE](0.9),
+            Scalar[Self.DTYPE](0.95),
+            Scalar[Self.DTYPE](0.001),
+        ),
+    ) -> Int:
+        """Add a connect (ball joint) equality constraint.
+
+        Args:
+            body_a: First body index.
+            body_b: Second body index (-1 for world).
+            anchor_a: Anchor point in body_a frame.
+            anchor_b: Anchor point in body_b frame (or world frame if body_b=-1).
+            solref: Impedance parameters [timeconst, dampratio].
+            solimp: Impedance parameters [dmin, dmax, width].
+
+        Returns:
+            Constraint index, or -1 if max constraints exceeded.
+        """
+        if self.num_equality >= Self.MAX_EQUALITY:
+            return -1
+        var idx = self.num_equality
+        self.equality_constraints[idx] = EqualityConstraintDef[Self.DTYPE](
+            eq_type=EQ_CONNECT,
+            body_a=body_a,
+            body_b=body_b,
+            anchor_a_x=anchor_a[0],
+            anchor_a_y=anchor_a[1],
+            anchor_a_z=anchor_a[2],
+            anchor_b_x=anchor_b[0],
+            anchor_b_y=anchor_b[1],
+            anchor_b_z=anchor_b[2],
+            relpose_x=Scalar[Self.DTYPE](0),
+            relpose_y=Scalar[Self.DTYPE](0),
+            relpose_z=Scalar[Self.DTYPE](0),
+            relpose_w=Scalar[Self.DTYPE](1),
+            solref_0=solref[0],
+            solref_1=solref[1],
+            solimp_0=solimp[0],
+            solimp_1=solimp[1],
+            solimp_2=solimp[2],
+        )
+        self.num_equality += 1
+        return idx
+
+    fn add_weld_constraint(
+        mut self,
+        body_a: Int,
+        body_b: Int,
+        anchor_a: Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]],
+        anchor_b: Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]],
+        relpose: Tuple[
+            Scalar[Self.DTYPE],
+            Scalar[Self.DTYPE],
+            Scalar[Self.DTYPE],
+            Scalar[Self.DTYPE],
+        ] = (
+            Scalar[Self.DTYPE](0),
+            Scalar[Self.DTYPE](0),
+            Scalar[Self.DTYPE](0),
+            Scalar[Self.DTYPE](1),
+        ),
+        solref: Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE]] = (
+            Scalar[Self.DTYPE](0.02),
+            Scalar[Self.DTYPE](1.0),
+        ),
+        solimp: Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]] = (
+            Scalar[Self.DTYPE](0.9),
+            Scalar[Self.DTYPE](0.95),
+            Scalar[Self.DTYPE](0.001),
+        ),
+    ) -> Int:
+        """Add a weld (rigid attachment) equality constraint.
+
+        Args:
+            body_a: First body index.
+            body_b: Second body index (-1 for world).
+            anchor_a: Anchor point in body_a frame.
+            anchor_b: Anchor point in body_b frame (or world frame if body_b=-1).
+            relpose: Relative orientation quaternion [x, y, z, w].
+            solref: Impedance parameters [timeconst, dampratio].
+            solimp: Impedance parameters [dmin, dmax, width].
+
+        Returns:
+            Constraint index, or -1 if max constraints exceeded.
+        """
+        if self.num_equality >= Self.MAX_EQUALITY:
+            return -1
+        var idx = self.num_equality
+        self.equality_constraints[idx] = EqualityConstraintDef[Self.DTYPE](
+            eq_type=EQ_WELD,
+            body_a=body_a,
+            body_b=body_b,
+            anchor_a_x=anchor_a[0],
+            anchor_a_y=anchor_a[1],
+            anchor_a_z=anchor_a[2],
+            anchor_b_x=anchor_b[0],
+            anchor_b_y=anchor_b[1],
+            anchor_b_z=anchor_b[2],
+            relpose_x=relpose[0],
+            relpose_y=relpose[1],
+            relpose_z=relpose[2],
+            relpose_w=relpose[3],
+            solref_0=solref[0],
+            solref_1=solref[1],
+            solimp_0=solimp[0],
+            solimp_1=solimp[1],
+            solimp_2=solimp[2],
+        )
+        self.num_equality += 1
+        return idx
 
     fn get_joint(self, joint_idx: Int) -> JointDef[Self.DTYPE]:
         """Get joint definition by index."""

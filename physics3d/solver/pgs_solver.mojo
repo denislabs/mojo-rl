@@ -68,6 +68,7 @@ from ..constraints.constraint_builder_gpu import (
     precompute_contact_normal_gpu,
     warmstart_normals_gpu,
     detect_and_solve_limits_gpu,
+    build_and_solve_equality_gpu,
 )
 
 # PGS solver parameters
@@ -110,8 +111,9 @@ struct PGSSolver(ConstraintSolver):
         V_SIZE: Int,
         M_SIZE: Int,
         NGEOM: Int = 0,
+        MAX_EQUALITY: Int = 0,
     ](
-        model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
+        model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         M_inv: InlineArray[Scalar[DTYPE], M_SIZE],
         mut constraints: ConstraintData[DTYPE, MAX_ROWS, NV],
@@ -132,8 +134,10 @@ struct PGSSolver(ConstraintSolver):
         var num_normals = constraints.num_normals
         var num_friction = constraints.num_friction
         var num_limits = constraints.num_limits
+        var num_equality = constraints.num_equality
         var friction_start = num_normals
         var limits_start = num_normals + num_friction
+        var equality_start = limits_start + num_limits
 
         # =====================================================================
         # Phase 1: Apply warm-start forces (normals)
@@ -286,6 +290,22 @@ struct PGSSolver(ConstraintSolver):
                 for i in range(NV):
                     qacc[i] += constraints.MinvJT[r * NV + i] * actual
 
+            # --- Equality constraints (bilateral, NO clamping) ---
+            for r_off in range(num_equality):
+                var r = equality_start + r_off
+                var a_eq: Scalar[DTYPE] = 0
+                for i in range(NV):
+                    a_eq += constraints.J[r * NV + i] * qacc[i]
+                var R_eq = Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp - constraints.rows[r].K
+                var residual = a_eq + constraints.rows[r].bias + R_eq * constraints.rows[r].lambda_val
+                var delta = -residual * constraints.rows[r].inv_K_imp
+                var old_lambda = constraints.rows[r].lambda_val
+                constraints.rows[r].lambda_val = constraints.rows[r].lambda_val + delta
+                # Bilateral: no clamping (force can push or pull)
+                var actual = constraints.rows[r].lambda_val - old_lambda
+                for i in range(NV):
+                    qacc[i] += constraints.MinvJT[r * NV + i] * actual
+
     @staticmethod
     fn solver_threads[
         NQ: Int,
@@ -310,6 +330,8 @@ struct PGSSolver(ConstraintSolver):
         V_SIZE: Int,
         BATCH: Int,
         WS_SIZE: Int,
+        NGEOM: Int = 0,
+        MAX_EQUALITY: Int = 0,
     ](
         state: LayoutTensor[
             DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
@@ -525,6 +547,24 @@ struct PGSSolver(ConstraintSolver):
                 BATCH,
                 PGS_ITERATIONS,
             ](env, dt, state, model, workspace)
+
+            # Equality constraints
+            build_and_solve_equality_gpu[
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                MAX_EQUALITY,
+                NGEOM,
+                STATE_SIZE,
+                MODEL_SIZE,
+                V_SIZE,
+                WS_SIZE,
+                BATCH,
+                PGS_ITERATIONS,
+            ](env, state, model, workspace)
 
         barrier()
 

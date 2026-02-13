@@ -37,8 +37,9 @@ trait Integrator(Movable & ImplicitlyCopyable):
         NJOINT: Int,
         MAX_CONTACTS: Int,
         NGEOM: Int = 0,
+        MAX_EQUALITY: Int = 0,
     ](
-        model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
+        model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         verbose: Bool = False,
     ) where DTYPE.is_floating_point():
@@ -60,8 +61,9 @@ trait Integrator(Movable & ImplicitlyCopyable):
         NJOINT: Int,
         MAX_CONTACTS: Int,
         NGEOM: Int = 0,
+        MAX_EQUALITY: Int = 0,
     ](
-        model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
+        model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         num_steps: Int,
     ) where DTYPE.is_floating_point():
@@ -88,6 +90,7 @@ trait Integrator(Movable & ImplicitlyCopyable):
         MAX_CONTACTS: Int,
         BATCH: Int,
         NGEOM: Int = 0,
+        MAX_EQUALITY: Int = 0,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],

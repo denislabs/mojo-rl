@@ -60,6 +60,7 @@ from ..constraints.constraint_builder_gpu import (
     warmstart_normals_gpu,
     apply_solved_normals_gpu,
     detect_and_solve_limits_gpu,
+    build_and_solve_equality_gpu,
 )
 
 # Import shared friction solver (GPU only now — CPU friction uses ConstraintData)
@@ -125,8 +126,9 @@ struct CGSolver(ConstraintSolver):
         V_SIZE: Int,
         M_SIZE: Int,
         NGEOM: Int = 0,
+        MAX_EQUALITY: Int = 0,
     ](
-        model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
+        model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         M_inv: InlineArray[Scalar[DTYPE], M_SIZE],
         mut constraints: ConstraintData[DTYPE, MAX_ROWS, NV],
@@ -147,8 +149,10 @@ struct CGSolver(ConstraintSolver):
         var num_normals = constraints.num_normals
         var num_friction = constraints.num_friction
         var num_limits = constraints.num_limits
+        var num_equality = constraints.num_equality
         var friction_start = num_normals
         var limits_start = num_normals + num_friction
+        var equality_start = limits_start + num_limits
 
         comptime MR = _max_one[MAX_ROWS]()
         comptime A_SIZE = _max_one[MAX_ROWS * MAX_ROWS]()
@@ -307,7 +311,7 @@ struct CGSolver(ConstraintSolver):
         # Phase 3: Coupled PGS (normals + friction + limits together)
         # MuJoCo-style: iterate over ALL constraints in each pass.
         # =====================================================================
-        if num_friction == 0 and num_limits == 0:
+        if num_friction == 0 and num_limits == 0 and num_equality == 0:
             return
 
         # Apply friction warm-start before coupled iterations
@@ -445,6 +449,22 @@ struct CGSolver(ConstraintSolver):
                 for i in range(NV):
                     qacc[i] += constraints.MinvJT[r * NV + i] * actual
 
+            # --- Equality constraints (bilateral, NO clamping) ---
+            for r_off in range(num_equality):
+                var r = equality_start + r_off
+                var a_eq: Scalar[DTYPE] = 0
+                for i in range(NV):
+                    a_eq += constraints.J[r * NV + i] * qacc[i]
+                var R_eq = Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp - constraints.rows[r].K
+                var residual = a_eq + constraints.rows[r].bias + R_eq * constraints.rows[r].lambda_val
+                var delta = -residual * constraints.rows[r].inv_K_imp
+                var old_lambda = constraints.rows[r].lambda_val
+                constraints.rows[r].lambda_val = constraints.rows[r].lambda_val + delta
+                # Bilateral: no clamping (force can push or pull)
+                var actual = constraints.rows[r].lambda_val - old_lambda
+                for i in range(NV):
+                    qacc[i] += constraints.MinvJT[r * NV + i] * actual
+
     @staticmethod
     @always_inline
     fn solve_gpu[
@@ -459,6 +479,8 @@ struct CGSolver(ConstraintSolver):
         V_SIZE: Int,
         BATCH: Int,
         WS_SIZE: Int,
+        NGEOM: Int = 0,
+        MAX_EQUALITY: Int = 0,
     ](
         state: LayoutTensor[
             DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
@@ -779,6 +801,24 @@ struct CGSolver(ConstraintSolver):
             BATCH,
             CG_ITERATIONS,
         ](env, dt, state, model, workspace)
+
+        # Equality constraints
+        build_and_solve_equality_gpu[
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            MAX_EQUALITY,
+            NGEOM,
+            STATE_SIZE,
+            MODEL_SIZE,
+            V_SIZE,
+            WS_SIZE,
+            BATCH,
+            CG_ITERATIONS,
+        ](env, state, model, workspace)
 
         # Friction via PGS
         _solve_friction_pgs_gpu[

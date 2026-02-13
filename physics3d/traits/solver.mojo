@@ -64,8 +64,9 @@ trait ConstraintSolver(Movable & ImplicitlyCopyable):
         V_SIZE: Int,
         M_SIZE: Int,
         NGEOM: Int = 0,
+        MAX_EQUALITY: Int = 0,
     ](
-        model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
+        model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         M_inv: InlineArray[Scalar[DTYPE], M_SIZE],
         mut constraints: ConstraintData[DTYPE, MAX_ROWS, NV],
@@ -97,6 +98,8 @@ trait ConstraintSolver(Movable & ImplicitlyCopyable):
         V_SIZE: Int,
         BATCH: Int,
         WS_SIZE: Int,
+        NGEOM: Int = 0,
+        MAX_EQUALITY: Int = 0,
     ](
         state: LayoutTensor[
             DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin

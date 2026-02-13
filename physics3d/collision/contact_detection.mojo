@@ -90,8 +90,9 @@ fn normalize_qpos_quaternions[
     NJOINT: Int,
     MAX_CONTACTS: Int,
     NGEOM: Int = 0,
+    MAX_EQUALITY: Int = 0,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
     mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
 ) where DTYPE.is_floating_point():
     """Normalize quaternions in qpos for BALL and FREE joints."""
@@ -191,9 +192,9 @@ fn normalize_qpos_quaternions_gpu[
 
 fn _geom_world_pos[
     DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, NJOINT: Int,
-    MAX_CONTACTS: Int, NGEOM: Int,
+    MAX_CONTACTS: Int, NGEOM: Int, MAX_EQUALITY: Int = 0,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     g: Int,
 ) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
@@ -237,9 +238,9 @@ fn _geom_world_pos[
 
 fn detect_contacts[
     DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, NJOINT: Int,
-    MAX_CONTACTS: Int, NGEOM: Int,
+    MAX_CONTACTS: Int, NGEOM: Int, MAX_EQUALITY: Int = 0,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM],
+    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
     mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
 ):
     """Unified contact detection using geom arrays."""
