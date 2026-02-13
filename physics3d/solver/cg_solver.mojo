@@ -29,8 +29,12 @@ from ..constraints import (
     CNSTR_NORMAL,
     CNSTR_FRICTION_T1,
     CNSTR_FRICTION_T2,
+    CNSTR_FRICTION_TORSION,
+    CNSTR_FRICTION_ROLL1,
+    CNSTR_FRICTION_ROLL2,
     CNSTR_LIMIT,
 )
+from .qcqp import qcqp2, qcqp3, qcqp5
 from ..gpu.constants import (
     contacts_offset,
     metadata_offset,
@@ -85,7 +89,7 @@ struct CGSolver(ConstraintSolver):
 
     @staticmethod
     fn solver_workspace_size[NV: Int, MAX_CONTACTS: Int]() -> Int:
-        """CG solver workspace: 27*MC + 6*MC*NV + MC*MC floats.
+        """CG solver workspace: 48*MC + 12*MC*NV + MC*MC floats.
 
         Layout (offsets relative to solver workspace start):
           [0..13*MC+2*MC*NV)                            Common normal block
@@ -94,10 +98,10 @@ struct CGSolver(ConstraintSolver):
           [14*MC+2*MC*NV+MC*MC..15*MC+2*MC*NV+MC*MC)    r (residual)
           [15*MC+2*MC*NV+MC*MC..16*MC+2*MC*NV+MC*MC)    p (search direction)
           [16*MC+2*MC*NV+MC*MC..17*MC+2*MC*NV+MC*MC)    Ap (A*p product)
-          [17*MC+2*MC*NV+MC*MC..27*MC+6*MC*NV+MC*MC)    Friction (10*MC + 4*MC*NV)
+          [17*MC+2*MC*NV+MC*MC..48*MC+12*MC*NV+MC*MC)   Friction (31*MC + 10*MC*NV)
         """
         comptime MC = _max_one[MAX_CONTACTS]()
-        return 27 * MC + 6 * MC * NV + MC * MC
+        return 48 * MC + 12 * MC * NV + MC * MC
 
     @staticmethod
     fn solver_threads[
@@ -337,57 +341,92 @@ struct CGSolver(ConstraintSolver):
                 for i in range(NV):
                     qacc[i] += constraints.MinvJT[r * NV + i] * actual
 
-            # --- Friction constraints (paired t1/t2 with Coulomb cone) ---
-            var pair_idx = 0
-            while pair_idx < num_friction:
-                var r_t1 = friction_start + pair_idx
-                var r_t2 = friction_start + pair_idx + 1
-                var normal_row = constraints.rows[r_t1].friction_parent
-                var mu = constraints.rows[r_t1].friction_coef
+            # --- Friction constraints (contact-group with elliptic cone) ---
+            var fric_idx = 0
+            while fric_idx < num_friction:
+                var r_start = friction_start + fric_idx
+                var normal_row = constraints.rows[r_start].friction_parent
                 var lambda_n = constraints.rows[normal_row].lambda_val
 
+                # Count group size (consecutive rows with same friction_parent)
+                var group_size = 1
+                while fric_idx + group_size < num_friction:
+                    if constraints.rows[friction_start + fric_idx + group_size].friction_parent != normal_row:
+                        break
+                    group_size += 1
+
                 if lambda_n <= Scalar[DTYPE](0):
-                    pair_idx += 2
+                    fric_idx += group_size
                     continue
 
-                var max_friction = mu * lambda_n
+                # Save old values for all rows in group
+                var old_vals = InlineArray[Scalar[DTYPE], 5](fill=Scalar[DTYPE](0))
+                for g in range(group_size):
+                    old_vals[g] = constraints.rows[r_start + g].lambda_val
 
-                var old_t1 = constraints.rows[r_t1].lambda_val
-                if constraints.rows[r_t1].K >= Scalar[DTYPE](FRICTION_K_MIN):
-                    var a_t1: Scalar[DTYPE] = 0
-                    for i in range(NV):
-                        a_t1 += constraints.J[r_t1 * NV + i] * qacc[i]
-                    constraints.rows[r_t1].lambda_val = old_t1 - a_t1 / constraints.rows[r_t1].K
+                # GS update for each row in group
+                for g in range(group_size):
+                    var r = r_start + g
+                    if constraints.rows[r].K >= Scalar[DTYPE](FRICTION_K_MIN):
+                        var a_f: Scalar[DTYPE] = 0
+                        for i in range(NV):
+                            a_f += constraints.J[r * NV + i] * qacc[i]
+                        constraints.rows[r].lambda_val = constraints.rows[r].lambda_val - a_f / constraints.rows[r].K
 
-                var old_t2 = constraints.rows[r_t2].lambda_val
-                if constraints.rows[r_t2].K >= Scalar[DTYPE](FRICTION_K_MIN):
-                    var a_t2: Scalar[DTYPE] = 0
-                    for i in range(NV):
-                        a_t2 += constraints.J[r_t2 * NV + i] * qacc[i]
-                    constraints.rows[r_t2].lambda_val = old_t2 - a_t2 / constraints.rows[r_t2].K
-
-                # Coulomb cone clamping
-                var t_mag = sqrt(
-                    constraints.rows[r_t1].lambda_val
-                    * constraints.rows[r_t1].lambda_val
-                    + constraints.rows[r_t2].lambda_val
-                    * constraints.rows[r_t2].lambda_val
-                )
-                if t_mag > max_friction:
-                    var scale = max_friction / t_mag
-                    constraints.rows[r_t1].lambda_val = constraints.rows[r_t1].lambda_val * scale
-                    constraints.rows[r_t2].lambda_val = constraints.rows[r_t2].lambda_val * scale
-
-                var actual_t1 = constraints.rows[r_t1].lambda_val - old_t1
-                var actual_t2 = constraints.rows[r_t2].lambda_val - old_t2
-
-                for i in range(NV):
-                    qacc[i] += (
-                        constraints.MinvJT[r_t1 * NV + i] * actual_t1
-                        + constraints.MinvJT[r_t2 * NV + i] * actual_t2
+                # QCQP elliptic cone projection
+                if group_size == 2:
+                    var f1 = constraints.rows[r_start].lambda_val
+                    var f2 = constraints.rows[r_start + 1].lambda_val
+                    qcqp2[DTYPE](
+                        f1, f2,
+                        constraints.rows[r_start].friction_coef,
+                        lambda_n,
                     )
+                    constraints.rows[r_start].lambda_val = f1
+                    constraints.rows[r_start + 1].lambda_val = f2
+                elif group_size == 3:
+                    var f1 = constraints.rows[r_start].lambda_val
+                    var f2 = constraints.rows[r_start + 1].lambda_val
+                    var f3 = constraints.rows[r_start + 2].lambda_val
+                    qcqp3[DTYPE](
+                        f1, f2, f3,
+                        constraints.rows[r_start].friction_coef,
+                        constraints.rows[r_start + 1].friction_coef,
+                        constraints.rows[r_start + 2].friction_coef,
+                        lambda_n,
+                    )
+                    constraints.rows[r_start].lambda_val = f1
+                    constraints.rows[r_start + 1].lambda_val = f2
+                    constraints.rows[r_start + 2].lambda_val = f3
+                elif group_size == 5:
+                    var f1 = constraints.rows[r_start].lambda_val
+                    var f2 = constraints.rows[r_start + 1].lambda_val
+                    var f3 = constraints.rows[r_start + 2].lambda_val
+                    var f4 = constraints.rows[r_start + 3].lambda_val
+                    var f5 = constraints.rows[r_start + 4].lambda_val
+                    qcqp5[DTYPE](
+                        f1, f2, f3, f4, f5,
+                        constraints.rows[r_start].friction_coef,
+                        constraints.rows[r_start + 1].friction_coef,
+                        constraints.rows[r_start + 2].friction_coef,
+                        constraints.rows[r_start + 3].friction_coef,
+                        constraints.rows[r_start + 4].friction_coef,
+                        lambda_n,
+                    )
+                    constraints.rows[r_start].lambda_val = f1
+                    constraints.rows[r_start + 1].lambda_val = f2
+                    constraints.rows[r_start + 2].lambda_val = f3
+                    constraints.rows[r_start + 3].lambda_val = f4
+                    constraints.rows[r_start + 4].lambda_val = f5
 
-                pair_idx += 2
+                # Apply delta to qacc
+                for g in range(group_size):
+                    var r = r_start + g
+                    var actual = constraints.rows[r].lambda_val - old_vals[g]
+                    for i in range(NV):
+                        qacc[i] += constraints.MinvJT[r * NV + i] * actual
+
+                fric_idx += group_size
 
             # --- Joint limit constraints ---
             for r_off in range(num_limits):

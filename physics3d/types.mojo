@@ -58,7 +58,13 @@ struct ContactInfo[DTYPE: DType](ImplicitlyCopyable, Movable):
     var force_n: Scalar[Self.DTYPE]  # Normal constraint force
     var force_t1: Scalar[Self.DTYPE]  # Tangent constraint force 1
     var force_t2: Scalar[Self.DTYPE]  # Tangent constraint force 2
-    var friction: Scalar[Self.DTYPE]  # Per-contact friction coefficient
+    var friction: Scalar[Self.DTYPE]  # Per-contact slide friction coefficient
+    var friction_spin: Scalar[Self.DTYPE]  # Torsional friction coefficient
+    var friction_roll: Scalar[Self.DTYPE]  # Rolling friction coefficient
+    var condim: Int  # Contact dimensionality (1, 3, 4, or 6)
+    var force_torsion: Scalar[Self.DTYPE]  # Torsional friction force (warm-start)
+    var force_roll1: Scalar[Self.DTYPE]  # Rolling friction force 1 (warm-start)
+    var force_roll2: Scalar[Self.DTYPE]  # Rolling friction force 2 (warm-start)
 
     @staticmethod
     fn empty() -> Self:
@@ -77,6 +83,12 @@ struct ContactInfo[DTYPE: DType](ImplicitlyCopyable, Movable):
             force_t1=Scalar[Self.DTYPE](0),
             force_t2=Scalar[Self.DTYPE](0),
             friction=Scalar[Self.DTYPE](0),
+            friction_spin=Scalar[Self.DTYPE](0),
+            friction_roll=Scalar[Self.DTYPE](0),
+            condim=3,
+            force_torsion=Scalar[Self.DTYPE](0),
+            force_roll1=Scalar[Self.DTYPE](0),
+            force_roll2=Scalar[Self.DTYPE](0),
         )
 
 
@@ -161,8 +173,15 @@ struct Model[
     var geom_half_y: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM]()]
     var geom_half_z: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM]()]
     var geom_friction: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM]()]
+    var geom_condim: InlineArray[Int, _max_one[Self.NGEOM]()]
+    var geom_friction_spin: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM]()]
+    var geom_friction_roll: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM]()]
     var geom_contype: InlineArray[Int, _max_one[Self.NGEOM]()]
     var geom_conaffinity: InlineArray[Int, _max_one[Self.NGEOM]()]
+
+    # Friction cone model
+    var cone_type: Int  # 0=pyramidal, 1=elliptic (default 1)
+    var impratio: Scalar[Self.DTYPE]  # MuJoCo impratio (default 1.0)
 
     # Joint definitions
     var joints: InlineArray[JointDef[Self.DTYPE], _max_one[Self.NJOINT]()]
@@ -264,12 +283,23 @@ struct Model[
         self.geom_friction = InlineArray[
             Scalar[Self.DTYPE], _max_one[Self.NGEOM]()
         ](uninitialized=True)
+        self.geom_condim = InlineArray[Int, _max_one[Self.NGEOM]()](
+            uninitialized=True
+        )
+        self.geom_friction_spin = InlineArray[
+            Scalar[Self.DTYPE], _max_one[Self.NGEOM]()
+        ](uninitialized=True)
+        self.geom_friction_roll = InlineArray[
+            Scalar[Self.DTYPE], _max_one[Self.NGEOM]()
+        ](uninitialized=True)
         self.geom_contype = InlineArray[Int, _max_one[Self.NGEOM]()](
             uninitialized=True
         )
         self.geom_conaffinity = InlineArray[Int, _max_one[Self.NGEOM]()](
             uninitialized=True
         )
+        self.cone_type = 1  # Default: elliptic
+        self.impratio = Scalar[Self.DTYPE](1.0)
         for i in range(_max_one[Self.NGEOM]()):
             self.geom_type[i] = 0
             self.geom_body[i] = -1
@@ -279,6 +309,9 @@ struct Model[
             self.geom_half_y[i] = Scalar[Self.DTYPE](0)
             self.geom_half_z[i] = Scalar[Self.DTYPE](0)
             self.geom_friction[i] = Scalar[Self.DTYPE](0.5)
+            self.geom_condim[i] = 3
+            self.geom_friction_spin[i] = Scalar[Self.DTYPE](0.005)
+            self.geom_friction_roll[i] = Scalar[Self.DTYPE](0.0001)
             self.geom_contype[i] = 1
             self.geom_conaffinity[i] = 1
         for i in range(_max_one[Self.NGEOM * 3]()):

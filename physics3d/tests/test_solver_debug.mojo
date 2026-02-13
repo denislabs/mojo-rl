@@ -288,7 +288,7 @@ fn debug_step[
         print("")
 
     # 5. Build constraints
-    comptime MAX_ROWS = 3 * MAX_CONTACTS + 2 * NJOINT
+    comptime MAX_ROWS = 11 * MAX_CONTACTS + 2 * NJOINT
     var constraints = ConstraintData[DTYPE, MAX_ROWS, NV]()
     build_constraints[
         DTYPE,

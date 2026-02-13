@@ -52,6 +52,9 @@ trait GeomSpec:
     comptime HALF_Z: Float64
     # Physics
     comptime FRICTION: Float64
+    comptime CONDIM: Int  # Contact dimensionality: 1, 3, 4, or 6
+    comptime FRICTION_SPIN: Float64  # Torsional friction coefficient
+    comptime FRICTION_ROLL: Float64  # Rolling friction coefficient
     # Collision filtering
     comptime CONTYPE: Int
     comptime CONAFFINITY: Int
@@ -68,6 +71,9 @@ trait GeomSpec:
 struct PlaneGeom[
     z: Float64 = 0.0,
     friction: Float64 = 0.5,
+    condim: Int = 3,
+    friction_spin: Float64 = 0.005,
+    friction_roll: Float64 = 0.0001,
     contype: Int = 1,
     conaffinity: Int = 1,
     size_x: Float64 = 40.0,
@@ -97,6 +103,9 @@ struct PlaneGeom[
     comptime HALF_Y: Float64 = 0.0
     comptime HALF_Z: Float64 = 0.0
     comptime FRICTION: Float64 = Self.friction
+    comptime CONDIM: Int = Self.condim
+    comptime FRICTION_SPIN: Float64 = Self.friction_spin
+    comptime FRICTION_ROLL: Float64 = Self.friction_roll
     comptime CONTYPE: Int = Self.contype
     comptime CONAFFINITY: Int = Self.conaffinity
     comptime COLOR: Color3D = Color3D(128, 128, 128)
@@ -109,6 +118,9 @@ struct SphereGeom[
     pos_z: Float64 = 0.0,
     radius: Float64 = 0.5,
     friction: Float64 = 0.5,
+    condim: Int = 3,
+    friction_spin: Float64 = 0.005,
+    friction_roll: Float64 = 0.0001,
     contype: Int = 1,
     conaffinity: Int = 1,
     color: Color3D = Color3D(100, 100, 200),
@@ -136,6 +148,9 @@ struct SphereGeom[
     comptime HALF_Y: Float64 = 0.0
     comptime HALF_Z: Float64 = 0.0
     comptime FRICTION: Float64 = Self.friction
+    comptime CONDIM: Int = Self.condim
+    comptime FRICTION_SPIN: Float64 = Self.friction_spin
+    comptime FRICTION_ROLL: Float64 = Self.friction_roll
     comptime CONTYPE: Int = Self.contype
     comptime CONAFFINITY: Int = Self.conaffinity
     comptime COLOR: Color3D = Self.color
@@ -154,6 +169,9 @@ struct BoxGeom[
     half_y: Float64 = 0.5,
     half_z: Float64 = 0.5,
     friction: Float64 = 0.5,
+    condim: Int = 3,
+    friction_spin: Float64 = 0.005,
+    friction_roll: Float64 = 0.0001,
     contype: Int = 1,
     conaffinity: Int = 1,
     color: Color3D = Color3D(100, 200, 100),
@@ -181,6 +199,9 @@ struct BoxGeom[
     comptime HALF_Y: Float64 = Self.half_y
     comptime HALF_Z: Float64 = Self.half_z
     comptime FRICTION: Float64 = Self.friction
+    comptime CONDIM: Int = Self.condim
+    comptime FRICTION_SPIN: Float64 = Self.friction_spin
+    comptime FRICTION_ROLL: Float64 = Self.friction_roll
     comptime CONTYPE: Int = Self.contype
     comptime CONAFFINITY: Int = Self.conaffinity
     comptime COLOR: Color3D = Self.color
@@ -198,6 +219,9 @@ struct CapsuleGeom[
     half_length: Float64 = 0.5,
     radius: Float64 = 0.25,
     friction: Float64 = 0.5,
+    condim: Int = 3,
+    friction_spin: Float64 = 0.005,
+    friction_roll: Float64 = 0.0001,
     contype: Int = 1,
     conaffinity: Int = 1,
     color: Color3D = Color3D(200, 100, 100),
@@ -227,6 +251,9 @@ struct CapsuleGeom[
     comptime HALF_Y: Float64 = 0.0
     comptime HALF_Z: Float64 = 0.0
     comptime FRICTION: Float64 = Self.friction
+    comptime CONDIM: Int = Self.condim
+    comptime FRICTION_SPIN: Float64 = Self.friction_spin
+    comptime FRICTION_ROLL: Float64 = Self.friction_roll
     comptime CONTYPE: Int = Self.contype
     comptime CONAFFINITY: Int = Self.conaffinity
     comptime COLOR: Color3D = Self.color
@@ -250,6 +277,9 @@ struct BodyCapsuleGeom[
     quat_z: Float64 = 0.0,
     quat_w: Float64 = 1.0,
     friction: Float64 = 0.5,
+    condim: Int = 3,
+    friction_spin: Float64 = 0.005,
+    friction_roll: Float64 = 0.0001,
     contype: Int = 1,
     conaffinity: Int = 1,
     color: Color3D = Color3D(204, 153, 102),
@@ -278,6 +308,9 @@ struct BodyCapsuleGeom[
     comptime HALF_Y: Float64 = 0.0
     comptime HALF_Z: Float64 = 0.0
     comptime FRICTION: Float64 = Self.friction
+    comptime CONDIM: Int = Self.condim
+    comptime FRICTION_SPIN: Float64 = Self.friction_spin
+    comptime FRICTION_ROLL: Float64 = Self.friction_roll
     comptime CONTYPE: Int = Self.contype
     comptime CONAFFINITY: Int = Self.conaffinity
     comptime COLOR: Color3D = Self.color
@@ -291,6 +324,9 @@ struct BodySphereGeom[
     pos_y: Float64 = 0.0,
     pos_z: Float64 = 0.0,
     friction: Float64 = 0.5,
+    condim: Int = 3,
+    friction_spin: Float64 = 0.005,
+    friction_roll: Float64 = 0.0001,
     contype: Int = 1,
     conaffinity: Int = 1,
     color: Color3D = Color3D(204, 153, 102),
@@ -315,6 +351,9 @@ struct BodySphereGeom[
     comptime HALF_Y: Float64 = 0.0
     comptime HALF_Z: Float64 = 0.0
     comptime FRICTION: Float64 = Self.friction
+    comptime CONDIM: Int = Self.condim
+    comptime FRICTION_SPIN: Float64 = Self.friction_spin
+    comptime FRICTION_ROLL: Float64 = Self.friction_roll
     comptime CONTYPE: Int = Self.contype
     comptime CONAFFINITY: Int = Self.conaffinity
     comptime COLOR: Color3D = Self.color
@@ -334,6 +373,9 @@ struct BodyBoxGeom[
     quat_z: Float64 = 0.0,
     quat_w: Float64 = 1.0,
     friction: Float64 = 0.5,
+    condim: Int = 3,
+    friction_spin: Float64 = 0.005,
+    friction_roll: Float64 = 0.0001,
     contype: Int = 1,
     conaffinity: Int = 1,
     color: Color3D = Color3D(204, 153, 102),
@@ -358,6 +400,9 @@ struct BodyBoxGeom[
     comptime HALF_Y: Float64 = Self.half_y
     comptime HALF_Z: Float64 = Self.half_z
     comptime FRICTION: Float64 = Self.friction
+    comptime CONDIM: Int = Self.condim
+    comptime FRICTION_SPIN: Float64 = Self.friction_spin
+    comptime FRICTION_ROLL: Float64 = Self.friction_roll
     comptime CONTYPE: Int = Self.contype
     comptime CONAFFINITY: Int = Self.conaffinity
     comptime COLOR: Color3D = Self.color

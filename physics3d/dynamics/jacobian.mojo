@@ -1119,3 +1119,122 @@ fn compute_contact_jacobian_row_gpu[
                 J_row[dof_idx] += rebind[Scalar[DTYPE]](val)
             if affects_b:
                 J_row[dof_idx] -= rebind[Scalar[DTYPE]](val)
+
+
+@always_inline
+fn compute_angular_jacobian_row_gpu[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    STATE_SIZE: Int,
+    MODEL_SIZE: Int,
+    V_SIZE: Int,
+    BATCH: Int,
+    WS_SIZE: Int,
+](
+    env: Int,
+    state: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+    ],
+    model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+    workspace: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+    ],
+    contact_body_a: Int,
+    contact_body_b: Int,
+    dir_x: Scalar[DTYPE],
+    dir_y: Scalar[DTYPE],
+    dir_z: Scalar[DTYPE],
+    mut J_row: InlineArray[Scalar[DTYPE], V_SIZE],
+):
+    """Compute angular-only Jacobian row on GPU for torsional/rolling friction.
+
+    Like compute_contact_jacobian_row_gpu but only uses the angular component
+    of cdof (no cross product with position offset, no linear component).
+    J[dof] = cdof_angular[dof] . dir (bilateral: body_a - body_b).
+    """
+    comptime cdof_idx = ws_cdof_offset()
+
+    for i in range(V_SIZE):
+        J_row[i] = 0
+
+    var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
+    var num_joints = Int(
+        rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_NJOINT])
+    )
+
+    for j_idx in range(num_joints):
+        var joint_off = model_joint_offset[NBODY](j_idx)
+        var jnt_type = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
+        )
+        var joint_body = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID])
+        )
+        var dof_adr = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
+        )
+
+        # Check if this joint affects body_a
+        var affects_a = False
+        if contact_body_a == joint_body:
+            affects_a = True
+        else:
+            var current = contact_body_a
+            while current >= 0:
+                var current_body_off = model_body_offset(current)
+                var current_parent = Int(
+                    rebind[Scalar[DTYPE]](
+                        model[0, current_body_off + BODY_IDX_PARENT]
+                    )
+                )
+                if current_parent == joint_body:
+                    affects_a = True
+                    break
+                current = current_parent
+
+        # Check if this joint affects body_b
+        var affects_b = False
+        if contact_body_b >= 0:
+            if contact_body_b == joint_body:
+                affects_b = True
+            else:
+                var current_b = contact_body_b
+                while current_b >= 0:
+                    var current_body_off_b = model_body_offset(current_b)
+                    var current_parent_b = Int(
+                        rebind[Scalar[DTYPE]](
+                            model[0, current_body_off_b + BODY_IDX_PARENT]
+                        )
+                    )
+                    if current_parent_b == joint_body:
+                        affects_b = True
+                        break
+                    current_b = current_parent_b
+
+        if not affects_a and not affects_b:
+            continue
+
+        var num_dof = 1
+        if jnt_type == JNT_FREE:
+            num_dof = 6
+        elif jnt_type == JNT_BALL:
+            num_dof = 3
+
+        for d in range(num_dof):
+            var dof_idx = dof_adr + d
+
+            # Angular-only: just dot product of angular cdof with direction
+            var ang_x = workspace[env, cdof_idx + dof_idx * 6 + 0]
+            var ang_y = workspace[env, cdof_idx + dof_idx * 6 + 1]
+            var ang_z = workspace[env, cdof_idx + dof_idx * 6 + 2]
+
+            var val = ang_x * dir_x + ang_y * dir_y + ang_z * dir_z
+
+            if affects_a:
+                J_row[dof_idx] += rebind[Scalar[DTYPE]](val)
+            if affects_b:
+                J_row[dof_idx] -= rebind[Scalar[DTYPE]](val)

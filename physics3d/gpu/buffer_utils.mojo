@@ -107,6 +107,11 @@ from .constants import (
     GEOM_IDX_FRICTION,
     GEOM_IDX_CONTYPE,
     GEOM_IDX_CONAFFINITY,
+    GEOM_IDX_CONDIM,
+    GEOM_IDX_FRICTION_SPIN,
+    GEOM_IDX_FRICTION_ROLL,
+    MODEL_META_IDX_CONE_TYPE,
+    MODEL_META_IDX_IMPRATIO,
     model_geom_offset,
 )
 from ..types import Model, Data
@@ -273,6 +278,9 @@ fn copy_model_to_buffer[
     buffer[meta_offset + MODEL_META_IDX_SOLIMP_LIMIT_0] = model.solimp_limit[0]
     buffer[meta_offset + MODEL_META_IDX_SOLIMP_LIMIT_1] = model.solimp_limit[1]
     buffer[meta_offset + MODEL_META_IDX_SOLIMP_LIMIT_2] = model.solimp_limit[2]
+    # Friction cone model
+    buffer[meta_offset + MODEL_META_IDX_CONE_TYPE] = Scalar[DTYPE](model.cone_type)
+    buffer[meta_offset + MODEL_META_IDX_IMPRATIO] = model.impratio
 
 
 fn copy_geoms_to_buffer[
@@ -316,6 +324,11 @@ fn copy_geoms_to_buffer[
         buffer[offset + GEOM_IDX_CONAFFINITY] = Scalar[DTYPE](
             model.geom_conaffinity[g]
         )
+        buffer[offset + GEOM_IDX_CONDIM] = Scalar[DTYPE](
+            model.geom_condim[g]
+        )
+        buffer[offset + GEOM_IDX_FRICTION_SPIN] = model.geom_friction_spin[g]
+        buffer[offset + GEOM_IDX_FRICTION_ROLL] = model.geom_friction_roll[g]
 
 
 # =============================================================================

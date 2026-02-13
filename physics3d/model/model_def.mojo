@@ -882,6 +882,9 @@ struct Geoms[*G: GeomSpec]:
             model.geom_half_y[i] = Scalar[DTYPE](G_item.HALF_Y)
             model.geom_half_z[i] = Scalar[DTYPE](G_item.HALF_Z)
             model.geom_friction[i] = Scalar[DTYPE](G_item.FRICTION)
+            model.geom_condim[i] = G_item.CONDIM
+            model.geom_friction_spin[i] = Scalar[DTYPE](G_item.FRICTION_SPIN)
+            model.geom_friction_roll[i] = Scalar[DTYPE](G_item.FRICTION_ROLL)
             model.geom_contype[i] = G_item.CONTYPE
             model.geom_conaffinity[i] = G_item.CONAFFINITY
 

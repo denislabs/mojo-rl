@@ -1,9 +1,31 @@
+"""GPU friction solver with variable condim (1/3/4/6) and QCQP elliptic cone.
+
+Shared friction PGS solver for GPU, used by CG and Newton solvers.
+Supports up to 5 friction directions per contact:
+  slot 0 = tangent 1 (slide)
+  slot 1 = tangent 2 (slide)
+  slot 2 = torsion (angular, along normal)
+  slot 3 = roll 1 (angular, along tangent 1)
+  slot 4 = roll 2 (angular, along tangent 2)
+
+Workspace layout (31*MC + 10*MC*NV per solver):
+  lambda_f[5*MC]      - friction impulses per direction
+  K_f[5*MC]           - effective masses per direction
+  dir_f[15*MC]        - direction vectors (5 dirs × 3 components)
+  fric_coef[5*MC]     - per-direction friction coefficients
+  condim_c[MC]        - per-contact condim
+  J_f[5*MC*NV]        - Jacobians per direction
+  MinvJ_f[5*MC*NV]    - M_inv @ J^T per direction
+"""
+
 from layout import Layout, LayoutTensor
 from math import sqrt
 from ..types import _max_one
 from ..dynamics.jacobian import (
     compute_contact_jacobian_row_gpu,
+    compute_angular_jacobian_row_gpu,
 )
+from .qcqp import qcqp2, qcqp3, qcqp5
 from ..gpu.constants import (
     ws_qacc_constrained_offset,
     ws_m_inv_offset,
@@ -12,12 +34,25 @@ from ..gpu.constants import (
     CONTACT_IDX_FORCE_N,
     CONTACT_IDX_FORCE_T1,
     CONTACT_IDX_FORCE_T2,
+    CONTACT_IDX_FORCE_TORSION,
+    CONTACT_IDX_FORCE_ROLL1,
+    CONTACT_IDX_FORCE_ROLL2,
+    CONTACT_IDX_FRICTION,
+    CONTACT_IDX_FRICTION_SPIN,
+    CONTACT_IDX_FRICTION_ROLL,
+    CONTACT_IDX_CONDIM,
 )
 
 # Coupled PGS iterations (normals + friction together, MuJoCo-style)
 comptime COUPLED_PGS_ITERATIONS_GPU: Int = 50
 # Minimum K for friction tangent rows — below this, direction is degenerate
 comptime FRICTION_K_MIN: Float64 = 1e-6
+
+
+fn friction_workspace_size[MC: Int, NV: Int]() -> Int:
+    """Size of friction workspace block: 31*MC + 10*MC*NV."""
+    return 31 * MC + 10 * MC * NV
+
 
 # =============================================================================
 # Shared friction solver (PGS) - GPU
@@ -48,28 +83,23 @@ fn _solve_friction_pgs_gpu[
     workspace: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
     ],
-    # Offsets into workspace (absolute from env row start)
     nc: Int,
     friction_coef: Scalar[DTYPE],
     contacts_off: Int,
 ):
-    """Friction solver using PGS on GPU (shared by CG and Newton solvers).
+    """Friction solver using PGS on GPU with variable condim and QCQP projection.
 
-    Derives all writable pointers from workspace.ptr (preserves mutable origin).
-    Contact data is read-only, friction data is read-write.
+    Supports condim 1 (no friction), 3 (t1+t2), 4 (+torsion), 6 (+roll1+roll2).
+    Uses QCQP elliptic cone projection for condim >= 3.
     """
 
     comptime qacc_idx = ws_qacc_constrained_offset[NV, NBODY]()
-
     comptime contact_ws_off = ws_solver_offset[NV, NBODY]()
-    comptime friction_ws_off = contact_ws_off + FRICTION_WS_OFFSET
+    comptime fws = contact_ws_off + FRICTION_WS_OFFSET
     comptime MC = _max_one[MAX_CONTACTS]()
-
-    # Derive ALL pointers from workspace.ptr for mutable writes
-
     comptime M_inv = ws_m_inv_offset[NV, NBODY]()
 
-    # Contact block (read-only)
+    # Contact block (read-only, from common normal workspace)
     comptime ws_lambda_n = contact_ws_off + 0 * MC
     comptime ws_c_body = contact_ws_off + 3 * MC
     comptime ws_c_body_b = contact_ws_off + 4 * MC
@@ -80,177 +110,169 @@ fn _solve_friction_pgs_gpu[
     comptime ws_c_ny = contact_ws_off + 9 * MC
     comptime ws_c_nz = contact_ws_off + 10 * MC
 
-    # Friction block (read-write)
-    comptime lt1 = friction_ws_off + 0 * MC
-    comptime lt2 = friction_ws_off + 1 * MC
-    comptime kt1 = friction_ws_off + 2 * MC
-    comptime kt2 = friction_ws_off + 3 * MC
-    comptime _t1x = friction_ws_off + 4 * MC
-    comptime _t1y = friction_ws_off + 5 * MC
-    comptime _t1z = friction_ws_off + 6 * MC
-    comptime _t2x = friction_ws_off + 7 * MC
-    comptime _t2y = friction_ws_off + 8 * MC
-    comptime _t2z = friction_ws_off + 9 * MC
-    # Cached Jacobians and precomputed M_inv @ J^T (4 * MC * NV)
-    comptime ws_J_t1 = friction_ws_off + 10 * MC
-    comptime ws_J_t2 = friction_ws_off + 10 * MC + MC * NV
-    comptime ws_MinvJt1 = friction_ws_off + 10 * MC + 2 * MC * NV
-    comptime ws_MinvJt2 = friction_ws_off + 10 * MC + 3 * MC * NV
+    # Friction workspace offsets (relative to fws)
+    # lambda_f[d][c] = fws + d*MC + c
+    comptime lf = fws + 0 * MC      # 5 * MC
+    # K_f[d][c] = fws + 5*MC + d*MC + c
+    comptime kf = fws + 5 * MC      # 5 * MC
+    # dir_f[d][axis][c] = fws + 10*MC + (d*3+axis)*MC + c
+    comptime df = fws + 10 * MC     # 15 * MC
+    # fric_coef[d][c] = fws + 25*MC + d*MC + c
+    comptime fc = fws + 25 * MC     # 5 * MC
+    # condim_c[c] = fws + 30*MC + c
+    comptime cd = fws + 30 * MC     # MC
+    # J_f[d][c*NV+i] = fws + 31*MC + d*MC*NV + c*NV + i
+    comptime jf = fws + 31 * MC     # 5 * MC * NV
+    # MinvJ_f[d][c*NV+i] = fws + 31*MC + 5*MC*NV + d*MC*NV + c*NV + i
+    comptime mj = fws + 31 * MC + 5 * MC * NV  # 5 * MC * NV
 
     # Initialize friction workspace
-    for i in range(MC):
-        workspace[env, lt1 + i] = Scalar[DTYPE](0)
-        workspace[env, lt2 + i] = Scalar[DTYPE](0)
-        workspace[env, kt1 + i] = Scalar[DTYPE](1)
-        workspace[env, kt2 + i] = Scalar[DTYPE](1)
-        workspace[env, _t1x + i] = Scalar[DTYPE](0)
-        workspace[env, _t1y + i] = Scalar[DTYPE](0)
-        workspace[env, _t1z + i] = Scalar[DTYPE](0)
-        workspace[env, _t2x + i] = Scalar[DTYPE](0)
-        workspace[env, _t2y + i] = Scalar[DTYPE](0)
-        workspace[env, _t2z + i] = Scalar[DTYPE](0)
+    for c in range(MC):
+        for d in range(5):
+            workspace[env, lf + d * MC + c] = Scalar[DTYPE](0)
+            workspace[env, kf + d * MC + c] = Scalar[DTYPE](1)
+            workspace[env, fc + d * MC + c] = Scalar[DTYPE](0)
+            for axis in range(3):
+                workspace[env, df + (d * 3 + axis) * MC + c] = Scalar[DTYPE](0)
+        workspace[env, cd + c] = Scalar[DTYPE](3)  # default condim=3
 
     var J_row = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
 
-    # Precompute tangent basis and K_t for active contacts
+    # Precompute friction directions, Jacobians, and K for active contacts
     for c in range(nc):
         if workspace[env, ws_lambda_n + c] <= Scalar[DTYPE](0):
             continue
 
-        var nx = workspace[env, ws_c_nx + c]
-        var ny = workspace[env, ws_c_ny + c]
-        var nz = workspace[env, ws_c_nz + c]
-
-        if abs(nx) < Scalar[DTYPE](0.9):
-            workspace[env, _t1x + c] = Scalar[DTYPE](0)
-            workspace[env, _t1y + c] = -nz
-            workspace[env, _t1z + c] = ny
-        else:
-            workspace[env, _t1x + c] = nz
-            workspace[env, _t1y + c] = Scalar[DTYPE](0)
-            workspace[env, _t1z + c] = -nx
-
-        var t1_mag = sqrt(
-            workspace[env, _t1x + c] * workspace[env, _t1x + c]
-            + workspace[env, _t1y + c] * workspace[env, _t1y + c]
-            + workspace[env, _t1z + c] * workspace[env, _t1z + c]
-        )
-        if t1_mag > Scalar[DTYPE](1e-10):
-            workspace[env, _t1x + c] = workspace[env, _t1x + c] / t1_mag
-            workspace[env, _t1y + c] = workspace[env, _t1y + c] / t1_mag
-            workspace[env, _t1z + c] = workspace[env, _t1z + c] / t1_mag
-
-        workspace[env, _t2x + c] = (
-            ny * workspace[env, _t1z + c] - nz * workspace[env, _t1y + c]
-        )
-        workspace[env, _t2y + c] = (
-            nz * workspace[env, _t1x + c] - nx * workspace[env, _t1z + c]
-        )
-        workspace[env, _t2z + c] = (
-            nx * workspace[env, _t1y + c] - ny * workspace[env, _t1x + c]
-        )
-
-        # Compute K_t1, cache J_t1 and MinvJt1
-        compute_contact_jacobian_row_gpu[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            STATE_SIZE,
-            MODEL_SIZE,
-            V_SIZE,
-            BATCH,
-            WS_SIZE,
-        ](
-            env,
-            state,
-            model,
-            workspace,
-            Int(workspace[env, ws_c_body + c]),
-            Int(workspace[env, ws_c_body_b + c]),
-            rebind[Scalar[DTYPE]](workspace[env, ws_c_px + c]),
-            rebind[Scalar[DTYPE]](workspace[env, ws_c_py + c]),
-            rebind[Scalar[DTYPE]](workspace[env, ws_c_pz + c]),
-            rebind[Scalar[DTYPE]](workspace[env, _t1x + c]),
-            rebind[Scalar[DTYPE]](workspace[env, _t1y + c]),
-            rebind[Scalar[DTYPE]](workspace[env, _t1z + c]),
-            J_row,
-        )
-
-        var k1: workspace.element_type = 0
-        for i in range(NV):
-            workspace[env, ws_J_t1 + c * NV + i] = J_row[i]
-            var mi_j_sum: workspace.element_type = 0
-            for j_idx in range(NV):
-                mi_j_sum += (
-                    workspace[env, M_inv + i * NV + j_idx] * J_row[j_idx]
-                )
-            workspace[env, ws_MinvJt1 + c * NV + i] = mi_j_sum
-            k1 += J_row[i] * mi_j_sum
-        if k1 < Scalar[DTYPE](1e-10):
-            k1 = Scalar[DTYPE](1e-10)
-        workspace[env, kt1 + c] = k1
-
-        # Compute K_t2, cache J_t2 and MinvJt2
-        compute_contact_jacobian_row_gpu[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            STATE_SIZE,
-            MODEL_SIZE,
-            V_SIZE,
-            BATCH,
-            WS_SIZE,
-        ](
-            env,
-            state,
-            model,
-            workspace,
-            Int(workspace[env, ws_c_body + c]),
-            Int(workspace[env, ws_c_body_b + c]),
-            rebind[Scalar[DTYPE]](workspace[env, ws_c_px + c]),
-            rebind[Scalar[DTYPE]](workspace[env, ws_c_py + c]),
-            rebind[Scalar[DTYPE]](workspace[env, ws_c_pz + c]),
-            rebind[Scalar[DTYPE]](workspace[env, _t2x + c]),
-            rebind[Scalar[DTYPE]](workspace[env, _t2y + c]),
-            rebind[Scalar[DTYPE]](workspace[env, _t2z + c]),
-            J_row,
-        )
-        var k2: workspace.element_type = 0
-        for i in range(NV):
-            workspace[env, ws_J_t2 + c * NV + i] = J_row[i]
-            var mi_j_sum: workspace.element_type = 0
-            for j_idx in range(NV):
-                mi_j_sum += (
-                    workspace[env, M_inv + i * NV + j_idx] * J_row[j_idx]
-                )
-            workspace[env, ws_MinvJt2 + c * NV + i] = mi_j_sum
-            k2 += J_row[i] * mi_j_sum
-        if k2 < Scalar[DTYPE](1e-10):
-            k2 = Scalar[DTYPE](1e-10)
-        workspace[env, kt2 + c] = k2
-
-        # Warm start tangent impulses (skip degenerate directions)
         var c_off = contacts_off + c * CONTACT_SIZE
-        if k1 >= Scalar[DTYPE](FRICTION_K_MIN):
-            workspace[env, lt1 + c] = rebind[Scalar[DTYPE]](
-                state[env, c_off + CONTACT_IDX_FORCE_T1]
-            )
-        else:
-            workspace[env, lt1 + c] = Scalar[DTYPE](0)
-        if k2 >= Scalar[DTYPE](FRICTION_K_MIN):
-            workspace[env, lt2 + c] = rebind[Scalar[DTYPE]](
-                state[env, c_off + CONTACT_IDX_FORCE_T2]
-            )
-        else:
-            workspace[env, lt2 + c] = Scalar[DTYPE](0)
 
-    # Normal constraint workspace offsets (already in common block at contact_ws_off)
+        # Read per-contact friction params from state buffer
+        var mu_slide = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_FRICTION])
+        if mu_slide <= Scalar[DTYPE](0):
+            mu_slide = friction_coef  # fallback to model default
+        var mu_spin = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_FRICTION_SPIN])
+        var mu_roll = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_FRICTION_ROLL])
+        var condim = Int(rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_CONDIM]))
+        if condim < 1:
+            condim = 3
+        workspace[env, cd + c] = Scalar[DTYPE](condim)
+
+        if condim == 1:
+            continue  # No friction
+
+        var nx = rebind[Scalar[DTYPE]](workspace[env, ws_c_nx + c])
+        var ny = rebind[Scalar[DTYPE]](workspace[env, ws_c_ny + c])
+        var nz = rebind[Scalar[DTYPE]](workspace[env, ws_c_nz + c])
+
+        # Compute tangent basis (t1, t2)
+        var t1x: Scalar[DTYPE]
+        var t1y: Scalar[DTYPE]
+        var t1z: Scalar[DTYPE]
+        if abs(nx) < Scalar[DTYPE](0.9):
+            t1x = Scalar[DTYPE](0)
+            t1y = -nz
+            t1z = ny
+        else:
+            t1x = nz
+            t1y = Scalar[DTYPE](0)
+            t1z = -nx
+
+        var t1_mag = sqrt(t1x * t1x + t1y * t1y + t1z * t1z)
+        if t1_mag > Scalar[DTYPE](1e-10):
+            t1x = t1x / t1_mag
+            t1y = t1y / t1_mag
+            t1z = t1z / t1_mag
+
+        var t2x = ny * t1z - nz * t1y
+        var t2y = nz * t1x - nx * t1z
+        var t2z = nx * t1y - ny * t1x
+
+        # Store tangent directions
+        workspace[env, df + (0 * 3 + 0) * MC + c] = t1x
+        workspace[env, df + (0 * 3 + 1) * MC + c] = t1y
+        workspace[env, df + (0 * 3 + 2) * MC + c] = t1z
+        workspace[env, df + (1 * 3 + 0) * MC + c] = t2x
+        workspace[env, df + (1 * 3 + 1) * MC + c] = t2y
+        workspace[env, df + (1 * 3 + 2) * MC + c] = t2z
+
+        # Store friction coefficients
+        workspace[env, fc + 0 * MC + c] = mu_slide
+        workspace[env, fc + 1 * MC + c] = mu_slide
+
+        # Number of friction directions based on condim
+        var num_fric = 2  # condim=3: t1+t2
+        if condim >= 4:
+            num_fric = 3  # +torsion
+            # Torsion direction = normal
+            workspace[env, df + (2 * 3 + 0) * MC + c] = nx
+            workspace[env, df + (2 * 3 + 1) * MC + c] = ny
+            workspace[env, df + (2 * 3 + 2) * MC + c] = nz
+            workspace[env, fc + 2 * MC + c] = mu_spin
+        if condim >= 6:
+            num_fric = 5  # +roll1+roll2
+            # Roll 1 direction = t1
+            workspace[env, df + (3 * 3 + 0) * MC + c] = t1x
+            workspace[env, df + (3 * 3 + 1) * MC + c] = t1y
+            workspace[env, df + (3 * 3 + 2) * MC + c] = t1z
+            # Roll 2 direction = t2
+            workspace[env, df + (4 * 3 + 0) * MC + c] = t2x
+            workspace[env, df + (4 * 3 + 1) * MC + c] = t2y
+            workspace[env, df + (4 * 3 + 2) * MC + c] = t2z
+            workspace[env, fc + 3 * MC + c] = mu_roll
+            workspace[env, fc + 4 * MC + c] = mu_roll
+
+        var body_a = Int(workspace[env, ws_c_body + c])
+        var body_b = Int(workspace[env, ws_c_body_b + c])
+        var px = rebind[Scalar[DTYPE]](workspace[env, ws_c_px + c])
+        var py = rebind[Scalar[DTYPE]](workspace[env, ws_c_py + c])
+        var pz = rebind[Scalar[DTYPE]](workspace[env, ws_c_pz + c])
+
+        # Compute Jacobian, MinvJ, and K for each friction direction
+        for d in range(num_fric):
+            var dx = rebind[Scalar[DTYPE]](workspace[env, df + (d * 3 + 0) * MC + c])
+            var dy = rebind[Scalar[DTYPE]](workspace[env, df + (d * 3 + 1) * MC + c])
+            var dz = rebind[Scalar[DTYPE]](workspace[env, df + (d * 3 + 2) * MC + c])
+
+            if d < 2:
+                # Slide friction: full spatial Jacobian
+                compute_contact_jacobian_row_gpu[
+                    DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+                    STATE_SIZE, MODEL_SIZE, V_SIZE, BATCH, WS_SIZE,
+                ](env, state, model, workspace, body_a, body_b, px, py, pz, dx, dy, dz, J_row)
+            else:
+                # Torsion/rolling: angular-only Jacobian
+                compute_angular_jacobian_row_gpu[
+                    DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+                    STATE_SIZE, MODEL_SIZE, V_SIZE, BATCH, WS_SIZE,
+                ](env, state, model, workspace, body_a, body_b, dx, dy, dz, J_row)
+
+            var k_d: workspace.element_type = 0
+            for i in range(NV):
+                workspace[env, jf + d * MC * NV + c * NV + i] = J_row[i]
+                var mi_j_sum: workspace.element_type = 0
+                for j_idx in range(NV):
+                    mi_j_sum += workspace[env, M_inv + i * NV + j_idx] * J_row[j_idx]
+                workspace[env, mj + d * MC * NV + c * NV + i] = mi_j_sum
+                k_d += J_row[i] * mi_j_sum
+            if k_d < Scalar[DTYPE](1e-10):
+                k_d = Scalar[DTYPE](1e-10)
+            workspace[env, kf + d * MC + c] = k_d
+
+        # Warm-start friction impulses
+        var warm_force_idx = InlineArray[Int, 5](uninitialized=True)
+        warm_force_idx[0] = CONTACT_IDX_FORCE_T1
+        warm_force_idx[1] = CONTACT_IDX_FORCE_T2
+        warm_force_idx[2] = CONTACT_IDX_FORCE_TORSION
+        warm_force_idx[3] = CONTACT_IDX_FORCE_ROLL1
+        warm_force_idx[4] = CONTACT_IDX_FORCE_ROLL2
+        for d in range(num_fric):
+            if workspace[env, kf + d * MC + c] >= Scalar[DTYPE](FRICTION_K_MIN):
+                workspace[env, lf + d * MC + c] = rebind[Scalar[DTYPE]](
+                    state[env, c_off + warm_force_idx[d]]
+                )
+            else:
+                workspace[env, lf + d * MC + c] = Scalar[DTYPE](0)
+
+    # Normal constraint workspace offsets
     comptime ws_K_n = contact_ws_off + 1 * MC
     comptime ws_c_dist = contact_ws_off + 2 * MC
     comptime ws_pos_bias = contact_ws_off + 11 * MC
@@ -264,11 +286,9 @@ fn _solve_friction_pgs_gpu[
         for c in range(nc):
             if workspace[env, ws_c_dist + c] >= Scalar[DTYPE](0):
                 continue
-            # Compute normal acceleration: a_n = J_n . qacc
             var a_n: workspace.element_type = 0
             for i in range(NV):
                 a_n += workspace[env, ws_J_n + c * NV + i] * workspace[env, qacc_idx + i]
-            # R = 1/inv_K_imp - K
             var R_n = Scalar[DTYPE](1.0) / workspace[env, ws_inv_K_imp + c] - workspace[env, ws_K_n + c]
             var residual = a_n + workspace[env, ws_pos_bias + c] + R_n * workspace[env, ws_lambda_n + c]
             var delta = -residual * workspace[env, ws_inv_K_imp + c]
@@ -280,53 +300,93 @@ fn _solve_friction_pgs_gpu[
             for i in range(NV):
                 workspace[env, qacc_idx + i] += workspace[env, ws_MinvJn + c * NV + i] * actual_n
 
-        # --- Friction constraints PGS update (with Coulomb cone) ---
+        # --- Friction constraints PGS update (with QCQP elliptic cone) ---
         for c in range(nc):
             if workspace[env, ws_lambda_n + c] <= Scalar[DTYPE](0):
                 continue
+            var condim = Int(workspace[env, cd + c])
+            if condim == 1:
+                continue
 
-            var max_friction = friction_coef * workspace[env, ws_lambda_n + c]
+            var num_fric = 2
+            if condim >= 4:
+                num_fric = 3
+            if condim >= 6:
+                num_fric = 5
 
-            # Tangent 1
-            var old_t1 = workspace[env, lt1 + c]
-            if workspace[env, kt1 + c] >= Scalar[DTYPE](FRICTION_K_MIN):
-                var v_t1: workspace.element_type = 0
-                for i in range(NV):
-                    v_t1 += workspace[env, ws_J_t1 + c * NV + i] * workspace[env, qacc_idx + i]
-                workspace[env, lt1 + c] = workspace[env, lt1 + c] - v_t1 / workspace[env, kt1 + c]
+            var lambda_n = rebind[Scalar[DTYPE]](workspace[env, ws_lambda_n + c])
 
-            # Tangent 2
-            var old_t2 = workspace[env, lt2 + c]
-            if workspace[env, kt2 + c] >= Scalar[DTYPE](FRICTION_K_MIN):
-                var v_t2: workspace.element_type = 0
-                for i in range(NV):
-                    v_t2 += workspace[env, ws_J_t2 + c * NV + i] * workspace[env, qacc_idx + i]
-                workspace[env, lt2 + c] = workspace[env, lt2 + c] - v_t2 / workspace[env, kt2 + c]
+            # Save old values
+            var old_vals = InlineArray[Scalar[DTYPE], 5](fill=Scalar[DTYPE](0))
+            for d in range(num_fric):
+                old_vals[d] = rebind[Scalar[DTYPE]](workspace[env, lf + d * MC + c])
 
-            # Coulomb cone clamping
-            var t_mag = sqrt(
-                workspace[env, lt1 + c] * workspace[env, lt1 + c]
-                + workspace[env, lt2 + c] * workspace[env, lt2 + c]
-            )
-            if t_mag > max_friction:
-                var scale = max_friction / t_mag
-                workspace[env, lt1 + c] = workspace[env, lt1 + c] * scale
-                workspace[env, lt2 + c] = workspace[env, lt2 + c] * scale
+            # GS update for each friction direction
+            for d in range(num_fric):
+                if workspace[env, kf + d * MC + c] >= Scalar[DTYPE](FRICTION_K_MIN):
+                    var a_f: workspace.element_type = 0
+                    for i in range(NV):
+                        a_f += workspace[env, jf + d * MC * NV + c * NV + i] * workspace[env, qacc_idx + i]
+                    workspace[env, lf + d * MC + c] = workspace[env, lf + d * MC + c] - a_f / workspace[env, kf + d * MC + c]
 
-            var actual_t1 = workspace[env, lt1 + c] - old_t1
-            var actual_t2 = workspace[env, lt2 + c] - old_t2
-
-            for i in range(NV):
-                workspace[env, qacc_idx + i] += (
-                    workspace[env, ws_MinvJt1 + c * NV + i] * actual_t1
-                    + workspace[env, ws_MinvJt2 + c * NV + i] * actual_t2
+            # QCQP elliptic cone projection
+            if num_fric == 2:
+                var f1 = rebind[Scalar[DTYPE]](workspace[env, lf + 0 * MC + c])
+                var f2 = rebind[Scalar[DTYPE]](workspace[env, lf + 1 * MC + c])
+                qcqp2[DTYPE](f1, f2, rebind[Scalar[DTYPE]](workspace[env, fc + 0 * MC + c]), lambda_n)
+                workspace[env, lf + 0 * MC + c] = f1
+                workspace[env, lf + 1 * MC + c] = f2
+            elif num_fric == 3:
+                var f1 = rebind[Scalar[DTYPE]](workspace[env, lf + 0 * MC + c])
+                var f2 = rebind[Scalar[DTYPE]](workspace[env, lf + 1 * MC + c])
+                var f3 = rebind[Scalar[DTYPE]](workspace[env, lf + 2 * MC + c])
+                qcqp3[DTYPE](
+                    f1, f2, f3,
+                    rebind[Scalar[DTYPE]](workspace[env, fc + 0 * MC + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, fc + 1 * MC + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, fc + 2 * MC + c]),
+                    lambda_n,
                 )
+                workspace[env, lf + 0 * MC + c] = f1
+                workspace[env, lf + 1 * MC + c] = f2
+                workspace[env, lf + 2 * MC + c] = f3
+            elif num_fric == 5:
+                var f1 = rebind[Scalar[DTYPE]](workspace[env, lf + 0 * MC + c])
+                var f2 = rebind[Scalar[DTYPE]](workspace[env, lf + 1 * MC + c])
+                var f3 = rebind[Scalar[DTYPE]](workspace[env, lf + 2 * MC + c])
+                var f4 = rebind[Scalar[DTYPE]](workspace[env, lf + 3 * MC + c])
+                var f5 = rebind[Scalar[DTYPE]](workspace[env, lf + 4 * MC + c])
+                qcqp5[DTYPE](
+                    f1, f2, f3, f4, f5,
+                    rebind[Scalar[DTYPE]](workspace[env, fc + 0 * MC + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, fc + 1 * MC + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, fc + 2 * MC + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, fc + 3 * MC + c]),
+                    rebind[Scalar[DTYPE]](workspace[env, fc + 4 * MC + c]),
+                    lambda_n,
+                )
+                workspace[env, lf + 0 * MC + c] = f1
+                workspace[env, lf + 1 * MC + c] = f2
+                workspace[env, lf + 2 * MC + c] = f3
+                workspace[env, lf + 3 * MC + c] = f4
+                workspace[env, lf + 4 * MC + c] = f5
+
+            # Apply delta to qacc
+            for d in range(num_fric):
+                var actual = workspace[env, lf + d * MC + c] - old_vals[d]
+                if actual != Scalar[DTYPE](0):
+                    for i in range(NV):
+                        workspace[env, qacc_idx + i] += workspace[env, mj + d * MC * NV + c * NV + i] * actual
 
     # Store impulses back for warm-starting
     for c in range(nc):
         var c_off = contacts_off + c * CONTACT_SIZE
-        state[env, c_off + CONTACT_IDX_FORCE_N] = workspace[
-            env, ws_lambda_n + c
-        ]
-        state[env, c_off + CONTACT_IDX_FORCE_T1] = workspace[env, lt1 + c]
-        state[env, c_off + CONTACT_IDX_FORCE_T2] = workspace[env, lt2 + c]
+        state[env, c_off + CONTACT_IDX_FORCE_N] = workspace[env, ws_lambda_n + c]
+        state[env, c_off + CONTACT_IDX_FORCE_T1] = workspace[env, lf + 0 * MC + c]
+        state[env, c_off + CONTACT_IDX_FORCE_T2] = workspace[env, lf + 1 * MC + c]
+        var condim = Int(workspace[env, cd + c])
+        if condim >= 4:
+            state[env, c_off + CONTACT_IDX_FORCE_TORSION] = workspace[env, lf + 2 * MC + c]
+        if condim >= 6:
+            state[env, c_off + CONTACT_IDX_FORCE_ROLL1] = workspace[env, lf + 3 * MC + c]
+            state[env, c_off + CONTACT_IDX_FORCE_ROLL2] = workspace[env, lf + 4 * MC + c]

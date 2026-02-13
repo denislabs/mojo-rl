@@ -10,6 +10,10 @@ Constraint types:
 - CNSTR_FRICTION_T1 (1): Friction tangent 1 (Coulomb cone)
 - CNSTR_FRICTION_T2 (2): Friction tangent 2 (Coulomb cone)
 - CNSTR_LIMIT (3): Joint limit constraint (lambda >= 0)
+- CNSTR_FRICTION_TORSION (4): Torsional friction (condim >= 4)
+- CNSTR_FRICTION_ROLL1 (5): Rolling friction 1 (condim == 6)
+- CNSTR_FRICTION_ROLL2 (6): Rolling friction 2 (condim == 6)
+- CNSTR_PYRAMID_EDGE (7): Pyramidal cone edge constraint (lambda >= 0)
 """
 
 from ..types import _max_one
@@ -19,6 +23,10 @@ comptime CNSTR_NORMAL: Int = 0
 comptime CNSTR_FRICTION_T1: Int = 1
 comptime CNSTR_FRICTION_T2: Int = 2
 comptime CNSTR_LIMIT: Int = 3
+comptime CNSTR_FRICTION_TORSION: Int = 4
+comptime CNSTR_FRICTION_ROLL1: Int = 5
+comptime CNSTR_FRICTION_ROLL2: Int = 6
+comptime CNSTR_PYRAMID_EDGE: Int = 7
 
 
 @fieldwise_init

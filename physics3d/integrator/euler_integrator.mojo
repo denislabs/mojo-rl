@@ -323,7 +323,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         compute_M_inv_from_ldl[DTYPE, NV, M_SIZE, V_SIZE](L, D, M_inv)
 
         # 8. Build constraints and solve (modifies qacc in-place)
-        comptime MAX_ROWS = 3 * MAX_CONTACTS + 2 * NJOINT
+        comptime MAX_ROWS = 11 * MAX_CONTACTS + 2 * NJOINT
         var constraints = ConstraintData[DTYPE, MAX_ROWS, NV]()
         build_constraints[
             DTYPE,

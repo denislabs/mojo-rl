@@ -31,7 +31,7 @@ Reference material:
   - [2.3 RK4 Integrator](#23-rk4-integrator)
 - [Phase 3: Constraint System](#phase-3-constraint-system)
   - [3.1 Unified Constraint Representation](#31-unified-constraint-representation)
-  - [3.2 Friction Cone Models (pyramidal + elliptic)](#32-friction-cone-models-pyramidal--elliptic)
+  - [3.2 Friction Cone Models (pyramidal + elliptic) — DONE](#32-friction-cone-models-pyramidal--elliptic--done)
   - [3.3 Equality Constraints (weld + connect)](#33-equality-constraints-weld--connect)
   - [3.4 Per-Contact Solver Parameters (solref/solimp)](#34-per-contact-solver-parameters-solrefsolimp)
 - [Phase 4: Collision Pipeline](#phase-4-collision-pipeline)
@@ -77,6 +77,7 @@ Reference material:
 - **Physics stability**: MuJoCo solref/solimp impedance model, velocity clamping (MAX_QVEL=10)
 - **Constraint solver parameters**: per-model solref/solimp for contacts and joint limits (Phase 3.4 DONE)
 - **Unified constraint representation**: ConstraintData/ConstraintRow structs with single builder (Phase 3.1 DONE)
+- **Friction cone models**: Pyramidal + elliptic cones with condim 1/3/4/6, QCQP solver, torsional/rolling friction, CPU + GPU (Phase 3.2 DONE)
 
 ### What We're Missing (by impact)
 
@@ -93,7 +94,7 @@ Reference material:
 | ~~No implicit integrators~~ | ~~Medium~~ | ~~2~~ DONE |
 | No RK4 integrator | Medium - energy conservation | 2 |
 | ~~No unified constraint rows~~ | ~~Medium~~ | ~~3~~ DONE |
-| Simple Coulomb friction only | Medium - no torsional/rolling | 3 |
+| ~~Simple Coulomb friction only~~ | ~~Medium~~ | ~~3~~ DONE |
 | No equality constraints | Medium - can't model welds/connects | 3 |
 | ~~No per-contact solref/solimp~~ | ~~Low~~ | ~~3~~ DONE |
 | No broadphase | Low - performance for many bodies | 4 |
@@ -1094,77 +1095,65 @@ trait ConstraintSolver:
 
 ---
 
-### 3.2 Friction Cone Models (pyramidal + elliptic)
+### 3.2 Friction Cone Models (pyramidal + elliptic) — DONE
 
-**Problem**: We use simple Coulomb clamping: `|f_tangent| <= mu * f_normal`.
-MuJoCo supports two friction cone models that handle multi-dimensional friction
-(tangent1, tangent2, torsional, rolling).
+**Status**: COMPLETE. Both pyramidal and elliptic friction cone models implemented
+with variable contact dimensionality (condim 1/3/4/6) on CPU and GPU. Default is
+elliptic cone with condim=3 (matching previous behavior).
 
-**Files to create/modify**:
-- `constraint/friction_cone.mojo` (NEW - cone projection functions)
-- `constraint/constraint_builder.mojo` (friction row generation)
-- Solvers (friction projection step)
+**Two cone types** (`model.cone_type`):
+- **Pyramidal** (0): Edge constraints `J_edge± = J_normal ± μ_k * J_tangent_k`, all `λ ≥ 0`. Simpler solver (no Coulomb projection needed).
+- **Elliptic** (1, default): Separate normal + friction rows with QCQP projection onto the true elliptic cone.
 
-#### Pyramidal Friction Cone
+**Variable condim per contact** (combined as `max(geom_a, geom_b)` at contact detection):
+- **condim=1**: Frictionless (no friction rows)
+- **condim=3**: 2 tangent friction directions (slide), default
+- **condim=4**: +1 torsional friction (angular, along contact normal)
+- **condim=6**: +2 rolling friction (angular, along tangent directions)
 
-MuJoCo reference: `engine_core_constraint.c` lines 1050-1068.
+**Per-geom friction arrays**: `GeomSpec` trait provides `FRICTION` (slide), `FRICTION_SPIN` (torsional, default 0.005), `FRICTION_ROLL` (rolling, default 0.0001). Combined via `max()` per-element at contact detection.
 
-Instead of one friction constraint, create pairs of pyramid edges:
-```
-For each tangent direction k (k = 1 to condim-1):
-  Edge+: J_edge = J_normal + mu_k * J_tangent[k]
-  Edge-: J_edge = J_normal - mu_k * J_tangent[k]
+**QCQP solver** (`solver/qcqp.mojo`): Newton on dual variable for elliptic cone projection.
+- `qcqp2[DTYPE]()`: 2D (condim=3) — radial projection
+- `qcqp3[DTYPE]()`: 3D (condim=4) — 3×3 Newton dual
+- `qcqp5[DTYPE]()`: 5D (condim=6) — 5×5 Newton dual
 
-  Both edges have: force >= 0 (inequality constraint)
-```
+**Angular-only Jacobian** (`dynamics/jacobian.mojo`): `compute_angular_jacobian_row_gpu` for torsional/rolling friction — uses only angular cdof components (no cross product with position offset).
 
-The pyramid approximates the friction cone with linear constraints.
-For 3D contact (condim=3): 1 normal + 2 pairs = 5 constraint rows.
+**CPU implementation**:
+- `constraint_builder.mojo`: Builds variable friction rows (2/3/5 per contact) for elliptic, or edge rows for pyramidal. Pyramidal uses `CNSTR_PYRAMID_EDGE` type with `source_dof` encoding tangent direction and sign.
+- All 3 CPU solvers (PGS, CG, Newton): Group-based friction iteration with QCQP dispatch by group size (elliptic) or simple `λ ≥ 0` clamping (pyramidal).
+- `writeback_forces`: Handles all constraint types including pyramid edge force decode.
 
-**Advantages**: All constraints are simple inequalities (lambda >= 0).
-**Disadvantages**: Approximation of the true cone, can allow sliding at pyramid edges.
+**GPU implementation**:
+- `friction_solver.mojo`: Rewritten for variable condim. Workspace: `31*MC + 10*MC*NV` (5 friction directions × Jacobians, MinvJ, K, coefficients, directions).
+- `pgs_solver.mojo`: Extended precompute phase and coupled PGS with condim-aware friction and QCQP projection.
+- Solver workspace sizes: PGS `44*MC+12*MC*NV`, Newton `49*MC+12*MC*NV+MC*MC`, CG `48*MC+12*MC*NV+MC*MC`.
+- `MAX_ROWS = 11 * MAX_CONTACTS + 2 * NJOINT` (worst case: pyramidal condim=6).
 
-#### Elliptic Friction Cone
+**Constraint type constants** (`constraint_data.mojo`):
+- `CNSTR_FRICTION_TORSION=4`, `CNSTR_FRICTION_ROLL1=5`, `CNSTR_FRICTION_ROLL2=6`, `CNSTR_PYRAMID_EDGE=7`
 
-MuJoCo reference: `engine_core_constraint.c` lines 1070-1075, solver lines 268-307.
+**Files created**:
+- `solver/qcqp.mojo` — QCQP2/3/5 elliptic cone projection solvers
 
-Uses the true elliptic cone constraint:
-```
-sum((f_tangent[k] / (mu_k * f_normal))^2) <= 1
-```
-
-This requires the QCQP solver for the friction subproblem:
-```
-minimize:   0.5 * f_t^T * A * f_t + b^T * f_t
-subject to: sum((f_t[k] / mu_k)^2) <= f_normal^2
-```
-
-The QCQP solver uses Newton's method on the Lagrangian (augmented with the
-elliptic constraint). For 2D friction (the common case), this is the QCQP2
-solver with closed-form Newton steps.
-
-#### QCQP Solver
-
-MuJoCo reference: `engine_util_solve.c` lines 986-1052 (`mju_QCQP2`).
-
-```
-Input: A (2x2 Hessian), b (2D gradient), d (2D scaling), r (radius = f_normal)
-Output: x (2D optimal friction force)
-
-Algorithm:
-1. Scale A and b so constraint becomes ||x||^2 <= r^2
-2. Newton iteration on dual variable lambda:
-   - Solve (A + lambda*I) * x = -b
-   - Check ||x||^2 <= r^2
-   - If violated: lambda += -(||x||^2 - r^2) / deriv
-3. Unscale result
-```
-
-#### Implementation Plan
-
-1. Start with pyramidal (simpler, compatible with existing PGS solver)
-2. Add elliptic later with QCQP solver
-3. Add `condim` parameter to contacts (1=frictionless, 3=standard, 4=torsional, 6=rolling)
+**Files modified**:
+- `model/geom_spec.mojo` — `CONDIM`, `FRICTION_SPIN`, `FRICTION_ROLL` on trait + 7 geom structs
+- `types.mojo` — ContactInfo: +7 fields; Model: +5 fields (3 geom arrays, cone_type, impratio)
+- `gpu/constants.mojo` — CONTACT_SIZE 13→20, MODEL_GEOM_SIZE 17→20, new indices, workspace sizes
+- `gpu/buffer_utils.mojo` — Pack/unpack new geom + contact fields
+- `constraints/constraint_data.mojo` — +4 constraint type constants
+- `constraints/constraint_builder.mojo` — condim-aware friction rows, pyramidal branch, writeback
+- `constraints/constraint_builder_gpu.mojo` — Extended warmstart/writeback
+- `solver/friction_solver.mojo` — Variable condim, both cone types, GPU
+- `solver/pgs_solver.mojo` — CPU: group-based friction; GPU: extended workspace + condim
+- `solver/cg_solver.mojo` — Same pattern
+- `solver/newton_solver.mojo` — Same pattern
+- `dynamics/jacobian.mojo` — `compute_angular_jacobian_row_gpu` for torsion/rolling
+- `collision/contact_detection.mojo` — Friction combination (max), condim propagation, CPU + GPU
+- `model/model_def.mojo` — Copy new geom fields to Model
+- `integrator/euler_integrator.mojo` — MAX_ROWS formula
+- `integrator/implicit_fast_integrator.mojo` — MAX_ROWS formula
 
 ---
 
@@ -1479,7 +1468,7 @@ Sprint 3 (Constraint system):
 
 Sprint 4 (Polish):
   5.1 Solver warmstart          DONE (all 3 solvers, CPU + GPU, writeback_forces)
-  3.2 Friction cone models      <- better friction physics
+  3.2 Friction cone models      DONE (pyramidal + elliptic, condim 1/3/4/6, QCQP solver, CPU + GPU)
   4.1 Broadphase (spheres)      <- performance for many geoms
 
 Sprint 5 (Advanced):

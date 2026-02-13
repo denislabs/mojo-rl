@@ -14,11 +14,11 @@ Model buffer (static, same for all environments):
     pos(3), quat(4), parent, ipos(3), iquat(4)]
   Per joint (MODEL_JOINT_SIZE=18): [type, body_id, qpos_adr, dof_adr,
     pos(3), axis(3), tau_limit, range_min/max, armature, damping, stiffness, springref, frictionloss]
-  Metadata (MODEL_META_SIZE=18): [NBODY, NJOINT, gravity(3), timestep, ground_z, friction,
-    solref_contact(2), solimp_contact(3), solref_limit(2), solimp_limit(3)]
+  Metadata (MODEL_META_SIZE=20): [NBODY, NJOINT, gravity(3), timestep, ground_z, friction,
+    solref_contact(2), solimp_contact(3), solref_limit(2), solimp_limit(3), cone_type, impratio]
   Curriculum (MODEL_CURRICULUM_SIZE=8): [up to 8 curriculum parameters]
-  Per geom (MODEL_GEOM_SIZE=17): [type, body, pos(3), quat(4), radius, half_length,
-    half_x/y/z, friction, contype, conaffinity]
+  Per geom (MODEL_GEOM_SIZE=20): [type, body, pos(3), quat(4), radius, half_length,
+    half_x/y/z, friction, contype, conaffinity, condim, friction_spin, friction_roll]
 """
 
 # =============================================================================
@@ -107,7 +107,7 @@ fn xangvel_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
 # =============================================================================
 
 # Contact layout (same as Cartesian engine: 12 floats per contact)
-comptime CONTACT_SIZE: Int = 13
+comptime CONTACT_SIZE: Int = 20
 
 comptime CONTACT_IDX_BODY_A: Int = 0
 comptime CONTACT_IDX_BODY_B: Int = 1
@@ -122,6 +122,13 @@ comptime CONTACT_IDX_FORCE_N: Int = 9
 comptime CONTACT_IDX_FORCE_T1: Int = 10
 comptime CONTACT_IDX_FORCE_T2: Int = 11
 comptime CONTACT_IDX_FRICTION: Int = 12
+comptime CONTACT_IDX_FRICTION_SPIN: Int = 13
+comptime CONTACT_IDX_FRICTION_ROLL: Int = 14
+comptime CONTACT_IDX_CONDIM: Int = 15
+comptime CONTACT_IDX_FORCE_TORSION: Int = 16
+comptime CONTACT_IDX_FORCE_ROLL1: Int = 17
+comptime CONTACT_IDX_FORCE_ROLL2: Int = 18
+comptime CONTACT_IDX_PADDING: Int = 19
 
 
 fn contacts_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
@@ -246,7 +253,7 @@ fn model_joint_offset[NBODY: Int](joint_idx: Int) -> Int:
 # Model Buffer Layout - Global Metadata
 # =============================================================================
 
-comptime MODEL_META_SIZE: Int = 18
+comptime MODEL_META_SIZE: Int = 20
 
 comptime MODEL_META_IDX_NBODY: Int = 0
 comptime MODEL_META_IDX_NJOINT: Int = 1
@@ -268,6 +275,9 @@ comptime MODEL_META_IDX_SOLREF_LIMIT_1: Int = 14    # dampratio
 comptime MODEL_META_IDX_SOLIMP_LIMIT_0: Int = 15    # dmin
 comptime MODEL_META_IDX_SOLIMP_LIMIT_1: Int = 16    # dmax
 comptime MODEL_META_IDX_SOLIMP_LIMIT_2: Int = 17    # width
+# Friction cone model
+comptime MODEL_META_IDX_CONE_TYPE: Int = 18    # 0=pyramidal, 1=elliptic
+comptime MODEL_META_IDX_IMPRATIO: Int = 19     # MuJoCo impratio
 
 
 fn model_metadata_offset[NBODY: Int, NJOINT: Int]() -> Int:
@@ -279,7 +289,7 @@ fn model_metadata_offset[NBODY: Int, NJOINT: Int]() -> Int:
 # Model Buffer Layout - Unified Geoms (body-attached + static)
 # =============================================================================
 
-comptime MODEL_GEOM_SIZE: Int = 17  # Per unified geom
+comptime MODEL_GEOM_SIZE: Int = 20  # Per unified geom
 
 comptime GEOM_IDX_TYPE: Int = 0
 comptime GEOM_IDX_BODY: Int = 1  # Body index (-1 for static)
@@ -298,6 +308,9 @@ comptime GEOM_IDX_HALF_Z: Int = 13
 comptime GEOM_IDX_FRICTION: Int = 14
 comptime GEOM_IDX_CONTYPE: Int = 15
 comptime GEOM_IDX_CONAFFINITY: Int = 16
+comptime GEOM_IDX_CONDIM: Int = 17
+comptime GEOM_IDX_FRICTION_SPIN: Int = 18
+comptime GEOM_IDX_FRICTION_ROLL: Int = 19
 
 
 fn model_geom_offset[NBODY: Int, NJOINT: Int](geom_idx: Int) -> Int:
