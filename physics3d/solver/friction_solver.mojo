@@ -14,8 +14,8 @@ from ..gpu.constants import (
     CONTACT_IDX_FORCE_T2,
 )
 
-# Friction uses PGS iterations
-comptime FRICTION_PGS_ITERATIONS: Int = 30
+# Coupled PGS iterations (normals + friction together, MuJoCo-style)
+comptime COUPLED_PGS_ITERATIONS_GPU: Int = 50
 # Minimum K for friction tangent rows — below this, direction is degenerate
 comptime FRICTION_K_MIN: Float64 = 1e-6
 
@@ -250,38 +250,58 @@ fn _solve_friction_pgs_gpu[
         else:
             workspace[env, lt2 + c] = Scalar[DTYPE](0)
 
-    # Friction PGS iterations (using cached J_t1/J_t2 and MinvJt1/MinvJt2)
-    for _ in range(FRICTION_PGS_ITERATIONS):
-        var max_delta: workspace.element_type = 0
+    # Normal constraint workspace offsets (already in common block at contact_ws_off)
+    comptime ws_K_n = contact_ws_off + 1 * MC
+    comptime ws_c_dist = contact_ws_off + 2 * MC
+    comptime ws_pos_bias = contact_ws_off + 11 * MC
+    comptime ws_inv_K_imp = contact_ws_off + 12 * MC
+    comptime ws_J_n = contact_ws_off + 13 * MC
+    comptime ws_MinvJn = contact_ws_off + 13 * MC + MC * NV
+
+    # Coupled PGS iterations (normals + friction together, MuJoCo-style)
+    for _ in range(COUPLED_PGS_ITERATIONS_GPU):
+        # --- Normal constraints PGS update ---
+        for c in range(nc):
+            if workspace[env, ws_c_dist + c] >= Scalar[DTYPE](0):
+                continue
+            # Compute normal acceleration: a_n = J_n . qacc
+            var a_n: workspace.element_type = 0
+            for i in range(NV):
+                a_n += workspace[env, ws_J_n + c * NV + i] * workspace[env, qacc_idx + i]
+            # R = 1/inv_K_imp - K
+            var R_n = Scalar[DTYPE](1.0) / workspace[env, ws_inv_K_imp + c] - workspace[env, ws_K_n + c]
+            var residual = a_n + workspace[env, ws_pos_bias + c] + R_n * workspace[env, ws_lambda_n + c]
+            var delta = -residual * workspace[env, ws_inv_K_imp + c]
+            var old_lambda_n = workspace[env, ws_lambda_n + c]
+            workspace[env, ws_lambda_n + c] = workspace[env, ws_lambda_n + c] + delta
+            if workspace[env, ws_lambda_n + c] < Scalar[DTYPE](0):
+                workspace[env, ws_lambda_n + c] = Scalar[DTYPE](0)
+            var actual_n = workspace[env, ws_lambda_n + c] - old_lambda_n
+            for i in range(NV):
+                workspace[env, qacc_idx + i] += workspace[env, ws_MinvJn + c * NV + i] * actual_n
+
+        # --- Friction constraints PGS update (with Coulomb cone) ---
         for c in range(nc):
             if workspace[env, ws_lambda_n + c] <= Scalar[DTYPE](0):
                 continue
 
             var max_friction = friction_coef * workspace[env, ws_lambda_n + c]
 
-            # Tangent 1 — skip if degenerate
+            # Tangent 1
             var old_t1 = workspace[env, lt1 + c]
             if workspace[env, kt1 + c] >= Scalar[DTYPE](FRICTION_K_MIN):
                 var v_t1: workspace.element_type = 0
                 for i in range(NV):
-                    v_t1 += (
-                        workspace[env, ws_J_t1 + c * NV + i]
-                        * workspace[env, qacc_idx + i]
-                    )
-                var delta_t1 = -v_t1 / workspace[env, kt1 + c]
-                workspace[env, lt1 + c] = workspace[env, lt1 + c] + delta_t1
+                    v_t1 += workspace[env, ws_J_t1 + c * NV + i] * workspace[env, qacc_idx + i]
+                workspace[env, lt1 + c] = workspace[env, lt1 + c] - v_t1 / workspace[env, kt1 + c]
 
-            # Tangent 2 — skip if degenerate
+            # Tangent 2
             var old_t2 = workspace[env, lt2 + c]
             if workspace[env, kt2 + c] >= Scalar[DTYPE](FRICTION_K_MIN):
                 var v_t2: workspace.element_type = 0
                 for i in range(NV):
-                    v_t2 += (
-                        workspace[env, ws_J_t2 + c * NV + i]
-                        * workspace[env, qacc_idx + i]
-                    )
-                var delta_t2 = -v_t2 / workspace[env, kt2 + c]
-                workspace[env, lt2 + c] = workspace[env, lt2 + c] + delta_t2
+                    v_t2 += workspace[env, ws_J_t2 + c * NV + i] * workspace[env, qacc_idx + i]
+                workspace[env, lt2 + c] = workspace[env, lt2 + c] - v_t2 / workspace[env, kt2 + c]
 
             # Coulomb cone clamping
             var t_mag = sqrt(
@@ -296,24 +316,11 @@ fn _solve_friction_pgs_gpu[
             var actual_t1 = workspace[env, lt1 + c] - old_t1
             var actual_t2 = workspace[env, lt2 + c] - old_t2
 
-            # Track max delta for early exit
-            var abs_t1 = abs(actual_t1)
-            var abs_t2 = abs(actual_t2)
-            if abs_t1 > max_delta:
-                max_delta = abs_t1
-            if abs_t2 > max_delta:
-                max_delta = abs_t2
-
-            # Apply velocity correction: qvel += MinvJt1 * actual_t1 + MinvJt2 * actual_t2
             for i in range(NV):
                 workspace[env, qacc_idx + i] += (
                     workspace[env, ws_MinvJt1 + c * NV + i] * actual_t1
                     + workspace[env, ws_MinvJt2 + c * NV + i] * actual_t2
                 )
-
-        # Early exit if converged
-        if max_delta < Scalar[DTYPE](1e-4):
-            break
 
     # Store impulses back for warm-starting
     for c in range(nc):

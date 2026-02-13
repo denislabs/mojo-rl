@@ -97,7 +97,7 @@ Reference material:
 | No equality constraints | Medium - can't model welds/connects | 3 |
 | ~~No per-contact solref/solimp~~ | ~~Low~~ | ~~3~~ DONE |
 | No broadphase | Low - performance for many bodies | 4 |
-| No warmstart | Low - more solver iterations | 5 |
+| ~~No warmstart~~ | ~~Low~~ | ~~5~~ DONE |
 | No solver islands | Low - parallelism optimization | 5 |
 | No actuators / tendons | Low - feature completeness | 5 |
 
@@ -1326,39 +1326,25 @@ scenes with 50+ geoms.
 
 ## Phase 5: Advanced Features
 
-### 5.1 Solver Warmstart
+### 5.1 Solver Warmstart — DONE
 
-**Problem**: Each step, solvers start from zero. MuJoCo warmstarts from the
-previous step's constraint forces, reducing iteration count significantly.
+**Status**: COMPLETE. All three solvers (PGS, CG, Newton) warm-start from the
+previous step's constraint forces on both CPU and GPU. Solved forces are written
+back to `data.contacts` via `writeback_forces()` (CPU) and stored in the state
+buffer (GPU) for use in the next timestep.
 
-**Files to modify**:
-- `types.mojo` (add warmstart storage to Data)
-- All three solvers (initialize from warmstart)
-- Both integrators (save result for next step)
+**Implementation**:
+- `constraint_builder.mojo`: `writeback_forces()` saves solved normal/friction forces back to contacts
+- `constraint_builder_gpu.mojo`: `warmstart_normals_gpu()` applies warm-start impulses to predicted velocity
+- `constraint_data.mojo`: `ConstraintRow.force` field initialized from previous step's solved forces
+- All 3 solvers: Load warm-start at solve start, apply to qacc, then write back final forces
+- GPU path: `warmstart_normals_gpu` + friction warm-start in each solver's `solve_gpu`
 
-#### Implementation
-
-```mojo
-# In Data:
-var qacc_warmstart: InlineArray[Scalar[DTYPE], NV]
-var lambda_warmstart: InlineArray[Scalar[DTYPE], MAX_CONSTRAINTS]
-
-# In solver, at start:
-if use_warmstart:
-    for i in range(num_constraints):
-        lambda[i] = data.lambda_warmstart[i]
-else:
-    for i in range(num_constraints):
-        lambda[i] = 0
-
-# After solver converges:
-for i in range(num_constraints):
-    data.lambda_warmstart[i] = lambda[i]
-data.qacc_warmstart = qacc
-```
-
-MuJoCo also compares the warmstart cost with the cold start cost and picks
-the better one (reference: `engine_forward.c` line 630 `warmstart()` function).
+**Files modified**:
+- `constraints/constraint_builder.mojo`, `constraints/constraint_builder_gpu.mojo`
+- `constraints/constraint_data.mojo`
+- `solver/pgs_solver.mojo`, `solver/cg_solver.mojo`, `solver/newton_solver.mojo`
+- `solver/friction_solver.mojo`
 
 ---
 
@@ -1492,7 +1478,7 @@ Sprint 3 (Constraint system):
   3.4 Per-contact solref/solimp DONE (impedance model, all 3 solvers, CPU + GPU)
 
 Sprint 4 (Polish):
-  5.1 Solver warmstart          <- performance (fewer iterations)
+  5.1 Solver warmstart          DONE (all 3 solvers, CPU + GPU, writeback_forces)
   3.2 Friction cone models      <- better friction physics
   4.1 Broadphase (spheres)      <- performance for many geoms
 

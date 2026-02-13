@@ -637,77 +637,65 @@ struct PGSSolver(ConstraintSolver):
         # All threads must hit this barrier
         barrier()
 
-        # === SEQUENTIAL: Friction PGS + impulse store (thread 0 only) ===
+        # === SEQUENTIAL: Coupled PGS (normals + friction) + impulse store (thread 0) ===
         if valid_env and contact_tid == 0:
-            # Friction PGS iterations
+            # Coupled PGS iterations (normals + friction together, MuJoCo-style)
             for _ in range(PGS_ITERATIONS):
-                var max_fric_delta: workspace.element_type = 0
+                # --- Normal constraints PGS update ---
+                for c in range(nc):
+                    if workspace[env, ws_c_dist + c] >= Scalar[DTYPE](0):
+                        continue
+                    var a_n: workspace.element_type = 0
+                    for i in range(NV):
+                        a_n += workspace[env, ws_J_n + c * NV + i] * workspace[env, qacc_idx + i]
+                    var R_c = Scalar[DTYPE](1.0) / workspace[env, ws_inv_K_imp + c] - workspace[env, ws_K_n + c]
+                    var residual = a_n + workspace[env, ws_pos_bias + c] + R_c * workspace[env, ws_lambda_n + c]
+                    var delta = -residual * workspace[env, ws_inv_K_imp + c]
+                    var old_lambda = workspace[env, ws_lambda_n + c]
+                    workspace[env, ws_lambda_n + c] = workspace[env, ws_lambda_n + c] + delta
+                    if workspace[env, ws_lambda_n + c] < Scalar[DTYPE](0):
+                        workspace[env, ws_lambda_n + c] = Scalar[DTYPE](0)
+                    var actual_n = workspace[env, ws_lambda_n + c] - old_lambda
+                    for i in range(NV):
+                        workspace[env, qacc_idx + i] += workspace[env, ws_MinvJn + c * NV + i] * actual_n
+
+                # --- Friction constraints PGS update (with Coulomb cone) ---
                 for c in range(nc):
                     if workspace[env, ws_lambda_n + c] <= Scalar[DTYPE](0):
                         continue
 
-                    var max_friction = (
-                        friction_coef * workspace[env, ws_lambda_n + c]
-                    )
+                    var max_friction = friction_coef * workspace[env, ws_lambda_n + c]
 
+                    var old_t1 = workspace[env, ws_lambda_t1 + c]
                     var v_t1: workspace.element_type = 0
                     for i in range(NV):
-                        v_t1 += (
-                            workspace[env, ws_J_t1 + c * NV + i]
-                            * workspace[env, qacc_idx + i]
-                        )
-                    var delta_t1 = -v_t1 / workspace[env, ws_K_t1 + c]
-                    var old_t1 = workspace[env, ws_lambda_t1 + c]
-                    workspace[env, ws_lambda_t1 + c] = (
-                        workspace[env, ws_lambda_t1 + c] + delta_t1
-                    )
+                        v_t1 += workspace[env, ws_J_t1 + c * NV + i] * workspace[env, qacc_idx + i]
+                    workspace[env, ws_lambda_t1 + c] = workspace[env, ws_lambda_t1 + c] - v_t1 / workspace[env, ws_K_t1 + c]
 
+                    var old_t2 = workspace[env, ws_lambda_t2 + c]
                     var v_t2: workspace.element_type = 0
                     for i in range(NV):
-                        v_t2 += (
-                            workspace[env, ws_J_t2 + c * NV + i]
-                            * workspace[env, qacc_idx + i]
-                        )
-                    var delta_t2 = -v_t2 / workspace[env, ws_K_t2 + c]
-                    var old_t2 = workspace[env, ws_lambda_t2 + c]
-                    workspace[env, ws_lambda_t2 + c] = (
-                        workspace[env, ws_lambda_t2 + c] + delta_t2
-                    )
+                        v_t2 += workspace[env, ws_J_t2 + c * NV + i] * workspace[env, qacc_idx + i]
+                    workspace[env, ws_lambda_t2 + c] = workspace[env, ws_lambda_t2 + c] - v_t2 / workspace[env, ws_K_t2 + c]
 
                     # Coulomb cone clamping
                     var t_mag = sqrt(
-                        workspace[env, ws_lambda_t1 + c]
-                        * workspace[env, ws_lambda_t1 + c]
-                        + workspace[env, ws_lambda_t2 + c]
-                        * workspace[env, ws_lambda_t2 + c]
+                        workspace[env, ws_lambda_t1 + c] * workspace[env, ws_lambda_t1 + c]
+                        + workspace[env, ws_lambda_t2 + c] * workspace[env, ws_lambda_t2 + c]
                     )
                     if t_mag > max_friction:
                         var scale = max_friction / t_mag
-                        workspace[env, ws_lambda_t1 + c] = (
-                            workspace[env, ws_lambda_t1 + c] * scale
-                        )
-                        workspace[env, ws_lambda_t2 + c] = (
-                            workspace[env, ws_lambda_t2 + c] * scale
-                        )
+                        workspace[env, ws_lambda_t1 + c] = workspace[env, ws_lambda_t1 + c] * scale
+                        workspace[env, ws_lambda_t2 + c] = workspace[env, ws_lambda_t2 + c] * scale
 
                     var actual_t1 = workspace[env, ws_lambda_t1 + c] - old_t1
                     var actual_t2 = workspace[env, ws_lambda_t2 + c] - old_t2
 
-                    var abs_t1 = abs(actual_t1)
-                    var abs_t2 = abs(actual_t2)
-                    if abs_t1 > max_fric_delta:
-                        max_fric_delta = abs_t1
-                    if abs_t2 > max_fric_delta:
-                        max_fric_delta = abs_t2
-
                     for i in range(NV):
                         workspace[env, qacc_idx + i] += (
                             workspace[env, ws_MinvJt1 + c * NV + i] * actual_t1
-                            + workspace[env, ws_MinvJt2 + c * NV + i]
-                            * actual_t2
+                            + workspace[env, ws_MinvJt2 + c * NV + i] * actual_t2
                         )
-                if max_fric_delta < Scalar[DTYPE](1e-4):
-                    break
 
             # Store impulses back to state buffer for warm-starting
             for c in range(nc):
