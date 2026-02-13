@@ -178,6 +178,7 @@ struct Model[
     var geom_friction_roll: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM]()]
     var geom_contype: InlineArray[Int, _max_one[Self.NGEOM]()]
     var geom_conaffinity: InlineArray[Int, _max_one[Self.NGEOM]()]
+    var geom_rbound: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM]()]
 
     # Friction cone model
     var cone_type: Int  # 0=pyramidal, 1=elliptic (default 1)
@@ -298,6 +299,9 @@ struct Model[
         self.geom_conaffinity = InlineArray[Int, _max_one[Self.NGEOM]()](
             uninitialized=True
         )
+        self.geom_rbound = InlineArray[
+            Scalar[Self.DTYPE], _max_one[Self.NGEOM]()
+        ](uninitialized=True)
         self.cone_type = 1  # Default: elliptic
         self.impratio = Scalar[Self.DTYPE](1.0)
         for i in range(_max_one[Self.NGEOM]()):
@@ -314,6 +318,7 @@ struct Model[
             self.geom_friction_roll[i] = Scalar[Self.DTYPE](0.0001)
             self.geom_contype[i] = 1
             self.geom_conaffinity[i] = 1
+            self.geom_rbound[i] = Scalar[Self.DTYPE](0)
         for i in range(_max_one[Self.NGEOM * 3]()):
             self.geom_pos[i] = Scalar[Self.DTYPE](0)
         for i in range(_max_one[Self.NGEOM * 4]()):

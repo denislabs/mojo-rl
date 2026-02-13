@@ -110,6 +110,7 @@ from .constants import (
     GEOM_IDX_CONDIM,
     GEOM_IDX_FRICTION_SPIN,
     GEOM_IDX_FRICTION_ROLL,
+    GEOM_IDX_RBOUND,
     MODEL_META_IDX_CONE_TYPE,
     MODEL_META_IDX_IMPRATIO,
     model_geom_offset,
@@ -329,6 +330,7 @@ fn copy_geoms_to_buffer[
         )
         buffer[offset + GEOM_IDX_FRICTION_SPIN] = model.geom_friction_spin[g]
         buffer[offset + GEOM_IDX_FRICTION_ROLL] = model.geom_friction_roll[g]
+        buffer[offset + GEOM_IDX_RBOUND] = model.geom_rbound[g]
 
 
 # =============================================================================

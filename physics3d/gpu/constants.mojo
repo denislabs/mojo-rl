@@ -17,8 +17,8 @@ Model buffer (static, same for all environments):
   Metadata (MODEL_META_SIZE=20): [NBODY, NJOINT, gravity(3), timestep, ground_z, friction,
     solref_contact(2), solimp_contact(3), solref_limit(2), solimp_limit(3), cone_type, impratio]
   Curriculum (MODEL_CURRICULUM_SIZE=8): [up to 8 curriculum parameters]
-  Per geom (MODEL_GEOM_SIZE=20): [type, body, pos(3), quat(4), radius, half_length,
-    half_x/y/z, friction, contype, conaffinity, condim, friction_spin, friction_roll]
+  Per geom (MODEL_GEOM_SIZE=21): [type, body, pos(3), quat(4), radius, half_length,
+    half_x/y/z, friction, contype, conaffinity, condim, friction_spin, friction_roll, rbound]
 """
 
 # =============================================================================
@@ -289,7 +289,7 @@ fn model_metadata_offset[NBODY: Int, NJOINT: Int]() -> Int:
 # Model Buffer Layout - Unified Geoms (body-attached + static)
 # =============================================================================
 
-comptime MODEL_GEOM_SIZE: Int = 20  # Per unified geom
+comptime MODEL_GEOM_SIZE: Int = 21  # Per unified geom
 
 comptime GEOM_IDX_TYPE: Int = 0
 comptime GEOM_IDX_BODY: Int = 1  # Body index (-1 for static)
@@ -311,6 +311,7 @@ comptime GEOM_IDX_CONAFFINITY: Int = 16
 comptime GEOM_IDX_CONDIM: Int = 17
 comptime GEOM_IDX_FRICTION_SPIN: Int = 18
 comptime GEOM_IDX_FRICTION_ROLL: Int = 19
+comptime GEOM_IDX_RBOUND: Int = 20
 
 
 fn model_geom_offset[NBODY: Int, NJOINT: Int](geom_idx: Int) -> Int:

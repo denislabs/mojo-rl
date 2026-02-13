@@ -61,6 +61,7 @@ from ..gpu.constants import (
     GEOM_IDX_CONDIM,
     GEOM_IDX_FRICTION_SPIN,
     GEOM_IDX_FRICTION_ROLL,
+    GEOM_IDX_RBOUND,
     model_body_offset,
     model_joint_offset,
     model_geom_offset,
@@ -273,6 +274,17 @@ fn detect_contacts[
             var qi_x = wi[3]; var qi_y = wi[4]; var qi_z = wi[5]; var qi_w = wi[6]
             var pj_x = wj[0]; var pj_y = wj[1]; var pj_z = wj[2]
             var qj_x = wj[3]; var qj_y = wj[4]; var qj_z = wj[5]; var qj_w = wj[6]
+
+            # Broadphase bounding sphere check (skip for plane geoms — they're infinite)
+            if gi_type != GEOM_PLANE and gj_type != GEOM_PLANE:
+                var dx = pi_x - pj_x
+                var dy = pi_y - pj_y
+                var dz = pi_z - pj_z
+                var dist_sq = dx * dx + dy * dy + dz * dz
+                var bound = model.geom_rbound[gi] + model.geom_rbound[gj]
+                if dist_sq > bound * bound:
+                    continue
+
             var ri = model.geom_radius[gi]; var rj = model.geom_radius[gj]
             var hli = model.geom_half_length[gi]; var hlj = model.geom_half_length[gj]
             var hxi = model.geom_half_x[gi]; var hyi = model.geom_half_y[gi]; var hzi = model.geom_half_z[gi]
@@ -501,6 +513,19 @@ fn detect_contacts_gpu[
             var pj_x: Scalar[DTYPE] = 0; var pj_y: Scalar[DTYPE] = 0; var pj_z: Scalar[DTYPE] = 0
             var qj_x: Scalar[DTYPE] = 0; var qj_y: Scalar[DTYPE] = 0; var qj_z: Scalar[DTYPE] = 0; var qj_w: Scalar[DTYPE] = 1
             _geom_world_pos_gpu[DTYPE, NQ, NV, NBODY, STATE_SIZE, MODEL_SIZE, BATCH](env, gj_off, state, model, pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w)
+
+            # Broadphase bounding sphere check (skip for plane geoms — they're infinite)
+            if gi_type != GEOM_PLANE and gj_type != GEOM_PLANE:
+                var dx = pi_x - pj_x
+                var dy = pi_y - pj_y
+                var dz = pi_z - pj_z
+                var dist_sq = dx * dx + dy * dy + dz * dz
+                var ri_bound = rebind[Scalar[DTYPE]](model[0, gi_off + GEOM_IDX_RBOUND])
+                var rj_bound = rebind[Scalar[DTYPE]](model[0, gj_off + GEOM_IDX_RBOUND])
+                var bound = ri_bound + rj_bound
+                if dist_sq > bound * bound:
+                    continue
+
             var ri = rebind[Scalar[DTYPE]](model[0, gi_off + GEOM_IDX_RADIUS])
             var rj = rebind[Scalar[DTYPE]](model[0, gj_off + GEOM_IDX_RADIUS])
             var hli = rebind[Scalar[DTYPE]](model[0, gi_off + GEOM_IDX_HALF_LENGTH])

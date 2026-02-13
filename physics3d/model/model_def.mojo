@@ -29,7 +29,8 @@ from .joint_spec import JointSpec
 from .geom_spec import GeomSpec
 from ..types import Model, Data
 from ..joint_types import JNT_HINGE, JNT_SLIDE
-from ..constants import GEOM_PLANE
+from math import sqrt
+from ..constants import GEOM_SPHERE, GEOM_CAPSULE, GEOM_BOX, GEOM_PLANE
 
 # GPU imports
 from gpu.host import DeviceContext, DeviceBuffer
@@ -887,6 +888,21 @@ struct Geoms[*G: GeomSpec]:
             model.geom_friction_roll[i] = Scalar[DTYPE](G_item.FRICTION_ROLL)
             model.geom_contype[i] = G_item.CONTYPE
             model.geom_conaffinity[i] = G_item.CONAFFINITY
+
+            # Compute bounding sphere radius
+            @parameter
+            if G_item.GEOM_TYPE == GEOM_SPHERE:
+                model.geom_rbound[i] = Scalar[DTYPE](G_item.RADIUS)
+            elif G_item.GEOM_TYPE == GEOM_CAPSULE:
+                model.geom_rbound[i] = Scalar[DTYPE](G_item.HALF_LENGTH) + Scalar[DTYPE](G_item.RADIUS)
+            elif G_item.GEOM_TYPE == GEOM_BOX:
+                model.geom_rbound[i] = sqrt(
+                    Scalar[DTYPE](G_item.HALF_X) * Scalar[DTYPE](G_item.HALF_X)
+                    + Scalar[DTYPE](G_item.HALF_Y) * Scalar[DTYPE](G_item.HALF_Y)
+                    + Scalar[DTYPE](G_item.HALF_Z) * Scalar[DTYPE](G_item.HALF_Z)
+                )
+            elif G_item.GEOM_TYPE == GEOM_PLANE:
+                model.geom_rbound[i] = Scalar[DTYPE](1e10)  # Planes are infinite
 
             # For plane geoms, also write to legacy ground fields
             @parameter

@@ -35,7 +35,7 @@ Reference material:
   - [3.3 Equality Constraints (weld + connect)](#33-equality-constraints-weld--connect)
   - [3.4 Per-Contact Solver Parameters (solref/solimp)](#34-per-contact-solver-parameters-solrefsolimp)
 - [Phase 4: Collision Pipeline](#phase-4-collision-pipeline)
-  - [4.1 Broadphase Collision (bounding sphere)](#41-broadphase-collision-bounding-sphere)
+  - [4.1 Broadphase Collision (bounding sphere) — DONE](#41-broadphase-collision-bounding-sphere--done)
   - [4.2 Broadphase Collision (AABB/SAP)](#42-broadphase-collision-aabbsap)
 - [Phase 5: Advanced Features](#phase-5-advanced-features)
   - [5.1 Solver Warmstart](#51-solver-warmstart)
@@ -97,7 +97,7 @@ Reference material:
 | ~~Simple Coulomb friction only~~ | ~~Medium~~ | ~~3~~ DONE |
 | No equality constraints | Medium - can't model welds/connects | 3 |
 | ~~No per-contact solref/solimp~~ | ~~Low~~ | ~~3~~ DONE |
-| No broadphase | Low - performance for many bodies | 4 |
+| ~~No broadphase~~ | ~~Low - performance for many bodies~~ | ~~4~~ DONE |
 | ~~No warmstart~~ | ~~Low~~ | ~~5~~ DONE |
 | No solver islands | Low - parallelism optimization | 5 |
 | No actuators / tendons | Low - feature completeness | 5 |
@@ -1256,34 +1256,31 @@ coefficients directly from solref parameters.
 
 ## Phase 4: Collision Pipeline
 
-### 4.1 Broadphase Collision (bounding sphere)
+### 4.1 Broadphase Collision (bounding sphere) — DONE
 
-**Problem**: O(N^2) geom-pair collision is expensive for many geoms. A bounding
-sphere pre-filter eliminates most pairs cheaply.
+**Status**: COMPLETE. Pre-computed bounding sphere radius per geom, used as a
+broadphase filter before narrowphase dispatch. Skips expensive narrowphase
+primitives (SAT for boxes, closest-point for capsules) when bounding spheres
+don't overlap. Plane geoms skip the broadphase check (they're infinite).
 
-**Files to modify**:
-- `collision/contact_detection.mojo` (add broadphase filter before narrowphase)
-- `model/geom_spec.mojo` (add bounding radius computation per geom)
-
-#### Algorithm
-
-MuJoCo Warp reference: `collision_driver.py` lines 271-318.
-
-```
-For each geom pair (gi, gj):
-  bound = rbound[gi] + rbound[gj]
-  dist_sq = |world_pos[gi] - world_pos[gj]|^2
-  if dist_sq > bound^2:
-    skip pair  // bounding spheres don't overlap
-```
-
-Where `rbound` is per-geom (not per-body):
+**Bounding radius formulas** (matching MuJoCo Warp `collision_driver.py`):
 - Sphere: `rbound = radius`
 - Capsule: `rbound = half_length + radius`
 - Box: `rbound = sqrt(hx^2 + hy^2 + hz^2)`
+- Plane: `rbound = 1e10` (sentinel, broadphase skipped for planes)
 
-**Note**: With the unified geom-based detection, broadphase operates on geom pairs
-rather than body pairs, which is more natural and handles multiple geoms per body correctly.
+**Implementation**:
+- `geom_rbound[]` array on Model struct, computed at model setup time
+- Broadphase check inserted after world pos computation, before narrowphase dispatch
+- Both CPU and GPU paths updated
+- GPU: `GEOM_IDX_RBOUND = 20`, `MODEL_GEOM_SIZE = 21`
+
+**Files modified**:
+- `types.mojo` — `Model.geom_rbound[]` array
+- `model/model_def.mojo` — compute `geom_rbound` from geom type at setup
+- `collision/contact_detection.mojo` — broadphase check in CPU + GPU paths
+- `gpu/constants.mojo` — `MODEL_GEOM_SIZE 20→21`, `GEOM_IDX_RBOUND = 20`
+- `gpu/buffer_utils.mojo` — pack `geom_rbound` into GPU model buffer
 
 ---
 
@@ -1469,7 +1466,7 @@ Sprint 3 (Constraint system):
 Sprint 4 (Polish):
   5.1 Solver warmstart          DONE (all 3 solvers, CPU + GPU, writeback_forces)
   3.2 Friction cone models      DONE (pyramidal + elliptic, condim 1/3/4/6, QCQP solver, CPU + GPU)
-  4.1 Broadphase (spheres)      <- performance for many geoms
+  4.1 Broadphase (spheres)      DONE (bounding sphere pre-filter, CPU + GPU)
 
 Sprint 5 (Advanced):
   3.3 Equality constraints      <- weld/connect
