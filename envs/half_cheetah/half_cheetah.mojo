@@ -59,6 +59,7 @@ from physics3d.gpu.constants import (
     metadata_offset,
     model_size,
     integrator_workspace_size,
+    implicit_extra_workspace_size,
     META_IDX_NUM_CONTACTS,
     META_IDX_STEP_COUNT,
     META_IDX_PREV_X,
@@ -147,7 +148,9 @@ struct HalfCheetah[
     comptime STEP_WS_SHARED: Int = model_size[NBODY, NJOINT, NGEOM]()
     comptime STEP_WS_PER_ENV: Int = integrator_workspace_size[
         NV, NBODY
-    ]() + NV * NV + NewtonSolver.solver_workspace_size[NV, MAX_CONTACTS]()
+    ]() + NV * NV + NewtonSolver.solver_workspace_size[
+        NV, MAX_CONTACTS
+    ]() + implicit_extra_workspace_size[NV, NBODY]()
 
     # Physics model and data
     var model: Model[
@@ -568,7 +571,7 @@ struct HalfCheetah[
             Self.NV, Self.NUM_BODIES
         ]() + Self.NV * Self.NV + NewtonSolver.solver_workspace_size[
             Self.NV, Self.MAX_CONTACTS
-        ]()
+        ]() + implicit_extra_workspace_size[Self.NV, Self.NUM_BODIES]()
 
         var model_buf: DeviceBuffer[gpu_dtype]
         var workspace_buf: DeviceBuffer[gpu_dtype]

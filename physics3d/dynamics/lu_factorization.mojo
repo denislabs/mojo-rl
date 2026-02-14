@@ -6,7 +6,17 @@ Used by ImplicitIntegrator where M_hat = M - dt*qDeriv is non-symmetric
 For the typical NV sizes in robotics (NV <= 30), dense LU is trivially fast.
 """
 
+from layout import LayoutTensor, Layout
+
 from ..types import _max_one
+from ..gpu.constants import (
+    ws_M_offset,
+    ws_L_offset,
+    ws_D_offset,
+    ws_fnet_offset,
+    ws_qacc_ws_offset,
+    ws_m_inv_offset,
+)
 
 
 fn lu_factor[
@@ -151,3 +161,205 @@ fn compute_M_inv_from_lu[
         # Store column j of M_inv
         for i in range(NV):
             M_inv[i * NV + j] = col[i]
+
+
+# =============================================================================
+# GPU versions — read/write workspace LayoutTensor
+# =============================================================================
+# Reuse the L slot (NV×NV) for LU factors and D slot (NV) for pivots
+# (stored as floats since workspace is typed).
+
+
+@always_inline
+fn lu_factor_gpu[
+    DTYPE: DType,
+    NV: Int,
+    NBODY: Int,
+    BATCH: Int,
+    WS_SIZE: Int,
+](
+    env: Int,
+    workspace: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+    ],
+):
+    """In-place LU factorization with partial pivoting on GPU.
+
+    Reads M from ws_M, copies to ws_L, factorizes in-place.
+    Writes pivot indices (as floats) to ws_D.
+    """
+    comptime M_idx = ws_M_offset[NV, NBODY]()
+    comptime L_idx = ws_L_offset[NV, NBODY]()
+    comptime D_idx = ws_D_offset[NV, NBODY]()
+
+    # Copy M to L slot (LU overwrites in-place)
+    for i in range(NV * NV):
+        workspace[env, L_idx + i] = workspace[env, M_idx + i]
+
+    # Initialize pivots to identity
+    for i in range(NV):
+        workspace[env, D_idx + i] = Scalar[DTYPE](i)
+
+    for k in range(NV):
+        # Find pivot: row with largest absolute value in column k
+        var max_val = abs(rebind[Scalar[DTYPE]](workspace[env, L_idx + k * NV + k]))
+        var max_row = k
+        for i in range(k + 1, NV):
+            var val = abs(rebind[Scalar[DTYPE]](workspace[env, L_idx + i * NV + k]))
+            if val > max_val:
+                max_val = val
+                max_row = i
+
+        # Swap rows k and max_row
+        if max_row != k:
+            workspace[env, D_idx + k] = Scalar[DTYPE](max_row)
+            for j in range(NV):
+                var tmp = workspace[env, L_idx + k * NV + j]
+                workspace[env, L_idx + k * NV + j] = workspace[
+                    env, L_idx + max_row * NV + j
+                ]
+                workspace[env, L_idx + max_row * NV + j] = tmp
+
+        # Regularize near-zero pivot
+        var pivot = rebind[Scalar[DTYPE]](workspace[env, L_idx + k * NV + k])
+        if abs(pivot) < Scalar[DTYPE](1e-30):
+            workspace[env, L_idx + k * NV + k] = Scalar[DTYPE](1e-30)
+            pivot = Scalar[DTYPE](1e-30)
+
+        # Compute multipliers and update trailing submatrix
+        var inv_pivot = Scalar[DTYPE](1) / pivot
+        for i in range(k + 1, NV):
+            var lik = rebind[Scalar[DTYPE]](
+                workspace[env, L_idx + i * NV + k]
+            ) * inv_pivot
+            workspace[env, L_idx + i * NV + k] = lik
+            for j in range(k + 1, NV):
+                var cur = rebind[Scalar[DTYPE]](
+                    workspace[env, L_idx + i * NV + j]
+                )
+                var ukj = rebind[Scalar[DTYPE]](
+                    workspace[env, L_idx + k * NV + j]
+                )
+                workspace[env, L_idx + i * NV + j] = cur - lik * ukj
+
+
+@always_inline
+fn lu_solve_workspace_gpu[
+    DTYPE: DType,
+    NV: Int,
+    NBODY: Int,
+    BATCH: Int,
+    WS_SIZE: Int,
+](
+    env: Int,
+    workspace: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+    ],
+):
+    """Solve A*x = b using LU factors from lu_factor_gpu.
+
+    Reads LU from ws_L, pivots from ws_D, f_net from ws_fnet.
+    Writes solution to ws_qacc_ws.
+    """
+    comptime L_idx = ws_L_offset[NV, NBODY]()
+    comptime D_idx = ws_D_offset[NV, NBODY]()
+    comptime b_idx = ws_fnet_offset[NV, NBODY]()
+    comptime x_idx = ws_qacc_ws_offset[NV, NBODY]()
+    comptime V_SIZE = _max_one[NV]()
+
+    # Copy b and apply permutation
+    var y = InlineArray[workspace.element_type, V_SIZE](uninitialized=True)
+    for i in range(NV):
+        y[i] = workspace[env, b_idx + i]
+
+    for i in range(NV):
+        var piv_i = Int(rebind[Scalar[DTYPE]](workspace[env, D_idx + i]))
+        if piv_i != i:
+            var tmp = y[i]
+            y[i] = y[piv_i]
+            y[piv_i] = tmp
+
+    # Forward substitution: L * y = Pb (L has unit diagonal)
+    for i in range(NV):
+        for j in range(i):
+            y[i] = y[i] - workspace[env, L_idx + i * NV + j] * y[j]
+
+    # Backward substitution: U * x = y
+    for i in range(NV - 1, -1, -1):
+        var s = y[i]
+        for j in range(i + 1, NV):
+            s = s - workspace[env, L_idx + i * NV + j] * workspace[
+                env, x_idx + j
+            ]
+        var diag = rebind[Scalar[DTYPE]](workspace[env, L_idx + i * NV + i])
+        if abs(diag) > Scalar[DTYPE](1e-30):
+            workspace[env, x_idx + i] = s / diag
+        else:
+            workspace[env, x_idx + i] = Scalar[DTYPE](0)
+
+
+@always_inline
+fn compute_M_inv_from_lu_gpu[
+    DTYPE: DType,
+    NV: Int,
+    NBODY: Int,
+    BATCH: Int,
+    WS_SIZE: Int,
+](
+    env: Int,
+    workspace: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+    ],
+):
+    """Compute M^-1 from LU factors by solving M * col = e_j for each column.
+
+    Reads LU from ws_L, pivots from ws_D. Writes M_inv to ws_m_inv.
+    """
+    comptime L_idx = ws_L_offset[NV, NBODY]()
+    comptime D_idx = ws_D_offset[NV, NBODY]()
+    comptime M_inv_idx = ws_m_inv_offset[NV, NBODY]()
+    comptime V_SIZE = _max_one[NV]()
+
+    var e = InlineArray[workspace.element_type, V_SIZE](uninitialized=True)
+    var col = InlineArray[workspace.element_type, V_SIZE](uninitialized=True)
+
+    for j_col in range(NV):
+        # Set up unit vector e_j
+        for i in range(NV):
+            e[i] = 0
+        e[j_col] = 1
+
+        # Apply permutation
+        for i in range(NV):
+            var piv_i = Int(
+                rebind[Scalar[DTYPE]](workspace[env, D_idx + i])
+            )
+            if piv_i != i:
+                var tmp = e[i]
+                e[i] = e[piv_i]
+                e[piv_i] = tmp
+
+        # Forward substitution: L * y = Pe (L has unit diagonal)
+        var y = InlineArray[workspace.element_type, V_SIZE](uninitialized=True)
+        for i in range(NV):
+            var s = e[i]
+            for k in range(i):
+                s = s - workspace[env, L_idx + i * NV + k] * y[k]
+            y[i] = s
+
+        # Backward substitution: U * col = y
+        for i in range(NV - 1, -1, -1):
+            var s = y[i]
+            for k in range(i + 1, NV):
+                s = s - workspace[env, L_idx + i * NV + k] * col[k]
+            var diag = rebind[Scalar[DTYPE]](
+                workspace[env, L_idx + i * NV + i]
+            )
+            if abs(diag) > Scalar[DTYPE](1e-30):
+                col[i] = s / diag
+            else:
+                col[i] = 0
+
+        # Store column
+        for i in range(NV):
+            workspace[env, M_inv_idx + i * NV + j_col] = col[i]

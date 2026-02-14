@@ -467,3 +467,77 @@ fn ws_m_inv_offset[NV: Int, NBODY: Int]() -> Int:
 fn ws_solver_offset[NV: Int, NBODY: Int]() -> Int:
     """Offset to solver workspace (after integrator temps + M_inv)."""
     return integrator_workspace_size[NV, NBODY]() + NV * NV
+
+
+# =============================================================================
+# Implicit Integrator Extra Workspace
+# =============================================================================
+# Additional workspace for the full implicit integrator's RNE velocity
+# derivative computation. Placed AFTER solver workspace so existing offsets
+# are unchanged.
+#
+# Layout within implicit extra section:
+#   [qDeriv: NV*NV | cdof_origin: NV*6 | cvel_origin: NBODY*6 |
+#    cinert: NBODY*10 | cdof_dot: NV*6 |
+#    Dcvel: NBODY*6*NV | Dcdofdot: NV*6*NV |
+#    Dcacc: NBODY*6*NV | Dcfrcbody: NBODY*6*NV]
+
+
+fn implicit_extra_workspace_size[NV: Int, NBODY: Int]() -> Int:
+    """Total implicit-extra workspace size per environment."""
+    return (
+        NV * NV  # qDeriv
+        + NV * 6  # cdof_origin
+        + NBODY * 6  # cvel_origin
+        + NBODY * 10  # cinert
+        + NV * 6  # cdof_dot
+        + NBODY * 6 * NV  # Dcvel
+        + NV * 6 * NV  # Dcdofdot
+        + NBODY * 6 * NV  # Dcacc
+        + NBODY * 6 * NV  # Dcfrcbody
+    )
+
+
+fn ws_implicit_qderiv_offset(base: Int) -> Int:
+    """Offset to qDeriv (NV*NV) within implicit extra workspace."""
+    return base
+
+
+fn ws_implicit_cdof_origin_offset[NV: Int](base: Int) -> Int:
+    """Offset to cdof_origin (NV*6) within implicit extra workspace."""
+    return base + NV * NV
+
+
+fn ws_implicit_cvel_origin_offset[NV: Int](base: Int) -> Int:
+    """Offset to cvel_origin (NBODY*6) within implicit extra workspace."""
+    return base + NV * NV + NV * 6
+
+
+fn ws_implicit_cinert_offset[NV: Int, NBODY: Int](base: Int) -> Int:
+    """Offset to cinert (NBODY*10) within implicit extra workspace."""
+    return base + NV * NV + NV * 6 + NBODY * 6
+
+
+fn ws_implicit_cdof_dot_offset[NV: Int, NBODY: Int](base: Int) -> Int:
+    """Offset to cdof_dot (NV*6) within implicit extra workspace."""
+    return base + NV * NV + NV * 6 + NBODY * 6 + NBODY * 10
+
+
+fn ws_implicit_dcvel_offset[NV: Int, NBODY: Int](base: Int) -> Int:
+    """Offset to Dcvel (NBODY*6*NV) within implicit extra workspace."""
+    return base + NV * NV + NV * 6 + NBODY * 6 + NBODY * 10 + NV * 6
+
+
+fn ws_implicit_dcdofdot_offset[NV: Int, NBODY: Int](base: Int) -> Int:
+    """Offset to Dcdofdot (NV*6*NV) within implicit extra workspace."""
+    return base + NV * NV + NV * 6 + NBODY * 6 + NBODY * 10 + NV * 6 + NBODY * 6 * NV
+
+
+fn ws_implicit_dcacc_offset[NV: Int, NBODY: Int](base: Int) -> Int:
+    """Offset to Dcacc (NBODY*6*NV) within implicit extra workspace."""
+    return base + NV * NV + NV * 6 + NBODY * 6 + NBODY * 10 + NV * 6 + NBODY * 6 * NV + NV * 6 * NV
+
+
+fn ws_implicit_dcfrcbody_offset[NV: Int, NBODY: Int](base: Int) -> Int:
+    """Offset to Dcfrcbody (NBODY*6*NV) within implicit extra workspace."""
+    return base + NV * NV + NV * 6 + NBODY * 6 + NBODY * 10 + NV * 6 + NBODY * 6 * NV + NV * 6 * NV + NBODY * 6 * NV

@@ -27,7 +27,7 @@ Reference material:
   - [1.4 Joint Limits as Constraints](#14-joint-limits-as-constraints)
 - [Phase 2: Integrator Improvements](#phase-2-integrator-improvements)
   - [2.1 Implicit-fast Integrator](#21-implicit-fast-integrator)
-  - [2.2 Implicit Integrator (full)](#22-implicit-integrator-full)
+  - [2.2 Implicit Integrator (full) — DONE](#22-implicit-integrator-full--done)
   - [2.3 RK4 Integrator](#23-rk4-integrator)
 - [Phase 3: Constraint System](#phase-3-constraint-system)
   - [3.1 Unified Constraint Representation](#31-unified-constraint-representation)
@@ -73,7 +73,7 @@ Reference material:
 - **GPU support**: all solvers, kinematics, dynamics have GPU kernels
 - **Passive forces**: armature, implicit damping, stiffness+springref, frictionloss (Phase 5.3 DONE)
 - **Joint limits as constraints**: unilateral inequality constraints in all 3 solvers, CPU + GPU (Phase 1.4 DONE)
-- **Two integrators**: EulerIntegrator + ImplicitFastIntegrator, both with correct damping, CPU + GPU (Phase 2.1 DONE)
+- **Three integrators**: EulerIntegrator + ImplicitFastIntegrator + ImplicitIntegrator (full), all with correct damping, CPU + GPU (Phase 2.1 + 2.2 DONE)
 - **Physics stability**: MuJoCo solref/solimp impedance model, velocity clamping (MAX_QVEL=10)
 - **Constraint solver parameters**: per-model solref/solimp for contacts and joint limits (Phase 3.4 DONE)
 - **Unified constraint representation**: ConstraintData/ConstraintRow structs with single builder (Phase 3.1 DONE)
@@ -93,6 +93,7 @@ Reference material:
 | ~~Ground contacts only~~ | ~~High~~ | ~~1~~ DONE |
 | ~~Joint limits via post-clamping~~ | ~~Medium~~ | ~~1~~ DONE |
 | ~~No implicit integrators~~ | ~~Medium~~ | ~~2~~ DONE |
+| ~~No full implicit integrator~~ | ~~Medium - gyroscopic stability~~ | ~~2~~ DONE |
 | No RK4 integrator | Medium - energy conservation | 2 |
 | ~~No unified constraint rows~~ | ~~Medium~~ | ~~3~~ DONE |
 | ~~Simple Coulomb friction only~~ | ~~Medium~~ | ~~3~~ DONE |
@@ -868,37 +869,51 @@ qDeriv[i,i] += d(actuator_force)/d(qvel_i)  (gainprm[2], biasprm[2])
 
 ---
 
-### 2.2 Implicit Integrator (full)
+### 2.2 Implicit Integrator (full) — DONE
 
-**Problem**: `implicitfast` skips the Coriolis derivative. For systems with significant
-gyroscopic effects (rapidly spinning objects, robot arms at high speed), the full
-implicit integrator includes `d(bias)/d(qvel)` for better accuracy.
+**Status**: COMPLETE. Full implicit integrator with RNE velocity derivatives
+(`d(bias)/d(qvel)`) and LU factorization for the non-symmetric modified mass matrix.
+Both CPU and GPU implementations. More accurate than `implicitfast` for systems with
+significant gyroscopic effects (rapidly spinning objects, robot arms at high speed).
 
-**Files to create/modify**:
-- `integrator/implicit_integrator.mojo` (NEW)
-- `dynamics/velocity_derivatives.mojo` (add RNE velocity derivative)
+**Files created**:
+- `integrator/implicit_integrator.mojo` (NEW — full implicit integrator with RNE velocity derivatives)
+- `dynamics/velocity_derivatives.mojo` (NEW — `compute_rne_vel_derivative()`, dense NV×NV Jacobian)
+- `dynamics/lu_factorization.mojo` (NEW — LU factorization with partial pivoting for non-symmetric matrices)
+- `tests/test_implicit_integrator.mojo` (NEW — LU tests, zero-velocity qDeriv validation)
 
-#### Additional Computation: RNE Velocity Derivative
+**Files modified**:
+- `integrator/__init__.mojo` — exports `ImplicitIntegrator`
+- `gpu/constants.mojo` — `implicit_extra_workspace_size`, offset functions for derivative workspace arrays
 
-MuJoCo reference: `engine_derivative.c` lines 596-700 (`mjd_rne_vel`).
+#### What Was Implemented
 
-This computes `d(C(q,v))/dv` where C is the Coriolis/centrifugal term from RNE.
-The derivative is generally non-symmetric, requiring LU factorization instead of
-Cholesky/LDL:
+**Full qDeriv computation** (vs implicitfast which only uses passive damping diagonal):
+1. Initialize `qDeriv[i,i] = -damping[i]` (passive forces, same as implicitfast)
+2. Add RNE velocity derivative: `qDeriv -= d(qfrc_bias)/d(qvel)` (Coriolis/centrifugal derivative)
+3. Form `M_hat = M + armature - dt * qDeriv` (full NV×NV matrix, generally non-symmetric)
+4. **LU factorization** of M_hat (not LDL, because qDeriv is non-symmetric)
+5. LU solve: `qacc = M_hat^{-1} * f_net`
 
-```
-dF/dv_full = dF_passive/dv + dF_actuator/dv - d(bias)/dv
+**RNE velocity derivative algorithm** (matching MuJoCo's `mjd_rne_vel_dense`):
+1. Precompute body-origin quantities (cdof, cvel, cinert at body origin)
+2. Compute `Dcvel` and `Dcdofdot` (velocity Jacobians)
+3. Forward pass: compute `Dcacc` and `Dcfrcbody` (force Jacobians)
+4. Backward pass: accumulate `Dcfrcbody` to parents
+5. Project to joint space: subtract from qDeriv
 
-Modified system: (M - dt * dF/dv_full) * qacc = f_total
-Factorize via LU (not LDL, because dF/dv_full is not symmetric)
-```
+**LU factorization** (`lu_factorization.mojo`):
+- `lu_factor()`: In-place LU with partial pivoting
+- `lu_solve()`: Solve Ax=b using LU factors
+- `compute_M_inv_from_lu()`: Compute M_inv column-by-column for constraint solver
 
-**Implementation**: Same as implicitfast but:
-1. Compute full `dF/dv` matrix (NV x NV), including `d(bias)/dv`
-2. Use LU factorization instead of LDL
-3. More expensive but more stable for gyroscopic systems
+**GPU implementation**:
+- Three-kernel approach to avoid Metal register pressure
+- Extra workspace section for large derivative matrices (Dcvel, Dcdofdot, Dcacc, Dcfrcbody)
+- Offset functions: `ws_implicit_qderiv_offset`, `ws_implicit_cdof_origin_offset`, etc.
 
-**Recommendation**: Implement after implicitfast. Most robotics tasks don't need this.
+MuJoCo reference: `engine_derivative.c` lines 596-700 (`mjd_rne_vel`),
+`engine_forward.c` lines 1117-1137 (implicit integration path).
 
 ---
 
@@ -1467,7 +1482,7 @@ Sprint 4 (Polish):
 Sprint 5 (Advanced):
   3.3 Equality constraints      DONE (connect + weld, bilateral PGS, MuJoCo impedance, CPU + GPU)
   2.3 RK4 integrator            <- energy conservation option
-  2.2 Implicit integrator       <- gyroscopic stability
+  2.2 Implicit integrator       DONE (full RNE velocity derivative, LU factorization, CPU + GPU)
   5.2 Solver islands            <- multi-agent parallelism
   5.4 Actuator dynamics         DONE (ActuatorSpec trait, Motor/Position/Velocity/General, CPU + GPU)
 ```
