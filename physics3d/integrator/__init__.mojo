@@ -12,11 +12,19 @@ ImplicitFastIntegrator[SOLVER]:
   - Same result as Euler for passive systems (no actuators)
   - Extensible for actuator velocity derivatives
 
+ImplicitIntegrator[SOLVER]:
+  - Full implicit integration: M_hat = M + arm - dt*qDeriv
+  - qDeriv includes RNE velocity derivative (d(Coriolis)/d(qvel))
+  - Non-symmetric qDeriv → uses LU factorization instead of LDL
+  - CPU only (GPU deferred, falls back to ImplicitFast)
+  - Better stability for systems with significant gyroscopic effects
+
 DefaultIntegrator is an alias for ImplicitFastIntegrator[PGSSolver].
 """
 
 from .euler_integrator import EulerDefaultIntegrator, EulerIntegrator
 from .implicit_fast_integrator import ImplicitFastIntegrator
+from .implicit_integrator import ImplicitIntegrator
 from ..solver.pgs_solver import PGSSolver
 
 # Default integrator uses implicit-fast (matches MuJoCo default)

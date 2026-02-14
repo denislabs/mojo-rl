@@ -37,7 +37,7 @@ from layout import Layout, LayoutTensor
 
 # Import GC physics engine
 from physics3d.types import Model, Data
-from physics3d.integrator import ImplicitFastIntegrator
+from physics3d.integrator import ImplicitIntegrator
 from physics3d.solver import NewtonSolver
 from physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
@@ -367,9 +367,9 @@ struct HalfCheetah[
 
         # Physics step (with frame skip)
         for _ in range(self.frame_skip):
-            ImplicitFastIntegrator[SOLVER=NewtonSolver].step[
-                NGEOM = Self.NGEOM
-            ](self.model, self.data, verbose=verbose)
+            ImplicitIntegrator[SOLVER=NewtonSolver].step[NGEOM = Self.NGEOM](
+                self.model, self.data, verbose=verbose
+            )
             # Enforce joint limits after each physics step
             HalfCheetahJoints.enforce_limits(self.data)
 
@@ -602,12 +602,17 @@ struct HalfCheetah[
 
         # Apply actions to qfrc via actuators (MuJoCo-style)
         HalfCheetahActuators.apply_actions_kernel_gpu[
-            gpu_dtype, BATCH_SIZE, STATE_SIZE_VAL, ACTION_DIM_VAL, Self.NQ, Self.NV
+            gpu_dtype,
+            BATCH_SIZE,
+            STATE_SIZE_VAL,
+            ACTION_DIM_VAL,
+            Self.NQ,
+            Self.NV,
         ](ctx, states_buf, actions_buf)
 
         # Run FRAME_SKIP physics sub-steps with joint limit enforcement
         for _ in range(P.FRAME_SKIP):
-            ImplicitFastIntegrator[SOLVER=NewtonSolver].step_gpu[
+            ImplicitIntegrator[SOLVER=NewtonSolver].step_gpu[
                 gpu_dtype,
                 Self.NQ,
                 Self.NV,
