@@ -14,7 +14,8 @@ robot definition. Replaces the former constants.mojo.
 
 from physics3d.model.body_spec import CapsuleBody
 from physics3d.model.joint_spec import HingeJoint, SlideJoint
-from physics3d.model.model_def import Bodies, Joints, Geoms, ModelDef
+from physics3d.model.model_def import Bodies, Joints, Geoms, Actuators, ModelDef
+from physics3d.model.actuator_spec import MotorActuator
 from physics3d.model.geom_spec import PlaneGeom, BodyCapsuleGeom
 from render3d import Color3D
 from physics3d.gpu.constants import (
@@ -322,6 +323,21 @@ comptime FFootJ = HingeJoint[
 
 
 # =============================================================================
+# Actuator Type Aliases (MuJoCo-style motor actuators)
+# =============================================================================
+# All joints are 1-DOF hinges. Root joints (0-2) are unactuated.
+# Actuators map action[i] -> gear * clamp(ctrl, -1, 1) -> qfrc[dof_adr].
+# dof_adr = qpos_adr = joint_idx for this model (all joints have NQ=NV=1).
+
+comptime BThighMotor = MotorActuator[joint_idx=3, dof_adr=3, gear=120.0]
+comptime BShinMotor = MotorActuator[joint_idx=4, dof_adr=4, gear=90.0]
+comptime BFootMotor = MotorActuator[joint_idx=5, dof_adr=5, gear=60.0]
+comptime FThighMotor = MotorActuator[joint_idx=6, dof_adr=6, gear=120.0]
+comptime FShinMotor = MotorActuator[joint_idx=7, dof_adr=7, gear=60.0]
+comptime FFootMotor = MotorActuator[joint_idx=8, dof_adr=8, gear=30.0]
+
+
+# =============================================================================
 # HalfCheetahModel — Full Model Definition
 # =============================================================================
 
@@ -331,6 +347,10 @@ comptime HalfCheetahBodies = Bodies[
 
 comptime HalfCheetahJoints = Joints[
     RootX, RootZ, RootY, BThighJ, BShinJ, BFootJ, FThighJ, FShinJ, FFootJ
+]
+
+comptime HalfCheetahActuators = Actuators[
+    BThighMotor, BShinMotor, BFootMotor, FThighMotor, FShinMotor, FFootMotor
 ]
 
 

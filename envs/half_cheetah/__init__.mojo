@@ -33,6 +33,7 @@ from .half_cheetah_def import (
     HalfCheetahModel,
     HalfCheetahBodies,
     HalfCheetahJoints,
+    HalfCheetahActuators,
     # Params struct
     HalfCheetahParams,
     HalfCheetahParamsCPU,

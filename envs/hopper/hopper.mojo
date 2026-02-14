@@ -67,6 +67,7 @@ from .hopper_def import (
     HopperBodies,
     HopperJoints,
     HopperGeoms,
+    HopperActuators,
     HopperParams,
     BODY_TORSO,
     JOINT_ROOTX,
@@ -371,9 +372,9 @@ struct Hopper[
         # Store previous x position for velocity calculation
         self.prev_x_position = self.data.qpos[JOINT_ROOTX]
 
-        # Apply actions via generic Joints method
+        # Apply actions via actuators (MuJoCo-style)
         var clamped_action = action.clamp()
-        HopperJoints.apply_actions(self.data, clamped_action.to_list())
+        HopperActuators.apply_actions(self.data, clamped_action.to_list())
 
         # Physics step (with frame skip)
         for _ in range(self.frame_skip):
@@ -687,9 +688,9 @@ struct Hopper[
         # Store prev_x_position before physics
         Self._store_prev_x_gpu[BATCH_SIZE, STATE_SIZE_VAL](ctx, states_buf)
 
-        # Apply actions to qfrc via generic Joints method
-        HopperJoints.apply_actions_kernel_gpu[
-            gpu_dtype, BATCH_SIZE, STATE_SIZE_VAL, ACTION_DIM_VAL
+        # Apply actions to qfrc via actuators (MuJoCo-style)
+        HopperActuators.apply_actions_kernel_gpu[
+            gpu_dtype, BATCH_SIZE, STATE_SIZE_VAL, ACTION_DIM_VAL, Self.NQ, Self.NV
         ](ctx, states_buf, actions_buf)
 
         # Run FRAME_SKIP physics sub-steps

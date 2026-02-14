@@ -31,6 +31,7 @@ from .hopper_def import (
     HopperModel,
     HopperBodies,
     HopperJoints,
+    HopperActuators,
     # Params struct (new name)
     HopperParams,
     HopperParamsCPU,

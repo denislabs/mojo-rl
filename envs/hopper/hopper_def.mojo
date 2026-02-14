@@ -14,7 +14,8 @@ model definition. Replaces the former constants.mojo.
 
 from physics3d.model.body_spec import CapsuleBody
 from physics3d.model.joint_spec import HingeJoint, SlideJoint
-from physics3d.model.model_def import Bodies, Joints, Geoms, ModelDef
+from physics3d.model.model_def import Bodies, Joints, Geoms, Actuators, ModelDef
+from physics3d.model.actuator_spec import MotorActuator
 from physics3d.model.geom_spec import PlaneGeom, BodyCapsuleGeom
 from render3d import Color3D
 from physics3d.gpu.constants import (
@@ -278,6 +279,21 @@ comptime HopperJoints = Joints[
     HopperLegJ,
     HopperFootJ,
 ]
+
+# =============================================================================
+# Actuator Type Aliases (MuJoCo-style motor actuators)
+# =============================================================================
+# All actuated joints are 1-DOF hinges at indices 3-5 (dof_adr = joint_idx).
+# Hopper MuJoCo: all 3 actuators have gear=200 (ctrllimited, ctrlrange=[-1,1]).
+
+comptime HopperThighMotor = MotorActuator[joint_idx=3, dof_adr=3, gear=200.0]
+comptime HopperLegMotor = MotorActuator[joint_idx=4, dof_adr=4, gear=200.0]
+comptime HopperFootMotor = MotorActuator[joint_idx=5, dof_adr=5, gear=200.0]
+
+comptime HopperActuators = Actuators[
+    HopperThighMotor, HopperLegMotor, HopperFootMotor
+]
+
 
 comptime HopperModel = ModelDef[
     HopperBodies.N,

@@ -1,8 +1,8 @@
-"""Model definition package for compile-time body/joint/geom specifications.
+"""Model definition package for compile-time body/joint/geom/actuator specifications.
 
-Provides BodySpec, JointSpec, and GeomSpec traits with concrete implementations
-(CapsuleBody, SphereBody, BoxBody, HingeJoint, SlideJoint, PlaneGeom) and
-variadic containers (Bodies, Joints, Geoms) plus a ModelDef compositor.
+Provides BodySpec, JointSpec, GeomSpec, and ActuatorSpec traits with concrete
+implementations and variadic containers (Bodies, Joints, Geoms, Actuators)
+plus a ModelDef compositor.
 """
 
 from .body_spec import BodySpec, CapsuleBody, SphereBody, BoxBody
@@ -18,5 +18,12 @@ from .geom_spec import (
     BodyBoxGeom,
 )
 from .equality_spec import EqualitySpec, ConnectConstraint, WeldConstraint
-from .model_def import Bodies, Joints, Geoms, Equalities, ModelDef
+from .actuator_spec import (
+    ActuatorSpec,
+    MotorActuator,
+    PositionActuator,
+    VelocityActuator,
+    GeneralActuator,
+)
+from .model_def import Bodies, Joints, Geoms, Equalities, Actuators, ModelDef
 from .model_renderer import ModelRenderer

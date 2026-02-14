@@ -25,6 +25,20 @@ Example usage:
 from .joint_types import JointDef, JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
 from .joint_types import get_joint_qpos_size, get_joint_qvel_size
 
+# Actuator dynamics type constants
+comptime DYN_NONE: Int = 0
+comptime DYN_INTEGRATOR: Int = 1
+comptime DYN_FILTER: Int = 2
+comptime DYN_FILTEREXACT: Int = 3
+
+# Actuator gain type constants
+comptime GAIN_FIXED: Int = 0
+comptime GAIN_AFFINE: Int = 1
+
+# Actuator bias type constants
+comptime BIAS_NONE: Int = 0
+comptime BIAS_AFFINE: Int = 1
+
 
 # Helper to compute max(1, n) at compile time for array sizing
 @always_inline
@@ -88,6 +102,65 @@ struct EqualityConstraintDef[DTYPE: DType](Copyable, ImplicitlyCopyable, Movable
             solimp_0=Scalar[Self.DTYPE](0.9),
             solimp_1=Scalar[Self.DTYPE](0.95),
             solimp_2=Scalar[Self.DTYPE](0.001),
+        )
+
+
+# =============================================================================
+# ActuatorDef - Runtime actuator definition
+# =============================================================================
+
+
+@fieldwise_init
+struct ActuatorDef[DTYPE: DType](Copyable, ImplicitlyCopyable, Movable):
+    """Runtime representation of an actuator (populated from ActuatorSpec).
+
+    Stores all parameters needed to compute actuator forces at runtime.
+    Used by Actuators container on CPU; GPU uses flat buffer layout.
+    """
+
+    var joint_idx: Int       # Which joint this actuates
+    var dof_adr: Int         # DOF address (computed from joint's dof_adr)
+    var qpos_adr: Int        # Qpos address (computed from joint's qpos_adr)
+    var gear: Scalar[Self.DTYPE]
+    var dyntype: Int
+    var dynprm_0: Scalar[Self.DTYPE]  # Time constant for filter
+    var gaintype: Int
+    var gainprm_0: Scalar[Self.DTYPE]
+    var gainprm_1: Scalar[Self.DTYPE]
+    var gainprm_2: Scalar[Self.DTYPE]
+    var biastype: Int
+    var biasprm_0: Scalar[Self.DTYPE]
+    var biasprm_1: Scalar[Self.DTYPE]
+    var biasprm_2: Scalar[Self.DTYPE]
+    var ctrl_min: Scalar[Self.DTYPE]
+    var ctrl_max: Scalar[Self.DTYPE]
+    var force_min: Scalar[Self.DTYPE]
+    var force_max: Scalar[Self.DTYPE]
+    var has_activation: Bool
+
+    @staticmethod
+    fn empty() -> Self:
+        """Create empty actuator definition."""
+        return Self(
+            joint_idx=-1,
+            dof_adr=-1,
+            qpos_adr=-1,
+            gear=Scalar[Self.DTYPE](1),
+            dyntype=DYN_NONE,
+            dynprm_0=Scalar[Self.DTYPE](1),
+            gaintype=GAIN_FIXED,
+            gainprm_0=Scalar[Self.DTYPE](1),
+            gainprm_1=Scalar[Self.DTYPE](0),
+            gainprm_2=Scalar[Self.DTYPE](0),
+            biastype=BIAS_NONE,
+            biasprm_0=Scalar[Self.DTYPE](0),
+            biasprm_1=Scalar[Self.DTYPE](0),
+            biasprm_2=Scalar[Self.DTYPE](0),
+            ctrl_min=Scalar[Self.DTYPE](-1),
+            ctrl_max=Scalar[Self.DTYPE](1),
+            force_min=Scalar[Self.DTYPE](-1e10),
+            force_max=Scalar[Self.DTYPE](1e10),
+            has_activation=False,
         )
 
 

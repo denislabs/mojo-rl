@@ -41,7 +41,7 @@ Reference material:
   - [5.1 Solver Warmstart](#51-solver-warmstart)
   - [5.2 Solver Islands](#52-solver-islands)
   - [5.3 Passive Forces (spring/damper per joint)](#53-passive-forces-springdamper-per-joint)
-  - [5.4 Actuator Dynamics](#54-actuator-dynamics)
+  - [5.4 Actuator Dynamics — DONE](#54-actuator-dynamics--done)
   - [5.5 Tendon System](#55-tendon-system)
   - [5.6 No-Slip Friction Post-Solver](#56-no-slip-friction-post-solver)
 
@@ -101,7 +101,7 @@ Reference material:
 | ~~No broadphase~~ | ~~Low - performance for many bodies~~ | ~~4~~ DONE |
 | ~~No warmstart~~ | ~~Low~~ | ~~5~~ DONE |
 | No solver islands | Low - parallelism optimization | 5 |
-| No actuators / tendons | Low - feature completeness | 5 |
+| ~~No actuators~~ / No tendons | ~~Low~~ | ~~5~~ DONE (actuators) |
 
 ---
 
@@ -1379,45 +1379,39 @@ All passive forces are defined per-joint via `JointSpec` traits and work on CPU 
 
 ---
 
-### 5.4 Actuator Dynamics
+### 5.4 Actuator Dynamics — DONE
 
-**Problem**: MuJoCo has a full actuator system with activation dynamics, gain/bias
-computation, force limits, and multiple transmission types. Our engine applies
-torques directly via `qfrc` (mapped through `JointSpec.TAU_LIMIT`).
+**Status**: COMPLETE. Trait-based compile-time actuator system following the
+BodySpec/JointSpec/GeomSpec pattern. Supports 4 actuator types (Motor, Position,
+Velocity, General) with full MuJoCo gain/bias pipeline, force clamping, and
+qDeriv contributions for implicit integration.
 
-**Current state**: `Joints.apply_actions()` maps normalized [-1, 1] actions to
-`qfrc` via `tau_limit * action`, filtering by `IS_ACTUATED` flag. This is equivalent
-to MuJoCo's simplest actuator (motor with fixed gain = tau_limit).
+**Architecture**:
+- `ActuatorSpec` trait with 19 compile-time fields (joint_idx, dof_adr, qpos_adr, gear, dyntype, gaintype, biastype, gain/bias params, ctrl/force ranges)
+- `Actuators[*A: ActuatorSpec]` variadic container with `apply_actions` (CPU), `apply_actions_gpu` (GPU), `compute_qderiv_contribution` (CPU/GPU)
+- All actuator params are compile-time via `@parameter for` — no GPU buffer storage needed
 
-**Missing**:
-- Activation dynamics (INTEGRATOR, FILTER, MUSCLE)
-- Gain/bias functions (AFFINE with gainprm/biasprm)
-- Force clamping (forcerange)
-- Position/velocity actuators (PD control)
+**Actuator types**:
+- `MotorActuator[joint_idx, dof_adr, gear]`: `force = gear * clamp(ctrl, ctrl_min, ctrl_max)`
+- `PositionActuator[joint_idx, dof_adr, kp, kd]`: `force = kp*(ctrl - qpos) - kd*qvel` (PD servo)
+- `VelocityActuator[joint_idx, dof_adr, kv]`: `force = kv*(ctrl - qvel)` (velocity servo)
+- `GeneralActuator[...]`: Full control over dyntype, gaintype, biastype, all params
 
-#### MuJoCo Actuator Pipeline
-
+**MuJoCo force pipeline** (implemented):
 ```
-1. Activation dynamics: act_dot = f(act, ctrl)
-   - INTEGRATOR: act_dot = ctrl
-   - FILTER: act_dot = (ctrl - act) / tau
-   - MUSCLE: Hill muscle model
-
-2. Gain: g = gain(act, vel, ...)
-   - FIXED: g = gainprm[0]
-   - AFFINE: g = gainprm[0] + gainprm[1] * act
-
-3. Bias: b = bias(act, vel, ...)
-   - NONE: b = 0
-   - AFFINE: b = biasprm[0] + biasprm[1] * act + biasprm[2] * vel
-
-4. Force: f = g * ctrl + b
-5. Clamping: f = clamp(f, forcerange)
-6. Transmission: qfrc += J_actuator^T * f
+1. Clamp ctrl to [ctrl_min, ctrl_max]
+2. Compute gain: FIXED → gainprm_0, AFFINE → gainprm_0 + gainprm_1*qpos + gainprm_2*qvel
+3. Compute bias: NONE → 0, AFFINE → biasprm_0 + biasprm_1*qpos + biasprm_2*qvel
+4. Force = gain * ctrl + bias
+5. Clamp force to [force_min, force_max]
+6. qfrc[dof_adr] = force
 ```
 
-**Recommendation**: Start with simple position/velocity actuators (PD control).
-Add muscle dynamics later if needed for biomechanics.
+**Environments migrated**: HalfCheetah (6 MotorActuators, gear=120/90/60/120/60/30), Hopper (3 MotorActuators, gear=200)
+
+**Not yet implemented**: Activation dynamics (DYN_INTEGRATOR, DYN_FILTER) — constants defined, runtime pipeline ready, but no env uses them yet.
+
+**Files**: `actuator_spec.mojo` (NEW), `model_def.mojo`, `types.mojo`, `half_cheetah_def.mojo`, `hopper_def.mojo`, `half_cheetah.mojo`, `hopper.mojo`
 
 ---
 
@@ -1475,7 +1469,7 @@ Sprint 5 (Advanced):
   2.3 RK4 integrator            <- energy conservation option
   2.2 Implicit integrator       <- gyroscopic stability
   5.2 Solver islands            <- multi-agent parallelism
-  5.4 Actuator dynamics         <- MuJoCo model compatibility
+  5.4 Actuator dynamics         DONE (ActuatorSpec trait, Motor/Position/Velocity/General, CPU + GPU)
 ```
 
 ---

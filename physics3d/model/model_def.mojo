@@ -28,7 +28,18 @@ from .body_spec import BodySpec
 from .joint_spec import JointSpec
 from .geom_spec import GeomSpec
 from .equality_spec import EqualitySpec
-from ..types import Model, Data, EqualityConstraintDef, EQ_CONNECT, EQ_WELD
+from .actuator_spec import (
+    ActuatorSpec,
+    DYN_NONE,
+    DYN_INTEGRATOR,
+    DYN_FILTER,
+    DYN_FILTEREXACT,
+    GAIN_FIXED,
+    GAIN_AFFINE,
+    BIAS_NONE,
+    BIAS_AFFINE,
+)
+from ..types import Model, Data, ActuatorDef, EqualityConstraintDef, EQ_CONNECT, EQ_WELD
 from ..joint_types import JNT_HINGE, JNT_SLIDE
 from math import sqrt
 from ..constants import GEOM_SPHERE, GEOM_CAPSULE, GEOM_BOX, GEOM_PLANE
@@ -974,6 +985,263 @@ struct Geoms[*G: GeomSpec]:
             if G_item.GEOM_TYPE == GEOM_PLANE:
                 model.ground_z = Scalar[DTYPE](G_item.POS_Z)
                 model.friction = Scalar[DTYPE](G_item.FRICTION)
+
+
+# =============================================================================
+# Actuators — variadic actuator list
+# =============================================================================
+
+
+@fieldwise_init
+struct Actuators[*A: ActuatorSpec]:
+    """Compile-time list of actuator specifications.
+
+    Provides N (actuator count), force computation (CPU + GPU), and
+    velocity derivative computation for implicit integration (qDeriv).
+
+    Actuators replace the Joints IS_ACTUATED/TAU_LIMIT mechanism with
+    MuJoCo-style gain/bias functions: force = gain*ctrl + bias(qpos, qvel).
+    """
+
+    comptime act_types = Variadic.types[T=ActuatorSpec, *Self.A]
+    comptime N: Int = Variadic.size(Self.act_types)
+
+    # =========================================================================
+    # CPU Operations
+    # =========================================================================
+
+    @staticmethod
+    fn apply_actions[
+        DTYPE: DType,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
+    ](
+        mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+        actions: List[Float64],
+    ):
+        """Apply actions through actuators to produce joint forces.
+
+        For each actuator:
+        1. Clamp ctrl to [ctrl_min, ctrl_max]
+        2. Compute: force = gain * ctrl + bias(qpos, qvel)
+        3. Clamp force to [force_min, force_max]
+        4. Write gear * force to qfrc[dof_adr]
+
+        Uses compile-time DOF_ADR and QPOS_ADR from ActuatorSpec.
+        """
+        @parameter
+        for i in range(Self.N):
+            comptime A_item = Self.act_types[i]
+            comptime dof_adr = A_item.DOF_ADR
+            comptime qpos_adr = A_item.QPOS_ADR
+
+            # Get action value
+            var ctrl = Float64(0)
+            if i < len(actions):
+                ctrl = actions[i]
+
+            # Clamp ctrl
+            if ctrl > A_item.CTRL_MAX:
+                ctrl = A_item.CTRL_MAX
+            elif ctrl < A_item.CTRL_MIN:
+                ctrl = A_item.CTRL_MIN
+
+            # Compute gain
+            var gain = Scalar[DTYPE](A_item.GAINPRM_0)
+            @parameter
+            if A_item.GAINTYPE == GAIN_AFFINE:
+                var qpos_val = data.qpos[qpos_adr]
+                var qvel_val = data.qvel[dof_adr]
+                gain = Scalar[DTYPE](A_item.GAINPRM_0) + Scalar[DTYPE](A_item.GAINPRM_1) * qpos_val + Scalar[DTYPE](A_item.GAINPRM_2) * qvel_val
+
+            # Compute bias
+            var bias = Scalar[DTYPE](0)
+            @parameter
+            if A_item.BIASTYPE == BIAS_AFFINE:
+                var qpos_val = data.qpos[qpos_adr]
+                var qvel_val = data.qvel[dof_adr]
+                bias = Scalar[DTYPE](A_item.BIASPRM_0) + Scalar[DTYPE](A_item.BIASPRM_1) * qpos_val + Scalar[DTYPE](A_item.BIASPRM_2) * qvel_val
+
+            # Compute force
+            var force = gain * Scalar[DTYPE](ctrl) + bias
+
+            # Clamp force
+            if force > Scalar[DTYPE](A_item.FORCE_MAX):
+                force = Scalar[DTYPE](A_item.FORCE_MAX)
+            elif force < Scalar[DTYPE](A_item.FORCE_MIN):
+                force = Scalar[DTYPE](A_item.FORCE_MIN)
+
+            # Write to qfrc (gear * force)
+            data.qfrc[dof_adr] = Scalar[DTYPE](A_item.GEAR) * force
+
+    # =========================================================================
+    # GPU Operations — inline per-env (called from inside kernels)
+    # =========================================================================
+
+    @always_inline
+    @staticmethod
+    fn apply_actions_gpu[
+        GDTYPE: DType,
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        ACTION_DIM: Int,
+        NQ: Int,
+        NV: Int,
+    ](
+        states: LayoutTensor[
+            GDTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ],
+        actions: LayoutTensor[
+            GDTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+        ],
+        env: Int,
+    ):
+        """Apply actions through actuators for a single env on GPU.
+
+        Uses compile-time DOF_ADR/QPOS_ADR from ActuatorSpec for state
+        buffer addressing. NQ/NV are compile-time template params matching
+        the joint layout.
+        """
+        comptime QPOS_OFF = qpos_offset[NQ, NV]()
+        comptime QVEL_OFF = qvel_offset[NQ, NV]()
+        comptime QFRC_OFF = qfrc_offset[NQ, NV]()
+
+        @parameter
+        for i in range(Self.N):
+            comptime A_item = Self.act_types[i]
+            comptime dof_adr = A_item.DOF_ADR
+            comptime qpos_adr = A_item.QPOS_ADR
+
+            # Get action value
+            var ctrl = Scalar[GDTYPE](0)
+            if i < ACTION_DIM:
+                ctrl = rebind[Scalar[GDTYPE]](actions[env, i])
+
+            # Clamp ctrl
+            if ctrl > Scalar[GDTYPE](A_item.CTRL_MAX):
+                ctrl = Scalar[GDTYPE](A_item.CTRL_MAX)
+            elif ctrl < Scalar[GDTYPE](A_item.CTRL_MIN):
+                ctrl = Scalar[GDTYPE](A_item.CTRL_MIN)
+
+            # Compute gain
+            var gain = Scalar[GDTYPE](A_item.GAINPRM_0)
+            @parameter
+            if A_item.GAINTYPE == GAIN_AFFINE:
+                var qpos_val = rebind[Scalar[GDTYPE]](states[env, QPOS_OFF + qpos_adr])
+                var qvel_val = rebind[Scalar[GDTYPE]](states[env, QVEL_OFF + dof_adr])
+                gain = Scalar[GDTYPE](A_item.GAINPRM_0) + Scalar[GDTYPE](A_item.GAINPRM_1) * qpos_val + Scalar[GDTYPE](A_item.GAINPRM_2) * qvel_val
+
+            # Compute bias
+            var bias = Scalar[GDTYPE](0)
+            @parameter
+            if A_item.BIASTYPE == BIAS_AFFINE:
+                var qpos_val = rebind[Scalar[GDTYPE]](states[env, QPOS_OFF + qpos_adr])
+                var qvel_val = rebind[Scalar[GDTYPE]](states[env, QVEL_OFF + dof_adr])
+                bias = Scalar[GDTYPE](A_item.BIASPRM_0) + Scalar[GDTYPE](A_item.BIASPRM_1) * qpos_val + Scalar[GDTYPE](A_item.BIASPRM_2) * qvel_val
+
+            # Compute force
+            var force = gain * ctrl + bias
+
+            # Clamp force
+            if force > Scalar[GDTYPE](A_item.FORCE_MAX):
+                force = Scalar[GDTYPE](A_item.FORCE_MAX)
+            elif force < Scalar[GDTYPE](A_item.FORCE_MIN):
+                force = Scalar[GDTYPE](A_item.FORCE_MIN)
+
+            # Write to qfrc (gear * force) at compile-time DOF address
+            states[env, QFRC_OFF + dof_adr] = Scalar[GDTYPE](A_item.GEAR) * force
+
+    @staticmethod
+    fn compute_qderiv_contribution[
+        DTYPE: DType, NV: Int,
+    ](mut qderiv: InlineArray[Scalar[DTYPE], NV * NV]):
+        """Add actuator velocity derivative contributions to qDeriv.
+
+        For each actuator with velocity-dependent gain or bias:
+            qDeriv[dof, dof] += gear * (gainprm_2 + biasprm_2)
+
+        This is used by ImplicitFastIntegrator: M_hat = M + arm - dt*qDeriv.
+        Velocity-dependent terms contribute negative damping-like effects.
+        """
+        @parameter
+        for i in range(Self.N):
+            comptime A_item = Self.act_types[i]
+            comptime dof = A_item.DOF_ADR
+            # Velocity derivative: d(force)/d(qvel) = gear * (gainprm_2 + biasprm_2)
+            comptime vel_deriv = A_item.GEAR * (A_item.GAINPRM_2 + A_item.BIASPRM_2)
+            @parameter
+            if vel_deriv != 0.0:
+                qderiv[dof * NV + dof] += Scalar[DTYPE](vel_deriv)
+
+    @always_inline
+    @staticmethod
+    fn compute_qderiv_contribution_gpu[
+        GDTYPE: DType, NV: Int,
+    ](workspace: LayoutTensor[GDTYPE, _, MutAnyOrigin], env: Int, qderiv_offset: Int):
+        """Add actuator velocity derivative contributions to qDeriv in GPU workspace."""
+        @parameter
+        for i in range(Self.N):
+            comptime A_item = Self.act_types[i]
+            comptime dof = A_item.DOF_ADR
+            comptime vel_deriv = A_item.GEAR * (A_item.GAINPRM_2 + A_item.BIASPRM_2)
+            @parameter
+            if vel_deriv != 0.0:
+                var idx = qderiv_offset + dof * NV + dof
+                var cur = rebind[Scalar[GDTYPE]](workspace[env, idx])
+                workspace[env, idx] = cur + Scalar[GDTYPE](vel_deriv)
+
+    @staticmethod
+    fn apply_actions_kernel_gpu[
+        GDTYPE: DType,
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        ACTION_DIM: Int,
+        NQ: Int,
+        NV: Int,
+    ](
+        ctx: DeviceContext,
+        mut states_buf: DeviceBuffer[GDTYPE],
+        actions_buf: DeviceBuffer[GDTYPE],
+    ) raises:
+        """Launch kernel to apply actuator actions for all envs."""
+        var states = LayoutTensor[
+            GDTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ](states_buf.unsafe_ptr())
+        var actions = LayoutTensor[
+            GDTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+        ](actions_buf.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
+
+        @always_inline
+        fn kernel(
+            states: LayoutTensor[
+                GDTYPE,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                MutAnyOrigin,
+            ],
+            actions: LayoutTensor[
+                GDTYPE,
+                Layout.row_major(BATCH_SIZE, ACTION_DIM),
+                MutAnyOrigin,
+            ],
+        ):
+            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if env >= BATCH_SIZE:
+                return
+            Self.apply_actions_gpu[GDTYPE, BATCH_SIZE, STATE_SIZE, ACTION_DIM, NQ, NV](
+                states, actions, env
+            )
+
+        ctx.enqueue_function[kernel, kernel](
+            states,
+            actions,
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )
 
 
 @fieldwise_init
