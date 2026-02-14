@@ -37,7 +37,7 @@ from layout import Layout, LayoutTensor
 
 # Import GC physics engine
 from physics3d.types import Model, Data
-from physics3d.integrator import ImplicitIntegrator
+from physics3d.integrator import ImplicitFastIntegrator
 from physics3d.solver import NewtonSolver
 from physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
@@ -150,7 +150,9 @@ struct HalfCheetah[
         NV, NBODY
     ]() + NV * NV + NewtonSolver.solver_workspace_size[
         NV, MAX_CONTACTS
-    ]() + implicit_extra_workspace_size[NV, NBODY]()
+    ]() + implicit_extra_workspace_size[
+        NV, NBODY
+    ]()
 
     # Physics model and data
     var model: Model[
@@ -370,9 +372,9 @@ struct HalfCheetah[
 
         # Physics step (with frame skip)
         for _ in range(self.frame_skip):
-            ImplicitIntegrator[SOLVER=NewtonSolver].step[NGEOM = Self.NGEOM](
-                self.model, self.data, verbose=verbose
-            )
+            ImplicitFastIntegrator[SOLVER=NewtonSolver].step[
+                NGEOM = Self.NGEOM
+            ](self.model, self.data, verbose=verbose)
             # Enforce joint limits after each physics step
             HalfCheetahJoints.enforce_limits(self.data)
 
@@ -571,7 +573,9 @@ struct HalfCheetah[
             Self.NV, Self.NUM_BODIES
         ]() + Self.NV * Self.NV + NewtonSolver.solver_workspace_size[
             Self.NV, Self.MAX_CONTACTS
-        ]() + implicit_extra_workspace_size[Self.NV, Self.NUM_BODIES]()
+        ]() + implicit_extra_workspace_size[
+            Self.NV, Self.NUM_BODIES
+        ]()
 
         var model_buf: DeviceBuffer[gpu_dtype]
         var workspace_buf: DeviceBuffer[gpu_dtype]
@@ -615,7 +619,7 @@ struct HalfCheetah[
 
         # Run FRAME_SKIP physics sub-steps with joint limit enforcement
         for _ in range(P.FRAME_SKIP):
-            ImplicitIntegrator[SOLVER=NewtonSolver].step_gpu[
+            ImplicitFastIntegrator[SOLVER=NewtonSolver].step_gpu[
                 gpu_dtype,
                 Self.NQ,
                 Self.NV,

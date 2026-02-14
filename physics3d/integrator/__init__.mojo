@@ -25,6 +25,7 @@ DefaultIntegrator is an alias for ImplicitFastIntegrator[PGSSolver].
 from .euler_integrator import EulerDefaultIntegrator, EulerIntegrator
 from .implicit_fast_integrator import ImplicitFastIntegrator
 from .implicit_integrator import ImplicitIntegrator
+from .rk4_integrator import RK4Integrator
 from ..solver.pgs_solver import PGSSolver
 
 # Default integrator uses implicit-fast (matches MuJoCo default)

@@ -20,6 +20,9 @@ struct GridState(Copyable, ImplicitlyCopyable, Movable, State):
     fn __eq__(self, other: Self) -> Bool:
         return self.x == other.x and self.y == other.y
 
+    fn __str__(self) -> String:
+        return "GridState(" + String(self.x) + ", " + String(self.y) + ")"
+
 
 @fieldwise_init
 struct GridAction(Action, Copyable, ImplicitlyCopyable, Movable):
@@ -48,6 +51,17 @@ struct GridAction(Action, Copyable, ImplicitlyCopyable, Movable):
     @staticmethod
     fn left() -> Self:
         return Self(direction=3)
+
+    fn __str__(self) -> String:
+        if self.direction == 0:
+            return "GridAction(UP)"
+        elif self.direction == 1:
+            return "GridAction(RIGHT)"
+        elif self.direction == 2:
+            return "GridAction(DOWN)"
+        elif self.direction == 3:
+            return "GridAction(LEFT)"
+        return "GridAction(UNKNOWN)"
 
 
 struct GridWorldEnv(DiscreteEnv):
