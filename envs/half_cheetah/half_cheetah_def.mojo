@@ -62,13 +62,14 @@ from physics3d.gpu.constants import (
 comptime _R: Float64 = 0.046
 
 # Body 0: Torso — root body, parent = -1
-# MuJoCo body_pos=(0,0,0.7) but we use body_pos=(0,0,0) + rootz init_qpos=0.7
+# MuJoCo body_pos=(0,0,0.7) — body origin offset in parent (world) frame
 comptime Torso = CapsuleBody[
     parent= -1,
     mass=6.250209,
     name="torso",
     radius=_R,
     half_length=0.5,
+    pos_z=0.7,  # MuJoCo body_pos z-offset
     # body_quat = identity (default)
     ipos_x=0.152390,
     ipos_y=0.0,
@@ -240,12 +241,12 @@ comptime RootX = SlideJoint[
 ]
 
 # Joint 1: rootz — Slide along Z (body 0, unactuated)
+# Height comes from body_pos_z=0.7, NOT from init_qpos (MuJoCo qpos0 is all zeros)
 comptime RootZ = SlideJoint[
     body_idx=0,
     axis_x=0.0,
     axis_y=0.0,
     axis_z=1.0,
-    init_qpos=0.7,  # INIT_HEIGHT (MuJoCo qpos0)
 ]
 
 # Joint 2: rooty — Hinge around Y (body 0, unactuated)
@@ -570,7 +571,7 @@ struct HalfCheetahParams[DTYPE: DType = DType.float64]:
     comptime OBS_DIM: Int = 17
     comptime ACTION_DIM: Int = 6
 
-    # Initial height (rootz init_qpos)
+    # Initial torso height (from body_pos_z; qpos[rootz] starts at 0)
     comptime INITIAL_Z: Scalar[Self.DTYPE] = 0.7
 
     # GPU layout sizes

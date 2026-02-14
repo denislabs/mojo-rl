@@ -56,13 +56,14 @@ from physics3d.gpu.constants import (
 # =============================================================================
 
 # Body 0: Torso — vertical capsule, root of kinematic tree
-# MuJoCo: body_pos=(0,0,1.25), but we use rootz init_qpos=1.25
+# MuJoCo: body_pos=(0,0,1.25) — body origin offset in parent (world) frame
 comptime HopperTorso = CapsuleBody[
     parent= -1,
     mass=3.665191,
     name="torso",
     radius=0.05,
     half_length=0.2,
+    pos_z=1.25,  # MuJoCo body_pos z-offset
     # ipos = (0, 0, 0), iquat = identity (defaults)
     ixx_override=0.069246,
     iyy_override=0.069246,
@@ -141,13 +142,12 @@ comptime HopperRootX = SlideJoint[
 ]
 
 # Joint 1: rootz — Slide along Z (body 0, unactuated)
-# init_qpos = INITIAL_Z (computed from body geometry stack)
+# Height comes from body_pos_z=1.25, NOT from init_qpos (MuJoCo qpos0 is all zeros)
 comptime HopperRootZ = SlideJoint[
     body_idx=0,
     axis_x=0.0,
     axis_y=0.0,
     axis_z=1.0,
-    init_qpos=1.25,  # FOOT_R + LEG_R + 2*LEG_HL + 2*THIGH_HL + TORSO_HL
 ]
 
 # Joint 2: rooty — Hinge around Y (body 0, unactuated)
@@ -367,7 +367,7 @@ struct HopperParams[DTYPE: DType = DType.float64]:
     comptime OBS_DIM: Int = 11
     comptime ACTION_DIM: Int = 3
 
-    # Initial height (rootz init_qpos)
+    # Initial torso height (from body_pos_z; qpos[rootz] starts at 0)
     comptime INITIAL_Z: Scalar[Self.DTYPE] = 1.25
 
     # Motor

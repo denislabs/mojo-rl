@@ -234,7 +234,7 @@ struct HalfCheetah[
 
         # Elliptic cone (cone_type=1) — pyramidal not yet fully implemented
         # MuJoCo defaults to pyramidal, but elliptic should produce equivalent results
-        self.model.cone_type = 0
+        # self.model.cone_type = 0
 
         # Initialize data
         self.data = Data[
@@ -872,7 +872,7 @@ struct HalfCheetah[
         model.solimp_limit[2] = P.SOLIMP_LIMIT_2
 
         # Elliptic cone (cone_type=1) — pyramidal not yet fully implemented
-        model.cone_type = 0
+        # model.cone_type = 0
 
         HalfCheetahBodies.setup_model(model)
         HalfCheetahJoints.setup_model(model)
