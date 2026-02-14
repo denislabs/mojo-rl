@@ -309,7 +309,7 @@ struct HopperParams[DTYPE: DType = DType.float64]:
     comptime FRAME_SKIP: Int = 4  # Number of physics steps per env step
     comptime GRAVITY_Z: Scalar[Self.DTYPE] = -9.81
     comptime FRICTION: Scalar[Self.DTYPE] = 1.0
-    comptime MAX_CONTACTS: Int = 10
+    comptime MAX_CONTACTS: Int = 20
 
     # Solref/solimp (from hopper.xml)
     comptime SOLREF_CONTACT_0: Scalar[Self.DTYPE] = 0.02  # timeconst
@@ -471,7 +471,7 @@ comptime NQ: Int = HopperModel.NQ
 comptime NV: Int = HopperModel.NV
 comptime NBODY: Int = HopperModel.NBODY
 comptime NJOINT: Int = HopperModel.NJOINT
-comptime MAX_CONTACTS: Int = 10
+comptime MAX_CONTACTS: Int = 20
 comptime NGEOM: Int = HopperModel.NGEOM
 comptime OBS_DIM: Int = 11
 comptime ACTION_DIM: Int = 3
