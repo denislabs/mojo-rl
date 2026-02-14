@@ -90,7 +90,7 @@ struct CGSolver(ConstraintSolver):
 
     @staticmethod
     fn solver_workspace_size[NV: Int, MAX_CONTACTS: Int]() -> Int:
-        """CG solver workspace: 58*MC + 12*MC*NV + MC*MC floats.
+        """CG solver workspace: 83*MC + 12*MC*NV + MC*MC floats.
 
         Layout (offsets relative to solver workspace start):
           [0..13*MC+2*MC*NV)                            Common normal block
@@ -99,10 +99,10 @@ struct CGSolver(ConstraintSolver):
           [14*MC+2*MC*NV+MC*MC..15*MC+2*MC*NV+MC*MC)    r (residual)
           [15*MC+2*MC*NV+MC*MC..16*MC+2*MC*NV+MC*MC)    p (search direction)
           [16*MC+2*MC*NV+MC*MC..17*MC+2*MC*NV+MC*MC)    Ap (A*p product)
-          [17*MC+2*MC*NV+MC*MC..58*MC+12*MC*NV+MC*MC)   Friction (41*MC + 10*MC*NV)
+          [17*MC+2*MC*NV+MC*MC..83*MC+12*MC*NV+MC*MC)   Friction (66*MC + 10*MC*NV)
         """
         comptime MC = _max_one[MAX_CONTACTS]()
-        return 58 * MC + 12 * MC * NV + MC * MC
+        return 83 * MC + 12 * MC * NV + MC * MC
 
     @staticmethod
     fn solver_threads[

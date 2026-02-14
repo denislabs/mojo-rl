@@ -97,7 +97,7 @@ struct NewtonSolver(ConstraintSolver):
 
     @staticmethod
     fn solver_workspace_size[NV: Int, MAX_CONTACTS: Int]() -> Int:
-        """Newton solver workspace: 59*MC + 12*MC*NV + MC*MC floats.
+        """Newton solver workspace: 84*MC + 12*MC*NV + MC*MC floats.
 
         Layout (offsets relative to solver workspace start):
           [0..13*MC+2*MC*NV)                            Common normal block
@@ -107,10 +107,10 @@ struct NewtonSolver(ConstraintSolver):
           [15*MC+2*MC*NV+MC*MC..16*MC+2*MC*NV+MC*MC)    d (Newton direction)
           [16*MC+2*MC*NV+MC*MC..17*MC+2*MC*NV+MC*MC)    lambda_trial
           [17*MC+2*MC*NV+MC*MC..18*MC+2*MC*NV+MC*MC)    free_map (Float)
-          [18*MC+2*MC*NV+MC*MC..59*MC+12*MC*NV+MC*MC)   Friction (41*MC + 10*MC*NV)
+          [18*MC+2*MC*NV+MC*MC..84*MC+12*MC*NV+MC*MC)   Friction (66*MC + 10*MC*NV)
         """
         comptime MC = _max_one[MAX_CONTACTS]()
-        return 59 * MC + 12 * MC * NV + MC * MC
+        return 84 * MC + 12 * MC * NV + MC * MC
 
     @staticmethod
     fn solve[
@@ -168,6 +168,16 @@ struct NewtonSolver(ConstraintSolver):
             for i in range(NV):
                 a_n += constraints.J[r * NV + i] * qacc[i]
             rhs[r] = a_n + constraints.rows[r].bias
+
+        # Save warm-start lambdas (needed for removal after Newton QP)
+        # We use the actual lambda_val, NOT data.contacts[].force_n, because
+        # in pyramidal mode lambda_val=0 while force_n may be non-zero from
+        # the previous frame's accumulated edge forces.
+        var warm_lambda = InlineArray[Scalar[DTYPE], MR](uninitialized=True)
+        for r in range(MR):
+            warm_lambda[r] = Scalar[DTYPE](0)
+        for r in range(num_normals):
+            warm_lambda[r] = constraints.rows[r].lambda_val
 
         # Apply warm-start (after rhs is fully computed)
         for r in range(num_normals):
@@ -356,13 +366,12 @@ struct NewtonSolver(ConstraintSolver):
             )
 
         # Apply solved forces: remove warm-start, apply final
+        # Use saved warm_lambda (not data.contacts[].force_n) to avoid
+        # pyramidal mode bug where force_n != lambda_val.
         for c in range(num_normals):
-            var warm = data.contacts[
-                constraints.rows[c].source_contact_idx
-            ].force_n
-            if warm > Scalar[DTYPE](0):
+            if warm_lambda[c] > Scalar[DTYPE](0):
                 for i in range(NV):
-                    qacc[i] -= constraints.MinvJT[c * NV + i] * warm
+                    qacc[i] -= constraints.MinvJT[c * NV + i] * warm_lambda[c]
 
         for c in range(num_normals):
             if constraints.rows[c].lambda_val > Scalar[DTYPE](0):
