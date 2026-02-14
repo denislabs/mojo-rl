@@ -77,7 +77,9 @@ fn _compute_angular_jacobian_row[
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
+    model: Model[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+    ],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
     contact_body_a: Int,
@@ -140,11 +142,14 @@ fn _joint_affects_body[
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
+    model: Model[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+    ],
     joint_idx: Int,
     body_idx: Int,
 ) -> Bool:
-    """Check if a joint affects a body (body is the joint's body or a descendant)."""
+    """Check if a joint affects a body (body is the joint's body or a descendant).
+    """
     var joint_body = model.joints[joint_idx].body_id
     if body_idx == joint_body:
         return True
@@ -170,7 +175,9 @@ fn build_constraints[
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
+    model: Model[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+    ],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
     M_inv: InlineArray[Scalar[DTYPE], M_SIZE],
@@ -209,7 +216,9 @@ fn build_constraints[
     if si_dmax < Scalar[DTYPE](1e-4):
         si_dmax = Scalar[DTYPE](1e-4)
     # Acceleration-level spring/damper coefficients (dt-independent)
-    var K_spring = Scalar[DTYPE](1.0) / (si_dmax * si_dmax * sr_tc * sr_tc * sr_dr * sr_dr)
+    var K_spring = Scalar[DTYPE](1.0) / (
+        si_dmax * si_dmax * sr_tc * sr_tc * sr_dr * sr_dr
+    )
     var B_damp = Scalar[DTYPE](2.0) / (si_dmax * sr_tc)
     var default_friction = model.friction
 
@@ -248,8 +257,20 @@ fn build_constraints[
             # Compute normal Jacobian
             compute_contact_jacobian_row[
                 DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, CDOF_SIZE
-            ](model, data, cdof, contact.body_a, contact.body_b,
-              contact.pos_x, contact.pos_y, contact.pos_z, nx, ny, nz, J_n)
+            ](
+                model,
+                data,
+                cdof,
+                contact.body_a,
+                contact.body_b,
+                contact.pos_x,
+                contact.pos_y,
+                contact.pos_z,
+                nx,
+                ny,
+                nz,
+                J_n,
+            )
 
             # Compute aref using normal Jacobian
             var k_n: Scalar[DTYPE] = 0
@@ -265,7 +286,14 @@ fn build_constraints[
 
             var penetration = -contact.dist
             var imp_result = _compute_aref[DTYPE](
-                penetration, si_dmin, si_dmax, si_width, K_spring, B_damp, v_n, k_n
+                penetration,
+                si_dmin,
+                si_dmax,
+                si_width,
+                K_spring,
+                B_damp,
+                v_n,
+                k_n,
             )
             var bias_n = imp_result[0]
             var inv_K_imp_n = imp_result[1]
@@ -345,36 +373,125 @@ fn build_constraints[
                 if td == 0:
                     # Tangent 1 (slide)
                     compute_contact_jacobian_row[
-                        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, CDOF_SIZE
-                    ](model, data, cdof, contact.body_a, contact.body_b,
-                      contact.pos_x, contact.pos_y, contact.pos_z, t1_x, t1_y, t1_z, J_t)
+                        DTYPE,
+                        NQ,
+                        NV,
+                        NBODY,
+                        NJOINT,
+                        MAX_CONTACTS,
+                        V_SIZE,
+                        CDOF_SIZE,
+                    ](
+                        model,
+                        data,
+                        cdof,
+                        contact.body_a,
+                        contact.body_b,
+                        contact.pos_x,
+                        contact.pos_y,
+                        contact.pos_z,
+                        t1_x,
+                        t1_y,
+                        t1_z,
+                        J_t,
+                    )
                 elif td == 1:
                     # Tangent 2 (slide)
                     compute_contact_jacobian_row[
-                        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, CDOF_SIZE
-                    ](model, data, cdof, contact.body_a, contact.body_b,
-                      contact.pos_x, contact.pos_y, contact.pos_z, t2_x, t2_y, t2_z, J_t)
+                        DTYPE,
+                        NQ,
+                        NV,
+                        NBODY,
+                        NJOINT,
+                        MAX_CONTACTS,
+                        V_SIZE,
+                        CDOF_SIZE,
+                    ](
+                        model,
+                        data,
+                        cdof,
+                        contact.body_a,
+                        contact.body_b,
+                        contact.pos_x,
+                        contact.pos_y,
+                        contact.pos_z,
+                        t2_x,
+                        t2_y,
+                        t2_z,
+                        J_t,
+                    )
                 elif td == 2:
                     # Torsion (angular along normal)
                     mu_td = contact.friction_spin
 
                     _compute_angular_jacobian_row[
-                        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, CDOF_SIZE
-                    ](model, data, cdof, contact.body_a, contact.body_b, nx, ny, nz, J_t)
+                        DTYPE,
+                        NQ,
+                        NV,
+                        NBODY,
+                        NJOINT,
+                        MAX_CONTACTS,
+                        V_SIZE,
+                        CDOF_SIZE,
+                    ](
+                        model,
+                        data,
+                        cdof,
+                        contact.body_a,
+                        contact.body_b,
+                        nx,
+                        ny,
+                        nz,
+                        J_t,
+                    )
                 elif td == 3:
                     # Roll 1 (angular along tangent 1)
                     mu_td = contact.friction_roll
 
                     _compute_angular_jacobian_row[
-                        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, CDOF_SIZE
-                    ](model, data, cdof, contact.body_a, contact.body_b, t1_x, t1_y, t1_z, J_t)
+                        DTYPE,
+                        NQ,
+                        NV,
+                        NBODY,
+                        NJOINT,
+                        MAX_CONTACTS,
+                        V_SIZE,
+                        CDOF_SIZE,
+                    ](
+                        model,
+                        data,
+                        cdof,
+                        contact.body_a,
+                        contact.body_b,
+                        t1_x,
+                        t1_y,
+                        t1_z,
+                        J_t,
+                    )
                 elif td == 4:
                     # Roll 2 (angular along tangent 2)
                     mu_td = contact.friction_roll
 
                     _compute_angular_jacobian_row[
-                        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, CDOF_SIZE
-                    ](model, data, cdof, contact.body_a, contact.body_b, t2_x, t2_y, t2_z, J_t)
+                        DTYPE,
+                        NQ,
+                        NV,
+                        NBODY,
+                        NJOINT,
+                        MAX_CONTACTS,
+                        V_SIZE,
+                        CDOF_SIZE,
+                    ](
+                        model,
+                        data,
+                        cdof,
+                        contact.body_a,
+                        contact.body_b,
+                        t2_x,
+                        t2_y,
+                        t2_z,
+                        J_t,
+                    )
 
                 if mu_td <= Scalar[DTYPE](1e-12):
                     continue
@@ -387,7 +504,9 @@ fn build_constraints[
                 for sign_idx in range(2):
                     if row_idx >= MAX_ROWS:
                         break
-                    var sign = Scalar[DTYPE](1.0) if sign_idx == 0 else Scalar[DTYPE](-1.0)
+                    var sign = Scalar[DTYPE](1.0) if sign_idx == 0 else Scalar[
+                        DTYPE
+                    ](-1.0)
 
                     # J_edge = J_n + sign * mu * J_t
                     var k_edge: Scalar[DTYPE] = 0
@@ -396,7 +515,9 @@ fn build_constraints[
                         constraints.J[row_idx * NV + i] = j_edge
                         var mi_j_sum: Scalar[DTYPE] = 0
                         for j_idx in range(NV):
-                            var j_edge_j = J_n[j_idx] + sign * mu_td * J_t[j_idx]
+                            var j_edge_j = (
+                                J_n[j_idx] + sign * mu_td * J_t[j_idx]
+                            )
                             mi_j_sum += M_inv[i * NV + j_idx] * j_edge_j
                         constraints.MinvJT[row_idx * NV + i] = mi_j_sum
                         k_edge += (J_n[i] + sign * mu_td * J_t[i]) * mi_j_sum
@@ -412,7 +533,9 @@ fn build_constraints[
                     constraints.rows[row_idx].lo = Scalar[DTYPE](0)
                     constraints.rows[row_idx].hi = Scalar[DTYPE](1e20)
                     constraints.rows[row_idx].lambda_val = Scalar[DTYPE](0)
-                    constraints.rows[row_idx].constraint_type = CNSTR_PYRAMID_EDGE
+                    constraints.rows[
+                        row_idx
+                    ].constraint_type = CNSTR_PYRAMID_EDGE
                     constraints.rows[row_idx].friction_parent = -1
                     constraints.rows[row_idx].friction_coef = mu_td
                     constraints.rows[row_idx].source_contact_idx = c
@@ -473,7 +596,14 @@ fn build_constraints[
 
             var penetration = -contact.dist
             var imp_result = _compute_aref[DTYPE](
-                penetration, si_dmin, si_dmax, si_width, K_spring, B_damp, v_n, k
+                penetration,
+                si_dmin,
+                si_dmax,
+                si_width,
+                K_spring,
+                B_damp,
+                v_n,
+                k,
             )
 
             var friction_coef = contact.friction
@@ -591,8 +721,15 @@ fn build_constraints[
             k1 = Scalar[DTYPE](1e-10)
 
         # Compute friction regularizer from parent normal's impedance
-        var imp_n = constraints.rows[normal_row].inv_K_imp * constraints.rows[normal_row].K
-        var R_n = (Scalar[DTYPE](1.0) - imp_n) / imp_n * constraints.rows[normal_row].K
+        var imp_n = (
+            constraints.rows[normal_row].inv_K_imp
+            * constraints.rows[normal_row].K
+        )
+        var R_n = (
+            (Scalar[DTYPE](1.0) - imp_n)
+            / imp_n
+            * constraints.rows[normal_row].K
+        )
         var R_f1 = R_n / model.impratio
         var inv_K_imp_f1 = Scalar[DTYPE](1.0) / (k1 + R_f1)
 
@@ -698,7 +835,9 @@ fn build_constraints[
             var mu_spin = contact.friction_spin
             var R_f3 = R_n / model.impratio
             if mu_spin > Scalar[DTYPE](1e-12):
-                R_f3 = R_f3 * friction_coef * friction_coef / (mu_spin * mu_spin)
+                R_f3 = (
+                    R_f3 * friction_coef * friction_coef / (mu_spin * mu_spin)
+                )
             var inv_K_imp_f3 = Scalar[DTYPE](1.0) / (k3 + R_f3)
 
             var bias_f3 = B_damp * imp_n * v_t3
@@ -721,7 +860,14 @@ fn build_constraints[
             # Roll 1: angular velocity along tangent 1
             if row_idx < MAX_ROWS:
                 _compute_angular_jacobian_row[
-                    DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, CDOF_SIZE
+                    DTYPE,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    MAX_CONTACTS,
+                    V_SIZE,
+                    CDOF_SIZE,
                 ](
                     model,
                     data,
@@ -751,7 +897,12 @@ fn build_constraints[
                 var mu_roll1 = contact.friction_roll
                 var R_f4 = R_n / model.impratio
                 if mu_roll1 > Scalar[DTYPE](1e-12):
-                    R_f4 = R_f4 * friction_coef * friction_coef / (mu_roll1 * mu_roll1)
+                    R_f4 = (
+                        R_f4
+                        * friction_coef
+                        * friction_coef
+                        / (mu_roll1 * mu_roll1)
+                    )
                 var inv_K_imp_f4 = Scalar[DTYPE](1.0) / (k4 + R_f4)
 
                 var bias_f4 = B_damp * imp_n * v_t4
@@ -772,7 +923,14 @@ fn build_constraints[
             # Roll 2: angular velocity along tangent 2
             if row_idx < MAX_ROWS:
                 _compute_angular_jacobian_row[
-                    DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, CDOF_SIZE
+                    DTYPE,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    MAX_CONTACTS,
+                    V_SIZE,
+                    CDOF_SIZE,
                 ](
                     model,
                     data,
@@ -801,7 +959,12 @@ fn build_constraints[
                 var mu_roll2 = contact.friction_roll
                 var R_f5 = R_n / model.impratio
                 if mu_roll2 > Scalar[DTYPE](1e-12):
-                    R_f5 = R_f5 * friction_coef * friction_coef / (mu_roll2 * mu_roll2)
+                    R_f5 = (
+                        R_f5
+                        * friction_coef
+                        * friction_coef
+                        / (mu_roll2 * mu_roll2)
+                    )
                 var inv_K_imp_f5 = Scalar[DTYPE](1.0) / (k5 + R_f5)
 
                 var bias_f5 = B_damp * imp_n * v_t5
@@ -837,7 +1000,9 @@ fn build_constraints[
     if li_dmax < Scalar[DTYPE](1e-4):
         li_dmax = Scalar[DTYPE](1e-4)
     # Acceleration-level spring/damper for limits
-    var l_K_spring = Scalar[DTYPE](1.0) / (li_dmax * li_dmax * lr_tc * lr_tc * lr_dr * lr_dr)
+    var l_K_spring = Scalar[DTYPE](1.0) / (
+        li_dmax * li_dmax * lr_tc * lr_tc * lr_dr * lr_dr
+    )
     var l_B_damp = Scalar[DTYPE](2.0) / (li_dmax * lr_tc)
 
     for j in range(model.num_joints):
@@ -862,7 +1027,9 @@ fn build_constraints[
             # Jacobian: J[dof] = sign, all others zero
             for i in range(NV):
                 constraints.J[row_idx * NV + i] = Scalar[DTYPE](0)
-                constraints.MinvJT[row_idx * NV + i] = M_inv[i * NV + dof] * sign
+                constraints.MinvJT[row_idx * NV + i] = (
+                    M_inv[i * NV + dof] * sign
+                )
             constraints.J[row_idx * NV + dof] = sign
 
             # Acceleration-level aref for limit
@@ -872,7 +1039,14 @@ fn build_constraints[
             # Use current velocity for damping (not qacc)
             var v_lim = sign * data.qvel[dof]
             var imp_result = _compute_aref[DTYPE](
-                penetration, li_dmin, li_dmax, li_width, l_K_spring, l_B_damp, v_lim, K_lim
+                penetration,
+                li_dmin,
+                li_dmax,
+                li_width,
+                l_K_spring,
+                l_B_damp,
+                v_lim,
+                K_lim,
             )
 
             constraints.rows[row_idx].K = K_lim
@@ -899,7 +1073,9 @@ fn build_constraints[
 
             for i in range(NV):
                 constraints.J[row_idx * NV + i] = Scalar[DTYPE](0)
-                constraints.MinvJT[row_idx * NV + i] = M_inv[i * NV + dof] * sign
+                constraints.MinvJT[row_idx * NV + i] = (
+                    M_inv[i * NV + dof] * sign
+                )
             constraints.J[row_idx * NV + dof] = sign
 
             var penetration = -dist_hi
@@ -908,7 +1084,14 @@ fn build_constraints[
             # Use current velocity for damping (not qacc)
             var v_lim = sign * data.qvel[dof]
             var imp_result = _compute_aref[DTYPE](
-                penetration, li_dmin, li_dmax, li_width, l_K_spring, l_B_damp, v_lim, K_lim
+                penetration,
+                li_dmin,
+                li_dmax,
+                li_width,
+                l_K_spring,
+                l_B_damp,
+                v_lim,
+                K_lim,
             )
 
             constraints.rows[row_idx].K = K_lim
@@ -954,7 +1137,12 @@ fn build_constraints[
             if eq_si_dmax < Scalar[DTYPE](1e-4):
                 eq_si_dmax = Scalar[DTYPE](1e-4)
             var eq_K_spring = Scalar[DTYPE](1.0) / (
-                eq_si_dmax * eq_si_dmax * eq_sr_tc * eq_sr_tc * eq_sr_dr * eq_sr_dr
+                eq_si_dmax
+                * eq_si_dmax
+                * eq_sr_tc
+                * eq_sr_tc
+                * eq_sr_dr
+                * eq_sr_dr
             )
             var eq_B_damp = Scalar[DTYPE](2.0) / (eq_si_dmax * eq_sr_tc)
 
@@ -1008,9 +1196,15 @@ fn build_constraints[
 
             # --- 3 position rows (connect + weld) ---
             var dirs = InlineArray[Scalar[DTYPE], 9](uninitialized=True)
-            dirs[0] = 1; dirs[1] = 0; dirs[2] = 0  # x-axis
-            dirs[3] = 0; dirs[4] = 1; dirs[5] = 0  # y-axis
-            dirs[6] = 0; dirs[7] = 0; dirs[8] = 1  # z-axis
+            dirs[0] = 1
+            dirs[1] = 0
+            dirs[2] = 0  # x-axis
+            dirs[3] = 0
+            dirs[4] = 1
+            dirs[5] = 0  # y-axis
+            dirs[6] = 0
+            dirs[7] = 0
+            dirs[8] = 1  # z-axis
 
             var pos_errs = InlineArray[Scalar[DTYPE], 3](uninitialized=True)
             pos_errs[0] = pos_err_x
@@ -1027,13 +1221,28 @@ fn build_constraints[
 
                 # Compute Jacobian row: J = contact_jacobian(body_a, body_b, world_a, dir)
                 compute_contact_jacobian_row[
-                    DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, CDOF_SIZE,
-                    NGEOM, MAX_EQUALITY,
+                    DTYPE,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    MAX_CONTACTS,
+                    V_SIZE,
+                    CDOF_SIZE,
+                    NGEOM,
+                    MAX_EQUALITY,
                 ](
-                    model, data, cdof,
-                    body_a, body_b,
-                    world_a_x, world_a_y, world_a_z,
-                    dir_x, dir_y, dir_z,
+                    model,
+                    data,
+                    cdof,
+                    body_a,
+                    body_b,
+                    world_a_x,
+                    world_a_y,
+                    world_a_z,
+                    dir_x,
+                    dir_y,
+                    dir_z,
                     J_row,
                 )
 
@@ -1056,8 +1265,14 @@ fn build_constraints[
                 var penetration = abs(err_d)
 
                 var imp_result = _compute_aref[DTYPE](
-                    penetration, eq_si_dmin, eq_si_dmax, eq_si_width,
-                    eq_K_spring, eq_B_damp, v_eq, k_eq,
+                    penetration,
+                    eq_si_dmin,
+                    eq_si_dmax,
+                    eq_si_width,
+                    eq_K_spring,
+                    eq_B_damp,
+                    v_eq,
+                    k_eq,
                 )
 
                 # For bilateral equality: bias sign depends on error direction
@@ -1073,7 +1288,9 @@ fn build_constraints[
                 constraints.rows[row_idx].lo = Scalar[DTYPE](-1e20)
                 constraints.rows[row_idx].hi = Scalar[DTYPE](1e20)
                 constraints.rows[row_idx].lambda_val = Scalar[DTYPE](0)
-                constraints.rows[row_idx].constraint_type = CNSTR_EQUALITY_CONNECT
+                constraints.rows[
+                    row_idx
+                ].constraint_type = CNSTR_EQUALITY_CONNECT
                 constraints.rows[row_idx].friction_parent = -1
                 constraints.rows[row_idx].friction_coef = Scalar[DTYPE](0)
                 constraints.rows[row_idx].source_contact_idx = -1
@@ -1084,26 +1301,54 @@ fn build_constraints[
             # --- 3 orientation rows (weld only) ---
             if eq.eq_type == EQ_WELD:
                 # Orientation error: 0.5 * imag(conj(quat_b) * quat_a * relpose)
-                var qa_x = data.xquat[body_a * 4 + 0] if body_a >= 0 else Scalar[DTYPE](0)
-                var qa_y = data.xquat[body_a * 4 + 1] if body_a >= 0 else Scalar[DTYPE](0)
-                var qa_z = data.xquat[body_a * 4 + 2] if body_a >= 0 else Scalar[DTYPE](0)
-                var qa_w = data.xquat[body_a * 4 + 3] if body_a >= 0 else Scalar[DTYPE](1)
+                var qa_x = data.xquat[
+                    body_a * 4 + 0
+                ] if body_a >= 0 else Scalar[DTYPE](0)
+                var qa_y = data.xquat[
+                    body_a * 4 + 1
+                ] if body_a >= 0 else Scalar[DTYPE](0)
+                var qa_z = data.xquat[
+                    body_a * 4 + 2
+                ] if body_a >= 0 else Scalar[DTYPE](0)
+                var qa_w = data.xquat[
+                    body_a * 4 + 3
+                ] if body_a >= 0 else Scalar[DTYPE](1)
 
-                var qb_x = data.xquat[body_b * 4 + 0] if body_b >= 0 else Scalar[DTYPE](0)
-                var qb_y = data.xquat[body_b * 4 + 1] if body_b >= 0 else Scalar[DTYPE](0)
-                var qb_z = data.xquat[body_b * 4 + 2] if body_b >= 0 else Scalar[DTYPE](0)
-                var qb_w = data.xquat[body_b * 4 + 3] if body_b >= 0 else Scalar[DTYPE](1)
+                var qb_x = data.xquat[
+                    body_b * 4 + 0
+                ] if body_b >= 0 else Scalar[DTYPE](0)
+                var qb_y = data.xquat[
+                    body_b * 4 + 1
+                ] if body_b >= 0 else Scalar[DTYPE](0)
+                var qb_z = data.xquat[
+                    body_b * 4 + 2
+                ] if body_b >= 0 else Scalar[DTYPE](0)
+                var qb_w = data.xquat[
+                    body_b * 4 + 3
+                ] if body_b >= 0 else Scalar[DTYPE](1)
 
                 # conj(qb) * qa
                 var qb_conj = quat_conjugate[DTYPE](qb_x, qb_y, qb_z, qb_w)
                 var q_diff = quat_mul[DTYPE](
-                    qb_conj[0], qb_conj[1], qb_conj[2], qb_conj[3],
-                    qa_x, qa_y, qa_z, qa_w,
+                    qb_conj[0],
+                    qb_conj[1],
+                    qb_conj[2],
+                    qb_conj[3],
+                    qa_x,
+                    qa_y,
+                    qa_z,
+                    qa_w,
                 )
                 # q_diff * relpose
                 var q_err = quat_mul[DTYPE](
-                    q_diff[0], q_diff[1], q_diff[2], q_diff[3],
-                    eq.relpose_x, eq.relpose_y, eq.relpose_z, eq.relpose_w,
+                    q_diff[0],
+                    q_diff[1],
+                    q_diff[2],
+                    q_diff[3],
+                    eq.relpose_x,
+                    eq.relpose_y,
+                    eq.relpose_z,
+                    eq.relpose_w,
                 )
                 # Orientation error = 0.5 * imaginary part
                 var rot_err_x = Scalar[DTYPE](0.5) * q_err[0]
@@ -1125,12 +1370,25 @@ fn build_constraints[
 
                     # Angular-only Jacobian (like torsional friction)
                     _compute_angular_jacobian_row[
-                        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, CDOF_SIZE,
-                        NGEOM, MAX_EQUALITY,
+                        DTYPE,
+                        NQ,
+                        NV,
+                        NBODY,
+                        NJOINT,
+                        MAX_CONTACTS,
+                        V_SIZE,
+                        CDOF_SIZE,
+                        NGEOM,
+                        MAX_EQUALITY,
                     ](
-                        model, data, cdof,
-                        body_a, body_b,
-                        dir_x, dir_y, dir_z,
+                        model,
+                        data,
+                        cdof,
+                        body_a,
+                        body_b,
+                        dir_x,
+                        dir_y,
+                        dir_z,
                         J_row,
                     )
 
@@ -1151,8 +1409,14 @@ fn build_constraints[
                     var pen_rot = abs(err_rot)
 
                     var imp_rot = _compute_aref[DTYPE](
-                        pen_rot, eq_si_dmin, eq_si_dmax, eq_si_width,
-                        eq_K_spring, eq_B_damp, v_rot, k_rot,
+                        pen_rot,
+                        eq_si_dmin,
+                        eq_si_dmax,
+                        eq_si_width,
+                        eq_K_spring,
+                        eq_B_damp,
+                        v_rot,
+                        k_rot,
                     )
 
                     var bias_rot = imp_rot[0]
@@ -1165,7 +1429,9 @@ fn build_constraints[
                     constraints.rows[row_idx].lo = Scalar[DTYPE](-1e20)
                     constraints.rows[row_idx].hi = Scalar[DTYPE](1e20)
                     constraints.rows[row_idx].lambda_val = Scalar[DTYPE](0)
-                    constraints.rows[row_idx].constraint_type = CNSTR_EQUALITY_WELD
+                    constraints.rows[
+                        row_idx
+                    ].constraint_type = CNSTR_EQUALITY_WELD
                     constraints.rows[row_idx].friction_parent = -1
                     constraints.rows[row_idx].friction_coef = Scalar[DTYPE](0)
                     constraints.rows[row_idx].source_contact_idx = -1
@@ -1230,7 +1496,9 @@ fn writeback_forces[
             # Decode: source_dof = td * 2 + sign_idx
             var td = row.source_dof // 2
             var sign_idx = row.source_dof % 2
-            var sign = Scalar[DTYPE](1.0) if sign_idx == 0 else Scalar[DTYPE](-1.0)
+            var sign = Scalar[DTYPE](1.0) if sign_idx == 0 else Scalar[DTYPE](
+                -1.0
+            )
             # All edges contribute to normal force
             data.contacts[c].force_n += row.lambda_val
             # Tangent force = mu * sign * lambda
