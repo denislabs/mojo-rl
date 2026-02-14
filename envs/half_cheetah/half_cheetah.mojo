@@ -226,6 +226,9 @@ struct HalfCheetah[
         self.model.solimp_limit[1] = P.SOLIMP_LIMIT_1
         self.model.solimp_limit[2] = P.SOLIMP_LIMIT_2
 
+        # Elliptic cone (cone_type=1) — pyramidal not yet fully implemented
+        # MuJoCo defaults to pyramidal, but elliptic should produce equivalent results
+
         # Initialize data
         self.data = Data[
             Self.DTYPE,
@@ -335,7 +338,7 @@ struct HalfCheetah[
             act.data[i] = Float64(action[i])
 
         # Take step
-        var result = self.step(act)
+        var result = self.step(act, verbose=verbose)
 
         # Build observation list
         var obs_list = List[Scalar[Self.DTYPE]](capacity=Self.OBS_DIM)
@@ -853,6 +856,8 @@ struct HalfCheetah[
         model.solimp_limit[0] = P.SOLIMP_LIMIT_0
         model.solimp_limit[1] = P.SOLIMP_LIMIT_1
         model.solimp_limit[2] = P.SOLIMP_LIMIT_2
+
+        # Elliptic cone (cone_type=1) — pyramidal not yet fully implemented
 
         HalfCheetahBodies.setup_model(model)
         HalfCheetahJoints.setup_model(model)

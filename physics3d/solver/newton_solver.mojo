@@ -66,7 +66,7 @@ from ..constraints.constraint_builder_gpu import (
 
 
 # Newton solver parameters
-comptime NEWTON_ITERATIONS: Int = 15
+comptime NEWTON_ITERATIONS: Int = 100
 comptime NEWTON_TOLERANCE: Float64 = 1e-8
 comptime LINESEARCH_ITERATIONS: Int = 10
 comptime LINESEARCH_BETA: Float64 = 0.5  # Step shrink factor
@@ -97,7 +97,7 @@ struct NewtonSolver(ConstraintSolver):
 
     @staticmethod
     fn solver_workspace_size[NV: Int, MAX_CONTACTS: Int]() -> Int:
-        """Newton solver workspace: 54*MC + 12*MC*NV + MC*MC floats.
+        """Newton solver workspace: 59*MC + 12*MC*NV + MC*MC floats.
 
         Layout (offsets relative to solver workspace start):
           [0..13*MC+2*MC*NV)                            Common normal block
@@ -107,10 +107,10 @@ struct NewtonSolver(ConstraintSolver):
           [15*MC+2*MC*NV+MC*MC..16*MC+2*MC*NV+MC*MC)    d (Newton direction)
           [16*MC+2*MC*NV+MC*MC..17*MC+2*MC*NV+MC*MC)    lambda_trial
           [17*MC+2*MC*NV+MC*MC..18*MC+2*MC*NV+MC*MC)    free_map (Float)
-          [18*MC+2*MC*NV+MC*MC..54*MC+12*MC*NV+MC*MC)   Friction (36*MC + 10*MC*NV)
+          [18*MC+2*MC*NV+MC*MC..59*MC+12*MC*NV+MC*MC)   Friction (41*MC + 10*MC*NV)
         """
         comptime MC = _max_one[MAX_CONTACTS]()
-        return 54 * MC + 12 * MC * NV + MC * MC
+        return 59 * MC + 12 * MC * NV + MC * MC
 
     @staticmethod
     fn solve[
@@ -440,6 +440,14 @@ struct NewtonSolver(ConstraintSolver):
                     group_size += 1
 
                 if lambda_n <= Scalar[DTYPE](0):
+                    # Zero friction when normal force is zero (cone constraint)
+                    for g in range(group_size):
+                        var r = r_start + g
+                        var old_f = constraints.rows[r].lambda_val
+                        if old_f != Scalar[DTYPE](0):
+                            constraints.rows[r].lambda_val = Scalar[DTYPE](0)
+                            for i in range(NV):
+                                qacc[i] -= constraints.MinvJT[r * NV + i] * old_f
                     fric_idx += group_size
                     continue
 
@@ -458,7 +466,7 @@ struct NewtonSolver(ConstraintSolver):
                         for i in range(NV):
                             a_f += constraints.J[r * NV + i] * qacc[i]
                         var R_f = Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp - constraints.rows[r].K
-                        var residual_f = a_f + R_f * constraints.rows[r].lambda_val
+                        var residual_f = a_f + constraints.rows[r].bias + R_f * constraints.rows[r].lambda_val
                         var delta_f = -residual_f * constraints.rows[r].inv_K_imp
                         constraints.rows[r].lambda_val = (
                             constraints.rows[r].lambda_val

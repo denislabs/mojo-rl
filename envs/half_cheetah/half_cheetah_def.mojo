@@ -353,6 +353,9 @@ comptime TorsoGeom = BodyCapsuleGeom[
     # MuJoCo geom pos=(0,0,0), quat=(0.707107, 0, -0.707107, 0) → 90°Y rotation
     quat_y= -0.707107,
     quat_w=0.707107,
+    friction=0.4,
+    friction_spin=0.1,
+    friction_roll=0.1,
     conaffinity=0,
     color = Color3D(204, 153, 102),
 ]
@@ -365,6 +368,9 @@ comptime BThighGeom = BodyCapsuleGeom[
     # MuJoCo quat (w,x,y,z) = (-0.32329, 0, -0.9463, 0)
     quat_y= -0.946300,
     quat_w= -0.323290,
+    friction=0.4,
+    friction_spin=0.1,
+    friction_roll=0.1,
     conaffinity=0,
     color = Color3D(204, 153, 102),
 ]
@@ -377,6 +383,9 @@ comptime BShinGeom = BodyCapsuleGeom[
     # MuJoCo quat (w,x,y,z) = (0.52762, 0, -0.849481, 0)
     quat_y= -0.849481,
     quat_w=0.527620,
+    friction=0.4,
+    friction_spin=0.1,
+    friction_roll=0.1,
     conaffinity=0,
     color = Color3D(230, 153, 153),
 ]
@@ -389,6 +398,9 @@ comptime BFootGeom = BodyCapsuleGeom[
     # MuJoCo quat (w,x,y,z) = (0.990901, 0, -0.13459, 0)
     quat_y= -0.134590,
     quat_w=0.990901,
+    friction=0.4,
+    friction_spin=0.1,
+    friction_roll=0.1,
     conaffinity=0,
     color = Color3D(230, 153, 153),
 ]
@@ -401,6 +413,9 @@ comptime FThighGeom = BodyCapsuleGeom[
     # MuJoCo quat (w,x,y,z) = (0.96639, 0, 0.257081, 0)
     quat_y=0.257081,
     quat_w=0.966390,
+    friction=0.4,
+    friction_spin=0.1,
+    friction_roll=0.1,
     conaffinity=0,
     color = Color3D(204, 153, 102),
 ]
@@ -413,6 +428,9 @@ comptime FShinGeom = BodyCapsuleGeom[
     # MuJoCo quat (w,x,y,z) = (0.955336, 0, -0.29552, 0)
     quat_y= -0.295520,
     quat_w=0.955336,
+    friction=0.4,
+    friction_spin=0.1,
+    friction_roll=0.1,
     conaffinity=0,
     color = Color3D(230, 153, 153),
 ]
@@ -425,6 +443,9 @@ comptime FFootGeom = BodyCapsuleGeom[
     # MuJoCo quat (w,x,y,z) = (0.955336, 0, -0.29552, 0)
     quat_y= -0.295520,
     quat_w=0.955336,
+    friction=0.4,
+    friction_spin=0.1,
+    friction_roll=0.1,
     conaffinity=0,
     color = Color3D(230, 153, 153),
 ]
@@ -440,6 +461,9 @@ comptime HeadGeom = BodyCapsuleGeom[
     # MuJoCo quat (w,x,y,z) = (0.90687, 0, 0.42141, 0) → our (0, 0.42141, 0, 0.90687)
     quat_y=0.421410,
     quat_w=0.906870,
+    friction=0.4,
+    friction_spin=0.1,
+    friction_roll=0.1,
     conaffinity=0,
     color = Color3D(204, 153, 102),
 ]
@@ -482,8 +506,8 @@ struct HalfCheetahParams[DTYPE: DType = DType.float64]:
     """
 
     # Physics
-    comptime DT: Scalar[Self.DTYPE] = 0.002  # Physics timestep (500 Hz)
-    comptime FRAME_SKIP: Int = 5  # Number of physics steps per env step
+    comptime DT: Scalar[Self.DTYPE] = 0.01  # Physics timestep (100 Hz, matching MuJoCo)
+    comptime FRAME_SKIP: Int = 5  # Number of physics steps per env step (matching MuJoCo)
     comptime GRAVITY_Z: Scalar[Self.DTYPE] = -9.81
     comptime FRICTION: Scalar[Self.DTYPE] = 0.9
     comptime MAX_CONTACTS: Int = 20

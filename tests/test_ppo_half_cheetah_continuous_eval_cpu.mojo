@@ -129,7 +129,7 @@ fn main() raises:
         debug=True,
         stochastic=False,  # Use deterministic policy for evaluation
         render=RENDER,
-        frame_delay_ms=20,  # ~50 FPS
+        frame_delay_ms=100,  # ~50 FPS
     )
 
     var elapsed_ms = (perf_counter_ns() - start_time) / 1_000_000

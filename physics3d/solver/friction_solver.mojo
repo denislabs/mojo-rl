@@ -8,13 +8,14 @@ Supports up to 5 friction directions per contact:
   slot 3 = roll 1 (angular, along tangent 1)
   slot 4 = roll 2 (angular, along tangent 2)
 
-Workspace layout (36*MC + 10*MC*NV per solver):
+Workspace layout (41*MC + 10*MC*NV per solver):
   lambda_f[5*MC]      - friction impulses per direction
   K_f[5*MC]           - effective masses per direction
   dir_f[15*MC]        - direction vectors (5 dirs × 3 components)
   fric_coef[5*MC]     - per-direction friction coefficients
   condim_c[MC]        - per-contact condim
   R_f[5*MC]           - per-direction regularizer values
+  bias_f[5*MC]        - per-direction velocity damping bias
   J_f[5*MC*NV]        - Jacobians per direction
   MinvJ_f[5*MC*NV]    - M_inv @ J^T per direction
 """
@@ -44,6 +45,9 @@ from ..gpu.constants import (
     CONTACT_IDX_FRICTION_ROLL,
     CONTACT_IDX_CONDIM,
     MODEL_META_IDX_IMPRATIO,
+    MODEL_META_IDX_SOLREF_CONTACT_0,
+    MODEL_META_IDX_SOLIMP_CONTACT_1,
+    qvel_offset,
 )
 
 # Coupled PGS iterations (normals + friction together, MuJoCo-style)
@@ -53,8 +57,8 @@ comptime FRICTION_K_MIN: Float64 = 1e-6
 
 
 fn friction_workspace_size[MC: Int, NV: Int]() -> Int:
-    """Size of friction workspace block: 36*MC + 10*MC*NV."""
-    return 36 * MC + 10 * MC * NV
+    """Size of friction workspace block: 41*MC + 10*MC*NV."""
+    return 41 * MC + 10 * MC * NV
 
 
 # =============================================================================
@@ -128,10 +132,12 @@ fn _solve_friction_pgs_gpu[
     comptime cd = fws + 30 * MC     # MC
     # R_f[d][c] = fws + 31*MC + d*MC + c  (friction regularizer per direction)
     comptime rf = fws + 31 * MC     # 5 * MC
-    # J_f[d][c*NV+i] = fws + 36*MC + d*MC*NV + c*NV + i
-    comptime jf = fws + 36 * MC     # 5 * MC * NV
-    # MinvJ_f[d][c*NV+i] = fws + 36*MC + 5*MC*NV + d*MC*NV + c*NV + i
-    comptime mj = fws + 36 * MC + 5 * MC * NV  # 5 * MC * NV
+    # bias_f[d][c] = fws + 36*MC + d*MC + c  (velocity damping bias per direction)
+    comptime bf = fws + 36 * MC     # 5 * MC
+    # J_f[d][c*NV+i] = fws + 41*MC + d*MC*NV + c*NV + i
+    comptime jf = fws + 41 * MC     # 5 * MC * NV
+    # MinvJ_f[d][c*NV+i] = fws + 41*MC + 5*MC*NV + d*MC*NV + c*NV + i
+    comptime mj = fws + 41 * MC + 5 * MC * NV  # 5 * MC * NV
 
     # Initialize friction workspace
     for c in range(MC):
@@ -140,6 +146,7 @@ fn _solve_friction_pgs_gpu[
             workspace[env, kf + d * MC + c] = Scalar[DTYPE](1)
             workspace[env, fc + d * MC + c] = Scalar[DTYPE](0)
             workspace[env, rf + d * MC + c] = Scalar[DTYPE](0)
+            workspace[env, bf + d * MC + c] = Scalar[DTYPE](0)
             for axis in range(3):
                 workspace[env, df + (d * 3 + axis) * MC + c] = Scalar[DTYPE](0)
         workspace[env, cd + c] = Scalar[DTYPE](3)  # default condim=3
@@ -281,6 +288,18 @@ fn _solve_friction_pgs_gpu[
                     R_d = R_base * mu_slide * mu_slide / (mu_d * mu_d)
             workspace[env, rf + d * MC + c] = R_d
 
+        # Compute velocity damping bias for friction rows
+        # bias_f = B_damp * imp_n * v_tangential (matches MuJoCo friction aref)
+        var sr_tc = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_SOLREF_CONTACT_0])
+        var si_dmax = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_1])
+        var B_damp = Scalar[DTYPE](2.0) / (si_dmax * sr_tc)
+        comptime qvel_off = qvel_offset[NQ, NV]()
+        for d in range(num_fric):
+            var v_t: workspace.element_type = 0
+            for i in range(NV):
+                v_t += rebind[Scalar[DTYPE]](workspace[env, jf + d * MC * NV + c * NV + i]) * rebind[Scalar[DTYPE]](state[env, qvel_off + i])
+            workspace[env, bf + d * MC + c] = B_damp * rebind[Scalar[DTYPE]](v_t)
+
         # Warm-start friction impulses
         var warm_force_idx = InlineArray[Int, 5](uninitialized=True)
         warm_force_idx[0] = CONTACT_IDX_FORCE_T1
@@ -325,6 +344,19 @@ fn _solve_friction_pgs_gpu[
         # --- Friction constraints PGS update (with QCQP elliptic cone) ---
         for c in range(nc):
             if workspace[env, ws_lambda_n + c] <= Scalar[DTYPE](0):
+                # Zero friction when normal force is zero (cone constraint)
+                var condim_z = Int(workspace[env, cd + c])
+                var num_fric_z = 2
+                if condim_z >= 4:
+                    num_fric_z = 3
+                if condim_z >= 6:
+                    num_fric_z = 5
+                for d in range(num_fric_z):
+                    var old_f = rebind[Scalar[DTYPE]](workspace[env, lf + d * MC + c])
+                    if old_f != Scalar[DTYPE](0):
+                        workspace[env, lf + d * MC + c] = Scalar[DTYPE](0)
+                        for i in range(NV):
+                            workspace[env, qacc_idx + i] -= workspace[env, mj + d * MC * NV + c * NV + i] * old_f
                 continue
             var condim = Int(workspace[env, cd + c])
             if condim == 1:
@@ -350,7 +382,7 @@ fn _solve_friction_pgs_gpu[
                     for i in range(NV):
                         a_f += workspace[env, jf + d * MC * NV + c * NV + i] * workspace[env, qacc_idx + i]
                     var R_f_d = workspace[env, rf + d * MC + c]
-                    var residual_f = a_f + R_f_d * workspace[env, lf + d * MC + c]
+                    var residual_f = a_f + workspace[env, bf + d * MC + c] + R_f_d * workspace[env, lf + d * MC + c]
                     var inv_AR = Scalar[DTYPE](1.0) / (workspace[env, kf + d * MC + c] + R_f_d)
                     var delta_f = -residual_f * inv_AR
                     workspace[env, lf + d * MC + c] = workspace[env, lf + d * MC + c] + delta_f

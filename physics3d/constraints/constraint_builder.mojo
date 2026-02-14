@@ -55,9 +55,9 @@ fn _compute_aref[
     var imp = si_dmin + (
         Scalar[DTYPE](3.0) * x * x - Scalar[DTYPE](2.0) * x * x * x
     ) * (si_dmax - si_dmin)
-    # Impedance floor prevents zero-force contacts at surface
-    if imp < Scalar[DTYPE](0.2):
-        imp = Scalar[DTYPE](0.2)
+    # MuJoCo uses mjMINIMP ~1e-6 (only prevents division by zero)
+    if imp < Scalar[DTYPE](1e-6):
+        imp = Scalar[DTYPE](1e-6)
     # aref = K*imp*pen - B*v_n, bias = -aref
     var bias = -K_spring * imp * penetration + B_damp * v_n
     # MuJoCo: AR[i,i] = K + (1-imp)/imp * K = K/imp, so inv = imp/K
@@ -578,6 +578,7 @@ fn build_constraints[
         )
 
         var k1: Scalar[DTYPE] = 0
+        var v_t1: Scalar[DTYPE] = 0
         for i in range(NV):
             constraints.J[row_idx * NV + i] = J_row[i]
             var mi_j_sum: Scalar[DTYPE] = 0
@@ -585,6 +586,7 @@ fn build_constraints[
                 mi_j_sum += M_inv[i * NV + j_idx] * J_row[j_idx]
             constraints.MinvJT[row_idx * NV + i] = mi_j_sum
             k1 += J_row[i] * mi_j_sum
+            v_t1 += J_row[i] * data.qvel[i]
         if k1 < Scalar[DTYPE](1e-10):
             k1 = Scalar[DTYPE](1e-10)
 
@@ -594,8 +596,12 @@ fn build_constraints[
         var R_f1 = R_n / model.impratio
         var inv_K_imp_f1 = Scalar[DTYPE](1.0) / (k1 + R_f1)
 
+        # Friction velocity damping bias (MuJoCo-style):
+        # aref_friction = B_damp * imp * v_tangential → bias = -aref
+        var bias_f1 = B_damp * imp_n * v_t1
+
         constraints.rows[row_idx].K = k1
-        constraints.rows[row_idx].bias = Scalar[DTYPE](0)
+        constraints.rows[row_idx].bias = bias_f1
         constraints.rows[row_idx].inv_K_imp = inv_K_imp_f1
         constraints.rows[row_idx].lo = Scalar[DTYPE](-1e20)
         constraints.rows[row_idx].hi = Scalar[DTYPE](1e20)
@@ -627,6 +633,7 @@ fn build_constraints[
         )
 
         var k2: Scalar[DTYPE] = 0
+        var v_t2: Scalar[DTYPE] = 0
         for i in range(NV):
             constraints.J[row_idx * NV + i] = J_row[i]
             var mi_j_sum: Scalar[DTYPE] = 0
@@ -634,14 +641,18 @@ fn build_constraints[
                 mi_j_sum += M_inv[i * NV + j_idx] * J_row[j_idx]
             constraints.MinvJT[row_idx * NV + i] = mi_j_sum
             k2 += J_row[i] * mi_j_sum
+            v_t2 += J_row[i] * data.qvel[i]
         if k2 < Scalar[DTYPE](1e-10):
             k2 = Scalar[DTYPE](1e-10)
 
         var R_f2 = R_n / model.impratio
         var inv_K_imp_f2 = Scalar[DTYPE](1.0) / (k2 + R_f2)
 
+        # Friction velocity damping bias
+        var bias_f2 = B_damp * imp_n * v_t2
+
         constraints.rows[row_idx].K = k2
-        constraints.rows[row_idx].bias = Scalar[DTYPE](0)
+        constraints.rows[row_idx].bias = bias_f2
         constraints.rows[row_idx].inv_K_imp = inv_K_imp_f2
         constraints.rows[row_idx].lo = Scalar[DTYPE](-1e20)
         constraints.rows[row_idx].hi = Scalar[DTYPE](1e20)
@@ -671,6 +682,7 @@ fn build_constraints[
             )
 
             var k3: Scalar[DTYPE] = 0
+            var v_t3: Scalar[DTYPE] = 0
             for i in range(NV):
                 constraints.J[row_idx * NV + i] = J_row[i]
                 var mi_j_sum: Scalar[DTYPE] = 0
@@ -678,6 +690,7 @@ fn build_constraints[
                     mi_j_sum += M_inv[i * NV + j_idx] * J_row[j_idx]
                 constraints.MinvJT[row_idx * NV + i] = mi_j_sum
                 k3 += J_row[i] * mi_j_sum
+                v_t3 += J_row[i] * data.qvel[i]
             if k3 < Scalar[DTYPE](1e-10):
                 k3 = Scalar[DTYPE](1e-10)
 
@@ -688,8 +701,9 @@ fn build_constraints[
                 R_f3 = R_f3 * friction_coef * friction_coef / (mu_spin * mu_spin)
             var inv_K_imp_f3 = Scalar[DTYPE](1.0) / (k3 + R_f3)
 
+            var bias_f3 = B_damp * imp_n * v_t3
             constraints.rows[row_idx].K = k3
-            constraints.rows[row_idx].bias = Scalar[DTYPE](0)
+            constraints.rows[row_idx].bias = bias_f3
             constraints.rows[row_idx].inv_K_imp = inv_K_imp_f3
             constraints.rows[row_idx].lo = Scalar[DTYPE](-1e20)
             constraints.rows[row_idx].hi = Scalar[DTYPE](1e20)
@@ -721,6 +735,7 @@ fn build_constraints[
                 )
 
                 var k4: Scalar[DTYPE] = 0
+                var v_t4: Scalar[DTYPE] = 0
                 for i in range(NV):
                     constraints.J[row_idx * NV + i] = J_row[i]
                     var mi_j_sum: Scalar[DTYPE] = 0
@@ -728,6 +743,7 @@ fn build_constraints[
                         mi_j_sum += M_inv[i * NV + j_idx] * J_row[j_idx]
                     constraints.MinvJT[row_idx * NV + i] = mi_j_sum
                     k4 += J_row[i] * mi_j_sum
+                    v_t4 += J_row[i] * data.qvel[i]
                 if k4 < Scalar[DTYPE](1e-10):
                     k4 = Scalar[DTYPE](1e-10)
 
@@ -738,8 +754,9 @@ fn build_constraints[
                     R_f4 = R_f4 * friction_coef * friction_coef / (mu_roll1 * mu_roll1)
                 var inv_K_imp_f4 = Scalar[DTYPE](1.0) / (k4 + R_f4)
 
+                var bias_f4 = B_damp * imp_n * v_t4
                 constraints.rows[row_idx].K = k4
-                constraints.rows[row_idx].bias = Scalar[DTYPE](0)
+                constraints.rows[row_idx].bias = bias_f4
                 constraints.rows[row_idx].inv_K_imp = inv_K_imp_f4
                 constraints.rows[row_idx].lo = Scalar[DTYPE](-1e20)
                 constraints.rows[row_idx].hi = Scalar[DTYPE](1e20)
@@ -769,6 +786,7 @@ fn build_constraints[
                 )
 
                 var k5: Scalar[DTYPE] = 0
+                var v_t5: Scalar[DTYPE] = 0
                 for i in range(NV):
                     constraints.J[row_idx * NV + i] = J_row[i]
                     var mi_j_sum: Scalar[DTYPE] = 0
@@ -776,6 +794,7 @@ fn build_constraints[
                         mi_j_sum += M_inv[i * NV + j_idx] * J_row[j_idx]
                     constraints.MinvJT[row_idx * NV + i] = mi_j_sum
                     k5 += J_row[i] * mi_j_sum
+                    v_t5 += J_row[i] * data.qvel[i]
                 if k5 < Scalar[DTYPE](1e-10):
                     k5 = Scalar[DTYPE](1e-10)
 
@@ -785,8 +804,9 @@ fn build_constraints[
                     R_f5 = R_f5 * friction_coef * friction_coef / (mu_roll2 * mu_roll2)
                 var inv_K_imp_f5 = Scalar[DTYPE](1.0) / (k5 + R_f5)
 
+                var bias_f5 = B_damp * imp_n * v_t5
                 constraints.rows[row_idx].K = k5
-                constraints.rows[row_idx].bias = Scalar[DTYPE](0)
+                constraints.rows[row_idx].bias = bias_f5
                 constraints.rows[row_idx].inv_K_imp = inv_K_imp_f5
                 constraints.rows[row_idx].lo = Scalar[DTYPE](-1e20)
                 constraints.rows[row_idx].hi = Scalar[DTYPE](1e20)

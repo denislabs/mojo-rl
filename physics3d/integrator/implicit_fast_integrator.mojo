@@ -585,7 +585,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         ](constraints, data)
 
         # 9. Integrate: qvel = old_qvel + constrained_qacc * dt
-        comptime MAX_QVEL: Scalar[DTYPE] = 10.0
+        comptime MAX_QVEL: Scalar[DTYPE] = 100.0  # Safety clamp (MuJoCo has no clamp)
         for i in range(NV):
             data.qacc[i] = qacc[i]
             data.qvel[i] = data.qvel[i] + qacc[i] * dt
@@ -1039,7 +1039,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         )
         # 9. Integrate: qvel = old_qvel + constrained_qacc * dt
         var qpos_off = qpos_offset[NQ, NV]()
-        comptime MAX_QVEL: Scalar[DTYPE] = 10.0
+        comptime MAX_QVEL: Scalar[DTYPE] = 100.0  # Safety clamp (MuJoCo has no clamp)
         for i in range(NV):
             var old_qvel = rebind[Scalar[DTYPE]](state[env, qvel_off + i])
             var constrained_qacc = rebind[Scalar[DTYPE]](

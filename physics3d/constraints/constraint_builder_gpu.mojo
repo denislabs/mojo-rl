@@ -297,8 +297,8 @@ fn precompute_contact_normal_gpu[
                 Scalar[DTYPE](3.0) * x * x - Scalar[DTYPE](2.0) * x * x * x
             ) * (si_dmax - si_dmin)
             # Impedance floor prevents zero-force contacts at surface
-            if imp < Scalar[DTYPE](0.2):
-                imp = Scalar[DTYPE](0.2)
+            if imp < Scalar[DTYPE](1e-6):
+                imp = Scalar[DTYPE](1e-6)
             # aref = K*imp*pen - B*v_n, bias = -aref
             # Solver uses: delta = -(a_n + bias + R*lambda) * inv_K
             var bias = -K_spring * imp * penetration + B_damp * v_n
@@ -563,9 +563,9 @@ fn detect_and_solve_limits_gpu[
             Scalar[DTYPE](3.0) * x_lim * x_lim
             - Scalar[DTYPE](2.0) * x_lim * x_lim * x_lim
         ) * (li_dmax - li_dmin)
-        # Impedance floor prevents zero-force limits at boundary
-        if imp_lim < Scalar[DTYPE](0.2):
-            imp_lim = Scalar[DTYPE](0.2)
+        # MuJoCo uses mjMINIMP ~1e-6
+        if imp_lim < Scalar[DTYPE](1e-6):
+            imp_lim = Scalar[DTYPE](1e-6)
         # aref = K*imp*pen - B*v, bias = -aref
         comptime qvel_off_lim = qvel_offset[NQ, NV]()
         var v_limit = limit_sign[l] * rebind[Scalar[DTYPE]](
@@ -799,8 +799,8 @@ fn build_and_solve_equality_gpu[
             if x > Scalar[DTYPE](1.0):
                 x = Scalar[DTYPE](1.0)
             var imp = si_dmin + (Scalar[DTYPE](3.0) * x * x - Scalar[DTYPE](2.0) * x * x * x) * (si_dmax - si_dmin)
-            if imp < Scalar[DTYPE](0.2):
-                imp = Scalar[DTYPE](0.2)
+            if imp < Scalar[DTYPE](1e-6):
+                imp = Scalar[DTYPE](1e-6)
 
             # bias = -K*imp*pen + B*v_n (bilateral: sign depends on error direction)
             var bias = -eq_K_spring * imp * penetration + eq_B_damp * v_n
@@ -889,8 +889,8 @@ fn build_and_solve_equality_gpu[
                 if x > Scalar[DTYPE](1.0):
                     x = Scalar[DTYPE](1.0)
                 var imp = si_dmin + (Scalar[DTYPE](3.0) * x * x - Scalar[DTYPE](2.0) * x * x * x) * (si_dmax - si_dmin)
-                if imp < Scalar[DTYPE](0.2):
-                    imp = Scalar[DTYPE](0.2)
+                if imp < Scalar[DTYPE](1e-6):
+                    imp = Scalar[DTYPE](1e-6)
 
                 var bias = -eq_K_spring * imp * penetration + eq_B_damp * v_n
                 if err_d < Scalar[DTYPE](0):

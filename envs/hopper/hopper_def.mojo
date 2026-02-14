@@ -199,29 +199,47 @@ comptime HopperFootJ = HingeJoint[
 # Geom Definitions (unified collision geometry)
 # =============================================================================
 
-# Geom 0: Ground plane
+# Geom 0: Ground plane (MuJoCo floor: condim=3, no explicit friction → default 1.0)
 comptime HopperGroundGeom = PlaneGeom[
-    z=0.0, friction=0.9, conaffinity=1, size_x=20.0, size_y=20.0
+    z=0.0, friction=1.0, conaffinity=1, size_x=20.0, size_y=20.0
 ]
 
 # Geom 1: Torso capsule (body 0) — at body origin, no local transform
+# MuJoCo: friction="0.9", condim=1 (from default geom class)
 comptime HopperTorsoGeom = BodyCapsuleGeom[
-    body_idx=0, radius=0.05, half_length=0.2, color = Color3D(60, 120, 200)
+    body_idx=0, radius=0.05, half_length=0.2,
+    friction=0.9,
+    friction_spin=0.005,
+    friction_roll=0.0001,
+    condim=1,
+    color = Color3D(60, 120, 200),
 ]
 
 # Geom 2: Thigh capsule (body 1) — MuJoCo geom_pos=(0, 0, -0.225)
+# MuJoCo: friction="0.9", condim=1
 comptime HopperThighGeom = BodyCapsuleGeom[
     body_idx=1, radius=0.05, half_length=0.225,
     pos_z= -0.225,
+    friction=0.9,
+    friction_spin=0.005,
+    friction_roll=0.0001,
+    condim=1,
     color = Color3D(80, 200, 80),
 ]
 
 # Geom 3: Leg capsule (body 2) — at body origin
+# MuJoCo: friction="0.9", condim=1
 comptime HopperLegGeom = BodyCapsuleGeom[
-    body_idx=2, radius=0.04, half_length=0.25, color = Color3D(220, 140, 60)
+    body_idx=2, radius=0.04, half_length=0.25,
+    friction=0.9,
+    friction_spin=0.005,
+    friction_roll=0.0001,
+    condim=1,
+    color = Color3D(220, 140, 60),
 ]
 
 # Geom 4: Foot capsule (body 3) — MuJoCo geom_pos=(-0.065, 0, 0.1), 90deg Y rotation
+# MuJoCo: friction="2.0", condim=1
 comptime HopperFootGeom = BodyCapsuleGeom[
     body_idx=3,
     radius=0.06,
@@ -230,6 +248,10 @@ comptime HopperFootGeom = BodyCapsuleGeom[
     pos_z=0.1,
     quat_y= -0.707107,
     quat_w=0.707107,
+    friction=2.0,
+    friction_spin=0.005,
+    friction_roll=0.0001,
+    condim=1,
     color = Color3D(220, 80, 80),
 ]
 

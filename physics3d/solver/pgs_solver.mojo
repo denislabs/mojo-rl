@@ -63,6 +63,7 @@ from ..gpu.constants import (
     MODEL_META_IDX_SOLIMP_CONTACT_1,
     MODEL_META_IDX_SOLIMP_CONTACT_2,
     MODEL_META_IDX_IMPRATIO,
+    qvel_offset,
 )
 from ..constraints.constraint_builder_gpu import (
     init_common_normal_workspace_gpu,
@@ -87,18 +88,19 @@ struct PGSSolver(ConstraintSolver):
 
     @staticmethod
     fn solver_workspace_size[NV: Int, MAX_CONTACTS: Int]() -> Int:
-        """PGS solver workspace: 49*MC + 12*MC*NV floats.
+        """PGS solver workspace: 54*MC + 12*MC*NV floats.
 
         Layout (offsets relative to solver workspace start):
           Common normal block (13*MC + 2*MC*NV):
           [0..13*MC+2*MC*NV)             See constraint_builder_gpu.mojo
-          Friction block (36*MC + 10*MC*NV):
+          Friction block (41*MC + 10*MC*NV):
           [13*MC+2*MC*NV)                lambda_f[5*MC], K_f[5*MC], dir_f[15*MC],
                                          fric_coef[5*MC], condim[MC], R_f[5*MC],
+                                         bias_f[5*MC],
                                          J_f[5*MC*NV], MinvJ_f[5*MC*NV]
         """
         comptime MC = _max_one[MAX_CONTACTS]()
-        return 49 * MC + 12 * MC * NV
+        return 54 * MC + 12 * MC * NV
 
     @staticmethod
     fn solve[
@@ -202,6 +204,14 @@ struct PGSSolver(ConstraintSolver):
                     group_size += 1
 
                 if lambda_n <= Scalar[DTYPE](0):
+                    # Zero friction when normal force is zero (cone constraint)
+                    for g in range(group_size):
+                        var r = r_start + g
+                        var old_f = constraints.rows[r].lambda_val
+                        if old_f != Scalar[DTYPE](0):
+                            constraints.rows[r].lambda_val = Scalar[DTYPE](0)
+                            for i in range(NV):
+                                qacc[i] -= constraints.MinvJT[r * NV + i] * old_f
                     fric_idx += group_size
                     continue
 
@@ -218,7 +228,7 @@ struct PGSSolver(ConstraintSolver):
                         for i in range(NV):
                             a_f += constraints.J[r * NV + i] * qacc[i]
                         var R_f = Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp - constraints.rows[r].K
-                        var residual_f = a_f + R_f * constraints.rows[r].lambda_val
+                        var residual_f = a_f + constraints.rows[r].bias + R_f * constraints.rows[r].lambda_val
                         var delta_f = -residual_f * constraints.rows[r].inv_K_imp
                         constraints.rows[r].lambda_val = constraints.rows[r].lambda_val + delta_f
 
@@ -381,7 +391,7 @@ struct PGSSolver(ConstraintSolver):
         comptime ws_J_n = solver_idx + 13 * MC
         comptime ws_MinvJn = solver_idx + 13 * MC + MC * NV
 
-        # Friction workspace offsets (36*MC + 10*MC*NV, same layout as friction_solver.mojo)
+        # Friction workspace offsets (41*MC + 10*MC*NV, same layout as friction_solver.mojo)
         comptime fws = solver_idx + 13 * MC + 2 * MC * NV
         comptime ws_lf = fws + 0 * MC       # lambda_f[5*MC]
         comptime ws_kf = fws + 5 * MC       # K_f[5*MC]
@@ -389,8 +399,9 @@ struct PGSSolver(ConstraintSolver):
         comptime ws_fc = fws + 25 * MC      # fric_coef[5*MC]
         comptime ws_cd = fws + 30 * MC      # condim[MC]
         comptime ws_rf = fws + 31 * MC      # R_f[5*MC] (friction regularizer)
-        comptime ws_jf = fws + 36 * MC      # J_f[5*MC*NV]
-        comptime ws_mj = fws + 36 * MC + 5 * MC * NV  # MinvJ_f[5*MC*NV]
+        comptime ws_bf = fws + 36 * MC      # bias_f[5*MC] (velocity damping bias)
+        comptime ws_jf = fws + 41 * MC      # J_f[5*MC*NV]
+        comptime ws_mj = fws + 41 * MC + 5 * MC * NV  # MinvJ_f[5*MC*NV]
 
         # === PARALLEL: Initialize workspace ===
         if valid_env:
@@ -408,6 +419,7 @@ struct PGSSolver(ConstraintSolver):
                 workspace[env, ws_kf + d * MC + contact_tid] = 1
                 workspace[env, ws_fc + d * MC + contact_tid] = 0
                 workspace[env, ws_rf + d * MC + contact_tid] = 0
+                workspace[env, ws_bf + d * MC + contact_tid] = 0
                 for axis in range(3):
                     workspace[env, ws_df + (d * 3 + axis) * MC + contact_tid] = 0
             workspace[env, ws_cd + contact_tid] = 3  # default condim=3
@@ -697,6 +709,14 @@ struct PGSSolver(ConstraintSolver):
                                 R_d_pgs = R_base_pgs * mu_slide * mu_slide / (mu_d_pgs * mu_d_pgs)
                         workspace[env, ws_rf + d * MC + c] = R_d_pgs
 
+                    # Compute velocity damping bias for friction rows
+                    comptime qvel_off = qvel_offset[NQ, NV]()
+                    for d in range(num_fric):
+                        var v_t: workspace.element_type = 0
+                        for i in range(NV):
+                            v_t += rebind[Scalar[DTYPE]](workspace[env, ws_jf + d * MC * NV + c * NV + i]) * rebind[Scalar[DTYPE]](state[env, qvel_off + i])
+                        workspace[env, ws_bf + d * MC + c] = B_damp * rebind[Scalar[DTYPE]](v_t)
+
                     # Warm-start friction impulses
                     var warm_idx = InlineArray[Int, 5](uninitialized=True)
                     warm_idx[0] = CONTACT_IDX_FORCE_T1
@@ -762,7 +782,7 @@ struct PGSSolver(ConstraintSolver):
                             for i in range(NV):
                                 a_f += workspace[env, ws_jf + d * MC * NV + c * NV + i] * workspace[env, qacc_idx + i]
                             var R_f_d = workspace[env, ws_rf + d * MC + c]
-                            var residual_f = a_f + R_f_d * workspace[env, ws_lf + d * MC + c]
+                            var residual_f = a_f + workspace[env, ws_bf + d * MC + c] + R_f_d * workspace[env, ws_lf + d * MC + c]
                             var inv_AR = Scalar[DTYPE](1.0) / (workspace[env, ws_kf + d * MC + c] + R_f_d)
                             var delta_f = -residual_f * inv_AR
                             workspace[env, ws_lf + d * MC + c] = workspace[env, ws_lf + d * MC + c] + delta_f
