@@ -593,7 +593,6 @@ fn detect_and_solve_limits_gpu[
             var a_limit = (
                 limit_sign[l] * workspace[env, qacc_idx + limit_dof[l]]
             )
-            # MuJoCo regularizer: R = K/imp - K = 1/inv_K - K
             var R_lim = Scalar[DTYPE](1.0) / lim_inv_K[l] - K_limit[l]
             var residual_l = a_limit + lim_bias[l] + R_lim * lambda_limit[l]
             var delta_l = -residual_l * lim_inv_K[l]
@@ -1050,7 +1049,6 @@ fn build_and_solve_equality_gpu[
                     workspace[env, qacc_idx + i]
                 )
 
-            # R = 1/inv_K_imp - K (MuJoCo regularizer)
             var R_eq = Scalar[DTYPE](1.0) / eq_inv_K_imp[r] - eq_K[r]
             var residual = a_eq + eq_bias[r] + R_eq * eq_lambda[r]
             var delta = -residual * eq_inv_K_imp[r]

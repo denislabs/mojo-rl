@@ -192,15 +192,8 @@ struct PGSSolver(ConstraintSolver):
                 var a: Scalar[DTYPE] = 0
                 for i in range(NV):
                     a += constraints.J[r * NV + i] * qacc[i]
-                var R = (
-                    Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp
-                    - constraints.rows[r].K
-                )
-                var residual = (
-                    a
-                    + constraints.rows[r].bias
-                    + R * constraints.rows[r].lambda_val
-                )
+                var R_n = Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp - constraints.rows[r].K
+                var residual = a + constraints.rows[r].bias + R_n * constraints.rows[r].lambda_val
                 var delta = -residual * constraints.rows[r].inv_K_imp
                 var old_lambda = constraints.rows[r].lambda_val
                 constraints.rows[r].lambda_val = (
@@ -259,10 +252,7 @@ struct PGSSolver(ConstraintSolver):
                         var a_f: Scalar[DTYPE] = 0
                         for i in range(NV):
                             a_f += constraints.J[r * NV + i] * qacc[i]
-                        var R_f = (
-                            Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp
-                            - constraints.rows[r].K
-                        )
+                        var R_f = Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp - constraints.rows[r].K
                         var residual_f = (
                             a_f
                             + constraints.rows[r].bias
@@ -343,10 +333,7 @@ struct PGSSolver(ConstraintSolver):
                 var dof = constraints.rows[r].source_dof
                 var sign = constraints.rows[r].limit_sign
                 var a_limit = sign * qacc[dof]
-                var R_lim = (
-                    Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp
-                    - constraints.rows[r].K
-                )
+                var R_lim = Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp - constraints.rows[r].K
                 var residual = (
                     a_limit
                     + constraints.rows[r].bias
@@ -369,10 +356,7 @@ struct PGSSolver(ConstraintSolver):
                 var a_eq: Scalar[DTYPE] = 0
                 for i in range(NV):
                     a_eq += constraints.J[r * NV + i] * qacc[i]
-                var R_eq = (
-                    Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp
-                    - constraints.rows[r].K
-                )
+                var R_eq = Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp - constraints.rows[r].K
                 var residual = (
                     a_eq
                     + constraints.rows[r].bias
@@ -613,15 +597,11 @@ struct PGSSolver(ConstraintSolver):
                             workspace[env, ws_J_n + c * NV + i]
                             * workspace[env, qacc_idx + i]
                         )
-                    # MuJoCo regularizer: R = K/imp - K = 1/inv_K_imp - K
-                    var R_c = (
-                        Scalar[DTYPE](1.0) / workspace[env, ws_inv_K_imp + c]
-                        - workspace[env, ws_K_n + c]
-                    )
+                    var R_n = Scalar[DTYPE](1.0) / rebind[Scalar[DTYPE]](workspace[env, ws_inv_K_imp + c]) - rebind[Scalar[DTYPE]](workspace[env, ws_K_n + c])
                     var residual = (
                         a_n
                         + workspace[env, ws_pos_bias + c]
-                        + R_c * workspace[env, ws_lambda_n + c]
+                        + R_n * workspace[env, ws_lambda_n + c]
                     )
                     var delta = -residual * workspace[env, ws_inv_K_imp + c]
                     var old_lambda = workspace[env, ws_lambda_n + c]
@@ -976,14 +956,11 @@ struct PGSSolver(ConstraintSolver):
                             workspace[env, ws_J_n + c * NV + i]
                             * workspace[env, qacc_idx + i]
                         )
-                    var R_c = (
-                        Scalar[DTYPE](1.0) / workspace[env, ws_inv_K_imp + c]
-                        - workspace[env, ws_K_n + c]
-                    )
+                    var R_n = Scalar[DTYPE](1.0) / rebind[Scalar[DTYPE]](workspace[env, ws_inv_K_imp + c]) - rebind[Scalar[DTYPE]](workspace[env, ws_K_n + c])
                     var residual = (
                         a_n
                         + workspace[env, ws_pos_bias + c]
-                        + R_c * workspace[env, ws_lambda_n + c]
+                        + R_n * workspace[env, ws_lambda_n + c]
                     )
                     var delta = -residual * workspace[env, ws_inv_K_imp + c]
                     var old_lambda = workspace[env, ws_lambda_n + c]

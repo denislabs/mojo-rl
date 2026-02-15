@@ -21,7 +21,7 @@ from python import Python, PythonObject
 from math import abs
 from collections import InlineArray
 
-from physics3d.types import Model, Data, _max_one
+from physics3d.types import Model, Data, _max_one, ConeType
 from physics3d.integrator.euler_integrator import EulerIntegrator
 from physics3d.solver.newton_solver import NewtonSolver
 from envs.half_cheetah.half_cheetah_def import (
@@ -73,7 +73,9 @@ fn compare_step(
     print("  Steps:", num_steps)
 
     # === Our engine ===
-    var model = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM](
+    var model = Model[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, ConeType.ELLIPTIC
+    ](
         gravity_z=Scalar[DTYPE](-9.81),
         timestep=Scalar[DTYPE](0.01),
     )
@@ -94,11 +96,6 @@ fn compare_step(
     model.solimp_limit[0] = P.SOLIMP_LIMIT_0
     model.solimp_limit[1] = P.SOLIMP_LIMIT_1
     model.solimp_limit[2] = P.SOLIMP_LIMIT_2
-
-    # Use pyramidal cone to match MuJoCo default
-    model.cone_type = 0
-
-    print("model.cone_type:", model.cone_type)
 
     var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
     for i in range(NQ):

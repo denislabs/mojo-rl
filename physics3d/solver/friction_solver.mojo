@@ -491,10 +491,7 @@ fn _solve_friction_pgs_gpu[
                     workspace[env, ws_J_n + c * NV + i]
                     * workspace[env, qacc_idx + i]
                 )
-            var R_n = (
-                Scalar[DTYPE](1.0) / workspace[env, ws_inv_K_imp + c]
-                - workspace[env, ws_K_n + c]
-            )
+            var R_n = Scalar[DTYPE](1.0) / rebind[Scalar[DTYPE]](workspace[env, ws_inv_K_imp + c]) - rebind[Scalar[DTYPE]](workspace[env, ws_K_n + c])
             var residual = (
                 a_n
                 + workspace[env, ws_pos_bias + c]

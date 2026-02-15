@@ -15,9 +15,10 @@ from python import Python, PythonObject
 from math import abs
 from collections import InlineArray
 
-from physics3d.types import Model, Data, _max_one
+from physics3d.types import Model, Data, _max_one, ConeType
 from physics3d.integrator.euler_integrator import EulerIntegrator
 from physics3d.solver.newton_solver import NewtonSolver
+from physics3d.solver.pgs_solver import PGSSolver
 from envs.half_cheetah.half_cheetah_def import (
     HalfCheetahModel,
     HalfCheetahBodies,
@@ -66,7 +67,9 @@ fn compare_step(
     print("  Steps:", num_steps)
 
     # === Our engine ===
-    var model = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM](
+    var model = Model[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, ConeType.ELLIPTIC
+    ](
         gravity_z=Scalar[DTYPE](-9.81),
         timestep=Scalar[DTYPE](0.01),
     )
@@ -87,10 +90,6 @@ fn compare_step(
     model.solimp_limit[1] = P.SOLIMP_LIMIT_1
     model.solimp_limit[2] = P.SOLIMP_LIMIT_2
 
-    # Use elliptic cone — avoids pyramidal redundancy (40 edges for 9 DoFs)
-    # Set mj_model.opt.cone = 1 on the MuJoCo side to match
-    model.cone_type = 1
-
     var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
     for i in range(NQ):
         data.qpos[i] = Scalar[DTYPE](qpos_init[i])
@@ -110,9 +109,7 @@ fn compare_step(
             DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS
         ](data, action_list)
 
-        EulerIntegrator[SOLVER=NewtonSolver].step[
-            NGEOM=NGEOM
-        ](model, data)
+        EulerIntegrator[SOLVER=PGSSolver].step[NGEOM=NGEOM](model, data)
 
     # === MuJoCo reference ===
     var mujoco = Python.import_module("mujoco")
@@ -124,6 +121,7 @@ fn compare_step(
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
     # Match our elliptic cone setting
     mj_model.opt.cone = 1  # mjCONE_ELLIPTIC
+    mj_model.opt.solver = 0  # mjSOL_PGS to match our PGS solver
     var mj_data = mujoco.MjData(mj_model)
 
     for i in range(NQ):
@@ -164,11 +162,17 @@ fn compare_step(
         if not ok:
             if qpos_fails < 5:
                 print(
-                    "  FAIL qpos[", i, "]",
-                    " ours=", our_val,
-                    " mj=", mj_val,
-                    " abs=", abs_err,
-                    " rel=", rel_err,
+                    "  FAIL qpos[",
+                    i,
+                    "]",
+                    " ours=",
+                    our_val,
+                    " mj=",
+                    mj_val,
+                    " abs=",
+                    abs_err,
+                    " rel=",
+                    rel_err,
                 )
             qpos_fails += 1
             qpos_pass = False
@@ -196,11 +200,17 @@ fn compare_step(
         if not ok:
             if qvel_fails < 5:
                 print(
-                    "  FAIL qvel[", i, "]",
-                    " ours=", our_val,
-                    " mj=", mj_val,
-                    " abs=", abs_err,
-                    " rel=", rel_err,
+                    "  FAIL qvel[",
+                    i,
+                    "]",
+                    " ours=",
+                    our_val,
+                    " mj=",
+                    mj_val,
+                    " abs=",
+                    abs_err,
+                    " rel=",
+                    rel_err,
                 )
             qvel_fails += 1
             qvel_pass = False
@@ -209,17 +219,31 @@ fn compare_step(
 
     if all_pass:
         print(
-            "  ALL OK  qpos_max_abs=", qpos_max_abs,
-            " qpos_max_rel=", qpos_max_rel,
-            " qvel_max_abs=", qvel_max_abs,
-            " qvel_max_rel=", qvel_max_rel,
+            "  ALL OK  qpos_max_abs=",
+            qpos_max_abs,
+            " qpos_max_rel=",
+            qpos_max_rel,
+            " qvel_max_abs=",
+            qvel_max_abs,
+            " qvel_max_rel=",
+            qvel_max_rel,
         )
     else:
         print(
-            "  FAILED  qpos:", qpos_fails, "fails (max_abs=", qpos_max_abs,
-            " max_rel=", qpos_max_rel, ")",
-            " qvel:", qvel_fails, "fails (max_abs=", qvel_max_abs,
-            " max_rel=", qvel_max_rel, ")",
+            "  FAILED  qpos:",
+            qpos_fails,
+            "fails (max_abs=",
+            qpos_max_abs,
+            " max_rel=",
+            qpos_max_rel,
+            ")",
+            " qvel:",
+            qvel_fails,
+            "fails (max_abs=",
+            qvel_max_abs,
+            " max_rel=",
+            qvel_max_rel,
+            ")",
         )
 
     # Print values
@@ -250,13 +274,23 @@ fn compare_step(
         print("  --- Contact details ---")
         for c in range(our_ncon):
             print(
-                "  Our contact[", c, "]: body_a=", Int(data.contacts[c].body_a),
-                " body_b=", Int(data.contacts[c].body_b),
-                " pos=(", Float64(data.contacts[c].pos_x),
-                ",", Float64(data.contacts[c].pos_y),
-                ",", Float64(data.contacts[c].pos_z), ")",
-                " dist=", Float64(data.contacts[c].dist),
-                " force_n=", Float64(data.contacts[c].force_n),
+                "  Our contact[",
+                c,
+                "]: body_a=",
+                Int(data.contacts[c].body_a),
+                " body_b=",
+                Int(data.contacts[c].body_b),
+                " pos=(",
+                Float64(data.contacts[c].pos_x),
+                ",",
+                Float64(data.contacts[c].pos_y),
+                ",",
+                Float64(data.contacts[c].pos_z),
+                ")",
+                " dist=",
+                Float64(data.contacts[c].dist),
+                " force_n=",
+                Float64(data.contacts[c].force_n),
             )
 
     if mj_ncon > 0:
@@ -267,12 +301,22 @@ fn compare_step(
             var mj_pos = mj_c.pos.flatten().tolist()
             var mj_geom = mj_c.geom.flatten().tolist()
             print(
-                "  MJ  contact[", c, "]: geom=(",
-                Int(py=mj_geom[0]), ",", Int(py=mj_geom[1]), ")",
-                " pos=(", Float64(py=mj_pos[0]),
-                ",", Float64(py=mj_pos[1]),
-                ",", Float64(py=mj_pos[2]), ")",
-                " dist=", mj_dist,
+                "  MJ  contact[",
+                c,
+                "]: geom=(",
+                Int(py=mj_geom[0]),
+                ",",
+                Int(py=mj_geom[1]),
+                ")",
+                " pos=(",
+                Float64(py=mj_pos[0]),
+                ",",
+                Float64(py=mj_pos[1]),
+                ",",
+                Float64(py=mj_pos[2]),
+                ")",
+                " dist=",
+                mj_dist,
             )
 
     # Also compare qfrc_constraint (net constraint force in joint space)
@@ -282,6 +326,50 @@ fn compare_step(
     for i in range(NV):
         print(" ", Float64(py=mj_qfrc[i]), end="")
     print()
+
+    # --- Compare constraint parameters (run mj_forward on FRESH data) ---
+    var mj_data2 = mujoco.MjData(mj_model)
+    for i in range(NQ):
+        mj_data2.qpos[i] = qpos_init[i]
+    for i in range(NV):
+        mj_data2.qvel[i] = qvel_init[i]
+    for i in range(ACTION_DIM):
+        mj_data2.ctrl[i] = actions[i]
+    # mj_step1 does: position kinematics, collision, constraint setup
+    mujoco.mj_step1(mj_model, mj_data2)
+
+    var mj_nefc = Int(py=mj_data2.nefc)
+    print("  --- MuJoCo constraint params (nefc=", mj_nefc, ") ---")
+    # Print solimp/solref used by MuJoCo
+    var mj_solref = mj_model.opt.o_solref.flatten().tolist()
+    var mj_solimp = mj_model.opt.o_solimp.flatten().tolist()
+    print("    solref:", Float64(py=mj_solref[0]), Float64(py=mj_solref[1]))
+    print("    solimp:", Float64(py=mj_solimp[0]), Float64(py=mj_solimp[1]),
+          Float64(py=mj_solimp[2]), Float64(py=mj_solimp[3]), Float64(py=mj_solimp[4]))
+    if mj_nefc > 0:
+        var mj_efc_b = mj_data2.efc_b.flatten().tolist()
+        var mj_efc_D = mj_data2.efc_D.flatten().tolist()
+        var mj_efc_R = mj_data2.efc_R.flatten().tolist()
+        var mj_efc_aref = mj_data2.efc_aref.flatten().tolist()
+        var mj_efc_type = mj_data2.efc_type.flatten().tolist()
+        # Also print KBIP
+        var mj_efc_KBIP = mj_data2.efc_KBIP.flatten().tolist()
+        for r in range(mj_nefc):
+            if r < 15:  # Limit output
+                var kbip_off = r * 4
+                print(
+                    "    row", r,
+                    " type=", Int(py=mj_efc_type[r]),
+                    " D=", Float64(py=mj_efc_D[r]),
+                    " R=", Float64(py=mj_efc_R[r]),
+                    " aref=", Float64(py=mj_efc_aref[r]),
+                    " KBIP=[",
+                    Float64(py=mj_efc_KBIP[kbip_off]),
+                    Float64(py=mj_efc_KBIP[kbip_off+1]),
+                    Float64(py=mj_efc_KBIP[kbip_off+2]),
+                    Float64(py=mj_efc_KBIP[kbip_off+3]),
+                    "]",
+                )
 
     return all_pass
 
@@ -306,12 +394,12 @@ fn test_ground_contact_with_action() raises -> Bool:
     qpos[1] = -0.45  # rootz — pushes robot down
     var qvel = InlineArray[Float64, NV](fill=0.0)
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    actions[0] = 0.8   # bthigh
+    actions[0] = 0.8  # bthigh
     actions[1] = -0.5  # bshin
-    actions[2] = 0.3   # bfoot
-    actions[3] = 0.8   # fthigh
+    actions[2] = 0.3  # bfoot
+    actions[3] = 0.8  # fthigh
     actions[4] = -0.5  # fshin
-    actions[5] = 0.3   # ffoot
+    actions[5] = 0.3  # ffoot
     return compare_step("Ground contact with action", qpos, qvel, actions)
 
 
@@ -326,7 +414,7 @@ fn main() raises:
     print("=" * 60)
     print("Model: HalfCheetah (NQ=9, NV=9)")
     print("Integrator: Euler (MuJoCo default)")
-    print("Solver: Newton (MuJoCo default)")
+    print("Solver: PGS")
     print("Cone: elliptic (both engines)")
     print("Precision: float64")
     print("Tolerances: qpos abs=", QPOS_ABS_TOL, " rel=", QPOS_REL_TOL)

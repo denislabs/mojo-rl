@@ -348,14 +348,11 @@ struct CGSolver(ConstraintSolver):
                 var a: Scalar[DTYPE] = 0
                 for i in range(NV):
                     a += constraints.J[r * NV + i] * qacc[i]
-                var R = (
-                    Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp
-                    - constraints.rows[r].K
-                )
+                var R_n = Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp - constraints.rows[r].K
                 var residual = (
                     a
                     + constraints.rows[r].bias
-                    + R * constraints.rows[r].lambda_val
+                    + R_n * constraints.rows[r].lambda_val
                 )
                 var delta = -residual * constraints.rows[r].inv_K_imp
                 var old_lambda = constraints.rows[r].lambda_val
@@ -415,10 +412,7 @@ struct CGSolver(ConstraintSolver):
                         var a_f: Scalar[DTYPE] = 0
                         for i in range(NV):
                             a_f += constraints.J[r * NV + i] * qacc[i]
-                        var R_f = (
-                            Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp
-                            - constraints.rows[r].K
-                        )
+                        var R_f = Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp - constraints.rows[r].K
                         var residual_f = (
                             a_f
                             + constraints.rows[r].bias
@@ -499,10 +493,7 @@ struct CGSolver(ConstraintSolver):
                 var dof = constraints.rows[r].source_dof
                 var sign = constraints.rows[r].limit_sign
                 var a_limit = sign * qacc[dof]
-                var R_lim = (
-                    Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp
-                    - constraints.rows[r].K
-                )
+                var R_lim = Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp - constraints.rows[r].K
                 var residual = (
                     a_limit
                     + constraints.rows[r].bias
@@ -525,10 +516,7 @@ struct CGSolver(ConstraintSolver):
                 var a_eq: Scalar[DTYPE] = 0
                 for i in range(NV):
                     a_eq += constraints.J[r * NV + i] * qacc[i]
-                var R_eq = (
-                    Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp
-                    - constraints.rows[r].K
-                )
+                var R_eq = Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp - constraints.rows[r].K
                 var residual = (
                     a_eq
                     + constraints.rows[r].bias
