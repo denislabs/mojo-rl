@@ -127,8 +127,19 @@ struct CGSolver(ConstraintSolver):
         M_SIZE: Int,
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
+        CONE_TYPE: Int = ConeType.ELLIPTIC,
     ](
-        model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
+        model: Model[
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
+        ],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         M_inv: InlineArray[Scalar[DTYPE], M_SIZE],
         mut constraints: ConstraintData[DTYPE, MAX_ROWS, NV],
@@ -195,7 +206,10 @@ struct CGSolver(ConstraintSolver):
 
         # Add MuJoCo regularizer R to diagonal: AR[c,c] = K/imp
         for c in range(num_normals):
-            var R = Scalar[DTYPE](1.0) / constraints.rows[c].inv_K_imp - constraints.rows[c].K
+            var R = (
+                Scalar[DTYPE](1.0) / constraints.rows[c].inv_K_imp
+                - constraints.rows[c].K
+            )
             A[c * num_normals + c] += R
 
         # =====================================================================
@@ -334,11 +348,20 @@ struct CGSolver(ConstraintSolver):
                 var a: Scalar[DTYPE] = 0
                 for i in range(NV):
                     a += constraints.J[r * NV + i] * qacc[i]
-                var R = Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp - constraints.rows[r].K
-                var residual = a + constraints.rows[r].bias + R * constraints.rows[r].lambda_val
+                var R = (
+                    Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp
+                    - constraints.rows[r].K
+                )
+                var residual = (
+                    a
+                    + constraints.rows[r].bias
+                    + R * constraints.rows[r].lambda_val
+                )
                 var delta = -residual * constraints.rows[r].inv_K_imp
                 var old_lambda = constraints.rows[r].lambda_val
-                constraints.rows[r].lambda_val = constraints.rows[r].lambda_val + delta
+                constraints.rows[r].lambda_val = (
+                    constraints.rows[r].lambda_val + delta
+                )
                 if constraints.rows[r].lambda_val < Scalar[DTYPE](0):
                     constraints.rows[r].lambda_val = Scalar[DTYPE](0)
                 var actual = constraints.rows[r].lambda_val - old_lambda
@@ -355,7 +378,12 @@ struct CGSolver(ConstraintSolver):
                 # Count group size (consecutive rows with same friction_parent)
                 var group_size = 1
                 while fric_idx + group_size < num_friction:
-                    if constraints.rows[friction_start + fric_idx + group_size].friction_parent != normal_row:
+                    if (
+                        constraints.rows[
+                            friction_start + fric_idx + group_size
+                        ].friction_parent
+                        != normal_row
+                    ):
                         break
                     group_size += 1
 
@@ -367,12 +395,16 @@ struct CGSolver(ConstraintSolver):
                         if old_f != Scalar[DTYPE](0):
                             constraints.rows[r].lambda_val = Scalar[DTYPE](0)
                             for i in range(NV):
-                                qacc[i] -= constraints.MinvJT[r * NV + i] * old_f
+                                qacc[i] -= (
+                                    constraints.MinvJT[r * NV + i] * old_f
+                                )
                     fric_idx += group_size
                     continue
 
                 # Save old values for all rows in group
-                var old_vals = InlineArray[Scalar[DTYPE], 5](fill=Scalar[DTYPE](0))
+                var old_vals = InlineArray[Scalar[DTYPE], 5](
+                    fill=Scalar[DTYPE](0)
+                )
                 for g in range(group_size):
                     old_vals[g] = constraints.rows[r_start + g].lambda_val
 
@@ -383,17 +415,29 @@ struct CGSolver(ConstraintSolver):
                         var a_f: Scalar[DTYPE] = 0
                         for i in range(NV):
                             a_f += constraints.J[r * NV + i] * qacc[i]
-                        var R_f = Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp - constraints.rows[r].K
-                        var residual_f = a_f + constraints.rows[r].bias + R_f * constraints.rows[r].lambda_val
-                        var delta_f = -residual_f * constraints.rows[r].inv_K_imp
-                        constraints.rows[r].lambda_val = constraints.rows[r].lambda_val + delta_f
+                        var R_f = (
+                            Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp
+                            - constraints.rows[r].K
+                        )
+                        var residual_f = (
+                            a_f
+                            + constraints.rows[r].bias
+                            + R_f * constraints.rows[r].lambda_val
+                        )
+                        var delta_f = (
+                            -residual_f * constraints.rows[r].inv_K_imp
+                        )
+                        constraints.rows[r].lambda_val = (
+                            constraints.rows[r].lambda_val + delta_f
+                        )
 
                 # QCQP elliptic cone projection
                 if group_size == 2:
                     var f1 = constraints.rows[r_start].lambda_val
                     var f2 = constraints.rows[r_start + 1].lambda_val
                     qcqp2[DTYPE](
-                        f1, f2,
+                        f1,
+                        f2,
                         constraints.rows[r_start].friction_coef,
                         lambda_n,
                     )
@@ -404,7 +448,9 @@ struct CGSolver(ConstraintSolver):
                     var f2 = constraints.rows[r_start + 1].lambda_val
                     var f3 = constraints.rows[r_start + 2].lambda_val
                     qcqp3[DTYPE](
-                        f1, f2, f3,
+                        f1,
+                        f2,
+                        f3,
                         constraints.rows[r_start].friction_coef,
                         constraints.rows[r_start + 1].friction_coef,
                         constraints.rows[r_start + 2].friction_coef,
@@ -420,7 +466,11 @@ struct CGSolver(ConstraintSolver):
                     var f4 = constraints.rows[r_start + 3].lambda_val
                     var f5 = constraints.rows[r_start + 4].lambda_val
                     qcqp5[DTYPE](
-                        f1, f2, f3, f4, f5,
+                        f1,
+                        f2,
+                        f3,
+                        f4,
+                        f5,
                         constraints.rows[r_start].friction_coef,
                         constraints.rows[r_start + 1].friction_coef,
                         constraints.rows[r_start + 2].friction_coef,
@@ -449,11 +499,20 @@ struct CGSolver(ConstraintSolver):
                 var dof = constraints.rows[r].source_dof
                 var sign = constraints.rows[r].limit_sign
                 var a_limit = sign * qacc[dof]
-                var R_lim = Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp - constraints.rows[r].K
-                var residual = a_limit + constraints.rows[r].bias + R_lim * constraints.rows[r].lambda_val
+                var R_lim = (
+                    Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp
+                    - constraints.rows[r].K
+                )
+                var residual = (
+                    a_limit
+                    + constraints.rows[r].bias
+                    + R_lim * constraints.rows[r].lambda_val
+                )
                 var delta = -residual * constraints.rows[r].inv_K_imp
                 var old_lambda = constraints.rows[r].lambda_val
-                constraints.rows[r].lambda_val = constraints.rows[r].lambda_val + delta
+                constraints.rows[r].lambda_val = (
+                    constraints.rows[r].lambda_val + delta
+                )
                 if constraints.rows[r].lambda_val < Scalar[DTYPE](0):
                     constraints.rows[r].lambda_val = Scalar[DTYPE](0)
                 var actual = constraints.rows[r].lambda_val - old_lambda
@@ -466,11 +525,20 @@ struct CGSolver(ConstraintSolver):
                 var a_eq: Scalar[DTYPE] = 0
                 for i in range(NV):
                     a_eq += constraints.J[r * NV + i] * qacc[i]
-                var R_eq = Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp - constraints.rows[r].K
-                var residual = a_eq + constraints.rows[r].bias + R_eq * constraints.rows[r].lambda_val
+                var R_eq = (
+                    Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp
+                    - constraints.rows[r].K
+                )
+                var residual = (
+                    a_eq
+                    + constraints.rows[r].bias
+                    + R_eq * constraints.rows[r].lambda_val
+                )
                 var delta = -residual * constraints.rows[r].inv_K_imp
                 var old_lambda = constraints.rows[r].lambda_val
-                constraints.rows[r].lambda_val = constraints.rows[r].lambda_val + delta
+                constraints.rows[r].lambda_val = (
+                    constraints.rows[r].lambda_val + delta
+                )
                 # Bilateral: no clamping (force can push or pull)
                 var actual = constraints.rows[r].lambda_val - old_lambda
                 for i in range(NV):
@@ -492,6 +560,7 @@ struct CGSolver(ConstraintSolver):
         WS_SIZE: Int,
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
+        CONE_TYPE: Int = ConeType.ELLIPTIC,
     ](
         state: LayoutTensor[
             DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
@@ -599,7 +668,9 @@ struct CGSolver(ConstraintSolver):
                 si_width = Scalar[DTYPE](1e-6)
             if si_dmax < Scalar[DTYPE](1e-4):
                 si_dmax = Scalar[DTYPE](1e-4)
-            K_spring = Scalar[DTYPE](1.0) / (si_dmax * si_dmax * sr_tc * sr_tc * sr_dr * sr_dr)
+            K_spring = Scalar[DTYPE](1.0) / (
+                si_dmax * si_dmax * sr_tc * sr_tc * sr_dr * sr_dr
+            )
             B_damp = Scalar[DTYPE](2.0) / (si_dmax * sr_tc)
 
         # === PARALLEL PHASE 1: Each thread precomputes one contact ===
@@ -652,8 +723,14 @@ struct CGSolver(ConstraintSolver):
                     ] = a_val
                 # Add MuJoCo regularizer R to diagonal
                 comptime ws_inv_K_imp_cg = solver_ws_idx + 12 * MC
-                var R_c = Scalar[DTYPE](1.0) / workspace[env, ws_inv_K_imp_cg + contact_tid] - workspace[env, ws_K_n_idx + contact_tid]
-                workspace[env, ws_A_idx + contact_tid * MAX_CONTACTS + contact_tid] += R_c
+                var R_c = (
+                    Scalar[DTYPE](1.0)
+                    / workspace[env, ws_inv_K_imp_cg + contact_tid]
+                    - workspace[env, ws_K_n_idx + contact_tid]
+                )
+                workspace[
+                    env, ws_A_idx + contact_tid * MAX_CONTACTS + contact_tid
+                ] += R_c
 
         barrier()
 
@@ -832,6 +909,7 @@ struct CGSolver(ConstraintSolver):
         ](env, state, model, workspace)
 
         # Friction via PGS
+        comptime FRICTION_WS_OFFSET = 17 * MC + 2 * MC * NV + MC * MC
         _solve_friction_pgs_gpu[
             DTYPE,
             NQ,
@@ -844,5 +922,6 @@ struct CGSolver(ConstraintSolver):
             V_SIZE,
             BATCH,
             WS_SIZE,
-            FRICTION_WS_OFFSET = 17 * MC + 2 * MC * NV + MC * MC,
+            FRICTION_WS_OFFSET,
+            CONE_TYPE,
         ](env, state, model, workspace, nc, friction_coef, contacts_off)

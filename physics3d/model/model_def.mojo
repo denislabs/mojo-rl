@@ -39,7 +39,15 @@ from .actuator_spec import (
     BIAS_NONE,
     BIAS_AFFINE,
 )
-from ..types import Model, Data, ActuatorDef, EqualityConstraintDef, EQ_CONNECT, EQ_WELD
+from ..types import (
+    Model,
+    Data,
+    ActuatorDef,
+    EqualityConstraintDef,
+    EQ_CONNECT,
+    EQ_WELD,
+    ConeType,
+)
 from ..joint_types import JNT_HINGE, JNT_SLIDE
 from math import sqrt
 from ..constants import GEOM_SPHERE, GEOM_CAPSULE, GEOM_BOX, GEOM_PLANE
@@ -80,7 +88,21 @@ struct Bodies[*B: BodySpec]:
         NJOINT: Int,
         MAX_CONTACTS: Int,
         NGEOM: Int = 0,
-    ](mut model: Model[DTYPE, NQ, NV, Self.N, NJOINT, MAX_CONTACTS, NGEOM]):
+        MAX_EQUALITY: Int = 0,
+        CONE_TYPE: Int = ConeType.ELLIPTIC,
+    ](
+        mut model: Model[
+            DTYPE,
+            NQ,
+            NV,
+            Self.N,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
+        ]
+    ):
         """Populate model body properties from compile-time BodySpec list.
 
         Iterates over all body specs and sets mass, inertia, geometry, parent,
@@ -758,7 +780,21 @@ struct Joints[*J: JointSpec]:
         NBODY: Int,
         MAX_CONTACTS: Int,
         NGEOM: Int = 0,
-    ](mut model: Model[DTYPE, NQ, NV, NBODY, Self.N, MAX_CONTACTS, NGEOM]):
+        MAX_EQUALITY: Int = 0,
+        CONE_TYPE: Int = ConeType.ELLIPTIC,
+    ](
+        mut model: Model[
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            Self.N,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
+        ]
+    ):
         """Populate model joints from compile-time JointSpec list.
 
         Iterates over all joint specs and calls add_hinge_joint or
@@ -838,7 +874,8 @@ struct Equalities[*E: EqualitySpec]:
 
     @staticmethod
     fn _sum_rows() -> Int:
-        """Sum NUM_ROWS across all equality constraints (total constraint rows)."""
+        """Sum NUM_ROWS across all equality constraints (total constraint rows).
+        """
         var total = 0
 
         @parameter
@@ -855,7 +892,21 @@ struct Equalities[*E: EqualitySpec]:
         NJOINT: Int,
         MAX_CONTACTS: Int,
         NGEOM: Int = 0,
-    ](mut model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, Self.N]):
+        MAX_EQUALITY: Int = 0,
+        CONE_TYPE: Int = ConeType.ELLIPTIC,
+    ](
+        mut model: Model[
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            Self.N,
+            MAX_EQUALITY,
+            CONE_TYPE,
+        ]
+    ):
         """Populate model equality constraints from compile-time specs."""
 
         @parameter
@@ -931,7 +982,21 @@ struct Geoms[*G: GeomSpec]:
         NJOINT: Int,
         MAX_CONTACTS: Int,
         NGEOM: Int = 0,
-    ](mut model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM]):
+        MAX_EQUALITY: Int = 0,
+        CONE_TYPE: Int = ConeType.ELLIPTIC,
+    ](
+        mut model: Model[
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
+        ]
+    ):
         """Populate model geom arrays from compile-time GeomSpec list.
 
         Sets geom type, body index, position, orientation, size, collision
@@ -970,15 +1035,21 @@ struct Geoms[*G: GeomSpec]:
             if G_item.GEOM_TYPE == GEOM_SPHERE:
                 model.geom_rbound[i] = Scalar[DTYPE](G_item.RADIUS)
             elif G_item.GEOM_TYPE == GEOM_CAPSULE:
-                model.geom_rbound[i] = Scalar[DTYPE](G_item.HALF_LENGTH) + Scalar[DTYPE](G_item.RADIUS)
+                model.geom_rbound[i] = Scalar[DTYPE](
+                    G_item.HALF_LENGTH
+                ) + Scalar[DTYPE](G_item.RADIUS)
             elif G_item.GEOM_TYPE == GEOM_BOX:
                 model.geom_rbound[i] = sqrt(
                     Scalar[DTYPE](G_item.HALF_X) * Scalar[DTYPE](G_item.HALF_X)
-                    + Scalar[DTYPE](G_item.HALF_Y) * Scalar[DTYPE](G_item.HALF_Y)
-                    + Scalar[DTYPE](G_item.HALF_Z) * Scalar[DTYPE](G_item.HALF_Z)
+                    + Scalar[DTYPE](G_item.HALF_Y)
+                    * Scalar[DTYPE](G_item.HALF_Y)
+                    + Scalar[DTYPE](G_item.HALF_Z)
+                    * Scalar[DTYPE](G_item.HALF_Z)
                 )
             elif G_item.GEOM_TYPE == GEOM_PLANE:
-                model.geom_rbound[i] = Scalar[DTYPE](1e10)  # Planes are infinite
+                model.geom_rbound[i] = Scalar[DTYPE](
+                    1e10
+                )  # Planes are infinite
 
             # For plane geoms, also write to legacy ground fields
             @parameter
@@ -1032,6 +1103,7 @@ struct Actuators[*A: ActuatorSpec]:
 
         Uses compile-time DOF_ADR and QPOS_ADR from ActuatorSpec.
         """
+
         @parameter
         for i in range(Self.N):
             comptime A_item = Self.act_types[i]
@@ -1051,19 +1123,29 @@ struct Actuators[*A: ActuatorSpec]:
 
             # Compute gain
             var gain = Scalar[DTYPE](A_item.GAINPRM_0)
+
             @parameter
             if A_item.GAINTYPE == GAIN_AFFINE:
                 var qpos_val = data.qpos[qpos_adr]
                 var qvel_val = data.qvel[dof_adr]
-                gain = Scalar[DTYPE](A_item.GAINPRM_0) + Scalar[DTYPE](A_item.GAINPRM_1) * qpos_val + Scalar[DTYPE](A_item.GAINPRM_2) * qvel_val
+                gain = (
+                    Scalar[DTYPE](A_item.GAINPRM_0)
+                    + Scalar[DTYPE](A_item.GAINPRM_1) * qpos_val
+                    + Scalar[DTYPE](A_item.GAINPRM_2) * qvel_val
+                )
 
             # Compute bias
             var bias = Scalar[DTYPE](0)
+
             @parameter
             if A_item.BIASTYPE == BIAS_AFFINE:
                 var qpos_val = data.qpos[qpos_adr]
                 var qvel_val = data.qvel[dof_adr]
-                bias = Scalar[DTYPE](A_item.BIASPRM_0) + Scalar[DTYPE](A_item.BIASPRM_1) * qpos_val + Scalar[DTYPE](A_item.BIASPRM_2) * qvel_val
+                bias = (
+                    Scalar[DTYPE](A_item.BIASPRM_0)
+                    + Scalar[DTYPE](A_item.BIASPRM_1) * qpos_val
+                    + Scalar[DTYPE](A_item.BIASPRM_2) * qvel_val
+                )
 
             # Compute force
             var force = gain * Scalar[DTYPE](ctrl) + bias
@@ -1128,19 +1210,37 @@ struct Actuators[*A: ActuatorSpec]:
 
             # Compute gain
             var gain = Scalar[GDTYPE](A_item.GAINPRM_0)
+
             @parameter
             if A_item.GAINTYPE == GAIN_AFFINE:
-                var qpos_val = rebind[Scalar[GDTYPE]](states[env, QPOS_OFF + qpos_adr])
-                var qvel_val = rebind[Scalar[GDTYPE]](states[env, QVEL_OFF + dof_adr])
-                gain = Scalar[GDTYPE](A_item.GAINPRM_0) + Scalar[GDTYPE](A_item.GAINPRM_1) * qpos_val + Scalar[GDTYPE](A_item.GAINPRM_2) * qvel_val
+                var qpos_val = rebind[Scalar[GDTYPE]](
+                    states[env, QPOS_OFF + qpos_adr]
+                )
+                var qvel_val = rebind[Scalar[GDTYPE]](
+                    states[env, QVEL_OFF + dof_adr]
+                )
+                gain = (
+                    Scalar[GDTYPE](A_item.GAINPRM_0)
+                    + Scalar[GDTYPE](A_item.GAINPRM_1) * qpos_val
+                    + Scalar[GDTYPE](A_item.GAINPRM_2) * qvel_val
+                )
 
             # Compute bias
             var bias = Scalar[GDTYPE](0)
+
             @parameter
             if A_item.BIASTYPE == BIAS_AFFINE:
-                var qpos_val = rebind[Scalar[GDTYPE]](states[env, QPOS_OFF + qpos_adr])
-                var qvel_val = rebind[Scalar[GDTYPE]](states[env, QVEL_OFF + dof_adr])
-                bias = Scalar[GDTYPE](A_item.BIASPRM_0) + Scalar[GDTYPE](A_item.BIASPRM_1) * qpos_val + Scalar[GDTYPE](A_item.BIASPRM_2) * qvel_val
+                var qpos_val = rebind[Scalar[GDTYPE]](
+                    states[env, QPOS_OFF + qpos_adr]
+                )
+                var qvel_val = rebind[Scalar[GDTYPE]](
+                    states[env, QVEL_OFF + dof_adr]
+                )
+                bias = (
+                    Scalar[GDTYPE](A_item.BIASPRM_0)
+                    + Scalar[GDTYPE](A_item.BIASPRM_1) * qpos_val
+                    + Scalar[GDTYPE](A_item.BIASPRM_2) * qvel_val
+                )
 
             # Compute force
             var force = gain * ctrl + bias
@@ -1152,11 +1252,14 @@ struct Actuators[*A: ActuatorSpec]:
                 force = Scalar[GDTYPE](A_item.FORCE_MIN)
 
             # Write to qfrc (gear * force) at compile-time DOF address
-            states[env, QFRC_OFF + dof_adr] = Scalar[GDTYPE](A_item.GEAR) * force
+            states[env, QFRC_OFF + dof_adr] = (
+                Scalar[GDTYPE](A_item.GEAR) * force
+            )
 
     @staticmethod
     fn compute_qderiv_contribution[
-        DTYPE: DType, NV: Int,
+        DTYPE: DType,
+        NV: Int,
     ](mut qderiv: InlineArray[Scalar[DTYPE], NV * NV]):
         """Add actuator velocity derivative contributions to qDeriv.
 
@@ -1166,12 +1269,16 @@ struct Actuators[*A: ActuatorSpec]:
         This is used by ImplicitFastIntegrator: M_hat = M + arm - dt*qDeriv.
         Velocity-dependent terms contribute negative damping-like effects.
         """
+
         @parameter
         for i in range(Self.N):
             comptime A_item = Self.act_types[i]
             comptime dof = A_item.DOF_ADR
             # Velocity derivative: d(force)/d(qvel) = gear * (gainprm_2 + biasprm_2)
-            comptime vel_deriv = A_item.GEAR * (A_item.GAINPRM_2 + A_item.BIASPRM_2)
+            comptime vel_deriv = A_item.GEAR * (
+                A_item.GAINPRM_2 + A_item.BIASPRM_2
+            )
+
             @parameter
             if vel_deriv != 0.0:
                 qderiv[dof * NV + dof] += Scalar[DTYPE](vel_deriv)
@@ -1179,14 +1286,24 @@ struct Actuators[*A: ActuatorSpec]:
     @always_inline
     @staticmethod
     fn compute_qderiv_contribution_gpu[
-        GDTYPE: DType, NV: Int,
-    ](workspace: LayoutTensor[GDTYPE, _, MutAnyOrigin], env: Int, qderiv_offset: Int):
-        """Add actuator velocity derivative contributions to qDeriv in GPU workspace."""
+        GDTYPE: DType,
+        NV: Int,
+    ](
+        workspace: LayoutTensor[GDTYPE, _, MutAnyOrigin],
+        env: Int,
+        qderiv_offset: Int,
+    ):
+        """Add actuator velocity derivative contributions to qDeriv in GPU workspace.
+        """
+
         @parameter
         for i in range(Self.N):
             comptime A_item = Self.act_types[i]
             comptime dof = A_item.DOF_ADR
-            comptime vel_deriv = A_item.GEAR * (A_item.GAINPRM_2 + A_item.BIASPRM_2)
+            comptime vel_deriv = A_item.GEAR * (
+                A_item.GAINPRM_2 + A_item.BIASPRM_2
+            )
+
             @parameter
             if vel_deriv != 0.0:
                 var idx = qderiv_offset + dof * NV + dof
@@ -1232,9 +1349,9 @@ struct Actuators[*A: ActuatorSpec]:
             var env = Int(block_dim.x * block_idx.x + thread_idx.x)
             if env >= BATCH_SIZE:
                 return
-            Self.apply_actions_gpu[GDTYPE, BATCH_SIZE, STATE_SIZE, ACTION_DIM, NQ, NV](
-                states, actions, env
-            )
+            Self.apply_actions_gpu[
+                GDTYPE, BATCH_SIZE, STATE_SIZE, ACTION_DIM, NQ, NV
+            ](states, actions, env)
 
         ctx.enqueue_function[kernel, kernel](
             states,
@@ -1245,7 +1362,15 @@ struct Actuators[*A: ActuatorSpec]:
 
 
 @fieldwise_init
-struct ModelDef[nbody: Int, njoint: Int, nq: Int, nv: Int, ngeom: Int = 0]:
+struct ModelDef[
+    nbody: Int,
+    njoint: Int,
+    nq: Int,
+    nv: Int,
+    ngeom: Int = 0,
+    max_equality: Int = 0,
+    cone_type: Int = ConeType.ELLIPTIC,
+]:
     """Compile-time model definition with pre-computed dimensions.
 
     Takes concrete Int parameters rather than Bodies/Joints directly,
@@ -1267,3 +1392,5 @@ struct ModelDef[nbody: Int, njoint: Int, nq: Int, nv: Int, ngeom: Int = 0]:
     comptime NQ: Int = Self.nq
     comptime NV: Int = Self.nv
     comptime NGEOM: Int = Self.ngeom
+    comptime MAX_EQUALITY: Int = Self.max_equality
+    comptime CONE_TYPE: Int = Self.cone_type

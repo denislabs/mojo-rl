@@ -54,7 +54,9 @@ comptime EQ_WELD: Int = 1  # Rigid attachment (3 position + 3 orientation rows)
 
 
 @fieldwise_init
-struct EqualityConstraintDef[DTYPE: DType](Copyable, ImplicitlyCopyable, Movable):
+struct EqualityConstraintDef[DTYPE: DType](
+    Copyable, ImplicitlyCopyable, Movable
+):
     """Definition of an equality constraint (connect or weld).
 
     Connect: 3 rows enforcing world_anchor_a == world_anchor_b.
@@ -67,7 +69,9 @@ struct EqualityConstraintDef[DTYPE: DType](Copyable, ImplicitlyCopyable, Movable
     var anchor_a_x: Scalar[Self.DTYPE]  # Anchor point in body_a frame
     var anchor_a_y: Scalar[Self.DTYPE]
     var anchor_a_z: Scalar[Self.DTYPE]
-    var anchor_b_x: Scalar[Self.DTYPE]  # Anchor point in body_b frame (or world)
+    var anchor_b_x: Scalar[
+        Self.DTYPE
+    ]  # Anchor point in body_b frame (or world)
     var anchor_b_y: Scalar[Self.DTYPE]
     var anchor_b_z: Scalar[Self.DTYPE]
     var relpose_x: Scalar[Self.DTYPE]  # Relative orientation quat (weld only)
@@ -118,9 +122,9 @@ struct ActuatorDef[DTYPE: DType](Copyable, ImplicitlyCopyable, Movable):
     Used by Actuators container on CPU; GPU uses flat buffer layout.
     """
 
-    var joint_idx: Int       # Which joint this actuates
-    var dof_adr: Int         # DOF address (computed from joint's dof_adr)
-    var qpos_adr: Int        # Qpos address (computed from joint's qpos_adr)
+    var joint_idx: Int  # Which joint this actuates
+    var dof_adr: Int  # DOF address (computed from joint's dof_adr)
+    var qpos_adr: Int  # Qpos address (computed from joint's qpos_adr)
     var gear: Scalar[Self.DTYPE]
     var dyntype: Int
     var dynprm_0: Scalar[Self.DTYPE]  # Time constant for filter
@@ -192,7 +196,9 @@ struct ContactInfo[DTYPE: DType](ImplicitlyCopyable, Movable):
     var friction_spin: Scalar[Self.DTYPE]  # Torsional friction coefficient
     var friction_roll: Scalar[Self.DTYPE]  # Rolling friction coefficient
     var condim: Int  # Contact dimensionality (1, 3, 4, or 6)
-    var force_torsion: Scalar[Self.DTYPE]  # Torsional friction force (warm-start)
+    var force_torsion: Scalar[
+        Self.DTYPE
+    ]  # Torsional friction force (warm-start)
     var force_roll1: Scalar[Self.DTYPE]  # Rolling friction force 1 (warm-start)
     var force_roll2: Scalar[Self.DTYPE]  # Rolling friction force 2 (warm-start)
 
@@ -227,6 +233,11 @@ struct ContactInfo[DTYPE: DType](ImplicitlyCopyable, Movable):
 # =============================================================================
 
 
+struct ConeType:
+    comptime PYRAMIDAL: Int = 0
+    comptime ELLIPTIC: Int = 1
+
+
 struct Model[
     DTYPE: DType,
     NQ: Int,  # Total qpos size (sum of all joint qpos sizes)
@@ -236,6 +247,7 @@ struct Model[
     MAX_CONTACTS: Int,  # Maximum number of contacts
     NGEOM: Int = 0,  # Number of geoms (0 = legacy mode, uses body geometry)
     MAX_EQUALITY: Int = 0,  # Maximum number of equality constraints
+    CONE_TYPE: Int = ConeType.ELLIPTIC,  # Cone type (0=pyramidal, 1=elliptic)
 ]:
     """Static configuration for MuJoCo-style generalized coordinates simulation.
 
@@ -248,6 +260,7 @@ struct Model[
         MAX_CONTACTS: Maximum number of simultaneous contacts.
         NGEOM: Number of geoms (0 = legacy mode, uses body geometry).
         MAX_EQUALITY: Maximum number of equality constraints (0 = none).
+        CONE_TYPE: Cone type (0=pyramidal, 1=elliptic).
 
     The kinematic tree is defined by body_parent array:
     - body_parent[i] = index of parent body (-1 for world)
@@ -306,14 +319,17 @@ struct Model[
     var geom_half_z: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM]()]
     var geom_friction: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM]()]
     var geom_condim: InlineArray[Int, _max_one[Self.NGEOM]()]
-    var geom_friction_spin: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM]()]
-    var geom_friction_roll: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM]()]
+    var geom_friction_spin: InlineArray[
+        Scalar[Self.DTYPE], _max_one[Self.NGEOM]()
+    ]
+    var geom_friction_roll: InlineArray[
+        Scalar[Self.DTYPE], _max_one[Self.NGEOM]()
+    ]
     var geom_contype: InlineArray[Int, _max_one[Self.NGEOM]()]
     var geom_conaffinity: InlineArray[Int, _max_one[Self.NGEOM]()]
     var geom_rbound: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM]()]
 
     # Friction cone model
-    var cone_type: Int  # 0=pyramidal, 1=elliptic (default 1)
     var impratio: Scalar[Self.DTYPE]  # MuJoCo impratio (default 1.0)
 
     # Joint definitions
@@ -440,7 +456,6 @@ struct Model[
         self.geom_rbound = InlineArray[
             Scalar[Self.DTYPE], _max_one[Self.NGEOM]()
         ](uninitialized=True)
-        self.cone_type = 1  # Default: elliptic
         self.impratio = Scalar[Self.DTYPE](1.0)
         for i in range(_max_one[Self.NGEOM]()):
             self.geom_type[i] = 0
@@ -509,7 +524,9 @@ struct Model[
             EqualityConstraintDef[Self.DTYPE], _max_one[Self.MAX_EQUALITY]()
         ](uninitialized=True)
         for i in range(_max_one[Self.MAX_EQUALITY]()):
-            self.equality_constraints[i] = EqualityConstraintDef[Self.DTYPE].empty()
+            self.equality_constraints[i] = EqualityConstraintDef[
+                Self.DTYPE
+            ].empty()
         self.num_equality = 0
 
     fn set_body(
@@ -752,13 +769,19 @@ struct Model[
         mut self,
         body_a: Int,
         body_b: Int,
-        anchor_a: Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]],
-        anchor_b: Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]],
+        anchor_a: Tuple[
+            Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]
+        ],
+        anchor_b: Tuple[
+            Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]
+        ],
         solref: Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE]] = (
             Scalar[Self.DTYPE](0.02),
             Scalar[Self.DTYPE](1.0),
         ),
-        solimp: Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]] = (
+        solimp: Tuple[
+            Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]
+        ] = (
             Scalar[Self.DTYPE](0.9),
             Scalar[Self.DTYPE](0.95),
             Scalar[Self.DTYPE](0.001),
@@ -807,8 +830,12 @@ struct Model[
         mut self,
         body_a: Int,
         body_b: Int,
-        anchor_a: Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]],
-        anchor_b: Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]],
+        anchor_a: Tuple[
+            Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]
+        ],
+        anchor_b: Tuple[
+            Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]
+        ],
         relpose: Tuple[
             Scalar[Self.DTYPE],
             Scalar[Self.DTYPE],
@@ -824,7 +851,9 @@ struct Model[
             Scalar[Self.DTYPE](0.02),
             Scalar[Self.DTYPE](1.0),
         ),
-        solimp: Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]] = (
+        solimp: Tuple[
+            Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]
+        ] = (
             Scalar[Self.DTYPE](0.9),
             Scalar[Self.DTYPE](0.95),
             Scalar[Self.DTYPE](0.001),
@@ -920,7 +949,9 @@ struct Data[
     # Computed world-space state (via forward kinematics)
     var xpos: InlineArray[Scalar[Self.DTYPE], Self.NBODY * 3]
     var xquat: InlineArray[Scalar[Self.DTYPE], Self.NBODY * 4]
-    var xipos: InlineArray[Scalar[Self.DTYPE], Self.NBODY * 3]  # CoM world position
+    var xipos: InlineArray[
+        Scalar[Self.DTYPE], Self.NBODY * 3
+    ]  # CoM world position
 
     # Computed world-space velocities (for collision response)
     var xvel: InlineArray[Scalar[Self.DTYPE], Self.NBODY * 3]  # Linear

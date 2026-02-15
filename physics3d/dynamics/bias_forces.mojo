@@ -13,9 +13,14 @@ Reference: Featherstone, "Rigid Body Dynamics Algorithms"
 from math import sin, cos
 from layout import LayoutTensor, Layout
 
-from ..types import Model, Data, _max_one
+from ..types import Model, Data, _max_one, ConeType
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
-from ..kinematics.quat_math import quat_rotate, quat_mul, gpu_quat_rotate, gpu_quat_mul
+from ..kinematics.quat_math import (
+    quat_rotate,
+    quat_mul,
+    gpu_quat_rotate,
+    gpu_quat_mul,
+)
 from ..gpu.constants import (
     xpos_offset,
     xquat_offset,
@@ -103,7 +108,9 @@ fn compute_bias_forces[
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
+    model: Model[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+    ],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     mut bias: InlineArray[Scalar[DTYPE], V_SIZE],
 ):
@@ -332,7 +339,9 @@ fn _is_descendant[
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
+    model: Model[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+    ],
     body: Int,
     ancestor: Int,
 ) -> Bool:
@@ -360,7 +369,9 @@ fn compute_coriolis_forces[
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
+    model: Model[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+    ],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     mut coriolis: InlineArray[Scalar[DTYPE], NV],
 ):
@@ -664,8 +675,19 @@ fn compute_bias_forces_rne[
     CDOF_SIZE: Int,
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
+    CONE_TYPE: Int = ConeType.ELLIPTIC,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
+    model: Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        MAX_EQUALITY,
+        CONE_TYPE,
+    ],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
     mut bias: InlineArray[Scalar[DTYPE], V_SIZE],
@@ -874,9 +896,15 @@ fn compute_bias_forces_rne[
                     var cdot_ang_x = cv_wy * s_ang_z - cv_wz * s_ang_y
                     var cdot_ang_y = cv_wz * s_ang_x - cv_wx * s_ang_z
                     var cdot_ang_z = cv_wx * s_ang_y - cv_wy * s_ang_x
-                    var cdot_lin_x = (cv_wy * s_lin_z - cv_wz * s_lin_y) + (cv_vy * s_ang_z - cv_vz * s_ang_y)
-                    var cdot_lin_y = (cv_wz * s_lin_x - cv_wx * s_lin_z) + (cv_vz * s_ang_x - cv_vx * s_ang_z)
-                    var cdot_lin_z = (cv_wx * s_lin_y - cv_wy * s_lin_x) + (cv_vx * s_ang_y - cv_vy * s_ang_x)
+                    var cdot_lin_x = (cv_wy * s_lin_z - cv_wz * s_lin_y) + (
+                        cv_vy * s_ang_z - cv_vz * s_ang_y
+                    )
+                    var cdot_lin_y = (cv_wz * s_lin_x - cv_wx * s_lin_z) + (
+                        cv_vz * s_ang_x - cv_vx * s_ang_z
+                    )
+                    var cdot_lin_z = (cv_wx * s_lin_y - cv_wy * s_lin_x) + (
+                        cv_vx * s_ang_y - cv_vy * s_ang_x
+                    )
 
                     cacc[b * 6 + 0] = cacc[b * 6 + 0] + cdot_ang_x * qdot
                     cacc[b * 6 + 1] = cacc[b * 6 + 1] + cdot_ang_y * qdot
@@ -908,9 +936,15 @@ fn compute_bias_forces_rne[
                     var cdot_ang_x = cv_wy * s_ang_z - cv_wz * s_ang_y
                     var cdot_ang_y = cv_wz * s_ang_x - cv_wx * s_ang_z
                     var cdot_ang_z = cv_wx * s_ang_y - cv_wy * s_ang_x
-                    var cdot_lin_x = (cv_wy * s_lin_z - cv_wz * s_lin_y) + (cv_vy * s_ang_z - cv_vz * s_ang_y)
-                    var cdot_lin_y = (cv_wz * s_lin_x - cv_wx * s_lin_z) + (cv_vz * s_ang_x - cv_vx * s_ang_z)
-                    var cdot_lin_z = (cv_wx * s_lin_y - cv_wy * s_lin_x) + (cv_vx * s_ang_y - cv_vy * s_ang_x)
+                    var cdot_lin_x = (cv_wy * s_lin_z - cv_wz * s_lin_y) + (
+                        cv_vy * s_ang_z - cv_vz * s_ang_y
+                    )
+                    var cdot_lin_y = (cv_wz * s_lin_x - cv_wx * s_lin_z) + (
+                        cv_vz * s_ang_x - cv_vx * s_ang_z
+                    )
+                    var cdot_lin_z = (cv_wx * s_lin_y - cv_wy * s_lin_x) + (
+                        cv_vx * s_ang_y - cv_vy * s_ang_x
+                    )
 
                     cacc[b * 6 + 0] = cacc[b * 6 + 0] + cdot_ang_x * qdot
                     cacc[b * 6 + 1] = cacc[b * 6 + 1] + cdot_ang_y * qdot
@@ -945,9 +979,15 @@ fn compute_bias_forces_rne[
                 var cdot_ang_x = cv_wy * s_ang_z - cv_wz * s_ang_y
                 var cdot_ang_y = cv_wz * s_ang_x - cv_wx * s_ang_z
                 var cdot_ang_z = cv_wx * s_ang_y - cv_wy * s_ang_x
-                var cdot_lin_x = (cv_wy * s_lin_z - cv_wz * s_lin_y) + (cv_vy * s_ang_z - cv_vz * s_ang_y)
-                var cdot_lin_y = (cv_wz * s_lin_x - cv_wx * s_lin_z) + (cv_vz * s_ang_x - cv_vx * s_ang_z)
-                var cdot_lin_z = (cv_wx * s_lin_y - cv_wy * s_lin_x) + (cv_vx * s_ang_y - cv_vy * s_ang_x)
+                var cdot_lin_x = (cv_wy * s_lin_z - cv_wz * s_lin_y) + (
+                    cv_vy * s_ang_z - cv_vz * s_ang_y
+                )
+                var cdot_lin_y = (cv_wz * s_lin_x - cv_wx * s_lin_z) + (
+                    cv_vz * s_ang_x - cv_vx * s_ang_z
+                )
+                var cdot_lin_z = (cv_wx * s_lin_y - cv_wy * s_lin_x) + (
+                    cv_vx * s_ang_y - cv_vy * s_ang_x
+                )
 
                 cacc[b * 6 + 0] = cacc[b * 6 + 0] + cdot_ang_x * qdot
                 cacc[b * 6 + 1] = cacc[b * 6 + 1] + cdot_ang_y * qdot
@@ -1268,12 +1308,24 @@ fn compute_bias_forces_rne_gpu[
         var cv_vy: Scalar[DTYPE] = 0
         var cv_vz: Scalar[DTYPE] = 0
         if parent >= 0:
-            cv_wx = rebind[Scalar[DTYPE]](workspace[env, cvel_idx + parent * 6 + 0])
-            cv_wy = rebind[Scalar[DTYPE]](workspace[env, cvel_idx + parent * 6 + 1])
-            cv_wz = rebind[Scalar[DTYPE]](workspace[env, cvel_idx + parent * 6 + 2])
-            cv_vx = rebind[Scalar[DTYPE]](workspace[env, cvel_idx + parent * 6 + 3])
-            cv_vy = rebind[Scalar[DTYPE]](workspace[env, cvel_idx + parent * 6 + 4])
-            cv_vz = rebind[Scalar[DTYPE]](workspace[env, cvel_idx + parent * 6 + 5])
+            cv_wx = rebind[Scalar[DTYPE]](
+                workspace[env, cvel_idx + parent * 6 + 0]
+            )
+            cv_wy = rebind[Scalar[DTYPE]](
+                workspace[env, cvel_idx + parent * 6 + 1]
+            )
+            cv_wz = rebind[Scalar[DTYPE]](
+                workspace[env, cvel_idx + parent * 6 + 2]
+            )
+            cv_vx = rebind[Scalar[DTYPE]](
+                workspace[env, cvel_idx + parent * 6 + 3]
+            )
+            cv_vy = rebind[Scalar[DTYPE]](
+                workspace[env, cvel_idx + parent * 6 + 4]
+            )
+            cv_vz = rebind[Scalar[DTYPE]](
+                workspace[env, cvel_idx + parent * 6 + 5]
+            )
 
             # Transfer linear velocity from parent CoM to this body's CoM
             var rx = rebind[Scalar[DTYPE]](
@@ -1319,30 +1371,84 @@ fn compute_bias_forces_rne_gpu[
                 for d in range(3):
                     var dof = dof_adr + d
                     var qdot = rebind[Scalar[DTYPE]](state[env, qvel_off + dof])
-                    cv_wx = cv_wx + rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 0]) * qdot
-                    cv_wy = cv_wy + rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 1]) * qdot
-                    cv_wz = cv_wz + rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 2]) * qdot
-                    cv_vx = cv_vx + rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 3]) * qdot
-                    cv_vy = cv_vy + rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 4]) * qdot
-                    cv_vz = cv_vz + rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 5]) * qdot
+                    cv_wx = (
+                        cv_wx
+                        + rebind[Scalar[DTYPE]](
+                            workspace[env, cdof_idx + dof * 6 + 0]
+                        )
+                        * qdot
+                    )
+                    cv_wy = (
+                        cv_wy
+                        + rebind[Scalar[DTYPE]](
+                            workspace[env, cdof_idx + dof * 6 + 1]
+                        )
+                        * qdot
+                    )
+                    cv_wz = (
+                        cv_wz
+                        + rebind[Scalar[DTYPE]](
+                            workspace[env, cdof_idx + dof * 6 + 2]
+                        )
+                        * qdot
+                    )
+                    cv_vx = (
+                        cv_vx
+                        + rebind[Scalar[DTYPE]](
+                            workspace[env, cdof_idx + dof * 6 + 3]
+                        )
+                        * qdot
+                    )
+                    cv_vy = (
+                        cv_vy
+                        + rebind[Scalar[DTYPE]](
+                            workspace[env, cdof_idx + dof * 6 + 4]
+                        )
+                        * qdot
+                    )
+                    cv_vz = (
+                        cv_vz
+                        + rebind[Scalar[DTYPE]](
+                            workspace[env, cdof_idx + dof * 6 + 5]
+                        )
+                        * qdot
+                    )
 
                 # Rotation DOFs: compute cdof_dot with current cvel
                 for d in range(3, 6):
                     var dof = dof_adr + d
                     var qdot = rebind[Scalar[DTYPE]](state[env, qvel_off + dof])
-                    var s_ang_x = rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 0])
-                    var s_ang_y = rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 1])
-                    var s_ang_z = rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 2])
-                    var s_lin_x = rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 3])
-                    var s_lin_y = rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 4])
-                    var s_lin_z = rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 5])
+                    var s_ang_x = rebind[Scalar[DTYPE]](
+                        workspace[env, cdof_idx + dof * 6 + 0]
+                    )
+                    var s_ang_y = rebind[Scalar[DTYPE]](
+                        workspace[env, cdof_idx + dof * 6 + 1]
+                    )
+                    var s_ang_z = rebind[Scalar[DTYPE]](
+                        workspace[env, cdof_idx + dof * 6 + 2]
+                    )
+                    var s_lin_x = rebind[Scalar[DTYPE]](
+                        workspace[env, cdof_idx + dof * 6 + 3]
+                    )
+                    var s_lin_y = rebind[Scalar[DTYPE]](
+                        workspace[env, cdof_idx + dof * 6 + 4]
+                    )
+                    var s_lin_z = rebind[Scalar[DTYPE]](
+                        workspace[env, cdof_idx + dof * 6 + 5]
+                    )
 
                     var cdot_ang_x = cv_wy * s_ang_z - cv_wz * s_ang_y
                     var cdot_ang_y = cv_wz * s_ang_x - cv_wx * s_ang_z
                     var cdot_ang_z = cv_wx * s_ang_y - cv_wy * s_ang_x
-                    var cdot_lin_x = (cv_wy * s_lin_z - cv_wz * s_lin_y) + (cv_vy * s_ang_z - cv_vz * s_ang_y)
-                    var cdot_lin_y = (cv_wz * s_lin_x - cv_wx * s_lin_z) + (cv_vz * s_ang_x - cv_vx * s_ang_z)
-                    var cdot_lin_z = (cv_wx * s_lin_y - cv_wy * s_lin_x) + (cv_vx * s_ang_y - cv_vy * s_ang_x)
+                    var cdot_lin_x = (cv_wy * s_lin_z - cv_wz * s_lin_y) + (
+                        cv_vy * s_ang_z - cv_vz * s_ang_y
+                    )
+                    var cdot_lin_y = (cv_wz * s_lin_x - cv_wx * s_lin_z) + (
+                        cv_vz * s_ang_x - cv_vx * s_ang_z
+                    )
+                    var cdot_lin_z = (cv_wx * s_lin_y - cv_wy * s_lin_x) + (
+                        cv_vx * s_ang_y - cv_vy * s_ang_x
+                    )
 
                     cacc[b * 6 + 0] = cacc[b * 6 + 0] + cdot_ang_x * qdot
                     cacc[b * 6 + 1] = cacc[b * 6 + 1] + cdot_ang_y * qdot
@@ -1363,19 +1469,37 @@ fn compute_bias_forces_rne_gpu[
                 for d in range(3):
                     var dof = dof_adr + d
                     var qdot = rebind[Scalar[DTYPE]](state[env, qvel_off + dof])
-                    var s_ang_x = rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 0])
-                    var s_ang_y = rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 1])
-                    var s_ang_z = rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 2])
-                    var s_lin_x = rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 3])
-                    var s_lin_y = rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 4])
-                    var s_lin_z = rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 5])
+                    var s_ang_x = rebind[Scalar[DTYPE]](
+                        workspace[env, cdof_idx + dof * 6 + 0]
+                    )
+                    var s_ang_y = rebind[Scalar[DTYPE]](
+                        workspace[env, cdof_idx + dof * 6 + 1]
+                    )
+                    var s_ang_z = rebind[Scalar[DTYPE]](
+                        workspace[env, cdof_idx + dof * 6 + 2]
+                    )
+                    var s_lin_x = rebind[Scalar[DTYPE]](
+                        workspace[env, cdof_idx + dof * 6 + 3]
+                    )
+                    var s_lin_y = rebind[Scalar[DTYPE]](
+                        workspace[env, cdof_idx + dof * 6 + 4]
+                    )
+                    var s_lin_z = rebind[Scalar[DTYPE]](
+                        workspace[env, cdof_idx + dof * 6 + 5]
+                    )
 
                     var cdot_ang_x = cv_wy * s_ang_z - cv_wz * s_ang_y
                     var cdot_ang_y = cv_wz * s_ang_x - cv_wx * s_ang_z
                     var cdot_ang_z = cv_wx * s_ang_y - cv_wy * s_ang_x
-                    var cdot_lin_x = (cv_wy * s_lin_z - cv_wz * s_lin_y) + (cv_vy * s_ang_z - cv_vz * s_ang_y)
-                    var cdot_lin_y = (cv_wz * s_lin_x - cv_wx * s_lin_z) + (cv_vz * s_ang_x - cv_vx * s_ang_z)
-                    var cdot_lin_z = (cv_wx * s_lin_y - cv_wy * s_lin_x) + (cv_vx * s_ang_y - cv_vy * s_ang_x)
+                    var cdot_lin_x = (cv_wy * s_lin_z - cv_wz * s_lin_y) + (
+                        cv_vy * s_ang_z - cv_vz * s_ang_y
+                    )
+                    var cdot_lin_y = (cv_wz * s_lin_x - cv_wx * s_lin_z) + (
+                        cv_vz * s_ang_x - cv_vx * s_ang_z
+                    )
+                    var cdot_lin_z = (cv_wx * s_lin_y - cv_wy * s_lin_x) + (
+                        cv_vx * s_ang_y - cv_vy * s_ang_x
+                    )
 
                     cacc[b * 6 + 0] = cacc[b * 6 + 0] + cdot_ang_x * qdot
                     cacc[b * 6 + 1] = cacc[b * 6 + 1] + cdot_ang_y * qdot
@@ -1388,30 +1512,84 @@ fn compute_bias_forces_rne_gpu[
                 for d in range(3):
                     var dof = dof_adr + d
                     var qdot = rebind[Scalar[DTYPE]](state[env, qvel_off + dof])
-                    cv_wx = cv_wx + rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 0]) * qdot
-                    cv_wy = cv_wy + rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 1]) * qdot
-                    cv_wz = cv_wz + rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 2]) * qdot
-                    cv_vx = cv_vx + rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 3]) * qdot
-                    cv_vy = cv_vy + rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 4]) * qdot
-                    cv_vz = cv_vz + rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 5]) * qdot
+                    cv_wx = (
+                        cv_wx
+                        + rebind[Scalar[DTYPE]](
+                            workspace[env, cdof_idx + dof * 6 + 0]
+                        )
+                        * qdot
+                    )
+                    cv_wy = (
+                        cv_wy
+                        + rebind[Scalar[DTYPE]](
+                            workspace[env, cdof_idx + dof * 6 + 1]
+                        )
+                        * qdot
+                    )
+                    cv_wz = (
+                        cv_wz
+                        + rebind[Scalar[DTYPE]](
+                            workspace[env, cdof_idx + dof * 6 + 2]
+                        )
+                        * qdot
+                    )
+                    cv_vx = (
+                        cv_vx
+                        + rebind[Scalar[DTYPE]](
+                            workspace[env, cdof_idx + dof * 6 + 3]
+                        )
+                        * qdot
+                    )
+                    cv_vy = (
+                        cv_vy
+                        + rebind[Scalar[DTYPE]](
+                            workspace[env, cdof_idx + dof * 6 + 4]
+                        )
+                        * qdot
+                    )
+                    cv_vz = (
+                        cv_vz
+                        + rebind[Scalar[DTYPE]](
+                            workspace[env, cdof_idx + dof * 6 + 5]
+                        )
+                        * qdot
+                    )
 
             else:
                 # HINGE or SLIDE (1 DOF)
                 var dof = dof_adr
                 var qdot = rebind[Scalar[DTYPE]](state[env, qvel_off + dof])
-                var s_ang_x = rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 0])
-                var s_ang_y = rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 1])
-                var s_ang_z = rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 2])
-                var s_lin_x = rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 3])
-                var s_lin_y = rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 4])
-                var s_lin_z = rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 5])
+                var s_ang_x = rebind[Scalar[DTYPE]](
+                    workspace[env, cdof_idx + dof * 6 + 0]
+                )
+                var s_ang_y = rebind[Scalar[DTYPE]](
+                    workspace[env, cdof_idx + dof * 6 + 1]
+                )
+                var s_ang_z = rebind[Scalar[DTYPE]](
+                    workspace[env, cdof_idx + dof * 6 + 2]
+                )
+                var s_lin_x = rebind[Scalar[DTYPE]](
+                    workspace[env, cdof_idx + dof * 6 + 3]
+                )
+                var s_lin_y = rebind[Scalar[DTYPE]](
+                    workspace[env, cdof_idx + dof * 6 + 4]
+                )
+                var s_lin_z = rebind[Scalar[DTYPE]](
+                    workspace[env, cdof_idx + dof * 6 + 5]
+                )
 
                 var cdot_ang_x = cv_wy * s_ang_z - cv_wz * s_ang_y
                 var cdot_ang_y = cv_wz * s_ang_x - cv_wx * s_ang_z
                 var cdot_ang_z = cv_wx * s_ang_y - cv_wy * s_ang_x
-                var cdot_lin_x = (cv_wy * s_lin_z - cv_wz * s_lin_y) + (cv_vy * s_ang_z - cv_vz * s_ang_y)
-                var cdot_lin_y = (cv_wz * s_lin_x - cv_wx * s_lin_z) + (cv_vz * s_ang_x - cv_vx * s_ang_z)
-                var cdot_lin_z = (cv_wx * s_lin_y - cv_wy * s_lin_x) + (cv_vx * s_ang_y - cv_vy * s_ang_x)
+                var cdot_lin_x = (cv_wy * s_lin_z - cv_wz * s_lin_y) + (
+                    cv_vy * s_ang_z - cv_vz * s_ang_y
+                )
+                var cdot_lin_y = (cv_wz * s_lin_x - cv_wx * s_lin_z) + (
+                    cv_vz * s_ang_x - cv_vx * s_ang_z
+                )
+                var cdot_lin_z = (cv_wx * s_lin_y - cv_wy * s_lin_x) + (
+                    cv_vx * s_ang_y - cv_vy * s_ang_x
+                )
 
                 cacc[b * 6 + 0] = cacc[b * 6 + 0] + cdot_ang_x * qdot
                 cacc[b * 6 + 1] = cacc[b * 6 + 1] + cdot_ang_y * qdot

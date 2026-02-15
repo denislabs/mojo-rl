@@ -92,8 +92,19 @@ fn forward_kinematics[
     MAX_CONTACTS: Int,
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
+    CONE_TYPE: Int = ConeType.ELLIPTIC,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
+    model: Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        MAX_EQUALITY,
+        CONE_TYPE,
+    ],
     mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
 ) where DTYPE.is_floating_point():
     """Compute body world positions from joint positions.
@@ -286,8 +297,13 @@ fn forward_kinematics[
 
                     # Joint anchor = cur_pos + rotate(jnt_pos, cur_quat)
                     var anchor_off = quat_rotate(
-                        cur_qx, cur_qy, cur_qz, cur_qw,
-                        jpos_x, jpos_y, jpos_z,
+                        cur_qx,
+                        cur_qy,
+                        cur_qz,
+                        cur_qw,
+                        jpos_x,
+                        jpos_y,
+                        jpos_z,
                     )
                     var anchor_x = cur_px + anchor_off[0]
                     var anchor_y = cur_py + anchor_off[1]
@@ -299,8 +315,13 @@ fn forward_kinematics[
                     var axis_z = joint.axis_z
 
                     var axis_world = quat_rotate(
-                        cur_qx, cur_qy, cur_qz, cur_qw,
-                        axis_x, axis_y, axis_z,
+                        cur_qx,
+                        cur_qy,
+                        cur_qz,
+                        cur_qw,
+                        axis_x,
+                        axis_y,
+                        axis_z,
                     )
 
                     # Create rotation quaternion from axis-angle
@@ -327,8 +348,13 @@ fn forward_kinematics[
                     # Body orbits around anchor:
                     # new_pos = anchor + rotate(-jnt_pos, new_quat)
                     var neg_off = quat_rotate(
-                        cur_qx, cur_qy, cur_qz, cur_qw,
-                        -jpos_x, -jpos_y, -jpos_z,
+                        cur_qx,
+                        cur_qy,
+                        cur_qz,
+                        cur_qw,
+                        -jpos_x,
+                        -jpos_y,
+                        -jpos_z,
                     )
                     cur_px = anchor_x + neg_off[0]
                     cur_py = anchor_y + neg_off[1]
@@ -344,8 +370,13 @@ fn forward_kinematics[
                     var axis_z = joint.axis_z
 
                     var axis_world = quat_rotate(
-                        cur_qx, cur_qy, cur_qz, cur_qw,
-                        axis_x, axis_y, axis_z,
+                        cur_qx,
+                        cur_qy,
+                        cur_qz,
+                        cur_qw,
+                        axis_x,
+                        axis_y,
+                        axis_z,
                     )
 
                     # Add displacement along world axis
@@ -376,8 +407,13 @@ fn forward_kinematics[
 
                     # Joint anchor
                     var anchor_off = quat_rotate(
-                        cur_qx, cur_qy, cur_qz, cur_qw,
-                        jpos_x, jpos_y, jpos_z,
+                        cur_qx,
+                        cur_qy,
+                        cur_qz,
+                        cur_qw,
+                        jpos_x,
+                        jpos_y,
+                        jpos_z,
                     )
                     var anchor_x = cur_px + anchor_off[0]
                     var anchor_y = cur_py + anchor_off[1]
@@ -401,8 +437,13 @@ fn forward_kinematics[
 
                     # Body orbits around anchor
                     var neg_off = quat_rotate(
-                        cur_qx, cur_qy, cur_qz, cur_qw,
-                        -jpos_x, -jpos_y, -jpos_z,
+                        cur_qx,
+                        cur_qy,
+                        cur_qz,
+                        cur_qw,
+                        -jpos_x,
+                        -jpos_y,
+                        -jpos_z,
                     )
                     cur_px = anchor_x + neg_off[0]
                     cur_py = anchor_y + neg_off[1]
@@ -450,8 +491,19 @@ fn compute_body_velocities[
     MAX_CONTACTS: Int,
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
+    CONE_TYPE: Int = ConeType.ELLIPTIC,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
+    model: Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        MAX_EQUALITY,
+        CONE_TYPE,
+    ],
     mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
 ):
     """Compute body world velocities from joint velocities.
@@ -759,10 +811,24 @@ fn forward_kinematics_gpu[
 
             # Compute xipos = xpos + rotate(body_ipos, xquat)
             var xipos_off = xipos_offset[NQ, NV, NBODY]()
-            var ipos_x = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IPOS_X])
-            var ipos_y = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IPOS_Y])
-            var ipos_z = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IPOS_Z])
-            var rot_ipos = gpu_quat_rotate(norm_q[0], norm_q[1], norm_q[2], norm_q[3], ipos_x, ipos_y, ipos_z)
+            var ipos_x = rebind[Scalar[DTYPE]](
+                model[0, body_off + BODY_IDX_IPOS_X]
+            )
+            var ipos_y = rebind[Scalar[DTYPE]](
+                model[0, body_off + BODY_IDX_IPOS_Y]
+            )
+            var ipos_z = rebind[Scalar[DTYPE]](
+                model[0, body_off + BODY_IDX_IPOS_Z]
+            )
+            var rot_ipos = gpu_quat_rotate(
+                norm_q[0],
+                norm_q[1],
+                norm_q[2],
+                norm_q[3],
+                ipos_x,
+                ipos_y,
+                ipos_z,
+            )
             state[env, xipos_off + body * 3 + 0] = world_px + rot_ipos[0]
             state[env, xipos_off + body * 3 + 1] = world_py + rot_ipos[1]
             state[env, xipos_off + body * 3 + 2] = world_pz + rot_ipos[2]
@@ -886,8 +952,13 @@ fn forward_kinematics_gpu[
 
                     # Joint anchor = cur_pos + rotate(jnt_pos, cur_quat)
                     var anchor_off = gpu_quat_rotate(
-                        cur_qx, cur_qy, cur_qz, cur_qw,
-                        jpos_x, jpos_y, jpos_z,
+                        cur_qx,
+                        cur_qy,
+                        cur_qz,
+                        cur_qw,
+                        jpos_x,
+                        jpos_y,
+                        jpos_z,
                     )
                     var anchor_x = cur_px + anchor_off[0]
                     var anchor_y = cur_py + anchor_off[1]
@@ -895,8 +966,13 @@ fn forward_kinematics_gpu[
 
                     # Transform axis to world using current orientation
                     var axis_world = gpu_quat_rotate(
-                        cur_qx, cur_qy, cur_qz, cur_qw,
-                        axis_x, axis_y, axis_z,
+                        cur_qx,
+                        cur_qy,
+                        cur_qz,
+                        cur_qw,
+                        axis_x,
+                        axis_y,
+                        axis_z,
                     )
 
                     # Create rotation quaternion from axis-angle
@@ -922,8 +998,13 @@ fn forward_kinematics_gpu[
 
                     # Body orbits around anchor
                     var neg_off = gpu_quat_rotate(
-                        cur_qx, cur_qy, cur_qz, cur_qw,
-                        -jpos_x, -jpos_y, -jpos_z,
+                        cur_qx,
+                        cur_qy,
+                        cur_qz,
+                        cur_qw,
+                        -jpos_x,
+                        -jpos_y,
+                        -jpos_z,
                     )
                     cur_px = anchor_x + neg_off[0]
                     cur_py = anchor_y + neg_off[1]
@@ -937,8 +1018,13 @@ fn forward_kinematics_gpu[
 
                     # Transform axis to world using current orientation
                     var axis_world = gpu_quat_rotate(
-                        cur_qx, cur_qy, cur_qz, cur_qw,
-                        axis_x, axis_y, axis_z,
+                        cur_qx,
+                        cur_qy,
+                        cur_qz,
+                        cur_qw,
+                        axis_x,
+                        axis_y,
+                        axis_z,
                     )
 
                     # Add displacement along world axis
@@ -981,8 +1067,13 @@ fn forward_kinematics_gpu[
 
                     # Joint anchor
                     var anchor_off = gpu_quat_rotate(
-                        cur_qx, cur_qy, cur_qz, cur_qw,
-                        jpos_x, jpos_y, jpos_z,
+                        cur_qx,
+                        cur_qy,
+                        cur_qz,
+                        cur_qw,
+                        jpos_x,
+                        jpos_y,
+                        jpos_z,
                     )
                     var anchor_x = cur_px + anchor_off[0]
                     var anchor_y = cur_py + anchor_off[1]
@@ -1006,8 +1097,13 @@ fn forward_kinematics_gpu[
 
                     # Body orbits around anchor
                     var neg_off = gpu_quat_rotate(
-                        cur_qx, cur_qy, cur_qz, cur_qw,
-                        -jpos_x, -jpos_y, -jpos_z,
+                        cur_qx,
+                        cur_qy,
+                        cur_qz,
+                        cur_qw,
+                        -jpos_x,
+                        -jpos_y,
+                        -jpos_z,
                     )
                     cur_px = anchor_x + neg_off[0]
                     cur_py = anchor_y + neg_off[1]
@@ -1017,9 +1113,7 @@ fn forward_kinematics_gpu[
             var world_px = cur_px
             var world_py = cur_py
             var world_pz = cur_pz
-            var norm_q = gpu_quat_normalize(
-                cur_qx, cur_qy, cur_qz, cur_qw
-            )
+            var norm_q = gpu_quat_normalize(cur_qx, cur_qy, cur_qz, cur_qw)
 
             state[env, xpos_off + body * 3 + 0] = world_px
             state[env, xpos_off + body * 3 + 1] = world_py
@@ -1031,10 +1125,24 @@ fn forward_kinematics_gpu[
 
             # Compute xipos = xpos + rotate(body_ipos, xquat)
             var xipos_off = xipos_offset[NQ, NV, NBODY]()
-            var ipos_x = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IPOS_X])
-            var ipos_y = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IPOS_Y])
-            var ipos_z = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IPOS_Z])
-            var rot_ipos = gpu_quat_rotate(norm_q[0], norm_q[1], norm_q[2], norm_q[3], ipos_x, ipos_y, ipos_z)
+            var ipos_x = rebind[Scalar[DTYPE]](
+                model[0, body_off + BODY_IDX_IPOS_X]
+            )
+            var ipos_y = rebind[Scalar[DTYPE]](
+                model[0, body_off + BODY_IDX_IPOS_Y]
+            )
+            var ipos_z = rebind[Scalar[DTYPE]](
+                model[0, body_off + BODY_IDX_IPOS_Z]
+            )
+            var rot_ipos = gpu_quat_rotate(
+                norm_q[0],
+                norm_q[1],
+                norm_q[2],
+                norm_q[3],
+                ipos_x,
+                ipos_y,
+                ipos_z,
+            )
             state[env, xipos_off + body * 3 + 0] = world_px + rot_ipos[0]
             state[env, xipos_off + body * 3 + 1] = world_py + rot_ipos[1]
             state[env, xipos_off + body * 3 + 2] = world_pz + rot_ipos[2]

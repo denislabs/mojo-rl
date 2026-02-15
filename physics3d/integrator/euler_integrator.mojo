@@ -29,7 +29,7 @@ from gpu.host import DeviceContext, DeviceBuffer
 from gpu import thread_idx, block_idx, block_dim
 from layout import LayoutTensor, Layout
 
-from ..types import Model, Data, _max_one
+from ..types import Model, Data, _max_one, ConeType
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
 from ..kinematics.forward_kinematics import (
     forward_kinematics,
@@ -140,9 +140,18 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         MAX_CONTACTS: Int,
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
+        CONE_TYPE: Int = ConeType.ELLIPTIC,
     ](
         model: Model[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
         ],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         verbose: Bool = False,
@@ -165,39 +174,23 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         compute_body_velocities(model, data)
 
         # 2. Collision detection
-        detect_contacts[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM](
-            model, data
-        )
+        detect_contacts(model, data)
 
         # 3. Compute cdof (spatial motion axes per DOF) - needed for full M
         var cdof = InlineArray[Scalar[DTYPE], CDOF_SIZE](uninitialized=True)
-        compute_cdof[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CDOF_SIZE](
-            model, data, cdof
-        )
+        compute_cdof(model, data, cdof)
 
         # 4. Compute composite rigid body inertia
         var crb = InlineArray[Scalar[DTYPE], CRB_SIZE](uninitialized=True)
         for i in range(CRB_SIZE):
             crb[i] = Scalar[DTYPE](0)
-        compute_composite_inertia[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CRB_SIZE
-        ](model, data, crb)
+        compute_composite_inertia(model, data, crb)
 
         # 5. Compute full mass matrix using CRBA
         var M = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
         for i in range(M_SIZE):
             M[i] = Scalar[DTYPE](0)
-        compute_mass_matrix_full[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            M_SIZE,
-            CDOF_SIZE,
-            CRB_SIZE,
-        ](model, data, cdof, crb, M)
+        compute_mass_matrix_full(model, data, cdof, crb, M)
 
         # 5b. Add armature + implicit damping to mass matrix diagonal
         # MuJoCo implicitfast: M_eff[i,i] += armature[i] + dt * damping[i]
@@ -231,9 +224,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         var bias = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
         for i in range(V_SIZE):
             bias[i] = Scalar[DTYPE](0)
-        compute_bias_forces_rne[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, CDOF_SIZE
-        ](model, data, cdof, bias)
+        compute_bias_forces_rne(model, data, cdof, bias)
 
         var f_net = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
         for i in range(NV):
@@ -328,32 +319,9 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         # 8. Build constraints and solve (modifies qacc in-place)
         comptime MAX_ROWS = 11 * MAX_CONTACTS + 2 * NJOINT + 6 * MAX_EQUALITY
         var constraints = ConstraintData[DTYPE, MAX_ROWS, NV]()
-        build_constraints[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            MAX_ROWS,
-            V_SIZE,
-            M_SIZE,
-            CDOF_SIZE,
-            NGEOM,
-            MAX_EQUALITY,
-        ](model, data, cdof, M_inv, qacc, dt, constraints)
+        build_constraints(model, data, cdof, M_inv, qacc, dt, constraints)
 
-        Self.SOLVER.solve[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            MAX_ROWS,
-            V_SIZE,
-            M_SIZE,
-        ](model, data, M_inv, constraints, qacc, dt)
+        Self.SOLVER.solve(model, data, M_inv, constraints, qacc, dt)
 
         writeback_forces[
             DTYPE,
@@ -366,17 +334,10 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         ](constraints, data)
 
         # 9. Integrate: qvel = old_qvel + constrained_qacc * dt
-        comptime MAX_QVEL: Scalar[DTYPE] = 100.0  # Safety clamp (MuJoCo has no clamp)
+
         for i in range(NV):
             data.qacc[i] = qacc[i]
             data.qvel[i] = data.qvel[i] + qacc[i] * dt
-
-        # 9b. Clamp velocities to prevent divergence
-        for i in range(NV):
-            if data.qvel[i] > MAX_QVEL:
-                data.qvel[i] = MAX_QVEL
-            elif data.qvel[i] < -MAX_QVEL:
-                data.qvel[i] = -MAX_QVEL
 
         for i in range(NQ):
             if i < NV:
@@ -398,9 +359,18 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         MAX_CONTACTS: Int,
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
+        CONE_TYPE: Int = ConeType.ELLIPTIC,
     ](
         model: Model[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
         ],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         num_steps: Int,
@@ -408,7 +378,15 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         """Run simulation for multiple steps on CPU."""
         for _ in range(num_steps):
             Self.step[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                NGEOM,
+                MAX_EQUALITY,
+                CONE_TYPE,
             ](model, data)
 
     # =========================================================================
@@ -817,7 +795,9 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         )
         # 9. Integrate: qvel = old_qvel + constrained_qacc * dt
         var qpos_off = qpos_offset[NQ, NV]()
-        comptime MAX_QVEL: Scalar[DTYPE] = 100.0  # Safety clamp (MuJoCo has no clamp)
+        comptime MAX_QVEL: Scalar[
+            DTYPE
+        ] = 100.0  # Safety clamp (MuJoCo has no clamp)
         for i in range(NV):
             var old_qvel = rebind[Scalar[DTYPE]](state[env, qvel_off + i])
             var constrained_qacc = rebind[Scalar[DTYPE]](
@@ -865,6 +845,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         BATCH: Int,
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
+        CONE_TYPE: Int = ConeType.ELLIPTIC,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],
@@ -946,6 +927,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             WS_SIZE,
             NGEOM,
             MAX_EQUALITY,
+            CONE_TYPE,
         ]
 
         ctx.enqueue_function[solver_wrapper, solver_wrapper](
@@ -987,6 +969,8 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         MAX_CONTACTS: Int,
         BATCH: Int,
         NGEOM: Int = 0,
+        MAX_EQUALITY: Int = 0,
+        CONE_TYPE: Int = ConeType.ELLIPTIC,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],
@@ -1000,7 +984,16 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         """Run simulation for multiple steps on GPU."""
         for _ in range(num_steps):
             Self.step_gpu[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, BATCH, NGEOM
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                BATCH,
+                NGEOM,
+                MAX_EQUALITY,
+                CONE_TYPE,
             ](
                 ctx,
                 state_buf,

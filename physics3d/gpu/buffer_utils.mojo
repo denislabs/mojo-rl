@@ -111,7 +111,6 @@ from .constants import (
     GEOM_IDX_FRICTION_SPIN,
     GEOM_IDX_FRICTION_ROLL,
     GEOM_IDX_RBOUND,
-    MODEL_META_IDX_CONE_TYPE,
     MODEL_META_IDX_IMPRATIO,
     MODEL_META_IDX_NEQUALITY,
     model_geom_offset,
@@ -217,7 +216,9 @@ fn copy_model_to_buffer[
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
+    model: Model[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+    ],
     buffer: HostBuffer[DTYPE],
 ):
     """Copy Model data to a flat buffer for GPU.
@@ -291,11 +292,21 @@ fn copy_model_to_buffer[
     buffer[meta_offset + MODEL_META_IDX_GROUND_Z] = model.ground_z
     buffer[meta_offset + MODEL_META_IDX_FRICTION] = model.friction
     # solref/solimp contact
-    buffer[meta_offset + MODEL_META_IDX_SOLREF_CONTACT_0] = model.solref_contact[0]
-    buffer[meta_offset + MODEL_META_IDX_SOLREF_CONTACT_1] = model.solref_contact[1]
-    buffer[meta_offset + MODEL_META_IDX_SOLIMP_CONTACT_0] = model.solimp_contact[0]
-    buffer[meta_offset + MODEL_META_IDX_SOLIMP_CONTACT_1] = model.solimp_contact[1]
-    buffer[meta_offset + MODEL_META_IDX_SOLIMP_CONTACT_2] = model.solimp_contact[2]
+    buffer[
+        meta_offset + MODEL_META_IDX_SOLREF_CONTACT_0
+    ] = model.solref_contact[0]
+    buffer[
+        meta_offset + MODEL_META_IDX_SOLREF_CONTACT_1
+    ] = model.solref_contact[1]
+    buffer[
+        meta_offset + MODEL_META_IDX_SOLIMP_CONTACT_0
+    ] = model.solimp_contact[0]
+    buffer[
+        meta_offset + MODEL_META_IDX_SOLIMP_CONTACT_1
+    ] = model.solimp_contact[1]
+    buffer[
+        meta_offset + MODEL_META_IDX_SOLIMP_CONTACT_2
+    ] = model.solimp_contact[2]
     # solref/solimp limit
     buffer[meta_offset + MODEL_META_IDX_SOLREF_LIMIT_0] = model.solref_limit[0]
     buffer[meta_offset + MODEL_META_IDX_SOLREF_LIMIT_1] = model.solref_limit[1]
@@ -303,10 +314,12 @@ fn copy_model_to_buffer[
     buffer[meta_offset + MODEL_META_IDX_SOLIMP_LIMIT_1] = model.solimp_limit[1]
     buffer[meta_offset + MODEL_META_IDX_SOLIMP_LIMIT_2] = model.solimp_limit[2]
     # Friction cone model
-    buffer[meta_offset + MODEL_META_IDX_CONE_TYPE] = Scalar[DTYPE](model.cone_type)
+
     buffer[meta_offset + MODEL_META_IDX_IMPRATIO] = model.impratio
     # Equality constraints
-    buffer[meta_offset + MODEL_META_IDX_NEQUALITY] = Scalar[DTYPE](model.num_equality)
+    buffer[meta_offset + MODEL_META_IDX_NEQUALITY] = Scalar[DTYPE](
+        model.num_equality
+    )
 
 
 fn copy_geoms_to_buffer[
@@ -319,7 +332,9 @@ fn copy_geoms_to_buffer[
     NGEOM: Int,
     MAX_EQUALITY: Int = 0,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
+    model: Model[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+    ],
     buffer: HostBuffer[DTYPE],
 ):
     """Copy unified geom data from Model to GPU buffer.
@@ -345,15 +360,11 @@ fn copy_geoms_to_buffer[
         buffer[offset + GEOM_IDX_HALF_Y] = model.geom_half_y[g]
         buffer[offset + GEOM_IDX_HALF_Z] = model.geom_half_z[g]
         buffer[offset + GEOM_IDX_FRICTION] = model.geom_friction[g]
-        buffer[offset + GEOM_IDX_CONTYPE] = Scalar[DTYPE](
-            model.geom_contype[g]
-        )
+        buffer[offset + GEOM_IDX_CONTYPE] = Scalar[DTYPE](model.geom_contype[g])
         buffer[offset + GEOM_IDX_CONAFFINITY] = Scalar[DTYPE](
             model.geom_conaffinity[g]
         )
-        buffer[offset + GEOM_IDX_CONDIM] = Scalar[DTYPE](
-            model.geom_condim[g]
-        )
+        buffer[offset + GEOM_IDX_CONDIM] = Scalar[DTYPE](model.geom_condim[g])
         buffer[offset + GEOM_IDX_FRICTION_SPIN] = model.geom_friction_spin[g]
         buffer[offset + GEOM_IDX_FRICTION_ROLL] = model.geom_friction_roll[g]
         buffer[offset + GEOM_IDX_RBOUND] = model.geom_rbound[g]
@@ -369,7 +380,9 @@ fn copy_equality_to_buffer[
     NGEOM: Int,
     MAX_EQUALITY: Int = 0,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
+    model: Model[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+    ],
     buffer: HostBuffer[DTYPE],
 ):
     """Copy equality constraint data from Model to GPU buffer.

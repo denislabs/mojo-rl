@@ -9,8 +9,8 @@ Supports up to 5 friction directions per contact:
   slot 4 = roll 2 (angular, along tangent 2)
 
 Two cone models:
-  cone_type=1 (elliptic, default): QCQP projection onto elliptic cone
-  cone_type=0 (pyramidal): Edge constraints J_edge = J_n ± μ*J_t, λ≥0
+  CONE_TYPE=ConeType.ELLIPTIC (elliptic, default): QCQP projection onto elliptic cone
+  CONE_TYPE=ConeType.PYRAMIDAL (pyramidal): Edge constraints J_edge = J_n ± μ*J_t, λ≥0
 
 Workspace layout (66*MC + 10*MC*NV per solver):
   lambda_f[5*MC]      - friction impulses per direction (elliptic) / lambda_edge_pos (pyramidal)
@@ -32,7 +32,7 @@ Workspace layout (66*MC + 10*MC*NV per solver):
 
 from layout import Layout, LayoutTensor
 from math import sqrt
-from ..types import _max_one
+from ..types import _max_one, ConeType
 from ..dynamics.jacobian import (
     compute_contact_jacobian_row_gpu,
     compute_angular_jacobian_row_gpu,
@@ -55,7 +55,6 @@ from ..gpu.constants import (
     CONTACT_IDX_FRICTION_ROLL,
     CONTACT_IDX_CONDIM,
     MODEL_META_IDX_IMPRATIO,
-    MODEL_META_IDX_CONE_TYPE,
     MODEL_META_IDX_SOLREF_CONTACT_0,
     MODEL_META_IDX_SOLIMP_CONTACT_1,
     qvel_offset,
@@ -96,6 +95,7 @@ fn _solve_friction_pgs_gpu[
     BATCH: Int,
     WS_SIZE: Int,
     FRICTION_WS_OFFSET: Int,
+    CONE_TYPE: Int = ConeType.ELLIPTIC,
 ](
     env: Int,
     state: LayoutTensor[
@@ -141,34 +141,33 @@ fn _solve_friction_pgs_gpu[
 
     # Friction workspace offsets (relative to fws)
     # lambda_f[d][c] = fws + d*MC + c
-    comptime lf = fws + 0 * MC      # 5 * MC
+    comptime lf = fws + 0 * MC  # 5 * MC
     # K_f[d][c] = fws + 5*MC + d*MC + c
-    comptime kf = fws + 5 * MC      # 5 * MC
+    comptime kf = fws + 5 * MC  # 5 * MC
     # dir_f[d][axis][c] = fws + 10*MC + (d*3+axis)*MC + c
-    comptime df = fws + 10 * MC     # 15 * MC
+    comptime df = fws + 10 * MC  # 15 * MC
     # fric_coef[d][c] = fws + 25*MC + d*MC + c
-    comptime fc = fws + 25 * MC     # 5 * MC
+    comptime fc = fws + 25 * MC  # 5 * MC
     # condim_c[c] = fws + 30*MC + c
-    comptime cd = fws + 30 * MC     # MC
+    comptime cd = fws + 30 * MC  # MC
     # R_f[d][c] = fws + 31*MC + d*MC + c  (friction regularizer per direction)
-    comptime rf = fws + 31 * MC     # 5 * MC
+    comptime rf = fws + 31 * MC  # 5 * MC
     # bias_f[d][c] = fws + 36*MC + d*MC + c  (velocity damping bias per direction)
-    comptime bf = fws + 36 * MC     # 5 * MC
+    comptime bf = fws + 36 * MC  # 5 * MC
     # J_f[d][c*NV+i] = fws + 41*MC + d*MC*NV + c*NV + i
-    comptime jf = fws + 41 * MC     # 5 * MC * NV
+    comptime jf = fws + 41 * MC  # 5 * MC * NV
     # MinvJ_f[d][c*NV+i] = fws + 41*MC + 5*MC*NV + d*MC*NV + c*NV + i
     comptime mj = fws + 41 * MC + 5 * MC * NV  # 5 * MC * NV
 
     # Pyramidal-only workspace offsets (25*MC after J_f/MinvJ_f)
     comptime le_neg = fws + 41 * MC + 10 * MC * NV  # lambda_edge_neg[5*MC]
-    comptime cnt = le_neg + 5 * MC                    # C_nt[5*MC] (cross-term)
-    comptime kep = cnt + 5 * MC                       # K_edge_pos[5*MC]
-    comptime ken = kep + 5 * MC                       # K_edge_neg[5*MC]
-    comptime re = ken + 5 * MC                        # R_edge[5*MC]
+    comptime cnt = le_neg + 5 * MC  # C_nt[5*MC] (cross-term)
+    comptime kep = cnt + 5 * MC  # K_edge_pos[5*MC]
+    comptime ken = kep + 5 * MC  # K_edge_neg[5*MC]
+    comptime re = ken + 5 * MC  # R_edge[5*MC]
 
     # Read cone_type from model metadata
     comptime model_meta_off_ct = model_metadata_offset[NBODY, NJOINT]()
-    var cone_type = Int(rebind[Scalar[DTYPE]](model[0, model_meta_off_ct + MODEL_META_IDX_CONE_TYPE]))
 
     # Initialize friction workspace
     for c in range(MC):
@@ -198,12 +197,20 @@ fn _solve_friction_pgs_gpu[
         var c_off = contacts_off + c * CONTACT_SIZE
 
         # Read per-contact friction params from state buffer
-        var mu_slide = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_FRICTION])
+        var mu_slide = rebind[Scalar[DTYPE]](
+            state[env, c_off + CONTACT_IDX_FRICTION]
+        )
         if mu_slide <= Scalar[DTYPE](0):
             mu_slide = friction_coef  # fallback to model default
-        var mu_spin = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_FRICTION_SPIN])
-        var mu_roll = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_FRICTION_ROLL])
-        var condim = Int(rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_CONDIM]))
+        var mu_spin = rebind[Scalar[DTYPE]](
+            state[env, c_off + CONTACT_IDX_FRICTION_SPIN]
+        )
+        var mu_roll = rebind[Scalar[DTYPE]](
+            state[env, c_off + CONTACT_IDX_FRICTION_ROLL]
+        )
+        var condim = Int(
+            rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_CONDIM])
+        )
         if condim < 1:
             condim = 3
         workspace[env, cd + c] = Scalar[DTYPE](condim)
@@ -280,29 +287,80 @@ fn _solve_friction_pgs_gpu[
 
         # Compute Jacobian, MinvJ, and K for each friction direction
         for d in range(num_fric):
-            var dx = rebind[Scalar[DTYPE]](workspace[env, df + (d * 3 + 0) * MC + c])
-            var dy = rebind[Scalar[DTYPE]](workspace[env, df + (d * 3 + 1) * MC + c])
-            var dz = rebind[Scalar[DTYPE]](workspace[env, df + (d * 3 + 2) * MC + c])
+            var dx = rebind[Scalar[DTYPE]](
+                workspace[env, df + (d * 3 + 0) * MC + c]
+            )
+            var dy = rebind[Scalar[DTYPE]](
+                workspace[env, df + (d * 3 + 1) * MC + c]
+            )
+            var dz = rebind[Scalar[DTYPE]](
+                workspace[env, df + (d * 3 + 2) * MC + c]
+            )
 
             if d < 2:
                 # Slide friction: full spatial Jacobian
                 compute_contact_jacobian_row_gpu[
-                    DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-                    STATE_SIZE, MODEL_SIZE, V_SIZE, BATCH, WS_SIZE,
-                ](env, state, model, workspace, body_a, body_b, px, py, pz, dx, dy, dz, J_row)
+                    DTYPE,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    MAX_CONTACTS,
+                    STATE_SIZE,
+                    MODEL_SIZE,
+                    V_SIZE,
+                    BATCH,
+                    WS_SIZE,
+                ](
+                    env,
+                    state,
+                    model,
+                    workspace,
+                    body_a,
+                    body_b,
+                    px,
+                    py,
+                    pz,
+                    dx,
+                    dy,
+                    dz,
+                    J_row,
+                )
             else:
                 # Torsion/rolling: angular-only Jacobian
                 compute_angular_jacobian_row_gpu[
-                    DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-                    STATE_SIZE, MODEL_SIZE, V_SIZE, BATCH, WS_SIZE,
-                ](env, state, model, workspace, body_a, body_b, dx, dy, dz, J_row)
+                    DTYPE,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    MAX_CONTACTS,
+                    STATE_SIZE,
+                    MODEL_SIZE,
+                    V_SIZE,
+                    BATCH,
+                    WS_SIZE,
+                ](
+                    env,
+                    state,
+                    model,
+                    workspace,
+                    body_a,
+                    body_b,
+                    dx,
+                    dy,
+                    dz,
+                    J_row,
+                )
 
             var k_d: workspace.element_type = 0
             for i in range(NV):
                 workspace[env, jf + d * MC * NV + c * NV + i] = J_row[i]
                 var mi_j_sum: workspace.element_type = 0
                 for j_idx in range(NV):
-                    mi_j_sum += workspace[env, M_inv + i * NV + j_idx] * J_row[j_idx]
+                    mi_j_sum += (
+                        workspace[env, M_inv + i * NV + j_idx] * J_row[j_idx]
+                    )
                 workspace[env, mj + d * MC * NV + c * NV + i] = mi_j_sum
                 k_d += J_row[i] * mi_j_sum
             if k_d < Scalar[DTYPE](1e-10):
@@ -311,50 +369,92 @@ fn _solve_friction_pgs_gpu[
 
         # Compute friction regularizer R_f from parent normal's impedance
         comptime model_meta_off = model_metadata_offset[NBODY, NJOINT]()
-        var impratio = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_IMPRATIO])
+        var impratio = rebind[Scalar[DTYPE]](
+            model[0, model_meta_off + MODEL_META_IDX_IMPRATIO]
+        )
         if impratio < Scalar[DTYPE](1e-6):
             impratio = Scalar[DTYPE](1.0)
-        var imp_n = rebind[Scalar[DTYPE]](workspace[env, ws_inv_K_imp + c]) * rebind[Scalar[DTYPE]](workspace[env, ws_K_n + c])
-        var R_base = (Scalar[DTYPE](1.0) - imp_n) / imp_n * rebind[Scalar[DTYPE]](workspace[env, ws_K_n + c]) / impratio
+        var imp_n = rebind[Scalar[DTYPE]](
+            workspace[env, ws_inv_K_imp + c]
+        ) * rebind[Scalar[DTYPE]](workspace[env, ws_K_n + c])
+        var R_base = (
+            (Scalar[DTYPE](1.0) - imp_n)
+            / imp_n
+            * rebind[Scalar[DTYPE]](workspace[env, ws_K_n + c])
+            / impratio
+        )
         for d in range(num_fric):
             var R_d = R_base
             # For condim > 3, scale by mu_slide^2/mu_dir^2
             if d >= 2:
-                var mu_d = rebind[Scalar[DTYPE]](workspace[env, fc + d * MC + c])
+                var mu_d = rebind[Scalar[DTYPE]](
+                    workspace[env, fc + d * MC + c]
+                )
                 if mu_d > Scalar[DTYPE](1e-12):
                     R_d = R_base * mu_slide * mu_slide / (mu_d * mu_d)
             workspace[env, rf + d * MC + c] = R_d
 
         # Compute velocity damping bias for friction rows
         # bias_f = B_damp * imp_n * v_tangential (matches MuJoCo friction aref)
-        var sr_tc = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_SOLREF_CONTACT_0])
-        var si_dmax = rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_1])
+        var sr_tc = rebind[Scalar[DTYPE]](
+            model[0, model_meta_off + MODEL_META_IDX_SOLREF_CONTACT_0]
+        )
+        var si_dmax = rebind[Scalar[DTYPE]](
+            model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_1]
+        )
         var B_damp = Scalar[DTYPE](2.0) / (si_dmax * sr_tc)
         comptime qvel_off = qvel_offset[NQ, NV]()
         for d in range(num_fric):
             var v_t: workspace.element_type = 0
             for i in range(NV):
-                v_t += rebind[Scalar[DTYPE]](workspace[env, jf + d * MC * NV + c * NV + i]) * rebind[Scalar[DTYPE]](state[env, qvel_off + i])
-            workspace[env, bf + d * MC + c] = B_damp * rebind[Scalar[DTYPE]](v_t)
+                v_t += rebind[Scalar[DTYPE]](
+                    workspace[env, jf + d * MC * NV + c * NV + i]
+                ) * rebind[Scalar[DTYPE]](state[env, qvel_off + i])
+            workspace[env, bf + d * MC + c] = B_damp * rebind[Scalar[DTYPE]](
+                v_t
+            )
 
         # Pyramidal precomputation: cross-term C_nt, K_edge_pos/neg, R_edge
-        if cone_type == 0:
-            var R_n_val = (Scalar[DTYPE](1.0) - imp_n) / imp_n * rebind[Scalar[DTYPE]](workspace[env, ws_K_n + c])
+        @parameter
+        if CONE_TYPE == ConeType.PYRAMIDAL:
+            var R_n_val = (
+                (Scalar[DTYPE](1.0) - imp_n)
+                / imp_n
+                * rebind[Scalar[DTYPE]](workspace[env, ws_K_n + c])
+            )
             for d in range(num_fric):
-                var mu_d = rebind[Scalar[DTYPE]](workspace[env, fc + d * MC + c])
+                var mu_d = rebind[Scalar[DTYPE]](
+                    workspace[env, fc + d * MC + c]
+                )
                 # Cross-term: C_nt[d][c] = Σ_i J_n[c*NV+i] * MinvJ_f[d*MC*NV+c*NV+i]
                 var c_nt_val: workspace.element_type = 0
                 for i in range(NV):
-                    c_nt_val += rebind[Scalar[DTYPE]](workspace[env, ws_J_n + c * NV + i]) * rebind[Scalar[DTYPE]](workspace[env, mj + d * MC * NV + c * NV + i])
+                    c_nt_val += rebind[Scalar[DTYPE]](
+                        workspace[env, ws_J_n + c * NV + i]
+                    ) * rebind[Scalar[DTYPE]](
+                        workspace[env, mj + d * MC * NV + c * NV + i]
+                    )
                 workspace[env, cnt + d * MC + c] = c_nt_val
                 # K_edge_pos = K_n + 2*mu*C_nt + mu^2*K_f
                 var K_n_c = rebind[Scalar[DTYPE]](workspace[env, ws_K_n + c])
-                var K_f_d = rebind[Scalar[DTYPE]](workspace[env, kf + d * MC + c])
-                workspace[env, kep + d * MC + c] = K_n_c + Scalar[DTYPE](2.0) * mu_d * c_nt_val + mu_d * mu_d * K_f_d
+                var K_f_d = rebind[Scalar[DTYPE]](
+                    workspace[env, kf + d * MC + c]
+                )
+                workspace[env, kep + d * MC + c] = (
+                    K_n_c
+                    + Scalar[DTYPE](2.0) * mu_d * c_nt_val
+                    + mu_d * mu_d * K_f_d
+                )
                 # K_edge_neg = K_n - 2*mu*C_nt + mu^2*K_f
-                workspace[env, ken + d * MC + c] = K_n_c - Scalar[DTYPE](2.0) * mu_d * c_nt_val + mu_d * mu_d * K_f_d
+                workspace[env, ken + d * MC + c] = (
+                    K_n_c
+                    - Scalar[DTYPE](2.0) * mu_d * c_nt_val
+                    + mu_d * mu_d * K_f_d
+                )
                 # R_edge = 2*mu^2*R_n
-                workspace[env, re + d * MC + c] = Scalar[DTYPE](2.0) * mu_d * mu_d * R_n_val
+                workspace[env, re + d * MC + c] = (
+                    Scalar[DTYPE](2.0) * mu_d * mu_d * R_n_val
+                )
             # No warm-start for pyramidal (edge lambdas start at 0)
             for d in range(num_fric):
                 workspace[env, lf + d * MC + c] = Scalar[DTYPE](0)
@@ -368,7 +468,9 @@ fn _solve_friction_pgs_gpu[
             warm_force_idx[3] = CONTACT_IDX_FORCE_ROLL1
             warm_force_idx[4] = CONTACT_IDX_FORCE_ROLL2
             for d in range(num_fric):
-                if workspace[env, kf + d * MC + c] >= Scalar[DTYPE](FRICTION_K_MIN):
+                if workspace[env, kf + d * MC + c] >= Scalar[DTYPE](
+                    FRICTION_K_MIN
+                ):
                     workspace[env, lf + d * MC + c] = rebind[Scalar[DTYPE]](
                         state[env, c_off + warm_force_idx[d]]
                     )
@@ -385,17 +487,31 @@ fn _solve_friction_pgs_gpu[
                 continue
             var a_n: workspace.element_type = 0
             for i in range(NV):
-                a_n += workspace[env, ws_J_n + c * NV + i] * workspace[env, qacc_idx + i]
-            var R_n = Scalar[DTYPE](1.0) / workspace[env, ws_inv_K_imp + c] - workspace[env, ws_K_n + c]
-            var residual = a_n + workspace[env, ws_pos_bias + c] + R_n * workspace[env, ws_lambda_n + c]
+                a_n += (
+                    workspace[env, ws_J_n + c * NV + i]
+                    * workspace[env, qacc_idx + i]
+                )
+            var R_n = (
+                Scalar[DTYPE](1.0) / workspace[env, ws_inv_K_imp + c]
+                - workspace[env, ws_K_n + c]
+            )
+            var residual = (
+                a_n
+                + workspace[env, ws_pos_bias + c]
+                + R_n * workspace[env, ws_lambda_n + c]
+            )
             var delta = -residual * workspace[env, ws_inv_K_imp + c]
             var old_lambda_n = workspace[env, ws_lambda_n + c]
-            workspace[env, ws_lambda_n + c] = workspace[env, ws_lambda_n + c] + delta
+            workspace[env, ws_lambda_n + c] = (
+                workspace[env, ws_lambda_n + c] + delta
+            )
             if workspace[env, ws_lambda_n + c] < Scalar[DTYPE](0):
                 workspace[env, ws_lambda_n + c] = Scalar[DTYPE](0)
             var actual_n = workspace[env, ws_lambda_n + c] - old_lambda_n
             for i in range(NV):
-                workspace[env, qacc_idx + i] += workspace[env, ws_MinvJn + c * NV + i] * actual_n
+                workspace[env, qacc_idx + i] += (
+                    workspace[env, ws_MinvJn + c * NV + i] * actual_n
+                )
 
         # --- Friction constraints PGS update ---
         for c in range(nc):
@@ -408,26 +524,55 @@ fn _solve_friction_pgs_gpu[
                 if condim_z >= 6:
                     num_fric_z = 5
                 for d in range(num_fric_z):
-                    if cone_type == 0:
+
+                    @parameter
+                    if CONE_TYPE == ConeType.PYRAMIDAL:
                         # Pyramidal: undo edge forces (MinvJ_n ± mu*MinvJ_f)
-                        var mu_d = rebind[Scalar[DTYPE]](workspace[env, fc + d * MC + c])
-                        var old_pos = rebind[Scalar[DTYPE]](workspace[env, lf + d * MC + c])
-                        var old_neg_v = rebind[Scalar[DTYPE]](workspace[env, le_neg + d * MC + c])
-                        if old_pos != Scalar[DTYPE](0) or old_neg_v != Scalar[DTYPE](0):
+                        var mu_d = rebind[Scalar[DTYPE]](
+                            workspace[env, fc + d * MC + c]
+                        )
+                        var old_pos = rebind[Scalar[DTYPE]](
+                            workspace[env, lf + d * MC + c]
+                        )
+                        var old_neg_v = rebind[Scalar[DTYPE]](
+                            workspace[env, le_neg + d * MC + c]
+                        )
+                        if old_pos != Scalar[DTYPE](0) or old_neg_v != Scalar[
+                            DTYPE
+                        ](0):
                             workspace[env, lf + d * MC + c] = Scalar[DTYPE](0)
-                            workspace[env, le_neg + d * MC + c] = Scalar[DTYPE](0)
+                            workspace[env, le_neg + d * MC + c] = Scalar[DTYPE](
+                                0
+                            )
                             for i in range(NV):
-                                var minvjn_i = rebind[Scalar[DTYPE]](workspace[env, ws_MinvJn + c * NV + i])
-                                var minvjf_i = rebind[Scalar[DTYPE]](workspace[env, mj + d * MC * NV + c * NV + i])
-                                workspace[env, qacc_idx + i] -= (minvjn_i + mu_d * minvjf_i) * old_pos
-                                workspace[env, qacc_idx + i] -= (minvjn_i - mu_d * minvjf_i) * old_neg_v
+                                var minvjn_i = rebind[Scalar[DTYPE]](
+                                    workspace[env, ws_MinvJn + c * NV + i]
+                                )
+                                var minvjf_i = rebind[Scalar[DTYPE]](
+                                    workspace[
+                                        env, mj + d * MC * NV + c * NV + i
+                                    ]
+                                )
+                                workspace[env, qacc_idx + i] -= (
+                                    minvjn_i + mu_d * minvjf_i
+                                ) * old_pos
+                                workspace[env, qacc_idx + i] -= (
+                                    minvjn_i - mu_d * minvjf_i
+                                ) * old_neg_v
                     else:
                         # Elliptic: undo via MinvJ_f only
-                        var old_f = rebind[Scalar[DTYPE]](workspace[env, lf + d * MC + c])
+                        var old_f = rebind[Scalar[DTYPE]](
+                            workspace[env, lf + d * MC + c]
+                        )
                         if old_f != Scalar[DTYPE](0):
                             workspace[env, lf + d * MC + c] = Scalar[DTYPE](0)
                             for i in range(NV):
-                                workspace[env, qacc_idx + i] -= workspace[env, mj + d * MC * NV + c * NV + i] * old_f
+                                workspace[env, qacc_idx + i] -= (
+                                    workspace[
+                                        env, mj + d * MC * NV + c * NV + i
+                                    ]
+                                    * old_f
+                                )
                 continue
             var condim = Int(workspace[env, cd + c])
             if condim == 1:
@@ -439,21 +584,36 @@ fn _solve_friction_pgs_gpu[
             if condim >= 6:
                 num_fric = 5
 
-            var lambda_n = rebind[Scalar[DTYPE]](workspace[env, ws_lambda_n + c])
+            var lambda_n = rebind[Scalar[DTYPE]](
+                workspace[env, ws_lambda_n + c]
+            )
 
-            if cone_type == 0:
+            @parameter
+            if CONE_TYPE == ConeType.PYRAMIDAL:
                 # === PYRAMIDAL CONE: Edge constraints with λ ≥ 0 ===
                 # Save old values for delta computation
-                var old_pos = InlineArray[Scalar[DTYPE], 5](fill=Scalar[DTYPE](0))
-                var old_neg = InlineArray[Scalar[DTYPE], 5](fill=Scalar[DTYPE](0))
+                var old_pos = InlineArray[Scalar[DTYPE], 5](
+                    fill=Scalar[DTYPE](0)
+                )
+                var old_neg = InlineArray[Scalar[DTYPE], 5](
+                    fill=Scalar[DTYPE](0)
+                )
                 for d in range(num_fric):
-                    old_pos[d] = rebind[Scalar[DTYPE]](workspace[env, lf + d * MC + c])
-                    old_neg[d] = rebind[Scalar[DTYPE]](workspace[env, le_neg + d * MC + c])
+                    old_pos[d] = rebind[Scalar[DTYPE]](
+                        workspace[env, lf + d * MC + c]
+                    )
+                    old_neg[d] = rebind[Scalar[DTYPE]](
+                        workspace[env, le_neg + d * MC + c]
+                    )
 
-                var bias_n = rebind[Scalar[DTYPE]](workspace[env, ws_pos_bias + c])
+                var bias_n = rebind[Scalar[DTYPE]](
+                    workspace[env, ws_pos_bias + c]
+                )
 
                 for d in range(num_fric):
-                    var mu_d = rebind[Scalar[DTYPE]](workspace[env, fc + d * MC + c])
+                    var mu_d = rebind[Scalar[DTYPE]](
+                        workspace[env, fc + d * MC + c]
+                    )
                     if mu_d <= Scalar[DTYPE](1e-12):
                         continue
 
@@ -461,87 +621,189 @@ fn _solve_friction_pgs_gpu[
                     var a_n_val: workspace.element_type = 0
                     var a_f_val: workspace.element_type = 0
                     for i in range(NV):
-                        var qi = rebind[Scalar[DTYPE]](workspace[env, qacc_idx + i])
-                        a_n_val += rebind[Scalar[DTYPE]](workspace[env, ws_J_n + c * NV + i]) * qi
-                        a_f_val += rebind[Scalar[DTYPE]](workspace[env, jf + d * MC * NV + c * NV + i]) * qi
+                        var qi = rebind[Scalar[DTYPE]](
+                            workspace[env, qacc_idx + i]
+                        )
+                        a_n_val += (
+                            rebind[Scalar[DTYPE]](
+                                workspace[env, ws_J_n + c * NV + i]
+                            )
+                            * qi
+                        )
+                        a_f_val += (
+                            rebind[Scalar[DTYPE]](
+                                workspace[env, jf + d * MC * NV + c * NV + i]
+                            )
+                            * qi
+                        )
 
-                    var R_e = rebind[Scalar[DTYPE]](workspace[env, re + d * MC + c])
+                    var R_e = rebind[Scalar[DTYPE]](
+                        workspace[env, re + d * MC + c]
+                    )
 
                     # Positive edge (+): a_edge = a_n + mu * a_f
                     var a_edge_pos = a_n_val + mu_d * a_f_val
-                    var K_ep = rebind[Scalar[DTYPE]](workspace[env, kep + d * MC + c])
-                    var residual_pos = a_edge_pos + bias_n + R_e * rebind[Scalar[DTYPE]](workspace[env, lf + d * MC + c])
+                    var K_ep = rebind[Scalar[DTYPE]](
+                        workspace[env, kep + d * MC + c]
+                    )
+                    var residual_pos = (
+                        a_edge_pos
+                        + bias_n
+                        + R_e
+                        * rebind[Scalar[DTYPE]](workspace[env, lf + d * MC + c])
+                    )
                     var delta_pos = -residual_pos / (K_ep + R_e)
-                    var new_lp = rebind[Scalar[DTYPE]](workspace[env, lf + d * MC + c]) + delta_pos
+                    var new_lp = (
+                        rebind[Scalar[DTYPE]](workspace[env, lf + d * MC + c])
+                        + delta_pos
+                    )
                     if new_lp < Scalar[DTYPE](0):
                         new_lp = Scalar[DTYPE](0)
-                    var actual_pos = new_lp - rebind[Scalar[DTYPE]](workspace[env, lf + d * MC + c])
+                    var actual_pos = new_lp - rebind[Scalar[DTYPE]](
+                        workspace[env, lf + d * MC + c]
+                    )
                     workspace[env, lf + d * MC + c] = new_lp
                     # Apply delta via MinvJ_n + mu * MinvJ_f
                     if actual_pos != Scalar[DTYPE](0):
                         for i in range(NV):
                             workspace[env, qacc_idx + i] += (
-                                rebind[Scalar[DTYPE]](workspace[env, ws_MinvJn + c * NV + i])
-                                + mu_d * rebind[Scalar[DTYPE]](workspace[env, mj + d * MC * NV + c * NV + i])
+                                rebind[Scalar[DTYPE]](
+                                    workspace[env, ws_MinvJn + c * NV + i]
+                                )
+                                + mu_d
+                                * rebind[Scalar[DTYPE]](
+                                    workspace[
+                                        env, mj + d * MC * NV + c * NV + i
+                                    ]
+                                )
                             ) * actual_pos
 
                     # Recompute a_n, a_f after positive edge update
                     a_n_val = 0
                     a_f_val = 0
                     for i in range(NV):
-                        var qi = rebind[Scalar[DTYPE]](workspace[env, qacc_idx + i])
-                        a_n_val += rebind[Scalar[DTYPE]](workspace[env, ws_J_n + c * NV + i]) * qi
-                        a_f_val += rebind[Scalar[DTYPE]](workspace[env, jf + d * MC * NV + c * NV + i]) * qi
+                        var qi = rebind[Scalar[DTYPE]](
+                            workspace[env, qacc_idx + i]
+                        )
+                        a_n_val += (
+                            rebind[Scalar[DTYPE]](
+                                workspace[env, ws_J_n + c * NV + i]
+                            )
+                            * qi
+                        )
+                        a_f_val += (
+                            rebind[Scalar[DTYPE]](
+                                workspace[env, jf + d * MC * NV + c * NV + i]
+                            )
+                            * qi
+                        )
 
                     # Negative edge (-): a_edge = a_n - mu * a_f
                     var a_edge_neg = a_n_val - mu_d * a_f_val
-                    var K_en = rebind[Scalar[DTYPE]](workspace[env, ken + d * MC + c])
-                    var residual_neg = a_edge_neg + bias_n + R_e * rebind[Scalar[DTYPE]](workspace[env, le_neg + d * MC + c])
+                    var K_en = rebind[Scalar[DTYPE]](
+                        workspace[env, ken + d * MC + c]
+                    )
+                    var residual_neg = (
+                        a_edge_neg
+                        + bias_n
+                        + R_e
+                        * rebind[Scalar[DTYPE]](
+                            workspace[env, le_neg + d * MC + c]
+                        )
+                    )
                     var delta_neg = -residual_neg / (K_en + R_e)
-                    var new_ln = rebind[Scalar[DTYPE]](workspace[env, le_neg + d * MC + c]) + delta_neg
+                    var new_ln = (
+                        rebind[Scalar[DTYPE]](
+                            workspace[env, le_neg + d * MC + c]
+                        )
+                        + delta_neg
+                    )
                     if new_ln < Scalar[DTYPE](0):
                         new_ln = Scalar[DTYPE](0)
-                    var actual_neg = new_ln - rebind[Scalar[DTYPE]](workspace[env, le_neg + d * MC + c])
+                    var actual_neg = new_ln - rebind[Scalar[DTYPE]](
+                        workspace[env, le_neg + d * MC + c]
+                    )
                     workspace[env, le_neg + d * MC + c] = new_ln
                     # Apply delta via MinvJ_n - mu * MinvJ_f
                     if actual_neg != Scalar[DTYPE](0):
                         for i in range(NV):
                             workspace[env, qacc_idx + i] += (
-                                rebind[Scalar[DTYPE]](workspace[env, ws_MinvJn + c * NV + i])
-                                - mu_d * rebind[Scalar[DTYPE]](workspace[env, mj + d * MC * NV + c * NV + i])
+                                rebind[Scalar[DTYPE]](
+                                    workspace[env, ws_MinvJn + c * NV + i]
+                                )
+                                - mu_d
+                                * rebind[Scalar[DTYPE]](
+                                    workspace[
+                                        env, mj + d * MC * NV + c * NV + i
+                                    ]
+                                )
                             ) * actual_neg
             else:
                 # === ELLIPTIC CONE: QCQP projection (default) ===
                 # Save old values
-                var old_vals = InlineArray[Scalar[DTYPE], 5](fill=Scalar[DTYPE](0))
+                var old_vals = InlineArray[Scalar[DTYPE], 5](
+                    fill=Scalar[DTYPE](0)
+                )
                 for d in range(num_fric):
-                    old_vals[d] = rebind[Scalar[DTYPE]](workspace[env, lf + d * MC + c])
+                    old_vals[d] = rebind[Scalar[DTYPE]](
+                        workspace[env, lf + d * MC + c]
+                    )
 
                 # GS update for each friction direction (regularized)
                 for d in range(num_fric):
-                    if workspace[env, kf + d * MC + c] >= Scalar[DTYPE](FRICTION_K_MIN):
+                    if workspace[env, kf + d * MC + c] >= Scalar[DTYPE](
+                        FRICTION_K_MIN
+                    ):
                         var a_f: workspace.element_type = 0
                         for i in range(NV):
-                            a_f += workspace[env, jf + d * MC * NV + c * NV + i] * workspace[env, qacc_idx + i]
+                            a_f += (
+                                workspace[env, jf + d * MC * NV + c * NV + i]
+                                * workspace[env, qacc_idx + i]
+                            )
                         var R_f_d = workspace[env, rf + d * MC + c]
-                        var residual_f = a_f + workspace[env, bf + d * MC + c] + R_f_d * workspace[env, lf + d * MC + c]
-                        var inv_AR = Scalar[DTYPE](1.0) / (workspace[env, kf + d * MC + c] + R_f_d)
+                        var residual_f = (
+                            a_f
+                            + workspace[env, bf + d * MC + c]
+                            + R_f_d * workspace[env, lf + d * MC + c]
+                        )
+                        var inv_AR = Scalar[DTYPE](1.0) / (
+                            workspace[env, kf + d * MC + c] + R_f_d
+                        )
                         var delta_f = -residual_f * inv_AR
-                        workspace[env, lf + d * MC + c] = workspace[env, lf + d * MC + c] + delta_f
+                        workspace[env, lf + d * MC + c] = (
+                            workspace[env, lf + d * MC + c] + delta_f
+                        )
 
                 # QCQP elliptic cone projection
                 if num_fric == 2:
-                    var f1 = rebind[Scalar[DTYPE]](workspace[env, lf + 0 * MC + c])
-                    var f2 = rebind[Scalar[DTYPE]](workspace[env, lf + 1 * MC + c])
-                    qcqp2[DTYPE](f1, f2, rebind[Scalar[DTYPE]](workspace[env, fc + 0 * MC + c]), lambda_n)
+                    var f1 = rebind[Scalar[DTYPE]](
+                        workspace[env, lf + 0 * MC + c]
+                    )
+                    var f2 = rebind[Scalar[DTYPE]](
+                        workspace[env, lf + 1 * MC + c]
+                    )
+                    qcqp2[DTYPE](
+                        f1,
+                        f2,
+                        rebind[Scalar[DTYPE]](workspace[env, fc + 0 * MC + c]),
+                        lambda_n,
+                    )
                     workspace[env, lf + 0 * MC + c] = f1
                     workspace[env, lf + 1 * MC + c] = f2
                 elif num_fric == 3:
-                    var f1 = rebind[Scalar[DTYPE]](workspace[env, lf + 0 * MC + c])
-                    var f2 = rebind[Scalar[DTYPE]](workspace[env, lf + 1 * MC + c])
-                    var f3 = rebind[Scalar[DTYPE]](workspace[env, lf + 2 * MC + c])
+                    var f1 = rebind[Scalar[DTYPE]](
+                        workspace[env, lf + 0 * MC + c]
+                    )
+                    var f2 = rebind[Scalar[DTYPE]](
+                        workspace[env, lf + 1 * MC + c]
+                    )
+                    var f3 = rebind[Scalar[DTYPE]](
+                        workspace[env, lf + 2 * MC + c]
+                    )
                     qcqp3[DTYPE](
-                        f1, f2, f3,
+                        f1,
+                        f2,
+                        f3,
                         rebind[Scalar[DTYPE]](workspace[env, fc + 0 * MC + c]),
                         rebind[Scalar[DTYPE]](workspace[env, fc + 1 * MC + c]),
                         rebind[Scalar[DTYPE]](workspace[env, fc + 2 * MC + c]),
@@ -551,13 +813,27 @@ fn _solve_friction_pgs_gpu[
                     workspace[env, lf + 1 * MC + c] = f2
                     workspace[env, lf + 2 * MC + c] = f3
                 elif num_fric == 5:
-                    var f1 = rebind[Scalar[DTYPE]](workspace[env, lf + 0 * MC + c])
-                    var f2 = rebind[Scalar[DTYPE]](workspace[env, lf + 1 * MC + c])
-                    var f3 = rebind[Scalar[DTYPE]](workspace[env, lf + 2 * MC + c])
-                    var f4 = rebind[Scalar[DTYPE]](workspace[env, lf + 3 * MC + c])
-                    var f5 = rebind[Scalar[DTYPE]](workspace[env, lf + 4 * MC + c])
+                    var f1 = rebind[Scalar[DTYPE]](
+                        workspace[env, lf + 0 * MC + c]
+                    )
+                    var f2 = rebind[Scalar[DTYPE]](
+                        workspace[env, lf + 1 * MC + c]
+                    )
+                    var f3 = rebind[Scalar[DTYPE]](
+                        workspace[env, lf + 2 * MC + c]
+                    )
+                    var f4 = rebind[Scalar[DTYPE]](
+                        workspace[env, lf + 3 * MC + c]
+                    )
+                    var f5 = rebind[Scalar[DTYPE]](
+                        workspace[env, lf + 4 * MC + c]
+                    )
                     qcqp5[DTYPE](
-                        f1, f2, f3, f4, f5,
+                        f1,
+                        f2,
+                        f3,
+                        f4,
+                        f5,
                         rebind[Scalar[DTYPE]](workspace[env, fc + 0 * MC + c]),
                         rebind[Scalar[DTYPE]](workspace[env, fc + 1 * MC + c]),
                         rebind[Scalar[DTYPE]](workspace[env, fc + 2 * MC + c]),
@@ -576,10 +852,14 @@ fn _solve_friction_pgs_gpu[
                     var actual = workspace[env, lf + d * MC + c] - old_vals[d]
                     if actual != Scalar[DTYPE](0):
                         for i in range(NV):
-                            workspace[env, qacc_idx + i] += workspace[env, mj + d * MC * NV + c * NV + i] * actual
+                            workspace[env, qacc_idx + i] += (
+                                workspace[env, mj + d * MC * NV + c * NV + i]
+                                * actual
+                            )
 
     # Store impulses back for warm-starting
-    if cone_type == 0:
+    @parameter
+    if CONE_TYPE == ConeType.PYRAMIDAL:
         # Pyramidal: force_n includes edge contributions, tangent = mu*(pos-neg)
         for c in range(nc):
             var c_off = contacts_off + c * CONTACT_SIZE
@@ -592,8 +872,12 @@ fn _solve_friction_pgs_gpu[
             # Normal force = lambda_n + sum of all edge lambdas
             var total_n = rebind[Scalar[DTYPE]](workspace[env, ws_lambda_n + c])
             for d in range(num_fric):
-                total_n += rebind[Scalar[DTYPE]](workspace[env, lf + d * MC + c])
-                total_n += rebind[Scalar[DTYPE]](workspace[env, le_neg + d * MC + c])
+                total_n += rebind[Scalar[DTYPE]](
+                    workspace[env, lf + d * MC + c]
+                )
+                total_n += rebind[Scalar[DTYPE]](
+                    workspace[env, le_neg + d * MC + c]
+                )
             state[env, c_off + CONTACT_IDX_FORCE_N] = total_n
             # Tangent forces = mu * (lambda_pos - lambda_neg)
             var mu_0 = rebind[Scalar[DTYPE]](workspace[env, fc + 0 * MC + c])
@@ -607,18 +891,24 @@ fn _solve_friction_pgs_gpu[
                 - rebind[Scalar[DTYPE]](workspace[env, le_neg + 1 * MC + c])
             )
             if condim >= 4:
-                var mu_2 = rebind[Scalar[DTYPE]](workspace[env, fc + 2 * MC + c])
+                var mu_2 = rebind[Scalar[DTYPE]](
+                    workspace[env, fc + 2 * MC + c]
+                )
                 state[env, c_off + CONTACT_IDX_FORCE_TORSION] = mu_2 * (
                     rebind[Scalar[DTYPE]](workspace[env, lf + 2 * MC + c])
                     - rebind[Scalar[DTYPE]](workspace[env, le_neg + 2 * MC + c])
                 )
             if condim >= 6:
-                var mu_3 = rebind[Scalar[DTYPE]](workspace[env, fc + 3 * MC + c])
+                var mu_3 = rebind[Scalar[DTYPE]](
+                    workspace[env, fc + 3 * MC + c]
+                )
                 state[env, c_off + CONTACT_IDX_FORCE_ROLL1] = mu_3 * (
                     rebind[Scalar[DTYPE]](workspace[env, lf + 3 * MC + c])
                     - rebind[Scalar[DTYPE]](workspace[env, le_neg + 3 * MC + c])
                 )
-                var mu_4 = rebind[Scalar[DTYPE]](workspace[env, fc + 4 * MC + c])
+                var mu_4 = rebind[Scalar[DTYPE]](
+                    workspace[env, fc + 4 * MC + c]
+                )
                 state[env, c_off + CONTACT_IDX_FORCE_ROLL2] = mu_4 * (
                     rebind[Scalar[DTYPE]](workspace[env, lf + 4 * MC + c])
                     - rebind[Scalar[DTYPE]](workspace[env, le_neg + 4 * MC + c])
@@ -627,12 +917,24 @@ fn _solve_friction_pgs_gpu[
         # Elliptic: direct force writeback
         for c in range(nc):
             var c_off = contacts_off + c * CONTACT_SIZE
-            state[env, c_off + CONTACT_IDX_FORCE_N] = workspace[env, ws_lambda_n + c]
-            state[env, c_off + CONTACT_IDX_FORCE_T1] = workspace[env, lf + 0 * MC + c]
-            state[env, c_off + CONTACT_IDX_FORCE_T2] = workspace[env, lf + 1 * MC + c]
+            state[env, c_off + CONTACT_IDX_FORCE_N] = workspace[
+                env, ws_lambda_n + c
+            ]
+            state[env, c_off + CONTACT_IDX_FORCE_T1] = workspace[
+                env, lf + 0 * MC + c
+            ]
+            state[env, c_off + CONTACT_IDX_FORCE_T2] = workspace[
+                env, lf + 1 * MC + c
+            ]
             var condim = Int(workspace[env, cd + c])
             if condim >= 4:
-                state[env, c_off + CONTACT_IDX_FORCE_TORSION] = workspace[env, lf + 2 * MC + c]
+                state[env, c_off + CONTACT_IDX_FORCE_TORSION] = workspace[
+                    env, lf + 2 * MC + c
+                ]
             if condim >= 6:
-                state[env, c_off + CONTACT_IDX_FORCE_ROLL1] = workspace[env, lf + 3 * MC + c]
-                state[env, c_off + CONTACT_IDX_FORCE_ROLL2] = workspace[env, lf + 4 * MC + c]
+                state[env, c_off + CONTACT_IDX_FORCE_ROLL1] = workspace[
+                    env, lf + 3 * MC + c
+                ]
+                state[env, c_off + CONTACT_IDX_FORCE_ROLL2] = workspace[
+                    env, lf + 4 * MC + c
+                ]

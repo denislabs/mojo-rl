@@ -8,7 +8,7 @@ This consolidates code previously duplicated across PGS, CG, and Newton solvers.
 """
 
 from math import sqrt
-from ..types import Model, Data, EQ_CONNECT, EQ_WELD, _max_one
+from ..types import Model, Data, EQ_CONNECT, EQ_WELD, _max_one, ConeType
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
 from ..dynamics.jacobian import compute_contact_jacobian_row
 from ..kinematics.quat_math import quat_mul, quat_conjugate, quat_rotate
@@ -76,9 +76,18 @@ fn _compute_angular_jacobian_row[
     CDOF_SIZE: Int,
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
+    CONE_TYPE: Int = ConeType.ELLIPTIC,
 ](
     model: Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        MAX_EQUALITY,
+        CONE_TYPE,
     ],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
@@ -141,9 +150,18 @@ fn _joint_affects_body[
     MAX_CONTACTS: Int,
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
+    CONE_TYPE: Int = ConeType.ELLIPTIC,
 ](
     model: Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        MAX_EQUALITY,
+        CONE_TYPE,
     ],
     joint_idx: Int,
     body_idx: Int,
@@ -174,9 +192,18 @@ fn build_constraints[
     CDOF_SIZE: Int,
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
+    CONE_TYPE: Int = ConeType.ELLIPTIC,
 ](
     model: Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        MAX_EQUALITY,
+        CONE_TYPE,
     ],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
@@ -235,7 +262,8 @@ fn build_constraints[
         contact_active[i] = 0
         contact_normal_row[i] = -1
 
-    if model.cone_type == 0:
+    @parameter
+    if CONE_TYPE == ConeType.PYRAMIDAL:
         # =================================================================
         # PYRAMIDAL CONE: Build edge rows (all >= 0 constraints)
         # J_edge± = J_normal ± mu_k * J_tangent_k
@@ -255,9 +283,7 @@ fn build_constraints[
             var nz = contact.normal_z
 
             # Compute normal Jacobian
-            compute_contact_jacobian_row[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, CDOF_SIZE
-            ](
+            compute_contact_jacobian_row(
                 model,
                 data,
                 cdof,
@@ -372,16 +398,7 @@ fn build_constraints[
                 # Compute the tangent Jacobian for this direction
                 if td == 0:
                     # Tangent 1 (slide)
-                    compute_contact_jacobian_row[
-                        DTYPE,
-                        NQ,
-                        NV,
-                        NBODY,
-                        NJOINT,
-                        MAX_CONTACTS,
-                        V_SIZE,
-                        CDOF_SIZE,
-                    ](
+                    compute_contact_jacobian_row(
                         model,
                         data,
                         cdof,
@@ -397,16 +414,7 @@ fn build_constraints[
                     )
                 elif td == 1:
                     # Tangent 2 (slide)
-                    compute_contact_jacobian_row[
-                        DTYPE,
-                        NQ,
-                        NV,
-                        NBODY,
-                        NJOINT,
-                        MAX_CONTACTS,
-                        V_SIZE,
-                        CDOF_SIZE,
-                    ](
+                    compute_contact_jacobian_row(
                         model,
                         data,
                         cdof,
@@ -562,9 +570,7 @@ fn build_constraints[
                 break
 
             # Compute normal Jacobian row
-            compute_contact_jacobian_row[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, CDOF_SIZE
-            ](
+            compute_contact_jacobian_row(
                 model,
                 data,
                 cdof,
@@ -640,7 +646,7 @@ fn build_constraints[
     var friction_start = row_idx
 
     # Skip friction rows for pyramidal cone (friction encoded in edge rows)
-    var nc_friction = nc if model.cone_type != 0 else 0
+    var nc_friction = nc if CONE_TYPE != ConeType.PYRAMIDAL else 0
 
     for c in range(nc_friction):
         if contact_active[c] == 0:
@@ -690,9 +696,7 @@ fn build_constraints[
         if row_idx + 1 >= MAX_ROWS:
             break
 
-        compute_contact_jacobian_row[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, CDOF_SIZE
-        ](
+        compute_contact_jacobian_row(
             model,
             data,
             cdof,
@@ -752,9 +756,7 @@ fn build_constraints[
         row_idx += 1
 
         # --- Tangent 2 (slide) ---
-        compute_contact_jacobian_row[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, CDOF_SIZE
-        ](
+        compute_contact_jacobian_row(
             model,
             data,
             cdof,
@@ -1220,18 +1222,7 @@ fn build_constraints[
                 var dir_z = dirs[d * 3 + 2]
 
                 # Compute Jacobian row: J = contact_jacobian(body_a, body_b, world_a, dir)
-                compute_contact_jacobian_row[
-                    DTYPE,
-                    NQ,
-                    NV,
-                    NBODY,
-                    NJOINT,
-                    MAX_CONTACTS,
-                    V_SIZE,
-                    CDOF_SIZE,
-                    NGEOM,
-                    MAX_EQUALITY,
-                ](
+                compute_contact_jacobian_row(
                     model,
                     data,
                     cdof,
@@ -1369,18 +1360,7 @@ fn build_constraints[
                     var dir_z = dirs[d * 3 + 2]
 
                     # Angular-only Jacobian (like torsional friction)
-                    _compute_angular_jacobian_row[
-                        DTYPE,
-                        NQ,
-                        NV,
-                        NBODY,
-                        NJOINT,
-                        MAX_CONTACTS,
-                        V_SIZE,
-                        CDOF_SIZE,
-                        NGEOM,
-                        MAX_EQUALITY,
-                    ](
+                    _compute_angular_jacobian_row(
                         model,
                         data,
                         cdof,

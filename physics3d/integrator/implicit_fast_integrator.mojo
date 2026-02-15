@@ -141,9 +141,18 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         MAX_CONTACTS: Int,
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
+        CONE_TYPE: Int = ConeType.ELLIPTIC,
     ](
         model: Model[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
         ],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         verbose: Bool = False,
@@ -245,17 +254,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         var M = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
         for i in range(M_SIZE):
             M[i] = Scalar[DTYPE](0)
-        compute_mass_matrix_full[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            M_SIZE,
-            CDOF_SIZE,
-            CRB_SIZE,
-        ](model, data, cdof, crb, M)
+        compute_mass_matrix_full(model, data, cdof, crb, M)
 
         # 5b. Compute qDeriv and modify mass matrix
         # M_hat = M + armature - dt * qDeriv
@@ -420,20 +419,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         # 8. Build constraints and solve (modifies qacc in-place)
         comptime MAX_ROWS = 11 * MAX_CONTACTS + 2 * NJOINT + 6 * MAX_EQUALITY
         var constraints = ConstraintData[DTYPE, MAX_ROWS, NV]()
-        build_constraints[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            MAX_ROWS,
-            V_SIZE,
-            M_SIZE,
-            CDOF_SIZE,
-            NGEOM,
-            MAX_EQUALITY,
-        ](model, data, cdof, M_inv, qacc, dt, constraints)
+        build_constraints(model, data, cdof, M_inv, qacc, dt, constraints)
 
         if verbose:
             print(
@@ -512,17 +498,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
                 print(" ", Float64(qacc[i]), end="")
             print("")
 
-        Self.SOLVER.solve[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            MAX_ROWS,
-            V_SIZE,
-            M_SIZE,
-        ](model, data, M_inv, constraints, qacc, dt)
+        Self.SOLVER.solve(model, data, M_inv, constraints, qacc, dt)
 
         if verbose:
             print("    qacc after solve:", end="")
@@ -585,7 +561,9 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         ](constraints, data)
 
         # 9. Integrate: qvel = old_qvel + constrained_qacc * dt
-        comptime MAX_QVEL: Scalar[DTYPE] = 100.0  # Safety clamp (MuJoCo has no clamp)
+        comptime MAX_QVEL: Scalar[
+            DTYPE
+        ] = 100.0  # Safety clamp (MuJoCo has no clamp)
         for i in range(NV):
             data.qacc[i] = qacc[i]
             data.qvel[i] = data.qvel[i] + qacc[i] * dt
@@ -628,9 +606,18 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         MAX_CONTACTS: Int,
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
+        CONE_TYPE: Int = ConeType.ELLIPTIC,
     ](
         model: Model[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
         ],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         num_steps: Int,
@@ -638,7 +625,15 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         """Run simulation for multiple steps on CPU."""
         for _ in range(num_steps):
             Self.step[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                NGEOM,
+                MAX_EQUALITY,
+                CONE_TYPE,
             ](model, data)
 
     # =========================================================================
@@ -659,6 +654,8 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         BATCH: Int,
         WS_SIZE: Int,
         NGEOM: Int = 0,
+        MAX_EQUALITY: Int = 0,
+        CONE_TYPE: Int = ConeType.ELLIPTIC,
     ](
         state: LayoutTensor[
             DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
@@ -1039,7 +1036,9 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         )
         # 9. Integrate: qvel = old_qvel + constrained_qacc * dt
         var qpos_off = qpos_offset[NQ, NV]()
-        comptime MAX_QVEL: Scalar[DTYPE] = 100.0  # Safety clamp (MuJoCo has no clamp)
+        comptime MAX_QVEL: Scalar[
+            DTYPE
+        ] = 100.0  # Safety clamp (MuJoCo has no clamp)
         for i in range(NV):
             var old_qvel = rebind[Scalar[DTYPE]](state[env, qvel_off + i])
             var constrained_qacc = rebind[Scalar[DTYPE]](
@@ -1087,6 +1086,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         BATCH: Int,
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
+        CONE_TYPE: Int = ConeType.ELLIPTIC,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],
@@ -1168,6 +1168,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
             WS_SIZE,
             NGEOM,
             MAX_EQUALITY,
+            CONE_TYPE,
         ]
 
         ctx.enqueue_function[solver_wrapper, solver_wrapper](
@@ -1209,6 +1210,8 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         MAX_CONTACTS: Int,
         BATCH: Int,
         NGEOM: Int = 0,
+        MAX_EQUALITY: Int = 0,
+        CONE_TYPE: Int = ConeType.ELLIPTIC,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],
@@ -1222,7 +1225,16 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         """Run simulation for multiple steps on GPU."""
         for _ in range(num_steps):
             Self.step_gpu[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, BATCH, NGEOM
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                BATCH,
+                NGEOM,
+                MAX_EQUALITY,
+                CONE_TYPE,
             ](
                 ctx,
                 state_buf,

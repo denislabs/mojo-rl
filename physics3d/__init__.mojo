@@ -10,7 +10,14 @@ from .constants import TILE, TPB, PhysicsConstants
 from .constants import GEOM_PLANE, GEOM_SPHERE
 
 # Types
-from .types import Model, Data, ContactInfo, compute_capsule_inertia, _max_one
+from .types import (
+    Model,
+    Data,
+    ContactInfo,
+    compute_capsule_inertia,
+    _max_one,
+    ConeType,
+)
 from .joint_types import JointDef, JNT_FREE, JNT_BALL, JNT_SLIDE, JNT_HINGE
 from .traits import Integrator, ConstraintSolver
 
@@ -33,7 +40,11 @@ from .dynamics.mass_matrix import compute_mass_matrix, solve_linear_diagonal
 from .dynamics.bias_forces import compute_bias_forces
 
 # Integrator
-from .integrator import DefaultIntegrator, EulerIntegrator, ImplicitFastIntegrator
+from .integrator import (
+    DefaultIntegrator,
+    EulerIntegrator,
+    ImplicitFastIntegrator,
+)
 
 # Solvers
 from .solver import PGSSolver, CGSolver, NewtonSolver

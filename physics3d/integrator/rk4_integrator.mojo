@@ -25,7 +25,7 @@ Use for validation, trajectory comparison, and energy conservation testing.
 from math import sqrt
 from gpu.host import DeviceContext, DeviceBuffer
 
-from ..types import Model, Data, _max_one
+from ..types import Model, Data, _max_one, ConeType
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
 from ..kinematics.forward_kinematics import (
     forward_kinematics,
@@ -63,8 +63,19 @@ fn _forward_dynamics[
     M_SIZE: Int,
     CDOF_SIZE: Int,
     CRB_SIZE: Int,
+    CONE_TYPE: Int = ConeType.ELLIPTIC,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
+    model: Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        MAX_EQUALITY,
+        CONE_TYPE,
+    ],
     mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     mut qacc_out: InlineArray[Scalar[DTYPE], V_SIZE],
     mut cdof_out: InlineArray[Scalar[DTYPE], CDOF_SIZE],
@@ -77,7 +88,9 @@ fn _forward_dynamics[
 
     Returns qacc, cdof (for constraint builder), and M_inv (for constraint solver).
     """
-    var _ = model.timestep  # Not used — RK4 uses explicit damping (no dt*D in M)
+    var _ = (
+        model.timestep
+    )  # Not used — RK4 uses explicit damping (no dt*D in M)
 
     # 1. Forward kinematics + body velocities
     forward_kinematics(model, data)
@@ -106,7 +119,15 @@ fn _forward_dynamics[
     for i in range(M_SIZE):
         M[i] = Scalar[DTYPE](0)
     compute_mass_matrix_full[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, M_SIZE, CDOF_SIZE, CRB_SIZE,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        M_SIZE,
+        CDOF_SIZE,
+        CRB_SIZE,
     ](model, data, cdof_out, crb, M)
 
     # 5b. Armature only (no implicit damping for RK4 — damping is explicit)
@@ -232,8 +253,19 @@ fn _integrate_pos[
     MAX_CONTACTS: Int,
     NGEOM: Int,
     MAX_EQUALITY: Int,
+    CONE_TYPE: Int = ConeType.ELLIPTIC,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
+    model: Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        MAX_EQUALITY,
+        CONE_TYPE,
+    ],
     qpos_base: InlineArray[Scalar[DTYPE], _max_one[NQ]()],
     vel: InlineArray[Scalar[DTYPE], _max_one[NV]()],
     dt: Scalar[DTYPE],
@@ -256,7 +288,9 @@ fn _integrate_pos[
         if joint.jnt_type == JNT_FREE:
             # Linear position: simple addition
             for d in range(3):
-                qpos_out[qpos_adr + d] = qpos_base[qpos_adr + d] + vel[dof_adr + d] * dt
+                qpos_out[qpos_adr + d] = (
+                    qpos_base[qpos_adr + d] + vel[dof_adr + d] * dt
+                )
             # Quaternion: exponential map integration
             var qx = qpos_base[qpos_adr + 3]
             var qy = qpos_base[qpos_adr + 4]
@@ -266,7 +300,9 @@ fn _integrate_pos[
             var wy = vel[dof_adr + 4]
             var wz = vel[dof_adr + 5]
             var result = quat_integrate(qx, qy, qz, qw, wx, wy, wz, dt)
-            var norm = quat_normalize(result[0], result[1], result[2], result[3])
+            var norm = quat_normalize(
+                result[0], result[1], result[2], result[3]
+            )
             qpos_out[qpos_adr + 3] = norm[0]
             qpos_out[qpos_adr + 4] = norm[1]
             qpos_out[qpos_adr + 5] = norm[2]
@@ -282,7 +318,9 @@ fn _integrate_pos[
             var wy = vel[dof_adr + 1]
             var wz = vel[dof_adr + 2]
             var result = quat_integrate(qx, qy, qz, qw, wx, wy, wz, dt)
-            var norm = quat_normalize(result[0], result[1], result[2], result[3])
+            var norm = quat_normalize(
+                result[0], result[1], result[2], result[3]
+            )
             qpos_out[qpos_adr] = norm[0]
             qpos_out[qpos_adr + 1] = norm[1]
             qpos_out[qpos_adr + 2] = norm[2]
@@ -322,9 +360,18 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         MAX_CONTACTS: Int,
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
+        CONE_TYPE: Int = ConeType.ELLIPTIC,
     ](
         model: Model[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
         ],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         verbose: Bool = False,
@@ -364,8 +411,18 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         # =====================================================================
         # data already has (q0, v0)
         _forward_dynamics[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY,
-            V_SIZE, M_SIZE, CDOF_SIZE, CRB_SIZE,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            V_SIZE,
+            M_SIZE,
+            CDOF_SIZE,
+            CRB_SIZE,
         ](model, data, a1, cdof, M_inv)
 
         # =====================================================================
@@ -379,15 +436,25 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
 
         # Set positions for stage 2: q0 + dt/2 * v0
         var q_stage = InlineArray[Scalar[DTYPE], Q_SIZE](uninitialized=True)
-        _integrate_pos[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY](
-            model, q0, v0, half_dt, q_stage
-        )
+        _integrate_pos[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+        ](model, q0, v0, half_dt, q_stage)
         for i in range(NQ):
             data.qpos[i] = q_stage[i]
 
         _forward_dynamics[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY,
-            V_SIZE, M_SIZE, CDOF_SIZE, CRB_SIZE,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            V_SIZE,
+            M_SIZE,
+            CDOF_SIZE,
+            CRB_SIZE,
         ](model, data, a2, cdof, M_inv)
 
         # =====================================================================
@@ -414,15 +481,25 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             v_stage2[i] = v0[i] + half_dt * a1[i]
 
         # q_stage3 = q0 + dt/2 * v_stage2
-        _integrate_pos[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY](
-            model, q0, v_stage2, half_dt, q_stage
-        )
+        _integrate_pos[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+        ](model, q0, v_stage2, half_dt, q_stage)
         for i in range(NQ):
             data.qpos[i] = q_stage[i]
 
         _forward_dynamics[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY,
-            V_SIZE, M_SIZE, CDOF_SIZE, CRB_SIZE,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            V_SIZE,
+            M_SIZE,
+            CDOF_SIZE,
+            CRB_SIZE,
         ](model, data, a3, cdof, M_inv)
 
         # =====================================================================
@@ -437,15 +514,25 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             data.qvel[i] = v0[i] + dt * a3[i]
 
         # q_stage4 = q0 + dt * v_stage3
-        _integrate_pos[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY](
-            model, q0, v_stage3, dt, q_stage
-        )
+        _integrate_pos[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+        ](model, q0, v_stage3, dt, q_stage)
         for i in range(NQ):
             data.qpos[i] = q_stage[i]
 
         _forward_dynamics[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY,
-            V_SIZE, M_SIZE, CDOF_SIZE, CRB_SIZE,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            V_SIZE,
+            M_SIZE,
+            CDOF_SIZE,
+            CRB_SIZE,
         ](model, data, a4, cdof, M_inv)
 
         # =====================================================================
@@ -474,14 +561,10 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         # Re-run FK and collision for constraint solver (needs current geometry)
         forward_kinematics(model, data)
         compute_body_velocities(model, data)
-        detect_contacts[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM](
-            model, data
-        )
+        detect_contacts(model, data)
 
         # Re-compute cdof for constraint builder
-        compute_cdof[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CDOF_SIZE](
-            model, data, cdof
-        )
+        compute_cdof(model, data, cdof)
 
         # Re-compute M_inv for constraint solver (at initial state)
         var crb = InlineArray[Scalar[DTYPE], CRB_SIZE](uninitialized=True)
@@ -494,9 +577,7 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         var M = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
         for i in range(M_SIZE):
             M[i] = Scalar[DTYPE](0)
-        compute_mass_matrix_full[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, M_SIZE, CDOF_SIZE, CRB_SIZE,
-        ](model, data, cdof, crb, M)
+        compute_mass_matrix_full(model, data, cdof, crb, M)
 
         # Add armature to M diagonal
         for j in range(model.num_joints):
@@ -528,17 +609,18 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         # =====================================================================
         comptime MAX_ROWS = 11 * MAX_CONTACTS + 2 * NJOINT + 6 * MAX_EQUALITY
         var constraints = ConstraintData[DTYPE, MAX_ROWS, NV]()
-        build_constraints[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, MAX_ROWS,
-            V_SIZE, M_SIZE, CDOF_SIZE, NGEOM, MAX_EQUALITY,
-        ](model, data, cdof, M_inv, qacc, dt, constraints)
+        build_constraints(model, data, cdof, M_inv, qacc, dt, constraints)
 
-        Self.SOLVER.solve[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, MAX_ROWS, V_SIZE, M_SIZE,
-        ](model, data, M_inv, constraints, qacc, dt)
+        Self.SOLVER.solve(model, data, M_inv, constraints, qacc, dt)
 
         writeback_forces[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, MAX_ROWS,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            MAX_ROWS,
         ](constraints, data)
 
         # =====================================================================
@@ -570,9 +652,7 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                 + ONE_SIXTH * k4_q_i
             )
 
-        _integrate_pos[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY](
-            model, q0, v_combined, dt, q_stage
-        )
+        _integrate_pos(model, q0, v_combined, dt, q_stage)
         for i in range(NQ):
             data.qpos[i] = q_stage[i]
 
@@ -589,9 +669,18 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         MAX_CONTACTS: Int,
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
+        CONE_TYPE: Int = ConeType.ELLIPTIC,
     ](
         model: Model[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
         ],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         num_steps: Int,
@@ -599,7 +688,15 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         """Run simulation for multiple steps on CPU."""
         for _ in range(num_steps):
             Self.step[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                NGEOM,
+                MAX_EQUALITY,
+                CONE_TYPE,
             ](model, data)
 
     # =========================================================================
@@ -617,6 +714,7 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         BATCH: Int,
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
+        CONE_TYPE: Int = ConeType.ELLIPTIC,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],
@@ -644,6 +742,8 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         MAX_CONTACTS: Int,
         BATCH: Int,
         NGEOM: Int = 0,
+        MAX_EQUALITY: Int = 0,
+        CONE_TYPE: Int = ConeType.ELLIPTIC,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],

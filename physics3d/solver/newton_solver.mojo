@@ -125,9 +125,18 @@ struct NewtonSolver(ConstraintSolver):
         M_SIZE: Int,
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
+        CONE_TYPE: Int = ConeType.ELLIPTIC,
     ](
         model: Model[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
         ],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         M_inv: InlineArray[Scalar[DTYPE], M_SIZE],
@@ -386,7 +395,12 @@ struct NewtonSolver(ConstraintSolver):
         # MuJoCo-style: iterate over ALL constraints in each pass so that
         # normal and friction forces naturally couple.
         # =====================================================================
-        if num_friction == 0 and num_limits == 0 and num_equality == 0:
+        if (
+            num_normals == 0
+            and num_friction == 0
+            and num_limits == 0
+            and num_equality == 0
+        ):
             return
 
         # Apply friction warm-start (skip degenerate tangent rows)
@@ -456,7 +470,9 @@ struct NewtonSolver(ConstraintSolver):
                         if old_f != Scalar[DTYPE](0):
                             constraints.rows[r].lambda_val = Scalar[DTYPE](0)
                             for i in range(NV):
-                                qacc[i] -= constraints.MinvJT[r * NV + i] * old_f
+                                qacc[i] -= (
+                                    constraints.MinvJT[r * NV + i] * old_f
+                                )
                     fric_idx += group_size
                     continue
 
@@ -474,12 +490,20 @@ struct NewtonSolver(ConstraintSolver):
                         var a_f: Scalar[DTYPE] = 0
                         for i in range(NV):
                             a_f += constraints.J[r * NV + i] * qacc[i]
-                        var R_f = Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp - constraints.rows[r].K
-                        var residual_f = a_f + constraints.rows[r].bias + R_f * constraints.rows[r].lambda_val
-                        var delta_f = -residual_f * constraints.rows[r].inv_K_imp
+                        var R_f = (
+                            Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp
+                            - constraints.rows[r].K
+                        )
+                        var residual_f = (
+                            a_f
+                            + constraints.rows[r].bias
+                            + R_f * constraints.rows[r].lambda_val
+                        )
+                        var delta_f = (
+                            -residual_f * constraints.rows[r].inv_K_imp
+                        )
                         constraints.rows[r].lambda_val = (
-                            constraints.rows[r].lambda_val
-                            + delta_f
+                            constraints.rows[r].lambda_val + delta_f
                         )
 
                 # QCQP elliptic cone projection
@@ -621,6 +645,7 @@ struct NewtonSolver(ConstraintSolver):
         WS_SIZE: Int,
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
+        CONE_TYPE: Int = ConeType.ELLIPTIC,
     ](
         state: LayoutTensor[
             DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
@@ -1007,6 +1032,7 @@ struct NewtonSolver(ConstraintSolver):
         ](env, state, model, workspace)
 
         # Friction via PGS
+        comptime FRICTION_WS_OFFSET = 18 * MC + 2 * MC * NV + MC * MC
         _solve_friction_pgs_gpu[
             DTYPE,
             NQ,
@@ -1019,7 +1045,8 @@ struct NewtonSolver(ConstraintSolver):
             V_SIZE,
             BATCH,
             WS_SIZE,
-            FRICTION_WS_OFFSET = 18 * MC + 2 * MC * NV + MC * MC,
+            FRICTION_WS_OFFSET,
+            CONE_TYPE,
         ](
             env,
             state,

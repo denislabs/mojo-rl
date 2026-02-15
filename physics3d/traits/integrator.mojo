@@ -8,7 +8,7 @@ Both CPU and GPU execution paths are supported through the trait interface.
 
 from gpu.host import DeviceContext, DeviceBuffer
 
-from ..types import Model, Data
+from ..types import Model, Data, ConeType
 
 
 trait Integrator(Movable & ImplicitlyCopyable):
@@ -38,9 +38,18 @@ trait Integrator(Movable & ImplicitlyCopyable):
         MAX_CONTACTS: Int,
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
+        CONE_TYPE: Int = ConeType.ELLIPTIC,
     ](
         model: Model[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
         ],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         verbose: Bool = False,
@@ -64,9 +73,18 @@ trait Integrator(Movable & ImplicitlyCopyable):
         MAX_CONTACTS: Int,
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
+        CONE_TYPE: Int = ConeType.ELLIPTIC,
     ](
         model: Model[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
         ],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         num_steps: Int,
@@ -95,6 +113,7 @@ trait Integrator(Movable & ImplicitlyCopyable):
         BATCH: Int,
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
+        CONE_TYPE: Int = ConeType.ELLIPTIC,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],
@@ -131,6 +150,8 @@ trait Integrator(Movable & ImplicitlyCopyable):
         MAX_CONTACTS: Int,
         BATCH: Int,
         NGEOM: Int = 0,
+        MAX_EQUALITY: Int = 0,
+        CONE_TYPE: Int = ConeType.ELLIPTIC,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],

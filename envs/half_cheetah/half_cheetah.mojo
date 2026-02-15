@@ -87,6 +87,8 @@ comptime NV = HalfCheetahModel.NV
 comptime NBODY = HalfCheetahModel.NBODY
 comptime NJOINT = HalfCheetahModel.NJOINT
 comptime NGEOM = HalfCheetahModel.NGEOM
+comptime MAX_EQUALITY = HalfCheetahModel.MAX_EQUALITY
+comptime CONE_TYPE = HalfCheetahModel.CONE_TYPE
 comptime MAX_CONTACTS = HalfCheetahParams[DType.float64].MAX_CONTACTS
 comptime OBS_DIM = HalfCheetahParams[DType.float64].OBS_DIM
 comptime ACTION_DIM = HalfCheetahParams[DType.float64].ACTION_DIM
@@ -143,6 +145,8 @@ struct HalfCheetah[
     ]()
 
     comptime NGEOM: Int = NGEOM
+    comptime MAX_EQUALITY: Int = MAX_EQUALITY
+    comptime CONE_TYPE: Int = CONE_TYPE
 
     # Pre-allocated workspace sizes for step_kernel_gpu
     comptime STEP_WS_SHARED: Int = model_size[NBODY, NJOINT, NGEOM]()
@@ -163,6 +167,8 @@ struct HalfCheetah[
         Self.NUM_JOINTS,
         Self.MAX_CONTACTS,
         Self.NGEOM,
+        Self.MAX_EQUALITY,
+        Self.CONE_TYPE,
     ]
     var data: Data[
         Self.DTYPE,
@@ -212,6 +218,8 @@ struct HalfCheetah[
             Self.NUM_JOINTS,
             Self.MAX_CONTACTS,
             Self.NGEOM,
+            Self.MAX_EQUALITY,
+            Self.CONE_TYPE,
         ](
             gravity_z=Scalar[Self.DTYPE](
                 HalfCheetahParams[Self.DTYPE].GRAVITY_Z

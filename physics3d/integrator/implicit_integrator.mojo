@@ -37,6 +37,7 @@ from ..kinematics.forward_kinematics import (
     forward_kinematics_gpu,
     compute_body_velocities_gpu,
 )
+from .implicit_fast_integrator import ImplicitFastIntegrator
 from ..kinematics.quat_math import quat_normalize, quat_integrate, quat_rotate
 from ..dynamics.mass_matrix import (
     compute_mass_matrix,
@@ -160,9 +161,18 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
         MAX_CONTACTS: Int,
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
+        CONE_TYPE: Int = ConeType.ELLIPTIC,
     ](
         model: Model[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
         ],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         verbose: Bool = False,
@@ -188,9 +198,7 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
         compute_body_velocities(model, data)
 
         # 2. Collision detection
-        detect_contacts[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM](
-            model, data
-        )
+        detect_contacts(model, data)
 
         if verbose:
             print("  [FK] body positions:")
@@ -211,33 +219,19 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
 
         # 3. Compute cdof (spatial motion axes per DOF)
         var cdof = InlineArray[Scalar[DTYPE], CDOF_SIZE](uninitialized=True)
-        compute_cdof[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CDOF_SIZE](
-            model, data, cdof
-        )
+        compute_cdof(model, data, cdof)
 
         # 4. Compute composite rigid body inertia
         var crb = InlineArray[Scalar[DTYPE], CRB_SIZE](uninitialized=True)
         for i in range(CRB_SIZE):
             crb[i] = Scalar[DTYPE](0)
-        compute_composite_inertia[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CRB_SIZE
-        ](model, data, crb)
+        compute_composite_inertia(model, data, crb)
 
         # 5. Compute full mass matrix using CRBA
         var M = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
         for i in range(M_SIZE):
             M[i] = Scalar[DTYPE](0)
-        compute_mass_matrix_full[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            M_SIZE,
-            CDOF_SIZE,
-            CRB_SIZE,
-        ](model, data, cdof, crb, M)
+        compute_mass_matrix_full(model, data, cdof, crb, M)
 
         # 5b. Compute FULL qDeriv and modify mass matrix
         # M_hat = M + armature - dt * qDeriv
@@ -266,16 +260,7 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
                 qDeriv[dof_adr * NV + dof_adr] = -damp
 
         # (b) RNE velocity derivative: subtract d(bias)/d(qvel) from qDeriv
-        compute_rne_vel_derivative[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            M_SIZE,
-            CDOF_SIZE,
-        ](model, data, cdof, qDeriv)
+        compute_rne_vel_derivative(model, data, cdof, qDeriv)
 
         # Now form M_hat = M + armature - dt * qDeriv
         # Add armature to diagonal
@@ -439,20 +424,7 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
         # 8. Build constraints and solve (modifies qacc in-place)
         comptime MAX_ROWS = 11 * MAX_CONTACTS + 2 * NJOINT + 6 * MAX_EQUALITY
         var constraints = ConstraintData[DTYPE, MAX_ROWS, NV]()
-        build_constraints[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            MAX_ROWS,
-            V_SIZE,
-            M_SIZE,
-            CDOF_SIZE,
-            NGEOM,
-            MAX_EQUALITY,
-        ](model, data, cdof, M_inv, qacc, dt, constraints)
+        build_constraints(model, data, cdof, M_inv, qacc, dt, constraints)
 
         if verbose:
             print(
@@ -466,17 +438,7 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
                 constraints.num_limits,
             )
 
-        Self.SOLVER.solve[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            MAX_ROWS,
-            V_SIZE,
-            M_SIZE,
-        ](model, data, M_inv, constraints, qacc, dt)
+        Self.SOLVER.solve(model, data, M_inv, constraints, qacc, dt)
 
         if verbose:
             print("    qacc after solve:", end="")
@@ -531,9 +493,18 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
         MAX_CONTACTS: Int,
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
+        CONE_TYPE: Int = ConeType.ELLIPTIC,
     ](
         model: Model[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
         ],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         num_steps: Int,
@@ -541,7 +512,15 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
         """Run simulation for multiple steps on CPU."""
         for _ in range(num_steps):
             Self.step[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                NGEOM,
+                MAX_EQUALITY,
+                CONE_TYPE,
             ](model, data)
 
     # =========================================================================
@@ -562,6 +541,8 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
         BATCH: Int,
         WS_SIZE: Int,
         NGEOM: Int = 0,
+        MAX_EQUALITY: Int = 0,
+        CONE_TYPE: Int = ConeType.ELLIPTIC,
     ](
         state: LayoutTensor[
             DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
@@ -593,43 +574,91 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
         comptime qacc_constrained_idx = ws_qacc_constrained_offset[NV, NBODY]()
 
         # Implicit extra workspace starts after solver workspace
-        comptime implicit_base = ws_solver_offset[NV, NBODY]() + Self.SOLVER.solver_workspace_size[NV, MAX_CONTACTS]()
+        comptime implicit_base = ws_solver_offset[
+            NV, NBODY
+        ]() + Self.SOLVER.solver_workspace_size[NV, MAX_CONTACTS]()
         comptime qd_off = ws_implicit_qderiv_offset(implicit_base)
 
         # 1. Forward kinematics
         forward_kinematics_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, BATCH,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
         ](env, state, model)
 
         # 2. Compute body velocities
         compute_body_velocities_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, BATCH,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
         ](env, state, model)
 
         # 3. Detect contacts
         detect_contacts_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, BATCH, NGEOM,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
+            NGEOM,
         ](env, state, model)
 
         # 4. Compute cdof
         compute_cdof_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
+            WS_SIZE,
         ](env, state, model, workspace)
 
         # 5. Compute composite rigid body inertia
         compute_composite_inertia_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
+            WS_SIZE,
         ](env, state, model, workspace)
 
         # 6. Compute full mass matrix
         compute_mass_matrix_full_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
+            WS_SIZE,
         ](env, state, model, workspace)
 
         # 6b. Compute full qDeriv via RNE velocity derivative
@@ -645,59 +674,103 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
 
         for j in range(NJOINT):
             var joint_off = model_joint_offset[NBODY](j)
-            var jnt_type = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE]))
-            var dof_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR]))
-            var damp = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DAMPING])
+            var jnt_type = Int(
+                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
+            )
+            var dof_adr = Int(
+                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
+            )
+            var damp = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_DAMPING]
+            )
             if jnt_type == JNT_FREE:
                 for d in range(6):
-                    workspace[env, qd_off + (dof_adr + d) * NV + (dof_adr + d)] = -damp
+                    workspace[
+                        env, qd_off + (dof_adr + d) * NV + (dof_adr + d)
+                    ] = -damp
             elif jnt_type == JNT_BALL:
                 for d in range(3):
-                    workspace[env, qd_off + (dof_adr + d) * NV + (dof_adr + d)] = -damp
+                    workspace[
+                        env, qd_off + (dof_adr + d) * NV + (dof_adr + d)
+                    ] = -damp
             else:
                 workspace[env, qd_off + dof_adr * NV + dof_adr] = -damp
 
         # Compute RNE velocity derivative (subtracts from qDeriv)
         compute_rne_vel_derivative_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE, NGEOM,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
+            WS_SIZE,
+            NGEOM,
         ](env, state, model, workspace, implicit_base)
 
         # 6c. Form M_hat = M + armature - dt * qDeriv
         for j in range(NJOINT):
             var joint_off = model_joint_offset[NBODY](j)
-            var jnt_type = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE]))
-            var dof_adr = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR]))
-            var arm = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_ARMATURE])
+            var jnt_type = Int(
+                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
+            )
+            var dof_adr = Int(
+                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
+            )
+            var arm = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_ARMATURE]
+            )
             if jnt_type == JNT_FREE:
                 for d in range(6):
                     var idx = M_idx + (dof_adr + d) * NV + (dof_adr + d)
-                    workspace[env, idx] = rebind[Scalar[DTYPE]](workspace[env, idx]) + arm
+                    workspace[env, idx] = (
+                        rebind[Scalar[DTYPE]](workspace[env, idx]) + arm
+                    )
             elif jnt_type == JNT_BALL:
                 for d in range(3):
                     var idx = M_idx + (dof_adr + d) * NV + (dof_adr + d)
-                    workspace[env, idx] = rebind[Scalar[DTYPE]](workspace[env, idx]) + arm
+                    workspace[env, idx] = (
+                        rebind[Scalar[DTYPE]](workspace[env, idx]) + arm
+                    )
             else:
                 var idx = M_idx + dof_adr * NV + dof_adr
-                workspace[env, idx] = rebind[Scalar[DTYPE]](workspace[env, idx]) + arm
+                workspace[env, idx] = (
+                    rebind[Scalar[DTYPE]](workspace[env, idx]) + arm
+                )
 
         # Subtract dt * qDeriv from M (full matrix)
         for i in range(NV):
             for j_col in range(NV):
                 var m_idx_ij = M_idx + i * NV + j_col
-                var qd_val = rebind[Scalar[DTYPE]](workspace[env, qd_off + i * NV + j_col])
+                var qd_val = rebind[Scalar[DTYPE]](
+                    workspace[env, qd_off + i * NV + j_col]
+                )
                 workspace[env, m_idx_ij] = (
-                    rebind[Scalar[DTYPE]](workspace[env, m_idx_ij]) - dt * qd_val
+                    rebind[Scalar[DTYPE]](workspace[env, m_idx_ij])
+                    - dt * qd_val
                 )
 
         # 7. LU factorize M_hat and compute M_inv
         lu_factor_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](env, workspace)
-        compute_M_inv_from_lu_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](env, workspace)
+        compute_M_inv_from_lu_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
+            env, workspace
+        )
 
         # 8. Compute bias forces
         compute_bias_forces_rne_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
+            WS_SIZE,
         ](env, state, model, workspace)
 
         # 9. Compute f_net = qfrc - bias
@@ -719,21 +792,39 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
             var dof_adr = Int(
                 rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
             )
-            var damp_d = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DAMPING])
+            var damp_d = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_DAMPING]
+            )
             if damp_d > Scalar[DTYPE](0):
                 if jnt_type == JNT_FREE:
                     for d in range(6):
-                        var v = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + d])
-                        var cur = rebind[Scalar[DTYPE]](workspace[env, fnet_idx + dof_adr + d])
-                        workspace[env, fnet_idx + dof_adr + d] = cur - damp_d * v
+                        var v = rebind[Scalar[DTYPE]](
+                            state[env, qvel_off + dof_adr + d]
+                        )
+                        var cur = rebind[Scalar[DTYPE]](
+                            workspace[env, fnet_idx + dof_adr + d]
+                        )
+                        workspace[env, fnet_idx + dof_adr + d] = (
+                            cur - damp_d * v
+                        )
                 elif jnt_type == JNT_BALL:
                     for d in range(3):
-                        var v = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + d])
-                        var cur = rebind[Scalar[DTYPE]](workspace[env, fnet_idx + dof_adr + d])
-                        workspace[env, fnet_idx + dof_adr + d] = cur - damp_d * v
+                        var v = rebind[Scalar[DTYPE]](
+                            state[env, qvel_off + dof_adr + d]
+                        )
+                        var cur = rebind[Scalar[DTYPE]](
+                            workspace[env, fnet_idx + dof_adr + d]
+                        )
+                        workspace[env, fnet_idx + dof_adr + d] = (
+                            cur - damp_d * v
+                        )
                 else:
-                    var v = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr])
-                    var cur = rebind[Scalar[DTYPE]](workspace[env, fnet_idx + dof_adr])
+                    var v = rebind[Scalar[DTYPE]](
+                        state[env, qvel_off + dof_adr]
+                    )
+                    var cur = rebind[Scalar[DTYPE]](
+                        workspace[env, fnet_idx + dof_adr]
+                    )
                     workspace[env, fnet_idx + dof_adr] = cur - damp_d * v
 
         # Stiffness + frictionloss
@@ -749,45 +840,81 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
             var qpos_adr = Int(
                 rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_QPOS_ADR])
             )
-            var stiff = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_STIFFNESS])
-            var sref = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_SPRINGREF])
-            var floss = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_FRICTIONLOSS])
+            var stiff = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_STIFFNESS]
+            )
+            var sref = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_SPRINGREF]
+            )
+            var floss = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_FRICTIONLOSS]
+            )
             if stiff > Scalar[DTYPE](0):
                 if jnt_type == JNT_FREE:
                     for d in range(6):
-                        var qpos_d = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr + d])
-                        var cur = rebind[Scalar[DTYPE]](workspace[env, fnet_idx + dof_adr + d])
-                        workspace[env, fnet_idx + dof_adr + d] = cur - stiff * (qpos_d - sref)
+                        var qpos_d = rebind[Scalar[DTYPE]](
+                            state[env, qpos_off + qpos_adr + d]
+                        )
+                        var cur = rebind[Scalar[DTYPE]](
+                            workspace[env, fnet_idx + dof_adr + d]
+                        )
+                        workspace[env, fnet_idx + dof_adr + d] = cur - stiff * (
+                            qpos_d - sref
+                        )
                 elif jnt_type == JNT_BALL:
                     for d in range(3):
-                        var qpos_d = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr + d])
-                        var cur = rebind[Scalar[DTYPE]](workspace[env, fnet_idx + dof_adr + d])
-                        workspace[env, fnet_idx + dof_adr + d] = cur - stiff * (qpos_d - sref)
+                        var qpos_d = rebind[Scalar[DTYPE]](
+                            state[env, qpos_off + qpos_adr + d]
+                        )
+                        var cur = rebind[Scalar[DTYPE]](
+                            workspace[env, fnet_idx + dof_adr + d]
+                        )
+                        workspace[env, fnet_idx + dof_adr + d] = cur - stiff * (
+                            qpos_d - sref
+                        )
                 else:
-                    var qpos_d = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr])
-                    var cur = rebind[Scalar[DTYPE]](workspace[env, fnet_idx + dof_adr])
-                    workspace[env, fnet_idx + dof_adr] = cur - stiff * (qpos_d - sref)
+                    var qpos_d = rebind[Scalar[DTYPE]](
+                        state[env, qpos_off + qpos_adr]
+                    )
+                    var cur = rebind[Scalar[DTYPE]](
+                        workspace[env, fnet_idx + dof_adr]
+                    )
+                    workspace[env, fnet_idx + dof_adr] = cur - stiff * (
+                        qpos_d - sref
+                    )
             if floss > Scalar[DTYPE](0):
                 comptime VEL_THRESH: Scalar[DTYPE] = 1e-4
                 if jnt_type == JNT_FREE:
                     for d in range(6):
-                        var v = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + d])
-                        var cur = rebind[Scalar[DTYPE]](workspace[env, fnet_idx + dof_adr + d])
+                        var v = rebind[Scalar[DTYPE]](
+                            state[env, qvel_off + dof_adr + d]
+                        )
+                        var cur = rebind[Scalar[DTYPE]](
+                            workspace[env, fnet_idx + dof_adr + d]
+                        )
                         if v > VEL_THRESH:
                             workspace[env, fnet_idx + dof_adr + d] = cur - floss
                         elif v < -VEL_THRESH:
                             workspace[env, fnet_idx + dof_adr + d] = cur + floss
                 elif jnt_type == JNT_BALL:
                     for d in range(3):
-                        var v = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + d])
-                        var cur = rebind[Scalar[DTYPE]](workspace[env, fnet_idx + dof_adr + d])
+                        var v = rebind[Scalar[DTYPE]](
+                            state[env, qvel_off + dof_adr + d]
+                        )
+                        var cur = rebind[Scalar[DTYPE]](
+                            workspace[env, fnet_idx + dof_adr + d]
+                        )
                         if v > VEL_THRESH:
                             workspace[env, fnet_idx + dof_adr + d] = cur - floss
                         elif v < -VEL_THRESH:
                             workspace[env, fnet_idx + dof_adr + d] = cur + floss
                 else:
-                    var v = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr])
-                    var cur = rebind[Scalar[DTYPE]](workspace[env, fnet_idx + dof_adr])
+                    var v = rebind[Scalar[DTYPE]](
+                        state[env, qvel_off + dof_adr]
+                    )
+                    var cur = rebind[Scalar[DTYPE]](
+                        workspace[env, fnet_idx + dof_adr]
+                    )
                     if v > VEL_THRESH:
                         workspace[env, fnet_idx + dof_adr] = cur - floss
                     elif v < -VEL_THRESH:
@@ -797,12 +924,16 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
         lu_solve_workspace_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](env, workspace)
 
         for i in range(NV):
-            var qacc_val = rebind[Scalar[DTYPE]](workspace[env, qacc_ws_idx + i])
+            var qacc_val = rebind[Scalar[DTYPE]](
+                workspace[env, qacc_ws_idx + i]
+            )
             state[env, qacc_off + i] = qacc_val
 
         # Write to constrained qacc slot for solver
         for i in range(NV):
-            var qacc_val = rebind[Scalar[DTYPE]](workspace[env, qacc_ws_idx + i])
+            var qacc_val = rebind[Scalar[DTYPE]](
+                workspace[env, qacc_ws_idx + i]
+            )
             workspace[env, qacc_constrained_idx + i] = qacc_val
 
     @always_inline
@@ -830,11 +961,18 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
         ],
     ):
         """GPU finalize kernel — delegates to ImplicitFast (identical logic)."""
-        from .implicit_fast_integrator import ImplicitFastIntegrator
 
         ImplicitFastIntegrator[Self.SOLVER].step_finalize_kernel[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
+            WS_SIZE,
         ](state, model, workspace)
 
     @staticmethod
@@ -848,6 +986,7 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
         BATCH: Int,
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
+        CONE_TYPE: Int = ConeType.ELLIPTIC,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],
@@ -863,7 +1002,9 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
             NBODY, NJOINT, NGEOM, NEQUALITY=MAX_EQUALITY
         ]()
         # Workspace = integrator_temps + M_inv + solver_ws + implicit_extra
-        comptime SOLVER_WS = Self.SOLVER.solver_workspace_size[NV, MAX_CONTACTS]()
+        comptime SOLVER_WS = Self.SOLVER.solver_workspace_size[
+            NV, MAX_CONTACTS
+        ]()
         comptime WS_SIZE = (
             integrator_workspace_size[NV, NBODY]()
             + NV * NV
@@ -894,12 +1035,23 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
         ](workspace_buf.unsafe_ptr())
 
         comptime kernel_wrapper = Self.step_kernel[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE, NGEOM,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
+            WS_SIZE,
+            NGEOM,
         ]
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
-            state, model_lt, workspace,
+            state,
+            model_lt,
+            workspace,
             grid_dim=(ENV_BLOCKS,),
             block_dim=(TPB,),
         )
@@ -907,24 +1059,47 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
         comptime V_SIZE = _max_one[NV]()
 
         comptime solver_wrapper = Self.SOLVER.solve_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, V_SIZE, BATCH, WS_SIZE,
-            NGEOM, MAX_EQUALITY,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            V_SIZE,
+            BATCH,
+            WS_SIZE,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
         ]
 
         ctx.enqueue_function[solver_wrapper, solver_wrapper](
-            state, model_lt, workspace,
+            state,
+            model_lt,
+            workspace,
             grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
             block_dim=(SOLVER_ENV_TPB, THREADS),
         )
 
         comptime finalize_kernel_wrapper = Self.step_finalize_kernel[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
+            WS_SIZE,
         ]
 
         ctx.enqueue_function[finalize_kernel_wrapper, finalize_kernel_wrapper](
-            state, model_lt, workspace,
+            state,
+            model_lt,
+            workspace,
             grid_dim=(ENV_BLOCKS,),
             block_dim=(TPB,),
         )
@@ -939,6 +1114,8 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
         MAX_CONTACTS: Int,
         BATCH: Int,
         NGEOM: Int = 0,
+        MAX_EQUALITY: Int = 0,
+        CONE_TYPE: Int = ConeType.ELLIPTIC,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],
@@ -952,7 +1129,16 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
         """Run simulation for multiple steps on GPU."""
         for _ in range(num_steps):
             Self.step_gpu[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, BATCH, NGEOM
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                BATCH,
+                NGEOM,
+                MAX_EQUALITY,
+                CONE_TYPE,
             ](
                 ctx,
                 state_buf,

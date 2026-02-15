@@ -15,7 +15,7 @@ Model buffer (static, same for all environments):
   Per joint (MODEL_JOINT_SIZE=18): [type, body_id, qpos_adr, dof_adr,
     pos(3), axis(3), tau_limit, range_min/max, armature, damping, stiffness, springref, frictionloss]
   Metadata (MODEL_META_SIZE=21): [NBODY, NJOINT, gravity(3), timestep, ground_z, friction,
-    solref_contact(2), solimp_contact(3), solref_limit(2), solimp_limit(3), cone_type, impratio, nequality]
+    solref_contact(2), solimp_contact(3), solref_limit(2), solimp_limit(3), impratio, nequality]
   Curriculum (MODEL_CURRICULUM_SIZE=8): [up to 8 curriculum parameters]
   Per geom (MODEL_GEOM_SIZE=21): [type, body, pos(3), quat(4), radius, half_length,
     half_x/y/z, friction, contype, conaffinity, condim, friction_spin, friction_roll, rbound]
@@ -133,7 +133,9 @@ comptime CONTACT_IDX_PADDING: Int = 19
 
 fn contacts_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
     """Offset to contacts array."""
-    return NQ + 3 * NV + NBODY * 3 + NBODY * 4 + NBODY * 3 + NBODY * 3 + NBODY * 3
+    return (
+        NQ + 3 * NV + NBODY * 3 + NBODY * 4 + NBODY * 3 + NBODY * 3 + NBODY * 3
+    )
 
 
 fn contact_offset[NQ: Int, NV: Int, NBODY: Int](contact_idx: Int) -> Int:
@@ -264,22 +266,21 @@ comptime MODEL_META_IDX_TIMESTEP: Int = 5
 comptime MODEL_META_IDX_GROUND_Z: Int = 6
 comptime MODEL_META_IDX_FRICTION: Int = 7
 # solref/solimp contact parameters (MuJoCo impedance model)
-comptime MODEL_META_IDX_SOLREF_CONTACT_0: Int = 8   # timeconst
-comptime MODEL_META_IDX_SOLREF_CONTACT_1: Int = 9   # dampratio
+comptime MODEL_META_IDX_SOLREF_CONTACT_0: Int = 8  # timeconst
+comptime MODEL_META_IDX_SOLREF_CONTACT_1: Int = 9  # dampratio
 comptime MODEL_META_IDX_SOLIMP_CONTACT_0: Int = 10  # dmin
 comptime MODEL_META_IDX_SOLIMP_CONTACT_1: Int = 11  # dmax
 comptime MODEL_META_IDX_SOLIMP_CONTACT_2: Int = 12  # width
 # solref/solimp limit parameters (MuJoCo impedance model)
-comptime MODEL_META_IDX_SOLREF_LIMIT_0: Int = 13    # timeconst
-comptime MODEL_META_IDX_SOLREF_LIMIT_1: Int = 14    # dampratio
-comptime MODEL_META_IDX_SOLIMP_LIMIT_0: Int = 15    # dmin
-comptime MODEL_META_IDX_SOLIMP_LIMIT_1: Int = 16    # dmax
-comptime MODEL_META_IDX_SOLIMP_LIMIT_2: Int = 17    # width
+comptime MODEL_META_IDX_SOLREF_LIMIT_0: Int = 13  # timeconst
+comptime MODEL_META_IDX_SOLREF_LIMIT_1: Int = 14  # dampratio
+comptime MODEL_META_IDX_SOLIMP_LIMIT_0: Int = 15  # dmin
+comptime MODEL_META_IDX_SOLIMP_LIMIT_1: Int = 16  # dmax
+comptime MODEL_META_IDX_SOLIMP_LIMIT_2: Int = 17  # width
 # Friction cone model
-comptime MODEL_META_IDX_CONE_TYPE: Int = 18    # 0=pyramidal, 1=elliptic
-comptime MODEL_META_IDX_IMPRATIO: Int = 19     # MuJoCo impratio
+comptime MODEL_META_IDX_IMPRATIO: Int = 18  # MuJoCo impratio
 # Equality constraints
-comptime MODEL_META_IDX_NEQUALITY: Int = 20    # Number of equality constraints
+comptime MODEL_META_IDX_NEQUALITY: Int = 19  # Number of equality constraints
 
 
 fn model_metadata_offset[NBODY: Int, NJOINT: Int]() -> Int:
@@ -322,7 +323,13 @@ fn model_geom_offset[NBODY: Int, NJOINT: Int](geom_idx: Int) -> Int:
     Geoms are stored AFTER metadata+curriculum to avoid shifting metadata offsets.
     Layout: [bodies | joints | metadata | curriculum | geoms | equality]
     """
-    return NBODY * MODEL_BODY_SIZE + NJOINT * MODEL_JOINT_SIZE + MODEL_META_SIZE + MODEL_CURRICULUM_SIZE + geom_idx * MODEL_GEOM_SIZE
+    return (
+        NBODY * MODEL_BODY_SIZE
+        + NJOINT * MODEL_JOINT_SIZE
+        + MODEL_META_SIZE
+        + MODEL_CURRICULUM_SIZE
+        + geom_idx * MODEL_GEOM_SIZE
+    )
 
 
 # =============================================================================
@@ -331,9 +338,9 @@ fn model_geom_offset[NBODY: Int, NJOINT: Int](geom_idx: Int) -> Int:
 
 comptime MODEL_EQ_SIZE: Int = 18  # Per equality constraint
 
-comptime EQ_IDX_TYPE: Int = 0       # EQ_CONNECT=0 or EQ_WELD=1
+comptime EQ_IDX_TYPE: Int = 0  # EQ_CONNECT=0 or EQ_WELD=1
 comptime EQ_IDX_BODY_A: Int = 1
-comptime EQ_IDX_BODY_B: Int = 2     # -1 for world
+comptime EQ_IDX_BODY_B: Int = 2  # -1 for world
 comptime EQ_IDX_ANCHOR_AX: Int = 3
 comptime EQ_IDX_ANCHOR_AY: Int = 4
 comptime EQ_IDX_ANCHOR_AZ: Int = 5
@@ -351,13 +358,22 @@ comptime EQ_IDX_SOLIMP_1: Int = 16
 comptime EQ_IDX_SOLIMP_2: Int = 17
 
 
-fn model_equality_offset[NBODY: Int, NJOINT: Int, NGEOM: Int](eq_idx: Int) -> Int:
+fn model_equality_offset[
+    NBODY: Int, NJOINT: Int, NGEOM: Int
+](eq_idx: Int) -> Int:
     """Offset to a specific equality constraint in model buffer.
 
     Equality stored AFTER geoms.
     Layout: [bodies | joints | metadata | curriculum | geoms | equality]
     """
-    return NBODY * MODEL_BODY_SIZE + NJOINT * MODEL_JOINT_SIZE + MODEL_META_SIZE + MODEL_CURRICULUM_SIZE + NGEOM * MODEL_GEOM_SIZE + eq_idx * MODEL_EQ_SIZE
+    return (
+        NBODY * MODEL_BODY_SIZE
+        + NJOINT * MODEL_JOINT_SIZE
+        + MODEL_META_SIZE
+        + MODEL_CURRICULUM_SIZE
+        + NGEOM * MODEL_GEOM_SIZE
+        + eq_idx * MODEL_EQ_SIZE
+    )
 
 
 # =============================================================================
@@ -383,12 +399,21 @@ fn model_curriculum_offset[NBODY: Int, NJOINT: Int]() -> Int:
     return model_metadata_offset[NBODY, NJOINT]() + MODEL_META_SIZE
 
 
-fn model_size[NBODY: Int, NJOINT: Int, NGEOM: Int = 0, NEQUALITY: Int = 0]() -> Int:
+fn model_size[
+    NBODY: Int, NJOINT: Int, NGEOM: Int = 0, NEQUALITY: Int = 0
+]() -> Int:
     """Total model buffer size.
 
     Layout: [bodies | joints | metadata | curriculum | geoms | equality]
     """
-    return NBODY * MODEL_BODY_SIZE + NJOINT * MODEL_JOINT_SIZE + MODEL_META_SIZE + MODEL_CURRICULUM_SIZE + NGEOM * MODEL_GEOM_SIZE + NEQUALITY * MODEL_EQ_SIZE
+    return (
+        NBODY * MODEL_BODY_SIZE
+        + NJOINT * MODEL_JOINT_SIZE
+        + MODEL_META_SIZE
+        + MODEL_CURRICULUM_SIZE
+        + NGEOM * MODEL_GEOM_SIZE
+        + NEQUALITY * MODEL_EQ_SIZE
+    )
 
 
 # =============================================================================
@@ -530,14 +555,41 @@ fn ws_implicit_dcvel_offset[NV: Int, NBODY: Int](base: Int) -> Int:
 
 fn ws_implicit_dcdofdot_offset[NV: Int, NBODY: Int](base: Int) -> Int:
     """Offset to Dcdofdot (NV*6*NV) within implicit extra workspace."""
-    return base + NV * NV + NV * 6 + NBODY * 6 + NBODY * 10 + NV * 6 + NBODY * 6 * NV
+    return (
+        base
+        + NV * NV
+        + NV * 6
+        + NBODY * 6
+        + NBODY * 10
+        + NV * 6
+        + NBODY * 6 * NV
+    )
 
 
 fn ws_implicit_dcacc_offset[NV: Int, NBODY: Int](base: Int) -> Int:
     """Offset to Dcacc (NBODY*6*NV) within implicit extra workspace."""
-    return base + NV * NV + NV * 6 + NBODY * 6 + NBODY * 10 + NV * 6 + NBODY * 6 * NV + NV * 6 * NV
+    return (
+        base
+        + NV * NV
+        + NV * 6
+        + NBODY * 6
+        + NBODY * 10
+        + NV * 6
+        + NBODY * 6 * NV
+        + NV * 6 * NV
+    )
 
 
 fn ws_implicit_dcfrcbody_offset[NV: Int, NBODY: Int](base: Int) -> Int:
     """Offset to Dcfrcbody (NBODY*6*NV) within implicit extra workspace."""
-    return base + NV * NV + NV * 6 + NBODY * 6 + NBODY * 10 + NV * 6 + NBODY * 6 * NV + NV * 6 * NV + NBODY * 6 * NV
+    return (
+        base
+        + NV * NV
+        + NV * 6
+        + NBODY * 6
+        + NBODY * 10
+        + NV * 6
+        + NBODY * 6 * NV
+        + NV * 6 * NV
+        + NBODY * 6 * NV
+    )

@@ -15,9 +15,14 @@ Reference: Featherstone, "Rigid Body Dynamics Algorithms"
 from math import sqrt
 from layout import LayoutTensor, Layout
 
-from ..types import Model, Data
+from ..types import Model, Data, ConeType
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
-from ..kinematics.quat_math import quat_rotate, quat_mul, gpu_quat_rotate, gpu_quat_mul
+from ..kinematics.quat_math import (
+    quat_rotate,
+    quat_mul,
+    gpu_quat_rotate,
+    gpu_quat_mul,
+)
 from ..gpu.constants import (
     xpos_offset,
     xquat_offset,
@@ -77,8 +82,19 @@ fn _is_descendant[
     MAX_CONTACTS: Int,
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
+    CONE_TYPE: Int = ConeType.ELLIPTIC,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
+    model: Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        MAX_EQUALITY,
+        CONE_TYPE,
+    ],
     body: Int,
     ancestor: Int,
 ) -> Bool:
@@ -110,7 +126,9 @@ fn compute_mass_matrix[
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
+    model: Model[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+    ],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     mut M: InlineArray[Scalar[DTYPE], M_SIZE],
 ):
@@ -345,8 +363,19 @@ fn compute_mass_matrix_full[
     CRB_SIZE: Int,
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
+    CONE_TYPE: Int = ConeType.ELLIPTIC,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
+    model: Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        MAX_EQUALITY,
+        CONE_TYPE,
+    ],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
     crb: InlineArray[Scalar[DTYPE], CRB_SIZE],

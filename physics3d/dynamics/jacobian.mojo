@@ -75,7 +75,11 @@ from ..joint_types import (
     JNT_HINGE,
     JNT_SLIDE,
 )
-from ..kinematics.quat_math import gpu_quat_rotate, gpu_quat_mul, gpu_axis_angle_to_quat
+from ..kinematics.quat_math import (
+    gpu_quat_rotate,
+    gpu_quat_mul,
+    gpu_axis_angle_to_quat,
+)
 from ..joint_types import (
     JNT_FREE,
     JNT_BALL,
@@ -98,8 +102,19 @@ fn compute_cdof[
     CDOF_SIZE: Int,
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
+    CONE_TYPE: Int = ConeType.ELLIPTIC,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
+    model: Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        MAX_EQUALITY,
+        CONE_TYPE,
+    ],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     mut cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
 ):
@@ -156,8 +171,14 @@ fn compute_cdof[
         var bq_z = model.body_quat[body * 4 + 2]
         var bq_w = model.body_quat[body * 4 + 3]
         var pre_q = quat_mul(
-            acc_qx, acc_qy, acc_qz, acc_qw,
-            bq_x, bq_y, bq_z, bq_w,
+            acc_qx,
+            acc_qy,
+            acc_qz,
+            acc_qw,
+            bq_x,
+            bq_y,
+            bq_z,
+            bq_w,
         )
         acc_qx = pre_q[0]
         acc_qy = pre_q[1]
@@ -194,8 +215,13 @@ fn compute_cdof[
 
                 # Rotate axis to world using accumulated (pre-this-joint) orientation
                 var axis_world = quat_rotate(
-                    acc_qx, acc_qy, acc_qz, acc_qw,
-                    axis_lx, axis_ly, axis_lz,
+                    acc_qx,
+                    acc_qy,
+                    acc_qz,
+                    acc_qw,
+                    axis_lx,
+                    axis_ly,
+                    axis_lz,
                 )
                 var ax = axis_world[0]
                 var ay = axis_world[1]
@@ -203,8 +229,13 @@ fn compute_cdof[
 
                 # Joint anchor = body_xpos + rotate(jnt_pos, acc_quat)
                 var jp = quat_rotate(
-                    acc_qx, acc_qy, acc_qz, acc_qw,
-                    jpos_lx, jpos_ly, jpos_lz,
+                    acc_qx,
+                    acc_qy,
+                    acc_qz,
+                    acc_qw,
+                    jpos_lx,
+                    jpos_ly,
+                    jpos_lz,
                 )
                 var anc_x = bpx + jp[0]
                 var anc_y = bpy + jp[1]
@@ -228,9 +259,14 @@ fn compute_cdof[
                 var angle = data.qpos[joint.qpos_adr]
                 var hinge_quat = axis_angle_to_quat(ax, ay, az, angle)
                 var new_q = quat_mul(
-                    hinge_quat[0], hinge_quat[1],
-                    hinge_quat[2], hinge_quat[3],
-                    acc_qx, acc_qy, acc_qz, acc_qw,
+                    hinge_quat[0],
+                    hinge_quat[1],
+                    hinge_quat[2],
+                    hinge_quat[3],
+                    acc_qx,
+                    acc_qy,
+                    acc_qz,
+                    acc_qw,
                 )
                 acc_qx = new_q[0]
                 acc_qy = new_q[1]
@@ -245,8 +281,13 @@ fn compute_cdof[
 
                 # Rotate axis to world using accumulated (pre-this-joint) orientation
                 var axis_world = quat_rotate(
-                    acc_qx, acc_qy, acc_qz, acc_qw,
-                    axis_lx, axis_ly, axis_lz,
+                    acc_qx,
+                    acc_qy,
+                    acc_qz,
+                    acc_qw,
+                    axis_lx,
+                    axis_ly,
+                    axis_lz,
                 )
 
                 # angular part = 0 (slide doesn't rotate)
@@ -290,8 +331,19 @@ fn compute_contact_jacobian_row[
     CDOF_SIZE: Int,
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
+    CONE_TYPE: Int = ConeType.ELLIPTIC,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
+    model: Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        MAX_EQUALITY,
+        CONE_TYPE,
+    ],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
     contact_body_a: Int,
@@ -399,8 +451,19 @@ fn _joint_affects_body[
     MAX_CONTACTS: Int,
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
+    CONE_TYPE: Int = ConeType.ELLIPTIC,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
+    model: Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        MAX_EQUALITY,
+        CONE_TYPE,
+    ],
     joint_idx: Int,
     body_idx: Int,
 ) -> Bool:
@@ -435,8 +498,19 @@ fn compute_composite_inertia[
     CRB_SIZE: Int,
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
+    CONE_TYPE: Int = ConeType.ELLIPTIC,
 ](
-    model: Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY],
+    model: Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        MAX_EQUALITY,
+        CONE_TYPE,
+    ],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     mut crb: InlineArray[Scalar[DTYPE], CRB_SIZE],
 ):
@@ -944,8 +1018,14 @@ fn compute_cdof_gpu[
         var bq_z = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_QUAT_Z])
         var bq_w = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_QUAT_W])
         var pre_q = gpu_quat_mul(
-            acc_qx, acc_qy, acc_qz, acc_qw,
-            bq_x, bq_y, bq_z, bq_w,
+            acc_qx,
+            acc_qy,
+            acc_qz,
+            acc_qw,
+            bq_x,
+            bq_y,
+            bq_z,
+            bq_w,
         )
         acc_qx = pre_q[0]
         acc_qy = pre_q[1]
@@ -998,8 +1078,13 @@ fn compute_cdof_gpu[
 
                 # Rotate axis using accumulated (pre-this-joint) orientation
                 var a_w = gpu_quat_rotate(
-                    acc_qx, acc_qy, acc_qz, acc_qw,
-                    axis_lx, axis_ly, axis_lz,
+                    acc_qx,
+                    acc_qy,
+                    acc_qz,
+                    acc_qw,
+                    axis_lx,
+                    axis_ly,
+                    axis_lz,
                 )
                 var ax = a_w[0]
                 var ay = a_w[1]
@@ -1007,8 +1092,13 @@ fn compute_cdof_gpu[
 
                 # Joint anchor = body_xpos + rotate(jnt_pos, acc_quat)
                 var jp = gpu_quat_rotate(
-                    acc_qx, acc_qy, acc_qz, acc_qw,
-                    jpos_lx, jpos_ly, jpos_lz,
+                    acc_qx,
+                    acc_qy,
+                    acc_qz,
+                    acc_qw,
+                    jpos_lx,
+                    jpos_ly,
+                    jpos_lz,
                 )
                 var anc_x = bpx + jp[0]
                 var anc_y = bpy + jp[1]
@@ -1037,8 +1127,14 @@ fn compute_cdof_gpu[
                 )
                 var hinge_q = gpu_axis_angle_to_quat(ax, ay, az, angle)
                 var new_q = gpu_quat_mul(
-                    hinge_q[0], hinge_q[1], hinge_q[2], hinge_q[3],
-                    acc_qx, acc_qy, acc_qz, acc_qw,
+                    hinge_q[0],
+                    hinge_q[1],
+                    hinge_q[2],
+                    hinge_q[3],
+                    acc_qx,
+                    acc_qy,
+                    acc_qz,
+                    acc_qw,
                 )
                 acc_qx = new_q[0]
                 acc_qy = new_q[1]
@@ -1058,8 +1154,13 @@ fn compute_cdof_gpu[
 
                 # Rotate axis using accumulated orientation
                 var a_w = gpu_quat_rotate(
-                    acc_qx, acc_qy, acc_qz, acc_qw,
-                    axis_lx, axis_ly, axis_lz,
+                    acc_qx,
+                    acc_qy,
+                    acc_qz,
+                    acc_qw,
+                    axis_lx,
+                    axis_ly,
+                    axis_lz,
                 )
 
                 workspace[env, cdof_idx + dof_adr * 6 + 3] = a_w[0]
