@@ -20,13 +20,12 @@ from ..gpu.constants import (
     xpos_offset,
     xquat_offset,
     xipos_offset,
-    xvel_offset,
-    xangvel_offset,
     qvel_offset,
     model_body_offset,
     model_joint_offset,
     model_metadata_offset,
     ws_cdof_offset,
+    ws_crb_offset,
     ws_bias_offset,
     BODY_IDX_PARENT,
     BODY_IDX_MASS,
@@ -703,8 +702,13 @@ fn compute_bias_forces_rne[
     var gy = model.gravity[1]
     var gz = model.gravity[2]
 
-    # Per-body spatial acceleration [angular(3), linear(3)]
+    # Per-body spatial velocity [angular(3), linear(3)] at CoM
     comptime BODY6_SIZE = _max_one[NBODY * 6]()
+    var cvel = InlineArray[Scalar[DTYPE], BODY6_SIZE](uninitialized=True)
+    for i in range(BODY6_SIZE):
+        cvel[i] = Scalar[DTYPE](0)
+
+    # Per-body spatial acceleration [angular(3), linear(3)]
     var cacc = InlineArray[Scalar[DTYPE], BODY6_SIZE](uninitialized=True)
     for i in range(BODY6_SIZE):
         cacc[i] = Scalar[DTYPE](0)
@@ -786,16 +790,46 @@ fn compute_bias_forces_rne[
         )  # Iyz
 
     # =========================================================================
-    # Step 1: Forward pass - compute spatial accelerations (root to leaves)
-    #   cacc[body] = cacc[parent] + sum(cdof_dot[d] * qvel[d])
-    #   where cdof_dot[d] = cvel[parent] x_motion cdof[d]
+    # Step 1: Forward pass - compute cvel and cacc (root to leaves)
+    #   MuJoCo-style: cvel is accumulated progressively per joint.
+    #   For each body:
+    #     cvel = cvel[parent]
+    #     For each joint d of this body:
+    #       cdof_dot = cvel x_motion cdof[d]
+    #       cacc += cdof_dot * qvel[d]
+    #       cvel += cdof[d] * qvel[d]   (update BEFORE next joint)
+    #
+    #   Reference: MuJoCo engine_core_smooth.c mj_comVel()
     # =========================================================================
     for b in range(NBODY):
         var parent = model.body_parent[b]
 
+        # Initialize cvel from parent, transferred to this body's CoM
+        var cv_wx: Scalar[DTYPE] = 0
+        var cv_wy: Scalar[DTYPE] = 0
+        var cv_wz: Scalar[DTYPE] = 0
+        var cv_vx: Scalar[DTYPE] = 0
+        var cv_vy: Scalar[DTYPE] = 0
+        var cv_vz: Scalar[DTYPE] = 0
+        if parent >= 0:
+            cv_wx = cvel[parent * 6 + 0]
+            cv_wy = cvel[parent * 6 + 1]
+            cv_wz = cvel[parent * 6 + 2]
+            cv_vx = cvel[parent * 6 + 3]
+            cv_vy = cvel[parent * 6 + 4]
+            cv_vz = cvel[parent * 6 + 5]
+
+            # Transfer linear velocity from parent CoM to this body's CoM
+            # v_child_com = v_parent_com + w_parent × (child_com - parent_com)
+            var rx = data.xipos[b * 3 + 0] - data.xipos[parent * 3 + 0]
+            var ry = data.xipos[b * 3 + 1] - data.xipos[parent * 3 + 1]
+            var rz = data.xipos[b * 3 + 2] - data.xipos[parent * 3 + 2]
+            cv_vx = cv_vx + (cv_wy * rz - cv_wz * ry)
+            cv_vy = cv_vy + (cv_wz * rx - cv_wx * rz)
+            cv_vz = cv_vz + (cv_wx * ry - cv_wy * rx)
+
         if parent < 0:
             # Root body: gravity as fictitious acceleration
-            # cacc = [0, 0, 0, -gx, -gy, -gz]
             cacc[b * 6 + 3] = -gx
             cacc[b * 6 + 4] = -gy
             cacc[b * 6 + 5] = -gz
@@ -804,41 +838,102 @@ fn compute_bias_forces_rne[
             for k in range(6):
                 cacc[b * 6 + k] = cacc[parent * 6 + k]
 
-        # Get parent velocity (zero for root bodies)
-        var wp_x: Scalar[DTYPE] = 0
-        var wp_y: Scalar[DTYPE] = 0
-        var wp_z: Scalar[DTYPE] = 0
-        var vp_x: Scalar[DTYPE] = 0
-        var vp_y: Scalar[DTYPE] = 0
-        var vp_z: Scalar[DTYPE] = 0
-        if parent >= 0:
-            wp_x = data.xangvel[parent * 3 + 0]
-            wp_y = data.xangvel[parent * 3 + 1]
-            wp_z = data.xangvel[parent * 3 + 2]
-            vp_x = data.xvel[parent * 3 + 0]
-            vp_y = data.xvel[parent * 3 + 1]
-            vp_z = data.xvel[parent * 3 + 2]
-
-        # Add velocity-dependent acceleration for each DOF of this body
-        # cdof_dot[d] = cvel[parent] x_motion cdof[d]
-        # (MuJoCo: engine_core_smooth.c mj_comVel, crossMotion)
+        # Process each joint of this body
         for j in range(model.num_joints):
             var joint = model.joints[j]
             if joint.body_id != b:
                 continue
 
             var dof_adr = joint.dof_adr
-            var num_dof = 1
+
             if joint.jnt_type == JNT_FREE:
-                num_dof = 6
+                # FREE joint: translation DOFs have cdof_dot = 0
+                # First 3 DOFs (translation): cdof_dot = 0, just update cvel
+                for d in range(3):
+                    var dof = dof_adr + d
+                    var qdot = data.qvel[dof]
+                    cv_wx = cv_wx + cdof[dof * 6 + 0] * qdot
+                    cv_wy = cv_wy + cdof[dof * 6 + 1] * qdot
+                    cv_wz = cv_wz + cdof[dof * 6 + 2] * qdot
+                    cv_vx = cv_vx + cdof[dof * 6 + 3] * qdot
+                    cv_vy = cv_vy + cdof[dof * 6 + 4] * qdot
+                    cv_vz = cv_vz + cdof[dof * 6 + 5] * qdot
+
+                # Next 3 DOFs (rotation): compute cdof_dot with current cvel
+                for d in range(3, 6):
+                    var dof = dof_adr + d
+                    var qdot = data.qvel[dof]
+                    var s_ang_x = cdof[dof * 6 + 0]
+                    var s_ang_y = cdof[dof * 6 + 1]
+                    var s_ang_z = cdof[dof * 6 + 2]
+                    var s_lin_x = cdof[dof * 6 + 3]
+                    var s_lin_y = cdof[dof * 6 + 4]
+                    var s_lin_z = cdof[dof * 6 + 5]
+
+                    # cdof_dot = cvel x_motion cdof
+                    var cdot_ang_x = cv_wy * s_ang_z - cv_wz * s_ang_y
+                    var cdot_ang_y = cv_wz * s_ang_x - cv_wx * s_ang_z
+                    var cdot_ang_z = cv_wx * s_ang_y - cv_wy * s_ang_x
+                    var cdot_lin_x = (cv_wy * s_lin_z - cv_wz * s_lin_y) + (cv_vy * s_ang_z - cv_vz * s_ang_y)
+                    var cdot_lin_y = (cv_wz * s_lin_x - cv_wx * s_lin_z) + (cv_vz * s_ang_x - cv_vx * s_ang_z)
+                    var cdot_lin_z = (cv_wx * s_lin_y - cv_wy * s_lin_x) + (cv_vx * s_ang_y - cv_vy * s_ang_x)
+
+                    cacc[b * 6 + 0] = cacc[b * 6 + 0] + cdot_ang_x * qdot
+                    cacc[b * 6 + 1] = cacc[b * 6 + 1] + cdot_ang_y * qdot
+                    cacc[b * 6 + 2] = cacc[b * 6 + 2] + cdot_ang_z * qdot
+                    cacc[b * 6 + 3] = cacc[b * 6 + 3] + cdot_lin_x * qdot
+                    cacc[b * 6 + 4] = cacc[b * 6 + 4] + cdot_lin_y * qdot
+                    cacc[b * 6 + 5] = cacc[b * 6 + 5] + cdot_lin_z * qdot
+
+                    # Update cvel
+                    cv_wx = cv_wx + s_ang_x * qdot
+                    cv_wy = cv_wy + s_ang_y * qdot
+                    cv_wz = cv_wz + s_ang_z * qdot
+                    cv_vx = cv_vx + s_lin_x * qdot
+                    cv_vy = cv_vy + s_lin_y * qdot
+                    cv_vz = cv_vz + s_lin_z * qdot
+
             elif joint.jnt_type == JNT_BALL:
-                num_dof = 3
+                # BALL: compute all 3 cdof_dots using current cvel, then update
+                for d in range(3):
+                    var dof = dof_adr + d
+                    var qdot = data.qvel[dof]
+                    var s_ang_x = cdof[dof * 6 + 0]
+                    var s_ang_y = cdof[dof * 6 + 1]
+                    var s_ang_z = cdof[dof * 6 + 2]
+                    var s_lin_x = cdof[dof * 6 + 3]
+                    var s_lin_y = cdof[dof * 6 + 4]
+                    var s_lin_z = cdof[dof * 6 + 5]
 
-            for d in range(num_dof):
-                var dof = dof_adr + d
+                    var cdot_ang_x = cv_wy * s_ang_z - cv_wz * s_ang_y
+                    var cdot_ang_y = cv_wz * s_ang_x - cv_wx * s_ang_z
+                    var cdot_ang_z = cv_wx * s_ang_y - cv_wy * s_ang_x
+                    var cdot_lin_x = (cv_wy * s_lin_z - cv_wz * s_lin_y) + (cv_vy * s_ang_z - cv_vz * s_ang_y)
+                    var cdot_lin_y = (cv_wz * s_lin_x - cv_wx * s_lin_z) + (cv_vz * s_ang_x - cv_vx * s_ang_z)
+                    var cdot_lin_z = (cv_wx * s_lin_y - cv_wy * s_lin_x) + (cv_vx * s_ang_y - cv_vy * s_ang_x)
+
+                    cacc[b * 6 + 0] = cacc[b * 6 + 0] + cdot_ang_x * qdot
+                    cacc[b * 6 + 1] = cacc[b * 6 + 1] + cdot_ang_y * qdot
+                    cacc[b * 6 + 2] = cacc[b * 6 + 2] + cdot_ang_z * qdot
+                    cacc[b * 6 + 3] = cacc[b * 6 + 3] + cdot_lin_x * qdot
+                    cacc[b * 6 + 4] = cacc[b * 6 + 4] + cdot_lin_y * qdot
+                    cacc[b * 6 + 5] = cacc[b * 6 + 5] + cdot_lin_z * qdot
+
+                # Update cvel after all 3 DOFs
+                for d in range(3):
+                    var dof = dof_adr + d
+                    var qdot = data.qvel[dof]
+                    cv_wx = cv_wx + cdof[dof * 6 + 0] * qdot
+                    cv_wy = cv_wy + cdof[dof * 6 + 1] * qdot
+                    cv_wz = cv_wz + cdof[dof * 6 + 2] * qdot
+                    cv_vx = cv_vx + cdof[dof * 6 + 3] * qdot
+                    cv_vy = cv_vy + cdof[dof * 6 + 4] * qdot
+                    cv_vz = cv_vz + cdof[dof * 6 + 5] * qdot
+
+            else:
+                # HINGE or SLIDE (1 DOF)
+                var dof = dof_adr
                 var qdot = data.qvel[dof]
-
-                # cdof components
                 var s_ang_x = cdof[dof * 6 + 0]
                 var s_ang_y = cdof[dof * 6 + 1]
                 var s_ang_z = cdof[dof * 6 + 2]
@@ -846,24 +941,14 @@ fn compute_bias_forces_rne[
                 var s_lin_y = cdof[dof * 6 + 4]
                 var s_lin_z = cdof[dof * 6 + 5]
 
-                # Spatial motion cross: cvel_parent x_m cdof
-                # cdot_ang = w_p x s_ang
-                var cdot_ang_x = wp_y * s_ang_z - wp_z * s_ang_y
-                var cdot_ang_y = wp_z * s_ang_x - wp_x * s_ang_z
-                var cdot_ang_z = wp_x * s_ang_y - wp_y * s_ang_x
+                # cdof_dot = cvel x_motion cdof
+                var cdot_ang_x = cv_wy * s_ang_z - cv_wz * s_ang_y
+                var cdot_ang_y = cv_wz * s_ang_x - cv_wx * s_ang_z
+                var cdot_ang_z = cv_wx * s_ang_y - cv_wy * s_ang_x
+                var cdot_lin_x = (cv_wy * s_lin_z - cv_wz * s_lin_y) + (cv_vy * s_ang_z - cv_vz * s_ang_y)
+                var cdot_lin_y = (cv_wz * s_lin_x - cv_wx * s_lin_z) + (cv_vz * s_ang_x - cv_vx * s_ang_z)
+                var cdot_lin_z = (cv_wx * s_lin_y - cv_wy * s_lin_x) + (cv_vx * s_ang_y - cv_vy * s_ang_x)
 
-                # cdot_lin = w_p x s_lin + v_p x s_ang
-                var cdot_lin_x = (wp_y * s_lin_z - wp_z * s_lin_y) + (
-                    vp_y * s_ang_z - vp_z * s_ang_y
-                )
-                var cdot_lin_y = (wp_z * s_lin_x - wp_x * s_lin_z) + (
-                    vp_z * s_ang_x - vp_x * s_ang_z
-                )
-                var cdot_lin_z = (wp_x * s_lin_y - wp_y * s_lin_x) + (
-                    vp_x * s_ang_y - vp_y * s_ang_x
-                )
-
-                # Accumulate: cacc += cdof_dot * qvel
                 cacc[b * 6 + 0] = cacc[b * 6 + 0] + cdot_ang_x * qdot
                 cacc[b * 6 + 1] = cacc[b * 6 + 1] + cdot_ang_y * qdot
                 cacc[b * 6 + 2] = cacc[b * 6 + 2] + cdot_ang_z * qdot
@@ -871,24 +956,38 @@ fn compute_bias_forces_rne[
                 cacc[b * 6 + 4] = cacc[b * 6 + 4] + cdot_lin_y * qdot
                 cacc[b * 6 + 5] = cacc[b * 6 + 5] + cdot_lin_z * qdot
 
+                # Update cvel (crossMotion(cdof,cdof)=0 so order doesn't matter
+                # for single DOF, but we update for consistency)
+                cv_wx = cv_wx + s_ang_x * qdot
+                cv_wy = cv_wy + s_ang_y * qdot
+                cv_wz = cv_wz + s_ang_z * qdot
+                cv_vx = cv_vx + s_lin_x * qdot
+                cv_vy = cv_vy + s_lin_y * qdot
+                cv_vz = cv_vz + s_lin_z * qdot
+
+        # Store final cvel for this body (used by children and Step 2)
+        cvel[b * 6 + 0] = cv_wx
+        cvel[b * 6 + 1] = cv_wy
+        cvel[b * 6 + 2] = cv_wz
+        cvel[b * 6 + 3] = cv_vx
+        cvel[b * 6 + 4] = cv_vy
+        cvel[b * 6 + 5] = cv_vz
+
     # =========================================================================
     # Step 2: Compute spatial forces per body
     #   cfrc = I * cacc + cvel x* (I * cvel)
-    #
-    #   At CoM (offset=0):
-    #   - I*v: angular = I_world @ w, linear = mass * v
-    #   - v x* (I*v): angular = w x (I_world*w), linear = w x (mass*v)
+    #   Using accumulated cvel (not data.xvel/xangvel)
     # =========================================================================
     for b in range(NBODY):
         var mass = model.body_mass[b]
 
-        # Body velocities
-        var wx = data.xangvel[b * 3 + 0]
-        var wy = data.xangvel[b * 3 + 1]
-        var wz = data.xangvel[b * 3 + 2]
-        var vx = data.xvel[b * 3 + 0]
-        var vy = data.xvel[b * 3 + 1]
-        var vz = data.xvel[b * 3 + 2]
+        # Body velocities from accumulated cvel
+        var wx = cvel[b * 6 + 0]
+        var wy = cvel[b * 6 + 1]
+        var wz = cvel[b * 6 + 2]
+        var vx = cvel[b * 6 + 3]
+        var vy = cvel[b * 6 + 4]
+        var vz = cvel[b * 6 + 5]
 
         # Spatial acceleration
         var a_ang_x = cacc[b * 6 + 0]
@@ -919,12 +1018,13 @@ fn compute_bias_forces_rne[
         var Iw_y = Ixy * wx + Iyy * wy + Iyz * wz
         var Iw_z = Ixz * wx + Iyz * wy + Izz * wz
 
-        # cvel x* (I * cvel) = [w x (I*w), w x (m*v)]
-        # (v x (m*v) = 0 since v x v = 0)
+        # cvel x* (I * cvel) — spatial force cross product
+        # angular: w x (I*w) + v x (m*v) = w x (I*w) (since v x v = 0)
         var xf_ang_x = wy * Iw_z - wz * Iw_y
         var xf_ang_y = wz * Iw_x - wx * Iw_z
         var xf_ang_z = wx * Iw_y - wy * Iw_x
 
+        # linear: w x (m*v)
         var xf_lin_x = wy * (mass * vz) - wz * (mass * vy)
         var xf_lin_y = wz * (mass * vx) - wx * (mass * vz)
         var xf_lin_z = wx * (mass * vy) - wy * (mass * vx)
@@ -942,7 +1042,7 @@ fn compute_bias_forces_rne[
     #   When transferring force wrench from child CoM to parent CoM:
     #   tau_parent += tau_child + r x f_child
     #   f_parent += f_child
-    #   where r = xpos[child] - xpos[parent]
+    #   where r = xipos[child] - xipos[parent]
     # =========================================================================
     for b in range(NBODY - 1, 0, -1):
         var parent = model.body_parent[b]
@@ -1059,10 +1159,7 @@ fn compute_bias_forces_rne_gpu[
     )
 
     # State buffer offsets
-    var xpos_off = xpos_offset[NQ, NV, NBODY]()
     var xquat_off = xquat_offset[NQ, NV, NBODY]()
-    var xvel_off = xvel_offset[NQ, NV, NBODY]()
-    var xangvel_off = xangvel_offset[NQ, NV, NBODY]()
     var qvel_off = qvel_offset[NQ, NV]()
 
     # Per-body arrays: spatial acceleration, force, world-frame inertia
@@ -1144,14 +1241,53 @@ fn compute_bias_forces_rne_gpu[
             + Izz_local * r12 * r22
         )  # Iyz
 
+    # Per-body spatial velocity stored in workspace at crb offset (reused, not needed during RNE)
+    # cvel uses NBODY*6 slots, crb region has NBODY*10 slots — fits easily
+    comptime cvel_idx = ws_crb_offset[NV]()
+    for i in range(NBODY * 6):
+        workspace[env, cvel_idx + i] = 0
+
     # =========================================================================
-    # Step 1: Forward pass - spatial accelerations (root to leaves)
+    # Step 1: Forward pass - compute cvel and cacc (root to leaves)
+    #   MuJoCo-style: cvel is accumulated progressively per joint.
+    #   Matches CPU compute_bias_forces_rne.
     # =========================================================================
+    var xipos_off = xipos_offset[NQ, NV, NBODY]()
+
     for b in range(NBODY):
         var body_off = model_body_offset(b)
         var parent = Int(
             rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT])
         )
+
+        # Initialize cvel from parent, transferred to this body's CoM
+        var cv_wx: Scalar[DTYPE] = 0
+        var cv_wy: Scalar[DTYPE] = 0
+        var cv_wz: Scalar[DTYPE] = 0
+        var cv_vx: Scalar[DTYPE] = 0
+        var cv_vy: Scalar[DTYPE] = 0
+        var cv_vz: Scalar[DTYPE] = 0
+        if parent >= 0:
+            cv_wx = rebind[Scalar[DTYPE]](workspace[env, cvel_idx + parent * 6 + 0])
+            cv_wy = rebind[Scalar[DTYPE]](workspace[env, cvel_idx + parent * 6 + 1])
+            cv_wz = rebind[Scalar[DTYPE]](workspace[env, cvel_idx + parent * 6 + 2])
+            cv_vx = rebind[Scalar[DTYPE]](workspace[env, cvel_idx + parent * 6 + 3])
+            cv_vy = rebind[Scalar[DTYPE]](workspace[env, cvel_idx + parent * 6 + 4])
+            cv_vz = rebind[Scalar[DTYPE]](workspace[env, cvel_idx + parent * 6 + 5])
+
+            # Transfer linear velocity from parent CoM to this body's CoM
+            var rx = rebind[Scalar[DTYPE]](
+                state[env, xipos_off + b * 3 + 0]
+            ) - rebind[Scalar[DTYPE]](state[env, xipos_off + parent * 3 + 0])
+            var ry = rebind[Scalar[DTYPE]](
+                state[env, xipos_off + b * 3 + 1]
+            ) - rebind[Scalar[DTYPE]](state[env, xipos_off + parent * 3 + 1])
+            var rz = rebind[Scalar[DTYPE]](
+                state[env, xipos_off + b * 3 + 2]
+            ) - rebind[Scalar[DTYPE]](state[env, xipos_off + parent * 3 + 2])
+            cv_vx = cv_vx + (cv_wy * rz - cv_wz * ry)
+            cv_vy = cv_vy + (cv_wz * rx - cv_wx * rz)
+            cv_vz = cv_vz + (cv_wx * ry - cv_wy * rx)
 
         if parent < 0:
             # Root body: gravity as fictitious acceleration
@@ -1162,28 +1298,7 @@ fn compute_bias_forces_rne_gpu[
             for k in range(6):
                 cacc[b * 6 + k] = cacc[parent * 6 + k]
 
-        # Get parent velocity
-        var wp_x: Scalar[DTYPE] = 0
-        var wp_y: Scalar[DTYPE] = 0
-        var wp_z: Scalar[DTYPE] = 0
-        var vp_x: Scalar[DTYPE] = 0
-        var vp_y: Scalar[DTYPE] = 0
-        var vp_z: Scalar[DTYPE] = 0
-        if parent >= 0:
-            wp_x = rebind[Scalar[DTYPE]](
-                state[env, xangvel_off + parent * 3 + 0]
-            )
-            wp_y = rebind[Scalar[DTYPE]](
-                state[env, xangvel_off + parent * 3 + 1]
-            )
-            wp_z = rebind[Scalar[DTYPE]](
-                state[env, xangvel_off + parent * 3 + 2]
-            )
-            vp_x = rebind[Scalar[DTYPE]](state[env, xvel_off + parent * 3 + 0])
-            vp_y = rebind[Scalar[DTYPE]](state[env, xvel_off + parent * 3 + 1])
-            vp_z = rebind[Scalar[DTYPE]](state[env, xvel_off + parent * 3 + 2])
-
-        # Add cdof_dot * qvel for each DOF of this body
+        # Process each joint of this body
         for j in range(NJOINT):
             var joint_off = model_joint_offset[NBODY](j)
             var jnt_body = Int(
@@ -1198,74 +1313,144 @@ fn compute_bias_forces_rne_gpu[
             var dof_adr = Int(
                 rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
             )
-            var num_dof = 1
+
             if jnt_type == JNT_FREE:
-                num_dof = 6
+                # Translation DOFs: cdof_dot = 0, just update cvel
+                for d in range(3):
+                    var dof = dof_adr + d
+                    var qdot = rebind[Scalar[DTYPE]](state[env, qvel_off + dof])
+                    cv_wx = cv_wx + rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 0]) * qdot
+                    cv_wy = cv_wy + rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 1]) * qdot
+                    cv_wz = cv_wz + rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 2]) * qdot
+                    cv_vx = cv_vx + rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 3]) * qdot
+                    cv_vy = cv_vy + rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 4]) * qdot
+                    cv_vz = cv_vz + rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 5]) * qdot
+
+                # Rotation DOFs: compute cdof_dot with current cvel
+                for d in range(3, 6):
+                    var dof = dof_adr + d
+                    var qdot = rebind[Scalar[DTYPE]](state[env, qvel_off + dof])
+                    var s_ang_x = rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 0])
+                    var s_ang_y = rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 1])
+                    var s_ang_z = rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 2])
+                    var s_lin_x = rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 3])
+                    var s_lin_y = rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 4])
+                    var s_lin_z = rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 5])
+
+                    var cdot_ang_x = cv_wy * s_ang_z - cv_wz * s_ang_y
+                    var cdot_ang_y = cv_wz * s_ang_x - cv_wx * s_ang_z
+                    var cdot_ang_z = cv_wx * s_ang_y - cv_wy * s_ang_x
+                    var cdot_lin_x = (cv_wy * s_lin_z - cv_wz * s_lin_y) + (cv_vy * s_ang_z - cv_vz * s_ang_y)
+                    var cdot_lin_y = (cv_wz * s_lin_x - cv_wx * s_lin_z) + (cv_vz * s_ang_x - cv_vx * s_ang_z)
+                    var cdot_lin_z = (cv_wx * s_lin_y - cv_wy * s_lin_x) + (cv_vx * s_ang_y - cv_vy * s_ang_x)
+
+                    cacc[b * 6 + 0] = cacc[b * 6 + 0] + cdot_ang_x * qdot
+                    cacc[b * 6 + 1] = cacc[b * 6 + 1] + cdot_ang_y * qdot
+                    cacc[b * 6 + 2] = cacc[b * 6 + 2] + cdot_ang_z * qdot
+                    cacc[b * 6 + 3] = cacc[b * 6 + 3] + cdot_lin_x * qdot
+                    cacc[b * 6 + 4] = cacc[b * 6 + 4] + cdot_lin_y * qdot
+                    cacc[b * 6 + 5] = cacc[b * 6 + 5] + cdot_lin_z * qdot
+
+                    cv_wx = cv_wx + s_ang_x * qdot
+                    cv_wy = cv_wy + s_ang_y * qdot
+                    cv_wz = cv_wz + s_ang_z * qdot
+                    cv_vx = cv_vx + s_lin_x * qdot
+                    cv_vy = cv_vy + s_lin_y * qdot
+                    cv_vz = cv_vz + s_lin_z * qdot
+
             elif jnt_type == JNT_BALL:
-                num_dof = 3
+                # BALL: compute all 3 cdof_dots using current cvel, then update
+                for d in range(3):
+                    var dof = dof_adr + d
+                    var qdot = rebind[Scalar[DTYPE]](state[env, qvel_off + dof])
+                    var s_ang_x = rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 0])
+                    var s_ang_y = rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 1])
+                    var s_ang_z = rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 2])
+                    var s_lin_x = rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 3])
+                    var s_lin_y = rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 4])
+                    var s_lin_z = rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 5])
 
-            for d in range(num_dof):
-                var dof = dof_adr + d
+                    var cdot_ang_x = cv_wy * s_ang_z - cv_wz * s_ang_y
+                    var cdot_ang_y = cv_wz * s_ang_x - cv_wx * s_ang_z
+                    var cdot_ang_z = cv_wx * s_ang_y - cv_wy * s_ang_x
+                    var cdot_lin_x = (cv_wy * s_lin_z - cv_wz * s_lin_y) + (cv_vy * s_ang_z - cv_vz * s_ang_y)
+                    var cdot_lin_y = (cv_wz * s_lin_x - cv_wx * s_lin_z) + (cv_vz * s_ang_x - cv_vx * s_ang_z)
+                    var cdot_lin_z = (cv_wx * s_lin_y - cv_wy * s_lin_x) + (cv_vx * s_ang_y - cv_vy * s_ang_x)
+
+                    cacc[b * 6 + 0] = cacc[b * 6 + 0] + cdot_ang_x * qdot
+                    cacc[b * 6 + 1] = cacc[b * 6 + 1] + cdot_ang_y * qdot
+                    cacc[b * 6 + 2] = cacc[b * 6 + 2] + cdot_ang_z * qdot
+                    cacc[b * 6 + 3] = cacc[b * 6 + 3] + cdot_lin_x * qdot
+                    cacc[b * 6 + 4] = cacc[b * 6 + 4] + cdot_lin_y * qdot
+                    cacc[b * 6 + 5] = cacc[b * 6 + 5] + cdot_lin_z * qdot
+
+                # Update cvel after all 3 DOFs
+                for d in range(3):
+                    var dof = dof_adr + d
+                    var qdot = rebind[Scalar[DTYPE]](state[env, qvel_off + dof])
+                    cv_wx = cv_wx + rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 0]) * qdot
+                    cv_wy = cv_wy + rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 1]) * qdot
+                    cv_wz = cv_wz + rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 2]) * qdot
+                    cv_vx = cv_vx + rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 3]) * qdot
+                    cv_vy = cv_vy + rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 4]) * qdot
+                    cv_vz = cv_vz + rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 5]) * qdot
+
+            else:
+                # HINGE or SLIDE (1 DOF)
+                var dof = dof_adr
                 var qdot = rebind[Scalar[DTYPE]](state[env, qvel_off + dof])
+                var s_ang_x = rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 0])
+                var s_ang_y = rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 1])
+                var s_ang_z = rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 2])
+                var s_lin_x = rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 3])
+                var s_lin_y = rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 4])
+                var s_lin_z = rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 5])
 
-                # cdof components (read from workspace)
-                var s_ang_x = workspace[env, cdof_idx + dof * 6 + 0]
-                var s_ang_y = workspace[env, cdof_idx + dof * 6 + 1]
-                var s_ang_z = workspace[env, cdof_idx + dof * 6 + 2]
-                var s_lin_x = workspace[env, cdof_idx + dof * 6 + 3]
-                var s_lin_y = workspace[env, cdof_idx + dof * 6 + 4]
-                var s_lin_z = workspace[env, cdof_idx + dof * 6 + 5]
+                var cdot_ang_x = cv_wy * s_ang_z - cv_wz * s_ang_y
+                var cdot_ang_y = cv_wz * s_ang_x - cv_wx * s_ang_z
+                var cdot_ang_z = cv_wx * s_ang_y - cv_wy * s_ang_x
+                var cdot_lin_x = (cv_wy * s_lin_z - cv_wz * s_lin_y) + (cv_vy * s_ang_z - cv_vz * s_ang_y)
+                var cdot_lin_y = (cv_wz * s_lin_x - cv_wx * s_lin_z) + (cv_vz * s_ang_x - cv_vx * s_ang_z)
+                var cdot_lin_z = (cv_wx * s_lin_y - cv_wy * s_lin_x) + (cv_vx * s_ang_y - cv_vy * s_ang_x)
 
-                # Spatial motion cross: cvel_parent x_m cdof
-                var cdot_ang_x = wp_y * s_ang_z - wp_z * s_ang_y
-                var cdot_ang_y = wp_z * s_ang_x - wp_x * s_ang_z
-                var cdot_ang_z = wp_x * s_ang_y - wp_y * s_ang_x
+                cacc[b * 6 + 0] = cacc[b * 6 + 0] + cdot_ang_x * qdot
+                cacc[b * 6 + 1] = cacc[b * 6 + 1] + cdot_ang_y * qdot
+                cacc[b * 6 + 2] = cacc[b * 6 + 2] + cdot_ang_z * qdot
+                cacc[b * 6 + 3] = cacc[b * 6 + 3] + cdot_lin_x * qdot
+                cacc[b * 6 + 4] = cacc[b * 6 + 4] + cdot_lin_y * qdot
+                cacc[b * 6 + 5] = cacc[b * 6 + 5] + cdot_lin_z * qdot
 
-                var cdot_lin_x = (wp_y * s_lin_z - wp_z * s_lin_y) + (
-                    vp_y * s_ang_z - vp_z * s_ang_y
-                )
-                var cdot_lin_y = (wp_z * s_lin_x - wp_x * s_lin_z) + (
-                    vp_z * s_ang_x - vp_x * s_ang_z
-                )
-                var cdot_lin_z = (wp_x * s_lin_y - wp_y * s_lin_x) + (
-                    vp_x * s_ang_y - vp_y * s_ang_x
-                )
+                cv_wx = cv_wx + s_ang_x * qdot
+                cv_wy = cv_wy + s_ang_y * qdot
+                cv_wz = cv_wz + s_ang_z * qdot
+                cv_vx = cv_vx + s_lin_x * qdot
+                cv_vy = cv_vy + s_lin_y * qdot
+                cv_vz = cv_vz + s_lin_z * qdot
 
-                # Accumulate: cacc += cdof_dot * qvel
-                cacc[b * 6 + 0] = cacc[b * 6 + 0] + rebind[Scalar[DTYPE]](
-                    cdot_ang_x
-                ) * rebind[Scalar[DTYPE]](qdot)
-                cacc[b * 6 + 1] = cacc[b * 6 + 1] + rebind[Scalar[DTYPE]](
-                    cdot_ang_y
-                ) * rebind[Scalar[DTYPE]](qdot)
-                cacc[b * 6 + 2] = cacc[b * 6 + 2] + rebind[Scalar[DTYPE]](
-                    cdot_ang_z
-                ) * rebind[Scalar[DTYPE]](qdot)
-                cacc[b * 6 + 3] = cacc[b * 6 + 3] + rebind[Scalar[DTYPE]](
-                    cdot_lin_x
-                ) * rebind[Scalar[DTYPE]](qdot)
-                cacc[b * 6 + 4] = cacc[b * 6 + 4] + rebind[Scalar[DTYPE]](
-                    cdot_lin_y
-                ) * rebind[Scalar[DTYPE]](qdot)
-                cacc[b * 6 + 5] = cacc[b * 6 + 5] + rebind[Scalar[DTYPE]](
-                    cdot_lin_z
-                ) * rebind[Scalar[DTYPE]](qdot)
+        # Store final cvel for this body (in workspace crb region)
+        workspace[env, cvel_idx + b * 6 + 0] = cv_wx
+        workspace[env, cvel_idx + b * 6 + 1] = cv_wy
+        workspace[env, cvel_idx + b * 6 + 2] = cv_wz
+        workspace[env, cvel_idx + b * 6 + 3] = cv_vx
+        workspace[env, cvel_idx + b * 6 + 4] = cv_vy
+        workspace[env, cvel_idx + b * 6 + 5] = cv_vz
 
     # =========================================================================
     # Step 2: Compute spatial forces per body
     #   cfrc = I * cacc + cvel x* (I * cvel)
+    #   Using accumulated cvel from workspace
     # =========================================================================
     for b in range(NBODY):
         var body_off = model_body_offset(b)
         var mass = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_MASS])
 
-        # Body velocities from state buffer
-        var wx = rebind[Scalar[DTYPE]](state[env, xangvel_off + b * 3 + 0])
-        var wy = rebind[Scalar[DTYPE]](state[env, xangvel_off + b * 3 + 1])
-        var wz = rebind[Scalar[DTYPE]](state[env, xangvel_off + b * 3 + 2])
-        var vx = rebind[Scalar[DTYPE]](state[env, xvel_off + b * 3 + 0])
-        var vy = rebind[Scalar[DTYPE]](state[env, xvel_off + b * 3 + 1])
-        var vz = rebind[Scalar[DTYPE]](state[env, xvel_off + b * 3 + 2])
+        # Body velocities from accumulated cvel (stored in workspace)
+        var wx = rebind[Scalar[DTYPE]](workspace[env, cvel_idx + b * 6 + 0])
+        var wy = rebind[Scalar[DTYPE]](workspace[env, cvel_idx + b * 6 + 1])
+        var wz = rebind[Scalar[DTYPE]](workspace[env, cvel_idx + b * 6 + 2])
+        var vx = rebind[Scalar[DTYPE]](workspace[env, cvel_idx + b * 6 + 3])
+        var vy = rebind[Scalar[DTYPE]](workspace[env, cvel_idx + b * 6 + 4])
+        var vz = rebind[Scalar[DTYPE]](workspace[env, cvel_idx + b * 6 + 5])
 
         # Spatial acceleration
         var a_ang_x = cacc[b * 6 + 0]
