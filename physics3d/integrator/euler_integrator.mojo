@@ -321,6 +321,12 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         var constraints = ConstraintData[DTYPE, MAX_ROWS, NV]()
         build_constraints(model, data, cdof, M_inv, qacc, dt, constraints)
 
+        # Fill M_hat and qfrc_smooth for primal solvers
+        for i in range(NV * NV):
+            constraints.M_hat[i] = M[i]
+        for i in range(NV):
+            constraints.qfrc_smooth[i] = f_net[i]
+
         Self.SOLVER.solve(model, data, M_inv, constraints, qacc, dt)
 
         writeback_forces[

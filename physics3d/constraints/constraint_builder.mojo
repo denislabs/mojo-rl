@@ -58,8 +58,9 @@ fn _compute_aref[
     # MuJoCo uses mjMINIMP ~1e-6 (only prevents division by zero)
     if imp < Scalar[DTYPE](1e-6):
         imp = Scalar[DTYPE](1e-6)
-    # aref = K*imp*pen - B*imp*v_n, bias = -aref (both terms scaled by imp, per MuJoCo)
-    var bias = -K_spring * imp * penetration + B_damp * imp * v_n
+    # MuJoCo: aref = -B*vel - K*imp*pos, bias = -aref = B*vel + K*imp*pen
+    # Only K term is scaled by imp, NOT B (see engine_core_constraint.c:2384)
+    var bias = -K_spring * imp * penetration + B_damp * v_n
     # MuJoCo: AR[i,i] = K + (1-imp)/imp * K = K/imp, so inv = imp/K
     var inv_K = imp / K
     return (bias, inv_K)

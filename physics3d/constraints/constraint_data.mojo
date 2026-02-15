@@ -91,6 +91,10 @@ struct ConstraintData[DTYPE: DType, MAX_ROWS: Int, NV: Int]:
     - rows[..+num_equality): equality constraints (connect/weld, bilateral)
 
     J and MinvJT are stored row-major: row r spans [r*NV .. (r+1)*NV).
+
+    M_hat and qfrc_smooth are filled by the integrator before calling solve().
+    They are used by primal solvers (PrimalNewtonSolver, PrimalCGSolver) which
+    operate in qacc space rather than dual (force) space.
     """
 
     var rows: InlineArray[ConstraintRow[Self.DTYPE], _max_one[Self.MAX_ROWS]()]
@@ -98,6 +102,10 @@ struct ConstraintData[DTYPE: DType, MAX_ROWS: Int, NV: Int]:
     var MinvJT: InlineArray[
         Scalar[Self.DTYPE], _max_one[Self.MAX_ROWS * Self.NV]()
     ]
+    # Mass matrix (with armature + implicit damping) — for primal solvers
+    var M_hat: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NV * Self.NV]()]
+    # Net unconstrained force (qfrc - bias - passive) — for primal solvers
+    var qfrc_smooth: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NV]()]
     var num_rows: Int
     var num_normals: Int  # Normal contact constraints [0..num_normals)
     var num_friction: Int  # Friction rows [num_normals..num_normals+num_friction)
@@ -107,11 +115,19 @@ struct ConstraintData[DTYPE: DType, MAX_ROWS: Int, NV: Int]:
     fn __init__(out self):
         comptime MR = _max_one[Self.MAX_ROWS]()
         comptime JSize = _max_one[Self.MAX_ROWS * Self.NV]()
+        comptime MSize = _max_one[Self.NV * Self.NV]()
+        comptime VSize = _max_one[Self.NV]()
         self.rows = InlineArray[ConstraintRow[Self.DTYPE], MR](
             fill=ConstraintRow[Self.DTYPE]()
         )
         self.J = InlineArray[Scalar[Self.DTYPE], JSize](fill=Scalar[Self.DTYPE](0))
         self.MinvJT = InlineArray[Scalar[Self.DTYPE], JSize](
+            fill=Scalar[Self.DTYPE](0)
+        )
+        self.M_hat = InlineArray[Scalar[Self.DTYPE], MSize](
+            fill=Scalar[Self.DTYPE](0)
+        )
+        self.qfrc_smooth = InlineArray[Scalar[Self.DTYPE], VSize](
             fill=Scalar[Self.DTYPE](0)
         )
         self.num_rows = 0

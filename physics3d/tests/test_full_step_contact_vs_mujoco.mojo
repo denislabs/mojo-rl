@@ -17,7 +17,7 @@ from collections import InlineArray
 
 from physics3d.types import Model, Data, _max_one, ConeType
 from physics3d.integrator.euler_integrator import EulerIntegrator
-from physics3d.solver.newton_solver import NewtonSolver
+from physics3d.solver.primal_newton_solver import PrimalNewtonSolver
 from physics3d.solver.pgs_solver import PGSSolver
 from envs.half_cheetah.half_cheetah_def import (
     HalfCheetahModel,
@@ -109,7 +109,9 @@ fn compare_step(
             DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS
         ](data, action_list)
 
-        EulerIntegrator[SOLVER=PGSSolver].step[NGEOM=NGEOM](model, data)
+        EulerIntegrator[SOLVER=PrimalNewtonSolver].step[NGEOM=NGEOM](
+            model, data
+        )
 
     # === MuJoCo reference ===
     var mujoco = Python.import_module("mujoco")
@@ -121,7 +123,7 @@ fn compare_step(
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
     # Match our elliptic cone setting
     mj_model.opt.cone = 1  # mjCONE_ELLIPTIC
-    mj_model.opt.solver = 0  # mjSOL_PGS to match our PGS solver
+    mj_model.opt.solver = 2  # mjSOL_NEWTON to match our PrimalNewtonSolver
     var mj_data = mujoco.MjData(mj_model)
 
     for i in range(NQ):
@@ -344,8 +346,14 @@ fn compare_step(
     var mj_solref = mj_model.opt.o_solref.flatten().tolist()
     var mj_solimp = mj_model.opt.o_solimp.flatten().tolist()
     print("    solref:", Float64(py=mj_solref[0]), Float64(py=mj_solref[1]))
-    print("    solimp:", Float64(py=mj_solimp[0]), Float64(py=mj_solimp[1]),
-          Float64(py=mj_solimp[2]), Float64(py=mj_solimp[3]), Float64(py=mj_solimp[4]))
+    print(
+        "    solimp:",
+        Float64(py=mj_solimp[0]),
+        Float64(py=mj_solimp[1]),
+        Float64(py=mj_solimp[2]),
+        Float64(py=mj_solimp[3]),
+        Float64(py=mj_solimp[4]),
+    )
     if mj_nefc > 0:
         var mj_efc_b = mj_data2.efc_b.flatten().tolist()
         var mj_efc_D = mj_data2.efc_D.flatten().tolist()
@@ -358,16 +366,21 @@ fn compare_step(
             if r < 15:  # Limit output
                 var kbip_off = r * 4
                 print(
-                    "    row", r,
-                    " type=", Int(py=mj_efc_type[r]),
-                    " D=", Float64(py=mj_efc_D[r]),
-                    " R=", Float64(py=mj_efc_R[r]),
-                    " aref=", Float64(py=mj_efc_aref[r]),
+                    "    row",
+                    r,
+                    " type=",
+                    Int(py=mj_efc_type[r]),
+                    " D=",
+                    Float64(py=mj_efc_D[r]),
+                    " R=",
+                    Float64(py=mj_efc_R[r]),
+                    " aref=",
+                    Float64(py=mj_efc_aref[r]),
                     " KBIP=[",
                     Float64(py=mj_efc_KBIP[kbip_off]),
-                    Float64(py=mj_efc_KBIP[kbip_off+1]),
-                    Float64(py=mj_efc_KBIP[kbip_off+2]),
-                    Float64(py=mj_efc_KBIP[kbip_off+3]),
+                    Float64(py=mj_efc_KBIP[kbip_off + 1]),
+                    Float64(py=mj_efc_KBIP[kbip_off + 2]),
+                    Float64(py=mj_efc_KBIP[kbip_off + 3]),
                     "]",
                 )
 

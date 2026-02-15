@@ -301,9 +301,10 @@ fn precompute_contact_normal_gpu[
             # Impedance floor prevents zero-force contacts at surface
             if imp < Scalar[DTYPE](1e-6):
                 imp = Scalar[DTYPE](1e-6)
-            # aref = K*imp*pen - B*imp*v_n, bias = -aref (both scaled by imp, per MuJoCo)
+            # MuJoCo: aref = -B*vel - K*imp*pos, bias = -aref = B*vel + K*imp*pen
+            # Only K term is scaled by imp, NOT B (see engine_core_constraint.c:2384)
             # Solver uses: delta = -(a_n + bias + R*lambda) * inv_K
-            var bias = -K_spring * imp * penetration + B_damp * imp * v_n
+            var bias = -K_spring * imp * penetration + B_damp * v_n
             workspace[env, ws_pos_bias + c] = bias
             # MuJoCo: AR[i,i] = K + (1-imp)/imp * K = K/imp, so inv = imp/K
             workspace[env, ws_inv_K_imp + c] = imp / k

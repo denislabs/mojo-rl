@@ -1,198 +1,221 @@
-# Diagnosis: Physics Instability (Acceleration-Level Solver)
+Plan: Primal Newton/CG Solvers (MuJoCo-Matching)       
 
-## Current Status
-Migrated from velocity-level to acceleration-level constraint solving.
-Free-fall test is stable (rootz settles at 0.575, max_pen ~7mm).
-**Random-action stress test is UNSTABLE** — max pen 1.77m, robot flies to 2.19m.
-MuJoCo with same scenario: max pen 26mm, completely stable.
+ Context
 
-## Bugs Found and Fixed
+ Our Newton and CG solvers operate in dual (lambda/force) space: they build the Delassus matrix A = J*M^{-1}*J^T and solve a QP
+ over constraint forces. MuJoCo's Newton and CG are primal solvers operating in qacc (acceleration) space, minimizing:
 
-### 1. Newton/CG RHS Corruption (FIXED)
-RHS was computed interleaved with warm-start application, corrupting rhs for later rows.
-**Fix**: Split into two loops — compute ALL rhs first, then apply all warm-starts.
+ cost = 0.5*(qacc - qacc_smooth)^T * M * (qacc - qacc_smooth)  [Gauss term]
+      + sum_i penalty_i(J*qacc - aref)                         [constraint costs]
 
-### 2. Newton Jacobi Initial Guess (FIXED)
-Initial guess for reduced system solve used `K` instead of `AR[c,c] = K/imp` (Hessian diagonal
-with regularizer). Overshoots by factor 1/imp. For imp=0.2: 5x too large.
-**Fix**: Use `A[c * num_normals + c]` (includes regularizer). CPU + GPU.
+ Forces are derived from qacc: force[i] = -D[i] * (J*qacc - aref)[i]. The Hessian is H = M + J^T*D*J (naturally PD). This is
+ fundamentally different from our dual approach and explains the ~5% error in contact tests.
 
-### 3. Degenerate Friction Tangent Directions (FIXED)
-HalfCheetah is a 2D planar robot. One tangent direction (out-of-plane) has K ≈ 1e-10.
-Friction PGS divided by K=1e-10, producing huge deltas that dominated the Coulomb cone,
-starving the real tangent direction of friction budget.
-**Fix**: Skip friction updates for tangent rows where K < 1e-6. Applied to all 3 CPU solvers
-and GPU friction solver. Zero warm-start for degenerate directions.
+ MuJoCo's PGS is dual, so our PGS is structurally correct.
 
-### 4. Self-Collision Display Bug (FIXED)
-`model.body_name[Int(ct.body_b)]` with body_b = -1 (ground) wraps to last body.
-**Fix**: `model.get_body_name()` returns "world" for -1.
+ Source: mujoco-main/src/engine/engine_solver.c lines 750-1968 (mj_solPrimal), engine_core_constraint.c lines 2394-2587
+ (mj_constraintUpdate_impl).
 
-## Newton QP Convergence: VERIFIED GOOD
-projected_grad_norm ≈ 1e-30. Newton solver converges to machine precision.
-Increasing from 15 to 100 iterations only improved max pen from 1.77m to 1.31m — NOT a convergence issue.
+ Algorithm: MuJoCo Primal Solver (shared Newton/CG)
 
-## Random-Action Stress Test: FAILED
+ Input: M (mass matrix), J (Jacobian), D (constraint inertia = inv_K_imp),
+        R (regularizer), aref (= -bias), qacc_smooth, qfrc_smooth
 
-Ran `test_random_action_stability.mojo` — 1000 steps with random torques in [-1, 1].
+ 1. qacc = qacc_smooth (copy of unconstrained acceleration)
+ 2. Ma = M * qacc
+ 3. jar = J * qacc - aref
+ 4. constraintUpdate(jar) → force, state, cost
+ 5. qfrc_constraint = J^T * force
+ 6. Gauss_cost = 0.5*(Ma - qfrc_smooth) . (qacc - qacc_smooth)
+ 7. total_cost = constraint_cost + Gauss_cost
 
-### Our Engine Results (dt=0.002, frame_skip=5)
-- **Max penetration: 1.77m** (first anomaly at step 231: 89mm)
-- **Max velocity: 10.0** (clamped by MAX_QVEL)
-- **rootz range: [-1.53, 2.19]** (robot both penetrates ground and flies)
-- **Max contacts: 6-11** during instability
-- **STATUS: UNSTABLE**
+ Newton: H = M + J^T * D_active * J, factorize H via Cholesky
+ 8. grad = Ma - qfrc_smooth - qfrc_constraint
+ Newton: search = -chol_solve(H, grad)
+ CG:     search = -M^{-1}*grad, then Polak-Ribiere beta update
 
-### MuJoCo Reference (dt=0.01, frame_skip=5)
-- **Max penetration: 26mm**
-- **Max velocity: ~20 m/s** (no clamp)
-- **rootz range: [-0.19, 0.0]** (always near ground)
-- **Max contacts: 2**
-- **STATUS: STABLE** — even starting at z=0.7 (23.6mm max pen)
+ 9. Analytical line search → alpha
+ 10. qacc += alpha * search, Ma += alpha * M*search, jar += alpha * J*search
+ 11. constraintUpdate → new force, state, cost
+ Newton: incremental Hessian update (rank-1 Cholesky update/downdate)
+ 12. Check convergence (improvement < tolerance OR gradient < tolerance)
+ 13. Go to 8
 
-### 75x Penetration Gap: Root Cause Investigation
+ constraintUpdate: force from jar (MuJoCo mj_constraintUpdate_impl)
 
-Tested multiple hypotheses. Summary of what was tried:
+ Given jar[i] = (J*qacc - aref)[i]:
+ - Equality (always active): force = -D*jar, cost = 0.5*D*jar^2
+ - Limit/pyramidal (jar >= 0): force = 0, cost = 0 (satisfied)
+ - Limit/pyramidal (jar < 0): force = -D*jar, cost = 0.5*D*jar^2
+ - Elliptic cone: 3 zones (top=satisfied, bottom=quadratic, middle=cone projection)
+   - Middle zone cost: 0.5*Dm*(N-mu*T)^2 where Dm = D[0]/(mu^2*(1+mu^2))
 
-| Change | Max Pen | Effect |
-|--------|---------|--------|
-| Baseline (imp=0.2, B no imp, dt=0.002, MAXV=10) | 1.77m | — |
-| Newton iterations 15→100 | 1.31m | Marginal improvement |
-| imp floor 0.2→0.0001 + B*imp (MuJoCo values) + dt=0.002 | 3.9m | WORSE (contacts too soft at small dt) |
-| imp=0.2 + B*imp (fix damping) + dt=0.002 | 6.0m | MUCH WORSE (weaker damping) |
-| imp=0.2 + B no imp + MAX_QVEL 10→100 | 0.43m | 4x better pen, but robot flies to 12.9m (bouncing) |
-| imp=0.0001 + B*imp + dt=0.01 + MAXV=100 | 965m | CATASTROPHIC |
+ Analytical Line Search (MuJoCo PrimalSearch)
 
-### Key Findings
+ NOT Armijo backtracking! Uses 1D Newton with analytical first+second derivatives:
+ 1. Precompute quadratic polynomials q0 + q1*alpha + q2*alpha^2 per constraint
+ 2. For each candidate alpha: sum all constraint costs + Gauss cost → total cost + derivatives
+ 3. One-sided Newton search to bracket the root of dcost/dalpha = 0
+ 4. Bracketed Newton refinement to convergence
 
-1. **Sign conventions and Jacobians are correct** — contact normal points up (0,0,1), J·qvel>0 = separating, positive force pushes body away from ground.
+ Hessian (Newton only)
 
-2. **Integration flow is correct** — qacc → qvel += qacc*dt → clamp ±10 → qpos += qvel*dt.
+ - D_active[i] = D[i] if state is QUADRATIC, else 0
+ - H = M + J^T * diag(D_active) * J (dense NV×NV, ~9×9 for HalfCheetah)
+ - Dense Cholesky factorize
+ - When constraint state changes: rank-1 Cholesky update/downdate with sqrt(D[i]) * J[i,:]
+ - Cone contacts: add cone Hessian contributions via multiple rank-1 updates
 
-3. **Our aref formula does NOT match MuJoCo's actual values:**
-   - MuJoCo at pen=1mm, v=-5, d=0.016: aref = 572.99
-   - Our formula: K_spring*d*pen + B*d*v = 3906*0.016*0.001 + 125*0.016*5 = 11.49
-   - **50x discrepancy at shallow penetration!**
-   - At pen=10mm, v=-5, d=0.8: MuJoCo aref=600, our formula gives 531 → closer but still off
-   - MuJoCo's effective K_spring = 3571 (not 3906 = 1/(dmax²*tc²*dr²))
-   - MuJoCo's effective B_damp = 143 (not 125 = 2/(dmax*tc))
-   - These DON'T match any simple formula involving solref/solimp
+ Data Flow & Interface Changes
 
-4. **MuJoCo's R (regularizer) also doesn't match expected formula:**
-   - At d=0.8, K=1: expected R = (1/d-1)*K = 0.25, MuJoCo actual R = 0.143
-   - At d=0.016, K=1: expected R = 61.5, MuJoCo actual R = 4.37
-   - The discrepancy is HUGE at shallow penetration (14x weaker regularizer than expected)
-   - This means MuJoCo's contacts are much STIFFER at shallow pen than the simple formula suggests
+ What the primal solver needs (beyond current trait args)
 
-5. **The impedance floor matters enormously:**
-   - imp=0.2 (our value): firm contact from first touch, prevents initial penetration but causes bouncing
-   - imp=0.0001 (MuJoCo's mjMINIMP): very soft at surface, needs MuJoCo's dt=0.01 to work
-   - At dt=0.002 with imp=0.0001: contacts too soft to arrest impacts before deep penetration
+ ┌────────────────────────────────────────────────┬──────────────────────────────┬────────────────────────┐
+ │                      Data                      │            Source            │   Size (HalfCheetah)   │
+ ├────────────────────────────────────────────────┼──────────────────────────────┼────────────────────────┤
+ │ M (mass matrix with armature+damping)          │ Integrator local M array     │ NV*NV = 81             │
+ ├────────────────────────────────────────────────┼──────────────────────────────┼────────────────────────┤
+ │ f_net (qfrc_smooth = applied - bias - passive) │ Integrator local f_net array │ NV = 9                 │
+ ├────────────────────────────────────────────────┼──────────────────────────────┼────────────────────────┤
+ │ qacc_smooth                                    │ = initial qacc before solver │ NV = 9 (copy at entry) │
+ └────────────────────────────────────────────────┴──────────────────────────────┴────────────────────────┘
 
-6. **MAX_QVEL=10 clamp hurts recovery but isn't the root cause:**
-   - Raising to 100 reduces max pen (0.43m vs 1.77m) but robot flies to 12.9m
-   - The bouncing from stiff contacts (imp=0.2) injects energy
+ Approach: Extend ConstraintData
 
-7. **Our contact detection generates 2x more contacts than MuJoCo:**
-   - We generate 2 contacts per capsule (both endpoints), MuJoCo generates 1 (closest point)
-   - HalfCheetah: we see 6-16 contacts, MuJoCo sees 1-2
-   - Redundant contacts may cause conditioning issues in the solver
+ Add to ConstraintData:
+ var M_hat: InlineArray[Scalar[DTYPE], _max_one[NV * NV]()]      # Mass matrix
+ var qfrc_smooth: InlineArray[Scalar[DTYPE], _max_one[NV]()]     # Net unconstrained force
 
-8. **dt mismatch:**
-   - MuJoCo: dt=0.01 → qacc correction per step = qacc*0.01
-   - Ours: dt=0.002 → qacc correction per step = qacc*0.002 (5x less per substep)
-   - Over frame_skip=5, total correction similar, but intermediate penetration is worse
+ The integrator fills these after LDL factorization, before calling solver.solve(). Existing solvers (PGS, old Newton/CG) simply
+ ignore the new fields.
 
-## Priority 1 Resolution: MuJoCo's Constraint Formula — VERIFIED CORRECT
+ On GPU: M is already in workspace at ws_M_offset, f_net at ws_fnet_offset. No extra storage needed.
 
-**Our formulas match MuJoCo's source code exactly.** Verified by:
-1. Reading `engine_core_constraint.c` (`mj_makeImpedance`, `mj_referenceConstraint`)
-2. Running comprehensive Python tests comparing our reimplementation vs MuJoCo internals
+ Implementation Steps
 
-### Confirmed Formulas
-```
-K = 1 / (dmax² × tc² × dr²) = 3906.25  (for solref=[0.02,1.0], dmax=0.8)
-B = 2 / (dmax × tc) = 125.0
-aref = -B*vel - K*imp*(pos - margin)     (imp scales K term only, NOT B)
-R = (1-imp)/imp × diagApprox             (where diagApprox = J*M_inv*J^T)
-D = 1/R
-```
+ Step 1: Extend ConstraintData + integrator fill
 
-### Earlier Discrepancy Explained
-The R=0.143 vs expected 0.25 discrepancy was because MuJoCo OVERWRITES `efc_diagApprox`
-after computing R: `diagApprox[i] = R[i] * imp / (1-imp)`. The reported diagApprox was
-the ADJUSTED value, not the one used to compute R. Mathematically this adjustment is
-identity (restores original value), but the intermediate computation uses the original.
+ Modify: physics3d/constraints/constraint_data.mojo
+ - Add M_hat[NV*NV] and qfrc_smooth[NV] fields
 
-### MuJoCo's 5-Parameter Impedance Function
-```c
-x = pen / width (clamped to [0,1])
-if x <= mid:  y = x^power / mid^(power-1)
-if x > mid:   y = 1 - (1-x)^power / (1-mid)^(power-1)
-imp = dmin + y * (dmax - dmin)
-```
-Our 3-parameter cubic smoothstep (`3x²-2x³`) is equivalent when mid=0.5, power=2 (the defaults).
-Small differences at shallow penetration are masked by the 0.2 impedance floor.
+ Modify: physics3d/integrator/euler_integrator.mojo
+ - After computing M and f_net, copy them into constraints struct before calling solve()
 
-### Solver Formulation Also Verified
-Our PGS KKT condition `a + bias + R*lambda = 0` with `bias = -aref` is equivalent to
-MuJoCo's `(K+R)*f = efc_b` where `efc_b = aref + J*qacc_unconstrained`.
+ Step 2: primal_common.mojo — shared primal infrastructure
 
-**Conclusion: The impedance/constraint formulas are NOT the root cause of instability.**
+ Create: physics3d/solver/primal_common.mojo
 
-## dt Experiment (dt=0.01)
+ Functions (all generic over DTYPE, NV, MAX_ROWS):
 
-Tested dt=0.01 (matching MuJoCo) with current settings (imp floor=0.2, MAX_QVEL=10):
-- **Result: 6.11m max pen** — WORSE than dt=0.002 (1.77m)
-- Larger dt means larger position updates per step, which dominates over the benefit
-  of larger per-step velocity correction
-- **dt=0.002 is correct for our engine** — smaller dt gives better stability
+ 1. constraint_update[...]() — port of mj_constraintUpdate_impl
+   - Input: jar[nefc], D[nefc], R[nefc], constraint types
+   - Output: force[nefc], state[nefc], cost
+   - Handles equality, limits, pyramidal contacts, elliptic cone (3 zones)
+ 2. primal_prepare[...]() — precompute line search quadratics
+   - Input: search direction, jar, D, J
+   - Output: quad[nefc*3] polynomials + cone quantities
+ 3. primal_eval[...]() — evaluate 1D cost at alpha
+   - Input: alpha, quad, Gauss quadratic, cone data
+   - Output: cost, first derivative, second derivative
+ 4. primal_linesearch[...]() — analytical 1D Newton line search
+   - Port of MuJoCo's PrimalSearch
+   - Bracketing + Newton convergence
 
-## Updated Root Cause Analysis
+ Step 3: PrimalNewtonSolver — CPU
 
-Since formulas are verified correct, the remaining suspects are:
+ Create: physics3d/solver/primal_newton_solver.mojo
 
-### Priority 1 (NEW): Contact Detection Quality
-We generate **2 contacts per capsule** (both endpoints), MuJoCo generates **1** (closest point).
-- Our 6-16 contacts vs MuJoCo's 1-2 causes solver conditioning issues
-- Multiple contacts on the same body split the constraint force between them
-- Redundant contacts may conflict, causing the iterative solver to oscillate
-- **Fix**: Implement closest-point capsule-plane contact (single contact per geom)
+ Implements ConstraintSolver trait. CPU solve():
+ 1. Extract M, qfrc_smooth from constraints; save qacc_smooth = copy(qacc)
+ 2. Compute Ma = M * qacc
+ 3. Compute jar = J * qacc - aref (where aref = -bias from constraint rows)
+ 4. Call constraint_update → force, state, cost
+ 5. Compute qfrc_constraint = J^T * force
+ 6. Build H = M + J^T * D_active * J (dense NV×NV)
+ 7. Dense Cholesky factorize H
+ 8. Main loop (up to 100 iterations):
+ a. grad = Ma - qfrc_smooth - qfrc_constraint
+ b. search = -chol_solve(H, grad)
+ c. Analytical line search → alpha
+ d. qacc += alpha * search, Ma += alpha * Msearch, jar += alpha * Jsearch
+ e. constraint_update → force, state, cost
+ f. qfrc_constraint = J^T * force
+ g. If state changed: incremental Hessian (rank-1 Cholesky update/downdate)
+ h. If cone contacts: add cone Hessian contributions
+ i. Check convergence
 
-### Priority 2 (NEW): Impedance Floor Causing Energy Injection
-The imp=0.2 floor makes contacts stiff even at surface touch:
-- Contact spring force at pen=0.1mm: K*0.2*0.0001 = 0.078 m/s² (negligible)
-- But the regularizer R = 4*K is only 4x (relatively stiff solver)
-- Stiff contacts on impact → large constraint forces → bouncing → energy injection
-- MuJoCo with imp≈0 at surface: R→∞, contacts are very soft, no bouncing
-- MuJoCo handles this with dt=0.01 where one step corrects the full velocity
-- **We can't just remove the floor** (tested: 3.9m pen at dt=0.002 without floor)
-- May need to tune floor relative to dt, or use position-based correction post-solver
+ For solve_gpu: similar structure but reading/writing workspace buffers.
 
-### Priority 3: MAX_QVEL=10 Limits Recovery
-- Raising to 100 reduces pen from 1.77m to 0.43m (4x better)
-- But causes 12.9m flying (bouncing from stiff contacts)
-- Combined fix with softer impedance might work
+ Step 4: PrimalCGSolver — CPU
 
-### Priority 4: Consider Velocity-Level Fallback
-The acceleration-level approach is theoretically correct but practically harder to stabilize
-at dt=0.002. The velocity-level approach was more forgiving because it directly constrains
-the velocity (what matters for position updates).
+ Create: physics3d/solver/primal_cg_solver.mojo
 
-## Test Scripts Created
-- `tests/test_zero_action_stability.mojo` — zero-torque stability test (PASSES)
-- `tests/test_random_action_stability.mojo` — random-torque stress test (FAILS)
-- `tests/mujoco_random_action_test.py` — MuJoCo reference (random torques)
-- `tests/mujoco_high_start_test.py` — MuJoCo at z=0.7 start
-- `tests/mujoco_solver_debug.py` — MuJoCo solver internals (efc_D, efc_R, efc_force, efc_aref)
-- `tests/mujoco_impedance_compare.py` — impedance function comparison
-- `tests/mujoco_impedance_deep_debug.py` — comprehensive formula verification
+ Same primal framework but:
+ - No Hessian construction
+ - Preconditioner: Mgrad = M^{-1} * grad via M_inv (already available!)
+ - Polak-Ribiere-Plus beta: beta = max(0, grad.dot(Mgrad - Mgrad_old) / grad_old.dot(Mgrad_old))
+ - Same analytical line search
 
-## Current Code State
-All experimental changes have been reverted. Code is back to the working baseline:
-- `constraint_builder.mojo`: imp floor=0.2, bias = -K_spring*imp*pen + B_damp*v_n
-- `constraint_builder_gpu.mojo`: same
-- `implicit_fast_integrator.mojo`: MAX_QVEL = 10.0
-- `half_cheetah_def.mojo`: DT = 0.002, FRAME_SKIP = 5
-- `half_cheetah.mojo`: timestep default = HalfCheetahParams.DT (was hardcoded 0.002, now reads from params)
-- `newton_solver.mojo`: NEWTON_ITERATIONS = 15
+ Step 5: Dense Cholesky utilities
+
+ Create or add to: physics3d/solver/cholesky.mojo
+
+ Small dense Cholesky operations for NV×NV matrices:
+ - chol_factor[NV](H) — in-place Cholesky L*L^T = H
+ - chol_solve[NV](L, b) → x such that H*x = b
+ - chol_rank1_update[NV](L, v, sign) — rank-1 update: H ← H ± v*v^T
+ (used for incremental Hessian updates)
+
+ Step 6: Wire into integrator
+
+ Modify: physics3d/solver/__init__.mojo — export PrimalNewtonSolver, PrimalCGSolver
+
+ Modify: test file — use EulerIntegrator[PrimalNewtonSolver] and set MuJoCo to mjSOL_NEWTON
+
+ Step 7: GPU implementation
+
+ Port PrimalNewtonSolver.solve_gpu:
+ - M already in workspace, jar/force/state/quad in solver workspace region
+ - Dense Cholesky is cheap for NV=9 on GPU
+ - Line search is sequential (runs on thread 0)
+
+ Files Summary
+
+ ┌────────┬────────────────────────────────────────────┬───────────────────────────────────────────────┐
+ │ Action │                    File                    │                  Description                  │
+ ├────────┼────────────────────────────────────────────┼───────────────────────────────────────────────┤
+ │ CREATE │ physics3d/solver/primal_common.mojo        │ constraint_update, line search, prepare, eval │
+ ├────────┼────────────────────────────────────────────┼───────────────────────────────────────────────┤
+ │ CREATE │ physics3d/solver/primal_newton_solver.mojo │ Primal Newton solver (CPU + GPU)              │
+ ├────────┼────────────────────────────────────────────┼───────────────────────────────────────────────┤
+ │ CREATE │ physics3d/solver/primal_cg_solver.mojo     │ Primal CG solver (CPU + GPU)                  │
+ ├────────┼────────────────────────────────────────────┼───────────────────────────────────────────────┤
+ │ CREATE │ physics3d/solver/cholesky.mojo             │ Dense Cholesky factor/solve/rank1update       │
+ ├────────┼────────────────────────────────────────────┼───────────────────────────────────────────────┤
+ │ MODIFY │ physics3d/constraints/constraint_data.mojo │ Add M_hat, qfrc_smooth fields                 │
+ ├────────┼────────────────────────────────────────────┼───────────────────────────────────────────────┤
+ │ MODIFY │ physics3d/integrator/euler_integrator.mojo │ Fill M_hat, qfrc_smooth before solve()        │
+ ├────────┼────────────────────────────────────────────┼───────────────────────────────────────────────┤
+ │ MODIFY │ physics3d/solver/__init__.mojo             │ Export new solvers                            │
+ └────────┴────────────────────────────────────────────┴───────────────────────────────────────────────┘
+
+ Verification
+
+ 1. Unit test: test_full_step_contact_vs_mujoco.mojo — switch to PrimalNewtonSolver, set MuJoCo to Newton (mj_model.opt.solver =
+ 2). Expect error < 1%.
+ 2. Non-contact test: test_full_step_vs_mujoco.mojo — verify no regression for non-contact cases.
+ 3. Analytical: Free fall scenario (no contacts) — primal solver should return qacc_smooth unchanged.
+ 4. GPU: After CPU passes, implement GPU and run pixi run -e apple mojo run ...
+
+ Phasing
+
+ Phase 1 (CPU Newton — this PR):
+ 1. Step 1 (ConstraintData + integrator)
+ 2. Step 2 (primal_common)
+ 3. Step 5 (cholesky utils)
+ 4. Step 3 (PrimalNewtonSolver CPU)
+ 5. Step 6 (wire up + test)
+
+ Phase 2 (CPU CG + GPU — follow-up):
+ - Step 4 (PrimalCGSolver CPU)
+ - Step 7 (GPU implementations)
