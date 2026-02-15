@@ -1,18 +1,20 @@
 """QCQP (Quadratically Constrained Quadratic Program) solvers for friction cone projection.
 
-Implements elliptic friction cone projection for condim 3/4/6:
-- qcqp2: 2D projection (condim=3, tangent t1+t2)
-- qcqp3: 3D projection (condim=4, t1+t2+torsion)
-- qcqp5: 5D projection (condim=6, t1+t2+torsion+roll1+roll2)
+Two families of solvers:
 
-Algorithm: Newton on dual variable for n-D elliptic cone projection.
-Given unconstrained friction forces f and friction limits mu*fn per dim,
-project f onto the elliptic cone ||f_i / mu_i|| <= fn.
+1. Simple cone projection (qcqp2/3/5): Project friction forces onto elliptic cone.
+   Used by pyramidal cone mode and as fallback.
 
-Reference: MuJoCo source (engine_solver.c, mj_solQCQP)
+2. MuJoCo-matching QCQP (mj_qcqp2/3/5): Solve the full QP:
+     min  0.5*x'*A*x + x'*b  s.t.  sum(xi/di)^2 <= r^2
+   These take the AR Hessian submatrix and adjusted bias, matching
+   MuJoCo's engine_util_solve.c (mju_QCQP2/3/QCQP).
+
+Reference: MuJoCo source (engine_util_solve.c lines 991-1212)
 """
 
 from math import sqrt
+from ..types import _max_one
 
 
 @always_inline
@@ -251,3 +253,297 @@ fn qcqp5[DTYPE: DType](
     f3 = f3 * d3 * d3 / (d3 * d3 + lam)
     f4 = f4 * d4 * d4 / (d4 * d4 + lam)
     f5 = f5 * d5 * d5 / (d5 * d5 + lam)
+
+
+# =============================================================================
+# MuJoCo-matching QCQP solvers
+# Solve: min 0.5*x'*A*x + x'*b  s.t.  sum(xi/di)^2 <= r^2
+# Reference: engine_util_solve.c mju_QCQP2/3/QCQP
+# =============================================================================
+
+
+@always_inline
+fn mj_qcqp2[DTYPE: DType](
+    mut res0: Scalar[DTYPE],
+    mut res1: Scalar[DTYPE],
+    A: InlineArray[Scalar[DTYPE], 4],  # 2x2 row-major
+    b: InlineArray[Scalar[DTYPE], 2],
+    d: InlineArray[Scalar[DTYPE], 2],  # scaling (mu per direction)
+    r: Scalar[DTYPE],  # constraint radius (normal force)
+) -> Bool:
+    """Solve 2D QCQP matching MuJoCo's mju_QCQP2.
+
+    Returns True if constrained (lambda > 0).
+    """
+    # Scale A, b so constraint becomes x'*x <= r*r
+    var b1 = b[0] * d[0]
+    var b2 = b[1] * d[1]
+    var A11 = A[0] * d[0] * d[0]
+    var A22 = A[3] * d[1] * d[1]
+    var A12 = A[1] * d[0] * d[1]
+
+    # Newton iteration
+    var la: Scalar[DTYPE] = 0
+    var v1: Scalar[DTYPE] = 0
+    var v2: Scalar[DTYPE] = 0
+
+    for _ in range(20):
+        # det(A+la)
+        var det = (A11 + la) * (A22 + la) - A12 * A12
+
+        # Check SPD
+        if det < Scalar[DTYPE](1e-10):
+            res0 = 0
+            res1 = 0
+            return False
+
+        # P = inv(A+la)
+        var detinv = Scalar[DTYPE](1.0) / det
+        var P11 = (A22 + la) * detinv
+        var P22 = (A11 + la) * detinv
+        var P12 = -A12 * detinv
+
+        # v = -P*b
+        v1 = -P11 * b1 - P12 * b2
+        v2 = -P12 * b1 - P22 * b2
+
+        # val = v'*v - r*r
+        var val = v1 * v1 + v2 * v2 - r * r
+
+        # Check convergence or unconstrained
+        if val < Scalar[DTYPE](1e-10):
+            break
+
+        # deriv = -2 * v' * P * v
+        var deriv = Scalar[DTYPE](-2.0) * (
+            P11 * v1 * v1 + Scalar[DTYPE](2.0) * P12 * v1 * v2 + P22 * v2 * v2
+        )
+
+        # Update
+        var delta = -val / deriv
+        if delta < Scalar[DTYPE](1e-10):
+            break
+        la += delta
+
+    # Undo scaling
+    res0 = v1 * d[0]
+    res1 = v2 * d[1]
+    return la != Scalar[DTYPE](0)
+
+
+@always_inline
+fn mj_qcqp3[DTYPE: DType](
+    mut res0: Scalar[DTYPE],
+    mut res1: Scalar[DTYPE],
+    mut res2: Scalar[DTYPE],
+    A: InlineArray[Scalar[DTYPE], 9],  # 3x3 row-major
+    b: InlineArray[Scalar[DTYPE], 3],
+    d: InlineArray[Scalar[DTYPE], 3],
+    r: Scalar[DTYPE],
+) -> Bool:
+    """Solve 3D QCQP matching MuJoCo's mju_QCQP3.
+
+    Returns True if constrained (lambda > 0).
+    """
+    # Scale A, b
+    var b1 = b[0] * d[0]
+    var b2 = b[1] * d[1]
+    var b3 = b[2] * d[2]
+    var A11 = A[0] * d[0] * d[0]
+    var A22 = A[4] * d[1] * d[1]
+    var A33 = A[8] * d[2] * d[2]
+    var A12 = A[1] * d[0] * d[1]
+    var A13 = A[2] * d[0] * d[2]
+    var A23 = A[5] * d[1] * d[2]
+
+    var la: Scalar[DTYPE] = 0
+    var v1: Scalar[DTYPE] = 0
+    var v2: Scalar[DTYPE] = 0
+    var v3: Scalar[DTYPE] = 0
+
+    for _ in range(20):
+        # Cofactors (unscaled P)
+        var P11 = (A22 + la) * (A33 + la) - A23 * A23
+        var P22 = (A11 + la) * (A33 + la) - A13 * A13
+        var P33 = (A11 + la) * (A22 + la) - A12 * A12
+        var P12 = A13 * A23 - A12 * (A33 + la)
+        var P13 = A12 * A23 - A13 * (A22 + la)
+        var P23 = A12 * A13 - A23 * (A11 + la)
+
+        # det(A+la)
+        var det = (A11 + la) * P11 + A12 * P12 + A13 * P13
+
+        if det < Scalar[DTYPE](1e-10):
+            res0 = 0
+            res1 = 0
+            res2 = 0
+            return False
+
+        var detinv = Scalar[DTYPE](1.0) / det
+        P11 *= detinv
+        P22 *= detinv
+        P33 *= detinv
+        P12 *= detinv
+        P13 *= detinv
+        P23 *= detinv
+
+        # v = -P*b
+        v1 = -P11 * b1 - P12 * b2 - P13 * b3
+        v2 = -P12 * b1 - P22 * b2 - P23 * b3
+        v3 = -P13 * b1 - P23 * b2 - P33 * b3
+
+        var val = v1 * v1 + v2 * v2 + v3 * v3 - r * r
+
+        if val < Scalar[DTYPE](1e-10):
+            break
+
+        var deriv = Scalar[DTYPE](-2.0) * (P11 * v1 * v1 + P22 * v2 * v2 + P33 * v3 * v3) - Scalar[DTYPE](4.0) * (P12 * v1 * v2 + P13 * v1 * v3 + P23 * v2 * v3)
+
+        var delta = -val / deriv
+        if delta < Scalar[DTYPE](1e-10):
+            break
+        la += delta
+
+    res0 = v1 * d[0]
+    res1 = v2 * d[1]
+    res2 = v3 * d[2]
+    return la != Scalar[DTYPE](0)
+
+
+@always_inline
+fn mj_qcqp5[DTYPE: DType](
+    mut res: InlineArray[Scalar[DTYPE], 5],
+    A: InlineArray[Scalar[DTYPE], 25],  # 5x5 row-major
+    b: InlineArray[Scalar[DTYPE], 5],
+    d: InlineArray[Scalar[DTYPE], 5],
+    r: Scalar[DTYPE],
+) -> Bool:
+    """Solve 5D QCQP matching MuJoCo's mju_QCQP (n=5) via Cholesky.
+
+    Returns True if constrained (lambda > 0).
+    """
+    # Scale A, b
+    var As = InlineArray[Scalar[DTYPE], 25](fill=Scalar[DTYPE](0))
+    var bs = InlineArray[Scalar[DTYPE], 5](fill=Scalar[DTYPE](0))
+    for i in range(5):
+        bs[i] = b[i] * d[i]
+        for j in range(5):
+            As[i * 5 + j] = A[i * 5 + j] * d[i] * d[j]
+
+    var la: Scalar[DTYPE] = 0
+
+    for _ in range(20):
+        # Make Ala = As + la*I
+        var Ala = InlineArray[Scalar[DTYPE], 25](fill=Scalar[DTYPE](0))
+        for i in range(5):
+            for j in range(5):
+                Ala[i * 5 + j] = As[i * 5 + j]
+            Ala[i * 5 + i] += la
+
+        # Cholesky factorize (in-place, lower triangular)
+        var L = InlineArray[Scalar[DTYPE], 25](fill=Scalar[DTYPE](0))
+        var rank_ok = True
+        for i in range(5):
+            for j in range(i + 1):
+                var s: Scalar[DTYPE] = 0
+                for k in range(j):
+                    s += L[i * 5 + k] * L[j * 5 + k]
+                if i == j:
+                    var diag = Ala[i * 5 + i] - s
+                    if diag < Scalar[DTYPE](1e-10):
+                        rank_ok = False
+                        break
+                    L[i * 5 + j] = sqrt(diag)
+                else:
+                    L[i * 5 + j] = (Ala[i * 5 + j] - s) / L[j * 5 + j]
+            if not rank_ok:
+                break
+
+        if not rank_ok:
+            for i in range(5):
+                res[i] = 0
+            return False
+
+        # Solve L*y = -bs (forward substitution)
+        var y = InlineArray[Scalar[DTYPE], 5](fill=Scalar[DTYPE](0))
+        for i in range(5):
+            var s: Scalar[DTYPE] = 0
+            for j in range(i):
+                s += L[i * 5 + j] * y[j]
+            y[i] = (-bs[i] - s) / L[i * 5 + i]
+
+        # Solve L'*x = y (back substitution) -> res = -(A+la)^-1 * bs
+        for i_rev in range(5):
+            var i = 4 - i_rev
+            var s: Scalar[DTYPE] = 0
+            for j in range(i + 1, 5):
+                s += L[j * 5 + i] * res[j]
+            res[i] = (y[i] - s) / L[i * 5 + i]
+
+        # val = res'*res - r*r
+        var val: Scalar[DTYPE] = 0
+        for i in range(5):
+            val += res[i] * res[i]
+        val -= r * r
+
+        if val < Scalar[DTYPE](1e-10):
+            break
+
+        # Solve L*L'*tmp = res for deriv
+        var tmp_y = InlineArray[Scalar[DTYPE], 5](fill=Scalar[DTYPE](0))
+        for i in range(5):
+            var s: Scalar[DTYPE] = 0
+            for j in range(i):
+                s += L[i * 5 + j] * tmp_y[j]
+            tmp_y[i] = (res[i] - s) / L[i * 5 + i]
+        var tmp = InlineArray[Scalar[DTYPE], 5](fill=Scalar[DTYPE](0))
+        for i_rev in range(5):
+            var i = 4 - i_rev
+            var s: Scalar[DTYPE] = 0
+            for j in range(i + 1, 5):
+                s += L[j * 5 + i] * tmp[j]
+            tmp[i] = (tmp_y[i] - s) / L[i * 5 + i]
+
+        var deriv: Scalar[DTYPE] = 0
+        for i in range(5):
+            deriv += res[i] * tmp[i]
+        deriv *= Scalar[DTYPE](-2.0)
+
+        var delta = -val / deriv
+        if delta < Scalar[DTYPE](1e-10):
+            break
+        la += delta
+
+    # Undo scaling
+    for i in range(5):
+        res[i] = res[i] * d[i]
+    return la != Scalar[DTYPE](0)
+
+
+@always_inline
+fn cost_change[DTYPE: DType, MAX_DIM: Int, AR_SIZE: Int](
+    force: InlineArray[Scalar[DTYPE], MAX_DIM],
+    oldforce: InlineArray[Scalar[DTYPE], MAX_DIM],
+    AR: InlineArray[Scalar[DTYPE], AR_SIZE],
+    res: InlineArray[Scalar[DTYPE], MAX_DIM],
+    dim: Int,
+) -> Scalar[DTYPE]:
+    """Compute cost change from MuJoCo's costChange function.
+
+    Returns the change value. Positive change means the update increased cost
+    and should be reverted.
+
+    change = 0.5*delta'*AR*delta + delta'*res
+    """
+    var change: Scalar[DTYPE] = 0
+    if dim == 1:
+        var delta = force[0] - oldforce[0]
+        change = Scalar[DTYPE](0.5) * delta * delta * AR[0] + delta * res[0]
+    else:
+        for i in range(dim):
+            var delta_i = force[i] - oldforce[i]
+            change += delta_i * res[i]
+            for j in range(dim):
+                var delta_j = force[j] - oldforce[j]
+                change += Scalar[DTYPE](0.5) * delta_i * AR[i * dim + j] * delta_j
+    return change

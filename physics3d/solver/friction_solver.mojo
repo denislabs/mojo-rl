@@ -37,7 +37,7 @@ from ..dynamics.jacobian import (
     compute_contact_jacobian_row_gpu,
     compute_angular_jacobian_row_gpu,
 )
-from .qcqp import qcqp2, qcqp3, qcqp5
+from .qcqp import qcqp2, qcqp3, qcqp5, mj_qcqp2, mj_qcqp3, mj_qcqp5
 from ..gpu.constants import (
     ws_qacc_constrained_offset,
     ws_m_inv_offset,
@@ -736,123 +736,205 @@ fn _solve_friction_pgs_gpu[
                                 )
                             ) * actual_neg
             else:
-                # === ELLIPTIC CONE: QCQP projection (default) ===
-                # Save old values
-                var old_vals = InlineArray[Scalar[DTYPE], 5](
-                    fill=Scalar[DTYPE](0)
-                )
-                for d in range(num_fric):
-                    old_vals[d] = rebind[Scalar[DTYPE]](
-                        workspace[env, lf + d * MC + c]
-                    )
+                # === ELLIPTIC CONE: MuJoCo-style block update ===
+                # Ray update + QCQP with AR submatrix + costChange
+                var dim = 1 + num_fric
 
-                # GS update for each friction direction (regularized)
-                for d in range(num_fric):
-                    if workspace[env, kf + d * MC + c] >= Scalar[DTYPE](
-                        FRICTION_K_MIN
-                    ):
-                        var a_f: workspace.element_type = 0
+                # Build block AR matrix on-the-fly from J/MinvJ
+                # AR[0,0] = K_n + R_n (normal-normal)
+                # AR[0,d+1] = AR[d+1,0] = J_n @ MinvJ_f (normal-friction cross)
+                # AR[d1+1,d2+1] = J_f[d1] @ MinvJ_f[d2] + R_f*delta(d1,d2)
+                var AR = InlineArray[Scalar[DTYPE], 36](fill=Scalar[DTYPE](0))
+                var R_n_val = Scalar[DTYPE](1.0) / rebind[Scalar[DTYPE]](workspace[env, ws_inv_K_imp + c]) - rebind[Scalar[DTYPE]](workspace[env, ws_K_n + c])
+                AR[0] = rebind[Scalar[DTYPE]](workspace[env, ws_K_n + c]) + R_n_val
+
+                for d1 in range(num_fric):
+                    # Normal-friction cross: J_n @ MinvJ_f[d1]
+                    var cross: Scalar[DTYPE] = 0
+                    for i in range(NV):
+                        cross += rebind[Scalar[DTYPE]](workspace[env, ws_J_n + c * NV + i]) * rebind[Scalar[DTYPE]](workspace[env, mj + d1 * MC * NV + c * NV + i])
+                    AR[(d1 + 1)] = cross  # AR[0, d1+1]
+                    AR[(d1 + 1) * dim] = cross  # AR[d1+1, 0]
+
+                    for d2 in range(num_fric):
+                        # Friction-friction: J_f[d1] @ MinvJ_f[d2]
+                        var ff: Scalar[DTYPE] = 0
                         for i in range(NV):
-                            a_f += (
-                                workspace[env, jf + d * MC * NV + c * NV + i]
-                                * workspace[env, qacc_idx + i]
-                            )
-                        var R_f_d = workspace[env, rf + d * MC + c]
-                        var residual_f = (
-                            a_f
-                            + workspace[env, bf + d * MC + c]
-                            + R_f_d * workspace[env, lf + d * MC + c]
-                        )
-                        var inv_AR = Scalar[DTYPE](1.0) / (
-                            workspace[env, kf + d * MC + c] + R_f_d
-                        )
-                        var delta_f = -residual_f * inv_AR
-                        workspace[env, lf + d * MC + c] = (
-                            workspace[env, lf + d * MC + c] + delta_f
-                        )
+                            ff += rebind[Scalar[DTYPE]](workspace[env, jf + d1 * MC * NV + c * NV + i]) * rebind[Scalar[DTYPE]](workspace[env, mj + d2 * MC * NV + c * NV + i])
+                        if d1 == d2:
+                            ff += rebind[Scalar[DTYPE]](workspace[env, rf + d1 * MC + c])
+                        AR[(d1 + 1) * dim + (d2 + 1)] = ff
 
-                # QCQP elliptic cone projection
-                if num_fric == 2:
-                    var f1 = rebind[Scalar[DTYPE]](
-                        workspace[env, lf + 0 * MC + c]
-                    )
-                    var f2 = rebind[Scalar[DTYPE]](
-                        workspace[env, lf + 1 * MC + c]
-                    )
-                    qcqp2[DTYPE](
-                        f1,
-                        f2,
-                        rebind[Scalar[DTYPE]](workspace[env, fc + 0 * MC + c]),
-                        lambda_n,
-                    )
-                    workspace[env, lf + 0 * MC + c] = f1
-                    workspace[env, lf + 1 * MC + c] = f2
-                elif num_fric == 3:
-                    var f1 = rebind[Scalar[DTYPE]](
-                        workspace[env, lf + 0 * MC + c]
-                    )
-                    var f2 = rebind[Scalar[DTYPE]](
-                        workspace[env, lf + 1 * MC + c]
-                    )
-                    var f3 = rebind[Scalar[DTYPE]](
-                        workspace[env, lf + 2 * MC + c]
-                    )
-                    qcqp3[DTYPE](
-                        f1,
-                        f2,
-                        f3,
-                        rebind[Scalar[DTYPE]](workspace[env, fc + 0 * MC + c]),
-                        rebind[Scalar[DTYPE]](workspace[env, fc + 1 * MC + c]),
-                        rebind[Scalar[DTYPE]](workspace[env, fc + 2 * MC + c]),
-                        lambda_n,
-                    )
-                    workspace[env, lf + 0 * MC + c] = f1
-                    workspace[env, lf + 1 * MC + c] = f2
-                    workspace[env, lf + 2 * MC + c] = f3
-                elif num_fric == 5:
-                    var f1 = rebind[Scalar[DTYPE]](
-                        workspace[env, lf + 0 * MC + c]
-                    )
-                    var f2 = rebind[Scalar[DTYPE]](
-                        workspace[env, lf + 1 * MC + c]
-                    )
-                    var f3 = rebind[Scalar[DTYPE]](
-                        workspace[env, lf + 2 * MC + c]
-                    )
-                    var f4 = rebind[Scalar[DTYPE]](
-                        workspace[env, lf + 3 * MC + c]
-                    )
-                    var f5 = rebind[Scalar[DTYPE]](
-                        workspace[env, lf + 4 * MC + c]
-                    )
-                    qcqp5[DTYPE](
-                        f1,
-                        f2,
-                        f3,
-                        f4,
-                        f5,
-                        rebind[Scalar[DTYPE]](workspace[env, fc + 0 * MC + c]),
-                        rebind[Scalar[DTYPE]](workspace[env, fc + 1 * MC + c]),
-                        rebind[Scalar[DTYPE]](workspace[env, fc + 2 * MC + c]),
-                        rebind[Scalar[DTYPE]](workspace[env, fc + 3 * MC + c]),
-                        rebind[Scalar[DTYPE]](workspace[env, fc + 4 * MC + c]),
-                        lambda_n,
-                    )
-                    workspace[env, lf + 0 * MC + c] = f1
-                    workspace[env, lf + 1 * MC + c] = f2
-                    workspace[env, lf + 2 * MC + c] = f3
-                    workspace[env, lf + 3 * MC + c] = f4
-                    workspace[env, lf + 4 * MC + c] = f5
+                # Compute block residual
+                var block_res = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
+                # Normal residual
+                var a_n_res: Scalar[DTYPE] = 0
+                for i in range(NV):
+                    a_n_res += rebind[Scalar[DTYPE]](workspace[env, ws_J_n + c * NV + i]) * rebind[Scalar[DTYPE]](workspace[env, qacc_idx + i])
+                block_res[0] = a_n_res + rebind[Scalar[DTYPE]](workspace[env, ws_pos_bias + c]) + R_n_val * rebind[Scalar[DTYPE]](workspace[env, ws_lambda_n + c])
+                # Friction residuals
+                for d in range(num_fric):
+                    var a_f_res: Scalar[DTYPE] = 0
+                    for i in range(NV):
+                        a_f_res += rebind[Scalar[DTYPE]](workspace[env, jf + d * MC * NV + c * NV + i]) * rebind[Scalar[DTYPE]](workspace[env, qacc_idx + i])
+                    var R_f_d = rebind[Scalar[DTYPE]](workspace[env, rf + d * MC + c])
+                    block_res[1 + d] = a_f_res + rebind[Scalar[DTYPE]](workspace[env, bf + d * MC + c]) + R_f_d * rebind[Scalar[DTYPE]](workspace[env, lf + d * MC + c])
+
+                # Save old forces
+                var oldforce = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
+                oldforce[0] = rebind[Scalar[DTYPE]](workspace[env, ws_lambda_n + c])
+                for d in range(num_fric):
+                    oldforce[1 + d] = rebind[Scalar[DTYPE]](workspace[env, lf + d * MC + c])
+
+                var ARinv0: Scalar[DTYPE] = 0
+                if AR[0] > Scalar[DTYPE](1e-10):
+                    ARinv0 = Scalar[DTYPE](1.0) / AR[0]
+
+                # --- Ray update ---
+                if rebind[Scalar[DTYPE]](workspace[env, ws_lambda_n + c]) < Scalar[DTYPE](1e-10):
+                    # Normal force too small: scalar update, zero friction
+                    workspace[env, ws_lambda_n + c] = rebind[Scalar[DTYPE]](workspace[env, ws_lambda_n + c]) - block_res[0] * ARinv0
+                    if workspace[env, ws_lambda_n + c] < Scalar[DTYPE](0):
+                        workspace[env, ws_lambda_n + c] = Scalar[DTYPE](0)
+                    for d in range(num_fric):
+                        workspace[env, lf + d * MC + c] = Scalar[DTYPE](0)
+                else:
+                    var v = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
+                    v[0] = rebind[Scalar[DTYPE]](workspace[env, ws_lambda_n + c])
+                    for d in range(num_fric):
+                        v[1 + d] = rebind[Scalar[DTYPE]](workspace[env, lf + d * MC + c])
+                    var denom: Scalar[DTYPE] = 0
+                    for bi in range(dim):
+                        for bj in range(dim):
+                            denom += v[bi] * AR[bi * dim + bj] * v[bj]
+                    if denom >= Scalar[DTYPE](1e-10):
+                        var vdotr: Scalar[DTYPE] = 0
+                        for bi in range(dim):
+                            vdotr += v[bi] * block_res[bi]
+                        var x = -vdotr / denom
+                        if rebind[Scalar[DTYPE]](workspace[env, ws_lambda_n + c]) + x * v[0] < Scalar[DTYPE](0):
+                            x = -rebind[Scalar[DTYPE]](workspace[env, ws_lambda_n + c]) / v[0]
+                        workspace[env, ws_lambda_n + c] = rebind[Scalar[DTYPE]](workspace[env, ws_lambda_n + c]) + x * v[0]
+                        for d in range(num_fric):
+                            workspace[env, lf + d * MC + c] = rebind[Scalar[DTYPE]](workspace[env, lf + d * MC + c]) + x * v[1 + d]
+
+                # --- QCQP friction update ---
+                var fn_val = rebind[Scalar[DTYPE]](workspace[env, ws_lambda_n + c])
+                if fn_val >= Scalar[DTYPE](1e-10) and num_fric > 0:
+                    # Build friction sub-block Ac and adjusted bias bc
+                    var Ac = InlineArray[Scalar[DTYPE], 25](fill=Scalar[DTYPE](0))
+                    var bc_arr = InlineArray[Scalar[DTYPE], 5](fill=Scalar[DTYPE](0))
+                    for j in range(num_fric):
+                        for j2 in range(num_fric):
+                            Ac[j * num_fric + j2] = AR[(1 + j) * dim + (1 + j2)]
+                        bc_arr[j] = block_res[1 + j]
+                        for j2 in range(num_fric):
+                            bc_arr[j] -= Ac[j * num_fric + j2] * oldforce[1 + j2]
+                        bc_arr[j] += AR[(1 + j) * dim + 0] * (fn_val - oldforce[0])
+
+                    var mu_arr = InlineArray[Scalar[DTYPE], 5](fill=Scalar[DTYPE](0))
+                    for d in range(num_fric):
+                        mu_arr[d] = rebind[Scalar[DTYPE]](workspace[env, fc + d * MC + c])
+
+                    var flg_active = False
+                    if num_fric == 2:
+                        var A2 = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+                        var b2 = InlineArray[Scalar[DTYPE], 2](fill=Scalar[DTYPE](0))
+                        var d2 = InlineArray[Scalar[DTYPE], 2](fill=Scalar[DTYPE](0))
+                        for ii in range(2):
+                            b2[ii] = bc_arr[ii]
+                            d2[ii] = mu_arr[ii]
+                            for jj in range(2):
+                                A2[ii * 2 + jj] = Ac[ii * num_fric + jj]
+                        var r0: Scalar[DTYPE] = 0
+                        var r1: Scalar[DTYPE] = 0
+                        flg_active = mj_qcqp2[DTYPE](r0, r1, A2, b2, d2, fn_val)
+                        workspace[env, lf + 0 * MC + c] = r0
+                        workspace[env, lf + 1 * MC + c] = r1
+                    elif num_fric == 3:
+                        var A3 = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+                        var b3 = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+                        var d3 = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+                        for ii in range(3):
+                            b3[ii] = bc_arr[ii]
+                            d3[ii] = mu_arr[ii]
+                            for jj in range(3):
+                                A3[ii * 3 + jj] = Ac[ii * num_fric + jj]
+                        var r0: Scalar[DTYPE] = 0
+                        var r1: Scalar[DTYPE] = 0
+                        var r2: Scalar[DTYPE] = 0
+                        flg_active = mj_qcqp3[DTYPE](r0, r1, r2, A3, b3, d3, fn_val)
+                        workspace[env, lf + 0 * MC + c] = r0
+                        workspace[env, lf + 1 * MC + c] = r1
+                        workspace[env, lf + 2 * MC + c] = r2
+                    elif num_fric == 5:
+                        var A5 = InlineArray[Scalar[DTYPE], 25](fill=Scalar[DTYPE](0))
+                        var b5 = InlineArray[Scalar[DTYPE], 5](fill=Scalar[DTYPE](0))
+                        var d5 = InlineArray[Scalar[DTYPE], 5](fill=Scalar[DTYPE](0))
+                        for ii in range(5):
+                            b5[ii] = bc_arr[ii]
+                            d5[ii] = mu_arr[ii]
+                            for jj in range(5):
+                                A5[ii * 5 + jj] = Ac[ii * num_fric + jj]
+                        var res5 = InlineArray[Scalar[DTYPE], 5](fill=Scalar[DTYPE](0))
+                        flg_active = mj_qcqp5[DTYPE](res5, A5, b5, d5, fn_val)
+                        for d in range(5):
+                            workspace[env, lf + d * MC + c] = res5[d]
+
+                    # Rescale to exact ellipsoid if constrained
+                    if flg_active:
+                        var s: Scalar[DTYPE] = 0
+                        for d in range(num_fric):
+                            var fv = rebind[Scalar[DTYPE]](workspace[env, lf + d * MC + c])
+                            var mu_d = mu_arr[d]
+                            if mu_d > Scalar[DTYPE](1e-10):
+                                s += fv * fv / (mu_d * mu_d)
+                        if s > Scalar[DTYPE](1e-10):
+                            var scale = sqrt(fn_val * fn_val / s)
+                            for d in range(num_fric):
+                                workspace[env, lf + d * MC + c] = rebind[Scalar[DTYPE]](workspace[env, lf + d * MC + c]) * scale
+
+                # --- Cost descent check ---
+                var cost_val: Scalar[DTYPE] = 0
+                for bi in range(dim):
+                    var new_i: Scalar[DTYPE]
+                    var old_i: Scalar[DTYPE]
+                    if bi == 0:
+                        new_i = rebind[Scalar[DTYPE]](workspace[env, ws_lambda_n + c])
+                        old_i = oldforce[0]
+                    else:
+                        new_i = rebind[Scalar[DTYPE]](workspace[env, lf + (bi - 1) * MC + c])
+                        old_i = oldforce[bi]
+                    var delta_i = new_i - old_i
+                    cost_val += delta_i * block_res[bi]
+                    for bj in range(dim):
+                        var new_j: Scalar[DTYPE]
+                        var old_j: Scalar[DTYPE]
+                        if bj == 0:
+                            new_j = rebind[Scalar[DTYPE]](workspace[env, ws_lambda_n + c])
+                            old_j = oldforce[0]
+                        else:
+                            new_j = rebind[Scalar[DTYPE]](workspace[env, lf + (bj - 1) * MC + c])
+                            old_j = oldforce[bj]
+                        var delta_j = new_j - old_j
+                        cost_val += Scalar[DTYPE](0.5) * delta_i * AR[bi * dim + bj] * delta_j
+
+                if cost_val > Scalar[DTYPE](1e-10):
+                    # Revert
+                    workspace[env, ws_lambda_n + c] = oldforce[0]
+                    for d in range(num_fric):
+                        workspace[env, lf + d * MC + c] = oldforce[1 + d]
 
                 # Apply delta to qacc
+                var actual_n = rebind[Scalar[DTYPE]](workspace[env, ws_lambda_n + c]) - oldforce[0]
+                if actual_n != Scalar[DTYPE](0):
+                    for i in range(NV):
+                        workspace[env, qacc_idx + i] += workspace[env, ws_MinvJn + c * NV + i] * actual_n
                 for d in range(num_fric):
-                    var actual = workspace[env, lf + d * MC + c] - old_vals[d]
-                    if actual != Scalar[DTYPE](0):
+                    var actual_f = rebind[Scalar[DTYPE]](workspace[env, lf + d * MC + c]) - oldforce[1 + d]
+                    if actual_f != Scalar[DTYPE](0):
                         for i in range(NV):
-                            workspace[env, qacc_idx + i] += (
-                                workspace[env, mj + d * MC * NV + c * NV + i]
-                                * actual
-                            )
+                            workspace[env, qacc_idx + i] += workspace[env, mj + d * MC * NV + c * NV + i] * actual_f
 
     # Store impulses back for warm-starting
     @parameter
