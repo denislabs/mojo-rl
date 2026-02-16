@@ -6,10 +6,10 @@ identical initial states with identical actions applied.
 This is the ultimate integration test — it validates the entire pipeline:
   FK → contacts → constraint building → solver → integration
 
-To match MuJoCo defaults:
-  - Integrator: Euler (MuJoCo default)
-  - Solver: Newton (MuJoCo default)
-  - Cone: pyramidal (MuJoCo default)
+To match our engine settings (forced in MuJoCo via opt):
+  - Integrator: Euler (opt.integrator=0)
+  - Solver: Newton (opt.solver=2)
+  - Cone: elliptic (opt.cone=1)
   - timestep: 0.01
   - gravity: -9.81
 
@@ -23,7 +23,9 @@ from collections import InlineArray
 
 from physics3d.types import Model, Data, _max_one, ConeType
 from physics3d.integrator.euler_integrator import EulerIntegrator
-from physics3d.solver.newton_solver import NewtonSolver
+from physics3d.solver import PrimalNewtonSolver
+from physics3d.kinematics.forward_kinematics import forward_kinematics
+from physics3d.dynamics.mass_matrix import compute_body_invweight0
 from envs.half_cheetah.half_cheetah_def import (
     HalfCheetahModel,
     HalfCheetahBodies,
@@ -98,6 +100,19 @@ fn compare_step(
     model.solimp_limit[2] = P.SOLIMP_LIMIT_2
 
     var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
+
+    # Compute body_invweight0 at REFERENCE pose (MuJoCo mj_setConst does this once at init)
+    forward_kinematics(model, data)
+    compute_body_invweight0[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+    ](model, data)
+
     for i in range(NQ):
         data.qpos[i] = Scalar[DTYPE](qpos_init[i])
     for i in range(NV):
@@ -117,7 +132,9 @@ fn compare_step(
             DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS
         ](data, action_list)
 
-        EulerIntegrator[SOLVER=NewtonSolver].step[NGEOM=NGEOM](model, data)
+        EulerIntegrator[SOLVER=PrimalNewtonSolver].step[NGEOM=NGEOM](
+            model, data
+        )
 
     print("data.num_contacts:", data.num_contacts)
 
@@ -129,6 +146,10 @@ fn compare_step(
         "../Gymnasium-main/gymnasium/envs/mujoco/assets/half_cheetah.xml"
     )
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
+    # Match our engine settings: Euler integrator, Newton solver, elliptic cone
+    mj_model.opt.integrator = 0  # mjINT_EULER
+    mj_model.opt.solver = 2  # mjSOL_NEWTON
+    mj_model.opt.cone = 1  # mjCONE_ELLIPTIC
     var mj_data = mujoco.MjData(mj_model)
 
     for i in range(NQ):
@@ -374,9 +395,9 @@ fn main() raises:
     print("Full Step Validation: Mojo Engine vs MuJoCo Reference")
     print("=" * 60)
     print("Model: HalfCheetah (NQ=9, NV=9)")
-    print("Integrator: Euler (MuJoCo default)")
-    print("Solver: Newton (MuJoCo default)")
-    print("Cone: pyramidal (MuJoCo default)")
+    print("Integrator: Euler (opt.integrator=0)")
+    print("Solver: Newton (opt.solver=2)")
+    print("Cone: elliptic (opt.cone=1)")
     print("Precision: float64")
     print("Tolerances: qpos abs=", QPOS_ABS_TOL, " rel=", QPOS_REL_TOL)
     print("            qvel abs=", QVEL_ABS_TOL, " rel=", QVEL_REL_TOL)

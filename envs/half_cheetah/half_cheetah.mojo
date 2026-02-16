@@ -38,7 +38,7 @@ from layout import Layout, LayoutTensor
 # Import GC physics engine
 from physics3d.types import Model, Data
 from physics3d.integrator import ImplicitFastIntegrator
-from physics3d.solver import NewtonSolver
+from physics3d.solver import PrimalNewtonSolver
 from physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     forward_kinematics_gpu,
@@ -47,6 +47,7 @@ from physics3d.dynamics.mass_matrix import compute_body_invweight0
 from physics3d.gpu.buffer_utils import (
     copy_model_to_buffer,
     copy_geoms_to_buffer,
+    copy_invweight0_to_buffer,
     create_model_buffer,
 )
 from physics3d.gpu.constants import (
@@ -59,6 +60,7 @@ from physics3d.gpu.constants import (
     xpos_offset,
     metadata_offset,
     model_size,
+    model_size_with_invweight,
     integrator_workspace_size,
     implicit_extra_workspace_size,
     META_IDX_NUM_CONTACTS,
@@ -150,10 +152,10 @@ struct HalfCheetah[
     comptime CONE_TYPE: Int = CONE_TYPE
 
     # Pre-allocated workspace sizes for step_kernel_gpu
-    comptime STEP_WS_SHARED: Int = model_size[NBODY, NJOINT, NGEOM]()
+    comptime STEP_WS_SHARED: Int = model_size_with_invweight[NBODY, NJOINT, NV, NGEOM]()
     comptime STEP_WS_PER_ENV: Int = integrator_workspace_size[
         NV, NBODY
-    ]() + NV * NV + NewtonSolver.solver_workspace_size[
+    ]() + NV * NV + PrimalNewtonSolver.solver_workspace_size[
         NV, MAX_CONTACTS
     ]() + implicit_extra_workspace_size[
         NV, NBODY
@@ -384,7 +386,7 @@ struct HalfCheetah[
 
         # Physics step (with frame skip)
         for _ in range(self.frame_skip):
-            ImplicitFastIntegrator[SOLVER=NewtonSolver].step[
+            ImplicitFastIntegrator[SOLVER=PrimalNewtonSolver].step[
                 NGEOM = Self.NGEOM,
                 CONE_TYPE = Self.CONE_TYPE,
             ](self.model, self.data, verbose=verbose)
@@ -584,7 +586,7 @@ struct HalfCheetah[
         comptime P = HalfCheetahParams[gpu_dtype]
         comptime WS_SIZE = integrator_workspace_size[
             Self.NV, Self.NUM_BODIES
-        ]() + Self.NV * Self.NV + NewtonSolver.solver_workspace_size[
+        ]() + Self.NV * Self.NV + PrimalNewtonSolver.solver_workspace_size[
             Self.NV, Self.MAX_CONTACTS
         ]() + implicit_extra_workspace_size[
             Self.NV, Self.NUM_BODIES
@@ -632,7 +634,7 @@ struct HalfCheetah[
 
         # Run FRAME_SKIP physics sub-steps with joint limit enforcement
         for _ in range(P.FRAME_SKIP):
-            ImplicitFastIntegrator[SOLVER=NewtonSolver].step_gpu[
+            ImplicitFastIntegrator[SOLVER=PrimalNewtonSolver].step_gpu[
                 gpu_dtype,
                 Self.NQ,
                 Self.NV,
@@ -891,14 +893,39 @@ struct HalfCheetah[
         HalfCheetahJoints.setup_model(model)
         HalfCheetahGeoms.setup_model(model)
 
-        var host_buf = create_model_buffer[
+        # Compute body_invweight0 and dof_invweight0 at reference pose
+        var data_ref = Data[
             gpu_dtype,
+            HalfCheetah.NQ,
+            HalfCheetah.NV,
             HalfCheetah.NUM_BODIES,
             HalfCheetah.NUM_JOINTS,
+            HalfCheetah.MAX_CONTACTS,
+        ]()
+        forward_kinematics(model, data_ref)
+        compute_body_invweight0[
+            gpu_dtype,
+            HalfCheetah.NQ,
+            HalfCheetah.NV,
+            HalfCheetah.NUM_BODIES,
+            HalfCheetah.NUM_JOINTS,
+            HalfCheetah.MAX_CONTACTS,
             HalfCheetah.NGEOM,
-        ](ctx)
+        ](model, data_ref)
+
+        # Allocate buffer large enough for invweight0 arrays
+        comptime BUF_SIZE = model_size_with_invweight[
+            HalfCheetah.NUM_BODIES,
+            HalfCheetah.NUM_JOINTS,
+            HalfCheetah.NV,
+            HalfCheetah.NGEOM,
+        ]()
+        var host_buf = ctx.enqueue_create_host_buffer[gpu_dtype](BUF_SIZE)
+        for i in range(BUF_SIZE):
+            host_buf[i] = Scalar[gpu_dtype](0)
         copy_model_to_buffer(model, host_buf)
         copy_geoms_to_buffer(model, host_buf)
+        copy_invweight0_to_buffer(model, host_buf)
 
         var curr = model_curriculum_offset[
             HalfCheetah.NUM_BODIES, HalfCheetah.NUM_JOINTS
@@ -921,8 +948,8 @@ struct HalfCheetah[
         BATCH_SIZE: Int,
     ](ctx: DeviceContext, mut workspace_buf: DeviceBuffer[gpu_dtype],) raises:
         """Initialize pre-allocated step workspace buffer."""
-        comptime MODEL_SIZE = model_size[
-            HalfCheetah.NUM_BODIES, HalfCheetah.NUM_JOINTS, HalfCheetah.NGEOM
+        comptime MODEL_SIZE = model_size_with_invweight[
+            HalfCheetah.NUM_BODIES, HalfCheetah.NUM_JOINTS, HalfCheetah.NV, HalfCheetah.NGEOM
         ]()
         var model_view = DeviceBuffer[gpu_dtype](
             ctx,

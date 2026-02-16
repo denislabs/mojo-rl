@@ -48,10 +48,10 @@ comptime ACTION_DIM = HalfCheetahParams[DTYPE].ACTION_DIM  # 6
 # contact geometry differences (our contact detection gives slightly different
 # contact positions/normals than MuJoCo's), NOT from solver accuracy.
 # D values match MuJoCo exactly; solver converges fully.
-comptime QPOS_ABS_TOL: Float64 = 2e-2
-comptime QPOS_REL_TOL: Float64 = 2e-1
-comptime QVEL_ABS_TOL: Float64 = 2e-1
-comptime QVEL_REL_TOL: Float64 = 2e-1
+comptime QPOS_ABS_TOL: Float64 = 2e-4
+comptime QPOS_REL_TOL: Float64 = 2e-4
+comptime QVEL_ABS_TOL: Float64 = 2e-4
+comptime QVEL_REL_TOL: Float64 = 2e-4
 
 
 # =============================================================================
@@ -140,9 +140,9 @@ fn compare_step(
     )
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
     # Match our elliptic cone setting
-    mj_model.opt.cone = 1       # mjCONE_ELLIPTIC
-    mj_model.opt.solver = 2     # mjSOL_NEWTON to match our PrimalNewtonSolver
-    mj_model.opt.integrator = 0 # mjINT_EULER to match our EulerIntegrator
+    mj_model.opt.cone = 1  # mjCONE_ELLIPTIC
+    mj_model.opt.solver = 2  # mjSOL_NEWTON to match our PrimalNewtonSolver
+    mj_model.opt.integrator = 0  # mjINT_EULER to match our EulerIntegrator
     var mj_data = mujoco.MjData(mj_model)
 
     for i in range(NQ):

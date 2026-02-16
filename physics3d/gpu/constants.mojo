@@ -404,7 +404,7 @@ fn model_curriculum_offset[NBODY: Int, NJOINT: Int]() -> Int:
 fn model_size[
     NBODY: Int, NJOINT: Int, NGEOM: Int = 0, NEQUALITY: Int = 0
 ]() -> Int:
-    """Total model buffer size.
+    """Total model buffer size (without invweight0 arrays).
 
     Layout: [bodies | joints | metadata | curriculum | geoms | equality]
     """
@@ -416,6 +416,37 @@ fn model_size[
         + NGEOM * MODEL_GEOM_SIZE
         + NEQUALITY * MODEL_EQ_SIZE
     )
+
+
+fn model_body_invweight0_offset[
+    NBODY: Int, NJOINT: Int, NGEOM: Int = 0, NEQUALITY: Int = 0
+]() -> Int:
+    """Offset to body_invweight0[NBODY*2] in model buffer.
+
+    Appended after geoms/equality section.
+    """
+    return model_size[NBODY, NJOINT, NGEOM, NEQUALITY]()
+
+
+fn model_dof_invweight0_offset[
+    NBODY: Int, NJOINT: Int, NGEOM: Int = 0, NEQUALITY: Int = 0
+]() -> Int:
+    """Offset to dof_invweight0[NV] in model buffer.
+
+    Appended after body_invweight0[NBODY*2].
+    """
+    return model_body_invweight0_offset[NBODY, NJOINT, NGEOM, NEQUALITY]() + NBODY * 2
+
+
+fn model_size_with_invweight[
+    NBODY: Int, NJOINT: Int, NV: Int, NGEOM: Int = 0, NEQUALITY: Int = 0
+]() -> Int:
+    """Total model buffer size including invweight0 arrays.
+
+    Layout: [bodies | joints | metadata | curriculum | geoms | equality |
+             body_invweight0(NBODY*2) | dof_invweight0(NV)]
+    """
+    return model_dof_invweight0_offset[NBODY, NJOINT, NGEOM, NEQUALITY]() + NV
 
 
 # =============================================================================

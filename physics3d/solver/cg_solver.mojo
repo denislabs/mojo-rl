@@ -747,6 +747,8 @@ struct CGSolver(ConstraintSolver):
                 V_SIZE,
                 BATCH,
                 WS_SIZE,
+                NGEOM,
+                MAX_EQUALITY,
                 COMPUTE_RHS=True,
                 RHS_IDX=ws_rhs_idx,
             ](
@@ -948,6 +950,8 @@ struct CGSolver(ConstraintSolver):
             WS_SIZE,
             BATCH,
             CG_ITERATIONS,
+            NGEOM,
+            MAX_EQUALITY,
         ](env, dt, state, model, workspace)
 
         # Equality constraints

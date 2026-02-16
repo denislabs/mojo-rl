@@ -1015,6 +1015,8 @@ struct NewtonSolver(ConstraintSolver):
                 V_SIZE,
                 BATCH,
                 WS_SIZE,
+                NGEOM,
+                MAX_EQUALITY,
                 COMPUTE_RHS=True,
                 RHS_IDX=ws_rhs_idx,
             ](
@@ -1252,6 +1254,8 @@ struct NewtonSolver(ConstraintSolver):
             WS_SIZE,
             BATCH,
             NEWTON_ITERATIONS,
+            NGEOM,
+            MAX_EQUALITY,
         ](env, dt, state, model, workspace)
 
         # Equality constraints

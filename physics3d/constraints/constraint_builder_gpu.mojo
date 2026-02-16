@@ -85,6 +85,8 @@ from ..gpu.constants import (
     EQ_IDX_SOLIMP_1,
     EQ_IDX_SOLIMP_2,
     model_equality_offset,
+    model_body_invweight0_offset,
+    model_dof_invweight0_offset,
 )
 
 
@@ -157,6 +159,8 @@ fn precompute_contact_normal_gpu[
     V_SIZE: Int,
     BATCH: Int,
     WS_SIZE: Int,
+    NGEOM: Int = 0,
+    MAX_EQUALITY: Int = 0,
     COMPUTE_RHS: Bool = False,
     RHS_IDX: Int = 0,
 ](
@@ -305,8 +309,20 @@ fn precompute_contact_normal_gpu[
             # bias = -aref = -(K*imp*pen - B*v_n) = -K*imp*pen + B*v_n
             var bias = -K_spring * imp * penetration + B_damp * v_n
             workspace[env, ws_pos_bias + c] = bias
-            # MuJoCo: AR[i,i] = K + (1-imp)/imp * K = K/imp, so inv = imp/K
-            workspace[env, ws_inv_K_imp + c] = imp / k
+            # MuJoCo: R = (1-imp)/imp * diagApprox, inv_K_imp = 1/(K + R)
+            # diagApprox = body_invweight0[2*body_a] + body_invweight0[2*body_b]
+            comptime bw_off = model_body_invweight0_offset[
+                NBODY, NJOINT, NGEOM, MAX_EQUALITY
+            ]()
+            var diag_n: Scalar[DTYPE] = 0
+            if body >= 0 and body < NBODY:
+                diag_n += rebind[Scalar[DTYPE]](model[0, bw_off + body * 2])
+            if body_b >= 0 and body_b < NBODY:
+                diag_n += rebind[Scalar[DTYPE]](model[0, bw_off + body_b * 2])
+            if diag_n < Scalar[DTYPE](1e-10):
+                diag_n = rebind[Scalar[DTYPE]](k)  # Fallback to exact K
+            var R_n = (Scalar[DTYPE](1.0) - imp) / imp * diag_n
+            workspace[env, ws_inv_K_imp + c] = Scalar[DTYPE](1.0) / (rebind[Scalar[DTYPE]](k) + R_n)
 
             @parameter
             if COMPUTE_RHS:
@@ -439,6 +455,8 @@ fn detect_and_solve_limits_gpu[
     WS_SIZE: Int,
     BATCH: Int,
     NUM_ITERATIONS: Int,
+    NGEOM: Int = 0,
+    MAX_EQUALITY: Int = 0,
 ](
     env: Int,
     dt: Scalar[DTYPE],
@@ -577,8 +595,15 @@ fn detect_and_solve_limits_gpu[
         lim_bias[l] = rebind[Scalar[DTYPE]](
             -l_K_spring * imp_lim * penetration + l_B_damp * v_limit
         )
-        # MuJoCo: AR = K + (1-imp)/imp * K = K/imp, so inv = imp/K
-        lim_inv_K[l] = imp_lim / K_limit[l]
+        # MuJoCo: R = (1-imp)/imp * dof_invweight0[dof], inv_K = 1/(K + R)
+        comptime dw_off = model_dof_invweight0_offset[
+            NBODY, NJOINT, NGEOM, MAX_EQUALITY
+        ]()
+        var diag_lim = rebind[Scalar[DTYPE]](model[0, dw_off + limit_dof[l]])
+        if diag_lim < Scalar[DTYPE](1e-10):
+            diag_lim = K_limit[l]  # Fallback
+        var R_lim = (Scalar[DTYPE](1.0) - imp_lim) / imp_lim * diag_lim
+        lim_inv_K[l] = Scalar[DTYPE](1.0) / (K_limit[l] + R_lim)
         var ldof = limit_dof[l]
         var lsign = limit_sign[l]
         for i in range(NV):
@@ -894,7 +919,23 @@ fn build_and_solve_equality_gpu[
             if err_d < Scalar[DTYPE](0):
                 bias = -bias
             eq_bias[num_eq_rows] = bias
-            eq_inv_K_imp[num_eq_rows] = imp / k
+            # MuJoCo: R = (1-imp)/imp * diagApprox (translation weights)
+            comptime eq_bw_off = model_body_invweight0_offset[
+                NBODY, NJOINT, NGEOM, MAX_EQUALITY
+            ]()
+            var diag_eq: Scalar[DTYPE] = 0
+            if body_a >= 0 and body_a < NBODY:
+                diag_eq += rebind[Scalar[DTYPE]](
+                    model[0, eq_bw_off + body_a * 2]
+                )
+            if body_b >= 0 and body_b < NBODY:
+                diag_eq += rebind[Scalar[DTYPE]](
+                    model[0, eq_bw_off + body_b * 2]
+                )
+            if diag_eq < Scalar[DTYPE](1e-10):
+                diag_eq = rebind[Scalar[DTYPE]](k)
+            var R_eq = (Scalar[DTYPE](1.0) - imp) / imp * diag_eq
+            eq_inv_K_imp[num_eq_rows] = Scalar[DTYPE](1.0) / (rebind[Scalar[DTYPE]](k) + R_eq)
 
             num_eq_rows += 1
 
@@ -1032,7 +1073,23 @@ fn build_and_solve_equality_gpu[
                 if err_d < Scalar[DTYPE](0):
                     bias = -bias
                 eq_bias[num_eq_rows] = bias
-                eq_inv_K_imp[num_eq_rows] = imp / k
+                # MuJoCo: R = (1-imp)/imp * diagApprox (rotation weights)
+                comptime eq_rot_bw_off = model_body_invweight0_offset[
+                    NBODY, NJOINT, NGEOM, MAX_EQUALITY
+                ]()
+                var diag_rot: Scalar[DTYPE] = 0
+                if body_a >= 0 and body_a < NBODY:
+                    diag_rot += rebind[Scalar[DTYPE]](
+                        model[0, eq_rot_bw_off + body_a * 2 + 1]
+                    )
+                if body_b >= 0 and body_b < NBODY:
+                    diag_rot += rebind[Scalar[DTYPE]](
+                        model[0, eq_rot_bw_off + body_b * 2 + 1]
+                    )
+                if diag_rot < Scalar[DTYPE](1e-10):
+                    diag_rot = rebind[Scalar[DTYPE]](k)
+                var R_rot = (Scalar[DTYPE](1.0) - imp) / imp * diag_rot
+                eq_inv_K_imp[num_eq_rows] = Scalar[DTYPE](1.0) / (rebind[Scalar[DTYPE]](k) + R_rot)
 
                 num_eq_rows += 1
 

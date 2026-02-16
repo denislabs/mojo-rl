@@ -80,6 +80,7 @@ from ..gpu.constants import (
     TPB,
     state_size,
     model_size,
+    model_size_with_invweight,
     model_metadata_offset,
     model_joint_offset,
     qpos_offset,
@@ -339,8 +340,10 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         ](constraints, data)
 
         # 9. Integrate with implicit velocity damping (MuJoCo 3.x Euler)
-        # Formula: (M + dt*D) * v_new = M * (v_old + dt * qacc)
-        # This provides unconditional stability for damping.
+        # Formula: (M + dt*D) * v_new = M * v_euler + dt * D * v_old
+        # where v_euler = v_old + dt * qacc (qacc includes explicit damping).
+        # The dt*D*v_old term cancels the explicit damping in qacc, making
+        # all damping purely implicit. Without it, damping is double-counted.
 
         # Step 1: v_euler = v_old + dt * qacc
         var v_euler = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
@@ -355,6 +358,21 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             for j in range(NV):
                 sum += M[i * NV + j] * v_euler[j]
             rhs[i] = sum
+
+        # Step 2b: Add dt * D * v_old to rhs (cancels explicit damping in qacc)
+        for j in range(model.num_joints):
+            var joint = model.joints[j]
+            var dof_adr = joint.dof_adr
+            var damp = joint.damping
+            if damp > Scalar[DTYPE](0):
+                if joint.jnt_type == JNT_FREE:
+                    for d in range(6):
+                        rhs[dof_adr + d] += dt * damp * data.qvel[dof_adr + d]
+                elif joint.jnt_type == JNT_BALL:
+                    for d in range(3):
+                        rhs[dof_adr + d] += dt * damp * data.qvel[dof_adr + d]
+                else:
+                    rhs[dof_adr] += dt * damp * data.qvel[dof_adr]
 
         # Step 3: Add dt*damping to M diagonal → M_hat = M + arm + dt*D
         for j in range(model.num_joints):
@@ -839,7 +857,8 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         )
 
         # 9. Integrate with implicit velocity damping (MuJoCo 3.x Euler)
-        # Formula: (M + dt*D) * v_new = M * (v_old + dt * qacc)
+        # Formula: (M + dt*D) * v_new = M * v_euler + dt * D * v_old
+        # The dt*D*v_old term cancels explicit damping in qacc.
 
         # Step 1: v_euler = v_old + dt * qacc (store in bias region, reusable)
         var qpos_off = qpos_offset[NQ, NV]()
@@ -863,6 +882,37 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                 )
                 sum += M_ij * v_j
             workspace[env, fnet_idx + i] = sum
+
+        # Step 2b: Add dt * D * v_old to rhs (cancels explicit damping in qacc)
+        for j in range(NJOINT):
+            var joint_off = model_joint_offset[NBODY](j)
+            var jnt_type = Int(
+                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
+            )
+            var dof_adr = Int(
+                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
+            )
+            var damp = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_DAMPING]
+            )
+            if damp > Scalar[DTYPE](0):
+                if jnt_type == JNT_FREE:
+                    for d in range(6):
+                        var old_v = rebind[Scalar[DTYPE]](
+                            state[env, qvel_off + dof_adr + d]
+                        )
+                        workspace[env, fnet_idx + dof_adr + d] += dt * damp * old_v
+                elif jnt_type == JNT_BALL:
+                    for d in range(3):
+                        var old_v = rebind[Scalar[DTYPE]](
+                            state[env, qvel_off + dof_adr + d]
+                        )
+                        workspace[env, fnet_idx + dof_adr + d] += dt * damp * old_v
+                else:
+                    var old_v = rebind[Scalar[DTYPE]](
+                        state[env, qvel_off + dof_adr]
+                    )
+                    workspace[env, fnet_idx + dof_adr] += dt * damp * old_v
 
         # Step 3: Add dt*damping to M diagonal → M_hat
         for j in range(NJOINT):
@@ -959,8 +1009,8 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         Uses the parametrized SOLVER for contact constraint resolution.
         """
         comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS]()
-        comptime MODEL_SIZE = model_size[
-            NBODY, NJOINT, NGEOM, NEQUALITY=MAX_EQUALITY
+        comptime MODEL_SIZE = model_size_with_invweight[
+            NBODY, NJOINT, NV, NGEOM, NEQUALITY=MAX_EQUALITY
         ]()
         comptime WS_SIZE = integrator_workspace_size[
             NV, NBODY

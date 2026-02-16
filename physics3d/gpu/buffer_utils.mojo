@@ -134,6 +134,8 @@ from .constants import (
     EQ_IDX_SOLIMP_1,
     EQ_IDX_SOLIMP_2,
     model_equality_offset,
+    model_body_invweight0_offset,
+    model_dof_invweight0_offset,
 )
 from ..types import Model, Data
 
@@ -319,6 +321,45 @@ fn copy_model_to_buffer[
     buffer[meta_offset + MODEL_META_IDX_NEQUALITY] = Scalar[DTYPE](
         model.num_equality
     )
+
+
+fn copy_invweight0_to_buffer[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    NGEOM: Int = 0,
+    MAX_EQUALITY: Int = 0,
+](
+    model: Model[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+    ],
+    buffer: HostBuffer[DTYPE],
+):
+    """Copy body_invweight0 and dof_invweight0 from Model to GPU buffer.
+
+    Must be called after copy_model_to_buffer. The buffer must be allocated
+    with model_size_with_invweight (not model_size) to have enough space.
+
+    Args:
+        model: Source model (must have invweight0 computed).
+        buffer: Destination buffer.
+    """
+    # Copy body_invweight0[NBODY*2]
+    var bw_offset = model_body_invweight0_offset[
+        NBODY, NJOINT, NGEOM, MAX_EQUALITY
+    ]()
+    for i in range(NBODY * 2):
+        buffer[bw_offset + i] = model.body_invweight0[i]
+
+    # Copy dof_invweight0[NV]
+    var dw_offset = model_dof_invweight0_offset[
+        NBODY, NJOINT, NGEOM, MAX_EQUALITY
+    ]()
+    for i in range(NV):
+        buffer[dw_offset + i] = model.dof_invweight0[i]
 
 
 fn copy_geoms_to_buffer[

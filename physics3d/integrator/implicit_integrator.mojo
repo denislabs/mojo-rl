@@ -99,6 +99,7 @@ from ..gpu.constants import (
     TPB,
     state_size,
     model_size,
+    model_size_with_invweight,
     model_metadata_offset,
     model_joint_offset,
     qpos_offset,
@@ -1000,8 +1001,8 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
     ) raises:
         """Perform one full implicit physics step on GPU."""
         comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS]()
-        comptime MODEL_SIZE = model_size[
-            NBODY, NJOINT, NGEOM, NEQUALITY=MAX_EQUALITY
+        comptime MODEL_SIZE = model_size_with_invweight[
+            NBODY, NJOINT, NV, NGEOM, NEQUALITY=MAX_EQUALITY
         ]()
         # Workspace = integrator_temps + M_inv + solver_ws + implicit_extra
         comptime SOLVER_WS = Self.SOLVER.solver_workspace_size[

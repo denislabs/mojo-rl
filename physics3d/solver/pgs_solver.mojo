@@ -653,6 +653,8 @@ struct PGSSolver(ConstraintSolver):
                 V_SIZE,
                 BATCH,
                 WS_SIZE,
+                NGEOM,
+                MAX_EQUALITY,
             ](
                 env,
                 contact_tid,
@@ -732,6 +734,8 @@ struct PGSSolver(ConstraintSolver):
                 WS_SIZE,
                 BATCH,
                 PGS_ITERATIONS,
+                NGEOM,
+                MAX_EQUALITY,
             ](env, dt, state, model, workspace)
 
             # Equality constraints
