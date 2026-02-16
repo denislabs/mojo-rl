@@ -385,7 +385,8 @@ struct HalfCheetah[
         # Physics step (with frame skip)
         for _ in range(self.frame_skip):
             ImplicitFastIntegrator[SOLVER=NewtonSolver].step[
-                NGEOM = Self.NGEOM
+                NGEOM = Self.NGEOM,
+                CONE_TYPE = Self.CONE_TYPE,
             ](self.model, self.data, verbose=verbose)
             # Enforce joint limits after each physics step
             HalfCheetahJoints.enforce_limits(self.data)

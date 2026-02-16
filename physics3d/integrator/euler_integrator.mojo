@@ -319,7 +319,9 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         # 8. Build constraints and solve (modifies qacc in-place)
         comptime MAX_ROWS = 11 * MAX_CONTACTS + 2 * NJOINT + 6 * MAX_EQUALITY
         var constraints = ConstraintData[DTYPE, MAX_ROWS, NV]()
-        build_constraints(model, data, cdof, M_inv, qacc, dt, constraints)
+        build_constraints[
+            CONE_TYPE=CONE_TYPE,
+        ](model, data, cdof, M_inv, qacc, dt, constraints)
 
         # Fill M_hat and qfrc_smooth for primal solvers
         for i in range(NV * NV):
@@ -327,7 +329,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         for i in range(NV):
             constraints.qfrc_smooth[i] = f_net[i]
 
-        Self.SOLVER.solve(model, data, M_inv, constraints, qacc, dt)
+        Self.SOLVER.solve[CONE_TYPE=CONE_TYPE](model, data, M_inv, constraints, qacc, dt)
 
         writeback_forces[
             DTYPE,

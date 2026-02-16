@@ -419,7 +419,9 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         # 8. Build constraints and solve (modifies qacc in-place)
         comptime MAX_ROWS = 11 * MAX_CONTACTS + 2 * NJOINT + 6 * MAX_EQUALITY
         var constraints = ConstraintData[DTYPE, MAX_ROWS, NV]()
-        build_constraints(model, data, cdof, M_inv, qacc, dt, constraints)
+        build_constraints[
+            CONE_TYPE=CONE_TYPE,
+        ](model, data, cdof, M_inv, qacc, dt, constraints)
 
         if verbose:
             print(
@@ -498,7 +500,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
                 print(" ", Float64(qacc[i]), end="")
             print("")
 
-        Self.SOLVER.solve(model, data, M_inv, constraints, qacc, dt)
+        Self.SOLVER.solve[CONE_TYPE=CONE_TYPE](model, data, M_inv, constraints, qacc, dt)
 
         if verbose:
             print("    qacc after solve:", end="")

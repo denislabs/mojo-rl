@@ -185,210 +185,239 @@ struct PGSSolver(ConstraintSolver):
                         * constraints.rows[r].lambda_val
                     )
 
-        # Coupled PGS iterations (MuJoCo-style block updates for elliptic contacts)
+        # Coupled PGS iterations
         # Reference: mj_solPGS in engine_solver.c lines 316-531
         comptime MINVAL: Float64 = 1e-10
         for _ in range(PGS_ITERATIONS):
-            # === Process each contact as a block (normal + friction together) ===
-            var fric_idx = 0
-            for normal_r in range(num_normals):
-                # Count friction group for this normal
-                var group_size = 0
-                while fric_idx + group_size < num_friction:
-                    if constraints.rows[friction_start + fric_idx + group_size].friction_parent != normal_r:
-                        break
-                    group_size += 1
-
-                var dim = 1 + group_size  # normal + friction rows
-
-                # Collect row indices for the block
-                var row_idx = InlineArray[Int, 6](fill=0)
-                row_idx[0] = normal_r
-                for g in range(group_size):
-                    row_idx[1 + g] = friction_start + fric_idx + g
-
-                # Build block AR matrix (dim x dim)
-                # AR[i,j] = J[row_i] @ MinvJT[row_j] + R[row_i]*delta(i,j)
-                var AR = InlineArray[Scalar[DTYPE], 36](fill=Scalar[DTYPE](0))
-                for bi in range(dim):
-                    for bj in range(dim):
-                        var a_val: Scalar[DTYPE] = 0
-                        for k in range(NV):
-                            a_val += constraints.J[row_idx[bi] * NV + k] * constraints.MinvJT[row_idx[bj] * NV + k]
-                        if bi == bj:
-                            var R_row = Scalar[DTYPE](1.0) / constraints.rows[row_idx[bi]].inv_K_imp - constraints.rows[row_idx[bi]].K
-                            a_val += R_row
-                        AR[bi * dim + bj] = a_val
-
-                # Compute block residual: res[j] = J[row_j] @ qacc + bias[row_j] + R[row_j] * lambda[row_j]
-                # This equals efc_b + AR*force in MuJoCo's formulation
-                var block_res = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
-                for bj in range(dim):
-                    var a: Scalar[DTYPE] = 0
-                    for k in range(NV):
-                        a += constraints.J[row_idx[bj] * NV + k] * qacc[k]
-                    var R_row = Scalar[DTYPE](1.0) / constraints.rows[row_idx[bj]].inv_K_imp - constraints.rows[row_idx[bj]].K
-                    block_res[bj] = a + constraints.rows[row_idx[bj]].bias + R_row * constraints.rows[row_idx[bj]].lambda_val
-
-                # Save old forces
-                var oldforce = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
-                oldforce[0] = constraints.rows[normal_r].lambda_val
-                for g in range(group_size):
-                    oldforce[1 + g] = constraints.rows[row_idx[1 + g]].lambda_val
-
-                # ARinv[0] = 1/AR[0,0] for scalar normal update
-                var ARinv0: Scalar[DTYPE] = 0
-                if AR[0] > Scalar[DTYPE](MINVAL):
-                    ARinv0 = Scalar[DTYPE](1.0) / AR[0]
-
-                # === BLOCK UPDATE (MuJoCo mj_solPGS lines 381-476) ===
-                if dim == 1:
-                    # Simple scalar: normal only
-                    constraints.rows[normal_r].lambda_val -= block_res[0] * ARinv0
+            @parameter
+            if CONE_TYPE == ConeType.PYRAMIDAL:
+                # === PYRAMIDAL CONE: Independent PGS on normals + edge constraints ===
+                # Normal constraints: simple λ≥0 PGS
+                for normal_r in range(num_normals):
+                    var a_n: Scalar[DTYPE] = 0
+                    for i in range(NV):
+                        a_n += constraints.J[normal_r * NV + i] * qacc[i]
+                    var R_n = Scalar[DTYPE](1.0) / constraints.rows[normal_r].inv_K_imp - constraints.rows[normal_r].K
+                    var residual_n = (
+                        a_n
+                        + constraints.rows[normal_r].bias
+                        + R_n * constraints.rows[normal_r].lambda_val
+                    )
+                    var delta_n = -residual_n * constraints.rows[normal_r].inv_K_imp
+                    var old_lambda_n = constraints.rows[normal_r].lambda_val
+                    constraints.rows[normal_r].lambda_val = (
+                        constraints.rows[normal_r].lambda_val + delta_n
+                    )
                     if constraints.rows[normal_r].lambda_val < Scalar[DTYPE](0):
                         constraints.rows[normal_r].lambda_val = Scalar[DTYPE](0)
-                else:
-                    # --- Ray update (lines 391-430) ---
-                    if constraints.rows[normal_r].lambda_val < Scalar[DTYPE](MINVAL):
-                        # Normal force too small: scalar normal update, zero friction
+                    var actual_n = constraints.rows[normal_r].lambda_val - old_lambda_n
+                    if actual_n != Scalar[DTYPE](0):
+                        for i in range(NV):
+                            qacc[i] += constraints.MinvJT[normal_r * NV + i] * actual_n
+
+                # Pyramid edge constraints: each edge is λ≥0
+                for r_off in range(num_friction):
+                    var r = friction_start + r_off
+                    var a_edge: Scalar[DTYPE] = 0
+                    for i in range(NV):
+                        a_edge += constraints.J[r * NV + i] * qacc[i]
+                    var R_edge = Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp - constraints.rows[r].K
+                    var residual_edge = (
+                        a_edge
+                        + constraints.rows[r].bias
+                        + R_edge * constraints.rows[r].lambda_val
+                    )
+                    var delta_edge = -residual_edge * constraints.rows[r].inv_K_imp
+                    var old_lambda_edge = constraints.rows[r].lambda_val
+                    constraints.rows[r].lambda_val = (
+                        constraints.rows[r].lambda_val + delta_edge
+                    )
+                    if constraints.rows[r].lambda_val < Scalar[DTYPE](0):
+                        constraints.rows[r].lambda_val = Scalar[DTYPE](0)
+                    var actual_edge = constraints.rows[r].lambda_val - old_lambda_edge
+                    if actual_edge != Scalar[DTYPE](0):
+                        for i in range(NV):
+                            qacc[i] += constraints.MinvJT[r * NV + i] * actual_edge
+            else:
+                # === ELLIPTIC CONE: MuJoCo-style block QCQP updates ===
+                var fric_idx = 0
+                for normal_r in range(num_normals):
+                    # Count friction group for this normal
+                    var group_size = 0
+                    while fric_idx + group_size < num_friction:
+                        if constraints.rows[friction_start + fric_idx + group_size].friction_parent != normal_r:
+                            break
+                        group_size += 1
+
+                    var dim = 1 + group_size  # normal + friction rows
+
+                    # Collect row indices for the block
+                    var row_idx = InlineArray[Int, 6](fill=0)
+                    row_idx[0] = normal_r
+                    for g in range(group_size):
+                        row_idx[1 + g] = friction_start + fric_idx + g
+
+                    # Build block AR matrix (dim x dim)
+                    var AR = InlineArray[Scalar[DTYPE], 36](fill=Scalar[DTYPE](0))
+                    for bi in range(dim):
+                        for bj in range(dim):
+                            var a_val: Scalar[DTYPE] = 0
+                            for k in range(NV):
+                                a_val += constraints.J[row_idx[bi] * NV + k] * constraints.MinvJT[row_idx[bj] * NV + k]
+                            if bi == bj:
+                                var R_row = Scalar[DTYPE](1.0) / constraints.rows[row_idx[bi]].inv_K_imp - constraints.rows[row_idx[bi]].K
+                                a_val += R_row
+                            AR[bi * dim + bj] = a_val
+
+                    # Compute block residual
+                    var block_res = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
+                    for bj in range(dim):
+                        var a: Scalar[DTYPE] = 0
+                        for k in range(NV):
+                            a += constraints.J[row_idx[bj] * NV + k] * qacc[k]
+                        var R_row = Scalar[DTYPE](1.0) / constraints.rows[row_idx[bj]].inv_K_imp - constraints.rows[row_idx[bj]].K
+                        block_res[bj] = a + constraints.rows[row_idx[bj]].bias + R_row * constraints.rows[row_idx[bj]].lambda_val
+
+                    # Save old forces
+                    var oldforce = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
+                    oldforce[0] = constraints.rows[normal_r].lambda_val
+                    for g in range(group_size):
+                        oldforce[1 + g] = constraints.rows[row_idx[1 + g]].lambda_val
+
+                    var ARinv0: Scalar[DTYPE] = 0
+                    if AR[0] > Scalar[DTYPE](MINVAL):
+                        ARinv0 = Scalar[DTYPE](1.0) / AR[0]
+
+                    if dim == 1:
                         constraints.rows[normal_r].lambda_val -= block_res[0] * ARinv0
                         if constraints.rows[normal_r].lambda_val < Scalar[DTYPE](0):
                             constraints.rows[normal_r].lambda_val = Scalar[DTYPE](0)
-                        for g in range(group_size):
-                            constraints.rows[row_idx[1 + g]].lambda_val = Scalar[DTYPE](0)
                     else:
-                        # v = current force vector
-                        var v = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
-                        v[0] = constraints.rows[normal_r].lambda_val
-                        for g in range(group_size):
-                            v[1 + g] = constraints.rows[row_idx[1 + g]].lambda_val
+                        # --- Ray update ---
+                        if constraints.rows[normal_r].lambda_val < Scalar[DTYPE](MINVAL):
+                            constraints.rows[normal_r].lambda_val -= block_res[0] * ARinv0
+                            if constraints.rows[normal_r].lambda_val < Scalar[DTYPE](0):
+                                constraints.rows[normal_r].lambda_val = Scalar[DTYPE](0)
+                            for g in range(group_size):
+                                constraints.rows[row_idx[1 + g]].lambda_val = Scalar[DTYPE](0)
+                        else:
+                            var v = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
+                            v[0] = constraints.rows[normal_r].lambda_val
+                            for g in range(group_size):
+                                v[1 + g] = constraints.rows[row_idx[1 + g]].lambda_val
 
-                        # denom = v' * AR * v
-                        var denom: Scalar[DTYPE] = 0
-                        for bi in range(dim):
-                            for bj in range(dim):
-                                denom += v[bi] * AR[bi * dim + bj] * v[bj]
-
-                        if denom >= Scalar[DTYPE](MINVAL):
-                            # x = -v' * res / denom
-                            var vdotr: Scalar[DTYPE] = 0
+                            var denom: Scalar[DTYPE] = 0
                             for bi in range(dim):
-                                vdotr += v[bi] * block_res[bi]
-                            var x = -vdotr / denom
+                                for bj in range(dim):
+                                    denom += v[bi] * AR[bi * dim + bj] * v[bj]
 
-                            # Ensure normal stays non-negative
-                            if constraints.rows[normal_r].lambda_val + x * v[0] < Scalar[DTYPE](0):
-                                x = -constraints.rows[normal_r].lambda_val / v[0]
+                            if denom >= Scalar[DTYPE](MINVAL):
+                                var vdotr: Scalar[DTYPE] = 0
+                                for bi in range(dim):
+                                    vdotr += v[bi] * block_res[bi]
+                                var x = -vdotr / denom
 
-                            # force += x * v
-                            constraints.rows[normal_r].lambda_val += x * v[0]
-                            for g in range(group_size):
-                                constraints.rows[row_idx[1 + g]].lambda_val += x * v[1 + g]
+                                if constraints.rows[normal_r].lambda_val + x * v[0] < Scalar[DTYPE](0):
+                                    x = -constraints.rows[normal_r].lambda_val / v[0]
 
-                    # --- QCQP friction update (lines 434-476) ---
-                    if constraints.rows[normal_r].lambda_val >= Scalar[DTYPE](MINVAL) and group_size > 0:
-                        # Build friction sub-block Ac and adjusted bias bc
-                        # Ac[j1,j2] = AR[1+j1, 1+j2]
-                        # bc[j] = res[1+j] - dot(Ac[j,:], oldforce[1:]) + AR[1+j,0] * (force_n - oldforce_n)
-                        var Ac = InlineArray[Scalar[DTYPE], 25](fill=Scalar[DTYPE](0))
-                        var bc = InlineArray[Scalar[DTYPE], 5](fill=Scalar[DTYPE](0))
-                        for j in range(group_size):
-                            for j2 in range(group_size):
-                                Ac[j * group_size + j2] = AR[(1 + j) * dim + (1 + j2)]
-                            bc[j] = block_res[1 + j]
-                            # Subtract old friction coupling
-                            for j2 in range(group_size):
-                                bc[j] -= Ac[j * group_size + j2] * oldforce[1 + j2]
-                            # Add normal force change coupling
-                            bc[j] += AR[(1 + j) * dim + 0] * (constraints.rows[normal_r].lambda_val - oldforce[0])
-
-                        var mu_arr = InlineArray[Scalar[DTYPE], 5](fill=Scalar[DTYPE](0))
-                        for g in range(group_size):
-                            mu_arr[g] = constraints.rows[row_idx[1 + g]].friction_coef
-
-                        var fn_val = constraints.rows[normal_r].lambda_val
-                        var flg_active = False
-
-                        if group_size == 2:
-                            var A2 = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
-                            var b2 = InlineArray[Scalar[DTYPE], 2](fill=Scalar[DTYPE](0))
-                            var d2 = InlineArray[Scalar[DTYPE], 2](fill=Scalar[DTYPE](0))
-                            for ii in range(2):
-                                b2[ii] = bc[ii]
-                                d2[ii] = mu_arr[ii]
-                                for jj in range(2):
-                                    A2[ii * 2 + jj] = Ac[ii * group_size + jj]
-                            var r0: Scalar[DTYPE] = 0
-                            var r1: Scalar[DTYPE] = 0
-                            flg_active = mj_qcqp2[DTYPE](r0, r1, A2, b2, d2, fn_val)
-                            constraints.rows[row_idx[1]].lambda_val = r0
-                            constraints.rows[row_idx[2]].lambda_val = r1
-                        elif group_size == 3:
-                            var A3 = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
-                            var b3 = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
-                            var d3 = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
-                            for ii in range(3):
-                                b3[ii] = bc[ii]
-                                d3[ii] = mu_arr[ii]
-                                for jj in range(3):
-                                    A3[ii * 3 + jj] = Ac[ii * group_size + jj]
-                            var r0: Scalar[DTYPE] = 0
-                            var r1: Scalar[DTYPE] = 0
-                            var r2: Scalar[DTYPE] = 0
-                            flg_active = mj_qcqp3[DTYPE](r0, r1, r2, A3, b3, d3, fn_val)
-                            constraints.rows[row_idx[1]].lambda_val = r0
-                            constraints.rows[row_idx[2]].lambda_val = r1
-                            constraints.rows[row_idx[3]].lambda_val = r2
-                        elif group_size == 5:
-                            var A5 = InlineArray[Scalar[DTYPE], 25](fill=Scalar[DTYPE](0))
-                            var b5 = InlineArray[Scalar[DTYPE], 5](fill=Scalar[DTYPE](0))
-                            var d5 = InlineArray[Scalar[DTYPE], 5](fill=Scalar[DTYPE](0))
-                            for ii in range(5):
-                                b5[ii] = bc[ii]
-                                d5[ii] = mu_arr[ii]
-                                for jj in range(5):
-                                    A5[ii * 5 + jj] = Ac[ii * group_size + jj]
-                            var res5 = InlineArray[Scalar[DTYPE], 5](fill=Scalar[DTYPE](0))
-                            flg_active = mj_qcqp5[DTYPE](res5, A5, b5, d5, fn_val)
-                            for g in range(5):
-                                constraints.rows[row_idx[1 + g]].lambda_val = res5[g]
-
-                        # If constrained, rescale to exact ellipsoid
-                        if flg_active:
-                            var s: Scalar[DTYPE] = 0
-                            for g in range(group_size):
-                                var fv = constraints.rows[row_idx[1 + g]].lambda_val
-                                var mu_g = mu_arr[g]
-                                if mu_g > Scalar[DTYPE](MINVAL):
-                                    s += fv * fv / (mu_g * mu_g)
-                            if s > Scalar[DTYPE](MINVAL):
-                                var scale = sqrt(fn_val * fn_val / s)
+                                constraints.rows[normal_r].lambda_val += x * v[0]
                                 for g in range(group_size):
-                                    constraints.rows[row_idx[1 + g]].lambda_val *= scale
+                                    constraints.rows[row_idx[1 + g]].lambda_val += x * v[1 + g]
 
-                # --- Cost descent check (MuJoCo costChange) ---
-                var newforce = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
-                newforce[0] = constraints.rows[normal_r].lambda_val
-                for g in range(group_size):
-                    newforce[1 + g] = constraints.rows[row_idx[1 + g]].lambda_val
-                var change = cost_change[DTYPE, 6, 36](newforce, oldforce, AR, block_res, dim)
-                if change > Scalar[DTYPE](MINVAL):
-                    # Revert to old force
-                    constraints.rows[normal_r].lambda_val = oldforce[0]
+                        # --- QCQP friction update ---
+                        if constraints.rows[normal_r].lambda_val >= Scalar[DTYPE](MINVAL) and group_size > 0:
+                            var Ac = InlineArray[Scalar[DTYPE], 25](fill=Scalar[DTYPE](0))
+                            var bc = InlineArray[Scalar[DTYPE], 5](fill=Scalar[DTYPE](0))
+                            for j in range(group_size):
+                                for j2 in range(group_size):
+                                    Ac[j * group_size + j2] = AR[(1 + j) * dim + (1 + j2)]
+                                bc[j] = block_res[1 + j]
+                                for j2 in range(group_size):
+                                    bc[j] -= Ac[j * group_size + j2] * oldforce[1 + j2]
+                                bc[j] += AR[(1 + j) * dim + 0] * (constraints.rows[normal_r].lambda_val - oldforce[0])
+
+                            var mu_arr = InlineArray[Scalar[DTYPE], 5](fill=Scalar[DTYPE](0))
+                            for g in range(group_size):
+                                mu_arr[g] = constraints.rows[row_idx[1 + g]].friction_coef
+
+                            var fn_val = constraints.rows[normal_r].lambda_val
+                            var flg_active = False
+
+                            if group_size == 2:
+                                var A2 = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+                                var b2 = InlineArray[Scalar[DTYPE], 2](fill=Scalar[DTYPE](0))
+                                var d2 = InlineArray[Scalar[DTYPE], 2](fill=Scalar[DTYPE](0))
+                                for ii in range(2):
+                                    b2[ii] = bc[ii]
+                                    d2[ii] = mu_arr[ii]
+                                    for jj in range(2):
+                                        A2[ii * 2 + jj] = Ac[ii * group_size + jj]
+                                var r0: Scalar[DTYPE] = 0
+                                var r1: Scalar[DTYPE] = 0
+                                flg_active = mj_qcqp2[DTYPE](r0, r1, A2, b2, d2, fn_val)
+                                constraints.rows[row_idx[1]].lambda_val = r0
+                                constraints.rows[row_idx[2]].lambda_val = r1
+                            elif group_size == 3:
+                                var A3 = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+                                var b3 = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+                                var d3 = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+                                for ii in range(3):
+                                    b3[ii] = bc[ii]
+                                    d3[ii] = mu_arr[ii]
+                                    for jj in range(3):
+                                        A3[ii * 3 + jj] = Ac[ii * group_size + jj]
+                                var r0: Scalar[DTYPE] = 0
+                                var r1: Scalar[DTYPE] = 0
+                                var r2: Scalar[DTYPE] = 0
+                                flg_active = mj_qcqp3[DTYPE](r0, r1, r2, A3, b3, d3, fn_val)
+                                constraints.rows[row_idx[1]].lambda_val = r0
+                                constraints.rows[row_idx[2]].lambda_val = r1
+                                constraints.rows[row_idx[3]].lambda_val = r2
+                            elif group_size == 5:
+                                var A5 = InlineArray[Scalar[DTYPE], 25](fill=Scalar[DTYPE](0))
+                                var b5 = InlineArray[Scalar[DTYPE], 5](fill=Scalar[DTYPE](0))
+                                var d5 = InlineArray[Scalar[DTYPE], 5](fill=Scalar[DTYPE](0))
+                                for ii in range(5):
+                                    b5[ii] = bc[ii]
+                                    d5[ii] = mu_arr[ii]
+                                    for jj in range(5):
+                                        A5[ii * 5 + jj] = Ac[ii * group_size + jj]
+                                var res5 = InlineArray[Scalar[DTYPE], 5](fill=Scalar[DTYPE](0))
+                                flg_active = mj_qcqp5[DTYPE](res5, A5, b5, d5, fn_val)
+                                for g in range(5):
+                                    constraints.rows[row_idx[1 + g]].lambda_val = res5[g]
+
+                            if flg_active:
+                                var s: Scalar[DTYPE] = 0
+                                for g in range(group_size):
+                                    var fv = constraints.rows[row_idx[1 + g]].lambda_val
+                                    var mu_g = mu_arr[g]
+                                    if mu_g > Scalar[DTYPE](MINVAL):
+                                        s += fv * fv / (mu_g * mu_g)
+                                if s > Scalar[DTYPE](MINVAL):
+                                    var scale = sqrt(fn_val * fn_val / s)
+                                    for g in range(group_size):
+                                        constraints.rows[row_idx[1 + g]].lambda_val *= scale
+
+                    # --- Cost descent check ---
+                    var newforce = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
+                    newforce[0] = constraints.rows[normal_r].lambda_val
                     for g in range(group_size):
-                        constraints.rows[row_idx[1 + g]].lambda_val = oldforce[1 + g]
+                        newforce[1 + g] = constraints.rows[row_idx[1 + g]].lambda_val
+                    var change = cost_change[DTYPE, 6, 36](newforce, oldforce, AR, block_res, dim)
+                    if change > Scalar[DTYPE](MINVAL):
+                        constraints.rows[normal_r].lambda_val = oldforce[0]
+                        for g in range(group_size):
+                            constraints.rows[row_idx[1 + g]].lambda_val = oldforce[1 + g]
 
-                # Apply actual delta to qacc for all rows in block
-                for bi in range(dim):
-                    var actual = constraints.rows[row_idx[bi]].lambda_val - oldforce[bi]
-                    if actual != Scalar[DTYPE](0):
-                        for k in range(NV):
-                            qacc[k] += constraints.MinvJT[row_idx[bi] * NV + k] * actual
+                    # Apply actual delta to qacc
+                    for bi in range(dim):
+                        var actual = constraints.rows[row_idx[bi]].lambda_val - oldforce[bi]
+                        if actual != Scalar[DTYPE](0):
+                            for k in range(NV):
+                                qacc[k] += constraints.MinvJT[row_idx[bi] * NV + k] * actual
 
-                fric_idx += group_size
-
-            # === Normals without friction (if more normals than friction groups) ===
-            # (handled above since fric_idx advances correctly)
+                    fric_idx += group_size
 
             # --- Joint limit constraints ---
             for r_off in range(num_limits):
@@ -603,9 +632,9 @@ struct PGSSolver(ConstraintSolver):
             if si_dmax < Scalar[DTYPE](1e-4):
                 si_dmax = Scalar[DTYPE](1e-4)
             K_spring = Scalar[DTYPE](1.0) / (
-                si_dmax * si_dmax * sr_tc * sr_tc * sr_dr * sr_dr
+                sr_tc * sr_tc * sr_dr * sr_dr
             )
-            B_damp = Scalar[DTYPE](2.0) / (si_dmax * sr_tc)
+            B_damp = Scalar[DTYPE](2.0) * sr_dr / sr_tc
 
         # === PARALLEL PHASE 1: Each thread precomputes one contact ===
         if valid_env:

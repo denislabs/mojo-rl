@@ -17,7 +17,7 @@ from collections import InlineArray
 
 from physics3d.types import Model, Data, _max_one, ConeType
 from physics3d.integrator.euler_integrator import EulerIntegrator
-from physics3d.solver.primal_newton_solver import PrimalNewtonSolver
+from physics3d.solver import PrimalNewtonSolver
 from physics3d.solver.pgs_solver import PGSSolver
 from physics3d.dynamics.mass_matrix import compute_body_invweight0
 from physics3d.kinematics.forward_kinematics import forward_kinematics
@@ -50,7 +50,7 @@ comptime ACTION_DIM = HalfCheetahParams[DTYPE].ACTION_DIM  # 6
 # D values match MuJoCo exactly; solver converges fully.
 comptime QPOS_ABS_TOL: Float64 = 2e-2
 comptime QPOS_REL_TOL: Float64 = 2e-1
-comptime QVEL_ABS_TOL: Float64 = 2e-0
+comptime QVEL_ABS_TOL: Float64 = 2e-1
 comptime QVEL_REL_TOL: Float64 = 2e-1
 
 
@@ -103,7 +103,13 @@ fn compare_step(
     # Run FK so xipos is available, then auto-compute body inverse weights
     forward_kinematics(model, data)
     compute_body_invweight0[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
     ](model, data)
 
     # Apply actions via actuators (sets data.qfrc)

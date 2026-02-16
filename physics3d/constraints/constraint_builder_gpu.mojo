@@ -302,8 +302,7 @@ fn precompute_contact_normal_gpu[
             if imp < Scalar[DTYPE](1e-6):
                 imp = Scalar[DTYPE](1e-6)
             # MuJoCo: aref = -B*vel - K*imp*pos, bias = -aref = B*vel + K*imp*pen
-            # Only K term is scaled by imp, NOT B (see engine_core_constraint.c:2384)
-            # Solver uses: delta = -(a_n + bias + R*lambda) * inv_K
+            # bias = -aref = -(K*imp*pen - B*v_n) = -K*imp*pen + B*v_n
             var bias = -K_spring * imp * penetration + B_damp * v_n
             workspace[env, ws_pos_bias + c] = bias
             # MuJoCo: AR[i,i] = K + (1-imp)/imp * K = K/imp, so inv = imp/K
@@ -543,10 +542,11 @@ fn detect_and_solve_limits_gpu[
     if li_dmax < Scalar[DTYPE](1e-4):
         li_dmax = Scalar[DTYPE](1e-4)
     # Acceleration-level coefficients for limits
+    # MuJoCo formula: K = 1/(tc² * dr²), B = 2*dr/tc
     var l_K_spring = Scalar[DTYPE](1.0) / (
-        li_dmax * li_dmax * lr_tc * lr_tc * lr_dr * lr_dr
+        lr_tc * lr_tc * lr_dr * lr_dr
     )
-    var l_B_damp = Scalar[DTYPE](2.0) / (li_dmax * lr_tc)
+    var l_B_damp = Scalar[DTYPE](2.0) * lr_dr / lr_tc
 
     # Precompute impedance and MinvJ for limits
     var lim_bias = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
@@ -725,9 +725,9 @@ fn build_and_solve_equality_gpu[
         if si_dmax < Scalar[DTYPE](1e-4):
             si_dmax = Scalar[DTYPE](1e-4)
         var eq_K_spring = Scalar[DTYPE](1.0) / (
-            si_dmax * si_dmax * sr_tc * sr_tc * sr_dr * sr_dr
+            sr_tc * sr_tc * sr_dr * sr_dr
         )
-        var eq_B_damp = Scalar[DTYPE](2.0) / (si_dmax * sr_tc)
+        var eq_B_damp = Scalar[DTYPE](2.0) * sr_dr / sr_tc
 
         # Compute world anchor A: xpos[body_a] + quat_rotate(xquat[body_a], anchor_a)
         var xpos_a_x = rebind[Scalar[DTYPE]](
@@ -889,7 +889,7 @@ fn build_and_solve_equality_gpu[
             if imp < Scalar[DTYPE](1e-6):
                 imp = Scalar[DTYPE](1e-6)
 
-            # bias = -K*imp*pen + B*v_n (bilateral: sign depends on error direction)
+            # bias = -aref (bilateral: sign depends on error direction)
             var bias = -eq_K_spring * imp * penetration + eq_B_damp * v_n
             if err_d < Scalar[DTYPE](0):
                 bias = -bias

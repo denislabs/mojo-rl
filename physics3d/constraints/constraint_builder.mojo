@@ -42,12 +42,13 @@ fn _compute_aref[
     """Compute acceleration-level constraint reference and inv_K.
 
     Returns (bias, inv_K) where:
-    - bias = -aref = -(K_spring * imp * penetration) + (B_damp * imp * v_n)
+    - bias = -aref (negated for solver: residual = a + bias + R*lambda)
     - inv_K = imp / K (MuJoCo regularizer: AR = K + R, R = (1-imp)/imp * K, so AR = K/imp)
 
-    MuJoCo formula: aref = K*d*pen - B*d*v_n  (both terms scaled by impedance d)
-    Both position and velocity terms push apart (positive aref for penetrating contact).
-    Stored negated as bias so PGS formula -(a + bias) * inv_K works.
+    MuJoCo formula: aref = -B*vel - K*imp*pos = K*imp*pen - B*v_n
+    Our solver uses: residual = J*qacc + bias + R*lambda (= 0 at convergence)
+    MuJoCo uses: residual = J*qacc0 - aref + AR*force (efc_b + AR*f)
+    So: bias = -aref = -K*imp*pen + B*v_n
     """
     var x = penetration / si_width
     if x > Scalar[DTYPE](1.0):
@@ -58,8 +59,7 @@ fn _compute_aref[
     # MuJoCo uses mjMINIMP ~1e-6 (only prevents division by zero)
     if imp < Scalar[DTYPE](1e-6):
         imp = Scalar[DTYPE](1e-6)
-    # MuJoCo: aref = -B*vel - K*imp*pos, bias = -aref = B*vel + K*imp*pen
-    # Only K term is scaled by imp, NOT B (see engine_core_constraint.c:2384)
+    # bias = -aref = -(K*imp*pen - B*v_n) = -K*imp*pen + B*v_n
     var bias = -K_spring * imp * penetration + B_damp * v_n
     # MuJoCo: AR[i,i] = K + (1-imp)/imp * K = K/imp, so inv = imp/K
     var inv_K = imp / K
@@ -244,10 +244,12 @@ fn build_constraints[
     if si_dmax < Scalar[DTYPE](1e-4):
         si_dmax = Scalar[DTYPE](1e-4)
     # Acceleration-level spring/damper coefficients (dt-independent)
+    # MuJoCo formula: K = 1/(tc² * dr²), B = 2*dr/tc
+    # Note: dmax is NOT included in K or B — it only affects impedance range
     var K_spring = Scalar[DTYPE](1.0) / (
-        si_dmax * si_dmax * sr_tc * sr_tc * sr_dr * sr_dr
+        sr_tc * sr_tc * sr_dr * sr_dr
     )
-    var B_damp = Scalar[DTYPE](2.0) / (si_dmax * sr_tc)
+    var B_damp = Scalar[DTYPE](2.0) * sr_dr / sr_tc
     var default_friction = model.friction
 
     var row_idx = 0
@@ -505,9 +507,13 @@ fn build_constraints[
                 if mu_td <= Scalar[DTYPE](1e-12):
                     continue
 
-                # Pyramidal regularizer: R_pyramid = 2 * mu^2 * R_normal
-                var R_n = Scalar[DTYPE](1.0) / inv_K_imp_n - k_n  # R_normal
-                var R_edge = Scalar[DTYPE](2.0) * mu_td * mu_td * R_n
+                # Compute tangential velocity for edge bias
+                var v_t: Scalar[DTYPE] = 0
+                for i in range(NV):
+                    v_t += J_t[i] * qvel[i]
+
+                # Extract impedance from normal (shared by all edges)
+                var imp_n = inv_K_imp_n * k_n
 
                 # Build edge+ and edge- rows
                 for sign_idx in range(2):
@@ -533,11 +539,25 @@ fn build_constraints[
                     if k_edge < Scalar[DTYPE](1e-10):
                         k_edge = Scalar[DTYPE](1e-10)
 
-                    # Edge impedance: inv_K = 1 / (k_edge + R_edge)
-                    var inv_K_edge = Scalar[DTYPE](1.0) / (k_edge + R_edge)
+                    # Edge bias: include tangential velocity damping but
+                    # adaptively scale to prevent edge deactivation.
+                    # Limit tangential contribution to 30% of |bias_n|
+                    # to keep both edges well-active and limit parasitic
+                    # normal force while still providing friction damping.
+                    var tang_full = B_damp * mu_td * abs(v_t)
+                    var abs_bias_n = -bias_n if bias_n < Scalar[DTYPE](0) else bias_n
+                    var tang_limit = Scalar[DTYPE](0.4) * abs_bias_n
+                    var tang_scale = Scalar[DTYPE](1.0)
+                    if tang_full > tang_limit and tang_full > Scalar[DTYPE](1e-10):
+                        tang_scale = tang_limit / tang_full
+                    var bias_edge = bias_n + tang_scale * B_damp * sign * mu_td * v_t
+
+                    # Edge regularizer: MuJoCo per-row formula
+                    # R = (1-imp)/imp * K, so inv_K = imp / k_edge
+                    var inv_K_edge = imp_n / k_edge
 
                     constraints.rows[row_idx].K = k_edge
-                    constraints.rows[row_idx].bias = bias_n
+                    constraints.rows[row_idx].bias = bias_edge
                     constraints.rows[row_idx].inv_K_imp = inv_K_edge
                     constraints.rows[row_idx].lo = Scalar[DTYPE](0)
                     constraints.rows[row_idx].hi = Scalar[DTYPE](1e20)
@@ -1003,10 +1023,11 @@ fn build_constraints[
     if li_dmax < Scalar[DTYPE](1e-4):
         li_dmax = Scalar[DTYPE](1e-4)
     # Acceleration-level spring/damper for limits
+    # MuJoCo formula: K = 1/(tc² * dr²), B = 2*dr/tc
     var l_K_spring = Scalar[DTYPE](1.0) / (
-        li_dmax * li_dmax * lr_tc * lr_tc * lr_dr * lr_dr
+        lr_tc * lr_tc * lr_dr * lr_dr
     )
-    var l_B_damp = Scalar[DTYPE](2.0) / (li_dmax * lr_tc)
+    var l_B_damp = Scalar[DTYPE](2.0) * lr_dr / lr_tc
 
     for j in range(model.num_joints):
         var joint = model.joints[j]
@@ -1140,14 +1161,12 @@ fn build_constraints[
             if eq_si_dmax < Scalar[DTYPE](1e-4):
                 eq_si_dmax = Scalar[DTYPE](1e-4)
             var eq_K_spring = Scalar[DTYPE](1.0) / (
-                eq_si_dmax
-                * eq_si_dmax
-                * eq_sr_tc
+                eq_sr_tc
                 * eq_sr_tc
                 * eq_sr_dr
                 * eq_sr_dr
             )
-            var eq_B_damp = Scalar[DTYPE](2.0) / (eq_si_dmax * eq_sr_tc)
+            var eq_B_damp = Scalar[DTYPE](2.0) * eq_sr_dr / eq_sr_tc
 
             # Compute world anchor positions
             var world_a_x: Scalar[DTYPE]
