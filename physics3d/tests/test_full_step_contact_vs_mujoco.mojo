@@ -95,12 +95,8 @@ fn compare_step(
     model.solimp_limit[2] = P.SOLIMP_LIMIT_2
 
     var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
-    for i in range(NQ):
-        data.qpos[i] = Scalar[DTYPE](qpos_init[i])
-    for i in range(NV):
-        data.qvel[i] = Scalar[DTYPE](qvel_init[i])
 
-    # Run FK so xipos is available, then auto-compute body inverse weights
+    # Compute body_invweight0 at REFERENCE pose (MuJoCo mj_setConst does this once at init)
     forward_kinematics(model, data)
     compute_body_invweight0[
         DTYPE,
@@ -111,6 +107,12 @@ fn compare_step(
         MAX_CONTACTS,
         NGEOM,
     ](model, data)
+
+    # Now set test configuration
+    for i in range(NQ):
+        data.qpos[i] = Scalar[DTYPE](qpos_init[i])
+    for i in range(NV):
+        data.qvel[i] = Scalar[DTYPE](qvel_init[i])
 
     # Apply actions via actuators (sets data.qfrc)
     var action_list = List[Float64]()
@@ -138,8 +140,9 @@ fn compare_step(
     )
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
     # Match our elliptic cone setting
-    mj_model.opt.cone = 1  # mjCONE_ELLIPTIC
-    mj_model.opt.solver = 2  # mjSOL_NEWTON to match our PrimalNewtonSolver
+    mj_model.opt.cone = 1       # mjCONE_ELLIPTIC
+    mj_model.opt.solver = 2     # mjSOL_NEWTON to match our PrimalNewtonSolver
+    mj_model.opt.integrator = 0 # mjINT_EULER to match our EulerIntegrator
     var mj_data = mujoco.MjData(mj_model)
 
     for i in range(NQ):

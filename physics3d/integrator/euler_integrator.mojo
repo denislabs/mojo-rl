@@ -192,17 +192,14 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             M[i] = Scalar[DTYPE](0)
         compute_mass_matrix_full(model, data, cdof, crb, M)
 
-        # 5b. Add armature + implicit damping to mass matrix diagonal
-        # MuJoCo implicitfast: M_eff[i,i] += armature[i] + dt * damping[i]
-        # Implicit damping: instead of explicit f -= D*qvel, we add dt*D
-        # to the mass matrix. This provides unconditional stability for damping
-        # and correctly damps the NEW velocity (semi-implicit treatment).
+        # 5b. Add armature to mass matrix diagonal
+        # MuJoCo Euler: M_solver = M + armature (damping is purely explicit via f -= D*v)
+        # This differs from ImplicitFast which uses M_hat = M + arm + dt*D
         for j in range(model.num_joints):
             var joint = model.joints[j]
             var dof_adr = joint.dof_adr
             var arm = joint.armature
-            var damp = joint.damping
-            var diag_add = arm + dt * damp
+            var diag_add = arm
             if joint.jnt_type == JNT_FREE:
                 for d in range(6):
                     M[(dof_adr + d) * NV + (dof_adr + d)] = (
@@ -341,11 +338,50 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             MAX_ROWS,
         ](constraints, data)
 
-        # 9. Integrate: qvel = old_qvel + constrained_qacc * dt
+        # 9. Integrate with implicit velocity damping (MuJoCo 3.x Euler)
+        # Formula: (M + dt*D) * v_new = M * (v_old + dt * qacc)
+        # This provides unconditional stability for damping.
 
+        # Step 1: v_euler = v_old + dt * qacc
+        var v_euler = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
         for i in range(NV):
             data.qacc[i] = qacc[i]
-            data.qvel[i] = data.qvel[i] + qacc[i] * dt
+            v_euler[i] = data.qvel[i] + qacc[i] * dt
+
+        # Step 2: rhs = M * v_euler (M still has armature only)
+        var rhs = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        for i in range(NV):
+            var sum = Scalar[DTYPE](0)
+            for j in range(NV):
+                sum += M[i * NV + j] * v_euler[j]
+            rhs[i] = sum
+
+        # Step 3: Add dt*damping to M diagonal → M_hat = M + arm + dt*D
+        for j in range(model.num_joints):
+            var joint = model.joints[j]
+            var dof_adr = joint.dof_adr
+            var damp = joint.damping
+            if damp > Scalar[DTYPE](0):
+                if joint.jnt_type == JNT_FREE:
+                    for d in range(6):
+                        M[(dof_adr + d) * NV + (dof_adr + d)] += dt * damp
+                elif joint.jnt_type == JNT_BALL:
+                    for d in range(3):
+                        M[(dof_adr + d) * NV + (dof_adr + d)] += dt * damp
+                else:
+                    M[dof_adr * NV + dof_adr] += dt * damp
+
+        # Step 4: Re-factor M_hat via LDL
+        ldl_factor[DTYPE, NV, M_SIZE, V_SIZE](M, L, D)
+
+        # Step 5: Solve M_hat * v_new = rhs
+        var v_new = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        for i in range(NV):
+            v_new[i] = Scalar[DTYPE](0)
+        ldl_solve[DTYPE, NV, M_SIZE, V_SIZE](L, D, rhs, v_new)
+
+        for i in range(NV):
+            data.qvel[i] = v_new[i]
 
         for i in range(NQ):
             if i < NV:
@@ -539,18 +575,14 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             WS_SIZE,
         ](env, state, model, workspace)
 
-        # 6b. Add armature + implicit damping to mass matrix diagonal
-        # MuJoCo implicitfast: M_eff[i,i] += armature[i] + dt * damping[i]
-        var model_meta_off_arm = model_metadata_offset[NBODY, NJOINT]()
-        var dt_arm = model[0, model_meta_off_arm + MODEL_META_IDX_TIMESTEP]
-
+        # 6b. Add armature to mass matrix diagonal
+        # MuJoCo Euler: M_solver = M + armature (damping is purely explicit via f -= D*v)
         for j in range(NJOINT):
             var joint_off = model_joint_offset[NBODY](j)
             var jnt_type = Int(model[0, joint_off + JOINT_IDX_TYPE])
             var dof_adr = Int(model[0, joint_off + JOINT_IDX_DOF_ADR])
             var arm = model[0, joint_off + JOINT_IDX_ARMATURE]
-            var damp = model[0, joint_off + JOINT_IDX_DAMPING]
-            var diag_add = arm + dt_arm * damp
+            var diag_add = arm
             if jnt_type == JNT_FREE:
                 for d in range(6):
                     var idx = M_idx + (dof_adr + d) * NV + (dof_adr + d)
@@ -797,23 +829,82 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         var qvel_off = qvel_offset[NQ, NV]()
         var qacc_off = qacc_offset[NQ, NV]()
         var qacc_constrained_idx = ws_qacc_constrained_offset[NV, NBODY]()
+        comptime M_idx = ws_M_offset[NV, NBODY]()
+        comptime bias_idx = ws_bias_offset[NV, NBODY]()
+        comptime fnet_idx = ws_fnet_offset[NV, NBODY]()
+        comptime qacc_ws_idx = ws_qacc_ws_offset[NV, NBODY]()
         var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
         var dt = rebind[Scalar[DTYPE]](
             model[0, model_meta_off + MODEL_META_IDX_TIMESTEP]
         )
-        # 9. Integrate: qvel = old_qvel + constrained_qacc * dt
+
+        # 9. Integrate with implicit velocity damping (MuJoCo 3.x Euler)
+        # Formula: (M + dt*D) * v_new = M * (v_old + dt * qacc)
+
+        # Step 1: v_euler = v_old + dt * qacc (store in bias region, reusable)
         var qpos_off = qpos_offset[NQ, NV]()
-        comptime MAX_QVEL: Scalar[
-            DTYPE
-        ] = 100.0  # Safety clamp (MuJoCo has no clamp)
         for i in range(NV):
             var old_qvel = rebind[Scalar[DTYPE]](state[env, qvel_off + i])
             var constrained_qacc = rebind[Scalar[DTYPE]](
                 workspace[env, qacc_constrained_idx + i]
             )
             state[env, qacc_off + i] = constrained_qacc
-            var new_qvel = old_qvel + constrained_qacc * dt
-            # Clamp velocity
+            workspace[env, bias_idx + i] = old_qvel + constrained_qacc * dt
+
+        # Step 2: rhs = M * v_euler (store in fnet region)
+        for i in range(NV):
+            var sum = Scalar[DTYPE](0)
+            for j in range(NV):
+                var M_ij = rebind[Scalar[DTYPE]](
+                    workspace[env, M_idx + i * NV + j]
+                )
+                var v_j = rebind[Scalar[DTYPE]](
+                    workspace[env, bias_idx + j]
+                )
+                sum += M_ij * v_j
+            workspace[env, fnet_idx + i] = sum
+
+        # Step 3: Add dt*damping to M diagonal → M_hat
+        for j in range(NJOINT):
+            var joint_off = model_joint_offset[NBODY](j)
+            var jnt_type = Int(
+                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
+            )
+            var dof_adr = Int(
+                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
+            )
+            var damp = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_DAMPING]
+            )
+            if damp > Scalar[DTYPE](0):
+                if jnt_type == JNT_FREE:
+                    for d in range(6):
+                        var idx = M_idx + (dof_adr + d) * NV + (dof_adr + d)
+                        workspace[env, idx] += dt * damp
+                elif jnt_type == JNT_BALL:
+                    for d in range(3):
+                        var idx = M_idx + (dof_adr + d) * NV + (dof_adr + d)
+                        workspace[env, idx] += dt * damp
+                else:
+                    var idx = M_idx + dof_adr * NV + dof_adr
+                    workspace[env, idx] += dt * damp
+
+        # Step 4: Re-factor M_hat via LDL (reuses L/D workspace regions)
+        ldl_factor_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](env, workspace)
+
+        # Step 5: LDL solve M_hat * v_new = rhs (reads fnet, writes qacc_ws)
+        ldl_solve_workspace_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
+            env, workspace
+        )
+
+        # Step 6: Read v_new from qacc_ws, write to state
+        comptime MAX_QVEL: Scalar[
+            DTYPE
+        ] = 100.0  # Safety clamp
+        for i in range(NV):
+            var new_qvel = rebind[Scalar[DTYPE]](
+                workspace[env, qacc_ws_idx + i]
+            )
             if new_qvel > MAX_QVEL:
                 new_qvel = MAX_QVEL
             elif new_qvel < -MAX_QVEL:

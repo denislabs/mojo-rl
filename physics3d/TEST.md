@@ -45,7 +45,7 @@ Isolate each stage first.
 | Component              | MuJoCo vs CPU | CPU vs GPU | Notes                                    |
 |------------------------|:-------------:|:----------:|------------------------------------------|
 | Solver Forces          | DONE          | TODO       | qfrc_constraint vs MuJoCo (4 configs)    |
-| Full Step (contact)    | PASS          | TODO       | 2 configs pass with relaxed tolerances   |
+| Full Step (contact)    | DONE          | TODO       | 2 configs, err ~1e-5. See analysis below |
 
 ---
 
@@ -64,7 +64,7 @@ Isolate each stage first.
 | `test_jacobian_vs_mujoco.mojo` | Constraint Jacobians (J rows) | PASS | 4 (low static, low moving, very low, bent) | abs: 1e-4, rel: 1e-3 |
 | `test_constraint_params_vs_mujoco.mojo` | Constraint params (imp, aref, D, R) | PASS | 4 (low static, low moving, very low, bent) | imp: 1e-3, aref: 1e-2, D/R: 1e-2 |
 | `test_solver_forces_vs_mujoco.mojo` | Solver forces (qacc, qfrc_constraint, efc_force) | PASS (4/4) | 4 (low static, low moving, very low, bent) | qacc/qfrc: 5e-2. Cost matches to 12 digits. See analysis below. |
-| `test_full_step_contact_vs_mujoco.mojo` | Full step with contacts | PASS | 2 (ground contact, with actions) | relaxed tolerances |
+| `test_full_step_contact_vs_mujoco.mojo` | Full step with contacts | PASS | 2 (ground contact, with actions) | qpos: 2e-2, qvel: 2e-1 (actual err ~1e-5) |
 
 ### CPU vs GPU Comparison Tests
 
@@ -217,47 +217,42 @@ Wrong J means forces are applied in wrong directions.
 5. Per-row efc_force (informational, printed for analysis)
 
 **Pipeline replicated:** Full euler_integrator pipeline including passive forces (damping,
-stiffness, frictionloss), M_hat with armature+dt*damping, qfrc_smooth, then
-PrimalNewtonSolver.solve() with CONE_TYPE=ELLIPTIC.
+stiffness, frictionloss), M with armature only (no dt*damping — solver uses M+arm, damping
+is implicit in velocity integration), qfrc_smooth, then PrimalNewtonSolver.solve() with
+CONE_TYPE=ELLIPTIC.
 
-**Tolerance:** Relaxed — abs: 5e-2, rel: 2e-1 (solver convergence paths differ)
+**Tolerance:** abs: 5e-2, rel: 2e-1
 
-**Result:** 0/4 PASS (all fail). Two bugs fixed, remaining error is solver architecture.
+**Result:** 4/4 PASS. Cost matches MuJoCo to 12 significant digits. qacc errors ~1e-5.
 
-**Bugs fixed:**
+**Solver:** PrimalNewtonSolver — MuJoCo-style primal Newton in qacc space with 3-zone
+cone logic (TOP/BOTTOM/CONE), cone-aware Hessian, and Newton root-finding linesearch.
+Handles all constraints (normals + friction cone + limits) in a unified optimization.
+No separate PGS friction phase needed.
+
+**Bugs fixed (cumulative):**
 1. **Tangent frame** (FIXED): T1 now uses capsule axis as hint via MuJoCo's `mju_makeFrame`
    (Gram-Schmidt orthogonalization). T1 K values now 0.27-0.77 (was 1e-10 degenerate).
    Files: `contact_detection.mojo`, `constraint_builder.mojo`, `friction_solver.mojo`, `pgs_solver.mojo`
 2. **Friction aref** (FIXED): Removed spurious `imp` factor from friction bias.
    Was `B_damp * imp * v_t`, now `B_damp * v_t` (MuJoCo doesn't apply impedance to friction bias).
    File: `constraint_builder.mojo`
+3. **Zone condition & Dm formula** (FIXED): BOTTOM zone condition and Dm had spurious `group_size`
+   factor. Was `group_size*mu*jar_n + T <= 0` and `Dm = D_n/(1+group_size*mu^2)`.
+   Now `mu*jar_n + T <= 0` and `Dm = D_n/(1+mu^2)`.
+   Root cause: MuJoCo's `con->mu = friction[0]` (per-direction mu for impratio=1),
+   NOT `friction[0]*sqrt(group_size)` as previously assumed. The U-space mapping
+   `U[0] = jar_n * con->mu` uses per-direction mu, so zone boundaries don't have a group_size factor.
+   Files: `primal_common.mojo` (12 locations), `primal_newton_solver.mojo` (1 location)
 
-**Current state (after fixes):**
-- All constraint parameters match MuJoCo (4/4 param tests PASS)
-- Normal forces consistently ~7% higher than MuJoCo
-- Friction T1 forces directionally correct, magnitude off ~5-30% (tracks normal error)
-- T2 forces correctly zero (HalfCheetah is 2D, Y direction is degenerate)
+**Current results:**
 
-| Config | qfrc max_abs | qfrc max_rel | qacc max_abs | qacc max_rel | total_N err% |
-|--------|-------------|-------------|-------------|-------------|-------------|
-| Low static | 301.4 | 82% | 232.3 | 37% | 7.6% |
-| Low moving | 297.6 | 48% | 373.0 | 318% | 6.5% |
-| Very low | 454.4 | 42% | 399.4 | 368% | 6.5% |
-| Bent legs | 46.1 | 717% | 115.2 | 32% | 3.2% |
-
-**Remaining root cause: Solver architecture mismatch.**
-MuJoCo uses a true Newton method on the full coupled normal+friction QCQP problem
-(constraint type CE = condim>1 elliptic, each contact is one 3D constraint).
-Our solver decouples: Newton for normals → coupled PGS for friction.
-This means:
-- Our normal forces don't account for friction's effect (7% excess)
-- Friction errors compound on top of normal force errors
-- The friction-to-normal ratio is similar (~14-33%), confirming correct coupling within PGS,
-  but the base normal force is too high
-
-**Next steps to reduce error:**
-1. Implement MuJoCo-style coupled Newton solver (normal+friction as single 3D QCQP per contact)
-2. Or increase coupled PGS iterations (diminishing returns past ~50)
+| Config | qfrc max_abs | qfrc max_rel | qacc max_abs | qacc max_rel | cost match |
+|--------|-------------|-------------|-------------|-------------|------------|
+| Low static | 1.1e-3 | 6.3e-6 | 8.6e-4 | 6.8e-6 | 12 digits |
+| Low moving | 2.1e-3 | 4.3e-6 | 1.9e-3 | 3.5e-5 | 12 digits |
+| Very low | 3.1e-3 | 9.2e-6 | 2.5e-3 | 4.0e-5 | 12 digits |
+| Bent legs | 2.0e-4 | 3.0e-5 | 9.4e-4 | 4.0e-6 | 12 digits |
 
 ---
 
@@ -313,17 +308,21 @@ Recommended: Append NV floats after the current model buffer end. Add `model_dof
 
 ## TODO: MuJoCo vs CPU — Full Step (Stage 3)
 
-### Full Step with Contacts — PASS (relaxed tolerances)
+### Full Step with Contacts — PASS (err ~1e-5)
 
-`test_full_step_contact_vs_mujoco.mojo` now passes with 2 configs.
-Can be tightened as solver accuracy improves.
+`test_full_step_contact_vs_mujoco.mojo` passes with 2 configs (qpos err ~1e-7, qvel err ~1e-5).
 
-**Approach for full-step debugging (if needed):**
-1. Single step first (num_steps=1)
-2. Compare qacc (acceleration output of solver)
-3. Compare qvel_new = qvel + qacc * dt
-4. Compare qpos_new (position integration)
-5. Only then try multi-step (10, 100 steps)
+**Bugs fixed:**
+1. **M vs M_hat separation** (FIXED): EulerIntegrator was adding `arm + dt*damp` to M diagonal
+   (ImplicitFast behavior). MuJoCo's Euler uses `M + arm` only for the solver. Fixed to only add armature.
+2. **Implicit velocity damping** (FIXED): MuJoCo 3.3.6's "Euler" integrator applies implicit
+   damping in the velocity update: `(M + dt*D) * v_new = M * (v_old + dt * qacc)`.
+   Our integrator was doing pure `qvel += dt*qacc`. Fixed by adding a second LDL factorization
+   of `M_hat = M + arm + dt*D` and solving for `v_new`. This matches MuJoCo to machine precision.
+3. **MuJoCo integrator setting** (FIXED): Test wasn't setting `opt.integrator = 0` (Euler).
+   MuJoCo 3.x defaults may differ from older versions.
+4. **body_invweight0 pose** (FIXED): Test computed invweight0 at test pose instead of reference
+   pose (MuJoCo computes it once in mj_setConst at the default pose).
 
 ---
 
@@ -356,7 +355,7 @@ For each component that passes MuJoCo vs CPU, add a CPU vs GPU comparison test.
 │ 3. Bias Forces   │    │ 6. Constraint Jacobians         │ DONE
 │                  │    │ 7. Constraint Parameters (D,R)  │ DONE (CPU). GPU sync needed.
 │                  │    │ 8. Solver Forces                │ DONE (test written)
-│                  │    │ 9. Full Step (contact)          │ PASS (relaxed tol)
+│                  │    │ 9. Full Step (contact)          │ DONE (err ~1e-5)
 └──────────────────┘    └─────────────────────────────────┘
 ```
 
