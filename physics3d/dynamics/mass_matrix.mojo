@@ -645,6 +645,207 @@ fn ldl_solve[
         x[i] = s
 
 
+# =============================================================================
+# Body Inverse Weights (MuJoCo mj_setConst body_invweight0)
+# =============================================================================
+
+
+fn compute_body_invweight0[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    NGEOM: Int = 0,
+    MAX_EQUALITY: Int = 0,
+    CONE_TYPE: Int = ConeType.ELLIPTIC,
+](
+    mut model: Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        MAX_EQUALITY,
+        CONE_TYPE,
+    ],
+    data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+):
+    """Compute body_invweight0 from mass matrix and body CoM Jacobians.
+
+    Follows MuJoCo's mj_setConst (engine_setconst.c:620-661):
+    For each body, compute the body CoM Jacobian J (6×NV), then
+    A = J * M^{-1} * J^T. The inverse weights are:
+      invweight0[2*i]   = avg(A[0,0], A[1,1], A[2,2])  (translation)
+      invweight0[2*i+1] = avg(A[3,3], A[4,4], A[5,5])  (rotation)
+
+    Requires: forward_kinematics and compute_cdof already called.
+    """
+    # Compute cdof, mass matrix, and LDL factorization
+    comptime CDOF_SIZE = _ensure_positive[NV * 6]()
+    comptime CRB_SIZE = _ensure_positive[NBODY * 10]()
+    comptime M_SIZE = _ensure_positive[NV * NV]()
+    comptime V_SIZE = _ensure_positive[NV]()
+
+    var cdof = InlineArray[Scalar[DTYPE], CDOF_SIZE](uninitialized=True)
+    var crb = InlineArray[Scalar[DTYPE], CRB_SIZE](uninitialized=True)
+    var M = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
+    var L = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
+    var D = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+
+    from .jacobian import compute_cdof, compute_composite_inertia
+
+    compute_cdof(model, data, cdof)
+    compute_composite_inertia(model, data, crb)
+    compute_mass_matrix_full[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, M_SIZE, CDOF_SIZE,
+        CRB_SIZE, NGEOM, MAX_EQUALITY, CONE_TYPE,
+    ](model, data, cdof, crb, M)
+
+    # Add armature to diagonal before factoring
+    for j in range(model.num_joints):
+        var joint = model.joints[j]
+        var dof_adr = joint.dof_adr
+        var arm = joint.armature
+        var ndof = 1
+        if joint.jnt_type == JNT_FREE:
+            ndof = 6
+        elif joint.jnt_type == JNT_BALL:
+            ndof = 3
+        for d in range(ndof):
+            M[(dof_adr + d) * NV + (dof_adr + d)] += arm
+
+    ldl_factor[DTYPE, NV, M_SIZE, V_SIZE](M, L, D)
+
+    # Build dof_to_body mapping
+    var dof_body = InlineArray[Int, V_SIZE](uninitialized=True)
+    for i in range(NV):
+        dof_body[i] = 0
+
+    for j in range(model.num_joints):
+        var joint = model.joints[j]
+        var body = joint.body_id
+        var dof_adr = joint.dof_adr
+        var ndof = 1
+        if joint.jnt_type == JNT_FREE:
+            ndof = 6
+        elif joint.jnt_type == JNT_BALL:
+            ndof = 3
+        for d in range(ndof):
+            dof_body[dof_adr + d] = body
+
+    # World body: zero weights
+    model.body_invweight0[0] = Scalar[DTYPE](0)
+    model.body_invweight0[1] = Scalar[DTYPE](0)
+
+    # For each non-world body, compute invweight0
+    for i in range(NBODY):
+        # Build 6×NV body CoM Jacobian for body i
+        # Row k of J maps joint velocities to body i's CoM spatial velocity
+        # Rows 0-2: linear (translation), Rows 3-5: angular (rotation)
+        #
+        # For each DOF d on the kinematic chain from root to body i:
+        #   J_lin[d] = cdof_lin[d] + cdof_ang[d] × (xipos[i] - xipos[dof_body[d]])
+        #   J_ang[d] = cdof_ang[d]
+
+        # Target body CoM position
+        var ti_x = data.xipos[i * 3 + 0]
+        var ti_y = data.xipos[i * 3 + 1]
+        var ti_z = data.xipos[i * 3 + 2]
+
+        # We only need the 6 diagonal elements of A = J * M^{-1} * J^T
+        # For diagonal A[k,k] = dot(J_row_k, M^{-1} * J_row_k)
+        # We solve M * x_k = J_row_k for each k, then A[k,k] = dot(J_row_k, x_k)
+        var A_diag = InlineArray[Scalar[DTYPE], 6](uninitialized=True)
+        for k in range(6):
+            A_diag[k] = Scalar[DTYPE](0)
+
+        # Build J rows and solve systems
+        # Process all 6 rows
+        for k in range(6):
+            var J_row = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+            for d in range(NV):
+                J_row[d] = Scalar[DTYPE](0)
+
+            # Fill J_row[d] for each DOF that affects body i
+            for d in range(NV):
+                var b = dof_body[d]
+                # Check if DOF d affects body i (d's body is i or ancestor of i)
+                var affects = False
+                if b == i:
+                    affects = True
+                else:
+                    var current = i
+                    while current >= 0:
+                        if model.body_parent[current] == b:
+                            affects = True
+                            break
+                        current = model.body_parent[current]
+
+                if not affects:
+                    continue
+
+                var ang_x = cdof[d * 6 + 0]
+                var ang_y = cdof[d * 6 + 1]
+                var ang_z = cdof[d * 6 + 2]
+                var lin_x = cdof[d * 6 + 3]
+                var lin_y = cdof[d * 6 + 4]
+                var lin_z = cdof[d * 6 + 5]
+
+                # Offset from DOF's body CoM to target body CoM
+                var dx = ti_x - data.xipos[b * 3 + 0]
+                var dy = ti_y - data.xipos[b * 3 + 1]
+                var dz = ti_z - data.xipos[b * 3 + 2]
+
+                if k == 0:
+                    # J_lin_x = cdof_lin_x + (ang_y*dz - ang_z*dy)
+                    J_row[d] = lin_x + ang_y * dz - ang_z * dy
+                elif k == 1:
+                    # J_lin_y = cdof_lin_y + (ang_z*dx - ang_x*dz)
+                    J_row[d] = lin_y + ang_z * dx - ang_x * dz
+                elif k == 2:
+                    # J_lin_z = cdof_lin_z + (ang_x*dy - ang_y*dx)
+                    J_row[d] = lin_z + ang_x * dy - ang_y * dx
+                elif k == 3:
+                    # J_ang_x
+                    J_row[d] = ang_x
+                elif k == 4:
+                    # J_ang_y
+                    J_row[d] = ang_y
+                else:
+                    # J_ang_z
+                    J_row[d] = ang_z
+
+            # Solve M * x = J_row
+            var x = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+            for d in range(NV):
+                x[d] = Scalar[DTYPE](0)
+            ldl_solve[DTYPE, NV, M_SIZE, V_SIZE](L, D, J_row, x)
+
+            # A[k,k] = dot(J_row, x)
+            var dot_val = Scalar[DTYPE](0)
+            for d in range(NV):
+                dot_val += J_row[d] * x[d]
+            A_diag[k] = dot_val
+
+        # Translation: average of A[0,0], A[1,1], A[2,2]
+        var tran = (A_diag[0] + A_diag[1] + A_diag[2]) / Scalar[DTYPE](3)
+        # Rotation: average of A[3,3], A[4,4], A[5,5]
+        var rot = (A_diag[3] + A_diag[4] + A_diag[5]) / Scalar[DTYPE](3)
+
+        # Fallback: if one is near-zero, use the other (MuJoCo behavior)
+        if tran < Scalar[DTYPE](1e-10) and rot > Scalar[DTYPE](1e-10):
+            tran = rot
+        elif rot < Scalar[DTYPE](1e-10) and tran > Scalar[DTYPE](1e-10):
+            rot = tran
+
+        model.body_invweight0[2 * i] = tran
+        model.body_invweight0[2 * i + 1] = rot
+
+
 fn compute_M_inv_from_ldl[
     DTYPE: DType,
     NV: Int,

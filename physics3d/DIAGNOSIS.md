@@ -219,3 +219,65 @@ Plan: Primal Newton/CG Solvers (MuJoCo-Matching)
  Phase 2 (CPU CG + GPU — follow-up):
  - Step 4 (PrimalCGSolver CPU)
  - Step 7 (GPU implementations)
+
+
+ This is a critical finding. MuJoCo's diagApprox doesn't use sum J²/D_LDL at all — it uses precomputed body inverse weights (body_invweight0),  
+  which are model constants computed once from J_body * M^{-1} * J_body^T at the body CoM. This is fundamentally different from our LDL-based    
+  approach.                                                                                                                                      
+                                                                                                                                                 
+  Let me verify: the D_mj values printed in our solver output are actually OUR computed D values, not MuJoCo's:                                  
+                                                                                                                                                 
+⏺ Searched for 1 pattern (ctrl+o to expand)                                                                                                      
+                                                                                                                                                 
+⏺ Yes, D_mj= is printing OUR D values (which we compute via LDL diagApprox). The name is confusing. Our D=24.02 while MuJoCo's actual D=41.27.   
+   
+  Given the complexity of computing body_invweight0 properly, let me take a pragmatic approach: since we can't easily match MuJoCo's exact D     
+  values, let me simplify to use the stored inv_K_imp and K from the constraint builder (our original primal_D formula), remove the complex    
+  compute_primal_D_values function, and check if the solver logic itself is correct. The D mismatch is a known source of ~1.7x difference that we
+   can fix later by adding body_invweight0.                                                                                                      
+
+⏺ Read 1 file (ctrl+o to expand)     
+
+⏺ Now let me understand the approach. Rather than trying to match MuJoCo's exact D values (which requires body_invweight0), let me simplify: use
+  our stored primal_D (from inv_K_imp and K) and see if the solver logic is correct. The D values will differ from MuJoCo's but should still
+  produce a valid solution.                                                                                                                      
+   
+  Actually, let me take a better approach. Let me add body_invweight0 computation to our Model and use it for diagApprox, matching MuJoCo        
+  exactly. This is the right long-term fix.                                                                                                    
+                                                                                                                                               
+  But first, let me understand the body_invweight0 formula more concretely:
+
+  Now I need to add body_invweight0 to the Model struct. Let me add it as a simple InlineArray field and compute it during model initialization. 
+  The computation needs M_inv and body Jacobians at CoM.                                                                                         
+                                                                                                                                                 
+  The simplest approach: add body_invweight0 to Model (2 floats per body: translation + rotation), and compute it in a new helper function that  
+  the robot definition files call. For now, let me add it to Model and compute in the constraint builder (which already has M_inv).              
+                                                                                                                                                 
+  Actually, the best place is in the primal solver itself — it can compute it once per solve call using the available M_inv. Let me update
+  compute_primal_D_values to compute body_invweight0 from M_inv and the FK data. But I'd need body CoM positions and joint info...
+
+  Let me take a simpler approach: store body_invweight0 in the Model struct and compute it in the robot definition files (half_cheetah_def.mojo,
+  hopper_def.mojo) since they already know the body structure. I'll compute it analytically for the initial pose.
+
+  I'll add the computation to primal_common.mojo since it's specific to the primal solver. The key insight: for a serial chain robot, the body   
+  Jacobian at CoM can be computed from cdof/joint information. But since we need M_inv (which varies with qpos), let me compute it in the
+  solver's solve() method, which already has M_inv.                                                                                              
+                                                                                                                                               
+  Actually, since body_invweight0 is a MODEL CONSTANT (MuJoCo computes it once at setConst using the initial pose), I should compute it once and 
+  store it in Model. Let me add a function that robot defs call during setup.                                                                    
+                                                                                                                                                 
+  The simplest approach for now: compute it inside compute_primal_D_values using available data (M_inv from constraint data, J from constraint
+  rows, contact body info). Instead of computing body Jacobians from scratch, I can approximate: for each body that has contacts, extract its
+  diagApprox from the available M_inv and constraint Jacobian columns.
+
+  Wait, that's circular — the constraint Jacobian is at the contact point, not the body CoM. Let me think...
+
+  Actually, for the primal solver to work correctly, I need the EXACT same body_invweight0 values that MuJoCo computes. These come from the body
+  CoM Jacobian, NOT the contact Jacobian.
+
+  Let me add a proper computation function. It needs:
+  1. cdof (joint axes/anchors from FK)
+  2. xipos (body CoM in world frame)
+  3. M_inv
+
+  I'll compute it during the integrator step, right after FK and M computation, and store in Model.

@@ -305,6 +305,10 @@ struct Model[
     # Kinematic tree structure
     var body_parent: InlineArray[Int, Self.NBODY]  # -1 for world
 
+    # Body inverse weights for primal solver (MuJoCo-style diagApprox)
+    # [2*i] = translation, [2*i+1] = rotation  (precomputed model constant)
+    var body_invweight0: InlineArray[Scalar[Self.DTYPE], Self.NBODY * 2]
+
     # Unified geom arrays (NGEOM > 0)
     var geom_type: InlineArray[Int, _max_one[Self.NGEOM]()]
     var geom_body: InlineArray[Int, _max_one[Self.NGEOM]()]  # -1 for static
@@ -406,6 +410,9 @@ struct Model[
             uninitialized=True
         )
         self.body_parent = InlineArray[Int, Self.NBODY](uninitialized=True)
+        self.body_invweight0 = InlineArray[Scalar[Self.DTYPE], Self.NBODY * 2](
+            fill=Scalar[Self.DTYPE](0)
+        )
 
         # Initialize geom arrays
         self.geom_type = InlineArray[Int, _max_one[Self.NGEOM]()](

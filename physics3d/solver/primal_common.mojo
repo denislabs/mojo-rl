@@ -376,6 +376,7 @@ fn compute_primal_D_values[
             else:
                 L_ldl[i_row * NV + j] = Scalar[DTYPE](0)
 
+
     # Compute diagApprox per row using MuJoCo convention:
     # all rows in a contact group use the normal row's diagApprox
     var fric_idx = 0
@@ -647,7 +648,11 @@ fn primal_linesearch_with_D[
     force: InlineArray[Scalar[DTYPE], R_SIZE],
     tolerance: Scalar[DTYPE],
 ) -> Scalar[DTYPE]:
-    """Linesearch using precomputed D values."""
+    """Armijo backtracking linesearch using precomputed D values.
+
+    Initial step from Newton: alpha = -d1/d2 (only active constraints in d2).
+    Then Armijo backtracking to guarantee sufficient decrease.
+    """
     var snorm: Scalar[DTYPE] = 0
     for i in range(NV):
         snorm += search[i] * search[i]
@@ -655,6 +660,7 @@ fn primal_linesearch_with_D[
     if snorm < Scalar[DTYPE](PRIMAL_MINVAL):
         return Scalar[DTYPE](0)
 
+    # Directional derivative d1 = grad . search
     var d1: Scalar[DTYPE] = 0
     for i in range(NV):
         var grad_i = Ma[i] - qfrc_smooth[i]
@@ -668,10 +674,14 @@ fn primal_linesearch_with_D[
     if d1 >= Scalar[DTYPE](0):
         return Scalar[DTYPE](0)
 
+    # Second derivative d2 = search^T * H * search (only active constraints)
     var d2: Scalar[DTYPE] = 0
     for i in range(NV):
         d2 += Mv[i] * search[i]
     for r in range(constraints.num_rows):
+        # Only include active constraints (force != 0)
+        if force[r] == Scalar[DTYPE](0):
+            continue
         var Jv: Scalar[DTYPE] = 0
         for i in range(NV):
             Jv += constraints.J[r * NV + i] * search[i]

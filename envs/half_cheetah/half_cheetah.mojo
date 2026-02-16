@@ -43,6 +43,7 @@ from physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     forward_kinematics_gpu,
 )
+from physics3d.dynamics.mass_matrix import compute_body_invweight0
 from physics3d.gpu.buffer_utils import (
     copy_model_to_buffer,
     copy_geoms_to_buffer,
@@ -259,8 +260,11 @@ struct HalfCheetah[
         HalfCheetahJoints.setup_model(self.model)
         HalfCheetahGeoms.setup_model(self.model)
 
-        # Reset to initial state
+        # Reset to initial state (runs FK → xpos, xquat, xipos available)
         self._reset_state()
+
+        # Auto-compute body inverse weights (MuJoCo mj_setConst)
+        compute_body_invweight0(self.model, self.data)
 
     # =========================================================================
     # Physics State Management

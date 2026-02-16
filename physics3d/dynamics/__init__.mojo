@@ -13,6 +13,7 @@ from .mass_matrix import (
     ldl_factor,
     ldl_solve,
     compute_M_inv_from_ldl,
+    compute_body_invweight0,
 )
 from .bias_forces import compute_bias_forces
 from .jacobian import compute_cdof, compute_contact_jacobian_row, compute_composite_inertia
