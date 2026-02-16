@@ -403,7 +403,12 @@ fn _solve_friction_pgs_gpu[
         var sr_dr = rebind[Scalar[DTYPE]](
             model[0, model_meta_off + MODEL_META_IDX_SOLREF_CONTACT_1]
         )
-        var B_damp = Scalar[DTYPE](2.0) * sr_dr / sr_tc
+        var si_dmax = rebind[Scalar[DTYPE]](
+            model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_1]
+        )
+        if si_dmax < Scalar[DTYPE](1e-4):
+            si_dmax = Scalar[DTYPE](1e-4)
+        var B_damp = Scalar[DTYPE](2.0) * sr_dr / (sr_tc * si_dmax)
         comptime qvel_off = qvel_offset[NQ, NV]()
         for d in range(num_fric):
             var v_t: workspace.element_type = 0

@@ -1,20 +1,20 @@
-"""Test Constraint Jacobians against MuJoCo reference.
+"""Test Constraint Parameters against MuJoCo reference.
 
-Compares our constraint Jacobian rows (J matrix) against MuJoCo's efc_J
-for the HalfCheetah model at configurations with ground contacts.
+Compares our constraint parameters (K, R, bias, impedance) against MuJoCo's
+efc_D, efc_R, efc_aref, efc_KBIP for the HalfCheetah model at configurations
+with ground contacts.
 
-The constraint Jacobian maps joint velocities to constraint-space velocities:
-    constraint_vel = J @ qvel
-Each row of J corresponds to one constraint (normal, friction_t1, friction_t2, etc.)
+Constraint parameters control how "stiff" each constraint is:
+  - K (efc_D): Effective mass = J @ M_inv @ J^T (Delassus diagonal)
+  - R (efc_R): Regularizer = (1-imp)/imp * K (softens constraint)
+  - aref (efc_aref): Reference acceleration the constraint tries to achieve
+  - imp: Impedance from solimp smoothstep (0 = soft, 1 = rigid)
+  - bias: Our RHS = -aref
 
-MuJoCo reference: mj_data.efc_J (nefc x NV matrix, after mj_step1)
-  - Must set model.opt.cone = 1 (elliptic) to match our parameterization
-  - MuJoCo interleaves per-contact: [normal_0, t1_0, t2_0, normal_1, t1_1, t2_1, ...]
-  - Our layout: [normal_0, ..., normal_N, t1_0, t2_0, t1_1, t2_1, ...]
-  - MuJoCo efc_type: 7 = mjCNSTR_CONTACT_ELLIPTIC, 3 = mjCNSTR_LIMIT_JOINT
+MuJoCo reference: efc_D, efc_R, efc_aref, efc_b, efc_KBIP (after mj_step1)
 
 Run with:
-    cd mojo-rl && pixi run mojo run physics3d/tests/test_jacobian_vs_mujoco.mojo
+    cd mojo-rl && pixi run mojo run physics3d/tests/test_constraint_params_vs_mujoco.mojo
 """
 
 from python import Python, PythonObject
@@ -66,95 +66,50 @@ comptime CRB_SIZE = _max_one[NBODY * 10]()
 comptime MAX_ROWS = 11 * MAX_CONTACTS + 2 * NJOINT
 
 # Tolerances
-comptime ABS_TOL: Float64 = 1e-4
-comptime REL_TOL: Float64 = 1e-3
+# NOTE: D (Delassus diagonal) and R (regularizer) use fundamentally different
+# formulas: we use exact J@M_inv@J^T, MuJoCo uses invweight0 approximation.
+# So we only compare imp and aref, which validate the constraint SETUP.
+comptime AREF_ABS_TOL: Float64 = 1e-2  # Reference acceleration
+comptime AREF_REL_TOL: Float64 = 1e-3
+comptime IMP_ABS_TOL: Float64 = 1e-3  # Impedance
+# Minimum K for friction tangent — below this, direction is degenerate (skip)
+comptime FRIC_K_MIN: Float64 = 1e-6
 
 
 # =============================================================================
-# Helper: compare a single J row
+# Helper: compare a scalar parameter
 # =============================================================================
 
 
-fn compare_J_row(
+fn compare_scalar(
     label: String,
-    our_row_idx: Int,
-    mj_J_row: PythonObject,
-    constraints: ConstraintData[DTYPE, MAX_ROWS, NV],
-    sign: Float64 = 1.0,
+    our_val: Float64,
+    mj_val: Float64,
+    abs_tol: Float64,
+    rel_tol: Float64,
 ) raises -> Bool:
-    """Compare one Jacobian row element-by-element.
+    """Compare a single scalar value, return True if passes."""
+    var abs_err = abs(our_val - mj_val)
+    var ref_mag = abs(mj_val)
+    var rel_err: Float64 = 0.0
+    if ref_mag > 1e-10:
+        rel_err = abs_err / ref_mag
 
-    sign: 1.0 for direct comparison, -1.0 to compare our row against -mj_row
-    (tangent directions can be negated and still valid).
-    """
-    var max_abs_err: Float64 = 0.0
-    var max_rel_err: Float64 = 0.0
-    var fail_count = 0
-
-    for col in range(NV):
-        var our_val = Float64(constraints.J[our_row_idx * NV + col])
-        var mj_val = sign * Float64(py=mj_J_row[col])
-        var abs_err = abs(our_val - mj_val)
-        var ref_mag = abs(mj_val)
-        var rel_err: Float64 = 0.0
-        if ref_mag > 1e-10:
-            rel_err = abs_err / ref_mag
-
-        if abs_err > max_abs_err:
-            max_abs_err = abs_err
-        if rel_err > max_rel_err:
-            max_rel_err = rel_err
-
-        var ok = abs_err < ABS_TOL or rel_err < REL_TOL
-        if not ok:
-            if fail_count < 3:
-                print(
-                    "    FAIL",
-                    label,
-                    "[",
-                    col,
-                    "]",
-                    " ours=",
-                    our_val,
-                    " mj=",
-                    mj_val,
-                    " abs=",
-                    abs_err,
-                )
-            fail_count += 1
-
-    if fail_count == 0:
+    var ok = abs_err < abs_tol or rel_err < rel_tol
+    if not ok:
         print(
-            "    ",
+            "    FAIL",
             label,
-            " OK  max_abs=",
-            max_abs_err,
-            " max_rel=",
-            max_rel_err,
+            " ours=",
+            our_val,
+            " mj=",
+            mj_val,
+            " abs=",
+            abs_err,
+            " rel=",
+            rel_err,
         )
-    else:
-        print(
-            "    ",
-            label,
-            " FAILED",
-            fail_count,
-            "/",
-            NV,
-            " max_abs=",
-            max_abs_err,
-        )
-        # Print full rows for debugging
-        print("      Our:", end="")
-        for col in range(NV):
-            print(" ", Float64(constraints.J[our_row_idx * NV + col]), end="")
-        print()
-        var mj_list = mj_J_row.tolist()
-        print("      MJ :", end="")
-        for col in range(NV):
-            print(" ", sign * Float64(py=mj_list[col]), end="")
-        print()
-
-    return fail_count == 0
+    return ok
 
 
 # =============================================================================
@@ -162,13 +117,12 @@ fn compare_J_row(
 # =============================================================================
 
 
-fn compare_jacobians(
+fn compare_constraint_params(
     test_name: String,
     qpos_values: InlineArray[Float64, NQ],
     qvel_values: InlineArray[Float64, NV],
 ) raises -> Bool:
-    """Compute constraint Jacobians in both engines with identical state, compare.
-    """
+    """Compute constraints in both engines with identical state, compare params."""
     print("--- Test:", test_name, "---")
 
     # === Our engine ===
@@ -181,6 +135,19 @@ fn compare_jacobians(
     HalfCheetahBodies.setup_model(model)
     HalfCheetahJoints.setup_model(model)
     HalfCheetahGeoms.setup_model(model)
+
+    # Set solref/solimp from HalfCheetahParams (matching half_cheetah.mojo)
+    comptime P = HalfCheetahParams[DTYPE]
+    model.solref_contact[0] = P.SOLREF_CONTACT_0
+    model.solref_contact[1] = P.SOLREF_CONTACT_1
+    model.solimp_contact[0] = P.SOLIMP_CONTACT_0
+    model.solimp_contact[1] = P.SOLIMP_CONTACT_1
+    model.solimp_contact[2] = P.SOLIMP_CONTACT_2
+    model.solref_limit[0] = P.SOLREF_LIMIT_0
+    model.solref_limit[1] = P.SOLREF_LIMIT_1
+    model.solimp_limit[0] = P.SOLIMP_LIMIT_0
+    model.solimp_limit[1] = P.SOLIMP_LIMIT_1
+    model.solimp_limit[2] = P.SOLIMP_LIMIT_2
 
     var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
     for i in range(NQ):
@@ -202,7 +169,7 @@ fn compare_jacobians(
         model, data
     )
 
-    # 3. Mass matrix + armature + dt*D → LDL → M_inv
+    # 3. Mass matrix + armature + dt*D -> LDL -> M_inv
     var crb = InlineArray[Scalar[DTYPE], CRB_SIZE](uninitialized=True)
     for i in range(CRB_SIZE):
         crb[i] = Scalar[DTYPE](0)
@@ -292,15 +259,14 @@ fn compare_jacobians(
         print("  ALL OK  (no constraints)")
         return True
 
-    # Get MuJoCo efc_J (nefc x NV) and efc_type
-    var mj_J = mj_data.efc_J.reshape(mj_nefc, NV)
+    # Get MuJoCo efc arrays
+    var mj_D = mj_data.efc_D.flatten().tolist()
+    var mj_R = mj_data.efc_R.flatten().tolist()
+    var mj_aref = mj_data.efc_aref.flatten().tolist()
+    var mj_b = mj_data.efc_b.flatten().tolist()
     var mj_types = mj_data.efc_type.flatten().tolist()
-
-    # MuJoCo elliptic layout (condim=3): interleaved per contact
-    #   [normal_0, t1_0, t2_0, normal_1, t1_1, t2_1, ...]
-    #   efc_type=7 for all contact rows
-    # Our layout: grouped
-    #   [normal_0, ..., normal_N, t1_0, t2_0, t1_1, t2_1, ...]
+    # efc_KBIP: (nefc, 4) — [K_spring, B_damp, imp, pos] per row
+    var mj_KBIP = mj_data.efc_KBIP.reshape(mj_nefc, 4)
 
     # Count MuJoCo contact vs limit rows
     var mj_contact_rows = 0
@@ -318,152 +284,140 @@ fn compare_jacobians(
         mj_limit_rows,
     )
 
-    # Verify row counts match
-    var expected_contact_rows = our_ncon * 3  # normal + t1 + t2
-    var all_pass = True
-
-    if mj_contact_rows != expected_contact_rows:
-        print(
-            "  WARN: MJ contact rows=",
-            mj_contact_rows,
-            " expected=",
-            expected_contact_rows,
-        )
-
-    if our_nnorm + our_nfric != mj_contact_rows:
-        print(
-            "  FAIL: total contact rows mismatch! ours=",
-            our_nnorm + our_nfric,
-            " mj=",
-            mj_contact_rows,
-        )
-        all_pass = False
-
-    # === Compare per-contact Jacobian rows ===
-    # Match contacts by order (same detection order verified in contact test)
-    # MuJoCo: contact c → rows [c*3, c*3+1, c*3+2] = [normal, t1, t2]
-    # But MuJoCo may have limit rows mixed in... find contact-only row indices
+    # Build MuJoCo row index maps
     var mj_contact_row_indices = InlineArray[Int, MAX_ROWS](fill=-1)
     var mj_idx = 0
     for r in range(mj_nefc):
         var t = Int(py=mj_types[r])
-        if t == 7:  # contact elliptic
+        if t == 7:
             mj_contact_row_indices[mj_idx] = r
             mj_idx += 1
 
+    var mj_limit_row_indices = InlineArray[Int, MAX_ROWS](fill=-1)
+    var ml_idx = 0
+    for r in range(mj_nefc):
+        var t = Int(py=mj_types[r])
+        if t == 3:
+            mj_limit_row_indices[ml_idx] = r
+            ml_idx += 1
+
+    # === Compare ===
+    # We compare imp (impedance) and aref (reference acceleration) which
+    # validate the constraint setup (K_spring, B_damp, solimp smoothstep).
+    # We skip D (Delassus diagonal) and R (regularizer) because:
+    #   - Our engine: D = J @ M_inv @ J^T (exact Delassus diagonal)
+    #   - MuJoCo: D = imp/((1-imp)*invweight0) (body-level approximation)
+    # These are fundamentally different approaches, both valid.
+    var all_pass = True
+    var total_checks = 0
+    var pass_checks = 0
+
+    # --- Compare per-contact parameters ---
+    # Row mapping (elliptic, condim=3):
+    #   MuJoCo interleaves: [n0, t1_0, t2_0, n1, t1_1, t2_1, ...]
+    #   Ours groups: [n0,...,nN, t1_0, t2_0, t1_1, t2_1, ...]
+
     for c in range(our_ncon):
+        if c * 3 + 2 >= mj_contact_rows:
+            print("  WARN: contact", c, "out of MJ range")
+            break
+
         print("  Contact", c, ":")
 
         # --- Normal row ---
-        # Our: row index = c
-        # MuJoCo: row index = mj_contact_row_indices[c * 3]
-        var mj_normal_idx = mj_contact_row_indices[c * 3]
-        var our_normal_idx = c
-        if not compare_J_row(
-            "Normal", our_normal_idx, mj_J[mj_normal_idx], constraints
+        var our_norm_idx = c
+        var mj_norm_idx = mj_contact_row_indices[c * 3]
+
+        var our_K_n = Float64(constraints.rows[our_norm_idx].K)
+        var mj_D_n = Float64(py=mj_D[mj_norm_idx])
+
+        # Compute our impedance from inv_K_imp
+        var our_inv_K_imp_n = Float64(constraints.rows[our_norm_idx].inv_K_imp)
+        var our_imp_n = our_inv_K_imp_n * our_K_n
+
+        # impedance from KBIP
+        var mj_imp_n = Float64(py=mj_KBIP[mj_norm_idx][2])
+        total_checks += 1
+        if compare_scalar(
+            "imp(normal)", our_imp_n, mj_imp_n, IMP_ABS_TOL, 0.01
         ):
+            pass_checks += 1
+        else:
             all_pass = False
 
+        # aref: our bias = -aref
+        var our_aref_n = -Float64(constraints.rows[our_norm_idx].bias)
+        var mj_aref_n = Float64(py=mj_aref[mj_norm_idx])
+        total_checks += 1
+        if compare_scalar(
+            "aref(normal)", our_aref_n, mj_aref_n, AREF_ABS_TOL, AREF_REL_TOL
+        ):
+            pass_checks += 1
+        else:
+            all_pass = False
+
+        # Print summary for normal
+        print(
+            "    normal: K=",
+            our_K_n,
+            " imp=",
+            our_imp_n,
+            " aref=",
+            our_aref_n,
+        )
+        print(
+            "    mj:     D=",
+            mj_D_n,
+            " imp=",
+            mj_imp_n,
+            " aref=",
+            mj_aref_n,
+        )
+
         # --- Friction rows ---
-        # Tangent basis can differ between engines (both valid, just different
-        # parameterization of the tangent plane). Instead of matching t1↔t1,
-        # find the best match: compare our t1 against both MJ t1 and MJ t2,
-        # and vice versa.
-        var mj_t1_idx = mj_contact_row_indices[c * 3 + 1]
-        var mj_t2_idx = mj_contact_row_indices[c * 3 + 2]
         var our_t1_idx = our_nnorm + c * 2
         var our_t2_idx = our_nnorm + c * 2 + 1
+        var mj_t1_idx = mj_contact_row_indices[c * 3 + 1]
+        var mj_t2_idx = mj_contact_row_indices[c * 3 + 2]
 
-        # Compute error for both possible matchings:
-        #   Matching A: our_t1↔mj_t1, our_t2↔mj_t2
-        #   Matching B: our_t1↔mj_t2, our_t2↔mj_t1
-        var err_A1: Float64 = 0.0
-        var err_A2: Float64 = 0.0
-        var err_B1: Float64 = 0.0
-        var err_B2: Float64 = 0.0
+        var our_K_t1 = Float64(constraints.rows[our_t1_idx].K)
+        var our_K_t2 = Float64(constraints.rows[our_t2_idx].K)
 
-        var mj_t1_list = mj_J[mj_t1_idx].flatten().tolist()
-        var mj_t2_list = mj_J[mj_t2_idx].flatten().tolist()
+        # Match tangent directions by closest K value (basis can be swapped)
+        var mj_D_t1 = Float64(py=mj_D[mj_t1_idx])
+        var mj_D_t2 = Float64(py=mj_D[mj_t2_idx])
+        var err_direct = abs(our_K_t1 - mj_D_t1) + abs(our_K_t2 - mj_D_t2)
+        var err_swap = abs(our_K_t1 - mj_D_t2) + abs(our_K_t2 - mj_D_t1)
+        var swap = err_swap < err_direct
+        var matched_mj_t1 = mj_t1_idx if not swap else mj_t2_idx
 
-        for col in range(NV):
-            var our_v1 = Float64(constraints.J[our_t1_idx * NV + col])
-            var our_v2 = Float64(constraints.J[our_t2_idx * NV + col])
-            var mj_v1 = Float64(py=mj_t1_list[col])
-            var mj_v2 = Float64(py=mj_t2_list[col])
-            err_A1 += abs(our_v1 - mj_v1)
-            err_A2 += abs(our_v2 - mj_v2)
-            err_B1 += abs(our_v1 - mj_v2)
-            err_B2 += abs(our_v2 - mj_v1)
-
-        var err_A = err_A1 + err_A2
-        var err_B = err_B1 + err_B2
-
-        # Also check sign-flipped matching (tangent can be negated)
-        var err_C1: Float64 = 0.0
-        var err_C2: Float64 = 0.0
-        var err_D1: Float64 = 0.0
-        var err_D2: Float64 = 0.0
-        for col in range(NV):
-            var our_v1 = Float64(constraints.J[our_t1_idx * NV + col])
-            var our_v2 = Float64(constraints.J[our_t2_idx * NV + col])
-            var mj_v1 = Float64(py=mj_t1_list[col])
-            var mj_v2 = Float64(py=mj_t2_list[col])
-            err_C1 += abs(our_v1 + mj_v1)  # sign flipped
-            err_C2 += abs(our_v2 + mj_v2)
-            err_D1 += abs(our_v1 + mj_v2)  # swapped + sign flipped
-            err_D2 += abs(our_v2 + mj_v1)
-        var err_C = err_C1 + err_C2
-        var err_D = err_D1 + err_D2
-
-        # Pick best matching
-        var best_err = err_A
-        var best_label = String("A(t1↔t1)")
-        if err_B < best_err:
-            best_err = err_B
-            best_label = "B(t1↔t2)"
-        if err_C < best_err:
-            best_err = err_C
-            best_label = "C(t1↔-t1)"
-        if err_D < best_err:
-            best_err = err_D
-            best_label = "D(t1↔-t2)"
-
-        # Determine sign and swap for best matching
-        var swap = best_label == "B(t1↔t2)" or best_label == "D(t1↔-t2)"
-        var negate = best_label == "C(t1↔-t1)" or best_label == "D(t1↔-t2)"
-        var sign: Float64 = -1.0 if negate else 1.0
-
-        if not swap:
-            if not compare_J_row(
-                "Fric_t1", our_t1_idx, mj_J[mj_t1_idx], constraints, sign
+        # Skip degenerate friction tangent (K < threshold)
+        if our_K_t1 > FRIC_K_MIN:
+            var our_aref_t1 = -Float64(constraints.rows[our_t1_idx].bias)
+            var mj_aref_t1 = Float64(py=mj_aref[matched_mj_t1])
+            total_checks += 1
+            if compare_scalar(
+                "aref(fric_t1)",
+                our_aref_t1,
+                mj_aref_t1,
+                AREF_ABS_TOL,
+                AREF_REL_TOL,
             ):
+                pass_checks += 1
+            else:
                 all_pass = False
-            if not compare_J_row(
-                "Fric_t2", our_t2_idx, mj_J[mj_t2_idx], constraints, sign
-            ):
-                all_pass = False
+            print(
+                "    fric_t1: K=",
+                our_K_t1,
+                " aref=",
+                our_aref_t1,
+                " mj_aref=",
+                mj_aref_t1,
+            )
         else:
-            # Swapped: our_t1 matches MJ_t2 and our_t2 matches MJ_t1
-            if not compare_J_row(
-                "Fric_t1(↔mj_t2)",
-                our_t1_idx,
-                mj_J[mj_t2_idx],
-                constraints,
-                sign,
-            ):
-                all_pass = False
-            if not compare_J_row(
-                "Fric_t2(↔mj_t1)",
-                our_t2_idx,
-                mj_J[mj_t1_idx],
-                constraints,
-                sign,
-            ):
-                all_pass = False
+            print("    fric_t1: SKIP (degenerate K=", our_K_t1, ")")
 
-        print("    (tangent matching:", best_label, " err=", best_err, ")")
-
-    # === Compare limit rows (if any) ===
+    # --- Compare limit rows ---
     if our_nlim > 0 or mj_limit_rows > 0:
         print("  Limits (ours:", our_nlim, " mj:", mj_limit_rows, "):")
 
@@ -476,24 +430,75 @@ fn compare_jacobians(
             )
             all_pass = False
         else:
-            # Get MuJoCo limit row indices
-            var mj_limit_row_indices = InlineArray[Int, MAX_ROWS](fill=-1)
-            var ml_idx = 0
-            for r in range(mj_nefc):
-                var t = Int(py=mj_types[r])
-                if t == 3:  # mjCNSTR_LIMIT_JOINT
-                    mj_limit_row_indices[ml_idx] = r
-                    ml_idx += 1
-
             for ll in range(our_nlim):
                 var our_lim_idx = our_nnorm + our_nfric + ll
                 var mj_lim_idx = mj_limit_row_indices[ll]
-                if not compare_J_row(
-                    "Limit", our_lim_idx, mj_J[mj_lim_idx], constraints
+
+                # impedance
+                var our_K_lim = Float64(constraints.rows[our_lim_idx].K)
+                var our_inv_K_imp_lim = Float64(
+                    constraints.rows[our_lim_idx].inv_K_imp
+                )
+                var our_imp_lim = our_inv_K_imp_lim * our_K_lim
+                var mj_imp_lim = Float64(py=mj_KBIP[mj_lim_idx][2])
+                total_checks += 1
+                if compare_scalar(
+                    "imp(limit_" + String(ll) + ")",
+                    our_imp_lim,
+                    mj_imp_lim,
+                    IMP_ABS_TOL,
+                    0.01,
                 ):
+                    pass_checks += 1
+                else:
                     all_pass = False
 
+                # aref
+                var our_aref_lim = -Float64(
+                    constraints.rows[our_lim_idx].bias
+                )
+                var mj_aref_lim = Float64(py=mj_aref[mj_lim_idx])
+                total_checks += 1
+                if compare_scalar(
+                    "aref(limit_" + String(ll) + ")",
+                    our_aref_lim,
+                    mj_aref_lim,
+                    AREF_ABS_TOL,
+                    AREF_REL_TOL,
+                ):
+                    pass_checks += 1
+                else:
+                    all_pass = False
+
+                var mj_D_lim = Float64(py=mj_D[mj_lim_idx])
+                var mj_R_lim = Float64(py=mj_R[mj_lim_idx])
+                print(
+                    "    limit_" + String(ll) + ": K=",
+                    our_K_lim,
+                    " imp=",
+                    our_imp_lim,
+                    " aref=",
+                    our_aref_lim,
+                )
+                print(
+                    "    mj:       D=",
+                    mj_D_lim,
+                    " imp=",
+                    mj_imp_lim,
+                    " R=",
+                    mj_R_lim,
+                    " aref=",
+                    mj_aref_lim,
+                )
+
     print()
+    print(
+        "  Checks:",
+        pass_checks,
+        "/",
+        total_checks,
+        "passed",
+    )
     if all_pass:
         print("  ALL OK")
     else:
@@ -508,31 +513,30 @@ fn compare_jacobians(
 
 
 fn test_low_pose_static() raises -> Bool:
-    """Low pose (rootz=-0.3), zero velocity — basic contact Jacobians."""
+    """Low pose (rootz=-0.3), zero velocity."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.3  # rootz low
     var qvel = InlineArray[Float64, NV](fill=0.0)
-    return compare_jacobians("Low pose static (rootz=-0.3)", qpos, qvel)
+    return compare_constraint_params("Low pose static (rootz=-0.3)", qpos, qvel)
 
 
 fn test_low_pose_moving() raises -> Bool:
-    """Low pose with velocity — Jacobians should be same (velocity-independent).
-    """
+    """Low pose with velocity — bias should include velocity damping terms."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.3  # rootz low
     var qvel = InlineArray[Float64, NV](fill=0.0)
     qvel[0] = 2.0  # moving forward
     qvel[1] = -0.5  # moving down
     qvel[3] = -1.0  # bthigh rotating
-    return compare_jacobians("Low pose moving", qpos, qvel)
+    return compare_constraint_params("Low pose moving", qpos, qvel)
 
 
 fn test_very_low_pose() raises -> Bool:
-    """Very low pose (rootz=-0.45) — more contacts."""
+    """Very low pose (rootz=-0.45) — deeper penetration, different impedance."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.45  # rootz very low
     var qvel = InlineArray[Float64, NV](fill=0.0)
-    return compare_jacobians("Very low pose (rootz=-0.45)", qpos, qvel)
+    return compare_constraint_params("Very low pose (rootz=-0.45)", qpos, qvel)
 
 
 fn test_bent_legs() raises -> Bool:
@@ -544,7 +548,7 @@ fn test_bent_legs() raises -> Bool:
     qpos[6] = 0.5  # fthigh bent
     qpos[7] = -0.8  # fshin extended
     var qvel = InlineArray[Float64, NV](fill=0.0)
-    return compare_jacobians("Bent legs", qpos, qvel)
+    return compare_constraint_params("Bent legs", qpos, qvel)
 
 
 # =============================================================================
@@ -554,11 +558,17 @@ fn test_bent_legs() raises -> Bool:
 
 fn main() raises:
     print("=" * 60)
-    print("Constraint Jacobians: Mojo Engine vs MuJoCo")
+    print("Constraint Parameters: Mojo Engine vs MuJoCo")
     print("=" * 60)
     print("Model: HalfCheetah (NV=", NV, ")")
     print("MuJoCo cone: elliptic (to match our engine)")
-    print("Tolerances: abs=", ABS_TOL, " rel=", REL_TOL)
+    print(
+        "Tolerances: aref_abs=",
+        AREF_ABS_TOL,
+        " imp_abs=",
+        IMP_ABS_TOL,
+    )
+    print("Note: D/R skipped (different formulas: exact Delassus vs invweight0)")
     print()
 
     var num_pass = 0

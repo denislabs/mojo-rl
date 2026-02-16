@@ -359,7 +359,10 @@ struct Model[
         self.ground_z = ground_z
         self.friction = friction
 
-        # MuJoCo global defaults: solref=[0.02, 1.0], solimp=[0.9, 0.95, 0.001]
+        # MuJoCo geom defaults: solref=[0.02, 1.0], solimp=[0.0, 0.8, 0.01]
+        # Note: solimp defaults are MuJoCo's built-in geom defaults, NOT the
+        # solver-level defaults [0.9, 0.95, 0.001]. Contacts use per-geom solimp
+        # combined via max(), and geom defaults are [0.0, 0.8, 0.01, 0.5, 2.0].
         self.solref_contact = InlineArray[Scalar[Self.DTYPE], 2](
             uninitialized=True
         )
@@ -368,9 +371,9 @@ struct Model[
         self.solimp_contact = InlineArray[Scalar[Self.DTYPE], 3](
             uninitialized=True
         )
-        self.solimp_contact[0] = Scalar[Self.DTYPE](0.9)
-        self.solimp_contact[1] = Scalar[Self.DTYPE](0.95)
-        self.solimp_contact[2] = Scalar[Self.DTYPE](0.001)
+        self.solimp_contact[0] = Scalar[Self.DTYPE](0.0)
+        self.solimp_contact[1] = Scalar[Self.DTYPE](0.8)
+        self.solimp_contact[2] = Scalar[Self.DTYPE](0.01)
         self.solref_limit = InlineArray[Scalar[Self.DTYPE], 2](
             uninitialized=True
         )
@@ -379,9 +382,9 @@ struct Model[
         self.solimp_limit = InlineArray[Scalar[Self.DTYPE], 3](
             uninitialized=True
         )
-        self.solimp_limit[0] = Scalar[Self.DTYPE](0.9)
-        self.solimp_limit[1] = Scalar[Self.DTYPE](0.95)
-        self.solimp_limit[2] = Scalar[Self.DTYPE](0.001)
+        self.solimp_limit[0] = Scalar[Self.DTYPE](0.0)
+        self.solimp_limit[1] = Scalar[Self.DTYPE](0.8)
+        self.solimp_limit[2] = Scalar[Self.DTYPE](0.01)
 
         # Initialize body arrays
         self.body_mass = InlineArray[Scalar[Self.DTYPE], Self.NBODY](

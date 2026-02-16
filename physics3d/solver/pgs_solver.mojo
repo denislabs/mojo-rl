@@ -632,9 +632,9 @@ struct PGSSolver(ConstraintSolver):
             if si_dmax < Scalar[DTYPE](1e-4):
                 si_dmax = Scalar[DTYPE](1e-4)
             K_spring = Scalar[DTYPE](1.0) / (
-                sr_tc * sr_tc * sr_dr * sr_dr
+                sr_tc * sr_tc * si_dmax * si_dmax
             )
-            B_damp = Scalar[DTYPE](2.0) * sr_dr / sr_tc
+            B_damp = Scalar[DTYPE](2.0) * sr_dr / (sr_tc * si_dmax)
 
         # === PARALLEL PHASE 1: Each thread precomputes one contact ===
         if valid_env:

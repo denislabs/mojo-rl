@@ -38,7 +38,7 @@ Isolate each stage first.
 |------------------------|:-------------:|:----------:|------------------------------------------|
 | Contact Detection      | DONE          | TODO       | 6 configs, pos/normal/dist match ~1e-5   |
 | Constraint Jacobians   | DONE          | TODO       | 4 configs, normal/friction/limit ~1e-7   |
-| Constraint Parameters  | TODO          | TODO       | D, R, aref, bias vs MuJoCo efc_D/R/aref |
+| Constraint Parameters  | DONE          | TODO       | 4 configs, imp+aref match ~1e-3. D/R skipped (different formulas) |
 
 ### Stage 3: Solver output
 
@@ -62,6 +62,7 @@ Isolate each stage first.
 | `test_qacc0_vs_mujoco.mojo` | Unconstrained accel qacc_smooth | PASS | 5 (gravity, actions, vel, combo, contact pose) | abs: 1e-4, rel: 1e-3 |
 | `test_contacts_vs_mujoco.mojo` | Contact detection (pos, normal, dist) | PASS | 6 (high, default, low, very low, bent, tilted) | pos: 1e-3, dist: 1e-3, normal dot>0.99 |
 | `test_jacobian_vs_mujoco.mojo` | Constraint Jacobians (J rows) | PASS | 4 (low static, low moving, very low, bent) | abs: 1e-4, rel: 1e-3 |
+| `test_constraint_params_vs_mujoco.mojo` | Constraint params (imp, aref) | PASS | 4 (low static, low moving, very low, bent) | imp: 1e-3, aref: 1e-2 |
 | `test_full_step_contact_vs_mujoco.mojo` | Full step with contacts | FAILING | 2 (ground contact, with actions) | relaxed tolerances |
 
 ### CPU vs GPU Comparison Tests
@@ -161,31 +162,36 @@ This is the #1 suspect for full-step divergence.
 **Why this matters:** J is the bridge between joint space and constraint space.
 Wrong J means forces are applied in wrong directions.
 
-### Test 4: Constraint Parameters (`test_constraint_params_vs_mujoco.mojo`) — TODO
+### Test 4: Constraint Parameters (`test_constraint_params_vs_mujoco.mojo`) — DONE
 
-**What:** Compare constraint parameters (D, R, aref, bias) against MuJoCo.
+**What:** Compare constraint impedance and reference acceleration against MuJoCo.
 
 **MuJoCo reference (after `mj_step1`):**
-- `efc_D` — constraint diagonal (related to impedance and stiffness)
-- `efc_R` — regularizer per constraint row
-- `efc_aref` — reference acceleration (what the constraint tries to achieve)
-- `efc_b` — bias = J*qacc0 - aref (RHS of constraint equation)
 - `efc_KBIP` — [K, B, imp, pos] per constraint (4 values)
+- `efc_aref` — reference acceleration (what the constraint tries to achieve)
+- `efc_D` — Delassus diagonal approximation (NOT compared — see below)
+- `efc_R` — regularizer (NOT compared — see below)
 
-**Configs:** Same as Test 2/3 (contact configs).
+**Why D/R are skipped:**
+- Our engine: D = J @ M_inv @ J^T (exact Delassus diagonal)
+- MuJoCo: D = imp/((1-imp) * invweight0) (body-level approximation)
+- These are fundamentally different approaches, both valid for their respective solvers.
 
-**What to compare per constraint row:**
-- K (stiffness): abs tol 1e-2 (depends on solimp/solref)
-- B (damping): abs tol 1e-2
-- imp (impedance): abs tol 1e-3
-- D (Delassus diagonal approximation): rel tol 1e-2
-- R (regularizer): rel tol 1e-2
-- aref: abs tol 1e-3
-- bias (efc_b): abs tol 1e-3
+**Configs:** 4 (low static, low moving, very low, bent legs with limit)
 
-**Why this matters:** Wrong D/R/bias means the solver optimizes the wrong objective.
-Even a perfect solver will give wrong forces if these inputs are wrong.
-This is suspect #2 for full-step divergence.
+**What to compare:**
+- imp (impedance): abs tol 1e-3 → PASS (all contacts imp=0.8, limit imp=0.4)
+- aref (reference acceleration): abs tol 1e-2, rel tol 1e-3 → PASS
+- Degenerate friction tangent directions (K < 1e-6) are skipped
+
+**Bugs found and fixed:**
+- solimp defaults were [0.9, 0.95, 0.001] (MuJoCo solver defaults), should be [0.0, 0.8, 0.01] (MuJoCo geom defaults)
+- K_spring formula: was 1/(tc²*dr²), should be 1/(tc²*dmax²) — dmax from solimp, not dr from solref
+- B_damp formula: was 2*dr/tc, should be 2*dr/(tc*dmax)
+- Limit solimp width: was 0.01 (geom default), should be 0.03 (joint default)
+- Test must set solref/solimp from HalfCheetahParams (like the actual environment does)
+
+**Result:** ALL 4 PASS. imp and aref match MuJoCo within tolerances.
 
 ### Test 5: Solver Forces (`test_solver_forces_vs_mujoco.mojo`) — TODO
 

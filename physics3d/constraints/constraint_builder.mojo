@@ -244,12 +244,12 @@ fn build_constraints[
     if si_dmax < Scalar[DTYPE](1e-4):
         si_dmax = Scalar[DTYPE](1e-4)
     # Acceleration-level spring/damper coefficients (dt-independent)
-    # MuJoCo formula: K = 1/(tc² * dr²), B = 2*dr/tc
-    # Note: dmax is NOT included in K or B — it only affects impedance range
+    # MuJoCo formula: K = 1/(tc² * dmax²), B = 2*dr/(tc * dmax)
+    # dmax from solimp scales both K and B (critical damping reference)
     var K_spring = Scalar[DTYPE](1.0) / (
-        sr_tc * sr_tc * sr_dr * sr_dr
+        sr_tc * sr_tc * si_dmax * si_dmax
     )
-    var B_damp = Scalar[DTYPE](2.0) * sr_dr / sr_tc
+    var B_damp = Scalar[DTYPE](2.0) * sr_dr / (sr_tc * si_dmax)
     var default_friction = model.friction
 
     var row_idx = 0
@@ -1023,11 +1023,11 @@ fn build_constraints[
     if li_dmax < Scalar[DTYPE](1e-4):
         li_dmax = Scalar[DTYPE](1e-4)
     # Acceleration-level spring/damper for limits
-    # MuJoCo formula: K = 1/(tc² * dr²), B = 2*dr/tc
+    # MuJoCo formula: K = 1/(tc² * dmax²), B = 2*dr/(tc * dmax)
     var l_K_spring = Scalar[DTYPE](1.0) / (
-        lr_tc * lr_tc * lr_dr * lr_dr
+        lr_tc * lr_tc * li_dmax * li_dmax
     )
-    var l_B_damp = Scalar[DTYPE](2.0) * lr_dr / lr_tc
+    var l_B_damp = Scalar[DTYPE](2.0) * lr_dr / (lr_tc * li_dmax)
 
     for j in range(model.num_joints):
         var joint = model.joints[j]
@@ -1163,10 +1163,12 @@ fn build_constraints[
             var eq_K_spring = Scalar[DTYPE](1.0) / (
                 eq_sr_tc
                 * eq_sr_tc
-                * eq_sr_dr
-                * eq_sr_dr
+                * eq_si_dmax
+                * eq_si_dmax
             )
-            var eq_B_damp = Scalar[DTYPE](2.0) * eq_sr_dr / eq_sr_tc
+            var eq_B_damp = Scalar[DTYPE](2.0) * eq_sr_dr / (
+                eq_sr_tc * eq_si_dmax
+            )
 
             # Compute world anchor positions
             var world_a_x: Scalar[DTYPE]
