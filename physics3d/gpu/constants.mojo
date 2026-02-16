@@ -107,7 +107,7 @@ fn xangvel_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
 # =============================================================================
 
 # Contact layout (same as Cartesian engine: 12 floats per contact)
-comptime CONTACT_SIZE: Int = 20
+comptime CONTACT_SIZE: Int = 22
 
 comptime CONTACT_IDX_BODY_A: Int = 0
 comptime CONTACT_IDX_BODY_B: Int = 1
@@ -128,7 +128,9 @@ comptime CONTACT_IDX_CONDIM: Int = 15
 comptime CONTACT_IDX_FORCE_TORSION: Int = 16
 comptime CONTACT_IDX_FORCE_ROLL1: Int = 17
 comptime CONTACT_IDX_FORCE_ROLL2: Int = 18
-comptime CONTACT_IDX_PADDING: Int = 19
+comptime CONTACT_IDX_FRAME_T1_X: Int = 19  # T1 hint for tangent frame (capsule axis)
+comptime CONTACT_IDX_FRAME_T1_Y: Int = 20
+comptime CONTACT_IDX_FRAME_T1_Z: Int = 21
 
 
 fn contacts_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:

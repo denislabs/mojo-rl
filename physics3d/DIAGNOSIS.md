@@ -281,3 +281,27 @@ Plan: Primal Newton/CG Solvers (MuJoCo-Matching)
   3. M_inv
 
   I'll compute it during the integrator step, right after FK and M computation, and store in Model.
+
+
+  Root Cause Analysis: PrimalNewtonSolver vs MuJoCo                                                                                                                                
+   
+  Bug 1: Cone Force Formula — Missing mu^2 Factor (Critical)                                                                                                                       
+                                                                                                                                                                                 
+  In the middle (cone) zone, our cost/force formulas are 1/mu^2 too large compared to MuJoCo.
+
+  MuJoCo maps to U-space first: U = (mu*jar_n, friction.*jar_f), then NmT = mu*s where s = jar_n - mu*T. The resulting cost:
+  cost_mj = 0.5 * D/(1+mu^2) * s^2
+  force_n = -D/(1+mu^2) * s
+
+  Our code skips the U-space mapping, uses:
+  Dm = D / (mu^2 * (1+mu^2))     ← WRONG
+  cost = 0.5 * D/(mu^2*(1+mu^2)) * s^2   ← 1/mu^2 too strong
+  force_n = -D/(mu^2*(1+mu^2)) * s        ← 1/mu^2 too strong
+
+  Fix: Dm = D / (1 + mu^2) instead of D / (mu^2 * (1+mu^2)).
+
+  Bug 2: Missing Cone Hessian Cross-Terms (Convergence)
+
+  MuJoCo's HessianCone adds a full dim x dim matrix coupling normal and friction rows. Our code only adds diagonal D_r * J_r * J_r^T per row, missing the off-diagonal coupling.
+
+  Let me fix both. Starting with the Dm formula:

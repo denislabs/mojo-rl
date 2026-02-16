@@ -62,6 +62,9 @@ struct ConstraintRow[DTYPE: DType](Copyable, ImplicitlyCopyable, Movable):
     var limit_sign: Scalar[
         Self.DTYPE
     ]  # +1 for lower limit, -1 for upper limit (0 for contacts)
+    var diagApprox: Scalar[
+        Self.DTYPE
+    ]  # MuJoCo body_invweight0 diagonal approximation for D/R
 
     fn __init__(out self):
         self.K = Scalar[Self.DTYPE](1)
@@ -76,6 +79,7 @@ struct ConstraintRow[DTYPE: DType](Copyable, ImplicitlyCopyable, Movable):
         self.source_contact_idx = -1
         self.source_dof = -1
         self.limit_sign = Scalar[Self.DTYPE](0)
+        self.diagApprox = Scalar[Self.DTYPE](0)
 
 
 struct ConstraintData[DTYPE: DType, MAX_ROWS: Int, NV: Int]:

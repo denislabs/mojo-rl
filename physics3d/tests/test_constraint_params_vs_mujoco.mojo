@@ -32,6 +32,7 @@ from physics3d.dynamics.mass_matrix import (
     ldl_factor,
     ldl_solve,
     compute_M_inv_from_ldl,
+    compute_body_invweight0,
 )
 from physics3d.collision.contact_detection import detect_contacts
 from physics3d.constraints.constraint_builder import build_constraints
@@ -66,12 +67,11 @@ comptime CRB_SIZE = _max_one[NBODY * 10]()
 comptime MAX_ROWS = 11 * MAX_CONTACTS + 2 * NJOINT
 
 # Tolerances
-# NOTE: D (Delassus diagonal) and R (regularizer) use fundamentally different
-# formulas: we use exact J@M_inv@J^T, MuJoCo uses invweight0 approximation.
-# So we only compare imp and aref, which validate the constraint SETUP.
 comptime AREF_ABS_TOL: Float64 = 1e-2  # Reference acceleration
 comptime AREF_REL_TOL: Float64 = 1e-3
 comptime IMP_ABS_TOL: Float64 = 1e-3  # Impedance
+comptime DR_ABS_TOL: Float64 = 1e-2  # D/R (now using body_invweight0)
+comptime DR_REL_TOL: Float64 = 1e-2
 # Minimum K for friction tangent — below this, direction is degenerate (skip)
 comptime FRIC_K_MIN: Float64 = 1e-6
 
@@ -150,6 +150,13 @@ fn compare_constraint_params(
     model.solimp_limit[2] = P.SOLIMP_LIMIT_2
 
     var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
+
+    # Compute body_invweight0 at REFERENCE pose (MuJoCo mj_setConst is called
+    # at init time with the initial configuration, not the test configuration)
+    forward_kinematics(model, data)
+    compute_body_invweight0(model, data)
+
+    # Now set the test configuration
     for i in range(NQ):
         data.qpos[i] = Scalar[DTYPE](qpos_values[i])
     for i in range(NV):
@@ -330,10 +337,19 @@ fn compare_constraint_params(
 
         var our_K_n = Float64(constraints.rows[our_norm_idx].K)
         var mj_D_n = Float64(py=mj_D[mj_norm_idx])
+        var mj_R_n = Float64(py=mj_R[mj_norm_idx])
 
-        # Compute our impedance from inv_K_imp
+        # Compute our impedance: recover from diagApprox and inv_K_imp
         var our_inv_K_imp_n = Float64(constraints.rows[our_norm_idx].inv_K_imp)
-        var our_imp_n = our_inv_K_imp_n * our_K_n
+        var our_R_n = 1.0 / our_inv_K_imp_n - our_K_n
+        var our_diagApprox_n = Float64(constraints.rows[our_norm_idx].diagApprox)
+        var our_imp_n: Float64
+        if our_diagApprox_n > 1e-12:
+            our_imp_n = our_diagApprox_n / (our_diagApprox_n + our_R_n)
+        else:
+            our_imp_n = our_inv_K_imp_n * our_K_n
+        # Our D = 1/R
+        var our_D_n = 1.0 / our_R_n if our_R_n > 1e-12 else 0.0
 
         # impedance from KBIP
         var mj_imp_n = Float64(py=mj_KBIP[mj_norm_idx][2])
@@ -356,6 +372,24 @@ fn compare_constraint_params(
         else:
             all_pass = False
 
+        # D (Delassus / primal stiffness)
+        total_checks += 1
+        if compare_scalar(
+            "D(normal)", our_D_n, mj_D_n, DR_ABS_TOL, DR_REL_TOL
+        ):
+            pass_checks += 1
+        else:
+            all_pass = False
+
+        # R (regularizer)
+        total_checks += 1
+        if compare_scalar(
+            "R(normal)", our_R_n, mj_R_n, DR_ABS_TOL, DR_REL_TOL
+        ):
+            pass_checks += 1
+        else:
+            all_pass = False
+
         # Print summary for normal
         print(
             "    normal: K=",
@@ -364,6 +398,10 @@ fn compare_constraint_params(
             our_imp_n,
             " aref=",
             our_aref_n,
+            " D=",
+            our_D_n,
+            " R=",
+            our_R_n,
         )
         print(
             "    mj:     D=",
@@ -372,6 +410,8 @@ fn compare_constraint_params(
             mj_imp_n,
             " aref=",
             mj_aref_n,
+            " R=",
+            mj_R_n,
         )
 
         # --- Friction rows ---
@@ -390,6 +430,7 @@ fn compare_constraint_params(
         var err_swap = abs(our_K_t1 - mj_D_t2) + abs(our_K_t2 - mj_D_t1)
         var swap = err_swap < err_direct
         var matched_mj_t1 = mj_t1_idx if not swap else mj_t2_idx
+        var matched_mj_t2 = mj_t2_idx if not swap else mj_t1_idx
 
         # Skip degenerate friction tangent (K < threshold)
         if our_K_t1 > FRIC_K_MIN:
@@ -406,13 +447,27 @@ fn compare_constraint_params(
                 pass_checks += 1
             else:
                 all_pass = False
+
+            # D/R for friction
+            var our_R_t1 = 1.0 / Float64(constraints.rows[our_t1_idx].inv_K_imp) - our_K_t1
+            var mj_R_t1 = Float64(py=mj_R[matched_mj_t1])
+            total_checks += 1
+            if compare_scalar(
+                "R(fric_t1)", our_R_t1, mj_R_t1, DR_ABS_TOL, DR_REL_TOL
+            ):
+                pass_checks += 1
+            else:
+                all_pass = False
+
             print(
                 "    fric_t1: K=",
                 our_K_t1,
                 " aref=",
                 our_aref_t1,
-                " mj_aref=",
-                mj_aref_t1,
+                " R=",
+                our_R_t1,
+                " mj_R=",
+                mj_R_t1,
             )
         else:
             print("    fric_t1: SKIP (degenerate K=", our_K_t1, ")")
@@ -439,7 +494,14 @@ fn compare_constraint_params(
                 var our_inv_K_imp_lim = Float64(
                     constraints.rows[our_lim_idx].inv_K_imp
                 )
-                var our_imp_lim = our_inv_K_imp_lim * our_K_lim
+                var our_R_lim = 1.0 / our_inv_K_imp_lim - our_K_lim
+                var our_diagApprox_lim = Float64(constraints.rows[our_lim_idx].diagApprox)
+                var our_imp_lim: Float64
+                if our_diagApprox_lim > 1e-12:
+                    our_imp_lim = our_diagApprox_lim / (our_diagApprox_lim + our_R_lim)
+                else:
+                    our_imp_lim = our_inv_K_imp_lim * our_K_lim
+                var our_D_lim = 1.0 / our_R_lim if our_R_lim > 1e-12 else 0.0
                 var mj_imp_lim = Float64(py=mj_KBIP[mj_lim_idx][2])
                 total_checks += 1
                 if compare_scalar(
@@ -470,8 +532,32 @@ fn compare_constraint_params(
                 else:
                     all_pass = False
 
+                # D and R for limits
                 var mj_D_lim = Float64(py=mj_D[mj_lim_idx])
                 var mj_R_lim = Float64(py=mj_R[mj_lim_idx])
+                total_checks += 1
+                if compare_scalar(
+                    "D(limit_" + String(ll) + ")",
+                    our_D_lim,
+                    mj_D_lim,
+                    DR_ABS_TOL,
+                    DR_REL_TOL,
+                ):
+                    pass_checks += 1
+                else:
+                    all_pass = False
+                total_checks += 1
+                if compare_scalar(
+                    "R(limit_" + String(ll) + ")",
+                    our_R_lim,
+                    mj_R_lim,
+                    DR_ABS_TOL,
+                    DR_REL_TOL,
+                ):
+                    pass_checks += 1
+                else:
+                    all_pass = False
+
                 print(
                     "    limit_" + String(ll) + ": K=",
                     our_K_lim,
@@ -479,6 +565,10 @@ fn compare_constraint_params(
                     our_imp_lim,
                     " aref=",
                     our_aref_lim,
+                    " D=",
+                    our_D_lim,
+                    " R=",
+                    our_R_lim,
                 )
                 print(
                     "    mj:       D=",
@@ -567,8 +657,10 @@ fn main() raises:
         AREF_ABS_TOL,
         " imp_abs=",
         IMP_ABS_TOL,
+        " DR_abs=",
+        DR_ABS_TOL,
     )
-    print("Note: D/R skipped (different formulas: exact Delassus vs invweight0)")
+    print("Now comparing D/R using body_invweight0 (MuJoCo-matching)")
     print()
 
     var num_pass = 0

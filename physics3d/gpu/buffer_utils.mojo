@@ -314,7 +314,6 @@ fn copy_model_to_buffer[
     buffer[meta_offset + MODEL_META_IDX_SOLIMP_LIMIT_1] = model.solimp_limit[1]
     buffer[meta_offset + MODEL_META_IDX_SOLIMP_LIMIT_2] = model.solimp_limit[2]
     # Friction cone model
-
     buffer[meta_offset + MODEL_META_IDX_IMPRATIO] = model.impratio
     # Equality constraints
     buffer[meta_offset + MODEL_META_IDX_NEQUALITY] = Scalar[DTYPE](

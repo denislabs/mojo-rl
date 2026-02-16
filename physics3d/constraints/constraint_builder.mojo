@@ -38,16 +38,18 @@ fn _compute_aref[
     B_damp: Scalar[DTYPE],
     v_n: Scalar[DTYPE],
     K: Scalar[DTYPE],
-) -> Tuple[Scalar[DTYPE], Scalar[DTYPE]]:
+    diagApprox: Scalar[DTYPE],
+) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
     """Compute acceleration-level constraint reference and inv_K.
 
-    Returns (bias, inv_K) where:
+    Returns (bias, inv_K_imp, imp) where:
     - bias = -aref (negated for solver: residual = a + bias + R*lambda)
-    - inv_K = imp / K (MuJoCo regularizer: AR = K + R, R = (1-imp)/imp * K, so AR = K/imp)
+    - inv_K_imp = 1/(K + R) where R = (1-imp)/imp * diagApprox (MuJoCo body_invweight0)
+    - imp = impedance from solimp smoothstep
 
     MuJoCo formula: aref = -B*vel - K*imp*pos = K*imp*pen - B*v_n
     Our solver uses: residual = J*qacc + bias + R*lambda (= 0 at convergence)
-    MuJoCo uses: residual = J*qacc0 - aref + AR*force (efc_b + AR*f)
+    MuJoCo uses: R = (1-imp)/imp * diagApprox, D = imp/((1-imp)*diagApprox)
     So: bias = -aref = -K*imp*pen + B*v_n
     """
     var x = penetration / si_width
@@ -61,9 +63,10 @@ fn _compute_aref[
         imp = Scalar[DTYPE](1e-6)
     # bias = -aref = -(K*imp*pen - B*v_n) = -K*imp*pen + B*v_n
     var bias = -K_spring * imp * penetration + B_damp * v_n
-    # MuJoCo: AR[i,i] = K + (1-imp)/imp * K = K/imp, so inv = imp/K
-    var inv_K = imp / K
-    return (bias, inv_K)
+    # MuJoCo: R = (1-imp)/imp * diagApprox, inv_K_imp = 1/(K + R)
+    var R = (Scalar[DTYPE](1.0) - imp) / imp * diagApprox
+    var inv_K_imp = Scalar[DTYPE](1.0) / (K + R)
+    return (bias, inv_K_imp, imp)
 
 
 fn _compute_angular_jacobian_row[
@@ -313,6 +316,15 @@ fn build_constraints[
             if k_n < Scalar[DTYPE](1e-10):
                 k_n = Scalar[DTYPE](1e-10)
 
+            # Compute diagApprox from body_invweight0 (MuJoCo-style)
+            var diag_n: Scalar[DTYPE] = 0
+            if contact.body_a >= 0 and contact.body_a < NBODY:
+                diag_n += model.body_invweight0[contact.body_a * 2]
+            if contact.body_b >= 0 and contact.body_b < NBODY:
+                diag_n += model.body_invweight0[contact.body_b * 2]
+            if diag_n < Scalar[DTYPE](1e-10):
+                diag_n = k_n
+
             var penetration = -contact.dist
             var imp_result = _compute_aref[DTYPE](
                 penetration,
@@ -323,9 +335,11 @@ fn build_constraints[
                 B_damp,
                 v_n,
                 k_n,
+                diag_n,
             )
             var bias_n = imp_result[0]
             var inv_K_imp_n = imp_result[1]
+            var imp_n_val = imp_result[2]
 
             # For condim=1 (frictionless), just add a normal row
             if condim <= 1:
@@ -358,23 +372,34 @@ fn build_constraints[
             if mu_slide <= Scalar[DTYPE](0):
                 mu_slide = default_friction
 
-            # Tangent basis
-            var t1_x: Scalar[DTYPE]
-            var t1_y: Scalar[DTYPE]
-            var t1_z: Scalar[DTYPE]
-            if abs(nx) < Scalar[DTYPE](0.9):
-                t1_x = Scalar[DTYPE](0)
-                t1_y = -nz
-                t1_z = ny
-            else:
-                t1_x = nz
-                t1_y = Scalar[DTYPE](0)
-                t1_z = -nx
+            # Tangent basis (MuJoCo mju_makeFrame with capsule axis hint)
+            var hint_x = contact.frame_t1_x
+            var hint_y = contact.frame_t1_y
+            var hint_z = contact.frame_t1_z
+            var hint_len_sq = hint_x * hint_x + hint_y * hint_y + hint_z * hint_z
+
+            # If no hint (non-capsule), use MuJoCo default
+            if hint_len_sq < Scalar[DTYPE](0.25):
+                hint_x = Scalar[DTYPE](0)
+                if ny < Scalar[DTYPE](0.5) and ny > Scalar[DTYPE](-0.5):
+                    hint_y = Scalar[DTYPE](1)
+                    hint_z = Scalar[DTYPE](0)
+                else:
+                    hint_y = Scalar[DTYPE](0)
+                    hint_z = Scalar[DTYPE](1)
+
+            # Gram-Schmidt: orthogonalize hint against normal
+            var dot_nh = nx * hint_x + ny * hint_y + nz * hint_z
+            var t1_x = hint_x - dot_nh * nx
+            var t1_y = hint_y - dot_nh * ny
+            var t1_z = hint_z - dot_nh * nz
             var t1_mag = sqrt(t1_x * t1_x + t1_y * t1_y + t1_z * t1_z)
             if t1_mag > Scalar[DTYPE](1e-10):
                 t1_x /= t1_mag
                 t1_y /= t1_mag
                 t1_z /= t1_mag
+
+            # T2 = cross(normal, T1)
             var t2_x = ny * t1_z - nz * t1_y
             var t2_y = nz * t1_x - nx * t1_z
             var t2_z = nx * t1_y - ny * t1_x
@@ -513,7 +538,7 @@ fn build_constraints[
                     v_t += J_t[i] * qvel[i]
 
                 # Extract impedance from normal (shared by all edges)
-                var imp_n = inv_K_imp_n * k_n
+                var imp_n = imp_n_val
 
                 # Build edge+ and edge- rows
                 for sign_idx in range(2):
@@ -553,8 +578,9 @@ fn build_constraints[
                     var bias_edge = bias_n + tang_scale * B_damp * sign * mu_td * v_t
 
                     # Edge regularizer: MuJoCo per-row formula
-                    # R = (1-imp)/imp * K, so inv_K = imp / k_edge
-                    var inv_K_edge = imp_n / k_edge
+                    # R = (1-imp)/imp * diagApprox
+                    var R_edge = (Scalar[DTYPE](1.0) - imp_n) / imp_n * diag_n
+                    var inv_K_edge = Scalar[DTYPE](1.0) / (k_edge + R_edge)
 
                     constraints.rows[row_idx].K = k_edge
                     constraints.rows[row_idx].bias = bias_edge
@@ -621,6 +647,15 @@ fn build_constraints[
             if k < Scalar[DTYPE](1e-10):
                 k = Scalar[DTYPE](1e-10)
 
+            # Compute diagApprox from body_invweight0 (MuJoCo-style)
+            var diag_n: Scalar[DTYPE] = 0
+            if contact.body_a >= 0 and contact.body_a < NBODY:
+                diag_n += model.body_invweight0[contact.body_a * 2]
+            if contact.body_b >= 0 and contact.body_b < NBODY:
+                diag_n += model.body_invweight0[contact.body_b * 2]
+            if diag_n < Scalar[DTYPE](1e-10):
+                diag_n = k  # Fallback to exact K if no invweight0
+
             var penetration = -contact.dist
             var imp_result = _compute_aref[DTYPE](
                 penetration,
@@ -631,6 +666,7 @@ fn build_constraints[
                 B_damp,
                 v_n,
                 k,
+                diag_n,
             )
 
             var friction_coef = contact.friction
@@ -649,6 +685,7 @@ fn build_constraints[
             constraints.rows[row_idx].source_contact_idx = c
             constraints.rows[row_idx].source_dof = -1
             constraints.rows[row_idx].limit_sign = Scalar[DTYPE](0)
+            constraints.rows[row_idx].diagApprox = diag_n
 
             contact_active[c] = 1
             contact_normal_row[c] = row_idx
@@ -689,26 +726,34 @@ fn build_constraints[
         var ny = contact.normal_y
         var nz = contact.normal_z
 
-        # Compute tangent basis
-        var t1_x: Scalar[DTYPE]
-        var t1_y: Scalar[DTYPE]
-        var t1_z: Scalar[DTYPE]
+        # Compute tangent basis (MuJoCo mju_makeFrame with capsule axis hint)
+        var hint_x = contact.frame_t1_x
+        var hint_y = contact.frame_t1_y
+        var hint_z = contact.frame_t1_z
+        var hint_len_sq = hint_x * hint_x + hint_y * hint_y + hint_z * hint_z
 
-        if abs(nx) < Scalar[DTYPE](0.9):
-            t1_x = Scalar[DTYPE](0)
-            t1_y = -nz
-            t1_z = ny
-        else:
-            t1_x = nz
-            t1_y = Scalar[DTYPE](0)
-            t1_z = -nx
+        # If no hint (non-capsule), use MuJoCo default
+        if hint_len_sq < Scalar[DTYPE](0.25):
+            hint_x = Scalar[DTYPE](0)
+            if ny < Scalar[DTYPE](0.5) and ny > Scalar[DTYPE](-0.5):
+                hint_y = Scalar[DTYPE](1)
+                hint_z = Scalar[DTYPE](0)
+            else:
+                hint_y = Scalar[DTYPE](0)
+                hint_z = Scalar[DTYPE](1)
 
+        # Gram-Schmidt: orthogonalize hint against normal
+        var dot_nh = nx * hint_x + ny * hint_y + nz * hint_z
+        var t1_x = hint_x - dot_nh * nx
+        var t1_y = hint_y - dot_nh * ny
+        var t1_z = hint_z - dot_nh * nz
         var t1_mag = sqrt(t1_x * t1_x + t1_y * t1_y + t1_z * t1_z)
         if t1_mag > Scalar[DTYPE](1e-10):
             t1_x = t1_x / t1_mag
             t1_y = t1_y / t1_mag
             t1_z = t1_z / t1_mag
 
+        # T2 = cross(normal, T1)
         var t2_x = ny * t1_z - nz * t1_y
         var t2_y = nz * t1_x - nx * t1_z
         var t2_z = nx * t1_y - ny * t1_x
@@ -745,22 +790,27 @@ fn build_constraints[
         if k1 < Scalar[DTYPE](1e-10):
             k1 = Scalar[DTYPE](1e-10)
 
-        # Compute friction regularizer from parent normal's impedance
-        var imp_n = (
-            constraints.rows[normal_row].inv_K_imp
-            * constraints.rows[normal_row].K
-        )
+        # Compute friction regularizer from parent normal's diagApprox
+        # R_n = 1/inv_K_imp_n - K_n (exact regularizer from stored values)
         var R_n = (
-            (Scalar[DTYPE](1.0) - imp_n)
-            / imp_n
-            * constraints.rows[normal_row].K
+            Scalar[DTYPE](1.0) / constraints.rows[normal_row].inv_K_imp
+            - constraints.rows[normal_row].K
         )
+        if R_n < Scalar[DTYPE](1e-12):
+            R_n = Scalar[DTYPE](1e-12)
+        # Recover imp_n from diagApprox: R_n = (1-imp)/imp * diagApprox
+        var diag_n_parent = constraints.rows[normal_row].diagApprox
+        var imp_n: Scalar[DTYPE]
+        if diag_n_parent > Scalar[DTYPE](1e-12):
+            imp_n = diag_n_parent / (diag_n_parent + R_n)
+        else:
+            imp_n = constraints.rows[normal_row].inv_K_imp * constraints.rows[normal_row].K
         var R_f1 = R_n / model.impratio
         var inv_K_imp_f1 = Scalar[DTYPE](1.0) / (k1 + R_f1)
 
         # Friction velocity damping bias (MuJoCo-style):
-        # aref_friction = B_damp * imp * v_tangential → bias = -aref
-        var bias_f1 = B_damp * imp_n * v_t1
+        # aref_friction = B_damp * v_tangential → bias = -aref
+        var bias_f1 = B_damp * v_t1
 
         constraints.rows[row_idx].K = k1
         constraints.rows[row_idx].bias = bias_f1
@@ -809,7 +859,7 @@ fn build_constraints[
         var inv_K_imp_f2 = Scalar[DTYPE](1.0) / (k2 + R_f2)
 
         # Friction velocity damping bias
-        var bias_f2 = B_damp * imp_n * v_t2
+        var bias_f2 = B_damp * v_t2
 
         constraints.rows[row_idx].K = k2
         constraints.rows[row_idx].bias = bias_f2
@@ -863,7 +913,7 @@ fn build_constraints[
                 )
             var inv_K_imp_f3 = Scalar[DTYPE](1.0) / (k3 + R_f3)
 
-            var bias_f3 = B_damp * imp_n * v_t3
+            var bias_f3 = B_damp * v_t3
             constraints.rows[row_idx].K = k3
             constraints.rows[row_idx].bias = bias_f3
             constraints.rows[row_idx].inv_K_imp = inv_K_imp_f3
@@ -928,7 +978,7 @@ fn build_constraints[
                     )
                 var inv_K_imp_f4 = Scalar[DTYPE](1.0) / (k4 + R_f4)
 
-                var bias_f4 = B_damp * imp_n * v_t4
+                var bias_f4 = B_damp * v_t4
                 constraints.rows[row_idx].K = k4
                 constraints.rows[row_idx].bias = bias_f4
                 constraints.rows[row_idx].inv_K_imp = inv_K_imp_f4
@@ -990,7 +1040,7 @@ fn build_constraints[
                     )
                 var inv_K_imp_f5 = Scalar[DTYPE](1.0) / (k5 + R_f5)
 
-                var bias_f5 = B_damp * imp_n * v_t5
+                var bias_f5 = B_damp * v_t5
                 constraints.rows[row_idx].K = k5
                 constraints.rows[row_idx].bias = bias_f5
                 constraints.rows[row_idx].inv_K_imp = inv_K_imp_f5
@@ -1040,6 +1090,11 @@ fn build_constraints[
         if rmin < Scalar[DTYPE](-1e9) or rmax > Scalar[DTYPE](1e9):
             continue
 
+        # Compute diagApprox for limit: MuJoCo uses dof_invweight0[dof_adr]
+        var diag_lim: Scalar[DTYPE] = 0
+        if dof >= 0 and dof < NV:
+            diag_lim = model.dof_invweight0[dof]
+
         # Lower limit: q >= range_min → constraint dist = q - range_min
         var dist_lo = pos - rmin
         if dist_lo < Scalar[DTYPE](0.01) and row_idx < MAX_ROWS:
@@ -1062,6 +1117,9 @@ fn build_constraints[
                 penetration = Scalar[DTYPE](0)
             # Use current velocity for damping (not qacc)
             var v_lim = sign * data.qvel[dof]
+            var diag_lim_use = diag_lim
+            if diag_lim_use < Scalar[DTYPE](1e-10):
+                diag_lim_use = K_lim  # Fallback
             var imp_result = _compute_aref[DTYPE](
                 penetration,
                 li_dmin,
@@ -1071,6 +1129,7 @@ fn build_constraints[
                 l_B_damp,
                 v_lim,
                 K_lim,
+                diag_lim_use,
             )
 
             constraints.rows[row_idx].K = K_lim
@@ -1085,6 +1144,7 @@ fn build_constraints[
             constraints.rows[row_idx].source_contact_idx = -1
             constraints.rows[row_idx].source_dof = dof
             constraints.rows[row_idx].limit_sign = sign
+            constraints.rows[row_idx].diagApprox = diag_lim_use
             row_idx += 1
 
         # Upper limit: q <= range_max → constraint dist = range_max - q
@@ -1107,6 +1167,9 @@ fn build_constraints[
                 penetration = Scalar[DTYPE](0)
             # Use current velocity for damping (not qacc)
             var v_lim = sign * data.qvel[dof]
+            var diag_lim_use_hi = diag_lim
+            if diag_lim_use_hi < Scalar[DTYPE](1e-10):
+                diag_lim_use_hi = K_lim
             var imp_result = _compute_aref[DTYPE](
                 penetration,
                 li_dmin,
@@ -1116,6 +1179,7 @@ fn build_constraints[
                 l_B_damp,
                 v_lim,
                 K_lim,
+                diag_lim_use_hi,
             )
 
             constraints.rows[row_idx].K = K_lim
@@ -1130,6 +1194,7 @@ fn build_constraints[
             constraints.rows[row_idx].source_contact_idx = -1
             constraints.rows[row_idx].source_dof = dof
             constraints.rows[row_idx].limit_sign = sign
+            constraints.rows[row_idx].diagApprox = diag_lim_use_hi
             row_idx += 1
 
     constraints.num_limits = row_idx - limits_start
@@ -1277,6 +1342,15 @@ fn build_constraints[
                 var err_d = pos_errs[d]
                 var penetration = abs(err_d)
 
+                # Equality diagApprox: translation weights
+                var diag_eq: Scalar[DTYPE] = 0
+                if body_a >= 0 and body_a < NBODY:
+                    diag_eq += model.body_invweight0[body_a * 2]
+                if body_b >= 0 and body_b < NBODY:
+                    diag_eq += model.body_invweight0[body_b * 2]
+                if diag_eq < Scalar[DTYPE](1e-10):
+                    diag_eq = k_eq
+
                 var imp_result = _compute_aref[DTYPE](
                     penetration,
                     eq_si_dmin,
@@ -1286,6 +1360,7 @@ fn build_constraints[
                     eq_B_damp,
                     v_eq,
                     k_eq,
+                    diag_eq,
                 )
 
                 # For bilateral equality: bias sign depends on error direction
@@ -1309,6 +1384,7 @@ fn build_constraints[
                 constraints.rows[row_idx].source_contact_idx = -1
                 constraints.rows[row_idx].source_dof = -1
                 constraints.rows[row_idx].limit_sign = Scalar[DTYPE](0)
+                constraints.rows[row_idx].diagApprox = diag_eq
                 row_idx += 1
 
             # --- 3 orientation rows (weld only) ---
@@ -1410,6 +1486,15 @@ fn build_constraints[
                     var err_rot = rot_errs[d]
                     var pen_rot = abs(err_rot)
 
+                    # Weld rotation: use rotation weights
+                    var diag_rot: Scalar[DTYPE] = 0
+                    if body_a >= 0 and body_a < NBODY:
+                        diag_rot += model.body_invweight0[body_a * 2 + 1]
+                    if body_b >= 0 and body_b < NBODY:
+                        diag_rot += model.body_invweight0[body_b * 2 + 1]
+                    if diag_rot < Scalar[DTYPE](1e-10):
+                        diag_rot = k_rot
+
                     var imp_rot = _compute_aref[DTYPE](
                         pen_rot,
                         eq_si_dmin,
@@ -1419,6 +1504,7 @@ fn build_constraints[
                         eq_B_damp,
                         v_rot,
                         k_rot,
+                        diag_rot,
                     )
 
                     var bias_rot = imp_rot[0]
@@ -1439,6 +1525,7 @@ fn build_constraints[
                     constraints.rows[row_idx].source_contact_idx = -1
                     constraints.rows[row_idx].source_dof = -1
                     constraints.rows[row_idx].limit_sign = Scalar[DTYPE](0)
+                    constraints.rows[row_idx].diagApprox = diag_rot
                     row_idx += 1
 
     constraints.num_equality = row_idx - eq_start

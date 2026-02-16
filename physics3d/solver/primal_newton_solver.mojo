@@ -112,6 +112,148 @@ comptime PRIMAL_NEWTON_DEBUG: Bool = False
 comptime MINVAL: Float64 = 1e-10
 
 
+@always_inline
+fn _build_hessian[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    MAX_ROWS: Int,
+    V_SIZE: Int,
+    M_SIZE: Int,
+](
+    constraints: ConstraintData[DTYPE, MAX_ROWS, NV],
+    D_vals: InlineArray[Scalar[DTYPE], _max_one[MAX_ROWS]()],
+    jar: InlineArray[Scalar[DTYPE], _max_one[MAX_ROWS]()],
+    cstate: InlineArray[Int, _max_one[MAX_ROWS]()],
+    mut H: InlineArray[Scalar[DTYPE], M_SIZE],
+):
+    """Build Hessian contributions from active constraints.
+
+    For QUADRATIC state: add D_r * J_r * J_r^T (standard per-row).
+    For CONE state: add J_group^T * H_cone * J_group (coupled dim x dim).
+
+    The cone Hessian H_cone is d^2(cost)/d(jar)^2 for the contact group:
+      H[0,0] = Dm
+      H[0,j] = -Dm * mu * jar_fj / T
+      H[j,k] = Dm * mu^2 * jar_fj*jar_fk/T^2 + Dm*mu*(N-mu*T)/T * (jar_fj*jar_fk/T^2 - delta_jk)
+      where N = jar_n, T = ||jar_f||, Dm = D_n/(1+mu^2)
+
+    Reference: mujoco-main/src/engine/engine_core_constraint.c:2530-2569
+    """
+    comptime MR = _max_one[MAX_ROWS]()
+    var num_normals = constraints.num_normals
+    var num_friction = constraints.num_friction
+    var friction_start = num_normals
+    var limits_start = num_normals + num_friction
+
+    # Track which rows are handled as part of cone groups
+    var handled = InlineArray[Bool, MR](fill=False)
+
+    # Process cone contact groups (normal + friction children together)
+    var fric_idx = 0
+    for n in range(num_normals):
+        # Find friction children
+        var group_size = 0
+        while fric_idx + group_size < num_friction:
+            if (
+                constraints.rows[
+                    friction_start + fric_idx + group_size
+                ].friction_parent
+                != n
+            ):
+                break
+            group_size += 1
+
+        if cstate[n] == PRIMAL_CONE and group_size > 0:
+            # Cone state: build full dim x dim Hessian
+            var D_n = D_vals[n]
+            var mu = constraints.rows[
+                friction_start + fric_idx
+            ].friction_coef
+            # Dm = D_n / (1 + mu^2) in jar-space (no group_size factor)
+            var Dm = D_n / (Scalar[DTYPE](1) + mu * mu)
+
+            var N = jar[n]
+            var T_sq: Scalar[DTYPE] = 0
+            for g in range(group_size):
+                T_sq += jar[friction_start + fric_idx + g] * jar[friction_start + fric_idx + g]
+            var T = sqrt(T_sq)
+            var T_safe = T
+            if T_safe < Scalar[DTYPE](MINVAL):
+                T_safe = Scalar[DTYPE](MINVAL)
+            var s = N - mu * T
+
+            # Build cone Hessian as J^T * H_cone * J
+            # Rather than form H_cone explicitly, compute J_cone^T * H_cone * J_cone
+            # row indices: n (normal), friction_start + fric_idx + g (friction children)
+
+            # H_cone[0,0] = Dm → add Dm * J_n * J_n^T
+            for i in range(NV):
+                for j in range(NV):
+                    H[i * NV + j] += (
+                        Dm
+                        * constraints.J[n * NV + i]
+                        * constraints.J[n * NV + j]
+                    )
+
+            # H_cone[0,g+1] = -Dm * mu * jar_fg / T_safe  (cross-terms)
+            for g in range(group_size):
+                var fr = friction_start + fric_idx + g
+                var h_cross = -Dm * mu * jar[fr] / T_safe
+                for i in range(NV):
+                    for j in range(NV):
+                        # J_n^T * h_cross * J_fr + J_fr^T * h_cross * J_n (symmetric)
+                        H[i * NV + j] += h_cross * (
+                            constraints.J[n * NV + i] * constraints.J[fr * NV + j]
+                            + constraints.J[fr * NV + i] * constraints.J[n * NV + j]
+                        )
+
+            # H_cone[g1+1,g2+1]: friction-friction block
+            for g1 in range(group_size):
+                var fr1 = friction_start + fric_idx + g1
+                for g2 in range(group_size):
+                    var fr2 = friction_start + fric_idx + g2
+                    # Outer product term: Dm * mu^2 * jar_f1*jar_f2 / T^2
+                    var h_ff = Dm * mu * mu * jar[fr1] * jar[fr2] / (T_safe * T_safe)
+                    # Rank-correction: Dm * mu * s / T * (jar_f1*jar_f2/T^2 - delta)
+                    h_ff += Dm * mu * s / T_safe * (
+                        jar[fr1] * jar[fr2] / (T_safe * T_safe)
+                    )
+                    if g1 == g2:
+                        h_ff -= Dm * mu * s / T_safe
+                    for i in range(NV):
+                        for j in range(NV):
+                            H[i * NV + j] += (
+                                h_ff
+                                * constraints.J[fr1 * NV + i]
+                                * constraints.J[fr2 * NV + j]
+                            )
+
+            # Mark these rows as handled
+            handled[n] = True
+            for g in range(group_size):
+                handled[friction_start + fric_idx + g] = True
+
+        fric_idx += group_size
+
+    # Add standard per-row contributions for non-cone active rows
+    for r in range(constraints.num_rows):
+        if handled[r] or cstate[r] == PRIMAL_SATISFIED:
+            continue
+        # QUADRATIC state: standard D * J * J^T
+        var D_r = D_vals[r]
+        for i in range(NV):
+            for j in range(NV):
+                H[i * NV + j] += (
+                    D_r
+                    * constraints.J[r * NV + i]
+                    * constraints.J[r * NV + j]
+                )
+
+
 struct PrimalNewtonSolver(ConstraintSolver):
     """MuJoCo-style primal Newton constraint solver.
 
@@ -180,73 +322,18 @@ struct PrimalNewtonSolver(ConstraintSolver):
         var num_friction = constraints.num_friction
         var friction_start = num_normals
 
-        # Compute D values using body_invweight0 (MuJoCo-matching)
-        # For each contact: diagApprox = body_invweight0[2*body_a] + body_invweight0[2*body_b]
-        # For ground contacts (body_b = -1/0): diagApprox = body_invweight0[2*body_a]
-        # D = imp / ((1-imp) * diagApprox)
+        # Compute D values from stored diagApprox and inv_K_imp
+        # D = 1/R where R = 1/inv_K_imp - K = (1-imp)/imp * diagApprox
+        # All constraint types now store diagApprox, so primal_D works correctly.
         var D_vals = InlineArray[Scalar[DTYPE], MR](fill=Scalar[DTYPE](0))
-        var fric_idx = 0
-        for n in range(num_normals):
-            var ci = constraints.rows[n].source_contact_idx
-            var body_a = data.contacts[ci].body_a
-            var body_b = data.contacts[ci].body_b
-
-            # diagApprox from body inverse weights
-            var diag_n: Scalar[DTYPE] = 0
-            if body_a >= 0 and body_a < NBODY:
-                diag_n += model.body_invweight0[body_a * 2]
-            if body_b >= 0 and body_b < NBODY:
-                diag_n += model.body_invweight0[body_b * 2]
-
-            # Extract impedance from stored values
-            var imp = constraints.rows[n].inv_K_imp * constraints.rows[n].K
-            if imp < Scalar[DTYPE](1e-12):
-                imp = Scalar[DTYPE](1e-12)
-            if imp > Scalar[DTYPE](1) - Scalar[DTYPE](1e-12):
-                imp = Scalar[DTYPE](1) - Scalar[DTYPE](1e-12)
-
-            # D = imp / ((1-imp) * diagApprox)
-            if diag_n > Scalar[DTYPE](1e-12):
-                D_vals[n] = imp / (
-                    (Scalar[DTYPE](1) - imp) * diag_n
-                )
-            else:
-                # Fallback to primal_D if no body_invweight0
-                D_vals[n] = primal_D(
-                    constraints.rows[n].inv_K_imp,
-                    constraints.rows[n].K,
-                )
-
-            # Friction children get same D as parent normal
-            var group_size = 0
-            while fric_idx + group_size < num_friction:
-                if (
-                    constraints.rows[
-                        friction_start + fric_idx + group_size
-                    ].friction_parent
-                    != n
-                ):
-                    break
-                group_size += 1
-            for g in range(group_size):
-                D_vals[friction_start + fric_idx + g] = D_vals[n]
-            fric_idx += group_size
-
-        # Limits and equality: use primal_D (exact Delassus diagonal)
-        var limits_start = num_normals + num_friction
-        for r_off in range(constraints.num_limits):
-            var r = limits_start + r_off
+        for r in range(num_rows):
             D_vals[r] = primal_D(
                 constraints.rows[r].inv_K_imp,
                 constraints.rows[r].K,
             )
-        var eq_start = limits_start + constraints.num_limits
-        for r_off in range(constraints.num_equality):
-            var r = eq_start + r_off
-            D_vals[r] = primal_D(
-                constraints.rows[r].inv_K_imp,
-                constraints.rows[r].K,
-            )
+        # Each row keeps its own D = 1/R computed from its own diagApprox.
+        # In MuJoCo's BOTTOM zone, force = -D[j]*jar[j] uses per-row D.
+        # In CONE zone, Dm = D_n/(1+mu²) handles normal-friction coupling.
 
         # Save qacc_smooth (unconstrained acceleration)
         var qacc_smooth = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
@@ -301,24 +388,16 @@ struct PrimalNewtonSolver(ConstraintSolver):
             constraints, force, qfrc_constraint
         )
 
-        # Build Hessian H = M + J^T * D_active * J
+        # Build Hessian H = M + J^T * D_active * J + cone Hessians
         var H = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
         var L = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
         for i in range(NV * NV):
             H[i] = constraints.M_hat[i]
 
-        # Add contributions from active constraints using MuJoCo D
-        for r in range(num_rows):
-            if cstate[r] == PRIMAL_SATISFIED:
-                continue
-            var D_r = D_vals[r]
-            for i in range(NV):
-                for j in range(NV):
-                    H[i * NV + j] += (
-                        D_r
-                        * constraints.J[r * NV + i]
-                        * constraints.J[r * NV + j]
-                    )
+        _build_hessian[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+                       MAX_ROWS, V_SIZE, M_SIZE](
+            constraints, D_vals, jar, cstate, H
+        )
 
         # Cholesky factorize H
         chol_factor[DTYPE, NV, M_SIZE](H, L)
@@ -337,15 +416,25 @@ struct PrimalNewtonSolver(ConstraintSolver):
         var search = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
         var Mv = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
 
+        var total_iter = 0
+
         for iter in range(PRIMAL_NEWTON_ITERATIONS):
+            total_iter += 1
             # Compute gradient: grad = Ma - qfrc_smooth - qfrc_constraint
             var grad_norm: Scalar[DTYPE] = 0
             for i in range(NV):
                 grad[i] = Ma[i] - qfrc_smooth[i] - qfrc_constraint[i]
                 grad_norm += grad[i] * grad[i]
 
+            @parameter
+            if PRIMAL_NEWTON_DEBUG:
+                print("    [PRIMAL_NEWTON] iter_start", total_iter, " grad_norm=", Float64(sqrt(grad_norm)), " scaled=", Float64(scale * sqrt(grad_norm)))
+
             # Check gradient convergence
             if scale * sqrt(grad_norm) < Scalar[DTYPE](PRIMAL_NEWTON_TOLERANCE):
+                @parameter
+                if PRIMAL_NEWTON_DEBUG:
+                    print("    [PRIMAL_NEWTON] CONVERGED at iter", total_iter, " (gradient)")
                 break
 
             # Newton direction: search = -H^{-1} * grad via Cholesky solve
@@ -359,7 +448,7 @@ struct PrimalNewtonSolver(ConstraintSolver):
                 for j in range(NV):
                     Mv[i] += constraints.M_hat[i * NV + j] * search[j]
 
-            # Cone-aware Armijo linesearch with MuJoCo D
+            # Forward-exploring linesearch with MuJoCo D
             var alpha = primal_linesearch_with_D[DTYPE, MAX_ROWS, NV, V_SIZE, MR](
                 constraints,
                 D_vals,
@@ -375,6 +464,9 @@ struct PrimalNewtonSolver(ConstraintSolver):
             )
 
             if alpha == Scalar[DTYPE](0):
+                @parameter
+                if PRIMAL_NEWTON_DEBUG:
+                    print("    [PRIMAL_NEWTON] STOPPED at iter", total_iter, " (alpha=0)")
                 break
 
             # Save old state, cost, qacc, Ma
@@ -420,7 +512,7 @@ struct PrimalNewtonSolver(ConstraintSolver):
             if PRIMAL_NEWTON_DEBUG:
                 print(
                     "    [PRIMAL_NEWTON] iter",
-                    iter,
+                    total_iter,
                     " alpha=",
                     Float64(alpha),
                     " cost=",
@@ -449,36 +541,32 @@ struct PrimalNewtonSolver(ConstraintSolver):
                     )
                 break
 
-            # Incremental Hessian update: rank-1 Cholesky update/downdate
-            # for constraints that changed state
+            # Check if any states changed — if so, rebuild Hessian
+            var state_changed = False
             for r in range(num_rows):
-                if old_state[r] == cstate[r]:
-                    continue
+                if old_state[r] != cstate[r]:
+                    state_changed = True
+                    break
 
-                var D_r = D_vals[r]
-                var sqrt_D = sqrt(D_r)
+            if state_changed:
+                for i in range(NV * NV):
+                    H[i] = constraints.M_hat[i]
+                _build_hessian[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+                               MAX_ROWS, V_SIZE, M_SIZE](
+                    constraints, D_vals, jar, cstate, H
+                )
+                chol_factor[DTYPE, NV, M_SIZE](H, L)
 
-                # Build vector v = sqrt(D) * J[r,:]
-                var v = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-                for i in range(NV):
-                    v[i] = sqrt_D * constraints.J[r * NV + i]
-
-                if (
-                    old_state[r] == PRIMAL_SATISFIED
-                    and cstate[r] != PRIMAL_SATISFIED
-                ):
-                    # Became active: add D*J*J^T to H
-                    chol_rank1_update[DTYPE, NV, M_SIZE, V_SIZE](
-                        L, v, Scalar[DTYPE](1)
-                    )
-                elif (
-                    old_state[r] != PRIMAL_SATISFIED
-                    and cstate[r] == PRIMAL_SATISFIED
-                ):
-                    # Became inactive: remove D*J*J^T from H
-                    chol_rank1_update[DTYPE, NV, M_SIZE, V_SIZE](
-                        L, v, Scalar[DTYPE](-1)
-                    )
+        @parameter
+        if PRIMAL_NEWTON_DEBUG:
+            print("  [PRIMAL] Final states:")
+            for r in range(num_rows):
+                var state_str = "SAT"
+                if cstate[r] == PRIMAL_QUADRATIC:
+                    state_str = "QUAD"
+                elif cstate[r] == PRIMAL_CONE:
+                    state_str = "CONE"
+                print("    row", r, " state=", state_str, " jar=", Float64(jar[r]), " force=", Float64(force[r]))
 
         # Write forces back to constraint lambda_val for warm-starting
         for r in range(num_rows):

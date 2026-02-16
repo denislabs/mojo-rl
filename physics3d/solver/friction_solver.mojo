@@ -54,6 +54,9 @@ from ..gpu.constants import (
     CONTACT_IDX_FRICTION_SPIN,
     CONTACT_IDX_FRICTION_ROLL,
     CONTACT_IDX_CONDIM,
+    CONTACT_IDX_FRAME_T1_X,
+    CONTACT_IDX_FRAME_T1_Y,
+    CONTACT_IDX_FRAME_T1_Z,
     MODEL_META_IDX_IMPRATIO,
     MODEL_META_IDX_SOLREF_CONTACT_0,
     MODEL_META_IDX_SOLREF_CONTACT_1,
@@ -223,25 +226,34 @@ fn _solve_friction_pgs_gpu[
         var ny = rebind[Scalar[DTYPE]](workspace[env, ws_c_ny + c])
         var nz = rebind[Scalar[DTYPE]](workspace[env, ws_c_nz + c])
 
-        # Compute tangent basis (t1, t2)
-        var t1x: Scalar[DTYPE]
-        var t1y: Scalar[DTYPE]
-        var t1z: Scalar[DTYPE]
-        if abs(nx) < Scalar[DTYPE](0.9):
-            t1x = Scalar[DTYPE](0)
-            t1y = -nz
-            t1z = ny
-        else:
-            t1x = nz
-            t1y = Scalar[DTYPE](0)
-            t1z = -nx
+        # Compute tangent basis (MuJoCo mju_makeFrame with capsule axis hint)
+        var hint_x = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_FRAME_T1_X])
+        var hint_y = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_FRAME_T1_Y])
+        var hint_z = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_FRAME_T1_Z])
+        var hint_len_sq = hint_x * hint_x + hint_y * hint_y + hint_z * hint_z
 
+        # If no hint (non-capsule), use MuJoCo default
+        if hint_len_sq < Scalar[DTYPE](0.25):
+            hint_x = Scalar[DTYPE](0)
+            if ny < Scalar[DTYPE](0.5) and ny > Scalar[DTYPE](-0.5):
+                hint_y = Scalar[DTYPE](1)
+                hint_z = Scalar[DTYPE](0)
+            else:
+                hint_y = Scalar[DTYPE](0)
+                hint_z = Scalar[DTYPE](1)
+
+        # Gram-Schmidt: orthogonalize hint against normal
+        var dot_nh = nx * hint_x + ny * hint_y + nz * hint_z
+        var t1x = hint_x - dot_nh * nx
+        var t1y = hint_y - dot_nh * ny
+        var t1z = hint_z - dot_nh * nz
         var t1_mag = sqrt(t1x * t1x + t1y * t1y + t1z * t1z)
         if t1_mag > Scalar[DTYPE](1e-10):
             t1x = t1x / t1_mag
             t1y = t1y / t1_mag
             t1z = t1z / t1_mag
 
+        # T2 = cross(normal, T1)
         var t2x = ny * t1z - nz * t1y
         var t2y = nz * t1x - nx * t1z
         var t2z = nx * t1y - ny * t1x

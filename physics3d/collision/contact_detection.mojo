@@ -37,6 +37,9 @@ from ..gpu.constants import (
     CONTACT_IDX_FRICTION_SPIN,
     CONTACT_IDX_FRICTION_ROLL,
     CONTACT_IDX_CONDIM,
+    CONTACT_IDX_FRAME_T1_X,
+    CONTACT_IDX_FRAME_T1_Y,
+    CONTACT_IDX_FRAME_T1_Z,
     JOINT_IDX_TYPE,
     JOINT_IDX_QPOS_ADR,
     META_IDX_NUM_CONTACTS,
@@ -422,6 +425,9 @@ fn detect_contacts[
                         data.contacts[idx].friction_spin = contact_friction_spin
                         data.contacts[idx].friction_roll = contact_friction_roll
                         data.contacts[idx].condim = contact_condim
+                        data.contacts[idx].frame_t1_x = axis_w[0]
+                        data.contacts[idx].frame_t1_y = axis_w[1]
+                        data.contacts[idx].frame_t1_z = axis_w[2]
                         data.num_contacts += 1
                     # Endpoint 2: center - half_length * axis
                     var e2_x = pj_x - hlj * axis_w[0]
@@ -448,6 +454,9 @@ fn detect_contacts[
                         data.contacts[idx].friction_spin = contact_friction_spin
                         data.contacts[idx].friction_roll = contact_friction_roll
                         data.contacts[idx].condim = contact_condim
+                        data.contacts[idx].frame_t1_x = axis_w[0]
+                        data.contacts[idx].frame_t1_y = axis_w[1]
+                        data.contacts[idx].frame_t1_z = axis_w[2]
                         data.num_contacts += 1
                 elif gj_type == GEOM_SPHERE:
                     var dist = pj_z - rj - ground_z
@@ -512,6 +521,9 @@ fn detect_contacts[
                         data.contacts[idx].friction_spin = contact_friction_spin
                         data.contacts[idx].friction_roll = contact_friction_roll
                         data.contacts[idx].condim = contact_condim
+                        data.contacts[idx].frame_t1_x = axis_w[0]
+                        data.contacts[idx].frame_t1_y = axis_w[1]
+                        data.contacts[idx].frame_t1_z = axis_w[2]
                         data.num_contacts += 1
                     # Endpoint 2
                     var e2_x = pi_x - hli * axis_w[0]
@@ -538,6 +550,9 @@ fn detect_contacts[
                         data.contacts[idx].friction_spin = contact_friction_spin
                         data.contacts[idx].friction_roll = contact_friction_roll
                         data.contacts[idx].condim = contact_condim
+                        data.contacts[idx].frame_t1_x = axis_w[0]
+                        data.contacts[idx].frame_t1_y = axis_w[1]
+                        data.contacts[idx].frame_t1_z = axis_w[2]
                         data.num_contacts += 1
                 elif gi_type == GEOM_SPHERE:
                     var dist = pi_z - ri - ground_z
@@ -1150,6 +1165,9 @@ fn detect_contacts_gpu[
                         state[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
                             contact_condim
                         )
+                        state[env, c_off + CONTACT_IDX_FRAME_T1_X] = axis_w[0]
+                        state[env, c_off + CONTACT_IDX_FRAME_T1_Y] = axis_w[1]
+                        state[env, c_off + CONTACT_IDX_FRAME_T1_Z] = axis_w[2]
                         num_contacts += 1
                     # Endpoint 2: center - half_length * axis
                     var e2_x = pj_x - hlj * axis_w[0]
@@ -1185,6 +1203,9 @@ fn detect_contacts_gpu[
                         state[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
                             contact_condim
                         )
+                        state[env, c_off + CONTACT_IDX_FRAME_T1_X] = axis_w[0]
+                        state[env, c_off + CONTACT_IDX_FRAME_T1_Y] = axis_w[1]
+                        state[env, c_off + CONTACT_IDX_FRAME_T1_Z] = axis_w[2]
                         num_contacts += 1
                 elif gj_type == GEOM_SPHERE:
                     var dist = pj_z - rj - ground_z
@@ -1267,6 +1288,9 @@ fn detect_contacts_gpu[
                         state[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
                             contact_condim
                         )
+                        state[env, c_off + CONTACT_IDX_FRAME_T1_X] = axis_w[0]
+                        state[env, c_off + CONTACT_IDX_FRAME_T1_Y] = axis_w[1]
+                        state[env, c_off + CONTACT_IDX_FRAME_T1_Z] = axis_w[2]
                         num_contacts += 1
                     # Endpoint 2: center - half_length * axis
                     var e2_x = pi_x - hli * axis_w[0]
@@ -1302,6 +1326,9 @@ fn detect_contacts_gpu[
                         state[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
                             contact_condim
                         )
+                        state[env, c_off + CONTACT_IDX_FRAME_T1_X] = axis_w[0]
+                        state[env, c_off + CONTACT_IDX_FRAME_T1_Y] = axis_w[1]
+                        state[env, c_off + CONTACT_IDX_FRAME_T1_Z] = axis_w[2]
                         num_contacts += 1
                 elif gi_type == GEOM_SPHERE:
                     var dist = pi_z - ri - ground_z

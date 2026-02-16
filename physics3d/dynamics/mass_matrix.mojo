@@ -845,6 +845,18 @@ fn compute_body_invweight0[
         model.body_invweight0[2 * i] = tran
         model.body_invweight0[2 * i + 1] = rot
 
+    # Compute dof_invweight0: diagonal of M^{-1}
+    # For each DOF d, solve M * x = e_d, then dof_invweight0[d] = x[d]
+    var e_dof = InlineArray[Scalar[DTYPE], V_SIZE](fill=Scalar[DTYPE](0))
+    var x_dof = InlineArray[Scalar[DTYPE], V_SIZE](fill=Scalar[DTYPE](0))
+    for d in range(NV):
+        for i in range(NV):
+            e_dof[i] = Scalar[DTYPE](0)
+            x_dof[i] = Scalar[DTYPE](0)
+        e_dof[d] = Scalar[DTYPE](1)
+        ldl_solve[DTYPE, NV, M_SIZE, V_SIZE](L, D, e_dof, x_dof)
+        model.dof_invweight0[d] = x_dof[d]
+
 
 fn compute_M_inv_from_ldl[
     DTYPE: DType,

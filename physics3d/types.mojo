@@ -201,6 +201,9 @@ struct ContactInfo[DTYPE: DType](ImplicitlyCopyable, Movable):
     ]  # Torsional friction force (warm-start)
     var force_roll1: Scalar[Self.DTYPE]  # Rolling friction force 1 (warm-start)
     var force_roll2: Scalar[Self.DTYPE]  # Rolling friction force 2 (warm-start)
+    var frame_t1_x: Scalar[Self.DTYPE]  # T1 hint for tangent frame (capsule axis)
+    var frame_t1_y: Scalar[Self.DTYPE]
+    var frame_t1_z: Scalar[Self.DTYPE]
 
     @staticmethod
     fn empty() -> Self:
@@ -225,6 +228,9 @@ struct ContactInfo[DTYPE: DType](ImplicitlyCopyable, Movable):
             force_torsion=Scalar[Self.DTYPE](0),
             force_roll1=Scalar[Self.DTYPE](0),
             force_roll2=Scalar[Self.DTYPE](0),
+            frame_t1_x=Scalar[Self.DTYPE](0),
+            frame_t1_y=Scalar[Self.DTYPE](0),
+            frame_t1_z=Scalar[Self.DTYPE](0),
         )
 
 
@@ -308,6 +314,10 @@ struct Model[
     # Body inverse weights for primal solver (MuJoCo-style diagApprox)
     # [2*i] = translation, [2*i+1] = rotation  (precomputed model constant)
     var body_invweight0: InlineArray[Scalar[Self.DTYPE], Self.NBODY * 2]
+
+    # DOF inverse weights: dof_invweight0[d] = M_inv[d,d] (diagonal of inverse mass matrix)
+    # Used for joint limit diagApprox (MuJoCo uses this instead of body_invweight0 for limits)
+    var dof_invweight0: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NV]()]
 
     # Unified geom arrays (NGEOM > 0)
     var geom_type: InlineArray[Int, _max_one[Self.NGEOM]()]
@@ -414,6 +424,9 @@ struct Model[
         )
         self.body_parent = InlineArray[Int, Self.NBODY](uninitialized=True)
         self.body_invweight0 = InlineArray[Scalar[Self.DTYPE], Self.NBODY * 2](
+            fill=Scalar[Self.DTYPE](0)
+        )
+        self.dof_invweight0 = InlineArray[Scalar[Self.DTYPE], _max_one[Self.NV]()](
             fill=Scalar[Self.DTYPE](0)
         )
 
