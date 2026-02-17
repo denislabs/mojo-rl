@@ -1,23 +1,19 @@
-"""Implicit-fast integrator matching MuJoCo's implicitfast integration scheme.
+"""Implicit-fast integrator matching MuJoCo 3.4.1+ implicitfast design.
 
-Like EulerIntegrator, but uses the qDeriv (velocity derivative) formulation
-for mass matrix modification:
+Uses M_hat = M + armature + dt * dof_damping for the mass matrix, with
+damping also explicit in forces (f_net -= D*v). This is algebraically
+equivalent to the Euler integrator's implicit velocity damping scheme.
 
-  M_hat = M + armature - dt * qDeriv
+MuJoCo ImplicitFast (3.4.1+) calls mjd_smooth_vel(flg_bias=0), which
+computes qDeriv from actuator and passive velocity derivatives only,
+SKIPPING Coriolis/centripetal force derivatives (mjd_rne_vel).
 
-where qDeriv = d(passive_forces + actuator_forces) / d(qvel).
+For simple motor actuators without kv, qDeriv = -diag(dof_damping), so:
+  M_hat = M + arm - dt*(-diag(D)) = M + arm + dt*D
 
-Currently (without actuators): qDeriv[i,i] = -damping[i], so:
-  M_hat = M + armature + dt * damping  (same as Euler)
-
-When actuators are added, qDeriv will also include:
-  - Actuator velocity derivatives (gainprm[2], biasprm[2])
-  - Tendon damping derivatives
-
-This produces identical results to EulerIntegrator for passive systems,
-but has the architecture to correctly handle actuator dynamics.
-
-Pipeline matches EulerIntegrator exactly (see euler_integrator.mojo).
+Note: MuJoCo 3.3.6 includes Coriolis derivatives for ImplicitFast, causing
+~1-5% velocity-dependent drift vs our implementation. This was changed in
+3.4.x per the original design intent (see MuJoCo 3.0 changelog).
 """
 
 from math import sqrt
@@ -257,33 +253,25 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
             M[i] = Scalar[DTYPE](0)
         compute_mass_matrix_full(model, data, cdof, crb, M)
 
-        # 5b. Compute qDeriv and modify mass matrix
-        # M_hat = M + armature - dt * qDeriv
-        # qDeriv[i,i] = d(force_i)/d(qvel_i)
-        # For passive damping: qDeriv[i,i] = -damping[i]
-        # So: M_hat[i,i] += armature[i] - dt * (-damping[i])
-        #                  = armature[i] + dt * damping[i]
-        # Future: qDeriv will also include actuator velocity derivatives
+        # 5b. Add armature only to mass matrix diagonal
+        # MuJoCo: constraint solver sees M + arm (no dt*D).
+        # The dt*D is added later in the post-constraint re-solve step.
         for j in range(model.num_joints):
             var joint = model.joints[j]
             var dof_adr = joint.dof_adr
             var arm = joint.armature
-            var damp = joint.damping
-            # qDeriv_diag = -damp (damping force derivative w.r.t. velocity)
-            # M_hat += arm - dt * qDeriv_diag = arm + dt * damp
-            var diag_add = arm + dt * damp
             if joint.jnt_type == JNT_FREE:
                 for d in range(6):
                     M[(dof_adr + d) * NV + (dof_adr + d)] = (
-                        M[(dof_adr + d) * NV + (dof_adr + d)] + diag_add
+                        M[(dof_adr + d) * NV + (dof_adr + d)] + arm
                     )
             elif joint.jnt_type == JNT_BALL:
                 for d in range(3):
                     M[(dof_adr + d) * NV + (dof_adr + d)] = (
-                        M[(dof_adr + d) * NV + (dof_adr + d)] + diag_add
+                        M[(dof_adr + d) * NV + (dof_adr + d)] + arm
                     )
             else:
-                M[dof_adr * NV + dof_adr] = M[dof_adr * NV + dof_adr] + diag_add
+                M[dof_adr * NV + dof_adr] = M[dof_adr * NV + dof_adr] + arm
 
         # 6. LDL factorize M and solve for qacc
         var L = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
@@ -302,9 +290,9 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
             f_net[i] = data.qfrc[i] - bias[i]
 
         # 6b. Apply passive joint forces: damping + stiffness + frictionloss
-        # Damping force: f -= damping * qvel (explicit part)
-        # The implicit part (dt*damping added to M via qDeriv) handles the
-        # NEW velocity component. Both are needed for MuJoCo-matching behavior.
+        # Damping force: f -= damping * qvel (purely explicit in MuJoCo 3.3.6)
+        # MuJoCo's qDeriv = 0 for simple motor actuators, so damping is NOT
+        # incorporated into M_hat — it's handled entirely through this force term.
         for j in range(model.num_joints):
             var joint_d = model.joints[j]
             var dof_adr_d = joint_d.dof_adr
@@ -501,6 +489,13 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
                 print(" ", Float64(qacc[i]), end="")
             print("")
 
+        # Fill M_hat and qfrc_smooth for primal solvers
+        # M_hat = M + arm (already computed as M above)
+        for i in range(NV * NV):
+            constraints.M_hat[i] = M[i]
+        for i in range(NV):
+            constraints.qfrc_smooth[i] = f_net[i]
+
         Self.SOLVER.solve[CONE_TYPE=CONE_TYPE](model, data, M_inv, constraints, qacc, dt)
 
         if verbose:
@@ -563,15 +558,61 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
             MAX_ROWS,
         ](constraints, data)
 
-        # 9. Integrate: qvel = old_qvel + constrained_qacc * dt
+        # 9. Post-constraint re-solve with M_hat = M + arm + dt*D
+        # MuJoCo pattern: constraint solver uses M+arm, then the integrator
+        # re-solves qacc = M_hat^{-1} * (qfrc_smooth + qfrc_constraint).
+        # This is equivalent to mj_implicitSkip in MuJoCo.
+
+        # 9a. Compute qfrc_constraint = sum(J^T * lambda) for all constraints
+        var qfrc_constraint = InlineArray[Scalar[DTYPE], V_SIZE](
+            uninitialized=True
+        )
+        for i in range(NV):
+            qfrc_constraint[i] = Scalar[DTYPE](0)
+        for r in range(constraints.num_rows):
+            var lam = constraints.rows[r].lambda_val
+            for i in range(NV):
+                qfrc_constraint[i] += constraints.J[r * NV + i] * lam
+
+        # 9b. qfrc_total = qfrc_smooth + qfrc_constraint
+        #     where qfrc_smooth = f_net (already computed: qfrc - bias - D*v - K*(q-qref))
+        var qfrc_total = InlineArray[Scalar[DTYPE], V_SIZE](
+            uninitialized=True
+        )
+        for i in range(NV):
+            qfrc_total[i] = f_net[i] + qfrc_constraint[i]
+
+        # 9c. Add dt*damping to M diagonal → M_hat = M + arm + dt*D
+        for j in range(model.num_joints):
+            var joint = model.joints[j]
+            var dof_adr = joint.dof_adr
+            var damp = joint.damping
+            if damp > Scalar[DTYPE](0):
+                if joint.jnt_type == JNT_FREE:
+                    for d in range(6):
+                        M[(dof_adr + d) * NV + (dof_adr + d)] += dt * damp
+                elif joint.jnt_type == JNT_BALL:
+                    for d in range(3):
+                        M[(dof_adr + d) * NV + (dof_adr + d)] += dt * damp
+                else:
+                    M[dof_adr * NV + dof_adr] += dt * damp
+
+        # 9d. Re-factor M_hat and solve qacc = M_hat^{-1} * qfrc_total
+        ldl_factor[DTYPE, NV, M_SIZE, V_SIZE](M, L, D)
+        for i in range(NV):
+            qacc[i] = Scalar[DTYPE](0)
+        ldl_solve[DTYPE, NV, M_SIZE, V_SIZE](L, D, qfrc_total, qacc)
+
+        # 9e. Integrate: qvel += dt * qacc, qpos += dt * qvel
         comptime MAX_QVEL: Scalar[
             DTYPE
         ] = 100.0  # Safety clamp (MuJoCo has no clamp)
+
         for i in range(NV):
             data.qacc[i] = qacc[i]
             data.qvel[i] = data.qvel[i] + qacc[i] * dt
 
-        # 9b. Clamp velocities to prevent divergence
+        # Clamp velocities to prevent divergence
         for i in range(NV):
             if data.qvel[i] > MAX_QVEL:
                 data.qvel[i] = MAX_QVEL
@@ -772,32 +813,29 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
             WS_SIZE,
         ](env, state, model, workspace)
 
-        # 6b. Compute qDeriv and modify mass matrix
-        # M_hat = M + armature - dt * qDeriv
-        # qDeriv[i,i] = -damping[i] (passive only; extensible for actuators)
-        # Result: M_hat[i,i] += armature[i] + dt * damping[i]
-        var model_meta_off_arm = model_metadata_offset[NBODY, NJOINT]()
-        var dt_arm = model[0, model_meta_off_arm + MODEL_META_IDX_TIMESTEP]
-
+        # 6b. Add armature only to mass matrix diagonal
+        # MuJoCo: constraint solver sees M + arm (no dt*D).
+        # The dt*D is added later in step_finalize_kernel.
+        var model_meta_off_early = model_metadata_offset[NBODY, NJOINT]()
+        var dt = rebind[Scalar[DTYPE]](
+            model[0, model_meta_off_early + MODEL_META_IDX_TIMESTEP]
+        )
         for j in range(NJOINT):
             var joint_off = model_joint_offset[NBODY](j)
             var jnt_type = Int(model[0, joint_off + JOINT_IDX_TYPE])
             var dof_adr = Int(model[0, joint_off + JOINT_IDX_DOF_ADR])
             var arm = model[0, joint_off + JOINT_IDX_ARMATURE]
-            var damp = model[0, joint_off + JOINT_IDX_DAMPING]
-            # qDeriv_diag = -damp => M_hat += arm - dt * (-damp) = arm + dt * damp
-            var diag_add = arm + dt_arm * damp
             if jnt_type == JNT_FREE:
                 for d in range(6):
                     var idx = M_idx + (dof_adr + d) * NV + (dof_adr + d)
-                    workspace[env, idx] += diag_add
+                    workspace[env, idx] += arm
             elif jnt_type == JNT_BALL:
                 for d in range(3):
                     var idx = M_idx + (dof_adr + d) * NV + (dof_adr + d)
-                    workspace[env, idx] += diag_add
+                    workspace[env, idx] += arm
             else:
                 var idx = M_idx + dof_adr * NV + dof_adr
-                workspace[env, idx] += diag_add
+                workspace[env, idx] += arm
 
         # 7. LDL factorize (reads M, writes L/D in workspace)
         ldl_factor_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](env, workspace)
@@ -826,9 +864,6 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         var qacc_off = qacc_offset[NQ, NV]()
         var qfrc_off = qfrc_offset[NQ, NV]()
         var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
-        var dt = rebind[Scalar[DTYPE]](
-            model[0, model_meta_off + MODEL_META_IDX_TIMESTEP]
-        )
 
         # f_net = qfrc - bias (write to workspace fnet region)
         for i in range(NV):
@@ -1037,18 +1072,76 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         var dt = rebind[Scalar[DTYPE]](
             model[0, model_meta_off + MODEL_META_IDX_TIMESTEP]
         )
-        # 9. Integrate: qvel = old_qvel + constrained_qacc * dt
+
+        # 9. Post-constraint re-solve with M_hat = M + arm + dt*D
+        # MuJoCo pattern: constraint solver used M+arm, now re-solve with M_hat.
+        # qacc_final = M_hat^{-1} * (qfrc_smooth + qfrc_constraint)
+        #            = M_hat^{-1} * M * qacc_constrained
+        # (since qacc_constrained = M_inv * (qfrc_smooth + qfrc_constraint))
+
+        comptime M_idx = ws_M_offset[NV, NBODY]()
+        comptime fnet_idx = ws_fnet_offset[NV, NBODY]()
+
+        # 9a. Compute qfrc_total = M * qacc_constrained (store in fnet workspace)
+        for i in range(NV):
+            var sum = Scalar[DTYPE](0)
+            for j in range(NV):
+                var m_ij = rebind[Scalar[DTYPE]](
+                    workspace[env, M_idx + i * NV + j]
+                )
+                var qacc_j = rebind[Scalar[DTYPE]](
+                    workspace[env, qacc_constrained_idx + j]
+                )
+                sum += m_ij * qacc_j
+            workspace[env, fnet_idx + i] = sum
+
+        # 9b. Add dt*damping to M diagonal → M_hat = M + arm + dt*D
+        for j in range(NJOINT):
+            var joint_off = model_joint_offset[NBODY](j)
+            var jnt_type = Int(
+                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
+            )
+            var dof_adr = Int(
+                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
+            )
+            var damp = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_DAMPING]
+            )
+            if damp > Scalar[DTYPE](0):
+                if jnt_type == JNT_FREE:
+                    for d in range(6):
+                        var idx = M_idx + (dof_adr + d) * NV + (dof_adr + d)
+                        var cur = rebind[Scalar[DTYPE]](workspace[env, idx])
+                        workspace[env, idx] = cur + dt * damp
+                elif jnt_type == JNT_BALL:
+                    for d in range(3):
+                        var idx = M_idx + (dof_adr + d) * NV + (dof_adr + d)
+                        var cur = rebind[Scalar[DTYPE]](workspace[env, idx])
+                        workspace[env, idx] = cur + dt * damp
+                else:
+                    var idx = M_idx + dof_adr * NV + dof_adr
+                    var cur = rebind[Scalar[DTYPE]](workspace[env, idx])
+                    workspace[env, idx] = cur + dt * damp
+
+        # 9c. Re-factor M_hat and solve qacc_final = M_hat^{-1} * qfrc_total
+        ldl_factor_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](env, workspace)
+        ldl_solve_workspace_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
+            env, workspace
+        )
+
+        # 9d. Read re-solved qacc from workspace and integrate
+        comptime qacc_ws_idx = ws_qacc_ws_offset[NV, NBODY]()
         var qpos_off = qpos_offset[NQ, NV]()
         comptime MAX_QVEL: Scalar[
             DTYPE
         ] = 100.0  # Safety clamp (MuJoCo has no clamp)
         for i in range(NV):
             var old_qvel = rebind[Scalar[DTYPE]](state[env, qvel_off + i])
-            var constrained_qacc = rebind[Scalar[DTYPE]](
-                workspace[env, qacc_constrained_idx + i]
+            var qacc_final = rebind[Scalar[DTYPE]](
+                workspace[env, qacc_ws_idx + i]
             )
-            state[env, qacc_off + i] = constrained_qacc
-            var new_qvel = old_qvel + constrained_qacc * dt
+            state[env, qacc_off + i] = qacc_final
+            var new_qvel = old_qvel + qacc_final * dt
             # Clamp velocity
             if new_qvel > MAX_QVEL:
                 new_qvel = MAX_QVEL
