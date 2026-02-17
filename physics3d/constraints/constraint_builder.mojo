@@ -532,13 +532,25 @@ fn build_constraints[
                 if mu_td <= Scalar[DTYPE](1e-12):
                     continue
 
-                # Compute tangential velocity for edge bias
-                var v_t: Scalar[DTYPE] = 0
-                for i in range(NV):
-                    v_t += J_t[i] * qvel[i]
-
                 # Extract impedance from normal (shared by all edges)
                 var imp_n = imp_n_val
+
+                # MuJoCo pyramidal diagApprox (engine_core_constraint.c:1203-1205):
+                #   dA = tran + fri^2 * (j < 2 ? tran : rot)
+                # For condim=3, td=0,1 are sliding: dA = tran + mu^2*tran
+                # For condim=4, td=2 is torsion: dA = tran + mu_spin^2*rot
+                # For condim=6, td=3,4 are rolling: dA = tran + mu_roll^2*rot
+                # We use tran for both (rot weight not stored separately)
+                var diag_edge = diag_n + mu_td * mu_td * diag_n
+
+                # MuJoCo pyramidal R adjustment (engine_core_constraint.c:1484-1493):
+                #   R_initial = (1-imp)/imp * dA
+                #   R[i+1] = R[i] / impratio  (impratio=1 → same)
+                #   con->mu = friction[0] * sqrt(1/impratio)  (=friction[0] for impratio=1)
+                #   Rpy = 2 * con->mu^2 * R_initial
+                # For impratio=1: Rpy = 2 * mu^2 * (1-imp)/imp * dA
+                var R_initial = (Scalar[DTYPE](1.0) - imp_n) / imp_n * diag_edge
+                var R_edge = Scalar[DTYPE](2.0) * mu_slide * mu_slide * R_initial
 
                 # Build edge+ and edge- rows
                 for sign_idx in range(2):
@@ -564,22 +576,19 @@ fn build_constraints[
                     if k_edge < Scalar[DTYPE](1e-10):
                         k_edge = Scalar[DTYPE](1e-10)
 
-                    # Edge bias: include tangential velocity damping but
-                    # adaptively scale to prevent edge deactivation.
-                    # Limit tangential contribution to 30% of |bias_n|
-                    # to keep both edges well-active and limit parasitic
-                    # normal force while still providing friction damping.
-                    var tang_full = B_damp * mu_td * abs(v_t)
-                    var abs_bias_n = -bias_n if bias_n < Scalar[DTYPE](0) else bias_n
-                    var tang_limit = Scalar[DTYPE](0.4) * abs_bias_n
-                    var tang_scale = Scalar[DTYPE](1.0)
-                    if tang_full > tang_limit and tang_full > Scalar[DTYPE](1e-10):
-                        tang_scale = tang_limit / tang_full
-                    var bias_edge = bias_n + tang_scale * B_damp * sign * mu_td * v_t
+                    # MuJoCo edge bias: uses edge Jacobian velocity directly
+                    # efc_vel = J_edge * qvel, then:
+                    # efc_aref = -B*efc_vel - K*imp*(pos - margin)
+                    # bias = -efc_aref (our convention)
+                    # pos = con->dist for both edges, margin = includemargin (0)
+                    var v_edge: Scalar[DTYPE] = 0
+                    for i in range(NV):
+                        v_edge += constraints.J[row_idx * NV + i] * data.qvel[i]
+                    # aref = -B*v_edge - K*imp*dist  (dist = -penetration, negative)
+                    # bias = -aref = B*v_edge + K*imp*dist
+                    # = B*v_edge - K*imp*penetration
+                    var bias_edge = B_damp * v_edge - K_spring * imp_n * penetration
 
-                    # Edge regularizer: MuJoCo per-row formula
-                    # R = (1-imp)/imp * diagApprox
-                    var R_edge = (Scalar[DTYPE](1.0) - imp_n) / imp_n * diag_n
                     var inv_K_edge = Scalar[DTYPE](1.0) / (k_edge + R_edge)
 
                     constraints.rows[row_idx].K = k_edge

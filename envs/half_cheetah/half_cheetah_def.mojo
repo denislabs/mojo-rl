@@ -510,7 +510,7 @@ comptime HalfCheetahModel = ModelDef[
     HalfCheetahJoints._sum_nv(),
     HalfCheetahGeoms.N,
     0,
-    ConeType.ELLIPTIC,
+    ConeType.PYRAMIDAL,
 ]
 
 

@@ -656,6 +656,12 @@ fn _solve_friction_pgs_gpu[
                         workspace[env, re + d * MC + c]
                     )
 
+                    # Per-edge bias: bias_edge = bias_n ± mu * B_damp * v_t
+                    # bf[d*MC+c] already stores B_damp * v_t (friction velocity damping)
+                    var bf_d = rebind[Scalar[DTYPE]](
+                        workspace[env, bf + d * MC + c]
+                    )
+
                     # Positive edge (+): a_edge = a_n + mu * a_f
                     var a_edge_pos = a_n_val + mu_d * a_f_val
                     var K_ep = rebind[Scalar[DTYPE]](
@@ -663,7 +669,7 @@ fn _solve_friction_pgs_gpu[
                     )
                     var residual_pos = (
                         a_edge_pos
-                        + bias_n
+                        + bias_n + mu_d * bf_d
                         + R_e
                         * rebind[Scalar[DTYPE]](workspace[env, lf + d * MC + c])
                     )
@@ -720,7 +726,7 @@ fn _solve_friction_pgs_gpu[
                     )
                     var residual_neg = (
                         a_edge_neg
-                        + bias_n
+                        + bias_n - mu_d * bf_d
                         + R_e
                         * rebind[Scalar[DTYPE]](
                             workspace[env, le_neg + d * MC + c]

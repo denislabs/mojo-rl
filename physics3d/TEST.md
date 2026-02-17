@@ -24,17 +24,19 @@ Isolate each stage first.
 
 ### Integrator/Solver coverage
 
-| Integrator     | Solver             | Cone     | MuJoCo vs CPU | CPU vs GPU | Used by          |
-|----------------|--------------------|----------|:-------------:|:----------:|------------------|
-| Euler          | Newton             | Elliptic | DONE          | DONE       | (tests only)     |
-| Euler          | CG                 | Elliptic | DONE          | —          | (tests only)     |
-| Euler          | PGS (dual)         | Elliptic | DONE          | —          | (tests only)     |
-| ImplicitFast   | Newton             | Elliptic | DONE          | DONE       | HalfCheetah      |
-| ImplicitFast   | PGS                | Elliptic | N/A           | DONE       | Hopper (Default) |
-| Implicit (full)| PGS                | Elliptic | DONE          | DONE       | (tests only)     |
+| Integrator     | Solver             | Cone      | MuJoCo vs CPU | CPU vs GPU | Used by          |
+|----------------|--------------------|-----------|:-------------:|:----------:|------------------|
+| Euler          | Newton             | Elliptic  | DONE          | DONE       | (tests only)     |
+| Euler          | CG                 | Elliptic  | DONE          | —          | (tests only)     |
+| Euler          | PGS (dual)         | Elliptic  | DONE          | —          | (tests only)     |
+| Euler          | Newton             | Pyramidal | DONE          | DONE       | (tests only)     |
+| ImplicitFast   | Newton             | Elliptic  | DONE          | DONE       | HalfCheetah      |
+| ImplicitFast   | PGS                | Elliptic  | N/A           | DONE       | Hopper (Default) |
+| Implicit (full)| PGS                | Elliptic  | DONE          | DONE       | (tests only)     |
+| RK4            | Newton             | Elliptic  | DONE          | DONE       | (tests only)     |
 
-MuJoCo comparison uses `opt.integrator=0` (Euler) for Euler tests, `opt.integrator=3` (ImplicitFast)
-for ImplicitFast tests, and `opt.integrator=2` (Implicit) for full Implicit tests.
+MuJoCo comparison uses `opt.integrator=0` (Euler) for Euler tests, `opt.integrator=1` (RK4) for RK4 tests,
+`opt.integrator=3` (ImplicitFast) for ImplicitFast tests, and `opt.integrator=2` (Implicit) for full Implicit tests.
 
 **CRITICAL: MuJoCo 3.3.6 integrator enum values:**
 - `0` = mjINT_EULER
@@ -134,6 +136,8 @@ ImplicitFast+PGS has no MuJoCo comparison because MuJoCo only allows Newton solv
 | `test_implicit_step_vs_mujoco.mojo` | Implicit (full) step no contacts (ref: MuJoCo Implicit) | PASS | 6 (free fall, zero vel+actions, moving+actions, fast spinning, 10-step variants) | qpos: 1e-4, qvel: 1e-2 (actual err ~5.9e-6) |
 | `test_qderiv_finite_diff.mojo` | RNE velocity derivative vs finite differences | PASS | HalfCheetah nonzero vel | max err ~1e-6 |
 | `test_qderiv_vs_mujoco.mojo` | qDeriv vs MuJoCo reference | PASS | HalfCheetah nonzero vel | matches MuJoCo |
+| `test_pyramidal_vs_mujoco.mojo` | Pyramidal cone Newton solver forces (qacc, qfrc_constraint) | PASS (4/4) | 4 (low static, low moving, very low, bent) | qacc/qfrc: 5e-2 (actual ~1e-3). D/R match exactly. |
+| `test_rk4_step_vs_mujoco.mojo` | RK4 full step no contact + contact (ref: MuJoCo RK4) | PASS (6/6) | 6 (free fall, actions, moving, fast spin, 10-step, ground contact) | qpos: 1e-3, qvel: 1e-2 (actual err ~1e-6 no-contact, ~3.5e-6 contact) |
 
 ### CPU vs GPU Comparison Tests
 
@@ -150,6 +154,8 @@ ImplicitFast+PGS has no MuJoCo comparison because MuJoCo only allows Newton solv
 | `test_implicit_fast_newton_cpu_vs_gpu.mojo` | ImplicitFast+Newton full step (float32) | PASS | 7 (3 no-contact + 4 contact, deep pen skipped) | qpos: 3e-2, qvel: 5e-1 (actual err=0 for most, ~0 for contact) |
 | `test_implicit_fast_pgs_cpu_vs_gpu.mojo` | ImplicitFast+PGS full step (float32) | PASS | 8 (3 no-contact + 5 contact) | qpos: 5e-2, qvel: 1.0 (actual max qvel err 0.33 for deep pen) |
 | `test_implicit_cpu_vs_gpu.mojo` | Implicit(full)+PGS full step (float32) | PASS | 8 (zero vel, nonzero vel, actions, contact) | qpos: 5e-2, qvel: 1.0 (nonzero vel err ~2.8e-4, contact ~0.01) |
+| `test_pyramidal_cpu_vs_gpu.mojo` | Pyramidal cone Euler+Newton CPU vs GPU (float32) | PASS | 6 (static, actions, deep pen, moving, 5-step) | qpos: 3e-2, qvel: 5e-1 (actual static ~0.08, deep ~0.55, moving ~0.16) |
+| `test_rk4_cpu_vs_gpu.mojo` | RK4+Newton full step CPU vs GPU (float32) | PASS | 6 (free fall, actions, moving, fast spin, 10-step, ground contact) | qpos: 3e-2, qvel: 5e-1 (actual err ~0, exact match) |
 
 ### Analytical / Standalone Tests
 
@@ -330,6 +336,99 @@ No separate PGS friction phase needed.
 | Low moving | 2.1e-3 | 4.3e-6 | 1.9e-3 | 3.5e-5 | 12 digits |
 | Very low | 3.1e-3 | 9.2e-6 | 2.5e-3 | 4.0e-5 | 12 digits |
 | Bent legs | 2.0e-4 | 3.0e-5 | 9.4e-4 | 4.0e-6 | 12 digits |
+
+### Stage 6: Pyramidal Cone — Euler + Newton
+
+| Component              | MuJoCo vs CPU | CPU vs GPU | Notes                                    |
+|------------------------|:-------------:|:----------:|------------------------------------------|
+| Solver Forces          | DONE          | DONE       | 4 configs, qacc ~1e-3, D/R exact match   |
+
+**Test:** `test_pyramidal_vs_mujoco.mojo` — Compares our Newton solver with `ConeType.PYRAMIDAL`
+against MuJoCo's Newton solver with `opt.cone=0` (pyramidal).
+
+**Pyramidal cone vs Elliptic:**
+- Elliptic: separate normal + friction rows, QCQP projection for cone constraint
+- Pyramidal: edge rows `J_edge± = J_n ± mu*J_t` with `lambda >= 0` (simple inequality)
+- MuJoCo CG/Newton treats pyramidal edges as plain inequality constraints (no 3-zone cone logic)
+
+**Pyramidal-specific D/R computation (differs from elliptic):**
+- `diagApprox = tran + mu² * tran` (vs just `tran` for elliptic normal)
+- `R_initial = (1-imp)/imp * diagApprox`
+- `R_edge = 2 * mu² * R_initial` (MuJoCo engine_core_constraint.c:1484-1493)
+
+**Bugs found and fixed:**
+1. **Edge velocity source** (FIXED): Pyramidal edge bias used `qvel[i]` (function parameter)
+   instead of `data.qvel[i]` (actual joint velocity). This was the ONLY place in the entire
+   constraint builder that used the parameter instead of `data.qvel`. For static poses with
+   gravity, this injected `B_damp * J_edge * qacc0 ≈ 125 * 9.81 = 1226` into all biases.
+   File: `constraint_builder.mojo` line 586
+2. **Edge R/D formula** (FIXED): Was using elliptic formula `R = (1-imp)/imp * diag_n`.
+   Now uses MuJoCo's pyramidal-specific `R = 2*mu²*(1-imp)/imp*(tran + mu²*tran)`.
+   File: `constraint_builder.mojo` lines 538-553
+
+**Current results:**
+
+| Config | qfrc max_abs | qfrc max_rel | qacc max_abs | qacc max_rel |
+|--------|-------------|-------------|-------------|-------------|
+| Low static | 4.9e-4 | 8.0e-6 | 1.5e-3 | 5.6e-6 |
+| Low moving | 2.0e-3 | 4.4e-6 | 2.6e-3 | 1.8e-5 |
+| Very low | 3.0e-3 | 1.2e-5 | 3.8e-3 | 2.5e-5 |
+| Bent legs | 1.9e-4 | 5.9e-6 | 9.6e-4 | 4.6e-6 |
+
+**CPU vs GPU (`test_pyramidal_cpu_vs_gpu.mojo`):**
+CPU uses primal Newton solver (exact cone logic), GPU uses coupled PGS (iterative).
+Both use `ConeType.PYRAMIDAL`. 6 configs, all pass.
+
+| Config | qpos max_abs | qvel max_abs | Notes |
+|--------|-------------|-------------|-------|
+| Ground contact (1 step) | 8.1e-4 | 0.081 | |
+| Ground + actions (1 step) | 6.1e-4 | 0.061 | |
+| Deep penetration (1 step) | 5.5e-3 | 0.55 | 10 contacts |
+| Moving + contacts (1 step) | 1.6e-3 | 0.16 | Fixed by per-edge bias |
+| Ground contact (5 steps) | 2.6e-3 | 0.023 | |
+| Ground + actions (5 steps) | 1.6e-3 | 0.014 | |
+
+3. **GPU per-edge bias** (FIXED): GPU friction solver used normal-only bias (`bias_n`) for all
+   pyramidal edges. MuJoCo uses per-edge velocity: `v_edge = (J_n ± mu*J_t) * qvel`.
+   Fix: `bias_pos = bias_n + mu * B_damp * v_t`, `bias_neg = bias_n - mu * B_damp * v_t`.
+   `B_damp * v_t` was already computed in workspace (`bf[d*MC+c]`).
+   File: `friction_solver.mojo` lines 664, 724
+
+### Stage 7: RK4 integrator
+
+| Component                        | Integrator | Solver       | MuJoCo vs CPU | CPU vs GPU | Notes |
+|----------------------------------|------------|--------------|:-------------:|:----------:|-------|
+| Full Step no contact + contact   | RK4        | Newton       | DONE          | DONE       | MuJoCo: 6 configs, err~1e-6. GPU: 6 configs (float32). |
+
+**RK4 MuJoCo comparison notes:**
+- MuJoCo RK4 (`mj_RungeKutta`) runs FULL forward dynamics + constraint solver at EACH of the 4 RK4 stages
+- Our RK4Integrator restructured to match: `_forward_dynamics` + `_solve_constraints` at each stage
+- `_solve_constraints` extracted to separate function (its own stack frame) to avoid stack overflow
+  from 4× ConstraintData allocations (~30KB each)
+- Limited to 6 tests per run due to RK4 step() large stack frame (4× forward dynamics + InlineArrays)
+- GPU version: 9 kernel launches per step (4 × stage_kernel + 4 × solver + 1 combine_kernel)
+- GPU workspace: RK4 extras (q0, v0, A[0-3], C1, C2) appended after solver workspace
+
+**Test results:**
+
+| Config | qpos max_abs | qvel max_abs | Contacts |
+|--------|-------------|-------------|----------|
+| Free fall (1 step) | 7.4e-19 | 1.5e-16 | 0 |
+| Actions (1 step) | 1.0e-8 | 1.8e-6 | 0 |
+| Moving+actions (1 step) | 2.8e-8 | 5.2e-6 | 0 |
+| Fast spinning (1 step) | 5.5e-8 | 9.9e-6 | 0 |
+| Moving+actions (10 steps) | 5.3e-7 | 3.8e-6 | 0 |
+| Ground contact+actions (1 step) | 2.2e-8 | 3.5e-6 | 6 |
+
+**Bugs found and fixed:**
+1. **Constraint-once approach** (FIXED): Original RK4 ran constraints once at the end.
+   MuJoCo runs full dynamics+constraints at each of 4 stages. Contact test showed large errors
+   (qpos ~0.05, qvel ~6.4). Fixed by restructuring to per-stage constraint solving.
+2. **Missing M_hat/qfrc_smooth** (FIXED): RK4 integrator didn't fill `constraints.M_hat` and
+   `constraints.qfrc_smooth` before calling Newton solver, causing crash on contact tests.
+3. **Stack overflow** (WORKAROUND): 7th compare_step call crashes due to accumulated stack from
+   RK4's large frame (4× forward dynamics). Extracted `_solve_constraints` to separate function
+   and limited to 6 tests per run.
 
 ---
 

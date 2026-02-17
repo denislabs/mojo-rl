@@ -626,3 +626,56 @@ fn ws_implicit_dcfrcbody_offset[NV: Int, NBODY: Int](base: Int) -> Int:
         + NV * 6 * NV
         + NBODY * 6 * NV
     )
+
+
+# =============================================================================
+# RK4 Integrator Extra Workspace
+# =============================================================================
+# Additional workspace for the RK4 integrator's 4-stage pipeline.
+# Placed AFTER solver workspace so existing offsets are unchanged.
+#
+# Layout within RK4 extra section:
+#   [q0: NQ | v0: NV | A0: NV | A1: NV | A2: NV | A3: NV | C1: NV | C2: NV]
+#
+# Total: NQ + 7*NV
+
+
+fn rk4_extra_workspace_size[NQ: Int, NV: Int]() -> Int:
+    """Total RK4-extra workspace size per environment."""
+    return NQ + 7 * NV
+
+
+fn ws_rk4_q0_offset[NV: Int, NBODY: Int](solver_ws_size: Int) -> Int:
+    """Offset to saved initial qpos (NQ) in RK4 workspace.
+
+    Placed after integrator_temps + M_inv + solver_ws.
+    """
+    return ws_solver_offset[NV, NBODY]() + solver_ws_size
+
+
+fn ws_rk4_v0_offset[NV: Int, NBODY: Int, NQ: Int](
+    solver_ws_size: Int,
+) -> Int:
+    """Offset to saved initial qvel (NV) in RK4 workspace."""
+    return ws_rk4_q0_offset[NV, NBODY](solver_ws_size) + NQ
+
+
+fn ws_rk4_A_offset[NV: Int, NBODY: Int, NQ: Int](
+    solver_ws_size: Int, stage: Int
+) -> Int:
+    """Offset to A[stage] (NV) in RK4 workspace. stage in [0,3]."""
+    return ws_rk4_v0_offset[NV, NBODY, NQ](solver_ws_size) + NV + stage * NV
+
+
+fn ws_rk4_C1_offset[NV: Int, NBODY: Int, NQ: Int](
+    solver_ws_size: Int,
+) -> Int:
+    """Offset to C1 velocity intermediate (NV) in RK4 workspace."""
+    return ws_rk4_v0_offset[NV, NBODY, NQ](solver_ws_size) + NV + 4 * NV
+
+
+fn ws_rk4_C2_offset[NV: Int, NBODY: Int, NQ: Int](
+    solver_ws_size: Int,
+) -> Int:
+    """Offset to C2 velocity intermediate (NV) in RK4 workspace."""
+    return ws_rk4_C1_offset[NV, NBODY, NQ](solver_ws_size) + NV

@@ -1,53 +1,104 @@
 """RK4 (4th-order Runge-Kutta) integrator for physics simulation.
 
-Provides 4th-order accuracy for smooth dynamics, with significantly better
-energy conservation than Euler for conservative systems (undamped pendulums,
-free-flight dynamics). Uses the standard Butcher tableau:
+Matches MuJoCo's mj_RungeKutta: runs full forward dynamics (including
+constraint solver) at each of the 4 stages. Uses the standard Butcher tableau:
 
   c = [0, 1/2, 1/2, 1]
   b = [1/6, 1/3, 1/3, 1/6]
 
-Pipeline per step:
+Pipeline per step (matching MuJoCo):
 1. Save initial (qpos, qvel)
-2. Stage 1: evaluate forward_dynamics at (q0, v0) -> a1
-3. Stage 2: evaluate at (q0 + dt/2*v0, v0 + dt/2*a1) -> a2
-4. Stage 3: evaluate at (q0 + dt/2*v2, v0 + dt/2*a2) -> a3
-5. Stage 4: evaluate at (q0 + dt*v3, v0 + dt*a3) -> a4
-6. Combine: qacc = (a1 + 2*a2 + 2*a3 + a4) / 6
-7. Constraint solve on combined acceleration (once)
-8. Integrate: qvel += qacc*dt, qpos += qvel*dt (quaternion-aware)
-9. Normalize quaternions
+2. Stage 0: full forward dynamics + constraints at (q0, v0) -> A[0], C[0]=v0
+3. Stage 1: full dynamics + constraints at (q0+dt/2*C[0], v0+dt/2*A[0]) -> A[1]
+4. Stage 2: full dynamics + constraints at (q0+dt/2*C[1], v0+dt/2*A[1]) -> A[2]
+5. Stage 3: full dynamics + constraints at (q0+dt*C[2], v0+dt*A[2]) -> A[3]
+6. Combine: qacc = (A[0]+2*A[1]+2*A[2]+A[3])/6, v_rk4 = (C[0]+2*C[1]+2*C[2]+C[3])/6
+7. Integrate: qvel = v0+qacc*dt, qpos = q0+v_rk4*dt (quaternion-aware)
 
-CPU only — 4x dynamics cost makes this impractical for batched GPU RL training.
-Use for validation, trajectory comparison, and energy conservation testing.
+Both CPU and GPU supported. GPU uses 9 kernel launches per step:
+  4 × (stage_kernel + solver) + 1 combine_kernel
 """
 
 from math import sqrt
 from gpu.host import DeviceContext, DeviceBuffer
+from gpu import thread_idx, block_idx, block_dim
+from layout import LayoutTensor, Layout
 
 from ..types import Model, Data, _max_one, ConeType
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
 from ..kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
+    forward_kinematics_gpu,
+    compute_body_velocities_gpu,
 )
 from ..kinematics.quat_math import quat_normalize, quat_integrate
 from ..dynamics.mass_matrix import (
     compute_mass_matrix_full,
+    compute_mass_matrix_full_gpu,
     ldl_factor,
+    ldl_factor_gpu,
     ldl_solve,
+    ldl_solve_gpu,
+    ldl_solve_workspace_gpu,
     compute_M_inv_from_ldl,
+    compute_M_inv_from_ldl_gpu,
 )
-from ..dynamics.bias_forces import compute_bias_forces_rne
-from ..dynamics.jacobian import compute_cdof, compute_composite_inertia
+from ..dynamics.bias_forces import (
+    compute_bias_forces_rne,
+    compute_bias_forces_rne_gpu,
+)
+from ..dynamics.jacobian import (
+    compute_cdof,
+    compute_cdof_gpu,
+    compute_composite_inertia,
+    compute_composite_inertia_gpu,
+)
 from ..collision.contact_detection import (
     detect_contacts,
+    detect_contacts_gpu,
     normalize_qpos_quaternions,
+    normalize_qpos_quaternions_gpu,
 )
 from ..constraints.constraint_data import ConstraintData
 from ..constraints.constraint_builder import build_constraints, writeback_forces
 from ..traits.integrator import Integrator
 from ..traits.solver import ConstraintSolver
+from ..gpu.constants import (
+    TPB,
+    state_size,
+    model_size,
+    model_size_with_invweight,
+    model_metadata_offset,
+    model_joint_offset,
+    qpos_offset,
+    qvel_offset,
+    qacc_offset,
+    qfrc_offset,
+    JOINT_IDX_TYPE,
+    JOINT_IDX_QPOS_ADR,
+    JOINT_IDX_DOF_ADR,
+    JOINT_IDX_ARMATURE,
+    JOINT_IDX_STIFFNESS,
+    JOINT_IDX_DAMPING,
+    JOINT_IDX_SPRINGREF,
+    JOINT_IDX_FRICTIONLOSS,
+    MODEL_META_IDX_TIMESTEP,
+    integrator_workspace_size,
+    ws_M_offset,
+    ws_bias_offset,
+    ws_fnet_offset,
+    ws_qacc_ws_offset,
+    ws_qacc_constrained_offset,
+    ws_m_inv_offset,
+    ws_solver_offset,
+    rk4_extra_workspace_size,
+    ws_rk4_q0_offset,
+    ws_rk4_v0_offset,
+    ws_rk4_A_offset,
+    ws_rk4_C1_offset,
+    ws_rk4_C2_offset,
+)
 
 
 fn _forward_dynamics[
@@ -80,18 +131,15 @@ fn _forward_dynamics[
     mut qacc_out: InlineArray[Scalar[DTYPE], V_SIZE],
     mut cdof_out: InlineArray[Scalar[DTYPE], CDOF_SIZE],
     mut M_inv_out: InlineArray[Scalar[DTYPE], M_SIZE],
+    mut M_out: InlineArray[Scalar[DTYPE], M_SIZE],
 ) where DTYPE.is_floating_point():
     """Compute unconstrained acceleration from current (qpos, qvel) in data.
 
     Runs the full dynamics pipeline:
     FK -> body velocities -> collision -> cdof -> CRBA -> M -> LDL -> bias -> passive -> solve.
 
-    Returns qacc, cdof (for constraint builder), and M_inv (for constraint solver).
+    Returns qacc, cdof, M_inv, and M (with armature, for constraint solver M_hat).
     """
-    var _ = (
-        model.timestep
-    )  # Not used — RK4 uses explicit damping (no dt*D in M)
-
     # 1. Forward kinematics + body velocities
     forward_kinematics(model, data)
     compute_body_velocities(model, data)
@@ -115,9 +163,8 @@ fn _forward_dynamics[
     ](model, data, crb)
 
     # 5. Full mass matrix
-    var M = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
     for i in range(M_SIZE):
-        M[i] = Scalar[DTYPE](0)
+        M_out[i] = Scalar[DTYPE](0)
     compute_mass_matrix_full[
         DTYPE,
         NQ,
@@ -128,7 +175,7 @@ fn _forward_dynamics[
         M_SIZE,
         CDOF_SIZE,
         CRB_SIZE,
-    ](model, data, cdof_out, crb, M)
+    ](model, data, cdof_out, crb, M_out)
 
     # 5b. Armature only (no implicit damping for RK4 — damping is explicit)
     for j in range(model.num_joints):
@@ -137,21 +184,21 @@ fn _forward_dynamics[
         var arm = joint.armature
         if joint.jnt_type == JNT_FREE:
             for d in range(6):
-                M[(dof_adr + d) * NV + (dof_adr + d)] = (
-                    M[(dof_adr + d) * NV + (dof_adr + d)] + arm
+                M_out[(dof_adr + d) * NV + (dof_adr + d)] = (
+                    M_out[(dof_adr + d) * NV + (dof_adr + d)] + arm
                 )
         elif joint.jnt_type == JNT_BALL:
             for d in range(3):
-                M[(dof_adr + d) * NV + (dof_adr + d)] = (
-                    M[(dof_adr + d) * NV + (dof_adr + d)] + arm
+                M_out[(dof_adr + d) * NV + (dof_adr + d)] = (
+                    M_out[(dof_adr + d) * NV + (dof_adr + d)] + arm
                 )
         else:
-            M[dof_adr * NV + dof_adr] = M[dof_adr * NV + dof_adr] + arm
+            M_out[dof_adr * NV + dof_adr] = M_out[dof_adr * NV + dof_adr] + arm
 
     # 6. LDL factorize
     var L = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
     var D = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-    ldl_factor[DTYPE, NV, M_SIZE, V_SIZE](M, L, D)
+    ldl_factor[DTYPE, NV, M_SIZE, V_SIZE](M_out, L, D)
 
     # 7. Bias forces
     var bias = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
@@ -237,11 +284,81 @@ fn _forward_dynamics[
         qacc_out[i] = Scalar[DTYPE](0)
     ldl_solve[DTYPE, NV, M_SIZE, V_SIZE](L, D, f_net, qacc_out)
 
-    # 10. M_inv for constraint solver (only needed at final stage, but
-    # we compute it here since we have L,D — caller can ignore if not needed)
+    # 10. M_inv for constraint solver
     for i in range(M_SIZE):
         M_inv_out[i] = Scalar[DTYPE](0)
     compute_M_inv_from_ldl[DTYPE, NV, M_SIZE, V_SIZE](L, D, M_inv_out)
+
+
+fn _solve_constraints[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    NGEOM: Int,
+    MAX_EQUALITY: Int,
+    V_SIZE: Int,
+    M_SIZE: Int,
+    CDOF_SIZE: Int,
+    CONE_TYPE: Int,
+    SOLVER: ConstraintSolver,
+](
+    model: Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        MAX_EQUALITY,
+        CONE_TYPE,
+    ],
+    mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+    cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
+    M_inv: InlineArray[Scalar[DTYPE], M_SIZE],
+    M: InlineArray[Scalar[DTYPE], M_SIZE],
+    mut qacc: InlineArray[Scalar[DTYPE], V_SIZE],
+    dt: Scalar[DTYPE],
+    is_last_stage: Bool,
+) where DTYPE.is_floating_point():
+    """Build and solve constraints, modifying qacc in place.
+
+    Separate function so ConstraintData is allocated/freed in its own stack frame.
+    This prevents stack overflow from accumulating 4 ConstraintData instances.
+    """
+    comptime MAX_ROWS = 11 * MAX_CONTACTS + 2 * NJOINT + 6 * MAX_EQUALITY
+    var constraints = ConstraintData[DTYPE, MAX_ROWS, NV]()
+    build_constraints[CONE_TYPE=CONE_TYPE,](
+        model, data, cdof, M_inv, qacc, dt, constraints
+    )
+
+    # Fill M_hat and qfrc_smooth for primal solvers
+    for i in range(NV * NV):
+        constraints.M_hat[i] = M[i]
+    for i in range(NV):
+        var f_i = Scalar[DTYPE](0)
+        for j in range(NV):
+            f_i = f_i + M[i * NV + j] * qacc[j]
+        constraints.qfrc_smooth[i] = f_i
+
+    SOLVER.solve[CONE_TYPE=CONE_TYPE](
+        model, data, M_inv, constraints, qacc, dt
+    )
+
+    # Only write back forces on the last stage (for data.qfrc_constraint)
+    if is_last_stage:
+        writeback_forces[
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            MAX_ROWS,
+        ](constraints, data)
 
 
 fn _integrate_pos[
@@ -334,16 +451,17 @@ fn _integrate_pos[
 struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
     """4th-order Runge-Kutta integrator with configurable constraint solver.
 
-    Provides 4th-order accuracy for smooth dynamics with significantly better
-    energy conservation than Euler integration. Constraint solver runs once
-    per step on the combined RK4 acceleration.
+    Matches MuJoCo's mj_RungeKutta: runs full forward dynamics including
+    constraint solver at each of the 4 RK4 stages. The constrained
+    accelerations from all stages are combined with RK4 weights.
 
-    CPU only — GPU methods are stubs (4x dynamics cost is impractical for
-    batched RL training).
+    GPU support: 9 kernel launches per step (4 stage + 4 solver + 1 combine).
+    Workspace includes extra RK4 storage (q0, v0, A[0..3], C1, C2).
 
     Usage:
         alias RK4PGS = RK4Integrator[PGSSolver]
-        RK4PGS.step(model, data)
+        RK4PGS.step(model, data)        # CPU
+        RK4PGS.step_gpu[...](ctx, ...)  # GPU
     """
 
     # =========================================================================
@@ -376,10 +494,10 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         verbose: Bool = False,
     ) where DTYPE.is_floating_point():
-        """Execute one RK4 simulation step.
+        """Execute one RK4 simulation step (MuJoCo-compatible).
 
-        Evaluates forward dynamics 4 times at different (q, v) states,
-        combines with RK4 weights, then runs constraint solver once.
+        Runs full forward dynamics + constraint solver at each of 4 stages,
+        then combines with RK4 weights. Matches MuJoCo's mj_RungeKutta.
         """
         var dt = model.timestep
         comptime Q_SIZE = _max_one[NQ]()
@@ -396,46 +514,42 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         for i in range(NV):
             v0[i] = data.qvel[i]
 
-        # Accumulators for RK4 weighted sum
+        # RK4 stage results: A[i] = constrained qacc, C[i] = velocity at stage
+        var a0 = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
         var a1 = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
         var a2 = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
         var a3 = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-        var a4 = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
 
-        # Workspace for _forward_dynamics (cdof and M_inv from last stage used for constraints)
+        # Workspace reused across stages
         var cdof = InlineArray[Scalar[DTYPE], CDOF_SIZE](uninitialized=True)
         var M_inv = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
+        var M = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
 
-        # =====================================================================
-        # Stage 1: evaluate at (q0, v0)
-        # =====================================================================
+        var half_dt = dt * Scalar[DTYPE](0.5)
+        var q_stage = InlineArray[Scalar[DTYPE], Q_SIZE](uninitialized=True)
+
+        # =================================================================
+        # Stage 0: evaluate at (q0, v0) — full pipeline
+        # =================================================================
         # data already has (q0, v0)
         _forward_dynamics[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            NGEOM,
-            MAX_EQUALITY,
-            V_SIZE,
-            M_SIZE,
-            CDOF_SIZE,
-            CRB_SIZE,
-        ](model, data, a1, cdof, M_inv)
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
+            MAX_EQUALITY, V_SIZE, M_SIZE, CDOF_SIZE, CRB_SIZE,
+        ](model, data, a0, cdof, M_inv, M)
 
-        # =====================================================================
-        # Stage 2: evaluate at (q0 + dt/2 * v0, v0 + dt/2 * a1)
-        # =====================================================================
-        var half_dt = dt * Scalar[DTYPE](0.5)
+        _solve_constraints[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
+            MAX_EQUALITY, V_SIZE, M_SIZE, CDOF_SIZE, CONE_TYPE, Self.SOLVER,
+        ](model, data, cdof, M_inv, M, a0, dt, False)
+        # a0 is now CONSTRAINED qacc
+        # C[0] = v0 (saved above)
 
-        # Set velocities for stage 2
+        # =================================================================
+        # Stage 1: evaluate at (q0 + dt/2*C[0], v0 + dt/2*A[0])
+        # =================================================================
+        # C[0] = v0
         for i in range(NV):
-            data.qvel[i] = v0[i] + half_dt * a1[i]
-
-        # Set positions for stage 2: q0 + dt/2 * v0
-        var q_stage = InlineArray[Scalar[DTYPE], Q_SIZE](uninitialized=True)
+            data.qvel[i] = v0[i] + half_dt * a0[i]
         _integrate_pos[
             DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
         ](model, q0, v0, half_dt, q_stage)
@@ -443,211 +557,113 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             data.qpos[i] = q_stage[i]
 
         _forward_dynamics[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            NGEOM,
-            MAX_EQUALITY,
-            V_SIZE,
-            M_SIZE,
-            CDOF_SIZE,
-            CRB_SIZE,
-        ](model, data, a2, cdof, M_inv)
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
+            MAX_EQUALITY, V_SIZE, M_SIZE, CDOF_SIZE, CRB_SIZE,
+        ](model, data, a1, cdof, M_inv, M)
 
-        # =====================================================================
-        # Stage 3: evaluate at (q0 + dt/2 * v2, v0 + dt/2 * a2)
-        # =====================================================================
-        # v2 = v0 + dt/2 * a2 (the velocity AT stage 2 evaluation point... but
-        # MuJoCo RK4 uses k_q = velocity at the stage, so:
-        # k2_q = v2 = v0 + dt/2 * a1  (the velocity we set for stage 2)
-        # Stage 3 pos = q0 + dt/2 * k2_q = q0 + dt/2 * (v0 + dt/2 * a1)
-        # But standard RK4 for q' = v, v' = a(q,v) is:
-        #   k1_q = v0,              k1_v = a1
-        #   k2_q = v0 + dt/2 * a1,  k2_v = a2
-        #   k3_q = v0 + dt/2 * a2,  k3_v = a3
-        #   k4_q = v0 + dt * a3,    k4_v = a4
-        # Position update: q = q0 + dt/6 * (k1_q + 2*k2_q + 2*k3_q + k4_q)
+        _solve_constraints[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
+            MAX_EQUALITY, V_SIZE, M_SIZE, CDOF_SIZE, CONE_TYPE, Self.SOLVER,
+        ](model, data, cdof, M_inv, M, a1, dt, False)
+        # a1 is now CONSTRAINED qacc
+        # C[1] = v0 + dt/2*A[0] = data.qvel (set above)
 
-        # v_stage3 for evaluation = v0 + dt/2 * a2
+        # =================================================================
+        # Stage 2: evaluate at (q0 + dt/2*C[1], v0 + dt/2*A[1])
+        # =================================================================
+        # C[1] = v0 + dt/2*a0
+        var c1 = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
         for i in range(NV):
-            data.qvel[i] = v0[i] + half_dt * a2[i]
+            c1[i] = v0[i] + half_dt * a0[i]
 
-        # k2_q = v0 + dt/2 * a1 (already computed as data.qvel from stage 2)
-        var v_stage2 = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
         for i in range(NV):
-            v_stage2[i] = v0[i] + half_dt * a1[i]
-
-        # q_stage3 = q0 + dt/2 * v_stage2
+            data.qvel[i] = v0[i] + half_dt * a1[i]
         _integrate_pos[
             DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
-        ](model, q0, v_stage2, half_dt, q_stage)
+        ](model, q0, c1, half_dt, q_stage)
         for i in range(NQ):
             data.qpos[i] = q_stage[i]
 
         _forward_dynamics[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            NGEOM,
-            MAX_EQUALITY,
-            V_SIZE,
-            M_SIZE,
-            CDOF_SIZE,
-            CRB_SIZE,
-        ](model, data, a3, cdof, M_inv)
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
+            MAX_EQUALITY, V_SIZE, M_SIZE, CDOF_SIZE, CRB_SIZE,
+        ](model, data, a2, cdof, M_inv, M)
 
-        # =====================================================================
-        # Stage 4: evaluate at (q0 + dt * v3, v0 + dt * a3)
-        # =====================================================================
-        # v_stage3 = v0 + dt/2 * a2 (k3_q)
-        var v_stage3 = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        _solve_constraints[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
+            MAX_EQUALITY, V_SIZE, M_SIZE, CDOF_SIZE, CONE_TYPE, Self.SOLVER,
+        ](model, data, cdof, M_inv, M, a2, dt, False)
+        # a2 is now CONSTRAINED qacc
+        # C[2] = v0 + dt/2*A[1] = data.qvel (set above)
+
+        # =================================================================
+        # Stage 3: evaluate at (q0 + dt*C[2], v0 + dt*A[2])
+        # =================================================================
+        # C[2] = v0 + dt/2*a1
+        var c2 = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
         for i in range(NV):
-            v_stage3[i] = v0[i] + half_dt * a2[i]
+            c2[i] = v0[i] + half_dt * a1[i]
 
         for i in range(NV):
-            data.qvel[i] = v0[i] + dt * a3[i]
-
-        # q_stage4 = q0 + dt * v_stage3
+            data.qvel[i] = v0[i] + dt * a2[i]
         _integrate_pos[
             DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
-        ](model, q0, v_stage3, dt, q_stage)
+        ](model, q0, c2, dt, q_stage)
         for i in range(NQ):
             data.qpos[i] = q_stage[i]
 
         _forward_dynamics[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            NGEOM,
-            MAX_EQUALITY,
-            V_SIZE,
-            M_SIZE,
-            CDOF_SIZE,
-            CRB_SIZE,
-        ](model, data, a4, cdof, M_inv)
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
+            MAX_EQUALITY, V_SIZE, M_SIZE, CDOF_SIZE, CRB_SIZE,
+        ](model, data, a3, cdof, M_inv, M)
 
-        # =====================================================================
-        # Combine: qacc = (a1 + 2*a2 + 2*a3 + a4) / 6
-        # =====================================================================
-        var qacc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        _solve_constraints[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
+            MAX_EQUALITY, V_SIZE, M_SIZE, CDOF_SIZE, CONE_TYPE, Self.SOLVER,
+        ](model, data, cdof, M_inv, M, a3, dt, True)
+        # a3 is now CONSTRAINED qacc
+        # C[3] = v0 + dt*A[2] = data.qvel (set above)
+
+        # =================================================================
+        # Combine with RK4 weights: b = [1/6, 1/3, 1/3, 1/6]
+        # =================================================================
         comptime ONE_SIXTH: Scalar[DTYPE] = 1.0 / 6.0
         comptime ONE_THIRD: Scalar[DTYPE] = 1.0 / 3.0
+
+        # qacc_combined = (A[0] + 2*A[1] + 2*A[2] + A[3]) / 6
+        var qacc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
         for i in range(NV):
             qacc[i] = (
-                ONE_SIXTH * a1[i]
+                ONE_SIXTH * a0[i]
+                + ONE_THIRD * a1[i]
                 + ONE_THIRD * a2[i]
-                + ONE_THIRD * a3[i]
-                + ONE_SIXTH * a4[i]
+                + ONE_SIXTH * a3[i]
             )
 
-        # =====================================================================
-        # Restore state for constraint solving
-        # =====================================================================
-        # Restore original qpos/qvel so constraint solver sees the initial state
-        for i in range(NQ):
-            data.qpos[i] = q0[i]
+        # v_combined = (C[0] + 2*C[1] + 2*C[2] + C[3]) / 6
+        # C[0] = v0, C[1] = v0+dt/2*a0, C[2] = v0+dt/2*a1, C[3] = v0+dt*a2
+        var c3 = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
         for i in range(NV):
-            data.qvel[i] = v0[i]
+            c3[i] = v0[i] + dt * a2[i]
 
-        # Re-run FK and collision for constraint solver (needs current geometry)
-        forward_kinematics(model, data)
-        compute_body_velocities(model, data)
-        detect_contacts(model, data)
+        var v_combined = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        for i in range(NV):
+            v_combined[i] = (
+                ONE_SIXTH * v0[i]
+                + ONE_THIRD * c1[i]
+                + ONE_THIRD * c2[i]
+                + ONE_SIXTH * c3[i]
+            )
 
-        # Re-compute cdof for constraint builder
-        compute_cdof(model, data, cdof)
-
-        # Re-compute M_inv for constraint solver (at initial state)
-        var crb = InlineArray[Scalar[DTYPE], CRB_SIZE](uninitialized=True)
-        for i in range(CRB_SIZE):
-            crb[i] = Scalar[DTYPE](0)
-        compute_composite_inertia[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, CRB_SIZE
-        ](model, data, crb)
-
-        var M = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-        for i in range(M_SIZE):
-            M[i] = Scalar[DTYPE](0)
-        compute_mass_matrix_full(model, data, cdof, crb, M)
-
-        # Add armature to M diagonal
-        for j in range(model.num_joints):
-            var joint = model.joints[j]
-            var dof_adr = joint.dof_adr
-            var arm = joint.armature
-            if joint.jnt_type == JNT_FREE:
-                for d in range(6):
-                    M[(dof_adr + d) * NV + (dof_adr + d)] = (
-                        M[(dof_adr + d) * NV + (dof_adr + d)] + arm
-                    )
-            elif joint.jnt_type == JNT_BALL:
-                for d in range(3):
-                    M[(dof_adr + d) * NV + (dof_adr + d)] = (
-                        M[(dof_adr + d) * NV + (dof_adr + d)] + arm
-                    )
-            else:
-                M[dof_adr * NV + dof_adr] = M[dof_adr * NV + dof_adr] + arm
-
-        var L = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
-        var D_ldl = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-        ldl_factor[DTYPE, NV, M_SIZE, V_SIZE](M, L, D_ldl)
-        for i in range(M_SIZE):
-            M_inv[i] = Scalar[DTYPE](0)
-        compute_M_inv_from_ldl[DTYPE, NV, M_SIZE, V_SIZE](L, D_ldl, M_inv)
-
-        # =====================================================================
-        # Constraint solve on combined acceleration
-        # =====================================================================
-        comptime MAX_ROWS = 11 * MAX_CONTACTS + 2 * NJOINT + 6 * MAX_EQUALITY
-        var constraints = ConstraintData[DTYPE, MAX_ROWS, NV]()
-        build_constraints[CONE_TYPE=CONE_TYPE,](
-            model, data, cdof, M_inv, qacc, dt, constraints
-        )
-
-        Self.SOLVER.solve[CONE_TYPE=CONE_TYPE](
-            model, data, M_inv, constraints, qacc, dt
-        )
-
-        writeback_forces[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            MAX_ROWS,
-        ](constraints, data)
-
-        # =====================================================================
-        # Final integration
-        # =====================================================================
+        # =================================================================
+        # Final integration (MuJoCo's mj_advance)
+        # =================================================================
         # qvel = v0 + qacc * dt
         for i in range(NV):
             data.qacc[i] = qacc[i]
             data.qvel[i] = v0[i] + qacc[i] * dt
 
-        # Position integration: combine velocity k-vectors with RK4 weights
-        # k1_q = v0, k2_q = v0+dt/2*a1, k3_q = v0+dt/2*a2, k4_q = v0+dt*a3
-        var v_combined = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-        # k1_q = v0, k2_q = v_stage2, k3_q = v_stage3, k4_q = v0 + dt*a3
-        for i in range(NV):
-            var k4_q_i = v0[i] + dt * a3[i]
-            v_combined[i] = (
-                ONE_SIXTH * v0[i]
-                + ONE_THIRD * v_stage2[i]
-                + ONE_THIRD * v_stage3[i]
-                + ONE_SIXTH * k4_q_i
-            )
-
+        # qpos = q0 + v_combined * dt
         _integrate_pos(model, q0, v_combined, dt, q_stage)
         for i in range(NQ):
             data.qpos[i] = q_stage[i]
@@ -696,8 +712,479 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             ](model, data)
 
     # =========================================================================
-    # GPU Methods (stubs — RK4 is CPU only)
+    # GPU Methods
     # =========================================================================
+
+    @always_inline
+    @staticmethod
+    fn rk4_stage_kernel[
+        DTYPE: DType,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
+        STATE_SIZE: Int,
+        MODEL_SIZE: Int,
+        BATCH: Int,
+        WS_SIZE: Int,
+        NGEOM: Int,
+        SOLVER_WS_SIZE: Int,
+        STAGE: Int,
+    ](
+        state: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+        ],
+        model: LayoutTensor[
+            DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+        ],
+        workspace: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+        ],
+    ):
+        """RK4 stage kernel: sets up intermediate state, runs forward dynamics.
+
+        STAGE 0: save q0/v0 to workspace, run dynamics on original state.
+        STAGE 1: save A[0] from qacc_constrained, set state = (q0+dt/2*v0, v0+dt/2*A[0]).
+        STAGE 2: save A[1], set state = (q0+dt/2*C[1], v0+dt/2*A[1]).
+        STAGE 3: save A[2], set state = (q0+dt*C[2], v0+dt*A[2]).
+
+        After this kernel, the solver kernel runs to modify qacc_constrained.
+        """
+        var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+        if env >= BATCH:
+            return
+
+        comptime M_idx = ws_M_offset[NV, NBODY]()
+        comptime bias_idx = ws_bias_offset[NV, NBODY]()
+        comptime fnet_idx = ws_fnet_offset[NV, NBODY]()
+        comptime qacc_ws_idx = ws_qacc_ws_offset[NV, NBODY]()
+        comptime qacc_constrained_idx = ws_qacc_constrained_offset[NV, NBODY]()
+        comptime m_inv_idx = ws_m_inv_offset[NV, NBODY]()
+
+        # RK4 workspace offsets
+        comptime q0_idx = ws_rk4_q0_offset[NV, NBODY](SOLVER_WS_SIZE)
+        comptime v0_idx = ws_rk4_v0_offset[NV, NBODY, NQ](SOLVER_WS_SIZE)
+        comptime A0_idx = ws_rk4_A_offset[NV, NBODY, NQ](SOLVER_WS_SIZE, 0)
+        comptime A1_idx = ws_rk4_A_offset[NV, NBODY, NQ](SOLVER_WS_SIZE, 1)
+        comptime A2_idx = ws_rk4_A_offset[NV, NBODY, NQ](SOLVER_WS_SIZE, 2)
+        comptime c1_idx = ws_rk4_C1_offset[NV, NBODY, NQ](SOLVER_WS_SIZE)
+        comptime c2_idx = ws_rk4_C2_offset[NV, NBODY, NQ](SOLVER_WS_SIZE)
+
+        var qpos_off = qpos_offset[NQ, NV]()
+        var qvel_off = qvel_offset[NQ, NV]()
+        var qacc_off = qacc_offset[NQ, NV]()
+        var qfrc_off = qfrc_offset[NQ, NV]()
+        var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
+        var dt = rebind[Scalar[DTYPE]](
+            model[0, model_meta_off + MODEL_META_IDX_TIMESTEP]
+        )
+        var half_dt = dt * Scalar[DTYPE](0.5)
+
+        # ---- Pre-stage: save A[prev] and set intermediate state ----
+
+        @parameter
+        if STAGE == 0:
+            # Save initial state to workspace
+            for i in range(NQ):
+                workspace[env, q0_idx + i] = state[env, qpos_off + i]
+            for i in range(NV):
+                workspace[env, v0_idx + i] = state[env, qvel_off + i]
+        elif STAGE == 1:
+            # Save A[0] from qacc_constrained
+            for i in range(NV):
+                workspace[env, A0_idx + i] = workspace[
+                    env, qacc_constrained_idx + i
+                ]
+            # Set intermediate state: qpos = q0 + dt/2 * v0 (C[0] = v0)
+            # qvel = v0 + dt/2 * A[0]
+            for i in range(NQ):
+                if i < NV:
+                    var q0_i = rebind[Scalar[DTYPE]](workspace[env, q0_idx + i])
+                    var v0_i = rebind[Scalar[DTYPE]](workspace[env, v0_idx + i])
+                    state[env, qpos_off + i] = q0_i + half_dt * v0_i
+            for i in range(NV):
+                var v0_i = rebind[Scalar[DTYPE]](workspace[env, v0_idx + i])
+                var a0_i = rebind[Scalar[DTYPE]](workspace[env, A0_idx + i])
+                state[env, qvel_off + i] = v0_i + half_dt * a0_i
+        elif STAGE == 2:
+            # Save A[1] from qacc_constrained
+            for i in range(NV):
+                workspace[env, A1_idx + i] = workspace[
+                    env, qacc_constrained_idx + i
+                ]
+            # C[1] = v0 + dt/2 * A[0] — save to workspace for combine kernel
+            for i in range(NV):
+                var v0_i = rebind[Scalar[DTYPE]](workspace[env, v0_idx + i])
+                var a0_i = rebind[Scalar[DTYPE]](workspace[env, A0_idx + i])
+                workspace[env, c1_idx + i] = v0_i + half_dt * a0_i
+            # Set intermediate state: qpos = q0 + dt/2 * C[1]
+            # qvel = v0 + dt/2 * A[1]
+            for i in range(NQ):
+                if i < NV:
+                    var q0_i = rebind[Scalar[DTYPE]](workspace[env, q0_idx + i])
+                    var c1_i = rebind[Scalar[DTYPE]](workspace[env, c1_idx + i])
+                    state[env, qpos_off + i] = q0_i + half_dt * c1_i
+            for i in range(NV):
+                var v0_i = rebind[Scalar[DTYPE]](workspace[env, v0_idx + i])
+                var a1_i = rebind[Scalar[DTYPE]](workspace[env, A1_idx + i])
+                state[env, qvel_off + i] = v0_i + half_dt * a1_i
+        elif STAGE == 3:
+            # Save A[2] from qacc_constrained
+            for i in range(NV):
+                workspace[env, A2_idx + i] = workspace[
+                    env, qacc_constrained_idx + i
+                ]
+            # C[2] = v0 + dt/2 * A[1] — save to workspace for combine kernel
+            for i in range(NV):
+                var v0_i = rebind[Scalar[DTYPE]](workspace[env, v0_idx + i])
+                var a1_i = rebind[Scalar[DTYPE]](workspace[env, A1_idx + i])
+                workspace[env, c2_idx + i] = v0_i + half_dt * a1_i
+            # Set intermediate state: qpos = q0 + dt * C[2]
+            # qvel = v0 + dt * A[2]
+            for i in range(NQ):
+                if i < NV:
+                    var q0_i = rebind[Scalar[DTYPE]](workspace[env, q0_idx + i])
+                    var c2_i = rebind[Scalar[DTYPE]](workspace[env, c2_idx + i])
+                    state[env, qpos_off + i] = q0_i + dt * c2_i
+            for i in range(NV):
+                var v0_i = rebind[Scalar[DTYPE]](workspace[env, v0_idx + i])
+                var a2_i = rebind[Scalar[DTYPE]](workspace[env, A2_idx + i])
+                state[env, qvel_off + i] = v0_i + dt * a2_i
+
+        # ---- Forward dynamics pipeline (same as EulerIntegrator.step_kernel) ----
+
+        # 1. Forward kinematics
+        forward_kinematics_gpu[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+            STATE_SIZE, MODEL_SIZE, BATCH,
+        ](env, state, model)
+
+        # 2. Body velocities
+        compute_body_velocities_gpu[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+            STATE_SIZE, MODEL_SIZE, BATCH,
+        ](env, state, model)
+
+        # 3. Detect contacts
+        detect_contacts_gpu[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+            STATE_SIZE, MODEL_SIZE, BATCH, NGEOM,
+        ](env, state, model)
+
+        # 4. Compute cdof
+        compute_cdof_gpu[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+        ](env, state, model, workspace)
+
+        # 5. Composite rigid body inertia
+        compute_composite_inertia_gpu[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+        ](env, state, model, workspace)
+
+        # 6. Full mass matrix
+        compute_mass_matrix_full_gpu[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+        ](env, state, model, workspace)
+
+        # 6b. Armature only (no implicit damping for RK4)
+        for j in range(NJOINT):
+            var joint_off = model_joint_offset[NBODY](j)
+            var jnt_type = Int(model[0, joint_off + JOINT_IDX_TYPE])
+            var dof_adr = Int(model[0, joint_off + JOINT_IDX_DOF_ADR])
+            var arm = model[0, joint_off + JOINT_IDX_ARMATURE]
+            if jnt_type == JNT_FREE:
+                for d in range(6):
+                    var idx = M_idx + (dof_adr + d) * NV + (dof_adr + d)
+                    workspace[env, idx] += arm
+            elif jnt_type == JNT_BALL:
+                for d in range(3):
+                    var idx = M_idx + (dof_adr + d) * NV + (dof_adr + d)
+                    workspace[env, idx] += arm
+            else:
+                var idx = M_idx + dof_adr * NV + dof_adr
+                workspace[env, idx] += arm
+
+        # 7. LDL factorize + M_inv
+        ldl_factor_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](env, workspace)
+        compute_M_inv_from_ldl_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
+            env, workspace
+        )
+
+        # 8. Bias forces
+        compute_bias_forces_rne_gpu[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+        ](env, state, model, workspace)
+
+        # 9. f_net = qfrc - bias
+        for i in range(NV):
+            var qfrc = rebind[Scalar[DTYPE]](state[env, qfrc_off + i])
+            var bias_val = rebind[Scalar[DTYPE]](workspace[env, bias_idx + i])
+            workspace[env, fnet_idx + i] = qfrc - bias_val
+
+        # 9b. Passive forces: damping + stiffness + frictionloss (explicit for RK4)
+        for j in range(NJOINT):
+            var joint_off = model_joint_offset[NBODY](j)
+            var jnt_type = Int(
+                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
+            )
+            var dof_adr = Int(
+                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
+            )
+            var damp = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_DAMPING]
+            )
+            if damp > Scalar[DTYPE](0):
+                if jnt_type == JNT_FREE:
+                    for d in range(6):
+                        var v = rebind[Scalar[DTYPE]](
+                            state[env, qvel_off + dof_adr + d]
+                        )
+                        var cur = rebind[Scalar[DTYPE]](
+                            workspace[env, fnet_idx + dof_adr + d]
+                        )
+                        workspace[env, fnet_idx + dof_adr + d] = cur - damp * v
+                elif jnt_type == JNT_BALL:
+                    for d in range(3):
+                        var v = rebind[Scalar[DTYPE]](
+                            state[env, qvel_off + dof_adr + d]
+                        )
+                        var cur = rebind[Scalar[DTYPE]](
+                            workspace[env, fnet_idx + dof_adr + d]
+                        )
+                        workspace[env, fnet_idx + dof_adr + d] = cur - damp * v
+                else:
+                    var v = rebind[Scalar[DTYPE]](
+                        state[env, qvel_off + dof_adr]
+                    )
+                    var cur = rebind[Scalar[DTYPE]](
+                        workspace[env, fnet_idx + dof_adr]
+                    )
+                    workspace[env, fnet_idx + dof_adr] = cur - damp * v
+
+        # Stiffness + frictionloss
+        var qpos_off_stiff = qpos_offset[NQ, NV]()
+        for j in range(NJOINT):
+            var joint_off = model_joint_offset[NBODY](j)
+            var jnt_type = Int(
+                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
+            )
+            var dof_adr = Int(
+                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
+            )
+            var qpos_adr_j = Int(
+                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_QPOS_ADR])
+            )
+            var stiff = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_STIFFNESS]
+            )
+            var sref = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_SPRINGREF]
+            )
+            var floss = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_FRICTIONLOSS]
+            )
+            if stiff > Scalar[DTYPE](0):
+                if jnt_type == JNT_FREE:
+                    for d in range(6):
+                        var qpos_d = rebind[Scalar[DTYPE]](
+                            state[env, qpos_off_stiff + qpos_adr_j + d]
+                        )
+                        var cur = rebind[Scalar[DTYPE]](
+                            workspace[env, fnet_idx + dof_adr + d]
+                        )
+                        workspace[env, fnet_idx + dof_adr + d] = (
+                            cur - stiff * (qpos_d - sref)
+                        )
+                elif jnt_type == JNT_BALL:
+                    for d in range(3):
+                        var qpos_d = rebind[Scalar[DTYPE]](
+                            state[env, qpos_off_stiff + qpos_adr_j + d]
+                        )
+                        var cur = rebind[Scalar[DTYPE]](
+                            workspace[env, fnet_idx + dof_adr + d]
+                        )
+                        workspace[env, fnet_idx + dof_adr + d] = (
+                            cur - stiff * (qpos_d - sref)
+                        )
+                else:
+                    var qpos_d = rebind[Scalar[DTYPE]](
+                        state[env, qpos_off_stiff + qpos_adr_j]
+                    )
+                    var cur = rebind[Scalar[DTYPE]](
+                        workspace[env, fnet_idx + dof_adr]
+                    )
+                    workspace[env, fnet_idx + dof_adr] = (
+                        cur - stiff * (qpos_d - sref)
+                    )
+            if floss > Scalar[DTYPE](0):
+                comptime VEL_THRESH: Scalar[DTYPE] = 1e-4
+                if jnt_type == JNT_FREE:
+                    for d in range(6):
+                        var v = rebind[Scalar[DTYPE]](
+                            state[env, qvel_off + dof_adr + d]
+                        )
+                        var cur = rebind[Scalar[DTYPE]](
+                            workspace[env, fnet_idx + dof_adr + d]
+                        )
+                        if v > VEL_THRESH:
+                            workspace[env, fnet_idx + dof_adr + d] = (
+                                cur - floss
+                            )
+                        elif v < -VEL_THRESH:
+                            workspace[env, fnet_idx + dof_adr + d] = (
+                                cur + floss
+                            )
+                elif jnt_type == JNT_BALL:
+                    for d in range(3):
+                        var v = rebind[Scalar[DTYPE]](
+                            state[env, qvel_off + dof_adr + d]
+                        )
+                        var cur = rebind[Scalar[DTYPE]](
+                            workspace[env, fnet_idx + dof_adr + d]
+                        )
+                        if v > VEL_THRESH:
+                            workspace[env, fnet_idx + dof_adr + d] = (
+                                cur - floss
+                            )
+                        elif v < -VEL_THRESH:
+                            workspace[env, fnet_idx + dof_adr + d] = (
+                                cur + floss
+                            )
+                else:
+                    var v = rebind[Scalar[DTYPE]](
+                        state[env, qvel_off + dof_adr]
+                    )
+                    var cur = rebind[Scalar[DTYPE]](
+                        workspace[env, fnet_idx + dof_adr]
+                    )
+                    if v > VEL_THRESH:
+                        workspace[env, fnet_idx + dof_adr] = cur - floss
+                    elif v < -VEL_THRESH:
+                        workspace[env, fnet_idx + dof_adr] = cur + floss
+
+        # 10. LDL solve: f_net → qacc
+        ldl_solve_workspace_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
+            env, workspace
+        )
+
+        # Write qacc to state and qacc_constrained for solver
+        for i in range(NV):
+            var qacc_val = rebind[Scalar[DTYPE]](
+                workspace[env, qacc_ws_idx + i]
+            )
+            state[env, qacc_off + i] = qacc_val
+            workspace[env, qacc_constrained_idx + i] = qacc_val
+
+    @always_inline
+    @staticmethod
+    fn rk4_combine_kernel[
+        DTYPE: DType,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
+        STATE_SIZE: Int,
+        MODEL_SIZE: Int,
+        BATCH: Int,
+        WS_SIZE: Int,
+        SOLVER_WS_SIZE: Int,
+    ](
+        state: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+        ],
+        model: LayoutTensor[
+            DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+        ],
+        workspace: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+        ],
+    ):
+        """RK4 combine kernel: save A[3], combine all stages, integrate.
+
+        Reads A[0..2] from workspace, A[3] from qacc_constrained.
+        Computes RK4-weighted qacc and velocity, integrates position.
+        """
+        var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+        if env >= BATCH:
+            return
+
+        comptime qacc_constrained_idx = ws_qacc_constrained_offset[NV, NBODY]()
+        comptime q0_idx = ws_rk4_q0_offset[NV, NBODY](SOLVER_WS_SIZE)
+        comptime v0_idx = ws_rk4_v0_offset[NV, NBODY, NQ](SOLVER_WS_SIZE)
+        comptime A0_idx = ws_rk4_A_offset[NV, NBODY, NQ](SOLVER_WS_SIZE, 0)
+        comptime A1_idx = ws_rk4_A_offset[NV, NBODY, NQ](SOLVER_WS_SIZE, 1)
+        comptime A2_idx = ws_rk4_A_offset[NV, NBODY, NQ](SOLVER_WS_SIZE, 2)
+        comptime c1_idx = ws_rk4_C1_offset[NV, NBODY, NQ](SOLVER_WS_SIZE)
+        comptime c2_idx = ws_rk4_C2_offset[NV, NBODY, NQ](SOLVER_WS_SIZE)
+
+        var qpos_off = qpos_offset[NQ, NV]()
+        var qvel_off = qvel_offset[NQ, NV]()
+        var qacc_off = qacc_offset[NQ, NV]()
+        var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
+        var dt = rebind[Scalar[DTYPE]](
+            model[0, model_meta_off + MODEL_META_IDX_TIMESTEP]
+        )
+
+        comptime ONE_SIXTH = Scalar[DTYPE](1.0 / 6.0)
+        comptime ONE_THIRD = Scalar[DTYPE](1.0 / 3.0)
+
+        # Read A[3] from qacc_constrained (stage 3 solver just ran)
+        # Compute qacc_combined = (A[0] + 2*A[1] + 2*A[2] + A[3]) / 6
+        # Compute C[3] = v0 + dt * A[2]
+        # v_combined = (C[0] + 2*C[1] + 2*C[2] + C[3]) / 6
+        #   where C[0] = v0
+
+        for i in range(NV):
+            var a0_i = rebind[Scalar[DTYPE]](workspace[env, A0_idx + i])
+            var a1_i = rebind[Scalar[DTYPE]](workspace[env, A1_idx + i])
+            var a2_i = rebind[Scalar[DTYPE]](workspace[env, A2_idx + i])
+            var a3_i = rebind[Scalar[DTYPE]](
+                workspace[env, qacc_constrained_idx + i]
+            )
+            var v0_i = rebind[Scalar[DTYPE]](workspace[env, v0_idx + i])
+            var c1_i = rebind[Scalar[DTYPE]](workspace[env, c1_idx + i])
+            var c2_i = rebind[Scalar[DTYPE]](workspace[env, c2_idx + i])
+
+            # Combined acceleration
+            var qacc_i = (
+                ONE_SIXTH * a0_i
+                + ONE_THIRD * a1_i
+                + ONE_THIRD * a2_i
+                + ONE_SIXTH * a3_i
+            )
+
+            # C[3] = v0 + dt * A[2]
+            var c3_i = v0_i + dt * a2_i
+
+            # Combined velocity
+            var v_combined_i = (
+                ONE_SIXTH * v0_i
+                + ONE_THIRD * c1_i
+                + ONE_THIRD * c2_i
+                + ONE_SIXTH * c3_i
+            )
+
+            # Integrate: qvel = v0 + qacc * dt
+            state[env, qvel_off + i] = v0_i + qacc_i * dt
+            state[env, qacc_off + i] = qacc_i
+
+            # Integrate position: qpos = q0 + v_combined * dt
+            # (HalfCheetah/Hopper: only SLIDE+HINGE, NQ==NV, simple addition)
+            if i < NQ:
+                var q0_i = rebind[Scalar[DTYPE]](workspace[env, q0_idx + i])
+                state[env, qpos_off + i] = q0_i + v_combined_i * dt
+
+        # Normalize quaternions
+        normalize_qpos_quaternions_gpu[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+            STATE_SIZE, MODEL_SIZE, BATCH,
+        ](env, state, model)
 
     @staticmethod
     fn step_gpu[
@@ -720,13 +1207,123 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         gravity_z: Scalar[DTYPE],
         ground_z: Scalar[DTYPE],
     ) raises:
-        """GPU step is not supported for RK4Integrator.
+        """Perform one RK4 physics step on GPU.
 
-        RK4 requires 4x dynamics evaluations per step, making it impractical
-        for batched GPU simulation. Use EulerIntegrator or ImplicitFastIntegrator
-        for GPU workloads.
+        Launches 9 kernels: 4 × (stage + solver) + 1 combine.
+        Workspace must include RK4 extra space beyond the standard layout.
         """
-        raise "RK4Integrator does not support GPU execution. Use EulerIntegrator or ImplicitFastIntegrator for GPU."
+        comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS]()
+        comptime MODEL_SIZE = model_size_with_invweight[
+            NBODY, NJOINT, NV, NGEOM, NEQUALITY=MAX_EQUALITY
+        ]()
+        comptime SOLVER_WS = Self.SOLVER.solver_workspace_size[
+            NV, MAX_CONTACTS
+        ]()
+        comptime WS_SIZE = (
+            integrator_workspace_size[NV, NBODY]()
+            + NV * NV
+            + SOLVER_WS
+            + rk4_extra_workspace_size[NQ, NV]()
+        )
+
+        comptime V_SIZE = _max_one[NV]()
+        comptime ENV_BLOCKS = (BATCH + TPB - 1) // TPB
+        comptime THREADS = Self.SOLVER.solver_threads[
+            NQ, NV, NBODY, NJOINT, MAX_CONTACTS
+        ]()
+        comptime SOLVER_THREADS_BLOCKS = (THREADS + THREADS - 1) // THREADS
+        comptime SOLVER_ENV_TPB = TPB // THREADS
+        comptime SOLVER_ENV_BLOCKS = (
+            BATCH + SOLVER_ENV_TPB - 1
+        ) // SOLVER_ENV_TPB
+
+        var state = LayoutTensor[
+            DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+        ](state_buf.unsafe_ptr())
+
+        var model = LayoutTensor[
+            DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+        ](model_buf.unsafe_ptr())
+
+        var workspace = LayoutTensor[
+            DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+        ](workspace_buf.unsafe_ptr())
+
+        # --- Stage 0: forward dynamics at (q0, v0) ---
+        comptime stage0_kernel = Self.rk4_stage_kernel[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE, NGEOM, SOLVER_WS, 0,
+        ]
+        ctx.enqueue_function[stage0_kernel, stage0_kernel](
+            state, model, workspace,
+            grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+        )
+
+        comptime solver_wrapper = Self.SOLVER.solve_gpu[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+            STATE_SIZE, MODEL_SIZE, V_SIZE, BATCH, WS_SIZE,
+            NGEOM, MAX_EQUALITY, CONE_TYPE,
+        ]
+        ctx.enqueue_function[solver_wrapper, solver_wrapper](
+            state, model, workspace,
+            grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
+            block_dim=(SOLVER_ENV_TPB, THREADS),
+        )
+
+        # --- Stage 1: forward dynamics at (q0+dt/2*C[0], v0+dt/2*A[0]) ---
+        comptime stage1_kernel = Self.rk4_stage_kernel[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE, NGEOM, SOLVER_WS, 1,
+        ]
+        ctx.enqueue_function[stage1_kernel, stage1_kernel](
+            state, model, workspace,
+            grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+        )
+        ctx.enqueue_function[solver_wrapper, solver_wrapper](
+            state, model, workspace,
+            grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
+            block_dim=(SOLVER_ENV_TPB, THREADS),
+        )
+
+        # --- Stage 2: forward dynamics at (q0+dt/2*C[1], v0+dt/2*A[1]) ---
+        comptime stage2_kernel = Self.rk4_stage_kernel[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE, NGEOM, SOLVER_WS, 2,
+        ]
+        ctx.enqueue_function[stage2_kernel, stage2_kernel](
+            state, model, workspace,
+            grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+        )
+        ctx.enqueue_function[solver_wrapper, solver_wrapper](
+            state, model, workspace,
+            grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
+            block_dim=(SOLVER_ENV_TPB, THREADS),
+        )
+
+        # --- Stage 3: forward dynamics at (q0+dt*C[2], v0+dt*A[2]) ---
+        comptime stage3_kernel = Self.rk4_stage_kernel[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE, NGEOM, SOLVER_WS, 3,
+        ]
+        ctx.enqueue_function[stage3_kernel, stage3_kernel](
+            state, model, workspace,
+            grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+        )
+        ctx.enqueue_function[solver_wrapper, solver_wrapper](
+            state, model, workspace,
+            grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
+            block_dim=(SOLVER_ENV_TPB, THREADS),
+        )
+
+        # --- Combine: weighted average + integrate ---
+        comptime combine_kernel = Self.rk4_combine_kernel[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE, SOLVER_WS,
+        ]
+        ctx.enqueue_function[combine_kernel, combine_kernel](
+            state, model, workspace,
+            grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+        )
 
     @staticmethod
     fn simulate_gpu[
@@ -750,5 +1347,12 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         gravity_z: Scalar[DTYPE],
         ground_z: Scalar[DTYPE],
     ) raises:
-        """GPU simulate is not supported for RK4Integrator."""
-        raise "RK4Integrator does not support GPU execution. Use EulerIntegrator or ImplicitFastIntegrator for GPU."
+        """Run RK4 simulation for multiple steps on GPU."""
+        for _ in range(num_steps):
+            Self.step_gpu[
+                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, BATCH,
+                NGEOM, MAX_EQUALITY, CONE_TYPE,
+            ](
+                ctx, state_buf, model_buf, workspace_buf,
+                dt, gravity_z, ground_z,
+            )
