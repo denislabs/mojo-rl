@@ -201,7 +201,9 @@ struct ContactInfo[DTYPE: DType](ImplicitlyCopyable, Movable):
     ]  # Torsional friction force (warm-start)
     var force_roll1: Scalar[Self.DTYPE]  # Rolling friction force 1 (warm-start)
     var force_roll2: Scalar[Self.DTYPE]  # Rolling friction force 2 (warm-start)
-    var frame_t1_x: Scalar[Self.DTYPE]  # T1 hint for tangent frame (capsule axis)
+    var frame_t1_x: Scalar[
+        Self.DTYPE
+    ]  # T1 hint for tangent frame (capsule axis)
     var frame_t1_y: Scalar[Self.DTYPE]
     var frame_t1_z: Scalar[Self.DTYPE]
 
@@ -278,8 +280,6 @@ struct Model[
     # Global physics parameters
     var gravity: SIMD[Self.DTYPE, 4]  # (gx, gy, gz, 0)
     var timestep: Scalar[Self.DTYPE]
-    var ground_z: Scalar[Self.DTYPE]
-    var friction: Scalar[Self.DTYPE]
 
     # MuJoCo solref/solimp impedance parameters (contact)
     var solref_contact: InlineArray[
@@ -323,7 +323,9 @@ struct Model[
 
     # Unified geom arrays (NGEOM > 0)
     var geom_type: InlineArray[Int, _max_one[Self.NGEOM]()]
-    var geom_body: InlineArray[Int, _max_one[Self.NGEOM]()]  # 0 for worldbody/static
+    var geom_body: InlineArray[
+        Int, _max_one[Self.NGEOM]()
+    ]  # 0 for worldbody/static
     var geom_pos: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM * 3]()]
     var geom_quat: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM * 4]()]
     var geom_radius: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM]()]
@@ -350,8 +352,12 @@ struct Model[
     var geom_solimp: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM * 3]()]
 
     # Per-joint solref/solimp for limits (MuJoCo-style per-joint impedance overrides)
-    var joint_solref_limit: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NJOINT * 2]()]
-    var joint_solimp_limit: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NJOINT * 3]()]
+    var joint_solref_limit: InlineArray[
+        Scalar[Self.DTYPE], _max_one[Self.NJOINT * 2]()
+    ]
+    var joint_solimp_limit: InlineArray[
+        Scalar[Self.DTYPE], _max_one[Self.NJOINT * 3]()
+    ]
 
     # Friction cone model
     var impratio: Scalar[Self.DTYPE]  # MuJoCo impratio (default 1.0)
@@ -366,18 +372,10 @@ struct Model[
     ]
     var num_equality: Int
 
-    fn __init__(
-        out self,
-        gravity_z: Scalar[Self.DTYPE] = -9.81,
-        timestep: Scalar[Self.DTYPE] = 0.01,
-        ground_z: Scalar[Self.DTYPE] = 0.0,
-        friction: Scalar[Self.DTYPE] = 0.5,
-    ):
+    fn __init__(out self):
         """Initialize model with default values."""
-        self.gravity = SIMD[Self.DTYPE, 4](0, 0, gravity_z, 0)
-        self.timestep = timestep
-        self.ground_z = ground_z
-        self.friction = friction
+        self.gravity = SIMD[Self.DTYPE, 4](0, 0, -9.81, 0)
+        self.timestep = Scalar[Self.DTYPE](0.01)
 
         # MuJoCo geom defaults: solref=[0.02, 1.0], solimp=[0.0, 0.8, 0.01]
         # Note: solimp defaults are MuJoCo's built-in geom defaults, NOT the
@@ -436,9 +434,9 @@ struct Model[
         self.body_invweight0 = InlineArray[Scalar[Self.DTYPE], Self.NBODY * 2](
             fill=Scalar[Self.DTYPE](0)
         )
-        self.dof_invweight0 = InlineArray[Scalar[Self.DTYPE], _max_one[Self.NV]()](
-            fill=Scalar[Self.DTYPE](0)
-        )
+        self.dof_invweight0 = InlineArray[
+            Scalar[Self.DTYPE], _max_one[Self.NV]()
+        ](fill=Scalar[Self.DTYPE](0))
 
         # Initialize geom arrays
         self.geom_type = InlineArray[Int, _max_one[Self.NGEOM]()](
@@ -526,7 +524,9 @@ struct Model[
         for i in range(Self.NBODY):
             self.body_mass[i] = Scalar[Self.DTYPE](1.0)
             self.body_inv_mass[i] = Scalar[Self.DTYPE](1.0)
-            self.body_parent[i] = 0  # Default: all bodies have worldbody as parent
+            self.body_parent[
+                i
+            ] = 0  # Default: all bodies have worldbody as parent
             # Default body position: origin in parent frame
             self.body_pos[i * 3 + 0] = Scalar[Self.DTYPE](0)
             self.body_pos[i * 3 + 1] = Scalar[Self.DTYPE](0)

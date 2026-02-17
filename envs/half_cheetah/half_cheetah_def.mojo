@@ -15,7 +15,14 @@ robot definition. Replaces the former constants.mojo.
 from physics3d.model.body_spec import CapsuleBody
 from physics3d.model.joint_spec import HingeJoint, SlideJoint
 from physics3d.types import ConeType
-from physics3d.model.model_def import Bodies, Joints, Geoms, Actuators, ModelDef, ModelDefaults
+from physics3d.model.model_def import (
+    Bodies,
+    Joints,
+    Geoms,
+    Actuators,
+    ModelDef,
+    ModelDefaults,
+)
 from physics3d.model.actuator_spec import MotorActuator
 from physics3d.model.geom_spec import Plane, Capsule
 from render3d import Color3D
@@ -495,6 +502,8 @@ comptime HalfCheetahDefaults = ModelDefaults[
     joint_solimp_limit_0=0.0,
     joint_solimp_limit_1=0.8,
     joint_solimp_limit_2=0.03,
+    gravity_z= -9.81,
+    timestep=0.01,
 ]
 
 
@@ -525,11 +534,7 @@ struct HalfCheetahParams[DTYPE: DType = DType.float64]:
     """
 
     # Physics
-    comptime DT: Scalar[
-        Self.DTYPE
-    ] = 0.01  # Physics timestep (100 Hz, matching MuJoCo)
     comptime FRAME_SKIP: Int = 5  # Number of physics steps per env step (matching MuJoCo)
-    comptime GRAVITY_Z: Scalar[Self.DTYPE] = -9.81
     comptime MAX_CONTACTS: Int = 20
 
     # Reward

@@ -119,9 +119,6 @@ trait Integrator(Movable & ImplicitlyCopyable):
         mut state_buf: DeviceBuffer[DTYPE],
         mut model_buf: DeviceBuffer[DTYPE],
         mut workspace_buf: DeviceBuffer[DTYPE],
-        dt: Scalar[DTYPE],
-        gravity_z: Scalar[DTYPE],
-        ground_z: Scalar[DTYPE],
     ) raises:
         """Perform one physics simulation step on GPU.
 
@@ -134,9 +131,6 @@ trait Integrator(Movable & ImplicitlyCopyable):
             model_buf: Device buffer containing per-body model data.
             workspace_buf: Device buffer for solver workspace (M_inv, J_n, A).
                 Layout: [BATCH, WS_SIZE].
-            dt: Timestep.
-            gravity_z: Z-component of gravity.
-            ground_z: Ground plane height.
         """
         ...
 
@@ -158,9 +152,6 @@ trait Integrator(Movable & ImplicitlyCopyable):
         mut model_buf: DeviceBuffer[DTYPE],
         mut workspace_buf: DeviceBuffer[DTYPE],
         num_steps: Int,
-        dt: Scalar[DTYPE],
-        gravity_z: Scalar[DTYPE],
-        ground_z: Scalar[DTYPE],
     ) raises:
         """Run simulation for multiple steps on GPU.
 
@@ -170,8 +161,5 @@ trait Integrator(Movable & ImplicitlyCopyable):
             model_buf: Device buffer containing per-body model data.
             workspace_buf: Device buffer for solver workspace (M_inv, J_n, A).
             num_steps: Number of simulation steps to run.
-            dt: Timestep.
-            gravity_z: Z-component of gravity.
-            ground_z: Ground plane height.
         """
         ...

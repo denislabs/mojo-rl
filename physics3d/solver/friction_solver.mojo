@@ -110,7 +110,6 @@ fn _solve_friction_pgs_gpu[
         DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
     ],
     nc: Int,
-    friction_coef: Scalar[DTYPE],
     contacts_off: Int,
 ):
     """Friction solver using PGS on GPU with variable condim.
@@ -205,7 +204,7 @@ fn _solve_friction_pgs_gpu[
             state[env, c_off + CONTACT_IDX_FRICTION]
         )
         if mu_slide <= Scalar[DTYPE](0):
-            mu_slide = friction_coef  # fallback to model default
+            mu_slide = Scalar[DTYPE](0.5)  # fallback (contacts always have friction from geom specs)
         var mu_spin = rebind[Scalar[DTYPE]](
             state[env, c_off + CONTACT_IDX_FRICTION_SPIN]
         )

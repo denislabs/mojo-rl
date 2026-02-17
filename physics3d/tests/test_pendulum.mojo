@@ -37,11 +37,9 @@ fn test_pendulum_period() -> Bool:
 
     # Create simple pendulum
     # Mass at end of massless rod (approximated by body at distance L)
-    var model = Model[DType.float64, 1, 1, 2, 1, 5](
-        gravity_z=-g,
-        timestep=0.001,  # Small timestep for accuracy
-        ground_z=-10.0,  # Below pendulum to avoid collision
-    )
+    var model = Model[DType.float64, 1, 1, 2, 1, 5]()
+    model.gravity = SIMD[DType.float64, 4](0, 0, -g, 0)
+    model.timestep = 0.001  # Small timestep for accuracy
 
     model.set_body(1, name="bob", mass=1.0, inertia=(0.01, 0.01, 0.01))
     model.set_body_parent(1, 0)
@@ -128,11 +126,9 @@ fn test_energy_conservation() -> Bool:
     var g = Float64(9.81)
     var m = Float64(1.0)
 
-    var model = Model[DType.float64, 1, 1, 2, 1, 5](
-        gravity_z=-g,
-        timestep=0.001,
-        ground_z=-10.0,  # Below pendulum to avoid collision
-    )
+    var model = Model[DType.float64, 1, 1, 2, 1, 5]()
+    model.gravity = SIMD[DType.float64, 4](0, 0, -g, 0)
+    model.timestep = 0.001
 
     model.set_body(1, name="bob", mass=m, inertia=(0.01, 0.01, 0.01))
     model.set_body_parent(1, 0)
@@ -202,11 +198,7 @@ fn test_gravity_swinging() -> Bool:
     """Test that gravity causes the pendulum to swing."""
     print("Test gravity causes swinging...")
 
-    var model = Model[DType.float64, 1, 1, 2, 1, 5](
-        gravity_z=-9.81,
-        timestep=0.01,
-        ground_z=-10.0,  # Below pendulum to avoid collision
-    )
+    var model = Model[DType.float64, 1, 1, 2, 1, 5]()
 
     model.set_body(1, name="bob", mass=1.0, inertia=(0.1, 0.1, 0.1))
     model.set_body_parent(1, 0)

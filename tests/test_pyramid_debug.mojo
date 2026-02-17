@@ -9,7 +9,6 @@ fn main():
     _ = env.reset()
 
     print("cone_type =", env.model.cone_type)
-    print("friction =", env.model.friction)
 
     var zero_action = env.ActionType()
     for i in range(6):

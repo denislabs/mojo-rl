@@ -995,9 +995,6 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
         mut state_buf: DeviceBuffer[DTYPE],
         mut model_buf: DeviceBuffer[DTYPE],
         mut workspace_buf: DeviceBuffer[DTYPE],
-        dt: Scalar[DTYPE],
-        gravity_z: Scalar[DTYPE],
-        ground_z: Scalar[DTYPE],
     ) raises:
         """Perform one full implicit physics step on GPU."""
         comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS]()
@@ -1125,9 +1122,6 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
         mut model_buf: DeviceBuffer[DTYPE],
         mut workspace_buf: DeviceBuffer[DTYPE],
         num_steps: Int,
-        dt: Scalar[DTYPE],
-        gravity_z: Scalar[DTYPE],
-        ground_z: Scalar[DTYPE],
     ) raises:
         """Run simulation for multiple steps on GPU."""
         for _ in range(num_steps):
@@ -1147,7 +1141,4 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
                 state_buf,
                 model_buf,
                 workspace_buf,
-                dt,
-                gravity_z,
-                ground_z,
             )

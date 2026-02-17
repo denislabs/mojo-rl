@@ -66,7 +66,6 @@ from ..gpu.constants import (
     CONTACT_SIZE,
     CONTACT_IDX_FORCE_N,
     META_IDX_NUM_CONTACTS,
-    MODEL_META_IDX_FRICTION,
     MODEL_META_IDX_TIMESTEP,
     MODEL_META_IDX_SOLREF_CONTACT_0,
     MODEL_META_IDX_SOLREF_CONTACT_1,
@@ -495,7 +494,6 @@ struct CGSolver(ConstraintSolver):
 
         var nc = 0
         var dt: Scalar[DTYPE] = 0
-        var friction_coef: Scalar[DTYPE] = 0
         var K_spring: Scalar[DTYPE] = 0
         var B_damp: Scalar[DTYPE] = 0
         var si_dmin: Scalar[DTYPE] = 0
@@ -510,9 +508,6 @@ struct CGSolver(ConstraintSolver):
                 rebind[Scalar[DTYPE]](
                     state[env, meta_off + META_IDX_NUM_CONTACTS]
                 )
-            )
-            friction_coef = rebind[Scalar[DTYPE]](
-                model[0, model_meta_off + MODEL_META_IDX_FRICTION]
             )
             if nc > MAX_CONTACTS:
                 nc = MAX_CONTACTS
@@ -685,6 +680,5 @@ struct CGSolver(ConstraintSolver):
             model,
             workspace,
             nc,
-            friction_coef,
             contacts_off,
         )

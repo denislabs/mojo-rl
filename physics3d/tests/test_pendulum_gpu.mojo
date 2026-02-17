@@ -87,18 +87,15 @@ fn main() raises:
     print()
 
     # Create CPU model and data first
-    var model = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, 0](
-        gravity_z=Scalar[DTYPE](-g),
-        timestep=Scalar[DTYPE](dt),
-        ground_z=Scalar[DTYPE](ground_z),
-    )
+    var model = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, 0]()
+    model.gravity = SIMD[DTYPE, 4](0, 0, Scalar[DTYPE](-g), 0)
+    model.timestep = Scalar[DTYPE](dt)
 
     # Set body properties
     model.set_body(
         1,
         mass=Scalar[DTYPE](mass),
         inertia=(Scalar[DTYPE](I_cm), Scalar[DTYPE](I_cm), Scalar[DTYPE](I_cm)),
-        radius=Scalar[DTYPE](0.1),
     )
     model.set_body_parent(1, 0)  # Parent is worldbody
     model.set_body_local_frame(
@@ -180,9 +177,6 @@ fn main() raises:
             state_buf,
             model_buf,
             workspace_buf,
-            Scalar[DTYPE](dt),
-            Scalar[DTYPE](-g),
-            Scalar[DTYPE](ground_z),
         )
         current_time = current_time + dt
 

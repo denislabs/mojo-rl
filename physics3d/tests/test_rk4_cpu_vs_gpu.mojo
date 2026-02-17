@@ -63,7 +63,9 @@ comptime BATCH = 1
 comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS]()
 comptime MODEL_SIZE = model_size[NBODY, NJOINT]()
 comptime SOLVER_WS = NewtonSolver.solver_workspace_size[NV, MAX_CONTACTS]()
-comptime WS_SIZE = integrator_workspace_size[NV, NBODY]() + NV * NV + SOLVER_WS + rk4_extra_workspace_size[NQ, NV]()
+comptime WS_SIZE = integrator_workspace_size[
+    NV, NBODY
+]() + NV * NV + SOLVER_WS + rk4_extra_workspace_size[NQ, NV]()
 
 # Tolerances (float32 accumulates errors through 4× full pipeline + integration)
 comptime QPOS_ABS_TOL: Float64 = 3e-2
@@ -90,17 +92,17 @@ fn compare_step(
     mut workspace_buf: DeviceBuffer[DTYPE],
     mut ws_host: HostBuffer[DTYPE],
 ) raises -> Bool:
-    """Run num_steps RK4 physics steps on CPU and GPU, compare final qpos/qvel."""
+    """Run num_steps RK4 physics steps on CPU and GPU, compare final qpos/qvel.
+    """
     print("--- Test:", test_name, "(", num_steps, "steps) ---")
 
     # === CPU pipeline ===
     var model_cpu = Model[
         DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, ConeType.ELLIPTIC
-    ](
-        gravity_z=Scalar[DTYPE](-9.81),
-        timestep=Scalar[DTYPE](0.01),
+    ]()
+    HalfCheetahModel.setup_solver_params[Defaults=HalfCheetahDefaults](
+        model_cpu
     )
-    HalfCheetahModel.setup_solver_params[Defaults=HalfCheetahDefaults](model_cpu)
     HalfCheetahBodies.setup_model(model_cpu)
     HalfCheetahJoints.setup_model[Defaults=HalfCheetahDefaults](model_cpu)
     HalfCheetahGeoms.setup_model[Defaults=HalfCheetahDefaults](model_cpu)
@@ -137,11 +139,10 @@ fn compare_step(
     # === GPU pipeline ===
     var model_gpu = Model[
         DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, ConeType.ELLIPTIC
-    ](
-        gravity_z=Scalar[DTYPE](-9.81),
-        timestep=Scalar[DTYPE](0.01),
+    ]()
+    HalfCheetahModel.setup_solver_params[Defaults=HalfCheetahDefaults](
+        model_gpu
     )
-    HalfCheetahModel.setup_solver_params[Defaults=HalfCheetahDefaults](model_gpu)
     HalfCheetahBodies.setup_model(model_gpu)
     HalfCheetahJoints.setup_model[Defaults=HalfCheetahDefaults](model_gpu)
     HalfCheetahGeoms.setup_model[Defaults=HalfCheetahDefaults](model_gpu)
@@ -198,13 +199,20 @@ fn compare_step(
             ctx.synchronize()
 
         RK4Integrator[SOLVER=NewtonSolver].step_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, BATCH,
-            NGEOM=0, CONE_TYPE=ConeType.ELLIPTIC,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            BATCH,
+            NGEOM=0,
+            CONE_TYPE = ConeType.ELLIPTIC,
         ](
-            ctx, state_buf, model_buf_local, workspace_buf,
-            dt=Scalar[DTYPE](0.01),
-            gravity_z=Scalar[DTYPE](-9.81),
-            ground_z=Scalar[DTYPE](0.0),
+            ctx,
+            state_buf,
+            model_buf_local,
+            workspace_buf,
         )
         ctx.synchronize()
 
@@ -236,11 +244,17 @@ fn compare_step(
         if not ok:
             if qpos_fails < 5:
                 print(
-                    "  FAIL qpos[", i, "]",
-                    " cpu=", cpu_val,
-                    " gpu=", gpu_val,
-                    " abs=", abs_err,
-                    " rel=", rel_err,
+                    "  FAIL qpos[",
+                    i,
+                    "]",
+                    " cpu=",
+                    cpu_val,
+                    " gpu=",
+                    gpu_val,
+                    " abs=",
+                    abs_err,
+                    " rel=",
+                    rel_err,
                 )
             qpos_fails += 1
             qpos_pass = False
@@ -269,11 +283,17 @@ fn compare_step(
         if not ok:
             if qvel_fails < 5:
                 print(
-                    "  FAIL qvel[", i, "]",
-                    " cpu=", cpu_val,
-                    " gpu=", gpu_val,
-                    " abs=", abs_err,
-                    " rel=", rel_err,
+                    "  FAIL qvel[",
+                    i,
+                    "]",
+                    " cpu=",
+                    cpu_val,
+                    " gpu=",
+                    gpu_val,
+                    " abs=",
+                    abs_err,
+                    " rel=",
+                    rel_err,
                 )
             qvel_fails += 1
             qvel_pass = False
@@ -281,15 +301,32 @@ fn compare_step(
     var all_pass = qpos_pass and qvel_pass
     if all_pass:
         print(
-            "  ALL OK  qpos(abs=", qpos_max_abs, " rel=", qpos_max_rel,
-            ") qvel(abs=", qvel_max_abs, " rel=", qvel_max_rel, ")",
+            "  ALL OK  qpos(abs=",
+            qpos_max_abs,
+            " rel=",
+            qpos_max_rel,
+            ") qvel(abs=",
+            qvel_max_abs,
+            " rel=",
+            qvel_max_rel,
+            ")",
         )
     else:
         print(
-            "  FAILED  qpos:", qpos_fails, "fails (abs=", qpos_max_abs,
-            " rel=", qpos_max_rel, ")",
-            " qvel:", qvel_fails, "fails (abs=", qvel_max_abs,
-            " rel=", qvel_max_rel, ")",
+            "  FAILED  qpos:",
+            qpos_fails,
+            "fails (abs=",
+            qpos_max_abs,
+            " rel=",
+            qpos_max_rel,
+            ")",
+            " qvel:",
+            qvel_fails,
+            "fails (abs=",
+            qvel_max_abs,
+            " rel=",
+            qvel_max_rel,
+            ")",
         )
 
     # Print values
@@ -324,9 +361,19 @@ fn main() raises:
     print("Precision: float32")
     print("Tolerances: qpos abs=", QPOS_ABS_TOL, " rel=", QPOS_REL_TOL)
     print("            qvel abs=", QVEL_ABS_TOL, " rel=", QVEL_REL_TOL)
-    print("WS_SIZE:", WS_SIZE, "(integrator:", integrator_workspace_size[NV, NBODY](),
-          "+ M_inv:", NV * NV, "+ solver:", SOLVER_WS,
-          "+ rk4:", rk4_extra_workspace_size[NQ, NV](), ")")
+    print(
+        "WS_SIZE:",
+        WS_SIZE,
+        "(integrator:",
+        integrator_workspace_size[NV, NBODY](),
+        "+ M_inv:",
+        NV * NV,
+        "+ solver:",
+        SOLVER_WS,
+        "+ rk4:",
+        rk4_extra_workspace_size[NQ, NV](),
+        ")",
+    )
     print()
 
     # Initialize GPU
@@ -353,8 +400,17 @@ fn main() raises:
     var qvel1 = InlineArray[Float64, NV](fill=0.0)
     var act1 = InlineArray[Float64, ACTION_DIM](fill=0.0)
     if compare_step(
-        "Free fall (1 step)", qpos1, qvel1, act1, 1,
-        ctx, model_buf, state_host, state_buf, workspace_buf, ws_host,
+        "Free fall (1 step)",
+        qpos1,
+        qvel1,
+        act1,
+        1,
+        ctx,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
     ):
         num_pass += 1
     else:
@@ -370,8 +426,17 @@ fn main() raises:
     act2[4] = -0.3  # fshin
     act2[5] = 0.1  # ffoot
     if compare_step(
-        "Free fall + actions (1 step)", qpos1, qvel1, act2, 1,
-        ctx, model_buf, state_host, state_buf, workspace_buf, ws_host,
+        "Free fall + actions (1 step)",
+        qpos1,
+        qvel1,
+        act2,
+        1,
+        ctx,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
     ):
         num_pass += 1
     else:
@@ -395,8 +460,17 @@ fn main() raises:
     act3[3] = 1.0
     act3[4] = -0.5
     if compare_step(
-        "Moving + actions (1 step)", qpos3, qvel3, act3, 1,
-        ctx, model_buf, state_host, state_buf, workspace_buf, ws_host,
+        "Moving + actions (1 step)",
+        qpos3,
+        qvel3,
+        act3,
+        1,
+        ctx,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
     ):
         num_pass += 1
     else:
@@ -419,8 +493,17 @@ fn main() raises:
     qvel4[7] = -5.0
     qvel4[8] = 3.0
     if compare_step(
-        "Fast spinning (1 step)", qpos4, qvel4, act1, 1,
-        ctx, model_buf, state_host, state_buf, workspace_buf, ws_host,
+        "Fast spinning (1 step)",
+        qpos4,
+        qvel4,
+        act1,
+        1,
+        ctx,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
     ):
         num_pass += 1
     else:
@@ -429,8 +512,17 @@ fn main() raises:
 
     # --- Config 5: Free fall 10 steps ---
     if compare_step(
-        "Free fall (10 steps)", qpos1, qvel1, act1, 10,
-        ctx, model_buf, state_host, state_buf, workspace_buf, ws_host,
+        "Free fall (10 steps)",
+        qpos1,
+        qvel1,
+        act1,
+        10,
+        ctx,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
     ):
         num_pass += 1
     else:
@@ -443,8 +535,17 @@ fn main() raises:
     var qvel6 = InlineArray[Float64, NV](fill=0.0)
     qvel6[1] = -1.0  # moving down toward ground
     if compare_step(
-        "Ground contact (1 step)", qpos6, qvel6, act1, 1,
-        ctx, model_buf, state_host, state_buf, workspace_buf, ws_host,
+        "Ground contact (1 step)",
+        qpos6,
+        qvel6,
+        act1,
+        1,
+        ctx,
+        model_buf,
+        state_host,
+        state_buf,
+        workspace_buf,
+        ws_host,
     ):
         num_pass += 1
     else:

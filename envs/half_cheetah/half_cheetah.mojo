@@ -146,7 +146,9 @@ struct HalfCheetah[
     comptime CONE_TYPE: Int = CONE_TYPE
 
     # Pre-allocated workspace sizes for step_kernel_gpu
-    comptime STEP_WS_SHARED: Int = model_size_with_invweight[NBODY, NJOINT, NV, NGEOM]()
+    comptime STEP_WS_SHARED: Int = model_size_with_invweight[
+        NBODY, NJOINT, NV, NGEOM
+    ]()
     comptime STEP_WS_PER_ENV: Int = integrator_workspace_size[
         NV, NBODY
     ]() + NV * NV + NewtonSolver.solver_workspace_size[
@@ -196,7 +198,6 @@ struct HalfCheetah[
         out self,
         max_steps: Int = 1000,
         frame_skip: Int = 5,
-        timestep: Scalar[Self.DTYPE] = HalfCheetahParams[Self.DTYPE].DT,
     ):
         """Initialize the HalfCheetah environment."""
         self.max_steps = max_steps
@@ -209,9 +210,16 @@ struct HalfCheetah[
         # Initialize GC model with solver parameters
         comptime P = HalfCheetahParams[Self.DTYPE]
         self.model = Model[
-            Self.DTYPE, Self.NQ, Self.NV, Self.NUM_BODIES, Self.NUM_JOINTS,
-            Self.MAX_CONTACTS, Self.NGEOM, Self.MAX_EQUALITY, Self.CONE_TYPE,
-        ](gravity_z=Scalar[Self.DTYPE](P.GRAVITY_Z), timestep=timestep)
+            Self.DTYPE,
+            Self.NQ,
+            Self.NV,
+            Self.NUM_BODIES,
+            Self.NUM_JOINTS,
+            Self.MAX_CONTACTS,
+            Self.NGEOM,
+            Self.MAX_EQUALITY,
+            Self.CONE_TYPE,
+        ]()
         HalfCheetahModel.setup_solver_params[Defaults=HalfCheetahDefaults](
             self.model,
         )
@@ -368,7 +376,7 @@ struct HalfCheetah[
 
         # Compute velocity from position change
         var x_position_after = Float64(self.data.qpos[JOINT_ROOTX])
-        var dt = Float64(HalfCheetahParams[DType.float64].DT) * self.frame_skip
+        var dt = Float64(HalfCheetahDefaults.TIMESTEP) * self.frame_skip
         var x_velocity = (x_position_after - Float64(self.prev_x_position)) / dt
 
         # Compute reward
@@ -619,9 +627,6 @@ struct HalfCheetah[
                 states_buf,
                 model_buf,
                 workspace_buf,
-                dt=Scalar[gpu_dtype](P.DT),
-                gravity_z=Scalar[gpu_dtype](-9.81),
-                ground_z=Scalar[gpu_dtype](0.0),
             )
             # Enforce joint limits via generic Joints method
             HalfCheetahJoints.enforce_limits_kernel_gpu[
@@ -834,10 +839,16 @@ struct HalfCheetah[
         comptime P = HalfCheetahParams[gpu_dtype]
 
         var model = Model[
-            gpu_dtype, HalfCheetah.NQ, HalfCheetah.NV, HalfCheetah.NUM_BODIES,
-            HalfCheetah.NUM_JOINTS, HalfCheetah.MAX_CONTACTS,
-            HalfCheetah.NGEOM, HalfCheetah.MAX_EQUALITY, HalfCheetah.CONE_TYPE,
-        ](gravity_z=P.GRAVITY_Z, timestep=P.DT)
+            gpu_dtype,
+            HalfCheetah.NQ,
+            HalfCheetah.NV,
+            HalfCheetah.NUM_BODIES,
+            HalfCheetah.NUM_JOINTS,
+            HalfCheetah.MAX_CONTACTS,
+            HalfCheetah.NGEOM,
+            HalfCheetah.MAX_EQUALITY,
+            HalfCheetah.CONE_TYPE,
+        ]()
         HalfCheetahModel.setup_solver_params[Defaults=HalfCheetahDefaults](
             model,
         )
@@ -856,7 +867,9 @@ struct HalfCheetah[
         ]()
         HalfCheetahModel.finalize(model, data_ref)
 
-        var host_buf = HalfCheetahModel.create_gpu_model_buffer[gpu_dtype, Self.MAX_CONTACTS](ctx, model)
+        var host_buf = HalfCheetahModel.create_gpu_model_buffer[
+            gpu_dtype, Self.MAX_CONTACTS
+        ](ctx, model)
 
         var curr = model_curriculum_offset[
             HalfCheetah.NUM_BODIES, HalfCheetah.NUM_JOINTS
@@ -880,7 +893,10 @@ struct HalfCheetah[
     ](ctx: DeviceContext, mut workspace_buf: DeviceBuffer[gpu_dtype],) raises:
         """Initialize pre-allocated step workspace buffer."""
         comptime MODEL_SIZE = model_size_with_invweight[
-            HalfCheetah.NUM_BODIES, HalfCheetah.NUM_JOINTS, HalfCheetah.NV, HalfCheetah.NGEOM
+            HalfCheetah.NUM_BODIES,
+            HalfCheetah.NUM_JOINTS,
+            HalfCheetah.NV,
+            HalfCheetah.NGEOM,
         ]()
         var model_view = DeviceBuffer[gpu_dtype](
             ctx,
@@ -1064,7 +1080,9 @@ struct HalfCheetah[
             # Compute velocity from position change
             var x_position_after = states[env, QPOS_OFF + 0]
             var prev_x = states[env, META_OFF + META_IDX_PREV_X]
-            var effective_dt = P.DT * Scalar[gpu_dtype](P.FRAME_SKIP)
+            var effective_dt = Scalar[gpu_dtype](
+                HalfCheetahDefaults.TIMESTEP
+            ) * Scalar[gpu_dtype](P.FRAME_SKIP)
             var x_velocity = (x_position_after - prev_x) / effective_dt
 
             # Compute reward

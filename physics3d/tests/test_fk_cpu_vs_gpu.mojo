@@ -117,8 +117,6 @@ fn compare_fk(
 
     # === CPU FK (float64 for reference, then compare as float32) ===
     var model_cpu = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM](
-        gravity_z=Scalar[DTYPE](-9.81),
-        timestep=Scalar[DTYPE](0.01),
     )
     HalfCheetahBodies.setup_model(model_cpu)
     HalfCheetahJoints.setup_model(model_cpu)
@@ -372,8 +370,6 @@ fn main() raises:
 
     # Create model buffer once (shared across all tests)
     var model_cpu = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM](
-        gravity_z=Scalar[DTYPE](-9.81),
-        timestep=Scalar[DTYPE](0.01),
     )
     HalfCheetahBodies.setup_model(model_cpu)
     HalfCheetahJoints.setup_model(model_cpu)

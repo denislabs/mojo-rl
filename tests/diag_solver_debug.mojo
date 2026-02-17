@@ -47,7 +47,6 @@ fn main():
     print("\n=== Model parameters ===")
     print("cone_type =", env.model.cone_type)
     print("impratio =", env.model.impratio)
-    print("friction =", env.model.friction)
     print("solref_contact =", env.model.solref_contact[0], env.model.solref_contact[1])
     print("solimp_contact =", env.model.solimp_contact[0], env.model.solimp_contact[1], env.model.solimp_contact[2])
     print("DT = 0.01 (from def)")

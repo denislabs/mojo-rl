@@ -102,8 +102,6 @@ fn test_zero_velocity_qderiv() -> Bool:
     var model = Model[DType.float64, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
     model.gravity = SIMD[DType.float64, 4](0, 0, -9.81, 0)
     model.timestep = Scalar[DType.float64](0.01)
-    model.ground_z = Scalar[DType.float64](0)
-    model.friction = Scalar[DType.float64](1.0)
 
     # Body 0 = worldbody (initialized by Model.__init__)
     # Set up body 1 (first link, parent = worldbody)
@@ -131,9 +129,7 @@ fn test_zero_velocity_qderiv() -> Bool:
         model.body_ipos[6 + i] = Scalar[DType.float64](0)
 
     # Initialize qDeriv to zero
-    var qDeriv = InlineArray[Scalar[DType.float64], M_SIZE](
-        uninitialized=True
-    )
+    var qDeriv = InlineArray[Scalar[DType.float64], M_SIZE](uninitialized=True)
     for i in range(M_SIZE):
         qDeriv[i] = Scalar[DType.float64](0)
 

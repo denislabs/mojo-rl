@@ -99,8 +99,6 @@ fn compare_step(
     var model_cpu = Model[
         DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, ConeType.PYRAMIDAL
     ](
-        gravity_z=Scalar[DTYPE](-9.81),
-        timestep=Scalar[DTYPE](0.01),
     )
     HalfCheetahModel.setup_solver_params[Defaults=HalfCheetahDefaults](model_cpu)
 
@@ -183,7 +181,6 @@ fn compare_step(
         ](
             ctx, state_buf, model_buf, workspace_buf,
             dt=Scalar[DTYPE](0.01),
-            gravity_z=Scalar[DTYPE](-9.81),
             ground_z=Scalar[DTYPE](0.0),
         )
         ctx.synchronize()
@@ -310,8 +307,6 @@ fn main() raises:
     var model_gpu = Model[
         DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, ConeType.ELLIPTIC
     ](
-        gravity_z=Scalar[DTYPE](-9.81),
-        timestep=Scalar[DTYPE](0.01),
     )
     HalfCheetahModel.setup_solver_params[Defaults=HalfCheetahDefaults](model_gpu)
 

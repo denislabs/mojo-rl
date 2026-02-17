@@ -253,7 +253,7 @@ fn build_constraints[
         sr_tc * sr_tc * si_dmax * si_dmax
     )
     var B_damp = Scalar[DTYPE](2.0) * sr_dr / (sr_tc * si_dmax)
-    var default_friction = model.friction
+    var default_friction = Scalar[DTYPE](0.5)  # Fallback (contacts always have friction from geom specs)
 
     var row_idx = 0
     var J_row = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)

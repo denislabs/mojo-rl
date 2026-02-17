@@ -50,6 +50,7 @@ fn setup_pendulum(
 # Test 5.1: RK4 compiles and runs with HalfCheetah
 # =========================================================================
 
+
 fn test_rk4_compiles_halfcheetah() -> Bool:
     """Test that RK4Integrator[PGSSolver] compiles and runs a single step
     with the HalfCheetah model without crashing."""
@@ -63,10 +64,7 @@ fn test_rk4_compiles_halfcheetah() -> Bool:
     comptime NGEOM = 9
     comptime MAX_CONTACTS = 20
 
-    var model = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM](
-        gravity_z=Scalar[DTYPE](-9.81),
-        timestep=Scalar[DTYPE](0.01),
-    )
+    var model = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM]()
     HalfCheetahBodies.setup_model(model)
     HalfCheetahJoints.setup_model(model)
     HalfCheetahGeoms.setup_model(model)
@@ -109,6 +107,7 @@ fn test_rk4_compiles_halfcheetah() -> Bool:
 # Test 5.2: Energy conservation — RK4 vs Euler
 # =========================================================================
 
+
 fn test_energy_conservation_rk4_vs_euler() -> Bool:
     """Test that RK4 conserves energy at least 10x better than Euler
     for an undamped pendulum over 1000 steps."""
@@ -139,9 +138,9 @@ fn test_energy_conservation_rk4_vs_euler() -> Bool:
         return PE + KE
 
     # --- Euler run ---
-    var model_euler = Model[DType.float64, 1, 1, 2, 1, 5](
-        gravity_z=-g, timestep=0.001, ground_z=-10.0,
-    )
+    var model_euler = Model[DType.float64, 1, 1, 2, 1, 5]()
+    model_euler.gravity = SIMD[DType.float64, 4](0, 0, -g, 0)
+    model_euler.timestep = 0.001
     setup_pendulum(model_euler, L, m, I_cm)
 
     var data_euler = Data[DType.float64, 1, 1, 2, 1, 5]()
@@ -161,9 +160,10 @@ fn test_energy_conservation_rk4_vs_euler() -> Bool:
             max_drift_euler = deviation
 
     # --- RK4 run ---
-    var model_rk4 = Model[DType.float64, 1, 1, 2, 1, 5](
-        gravity_z=-g, timestep=0.001, ground_z=-10.0,
-    )
+    var model_rk4 = Model[DType.float64, 1, 1, 2, 1, 5]()
+
+    model_rk4.gravity = SIMD[DType.float64, 4](0, 0, -g, 0)
+    model_rk4.timestep = 0.001
     setup_pendulum(model_rk4, L, m, I_cm)
 
     var data_rk4 = Data[DType.float64, 1, 1, 2, 1, 5]()
@@ -225,6 +225,7 @@ fn test_energy_conservation_rk4_vs_euler() -> Bool:
 # Test 5.3: Trajectory comparison — pendulum
 # =========================================================================
 
+
 fn test_trajectory_comparison() -> Bool:
     """Compare RK4 vs Euler for a pendulum at small angles.
     Both should produce similar results, but RK4 should be more accurate
@@ -243,9 +244,9 @@ fn test_trajectory_comparison() -> Bool:
     var omega_nat = sqrt(m * g * L / I_total)
 
     # --- Euler ---
-    var model_euler = Model[DType.float64, 1, 1, 2, 1, 5](
-        gravity_z=-g, timestep=0.001, ground_z=-10.0,
-    )
+    var model_euler = Model[DType.float64, 1, 1, 2, 1, 5]()
+    model_euler.gravity = SIMD[DType.float64, 4](0, 0, -g, 0)
+    model_euler.timestep = 0.001
     setup_pendulum(model_euler, L, m, I_cm)
 
     var data_euler = Data[DType.float64, 1, 1, 2, 1, 5]()
@@ -253,9 +254,9 @@ fn test_trajectory_comparison() -> Bool:
     data_euler.qvel[0] = Float64(0.0)
 
     # --- RK4 ---
-    var model_rk4 = Model[DType.float64, 1, 1, 2, 1, 5](
-        gravity_z=-g, timestep=0.001, ground_z=-10.0,
-    )
+    var model_rk4 = Model[DType.float64, 1, 1, 2, 1, 5]()
+    model_rk4.gravity = SIMD[DType.float64, 4](0, 0, -g, 0)
+    model_rk4.timestep = 0.001
     setup_pendulum(model_rk4, L, m, I_cm)
 
     var data_rk4 = Data[DType.float64, 1, 1, 2, 1, 5]()
@@ -295,9 +296,9 @@ fn test_trajectory_comparison() -> Bool:
     print("  Analytical final:", initial_angle * cos(omega_nat * time))
 
     # Both should be reasonably close
-    var both_reasonable = (
-        max_euler_error < Float64(0.01) and max_rk4_error < Float64(0.01)
-    )
+    var both_reasonable = max_euler_error < Float64(
+        0.01
+    ) and max_rk4_error < Float64(0.01)
 
     var rk4_better = max_rk4_error < max_euler_error
 

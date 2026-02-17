@@ -82,8 +82,6 @@ from .constants import (
     MODEL_META_IDX_GRAVITY_Y,
     MODEL_META_IDX_GRAVITY_Z,
     MODEL_META_IDX_TIMESTEP,
-    MODEL_META_IDX_GROUND_Z,
-    MODEL_META_IDX_FRICTION,
     MODEL_META_IDX_SOLREF_CONTACT_0,
     MODEL_META_IDX_SOLREF_CONTACT_1,
     MODEL_META_IDX_SOLIMP_CONTACT_0,
@@ -230,7 +228,15 @@ fn copy_model_to_buffer[
     CONE_TYPE: Int = ConeType.ELLIPTIC,
 ](
     model: Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY, CONE_TYPE
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        MAX_EQUALITY,
+        CONE_TYPE,
     ],
     buffer: HostBuffer[DTYPE],
 ):
@@ -317,8 +323,6 @@ fn copy_model_to_buffer[
     buffer[meta_offset + MODEL_META_IDX_GRAVITY_Y] = model.gravity[1]
     buffer[meta_offset + MODEL_META_IDX_GRAVITY_Z] = model.gravity[2]
     buffer[meta_offset + MODEL_META_IDX_TIMESTEP] = model.timestep
-    buffer[meta_offset + MODEL_META_IDX_GROUND_Z] = model.ground_z
-    buffer[meta_offset + MODEL_META_IDX_FRICTION] = model.friction
     # solref/solimp contact
     buffer[
         meta_offset + MODEL_META_IDX_SOLREF_CONTACT_0
@@ -361,7 +365,15 @@ fn copy_invweight0_to_buffer[
     CONE_TYPE: Int = ConeType.ELLIPTIC,
 ](
     model: Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY, CONE_TYPE
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        MAX_EQUALITY,
+        CONE_TYPE,
     ],
     buffer: HostBuffer[DTYPE],
 ):
@@ -401,7 +413,15 @@ fn copy_geoms_to_buffer[
     CONE_TYPE: Int = ConeType.ELLIPTIC,
 ](
     model: Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY, CONE_TYPE
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        MAX_EQUALITY,
+        CONE_TYPE,
     ],
     buffer: HostBuffer[DTYPE],
 ):

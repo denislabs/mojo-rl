@@ -454,10 +454,7 @@ fn main() raises:
     # === Create CPU model (float64) ===
     var model_cpu = Model[
         CPU_DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM
-    ](
-        gravity_z=Scalar[CPU_DTYPE](-9.81),
-        timestep=Scalar[CPU_DTYPE](0.01),
-    )
+    ]()
     HalfCheetahModel.setup_solver_params[Defaults=HalfCheetahDefaults](model_cpu)
     HalfCheetahBodies.setup_model(model_cpu)
     HalfCheetahJoints.setup_model[Defaults=HalfCheetahDefaults](model_cpu)

@@ -442,7 +442,6 @@ fn main():
     print("solimp_contact =", env.model.solimp_contact[0], env.model.solimp_contact[1], env.model.solimp_contact[2])
     print("solref_limit =", env.model.solref_limit[0], env.model.solref_limit[1])
     print("solimp_limit =", env.model.solimp_limit[0], env.model.solimp_limit[1], env.model.solimp_limit[2])
-    print("friction =", env.model.friction)
     print("")
 
     # Show initial state

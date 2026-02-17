@@ -344,9 +344,7 @@ fn _solve_constraints[
             f_i = f_i + M[i * NV + j] * qacc[j]
         constraints.qfrc_smooth[i] = f_i
 
-    SOLVER.solve[CONE_TYPE=CONE_TYPE](
-        model, data, M_inv, constraints, qacc, dt
-    )
+    SOLVER.solve[CONE_TYPE=CONE_TYPE](model, data, M_inv, constraints, qacc, dt)
 
     # Only write back forces on the last stage (for data.qfrc_constraint)
     if is_last_stage:
@@ -533,13 +531,34 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         # =================================================================
         # data already has (q0, v0)
         _forward_dynamics[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-            MAX_EQUALITY, V_SIZE, M_SIZE, CDOF_SIZE, CRB_SIZE,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            V_SIZE,
+            M_SIZE,
+            CDOF_SIZE,
+            CRB_SIZE,
         ](model, data, a0, cdof, M_inv, M)
 
         _solve_constraints[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-            MAX_EQUALITY, V_SIZE, M_SIZE, CDOF_SIZE, CONE_TYPE, Self.SOLVER,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            V_SIZE,
+            M_SIZE,
+            CDOF_SIZE,
+            CONE_TYPE,
+            Self.SOLVER,
         ](model, data, cdof, M_inv, M, a0, dt, False)
         # a0 is now CONSTRAINED qacc
         # C[0] = v0 (saved above)
@@ -557,13 +576,34 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             data.qpos[i] = q_stage[i]
 
         _forward_dynamics[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-            MAX_EQUALITY, V_SIZE, M_SIZE, CDOF_SIZE, CRB_SIZE,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            V_SIZE,
+            M_SIZE,
+            CDOF_SIZE,
+            CRB_SIZE,
         ](model, data, a1, cdof, M_inv, M)
 
         _solve_constraints[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-            MAX_EQUALITY, V_SIZE, M_SIZE, CDOF_SIZE, CONE_TYPE, Self.SOLVER,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            V_SIZE,
+            M_SIZE,
+            CDOF_SIZE,
+            CONE_TYPE,
+            Self.SOLVER,
         ](model, data, cdof, M_inv, M, a1, dt, False)
         # a1 is now CONSTRAINED qacc
         # C[1] = v0 + dt/2*A[0] = data.qvel (set above)
@@ -585,13 +625,34 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             data.qpos[i] = q_stage[i]
 
         _forward_dynamics[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-            MAX_EQUALITY, V_SIZE, M_SIZE, CDOF_SIZE, CRB_SIZE,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            V_SIZE,
+            M_SIZE,
+            CDOF_SIZE,
+            CRB_SIZE,
         ](model, data, a2, cdof, M_inv, M)
 
         _solve_constraints[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-            MAX_EQUALITY, V_SIZE, M_SIZE, CDOF_SIZE, CONE_TYPE, Self.SOLVER,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            V_SIZE,
+            M_SIZE,
+            CDOF_SIZE,
+            CONE_TYPE,
+            Self.SOLVER,
         ](model, data, cdof, M_inv, M, a2, dt, False)
         # a2 is now CONSTRAINED qacc
         # C[2] = v0 + dt/2*A[1] = data.qvel (set above)
@@ -613,13 +674,34 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             data.qpos[i] = q_stage[i]
 
         _forward_dynamics[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-            MAX_EQUALITY, V_SIZE, M_SIZE, CDOF_SIZE, CRB_SIZE,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            V_SIZE,
+            M_SIZE,
+            CDOF_SIZE,
+            CRB_SIZE,
         ](model, data, a3, cdof, M_inv, M)
 
         _solve_constraints[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-            MAX_EQUALITY, V_SIZE, M_SIZE, CDOF_SIZE, CONE_TYPE, Self.SOLVER,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            V_SIZE,
+            M_SIZE,
+            CDOF_SIZE,
+            CONE_TYPE,
+            Self.SOLVER,
         ](model, data, cdof, M_inv, M, a3, dt, True)
         # a3 is now CONSTRAINED qacc
         # C[3] = v0 + dt*A[2] = data.qvel (set above)
@@ -856,38 +938,84 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
 
         # 1. Forward kinematics
         forward_kinematics_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, BATCH,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
         ](env, state, model)
 
         # 2. Body velocities
         compute_body_velocities_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, BATCH,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
         ](env, state, model)
 
         # 3. Detect contacts
         detect_contacts_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, BATCH, NGEOM,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
+            NGEOM,
         ](env, state, model)
 
         # 4. Compute cdof
         compute_cdof_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
+            WS_SIZE,
         ](env, state, model, workspace)
 
         # 5. Composite rigid body inertia
         compute_composite_inertia_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
+            WS_SIZE,
         ](env, state, model, workspace)
 
         # 6. Full mass matrix
         compute_mass_matrix_full_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
+            WS_SIZE,
         ](env, state, model, workspace)
 
         # 6b. Armature only (no implicit damping for RK4)
@@ -916,8 +1044,16 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
 
         # 8. Bias forces
         compute_bias_forces_rne_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
+            WS_SIZE,
         ](env, state, model, workspace)
 
         # 9. f_net = qfrc - bias
@@ -997,8 +1133,8 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                         var cur = rebind[Scalar[DTYPE]](
                             workspace[env, fnet_idx + dof_adr + d]
                         )
-                        workspace[env, fnet_idx + dof_adr + d] = (
-                            cur - stiff * (qpos_d - sref)
+                        workspace[env, fnet_idx + dof_adr + d] = cur - stiff * (
+                            qpos_d - sref
                         )
                 elif jnt_type == JNT_BALL:
                     for d in range(3):
@@ -1008,8 +1144,8 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                         var cur = rebind[Scalar[DTYPE]](
                             workspace[env, fnet_idx + dof_adr + d]
                         )
-                        workspace[env, fnet_idx + dof_adr + d] = (
-                            cur - stiff * (qpos_d - sref)
+                        workspace[env, fnet_idx + dof_adr + d] = cur - stiff * (
+                            qpos_d - sref
                         )
                 else:
                     var qpos_d = rebind[Scalar[DTYPE]](
@@ -1018,8 +1154,8 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                     var cur = rebind[Scalar[DTYPE]](
                         workspace[env, fnet_idx + dof_adr]
                     )
-                    workspace[env, fnet_idx + dof_adr] = (
-                        cur - stiff * (qpos_d - sref)
+                    workspace[env, fnet_idx + dof_adr] = cur - stiff * (
+                        qpos_d - sref
                     )
             if floss > Scalar[DTYPE](0):
                 comptime VEL_THRESH: Scalar[DTYPE] = 1e-4
@@ -1032,13 +1168,9 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                             workspace[env, fnet_idx + dof_adr + d]
                         )
                         if v > VEL_THRESH:
-                            workspace[env, fnet_idx + dof_adr + d] = (
-                                cur - floss
-                            )
+                            workspace[env, fnet_idx + dof_adr + d] = cur - floss
                         elif v < -VEL_THRESH:
-                            workspace[env, fnet_idx + dof_adr + d] = (
-                                cur + floss
-                            )
+                            workspace[env, fnet_idx + dof_adr + d] = cur + floss
                 elif jnt_type == JNT_BALL:
                     for d in range(3):
                         var v = rebind[Scalar[DTYPE]](
@@ -1048,13 +1180,9 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                             workspace[env, fnet_idx + dof_adr + d]
                         )
                         if v > VEL_THRESH:
-                            workspace[env, fnet_idx + dof_adr + d] = (
-                                cur - floss
-                            )
+                            workspace[env, fnet_idx + dof_adr + d] = cur - floss
                         elif v < -VEL_THRESH:
-                            workspace[env, fnet_idx + dof_adr + d] = (
-                                cur + floss
-                            )
+                            workspace[env, fnet_idx + dof_adr + d] = cur + floss
                 else:
                     var v = rebind[Scalar[DTYPE]](
                         state[env, qvel_off + dof_adr]
@@ -1182,8 +1310,15 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
 
         # Normalize quaternions
         normalize_qpos_quaternions_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, BATCH,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
         ](env, state, model)
 
     @staticmethod
@@ -1203,9 +1338,6 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         mut state_buf: DeviceBuffer[DTYPE],
         mut model_buf: DeviceBuffer[DTYPE],
         mut workspace_buf: DeviceBuffer[DTYPE],
-        dt: Scalar[DTYPE],
-        gravity_z: Scalar[DTYPE],
-        ground_z: Scalar[DTYPE],
     ) raises:
         """Perform one RK4 physics step on GPU.
 
@@ -1251,78 +1383,165 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
 
         # --- Stage 0: forward dynamics at (q0, v0) ---
         comptime stage0_kernel = Self.rk4_stage_kernel[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE, NGEOM, SOLVER_WS, 0,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
+            WS_SIZE,
+            NGEOM,
+            SOLVER_WS,
+            0,
         ]
         ctx.enqueue_function[stage0_kernel, stage0_kernel](
-            state, model, workspace,
-            grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+            state,
+            model,
+            workspace,
+            grid_dim=(ENV_BLOCKS,),
+            block_dim=(TPB,),
         )
 
         comptime solver_wrapper = Self.SOLVER.solve_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, V_SIZE, BATCH, WS_SIZE,
-            NGEOM, MAX_EQUALITY, CONE_TYPE,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            V_SIZE,
+            BATCH,
+            WS_SIZE,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
         ]
         ctx.enqueue_function[solver_wrapper, solver_wrapper](
-            state, model, workspace,
+            state,
+            model,
+            workspace,
             grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
             block_dim=(SOLVER_ENV_TPB, THREADS),
         )
 
         # --- Stage 1: forward dynamics at (q0+dt/2*C[0], v0+dt/2*A[0]) ---
         comptime stage1_kernel = Self.rk4_stage_kernel[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE, NGEOM, SOLVER_WS, 1,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
+            WS_SIZE,
+            NGEOM,
+            SOLVER_WS,
+            1,
         ]
         ctx.enqueue_function[stage1_kernel, stage1_kernel](
-            state, model, workspace,
-            grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+            state,
+            model,
+            workspace,
+            grid_dim=(ENV_BLOCKS,),
+            block_dim=(TPB,),
         )
         ctx.enqueue_function[solver_wrapper, solver_wrapper](
-            state, model, workspace,
+            state,
+            model,
+            workspace,
             grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
             block_dim=(SOLVER_ENV_TPB, THREADS),
         )
 
         # --- Stage 2: forward dynamics at (q0+dt/2*C[1], v0+dt/2*A[1]) ---
         comptime stage2_kernel = Self.rk4_stage_kernel[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE, NGEOM, SOLVER_WS, 2,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
+            WS_SIZE,
+            NGEOM,
+            SOLVER_WS,
+            2,
         ]
         ctx.enqueue_function[stage2_kernel, stage2_kernel](
-            state, model, workspace,
-            grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+            state,
+            model,
+            workspace,
+            grid_dim=(ENV_BLOCKS,),
+            block_dim=(TPB,),
         )
         ctx.enqueue_function[solver_wrapper, solver_wrapper](
-            state, model, workspace,
+            state,
+            model,
+            workspace,
             grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
             block_dim=(SOLVER_ENV_TPB, THREADS),
         )
 
         # --- Stage 3: forward dynamics at (q0+dt*C[2], v0+dt*A[2]) ---
         comptime stage3_kernel = Self.rk4_stage_kernel[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE, NGEOM, SOLVER_WS, 3,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
+            WS_SIZE,
+            NGEOM,
+            SOLVER_WS,
+            3,
         ]
         ctx.enqueue_function[stage3_kernel, stage3_kernel](
-            state, model, workspace,
-            grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+            state,
+            model,
+            workspace,
+            grid_dim=(ENV_BLOCKS,),
+            block_dim=(TPB,),
         )
         ctx.enqueue_function[solver_wrapper, solver_wrapper](
-            state, model, workspace,
+            state,
+            model,
+            workspace,
             grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
             block_dim=(SOLVER_ENV_TPB, THREADS),
         )
 
         # --- Combine: weighted average + integrate ---
         comptime combine_kernel = Self.rk4_combine_kernel[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE, SOLVER_WS,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
+            WS_SIZE,
+            SOLVER_WS,
         ]
         ctx.enqueue_function[combine_kernel, combine_kernel](
-            state, model, workspace,
-            grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+            state,
+            model,
+            workspace,
+            grid_dim=(ENV_BLOCKS,),
+            block_dim=(TPB,),
         )
 
     @staticmethod
@@ -1343,16 +1562,23 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         mut model_buf: DeviceBuffer[DTYPE],
         mut workspace_buf: DeviceBuffer[DTYPE],
         num_steps: Int,
-        dt: Scalar[DTYPE],
-        gravity_z: Scalar[DTYPE],
-        ground_z: Scalar[DTYPE],
     ) raises:
         """Run RK4 simulation for multiple steps on GPU."""
         for _ in range(num_steps):
             Self.step_gpu[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, BATCH,
-                NGEOM, MAX_EQUALITY, CONE_TYPE,
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                BATCH,
+                NGEOM,
+                MAX_EQUALITY,
+                CONE_TYPE,
             ](
-                ctx, state_buf, model_buf, workspace_buf,
-                dt, gravity_z, ground_z,
+                ctx,
+                state_buf,
+                model_buf,
+                workspace_buf,
             )

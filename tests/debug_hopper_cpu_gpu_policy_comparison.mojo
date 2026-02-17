@@ -159,12 +159,7 @@ fn main() raises:
     # =========================================================================
 
     var cpu_env = Hopper[DType.float64](
-        torque_limit=200.0,
-        min_height=0.7,
-        max_pitch=0.2,
         max_steps=1000,
-        timestep=0.002,
-        friction=0.5,
     )
 
     var ctx = DeviceContext()

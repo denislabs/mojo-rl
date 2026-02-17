@@ -313,7 +313,7 @@ comptime HopperDefaults = ModelDefaults[
     geom_condim=1,
     geom_solref_0=0.02,
     geom_solref_1=1.0,
-    geom_solimp_0=0.8,   # MuJoCo XML default: solimp=".8 .8 .01"
+    geom_solimp_0=0.8,  # MuJoCo XML default: solimp=".8 .8 .01"
     geom_solimp_1=0.8,
     geom_solimp_2=0.01,
     joint_solref_limit_0=0.02,
@@ -321,6 +321,8 @@ comptime HopperDefaults = ModelDefaults[
     joint_solimp_limit_0=0.0,
     joint_solimp_limit_1=0.8,
     joint_solimp_limit_2=0.03,
+    gravity_z= -9.81,
+    timestep=0.002,
 ]
 
 
@@ -510,12 +512,10 @@ comptime OBS_DIM: Int = 11
 comptime ACTION_DIM: Int = 3
 comptime NUM_BODIES: Int = 5
 
-# Physics constants for backward compatibility
-comptime DT: Float64 = 0.002
+# Physics constants for backward compatibility (derived from HopperDefaults)
+comptime DT: Float64 = HopperDefaults.TIMESTEP
 comptime FRAME_SKIP: Int = 4
 comptime EFFECTIVE_DT: Float64 = DT * FRAME_SKIP
-comptime GRAVITY_Z: Float64 = -9.81
-comptime GROUND_Z: Float64 = 0.0
 comptime MAX_STEPS: Int = 1000
 comptime INITIAL_Z: Float64 = 1.25
 comptime FRICTION: Float64 = 1.0

@@ -79,9 +79,7 @@ from .hopper_def import (
     NGEOM,
     OBS_DIM,
     ACTION_DIM,
-    DT,
     FRAME_SKIP,
-    GRAVITY_Z,
     FORWARD_REWARD_WEIGHT,
     CTRL_COST_WEIGHT,
     HEALTHY_REWARD,
@@ -187,7 +185,6 @@ struct Hopper[
         out self,
         max_steps: Int = 1000,
         frame_skip: Int = 4,
-        timestep: Scalar[Self.DTYPE] = 0.002,
     ):
         """Initialize the Hopper environment."""
         self.max_steps = max_steps
@@ -207,7 +204,7 @@ struct Hopper[
             Self.NUM_JOINTS,
             Self.MAX_CONTACTS,
             Self.NGEOM,
-        ](gravity_z=Scalar[Self.DTYPE](GRAVITY_Z), timestep=timestep)
+        ]()
         HopperModel.setup_solver_params[Defaults=HopperDefaults](
             self.model,
         )
@@ -707,9 +704,6 @@ struct Hopper[
                 states_buf,
                 model_buf,
                 workspace_buf,
-                dt=Scalar[gpu_dtype](P.DT),
-                gravity_z=Scalar[gpu_dtype](-9.81),
-                ground_z=Scalar[gpu_dtype](0.0),
             )
 
         # Extract observations, compute rewards, check termination
@@ -925,7 +919,7 @@ struct Hopper[
             Hopper.NUM_JOINTS,
             Hopper.MAX_CONTACTS,
             Hopper.NGEOM,
-        ](gravity_z=P.GRAVITY_Z, timestep=P.DT)
+        ]()
         HopperModel.setup_solver_params[Defaults=HopperDefaults](
             model,
         )

@@ -130,8 +130,6 @@ fn compare_constraint_params(
     var model = Model[
         DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, ConeType.ELLIPTIC
     ](
-        gravity_z=Scalar[DTYPE](-9.81),
-        timestep=Scalar[DTYPE](0.01),
     )
     HalfCheetahModel.setup_solver_params[Defaults=HalfCheetahDefaults](model)
 

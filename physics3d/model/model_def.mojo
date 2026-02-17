@@ -110,7 +110,7 @@ fn _resolve_int[val: Int, default: Int]() -> Int:
 
 
 trait ModelDefaultsLike(TrivialRegisterPassable):
-    """Trait for compile-time model defaults (MuJoCo-style <default> block).
+    """Trait for compile-time model defaults (MuJoCo-style <default> + <option>).
 
     Allows different specializations of ModelDefaults to be passed as
     type parameters to setup_model functions.
@@ -137,6 +137,11 @@ trait ModelDefaultsLike(TrivialRegisterPassable):
     comptime JOINT_SOLIMP_LIMIT_1: Float64
     comptime JOINT_SOLIMP_LIMIT_2: Float64
     comptime IMPRATIO: Float64
+    # MuJoCo <option> block
+    comptime GRAVITY_X: Float64
+    comptime GRAVITY_Y: Float64
+    comptime GRAVITY_Z: Float64
+    comptime TIMESTEP: Float64
 
 
 @fieldwise_init
@@ -168,6 +173,10 @@ struct ModelDefaults[
     motor_ctrl_max: Float64 = 1.0,
     # Model-level (MuJoCo <option>)
     impratio: Float64 = 1.0,
+    gravity_x: Float64 = 0.0,
+    gravity_y: Float64 = 0.0,
+    gravity_z: Float64 = -9.81,
+    timestep: Float64 = 0.01,
 ](ModelDefaultsLike):
     """MuJoCo-style model defaults block.
 
@@ -199,6 +208,10 @@ struct ModelDefaults[
     comptime JOINT_SOLIMP_LIMIT_1: Float64 = Self.joint_solimp_limit_1
     comptime JOINT_SOLIMP_LIMIT_2: Float64 = Self.joint_solimp_limit_2
     comptime IMPRATIO: Float64 = Self.impratio
+    comptime GRAVITY_X: Float64 = Self.gravity_x
+    comptime GRAVITY_Y: Float64 = Self.gravity_y
+    comptime GRAVITY_Z: Float64 = Self.gravity_z
+    comptime TIMESTEP: Float64 = Self.timestep
 
 
 # =============================================================================
@@ -1003,29 +1016,19 @@ struct Joints[*J: JointSpec]:
 
             # Per-joint solref/solimp for limits (resolved from defaults)
             model.joint_solref_limit[i * 2 + 0] = Scalar[DTYPE](
-                _resolve_f64[
-                    J.SOLREF_LIMIT_0, Defaults.JOINT_SOLREF_LIMIT_0
-                ]()
+                _resolve_f64[J.SOLREF_LIMIT_0, Defaults.JOINT_SOLREF_LIMIT_0]()
             )
             model.joint_solref_limit[i * 2 + 1] = Scalar[DTYPE](
-                _resolve_f64[
-                    J.SOLREF_LIMIT_1, Defaults.JOINT_SOLREF_LIMIT_1
-                ]()
+                _resolve_f64[J.SOLREF_LIMIT_1, Defaults.JOINT_SOLREF_LIMIT_1]()
             )
             model.joint_solimp_limit[i * 3 + 0] = Scalar[DTYPE](
-                _resolve_f64[
-                    J.SOLIMP_LIMIT_0, Defaults.JOINT_SOLIMP_LIMIT_0
-                ]()
+                _resolve_f64[J.SOLIMP_LIMIT_0, Defaults.JOINT_SOLIMP_LIMIT_0]()
             )
             model.joint_solimp_limit[i * 3 + 1] = Scalar[DTYPE](
-                _resolve_f64[
-                    J.SOLIMP_LIMIT_1, Defaults.JOINT_SOLIMP_LIMIT_1
-                ]()
+                _resolve_f64[J.SOLIMP_LIMIT_1, Defaults.JOINT_SOLIMP_LIMIT_1]()
             )
             model.joint_solimp_limit[i * 3 + 2] = Scalar[DTYPE](
-                _resolve_f64[
-                    J.SOLIMP_LIMIT_2, Defaults.JOINT_SOLIMP_LIMIT_2
-                ]()
+                _resolve_f64[J.SOLIMP_LIMIT_2, Defaults.JOINT_SOLIMP_LIMIT_2]()
             )
 
 
@@ -1179,8 +1182,7 @@ struct Geoms[*G: GeomSpec]:
 
         Resolves sentinel values (-1.0/-1) from ModelDefaults.
         Sets geom type, body index, position, orientation, size, collision
-        filtering, friction, and per-geom solref/solimp. For plane geoms,
-        also writes to ground_z and friction.
+        filtering, friction, and per-geom solref/solimp.
         """
 
         @parameter
@@ -1211,10 +1213,14 @@ struct Geoms[*G: GeomSpec]:
                 G_item.CONDIM, Defaults.GEOM_CONDIM
             ]()
             model.geom_friction_spin[i] = Scalar[DTYPE](
-                _resolve_f64[G_item.FRICTION_SPIN, Defaults.GEOM_FRICTION_SPIN]()
+                _resolve_f64[
+                    G_item.FRICTION_SPIN, Defaults.GEOM_FRICTION_SPIN
+                ]()
             )
             model.geom_friction_roll[i] = Scalar[DTYPE](
-                _resolve_f64[G_item.FRICTION_ROLL, Defaults.GEOM_FRICTION_ROLL]()
+                _resolve_f64[
+                    G_item.FRICTION_ROLL, Defaults.GEOM_FRICTION_ROLL
+                ]()
             )
             model.geom_contype[i] = _resolve_int[
                 G_item.CONTYPE, Defaults.GEOM_CONTYPE
@@ -1261,13 +1267,6 @@ struct Geoms[*G: GeomSpec]:
                     1e10
                 )  # Planes are infinite
 
-            # For plane geoms, also write to legacy ground fields
-            @parameter
-            if G_item.GEOM_TYPE == GEOM_PLANE:
-                model.ground_z = Scalar[DTYPE](G_item.POS_Z)
-                model.friction = Scalar[DTYPE](
-                    _resolve_f64[G_item.FRICTION, Defaults.GEOM_FRICTION]()
-                )
 
 
 # =============================================================================
@@ -1652,6 +1651,13 @@ struct ModelDef[
         model.solimp_limit[1] = Scalar[DTYPE](Defaults.JOINT_SOLIMP_LIMIT_1)
         model.solimp_limit[2] = Scalar[DTYPE](Defaults.JOINT_SOLIMP_LIMIT_2)
         model.impratio = Scalar[DTYPE](Defaults.IMPRATIO)
+        model.gravity = SIMD[DTYPE, 4](
+            Scalar[DTYPE](Defaults.GRAVITY_X),
+            Scalar[DTYPE](Defaults.GRAVITY_Y),
+            Scalar[DTYPE](Defaults.GRAVITY_Z),
+            Scalar[DTYPE](0),
+        )
+        model.timestep = Scalar[DTYPE](Defaults.TIMESTEP)
 
     @staticmethod
     fn finalize[
@@ -1711,7 +1717,10 @@ struct ModelDef[
         ctx.enqueue_copy to a DeviceBuffer.
         """
         comptime BUF_SIZE = model_size_with_invweight[
-            Self.NBODY, Self.NJOINT, Self.NV, Self.NGEOM,
+            Self.NBODY,
+            Self.NJOINT,
+            Self.NV,
+            Self.NGEOM,
         ]()
         var host_buf = ctx.enqueue_create_host_buffer[DTYPE](BUF_SIZE)
         for i in range(BUF_SIZE):

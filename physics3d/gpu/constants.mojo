@@ -14,7 +14,7 @@ Model buffer (static, same for all environments):
     pos(3), quat(4), parent, ipos(3), iquat(4)]
   Per joint (MODEL_JOINT_SIZE=18): [type, body_id, qpos_adr, dof_adr,
     pos(3), axis(3), tau_limit, range_min/max, armature, damping, stiffness, springref, frictionloss]
-  Metadata (MODEL_META_SIZE=21): [NBODY, NJOINT, gravity(3), timestep, ground_z, friction,
+  Metadata (MODEL_META_SIZE=21): [NBODY, NJOINT, gravity(3), timestep, _reserved(2),
     solref_contact(2), solimp_contact(3), solref_limit(2), solimp_limit(3), impratio, nequality]
   Curriculum (MODEL_CURRICULUM_SIZE=8): [up to 8 curriculum parameters]
   Per geom (MODEL_GEOM_SIZE=21): [type, body, pos(3), quat(4), radius, half_length,
@@ -270,8 +270,6 @@ comptime MODEL_META_IDX_GRAVITY_X: Int = 2
 comptime MODEL_META_IDX_GRAVITY_Y: Int = 3
 comptime MODEL_META_IDX_GRAVITY_Z: Int = 4
 comptime MODEL_META_IDX_TIMESTEP: Int = 5
-comptime MODEL_META_IDX_GROUND_Z: Int = 6
-comptime MODEL_META_IDX_FRICTION: Int = 7
 # solref/solimp contact parameters (MuJoCo impedance model)
 comptime MODEL_META_IDX_SOLREF_CONTACT_0: Int = 8  # timeconst
 comptime MODEL_META_IDX_SOLREF_CONTACT_1: Int = 9  # dampratio
@@ -445,7 +443,10 @@ fn model_dof_invweight0_offset[
 
     Appended after body_invweight0[NBODY*2].
     """
-    return model_body_invweight0_offset[NBODY, NJOINT, NGEOM, NEQUALITY]() + NBODY * 2
+    return (
+        model_body_invweight0_offset[NBODY, NJOINT, NGEOM, NEQUALITY]()
+        + NBODY * 2
+    )
 
 
 fn model_size_with_invweight[
@@ -572,12 +573,14 @@ fn ws_implicit_qderiv_offset(base: Int) -> Int:
 
 
 fn ws_implicit_cdof_origin_offset[NV: Int](base: Int) -> Int:
-    """Offset to cdof_sc (NV*6) within implicit extra workspace (subtree-COM)."""
+    """Offset to cdof_sc (NV*6) within implicit extra workspace (subtree-COM).
+    """
     return base + NV * NV
 
 
 fn ws_implicit_cvel_origin_offset[NV: Int](base: Int) -> Int:
-    """Offset to cvel_sc (NBODY*6) within implicit extra workspace (subtree-COM)."""
+    """Offset to cvel_sc (NBODY*6) within implicit extra workspace (subtree-COM).
+    """
     return base + NV * NV + NV * 6
 
 
@@ -663,29 +666,29 @@ fn ws_rk4_q0_offset[NV: Int, NBODY: Int](solver_ws_size: Int) -> Int:
     return ws_solver_offset[NV, NBODY]() + solver_ws_size
 
 
-fn ws_rk4_v0_offset[NV: Int, NBODY: Int, NQ: Int](
-    solver_ws_size: Int,
-) -> Int:
+fn ws_rk4_v0_offset[
+    NV: Int, NBODY: Int, NQ: Int
+](solver_ws_size: Int,) -> Int:
     """Offset to saved initial qvel (NV) in RK4 workspace."""
     return ws_rk4_q0_offset[NV, NBODY](solver_ws_size) + NQ
 
 
-fn ws_rk4_A_offset[NV: Int, NBODY: Int, NQ: Int](
-    solver_ws_size: Int, stage: Int
-) -> Int:
+fn ws_rk4_A_offset[
+    NV: Int, NBODY: Int, NQ: Int
+](solver_ws_size: Int, stage: Int) -> Int:
     """Offset to A[stage] (NV) in RK4 workspace. stage in [0,3]."""
     return ws_rk4_v0_offset[NV, NBODY, NQ](solver_ws_size) + NV + stage * NV
 
 
-fn ws_rk4_C1_offset[NV: Int, NBODY: Int, NQ: Int](
-    solver_ws_size: Int,
-) -> Int:
+fn ws_rk4_C1_offset[
+    NV: Int, NBODY: Int, NQ: Int
+](solver_ws_size: Int,) -> Int:
     """Offset to C1 velocity intermediate (NV) in RK4 workspace."""
     return ws_rk4_v0_offset[NV, NBODY, NQ](solver_ws_size) + NV + 4 * NV
 
 
-fn ws_rk4_C2_offset[NV: Int, NBODY: Int, NQ: Int](
-    solver_ws_size: Int,
-) -> Int:
+fn ws_rk4_C2_offset[
+    NV: Int, NBODY: Int, NQ: Int
+](solver_ws_size: Int,) -> Int:
     """Offset to C2 velocity intermediate (NV) in RK4 workspace."""
     return ws_rk4_C1_offset[NV, NBODY, NQ](solver_ws_size) + NV
