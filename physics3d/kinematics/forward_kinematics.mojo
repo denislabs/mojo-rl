@@ -120,37 +120,30 @@ fn forward_kinematics[
     - data.xpos contains world positions for all bodies
     - data.xquat contains world orientations for all bodies
     """
-    # Process each body in order (assuming topological ordering)
-    for body in range(NBODY):
+    # Initialize worldbody at index 0 (identity pose)
+    data.xpos[0] = Scalar[DTYPE](0)
+    data.xpos[1] = Scalar[DTYPE](0)
+    data.xpos[2] = Scalar[DTYPE](0)
+    data.xquat[0] = Scalar[DTYPE](0)
+    data.xquat[1] = Scalar[DTYPE](0)
+    data.xquat[2] = Scalar[DTYPE](0)
+    data.xquat[3] = Scalar[DTYPE](1)
+    data.xipos[0] = Scalar[DTYPE](0)
+    data.xipos[1] = Scalar[DTYPE](0)
+    data.xipos[2] = Scalar[DTYPE](0)
+
+    # Process each body in order (skip worldbody at 0)
+    for body in range(1, NBODY):
         var parent = model.body_parent[body]
 
-        # Start with parent's world pose (or identity for world)
-        var parent_px: Scalar[DTYPE]
-        var parent_py: Scalar[DTYPE]
-        var parent_pz: Scalar[DTYPE]
-        var parent_qx: Scalar[DTYPE]
-        var parent_qy: Scalar[DTYPE]
-        var parent_qz: Scalar[DTYPE]
-        var parent_qw: Scalar[DTYPE]
-
-        if parent < 0:
-            # World parent - start at origin with identity orientation
-            parent_px = Scalar[DTYPE](0)
-            parent_py = Scalar[DTYPE](0)
-            parent_pz = Scalar[DTYPE](0)
-            parent_qx = Scalar[DTYPE](0)
-            parent_qy = Scalar[DTYPE](0)
-            parent_qz = Scalar[DTYPE](0)
-            parent_qw = Scalar[DTYPE](1)
-        else:
-            # Get parent's world pose
-            parent_px = data.xpos[parent * 3 + 0]
-            parent_py = data.xpos[parent * 3 + 1]
-            parent_pz = data.xpos[parent * 3 + 2]
-            parent_qx = data.xquat[parent * 4 + 0]
-            parent_qy = data.xquat[parent * 4 + 1]
-            parent_qz = data.xquat[parent * 4 + 2]
-            parent_qw = data.xquat[parent * 4 + 3]
+        # Get parent's world pose (parent is always valid, worldbody=0 has identity)
+        var parent_px = data.xpos[parent * 3 + 0]
+        var parent_py = data.xpos[parent * 3 + 1]
+        var parent_pz = data.xpos[parent * 3 + 2]
+        var parent_qx = data.xquat[parent * 4 + 0]
+        var parent_qy = data.xquat[parent * 4 + 1]
+        var parent_qz = data.xquat[parent * 4 + 2]
+        var parent_qw = data.xquat[parent * 4 + 3]
 
         # Count joints for this body
         var joint_count = 0
@@ -520,35 +513,27 @@ fn compute_body_velocities[
         data.xvel[i] = Scalar[DTYPE](0)
         data.xangvel[i] = Scalar[DTYPE](0)
 
-    # Process each body
-    for body in range(NBODY):
+    # Process each body (skip worldbody at 0, already zero)
+    for body in range(1, NBODY):
         var parent = model.body_parent[body]
 
-        # Start with parent's velocity (if any)
-        var vx: Scalar[DTYPE] = Scalar[DTYPE](0)
-        var vy: Scalar[DTYPE] = Scalar[DTYPE](0)
-        var vz: Scalar[DTYPE] = Scalar[DTYPE](0)
-        var wx: Scalar[DTYPE] = Scalar[DTYPE](0)
-        var wy: Scalar[DTYPE] = Scalar[DTYPE](0)
-        var wz: Scalar[DTYPE] = Scalar[DTYPE](0)
+        # Start with parent's velocity
+        var vx = data.xvel[parent * 3 + 0]
+        var vy = data.xvel[parent * 3 + 1]
+        var vz = data.xvel[parent * 3 + 2]
+        var wx = data.xangvel[parent * 3 + 0]
+        var wy = data.xangvel[parent * 3 + 1]
+        var wz = data.xangvel[parent * 3 + 2]
 
-        if parent >= 0:
-            vx = data.xvel[parent * 3 + 0]
-            vy = data.xvel[parent * 3 + 1]
-            vz = data.xvel[parent * 3 + 2]
-            wx = data.xangvel[parent * 3 + 0]
-            wy = data.xangvel[parent * 3 + 1]
-            wz = data.xangvel[parent * 3 + 2]
+        # Add velocity from parent's rotation about this body's offset
+        var rx = data.xipos[body * 3 + 0] - data.xipos[parent * 3 + 0]
+        var ry = data.xipos[body * 3 + 1] - data.xipos[parent * 3 + 1]
+        var rz = data.xipos[body * 3 + 2] - data.xipos[parent * 3 + 2]
 
-            # Add velocity from parent's rotation about this body's offset
-            var rx = data.xipos[body * 3 + 0] - data.xipos[parent * 3 + 0]
-            var ry = data.xipos[body * 3 + 1] - data.xipos[parent * 3 + 1]
-            var rz = data.xipos[body * 3 + 2] - data.xipos[parent * 3 + 2]
-
-            # v = parent_v + parent_w x r
-            vx = vx + (wy * rz - wz * ry)
-            vy = vy + (wz * rx - wx * rz)
-            vz = vz + (wx * ry - wy * rx)
+        # v = parent_v + parent_w x r
+        vx = vx + (wy * rz - wz * ry)
+        vy = vy + (wz * rx - wx * rz)
+        vz = vz + (wx * ry - wy * rx)
 
         # Apply joint velocities
         for j in range(model.num_joints):
@@ -596,27 +581,22 @@ fn compute_body_velocities[
                 var axis_y = joint.axis_y
                 var axis_z = joint.axis_z
 
-                if parent >= 0:
-                    var parent_qx = data.xquat[parent * 4 + 0]
-                    var parent_qy = data.xquat[parent * 4 + 1]
-                    var parent_qz = data.xquat[parent * 4 + 2]
-                    var parent_qw = data.xquat[parent * 4 + 3]
-                    var axis_world = quat_rotate(
-                        parent_qx,
-                        parent_qy,
-                        parent_qz,
-                        parent_qw,
-                        axis_x,
-                        axis_y,
-                        axis_z,
-                    )
-                    vx = vx + axis_world[0] * vel
-                    vy = vy + axis_world[1] * vel
-                    vz = vz + axis_world[2] * vel
-                else:
-                    vx = vx + axis_x * vel
-                    vy = vy + axis_y * vel
-                    vz = vz + axis_z * vel
+                var parent_qx = data.xquat[parent * 4 + 0]
+                var parent_qy = data.xquat[parent * 4 + 1]
+                var parent_qz = data.xquat[parent * 4 + 2]
+                var parent_qw = data.xquat[parent * 4 + 3]
+                var axis_world = quat_rotate(
+                    parent_qx,
+                    parent_qy,
+                    parent_qz,
+                    parent_qw,
+                    axis_x,
+                    axis_y,
+                    axis_z,
+                )
+                vx = vx + axis_world[0] * vel
+                vy = vy + axis_world[1] * vel
+                vz = vz + axis_world[2] * vel
 
             elif jnt_type == JNT_HINGE:
                 # HINGE joint: angular velocity around axis
@@ -627,28 +607,23 @@ fn compute_body_velocities[
                 var axis_y = joint.axis_y
                 var axis_z = joint.axis_z
 
-                # For hinge, axis is in parent frame
-                if parent >= 0:
-                    var parent_qx = data.xquat[parent * 4 + 0]
-                    var parent_qy = data.xquat[parent * 4 + 1]
-                    var parent_qz = data.xquat[parent * 4 + 2]
-                    var parent_qw = data.xquat[parent * 4 + 3]
-                    var axis_world = quat_rotate(
-                        parent_qx,
-                        parent_qy,
-                        parent_qz,
-                        parent_qw,
-                        axis_x,
-                        axis_y,
-                        axis_z,
-                    )
-                    wx = wx + axis_world[0] * omega
-                    wy = wy + axis_world[1] * omega
-                    wz = wz + axis_world[2] * omega
-                else:
-                    wx = wx + axis_x * omega
-                    wy = wy + axis_y * omega
-                    wz = wz + axis_z * omega
+                # Rotate axis from body frame to world frame
+                var parent_qx = data.xquat[parent * 4 + 0]
+                var parent_qy = data.xquat[parent * 4 + 1]
+                var parent_qz = data.xquat[parent * 4 + 2]
+                var parent_qw = data.xquat[parent * 4 + 3]
+                var axis_world = quat_rotate(
+                    parent_qx,
+                    parent_qy,
+                    parent_qz,
+                    parent_qw,
+                    axis_x,
+                    axis_y,
+                    axis_z,
+                )
+                wx = wx + axis_world[0] * omega
+                wy = wy + axis_world[1] * omega
+                wz = wz + axis_world[2] * omega
 
         # Store computed velocities
         data.xvel[body * 3 + 0] = vx
@@ -699,8 +674,21 @@ fn forward_kinematics_gpu[
         rebind[Scalar[DTYPE]](model[0, meta_off + MODEL_META_IDX_NJOINT])
     )
 
-    # Process each body in order (assuming topological ordering)
-    for body in range(NBODY):
+    # Initialize worldbody at index 0 (identity pose)
+    state[env, xpos_off + 0] = Scalar[DTYPE](0)
+    state[env, xpos_off + 1] = Scalar[DTYPE](0)
+    state[env, xpos_off + 2] = Scalar[DTYPE](0)
+    state[env, xquat_off + 0] = Scalar[DTYPE](0)
+    state[env, xquat_off + 1] = Scalar[DTYPE](0)
+    state[env, xquat_off + 2] = Scalar[DTYPE](0)
+    state[env, xquat_off + 3] = Scalar[DTYPE](1)
+    var xipos_off_init = xipos_offset[NQ, NV, NBODY]()
+    state[env, xipos_off_init + 0] = Scalar[DTYPE](0)
+    state[env, xipos_off_init + 1] = Scalar[DTYPE](0)
+    state[env, xipos_off_init + 2] = Scalar[DTYPE](0)
+
+    # Process each body in order (skip worldbody at 0)
+    for body in range(1, NBODY):
         var body_off = model_body_offset(body)
         var parent = Int(
             rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT])
@@ -728,37 +716,28 @@ fn forward_kinematics_gpu[
             model[0, body_off + BODY_IDX_QUAT_W]
         )
 
-        # Start with parent's world pose (or identity for world)
-        var cur_px: Scalar[DTYPE] = 0
-        var cur_py: Scalar[DTYPE] = 0
-        var cur_pz: Scalar[DTYPE] = 0
-        var cur_qx: Scalar[DTYPE] = 0
-        var cur_qy: Scalar[DTYPE] = 0
-        var cur_qz: Scalar[DTYPE] = 0
-        var cur_qw: Scalar[DTYPE] = 1
-
-        if parent >= 0:
-            cur_px = rebind[Scalar[DTYPE]](
-                state[env, xpos_off + parent * 3 + 0]
-            )
-            cur_py = rebind[Scalar[DTYPE]](
-                state[env, xpos_off + parent * 3 + 1]
-            )
-            cur_pz = rebind[Scalar[DTYPE]](
-                state[env, xpos_off + parent * 3 + 2]
-            )
-            cur_qx = rebind[Scalar[DTYPE]](
-                state[env, xquat_off + parent * 4 + 0]
-            )
-            cur_qy = rebind[Scalar[DTYPE]](
-                state[env, xquat_off + parent * 4 + 1]
-            )
-            cur_qz = rebind[Scalar[DTYPE]](
-                state[env, xquat_off + parent * 4 + 2]
-            )
-            cur_qw = rebind[Scalar[DTYPE]](
-                state[env, xquat_off + parent * 4 + 3]
-            )
+        # Get parent's world pose (parent is always valid, worldbody=0 has identity)
+        var cur_px = rebind[Scalar[DTYPE]](
+            state[env, xpos_off + parent * 3 + 0]
+        )
+        var cur_py = rebind[Scalar[DTYPE]](
+            state[env, xpos_off + parent * 3 + 1]
+        )
+        var cur_pz = rebind[Scalar[DTYPE]](
+            state[env, xpos_off + parent * 3 + 2]
+        )
+        var cur_qx = rebind[Scalar[DTYPE]](
+            state[env, xquat_off + parent * 4 + 0]
+        )
+        var cur_qy = rebind[Scalar[DTYPE]](
+            state[env, xquat_off + parent * 4 + 1]
+        )
+        var cur_qz = rebind[Scalar[DTYPE]](
+            state[env, xquat_off + parent * 4 + 2]
+        )
+        var cur_qw = rebind[Scalar[DTYPE]](
+            state[env, xquat_off + parent * 4 + 3]
+        )
 
         # Count joints for this body
         var has_joint = False
@@ -1196,58 +1175,50 @@ fn compute_body_velocities_gpu[
         state[env, xangvel_off + body * 3 + 1] = Scalar[DTYPE](0)
         state[env, xangvel_off + body * 3 + 2] = Scalar[DTYPE](0)
 
-    # Process each body in order
-    for body in range(NBODY):
+    # Process each body in order (skip worldbody at 0, already zero)
+    for body in range(1, NBODY):
         var body_off = model_body_offset(body)
         var parent = Int(
             rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT])
         )
 
-        # Start with parent's velocity (if any)
-        var vx: Scalar[DTYPE] = 0
-        var vy: Scalar[DTYPE] = 0
-        var vz: Scalar[DTYPE] = 0
-        var wx: Scalar[DTYPE] = 0
-        var wy: Scalar[DTYPE] = 0
-        var wz: Scalar[DTYPE] = 0
+        # Start with parent's velocity
+        var vx = rebind[Scalar[DTYPE]](state[env, xvel_off + parent * 3 + 0])
+        var vy = rebind[Scalar[DTYPE]](state[env, xvel_off + parent * 3 + 1])
+        var vz = rebind[Scalar[DTYPE]](state[env, xvel_off + parent * 3 + 2])
+        var wx = rebind[Scalar[DTYPE]](state[env, xangvel_off + parent * 3 + 0])
+        var wy = rebind[Scalar[DTYPE]](state[env, xangvel_off + parent * 3 + 1])
+        var wz = rebind[Scalar[DTYPE]](state[env, xangvel_off + parent * 3 + 2])
 
-        if parent >= 0:
-            vx = rebind[Scalar[DTYPE]](state[env, xvel_off + parent * 3 + 0])
-            vy = rebind[Scalar[DTYPE]](state[env, xvel_off + parent * 3 + 1])
-            vz = rebind[Scalar[DTYPE]](state[env, xvel_off + parent * 3 + 2])
-            wx = rebind[Scalar[DTYPE]](state[env, xangvel_off + parent * 3 + 0])
-            wy = rebind[Scalar[DTYPE]](state[env, xangvel_off + parent * 3 + 1])
-            wz = rebind[Scalar[DTYPE]](state[env, xangvel_off + parent * 3 + 2])
+        # Add velocity from parent's rotation about this body's offset
+        var xipos_off = xipos_offset[NQ, NV, NBODY]()
+        var body_px = rebind[Scalar[DTYPE]](
+            state[env, xipos_off + body * 3 + 0]
+        )
+        var body_py = rebind[Scalar[DTYPE]](
+            state[env, xipos_off + body * 3 + 1]
+        )
+        var body_pz = rebind[Scalar[DTYPE]](
+            state[env, xipos_off + body * 3 + 2]
+        )
+        var parent_px = rebind[Scalar[DTYPE]](
+            state[env, xipos_off + parent * 3 + 0]
+        )
+        var parent_py = rebind[Scalar[DTYPE]](
+            state[env, xipos_off + parent * 3 + 1]
+        )
+        var parent_pz = rebind[Scalar[DTYPE]](
+            state[env, xipos_off + parent * 3 + 2]
+        )
 
-            # Add velocity from parent's rotation about this body's offset
-            var xipos_off = xipos_offset[NQ, NV, NBODY]()
-            var body_px = rebind[Scalar[DTYPE]](
-                state[env, xipos_off + body * 3 + 0]
-            )
-            var body_py = rebind[Scalar[DTYPE]](
-                state[env, xipos_off + body * 3 + 1]
-            )
-            var body_pz = rebind[Scalar[DTYPE]](
-                state[env, xipos_off + body * 3 + 2]
-            )
-            var parent_px = rebind[Scalar[DTYPE]](
-                state[env, xipos_off + parent * 3 + 0]
-            )
-            var parent_py = rebind[Scalar[DTYPE]](
-                state[env, xipos_off + parent * 3 + 1]
-            )
-            var parent_pz = rebind[Scalar[DTYPE]](
-                state[env, xipos_off + parent * 3 + 2]
-            )
+        var rx = body_px - parent_px
+        var ry = body_py - parent_py
+        var rz = body_pz - parent_pz
 
-            var rx = body_px - parent_px
-            var ry = body_py - parent_py
-            var rz = body_pz - parent_pz
-
-            # v = parent_v + parent_w x r
-            vx = vx + (wy * rz - wz * ry)
-            vy = vy + (wz * rx - wx * rz)
-            vz = vz + (wx * ry - wy * rx)
+        # v = parent_v + parent_w x r
+        vx = vx + (wy * rz - wz * ry)
+        vy = vy + (wz * rx - wx * rz)
+        vz = vz + (wx * ry - wy * rx)
 
         # Apply joint velocities - accumulate for all joints on this body
         for j in range(num_joints):
@@ -1300,34 +1271,26 @@ fn compute_body_velocities_gpu[
                 # SLIDE joint: add velocity along axis
                 var vel = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr])
 
-                # Get world-space axis (using parent's orientation if applicable)
-                var world_axis_x = axis_x
-                var world_axis_y = axis_y
-                var world_axis_z = axis_z
+                # Rotate axis from body frame to world frame
+                var pqx = rebind[Scalar[DTYPE]](
+                    state[env, xquat_off + parent * 4 + 0]
+                )
+                var pqy = rebind[Scalar[DTYPE]](
+                    state[env, xquat_off + parent * 4 + 1]
+                )
+                var pqz = rebind[Scalar[DTYPE]](
+                    state[env, xquat_off + parent * 4 + 2]
+                )
+                var pqw = rebind[Scalar[DTYPE]](
+                    state[env, xquat_off + parent * 4 + 3]
+                )
+                var rotated = gpu_quat_rotate(
+                    pqx, pqy, pqz, pqw, axis_x, axis_y, axis_z
+                )
 
-                if parent >= 0:
-                    var pqx = rebind[Scalar[DTYPE]](
-                        state[env, xquat_off + parent * 4 + 0]
-                    )
-                    var pqy = rebind[Scalar[DTYPE]](
-                        state[env, xquat_off + parent * 4 + 1]
-                    )
-                    var pqz = rebind[Scalar[DTYPE]](
-                        state[env, xquat_off + parent * 4 + 2]
-                    )
-                    var pqw = rebind[Scalar[DTYPE]](
-                        state[env, xquat_off + parent * 4 + 3]
-                    )
-                    var rotated = gpu_quat_rotate(
-                        pqx, pqy, pqz, pqw, axis_x, axis_y, axis_z
-                    )
-                    world_axis_x = rotated[0]
-                    world_axis_y = rotated[1]
-                    world_axis_z = rotated[2]
-
-                vx = vx + world_axis_x * vel
-                vy = vy + world_axis_y * vel
-                vz = vz + world_axis_z * vel
+                vx = vx + rotated[0] * vel
+                vy = vy + rotated[1] * vel
+                vz = vz + rotated[2] * vel
 
             elif jnt_type == JNT_HINGE:
                 # HINGE joint: add angular velocity around axis
@@ -1335,34 +1298,26 @@ fn compute_body_velocities_gpu[
                     state[env, qvel_off + dof_adr]
                 )
 
-                # Get world-space axis (using parent's orientation if applicable)
-                var world_axis_x = axis_x
-                var world_axis_y = axis_y
-                var world_axis_z = axis_z
+                # Rotate axis from body frame to world frame
+                var pqx = rebind[Scalar[DTYPE]](
+                    state[env, xquat_off + parent * 4 + 0]
+                )
+                var pqy = rebind[Scalar[DTYPE]](
+                    state[env, xquat_off + parent * 4 + 1]
+                )
+                var pqz = rebind[Scalar[DTYPE]](
+                    state[env, xquat_off + parent * 4 + 2]
+                )
+                var pqw = rebind[Scalar[DTYPE]](
+                    state[env, xquat_off + parent * 4 + 3]
+                )
+                var rotated = gpu_quat_rotate(
+                    pqx, pqy, pqz, pqw, axis_x, axis_y, axis_z
+                )
 
-                if parent >= 0:
-                    var pqx = rebind[Scalar[DTYPE]](
-                        state[env, xquat_off + parent * 4 + 0]
-                    )
-                    var pqy = rebind[Scalar[DTYPE]](
-                        state[env, xquat_off + parent * 4 + 1]
-                    )
-                    var pqz = rebind[Scalar[DTYPE]](
-                        state[env, xquat_off + parent * 4 + 2]
-                    )
-                    var pqw = rebind[Scalar[DTYPE]](
-                        state[env, xquat_off + parent * 4 + 3]
-                    )
-                    var rotated = gpu_quat_rotate(
-                        pqx, pqy, pqz, pqw, axis_x, axis_y, axis_z
-                    )
-                    world_axis_x = rotated[0]
-                    world_axis_y = rotated[1]
-                    world_axis_z = rotated[2]
-
-                wx = wx + world_axis_x * omega
-                wy = wy + world_axis_y * omega
-                wz = wz + world_axis_z * omega
+                wx = wx + rotated[0] * omega
+                wy = wy + rotated[1] * omega
+                wz = wz + rotated[2] * omega
 
         # Store computed velocities
         state[env, xvel_off + body * 3 + 0] = vx

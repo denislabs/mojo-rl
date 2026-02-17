@@ -37,26 +37,26 @@ fn test_pendulum_period() -> Bool:
 
     # Create simple pendulum
     # Mass at end of massless rod (approximated by body at distance L)
-    var model = Model[DType.float64, 1, 1, 1, 1, 5](
+    var model = Model[DType.float64, 1, 1, 2, 1, 5](
         gravity_z=-g,
         timestep=0.001,  # Small timestep for accuracy
         ground_z=-10.0,  # Below pendulum to avoid collision
     )
 
-    model.set_body(0, mass=1.0, inertia=(0.01, 0.01, 0.01), radius=0.1)
-    model.set_body_parent(0, -1)
+    model.set_body(1, name="bob", mass=1.0, inertia=(0.01, 0.01, 0.01))
+    model.set_body_parent(1, 0)
 
     # Body at (0, 0, -L) relative to pivot at origin
-    model.set_body_local_frame(0, pos=(0.0, 0.0, -L))
+    model.set_body_local_frame(1, pos=(0.0, 0.0, -L))
 
     # Hinge at origin, Y axis
     _ = model.add_hinge_joint(
-        body_id=0,
+        body_id=1,
         pos=(0.0, 0.0, 0.0),
         axis=(0.0, 1.0, 0.0),
     )
 
-    var data = Data[DType.float64, 1, 1, 1, 1, 5]()
+    var data = Data[DType.float64, 1, 1, 2, 1, 5]()
 
     # Small initial angle (for small-angle approximation to be valid)
     var initial_angle = Float64(0.1)  # ~6 degrees
@@ -128,23 +128,23 @@ fn test_energy_conservation() -> Bool:
     var g = Float64(9.81)
     var m = Float64(1.0)
 
-    var model = Model[DType.float64, 1, 1, 1, 1, 5](
+    var model = Model[DType.float64, 1, 1, 2, 1, 5](
         gravity_z=-g,
         timestep=0.001,
         ground_z=-10.0,  # Below pendulum to avoid collision
     )
 
-    model.set_body(0, mass=m, inertia=(0.01, 0.01, 0.01), radius=0.1)
-    model.set_body_parent(0, -1)
-    model.set_body_local_frame(0, pos=(0.0, 0.0, -L))
+    model.set_body(1, name="bob", mass=m, inertia=(0.01, 0.01, 0.01))
+    model.set_body_parent(1, 0)
+    model.set_body_local_frame(1, pos=(0.0, 0.0, -L))
 
     _ = model.add_hinge_joint(
-        body_id=0,
+        body_id=1,
         pos=(0.0, 0.0, 0.0),
         axis=(0.0, 1.0, 0.0),
     )
 
-    var data = Data[DType.float64, 1, 1, 1, 1, 5]()
+    var data = Data[DType.float64, 1, 1, 2, 1, 5]()
     data.qpos[0] = Float64(0.5)  # ~30 degrees
     data.qvel[0] = Float64(0.0)
 
@@ -155,12 +155,12 @@ fn test_energy_conservation() -> Bool:
     # PE = m*g*h where h is height of mass relative to lowest point
     # KE = 0.5 * I * omega^2 where I = m*L^2
     fn compute_energy(
-        data: Data[DType.float64, 1, 1, 1, 1, 5],
+        data: Data[DType.float64, 1, 1, 2, 1, 5],
         m: Float64,
         g: Float64,
         L: Float64,
     ) -> Float64:
-        var z = data.xpos[2]
+        var z = data.xpos[5]  # body 1, z component
         var h = z + L  # Height relative to lowest point (z = -L)
         var PE = m * g * h
         var omega = data.qvel[0]
@@ -202,23 +202,23 @@ fn test_gravity_swinging() -> Bool:
     """Test that gravity causes the pendulum to swing."""
     print("Test gravity causes swinging...")
 
-    var model = Model[DType.float64, 1, 1, 1, 1, 5](
+    var model = Model[DType.float64, 1, 1, 2, 1, 5](
         gravity_z=-9.81,
         timestep=0.01,
         ground_z=-10.0,  # Below pendulum to avoid collision
     )
 
-    model.set_body(0, mass=1.0, inertia=(0.1, 0.1, 0.1), radius=0.1)
-    model.set_body_parent(0, -1)
-    model.set_body_local_frame(0, pos=(0.0, 0.0, -1.0))
+    model.set_body(1, name="bob", mass=1.0, inertia=(0.1, 0.1, 0.1))
+    model.set_body_parent(1, 0)
+    model.set_body_local_frame(1, pos=(0.0, 0.0, -1.0))
 
     _ = model.add_hinge_joint(
-        body_id=0,
+        body_id=1,
         pos=(0.0, 0.0, 0.0),
         axis=(0.0, 1.0, 0.0),
     )
 
-    var data = Data[DType.float64, 1, 1, 1, 1, 5]()
+    var data = Data[DType.float64, 1, 1, 2, 1, 5]()
     data.qpos[0] = Float64(0.5)  # Initial angle
     data.qvel[0] = Float64(0.0)
 

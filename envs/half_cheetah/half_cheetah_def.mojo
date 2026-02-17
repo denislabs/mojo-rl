@@ -17,7 +17,7 @@ from physics3d.model.joint_spec import HingeJoint, SlideJoint
 from physics3d.types import ConeType
 from physics3d.model.model_def import Bodies, Joints, Geoms, Actuators, ModelDef
 from physics3d.model.actuator_spec import MotorActuator
-from physics3d.model.geom_spec import PlaneGeom, BodyCapsuleGeom
+from physics3d.model.geom_spec import Plane, Capsule
 from render3d import Color3D
 from physics3d.gpu.constants import (
     state_size,
@@ -62,10 +62,10 @@ from physics3d.gpu.constants import (
 # Shared radius for all capsules
 comptime _R: Float64 = 0.046
 
-# Body 0: Torso — root body, parent = -1
+# Body 1: Torso — root body, parent = 0 (worldbody)
 # MuJoCo body_pos=(0,0,0.7) — body origin offset in parent (world) frame
 comptime Torso = CapsuleBody[
-    parent= -1,
+    parent=0,
     mass=6.250209,
     name="torso",
     radius=_R,
@@ -88,10 +88,10 @@ comptime Torso = CapsuleBody[
     color = Color3D(204, 153, 102),
 ]
 
-# Body 1: Back Thigh
+# Body 2: Back Thigh
 # MuJoCo body_pos = (-0.5, 0, 0) relative to torso
 comptime BThigh = CapsuleBody[
-    parent=0,
+    parent=1,
     mass=1.543515,
     name="bthigh",
     radius=_R,
@@ -111,10 +111,10 @@ comptime BThigh = CapsuleBody[
     color = Color3D(204, 153, 102),
 ]
 
-# Body 2: Back Shin
+# Body 3: Back Shin
 # MuJoCo body_pos = (0.16, 0, -0.25) relative to bthigh
 comptime BShin = CapsuleBody[
-    parent=1,
+    parent=2,
     mass=1.587448,
     name="bshin",
     radius=_R,
@@ -134,10 +134,10 @@ comptime BShin = CapsuleBody[
     color = Color3D(230, 153, 153),
 ]
 
-# Body 3: Back Foot
+# Body 4: Back Foot
 # MuJoCo body_pos = (-0.28, 0, -0.14) relative to bshin
 comptime BFoot = CapsuleBody[
-    parent=2,
+    parent=3,
     mass=1.095397,
     name="bfoot",
     radius=_R,
@@ -157,10 +157,10 @@ comptime BFoot = CapsuleBody[
     color = Color3D(230, 153, 153),
 ]
 
-# Body 4: Front Thigh
+# Body 5: Front Thigh
 # MuJoCo body_pos = (0.5, 0, 0) relative to torso
 comptime FThigh = CapsuleBody[
-    parent=0,
+    parent=1,
     mass=1.438075,
     name="fthigh",
     radius=_R,
@@ -180,10 +180,10 @@ comptime FThigh = CapsuleBody[
     color = Color3D(204, 153, 102),
 ]
 
-# Body 5: Front Shin
+# Body 6: Front Shin
 # MuJoCo body_pos = (-0.14, 0, -0.24) relative to fthigh
 comptime FShin = CapsuleBody[
-    parent=4,
+    parent=5,
     mass=1.200837,
     name="fshin",
     radius=_R,
@@ -203,10 +203,10 @@ comptime FShin = CapsuleBody[
     color = Color3D(230, 153, 153),
 ]
 
-# Body 6: Front Foot
+# Body 7: Front Foot
 # MuJoCo body_pos = (0.13, 0, -0.18) relative to fshin
 comptime FFoot = CapsuleBody[
-    parent=5,
+    parent=6,
     mass=0.884519,
     name="ffoot",
     radius=_R,
@@ -231,38 +231,38 @@ comptime FFoot = CapsuleBody[
 # Joint Type Aliases (with observation/actuation flags)
 # =============================================================================
 
-# Joint 0: rootx — Slide along X (body 0, unactuated)
+# Joint 0: rootx — Slide along X (body 1/torso, unactuated)
 # exclude_obs_qpos=True: rootx excluded from observation for translation invariance
 comptime RootX = SlideJoint[
-    body_idx=0,
+    body_idx=1,
     axis_x=1.0,
     axis_y=0.0,
     axis_z=0.0,
     exclude_obs_qpos=True,  # rootx excluded from obs (translation invariance)
 ]
 
-# Joint 1: rootz — Slide along Z (body 0, unactuated)
+# Joint 1: rootz — Slide along Z (body 1/torso, unactuated)
 # Height comes from body_pos_z=0.7, NOT from init_qpos (MuJoCo qpos0 is all zeros)
 comptime RootZ = SlideJoint[
-    body_idx=0,
+    body_idx=1,
     axis_x=0.0,
     axis_y=0.0,
     axis_z=1.0,
 ]
 
-# Joint 2: rooty — Hinge around Y (body 0, unactuated)
+# Joint 2: rooty — Hinge around Y (body 1/torso, unactuated)
 comptime RootY = HingeJoint[
-    body_idx=0,
+    body_idx=1,
     tau_limit=0.0,
     armature=0.0,
     is_actuated=False,
     has_limits=False,
 ]
 
-# Joint 3: bthigh — Back thigh hinge (body 1)
+# Joint 3: bthigh — Back thigh hinge (body 2)
 # MuJoCo joint pos = (0, 0, 0) — joint at body origin
 comptime BThighJ = HingeJoint[
-    body_idx=1,
+    body_idx=2,
     # pos = (0,0,0) default — joint at body origin
     tau_limit=120.0,
     range_min= -0.52,
@@ -271,9 +271,9 @@ comptime BThighJ = HingeJoint[
     stiffness=240.0,
 ]
 
-# Joint 4: bshin — Back shin hinge (body 2)
+# Joint 4: bshin — Back shin hinge (body 3)
 comptime BShinJ = HingeJoint[
-    body_idx=2,
+    body_idx=3,
     tau_limit=90.0,
     range_min= -0.785,
     range_max=0.785,
@@ -281,9 +281,9 @@ comptime BShinJ = HingeJoint[
     stiffness=180.0,
 ]
 
-# Joint 5: bfoot — Back foot hinge (body 3)
+# Joint 5: bfoot — Back foot hinge (body 4)
 comptime BFootJ = HingeJoint[
-    body_idx=3,
+    body_idx=4,
     tau_limit=60.0,
     range_min= -0.4,
     range_max=0.785,
@@ -291,9 +291,9 @@ comptime BFootJ = HingeJoint[
     stiffness=120.0,
 ]
 
-# Joint 6: fthigh — Front thigh hinge (body 4)
+# Joint 6: fthigh — Front thigh hinge (body 5)
 comptime FThighJ = HingeJoint[
-    body_idx=4,
+    body_idx=5,
     tau_limit=120.0,
     range_min= -1.0,
     range_max=0.7,
@@ -301,9 +301,9 @@ comptime FThighJ = HingeJoint[
     stiffness=180.0,
 ]
 
-# Joint 7: fshin — Front shin hinge (body 5)
+# Joint 7: fshin — Front shin hinge (body 6)
 comptime FShinJ = HingeJoint[
-    body_idx=5,
+    body_idx=6,
     tau_limit=60.0,
     range_min= -1.2,
     range_max=0.87,
@@ -311,9 +311,9 @@ comptime FShinJ = HingeJoint[
     stiffness=120.0,
 ]
 
-# Joint 8: ffoot — Front foot hinge (body 6)
+# Joint 8: ffoot — Front foot hinge (body 7)
 comptime FFootJ = HingeJoint[
-    body_idx=6,
+    body_idx=7,
     tau_limit=30.0,
     range_min= -0.5,
     range_max=0.5,
@@ -361,15 +361,15 @@ comptime HalfCheetahActuators = Actuators[
 # =============================================================================
 
 # Ground plane
-comptime GroundGeom = PlaneGeom[
+comptime GroundGeom = Plane[
     z=0.0, friction=0.4, conaffinity=1, size_x=40.0, size_y=40.0
 ]
 
 # Body capsule geoms with local pos/quat from MuJoCo
 # (body frames are now identity-oriented, so geoms need their own transforms)
 # MuJoCo geom quat is (w,x,y,z), our engine uses (x,y,z,w)
-comptime TorsoGeom = BodyCapsuleGeom[
-    body_idx=0,
+comptime TorsoGeom = Capsule[
+    body_idx=1,
     radius=_R,
     half_length=0.5,
     # MuJoCo geom pos=(0,0,0), quat=(0.707107, 0, -0.707107, 0) → 90°Y rotation
@@ -381,8 +381,8 @@ comptime TorsoGeom = BodyCapsuleGeom[
     conaffinity=0,
     color = Color3D(204, 153, 102),
 ]
-comptime BThighGeom = BodyCapsuleGeom[
-    body_idx=1,
+comptime BThighGeom = Capsule[
+    body_idx=2,
     radius=_R,
     half_length=0.145,
     pos_x=0.1,
@@ -396,8 +396,8 @@ comptime BThighGeom = BodyCapsuleGeom[
     conaffinity=0,
     color = Color3D(204, 153, 102),
 ]
-comptime BShinGeom = BodyCapsuleGeom[
-    body_idx=2,
+comptime BShinGeom = Capsule[
+    body_idx=3,
     radius=_R,
     half_length=0.15,
     pos_x= -0.14,
@@ -411,8 +411,8 @@ comptime BShinGeom = BodyCapsuleGeom[
     conaffinity=0,
     color = Color3D(230, 153, 153),
 ]
-comptime BFootGeom = BodyCapsuleGeom[
-    body_idx=3,
+comptime BFootGeom = Capsule[
+    body_idx=4,
     radius=_R,
     half_length=0.094,
     pos_x=0.03,
@@ -426,8 +426,8 @@ comptime BFootGeom = BodyCapsuleGeom[
     conaffinity=0,
     color = Color3D(230, 153, 153),
 ]
-comptime FThighGeom = BodyCapsuleGeom[
-    body_idx=4,
+comptime FThighGeom = Capsule[
+    body_idx=5,
     radius=_R,
     half_length=0.133,
     pos_x= -0.07,
@@ -441,8 +441,8 @@ comptime FThighGeom = BodyCapsuleGeom[
     conaffinity=0,
     color = Color3D(204, 153, 102),
 ]
-comptime FShinGeom = BodyCapsuleGeom[
-    body_idx=5,
+comptime FShinGeom = Capsule[
+    body_idx=6,
     radius=_R,
     half_length=0.106,
     pos_x=0.065,
@@ -456,8 +456,8 @@ comptime FShinGeom = BodyCapsuleGeom[
     conaffinity=0,
     color = Color3D(230, 153, 153),
 ]
-comptime FFootGeom = BodyCapsuleGeom[
-    body_idx=6,
+comptime FFootGeom = Capsule[
+    body_idx=7,
     radius=_R,
     half_length=0.07,
     pos_x=0.045,
@@ -474,8 +474,8 @@ comptime FFootGeom = BodyCapsuleGeom[
 
 # Head geom — attached to torso (body 0) with local offset
 # MuJoCo: pos=(0.6, 0, 0.1), quat=(0.90687, 0, 0.42141, 0)
-comptime HeadGeom = BodyCapsuleGeom[
-    body_idx=0,
+comptime HeadGeom = Capsule[
+    body_idx=1,
     radius=_R,
     half_length=0.15,
     pos_x=0.6,
@@ -504,7 +504,7 @@ comptime HalfCheetahGeoms = Geoms[
 
 
 comptime HalfCheetahModel = ModelDef[
-    HalfCheetahBodies.N,
+    HalfCheetahBodies.N + 1,  # +1 for worldbody at index 0
     HalfCheetahJoints.N,
     HalfCheetahJoints._sum_nq(),
     HalfCheetahJoints._sum_nv(),
@@ -655,13 +655,14 @@ comptime HalfCheetahParamsGPU = HalfCheetahParams[DType.float32]
 # Body/Joint Index Constants (for backward compatibility with external consumers)
 # =============================================================================
 
-comptime BODY_TORSO: Int = 0
-comptime BODY_BTHIGH: Int = 1
-comptime BODY_BSHIN: Int = 2
-comptime BODY_BFOOT: Int = 3
-comptime BODY_FTHIGH: Int = 4
-comptime BODY_FSHIN: Int = 5
-comptime BODY_FFOOT: Int = 6
+comptime BODY_WORLDBODY: Int = 0
+comptime BODY_TORSO: Int = 1
+comptime BODY_BTHIGH: Int = 2
+comptime BODY_BSHIN: Int = 3
+comptime BODY_BFOOT: Int = 4
+comptime BODY_FTHIGH: Int = 5
+comptime BODY_FSHIN: Int = 6
+comptime BODY_FFOOT: Int = 7
 
 comptime JOINT_ROOTX: Int = 0
 comptime JOINT_ROOTZ: Int = 1

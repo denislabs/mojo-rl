@@ -1,25 +1,26 @@
 """GeomSpec trait and concrete geom types for geometry specification.
 
-Supports both static (worldbody) geoms and body-attached geoms.
-Static geoms have BODY_IDX = -1, body-attached geoms have BODY_IDX >= 0.
+Supports both worldbody (static) and body-attached geoms via `body_idx`:
+  - body_idx=0: worldbody (static geom in world frame)
+  - body_idx>=1: attached to that body (pos/quat in body's local frame)
 
-Geom types:
-  - PlaneGeom: Infinite ground plane (static only)
-  - SphereGeom: Static sphere obstacle
-  - BoxGeom: Static box obstacle
-  - CapsuleGeom: Static capsule obstacle
-  - BodyCapsuleGeom: Capsule attached to a body
-  - BodySphereGeom: Sphere attached to a body
-  - BodyBoxGeom: Box attached to a body
+Four geom shapes:
+  - Plane: Infinite ground plane (body_idx always 0)
+  - Sphere: Sphere geom (body_idx=0 for static, >=1 for body-attached)
+  - Capsule: Capsule geom (body_idx=0 for static, >=1 for body-attached)
+  - Box: Box geom (body_idx=0 for static, >=1 for body-attached)
 
 Usage:
-    from physics3d.model.geom_spec import GeomSpec, PlaneGeom, BodyCapsuleGeom
+    from physics3d.model.geom_spec import GeomSpec, Plane, Capsule
 
     # Ground plane
-    comptime MyPlane = PlaneGeom[z=0.0, friction=0.4]
+    comptime MyPlane = Plane[z=0.0, friction=0.4]
 
-    # Capsule geom on body 0 (torso) at local offset
-    comptime MyGeom = BodyCapsuleGeom[body_idx=0, radius=0.046, half_length=0.09]
+    # Static capsule in world frame
+    comptime StaticCap = Capsule[radius=0.25, half_length=0.5]
+
+    # Capsule attached to body 1
+    comptime BodyCap = Capsule[body_idx=1, radius=0.046, half_length=0.09]
 """
 
 from ..constants import GEOM_PLANE, GEOM_SPHERE, GEOM_CAPSULE, GEOM_BOX
@@ -30,7 +31,7 @@ trait GeomSpec:
     """Compile-time specification for a geom (static or body-attached)."""
 
     comptime GEOM_TYPE: Int  # GEOM_PLANE, GEOM_BOX, GEOM_SPHERE, GEOM_CAPSULE
-    # Body index (-1 for static/worldbody geoms, >= 0 for body-attached)
+    # Body index (0 for worldbody/static geoms, >= 1 for body-attached)
     comptime BODY_IDX: Int
     # Position (world frame for static, local frame in body for attached)
     comptime POS_X: Float64
@@ -63,12 +64,12 @@ trait GeomSpec:
 
 
 # =============================================================================
-# Static (worldbody) geom types — BODY_IDX = -1
+# Plane — infinite ground plane (always worldbody)
 # =============================================================================
 
 
 @fieldwise_init
-struct PlaneGeom[
+struct Plane[
     z: Float64 = 0.0,
     friction: Float64 = 0.5,
     condim: Int = 3,
@@ -86,7 +87,7 @@ struct PlaneGeom[
     """
 
     comptime GEOM_TYPE: Int = GEOM_PLANE
-    comptime BODY_IDX: Int = -1
+    comptime BODY_IDX: Int = 0
     comptime POS_X: Float64 = 0.0
     comptime POS_Y: Float64 = 0.0
     comptime POS_Z: Float64 = Self.z
@@ -111,12 +112,18 @@ struct PlaneGeom[
     comptime COLOR: Color3D = Color3D(128, 128, 128)
 
 
+# =============================================================================
+# Sphere — static (body_idx=0) or body-attached (body_idx>=1)
+# =============================================================================
+
+
 @fieldwise_init
-struct SphereGeom[
+struct Sphere[
+    body_idx: Int = 0,
+    radius: Float64 = 0.5,
     pos_x: Float64 = 0.0,
     pos_y: Float64 = 0.0,
     pos_z: Float64 = 0.0,
-    radius: Float64 = 0.5,
     friction: Float64 = 0.5,
     condim: Int = 3,
     friction_spin: Float64 = 0.005,
@@ -125,13 +132,15 @@ struct SphereGeom[
     conaffinity: Int = 1,
     color: Color3D = Color3D(100, 100, 200),
 ](GeomSpec):
-    """Static sphere geom at a fixed world position.
+    """Sphere geom (static or body-attached).
 
-    Matches MuJoCo <geom type="sphere" pos="x y z" size="radius"/>.
+    body_idx=0: static in world frame (pos is world position).
+    body_idx>=1: attached to body (pos is local offset in body frame).
+    Matches MuJoCo <geom type="sphere" size="radius"/>.
     """
 
     comptime GEOM_TYPE: Int = GEOM_SPHERE
-    comptime BODY_IDX: Int = -1
+    comptime BODY_IDX: Int = Self.body_idx
     comptime POS_X: Float64 = Self.pos_x
     comptime POS_Y: Float64 = Self.pos_y
     comptime POS_Z: Float64 = Self.pos_z
@@ -156,8 +165,16 @@ struct SphereGeom[
     comptime COLOR: Color3D = Self.color
 
 
+# =============================================================================
+# Capsule — static (body_idx=0) or body-attached (body_idx>=1)
+# =============================================================================
+
+
 @fieldwise_init
-struct BoxGeom[
+struct Capsule[
+    body_idx: Int = 0,
+    radius: Float64 = 0.25,
+    half_length: Float64 = 0.5,
     pos_x: Float64 = 0.0,
     pos_y: Float64 = 0.0,
     pos_z: Float64 = 0.0,
@@ -165,9 +182,67 @@ struct BoxGeom[
     quat_y: Float64 = 0.0,
     quat_z: Float64 = 0.0,
     quat_w: Float64 = 1.0,
+    friction: Float64 = 0.5,
+    condim: Int = 3,
+    friction_spin: Float64 = 0.005,
+    friction_roll: Float64 = 0.0001,
+    contype: Int = 1,
+    conaffinity: Int = 1,
+    color: Color3D = Color3D(204, 153, 102),
+](GeomSpec):
+    """Capsule geom (static or body-attached).
+
+    body_idx=0: static in world frame (pos/quat is world pose).
+    body_idx>=1: attached to body (pos/quat is local offset in body frame).
+    Capsule axis is local Z, half_length defines the cylinder half-length
+    (total capsule length = 2*half_length + 2*radius).
+    Matches MuJoCo <geom type="capsule" size="radius hlength"/>.
+    """
+
+    comptime GEOM_TYPE: Int = GEOM_CAPSULE
+    comptime BODY_IDX: Int = Self.body_idx
+    comptime POS_X: Float64 = Self.pos_x
+    comptime POS_Y: Float64 = Self.pos_y
+    comptime POS_Z: Float64 = Self.pos_z
+    comptime QUAT_X: Float64 = Self.quat_x
+    comptime QUAT_Y: Float64 = Self.quat_y
+    comptime QUAT_Z: Float64 = Self.quat_z
+    comptime QUAT_W: Float64 = Self.quat_w
+    comptime SIZE_X: Float64 = 0.0
+    comptime SIZE_Y: Float64 = 0.0
+    comptime SIZE_Z: Float64 = Self.half_length
+    comptime RADIUS: Float64 = Self.radius
+    comptime HALF_LENGTH: Float64 = Self.half_length
+    comptime HALF_X: Float64 = 0.0
+    comptime HALF_Y: Float64 = 0.0
+    comptime HALF_Z: Float64 = 0.0
+    comptime FRICTION: Float64 = Self.friction
+    comptime CONDIM: Int = Self.condim
+    comptime FRICTION_SPIN: Float64 = Self.friction_spin
+    comptime FRICTION_ROLL: Float64 = Self.friction_roll
+    comptime CONTYPE: Int = Self.contype
+    comptime CONAFFINITY: Int = Self.conaffinity
+    comptime COLOR: Color3D = Self.color
+
+
+# =============================================================================
+# Box — static (body_idx=0) or body-attached (body_idx>=1)
+# =============================================================================
+
+
+@fieldwise_init
+struct Box[
+    body_idx: Int = 0,
     half_x: Float64 = 0.5,
     half_y: Float64 = 0.5,
     half_z: Float64 = 0.5,
+    pos_x: Float64 = 0.0,
+    pos_y: Float64 = 0.0,
+    pos_z: Float64 = 0.0,
+    quat_x: Float64 = 0.0,
+    quat_y: Float64 = 0.0,
+    quat_z: Float64 = 0.0,
+    quat_w: Float64 = 1.0,
     friction: Float64 = 0.5,
     condim: Int = 3,
     friction_spin: Float64 = 0.005,
@@ -176,211 +251,12 @@ struct BoxGeom[
     conaffinity: Int = 1,
     color: Color3D = Color3D(100, 200, 100),
 ](GeomSpec):
-    """Static box geom at a fixed world position and orientation.
+    """Box geom (static or body-attached).
 
-    Matches MuJoCo <geom type="box" pos="x y z" quat="w x y z" size="hx hy hz"/>.
+    body_idx=0: static in world frame (pos/quat is world pose).
+    body_idx>=1: attached to body (pos/quat is local offset in body frame).
+    Matches MuJoCo <geom type="box" size="hx hy hz"/>.
     """
-
-    comptime GEOM_TYPE: Int = GEOM_BOX
-    comptime BODY_IDX: Int = -1
-    comptime POS_X: Float64 = Self.pos_x
-    comptime POS_Y: Float64 = Self.pos_y
-    comptime POS_Z: Float64 = Self.pos_z
-    comptime QUAT_X: Float64 = Self.quat_x
-    comptime QUAT_Y: Float64 = Self.quat_y
-    comptime QUAT_Z: Float64 = Self.quat_z
-    comptime QUAT_W: Float64 = Self.quat_w
-    comptime SIZE_X: Float64 = Self.half_x
-    comptime SIZE_Y: Float64 = Self.half_y
-    comptime SIZE_Z: Float64 = Self.half_z
-    comptime RADIUS: Float64 = 0.0
-    comptime HALF_LENGTH: Float64 = 0.0
-    comptime HALF_X: Float64 = Self.half_x
-    comptime HALF_Y: Float64 = Self.half_y
-    comptime HALF_Z: Float64 = Self.half_z
-    comptime FRICTION: Float64 = Self.friction
-    comptime CONDIM: Int = Self.condim
-    comptime FRICTION_SPIN: Float64 = Self.friction_spin
-    comptime FRICTION_ROLL: Float64 = Self.friction_roll
-    comptime CONTYPE: Int = Self.contype
-    comptime CONAFFINITY: Int = Self.conaffinity
-    comptime COLOR: Color3D = Self.color
-
-
-@fieldwise_init
-struct CapsuleGeom[
-    pos_x: Float64 = 0.0,
-    pos_y: Float64 = 0.0,
-    pos_z: Float64 = 0.0,
-    quat_x: Float64 = 0.0,
-    quat_y: Float64 = 0.0,
-    quat_z: Float64 = 0.0,
-    quat_w: Float64 = 1.0,
-    half_length: Float64 = 0.5,
-    radius: Float64 = 0.25,
-    friction: Float64 = 0.5,
-    condim: Int = 3,
-    friction_spin: Float64 = 0.005,
-    friction_roll: Float64 = 0.0001,
-    contype: Int = 1,
-    conaffinity: Int = 1,
-    color: Color3D = Color3D(200, 100, 100),
-](GeomSpec):
-    """Static capsule geom at a fixed world position and orientation.
-
-    Matches MuJoCo <geom type="capsule" pos="x y z" size="radius hlength"/>.
-    Capsule axis is local Z, half_length defines the cylinder half-length
-    (total capsule length = 2*half_length + 2*radius).
-    """
-
-    comptime GEOM_TYPE: Int = GEOM_CAPSULE
-    comptime BODY_IDX: Int = -1
-    comptime POS_X: Float64 = Self.pos_x
-    comptime POS_Y: Float64 = Self.pos_y
-    comptime POS_Z: Float64 = Self.pos_z
-    comptime QUAT_X: Float64 = Self.quat_x
-    comptime QUAT_Y: Float64 = Self.quat_y
-    comptime QUAT_Z: Float64 = Self.quat_z
-    comptime QUAT_W: Float64 = Self.quat_w
-    comptime SIZE_X: Float64 = 0.0
-    comptime SIZE_Y: Float64 = 0.0
-    comptime SIZE_Z: Float64 = Self.half_length
-    comptime RADIUS: Float64 = Self.radius
-    comptime HALF_LENGTH: Float64 = Self.half_length
-    comptime HALF_X: Float64 = 0.0
-    comptime HALF_Y: Float64 = 0.0
-    comptime HALF_Z: Float64 = 0.0
-    comptime FRICTION: Float64 = Self.friction
-    comptime CONDIM: Int = Self.condim
-    comptime FRICTION_SPIN: Float64 = Self.friction_spin
-    comptime FRICTION_ROLL: Float64 = Self.friction_roll
-    comptime CONTYPE: Int = Self.contype
-    comptime CONAFFINITY: Int = Self.conaffinity
-    comptime COLOR: Color3D = Self.color
-
-
-# =============================================================================
-# Body-attached geom types — BODY_IDX >= 0
-# =============================================================================
-
-
-@fieldwise_init
-struct BodyCapsuleGeom[
-    body_idx: Int,
-    radius: Float64 = 0.05,
-    half_length: Float64 = 0.1,
-    pos_x: Float64 = 0.0,
-    pos_y: Float64 = 0.0,
-    pos_z: Float64 = 0.0,
-    quat_x: Float64 = 0.0,
-    quat_y: Float64 = 0.0,
-    quat_z: Float64 = 0.0,
-    quat_w: Float64 = 1.0,
-    friction: Float64 = 0.5,
-    condim: Int = 3,
-    friction_spin: Float64 = 0.005,
-    friction_roll: Float64 = 0.0001,
-    contype: Int = 1,
-    conaffinity: Int = 1,
-    color: Color3D = Color3D(204, 153, 102),
-](GeomSpec):
-    """Capsule geom attached to a body at a local offset.
-
-    pos/quat define the geom frame relative to the body frame.
-    When pos=(0,0,0) and quat=(0,0,0,1), the geom is at the body origin.
-    """
-
-    comptime GEOM_TYPE: Int = GEOM_CAPSULE
-    comptime BODY_IDX: Int = Self.body_idx
-    comptime POS_X: Float64 = Self.pos_x
-    comptime POS_Y: Float64 = Self.pos_y
-    comptime POS_Z: Float64 = Self.pos_z
-    comptime QUAT_X: Float64 = Self.quat_x
-    comptime QUAT_Y: Float64 = Self.quat_y
-    comptime QUAT_Z: Float64 = Self.quat_z
-    comptime QUAT_W: Float64 = Self.quat_w
-    comptime SIZE_X: Float64 = 0.0
-    comptime SIZE_Y: Float64 = 0.0
-    comptime SIZE_Z: Float64 = Self.half_length
-    comptime RADIUS: Float64 = Self.radius
-    comptime HALF_LENGTH: Float64 = Self.half_length
-    comptime HALF_X: Float64 = 0.0
-    comptime HALF_Y: Float64 = 0.0
-    comptime HALF_Z: Float64 = 0.0
-    comptime FRICTION: Float64 = Self.friction
-    comptime CONDIM: Int = Self.condim
-    comptime FRICTION_SPIN: Float64 = Self.friction_spin
-    comptime FRICTION_ROLL: Float64 = Self.friction_roll
-    comptime CONTYPE: Int = Self.contype
-    comptime CONAFFINITY: Int = Self.conaffinity
-    comptime COLOR: Color3D = Self.color
-
-
-@fieldwise_init
-struct BodySphereGeom[
-    body_idx: Int,
-    radius: Float64 = 0.05,
-    pos_x: Float64 = 0.0,
-    pos_y: Float64 = 0.0,
-    pos_z: Float64 = 0.0,
-    friction: Float64 = 0.5,
-    condim: Int = 3,
-    friction_spin: Float64 = 0.005,
-    friction_roll: Float64 = 0.0001,
-    contype: Int = 1,
-    conaffinity: Int = 1,
-    color: Color3D = Color3D(204, 153, 102),
-](GeomSpec):
-    """Sphere geom attached to a body at a local offset."""
-
-    comptime GEOM_TYPE: Int = GEOM_SPHERE
-    comptime BODY_IDX: Int = Self.body_idx
-    comptime POS_X: Float64 = Self.pos_x
-    comptime POS_Y: Float64 = Self.pos_y
-    comptime POS_Z: Float64 = Self.pos_z
-    comptime QUAT_X: Float64 = 0.0
-    comptime QUAT_Y: Float64 = 0.0
-    comptime QUAT_Z: Float64 = 0.0
-    comptime QUAT_W: Float64 = 1.0
-    comptime SIZE_X: Float64 = 0.0
-    comptime SIZE_Y: Float64 = 0.0
-    comptime SIZE_Z: Float64 = 0.0
-    comptime RADIUS: Float64 = Self.radius
-    comptime HALF_LENGTH: Float64 = 0.0
-    comptime HALF_X: Float64 = 0.0
-    comptime HALF_Y: Float64 = 0.0
-    comptime HALF_Z: Float64 = 0.0
-    comptime FRICTION: Float64 = Self.friction
-    comptime CONDIM: Int = Self.condim
-    comptime FRICTION_SPIN: Float64 = Self.friction_spin
-    comptime FRICTION_ROLL: Float64 = Self.friction_roll
-    comptime CONTYPE: Int = Self.contype
-    comptime CONAFFINITY: Int = Self.conaffinity
-    comptime COLOR: Color3D = Self.color
-
-
-@fieldwise_init
-struct BodyBoxGeom[
-    body_idx: Int,
-    half_x: Float64 = 0.1,
-    half_y: Float64 = 0.1,
-    half_z: Float64 = 0.1,
-    pos_x: Float64 = 0.0,
-    pos_y: Float64 = 0.0,
-    pos_z: Float64 = 0.0,
-    quat_x: Float64 = 0.0,
-    quat_y: Float64 = 0.0,
-    quat_z: Float64 = 0.0,
-    quat_w: Float64 = 1.0,
-    friction: Float64 = 0.5,
-    condim: Int = 3,
-    friction_spin: Float64 = 0.005,
-    friction_roll: Float64 = 0.0001,
-    contype: Int = 1,
-    conaffinity: Int = 1,
-    color: Color3D = Color3D(204, 153, 102),
-](GeomSpec):
-    """Box geom attached to a body at a local offset."""
 
     comptime GEOM_TYPE: Int = GEOM_BOX
     comptime BODY_IDX: Int = Self.body_idx
@@ -406,3 +282,16 @@ struct BodyBoxGeom[
     comptime CONTYPE: Int = Self.contype
     comptime CONAFFINITY: Int = Self.conaffinity
     comptime COLOR: Color3D = Self.color
+
+
+# =============================================================================
+# Backwards-compatible aliases
+# =============================================================================
+
+comptime PlaneGeom = Plane
+comptime SphereGeom = Sphere
+comptime BoxGeom = Box
+comptime CapsuleGeom = Capsule
+comptime BodyCapsuleGeom = Capsule
+comptime BodySphereGeom = Sphere
+comptime BodyBoxGeom = Box

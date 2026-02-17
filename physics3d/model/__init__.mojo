@@ -9,6 +9,10 @@ from .body_spec import BodySpec, CapsuleBody, SphereBody, BoxBody
 from .joint_spec import JointSpec, HingeJoint, SlideJoint
 from .geom_spec import (
     GeomSpec,
+    Plane,
+    Sphere,
+    Box,
+    Capsule,
     PlaneGeom,
     SphereGeom,
     BoxGeom,

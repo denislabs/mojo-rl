@@ -248,7 +248,7 @@ fn _geom_world_pos[
     var lqz = model.geom_quat[g * 4 + 2]
     var lqw = model.geom_quat[g * 4 + 3]
 
-    if body_idx < 0:
+    if body_idx == 0:
         return (lx, ly, lz, lqx, lqy, lqz, lqw)
 
     var bpx = data.xpos[body_idx * 3 + 0]
@@ -315,13 +315,13 @@ fn detect_contacts[
                 return
             var gj_type = model.geom_type[gj]
             var gj_body = model.geom_body[gj]
-            if gi_type == GEOM_PLANE and gj_body < 0:
+            if gi_type == GEOM_PLANE and gj_body == 0:
                 continue
-            if gj_type == GEOM_PLANE and gi_body < 0:
+            if gj_type == GEOM_PLANE and gi_body == 0:
                 continue
-            if gi_body >= 0 and gi_body == gj_body:
+            if gi_body > 0 and gi_body == gj_body:
                 continue
-            if gi_body >= 0 and gj_body >= 0:
+            if gi_body > 0 and gj_body > 0:
                 if (
                     model.body_parent[gj_body] == gi_body
                     or model.body_parent[gi_body] == gj_body
@@ -411,7 +411,7 @@ fn detect_contacts[
                     ):
                         var idx = data.num_contacts
                         data.contacts[idx].body_a = gj_body
-                        data.contacts[idx].body_b = -1
+                        data.contacts[idx].body_b = 0
                         data.contacts[idx].pos_x = e1_x
                         data.contacts[idx].pos_y = e1_y
                         data.contacts[idx].pos_z = ground_z + dist1 * Scalar[
@@ -440,7 +440,7 @@ fn detect_contacts[
                     ):
                         var idx = data.num_contacts
                         data.contacts[idx].body_a = gj_body
-                        data.contacts[idx].body_b = -1
+                        data.contacts[idx].body_b = 0
                         data.contacts[idx].pos_x = e2_x
                         data.contacts[idx].pos_y = e2_y
                         data.contacts[idx].pos_z = ground_z + dist2 * Scalar[
@@ -466,7 +466,7 @@ fn detect_contacts[
                     ):
                         var idx = data.num_contacts
                         data.contacts[idx].body_a = gj_body
-                        data.contacts[idx].body_b = -1
+                        data.contacts[idx].body_b = 0
                         data.contacts[idx].pos_x = pj_x
                         data.contacts[idx].pos_y = pj_y
                         data.contacts[idx].pos_z = ground_z + dist * Scalar[
@@ -507,7 +507,7 @@ fn detect_contacts[
                     ):
                         var idx = data.num_contacts
                         data.contacts[idx].body_a = gi_body
-                        data.contacts[idx].body_b = -1
+                        data.contacts[idx].body_b = 0
                         data.contacts[idx].pos_x = e1_x
                         data.contacts[idx].pos_y = e1_y
                         data.contacts[idx].pos_z = ground_z + dist1 * Scalar[
@@ -536,7 +536,7 @@ fn detect_contacts[
                     ):
                         var idx = data.num_contacts
                         data.contacts[idx].body_a = gi_body
-                        data.contacts[idx].body_b = -1
+                        data.contacts[idx].body_b = 0
                         data.contacts[idx].pos_x = e2_x
                         data.contacts[idx].pos_y = e2_y
                         data.contacts[idx].pos_z = ground_z + dist2 * Scalar[
@@ -562,7 +562,7 @@ fn detect_contacts[
                     ):
                         var idx = data.num_contacts
                         data.contacts[idx].body_a = gi_body
-                        data.contacts[idx].body_b = -1
+                        data.contacts[idx].body_b = 0
                         data.contacts[idx].pos_x = pi_x
                         data.contacts[idx].pos_y = pi_y
                         data.contacts[idx].pos_z = ground_z + dist * Scalar[
@@ -874,7 +874,7 @@ fn _geom_world_pos_gpu[
     var lqy = rebind[Scalar[DTYPE]](model[0, g_off + GEOM_IDX_QUAT_Y])
     var lqz = rebind[Scalar[DTYPE]](model[0, g_off + GEOM_IDX_QUAT_Z])
     var lqw = rebind[Scalar[DTYPE]](model[0, g_off + GEOM_IDX_QUAT_W])
-    if body_idx < 0:
+    if body_idx == 0:
         out_px = lx
         out_py = ly
         out_pz = lz
@@ -980,13 +980,13 @@ fn detect_contacts_gpu[
             var gj_body = Int(
                 rebind[Scalar[DTYPE]](model[0, gj_off + GEOM_IDX_BODY])
             )
-            if gi_type == GEOM_PLANE and gj_body < 0:
+            if gi_type == GEOM_PLANE and gj_body == 0:
                 continue
-            if gj_type == GEOM_PLANE and gi_body < 0:
+            if gj_type == GEOM_PLANE and gi_body == 0:
                 continue
-            if gi_body >= 0 and gi_body == gj_body:
+            if gi_body > 0 and gi_body == gj_body:
                 continue
-            if gi_body >= 0 and gj_body >= 0:
+            if gi_body > 0 and gj_body > 0:
                 var bi_off = model_body_offset(gi_body)
                 var bj_off = model_body_offset(gj_body)
                 var pi = Int(

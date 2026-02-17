@@ -22,12 +22,12 @@ trait EqualitySpec:
 
     comptime EQ_TYPE: Int  # EQ_CONNECT or EQ_WELD
     comptime BODY_A: Int  # First body index
-    comptime BODY_B: Int  # Second body index (-1 for world)
+    comptime BODY_B: Int  # Second body index (0 for worldbody)
     # Anchor point in body_a frame
     comptime ANCHOR_A_X: Float64
     comptime ANCHOR_A_Y: Float64
     comptime ANCHOR_A_Z: Float64
-    # Anchor point in body_b frame (or world frame if BODY_B == -1)
+    # Anchor point in body_b frame (or world frame if BODY_B == 0)
     comptime ANCHOR_B_X: Float64
     comptime ANCHOR_B_Y: Float64
     comptime ANCHOR_B_Z: Float64
@@ -49,7 +49,7 @@ trait EqualitySpec:
 @fieldwise_init
 struct ConnectConstraint[
     body_a: Int,
-    body_b: Int = -1,
+    body_b: Int = 0,
     anchor_a_x: Float64 = 0.0,
     anchor_a_y: Float64 = 0.0,
     anchor_a_z: Float64 = 0.0,
@@ -88,7 +88,7 @@ struct ConnectConstraint[
 @fieldwise_init
 struct WeldConstraint[
     body_a: Int,
-    body_b: Int = -1,
+    body_b: Int = 0,
     anchor_a_x: Float64 = 0.0,
     anchor_a_y: Float64 = 0.0,
     anchor_a_z: Float64 = 0.0,

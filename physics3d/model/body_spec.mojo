@@ -30,7 +30,7 @@ trait BodySpec:
     comptime MASS: Float64
 
     # Kinematic tree
-    comptime PARENT: Int  # Parent body index (-1 for world)
+    comptime PARENT: Int  # Parent body index (0 for worldbody)
 
     # Local frame in parent
     comptime POS_X: Float64
@@ -76,7 +76,7 @@ trait BodySpec:
 
 @fieldwise_init
 struct CapsuleBody[
-    parent: Int = -1,
+    parent: Int = 0,
     mass: Float64 = 1.0,
     name: String = "capsule",
     radius: Float64 = 0.05,
@@ -176,7 +176,7 @@ struct CapsuleBody[
 
 @fieldwise_init
 struct SphereBody[
-    parent: Int = -1,
+    parent: Int = 0,
     mass: Float64 = 1.0,
     name: String = "sphere",
     radius: Float64 = 0.05,
@@ -250,7 +250,7 @@ struct SphereBody[
 
 @fieldwise_init
 struct BoxBody[
-    parent: Int = -1,
+    parent: Int = 0,
     mass: Float64 = 1.0,
     name: String = "box",
     half_x: Float64 = 0.1,

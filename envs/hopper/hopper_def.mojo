@@ -16,7 +16,7 @@ from physics3d.model.body_spec import CapsuleBody
 from physics3d.model.joint_spec import HingeJoint, SlideJoint
 from physics3d.model.model_def import Bodies, Joints, Geoms, Actuators, ModelDef
 from physics3d.model.actuator_spec import MotorActuator
-from physics3d.model.geom_spec import PlaneGeom, BodyCapsuleGeom
+from physics3d.model.geom_spec import Plane, Capsule
 from render3d import Color3D
 from physics3d.gpu.constants import (
     state_size,
@@ -55,10 +55,10 @@ from physics3d.gpu.constants import (
 # Inertia overrides from MuJoCo (inertiafromgeom + settotalmass)
 # =============================================================================
 
-# Body 0: Torso — vertical capsule, root of kinematic tree
+# Body 1: Torso — vertical capsule, root of kinematic tree
 # MuJoCo: body_pos=(0,0,1.25) — body origin offset in parent (world) frame
 comptime HopperTorso = CapsuleBody[
-    parent= -1,
+    parent=0,
     mass=3.665191,
     name="torso",
     radius=0.05,
@@ -71,10 +71,10 @@ comptime HopperTorso = CapsuleBody[
     color = Color3D(60, 120, 200),
 ]
 
-# Body 1: Thigh — vertical capsule below torso
+# Body 2: Thigh — vertical capsule below torso
 # MuJoCo: body_pos=(0, 0, -0.2) relative to torso
 comptime HopperThigh = CapsuleBody[
-    parent=0,
+    parent=1,
     mass=4.057891,
     name="thigh",
     radius=0.05,
@@ -88,10 +88,10 @@ comptime HopperThigh = CapsuleBody[
     color = Color3D(80, 200, 80),
 ]
 
-# Body 2: Leg — vertical capsule below thigh
+# Body 3: Leg — vertical capsule below thigh
 # MuJoCo: body_pos=(0, 0, -0.7) relative to thigh
 comptime HopperLeg = CapsuleBody[
-    parent=1,
+    parent=2,
     mass=2.781357,
     name="leg",
     radius=0.04,
@@ -104,11 +104,11 @@ comptime HopperLeg = CapsuleBody[
     color = Color3D(220, 140, 60),
 ]
 
-# Body 3: Foot — horizontal capsule, below leg
+# Body 4: Foot — horizontal capsule, below leg
 # MuJoCo: body_pos=(0.13, 0, -0.35) relative to leg
 # body_quat = identity (capsule rotation is in geom, not body frame)
 comptime HopperFoot = CapsuleBody[
-    parent=2,
+    parent=3,
     mass=5.315575,
     name="foot",
     radius=0.06,
@@ -132,37 +132,37 @@ comptime HopperFoot = CapsuleBody[
 # Joint Type Aliases
 # =============================================================================
 
-# Joint 0: rootx — Slide along X (body 0, unactuated)
+# Joint 0: rootx — Slide along X (body 1/torso, unactuated)
 comptime HopperRootX = SlideJoint[
-    body_idx=0,
+    body_idx=1,
     axis_x=1.0,
     axis_y=0.0,
     axis_z=0.0,
     exclude_obs_qpos=True,
 ]
 
-# Joint 1: rootz — Slide along Z (body 0, unactuated)
+# Joint 1: rootz — Slide along Z (body 1/torso, unactuated)
 # Height comes from body_pos_z=1.25, NOT from init_qpos (MuJoCo qpos0 is all zeros)
 comptime HopperRootZ = SlideJoint[
-    body_idx=0,
+    body_idx=1,
     axis_x=0.0,
     axis_y=0.0,
     axis_z=1.0,
 ]
 
-# Joint 2: rooty — Hinge around Y (body 0, unactuated)
+# Joint 2: rooty — Hinge around Y (body 1/torso, unactuated)
 comptime HopperRootY = HingeJoint[
-    body_idx=0,
+    body_idx=1,
     tau_limit=0.0,
     armature=0.0,
     is_actuated=False,
     has_limits=False,
 ]
 
-# Joint 3: thigh — Hinge around Y (body 1)
+# Joint 3: thigh — Hinge around Y (body 2)
 # MuJoCo: joint pos=(0,0,0) relative to body (joint at body origin)
 comptime HopperThighJ = HingeJoint[
-    body_idx=1,
+    body_idx=2,
     tau_limit=200.0,
     range_min= -2.618,
     range_max=0.0,
@@ -170,10 +170,10 @@ comptime HopperThighJ = HingeJoint[
     damping=1.0,
 ]
 
-# Joint 4: leg — Hinge around Y (body 2)
+# Joint 4: leg — Hinge around Y (body 3)
 # MuJoCo: joint pos=(0, 0, 0.25) relative to body
 comptime HopperLegJ = HingeJoint[
-    body_idx=2,
+    body_idx=3,
     pos_z=0.25,
     tau_limit=200.0,
     range_min= -2.618,
@@ -182,10 +182,10 @@ comptime HopperLegJ = HingeJoint[
     damping=1.0,
 ]
 
-# Joint 5: foot — Hinge around Y (body 3)
+# Joint 5: foot — Hinge around Y (body 4)
 # MuJoCo: joint pos=(-0.13, 0, 0.1) relative to body
 comptime HopperFootJ = HingeJoint[
-    body_idx=3,
+    body_idx=4,
     pos_x= -0.13,
     pos_z=0.1,
     tau_limit=200.0,
@@ -201,14 +201,14 @@ comptime HopperFootJ = HingeJoint[
 # =============================================================================
 
 # Geom 0: Ground plane (MuJoCo floor: condim=3, no explicit friction → default 1.0)
-comptime HopperGroundGeom = PlaneGeom[
+comptime HopperGroundGeom = Plane[
     z=0.0, friction=1.0, conaffinity=1, size_x=20.0, size_y=20.0
 ]
 
-# Geom 1: Torso capsule (body 0) — at body origin, no local transform
+# Geom 1: Torso capsule (body 1) — at body origin, no local transform
 # MuJoCo: friction="0.9", condim=1 (from default geom class)
-comptime HopperTorsoGeom = BodyCapsuleGeom[
-    body_idx=0, radius=0.05, half_length=0.2,
+comptime HopperTorsoGeom = Capsule[
+    body_idx=1, radius=0.05, half_length=0.2,
     friction=0.9,
     friction_spin=0.005,
     friction_roll=0.0001,
@@ -216,10 +216,10 @@ comptime HopperTorsoGeom = BodyCapsuleGeom[
     color = Color3D(60, 120, 200),
 ]
 
-# Geom 2: Thigh capsule (body 1) — MuJoCo geom_pos=(0, 0, -0.225)
+# Geom 2: Thigh capsule (body 2) — MuJoCo geom_pos=(0, 0, -0.225)
 # MuJoCo: friction="0.9", condim=1
-comptime HopperThighGeom = BodyCapsuleGeom[
-    body_idx=1, radius=0.05, half_length=0.225,
+comptime HopperThighGeom = Capsule[
+    body_idx=2, radius=0.05, half_length=0.225,
     pos_z= -0.225,
     friction=0.9,
     friction_spin=0.005,
@@ -228,10 +228,10 @@ comptime HopperThighGeom = BodyCapsuleGeom[
     color = Color3D(80, 200, 80),
 ]
 
-# Geom 3: Leg capsule (body 2) — at body origin
+# Geom 3: Leg capsule (body 3) — at body origin
 # MuJoCo: friction="0.9", condim=1
-comptime HopperLegGeom = BodyCapsuleGeom[
-    body_idx=2, radius=0.04, half_length=0.25,
+comptime HopperLegGeom = Capsule[
+    body_idx=3, radius=0.04, half_length=0.25,
     friction=0.9,
     friction_spin=0.005,
     friction_roll=0.0001,
@@ -239,10 +239,10 @@ comptime HopperLegGeom = BodyCapsuleGeom[
     color = Color3D(220, 140, 60),
 ]
 
-# Geom 4: Foot capsule (body 3) — MuJoCo geom_pos=(-0.065, 0, 0.1), 90deg Y rotation
+# Geom 4: Foot capsule (body 4) — MuJoCo geom_pos=(-0.065, 0, 0.1), 90deg Y rotation
 # MuJoCo: friction="2.0", condim=1
-comptime HopperFootGeom = BodyCapsuleGeom[
-    body_idx=3,
+comptime HopperFootGeom = Capsule[
+    body_idx=4,
     radius=0.06,
     half_length=0.195,
     pos_x= -0.065,
@@ -296,7 +296,7 @@ comptime HopperActuators = Actuators[
 
 
 comptime HopperModel = ModelDef[
-    HopperBodies.N,
+    HopperBodies.N + 1,  # +1 for worldbody at index 0
     HopperJoints.N,
     HopperJoints._sum_nq(),
     HopperJoints._sum_nv(),
@@ -454,10 +454,11 @@ comptime HopperConstantsGPU = HopperParamsGPU
 # Body/Joint Index Constants (for backward compatibility)
 # =============================================================================
 
-comptime BODY_TORSO: Int = 0
-comptime BODY_THIGH: Int = 1
-comptime BODY_LEG: Int = 2
-comptime BODY_FOOT: Int = 3
+comptime BODY_WORLDBODY: Int = 0
+comptime BODY_TORSO: Int = 1
+comptime BODY_THIGH: Int = 2
+comptime BODY_LEG: Int = 3
+comptime BODY_FOOT: Int = 4
 
 comptime JOINT_ROOTX: Int = 0
 comptime JOINT_ROOTZ: Int = 1
@@ -491,7 +492,7 @@ comptime MAX_CONTACTS: Int = 20
 comptime NGEOM: Int = HopperModel.NGEOM
 comptime OBS_DIM: Int = 11
 comptime ACTION_DIM: Int = 3
-comptime NUM_BODIES: Int = 4
+comptime NUM_BODIES: Int = 5
 
 # Physics constants for backward compatibility
 comptime DT: Float64 = 0.002

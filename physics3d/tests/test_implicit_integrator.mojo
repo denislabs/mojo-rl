@@ -92,7 +92,7 @@ fn test_zero_velocity_qderiv() -> Bool:
     # Simple double pendulum
     comptime NQ = 2
     comptime NV = 2
-    comptime NBODY = 2
+    comptime NBODY = 3  # worldbody + 2 real bodies
     comptime NJOINT = 2
     comptime MAX_CONTACTS = 5
     comptime M_SIZE = 4
@@ -105,21 +105,10 @@ fn test_zero_velocity_qderiv() -> Bool:
     model.ground_z = Scalar[DType.float64](0)
     model.friction = Scalar[DType.float64](1.0)
 
-    # Set up body 0
-    model.body_mass[0] = Scalar[DType.float64](1.0)
-    model.body_parent[0] = -1
-    model.body_inertia[0] = Scalar[DType.float64](0.01)
-    model.body_inertia[1] = Scalar[DType.float64](0.01)
-    model.body_inertia[2] = Scalar[DType.float64](0.01)
-    for i in range(4):
-        model.body_iquat[i] = Scalar[DType.float64](0)
-    model.body_iquat[3] = Scalar[DType.float64](1)
-    for i in range(3):
-        model.body_ipos[i] = Scalar[DType.float64](0)
-
-    # Set up body 1
+    # Body 0 = worldbody (initialized by Model.__init__)
+    # Set up body 1 (first link, parent = worldbody)
     model.body_mass[1] = Scalar[DType.float64](1.0)
-    model.body_parent[1] = 0
+    model.body_parent[1] = 0  # parent = worldbody
     model.body_inertia[3] = Scalar[DType.float64](0.01)
     model.body_inertia[4] = Scalar[DType.float64](0.01)
     model.body_inertia[5] = Scalar[DType.float64](0.01)
@@ -128,6 +117,18 @@ fn test_zero_velocity_qderiv() -> Bool:
     model.body_iquat[7] = Scalar[DType.float64](1)
     for i in range(3):
         model.body_ipos[3 + i] = Scalar[DType.float64](0)
+
+    # Set up body 2 (second link, parent = body 1)
+    model.body_mass[2] = Scalar[DType.float64](1.0)
+    model.body_parent[2] = 1
+    model.body_inertia[6] = Scalar[DType.float64](0.01)
+    model.body_inertia[7] = Scalar[DType.float64](0.01)
+    model.body_inertia[8] = Scalar[DType.float64](0.01)
+    for i in range(4):
+        model.body_iquat[8 + i] = Scalar[DType.float64](0)
+    model.body_iquat[11] = Scalar[DType.float64](1)
+    for i in range(3):
+        model.body_ipos[6 + i] = Scalar[DType.float64](0)
 
     # Initialize qDeriv to zero
     var qDeriv = InlineArray[Scalar[DType.float64], M_SIZE](

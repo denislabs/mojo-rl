@@ -38,7 +38,7 @@ from physics3d.gpu.buffer_utils import (
 comptime DTYPE = DType.float32
 comptime NQ: Int = 1  # Single hinge joint = 1 qpos
 comptime NV: Int = 1  # Single hinge joint = 1 qvel
-comptime NBODY: Int = 1
+comptime NBODY: Int = 2  # worldbody + 1 real body
 comptime NJOINT: Int = 1
 comptime MAX_CONTACTS: Int = 5
 comptime BATCH: Int = 1
@@ -95,20 +95,20 @@ fn main() raises:
 
     # Set body properties
     model.set_body(
-        0,
+        1,
         mass=Scalar[DTYPE](mass),
         inertia=(Scalar[DTYPE](I_cm), Scalar[DTYPE](I_cm), Scalar[DTYPE](I_cm)),
         radius=Scalar[DTYPE](0.1),
     )
-    model.set_body_parent(0, -1)  # World parent
+    model.set_body_parent(1, 0)  # Parent is worldbody
     model.set_body_local_frame(
-        0,
+        1,
         pos=(Scalar[DTYPE](0.0), Scalar[DTYPE](0.0), Scalar[DTYPE](-L)),
     )
 
     # Add hinge joint at origin with Y axis
     _ = model.add_hinge_joint(
-        body_id=0,
+        body_id=1,
         pos=(Scalar[DTYPE](0.0), Scalar[DTYPE](0.0), Scalar[DTYPE](0.0)),
         axis=(Scalar[DTYPE](0.0), Scalar[DTYPE](1.0), Scalar[DTYPE](0.0)),
     )
@@ -198,7 +198,7 @@ fn main() raises:
 
             var qpos = Float32(state_host[qpos_off])
             var qvel = Float32(state_host[qvel_off])
-            var body_z = Float32(state_host[xpos_off + 2])
+            var body_z = Float32(state_host[xpos_off + 1 * 3 + 2])  # body 1, z
 
             # Compute energy: PE + KE
             var h = body_z + L  # Height relative to lowest point
@@ -235,8 +235,8 @@ fn main() raises:
             var xpos_off = xpos_offset[NQ, NV, NBODY]()
 
             var qpos = Float32(state_host[qpos_off])
-            var body_x = Float32(state_host[xpos_off + 0])
-            var body_z = Float32(state_host[xpos_off + 2])
+            var body_x = Float32(state_host[xpos_off + 1 * 3 + 0])  # body 1, x
+            var body_z = Float32(state_host[xpos_off + 1 * 3 + 2])  # body 1, z
 
             print(
                 "  Step",

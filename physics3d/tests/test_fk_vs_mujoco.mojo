@@ -92,7 +92,7 @@ fn compare_fk(
     var mj_xipos_flat = mj_data.xipos.flatten().tolist()
 
     # === Compare body by body ===
-    # MuJoCo body 0 = worldbody, our body 0 = MuJoCo body 1
+    # Both engines: body 0 = worldbody, body 1 = torso, etc.
     var all_pass = True
     var body_names = List[String]()
     body_names.append("torso")
@@ -103,13 +103,13 @@ fn compare_fk(
     body_names.append("fshin")
     body_names.append("ffoot")
 
-    for b in range(NBODY):
-        var mj_b = b + 1  # Skip worldbody
+    for bi in range(len(body_names)):
+        var b = bi + 1  # Skip worldbody (body 0)
 
         # --- xpos ---
-        var mj_px = Float64(py=mj_xpos_flat[mj_b * 3 + 0])
-        var mj_py = Float64(py=mj_xpos_flat[mj_b * 3 + 1])
-        var mj_pz = Float64(py=mj_xpos_flat[mj_b * 3 + 2])
+        var mj_px = Float64(py=mj_xpos_flat[b * 3 + 0])
+        var mj_py = Float64(py=mj_xpos_flat[b * 3 + 1])
+        var mj_pz = Float64(py=mj_xpos_flat[b * 3 + 2])
 
         var our_px = Float64(data.xpos[b * 3 + 0])
         var our_py = Float64(data.xpos[b * 3 + 1])
@@ -120,12 +120,12 @@ fn compare_fk(
         )
 
         if pos_err > POS_TOL:
-            print("  FAIL xpos ", body_names[b], " err=", pos_err)
+            print("  FAIL xpos ", body_names[bi], " err=", pos_err)
             print("    ours:  ", our_px, our_py, our_pz)
             print("    mujoco:", mj_px, mj_py, mj_pz)
             all_pass = False
         else:
-            print("  OK   xpos ", body_names[b], " err=", pos_err)
+            print("  OK   xpos ", body_names[bi], " err=", pos_err)
 
         # --- xquat ---
         # MuJoCo uses (w,x,y,z), our engine uses (x,y,z,w)
@@ -134,10 +134,10 @@ fn compare_fk(
         var our_qz = Float64(data.xquat[b * 4 + 2])
         var our_qw = Float64(data.xquat[b * 4 + 3])
 
-        var mj_qw = Float64(py=mj_xquat_flat[mj_b * 4 + 0])  # MuJoCo: (w,x,y,z)
-        var mj_qx = Float64(py=mj_xquat_flat[mj_b * 4 + 1])
-        var mj_qy = Float64(py=mj_xquat_flat[mj_b * 4 + 2])
-        var mj_qz = Float64(py=mj_xquat_flat[mj_b * 4 + 3])
+        var mj_qw = Float64(py=mj_xquat_flat[b * 4 + 0])  # MuJoCo: (w,x,y,z)
+        var mj_qx = Float64(py=mj_xquat_flat[b * 4 + 1])
+        var mj_qy = Float64(py=mj_xquat_flat[b * 4 + 2])
+        var mj_qz = Float64(py=mj_xquat_flat[b * 4 + 3])
 
         # Quaternions q and -q represent the same rotation — check both signs
         var diff_pos = (
@@ -155,17 +155,17 @@ fn compare_fk(
         var quat_err = diff_pos if diff_pos < diff_neg else diff_neg
 
         if quat_err > QUAT_TOL:
-            print("  FAIL xquat", body_names[b], " err=", quat_err)
+            print("  FAIL xquat", body_names[bi], " err=", quat_err)
             print("    ours (x,y,z,w):  ", our_qx, our_qy, our_qz, our_qw)
             print("    mujoco (w,x,y,z):", mj_qw, mj_qx, mj_qy, mj_qz)
             all_pass = False
         else:
-            print("  OK   xquat", body_names[b], " err=", quat_err)
+            print("  OK   xquat", body_names[bi], " err=", quat_err)
 
         # --- xipos ---
-        var mj_xi_x = Float64(py=mj_xipos_flat[mj_b * 3 + 0])
-        var mj_xi_y = Float64(py=mj_xipos_flat[mj_b * 3 + 1])
-        var mj_xi_z = Float64(py=mj_xipos_flat[mj_b * 3 + 2])
+        var mj_xi_x = Float64(py=mj_xipos_flat[b * 3 + 0])
+        var mj_xi_y = Float64(py=mj_xipos_flat[b * 3 + 1])
+        var mj_xi_z = Float64(py=mj_xipos_flat[b * 3 + 2])
 
         var our_xi_x = Float64(data.xipos[b * 3 + 0])
         var our_xi_y = Float64(data.xipos[b * 3 + 1])
@@ -178,12 +178,12 @@ fn compare_fk(
         )
 
         if xipos_err > POS_TOL:
-            print("  FAIL xipos", body_names[b], " err=", xipos_err)
+            print("  FAIL xipos", body_names[bi], " err=", xipos_err)
             print("    ours:  ", our_xi_x, our_xi_y, our_xi_z)
             print("    mujoco:", mj_xi_x, mj_xi_y, mj_xi_z)
             all_pass = False
         else:
-            print("  OK   xipos", body_names[b], " err=", xipos_err)
+            print("  OK   xipos", body_names[bi], " err=", xipos_err)
 
     return all_pass
 

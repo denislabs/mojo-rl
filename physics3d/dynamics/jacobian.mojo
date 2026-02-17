@@ -145,25 +145,15 @@ fn compute_cdof[
         cdof[i] = Scalar[DTYPE](0)
 
     # Process per-body (like MuJoCo FK), tracking accumulated orientation
-    for body in range(NBODY):
+    # Skip worldbody at 0 (no joints)
+    for body in range(1, NBODY):
         var parent = model.body_parent[body]
 
-        # Start with parent's world orientation
-        var acc_qx: Scalar[DTYPE]
-        var acc_qy: Scalar[DTYPE]
-        var acc_qz: Scalar[DTYPE]
-        var acc_qw: Scalar[DTYPE]
-
-        if parent < 0:
-            acc_qx = Scalar[DTYPE](0)
-            acc_qy = Scalar[DTYPE](0)
-            acc_qz = Scalar[DTYPE](0)
-            acc_qw = Scalar[DTYPE](1)
-        else:
-            acc_qx = data.xquat[parent * 4 + 0]
-            acc_qy = data.xquat[parent * 4 + 1]
-            acc_qz = data.xquat[parent * 4 + 2]
-            acc_qw = data.xquat[parent * 4 + 3]
+        # Get parent's world orientation (worldbody=0 has identity)
+        var acc_qx = data.xquat[parent * 4 + 0]
+        var acc_qy = data.xquat[parent * 4 + 1]
+        var acc_qz = data.xquat[parent * 4 + 2]
+        var acc_qw = data.xquat[parent * 4 + 3]
 
         # Apply body_quat: acc = parent_quat * body_quat
         var bq_x = model.body_quat[body * 4 + 0]
@@ -361,12 +351,12 @@ fn compute_contact_jacobian_row[
     Maps joint velocities to contact velocity along a given direction
     (normal or tangent) for a contact between body_a and body_b.
 
-    For body-body contacts (body_b >= 0), the Jacobian is bilateral:
+    For body-body contacts (body_b > 0), the Jacobian is bilateral:
     J_row[i] = J_a[i] - J_b[i], where J_a and J_b are the contributions
     from body_a and body_b respectively. When a joint affects both bodies
     (shared ancestor), the contributions cancel — physically correct.
 
-    For ground contacts (body_b = -1), only body_a contributes.
+    For ground contacts (body_b = 0, worldbody), only body_a contributes.
 
     Reference: MuJoCo mj_jac() in engine_core_util.c:177-227
 
@@ -389,7 +379,7 @@ fn compute_contact_jacobian_row[
 
         # Check if this joint affects either contact body
         var affects_a = _joint_affects_body(model, j, contact_body_a)
-        var affects_b = (contact_body_b >= 0) and _joint_affects_body(
+        var affects_b = (contact_body_b > 0) and _joint_affects_body(
             model, j, contact_body_b
         )
 
@@ -475,7 +465,7 @@ fn _joint_affects_body[
         return True
 
     var current = body_idx
-    while current >= 0:
+    while current > 0:
         if model.body_parent[current] == joint_body:
             return True
         current = model.body_parent[current]
@@ -618,8 +608,6 @@ fn compute_composite_inertia[
     # We need to transform the child's spatial inertia to the parent frame.
     for b in range(NBODY - 1, 0, -1):
         var parent = model.body_parent[b]
-        if parent < 0:
-            continue
 
         var child_mass = crb[b * 10 + 0]
         if child_mass < Scalar[DTYPE](1e-20):
@@ -829,8 +817,6 @@ fn compute_composite_inertia_gpu[
     for b in range(NBODY - 1, 0, -1):
         var body_off = model_body_offset(b)
         var parent = Int(model[0, body_off + BODY_IDX_PARENT])
-        if parent < 0:
-            continue
 
         var child_mass = workspace[env, crb_idx + b * 10 + 0]
         if child_mass < 1e-20:
@@ -986,31 +972,26 @@ fn compute_cdof_gpu[
     var num_joints = Int(model[0, model_meta_off + MODEL_META_IDX_NJOINT])
 
     # Process per-body, tracking accumulated orientation
-    for body in range(NBODY):
+    # Skip worldbody at 0 (no joints)
+    for body in range(1, NBODY):
         var body_off = model_body_offset(body)
         var parent = Int(
             rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT])
         )
 
-        # Start with parent's world orientation
-        var acc_qx: Scalar[DTYPE] = 0
-        var acc_qy: Scalar[DTYPE] = 0
-        var acc_qz: Scalar[DTYPE] = 0
-        var acc_qw: Scalar[DTYPE] = 1
-
-        if parent >= 0:
-            acc_qx = rebind[Scalar[DTYPE]](
-                state[env, xquat_off + parent * 4 + 0]
-            )
-            acc_qy = rebind[Scalar[DTYPE]](
-                state[env, xquat_off + parent * 4 + 1]
-            )
-            acc_qz = rebind[Scalar[DTYPE]](
-                state[env, xquat_off + parent * 4 + 2]
-            )
-            acc_qw = rebind[Scalar[DTYPE]](
-                state[env, xquat_off + parent * 4 + 3]
-            )
+        # Get parent's world orientation (worldbody=0 has identity)
+        var acc_qx = rebind[Scalar[DTYPE]](
+            state[env, xquat_off + parent * 4 + 0]
+        )
+        var acc_qy = rebind[Scalar[DTYPE]](
+            state[env, xquat_off + parent * 4 + 1]
+        )
+        var acc_qz = rebind[Scalar[DTYPE]](
+            state[env, xquat_off + parent * 4 + 2]
+        )
+        var acc_qw = rebind[Scalar[DTYPE]](
+            state[env, xquat_off + parent * 4 + 3]
+        )
 
         # Apply body_quat: acc = parent_quat * body_quat
         var bq_x = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_QUAT_X])
@@ -1245,7 +1226,7 @@ fn compute_contact_jacobian_row_gpu[
 
     Reads cdof from workspace. J_row remains InlineArray (small, V_SIZE).
     Bilateral: J_row[i] = J_a[i] - J_b[i] for body-body contacts.
-    For ground contacts (body_b = -1), only body_a contributes.
+    For ground contacts (body_b = 0, worldbody), only body_a contributes.
     """
 
     # Derive cdof pointer from workspace (read-only)
@@ -1278,7 +1259,7 @@ fn compute_contact_jacobian_row_gpu[
             affects_a = True
         else:
             var current = contact_body_a
-            while current >= 0:
+            while current > 0:
                 var current_body_off = model_body_offset(current)
                 var current_parent = Int(
                     rebind[Scalar[DTYPE]](
@@ -1290,14 +1271,14 @@ fn compute_contact_jacobian_row_gpu[
                     break
                 current = current_parent
 
-        # Check if this joint affects body_b (only if body_b >= 0)
+        # Check if this joint affects body_b (only if body_b > 0, i.e. not ground)
         var affects_b = False
-        if contact_body_b >= 0:
+        if contact_body_b > 0:
             if contact_body_b == joint_body:
                 affects_b = True
             else:
                 var current_b = contact_body_b
-                while current_b >= 0:
+                while current_b > 0:
                     var current_body_off_b = model_body_offset(current_b)
                     var current_parent_b = Int(
                         rebind[Scalar[DTYPE]](
@@ -1425,7 +1406,7 @@ fn compute_angular_jacobian_row_gpu[
             affects_a = True
         else:
             var current = contact_body_a
-            while current >= 0:
+            while current > 0:
                 var current_body_off = model_body_offset(current)
                 var current_parent = Int(
                     rebind[Scalar[DTYPE]](
@@ -1437,14 +1418,14 @@ fn compute_angular_jacobian_row_gpu[
                     break
                 current = current_parent
 
-        # Check if this joint affects body_b
+        # Check if this joint affects body_b (only if body_b > 0, i.e. not ground)
         var affects_b = False
-        if contact_body_b >= 0:
+        if contact_body_b > 0:
             if contact_body_b == joint_body:
                 affects_b = True
             else:
                 var current_b = contact_body_b
-                while current_b >= 0:
+                while current_b > 0:
                     var current_body_off_b = model_body_offset(current_b)
                     var current_parent_b = Int(
                         rebind[Scalar[DTYPE]](

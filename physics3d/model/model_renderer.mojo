@@ -19,7 +19,7 @@ struct ModelRenderer[*G: GeomSpec](EnvRenderer3D, Movable):
 
     Draws capsule geoms using compile-time geometry from GeomSpec (RADIUS,
     HALF_LENGTH). Camera follows torso (body 0) with configurable offsets.
-    Plane geoms (BODY_IDX == -1) are skipped. Body-attached geoms use
+    Plane geoms (BODY_IDX == 0, worldbody) are skipped. Body-attached geoms use
     body world position + local offset.
 
     Parameters:
@@ -152,7 +152,7 @@ struct ModelRenderer[*G: GeomSpec](EnvRenderer3D, Movable):
         if not self.initialized:
             return
 
-        var torso_pos = positions[0]
+        var torso_pos = positions[1]  # Body 1 = torso (body 0 = worldbody)
 
         # Camera follow torso
         if self.follow:
@@ -172,7 +172,7 @@ struct ModelRenderer[*G: GeomSpec](EnvRenderer3D, Movable):
         for i in range(Self.NUM_GEOMS):
             comptime GG = Self.geom_types[i]
             @parameter
-            if GG.BODY_IDX >= 0:
+            if GG.BODY_IDX > 0:
                 if GG.RADIUS > max_radius:
                     max_radius = GG.RADIUS
 
@@ -195,9 +195,9 @@ struct ModelRenderer[*G: GeomSpec](EnvRenderer3D, Movable):
             for i in range(Self.NUM_GEOMS):
                 comptime GG = Self.geom_types[i]
 
-                # Skip static geoms (planes, etc.)
+                # Skip worldbody geoms (planes, etc.)
                 @parameter
-                if GG.BODY_IDX >= 0:
+                if GG.BODY_IDX > 0:
                     # Get body world position and orientation
                     var body_pos = positions[GG.BODY_IDX]
                     var body_quat = quaternions[GG.BODY_IDX]

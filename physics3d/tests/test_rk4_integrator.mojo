@@ -28,17 +28,19 @@ from envs.half_cheetah.half_cheetah_def import (
 # - CoM at (0,0,-L) via ipos (MuJoCo convention)
 # - Hinge joint at body origin
 fn setup_pendulum(
-    mut model: Model[DType.float64, 1, 1, 1, 1, 5],
+    mut model: Model[DType.float64, 1, 1, 2, 1, 5],
     L: Float64,
     m: Float64,
     I_cm: Float64,
 ):
-    model.set_body(0, name="bob", mass=m, inertia=(I_cm, I_cm, I_cm))
-    model.set_body_parent(0, -1)
-    model.set_body_local_frame(0, pos=(0.0, 0.0, 0.0))
-    model.set_body_ipos_iquat(0, ipos=(0.0, 0.0, -L))
+    # Body 0 = worldbody (initialized by Model.__init__)
+    # Body 1 = bob
+    model.set_body(1, name="bob", mass=m, inertia=(I_cm, I_cm, I_cm))
+    model.set_body_parent(1, 0)  # parent = worldbody
+    model.set_body_local_frame(1, pos=(0.0, 0.0, 0.0))
+    model.set_body_ipos_iquat(1, ipos=(0.0, 0.0, -L))
     _ = model.add_hinge_joint(
-        body_id=0,
+        body_id=1,
         pos=(0.0, 0.0, 0.0),
         axis=(0.0, 1.0, 0.0),
     )
@@ -56,7 +58,7 @@ fn test_rk4_compiles_halfcheetah() -> Bool:
     comptime DTYPE = DType.float64
     comptime NQ = 9
     comptime NV = 9
-    comptime NBODY = 7
+    comptime NBODY = 8  # 7 real bodies + worldbody
     comptime NJOINT = 9
     comptime NGEOM = 9
     comptime MAX_CONTACTS = 20
@@ -121,7 +123,7 @@ fn test_energy_conservation_rk4_vs_euler() -> Bool:
     var initial_angle = Float64(0.5)  # ~30 degrees
 
     fn compute_energy(
-        data: Data[DType.float64, 1, 1, 1, 1, 5],
+        data: Data[DType.float64, 1, 1, 2, 1, 5],
         m: Float64,
         g: Float64,
         L: Float64,
@@ -137,12 +139,12 @@ fn test_energy_conservation_rk4_vs_euler() -> Bool:
         return PE + KE
 
     # --- Euler run ---
-    var model_euler = Model[DType.float64, 1, 1, 1, 1, 5](
+    var model_euler = Model[DType.float64, 1, 1, 2, 1, 5](
         gravity_z=-g, timestep=0.001, ground_z=-10.0,
     )
     setup_pendulum(model_euler, L, m, I_cm)
 
-    var data_euler = Data[DType.float64, 1, 1, 1, 1, 5]()
+    var data_euler = Data[DType.float64, 1, 1, 2, 1, 5]()
     data_euler.qpos[0] = initial_angle
     data_euler.qvel[0] = Float64(0.0)
     forward_kinematics(model_euler, data_euler)
@@ -159,12 +161,12 @@ fn test_energy_conservation_rk4_vs_euler() -> Bool:
             max_drift_euler = deviation
 
     # --- RK4 run ---
-    var model_rk4 = Model[DType.float64, 1, 1, 1, 1, 5](
+    var model_rk4 = Model[DType.float64, 1, 1, 2, 1, 5](
         gravity_z=-g, timestep=0.001, ground_z=-10.0,
     )
     setup_pendulum(model_rk4, L, m, I_cm)
 
-    var data_rk4 = Data[DType.float64, 1, 1, 1, 1, 5]()
+    var data_rk4 = Data[DType.float64, 1, 1, 2, 1, 5]()
     data_rk4.qpos[0] = initial_angle
     data_rk4.qvel[0] = Float64(0.0)
     forward_kinematics(model_rk4, data_rk4)
@@ -241,22 +243,22 @@ fn test_trajectory_comparison() -> Bool:
     var omega_nat = sqrt(m * g * L / I_total)
 
     # --- Euler ---
-    var model_euler = Model[DType.float64, 1, 1, 1, 1, 5](
+    var model_euler = Model[DType.float64, 1, 1, 2, 1, 5](
         gravity_z=-g, timestep=0.001, ground_z=-10.0,
     )
     setup_pendulum(model_euler, L, m, I_cm)
 
-    var data_euler = Data[DType.float64, 1, 1, 1, 1, 5]()
+    var data_euler = Data[DType.float64, 1, 1, 2, 1, 5]()
     data_euler.qpos[0] = initial_angle
     data_euler.qvel[0] = Float64(0.0)
 
     # --- RK4 ---
-    var model_rk4 = Model[DType.float64, 1, 1, 1, 1, 5](
+    var model_rk4 = Model[DType.float64, 1, 1, 2, 1, 5](
         gravity_z=-g, timestep=0.001, ground_z=-10.0,
     )
     setup_pendulum(model_rk4, L, m, I_cm)
 
-    var data_rk4 = Data[DType.float64, 1, 1, 1, 1, 5]()
+    var data_rk4 = Data[DType.float64, 1, 1, 2, 1, 5]()
     data_rk4.qpos[0] = initial_angle
     data_rk4.qvel[0] = Float64(0.0)
 

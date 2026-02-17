@@ -81,7 +81,7 @@ fn _is_descendant_gpu[
 ) -> Bool:
     """GPU-compatible check if body is a descendant of ancestor."""
     var current = body
-    while current >= 0:
+    while current > 0:
         var body_off = model_body_offset(current)
         var parent = Int(
             rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT])
@@ -347,7 +347,7 @@ fn _is_descendant[
 ) -> Bool:
     """Check if body is a descendant of ancestor in the kinematic tree."""
     var current = body
-    while current >= 0:
+    while current > 0:
         if model.body_parent[current] == ancestor:
             return True
         current = model.body_parent[current]
@@ -823,17 +823,18 @@ fn compute_bias_forces_rne[
     #
     #   Reference: MuJoCo engine_core_smooth.c mj_comVel()
     # =========================================================================
-    for b in range(NBODY):
+    # Skip worldbody at 0 (no joints, cvel=0, cacc=0)
+    for b in range(1, NBODY):
         var parent = model.body_parent[b]
 
         # Initialize cvel from parent, transferred to this body's CoM
-        var cv_wx: Scalar[DTYPE] = 0
-        var cv_wy: Scalar[DTYPE] = 0
-        var cv_wz: Scalar[DTYPE] = 0
-        var cv_vx: Scalar[DTYPE] = 0
-        var cv_vy: Scalar[DTYPE] = 0
-        var cv_vz: Scalar[DTYPE] = 0
-        if parent >= 0:
+        var cv_wx = cvel[parent * 6 + 0]
+        var cv_wy = cvel[parent * 6 + 1]
+        var cv_wz = cvel[parent * 6 + 2]
+        var cv_vx = cvel[parent * 6 + 3]
+        var cv_vy = cvel[parent * 6 + 4]
+        var cv_vz = cvel[parent * 6 + 5]
+        if parent > 0:
             cv_wx = cvel[parent * 6 + 0]
             cv_wy = cvel[parent * 6 + 1]
             cv_wz = cvel[parent * 6 + 2]
@@ -850,8 +851,11 @@ fn compute_bias_forces_rne[
             cv_vy = cv_vy + (cv_wz * rx - cv_wx * rz)
             cv_vz = cv_vz + (cv_wx * ry - cv_wy * rx)
 
-        if parent < 0:
-            # Root body: gravity as fictitious acceleration
+        if parent == 0:
+            # Root body (parent is worldbody): gravity as fictitious acceleration
+            cacc[b * 6 + 0] = Scalar[DTYPE](0)
+            cacc[b * 6 + 1] = Scalar[DTYPE](0)
+            cacc[b * 6 + 2] = Scalar[DTYPE](0)
             cacc[b * 6 + 3] = -gx
             cacc[b * 6 + 4] = -gy
             cacc[b * 6 + 5] = -gz
@@ -1086,8 +1090,6 @@ fn compute_bias_forces_rne[
     # =========================================================================
     for b in range(NBODY - 1, 0, -1):
         var parent = model.body_parent[b]
-        if parent < 0:
-            continue
 
         # Offset from parent CoM to child CoM
         var rx = data.xipos[b * 3 + 0] - data.xipos[parent * 3 + 0]
@@ -1294,39 +1296,33 @@ fn compute_bias_forces_rne_gpu[
     # =========================================================================
     var xipos_off = xipos_offset[NQ, NV, NBODY]()
 
-    for b in range(NBODY):
+    # Skip worldbody at 0 (no joints, cvel=0, cacc=0)
+    for b in range(1, NBODY):
         var body_off = model_body_offset(b)
         var parent = Int(
             rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT])
         )
 
         # Initialize cvel from parent, transferred to this body's CoM
-        var cv_wx: Scalar[DTYPE] = 0
-        var cv_wy: Scalar[DTYPE] = 0
-        var cv_wz: Scalar[DTYPE] = 0
-        var cv_vx: Scalar[DTYPE] = 0
-        var cv_vy: Scalar[DTYPE] = 0
-        var cv_vz: Scalar[DTYPE] = 0
-        if parent >= 0:
-            cv_wx = rebind[Scalar[DTYPE]](
-                workspace[env, cvel_idx + parent * 6 + 0]
-            )
-            cv_wy = rebind[Scalar[DTYPE]](
-                workspace[env, cvel_idx + parent * 6 + 1]
-            )
-            cv_wz = rebind[Scalar[DTYPE]](
-                workspace[env, cvel_idx + parent * 6 + 2]
-            )
-            cv_vx = rebind[Scalar[DTYPE]](
-                workspace[env, cvel_idx + parent * 6 + 3]
-            )
-            cv_vy = rebind[Scalar[DTYPE]](
-                workspace[env, cvel_idx + parent * 6 + 4]
-            )
-            cv_vz = rebind[Scalar[DTYPE]](
-                workspace[env, cvel_idx + parent * 6 + 5]
-            )
-
+        var cv_wx = rebind[Scalar[DTYPE]](
+            workspace[env, cvel_idx + parent * 6 + 0]
+        )
+        var cv_wy = rebind[Scalar[DTYPE]](
+            workspace[env, cvel_idx + parent * 6 + 1]
+        )
+        var cv_wz = rebind[Scalar[DTYPE]](
+            workspace[env, cvel_idx + parent * 6 + 2]
+        )
+        var cv_vx = rebind[Scalar[DTYPE]](
+            workspace[env, cvel_idx + parent * 6 + 3]
+        )
+        var cv_vy = rebind[Scalar[DTYPE]](
+            workspace[env, cvel_idx + parent * 6 + 4]
+        )
+        var cv_vz = rebind[Scalar[DTYPE]](
+            workspace[env, cvel_idx + parent * 6 + 5]
+        )
+        if parent > 0:
             # Transfer linear velocity from parent CoM to this body's CoM
             var rx = rebind[Scalar[DTYPE]](
                 state[env, xipos_off + b * 3 + 0]
@@ -1341,8 +1337,11 @@ fn compute_bias_forces_rne_gpu[
             cv_vy = cv_vy + (cv_wz * rx - cv_wx * rz)
             cv_vz = cv_vz + (cv_wx * ry - cv_wy * rx)
 
-        if parent < 0:
-            # Root body: gravity as fictitious acceleration
+        if parent == 0:
+            # Root body (parent is worldbody): gravity as fictitious acceleration
+            cacc[b * 6 + 0] = Scalar[DTYPE](0)
+            cacc[b * 6 + 1] = Scalar[DTYPE](0)
+            cacc[b * 6 + 2] = Scalar[DTYPE](0)
             cacc[b * 6 + 3] = -gx
             cacc[b * 6 + 4] = -gy
             cacc[b * 6 + 5] = -gz
@@ -1683,8 +1682,6 @@ fn compute_bias_forces_rne_gpu[
         var parent = Int(
             rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT])
         )
-        if parent < 0:
-            continue
 
         # Offset from parent CoM to child CoM (use xipos)
         var xipos_off = xipos_offset[NQ, NV, NBODY]()

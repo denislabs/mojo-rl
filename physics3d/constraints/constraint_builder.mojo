@@ -118,7 +118,7 @@ fn _compute_angular_jacobian_row[
         var dof_adr = joint.dof_adr
 
         var affects_a = _joint_affects_body(model, j, contact_body_a)
-        var affects_b = (contact_body_b >= 0) and _joint_affects_body(
+        var affects_b = (contact_body_b > 0) and _joint_affects_body(
             model, j, contact_body_b
         )
 
@@ -176,7 +176,7 @@ fn _joint_affects_body[
     if body_idx == joint_body:
         return True
     var current = body_idx
-    while current >= 0:
+    while current > 0:
         if model.body_parent[current] == joint_body:
             return True
         current = model.body_parent[current]
@@ -318,9 +318,9 @@ fn build_constraints[
 
             # Compute diagApprox from body_invweight0 (MuJoCo-style)
             var diag_n: Scalar[DTYPE] = 0
-            if contact.body_a >= 0 and contact.body_a < NBODY:
+            if contact.body_a > 0 and contact.body_a < NBODY:
                 diag_n += model.body_invweight0[contact.body_a * 2]
-            if contact.body_b >= 0 and contact.body_b < NBODY:
+            if contact.body_b > 0 and contact.body_b < NBODY:
                 diag_n += model.body_invweight0[contact.body_b * 2]
             if diag_n < Scalar[DTYPE](1e-10):
                 diag_n = k_n
@@ -658,9 +658,9 @@ fn build_constraints[
 
             # Compute diagApprox from body_invweight0 (MuJoCo-style)
             var diag_n: Scalar[DTYPE] = 0
-            if contact.body_a >= 0 and contact.body_a < NBODY:
+            if contact.body_a > 0 and contact.body_a < NBODY:
                 diag_n += model.body_invweight0[contact.body_a * 2]
-            if contact.body_b >= 0 and contact.body_b < NBODY:
+            if contact.body_b > 0 and contact.body_b < NBODY:
                 diag_n += model.body_invweight0[contact.body_b * 2]
             if diag_n < Scalar[DTYPE](1e-10):
                 diag_n = k  # Fallback to exact K if no invweight0
@@ -1248,7 +1248,7 @@ fn build_constraints[
             var world_a_x: Scalar[DTYPE]
             var world_a_y: Scalar[DTYPE]
             var world_a_z: Scalar[DTYPE]
-            if body_a >= 0:
+            if body_a > 0:
                 var rot_a = quat_rotate[DTYPE](
                     data.xquat[body_a * 4 + 0],
                     data.xquat[body_a * 4 + 1],
@@ -1269,7 +1269,7 @@ fn build_constraints[
             var world_b_x: Scalar[DTYPE]
             var world_b_y: Scalar[DTYPE]
             var world_b_z: Scalar[DTYPE]
-            if body_b >= 0:
+            if body_b > 0:
                 var rot_b = quat_rotate[DTYPE](
                     data.xquat[body_b * 4 + 0],
                     data.xquat[body_b * 4 + 1],
@@ -1353,9 +1353,9 @@ fn build_constraints[
 
                 # Equality diagApprox: translation weights
                 var diag_eq: Scalar[DTYPE] = 0
-                if body_a >= 0 and body_a < NBODY:
+                if body_a > 0 and body_a < NBODY:
                     diag_eq += model.body_invweight0[body_a * 2]
-                if body_b >= 0 and body_b < NBODY:
+                if body_b > 0 and body_b < NBODY:
                     diag_eq += model.body_invweight0[body_b * 2]
                 if diag_eq < Scalar[DTYPE](1e-10):
                     diag_eq = k_eq
@@ -1401,29 +1401,29 @@ fn build_constraints[
                 # Orientation error: 0.5 * imag(conj(quat_b) * quat_a * relpose)
                 var qa_x = data.xquat[
                     body_a * 4 + 0
-                ] if body_a >= 0 else Scalar[DTYPE](0)
+                ] if body_a > 0 else Scalar[DTYPE](0)
                 var qa_y = data.xquat[
                     body_a * 4 + 1
-                ] if body_a >= 0 else Scalar[DTYPE](0)
+                ] if body_a > 0 else Scalar[DTYPE](0)
                 var qa_z = data.xquat[
                     body_a * 4 + 2
-                ] if body_a >= 0 else Scalar[DTYPE](0)
+                ] if body_a > 0 else Scalar[DTYPE](0)
                 var qa_w = data.xquat[
                     body_a * 4 + 3
-                ] if body_a >= 0 else Scalar[DTYPE](1)
+                ] if body_a > 0 else Scalar[DTYPE](1)
 
                 var qb_x = data.xquat[
                     body_b * 4 + 0
-                ] if body_b >= 0 else Scalar[DTYPE](0)
+                ] if body_b > 0 else Scalar[DTYPE](0)
                 var qb_y = data.xquat[
                     body_b * 4 + 1
-                ] if body_b >= 0 else Scalar[DTYPE](0)
+                ] if body_b > 0 else Scalar[DTYPE](0)
                 var qb_z = data.xquat[
                     body_b * 4 + 2
-                ] if body_b >= 0 else Scalar[DTYPE](0)
+                ] if body_b > 0 else Scalar[DTYPE](0)
                 var qb_w = data.xquat[
                     body_b * 4 + 3
-                ] if body_b >= 0 else Scalar[DTYPE](1)
+                ] if body_b > 0 else Scalar[DTYPE](1)
 
                 # conj(qb) * qa
                 var qb_conj = quat_conjugate[DTYPE](qb_x, qb_y, qb_z, qb_w)
@@ -1497,9 +1497,9 @@ fn build_constraints[
 
                     # Weld rotation: use rotation weights
                     var diag_rot: Scalar[DTYPE] = 0
-                    if body_a >= 0 and body_a < NBODY:
+                    if body_a > 0 and body_a < NBODY:
                         diag_rot += model.body_invweight0[body_a * 2 + 1]
-                    if body_b >= 0 and body_b < NBODY:
+                    if body_b > 0 and body_b < NBODY:
                         diag_rot += model.body_invweight0[body_b * 2 + 1]
                     if diag_rot < Scalar[DTYPE](1e-10):
                         diag_rot = k_rot

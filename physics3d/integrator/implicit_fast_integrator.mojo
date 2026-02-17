@@ -210,10 +210,10 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
                 var ct = data.contacts[c]
                 var ba = Int(ct.body_a)
                 var bb = Int(ct.body_b)
-                var ba_name = String("ground") if ba < 0 else String(
+                var ba_name = String("ground") if ba == 0 else String(
                     model.get_body_name(ba)
                 )
-                var bb_name = String("ground") if bb < 0 else String(
+                var bb_name = String("ground") if bb == 0 else String(
                     model.get_body_name(bb)
                 )
                 print(

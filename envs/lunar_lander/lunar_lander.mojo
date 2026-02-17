@@ -1188,7 +1188,7 @@ struct LunarLander[
         for i in range(n_contacts):
             var body_a = Int(contacts[0, i, CONTACT_BODY_A])
             # BODY_LANDER = 0, legs are 1 and 2
-            # Contact with terrain means body_b = -1 (static)
+            # Contact with terrain means body_b = 0 (worldbody)
             if body_a == Self.BODY_LANDER:
                 return True
         return False

@@ -103,7 +103,7 @@ fn _is_descendant[
     Traverses the parent chain from body upwards to see if ancestor is found.
     """
     var current = body
-    while current >= 0:
+    while current > 0:
         if model.body_parent[current] == ancestor:
             return True
         current = model.body_parent[current]
@@ -779,7 +779,7 @@ fn compute_body_invweight0[
                     affects = True
                 else:
                     var current = i
-                    while current >= 0:
+                    while current > 0:
                         if model.body_parent[current] == b:
                             affects = True
                             break
@@ -1359,7 +1359,7 @@ fn _is_descendant_gpu[
 ) -> Bool:
     """GPU-compatible check if body is a descendant of ancestor."""
     var current = body
-    while current >= 0:
+    while current > 0:
         var body_off = model_body_offset(current)
         var parent = Int(
             rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT])

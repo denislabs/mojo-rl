@@ -95,7 +95,7 @@ struct Bodies[*B: BodySpec]:
             DTYPE,
             NQ,
             NV,
-            Self.N,
+            Self.N + 1,  # +1 for worldbody at index 0
             NJOINT,
             MAX_CONTACTS,
             NGEOM,
@@ -106,16 +106,19 @@ struct Bodies[*B: BodySpec]:
         """Populate model body properties from compile-time BodySpec list.
 
         Iterates over all body specs and sets mass, inertia, geometry, parent,
-        local frame, and collision filtering on the model.
+        local frame, and collision filtering on the model. Body indices start
+        at 1 (worldbody at index 0 is initialized by Model.__init__).
         """
 
         @parameter
         for i in range(Self.N):
             comptime B = Self.body_types[i]
+            # Body index i+1: worldbody is at index 0 (reserved)
+            comptime body_idx = i + 1
 
             # Mass, inertia
             model.set_body(
-                i,
+                body_idx,
                 name=B.NAME,
                 mass=Scalar[DTYPE](B.MASS),
                 inertia=(
@@ -126,11 +129,11 @@ struct Bodies[*B: BodySpec]:
             )
 
             # Kinematic tree
-            model.set_body_parent(i, B.PARENT)
+            model.set_body_parent(body_idx, B.PARENT)
 
             # Local frame in parent
             model.set_body_local_frame(
-                i,
+                body_idx,
                 pos=(
                     Scalar[DTYPE](B.POS_X),
                     Scalar[DTYPE](B.POS_Y),
@@ -146,7 +149,7 @@ struct Bodies[*B: BodySpec]:
 
             # CoM offset and inertia frame
             model.set_body_ipos_iquat(
-                i,
+                body_idx,
                 ipos=(
                     Scalar[DTYPE](B.IPOS_X),
                     Scalar[DTYPE](B.IPOS_Y),
@@ -949,14 +952,14 @@ struct Geoms[*G: GeomSpec]:
 
     @staticmethod
     fn _count_static_geoms() -> Int:
-        """Count of static (worldbody) geoms (BODY_IDX == -1)."""
+        """Count of static (worldbody) geoms (BODY_IDX == 0)."""
         var total = 0
 
         @parameter
         for i in range(Self.N):
 
             @parameter
-            if Self.geom_types[i].BODY_IDX == -1:
+            if Self.geom_types[i].BODY_IDX == 0:
                 total += 1
         return total
 

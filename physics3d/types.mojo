@@ -14,7 +14,7 @@ Example usage:
     # NQ=1 (1 angle), NV=1 (1 angular velocity)
     var model = Model[DType.float64, 1, 1, 1, 1, 5]()
     model.set_body(0, mass=1.0, inertia=(0.1, 0.1, 0.1))
-    model.set_body_parent(0, -1)  # Parent is world
+    model.set_body_parent(1, 0)  # Parent is worldbody
 
     var data = Data[DType.float64, 1, 1, 1, 1, 5]()
     data.qpos[0] = 0.5  # Initial angle (radians)
@@ -65,7 +65,7 @@ struct EqualityConstraintDef[DTYPE: DType](
 
     var eq_type: Int  # EQ_CONNECT or EQ_WELD
     var body_a: Int  # First body index
-    var body_b: Int  # Second body index (-1 for world)
+    var body_b: Int  # Second body index (0 for worldbody)
     var anchor_a_x: Scalar[Self.DTYPE]  # Anchor point in body_a frame
     var anchor_a_y: Scalar[Self.DTYPE]
     var anchor_a_z: Scalar[Self.DTYPE]
@@ -89,8 +89,8 @@ struct EqualityConstraintDef[DTYPE: DType](
         """Create empty equality constraint."""
         return Self(
             eq_type=EQ_CONNECT,
-            body_a=-1,
-            body_b=-1,
+            body_a=0,
+            body_b=0,
             anchor_a_x=Scalar[Self.DTYPE](0),
             anchor_a_y=Scalar[Self.DTYPE](0),
             anchor_a_z=Scalar[Self.DTYPE](0),
@@ -181,7 +181,7 @@ struct ContactInfo[DTYPE: DType](ImplicitlyCopyable, Movable):
     """
 
     var body_a: Int  # Index of first body
-    var body_b: Int  # Index of second body (-1 for ground)
+    var body_b: Int  # Index of second body (0 for ground/worldbody)
     var pos_x: Scalar[Self.DTYPE]  # Contact point (world)
     var pos_y: Scalar[Self.DTYPE]
     var pos_z: Scalar[Self.DTYPE]
@@ -209,8 +209,8 @@ struct ContactInfo[DTYPE: DType](ImplicitlyCopyable, Movable):
     fn empty() -> Self:
         """Create empty contact."""
         return Self(
-            body_a=-1,
-            body_b=-1,
+            body_a=0,
+            body_b=0,
             pos_x=Scalar[Self.DTYPE](0),
             pos_y=Scalar[Self.DTYPE](0),
             pos_z=Scalar[Self.DTYPE](0),
@@ -269,7 +269,9 @@ struct Model[
         CONE_TYPE: Cone type (0=pyramidal, 1=elliptic).
 
     The kinematic tree is defined by body_parent array:
-    - body_parent[i] = index of parent body (-1 for world)
+    - body_parent[0] = 0 (worldbody, self-referencing)
+    - body_parent[i] = index of parent body (0 for worldbody parent)
+    - Real bodies start at index 1, worldbody is always index 0
     - Bodies must be added in topological order (parent before child)
     """
 
@@ -309,7 +311,7 @@ struct Model[
     var body_iquat: InlineArray[Scalar[Self.DTYPE], Self.NBODY * 4]
 
     # Kinematic tree structure
-    var body_parent: InlineArray[Int, Self.NBODY]  # -1 for world
+    var body_parent: InlineArray[Int, Self.NBODY]  # 0 for worldbody
 
     # Body inverse weights for primal solver (MuJoCo-style diagApprox)
     # [2*i] = translation, [2*i+1] = rotation  (precomputed model constant)
@@ -321,7 +323,7 @@ struct Model[
 
     # Unified geom arrays (NGEOM > 0)
     var geom_type: InlineArray[Int, _max_one[Self.NGEOM]()]
-    var geom_body: InlineArray[Int, _max_one[Self.NGEOM]()]  # -1 for static
+    var geom_body: InlineArray[Int, _max_one[Self.NGEOM]()]  # 0 for worldbody/static
     var geom_pos: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM * 3]()]
     var geom_quat: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM * 4]()]
     var geom_radius: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM]()]
@@ -482,7 +484,7 @@ struct Model[
         self.impratio = Scalar[Self.DTYPE](1.0)
         for i in range(_max_one[Self.NGEOM]()):
             self.geom_type[i] = 0
-            self.geom_body[i] = -1
+            self.geom_body[i] = 0
             self.geom_radius[i] = Scalar[Self.DTYPE](0)
             self.geom_half_length[i] = Scalar[Self.DTYPE](0)
             self.geom_half_x[i] = Scalar[Self.DTYPE](0)
@@ -504,7 +506,7 @@ struct Model[
         for i in range(Self.NBODY):
             self.body_mass[i] = Scalar[Self.DTYPE](1.0)
             self.body_inv_mass[i] = Scalar[Self.DTYPE](1.0)
-            self.body_parent[i] = -1  # Default: all bodies have world as parent
+            self.body_parent[i] = 0  # Default: all bodies have worldbody as parent
             # Default body position: origin in parent frame
             self.body_pos[i * 3 + 0] = Scalar[Self.DTYPE](0)
             self.body_pos[i * 3 + 1] = Scalar[Self.DTYPE](0)
@@ -533,6 +535,14 @@ struct Model[
                 0.004
             )  # Default sphere inertia
             self.body_inv_inertia[i] = Scalar[Self.DTYPE](250.0)
+
+        # Initialize worldbody at index 0 (MuJoCo convention)
+        self.body_mass[0] = Scalar[Self.DTYPE](0)
+        self.body_inv_mass[0] = Scalar[Self.DTYPE](0)
+        self.body_parent[0] = 0  # Self-referencing (MuJoCo convention)
+        for k in range(3):
+            self.body_inertia[k] = Scalar[Self.DTYPE](0)
+            self.body_inv_inertia[k] = Scalar[Self.DTYPE](0)
 
         # Initialize joints
         self.joints = InlineArray[
@@ -590,7 +600,7 @@ struct Model[
         """Get body name."""
         if body_id >= Self.NBODY:
             return ""
-        if body_id < 0:
+        if body_id == 0:
             return "world"
         return self.body_name[body_id]
 
@@ -599,7 +609,7 @@ struct Model[
 
         Args:
             body_id: Child body index.
-            parent_id: Parent body index (-1 for world).
+            parent_id: Parent body index (0 for worldbody).
         """
         self.body_parent[body_id] = parent_id
 
@@ -814,9 +824,9 @@ struct Model[
 
         Args:
             body_a: First body index.
-            body_b: Second body index (-1 for world).
+            body_b: Second body index (0 for worldbody).
             anchor_a: Anchor point in body_a frame.
-            anchor_b: Anchor point in body_b frame (or world frame if body_b=-1).
+            anchor_b: Anchor point in body_b frame (or world frame if body_b=0).
             solref: Impedance parameters [timeconst, dampratio].
             solimp: Impedance parameters [dmin, dmax, width].
 
@@ -886,9 +896,9 @@ struct Model[
 
         Args:
             body_a: First body index.
-            body_b: Second body index (-1 for world).
+            body_b: Second body index (0 for worldbody).
             anchor_a: Anchor point in body_a frame.
-            anchor_b: Anchor point in body_b frame (or world frame if body_b=-1).
+            anchor_b: Anchor point in body_b frame (or world frame if body_b=0).
             relpose: Relative orientation quaternion [x, y, z, w].
             solref: Impedance parameters [timeconst, dampratio].
             solimp: Impedance parameters [dmin, dmax, width].

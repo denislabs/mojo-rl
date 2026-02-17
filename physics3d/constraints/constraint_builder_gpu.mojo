@@ -315,9 +315,9 @@ fn precompute_contact_normal_gpu[
                 NBODY, NJOINT, NGEOM, MAX_EQUALITY
             ]()
             var diag_n: Scalar[DTYPE] = 0
-            if body >= 0 and body < NBODY:
+            if body > 0 and body < NBODY:
                 diag_n += rebind[Scalar[DTYPE]](model[0, bw_off + body * 2])
-            if body_b >= 0 and body_b < NBODY:
+            if body_b > 0 and body_b < NBODY:
                 diag_n += rebind[Scalar[DTYPE]](model[0, bw_off + body_b * 2])
             if diag_n < Scalar[DTYPE](1e-10):
                 diag_n = rebind[Scalar[DTYPE]](k)  # Fallback to exact K
@@ -787,7 +787,7 @@ fn build_and_solve_equality_gpu[
         var world_bx: Scalar[DTYPE]
         var world_by: Scalar[DTYPE]
         var world_bz: Scalar[DTYPE]
-        if body_b >= 0:
+        if body_b > 0:
             var xpos_b_x = rebind[Scalar[DTYPE]](
                 state[env, xpos_off + body_b * 3 + 0]
             )
@@ -924,11 +924,11 @@ fn build_and_solve_equality_gpu[
                 NBODY, NJOINT, NGEOM, MAX_EQUALITY
             ]()
             var diag_eq: Scalar[DTYPE] = 0
-            if body_a >= 0 and body_a < NBODY:
+            if body_a > 0 and body_a < NBODY:
                 diag_eq += rebind[Scalar[DTYPE]](
                     model[0, eq_bw_off + body_a * 2]
                 )
-            if body_b >= 0 and body_b < NBODY:
+            if body_b > 0 and body_b < NBODY:
                 diag_eq += rebind[Scalar[DTYPE]](
                     model[0, eq_bw_off + body_b * 2]
                 )
@@ -965,7 +965,7 @@ fn build_and_solve_equality_gpu[
             var qb_y: Scalar[DTYPE]
             var qb_z: Scalar[DTYPE]
             var qb_w: Scalar[DTYPE]
-            if body_b >= 0:
+            if body_b > 0:
                 qb_x = rebind[Scalar[DTYPE]](
                     state[env, xquat_off + body_b * 4 + 0]
                 )
@@ -1078,11 +1078,11 @@ fn build_and_solve_equality_gpu[
                     NBODY, NJOINT, NGEOM, MAX_EQUALITY
                 ]()
                 var diag_rot: Scalar[DTYPE] = 0
-                if body_a >= 0 and body_a < NBODY:
+                if body_a > 0 and body_a < NBODY:
                     diag_rot += rebind[Scalar[DTYPE]](
                         model[0, eq_rot_bw_off + body_a * 2 + 1]
                     )
-                if body_b >= 0 and body_b < NBODY:
+                if body_b > 0 and body_b < NBODY:
                     diag_rot += rebind[Scalar[DTYPE]](
                         model[0, eq_rot_bw_off + body_b * 2 + 1]
                     )
