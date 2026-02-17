@@ -567,10 +567,10 @@ struct Hopper[
         if not self._renderer[].is_open():
             return
 
-        var positions = List[Vec3](capacity=4)
-        var quaternions = List[Quat](capacity=4)
+        var positions = List[Vec3](capacity=Hopper.NUM_BODIES)
+        var quaternions = List[Quat](capacity=Hopper.NUM_BODIES)
 
-        for i in range(4):
+        for i in range(Hopper.NUM_BODIES):
             var pos = self.get_body_position(i)
             positions.append(
                 Vec3(Float64(pos[0]), Float64(pos[1]), Float64(pos[2]))

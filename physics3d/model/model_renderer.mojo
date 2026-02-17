@@ -220,7 +220,7 @@ struct ModelRenderer[*G: GeomSpec](EnvRenderer3D, Movable):
                             )
                         else:
                             # Apply local rotation: geom_quat = body_quat * local_quat
-                            var local_quat = Quat(GG.QUAT_X, GG.QUAT_Y, GG.QUAT_Z, GG.QUAT_W)
+                            var local_quat = Quat(GG.QUAT_W, GG.QUAT_X, GG.QUAT_Y, GG.QUAT_Z)
                             var geom_quat = body_quat * local_quat
                             self.renderer.draw_capsule(
                                 center=geom_pos,
@@ -245,7 +245,7 @@ struct ModelRenderer[*G: GeomSpec](EnvRenderer3D, Movable):
                                 color=GG.COLOR,
                             )
                         else:
-                            var local_quat = Quat(GG.QUAT_X, GG.QUAT_Y, GG.QUAT_Z, GG.QUAT_W)
+                            var local_quat = Quat(GG.QUAT_W, GG.QUAT_X, GG.QUAT_Y, GG.QUAT_Z)
                             var geom_quat = body_quat * local_quat
                             self.renderer.draw_capsule(
                                 center=geom_pos,

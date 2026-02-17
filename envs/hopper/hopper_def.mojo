@@ -14,7 +14,14 @@ model definition. Replaces the former constants.mojo.
 
 from physics3d.model.body_spec import CapsuleBody
 from physics3d.model.joint_spec import HingeJoint, SlideJoint
-from physics3d.model.model_def import Bodies, Joints, Geoms, Actuators, ModelDef, ModelDefaults
+from physics3d.model.model_def import (
+    Bodies,
+    Joints,
+    Geoms,
+    Actuators,
+    ModelDef,
+    ModelDefaults,
+)
 from physics3d.model.actuator_spec import MotorActuator
 from physics3d.model.geom_spec import Plane, Capsule
 from render3d import Color3D
@@ -133,28 +140,39 @@ comptime HopperFoot = CapsuleBody[
 # =============================================================================
 
 # Joint 0: rootx — Slide along X (body 1/torso, unactuated)
+# MuJoCo: armature=0, damping=0, stiffness=0
 comptime HopperRootX = SlideJoint[
     body_idx=1,
     axis_x=1.0,
     axis_y=0.0,
     axis_z=0.0,
+    armature=0.0,
+    damping=0.0,
+    stiffness=0.0,
     exclude_obs_qpos=True,
 ]
 
 # Joint 1: rootz — Slide along Z (body 1/torso, unactuated)
+# MuJoCo: armature=0, damping=0, stiffness=0
 # Height comes from body_pos_z=1.25, NOT from init_qpos (MuJoCo qpos0 is all zeros)
 comptime HopperRootZ = SlideJoint[
     body_idx=1,
     axis_x=0.0,
     axis_y=0.0,
     axis_z=1.0,
+    armature=0.0,
+    damping=0.0,
+    stiffness=0.0,
 ]
 
 # Joint 2: rooty — Hinge around Y (body 1/torso, unactuated)
+# MuJoCo: armature=0, damping=0, stiffness=0
 comptime HopperRootY = HingeJoint[
     body_idx=1,
     tau_limit=0.0,
     armature=0.0,
+    damping=0.0,
+    stiffness=0.0,
     is_actuated=False,
     has_limits=False,
 ]
@@ -207,20 +225,26 @@ comptime HopperGroundGeom = Plane[
 
 # Geom 1: Torso capsule (body 1) — friction/condim from HopperDefaults
 comptime HopperTorsoGeom = Capsule[
-    body_idx=1, radius=0.05, half_length=0.2,
+    body_idx=1,
+    radius=0.05,
+    half_length=0.2,
     color = Color3D(60, 120, 200),
 ]
 
 # Geom 2: Thigh capsule (body 2) — MuJoCo geom_pos=(0, 0, -0.225)
 comptime HopperThighGeom = Capsule[
-    body_idx=2, radius=0.05, half_length=0.225,
+    body_idx=2,
+    radius=0.05,
+    half_length=0.225,
     pos_z= -0.225,
     color = Color3D(80, 200, 80),
 ]
 
 # Geom 3: Leg capsule (body 3) — at body origin
 comptime HopperLegGeom = Capsule[
-    body_idx=3, radius=0.04, half_length=0.25,
+    body_idx=3,
+    radius=0.04,
+    half_length=0.25,
     color = Color3D(220, 140, 60),
 ]
 
@@ -289,7 +313,7 @@ comptime HopperDefaults = ModelDefaults[
     geom_condim=1,
     geom_solref_0=0.02,
     geom_solref_1=1.0,
-    geom_solimp_0=0.0,
+    geom_solimp_0=0.8,   # MuJoCo XML default: solimp=".8 .8 .01"
     geom_solimp_1=0.8,
     geom_solimp_2=0.01,
     joint_solref_limit_0=0.02,
