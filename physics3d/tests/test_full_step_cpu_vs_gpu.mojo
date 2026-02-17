@@ -42,6 +42,7 @@ from envs.half_cheetah.half_cheetah_def import (
     HalfCheetahGeoms,
     HalfCheetahActuators,
     HalfCheetahParams,
+    HalfCheetahDefaults,
 )
 
 
@@ -98,22 +99,10 @@ fn compare_step(
         gravity_z=Scalar[DTYPE](-9.81),
         timestep=Scalar[DTYPE](0.01),
     )
+    HalfCheetahModel.setup_solver_params[Defaults=HalfCheetahDefaults](model_cpu)
     HalfCheetahBodies.setup_model(model_cpu)
-    HalfCheetahJoints.setup_model(model_cpu)
-    HalfCheetahGeoms.setup_model(model_cpu)
-
-    # Set solver params
-    comptime P = HalfCheetahParams[DTYPE]
-    model_cpu.solref_contact[0] = P.SOLREF_CONTACT_0
-    model_cpu.solref_contact[1] = P.SOLREF_CONTACT_1
-    model_cpu.solimp_contact[0] = P.SOLIMP_CONTACT_0
-    model_cpu.solimp_contact[1] = P.SOLIMP_CONTACT_1
-    model_cpu.solimp_contact[2] = P.SOLIMP_CONTACT_2
-    model_cpu.solref_limit[0] = P.SOLREF_LIMIT_0
-    model_cpu.solref_limit[1] = P.SOLREF_LIMIT_1
-    model_cpu.solimp_limit[0] = P.SOLIMP_LIMIT_0
-    model_cpu.solimp_limit[1] = P.SOLIMP_LIMIT_1
-    model_cpu.solimp_limit[2] = P.SOLIMP_LIMIT_2
+    HalfCheetahJoints.setup_model[Defaults=HalfCheetahDefaults](model_cpu)
+    HalfCheetahGeoms.setup_model[Defaults=HalfCheetahDefaults](model_cpu)
 
     var data_cpu = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
 
@@ -152,19 +141,13 @@ fn compare_step(
         gravity_z=Scalar[DTYPE](-9.81),
         timestep=Scalar[DTYPE](0.01),
     )
+    HalfCheetahModel.setup_solver_params[Defaults=HalfCheetahDefaults](model_gpu)
+
     HalfCheetahBodies.setup_model(model_gpu)
-    HalfCheetahJoints.setup_model(model_gpu)
-    HalfCheetahGeoms.setup_model(model_gpu)
-    model_gpu.solref_contact[0] = P.SOLREF_CONTACT_0
-    model_gpu.solref_contact[1] = P.SOLREF_CONTACT_1
-    model_gpu.solimp_contact[0] = P.SOLIMP_CONTACT_0
-    model_gpu.solimp_contact[1] = P.SOLIMP_CONTACT_1
-    model_gpu.solimp_contact[2] = P.SOLIMP_CONTACT_2
-    model_gpu.solref_limit[0] = P.SOLREF_LIMIT_0
-    model_gpu.solref_limit[1] = P.SOLREF_LIMIT_1
-    model_gpu.solimp_limit[0] = P.SOLIMP_LIMIT_0
-    model_gpu.solimp_limit[1] = P.SOLIMP_LIMIT_1
-    model_gpu.solimp_limit[2] = P.SOLIMP_LIMIT_2
+
+    HalfCheetahJoints.setup_model[Defaults=HalfCheetahDefaults](model_gpu)
+
+    HalfCheetahGeoms.setup_model[Defaults=HalfCheetahDefaults](model_gpu)
 
     # Compute invweight0 at ref pose
     var data_ref = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()

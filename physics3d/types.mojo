@@ -345,6 +345,14 @@ struct Model[
     var geom_conaffinity: InlineArray[Int, _max_one[Self.NGEOM]()]
     var geom_rbound: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM]()]
 
+    # Per-geom solref/solimp (MuJoCo-style per-geom impedance overrides)
+    var geom_solref: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM * 2]()]
+    var geom_solimp: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM * 3]()]
+
+    # Per-joint solref/solimp for limits (MuJoCo-style per-joint impedance overrides)
+    var joint_solref_limit: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NJOINT * 2]()]
+    var joint_solimp_limit: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NJOINT * 3]()]
+
     # Friction cone model
     var impratio: Scalar[Self.DTYPE]  # MuJoCo impratio (default 1.0)
 
@@ -481,6 +489,18 @@ struct Model[
         self.geom_rbound = InlineArray[
             Scalar[Self.DTYPE], _max_one[Self.NGEOM]()
         ](uninitialized=True)
+        self.geom_solref = InlineArray[
+            Scalar[Self.DTYPE], _max_one[Self.NGEOM * 2]()
+        ](fill=Scalar[Self.DTYPE](0))
+        self.geom_solimp = InlineArray[
+            Scalar[Self.DTYPE], _max_one[Self.NGEOM * 3]()
+        ](fill=Scalar[Self.DTYPE](0))
+        self.joint_solref_limit = InlineArray[
+            Scalar[Self.DTYPE], _max_one[Self.NJOINT * 2]()
+        ](fill=Scalar[Self.DTYPE](0))
+        self.joint_solimp_limit = InlineArray[
+            Scalar[Self.DTYPE], _max_one[Self.NJOINT * 3]()
+        ](fill=Scalar[Self.DTYPE](0))
         self.impratio = Scalar[Self.DTYPE](1.0)
         for i in range(_max_one[Self.NGEOM]()):
             self.geom_type[i] = 0

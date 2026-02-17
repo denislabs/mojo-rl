@@ -304,7 +304,7 @@ trait ModelParams:
 
 
 struct HalfCheetahModelParams(ModelParams):
-    comptime FRICTION: Float64 = 0.5
+    comptime FRICTION: Float64 = 0.8
     comptime FRICTION_SPIN: Float64 = 0.005
     comptime FRICTION_ROLL: Float64 = 0.0001
 
@@ -312,3 +312,29 @@ struct HalfCheetahModelParams(ModelParams):
 comptime FRICTION_DEFAULT: Float64 = 0.5
 comptime FRICTION_SPIN_DEFAULT: Float64 = 0.005
 comptime FRICTION_ROLL_DEFAULT: Float64 = 0.0001
+
+
+fn setup_friction_geom[
+    friction_geom: Optional[Float64] = None,
+    default_friction: Float64 = FRICTION_DEFAULT,
+]() -> Float64:
+    @parameter
+    if friction_geom:
+        return friction_geom.value()
+    else:
+        return default_friction
+
+
+fn setup_model_params():
+    comptime TorsoGeom = Sphere[
+        body_idx=1,
+        radius=0.25,
+    ]
+    comptime TorsoFriction = setup_friction_geom[
+        TorsoGeom.friction, HalfCheetahModelParams.FRICTION
+    ]()
+    print(String(TorsoFriction))
+
+
+fn main():
+    setup_model_params()

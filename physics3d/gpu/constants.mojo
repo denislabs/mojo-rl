@@ -226,7 +226,7 @@ fn model_body_offset(body_idx: Int) -> Int:
 # Model Buffer Layout - Per Joint
 # =============================================================================
 
-comptime MODEL_JOINT_SIZE: Int = 18  # Extended to include range limits + armature + damping + stiffness + springref + frictionloss
+comptime MODEL_JOINT_SIZE: Int = 23  # +5 for per-joint solref/solimp limits
 
 comptime JOINT_IDX_TYPE: Int = 0  # JNT_FREE, JNT_BALL, JNT_SLIDE, JNT_HINGE
 comptime JOINT_IDX_BODY_ID: Int = 1
@@ -246,6 +246,11 @@ comptime JOINT_IDX_DAMPING: Int = 14  # Passive joint damping
 comptime JOINT_IDX_STIFFNESS: Int = 15  # Passive joint stiffness (spring)
 comptime JOINT_IDX_SPRINGREF: Int = 16  # Spring reference position (rest position)
 comptime JOINT_IDX_FRICTIONLOSS: Int = 17  # Dry friction loss (Coulomb friction)
+comptime JOINT_IDX_SOLREF_LIMIT_0: Int = 18  # Per-joint limit solref timeconst
+comptime JOINT_IDX_SOLREF_LIMIT_1: Int = 19  # Per-joint limit solref dampratio
+comptime JOINT_IDX_SOLIMP_LIMIT_0: Int = 20  # Per-joint limit solimp dmin
+comptime JOINT_IDX_SOLIMP_LIMIT_1: Int = 21  # Per-joint limit solimp dmax
+comptime JOINT_IDX_SOLIMP_LIMIT_2: Int = 22  # Per-joint limit solimp width
 
 
 fn model_joint_offset[NBODY: Int](joint_idx: Int) -> Int:
@@ -294,7 +299,7 @@ fn model_metadata_offset[NBODY: Int, NJOINT: Int]() -> Int:
 # Model Buffer Layout - Unified Geoms (body-attached + static)
 # =============================================================================
 
-comptime MODEL_GEOM_SIZE: Int = 21  # Per unified geom
+comptime MODEL_GEOM_SIZE: Int = 26  # Per unified geom (+5 for solref/solimp)
 
 comptime GEOM_IDX_TYPE: Int = 0
 comptime GEOM_IDX_BODY: Int = 1  # Body index (-1 for static)
@@ -317,6 +322,11 @@ comptime GEOM_IDX_CONDIM: Int = 17
 comptime GEOM_IDX_FRICTION_SPIN: Int = 18
 comptime GEOM_IDX_FRICTION_ROLL: Int = 19
 comptime GEOM_IDX_RBOUND: Int = 20
+comptime GEOM_IDX_SOLREF_0: Int = 21  # Per-geom solref timeconst
+comptime GEOM_IDX_SOLREF_1: Int = 22  # Per-geom solref dampratio
+comptime GEOM_IDX_SOLIMP_0: Int = 23  # Per-geom solimp dmin
+comptime GEOM_IDX_SOLIMP_1: Int = 24  # Per-geom solimp dmax
+comptime GEOM_IDX_SOLIMP_2: Int = 25  # Per-geom solimp width
 
 
 fn model_geom_offset[NBODY: Int, NJOINT: Int](geom_idx: Int) -> Int:

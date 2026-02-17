@@ -71,6 +71,7 @@ from .half_cheetah_def import (
     HalfCheetahGeoms,
     HalfCheetahActuators,
     HalfCheetahParams,
+    HalfCheetahDefaults,
     BODY_TORSO,
     JOINT_ROOTX,
     JOINT_ROOTZ,
@@ -211,18 +212,8 @@ struct HalfCheetah[
             Self.DTYPE, Self.NQ, Self.NV, Self.NUM_BODIES, Self.NUM_JOINTS,
             Self.MAX_CONTACTS, Self.NGEOM, Self.MAX_EQUALITY, Self.CONE_TYPE,
         ](gravity_z=Scalar[Self.DTYPE](P.GRAVITY_Z), timestep=timestep)
-        HalfCheetahModel.setup_solver_params(
+        HalfCheetahModel.setup_solver_params[Defaults=HalfCheetahDefaults](
             self.model,
-            solref_contact_0=P.SOLREF_CONTACT_0,
-            solref_contact_1=P.SOLREF_CONTACT_1,
-            solimp_contact_0=P.SOLIMP_CONTACT_0,
-            solimp_contact_1=P.SOLIMP_CONTACT_1,
-            solimp_contact_2=P.SOLIMP_CONTACT_2,
-            solref_limit_0=P.SOLREF_LIMIT_0,
-            solref_limit_1=P.SOLREF_LIMIT_1,
-            solimp_limit_0=P.SOLIMP_LIMIT_0,
-            solimp_limit_1=P.SOLIMP_LIMIT_1,
-            solimp_limit_2=P.SOLIMP_LIMIT_2,
         )
 
         # Initialize data
@@ -237,8 +228,8 @@ struct HalfCheetah[
 
         # Configure bodies, joints, and geoms from compile-time model definition
         HalfCheetahBodies.setup_model(self.model)
-        HalfCheetahJoints.setup_model(self.model)
-        HalfCheetahGeoms.setup_model(self.model)
+        HalfCheetahJoints.setup_model[Defaults=HalfCheetahDefaults](self.model)
+        HalfCheetahGeoms.setup_model[Defaults=HalfCheetahDefaults](self.model)
 
         # Reset qpos to initial values, run FK + compute body inverse weights
         HalfCheetahJoints.reset_data(self.data)
@@ -847,22 +838,12 @@ struct HalfCheetah[
             HalfCheetah.NUM_JOINTS, HalfCheetah.MAX_CONTACTS,
             HalfCheetah.NGEOM, HalfCheetah.MAX_EQUALITY, HalfCheetah.CONE_TYPE,
         ](gravity_z=P.GRAVITY_Z, timestep=P.DT)
-        HalfCheetahModel.setup_solver_params(
+        HalfCheetahModel.setup_solver_params[Defaults=HalfCheetahDefaults](
             model,
-            solref_contact_0=P.SOLREF_CONTACT_0,
-            solref_contact_1=P.SOLREF_CONTACT_1,
-            solimp_contact_0=P.SOLIMP_CONTACT_0,
-            solimp_contact_1=P.SOLIMP_CONTACT_1,
-            solimp_contact_2=P.SOLIMP_CONTACT_2,
-            solref_limit_0=P.SOLREF_LIMIT_0,
-            solref_limit_1=P.SOLREF_LIMIT_1,
-            solimp_limit_0=P.SOLIMP_LIMIT_0,
-            solimp_limit_1=P.SOLIMP_LIMIT_1,
-            solimp_limit_2=P.SOLIMP_LIMIT_2,
         )
         HalfCheetahBodies.setup_model(model)
-        HalfCheetahJoints.setup_model(model)
-        HalfCheetahGeoms.setup_model(model)
+        HalfCheetahJoints.setup_model[Defaults=HalfCheetahDefaults](model)
+        HalfCheetahGeoms.setup_model[Defaults=HalfCheetahDefaults](model)
 
         # Compute body_invweight0 and dof_invweight0 at reference pose
         var data_ref = Data[

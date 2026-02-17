@@ -26,6 +26,7 @@ from envs.half_cheetah.half_cheetah_def import (
     HalfCheetahGeoms,
     HalfCheetahActuators,
     HalfCheetahParams,
+    HalfCheetahDefaults,
 )
 
 
@@ -74,21 +75,13 @@ fn compare_step(
         gravity_z=Scalar[DTYPE](-9.81),
         timestep=Scalar[DTYPE](0.01),
     )
-    HalfCheetahBodies.setup_model(model)
-    HalfCheetahJoints.setup_model(model)
-    HalfCheetahGeoms.setup_model(model)
+    HalfCheetahModel.setup_solver_params[Defaults=HalfCheetahDefaults](model)
 
-    comptime P = HalfCheetahParams[DTYPE]
-    model.solref_contact[0] = P.SOLREF_CONTACT_0
-    model.solref_contact[1] = P.SOLREF_CONTACT_1
-    model.solimp_contact[0] = P.SOLIMP_CONTACT_0
-    model.solimp_contact[1] = P.SOLIMP_CONTACT_1
-    model.solimp_contact[2] = P.SOLIMP_CONTACT_2
-    model.solref_limit[0] = P.SOLREF_LIMIT_0
-    model.solref_limit[1] = P.SOLREF_LIMIT_1
-    model.solimp_limit[0] = P.SOLIMP_LIMIT_0
-    model.solimp_limit[1] = P.SOLIMP_LIMIT_1
-    model.solimp_limit[2] = P.SOLIMP_LIMIT_2
+    HalfCheetahBodies.setup_model(model)
+
+    HalfCheetahJoints.setup_model[Defaults=HalfCheetahDefaults](model)
+
+    HalfCheetahGeoms.setup_model[Defaults=HalfCheetahDefaults](model)
 
     var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
 

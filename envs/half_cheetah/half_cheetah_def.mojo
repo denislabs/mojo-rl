@@ -15,7 +15,7 @@ robot definition. Replaces the former constants.mojo.
 from physics3d.model.body_spec import CapsuleBody
 from physics3d.model.joint_spec import HingeJoint, SlideJoint
 from physics3d.types import ConeType
-from physics3d.model.model_def import Bodies, Joints, Geoms, Actuators, ModelDef
+from physics3d.model.model_def import Bodies, Joints, Geoms, Actuators, ModelDef, ModelDefaults
 from physics3d.model.actuator_spec import MotorActuator
 from physics3d.model.geom_spec import Plane, Capsule
 from render3d import Color3D
@@ -368,6 +368,8 @@ comptime GroundGeom = Plane[
 # Body capsule geoms with local pos/quat from MuJoCo
 # (body frames are now identity-oriented, so geoms need their own transforms)
 # MuJoCo geom quat is (w,x,y,z), our engine uses (x,y,z,w)
+# Body capsule geoms — friction/friction_spin/friction_roll/conaffinity
+# inherited from HalfCheetahDefaults (friction=0.4, conaffinity=0)
 comptime TorsoGeom = Capsule[
     body_idx=1,
     radius=_R,
@@ -375,10 +377,6 @@ comptime TorsoGeom = Capsule[
     # MuJoCo geom pos=(0,0,0), quat=(0.707107, 0, -0.707107, 0) → 90°Y rotation
     quat_y= -0.707107,
     quat_w=0.707107,
-    friction=0.4,
-    friction_spin=0.1,
-    friction_roll=0.1,
-    conaffinity=0,
     color = Color3D(204, 153, 102),
 ]
 comptime BThighGeom = Capsule[
@@ -390,10 +388,6 @@ comptime BThighGeom = Capsule[
     # MuJoCo quat (w,x,y,z) = (-0.32329, 0, -0.9463, 0)
     quat_y= -0.946300,
     quat_w= -0.323290,
-    friction=0.4,
-    friction_spin=0.1,
-    friction_roll=0.1,
-    conaffinity=0,
     color = Color3D(204, 153, 102),
 ]
 comptime BShinGeom = Capsule[
@@ -405,10 +399,6 @@ comptime BShinGeom = Capsule[
     # MuJoCo quat (w,x,y,z) = (0.52762, 0, -0.849481, 0)
     quat_y= -0.849481,
     quat_w=0.527620,
-    friction=0.4,
-    friction_spin=0.1,
-    friction_roll=0.1,
-    conaffinity=0,
     color = Color3D(230, 153, 153),
 ]
 comptime BFootGeom = Capsule[
@@ -420,10 +410,6 @@ comptime BFootGeom = Capsule[
     # MuJoCo quat (w,x,y,z) = (0.990901, 0, -0.13459, 0)
     quat_y= -0.134590,
     quat_w=0.990901,
-    friction=0.4,
-    friction_spin=0.1,
-    friction_roll=0.1,
-    conaffinity=0,
     color = Color3D(230, 153, 153),
 ]
 comptime FThighGeom = Capsule[
@@ -435,10 +421,6 @@ comptime FThighGeom = Capsule[
     # MuJoCo quat (w,x,y,z) = (0.96639, 0, 0.257081, 0)
     quat_y=0.257081,
     quat_w=0.966390,
-    friction=0.4,
-    friction_spin=0.1,
-    friction_roll=0.1,
-    conaffinity=0,
     color = Color3D(204, 153, 102),
 ]
 comptime FShinGeom = Capsule[
@@ -450,10 +432,6 @@ comptime FShinGeom = Capsule[
     # MuJoCo quat (w,x,y,z) = (0.955336, 0, -0.29552, 0)
     quat_y= -0.295520,
     quat_w=0.955336,
-    friction=0.4,
-    friction_spin=0.1,
-    friction_roll=0.1,
-    conaffinity=0,
     color = Color3D(230, 153, 153),
 ]
 comptime FFootGeom = Capsule[
@@ -465,10 +443,6 @@ comptime FFootGeom = Capsule[
     # MuJoCo quat (w,x,y,z) = (0.955336, 0, -0.29552, 0)
     quat_y= -0.295520,
     quat_w=0.955336,
-    friction=0.4,
-    friction_spin=0.1,
-    friction_roll=0.1,
-    conaffinity=0,
     color = Color3D(230, 153, 153),
 ]
 
@@ -483,10 +457,6 @@ comptime HeadGeom = Capsule[
     # MuJoCo quat (w,x,y,z) = (0.90687, 0, 0.42141, 0) → our (0, 0.42141, 0, 0.90687)
     quat_y=0.421410,
     quat_w=0.906870,
-    friction=0.4,
-    friction_spin=0.1,
-    friction_roll=0.1,
-    conaffinity=0,
     color = Color3D(204, 153, 102),
 ]
 
@@ -500,6 +470,31 @@ comptime HalfCheetahGeoms = Geoms[
     FThighGeom,
     FShinGeom,
     FFootGeom,
+]
+
+
+# =============================================================================
+# HalfCheetahDefaults — MuJoCo-style model defaults
+# =============================================================================
+# Geom defaults match half_cheetah.xml: friction=0.4, conaffinity=0 for body
+# geoms (ground plane overrides conaffinity=1 explicitly).
+# Solver params: solref/solimp for contacts and limits.
+
+comptime HalfCheetahDefaults = ModelDefaults[
+    geom_friction=0.4,
+    geom_friction_spin=0.1,
+    geom_friction_roll=0.1,
+    geom_conaffinity=0,
+    geom_solref_0=0.02,
+    geom_solref_1=1.0,
+    geom_solimp_0=0.0,
+    geom_solimp_1=0.8,
+    geom_solimp_2=0.01,
+    joint_solref_limit_0=0.02,
+    joint_solref_limit_1=1.0,
+    joint_solimp_limit_0=0.0,
+    joint_solimp_limit_1=0.8,
+    joint_solimp_limit_2=0.03,
 ]
 
 
@@ -535,20 +530,7 @@ struct HalfCheetahParams[DTYPE: DType = DType.float64]:
     ] = 0.01  # Physics timestep (100 Hz, matching MuJoCo)
     comptime FRAME_SKIP: Int = 5  # Number of physics steps per env step (matching MuJoCo)
     comptime GRAVITY_Z: Scalar[Self.DTYPE] = -9.81
-    comptime FRICTION: Scalar[Self.DTYPE] = 0.9
     comptime MAX_CONTACTS: Int = 20
-
-    # Solref/solimp (from half_cheetah.xml)
-    comptime SOLREF_CONTACT_0: Scalar[Self.DTYPE] = 0.02  # timeconst
-    comptime SOLREF_CONTACT_1: Scalar[Self.DTYPE] = 1.0  # dampratio
-    comptime SOLIMP_CONTACT_0: Scalar[Self.DTYPE] = 0.0  # dmin
-    comptime SOLIMP_CONTACT_1: Scalar[Self.DTYPE] = 0.8  # dmax
-    comptime SOLIMP_CONTACT_2: Scalar[Self.DTYPE] = 0.01  # width
-    comptime SOLREF_LIMIT_0: Scalar[Self.DTYPE] = 0.02
-    comptime SOLREF_LIMIT_1: Scalar[Self.DTYPE] = 1.0
-    comptime SOLIMP_LIMIT_0: Scalar[Self.DTYPE] = 0.0
-    comptime SOLIMP_LIMIT_1: Scalar[Self.DTYPE] = 0.8
-    comptime SOLIMP_LIMIT_2: Scalar[Self.DTYPE] = 0.03
 
     # Reward
     comptime FORWARD_REWARD_WEIGHT: Scalar[Self.DTYPE] = 1.0

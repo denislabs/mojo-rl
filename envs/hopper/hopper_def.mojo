@@ -14,7 +14,7 @@ model definition. Replaces the former constants.mojo.
 
 from physics3d.model.body_spec import CapsuleBody
 from physics3d.model.joint_spec import HingeJoint, SlideJoint
-from physics3d.model.model_def import Bodies, Joints, Geoms, Actuators, ModelDef
+from physics3d.model.model_def import Bodies, Joints, Geoms, Actuators, ModelDef, ModelDefaults
 from physics3d.model.actuator_spec import MotorActuator
 from physics3d.model.geom_spec import Plane, Capsule
 from render3d import Color3D
@@ -200,47 +200,31 @@ comptime HopperFootJ = HingeJoint[
 # Geom Definitions (unified collision geometry)
 # =============================================================================
 
-# Geom 0: Ground plane (MuJoCo floor: condim=3, no explicit friction → default 1.0)
+# Geom 0: Ground plane (overrides: friction=1.0, conaffinity=1, condim=3)
 comptime HopperGroundGeom = Plane[
-    z=0.0, friction=1.0, conaffinity=1, size_x=20.0, size_y=20.0
+    z=0.0, friction=1.0, conaffinity=1, condim=3, size_x=20.0, size_y=20.0
 ]
 
-# Geom 1: Torso capsule (body 1) — at body origin, no local transform
-# MuJoCo: friction="0.9", condim=1 (from default geom class)
+# Geom 1: Torso capsule (body 1) — friction/condim from HopperDefaults
 comptime HopperTorsoGeom = Capsule[
     body_idx=1, radius=0.05, half_length=0.2,
-    friction=0.9,
-    friction_spin=0.005,
-    friction_roll=0.0001,
-    condim=1,
     color = Color3D(60, 120, 200),
 ]
 
 # Geom 2: Thigh capsule (body 2) — MuJoCo geom_pos=(0, 0, -0.225)
-# MuJoCo: friction="0.9", condim=1
 comptime HopperThighGeom = Capsule[
     body_idx=2, radius=0.05, half_length=0.225,
     pos_z= -0.225,
-    friction=0.9,
-    friction_spin=0.005,
-    friction_roll=0.0001,
-    condim=1,
     color = Color3D(80, 200, 80),
 ]
 
 # Geom 3: Leg capsule (body 3) — at body origin
-# MuJoCo: friction="0.9", condim=1
 comptime HopperLegGeom = Capsule[
     body_idx=3, radius=0.04, half_length=0.25,
-    friction=0.9,
-    friction_spin=0.005,
-    friction_roll=0.0001,
-    condim=1,
     color = Color3D(220, 140, 60),
 ]
 
-# Geom 4: Foot capsule (body 4) — MuJoCo geom_pos=(-0.065, 0, 0.1), 90deg Y rotation
-# MuJoCo: friction="2.0", condim=1
+# Geom 4: Foot capsule (body 4) — friction=2.0 overrides default 0.9
 comptime HopperFootGeom = Capsule[
     body_idx=4,
     radius=0.06,
@@ -250,9 +234,6 @@ comptime HopperFootGeom = Capsule[
     quat_y= -0.707107,
     quat_w=0.707107,
     friction=2.0,
-    friction_spin=0.005,
-    friction_roll=0.0001,
-    condim=1,
     color = Color3D(220, 80, 80),
 ]
 
@@ -295,6 +276,30 @@ comptime HopperActuators = Actuators[
 ]
 
 
+# =============================================================================
+# HopperDefaults — MuJoCo-style model defaults
+# =============================================================================
+# Geom defaults match hopper.xml: friction=0.9, condim=1 for body geoms.
+# Ground plane and foot override friction explicitly.
+
+comptime HopperDefaults = ModelDefaults[
+    geom_friction=0.9,
+    geom_friction_spin=0.005,
+    geom_friction_roll=0.0001,
+    geom_condim=1,
+    geom_solref_0=0.02,
+    geom_solref_1=1.0,
+    geom_solimp_0=0.0,
+    geom_solimp_1=0.8,
+    geom_solimp_2=0.01,
+    joint_solref_limit_0=0.02,
+    joint_solref_limit_1=1.0,
+    joint_solimp_limit_0=0.0,
+    joint_solimp_limit_1=0.8,
+    joint_solimp_limit_2=0.03,
+]
+
+
 comptime HopperModel = ModelDef[
     HopperBodies.N + 1,  # +1 for worldbody at index 0
     HopperJoints.N,
@@ -324,20 +329,7 @@ struct HopperParams[DTYPE: DType = DType.float64]:
     comptime DT: Scalar[Self.DTYPE] = 0.002  # Physics timestep (500 Hz)
     comptime FRAME_SKIP: Int = 4  # Number of physics steps per env step
     comptime GRAVITY_Z: Scalar[Self.DTYPE] = -9.81
-    comptime FRICTION: Scalar[Self.DTYPE] = 1.0
     comptime MAX_CONTACTS: Int = 20
-
-    # Solref/solimp (from hopper.xml)
-    comptime SOLREF_CONTACT_0: Scalar[Self.DTYPE] = 0.02  # timeconst
-    comptime SOLREF_CONTACT_1: Scalar[Self.DTYPE] = 1.0  # dampratio
-    comptime SOLIMP_CONTACT_0: Scalar[Self.DTYPE] = 0.0  # dmin
-    comptime SOLIMP_CONTACT_1: Scalar[Self.DTYPE] = 0.8  # dmax
-    comptime SOLIMP_CONTACT_2: Scalar[Self.DTYPE] = 0.01  # width
-    comptime SOLREF_LIMIT_0: Scalar[Self.DTYPE] = 0.02
-    comptime SOLREF_LIMIT_1: Scalar[Self.DTYPE] = 1.0
-    comptime SOLIMP_LIMIT_0: Scalar[Self.DTYPE] = 0.0
-    comptime SOLIMP_LIMIT_1: Scalar[Self.DTYPE] = 0.8
-    comptime SOLIMP_LIMIT_2: Scalar[Self.DTYPE] = 0.03
 
     # Reward
     comptime FORWARD_REWARD_WEIGHT: Scalar[Self.DTYPE] = 1.0

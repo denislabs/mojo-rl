@@ -75,6 +75,133 @@ from gpu.host import HostBuffer
 
 
 # =============================================================================
+# Sentinel value for "use model default"
+# =============================================================================
+
+# Float64 fields that are always non-negative use -1.0 as "unset"
+comptime UNSET_F64: Float64 = -1.0
+# Int fields that are always non-negative use -1 as "unset"
+comptime UNSET_INT: Int = -1
+
+
+fn _resolve_f64[val: Float64, default: Float64]() -> Float64:
+    """Resolve a compile-time Float64: use val if set (>= 0), else default."""
+
+    @parameter
+    if val >= 0.0:
+        return val
+    else:
+        return default
+
+
+fn _resolve_int[val: Int, default: Int]() -> Int:
+    """Resolve a compile-time Int: use val if set (>= 0), else default."""
+
+    @parameter
+    if val >= 0:
+        return val
+    else:
+        return default
+
+
+# =============================================================================
+# ModelDefaults — MuJoCo-style <default> block
+# =============================================================================
+
+
+trait ModelDefaultsLike(TrivialRegisterPassable):
+    """Trait for compile-time model defaults (MuJoCo-style <default> block).
+
+    Allows different specializations of ModelDefaults to be passed as
+    type parameters to setup_model functions.
+    """
+
+    comptime GEOM_FRICTION: Float64
+    comptime GEOM_FRICTION_SPIN: Float64
+    comptime GEOM_FRICTION_ROLL: Float64
+    comptime GEOM_CONDIM: Int
+    comptime GEOM_CONTYPE: Int
+    comptime GEOM_CONAFFINITY: Int
+    comptime GEOM_SOLREF_0: Float64
+    comptime GEOM_SOLREF_1: Float64
+    comptime GEOM_SOLIMP_0: Float64
+    comptime GEOM_SOLIMP_1: Float64
+    comptime GEOM_SOLIMP_2: Float64
+    comptime JOINT_ARMATURE: Float64
+    comptime JOINT_DAMPING: Float64
+    comptime JOINT_STIFFNESS: Float64
+    comptime JOINT_FRICTIONLOSS: Float64
+    comptime JOINT_SOLREF_LIMIT_0: Float64
+    comptime JOINT_SOLREF_LIMIT_1: Float64
+    comptime JOINT_SOLIMP_LIMIT_0: Float64
+    comptime JOINT_SOLIMP_LIMIT_1: Float64
+    comptime JOINT_SOLIMP_LIMIT_2: Float64
+    comptime IMPRATIO: Float64
+
+
+@fieldwise_init
+struct ModelDefaults[
+    # Geom defaults (MuJoCo <default><geom .../>)
+    geom_friction: Float64 = 0.5,
+    geom_friction_spin: Float64 = 0.005,
+    geom_friction_roll: Float64 = 0.0001,
+    geom_condim: Int = 3,
+    geom_contype: Int = 1,
+    geom_conaffinity: Int = 1,
+    geom_solref_0: Float64 = 0.02,
+    geom_solref_1: Float64 = 1.0,
+    geom_solimp_0: Float64 = 0.0,
+    geom_solimp_1: Float64 = 0.8,
+    geom_solimp_2: Float64 = 0.01,
+    # Joint defaults (MuJoCo <default><joint .../>)
+    joint_armature: Float64 = 0.1,
+    joint_damping: Float64 = 0.0,
+    joint_stiffness: Float64 = 0.0,
+    joint_frictionloss: Float64 = 0.0,
+    joint_solref_limit_0: Float64 = 0.02,
+    joint_solref_limit_1: Float64 = 1.0,
+    joint_solimp_limit_0: Float64 = 0.0,
+    joint_solimp_limit_1: Float64 = 0.8,
+    joint_solimp_limit_2: Float64 = 0.03,
+    # Motor defaults (MuJoCo <default><motor .../>)
+    motor_ctrl_min: Float64 = -1.0,
+    motor_ctrl_max: Float64 = 1.0,
+    # Model-level (MuJoCo <option>)
+    impratio: Float64 = 1.0,
+](ModelDefaultsLike):
+    """MuJoCo-style model defaults block.
+
+    Components that don't specify a value (sentinel = -1.0/-1) inherit
+    from these defaults. Resolution happens at Geoms/Joints.setup_model time.
+
+    Default values match MuJoCo's built-in defaults for geom/joint elements.
+    """
+
+    # Explicit trait member mapping (Mojo struct params don't auto-satisfy traits)
+    comptime GEOM_FRICTION: Float64 = Self.geom_friction
+    comptime GEOM_FRICTION_SPIN: Float64 = Self.geom_friction_spin
+    comptime GEOM_FRICTION_ROLL: Float64 = Self.geom_friction_roll
+    comptime GEOM_CONDIM: Int = Self.geom_condim
+    comptime GEOM_CONTYPE: Int = Self.geom_contype
+    comptime GEOM_CONAFFINITY: Int = Self.geom_conaffinity
+    comptime GEOM_SOLREF_0: Float64 = Self.geom_solref_0
+    comptime GEOM_SOLREF_1: Float64 = Self.geom_solref_1
+    comptime GEOM_SOLIMP_0: Float64 = Self.geom_solimp_0
+    comptime GEOM_SOLIMP_1: Float64 = Self.geom_solimp_1
+    comptime GEOM_SOLIMP_2: Float64 = Self.geom_solimp_2
+    comptime JOINT_ARMATURE: Float64 = Self.joint_armature
+    comptime JOINT_DAMPING: Float64 = Self.joint_damping
+    comptime JOINT_STIFFNESS: Float64 = Self.joint_stiffness
+    comptime JOINT_FRICTIONLOSS: Float64 = Self.joint_frictionloss
+    comptime JOINT_SOLREF_LIMIT_0: Float64 = Self.joint_solref_limit_0
+    comptime JOINT_SOLREF_LIMIT_1: Float64 = Self.joint_solref_limit_1
+    comptime JOINT_SOLIMP_LIMIT_0: Float64 = Self.joint_solimp_limit_0
+    comptime JOINT_SOLIMP_LIMIT_1: Float64 = Self.joint_solimp_limit_1
+    comptime JOINT_SOLIMP_LIMIT_2: Float64 = Self.joint_solimp_limit_2
+    comptime IMPRATIO: Float64 = Self.impratio
+
+
+# =============================================================================
 # Bodies — variadic body list
 # =============================================================================
 
@@ -794,6 +921,7 @@ struct Joints[*J: JointSpec]:
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
+        Defaults: ModelDefaultsLike = ModelDefaults[],
     ](
         mut model: Model[
             DTYPE,
@@ -809,13 +937,23 @@ struct Joints[*J: JointSpec]:
     ):
         """Populate model joints from compile-time JointSpec list.
 
-        Iterates over all joint specs and calls add_hinge_joint or
-        add_slide_joint with correct qpos/qvel offsets.
+        Resolves sentinel values (-1.0) from ModelDefaults.
+        Also populates per-joint solref/solimp limit arrays.
         """
 
         @parameter
         for i in range(Self.N):
             comptime J = Self.joint_types[i]
+
+            # Resolve dynamics fields from defaults
+            comptime arm = _resolve_f64[J.ARMATURE, Defaults.JOINT_ARMATURE]()
+            comptime damp = _resolve_f64[J.DAMPING, Defaults.JOINT_DAMPING]()
+            comptime stiff = _resolve_f64[
+                J.STIFFNESS, Defaults.JOINT_STIFFNESS
+            ]()
+            comptime frloss = _resolve_f64[
+                J.FRICTIONLOSS, Defaults.JOINT_FRICTIONLOSS
+            ]()
 
             @parameter
             if J.JNT_TYPE == JNT_HINGE:
@@ -834,11 +972,11 @@ struct Joints[*J: JointSpec]:
                     tau_limit=Scalar[DTYPE](J.TAU_LIMIT),
                     range_min=Scalar[DTYPE](J.RANGE_MIN),
                     range_max=Scalar[DTYPE](J.RANGE_MAX),
-                    armature=Scalar[DTYPE](J.ARMATURE),
-                    damping=Scalar[DTYPE](J.DAMPING),
-                    stiffness=Scalar[DTYPE](J.STIFFNESS),
+                    armature=Scalar[DTYPE](arm),
+                    damping=Scalar[DTYPE](damp),
+                    stiffness=Scalar[DTYPE](stiff),
                     springref=Scalar[DTYPE](J.SPRINGREF),
-                    frictionloss=Scalar[DTYPE](J.FRICTIONLOSS),
+                    frictionloss=Scalar[DTYPE](frloss),
                 )
             elif J.JNT_TYPE == JNT_SLIDE:
                 _ = model.add_slide_joint(
@@ -856,12 +994,39 @@ struct Joints[*J: JointSpec]:
                     force_limit=Scalar[DTYPE](J.TAU_LIMIT),
                     range_min=Scalar[DTYPE](J.RANGE_MIN),
                     range_max=Scalar[DTYPE](J.RANGE_MAX),
-                    armature=Scalar[DTYPE](J.ARMATURE),
-                    damping=Scalar[DTYPE](J.DAMPING),
-                    stiffness=Scalar[DTYPE](J.STIFFNESS),
+                    armature=Scalar[DTYPE](arm),
+                    damping=Scalar[DTYPE](damp),
+                    stiffness=Scalar[DTYPE](stiff),
                     springref=Scalar[DTYPE](J.SPRINGREF),
-                    frictionloss=Scalar[DTYPE](J.FRICTIONLOSS),
+                    frictionloss=Scalar[DTYPE](frloss),
                 )
+
+            # Per-joint solref/solimp for limits (resolved from defaults)
+            model.joint_solref_limit[i * 2 + 0] = Scalar[DTYPE](
+                _resolve_f64[
+                    J.SOLREF_LIMIT_0, Defaults.JOINT_SOLREF_LIMIT_0
+                ]()
+            )
+            model.joint_solref_limit[i * 2 + 1] = Scalar[DTYPE](
+                _resolve_f64[
+                    J.SOLREF_LIMIT_1, Defaults.JOINT_SOLREF_LIMIT_1
+                ]()
+            )
+            model.joint_solimp_limit[i * 3 + 0] = Scalar[DTYPE](
+                _resolve_f64[
+                    J.SOLIMP_LIMIT_0, Defaults.JOINT_SOLIMP_LIMIT_0
+                ]()
+            )
+            model.joint_solimp_limit[i * 3 + 1] = Scalar[DTYPE](
+                _resolve_f64[
+                    J.SOLIMP_LIMIT_1, Defaults.JOINT_SOLIMP_LIMIT_1
+                ]()
+            )
+            model.joint_solimp_limit[i * 3 + 2] = Scalar[DTYPE](
+                _resolve_f64[
+                    J.SOLIMP_LIMIT_2, Defaults.JOINT_SOLIMP_LIMIT_2
+                ]()
+            )
 
 
 # =============================================================================
@@ -996,6 +1161,7 @@ struct Geoms[*G: GeomSpec]:
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
+        Defaults: ModelDefaultsLike = ModelDefaults[],
     ](
         mut model: Model[
             DTYPE,
@@ -1011,9 +1177,10 @@ struct Geoms[*G: GeomSpec]:
     ):
         """Populate model geom arrays from compile-time GeomSpec list.
 
+        Resolves sentinel values (-1.0/-1) from ModelDefaults.
         Sets geom type, body index, position, orientation, size, collision
-        filtering, and friction for each geom. For plane geoms, also writes
-        to ground_z and friction.
+        filtering, friction, and per-geom solref/solimp. For plane geoms,
+        also writes to ground_z and friction.
         """
 
         @parameter
@@ -1035,12 +1202,43 @@ struct Geoms[*G: GeomSpec]:
             model.geom_half_x[i] = Scalar[DTYPE](G_item.HALF_X)
             model.geom_half_y[i] = Scalar[DTYPE](G_item.HALF_Y)
             model.geom_half_z[i] = Scalar[DTYPE](G_item.HALF_Z)
-            model.geom_friction[i] = Scalar[DTYPE](G_item.FRICTION)
-            model.geom_condim[i] = G_item.CONDIM
-            model.geom_friction_spin[i] = Scalar[DTYPE](G_item.FRICTION_SPIN)
-            model.geom_friction_roll[i] = Scalar[DTYPE](G_item.FRICTION_ROLL)
-            model.geom_contype[i] = G_item.CONTYPE
-            model.geom_conaffinity[i] = G_item.CONAFFINITY
+
+            # Resolve physics fields via defaults
+            model.geom_friction[i] = Scalar[DTYPE](
+                _resolve_f64[G_item.FRICTION, Defaults.GEOM_FRICTION]()
+            )
+            model.geom_condim[i] = _resolve_int[
+                G_item.CONDIM, Defaults.GEOM_CONDIM
+            ]()
+            model.geom_friction_spin[i] = Scalar[DTYPE](
+                _resolve_f64[G_item.FRICTION_SPIN, Defaults.GEOM_FRICTION_SPIN]()
+            )
+            model.geom_friction_roll[i] = Scalar[DTYPE](
+                _resolve_f64[G_item.FRICTION_ROLL, Defaults.GEOM_FRICTION_ROLL]()
+            )
+            model.geom_contype[i] = _resolve_int[
+                G_item.CONTYPE, Defaults.GEOM_CONTYPE
+            ]()
+            model.geom_conaffinity[i] = _resolve_int[
+                G_item.CONAFFINITY, Defaults.GEOM_CONAFFINITY
+            ]()
+
+            # Per-geom solref/solimp (resolved from defaults)
+            model.geom_solref[i * 2 + 0] = Scalar[DTYPE](
+                _resolve_f64[G_item.SOLREF_0, Defaults.GEOM_SOLREF_0]()
+            )
+            model.geom_solref[i * 2 + 1] = Scalar[DTYPE](
+                _resolve_f64[G_item.SOLREF_1, Defaults.GEOM_SOLREF_1]()
+            )
+            model.geom_solimp[i * 3 + 0] = Scalar[DTYPE](
+                _resolve_f64[G_item.SOLIMP_0, Defaults.GEOM_SOLIMP_0]()
+            )
+            model.geom_solimp[i * 3 + 1] = Scalar[DTYPE](
+                _resolve_f64[G_item.SOLIMP_1, Defaults.GEOM_SOLIMP_1]()
+            )
+            model.geom_solimp[i * 3 + 2] = Scalar[DTYPE](
+                _resolve_f64[G_item.SOLIMP_2, Defaults.GEOM_SOLIMP_2]()
+            )
 
             # Compute bounding sphere radius
             @parameter
@@ -1067,7 +1265,9 @@ struct Geoms[*G: GeomSpec]:
             @parameter
             if G_item.GEOM_TYPE == GEOM_PLANE:
                 model.ground_z = Scalar[DTYPE](G_item.POS_Z)
-                model.friction = Scalar[DTYPE](G_item.FRICTION)
+                model.friction = Scalar[DTYPE](
+                    _resolve_f64[G_item.FRICTION, Defaults.GEOM_FRICTION]()
+                )
 
 
 # =============================================================================
@@ -1414,46 +1614,44 @@ struct ModelDef[
     @staticmethod
     fn setup_solver_params[
         DTYPE: DType,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
         MAX_CONTACTS: Int,
+        NGEOM: Int = 0,
+        MAX_EQUALITY: Int = 0,
+        CONE_TYPE: Int = ConeType.ELLIPTIC,
+        Defaults: ModelDefaultsLike = ModelDefaults[],
     ](
         mut model: Model[
             DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
             MAX_CONTACTS,
-            Self.NGEOM,
-            Self.MAX_EQUALITY,
-            Self.CONE_TYPE,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
         ],
-        solref_contact_0: Scalar[DTYPE] = 0.02,
-        solref_contact_1: Scalar[DTYPE] = 1.0,
-        solimp_contact_0: Scalar[DTYPE] = 0.0,
-        solimp_contact_1: Scalar[DTYPE] = 0.8,
-        solimp_contact_2: Scalar[DTYPE] = 0.01,
-        solref_limit_0: Scalar[DTYPE] = 0.02,
-        solref_limit_1: Scalar[DTYPE] = 1.0,
-        solimp_limit_0: Scalar[DTYPE] = 0.0,
-        solimp_limit_1: Scalar[DTYPE] = 0.8,
-        solimp_limit_2: Scalar[DTYPE] = 0.01,
-        impratio: Scalar[DTYPE] = 1.0,
     ):
-        """Set all solver impedance params on a Model in one call.
+        """Set all solver impedance params on a Model from ModelDefaults.
 
-        Sets solref/solimp for contacts and limits, plus impratio.
+        Sets model-level solref/solimp for contacts and limits, plus impratio.
+        Per-geom and per-joint overrides are set in Geoms/Joints.setup_model.
         """
-        model.solref_contact[0] = solref_contact_0
-        model.solref_contact[1] = solref_contact_1
-        model.solimp_contact[0] = solimp_contact_0
-        model.solimp_contact[1] = solimp_contact_1
-        model.solimp_contact[2] = solimp_contact_2
-        model.solref_limit[0] = solref_limit_0
-        model.solref_limit[1] = solref_limit_1
-        model.solimp_limit[0] = solimp_limit_0
-        model.solimp_limit[1] = solimp_limit_1
-        model.solimp_limit[2] = solimp_limit_2
-        model.impratio = impratio
+        model.solref_contact[0] = Scalar[DTYPE](Defaults.GEOM_SOLREF_0)
+        model.solref_contact[1] = Scalar[DTYPE](Defaults.GEOM_SOLREF_1)
+        model.solimp_contact[0] = Scalar[DTYPE](Defaults.GEOM_SOLIMP_0)
+        model.solimp_contact[1] = Scalar[DTYPE](Defaults.GEOM_SOLIMP_1)
+        model.solimp_contact[2] = Scalar[DTYPE](Defaults.GEOM_SOLIMP_2)
+        model.solref_limit[0] = Scalar[DTYPE](Defaults.JOINT_SOLREF_LIMIT_0)
+        model.solref_limit[1] = Scalar[DTYPE](Defaults.JOINT_SOLREF_LIMIT_1)
+        model.solimp_limit[0] = Scalar[DTYPE](Defaults.JOINT_SOLIMP_LIMIT_0)
+        model.solimp_limit[1] = Scalar[DTYPE](Defaults.JOINT_SOLIMP_LIMIT_1)
+        model.solimp_limit[2] = Scalar[DTYPE](Defaults.JOINT_SOLIMP_LIMIT_2)
+        model.impratio = Scalar[DTYPE](Defaults.IMPRATIO)
 
     @staticmethod
     fn finalize[

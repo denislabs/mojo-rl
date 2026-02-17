@@ -104,6 +104,7 @@ from envs.half_cheetah.half_cheetah_def import (
     HalfCheetahJoints,
     HalfCheetahGeoms,
     HalfCheetahParams,
+    HalfCheetahDefaults,
 )
 
 
@@ -380,21 +381,13 @@ fn main() raises:
         gravity_z=Scalar[DTYPE](-9.81),
         timestep=Scalar[DTYPE](0.01),
     )
-    HalfCheetahBodies.setup_model(model_cpu)
-    HalfCheetahJoints.setup_model(model_cpu)
-    HalfCheetahGeoms.setup_model(model_cpu)
+    HalfCheetahModel.setup_solver_params[Defaults=HalfCheetahDefaults](model_cpu)
 
-    comptime P = HalfCheetahParams[DTYPE]
-    model_cpu.solref_contact[0] = P.SOLREF_CONTACT_0
-    model_cpu.solref_contact[1] = P.SOLREF_CONTACT_1
-    model_cpu.solimp_contact[0] = P.SOLIMP_CONTACT_0
-    model_cpu.solimp_contact[1] = P.SOLIMP_CONTACT_1
-    model_cpu.solimp_contact[2] = P.SOLIMP_CONTACT_2
-    model_cpu.solref_limit[0] = P.SOLREF_LIMIT_0
-    model_cpu.solref_limit[1] = P.SOLREF_LIMIT_1
-    model_cpu.solimp_limit[0] = P.SOLIMP_LIMIT_0
-    model_cpu.solimp_limit[1] = P.SOLIMP_LIMIT_1
-    model_cpu.solimp_limit[2] = P.SOLIMP_LIMIT_2
+    HalfCheetahBodies.setup_model(model_cpu)
+
+    HalfCheetahJoints.setup_model[Defaults=HalfCheetahDefaults](model_cpu)
+
+    HalfCheetahGeoms.setup_model[Defaults=HalfCheetahDefaults](model_cpu)
 
     # Compute body_invweight0 at reference pose
     var data_ref = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()

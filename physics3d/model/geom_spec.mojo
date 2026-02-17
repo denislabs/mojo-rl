@@ -10,25 +10,33 @@ Four geom shapes:
   - Capsule: Capsule geom (body_idx=0 for static, >=1 for body-attached)
   - Box: Box geom (body_idx=0 for static, >=1 for body-attached)
 
+Fields that use sentinel value -1.0 (Float64) or -1 (Int) mean "use
+ModelDefaults". Resolution happens at Geoms.setup_model time.
+
 Usage:
     from physics3d.model.geom_spec import GeomSpec, Plane, Capsule
 
-    # Ground plane
-    comptime MyPlane = Plane[z=0.0, friction=0.4]
+    # Ground plane (friction from defaults)
+    comptime MyPlane = Plane[z=0.0]
 
-    # Static capsule in world frame
-    comptime StaticCap = Capsule[radius=0.25, half_length=0.5]
-
-    # Capsule attached to body 1
-    comptime BodyCap = Capsule[body_idx=1, radius=0.046, half_length=0.09]
+    # Capsule with explicit friction override
+    comptime MyCap = Capsule[body_idx=1, radius=0.046, friction=0.4]
 """
 
 from ..constants import GEOM_PLANE, GEOM_SPHERE, GEOM_CAPSULE, GEOM_BOX
 from render3d import Color3D
 
+# Sentinel values for "use model default" (re-exported for convenience)
+comptime _UNSET_F64: Float64 = -1.0
+comptime _UNSET_INT: Int = -1
+
 
 trait GeomSpec:
-    """Compile-time specification for a geom (static or body-attached)."""
+    """Compile-time specification for a geom (static or body-attached).
+
+    Fields with value -1.0 (Float64) or -1 (Int) are "unset" and will
+    be resolved from ModelDefaults during Geoms.setup_model().
+    """
 
     comptime GEOM_TYPE: Int  # GEOM_PLANE, GEOM_BOX, GEOM_SPHERE, GEOM_CAPSULE
     # Body index (0 for worldbody/static geoms, >= 1 for body-attached)
@@ -51,14 +59,20 @@ trait GeomSpec:
     comptime HALF_X: Float64  # box half-extents
     comptime HALF_Y: Float64
     comptime HALF_Z: Float64
-    # Physics
+    # Physics (-1.0/-1 = use ModelDefaults)
     comptime FRICTION: Float64
     comptime CONDIM: Int  # Contact dimensionality: 1, 3, 4, or 6
     comptime FRICTION_SPIN: Float64  # Torsional friction coefficient
     comptime FRICTION_ROLL: Float64  # Rolling friction coefficient
-    # Collision filtering
+    # Collision filtering (-1 = use ModelDefaults)
     comptime CONTYPE: Int
     comptime CONAFFINITY: Int
+    # Per-geom solref/solimp (-1.0 = use model-level defaults)
+    comptime SOLREF_0: Float64  # timeconst
+    comptime SOLREF_1: Float64  # dampratio
+    comptime SOLIMP_0: Float64  # dmin
+    comptime SOLIMP_1: Float64  # dmax
+    comptime SOLIMP_2: Float64  # width
     # Visual
     comptime COLOR: Color3D
 
@@ -71,12 +85,17 @@ trait GeomSpec:
 @fieldwise_init
 struct Plane[
     z: Float64 = 0.0,
-    friction: Float64 = 0.5,
-    condim: Int = 3,
-    friction_spin: Float64 = 0.005,
-    friction_roll: Float64 = 0.0001,
-    contype: Int = 1,
-    conaffinity: Int = 1,
+    friction: Float64 = _UNSET_F64,
+    condim: Int = _UNSET_INT,
+    friction_spin: Float64 = _UNSET_F64,
+    friction_roll: Float64 = _UNSET_F64,
+    contype: Int = _UNSET_INT,
+    conaffinity: Int = _UNSET_INT,
+    solref_0: Float64 = _UNSET_F64,
+    solref_1: Float64 = _UNSET_F64,
+    solimp_0: Float64 = _UNSET_F64,
+    solimp_1: Float64 = _UNSET_F64,
+    solimp_2: Float64 = _UNSET_F64,
     size_x: Float64 = 40.0,
     size_y: Float64 = 40.0,
 ](GeomSpec):
@@ -109,6 +128,11 @@ struct Plane[
     comptime FRICTION_ROLL: Float64 = Self.friction_roll
     comptime CONTYPE: Int = Self.contype
     comptime CONAFFINITY: Int = Self.conaffinity
+    comptime SOLREF_0: Float64 = Self.solref_0
+    comptime SOLREF_1: Float64 = Self.solref_1
+    comptime SOLIMP_0: Float64 = Self.solimp_0
+    comptime SOLIMP_1: Float64 = Self.solimp_1
+    comptime SOLIMP_2: Float64 = Self.solimp_2
     comptime COLOR: Color3D = Color3D(128, 128, 128)
 
 
@@ -124,12 +148,17 @@ struct Sphere[
     pos_x: Float64 = 0.0,
     pos_y: Float64 = 0.0,
     pos_z: Float64 = 0.0,
-    friction: Float64 = 0.5,
-    condim: Int = 3,
-    friction_spin: Float64 = 0.005,
-    friction_roll: Float64 = 0.0001,
-    contype: Int = 1,
-    conaffinity: Int = 1,
+    friction: Float64 = _UNSET_F64,
+    condim: Int = _UNSET_INT,
+    friction_spin: Float64 = _UNSET_F64,
+    friction_roll: Float64 = _UNSET_F64,
+    contype: Int = _UNSET_INT,
+    conaffinity: Int = _UNSET_INT,
+    solref_0: Float64 = _UNSET_F64,
+    solref_1: Float64 = _UNSET_F64,
+    solimp_0: Float64 = _UNSET_F64,
+    solimp_1: Float64 = _UNSET_F64,
+    solimp_2: Float64 = _UNSET_F64,
     color: Color3D = Color3D(100, 100, 200),
 ](GeomSpec):
     """Sphere geom (static or body-attached).
@@ -162,6 +191,11 @@ struct Sphere[
     comptime FRICTION_ROLL: Float64 = Self.friction_roll
     comptime CONTYPE: Int = Self.contype
     comptime CONAFFINITY: Int = Self.conaffinity
+    comptime SOLREF_0: Float64 = Self.solref_0
+    comptime SOLREF_1: Float64 = Self.solref_1
+    comptime SOLIMP_0: Float64 = Self.solimp_0
+    comptime SOLIMP_1: Float64 = Self.solimp_1
+    comptime SOLIMP_2: Float64 = Self.solimp_2
     comptime COLOR: Color3D = Self.color
 
 
@@ -182,12 +216,17 @@ struct Capsule[
     quat_y: Float64 = 0.0,
     quat_z: Float64 = 0.0,
     quat_w: Float64 = 1.0,
-    friction: Float64 = 0.5,
-    condim: Int = 3,
-    friction_spin: Float64 = 0.005,
-    friction_roll: Float64 = 0.0001,
-    contype: Int = 1,
-    conaffinity: Int = 1,
+    friction: Float64 = _UNSET_F64,
+    condim: Int = _UNSET_INT,
+    friction_spin: Float64 = _UNSET_F64,
+    friction_roll: Float64 = _UNSET_F64,
+    contype: Int = _UNSET_INT,
+    conaffinity: Int = _UNSET_INT,
+    solref_0: Float64 = _UNSET_F64,
+    solref_1: Float64 = _UNSET_F64,
+    solimp_0: Float64 = _UNSET_F64,
+    solimp_1: Float64 = _UNSET_F64,
+    solimp_2: Float64 = _UNSET_F64,
     color: Color3D = Color3D(204, 153, 102),
 ](GeomSpec):
     """Capsule geom (static or body-attached).
@@ -222,6 +261,11 @@ struct Capsule[
     comptime FRICTION_ROLL: Float64 = Self.friction_roll
     comptime CONTYPE: Int = Self.contype
     comptime CONAFFINITY: Int = Self.conaffinity
+    comptime SOLREF_0: Float64 = Self.solref_0
+    comptime SOLREF_1: Float64 = Self.solref_1
+    comptime SOLIMP_0: Float64 = Self.solimp_0
+    comptime SOLIMP_1: Float64 = Self.solimp_1
+    comptime SOLIMP_2: Float64 = Self.solimp_2
     comptime COLOR: Color3D = Self.color
 
 
@@ -243,12 +287,17 @@ struct Box[
     quat_y: Float64 = 0.0,
     quat_z: Float64 = 0.0,
     quat_w: Float64 = 1.0,
-    friction: Float64 = 0.5,
-    condim: Int = 3,
-    friction_spin: Float64 = 0.005,
-    friction_roll: Float64 = 0.0001,
-    contype: Int = 1,
-    conaffinity: Int = 1,
+    friction: Float64 = _UNSET_F64,
+    condim: Int = _UNSET_INT,
+    friction_spin: Float64 = _UNSET_F64,
+    friction_roll: Float64 = _UNSET_F64,
+    contype: Int = _UNSET_INT,
+    conaffinity: Int = _UNSET_INT,
+    solref_0: Float64 = _UNSET_F64,
+    solref_1: Float64 = _UNSET_F64,
+    solimp_0: Float64 = _UNSET_F64,
+    solimp_1: Float64 = _UNSET_F64,
+    solimp_2: Float64 = _UNSET_F64,
     color: Color3D = Color3D(100, 200, 100),
 ](GeomSpec):
     """Box geom (static or body-attached).
@@ -281,6 +330,11 @@ struct Box[
     comptime FRICTION_ROLL: Float64 = Self.friction_roll
     comptime CONTYPE: Int = Self.contype
     comptime CONAFFINITY: Int = Self.conaffinity
+    comptime SOLREF_0: Float64 = Self.solref_0
+    comptime SOLREF_1: Float64 = Self.solref_1
+    comptime SOLIMP_0: Float64 = Self.solimp_0
+    comptime SOLIMP_1: Float64 = Self.solimp_1
+    comptime SOLIMP_2: Float64 = Self.solimp_2
     comptime COLOR: Color3D = Self.color
 
 

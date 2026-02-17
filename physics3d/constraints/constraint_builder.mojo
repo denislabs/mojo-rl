@@ -1071,22 +1071,12 @@ fn build_constraints[
     # =========================================================================
     var limits_start = row_idx
 
-    # Read solref/solimp for limits
-    var lr_tc = model.solref_limit[0]
-    var lr_dr = model.solref_limit[1]
-    var li_dmin = model.solimp_limit[0]
-    var li_dmax = model.solimp_limit[1]
-    var li_width = model.solimp_limit[2]
-    if li_width < Scalar[DTYPE](1e-6):
-        li_width = Scalar[DTYPE](1e-6)
-    if li_dmax < Scalar[DTYPE](1e-4):
-        li_dmax = Scalar[DTYPE](1e-4)
-    # Acceleration-level spring/damper for limits
-    # MuJoCo formula: K = 1/(tc² * dmax²), B = 2*dr/(tc * dmax)
-    var l_K_spring = Scalar[DTYPE](1.0) / (
-        lr_tc * lr_tc * li_dmax * li_dmax
-    )
-    var l_B_damp = Scalar[DTYPE](2.0) * lr_dr / (lr_tc * li_dmax)
+    # Read model-level solref/solimp for limits (fallback for per-joint)
+    var lr_tc_default = model.solref_limit[0]
+    var lr_dr_default = model.solref_limit[1]
+    var li_dmin_default = model.solimp_limit[0]
+    var li_dmax_default = model.solimp_limit[1]
+    var li_width_default = model.solimp_limit[2]
 
     for j in range(model.num_joints):
         var joint = model.joints[j]
@@ -1098,6 +1088,34 @@ fn build_constraints[
         var rmax = joint.range_max
         if rmin < Scalar[DTYPE](-1e9) or rmax > Scalar[DTYPE](1e9):
             continue
+
+        # Per-joint solref/solimp: use if set (>0), else model-level default
+        var lr_tc = model.joint_solref_limit[j * 2]
+        var lr_dr = model.joint_solref_limit[j * 2 + 1]
+        if lr_tc <= Scalar[DTYPE](0):
+            lr_tc = lr_tc_default
+        if lr_dr <= Scalar[DTYPE](0):
+            lr_dr = lr_dr_default
+        var li_dmin = model.joint_solimp_limit[j * 3]
+        var li_dmax = model.joint_solimp_limit[j * 3 + 1]
+        var li_width = model.joint_solimp_limit[j * 3 + 2]
+        # solimp dmin can legitimately be 0, so check if ALL three are 0
+        # (unset) to fall back to defaults
+        if li_dmax <= Scalar[DTYPE](0) and li_width <= Scalar[DTYPE](0):
+            li_dmin = li_dmin_default
+            li_dmax = li_dmax_default
+            li_width = li_width_default
+        if li_width < Scalar[DTYPE](1e-6):
+            li_width = Scalar[DTYPE](1e-6)
+        if li_dmax < Scalar[DTYPE](1e-4):
+            li_dmax = Scalar[DTYPE](1e-4)
+
+        # Acceleration-level spring/damper for limits
+        # MuJoCo formula: K = 1/(tc² * dmax²), B = 2*dr/(tc * dmax)
+        var l_K_spring = Scalar[DTYPE](1.0) / (
+            lr_tc * lr_tc * li_dmax * li_dmax
+        )
+        var l_B_damp = Scalar[DTYPE](2.0) * lr_dr / (lr_tc * li_dmax)
 
         # Compute diagApprox for limit: MuJoCo uses dof_invweight0[dof_adr]
         var diag_lim: Scalar[DTYPE] = 0

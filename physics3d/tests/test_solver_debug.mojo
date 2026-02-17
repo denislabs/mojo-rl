@@ -27,6 +27,7 @@ from envs.half_cheetah.half_cheetah_def import (
     JOINT_ROOTX,
     JOINT_ROOTZ,
     JOINT_ROOTY,
+    HalfCheetahDefaults,
 )
 
 from physics3d.types import Model, Data, _max_one

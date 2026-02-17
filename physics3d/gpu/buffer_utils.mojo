@@ -71,6 +71,11 @@ from .constants import (
     JOINT_IDX_STIFFNESS,
     JOINT_IDX_SPRINGREF,
     JOINT_IDX_FRICTIONLOSS,
+    JOINT_IDX_SOLREF_LIMIT_0,
+    JOINT_IDX_SOLREF_LIMIT_1,
+    JOINT_IDX_SOLIMP_LIMIT_0,
+    JOINT_IDX_SOLIMP_LIMIT_1,
+    JOINT_IDX_SOLIMP_LIMIT_2,
     MODEL_META_IDX_NBODY,
     MODEL_META_IDX_NJOINT,
     MODEL_META_IDX_GRAVITY_X,
@@ -111,6 +116,11 @@ from .constants import (
     GEOM_IDX_FRICTION_SPIN,
     GEOM_IDX_FRICTION_ROLL,
     GEOM_IDX_RBOUND,
+    GEOM_IDX_SOLREF_0,
+    GEOM_IDX_SOLREF_1,
+    GEOM_IDX_SOLIMP_0,
+    GEOM_IDX_SOLIMP_1,
+    GEOM_IDX_SOLIMP_2,
     MODEL_META_IDX_IMPRATIO,
     MODEL_META_IDX_NEQUALITY,
     model_geom_offset,
@@ -281,6 +291,21 @@ fn copy_model_to_buffer[
         buffer[offset + JOINT_IDX_STIFFNESS] = joint.stiffness
         buffer[offset + JOINT_IDX_SPRINGREF] = joint.springref
         buffer[offset + JOINT_IDX_FRICTIONLOSS] = joint.frictionloss
+        buffer[offset + JOINT_IDX_SOLREF_LIMIT_0] = model.joint_solref_limit[
+            j * 2 + 0
+        ]
+        buffer[offset + JOINT_IDX_SOLREF_LIMIT_1] = model.joint_solref_limit[
+            j * 2 + 1
+        ]
+        buffer[offset + JOINT_IDX_SOLIMP_LIMIT_0] = model.joint_solimp_limit[
+            j * 3 + 0
+        ]
+        buffer[offset + JOINT_IDX_SOLIMP_LIMIT_1] = model.joint_solimp_limit[
+            j * 3 + 1
+        ]
+        buffer[offset + JOINT_IDX_SOLIMP_LIMIT_2] = model.joint_solimp_limit[
+            j * 3 + 2
+        ]
 
     # Copy metadata
     var meta_offset = model_metadata_offset[NBODY, NJOINT]()
@@ -411,6 +436,11 @@ fn copy_geoms_to_buffer[
         buffer[offset + GEOM_IDX_FRICTION_SPIN] = model.geom_friction_spin[g]
         buffer[offset + GEOM_IDX_FRICTION_ROLL] = model.geom_friction_roll[g]
         buffer[offset + GEOM_IDX_RBOUND] = model.geom_rbound[g]
+        buffer[offset + GEOM_IDX_SOLREF_0] = model.geom_solref[g * 2 + 0]
+        buffer[offset + GEOM_IDX_SOLREF_1] = model.geom_solref[g * 2 + 1]
+        buffer[offset + GEOM_IDX_SOLIMP_0] = model.geom_solimp[g * 3 + 0]
+        buffer[offset + GEOM_IDX_SOLIMP_1] = model.geom_solimp[g * 3 + 1]
+        buffer[offset + GEOM_IDX_SOLIMP_2] = model.geom_solimp[g * 3 + 2]
 
 
 fn copy_equality_to_buffer[

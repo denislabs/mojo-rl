@@ -33,7 +33,7 @@ from layout import Layout, LayoutTensor
 
 # Import GC physics engine
 from physics3d.types import Model, Data
-from physics3d.integrator import DefaultIntegrator
+from physics3d.integrator import RK4Integrator
 from physics3d.solver import NewtonSolver
 from physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
@@ -66,6 +66,7 @@ from .hopper_def import (
     HopperGeoms,
     HopperActuators,
     HopperParams,
+    HopperDefaults,
     BODY_TORSO,
     JOINT_ROOTX,
     JOINT_ROOTZ,
@@ -140,7 +141,9 @@ struct Hopper[
     ]()
 
     # Pre-allocated workspace sizes for step_kernel_gpu
-    comptime STEP_WS_SHARED: Int = model_size_with_invweight[NBODY, NJOINT, NV, NGEOM]()
+    comptime STEP_WS_SHARED: Int = model_size_with_invweight[
+        NBODY, NJOINT, NV, NGEOM
+    ]()
     comptime STEP_WS_PER_ENV: Int = integrator_workspace_size[
         NV, NBODY
     ]() + NV * NV + NewtonSolver.solver_workspace_size[NV, MAX_CONTACTS]()
@@ -197,21 +200,16 @@ struct Hopper[
         # Initialize GC model with solver parameters
         comptime P = HopperParams[Self.DTYPE]
         self.model = Model[
-            Self.DTYPE, Self.NQ, Self.NV, Self.NUM_BODIES, Self.NUM_JOINTS,
-            Self.MAX_CONTACTS, Self.NGEOM,
+            Self.DTYPE,
+            Self.NQ,
+            Self.NV,
+            Self.NUM_BODIES,
+            Self.NUM_JOINTS,
+            Self.MAX_CONTACTS,
+            Self.NGEOM,
         ](gravity_z=Scalar[Self.DTYPE](GRAVITY_Z), timestep=timestep)
-        HopperModel.setup_solver_params(
+        HopperModel.setup_solver_params[Defaults=HopperDefaults](
             self.model,
-            solref_contact_0=P.SOLREF_CONTACT_0,
-            solref_contact_1=P.SOLREF_CONTACT_1,
-            solimp_contact_0=P.SOLIMP_CONTACT_0,
-            solimp_contact_1=P.SOLIMP_CONTACT_1,
-            solimp_contact_2=P.SOLIMP_CONTACT_2,
-            solref_limit_0=P.SOLREF_LIMIT_0,
-            solref_limit_1=P.SOLREF_LIMIT_1,
-            solimp_limit_0=P.SOLIMP_LIMIT_0,
-            solimp_limit_1=P.SOLIMP_LIMIT_1,
-            solimp_limit_2=P.SOLIMP_LIMIT_2,
         )
 
         # Initialize data
@@ -226,8 +224,8 @@ struct Hopper[
 
         # Configure bodies, joints, and geoms from compile-time model definition
         HopperBodies.setup_model(self.model)
-        HopperJoints.setup_model(self.model)
-        HopperGeoms.setup_model(self.model)
+        HopperJoints.setup_model[Defaults=HopperDefaults](self.model)
+        HopperGeoms.setup_model[Defaults=HopperDefaults](self.model)
 
         # Reset qpos to initial values, run FK + compute body inverse weights
         HopperJoints.reset_data(self.data)
@@ -373,7 +371,7 @@ struct Hopper[
 
         # Physics step (with frame skip)
         for _ in range(self.frame_skip):
-            DefaultIntegrator.step(self.model, self.data)
+            RK4Integrator[SOLVER=NewtonSolver].step(self.model, self.data)
             # Enforce joint limits after each physics step
             HopperJoints.enforce_limits(self.data)
 
@@ -685,12 +683,17 @@ struct Hopper[
 
         # Apply actions to qfrc via actuators (MuJoCo-style)
         HopperActuators.apply_actions_kernel_gpu[
-            gpu_dtype, BATCH_SIZE, STATE_SIZE_VAL, ACTION_DIM_VAL, Self.NQ, Self.NV
+            gpu_dtype,
+            BATCH_SIZE,
+            STATE_SIZE_VAL,
+            ACTION_DIM_VAL,
+            Self.NQ,
+            Self.NV,
         ](ctx, states_buf, actions_buf)
 
         # Run FRAME_SKIP physics sub-steps
         for _ in range(P.FRAME_SKIP):
-            DefaultIntegrator.step_gpu[
+            RK4Integrator[SOLVER=NewtonSolver].step_gpu[
                 gpu_dtype,
                 Self.NQ,
                 Self.NV,
@@ -915,25 +918,20 @@ struct Hopper[
         comptime P = HopperParams[gpu_dtype]
 
         var model = Model[
-            gpu_dtype, Hopper.NQ, Hopper.NV, Hopper.NUM_BODIES,
-            Hopper.NUM_JOINTS, Hopper.MAX_CONTACTS, Hopper.NGEOM,
+            gpu_dtype,
+            Hopper.NQ,
+            Hopper.NV,
+            Hopper.NUM_BODIES,
+            Hopper.NUM_JOINTS,
+            Hopper.MAX_CONTACTS,
+            Hopper.NGEOM,
         ](gravity_z=P.GRAVITY_Z, timestep=P.DT)
-        HopperModel.setup_solver_params(
+        HopperModel.setup_solver_params[Defaults=HopperDefaults](
             model,
-            solref_contact_0=P.SOLREF_CONTACT_0,
-            solref_contact_1=P.SOLREF_CONTACT_1,
-            solimp_contact_0=P.SOLIMP_CONTACT_0,
-            solimp_contact_1=P.SOLIMP_CONTACT_1,
-            solimp_contact_2=P.SOLIMP_CONTACT_2,
-            solref_limit_0=P.SOLREF_LIMIT_0,
-            solref_limit_1=P.SOLREF_LIMIT_1,
-            solimp_limit_0=P.SOLIMP_LIMIT_0,
-            solimp_limit_1=P.SOLIMP_LIMIT_1,
-            solimp_limit_2=P.SOLIMP_LIMIT_2,
         )
         HopperBodies.setup_model(model)
-        HopperJoints.setup_model(model)
-        HopperGeoms.setup_model(model)
+        HopperJoints.setup_model[Defaults=HopperDefaults](model)
+        HopperGeoms.setup_model[Defaults=HopperDefaults](model)
 
         # Compute body_invweight0 and dof_invweight0 at reference pose
         var data_ref = Data[
@@ -946,7 +944,9 @@ struct Hopper[
         ]()
         HopperModel.finalize(model, data_ref)
 
-        var host_buf = HopperModel.create_gpu_model_buffer[gpu_dtype, Self.MAX_CONTACTS](ctx, model)
+        var host_buf = HopperModel.create_gpu_model_buffer[
+            gpu_dtype, Self.MAX_CONTACTS
+        ](ctx, model)
 
         var curr = model_curriculum_offset[
             Hopper.NUM_BODIES, Hopper.NUM_JOINTS
