@@ -149,6 +149,7 @@ ImplicitFast+PGS has no MuJoCo comparison because MuJoCo only allows Newton solv
 | `test_full_step_contact_cpu_vs_gpu.mojo` | Full step with contacts (float32) | PASS | 6 (static, actions, deep pen, moving, 5-step) | qpos: 3e-2, qvel: 5e-1 (actual static ~1e-5, deep ~4e-3) |
 | `test_implicit_fast_newton_cpu_vs_gpu.mojo` | ImplicitFast+Newton full step (float32) | PASS | 7 (3 no-contact + 4 contact, deep pen skipped) | qpos: 3e-2, qvel: 5e-1 (actual err=0 for most, ~0 for contact) |
 | `test_implicit_fast_pgs_cpu_vs_gpu.mojo` | ImplicitFast+PGS full step (float32) | PASS | 8 (3 no-contact + 5 contact) | qpos: 5e-2, qvel: 1.0 (actual max qvel err 0.33 for deep pen) |
+| `test_implicit_cpu_vs_gpu.mojo` | Implicit(full)+PGS full step (float32) | PASS | 8 (zero vel, nonzero vel, actions, contact) | qpos: 5e-2, qvel: 1.0 (nonzero vel err ~2.8e-4, contact ~0.01) |
 
 ### Analytical / Standalone Tests
 
