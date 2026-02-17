@@ -4,8 +4,8 @@ Compares qpos/qvel after running N physics steps on CPU vs GPU for the
 HalfCheetah model. Uses high rootz to avoid ground contacts so we test the
 dynamics pipeline only (FK → M → bias → qacc → implicit damping → integrate).
 
-The CPU uses EulerIntegrator[PrimalNewtonSolver].step() (float32).
-The GPU uses EulerIntegrator[PrimalNewtonSolver].step_gpu() (float32).
+The CPU uses EulerIntegrator[NewtonSolver].step() (float32).
+The GPU uses EulerIntegrator[NewtonSolver].step_gpu() (float32).
 
 Run with:
     cd mojo-rl && pixi run -e apple mojo run physics3d/tests/test_full_step_cpu_vs_gpu.mojo
@@ -18,7 +18,7 @@ from layout import Layout, LayoutTensor
 
 from physics3d.types import Model, Data, _max_one, ConeType
 from physics3d.integrator.euler_integrator import EulerIntegrator
-from physics3d.solver import PrimalNewtonSolver
+from physics3d.solver import NewtonSolver
 from physics3d.kinematics.forward_kinematics import forward_kinematics
 from physics3d.dynamics.mass_matrix import compute_body_invweight0
 from physics3d.gpu.constants import (
@@ -61,7 +61,7 @@ comptime BATCH = 1
 
 comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS]()
 comptime MODEL_SIZE = model_size[NBODY, NJOINT]()
-comptime WS_SIZE = integrator_workspace_size[NV, NBODY]() + NV * NV + PrimalNewtonSolver.solver_workspace_size[NV, MAX_CONTACTS]()
+comptime WS_SIZE = integrator_workspace_size[NV, NBODY]() + NV * NV + NewtonSolver.solver_workspace_size[NV, MAX_CONTACTS]()
 
 # Tolerances (float32 accumulates errors through full pipeline + integration)
 comptime QPOS_ABS_TOL: Float64 = 1e-3
@@ -140,7 +140,7 @@ fn compare_step(
         HalfCheetahActuators.apply_actions[
             DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS
         ](data_cpu, action_list)
-        EulerIntegrator[SOLVER=PrimalNewtonSolver].step[NGEOM=NGEOM](
+        EulerIntegrator[SOLVER=NewtonSolver].step[NGEOM=NGEOM](
             model_cpu, data_cpu
         )
 
@@ -221,7 +221,7 @@ fn compare_step(
             ctx.enqueue_copy(workspace_buf, ws_host.unsafe_ptr())
             ctx.synchronize()
 
-        EulerIntegrator[SOLVER=PrimalNewtonSolver].step_gpu[
+        EulerIntegrator[SOLVER=NewtonSolver].step_gpu[
             DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, BATCH,
             NGEOM=0, CONE_TYPE=ConeType.ELLIPTIC,
         ](
@@ -343,7 +343,7 @@ fn main() raises:
     print("Full Step (no contacts): CPU vs GPU")
     print("=" * 60)
     print("Model: HalfCheetah (NQ=9, NV=9)")
-    print("Integrator: Euler + PrimalNewtonSolver")
+    print("Integrator: Euler + NewtonSolver")
     print("Cone: elliptic")
     print("Precision: float32")
     print("Tolerances: qpos abs=", QPOS_ABS_TOL, " rel=", QPOS_REL_TOL)

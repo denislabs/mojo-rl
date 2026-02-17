@@ -138,13 +138,13 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
 
     Since qDeriv is non-symmetric, uses LU factorization instead of LDL.
 
-    Parametrized by SOLVER type (PGSSolver, CGSolver, or NewtonSolver).
+    Parametrized by SOLVER type (PGSSolver, NewtonSolver, or CGSolver).
 
     Usage:
         # PGS:
         alias PGSImplicit = ImplicitIntegrator[PGSSolver]
 
-        # Newton (most accurate):
+        # Newton (most accurate, matches MuJoCo):
         alias NewtonImplicit = ImplicitIntegrator[NewtonSolver]
     """
 

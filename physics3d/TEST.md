@@ -26,10 +26,10 @@ Isolate each stage first.
 
 | Integrator     | Solver             | Cone     | MuJoCo vs CPU | CPU vs GPU | Used by          |
 |----------------|--------------------|----------|:-------------:|:----------:|------------------|
-| Euler          | PrimalNewton       | Elliptic | DONE          | DONE       | (tests only)     |
-| Euler          | PrimalCG           | Elliptic | DONE          | —          | (tests only)     |
+| Euler          | Newton             | Elliptic | DONE          | DONE       | (tests only)     |
+| Euler          | CG                 | Elliptic | DONE          | —          | (tests only)     |
 | Euler          | PGS (dual)         | Elliptic | DONE          | —          | (tests only)     |
-| ImplicitFast   | PrimalNewton       | Elliptic | DONE          | DONE       | HalfCheetah      |
+| ImplicitFast   | Newton             | Elliptic | DONE          | DONE       | HalfCheetah      |
 | ImplicitFast   | PGS                | Elliptic | N/A           | DONE       | Hopper (Default) |
 
 MuJoCo comparison uses `opt.integrator=0` (Euler) for both Euler and ImplicitFast tests.
@@ -38,7 +38,7 @@ MuJoCo 3.3.6's ImplicitFast (`opt.integrator=2`) includes Coriolis velocity deri
 3.4.1+ explicitly skips — using Euler as reference avoids this version-dependent behavior.
 ImplicitFast+PGS has no MuJoCo comparison because MuJoCo only allows Newton solver with implicitfast.
 
-### Stage 1: Dynamics (no contacts) — Euler + PrimalNewton + Elliptic
+### Stage 1: Dynamics (no contacts) — Euler + Newton + Elliptic
 
 | Component              | MuJoCo vs CPU | CPU vs GPU | Notes                                    |
 |------------------------|:-------------:|:----------:|------------------------------------------|
@@ -56,7 +56,7 @@ ImplicitFast+PGS has no MuJoCo comparison because MuJoCo only allows Newton solv
 | Constraint Jacobians   | DONE          | DONE       | 4 configs, J_n rows match ~6e-8          |
 | Constraint Parameters  | DONE          | DONE       | 4 configs, K/bias/inv_K_imp match. GPU now uses diagApprox from body_invweight0 |
 
-### Stage 3: Solver output — Euler + PrimalNewton + Elliptic
+### Stage 3: Solver output — Euler + Newton + Elliptic
 
 | Component              | MuJoCo vs CPU | CPU vs GPU | Notes                                    |
 |------------------------|:-------------:|:----------:|------------------------------------------|
@@ -67,8 +67,8 @@ ImplicitFast+PGS has no MuJoCo comparison because MuJoCo only allows Newton solv
 
 | Component                        | Integrator   | Solver       | MuJoCo vs CPU | CPU vs GPU | Notes |
 |----------------------------------|--------------|--------------|:-------------:|:----------:|-------|
-| Full Step no contact             | ImplicitFast | PrimalNewton | DONE          | DONE       | MuJoCo: 5 configs, err~5.6e-6. GPU: 3 configs, exact. |
-| Full Step with contacts          | ImplicitFast | PrimalNewton | DONE          | DONE       | MuJoCo: 4 configs, err~7.2e-6. GPU: 4 configs (deep pen skipped). |
+| Full Step no contact             | ImplicitFast | Newton       | DONE          | DONE       | MuJoCo: 5 configs, err~5.6e-6. GPU: 3 configs, exact. |
+| Full Step with contacts          | ImplicitFast | Newton       | DONE          | DONE       | MuJoCo: 4 configs, err~7.2e-6. GPU: 4 configs (deep pen skipped). |
 | Full Step no contact             | ImplicitFast | PGS          | N/A           | DONE       | 3 configs, exact match (err=0) |
 | Full Step with contacts          | ImplicitFast | PGS          | N/A           | DONE       | 5 configs, max qvel err 0.33 (deep pen) |
 
@@ -100,8 +100,8 @@ ImplicitFast+PGS has no MuJoCo comparison because MuJoCo only allows Newton solv
 | `test_contacts_vs_mujoco.mojo` | Contact detection (pos, normal, dist) | PASS | 6 (high, default, low, very low, bent, tilted) | pos: 1e-3, dist: 1e-3, normal dot>0.99 |
 | `test_jacobian_vs_mujoco.mojo` | Constraint Jacobians (J rows) | PASS | 4 (low static, low moving, very low, bent) | abs: 1e-4, rel: 1e-3 |
 | `test_constraint_params_vs_mujoco.mojo` | Constraint params (imp, aref, D, R) | PASS | 4 (low static, low moving, very low, bent) | imp: 1e-3, aref: 1e-2, D/R: 1e-2 |
-| `test_solver_forces_vs_mujoco.mojo` | PrimalNewton solver forces (qacc, qfrc_constraint, efc_force) | PASS (4/4) | 4 (low static, low moving, very low, bent) | qacc/qfrc: 5e-2. Cost matches to 12 digits. See analysis below. |
-| `test_primal_cg_vs_mujoco.mojo` | PrimalCG solver forces vs MuJoCo CG | PASS (4/4) | 4 (low static, low moving, very low, bent) | qacc/qfrc: 5e-2. Cost matches to ~12 digits. |
+| `test_solver_forces_vs_mujoco.mojo` | Newton solver forces (qacc, qfrc_constraint, efc_force) | PASS (4/4) | 4 (low static, low moving, very low, bent) | qacc/qfrc: 5e-2. Cost matches to 12 digits. See analysis below. |
+| `test_cg_vs_mujoco.mojo` | CG solver forces vs MuJoCo CG | PASS (4/4) | 4 (low static, low moving, very low, bent) | qacc/qfrc: 5e-2. Cost matches to ~12 digits. |
 | `test_pgs_vs_mujoco.mojo` | PGS (dual) solver forces vs MuJoCo PGS | PASS (4/4) | 4 (low static, low moving, very low, bent) | qacc/qfrc: 1e-1. Forces match within ~3.6e-3. |
 | `test_full_step_contact_vs_mujoco.mojo` | Full step with contacts | PASS | 2 (ground contact, with actions) | qpos: 2e-2, qvel: 2e-1 (actual err ~1e-5) |
 | `test_implicit_fast_step_vs_mujoco.mojo` | ImplicitFast full step no contacts (ref: MuJoCo Euler) | PASS | 5 (free fall, actions, moving, 10-step) | qpos: 1e-6, qvel: 1e-4 (actual err ~5.6e-6) |
@@ -119,7 +119,7 @@ ImplicitFast+PGS has no MuJoCo comparison because MuJoCo only allows Newton solv
 | `test_contacts_cpu_vs_gpu.mojo` | Contact detection pos, normal, dist (float32) | PASS | 6 (high, default, low, very low, bent, tilted) | pos: 1e-3, dist: 1e-3, normal_dot>0.999 |
 | `test_jacobian_cpu_vs_gpu.mojo` | Normal Jacobian J_n rows (float32) | PASS | 4 (low static, low moving, very low, bent) | abs: 1e-3 (actual err ~6e-8) |
 | `test_full_step_contact_cpu_vs_gpu.mojo` | Full step with contacts (float32) | PASS | 6 (static, actions, deep pen, moving, 5-step) | qpos: 3e-2, qvel: 5e-1 (actual static ~1e-5, deep ~4e-3) |
-| `test_implicit_fast_newton_cpu_vs_gpu.mojo` | ImplicitFast+PrimalNewton full step (float32) | PASS | 7 (3 no-contact + 4 contact, deep pen skipped) | qpos: 3e-2, qvel: 5e-1 (actual err=0 for most, ~0 for contact) |
+| `test_implicit_fast_newton_cpu_vs_gpu.mojo` | ImplicitFast+Newton full step (float32) | PASS | 7 (3 no-contact + 4 contact, deep pen skipped) | qpos: 3e-2, qvel: 5e-1 (actual err=0 for most, ~0 for contact) |
 | `test_implicit_fast_pgs_cpu_vs_gpu.mojo` | ImplicitFast+PGS full step (float32) | PASS | 8 (3 no-contact + 5 contact) | qpos: 5e-2, qvel: 1.0 (actual max qvel err 0.33 for deep pen) |
 
 ### Analytical / Standalone Tests
@@ -266,14 +266,14 @@ Wrong J means forces are applied in wrong directions.
 
 **Pipeline replicated:** Full euler_integrator pipeline including passive forces (damping,
 stiffness, frictionloss), M with armature only (no dt*damping — solver uses M+arm, damping
-is implicit in velocity integration), qfrc_smooth, then PrimalNewtonSolver.solve() with
+is implicit in velocity integration), qfrc_smooth, then NewtonSolver.solve() with
 CONE_TYPE=ELLIPTIC.
 
 **Tolerance:** abs: 5e-2, rel: 2e-1
 
 **Result:** 4/4 PASS. Cost matches MuJoCo to 12 significant digits. qacc errors ~1e-5.
 
-**Solver:** PrimalNewtonSolver — MuJoCo-style primal Newton in qacc space with 3-zone
+**Solver:** NewtonSolver — MuJoCo-style primal Newton in qacc space with 3-zone
 cone logic (TOP/BOTTOM/CONE), cone-aware Hessian, and Newton root-finding linesearch.
 Handles all constraints (normals + friction cone + limits) in a unified optimization.
 No separate PGS friction phase needed.
@@ -291,7 +291,7 @@ No separate PGS friction phase needed.
    Root cause: MuJoCo's `con->mu = friction[0]` (per-direction mu for impratio=1),
    NOT `friction[0]*sqrt(group_size)` as previously assumed. The U-space mapping
    `U[0] = jar_n * con->mu` uses per-direction mu, so zone boundaries don't have a group_size factor.
-   Files: `primal_common.mojo` (12 locations), `primal_newton_solver.mojo` (1 location)
+   Files: `primal_common.mojo` (12 locations), `newton_solver.mojo` (1 location)
 
 **Current results:**
 
@@ -318,7 +318,7 @@ matching the CPU implementation. Validated by `test_constraint_params_cpu_vs_gpu
 3. **`mass_matrix.mojo`**: `compute_body_invweight0` now also computes `dof_invweight0`
 4. **`constraint_builder.mojo`**: `_compute_aref` returns `(bias, inv_K_imp, imp)` where
    `inv_K_imp = 1/(K + R)` with `R = (1-imp)/imp * diagApprox`
-5. **`primal_newton_solver.mojo`**: Simplified — uses `primal_D(inv_K_imp, K)` instead of
+5. **`newton_solver.mojo`**: Simplified — uses `primal_D(inv_K_imp, K)` instead of
    manual body_invweight0 lookup
 
 ### GPU files that need changes

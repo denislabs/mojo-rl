@@ -47,7 +47,7 @@ from .integrator import (
 )
 
 # Solvers
-from .solver import PGSSolver, CGSolver, NewtonSolver
+from .solver import PGSSolver, NewtonSolver, CGSolver
 
 # Collision
 from .collision import (

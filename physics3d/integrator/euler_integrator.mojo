@@ -113,18 +113,18 @@ from ..gpu.constants import (
 struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
     """GC integrator with configurable constraint-based contact solving.
 
-    Parametrized by SOLVER type (PGSSolver, CGSolver, or NewtonSolver).
+    Parametrized by SOLVER type (PGSSolver, NewtonSolver, or CGSolver).
     Uses the specified solver for contact constraints instead of penalty springs.
 
     Usage:
-        # PGS (default, backward-compatible):
+        # PGS (default):
         alias PGSIntegrator = EulerIntegrator[PGSSolver]
+
+        # Newton (most accurate, matches MuJoCo):
+        alias NewtonIntegrator = EulerIntegrator[NewtonSolver]
 
         # Conjugate Gradient:
         alias CGIntegrator = EulerIntegrator[CGSolver]
-
-        # Newton:
-        alias NewtonIntegrator = EulerIntegrator[NewtonSolver]
     """
 
     # =========================================================================

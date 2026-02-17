@@ -38,7 +38,7 @@ from layout import Layout, LayoutTensor
 # Import GC physics engine
 from physics3d.types import Model, Data
 from physics3d.integrator import ImplicitFastIntegrator
-from physics3d.solver import PrimalNewtonSolver
+from physics3d.solver import NewtonSolver
 from physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     forward_kinematics_gpu,
@@ -155,7 +155,7 @@ struct HalfCheetah[
     comptime STEP_WS_SHARED: Int = model_size_with_invweight[NBODY, NJOINT, NV, NGEOM]()
     comptime STEP_WS_PER_ENV: Int = integrator_workspace_size[
         NV, NBODY
-    ]() + NV * NV + PrimalNewtonSolver.solver_workspace_size[
+    ]() + NV * NV + NewtonSolver.solver_workspace_size[
         NV, MAX_CONTACTS
     ]() + implicit_extra_workspace_size[
         NV, NBODY
@@ -386,7 +386,7 @@ struct HalfCheetah[
 
         # Physics step (with frame skip)
         for _ in range(self.frame_skip):
-            ImplicitFastIntegrator[SOLVER=PrimalNewtonSolver].step[
+            ImplicitFastIntegrator[SOLVER=NewtonSolver].step[
                 NGEOM = Self.NGEOM,
                 CONE_TYPE = Self.CONE_TYPE,
             ](self.model, self.data, verbose=verbose)
@@ -586,7 +586,7 @@ struct HalfCheetah[
         comptime P = HalfCheetahParams[gpu_dtype]
         comptime WS_SIZE = integrator_workspace_size[
             Self.NV, Self.NUM_BODIES
-        ]() + Self.NV * Self.NV + PrimalNewtonSolver.solver_workspace_size[
+        ]() + Self.NV * Self.NV + NewtonSolver.solver_workspace_size[
             Self.NV, Self.MAX_CONTACTS
         ]() + implicit_extra_workspace_size[
             Self.NV, Self.NUM_BODIES
@@ -634,7 +634,7 @@ struct HalfCheetah[
 
         # Run FRAME_SKIP physics sub-steps with joint limit enforcement
         for _ in range(P.FRAME_SKIP):
-            ImplicitFastIntegrator[SOLVER=PrimalNewtonSolver].step_gpu[
+            ImplicitFastIntegrator[SOLVER=NewtonSolver].step_gpu[
                 gpu_dtype,
                 Self.NQ,
                 Self.NV,

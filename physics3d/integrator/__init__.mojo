@@ -5,7 +5,7 @@ orchestrating collision detection, constraint solving, and position updates.
 
 EulerIntegrator[SOLVER]:
   - MuJoCo Euler integration: M_hat = M + arm + dt*diag(damping)
-  - Three solver choices: PGSSolver, CGSolver, NewtonSolver
+  - Solver choices: PGSSolver, NewtonSolver, CGSolver
 
 ImplicitFastIntegrator[SOLVER]:
   - MuJoCo implicit-fast integration: M_hat = M + arm - dt*qDeriv

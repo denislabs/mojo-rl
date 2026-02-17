@@ -1,11 +1,11 @@
 """Test Primal CG Solver Forces against MuJoCo reference.
 
-Compares our PrimalCGSolver output (qacc, qfrc_constraint, per-row forces)
+Compares our CGSolver output (qacc, qfrc_constraint, per-row forces)
 against MuJoCo's CG solver after mj_step() for the HalfCheetah model at
 configurations with ground contacts.
 
 MuJoCo's CG solver is primal (shares mj_solPrimal with Newton), so our
-PrimalCGSolver should produce matching results.
+CGSolver should produce matching results.
 
 What we compare (5 levels):
   1. qfrc_constraint (NV): J^T * lambda vs mj_data.qfrc_constraint
@@ -45,7 +45,7 @@ from physics3d.constraints.constraint_data import (
     CNSTR_FRICTION_T2,
     CNSTR_LIMIT,
 )
-from physics3d.solver import PrimalCGSolver
+from physics3d.solver import CGSolver
 from physics3d.solver.primal_common import (
     compute_total_cost_with_D,
     primal_D,
@@ -382,8 +382,8 @@ fn compare_solver_forces(
     for i in range(NV):
         qacc0[i] = qacc[i]
 
-    # 12. Solve constraints with PrimalCGSolver (modifies qacc in-place)
-    PrimalCGSolver.solve[CONE_TYPE=ConeType.ELLIPTIC](
+    # 12. Solve constraints with CGSolver (modifies qacc in-place)
+    CGSolver.solve[CONE_TYPE=ConeType.ELLIPTIC](
         model, data, M_inv, constraints, qacc, dt
     )
 
@@ -658,7 +658,7 @@ fn main() raises:
     print("=" * 60)
     print("Model: HalfCheetah (NV=", NV, ")")
     print("MuJoCo: cone=elliptic, solver=CG")
-    print("Our solver: PrimalCGSolver (cone=ELLIPTIC)")
+    print("Our solver: CGSolver (cone=ELLIPTIC)")
     print(
         "Tolerances: qacc abs=", QACC_ABS_TOL,
         " qfrc abs=", QFRC_ABS_TOL,

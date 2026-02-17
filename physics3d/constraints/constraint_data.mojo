@@ -97,7 +97,7 @@ struct ConstraintData[DTYPE: DType, MAX_ROWS: Int, NV: Int]:
     J and MinvJT are stored row-major: row r spans [r*NV .. (r+1)*NV).
 
     M_hat and qfrc_smooth are filled by the integrator before calling solve().
-    They are used by primal solvers (PrimalNewtonSolver, PrimalCGSolver) which
+    They are used by primal solvers (NewtonSolver, CGSolver) which
     operate in qacc space rather than dual (force) space.
     """
 

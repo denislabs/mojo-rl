@@ -31,7 +31,7 @@ comptime CAPSULE_RADIUS: Float64 = 0.046
 
 from physics3d.integrator.euler_integrator import EulerIntegrator
 from physics3d.solver.pgs_solver import PGSSolver
-from physics3d.solver.newton_solver import NewtonSolver
+from physics3d.solver import NewtonSolver
 from physics3d.kinematics.forward_kinematics import forward_kinematics
 
 

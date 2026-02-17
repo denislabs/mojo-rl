@@ -62,7 +62,7 @@ from physics3d.constraints.constraint_builder import (
     build_constraints,
     writeback_forces,
 )
-from physics3d.solver.newton_solver import NewtonSolver
+from physics3d.solver import NewtonSolver
 from physics3d.solver.pgs_solver import PGSSolver
 
 

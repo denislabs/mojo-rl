@@ -16,7 +16,7 @@ from collections import InlineArray
 
 from physics3d.types import Model, Data, _max_one, ConeType
 from physics3d.integrator.implicit_fast_integrator import ImplicitFastIntegrator
-from physics3d.solver import PrimalNewtonSolver
+from physics3d.solver import NewtonSolver
 from physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,

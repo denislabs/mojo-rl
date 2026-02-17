@@ -114,13 +114,13 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
     Uses M_hat = M + armature - dt * qDeriv where qDeriv = d(forces)/d(qvel).
     Currently qDeriv only includes passive damping; extensible for actuators.
 
-    Parametrized by SOLVER type (PGSSolver, CGSolver, or NewtonSolver).
+    Parametrized by SOLVER type (PGSSolver, NewtonSolver, or CGSolver).
 
     Usage:
         # PGS (default):
         alias PGSImplicitFast = ImplicitFastIntegrator[PGSSolver]
 
-        # Newton (most accurate):
+        # Newton (most accurate, matches MuJoCo):
         alias NewtonImplicitFast = ImplicitFastIntegrator[NewtonSolver]
     """
 

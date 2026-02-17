@@ -23,7 +23,7 @@ from collections import InlineArray
 
 from physics3d.types import Model, Data, _max_one, ConeType
 from physics3d.integrator.implicit_fast_integrator import ImplicitFastIntegrator
-from physics3d.solver import PrimalNewtonSolver
+from physics3d.solver import NewtonSolver
 from physics3d.kinematics.forward_kinematics import forward_kinematics
 from physics3d.dynamics.mass_matrix import compute_body_invweight0
 from envs.half_cheetah.half_cheetah_def import (
@@ -72,7 +72,7 @@ fn compare_step(
     """Run num_steps physics steps in both engines, compare final qpos/qvel."""
     print("--- Test:", test_name, "(", num_steps, "steps) ---")
 
-    # === Our engine (ImplicitFast + PrimalNewton) ===
+    # === Our engine (ImplicitFast + Newton) ===
     var model = Model[
         DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, ConeType.ELLIPTIC
     ](
@@ -119,7 +119,7 @@ fn compare_step(
         HalfCheetahActuators.apply_actions[
             DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS
         ](data, action_list)
-        ImplicitFastIntegrator[SOLVER=PrimalNewtonSolver].step[NGEOM=NGEOM](
+        ImplicitFastIntegrator[SOLVER=NewtonSolver].step[NGEOM=NGEOM](
             model, data
         )
 

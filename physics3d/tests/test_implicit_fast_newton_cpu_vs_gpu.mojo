@@ -1,6 +1,6 @@
-"""Test ImplicitFast + PrimalNewton: CPU vs GPU.
+"""Test ImplicitFast + Newton: CPU vs GPU.
 
-Compares qpos/qvel after running physics steps using ImplicitFastIntegrator[PrimalNewtonSolver]
+Compares qpos/qvel after running physics steps using ImplicitFastIntegrator[NewtonSolver]
 on CPU vs GPU for the HalfCheetah model. This is the integrator combo used by HalfCheetah.
 
 Tests both no-contact (free flight) and with-contact (ground contact) configurations.
@@ -16,7 +16,7 @@ from layout import Layout, LayoutTensor
 
 from physics3d.types import Model, Data, _max_one, ConeType
 from physics3d.integrator.implicit_fast_integrator import ImplicitFastIntegrator
-from physics3d.solver import PrimalNewtonSolver
+from physics3d.solver import NewtonSolver
 from physics3d.kinematics.forward_kinematics import forward_kinematics
 from physics3d.dynamics.mass_matrix import compute_body_invweight0
 from physics3d.gpu.constants import (
@@ -59,7 +59,7 @@ comptime BATCH = 1
 
 comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS]()
 comptime MODEL_SIZE = model_size_with_invweight[NBODY, NJOINT, NV, NGEOM]()
-comptime WS_SIZE = integrator_workspace_size[NV, NBODY]() + NV * NV + PrimalNewtonSolver.solver_workspace_size[NV, MAX_CONTACTS]()
+comptime WS_SIZE = integrator_workspace_size[NV, NBODY]() + NV * NV + NewtonSolver.solver_workspace_size[NV, MAX_CONTACTS]()
 
 # Tolerances
 # No contact: ~1e-4 (same as Euler). With contacts: ~0.03 qpos, ~0.5 qvel (solver differences).
@@ -68,7 +68,7 @@ comptime QPOS_REL_TOL: Float64 = 2e-1
 comptime QVEL_ABS_TOL: Float64 = 5e-1
 comptime QVEL_REL_TOL: Float64 = 3e-1
 
-comptime Integrator = ImplicitFastIntegrator[SOLVER=PrimalNewtonSolver]
+comptime Integrator = ImplicitFastIntegrator[SOLVER=NewtonSolver]
 
 
 # =============================================================================
@@ -256,10 +256,10 @@ fn compare_step(
 
 fn main() raises:
     print("=" * 60)
-    print("ImplicitFast + PrimalNewton: CPU vs GPU")
+    print("ImplicitFast + Newton: CPU vs GPU")
     print("=" * 60)
     print("Model: HalfCheetah (NQ=9, NV=9, NGEOM=", NGEOM, ")")
-    print("Integrator: ImplicitFast + PrimalNewtonSolver (elliptic)")
+    print("Integrator: ImplicitFast + NewtonSolver (elliptic)")
     print("Precision: float32")
     print()
 

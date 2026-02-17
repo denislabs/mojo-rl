@@ -17,7 +17,7 @@ from collections import InlineArray
 
 from physics3d.types import Model, Data, _max_one, ConeType
 from physics3d.integrator.euler_integrator import EulerIntegrator
-from physics3d.solver import PrimalNewtonSolver
+from physics3d.solver import NewtonSolver
 from physics3d.solver.pgs_solver import PGSSolver
 from physics3d.dynamics.mass_matrix import compute_body_invweight0
 from physics3d.kinematics.forward_kinematics import forward_kinematics
@@ -127,7 +127,7 @@ fn compare_step(
             DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS
         ](data, action_list)
 
-        EulerIntegrator[SOLVER=PrimalNewtonSolver].step[NGEOM=NGEOM](
+        EulerIntegrator[SOLVER=NewtonSolver].step[NGEOM=NGEOM](
             model, data
         )
 
@@ -141,7 +141,7 @@ fn compare_step(
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
     # Match our elliptic cone setting
     mj_model.opt.cone = 1  # mjCONE_ELLIPTIC
-    mj_model.opt.solver = 2  # mjSOL_NEWTON to match our PrimalNewtonSolver
+    mj_model.opt.solver = 2  # mjSOL_NEWTON to match our NewtonSolver
     mj_model.opt.integrator = 0  # mjINT_EULER to match our EulerIntegrator
     var mj_data = mujoco.MjData(mj_model)
 

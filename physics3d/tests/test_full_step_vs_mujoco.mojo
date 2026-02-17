@@ -23,7 +23,7 @@ from collections import InlineArray
 
 from physics3d.types import Model, Data, _max_one, ConeType
 from physics3d.integrator.euler_integrator import EulerIntegrator
-from physics3d.solver import PrimalNewtonSolver
+from physics3d.solver import NewtonSolver
 from physics3d.kinematics.forward_kinematics import forward_kinematics
 from physics3d.dynamics.mass_matrix import compute_body_invweight0
 from envs.half_cheetah.half_cheetah_def import (
@@ -132,7 +132,7 @@ fn compare_step(
             DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS
         ](data, action_list)
 
-        EulerIntegrator[SOLVER=PrimalNewtonSolver].step[NGEOM=NGEOM](
+        EulerIntegrator[SOLVER=NewtonSolver].step[NGEOM=NGEOM](
             model, data
         )
 

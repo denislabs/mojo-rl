@@ -1,26 +1,47 @@
-"""Newton constraint solver for Generalized Coordinates engine.
+"""Newton constraint solver (MuJoCo-matching).
 
-Implements MuJoCo-style projected Newton method for contact solving:
-1. Form the Delassus matrix: A[c1,c2] = J[c1] * M^-1 * J[c2]^T
-2. Minimize 0.5*lambda^T*A*lambda + b^T*lambda subject to lambda >= 0
-3. Use Newton steps with active-set identification and line search
+Operates in qacc (acceleration) space, minimizing:
+  cost = 0.5*(qacc - qacc_smooth)^T * M * (qacc - qacc_smooth)  [Gauss term]
+       + sum_i penalty_i(J*qacc - aref)                         [constraint costs]
 
-The Newton solver has quadratic convergence rate for the active set
-and is the most accurate solver for stiff contact problems. It is
-more expensive per iteration than PGS or CG but converges in fewer steps.
+Forces are derived from qacc: force[i] = -D[i] * (J*qacc - aref)[i].
+The Hessian is H = M + J^T*D_active*J (naturally positive definite).
 
-Friction is solved with PGS iterations (same as MuJoCo's approach).
+This is fundamentally different from a dual Newton solver which builds
+the Delassus matrix A = J*M^{-1}*J^T and solves a QP over forces.
 
-Reference: MuJoCo Technical Notes, Section on Newton solver.
+The constraint_update uses MuJoCo's 3-zone cone logic for elliptic contacts:
+- Top zone (N >= 0, N >= mu*T): satisfied, no forces
+- Bottom zone (N + mu*T <= 0): full quadratic on all rows
+- Middle zone: cone boundary projection with Dm-weighted cost
+
+This eliminates the need for a separate PGS friction phase — the
+Newton optimization handles ALL constraints (normals, friction, limits,
+equality) in a unified framework.
+
+Algorithm:
+1. qacc = qacc_smooth (unconstrained acceleration)
+2. Ma = M * qacc, jar = J*qacc - aref
+3. constraint_update → force, state, cost (cone-aware)
+4. Build H = M + J^T * D_active * J, Cholesky factorize
+5. Main loop:
+   a. grad = Ma - qfrc_smooth - J^T * force
+   b. search = -chol_solve(H, grad)
+   c. Armijo linesearch → alpha
+   d. qacc += alpha * search, Ma += alpha * M*search
+   e. constraint_update → force, state, cost
+   f. Incremental Hessian update if state changed
+   g. Check convergence
+
+Reference: mujoco-main/src/engine/engine_solver.c (mj_solPrimal)
 """
 
 from math import sqrt
 from layout import LayoutTensor, Layout
 from gpu import thread_idx, block_idx, block_dim, barrier
-from ..types import Model, Data, _max_one
+from ..types import Model, Data, _max_one, ConeType
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
 from ..traits.solver import ConstraintSolver
-from ..dynamics.jacobian import compute_contact_jacobian_row
 from ..constraints.constraint_data import (
     ConstraintData,
     CNSTR_NORMAL,
@@ -30,10 +51,27 @@ from ..constraints.constraint_data import (
     CNSTR_FRICTION_ROLL1,
     CNSTR_FRICTION_ROLL2,
     CNSTR_LIMIT,
+    CNSTR_PYRAMID_EDGE,
+    CNSTR_EQUALITY_CONNECT,
+    CNSTR_EQUALITY_WELD,
 )
-from .qcqp import qcqp2, qcqp3, qcqp5, mj_qcqp2, mj_qcqp3, mj_qcqp5, cost_change
+from .primal_common import (
+    constraint_update,
+    constraint_update_with_D,
+    compute_jar,
+    compute_qfrc_constraint,
+    compute_gauss_cost,
+    primal_linesearch,
+    primal_linesearch_with_D,
+    primal_D,
+    PRIMAL_SATISFIED,
+    PRIMAL_QUADRATIC,
+    PRIMAL_CONE,
+    PRIMAL_MINVAL,
+)
+from .cholesky import chol_factor, chol_solve, chol_rank1_update
 
-# Import shared friction solver (GPU only now — CPU friction uses ConstraintData)
+# Import shared friction solver for GPU
 from .friction_solver import _solve_friction_pgs_gpu
 
 from ..gpu.constants import (
@@ -43,6 +81,8 @@ from ..gpu.constants import (
     ws_qacc_constrained_offset,
     ws_m_inv_offset,
     ws_solver_offset,
+    ws_M_offset,
+    ws_fnet_offset,
     CONTACT_SIZE,
     CONTACT_IDX_FORCE_N,
     META_IDX_NUM_CONTACTS,
@@ -64,51 +104,174 @@ from ..constraints.constraint_builder_gpu import (
     build_and_solve_equality_gpu,
 )
 
-
 # Newton solver parameters
-comptime NEWTON_ITERATIONS: Int = 100
-comptime NEWTON_TOLERANCE: Float64 = 1e-8
-comptime LINESEARCH_ITERATIONS: Int = 10
-comptime LINESEARCH_BETA: Float64 = 0.5  # Step shrink factor
-comptime LINESEARCH_ARMIJO: Float64 = 1e-4  # Armijo sufficient decrease
-# Coupled PGS iterations (normals + friction + limits together, MuJoCo-style)
-comptime COUPLED_PGS_ITERATIONS: Int = 50
-# Debug flag — set to True to print Newton QP convergence info
-comptime NEWTON_DEBUG: Bool = False
-# Minimum K for friction tangent rows — below this, direction is degenerate
-comptime FRICTION_K_MIN: Float64 = 1e-6
+comptime NEWTON_CPU_ITERATIONS: Int = 200
+comptime NEWTON_CPU_TOLERANCE: Float64 = 1e-12
+# Debug flag
+comptime NEWTON_CPU_DEBUG: Bool = False
+comptime MINVAL: Float64 = 1e-10
+
+
+@always_inline
+fn _build_hessian[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    MAX_ROWS: Int,
+    V_SIZE: Int,
+    M_SIZE: Int,
+](
+    constraints: ConstraintData[DTYPE, MAX_ROWS, NV],
+    D_vals: InlineArray[Scalar[DTYPE], _max_one[MAX_ROWS]()],
+    jar: InlineArray[Scalar[DTYPE], _max_one[MAX_ROWS]()],
+    cstate: InlineArray[Int, _max_one[MAX_ROWS]()],
+    mut H: InlineArray[Scalar[DTYPE], M_SIZE],
+):
+    """Build Hessian contributions from active constraints.
+
+    For QUADRATIC state: add D_r * J_r * J_r^T (standard per-row).
+    For CONE state: add J_group^T * H_cone * J_group (coupled dim x dim).
+
+    The cone Hessian H_cone is d^2(cost)/d(jar)^2 for the contact group:
+      H[0,0] = Dm
+      H[0,j] = -Dm * mu * jar_fj / T
+      H[j,k] = Dm * mu^2 * jar_fj*jar_fk/T^2 + Dm*mu*(N-mu*T)/T * (jar_fj*jar_fk/T^2 - delta_jk)
+      where N = jar_n, T = ||jar_f||, Dm = D_n/(1+mu^2)
+
+    Reference: mujoco-main/src/engine/engine_core_constraint.c:2530-2569
+    """
+    comptime MR = _max_one[MAX_ROWS]()
+    var num_normals = constraints.num_normals
+    var num_friction = constraints.num_friction
+    var friction_start = num_normals
+    var limits_start = num_normals + num_friction
+
+    # Track which rows are handled as part of cone groups
+    var handled = InlineArray[Bool, MR](fill=False)
+
+    # Process cone contact groups (normal + friction children together)
+    var fric_idx = 0
+    for n in range(num_normals):
+        # Find friction children
+        var group_size = 0
+        while fric_idx + group_size < num_friction:
+            if (
+                constraints.rows[
+                    friction_start + fric_idx + group_size
+                ].friction_parent
+                != n
+            ):
+                break
+            group_size += 1
+
+        if cstate[n] == PRIMAL_CONE and group_size > 0:
+            # Cone state: build full dim x dim Hessian
+            var D_n = D_vals[n]
+            var mu = constraints.rows[
+                friction_start + fric_idx
+            ].friction_coef
+            # Dm = D_n / (1 + mu^2) in jar-space (no group_size factor)
+            var Dm = D_n / (Scalar[DTYPE](1) + mu * mu)
+
+            var N = jar[n]
+            var T_sq: Scalar[DTYPE] = 0
+            for g in range(group_size):
+                T_sq += jar[friction_start + fric_idx + g] * jar[friction_start + fric_idx + g]
+            var T = sqrt(T_sq)
+            var T_safe = T
+            if T_safe < Scalar[DTYPE](MINVAL):
+                T_safe = Scalar[DTYPE](MINVAL)
+            var s = N - mu * T
+
+            # Build cone Hessian as J^T * H_cone * J
+            # Rather than form H_cone explicitly, compute J_cone^T * H_cone * J_cone
+            # row indices: n (normal), friction_start + fric_idx + g (friction children)
+
+            # H_cone[0,0] = Dm → add Dm * J_n * J_n^T
+            for i in range(NV):
+                for j in range(NV):
+                    H[i * NV + j] += (
+                        Dm
+                        * constraints.J[n * NV + i]
+                        * constraints.J[n * NV + j]
+                    )
+
+            # H_cone[0,g+1] = -Dm * mu * jar_fg / T_safe  (cross-terms)
+            for g in range(group_size):
+                var fr = friction_start + fric_idx + g
+                var h_cross = -Dm * mu * jar[fr] / T_safe
+                for i in range(NV):
+                    for j in range(NV):
+                        # J_n^T * h_cross * J_fr + J_fr^T * h_cross * J_n (symmetric)
+                        H[i * NV + j] += h_cross * (
+                            constraints.J[n * NV + i] * constraints.J[fr * NV + j]
+                            + constraints.J[fr * NV + i] * constraints.J[n * NV + j]
+                        )
+
+            # H_cone[g1+1,g2+1]: friction-friction block
+            for g1 in range(group_size):
+                var fr1 = friction_start + fric_idx + g1
+                for g2 in range(group_size):
+                    var fr2 = friction_start + fric_idx + g2
+                    # Outer product term: Dm * mu^2 * jar_f1*jar_f2 / T^2
+                    var h_ff = Dm * mu * mu * jar[fr1] * jar[fr2] / (T_safe * T_safe)
+                    # Rank-correction: Dm * mu * s / T * (jar_f1*jar_f2/T^2 - delta)
+                    h_ff += Dm * mu * s / T_safe * (
+                        jar[fr1] * jar[fr2] / (T_safe * T_safe)
+                    )
+                    if g1 == g2:
+                        h_ff -= Dm * mu * s / T_safe
+                    for i in range(NV):
+                        for j in range(NV):
+                            H[i * NV + j] += (
+                                h_ff
+                                * constraints.J[fr1 * NV + i]
+                                * constraints.J[fr2 * NV + j]
+                            )
+
+            # Mark these rows as handled
+            handled[n] = True
+            for g in range(group_size):
+                handled[friction_start + fric_idx + g] = True
+
+        fric_idx += group_size
+
+    # Add standard per-row contributions for non-cone active rows
+    for r in range(constraints.num_rows):
+        if handled[r] or cstate[r] == PRIMAL_SATISFIED:
+            continue
+        # QUADRATIC state: standard D * J * J^T
+        var D_r = D_vals[r]
+        for i in range(NV):
+            for j in range(NV):
+                H[i * NV + j] += (
+                    D_r
+                    * constraints.J[r * NV + i]
+                    * constraints.J[r * NV + j]
+                )
 
 
 struct NewtonSolver(ConstraintSolver):
-    """Projected Newton constraint solver for GC engine.
+    """MuJoCo-style Newton constraint solver.
 
-    Solves the normal constraint QP using Newton's method with
-    active-set identification and Armijo line search.
+    Operates in qacc space, minimizing the cost function
+    (Gauss + constraint penalties) using Newton's method with
+    Cholesky-factored Hessian and Armijo linesearch.
 
-    Advantages over PGS/CG:
-    - Quadratic convergence for well-conditioned problems
-    - Most accurate for stiff contacts
-    - Reliable convergence with line search
+    The Hessian H = M + J^T*D*J is always positive definite (since M is PD
+    and J^T*D*J is PSD), so Newton direction is always a descent direction.
 
-    Disadvantages:
-    - Most expensive per iteration (solves linear system)
-    - Requires forming and solving the reduced Hessian
+    Handles ALL constraints (including friction cone) in a unified
+    optimization via cone-aware constraint_update.
+    No separate PGS friction phase needed on CPU.
     """
 
     @staticmethod
     fn solver_workspace_size[NV: Int, MAX_CONTACTS: Int]() -> Int:
-        """Newton solver workspace: 84*MC + 12*MC*NV + MC*MC floats.
-
-        Layout (offsets relative to solver workspace start):
-          [0..13*MC+2*MC*NV)                            Common normal block
-          [13*MC+2*MC*NV..14*MC+2*MC*NV)                rhs
-          [14*MC+2*MC*NV..14*MC+2*MC*NV+MC*MC)          A (Delassus matrix)
-          [14*MC+2*MC*NV+MC*MC..15*MC+2*MC*NV+MC*MC)    grad
-          [15*MC+2*MC*NV+MC*MC..16*MC+2*MC*NV+MC*MC)    d (Newton direction)
-          [16*MC+2*MC*NV+MC*MC..17*MC+2*MC*NV+MC*MC)    lambda_trial
-          [17*MC+2*MC*NV+MC*MC..18*MC+2*MC*NV+MC*MC)    free_map (Float)
-          [18*MC+2*MC*NV+MC*MC..84*MC+12*MC*NV+MC*MC)   Friction (66*MC + 10*MC*NV)
-        """
+        """Newton solver workspace size."""
         comptime MC = _max_one[MAX_CONTACTS]()
         return 84 * MC + 12 * MC * NV + MC * MC
 
@@ -144,721 +307,270 @@ struct NewtonSolver(ConstraintSolver):
         mut qacc: InlineArray[Scalar[DTYPE], V_SIZE],
         dt: Scalar[DTYPE],
     ):
-        """Solve constraints using Projected Newton on CPU (acceleration-level).
+        """Solve constraints using Newton on CPU.
 
-        Iterates over pre-built ConstraintData:
-        1. Build Delassus matrix from normal constraint rows
-        2. Projected Newton with Armijo line search for normals
-        3. PGS for joint limit constraints
-        4. PGS for friction (with Coulomb cone clamping)
+        Unified optimization over all constraints (normals + friction cone +
+        limits + equality) using cone-aware constraint_update.
         """
         if constraints.num_rows == 0:
             return
 
+        comptime MR = _max_one[MAX_ROWS]()
+
+        var num_rows = constraints.num_rows
         var num_normals = constraints.num_normals
         var num_friction = constraints.num_friction
-        var num_limits = constraints.num_limits
-        var num_equality = constraints.num_equality
         var friction_start = num_normals
-        var limits_start = num_normals + num_friction
-        var equality_start = limits_start + num_limits
 
-        comptime MR = _max_one[MAX_ROWS]()
-        comptime A_SIZE = _max_one[MAX_ROWS * MAX_ROWS]()
-
-        # RHS for Newton: rhs[r] = J[r] · qacc_unconstrained + bias[r]
-        # IMPORTANT: Compute ALL rhs from unconstrained qacc BEFORE warm-start
-        var rhs = InlineArray[Scalar[DTYPE], MR](uninitialized=True)
-        for i in range(MR):
-            rhs[i] = Scalar[DTYPE](0)
-
-        for r in range(num_normals):
-            var a_n: Scalar[DTYPE] = 0
-            for i in range(NV):
-                a_n += constraints.J[r * NV + i] * qacc[i]
-            rhs[r] = a_n + constraints.rows[r].bias
-
-        # Save warm-start lambdas (needed for removal after Newton QP)
-        # We use the actual lambda_val, NOT data.contacts[].force_n, because
-        # in pyramidal mode lambda_val=0 while force_n may be non-zero from
-        # the previous frame's accumulated edge forces.
-        var warm_lambda = InlineArray[Scalar[DTYPE], MR](uninitialized=True)
-        for r in range(MR):
-            warm_lambda[r] = Scalar[DTYPE](0)
-        for r in range(num_normals):
-            warm_lambda[r] = constraints.rows[r].lambda_val
-
-        # Apply warm-start (after rhs is fully computed)
-        for r in range(num_normals):
-            if constraints.rows[r].lambda_val > Scalar[DTYPE](0):
-                for i in range(NV):
-                    qacc[i] += (
-                        constraints.MinvJT[r * NV + i]
-                        * constraints.rows[r].lambda_val
-                    )
-
-        # Build Delassus matrix A[c1,c2] = J[c1] . MinvJT[c2]
-        # Then add regularizer R to diagonal: AR[c,c] = K + R where R = K/imp - K
-        var A = InlineArray[Scalar[DTYPE], A_SIZE](uninitialized=True)
-        for i in range(A_SIZE):
-            A[i] = Scalar[DTYPE](0)
-
-        for c1 in range(num_normals):
-            for c2 in range(num_normals):
-                var a_val: Scalar[DTYPE] = 0
-                for i in range(NV):
-                    a_val += (
-                        constraints.J[c1 * NV + i]
-                        * constraints.MinvJT[c2 * NV + i]
-                    )
-                A[c1 * num_normals + c2] = a_val
-
-        # Add MuJoCo regularizer R to diagonal: AR[c,c] = K/imp
-        for c in range(num_normals):
-            var R = (
-                Scalar[DTYPE](1.0) / constraints.rows[c].inv_K_imp
-                - constraints.rows[c].K
+        # Compute D values from stored diagApprox and inv_K_imp
+        # D = 1/R where R = 1/inv_K_imp - K = (1-imp)/imp * diagApprox
+        # All constraint types now store diagApprox, so primal_D works correctly.
+        var D_vals = InlineArray[Scalar[DTYPE], MR](fill=Scalar[DTYPE](0))
+        for r in range(num_rows):
+            D_vals[r] = primal_D(
+                constraints.rows[r].inv_K_imp,
+                constraints.rows[r].K,
             )
-            A[c * num_normals + c] += R
+        # Each row keeps its own D = 1/R computed from its own diagApprox.
+        # In MuJoCo's BOTTOM zone, force = -D[j]*jar[j] uses per-row D.
+        # In CONE zone, Dm = D_n/(1+mu²) handles normal-friction coupling.
 
-        # =====================================================================
-        # Phase 2: Projected Newton for normal constraints (ELLIPTIC only)
-        # Minimize: f(x) = 0.5 * x^T * A * x + rhs^T * x subject to x >= 0
-        # For PYRAMIDAL: skipped, handled entirely by PGS in Phase 3.
-        # =====================================================================
-        var grad = InlineArray[Scalar[DTYPE], MR](uninitialized=True)
-        var d = InlineArray[Scalar[DTYPE], MR](uninitialized=True)
-        var lambda_trial = InlineArray[Scalar[DTYPE], MR](uninitialized=True)
+        # Save qacc_smooth (unconstrained acceleration)
+        var qacc_smooth = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        for i in range(NV):
+            qacc_smooth[i] = qacc[i]
 
+        # qfrc_smooth from constraints (filled by integrator)
+        var qfrc_smooth = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        for i in range(NV):
+            qfrc_smooth[i] = constraints.qfrc_smooth[i]
+
+        # Compute Ma = M * qacc
+        var Ma = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        for i in range(NV):
+            Ma[i] = Scalar[DTYPE](0)
+            for j in range(NV):
+                Ma[i] += constraints.M_hat[i * NV + j] * qacc[j]
+
+        # Compute jar = J * qacc - aref (aref = -bias)
+        var jar = InlineArray[Scalar[DTYPE], MR](uninitialized=True)
         for i in range(MR):
-            grad[i] = Scalar[DTYPE](0)
-            d[i] = Scalar[DTYPE](0)
-            lambda_trial[i] = Scalar[DTYPE](0)
+            jar[i] = Scalar[DTYPE](0)
+        compute_jar[DTYPE, MAX_ROWS, NV, V_SIZE, MR](constraints, qacc, jar)
 
-        for _ in range(NEWTON_ITERATIONS):
-            # Compute gradient: g = A * lambda + rhs
-            for c in range(num_normals):
-                var g: Scalar[DTYPE] = rhs[c]
-                for c2 in range(num_normals):
-                    g += (
-                        A[c * num_normals + c2]
-                        * constraints.rows[c2].lambda_val
-                    )
-                grad[c] = g
+        # Compute initial force, state, cost (cone-aware with MuJoCo D)
+        var force = InlineArray[Scalar[DTYPE], MR](uninitialized=True)
+        var cstate = InlineArray[Int, MR](uninitialized=True)
+        for i in range(MR):
+            force[i] = Scalar[DTYPE](0)
+            cstate[i] = PRIMAL_SATISFIED
+        var constraint_cost: Scalar[DTYPE] = 0
+        constraint_update_with_D[DTYPE, MAX_ROWS, NV, MR](
+            constraints, jar, D_vals, force, cstate, constraint_cost
+        )
 
-            # Projected gradient norm
+        @parameter
+        if NEWTON_CPU_DEBUG:
+            print("  [PRIMAL] num_rows=", num_rows, " normals=", constraints.num_normals, " friction=", constraints.num_friction, " limits=", constraints.num_limits)
+            for r in range(num_rows):
+                var state_str = "SAT"
+                if cstate[r] == PRIMAL_QUADRATIC:
+                    state_str = "QUAD"
+                elif cstate[r] == PRIMAL_CONE:
+                    state_str = "CONE"
+                print("  row", r, " type=", constraints.rows[r].constraint_type, " D_mj=", Float64(D_vals[r]), " jar=", Float64(jar[r]), " force=", Float64(force[r]), " state=", state_str, " bias=", Float64(constraints.rows[r].bias), " mu=", Float64(constraints.rows[r].friction_coef), " parent=", constraints.rows[r].friction_parent)
+
+        # Compute qfrc_constraint = J^T * force
+        var qfrc_constraint = InlineArray[Scalar[DTYPE], V_SIZE](
+            uninitialized=True
+        )
+        compute_qfrc_constraint[DTYPE, MAX_ROWS, NV, V_SIZE, MR](
+            constraints, force, qfrc_constraint
+        )
+
+        # Build Hessian H = M + J^T * D_active * J + cone Hessians
+        var H = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
+        var L = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
+        for i in range(NV * NV):
+            H[i] = constraints.M_hat[i]
+
+        _build_hessian[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+                       MAX_ROWS, V_SIZE, M_SIZE](
+            constraints, D_vals, jar, cstate, H
+        )
+
+        # Cholesky factorize H
+        chol_factor[DTYPE, NV, M_SIZE](H, L)
+
+        # Compute scale for convergence check (MuJoCo: 1/sum(M diagonal))
+        var scale: Scalar[DTYPE] = 0
+        for i in range(NV):
+            scale += constraints.M_hat[i * NV + i]
+        if scale > Scalar[DTYPE](MINVAL):
+            scale = Scalar[DTYPE](1.0) / scale
+        else:
+            scale = Scalar[DTYPE](1.0)
+
+        # Main Newton iteration loop
+        var grad = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        var search = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        var Mv = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+
+        var total_iter = 0
+
+        for iter in range(NEWTON_CPU_ITERATIONS):
+            total_iter += 1
+            # Compute gradient: grad = Ma - qfrc_smooth - qfrc_constraint
             var grad_norm: Scalar[DTYPE] = 0
-            for c in range(num_normals):
-                if constraints.rows[c].lambda_val > Scalar[DTYPE](
-                    0
-                ) or grad[c] < Scalar[DTYPE](0):
-                    grad_norm += grad[c] * grad[c]
-
-            if grad_norm < Scalar[DTYPE](NEWTON_TOLERANCE):
-                break
-
-            # Identify free set
-            var free_count = 0
-            var free_map = InlineArray[Int, MR](uninitialized=True)
-            for i in range(MR):
-                free_map[i] = -1
-
-            for c in range(num_normals):
-                if constraints.rows[c].lambda_val > Scalar[DTYPE](
-                    0
-                ) or grad[c] < Scalar[DTYPE](0):
-                    free_map[c] = free_count
-                    free_count += 1
-
-            if free_count == 0:
-                break
-
-            # Jacobi initial guess + Gauss-Seidel refinement
-            for c in range(num_normals):
-                d[c] = Scalar[DTYPE](0)
-
-            for c in range(num_normals):
-                if free_map[c] < 0:
-                    continue
-                if A[c * num_normals + c] > Scalar[DTYPE](1e-14):
-                    d[c] = -grad[c] / A[c * num_normals + c]
-
-            for _ in range(5):
-                for c in range(num_normals):
-                    if free_map[c] < 0:
-                        continue
-                    var sum_off_diag: Scalar[DTYPE] = 0
-                    for c2 in range(num_normals):
-                        if c2 == c:
-                            continue
-                        if free_map[c2] < 0:
-                            continue
-                        sum_off_diag += A[c * num_normals + c2] * d[c2]
-                    d[c] = (
-                        (-grad[c] - sum_off_diag) / A[c * num_normals + c]
-                    )
-
-            # Line search with Armijo condition
-            var f_current: Scalar[DTYPE] = 0
-            for c in range(num_normals):
-                f_current += rhs[c] * constraints.rows[c].lambda_val
-                for c2 in range(num_normals):
-                    f_current += (
-                        Scalar[DTYPE](0.5)
-                        * constraints.rows[c].lambda_val
-                        * A[c * num_normals + c2]
-                        * constraints.rows[c2].lambda_val
-                    )
-
-            var gtd: Scalar[DTYPE] = 0
-            for c in range(num_normals):
-                if free_map[c] < 0:
-                    continue
-                gtd += grad[c] * d[c]
-
-            var step = Scalar[DTYPE](1.0)
-            var armijo = Scalar[DTYPE](LINESEARCH_ARMIJO)
-            var beta = Scalar[DTYPE](LINESEARCH_BETA)
-
-            for _ in range(LINESEARCH_ITERATIONS):
-                for c in range(num_normals):
-                    lambda_trial[c] = constraints.rows[c].lambda_val
-                    if free_map[c] >= 0:
-                        lambda_trial[c] = (
-                            constraints.rows[c].lambda_val + step * d[c]
-                        )
-                    if lambda_trial[c] < Scalar[DTYPE](0):
-                        lambda_trial[c] = Scalar[DTYPE](0)
-
-                var f_trial: Scalar[DTYPE] = 0
-                for c in range(num_normals):
-                    f_trial += rhs[c] * lambda_trial[c]
-                    for c2 in range(num_normals):
-                        f_trial += (
-                            Scalar[DTYPE](0.5)
-                            * lambda_trial[c]
-                            * A[c * num_normals + c2]
-                            * lambda_trial[c2]
-                        )
-
-                if f_trial <= f_current + armijo * step * gtd:
-                    break
-
-                step = step * beta
-
-            for c in range(num_normals):
-                constraints.rows[c].lambda_val = lambda_trial[c]
-
-        # DEBUG: Print Newton QP convergence
-        @parameter
-        if NEWTON_DEBUG:
-            var final_grad_norm: Scalar[DTYPE] = 0
-            for c in range(num_normals):
-                var g: Scalar[DTYPE] = rhs[c]
-                for c2 in range(num_normals):
-                    g += (
-                        A[c * num_normals + c2]
-                        * constraints.rows[c2].lambda_val
-                    )
-                if constraints.rows[c].lambda_val > Scalar[DTYPE](
-                    0
-                ) or g < Scalar[DTYPE](0):
-                    final_grad_norm += g * g
-                print(
-                    "    [NEWTON] row",
-                    c,
-                    ": lambda=",
-                    Float64(constraints.rows[c].lambda_val),
-                    " QP_grad=",
-                    Float64(g),
-                )
-            print(
-                "    [NEWTON] final projected_grad_norm=",
-                Float64(final_grad_norm),
-            )
-
-        # Apply solved forces: remove warm-start, apply final
-        # Use saved warm_lambda (not data.contacts[].force_n) to avoid
-        # pyramidal mode bug where force_n != lambda_val.
-        for c in range(num_normals):
-            if warm_lambda[c] > Scalar[DTYPE](0):
-                for i in range(NV):
-                    qacc[i] -= constraints.MinvJT[c * NV + i] * warm_lambda[c]
-
-        for c in range(num_normals):
-            if constraints.rows[c].lambda_val > Scalar[DTYPE](0):
-                for i in range(NV):
-                    qacc[i] += (
-                        constraints.MinvJT[c * NV + i]
-                        * constraints.rows[c].lambda_val
-                    )
-
-        # DEBUG: Print qacc after Phase 2
-        @parameter
-        if NEWTON_DEBUG:
-            print("    [PHASE2] qacc_z=", Float64(qacc[1]), " sum_lambda=", end="")
-            var sum_l: Scalar[DTYPE] = 0
-            for c in range(num_normals):
-                sum_l += constraints.rows[c].lambda_val
-            print(Float64(sum_l))
-
-        # =====================================================================
-        # Phase 3: Coupled PGS (normals + friction + limits together)
-        # MuJoCo-style: iterate over ALL constraints in each pass so that
-        # normal and friction forces naturally couple.
-        # =====================================================================
-        if (
-            num_normals == 0
-            and num_friction == 0
-            and num_limits == 0
-            and num_equality == 0
-        ):
-            return
-
-        # Apply friction warm-start (skip degenerate tangent rows)
-        for r_off in range(num_friction):
-            var r = friction_start + r_off
-            if constraints.rows[r].K < Scalar[DTYPE](FRICTION_K_MIN):
-                constraints.rows[r].lambda_val = Scalar[DTYPE](0)
-                continue
-            if constraints.rows[r].lambda_val != Scalar[DTYPE](0):
-                for i in range(NV):
-                    qacc[i] += (
-                        constraints.MinvJT[r * NV + i]
-                        * constraints.rows[r].lambda_val
-                    )
-
-        # Coupled PGS iterations
-        comptime MINVAL: Float64 = 1e-10
-        for _ in range(COUPLED_PGS_ITERATIONS):
+            for i in range(NV):
+                grad[i] = Ma[i] - qfrc_smooth[i] - qfrc_constraint[i]
+                grad_norm += grad[i] * grad[i]
 
             @parameter
-            if CONE_TYPE == ConeType.PYRAMIDAL:
-                # === PYRAMIDAL CONE: Independent PGS on normals + edge constraints ===
-                # Normal constraints: simple λ≥0 PGS
-                for normal_r in range(num_normals):
-                    var a_n: Scalar[DTYPE] = 0
+            if NEWTON_CPU_DEBUG:
+                print("    [PRIMAL_NEWTON] iter_start", total_iter, " grad_norm=", Float64(sqrt(grad_norm)), " scaled=", Float64(scale * sqrt(grad_norm)))
+
+            # Check gradient convergence
+            if scale * sqrt(grad_norm) < Scalar[DTYPE](NEWTON_CPU_TOLERANCE):
+                @parameter
+                if NEWTON_CPU_DEBUG:
+                    print("    [PRIMAL_NEWTON] CONVERGED at iter", total_iter, " (gradient)")
+                break
+
+            # Newton direction: search = -H^{-1} * grad via Cholesky solve
+            chol_solve[DTYPE, NV, M_SIZE, V_SIZE](L, grad, search)
+            for i in range(NV):
+                search[i] = -search[i]
+
+            # Compute Mv = M * search (needed for line search)
+            for i in range(NV):
+                Mv[i] = Scalar[DTYPE](0)
+                for j in range(NV):
+                    Mv[i] += constraints.M_hat[i * NV + j] * search[j]
+
+            # Forward-exploring linesearch with MuJoCo D
+            var alpha = primal_linesearch_with_D[DTYPE, MAX_ROWS, NV, V_SIZE, MR](
+                constraints,
+                D_vals,
+                qacc,
+                qacc_smooth,
+                qfrc_smooth,
+                Ma,
+                Mv,
+                search,
+                jar,
+                force,
+                Scalar[DTYPE](NEWTON_CPU_TOLERANCE),
+            )
+
+            if alpha == Scalar[DTYPE](0):
+                @parameter
+                if NEWTON_CPU_DEBUG:
+                    print("    [PRIMAL_NEWTON] STOPPED at iter", total_iter, " (alpha=0)")
+                break
+
+            # Save old state, cost, qacc, Ma
+            var old_cost = constraint_cost + compute_gauss_cost[DTYPE, NV, V_SIZE](
+                Ma, qfrc_smooth, qacc, qacc_smooth
+            )
+            var old_state = InlineArray[Int, MR](uninitialized=True)
+            for i in range(num_rows):
+                old_state[i] = cstate[i]
+            var old_qacc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+            var old_Ma = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+            for i in range(NV):
+                old_qacc[i] = qacc[i]
+                old_Ma[i] = Ma[i]
+
+            # Update qacc, Ma
+            for i in range(NV):
+                qacc[i] += alpha * search[i]
+                Ma[i] += alpha * Mv[i]
+
+            # Recompute jar
+            compute_jar[DTYPE, MAX_ROWS, NV, V_SIZE, MR](
+                constraints, qacc, jar
+            )
+
+            # Recompute force, state, cost (cone-aware with MuJoCo D)
+            constraint_update_with_D[DTYPE, MAX_ROWS, NV, MR](
+                constraints, jar, D_vals, force, cstate, constraint_cost
+            )
+
+            # Recompute qfrc_constraint
+            compute_qfrc_constraint[DTYPE, MAX_ROWS, NV, V_SIZE, MR](
+                constraints, force, qfrc_constraint
+            )
+
+            # Check improvement
+            var new_cost = constraint_cost + compute_gauss_cost[DTYPE, NV, V_SIZE](
+                Ma, qfrc_smooth, qacc, qacc_smooth
+            )
+            var improvement = scale * (old_cost - new_cost)
+
+            @parameter
+            if NEWTON_CPU_DEBUG:
+                print(
+                    "    [PRIMAL_NEWTON] iter",
+                    total_iter,
+                    " alpha=",
+                    Float64(alpha),
+                    " cost=",
+                    Float64(new_cost),
+                    " improvement=",
+                    Float64(improvement),
+                    " grad=",
+                    Float64(sqrt(grad_norm)),
+                )
+
+            if improvement < Scalar[DTYPE](NEWTON_CPU_TOLERANCE) and iter > 0:
+                # Restore qacc/Ma if cost increased
+                if improvement < Scalar[DTYPE](0):
                     for i in range(NV):
-                        a_n += constraints.J[normal_r * NV + i] * qacc[i]
-                    var R_n = (
-                        Scalar[DTYPE](1.0)
-                        / constraints.rows[normal_r].inv_K_imp
-                        - constraints.rows[normal_r].K
+                        qacc[i] = old_qacc[i]
+                        Ma[i] = old_Ma[i]
+                    # Recompute jar/force at restored point
+                    compute_jar[DTYPE, MAX_ROWS, NV, V_SIZE, MR](
+                        constraints, qacc, jar
                     )
-                    var residual_n = (
-                        a_n
-                        + constraints.rows[normal_r].bias
-                        + R_n * constraints.rows[normal_r].lambda_val
+                    constraint_update_with_D[DTYPE, MAX_ROWS, NV, MR](
+                        constraints, jar, D_vals, force, cstate, constraint_cost
                     )
-                    var delta_n = (
-                        -residual_n * constraints.rows[normal_r].inv_K_imp
+                    compute_qfrc_constraint[DTYPE, MAX_ROWS, NV, V_SIZE, MR](
+                        constraints, force, qfrc_constraint
                     )
-                    var old_lambda_n = constraints.rows[normal_r].lambda_val
-                    constraints.rows[normal_r].lambda_val = (
-                        constraints.rows[normal_r].lambda_val + delta_n
-                    )
-                    if constraints.rows[normal_r].lambda_val < Scalar[DTYPE](0):
-                        constraints.rows[normal_r].lambda_val = Scalar[DTYPE](0)
-                    var actual_n = (
-                        constraints.rows[normal_r].lambda_val - old_lambda_n
-                    )
-                    if actual_n != Scalar[DTYPE](0):
-                        for i in range(NV):
-                            qacc[i] += (
-                                constraints.MinvJT[normal_r * NV + i] * actual_n
-                            )
+                break
 
-                # Pyramid edge constraints: each edge is λ≥0
-                for r_off in range(num_friction):
-                    var r = friction_start + r_off
-                    var a_edge: Scalar[DTYPE] = 0
-                    for i in range(NV):
-                        a_edge += constraints.J[r * NV + i] * qacc[i]
-                    var R_edge = (
-                        Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp
-                        - constraints.rows[r].K
-                    )
-                    var residual_edge = (
-                        a_edge
-                        + constraints.rows[r].bias
-                        + R_edge * constraints.rows[r].lambda_val
-                    )
-                    var delta_edge = (
-                        -residual_edge * constraints.rows[r].inv_K_imp
-                    )
-                    var old_lambda_edge = constraints.rows[r].lambda_val
-                    constraints.rows[r].lambda_val = (
-                        constraints.rows[r].lambda_val + delta_edge
-                    )
-                    if constraints.rows[r].lambda_val < Scalar[DTYPE](0):
-                        constraints.rows[r].lambda_val = Scalar[DTYPE](0)
-                    var actual_edge = (
-                        constraints.rows[r].lambda_val - old_lambda_edge
-                    )
-                    if actual_edge != Scalar[DTYPE](0):
-                        for i in range(NV):
-                            qacc[i] += (
-                                constraints.MinvJT[r * NV + i] * actual_edge
-                            )
-            else:
-                # === ELLIPTIC CONE: MuJoCo-style block QCQP updates ===
-                var fric_idx = 0
-                for normal_r in range(num_normals):
-                    var group_size = 0
-                    while fric_idx + group_size < num_friction:
-                        if (
-                            constraints.rows[
-                                friction_start + fric_idx + group_size
-                            ].friction_parent
-                            != normal_r
-                        ):
-                            break
-                        group_size += 1
+            # Check if any states changed — if so, rebuild Hessian
+            var state_changed = False
+            for r in range(num_rows):
+                if old_state[r] != cstate[r]:
+                    state_changed = True
+                    break
 
-                    var dim = 1 + group_size
-                    var row_idx = InlineArray[Int, 6](fill=0)
-                    row_idx[0] = normal_r
-                    for g in range(group_size):
-                        row_idx[1 + g] = friction_start + fric_idx + g
-
-                    # Build block AR matrix
-                    var AR = InlineArray[Scalar[DTYPE], 36](
-                        fill=Scalar[DTYPE](0)
-                    )
-                    for bi in range(dim):
-                        for bj in range(dim):
-                            var a_val: Scalar[DTYPE] = 0
-                            for k in range(NV):
-                                a_val += (
-                                    constraints.J[row_idx[bi] * NV + k]
-                                    * constraints.MinvJT[row_idx[bj] * NV + k]
-                                )
-                            if bi == bj:
-                                a_val += (
-                                    Scalar[DTYPE](1.0)
-                                    / constraints.rows[row_idx[bi]].inv_K_imp
-                                    - constraints.rows[row_idx[bi]].K
-                                )
-                            AR[bi * dim + bj] = a_val
-
-                    # Compute block residual
-                    var block_res = InlineArray[Scalar[DTYPE], 6](
-                        fill=Scalar[DTYPE](0)
-                    )
-                    for bj in range(dim):
-                        var a: Scalar[DTYPE] = 0
-                        for k in range(NV):
-                            a += constraints.J[row_idx[bj] * NV + k] * qacc[k]
-                        var R_row = (
-                            Scalar[DTYPE](1.0)
-                            / constraints.rows[row_idx[bj]].inv_K_imp
-                            - constraints.rows[row_idx[bj]].K
-                        )
-                        block_res[bj] = (
-                            a
-                            + constraints.rows[row_idx[bj]].bias
-                            + R_row * constraints.rows[row_idx[bj]].lambda_val
-                        )
-
-                    var oldforce = InlineArray[Scalar[DTYPE], 6](
-                        fill=Scalar[DTYPE](0)
-                    )
-                    oldforce[0] = constraints.rows[normal_r].lambda_val
-                    for g in range(group_size):
-                        oldforce[1 + g] = constraints.rows[
-                            row_idx[1 + g]
-                        ].lambda_val
-
-                    var ARinv0: Scalar[DTYPE] = 0
-                    if AR[0] > Scalar[DTYPE](MINVAL):
-                        ARinv0 = Scalar[DTYPE](1.0) / AR[0]
-
-                    if dim == 1:
-                        constraints.rows[normal_r].lambda_val -= (
-                            block_res[0] * ARinv0
-                        )
-                        if constraints.rows[normal_r].lambda_val < Scalar[
-                            DTYPE
-                        ](0):
-                            constraints.rows[normal_r].lambda_val = Scalar[
-                                DTYPE
-                            ](0)
-                    else:
-                        # Ray update
-                        if constraints.rows[normal_r].lambda_val < Scalar[
-                            DTYPE
-                        ](MINVAL):
-                            constraints.rows[normal_r].lambda_val -= (
-                                block_res[0] * ARinv0
-                            )
-                            if constraints.rows[normal_r].lambda_val < Scalar[
-                                DTYPE
-                            ](0):
-                                constraints.rows[normal_r].lambda_val = Scalar[
-                                    DTYPE
-                                ](0)
-                            for g in range(group_size):
-                                constraints.rows[
-                                    row_idx[1 + g]
-                                ].lambda_val = Scalar[DTYPE](0)
-                        else:
-                            var v = InlineArray[Scalar[DTYPE], 6](
-                                fill=Scalar[DTYPE](0)
-                            )
-                            v[0] = constraints.rows[normal_r].lambda_val
-                            for g in range(group_size):
-                                v[1 + g] = constraints.rows[
-                                    row_idx[1 + g]
-                                ].lambda_val
-                            var denom: Scalar[DTYPE] = 0
-                            for bi in range(dim):
-                                for bj in range(dim):
-                                    denom += v[bi] * AR[bi * dim + bj] * v[bj]
-                            if denom >= Scalar[DTYPE](MINVAL):
-                                var vdotr: Scalar[DTYPE] = 0
-                                for bi in range(dim):
-                                    vdotr += v[bi] * block_res[bi]
-                                var x = -vdotr / denom
-                                if constraints.rows[
-                                    normal_r
-                                ].lambda_val + x * v[0] < Scalar[DTYPE](0):
-                                    x = (
-                                        -constraints.rows[normal_r].lambda_val
-                                        / v[0]
-                                    )
-                                constraints.rows[normal_r].lambda_val += (
-                                    x * v[0]
-                                )
-                                for g in range(group_size):
-                                    constraints.rows[
-                                        row_idx[1 + g]
-                                    ].lambda_val += (x * v[1 + g])
-
-                        # QCQP friction update
-                        if (
-                            constraints.rows[normal_r].lambda_val
-                            >= Scalar[DTYPE](MINVAL)
-                            and group_size > 0
-                        ):
-                            var Ac = InlineArray[Scalar[DTYPE], 25](
-                                fill=Scalar[DTYPE](0)
-                            )
-                            var bc = InlineArray[Scalar[DTYPE], 5](
-                                fill=Scalar[DTYPE](0)
-                            )
-                            for j in range(group_size):
-                                for j2 in range(group_size):
-                                    Ac[j * group_size + j2] = AR[
-                                        (1 + j) * dim + (1 + j2)
-                                    ]
-                                bc[j] = block_res[1 + j]
-                                for j2 in range(group_size):
-                                    bc[j] -= (
-                                        Ac[j * group_size + j2]
-                                        * oldforce[1 + j2]
-                                    )
-                                bc[j] += AR[(1 + j) * dim + 0] * (
-                                    constraints.rows[normal_r].lambda_val
-                                    - oldforce[0]
-                                )
-
-                            var mu_arr = InlineArray[Scalar[DTYPE], 5](
-                                fill=Scalar[DTYPE](0)
-                            )
-                            for g in range(group_size):
-                                mu_arr[g] = constraints.rows[
-                                    row_idx[1 + g]
-                                ].friction_coef
-
-                            var fn_val = constraints.rows[normal_r].lambda_val
-                            var flg_active = False
-
-                            if group_size == 2:
-                                var A2 = InlineArray[Scalar[DTYPE], 4](
-                                    fill=Scalar[DTYPE](0)
-                                )
-                                var b2 = InlineArray[Scalar[DTYPE], 2](
-                                    fill=Scalar[DTYPE](0)
-                                )
-                                var d2 = InlineArray[Scalar[DTYPE], 2](
-                                    fill=Scalar[DTYPE](0)
-                                )
-                                for ii in range(2):
-                                    b2[ii] = bc[ii]
-                                    d2[ii] = mu_arr[ii]
-                                    for jj in range(2):
-                                        A2[ii * 2 + jj] = Ac[
-                                            ii * group_size + jj
-                                        ]
-                                var r0: Scalar[DTYPE] = 0
-                                var r1: Scalar[DTYPE] = 0
-                                flg_active = mj_qcqp2[DTYPE](
-                                    r0, r1, A2, b2, d2, fn_val
-                                )
-                                constraints.rows[row_idx[1]].lambda_val = r0
-                                constraints.rows[row_idx[2]].lambda_val = r1
-                            elif group_size == 3:
-                                var A3 = InlineArray[Scalar[DTYPE], 9](
-                                    fill=Scalar[DTYPE](0)
-                                )
-                                var b3 = InlineArray[Scalar[DTYPE], 3](
-                                    fill=Scalar[DTYPE](0)
-                                )
-                                var d3 = InlineArray[Scalar[DTYPE], 3](
-                                    fill=Scalar[DTYPE](0)
-                                )
-                                for ii in range(3):
-                                    b3[ii] = bc[ii]
-                                    d3[ii] = mu_arr[ii]
-                                    for jj in range(3):
-                                        A3[ii * 3 + jj] = Ac[
-                                            ii * group_size + jj
-                                        ]
-                                var r0: Scalar[DTYPE] = 0
-                                var r1: Scalar[DTYPE] = 0
-                                var r2: Scalar[DTYPE] = 0
-                                flg_active = mj_qcqp3[DTYPE](
-                                    r0, r1, r2, A3, b3, d3, fn_val
-                                )
-                                constraints.rows[row_idx[1]].lambda_val = r0
-                                constraints.rows[row_idx[2]].lambda_val = r1
-                                constraints.rows[row_idx[3]].lambda_val = r2
-                            elif group_size == 5:
-                                var A5 = InlineArray[Scalar[DTYPE], 25](
-                                    fill=Scalar[DTYPE](0)
-                                )
-                                var b5 = InlineArray[Scalar[DTYPE], 5](
-                                    fill=Scalar[DTYPE](0)
-                                )
-                                var d5 = InlineArray[Scalar[DTYPE], 5](
-                                    fill=Scalar[DTYPE](0)
-                                )
-                                for ii in range(5):
-                                    b5[ii] = bc[ii]
-                                    d5[ii] = mu_arr[ii]
-                                    for jj in range(5):
-                                        A5[ii * 5 + jj] = Ac[
-                                            ii * group_size + jj
-                                        ]
-                                var res5 = InlineArray[Scalar[DTYPE], 5](
-                                    fill=Scalar[DTYPE](0)
-                                )
-                                flg_active = mj_qcqp5[DTYPE](
-                                    res5, A5, b5, d5, fn_val
-                                )
-                                for g in range(5):
-                                    constraints.rows[
-                                        row_idx[1 + g]
-                                    ].lambda_val = res5[g]
-
-                            if flg_active:
-                                var s: Scalar[DTYPE] = 0
-                                for g in range(group_size):
-                                    var fv = constraints.rows[
-                                        row_idx[1 + g]
-                                    ].lambda_val
-                                    var mu_g = mu_arr[g]
-                                    if mu_g > Scalar[DTYPE](MINVAL):
-                                        s += fv * fv / (mu_g * mu_g)
-                                if s > Scalar[DTYPE](MINVAL):
-                                    var scale = sqrt(fn_val * fn_val / s)
-                                    for g in range(group_size):
-                                        constraints.rows[
-                                            row_idx[1 + g]
-                                        ].lambda_val *= scale
-
-                    # Cost descent check
-                    var newforce = InlineArray[Scalar[DTYPE], 6](
-                        fill=Scalar[DTYPE](0)
-                    )
-                    newforce[0] = constraints.rows[normal_r].lambda_val
-                    for g in range(group_size):
-                        newforce[1 + g] = constraints.rows[
-                            row_idx[1 + g]
-                        ].lambda_val
-                    var change = cost_change[DTYPE, 6, 36](
-                        newforce, oldforce, AR, block_res, dim
-                    )
-                    if change > Scalar[DTYPE](MINVAL):
-                        constraints.rows[normal_r].lambda_val = oldforce[0]
-                        for g in range(group_size):
-                            constraints.rows[
-                                row_idx[1 + g]
-                            ].lambda_val = oldforce[1 + g]
-
-                    # Apply delta to qacc
-                    for bi in range(dim):
-                        var actual = (
-                            constraints.rows[row_idx[bi]].lambda_val
-                            - oldforce[bi]
-                        )
-                        if actual != Scalar[DTYPE](0):
-                            for k in range(NV):
-                                qacc[k] += (
-                                    constraints.MinvJT[row_idx[bi] * NV + k]
-                                    * actual
-                                )
-
-                    fric_idx += group_size
-
-            # --- Joint limit constraints ---
-            for r_off in range(num_limits):
-                var r = limits_start + r_off
-                var dof = constraints.rows[r].source_dof
-                var sign = constraints.rows[r].limit_sign
-                var a_limit = sign * qacc[dof]
-                var R_lim = (
-                    Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp
-                    - constraints.rows[r].K
+            if state_changed:
+                for i in range(NV * NV):
+                    H[i] = constraints.M_hat[i]
+                _build_hessian[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+                               MAX_ROWS, V_SIZE, M_SIZE](
+                    constraints, D_vals, jar, cstate, H
                 )
-                var residual = (
-                    a_limit
-                    + constraints.rows[r].bias
-                    + R_lim * constraints.rows[r].lambda_val
-                )
-                var delta = -residual * constraints.rows[r].inv_K_imp
-                var old_lambda = constraints.rows[r].lambda_val
-                constraints.rows[r].lambda_val = (
-                    constraints.rows[r].lambda_val + delta
-                )
-                if constraints.rows[r].lambda_val < Scalar[DTYPE](0):
-                    constraints.rows[r].lambda_val = Scalar[DTYPE](0)
-                var actual = constraints.rows[r].lambda_val - old_lambda
-                for i in range(NV):
-                    qacc[i] += constraints.MinvJT[r * NV + i] * actual
+                chol_factor[DTYPE, NV, M_SIZE](H, L)
 
-            # --- Equality constraints (bilateral, NO clamping) ---
-            for r_off in range(num_equality):
-                var r = equality_start + r_off
-                var a_eq: Scalar[DTYPE] = 0
-                for i in range(NV):
-                    a_eq += constraints.J[r * NV + i] * qacc[i]
-                var R_eq = (
-                    Scalar[DTYPE](1.0) / constraints.rows[r].inv_K_imp
-                    - constraints.rows[r].K
-                )
-                var residual = (
-                    a_eq
-                    + constraints.rows[r].bias
-                    + R_eq * constraints.rows[r].lambda_val
-                )
-                var delta = -residual * constraints.rows[r].inv_K_imp
-                var old_lambda = constraints.rows[r].lambda_val
-                constraints.rows[r].lambda_val = (
-                    constraints.rows[r].lambda_val + delta
-                )
-                var actual = constraints.rows[r].lambda_val - old_lambda
-                for i in range(NV):
-                    qacc[i] += constraints.MinvJT[r * NV + i] * actual
-
-        # DEBUG: Print qacc after Phase 3
         @parameter
-        if NEWTON_DEBUG:
-            print("    [PHASE3] qacc_z=", Float64(qacc[1]), " sum_lambda=", end="")
-            var sum_l3: Scalar[DTYPE] = 0
-            for c in range(num_normals):
-                sum_l3 += constraints.rows[c].lambda_val
-            print(Float64(sum_l3))
+        if NEWTON_CPU_DEBUG:
+            print("  [PRIMAL] Final states:")
+            for r in range(num_rows):
+                var state_str = "SAT"
+                if cstate[r] == PRIMAL_QUADRATIC:
+                    state_str = "QUAD"
+                elif cstate[r] == PRIMAL_CONE:
+                    state_str = "CONE"
+                print("    row", r, " state=", state_str, " jar=", Float64(jar[r]), " force=", Float64(force[r]))
+
+        # Write forces back to constraint lambda_val for warm-starting
+        for r in range(num_rows):
+            constraints.rows[r].lambda_val = force[r]
 
     @staticmethod
     fn solver_threads[
@@ -898,14 +610,11 @@ struct NewtonSolver(ConstraintSolver):
             DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
         ],
     ):
-        """Solve contact constraints using Projected Newton on GPU.
+        """GPU solve — uses PGS-based approach on GPU.
 
-        Uses thread_x for environment index, thread_y for contact index.
-        Phase 1 and Delassus build are parallelized across contacts.
-        Newton iterations are sequential on thread_y==0.
-        All threads must hit all barriers (no early returns between them).
+        The GPU path uses a PGS-based dual approach while the CPU path
+        uses the full Newton optimization matching MuJoCo exactly.
         """
-
         var env = Int(block_dim.x * block_idx.x + thread_idx.x)
         var contact_tid = Int(thread_idx.y)
         var valid_env = env < BATCH
@@ -947,7 +656,9 @@ struct NewtonSolver(ConstraintSolver):
             workspace[env, ws_ltrial_idx + contact_tid] = 0
             workspace[env, ws_fmap_idx + contact_tid] = -1
             for c2 in range(MC):
-                workspace[env, ws_A_idx + contact_tid * MAX_CONTACTS + c2] = 0
+                workspace[
+                    env, ws_A_idx + contact_tid * MAX_CONTACTS + c2
+                ] = 0
 
         # Read metadata
         comptime contacts_off = contacts_offset[NQ, NV, NBODY]()
@@ -978,19 +689,29 @@ struct NewtonSolver(ConstraintSolver):
             if nc > MAX_CONTACTS:
                 nc = MAX_CONTACTS
             var sr_tc = rebind[Scalar[DTYPE]](
-                model[0, model_meta_off + MODEL_META_IDX_SOLREF_CONTACT_0]
+                model[
+                    0, model_meta_off + MODEL_META_IDX_SOLREF_CONTACT_0
+                ]
             )
             var sr_dr = rebind[Scalar[DTYPE]](
-                model[0, model_meta_off + MODEL_META_IDX_SOLREF_CONTACT_1]
+                model[
+                    0, model_meta_off + MODEL_META_IDX_SOLREF_CONTACT_1
+                ]
             )
             si_dmin = rebind[Scalar[DTYPE]](
-                model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_0]
+                model[
+                    0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_0
+                ]
             )
             si_dmax = rebind[Scalar[DTYPE]](
-                model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_1]
+                model[
+                    0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_1
+                ]
             )
             si_width = rebind[Scalar[DTYPE]](
-                model[0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_2]
+                model[
+                    0, model_meta_off + MODEL_META_IDX_SOLIMP_CONTACT_2
+                ]
             )
             if si_width < Scalar[DTYPE](1e-6):
                 si_width = Scalar[DTYPE](1e-6)
@@ -1035,23 +756,28 @@ struct NewtonSolver(ConstraintSolver):
 
         barrier()
 
-        # === PARALLEL DELASSUS BUILD: Each thread computes one row of A ===
-        # Add regularizer R to diagonal: AR[c,c] = K + R = K/imp
+        # === PARALLEL DELASSUS BUILD ===
         if valid_env and contact_tid < nc:
-            if workspace[env, ws_c_dist_idx + contact_tid] < Scalar[DTYPE](0):
+            if workspace[env, ws_c_dist_idx + contact_tid] < Scalar[DTYPE](
+                0
+            ):
                 for c2 in range(nc):
-                    if workspace[env, ws_c_dist_idx + c2] >= Scalar[DTYPE](0):
+                    if workspace[env, ws_c_dist_idx + c2] >= Scalar[DTYPE](
+                        0
+                    ):
                         continue
                     var a_val: workspace.element_type = 0
                     for i in range(NV):
                         a_val += (
-                            workspace[env, ws_J_n_idx + contact_tid * NV + i]
+                            workspace[
+                                env, ws_J_n_idx + contact_tid * NV + i
+                            ]
                             * workspace[env, ws_MinvJn_idx + c2 * NV + i]
                         )
                     workspace[
                         env, ws_A_idx + contact_tid * MAX_CONTACTS + c2
                     ] = a_val
-                # Add MuJoCo regularizer R to diagonal
+                # Add regularizer
                 comptime ws_inv_K_imp_idx = solver_ws_idx + 12 * MC
                 var R_c = (
                     Scalar[DTYPE](1.0)
@@ -1059,12 +785,15 @@ struct NewtonSolver(ConstraintSolver):
                     - workspace[env, ws_K_n_idx + contact_tid]
                 )
                 workspace[
-                    env, ws_A_idx + contact_tid * MAX_CONTACTS + contact_tid
+                    env,
+                    ws_A_idx
+                    + contact_tid * MAX_CONTACTS
+                    + contact_tid,
                 ] += R_c
 
         barrier()
 
-        # === SEQUENTIAL: Thread 0 handles warm-start, Newton iterations, limits, friction ===
+        # === SEQUENTIAL: Thread 0 handles Newton iterations ===
         if not valid_env or contact_tid != 0:
             return
 
@@ -1077,32 +806,42 @@ struct NewtonSolver(ConstraintSolver):
             BATCH,
         ](env, nc, workspace)
 
-        # Phase 2: Projected Newton iterations
+        # Newton iterations for GPU
+        comptime NEWTON_ITERATIONS = 100
+        comptime NEWTON_TOLERANCE: Float64 = 1e-8
+        comptime LINESEARCH_ITERATIONS = 10
+        comptime LINESEARCH_BETA: Float64 = 0.5
+        comptime LINESEARCH_ARMIJO: Float64 = 1e-4
+
         for _ in range(NEWTON_ITERATIONS):
-            # Compute gradient: g = A * lambda + rhs
             var grad_norm: workspace.element_type = 0
             for c in range(nc):
                 if workspace[env, ws_c_dist_idx + c] >= Scalar[DTYPE](0):
                     workspace[env, ws_grad_idx + c] = Scalar[DTYPE](0)
                     continue
-                var g: workspace.element_type = workspace[env, ws_rhs_idx + c]
+                var g: workspace.element_type = workspace[
+                    env, ws_rhs_idx + c
+                ]
                 for c2 in range(nc):
-                    if workspace[env, ws_c_dist_idx + c2] >= Scalar[DTYPE](0):
+                    if workspace[env, ws_c_dist_idx + c2] >= Scalar[DTYPE](
+                        0
+                    ):
                         continue
                     g += (
-                        workspace[env, ws_A_idx + c * MAX_CONTACTS + c2]
+                        workspace[
+                            env, ws_A_idx + c * MAX_CONTACTS + c2
+                        ]
                         * workspace[env, ws_lambda_n_idx + c2]
                     )
                 workspace[env, ws_grad_idx + c] = g
 
-            # Projected gradient norm
             grad_norm = 0
             for c in range(nc):
                 if workspace[env, ws_c_dist_idx + c] >= Scalar[DTYPE](0):
                     continue
-                if workspace[env, ws_lambda_n_idx + c] > Scalar[DTYPE](0) or (
-                    workspace[env, ws_grad_idx + c]
-                ) < Scalar[DTYPE](0):
+                if workspace[env, ws_lambda_n_idx + c] > Scalar[DTYPE](
+                    0
+                ) or (workspace[env, ws_grad_idx + c]) < Scalar[DTYPE](0):
                     grad_norm += (
                         workspace[env, ws_grad_idx + c]
                         * workspace[env, ws_grad_idx + c]
@@ -1111,29 +850,31 @@ struct NewtonSolver(ConstraintSolver):
             if grad_norm < Scalar[DTYPE](NEWTON_TOLERANCE):
                 break
 
-            # Identify free set
             var free_count = 0
             for c in range(nc):
                 workspace[env, ws_fmap_idx + c] = Scalar[DTYPE](-1)
                 if workspace[env, ws_c_dist_idx + c] >= Scalar[DTYPE](0):
                     continue
-                if workspace[env, ws_lambda_n_idx + c] > Scalar[DTYPE](0) or (
-                    workspace[env, ws_grad_idx + c]
-                ) < Scalar[DTYPE](0):
-                    workspace[env, ws_fmap_idx + c] = Scalar[DTYPE](free_count)
+                if workspace[env, ws_lambda_n_idx + c] > Scalar[DTYPE](
+                    0
+                ) or (workspace[env, ws_grad_idx + c]) < Scalar[DTYPE](0):
+                    workspace[env, ws_fmap_idx + c] = Scalar[DTYPE](
+                        free_count
+                    )
                     free_count += 1
 
             if free_count == 0:
                 break
 
-            # Solve reduced system with Jacobi + GS refinement
             for c in range(nc):
                 workspace[env, ws_d_idx + c] = Scalar[DTYPE](0)
 
             for c in range(nc):
                 if workspace[env, ws_fmap_idx + c] < Scalar[DTYPE](0):
                     continue
-                var AR_diag = workspace[env, ws_A_idx + c * MAX_CONTACTS + c]
+                var AR_diag = workspace[
+                    env, ws_A_idx + c * MAX_CONTACTS + c
+                ]
                 if AR_diag > Scalar[DTYPE](1e-14):
                     workspace[env, ws_d_idx + c] = (
                         -(workspace[env, ws_grad_idx + c]) / AR_diag
@@ -1147,16 +888,19 @@ struct NewtonSolver(ConstraintSolver):
                     for c2 in range(nc):
                         if c2 == c:
                             continue
-                        if workspace[env, ws_fmap_idx + c2] < Scalar[DTYPE](0):
+                        if workspace[env, ws_fmap_idx + c2] < Scalar[
+                            DTYPE
+                        ](0):
                             continue
                         sum_off_diag += workspace[
                             env, ws_A_idx + c * MAX_CONTACTS + c2
                         ] * (workspace[env, ws_d_idx + c2])
                     workspace[env, ws_d_idx + c] = (
                         -(workspace[env, ws_grad_idx + c]) - sum_off_diag
-                    ) / (workspace[env, ws_A_idx + c * MAX_CONTACTS + c])
+                    ) / (
+                        workspace[env, ws_A_idx + c * MAX_CONTACTS + c]
+                    )
 
-            # Line search with Armijo condition
             var f_current: workspace.element_type = 0
             for c in range(nc):
                 if workspace[env, ws_c_dist_idx + c] >= Scalar[DTYPE](0):
@@ -1166,12 +910,16 @@ struct NewtonSolver(ConstraintSolver):
                     * workspace[env, ws_lambda_n_idx + c]
                 )
                 for c2 in range(nc):
-                    if workspace[env, ws_c_dist_idx + c2] >= Scalar[DTYPE](0):
+                    if workspace[env, ws_c_dist_idx + c2] >= Scalar[DTYPE](
+                        0
+                    ):
                         continue
                     f_current += (
                         Scalar[DTYPE](0.5)
                         * workspace[env, ws_lambda_n_idx + c]
-                        * workspace[env, ws_A_idx + c * MAX_CONTACTS + c2]
+                        * workspace[
+                            env, ws_A_idx + c * MAX_CONTACTS + c2
+                        ]
                         * workspace[env, ws_lambda_n_idx + c2]
                     )
 
@@ -1196,26 +944,34 @@ struct NewtonSolver(ConstraintSolver):
                         workspace[env, ws_ltrial_idx + c] = workspace[
                             env, ws_lambda_n_idx + c
                         ] + step * (workspace[env, ws_d_idx + c])
-                    if workspace[env, ws_ltrial_idx + c] < Scalar[DTYPE](0):
-                        workspace[env, ws_ltrial_idx + c] = Scalar[DTYPE](0)
+                    if workspace[env, ws_ltrial_idx + c] < Scalar[DTYPE](
+                        0
+                    ):
+                        workspace[env, ws_ltrial_idx + c] = Scalar[DTYPE](
+                            0
+                        )
 
                 var f_trial: workspace.element_type = 0
                 for c in range(nc):
-                    if workspace[env, ws_c_dist_idx + c] >= Scalar[DTYPE](0):
+                    if workspace[env, ws_c_dist_idx + c] >= Scalar[DTYPE](
+                        0
+                    ):
                         continue
                     f_trial += (
                         workspace[env, ws_rhs_idx + c]
                         * workspace[env, ws_ltrial_idx + c]
                     )
                     for c2 in range(nc):
-                        if workspace[env, ws_c_dist_idx + c2] >= Scalar[DTYPE](
-                            0
-                        ):
+                        if workspace[
+                            env, ws_c_dist_idx + c2
+                        ] >= Scalar[DTYPE](0):
                             continue
                         f_trial += (
                             Scalar[DTYPE](0.5)
                             * workspace[env, ws_ltrial_idx + c]
-                            * workspace[env, ws_A_idx + c * MAX_CONTACTS + c2]
+                            * workspace[
+                                env, ws_A_idx + c * MAX_CONTACTS + c2
+                            ]
                             * workspace[env, ws_ltrial_idx + c2]
                         )
 
@@ -1229,7 +985,6 @@ struct NewtonSolver(ConstraintSolver):
                     env, ws_ltrial_idx + c
                 ]
 
-        # Apply solved normals (remove warm-start, apply final)
         apply_solved_normals_gpu[
             DTYPE,
             NQ,
@@ -1241,7 +996,6 @@ struct NewtonSolver(ConstraintSolver):
             BATCH,
         ](env, nc, state, workspace)
 
-        # Joint limits
         detect_and_solve_limits_gpu[
             DTYPE,
             NQ,
@@ -1258,7 +1012,6 @@ struct NewtonSolver(ConstraintSolver):
             MAX_EQUALITY,
         ](env, dt, state, model, workspace)
 
-        # Equality constraints
         build_and_solve_equality_gpu[
             DTYPE,
             NQ,
@@ -1276,7 +1029,6 @@ struct NewtonSolver(ConstraintSolver):
             NEWTON_ITERATIONS,
         ](env, state, model, workspace)
 
-        # Friction via PGS
         comptime FRICTION_WS_OFFSET = 18 * MC + 2 * MC * NV + MC * MC
         _solve_friction_pgs_gpu[
             DTYPE,

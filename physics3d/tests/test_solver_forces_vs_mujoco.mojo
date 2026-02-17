@@ -1,6 +1,6 @@
 """Test Solver Forces against MuJoCo reference.
 
-Compares our PrimalNewtonSolver output (qacc, qfrc_constraint, per-row forces)
+Compares our NewtonSolver output (qacc, qfrc_constraint, per-row forces)
 against MuJoCo's after mj_step() for the HalfCheetah model at configurations
 with ground contacts.
 
@@ -46,7 +46,7 @@ from physics3d.constraints.constraint_data import (
     CNSTR_FRICTION_T2,
     CNSTR_LIMIT,
 )
-from physics3d.solver import PrimalNewtonSolver
+from physics3d.solver import NewtonSolver
 from physics3d.solver.primal_common import (
     compute_total_cost_with_D,
     primal_D,
@@ -396,7 +396,7 @@ fn compare_solver_forces(
         qacc0[i] = qacc[i]
 
     # 12. Solve constraints (modifies qacc in-place)
-    PrimalNewtonSolver.solve[CONE_TYPE=ConeType.ELLIPTIC](
+    NewtonSolver.solve[CONE_TYPE=ConeType.ELLIPTIC](
         model, data, M_inv, constraints, qacc, dt
     )
 
@@ -840,7 +840,7 @@ fn main() raises:
     print("=" * 60)
     print("Model: HalfCheetah (NV=", NV, ")")
     print("MuJoCo: cone=elliptic, solver=Newton")
-    print("Our solver: PrimalNewtonSolver (cone=ELLIPTIC)")
+    print("Our solver: NewtonSolver (cone=ELLIPTIC)")
     print(
         "Tolerances: qacc abs=", QACC_ABS_TOL,
         " qfrc abs=", QFRC_ABS_TOL,
