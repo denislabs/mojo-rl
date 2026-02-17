@@ -317,9 +317,9 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         # 8. Build constraints and solve (modifies qacc in-place)
         comptime MAX_ROWS = 11 * MAX_CONTACTS + 2 * NJOINT + 6 * MAX_EQUALITY
         var constraints = ConstraintData[DTYPE, MAX_ROWS, NV]()
-        build_constraints[
-            CONE_TYPE=CONE_TYPE,
-        ](model, data, cdof, M_inv, qacc, dt, constraints)
+        build_constraints[CONE_TYPE=CONE_TYPE,](
+            model, data, cdof, M_inv, qacc, dt, constraints
+        )
 
         # Fill M_hat and qfrc_smooth for primal solvers
         for i in range(NV * NV):
@@ -327,7 +327,9 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         for i in range(NV):
             constraints.qfrc_smooth[i] = f_net[i]
 
-        Self.SOLVER.solve[CONE_TYPE=CONE_TYPE](model, data, M_inv, constraints, qacc, dt)
+        Self.SOLVER.solve[CONE_TYPE=CONE_TYPE](
+            model, data, M_inv, constraints, qacc, dt
+        )
 
         writeback_forces[
             DTYPE,
@@ -877,9 +879,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                 var M_ij = rebind[Scalar[DTYPE]](
                     workspace[env, M_idx + i * NV + j]
                 )
-                var v_j = rebind[Scalar[DTYPE]](
-                    workspace[env, bias_idx + j]
-                )
+                var v_j = rebind[Scalar[DTYPE]](workspace[env, bias_idx + j])
                 sum += M_ij * v_j
             workspace[env, fnet_idx + i] = sum
 
@@ -901,13 +901,17 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                         var old_v = rebind[Scalar[DTYPE]](
                             state[env, qvel_off + dof_adr + d]
                         )
-                        workspace[env, fnet_idx + dof_adr + d] += dt * damp * old_v
+                        workspace[env, fnet_idx + dof_adr + d] += (
+                            dt * damp * old_v
+                        )
                 elif jnt_type == JNT_BALL:
                     for d in range(3):
                         var old_v = rebind[Scalar[DTYPE]](
                             state[env, qvel_off + dof_adr + d]
                         )
-                        workspace[env, fnet_idx + dof_adr + d] += dt * damp * old_v
+                        workspace[env, fnet_idx + dof_adr + d] += (
+                            dt * damp * old_v
+                        )
                 else:
                     var old_v = rebind[Scalar[DTYPE]](
                         state[env, qvel_off + dof_adr]
@@ -948,17 +952,11 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         )
 
         # Step 6: Read v_new from qacc_ws, write to state
-        comptime MAX_QVEL: Scalar[
-            DTYPE
-        ] = 100.0  # Safety clamp
         for i in range(NV):
             var new_qvel = rebind[Scalar[DTYPE]](
                 workspace[env, qacc_ws_idx + i]
             )
-            if new_qvel > MAX_QVEL:
-                new_qvel = MAX_QVEL
-            elif new_qvel < -MAX_QVEL:
-                new_qvel = -MAX_QVEL
+
             state[env, qvel_off + i] = new_qvel
 
         for i in range(NQ):

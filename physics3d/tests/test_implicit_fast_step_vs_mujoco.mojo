@@ -132,7 +132,7 @@ fn compare_step(
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
     mj_model.opt.cone = 1  # mjCONE_ELLIPTIC
     mj_model.opt.solver = 2  # mjSOL_NEWTON
-    mj_model.opt.integrator = 0  # mjINT_EULER (same qH = M+h*D as our ImplicitFast)
+    mj_model.opt.integrator = 3  # mjINT_IMPLICITFAST
     var mj_data = mujoco.MjData(mj_model)
 
     for i in range(NQ):
@@ -172,11 +172,17 @@ fn compare_step(
         if not ok:
             if qpos_fails < 5:
                 print(
-                    "  FAIL qpos[", i, "]",
-                    " ours=", our_val,
-                    " mj=", mj_val,
-                    " abs=", abs_err,
-                    " rel=", rel_err,
+                    "  FAIL qpos[",
+                    i,
+                    "]",
+                    " ours=",
+                    our_val,
+                    " mj=",
+                    mj_val,
+                    " abs=",
+                    abs_err,
+                    " rel=",
+                    rel_err,
                 )
             qpos_fails += 1
             qpos_pass = False
@@ -204,11 +210,17 @@ fn compare_step(
         if not ok:
             if qvel_fails < 5:
                 print(
-                    "  FAIL qvel[", i, "]",
-                    " ours=", our_val,
-                    " mj=", mj_val,
-                    " abs=", abs_err,
-                    " rel=", rel_err,
+                    "  FAIL qvel[",
+                    i,
+                    "]",
+                    " ours=",
+                    our_val,
+                    " mj=",
+                    mj_val,
+                    " abs=",
+                    abs_err,
+                    " rel=",
+                    rel_err,
                 )
             qvel_fails += 1
             qvel_pass = False
@@ -217,17 +229,31 @@ fn compare_step(
 
     if all_pass:
         print(
-            "  ALL OK  qpos_max_abs=", qpos_max_abs,
-            " qpos_max_rel=", qpos_max_rel,
-            " qvel_max_abs=", qvel_max_abs,
-            " qvel_max_rel=", qvel_max_rel,
+            "  ALL OK  qpos_max_abs=",
+            qpos_max_abs,
+            " qpos_max_rel=",
+            qpos_max_rel,
+            " qvel_max_abs=",
+            qvel_max_abs,
+            " qvel_max_rel=",
+            qvel_max_rel,
         )
     else:
         print(
-            "  FAILED  qpos:", qpos_fails, "fails (max_abs=", qpos_max_abs,
-            " max_rel=", qpos_max_rel, ")",
-            " qvel:", qvel_fails, "fails (max_abs=", qvel_max_abs,
-            " max_rel=", qvel_max_rel, ")",
+            "  FAILED  qpos:",
+            qpos_fails,
+            "fails (max_abs=",
+            qpos_max_abs,
+            " max_rel=",
+            qpos_max_rel,
+            ")",
+            " qvel:",
+            qvel_fails,
+            "fails (max_abs=",
+            qvel_max_abs,
+            " max_rel=",
+            qvel_max_rel,
+            ")",
         )
 
     # Print values for inspection
@@ -300,7 +326,9 @@ fn test_moving_with_action() raises -> Bool:
     actions[1] = -0.5
     actions[3] = 1.0
     actions[4] = -0.5
-    return compare_step("Moving with actions (no contacts)", qpos, qvel, actions)
+    return compare_step(
+        "Moving with actions (no contacts)", qpos, qvel, actions
+    )
 
 
 fn test_freefall_10_steps() raises -> Bool:
@@ -309,7 +337,9 @@ fn test_freefall_10_steps() raises -> Bool:
     qpos[1] = 1.5
     var qvel = InlineArray[Float64, NV](fill=0.0)
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    return compare_step("Free fall (10 steps)", qpos, qvel, actions, num_steps=10)
+    return compare_step(
+        "Free fall (10 steps)", qpos, qvel, actions, num_steps=10
+    )
 
 
 fn test_standing_10_steps() raises -> Bool:
@@ -378,7 +408,11 @@ fn main() raises:
 
     print("=" * 60)
     print(
-        "Results:", num_pass, "passed,", num_fail, "failed out of",
+        "Results:",
+        num_pass,
+        "passed,",
+        num_fail,
+        "failed out of",
         num_pass + num_fail,
     )
     if num_fail == 0:

@@ -609,11 +609,13 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         # =====================================================================
         comptime MAX_ROWS = 11 * MAX_CONTACTS + 2 * NJOINT + 6 * MAX_EQUALITY
         var constraints = ConstraintData[DTYPE, MAX_ROWS, NV]()
-        build_constraints[
-            CONE_TYPE=CONE_TYPE,
-        ](model, data, cdof, M_inv, qacc, dt, constraints)
+        build_constraints[CONE_TYPE=CONE_TYPE,](
+            model, data, cdof, M_inv, qacc, dt, constraints
+        )
 
-        Self.SOLVER.solve[CONE_TYPE=CONE_TYPE](model, data, M_inv, constraints, qacc, dt)
+        Self.SOLVER.solve[CONE_TYPE=CONE_TYPE](
+            model, data, M_inv, constraints, qacc, dt
+        )
 
         writeback_forces[
             DTYPE,
@@ -629,17 +631,9 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         # Final integration
         # =====================================================================
         # qvel = v0 + qacc * dt
-        comptime MAX_QVEL: Scalar[DTYPE] = 100.0
         for i in range(NV):
             data.qacc[i] = qacc[i]
             data.qvel[i] = v0[i] + qacc[i] * dt
-
-        # Clamp velocities
-        for i in range(NV):
-            if data.qvel[i] > MAX_QVEL:
-                data.qvel[i] = MAX_QVEL
-            elif data.qvel[i] < -MAX_QVEL:
-                data.qvel[i] = -MAX_QVEL
 
         # Position integration: combine velocity k-vectors with RK4 weights
         # k1_q = v0, k2_q = v0+dt/2*a1, k3_q = v0+dt/2*a2, k4_q = v0+dt*a3

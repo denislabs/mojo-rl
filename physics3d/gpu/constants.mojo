@@ -562,12 +562,12 @@ fn ws_implicit_qderiv_offset(base: Int) -> Int:
 
 
 fn ws_implicit_cdof_origin_offset[NV: Int](base: Int) -> Int:
-    """Offset to cdof_origin (NV*6) within implicit extra workspace."""
+    """Offset to cdof_sc (NV*6) within implicit extra workspace (subtree-COM)."""
     return base + NV * NV
 
 
 fn ws_implicit_cvel_origin_offset[NV: Int](base: Int) -> Int:
-    """Offset to cvel_origin (NBODY*6) within implicit extra workspace."""
+    """Offset to cvel_sc (NBODY*6) within implicit extra workspace (subtree-COM)."""
     return base + NV * NV + NV * 6
 
 

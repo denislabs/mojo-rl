@@ -408,9 +408,9 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         # 8. Build constraints and solve (modifies qacc in-place)
         comptime MAX_ROWS = 11 * MAX_CONTACTS + 2 * NJOINT + 6 * MAX_EQUALITY
         var constraints = ConstraintData[DTYPE, MAX_ROWS, NV]()
-        build_constraints[
-            CONE_TYPE=CONE_TYPE,
-        ](model, data, cdof, M_inv, qacc, dt, constraints)
+        build_constraints[CONE_TYPE=CONE_TYPE,](
+            model, data, cdof, M_inv, qacc, dt, constraints
+        )
 
         if verbose:
             print(
@@ -496,7 +496,9 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         for i in range(NV):
             constraints.qfrc_smooth[i] = f_net[i]
 
-        Self.SOLVER.solve[CONE_TYPE=CONE_TYPE](model, data, M_inv, constraints, qacc, dt)
+        Self.SOLVER.solve[CONE_TYPE=CONE_TYPE](
+            model, data, M_inv, constraints, qacc, dt
+        )
 
         if verbose:
             print("    qacc after solve:", end="")
@@ -576,9 +578,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
 
         # 9b. qfrc_total = qfrc_smooth + qfrc_constraint
         #     where qfrc_smooth = f_net (already computed: qfrc - bias - D*v - K*(q-qref))
-        var qfrc_total = InlineArray[Scalar[DTYPE], V_SIZE](
-            uninitialized=True
-        )
+        var qfrc_total = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
         for i in range(NV):
             qfrc_total[i] = f_net[i] + qfrc_constraint[i]
 
@@ -604,20 +604,9 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         ldl_solve[DTYPE, NV, M_SIZE, V_SIZE](L, D, qfrc_total, qacc)
 
         # 9e. Integrate: qvel += dt * qacc, qpos += dt * qvel
-        comptime MAX_QVEL: Scalar[
-            DTYPE
-        ] = 100.0  # Safety clamp (MuJoCo has no clamp)
-
         for i in range(NV):
             data.qacc[i] = qacc[i]
             data.qvel[i] = data.qvel[i] + qacc[i] * dt
-
-        # Clamp velocities to prevent divergence
-        for i in range(NV):
-            if data.qvel[i] > MAX_QVEL:
-                data.qvel[i] = MAX_QVEL
-            elif data.qvel[i] < -MAX_QVEL:
-                data.qvel[i] = -MAX_QVEL
 
         for i in range(NQ):
             if i < NV:
@@ -1132,9 +1121,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         # 9d. Read re-solved qacc from workspace and integrate
         comptime qacc_ws_idx = ws_qacc_ws_offset[NV, NBODY]()
         var qpos_off = qpos_offset[NQ, NV]()
-        comptime MAX_QVEL: Scalar[
-            DTYPE
-        ] = 100.0  # Safety clamp (MuJoCo has no clamp)
+
         for i in range(NV):
             var old_qvel = rebind[Scalar[DTYPE]](state[env, qvel_off + i])
             var qacc_final = rebind[Scalar[DTYPE]](
@@ -1142,11 +1129,6 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
             )
             state[env, qacc_off + i] = qacc_final
             var new_qvel = old_qvel + qacc_final * dt
-            # Clamp velocity
-            if new_qvel > MAX_QVEL:
-                new_qvel = MAX_QVEL
-            elif new_qvel < -MAX_QVEL:
-                new_qvel = -MAX_QVEL
             state[env, qvel_off + i] = new_qvel
 
         for i in range(NQ):

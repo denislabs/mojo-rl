@@ -425,9 +425,9 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
         # 8. Build constraints and solve (modifies qacc in-place)
         comptime MAX_ROWS = 11 * MAX_CONTACTS + 2 * NJOINT + 6 * MAX_EQUALITY
         var constraints = ConstraintData[DTYPE, MAX_ROWS, NV]()
-        build_constraints[
-            CONE_TYPE=CONE_TYPE,
-        ](model, data, cdof, M_inv, qacc, dt, constraints)
+        build_constraints[CONE_TYPE=CONE_TYPE,](
+            model, data, cdof, M_inv, qacc, dt, constraints
+        )
 
         if verbose:
             print(
@@ -441,7 +441,9 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
                 constraints.num_limits,
             )
 
-        Self.SOLVER.solve[CONE_TYPE=CONE_TYPE](model, data, M_inv, constraints, qacc, dt)
+        Self.SOLVER.solve[CONE_TYPE=CONE_TYPE](
+            model, data, M_inv, constraints, qacc, dt
+        )
 
         if verbose:
             print("    qacc after solve:", end="")
@@ -459,22 +461,20 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
             MAX_ROWS,
         ](constraints, data)
 
-        # 9. Integrate: qvel = old_qvel + constrained_qacc * dt
-        comptime MAX_QVEL: Scalar[DTYPE] = 100.0
+        # 9. Integrate: semi-implicit (symplectic) Euler
+        # MuJoCo 3.3.6 uses symplectic Euler for ALL integrators:
+        #   qvel += dt * qacc
+        #   qpos += dt * qvel_new
+
+        # Velocity update
         for i in range(NV):
             data.qacc[i] = qacc[i]
             data.qvel[i] = data.qvel[i] + qacc[i] * dt
 
-        # 9b. Clamp velocities
-        for i in range(NV):
-            if data.qvel[i] > MAX_QVEL:
-                data.qvel[i] = MAX_QVEL
-            elif data.qvel[i] < -MAX_QVEL:
-                data.qvel[i] = -MAX_QVEL
-
+        # Position update: symplectic Euler (use new velocity)
         for i in range(NQ):
             if i < NV:
-                data.qpos[i] = data.qpos[i] + data.qvel[i] * dt
+                data.qpos[i] = data.qpos[i] + dt * data.qvel[i]
 
         # 10. Normalize quaternions
         normalize_qpos_quaternions(model, data)

@@ -1,13 +1,23 @@
-"""Test ImplicitFast Full Step with Contacts: Mojo Engine vs MuJoCo.
+"""Test Full Implicit Step (no contacts): Mojo Engine vs MuJoCo.
 
-Compares qpos/qvel after running physics steps using ImplicitFastIntegrator
-on CPU vs MuJoCo Euler (same qH = M+h*D, avoids 3.3.6 Coriolis bug).
+Compares qpos/qvel after running physics steps using ImplicitIntegrator
+on CPU vs MuJoCo Implicit integrator (opt.integrator=2 = mjINT_IMPLICIT).
 
-Tests scenarios where the robot makes ground contact, exercising the
-full constraint solver pipeline (contact detection + Jacobians + solver).
+Our ImplicitIntegrator uses M_hat = M + armature - dt * qDeriv where qDeriv
+includes the FULL RNE velocity derivative (d(Coriolis)/d(qvel)), making
+M_hat non-symmetric. Uses LU factorization instead of LDL.
+
+MuJoCo reference: opt.integrator=2 (mjINT_IMPLICIT) which also includes
+the full RNE velocity derivative via mjd_rne_vel.
+
+Note: MuJoCo 3.3.6 enum values:
+  0 = mjINT_EULER
+  1 = mjINT_RK4
+  2 = mjINT_IMPLICIT (full, with RNE derivative)
+  3 = mjINT_IMPLICITFAST (no RNE derivative)
 
 Run with:
-    cd mojo-rl && pixi run mojo run physics3d/tests/test_implicit_fast_step_contact_vs_mujoco.mojo
+    cd mojo-rl && pixi run mojo run physics3d/tests/test_implicit_step_vs_mujoco.mojo
 """
 
 from python import Python, PythonObject
@@ -15,7 +25,7 @@ from math import abs
 from collections import InlineArray
 
 from physics3d.types import Model, Data, _max_one, ConeType
-from physics3d.integrator.implicit_fast_integrator import ImplicitFastIntegrator
+from physics3d.integrator.implicit_integrator import ImplicitIntegrator
 from physics3d.solver import NewtonSolver
 from physics3d.kinematics.forward_kinematics import forward_kinematics
 from physics3d.dynamics.mass_matrix import compute_body_invweight0
@@ -34,17 +44,15 @@ from envs.half_cheetah.half_cheetah_def import (
 # =============================================================================
 
 comptime DTYPE = DType.float64
-comptime NQ = HalfCheetahModel.NQ
-comptime NV = HalfCheetahModel.NV
+comptime NQ = HalfCheetahModel.NQ  # 9
+comptime NV = HalfCheetahModel.NV  # 9
 comptime NBODY = HalfCheetahModel.NBODY
 comptime NJOINT = HalfCheetahModel.NJOINT
 comptime NGEOM = HalfCheetahModel.NGEOM
 comptime MAX_CONTACTS = HalfCheetahParams[DTYPE].MAX_CONTACTS
 comptime ACTION_DIM = HalfCheetahParams[DTYPE].ACTION_DIM
 
-# Tolerances — relaxed for contact scenarios. The 7-16% error comes from
-# 1-5% no-contact drift (subtle passive force differences) amplified by
-# the nonlinear constraint solver with 6-10 simultaneous contacts.
+# Tolerances — tight since qDeriv is now verified to match MuJoCo.
 comptime QPOS_ABS_TOL: Float64 = 1e-6
 comptime QPOS_REL_TOL: Float64 = 1e-4
 comptime QVEL_ABS_TOL: Float64 = 1e-4
@@ -64,10 +72,9 @@ fn compare_step(
     num_steps: Int = 1,
 ) raises -> Bool:
     """Run num_steps physics steps in both engines, compare final qpos/qvel."""
-    print("--- Test:", test_name, "---")
-    print("  Steps:", num_steps)
+    print("--- Test:", test_name, "(", num_steps, "steps) ---")
 
-    # === Our engine (ImplicitFast + Newton) ===
+    # === Our engine (Implicit + Newton) ===
     var model = Model[
         DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, ConeType.ELLIPTIC
     ](
@@ -114,12 +121,11 @@ fn compare_step(
         HalfCheetahActuators.apply_actions[
             DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS
         ](data, action_list)
-        # Use ImplicitFastIntegrator WITH contacts (NGEOM=NGEOM)
-        ImplicitFastIntegrator[SOLVER=NewtonSolver].step[NGEOM=NGEOM](
+        ImplicitIntegrator[SOLVER=NewtonSolver].step[NGEOM=NGEOM](
             model, data
         )
 
-    # === MuJoCo reference (ImplicitFast) ===
+    # === MuJoCo reference (opt.integrator=1 = mjINT_IMPLICIT) ===
     var mujoco = Python.import_module("mujoco")
 
     var xml_path = (
@@ -128,7 +134,7 @@ fn compare_step(
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
     mj_model.opt.cone = 1  # mjCONE_ELLIPTIC
     mj_model.opt.solver = 2  # mjSOL_NEWTON
-    mj_model.opt.integrator = 3  # mjINT_IMPLICITFAST
+    mj_model.opt.integrator = 2  # mjINT_IMPLICIT (full implicit with RNE vel derivative)
     var mj_data = mujoco.MjData(mj_model)
 
     for i in range(NQ):
@@ -168,17 +174,11 @@ fn compare_step(
         if not ok:
             if qpos_fails < 5:
                 print(
-                    "  FAIL qpos[",
-                    i,
-                    "]",
-                    " ours=",
-                    our_val,
-                    " mj=",
-                    mj_val,
-                    " abs=",
-                    abs_err,
-                    " rel=",
-                    rel_err,
+                    "  FAIL qpos[", i, "]",
+                    " ours=", our_val,
+                    " mj=", mj_val,
+                    " abs=", abs_err,
+                    " rel=", rel_err,
                 )
             qpos_fails += 1
             qpos_pass = False
@@ -206,17 +206,11 @@ fn compare_step(
         if not ok:
             if qvel_fails < 5:
                 print(
-                    "  FAIL qvel[",
-                    i,
-                    "]",
-                    " ours=",
-                    our_val,
-                    " mj=",
-                    mj_val,
-                    " abs=",
-                    abs_err,
-                    " rel=",
-                    rel_err,
+                    "  FAIL qvel[", i, "]",
+                    " ours=", our_val,
+                    " mj=", mj_val,
+                    " abs=", abs_err,
+                    " rel=", rel_err,
                 )
             qvel_fails += 1
             qvel_pass = False
@@ -225,31 +219,17 @@ fn compare_step(
 
     if all_pass:
         print(
-            "  ALL OK  qpos_max_abs=",
-            qpos_max_abs,
-            " qpos_max_rel=",
-            qpos_max_rel,
-            " qvel_max_abs=",
-            qvel_max_abs,
-            " qvel_max_rel=",
-            qvel_max_rel,
+            "  ALL OK  qpos_max_abs=", qpos_max_abs,
+            " qpos_max_rel=", qpos_max_rel,
+            " qvel_max_abs=", qvel_max_abs,
+            " qvel_max_rel=", qvel_max_rel,
         )
     else:
         print(
-            "  FAILED  qpos:",
-            qpos_fails,
-            "fails (max_abs=",
-            qpos_max_abs,
-            " max_rel=",
-            qpos_max_rel,
-            ")",
-            " qvel:",
-            qvel_fails,
-            "fails (max_abs=",
-            qvel_max_abs,
-            " max_rel=",
-            qvel_max_rel,
-            ")",
+            "  FAILED  qpos:", qpos_fails, "fails (max_abs=", qpos_max_abs,
+            " max_rel=", qpos_max_rel, ")",
+            " qvel:", qvel_fails, "fails (max_abs=", qvel_max_abs,
+            " max_rel=", qvel_max_rel, ")",
         )
 
     # Print values for inspection
@@ -269,7 +249,6 @@ fn compare_step(
     for i in range(NV):
         print(" ", Float64(py=mj_qvel[i]), end="")
     print()
-
     print("  Our contacts:", Int(data.num_contacts))
     var mj_ncon = Int(py=mj_data.ncon)
     print("  MJ  contacts:", mj_ncon)
@@ -278,24 +257,23 @@ fn compare_step(
 
 
 # =============================================================================
-# Test cases — all involve ground contact
+# Test cases — no ground contact (free flight)
 # =============================================================================
 
 
-fn test_ground_contact_default() raises -> Bool:
-    """Robot at default height — feet may touch ground (0-2 contacts)."""
+fn test_freefall() raises -> Bool:
+    """Free fall from height — no contacts expected."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
-    # rootz=0 means body_pos height (0.7m), feet near ground
+    qpos[1] = 1.5  # rootz high enough to avoid ground contact
     var qvel = InlineArray[Float64, NV](fill=0.0)
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    return compare_step(
-        "Default height (feet near ground)", qpos, qvel, actions
-    )
+    return compare_step("Free fall (no contacts)", qpos, qvel, actions)
 
 
-fn test_ground_contact_default_with_action() raises -> Bool:
-    """Robot at default height with actions."""
+fn test_standing_with_action() raises -> Bool:
+    """Standing with moderate actions."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
+    qpos[1] = 1.5  # high enough for no contacts
     var qvel = InlineArray[Float64, NV](fill=0.0)
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
     actions[0] = 0.5
@@ -304,25 +282,93 @@ fn test_ground_contact_default_with_action() raises -> Bool:
     actions[3] = 0.5
     actions[4] = -0.3
     actions[5] = 0.1
-    return compare_step("Default height with actions", qpos, qvel, actions)
+    return compare_step("Actions (no contacts)", qpos, qvel, actions)
 
 
-fn test_ground_contact_mild() raises -> Bool:
-    """Robot slightly low — few contacts (rootz=-0.3)."""
+fn test_moving_with_action() raises -> Bool:
+    """Moving with velocity + actions, no contacts.
+
+    This is the key test for the full implicit integrator — with nonzero
+    velocities, the RNE velocity derivative (Coriolis terms) is nonzero,
+    making qDeriv dense and M_hat non-symmetric. ImplicitFast would get
+    different results because it skips these terms.
+    """
     var qpos = InlineArray[Float64, NQ](fill=0.0)
-    qpos[1] = -0.3  # rootz moderately low
+    qpos[1] = 1.5  # high
+    qpos[2] = 0.1  # slight pitch
+    qpos[3] = -0.3  # bthigh
+    qpos[6] = 0.4  # fthigh
+    var qvel = InlineArray[Float64, NV](fill=0.0)
+    qvel[0] = 2.0  # rootx vel
+    qvel[2] = 0.5  # rooty vel
+    qvel[3] = -1.0  # bthigh vel
+    qvel[6] = 1.2  # fthigh vel
+    var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
+    actions[0] = 1.0
+    actions[1] = -0.5
+    actions[3] = 1.0
+    actions[4] = -0.5
+    return compare_step("Moving with actions (no contacts)", qpos, qvel, actions)
+
+
+fn test_fast_spinning() raises -> Bool:
+    """High angular velocities — maximizes Coriolis/gyroscopic effects.
+
+    This test has high joint velocities which produce significant RNE
+    velocity derivative terms, maximizing the difference between full
+    implicit and implicit-fast integrators.
+    """
+    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    qpos[1] = 1.5  # high
+    qpos[2] = 0.3  # pitch
+    qpos[3] = -0.5  # bthigh bent
+    qpos[4] = 0.4  # bshin
+    qpos[6] = 0.5  # fthigh bent
+    qpos[7] = -0.3  # fshin
+    var qvel = InlineArray[Float64, NV](fill=0.0)
+    qvel[0] = 3.0  # rootx vel
+    qvel[2] = 2.0  # rooty angular vel
+    qvel[3] = -3.0  # bthigh fast
+    qvel[4] = 2.5  # bshin fast
+    qvel[6] = 3.0  # fthigh fast
+    qvel[7] = -2.0  # fshin fast
+    var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
+    actions[0] = 1.0
+    actions[1] = -1.0
+    actions[2] = 0.5
+    actions[3] = 1.0
+    actions[4] = -1.0
+    actions[5] = 0.5
+    return compare_step("Fast spinning (high angular vel)", qpos, qvel, actions)
+
+
+fn test_freefall_10_steps() raises -> Bool:
+    """Free fall 10 steps — accumulates per-step drift."""
+    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    qpos[1] = 1.5
     var qvel = InlineArray[Float64, NV](fill=0.0)
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    return compare_step("Mild contact (rootz=-0.3)", qpos, qvel, actions)
+    return compare_step("Free fall (10 steps)", qpos, qvel, actions, num_steps=10)
 
 
-fn test_ground_contact_deep() raises -> Bool:
-    """Robot deep penetration — many contacts (rootz=-0.45)."""
+fn test_moving_10_steps() raises -> Bool:
+    """Moving with velocity 10 steps — Coriolis effects accumulate."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
-    qpos[1] = -0.45  # rootz deep — 10 contacts
+    qpos[1] = 1.5
+    qpos[2] = 0.1
+    qpos[3] = -0.3
+    qpos[6] = 0.4
     var qvel = InlineArray[Float64, NV](fill=0.0)
+    qvel[0] = 2.0
+    qvel[2] = 0.5
+    qvel[3] = -1.0
+    qvel[6] = 1.2
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    return compare_step("Deep contact (rootz=-0.45)", qpos, qvel, actions)
+    actions[0] = 0.5
+    actions[3] = 0.5
+    return compare_step(
+        "Moving with actions (10 steps)", qpos, qvel, actions, num_steps=10
+    )
 
 
 # =============================================================================
@@ -332,10 +378,10 @@ fn test_ground_contact_deep() raises -> Bool:
 
 fn main() raises:
     print("=" * 60)
-    print("ImplicitFast Full Step (contacts): Mojo vs MuJoCo")
+    print("Full Implicit Step (no contacts): Mojo vs MuJoCo")
     print("=" * 60)
     print("Model: HalfCheetah (NQ=9, NV=9)")
-    print("Integrator: ImplicitFast (ref: MuJoCo Euler, same qH=M+h*D)")
+    print("Integrator: Full Implicit (ref: MuJoCo opt.integrator=2)")
     print("Solver: Newton (opt.solver=2)")
     print("Cone: elliptic (opt.cone=1)")
     print("Precision: float64")
@@ -346,25 +392,37 @@ fn main() raises:
     var num_pass = 0
     var num_fail = 0
 
-    if test_ground_contact_default():
+    if test_freefall():
         num_pass += 1
     else:
         num_fail += 1
     print()
 
-    if test_ground_contact_default_with_action():
+    if test_standing_with_action():
         num_pass += 1
     else:
         num_fail += 1
     print()
 
-    if test_ground_contact_mild():
+    if test_moving_with_action():
         num_pass += 1
     else:
         num_fail += 1
     print()
 
-    if test_ground_contact_deep():
+    if test_fast_spinning():
+        num_pass += 1
+    else:
+        num_fail += 1
+    print()
+
+    if test_freefall_10_steps():
+        num_pass += 1
+    else:
+        num_fail += 1
+    print()
+
+    if test_moving_10_steps():
         num_pass += 1
     else:
         num_fail += 1
@@ -372,11 +430,7 @@ fn main() raises:
 
     print("=" * 60)
     print(
-        "Results:",
-        num_pass,
-        "passed,",
-        num_fail,
-        "failed out of",
+        "Results:", num_pass, "passed,", num_fail, "failed out of",
         num_pass + num_fail,
     )
     if num_fail == 0:

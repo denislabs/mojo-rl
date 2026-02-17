@@ -31,11 +31,17 @@ Isolate each stage first.
 | Euler          | PGS (dual)         | Elliptic | DONE          | —          | (tests only)     |
 | ImplicitFast   | Newton             | Elliptic | DONE          | DONE       | HalfCheetah      |
 | ImplicitFast   | PGS                | Elliptic | N/A           | DONE       | Hopper (Default) |
+| Implicit (full)| PGS                | Elliptic | DONE          | DONE       | (tests only)     |
 
-MuJoCo comparison uses `opt.integrator=0` (Euler) for both Euler and ImplicitFast tests.
-Our ImplicitFast uses `qH = M + arm + dt*D` (no Coriolis), which is identical to MuJoCo Euler's qH.
-MuJoCo 3.3.6's ImplicitFast (`opt.integrator=2`) includes Coriolis velocity derivatives that
-3.4.1+ explicitly skips — using Euler as reference avoids this version-dependent behavior.
+MuJoCo comparison uses `opt.integrator=0` (Euler) for Euler tests, `opt.integrator=3` (ImplicitFast)
+for ImplicitFast tests, and `opt.integrator=2` (Implicit) for full Implicit tests.
+
+**CRITICAL: MuJoCo 3.3.6 integrator enum values:**
+- `0` = mjINT_EULER
+- `1` = mjINT_RK4 (NOT Implicit!)
+- `2` = mjINT_IMPLICIT
+- `3` = mjINT_IMPLICITFAST
+
 ImplicitFast+PGS has no MuJoCo comparison because MuJoCo only allows Newton solver with implicitfast.
 
 ### Stage 1: Dynamics (no contacts) — Euler + Newton + Elliptic
@@ -75,14 +81,33 @@ ImplicitFast+PGS has no MuJoCo comparison because MuJoCo only allows Newton solv
 **ImplicitFast MuJoCo comparison notes:**
 - No contacts: match within ~5.6e-6 (machine precision)
 - With contacts: match within ~7.2e-6 (machine precision)
-- Comparison uses MuJoCo Euler (`opt.integrator=0`) which has the same `qH = M + h*D` formula
+- Comparison now uses MuJoCo ImplicitFast (`opt.integrator=3`) directly
 - **Bug found and fixed**: Constraint solver was using `M_inv` from `M + arm + dt*D`, but MuJoCo's
   constraint solver always uses `M + arm` only. Fix: use `M + arm` for constraint solver, then
   post-constraint re-solve with `M_hat = M + arm + dt*D` (matching MuJoCo's `mj_implicitSkip`).
   This reduced contact errors from ~15% to ~7e-6.
 - **Earlier bug fixed**: `constraints.M_hat` was not filled by ImplicitFastIntegrator. The primal
   Newton solver used zero M_hat, causing the Hessian H = 0 + J^T*D*J (missing mass matrix term).
-  Fix: copy M (which already includes arm) to constraints.M_hat before calling solver.
+
+### Stage 5: Implicit (full) integrator
+
+| Component                        | Integrator       | Solver       | MuJoCo vs CPU | CPU vs GPU | Notes |
+|----------------------------------|------------------|--------------|:-------------:|:----------:|-------|
+| Full Step no contact             | Implicit (full)  | PGS          | DONE          | DONE       | MuJoCo: 6 configs, err~5.9e-6. GPU: 8 configs (float32). |
+| qDeriv finite diff               | Implicit (full)  | —            | DONE          | —          | RNE velocity derivative matches finite diff. |
+| qDeriv vs MuJoCo                 | Implicit (full)  | —            | DONE          | —          | qDeriv matches MuJoCo's efc_D at nonzero velocity. |
+
+**Implicit (full) integrator notes:**
+- Uses `M_hat = M + arm + dt*(D - qDeriv)` where `qDeriv = d(qfrc_bias)/d(qvel)` (RNE velocity derivative)
+- Compared against MuJoCo `opt.integrator=2` (mjINT_IMPLICIT)
+- **Critical enum bug found**: Previous code used `opt.integrator=1` thinking it was Implicit,
+  but `1` = mjINT_RK4. Fixed to `opt.integrator=2`. This was the root cause of "Implicit differs
+  from Euler at zero velocity" mystery.
+- ALL MuJoCo integrators use symplectic Euler for position: `qpos += dt * qvel_new` (NOT midpoint)
+- At zero velocity, qDeriv = 0 (Coriolis is quadratic in v), so Implicit == ImplicitFast == Euler
+- **GPU subtree-COM convention**: `compute_rne_vel_derivative_gpu` rewritten to use subtree-COM
+  convention matching the CPU version. Eliminates frame transfers in spatial propagation.
+  Validated by CPU vs GPU test (8/8 pass, nonzero vel err ~2.8e-4 in float32).
 
 ---
 
@@ -104,8 +129,11 @@ ImplicitFast+PGS has no MuJoCo comparison because MuJoCo only allows Newton solv
 | `test_cg_vs_mujoco.mojo` | CG solver forces vs MuJoCo CG | PASS (4/4) | 4 (low static, low moving, very low, bent) | qacc/qfrc: 5e-2. Cost matches to ~12 digits. |
 | `test_pgs_vs_mujoco.mojo` | PGS (dual) solver forces vs MuJoCo PGS | PASS (4/4) | 4 (low static, low moving, very low, bent) | qacc/qfrc: 1e-1. Forces match within ~3.6e-3. |
 | `test_full_step_contact_vs_mujoco.mojo` | Full step with contacts | PASS | 2 (ground contact, with actions) | qpos: 2e-2, qvel: 2e-1 (actual err ~1e-5) |
-| `test_implicit_fast_step_vs_mujoco.mojo` | ImplicitFast full step no contacts (ref: MuJoCo Euler) | PASS | 5 (free fall, actions, moving, 10-step) | qpos: 1e-6, qvel: 1e-4 (actual err ~5.6e-6) |
-| `test_implicit_fast_step_contact_vs_mujoco.mojo` | ImplicitFast full step with contacts (ref: MuJoCo Euler) | PASS | 4 (default, actions, mild, deep) | qpos: 1e-6, qvel: 1e-4 (actual err ~7.2e-6) |
+| `test_implicit_fast_step_vs_mujoco.mojo` | ImplicitFast full step no contacts (ref: MuJoCo ImplicitFast) | PASS | 5 (free fall, actions, moving, 10-step) | qpos: 1e-6, qvel: 1e-4 (actual err ~5.6e-6) |
+| `test_implicit_fast_step_contact_vs_mujoco.mojo` | ImplicitFast full step with contacts (ref: MuJoCo ImplicitFast) | PASS | 4 (default, actions, mild, deep) | qpos: 1e-6, qvel: 1e-4 (actual err ~7.2e-6) |
+| `test_implicit_step_vs_mujoco.mojo` | Implicit (full) step no contacts (ref: MuJoCo Implicit) | PASS | 6 (free fall, zero vel+actions, moving+actions, fast spinning, 10-step variants) | qpos: 1e-4, qvel: 1e-2 (actual err ~5.9e-6) |
+| `test_qderiv_finite_diff.mojo` | RNE velocity derivative vs finite differences | PASS | HalfCheetah nonzero vel | max err ~1e-6 |
+| `test_qderiv_vs_mujoco.mojo` | qDeriv vs MuJoCo reference | PASS | HalfCheetah nonzero vel | matches MuJoCo |
 
 ### CPU vs GPU Comparison Tests
 

@@ -374,19 +374,17 @@ fn compute_rne_vel_derivative[
 ) where DTYPE.is_floating_point():
     """Compute d(qfrc_bias)/d(qvel) and subtract from qDeriv.
 
-    This is the dense version matching MuJoCo's mjd_rne_vel_dense().
-    Internally converts to body-origin convention for clean propagation,
-    then projects back to joint space.
+    Uses subtree-COM convention matching MuJoCo's mjd_rne_vel_dense().
+    All spatial quantities (cinert, cdof, cvel) are expressed about a single
+    shared reference point (subtree COM of tree root), eliminating all
+    frame transfers in propagation and backward passes.
 
     The result is SUBTRACTED from qDeriv (matching MuJoCo convention):
       qDeriv[i,j] -= d(bias[i])/d(qvel[j])
 
-    For passive systems, call with qDeriv initialized to the diagonal
-    damping terms: qDeriv[i,i] = -damping[i].
-
     Args:
         model: Static model configuration.
-        data: Current state (xpos, xquat, xvel, xangvel, xipos from FK).
+        data: Current state (xpos, xquat, xipos from FK).
         cdof: Spatial motion axes per DOF at body COM (6*NV, from compute_cdof).
         qDeriv: NV×NV matrix. RNE derivative is SUBTRACTED from this.
     """
@@ -394,86 +392,35 @@ fn compute_rne_vel_derivative[
     comptime V_SIZE = _max_one[NV]()
     comptime BODY6_SIZE = _max_one[NBODY * 6]()
     comptime CINERT_SIZE = _max_one[NBODY * 10]()
-    comptime CDOF_O_SIZE = _max_one[NV * 6]()
+    comptime CDOF_SC_SIZE = _max_one[NV * 6]()
     comptime DCVEL_SIZE = _max_one[NBODY * 6 * NV]()
     comptime DCDOFDOT_SIZE = _max_one[NV * 6 * NV]()
 
     # =========================================================================
-    # Step 0: Precompute body-origin quantities
+    # Step 0: Compute subtree-COM and reexpress quantities at that point
     # =========================================================================
 
-    # --- cdof at body origin ---
-    # cdof_origin[d] = cdof_com[d] shifted from xipos to xpos:
-    #   ang: same, lin: += ang x (xpos - xipos)
-    var cdof_origin = InlineArray[Scalar[DTYPE], CDOF_O_SIZE](
-        uninitialized=True
-    )
-    for d in range(NV):
-        cdof_origin[d * 6 + 0] = cdof[d * 6 + 0]
-        cdof_origin[d * 6 + 1] = cdof[d * 6 + 1]
-        cdof_origin[d * 6 + 2] = cdof[d * 6 + 2]
-        # Will be set per-joint below
-        cdof_origin[d * 6 + 3] = cdof[d * 6 + 3]
-        cdof_origin[d * 6 + 4] = cdof[d * 6 + 4]
-        cdof_origin[d * 6 + 5] = cdof[d * 6 + 5]
-
-    for j in range(model.num_joints):
-        var joint = model.joints[j]
-        var body = joint.body_id
-        var dof_adr = joint.dof_adr
-
-        # Offset from body origin to body COM (in world frame)
-        var cx = data.xipos[body * 3 + 0] - data.xpos[body * 3 + 0]
-        var cy = data.xipos[body * 3 + 1] - data.xpos[body * 3 + 1]
-        var cz = data.xipos[body * 3 + 2] - data.xpos[body * 3 + 2]
-
-        # dx = xpos - xipos = -c
-        var dx = -cx
-        var dy = -cy
-        var dz = -cz
-
-        var num_dof = 1
-        if joint.jnt_type == JNT_FREE:
-            num_dof = 6
-        elif joint.jnt_type == JNT_BALL:
-            num_dof = 3
-
-        for d in range(num_dof):
-            var dof = dof_adr + d
-            var ax = cdof[dof * 6 + 0]
-            var ay = cdof[dof * 6 + 1]
-            var az = cdof[dof * 6 + 2]
-
-            # lin_origin = lin_com + ang x (xpos - xipos) = lin_com + ang x dx
-            cdof_origin[dof * 6 + 3] = cdof[dof * 6 + 3] + ay * dz - az * dy
-            cdof_origin[dof * 6 + 4] = cdof[dof * 6 + 4] + az * dx - ax * dz
-            cdof_origin[dof * 6 + 5] = cdof[dof * 6 + 5] + ax * dy - ay * dx
-
-    # --- cvel at body origin ---
-    # v_origin = v_COM + w x (xpos - xipos) = xvel + xangvel x (xpos - xipos)
-    var cvel_origin = InlineArray[Scalar[DTYPE], BODY6_SIZE](uninitialized=True)
-    for i in range(BODY6_SIZE):
-        cvel_origin[i] = Scalar[DTYPE](0)
-
+    # --- Compute subtree COM (weighted average of all body COMs) ---
+    # For single-tree robots, all bodies share one subtree_com.
+    var total_mass: Scalar[DTYPE] = 0
+    var com_x: Scalar[DTYPE] = 0
+    var com_y: Scalar[DTYPE] = 0
+    var com_z: Scalar[DTYPE] = 0
     for b in range(NBODY):
-        var wx = data.xangvel[b * 3 + 0]
-        var wy = data.xangvel[b * 3 + 1]
-        var wz = data.xangvel[b * 3 + 2]
+        var m = model.body_mass[b]
+        total_mass += m
+        com_x += m * data.xipos[b * 3 + 0]
+        com_y += m * data.xipos[b * 3 + 1]
+        com_z += m * data.xipos[b * 3 + 2]
+    if total_mass > Scalar[DTYPE](0):
+        com_x = com_x / total_mass
+        com_y = com_y / total_mass
+        com_z = com_z / total_mass
 
-        var dx = data.xpos[b * 3 + 0] - data.xipos[b * 3 + 0]
-        var dy = data.xpos[b * 3 + 1] - data.xipos[b * 3 + 1]
-        var dz = data.xpos[b * 3 + 2] - data.xipos[b * 3 + 2]
-
-        cvel_origin[b * 6 + 0] = wx
-        cvel_origin[b * 6 + 1] = wy
-        cvel_origin[b * 6 + 2] = wz
-        cvel_origin[b * 6 + 3] = data.xvel[b * 3 + 0] + wy * dz - wz * dy
-        cvel_origin[b * 6 + 4] = data.xvel[b * 3 + 1] + wz * dx - wx * dz
-        cvel_origin[b * 6 + 5] = data.xvel[b * 3 + 2] + wx * dy - wy * dx
-
-    # --- cinert at body origin (10-element spatial inertia) ---
-    # I_origin = I_COM + m*(c·c*I - c*c^T)  (parallel axis theorem)
-    # h = m * c  (first moment)
+    # --- cinert at subtree COM (10-element spatial inertia per body) ---
+    # cinert[b] = spatial inertia of body b expressed at subtree COM
+    # I_com_point = I_COM + m*(d·d*I - d*d^T) where d = xipos[b] - subtree_com
+    # h = m * d (first moment about subtree COM)
     var cinert = InlineArray[Scalar[DTYPE], CINERT_SIZE](uninitialized=True)
     for i in range(CINERT_SIZE):
         cinert[i] = Scalar[DTYPE](0)
@@ -481,12 +428,12 @@ fn compute_rne_vel_derivative[
     for b in range(NBODY):
         var mass = model.body_mass[b]
 
-        # COM offset from body origin (in world frame)
-        var cx = data.xipos[b * 3 + 0] - data.xpos[b * 3 + 0]
-        var cy = data.xipos[b * 3 + 1] - data.xpos[b * 3 + 1]
-        var cz = data.xipos[b * 3 + 2] - data.xpos[b * 3 + 2]
+        # Offset from subtree COM to body COM
+        var dx = data.xipos[b * 3 + 0] - com_x
+        var dy = data.xipos[b * 3 + 1] - com_y
+        var dz = data.xipos[b * 3 + 2] - com_z
 
-        # World-frame inertia at COM (recompute from body data)
+        # World-frame inertia at body COM
         var Ixx_local = model.body_inertia[b * 3 + 0]
         var Iyy_local = model.body_inertia[b * 3 + 1]
         var Izz_local = model.body_inertia[b * 3 + 2]
@@ -517,7 +464,7 @@ fn compute_rne_vel_derivative[
         var r12 = Scalar[DTYPE](2) * (qy * qz - qw * qx)
         var r22 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qx * qx + qy * qy)
 
-        # I_world at COM: R @ diag(Ixx,Iyy,Izz) @ R^T
+        # I_world at body COM: R @ diag(Ixx,Iyy,Izz) @ R^T
         var Iw_xx = (
             Ixx_local * r00 * r00
             + Iyy_local * r01 * r01
@@ -549,18 +496,63 @@ fn compute_rne_vel_derivative[
             + Izz_local * r12 * r22
         )
 
-        # Parallel axis: I_origin = I_COM + m*(c·c*I - c*c^T)
-        var c_sq = cx * cx + cy * cy + cz * cz
-        cinert[b * 10 + 0] = Iw_xx + mass * (c_sq - cx * cx)  # Ixx
-        cinert[b * 10 + 1] = Iw_yy + mass * (c_sq - cy * cy)  # Iyy
-        cinert[b * 10 + 2] = Iw_zz + mass * (c_sq - cz * cz)  # Izz
-        cinert[b * 10 + 3] = Iw_xy - mass * cx * cy  # Ixy
-        cinert[b * 10 + 4] = Iw_xz - mass * cx * cz  # Ixz
-        cinert[b * 10 + 5] = Iw_yz - mass * cy * cz  # Iyz
-        cinert[b * 10 + 6] = mass * cx  # h_x = m*cx
-        cinert[b * 10 + 7] = mass * cy  # h_y = m*cy
-        cinert[b * 10 + 8] = mass * cz  # h_z = m*cz
+        # Parallel axis: I_subtree_com = I_COM + m*(d·d*I - d*d^T)
+        var d_sq = dx * dx + dy * dy + dz * dz
+        cinert[b * 10 + 0] = Iw_xx + mass * (d_sq - dx * dx)  # Ixx
+        cinert[b * 10 + 1] = Iw_yy + mass * (d_sq - dy * dy)  # Iyy
+        cinert[b * 10 + 2] = Iw_zz + mass * (d_sq - dz * dz)  # Izz
+        cinert[b * 10 + 3] = Iw_xy - mass * dx * dy  # Ixy
+        cinert[b * 10 + 4] = Iw_xz - mass * dx * dz  # Ixz
+        cinert[b * 10 + 5] = Iw_yz - mass * dy * dz  # Iyz
+        cinert[b * 10 + 6] = mass * dx  # h_x = m*(xipos_x - com_x)
+        cinert[b * 10 + 7] = mass * dy  # h_y
+        cinert[b * 10 + 8] = mass * dz  # h_z
         cinert[b * 10 + 9] = mass
+
+    # --- cdof at subtree COM ---
+    # cdof_sc[d].ang = cdof[d].ang (same)
+    # cdof_sc[d].lin = cdof[d].lin + ang × (subtree_com - xipos[body])
+    #               = ang × (subtree_com - anchor)  [matches MuJoCo mju_dofCom]
+    var cdof_sc = InlineArray[Scalar[DTYPE], CDOF_SC_SIZE](uninitialized=True)
+
+    # Build dof_bodyid lookup first (needed for cdof_sc and projection)
+    comptime DOFBODY_SIZE = _max_one[NV]()
+    var dof_bodyid = InlineArray[Int, DOFBODY_SIZE](uninitialized=True)
+    for i in range(NV):
+        dof_bodyid[i] = 0
+    for j in range(model.num_joints):
+        var joint = model.joints[j]
+        var dof_adr = joint.dof_adr
+        var num_dof = 1
+        if joint.jnt_type == JNT_FREE:
+            num_dof = 6
+        elif joint.jnt_type == JNT_BALL:
+            num_dof = 3
+        for d in range(num_dof):
+            dof_bodyid[dof_adr + d] = joint.body_id
+
+    for d in range(NV):
+        var body = dof_bodyid[d]
+        var ax = cdof[d * 6 + 0]
+        var ay = cdof[d * 6 + 1]
+        var az = cdof[d * 6 + 2]
+        cdof_sc[d * 6 + 0] = ax
+        cdof_sc[d * 6 + 1] = ay
+        cdof_sc[d * 6 + 2] = az
+        # lin_sc = lin_com + ang × (subtree_com - xipos[body])
+        var sx = com_x - data.xipos[body * 3 + 0]
+        var sy = com_y - data.xipos[body * 3 + 1]
+        var sz = com_z - data.xipos[body * 3 + 2]
+        cdof_sc[d * 6 + 3] = cdof[d * 6 + 3] + ay * sz - az * sy
+        cdof_sc[d * 6 + 4] = cdof[d * 6 + 4] + az * sx - ax * sz
+        cdof_sc[d * 6 + 5] = cdof[d * 6 + 5] + ax * sy - ay * sx
+
+    # --- cvel at subtree COM ---
+    # At subtree COM, cvel propagation is simple copy from parent (NO transfer).
+    # cvel[child] = cvel[parent], then accumulate cdof_sc * qvel for body's DOFs.
+    var cvel_sc = InlineArray[Scalar[DTYPE], BODY6_SIZE](uninitialized=True)
+    for i in range(BODY6_SIZE):
+        cvel_sc[i] = Scalar[DTYPE](0)
 
     # --- Build body_dofadr and body_dofnum lookup ---
     var body_dofadr = InlineArray[Int, NBODY](uninitialized=True)
@@ -583,88 +575,161 @@ fn compute_rne_vel_derivative[
             body_dofadr[body] = dof_adr
         body_dofnum[body] = body_dofnum[body] + num_dof
 
-    # --- Build dof_bodyid lookup ---
-    comptime DOFBODY_SIZE = _max_one[NV]()
-    var dof_bodyid = InlineArray[Int, DOFBODY_SIZE](uninitialized=True)
-    for i in range(NV):
-        dof_bodyid[i] = 0
-    for j in range(model.num_joints):
-        var joint = model.joints[j]
-        var dof_adr = joint.dof_adr
-        var num_dof = 1
-        if joint.jnt_type == JNT_FREE:
-            num_dof = 6
-        elif joint.jnt_type == JNT_BALL:
-            num_dof = 3
-        for d in range(num_dof):
-            dof_bodyid[dof_adr + d] = joint.body_id
-
-    # --- Precompute cdof_dot at body origin ---
-    # cdof_dot[d] = crossMotion(cvel_origin[parent_of_body_of_d], cdof_origin[d])
-    var cdof_dot = InlineArray[Scalar[DTYPE], CDOF_O_SIZE](uninitialized=True)
-    for i in range(CDOF_O_SIZE):
+    # --- Precompute cdof_dot at subtree COM ---
+    # cdof_dot[d] = crossMotion(cvel_accumulated, cdof_sc[d])
+    # where cvel_accumulated starts as parent cvel and accumulates per-DOF.
+    var cdof_dot = InlineArray[Scalar[DTYPE], CDOF_SC_SIZE](uninitialized=True)
+    for i in range(CDOF_SC_SIZE):
         cdof_dot[i] = Scalar[DTYPE](0)
 
-    for j in range(model.num_joints):
-        var joint = model.joints[j]
-        var body = joint.body_id
-        var parent = model.body_parent[body]
-        var dof_adr = joint.dof_adr
-        var num_dof = 1
-        if joint.jnt_type == JNT_FREE:
-            num_dof = 6
-        elif joint.jnt_type == JNT_BALL:
-            num_dof = 3
+    for b in range(NBODY):
+        var parent = model.body_parent[b]
 
-        # Get parent velocity at body origin (or zero for world)
-        var wp_x: Scalar[DTYPE] = 0
-        var wp_y: Scalar[DTYPE] = 0
-        var wp_z: Scalar[DTYPE] = 0
-        var vp_x: Scalar[DTYPE] = 0
-        var vp_y: Scalar[DTYPE] = 0
-        var vp_z: Scalar[DTYPE] = 0
+        # Start with parent's cvel_sc (NO transfer needed at subtree COM!)
+        var cv_wx: Scalar[DTYPE] = 0
+        var cv_wy: Scalar[DTYPE] = 0
+        var cv_wz: Scalar[DTYPE] = 0
+        var cv_vx: Scalar[DTYPE] = 0
+        var cv_vy: Scalar[DTYPE] = 0
+        var cv_vz: Scalar[DTYPE] = 0
         if parent >= 0:
-            wp_x = cvel_origin[parent * 6 + 0]
-            wp_y = cvel_origin[parent * 6 + 1]
-            wp_z = cvel_origin[parent * 6 + 2]
-            vp_x = cvel_origin[parent * 6 + 3]
-            vp_y = cvel_origin[parent * 6 + 4]
-            vp_z = cvel_origin[parent * 6 + 5]
+            cv_wx = cvel_sc[parent * 6 + 0]
+            cv_wy = cvel_sc[parent * 6 + 1]
+            cv_wz = cvel_sc[parent * 6 + 2]
+            cv_vx = cvel_sc[parent * 6 + 3]
+            cv_vy = cvel_sc[parent * 6 + 4]
+            cv_vz = cvel_sc[parent * 6 + 5]
 
-        for d in range(num_dof):
-            var dof = dof_adr + d
-            var s_ang_x = cdof_origin[dof * 6 + 0]
-            var s_ang_y = cdof_origin[dof * 6 + 1]
-            var s_ang_z = cdof_origin[dof * 6 + 2]
-            var s_lin_x = cdof_origin[dof * 6 + 3]
-            var s_lin_y = cdof_origin[dof * 6 + 4]
-            var s_lin_z = cdof_origin[dof * 6 + 5]
+        # Process each joint of this body
+        for j in range(model.num_joints):
+            var joint = model.joints[j]
+            if joint.body_id != b:
+                continue
 
-            # crossMotion(cvel_parent, cdof):
-            # cdot_ang = w_p x s_ang
-            cdof_dot[dof * 6 + 0] = wp_y * s_ang_z - wp_z * s_ang_y
-            cdof_dot[dof * 6 + 1] = wp_z * s_ang_x - wp_x * s_ang_z
-            cdof_dot[dof * 6 + 2] = wp_x * s_ang_y - wp_y * s_ang_x
-            # cdot_lin = w_p x s_lin + v_p x s_ang
-            cdof_dot[dof * 6 + 3] = (wp_y * s_lin_z - wp_z * s_lin_y) + (
-                vp_y * s_ang_z - vp_z * s_ang_y
-            )
-            cdof_dot[dof * 6 + 4] = (wp_z * s_lin_x - wp_x * s_lin_z) + (
-                vp_z * s_ang_x - vp_x * s_ang_z
-            )
-            cdof_dot[dof * 6 + 5] = (wp_x * s_lin_y - wp_y * s_lin_x) + (
-                vp_x * s_ang_y - vp_y * s_ang_x
-            )
+            var dof_adr = joint.dof_adr
+
+            if joint.jnt_type == JNT_FREE:
+                # Translation DOFs: cdof_dot = 0, just update cvel
+                for d in range(3):
+                    var dof = dof_adr + d
+                    var qv = data.qvel[dof]
+                    cv_wx += cdof_sc[dof * 6 + 0] * qv
+                    cv_wy += cdof_sc[dof * 6 + 1] * qv
+                    cv_wz += cdof_sc[dof * 6 + 2] * qv
+                    cv_vx += cdof_sc[dof * 6 + 3] * qv
+                    cv_vy += cdof_sc[dof * 6 + 4] * qv
+                    cv_vz += cdof_sc[dof * 6 + 5] * qv
+
+                # Rotation DOFs: compute cdof_dot, then update cvel
+                for d in range(3, 6):
+                    var dof = dof_adr + d
+                    var s_ax = cdof_sc[dof * 6 + 0]
+                    var s_ay = cdof_sc[dof * 6 + 1]
+                    var s_az = cdof_sc[dof * 6 + 2]
+                    var s_lx = cdof_sc[dof * 6 + 3]
+                    var s_ly = cdof_sc[dof * 6 + 4]
+                    var s_lz = cdof_sc[dof * 6 + 5]
+
+                    cdof_dot[dof * 6 + 0] = cv_wy * s_az - cv_wz * s_ay
+                    cdof_dot[dof * 6 + 1] = cv_wz * s_ax - cv_wx * s_az
+                    cdof_dot[dof * 6 + 2] = cv_wx * s_ay - cv_wy * s_ax
+                    cdof_dot[dof * 6 + 3] = (cv_wy * s_lz - cv_wz * s_ly) + (
+                        cv_vy * s_az - cv_vz * s_ay
+                    )
+                    cdof_dot[dof * 6 + 4] = (cv_wz * s_lx - cv_wx * s_lz) + (
+                        cv_vz * s_ax - cv_vx * s_az
+                    )
+                    cdof_dot[dof * 6 + 5] = (cv_wx * s_ly - cv_wy * s_lx) + (
+                        cv_vx * s_ay - cv_vy * s_ax
+                    )
+
+                    var qv = data.qvel[dof]
+                    cv_wx += s_ax * qv
+                    cv_wy += s_ay * qv
+                    cv_wz += s_az * qv
+                    cv_vx += s_lx * qv
+                    cv_vy += s_ly * qv
+                    cv_vz += s_lz * qv
+
+            elif joint.jnt_type == JNT_BALL:
+                # Compute cdof_dot for all 3 DOFs before updating cvel
+                for d in range(3):
+                    var dof = dof_adr + d
+                    var s_ax = cdof_sc[dof * 6 + 0]
+                    var s_ay = cdof_sc[dof * 6 + 1]
+                    var s_az = cdof_sc[dof * 6 + 2]
+                    var s_lx = cdof_sc[dof * 6 + 3]
+                    var s_ly = cdof_sc[dof * 6 + 4]
+                    var s_lz = cdof_sc[dof * 6 + 5]
+
+                    cdof_dot[dof * 6 + 0] = cv_wy * s_az - cv_wz * s_ay
+                    cdof_dot[dof * 6 + 1] = cv_wz * s_ax - cv_wx * s_az
+                    cdof_dot[dof * 6 + 2] = cv_wx * s_ay - cv_wy * s_ax
+                    cdof_dot[dof * 6 + 3] = (cv_wy * s_lz - cv_wz * s_ly) + (
+                        cv_vy * s_az - cv_vz * s_ay
+                    )
+                    cdof_dot[dof * 6 + 4] = (cv_wz * s_lx - cv_wx * s_lz) + (
+                        cv_vz * s_ax - cv_vx * s_az
+                    )
+                    cdof_dot[dof * 6 + 5] = (cv_wx * s_ly - cv_wy * s_lx) + (
+                        cv_vx * s_ay - cv_vy * s_ax
+                    )
+
+                for d in range(3):
+                    var dof = dof_adr + d
+                    var qv = data.qvel[dof]
+                    cv_wx += cdof_sc[dof * 6 + 0] * qv
+                    cv_wy += cdof_sc[dof * 6 + 1] * qv
+                    cv_wz += cdof_sc[dof * 6 + 2] * qv
+                    cv_vx += cdof_sc[dof * 6 + 3] * qv
+                    cv_vy += cdof_sc[dof * 6 + 4] * qv
+                    cv_vz += cdof_sc[dof * 6 + 5] * qv
+
+            else:
+                # HINGE or SLIDE: single DOF
+                var dof = dof_adr
+                var s_ax = cdof_sc[dof * 6 + 0]
+                var s_ay = cdof_sc[dof * 6 + 1]
+                var s_az = cdof_sc[dof * 6 + 2]
+                var s_lx = cdof_sc[dof * 6 + 3]
+                var s_ly = cdof_sc[dof * 6 + 4]
+                var s_lz = cdof_sc[dof * 6 + 5]
+
+                cdof_dot[dof * 6 + 0] = cv_wy * s_az - cv_wz * s_ay
+                cdof_dot[dof * 6 + 1] = cv_wz * s_ax - cv_wx * s_az
+                cdof_dot[dof * 6 + 2] = cv_wx * s_ay - cv_wy * s_ax
+                cdof_dot[dof * 6 + 3] = (cv_wy * s_lz - cv_wz * s_ly) + (
+                    cv_vy * s_az - cv_vz * s_ay
+                )
+                cdof_dot[dof * 6 + 4] = (cv_wz * s_lx - cv_wx * s_lz) + (
+                    cv_vz * s_ax - cv_vx * s_az
+                )
+                cdof_dot[dof * 6 + 5] = (cv_wx * s_ly - cv_wy * s_lx) + (
+                    cv_vx * s_ay - cv_vy * s_ax
+                )
+
+                var qv = data.qvel[dof]
+                cv_wx += s_ax * qv
+                cv_wy += s_ay * qv
+                cv_wz += s_az * qv
+                cv_vx += s_lx * qv
+                cv_vy += s_ly * qv
+                cv_vz += s_lz * qv
+
+        # Store final cvel_sc for this body
+        cvel_sc[b * 6 + 0] = cv_wx
+        cvel_sc[b * 6 + 1] = cv_wy
+        cvel_sc[b * 6 + 2] = cv_wz
+        cvel_sc[b * 6 + 3] = cv_vx
+        cvel_sc[b * 6 + 4] = cv_vy
+        cvel_sc[b * 6 + 5] = cv_vz
 
     # =========================================================================
-    # Step 1: Compute Dcvel and Dcdofdot
-    # (MuJoCo: mjd_comVel_vel_dense)
+    # Step 1: Compute Dcvel and Dcdofdot (MuJoCo: mjd_comVel_vel_dense)
     #
-    # Dcvel[body, comp, k] = d(cvel_origin[body][comp]) / d(qvel[k])
-    # Layout: Dcvel[body*6*NV + comp*NV + k]
-    #
+    # At subtree COM, Dcvel propagation is simple copy (NO transfer).
+    # Dcvel[body, comp, k] = d(cvel_sc[body][comp]) / d(qvel[k])
     # Dcdofdot[dof, comp, k] = d(cdof_dot[dof][comp]) / d(qvel[k])
-    # Layout: Dcdofdot[dof*6*NV + comp*NV + k]
     # =========================================================================
     var Dcvel = InlineArray[Scalar[DTYPE], DCVEL_SIZE](uninitialized=True)
     for i in range(DCVEL_SIZE):
@@ -674,94 +739,45 @@ fn compute_rne_vel_derivative[
     for i in range(DCDOFDOT_SIZE):
         Dcdofdot[i] = Scalar[DTYPE](0)
 
-    # Temporary 6x6 matrices
     var mat = InlineArray[Scalar[DTYPE], 36](uninitialized=True)
-    # Forward pass over bodies
+
     for b in range(NBODY):
         var parent = model.body_parent[b]
-        if parent < 0:
-            # Root body: Dcvel = 0 (no qvel dependence for world)
+
+        # Dcvel[body] = Dcvel[parent]  (NO transfer at subtree COM!)
+        # For body 0 (world, parent=-1), Dcvel starts at 0 (already zeroed).
+        if parent >= 0:
+            for idx in range(6 * NV):
+                Dcvel[b * 6 * NV + idx] = Dcvel[parent * 6 * NV + idx]
+
+        # Process DOFs of this body (including world body!)
+        if body_dofadr[b] < 0:
             continue
 
-        # Dcvel[body] = Dcvel[parent]  (simple copy in body-origin convention)
-        for idx in range(6 * NV):
-            Dcvel[b * 6 * NV + idx] = Dcvel[parent * 6 * NV + idx]
+        for j in range(model.num_joints):
+            var joint = model.joints[j]
+            if joint.body_id != b:
+                continue
 
-        # Process DOFs of this body
-        if body_dofadr[b] < 0:
-            continue  # No DOFs for this body
+            var dof_adr = joint.dof_adr
 
-        var dof_start = body_dofadr[b]
-        var dof_end = dof_start + body_dofnum[b]
-
-        for j_dof in range(dof_start, dof_end):
-            # Get joint type for this DOF
-            var jnt_type = JNT_HINGE  # default
-            for jj in range(model.num_joints):
-                var joint_jj = model.joints[jj]
-                if joint_jj.body_id == b:
-                    jnt_type = joint_jj.jnt_type
-                    break
-
-            if jnt_type == JNT_FREE and j_dof == dof_start:
-                # FREE joint: first 3 DOFs are translation
-                # Dcdofdot = 0 for translation DOFs (already zeroed)
-
-                # Dcvel += cdof_origin * D(qvel) for translation DOFs
-                for k in range(6):
-                    Dcvel[b * 6 * NV + k * NV + j_dof + 0] += cdof_origin[
-                        (j_dof + 0) * 6 + k
-                    ]
-                    Dcvel[b * 6 * NV + k * NV + j_dof + 1] += cdof_origin[
-                        (j_dof + 1) * 6 + k
-                    ]
-                    Dcvel[b * 6 * NV + k * NV + j_dof + 2] += cdof_origin[
-                        (j_dof + 2) * 6 + k
-                    ]
-
-                # Now handle rotation DOFs (j_dof+3, j_dof+4, j_dof+5)
-                for rot_d in range(3):
-                    var dof_rot = j_dof + 3 + rot_d
-                    # Dcdofdot[dof_rot] = crossMotion_vel(cdof_origin[dof_rot]) @ Dcvel[body]
-                    var cdof_v = InlineArray[Scalar[DTYPE], 6](
-                        uninitialized=True
-                    )
+            if joint.jnt_type == JNT_FREE:
+                # Translation DOFs: Dcdofdot = 0, just update Dcvel
+                for d in range(3):
+                    var dof = dof_adr + d
                     for kk in range(6):
-                        cdof_v[kk] = cdof_origin[dof_rot * 6 + kk]
-                    _mjd_crossMotion_vel(mat, cdof_v)
-
-                    # Dcdofdot[dof_rot] = mat @ Dcvel[body]  (6xNV = 6x6 @ 6xNV)
-                    for ii in range(6):
-                        for kk in range(NV):
-                            var s: Scalar[DTYPE] = 0
-                            for jj in range(6):
-                                s += (
-                                    mat[ii * 6 + jj]
-                                    * Dcvel[b * 6 * NV + jj * NV + kk]
-                                )
-                            Dcdofdot[dof_rot * 6 * NV + ii * NV + kk] = s
-
-                    # Dcvel += cdof_origin * D(qvel)
-                    for kk in range(6):
-                        Dcvel[b * 6 * NV + kk * NV + dof_rot] += cdof_origin[
-                            dof_rot * 6 + kk
+                        Dcvel[b * 6 * NV + kk * NV + dof] += cdof_sc[
+                            dof * 6 + kk
                         ]
 
-                # Skip the 5 extra DOFs already processed (loop will advance j_dof)
-                # But since we process all DOFs of the body in this loop iteration,
-                # we need to break to avoid double processing
-                break
-
-            elif jnt_type == JNT_BALL and j_dof == dof_start:
-                # BALL joint: 3 rotation DOFs
-                for rot_d in range(3):
-                    var dof_rot = j_dof + rot_d
-                    # Dcdofdot[dof_rot] = crossMotion_vel(cdof_origin[dof_rot]) @ Dcvel[body]
+                # Rotation DOFs: compute Dcdofdot then update Dcvel
+                for d in range(3):
+                    var dof = dof_adr + 3 + d
                     var cdof_v = InlineArray[Scalar[DTYPE], 6](
                         uninitialized=True
                     )
                     for kk in range(6):
-                        cdof_v[kk] = cdof_origin[dof_rot * 6 + kk]
+                        cdof_v[kk] = cdof_sc[dof * 6 + kk]
                     _mjd_crossMotion_vel(mat, cdof_v)
 
                     for ii in range(6):
@@ -772,21 +788,44 @@ fn compute_rne_vel_derivative[
                                     mat[ii * 6 + jj]
                                     * Dcvel[b * 6 * NV + jj * NV + kk]
                                 )
-                            Dcdofdot[dof_rot * 6 * NV + ii * NV + kk] = s
+                            Dcdofdot[dof * 6 * NV + ii * NV + kk] = s
 
-                    # Dcvel += cdof_origin * D(qvel)
                     for kk in range(6):
-                        Dcvel[b * 6 * NV + kk * NV + dof_rot] += cdof_origin[
-                            dof_rot * 6 + kk
+                        Dcvel[b * 6 * NV + kk * NV + dof] += cdof_sc[
+                            dof * 6 + kk
                         ]
-                break
+
+            elif joint.jnt_type == JNT_BALL:
+                for d in range(3):
+                    var dof = dof_adr + d
+                    var cdof_v = InlineArray[Scalar[DTYPE], 6](
+                        uninitialized=True
+                    )
+                    for kk in range(6):
+                        cdof_v[kk] = cdof_sc[dof * 6 + kk]
+                    _mjd_crossMotion_vel(mat, cdof_v)
+
+                    for ii in range(6):
+                        for kk in range(NV):
+                            var s: Scalar[DTYPE] = 0
+                            for jj in range(6):
+                                s += (
+                                    mat[ii * 6 + jj]
+                                    * Dcvel[b * 6 * NV + jj * NV + kk]
+                                )
+                            Dcdofdot[dof * 6 * NV + ii * NV + kk] = s
+
+                    for kk in range(6):
+                        Dcvel[b * 6 * NV + kk * NV + dof] += cdof_sc[
+                            dof * 6 + kk
+                        ]
 
             else:
                 # HINGE or SLIDE: single DOF
-                # Dcdofdot = crossMotion_vel(cdof_origin) @ Dcvel[body]
+                var dof = dof_adr
                 var cdof_v = InlineArray[Scalar[DTYPE], 6](uninitialized=True)
                 for kk in range(6):
-                    cdof_v[kk] = cdof_origin[j_dof * 6 + kk]
+                    cdof_v[kk] = cdof_sc[dof * 6 + kk]
                 _mjd_crossMotion_vel(mat, cdof_v)
 
                 for ii in range(6):
@@ -797,17 +836,16 @@ fn compute_rne_vel_derivative[
                                 mat[ii * 6 + jj]
                                 * Dcvel[b * 6 * NV + jj * NV + kk]
                             )
-                        Dcdofdot[j_dof * 6 * NV + ii * NV + kk] = s
+                        Dcdofdot[dof * 6 * NV + ii * NV + kk] = s
 
-                # Dcvel += cdof_origin * D(qvel)
                 for kk in range(6):
-                    Dcvel[b * 6 * NV + kk * NV + j_dof] += cdof_origin[
-                        j_dof * 6 + kk
+                    Dcvel[b * 6 * NV + kk * NV + dof] += cdof_sc[
+                        dof * 6 + kk
                     ]
 
     # =========================================================================
     # Step 2: Forward pass - compute Dcacc and Dcfrcbody
-    # (MuJoCo: mjd_rne_vel_dense, lines 399-434)
+    # At subtree COM, Dcacc propagation is simple copy (NO transfer).
     # =========================================================================
     var Dcacc = InlineArray[Scalar[DTYPE], DCVEL_SIZE](uninitialized=True)
     for i in range(DCVEL_SIZE):
@@ -817,20 +855,21 @@ fn compute_rne_vel_derivative[
     for i in range(DCVEL_SIZE):
         Dcfrcbody[i] = Scalar[DTYPE](0)
 
-    # Temporary arrays for 6x6 @ 6xNV products
     var dmul = InlineArray[Scalar[DTYPE], 36](uninitialized=True)
     var mat1 = InlineArray[Scalar[DTYPE], 36](uninitialized=True)
     var mat2 = InlineArray[Scalar[DTYPE], 36](uninitialized=True)
     var tmp6 = InlineArray[Scalar[DTYPE], 6](uninitialized=True)
 
-    for b in range(1, NBODY):
+    for b in range(NBODY):
         var parent = model.body_parent[b]
 
-        # Dcacc[b] = Dcacc[parent]
-        for idx in range(6 * NV):
-            Dcacc[b * 6 * NV + idx] = Dcacc[parent * 6 * NV + idx]
+        # Dcacc[b] = Dcacc[parent]  (NO transfer at subtree COM!)
+        # For body 0 (world, parent=-1), Dcacc starts at 0 (already zeroed).
+        if parent >= 0:
+            for idx in range(6 * NV):
+                Dcacc[b * 6 * NV + idx] = Dcacc[parent * 6 * NV + idx]
 
-        # Dcacc += D(cdof_dot * qvel)
+        # Dcacc += D(cdof_dot * qvel) — process ALL bodies including world
         if body_dofadr[b] >= 0:
             var dof_start = body_dofadr[b]
             var dof_end = dof_start + body_dofnum[b]
@@ -849,16 +888,14 @@ fn compute_rne_vel_derivative[
                     )
 
         # --- Dcfrcbody = D(cinert * cacc + cvel x* (cinert * cvel)) ---
-
-        # Extract per-body cinert
         var ci = InlineArray[Scalar[DTYPE], 10](uninitialized=True)
         for k in range(10):
             ci[k] = cinert[b * 10 + k]
 
-        # dmul = D(mulInertVec) / D(vel)  (= the inertia matrix itself, 6x6)
+        # dmul = D(mulInertVec) / D(vel)
         _mjd_mulInertVec_vel(dmul, ci)
 
-        # Dcfrcbody[b] = dmul @ Dcacc[b]  (6xNV = 6x6 @ 6xNV)
+        # Dcfrcbody[b] = dmul @ Dcacc[b]
         for ii in range(6):
             for kk in range(NV):
                 var s: Scalar[DTYPE] = 0
@@ -866,30 +903,20 @@ fn compute_rne_vel_derivative[
                     s += dmul[ii * 6 + jj] * Dcacc[b * 6 * NV + jj * NV + kk]
                 Dcfrcbody[b * 6 * NV + ii * NV + kk] = s
 
-        # mat = D(crossForce)/D(vel) + D(crossForce)/D(frc) @ D(mulInertVec)/D(vel)
-        # where the crossForce is: cvel x* (cinert * cvel)
-
-        # First: tmp6 = cinert * cvel_origin[b]
+        # Cross-force derivative terms
         var cv = InlineArray[Scalar[DTYPE], 6](uninitialized=True)
         for k in range(6):
-            cv[k] = cvel_origin[b * 6 + k]
+            cv[k] = cvel_sc[b * 6 + k]
         _mulInertVec(tmp6, ci, cv)
 
-        # mat = D(crossForce(cvel, tmp6)) / D(cvel)
         _mjd_crossForce_vel(mat, tmp6)
-
-        # mat1 = D(crossForce(cvel, frc)) / D(frc)
         _mjd_crossForce_frc(mat1, cv)
-
-        # mat2 = mat1 @ dmul  (D(crossForce)/D(frc) @ D(mulInertVec)/D(vel))
         _matmul_6x6_x_6x6(mat2, mat1, dmul)
 
-        # mat += mat2
         for k in range(36):
             mat[k] += mat2[k]
 
-        # Dcfrcbody[b] += mat @ Dcvel[b]  (use body 0 as temp in MuJoCo,
-        # but we just accumulate directly)
+        # Dcfrcbody[b] += mat @ Dcvel[b]
         for ii in range(6):
             for kk in range(NV):
                 var s: Scalar[DTYPE] = 0
@@ -899,20 +926,19 @@ fn compute_rne_vel_derivative[
 
     # =========================================================================
     # Step 3: Backward pass - accumulate Dcfrcbody to parents
-    # Simple addition (body-origin convention)
+    # At subtree COM: SIMPLE ADDITION (no spatial transform needed!)
     # =========================================================================
     for b in range(NBODY - 1, 0, -1):
         var parent = model.body_parent[b]
         if parent >= 0:
             for idx in range(6 * NV):
-                Dcfrcbody[parent * 6 * NV + idx] += Dcfrcbody[b * 6 * NV + idx]
+                Dcfrcbody[parent * 6 * NV + idx] += Dcfrcbody[
+                    b * 6 * NV + idx
+                ]
 
     # =========================================================================
     # Step 4: Project to joint space
-    # qDeriv[i, k] -= Σ_comp cdof_origin[i][comp] * Dcfrcbody[body_of_i, comp, k]
-    #
-    # Note: We use cdof_origin (not cdof at COM) because the forces are
-    # at body origins.
+    # qDeriv[i, k] -= cdof_sc[i] · Dcfrcbody[body_of_i, :, k]
     # =========================================================================
     for i in range(NV):
         var body_i = dof_bodyid[i]
@@ -920,7 +946,7 @@ fn compute_rne_vel_derivative[
             var s: Scalar[DTYPE] = 0
             for comp in range(6):
                 s += (
-                    cdof_origin[i * 6 + comp]
+                    cdof_sc[i * 6 + comp]
                     * Dcfrcbody[body_i * 6 * NV + comp * NV + k]
                 )
             qDeriv[i * NV + k] -= s
@@ -957,8 +983,9 @@ fn compute_rne_vel_derivative_gpu[
 ):
     """Compute d(qfrc_bias)/d(qvel) on GPU, subtract from qDeriv in workspace.
 
-    Same algorithm as the CPU version but reads from state/model LayoutTensors
-    and uses workspace arrays for large derivative matrices.
+    Uses subtree-COM convention matching the CPU version and MuJoCo's
+    mjd_rne_vel_dense(). All spatial quantities are expressed about the
+    subtree COM, eliminating frame transfers in propagation.
 
     Args:
         env: Environment index.
@@ -971,8 +998,8 @@ fn compute_rne_vel_derivative_gpu[
 
     # Workspace offsets for implicit extra arrays
     var qd_off = ws_implicit_qderiv_offset(implicit_base)
-    var co_off = ws_implicit_cdof_origin_offset[NV](implicit_base)
-    var cv_off = ws_implicit_cvel_origin_offset[NV](implicit_base)
+    var co_off = ws_implicit_cdof_origin_offset[NV](implicit_base)  # cdof_sc
+    var cv_off = ws_implicit_cvel_origin_offset[NV](implicit_base)  # cvel_sc
     var ci_off = ws_implicit_cinert_offset[NV, NBODY](implicit_base)
     var cd_off = ws_implicit_cdof_dot_offset[NV, NBODY](implicit_base)
     var dcv_off = ws_implicit_dcvel_offset[NV, NBODY](implicit_base)
@@ -981,142 +1008,49 @@ fn compute_rne_vel_derivative_gpu[
     var dcf_off = ws_implicit_dcfrcbody_offset[NV, NBODY](implicit_base)
 
     # State offsets
-    var xp_off = xpos_offset[NQ, NV, NBODY]()
     var xq_off = xquat_offset[NQ, NV, NBODY]()
     var xi_off = xipos_offset[NQ, NV, NBODY]()
-    var xv_off = xvel_offset[NQ, NV, NBODY]()
-    var xa_off = xangvel_offset[NQ, NV, NBODY]()
     var qv_off = qvel_offset[NQ, NV]()
 
     # cdof offset in workspace (from compute_cdof_gpu)
     comptime cdof_idx = ws_cdof_offset()
 
-    var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
-
     # =========================================================================
-    # Step 0: Precompute body-origin quantities
+    # Step 0: Compute subtree COM and reexpress quantities at that point
     # =========================================================================
 
-    # --- cdof at body origin ---
-    # Copy cdof from workspace, then shift from COM to body origin
-    for d in range(NV):
-        for k in range(6):
-            workspace[env, co_off + d * 6 + k] = workspace[
-                env, cdof_idx + d * 6 + k
-            ]
-
-    for j in range(NJOINT):
-        var joint_off = model_joint_offset[NBODY](j)
-        var jnt_type = Int(
-            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
-        )
-        var body = Int(
-            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID])
-        )
-        var dof_adr = Int(
-            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
-        )
-
-        # Offset from body origin to body COM (world frame)
-        var cx = rebind[Scalar[DTYPE]](
-            state[env, xi_off + body * 3 + 0]
-        ) - rebind[Scalar[DTYPE]](state[env, xp_off + body * 3 + 0])
-        var cy = rebind[Scalar[DTYPE]](
-            state[env, xi_off + body * 3 + 1]
-        ) - rebind[Scalar[DTYPE]](state[env, xp_off + body * 3 + 1])
-        var cz = rebind[Scalar[DTYPE]](
-            state[env, xi_off + body * 3 + 2]
-        ) - rebind[Scalar[DTYPE]](state[env, xp_off + body * 3 + 2])
-        var dx = -cx
-        var dy = -cy
-        var dz = -cz
-
-        var num_dof = 1
-        if jnt_type == JNT_FREE:
-            num_dof = 6
-        elif jnt_type == JNT_BALL:
-            num_dof = 3
-
-        for d in range(num_dof):
-            var dof = dof_adr + d
-            var ax = rebind[Scalar[DTYPE]](
-                workspace[env, cdof_idx + dof * 6 + 0]
-            )
-            var ay = rebind[Scalar[DTYPE]](
-                workspace[env, cdof_idx + dof * 6 + 1]
-            )
-            var az = rebind[Scalar[DTYPE]](
-                workspace[env, cdof_idx + dof * 6 + 2]
-            )
-            workspace[env, co_off + dof * 6 + 3] = (
-                rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 3])
-                + ay * dz
-                - az * dy
-            )
-            workspace[env, co_off + dof * 6 + 4] = (
-                rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 4])
-                + az * dx
-                - ax * dz
-            )
-            workspace[env, co_off + dof * 6 + 5] = (
-                rebind[Scalar[DTYPE]](workspace[env, cdof_idx + dof * 6 + 5])
-                + ax * dy
-                - ay * dx
-            )
-
-    # --- cvel at body origin ---
+    # --- Compute subtree COM ---
+    var total_mass: Scalar[DTYPE] = 0
+    var com_x: Scalar[DTYPE] = 0
+    var com_y: Scalar[DTYPE] = 0
+    var com_z: Scalar[DTYPE] = 0
     for b in range(NBODY):
-        var wx = rebind[Scalar[DTYPE]](state[env, xa_off + b * 3 + 0])
-        var wy = rebind[Scalar[DTYPE]](state[env, xa_off + b * 3 + 1])
-        var wz = rebind[Scalar[DTYPE]](state[env, xa_off + b * 3 + 2])
-        var ddx = rebind[Scalar[DTYPE]](
-            state[env, xp_off + b * 3 + 0]
-        ) - rebind[Scalar[DTYPE]](state[env, xi_off + b * 3 + 0])
-        var ddy = rebind[Scalar[DTYPE]](
-            state[env, xp_off + b * 3 + 1]
-        ) - rebind[Scalar[DTYPE]](state[env, xi_off + b * 3 + 1])
-        var ddz = rebind[Scalar[DTYPE]](
-            state[env, xp_off + b * 3 + 2]
-        ) - rebind[Scalar[DTYPE]](state[env, xi_off + b * 3 + 2])
+        var body_off = model_body_offset(b)
+        var m = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_MASS])
+        total_mass += m
+        com_x += m * rebind[Scalar[DTYPE]](state[env, xi_off + b * 3 + 0])
+        com_y += m * rebind[Scalar[DTYPE]](state[env, xi_off + b * 3 + 1])
+        com_z += m * rebind[Scalar[DTYPE]](state[env, xi_off + b * 3 + 2])
+    if total_mass > Scalar[DTYPE](0):
+        com_x = com_x / total_mass
+        com_y = com_y / total_mass
+        com_z = com_z / total_mass
 
-        workspace[env, cv_off + b * 6 + 0] = wx
-        workspace[env, cv_off + b * 6 + 1] = wy
-        workspace[env, cv_off + b * 6 + 2] = wz
-        workspace[env, cv_off + b * 6 + 3] = (
-            rebind[Scalar[DTYPE]](state[env, xv_off + b * 3 + 0])
-            + wy * ddz
-            - wz * ddy
-        )
-        workspace[env, cv_off + b * 6 + 4] = (
-            rebind[Scalar[DTYPE]](state[env, xv_off + b * 3 + 1])
-            + wz * ddx
-            - wx * ddz
-        )
-        workspace[env, cv_off + b * 6 + 5] = (
-            rebind[Scalar[DTYPE]](state[env, xv_off + b * 3 + 2])
-            + wx * ddy
-            - wy * ddx
-        )
-
-    # --- cinert at body origin (10-element spatial inertia) ---
+    # --- cinert at subtree COM ---
     for b in range(NBODY):
         var body_off = model_body_offset(b)
         var mass = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_MASS])
-        var cx = rebind[Scalar[DTYPE]](state[env, xi_off + b * 3 + 0]) - rebind[
-            Scalar[DTYPE]
-        ](state[env, xp_off + b * 3 + 0])
-        var cy = rebind[Scalar[DTYPE]](state[env, xi_off + b * 3 + 1]) - rebind[
-            Scalar[DTYPE]
-        ](state[env, xp_off + b * 3 + 1])
-        var cz = rebind[Scalar[DTYPE]](state[env, xi_off + b * 3 + 2]) - rebind[
-            Scalar[DTYPE]
-        ](state[env, xp_off + b * 3 + 2])
+
+        # Offset from subtree COM to body COM
+        var dx = rebind[Scalar[DTYPE]](state[env, xi_off + b * 3 + 0]) - com_x
+        var dy = rebind[Scalar[DTYPE]](state[env, xi_off + b * 3 + 1]) - com_y
+        var dz = rebind[Scalar[DTYPE]](state[env, xi_off + b * 3 + 2]) - com_z
 
         var Ixx_local = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IXX])
         var Iyy_local = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IYY])
         var Izz_local = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_IZZ])
 
-        # Compose xquat with body_iquat
+        # Compose xquat with body_iquat for inertia rotation
         var bqx = rebind[Scalar[DTYPE]](state[env, xq_off + b * 4 + 0])
         var bqy = rebind[Scalar[DTYPE]](state[env, xq_off + b * 4 + 1])
         var bqz = rebind[Scalar[DTYPE]](state[env, xq_off + b * 4 + 2])
@@ -1142,7 +1076,7 @@ fn compute_rne_vel_derivative_gpu[
         var r12 = Scalar[DTYPE](2) * (qy * qz - qw * qx)
         var r22 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qx * qx + qy * qy)
 
-        # I_world at COM
+        # I_world at body COM: R @ diag(Ixx,Iyy,Izz) @ R^T
         var Iw_xx = (
             Ixx_local * r00 * r00
             + Iyy_local * r01 * r01
@@ -1174,17 +1108,17 @@ fn compute_rne_vel_derivative_gpu[
             + Izz_local * r12 * r22
         )
 
-        # Parallel axis theorem
-        var c_sq = cx * cx + cy * cy + cz * cz
-        workspace[env, ci_off + b * 10 + 0] = Iw_xx + mass * (c_sq - cx * cx)
-        workspace[env, ci_off + b * 10 + 1] = Iw_yy + mass * (c_sq - cy * cy)
-        workspace[env, ci_off + b * 10 + 2] = Iw_zz + mass * (c_sq - cz * cz)
-        workspace[env, ci_off + b * 10 + 3] = Iw_xy - mass * cx * cy
-        workspace[env, ci_off + b * 10 + 4] = Iw_xz - mass * cx * cz
-        workspace[env, ci_off + b * 10 + 5] = Iw_yz - mass * cy * cz
-        workspace[env, ci_off + b * 10 + 6] = mass * cx
-        workspace[env, ci_off + b * 10 + 7] = mass * cy
-        workspace[env, ci_off + b * 10 + 8] = mass * cz
+        # Parallel axis: I_subtree_com = I_COM + m*(d·d*I - d*d^T)
+        var d_sq = dx * dx + dy * dy + dz * dz
+        workspace[env, ci_off + b * 10 + 0] = Iw_xx + mass * (d_sq - dx * dx)
+        workspace[env, ci_off + b * 10 + 1] = Iw_yy + mass * (d_sq - dy * dy)
+        workspace[env, ci_off + b * 10 + 2] = Iw_zz + mass * (d_sq - dz * dz)
+        workspace[env, ci_off + b * 10 + 3] = Iw_xy - mass * dx * dy
+        workspace[env, ci_off + b * 10 + 4] = Iw_xz - mass * dx * dz
+        workspace[env, ci_off + b * 10 + 5] = Iw_yz - mass * dy * dz
+        workspace[env, ci_off + b * 10 + 6] = mass * dx
+        workspace[env, ci_off + b * 10 + 7] = mass * dy
+        workspace[env, ci_off + b * 10 + 8] = mass * dz
         workspace[env, ci_off + b * 10 + 9] = mass
 
     # --- Build body_dofadr, body_dofnum, dof_bodyid lookups ---
@@ -1221,100 +1155,187 @@ fn compute_rne_vel_derivative_gpu[
         for d in range(num_dof):
             dof_bodyid[dof_adr + d] = body
 
-    # --- Precompute cdof_dot at body origin ---
+    # --- cdof at subtree COM ---
+    # cdof_sc.ang = cdof.ang (unchanged)
+    # cdof_sc.lin = cdof.lin + ang × (subtree_com - xipos[body])
+    for d in range(NV):
+        var body = dof_bodyid[d]
+        var ax = rebind[Scalar[DTYPE]](workspace[env, cdof_idx + d * 6 + 0])
+        var ay = rebind[Scalar[DTYPE]](workspace[env, cdof_idx + d * 6 + 1])
+        var az = rebind[Scalar[DTYPE]](workspace[env, cdof_idx + d * 6 + 2])
+        workspace[env, co_off + d * 6 + 0] = ax
+        workspace[env, co_off + d * 6 + 1] = ay
+        workspace[env, co_off + d * 6 + 2] = az
+        var sx = com_x - rebind[Scalar[DTYPE]](
+            state[env, xi_off + body * 3 + 0]
+        )
+        var sy = com_y - rebind[Scalar[DTYPE]](
+            state[env, xi_off + body * 3 + 1]
+        )
+        var sz = com_z - rebind[Scalar[DTYPE]](
+            state[env, xi_off + body * 3 + 2]
+        )
+        workspace[env, co_off + d * 6 + 3] = (
+            rebind[Scalar[DTYPE]](workspace[env, cdof_idx + d * 6 + 3])
+            + ay * sz - az * sy
+        )
+        workspace[env, co_off + d * 6 + 4] = (
+            rebind[Scalar[DTYPE]](workspace[env, cdof_idx + d * 6 + 4])
+            + az * sx - ax * sz
+        )
+        workspace[env, co_off + d * 6 + 5] = (
+            rebind[Scalar[DTYPE]](workspace[env, cdof_idx + d * 6 + 5])
+            + ax * sy - ay * sx
+        )
+
+    # --- cvel at subtree COM + cdof_dot at subtree COM ---
+    # Propagation: cvel_sc[child] = cvel_sc[parent] (no transfer!)
+    # Then accumulate cdof_sc * qvel for each DOF of the body.
+    # cdof_dot is computed during accumulation.
+    for b in range(NBODY):
+        for k in range(6):
+            workspace[env, cv_off + b * 6 + k] = Scalar[DTYPE](0)
     for i in range(NV * 6):
         workspace[env, cd_off + i] = Scalar[DTYPE](0)
 
-    for j in range(NJOINT):
-        var joint_off = model_joint_offset[NBODY](j)
-        var jnt_type = Int(
-            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
-        )
-        var body = Int(
-            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID])
-        )
-        var dof_adr = Int(
-            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
-        )
-        var body_off = model_body_offset(body)
+    for b in range(NBODY):
+        var body_off = model_body_offset(b)
         var parent = Int(
             rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT])
         )
-        var num_dof = 1
-        if jnt_type == JNT_FREE:
-            num_dof = 6
-        elif jnt_type == JNT_BALL:
-            num_dof = 3
 
-        # Get parent velocity at body origin (or zero for world)
-        var wp_x: Scalar[DTYPE] = 0
-        var wp_y: Scalar[DTYPE] = 0
-        var wp_z: Scalar[DTYPE] = 0
-        var vp_x: Scalar[DTYPE] = 0
-        var vp_y: Scalar[DTYPE] = 0
-        var vp_z: Scalar[DTYPE] = 0
+        # Start with parent's cvel_sc (NO transfer at subtree COM!)
+        var cv_wx: Scalar[DTYPE] = 0
+        var cv_wy: Scalar[DTYPE] = 0
+        var cv_wz: Scalar[DTYPE] = 0
+        var cv_vx: Scalar[DTYPE] = 0
+        var cv_vy: Scalar[DTYPE] = 0
+        var cv_vz: Scalar[DTYPE] = 0
         if parent >= 0:
-            wp_x = rebind[Scalar[DTYPE]](
-                workspace[env, cv_off + parent * 6 + 0]
-            )
-            wp_y = rebind[Scalar[DTYPE]](
-                workspace[env, cv_off + parent * 6 + 1]
-            )
-            wp_z = rebind[Scalar[DTYPE]](
-                workspace[env, cv_off + parent * 6 + 2]
-            )
-            vp_x = rebind[Scalar[DTYPE]](
-                workspace[env, cv_off + parent * 6 + 3]
-            )
-            vp_y = rebind[Scalar[DTYPE]](
-                workspace[env, cv_off + parent * 6 + 4]
-            )
-            vp_z = rebind[Scalar[DTYPE]](
-                workspace[env, cv_off + parent * 6 + 5]
-            )
+            cv_wx = rebind[Scalar[DTYPE]](workspace[env, cv_off + parent * 6 + 0])
+            cv_wy = rebind[Scalar[DTYPE]](workspace[env, cv_off + parent * 6 + 1])
+            cv_wz = rebind[Scalar[DTYPE]](workspace[env, cv_off + parent * 6 + 2])
+            cv_vx = rebind[Scalar[DTYPE]](workspace[env, cv_off + parent * 6 + 3])
+            cv_vy = rebind[Scalar[DTYPE]](workspace[env, cv_off + parent * 6 + 4])
+            cv_vz = rebind[Scalar[DTYPE]](workspace[env, cv_off + parent * 6 + 5])
 
-        for d in range(num_dof):
-            var dof = dof_adr + d
-            var s_ang_x = rebind[Scalar[DTYPE]](
-                workspace[env, co_off + dof * 6 + 0]
-            )
-            var s_ang_y = rebind[Scalar[DTYPE]](
-                workspace[env, co_off + dof * 6 + 1]
-            )
-            var s_ang_z = rebind[Scalar[DTYPE]](
-                workspace[env, co_off + dof * 6 + 2]
-            )
-            var s_lin_x = rebind[Scalar[DTYPE]](
-                workspace[env, co_off + dof * 6 + 3]
-            )
-            var s_lin_y = rebind[Scalar[DTYPE]](
-                workspace[env, co_off + dof * 6 + 4]
-            )
-            var s_lin_z = rebind[Scalar[DTYPE]](
-                workspace[env, co_off + dof * 6 + 5]
-            )
+        # Process each joint of this body
+        if body_dofadr[b] >= 0:
+            for j in range(NJOINT):
+                var joint_off = model_joint_offset[NBODY](j)
+                var j_body = Int(
+                    rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID])
+                )
+                if j_body != b:
+                    continue
 
-            workspace[env, cd_off + dof * 6 + 0] = (
-                wp_y * s_ang_z - wp_z * s_ang_y
-            )
-            workspace[env, cd_off + dof * 6 + 1] = (
-                wp_z * s_ang_x - wp_x * s_ang_z
-            )
-            workspace[env, cd_off + dof * 6 + 2] = (
-                wp_x * s_ang_y - wp_y * s_ang_x
-            )
-            workspace[env, cd_off + dof * 6 + 3] = (
-                wp_y * s_lin_z - wp_z * s_lin_y
-            ) + (vp_y * s_ang_z - vp_z * s_ang_y)
-            workspace[env, cd_off + dof * 6 + 4] = (
-                wp_z * s_lin_x - wp_x * s_lin_z
-            ) + (vp_z * s_ang_x - vp_x * s_ang_z)
-            workspace[env, cd_off + dof * 6 + 5] = (
-                wp_x * s_lin_y - wp_y * s_lin_x
-            ) + (vp_x * s_ang_y - vp_y * s_ang_x)
+                var jnt_type = Int(
+                    rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
+                )
+                var dof_adr = Int(
+                    rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
+                )
+
+                if jnt_type == JNT_FREE:
+                    # Translation DOFs: cdof_dot = 0, just update cvel
+                    for d in range(3):
+                        var dof = dof_adr + d
+                        var qv = rebind[Scalar[DTYPE]](state[env, qv_off + dof])
+                        cv_wx += rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 0]) * qv
+                        cv_wy += rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 1]) * qv
+                        cv_wz += rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 2]) * qv
+                        cv_vx += rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 3]) * qv
+                        cv_vy += rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 4]) * qv
+                        cv_vz += rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 5]) * qv
+
+                    # Rotation DOFs: compute cdof_dot, then update cvel
+                    for d in range(3, 6):
+                        var dof = dof_adr + d
+                        var s_ax = rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 0])
+                        var s_ay = rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 1])
+                        var s_az = rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 2])
+                        var s_lx = rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 3])
+                        var s_ly = rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 4])
+                        var s_lz = rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 5])
+
+                        workspace[env, cd_off + dof * 6 + 0] = cv_wy * s_az - cv_wz * s_ay
+                        workspace[env, cd_off + dof * 6 + 1] = cv_wz * s_ax - cv_wx * s_az
+                        workspace[env, cd_off + dof * 6 + 2] = cv_wx * s_ay - cv_wy * s_ax
+                        workspace[env, cd_off + dof * 6 + 3] = (cv_wy * s_lz - cv_wz * s_ly) + (cv_vy * s_az - cv_vz * s_ay)
+                        workspace[env, cd_off + dof * 6 + 4] = (cv_wz * s_lx - cv_wx * s_lz) + (cv_vz * s_ax - cv_vx * s_az)
+                        workspace[env, cd_off + dof * 6 + 5] = (cv_wx * s_ly - cv_wy * s_lx) + (cv_vx * s_ay - cv_vy * s_ax)
+
+                        var qv = rebind[Scalar[DTYPE]](state[env, qv_off + dof])
+                        cv_wx += s_ax * qv
+                        cv_wy += s_ay * qv
+                        cv_wz += s_az * qv
+                        cv_vx += s_lx * qv
+                        cv_vy += s_ly * qv
+                        cv_vz += s_lz * qv
+
+                elif jnt_type == JNT_BALL:
+                    for d in range(3):
+                        var dof = dof_adr + d
+                        var s_ax = rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 0])
+                        var s_ay = rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 1])
+                        var s_az = rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 2])
+                        var s_lx = rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 3])
+                        var s_ly = rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 4])
+                        var s_lz = rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 5])
+
+                        workspace[env, cd_off + dof * 6 + 0] = cv_wy * s_az - cv_wz * s_ay
+                        workspace[env, cd_off + dof * 6 + 1] = cv_wz * s_ax - cv_wx * s_az
+                        workspace[env, cd_off + dof * 6 + 2] = cv_wx * s_ay - cv_wy * s_ax
+                        workspace[env, cd_off + dof * 6 + 3] = (cv_wy * s_lz - cv_wz * s_ly) + (cv_vy * s_az - cv_vz * s_ay)
+                        workspace[env, cd_off + dof * 6 + 4] = (cv_wz * s_lx - cv_wx * s_lz) + (cv_vz * s_ax - cv_vx * s_az)
+                        workspace[env, cd_off + dof * 6 + 5] = (cv_wx * s_ly - cv_wy * s_lx) + (cv_vx * s_ay - cv_vy * s_ax)
+
+                    for d in range(3):
+                        var dof = dof_adr + d
+                        var qv = rebind[Scalar[DTYPE]](state[env, qv_off + dof])
+                        cv_wx += rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 0]) * qv
+                        cv_wy += rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 1]) * qv
+                        cv_wz += rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 2]) * qv
+                        cv_vx += rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 3]) * qv
+                        cv_vy += rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 4]) * qv
+                        cv_vz += rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 5]) * qv
+
+                else:
+                    # HINGE or SLIDE: single DOF
+                    var dof = dof_adr
+                    var s_ax = rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 0])
+                    var s_ay = rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 1])
+                    var s_az = rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 2])
+                    var s_lx = rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 3])
+                    var s_ly = rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 4])
+                    var s_lz = rebind[Scalar[DTYPE]](workspace[env, co_off + dof * 6 + 5])
+
+                    workspace[env, cd_off + dof * 6 + 0] = cv_wy * s_az - cv_wz * s_ay
+                    workspace[env, cd_off + dof * 6 + 1] = cv_wz * s_ax - cv_wx * s_az
+                    workspace[env, cd_off + dof * 6 + 2] = cv_wx * s_ay - cv_wy * s_ax
+                    workspace[env, cd_off + dof * 6 + 3] = (cv_wy * s_lz - cv_wz * s_ly) + (cv_vy * s_az - cv_vz * s_ay)
+                    workspace[env, cd_off + dof * 6 + 4] = (cv_wz * s_lx - cv_wx * s_lz) + (cv_vz * s_ax - cv_vx * s_az)
+                    workspace[env, cd_off + dof * 6 + 5] = (cv_wx * s_ly - cv_wy * s_lx) + (cv_vx * s_ay - cv_vy * s_ax)
+
+                    var qv = rebind[Scalar[DTYPE]](state[env, qv_off + dof])
+                    cv_wx += s_ax * qv
+                    cv_wy += s_ay * qv
+                    cv_wz += s_az * qv
+                    cv_vx += s_lx * qv
+                    cv_vy += s_ly * qv
+                    cv_vz += s_lz * qv
+
+        # Store final cvel_sc for this body
+        workspace[env, cv_off + b * 6 + 0] = cv_wx
+        workspace[env, cv_off + b * 6 + 1] = cv_wy
+        workspace[env, cv_off + b * 6 + 2] = cv_wz
+        workspace[env, cv_off + b * 6 + 3] = cv_vx
+        workspace[env, cv_off + b * 6 + 4] = cv_vy
+        workspace[env, cv_off + b * 6 + 5] = cv_vz
 
     # =========================================================================
     # Step 1: Compute Dcvel and Dcdofdot
+    # At subtree COM, Dcvel propagation is simple copy (NO transfer).
     # =========================================================================
 
     # Zero Dcvel and Dcdofdot
@@ -1330,57 +1351,49 @@ fn compute_rne_vel_derivative_gpu[
         var parent = Int(
             rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT])
         )
-        if parent < 0:
-            continue
 
-        # Dcvel[body] = Dcvel[parent]
-        for idx in range(6 * NV):
-            workspace[env, dcv_off + b * 6 * NV + idx] = workspace[
-                env, dcv_off + parent * 6 * NV + idx
-            ]
+        # Dcvel[body] = Dcvel[parent] (NO transfer at subtree COM!)
+        if parent >= 0:
+            for idx in range(6 * NV):
+                workspace[env, dcv_off + b * 6 * NV + idx] = workspace[
+                    env, dcv_off + parent * 6 * NV + idx
+                ]
 
         if body_dofadr[b] < 0:
             continue
 
-        var dof_start = body_dofadr[b]
-        var dof_end = dof_start + body_dofnum[b]
+        # Process DOFs of this body
+        for j in range(NJOINT):
+            var joint_off = model_joint_offset[NBODY](j)
+            var j_body = Int(
+                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID])
+            )
+            if j_body != b:
+                continue
 
-        for j_dof in range(dof_start, dof_end):
-            # Get joint type for this body
-            var jnt_type_b = JNT_HINGE
-            for jj in range(NJOINT):
-                var jj_off = model_joint_offset[NBODY](jj)
-                var jj_body = Int(
-                    rebind[Scalar[DTYPE]](model[0, jj_off + JOINT_IDX_BODY_ID])
-                )
-                if jj_body == b:
-                    jnt_type_b = Int(
-                        rebind[Scalar[DTYPE]](model[0, jj_off + JOINT_IDX_TYPE])
-                    )
-                    break
+            var jnt_type = Int(
+                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
+            )
+            var dof_adr = Int(
+                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
+            )
 
-            if jnt_type_b == JNT_FREE and j_dof == dof_start:
-                # Translation DOFs: Dcvel += cdof_origin for each
+            if jnt_type == JNT_FREE:
+                # Translation DOFs: Dcdofdot = 0, just update Dcvel
                 for k in range(6):
                     for td in range(3):
                         workspace[
-                            env, dcv_off + b * 6 * NV + k * NV + j_dof + td
+                            env, dcv_off + b * 6 * NV + k * NV + dof_adr + td
                         ] = rebind[Scalar[DTYPE]](
-                            workspace[
-                                env, dcv_off + b * 6 * NV + k * NV + j_dof + td
-                            ]
-                        ) + rebind[
-                            Scalar[DTYPE]
-                        ](
-                            workspace[env, co_off + (j_dof + td) * 6 + k]
+                            workspace[env, dcv_off + b * 6 * NV + k * NV + dof_adr + td]
+                        ) + rebind[Scalar[DTYPE]](
+                            workspace[env, co_off + (dof_adr + td) * 6 + k]
                         )
 
-                # Rotation DOFs (j_dof+3..j_dof+5)
+                # Rotation DOFs
                 for rot_d in range(3):
-                    var dof_rot = j_dof + 3 + rot_d
-                    var cdof_v = InlineArray[Scalar[DTYPE], 6](
-                        uninitialized=True
-                    )
+                    var dof_rot = dof_adr + 3 + rot_d
+                    var cdof_v = InlineArray[Scalar[DTYPE], 6](uninitialized=True)
                     for kk in range(6):
                         cdof_v[kk] = rebind[Scalar[DTYPE]](
                             workspace[env, co_off + dof_rot * 6 + kk]
@@ -1392,34 +1405,23 @@ fn compute_rne_vel_derivative_gpu[
                             var s: Scalar[DTYPE] = 0
                             for jj in range(6):
                                 s += mat[ii * 6 + jj] * rebind[Scalar[DTYPE]](
-                                    workspace[
-                                        env, dcv_off + b * 6 * NV + jj * NV + kk
-                                    ]
+                                    workspace[env, dcv_off + b * 6 * NV + jj * NV + kk]
                                 )
-                            workspace[
-                                env, dcd_off + dof_rot * 6 * NV + ii * NV + kk
-                            ] = s
+                            workspace[env, dcd_off + dof_rot * 6 * NV + ii * NV + kk] = s
 
                     for kk in range(6):
-                        workspace[
-                            env, dcv_off + b * 6 * NV + kk * NV + dof_rot
-                        ] = rebind[Scalar[DTYPE]](
-                            workspace[
-                                env, dcv_off + b * 6 * NV + kk * NV + dof_rot
-                            ]
-                        ) + rebind[
-                            Scalar[DTYPE]
-                        ](
-                            workspace[env, co_off + dof_rot * 6 + kk]
+                        workspace[env, dcv_off + b * 6 * NV + kk * NV + dof_rot] = (
+                            rebind[Scalar[DTYPE]](
+                                workspace[env, dcv_off + b * 6 * NV + kk * NV + dof_rot]
+                            ) + rebind[Scalar[DTYPE]](
+                                workspace[env, co_off + dof_rot * 6 + kk]
+                            )
                         )
-                break
 
-            elif jnt_type_b == JNT_BALL and j_dof == dof_start:
+            elif jnt_type == JNT_BALL:
                 for rot_d in range(3):
-                    var dof_rot = j_dof + rot_d
-                    var cdof_v = InlineArray[Scalar[DTYPE], 6](
-                        uninitialized=True
-                    )
+                    var dof_rot = dof_adr + rot_d
+                    var cdof_v = InlineArray[Scalar[DTYPE], 6](uninitialized=True)
                     for kk in range(6):
                         cdof_v[kk] = rebind[Scalar[DTYPE]](
                             workspace[env, co_off + dof_rot * 6 + kk]
@@ -1431,34 +1433,25 @@ fn compute_rne_vel_derivative_gpu[
                             var s: Scalar[DTYPE] = 0
                             for jj in range(6):
                                 s += mat[ii * 6 + jj] * rebind[Scalar[DTYPE]](
-                                    workspace[
-                                        env, dcv_off + b * 6 * NV + jj * NV + kk
-                                    ]
+                                    workspace[env, dcv_off + b * 6 * NV + jj * NV + kk]
                                 )
-                            workspace[
-                                env, dcd_off + dof_rot * 6 * NV + ii * NV + kk
-                            ] = s
+                            workspace[env, dcd_off + dof_rot * 6 * NV + ii * NV + kk] = s
 
                     for kk in range(6):
-                        workspace[
-                            env, dcv_off + b * 6 * NV + kk * NV + dof_rot
-                        ] = rebind[Scalar[DTYPE]](
-                            workspace[
-                                env, dcv_off + b * 6 * NV + kk * NV + dof_rot
-                            ]
-                        ) + rebind[
-                            Scalar[DTYPE]
-                        ](
-                            workspace[env, co_off + dof_rot * 6 + kk]
+                        workspace[env, dcv_off + b * 6 * NV + kk * NV + dof_rot] = (
+                            rebind[Scalar[DTYPE]](
+                                workspace[env, dcv_off + b * 6 * NV + kk * NV + dof_rot]
+                            ) + rebind[Scalar[DTYPE]](
+                                workspace[env, co_off + dof_rot * 6 + kk]
+                            )
                         )
-                break
 
             else:
                 # HINGE or SLIDE: single DOF
                 var cdof_v = InlineArray[Scalar[DTYPE], 6](uninitialized=True)
                 for kk in range(6):
                     cdof_v[kk] = rebind[Scalar[DTYPE]](
-                        workspace[env, co_off + j_dof * 6 + kk]
+                        workspace[env, co_off + dof_adr * 6 + kk]
                     )
                 _mjd_crossMotion_vel(mat, cdof_v)
 
@@ -1467,27 +1460,22 @@ fn compute_rne_vel_derivative_gpu[
                         var s: Scalar[DTYPE] = 0
                         for jj in range(6):
                             s += mat[ii * 6 + jj] * rebind[Scalar[DTYPE]](
-                                workspace[
-                                    env, dcv_off + b * 6 * NV + jj * NV + kk
-                                ]
+                                workspace[env, dcv_off + b * 6 * NV + jj * NV + kk]
                             )
-                        workspace[
-                            env, dcd_off + j_dof * 6 * NV + ii * NV + kk
-                        ] = s
+                        workspace[env, dcd_off + dof_adr * 6 * NV + ii * NV + kk] = s
 
                 for kk in range(6):
-                    workspace[
-                        env, dcv_off + b * 6 * NV + kk * NV + j_dof
-                    ] = rebind[Scalar[DTYPE]](
-                        workspace[env, dcv_off + b * 6 * NV + kk * NV + j_dof]
-                    ) + rebind[
-                        Scalar[DTYPE]
-                    ](
-                        workspace[env, co_off + j_dof * 6 + kk]
+                    workspace[env, dcv_off + b * 6 * NV + kk * NV + dof_adr] = (
+                        rebind[Scalar[DTYPE]](
+                            workspace[env, dcv_off + b * 6 * NV + kk * NV + dof_adr]
+                        ) + rebind[Scalar[DTYPE]](
+                            workspace[env, co_off + dof_adr * 6 + kk]
+                        )
                     )
 
     # =========================================================================
     # Step 2: Forward pass - compute Dcacc and Dcfrcbody
+    # At subtree COM, Dcacc propagation is simple copy (NO transfer).
     # =========================================================================
 
     # Zero Dcacc and Dcfrcbody
@@ -1500,36 +1488,33 @@ fn compute_rne_vel_derivative_gpu[
     var mat2 = InlineArray[Scalar[DTYPE], 36](uninitialized=True)
     var tmp6 = InlineArray[Scalar[DTYPE], 6](uninitialized=True)
 
-    for b in range(1, NBODY):
+    for b in range(NBODY):
         var body_off = model_body_offset(b)
         var parent = Int(
             rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT])
         )
 
-        # Dcacc[b] = Dcacc[parent]
-        for idx in range(6 * NV):
-            workspace[env, dca_off + b * 6 * NV + idx] = workspace[
-                env, dca_off + parent * 6 * NV + idx
-            ]
+        # Dcacc[b] = Dcacc[parent] (NO transfer at subtree COM!)
+        if parent >= 0:
+            for idx in range(6 * NV):
+                workspace[env, dca_off + b * 6 * NV + idx] = workspace[
+                    env, dca_off + parent * 6 * NV + idx
+                ]
 
-        # Dcacc += D(cdof_dot * qvel)
+        # Dcacc += D(cdof_dot * qvel) for body's DOFs
         if body_dofadr[b] >= 0:
             var dof_start = body_dofadr[b]
             var dof_end = dof_start + body_dofnum[b]
             for j_dof in range(dof_start, dof_end):
-                # Dcacc += cdof_dot * D(qvel): column j_dof gets cdof_dot[j_dof]
                 for k in range(6):
                     workspace[
                         env, dca_off + b * 6 * NV + k * NV + j_dof
                     ] = rebind[Scalar[DTYPE]](
                         workspace[env, dca_off + b * 6 * NV + k * NV + j_dof]
-                    ) + rebind[
-                        Scalar[DTYPE]
-                    ](
+                    ) + rebind[Scalar[DTYPE]](
                         workspace[env, cd_off + j_dof * 6 + k]
                     )
 
-                # Dcacc += D(cdof_dot) * qvel[j_dof]
                 var qvel_j = rebind[Scalar[DTYPE]](state[env, qv_off + j_dof])
                 for idx in range(6 * NV):
                     workspace[env, dca_off + b * 6 * NV + idx] = (
@@ -1559,7 +1544,7 @@ fn compute_rne_vel_derivative_gpu[
                     )
                 workspace[env, dcf_off + b * 6 * NV + ii * NV + kk] = s
 
-        # mat = D(crossForce)/D(vel) + D(crossForce)/D(frc) @ D(mulInertVec)/D(vel)
+        # Cross-force derivative terms
         var cv = InlineArray[Scalar[DTYPE], 6](uninitialized=True)
         for k in range(6):
             cv[k] = rebind[Scalar[DTYPE]](workspace[env, cv_off + b * 6 + k])
@@ -1587,6 +1572,7 @@ fn compute_rne_vel_derivative_gpu[
 
     # =========================================================================
     # Step 3: Backward pass - accumulate Dcfrcbody to parents
+    # At subtree COM: simple addition (no spatial transform!)
     # =========================================================================
     for b in range(NBODY - 1, 0, -1):
         var body_off = model_body_offset(b)
@@ -1605,6 +1591,7 @@ fn compute_rne_vel_derivative_gpu[
 
     # =========================================================================
     # Step 4: Project to joint space — subtract from qDeriv
+    # qDeriv[i, k] -= cdof_sc[i] · Dcfrcbody[body_of_i, :, k]
     # =========================================================================
     for i in range(NV):
         var body_i = dof_bodyid[i]
