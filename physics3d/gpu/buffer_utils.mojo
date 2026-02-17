@@ -137,7 +137,7 @@ from .constants import (
     model_body_invweight0_offset,
     model_dof_invweight0_offset,
 )
-from ..types import Model, Data
+from ..types import Model, Data, ConeType
 
 # =============================================================================
 # Host Buffer Creation
@@ -217,9 +217,10 @@ fn copy_model_to_buffer[
     MAX_CONTACTS: Int,
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
+    CONE_TYPE: Int = ConeType.ELLIPTIC,
 ](
     model: Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY, CONE_TYPE
     ],
     buffer: HostBuffer[DTYPE],
 ):
@@ -332,9 +333,10 @@ fn copy_invweight0_to_buffer[
     MAX_CONTACTS: Int,
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
+    CONE_TYPE: Int = ConeType.ELLIPTIC,
 ](
     model: Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY, CONE_TYPE
     ],
     buffer: HostBuffer[DTYPE],
 ):
@@ -371,9 +373,10 @@ fn copy_geoms_to_buffer[
     MAX_CONTACTS: Int,
     NGEOM: Int,
     MAX_EQUALITY: Int = 0,
+    CONE_TYPE: Int = ConeType.ELLIPTIC,
 ](
     model: Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY, CONE_TYPE
     ],
     buffer: HostBuffer[DTYPE],
 ):

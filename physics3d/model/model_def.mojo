@@ -62,7 +62,16 @@ from ..gpu.constants import (
     qvel_offset,
     qacc_offset,
     qfrc_offset,
+    model_size_with_invweight,
 )
+from ..gpu.buffer_utils import (
+    copy_model_to_buffer,
+    copy_geoms_to_buffer,
+    copy_invweight0_to_buffer,
+)
+from ..kinematics.forward_kinematics import forward_kinematics
+from ..dynamics.mass_matrix import compute_body_invweight0
+from gpu.host import HostBuffer
 
 
 # =============================================================================
@@ -1397,3 +1406,119 @@ struct ModelDef[
     comptime NGEOM: Int = Self.ngeom
     comptime MAX_EQUALITY: Int = Self.max_equality
     comptime CONE_TYPE: Int = Self.cone_type
+
+    # =========================================================================
+    # Model Creation Helpers
+    # =========================================================================
+
+    @staticmethod
+    fn setup_solver_params[
+        DTYPE: DType,
+        MAX_CONTACTS: Int,
+    ](
+        mut model: Model[
+            DTYPE,
+            Self.NQ,
+            Self.NV,
+            Self.NBODY,
+            Self.NJOINT,
+            MAX_CONTACTS,
+            Self.NGEOM,
+            Self.MAX_EQUALITY,
+            Self.CONE_TYPE,
+        ],
+        solref_contact_0: Scalar[DTYPE] = 0.02,
+        solref_contact_1: Scalar[DTYPE] = 1.0,
+        solimp_contact_0: Scalar[DTYPE] = 0.0,
+        solimp_contact_1: Scalar[DTYPE] = 0.8,
+        solimp_contact_2: Scalar[DTYPE] = 0.01,
+        solref_limit_0: Scalar[DTYPE] = 0.02,
+        solref_limit_1: Scalar[DTYPE] = 1.0,
+        solimp_limit_0: Scalar[DTYPE] = 0.0,
+        solimp_limit_1: Scalar[DTYPE] = 0.8,
+        solimp_limit_2: Scalar[DTYPE] = 0.01,
+        impratio: Scalar[DTYPE] = 1.0,
+    ):
+        """Set all solver impedance params on a Model in one call.
+
+        Sets solref/solimp for contacts and limits, plus impratio.
+        """
+        model.solref_contact[0] = solref_contact_0
+        model.solref_contact[1] = solref_contact_1
+        model.solimp_contact[0] = solimp_contact_0
+        model.solimp_contact[1] = solimp_contact_1
+        model.solimp_contact[2] = solimp_contact_2
+        model.solref_limit[0] = solref_limit_0
+        model.solref_limit[1] = solref_limit_1
+        model.solimp_limit[0] = solimp_limit_0
+        model.solimp_limit[1] = solimp_limit_1
+        model.solimp_limit[2] = solimp_limit_2
+        model.impratio = impratio
+
+    @staticmethod
+    fn finalize[
+        DTYPE: DType,
+        MAX_CONTACTS: Int,
+    ](
+        mut model: Model[
+            DTYPE,
+            Self.NQ,
+            Self.NV,
+            Self.NBODY,
+            Self.NJOINT,
+            MAX_CONTACTS,
+            Self.NGEOM,
+            Self.MAX_EQUALITY,
+            Self.CONE_TYPE,
+        ],
+        mut data: Data[
+            DTYPE,
+            Self.NQ,
+            Self.NV,
+            Self.NBODY,
+            Self.NJOINT,
+            MAX_CONTACTS,
+        ],
+    ) where DTYPE.is_floating_point():
+        """Run FK + compute_body_invweight0 in the correct order.
+
+        Must be called after Bodies/Joints/Geoms.setup_model and after
+        Joints.reset_data (or manual qpos initialization).
+        """
+        forward_kinematics(model, data)
+        compute_body_invweight0(model, data)
+
+    @staticmethod
+    fn create_gpu_model_buffer[
+        DTYPE: DType,
+        MAX_CONTACTS: Int,
+    ](
+        ctx: DeviceContext,
+        model: Model[
+            DTYPE,
+            Self.NQ,
+            Self.NV,
+            Self.NBODY,
+            Self.NJOINT,
+            MAX_CONTACTS,
+            Self.NGEOM,
+            Self.MAX_EQUALITY,
+            Self.CONE_TYPE,
+        ],
+    ) raises -> HostBuffer[DTYPE]:
+        """Create a GPU host buffer from a fully-configured model.
+
+        Allocates buffer with model_size_with_invweight, copies model data,
+        geoms, and invweight0 arrays. Returns host buffer ready for
+        ctx.enqueue_copy to a DeviceBuffer.
+        """
+        comptime BUF_SIZE = model_size_with_invweight[
+            Self.NBODY, Self.NJOINT, Self.NV, Self.NGEOM,
+        ]()
+        var host_buf = ctx.enqueue_create_host_buffer[DTYPE](BUF_SIZE)
+        for i in range(BUF_SIZE):
+            host_buf[i] = Scalar[DTYPE](0)
+        copy_model_to_buffer(model, host_buf)
+        copy_geoms_to_buffer(model, host_buf)
+        copy_invweight0_to_buffer(model, host_buf)
+        return host_buf^

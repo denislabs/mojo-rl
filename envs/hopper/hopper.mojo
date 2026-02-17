@@ -39,13 +39,6 @@ from physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     forward_kinematics_gpu,
 )
-from physics3d.dynamics.mass_matrix import compute_body_invweight0
-from physics3d.gpu.buffer_utils import (
-    copy_model_to_buffer,
-    copy_geoms_to_buffer,
-    copy_invweight0_to_buffer,
-    create_model_buffer,
-)
 from physics3d.gpu.constants import (
     TPB,
     state_size,
@@ -67,6 +60,7 @@ from physics3d.gpu.constants import (
 )
 
 from .hopper_def import (
+    HopperModel,
     HopperBodies,
     HopperJoints,
     HopperGeoms,
@@ -200,32 +194,25 @@ struct Hopper[
         self._renderer = UnsafePointer[HopperRenderer, MutAnyOrigin]()
         self._renderer_initialized = False
 
-        # Initialize GC model
-        self.model = Model[
-            Self.DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NUM_BODIES,
-            Self.NUM_JOINTS,
-            Self.MAX_CONTACTS,
-            Self.NGEOM,
-        ](
-            gravity_z=Scalar[Self.DTYPE](GRAVITY_Z),
-            timestep=timestep,
-        )
-
-        # Set solref/solimp from MuJoCo hopper.xml
+        # Initialize GC model with solver parameters
         comptime P = HopperParams[Self.DTYPE]
-        self.model.solref_contact[0] = P.SOLREF_CONTACT_0
-        self.model.solref_contact[1] = P.SOLREF_CONTACT_1
-        self.model.solimp_contact[0] = P.SOLIMP_CONTACT_0
-        self.model.solimp_contact[1] = P.SOLIMP_CONTACT_1
-        self.model.solimp_contact[2] = P.SOLIMP_CONTACT_2
-        self.model.solref_limit[0] = P.SOLREF_LIMIT_0
-        self.model.solref_limit[1] = P.SOLREF_LIMIT_1
-        self.model.solimp_limit[0] = P.SOLIMP_LIMIT_0
-        self.model.solimp_limit[1] = P.SOLIMP_LIMIT_1
-        self.model.solimp_limit[2] = P.SOLIMP_LIMIT_2
+        self.model = Model[
+            Self.DTYPE, Self.NQ, Self.NV, Self.NUM_BODIES, Self.NUM_JOINTS,
+            Self.MAX_CONTACTS, Self.NGEOM,
+        ](gravity_z=Scalar[Self.DTYPE](GRAVITY_Z), timestep=timestep)
+        HopperModel.setup_solver_params(
+            self.model,
+            solref_contact_0=P.SOLREF_CONTACT_0,
+            solref_contact_1=P.SOLREF_CONTACT_1,
+            solimp_contact_0=P.SOLIMP_CONTACT_0,
+            solimp_contact_1=P.SOLIMP_CONTACT_1,
+            solimp_contact_2=P.SOLIMP_CONTACT_2,
+            solref_limit_0=P.SOLREF_LIMIT_0,
+            solref_limit_1=P.SOLREF_LIMIT_1,
+            solimp_limit_0=P.SOLIMP_LIMIT_0,
+            solimp_limit_1=P.SOLIMP_LIMIT_1,
+            solimp_limit_2=P.SOLIMP_LIMIT_2,
+        )
 
         # Initialize data
         self.data = Data[
@@ -237,16 +224,18 @@ struct Hopper[
             Self.MAX_CONTACTS,
         ]()
 
-        # Configure worldbody, bodies, joints, and geoms from compile-time model definition
+        # Configure bodies, joints, and geoms from compile-time model definition
         HopperBodies.setup_model(self.model)
         HopperJoints.setup_model(self.model)
         HopperGeoms.setup_model(self.model)
 
-        # Reset to initial state (runs FK → xpos, xquat, xipos available)
-        self._reset_state()
+        # Reset qpos to initial values, run FK + compute body inverse weights
+        HopperJoints.reset_data(self.data)
+        HopperModel.finalize(self.model, self.data)
 
-        # Auto-compute body inverse weights (MuJoCo mj_setConst)
-        compute_body_invweight0(self.model, self.data)
+        # Reset step counter and previous position
+        self.current_step = 0
+        self.prev_x_position = self.data.qpos[JOINT_ROOTX]
 
     # =========================================================================
     # Physics State Management
@@ -926,29 +915,22 @@ struct Hopper[
         comptime P = HopperParams[gpu_dtype]
 
         var model = Model[
-            gpu_dtype,
-            Hopper.NQ,
-            Hopper.NV,
-            Hopper.NUM_BODIES,
-            Hopper.NUM_JOINTS,
-            Hopper.MAX_CONTACTS,
-            Hopper.NGEOM,
-        ](
-            gravity_z=P.GRAVITY_Z,
-            timestep=P.DT,
+            gpu_dtype, Hopper.NQ, Hopper.NV, Hopper.NUM_BODIES,
+            Hopper.NUM_JOINTS, Hopper.MAX_CONTACTS, Hopper.NGEOM,
+        ](gravity_z=P.GRAVITY_Z, timestep=P.DT)
+        HopperModel.setup_solver_params(
+            model,
+            solref_contact_0=P.SOLREF_CONTACT_0,
+            solref_contact_1=P.SOLREF_CONTACT_1,
+            solimp_contact_0=P.SOLIMP_CONTACT_0,
+            solimp_contact_1=P.SOLIMP_CONTACT_1,
+            solimp_contact_2=P.SOLIMP_CONTACT_2,
+            solref_limit_0=P.SOLREF_LIMIT_0,
+            solref_limit_1=P.SOLREF_LIMIT_1,
+            solimp_limit_0=P.SOLIMP_LIMIT_0,
+            solimp_limit_1=P.SOLIMP_LIMIT_1,
+            solimp_limit_2=P.SOLIMP_LIMIT_2,
         )
-
-        model.solref_contact[0] = P.SOLREF_CONTACT_0
-        model.solref_contact[1] = P.SOLREF_CONTACT_1
-        model.solimp_contact[0] = P.SOLIMP_CONTACT_0
-        model.solimp_contact[1] = P.SOLIMP_CONTACT_1
-        model.solimp_contact[2] = P.SOLIMP_CONTACT_2
-        model.solref_limit[0] = P.SOLREF_LIMIT_0
-        model.solref_limit[1] = P.SOLREF_LIMIT_1
-        model.solimp_limit[0] = P.SOLIMP_LIMIT_0
-        model.solimp_limit[1] = P.SOLIMP_LIMIT_1
-        model.solimp_limit[2] = P.SOLIMP_LIMIT_2
-
         HopperBodies.setup_model(model)
         HopperJoints.setup_model(model)
         HopperGeoms.setup_model(model)
@@ -962,30 +944,9 @@ struct Hopper[
             Hopper.NUM_JOINTS,
             Hopper.MAX_CONTACTS,
         ]()
-        forward_kinematics(model, data_ref)
-        compute_body_invweight0[
-            gpu_dtype,
-            Hopper.NQ,
-            Hopper.NV,
-            Hopper.NUM_BODIES,
-            Hopper.NUM_JOINTS,
-            Hopper.MAX_CONTACTS,
-            Hopper.NGEOM,
-        ](model, data_ref)
+        HopperModel.finalize(model, data_ref)
 
-        # Allocate buffer large enough for invweight0 arrays
-        comptime BUF_SIZE = model_size_with_invweight[
-            Hopper.NUM_BODIES,
-            Hopper.NUM_JOINTS,
-            Hopper.NV,
-            Hopper.NGEOM,
-        ]()
-        var host_buf = ctx.enqueue_create_host_buffer[gpu_dtype](BUF_SIZE)
-        for i in range(BUF_SIZE):
-            host_buf[i] = Scalar[gpu_dtype](0)
-        copy_model_to_buffer(model, host_buf)
-        copy_geoms_to_buffer(model, host_buf)
-        copy_invweight0_to_buffer(model, host_buf)
+        var host_buf = HopperModel.create_gpu_model_buffer[gpu_dtype, Self.MAX_CONTACTS](ctx, model)
 
         var curr = model_curriculum_offset[
             Hopper.NUM_BODIES, Hopper.NUM_JOINTS

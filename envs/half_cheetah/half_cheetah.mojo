@@ -43,13 +43,6 @@ from physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     forward_kinematics_gpu,
 )
-from physics3d.dynamics.mass_matrix import compute_body_invweight0
-from physics3d.gpu.buffer_utils import (
-    copy_model_to_buffer,
-    copy_geoms_to_buffer,
-    copy_invweight0_to_buffer,
-    create_model_buffer,
-)
 from physics3d.gpu.constants import (
     TPB,
     state_size,
@@ -212,40 +205,25 @@ struct HalfCheetah[
         self._renderer = UnsafePointer[HalfCheetahRenderer, MutAnyOrigin]()
         self._renderer_initialized = False
 
-        # Initialize GC model
-        self.model = Model[
-            Self.DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NUM_BODIES,
-            Self.NUM_JOINTS,
-            Self.MAX_CONTACTS,
-            Self.NGEOM,
-            Self.MAX_EQUALITY,
-            Self.CONE_TYPE,
-        ](
-            gravity_z=Scalar[Self.DTYPE](
-                HalfCheetahParams[Self.DTYPE].GRAVITY_Z
-            ),
-            timestep=timestep,
-        )
-
-        # Set solref/solimp from MuJoCo half_cheetah.xml
+        # Initialize GC model with solver parameters
         comptime P = HalfCheetahParams[Self.DTYPE]
-        self.model.solref_contact[0] = P.SOLREF_CONTACT_0
-        self.model.solref_contact[1] = P.SOLREF_CONTACT_1
-        self.model.solimp_contact[0] = P.SOLIMP_CONTACT_0
-        self.model.solimp_contact[1] = P.SOLIMP_CONTACT_1
-        self.model.solimp_contact[2] = P.SOLIMP_CONTACT_2
-        self.model.solref_limit[0] = P.SOLREF_LIMIT_0
-        self.model.solref_limit[1] = P.SOLREF_LIMIT_1
-        self.model.solimp_limit[0] = P.SOLIMP_LIMIT_0
-        self.model.solimp_limit[1] = P.SOLIMP_LIMIT_1
-        self.model.solimp_limit[2] = P.SOLIMP_LIMIT_2
-
-        # Elliptic cone (cone_type=1) — pyramidal not yet fully implemented
-        # MuJoCo defaults to pyramidal, but elliptic should produce equivalent results
-        # self.model.cone_type = 0
+        self.model = Model[
+            Self.DTYPE, Self.NQ, Self.NV, Self.NUM_BODIES, Self.NUM_JOINTS,
+            Self.MAX_CONTACTS, Self.NGEOM, Self.MAX_EQUALITY, Self.CONE_TYPE,
+        ](gravity_z=Scalar[Self.DTYPE](P.GRAVITY_Z), timestep=timestep)
+        HalfCheetahModel.setup_solver_params(
+            self.model,
+            solref_contact_0=P.SOLREF_CONTACT_0,
+            solref_contact_1=P.SOLREF_CONTACT_1,
+            solimp_contact_0=P.SOLIMP_CONTACT_0,
+            solimp_contact_1=P.SOLIMP_CONTACT_1,
+            solimp_contact_2=P.SOLIMP_CONTACT_2,
+            solref_limit_0=P.SOLREF_LIMIT_0,
+            solref_limit_1=P.SOLREF_LIMIT_1,
+            solimp_limit_0=P.SOLIMP_LIMIT_0,
+            solimp_limit_1=P.SOLIMP_LIMIT_1,
+            solimp_limit_2=P.SOLIMP_LIMIT_2,
+        )
 
         # Initialize data
         self.data = Data[
@@ -257,16 +235,18 @@ struct HalfCheetah[
             Self.MAX_CONTACTS,
         ]()
 
-        # Configure worldbody, bodies, joints, and geoms from compile-time model definition
+        # Configure bodies, joints, and geoms from compile-time model definition
         HalfCheetahBodies.setup_model(self.model)
         HalfCheetahJoints.setup_model(self.model)
         HalfCheetahGeoms.setup_model(self.model)
 
-        # Reset to initial state (runs FK → xpos, xquat, xipos available)
-        self._reset_state()
+        # Reset qpos to initial values, run FK + compute body inverse weights
+        HalfCheetahJoints.reset_data(self.data)
+        HalfCheetahModel.finalize(self.model, self.data)
 
-        # Auto-compute body inverse weights (MuJoCo mj_setConst)
-        compute_body_invweight0(self.model, self.data)
+        # Reset step counter and previous position
+        self.current_step = 0
+        self.prev_x_position = self.data.qpos[JOINT_ROOTX]
 
     # =========================================================================
     # Physics State Management
@@ -863,32 +843,23 @@ struct HalfCheetah[
         comptime P = HalfCheetahParams[gpu_dtype]
 
         var model = Model[
-            gpu_dtype,
-            HalfCheetah.NQ,
-            HalfCheetah.NV,
-            HalfCheetah.NUM_BODIES,
-            HalfCheetah.NUM_JOINTS,
-            HalfCheetah.MAX_CONTACTS,
-            HalfCheetah.NGEOM,
-        ](
-            gravity_z=P.GRAVITY_Z,
-            timestep=P.DT,
+            gpu_dtype, HalfCheetah.NQ, HalfCheetah.NV, HalfCheetah.NUM_BODIES,
+            HalfCheetah.NUM_JOINTS, HalfCheetah.MAX_CONTACTS,
+            HalfCheetah.NGEOM, HalfCheetah.MAX_EQUALITY, HalfCheetah.CONE_TYPE,
+        ](gravity_z=P.GRAVITY_Z, timestep=P.DT)
+        HalfCheetahModel.setup_solver_params(
+            model,
+            solref_contact_0=P.SOLREF_CONTACT_0,
+            solref_contact_1=P.SOLREF_CONTACT_1,
+            solimp_contact_0=P.SOLIMP_CONTACT_0,
+            solimp_contact_1=P.SOLIMP_CONTACT_1,
+            solimp_contact_2=P.SOLIMP_CONTACT_2,
+            solref_limit_0=P.SOLREF_LIMIT_0,
+            solref_limit_1=P.SOLREF_LIMIT_1,
+            solimp_limit_0=P.SOLIMP_LIMIT_0,
+            solimp_limit_1=P.SOLIMP_LIMIT_1,
+            solimp_limit_2=P.SOLIMP_LIMIT_2,
         )
-
-        model.solref_contact[0] = P.SOLREF_CONTACT_0
-        model.solref_contact[1] = P.SOLREF_CONTACT_1
-        model.solimp_contact[0] = P.SOLIMP_CONTACT_0
-        model.solimp_contact[1] = P.SOLIMP_CONTACT_1
-        model.solimp_contact[2] = P.SOLIMP_CONTACT_2
-        model.solref_limit[0] = P.SOLREF_LIMIT_0
-        model.solref_limit[1] = P.SOLREF_LIMIT_1
-        model.solimp_limit[0] = P.SOLIMP_LIMIT_0
-        model.solimp_limit[1] = P.SOLIMP_LIMIT_1
-        model.solimp_limit[2] = P.SOLIMP_LIMIT_2
-
-        # Elliptic cone (cone_type=1) — pyramidal not yet fully implemented
-        # model.cone_type = 0
-
         HalfCheetahBodies.setup_model(model)
         HalfCheetahJoints.setup_model(model)
         HalfCheetahGeoms.setup_model(model)
@@ -902,30 +873,9 @@ struct HalfCheetah[
             HalfCheetah.NUM_JOINTS,
             HalfCheetah.MAX_CONTACTS,
         ]()
-        forward_kinematics(model, data_ref)
-        compute_body_invweight0[
-            gpu_dtype,
-            HalfCheetah.NQ,
-            HalfCheetah.NV,
-            HalfCheetah.NUM_BODIES,
-            HalfCheetah.NUM_JOINTS,
-            HalfCheetah.MAX_CONTACTS,
-            HalfCheetah.NGEOM,
-        ](model, data_ref)
+        HalfCheetahModel.finalize(model, data_ref)
 
-        # Allocate buffer large enough for invweight0 arrays
-        comptime BUF_SIZE = model_size_with_invweight[
-            HalfCheetah.NUM_BODIES,
-            HalfCheetah.NUM_JOINTS,
-            HalfCheetah.NV,
-            HalfCheetah.NGEOM,
-        ]()
-        var host_buf = ctx.enqueue_create_host_buffer[gpu_dtype](BUF_SIZE)
-        for i in range(BUF_SIZE):
-            host_buf[i] = Scalar[gpu_dtype](0)
-        copy_model_to_buffer(model, host_buf)
-        copy_geoms_to_buffer(model, host_buf)
-        copy_invweight0_to_buffer(model, host_buf)
+        var host_buf = HalfCheetahModel.create_gpu_model_buffer[gpu_dtype, Self.MAX_CONTACTS](ctx, model)
 
         var curr = model_curriculum_offset[
             HalfCheetah.NUM_BODIES, HalfCheetah.NUM_JOINTS
