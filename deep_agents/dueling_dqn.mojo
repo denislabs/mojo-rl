@@ -45,7 +45,7 @@ from deep_rl.initializer import Kaiming
 from deep_rl.training import Network
 from deep_rl.replay import ReplayBuffer
 from core import TrainingMetrics, BoxDiscreteActionEnv
-from render import RendererBase
+from render import Renderer2D
 from memory import UnsafePointer
 
 
@@ -772,8 +772,8 @@ struct DuelingDQNAgent[
         num_episodes: Int = 10,
         max_steps: Int = 1000,
         verbose: Bool = False,
-        renderer: UnsafePointer[RendererBase, MutAnyOrigin] = UnsafePointer[
-            RendererBase, MutAnyOrigin
+        renderer: UnsafePointer[Renderer2D, MutAnyOrigin] = UnsafePointer[
+            Renderer2D, MutAnyOrigin
         ](),
     ) -> Float64:
         """Evaluate the agent using greedy policy (no exploration).

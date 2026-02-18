@@ -16,8 +16,13 @@ Run with:
 """
 
 from envs import GridWorldEnv
-from agents import QLearningAgent, SARSAAgent, SARSALambdaAgent, DoubleQLearningAgent
-from render import RendererBase
+from agents import (
+    QLearningAgent,
+    SARSAAgent,
+    SARSALambdaAgent,
+    DoubleQLearningAgent,
+)
+from render import Renderer2D
 
 
 fn main() raises:
@@ -167,7 +172,7 @@ fn main() raises:
     print("-" * 60)
     print("Demonstrating learned policy (Q-Learning):")
     print("-" * 60)
-    var renderer = RendererBase()
+    var renderer = Renderer2D()
     _ = env_q.reset()
     env_q.render(renderer)
 

@@ -16,7 +16,7 @@ from gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOAgent
 from envs.lunar_lander import LunarLanderEnv, LunarLander
-from render import RendererBase
+from render import Renderer2D
 
 # =============================================================================
 # Constants
@@ -109,7 +109,7 @@ fn main() raises:
     # Create GPU context and agent
     # =========================================================================
 
-    var renderer = RendererBase(width=600, height=400, title="PPO LunarLander")
+    var renderer = Renderer2D(width=600, height=400, title="PPO LunarLander")
 
     with DeviceContext() as ctx:
         var agent = DeepPPOAgent[

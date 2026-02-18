@@ -1,6 +1,6 @@
 from .state import State
 from .action import Action
-from render import RendererBase
+from render import Renderer2D
 
 
 trait Env:
@@ -33,7 +33,7 @@ trait Env:
 
     fn render(
         mut self,
-        mut renderer: RendererBase,
+        mut renderer: Renderer2D,
     ):
         """Render the environment (optional)."""
         ...

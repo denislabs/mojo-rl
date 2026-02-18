@@ -13,7 +13,7 @@ from memory import UnsafePointer
 
 from deep_agents.ppo import DeepPPOContinuousAgent
 from envs.bipedal_walker import BipedalWalker, BWConstants
-from render import RendererBase
+from render import Renderer2D
 from deep_rl import dtype
 
 
@@ -101,7 +101,7 @@ fn main() raises:
     # Create renderer if enabled
     @parameter
     if RENDER:
-        var renderer = RendererBase(
+        var renderer = Renderer2D(
             width=600,
             height=400,
             title="PPO BipedalWalker Continuous - CPU Eval",

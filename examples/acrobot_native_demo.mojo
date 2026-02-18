@@ -8,7 +8,7 @@ Requires SDL2: brew install sdl2 sdl2_ttf
 from envs import AcrobotEnv
 from random import random_float64
 from time import sleep
-from render import RendererBase
+from render import Renderer2D
 
 
 fn main() raises:
@@ -17,7 +17,7 @@ fn main() raises:
 
     # Create environment and renderer
     var env = AcrobotEnv[DType.float64](num_bins=6)
-    var renderer = RendererBase(500, 500, 15, "Acrobot")
+    var renderer = Renderer2D(500, 500, 15, "Acrobot")
 
     # Run episodes with rendering
     var num_episodes = 5

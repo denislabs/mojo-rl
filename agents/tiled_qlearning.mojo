@@ -31,7 +31,7 @@ Example usage:
 from random import random_float64, random_si64
 from core.tile_coding import TileCoding, TiledWeights
 from core import BoxDiscreteActionEnv, TrainingMetrics
-from render import RendererBase
+from render import Renderer2D
 from memory import UnsafePointer
 
 
@@ -256,8 +256,8 @@ struct TiledQLearningAgent:
         tile_coding: TileCoding,
         num_episodes: Int = 10,
         max_steps: Int = 500,
-        renderer: UnsafePointer[RendererBase, MutAnyOrigin] = UnsafePointer[
-            RendererBase, MutAnyOrigin
+        renderer: UnsafePointer[Renderer2D, MutAnyOrigin] = UnsafePointer[
+            Renderer2D, MutAnyOrigin
         ](),
     ) -> Float64:
         """Evaluate the agent on the environment.
@@ -473,8 +473,8 @@ struct TiledSARSAAgent:
         tile_coding: TileCoding,
         num_episodes: Int = 10,
         max_steps: Int = 500,
-        renderer: UnsafePointer[RendererBase, MutAnyOrigin] = UnsafePointer[
-            RendererBase, MutAnyOrigin
+        renderer: UnsafePointer[Renderer2D, MutAnyOrigin] = UnsafePointer[
+            Renderer2D, MutAnyOrigin
         ](),
     ) -> Float64:
         """Evaluate the agent on the environment.
@@ -737,8 +737,8 @@ struct TiledSARSALambdaAgent:
         tile_coding: TileCoding,
         num_episodes: Int = 10,
         max_steps: Int = 500,
-        renderer: UnsafePointer[RendererBase, MutAnyOrigin] = UnsafePointer[
-            RendererBase, MutAnyOrigin
+        renderer: UnsafePointer[Renderer2D, MutAnyOrigin] = UnsafePointer[
+            Renderer2D, MutAnyOrigin
         ](),
     ) -> Float64:
         """Evaluate the agent on the environment.

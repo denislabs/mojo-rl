@@ -22,7 +22,7 @@ from core import (
     Action,
 )
 from render import (
-    RendererBase,
+    Renderer2D,
     SDL_Color,
     Camera,
     Vec2 as RenderVec2,
@@ -1173,7 +1173,7 @@ struct BipedalWalker[
         var obs = self.cached_state.to_list_typed[DTYPE_VEC]()
         return (obs^, Scalar[DTYPE_VEC](result[0]), result[1])
 
-    fn render(mut self, mut renderer: RendererBase):
+    fn render(mut self, mut renderer: Renderer2D):
         """Render the environment.
 
         Args:
@@ -1189,7 +1189,7 @@ struct BipedalWalker[
     # Rendering Methods
     # =========================================================================
 
-    fn _render_internal(mut self, mut renderer: RendererBase):
+    fn _render_internal(mut self, mut renderer: Renderer2D):
         """Render the environment with scrolling Camera.
 
         Args:
@@ -1230,7 +1230,7 @@ struct BipedalWalker[
 
         renderer.flip()
 
-    fn _draw_terrain(mut self, mut renderer: RendererBase, camera: Camera):
+    fn _draw_terrain(mut self, mut renderer: Renderer2D, camera: Camera):
         """Draw terrain polygons using Camera world coordinates."""
         var terrain_color = grass_green()
 
@@ -1262,7 +1262,7 @@ struct BipedalWalker[
                 vertices, camera, terrain_color, filled=True
             )
 
-    fn _draw_hull(mut self, mut renderer: RendererBase, camera: Camera):
+    fn _draw_hull(mut self, mut renderer: Renderer2D, camera: Camera):
         """Draw hull polygon using Transform2D and Camera."""
         var pos_x = self.physics.get_body_x(0, Self.BODY_HULL)
         var pos_y = self.physics.get_body_y(0, Self.BODY_HULL)
@@ -1312,7 +1312,7 @@ struct BipedalWalker[
             hull_verts, transform, camera, hull_color, filled=True
         )
 
-    fn _draw_legs(mut self, mut renderer: RendererBase, camera: Camera):
+    fn _draw_legs(mut self, mut renderer: Renderer2D, camera: Camera):
         """Draw leg segments using Transform2D and Camera."""
         for side in range(2):
             var upper_body_idx = (
@@ -1350,7 +1350,7 @@ struct BipedalWalker[
 
     fn _draw_leg_segment(
         mut self,
-        mut renderer: RendererBase,
+        mut renderer: Renderer2D,
         body_idx: Int,
         half_w: Float64,
         half_h: Float64,

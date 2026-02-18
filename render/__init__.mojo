@@ -1,15 +1,17 @@
-"""Render package - SDL2-based rendering infrastructure for RL environments.
+"""Render package - SDL3-based rendering infrastructure for RL environments.
 
 This package provides:
-- SDL2 FFI bindings (sdl2.mojo)
-- High-level renderer with common functionality (renderer_base.mojo)
+- Common data types (types.mojo)
+- High-level renderer with common functionality (renderer2d.mojo)
 - Transform utilities: Vec2, Transform2D, Camera (transform.mojo)
 - Color utilities and palettes (colors.mojo)
 - Common shape vertex definitions (shapes.mojo)
+- GPU-accelerated 3D renderer using SDL3's GPU API with Metal (MSL) shaders
+  for Blinn-Phong lit environment visualization.
 """
 
-# SDL2 low-level bindings
-from .sdl2 import SDL2, SDL_Event, SDL_Point, SDL_Rect, SDL_Color, SDLHandle
+# Common data types
+from .types import SDL_Color, SDL_Point, SDL_Rect, SDLHandle
 
 # Transform utilities
 from .transform import (
@@ -122,5 +124,9 @@ from .shapes import (
     flip_vertices_x,
 )
 
-# Native SDL2 renderer base (shared infrastructure)
-from .renderer_base import RendererBase
+# Native SDL3 renderer base (shared infrastructure)
+from .renderer2d import Renderer2D
+
+from .camera3d import Camera3D
+from .renderer3d import Renderer3D, Color3D
+from .gpu_types import MeshHandle

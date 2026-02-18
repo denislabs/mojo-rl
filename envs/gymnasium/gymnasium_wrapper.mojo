@@ -5,7 +5,7 @@ handling the Python-Mojo type conversions automatically.
 """
 
 from python import Python, PythonObject
-from render import RendererBase
+from render import Renderer2D
 
 
 struct GymnasiumEnv:
@@ -150,7 +150,7 @@ struct GymnasiumEnv:
         """Close the environment."""
         _ = self.env.close()
 
-    fn render(mut self, mut renderer: RendererBase) raises:
+    fn render(mut self, mut renderer: Renderer2D) raises:
         """Render the environment (uses Gymnasium's renderer, renderer argument ignored).
         """
         _ = renderer

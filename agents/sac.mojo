@@ -51,7 +51,7 @@ from core.continuous_replay_buffer import (
 )
 from core import PolynomialFeatures, TrainingMetrics, BoxContinuousActionEnv
 from deep_rl.gpu.random import gaussian_noise
-from render import RendererBase
+from render import Renderer2D
 from memory import UnsafePointer
 
 
@@ -830,8 +830,8 @@ struct SACAgent(Copyable, Movable):
         features: PolynomialFeatures,
         num_episodes: Int = 10,
         max_steps_per_episode: Int = 200,
-        renderer: UnsafePointer[RendererBase, MutAnyOrigin] = UnsafePointer[
-            RendererBase, MutAnyOrigin
+        renderer: UnsafePointer[Renderer2D, MutAnyOrigin] = UnsafePointer[
+            Renderer2D, MutAnyOrigin
         ](),
     ) -> Float64:
         """Evaluate the trained SAC agent using deterministic policy.

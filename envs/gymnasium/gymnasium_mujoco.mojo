@@ -23,7 +23,7 @@ Note: These require pip install "gymnasium[mujoco]" or mujoco-py
 
 from python import Python, PythonObject
 from core import State, Action, BoxContinuousActionEnv
-from render import RendererBase
+from render import Renderer2D
 
 
 # ============================================================================
@@ -309,7 +309,7 @@ struct GymMuJoCoEnv(BoxContinuousActionEnv):
         for i in range(self._obs_dim):
             obs.append(self.current_obs[i])
 
-    fn render(mut self, mut renderer: RendererBase):
+    fn render(mut self, mut renderer: Renderer2D):
         """Render the environment (uses Gymnasium's renderer, renderer argument ignored).
         """
         _ = renderer

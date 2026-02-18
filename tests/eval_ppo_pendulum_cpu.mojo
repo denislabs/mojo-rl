@@ -19,7 +19,7 @@ from time import perf_counter_ns, sleep
 
 from deep_agents.ppo import DeepPPOContinuousAgent
 from envs.pendulum import PendulumV2, PConstants
-from render import RendererBase
+from render import Renderer2D
 
 
 # =============================================================================
@@ -127,7 +127,7 @@ fn main() raises:
     @parameter
     if RENDER:
         print("Initializing SDL2 renderer...")
-        var renderer = RendererBase(
+        var renderer = Renderer2D(
             width=600, height=400, title="PPO Pendulum Continuous - CPU Eval"
         )
 
@@ -171,9 +171,7 @@ fn main() raises:
             max_steps=MAX_STEPS_PER_EPISODE,
             verbose=True,
             stochastic=False,
-            renderer=UnsafePointer[
-                RendererBase, MutAnyOrigin
-            ](),  # No rendering
+            renderer=UnsafePointer[Renderer2D, MutAnyOrigin](),  # No rendering
         )
 
         var deterministic_time = perf_counter_ns() - start_time
@@ -278,9 +276,7 @@ fn main() raises:
             max_steps=MAX_STEPS_PER_EPISODE,
             verbose=True,
             stochastic=False,
-            renderer=UnsafePointer[
-                RendererBase, MutAnyOrigin
-            ](),  # No rendering
+            renderer=UnsafePointer[Renderer2D, MutAnyOrigin](),  # No rendering
         )
 
         var deterministic_time = perf_counter_ns() - start_time

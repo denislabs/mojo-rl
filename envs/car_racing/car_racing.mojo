@@ -20,7 +20,7 @@ from random.philox import Random as PhiloxRandom
 
 from core import BoxContinuousActionEnv, GPUContinuousEnv, Action
 from render import (
-    RendererBase,
+    Renderer2D,
     RotatingCamera,
     Transform2D,
     SDL_Color,
@@ -292,7 +292,7 @@ struct CarRacing[DTYPE: DType](
         """Get current state."""
         return self.cached_state
 
-    fn render(mut self, mut renderer: RendererBase):
+    fn render(mut self, mut renderer: Renderer2D):
         """Render the environment with rotating camera following the car."""
         # Get car state from physics buffer
         var state = self._get_state_tensor()
@@ -353,7 +353,7 @@ struct CarRacing[DTYPE: DType](
 
         renderer.flip()
 
-    fn _draw_grass(self, mut renderer: RendererBase, camera: RotatingCamera):
+    fn _draw_grass(self, mut renderer: Renderer2D, camera: RotatingCamera):
         """Draw grass patches in a checkerboard pattern."""
         var grass_clr = SDL_Color(68, 160, 68, 255)  # Darker grass for pattern
 
@@ -389,7 +389,7 @@ struct CarRacing[DTYPE: DType](
                     vertices, camera, grass_clr, filled=True
                 )
 
-    fn _draw_track(self, mut renderer: RendererBase, camera: RotatingCamera):
+    fn _draw_track(self, mut renderer: Renderer2D, camera: RotatingCamera):
         """Draw track tiles."""
         var road_clr = SDL_Color(102, 102, 102, 255)  # Gray road
 
@@ -435,7 +435,7 @@ struct CarRacing[DTYPE: DType](
 
     fn _draw_car(
         self,
-        mut renderer: RendererBase,
+        mut renderer: Renderer2D,
         camera: RotatingCamera,
         hull_x: Float64,
         hull_y: Float64,
@@ -540,7 +540,7 @@ struct CarRacing[DTYPE: DType](
                 wheel_verts, wheel_transform, camera, wheel_color, filled=True
             )
 
-    fn _draw_info(self, mut renderer: RendererBase, vx: Float64, vy: Float64):
+    fn _draw_info(self, mut renderer: Renderer2D, vx: Float64, vy: Float64):
         """Draw HUD info panel."""
         var W = Float64(CRConstants.WINDOW_W)
         var H = Float64(CRConstants.WINDOW_H)
@@ -595,7 +595,7 @@ struct CarRacing[DTYPE: DType](
 
     fn _draw_vertical_indicator(
         self,
-        mut renderer: RendererBase,
+        mut renderer: Renderer2D,
         x_pos: Int,
         height: Float64,
         color: SDL_Color,

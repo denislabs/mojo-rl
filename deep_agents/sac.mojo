@@ -54,7 +54,7 @@ from deep_rl.checkpoint import (
     read_checkpoint_file,
 )
 from core import TrainingMetrics, BoxContinuousActionEnv
-from render import RendererBase
+from render import Renderer2D
 from memory import UnsafePointer
 
 
@@ -1186,8 +1186,8 @@ struct DeepSACAgent[
         mut env: E,
         num_episodes: Int = 10,
         max_steps: Int = 200,
-        renderer: UnsafePointer[RendererBase, MutAnyOrigin] = UnsafePointer[
-            RendererBase, MutAnyOrigin
+        renderer: UnsafePointer[Renderer2D, MutAnyOrigin] = UnsafePointer[
+            Renderer2D, MutAnyOrigin
         ](),
     ) -> Float64:
         """Evaluate the agent using deterministic policy.

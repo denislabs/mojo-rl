@@ -80,7 +80,7 @@ from core import (
     CurriculumScheduler,
     NoCurriculumScheduler,
 )
-from render import RendererBase
+from render import Renderer2D
 from memory import UnsafePointer
 from core.utils.gae import compute_gae_inline
 from core.utils.normalization import normalize_inline, RunningMeanStd
@@ -597,8 +597,8 @@ struct DeepPPOContinuousAgent[
         max_steps: Int = 1000,
         verbose: Bool = False,
         stochastic: Bool = True,
-        renderer: UnsafePointer[RendererBase, MutAnyOrigin] = UnsafePointer[
-            RendererBase, MutAnyOrigin
+        renderer: UnsafePointer[Renderer2D, MutAnyOrigin] = UnsafePointer[
+            Renderer2D, MutAnyOrigin
         ](),
     ) -> Float64:
         """Evaluate the agent (CPU with optional rendering).

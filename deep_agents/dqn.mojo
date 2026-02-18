@@ -72,7 +72,7 @@ from deep_rl.gpu import (
     gather_batch_kernel,
 )
 from core import TrainingMetrics, BoxDiscreteActionEnv, GPUDiscreteEnv
-from render import RendererBase
+from render import Renderer2D
 from memory import UnsafePointer
 
 
@@ -741,8 +741,8 @@ struct DQNAgent[
         mut env: E,
         num_episodes: Int = 10,
         max_steps: Int = 500,
-        renderer: UnsafePointer[RendererBase, MutAnyOrigin] = UnsafePointer[
-            RendererBase, MutAnyOrigin
+        renderer: UnsafePointer[Renderer2D, MutAnyOrigin] = UnsafePointer[
+            Renderer2D, MutAnyOrigin
         ](),
     ) -> Float64:
         """Evaluate the agent on the environment using greedy policy.
@@ -897,8 +897,8 @@ struct DQNAgent[
         mut env: E,
         num_episodes: Int = 10,
         max_steps: Int = 500,
-        renderer: UnsafePointer[RendererBase, MutAnyOrigin] = UnsafePointer[
-            RendererBase, MutAnyOrigin
+        renderer: UnsafePointer[Renderer2D, MutAnyOrigin] = UnsafePointer[
+            Renderer2D, MutAnyOrigin
         ](),
     ) -> Float64:
         """Evaluate the agent using pure greedy policy (epsilon=0).

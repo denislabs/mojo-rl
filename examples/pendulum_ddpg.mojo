@@ -22,7 +22,7 @@ Requirements:
 from envs import PendulumEnv
 from core import ContinuousReplayBuffer, PolynomialFeatures, TrainingMetrics
 from agents import DDPGAgent
-from render import RendererBase
+from render import Renderer2D
 
 
 fn main() raises:
@@ -95,7 +95,7 @@ fn main() raises:
     print("Watch the pendulum swing up and balance!")
 
     # Create renderer
-    var renderer = RendererBase(500, 500, 20, "Pendulum")
+    var renderer = Renderer2D(500, 500, 20, "Pendulum")
 
     # Run a few episodes with rendering
     for demo_ep in range(3):

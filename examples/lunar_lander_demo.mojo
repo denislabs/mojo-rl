@@ -16,7 +16,7 @@ Actions: 0=nothing, 1=left engine, 2=main engine, 3=right engine
 from envs.lunar_lander import LunarLanderEnv
 from random import random_float64, seed
 from time import sleep
-from render import RendererBase
+from render import Renderer2D
 
 
 fn main() raises:
@@ -29,7 +29,7 @@ fn main() raises:
 
     # Create environment (discrete actions, no wind for clearer demo)
     var env = LunarLanderEnv(continuous=False, enable_wind=False)
-    var renderer = RendererBase(600, 400, 50, "LunarLander")
+    var renderer = Renderer2D(600, 400, 50, "LunarLander")
 
     # Run episodes with rendering
     var num_episodes = 5
@@ -49,7 +49,14 @@ fn main() raises:
 
             if use_heuristic:
                 # Simple heuristic policy
-                action = _heuristic_action(state.x, state.y, state.vx, state.vy, state.angle, state.angular_velocity)
+                action = _heuristic_action(
+                    state.x,
+                    state.y,
+                    state.vx,
+                    state.vy,
+                    state.angle,
+                    state.angular_velocity,
+                )
             else:
                 # Random action
                 action = Int(random_float64() * 4.0)
@@ -89,7 +96,14 @@ fn main() raises:
     print("=== Demo Complete ===")
 
 
-fn _heuristic_action(x: Float64, y: Float64, vx: Float64, vy: Float64, angle: Float64, angular_vel: Float64) -> Int:
+fn _heuristic_action(
+    x: Float64,
+    y: Float64,
+    vx: Float64,
+    vy: Float64,
+    angle: Float64,
+    angular_vel: Float64,
+) -> Int:
     """Simple heuristic policy for LunarLander.
 
     Actions: 0=nop, 1=left engine, 2=main engine, 3=right engine

@@ -93,7 +93,7 @@ from physics2d.joints.revolute import RevoluteJointSolver
 
 # Rendering imports
 from render import (
-    RendererBase,
+    Renderer2D,
     SDL_Color,
     Camera,
     Vec2 as RenderVec2,
@@ -1439,7 +1439,7 @@ struct LunarLander[
         # Compute reward and termination
         return self._compute_step_result(m_power, s_power)
 
-    fn render(mut self, mut renderer: RendererBase):
+    fn render(mut self, mut renderer: Renderer2D):
         """Render the environment (Env trait method)."""
         # Render env 0 for single-env CPU mode
         self.render(0, renderer)
@@ -3566,12 +3566,12 @@ struct LunarLander[
     # Rendering Methods
     # =========================================================================
 
-    fn render(mut self, env: Int, mut renderer: RendererBase):
+    fn render(mut self, env: Int, mut renderer: Renderer2D):
         """Render a specific environment using the provided renderer.
 
         Args:
             env: Environment index to render (0 to BATCH-1).
-            renderer: Initialized RendererBase instance.
+            renderer: Initialized Renderer2D instance.
 
         The renderer should be initialized before calling this method.
         Call renderer.init_display() before first use if needed.
@@ -3614,7 +3614,7 @@ struct LunarLander[
         renderer.flip()
 
     fn _draw_terrain(
-        mut self, env: Int, camera: Camera, mut renderer: RendererBase
+        mut self, env: Int, camera: Camera, mut renderer: Renderer2D
     ):
         """Draw terrain as filled polygons using world coordinates."""
         var terrain_color = moon_gray()
@@ -3655,7 +3655,7 @@ struct LunarLander[
             )
 
     fn _draw_helipad(
-        mut self, env: Int, camera: Camera, mut renderer: RendererBase
+        mut self, env: Int, camera: Camera, mut renderer: Renderer2D
     ):
         """Draw the helipad landing zone using world coordinates."""
         var helipad_color = darken(moon_gray(), 0.8)
@@ -3691,7 +3691,7 @@ struct LunarLander[
         )
 
     fn _draw_flags(
-        mut self, env: Int, camera: Camera, mut renderer: RendererBase
+        mut self, env: Int, camera: Camera, mut renderer: Renderer2D
     ):
         """Draw helipad flags with poles using world coordinates."""
         var white_color = white()
@@ -3744,7 +3744,7 @@ struct LunarLander[
             )
 
     fn _draw_lander(
-        mut self, env: Int, camera: Camera, mut renderer: RendererBase
+        mut self, env: Int, camera: Camera, mut renderer: Renderer2D
     ):
         """Draw lander body as filled polygon using Transform2D."""
         # Get lander position and angle from physics
@@ -3771,9 +3771,7 @@ struct LunarLander[
             lander_verts, transform, camera, lander_outline, filled=False
         )
 
-    fn _draw_legs(
-        mut self, env: Int, camera: Camera, mut renderer: RendererBase
-    ):
+    fn _draw_legs(mut self, env: Int, camera: Camera, mut renderer: Renderer2D):
         """Draw lander legs as filled polygons using Transform2D."""
         # Get leg contact from observation
         var obs = self.get_observation(env)
@@ -3812,7 +3810,7 @@ struct LunarLander[
                 leg_verts, transform, camera, leg_outline, filled=False
             )
 
-    fn _draw_particles(mut self, camera: Camera, mut renderer: RendererBase):
+    fn _draw_particles(mut self, camera: Camera, mut renderer: Renderer2D):
         """Draw engine flame particles."""
         for i in range(len(self.particles)):
             var p = self.particles[i]

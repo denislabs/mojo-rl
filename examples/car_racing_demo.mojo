@@ -12,7 +12,7 @@ from random import random_float64
 
 from envs.car_racing import CarRacing, CarRacingAction
 from envs.car_racing.constants import CRConstants
-from render import RendererBase
+from render import Renderer2D
 
 
 fn main() raises:
@@ -29,7 +29,7 @@ fn main() raises:
     print()
 
     # Create renderer
-    var renderer = RendererBase(
+    var renderer = Renderer2D(
         CRConstants.WINDOW_W,
         CRConstants.WINDOW_H,
         CRConstants.FPS,

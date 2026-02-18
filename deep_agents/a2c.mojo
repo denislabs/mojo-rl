@@ -46,7 +46,7 @@ from deep_rl.checkpoint import (
     find_section_start,
 )
 from core import TrainingMetrics, BoxDiscreteActionEnv
-from render import RendererBase
+from render import Renderer2D
 from memory import UnsafePointer
 from core.utils.gae import compute_gae_inline
 from core.utils.softmax import (
@@ -686,8 +686,8 @@ struct DeepA2CAgent[
         num_episodes: Int = 10,
         max_steps: Int = 1000,
         verbose: Bool = False,
-        renderer: UnsafePointer[RendererBase, MutAnyOrigin] = UnsafePointer[
-            RendererBase, MutAnyOrigin
+        renderer: UnsafePointer[Renderer2D, MutAnyOrigin] = UnsafePointer[
+            Renderer2D, MutAnyOrigin
         ](),
     ) -> Float64:
         """Evaluate the agent using greedy policy.

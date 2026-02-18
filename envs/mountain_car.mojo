@@ -16,7 +16,7 @@ from math import cos, sin
 from random import random_float64
 from core import State, Action, DiscreteEnv, TileCoding, BoxDiscreteActionEnv
 from render import (
-    RendererBase,
+    Renderer2D,
     SDL_Color,
     SDL_Point,
     Vec2,
@@ -354,13 +354,13 @@ struct MountainCarEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
             0.45
         ) + Scalar[Self.dtype](0.55)
 
-    fn render(mut self, mut renderer: RendererBase):
+    fn render(mut self, mut renderer: Renderer2D):
         """Render the current state using SDL2.
 
         MountainCar uses custom coordinate conversion due to the terrain function.
 
         Args:
-            renderer: The RendererBase to use for rendering.
+            renderer: The Renderer2D to use for rendering.
         """
         # Begin frame handles init, events, and clear
         if not renderer.begin_frame():

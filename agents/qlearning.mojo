@@ -1,5 +1,5 @@
 from core import TabularAgent, DiscreteEnv, TrainingMetrics
-from render import RendererBase
+from render import Renderer2D
 from memory import UnsafePointer
 from random import random_si64, random_float64
 
@@ -241,8 +241,8 @@ struct QLearningAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
         self,
         mut env: E,
         num_episodes: Int = 10,
-        renderer: UnsafePointer[RendererBase, MutAnyOrigin] = UnsafePointer[
-            RendererBase, MutAnyOrigin
+        renderer: UnsafePointer[Renderer2D, MutAnyOrigin] = UnsafePointer[
+            Renderer2D, MutAnyOrigin
         ](),
     ) -> Float64:
         """Evaluate the agent on the environment.

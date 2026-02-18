@@ -23,7 +23,7 @@ from core import (
     ObsState,
     ContAction,
 )
-from render import RendererBase
+from render import Renderer2D
 from deep_rl import dtype as gpu_dtype
 
 # GPU imports
@@ -405,7 +405,7 @@ struct Hopper[
         self._reset_state()
         return self._get_obs()
 
-    fn render(mut self, mut renderer: RendererBase):
+    fn render(mut self, mut renderer: Renderer2D):
         pass
 
     fn close(mut self):

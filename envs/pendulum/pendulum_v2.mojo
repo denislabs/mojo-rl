@@ -31,7 +31,7 @@ from core import (
     PolynomialFeatures,
 )
 from render import (
-    RendererBase,
+    Renderer2D,
     Camera,
     SDL_Color,
     Vec2,
@@ -892,7 +892,7 @@ struct PendulumV2[DTYPE: DType](
     # Rendering
     # =========================================================================
 
-    fn render(mut self, mut renderer: RendererBase):
+    fn render(mut self, mut renderer: Renderer2D):
         """Render the current state using SDL2.
 
         Args:

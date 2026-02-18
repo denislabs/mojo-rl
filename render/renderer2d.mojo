@@ -1,31 +1,57 @@
-"""Native SDL2-based renderer - no Python dependency.
+"""Native SDL3-based renderer - no Python dependency.
 
-Provides the same API as RendererBase but uses native SDL2 bindings
-for maximum performance. Requires SDL2 and SDL2_ttf to be installed.
+Provides the same API as Renderer2D but uses native SDL3 bindings
+for maximum performance. Requires SDL3 to be installed (via pixi).
 
-On macOS: brew install sdl2 sdl2_ttf
+Text rendering uses SDL3's built-in 8x8 debug text (no TTF dependency).
 """
 
 from math import cos, sin, pi
-from .sdl2 import (
-    SDL2,
-    SDL_Event,
-    SDL_Point,
-    SDL_Color,
-    SDL_QUIT,
-    SDLHandle,
-)
+from ffi import c_float, c_int
+from .types import SDL_Color, SDL_Point, SDL_Rect, SDLHandle
 from .transform import Vec2, Transform2D, Camera, RotatingCamera
 
+from .sdl import (
+    init,
+    quit as sdl_quit,
+    InitFlags,
+    create_window,
+    destroy_window,
+    Window,
+    WindowFlags,
+    create_renderer,
+    destroy_renderer,
+    Renderer as SDLRenderer,
+    set_render_draw_color,
+    render_clear,
+    render_present,
+    render_line,
+    render_point,
+    render_fill_rect,
+    render_rect as sdl_render_rect,
+    render_debug_text,
+    poll_event,
+    Event,
+    EventType,
+    KeyboardEvent,
+    Keycode,
+    delay,
+    get_ticks,
+    Ptr,
+    AnyOrigin,
+    FRect,
+)
 
-struct RendererBase:
-    """Native SDL2 renderer with common functionality.
 
-    Provides the same interface as RendererBase but without Python/pygame.
-    Uses SDL2 for hardware-accelerated rendering.
+struct Renderer2D:
+    """Native SDL3 renderer with common functionality.
+
+    Uses SDL3 for hardware-accelerated 2D rendering.
     """
 
-    var sdl: SDL2
+    # SDL3 handles
+    var window: Ptr[Window, AnyOrigin[True]]
+    var sdl_renderer: Ptr[SDLRenderer, AnyOrigin[True]]
 
     # Display settings
     var screen_width: Int
@@ -43,7 +69,7 @@ struct RendererBase:
     var should_quit: Bool
 
     # Timing
-    var last_frame_time: UInt32
+    var last_frame_time: UInt64
 
     fn __init__(
         out self,
@@ -51,7 +77,7 @@ struct RendererBase:
         height: Int = 400,
         fps: Int = 30,
         title: String = "Mojo RL Environment",
-    ) raises:
+    ):
         """Initialize the native renderer.
 
         Args:
@@ -60,7 +86,8 @@ struct RendererBase:
             fps: Target frames per second.
             title: Window title.
         """
-        self.sdl = SDL2()
+        self.window = Ptr[Window, AnyOrigin[True]]()
+        self.sdl_renderer = Ptr[SDLRenderer, AnyOrigin[True]]()
 
         self.screen_width = width
         self.screen_height = height
@@ -104,7 +131,7 @@ struct RendererBase:
         return SDL_Point(Int32(x), Int32(y))
 
     fn init_display(mut self) -> Bool:
-        """Initialize SDL2 display window.
+        """Initialize SDL3 display window.
 
         Returns:
             True if initialization succeeded.
@@ -112,53 +139,29 @@ struct RendererBase:
         if self.initialized:
             return True
 
-        # Initialize SDL2
-        if not self.sdl.init():
-            print("Failed to initialize SDL2")
+        try:
+            # Initialize SDL3
+            init(InitFlags.INIT_VIDEO)
+
+            # Create window
+            var window_title = self.title
+            self.window = create_window(
+                window_title,
+                c_int(self.screen_width),
+                c_int(self.screen_height),
+                WindowFlags(0),
+            )
+
+            # Create renderer
+            var name = String("")
+            self.sdl_renderer = create_renderer(self.window, name)
+
+            self.initialized = True
+            self.last_frame_time = get_ticks()
+            return True
+        except:
+            print("Failed to initialize SDL3")
             return False
-
-        # Initialize TTF
-        if not self.sdl.init_ttf():
-            print("Failed to initialize SDL2_ttf")
-            return False
-
-        # Create window
-        var window_title = self.title
-        var window = self.sdl.create_window(
-            window_title,
-            self.screen_width,
-            self.screen_height,
-        )
-        if not window:
-            print("Failed to create window")
-            return False
-
-        # Create renderer
-        var renderer = self.sdl.create_renderer()
-        if not renderer:
-            print("Failed to create renderer")
-            return False
-
-        # Try to load system fonts
-        # macOS system fonts location
-        var font_paths = List[String]()
-        font_paths.append("/System/Library/Fonts/Helvetica.ttc")
-        font_paths.append("/System/Library/Fonts/SFNSMono.ttf")
-        font_paths.append("/Library/Fonts/Arial.ttf")
-        font_paths.append("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
-
-        for i in range(len(font_paths)):
-            var path = font_paths[i]
-            # Normal font (size 20)
-            var font = self.sdl.open_font(path, 20)
-            if font:
-                # Also open large font (size 42) for scores
-                _ = self.sdl.open_large_font(path, 42)
-                break
-
-        self.initialized = True
-        self.last_frame_time = self.sdl.get_ticks()
-        return True
 
     fn handle_events(mut self) -> Bool:
         """Process SDL events and check for quit.
@@ -166,29 +169,208 @@ struct RendererBase:
         Returns:
             True if should continue, False if quit requested.
         """
-        var event = SDL_Event()
+        var event = Event()
 
-        while self.sdl.poll_event(event):
-            if event.type == SDL_QUIT:
-                self.should_quit = True
-                return False
+        try:
+            while poll_event(Ptr(to=event)):
+                var event_type = event[UInt32]
+                if EventType(Int(event_type)) == EventType.EVENT_QUIT:
+                    self.should_quit = True
+                    return False
+                elif EventType(Int(event_type)) == EventType.EVENT_KEY_DOWN:
+                    var key_event = event[KeyboardEvent]
+                    if Int(key_event.key) == Int(Keycode.SDLK_ESCAPE):
+                        self.should_quit = True
+                        return False
+        except:
+            pass
 
         return True
 
     fn clear(mut self):
         """Clear screen with background color."""
-        self.sdl.set_draw_color(
-            self.background_color.r,
-            self.background_color.g,
-            self.background_color.b,
-            self.background_color.a,
-        )
-        self.sdl.clear()
+        try:
+            set_render_draw_color(
+                self.sdl_renderer,
+                self.background_color.r,
+                self.background_color.g,
+                self.background_color.b,
+                self.background_color.a,
+            )
+            render_clear(self.sdl_renderer)
+        except:
+            pass
 
     fn clear_with_color(mut self, color: SDL_Color):
         """Clear screen with specified color."""
-        self.sdl.set_draw_color(color.r, color.g, color.b, color.a)
-        self.sdl.clear()
+        try:
+            set_render_draw_color(
+                self.sdl_renderer, color.r, color.g, color.b, color.a
+            )
+            render_clear(self.sdl_renderer)
+        except:
+            pass
+
+    fn _set_color(mut self, color: SDL_Color):
+        """Set draw color on the renderer."""
+        try:
+            set_render_draw_color(
+                self.sdl_renderer, color.r, color.g, color.b, color.a
+            )
+        except:
+            pass
+
+    fn _draw_line_raw(mut self, x1: Int, y1: Int, x2: Int, y2: Int):
+        """Draw a line using raw pixel coordinates (color must be set)."""
+        try:
+            render_line(
+                self.sdl_renderer,
+                c_float(x1),
+                c_float(y1),
+                c_float(x2),
+                c_float(y2),
+            )
+        except:
+            pass
+
+    fn _draw_point_raw(mut self, x: Int, y: Int):
+        """Draw a single point (color must be set)."""
+        try:
+            render_point(self.sdl_renderer, c_float(x), c_float(y))
+        except:
+            pass
+
+    fn _fill_rect_raw(mut self, x: Int, y: Int, w: Int, h: Int):
+        """Draw a filled rectangle (color must be set)."""
+        try:
+            var rect = FRect(c_float(x), c_float(y), c_float(w), c_float(h))
+            render_fill_rect(
+                self.sdl_renderer,
+                rebind[Ptr[FRect, AnyOrigin[False]]](Ptr(to=rect)),
+            )
+        except:
+            pass
+
+    fn _draw_rect_raw(mut self, x: Int, y: Int, w: Int, h: Int):
+        """Draw a rectangle outline (color must be set)."""
+        try:
+            var rect = FRect(c_float(x), c_float(y), c_float(w), c_float(h))
+            sdl_render_rect(
+                self.sdl_renderer,
+                rebind[Ptr[FRect, AnyOrigin[False]]](Ptr(to=rect)),
+            )
+        except:
+            pass
+
+    fn _fill_circle_raw(
+        mut self,
+        center_x: Int,
+        center_y: Int,
+        radius: Int,
+    ):
+        """Draw a filled circle (color must be set)."""
+        for dy in range(-radius, radius + 1):
+            var dx_squared = radius * radius - dy * dy
+            if dx_squared >= 0:
+                var dx = Int(Float64(dx_squared) ** 0.5)
+                self._draw_line_raw(
+                    center_x - dx,
+                    center_y + dy,
+                    center_x + dx,
+                    center_y + dy,
+                )
+
+    fn _draw_circle_raw(
+        mut self,
+        center_x: Int,
+        center_y: Int,
+        radius: Int,
+    ):
+        """Draw a circle outline using midpoint algorithm (color must be set).
+        """
+        var x = radius
+        var y = 0
+        var err = 0
+
+        while x >= y:
+            self._draw_point_raw(center_x + x, center_y + y)
+            self._draw_point_raw(center_x + y, center_y + x)
+            self._draw_point_raw(center_x - y, center_y + x)
+            self._draw_point_raw(center_x - x, center_y + y)
+            self._draw_point_raw(center_x - x, center_y - y)
+            self._draw_point_raw(center_x - y, center_y - x)
+            self._draw_point_raw(center_x + y, center_y - x)
+            self._draw_point_raw(center_x + x, center_y - y)
+
+            y += 1
+            err += 1 + 2 * y
+            if 2 * (err - x) + 1 > 0:
+                x -= 1
+                err += 1 - 2 * x
+
+    fn _draw_lines_raw(mut self, points: List[SDL_Point]):
+        """Draw connected line segments (color must be set)."""
+        if len(points) < 2:
+            return
+        for i in range(len(points) - 1):
+            self._draw_line_raw(
+                Int(points[i].x),
+                Int(points[i].y),
+                Int(points[i + 1].x),
+                Int(points[i + 1].y),
+            )
+
+    fn _fill_polygon_raw(mut self, points: List[SDL_Point]):
+        """Draw a filled polygon using scanline algorithm (color must be set).
+        """
+        if len(points) < 3:
+            return
+
+        # Find bounding box
+        var min_y = Int(points[0].y)
+        var max_y = Int(points[0].y)
+        for i in range(len(points)):
+            if Int(points[i].y) < min_y:
+                min_y = Int(points[i].y)
+            if Int(points[i].y) > max_y:
+                max_y = Int(points[i].y)
+
+        # Scanline fill
+        for y in range(min_y, max_y + 1):
+            var intersections = List[Int]()
+
+            # Find intersections with all edges
+            var j = len(points) - 1
+            for i in range(len(points)):
+                var y1 = Int(points[i].y)
+                var y2 = Int(points[j].y)
+
+                if (y1 <= y < y2) or (y2 <= y < y1):
+                    var x1 = Int(points[i].x)
+                    var x2 = Int(points[j].x)
+                    var x = x1 + (y - y1) * (x2 - x1) // (y2 - y1)
+                    intersections.append(x)
+
+                j = i
+
+            # Sort intersections
+            for i in range(len(intersections)):
+                for k in range(i + 1, len(intersections)):
+                    if intersections[k] < intersections[i]:
+                        var temp = intersections[i]
+                        intersections[i] = intersections[k]
+                        intersections[k] = temp
+
+            # Draw horizontal lines between pairs
+            var idx = 0
+            while idx < len(intersections) - 1:
+                self._draw_line_raw(
+                    intersections[idx],
+                    y,
+                    intersections[idx + 1],
+                    y,
+                )
+                idx += 2
 
     fn draw_line(
         mut self,
@@ -207,10 +389,10 @@ struct RendererBase:
             color: Line color.
             width: Line width (approximated for width > 1).
         """
-        self.sdl.set_draw_color(color.r, color.g, color.b, color.a)
+        self._set_color(color)
 
         if width == 1:
-            self.sdl.draw_line(x1, y1, x2, y2)
+            self._draw_line_raw(x1, y1, x2, y2)
         else:
             # Draw multiple parallel lines for thicker lines
             var dx = x2 - x1
@@ -226,7 +408,7 @@ struct RendererBase:
             for i in range(-(width // 2), width // 2 + 1):
                 var offset_x = Int(px * Float64(i))
                 var offset_y = Int(py * Float64(i))
-                self.sdl.draw_line(
+                self._draw_line_raw(
                     x1 + offset_x,
                     y1 + offset_y,
                     x2 + offset_x,
@@ -252,12 +434,12 @@ struct RendererBase:
             color: Fill/border color.
             border_width: Border width (0 = filled).
         """
-        self.sdl.set_draw_color(color.r, color.g, color.b, color.a)
+        self._set_color(color)
 
         if border_width == 0:
-            self.sdl.fill_rect(x, y, width, height)
+            self._fill_rect_raw(x, y, width, height)
         else:
-            self.sdl.draw_rect(x, y, width, height)
+            self._draw_rect_raw(x, y, width, height)
 
     fn draw_circle(
         mut self,
@@ -275,12 +457,12 @@ struct RendererBase:
             color: Circle color.
             filled: If True, draw filled circle; otherwise outline.
         """
-        self.sdl.set_draw_color(color.r, color.g, color.b, color.a)
+        self._set_color(color)
 
         if filled:
-            self.sdl.fill_circle(center_x, center_y, radius)
+            self._fill_circle_raw(center_x, center_y, radius)
         else:
-            self.sdl.draw_circle(center_x, center_y, radius)
+            self._draw_circle_raw(center_x, center_y, radius)
 
     fn draw_polygon(
         mut self,
@@ -295,15 +477,15 @@ struct RendererBase:
             color: Polygon color.
             filled: If True, draw filled polygon; otherwise outline.
         """
-        self.sdl.set_draw_color(color.r, color.g, color.b, color.a)
+        self._set_color(color)
 
         if filled:
-            self.sdl.fill_polygon(points)
+            self._fill_polygon_raw(points)
         else:
-            self.sdl.draw_lines(points)
+            self._draw_lines_raw(points)
             # Close the polygon
             if len(points) >= 2:
-                self.sdl.draw_line(
+                self._draw_line_raw(
                     Int(points[len(points) - 1].x),
                     Int(points[len(points) - 1].y),
                     Int(points[0].x),
@@ -355,7 +537,7 @@ struct RendererBase:
         y: Int,
         color: SDL_Color,
     ):
-        """Draw text at specified position.
+        """Draw text at specified position using SDL3 debug text (8x8 font).
 
         Args:
             text: Text to render.
@@ -363,31 +545,12 @@ struct RendererBase:
             y: Y position.
             color: Text color.
         """
-        if not self.sdl.font:
-            return
-
-        # Render text to surface
-        var surface = self.sdl.render_text(text, color)
-        if not surface:
-            return
-
-        # Create texture from surface
-        var texture = self.sdl.create_texture_from_surface(surface)
-        if not texture:
-            self.sdl.free_surface(surface)
-            return
-
-        # Get texture dimensions
-        var dims = self.sdl.query_texture(texture)
-        var w = dims[0]
-        var h = dims[1]
-
-        # Render to screen
-        self.sdl.render_copy(texture, x, y, w, h)
-
-        # Cleanup
-        self.sdl.destroy_texture(texture)
-        self.sdl.free_surface(surface)
+        self._set_color(color)
+        try:
+            var t = text
+            render_debug_text(self.sdl_renderer, c_float(x), c_float(y), t)
+        except:
+            pass
 
     fn draw_text_large(
         mut self,
@@ -396,7 +559,10 @@ struct RendererBase:
         y: Int,
         color: SDL_Color,
     ):
-        """Draw large text at specified position (for scores/titles).
+        """Draw large text at specified position.
+
+        Note: SDL3 debug text is fixed 8x8 size. This falls back to
+        the same debug text. For true large text, SDL3_ttf would be needed.
 
         Args:
             text: Text to render.
@@ -404,40 +570,15 @@ struct RendererBase:
             y: Y position.
             color: Text color.
         """
-        if not self.sdl.large_font:
-            # Fall back to regular text if large font not available
-            self.draw_text(text, x, y, color)
-            return
-
-        # Render text to surface using large font
-        var surface = self.sdl.render_text_large(text, color)
-        if not surface:
-            return
-
-        # Create texture from surface
-        var texture = self.sdl.create_texture_from_surface(surface)
-        if not texture:
-            self.sdl.free_surface(surface)
-            return
-
-        # Get texture dimensions
-        var dims = self.sdl.query_texture(texture)
-        var w = dims[0]
-        var h = dims[1]
-
-        # Render to screen
-        self.sdl.render_copy(texture, x, y, w, h)
-
-        # Cleanup
-        self.sdl.destroy_texture(texture)
-        self.sdl.free_surface(surface)
+        # SDL3 debug text doesn't support size scaling, use same as regular
+        self.draw_text(text, x, y, color)
 
     fn draw_info_box(
         mut self,
         lines: List[String],
         x: Int = 10,
         y: Int = 10,
-        line_height: Int = 25,
+        line_height: Int = 12,
     ):
         """Draw multiple lines of info text.
 
@@ -445,7 +586,7 @@ struct RendererBase:
             lines: List of text lines to display.
             x: X position.
             y: Starting Y position.
-            line_height: Spacing between lines.
+            line_height: Spacing between lines (default 12 for 8x8 debug font).
         """
         var color = SDL_Color(
             self.black.r, self.black.g, self.black.b, self.black.a
@@ -456,25 +597,29 @@ struct RendererBase:
 
     fn flip(mut self):
         """Update display and cap framerate."""
-        self.sdl.present()
+        try:
+            render_present(self.sdl_renderer)
 
-        # Frame rate limiting
-        var current_time = self.sdl.get_ticks()
-        var elapsed = current_time - self.last_frame_time
+            # Frame rate limiting
+            var current_time = get_ticks()
+            var elapsed = current_time - self.last_frame_time
 
-        if elapsed < self.frame_delay:
-            self.sdl.delay(self.frame_delay - elapsed)
+            if elapsed < UInt64(self.frame_delay):
+                delay(UInt32(UInt64(self.frame_delay) - elapsed))
 
-        self.last_frame_time = self.sdl.get_ticks()
+            self.last_frame_time = get_ticks()
+        except:
+            pass
 
     fn close(mut self):
         """Close the SDL window and cleanup."""
         if self.initialized:
-            self.sdl.close_font()
-            self.sdl.destroy_renderer()
-            self.sdl.destroy_window()
-            self.sdl.quit_ttf()
-            self.sdl.quit()
+            try:
+                destroy_renderer(self.sdl_renderer)
+                destroy_window(self.window)
+                sdl_quit()
+            except:
+                pass
             self.initialized = False
 
     # =========================================================================

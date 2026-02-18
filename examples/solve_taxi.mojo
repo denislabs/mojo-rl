@@ -38,7 +38,7 @@ Run with:
 
 from envs import TaxiEnv
 from agents import QLearningAgent, DoubleQLearningAgent, DynaQAgent
-from render import RendererBase
+from render import Renderer2D
 
 
 fn main() raises:
@@ -211,7 +211,7 @@ fn main() raises:
     action_names.append("DROPOFF")
 
     var demo_env = TaxiEnv()
-    var renderer = RendererBase()
+    var renderer = Renderer2D()
     _ = demo_env.reset()
 
     print("Initial state:")

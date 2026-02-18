@@ -1,5 +1,5 @@
 from core import State, Action, Env, DiscreteEnv
-from render import RendererBase
+from render import Renderer2D
 
 
 @fieldwise_init
@@ -134,7 +134,7 @@ struct GridWorldEnv(DiscreteEnv):
         """Return current state."""
         return self.state
 
-    fn render(mut self, mut renderer: RendererBase):
+    fn render(mut self, mut renderer: Renderer2D):
         """Print the grid with agent position (text-based, renderer argument ignored).
         """
         _ = renderer

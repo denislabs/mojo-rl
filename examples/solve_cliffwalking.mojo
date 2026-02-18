@@ -29,7 +29,7 @@ Run with:
 
 from envs import CliffWalkingEnv
 from agents import QLearningAgent, SARSAAgent, SARSALambdaAgent
-from render import RendererBase
+from render import Renderer2D
 
 
 fn main() raises:
@@ -81,7 +81,9 @@ fn main() raises:
 
     var eval_q = agent_q.evaluate(env_q, num_episodes=10)
     print("")
-    print("Q-Learning training mean reward:", String(metrics_q.mean_reward())[:8])
+    print(
+        "Q-Learning training mean reward:", String(metrics_q.mean_reward())[:8]
+    )
     print("Q-Learning evaluation reward:", String(eval_q)[:8])
     print("")
 
@@ -153,7 +155,10 @@ fn main() raises:
 
     var eval_sl = agent_sl.evaluate(env_sl, num_episodes=10)
     print("")
-    print("SARSA(lambda) training mean reward:", String(metrics_sl.mean_reward())[:8])
+    print(
+        "SARSA(lambda) training mean reward:",
+        String(metrics_sl.mean_reward())[:8],
+    )
     print("SARSA(lambda) evaluation reward:", String(eval_sl)[:8])
     print("")
 
@@ -251,7 +256,7 @@ fn main() raises:
     print("-" * 60)
 
     var demo_env = CliffWalkingEnv(width=12, height=4)
-    var renderer = RendererBase()
+    var renderer = Renderer2D()
     _ = demo_env.reset()
     demo_env.render(renderer)
 

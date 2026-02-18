@@ -4,7 +4,7 @@ Provides predefined color palettes for consistent visual styling,
 color interpolation, and common color operations.
 """
 
-from .sdl2 import SDL_Color
+from .types import SDL_Color
 
 
 # =============================================================================

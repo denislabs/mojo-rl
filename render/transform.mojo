@@ -5,7 +5,7 @@ viewport management with world-to-screen coordinate conversion.
 """
 
 from math import cos, sin
-from .sdl2 import SDL_Point
+from .types import SDL_Point
 
 
 @fieldwise_init

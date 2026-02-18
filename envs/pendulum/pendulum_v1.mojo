@@ -23,7 +23,7 @@ from core import (
     PolynomialFeatures,
 )
 from render import (
-    RendererBase,
+    Renderer2D,
     SDL_Color,
     Vec2,
     Camera,
@@ -505,7 +505,7 @@ struct PendulumEnv[DTYPE: DType](
         var result = self.step(PendulumAction(direction=action))
         return (self._get_obs(), result[1], result[2])
 
-    fn render(mut self, mut renderer: RendererBase):
+    fn render(mut self, mut renderer: Renderer2D):
         """Render the current state using SDL2.
 
         Args:

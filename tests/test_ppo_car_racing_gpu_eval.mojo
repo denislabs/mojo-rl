@@ -16,7 +16,7 @@ from gpu.host import DeviceContext
 
 from deep_agents.ppo import DeepPPOContinuousAgent
 from envs.car_racing import CarRacing, CarRacingAction
-from render import RendererBase
+from render import Renderer2D
 
 # =============================================================================
 # Constants
@@ -114,7 +114,7 @@ fn main() raises:
     # Create GPU context and agent
     # =========================================================================
 
-    var renderer = RendererBase(width=800, height=600, title="PPO CarRacing")
+    var renderer = Renderer2D(width=800, height=600, title="PPO CarRacing")
 
     with DeviceContext() as ctx:
         # Initialize with same action biases as training

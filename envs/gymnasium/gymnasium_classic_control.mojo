@@ -21,7 +21,7 @@ from core import (
     TileCoding,
     PolynomialFeatures,
 )
-from render import RendererBase
+from render import Renderer2D
 
 
 # ============================================================================
@@ -292,9 +292,7 @@ struct GymCartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv):
         """Return observation dimension (4)."""
         return 4
 
-    fn step_obs(
-        mut self, action: Int
-    ) -> Tuple[List[Float64], Float64, Bool]:
+    fn step_obs(mut self, action: Int) -> Tuple[List[Float64], Float64, Bool]:
         """Take action and return (continuous_obs, reward, done)."""
         var result = self.step(GymCartPoleAction(direction=action))
         return (self.get_obs_list(), result[1], result[2])
@@ -320,8 +318,9 @@ struct GymCartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv):
     # Additional methods
     # ========================================================================
 
-    fn render(mut self, mut renderer: RendererBase):
-        """Render the environment (uses Gymnasium's renderer, renderer argument ignored)."""
+    fn render(mut self, mut renderer: Renderer2D):
+        """Render the environment (uses Gymnasium's renderer, renderer argument ignored).
+        """
         _ = renderer
         try:
             _ = self.env.render()
@@ -593,8 +592,9 @@ struct GymMountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
     # Additional methods
     # ========================================================================
 
-    fn render(mut self, mut renderer: RendererBase):
-        """Render the environment (uses Gymnasium's renderer, renderer argument ignored)."""
+    fn render(mut self, mut renderer: Renderer2D):
+        """Render the environment (uses Gymnasium's renderer, renderer argument ignored).
+        """
         _ = renderer
         try:
             _ = self.env.render()
@@ -854,8 +854,9 @@ struct GymAcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
         """Return full 6D observation (in 8-element SIMD)."""
         return self.current_obs
 
-    fn render(mut self, mut renderer: RendererBase):
-        """Render the environment (uses Gymnasium's renderer, renderer argument ignored)."""
+    fn render(mut self, mut renderer: Renderer2D):
+        """Render the environment (uses Gymnasium's renderer, renderer argument ignored).
+        """
         _ = renderer
         try:
             _ = self.env.render()
@@ -1068,7 +1069,8 @@ struct GymPendulumEnv(BoxContinuousActionEnv):
         return self.current_obs
 
     fn reset_obs_list(mut self) -> List[Float64]:
-        """Reset environment and return continuous observation as List (trait method)."""
+        """Reset environment and return continuous observation as List (trait method).
+        """
         _ = self.reset()
         return self.get_obs_list()
 
@@ -1121,8 +1123,9 @@ struct GymPendulumEnv(BoxContinuousActionEnv):
         var result = self.step(GymPendulumAction(torque=torque))
         return (self.current_obs, result[1], result[2])
 
-    fn render(mut self, mut renderer: RendererBase):
-        """Render the environment (uses Gymnasium's renderer, renderer argument ignored)."""
+    fn render(mut self, mut renderer: Renderer2D):
+        """Render the environment (uses Gymnasium's renderer, renderer argument ignored).
+        """
         _ = renderer
         try:
             _ = self.env.render()

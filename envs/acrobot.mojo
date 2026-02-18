@@ -23,7 +23,7 @@ from core import (
     PolynomialFeatures,
 )
 from render import (
-    RendererBase,
+    Renderer2D,
     SDL_Color,
     Vec2,
     Camera,
@@ -667,13 +667,13 @@ struct AcrobotEnv[DTYPE: DType](BoxDiscreteActionEnv & DiscreteEnv):
     # Rendering
     # ========================================================================
 
-    fn render(mut self, mut renderer: RendererBase):
+    fn render(mut self, mut renderer: Renderer2D):
         """Render the current state using SDL2.
 
         Uses Camera for world-to-screen coordinate conversion.
 
         Args:
-            renderer: The RendererBase to use for rendering.
+            renderer: The Renderer2D to use for rendering.
         """
         # Begin frame handles init, events, and clear
         if not renderer.begin_frame():

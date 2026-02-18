@@ -27,7 +27,7 @@ Run with:
 
 from envs import FrozenLakeEnv
 from agents import QLearningAgent, DoubleQLearningAgent
-from render import RendererBase
+from render import Renderer2D
 
 
 fn train_and_evaluate(
@@ -37,7 +37,8 @@ fn train_and_evaluate(
     max_steps: Int,
     algorithm_name: String,
 ) raises -> Tuple[Float64, Float64]:
-    """Train agent and return (training mean reward, evaluation success rate)."""
+    """Train agent and return (training mean reward, evaluation success rate).
+    """
     var metrics = agent.train(
         env,
         num_episodes=num_episodes,
@@ -228,7 +229,7 @@ fn main() raises:
         for col in range(4):
             var pos = row * 4 + col
             # Check if hole or goal
-            var is_hole = (pos == 5 or pos == 7 or pos == 11 or pos == 12)
+            var is_hole = pos == 5 or pos == 7 or pos == 11 or pos == 12
             var is_goal = pos == 15
 
             if is_hole:
@@ -244,7 +245,7 @@ fn main() raises:
     # Run a demo episode
     print("Demo episode:")
     var demo_env = FrozenLakeEnv(size=4, is_slippery=True)
-    var renderer = RendererBase()
+    var renderer = Renderer2D()
     _ = demo_env.reset()
     demo_env.render(renderer)
 
