@@ -1,13 +1,17 @@
-"""Generic model renderer that draws capsule geoms from GeomSpec definitions.
+"""Generic model renderer that draws geoms from GeomSpec definitions.
 
 Parameterized by a variadic list of GeomSpec types, iterates at compile time
 to draw all visible geoms automatically. Eliminates per-environment renderer boilerplate.
+
+Supports all geom types: capsule, sphere, box, and plane (ground).
 """
 
+from collections import InlineArray
 from math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
-from render import Renderer3D, Camera3D, Color3D
+from render import Renderer3D, Camera3D, Color
 from core import EnvRenderer3D
-from ..model.geom_spec import GeomSpec, GEOM_PLANE
+from ..model.geom_spec import GeomSpec
+from ..constants import GEOM_PLANE, GEOM_SPHERE, GEOM_CAPSULE, GEOM_BOX
 
 comptime Vec3 = Vec3Generic[DType.float64]
 comptime Quat = QuatGeneric[DType.float64]
@@ -17,10 +21,9 @@ comptime Quat = QuatGeneric[DType.float64]
 struct ModelRenderer[*G: GeomSpec](EnvRenderer3D, Movable):
     """Generic renderer for models defined by GeomSpec types.
 
-    Draws capsule geoms using compile-time geometry from GeomSpec (RADIUS,
-    HALF_LENGTH). Camera follows torso (body 0) with configurable offsets.
-    Plane geoms (BODY_IDX == 0, worldbody) are skipped. Body-attached geoms use
-    body world position + local offset.
+    Draws all geom types (capsule, sphere, box, plane) using compile-time
+    geometry from GeomSpec. Camera follows torso (body 1) with configurable
+    offsets.
 
     Parameters:
         G: Variadic list of GeomSpec types defining the model's geoms.
@@ -44,7 +47,7 @@ struct ModelRenderer[*G: GeomSpec](EnvRenderer3D, Movable):
     var vel_arrow_scale: Float64
 
     # Velocity arrow color
-    var vel_color: Color3D
+    var vel_color: Color
 
     fn __init__(
         out self,
@@ -57,7 +60,7 @@ struct ModelRenderer[*G: GeomSpec](EnvRenderer3D, Movable):
         axes_offset: Float64 = 1.5,
         vel_arrow_height: Float64 = 0.15,
         vel_arrow_scale: Float64 = 0.1,
-        vel_color: Color3D = Color3D(0, 255, 255),
+        vel_color: Color = Color(0, 255, 255, 255),
         follow: Bool = True,
         show_velocity: Bool = True,
         title: String = String("Model Environment"),
@@ -136,6 +139,49 @@ struct ModelRenderer[*G: GeomSpec](EnvRenderer3D, Movable):
     fn zoom_camera(mut self, delta: Float64) -> None:
         self.renderer.zoom_camera(delta)
 
+    fn render_from_body_state[
+        DTYPE: DType, SIZE_POS: Int, SIZE_QUAT: Int
+    ](
+        mut self,
+        xpos: InlineArray[Scalar[DTYPE], SIZE_POS],
+        xquat: InlineArray[Scalar[DTYPE], SIZE_QUAT],
+        num_bodies: Int,
+        vel_x: Float64 = 0.0,
+    ):
+        """Render directly from physics Data body arrays.
+
+        Extracts body positions and quaternions from raw xpos/xquat arrays
+        and delegates to render(). Eliminates per-environment boilerplate.
+
+        Args:
+            xpos: Flat array of body positions [x0,y0,z0, x1,y1,z1, ...].
+            xquat: Flat array of body quaternions [x0,y0,z0,w0, ...].
+            num_bodies: Number of bodies in the arrays.
+            vel_x: Forward velocity for indicator arrow.
+        """
+        var positions = List[Vec3](capacity=num_bodies)
+        var quaternions = List[Quat](capacity=num_bodies)
+
+        for i in range(num_bodies):
+            positions.append(
+                Vec3(
+                    Float64(xpos[i * 3 + 0]),
+                    Float64(xpos[i * 3 + 1]),
+                    Float64(xpos[i * 3 + 2]),
+                )
+            )
+            # xquat stored as [x, y, z, w], Quat constructor is (w, x, y, z)
+            quaternions.append(
+                Quat(
+                    Float64(xquat[i * 4 + 3]),
+                    Float64(xquat[i * 4 + 0]),
+                    Float64(xquat[i * 4 + 1]),
+                    Float64(xquat[i * 4 + 2]),
+                )
+            )
+
+        self.render(positions, quaternions, vel_x)
+
     fn render(
         mut self,
         positions: List[Vec3],
@@ -165,21 +211,37 @@ struct ModelRenderer[*G: GeomSpec](EnvRenderer3D, Movable):
 
         self.renderer.begin_frame()
 
-        # Ground grid — offset by max radius across all geoms × (scale - 1)
-        var max_radius: Float64 = 0.0
+        # --- R.2: Render plane geoms as ground ---
+        var has_plane = False
 
         @parameter
         for i in range(Self.NUM_GEOMS):
             comptime GG = Self.geom_types[i]
 
             @parameter
-            if GG.BODY_IDX > 0:
-                if GG.RADIUS > max_radius:
-                    max_radius = GG.RADIUS
+            if GG.GEOM_TYPE == GEOM_PLANE:
+                has_plane = True
+                var grid_center_x = torso_pos.x if self.follow else 0.0
+                self.renderer.draw_ground_grid(
+                    grid_center_x, height=GG.POS_Z
+                )
 
-        var ground_offset = -max_radius * (self.visual_radius_scale - 1.0)
-        var grid_center_x = torso_pos.x if self.follow else 0.0
-        self.renderer.draw_ground_grid(grid_center_x, height=ground_offset)
+        # Fallback: if no plane geom, draw default grid offset by visual scale
+        if not has_plane:
+            var max_radius: Float64 = 0.0
+
+            @parameter
+            for i in range(Self.NUM_GEOMS):
+                comptime GG = Self.geom_types[i]
+
+                @parameter
+                if GG.BODY_IDX > 0:
+                    if GG.RADIUS > max_radius:
+                        max_radius = GG.RADIUS
+
+            var ground_offset = -max_radius * (self.visual_radius_scale - 1.0)
+            var grid_center_x = torso_pos.x if self.follow else 0.0
+            self.renderer.draw_ground_grid(grid_center_x, height=ground_offset)
 
         # Coordinate axes
         if self.follow:
@@ -189,91 +251,69 @@ struct ModelRenderer[*G: GeomSpec](EnvRenderer3D, Movable):
         else:
             self.renderer.draw_coordinate_axes(Vec3(0.0, 0.0, 0.0), 0.2)
 
-        # Draw all body-attached capsule geoms
+        # --- R.1: Draw all body-attached geoms by type ---
         try:
 
             @parameter
             for i in range(Self.NUM_GEOMS):
                 comptime GG = Self.geom_types[i]
 
-                # Skip worldbody geoms (planes, etc.)
+                # Skip worldbody geoms (planes rendered above, static geoms at body_idx=0)
                 @parameter
                 if GG.BODY_IDX > 0:
-                    # Get body world position and orientation
+                    # Compute geom world position and orientation
                     var body_pos = positions[GG.BODY_IDX]
                     var body_quat = quaternions[GG.BODY_IDX]
 
-                    # Compute geom world position from body pos + local offset
+                    # Apply local position offset
+                    var geom_pos: Vec3
                     @parameter
                     if GG.POS_X == 0.0 and GG.POS_Y == 0.0 and GG.POS_Z == 0.0:
-                        # Identity offset — use body pos directly
-                        var geom_pos = body_pos
-
-                        @parameter
-                        if (
-                            GG.QUAT_X == 0.0
-                            and GG.QUAT_Y == 0.0
-                            and GG.QUAT_Z == 0.0
-                            and GG.QUAT_W == 1.0
-                        ):
-                            # Identity rotation — use body quat directly
-                            self.renderer.draw_capsule(
-                                center=geom_pos,
-                                orientation=body_quat,
-                                radius=GG.RADIUS * self.visual_radius_scale,
-                                half_height=GG.HALF_LENGTH,
-                                axis=2,
-                                color=GG.COLOR,
-                            )
-                        else:
-                            # Apply local rotation: geom_quat = body_quat * local_quat
-                            var local_quat = Quat(
-                                GG.QUAT_W, GG.QUAT_X, GG.QUAT_Y, GG.QUAT_Z
-                            )
-                            var geom_quat = body_quat * local_quat
-                            self.renderer.draw_capsule(
-                                center=geom_pos,
-                                orientation=geom_quat,
-                                radius=GG.RADIUS * self.visual_radius_scale,
-                                half_height=GG.HALF_LENGTH,
-                                axis=2,
-                                color=GG.COLOR,
-                            )
+                        geom_pos = body_pos
                     else:
-                        # Apply local offset: geom_pos = body_pos + body_quat.rotate_vec(local_pos)
                         var local_pos = Vec3(GG.POS_X, GG.POS_Y, GG.POS_Z)
-                        var geom_pos = body_pos + body_quat.rotate_vec(
-                            local_pos
-                        )
+                        geom_pos = body_pos + body_quat.rotate_vec(local_pos)
 
-                        @parameter
-                        if (
-                            GG.QUAT_X == 0.0
-                            and GG.QUAT_Y == 0.0
-                            and GG.QUAT_Z == 0.0
-                            and GG.QUAT_W == 1.0
-                        ):
-                            self.renderer.draw_capsule(
-                                center=geom_pos,
-                                orientation=body_quat,
-                                radius=GG.RADIUS * self.visual_radius_scale,
-                                half_height=GG.HALF_LENGTH,
-                                axis=2,
-                                color=GG.COLOR,
-                            )
-                        else:
-                            var local_quat = Quat(
-                                GG.QUAT_W, GG.QUAT_X, GG.QUAT_Y, GG.QUAT_Z
-                            )
-                            var geom_quat = body_quat * local_quat
-                            self.renderer.draw_capsule(
-                                center=geom_pos,
-                                orientation=geom_quat,
-                                radius=GG.RADIUS * self.visual_radius_scale,
-                                half_height=GG.HALF_LENGTH,
-                                axis=2,
-                                color=GG.COLOR,
-                            )
+                    # Apply local rotation
+                    var geom_quat: Quat
+                    @parameter
+                    if (
+                        GG.QUAT_X == 0.0
+                        and GG.QUAT_Y == 0.0
+                        and GG.QUAT_Z == 0.0
+                        and GG.QUAT_W == 1.0
+                    ):
+                        geom_quat = body_quat
+                    else:
+                        var local_quat = Quat(
+                            GG.QUAT_W, GG.QUAT_X, GG.QUAT_Y, GG.QUAT_Z
+                        )
+                        geom_quat = body_quat * local_quat
+
+                    # Dispatch draw call by geom type
+                    @parameter
+                    if GG.GEOM_TYPE == GEOM_CAPSULE:
+                        self.renderer.draw_capsule(
+                            center=geom_pos,
+                            orientation=geom_quat,
+                            radius=GG.RADIUS * self.visual_radius_scale,
+                            half_height=GG.HALF_LENGTH,
+                            axis=2,
+                            color=GG.COLOR,
+                        )
+                    elif GG.GEOM_TYPE == GEOM_SPHERE:
+                        self.renderer.draw_sphere(
+                            center=geom_pos,
+                            radius=GG.RADIUS * self.visual_radius_scale,
+                            color=GG.COLOR,
+                        )
+                    elif GG.GEOM_TYPE == GEOM_BOX:
+                        self.renderer.draw_box(
+                            center=geom_pos,
+                            orientation=geom_quat,
+                            half_extents=Vec3(GG.HALF_X, GG.HALF_Y, GG.HALF_Z),
+                            color=GG.COLOR,
+                        )
         except:
             pass
 

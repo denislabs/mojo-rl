@@ -24,7 +24,7 @@ from physics3d.model.model_def import (
 )
 from physics3d.model.actuator_spec import MotorActuator
 from physics3d.model.geom_spec import Plane, Capsule
-from render import Color3D
+from render import Color
 from physics3d.gpu.constants import (
     state_size,
     model_size,
@@ -75,7 +75,7 @@ comptime HopperTorso = CapsuleBody[
     ixx_override=0.069246,
     iyy_override=0.069246,
     izz_override=0.004451,
-    color = Color3D(60, 120, 200),
+    color = Color(60, 120, 200, 255),
 ]
 
 # Body 2: Thigh — vertical capsule below torso
@@ -92,7 +92,7 @@ comptime HopperThigh = CapsuleBody[
     ixx_override=0.093299,
     iyy_override=0.093299,
     izz_override=0.004941,
-    color = Color3D(80, 200, 80),
+    color = Color(80, 200, 80, 255),
 ]
 
 # Body 3: Leg — vertical capsule below thigh
@@ -108,7 +108,7 @@ comptime HopperLeg = CapsuleBody[
     ixx_override=0.072303,
     iyy_override=0.072303,
     izz_override=0.002182,
-    color = Color3D(220, 140, 60),
+    color = Color(220, 140, 60, 255),
 ]
 
 # Body 4: Foot — horizontal capsule, below leg
@@ -131,7 +131,7 @@ comptime HopperFoot = CapsuleBody[
     ixx_override=0.103523,
     iyy_override=0.103523,
     izz_override=0.009242,
-    color = Color3D(220, 80, 80),
+    color = Color(220, 80, 80, 255),
 ]
 
 
@@ -228,7 +228,7 @@ comptime HopperTorsoGeom = Capsule[
     body_idx=1,
     radius=0.05,
     half_length=0.2,
-    color = Color3D(60, 120, 200),
+    color = Color(60, 120, 200, 255),
 ]
 
 # Geom 2: Thigh capsule (body 2) — MuJoCo geom_pos=(0, 0, -0.225)
@@ -237,7 +237,7 @@ comptime HopperThighGeom = Capsule[
     radius=0.05,
     half_length=0.225,
     pos_z= -0.225,
-    color = Color3D(80, 200, 80),
+    color = Color(80, 200, 80, 255),
 ]
 
 # Geom 3: Leg capsule (body 3) — at body origin
@@ -245,7 +245,7 @@ comptime HopperLegGeom = Capsule[
     body_idx=3,
     radius=0.04,
     half_length=0.25,
-    color = Color3D(220, 140, 60),
+    color = Color(220, 140, 60, 255),
 ]
 
 # Geom 4: Foot capsule (body 4) — friction=2.0 overrides default 0.9
@@ -258,7 +258,7 @@ comptime HopperFootGeom = Capsule[
     quat_y= -0.707107,
     quat_w=0.707107,
     friction=2.0,
-    color = Color3D(220, 80, 80),
+    color = Color(220, 80, 80, 255),
 ]
 
 comptime HopperGeoms = Geoms[

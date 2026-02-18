@@ -24,7 +24,7 @@ Usage:
 """
 
 from physics3d.constants import GEOM_PLANE, GEOM_SPHERE, GEOM_CAPSULE, GEOM_BOX
-from render import Color3D
+from render import Color
 
 
 trait GeomSpec:
@@ -60,7 +60,7 @@ trait GeomSpec:
     comptime CONTYPE: Optional[Int]
     comptime CONAFFINITY: Int
     # Visual
-    comptime COLOR: Color3D
+    comptime COLOR: Color
 
 
 # =============================================================================
@@ -109,7 +109,7 @@ struct Plane[
     comptime FRICTION_ROLL: Float64 = Self.friction_roll
     comptime CONTYPE: Int = Self.contype
     comptime CONAFFINITY: Int = Self.conaffinity
-    comptime COLOR: Color3D = Color3D(128, 128, 128)
+    comptime COLOR: Color = Color(128, 128, 128, 255)
 
 
 # =============================================================================
@@ -130,7 +130,7 @@ struct Sphere[
     friction_roll: Optional[Float64] = None,
     contype: Int = 1,
     conaffinity: Int = 1,
-    color: Color3D = Color3D(100, 100, 200),
+    color: Color = Color(100, 100, 200, 255),
 ](GeomSpec):
     """Sphere geom (static or body-attached).
 
@@ -162,7 +162,7 @@ struct Sphere[
     comptime FRICTION_ROLL: Optional[Float64] = Self.friction_roll
     comptime CONTYPE: Int = Self.contype
     comptime CONAFFINITY: Int = Self.conaffinity
-    comptime COLOR: Color3D = Self.color
+    comptime COLOR: Color = Self.color
 
 
 # =============================================================================
@@ -188,7 +188,7 @@ struct Capsule[
     friction_roll: Optional[Float64] = None,
     contype: Int = 1,
     conaffinity: Int = 1,
-    color: Color3D = Color3D(204, 153, 102),
+    color: Color = Color(204, 153, 102, 255),
 ](GeomSpec):
     """Capsule geom (static or body-attached).
 
@@ -222,7 +222,7 @@ struct Capsule[
     comptime FRICTION_ROLL: Optional[Float64] = Self.friction_roll
     comptime CONTYPE: Int = Self.contype
     comptime CONAFFINITY: Int = Self.conaffinity
-    comptime COLOR: Color3D = Self.color
+    comptime COLOR: Color = Self.color
 
 
 # =============================================================================
@@ -249,7 +249,7 @@ struct Box[
     friction_roll: Optional[Float64] = None,
     contype: Int = 1,
     conaffinity: Int = 1,
-    color: Color3D = Color3D(100, 200, 100),
+    color: Color = Color(100, 200, 100, 255),
 ](GeomSpec):
     """Box geom (static or body-attached).
 
@@ -281,7 +281,7 @@ struct Box[
     comptime FRICTION_ROLL: Optional[Float64] = Self.friction_roll
     comptime CONTYPE: Int = Self.contype
     comptime CONAFFINITY: Int = Self.conaffinity
-    comptime COLOR: Color3D = Self.color
+    comptime COLOR: Color = Self.color
 
 
 # =============================================================================

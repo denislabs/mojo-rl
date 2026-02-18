@@ -11,7 +11,7 @@ This package provides:
 """
 
 # Common data types
-from .types import SDL_Color, SDL_Point, SDL_Rect, SDLHandle
+from .types import Color, SDL_Color, SDL_Point, SDL_Rect, SDLHandle
 
 # Transform utilities
 from .transform import (
@@ -128,5 +128,5 @@ from .shapes import (
 from .renderer2d import Renderer2D
 
 from .camera3d import Camera3D
-from .renderer3d import Renderer3D, Color3D
+from .renderer3d import Renderer3D
 from .gpu_types import MeshHandle

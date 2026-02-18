@@ -44,6 +44,14 @@ Reference material:
   - [5.4 Actuator Dynamics — DONE](#54-actuator-dynamics--done)
   - [5.5 Tendon System (fixed tendons)](#55-tendon-system-fixed-tendons)
   - [5.6 No-Slip Friction Post-Solver](#56-no-slip-friction-post-solver)
+- [Render Sprint: Visual Fidelity](#render-sprint-visual-fidelity)
+  - [R.1 Multi-Geom-Type Rendering](#r1-multi-geom-type-rendering)
+  - [R.2 Ground Plane Rendering](#r2-ground-plane-rendering)
+  - [R.3 RGBA Alpha Support](#r3-rgba-alpha-support)
+  - [R.4 Camera Spec from Model](#r4-camera-spec-from-model)
+  - [R.5 Lighting Model](#r5-lighting-model)
+  - [R.6 Materials & Textures](#r6-materials--textures)
+  - [R.7 Site Markers (visual)](#r7-site-markers-visual)
 - [Phase 6: MuJoCo XML Compatibility Gaps](#phase-6-mujoco-xml-compatibility-gaps)
   - [6.1 settotalmass Compiler Directive — DONE](#61-settotalmass-compiler-directive--done)
   - [6.2 inertiafromgeom from Child Geoms — DONE](#62-inertiafromgeom-from-child-geoms--done)
@@ -1548,7 +1556,221 @@ Sprint 7 (Specialized):
   5.2 Solver islands            <- multi-agent parallelism
   4.2 Broadphase (AABB/SAP)     <- large scenes
   0.5 MJCF XML parser           <- automate model translation
+
+Render Sprint (independent, can be done in parallel with any physics sprint):
+  R.1 Multi-geom-type render    <- DONE (dispatch on GEOM_TYPE + renderer factorization)
+  R.2 Ground plane render       <- DONE (plane geom drives ground at POS_Z)
+  R.3 RGBA alpha                <- transparency support on GeomSpec + Renderer3D
+  R.4 Camera spec from model    <- CameraSpec trait, init renderer from model def
+  R.5 Lighting model            <- LightSpec trait, directional + point lights, Phong shading
+  R.6 Materials & textures      <- MaterialSpec, built-in textures (checker, gradient), skybox
+  R.7 Site markers (visual)     <- render sites as small spheres/crosses (depends on 6.8)
 ```
+
+---
+
+## Render Sprint: Visual Fidelity
+
+This sprint is **independent from the physics pipeline** and can be done in parallel
+with any physics sprint. The goal is to close the gap between our wireframe/solid-color
+rendering and MuJoCo's visual output. Items are ordered by impact-to-effort ratio.
+
+**Current state**: `ModelRenderer[*G: GeomSpec]` draws all body-attached geoms as capsules
+using compile-time `COLOR`, `RADIUS`, `HALF_LENGTH` from `GeomSpec`. Camera follows torso.
+Ground is a wireframe grid. No lighting, materials, or textures.
+
+---
+
+### R.1 Multi-Geom-Type Rendering
+
+**Status**: DONE.
+**Effort**: ~1 day.
+**Priority**: High — currently ALL geoms render as capsules regardless of type.
+
+**Implemented**: `ModelRenderer.render()` now dispatches on `GG.GEOM_TYPE` inside the
+`@parameter for` loop, calling `draw_capsule()`, `draw_sphere()`, or `draw_box()`
+as appropriate. World position and orientation are computed once per geom (with local
+pos/quat offsets applied), then the correct draw primitive is called.
+
+Also factored out per-environment renderer boilerplate:
+- `HalfCheetahRenderer` and `HopperRenderer` wrapper structs replaced with `comptime`
+  type aliases for `ModelRenderer[...geoms...]` (~160 lines removed)
+- Added `render_from_body_state()` method on `ModelRenderer` that takes raw `xpos`/`xquat`
+  `InlineArray`s directly from `Data`, eliminating identical body-extraction loops in each env
+- Camera defaults moved inline to each env's `init_renderer()`
+
+**Files modified**:
+- `model/model_renderer.mojo` — dispatch on `GEOM_TYPE`, added `render_from_body_state()`
+- `envs/half_cheetah/renderer.mojo` — struct replaced with type alias
+- `envs/hopper/renderer.mojo` — struct replaced with type alias
+- `envs/half_cheetah/half_cheetah.mojo` — simplified `render_frame()`
+- `envs/hopper/hopper.mojo` — simplified `render_frame()`
+
+---
+
+### R.2 Ground Plane Rendering
+
+**Status**: DONE.
+**Effort**: ~0.5 day.
+**Priority**: Medium — replaces wireframe grid with a solid ground.
+
+**Implemented**: `GEOM_PLANE` geoms are now rendered via `draw_ground_grid()` at their
+`POS_Z` height (from GeomSpec). The plane is driven by the geom definition, not hardcoded.
+A fallback grid is drawn if no plane geom is defined. The existing `Renderer3D.draw_ground_grid()`
+already renders a procedural checkerboard ground with reflections.
+
+**Files modified**:
+- `model/model_renderer.mojo` — plane geoms rendered via `draw_ground_grid()` at `GG.POS_Z`
+
+---
+
+### R.3 Color Unification + RGBA Alpha Support
+
+**Status**: DONE.
+
+**What was done**:
+1. Renamed `SDL_Color` → `Color` in `render/types.mojo` (RGBA struct, the single color type)
+2. Added `comptime SDL_Color = Color` alias for backward compatibility with SDL FFI code
+3. Deleted `Color3D` struct from `render/renderer3d.mojo` — all 3D code now uses `Color`
+4. Added `color_to_vec4(color: Color)` overload in `render/gpu_types.mojo` — passes alpha through
+5. Updated `GeomSpec.COLOR` and `BodySpec.COLOR` from `Color3D` to `Color` (alpha in `Color.a`)
+6. Updated all environment defs, examples, and tests
+
+**Result**: One unified `Color` type (RGBA) for both 2D and 3D rendering. Transparency support
+is now plumbed through to the GPU shader via `color_to_vec4`. Back-to-front sorting for
+transparent geoms is not yet implemented (only needed when alpha < 255).
+
+---
+
+### R.4 Camera Spec from Model
+
+**Status**: NOT STARTED.
+**Effort**: ~0.5 day.
+**Priority**: Low — camera params are already configurable at `ModelRenderer` init.
+
+**Problem**: MuJoCo XML defines cameras:
+```xml
+<camera name="track" mode="trackcom" pos="0 -3 0.3" xyaxes="1 0 0 0 0 1"/>
+```
+Our `ModelRenderer` hardcodes camera offsets (`cam_eye_y=-3.0`, `cam_eye_z=1.0`).
+These roughly match HalfCheetah, but each environment should specify its own camera.
+
+**What to do**:
+1. Add `CameraSpec` trait with `NAME`, `MODE` (trackcom/fixed), `POS_X/Y/Z`, `XYAXES`
+2. Add `Cameras` variadic container to `ModelDef` (like `Geoms`, `Joints`)
+3. Use the first `trackcom` camera to initialize `ModelRenderer` eye/target
+
+**Files to create**:
+- `model/camera_spec.mojo` — `CameraSpec` trait, `TrackCamera`, `FixedCamera` structs
+
+**Files to modify**:
+- `model/model_def.mojo` — `Cameras` container
+- `model/model_renderer.mojo` — init camera from `CameraSpec`
+
+---
+
+### R.5 Lighting Model
+
+**Status**: NOT STARTED.
+**Effort**: ~2-3 days.
+**Priority**: Low for RL — solid colors are sufficient for debugging.
+
+**Problem**: MuJoCo XML defines lights:
+```xml
+<light cutoff="100" diffuse="1 1 1" dir="0 0 -1.3" directional="true" pos="0 0 1.3" specular=".1 .1 .1"/>
+```
+Our `Renderer3D` uses a fixed ambient+directional lighting model (hardcoded).
+
+**What to do**:
+1. Add `LightSpec` trait with `POS_X/Y/Z`, `DIR_X/Y/Z`, `DIFFUSE`, `SPECULAR`,
+   `CUTOFF`, `DIRECTIONAL` (bool)
+2. Add `Lights` variadic container to `ModelDef`
+3. Implement Phong/Blinn-Phong shading in the software rasterizer:
+   - Ambient: `I_a * color`
+   - Diffuse: `I_d * max(0, dot(N, L)) * color`
+   - Specular: `I_s * pow(max(0, dot(R, V)), shininess)`
+4. Compute surface normals for capsule/sphere/box primitives
+
+**Files to create**:
+- `model/light_spec.mojo` — `LightSpec` trait, `DirectionalLight`, `PointLight` structs
+
+**Files to modify**:
+- `model/model_def.mojo` — `Lights` container
+- `render/renderer3d.mojo` — Phong shading in draw primitives
+- `model/model_renderer.mojo` — pass lights to renderer
+
+---
+
+### R.6 Materials & Textures
+
+**Status**: NOT STARTED.
+**Effort**: ~3-5 days.
+**Priority**: Low for RL — cosmetic improvement only.
+
+**Problem**: MuJoCo XML defines textures and materials:
+```xml
+<texture builtin="checker" name="texplane" rgb1="0 0 0" rgb2="0.8 0.8 0.8" type="2d"/>
+<material name="MatPlane" reflectance="0.5" shininess="1" specular="1" texture="texplane"/>
+<texture builtin="gradient" type="skybox" rgb1="1 1 1" rgb2="0 0 0"/>
+```
+Our renderer has zero texture/material support.
+
+**What to do**:
+1. Add `TextureSpec` for built-in textures (checker, gradient, flat) — procedurally generated,
+   no file I/O needed
+2. Add `MaterialSpec` with `SHININESS`, `SPECULAR`, `REFLECTANCE`, `TEXTURE_NAME`
+3. Per-geom material reference: `MATERIAL` field on `GeomSpec`
+4. Skybox: render a gradient background behind the scene
+5. Texture mapping for ground plane (checker) and geom surfaces (cube-mapped)
+
+**Files to create**:
+- `model/texture_spec.mojo` — `TextureSpec` trait, `CheckerTexture`, `GradientTexture`
+- `model/material_spec.mojo` — `MaterialSpec` trait
+
+**Files to modify**:
+- `model/geom_spec.mojo` — `MATERIAL` reference field
+- `model/model_def.mojo` — `Textures`, `Materials` containers
+- `render/renderer3d.mojo` — texture sampling, material application
+
+---
+
+### R.7 Site Markers (visual)
+
+**Status**: NOT STARTED. Depends on Phase 6.8 (site elements).
+**Effort**: ~0.5 day (after 6.8 is done).
+**Priority**: Low — massless reference points, optional visualization.
+
+**Problem**: MuJoCo sites (e.g., `<site name='tip' pos='.15 0 .11'/>`) are useful debugging
+markers. Once `SiteSpec` exists (Phase 6.8), they should be optionally renderable.
+
+**What to do**:
+1. In `ModelRenderer`, optionally iterate over sites and draw small spheres or crosses
+   at their world positions
+2. Use a distinct color (e.g., bright green) and small radius (e.g., 0.01m)
+3. Gate behind a `show_sites: Bool` flag (default `False`)
+
+**Files to modify**:
+- `model/model_renderer.mojo` — optional site rendering loop
+
+---
+
+### Render Sprint Summary
+
+| Item | Effort | Priority | Dependencies |
+|------|--------|----------|--------------|
+| R.1 Multi-geom-type render | ~1 day | **DONE** | None |
+| R.2 Ground plane render | ~0.5 day | **DONE** | None |
+| R.3 RGBA alpha | ~0.5 day | Low | None |
+| R.4 Camera spec | ~0.5 day | Low | None |
+| R.5 Lighting model | ~2-3 days | Low | None |
+| R.6 Materials & textures | ~3-5 days | Low | R.5 (for material shading) |
+| R.7 Site markers | ~0.5 day | Low | Phase 6.8 (site elements) |
+| **Total** | **~8-11 days** | | |
+
+**Recommended order**: ~~R.1~~ → ~~R.2~~ → R.4 → R.3 → R.5 → R.6 → R.7
+
+R.1 + R.2 are done. Next up: R.4 (camera spec) for the biggest remaining improvement
+correctly with a solid ground plane. The rest is cosmetic polish.
 
 ---
 

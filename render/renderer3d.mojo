@@ -130,6 +130,7 @@ from .sdl import (
     release_gpu_graphics_pipeline,
 )
 from .camera3d import Camera3D
+from .types import Color
 from .gpu_types import (
     GPUVertex,
     SceneUniforms,
@@ -143,7 +144,7 @@ from .gpu_types import (
     mat4_to_gpu_f32,
     perspective_metal,
     ortho_metal,
-    color3d_to_vec4,
+    color_to_vec4,
     make_identity_f32,
 )
 from .gpu_mesh import (
@@ -167,65 +168,6 @@ from .gpu_shaders import (
 comptime Vec3 = Vec3Generic[DType.float64]
 comptime Quat = QuatGeneric[DType.float64]
 comptime Mat4 = Mat4Generic[DType.float64]
-
-
-struct Color3D(ImplicitlyCopyable, Movable):
-    """RGB color for 3D rendering."""
-
-    var r: UInt8
-    var g: UInt8
-    var b: UInt8
-
-    fn __init__(out self, r: UInt8, g: UInt8, b: UInt8):
-        self.r = r
-        self.g = g
-        self.b = b
-
-    fn __copyinit__(out self, read other: Self):
-        self.r = other.r
-        self.g = other.g
-        self.b = other.b
-
-    fn __moveinit__(out self, deinit other: Self):
-        self.r = other.r
-        self.g = other.g
-        self.b = other.b
-
-    @staticmethod
-    fn white() -> Self:
-        return Self(255, 255, 255)
-
-    @staticmethod
-    fn black() -> Self:
-        return Self(0, 0, 0)
-
-    @staticmethod
-    fn red() -> Self:
-        return Self(255, 0, 0)
-
-    @staticmethod
-    fn green() -> Self:
-        return Self(0, 255, 0)
-
-    @staticmethod
-    fn blue() -> Self:
-        return Self(0, 0, 255)
-
-    @staticmethod
-    fn yellow() -> Self:
-        return Self(255, 255, 0)
-
-    @staticmethod
-    fn cyan() -> Self:
-        return Self(0, 255, 255)
-
-    @staticmethod
-    fn gray() -> Self:
-        return Self(128, 128, 128)
-
-    @staticmethod
-    fn dark_gray() -> Self:
-        return Self(64, 64, 64)
 
 
 # Maximum line vertices per frame
@@ -318,7 +260,7 @@ struct Renderer3D(Movable):
     var camera: Camera3D
     var width: Int
     var height: Int
-    var background_color: Color3D
+    var background_color: Color
     var scene_uniforms: SceneUniforms
 
     # Swapchain format
@@ -340,7 +282,7 @@ struct Renderer3D(Movable):
     ) raises:
         self.width = width
         self.height = height
-        self.background_color = Color3D(32, 32, 48)
+        self.background_color = Color(32, 32, 48, 255)
         self.draw_grid = draw_grid
         self.draw_axes = draw_axes
         self.should_quit = False
@@ -1289,7 +1231,7 @@ struct Renderer3D(Movable):
         mut self,
         center: Vec3,
         radius: Float64,
-        color: Color3D = Color3D.white(),
+        color: Color = Color(255, 255, 255, 255),
     ):
         """Draw a solid sphere.
 
@@ -1303,7 +1245,7 @@ struct Renderer3D(Movable):
         )
         var uniforms = ObjectUniforms()
         uniforms.model = mat4_to_gpu_f32(model)
-        uniforms.color = color3d_to_vec4(color.r, color.g, color.b)
+        uniforms.color = color_to_vec4(color)
 
         self.solid_draws.append(SolidDrawCommand(0, uniforms))
 
@@ -1314,7 +1256,7 @@ struct Renderer3D(Movable):
         radius: Float64,
         half_height: Float64,
         axis: Int = 2,
-        color: Color3D = Color3D.white(),
+        color: Color = Color(255, 255, 255, 255),
     ) raises:
         """Draw a solid capsule.
 
@@ -1363,7 +1305,7 @@ struct Renderer3D(Movable):
 
         var uniforms = ObjectUniforms()
         uniforms.model = mat4_to_gpu_f32(model)
-        uniforms.color = color3d_to_vec4(color.r, color.g, color.b)
+        uniforms.color = color_to_vec4(color)
 
         self.solid_draws.append(
             SolidDrawCommand(
@@ -1376,7 +1318,7 @@ struct Renderer3D(Movable):
         center: Vec3,
         orientation: Quat,
         half_extents: Vec3,
-        color: Color3D = Color3D.white(),
+        color: Color = Color(255, 255, 255, 255),
     ):
         """Draw a solid box.
 
@@ -1396,7 +1338,7 @@ struct Renderer3D(Movable):
 
         var uniforms = ObjectUniforms()
         uniforms.model = mat4_to_gpu_f32(model)
-        uniforms.color = color3d_to_vec4(color.r, color.g, color.b)
+        uniforms.color = color_to_vec4(color)
 
         self.solid_draws.append(SolidDrawCommand(1, uniforms))
 
@@ -1416,7 +1358,7 @@ struct Renderer3D(Movable):
         var model = Mat4.from_translation(Vec3(center_x, 0.0, height))
         self.ground_uniforms = ObjectUniforms()
         self.ground_uniforms.model = mat4_to_gpu_f32(model)
-        self.ground_uniforms.color = color3d_to_vec4(255, 255, 255)
+        self.ground_uniforms.color = color_to_vec4(255, 255, 255)
         self.has_ground = True
         self.ground_z = height
 
@@ -1435,26 +1377,26 @@ struct Renderer3D(Movable):
         self._add_line(
             origin,
             origin + Vec3(length, 0.0, 0.0),
-            color3d_to_vec4(255, 50, 50),
+            color_to_vec4(255, 50, 50),
         )
         # Y axis - green
         self._add_line(
             origin,
             origin + Vec3(0.0, length, 0.0),
-            color3d_to_vec4(50, 255, 50),
+            color_to_vec4(50, 255, 50),
         )
         # Z axis - blue
         self._add_line(
             origin,
             origin + Vec3(0.0, 0.0, length),
-            color3d_to_vec4(80, 80, 255),
+            color_to_vec4(80, 80, 255),
         )
 
     fn draw_line_3d(
         mut self,
         start: Vec3,
         end: Vec3,
-        color: Color3D,
+        color: Color,
     ):
         """Draw a 3D line segment.
 
@@ -1466,7 +1408,7 @@ struct Renderer3D(Movable):
         self._add_line(
             start,
             end,
-            color3d_to_vec4(color.r, color.g, color.b),
+            color_to_vec4(color),
         )
 
     fn _add_line(

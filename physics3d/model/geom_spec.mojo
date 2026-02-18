@@ -24,7 +24,7 @@ Usage:
 """
 
 from ..constants import GEOM_PLANE, GEOM_SPHERE, GEOM_CAPSULE, GEOM_BOX
-from render import Color3D
+from render import Color
 
 # Sentinel values for "use model default" (re-exported for convenience)
 comptime _UNSET_F64: Float64 = -1.0
@@ -180,7 +180,7 @@ trait GeomSpec:
     comptime DENSITY: Float64  # kg/m³ (-1.0 = use ModelDefaults.GEOM_DENSITY)
     comptime GEOM_MASS: Float64  # kg (-1.0 = derive from density * volume)
     # Visual
-    comptime COLOR: Color3D
+    comptime COLOR: Color
 
 
 # =============================================================================
@@ -243,7 +243,7 @@ struct Plane[
     comptime MARGIN: Float64 = Self.margin
     comptime DENSITY: Float64 = 0.0  # Planes have no mass
     comptime GEOM_MASS: Float64 = 0.0  # Planes have no mass
-    comptime COLOR: Color3D = Color3D(128, 128, 128)
+    comptime COLOR: Color = Color(128, 128, 128, 255)
 
 
 # =============================================================================
@@ -272,7 +272,7 @@ struct Sphere[
     margin: Float64 = _UNSET_F64,
     density: Float64 = _UNSET_F64,
     mass: Float64 = _UNSET_F64,
-    color: Color3D = Color3D(100, 100, 200),
+    color: Color = Color(100, 100, 200, 255),
 ](GeomSpec):
     """Sphere geom (static or body-attached).
 
@@ -312,7 +312,7 @@ struct Sphere[
     comptime MARGIN: Float64 = Self.margin
     comptime DENSITY: Float64 = Self.density
     comptime GEOM_MASS: Float64 = Self.mass
-    comptime COLOR: Color3D = Self.color
+    comptime COLOR: Color = Self.color
 
 
 # =============================================================================
@@ -346,7 +346,7 @@ struct Capsule[
     margin: Float64 = _UNSET_F64,
     density: Float64 = _UNSET_F64,
     mass: Float64 = _UNSET_F64,
-    color: Color3D = Color3D(204, 153, 102),
+    color: Color = Color(204, 153, 102, 255),
 ](GeomSpec):
     """Capsule geom (static or body-attached).
 
@@ -388,7 +388,7 @@ struct Capsule[
     comptime MARGIN: Float64 = Self.margin
     comptime DENSITY: Float64 = Self.density
     comptime GEOM_MASS: Float64 = Self.mass
-    comptime COLOR: Color3D = Self.color
+    comptime COLOR: Color = Self.color
 
 
 # =============================================================================
@@ -420,7 +420,7 @@ struct FromToCapsule[
     margin: Float64 = _UNSET_F64,
     density: Float64 = _UNSET_F64,
     mass: Float64 = _UNSET_F64,
-    color: Color3D = Color3D(204, 153, 102),
+    color: Color = Color(204, 153, 102, 255),
 ](GeomSpec):
     """Capsule defined by two endpoints, matching MuJoCo's fromto="x1 y1 z1 x2 y2 z2".
 
@@ -480,7 +480,7 @@ struct FromToCapsule[
     comptime MARGIN: Float64 = Self.margin
     comptime DENSITY: Float64 = Self.density
     comptime GEOM_MASS: Float64 = Self.mass
-    comptime COLOR: Color3D = Self.color
+    comptime COLOR: Color = Self.color
 
 
 # =============================================================================
@@ -515,7 +515,7 @@ struct Box[
     margin: Float64 = _UNSET_F64,
     density: Float64 = _UNSET_F64,
     mass: Float64 = _UNSET_F64,
-    color: Color3D = Color3D(100, 200, 100),
+    color: Color = Color(100, 200, 100, 255),
 ](GeomSpec):
     """Box geom (static or body-attached).
 
@@ -555,7 +555,7 @@ struct Box[
     comptime MARGIN: Float64 = Self.margin
     comptime DENSITY: Float64 = Self.density
     comptime GEOM_MASS: Float64 = Self.mass
-    comptime COLOR: Color3D = Self.color
+    comptime COLOR: Color = Self.color
 
 
 # =============================================================================

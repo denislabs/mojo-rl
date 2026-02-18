@@ -8,7 +8,7 @@ Uses SDL3 GPU API with Metal (MSL) shaders.
 from render import (
     Renderer3D,
     Camera3D,
-    Color3D,
+    Color,
 )
 from math3d import Vec3, Quat
 
@@ -58,7 +58,7 @@ fn main() raises:
         renderer.draw_sphere(
             center=Vec3(0.0, 0.0, 1.0),
             radius=0.5,
-            color=Color3D.cyan(),
+            color=Color(0, 255, 255, 255),
         )
 
         # Draw a capsule (rotating)
@@ -69,7 +69,7 @@ fn main() raises:
             radius=0.15,
             half_height=0.3,
             axis=0,  # X-axis
-            color=Color3D.yellow(),
+            color=Color(255, 255, 0, 255),
         )
 
         # Draw a box (rotating)
@@ -78,7 +78,7 @@ fn main() raises:
             center=Vec3(-2.0, 0.0, 0.5),
             orientation=box_quat,
             half_extents=Vec3(0.4, 0.3, 0.3),
-            color=Color3D.green(),
+            color=Color(0, 255, 0, 255),
         )
 
         # Draw some more spheres as "bodies"
@@ -87,14 +87,14 @@ fn main() raises:
             renderer.draw_sphere(
                 center=Vec3(x, 2.0, 0.25),
                 radius=0.25,
-                color=Color3D.red(),
+                color=Color(255, 0, 0, 255),
             )
 
         # Draw a line representing a link/connection
         renderer.draw_line_3d(
             Vec3(0.0, 0.0, 1.5),
             Vec3(2.0, 0.0, 0.5),
-            Color3D.white(),
+            Color(255, 255, 255, 255),
         )
 
         # End frame

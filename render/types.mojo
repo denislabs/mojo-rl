@@ -43,10 +43,13 @@ struct SDL_Point(ImplicitlyCopyable, Movable):
 
 
 @fieldwise_init
-struct SDL_Color(ImplicitlyCopyable, Movable):
-    """SDL color structure (RGBA)."""
+struct Color(ImplicitlyCopyable, Movable):
+    """RGBA color (0-255 per component)."""
 
     var r: UInt8
     var g: UInt8
     var b: UInt8
     var a: UInt8
+
+
+comptime SDL_Color = Color

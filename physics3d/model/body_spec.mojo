@@ -8,7 +8,7 @@ Geometry types reuse constants from physics3d/constants.mojo:
 """
 
 from ..constants import GEOM_CAPSULE, GEOM_SPHERE, GEOM_BOX
-from render import Color3D
+from render import Color
 
 # =============================================================================
 # BodySpec Trait
@@ -53,7 +53,7 @@ trait BodySpec:
     comptime IQUAT_W: Float64
 
     # Visual properties
-    comptime COLOR: Color3D
+    comptime COLOR: Color
 
     # Auto-computed inertia from geometry + mass
     @staticmethod
@@ -100,7 +100,7 @@ struct CapsuleBody[
     izz_override: Float64 = 0.0,
     contype: Int = 1,
     conaffinity: Int = 1,
-    color: Color3D = Color3D(204, 153, 102),
+    color: Color = Color(204, 153, 102, 255),
 ](BodySpec):
     """Capsule body with auto-computed inertia.
 
@@ -134,7 +134,7 @@ struct CapsuleBody[
     comptime IQUAT_W: Float64 = Self.iquat_w
     comptime CONTYPE: Int = Self.contype
     comptime CONAFFINITY: Int = Self.conaffinity
-    comptime COLOR: Color3D = Self.color
+    comptime COLOR: Color = Self.color
     comptime NAME: String = Self.name
 
     @staticmethod
@@ -196,7 +196,7 @@ struct SphereBody[
     iquat_w: Float64 = 1.0,
     contype: Int = 1,
     conaffinity: Int = 1,
-    color: Color3D = Color3D(204, 153, 102),
+    color: Color = Color(204, 153, 102, 255),
 ](BodySpec):
     """Sphere body with auto-computed inertia.
 
@@ -227,7 +227,7 @@ struct SphereBody[
     comptime IQUAT_W: Float64 = Self.iquat_w
     comptime CONTYPE: Int = Self.contype
     comptime CONAFFINITY: Int = Self.conaffinity
-    comptime COLOR: Color3D = Self.color
+    comptime COLOR: Color = Self.color
     comptime NAME: String = Self.name
 
     @staticmethod
@@ -273,7 +273,7 @@ struct BoxBody[
     iquat_w: Float64 = 1.0,
     contype: Int = 1,
     conaffinity: Int = 1,
-    color: Color3D = Color3D(204, 153, 102),
+    color: Color = Color(204, 153, 102, 255),
 ](BodySpec):
     """Box body with auto-computed inertia.
 
@@ -305,7 +305,7 @@ struct BoxBody[
     comptime IQUAT_W: Float64 = Self.iquat_w
     comptime CONTYPE: Int = Self.contype
     comptime CONAFFINITY: Int = Self.conaffinity
-    comptime COLOR: Color3D = Self.color
+    comptime COLOR: Color = Self.color
     comptime NAME: String = Self.name
 
     @staticmethod

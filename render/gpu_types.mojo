@@ -8,6 +8,7 @@ from memory import UnsafePointer, memcpy
 from math import sqrt, tan, sin, cos
 from math3d import Vec3 as Vec3Generic, Mat4 as Mat4Generic, Quat as QuatGeneric
 from .sdl import Ptr, AnyOrigin, GPUBuffer
+from .types import Color
 
 comptime Vec3 = Vec3Generic[DType.float64]
 comptime Mat4 = Mat4Generic[DType.float64]
@@ -393,7 +394,24 @@ fn perspective_metal(
     return m
 
 
-fn color3d_to_vec4(r: UInt8, g: UInt8, b: UInt8) -> InlineArray[Float32, 4]:
+fn color_to_vec4(color: Color) -> InlineArray[Float32, 4]:
+    """Convert Color to normalized Float32 RGBA.
+
+    Args:
+        color: RGBA color (0-255 per component).
+
+    Returns:
+        Float32 RGBA array with alpha from color.a.
+    """
+    var out = InlineArray[Float32, 4](fill=Float32(0))
+    out[0] = Float32(color.r) / 255.0
+    out[1] = Float32(color.g) / 255.0
+    out[2] = Float32(color.b) / 255.0
+    out[3] = Float32(color.a) / 255.0
+    return out^
+
+
+fn color_to_vec4(r: UInt8, g: UInt8, b: UInt8) -> InlineArray[Float32, 4]:
     """Convert UInt8 RGB to normalized Float32 RGBA.
 
     Args:

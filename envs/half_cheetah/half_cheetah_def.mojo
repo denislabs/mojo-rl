@@ -25,7 +25,7 @@ from physics3d.model.model_def import (
 )
 from physics3d.model.actuator_spec import MotorActuator
 from physics3d.model.geom_spec import Plane, Capsule, FromToCapsule
-from render import Color3D
+from render import Color
 from physics3d.gpu.constants import (
     state_size,
     model_size,
@@ -92,7 +92,7 @@ comptime Torso = CapsuleBody[
     iyy_override=0.885655,
     izz_override=0.017961,
     conaffinity=0,
-    color = Color3D(204, 153, 102),
+    color = Color(204, 153, 102, 255),
 ]
 
 # Body 2: Back Thigh
@@ -115,7 +115,7 @@ comptime BThigh = CapsuleBody[
     iyy_override=0.016844,
     izz_override=0.001576,
     conaffinity=0,
-    color = Color3D(204, 153, 102),
+    color = Color(204, 153, 102, 255),
 ]
 
 # Body 3: Back Shin
@@ -138,7 +138,7 @@ comptime BShin = CapsuleBody[
     iyy_override=0.018267,
     izz_override=0.001623,
     conaffinity=0,
-    color = Color3D(230, 153, 153),
+    color = Color(230, 153, 153, 255),
 ]
 
 # Body 4: Back Foot
@@ -161,7 +161,7 @@ comptime BFoot = CapsuleBody[
     iyy_override=0.006352,
     izz_override=0.001102,
     conaffinity=0,
-    color = Color3D(230, 153, 153),
+    color = Color(230, 153, 153, 255),
 ]
 
 # Body 5: Front Thigh
@@ -184,7 +184,7 @@ comptime FThigh = CapsuleBody[
     iyy_override=0.013740,
     izz_override=0.001464,
     conaffinity=0,
-    color = Color3D(204, 153, 102),
+    color = Color(204, 153, 102, 255),
 ]
 
 # Body 6: Front Shin
@@ -207,7 +207,7 @@ comptime FShin = CapsuleBody[
     iyy_override=0.008222,
     izz_override=0.001213,
     conaffinity=0,
-    color = Color3D(230, 153, 153),
+    color = Color(230, 153, 153, 255),
 ]
 
 # Body 7: Front Foot
@@ -230,7 +230,7 @@ comptime FFoot = CapsuleBody[
     iyy_override=0.003529,
     izz_override=0.000879,
     conaffinity=0,
-    color = Color3D(230, 153, 153),
+    color = Color(230, 153, 153, 255),
 ]
 
 
@@ -384,7 +384,7 @@ comptime TorsoGeom = FromToCapsule[
     radius=_R,
     # MuJoCo: fromto="-.5 0 0 .5 0 0"
     from_x=-0.5, to_x=0.5,
-    color = Color3D(204, 153, 102),
+    color = Color(204, 153, 102, 255),
 ]
 comptime BThighGeom = Capsule[
     body_idx=2,
@@ -395,7 +395,7 @@ comptime BThighGeom = Capsule[
     # MuJoCo quat (w,x,y,z) = (-0.32329, 0, -0.9463, 0)
     quat_y= -0.946300,
     quat_w= -0.323290,
-    color = Color3D(204, 153, 102),
+    color = Color(204, 153, 102, 255),
 ]
 comptime BShinGeom = Capsule[
     body_idx=3,
@@ -406,7 +406,7 @@ comptime BShinGeom = Capsule[
     # MuJoCo quat (w,x,y,z) = (0.52762, 0, -0.849481, 0)
     quat_y= -0.849481,
     quat_w=0.527620,
-    color = Color3D(230, 153, 153),
+    color = Color(230, 153, 153, 255),
 ]
 comptime BFootGeom = Capsule[
     body_idx=4,
@@ -417,7 +417,7 @@ comptime BFootGeom = Capsule[
     # MuJoCo quat (w,x,y,z) = (0.990901, 0, -0.13459, 0)
     quat_y= -0.134590,
     quat_w=0.990901,
-    color = Color3D(230, 153, 153),
+    color = Color(230, 153, 153, 255),
 ]
 comptime FThighGeom = Capsule[
     body_idx=5,
@@ -428,7 +428,7 @@ comptime FThighGeom = Capsule[
     # MuJoCo quat (w,x,y,z) = (0.96639, 0, 0.257081, 0)
     quat_y=0.257081,
     quat_w=0.966390,
-    color = Color3D(204, 153, 102),
+    color = Color(204, 153, 102, 255),
 ]
 comptime FShinGeom = Capsule[
     body_idx=6,
@@ -439,7 +439,7 @@ comptime FShinGeom = Capsule[
     # MuJoCo quat (w,x,y,z) = (0.955336, 0, -0.29552, 0)
     quat_y= -0.295520,
     quat_w=0.955336,
-    color = Color3D(230, 153, 153),
+    color = Color(230, 153, 153, 255),
 ]
 comptime FFootGeom = Capsule[
     body_idx=7,
@@ -450,7 +450,7 @@ comptime FFootGeom = Capsule[
     # MuJoCo quat (w,x,y,z) = (0.955336, 0, -0.29552, 0)
     quat_y= -0.295520,
     quat_w=0.955336,
-    color = Color3D(230, 153, 153),
+    color = Color(230, 153, 153, 255),
 ]
 
 # Head geom — attached to torso (body 0) with local offset
@@ -464,7 +464,7 @@ comptime HeadGeom = Capsule[
     # MuJoCo quat (w,x,y,z) = (0.90687, 0, 0.42141, 0) → our (0, 0.42141, 0, 0.90687)
     quat_y=0.421410,
     quat_w=0.906870,
-    color = Color3D(204, 153, 102),
+    color = Color(204, 153, 102, 255),
 ]
 
 comptime HalfCheetahGeoms = Geoms[

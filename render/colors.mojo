@@ -4,7 +4,7 @@ Provides predefined color palettes for consistent visual styling,
 color interpolation, and common color operations.
 """
 
-from .types import SDL_Color
+from .types import Color
 
 
 # =============================================================================
@@ -13,76 +13,76 @@ from .types import SDL_Color
 
 
 struct Colors:
-    comptime white: SDL_Color = SDL_Color(255, 255, 255, 255)
-    comptime black: SDL_Color = SDL_Color(0, 0, 0, 255)
-    comptime red: SDL_Color = SDL_Color(255, 0, 0, 255)
-    comptime green: SDL_Color = SDL_Color(0, 255, 0, 255)
-    comptime blue: SDL_Color = SDL_Color(0, 0, 255, 255)
-    comptime yellow: SDL_Color = SDL_Color(255, 255, 0, 255)
-    comptime cyan: SDL_Color = SDL_Color(0, 255, 255, 255)
-    comptime magenta: SDL_Color = SDL_Color(255, 0, 255, 255)
-    comptime orange: SDL_Color = SDL_Color(255, 165, 0, 255)
-    comptime purple: SDL_Color = SDL_Color(128, 0, 128, 255)
-    comptime gray: SDL_Color = SDL_Color(128, 128, 128, 255)
-    comptime light_gray: SDL_Color = SDL_Color(192, 192, 192, 255)
-    comptime dark_gray: SDL_Color = SDL_Color(64, 64, 64, 255)
-    comptime transparent: SDL_Color = SDL_Color(0, 0, 0, 0)
+    comptime white: Color = Color(255, 255, 255, 255)
+    comptime black: Color = Color(0, 0, 0, 255)
+    comptime red: Color = Color(255, 0, 0, 255)
+    comptime green: Color = Color(0, 255, 0, 255)
+    comptime blue: Color = Color(0, 0, 255, 255)
+    comptime yellow: Color = Color(255, 255, 0, 255)
+    comptime cyan: Color = Color(0, 255, 255, 255)
+    comptime magenta: Color = Color(255, 0, 255, 255)
+    comptime orange: Color = Color(255, 165, 0, 255)
+    comptime purple: Color = Color(128, 0, 128, 255)
+    comptime gray: Color = Color(128, 128, 128, 255)
+    comptime light_gray: Color = Color(192, 192, 192, 255)
+    comptime dark_gray: Color = Color(64, 64, 64, 255)
+    comptime transparent: Color = Color(0, 0, 0, 0)
 
 
-fn white() -> SDL_Color:
-    return SDL_Color(255, 255, 255, 255)
+fn white() -> Color:
+    return Color(255, 255, 255, 255)
 
 
-fn black() -> SDL_Color:
-    return SDL_Color(0, 0, 0, 255)
+fn black() -> Color:
+    return Color(0, 0, 0, 255)
 
 
-fn red() -> SDL_Color:
-    return SDL_Color(255, 0, 0, 255)
+fn red() -> Color:
+    return Color(255, 0, 0, 255)
 
 
-fn green() -> SDL_Color:
-    return SDL_Color(0, 255, 0, 255)
+fn green() -> Color:
+    return Color(0, 255, 0, 255)
 
 
-fn blue() -> SDL_Color:
-    return SDL_Color(0, 0, 255, 255)
+fn blue() -> Color:
+    return Color(0, 0, 255, 255)
 
 
-fn yellow() -> SDL_Color:
-    return SDL_Color(255, 255, 0, 255)
+fn yellow() -> Color:
+    return Color(255, 255, 0, 255)
 
 
-fn cyan() -> SDL_Color:
-    return SDL_Color(0, 255, 255, 255)
+fn cyan() -> Color:
+    return Color(0, 255, 255, 255)
 
 
-fn magenta() -> SDL_Color:
-    return SDL_Color(255, 0, 255, 255)
+fn magenta() -> Color:
+    return Color(255, 0, 255, 255)
 
 
-fn orange() -> SDL_Color:
-    return SDL_Color(255, 165, 0, 255)
+fn orange() -> Color:
+    return Color(255, 165, 0, 255)
 
 
-fn purple() -> SDL_Color:
-    return SDL_Color(128, 0, 128, 255)
+fn purple() -> Color:
+    return Color(128, 0, 128, 255)
 
 
-fn gray() -> SDL_Color:
-    return SDL_Color(128, 128, 128, 255)
+fn gray() -> Color:
+    return Color(128, 128, 128, 255)
 
 
-fn light_gray() -> SDL_Color:
-    return SDL_Color(192, 192, 192, 255)
+fn light_gray() -> Color:
+    return Color(192, 192, 192, 255)
 
 
-fn dark_gray() -> SDL_Color:
-    return SDL_Color(64, 64, 64, 255)
+fn dark_gray() -> Color:
+    return Color(64, 64, 64, 255)
 
 
-fn transparent() -> SDL_Color:
-    return SDL_Color(0, 0, 0, 0)
+fn transparent() -> Color:
+    return Color(0, 0, 0, 0)
 
 
 # =============================================================================
@@ -91,164 +91,164 @@ fn transparent() -> SDL_Color:
 
 
 # Sky/Background colors
-fn sky_blue() -> SDL_Color:
+fn sky_blue() -> Color:
     """Light blue sky background."""
-    return SDL_Color(135, 206, 235, 255)
+    return Color(135, 206, 235, 255)
 
 
-fn night_sky() -> SDL_Color:
+fn night_sky() -> Color:
     """Dark night sky background."""
-    return SDL_Color(25, 25, 112, 255)
+    return Color(25, 25, 112, 255)
 
 
-fn space_black() -> SDL_Color:
+fn space_black() -> Color:
     """Deep space background (LunarLander)."""
-    return SDL_Color(0, 0, 0, 255)
+    return Color(0, 0, 0, 255)
 
 
 # Ground/Terrain colors
-fn ground_brown() -> SDL_Color:
+fn ground_brown() -> Color:
     """Brown ground/terrain."""
-    return SDL_Color(139, 119, 101, 255)
+    return Color(139, 119, 101, 255)
 
 
-fn grass_green() -> SDL_Color:
+fn grass_green() -> Color:
     """Grass/field green."""
-    return SDL_Color(34, 139, 34, 255)
+    return Color(34, 139, 34, 255)
 
 
-fn dark_grass() -> SDL_Color:
+fn dark_grass() -> Color:
     """Darker grass for checkerboard patterns."""
-    return SDL_Color(28, 107, 28, 255)
+    return Color(28, 107, 28, 255)
 
 
-fn sand() -> SDL_Color:
+fn sand() -> Color:
     """Sandy/tan color."""
-    return SDL_Color(210, 180, 140, 255)
+    return Color(210, 180, 140, 255)
 
 
-fn mountain_brown() -> SDL_Color:
+fn mountain_brown() -> Color:
     """Mountain terrain (MountainCar)."""
-    return SDL_Color(139, 90, 43, 255)
+    return Color(139, 90, 43, 255)
 
 
-fn moon_gray() -> SDL_Color:
+fn moon_gray() -> Color:
     """Lunar surface gray."""
-    return SDL_Color(102, 102, 102, 255)
+    return Color(102, 102, 102, 255)
 
 
 # Vehicle/Object colors
-fn cart_blue() -> SDL_Color:
+fn cart_blue() -> Color:
     """Blue cart color (CartPole)."""
-    return SDL_Color(31, 119, 180, 255)
+    return Color(31, 119, 180, 255)
 
 
-fn pole_tan() -> SDL_Color:
+fn pole_tan() -> Color:
     """Tan pole color (CartPole)."""
-    return SDL_Color(204, 153, 102, 255)
+    return Color(204, 153, 102, 255)
 
 
-fn axle_purple() -> SDL_Color:
+fn axle_purple() -> Color:
     """Purple axle color (CartPole)."""
-    return SDL_Color(127, 127, 204, 255)
+    return Color(127, 127, 204, 255)
 
 
-fn car_red() -> SDL_Color:
+fn car_red() -> Color:
     """Red car color (MountainCar)."""
-    return SDL_Color(204, 51, 51, 255)
+    return Color(204, 51, 51, 255)
 
 
-fn lander_gray() -> SDL_Color:
+fn lander_gray() -> Color:
     """Lunar lander body gray."""
-    return SDL_Color(128, 128, 128, 255)
+    return Color(128, 128, 128, 255)
 
 
-fn hull_purple() -> SDL_Color:
+fn hull_purple() -> Color:
     """Hull/body purple (BipedalWalker)."""
-    return SDL_Color(127, 51, 127, 255)
+    return Color(127, 51, 127, 255)
 
 
 # State indicator colors
-fn contact_green() -> SDL_Color:
+fn contact_green() -> Color:
     """Green for ground contact."""
-    return SDL_Color(0, 255, 0, 255)
+    return Color(0, 255, 0, 255)
 
 
-fn no_contact_blue() -> SDL_Color:
+fn no_contact_blue() -> Color:
     """Blue for no ground contact."""
-    return SDL_Color(77, 166, 255, 255)
+    return Color(77, 166, 255, 255)
 
 
-fn active_green() -> SDL_Color:
+fn active_green() -> Color:
     """Active state indicator."""
-    return SDL_Color(0, 200, 0, 255)
+    return Color(0, 200, 0, 255)
 
 
-fn inactive_gray() -> SDL_Color:
+fn inactive_gray() -> Color:
     """Inactive state indicator."""
-    return SDL_Color(128, 128, 128, 255)
+    return Color(128, 128, 128, 255)
 
 
-fn warning_orange() -> SDL_Color:
+fn warning_orange() -> Color:
     """Warning indicator."""
-    return SDL_Color(255, 165, 0, 255)
+    return Color(255, 165, 0, 255)
 
 
-fn danger_red() -> SDL_Color:
+fn danger_red() -> Color:
     """Danger indicator."""
-    return SDL_Color(255, 50, 50, 255)
+    return Color(255, 50, 50, 255)
 
 
 # Visualization colors
-fn velocity_orange() -> SDL_Color:
+fn velocity_orange() -> Color:
     """Velocity arrow/indicator."""
-    return SDL_Color(255, 165, 0, 255)
+    return Color(255, 165, 0, 255)
 
 
-fn force_red() -> SDL_Color:
+fn force_red() -> Color:
     """Force arrow/indicator."""
-    return SDL_Color(255, 0, 0, 255)
+    return Color(255, 0, 0, 255)
 
 
-fn torque_blue() -> SDL_Color:
+fn torque_blue() -> Color:
     """Torque indicator."""
-    return SDL_Color(0, 100, 255, 255)
+    return Color(0, 100, 255, 255)
 
 
-fn target_gold() -> SDL_Color:
+fn target_gold() -> Color:
     """Goal/target marker."""
-    return SDL_Color(255, 215, 0, 255)
+    return Color(255, 215, 0, 255)
 
 
-fn flag_red() -> SDL_Color:
+fn flag_red() -> Color:
     """Flag marker."""
-    return SDL_Color(255, 0, 0, 255)
+    return Color(255, 0, 0, 255)
 
 
-fn helipad_yellow() -> SDL_Color:
+fn helipad_yellow() -> Color:
     """Helipad marker."""
-    return SDL_Color(255, 255, 0, 255)
+    return Color(255, 255, 0, 255)
 
 
 # Track/Road colors
-fn track_gray() -> SDL_Color:
+fn track_gray() -> Color:
     """Track/road surface."""
-    return SDL_Color(107, 107, 107, 255)
+    return Color(107, 107, 107, 255)
 
 
-fn track_visited() -> SDL_Color:
+fn track_visited() -> Color:
     """Visited track tile (CarRacing)."""
-    return SDL_Color(107, 137, 107, 255)
+    return Color(107, 137, 107, 255)
 
 
-fn curb_red() -> SDL_Color:
+fn curb_red() -> Color:
     """Track curb red."""
-    return SDL_Color(255, 0, 0, 255)
+    return Color(255, 0, 0, 255)
 
 
-fn curb_white() -> SDL_Color:
+fn curb_white() -> Color:
     """Track curb white."""
-    return SDL_Color(255, 255, 255, 255)
+    return Color(255, 255, 255, 255)
 
 
 # =============================================================================
@@ -256,7 +256,7 @@ fn curb_white() -> SDL_Color:
 # =============================================================================
 
 
-fn rgb(r: Int, g: Int, b: Int) -> SDL_Color:
+fn rgb(r: Int, g: Int, b: Int) -> Color:
     """Create an opaque RGB color.
 
     Args:
@@ -265,12 +265,12 @@ fn rgb(r: Int, g: Int, b: Int) -> SDL_Color:
         b: Blue component (0-255).
 
     Returns:
-        SDL_Color with alpha=255.
+        Color with alpha=255.
     """
-    return SDL_Color(UInt8(r), UInt8(g), UInt8(b), 255)
+    return Color(UInt8(r), UInt8(g), UInt8(b), 255)
 
 
-fn rgba(r: Int, g: Int, b: Int, a: Int) -> SDL_Color:
+fn rgba(r: Int, g: Int, b: Int, a: Int) -> Color:
     """Create an RGBA color.
 
     Args:
@@ -280,12 +280,12 @@ fn rgba(r: Int, g: Int, b: Int, a: Int) -> SDL_Color:
         a: Alpha component (0-255).
 
     Returns:
-        SDL_Color.
+        Color.
     """
-    return SDL_Color(UInt8(r), UInt8(g), UInt8(b), UInt8(a))
+    return Color(UInt8(r), UInt8(g), UInt8(b), UInt8(a))
 
 
-fn with_alpha(color: SDL_Color, alpha: Int) -> SDL_Color:
+fn with_alpha(color: Color, alpha: Int) -> Color:
     """Return color with modified alpha.
 
     Args:
@@ -295,10 +295,10 @@ fn with_alpha(color: SDL_Color, alpha: Int) -> SDL_Color:
     Returns:
         Color with new alpha.
     """
-    return SDL_Color(color.r, color.g, color.b, UInt8(alpha))
+    return Color(color.r, color.g, color.b, UInt8(alpha))
 
 
-fn lerp_color(c1: SDL_Color, c2: SDL_Color, t: Float64) -> SDL_Color:
+fn lerp_color(c1: Color, c2: Color, t: Float64) -> Color:
     """Linearly interpolate between two colors.
 
     Args:
@@ -311,7 +311,7 @@ fn lerp_color(c1: SDL_Color, c2: SDL_Color, t: Float64) -> SDL_Color:
     """
     var tt = max(0.0, min(1.0, t))
     var inv_t = 1.0 - tt
-    return SDL_Color(
+    return Color(
         UInt8(Int(Float64(Int(c1.r)) * inv_t + Float64(Int(c2.r)) * tt)),
         UInt8(Int(Float64(Int(c1.g)) * inv_t + Float64(Int(c2.g)) * tt)),
         UInt8(Int(Float64(Int(c1.b)) * inv_t + Float64(Int(c2.b)) * tt)),
@@ -319,7 +319,7 @@ fn lerp_color(c1: SDL_Color, c2: SDL_Color, t: Float64) -> SDL_Color:
     )
 
 
-fn brighten(color: SDL_Color, factor: Float64) -> SDL_Color:
+fn brighten(color: Color, factor: Float64) -> Color:
     """Brighten a color.
 
     Args:
@@ -329,7 +329,7 @@ fn brighten(color: SDL_Color, factor: Float64) -> SDL_Color:
     Returns:
         Brightened color.
     """
-    return SDL_Color(
+    return Color(
         UInt8(min(255, Int(Float64(Int(color.r)) * factor))),
         UInt8(min(255, Int(Float64(Int(color.g)) * factor))),
         UInt8(min(255, Int(Float64(Int(color.b)) * factor))),
@@ -337,7 +337,7 @@ fn brighten(color: SDL_Color, factor: Float64) -> SDL_Color:
     )
 
 
-fn darken(color: SDL_Color, factor: Float64) -> SDL_Color:
+fn darken(color: Color, factor: Float64) -> Color:
     """Darken a color.
 
     Args:
@@ -347,7 +347,7 @@ fn darken(color: SDL_Color, factor: Float64) -> SDL_Color:
     Returns:
         Darkened color.
     """
-    return SDL_Color(
+    return Color(
         UInt8(Int(Float64(Int(color.r)) * factor)),
         UInt8(Int(Float64(Int(color.g)) * factor)),
         UInt8(Int(Float64(Int(color.b)) * factor)),
@@ -355,7 +355,7 @@ fn darken(color: SDL_Color, factor: Float64) -> SDL_Color:
     )
 
 
-fn grayscale(color: SDL_Color) -> SDL_Color:
+fn grayscale(color: Color) -> Color:
     """Convert color to grayscale.
 
     Args:
@@ -370,7 +370,7 @@ fn grayscale(color: SDL_Color) -> SDL_Color:
         + Float64(Int(color.g)) * 0.587
         + Float64(Int(color.b)) * 0.114
     )
-    return SDL_Color(UInt8(gray), UInt8(gray), UInt8(gray), color.a)
+    return Color(UInt8(gray), UInt8(gray), UInt8(gray), color.a)
 
 
 # =============================================================================
@@ -378,7 +378,7 @@ fn grayscale(color: SDL_Color) -> SDL_Color:
 # =============================================================================
 
 
-fn flame_color(lifetime_ratio: Float64) -> SDL_Color:
+fn flame_color(lifetime_ratio: Float64) -> Color:
     """Get flame particle color based on lifetime.
 
     Transitions from yellow -> orange -> red as lifetime decreases.
@@ -390,7 +390,7 @@ fn flame_color(lifetime_ratio: Float64) -> SDL_Color:
         Flame color.
     """
     var t = max(0.0, min(1.0, lifetime_ratio))
-    return SDL_Color(
+    return Color(
         255,  # Red always max
         UInt8(Int(200.0 * t + 50.0)),  # Green fades
         UInt8(Int(50.0 * t)),  # Blue fades faster
@@ -398,7 +398,7 @@ fn flame_color(lifetime_ratio: Float64) -> SDL_Color:
     )
 
 
-fn smoke_color(lifetime_ratio: Float64) -> SDL_Color:
+fn smoke_color(lifetime_ratio: Float64) -> Color:
     """Get smoke particle color based on lifetime.
 
     Transitions from gray -> lighter gray as lifetime decreases.
@@ -411,7 +411,7 @@ fn smoke_color(lifetime_ratio: Float64) -> SDL_Color:
     """
     var t = max(0.0, min(1.0, lifetime_ratio))
     var gray_val = Int(100.0 + 80.0 * (1.0 - t))
-    return SDL_Color(
+    return Color(
         UInt8(gray_val),
         UInt8(gray_val),
         UInt8(gray_val),
@@ -419,7 +419,7 @@ fn smoke_color(lifetime_ratio: Float64) -> SDL_Color:
     )
 
 
-fn spark_color(lifetime_ratio: Float64) -> SDL_Color:
+fn spark_color(lifetime_ratio: Float64) -> Color:
     """Get spark particle color based on lifetime.
 
     Transitions from white -> yellow -> orange.
@@ -431,7 +431,7 @@ fn spark_color(lifetime_ratio: Float64) -> SDL_Color:
         Spark color.
     """
     var t = max(0.0, min(1.0, lifetime_ratio))
-    return SDL_Color(
+    return Color(
         255,
         UInt8(Int(255.0 * t)),  # Green fades from white to yellow to orange
         UInt8(Int(200.0 * t * t)),  # Blue fades faster
@@ -444,7 +444,7 @@ fn spark_color(lifetime_ratio: Float64) -> SDL_Color:
 # =============================================================================
 
 
-fn heat_gradient(value: Float64) -> SDL_Color:
+fn heat_gradient(value: Float64) -> Color:
     """Get color from heat gradient (blue -> green -> yellow -> red).
 
     Args:
@@ -473,7 +473,7 @@ fn heat_gradient(value: Float64) -> SDL_Color:
         return lerp_color(yellow(), red(), local_t)
 
 
-fn rainbow_gradient(value: Float64) -> SDL_Color:
+fn rainbow_gradient(value: Float64) -> Color:
     """Get color from rainbow gradient.
 
     Args:

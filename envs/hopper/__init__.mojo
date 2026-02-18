@@ -84,8 +84,6 @@ from .hopper_def import (
     DT,
     FRAME_SKIP,
     EFFECTIVE_DT,
-    GRAVITY_Z,
-    GROUND_Z,
     MAX_STEPS,
     INITIAL_Z,
     FRICTION,

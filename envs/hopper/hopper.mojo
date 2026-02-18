@@ -87,12 +87,6 @@ from .hopper_def import (
 )
 from .renderer import HopperRenderer
 
-# Math types for renderer
-from math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
-
-comptime Vec3 = Vec3Generic[DType.float64]
-comptime Quat = QuatGeneric[DType.float64]
-
 
 # =============================================================================
 # Hopper Environment
@@ -548,8 +542,13 @@ struct Hopper[
         var renderer = HopperRenderer(
             width=1024,
             height=576,
-            follow_hopper=True,
-            show_velocity=True,
+            visual_radius_scale=1.5,
+            cam_eye_y=-2.5,
+            cam_eye_z=1.2,
+            cam_target_z=0.8,
+            axes_offset=0.8,
+            vel_arrow_height=0.25,
+            vel_arrow_scale=0.15,
         )
         renderer.init()
 
@@ -564,27 +563,10 @@ struct Hopper[
         if not self._renderer[].is_open():
             return
 
-        var positions = List[Vec3](capacity=Hopper.NUM_BODIES)
-        var quaternions = List[Quat](capacity=Hopper.NUM_BODIES)
-
-        for i in range(Hopper.NUM_BODIES):
-            var pos = self.get_body_position(i)
-            positions.append(
-                Vec3(Float64(pos[0]), Float64(pos[1]), Float64(pos[2]))
-            )
-
-            var quat = self.get_body_quaternion(i)
-            quaternions.append(
-                Quat(
-                    Float64(quat[3]),
-                    Float64(quat[0]),
-                    Float64(quat[1]),
-                    Float64(quat[2]),
-                )
-            )
-
-        var vel_x = Float64(self.get_x_velocity())
-        self._renderer[].render(positions, quaternions, vel_x)
+        self._renderer[].render_from_body_state(
+            self.data.xpos, self.data.xquat, Hopper.NUM_BODIES,
+            vel_x=Float64(self.get_x_velocity()),
+        )
 
     fn close_renderer(mut self) raises -> None:
         if not self._renderer_initialized:
