@@ -241,7 +241,7 @@ struct HalfCheetah[
 
         # Reset qpos to initial values, run FK + compute body inverse weights
         HalfCheetahJoints.reset_data(self.data)
-        HalfCheetahModel.finalize(self.model, self.data)
+        HalfCheetahModel.finalize[Defaults=HalfCheetahDefaults](self.model, self.data)
 
         # Reset step counter and previous position
         self.current_step = 0
@@ -865,7 +865,7 @@ struct HalfCheetah[
             HalfCheetah.NUM_JOINTS,
             HalfCheetah.MAX_CONTACTS,
         ]()
-        HalfCheetahModel.finalize(model, data_ref)
+        HalfCheetahModel.finalize[Defaults=HalfCheetahDefaults](model, data_ref)
 
         var host_buf = HalfCheetahModel.create_gpu_model_buffer[
             gpu_dtype, Self.MAX_CONTACTS

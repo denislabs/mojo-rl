@@ -504,6 +504,7 @@ comptime HalfCheetahDefaults = ModelDefaults[
     joint_solimp_limit_2=0.03,
     gravity_z= -9.81,
     timestep=0.01,
+    settotalmass=14.0,
 ]
 
 

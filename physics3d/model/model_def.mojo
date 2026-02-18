@@ -143,6 +143,8 @@ trait ModelDefaultsLike(TrivialRegisterPassable):
     comptime GRAVITY_Y: Float64
     comptime GRAVITY_Z: Float64
     comptime TIMESTEP: Float64
+    # MuJoCo <compiler> block
+    comptime SETTOTALMASS: Float64
 
 
 @fieldwise_init
@@ -179,6 +181,8 @@ struct ModelDefaults[
     gravity_y: Float64 = 0.0,
     gravity_z: Float64 = -9.81,
     timestep: Float64 = 0.01,
+    # Compiler directive (MuJoCo <compiler>)
+    settotalmass: Float64 = -1.0,
 ](ModelDefaultsLike):
     """MuJoCo-style model defaults block.
 
@@ -215,6 +219,7 @@ struct ModelDefaults[
     comptime GRAVITY_Y: Float64 = Self.gravity_y
     comptime GRAVITY_Z: Float64 = Self.gravity_z
     comptime TIMESTEP: Float64 = Self.timestep
+    comptime SETTOTALMASS: Float64 = Self.settotalmass
 
 
 # =============================================================================
@@ -1671,6 +1676,7 @@ struct ModelDef[
     fn finalize[
         DTYPE: DType,
         MAX_CONTACTS: Int,
+        Defaults: ModelDefaultsLike = ModelDefaults[],
     ](
         mut model: Model[
             DTYPE,
@@ -1696,7 +1702,25 @@ struct ModelDef[
 
         Must be called after Bodies/Joints/Geoms.setup_model and after
         Joints.reset_data (or manual qpos initialization).
+
+        If Defaults.SETTOTALMASS > 0, rescales all body masses and inertias
+        so the total mass equals the target (MuJoCo <compiler settotalmass>).
         """
+        # MuJoCo <compiler settotalmass> — rescale body masses/inertias
+        @parameter
+        if Defaults.SETTOTALMASS > 0.0:
+            var total_mass = Scalar[DTYPE](0)
+            for i in range(1, Self.NBODY):
+                total_mass += model.body_mass[i]
+            if total_mass > 0:
+                var scale = Scalar[DTYPE](Defaults.SETTOTALMASS) / total_mass
+                for i in range(1, Self.NBODY):
+                    model.body_mass[i] *= scale
+                    model.body_inv_mass[i] /= scale
+                    for k in range(3):
+                        model.body_inertia[i * 3 + k] *= scale
+                        model.body_inv_inertia[i * 3 + k] /= scale
+
         forward_kinematics(model, data)
         compute_body_invweight0(model, data)
 
