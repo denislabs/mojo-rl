@@ -245,6 +245,7 @@ comptime RootX = SlideJoint[
     axis_x=1.0,
     axis_y=0.0,
     axis_z=0.0,
+    armature=0.0,
     exclude_obs_qpos=True,  # rootx excluded from obs (translation invariance)
 ]
 
@@ -255,6 +256,7 @@ comptime RootZ = SlideJoint[
     axis_x=0.0,
     axis_y=0.0,
     axis_z=1.0,
+    armature=0.0,
 ]
 
 # Joint 2: rooty — Hinge around Y (body 1/torso, unactuated)
@@ -503,6 +505,7 @@ comptime HalfCheetahDefaults = ModelDefaults[
     gravity_z= -9.81,
     timestep=0.01,
     settotalmass=14.0,
+    inertiafromgeom=False,  # HalfCheetah uses hardcoded body mass/inertia values
 ]
 
 

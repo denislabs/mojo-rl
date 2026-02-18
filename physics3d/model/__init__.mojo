@@ -32,4 +32,5 @@ from .actuator_spec import (
     GeneralActuator,
 )
 from .model_def import Bodies, Joints, Geoms, Equalities, Actuators, ModelDef
+from .inertia_from_geom import compute_inertia_from_geoms
 from .model_renderer import ModelRenderer

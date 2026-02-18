@@ -71,6 +71,7 @@ from ..gpu.buffer_utils import (
 )
 from ..kinematics.forward_kinematics import forward_kinematics
 from ..dynamics.mass_matrix import compute_body_invweight0
+from .inertia_from_geom import geom_volume, compute_inertia_from_geoms
 from gpu.host import HostBuffer
 
 
@@ -138,6 +139,10 @@ trait ModelDefaultsLike(TrivialRegisterPassable):
     comptime JOINT_SOLIMP_LIMIT_1: Float64
     comptime JOINT_SOLIMP_LIMIT_2: Float64
     comptime IMPRATIO: Float64
+    # Geom density default (kg/m³)
+    comptime GEOM_DENSITY: Float64
+    # MuJoCo <compiler> inertiafromgeom
+    comptime INERTIAFROMGEOM: Bool
     # MuJoCo <option> block
     comptime GRAVITY_X: Float64
     comptime GRAVITY_Y: Float64
@@ -177,6 +182,10 @@ struct ModelDefaults[
     motor_ctrl_max: Float64 = 1.0,
     # Model-level (MuJoCo <option>)
     impratio: Float64 = 1.0,
+    # Geom density default (MuJoCo default = 1000 kg/m³)
+    geom_density: Float64 = 1000.0,
+    # MuJoCo <compiler> inertiafromgeom (default True, matching MuJoCo compiler default)
+    inertiafromgeom: Bool = True,
     gravity_x: Float64 = 0.0,
     gravity_y: Float64 = 0.0,
     gravity_z: Float64 = -9.81,
@@ -215,6 +224,8 @@ struct ModelDefaults[
     comptime JOINT_SOLIMP_LIMIT_1: Float64 = Self.joint_solimp_limit_1
     comptime JOINT_SOLIMP_LIMIT_2: Float64 = Self.joint_solimp_limit_2
     comptime IMPRATIO: Float64 = Self.impratio
+    comptime GEOM_DENSITY: Float64 = Self.geom_density
+    comptime INERTIAFROMGEOM: Bool = Self.inertiafromgeom
     comptime GRAVITY_X: Float64 = Self.gravity_x
     comptime GRAVITY_Y: Float64 = Self.gravity_y
     comptime GRAVITY_Z: Float64 = Self.gravity_z
@@ -1280,6 +1291,36 @@ struct Geoms[*G: GeomSpec]:
                     1e10
                 )  # Planes are infinite
 
+            # Compute and store per-geom mass
+            # Priority: explicit mass > explicit density > default density
+            @parameter
+            if G_item.GEOM_TYPE == GEOM_PLANE:
+                model.geom_mass[i] = Scalar[DTYPE](0)
+            elif G_item.GEOM_MASS >= 0.0:
+                # Explicit mass on the geom
+                model.geom_mass[i] = Scalar[DTYPE](G_item.GEOM_MASS)
+            else:
+                # Compute volume
+                var vol = geom_volume[DTYPE](
+                    G_item.GEOM_TYPE,
+                    Scalar[DTYPE](G_item.RADIUS),
+                    Scalar[DTYPE](G_item.HALF_LENGTH),
+                    Scalar[DTYPE](G_item.HALF_X),
+                    Scalar[DTYPE](G_item.HALF_Y),
+                    Scalar[DTYPE](G_item.HALF_Z),
+                )
+
+                @parameter
+                if G_item.DENSITY >= 0.0:
+                    # Explicit density on the geom
+                    model.geom_mass[i] = Scalar[DTYPE](
+                        G_item.DENSITY
+                    ) * vol
+                else:
+                    # Use default density
+                    model.geom_mass[i] = Scalar[DTYPE](
+                        Defaults.GEOM_DENSITY
+                    ) * vol
 
 
 # =============================================================================
@@ -1703,9 +1744,19 @@ struct ModelDef[
         Must be called after Bodies/Joints/Geoms.setup_model and after
         Joints.reset_data (or manual qpos initialization).
 
+        Order: inertiafromgeom → settotalmass → FK → invweight0
+
+        If Defaults.INERTIAFROMGEOM is True, computes body mass/inertia/ipos/iquat
+        from child geoms (overwriting any values set by Bodies.setup_model).
+
         If Defaults.SETTOTALMASS > 0, rescales all body masses and inertias
         so the total mass equals the target (MuJoCo <compiler settotalmass>).
         """
+        # MuJoCo <compiler inertiafromgeom> — compute body inertia from geoms
+        @parameter
+        if Defaults.INERTIAFROMGEOM and Self.NGEOM > 0:
+            compute_inertia_from_geoms(model)
+
         # MuJoCo <compiler settotalmass> — rescale body masses/inertias
         @parameter
         if Defaults.SETTOTALMASS > 0.0:

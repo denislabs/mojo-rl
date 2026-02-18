@@ -46,12 +46,12 @@ Reference material:
   - [5.6 No-Slip Friction Post-Solver](#56-no-slip-friction-post-solver)
 - [Phase 6: MuJoCo XML Compatibility Gaps](#phase-6-mujoco-xml-compatibility-gaps)
   - [6.1 settotalmass Compiler Directive — DONE](#61-settotalmass-compiler-directive--done)
-  - [6.2 inertiafromgeom from Child Geoms](#62-inertiafromgeom-from-child-geoms)
+  - [6.2 inertiafromgeom from Child Geoms — DONE](#62-inertiafromgeom-from-child-geoms--done)
   - [6.3 fromto Capsule Specification — DONE](#63-fromto-capsule-specification--done)
   - [6.4 Contact Margin](#64-contact-margin)
   - [6.5 Full solimp (5 params)](#65-full-solimp-5-params)
   - [6.6 Cylinder Geom Collision](#66-cylinder-geom-collision)
-  - [6.7 Geom Density (mass from density)](#67-geom-density-mass-from-density)
+  - [6.7 Geom Density (mass from density) — DONE](#67-geom-density-mass-from-density--done)
   - [6.8 Site Elements](#68-site-elements)
   - [6.9 Fluid Dynamics (density/viscosity)](#69-fluid-dynamics-densityviscosity)
   - [6.10 cfrc_ext (Contact Forces per Body)](#610-cfrc_ext-contact-forces-per-body)
@@ -70,7 +70,9 @@ Reference material:
 - **Geom specs**: Separate from bodies, mirroring MuJoCo's `<geom>` elements:
   - Static (worldbody): `PlaneGeom`, `SphereGeom`, `BoxGeom`, `CapsuleGeom` (BODY_IDX=-1)
   - Body-attached: `BodyCapsuleGeom`, `BodySphereGeom`, `BodyBoxGeom` (BODY_IDX>=0)
-  - Per-geom: friction, contype, conaffinity, local pos/quat offset
+  - Per-geom: friction, contype, conaffinity, density/mass, local pos/quat offset
+- **inertiafromgeom**: Automatic body mass/inertia/ipos/iquat computation from child geoms via parallel axis theorem + eigendecomposition (Phase 6.2 DONE)
+- **Geom density**: Per-geom density/mass with model-level default (1000 kg/m³), volume computation for sphere/capsule/box (Phase 6.7 DONE)
 - **Unified geom-based contact detection**: Single `detect_contacts` / `detect_contacts_gpu` function handles all geom pairs (plane-sphere, plane-capsule, sphere-sphere, capsule-sphere, capsule-capsule, box-sphere, box-capsule, box-box) with automatic world-frame transform, parent-child filtering, and contype/conaffinity filtering
 - **ModelRenderer**: Generic renderer parameterized by `GeomSpec` types, auto-draws all body-attached geoms with camera tracking
 
@@ -101,12 +103,12 @@ Reference material:
 | ~~No collision filtering~~ | ~~Medium~~ | ~~0~~ DONE |
 | No MJCF XML parser | Medium — manual model translation | 0 |
 | ~~No `settotalmass` compiler directive~~ | ~~Low~~ | ~~6~~ DONE |
-| No `inertiafromgeom` from child geoms | Medium — currently inertia is per-body shape, not summed from geoms | 6 |
+| ~~No `inertiafromgeom` from child geoms~~ | ~~Medium~~ | ~~6~~ DONE |
 | No `fromto` capsule specification | Low — requires endpoint→center conversion | 6 |
 | ~~No `margin` on geom/joint contacts~~ | ~~Medium~~ | ~~6~~ DONE |
 | `solimp` only 3 params (not 5) | Low — midpoint/power hardcoded to 0.5/2.0 | 6 |
 | No `cylinder` geom collision | Medium — Reacher, Pusher need it | 6 |
-| No `density` on geoms (mass from density) | Low — Swimmer, Walker2d, Ant, Pusher | 6 |
+| ~~No `density` on geoms (mass from density)~~ | ~~Low~~ | ~~6~~ DONE |
 | No `<site>` elements | Low — massless reference points for observations | 6 |
 | No `<tendon><fixed>` joint coupling | Medium — Humanoid hip-knee coupling | 5 |
 | No fluid dynamics (`density`/`viscosity` option) | Low — Swimmer only | 6 |
@@ -1531,13 +1533,13 @@ Sprint 5 (Next environments — Walker2d, Ant):
   6.4 Contact margin            DONE (per-geom margin, adjusted dist, CPU + GPU)
   6.1 settotalmass              DONE (ModelDefaultsLike trait, ModelDef.finalize rescaling)
   6.3 fromto capsule spec       DONE (FromToCapsule struct, compile-time conversion)
-  6.7 Geom density              <- Walker2d, Ant, Pusher
+  6.7 Geom density              DONE (subsumed by 6.2 inertiafromgeom)
 
 Sprint 6 (Humanoid):
   5.5 Fixed tendons             <- Humanoid hip-knee coupling
   6.10 cfrc_ext                 <- Humanoid observations
   6.6 Cylinder geom             <- Reacher, Pusher
-  6.2 inertiafromgeom           <- multi-geom body inertia
+  6.2 inertiafromgeom           <- DONE
 
 Sprint 7 (Specialized):
   6.9 Fluid dynamics            <- Swimmer only
@@ -1603,31 +1605,33 @@ model setup so the total equals the target.
 
 ---
 
-### 6.2 inertiafromgeom from Child Geoms
+### 6.2 inertiafromgeom from Child Geoms — DONE
 
-**Status**: PARTIAL. Currently each `BodySpec` computes inertia from its own shape
-(radius, half_length, mass). MuJoCo's `inertiafromgeom="true"` computes inertia
-by summing contributions from all child `<geom>` elements using parallel axis theorem.
+**Status**: DONE. Implements MuJoCo's `inertiafromgeom="true"` compiler directive.
+Computes body mass, inertia, ipos (CoM offset), and iquat (inertia frame) from
+child geoms using density, volume, parallel axis theorem, and Jacobi eigendecomposition.
+Also subsumes 6.7 (geom density).
 
 **Used by**: ALL Gymnasium environments.
-**Impact**: Medium — currently correct only when body shape matches its single geom.
-
-**The difference**: If a body has multiple geoms, or if the geom is offset from the
-body origin, the current approach gives wrong inertia. MuJoCo:
-```
-For each geom attached to body:
-    I_geom = inertia_from_shape(geom_type, geom_size, geom_mass)
-    I_body += parallel_axis(I_geom, geom_pos_in_body_frame)
-    com_body = weighted_average(geom_com, geom_mass)
-```
 
 **Implementation**:
-1. Add `compute_inertia_from_geoms()` to `ModelDef.finalize()`
-2. Iterate geoms, accumulate mass + shifted inertia per body
-3. Compute `body_ipos` (CoM) from weighted geom positions
-4. Apply parallel axis theorem: `I += m * (d²·E - d⊗d)` where `d = geom_pos - com`
+- `DENSITY` and `GEOM_MASS` fields on `GeomSpec` trait (sentinel -1.0 = use default)
+- `INERTIAFROMGEOM` and `GEOM_DENSITY` on `ModelDefaultsLike` (defaults: `True`, `1000.0`)
+- `geom_mass` array on `Model` struct, computed in `Geoms.setup_model` (priority: explicit mass > explicit density > default density)
+- `compute_inertia_from_geoms()` called in `finalize()` before `settotalmass`
+- Single-geom bodies: direct copy of pos/quat/mass/inertia
+- Multi-geom bodies: mass-weighted CoM, full 6-element inertia tensor via `globalinertia` + `offcenter`, then Jacobi eigendecomposition for principal axes
 
-**Files**: `model/model_def.mojo`, potentially `model/body_spec.mojo`
+Key functions in `inertia_from_geom.mojo`:
+- `geom_volume()` — sphere, capsule, box volume formulas
+- `geom_inertia()` — MuJoCo-matching diagonal inertia (capsule uses hemisphere parallel axis theorem)
+- `globalinertia()` — R * diag(I) * R^T (matches `mjuu_globalinertia`)
+- `offcenter()` — parallel axis theorem (matches `mjuu_offcenter`)
+- `eig3_symmetric()` — Jacobi eigendecomposition (matches `mjuu_eig3`)
+
+**Validation**: `test_inertiafromgeom_vs_mujoco.mojo` — HalfCheetah + Hopper pass (mass err ~1e-16, inertia err ~2e-8)
+
+**Files**: `model/inertia_from_geom.mojo` (NEW), `model/geom_spec.mojo`, `model/model_def.mojo`, `types.mojo`, `model/__init__.mojo`
 
 ---
 
@@ -1752,18 +1756,16 @@ MuJoCo reference: `engine_collision_primitive.c` (`mjc_PlaneCylinder`, `mjc_Sphe
 
 ---
 
-### 6.7 Geom Density (mass from density)
+### 6.7 Geom Density (mass from density) — DONE
 
-**Status**: NOT STARTED.
-**Used by**: Swimmer (`density=4000` on option), Walker2d/Ant/Pusher (`density` on individual geoms).
-**Impact**: Low — alternative way to specify mass.
+**Status**: DONE. Subsumed by 6.2 (inertiafromgeom).
 
-MuJoCo computes geom mass from `density * volume` when mass is not explicitly set.
-Volume formulas: sphere `4/3πr³`, capsule `πr²(2h + 4r/3)`, box `8*hx*hy*hz`,
-cylinder `πr²*2h`.
+Per-geom `DENSITY` and `GEOM_MASS` fields on `GeomSpec` trait with sentinel -1.0.
+Model-level default density via `GEOM_DENSITY` on `ModelDefaultsLike` (default 1000.0).
+Mass resolution priority: explicit `GEOM_MASS` > explicit `DENSITY * volume` > `default_density * volume`.
+Computed in `Geoms.setup_model` and stored in `model.geom_mass[NGEOM]`.
 
-**Implementation**: Add `DENSITY: Float64` to `GeomSpec` (sentinel -1.0). In
-`inertiafromgeom` computation, use `mass = density * volume` when density is set.
+**Files**: `model/geom_spec.mojo`, `model/model_def.mojo`, `types.mojo`
 
 ---
 
