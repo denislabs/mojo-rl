@@ -24,11 +24,11 @@ Example usage:
 """
 
 from .hopper import Hopper
-from .renderer import HopperRenderer
 from .curriculum import HopperCurriculum
 from .hopper_def import (
     # Model definition
     HopperModel,
+    HopperRenderer,
     HopperBodies,
     HopperJoints,
     HopperActuators,

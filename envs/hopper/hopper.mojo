@@ -64,6 +64,7 @@ from .hopper_def import (
     HopperBodies,
     HopperJoints,
     HopperGeoms,
+    HopperRenderer,
     HopperActuators,
     HopperParams,
     HopperDefaults,
@@ -87,7 +88,6 @@ from .hopper_def import (
     HEALTHY_REWARD,
     RESET_NOISE_SCALE,
 )
-from .renderer import HopperRenderer
 
 
 # =============================================================================
@@ -573,7 +573,9 @@ struct Hopper[
             return
 
         self._renderer[].render_from_body_state(
-            self.data.xpos, self.data.xquat, Hopper.NUM_BODIES,
+            self.data.xpos,
+            self.data.xquat,
+            Hopper.NUM_BODIES,
             vel_x=Float64(self.get_x_velocity()),
         )
 

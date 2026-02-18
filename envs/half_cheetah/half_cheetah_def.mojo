@@ -14,6 +14,7 @@ robot definition. Replaces the former constants.mojo.
 
 from physics3d.model.body_spec import CapsuleBody
 from physics3d.model.joint_spec import HingeJoint, SlideJoint
+from physics3d.model.model_renderer import ModelRenderer
 from physics3d.types import ConeType
 from physics3d.model.model_def import (
     Bodies,
@@ -27,7 +28,11 @@ from physics3d.model.model_def import (
 )
 from physics3d.model.actuator_spec import MotorActuator
 from physics3d.model.geom_spec import Plane, Capsule, FromToCapsule
-from physics3d.model.texture_spec import CheckerTexture, FlatTexture, GradientTexture
+from physics3d.model.texture_spec import (
+    CheckerTexture,
+    FlatTexture,
+    GradientTexture,
+)
 from physics3d.model.material_spec import Material, PlaneMaterial, GeomMaterial
 from physics3d.model.camera_spec import TrackCamera
 from physics3d.model.light_spec import DirectionalLight
@@ -377,20 +382,31 @@ comptime HalfCheetahActuators = Actuators[
 # <texture builtin="gradient" rgb1="1 1 1" rgb2="0 0 0" type="skybox"/>
 comptime SkyboxTexture = GradientTexture[
     name="skybox",
-    rgb1_r=1.0, rgb1_g=1.0, rgb1_b=1.0,
-    rgb2_r=0.0, rgb2_g=0.0, rgb2_b=0.0,
+    rgb1_r=1.0,
+    rgb1_g=1.0,
+    rgb1_b=1.0,
+    rgb2_r=0.0,
+    rgb2_g=0.0,
+    rgb2_b=0.0,
 ]
 # <texture builtin="flat" name="texgeom" rgb1="0.8 0.6 0.4" rgb2="0.8 0.6 0.4"/>
 comptime TexGeom = FlatTexture[
     name="texgeom",
-    rgb1_r=0.8, rgb1_g=0.6, rgb1_b=0.4,
+    rgb1_r=0.8,
+    rgb1_g=0.6,
+    rgb1_b=0.4,
 ]
 # <texture builtin="checker" name="texplane" rgb1="0 0 0" rgb2="0.8 0.8 0.8"/>
 comptime TexPlane = CheckerTexture[
     name="texplane",
-    rgb1_r=0.0, rgb1_g=0.0, rgb1_b=0.0,
-    rgb2_r=0.8, rgb2_g=0.8, rgb2_b=0.8,
-    repeat_x=60.0, repeat_y=60.0,
+    rgb1_r=0.0,
+    rgb1_g=0.0,
+    rgb1_b=0.0,
+    rgb2_r=0.8,
+    rgb2_g=0.8,
+    rgb2_b=0.8,
+    repeat_x=60.0,
+    repeat_y=60.0,
 ]
 
 comptime HalfCheetahTextures = Textures[SkyboxTexture, TexGeom, TexPlane]
@@ -434,9 +450,9 @@ comptime GroundGeom = Plane[
     size_x=40.0,
     size_y=40.0,
     material_name="MatPlane",
-    shininess=MatPlane.SHININESS,
-    specular=MatPlane.SPECULAR,
-    reflectance=MatPlane.REFLECTANCE,
+    shininess = MatPlane.SHININESS,
+    specular = MatPlane.SPECULAR,
+    reflectance = MatPlane.REFLECTANCE,
 ]
 
 # Body capsule geoms with local pos/quat from MuJoCo
@@ -603,6 +619,18 @@ comptime HalfCheetahModel = ModelDef[
     ConeType.PYRAMIDAL,
 ]
 
+
+comptime HalfCheetahRenderer = ModelRenderer[
+    GroundGeom,
+    TorsoGeom,
+    HeadGeom,
+    BThighGeom,
+    BShinGeom,
+    BFootGeom,
+    FThighGeom,
+    FShinGeom,
+    FFootGeom,
+]
 
 # =============================================================================
 # HalfCheetahParams — Environment-Specific Parameters

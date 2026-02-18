@@ -70,6 +70,7 @@ from .half_cheetah_def import (
     HalfCheetahJoints,
     HalfCheetahGeoms,
     HalfCheetahActuators,
+    HalfCheetahRenderer,
     HalfCheetahParams,
     HalfCheetahDefaults,
     HalfCheetahCamera,
@@ -91,7 +92,6 @@ comptime CONE_TYPE = HalfCheetahModel.CONE_TYPE
 comptime MAX_CONTACTS = HalfCheetahParams[DType.float64].MAX_CONTACTS
 comptime OBS_DIM = HalfCheetahParams[DType.float64].OBS_DIM
 comptime ACTION_DIM = HalfCheetahParams[DType.float64].ACTION_DIM
-from .renderer import HalfCheetahRenderer
 
 
 # =============================================================================
@@ -237,7 +237,9 @@ struct HalfCheetah[
 
         # Reset qpos to initial values, run FK + compute body inverse weights
         HalfCheetahJoints.reset_data(self.data)
-        HalfCheetahModel.finalize[Defaults=HalfCheetahDefaults](self.model, self.data)
+        HalfCheetahModel.finalize[Defaults=HalfCheetahDefaults](
+            self.model, self.data
+        )
 
         # Reset step counter and previous position
         self.current_step = 0
@@ -498,7 +500,9 @@ struct HalfCheetah[
             return
 
         self._renderer[].render_from_body_state(
-            self.data.xpos, self.data.xquat, Self.NUM_BODIES,
+            self.data.xpos,
+            self.data.xquat,
+            Self.NUM_BODIES,
             vel_x=Float64(self.get_x_velocity()),
         )
 

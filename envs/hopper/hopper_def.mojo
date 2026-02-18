@@ -24,6 +24,7 @@ from physics3d.model.model_def import (
     ModelDef,
     ModelDefaults,
 )
+from physics3d.model.model_renderer import ModelRenderer
 from physics3d.model.actuator_spec import MotorActuator
 from physics3d.model.geom_spec import Plane, Capsule
 from physics3d.model.texture_spec import CheckerTexture, GradientTexture
@@ -226,14 +227,23 @@ comptime HopperFootJ = HingeJoint[
 # =============================================================================
 comptime HopperSkyboxTex = GradientTexture[
     name="skybox",
-    rgb1_r=1.0, rgb1_g=1.0, rgb1_b=1.0,
-    rgb2_r=0.0, rgb2_g=0.0, rgb2_b=0.0,
+    rgb1_r=1.0,
+    rgb1_g=1.0,
+    rgb1_b=1.0,
+    rgb2_r=0.0,
+    rgb2_g=0.0,
+    rgb2_b=0.0,
 ]
 comptime HopperCheckerTex = CheckerTexture[
     name="texplane",
-    rgb1_r=0.0, rgb1_g=0.0, rgb1_b=0.0,
-    rgb2_r=0.8, rgb2_g=0.8, rgb2_b=0.8,
-    repeat_x=60.0, repeat_y=60.0,
+    rgb1_r=0.0,
+    rgb1_g=0.0,
+    rgb1_b=0.0,
+    rgb2_r=0.8,
+    rgb2_g=0.8,
+    rgb2_b=0.8,
+    repeat_x=60.0,
+    repeat_y=60.0,
 ]
 
 comptime HopperTextures = Textures[HopperSkyboxTex, HopperCheckerTex]
@@ -266,11 +276,16 @@ comptime HopperMaterials = Materials[HopperMatPlane, HopperMatGeom]
 # Geom 0: Ground plane (overrides: friction=1.0, conaffinity=1, condim=3)
 # MuJoCo: <geom material="MatPlane" name="floor" type="plane"/>
 comptime HopperGroundGeom = Plane[
-    z=0.0, friction=1.0, conaffinity=1, condim=3, size_x=20.0, size_y=20.0,
+    z=0.0,
+    friction=1.0,
+    conaffinity=1,
+    condim=3,
+    size_x=20.0,
+    size_y=20.0,
     material_name="MatPlane",
-    shininess=HopperMatPlane.SHININESS,
-    specular=HopperMatPlane.SPECULAR,
-    reflectance=HopperMatPlane.REFLECTANCE,
+    shininess = HopperMatPlane.SHININESS,
+    specular = HopperMatPlane.SPECULAR,
+    reflectance = HopperMatPlane.REFLECTANCE,
 ]
 
 # Geom 1: Torso capsule (body 1) — friction/condim from HopperDefaults
@@ -358,7 +373,7 @@ comptime HopperActuators = Actuators[
 # Camera — MuJoCo: <camera name="track" mode="trackcom" pos="0 -3 -0.25"/>
 # =============================================================================
 
-comptime HopperCamera = TrackCamera[pos_y=-3.0, pos_z=-0.25, target_z=0.8]
+comptime HopperCamera = TrackCamera[pos_y= -3.0, pos_z= -0.25, target_z=0.8]
 
 # Light — default directional light (matches Renderer3D defaults)
 comptime HopperLight = DirectionalLight[]
@@ -398,6 +413,15 @@ comptime HopperModel = ModelDef[
     HopperJoints._sum_nq(),
     HopperJoints._sum_nv(),
     HopperGeoms.N,
+]
+
+
+comptime HopperRenderer = ModelRenderer[
+    HopperGroundGeom,
+    HopperTorsoGeom,
+    HopperThighGeom,
+    HopperLegGeom,
+    HopperFootGeom,
 ]
 
 
