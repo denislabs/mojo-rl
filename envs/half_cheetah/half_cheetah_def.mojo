@@ -25,6 +25,8 @@ from physics3d.model.model_def import (
 )
 from physics3d.model.actuator_spec import MotorActuator
 from physics3d.model.geom_spec import Plane, Capsule, FromToCapsule
+from physics3d.model.camera_spec import TrackCamera
+from physics3d.model.light_spec import DirectionalLight
 from render import Color
 from physics3d.gpu.constants import (
     state_size,
@@ -478,6 +480,16 @@ comptime HalfCheetahGeoms = Geoms[
     FShinGeom,
     FFootGeom,
 ]
+
+
+# =============================================================================
+# Camera — MuJoCo: <camera name="track" mode="trackcom" pos="0 -3 0.3"/>
+# =============================================================================
+
+comptime HalfCheetahCamera = TrackCamera[pos_y=-3.0, pos_z=0.3, target_z=0.5]
+
+# Light — default directional light (matches Renderer3D defaults)
+comptime HalfCheetahLight = DirectionalLight[]
 
 
 # =============================================================================

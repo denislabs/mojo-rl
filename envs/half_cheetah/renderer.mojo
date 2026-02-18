@@ -16,6 +16,8 @@ from .half_cheetah_def import (
     FThighGeom,
     FShinGeom,
     FFootGeom,
+    HalfCheetahCamera,
+    HalfCheetahLight,
 )
 
 comptime HalfCheetahRenderer = ModelRenderer[

@@ -24,6 +24,8 @@ from physics3d.model.model_def import (
 )
 from physics3d.model.actuator_spec import MotorActuator
 from physics3d.model.geom_spec import Plane, Capsule
+from physics3d.model.camera_spec import TrackCamera
+from physics3d.model.light_spec import DirectionalLight
 from render import Color
 from physics3d.gpu.constants import (
     state_size,
@@ -298,6 +300,16 @@ comptime HopperFootMotor = MotorActuator[joint_idx=5, dof_adr=5, gear=200.0]
 comptime HopperActuators = Actuators[
     HopperThighMotor, HopperLegMotor, HopperFootMotor
 ]
+
+
+# =============================================================================
+# Camera — MuJoCo: <camera name="track" mode="trackcom" pos="0 -3 -0.25"/>
+# =============================================================================
+
+comptime HopperCamera = TrackCamera[pos_y=-3.0, pos_z=-0.25, target_z=0.8]
+
+# Light — default directional light (matches Renderer3D defaults)
+comptime HopperLight = DirectionalLight[]
 
 
 # =============================================================================

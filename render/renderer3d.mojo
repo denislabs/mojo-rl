@@ -263,6 +263,11 @@ struct Renderer3D(Movable):
     var background_color: Color
     var scene_uniforms: SceneUniforms
 
+    # Configurable light parameters
+    var light_dir: InlineArray[Float32, 3]
+    var light_color: InlineArray[Float32, 3]
+    var light_ambient: Float32
+
     # Swapchain format
     var swapchain_format: GPUTextureFormat
 
@@ -279,6 +284,13 @@ struct Renderer3D(Movable):
         camera: Camera3D = Camera3D(),
         draw_grid: Bool = True,
         draw_axes: Bool = True,
+        light_dir_x: Float32 = 0.3,
+        light_dir_y: Float32 = -0.4,
+        light_dir_z: Float32 = -0.8,
+        light_color_r: Float32 = 1.0,
+        light_color_g: Float32 = 0.98,
+        light_color_b: Float32 = 0.95,
+        light_ambient: Float32 = 0.25,
     ) raises:
         self.width = width
         self.height = height
@@ -337,6 +349,17 @@ struct Renderer3D(Movable):
 
         self.scene_uniforms = SceneUniforms()
 
+        # Store configurable light parameters
+        self.light_dir = InlineArray[Float32, 3](fill=Float32(0))
+        self.light_dir[0] = light_dir_x
+        self.light_dir[1] = light_dir_y
+        self.light_dir[2] = light_dir_z
+        self.light_color = InlineArray[Float32, 3](fill=Float32(0))
+        self.light_color[0] = light_color_r
+        self.light_color[1] = light_color_g
+        self.light_color[2] = light_color_b
+        self.light_ambient = light_ambient
+
     fn __moveinit__(out self, deinit other: Self):
         self.window = other.window
         self.device = other.device
@@ -367,6 +390,9 @@ struct Renderer3D(Movable):
         self.background_color = other.background_color
         self.scene_uniforms = other.scene_uniforms
         self.swapchain_format = other.swapchain_format
+        self.light_dir = other.light_dir^
+        self.light_color = other.light_color^
+        self.light_ambient = other.light_ambient
         self.initialized = other.initialized
         self.should_quit = other.should_quit
         self.draw_grid = other.draw_grid
@@ -1850,21 +1876,21 @@ struct Renderer3D(Movable):
         self.scene_uniforms.camera_pos[2] = Float32(self.camera.eye.z)
         self.scene_uniforms.camera_pos[3] = 1.0
 
-        # Light direction (from upper-left-back)
-        var lx = Float32(0.3)
-        var ly = Float32(-0.4)
-        var lz = Float32(-0.8)
+        # Light direction (normalized from configurable fields)
+        var lx = self.light_dir[0]
+        var ly = self.light_dir[1]
+        var lz = self.light_dir[2]
         var ll = sqrt(lx * lx + ly * ly + lz * lz)
         self.scene_uniforms.light_dir[0] = lx / ll
         self.scene_uniforms.light_dir[1] = ly / ll
         self.scene_uniforms.light_dir[2] = lz / ll
         self.scene_uniforms.light_dir[3] = 0.0
 
-        # Light color (white-ish, w = ambient)
-        self.scene_uniforms.light_color[0] = 1.0
-        self.scene_uniforms.light_color[1] = 0.98
-        self.scene_uniforms.light_color[2] = 0.95
-        self.scene_uniforms.light_color[3] = 0.25  # ambient intensity
+        # Light color + ambient from configurable fields
+        self.scene_uniforms.light_color[0] = self.light_color[0]
+        self.scene_uniforms.light_color[1] = self.light_color[1]
+        self.scene_uniforms.light_color[2] = self.light_color[2]
+        self.scene_uniforms.light_color[3] = self.light_ambient
 
     fn _build_light_view_proj(mut self):
         """Build light's orthographic view-projection matrix for shadow mapping.

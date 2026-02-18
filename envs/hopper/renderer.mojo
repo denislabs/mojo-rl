@@ -12,6 +12,8 @@ from .hopper_def import (
     HopperThighGeom,
     HopperLegGeom,
     HopperFootGeom,
+    HopperCamera,
+    HopperLight,
 )
 
 comptime HopperRenderer = ModelRenderer[

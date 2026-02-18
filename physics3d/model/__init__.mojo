@@ -31,6 +31,8 @@ from .actuator_spec import (
     VelocityActuator,
     GeneralActuator,
 )
-from .model_def import Bodies, Joints, Geoms, Equalities, Actuators, ModelDef
+from .camera_spec import CameraSpec, TrackCamera, CAM_TRACKCOM, CAM_FIXED
+from .light_spec import LightSpec, DirectionalLight, LIGHT_DIRECTIONAL, LIGHT_POINT
+from .model_def import Bodies, Joints, Geoms, Equalities, Actuators, Cameras, Lights, ModelDef
 from .inertia_from_geom import compute_inertia_from_geoms
 from .model_renderer import ModelRenderer

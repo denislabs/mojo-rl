@@ -49,6 +49,15 @@ struct ModelRenderer[*G: GeomSpec](EnvRenderer3D, Movable):
     # Velocity arrow color
     var vel_color: Color
 
+    # Light configuration
+    var light_dir_x: Float64
+    var light_dir_y: Float64
+    var light_dir_z: Float64
+    var light_color_r: Float64
+    var light_color_g: Float64
+    var light_color_b: Float64
+    var light_ambient: Float64
+
     fn __init__(
         out self,
         width: Int = 1280,
@@ -64,6 +73,13 @@ struct ModelRenderer[*G: GeomSpec](EnvRenderer3D, Movable):
         follow: Bool = True,
         show_velocity: Bool = True,
         title: String = String("Model Environment"),
+        light_dir_x: Float64 = 0.3,
+        light_dir_y: Float64 = -0.4,
+        light_dir_z: Float64 = -0.8,
+        light_color_r: Float64 = 1.0,
+        light_color_g: Float64 = 0.98,
+        light_color_b: Float64 = 0.95,
+        light_ambient: Float64 = 0.25,
     ) raises:
         self.visual_radius_scale = visual_radius_scale
         self.cam_eye_y = cam_eye_y
@@ -75,6 +91,13 @@ struct ModelRenderer[*G: GeomSpec](EnvRenderer3D, Movable):
         self.vel_color = vel_color
         self.follow = follow
         self.show_velocity = show_velocity
+        self.light_dir_x = light_dir_x
+        self.light_dir_y = light_dir_y
+        self.light_dir_z = light_dir_z
+        self.light_color_r = light_color_r
+        self.light_color_g = light_color_g
+        self.light_color_b = light_color_b
+        self.light_ambient = light_ambient
 
         var camera = Camera3D(
             eye=Vec3(0.0, cam_eye_y, cam_eye_z),
@@ -94,6 +117,13 @@ struct ModelRenderer[*G: GeomSpec](EnvRenderer3D, Movable):
             camera=camera,
             draw_grid=True,
             draw_axes=True,
+            light_dir_x=Float32(light_dir_x),
+            light_dir_y=Float32(light_dir_y),
+            light_dir_z=Float32(light_dir_z),
+            light_color_r=Float32(light_color_r),
+            light_color_g=Float32(light_color_g),
+            light_color_b=Float32(light_color_b),
+            light_ambient=Float32(light_ambient),
         )
         self.initialized = False
 
@@ -110,6 +140,13 @@ struct ModelRenderer[*G: GeomSpec](EnvRenderer3D, Movable):
         self.vel_arrow_height = other.vel_arrow_height
         self.vel_arrow_scale = other.vel_arrow_scale
         self.vel_color = other.vel_color
+        self.light_dir_x = other.light_dir_x
+        self.light_dir_y = other.light_dir_y
+        self.light_dir_z = other.light_dir_z
+        self.light_color_r = other.light_color_r
+        self.light_color_g = other.light_color_g
+        self.light_color_b = other.light_color_b
+        self.light_ambient = other.light_ambient
 
     fn init(mut self) raises -> None:
         var title = String("Model Environment")

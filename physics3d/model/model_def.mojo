@@ -28,6 +28,8 @@ from .body_spec import BodySpec
 from .joint_spec import JointSpec
 from .geom_spec import GeomSpec
 from .equality_spec import EqualitySpec
+from .camera_spec import CameraSpec
+from .light_spec import LightSpec
 from .actuator_spec import (
     ActuatorSpec,
     DYN_NONE,
@@ -1624,6 +1626,40 @@ struct Actuators[*A: ActuatorSpec]:
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )
+
+
+# =============================================================================
+# Cameras — variadic camera list (purely visual, no setup_model)
+# =============================================================================
+
+
+@fieldwise_init
+struct Cameras[*C: CameraSpec]:
+    """Compile-time list of camera specifications.
+
+    Provides N (camera count) and type-level access to each camera via cam_types[i].
+    Cameras are purely visual — no setup_model needed.
+    """
+
+    comptime cam_types = Variadic.types[T=CameraSpec, *Self.C]
+    comptime N: Int = Variadic.size(Self.cam_types)
+
+
+# =============================================================================
+# Lights — variadic light list (purely visual, no setup_model)
+# =============================================================================
+
+
+@fieldwise_init
+struct Lights[*L: LightSpec]:
+    """Compile-time list of light specifications.
+
+    Provides N (light count) and type-level access to each light via light_types[i].
+    Lights are purely visual — no setup_model needed.
+    """
+
+    comptime light_types = Variadic.types[T=LightSpec, *Self.L]
+    comptime N: Int = Variadic.size(Self.light_types)
 
 
 @fieldwise_init

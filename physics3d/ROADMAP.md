@@ -1560,9 +1560,9 @@ Sprint 7 (Specialized):
 Render Sprint (independent, can be done in parallel with any physics sprint):
   R.1 Multi-geom-type render    <- DONE (dispatch on GEOM_TYPE + renderer factorization)
   R.2 Ground plane render       <- DONE (plane geom drives ground at POS_Z)
-  R.3 RGBA alpha                <- transparency support on GeomSpec + Renderer3D
-  R.4 Camera spec from model    <- CameraSpec trait, init renderer from model def
-  R.5 Lighting model            <- LightSpec trait, directional + point lights, Phong shading
+  R.3 RGBA alpha                <- DONE (transparency support on GeomSpec + Renderer3D)
+  R.4 Camera spec from model    <- DONE (CameraSpec trait + TrackCamera, env renderers use camera specs)
+  R.5 Lighting model            <- DONE (LightSpec trait + DirectionalLight, configurable light params in Renderer3D/ModelRenderer)
   R.6 Materials & textures      <- MaterialSpec, built-in textures (checker, gradient), skybox
   R.7 Site markers (visual)     <- render sites as small spheres/crosses (depends on 6.8)
 ```
@@ -1644,60 +1644,51 @@ transparent geoms is not yet implemented (only needed when alpha < 255).
 
 ### R.4 Camera Spec from Model
 
-**Status**: NOT STARTED.
-**Effort**: ~0.5 day.
-**Priority**: Low — camera params are already configurable at `ModelRenderer` init.
+**Status**: **DONE**.
 
-**Problem**: MuJoCo XML defines cameras:
-```xml
-<camera name="track" mode="trackcom" pos="0 -3 0.3" xyaxes="1 0 0 0 0 1"/>
-```
-Our `ModelRenderer` hardcodes camera offsets (`cam_eye_y=-3.0`, `cam_eye_z=1.0`).
-These roughly match HalfCheetah, but each environment should specify its own camera.
-
-**What to do**:
-1. Add `CameraSpec` trait with `NAME`, `MODE` (trackcom/fixed), `POS_X/Y/Z`, `XYAXES`
-2. Add `Cameras` variadic container to `ModelDef` (like `Geoms`, `Joints`)
-3. Use the first `trackcom` camera to initialize `ModelRenderer` eye/target
-
-**Files to create**:
-- `model/camera_spec.mojo` — `CameraSpec` trait, `TrackCamera`, `FixedCamera` structs
-
-**Files to modify**:
-- `model/model_def.mojo` — `Cameras` container
-- `model/model_renderer.mojo` — init camera from `CameraSpec`
+**What was done**:
+1. Created `model/camera_spec.mojo` — `CameraSpec` trait, `TrackCamera` struct, `CAM_TRACKCOM`/`CAM_FIXED` constants
+2. Added `Cameras` variadic container to `model/model_def.mojo`
+3. Added `HalfCheetahCamera` (pos_y=-3.0, pos_z=0.3) and `HopperCamera` (pos_y=-3.0, pos_z=-0.25) to env defs
+4. Updated renderer construction in both environments to use camera spec values
+5. Exported camera specs from renderer modules and `__init__.mojo`
 
 ---
 
 ### R.5 Lighting Model
 
-**Status**: NOT STARTED.
-**Effort**: ~2-3 days.
-**Priority**: Low for RL — solid colors are sufficient for debugging.
+**Status**: **DONE**.
+**Effort**: ~0.5 day (Phase 1: configurable light params from model spec).
 
-**Problem**: MuJoCo XML defines lights:
-```xml
-<light cutoff="100" diffuse="1 1 1" dir="0 0 -1.3" directional="true" pos="0 0 1.3" specular=".1 .1 .1"/>
-```
-Our `Renderer3D` uses a fixed ambient+directional lighting model (hardcoded).
+**What was done**:
+1. Created `model/light_spec.mojo` — `LightSpec` trait + `DirectionalLight` struct with
+   compile-time fields: `DIR_X/Y/Z`, `COLOR_R/G/B`, `AMBIENT`, `SPECULAR_INTENSITY`,
+   `SPECULAR_EXPONENT`, `CAST_SHADOW`, `MODE` (directional/point)
+2. Added `Lights` variadic container to `model/model_def.mojo`
+3. Made `Renderer3D._build_scene_uniforms()` use configurable `light_dir`, `light_color`,
+   `light_ambient` fields instead of hardcoded literals
+4. Added light params to `ModelRenderer.__init__()` (pass through to `Renderer3D`)
+5. Both env definitions (`HalfCheetahLight`, `HopperLight`) use `DirectionalLight[]` defaults
+6. Env renderers pass light spec values to `ModelRenderer` constructor
 
-**What to do**:
-1. Add `LightSpec` trait with `POS_X/Y/Z`, `DIR_X/Y/Z`, `DIFFUSE`, `SPECULAR`,
-   `CUTOFF`, `DIRECTIONAL` (bool)
-2. Add `Lights` variadic container to `ModelDef`
-3. Implement Phong/Blinn-Phong shading in the software rasterizer:
-   - Ambient: `I_a * color`
-   - Diffuse: `I_d * max(0, dot(N, L)) * color`
-   - Specular: `I_s * pow(max(0, dot(R, V)), shininess)`
-4. Compute surface normals for capsule/sphere/box primitives
+**Note**: Blinn-Phong shading + shadow mapping already exist in the MSL shaders.
+This task made the light configuration data-driven from model specs. Specular intensity
+and exponent are defined on `LightSpec` for future shader parameterization (R.6).
 
-**Files to create**:
-- `model/light_spec.mojo` — `LightSpec` trait, `DirectionalLight`, `PointLight` structs
+**Files created**:
+- `model/light_spec.mojo` — `LightSpec` trait, `DirectionalLight` struct, mode constants
 
-**Files to modify**:
-- `model/model_def.mojo` — `Lights` container
-- `render/renderer3d.mojo` — Phong shading in draw primitives
-- `model/model_renderer.mojo` — pass lights to renderer
+**Files modified**:
+- `model/__init__.mojo` — exports
+- `model/model_def.mojo` — `Lights` container + `LightSpec` import
+- `render/renderer3d.mojo` — configurable light fields in struct, init, moveinit, uniforms
+- `model/model_renderer.mojo` — light params in struct, init, moveinit, passthrough
+- `envs/half_cheetah/half_cheetah_def.mojo` — `HalfCheetahLight` alias
+- `envs/hopper/hopper_def.mojo` — `HopperLight` alias
+- `envs/half_cheetah/renderer.mojo` — export `HalfCheetahLight`
+- `envs/hopper/renderer.mojo` — export `HopperLight`
+- `envs/half_cheetah/half_cheetah.mojo` — pass light params to renderer
+- `envs/hopper/hopper.mojo` — pass light params to renderer
 
 ---
 
@@ -1760,9 +1751,9 @@ markers. Once `SiteSpec` exists (Phase 6.8), they should be optionally renderabl
 |------|--------|----------|--------------|
 | R.1 Multi-geom-type render | ~1 day | **DONE** | None |
 | R.2 Ground plane render | ~0.5 day | **DONE** | None |
-| R.3 RGBA alpha | ~0.5 day | Low | None |
-| R.4 Camera spec | ~0.5 day | Low | None |
-| R.5 Lighting model | ~2-3 days | Low | None |
+| R.3 Color Unification + RGBA Alpha Support | ~0.5 day | **DONE** | None |
+| R.4 Camera spec | ~0.5 day | **DONE** | None |
+| R.5 Lighting model | ~0.5 day | **DONE** | None |
 | R.6 Materials & textures | ~3-5 days | Low | R.5 (for material shading) |
 | R.7 Site markers | ~0.5 day | Low | Phase 6.8 (site elements) |
 | **Total** | **~8-11 days** | | |
