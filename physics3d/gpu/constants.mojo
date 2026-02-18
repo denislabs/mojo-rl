@@ -17,8 +17,9 @@ Model buffer (static, same for all environments):
   Metadata (MODEL_META_SIZE=21): [NBODY, NJOINT, gravity(3), timestep, _reserved(2),
     solref_contact(2), solimp_contact(3), solref_limit(2), solimp_limit(3), impratio, nequality]
   Curriculum (MODEL_CURRICULUM_SIZE=8): [up to 8 curriculum parameters]
-  Per geom (MODEL_GEOM_SIZE=21): [type, body, pos(3), quat(4), radius, half_length,
-    half_x/y/z, friction, contype, conaffinity, condim, friction_spin, friction_roll, rbound]
+  Per geom (MODEL_GEOM_SIZE=27): [type, body, pos(3), quat(4), radius, half_length,
+    half_x/y/z, friction, contype, conaffinity, condim, friction_spin, friction_roll,
+    rbound, solref(2), solimp(3), margin]
 """
 
 # =============================================================================
@@ -297,7 +298,7 @@ fn model_metadata_offset[NBODY: Int, NJOINT: Int]() -> Int:
 # Model Buffer Layout - Unified Geoms (body-attached + static)
 # =============================================================================
 
-comptime MODEL_GEOM_SIZE: Int = 26  # Per unified geom (+5 for solref/solimp)
+comptime MODEL_GEOM_SIZE: Int = 27  # Per unified geom (+5 for solref/solimp +1 for margin)
 
 comptime GEOM_IDX_TYPE: Int = 0
 comptime GEOM_IDX_BODY: Int = 1  # Body index (-1 for static)
@@ -325,6 +326,7 @@ comptime GEOM_IDX_SOLREF_1: Int = 22  # Per-geom solref dampratio
 comptime GEOM_IDX_SOLIMP_0: Int = 23  # Per-geom solimp dmin
 comptime GEOM_IDX_SOLIMP_1: Int = 24  # Per-geom solimp dmax
 comptime GEOM_IDX_SOLIMP_2: Int = 25  # Per-geom solimp width
+comptime GEOM_IDX_MARGIN: Int = 26  # Per-geom contact margin
 
 
 fn model_geom_offset[NBODY: Int, NJOINT: Int](geom_idx: Int) -> Int:

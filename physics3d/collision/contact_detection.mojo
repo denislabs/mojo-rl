@@ -66,6 +66,7 @@ from ..gpu.constants import (
     GEOM_IDX_FRICTION_SPIN,
     GEOM_IDX_FRICTION_ROLL,
     GEOM_IDX_RBOUND,
+    GEOM_IDX_MARGIN,
     model_body_offset,
     model_joint_offset,
     model_geom_offset,
@@ -385,6 +386,10 @@ fn detect_contacts[
             var contact_condim = model.geom_condim[gi]
             if model.geom_condim[gj] > contact_condim:
                 contact_condim = model.geom_condim[gj]
+            # Contact margin: max of both geoms (MuJoCo convention)
+            var contact_margin = model.geom_margin[gi]
+            if model.geom_margin[gj] > contact_margin:
+                contact_margin = model.geom_margin[gj]
 
             # --- Plane vs body-attached geom ---
             if gi_type == GEOM_PLANE:
@@ -406,7 +411,7 @@ fn detect_contacts[
                     var e1_z = pj_z + hlj * axis_w[2]
                     var dist1 = e1_z - rj - ground_z
                     if (
-                        dist1 < Scalar[DTYPE](0)
+                        dist1 < contact_margin
                         and data.num_contacts < MAX_CONTACTS
                     ):
                         var idx = data.num_contacts
@@ -420,7 +425,7 @@ fn detect_contacts[
                         data.contacts[idx].normal_x = Scalar[DTYPE](0)
                         data.contacts[idx].normal_y = Scalar[DTYPE](0)
                         data.contacts[idx].normal_z = Scalar[DTYPE](1)
-                        data.contacts[idx].dist = dist1
+                        data.contacts[idx].dist = dist1 - contact_margin
                         data.contacts[idx].friction = contact_friction
                         data.contacts[idx].friction_spin = contact_friction_spin
                         data.contacts[idx].friction_roll = contact_friction_roll
@@ -435,7 +440,7 @@ fn detect_contacts[
                     var e2_z = pj_z - hlj * axis_w[2]
                     var dist2 = e2_z - rj - ground_z
                     if (
-                        dist2 < Scalar[DTYPE](0)
+                        dist2 < contact_margin
                         and data.num_contacts < MAX_CONTACTS
                     ):
                         var idx = data.num_contacts
@@ -449,7 +454,7 @@ fn detect_contacts[
                         data.contacts[idx].normal_x = Scalar[DTYPE](0)
                         data.contacts[idx].normal_y = Scalar[DTYPE](0)
                         data.contacts[idx].normal_z = Scalar[DTYPE](1)
-                        data.contacts[idx].dist = dist2
+                        data.contacts[idx].dist = dist2 - contact_margin
                         data.contacts[idx].friction = contact_friction
                         data.contacts[idx].friction_spin = contact_friction_spin
                         data.contacts[idx].friction_roll = contact_friction_roll
@@ -461,7 +466,7 @@ fn detect_contacts[
                 elif gj_type == GEOM_SPHERE:
                     var dist = pj_z - rj - ground_z
                     if (
-                        dist < Scalar[DTYPE](0)
+                        dist < contact_margin
                         and data.num_contacts < MAX_CONTACTS
                     ):
                         var idx = data.num_contacts
@@ -475,7 +480,7 @@ fn detect_contacts[
                         data.contacts[idx].normal_x = Scalar[DTYPE](0)
                         data.contacts[idx].normal_y = Scalar[DTYPE](0)
                         data.contacts[idx].normal_z = Scalar[DTYPE](1)
-                        data.contacts[idx].dist = dist
+                        data.contacts[idx].dist = dist - contact_margin
                         data.contacts[idx].friction = contact_friction
                         data.contacts[idx].friction_spin = contact_friction_spin
                         data.contacts[idx].friction_roll = contact_friction_roll
@@ -502,7 +507,7 @@ fn detect_contacts[
                     var e1_z = pi_z + hli * axis_w[2]
                     var dist1 = e1_z - ri - ground_z
                     if (
-                        dist1 < Scalar[DTYPE](0)
+                        dist1 < contact_margin
                         and data.num_contacts < MAX_CONTACTS
                     ):
                         var idx = data.num_contacts
@@ -516,7 +521,7 @@ fn detect_contacts[
                         data.contacts[idx].normal_x = Scalar[DTYPE](0)
                         data.contacts[idx].normal_y = Scalar[DTYPE](0)
                         data.contacts[idx].normal_z = Scalar[DTYPE](1)
-                        data.contacts[idx].dist = dist1
+                        data.contacts[idx].dist = dist1 - contact_margin
                         data.contacts[idx].friction = contact_friction
                         data.contacts[idx].friction_spin = contact_friction_spin
                         data.contacts[idx].friction_roll = contact_friction_roll
@@ -531,7 +536,7 @@ fn detect_contacts[
                     var e2_z = pi_z - hli * axis_w[2]
                     var dist2 = e2_z - ri - ground_z
                     if (
-                        dist2 < Scalar[DTYPE](0)
+                        dist2 < contact_margin
                         and data.num_contacts < MAX_CONTACTS
                     ):
                         var idx = data.num_contacts
@@ -545,7 +550,7 @@ fn detect_contacts[
                         data.contacts[idx].normal_x = Scalar[DTYPE](0)
                         data.contacts[idx].normal_y = Scalar[DTYPE](0)
                         data.contacts[idx].normal_z = Scalar[DTYPE](1)
-                        data.contacts[idx].dist = dist2
+                        data.contacts[idx].dist = dist2 - contact_margin
                         data.contacts[idx].friction = contact_friction
                         data.contacts[idx].friction_spin = contact_friction_spin
                         data.contacts[idx].friction_roll = contact_friction_roll
@@ -557,7 +562,7 @@ fn detect_contacts[
                 elif gi_type == GEOM_SPHERE:
                     var dist = pi_z - ri - ground_z
                     if (
-                        dist < Scalar[DTYPE](0)
+                        dist < contact_margin
                         and data.num_contacts < MAX_CONTACTS
                     ):
                         var idx = data.num_contacts
@@ -571,7 +576,7 @@ fn detect_contacts[
                         data.contacts[idx].normal_x = Scalar[DTYPE](0)
                         data.contacts[idx].normal_y = Scalar[DTYPE](0)
                         data.contacts[idx].normal_z = Scalar[DTYPE](1)
-                        data.contacts[idx].dist = dist
+                        data.contacts[idx].dist = dist - contact_margin
                         data.contacts[idx].friction = contact_friction
                         data.contacts[idx].friction_spin = contact_friction_spin
                         data.contacts[idx].friction_roll = contact_friction_roll
@@ -818,7 +823,7 @@ fn detect_contacts[
                 ny = r[5]
                 nz = r[6]
 
-            if dist < Scalar[DTYPE](0) and data.num_contacts < MAX_CONTACTS:
+            if dist < contact_margin and data.num_contacts < MAX_CONTACTS:
                 var idx = data.num_contacts
                 data.contacts[idx].body_a = body_a
                 data.contacts[idx].body_b = body_b
@@ -828,7 +833,7 @@ fn detect_contacts[
                 data.contacts[idx].normal_x = nx
                 data.contacts[idx].normal_y = ny
                 data.contacts[idx].normal_z = nz
-                data.contacts[idx].dist = dist
+                data.contacts[idx].dist = dist - contact_margin
                 data.contacts[idx].friction = contact_friction
                 data.contacts[idx].friction_spin = contact_friction_spin
                 data.contacts[idx].friction_roll = contact_friction_roll
@@ -1117,6 +1122,17 @@ fn detect_contacts_gpu[
             if cj > ci:
                 contact_condim = cj
 
+            # Margin combination: max of both geoms (MuJoCo convention)
+            var margin_gi = rebind[Scalar[DTYPE]](
+                model[0, gi_off + GEOM_IDX_MARGIN]
+            )
+            var margin_gj = rebind[Scalar[DTYPE]](
+                model[0, gj_off + GEOM_IDX_MARGIN]
+            )
+            var contact_margin = margin_gi
+            if margin_gj > margin_gi:
+                contact_margin = margin_gj
+
             # --- Plane handling ---
             if gi_type == GEOM_PLANE:
                 var ground_z = pi_z
@@ -1136,7 +1152,7 @@ fn detect_contacts_gpu[
                     var e1_y = pj_y + hlj * axis_w[1]
                     var e1_z = pj_z + hlj * axis_w[2]
                     var dist1 = e1_z - rj - ground_z
-                    if dist1 < Scalar[DTYPE](0) and num_contacts < MAX_CONTACTS:
+                    if dist1 < contact_margin and num_contacts < MAX_CONTACTS:
                         var c_off = contacts_off + num_contacts * CONTACT_SIZE
                         state[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
                             gj_body
@@ -1152,7 +1168,7 @@ fn detect_contacts_gpu[
                         state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                        state[env, c_off + CONTACT_IDX_DIST] = dist1
+                        state[env, c_off + CONTACT_IDX_DIST] = dist1 - contact_margin
                         state[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
@@ -1174,7 +1190,7 @@ fn detect_contacts_gpu[
                     var e2_y = pj_y - hlj * axis_w[1]
                     var e2_z = pj_z - hlj * axis_w[2]
                     var dist2 = e2_z - rj - ground_z
-                    if dist2 < Scalar[DTYPE](0) and num_contacts < MAX_CONTACTS:
+                    if dist2 < contact_margin and num_contacts < MAX_CONTACTS:
                         var c_off = contacts_off + num_contacts * CONTACT_SIZE
                         state[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
                             gj_body
@@ -1190,7 +1206,7 @@ fn detect_contacts_gpu[
                         state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                        state[env, c_off + CONTACT_IDX_DIST] = dist2
+                        state[env, c_off + CONTACT_IDX_DIST] = dist2 - contact_margin
                         state[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
@@ -1209,7 +1225,7 @@ fn detect_contacts_gpu[
                         num_contacts += 1
                 elif gj_type == GEOM_SPHERE:
                     var dist = pj_z - rj - ground_z
-                    if dist < Scalar[DTYPE](0) and num_contacts < MAX_CONTACTS:
+                    if dist < contact_margin and num_contacts < MAX_CONTACTS:
                         var c_off = contacts_off + num_contacts * CONTACT_SIZE
                         state[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
                             gj_body
@@ -1225,7 +1241,7 @@ fn detect_contacts_gpu[
                         state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                        state[env, c_off + CONTACT_IDX_DIST] = dist
+                        state[env, c_off + CONTACT_IDX_DIST] = dist - contact_margin
                         state[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
@@ -1259,7 +1275,7 @@ fn detect_contacts_gpu[
                     var e1_y = pi_y + hli * axis_w[1]
                     var e1_z = pi_z + hli * axis_w[2]
                     var dist1 = e1_z - ri - ground_z
-                    if dist1 < Scalar[DTYPE](0) and num_contacts < MAX_CONTACTS:
+                    if dist1 < contact_margin and num_contacts < MAX_CONTACTS:
                         var c_off = contacts_off + num_contacts * CONTACT_SIZE
                         state[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
                             gi_body
@@ -1275,7 +1291,7 @@ fn detect_contacts_gpu[
                         state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                        state[env, c_off + CONTACT_IDX_DIST] = dist1
+                        state[env, c_off + CONTACT_IDX_DIST] = dist1 - contact_margin
                         state[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
@@ -1297,7 +1313,7 @@ fn detect_contacts_gpu[
                     var e2_y = pi_y - hli * axis_w[1]
                     var e2_z = pi_z - hli * axis_w[2]
                     var dist2 = e2_z - ri - ground_z
-                    if dist2 < Scalar[DTYPE](0) and num_contacts < MAX_CONTACTS:
+                    if dist2 < contact_margin and num_contacts < MAX_CONTACTS:
                         var c_off = contacts_off + num_contacts * CONTACT_SIZE
                         state[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
                             gi_body
@@ -1313,7 +1329,7 @@ fn detect_contacts_gpu[
                         state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                        state[env, c_off + CONTACT_IDX_DIST] = dist2
+                        state[env, c_off + CONTACT_IDX_DIST] = dist2 - contact_margin
                         state[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
@@ -1332,7 +1348,7 @@ fn detect_contacts_gpu[
                         num_contacts += 1
                 elif gi_type == GEOM_SPHERE:
                     var dist = pi_z - ri - ground_z
-                    if dist < Scalar[DTYPE](0) and num_contacts < MAX_CONTACTS:
+                    if dist < contact_margin and num_contacts < MAX_CONTACTS:
                         var c_off = contacts_off + num_contacts * CONTACT_SIZE
                         state[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
                             gi_body
@@ -1348,7 +1364,7 @@ fn detect_contacts_gpu[
                         state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                        state[env, c_off + CONTACT_IDX_DIST] = dist
+                        state[env, c_off + CONTACT_IDX_DIST] = dist - contact_margin
                         state[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
@@ -1603,7 +1619,7 @@ fn detect_contacts_gpu[
                 ny = r[5]
                 nz = r[6]
 
-            if dist < Scalar[DTYPE](0) and num_contacts < MAX_CONTACTS:
+            if dist < contact_margin and num_contacts < MAX_CONTACTS:
                 var c_off = contacts_off + num_contacts * CONTACT_SIZE
                 state[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](body_a)
                 state[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](body_b)
@@ -1613,7 +1629,7 @@ fn detect_contacts_gpu[
                 state[env, c_off + CONTACT_IDX_NX] = nx
                 state[env, c_off + CONTACT_IDX_NY] = ny
                 state[env, c_off + CONTACT_IDX_NZ] = nz
-                state[env, c_off + CONTACT_IDX_DIST] = dist
+                state[env, c_off + CONTACT_IDX_DIST] = dist - contact_margin
                 state[env, c_off + CONTACT_IDX_FRICTION] = contact_friction
                 state[
                     env, c_off + CONTACT_IDX_FRICTION_SPIN

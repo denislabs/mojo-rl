@@ -119,6 +119,7 @@ from .constants import (
     GEOM_IDX_SOLIMP_0,
     GEOM_IDX_SOLIMP_1,
     GEOM_IDX_SOLIMP_2,
+    GEOM_IDX_MARGIN,
     MODEL_META_IDX_IMPRATIO,
     MODEL_META_IDX_NEQUALITY,
     model_geom_offset,
@@ -461,6 +462,7 @@ fn copy_geoms_to_buffer[
         buffer[offset + GEOM_IDX_SOLIMP_0] = model.geom_solimp[g * 3 + 0]
         buffer[offset + GEOM_IDX_SOLIMP_1] = model.geom_solimp[g * 3 + 1]
         buffer[offset + GEOM_IDX_SOLIMP_2] = model.geom_solimp[g * 3 + 2]
+        buffer[offset + GEOM_IDX_MARGIN] = model.geom_margin[g]
 
 
 fn copy_equality_to_buffer[

@@ -311,6 +311,7 @@ comptime HopperDefaults = ModelDefaults[
     geom_friction_spin=0.005,
     geom_friction_roll=0.0001,
     geom_condim=1,
+    geom_margin=0.001,
     geom_solref_0=0.02,
     geom_solref_1=1.0,
     geom_solimp_0=0.8,  # MuJoCo XML default: solimp=".8 .8 .01"

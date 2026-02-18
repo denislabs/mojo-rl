@@ -351,6 +351,9 @@ struct Model[
     var geom_solref: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM * 2]()]
     var geom_solimp: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM * 3]()]
 
+    # Per-geom contact margin (MuJoCo-style: contacts activate when dist < margin)
+    var geom_margin: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NGEOM]()]
+
     # Per-joint solref/solimp for limits (MuJoCo-style per-joint impedance overrides)
     var joint_solref_limit: InlineArray[
         Scalar[Self.DTYPE], _max_one[Self.NJOINT * 2]()
@@ -492,6 +495,9 @@ struct Model[
         ](fill=Scalar[Self.DTYPE](0))
         self.geom_solimp = InlineArray[
             Scalar[Self.DTYPE], _max_one[Self.NGEOM * 3]()
+        ](fill=Scalar[Self.DTYPE](0))
+        self.geom_margin = InlineArray[
+            Scalar[Self.DTYPE], _max_one[Self.NGEOM]()
         ](fill=Scalar[Self.DTYPE](0))
         self.joint_solref_limit = InlineArray[
             Scalar[Self.DTYPE], _max_one[Self.NJOINT * 2]()

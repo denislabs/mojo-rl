@@ -73,6 +73,8 @@ trait GeomSpec:
     comptime SOLIMP_0: Float64  # dmin
     comptime SOLIMP_1: Float64  # dmax
     comptime SOLIMP_2: Float64  # width
+    # Contact margin (MuJoCo-style: contacts activate when dist < margin)
+    comptime MARGIN: Float64
     # Visual
     comptime COLOR: Color3D
 
@@ -96,6 +98,7 @@ struct Plane[
     solimp_0: Float64 = _UNSET_F64,
     solimp_1: Float64 = _UNSET_F64,
     solimp_2: Float64 = _UNSET_F64,
+    margin: Float64 = _UNSET_F64,
     size_x: Float64 = 40.0,
     size_y: Float64 = 40.0,
 ](GeomSpec):
@@ -133,6 +136,7 @@ struct Plane[
     comptime SOLIMP_0: Float64 = Self.solimp_0
     comptime SOLIMP_1: Float64 = Self.solimp_1
     comptime SOLIMP_2: Float64 = Self.solimp_2
+    comptime MARGIN: Float64 = Self.margin
     comptime COLOR: Color3D = Color3D(128, 128, 128)
 
 
@@ -159,6 +163,7 @@ struct Sphere[
     solimp_0: Float64 = _UNSET_F64,
     solimp_1: Float64 = _UNSET_F64,
     solimp_2: Float64 = _UNSET_F64,
+    margin: Float64 = _UNSET_F64,
     color: Color3D = Color3D(100, 100, 200),
 ](GeomSpec):
     """Sphere geom (static or body-attached).
@@ -196,6 +201,7 @@ struct Sphere[
     comptime SOLIMP_0: Float64 = Self.solimp_0
     comptime SOLIMP_1: Float64 = Self.solimp_1
     comptime SOLIMP_2: Float64 = Self.solimp_2
+    comptime MARGIN: Float64 = Self.margin
     comptime COLOR: Color3D = Self.color
 
 
@@ -227,6 +233,7 @@ struct Capsule[
     solimp_0: Float64 = _UNSET_F64,
     solimp_1: Float64 = _UNSET_F64,
     solimp_2: Float64 = _UNSET_F64,
+    margin: Float64 = _UNSET_F64,
     color: Color3D = Color3D(204, 153, 102),
 ](GeomSpec):
     """Capsule geom (static or body-attached).
@@ -266,6 +273,7 @@ struct Capsule[
     comptime SOLIMP_0: Float64 = Self.solimp_0
     comptime SOLIMP_1: Float64 = Self.solimp_1
     comptime SOLIMP_2: Float64 = Self.solimp_2
+    comptime MARGIN: Float64 = Self.margin
     comptime COLOR: Color3D = Self.color
 
 
@@ -298,6 +306,7 @@ struct Box[
     solimp_0: Float64 = _UNSET_F64,
     solimp_1: Float64 = _UNSET_F64,
     solimp_2: Float64 = _UNSET_F64,
+    margin: Float64 = _UNSET_F64,
     color: Color3D = Color3D(100, 200, 100),
 ](GeomSpec):
     """Box geom (static or body-attached).
@@ -335,6 +344,7 @@ struct Box[
     comptime SOLIMP_0: Float64 = Self.solimp_0
     comptime SOLIMP_1: Float64 = Self.solimp_1
     comptime SOLIMP_2: Float64 = Self.solimp_2
+    comptime MARGIN: Float64 = Self.margin
     comptime COLOR: Color3D = Self.color
 
 

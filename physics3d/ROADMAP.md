@@ -28,7 +28,7 @@ Reference material:
 - [Phase 2: Integrator Improvements](#phase-2-integrator-improvements)
   - [2.1 Implicit-fast Integrator](#21-implicit-fast-integrator)
   - [2.2 Implicit Integrator (full) — DONE](#22-implicit-integrator-full--done)
-  - [2.3 RK4 Integrator](#23-rk4-integrator)
+  - [2.3 RK4 Integrator — DONE](#23-rk4-integrator--done)
 - [Phase 3: Constraint System](#phase-3-constraint-system)
   - [3.1 Unified Constraint Representation](#31-unified-constraint-representation)
   - [3.2 Friction Cone Models (pyramidal + elliptic) — DONE](#32-friction-cone-models-pyramidal--elliptic--done)
@@ -42,8 +42,20 @@ Reference material:
   - [5.2 Solver Islands](#52-solver-islands)
   - [5.3 Passive Forces (spring/damper per joint)](#53-passive-forces-springdamper-per-joint)
   - [5.4 Actuator Dynamics — DONE](#54-actuator-dynamics--done)
-  - [5.5 Tendon System](#55-tendon-system)
+  - [5.5 Tendon System (fixed tendons)](#55-tendon-system-fixed-tendons)
   - [5.6 No-Slip Friction Post-Solver](#56-no-slip-friction-post-solver)
+- [Phase 6: MuJoCo XML Compatibility Gaps](#phase-6-mujoco-xml-compatibility-gaps)
+  - [6.1 settotalmass Compiler Directive](#61-settotalmass-compiler-directive)
+  - [6.2 inertiafromgeom from Child Geoms](#62-inertiafromgeom-from-child-geoms)
+  - [6.3 fromto Capsule Specification](#63-fromto-capsule-specification)
+  - [6.4 Contact Margin](#64-contact-margin)
+  - [6.5 Full solimp (5 params)](#65-full-solimp-5-params)
+  - [6.6 Cylinder Geom Collision](#66-cylinder-geom-collision)
+  - [6.7 Geom Density (mass from density)](#67-geom-density-mass-from-density)
+  - [6.8 Site Elements](#68-site-elements)
+  - [6.9 Fluid Dynamics (density/viscosity)](#69-fluid-dynamics-densityviscosity)
+  - [6.10 cfrc_ext (Contact Forces per Body)](#610-cfrc_ext-contact-forces-per-body)
+  - [6.11 Runtime Solver Selection from XML](#611-runtime-solver-selection-from-xml)
 
 ---
 
@@ -73,7 +85,7 @@ Reference material:
 - **GPU support**: all solvers, kinematics, dynamics have GPU kernels
 - **Passive forces**: armature, implicit damping, stiffness+springref, frictionloss (Phase 5.3 DONE)
 - **Joint limits as constraints**: unilateral inequality constraints in all 3 solvers, CPU + GPU (Phase 1.4 DONE)
-- **Three integrators**: EulerIntegrator + ImplicitFastIntegrator + ImplicitIntegrator (full), all with correct damping, CPU + GPU (Phase 2.1 + 2.2 DONE)
+- **Four integrators**: EulerIntegrator + ImplicitFastIntegrator + ImplicitIntegrator (full) + RK4Integrator, all with correct damping, CPU + GPU (Phase 2.1 + 2.2 + 2.3 DONE)
 - **Physics stability**: MuJoCo solref/solimp impedance model, velocity clamping (MAX_QVEL=10)
 - **Constraint solver parameters**: per-model solref/solimp for contacts and joint limits (Phase 3.4 DONE)
 - **Unified constraint representation**: ConstraintData/ConstraintRow structs with single builder (Phase 3.1 DONE)
@@ -87,14 +99,26 @@ Reference material:
 | ~~Hardcoded model definitions~~ | ~~High~~ | ~~0~~ DONE |
 | ~~Separate ground/body-body detection~~ | ~~High~~ | ~~0~~ DONE |
 | ~~No collision filtering~~ | ~~Medium~~ | ~~0~~ DONE |
-| No MJCF XML parser | Medium - manual model translation | 0 |
+| No MJCF XML parser | Medium — manual model translation | 0 |
+| No `settotalmass` compiler directive | Low — only HalfCheetah uses it | 6 |
+| No `inertiafromgeom` from child geoms | Medium — currently inertia is per-body shape, not summed from geoms | 6 |
+| No `fromto` capsule specification | Low — requires endpoint→center conversion | 6 |
+| ~~No `margin` on geom/joint contacts~~ | ~~Medium~~ | ~~6~~ DONE |
+| `solimp` only 3 params (not 5) | Low — midpoint/power hardcoded to 0.5/2.0 | 6 |
+| No `cylinder` geom collision | Medium — Reacher, Pusher need it | 6 |
+| No `density` on geoms (mass from density) | Low — Swimmer, Walker2d, Ant, Pusher | 6 |
+| No `<site>` elements | Low — massless reference points for observations | 6 |
+| No `<tendon><fixed>` joint coupling | Medium — Humanoid hip-knee coupling | 5 |
+| No fluid dynamics (`density`/`viscosity` option) | Low — Swimmer only | 6 |
+| No `cfrc_ext` (contact forces per body) | Medium — Humanoid observations | 6 |
+| No runtime solver/iterations selection from XML | Low — Humanoid requests PGS+50 iter | 6 |
 | ~~Diagonal-only mass matrix~~ | ~~High~~ | ~~1~~ DONE |
 | ~~No Coriolis/centrifugal in bias forces~~ | ~~High~~ | ~~1~~ DONE |
 | ~~Ground contacts only~~ | ~~High~~ | ~~1~~ DONE |
 | ~~Joint limits via post-clamping~~ | ~~Medium~~ | ~~1~~ DONE |
 | ~~No implicit integrators~~ | ~~Medium~~ | ~~2~~ DONE |
 | ~~No full implicit integrator~~ | ~~Medium - gyroscopic stability~~ | ~~2~~ DONE |
-| No RK4 integrator | Medium - energy conservation | 2 |
+| ~~No RK4 integrator~~ | ~~Medium - energy conservation~~ | ~~2~~ DONE |
 | ~~No unified constraint rows~~ | ~~Medium~~ | ~~3~~ DONE |
 | ~~Simple Coulomb friction only~~ | ~~Medium~~ | ~~3~~ DONE |
 | ~~No equality constraints~~ | ~~Medium - can't model welds/connects~~ | ~~3~~ DONE |
@@ -917,14 +941,13 @@ MuJoCo reference: `engine_derivative.c` lines 596-700 (`mjd_rne_vel`),
 
 ---
 
-### 2.3 RK4 Integrator
+### 2.3 RK4 Integrator — DONE
 
-**Problem**: For systems that should conserve energy (pendulums, mechanical systems
-without damping), semi-implicit Euler drifts energy over time. RK4 provides 4th-order
-accuracy and much better energy conservation.
+**Status**: COMPLETE. 4th-order Runge-Kutta integrator with 4 force evaluations
+per step. Provides better energy conservation for systems without damping.
 
-**Files to create**:
-- `integrator/rk4_integrator.mojo` (NEW)
+**Files**:
+- `integrator/rk4_integrator.mojo`
 
 #### Algorithm
 
@@ -1430,11 +1453,32 @@ qDeriv contributions for implicit integration.
 
 ---
 
-### 5.5 Tendon System
+### 5.5 Tendon System (fixed tendons)
 
-**Problem**: MuJoCo supports tendons (cables that span multiple joints).
+**Problem**: MuJoCo supports tendons (cables that span multiple joints). The Humanoid
+environment uses `<fixed>` tendons to couple hip and knee joints.
 
-**Recommendation**: Low priority. Only needed for biomechanics/musculoskeletal models.
+**Used by**: Humanoid, HumanoidStandup (hip-knee coupling).
+
+**Fixed tendon** = linear constraint on joint positions/velocities:
+```xml
+<fixed name="left_hipknee">
+    <joint coef="-1" joint="left_hip_y"/>
+    <joint coef="1" joint="left_knee"/>
+</fixed>
+```
+
+This enforces `Σ coef_i * q_i = const` as a bilateral equality constraint.
+The tendon Jacobian is trivial: `J[dof_i] = coef_i` for each participating joint.
+
+**Implementation plan**:
+1. Add `TendonSpec` trait with `COEFS` and `JOINT_INDICES`
+2. Add `Tendons` variadic container (like `Equalities`)
+3. In constraint builder, add tendon rows as bilateral equality constraints
+4. Tendon Jacobian: `J[dof_adr_i] = coef_i` — simplest possible Jacobian
+
+**Recommendation**: Medium priority. Required for Humanoid. Spatial tendons (routing
+through bodies) are low priority — only fixed tendons are needed for Gymnasium envs.
 
 ---
 
@@ -1468,24 +1512,363 @@ Sprint 1 (Core correctness):
 
 Sprint 2 (Stability):
   2.1 Implicit-fast integrator  DONE (EulerIntegrator + ImplicitFastIntegrator, CPU + GPU)
+  2.2 Implicit integrator       DONE (full RNE velocity derivative, LU factorization, CPU + GPU)
+  2.3 RK4 integrator            DONE (4th-order Runge-Kutta, energy conservation)
   5.3 Passive forces            DONE (armature, damping, stiffness+springref, frictionloss)
 
 Sprint 3 (Constraint system):
   3.1 Unified constraint rows   DONE (ConstraintData/ConstraintRow, constraint_builder)
+  3.2 Friction cone models      DONE (pyramidal + elliptic, condim 1/3/4/6, QCQP solver, CPU + GPU)
+  3.3 Equality constraints      DONE (connect + weld, bilateral PGS, MuJoCo impedance, CPU + GPU)
   3.4 Per-contact solref/solimp DONE (impedance model, all 3 solvers, CPU + GPU)
 
 Sprint 4 (Polish):
-  5.1 Solver warmstart          DONE (all 3 solvers, CPU + GPU, writeback_forces)
-  3.2 Friction cone models      DONE (pyramidal + elliptic, condim 1/3/4/6, QCQP solver, CPU + GPU)
   4.1 Broadphase (spheres)      DONE (bounding sphere pre-filter, CPU + GPU)
-
-Sprint 5 (Advanced):
-  3.3 Equality constraints      DONE (connect + weld, bilateral PGS, MuJoCo impedance, CPU + GPU)
-  2.3 RK4 integrator            <- energy conservation option
-  2.2 Implicit integrator       DONE (full RNE velocity derivative, LU factorization, CPU + GPU)
-  5.2 Solver islands            <- multi-agent parallelism
+  5.1 Solver warmstart          DONE (all 3 solvers, CPU + GPU, writeback_forces)
   5.4 Actuator dynamics         DONE (ActuatorSpec trait, Motor/Position/Velocity/General, CPU + GPU)
+
+Sprint 5 (Next environments — Walker2d, Ant):
+  6.4 Contact margin            DONE (per-geom margin, adjusted dist, CPU + GPU)
+  6.1 settotalmass              <- HalfCheetah correctness
+  6.3 fromto capsule spec       <- convenience for model translation
+  6.7 Geom density              <- Walker2d, Ant, Pusher
+
+Sprint 6 (Humanoid):
+  5.5 Fixed tendons             <- Humanoid hip-knee coupling
+  6.10 cfrc_ext                 <- Humanoid observations
+  6.6 Cylinder geom             <- Reacher, Pusher
+  6.2 inertiafromgeom           <- multi-geom body inertia
+
+Sprint 7 (Specialized):
+  6.9 Fluid dynamics            <- Swimmer only
+  6.5 Full solimp (5 params)    <- non-default impedance curves
+  6.8 Site elements             <- InvertedDoublePendulum
+  5.2 Solver islands            <- multi-agent parallelism
+  4.2 Broadphase (AABB/SAP)     <- large scenes
+  0.5 MJCF XML parser           <- automate model translation
 ```
+
+---
+
+## Phase 6: MuJoCo XML Compatibility Gaps
+
+Gaps identified by comparing our model definition against all Gymnasium MuJoCo XML
+files (HalfCheetah, Hopper, Walker2d, Ant, Humanoid, Swimmer, Reacher, Pusher,
+InvertedPendulum, InvertedDoublePendulum).
+
+### Gymnasium MuJoCo Environment Feature Matrix
+
+| Feature | HalfCheetah | Hopper | Walker2d | Ant | Humanoid | Swimmer | Reacher | Pusher |
+|---|---|---|---|---|---|---|---|---|
+| **Joints** | | | | | | | | |
+| hinge | YES | YES | YES | YES | YES | YES | YES | YES |
+| slide | YES | YES | YES | - | - | YES | YES | YES |
+| free | - | - | - | YES | YES | - | - | - |
+| **Geoms** | | | | | | | | |
+| capsule | YES | YES | YES | YES | YES | YES | YES | YES |
+| plane | YES | YES | YES | YES | YES | YES | YES | YES |
+| sphere | - | - | - | YES | YES | - | YES | YES |
+| cylinder | - | - | - | - | - | - | YES | YES |
+| `fromto` spec | YES | - | - | YES | YES | YES | YES | YES |
+| **Root DOF** | | | | | | | | |
+| Planar (2 slide+hinge) | YES | YES | YES | - | - | YES | - | - |
+| Free (6DOF) | - | - | - | YES | YES | - | - | - |
+| **Integrator** | Euler | RK4 | RK4 | RK4 | RK4 | RK4 | RK4 | Euler |
+| **Special** | | | | | | | | |
+| settotalmass | YES | - | - | - | - | - | - | - |
+| margin on geom | - | YES | - | YES | YES | - | - | YES |
+| condim=1 default | - | YES | - | - | YES | YES | - | YES |
+| Fluid dynamics | - | - | - | - | - | YES | - | - |
+| Tendons (fixed) | - | - | - | - | YES | - | - | - |
+| geom density | - | - | YES | YES | - | YES | - | YES |
+
+---
+
+### 6.1 settotalmass Compiler Directive
+
+**Status**: NOT STARTED.
+**Used by**: HalfCheetah only.
+**Impact**: Low (workaround: manually compute scaled masses).
+
+MuJoCo's `<compiler settotalmass="14"/>` rescales all body masses after inertia
+computation so the total equals the target. Algorithm:
+```
+total = sum(body_mass[i] for i in range(NBODY))
+scale = target_total / total
+for i in range(NBODY):
+    body_mass[i] *= scale
+    body_inertia[i] *= scale
+```
+
+**Implementation**: Add `SETTOTALMASS: Float64` to `ModelDefaultsLike` (sentinel -1.0 = disabled).
+Apply in `ModelDef.finalize()` after `Bodies.setup_model()`.
+
+---
+
+### 6.2 inertiafromgeom from Child Geoms
+
+**Status**: PARTIAL. Currently each `BodySpec` computes inertia from its own shape
+(radius, half_length, mass). MuJoCo's `inertiafromgeom="true"` computes inertia
+by summing contributions from all child `<geom>` elements using parallel axis theorem.
+
+**Used by**: ALL Gymnasium environments.
+**Impact**: Medium — currently correct only when body shape matches its single geom.
+
+**The difference**: If a body has multiple geoms, or if the geom is offset from the
+body origin, the current approach gives wrong inertia. MuJoCo:
+```
+For each geom attached to body:
+    I_geom = inertia_from_shape(geom_type, geom_size, geom_mass)
+    I_body += parallel_axis(I_geom, geom_pos_in_body_frame)
+    com_body = weighted_average(geom_com, geom_mass)
+```
+
+**Implementation**:
+1. Add `compute_inertia_from_geoms()` to `ModelDef.finalize()`
+2. Iterate geoms, accumulate mass + shifted inertia per body
+3. Compute `body_ipos` (CoM) from weighted geom positions
+4. Apply parallel axis theorem: `I += m * (d²·E - d⊗d)` where `d = geom_pos - com`
+
+**Files**: `model/model_def.mojo`, potentially `model/body_spec.mojo`
+
+---
+
+### 6.3 fromto Capsule Specification
+
+**Status**: NOT STARTED.
+**Used by**: HalfCheetah, Ant, Humanoid, Swimmer, Reacher, Pusher.
+**Impact**: Low (conversion is straightforward, currently done manually).
+
+MuJoCo capsules can be defined by two endpoints: `fromto="x1 y1 z1 x2 y2 z2"`.
+Conversion to center + axis-angle + half_length:
+```
+center = (from + to) / 2
+axis = normalize(to - from)
+half_length = length(to - from) / 2
+quat = axis_to_quat(axis)  # rotation from default Z-axis to axis
+```
+
+**Implementation**: Add a `FromToCapsuleGeom` convenience type or a conversion
+function in `geom_spec.mojo`. Useful for the MJCF parser (Phase 0.5).
+
+---
+
+### 6.4 Contact Margin
+
+**Status**: DONE.
+**Used by**: Hopper (`margin=0.001`), Ant (`margin=0.01`), Humanoid (`margin=0.001`), Pusher (`margin=0.002`).
+
+MuJoCo generates contacts when `dist < margin` instead of `dist < 0`. This creates
+a "soft zone" where contacts activate before actual penetration, enabling smoother
+force onset.
+
+**Design**: "Adjusted dist" — store `dist_adjusted = raw_dist - margin` in the contact.
+All downstream solver checks (`dist >= 0`, `penetration = -dist`) automatically work
+correctly with zero solver file changes. Contact position is computed from raw dist
+before adjustment. Margin defaults to 0.0 (fully backward compatible).
+
+**Implementation**:
+1. `MARGIN: Float64` on `GeomSpec` trait + all concrete geom structs (Plane, Sphere, Capsule, Box)
+2. `GEOM_MARGIN` on `ModelDefaultsLike` trait + `ModelDefaults` (default 0.0)
+3. `geom_margin[NGEOM]` array on `Model`, resolved in `Geoms.setup_model()`
+4. GPU: `GEOM_IDX_MARGIN = 26`, `MODEL_GEOM_SIZE = 27`, packed in `buffer_utils.mojo`
+5. `contact_detection.mojo`: CPU + GPU paths — `contact_margin = max(margin_gi, margin_gj)`,
+   activation check `dist < contact_margin`, stored dist adjusted `dist - contact_margin`
+6. Hopper: `geom_margin=0.001` set in `HopperDefaults`
+
+**Files modified**: `geom_spec.mojo`, `model_def.mojo`, `types.mojo`, `constants.mojo`,
+`buffer_utils.mojo`, `contact_detection.mojo`, `hopper_def.mojo`.
+
+---
+
+### 6.5 Full solimp (5 params)
+
+**Status**: PARTIAL. Currently storing `solimp[0..2]` = `[dmin, dmax, width]`.
+MuJoCo uses `solimp[5]` = `[dmin, dmax, width, midpoint, power]`.
+
+**Used by**: All environments (but midpoint=0.5, power=2.0 are the defaults that
+99% of models use).
+**Impact**: Low — only matters for non-default impedance curves.
+
+The smoothstep currently uses hardcoded midpoint=0.5, power=2.0:
+```
+x = clamp(penetration / width, 0, 1)
+imp = dmin + (3x² - 2x³) * (dmax - dmin)  // hardcoded cubic Hermite
+```
+
+MuJoCo generalizes this with configurable midpoint `m` and power `p`:
+```
+y = 0.5 - cos(pi * clamp(x, 0, 1)) / 2  // sinusoidal smoothstep
+imp = dmin + y^(1/p) * (dmax - dmin)       // power curve
+```
+
+Wait — MuJoCo actually uses a different formula. From `engine_core_constraint.c`:
+```
+t = penetration / width
+imp = dmin + (dmax - dmin) * smoothstep(t, midpoint, power)
+```
+
+**Implementation**: Add `solimp[3]` (midpoint) and `solimp[4]` (power) throughout
+the impedance calculation in constraint builder + GPU. Low effort but touches many files.
+
+---
+
+### 6.6 Cylinder Geom Collision
+
+**Status**: NOT STARTED.
+**Used by**: Reacher (root post), Pusher (object, goal).
+**Impact**: Medium — needed for Reacher and Pusher environments.
+
+Required collision primitives:
+- `cylinder-plane`: Similar to capsule-plane but with flat ends
+- `cylinder-sphere`: Closest point on cylinder surface to sphere center
+- `cylinder-capsule`: SAT or GJK
+- `cylinder-cylinder`: Most complex, SAT-based
+
+MuJoCo reference: `engine_collision_primitive.c` (`mjc_PlaneCylinder`, `mjc_SphereCylinder`).
+
+**Implementation**:
+1. Add `GEOM_CYLINDER = 4` constant
+2. Add `CylinderGeom` / `BodyCylinderGeom` to `geom_spec.mojo`
+3. Implement narrowphase primitives in `collision_primitives.mojo`
+4. Register in dispatch table in `contact_detection.mojo`
+
+---
+
+### 6.7 Geom Density (mass from density)
+
+**Status**: NOT STARTED.
+**Used by**: Swimmer (`density=4000` on option), Walker2d/Ant/Pusher (`density` on individual geoms).
+**Impact**: Low — alternative way to specify mass.
+
+MuJoCo computes geom mass from `density * volume` when mass is not explicitly set.
+Volume formulas: sphere `4/3πr³`, capsule `πr²(2h + 4r/3)`, box `8*hx*hy*hz`,
+cylinder `πr²*2h`.
+
+**Implementation**: Add `DENSITY: Float64` to `GeomSpec` (sentinel -1.0). In
+`inertiafromgeom` computation, use `mass = density * volume` when density is set.
+
+---
+
+### 6.8 Site Elements
+
+**Status**: NOT STARTED.
+**Used by**: InvertedDoublePendulum (tip position for reward).
+**Impact**: Low — massless reference points.
+
+Sites are body-attached reference points with zero mass/inertia. They participate
+in FK (get world position/orientation) but not dynamics. Used for:
+- Observation reference points (tip of pendulum)
+- Sensor attachment points
+- Reward computation
+
+**Implementation**:
+1. Add `SiteSpec` trait with `BODY_IDX`, `POS_X/Y/Z`
+2. Add `site_xpos[NSITE*3]` to `Data`, computed during FK
+3. FK: `site_xpos = body_xpos + rotate(site_pos, body_xquat)`
+
+---
+
+### 6.9 Fluid Dynamics (density/viscosity)
+
+**Status**: NOT STARTED.
+**Used by**: Swimmer only (`density=4000`, `viscosity=0.1`).
+**Impact**: Low — specialized feature.
+
+MuJoCo applies drag and buoyancy forces when `option.density > 0`:
+```
+For each geom:
+    F_drag = -0.5 * density * Cd * A * |v| * v  (quadratic drag)
+    F_viscous = -viscosity * 6π * r * v          (Stokes drag)
+    F_buoyancy = density * volume * g             (Archimedes)
+```
+
+MuJoCo reference: `engine_passive.c` (`mj_passive`, fluid model).
+
+**Recommendation**: Implement only when adding Swimmer environment. Self-contained
+addition to the force pipeline.
+
+---
+
+### 6.10 cfrc_ext (Contact Forces per Body)
+
+**Status**: NOT STARTED.
+**Used by**: Humanoid (external contact forces as part of observation).
+**Impact**: Medium — needed for Humanoid observations.
+
+`cfrc_ext` accumulates contact constraint forces per body in Cartesian (6D) space.
+After constraint solving:
+```
+For each contact:
+    F_contact = lambda * J_contact  (in joint space)
+    For body_a and body_b:
+        cfrc_ext[body] += contact_force_at_point (6D: torque + force)
+```
+
+**Implementation**:
+1. Add `cfrc_ext[NBODY*6]` to `Data`
+2. After solver, accumulate contact forces per body using contact Jacobians
+3. Transform to body-local frame if needed (MuJoCo stores in subtree CoM frame)
+
+---
+
+### 6.11 Runtime Solver Selection from XML
+
+**Status**: NOT STARTED.
+**Used by**: Humanoid (`solver="PGS"`, `iterations="50"`).
+**Impact**: Low — currently solver type is a compile-time parameter.
+
+MuJoCo allows selecting solver type and iteration count in `<option>`:
+```xml
+<option solver="PGS" iterations="50"/>
+```
+
+Our solver type is a compile-time generic parameter (`EulerIntegrator[PGSSolver]`).
+Making this runtime would require either:
+- A solver dispatch enum (runtime overhead)
+- Or generating separate compiled paths per solver type
+
+**Recommendation**: Keep compile-time solver selection. Document which solver each
+environment should use. The MJCF parser can select the correct compile-time path.
+
+---
+
+## Implementation Priority — Per Environment
+
+What's needed to support each Gymnasium MuJoCo environment:
+
+### HalfCheetah — SUPPORTED
+Currently working. Minor gaps: `settotalmass` (mass is manually scaled),
+`fromto` capsules (manually converted).
+
+### Hopper — SUPPORTED
+Currently working. Minor gaps: `ref` on rootz joint
+(verify `springref` handles this), RK4 integrator (now DONE).
+`margin` on geoms — DONE (0.001).
+
+### Walker2d — NEEDS: geom density
+Similar to Hopper. Needs `density` on geoms. RK4 done. `margin` — DONE.
+
+### Ant — NEEDS: geom density, sphere-sphere collision improvements
+Uses free joint (already supported). Needs `density` on geoms.
+Sphere geom for torso. Otherwise structurally similar to existing envs. `margin` — DONE.
+
+### Humanoid — NEEDS: fixed tendons, cfrc_ext, sphere collision
+Most complex environment. Key blockers:
+1. Fixed tendons (hip-knee coupling) — Phase 5.5
+2. `cfrc_ext` for observations — Phase 6.10
+3. Sphere geoms (head, feet, hands)
+`margin` on geoms — DONE.
+
+### Swimmer — NEEDS: fluid dynamics
+Unique requirement for drag/buoyancy forces. Otherwise simple (2 bodies, slide joints).
+
+### Reacher — NEEDS: cylinder geom
+Simple arm task. Needs cylinder geom for the root post. Zero gravity variant exists (Pusher).
+
+### Pusher — NEEDS: cylinder geom, zero gravity
+Table-top arm task. Needs cylinder geom and `gravity="0 0 0"` support
+(gravity is already configurable — just set to zero).
 
 ---
 

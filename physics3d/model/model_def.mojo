@@ -127,6 +127,7 @@ trait ModelDefaultsLike(TrivialRegisterPassable):
     comptime GEOM_SOLIMP_0: Float64
     comptime GEOM_SOLIMP_1: Float64
     comptime GEOM_SOLIMP_2: Float64
+    comptime GEOM_MARGIN: Float64
     comptime JOINT_ARMATURE: Float64
     comptime JOINT_DAMPING: Float64
     comptime JOINT_STIFFNESS: Float64
@@ -158,6 +159,7 @@ struct ModelDefaults[
     geom_solimp_0: Float64 = 0.0,
     geom_solimp_1: Float64 = 0.8,
     geom_solimp_2: Float64 = 0.01,
+    geom_margin: Float64 = 0.0,
     # Joint defaults (MuJoCo <default><joint .../>)
     joint_armature: Float64 = 0.1,
     joint_damping: Float64 = 0.0,
@@ -198,6 +200,7 @@ struct ModelDefaults[
     comptime GEOM_SOLIMP_0: Float64 = Self.geom_solimp_0
     comptime GEOM_SOLIMP_1: Float64 = Self.geom_solimp_1
     comptime GEOM_SOLIMP_2: Float64 = Self.geom_solimp_2
+    comptime GEOM_MARGIN: Float64 = Self.geom_margin
     comptime JOINT_ARMATURE: Float64 = Self.joint_armature
     comptime JOINT_DAMPING: Float64 = Self.joint_damping
     comptime JOINT_STIFFNESS: Float64 = Self.joint_stiffness
@@ -1244,6 +1247,11 @@ struct Geoms[*G: GeomSpec]:
             )
             model.geom_solimp[i * 3 + 2] = Scalar[DTYPE](
                 _resolve_f64[G_item.SOLIMP_2, Defaults.GEOM_SOLIMP_2]()
+            )
+
+            # Contact margin (resolved from defaults)
+            model.geom_margin[i] = Scalar[DTYPE](
+                _resolve_f64[G_item.MARGIN, Defaults.GEOM_MARGIN]()
             )
 
             # Compute bounding sphere radius
