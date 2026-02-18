@@ -6,7 +6,7 @@ Provides view and projection matrices for rendering 3D scenes.
 from math import sqrt, sin, cos, tan
 from math3d import Vec3 as Vec3Generic, Mat4 as Mat4Generic
 
-# Type alias for Vec3 with float64 precision (used throughout render3d)
+# Type alias for Vec3 with float64 precision (used throughout render)
 comptime Vec3 = Vec3Generic[DType.float64]
 comptime Mat4 = Mat4Generic[DType.float64]
 

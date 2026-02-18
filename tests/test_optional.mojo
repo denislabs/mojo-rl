@@ -24,7 +24,7 @@ Usage:
 """
 
 from physics3d.constants import GEOM_PLANE, GEOM_SPHERE, GEOM_CAPSULE, GEOM_BOX
-from render3d import Color3D
+from render import Color3D
 
 
 trait GeomSpec:

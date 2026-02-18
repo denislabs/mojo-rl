@@ -1,11 +1,11 @@
 """3D Rendering Demo.
 
-Demonstrates the GPU-accelerated render3d module by rendering a simple 3D scene
+Demonstrates the GPU-accelerated render module by rendering a simple 3D scene
 with physics bodies (spheres, capsules, boxes) and ground plane.
 Uses SDL3 GPU API with Metal (MSL) shaders.
 """
 
-from render3d import (
+from render import (
     Renderer3D,
     Camera3D,
     Color3D,
@@ -20,9 +20,9 @@ fn main() raises:
 
     # Create camera looking at the scene
     var camera = Camera3D(
-        eye=Vec3(3.0, -6.0, 4.0),    # Camera position
+        eye=Vec3(3.0, -6.0, 4.0),  # Camera position
         target=Vec3(0.0, 0.0, 1.0),  # Look at center
-        up=Vec3(0.0, 0.0, 1.0),      # Z-up
+        up=Vec3(0.0, 0.0, 1.0),  # Z-up
         fov=60.0,
         screen_width=800,
         screen_height=450,

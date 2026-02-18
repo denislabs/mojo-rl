@@ -24,7 +24,7 @@ from physics3d.model.model_def import (
 )
 from physics3d.model.actuator_spec import MotorActuator
 from physics3d.model.geom_spec import Plane, Capsule
-from render3d import Color3D
+from render import Color3D
 from physics3d.gpu.constants import (
     state_size,
     model_size,

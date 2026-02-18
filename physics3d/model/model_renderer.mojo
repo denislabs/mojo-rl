@@ -5,7 +5,7 @@ to draw all visible geoms automatically. Eliminates per-environment renderer boi
 """
 
 from math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
-from render3d import Renderer3D, Camera3D, Color3D
+from render import Renderer3D, Camera3D, Color3D
 from core import EnvRenderer3D
 from ..model.geom_spec import GeomSpec, GEOM_PLANE
 
@@ -171,6 +171,7 @@ struct ModelRenderer[*G: GeomSpec](EnvRenderer3D, Movable):
         @parameter
         for i in range(Self.NUM_GEOMS):
             comptime GG = Self.geom_types[i]
+
             @parameter
             if GG.BODY_IDX > 0:
                 if GG.RADIUS > max_radius:
@@ -207,8 +208,14 @@ struct ModelRenderer[*G: GeomSpec](EnvRenderer3D, Movable):
                     if GG.POS_X == 0.0 and GG.POS_Y == 0.0 and GG.POS_Z == 0.0:
                         # Identity offset — use body pos directly
                         var geom_pos = body_pos
+
                         @parameter
-                        if GG.QUAT_X == 0.0 and GG.QUAT_Y == 0.0 and GG.QUAT_Z == 0.0 and GG.QUAT_W == 1.0:
+                        if (
+                            GG.QUAT_X == 0.0
+                            and GG.QUAT_Y == 0.0
+                            and GG.QUAT_Z == 0.0
+                            and GG.QUAT_W == 1.0
+                        ):
                             # Identity rotation — use body quat directly
                             self.renderer.draw_capsule(
                                 center=geom_pos,
@@ -220,7 +227,9 @@ struct ModelRenderer[*G: GeomSpec](EnvRenderer3D, Movable):
                             )
                         else:
                             # Apply local rotation: geom_quat = body_quat * local_quat
-                            var local_quat = Quat(GG.QUAT_W, GG.QUAT_X, GG.QUAT_Y, GG.QUAT_Z)
+                            var local_quat = Quat(
+                                GG.QUAT_W, GG.QUAT_X, GG.QUAT_Y, GG.QUAT_Z
+                            )
                             var geom_quat = body_quat * local_quat
                             self.renderer.draw_capsule(
                                 center=geom_pos,
@@ -233,9 +242,17 @@ struct ModelRenderer[*G: GeomSpec](EnvRenderer3D, Movable):
                     else:
                         # Apply local offset: geom_pos = body_pos + body_quat.rotate_vec(local_pos)
                         var local_pos = Vec3(GG.POS_X, GG.POS_Y, GG.POS_Z)
-                        var geom_pos = body_pos + body_quat.rotate_vec(local_pos)
+                        var geom_pos = body_pos + body_quat.rotate_vec(
+                            local_pos
+                        )
+
                         @parameter
-                        if GG.QUAT_X == 0.0 and GG.QUAT_Y == 0.0 and GG.QUAT_Z == 0.0 and GG.QUAT_W == 1.0:
+                        if (
+                            GG.QUAT_X == 0.0
+                            and GG.QUAT_Y == 0.0
+                            and GG.QUAT_Z == 0.0
+                            and GG.QUAT_W == 1.0
+                        ):
                             self.renderer.draw_capsule(
                                 center=geom_pos,
                                 orientation=body_quat,
@@ -245,7 +262,9 @@ struct ModelRenderer[*G: GeomSpec](EnvRenderer3D, Movable):
                                 color=GG.COLOR,
                             )
                         else:
-                            var local_quat = Quat(GG.QUAT_W, GG.QUAT_X, GG.QUAT_Y, GG.QUAT_Z)
+                            var local_quat = Quat(
+                                GG.QUAT_W, GG.QUAT_X, GG.QUAT_Y, GG.QUAT_Z
+                            )
                             var geom_quat = body_quat * local_quat
                             self.renderer.draw_capsule(
                                 center=geom_pos,

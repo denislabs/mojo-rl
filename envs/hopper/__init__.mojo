@@ -9,7 +9,7 @@ Components:
 - Hopper: Main environment struct implementing BoxContinuousActionEnv
 - ObsState[11]: 11D observation state (5 qpos + 6 qvel) -- from core
 - ContAction[3]: 3D continuous action (joint torques) -- from core
-- HopperRenderer: 3D visualization using render3d
+- HopperRenderer: 3D visualization using render
 
 Example usage:
     from envs.hopper import Hopper

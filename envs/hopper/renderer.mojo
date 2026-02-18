@@ -8,7 +8,7 @@ Implements EnvRenderer3D trait for integration with evaluation code.
 """
 
 from math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
-from render3d import Color3D
+from render import Color3D
 from core import EnvRenderer3D
 from physics3d.model.model_renderer import ModelRenderer
 
@@ -37,8 +37,11 @@ struct HopperRenderer(EnvRenderer3D, Movable):
     """
 
     var inner: ModelRenderer[
-        HopperGroundGeom, HopperTorsoGeom, HopperThighGeom,
-        HopperLegGeom, HopperFootGeom,
+        HopperGroundGeom,
+        HopperTorsoGeom,
+        HopperThighGeom,
+        HopperLegGeom,
+        HopperFootGeom,
     ]
 
     fn __init__(
@@ -49,8 +52,11 @@ struct HopperRenderer(EnvRenderer3D, Movable):
         show_velocity: Bool = True,
     ) raises:
         self.inner = ModelRenderer[
-            HopperGroundGeom, HopperTorsoGeom, HopperThighGeom,
-            HopperLegGeom, HopperFootGeom,
+            HopperGroundGeom,
+            HopperTorsoGeom,
+            HopperThighGeom,
+            HopperLegGeom,
+            HopperFootGeom,
         ](
             width=width,
             height=height,

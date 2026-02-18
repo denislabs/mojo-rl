@@ -24,7 +24,7 @@ Usage:
 """
 
 from ..constants import GEOM_PLANE, GEOM_SPHERE, GEOM_CAPSULE, GEOM_BOX
-from render3d import Color3D
+from render import Color3D
 
 # Sentinel values for "use model default" (re-exported for convenience)
 comptime _UNSET_F64: Float64 = -1.0

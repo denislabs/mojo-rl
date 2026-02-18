@@ -8,7 +8,7 @@ Geometry types reuse constants from physics3d/constants.mojo:
 """
 
 from ..constants import GEOM_CAPSULE, GEOM_SPHERE, GEOM_BOX
-from render3d import Color3D
+from render import Color3D
 
 # =============================================================================
 # BodySpec Trait

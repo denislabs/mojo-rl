@@ -1,6 +1,6 @@
-"""Test render3d module compilation and basic functionality."""
+"""Test render module compilation and basic functionality."""
 
-from render3d import (
+from render import (
     Camera3D,
     WireframeSphere,
     WireframeCapsule,
@@ -8,12 +8,12 @@ from render3d import (
     WireframeLine,
     Renderer3D,
 )
-from render3d.shapes3d import create_ground_grid, create_axes
+from render.shapes3d import create_ground_grid, create_axes
 from math3d import Vec3, Quat
 
 
 fn main() raises:
-    print("Testing render3d module...")
+    print("Testing render module...")
 
     # Test 1: Camera3D
     print("\nTest 1: Camera3D")
@@ -31,7 +31,13 @@ fn main() raises:
     # Test projection
     var test_point = Vec3(0.0, 0.0, 1.0)
     var projected = camera.project_to_screen(test_point)
-    print("  Projected (0,0,1):", projected[0], projected[1], "visible:", projected[2])
+    print(
+        "  Projected (0,0,1):",
+        projected[0],
+        projected[1],
+        "visible:",
+        projected[2],
+    )
 
     # Test 2: WireframeSphere
     print("\nTest 2: WireframeSphere")
@@ -83,4 +89,7 @@ fn main() raises:
         print("  Correct number of axes!")
 
     print("\nAll render3d tests passed!")
-    print("\nNote: To test actual rendering with SDL2, run examples/render3d_demo.mojo")
+    print(
+        "\nNote: To test actual rendering with SDL2, run"
+        " examples/render3d_demo.mojo"
+    )

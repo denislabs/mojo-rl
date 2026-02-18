@@ -8,7 +8,7 @@ Implements EnvRenderer3D trait for integration with evaluation code.
 """
 
 from math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
-from render3d import Color3D
+from render import Color3D
 from core import EnvRenderer3D
 from physics3d.model.model_renderer import ModelRenderer
 
@@ -40,8 +40,15 @@ struct HalfCheetahRenderer(EnvRenderer3D, Movable):
     """
 
     var inner: ModelRenderer[
-        GroundGeom, TorsoGeom, HeadGeom, BThighGeom, BShinGeom, BFootGeom,
-        FThighGeom, FShinGeom, FFootGeom,
+        GroundGeom,
+        TorsoGeom,
+        HeadGeom,
+        BThighGeom,
+        BShinGeom,
+        BFootGeom,
+        FThighGeom,
+        FShinGeom,
+        FFootGeom,
     ]
 
     fn __init__(
@@ -52,8 +59,15 @@ struct HalfCheetahRenderer(EnvRenderer3D, Movable):
         show_velocity: Bool = True,
     ) raises:
         self.inner = ModelRenderer[
-            GroundGeom, TorsoGeom, HeadGeom, BThighGeom, BShinGeom, BFootGeom,
-            FThighGeom, FShinGeom, FFootGeom,
+            GroundGeom,
+            TorsoGeom,
+            HeadGeom,
+            BThighGeom,
+            BShinGeom,
+            BFootGeom,
+            FThighGeom,
+            FShinGeom,
+            FFootGeom,
         ](
             width=width,
             height=height,
