@@ -30,6 +30,8 @@ from .geom_spec import GeomSpec
 from .equality_spec import EqualitySpec
 from .camera_spec import CameraSpec
 from .light_spec import LightSpec
+from .texture_spec import TextureSpec
+from .material_spec import MaterialSpec
 from .actuator_spec import (
     ActuatorSpec,
     DYN_NONE,
@@ -1660,6 +1662,41 @@ struct Lights[*L: LightSpec]:
 
     comptime light_types = Variadic.types[T=LightSpec, *Self.L]
     comptime N: Int = Variadic.size(Self.light_types)
+
+
+# =============================================================================
+# Textures — variadic texture list (purely visual, no setup_model)
+# =============================================================================
+
+
+@fieldwise_init
+struct Textures[*T: TextureSpec]:
+    """Compile-time list of texture specifications.
+
+    Provides N (texture count) and type-level access to each texture via tex_types[i].
+    Textures are purely visual assets — no setup_model needed.
+    """
+
+    comptime tex_types = Variadic.types[T=TextureSpec, *Self.T]
+    comptime N: Int = Variadic.size(Self.tex_types)
+
+
+# =============================================================================
+# Materials — variadic material list (purely visual, no setup_model)
+# =============================================================================
+
+
+@fieldwise_init
+struct Materials[*M: MaterialSpec]:
+    """Compile-time list of material specifications.
+
+    Provides N (material count) and type-level access to each material via mat_types[i].
+    Materials define surface appearance (shininess, specular, reflectance, emission)
+    and can reference a texture by name. Geoms reference materials by MATERIAL_NAME.
+    """
+
+    comptime mat_types = Variadic.types[T=MaterialSpec, *Self.M]
+    comptime N: Int = Variadic.size(Self.mat_types)
 
 
 @fieldwise_init

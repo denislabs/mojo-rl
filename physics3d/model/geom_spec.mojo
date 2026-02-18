@@ -181,6 +181,12 @@ trait GeomSpec:
     comptime GEOM_MASS: Float64  # kg (-1.0 = derive from density * volume)
     # Visual
     comptime COLOR: Color
+    # Material properties (-1.0 = use model/material default)
+    comptime SHININESS: Float64    # Specular exponent scaling (0-1)
+    comptime SPECULAR: Float64     # Specular intensity (0-1)
+    comptime REFLECTANCE: Float64  # Reflectance coefficient (0-1)
+    # Material name reference (MuJoCo-style: geom material="name")
+    comptime MATERIAL_NAME: String  # "" = no material reference
 
 
 # =============================================================================
@@ -205,6 +211,10 @@ struct Plane[
     margin: Float64 = _UNSET_F64,
     size_x: Float64 = 40.0,
     size_y: Float64 = 40.0,
+    shininess: Float64 = _UNSET_F64,
+    specular: Float64 = _UNSET_F64,
+    reflectance: Float64 = _UNSET_F64,
+    material_name: String = "",
 ](GeomSpec):
     """Infinite horizontal plane at height z.
 
@@ -244,6 +254,10 @@ struct Plane[
     comptime DENSITY: Float64 = 0.0  # Planes have no mass
     comptime GEOM_MASS: Float64 = 0.0  # Planes have no mass
     comptime COLOR: Color = Color(128, 128, 128, 255)
+    comptime SHININESS: Float64 = Self.shininess
+    comptime SPECULAR: Float64 = Self.specular
+    comptime REFLECTANCE: Float64 = Self.reflectance
+    comptime MATERIAL_NAME: String = Self.material_name
 
 
 # =============================================================================
@@ -273,6 +287,10 @@ struct Sphere[
     density: Float64 = _UNSET_F64,
     mass: Float64 = _UNSET_F64,
     color: Color = Color(100, 100, 200, 255),
+    shininess: Float64 = _UNSET_F64,
+    specular: Float64 = _UNSET_F64,
+    reflectance: Float64 = _UNSET_F64,
+    material_name: String = "",
 ](GeomSpec):
     """Sphere geom (static or body-attached).
 
@@ -313,6 +331,10 @@ struct Sphere[
     comptime DENSITY: Float64 = Self.density
     comptime GEOM_MASS: Float64 = Self.mass
     comptime COLOR: Color = Self.color
+    comptime SHININESS: Float64 = Self.shininess
+    comptime SPECULAR: Float64 = Self.specular
+    comptime REFLECTANCE: Float64 = Self.reflectance
+    comptime MATERIAL_NAME: String = Self.material_name
 
 
 # =============================================================================
@@ -347,6 +369,10 @@ struct Capsule[
     density: Float64 = _UNSET_F64,
     mass: Float64 = _UNSET_F64,
     color: Color = Color(204, 153, 102, 255),
+    shininess: Float64 = _UNSET_F64,
+    specular: Float64 = _UNSET_F64,
+    reflectance: Float64 = _UNSET_F64,
+    material_name: String = "",
 ](GeomSpec):
     """Capsule geom (static or body-attached).
 
@@ -389,6 +415,10 @@ struct Capsule[
     comptime DENSITY: Float64 = Self.density
     comptime GEOM_MASS: Float64 = Self.mass
     comptime COLOR: Color = Self.color
+    comptime SHININESS: Float64 = Self.shininess
+    comptime SPECULAR: Float64 = Self.specular
+    comptime REFLECTANCE: Float64 = Self.reflectance
+    comptime MATERIAL_NAME: String = Self.material_name
 
 
 # =============================================================================
@@ -421,6 +451,10 @@ struct FromToCapsule[
     density: Float64 = _UNSET_F64,
     mass: Float64 = _UNSET_F64,
     color: Color = Color(204, 153, 102, 255),
+    shininess: Float64 = _UNSET_F64,
+    specular: Float64 = _UNSET_F64,
+    reflectance: Float64 = _UNSET_F64,
+    material_name: String = "",
 ](GeomSpec):
     """Capsule defined by two endpoints, matching MuJoCo's fromto="x1 y1 z1 x2 y2 z2".
 
@@ -481,6 +515,10 @@ struct FromToCapsule[
     comptime DENSITY: Float64 = Self.density
     comptime GEOM_MASS: Float64 = Self.mass
     comptime COLOR: Color = Self.color
+    comptime SHININESS: Float64 = Self.shininess
+    comptime SPECULAR: Float64 = Self.specular
+    comptime REFLECTANCE: Float64 = Self.reflectance
+    comptime MATERIAL_NAME: String = Self.material_name
 
 
 # =============================================================================
@@ -516,6 +554,10 @@ struct Box[
     density: Float64 = _UNSET_F64,
     mass: Float64 = _UNSET_F64,
     color: Color = Color(100, 200, 100, 255),
+    shininess: Float64 = _UNSET_F64,
+    specular: Float64 = _UNSET_F64,
+    reflectance: Float64 = _UNSET_F64,
+    material_name: String = "",
 ](GeomSpec):
     """Box geom (static or body-attached).
 
@@ -556,6 +598,10 @@ struct Box[
     comptime DENSITY: Float64 = Self.density
     comptime GEOM_MASS: Float64 = Self.mass
     comptime COLOR: Color = Self.color
+    comptime SHININESS: Float64 = Self.shininess
+    comptime SPECULAR: Float64 = Self.specular
+    comptime REFLECTANCE: Float64 = Self.reflectance
+    comptime MATERIAL_NAME: String = Self.material_name
 
 
 # =============================================================================

@@ -18,12 +18,16 @@ from physics3d.model.model_def import (
     Bodies,
     Joints,
     Geoms,
+    Textures,
+    Materials,
     Actuators,
     ModelDef,
     ModelDefaults,
 )
 from physics3d.model.actuator_spec import MotorActuator
 from physics3d.model.geom_spec import Plane, Capsule
+from physics3d.model.texture_spec import CheckerTexture, GradientTexture
+from physics3d.model.material_spec import Material
 from physics3d.model.camera_spec import TrackCamera
 from physics3d.model.light_spec import DirectionalLight
 from render import Color
@@ -217,12 +221,56 @@ comptime HopperFootJ = HingeJoint[
 
 
 # =============================================================================
+# Textures — MuJoCo <asset> textures (Hopper doesn't define explicit textures
+# in XML, but uses the same MatPlane material as HalfCheetah)
+# =============================================================================
+comptime HopperSkyboxTex = GradientTexture[
+    name="skybox",
+    rgb1_r=1.0, rgb1_g=1.0, rgb1_b=1.0,
+    rgb2_r=0.0, rgb2_g=0.0, rgb2_b=0.0,
+]
+comptime HopperCheckerTex = CheckerTexture[
+    name="texplane",
+    rgb1_r=0.0, rgb1_g=0.0, rgb1_b=0.0,
+    rgb2_r=0.8, rgb2_g=0.8, rgb2_b=0.8,
+    repeat_x=60.0, repeat_y=60.0,
+]
+
+comptime HopperTextures = Textures[HopperSkyboxTex, HopperCheckerTex]
+
+# =============================================================================
+# Materials — MuJoCo <asset> materials
+# =============================================================================
+comptime HopperMatPlane = Material[
+    name="MatPlane",
+    shininess=1.0,
+    specular=1.0,
+    reflectance=0.5,
+    has_texture=True,
+    texture_name="texplane",
+]
+comptime HopperMatGeom = Material[
+    name="geom",
+    shininess=0.5,
+    specular=0.5,
+    reflectance=0.0,
+]
+
+comptime HopperMaterials = Materials[HopperMatPlane, HopperMatGeom]
+
+
+# =============================================================================
 # Geom Definitions (unified collision geometry)
 # =============================================================================
 
 # Geom 0: Ground plane (overrides: friction=1.0, conaffinity=1, condim=3)
+# MuJoCo: <geom material="MatPlane" name="floor" type="plane"/>
 comptime HopperGroundGeom = Plane[
-    z=0.0, friction=1.0, conaffinity=1, condim=3, size_x=20.0, size_y=20.0
+    z=0.0, friction=1.0, conaffinity=1, condim=3, size_x=20.0, size_y=20.0,
+    material_name="MatPlane",
+    shininess=HopperMatPlane.SHININESS,
+    specular=HopperMatPlane.SPECULAR,
+    reflectance=HopperMatPlane.REFLECTANCE,
 ]
 
 # Geom 1: Torso capsule (body 1) — friction/condim from HopperDefaults
@@ -231,6 +279,7 @@ comptime HopperTorsoGeom = Capsule[
     radius=0.05,
     half_length=0.2,
     color = Color(60, 120, 200, 255),
+    material_name="geom",
 ]
 
 # Geom 2: Thigh capsule (body 2) — MuJoCo geom_pos=(0, 0, -0.225)
@@ -240,6 +289,7 @@ comptime HopperThighGeom = Capsule[
     half_length=0.225,
     pos_z= -0.225,
     color = Color(80, 200, 80, 255),
+    material_name="geom",
 ]
 
 # Geom 3: Leg capsule (body 3) — at body origin
@@ -248,6 +298,7 @@ comptime HopperLegGeom = Capsule[
     radius=0.04,
     half_length=0.25,
     color = Color(220, 140, 60, 255),
+    material_name="geom",
 ]
 
 # Geom 4: Foot capsule (body 4) — friction=2.0 overrides default 0.9
@@ -261,6 +312,7 @@ comptime HopperFootGeom = Capsule[
     quat_w=0.707107,
     friction=2.0,
     color = Color(220, 80, 80, 255),
+    material_name="geom",
 ]
 
 comptime HopperGeoms = Geoms[

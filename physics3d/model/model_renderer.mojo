@@ -327,6 +327,11 @@ struct ModelRenderer[*G: GeomSpec](EnvRenderer3D, Movable):
                         )
                         geom_quat = body_quat * local_quat
 
+                    # Resolve material properties (-1.0 sentinel = use defaults)
+                    comptime _shin: Float64 = 0.5 if GG.SHININESS < 0.0 else GG.SHININESS
+                    comptime _spec: Float64 = 0.5 if GG.SPECULAR < 0.0 else GG.SPECULAR
+                    comptime _refl: Float64 = 0.0 if GG.REFLECTANCE < 0.0 else GG.REFLECTANCE
+
                     # Dispatch draw call by geom type
                     @parameter
                     if GG.GEOM_TYPE == GEOM_CAPSULE:
@@ -337,12 +342,18 @@ struct ModelRenderer[*G: GeomSpec](EnvRenderer3D, Movable):
                             half_height=GG.HALF_LENGTH,
                             axis=2,
                             color=GG.COLOR,
+                            shininess=Float32(_shin),
+                            specular=Float32(_spec),
+                            reflectance=Float32(_refl),
                         )
                     elif GG.GEOM_TYPE == GEOM_SPHERE:
                         self.renderer.draw_sphere(
                             center=geom_pos,
                             radius=GG.RADIUS * self.visual_radius_scale,
                             color=GG.COLOR,
+                            shininess=Float32(_shin),
+                            specular=Float32(_spec),
+                            reflectance=Float32(_refl),
                         )
                     elif GG.GEOM_TYPE == GEOM_BOX:
                         self.renderer.draw_box(
@@ -350,6 +361,9 @@ struct ModelRenderer[*G: GeomSpec](EnvRenderer3D, Movable):
                             orientation=geom_quat,
                             half_extents=Vec3(GG.HALF_X, GG.HALF_Y, GG.HALF_Z),
                             color=GG.COLOR,
+                            shininess=Float32(_shin),
+                            specular=Float32(_spec),
+                            reflectance=Float32(_refl),
                         )
         except:
             pass

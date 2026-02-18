@@ -93,27 +93,68 @@ struct SceneUniforms(ImplicitlyCopyable, Movable):
 
 
 struct ObjectUniforms(ImplicitlyCopyable, Movable):
-    """Per-object uniforms: 80 bytes.
+    """Per-object uniforms: 96 bytes.
 
     Layout (std140):
       model: mat4 (64 bytes)
       color: vec4 (16 bytes)
+      material: vec4 (16 bytes) — x=shininess, y=specular, z=reflectance, w=emission
     """
 
     var model: InlineArray[Float32, 16]
     var color: InlineArray[Float32, 4]
+    var material: InlineArray[Float32, 4]
 
     fn __init__(out self):
         self.model = InlineArray[Float32, 16](fill=Float32(0))
         self.color = InlineArray[Float32, 4](fill=Float32(0))
+        self.material = InlineArray[Float32, 4](fill=Float32(0))
+        # Defaults: shininess=0.5, specular=0.5, reflectance=0.0, emission=0.0
+        self.material[0] = 0.5
+        self.material[1] = 0.5
 
     fn __copyinit__(out self, read other: Self):
         self.model = other.model.copy()
         self.color = other.color.copy()
+        self.material = other.material.copy()
 
     fn __moveinit__(out self, deinit other: Self):
         self.model = other.model^
         self.color = other.color^
+        self.material = other.material^
+
+
+struct SkyboxUniforms(ImplicitlyCopyable, Movable):
+    """Skybox uniforms: 32 bytes.
+
+    Layout (std140):
+      top_color: vec4 (16 bytes) - gradient top color
+      bottom_color: vec4 (16 bytes) - gradient bottom color
+    """
+
+    var top_color: InlineArray[Float32, 4]
+    var bottom_color: InlineArray[Float32, 4]
+
+    fn __init__(out self):
+        self.top_color = InlineArray[Float32, 4](fill=Float32(0))
+        self.bottom_color = InlineArray[Float32, 4](fill=Float32(0))
+        # Default: white top, dark blue bottom
+        self.top_color[0] = 0.8
+        self.top_color[1] = 0.85
+        self.top_color[2] = 0.95
+        self.top_color[3] = 1.0
+        self.bottom_color[0] = 0.3
+        self.bottom_color[1] = 0.35
+        self.bottom_color[2] = 0.5
+        self.bottom_color[3] = 1.0
+
+    fn __copyinit__(out self, read other: Self):
+        self.top_color = other.top_color.copy()
+        self.bottom_color = other.bottom_color.copy()
+
+    fn __moveinit__(out self, deinit other: Self):
+        self.top_color = other.top_color^
+        self.bottom_color = other.bottom_color^
 
 
 struct LineUniforms(ImplicitlyCopyable, Movable):

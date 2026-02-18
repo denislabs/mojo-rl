@@ -19,12 +19,16 @@ from physics3d.model.model_def import (
     Bodies,
     Joints,
     Geoms,
+    Textures,
+    Materials,
     Actuators,
     ModelDef,
     ModelDefaults,
 )
 from physics3d.model.actuator_spec import MotorActuator
 from physics3d.model.geom_spec import Plane, Capsule, FromToCapsule
+from physics3d.model.texture_spec import CheckerTexture, FlatTexture, GradientTexture
+from physics3d.model.material_spec import Material, PlaneMaterial, GeomMaterial
 from physics3d.model.camera_spec import TrackCamera
 from physics3d.model.light_spec import DirectionalLight
 from render import Color
@@ -368,12 +372,71 @@ comptime HalfCheetahActuators = Actuators[
 
 
 # =============================================================================
+# Textures — MuJoCo <asset> textures
+# =============================================================================
+# <texture builtin="gradient" rgb1="1 1 1" rgb2="0 0 0" type="skybox"/>
+comptime SkyboxTexture = GradientTexture[
+    name="skybox",
+    rgb1_r=1.0, rgb1_g=1.0, rgb1_b=1.0,
+    rgb2_r=0.0, rgb2_g=0.0, rgb2_b=0.0,
+]
+# <texture builtin="flat" name="texgeom" rgb1="0.8 0.6 0.4" rgb2="0.8 0.6 0.4"/>
+comptime TexGeom = FlatTexture[
+    name="texgeom",
+    rgb1_r=0.8, rgb1_g=0.6, rgb1_b=0.4,
+]
+# <texture builtin="checker" name="texplane" rgb1="0 0 0" rgb2="0.8 0.8 0.8"/>
+comptime TexPlane = CheckerTexture[
+    name="texplane",
+    rgb1_r=0.0, rgb1_g=0.0, rgb1_b=0.0,
+    rgb2_r=0.8, rgb2_g=0.8, rgb2_b=0.8,
+    repeat_x=60.0, repeat_y=60.0,
+]
+
+comptime HalfCheetahTextures = Textures[SkyboxTexture, TexGeom, TexPlane]
+
+# =============================================================================
+# Materials — MuJoCo <asset> materials
+# =============================================================================
+# <material name="MatPlane" reflectance="0.5" shininess="1" specular="1"
+#           texrepeat="60 60" texture="texplane"/>
+comptime MatPlane = Material[
+    name="MatPlane",
+    shininess=1.0,
+    specular=1.0,
+    reflectance=0.5,
+    has_texture=True,
+    texture_name="texplane",
+]
+# <material name="geom" texture="texgeom" texuniform="true"/>
+comptime MatGeom = Material[
+    name="geom",
+    shininess=0.5,
+    specular=0.5,
+    reflectance=0.0,
+    has_texture=True,
+    texture_name="texgeom",
+]
+
+comptime HalfCheetahMaterials = Materials[MatPlane, MatGeom]
+
+
+# =============================================================================
 # Geoms — Unified geometry (replaces WorldBody + body-attached shapes)
 # =============================================================================
 
 # Ground plane
+# MuJoCo: <geom material="MatPlane" name="floor" type="plane"/>
 comptime GroundGeom = Plane[
-    z=0.0, friction=0.4, conaffinity=1, size_x=40.0, size_y=40.0
+    z=0.0,
+    friction=0.4,
+    conaffinity=1,
+    size_x=40.0,
+    size_y=40.0,
+    material_name="MatPlane",
+    shininess=MatPlane.SHININESS,
+    specular=MatPlane.SPECULAR,
+    reflectance=MatPlane.REFLECTANCE,
 ]
 
 # Body capsule geoms with local pos/quat from MuJoCo
@@ -385,8 +448,10 @@ comptime TorsoGeom = FromToCapsule[
     body_idx=1,
     radius=_R,
     # MuJoCo: fromto="-.5 0 0 .5 0 0"
-    from_x=-0.5, to_x=0.5,
+    from_x= -0.5,
+    to_x=0.5,
     color = Color(204, 153, 102, 255),
+    material_name="geom",
 ]
 comptime BThighGeom = Capsule[
     body_idx=2,
@@ -398,6 +463,7 @@ comptime BThighGeom = Capsule[
     quat_y= -0.946300,
     quat_w= -0.323290,
     color = Color(204, 153, 102, 255),
+    material_name="geom",
 ]
 comptime BShinGeom = Capsule[
     body_idx=3,
@@ -409,6 +475,7 @@ comptime BShinGeom = Capsule[
     quat_y= -0.849481,
     quat_w=0.527620,
     color = Color(230, 153, 153, 255),
+    material_name="geom",
 ]
 comptime BFootGeom = Capsule[
     body_idx=4,
@@ -420,6 +487,7 @@ comptime BFootGeom = Capsule[
     quat_y= -0.134590,
     quat_w=0.990901,
     color = Color(230, 153, 153, 255),
+    material_name="geom",
 ]
 comptime FThighGeom = Capsule[
     body_idx=5,
@@ -431,6 +499,7 @@ comptime FThighGeom = Capsule[
     quat_y=0.257081,
     quat_w=0.966390,
     color = Color(204, 153, 102, 255),
+    material_name="geom",
 ]
 comptime FShinGeom = Capsule[
     body_idx=6,
@@ -442,6 +511,7 @@ comptime FShinGeom = Capsule[
     quat_y= -0.295520,
     quat_w=0.955336,
     color = Color(230, 153, 153, 255),
+    material_name="geom",
 ]
 comptime FFootGeom = Capsule[
     body_idx=7,
@@ -453,6 +523,7 @@ comptime FFootGeom = Capsule[
     quat_y= -0.295520,
     quat_w=0.955336,
     color = Color(230, 153, 153, 255),
+    material_name="geom",
 ]
 
 # Head geom — attached to torso (body 0) with local offset
@@ -467,6 +538,7 @@ comptime HeadGeom = Capsule[
     quat_y=0.421410,
     quat_w=0.906870,
     color = Color(204, 153, 102, 255),
+    material_name="geom",
 ]
 
 comptime HalfCheetahGeoms = Geoms[
@@ -486,7 +558,7 @@ comptime HalfCheetahGeoms = Geoms[
 # Camera — MuJoCo: <camera name="track" mode="trackcom" pos="0 -3 0.3"/>
 # =============================================================================
 
-comptime HalfCheetahCamera = TrackCamera[pos_y=-3.0, pos_z=0.3, target_z=0.5]
+comptime HalfCheetahCamera = TrackCamera[pos_y= -3.0, pos_z=0.3, target_z=0.5]
 
 # Light — default directional light (matches Renderer3D defaults)
 comptime HalfCheetahLight = DirectionalLight[]

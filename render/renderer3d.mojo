@@ -137,6 +137,7 @@ from .gpu_types import (
     ObjectUniforms,
     LineUniforms,
     ShadowUniforms,
+    SkyboxUniforms,
     MeshData,
     MeshHandle,
     CapsuleCacheEntry,
@@ -163,6 +164,8 @@ from .gpu_shaders import (
     SHADOW_VERTEX_MSL,
     SHADOW_FRAGMENT_MSL,
     REFLECTION_FRAGMENT_MSL,
+    SKYBOX_VERTEX_MSL,
+    SKYBOX_FRAGMENT_MSL,
 )
 
 comptime Vec3 = Vec3Generic[DType.float64]
@@ -229,6 +232,7 @@ struct Renderer3D(Movable):
     var line_pipeline: Ptr[GPUGraphicsPipeline, AnyOrigin[True]]
     var shadow_pipeline: Ptr[GPUGraphicsPipeline, AnyOrigin[True]]
     var reflection_pipeline: Ptr[GPUGraphicsPipeline, AnyOrigin[True]]
+    var skybox_pipeline: Ptr[GPUGraphicsPipeline, AnyOrigin[True]]
 
     # Depth buffer
     var depth_texture: Ptr[GPUTexture, AnyOrigin[True]]
@@ -262,6 +266,10 @@ struct Renderer3D(Movable):
     var height: Int
     var background_color: Color
     var scene_uniforms: SceneUniforms
+
+    # Skybox
+    var skybox_uniforms: SkyboxUniforms
+    var draw_skybox: Bool
 
     # Configurable light parameters
     var light_dir: InlineArray[Float32, 3]
@@ -321,6 +329,7 @@ struct Renderer3D(Movable):
         self.line_pipeline = Ptr[GPUGraphicsPipeline, AnyOrigin[True]]()
         self.shadow_pipeline = Ptr[GPUGraphicsPipeline, AnyOrigin[True]]()
         self.reflection_pipeline = Ptr[GPUGraphicsPipeline, AnyOrigin[True]]()
+        self.skybox_pipeline = Ptr[GPUGraphicsPipeline, AnyOrigin[True]]()
         self.depth_texture = Ptr[GPUTexture, AnyOrigin[True]]()
         self.shadow_map = Ptr[GPUTexture, AnyOrigin[True]]()
         self.shadow_sampler = Ptr[GPUSampler, AnyOrigin[True]]()
@@ -348,6 +357,8 @@ struct Renderer3D(Movable):
         self.has_ground = False
 
         self.scene_uniforms = SceneUniforms()
+        self.skybox_uniforms = SkyboxUniforms()
+        self.draw_skybox = False
 
         # Store configurable light parameters
         self.light_dir = InlineArray[Float32, 3](fill=Float32(0))
@@ -368,6 +379,7 @@ struct Renderer3D(Movable):
         self.line_pipeline = other.line_pipeline
         self.shadow_pipeline = other.shadow_pipeline
         self.reflection_pipeline = other.reflection_pipeline
+        self.skybox_pipeline = other.skybox_pipeline
         self.depth_texture = other.depth_texture
         self.shadow_map = other.shadow_map
         self.shadow_sampler = other.shadow_sampler
@@ -389,6 +401,8 @@ struct Renderer3D(Movable):
         self.height = other.height
         self.background_color = other.background_color
         self.scene_uniforms = other.scene_uniforms
+        self.skybox_uniforms = other.skybox_uniforms
+        self.draw_skybox = other.draw_skybox
         self.swapchain_format = other.swapchain_format
         self.light_dir = other.light_dir^
         self.light_color = other.light_color^
@@ -1053,6 +1067,99 @@ struct Renderer3D(Movable):
             self.device, Ptr(to=refl_pi)
         )
 
+        # --- Skybox pipeline (fullscreen gradient, no depth write, no vertex input) ---
+        var skybox_vs = self._create_shader(
+            SKYBOX_VERTEX_MSL,
+            GPUShaderStage.GPU_SHADERSTAGE_VERTEX,
+            num_uniform_buffers=0,
+            entrypoint=String("skybox_vertex"),
+        )
+        var skybox_fs = self._create_shader(
+            SKYBOX_FRAGMENT_MSL,
+            GPUShaderStage.GPU_SHADERSTAGE_FRAGMENT,
+            num_uniform_buffers=1,
+            entrypoint=String("skybox_fragment"),
+        )
+
+        var skybox_ct = GPUColorTargetDescription(
+            format=self.swapchain_format,
+            blend_state=GPUColorTargetBlendState(
+                src_color_blendfactor=GPUBlendFactor.GPU_BLENDFACTOR_ONE,
+                dst_color_blendfactor=GPUBlendFactor.GPU_BLENDFACTOR_ZERO,
+                color_blend_op=GPUBlendOp.GPU_BLENDOP_ADD,
+                src_alpha_blendfactor=GPUBlendFactor.GPU_BLENDFACTOR_ONE,
+                dst_alpha_blendfactor=GPUBlendFactor.GPU_BLENDFACTOR_ZERO,
+                alpha_blend_op=GPUBlendOp.GPU_BLENDOP_ADD,
+                color_write_mask=GPUColorComponentFlags(0x0F),
+                enable_blend=False,
+                enable_color_write_mask=False,
+                padding1=0,
+                padding2=0,
+            ),
+        )
+
+        # Skybox has NO vertex input (uses vertex_id to generate fullscreen triangle)
+        var skybox_vi = GPUVertexInputState(
+            vertex_buffer_descriptions=Ptr[GPUVertexBufferDescription, AnyOrigin[False]](),
+            num_vertex_buffers=0,
+            vertex_attributes=Ptr[GPUVertexAttribute, AnyOrigin[False]](),
+            num_vertex_attributes=0,
+        )
+
+        var skybox_pi = GPUGraphicsPipelineCreateInfo(
+            vertex_shader=skybox_vs,
+            fragment_shader=skybox_fs,
+            vertex_input_state=skybox_vi,
+            primitive_type=GPUPrimitiveType.GPU_PRIMITIVETYPE_TRIANGLELIST,
+            rasterizer_state=GPURasterizerState(
+                fill_mode=GPUFillMode.GPU_FILLMODE_FILL,
+                cull_mode=GPUCullMode.GPU_CULLMODE_NONE,
+                front_face=GPUFrontFace.GPU_FRONTFACE_COUNTER_CLOCKWISE,
+                depth_bias_constant_factor=0.0,
+                depth_bias_clamp=0.0,
+                depth_bias_slope_factor=0.0,
+                enable_depth_bias=False,
+                enable_depth_clip=False,
+                padding1=0,
+                padding2=0,
+            ),
+            multisample_state=GPUMultisampleState(
+                sample_count=GPUSampleCount.GPU_SAMPLECOUNT_1,
+                sample_mask=0,
+                enable_mask=False,
+                padding1=0,
+                padding2=0,
+                padding3=0,
+            ),
+            depth_stencil_state=GPUDepthStencilState(
+                compare_op=GPUCompareOp.GPU_COMPAREOP_LESS_OR_EQUAL,
+                back_stencil_state=self._no_stencil_op(),
+                front_stencil_state=self._no_stencil_op(),
+                compare_mask=0,
+                write_mask=0,
+                enable_depth_test=False,
+                enable_depth_write=False,
+                enable_stencil_test=False,
+                padding1=0,
+                padding2=0,
+                padding3=0,
+            ),
+            target_info=GPUGraphicsPipelineTargetInfo(
+                color_target_descriptions=Ptr(to=skybox_ct),
+                num_color_targets=1,
+                depth_stencil_format=GPUTextureFormat.GPU_TEXTUREFORMAT_D32_FLOAT,
+                has_depth_stencil_target=True,
+                padding1=0,
+                padding2=0,
+                padding3=0,
+            ),
+            props=PropertiesID(0),
+        )
+
+        self.skybox_pipeline = create_gpu_graphics_pipeline(
+            self.device, Ptr(to=skybox_pi)
+        )
+
         # Free heap-allocated vertex attribute arrays
         solid_attrs.free()
         ground_attrs.free()
@@ -1070,6 +1177,8 @@ struct Renderer3D(Movable):
         release_gpu_shader(self.device, shadow_fs)
         release_gpu_shader(self.device, refl_vs)
         release_gpu_shader(self.device, refl_fs)
+        release_gpu_shader(self.device, skybox_vs)
+        release_gpu_shader(self.device, skybox_fs)
 
     fn _create_depth_texture(mut self) raises:
         """Create the depth buffer texture."""
@@ -1258,6 +1367,10 @@ struct Renderer3D(Movable):
         center: Vec3,
         radius: Float64,
         color: Color = Color(255, 255, 255, 255),
+        shininess: Float32 = 0.5,
+        specular: Float32 = 0.5,
+        reflectance: Float32 = 0.0,
+        emission: Float32 = 0.0,
     ):
         """Draw a solid sphere.
 
@@ -1265,6 +1378,10 @@ struct Renderer3D(Movable):
             center: Sphere center in world space.
             radius: Sphere radius.
             color: Surface color.
+            shininess: Specular exponent scaling (0-1).
+            specular: Specular intensity (0-1).
+            reflectance: Reflectance coefficient (0-1).
+            emission: Emissive intensity (0-1).
         """
         var model = Mat4.compose(
             center, Quat.identity(), Vec3(radius, radius, radius)
@@ -1272,6 +1389,10 @@ struct Renderer3D(Movable):
         var uniforms = ObjectUniforms()
         uniforms.model = mat4_to_gpu_f32(model)
         uniforms.color = color_to_vec4(color)
+        uniforms.material[0] = shininess
+        uniforms.material[1] = specular
+        uniforms.material[2] = reflectance
+        uniforms.material[3] = emission
 
         self.solid_draws.append(SolidDrawCommand(0, uniforms))
 
@@ -1283,6 +1404,10 @@ struct Renderer3D(Movable):
         half_height: Float64,
         axis: Int = 2,
         color: Color = Color(255, 255, 255, 255),
+        shininess: Float32 = 0.5,
+        specular: Float32 = 0.5,
+        reflectance: Float32 = 0.0,
+        emission: Float32 = 0.0,
     ) raises:
         """Draw a solid capsule.
 
@@ -1332,6 +1457,10 @@ struct Renderer3D(Movable):
         var uniforms = ObjectUniforms()
         uniforms.model = mat4_to_gpu_f32(model)
         uniforms.color = color_to_vec4(color)
+        uniforms.material[0] = shininess
+        uniforms.material[1] = specular
+        uniforms.material[2] = reflectance
+        uniforms.material[3] = emission
 
         self.solid_draws.append(
             SolidDrawCommand(
@@ -1345,6 +1474,10 @@ struct Renderer3D(Movable):
         orientation: Quat,
         half_extents: Vec3,
         color: Color = Color(255, 255, 255, 255),
+        shininess: Float32 = 0.5,
+        specular: Float32 = 0.5,
+        reflectance: Float32 = 0.0,
+        emission: Float32 = 0.0,
     ):
         """Draw a solid box.
 
@@ -1353,6 +1486,10 @@ struct Renderer3D(Movable):
             orientation: Box orientation.
             half_extents: Half-extents along local X, Y, Z.
             color: Surface color.
+            shininess: Specular exponent scaling (0-1).
+            specular: Specular intensity (0-1).
+            reflectance: Reflectance coefficient (0-1).
+            emission: Emissive intensity (0-1).
         """
         # Unit box is [-0.5, 0.5], so scale by 2 * half_extents
         var scale = Vec3(
@@ -1365,8 +1502,52 @@ struct Renderer3D(Movable):
         var uniforms = ObjectUniforms()
         uniforms.model = mat4_to_gpu_f32(model)
         uniforms.color = color_to_vec4(color)
+        uniforms.material[0] = shininess
+        uniforms.material[1] = specular
+        uniforms.material[2] = reflectance
+        uniforms.material[3] = emission
 
         self.solid_draws.append(SolidDrawCommand(1, uniforms))
+
+    fn set_skybox(
+        mut self,
+        top_r: Float32 = 0.8,
+        top_g: Float32 = 0.85,
+        top_b: Float32 = 0.95,
+        bottom_r: Float32 = 0.3,
+        bottom_g: Float32 = 0.35,
+        bottom_b: Float32 = 0.5,
+    ):
+        """Enable skybox gradient background.
+
+        Args:
+            top_r/g/b: Gradient top color (RGB, 0-1).
+            bottom_r/g/b: Gradient bottom color (RGB, 0-1).
+        """
+        self.draw_skybox = True
+        self.skybox_uniforms.top_color[0] = top_r
+        self.skybox_uniforms.top_color[1] = top_g
+        self.skybox_uniforms.top_color[2] = top_b
+        self.skybox_uniforms.top_color[3] = 1.0
+        self.skybox_uniforms.bottom_color[0] = bottom_r
+        self.skybox_uniforms.bottom_color[1] = bottom_g
+        self.skybox_uniforms.bottom_color[2] = bottom_b
+        self.skybox_uniforms.bottom_color[3] = 1.0
+
+    fn set_ground_checker_colors(
+        mut self,
+        r: Float32 = 0.22,
+        g: Float32 = 0.22,
+        b: Float32 = 0.25,
+    ):
+        """Set ground checker secondary color (stored in scene padding.xyz).
+
+        Args:
+            r/g/b: Checker dark tile color (RGB, 0-1). Light tile is 1.6x brighter.
+        """
+        self.scene_uniforms.padding[0] = r
+        self.scene_uniforms.padding[1] = g
+        self.scene_uniforms.padding[2] = b
 
     fn draw_ground_grid(
         mut self,
@@ -1586,7 +1767,7 @@ struct Renderer3D(Movable):
                     cmd_buf,
                     1,
                     Ptr(to=self.solid_draws[i].uniforms).bitcast[NoneType](),
-                    80,
+                    96,
                 )
                 self._select_and_draw(shadow_pass, self.solid_draws[i])
 
@@ -1675,6 +1856,20 @@ struct Renderer3D(Movable):
         )
 
         # ------------------------------------------------------------------
+        # Phase 0: SKYBOX (fullscreen gradient, drawn first)
+        # ------------------------------------------------------------------
+        if self.draw_skybox:
+            bind_gpu_graphics_pipeline(render_pass, self.skybox_pipeline)
+            push_gpu_fragment_uniform_data(
+                cmd_buf,
+                0,
+                Ptr(to=self.skybox_uniforms).bitcast[NoneType](),
+                32,
+            )
+            # Draw fullscreen triangle (3 vertices, no vertex buffer)
+            draw_gpu_primitives(render_pass, 3, 1, 0, 0)
+
+        # ------------------------------------------------------------------
         # Phase A: REFLECTIONS (Z-flipped solid objects, semi-transparent)
         # ------------------------------------------------------------------
         if self.has_ground and len(self.solid_draws) > 0:
@@ -1714,7 +1909,7 @@ struct Renderer3D(Movable):
                     cmd_buf,
                     1,
                     Ptr(to=mirrored_uniforms).bitcast[NoneType](),
-                    80,
+                    96,
                 )
                 self._select_and_draw(render_pass, self.solid_draws[i])
 
@@ -1747,7 +1942,7 @@ struct Renderer3D(Movable):
                 cmd_buf,
                 1,
                 Ptr(to=self.ground_uniforms).bitcast[NoneType](),
-                80,
+                96,
             )
 
             # Bind shadow map + sampler to fragment sampler slot 0
@@ -1814,7 +2009,7 @@ struct Renderer3D(Movable):
                     cmd_buf,
                     1,
                     Ptr(to=self.solid_draws[i].uniforms).bitcast[NoneType](),
-                    80,
+                    96,
                 )
                 self._select_and_draw(render_pass, self.solid_draws[i])
 
@@ -2040,6 +2235,7 @@ struct Renderer3D(Movable):
         release_gpu_graphics_pipeline(self.device, self.line_pipeline)
         release_gpu_graphics_pipeline(self.device, self.shadow_pipeline)
         release_gpu_graphics_pipeline(self.device, self.reflection_pipeline)
+        release_gpu_graphics_pipeline(self.device, self.skybox_pipeline)
 
         # Release window and device
         release_window_from_gpu_device(self.device, self.window)

@@ -1,11 +1,12 @@
 """MSL Shader Source Strings for GPU 3D Renderer.
 
-Six shader pairs as comptime string constants:
-  1. Solid object shaders (Blinn-Phong lighting + shadow sampling)
-  2. Ground shaders (procedural checkerboard + shadow sampling)
+Seven shader pairs as comptime string constants:
+  1. Solid object shaders (Blinn-Phong lighting + shadow sampling + per-object material)
+  2. Ground shaders (procedural checkerboard + shadow sampling + material)
   3. Line shaders (flat color, no lighting)
   4. Shadow map shaders (depth-only pass from light POV)
   5. Reflection shaders (Z-flipped, darkened, semi-transparent)
+  6. Skybox shaders (fullscreen vertical gradient)
 
 SDL_GPU MSL binding convention:
   - [[buffer(0)]] = uniform slot 0
@@ -16,7 +17,7 @@ SDL_GPU MSL binding convention:
 """
 
 
-# --- Solid Object Shaders (Blinn-Phong + Shadows) ---
+# --- Solid Object Shaders (Blinn-Phong + Shadows + Material) ---
 
 comptime SOLID_VERTEX_MSL = """
 #include <metal_stdlib>
@@ -33,6 +34,7 @@ struct VertexOut {
     float3 world_pos;
     float3 world_normal;
     float4 obj_color;
+    float4 obj_material;
 };
 
 struct SceneUniforms {
@@ -46,6 +48,7 @@ struct SceneUniforms {
 struct ObjectUniforms {
     float4x4 model;
     float4 color;
+    float4 material;  // x=shininess, y=specular, z=reflectance, w=emission
 };
 
 vertex VertexOut solid_vertex(
@@ -60,6 +63,7 @@ vertex VertexOut solid_vertex(
     // Transform normal by upper 3x3 of model matrix
     out.world_normal = (obj.model * float4(in.normal, 0.0)).xyz;
     out.obj_color = obj.color;
+    out.obj_material = obj.material;
     return out;
 }
 """
@@ -73,6 +77,7 @@ struct VertexOut {
     float3 world_pos;
     float3 world_normal;
     float4 obj_color;
+    float4 obj_material;
 };
 
 struct SceneUniforms {
@@ -135,15 +140,24 @@ fragment float4 solid_fragment(
     float3 V = normalize(scene.camera_pos.xyz - in.world_pos);
     float3 H = normalize(L + V);
 
+    // Per-object material properties
+    float mat_shininess = in.obj_material.x;  // 0-1, maps to specular exponent
+    float mat_specular = in.obj_material.y;    // 0-1, specular intensity
+    float mat_emission = in.obj_material.w;    // 0-1, emissive intensity
+
+    // Map shininess [0,1] to specular exponent: 0.0->4, 0.5->32, 1.0->128
+    float spec_exp = mix(4.0, 128.0, mat_shininess);
+
     float ambient = scene.light_color.w;
     float diffuse = max(dot(N, L), 0.0);
-    float specular = pow(max(dot(N, H), 0.0), 32.0) * 0.3;
+    float specular = pow(max(dot(N, H), 0.0), spec_exp) * mat_specular;
 
     float shadow_factor = compute_shadow(in.world_pos, shadow, shadow_map, shadow_sampler);
 
     float3 light_col = scene.light_color.xyz;
     float3 color = in.obj_color.rgb * (ambient + shadow_factor * diffuse * light_col)
-                 + shadow_factor * specular * light_col;
+                 + shadow_factor * specular * light_col
+                 + in.obj_color.rgb * mat_emission;
 
     return float4(color, in.obj_color.a);
 }
@@ -178,6 +192,7 @@ struct SceneUniforms {
 struct ObjectUniforms {
     float4x4 model;
     float4 color;
+    float4 material;  // x=shininess, y=specular, z=reflectance, w=emission
 };
 
 vertex VertexOut ground_vertex(
@@ -209,7 +224,7 @@ struct SceneUniforms {
     float4 camera_pos;
     float4 light_dir;
     float4 light_color;
-    float4 padding;
+    float4 padding;      // xyz = checker color2, w = ground_z
 };
 
 struct ShadowUniforms {
@@ -257,15 +272,23 @@ fragment float4 ground_fragment(
     depth2d<float> shadow_map [[texture(0)]],
     sampler shadow_sampler [[sampler(0)]]
 ) {
-    // Checkerboard pattern
+    // Checkerboard pattern — colors from scene.padding.xyz (color2) and scene uniforms
+    float3 checker_color1 = float3(0.35, 0.35, 0.38);  // Light tile (default)
+    float3 checker_color2 = float3(0.22, 0.22, 0.25);  // Dark tile (default)
+
+    // Use padding.xyz for checker color2 if non-zero
+    if (scene.padding.x > 0.001 || scene.padding.y > 0.001 || scene.padding.z > 0.001) {
+        checker_color2 = scene.padding.xyz;
+        // Derive color1 as brighter version
+        checker_color1 = checker_color2 * 1.6;
+    }
+
     float tile_size = 1.0;
     float2 tile = floor(in.world_pos.xy / tile_size);
     float checker = fmod(tile.x + tile.y, 2.0);
     checker = abs(checker);
 
-    float3 color1 = float3(0.35, 0.35, 0.38);  // Light tile
-    float3 color2 = float3(0.22, 0.22, 0.25);  // Dark tile
-    float3 base_color = mix(color1, color2, checker);
+    float3 base_color = mix(checker_color1, checker_color2, checker);
 
     // Subtle directional lighting
     float3 N = float3(0.0, 0.0, 1.0);
@@ -360,6 +383,7 @@ struct SceneUniforms {
 struct ObjectUniforms {
     float4x4 model;
     float4 color;
+    float4 material;
 };
 
 vertex VertexOut shadow_vertex(
@@ -395,6 +419,7 @@ struct VertexOut {
     float3 world_pos;
     float3 world_normal;
     float4 obj_color;
+    float4 obj_material;
 };
 
 struct SceneUniforms {
@@ -415,15 +440,19 @@ fragment float4 reflection_fragment(
         discard_fragment();
     }
 
-    // Basic lighting (simplified)
+    // Basic lighting with per-object material
     float3 N = normalize(in.world_normal);
     float3 L = normalize(-scene.light_dir.xyz);
     float3 V = normalize(scene.camera_pos.xyz - in.world_pos);
     float3 H = normalize(L + V);
 
+    float mat_shininess = in.obj_material.x;
+    float mat_specular = in.obj_material.y;
+    float spec_exp = mix(4.0, 128.0, mat_shininess);
+
     float ambient = scene.light_color.w;
     float diffuse = max(dot(N, L), 0.0);
-    float specular = pow(max(dot(N, H), 0.0), 32.0) * 0.15;
+    float specular = pow(max(dot(N, H), 0.0), spec_exp) * mat_specular * 0.5;
 
     float3 light_col = scene.light_color.xyz;
     float3 color = in.obj_color.rgb * (ambient + diffuse * light_col) + specular * light_col;
@@ -437,5 +466,52 @@ fragment float4 reflection_fragment(
     alpha *= 1.0 - smoothstep(6.0, 10.0, dist);
 
     return float4(color, alpha);
+}
+"""
+
+# --- Skybox Shaders (Fullscreen Vertical Gradient) ---
+
+comptime SKYBOX_VERTEX_MSL = """
+#include <metal_stdlib>
+using namespace metal;
+
+struct VertexOut {
+    float4 position [[position]];
+    float2 uv;
+};
+
+// Fullscreen triangle: 3 vertices cover the entire screen
+vertex VertexOut skybox_vertex(uint vid [[vertex_id]]) {
+    VertexOut out;
+    // Generate fullscreen triangle from vertex ID
+    float2 pos = float2((vid << 1) & 2, vid & 2);
+    out.position = float4(pos * 2.0 - 1.0, 0.999, 1.0);  // Near far plane
+    out.uv = float2(pos.x, 1.0 - pos.y);  // UV: (0,0) bottom-left, (1,1) top-right
+    return out;
+}
+"""
+
+comptime SKYBOX_FRAGMENT_MSL = """
+#include <metal_stdlib>
+using namespace metal;
+
+struct VertexOut {
+    float4 position [[position]];
+    float2 uv;
+};
+
+struct SkyboxUniforms {
+    float4 top_color;     // Gradient top color (rgb + alpha)
+    float4 bottom_color;  // Gradient bottom color (rgb + alpha)
+};
+
+fragment float4 skybox_fragment(
+    VertexOut in [[stage_in]],
+    constant SkyboxUniforms &sky [[buffer(0)]]
+) {
+    // Vertical gradient: uv.y=1 is top, uv.y=0 is bottom
+    float t = in.uv.y;
+    float3 color = mix(sky.bottom_color.rgb, sky.top_color.rgb, t);
+    return float4(color, 1.0);
 }
 """

@@ -1563,7 +1563,7 @@ Render Sprint (independent, can be done in parallel with any physics sprint):
   R.3 RGBA alpha                <- DONE (transparency support on GeomSpec + Renderer3D)
   R.4 Camera spec from model    <- DONE (CameraSpec trait + TrackCamera, env renderers use camera specs)
   R.5 Lighting model            <- DONE (LightSpec trait + DirectionalLight, configurable light params in Renderer3D/ModelRenderer)
-  R.6 Materials & textures      <- MaterialSpec, built-in textures (checker, gradient), skybox
+  R.6 Materials & textures      <- DONE (TextureSpec, MaterialSpec, skybox gradient, per-geom material properties)
   R.7 Site markers (visual)     <- render sites as small spheres/crosses (depends on 6.8)
 ```
 
@@ -1694,34 +1694,33 @@ and exponent are defined on `LightSpec` for future shader parameterization (R.6)
 
 ### R.6 Materials & Textures
 
-**Status**: NOT STARTED.
+**Status**: **DONE**.
 **Effort**: ~3-5 days.
-**Priority**: Low for RL — cosmetic improvement only.
 
-**Problem**: MuJoCo XML defines textures and materials:
-```xml
-<texture builtin="checker" name="texplane" rgb1="0 0 0" rgb2="0.8 0.8 0.8" type="2d"/>
-<material name="MatPlane" reflectance="0.5" shininess="1" specular="1" texture="texplane"/>
-<texture builtin="gradient" type="skybox" rgb1="1 1 1" rgb2="0 0 0"/>
-```
-Our renderer has zero texture/material support.
+**What was done**:
+1. **`TextureSpec` trait** + 3 concrete types: `CheckerTexture`, `FlatTexture`, `GradientTexture`
+   (`model/texture_spec.mojo`) — procedural textures matching MuJoCo builtins
+2. **`MaterialSpec` trait** + concrete `Material` type + pre-built `DefaultMaterial`, `PlaneMaterial`,
+   `GeomMaterial` (`model/material_spec.mojo`) — SHININESS, SPECULAR, REFLECTANCE, EMISSION,
+   TEXTURE_NAME fields
+3. **`Textures[*T]` / `Materials[*M]`** variadic containers in `model/model_def.mojo`
+   (like Cameras/Lights — compile-time asset declarations)
+4. **`MATERIAL_NAME: String`** field on `GeomSpec` trait + all 5 concrete geom types — geoms
+   reference their material by name (MuJoCo-style `material="MatPlane"`)
+5. **`SHININESS` / `SPECULAR` / `REFLECTANCE`** fields on `GeomSpec` — per-geom material
+   properties resolved from named materials at definition time
+6. **Per-object material in MSL shaders** — `ObjectUniforms` expanded to 96 bytes (added
+   `material` vec4: shininess, specular, reflectance, emission). Solid/ground/reflection
+   shaders use per-object material instead of hardcoded values.
+7. **Skybox gradient** — fullscreen triangle pipeline with `SkyboxUniforms` (top/bottom color),
+   rendered before scene. `set_skybox()` on Renderer3D.
+8. **Ground checker colors** — configurable via `set_ground_checker_colors()` + `SceneUniforms.padding.xyz`
+9. **HalfCheetah/Hopper** env defs declare textures & materials matching MuJoCo XML asset sections
 
-**What to do**:
-1. Add `TextureSpec` for built-in textures (checker, gradient, flat) — procedurally generated,
-   no file I/O needed
-2. Add `MaterialSpec` with `SHININESS`, `SPECULAR`, `REFLECTANCE`, `TEXTURE_NAME`
-3. Per-geom material reference: `MATERIAL` field on `GeomSpec`
-4. Skybox: render a gradient background behind the scene
-5. Texture mapping for ground plane (checker) and geom surfaces (cube-mapped)
-
-**Files to create**:
-- `model/texture_spec.mojo` — `TextureSpec` trait, `CheckerTexture`, `GradientTexture`
-- `model/material_spec.mojo` — `MaterialSpec` trait
-
-**Files to modify**:
-- `model/geom_spec.mojo` — `MATERIAL` reference field
-- `model/model_def.mojo` — `Textures`, `Materials` containers
-- `render/renderer3d.mojo` — texture sampling, material application
+**Files created**: `texture_spec.mojo`, `material_spec.mojo`
+**Files modified**: `geom_spec.mojo`, `model_def.mojo`, `model/__init__.mojo`,
+  `gpu_types.mojo`, `gpu_shaders.mojo`, `renderer3d.mojo`, `render/__init__.mojo`,
+  `model_renderer.mojo`, `half_cheetah_def.mojo`, `hopper_def.mojo`
 
 ---
 
@@ -1754,14 +1753,13 @@ markers. Once `SiteSpec` exists (Phase 6.8), they should be optionally renderabl
 | R.3 Color Unification + RGBA Alpha Support | ~0.5 day | **DONE** | None |
 | R.4 Camera spec | ~0.5 day | **DONE** | None |
 | R.5 Lighting model | ~0.5 day | **DONE** | None |
-| R.6 Materials & textures | ~3-5 days | Low | R.5 (for material shading) |
+| R.6 Materials & textures | ~3-5 days | **DONE** | R.5 (for material shading) |
 | R.7 Site markers | ~0.5 day | Low | Phase 6.8 (site elements) |
 | **Total** | **~8-11 days** | | |
 
-**Recommended order**: ~~R.1~~ → ~~R.2~~ → R.4 → R.3 → R.5 → R.6 → R.7
+**Recommended order**: ~~R.1~~ → ~~R.2~~ → ~~R.4~~ → ~~R.3~~ → ~~R.5~~ → ~~R.6~~ → R.7
 
-R.1 + R.2 are done. Next up: R.4 (camera spec) for the biggest remaining improvement
-correctly with a solid ground plane. The rest is cosmetic polish.
+R.1 through R.6 are done. Only R.7 (site markers) remains, which depends on Phase 6.8.
 
 ---
 
