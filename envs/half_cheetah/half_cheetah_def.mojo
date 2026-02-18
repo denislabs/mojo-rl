@@ -24,7 +24,7 @@ from physics3d.model.model_def import (
     ModelDefaults,
 )
 from physics3d.model.actuator_spec import MotorActuator
-from physics3d.model.geom_spec import Plane, Capsule
+from physics3d.model.geom_spec import Plane, Capsule, FromToCapsule
 from render import Color3D
 from physics3d.gpu.constants import (
     state_size,
@@ -377,13 +377,11 @@ comptime GroundGeom = Plane[
 # MuJoCo geom quat is (w,x,y,z), our engine uses (x,y,z,w)
 # Body capsule geoms — friction/friction_spin/friction_roll/conaffinity
 # inherited from HalfCheetahDefaults (friction=0.4, conaffinity=0)
-comptime TorsoGeom = Capsule[
+comptime TorsoGeom = FromToCapsule[
     body_idx=1,
     radius=_R,
-    half_length=0.5,
-    # MuJoCo geom pos=(0,0,0), quat=(0.707107, 0, -0.707107, 0) → 90°Y rotation
-    quat_y= -0.707107,
-    quat_w=0.707107,
+    # MuJoCo: fromto="-.5 0 0 .5 0 0"
+    from_x=-0.5, to_x=0.5,
     color = Color3D(204, 153, 102),
 ]
 comptime BThighGeom = Capsule[

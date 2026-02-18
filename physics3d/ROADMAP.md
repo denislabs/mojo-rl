@@ -45,9 +45,9 @@ Reference material:
   - [5.5 Tendon System (fixed tendons)](#55-tendon-system-fixed-tendons)
   - [5.6 No-Slip Friction Post-Solver](#56-no-slip-friction-post-solver)
 - [Phase 6: MuJoCo XML Compatibility Gaps](#phase-6-mujoco-xml-compatibility-gaps)
-  - [6.1 settotalmass Compiler Directive](#61-settotalmass-compiler-directive)
+  - [6.1 settotalmass Compiler Directive — DONE](#61-settotalmass-compiler-directive--done)
   - [6.2 inertiafromgeom from Child Geoms](#62-inertiafromgeom-from-child-geoms)
-  - [6.3 fromto Capsule Specification](#63-fromto-capsule-specification)
+  - [6.3 fromto Capsule Specification — DONE](#63-fromto-capsule-specification--done)
   - [6.4 Contact Margin](#64-contact-margin)
   - [6.5 Full solimp (5 params)](#65-full-solimp-5-params)
   - [6.6 Cylinder Geom Collision](#66-cylinder-geom-collision)
@@ -100,7 +100,7 @@ Reference material:
 | ~~Separate ground/body-body detection~~ | ~~High~~ | ~~0~~ DONE |
 | ~~No collision filtering~~ | ~~Medium~~ | ~~0~~ DONE |
 | No MJCF XML parser | Medium — manual model translation | 0 |
-| No `settotalmass` compiler directive | Low — only HalfCheetah uses it | 6 |
+| ~~No `settotalmass` compiler directive~~ | ~~Low~~ | ~~6~~ DONE |
 | No `inertiafromgeom` from child geoms | Medium — currently inertia is per-body shape, not summed from geoms | 6 |
 | No `fromto` capsule specification | Low — requires endpoint→center conversion | 6 |
 | ~~No `margin` on geom/joint contacts~~ | ~~Medium~~ | ~~6~~ DONE |
@@ -1529,8 +1529,8 @@ Sprint 4 (Polish):
 
 Sprint 5 (Next environments — Walker2d, Ant):
   6.4 Contact margin            DONE (per-geom margin, adjusted dist, CPU + GPU)
-  6.1 settotalmass              <- HalfCheetah correctness
-  6.3 fromto capsule spec       <- convenience for model translation
+  6.1 settotalmass              DONE (ModelDefaultsLike trait, ModelDef.finalize rescaling)
+  6.3 fromto capsule spec       DONE (FromToCapsule struct, compile-time conversion)
   6.7 Geom density              <- Walker2d, Ant, Pusher
 
 Sprint 6 (Humanoid):
@@ -1584,24 +1584,22 @@ InvertedPendulum, InvertedDoublePendulum).
 
 ---
 
-### 6.1 settotalmass Compiler Directive
+### 6.1 settotalmass Compiler Directive — DONE
 
-**Status**: NOT STARTED.
+**Status**: DONE.
 **Used by**: HalfCheetah only.
-**Impact**: Low (workaround: manually compute scaled masses).
 
-MuJoCo's `<compiler settotalmass="14"/>` rescales all body masses after inertia
-computation so the total equals the target. Algorithm:
-```
-total = sum(body_mass[i] for i in range(NBODY))
-scale = target_total / total
-for i in range(NBODY):
-    body_mass[i] *= scale
-    body_inertia[i] *= scale
-```
+MuJoCo's `<compiler settotalmass="14"/>` rescales all body masses and inertias after
+model setup so the total equals the target.
 
-**Implementation**: Add `SETTOTALMASS: Float64` to `ModelDefaultsLike` (sentinel -1.0 = disabled).
-Apply in `ModelDef.finalize()` after `Bodies.setup_model()`.
+**Implementation**:
+- Added `SETTOTALMASS: Float64` to `ModelDefaultsLike` trait and `ModelDefaults` struct (sentinel -1.0 = disabled)
+- `ModelDef.finalize()` takes a `Defaults: ModelDefaultsLike` type parameter; when `SETTOTALMASS > 0`, it sums masses of bodies 1..NBODY (skipping worldbody), computes `scale = target / total`, and scales `body_mass`, `body_inv_mass`, `body_inertia`, `body_inv_inertia`
+- HalfCheetahDefaults sets `settotalmass=14.0`; finalize call sites pass `[Defaults=HalfCheetahDefaults]`
+- Since HalfCheetah body masses are already pre-scaled to sum to 14, the scaling is a no-op (scale ~= 1.0)
+- Hopper and other envs use the default `ModelDefaults[]` (settotalmass=-1.0, disabled)
+
+**Files changed**: `model_def.mojo`, `half_cheetah_def.mojo`, `half_cheetah.mojo`
 
 ---
 
@@ -1633,9 +1631,9 @@ For each geom attached to body:
 
 ---
 
-### 6.3 fromto Capsule Specification
+### 6.3 fromto Capsule Specification — DONE
 
-**Status**: NOT STARTED.
+**Status**: DONE.
 **Used by**: HalfCheetah, Ant, Humanoid, Swimmer, Reacher, Pusher.
 **Impact**: Low (conversion is straightforward, currently done manually).
 
@@ -1648,8 +1646,27 @@ half_length = length(to - from) / 2
 quat = axis_to_quat(axis)  # rotation from default Z-axis to axis
 ```
 
-**Implementation**: Add a `FromToCapsuleGeom` convenience type or a conversion
-function in `geom_spec.mojo`. Useful for the MJCF parser (Phase 0.5).
+**Implementation**: `FromToCapsule` struct in `geom_spec.mojo` that conforms to
+`GeomSpec`. Takes `from_x/y/z` and `to_x/y/z` parameters and computes center,
+half_length, and orientation quaternion at compile time.
+
+Compile-time helpers:
+- `_comptime_sqrt()`: Newton's method sqrt (10 iterations, machine precision)
+- `_fromto_center_x/y/z()`: Midpoint calculation
+- `_fromto_half_length()`: Distance / 2
+- `_fromto_quat_component()`: Quaternion from Z-to-axis rotation using half-angle
+  formula `q = normalize(cross(Z, d), 1 + dot(Z, d))` — avoids trig functions.
+
+Usage:
+```mojo
+# MuJoCo XML: <geom fromto="-.5 0 0 .5 0 0" size="0.046" type="capsule"/>
+comptime TorsoGeom = FromToCapsule[
+    body_idx=1, radius=0.046,
+    from_x=-0.5, to_x=0.5,
+]
+```
+
+**Files modified**: `geom_spec.mojo`, `model/__init__.mojo`.
 
 ---
 
@@ -1838,8 +1855,8 @@ environment should use. The MJCF parser can select the correct compile-time path
 What's needed to support each Gymnasium MuJoCo environment:
 
 ### HalfCheetah — SUPPORTED
-Currently working. Minor gaps: `settotalmass` (mass is manually scaled),
-`fromto` capsules (manually converted).
+Currently working. Minor gaps: `fromto` capsules (manually converted).
+`settotalmass` now implemented (DONE).
 
 ### Hopper — SUPPORTED
 Currently working. Minor gaps: `ref` on rootz joint

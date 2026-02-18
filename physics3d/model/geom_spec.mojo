@@ -31,6 +31,107 @@ comptime _UNSET_F64: Float64 = -1.0
 comptime _UNSET_INT: Int = -1
 
 
+# =============================================================================
+# Compile-time math helpers for fromto conversion
+# =============================================================================
+
+
+fn _comptime_sqrt(x: Float64) -> Float64:
+    """Newton's method sqrt for compile-time evaluation.
+
+    Needed because math.sqrt may not be available at comptime.
+    Converges to machine precision in ~10 iterations for typical values.
+    """
+    if x <= 0.0:
+        return 0.0
+    # Initial guess
+    var r = x
+    if x > 1.0:
+        r = x / 2.0
+    # Newton iterations (enough for Float64 precision)
+    r = (r + x / r) * 0.5
+    r = (r + x / r) * 0.5
+    r = (r + x / r) * 0.5
+    r = (r + x / r) * 0.5
+    r = (r + x / r) * 0.5
+    r = (r + x / r) * 0.5
+    r = (r + x / r) * 0.5
+    r = (r + x / r) * 0.5
+    r = (r + x / r) * 0.5
+    r = (r + x / r) * 0.5
+    return r
+
+
+fn _fromto_center_x(from_x: Float64, to_x: Float64) -> Float64:
+    return (from_x + to_x) * 0.5
+
+
+fn _fromto_center_y(from_y: Float64, to_y: Float64) -> Float64:
+    return (from_y + to_y) * 0.5
+
+
+fn _fromto_center_z(from_z: Float64, to_z: Float64) -> Float64:
+    return (from_z + to_z) * 0.5
+
+
+fn _fromto_half_length(
+    from_x: Float64, from_y: Float64, from_z: Float64,
+    to_x: Float64, to_y: Float64, to_z: Float64,
+) -> Float64:
+    var dx = to_x - from_x
+    var dy = to_y - from_y
+    var dz = to_z - from_z
+    return _comptime_sqrt(dx * dx + dy * dy + dz * dz) * 0.5
+
+
+fn _fromto_quat_component(
+    from_x: Float64, from_y: Float64, from_z: Float64,
+    to_x: Float64, to_y: Float64, to_z: Float64,
+    component: Int,
+) -> Float64:
+    """Compute one component of the quaternion (x,y,z,w) rotating Z-axis to the fromto direction.
+
+    component: 0=x, 1=y, 2=z, 3=w.
+    Uses the half-angle formula: q = normalize(cross(Z, d), 1 + dot(Z, d))
+    = normalize(-dy, dx, 0, 1 + dz) which avoids trig functions.
+    """
+    var dx = to_x - from_x
+    var dy = to_y - from_y
+    var dz = to_z - from_z
+    var length = _comptime_sqrt(dx * dx + dy * dy + dz * dz)
+    if length < 1e-12:
+        # Degenerate: zero-length capsule, return identity
+        if component == 3:
+            return 1.0
+        return 0.0
+    # Normalized direction
+    var nx = dx / length
+    var ny = dy / length
+    var nz = dz / length
+    # Half-angle quaternion: q = normalize(cross(Z, n), 1 + dot(Z, n))
+    # cross(Z, n) = (0,0,1) x (nx,ny,nz) = (-ny, nx, 0)
+    # dot(Z, n) = nz
+    var qx = -ny
+    var qy = nx
+    var _ = 0.0  # qz is always 0 (cross(Z, n) has no z component)
+    var qw = 1.0 + nz
+    if qw < 1e-12:
+        # Direction is -Z: 180° rotation around X
+        if component == 0:
+            return 1.0
+        return 0.0
+    # Normalize
+    var qlen = _comptime_sqrt(qx * qx + qy * qy + qw * qw)
+    if component == 0:
+        return qx / qlen
+    elif component == 1:
+        return qy / qlen
+    elif component == 2:
+        return 0.0
+    else:
+        return qw / qlen
+
+
 trait GeomSpec:
     """Compile-time specification for a geom (static or body-attached).
 
@@ -278,6 +379,94 @@ struct Capsule[
 
 
 # =============================================================================
+# FromToCapsule — capsule defined by two endpoints (MuJoCo fromto="...")
+# =============================================================================
+
+
+@fieldwise_init
+struct FromToCapsule[
+    body_idx: Int = 0,
+    radius: Float64 = 0.25,
+    from_x: Float64 = 0.0,
+    from_y: Float64 = 0.0,
+    from_z: Float64 = 0.0,
+    to_x: Float64 = 0.0,
+    to_y: Float64 = 0.0,
+    to_z: Float64 = 0.0,
+    friction: Float64 = _UNSET_F64,
+    condim: Int = _UNSET_INT,
+    friction_spin: Float64 = _UNSET_F64,
+    friction_roll: Float64 = _UNSET_F64,
+    contype: Int = _UNSET_INT,
+    conaffinity: Int = _UNSET_INT,
+    solref_0: Float64 = _UNSET_F64,
+    solref_1: Float64 = _UNSET_F64,
+    solimp_0: Float64 = _UNSET_F64,
+    solimp_1: Float64 = _UNSET_F64,
+    solimp_2: Float64 = _UNSET_F64,
+    margin: Float64 = _UNSET_F64,
+    color: Color3D = Color3D(204, 153, 102),
+](GeomSpec):
+    """Capsule defined by two endpoints, matching MuJoCo's fromto="x1 y1 z1 x2 y2 z2".
+
+    Automatically computes center position, half-length, and orientation quaternion
+    from the two endpoints at compile time. The capsule axis runs from `from` to `to`.
+
+    Example (MuJoCo XML: fromto="-.5 0 0 .5 0 0"):
+        comptime TorsoGeom = FromToCapsule[
+            body_idx=1, radius=0.046,
+            from_x=-0.5, to_x=0.5,  # Y and Z default to 0
+        ]
+    """
+
+    comptime GEOM_TYPE: Int = GEOM_CAPSULE
+    comptime BODY_IDX: Int = Self.body_idx
+    comptime POS_X: Float64 = _fromto_center_x(Self.from_x, Self.to_x)
+    comptime POS_Y: Float64 = _fromto_center_y(Self.from_y, Self.to_y)
+    comptime POS_Z: Float64 = _fromto_center_z(Self.from_z, Self.to_z)
+    comptime QUAT_X: Float64 = _fromto_quat_component(
+        Self.from_x, Self.from_y, Self.from_z,
+        Self.to_x, Self.to_y, Self.to_z, 0,
+    )
+    comptime QUAT_Y: Float64 = _fromto_quat_component(
+        Self.from_x, Self.from_y, Self.from_z,
+        Self.to_x, Self.to_y, Self.to_z, 1,
+    )
+    comptime QUAT_Z: Float64 = _fromto_quat_component(
+        Self.from_x, Self.from_y, Self.from_z,
+        Self.to_x, Self.to_y, Self.to_z, 2,
+    )
+    comptime QUAT_W: Float64 = _fromto_quat_component(
+        Self.from_x, Self.from_y, Self.from_z,
+        Self.to_x, Self.to_y, Self.to_z, 3,
+    )
+    comptime SIZE_X: Float64 = 0.0
+    comptime SIZE_Y: Float64 = 0.0
+    comptime SIZE_Z: Float64 = _fromto_half_length(
+        Self.from_x, Self.from_y, Self.from_z,
+        Self.to_x, Self.to_y, Self.to_z,
+    )
+    comptime RADIUS: Float64 = Self.radius
+    comptime HALF_LENGTH: Float64 = Self.SIZE_Z
+    comptime HALF_X: Float64 = 0.0
+    comptime HALF_Y: Float64 = 0.0
+    comptime HALF_Z: Float64 = 0.0
+    comptime FRICTION: Float64 = Self.friction
+    comptime CONDIM: Int = Self.condim
+    comptime FRICTION_SPIN: Float64 = Self.friction_spin
+    comptime FRICTION_ROLL: Float64 = Self.friction_roll
+    comptime CONTYPE: Int = Self.contype
+    comptime CONAFFINITY: Int = Self.conaffinity
+    comptime SOLREF_0: Float64 = Self.solref_0
+    comptime SOLREF_1: Float64 = Self.solref_1
+    comptime SOLIMP_0: Float64 = Self.solimp_0
+    comptime SOLIMP_1: Float64 = Self.solimp_1
+    comptime SOLIMP_2: Float64 = Self.solimp_2
+    comptime MARGIN: Float64 = Self.margin
+    comptime COLOR: Color3D = Self.color
+
+
+# =============================================================================
 # Box — static (body_idx=0) or body-attached (body_idx>=1)
 # =============================================================================
 
@@ -356,6 +545,7 @@ comptime PlaneGeom = Plane
 comptime SphereGeom = Sphere
 comptime BoxGeom = Box
 comptime CapsuleGeom = Capsule
+comptime FromToCapsuleGeom = FromToCapsule
 comptime BodyCapsuleGeom = Capsule
 comptime BodySphereGeom = Sphere
 comptime BodyBoxGeom = Box
