@@ -11,7 +11,7 @@ from math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
 from render import Renderer3D, Camera3D, Color
 from core import EnvRenderer3D
 from ..model.geom_spec import GeomSpec
-from ..constants import GEOM_PLANE, GEOM_SPHERE, GEOM_CAPSULE, GEOM_BOX
+from ..constants import GEOM_PLANE, GEOM_SPHERE, GEOM_CAPSULE, GEOM_BOX, GEOM_CYLINDER
 
 comptime Vec3 = Vec3Generic[DType.float64]
 comptime Quat = QuatGeneric[DType.float64]
@@ -360,6 +360,19 @@ struct ModelRenderer[*G: GeomSpec](EnvRenderer3D, Movable):
                             center=geom_pos,
                             orientation=geom_quat,
                             half_extents=Vec3(GG.HALF_X, GG.HALF_Y, GG.HALF_Z),
+                            color=GG.COLOR,
+                            shininess=Float32(_shin),
+                            specular=Float32(_spec),
+                            reflectance=Float32(_refl),
+                        )
+                    elif GG.GEOM_TYPE == GEOM_CYLINDER:
+                        # Render cylinder as capsule (visual approximation)
+                        self.renderer.draw_capsule(
+                            center=geom_pos,
+                            orientation=geom_quat,
+                            radius=GG.RADIUS * self.visual_radius_scale,
+                            half_height=GG.HALF_LENGTH,
+                            axis=2,
                             color=GG.COLOR,
                             shininess=Float32(_shin),
                             specular=Float32(_spec),

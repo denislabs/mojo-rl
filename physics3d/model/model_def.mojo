@@ -54,7 +54,7 @@ from ..types import (
 )
 from ..joint_types import JNT_HINGE, JNT_SLIDE
 from math import sqrt
-from ..constants import GEOM_SPHERE, GEOM_CAPSULE, GEOM_BOX, GEOM_PLANE
+from ..constants import GEOM_SPHERE, GEOM_CAPSULE, GEOM_BOX, GEOM_PLANE, GEOM_CYLINDER
 
 # GPU imports
 from gpu.host import DeviceContext, DeviceBuffer
@@ -1282,6 +1282,14 @@ struct Geoms[*G: GeomSpec]:
                 model.geom_rbound[i] = Scalar[DTYPE](
                     G_item.HALF_LENGTH
                 ) + Scalar[DTYPE](G_item.RADIUS)
+            elif G_item.GEOM_TYPE == GEOM_CYLINDER:
+                # Corner of cylinder to center: sqrt(half_length^2 + radius^2)
+                model.geom_rbound[i] = sqrt(
+                    Scalar[DTYPE](G_item.HALF_LENGTH)
+                    * Scalar[DTYPE](G_item.HALF_LENGTH)
+                    + Scalar[DTYPE](G_item.RADIUS)
+                    * Scalar[DTYPE](G_item.RADIUS)
+                )
             elif G_item.GEOM_TYPE == GEOM_BOX:
                 model.geom_rbound[i] = sqrt(
                     Scalar[DTYPE](G_item.HALF_X) * Scalar[DTYPE](G_item.HALF_X)

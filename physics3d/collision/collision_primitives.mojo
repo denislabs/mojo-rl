@@ -698,6 +698,306 @@ fn capsule_capsule[
 
 
 # =============================================================================
+# Cylinder Collision Primitives
+# =============================================================================
+
+
+@always_inline
+fn cylinder_plane[
+    DTYPE: DType
+](
+    # Cylinder center and orientation
+    cyl_x: Scalar[DTYPE],
+    cyl_y: Scalar[DTYPE],
+    cyl_z: Scalar[DTYPE],
+    cyl_qx: Scalar[DTYPE],
+    cyl_qy: Scalar[DTYPE],
+    cyl_qz: Scalar[DTYPE],
+    cyl_qw: Scalar[DTYPE],
+    half_length: Scalar[DTYPE],
+    radius: Scalar[DTYPE],
+    # Plane (horizontal at ground_z)
+    ground_z: Scalar[DTYPE],
+) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
+    """Cylinder-plane collision detection (ground plane with normal = +Z).
+
+    Matching MuJoCo mjc_PlaneCylinder: tests rim points on both end-caps
+    to find the lowest contact point. A cylinder differs from a capsule in that
+    it has flat end-caps (no hemispherical caps), so contact points lie on the
+    rim edge rather than being offset by radius toward the ground.
+
+    Algorithm:
+    1. Compute cylinder axis in world frame
+    2. Find the "rim direction" perpendicular to axis that points most downward
+    3. Test bottom endpoint + rim offset (lowest point on bottom rim)
+
+    Returns:
+        Tuple of (dist, contact_x, contact_y, contact_z):
+        - dist: Signed distance from cylinder surface to plane (negative = penetration).
+        - contact: Contact point on the ground plane.
+    """
+    # Get cylinder axis in world frame (local Z)
+    var axis = rotate_vector_by_quat(
+        Scalar[DTYPE](0.0),
+        Scalar[DTYPE](0.0),
+        Scalar[DTYPE](1.0),
+        cyl_qx,
+        cyl_qy,
+        cyl_qz,
+        cyl_qw,
+    )
+    var ax = axis[0]
+    var ay = axis[1]
+    var az = axis[2]
+
+    # Plane normal is (0, 0, 1). Find the rim direction that points most downward.
+    # The rim vector is perpendicular to the cylinder axis and in the plane containing
+    # the axis and the ground normal. rim = normalize(n - (n·axis)*axis) where n = (0,0,1)
+    # Then the lowest point is: endpoint - rim * radius (toward ground)
+
+    # n_dot_axis = az (since n = (0,0,1))
+    var n_dot_axis = az
+
+    # rim = (0,0,1) - az * axis = (-az*ax, -az*ay, 1 - az*az)
+    var rim_x = -n_dot_axis * ax
+    var rim_y = -n_dot_axis * ay
+    var rim_z = Scalar[DTYPE](1.0) - n_dot_axis * n_dot_axis
+    var rim_len = sqrt(rim_x * rim_x + rim_y * rim_y + rim_z * rim_z)
+
+    if rim_len > Scalar[DTYPE](1e-10):
+        var inv_len = Scalar[DTYPE](1.0) / rim_len
+        rim_x *= inv_len
+        rim_y *= inv_len
+        rim_z *= inv_len
+    else:
+        # Cylinder axis is vertical — any horizontal rim direction works
+        rim_x = Scalar[DTYPE](1.0)
+        rim_y = Scalar[DTYPE](0.0)
+        rim_z = Scalar[DTYPE](0.0)
+
+    # Flip cylinder axis so it points toward the ground (lower endpoint first)
+    var flip_ax = ax
+    var flip_ay = ay
+    var flip_az = az
+    if az > Scalar[DTYPE](0.0):
+        flip_ax = -ax
+        flip_ay = -ay
+        flip_az = -az
+
+    # Bottom endpoint (in direction of flipped axis)
+    var ep_x = cyl_x + flip_ax * half_length
+    var ep_y = cyl_y + flip_ay * half_length
+    var ep_z = cyl_z + flip_az * half_length
+
+    # Lowest point on bottom rim: endpoint - rim * radius (rim points UP away from ground)
+    var low_x = ep_x - rim_x * radius
+    var low_y = ep_y - rim_y * radius
+    var low_z = ep_z - rim_z * radius
+
+    # Distance from lowest point to ground (no radius offset — flat end)
+    var dist = low_z - ground_z
+
+    # Contact point on the ground plane
+    var contact_x = low_x
+    var contact_y = low_y
+    var contact_z = ground_z
+
+    return (dist, contact_x, contact_y, contact_z)
+
+
+@always_inline
+fn cylinder_sphere[
+    DTYPE: DType
+](
+    # Cylinder
+    cyl_x: Scalar[DTYPE],
+    cyl_y: Scalar[DTYPE],
+    cyl_z: Scalar[DTYPE],
+    cyl_qx: Scalar[DTYPE],
+    cyl_qy: Scalar[DTYPE],
+    cyl_qz: Scalar[DTYPE],
+    cyl_qw: Scalar[DTYPE],
+    cyl_half_len: Scalar[DTYPE],
+    cyl_radius: Scalar[DTYPE],
+    # Sphere
+    sph_x: Scalar[DTYPE],
+    sph_y: Scalar[DTYPE],
+    sph_z: Scalar[DTYPE],
+    sph_radius: Scalar[DTYPE],
+) -> Tuple[
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+]:
+    """Cylinder-sphere collision detection (matching MuJoCo mjc_SphereCylinder).
+
+    Three cases based on where the sphere center projects onto the cylinder:
+    1. SIDE: Sphere is beside the cylinder body → sphere-line distance
+    2. CAP: Sphere is above/below a flat end-cap → plane-sphere distance
+    3. CORNER: Sphere is near the rim edge → sphere-point distance
+
+    Args:
+        cyl_*: Cylinder center, orientation, half-length, radius.
+        sph_*: Sphere center and radius.
+
+    Returns:
+        Tuple of (dist, contact_x, contact_y, contact_z, normal_x, normal_y, normal_z).
+    """
+    # Get cylinder axis in world frame
+    var axis = rotate_vector_by_quat(
+        Scalar[DTYPE](0.0),
+        Scalar[DTYPE](0.0),
+        Scalar[DTYPE](1.0),
+        cyl_qx,
+        cyl_qy,
+        cyl_qz,
+        cyl_qw,
+    )
+    var ax = axis[0]
+    var ay = axis[1]
+    var az = axis[2]
+
+    # Vector from cylinder center to sphere center
+    var dx = sph_x - cyl_x
+    var dy = sph_y - cyl_y
+    var dz = sph_z - cyl_z
+
+    # Project onto cylinder axis: t = dot(d, axis)
+    var t = dx * ax + dy * ay + dz * az
+
+    # Radial vector (perpendicular to axis)
+    var rad_x = dx - t * ax
+    var rad_y = dy - t * ay
+    var rad_z = dz - t * az
+    var rad_dist = sqrt(rad_x * rad_x + rad_y * rad_y + rad_z * rad_z)
+
+    # Determine case
+    var t_clamped = t
+    if t_clamped < -cyl_half_len:
+        t_clamped = -cyl_half_len
+    elif t_clamped > cyl_half_len:
+        t_clamped = cyl_half_len
+
+    var on_side = (t >= -cyl_half_len and t <= cyl_half_len)
+    var inside_radius = (rad_dist <= cyl_radius)
+
+    var dist: Scalar[DTYPE]
+    var cx: Scalar[DTYPE]
+    var cy: Scalar[DTYPE]
+    var cz: Scalar[DTYPE]
+    var nx: Scalar[DTYPE]
+    var ny: Scalar[DTYPE]
+    var nz: Scalar[DTYPE]
+
+    if on_side and not inside_radius:
+        # SIDE case: closest point is on the cylinder side surface
+        # Normalize radial direction
+        var inv_rad = Scalar[DTYPE](1.0) / rad_dist
+        var nr_x = rad_x * inv_rad
+        var nr_y = rad_y * inv_rad
+        var nr_z = rad_z * inv_rad
+
+        # Closest point on cylinder surface
+        var surf_x = cyl_x + t * ax + cyl_radius * nr_x
+        var surf_y = cyl_y + t * ay + cyl_radius * nr_y
+        var surf_z = cyl_z + t * az + cyl_radius * nr_z
+
+        dist = rad_dist - cyl_radius - sph_radius
+        nx = nr_x
+        ny = nr_y
+        nz = nr_z
+
+        # Contact = midpoint between surfaces
+        var half_d = Scalar[DTYPE](0.5) * dist
+        cx = surf_x + nx * half_d
+        cy = surf_y + ny * half_d
+        cz = surf_z + nz * half_d
+
+    elif not on_side and inside_radius:
+        # CAP case: sphere is above/below a flat end-cap
+        # Normal points along axis direction (toward sphere)
+        if t > Scalar[DTYPE](0.0):
+            nx = ax
+            ny = ay
+            nz = az
+            dist = (t - cyl_half_len) - sph_radius
+        else:
+            nx = -ax
+            ny = -ay
+            nz = -az
+            dist = (-t - cyl_half_len) - sph_radius
+
+        # Closest point on cap surface
+        var cap_x = cyl_x + t_clamped * ax + rad_x
+        var cap_y = cyl_y + t_clamped * ay + rad_y
+        var cap_z = cyl_z + t_clamped * az + rad_z
+
+        var half_d = Scalar[DTYPE](0.5) * dist
+        cx = cap_x + nx * half_d
+        cy = cap_y + ny * half_d
+        cz = cap_z + nz * half_d
+
+    else:
+        # CORNER case (or degenerate): closest point is on the rim edge
+        # Find the closest point on the rim circle
+        var rim_x: Scalar[DTYPE]
+        var rim_y: Scalar[DTYPE]
+        var rim_z: Scalar[DTYPE]
+
+        if rad_dist > Scalar[DTYPE](1e-10):
+            var inv_rad = Scalar[DTYPE](1.0) / rad_dist
+            rim_x = cyl_x + t_clamped * ax + cyl_radius * rad_x * inv_rad
+            rim_y = cyl_y + t_clamped * ay + cyl_radius * rad_y * inv_rad
+            rim_z = cyl_z + t_clamped * az + cyl_radius * rad_z * inv_rad
+        else:
+            # Sphere is on the axis — pick arbitrary radial direction
+            # Use the X axis of the cylinder's local frame
+            var local_x = rotate_vector_by_quat(
+                Scalar[DTYPE](1.0),
+                Scalar[DTYPE](0.0),
+                Scalar[DTYPE](0.0),
+                cyl_qx,
+                cyl_qy,
+                cyl_qz,
+                cyl_qw,
+            )
+            rim_x = cyl_x + t_clamped * ax + cyl_radius * local_x[0]
+            rim_y = cyl_y + t_clamped * ay + cyl_radius * local_x[1]
+            rim_z = cyl_z + t_clamped * az + cyl_radius * local_x[2]
+
+        # Sphere-point distance
+        var to_sph_x = sph_x - rim_x
+        var to_sph_y = sph_y - rim_y
+        var to_sph_z = sph_z - rim_z
+        var to_sph_dist = sqrt(
+            to_sph_x * to_sph_x + to_sph_y * to_sph_y + to_sph_z * to_sph_z
+        )
+
+        if to_sph_dist > Scalar[DTYPE](1e-10):
+            var inv_d = Scalar[DTYPE](1.0) / to_sph_dist
+            nx = to_sph_x * inv_d
+            ny = to_sph_y * inv_d
+            nz = to_sph_z * inv_d
+        else:
+            nx = Scalar[DTYPE](0.0)
+            ny = Scalar[DTYPE](0.0)
+            nz = Scalar[DTYPE](1.0)
+
+        dist = to_sph_dist - sph_radius
+
+        var half_d = Scalar[DTYPE](0.5) * dist
+        cx = rim_x + nx * half_d
+        cy = rim_y + ny * half_d
+        cz = rim_z + nz * half_d
+
+    return (dist, cx, cy, cz, nx, ny, nz)
+
+
+# =============================================================================
 # Box Collision Primitives (Phase 9)
 # =============================================================================
 

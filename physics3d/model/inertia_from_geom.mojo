@@ -11,7 +11,7 @@ Reference: mujoco-3.3.6/src/user/user_objects.cc (mjCBody::InertiaFromGeom)
 
 from collections import InlineArray
 from math import sqrt, abs as math_abs
-from ..constants import GEOM_PLANE, GEOM_SPHERE, GEOM_CAPSULE, GEOM_BOX
+from ..constants import GEOM_PLANE, GEOM_SPHERE, GEOM_CAPSULE, GEOM_BOX, GEOM_CYLINDER
 from ..types import Model
 
 # Pi constant
@@ -44,6 +44,11 @@ fn geom_volume[
         return Scalar[DTYPE](PI) * r2 * h + Scalar[DTYPE](
             4.0 / 3.0 * PI
         ) * r2 * radius
+    elif geom_type == GEOM_CYLINDER:
+        # V = pi * r^2 * 2h (no hemisphere caps)
+        var r2 = radius * radius
+        var h = Scalar[DTYPE](2.0) * half_length
+        return Scalar[DTYPE](PI) * r2 * h
     elif geom_type == GEOM_BOX:
         # V = 8 * hx * hy * hz
         return Scalar[DTYPE](8.0) * half_x * half_y * half_z
@@ -114,6 +119,17 @@ fn geom_inertia[
             2.0
         ) + sphere_inertia
 
+        return (Ix, Ix, Iz)
+
+    elif geom_type == GEOM_CYLINDER:
+        # Solid cylinder: axis = Z, height h = 2*half_length, radius r
+        # Iz = m*r^2/2
+        # Ix = Iy = m*(3r^2 + h^2)/12
+        var r = radius
+        var r2 = r * r
+        var h = Scalar[DTYPE](2.0) * half_length
+        var Iz = mass * r2 / Scalar[DTYPE](2.0)
+        var Ix = mass * (Scalar[DTYPE](3.0) * r2 + h * h) / Scalar[DTYPE](12.0)
         return (Ix, Ix, Iz)
 
     elif geom_type == GEOM_BOX:

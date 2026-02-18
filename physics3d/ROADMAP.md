@@ -1546,7 +1546,7 @@ Sprint 5 (Next environments — Walker2d, Ant):
 Sprint 6 (Humanoid):
   5.5 Fixed tendons             <- Humanoid hip-knee coupling
   6.10 cfrc_ext                 <- Humanoid observations
-  6.6 Cylinder geom             <- Reacher, Pusher
+  6.6 Cylinder geom             DONE (Cylinder struct, cylinder_plane, cylinder_sphere, CPU + GPU)
   6.2 inertiafromgeom           <- DONE
 
 Sprint 7 (Specialized):

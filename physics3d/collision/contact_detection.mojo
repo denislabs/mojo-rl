@@ -20,7 +20,7 @@ from ..kinematics.quat_math import (
     gpu_quat_normalize,
     gpu_quat_mul,
 )
-from ..constants import GEOM_SPHERE, GEOM_CAPSULE, GEOM_BOX, GEOM_PLANE
+from ..constants import GEOM_SPHERE, GEOM_CAPSULE, GEOM_BOX, GEOM_PLANE, GEOM_CYLINDER
 from ..gpu.constants import (
     BODY_IDX_PARENT,
     CONTACT_SIZE,
@@ -84,6 +84,8 @@ from ..collision.collision_primitives import (
     box_sphere,
     box_capsule,
     box_box,
+    cylinder_plane,
+    cylinder_sphere,
 )
 
 
@@ -463,6 +465,33 @@ fn detect_contacts[
                         data.contacts[idx].frame_t1_y = axis_w[1]
                         data.contacts[idx].frame_t1_z = axis_w[2]
                         data.num_contacts += 1
+                elif gj_type == GEOM_CYLINDER:
+                    # Cylinder-plane: single contact at lowest rim point
+                    var cp = cylinder_plane[DTYPE](
+                        pj_x, pj_y, pj_z,
+                        qj_x, qj_y, qj_z, qj_w,
+                        hlj, rj, ground_z,
+                    )
+                    var dist = cp[0]
+                    if (
+                        dist < contact_margin
+                        and data.num_contacts < MAX_CONTACTS
+                    ):
+                        var idx = data.num_contacts
+                        data.contacts[idx].body_a = gj_body
+                        data.contacts[idx].body_b = 0
+                        data.contacts[idx].pos_x = cp[1]
+                        data.contacts[idx].pos_y = cp[2]
+                        data.contacts[idx].pos_z = cp[3]
+                        data.contacts[idx].normal_x = Scalar[DTYPE](0)
+                        data.contacts[idx].normal_y = Scalar[DTYPE](0)
+                        data.contacts[idx].normal_z = Scalar[DTYPE](1)
+                        data.contacts[idx].dist = dist - contact_margin
+                        data.contacts[idx].friction = contact_friction
+                        data.contacts[idx].friction_spin = contact_friction_spin
+                        data.contacts[idx].friction_roll = contact_friction_roll
+                        data.contacts[idx].condim = contact_condim
+                        data.num_contacts += 1
                 elif gj_type == GEOM_SPHERE:
                     var dist = pj_z - rj - ground_z
                     if (
@@ -558,6 +587,33 @@ fn detect_contacts[
                         data.contacts[idx].frame_t1_x = axis_w[0]
                         data.contacts[idx].frame_t1_y = axis_w[1]
                         data.contacts[idx].frame_t1_z = axis_w[2]
+                        data.num_contacts += 1
+                elif gi_type == GEOM_CYLINDER:
+                    # Cylinder-plane: single contact at lowest rim point
+                    var cp = cylinder_plane[DTYPE](
+                        pi_x, pi_y, pi_z,
+                        qi_x, qi_y, qi_z, qi_w,
+                        hli, ri, ground_z,
+                    )
+                    var dist = cp[0]
+                    if (
+                        dist < contact_margin
+                        and data.num_contacts < MAX_CONTACTS
+                    ):
+                        var idx = data.num_contacts
+                        data.contacts[idx].body_a = gi_body
+                        data.contacts[idx].body_b = 0
+                        data.contacts[idx].pos_x = cp[1]
+                        data.contacts[idx].pos_y = cp[2]
+                        data.contacts[idx].pos_z = cp[3]
+                        data.contacts[idx].normal_x = Scalar[DTYPE](0)
+                        data.contacts[idx].normal_y = Scalar[DTYPE](0)
+                        data.contacts[idx].normal_z = Scalar[DTYPE](1)
+                        data.contacts[idx].dist = dist - contact_margin
+                        data.contacts[idx].friction = contact_friction
+                        data.contacts[idx].friction_spin = contact_friction_spin
+                        data.contacts[idx].friction_roll = contact_friction_roll
+                        data.contacts[idx].condim = contact_condim
                         data.num_contacts += 1
                 elif gi_type == GEOM_SPHERE:
                     var dist = pi_z - ri - ground_z
@@ -822,6 +878,54 @@ fn detect_contacts[
                 nx = r[4]
                 ny = r[5]
                 nz = r[6]
+            elif gi_type == GEOM_CYLINDER and gj_type == GEOM_SPHERE:
+                var r = cylinder_sphere[DTYPE](
+                    pi_x,
+                    pi_y,
+                    pi_z,
+                    qi_x,
+                    qi_y,
+                    qi_z,
+                    qi_w,
+                    hli,
+                    ri,
+                    pj_x,
+                    pj_y,
+                    pj_z,
+                    rj,
+                )
+                dist = r[0]
+                cx = r[1]
+                cy = r[2]
+                cz = r[3]
+                nx = r[4]
+                ny = r[5]
+                nz = r[6]
+            elif gi_type == GEOM_SPHERE and gj_type == GEOM_CYLINDER:
+                var r = cylinder_sphere[DTYPE](
+                    pj_x,
+                    pj_y,
+                    pj_z,
+                    qj_x,
+                    qj_y,
+                    qj_z,
+                    qj_w,
+                    hlj,
+                    rj,
+                    pi_x,
+                    pi_y,
+                    pi_z,
+                    ri,
+                )
+                dist = r[0]
+                cx = r[1]
+                cy = r[2]
+                cz = r[3]
+                nx = -r[4]
+                ny = -r[5]
+                nz = -r[6]
+                body_a = gj_body
+                body_b = gi_body
 
             if dist < contact_margin and data.num_contacts < MAX_CONTACTS:
                 var idx = data.num_contacts
@@ -952,6 +1056,8 @@ fn detect_contacts_gpu[
         box_sphere,
         box_capsule,
         box_box,
+        cylinder_plane,
+        cylinder_sphere,
     )
 
     var contacts_off = contacts_offset[NQ, NV, NBODY]()
@@ -1223,6 +1329,42 @@ fn detect_contacts_gpu[
                         state[env, c_off + CONTACT_IDX_FRAME_T1_Y] = axis_w[1]
                         state[env, c_off + CONTACT_IDX_FRAME_T1_Z] = axis_w[2]
                         num_contacts += 1
+                elif gj_type == GEOM_CYLINDER:
+                    # Cylinder-plane: single contact at lowest rim point
+                    var cp = cylinder_plane[DTYPE](
+                        pj_x, pj_y, pj_z,
+                        qj_x, qj_y, qj_z, qj_w,
+                        hlj, rj, ground_z,
+                    )
+                    var dist = cp[0]
+                    if dist < contact_margin and num_contacts < MAX_CONTACTS:
+                        var c_off = contacts_off + num_contacts * CONTACT_SIZE
+                        state[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
+                            gj_body
+                        )
+                        state[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
+                            -1
+                        )
+                        state[env, c_off + CONTACT_IDX_POS_X] = cp[1]
+                        state[env, c_off + CONTACT_IDX_POS_Y] = cp[2]
+                        state[env, c_off + CONTACT_IDX_POS_Z] = cp[3]
+                        state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
+                        state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
+                        state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
+                        state[env, c_off + CONTACT_IDX_DIST] = dist - contact_margin
+                        state[
+                            env, c_off + CONTACT_IDX_FRICTION
+                        ] = contact_friction
+                        state[
+                            env, c_off + CONTACT_IDX_FRICTION_SPIN
+                        ] = contact_friction_spin
+                        state[
+                            env, c_off + CONTACT_IDX_FRICTION_ROLL
+                        ] = contact_friction_roll
+                        state[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
+                            contact_condim
+                        )
+                        num_contacts += 1
                 elif gj_type == GEOM_SPHERE:
                     var dist = pj_z - rj - ground_z
                     if dist < contact_margin and num_contacts < MAX_CONTACTS:
@@ -1345,6 +1487,42 @@ fn detect_contacts_gpu[
                         state[env, c_off + CONTACT_IDX_FRAME_T1_X] = axis_w[0]
                         state[env, c_off + CONTACT_IDX_FRAME_T1_Y] = axis_w[1]
                         state[env, c_off + CONTACT_IDX_FRAME_T1_Z] = axis_w[2]
+                        num_contacts += 1
+                elif gi_type == GEOM_CYLINDER:
+                    # Cylinder-plane: single contact at lowest rim point
+                    var cp = cylinder_plane[DTYPE](
+                        pi_x, pi_y, pi_z,
+                        qi_x, qi_y, qi_z, qi_w,
+                        hli, ri, ground_z,
+                    )
+                    var dist = cp[0]
+                    if dist < contact_margin and num_contacts < MAX_CONTACTS:
+                        var c_off = contacts_off + num_contacts * CONTACT_SIZE
+                        state[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
+                            gi_body
+                        )
+                        state[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
+                            -1
+                        )
+                        state[env, c_off + CONTACT_IDX_POS_X] = cp[1]
+                        state[env, c_off + CONTACT_IDX_POS_Y] = cp[2]
+                        state[env, c_off + CONTACT_IDX_POS_Z] = cp[3]
+                        state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
+                        state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
+                        state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
+                        state[env, c_off + CONTACT_IDX_DIST] = dist - contact_margin
+                        state[
+                            env, c_off + CONTACT_IDX_FRICTION
+                        ] = contact_friction
+                        state[
+                            env, c_off + CONTACT_IDX_FRICTION_SPIN
+                        ] = contact_friction_spin
+                        state[
+                            env, c_off + CONTACT_IDX_FRICTION_ROLL
+                        ] = contact_friction_roll
+                        state[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
+                            contact_condim
+                        )
                         num_contacts += 1
                 elif gi_type == GEOM_SPHERE:
                     var dist = pi_z - ri - ground_z
@@ -1618,6 +1796,54 @@ fn detect_contacts_gpu[
                 nx = r[4]
                 ny = r[5]
                 nz = r[6]
+            elif gi_type == GEOM_CYLINDER and gj_type == GEOM_SPHERE:
+                var r = cylinder_sphere[DTYPE](
+                    pi_x,
+                    pi_y,
+                    pi_z,
+                    qi_x,
+                    qi_y,
+                    qi_z,
+                    qi_w,
+                    hli,
+                    ri,
+                    pj_x,
+                    pj_y,
+                    pj_z,
+                    rj,
+                )
+                dist = r[0]
+                cx = r[1]
+                cy = r[2]
+                cz = r[3]
+                nx = r[4]
+                ny = r[5]
+                nz = r[6]
+            elif gi_type == GEOM_SPHERE and gj_type == GEOM_CYLINDER:
+                var r = cylinder_sphere[DTYPE](
+                    pj_x,
+                    pj_y,
+                    pj_z,
+                    qj_x,
+                    qj_y,
+                    qj_z,
+                    qj_w,
+                    hlj,
+                    rj,
+                    pi_x,
+                    pi_y,
+                    pi_z,
+                    ri,
+                )
+                dist = r[0]
+                cx = r[1]
+                cy = r[2]
+                cz = r[3]
+                nx = -r[4]
+                ny = -r[5]
+                nz = -r[6]
+                body_a = gj_body
+                body_b = gi_body
 
             if dist < contact_margin and num_contacts < MAX_CONTACTS:
                 var c_off = contacts_off + num_contacts * CONTACT_SIZE

@@ -4,11 +4,12 @@ Supports both worldbody (static) and body-attached geoms via `body_idx`:
   - body_idx=0: worldbody (static geom in world frame)
   - body_idx>=1: attached to that body (pos/quat in body's local frame)
 
-Four geom shapes:
+Five geom shapes:
   - Plane: Infinite ground plane (body_idx always 0)
   - Sphere: Sphere geom (body_idx=0 for static, >=1 for body-attached)
   - Capsule: Capsule geom (body_idx=0 for static, >=1 for body-attached)
   - Box: Box geom (body_idx=0 for static, >=1 for body-attached)
+  - Cylinder: Cylinder geom (body_idx=0 for static, >=1 for body-attached)
 
 Fields that use sentinel value -1.0 (Float64) or -1 (Int) mean "use
 ModelDefaults". Resolution happens at Geoms.setup_model time.
@@ -23,7 +24,13 @@ Usage:
     comptime MyCap = Capsule[body_idx=1, radius=0.046, friction=0.4]
 """
 
-from ..constants import GEOM_PLANE, GEOM_SPHERE, GEOM_CAPSULE, GEOM_BOX
+from ..constants import (
+    GEOM_PLANE,
+    GEOM_SPHERE,
+    GEOM_CAPSULE,
+    GEOM_BOX,
+    GEOM_CYLINDER,
+)
 from render import Color
 
 # Sentinel values for "use model default" (re-exported for convenience)
@@ -75,8 +82,12 @@ fn _fromto_center_z(from_z: Float64, to_z: Float64) -> Float64:
 
 
 fn _fromto_half_length(
-    from_x: Float64, from_y: Float64, from_z: Float64,
-    to_x: Float64, to_y: Float64, to_z: Float64,
+    from_x: Float64,
+    from_y: Float64,
+    from_z: Float64,
+    to_x: Float64,
+    to_y: Float64,
+    to_z: Float64,
 ) -> Float64:
     var dx = to_x - from_x
     var dy = to_y - from_y
@@ -85,8 +96,12 @@ fn _fromto_half_length(
 
 
 fn _fromto_quat_component(
-    from_x: Float64, from_y: Float64, from_z: Float64,
-    to_x: Float64, to_y: Float64, to_z: Float64,
+    from_x: Float64,
+    from_y: Float64,
+    from_z: Float64,
+    to_x: Float64,
+    to_y: Float64,
+    to_z: Float64,
     component: Int,
 ) -> Float64:
     """Compute one component of the quaternion (x,y,z,w) rotating Z-axis to the fromto direction.
@@ -182,8 +197,8 @@ trait GeomSpec:
     # Visual
     comptime COLOR: Color
     # Material properties (-1.0 = use model/material default)
-    comptime SHININESS: Float64    # Specular exponent scaling (0-1)
-    comptime SPECULAR: Float64     # Specular intensity (0-1)
+    comptime SHININESS: Float64  # Specular exponent scaling (0-1)
+    comptime SPECULAR: Float64  # Specular intensity (0-1)
     comptime REFLECTANCE: Float64  # Reflectance coefficient (0-1)
     # Material name reference (MuJoCo-style: geom material="name")
     comptime MATERIAL_NAME: String  # "" = no material reference
@@ -474,26 +489,50 @@ struct FromToCapsule[
     comptime POS_Y: Float64 = _fromto_center_y(Self.from_y, Self.to_y)
     comptime POS_Z: Float64 = _fromto_center_z(Self.from_z, Self.to_z)
     comptime QUAT_X: Float64 = _fromto_quat_component(
-        Self.from_x, Self.from_y, Self.from_z,
-        Self.to_x, Self.to_y, Self.to_z, 0,
+        Self.from_x,
+        Self.from_y,
+        Self.from_z,
+        Self.to_x,
+        Self.to_y,
+        Self.to_z,
+        0,
     )
     comptime QUAT_Y: Float64 = _fromto_quat_component(
-        Self.from_x, Self.from_y, Self.from_z,
-        Self.to_x, Self.to_y, Self.to_z, 1,
+        Self.from_x,
+        Self.from_y,
+        Self.from_z,
+        Self.to_x,
+        Self.to_y,
+        Self.to_z,
+        1,
     )
     comptime QUAT_Z: Float64 = _fromto_quat_component(
-        Self.from_x, Self.from_y, Self.from_z,
-        Self.to_x, Self.to_y, Self.to_z, 2,
+        Self.from_x,
+        Self.from_y,
+        Self.from_z,
+        Self.to_x,
+        Self.to_y,
+        Self.to_z,
+        2,
     )
     comptime QUAT_W: Float64 = _fromto_quat_component(
-        Self.from_x, Self.from_y, Self.from_z,
-        Self.to_x, Self.to_y, Self.to_z, 3,
+        Self.from_x,
+        Self.from_y,
+        Self.from_z,
+        Self.to_x,
+        Self.to_y,
+        Self.to_z,
+        3,
     )
     comptime SIZE_X: Float64 = 0.0
     comptime SIZE_Y: Float64 = 0.0
     comptime SIZE_Z: Float64 = _fromto_half_length(
-        Self.from_x, Self.from_y, Self.from_z,
-        Self.to_x, Self.to_y, Self.to_z,
+        Self.from_x,
+        Self.from_y,
+        Self.from_z,
+        Self.to_x,
+        Self.to_y,
+        Self.to_z,
     )
     comptime RADIUS: Float64 = Self.radius
     comptime HALF_LENGTH: Float64 = Self.SIZE_Z
@@ -605,6 +644,208 @@ struct Box[
 
 
 # =============================================================================
+# Cylinder — static (body_idx=0) or body-attached (body_idx>=1)
+# =============================================================================
+
+
+@fieldwise_init
+struct Cylinder[
+    body_idx: Int = 0,
+    radius: Float64 = 0.25,
+    half_length: Float64 = 0.5,
+    pos_x: Float64 = 0.0,
+    pos_y: Float64 = 0.0,
+    pos_z: Float64 = 0.0,
+    quat_x: Float64 = 0.0,
+    quat_y: Float64 = 0.0,
+    quat_z: Float64 = 0.0,
+    quat_w: Float64 = 1.0,
+    friction: Float64 = _UNSET_F64,
+    condim: Int = _UNSET_INT,
+    friction_spin: Float64 = _UNSET_F64,
+    friction_roll: Float64 = _UNSET_F64,
+    contype: Int = _UNSET_INT,
+    conaffinity: Int = _UNSET_INT,
+    solref_0: Float64 = _UNSET_F64,
+    solref_1: Float64 = _UNSET_F64,
+    solimp_0: Float64 = _UNSET_F64,
+    solimp_1: Float64 = _UNSET_F64,
+    solimp_2: Float64 = _UNSET_F64,
+    margin: Float64 = _UNSET_F64,
+    density: Float64 = _UNSET_F64,
+    mass: Float64 = _UNSET_F64,
+    color: Color = Color(180, 120, 60, 255),
+    shininess: Float64 = _UNSET_F64,
+    specular: Float64 = _UNSET_F64,
+    reflectance: Float64 = _UNSET_F64,
+    material_name: String = "",
+](GeomSpec):
+    """Cylinder geom (static or body-attached).
+
+    body_idx=0: static in world frame (pos/quat is world pose).
+    body_idx>=1: attached to body (pos/quat is local offset in body frame).
+    Cylinder axis is local Z, half_length defines the half-height.
+    Like a capsule but with flat ends instead of hemispherical caps.
+    Matches MuJoCo <geom type="cylinder" size="radius hlength"/>.
+    """
+
+    comptime GEOM_TYPE: Int = GEOM_CYLINDER
+    comptime BODY_IDX: Int = Self.body_idx
+    comptime POS_X: Float64 = Self.pos_x
+    comptime POS_Y: Float64 = Self.pos_y
+    comptime POS_Z: Float64 = Self.pos_z
+    comptime QUAT_X: Float64 = Self.quat_x
+    comptime QUAT_Y: Float64 = Self.quat_y
+    comptime QUAT_Z: Float64 = Self.quat_z
+    comptime QUAT_W: Float64 = Self.quat_w
+    comptime SIZE_X: Float64 = 0.0
+    comptime SIZE_Y: Float64 = 0.0
+    comptime SIZE_Z: Float64 = Self.half_length
+    comptime RADIUS: Float64 = Self.radius
+    comptime HALF_LENGTH: Float64 = Self.half_length
+    comptime HALF_X: Float64 = 0.0
+    comptime HALF_Y: Float64 = 0.0
+    comptime HALF_Z: Float64 = 0.0
+    comptime FRICTION: Float64 = Self.friction
+    comptime CONDIM: Int = Self.condim
+    comptime FRICTION_SPIN: Float64 = Self.friction_spin
+    comptime FRICTION_ROLL: Float64 = Self.friction_roll
+    comptime CONTYPE: Int = Self.contype
+    comptime CONAFFINITY: Int = Self.conaffinity
+    comptime SOLREF_0: Float64 = Self.solref_0
+    comptime SOLREF_1: Float64 = Self.solref_1
+    comptime SOLIMP_0: Float64 = Self.solimp_0
+    comptime SOLIMP_1: Float64 = Self.solimp_1
+    comptime SOLIMP_2: Float64 = Self.solimp_2
+    comptime MARGIN: Float64 = Self.margin
+    comptime DENSITY: Float64 = Self.density
+    comptime GEOM_MASS: Float64 = Self.mass
+    comptime COLOR: Color = Self.color
+    comptime SHININESS: Float64 = Self.shininess
+    comptime SPECULAR: Float64 = Self.specular
+    comptime REFLECTANCE: Float64 = Self.reflectance
+    comptime MATERIAL_NAME: String = Self.material_name
+
+
+# =============================================================================
+# FromToCylinder — cylinder defined by two endpoints (MuJoCo fromto="...")
+# =============================================================================
+
+
+@fieldwise_init
+struct FromToCylinder[
+    body_idx: Int = 0,
+    radius: Float64 = 0.25,
+    from_x: Float64 = 0.0,
+    from_y: Float64 = 0.0,
+    from_z: Float64 = 0.0,
+    to_x: Float64 = 0.0,
+    to_y: Float64 = 0.0,
+    to_z: Float64 = 0.0,
+    friction: Float64 = _UNSET_F64,
+    condim: Int = _UNSET_INT,
+    friction_spin: Float64 = _UNSET_F64,
+    friction_roll: Float64 = _UNSET_F64,
+    contype: Int = _UNSET_INT,
+    conaffinity: Int = _UNSET_INT,
+    solref_0: Float64 = _UNSET_F64,
+    solref_1: Float64 = _UNSET_F64,
+    solimp_0: Float64 = _UNSET_F64,
+    solimp_1: Float64 = _UNSET_F64,
+    solimp_2: Float64 = _UNSET_F64,
+    margin: Float64 = _UNSET_F64,
+    density: Float64 = _UNSET_F64,
+    mass: Float64 = _UNSET_F64,
+    color: Color = Color(180, 120, 60, 255),
+    shininess: Float64 = _UNSET_F64,
+    specular: Float64 = _UNSET_F64,
+    reflectance: Float64 = _UNSET_F64,
+    material_name: String = "",
+](GeomSpec):
+    """Cylinder defined by two endpoints, matching MuJoCo's fromto="x1 y1 z1 x2 y2 z2".
+
+    Automatically computes center position, half-length, and orientation quaternion
+    from the two endpoints at compile time. The cylinder axis runs from `from` to `to`.
+    """
+
+    comptime GEOM_TYPE: Int = GEOM_CYLINDER
+    comptime BODY_IDX: Int = Self.body_idx
+    comptime POS_X: Float64 = _fromto_center_x(Self.from_x, Self.to_x)
+    comptime POS_Y: Float64 = _fromto_center_y(Self.from_y, Self.to_y)
+    comptime POS_Z: Float64 = _fromto_center_z(Self.from_z, Self.to_z)
+    comptime QUAT_X: Float64 = _fromto_quat_component(
+        Self.from_x,
+        Self.from_y,
+        Self.from_z,
+        Self.to_x,
+        Self.to_y,
+        Self.to_z,
+        0,
+    )
+    comptime QUAT_Y: Float64 = _fromto_quat_component(
+        Self.from_x,
+        Self.from_y,
+        Self.from_z,
+        Self.to_x,
+        Self.to_y,
+        Self.to_z,
+        1,
+    )
+    comptime QUAT_Z: Float64 = _fromto_quat_component(
+        Self.from_x,
+        Self.from_y,
+        Self.from_z,
+        Self.to_x,
+        Self.to_y,
+        Self.to_z,
+        2,
+    )
+    comptime QUAT_W: Float64 = _fromto_quat_component(
+        Self.from_x,
+        Self.from_y,
+        Self.from_z,
+        Self.to_x,
+        Self.to_y,
+        Self.to_z,
+        3,
+    )
+    comptime SIZE_X: Float64 = 0.0
+    comptime SIZE_Y: Float64 = 0.0
+    comptime SIZE_Z: Float64 = _fromto_half_length(
+        Self.from_x,
+        Self.from_y,
+        Self.from_z,
+        Self.to_x,
+        Self.to_y,
+        Self.to_z,
+    )
+    comptime RADIUS: Float64 = Self.radius
+    comptime HALF_LENGTH: Float64 = Self.SIZE_Z
+    comptime HALF_X: Float64 = 0.0
+    comptime HALF_Y: Float64 = 0.0
+    comptime HALF_Z: Float64 = 0.0
+    comptime FRICTION: Float64 = Self.friction
+    comptime CONDIM: Int = Self.condim
+    comptime FRICTION_SPIN: Float64 = Self.friction_spin
+    comptime FRICTION_ROLL: Float64 = Self.friction_roll
+    comptime CONTYPE: Int = Self.contype
+    comptime CONAFFINITY: Int = Self.conaffinity
+    comptime SOLREF_0: Float64 = Self.solref_0
+    comptime SOLREF_1: Float64 = Self.solref_1
+    comptime SOLIMP_0: Float64 = Self.solimp_0
+    comptime SOLIMP_1: Float64 = Self.solimp_1
+    comptime SOLIMP_2: Float64 = Self.solimp_2
+    comptime MARGIN: Float64 = Self.margin
+    comptime DENSITY: Float64 = Self.density
+    comptime GEOM_MASS: Float64 = Self.mass
+    comptime COLOR: Color = Self.color
+    comptime SHININESS: Float64 = Self.shininess
+    comptime SPECULAR: Float64 = Self.specular
+    comptime REFLECTANCE: Float64 = Self.reflectance
+    comptime MATERIAL_NAME: String = Self.material_name
+
+
+# =============================================================================
 # Backwards-compatible aliases
 # =============================================================================
 
@@ -612,7 +853,10 @@ comptime PlaneGeom = Plane
 comptime SphereGeom = Sphere
 comptime BoxGeom = Box
 comptime CapsuleGeom = Capsule
+comptime CylinderGeom = Cylinder
 comptime FromToCapsuleGeom = FromToCapsule
+comptime FromToCylinderGeom = FromToCylinder
 comptime BodyCapsuleGeom = Capsule
 comptime BodySphereGeom = Sphere
 comptime BodyBoxGeom = Box
+comptime BodyCylinderGeom = Cylinder
