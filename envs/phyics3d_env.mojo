@@ -414,8 +414,11 @@ struct Phyics3dEnv[
         ] = UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin](),
     ) raises:
         """Batched GPU step function using physics engine."""
-        comptime MODEL_SIZE = model_size[
-            Self.MODEL_DEF.NBODY, Self.MODEL_DEF.NJOINT, Self.MODEL_DEF.NGEOM
+        comptime MODEL_SIZE = model_size_with_invweight[
+            Self.MODEL_DEF.NBODY,
+            Self.MODEL_DEF.NJOINT,
+            Self.MODEL_DEF.NV,
+            Self.MODEL_DEF.NGEOM,
         ]()
         comptime WS_SIZE = integrator_workspace_size[
             Self.MODEL_DEF.NV, Self.MODEL_DEF.NBODY
@@ -523,7 +526,8 @@ struct Phyics3dEnv[
             var i = Int(block_dim.x * block_idx.x + thread_idx.x)
             if i >= BATCH_SIZE:
                 return
-            Self._reset_env_gpu[BATCH_SIZE, STATE_SIZE_VAL](states, i, seed)
+            # DEBUG: no-op to test if kernel compilation itself crashes
+            states[i, 0] = Scalar[gpu_dtype](0)
 
         ctx.enqueue_function[reset_wrapper, reset_wrapper](
             states,
@@ -531,10 +535,14 @@ struct Phyics3dEnv[
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )
+        ctx.synchronize()  # DEBUG: isolate reset vs FK crash
 
         # Run forward kinematics
-        comptime MODEL_SIZE = model_size[
-            Self.MODEL_DEF.NBODY, Self.MODEL_DEF.NJOINT, Self.MODEL_DEF.NGEOM
+        comptime MODEL_SIZE = model_size_with_invweight[
+            Self.MODEL_DEF.NBODY,
+            Self.MODEL_DEF.NJOINT,
+            Self.MODEL_DEF.NV,
+            Self.MODEL_DEF.NGEOM,
         ]()
         var model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
         Self.MODEL_DEF.init_model_gpu(ctx, model_buf)
@@ -598,8 +606,11 @@ struct Phyics3dEnv[
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
-        comptime MODEL_SIZE = model_size[
-            Self.MODEL_DEF.NBODY, Self.MODEL_DEF.NJOINT, Self.MODEL_DEF.NGEOM
+        comptime MODEL_SIZE = model_size_with_invweight[
+            Self.MODEL_DEF.NBODY,
+            Self.MODEL_DEF.NJOINT,
+            Self.MODEL_DEF.NV,
+            Self.MODEL_DEF.NGEOM,
         ]()
         var model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
         Self.MODEL_DEF.init_model_gpu(ctx, model_buf)

@@ -1014,34 +1014,22 @@ struct Joints[*J: JointSpec](JointsLike):
 
             @parameter
             if J.JNT_TYPE == JNT_FREE:
-                # Free joint: position with noise + identity quat with small noise
-                var nx = Scalar[GDTYPE](rand_vals[offset + 0] * 2.0 - 1.0) * noise_scale
-                var ny = Scalar[GDTYPE](rand_vals[offset + 1] * 2.0 - 1.0) * noise_scale
-                var nz = Scalar[GDTYPE](rand_vals[offset + 2] * 2.0 - 1.0) * noise_scale
-                states[env, QPOS_OFF + offset + 0] = Scalar[GDTYPE](J.INIT_POS_X) + nx
-                states[env, QPOS_OFF + offset + 1] = Scalar[GDTYPE](J.INIT_POS_Y) + ny
-                states[env, QPOS_OFF + offset + 2] = Scalar[GDTYPE](J.INIT_POS_Z) + nz
-                # Quaternion: identity + small noise, then normalize
-                var qx = Scalar[GDTYPE](rand_vals[offset + 3] * 2.0 - 1.0) * noise_scale
-                var qy = Scalar[GDTYPE](rand_vals[offset + 4] * 2.0 - 1.0) * noise_scale
-                var qz = Scalar[GDTYPE](rand_vals[offset + 5] * 2.0 - 1.0) * noise_scale
-                var qw = Scalar[GDTYPE](1.0) + Scalar[GDTYPE](rand_vals[offset + 6] * 2.0 - 1.0) * noise_scale
-                var norm = sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
-                if norm > Scalar[GDTYPE](1e-10):
-                    qx /= norm
-                    qy /= norm
-                    qz /= norm
-                    qw /= norm
-                else:
-                    qx = Scalar[GDTYPE](0)
-                    qy = Scalar[GDTYPE](0)
-                    qz = Scalar[GDTYPE](0)
-                    qw = Scalar[GDTYPE](1)
-                states[env, QPOS_OFF + offset + 3] = qx
-                states[env, QPOS_OFF + offset + 4] = qy
-                states[env, QPOS_OFF + offset + 5] = qz
-                states[env, QPOS_OFF + offset + 6] = qw
+                # Free joint: init position + identity quaternion (no noise for now)
+                states[env, QPOS_OFF + offset + 0] = Scalar[GDTYPE](
+                    J.INIT_POS_X
+                )
+                states[env, QPOS_OFF + offset + 1] = Scalar[GDTYPE](
+                    J.INIT_POS_Y
+                )
+                states[env, QPOS_OFF + offset + 2] = Scalar[GDTYPE](
+                    J.INIT_POS_Z
+                )
+                states[env, QPOS_OFF + offset + 3] = Scalar[GDTYPE](0)  # qx
+                states[env, QPOS_OFF + offset + 4] = Scalar[GDTYPE](0)  # qy
+                states[env, QPOS_OFF + offset + 5] = Scalar[GDTYPE](0)  # qz
+                states[env, QPOS_OFF + offset + 6] = Scalar[GDTYPE](1)  # qw
             else:
+
                 @parameter
                 for k in range(J.NQ):
                     var noise = (
