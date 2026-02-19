@@ -1376,8 +1376,20 @@ struct Geoms[*G: GeomSpec](GeomsLike):
             @parameter
             if GG.GEOM_TYPE == GEOM_PLANE:
                 has_plane = True
+                var max_radius: Float64 = 0.0
+
+                @parameter
+                for j in range(Self.N):
+                    comptime HH = Self.geom_types[j]
+
+                    @parameter
+                    if HH.BODY_IDX > 0:
+                        if HH.RADIUS > max_radius:
+                            max_radius = HH.RADIUS
+
+                var ground_offset = GG.POS_Z - max_radius * (visual_radius_scale - 1.0)
                 var grid_center_x = torso_x if follow else 0.0
-                renderer.draw_ground_grid(grid_center_x, height=GG.POS_Z)
+                renderer.draw_ground_grid(grid_center_x, height=ground_offset)
 
         if not has_plane:
             var max_radius: Float64 = 0.0

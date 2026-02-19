@@ -947,7 +947,7 @@ struct Phyics3dEnv[
         var renderer = ModelRenderer[Self.MODEL_DEF](
             width=1280,
             height=720,
-            visual_radius_scale=2.0,
+            visual_radius_scale=1.0,
             axes_offset=1.5,
             vel_arrow_height=0.15,
             vel_arrow_scale=0.1,
