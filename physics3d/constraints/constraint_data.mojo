@@ -16,6 +16,7 @@ Constraint types:
 - CNSTR_PYRAMID_EDGE (7): Pyramidal cone edge constraint (lambda >= 0)
 - CNSTR_EQUALITY_CONNECT (8): Equality connect constraint (bilateral, 3 rows)
 - CNSTR_EQUALITY_WELD (9): Equality weld constraint (bilateral, 6 rows)
+- CNSTR_EQUALITY_TENDON (10): Fixed tendon equality constraint (bilateral, 1 row)
 """
 
 from ..types import _max_one
@@ -31,6 +32,7 @@ comptime CNSTR_FRICTION_ROLL2: Int = 6
 comptime CNSTR_PYRAMID_EDGE: Int = 7
 comptime CNSTR_EQUALITY_CONNECT: Int = 8
 comptime CNSTR_EQUALITY_WELD: Int = 9
+comptime CNSTR_EQUALITY_TENDON: Int = 10
 
 
 @fieldwise_init

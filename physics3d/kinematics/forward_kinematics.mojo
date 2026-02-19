@@ -93,6 +93,7 @@ fn forward_kinematics[
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
+    MAX_TENDON: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -104,6 +105,7 @@ fn forward_kinematics[
         NGEOM,
         MAX_EQUALITY,
         CONE_TYPE,
+    MAX_TENDON,
     ],
     mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
 ) where DTYPE.is_floating_point():
@@ -485,6 +487,7 @@ fn compute_body_velocities[
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
+    MAX_TENDON: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -496,6 +499,7 @@ fn compute_body_velocities[
         NGEOM,
         MAX_EQUALITY,
         CONE_TYPE,
+    MAX_TENDON,
     ],
     mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
 ):

@@ -66,6 +66,7 @@ trait ConstraintSolver(Movable & ImplicitlyCopyable):
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
+    MAX_TENDON: Int = 0,
     ](
         model: Model[
             DTYPE,
@@ -77,6 +78,7 @@ trait ConstraintSolver(Movable & ImplicitlyCopyable):
             NGEOM,
             MAX_EQUALITY,
             CONE_TYPE,
+        MAX_TENDON,
         ],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         M_inv: InlineArray[Scalar[DTYPE], M_SIZE],
@@ -112,6 +114,7 @@ trait ConstraintSolver(Movable & ImplicitlyCopyable):
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
+    MAX_TENDON: Int = 0,
     ](
         state: LayoutTensor[
             DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin

@@ -80,6 +80,7 @@ from ..gpu.buffer_utils import (
     copy_model_to_buffer,
     copy_geoms_to_buffer,
     copy_invweight0_to_buffer,
+    copy_tendons_to_buffer,
 )
 from ..kinematics.forward_kinematics import forward_kinematics
 from ..dynamics.mass_matrix import compute_body_invweight0
@@ -112,6 +113,7 @@ trait ModelDefLike:
     comptime MAX_EQUALITY: Int
     comptime CONE_TYPE: Int
     comptime MAX_CONTACTS: Int
+    comptime MAX_TENDON: Int
     comptime OBS_DIM: Int
     comptime ACTION_DIM: Int
 
@@ -141,6 +143,7 @@ trait ModelDefLike:
             Self.NGEOM,
             Self.MAX_EQUALITY,
             Self.CONE_TYPE,
+            Self.MAX_TENDON,
         ],
         mut data: Data[
             DTYPE,
@@ -348,6 +351,7 @@ struct ModelDef[
     max_equality: Int = 0,
     max_contacts: Int = 0,
     cone_type: Int = ConeType.ELLIPTIC,
+    max_tendon: Int = 0,
     # Embedded component types via trait bounds (optional, backward compatible)
 ](ModelDefLike):
     """Compile-time model definition with pre-computed dimensions.
@@ -370,6 +374,7 @@ struct ModelDef[
     comptime MAX_EQUALITY: Int = Self.max_equality
     comptime CONE_TYPE: Int = Self.cone_type
     comptime MAX_CONTACTS: Int = Self.max_contacts
+    comptime MAX_TENDON: Int = Self.max_tendon
 
     # Derived from components (only meaningful when J is not _EmptyJoints)
     comptime OBS_DIM: Int = Self.Joints.OBS_DIM
@@ -404,6 +409,7 @@ struct ModelDef[
             Self.NGEOM,
             Self.MAX_EQUALITY,
             Self.CONE_TYPE,
+            Self.MAX_TENDON,
         ],
     ):
         """Set all solver impedance params on a Model from ModelDefaults.
@@ -455,6 +461,7 @@ struct ModelDef[
             Self.NGEOM,
             Self.MAX_EQUALITY,
             Self.CONE_TYPE,
+            Self.MAX_TENDON,
         ],
         mut data: Data[
             DTYPE,
@@ -518,6 +525,7 @@ struct ModelDef[
             Self.NGEOM,
             Self.MAX_EQUALITY,
             Self.CONE_TYPE,
+            Self.MAX_TENDON,
         ],
         mut data: Data[
             DTYPE,
@@ -550,6 +558,7 @@ struct ModelDef[
             Self.NGEOM,
             Self.MAX_EQUALITY,
             Self.CONE_TYPE,
+            Self.MAX_TENDON,
         ]()
         Self.setup_solver_params(model)
         Self.Bodies.setup_model(model)
@@ -731,6 +740,7 @@ struct ModelDef[
             Self.NGEOM,
             Self.MAX_EQUALITY,
             Self.CONE_TYPE,
+            Self.MAX_TENDON,
         ],
     ) raises -> HostBuffer[DTYPE]:
         """Create a GPU host buffer from a fully-configured model.
@@ -744,12 +754,15 @@ struct ModelDef[
             Self.NJOINT,
             Self.NV,
             Self.NGEOM,
+            Self.MAX_EQUALITY,
+            Self.MAX_TENDON,
         ]()
         var host_buf = ctx.enqueue_create_host_buffer[DTYPE](BUF_SIZE)
         for i in range(BUF_SIZE):
             host_buf[i] = Scalar[DTYPE](0)
         copy_model_to_buffer(model, host_buf)
         copy_geoms_to_buffer(model, host_buf)
+        copy_tendons_to_buffer(model, host_buf)
         copy_invweight0_to_buffer(model, host_buf)
         return host_buf^
 

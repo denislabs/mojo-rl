@@ -100,6 +100,7 @@ fn _solve_friction_pgs_gpu[
     WS_SIZE: Int,
     FRICTION_WS_OFFSET: Int,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
+    MAX_TENDON: Int = 0,
 ](
     env: Int,
     state: LayoutTensor[

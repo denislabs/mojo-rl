@@ -356,6 +356,7 @@ fn compute_rne_vel_derivative[
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
+    MAX_TENDON: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -367,6 +368,7 @@ fn compute_rne_vel_derivative[
         NGEOM,
         MAX_EQUALITY,
         CONE_TYPE,
+    MAX_TENDON,
     ],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],

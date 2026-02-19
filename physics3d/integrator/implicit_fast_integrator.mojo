@@ -139,6 +139,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
+        MAX_TENDON: Int = 0,
     ](
         model: Model[
             DTYPE,
@@ -150,6 +151,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
             NGEOM,
             MAX_EQUALITY,
             CONE_TYPE,
+            MAX_TENDON,
         ],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         verbose: Bool = False,
@@ -406,9 +408,9 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
             print("")
 
         # 8. Build constraints and solve (modifies qacc in-place)
-        comptime MAX_ROWS = 11 * MAX_CONTACTS + 2 * NJOINT + 6 * MAX_EQUALITY
+        comptime MAX_ROWS = 11 * MAX_CONTACTS + 2 * NJOINT + 6 * MAX_EQUALITY + MAX_TENDON
         var constraints = ConstraintData[DTYPE, MAX_ROWS, NV]()
-        build_constraints[CONE_TYPE=CONE_TYPE,](
+        build_constraints[CONE_TYPE=CONE_TYPE, MAX_TENDON=MAX_TENDON](
             model, data, cdof, M_inv, qacc, dt, constraints
         )
 
@@ -640,6 +642,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
+        MAX_TENDON: Int = 0,
     ](
         model: Model[
             DTYPE,
@@ -651,6 +654,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
             NGEOM,
             MAX_EQUALITY,
             CONE_TYPE,
+            MAX_TENDON,
         ],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         num_steps: Int,
@@ -667,6 +671,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
                 NGEOM,
                 MAX_EQUALITY,
                 CONE_TYPE,
+                MAX_TENDON,
             ](model, data)
 
     # =========================================================================
@@ -689,6 +694,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
+        MAX_TENDON: Int = 0,
     ](
         state: LayoutTensor[
             DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
@@ -1165,6 +1171,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
+        MAX_TENDON: Int = 0,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],
@@ -1244,6 +1251,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
             NGEOM,
             MAX_EQUALITY,
             CONE_TYPE,
+            MAX_TENDON,
         ]
 
         ctx.enqueue_function[solver_wrapper, solver_wrapper](
@@ -1287,6 +1295,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
+        MAX_TENDON: Int = 0,
     ](
         ctx: DeviceContext,
         mut state_buf: DeviceBuffer[DTYPE],
@@ -1307,6 +1316,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
                 NGEOM,
                 MAX_EQUALITY,
                 CONE_TYPE,
+                MAX_TENDON,
             ](
                 ctx,
                 state_buf,

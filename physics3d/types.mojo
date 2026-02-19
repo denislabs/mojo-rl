@@ -51,6 +51,10 @@ fn _max_one[n: Int]() -> Int:
 # Equality constraint type constants
 comptime EQ_CONNECT: Int = 0  # Point-to-point ball joint (3 position rows)
 comptime EQ_WELD: Int = 1  # Rigid attachment (3 position + 3 orientation rows)
+comptime EQ_TENDON: Int = 2  # Fixed tendon (1 bilateral row)
+
+# Maximum joints per tendon
+comptime MAX_TENDON_JOINTS: Int = 4
 
 
 @fieldwise_init
@@ -101,6 +105,61 @@ struct EqualityConstraintDef[DTYPE: DType](
             relpose_y=Scalar[Self.DTYPE](0),
             relpose_z=Scalar[Self.DTYPE](0),
             relpose_w=Scalar[Self.DTYPE](1),
+            solref_0=Scalar[Self.DTYPE](0.02),
+            solref_1=Scalar[Self.DTYPE](1.0),
+            solimp_0=Scalar[Self.DTYPE](0.9),
+            solimp_1=Scalar[Self.DTYPE](0.95),
+            solimp_2=Scalar[Self.DTYPE](0.001),
+        )
+
+
+# =============================================================================
+# TendonDef - Fixed tendon definition
+# =============================================================================
+
+
+@fieldwise_init
+struct TendonDef[DTYPE: DType](Copyable, ImplicitlyCopyable, Movable):
+    """Definition of a fixed tendon (linear combination of joint positions).
+
+    A fixed tendon computes: ten_length = Σ(coef_i * qpos[joint_qposadr_i])
+    An equality constraint enforces: ten_length - length_ref = 0
+    This produces 1 bilateral constraint row with trivial Jacobian: J[dof_adr_i] = coef_i.
+
+    Uses flat fields (joint_idx_0..3, coef_0..3) instead of InlineArray
+    to avoid Mojo copyability issues and simplify GPU buffer layout.
+    """
+
+    var num_joints: Int  # Number of joints in this tendon (1..4)
+    var joint_idx_0: Int  # Joint indices (unused slots = -1)
+    var joint_idx_1: Int
+    var joint_idx_2: Int
+    var joint_idx_3: Int
+    var coef_0: Scalar[Self.DTYPE]  # Coefficients per joint
+    var coef_1: Scalar[Self.DTYPE]
+    var coef_2: Scalar[Self.DTYPE]
+    var coef_3: Scalar[Self.DTYPE]
+    var length_ref: Scalar[Self.DTYPE]  # Reference length (from initial qpos)
+    var solref_0: Scalar[Self.DTYPE]  # timeconst
+    var solref_1: Scalar[Self.DTYPE]  # dampratio
+    var solimp_0: Scalar[Self.DTYPE]  # dmin
+    var solimp_1: Scalar[Self.DTYPE]  # dmax
+    var solimp_2: Scalar[Self.DTYPE]  # width
+
+    @staticmethod
+    fn empty() -> Self:
+        """Create empty tendon definition."""
+        return Self(
+            num_joints=0,
+            joint_idx_0=-1,
+            joint_idx_1=-1,
+            joint_idx_2=-1,
+            joint_idx_3=-1,
+            coef_0=Scalar[Self.DTYPE](0),
+            coef_1=Scalar[Self.DTYPE](0),
+            coef_2=Scalar[Self.DTYPE](0),
+            coef_3=Scalar[Self.DTYPE](0),
+            length_ref=Scalar[Self.DTYPE](0),
             solref_0=Scalar[Self.DTYPE](0.02),
             solref_1=Scalar[Self.DTYPE](1.0),
             solimp_0=Scalar[Self.DTYPE](0.9),
@@ -256,6 +315,7 @@ struct Model[
     NGEOM: Int = 0,  # Number of geoms (0 = legacy mode, uses body geometry)
     MAX_EQUALITY: Int = 0,  # Maximum number of equality constraints
     CONE_TYPE: Int = ConeType.ELLIPTIC,  # Cone type (0=pyramidal, 1=elliptic)
+    MAX_TENDON: Int = 0,  # Maximum number of fixed tendons
 ]:
     """Static configuration for MuJoCo-style generalized coordinates simulation.
 
@@ -269,6 +329,7 @@ struct Model[
         NGEOM: Number of geoms (0 = legacy mode, uses body geometry).
         MAX_EQUALITY: Maximum number of equality constraints (0 = none).
         CONE_TYPE: Cone type (0=pyramidal, 1=elliptic).
+        MAX_TENDON: Maximum number of fixed tendons (0 = none).
 
     The kinematic tree is defined by body_parent array:
     - body_parent[0] = 0 (worldbody, self-referencing)
@@ -377,6 +438,12 @@ struct Model[
         EqualityConstraintDef[Self.DTYPE], _max_one[Self.MAX_EQUALITY]()
     ]
     var num_equality: Int
+
+    # Fixed tendons
+    var tendons: InlineArray[
+        TendonDef[Self.DTYPE], _max_one[Self.MAX_TENDON]()
+    ]
+    var num_tendons: Int
 
     fn __init__(out self):
         """Initialize model with default values."""
@@ -593,6 +660,14 @@ struct Model[
                 Self.DTYPE
             ].empty()
         self.num_equality = 0
+
+        # Initialize tendons
+        self.tendons = InlineArray[
+            TendonDef[Self.DTYPE], _max_one[Self.MAX_TENDON]()
+        ](uninitialized=True)
+        for i in range(_max_one[Self.MAX_TENDON]()):
+            self.tendons[i] = TendonDef[Self.DTYPE].empty()
+        self.num_tendons = 0
 
     fn set_body(
         mut self,
@@ -962,6 +1037,60 @@ struct Model[
             solimp_2=solimp[2],
         )
         self.num_equality += 1
+        return idx
+
+    fn add_tendon(
+        mut self,
+        num_joints: Int,
+        joint_indices: InlineArray[Int, 4],
+        coefs: InlineArray[Scalar[Self.DTYPE], 4],
+        length_ref: Scalar[Self.DTYPE] = 0.0,
+        solref: Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE]] = (
+            Scalar[Self.DTYPE](0.02),
+            Scalar[Self.DTYPE](1.0),
+        ),
+        solimp: Tuple[
+            Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]
+        ] = (
+            Scalar[Self.DTYPE](0.9),
+            Scalar[Self.DTYPE](0.95),
+            Scalar[Self.DTYPE](0.001),
+        ),
+    ) -> Int:
+        """Add a fixed tendon (linear combination of joint positions).
+
+        Args:
+            num_joints: Number of joints in the tendon (1..4).
+            joint_indices: Joint indices (unused slots should be -1).
+            coefs: Coefficients per joint.
+            length_ref: Reference length (tendon length at rest).
+            solref: Impedance parameters [timeconst, dampratio].
+            solimp: Impedance parameters [dmin, dmax, width].
+
+        Returns:
+            Tendon index, or -1 if max tendons exceeded.
+        """
+        if self.num_tendons >= Self.MAX_TENDON:
+            return -1
+        var idx = self.num_tendons
+        self.tendons[idx] = TendonDef[Self.DTYPE](
+            num_joints=num_joints,
+            joint_idx_0=joint_indices[0],
+            joint_idx_1=joint_indices[1],
+            joint_idx_2=joint_indices[2],
+            joint_idx_3=joint_indices[3],
+            coef_0=coefs[0],
+            coef_1=coefs[1],
+            coef_2=coefs[2],
+            coef_3=coefs[3],
+            length_ref=length_ref,
+            solref_0=solref[0],
+            solref_1=solref[1],
+            solimp_0=solimp[0],
+            solimp_1=solimp[1],
+            solimp_2=solimp[2],
+        )
+        self.num_tendons += 1
         return idx
 
     fn get_joint(self, joint_idx: Int) -> JointDef[Self.DTYPE]:

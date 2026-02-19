@@ -166,6 +166,7 @@ struct Equalities[*E: EqualitySpec]:
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
+    MAX_TENDON: Int = 0,
     ](
         mut model: Model[
             DTYPE,
@@ -177,6 +178,7 @@ struct Equalities[*E: EqualitySpec]:
             Self.N,
             MAX_EQUALITY,
             CONE_TYPE,
+        MAX_TENDON,
         ]
     ):
         """Populate model equality constraints from compile-time specs."""

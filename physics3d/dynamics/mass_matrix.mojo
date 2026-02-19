@@ -83,6 +83,7 @@ fn _is_descendant[
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
+    MAX_TENDON: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -94,6 +95,7 @@ fn _is_descendant[
         NGEOM,
         MAX_EQUALITY,
         CONE_TYPE,
+    MAX_TENDON,
     ],
     body: Int,
     ancestor: Int,
@@ -364,6 +366,7 @@ fn compute_mass_matrix_full[
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
+    MAX_TENDON: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -375,6 +378,7 @@ fn compute_mass_matrix_full[
         NGEOM,
         MAX_EQUALITY,
         CONE_TYPE,
+    MAX_TENDON,
     ],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
@@ -660,6 +664,7 @@ fn compute_body_invweight0[
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
+    MAX_TENDON: Int = 0,
 ](
     mut model: Model[
         DTYPE,
@@ -671,6 +676,7 @@ fn compute_body_invweight0[
         NGEOM,
         MAX_EQUALITY,
         CONE_TYPE,
+    MAX_TENDON,
     ],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
 ):
@@ -703,6 +709,7 @@ fn compute_body_invweight0[
     compute_mass_matrix_full[
         DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, M_SIZE, CDOF_SIZE,
         CRB_SIZE, NGEOM, MAX_EQUALITY, CONE_TYPE,
+    MAX_TENDON,
     ](model, data, cdof, crb, M)
 
     # Add armature to diagonal before factoring

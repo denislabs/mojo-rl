@@ -73,6 +73,7 @@ from ..constraints.constraint_builder_gpu import (
     warmstart_normals_gpu,
     detect_and_solve_limits_gpu,
     build_and_solve_equality_gpu,
+    build_and_solve_tendon_gpu,
 )
 
 # PGS solver parameters
@@ -121,6 +122,7 @@ struct PGSSolver(ConstraintSolver):
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
+        MAX_TENDON: Int = 0,
     ](
         model: Model[
             DTYPE,
@@ -132,6 +134,7 @@ struct PGSSolver(ConstraintSolver):
             NGEOM,
             MAX_EQUALITY,
             CONE_TYPE,
+        MAX_TENDON,
         ],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         M_inv: InlineArray[Scalar[DTYPE], M_SIZE],
@@ -493,6 +496,7 @@ struct PGSSolver(ConstraintSolver):
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
+        MAX_TENDON: Int = 0,
     ](
         state: LayoutTensor[
             DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
@@ -749,6 +753,27 @@ struct PGSSolver(ConstraintSolver):
                 BATCH,
                 PGS_ITERATIONS,
             ](env, state, model, workspace)
+
+            # Tendon equality constraints
+            @parameter
+            if MAX_TENDON > 0:
+                build_and_solve_tendon_gpu[
+                    DTYPE,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    MAX_CONTACTS,
+                    MAX_EQUALITY,
+                    NGEOM,
+                    MAX_TENDON,
+                    STATE_SIZE,
+                    MODEL_SIZE,
+                    V_SIZE,
+                    WS_SIZE,
+                    BATCH,
+                    PGS_ITERATIONS,
+                ](env, state, model, workspace)
 
         barrier()
 

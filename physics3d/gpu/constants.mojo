@@ -15,7 +15,7 @@ Model buffer (static, same for all environments):
   Per joint (MODEL_JOINT_SIZE=18): [type, body_id, qpos_adr, dof_adr,
     pos(3), axis(3), tau_limit, range_min/max, armature, damping, stiffness, springref, frictionloss]
   Metadata (MODEL_META_SIZE=21): [NBODY, NJOINT, gravity(3), timestep, _reserved(2),
-    solref_contact(2), solimp_contact(3), solref_limit(2), solimp_limit(3), impratio, nequality]
+    solref_contact(2), solimp_contact(3), solref_limit(2), solimp_limit(3), impratio, nequality, ntendon]
   Curriculum (MODEL_CURRICULUM_SIZE=8): [up to 8 curriculum parameters]
   Per geom (MODEL_GEOM_SIZE=27): [type, body, pos(3), quat(4), radius, half_length,
     half_x/y/z, friction, contype, conaffinity, condim, friction_spin, friction_roll,
@@ -287,6 +287,8 @@ comptime MODEL_META_IDX_SOLIMP_LIMIT_2: Int = 17  # width
 comptime MODEL_META_IDX_IMPRATIO: Int = 18  # MuJoCo impratio
 # Equality constraints
 comptime MODEL_META_IDX_NEQUALITY: Int = 19  # Number of equality constraints
+# Fixed tendons
+comptime MODEL_META_IDX_NTENDON: Int = 20  # Number of fixed tendons
 
 
 fn model_metadata_offset[NBODY: Int, NJOINT: Int]() -> Int:
@@ -389,6 +391,48 @@ fn model_equality_offset[
 
 
 # =============================================================================
+# Model Buffer Layout - Fixed Tendons
+# =============================================================================
+
+comptime MODEL_TENDON_SIZE: Int = 15  # Per fixed tendon
+
+comptime TENDON_IDX_NUM_JOINTS: Int = 0
+comptime TENDON_IDX_JOINT_0: Int = 1
+comptime TENDON_IDX_JOINT_1: Int = 2
+comptime TENDON_IDX_JOINT_2: Int = 3
+comptime TENDON_IDX_JOINT_3: Int = 4
+comptime TENDON_IDX_COEF_0: Int = 5
+comptime TENDON_IDX_COEF_1: Int = 6
+comptime TENDON_IDX_COEF_2: Int = 7
+comptime TENDON_IDX_COEF_3: Int = 8
+comptime TENDON_IDX_LENGTH_REF: Int = 9
+comptime TENDON_IDX_SOLREF_0: Int = 10
+comptime TENDON_IDX_SOLREF_1: Int = 11
+comptime TENDON_IDX_SOLIMP_0: Int = 12
+comptime TENDON_IDX_SOLIMP_1: Int = 13
+comptime TENDON_IDX_SOLIMP_2: Int = 14
+
+
+fn model_tendon_offset[
+    NBODY: Int, NJOINT: Int, NGEOM: Int, NEQUALITY: Int = 0
+](tendon_idx: Int) -> Int:
+    """Offset to a specific tendon in model buffer.
+
+    Tendons are stored AFTER equality constraints.
+    Layout: [bodies | joints | metadata | curriculum | geoms | equality | tendons]
+    """
+    return (
+        NBODY * MODEL_BODY_SIZE
+        + NJOINT * MODEL_JOINT_SIZE
+        + MODEL_META_SIZE
+        + MODEL_CURRICULUM_SIZE
+        + NGEOM * MODEL_GEOM_SIZE
+        + NEQUALITY * MODEL_EQ_SIZE
+        + tendon_idx * MODEL_TENDON_SIZE
+    )
+
+
+# =============================================================================
 # Model Buffer Layout - Curriculum Parameters
 # =============================================================================
 
@@ -412,11 +456,12 @@ fn model_curriculum_offset[NBODY: Int, NJOINT: Int]() -> Int:
 
 
 fn model_size[
-    NBODY: Int, NJOINT: Int, NGEOM: Int = 0, NEQUALITY: Int = 0
+    NBODY: Int, NJOINT: Int, NGEOM: Int = 0, NEQUALITY: Int = 0,
+    NTENDON: Int = 0,
 ]() -> Int:
     """Total model buffer size (without invweight0 arrays).
 
-    Layout: [bodies | joints | metadata | curriculum | geoms | equality]
+    Layout: [bodies | joints | metadata | curriculum | geoms | equality | tendons]
     """
     return (
         NBODY * MODEL_BODY_SIZE
@@ -425,41 +470,45 @@ fn model_size[
         + MODEL_CURRICULUM_SIZE
         + NGEOM * MODEL_GEOM_SIZE
         + NEQUALITY * MODEL_EQ_SIZE
+        + NTENDON * MODEL_TENDON_SIZE
     )
 
 
 fn model_body_invweight0_offset[
-    NBODY: Int, NJOINT: Int, NGEOM: Int = 0, NEQUALITY: Int = 0
+    NBODY: Int, NJOINT: Int, NGEOM: Int = 0, NEQUALITY: Int = 0,
+    NTENDON: Int = 0,
 ]() -> Int:
     """Offset to body_invweight0[NBODY*2] in model buffer.
 
-    Appended after geoms/equality section.
+    Appended after geoms/equality/tendons section.
     """
-    return model_size[NBODY, NJOINT, NGEOM, NEQUALITY]()
+    return model_size[NBODY, NJOINT, NGEOM, NEQUALITY, NTENDON]()
 
 
 fn model_dof_invweight0_offset[
-    NBODY: Int, NJOINT: Int, NGEOM: Int = 0, NEQUALITY: Int = 0
+    NBODY: Int, NJOINT: Int, NGEOM: Int = 0, NEQUALITY: Int = 0,
+    NTENDON: Int = 0,
 ]() -> Int:
     """Offset to dof_invweight0[NV] in model buffer.
 
     Appended after body_invweight0[NBODY*2].
     """
     return (
-        model_body_invweight0_offset[NBODY, NJOINT, NGEOM, NEQUALITY]()
+        model_body_invweight0_offset[NBODY, NJOINT, NGEOM, NEQUALITY, NTENDON]()
         + NBODY * 2
     )
 
 
 fn model_size_with_invweight[
-    NBODY: Int, NJOINT: Int, NV: Int, NGEOM: Int = 0, NEQUALITY: Int = 0
+    NBODY: Int, NJOINT: Int, NV: Int, NGEOM: Int = 0, NEQUALITY: Int = 0,
+    NTENDON: Int = 0,
 ]() -> Int:
     """Total model buffer size including invweight0 arrays.
 
-    Layout: [bodies | joints | metadata | curriculum | geoms | equality |
+    Layout: [bodies | joints | metadata | curriculum | geoms | equality | tendons |
              body_invweight0(NBODY*2) | dof_invweight0(NV)]
     """
-    return model_dof_invweight0_offset[NBODY, NJOINT, NGEOM, NEQUALITY]() + NV
+    return model_dof_invweight0_offset[NBODY, NJOINT, NGEOM, NEQUALITY, NTENDON]() + NV
 
 
 # =============================================================================

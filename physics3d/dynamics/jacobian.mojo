@@ -103,6 +103,7 @@ fn compute_cdof[
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
+    MAX_TENDON: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -114,6 +115,7 @@ fn compute_cdof[
         NGEOM,
         MAX_EQUALITY,
         CONE_TYPE,
+    MAX_TENDON,
     ],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     mut cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
@@ -322,6 +324,7 @@ fn compute_contact_jacobian_row[
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
+    MAX_TENDON: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -333,6 +336,7 @@ fn compute_contact_jacobian_row[
         NGEOM,
         MAX_EQUALITY,
         CONE_TYPE,
+    MAX_TENDON,
     ],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
@@ -442,6 +446,7 @@ fn _joint_affects_body[
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
+    MAX_TENDON: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -453,6 +458,7 @@ fn _joint_affects_body[
         NGEOM,
         MAX_EQUALITY,
         CONE_TYPE,
+    MAX_TENDON,
     ],
     joint_idx: Int,
     body_idx: Int,
@@ -489,6 +495,7 @@ fn compute_composite_inertia[
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
+    MAX_TENDON: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -500,6 +507,7 @@ fn compute_composite_inertia[
         NGEOM,
         MAX_EQUALITY,
         CONE_TYPE,
+    MAX_TENDON,
     ],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     mut crb: InlineArray[Scalar[DTYPE], CRB_SIZE],

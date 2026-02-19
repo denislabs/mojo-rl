@@ -122,6 +122,7 @@ from .constants import (
     GEOM_IDX_MARGIN,
     MODEL_META_IDX_IMPRATIO,
     MODEL_META_IDX_NEQUALITY,
+    MODEL_META_IDX_NTENDON,
     model_geom_offset,
     MODEL_EQ_SIZE,
     EQ_IDX_TYPE,
@@ -145,6 +146,23 @@ from .constants import (
     model_equality_offset,
     model_body_invweight0_offset,
     model_dof_invweight0_offset,
+    MODEL_TENDON_SIZE,
+    TENDON_IDX_NUM_JOINTS,
+    TENDON_IDX_JOINT_0,
+    TENDON_IDX_JOINT_1,
+    TENDON_IDX_JOINT_2,
+    TENDON_IDX_JOINT_3,
+    TENDON_IDX_COEF_0,
+    TENDON_IDX_COEF_1,
+    TENDON_IDX_COEF_2,
+    TENDON_IDX_COEF_3,
+    TENDON_IDX_LENGTH_REF,
+    TENDON_IDX_SOLREF_0,
+    TENDON_IDX_SOLREF_1,
+    TENDON_IDX_SOLIMP_0,
+    TENDON_IDX_SOLIMP_1,
+    TENDON_IDX_SOLIMP_2,
+    model_tendon_offset,
 )
 from ..types import Model, Data, ConeType
 
@@ -227,6 +245,7 @@ fn copy_model_to_buffer[
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
+    MAX_TENDON: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -238,6 +257,7 @@ fn copy_model_to_buffer[
         NGEOM,
         MAX_EQUALITY,
         CONE_TYPE,
+        MAX_TENDON,
     ],
     buffer: HostBuffer[DTYPE],
 ):
@@ -352,6 +372,10 @@ fn copy_model_to_buffer[
     buffer[meta_offset + MODEL_META_IDX_NEQUALITY] = Scalar[DTYPE](
         model.num_equality
     )
+    # Fixed tendons
+    buffer[meta_offset + MODEL_META_IDX_NTENDON] = Scalar[DTYPE](
+        model.num_tendons
+    )
 
 
 fn copy_invweight0_to_buffer[
@@ -364,6 +388,7 @@ fn copy_invweight0_to_buffer[
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
+    MAX_TENDON: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -375,6 +400,7 @@ fn copy_invweight0_to_buffer[
         NGEOM,
         MAX_EQUALITY,
         CONE_TYPE,
+        MAX_TENDON,
     ],
     buffer: HostBuffer[DTYPE],
 ):
@@ -389,14 +415,14 @@ fn copy_invweight0_to_buffer[
     """
     # Copy body_invweight0[NBODY*2]
     var bw_offset = model_body_invweight0_offset[
-        NBODY, NJOINT, NGEOM, MAX_EQUALITY
+        NBODY, NJOINT, NGEOM, MAX_EQUALITY, MAX_TENDON
     ]()
     for i in range(NBODY * 2):
         buffer[bw_offset + i] = model.body_invweight0[i]
 
     # Copy dof_invweight0[NV]
     var dw_offset = model_dof_invweight0_offset[
-        NBODY, NJOINT, NGEOM, MAX_EQUALITY
+        NBODY, NJOINT, NGEOM, MAX_EQUALITY, MAX_TENDON
     ]()
     for i in range(NV):
         buffer[dw_offset + i] = model.dof_invweight0[i]
@@ -412,6 +438,7 @@ fn copy_geoms_to_buffer[
     NGEOM: Int,
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
+    MAX_TENDON: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -423,6 +450,7 @@ fn copy_geoms_to_buffer[
         NGEOM,
         MAX_EQUALITY,
         CONE_TYPE,
+        MAX_TENDON,
     ],
     buffer: HostBuffer[DTYPE],
 ):
@@ -507,6 +535,58 @@ fn copy_equality_to_buffer[
         buffer[offset + EQ_IDX_SOLIMP_0] = eq.solimp_0
         buffer[offset + EQ_IDX_SOLIMP_1] = eq.solimp_1
         buffer[offset + EQ_IDX_SOLIMP_2] = eq.solimp_2
+
+
+fn copy_tendons_to_buffer[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    NGEOM: Int,
+    MAX_EQUALITY: Int = 0,
+    CONE_TYPE: Int = ConeType.ELLIPTIC,
+    MAX_TENDON: Int = 0,
+](
+    model: Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        MAX_EQUALITY,
+        CONE_TYPE,
+        MAX_TENDON,
+    ],
+    buffer: HostBuffer[DTYPE],
+):
+    """Copy fixed tendon data from Model to GPU buffer.
+
+    Args:
+        model: Source model with tendons.
+        buffer: Destination buffer (must have room for tendon data).
+    """
+    for t in range(model.num_tendons):
+        var ten = model.tendons[t]
+        var offset = model_tendon_offset[NBODY, NJOINT, NGEOM, MAX_EQUALITY](t)
+        buffer[offset + TENDON_IDX_NUM_JOINTS] = Scalar[DTYPE](ten.num_joints)
+        buffer[offset + TENDON_IDX_JOINT_0] = Scalar[DTYPE](ten.joint_idx_0)
+        buffer[offset + TENDON_IDX_JOINT_1] = Scalar[DTYPE](ten.joint_idx_1)
+        buffer[offset + TENDON_IDX_JOINT_2] = Scalar[DTYPE](ten.joint_idx_2)
+        buffer[offset + TENDON_IDX_JOINT_3] = Scalar[DTYPE](ten.joint_idx_3)
+        buffer[offset + TENDON_IDX_COEF_0] = ten.coef_0
+        buffer[offset + TENDON_IDX_COEF_1] = ten.coef_1
+        buffer[offset + TENDON_IDX_COEF_2] = ten.coef_2
+        buffer[offset + TENDON_IDX_COEF_3] = ten.coef_3
+        buffer[offset + TENDON_IDX_LENGTH_REF] = ten.length_ref
+        buffer[offset + TENDON_IDX_SOLREF_0] = ten.solref_0
+        buffer[offset + TENDON_IDX_SOLREF_1] = ten.solref_1
+        buffer[offset + TENDON_IDX_SOLIMP_0] = ten.solimp_0
+        buffer[offset + TENDON_IDX_SOLIMP_1] = ten.solimp_1
+        buffer[offset + TENDON_IDX_SOLIMP_2] = ten.solimp_2
 
 
 # =============================================================================

@@ -42,7 +42,7 @@ Reference material:
   - [5.2 Solver Islands](#52-solver-islands)
   - [5.3 Passive Forces (spring/damper per joint)](#53-passive-forces-springdamper-per-joint)
   - [5.4 Actuator Dynamics — DONE](#54-actuator-dynamics--done)
-  - [5.5 Tendon System (fixed tendons)](#55-tendon-system-fixed-tendons)
+  - [5.5 Tendon System (fixed tendons) — DONE](#55-tendon-system-fixed-tendons--done)
   - [5.6 No-Slip Friction Post-Solver](#56-no-slip-friction-post-solver)
 - [Render Sprint: Visual Fidelity](#render-sprint-visual-fidelity)
   - [R.1 Multi-Geom-Type Rendering](#r1-multi-geom-type-rendering)
@@ -118,7 +118,7 @@ Reference material:
 | No `cylinder` geom collision | Medium — Reacher, Pusher need it | 6 |
 | ~~No `density` on geoms (mass from density)~~ | ~~Low~~ | ~~6~~ DONE |
 | No `<site>` elements | Low — massless reference points for observations | 6 |
-| No `<tendon><fixed>` joint coupling | Medium — Humanoid hip-knee coupling | 5 |
+| ~~No `<tendon><fixed>` joint coupling~~ | ~~Medium — Humanoid hip-knee coupling~~ | ~~5~~ DONE |
 | No fluid dynamics (`density`/`viscosity` option) | Low — Swimmer only | 6 |
 | No `cfrc_ext` (contact forces per body) | Medium — Humanoid observations | 6 |
 | No runtime solver/iterations selection from XML | Low — Humanoid requests PGS+50 iter | 6 |
@@ -136,7 +136,7 @@ Reference material:
 | ~~No broadphase~~ | ~~Low - performance for many bodies~~ | ~~4~~ DONE |
 | ~~No warmstart~~ | ~~Low~~ | ~~5~~ DONE |
 | No solver islands | Low - parallelism optimization | 5 |
-| ~~No actuators~~ / No tendons | ~~Low~~ | ~~5~~ DONE (actuators) |
+| ~~No actuators~~ / ~~No tendons~~ | ~~Low~~ | ~~5~~ DONE (actuators + tendons) |
 
 ---
 
@@ -877,7 +877,7 @@ forces act. This is mathematically wrong and means physics under-damps significa
 - **EulerIntegrator[SOLVER]**: `M_hat = M + arm + dt*diag(damping)`, simple diagonal treatment
 - **ImplicitFastIntegrator[SOLVER]**: `M_hat = M + arm - dt*qDeriv` where `qDeriv[i,i] = -damping[i]`
   - Currently identical results (no actuators), but extensible for actuator velocity derivatives
-  - `qDeriv` will later include `gainprm[2]`, `biasprm[2]`, tendon damping
+  - `qDeriv` will later include `gainprm[2]`, `biasprm[2]`, tendon damping (fixed tendons now implemented — Phase 5.5)
 
 **DefaultIntegrator** = `ImplicitFastIntegrator[PGSSolver]` (was `EulerIntegrator[PGSSolver]`).
 HalfCheetah uses `ImplicitFastIntegrator[NewtonSolver]`. Hopper uses DefaultIntegrator.
@@ -1463,7 +1463,7 @@ qDeriv contributions for implicit integration.
 
 ---
 
-### 5.5 Tendon System (fixed tendons)
+### 5.5 Tendon System (fixed tendons) — DONE
 
 **Problem**: MuJoCo supports tendons (cables that span multiple joints). The Humanoid
 environment uses `<fixed>` tendons to couple hip and knee joints.
@@ -1481,14 +1481,20 @@ environment uses `<fixed>` tendons to couple hip and knee joints.
 This enforces `Σ coef_i * q_i = const` as a bilateral equality constraint.
 The tendon Jacobian is trivial: `J[dof_i] = coef_i` for each participating joint.
 
-**Implementation plan**:
-1. Add `TendonSpec` trait with `COEFS` and `JOINT_INDICES`
-2. Add `Tendons` variadic container (like `Equalities`)
-3. In constraint builder, add tendon rows as bilateral equality constraints
-4. Tendon Jacobian: `J[dof_adr_i] = coef_i` — simplest possible Jacobian
+**Implementation** (Feb 2026):
+- `TendonDef[DTYPE]` struct with flat fields (joint_idx_0..3, coef_0..3, length_ref, solref, solimp)
+- `TendonSpec` trait + `FixedTendon` struct + `Tendons[*T: TendonSpec]` variadic container
+- `MAX_TENDON: Int = 0` parameter on `Model` — zero-cost when unused (compile-time elimination)
+- CPU constraint builder: Phase 5 after equality constraints, trivial Jacobian `J[dof_adr] = coef`
+- GPU: `build_and_solve_tendon_gpu()` with bilateral PGS, called in all 3 GPU solvers (PGS, CG, Newton)
+- `MAX_ROWS = 11*MC + 2*NJOINT + 6*MAX_EQUALITY + MAX_TENDON` in all 4 integrators
+- GPU buffer: `MODEL_TENDON_SIZE=15` per tendon, `copy_tendons_to_buffer()`
+- MuJoCo-style impedance (solref/solimp), diagApprox from `dof_invweight0`
+- `CNSTR_EQUALITY_TENDON = 10` constraint type, counted in `num_equality`
 
-**Recommendation**: Medium priority. Required for Humanoid. Spatial tendons (routing
-through bodies) are low priority — only fixed tendons are needed for Gymnasium envs.
+**Files**: `types.mojo`, `tendon_spec.mojo` (NEW), `constraint_data.mojo`, `constraint_builder.mojo`,
+`constraint_builder_gpu.mojo`, `constants.mojo`, `buffer_utils.mojo`, `model_def.mojo`,
+all 4 integrators, all 3 GPU solvers, 20+ physics files (MAX_TENDON cascade).
 
 ---
 
@@ -1544,7 +1550,7 @@ Sprint 5 (Next environments — Walker2d, Ant):
   6.7 Geom density              DONE (subsumed by 6.2 inertiafromgeom)
 
 Sprint 6 (Humanoid):
-  5.5 Fixed tendons             <- Humanoid hip-knee coupling
+  5.5 Fixed tendons             DONE
   6.10 cfrc_ext                 <- Humanoid observations
   6.6 Cylinder geom             DONE (Cylinder struct, cylinder_plane, cylinder_sphere, CPU + GPU)
   6.2 inertiafromgeom           <- DONE
@@ -1792,7 +1798,7 @@ InvertedPendulum, InvertedDoublePendulum).
 | margin on geom | - | YES | - | YES | YES | - | - | YES |
 | condim=1 default | - | YES | - | - | YES | YES | - | YES |
 | Fluid dynamics | - | - | - | - | - | YES | - | - |
-| Tendons (fixed) | - | - | - | - | YES | - | - | - |
+| ~~Tendons (fixed)~~ | - | - | - | - | ~~YES~~ | - | - | - | DONE |
 | geom density | - | - | YES | YES | - | YES | - | YES |
 
 ---
@@ -2083,9 +2089,9 @@ Similar to Hopper. Needs `density` on geoms. RK4 done. `margin` — DONE.
 Uses free joint (already supported). Needs `density` on geoms.
 Sphere geom for torso. Otherwise structurally similar to existing envs. `margin` — DONE.
 
-### Humanoid — NEEDS: fixed tendons, cfrc_ext, sphere collision
+### Humanoid — NEEDS: cfrc_ext, sphere collision
 Most complex environment. Key blockers:
-1. Fixed tendons (hip-knee coupling) — Phase 5.5
+1. ~~Fixed tendons (hip-knee coupling) — Phase 5.5~~ DONE
 2. `cfrc_ext` for observations — Phase 6.10
 3. Sphere geoms (head, feet, hands)
 `margin` on geoms — DONE.

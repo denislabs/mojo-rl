@@ -342,6 +342,7 @@ trait BodiesLike:
         NGEOM: Int,
         MAX_EQUALITY: Int,
         CONE_TYPE: Int,
+        MAX_TENDON: Int = 0,
     ](
         mut model: Model[
             DTYPE,
@@ -353,6 +354,7 @@ trait BodiesLike:
             NGEOM,
             MAX_EQUALITY,
             CONE_TYPE,
+        MAX_TENDON,
         ]
     ):
         ...
@@ -372,6 +374,7 @@ struct _EmptyBodies(BodiesLike):
         NGEOM: Int,
         MAX_EQUALITY: Int,
         CONE_TYPE: Int,
+        MAX_TENDON: Int = 0,
     ](
         mut model: Model[
             DTYPE,
@@ -383,6 +386,7 @@ struct _EmptyBodies(BodiesLike):
             NGEOM,
             MAX_EQUALITY,
             CONE_TYPE,
+        MAX_TENDON,
         ]
     ):
         pass
@@ -413,6 +417,7 @@ struct Bodies[*B: BodySpec](BodiesLike):
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
+    MAX_TENDON: Int = 0,
     ](
         mut model: Model[
             DTYPE,
@@ -424,6 +429,7 @@ struct Bodies[*B: BodySpec](BodiesLike):
             NGEOM,
             MAX_EQUALITY,
             CONE_TYPE,
+        MAX_TENDON,
         ]
     ):
         """Populate model body properties from compile-time BodySpec list.

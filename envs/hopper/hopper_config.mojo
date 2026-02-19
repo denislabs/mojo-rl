@@ -38,6 +38,7 @@ struct HopperConfig(Phyics3dEnvConfig):
         NGEOM: Int,
         MAX_EQUALITY: Int,
         CONE_TYPE: Int,
+        MAX_TENDON: Int = 0,
     ](
         mut model: Model[
             DTYPE,
@@ -49,6 +50,7 @@ struct HopperConfig(Phyics3dEnvConfig):
             NGEOM,
             MAX_EQUALITY,
             CONE_TYPE,
+        MAX_TENDON,
         ],
         mut data: Data[
             DTYPE,
@@ -150,6 +152,7 @@ struct HopperConfig(Phyics3dEnvConfig):
         NGEOM: Int,
         MAX_EQUALITY: Int,
         CONE_TYPE: Int,
+        MAX_TENDON: Int = 0,
     ](
         ctx: DeviceContext,
         mut states_buf: DeviceBuffer[DTYPE],

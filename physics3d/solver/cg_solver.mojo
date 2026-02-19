@@ -81,6 +81,7 @@ from ..constraints.constraint_builder_gpu import (
     apply_solved_normals_gpu,
     detect_and_solve_limits_gpu,
     build_and_solve_equality_gpu,
+    build_and_solve_tendon_gpu,
 )
 
 # CG solver parameters
@@ -128,6 +129,7 @@ struct CGSolver(ConstraintSolver):
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
+        MAX_TENDON: Int = 0,
     ](
         model: Model[
             DTYPE,
@@ -139,6 +141,7 @@ struct CGSolver(ConstraintSolver):
             NGEOM,
             MAX_EQUALITY,
             CONE_TYPE,
+        MAX_TENDON,
         ],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         M_inv: InlineArray[Scalar[DTYPE], M_SIZE],
@@ -441,6 +444,7 @@ struct CGSolver(ConstraintSolver):
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
+        MAX_TENDON: Int = 0,
     ](
         state: LayoutTensor[
             DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
@@ -659,6 +663,27 @@ struct CGSolver(ConstraintSolver):
             PGS_ITERATIONS,
         ](env, state, model, workspace)
 
+        # Tendon equality constraints
+        @parameter
+        if MAX_TENDON > 0:
+            build_and_solve_tendon_gpu[
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                MAX_EQUALITY,
+                NGEOM,
+                MAX_TENDON,
+                STATE_SIZE,
+                MODEL_SIZE,
+                V_SIZE,
+                WS_SIZE,
+                BATCH,
+                PGS_ITERATIONS,
+            ](env, state, model, workspace)
+
         comptime FRICTION_WS_OFFSET = 13 * MC + 2 * MC * NV
         _solve_friction_pgs_gpu[
             DTYPE,
@@ -674,6 +699,7 @@ struct CGSolver(ConstraintSolver):
             WS_SIZE,
             FRICTION_WS_OFFSET,
             CONE_TYPE,
+        MAX_TENDON,
         ](
             env,
             state,

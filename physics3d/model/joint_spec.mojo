@@ -236,6 +236,7 @@ trait JointsLike:
         NGEOM: Int,
         MAX_EQUALITY: Int,
         CONE_TYPE: Int,
+        MAX_TENDON: Int,
         Defaults: ModelDefaultsLike,
     ](
         mut model: Model[
@@ -248,6 +249,7 @@ trait JointsLike:
             NGEOM,
             MAX_EQUALITY,
             CONE_TYPE,
+            MAX_TENDON,
         ]
     ):
         ...
@@ -361,6 +363,7 @@ struct _EmptyJoints(JointsLike):
         NGEOM: Int,
         MAX_EQUALITY: Int,
         CONE_TYPE: Int,
+        MAX_TENDON: Int,
         Defaults: ModelDefaultsLike,
     ](
         mut model: Model[
@@ -373,6 +376,7 @@ struct _EmptyJoints(JointsLike):
             NGEOM,
             MAX_EQUALITY,
             CONE_TYPE,
+            MAX_TENDON,
         ]
     ):
         pass
@@ -1088,6 +1092,7 @@ struct Joints[*J: JointSpec](JointsLike):
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
+        MAX_TENDON: Int = 0,
         Defaults: ModelDefaultsLike = ModelDefaults[],
     ](
         mut model: Model[
@@ -1100,6 +1105,7 @@ struct Joints[*J: JointSpec](JointsLike):
             NGEOM,
             MAX_EQUALITY,
             CONE_TYPE,
+            MAX_TENDON,
         ]
     ):
         """Populate model joints from compile-time JointSpec list.

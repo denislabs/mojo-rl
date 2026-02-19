@@ -99,6 +99,7 @@ fn normalize_qpos_quaternions[
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
+    MAX_TENDON: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -110,6 +111,7 @@ fn normalize_qpos_quaternions[
         NGEOM,
         MAX_EQUALITY,
         CONE_TYPE,
+    MAX_TENDON,
     ],
     mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
 ) where DTYPE.is_floating_point():
@@ -218,6 +220,7 @@ fn _geom_world_pos[
     NGEOM: Int,
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
+    MAX_TENDON: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -229,6 +232,7 @@ fn _geom_world_pos[
         NGEOM,
         MAX_EQUALITY,
         CONE_TYPE,
+    MAX_TENDON,
     ],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     g: Int,
@@ -292,6 +296,7 @@ fn detect_contacts[
     NGEOM: Int,
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
+    MAX_TENDON: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -303,6 +308,7 @@ fn detect_contacts[
         NGEOM,
         MAX_EQUALITY,
         CONE_TYPE,
+    MAX_TENDON,
     ],
     mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
 ):

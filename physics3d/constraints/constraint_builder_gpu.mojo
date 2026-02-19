@@ -36,6 +36,7 @@ from ..gpu.constants import (
     metadata_offset,
     model_metadata_offset,
     model_joint_offset,
+    qpos_offset,
     qvel_offset,
     xpos_offset,
     xquat_offset,
@@ -60,6 +61,7 @@ from ..gpu.constants import (
     MODEL_META_IDX_SOLIMP_LIMIT_1,
     MODEL_META_IDX_SOLIMP_LIMIT_2,
     MODEL_META_IDX_NEQUALITY,
+    MODEL_META_IDX_NTENDON,
     JOINT_IDX_TYPE,
     JOINT_IDX_QPOS_ADR,
     JOINT_IDX_DOF_ADR,
@@ -87,6 +89,23 @@ from ..gpu.constants import (
     model_equality_offset,
     model_body_invweight0_offset,
     model_dof_invweight0_offset,
+    MODEL_TENDON_SIZE,
+    TENDON_IDX_NUM_JOINTS,
+    TENDON_IDX_JOINT_0,
+    TENDON_IDX_JOINT_1,
+    TENDON_IDX_JOINT_2,
+    TENDON_IDX_JOINT_3,
+    TENDON_IDX_COEF_0,
+    TENDON_IDX_COEF_1,
+    TENDON_IDX_COEF_2,
+    TENDON_IDX_COEF_3,
+    TENDON_IDX_LENGTH_REF,
+    TENDON_IDX_SOLREF_0,
+    TENDON_IDX_SOLREF_1,
+    TENDON_IDX_SOLIMP_0,
+    TENDON_IDX_SOLIMP_1,
+    TENDON_IDX_SOLIMP_2,
+    model_tendon_offset,
 )
 
 
@@ -1122,6 +1141,272 @@ fn build_and_solve_equality_gpu[
                 workspace[env, qacc_idx + i] = (
                     rebind[Scalar[DTYPE]](workspace[env, qacc_idx + i])
                     + eq_MinvJ[r * NV + i] * actual
+                )
+
+        if max_delta < Scalar[DTYPE](1e-4):
+            break
+
+
+# =============================================================================
+# 7. build_and_solve_tendon_gpu
+# =============================================================================
+
+
+@always_inline
+fn build_and_solve_tendon_gpu[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    MAX_EQUALITY: Int,
+    NGEOM: Int,
+    MAX_TENDON: Int,
+    STATE_SIZE: Int,
+    MODEL_SIZE: Int,
+    V_SIZE: Int,
+    WS_SIZE: Int,
+    BATCH: Int,
+    NUM_ITERATIONS: Int,
+](
+    env: Int,
+    state: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+    ],
+    model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+    workspace: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+    ],
+):
+    """Build and solve fixed tendon equality constraints on GPU.
+
+    Called in SEQUENTIAL phase (thread 0 only). Reads tendon definitions
+    from model buffer, computes trivial Jacobians (J[dof_adr] = coef),
+    impedance, and runs bilateral PGS iterations.
+
+    A fixed tendon is: ten_length = Σ(coef_i * qpos[joint_qposadr_i]).
+    Equality constraint: ten_length - length_ref = 0.
+    """
+
+    @parameter
+    if MAX_TENDON == 0:
+        return
+
+    comptime qacc_idx = ws_qacc_constrained_offset[NV, NBODY]()
+    comptime M_inv_idx = ws_m_inv_offset[NV, NBODY]()
+    comptime model_meta_off = model_metadata_offset[NBODY, NJOINT]()
+    comptime qpos_off = qpos_offset[NQ, NV]()
+    comptime qvel_off = qvel_offset[NQ, NV]()
+
+    # Read number of tendons from model metadata
+    var nten = Int(
+        rebind[Scalar[DTYPE]](
+            model[0, model_meta_off + MODEL_META_IDX_NTENDON]
+        )
+    )
+    if nten == 0:
+        return
+    if nten > MAX_TENDON:
+        nten = MAX_TENDON
+
+    # One bilateral row per tendon
+    comptime MAX_TEN_ROWS = _max_one[MAX_TENDON]()
+    comptime MINVJ_TEN_SIZE = _max_one[MAX_TENDON * NV]()
+
+    var ten_K = InlineArray[Scalar[DTYPE], MAX_TEN_ROWS](fill=Scalar[DTYPE](1))
+    var ten_bias = InlineArray[Scalar[DTYPE], MAX_TEN_ROWS](
+        fill=Scalar[DTYPE](0)
+    )
+    var ten_inv_K_imp = InlineArray[Scalar[DTYPE], MAX_TEN_ROWS](
+        fill=Scalar[DTYPE](0)
+    )
+    var ten_lambda = InlineArray[Scalar[DTYPE], MAX_TEN_ROWS](
+        fill=Scalar[DTYPE](0)
+    )
+    var ten_J = InlineArray[Scalar[DTYPE], MINVJ_TEN_SIZE](
+        fill=Scalar[DTYPE](0)
+    )
+    var ten_MinvJ = InlineArray[Scalar[DTYPE], MINVJ_TEN_SIZE](
+        fill=Scalar[DTYPE](0)
+    )
+
+    var num_ten_rows = 0
+
+    for t_i in range(nten):
+        if num_ten_rows >= MAX_TEN_ROWS:
+            break
+
+        var t_off = model_tendon_offset[NBODY, NJOINT, NGEOM, MAX_EQUALITY](
+            t_i
+        )
+        var num_joints = Int(
+            rebind[Scalar[DTYPE]](model[0, t_off + TENDON_IDX_NUM_JOINTS])
+        )
+        var length_ref = rebind[Scalar[DTYPE]](
+            model[0, t_off + TENDON_IDX_LENGTH_REF]
+        )
+
+        # Read joint indices and coefficients (up to 4)
+        var joint_idxs = InlineArray[Int, 4](fill=-1)
+        var coefs = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+        joint_idxs[0] = Int(
+            rebind[Scalar[DTYPE]](model[0, t_off + TENDON_IDX_JOINT_0])
+        )
+        joint_idxs[1] = Int(
+            rebind[Scalar[DTYPE]](model[0, t_off + TENDON_IDX_JOINT_1])
+        )
+        joint_idxs[2] = Int(
+            rebind[Scalar[DTYPE]](model[0, t_off + TENDON_IDX_JOINT_2])
+        )
+        joint_idxs[3] = Int(
+            rebind[Scalar[DTYPE]](model[0, t_off + TENDON_IDX_JOINT_3])
+        )
+        coefs[0] = rebind[Scalar[DTYPE]](model[0, t_off + TENDON_IDX_COEF_0])
+        coefs[1] = rebind[Scalar[DTYPE]](model[0, t_off + TENDON_IDX_COEF_1])
+        coefs[2] = rebind[Scalar[DTYPE]](model[0, t_off + TENDON_IDX_COEF_2])
+        coefs[3] = rebind[Scalar[DTYPE]](model[0, t_off + TENDON_IDX_COEF_3])
+
+        # Compute tendon length and velocity, build trivial Jacobian
+        var ten_length: Scalar[DTYPE] = 0
+        var ten_vel: Scalar[DTYPE] = 0
+        var r = num_ten_rows
+
+        for ji in range(4):
+            if ji >= num_joints:
+                break
+            var jnt_idx = joint_idxs[ji]
+            if jnt_idx < 0 or jnt_idx >= NJOINT:
+                continue
+            # Read joint's qpos_adr and dof_adr from model buffer
+            var j_off = model_joint_offset[NBODY](jnt_idx)
+            var qpos_adr = Int(
+                rebind[Scalar[DTYPE]](model[0, j_off + JOINT_IDX_QPOS_ADR])
+            )
+            var dof_adr = Int(
+                rebind[Scalar[DTYPE]](model[0, j_off + JOINT_IDX_DOF_ADR])
+            )
+            var c = coefs[ji]
+            ten_length += c * rebind[Scalar[DTYPE]](
+                state[env, qpos_off + qpos_adr]
+            )
+            ten_vel += c * rebind[Scalar[DTYPE]](
+                state[env, qvel_off + dof_adr]
+            )
+            # Trivial Jacobian: J[dof_adr] = coef
+            ten_J[r * NV + dof_adr] = c
+
+        # Tendon position error (bilateral)
+        var pos_err = ten_length - length_ref
+
+        # Compute K = J @ M_inv @ J^T and MinvJ
+        var k: Scalar[DTYPE] = 0
+        for i in range(NV):
+            var mi_j_sum: Scalar[DTYPE] = 0
+            for j_idx in range(NV):
+                mi_j_sum += (
+                    rebind[Scalar[DTYPE]](
+                        workspace[env, M_inv_idx + i * NV + j_idx]
+                    )
+                    * ten_J[r * NV + j_idx]
+                )
+            ten_MinvJ[r * NV + i] = mi_j_sum
+            k += ten_J[r * NV + i] * mi_j_sum
+
+        if k < Scalar[DTYPE](1e-10):
+            k = Scalar[DTYPE](1e-10)
+        ten_K[r] = k
+
+        # Read solref/solimp
+        var sr_tc = rebind[Scalar[DTYPE]](model[0, t_off + TENDON_IDX_SOLREF_0])
+        var sr_dr = rebind[Scalar[DTYPE]](model[0, t_off + TENDON_IDX_SOLREF_1])
+        var si_dmin = rebind[Scalar[DTYPE]](
+            model[0, t_off + TENDON_IDX_SOLIMP_0]
+        )
+        var si_dmax = rebind[Scalar[DTYPE]](
+            model[0, t_off + TENDON_IDX_SOLIMP_1]
+        )
+        var si_width = rebind[Scalar[DTYPE]](
+            model[0, t_off + TENDON_IDX_SOLIMP_2]
+        )
+        if si_width < Scalar[DTYPE](1e-6):
+            si_width = Scalar[DTYPE](1e-6)
+        if si_dmax < Scalar[DTYPE](1e-4):
+            si_dmax = Scalar[DTYPE](1e-4)
+        var t_K_spring = Scalar[DTYPE](1.0) / (
+            sr_tc * sr_tc * si_dmax * si_dmax
+        )
+        var t_B_damp = Scalar[DTYPE](2.0) * sr_dr / (sr_tc * si_dmax)
+
+        # Impedance: smoothstep on |pos_err|
+        var penetration = abs(pos_err)
+        var x = penetration / si_width
+        if x > Scalar[DTYPE](1.0):
+            x = Scalar[DTYPE](1.0)
+        var imp = si_dmin + (
+            Scalar[DTYPE](3.0) * x * x - Scalar[DTYPE](2.0) * x * x * x
+        ) * (si_dmax - si_dmin)
+        if imp < Scalar[DTYPE](1e-6):
+            imp = Scalar[DTYPE](1e-6)
+
+        # bias = -aref (bilateral: sign depends on error direction)
+        var bias = -t_K_spring * imp * penetration + t_B_damp * ten_vel
+        if pos_err < Scalar[DTYPE](0):
+            bias = -bias
+        ten_bias[r] = bias
+
+        # R = (1-imp)/imp * diagApprox (sum of dof_invweight0 for tendon joints)
+        comptime dw_off = model_dof_invweight0_offset[
+            NBODY, NJOINT, NGEOM, MAX_EQUALITY
+        ]()
+        var diag_ten: Scalar[DTYPE] = 0
+        for ji in range(4):
+            if ji >= num_joints:
+                break
+            var jnt_idx = joint_idxs[ji]
+            if jnt_idx < 0 or jnt_idx >= NJOINT:
+                continue
+            var j_off = model_joint_offset[NBODY](jnt_idx)
+            var dof_adr = Int(
+                rebind[Scalar[DTYPE]](model[0, j_off + JOINT_IDX_DOF_ADR])
+            )
+            diag_ten += rebind[Scalar[DTYPE]](model[0, dw_off + dof_adr])
+        if diag_ten < Scalar[DTYPE](1e-10):
+            diag_ten = k  # Fallback to exact K
+        var R_ten = (Scalar[DTYPE](1.0) - imp) / imp * diag_ten
+        ten_inv_K_imp[r] = Scalar[DTYPE](1.0) / (k + R_ten)
+
+        num_ten_rows += 1
+
+    if num_ten_rows == 0:
+        return
+
+    # Bilateral PGS iterations (no clamping — bilateral constraint)
+    for _ in range(NUM_ITERATIONS):
+        var max_delta: Scalar[DTYPE] = 0
+        for r in range(num_ten_rows):
+            # a_ten = J @ qacc
+            var a_ten: Scalar[DTYPE] = 0
+            for i in range(NV):
+                a_ten += ten_J[r * NV + i] * rebind[Scalar[DTYPE]](
+                    workspace[env, qacc_idx + i]
+                )
+
+            var R_ten = Scalar[DTYPE](1.0) / ten_inv_K_imp[r] - ten_K[r]
+            var residual = a_ten + ten_bias[r] + R_ten * ten_lambda[r]
+            var delta = -residual * ten_inv_K_imp[r]
+            var old_lambda = ten_lambda[r]
+            ten_lambda[r] = ten_lambda[r] + delta
+            # Bilateral: no clamping
+            var actual = ten_lambda[r] - old_lambda
+            var abs_d = abs(actual)
+            if abs_d > max_delta:
+                max_delta = abs_d
+            # qacc += MinvJ * delta
+            for i in range(NV):
+                workspace[env, qacc_idx + i] = (
+                    rebind[Scalar[DTYPE]](workspace[env, qacc_idx + i])
+                    + ten_MinvJ[r * NV + i] * actual
                 )
 
         if max_delta < Scalar[DTYPE](1e-4):

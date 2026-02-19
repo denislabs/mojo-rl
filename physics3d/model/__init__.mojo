@@ -69,6 +69,7 @@ from .material_spec import (
     Materials,
 )
 from .equality_spec import EqualitySpec, ConnectConstraint, WeldConstraint
+from .tendon_spec import TendonSpec, FixedTendon, Tendons
 from .actuator_spec import (
     ActuatorSpec,
     MotorActuator,

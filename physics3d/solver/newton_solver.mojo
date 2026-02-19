@@ -101,6 +101,7 @@ from ..constraints.constraint_builder_gpu import (
     apply_solved_normals_gpu,
     detect_and_solve_limits_gpu,
     build_and_solve_equality_gpu,
+    build_and_solve_tendon_gpu,
 )
 
 # Newton solver parameters
@@ -288,6 +289,7 @@ struct NewtonSolver(ConstraintSolver):
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
+        MAX_TENDON: Int = 0,
     ](
         model: Model[
             DTYPE,
@@ -299,6 +301,7 @@ struct NewtonSolver(ConstraintSolver):
             NGEOM,
             MAX_EQUALITY,
             CONE_TYPE,
+        MAX_TENDON,
         ],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
         M_inv: InlineArray[Scalar[DTYPE], M_SIZE],
@@ -598,6 +601,7 @@ struct NewtonSolver(ConstraintSolver):
         NGEOM: Int = 0,
         MAX_EQUALITY: Int = 0,
         CONE_TYPE: Int = ConeType.ELLIPTIC,
+        MAX_TENDON: Int = 0,
     ](
         state: LayoutTensor[
             DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
@@ -1024,6 +1028,27 @@ struct NewtonSolver(ConstraintSolver):
             NEWTON_ITERATIONS,
         ](env, state, model, workspace)
 
+        # Tendon equality constraints
+        @parameter
+        if MAX_TENDON > 0:
+            build_and_solve_tendon_gpu[
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                MAX_EQUALITY,
+                NGEOM,
+                MAX_TENDON,
+                STATE_SIZE,
+                MODEL_SIZE,
+                V_SIZE,
+                WS_SIZE,
+                BATCH,
+                NEWTON_ITERATIONS,
+            ](env, state, model, workspace)
+
         comptime FRICTION_WS_OFFSET = 18 * MC + 2 * MC * NV + MC * MC
         _solve_friction_pgs_gpu[
             DTYPE,
@@ -1039,6 +1064,7 @@ struct NewtonSolver(ConstraintSolver):
             WS_SIZE,
             FRICTION_WS_OFFSET,
             CONE_TYPE,
+        MAX_TENDON,
         ](
             env,
             state,

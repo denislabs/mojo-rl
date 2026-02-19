@@ -97,6 +97,7 @@ struct Phyics3dEnv[
     comptime NGEOM: Int = Self.MODEL_DEF.NGEOM
     comptime MAX_EQUALITY: Int = Self.MODEL_DEF.MAX_EQUALITY
     comptime CONE_TYPE: Int = Self.MODEL_DEF.CONE_TYPE
+    comptime MAX_TENDON: Int = Self.MODEL_DEF.MAX_TENDON
 
     # GPU state size
     comptime STATE_SIZE: Int = state_size[
@@ -130,6 +131,7 @@ struct Phyics3dEnv[
         Self.MODEL_DEF.NGEOM,
         Self.MODEL_DEF.MAX_EQUALITY,
         Self.MODEL_DEF.CONE_TYPE,
+        Self.MAX_TENDON,
     ]
     var data: Data[
         Self.DTYPE,
@@ -177,6 +179,7 @@ struct Phyics3dEnv[
             Self.MODEL_DEF.NGEOM,
             Self.MODEL_DEF.MAX_EQUALITY,
             Self.MODEL_DEF.CONE_TYPE,
+            Self.MAX_TENDON,
         ]()
         self.data = Data[
             Self.DTYPE,
@@ -464,6 +467,7 @@ struct Phyics3dEnv[
                 Self.MODEL_DEF.NGEOM,
                 Self.MODEL_DEF.MAX_EQUALITY,
                 Self.MODEL_DEF.CONE_TYPE,
+                Self.MAX_TENDON,
             ](ctx, states_buf, model_buf, workspace_buf)
 
             @parameter

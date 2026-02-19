@@ -8,7 +8,7 @@ This consolidates code previously duplicated across PGS, CG, and Newton solvers.
 """
 
 from math import sqrt
-from ..types import Model, Data, EQ_CONNECT, EQ_WELD, _max_one, ConeType
+from ..types import Model, Data, EQ_CONNECT, EQ_WELD, _max_one, ConeType, TendonDef
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
 from ..dynamics.jacobian import compute_contact_jacobian_row
 from ..kinematics.quat_math import quat_mul, quat_conjugate, quat_rotate
@@ -24,6 +24,7 @@ from .constraint_data import (
     CNSTR_FRICTION_ROLL2,
     CNSTR_EQUALITY_CONNECT,
     CNSTR_EQUALITY_WELD,
+    CNSTR_EQUALITY_TENDON,
 )
 
 
@@ -81,6 +82,7 @@ fn _compute_angular_jacobian_row[
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
+    MAX_TENDON: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -92,6 +94,7 @@ fn _compute_angular_jacobian_row[
         NGEOM,
         MAX_EQUALITY,
         CONE_TYPE,
+    MAX_TENDON,
     ],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
@@ -155,6 +158,7 @@ fn _joint_affects_body[
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
+    MAX_TENDON: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -166,6 +170,7 @@ fn _joint_affects_body[
         NGEOM,
         MAX_EQUALITY,
         CONE_TYPE,
+        MAX_TENDON,
     ],
     joint_idx: Int,
     body_idx: Int,
@@ -197,6 +202,7 @@ fn build_constraints[
     NGEOM: Int = 0,
     MAX_EQUALITY: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
+    MAX_TENDON: Int = 0,
 ](
     model: Model[
         DTYPE,
@@ -208,6 +214,7 @@ fn build_constraints[
         NGEOM,
         MAX_EQUALITY,
         CONE_TYPE,
+        MAX_TENDON,
     ],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
     cdof: InlineArray[Scalar[DTYPE], CDOF_SIZE],
@@ -1554,6 +1561,142 @@ fn build_constraints[
                     constraints.rows[row_idx].limit_sign = Scalar[DTYPE](0)
                     constraints.rows[row_idx].diagApprox = diag_rot
                     row_idx += 1
+
+    # =========================================================================
+    # Phase 5: Fixed tendon constraints
+    # Each tendon produces 1 bilateral row: ten_length - length_ref = 0
+    # Jacobian is trivial: J[dof_adr_i] = coef_i
+    # =========================================================================
+
+    @parameter
+    if MAX_TENDON > 0:
+        for t_idx in range(model.num_tendons):
+            if row_idx >= MAX_ROWS:
+                break
+
+            var ten = model.tendons[t_idx]
+
+            # Read per-tendon impedance params
+            var ten_sr_tc = ten.solref_0
+            var ten_sr_dr = ten.solref_1
+            var ten_si_dmin = ten.solimp_0
+            var ten_si_dmax = ten.solimp_1
+            var ten_si_width = ten.solimp_2
+            if ten_si_width < Scalar[DTYPE](1e-6):
+                ten_si_width = Scalar[DTYPE](1e-6)
+            if ten_si_dmax < Scalar[DTYPE](1e-4):
+                ten_si_dmax = Scalar[DTYPE](1e-4)
+            var ten_K_spring = Scalar[DTYPE](1.0) / (
+                ten_sr_tc * ten_sr_tc * ten_si_dmax * ten_si_dmax
+            )
+            var ten_B_damp = Scalar[DTYPE](2.0) * ten_sr_dr / (
+                ten_sr_tc * ten_si_dmax
+            )
+
+            # Compute tendon length: Σ coef_i * qpos[joint.qpos_adr]
+            # and tendon velocity: Σ coef_i * qvel[joint.dof_adr]
+            var ten_length: Scalar[DTYPE] = 0
+            var ten_vel: Scalar[DTYPE] = 0
+
+            # Build trivial Jacobian: J[dof_adr_i] = coef_i
+            for i in range(NV):
+                J_row[i] = Scalar[DTYPE](0)
+
+            # Joint 0
+            if ten.num_joints > 0 and ten.joint_idx_0 >= 0:
+                var j = model.joints[ten.joint_idx_0]
+                ten_length += ten.coef_0 * data.qpos[j.qpos_adr]
+                ten_vel += ten.coef_0 * data.qvel[j.dof_adr]
+                J_row[j.dof_adr] = ten.coef_0
+            # Joint 1
+            if ten.num_joints > 1 and ten.joint_idx_1 >= 0:
+                var j = model.joints[ten.joint_idx_1]
+                ten_length += ten.coef_1 * data.qpos[j.qpos_adr]
+                ten_vel += ten.coef_1 * data.qvel[j.dof_adr]
+                J_row[j.dof_adr] = ten.coef_1
+            # Joint 2
+            if ten.num_joints > 2 and ten.joint_idx_2 >= 0:
+                var j = model.joints[ten.joint_idx_2]
+                ten_length += ten.coef_2 * data.qpos[j.qpos_adr]
+                ten_vel += ten.coef_2 * data.qvel[j.dof_adr]
+                J_row[j.dof_adr] = ten.coef_2
+            # Joint 3
+            if ten.num_joints > 3 and ten.joint_idx_3 >= 0:
+                var j = model.joints[ten.joint_idx_3]
+                ten_length += ten.coef_3 * data.qpos[j.qpos_adr]
+                ten_vel += ten.coef_3 * data.qvel[j.dof_adr]
+                J_row[j.dof_adr] = ten.coef_3
+
+            # Tendon error: ten_length - length_ref
+            var ten_err = ten_length - ten.length_ref
+            var ten_pen = abs(ten_err)
+
+            # Compute K = J @ M_inv @ J^T
+            var k_ten: Scalar[DTYPE] = 0
+            for i in range(NV):
+                constraints.J[row_idx * NV + i] = J_row[i]
+                var mi_j_sum: Scalar[DTYPE] = 0
+                for j_idx in range(NV):
+                    mi_j_sum += M_inv[i * NV + j_idx] * J_row[j_idx]
+                constraints.MinvJT[row_idx * NV + i] = mi_j_sum
+                k_ten += J_row[i] * mi_j_sum
+            if k_ten < Scalar[DTYPE](1e-10):
+                k_ten = Scalar[DTYPE](1e-10)
+
+            # diagApprox: sum of dof_invweight0 for involved DOFs
+            var diag_ten: Scalar[DTYPE] = 0
+            if ten.num_joints > 0 and ten.joint_idx_0 >= 0:
+                diag_ten += model.dof_invweight0[
+                    model.joints[ten.joint_idx_0].dof_adr
+                ]
+            if ten.num_joints > 1 and ten.joint_idx_1 >= 0:
+                diag_ten += model.dof_invweight0[
+                    model.joints[ten.joint_idx_1].dof_adr
+                ]
+            if ten.num_joints > 2 and ten.joint_idx_2 >= 0:
+                diag_ten += model.dof_invweight0[
+                    model.joints[ten.joint_idx_2].dof_adr
+                ]
+            if ten.num_joints > 3 and ten.joint_idx_3 >= 0:
+                diag_ten += model.dof_invweight0[
+                    model.joints[ten.joint_idx_3].dof_adr
+                ]
+            if diag_ten < Scalar[DTYPE](1e-10):
+                diag_ten = k_ten
+
+            var imp_ten = _compute_aref[DTYPE](
+                ten_pen,
+                ten_si_dmin,
+                ten_si_dmax,
+                ten_si_width,
+                ten_K_spring,
+                ten_B_damp,
+                ten_vel,
+                k_ten,
+                diag_ten,
+            )
+
+            # Bilateral: sign depends on error direction
+            var bias_ten = imp_ten[0]
+            if ten_err < Scalar[DTYPE](0):
+                bias_ten = -bias_ten
+
+            constraints.rows[row_idx].K = k_ten
+            constraints.rows[row_idx].bias = bias_ten
+            constraints.rows[row_idx].inv_K_imp = imp_ten[1]
+            constraints.rows[row_idx].lo = Scalar[DTYPE](-1e20)
+            constraints.rows[row_idx].hi = Scalar[DTYPE](1e20)
+            constraints.rows[row_idx].lambda_val = Scalar[DTYPE](0)
+            constraints.rows[
+                row_idx
+            ].constraint_type = CNSTR_EQUALITY_TENDON
+            constraints.rows[row_idx].friction_parent = -1
+            constraints.rows[row_idx].friction_coef = Scalar[DTYPE](0)
+            constraints.rows[row_idx].source_contact_idx = -1
+            constraints.rows[row_idx].source_dof = -1
+            constraints.rows[row_idx].limit_sign = Scalar[DTYPE](0)
+            constraints.rows[row_idx].diagApprox = diag_ten
+            row_idx += 1
 
     constraints.num_equality = row_idx - eq_start
     constraints.num_rows = row_idx
