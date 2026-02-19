@@ -1,11 +1,12 @@
 """Generic MuJoCo Environment — shared logic for all MuJoCo-style environments.
 
-MuJoCoEnv[C: MuJoCoEnvConfig] delegates everything to C:
+Phyics3dEnv[MODEL_DEF, CONFIG] delegates everything to CONFIG:
   - Model setup, integrator choice, reward, termination, GPU model init
-  - Obs extraction, reset, enforce limits (C delegates to Joints internally)
-  - Action application (C delegates to Actuators internally)
+  - Obs extraction, reset, enforce limits (MODEL_DEF delegates to Joints)
+  - Action application (MODEL_DEF delegates to Actuators)
 
-This eliminates ~1200 lines of duplicated code between HalfCheetah and Hopper.
+The CONFIG has full access to physics state for reward/termination —
+no hardcoded assumptions about which qpos indices matter.
 """
 
 from collections import InlineArray
@@ -47,8 +48,7 @@ from physics3d.gpu.constants import (
     META_IDX_STEP_COUNT,
     META_IDX_PREV_X,
     model_curriculum_offset,
-    CURRICULUM_IDX_MIN_HEIGHT,
-    CURRICULUM_IDX_MAX_PITCH,
+    MODEL_CURRICULUM_SIZE,
 )
 
 from physics3d.model.model_renderer import ModelRenderer
@@ -72,10 +72,11 @@ struct Phyics3dEnv[
     GPUContinuousEnv,
     RenderableEnv,
 ):
-    """Generic MuJoCo environment parameterized by config.
+    """Generic MuJoCo environment parameterized by MODEL_DEF and CONFIG.
 
-    C provides everything: model setup, integrator, reward, termination,
-    obs extraction, reset, enforce limits, action application, GPU kernels.
+    MODEL_DEF provides: model setup, obs extraction, reset, enforce limits,
+    action application.
+    CONFIG provides: integrator, reward, termination, pre-step hooks.
     """
 
     # Trait type aliases
@@ -96,8 +97,6 @@ struct Phyics3dEnv[
     comptime NGEOM: Int = Self.MODEL_DEF.NGEOM
     comptime MAX_EQUALITY: Int = Self.MODEL_DEF.MAX_EQUALITY
     comptime CONE_TYPE: Int = Self.MODEL_DEF.CONE_TYPE
-
-    # Renderer constants
 
     # GPU state size
     comptime STATE_SIZE: Int = state_size[
@@ -146,8 +145,8 @@ struct Phyics3dEnv[
     var current_step: Int
     var frame_skip: Int
 
-    # Previous x position for velocity calculation
-    var prev_x_position: Scalar[Self.DTYPE]
+    # Per-env persistent state (used by config's pre_step hook)
+    var prev_x: Scalar[Self.DTYPE]
 
     # Renderer (optional)
     var _renderer: UnsafePointer[ModelRenderer[Self.MODEL_DEF], MutAnyOrigin]
@@ -165,7 +164,7 @@ struct Phyics3dEnv[
         self.max_steps = max_steps
         self.current_step = 0
         self.frame_skip = frame_skip
-        self.prev_x_position = Scalar[Self.DTYPE](0.0)
+        self.prev_x = Scalar[Self.DTYPE](0.0)
 
         # Initialize model and data
         self.model = Model[
@@ -195,9 +194,9 @@ struct Phyics3dEnv[
         # Delegate full setup to config
         Self.MODEL_DEF.setup_model_and_data(self.model, self.data)
 
-        # Reset step counter and previous position
+        # Initialize prev_x via config's pre_step hook
         self.current_step = 0
-        self.prev_x_position = self.data.qpos[0]  # rootx is always index 0
+        Self.CONFIG.pre_step_cpu(self.data, self.prev_x)
 
     # =========================================================================
     # Physics State Management
@@ -210,9 +209,9 @@ struct Phyics3dEnv[
         # Run forward kinematics to compute xpos/xquat
         forward_kinematics(self.model, self.data)
 
-        # Reset step counter and previous position
+        # Reset step counter and prev_x
         self.current_step = 0
-        self.prev_x_position = self.data.qpos[0]
+        Self.CONFIG.pre_step_cpu(self.data, self.prev_x)
 
     fn _get_obs(self) -> ObsState[Self.MODEL_DEF.OBS_DIM]:
         """Extract observation from current physics data."""
@@ -290,8 +289,8 @@ struct Phyics3dEnv[
         mut self, action: Self.ActionType, verbose: Bool = False
     ) -> Tuple[Self.StateType, Scalar[Self.dtype], Bool]:
         """Take an action and return (next_state, reward, done)."""
-        # Store previous x position for velocity calculation
-        self.prev_x_position = self.data.qpos[0]
+        # Pre-step: let config save whatever it needs
+        Self.CONFIG.pre_step_cpu(self.data, self.prev_x)
 
         # Apply actions via actuators
         var clamped_action = action.clamp()
@@ -305,33 +304,21 @@ struct Phyics3dEnv[
 
         self.current_step += 1
 
-        # Compute velocity from position change
-        var x_position_after = Float64(self.data.qpos[0])
-        var dt = Self.CONFIG.get_timestep() * self.frame_skip
-        var x_velocity = (x_position_after - Float64(self.prev_x_position)) / dt
-
-        # Health check
-        var y_angle = Float64(self.data.qpos[2])  # rooty is always index 2
-        var z_height = Float64(self.data.qpos[1])  # rootz is always index 1
-        var is_healthy = Self.CONFIG.check_health_cpu(
-            z_height,
-            y_angle,
-            Self.CONFIG.get_default_min_height(),
-            Self.CONFIG.get_default_max_pitch(),
+        # Compute reward and termination via config (full state access)
+        var result = Self.CONFIG.compute_reward_and_done_cpu(
+            self.data,
+            self.prev_x,
+            clamped_action.to_list(),
+            self.current_step,
+            self.frame_skip,
         )
-
-        # Compute reward
-        var ctrl_cost = Float64(clamped_action.squared_sum())
-        var reward = Self.CONFIG.compute_reward_cpu(
-            x_velocity, ctrl_cost, y_angle, z_height, is_healthy
-        )
-
-        # Termination
-        var terminated = False
+        var reward = result[0]
+        var terminated = result[1]
 
         @parameter
-        if Self.TERMINATE_ON_UNHEALTHY:
-            terminated = not is_healthy
+        if not Self.TERMINATE_ON_UNHEALTHY:
+            terminated = False
+
         var truncated = self.current_step >= self.max_steps
         var done = terminated or truncated
 
@@ -387,14 +374,16 @@ struct Phyics3dEnv[
 
         @parameter
         if Self.TERMINATE_ON_UNHEALTHY:
-            var y_angle = Float64(self.data.qpos[2])
-            var z_height = Float64(self.data.qpos[1])
-            return truncated or not Self.CONFIG.check_health_cpu(
-                z_height,
-                y_angle,
-                Self.CONFIG.get_default_min_height(),
-                Self.CONFIG.get_default_max_pitch(),
+            # Check termination via config
+            var dummy_actions = List[Float64]()
+            var result = Self.CONFIG.compute_reward_and_done_cpu(
+                self.data,
+                self.prev_x,
+                dummy_actions,
+                self.current_step,
+                self.frame_skip,
             )
+            return truncated or result[1]
         else:
             return truncated
 
@@ -449,22 +438,13 @@ struct Phyics3dEnv[
             )
         else:
             model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
-            var min_height = curriculum_values[0] if len(
-                curriculum_values
-            ) > 0 else Scalar[gpu_dtype](Self.CONFIG.get_default_min_height())
-            var max_pitch = curriculum_values[1] if len(
-                curriculum_values
-            ) > 1 else Scalar[gpu_dtype](Self.CONFIG.get_default_max_pitch())
             Self.MODEL_DEF.init_model_gpu(ctx, model_buf)
-            # TODO: Add curriculum values
-            # Scalar[gpu_dtype](Self.CONFIG.get_default_min_height()),
-            # Scalar[gpu_dtype](Self.CONFIG.get_default_max_pitch()),
             workspace_buf = ctx.enqueue_create_buffer[gpu_dtype](
                 BATCH_SIZE * WS_SIZE
             )
 
-        # Store prev_x_position before physics
-        Self._store_prev_x_gpu[BATCH_SIZE, STATE_SIZE_VAL](ctx, states_buf)
+        # Pre-step: let config save per-env state (e.g., prev_x)
+        Self._pre_step_gpu[BATCH_SIZE, STATE_SIZE_VAL](ctx, states_buf)
 
         # Apply actions to qfrc via actuators
         Self.MODEL_DEF.apply_actions_kernel_gpu[
@@ -553,13 +533,7 @@ struct Phyics3dEnv[
             Self.MODEL_DEF.NBODY, Self.MODEL_DEF.NJOINT, Self.MODEL_DEF.NGEOM
         ]()
         var model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
-        Self.MODEL_DEF.init_model_gpu(
-            ctx,
-            model_buf,
-            # TODO: Add curriculum values
-            # Scalar[gpu_dtype](Self.CONFIG.get_default_min_height()),
-            # Scalar[gpu_dtype](Self.CONFIG.get_default_max_pitch()),
-        )
+        Self.MODEL_DEF.init_model_gpu(ctx, model_buf)
 
         var model = LayoutTensor[
             gpu_dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
@@ -624,13 +598,7 @@ struct Phyics3dEnv[
             Self.MODEL_DEF.NBODY, Self.MODEL_DEF.NJOINT, Self.MODEL_DEF.NGEOM
         ]()
         var model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
-        Self.MODEL_DEF.init_model_gpu(
-            ctx,
-            model_buf,
-            # TODO: Add curriculum values
-            # Scalar[gpu_dtype](Self.CONFIG.get_default_min_height()),
-            # Scalar[gpu_dtype](Self.CONFIG.get_default_max_pitch()),
-        )
+        Self.MODEL_DEF.init_model_gpu(ctx, model_buf)
 
         var model = LayoutTensor[
             gpu_dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
@@ -716,13 +684,7 @@ struct Phyics3dEnv[
             MODEL_SIZE,
             owning=False,
         )
-        Self.MODEL_DEF.init_model_gpu(
-            ctx,
-            model_view,
-            # TODO: Add curriculum values
-            # Scalar[gpu_dtype](Self.CONFIG.get_default_min_height()),
-            # Scalar[gpu_dtype](Self.CONFIG.get_default_max_pitch()),
-        )
+        Self.MODEL_DEF.init_model_gpu(ctx, model_view)
 
     @staticmethod
     fn update_curriculum_gpu(
@@ -730,38 +692,43 @@ struct Phyics3dEnv[
         mut workspace_buf: DeviceBuffer[gpu_dtype],
         curriculum_values: List[Scalar[gpu_dtype]],
     ) raises:
-        """Update only the curriculum parameters in a pre-allocated workspace.
+        """Update curriculum parameters in a pre-allocated workspace.
+
+        Copies up to MODEL_CURRICULUM_SIZE values from the list into the
+        curriculum section of the model buffer. Generic — no assumption
+        about what the values mean.
         """
-        if len(curriculum_values) < 2:
+        var n = len(curriculum_values)
+        if n == 0:
             return
+        if n > MODEL_CURRICULUM_SIZE:
+            n = MODEL_CURRICULUM_SIZE
         var curr_offset = model_curriculum_offset[
             Self.MODEL_DEF.NBODY, Self.MODEL_DEF.NJOINT
         ]()
-        var curriculum_host = InlineArray[Scalar[gpu_dtype], 2](
-            fill=[
-                curriculum_values[0],
-                curriculum_values[1],
-            ]
+        # Copy values one at a time (small count, simple)
+        var curriculum_host = InlineArray[Scalar[gpu_dtype], MODEL_CURRICULUM_SIZE](
+            fill=Scalar[gpu_dtype](0.0)
         )
+        for i in range(n):
+            curriculum_host[i] = curriculum_values[i]
         ctx.enqueue_copy(
             workspace_buf.unsafe_ptr() + curr_offset,
             curriculum_host.unsafe_ptr(),
-            2,
+            n,
         )
 
     @staticmethod
-    fn _store_prev_x_gpu[
+    fn _pre_step_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](ctx: DeviceContext, mut states_buf: DeviceBuffer[gpu_dtype]) raises:
-        """Store current rootx position into metadata for velocity computation.
-        """
+        """Run config's pre-step hook for all environments on GPU."""
         var states = LayoutTensor[
             gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
         ](states_buf.unsafe_ptr())
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
-        comptime QPOS_OFF = qpos_offset[Self.MODEL_DEF.NQ, Self.MODEL_DEF.NV]()
         comptime META_OFF = metadata_offset[
             Self.MODEL_DEF.NQ,
             Self.MODEL_DEF.NV,
@@ -770,7 +737,7 @@ struct Phyics3dEnv[
         ]()
 
         @always_inline
-        fn store_prev_x_kernel(
+        fn pre_step_kernel(
             states: LayoutTensor[
                 gpu_dtype,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE),
@@ -780,9 +747,11 @@ struct Phyics3dEnv[
             var env = Int(block_dim.x * block_idx.x + thread_idx.x)
             if env >= BATCH_SIZE:
                 return
-            states[env, META_OFF + META_IDX_PREV_X] = states[env, QPOS_OFF + 0]
+            Self.CONFIG.pre_step_gpu[gpu_dtype, BATCH_SIZE, STATE_SIZE](
+                states, env, META_OFF
+            )
 
-        ctx.enqueue_function[store_prev_x_kernel, store_prev_x_kernel](
+        ctx.enqueue_function[pre_step_kernel, pre_step_kernel](
             states,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
@@ -880,68 +849,40 @@ struct Phyics3dEnv[
                 step_count
             )
 
-            # Extract observations via config delegate
+            # Extract observations via model delegate
             Self.MODEL_DEF.extract_obs_gpu[
                 gpu_dtype, BATCH_SIZE, STATE_SIZE, OBS_DIM_VAL
             ](states, obs, env)
 
-            # Read curriculum parameters
-            var min_height = model[
-                0, CURRICULUM_OFF + CURRICULUM_IDX_MIN_HEIGHT
-            ]
-            var max_pitch = model[0, CURRICULUM_OFF + CURRICULUM_IDX_MAX_PITCH]
-
-            # Compute velocity from position change
-            var x_position_after = rebind[Scalar[gpu_dtype]](
-                states[env, QPOS_OFF + 0]
+            # Compute reward and termination via config (full state access)
+            var result = Self.CONFIG.compute_reward_and_done_gpu[
+                gpu_dtype,
+                BATCH_SIZE,
+                STATE_SIZE,
+                Self.MODEL_DEF.ACTION_DIM,
+                MODEL_SIZE,
+            ](
+                states,
+                model,
+                actions,
+                env,
+                QPOS_OFF,
+                META_OFF,
+                CURRICULUM_OFF,
+                step_count,
+                Self.CONFIG.FRAME_SKIP,
+                Scalar[gpu_dtype](Self.CONFIG.get_timestep()),
             )
-            var prev_x = rebind[Scalar[gpu_dtype]](
-                states[env, META_OFF + META_IDX_PREV_X]
-            )
-            var effective_dt = Scalar[gpu_dtype](
-                Self.CONFIG.get_timestep()
-            ) * Scalar[gpu_dtype](Self.CONFIG.FRAME_SKIP)
-            var x_velocity = (x_position_after - prev_x) / effective_dt
-
-            # Read state for health check
-            var z_height = rebind[Scalar[gpu_dtype]](
-                states[env, QPOS_OFF + 1]
-            )  # rootz
-            var y_angle = rebind[Scalar[gpu_dtype]](
-                states[env, QPOS_OFF + 2]
-            )  # rooty
-
-            # Health check via config
-            var is_healthy = Self.CONFIG.check_health_gpu[gpu_dtype](
-                z_height,
-                y_angle,
-                rebind[Scalar[gpu_dtype]](min_height),
-                rebind[Scalar[gpu_dtype]](max_pitch),
-            )
-
-            # Clamp actions for reward computation
-            var ctrl_cost_sum = Scalar[gpu_dtype](0.0)
-            for a_idx in range(Self.MODEL_DEF.ACTION_DIM):
-                var a = rebind[Scalar[gpu_dtype]](actions[env, a_idx])
-                if a > Scalar[gpu_dtype](1.0):
-                    a = Scalar[gpu_dtype](1.0)
-                elif a < Scalar[gpu_dtype](-1.0):
-                    a = Scalar[gpu_dtype](-1.0)
-                ctrl_cost_sum += a * a
-
-            # Compute reward via config
-            var reward = Self.CONFIG.compute_reward_gpu[gpu_dtype](
-                x_velocity, ctrl_cost_sum, y_angle, is_healthy
-            )
-            rewards[env] = reward
+            rewards[env] = result[0]
 
             # Determine termination
-            var terminated = False
-            var truncated = step_count >= MAX_STEPS_VAL
+            var terminated = result[1]
 
             @parameter
-            if Self.TERMINATE_ON_UNHEALTHY:
-                terminated = not is_healthy
+            if not Self.TERMINATE_ON_UNHEALTHY:
+                terminated = False
+
+            var truncated = step_count >= MAX_STEPS_VAL
 
             if terminated or truncated:
                 dones[env] = Scalar[gpu_dtype](1.0)
@@ -974,21 +915,23 @@ struct Phyics3dEnv[
         """Reset a single environment on GPU with random noise."""
         var RESET_NOISE = Scalar[gpu_dtype](Self.CONFIG.get_reset_noise())
 
-        # Use config's Joints reset delegate
+        # Use model's Joints reset delegate
         Self.MODEL_DEF.reset_env_gpu[gpu_dtype, BATCH_SIZE, STATE_SIZE](
             states, env, RESET_NOISE, seed
         )
 
-        # Reset step counter and prev_x
+        # Reset step counter and prev_x via config's pre_step hook
         comptime META_OFF = metadata_offset[
             Self.MODEL_DEF.NQ,
             Self.MODEL_DEF.NV,
             Self.MODEL_DEF.NBODY,
             Self.MODEL_DEF.MAX_CONTACTS,
         ]()
-        comptime QPOS_OFF = qpos_offset[Self.MODEL_DEF.NQ, Self.MODEL_DEF.NV]()
         states[env, META_OFF + META_IDX_STEP_COUNT] = Scalar[gpu_dtype](0.0)
-        states[env, META_OFF + META_IDX_PREV_X] = states[env, QPOS_OFF + 0]
+        # Let config initialize prev_x
+        Self.CONFIG.pre_step_gpu[gpu_dtype, BATCH_SIZE, STATE_SIZE](
+            states, env, META_OFF
+        )
 
     # =========================================================================
     # RenderableEnv Trait Implementation

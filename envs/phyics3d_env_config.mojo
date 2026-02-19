@@ -1,9 +1,12 @@
 """Phyics3dEnvConfig trait — captures what varies between Phyics3d environments.
 
-Phyics3dEnv[MODEL_DEF: ModelDefLike, CONFIG: Phyics3dEnvConfig] delegates everything to C:
+Phyics3dEnv[MODEL_DEF: ModelDefLike, CONFIG: Phyics3dEnvConfig] delegates everything to CONFIG:
   - Model setup, integrator choice, reward, termination, GPU model init
   - Obs extraction, reset, enforce limits (delegates to Joints internally)
   - Action application (delegates to Actuators internally)
+
+The config has full access to physics state (qpos, qvel, etc.) for reward
+and termination — no hardcoded assumptions about which joints matter.
 """
 
 from gpu.host import DeviceContext, DeviceBuffer
@@ -55,24 +58,56 @@ trait Phyics3dEnvConfig:
     ):
         ...
 
-    # === CPU: Reward and health ===
+    # === CPU: Pre-step hook — save any per-env state before physics ===
     @staticmethod
-    fn compute_reward_cpu(
-        x_velocity: Float64,
-        ctrl_cost: Float64,
-        y_angle: Float64,
-        z_height: Float64,
-        is_healthy: Bool,
-    ) -> Float64:
+    fn pre_step_cpu[
+        DTYPE: DType where DTYPE.is_floating_point(),
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
+    ](
+        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+        mut prev_x: Scalar[DTYPE],
+    ):
+        """Save per-env state before physics step.
+
+        The prev_x parameter is a single scalar stored per-env (in the
+        metadata region on GPU). Configs use it to store whatever they need
+        (e.g., rootx position for velocity computation).
+        """
         ...
 
+    # === CPU: Unified reward + termination ===
     @staticmethod
-    fn check_health_cpu(
-        z_height: Float64,
-        y_angle: Float64,
-        min_height: Float64,
-        max_pitch: Float64,
-    ) -> Bool:
+    fn compute_reward_and_done_cpu[
+        DTYPE: DType where DTYPE.is_floating_point(),
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
+    ](
+        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+        prev_x: Scalar[DTYPE],
+        actions: List[Float64],
+        step_count: Int,
+        frame_skip: Int,
+    ) -> Tuple[Scalar[DTYPE], Bool]:
+        """Compute reward and early termination from full physics state.
+
+        Args:
+            data: Physics data with qpos, qvel, etc.
+            prev_x: Value saved by pre_step_cpu (e.g., previous x position).
+            actions: Clamped action values.
+            step_count: Current step count (for truncation checking outside).
+            frame_skip: Number of physics substeps per env step.
+
+        Returns:
+            (reward, terminated) — terminated is True for early termination
+            (NOT truncation — truncation is handled by the generic env).
+        """
         ...
 
     # === CPU: Float getters (can't use Float64 as comptime in traits) ===
@@ -82,14 +117,6 @@ trait Phyics3dEnvConfig:
 
     @staticmethod
     fn get_reset_noise() -> Float64:
-        ...
-
-    @staticmethod
-    fn get_default_min_height() -> Float64:
-        ...
-
-    @staticmethod
-    fn get_default_max_pitch() -> Float64:
         ...
 
     # === GPU: Integrator step ===
@@ -113,28 +140,69 @@ trait Phyics3dEnvConfig:
     ) raises:
         ...
 
-    # === GPU inline: Per-env methods (called from inside GPU kernels) ===
-
+    # === GPU inline: Pre-step hook ===
     @always_inline
     @staticmethod
-    fn compute_reward_gpu[
-        DTYPE: DType
+    fn pre_step_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
     ](
-        x_velocity: Scalar[DTYPE],
-        ctrl_cost_sum: Scalar[DTYPE],
-        y_angle: Scalar[DTYPE],
-        is_healthy: Bool,
-    ) -> Scalar[DTYPE]:
+        states: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ],
+        env: Int,
+        meta_offset: Int,
+    ):
+        """Save per-env state before physics (GPU inline version).
+
+        Write to states[env, meta_offset + META_IDX_PREV_X] to persist
+        a value for use in compute_reward_and_done_gpu.
+        """
         ...
 
+    # === GPU inline: Unified reward + termination ===
     @always_inline
     @staticmethod
-    fn check_health_gpu[
-        DTYPE: DType
+    fn compute_reward_and_done_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        ACTION_DIM: Int,
+        MODEL_SIZE: Int,
     ](
-        z_height: Scalar[DTYPE],
-        y_angle: Scalar[DTYPE],
-        min_height: Scalar[DTYPE],
-        max_pitch: Scalar[DTYPE],
-    ) -> Bool:
+        states: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ],
+        model: LayoutTensor[
+            DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+        ],
+        actions: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+        ],
+        env: Int,
+        qpos_off: Int,
+        meta_offset: Int,
+        curriculum_offset: Int,
+        step_count: Int,
+        frame_skip: Int,
+        timestep: Scalar[DTYPE],
+    ) -> Tuple[Scalar[DTYPE], Bool]:
+        """Compute reward and early termination from full GPU state.
+
+        Args:
+            states: Full state buffer (qpos, qvel, xpos, etc.).
+            model: Model buffer (includes curriculum parameters).
+            actions: Action buffer.
+            env: Environment index.
+            qpos_off: Offset to qpos in state buffer.
+            meta_offset: Offset to metadata in state buffer.
+            curriculum_offset: Offset to curriculum params in model buffer.
+            step_count: Current step count.
+            frame_skip: Frame skip value.
+            timestep: Physics timestep.
+
+        Returns:
+            (reward, terminated).
+        """
         ...

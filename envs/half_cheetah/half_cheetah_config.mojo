@@ -1,4 +1,4 @@
-"""HalfCheetah environment configuration for generic MuJoCoEnv."""
+"""HalfCheetah environment configuration for generic Phyics3dEnv."""
 
 from gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
@@ -8,12 +8,9 @@ from physics3d.integrator import ImplicitFastIntegrator
 from physics3d.solver import NewtonSolver
 from physics3d.gpu.constants import (
     implicit_extra_workspace_size,
-)
-
-from physics3d.gpu.constants import (
+    META_IDX_PREV_X,
+    qpos_offset,
     model_curriculum_offset,
-    CURRICULUM_IDX_MIN_HEIGHT,
-    CURRICULUM_IDX_MAX_PITCH,
 )
 
 from .half_cheetah_def import (
@@ -68,31 +65,65 @@ struct HalfCheetahConfig(Phyics3dEnvConfig):
             model, data, verbose=verbose
         )
 
-    # === CPU: Reward ===
+    # === CPU: Pre-step hook ===
     @staticmethod
-    fn compute_reward_cpu(
-        x_velocity: Float64,
-        ctrl_cost: Float64,
-        y_angle: Float64,
-        z_height: Float64,
-        is_healthy: Bool,
-    ) -> Float64:
-        comptime P = HalfCheetahParams[DType.float64]
-        var forward_reward = Float64(P.FORWARD_REWARD_WEIGHT) * x_velocity
-        var abs_angle = y_angle if y_angle >= 0.0 else -y_angle
-        var angle_penalty = Float64(P.ANGLE_PENALTY_WEIGHT) * abs_angle
-        return forward_reward - ctrl_cost - angle_penalty
+    fn pre_step_cpu[
+        DTYPE: DType where DTYPE.is_floating_point(),
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
+    ](
+        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+        mut prev_x: Scalar[DTYPE],
+    ):
+        prev_x = data.qpos[0]  # Save rootx position
 
+    # === CPU: Reward + termination ===
     @staticmethod
-    fn check_health_cpu(
-        z_height: Float64,
-        y_angle: Float64,
-        min_height: Float64,
-        max_pitch: Float64,
-    ) -> Bool:
-        if y_angle > max_pitch or y_angle < -max_pitch:
-            return False
-        return True
+    fn compute_reward_and_done_cpu[
+        DTYPE: DType where DTYPE.is_floating_point(),
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
+    ](
+        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+        prev_x: Scalar[DTYPE],
+        actions: List[Float64],
+        step_count: Int,
+        frame_skip: Int,
+    ) -> Tuple[Scalar[DTYPE], Bool]:
+        comptime P = HalfCheetahParams[DType.float64]
+
+        # Compute x velocity from position change
+        var x_after = data.qpos[0]
+        var dt = Scalar[DTYPE](Self.get_timestep()) * Scalar[DTYPE](frame_skip)
+        var x_velocity = (x_after - prev_x) / dt
+
+        # Forward reward
+        var forward_reward = Scalar[DTYPE](P.FORWARD_REWARD_WEIGHT) * x_velocity
+
+        # Control cost
+        var ctrl_cost = Scalar[DTYPE](0.0)
+        for i in range(len(actions)):
+            ctrl_cost += Scalar[DTYPE](actions[i] * actions[i])
+        ctrl_cost = Scalar[DTYPE](P.CTRL_COST_WEIGHT) * ctrl_cost
+
+        # Angle penalty
+        var y_angle = data.qpos[2]  # rooty
+        var abs_angle = y_angle if y_angle >= Scalar[DTYPE](0.0) else -y_angle
+        var angle_penalty = Scalar[DTYPE](P.ANGLE_PENALTY_WEIGHT) * abs_angle
+
+        var reward = forward_reward - ctrl_cost - angle_penalty
+
+        # Health check — HalfCheetah only checks pitch
+        var max_pitch = Scalar[DTYPE](P.MAX_PITCH)
+        var terminated = y_angle > max_pitch or y_angle < -max_pitch
+
+        return (reward, terminated)
 
     # === CPU: Float getters ===
     @staticmethod
@@ -102,14 +133,6 @@ struct HalfCheetahConfig(Phyics3dEnvConfig):
     @staticmethod
     fn get_reset_noise() -> Float64:
         return 0.1
-
-    @staticmethod
-    fn get_default_min_height() -> Float64:
-        return 0.0
-
-    @staticmethod
-    fn get_default_max_pitch() -> Float64:
-        return Float64(HalfCheetahParams[DType.float64].MAX_PITCH)
 
     # === GPU: Integrator step ===
     @staticmethod
@@ -141,35 +164,86 @@ struct HalfCheetahConfig(Phyics3dEnvConfig):
             NGEOM,
         ](ctx, states_buf, model_buf, workspace_buf)
 
-    # === GPU inline: Reward ===
+    # === GPU inline: Pre-step hook ===
     @always_inline
     @staticmethod
-    fn compute_reward_gpu[
-        DTYPE: DType
+    fn pre_step_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
     ](
-        x_velocity: Scalar[DTYPE],
-        ctrl_cost_sum: Scalar[DTYPE],
-        y_angle: Scalar[DTYPE],
-        is_healthy: Bool,
-    ) -> Scalar[DTYPE]:
+        states: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ],
+        env: Int,
+        meta_offset: Int,
+    ):
+        # Save rootx position into META_IDX_PREV_X
+        comptime QPOS_OFF = qpos_offset[
+            HalfCheetahModel.NQ, HalfCheetahModel.NV
+        ]()
+        states[env, meta_offset + META_IDX_PREV_X] = states[env, QPOS_OFF + 0]
+
+    # === GPU inline: Reward + termination ===
+    @always_inline
+    @staticmethod
+    fn compute_reward_and_done_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        ACTION_DIM: Int,
+        MODEL_SIZE: Int,
+    ](
+        states: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ],
+        model: LayoutTensor[
+            DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+        ],
+        actions: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+        ],
+        env: Int,
+        qpos_off: Int,
+        meta_offset: Int,
+        curriculum_offset: Int,
+        step_count: Int,
+        frame_skip: Int,
+        timestep: Scalar[DTYPE],
+    ) -> Tuple[Scalar[DTYPE], Bool]:
+        # Compute x velocity from position change
+        var x_after = rebind[Scalar[DTYPE]](states[env, qpos_off + 0])
+        var prev_x = rebind[Scalar[DTYPE]](
+            states[env, meta_offset + META_IDX_PREV_X]
+        )
+        var effective_dt = timestep * Scalar[DTYPE](frame_skip)
+        var x_velocity = (x_after - prev_x) / effective_dt
+
+        # Forward reward
+        var forward_reward = Scalar[DTYPE](1.0) * x_velocity
+
+        # Control cost (clamp actions)
+        var ctrl_cost_sum = Scalar[DTYPE](0.0)
+        for a_idx in range(ACTION_DIM):
+            var a = rebind[Scalar[DTYPE]](actions[env, a_idx])
+            if a > Scalar[DTYPE](1.0):
+                a = Scalar[DTYPE](1.0)
+            elif a < Scalar[DTYPE](-1.0):
+                a = Scalar[DTYPE](-1.0)
+            ctrl_cost_sum += a * a
+        var ctrl_cost = Scalar[DTYPE](0.1) * ctrl_cost_sum
+
+        # Angle penalty
+        var y_angle = rebind[Scalar[DTYPE]](states[env, qpos_off + 2])
         var abs_angle = y_angle
         if abs_angle < Scalar[DTYPE](0.0):
             abs_angle = -abs_angle
-        var forward_reward = Scalar[DTYPE](1.0) * x_velocity
-        var ctrl_cost = Scalar[DTYPE](0.1) * ctrl_cost_sum
         var angle_penalty = Scalar[DTYPE](0.5) * abs_angle
-        return forward_reward - ctrl_cost - angle_penalty
 
-    @always_inline
-    @staticmethod
-    fn check_health_gpu[
-        DTYPE: DType
-    ](
-        z_height: Scalar[DTYPE],
-        y_angle: Scalar[DTYPE],
-        min_height: Scalar[DTYPE],
-        max_pitch: Scalar[DTYPE],
-    ) -> Bool:
-        if y_angle > max_pitch or y_angle < -max_pitch:
-            return False
-        return True
+        var reward = forward_reward - ctrl_cost - angle_penalty
+
+        # Health check — read max_pitch from curriculum
+        var max_pitch = rebind[Scalar[DTYPE]](model[0, curriculum_offset + 1])
+        var terminated = y_angle > max_pitch or y_angle < -max_pitch
+
+        return (reward, terminated)

@@ -61,8 +61,6 @@ from physics3d.gpu.constants import (
     MODEL_META_SIZE,
     MODEL_CURRICULUM_SIZE,
     CONTACT_SIZE,
-    CURRICULUM_IDX_MIN_HEIGHT,
-    CURRICULUM_IDX_MAX_PITCH,
 )
 
 

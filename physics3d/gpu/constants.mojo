@@ -395,9 +395,9 @@ fn model_equality_offset[
 # Fixed-size curriculum section (environments use what they need)
 comptime MODEL_CURRICULUM_SIZE: Int = 8  # Up to 8 curriculum parameters
 
-# Common curriculum parameter indices (environments can define their own)
-comptime CURRICULUM_IDX_MIN_HEIGHT: Int = 0
-comptime CURRICULUM_IDX_MAX_PITCH: Int = 1
+# Generic curriculum parameter indices (environments define their own semantics)
+comptime CURRICULUM_IDX_PARAM_0: Int = 0
+comptime CURRICULUM_IDX_PARAM_1: Int = 1
 comptime CURRICULUM_IDX_PARAM_2: Int = 2
 comptime CURRICULUM_IDX_PARAM_3: Int = 3
 comptime CURRICULUM_IDX_PARAM_4: Int = 4

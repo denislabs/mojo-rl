@@ -6,6 +6,11 @@ from layout import Layout, LayoutTensor
 from physics3d.types import Model, Data
 from physics3d.integrator import RK4Integrator
 from physics3d.solver import NewtonSolver
+from physics3d.gpu.constants import (
+    META_IDX_PREV_X,
+    qpos_offset,
+    model_curriculum_offset,
+)
 
 from .hopper_def import (
     HopperModel,
@@ -57,34 +62,71 @@ struct HopperConfig(Phyics3dEnvConfig):
     ):
         RK4Integrator[SOLVER=NewtonSolver].step(model, data)
 
-    # === CPU: Reward ===
+    # === CPU: Pre-step hook ===
     @staticmethod
-    fn compute_reward_cpu(
-        x_velocity: Float64,
-        ctrl_cost: Float64,
-        y_angle: Float64,
-        z_height: Float64,
-        is_healthy: Bool,
-    ) -> Float64:
-        comptime P = HopperParams[DType.float64]
-        var forward_reward = Float64(P.FORWARD_REWARD_WEIGHT) * x_velocity
-        var healthy_reward: Float64 = 0.0
-        if is_healthy:
-            healthy_reward = Float64(P.HEALTHY_REWARD)
-        return forward_reward + healthy_reward - ctrl_cost
+    fn pre_step_cpu[
+        DTYPE: DType where DTYPE.is_floating_point(),
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
+    ](
+        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+        mut prev_x: Scalar[DTYPE],
+    ):
+        prev_x = data.qpos[0]  # Save rootx position
 
+    # === CPU: Reward + termination ===
     @staticmethod
-    fn check_health_cpu(
-        z_height: Float64,
-        y_angle: Float64,
-        min_height: Float64,
-        max_pitch: Float64,
-    ) -> Bool:
-        if z_height < min_height:
-            return False
+    fn compute_reward_and_done_cpu[
+        DTYPE: DType where DTYPE.is_floating_point(),
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
+    ](
+        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS],
+        prev_x: Scalar[DTYPE],
+        actions: List[Float64],
+        step_count: Int,
+        frame_skip: Int,
+    ) -> Tuple[Scalar[DTYPE], Bool]:
+        comptime P = HopperParams[DType.float64]
+
+        # Compute x velocity from position change
+        var x_after = data.qpos[0]
+        var dt = Scalar[DTYPE](Self.get_timestep()) * Scalar[DTYPE](frame_skip)
+        var x_velocity = (x_after - prev_x) / dt
+
+        # Forward reward
+        var forward_reward = Scalar[DTYPE](P.FORWARD_REWARD_WEIGHT) * x_velocity
+
+        # Control cost
+        var ctrl_cost = Scalar[DTYPE](0.0)
+        for i in range(len(actions)):
+            ctrl_cost += Scalar[DTYPE](actions[i] * actions[i])
+        ctrl_cost = Scalar[DTYPE](P.CTRL_COST_WEIGHT) * ctrl_cost
+
+        # Health check
+        var z_height = data.qpos[1]  # rootz
+        var y_angle = data.qpos[2]  # rooty
+        var min_height = Scalar[DTYPE](P.MIN_HEIGHT)
+        var max_pitch = Scalar[DTYPE](P.MAX_PITCH)
+        var is_healthy = z_height >= min_height
         if y_angle > max_pitch or y_angle < -max_pitch:
-            return False
-        return True
+            is_healthy = False
+
+        # Healthy reward
+        var healthy_reward = Scalar[DTYPE](0.0)
+        if is_healthy:
+            healthy_reward = Scalar[DTYPE](P.HEALTHY_REWARD)
+
+        var reward = forward_reward + healthy_reward - ctrl_cost
+        var terminated = not is_healthy
+
+        return (reward, terminated)
 
     # === CPU: Float getters ===
     @staticmethod
@@ -94,14 +136,6 @@ struct HopperConfig(Phyics3dEnvConfig):
     @staticmethod
     fn get_reset_noise() -> Float64:
         return 0.005
-
-    @staticmethod
-    fn get_default_min_height() -> Float64:
-        return Float64(HopperParams[DType.float64].MIN_HEIGHT)
-
-    @staticmethod
-    fn get_default_max_pitch() -> Float64:
-        return Float64(HopperParams[DType.float64].MAX_PITCH)
 
     # === GPU: Integrator step ===
     @staticmethod
@@ -133,35 +167,86 @@ struct HopperConfig(Phyics3dEnvConfig):
             NGEOM,
         ](ctx, states_buf, model_buf, workspace_buf)
 
-    # === GPU inline: Reward ===
+    # === GPU inline: Pre-step hook ===
     @always_inline
     @staticmethod
-    fn compute_reward_gpu[
-        DTYPE: DType
+    fn pre_step_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
     ](
-        x_velocity: Scalar[DTYPE],
-        ctrl_cost_sum: Scalar[DTYPE],
-        y_angle: Scalar[DTYPE],
-        is_healthy: Bool,
-    ) -> Scalar[DTYPE]:
+        states: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ],
+        env: Int,
+        meta_offset: Int,
+    ):
+        # Save rootx position into META_IDX_PREV_X
+        comptime QPOS_OFF = qpos_offset[HopperModel.NQ, HopperModel.NV]()
+        states[env, meta_offset + META_IDX_PREV_X] = states[env, QPOS_OFF + 0]
+
+    # === GPU inline: Reward + termination ===
+    @always_inline
+    @staticmethod
+    fn compute_reward_and_done_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        ACTION_DIM: Int,
+        MODEL_SIZE: Int,
+    ](
+        states: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ],
+        model: LayoutTensor[
+            DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+        ],
+        actions: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+        ],
+        env: Int,
+        qpos_off: Int,
+        meta_offset: Int,
+        curriculum_offset: Int,
+        step_count: Int,
+        frame_skip: Int,
+        timestep: Scalar[DTYPE],
+    ) -> Tuple[Scalar[DTYPE], Bool]:
+        # Compute x velocity from position change
+        var x_after = rebind[Scalar[DTYPE]](states[env, qpos_off + 0])
+        var prev_x = rebind[Scalar[DTYPE]](
+            states[env, meta_offset + META_IDX_PREV_X]
+        )
+        var effective_dt = timestep * Scalar[DTYPE](frame_skip)
+        var x_velocity = (x_after - prev_x) / effective_dt
+
+        # Control cost (clamp actions)
+        var ctrl_cost_sum = Scalar[DTYPE](0.0)
+        for a_idx in range(ACTION_DIM):
+            var a = rebind[Scalar[DTYPE]](actions[env, a_idx])
+            if a > Scalar[DTYPE](1.0):
+                a = Scalar[DTYPE](1.0)
+            elif a < Scalar[DTYPE](-1.0):
+                a = Scalar[DTYPE](-1.0)
+            ctrl_cost_sum += a * a
+        var ctrl_cost = Scalar[DTYPE](0.001) * ctrl_cost_sum
+
+        # Health check — read curriculum parameters
+        var min_height = rebind[Scalar[DTYPE]](model[0, curriculum_offset + 0])
+        var max_pitch = rebind[Scalar[DTYPE]](model[0, curriculum_offset + 1])
+        var z_height = rebind[Scalar[DTYPE]](states[env, qpos_off + 1])
+        var y_angle = rebind[Scalar[DTYPE]](states[env, qpos_off + 2])
+
+        var is_healthy = True
+        if z_height < min_height:
+            is_healthy = False
+        if y_angle > max_pitch or y_angle < -max_pitch:
+            is_healthy = False
+
+        # Healthy reward
         var healthy_reward = Scalar[DTYPE](1.0)
         if not is_healthy:
             healthy_reward = Scalar[DTYPE](0.0)
-        var ctrl_cost = Scalar[DTYPE](0.001) * ctrl_cost_sum
-        return x_velocity + healthy_reward - ctrl_cost
 
-    @always_inline
-    @staticmethod
-    fn check_health_gpu[
-        DTYPE: DType
-    ](
-        z_height: Scalar[DTYPE],
-        y_angle: Scalar[DTYPE],
-        min_height: Scalar[DTYPE],
-        max_pitch: Scalar[DTYPE],
-    ) -> Bool:
-        if z_height < min_height:
-            return False
-        if y_angle > max_pitch or y_angle < -max_pitch:
-            return False
-        return True
+        var reward = x_velocity + healthy_reward - ctrl_cost
+        return (reward, not is_healthy)
