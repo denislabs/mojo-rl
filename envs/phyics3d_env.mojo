@@ -695,28 +695,52 @@ struct Phyics3dEnv[
     ) raises:
         """Update curriculum parameters in a pre-allocated workspace.
 
-        Copies up to MODEL_CURRICULUM_SIZE values from the list into the
-        curriculum section of the model buffer. Generic — no assumption
-        about what the values mean.
+        Writes up to MODEL_CURRICULUM_SIZE values from the list into the
+        curriculum section of the model buffer via a small GPU kernel.
+        Uses a kernel instead of enqueue_copy to avoid Metal sub-pointer
+        issues (Metal requires base buffer pointers, not offset pointers).
         """
         var n = len(curriculum_values)
         if n == 0:
             return
-        if n > MODEL_CURRICULUM_SIZE:
-            n = MODEL_CURRICULUM_SIZE
-        var curr_offset = model_curriculum_offset[
+
+        # Extract values (curriculum has at most MODEL_CURRICULUM_SIZE entries)
+        var v0 = curriculum_values[0] if n > 0 else Scalar[gpu_dtype](0.0)
+        var v1 = curriculum_values[1] if n > 1 else Scalar[gpu_dtype](0.0)
+
+        comptime CURR_OFF = model_curriculum_offset[
             Self.MODEL_DEF.NBODY, Self.MODEL_DEF.NJOINT
         ]()
-        # Copy values one at a time (small count, simple)
-        var curriculum_host = InlineArray[Scalar[gpu_dtype], MODEL_CURRICULUM_SIZE](
-            fill=Scalar[gpu_dtype](0.0)
-        )
-        for i in range(n):
-            curriculum_host[i] = curriculum_values[i]
-        ctx.enqueue_copy(
-            workspace_buf.unsafe_ptr() + curr_offset,
-            curriculum_host.unsafe_ptr(),
-            n,
+        comptime MODEL_SIZE = model_size_with_invweight[
+            Self.MODEL_DEF.NBODY,
+            Self.MODEL_DEF.NJOINT,
+            Self.MODEL_DEF.NV,
+            Self.MODEL_DEF.NGEOM,
+        ]()
+
+        # Use the base pointer of workspace_buf (= start of model section).
+        # A single-thread kernel writes curriculum values at the correct offset.
+        var model = LayoutTensor[
+            gpu_dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+        ](workspace_buf.unsafe_ptr())
+
+        @always_inline
+        fn write_curriculum_kernel(
+            model: LayoutTensor[
+                gpu_dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+            ],
+            v0: Scalar[gpu_dtype],
+            v1: Scalar[gpu_dtype],
+        ):
+            model[0, CURR_OFF + 0] = v0
+            model[0, CURR_OFF + 1] = v1
+
+        ctx.enqueue_function[write_curriculum_kernel, write_curriculum_kernel](
+            model,
+            v0,
+            v1,
+            grid_dim=(1,),
+            block_dim=(1,),
         )
 
     @staticmethod

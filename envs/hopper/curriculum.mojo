@@ -57,16 +57,22 @@ struct HopperCurriculum(CurriculumScheduler):
         elif p > Scalar[DTYPE](1.0):
             p = Scalar[DTYPE](1.0)
 
-        var params = List[Scalar[DTYPE]](capacity=2)
+        var params = List[Scalar[DTYPE]]()
 
         # Linear interpolation: initial + progress * (final - initial)
-        params[0] = Scalar[DTYPE](Self.initial_min_height) + p * (
-            Scalar[DTYPE](Self.final_min_height)
-            - Scalar[DTYPE](Self.initial_min_height)
+        params.append(
+            Scalar[DTYPE](Self.initial_min_height)
+            + p * (
+                Scalar[DTYPE](Self.final_min_height)
+                - Scalar[DTYPE](Self.initial_min_height)
+            )
         )
-        params[1] = Scalar[DTYPE](Self.initial_max_pitch) + p * (
-            Scalar[DTYPE](Self.final_max_pitch)
-            - Scalar[DTYPE](Self.initial_max_pitch)
+        params.append(
+            Scalar[DTYPE](Self.initial_max_pitch)
+            + p * (
+                Scalar[DTYPE](Self.final_max_pitch)
+                - Scalar[DTYPE](Self.initial_max_pitch)
+            )
         )
 
         return params^
