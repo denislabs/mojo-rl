@@ -505,7 +505,12 @@ struct Phyics3dEnv[
         mut states_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64 = 0,
     ) raises:
-        """Reset all environments on GPU."""
+        """Reset all environments on GPU.
+
+        Combines reset + FK into a single kernel dispatch to avoid a Metal
+        shader compilation bug where FK compiled as a separate closure inside
+        a generic struct method produces incorrect code.
+        """
         var states = LayoutTensor[
             gpu_dtype,
             Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
@@ -514,30 +519,6 @@ struct Phyics3dEnv[
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
-        @always_inline
-        fn reset_wrapper(
-            states: LayoutTensor[
-                gpu_dtype,
-                Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
-                MutAnyOrigin,
-            ],
-            seed: Int,
-        ):
-            var i = Int(block_dim.x * block_idx.x + thread_idx.x)
-            if i >= BATCH_SIZE:
-                return
-            # DEBUG: no-op to test if kernel compilation itself crashes
-            states[i, 0] = Scalar[gpu_dtype](0)
-
-        ctx.enqueue_function[reset_wrapper, reset_wrapper](
-            states,
-            Int(rng_seed),
-            grid_dim=(BLOCKS,),
-            block_dim=(TPB,),
-        )
-        ctx.synchronize()  # DEBUG: isolate reset vs FK crash
-
-        # Run forward kinematics
         comptime MODEL_SIZE = model_size_with_invweight[
             Self.MODEL_DEF.NBODY,
             Self.MODEL_DEF.NJOINT,
@@ -552,7 +533,7 @@ struct Phyics3dEnv[
         ](model_buf.unsafe_ptr())
 
         @always_inline
-        fn fk_wrapper(
+        fn reset_with_fk_wrapper(
             states: LayoutTensor[
                 gpu_dtype,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
@@ -561,10 +542,12 @@ struct Phyics3dEnv[
             model: LayoutTensor[
                 gpu_dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
             ],
+            seed: Int,
         ):
             var i = Int(block_dim.x * block_idx.x + thread_idx.x)
             if i >= BATCH_SIZE:
                 return
+            Self._reset_env_gpu[BATCH_SIZE, STATE_SIZE_VAL](states, i, seed)
             forward_kinematics_gpu[
                 gpu_dtype,
                 Self.MODEL_DEF.NQ,
@@ -577,9 +560,12 @@ struct Phyics3dEnv[
                 BATCH_SIZE,
             ](i, states, model)
 
-        ctx.enqueue_function[fk_wrapper, fk_wrapper](
+        ctx.enqueue_function[
+            reset_with_fk_wrapper, reset_with_fk_wrapper
+        ](
             states,
             model,
+            Int(rng_seed),
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )

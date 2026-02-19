@@ -1926,17 +1926,18 @@ struct DeepPPOAgent[
         # =====================================================================
         # Initialize all environments on GPU
         # =====================================================================
-        # Reset environments (writes to full state buffer)
-        EnvType.reset_kernel_gpu[Self.n_envs, EnvType.STATE_SIZE](
-            ctx, states_buf
-        )
-        ctx.synchronize()
-
-        # Pre-allocate step workspace to avoid per-step GPU buffer allocations
+        # Pre-allocate step workspace BEFORE reset to avoid stack overflow
+        # (reset compiles large Metal shaders that consume stack space)
         comptime TOTAL_WS = EnvType.STEP_WS_SHARED + Self.n_envs * EnvType.STEP_WS_PER_ENV
         comptime WS_ALLOC = TOTAL_WS if TOTAL_WS > 0 else 1
         var step_ws_buf = ctx.enqueue_create_buffer[dtype](WS_ALLOC)
         EnvType.init_step_workspace_gpu[Self.n_envs](ctx, step_ws_buf)
+        ctx.synchronize()
+
+        # Reset environments (writes to full state buffer)
+        EnvType.reset_kernel_gpu[Self.n_envs, EnvType.STATE_SIZE](
+            ctx, states_buf
+        )
         ctx.synchronize()
 
         # Extract observations from state buffer for neural network input

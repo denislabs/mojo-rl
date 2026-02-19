@@ -38,6 +38,37 @@ comptime _RVec3 = _Vec3G[DType.float64]
 comptime _RQuat = _QuatG[DType.float64]
 from ..model.defaults_spec import ModelDefaults, _resolve_f64, _resolve_int
 from .inertia_from_geom import geom_volume, compute_inertia_from_geoms
+from ..gpu.constants import (
+    GEOM_IDX_TYPE,
+    GEOM_IDX_BODY,
+    GEOM_IDX_POS_X as _GEOM_IDX_POS_X,
+    GEOM_IDX_POS_Y as _GEOM_IDX_POS_Y,
+    GEOM_IDX_POS_Z as _GEOM_IDX_POS_Z,
+    GEOM_IDX_QUAT_X as _GEOM_IDX_QUAT_X,
+    GEOM_IDX_QUAT_Y as _GEOM_IDX_QUAT_Y,
+    GEOM_IDX_QUAT_Z as _GEOM_IDX_QUAT_Z,
+    GEOM_IDX_QUAT_W as _GEOM_IDX_QUAT_W,
+    GEOM_IDX_RADIUS as _GEOM_IDX_RADIUS,
+    GEOM_IDX_HALF_LENGTH as _GEOM_IDX_HALF_LENGTH,
+    GEOM_IDX_HALF_X as _GEOM_IDX_HALF_X,
+    GEOM_IDX_HALF_Y as _GEOM_IDX_HALF_Y,
+    GEOM_IDX_HALF_Z as _GEOM_IDX_HALF_Z,
+    GEOM_IDX_FRICTION as _GEOM_IDX_FRICTION,
+    GEOM_IDX_CONTYPE as _GEOM_IDX_CONTYPE,
+    GEOM_IDX_CONAFFINITY as _GEOM_IDX_CONAFFINITY,
+    GEOM_IDX_CONDIM as _GEOM_IDX_CONDIM,
+    GEOM_IDX_FRICTION_SPIN as _GEOM_IDX_FRICTION_SPIN,
+    GEOM_IDX_FRICTION_ROLL as _GEOM_IDX_FRICTION_ROLL,
+    GEOM_IDX_RBOUND as _GEOM_IDX_RBOUND,
+    GEOM_IDX_SOLREF_0 as _GEOM_IDX_SOLREF_0,
+    GEOM_IDX_SOLREF_1 as _GEOM_IDX_SOLREF_1,
+    GEOM_IDX_SOLIMP_0 as _GEOM_IDX_SOLIMP_0,
+    GEOM_IDX_SOLIMP_1 as _GEOM_IDX_SOLIMP_1,
+    GEOM_IDX_SOLIMP_2 as _GEOM_IDX_SOLIMP_2,
+    GEOM_IDX_MARGIN as _GEOM_IDX_MARGIN,
+    model_geom_offset,
+)
+from gpu.host import HostBuffer
 
 # Sentinel values for "use model default" (re-exported for convenience)
 comptime _UNSET_F64: Float64 = -1.0
@@ -857,6 +888,22 @@ trait GeomsLike:
     comptime N: Int
 
     @staticmethod
+    fn write_to_buffer[
+        DTYPE: DType,
+        NBODY: Int,
+        NJOINT: Int,
+        Defaults: ModelDefaultsLike,
+    ](buffer: HostBuffer[DTYPE]):
+        ...
+
+    @staticmethod
+    fn compute_geom_masses[
+        DTYPE: DType,
+        Defaults: ModelDefaultsLike,
+    ]() -> InlineArray[Scalar[DTYPE], Self.N]:
+        ...
+
+    @staticmethod
     fn setup_model[
         DTYPE: DType,
         NQ: Int,
@@ -909,6 +956,22 @@ trait GeomsLike:
 @fieldwise_init
 struct _EmptyGeoms(GeomsLike):
     comptime N: Int = 0
+
+    @staticmethod
+    fn write_to_buffer[
+        DTYPE: DType,
+        NBODY: Int,
+        NJOINT: Int,
+        Defaults: ModelDefaultsLike,
+    ](buffer: HostBuffer[DTYPE]):
+        pass
+
+    @staticmethod
+    fn compute_geom_masses[
+        DTYPE: DType,
+        Defaults: ModelDefaultsLike,
+    ]() -> InlineArray[Scalar[DTYPE], Self.N]:
+        return InlineArray[Scalar[DTYPE], Self.N](fill=Scalar[DTYPE](0))
 
     @staticmethod
     fn setup_model[
@@ -1152,6 +1215,149 @@ struct Geoms[*G: GeomSpec](GeomsLike):
                     model.geom_mass[i] = (
                         Scalar[DTYPE](Defaults.GEOM_DENSITY) * vol
                     )
+
+    @staticmethod
+    fn write_to_buffer[
+        DTYPE: DType,
+        NBODY: Int,
+        NJOINT: Int,
+        Defaults: ModelDefaultsLike = ModelDefaults[],
+    ](buffer: HostBuffer[DTYPE]):
+        """Write geom data directly to GPU HostBuffer (no Model struct).
+
+        Resolves sentinel values (-1.0/-1) from Defaults.
+        Computes rbound and geom_mass per geom type.
+        """
+
+        @parameter
+        for i in range(Self.N):
+            comptime G_item = Self.geom_types[i]
+            var off = model_geom_offset[NBODY, NJOINT](i)
+
+            buffer[off + GEOM_IDX_TYPE] = Scalar[DTYPE](G_item.GEOM_TYPE)
+            buffer[off + GEOM_IDX_BODY] = Scalar[DTYPE](G_item.BODY_IDX)
+            buffer[off + _GEOM_IDX_POS_X] = Scalar[DTYPE](G_item.POS_X)
+            buffer[off + _GEOM_IDX_POS_Y] = Scalar[DTYPE](G_item.POS_Y)
+            buffer[off + _GEOM_IDX_POS_Z] = Scalar[DTYPE](G_item.POS_Z)
+            buffer[off + _GEOM_IDX_QUAT_X] = Scalar[DTYPE](G_item.QUAT_X)
+            buffer[off + _GEOM_IDX_QUAT_Y] = Scalar[DTYPE](G_item.QUAT_Y)
+            buffer[off + _GEOM_IDX_QUAT_Z] = Scalar[DTYPE](G_item.QUAT_Z)
+            buffer[off + _GEOM_IDX_QUAT_W] = Scalar[DTYPE](G_item.QUAT_W)
+            buffer[off + _GEOM_IDX_RADIUS] = Scalar[DTYPE](G_item.RADIUS)
+            buffer[off + _GEOM_IDX_HALF_LENGTH] = Scalar[DTYPE](
+                G_item.HALF_LENGTH
+            )
+            buffer[off + _GEOM_IDX_HALF_X] = Scalar[DTYPE](G_item.HALF_X)
+            buffer[off + _GEOM_IDX_HALF_Y] = Scalar[DTYPE](G_item.HALF_Y)
+            buffer[off + _GEOM_IDX_HALF_Z] = Scalar[DTYPE](G_item.HALF_Z)
+
+            # Resolve physics fields via defaults
+            buffer[off + _GEOM_IDX_FRICTION] = Scalar[DTYPE](
+                _resolve_f64[G_item.FRICTION, Defaults.GEOM_FRICTION]()
+            )
+            buffer[off + _GEOM_IDX_CONTYPE] = Scalar[DTYPE](
+                _resolve_int[G_item.CONTYPE, Defaults.GEOM_CONTYPE]()
+            )
+            buffer[off + _GEOM_IDX_CONAFFINITY] = Scalar[DTYPE](
+                _resolve_int[G_item.CONAFFINITY, Defaults.GEOM_CONAFFINITY]()
+            )
+            buffer[off + _GEOM_IDX_CONDIM] = Scalar[DTYPE](
+                _resolve_int[G_item.CONDIM, Defaults.GEOM_CONDIM]()
+            )
+            buffer[off + _GEOM_IDX_FRICTION_SPIN] = Scalar[DTYPE](
+                _resolve_f64[
+                    G_item.FRICTION_SPIN, Defaults.GEOM_FRICTION_SPIN
+                ]()
+            )
+            buffer[off + _GEOM_IDX_FRICTION_ROLL] = Scalar[DTYPE](
+                _resolve_f64[
+                    G_item.FRICTION_ROLL, Defaults.GEOM_FRICTION_ROLL
+                ]()
+            )
+
+            # Per-geom solref/solimp
+            buffer[off + _GEOM_IDX_SOLREF_0] = Scalar[DTYPE](
+                _resolve_f64[G_item.SOLREF_0, Defaults.GEOM_SOLREF_0]()
+            )
+            buffer[off + _GEOM_IDX_SOLREF_1] = Scalar[DTYPE](
+                _resolve_f64[G_item.SOLREF_1, Defaults.GEOM_SOLREF_1]()
+            )
+            buffer[off + _GEOM_IDX_SOLIMP_0] = Scalar[DTYPE](
+                _resolve_f64[G_item.SOLIMP_0, Defaults.GEOM_SOLIMP_0]()
+            )
+            buffer[off + _GEOM_IDX_SOLIMP_1] = Scalar[DTYPE](
+                _resolve_f64[G_item.SOLIMP_1, Defaults.GEOM_SOLIMP_1]()
+            )
+            buffer[off + _GEOM_IDX_SOLIMP_2] = Scalar[DTYPE](
+                _resolve_f64[G_item.SOLIMP_2, Defaults.GEOM_SOLIMP_2]()
+            )
+            buffer[off + _GEOM_IDX_MARGIN] = Scalar[DTYPE](
+                _resolve_f64[G_item.MARGIN, Defaults.GEOM_MARGIN]()
+            )
+
+            # Compute bounding sphere radius
+            @parameter
+            if G_item.GEOM_TYPE == GEOM_SPHERE:
+                buffer[off + _GEOM_IDX_RBOUND] = Scalar[DTYPE](G_item.RADIUS)
+            elif G_item.GEOM_TYPE == GEOM_CAPSULE:
+                buffer[off + _GEOM_IDX_RBOUND] = Scalar[DTYPE](
+                    G_item.HALF_LENGTH
+                ) + Scalar[DTYPE](G_item.RADIUS)
+            elif G_item.GEOM_TYPE == GEOM_CYLINDER:
+                buffer[off + _GEOM_IDX_RBOUND] = sqrt(
+                    Scalar[DTYPE](G_item.HALF_LENGTH)
+                    * Scalar[DTYPE](G_item.HALF_LENGTH)
+                    + Scalar[DTYPE](G_item.RADIUS)
+                    * Scalar[DTYPE](G_item.RADIUS)
+                )
+            elif G_item.GEOM_TYPE == GEOM_BOX:
+                buffer[off + _GEOM_IDX_RBOUND] = sqrt(
+                    Scalar[DTYPE](G_item.HALF_X) * Scalar[DTYPE](G_item.HALF_X)
+                    + Scalar[DTYPE](G_item.HALF_Y)
+                    * Scalar[DTYPE](G_item.HALF_Y)
+                    + Scalar[DTYPE](G_item.HALF_Z)
+                    * Scalar[DTYPE](G_item.HALF_Z)
+                )
+            elif G_item.GEOM_TYPE == GEOM_PLANE:
+                buffer[off + _GEOM_IDX_RBOUND] = Scalar[DTYPE](1e10)
+
+    @staticmethod
+    fn compute_geom_masses[
+        DTYPE: DType,
+        Defaults: ModelDefaultsLike = ModelDefaults[],
+    ]() -> InlineArray[Scalar[DTYPE], Self.N]:
+        """Compute geom masses from compile-time specs.
+
+        Returns an InlineArray of per-geom masses matching the order in
+        the Geoms list. Priority: explicit mass > explicit density > default density.
+        """
+        var masses = InlineArray[Scalar[DTYPE], Self.N](fill=Scalar[DTYPE](0))
+
+        @parameter
+        for i in range(Self.N):
+            comptime G_item = Self.geom_types[i]
+
+            @parameter
+            if G_item.GEOM_TYPE == GEOM_PLANE:
+                masses[i] = Scalar[DTYPE](0)
+            elif G_item.GEOM_MASS >= 0.0:
+                masses[i] = Scalar[DTYPE](G_item.GEOM_MASS)
+            else:
+                var vol = geom_volume[DTYPE](
+                    G_item.GEOM_TYPE,
+                    Scalar[DTYPE](G_item.RADIUS),
+                    Scalar[DTYPE](G_item.HALF_LENGTH),
+                    Scalar[DTYPE](G_item.HALF_X),
+                    Scalar[DTYPE](G_item.HALF_Y),
+                    Scalar[DTYPE](G_item.HALF_Z),
+                )
+
+                @parameter
+                if G_item.DENSITY >= 0.0:
+                    masses[i] = Scalar[DTYPE](G_item.DENSITY) * vol
+                else:
+                    masses[i] = Scalar[DTYPE](Defaults.GEOM_DENSITY) * vol
+        return masses^
 
     @staticmethod
     fn render_ground_geoms(

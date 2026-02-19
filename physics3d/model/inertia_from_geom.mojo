@@ -13,6 +13,40 @@ from collections import InlineArray
 from math import sqrt, abs as math_abs
 from ..constants import GEOM_PLANE, GEOM_SPHERE, GEOM_CAPSULE, GEOM_BOX, GEOM_CYLINDER
 from ..types import Model
+from gpu.host import HostBuffer
+from ..gpu.constants import (
+    BODY_IDX_MASS,
+    BODY_IDX_INV_MASS,
+    BODY_IDX_IXX,
+    BODY_IDX_IYY,
+    BODY_IDX_IZZ,
+    BODY_IDX_INV_IXX,
+    BODY_IDX_INV_IYY,
+    BODY_IDX_INV_IZZ,
+    BODY_IDX_IPOS_X,
+    BODY_IDX_IPOS_Y,
+    BODY_IDX_IPOS_Z,
+    BODY_IDX_IQUAT_X,
+    BODY_IDX_IQUAT_Y,
+    BODY_IDX_IQUAT_Z,
+    BODY_IDX_IQUAT_W,
+    model_body_offset,
+    GEOM_IDX_TYPE,
+    GEOM_IDX_BODY,
+    GEOM_IDX_POS_X,
+    GEOM_IDX_POS_Y,
+    GEOM_IDX_POS_Z,
+    GEOM_IDX_QUAT_X,
+    GEOM_IDX_QUAT_Y,
+    GEOM_IDX_QUAT_Z,
+    GEOM_IDX_QUAT_W,
+    GEOM_IDX_RADIUS,
+    GEOM_IDX_HALF_LENGTH,
+    GEOM_IDX_HALF_X,
+    GEOM_IDX_HALF_Y,
+    GEOM_IDX_HALF_Z,
+    model_geom_offset,
+)
 
 # Pi constant
 comptime PI: Float64 = 3.14159265358979323846
@@ -698,3 +732,184 @@ fn compute_inertia_from_geoms[
             model.body_iquat[body_id * 4 + 1] = eig[4]
             model.body_iquat[body_id * 4 + 2] = eig[5]
             model.body_iquat[body_id * 4 + 3] = eig[6]
+
+
+fn compute_inertia_from_geoms_buffer[
+    DTYPE: DType,
+    NBODY: Int,
+    NJOINT: Int,
+    NGEOM: Int,
+](buffer: HostBuffer[DTYPE], geom_masses: InlineArray[Scalar[DTYPE], NGEOM]):
+    """Compute body mass/inertia/ipos/iquat from child geoms (buffer version).
+
+    Same algorithm as compute_inertia_from_geoms but reads geom data from
+    the HostBuffer and writes body data back to the buffer.
+
+    Args:
+        buffer: GPU host buffer with body and geom data.
+        geom_masses: Pre-computed geom masses (from Geoms.compute_masses).
+    """
+    for body_id in range(1, NBODY):
+        var body_off = model_body_offset(body_id)
+
+        # First pass: count contributing geoms and total mass
+        var total_mass = Scalar[DTYPE](0)
+        var num_contributing = 0
+
+        for g in range(NGEOM):
+            var goff = model_geom_offset[NBODY, NJOINT](g)
+            var gbody = Int(buffer[goff + GEOM_IDX_BODY])
+            if gbody == body_id:
+                var gm = geom_masses[g]
+                if gm > Scalar[DTYPE](1e-10):
+                    num_contributing += 1
+                    total_mass += gm
+
+        if num_contributing == 0:
+            continue
+
+        if num_contributing == 1:
+            # Single geom: find it and copy directly
+            for g in range(NGEOM):
+                var goff = model_geom_offset[NBODY, NJOINT](g)
+                var gbody = Int(buffer[goff + GEOM_IDX_BODY])
+                if gbody == body_id and geom_masses[g] > Scalar[DTYPE](1e-10):
+                    var gm = geom_masses[g]
+
+                    # Copy pos as ipos
+                    buffer[body_off + BODY_IDX_IPOS_X] = buffer[
+                        goff + GEOM_IDX_POS_X
+                    ]
+                    buffer[body_off + BODY_IDX_IPOS_Y] = buffer[
+                        goff + GEOM_IDX_POS_Y
+                    ]
+                    buffer[body_off + BODY_IDX_IPOS_Z] = buffer[
+                        goff + GEOM_IDX_POS_Z
+                    ]
+                    # Copy quat as iquat
+                    buffer[body_off + BODY_IDX_IQUAT_X] = buffer[
+                        goff + GEOM_IDX_QUAT_X
+                    ]
+                    buffer[body_off + BODY_IDX_IQUAT_Y] = buffer[
+                        goff + GEOM_IDX_QUAT_Y
+                    ]
+                    buffer[body_off + BODY_IDX_IQUAT_Z] = buffer[
+                        goff + GEOM_IDX_QUAT_Z
+                    ]
+                    buffer[body_off + BODY_IDX_IQUAT_W] = buffer[
+                        goff + GEOM_IDX_QUAT_W
+                    ]
+                    # Set mass
+                    buffer[body_off + BODY_IDX_MASS] = gm
+                    buffer[body_off + BODY_IDX_INV_MASS] = Scalar[DTYPE](
+                        1.0
+                    ) / gm
+                    # Compute diagonal inertia
+                    var gtype = Int(buffer[goff + GEOM_IDX_TYPE])
+                    var inertia = geom_inertia[DTYPE](
+                        gtype,
+                        gm,
+                        buffer[goff + GEOM_IDX_RADIUS],
+                        buffer[goff + GEOM_IDX_HALF_LENGTH],
+                        buffer[goff + GEOM_IDX_HALF_X],
+                        buffer[goff + GEOM_IDX_HALF_Y],
+                        buffer[goff + GEOM_IDX_HALF_Z],
+                    )
+                    buffer[body_off + BODY_IDX_IXX] = inertia[0]
+                    buffer[body_off + BODY_IDX_IYY] = inertia[1]
+                    buffer[body_off + BODY_IDX_IZZ] = inertia[2]
+                    buffer[body_off + BODY_IDX_INV_IXX] = Scalar[DTYPE](
+                        1.0
+                    ) / inertia[0]
+                    buffer[body_off + BODY_IDX_INV_IYY] = Scalar[DTYPE](
+                        1.0
+                    ) / inertia[1]
+                    buffer[body_off + BODY_IDX_INV_IZZ] = Scalar[DTYPE](
+                        1.0
+                    ) / inertia[2]
+                    break
+        else:
+            # Multiple geoms: accumulate
+            var com_x = Scalar[DTYPE](0)
+            var com_y = Scalar[DTYPE](0)
+            var com_z = Scalar[DTYPE](0)
+            for g in range(NGEOM):
+                var goff = model_geom_offset[NBODY, NJOINT](g)
+                var gbody = Int(buffer[goff + GEOM_IDX_BODY])
+                if gbody == body_id and geom_masses[g] > Scalar[DTYPE](1e-10):
+                    var gm = geom_masses[g]
+                    com_x += gm * buffer[goff + GEOM_IDX_POS_X]
+                    com_y += gm * buffer[goff + GEOM_IDX_POS_Y]
+                    com_z += gm * buffer[goff + GEOM_IDX_POS_Z]
+            com_x /= total_mass
+            com_y /= total_mass
+            com_z /= total_mass
+
+            # Set ipos = center of mass
+            buffer[body_off + BODY_IDX_IPOS_X] = com_x
+            buffer[body_off + BODY_IDX_IPOS_Y] = com_y
+            buffer[body_off + BODY_IDX_IPOS_Z] = com_z
+
+            # Set mass
+            buffer[body_off + BODY_IDX_MASS] = total_mass
+            buffer[body_off + BODY_IDX_INV_MASS] = Scalar[DTYPE](
+                1.0
+            ) / total_mass
+
+            # Accumulate full 6-element inertia tensor
+            var toti = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
+
+            for g in range(NGEOM):
+                var goff = model_geom_offset[NBODY, NJOINT](g)
+                var gbody = Int(buffer[goff + GEOM_IDX_BODY])
+                if gbody == body_id and geom_masses[g] > Scalar[DTYPE](1e-10):
+                    var gm = geom_masses[g]
+                    var gtype = Int(buffer[goff + GEOM_IDX_TYPE])
+
+                    var diag = geom_inertia[DTYPE](
+                        gtype,
+                        gm,
+                        buffer[goff + GEOM_IDX_RADIUS],
+                        buffer[goff + GEOM_IDX_HALF_LENGTH],
+                        buffer[goff + GEOM_IDX_HALF_X],
+                        buffer[goff + GEOM_IDX_HALF_Y],
+                        buffer[goff + GEOM_IDX_HALF_Z],
+                    )
+
+                    var inert_global = InlineArray[Scalar[DTYPE], 6](
+                        fill=Scalar[DTYPE](0)
+                    )
+                    globalinertia(
+                        diag[0],
+                        diag[1],
+                        diag[2],
+                        buffer[goff + GEOM_IDX_QUAT_X],
+                        buffer[goff + GEOM_IDX_QUAT_Y],
+                        buffer[goff + GEOM_IDX_QUAT_Z],
+                        buffer[goff + GEOM_IDX_QUAT_W],
+                        inert_global,
+                    )
+
+                    var dx = buffer[goff + GEOM_IDX_POS_X] - com_x
+                    var dy = buffer[goff + GEOM_IDX_POS_Y] - com_y
+                    var dz = buffer[goff + GEOM_IDX_POS_Z] - com_z
+                    var inert_offset = InlineArray[Scalar[DTYPE], 6](
+                        fill=Scalar[DTYPE](0)
+                    )
+                    offcenter(gm, dx, dy, dz, inert_offset)
+
+                    for j in range(6):
+                        toti[j] += inert_global[j] + inert_offset[j]
+
+            # Eigendecompose to get principal axes and moments
+            var eig = eig3_symmetric(toti)
+            buffer[body_off + BODY_IDX_IXX] = eig[0]
+            buffer[body_off + BODY_IDX_IYY] = eig[1]
+            buffer[body_off + BODY_IDX_IZZ] = eig[2]
+            buffer[body_off + BODY_IDX_INV_IXX] = Scalar[DTYPE](1.0) / eig[0]
+            buffer[body_off + BODY_IDX_INV_IYY] = Scalar[DTYPE](1.0) / eig[1]
+            buffer[body_off + BODY_IDX_INV_IZZ] = Scalar[DTYPE](1.0) / eig[2]
+            buffer[body_off + BODY_IDX_IQUAT_X] = eig[3]
+            buffer[body_off + BODY_IDX_IQUAT_Y] = eig[4]
+            buffer[body_off + BODY_IDX_IQUAT_Z] = eig[5]
+            buffer[body_off + BODY_IDX_IQUAT_W] = eig[6]

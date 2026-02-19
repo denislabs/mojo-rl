@@ -75,6 +75,38 @@ from ..gpu.constants import (
     qacc_offset,
     qfrc_offset,
     model_size_with_invweight,
+    model_metadata_offset,
+    model_body_offset,
+    model_body_invweight0_offset,
+    model_dof_invweight0_offset,
+    MODEL_META_IDX_NBODY,
+    MODEL_META_IDX_NJOINT,
+    MODEL_META_IDX_GRAVITY_X,
+    MODEL_META_IDX_GRAVITY_Y,
+    MODEL_META_IDX_GRAVITY_Z,
+    MODEL_META_IDX_TIMESTEP,
+    MODEL_META_IDX_SOLREF_CONTACT_0,
+    MODEL_META_IDX_SOLREF_CONTACT_1,
+    MODEL_META_IDX_SOLIMP_CONTACT_0,
+    MODEL_META_IDX_SOLIMP_CONTACT_1,
+    MODEL_META_IDX_SOLIMP_CONTACT_2,
+    MODEL_META_IDX_SOLREF_LIMIT_0,
+    MODEL_META_IDX_SOLREF_LIMIT_1,
+    MODEL_META_IDX_SOLIMP_LIMIT_0,
+    MODEL_META_IDX_SOLIMP_LIMIT_1,
+    MODEL_META_IDX_SOLIMP_LIMIT_2,
+    MODEL_META_IDX_IMPRATIO,
+    MODEL_META_IDX_NEQUALITY,
+    MODEL_META_IDX_NTENDON,
+    BODY_IDX_MASS,
+    BODY_IDX_INV_MASS,
+    BODY_IDX_IXX,
+    BODY_IDX_IYY,
+    BODY_IDX_IZZ,
+    BODY_IDX_INV_IXX,
+    BODY_IDX_INV_IYY,
+    BODY_IDX_INV_IZZ,
+    MODEL_BODY_SIZE,
 )
 from ..gpu.buffer_utils import (
     copy_model_to_buffer,
@@ -84,7 +116,11 @@ from ..gpu.buffer_utils import (
 )
 from ..kinematics.forward_kinematics import forward_kinematics
 from ..dynamics.mass_matrix import compute_body_invweight0
-from .inertia_from_geom import geom_volume, compute_inertia_from_geoms
+from .inertia_from_geom import (
+    geom_volume,
+    compute_inertia_from_geoms,
+    compute_inertia_from_geoms_buffer,
+)
 from gpu.host import HostBuffer
 from ..model.defaults_spec import ModelDefaults
 from ..model.body_spec import BodiesLike, _EmptyBodies
@@ -548,38 +584,229 @@ struct ModelDef[
     fn init_model_gpu[
         DTYPE: DType where DTYPE.is_floating_point()
     ](ctx: DeviceContext, mut model_buf: DeviceBuffer[DTYPE],) raises:
-        var model = Model[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
+        """Initialize GPU model buffer by writing directly to HostBuffer.
+
+        Bypasses creating a full Model struct on the stack (which causes
+        stack overflow for large robots like Ant). Instead writes body, joint,
+        geom, and metadata directly to the buffer using compile-time specs.
+        """
+        comptime BUF_SIZE = model_size_with_invweight[
             Self.NBODY,
             Self.NJOINT,
-            Self.MAX_CONTACTS,
+            Self.NV,
             Self.NGEOM,
             Self.MAX_EQUALITY,
-            Self.CONE_TYPE,
             Self.MAX_TENDON,
         ]()
-        Self.setup_solver_params(model)
-        Self.Bodies.setup_model(model)
-        Self.Joints.setup_model[Defaults = Self.Defaults](model)
-        Self.Geoms.setup_model[Defaults = Self.Defaults](model)
+        var host_buf = ctx.enqueue_create_host_buffer[DTYPE](BUF_SIZE)
+        # Zero-initialize
+        for i in range(BUF_SIZE):
+            host_buf[i] = Scalar[DTYPE](0)
 
-        var data_ref = Data[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            Self.MAX_CONTACTS,
-        ]()
-        Self.finalize(model, data_ref)
-
-        var host_buf = Self.create_gpu_model_buffer[DTYPE, Self.MAX_CONTACTS](
-            ctx, model
+        # Direct writes (no Model struct)
+        Self.Bodies.write_to_buffer[DTYPE, Self.NBODY](host_buf)
+        Self.Joints.write_to_buffer[DTYPE, Self.NBODY, Defaults = Self.Defaults](
+            host_buf
         )
+        @parameter
+        if Self.NGEOM > 0:
+            Self.Geoms.write_to_buffer[
+                DTYPE, Self.NBODY, Self.NJOINT, Defaults = Self.Defaults
+            ](host_buf)
+        Self._write_metadata_to_buffer[DTYPE](host_buf)
 
+        # Derived computations on buffer
+        @parameter
+        if Self.Defaults.INERTIAFROMGEOM and Self.NGEOM > 0:
+            var geom_masses = Self.Geoms.compute_geom_masses[
+                DTYPE, Defaults = Self.Defaults
+            ]()
+            compute_inertia_from_geoms_buffer[
+                DTYPE, Self.NBODY, Self.NJOINT, Self.NGEOM
+            ](host_buf, geom_masses)
+
+        @parameter
+        if Self.Defaults.SETTOTALMASS > 0.0:
+            Self._settotalmass_buffer[DTYPE](host_buf)
+
+        # invweight0 via small Model (reuses existing FK + invweight0 code)
+        Self._compute_invweight0_from_buffer[DTYPE](host_buf)
+
+        # Copy to GPU
         ctx.enqueue_copy(model_buf, host_buf.unsafe_ptr())
+
+    @staticmethod
+    fn _write_metadata_to_buffer[
+        DTYPE: DType,
+    ](buffer: HostBuffer[DTYPE]):
+        """Write model metadata directly to GPU HostBuffer."""
+        var off = model_metadata_offset[Self.NBODY, Self.NJOINT]()
+        buffer[off + MODEL_META_IDX_NBODY] = Scalar[DTYPE](Self.NBODY)
+        buffer[off + MODEL_META_IDX_NJOINT] = Scalar[DTYPE](Self.NJOINT)
+        buffer[off + MODEL_META_IDX_GRAVITY_X] = Scalar[DTYPE](
+            Self.Defaults.GRAVITY_X
+        )
+        buffer[off + MODEL_META_IDX_GRAVITY_Y] = Scalar[DTYPE](
+            Self.Defaults.GRAVITY_Y
+        )
+        buffer[off + MODEL_META_IDX_GRAVITY_Z] = Scalar[DTYPE](
+            Self.Defaults.GRAVITY_Z
+        )
+        buffer[off + MODEL_META_IDX_TIMESTEP] = Scalar[DTYPE](
+            Self.Defaults.TIMESTEP
+        )
+        buffer[off + MODEL_META_IDX_SOLREF_CONTACT_0] = Scalar[DTYPE](
+            Self.Defaults.GEOM_SOLREF_0
+        )
+        buffer[off + MODEL_META_IDX_SOLREF_CONTACT_1] = Scalar[DTYPE](
+            Self.Defaults.GEOM_SOLREF_1
+        )
+        buffer[off + MODEL_META_IDX_SOLIMP_CONTACT_0] = Scalar[DTYPE](
+            Self.Defaults.GEOM_SOLIMP_0
+        )
+        buffer[off + MODEL_META_IDX_SOLIMP_CONTACT_1] = Scalar[DTYPE](
+            Self.Defaults.GEOM_SOLIMP_1
+        )
+        buffer[off + MODEL_META_IDX_SOLIMP_CONTACT_2] = Scalar[DTYPE](
+            Self.Defaults.GEOM_SOLIMP_2
+        )
+        buffer[off + MODEL_META_IDX_SOLREF_LIMIT_0] = Scalar[DTYPE](
+            Self.Defaults.JOINT_SOLREF_LIMIT_0
+        )
+        buffer[off + MODEL_META_IDX_SOLREF_LIMIT_1] = Scalar[DTYPE](
+            Self.Defaults.JOINT_SOLREF_LIMIT_1
+        )
+        buffer[off + MODEL_META_IDX_SOLIMP_LIMIT_0] = Scalar[DTYPE](
+            Self.Defaults.JOINT_SOLIMP_LIMIT_0
+        )
+        buffer[off + MODEL_META_IDX_SOLIMP_LIMIT_1] = Scalar[DTYPE](
+            Self.Defaults.JOINT_SOLIMP_LIMIT_1
+        )
+        buffer[off + MODEL_META_IDX_SOLIMP_LIMIT_2] = Scalar[DTYPE](
+            Self.Defaults.JOINT_SOLIMP_LIMIT_2
+        )
+        buffer[off + MODEL_META_IDX_IMPRATIO] = Scalar[DTYPE](
+            Self.Defaults.IMPRATIO
+        )
+        buffer[off + MODEL_META_IDX_NEQUALITY] = Scalar[DTYPE](
+            Self.MAX_EQUALITY
+        )
+        buffer[off + MODEL_META_IDX_NTENDON] = Scalar[DTYPE](Self.MAX_TENDON)
+
+    @staticmethod
+    fn _settotalmass_buffer[
+        DTYPE: DType,
+    ](buffer: HostBuffer[DTYPE]):
+        """Rescale body masses/inertias so total matches target (buffer version)."""
+        var total_mass = Scalar[DTYPE](0)
+        for i in range(1, Self.NBODY):
+            var off = model_body_offset(i)
+            total_mass += buffer[off + BODY_IDX_MASS]
+        if total_mass > Scalar[DTYPE](0):
+            var scale = Scalar[DTYPE](Self.Defaults.SETTOTALMASS) / total_mass
+            for i in range(1, Self.NBODY):
+                var off = model_body_offset(i)
+                buffer[off + BODY_IDX_MASS] *= scale
+                buffer[off + BODY_IDX_INV_MASS] /= scale
+                buffer[off + BODY_IDX_IXX] *= scale
+                buffer[off + BODY_IDX_IYY] *= scale
+                buffer[off + BODY_IDX_IZZ] *= scale
+                buffer[off + BODY_IDX_INV_IXX] /= scale
+                buffer[off + BODY_IDX_INV_IYY] /= scale
+                buffer[off + BODY_IDX_INV_IZZ] /= scale
+
+    @staticmethod
+    fn _compute_invweight0_from_buffer[
+        DTYPE: DType where DTYPE.is_floating_point(),
+    ](buffer: HostBuffer[DTYPE]):
+        """Compute body_invweight0/dof_invweight0 via a small Model on the stack.
+
+        Creates a minimal Model (NGEOM=0, MAX_CONTACTS=1) which is small enough
+        for the stack. Reads body+joint data from the buffer, runs FK + invweight0,
+        then writes results back to the buffer.
+        """
+        # Small model with minimal geom/contact footprint
+        comptime SmallModel = Model[
+            DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
+            1,  # MAX_CONTACTS=1 (minimal)
+            0,  # NGEOM=0
+            0,  # MAX_EQUALITY=0
+            Self.CONE_TYPE,
+            0,  # MAX_TENDON=0
+        ]
+        comptime SmallData = Data[
+            DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT, 1,
+        ]
+
+        var model = SmallModel()
+        var data = SmallData()
+
+        # Copy body data from buffer → small model
+        for b in range(Self.NBODY):
+            var off = model_body_offset(b)
+            model.body_mass[b] = buffer[off + BODY_IDX_MASS]
+            model.body_inv_mass[b] = buffer[off + BODY_IDX_INV_MASS]
+            model.body_inertia[b * 3 + 0] = buffer[off + BODY_IDX_IXX]
+            model.body_inertia[b * 3 + 1] = buffer[off + BODY_IDX_IYY]
+            model.body_inertia[b * 3 + 2] = buffer[off + BODY_IDX_IZZ]
+            model.body_inv_inertia[b * 3 + 0] = buffer[off + BODY_IDX_INV_IXX]
+            model.body_inv_inertia[b * 3 + 1] = buffer[off + BODY_IDX_INV_IYY]
+            model.body_inv_inertia[b * 3 + 2] = buffer[off + BODY_IDX_INV_IZZ]
+            model.body_pos[b * 3 + 0] = buffer[
+                off + 8
+            ]  # BODY_IDX_POS_X=8
+            model.body_pos[b * 3 + 1] = buffer[off + 9]
+            model.body_pos[b * 3 + 2] = buffer[off + 10]
+            model.body_quat[b * 4 + 0] = buffer[off + 11]  # BODY_IDX_QUAT_X
+            model.body_quat[b * 4 + 1] = buffer[off + 12]
+            model.body_quat[b * 4 + 2] = buffer[off + 13]
+            model.body_quat[b * 4 + 3] = buffer[off + 14]
+            model.body_parent[b] = Int(buffer[off + 15])  # BODY_IDX_PARENT
+            model.body_ipos[b * 3 + 0] = buffer[off + 16]  # BODY_IDX_IPOS_X
+            model.body_ipos[b * 3 + 1] = buffer[off + 17]
+            model.body_ipos[b * 3 + 2] = buffer[off + 18]
+            model.body_iquat[b * 4 + 0] = buffer[off + 19]  # BODY_IDX_IQUAT_X
+            model.body_iquat[b * 4 + 1] = buffer[off + 20]
+            model.body_iquat[b * 4 + 2] = buffer[off + 21]
+            model.body_iquat[b * 4 + 3] = buffer[off + 22]
+
+        # Populate joints via Joints.setup_model on the small model
+        Self.Joints.setup_model[
+            DTYPE=DTYPE, NQ=Self.NQ, NV=Self.NV, NBODY=Self.NBODY,
+            MAX_CONTACTS=1, NGEOM=0, MAX_EQUALITY=0,
+            CONE_TYPE=Self.CONE_TYPE, MAX_TENDON=0,
+            Defaults=Self.Defaults,
+        ](model)
+
+        # Initialize qpos from JointSpec defaults
+        Self.Joints.reset_data(data)
+
+        # Set gravity and timestep
+        model.gravity = SIMD[DTYPE, 4](
+            Scalar[DTYPE](Self.Defaults.GRAVITY_X),
+            Scalar[DTYPE](Self.Defaults.GRAVITY_Y),
+            Scalar[DTYPE](Self.Defaults.GRAVITY_Z),
+            Scalar[DTYPE](0),
+        )
+        model.timestep = Scalar[DTYPE](Self.Defaults.TIMESTEP)
+
+        # Run FK + invweight0
+        forward_kinematics(model, data)
+        compute_body_invweight0(model, data)
+
+        # Write invweight0 results back to buffer
+        var bw_off = model_body_invweight0_offset[
+            Self.NBODY, Self.NJOINT, Self.NGEOM, Self.MAX_EQUALITY,
+            Self.MAX_TENDON,
+        ]()
+        for i in range(Self.NBODY * 2):
+            buffer[bw_off + i] = model.body_invweight0[i]
+        var dw_off = model_dof_invweight0_offset[
+            Self.NBODY, Self.NJOINT, Self.NGEOM, Self.MAX_EQUALITY,
+            Self.MAX_TENDON,
+        ]()
+        for i in range(Self.NV):
+            buffer[dw_off + i] = model.dof_invweight0[i]
 
     # === CPU: Joints/Actuators delegates ===
     @staticmethod

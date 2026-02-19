@@ -19,7 +19,32 @@ from ..gpu.constants import (
     qacc_offset,
     qfrc_offset,
     model_size_with_invweight,
+    JOINT_IDX_TYPE,
+    JOINT_IDX_BODY_ID,
+    JOINT_IDX_QPOS_ADR,
+    JOINT_IDX_DOF_ADR,
+    JOINT_IDX_POS_X,
+    JOINT_IDX_POS_Y,
+    JOINT_IDX_POS_Z,
+    JOINT_IDX_AXIS_X,
+    JOINT_IDX_AXIS_Y,
+    JOINT_IDX_AXIS_Z,
+    JOINT_IDX_TAU_LIMIT,
+    JOINT_IDX_RANGE_MIN,
+    JOINT_IDX_RANGE_MAX,
+    JOINT_IDX_ARMATURE,
+    JOINT_IDX_DAMPING,
+    JOINT_IDX_STIFFNESS,
+    JOINT_IDX_SPRINGREF,
+    JOINT_IDX_FRICTIONLOSS,
+    JOINT_IDX_SOLREF_LIMIT_0,
+    JOINT_IDX_SOLREF_LIMIT_1,
+    JOINT_IDX_SOLIMP_LIMIT_0,
+    JOINT_IDX_SOLIMP_LIMIT_1,
+    JOINT_IDX_SOLIMP_LIMIT_2,
+    model_joint_offset,
 )
+from gpu.host import HostBuffer
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_FREE, JointDef
 from ..model.defaults_spec import ModelDefaults, _resolve_f64, _resolve_int
 from random.philox import Random as PhiloxRandom
@@ -304,6 +329,14 @@ trait JointsLike:
     comptime OBS_DIM: Int
     comptime ACTION_DIM: Int
 
+    @staticmethod
+    fn write_to_buffer[
+        DTYPE: DType,
+        NBODY: Int,
+        Defaults: ModelDefaultsLike,
+    ](buffer: HostBuffer[DTYPE]):
+        ...
+
     # CPU methods
     @staticmethod
     fn setup_model[
@@ -431,6 +464,14 @@ struct _EmptyJoints(JointsLike):
     comptime NV: Int = 0
     comptime OBS_DIM: Int = 0
     comptime ACTION_DIM: Int = 0
+
+    @staticmethod
+    fn write_to_buffer[
+        DTYPE: DType,
+        NBODY: Int,
+        Defaults: ModelDefaultsLike,
+    ](buffer: HostBuffer[DTYPE]):
+        pass
 
     @staticmethod
     fn setup_model[
@@ -1325,3 +1366,82 @@ struct Joints[*J: JointSpec](JointsLike):
             model.joint_solimp_limit[i * 3 + 2] = Scalar[DTYPE](
                 _resolve_f64[J.SOLIMP_LIMIT_2, Defaults.JOINT_SOLIMP_LIMIT_2]()
             )
+
+    @staticmethod
+    fn write_to_buffer[
+        DTYPE: DType,
+        NBODY: Int,
+        Defaults: ModelDefaultsLike = ModelDefaults[],
+    ](buffer: HostBuffer[DTYPE]):
+        """Write joint data directly to GPU HostBuffer (no Model struct).
+
+        Computes qpos_adr/dof_adr incrementally from joint NQ/NV.
+        Resolves sentinel values (-1.0) from Defaults.
+        """
+        var qpos_adr = 0
+        var dof_adr = 0
+
+        @parameter
+        for i in range(Self.N):
+            comptime J = Self.joint_types[i]
+            var off = model_joint_offset[NBODY](i)
+
+            # Resolve dynamics fields from defaults
+            comptime arm = _resolve_f64[J.ARMATURE, Defaults.JOINT_ARMATURE]()
+            comptime damp = _resolve_f64[J.DAMPING, Defaults.JOINT_DAMPING]()
+            comptime stiff = _resolve_f64[
+                J.STIFFNESS, Defaults.JOINT_STIFFNESS
+            ]()
+            comptime frloss = _resolve_f64[
+                J.FRICTIONLOSS, Defaults.JOINT_FRICTIONLOSS
+            ]()
+
+            buffer[off + JOINT_IDX_TYPE] = Scalar[DTYPE](J.JNT_TYPE)
+            buffer[off + JOINT_IDX_BODY_ID] = Scalar[DTYPE](J.BODY_IDX)
+            buffer[off + JOINT_IDX_QPOS_ADR] = Scalar[DTYPE](qpos_adr)
+            buffer[off + JOINT_IDX_DOF_ADR] = Scalar[DTYPE](dof_adr)
+            buffer[off + JOINT_IDX_POS_X] = Scalar[DTYPE](J.POS_X)
+            buffer[off + JOINT_IDX_POS_Y] = Scalar[DTYPE](J.POS_Y)
+            buffer[off + JOINT_IDX_POS_Z] = Scalar[DTYPE](J.POS_Z)
+            buffer[off + JOINT_IDX_AXIS_X] = Scalar[DTYPE](J.AXIS_X)
+            buffer[off + JOINT_IDX_AXIS_Y] = Scalar[DTYPE](J.AXIS_Y)
+            buffer[off + JOINT_IDX_AXIS_Z] = Scalar[DTYPE](J.AXIS_Z)
+            buffer[off + JOINT_IDX_TAU_LIMIT] = Scalar[DTYPE](J.TAU_LIMIT)
+            buffer[off + JOINT_IDX_RANGE_MIN] = Scalar[DTYPE](J.RANGE_MIN)
+            buffer[off + JOINT_IDX_RANGE_MAX] = Scalar[DTYPE](J.RANGE_MAX)
+            buffer[off + JOINT_IDX_ARMATURE] = Scalar[DTYPE](arm)
+            buffer[off + JOINT_IDX_DAMPING] = Scalar[DTYPE](damp)
+            buffer[off + JOINT_IDX_STIFFNESS] = Scalar[DTYPE](stiff)
+            buffer[off + JOINT_IDX_SPRINGREF] = Scalar[DTYPE](J.SPRINGREF)
+            buffer[off + JOINT_IDX_FRICTIONLOSS] = Scalar[DTYPE](frloss)
+
+            # Per-joint solref/solimp for limits
+            buffer[off + JOINT_IDX_SOLREF_LIMIT_0] = Scalar[DTYPE](
+                _resolve_f64[
+                    J.SOLREF_LIMIT_0, Defaults.JOINT_SOLREF_LIMIT_0
+                ]()
+            )
+            buffer[off + JOINT_IDX_SOLREF_LIMIT_1] = Scalar[DTYPE](
+                _resolve_f64[
+                    J.SOLREF_LIMIT_1, Defaults.JOINT_SOLREF_LIMIT_1
+                ]()
+            )
+            buffer[off + JOINT_IDX_SOLIMP_LIMIT_0] = Scalar[DTYPE](
+                _resolve_f64[
+                    J.SOLIMP_LIMIT_0, Defaults.JOINT_SOLIMP_LIMIT_0
+                ]()
+            )
+            buffer[off + JOINT_IDX_SOLIMP_LIMIT_1] = Scalar[DTYPE](
+                _resolve_f64[
+                    J.SOLIMP_LIMIT_1, Defaults.JOINT_SOLIMP_LIMIT_1
+                ]()
+            )
+            buffer[off + JOINT_IDX_SOLIMP_LIMIT_2] = Scalar[DTYPE](
+                _resolve_f64[
+                    J.SOLIMP_LIMIT_2, Defaults.JOINT_SOLIMP_LIMIT_2
+                ]()
+            )
+
+            # Advance addresses
+            qpos_adr += J.NQ
+            dof_adr += J.NV

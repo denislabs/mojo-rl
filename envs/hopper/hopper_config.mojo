@@ -10,6 +10,7 @@ from physics3d.gpu.constants import (
     META_IDX_PREV_X,
     qpos_offset,
     model_curriculum_offset,
+    rk4_extra_workspace_size,
 )
 
 from .hopper_def import (
@@ -23,7 +24,9 @@ struct HopperConfig(Phyics3dEnvConfig):
     # === Physics ===
     comptime FRAME_SKIP: Int = 4
     comptime MAX_STEPS: Int = 1000
-    comptime INTEGRATOR_WS_EXTRA: Int = 0  # RK4 has no extra workspace
+    comptime INTEGRATOR_WS_EXTRA: Int = rk4_extra_workspace_size[
+        HopperModel.NQ, HopperModel.NV
+    ]()  # RK4 needs NQ + 7*NV extra workspace
     comptime GPU_ENFORCE_LIMITS: Bool = False
 
     # === CPU: Integrator step ===

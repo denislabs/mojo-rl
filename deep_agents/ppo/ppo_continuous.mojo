@@ -864,15 +864,16 @@ struct DeepPPOContinuousAgent[
         # =====================================================================
         # Initialize environments
         # =====================================================================
-        EnvType.reset_kernel_gpu[Self.n_envs, EnvType.STATE_SIZE](
-            ctx, env_states_buf
-        )
-
-        # Pre-allocate step workspace for eval
+        # Pre-allocate step workspace BEFORE reset to avoid stack overflow
+        # (reset compiles large Metal shaders that consume stack space)
         comptime EVAL_TOTAL_WS = EnvType.STEP_WS_SHARED + Self.n_envs * EnvType.STEP_WS_PER_ENV
         comptime EVAL_WS_ALLOC = EVAL_TOTAL_WS if EVAL_TOTAL_WS > 0 else 1
         var eval_ws_buf = ctx.enqueue_create_buffer[dtype](EVAL_WS_ALLOC)
         EnvType.init_step_workspace_gpu[Self.n_envs](ctx, eval_ws_buf)
+
+        EnvType.reset_kernel_gpu[Self.n_envs, EnvType.STATE_SIZE](
+            ctx, env_states_buf
+        )
 
         # Extract initial observations using environment-specific kernel
         comptime ENV_BLOCKS = (Self.n_envs + TPB - 1) // TPB
@@ -2647,19 +2648,18 @@ struct DeepPPOContinuousAgent[
         ctx.enqueue_memset(episode_rewards_buf, 0)
         ctx.enqueue_memset(episode_steps_buf, 0)
 
-        # Reset all environments
-        EnvType.reset_kernel_gpu[Self.n_envs, EnvType.STATE_SIZE](
-            ctx, states_buf
-        )
-        ctx.synchronize()
-
-        # Pre-allocate step workspace to avoid per-step GPU buffer allocations
-        # For envs with STEP_WS_SHARED > 0 (GC physics), this eliminates
-        # ~1024 buffer allocations + 512 model copies per rollout.
+        # Pre-allocate step workspace BEFORE reset to avoid stack overflow
+        # (reset compiles large Metal shaders that consume stack space)
         comptime TOTAL_WS = EnvType.STEP_WS_SHARED + Self.n_envs * EnvType.STEP_WS_PER_ENV
         comptime WS_ALLOC = TOTAL_WS if TOTAL_WS > 0 else 1
         var step_ws_buf = ctx.enqueue_create_buffer[dtype](WS_ALLOC)
         EnvType.init_step_workspace_gpu[Self.n_envs](ctx, step_ws_buf)
+        ctx.synchronize()
+
+        # Reset all environments
+        EnvType.reset_kernel_gpu[Self.n_envs, EnvType.STATE_SIZE](
+            ctx, states_buf
+        )
         ctx.synchronize()
 
         # Extract observations from state buffer using env-specific kernel

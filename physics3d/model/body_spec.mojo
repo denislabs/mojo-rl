@@ -8,6 +8,34 @@ Geometry types reuse constants from physics3d/constants.mojo:
 """
 
 from ..constants import GEOM_CAPSULE, GEOM_SPHERE, GEOM_BOX
+from ..gpu.constants import (
+    MODEL_BODY_SIZE,
+    BODY_IDX_MASS,
+    BODY_IDX_INV_MASS,
+    BODY_IDX_IXX,
+    BODY_IDX_IYY,
+    BODY_IDX_IZZ,
+    BODY_IDX_INV_IXX,
+    BODY_IDX_INV_IYY,
+    BODY_IDX_INV_IZZ,
+    BODY_IDX_POS_X,
+    BODY_IDX_POS_Y,
+    BODY_IDX_POS_Z,
+    BODY_IDX_QUAT_X,
+    BODY_IDX_QUAT_Y,
+    BODY_IDX_QUAT_Z,
+    BODY_IDX_QUAT_W,
+    BODY_IDX_PARENT,
+    BODY_IDX_IPOS_X,
+    BODY_IDX_IPOS_Y,
+    BODY_IDX_IPOS_Z,
+    BODY_IDX_IQUAT_X,
+    BODY_IDX_IQUAT_Y,
+    BODY_IDX_IQUAT_Z,
+    BODY_IDX_IQUAT_W,
+    model_body_offset,
+)
+from gpu.host import HostBuffer
 from render import Color
 
 # =============================================================================
@@ -333,6 +361,13 @@ trait BodiesLike:
     comptime N: Int  # number of bodies (excluding worldbody)
 
     @staticmethod
+    fn write_to_buffer[
+        DTYPE: DType,
+        NBODY: Int,
+    ](buffer: HostBuffer[DTYPE]):
+        ...
+
+    @staticmethod
     fn setup_model[
         DTYPE: DType,
         NQ: Int,
@@ -363,6 +398,13 @@ trait BodiesLike:
 @fieldwise_init
 struct _EmptyBodies(BodiesLike):
     comptime N: Int = 0
+
+    @staticmethod
+    fn write_to_buffer[
+        DTYPE: DType,
+        NBODY: Int,
+    ](buffer: HostBuffer[DTYPE]):
+        pass
 
     @staticmethod
     fn setup_model[
@@ -491,3 +533,60 @@ struct Bodies[*B: BodySpec](BodiesLike):
                     Scalar[DTYPE](B.IQUAT_W),
                 ),
             )
+
+    @staticmethod
+    fn write_to_buffer[
+        DTYPE: DType,
+        NBODY: Int,
+    ](buffer: HostBuffer[DTYPE]):
+        """Write body data directly to GPU HostBuffer (no Model struct).
+
+        Worldbody (index 0) is zero-initialized with identity quaternion.
+        Body specs are written at indices 1..N.
+        """
+        # Worldbody at index 0: mass=0, identity quat, zero inertia
+        var wb_off = model_body_offset(0)
+        buffer[wb_off + BODY_IDX_QUAT_W] = Scalar[DTYPE](1.0)
+        buffer[wb_off + BODY_IDX_IQUAT_W] = Scalar[DTYPE](1.0)
+        buffer[wb_off + BODY_IDX_PARENT] = Scalar[DTYPE](-1)
+
+        @parameter
+        for i in range(Self.N):
+            comptime B = Self.body_types[i]
+            comptime body_idx = i + 1
+            var off = model_body_offset(body_idx)
+
+            # Mass and inertia
+            buffer[off + BODY_IDX_MASS] = Scalar[DTYPE](B.MASS)
+            buffer[off + BODY_IDX_INV_MASS] = Scalar[DTYPE](1.0 / B.MASS)
+            buffer[off + BODY_IDX_IXX] = Scalar[DTYPE](B.ixx())
+            buffer[off + BODY_IDX_IYY] = Scalar[DTYPE](B.iyy())
+            buffer[off + BODY_IDX_IZZ] = Scalar[DTYPE](B.izz())
+            buffer[off + BODY_IDX_INV_IXX] = Scalar[DTYPE](1.0 / B.ixx())
+            buffer[off + BODY_IDX_INV_IYY] = Scalar[DTYPE](1.0 / B.iyy())
+            buffer[off + BODY_IDX_INV_IZZ] = Scalar[DTYPE](1.0 / B.izz())
+
+            # Position in parent frame
+            buffer[off + BODY_IDX_POS_X] = Scalar[DTYPE](B.POS_X)
+            buffer[off + BODY_IDX_POS_Y] = Scalar[DTYPE](B.POS_Y)
+            buffer[off + BODY_IDX_POS_Z] = Scalar[DTYPE](B.POS_Z)
+
+            # Quaternion in parent frame
+            buffer[off + BODY_IDX_QUAT_X] = Scalar[DTYPE](B.QUAT_X)
+            buffer[off + BODY_IDX_QUAT_Y] = Scalar[DTYPE](B.QUAT_Y)
+            buffer[off + BODY_IDX_QUAT_Z] = Scalar[DTYPE](B.QUAT_Z)
+            buffer[off + BODY_IDX_QUAT_W] = Scalar[DTYPE](B.QUAT_W)
+
+            # Parent body index
+            buffer[off + BODY_IDX_PARENT] = Scalar[DTYPE](B.PARENT)
+
+            # CoM offset (body frame)
+            buffer[off + BODY_IDX_IPOS_X] = Scalar[DTYPE](B.IPOS_X)
+            buffer[off + BODY_IDX_IPOS_Y] = Scalar[DTYPE](B.IPOS_Y)
+            buffer[off + BODY_IDX_IPOS_Z] = Scalar[DTYPE](B.IPOS_Z)
+
+            # Inertia frame quaternion (body frame)
+            buffer[off + BODY_IDX_IQUAT_X] = Scalar[DTYPE](B.IQUAT_X)
+            buffer[off + BODY_IDX_IQUAT_Y] = Scalar[DTYPE](B.IQUAT_Y)
+            buffer[off + BODY_IDX_IQUAT_Z] = Scalar[DTYPE](B.IQUAT_Z)
+            buffer[off + BODY_IDX_IQUAT_W] = Scalar[DTYPE](B.IQUAT_W)
