@@ -125,6 +125,18 @@ trait TexturesLike:
 
     comptime N: Int
 
+    @staticmethod
+    fn get_skybox_colors() -> List[Float64]:
+        """Return [top_r, top_g, top_b, bottom_r, bottom_g, bottom_b] from
+        the first GradientTexture, or empty list if none."""
+        ...
+
+    @staticmethod
+    fn get_checker_colors() -> List[Float64]:
+        """Return [rgb2_r, rgb2_g, rgb2_b] from the first CheckerTexture,
+        or empty list if none."""
+        ...
+
 
 @fieldwise_init
 struct Textures[*T: TextureSpec](TexturesLike):
@@ -137,7 +149,50 @@ struct Textures[*T: TextureSpec](TexturesLike):
     comptime tex_types = Variadic.types[T=TextureSpec, *Self.T]
     comptime N: Int = Variadic.size(Self.tex_types)
 
+    @staticmethod
+    fn get_skybox_colors() -> List[Float64]:
+        var result = List[Float64]()
+
+        @parameter
+        for i in range(Self.N):
+            comptime Tex = Self.tex_types[i]
+
+            @parameter
+            if Tex.BUILTIN == TEX_GRADIENT:
+                if len(result) == 0:
+                    result.append(Tex.RGB1_R)
+                    result.append(Tex.RGB1_G)
+                    result.append(Tex.RGB1_B)
+                    result.append(Tex.RGB2_R)
+                    result.append(Tex.RGB2_G)
+                    result.append(Tex.RGB2_B)
+        return result^
+
+    @staticmethod
+    fn get_checker_colors() -> List[Float64]:
+        var result = List[Float64]()
+
+        @parameter
+        for i in range(Self.N):
+            comptime Tex = Self.tex_types[i]
+
+            @parameter
+            if Tex.BUILTIN == TEX_CHECKER:
+                if len(result) == 0:
+                    result.append(Tex.RGB2_R)
+                    result.append(Tex.RGB2_G)
+                    result.append(Tex.RGB2_B)
+        return result^
+
 
 @fieldwise_init
 struct _EmptyTextures(TexturesLike):
     comptime N: Int = 0
+
+    @staticmethod
+    fn get_skybox_colors() -> List[Float64]:
+        return List[Float64]()
+
+    @staticmethod
+    fn get_checker_colors() -> List[Float64]:
+        return List[Float64]()

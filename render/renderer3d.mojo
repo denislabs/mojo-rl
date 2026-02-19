@@ -131,6 +131,7 @@ from .sdl import (
 )
 from .camera3d import Camera3D
 from .types import Color
+from .light import Light
 from .gpu_types import (
     GPUVertex,
     SceneUniforms,
@@ -271,10 +272,8 @@ struct Renderer3D(Movable):
     var skybox_uniforms: SkyboxUniforms
     var draw_skybox: Bool
 
-    # Configurable light parameters
-    var light_dir: InlineArray[Float32, 3]
-    var light_color: InlineArray[Float32, 3]
-    var light_ambient: Float32
+    # Configurable light parameters (up to 4 lights)
+    var lights: List[Light]
 
     # Swapchain format
     var swapchain_format: GPUTextureFormat
@@ -285,6 +284,9 @@ struct Renderer3D(Movable):
     var draw_grid: Bool
     var draw_axes: Bool
 
+    # Camera switching (set by check_quit, read by ModelRenderer)
+    var camera_switch_request: Int  # -1 = none, 0-8 = switch to camera N
+
     fn __init__(
         out self,
         width: Int = 800,
@@ -292,6 +294,7 @@ struct Renderer3D(Movable):
         camera: Camera3D = Camera3D(),
         draw_grid: Bool = True,
         draw_axes: Bool = True,
+        lights: List[Light] = List[Light](),
         light_dir_x: Float32 = 0.3,
         light_dir_y: Float32 = -0.4,
         light_dir_z: Float32 = -0.8,
@@ -360,16 +363,28 @@ struct Renderer3D(Movable):
         self.skybox_uniforms = SkyboxUniforms()
         self.draw_skybox = False
 
-        # Store configurable light parameters
-        self.light_dir = InlineArray[Float32, 3](fill=Float32(0))
-        self.light_dir[0] = light_dir_x
-        self.light_dir[1] = light_dir_y
-        self.light_dir[2] = light_dir_z
-        self.light_color = InlineArray[Float32, 3](fill=Float32(0))
-        self.light_color[0] = light_color_r
-        self.light_color[1] = light_color_g
-        self.light_color[2] = light_color_b
-        self.light_ambient = light_ambient
+        # Store configurable light parameters (up to 4 lights)
+        self.camera_switch_request = -1
+        if len(lights) > 0:
+            self.lights = lights.copy()
+        else:
+            # Create default light from individual params (backward compatibility)
+            self.lights = List[Light]()
+            self.lights.append(
+                Light(
+                    mode=0,  # LIGHT_DIRECTIONAL
+                    dir_x=Float64(light_dir_x),
+                    dir_y=Float64(light_dir_y),
+                    dir_z=Float64(light_dir_z),
+                    color_r=Float64(light_color_r),
+                    color_g=Float64(light_color_g),
+                    color_b=Float64(light_color_b),
+                    ambient=Float64(light_ambient),
+                    specular_intensity=0.3,
+                    specular_exponent=32.0,
+                    cast_shadow=True,
+                )
+            )
 
     fn __moveinit__(out self, deinit other: Self):
         self.window = other.window
@@ -404,9 +419,8 @@ struct Renderer3D(Movable):
         self.skybox_uniforms = other.skybox_uniforms
         self.draw_skybox = other.draw_skybox
         self.swapchain_format = other.swapchain_format
-        self.light_dir = other.light_dir^
-        self.light_color = other.light_color^
-        self.light_ambient = other.light_ambient
+        self.lights = other.lights^
+        self.camera_switch_request = other.camera_switch_request
         self.initialized = other.initialized
         self.should_quit = other.should_quit
         self.draw_grid = other.draw_grid
@@ -1540,14 +1554,14 @@ struct Renderer3D(Movable):
         g: Float32 = 0.22,
         b: Float32 = 0.25,
     ):
-        """Set ground checker secondary color (stored in scene padding.xyz).
+        """Set ground checker secondary color (stored in scene ground_params.xyz).
 
         Args:
             r/g/b: Checker dark tile color (RGB, 0-1). Light tile is 1.6x brighter.
         """
-        self.scene_uniforms.padding[0] = r
-        self.scene_uniforms.padding[1] = g
-        self.scene_uniforms.padding[2] = b
+        self.scene_uniforms.ground_params[0] = r
+        self.scene_uniforms.ground_params[1] = g
+        self.scene_uniforms.ground_params[2] = b
 
     fn draw_ground_grid(
         mut self,
@@ -1713,8 +1727,8 @@ struct Renderer3D(Movable):
         self._build_scene_uniforms()
         self._build_light_view_proj()
 
-        # Store ground_z in scene_uniforms padding.w for reflection clipping
-        self.scene_uniforms.padding[3] = Float32(self.ground_z)
+        # Store ground_z in scene_uniforms ground_params.w for reflection clipping
+        self.scene_uniforms.ground_params[3] = Float32(self.ground_z)
 
         # ====================================================================
         # SHADOW PASS (depth-only, from light POV)
@@ -1759,7 +1773,7 @@ struct Renderer3D(Movable):
                 cmd_buf,
                 0,
                 Ptr(to=light_scene).bitcast[NoneType](),
-                128,
+                224,
             )
 
             for i in range(len(self.solid_draws)):
@@ -1880,13 +1894,13 @@ struct Renderer3D(Movable):
                 cmd_buf,
                 0,
                 Ptr(to=self.scene_uniforms).bitcast[NoneType](),
-                128,
+                224,
             )
             push_gpu_fragment_uniform_data(
                 cmd_buf,
                 0,
                 Ptr(to=self.scene_uniforms).bitcast[NoneType](),
-                128,
+                224,
             )
 
             for i in range(len(self.solid_draws)):
@@ -1923,13 +1937,13 @@ struct Renderer3D(Movable):
                 cmd_buf,
                 0,
                 Ptr(to=self.scene_uniforms).bitcast[NoneType](),
-                128,
+                224,
             )
             push_gpu_fragment_uniform_data(
                 cmd_buf,
                 0,
                 Ptr(to=self.scene_uniforms).bitcast[NoneType](),
-                128,
+                224,
             )
             # Push shadow uniforms to fragment slot 1
             push_gpu_fragment_uniform_data(
@@ -1983,13 +1997,13 @@ struct Renderer3D(Movable):
                 cmd_buf,
                 0,
                 Ptr(to=self.scene_uniforms).bitcast[NoneType](),
-                128,
+                224,
             )
             push_gpu_fragment_uniform_data(
                 cmd_buf,
                 0,
                 Ptr(to=self.scene_uniforms).bitcast[NoneType](),
-                128,
+                224,
             )
             # Push shadow uniforms to fragment slot 1
             push_gpu_fragment_uniform_data(
@@ -2065,37 +2079,93 @@ struct Renderer3D(Movable):
 
         self.scene_uniforms.view_proj = mat4_to_gpu_f32(view_proj)
 
-        # Camera position
+        # Camera position + num_active_lights in w
+        var num_lights = len(self.lights)
+        if num_lights < 1:
+            num_lights = 1
+        if num_lights > 4:
+            num_lights = 4
         self.scene_uniforms.camera_pos[0] = Float32(self.camera.eye.x)
         self.scene_uniforms.camera_pos[1] = Float32(self.camera.eye.y)
         self.scene_uniforms.camera_pos[2] = Float32(self.camera.eye.z)
-        self.scene_uniforms.camera_pos[3] = 1.0
+        self.scene_uniforms.camera_pos[3] = Float32(num_lights)
 
-        # Light direction (normalized from configurable fields)
-        var lx = self.light_dir[0]
-        var ly = self.light_dir[1]
-        var lz = self.light_dir[2]
-        var ll = sqrt(lx * lx + ly * ly + lz * lz)
-        self.scene_uniforms.light_dir[0] = lx / ll
-        self.scene_uniforms.light_dir[1] = ly / ll
-        self.scene_uniforms.light_dir[2] = lz / ll
-        self.scene_uniforms.light_dir[3] = 0.0
+        # Fill light slots from self.lights (up to 4)
+        for li in range(num_lights):
+            var light = self.lights[li].copy()
+            var lx = Float32(light.dir_x)
+            var ly = Float32(light.dir_y)
+            var lz = Float32(light.dir_z)
+            var ll = sqrt(lx * lx + ly * ly + lz * lz)
+            if ll < 1e-6:
+                ll = 1.0
 
-        # Light color + ambient from configurable fields
-        self.scene_uniforms.light_color[0] = self.light_color[0]
-        self.scene_uniforms.light_color[1] = self.light_color[1]
-        self.scene_uniforms.light_color[2] = self.light_color[2]
-        self.scene_uniforms.light_color[3] = self.light_ambient
+            if li == 0:
+                self.scene_uniforms.light0_dir[0] = lx / ll
+                self.scene_uniforms.light0_dir[1] = ly / ll
+                self.scene_uniforms.light0_dir[2] = lz / ll
+                self.scene_uniforms.light0_dir[3] = Float32(light.ambient)
+                self.scene_uniforms.light0_color[0] = Float32(light.color_r)
+                self.scene_uniforms.light0_color[1] = Float32(light.color_g)
+                self.scene_uniforms.light0_color[2] = Float32(light.color_b)
+                self.scene_uniforms.light0_color[3] = Float32(
+                    1.0 if light.cast_shadow else 0.0
+                )
+            elif li == 1:
+                self.scene_uniforms.light1_dir[0] = lx / ll
+                self.scene_uniforms.light1_dir[1] = ly / ll
+                self.scene_uniforms.light1_dir[2] = lz / ll
+                self.scene_uniforms.light1_dir[3] = Float32(light.ambient)
+                self.scene_uniforms.light1_color[0] = Float32(light.color_r)
+                self.scene_uniforms.light1_color[1] = Float32(light.color_g)
+                self.scene_uniforms.light1_color[2] = Float32(light.color_b)
+                self.scene_uniforms.light1_color[3] = Float32(
+                    1.0 if light.cast_shadow else 0.0
+                )
+            elif li == 2:
+                self.scene_uniforms.light2_dir[0] = lx / ll
+                self.scene_uniforms.light2_dir[1] = ly / ll
+                self.scene_uniforms.light2_dir[2] = lz / ll
+                self.scene_uniforms.light2_dir[3] = Float32(light.ambient)
+                self.scene_uniforms.light2_color[0] = Float32(light.color_r)
+                self.scene_uniforms.light2_color[1] = Float32(light.color_g)
+                self.scene_uniforms.light2_color[2] = Float32(light.color_b)
+                self.scene_uniforms.light2_color[3] = Float32(
+                    1.0 if light.cast_shadow else 0.0
+                )
+            elif li == 3:
+                self.scene_uniforms.light3_dir[0] = lx / ll
+                self.scene_uniforms.light3_dir[1] = ly / ll
+                self.scene_uniforms.light3_dir[2] = lz / ll
+                self.scene_uniforms.light3_dir[3] = Float32(light.ambient)
+                self.scene_uniforms.light3_color[0] = Float32(light.color_r)
+                self.scene_uniforms.light3_color[1] = Float32(light.color_g)
+                self.scene_uniforms.light3_color[2] = Float32(light.color_b)
+                self.scene_uniforms.light3_color[3] = Float32(
+                    1.0 if light.cast_shadow else 0.0
+                )
 
     fn _build_light_view_proj(mut self):
         """Build light's orthographic view-projection matrix for shadow mapping.
+
+        Uses the first shadow-casting light, or light 0 as fallback.
         """
-        # Light direction (same as scene uniforms)
+        # Find first shadow-casting light direction
         var light_dir = Vec3(
-            Float64(self.scene_uniforms.light_dir[0]),
-            Float64(self.scene_uniforms.light_dir[1]),
-            Float64(self.scene_uniforms.light_dir[2]),
+            Float64(self.scene_uniforms.light0_dir[0]),
+            Float64(self.scene_uniforms.light0_dir[1]),
+            Float64(self.scene_uniforms.light0_dir[2]),
         )
+        for li in range(len(self.lights)):
+            if self.lights[li].cast_shadow:
+                var lx = self.lights[li].dir_x
+                var ly = self.lights[li].dir_y
+                var lz = self.lights[li].dir_z
+                var ll = sqrt(lx * lx + ly * ly + lz * lz)
+                if ll < 1e-6:
+                    ll = 1.0
+                light_dir = Vec3(lx / ll, ly / ll, lz / ll)
+                break
 
         # Light position: offset from camera target along negative light direction
         var target = self.camera.target
@@ -2131,14 +2201,16 @@ struct Renderer3D(Movable):
     # --- Event Handling ---
 
     fn check_quit(mut self) -> Bool:
-        """Check if user wants to quit.
+        """Check if user wants to quit and detect camera switch keys.
 
         Polls SDL events and returns True if quit event detected
-        (window close or Escape key).
+        (window close or Escape key). Number keys 1-9 set
+        camera_switch_request for ModelRenderer to pick up.
 
         Returns:
             True if quit event detected.
         """
+        self.camera_switch_request = -1
         var event = Event()
 
         try:
@@ -2149,9 +2221,14 @@ struct Renderer3D(Movable):
                     return True
                 elif EventType(Int(event_type)) == EventType.EVENT_KEY_DOWN:
                     var key_event = event[KeyboardEvent]
-                    if Int(key_event.key) == Int(Keycode.SDLK_ESCAPE):
+                    var key_val = Int(key_event.key)
+                    if key_val == Int(Keycode.SDLK_ESCAPE):
                         self.should_quit = True
                         return True
+                    # Number keys 1-9 for camera switching
+                    # SDLK_1=0x31 ... SDLK_9=0x39
+                    elif key_val >= 0x31 and key_val <= 0x39:
+                        self.camera_switch_request = key_val - 0x31  # 0-8
         except:
             pass
 

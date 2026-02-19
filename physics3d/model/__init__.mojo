@@ -82,6 +82,7 @@ from .actuator_spec import (
 from .camera_spec import (
     CameraSpec,
     TrackCamera,
+    FixedCamera,
     CAM_TRACKCOM,
     CAM_FIXED,
     CamerasLike,

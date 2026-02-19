@@ -321,6 +321,18 @@ trait ModelDefLike:
     fn setup_cameras(width: Int, height: Int) raises -> List[Camera3D]:
         ...
 
+    @staticmethod
+    fn setup_camera_modes() raises -> List[Int]:
+        ...
+
+    @staticmethod
+    fn get_skybox_colors() -> List[Float64]:
+        ...
+
+    @staticmethod
+    fn get_checker_colors() -> List[Float64]:
+        ...
+
 
 @fieldwise_init
 struct ModelDef[
@@ -770,3 +782,15 @@ struct ModelDef[
     @staticmethod
     fn setup_cameras(width: Int, height: Int) raises -> List[Camera3D]:
         return Self.Cameras.setup_cameras(width, height)
+
+    @staticmethod
+    fn setup_camera_modes() raises -> List[Int]:
+        return Self.Cameras.setup_camera_modes()
+
+    @staticmethod
+    fn get_skybox_colors() -> List[Float64]:
+        return Self.Textures.get_skybox_colors()
+
+    @staticmethod
+    fn get_checker_colors() -> List[Float64]:
+        return Self.Textures.get_checker_colors()

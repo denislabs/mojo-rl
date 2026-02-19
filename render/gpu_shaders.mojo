@@ -17,6 +17,43 @@ SDL_GPU MSL binding convention:
 """
 
 
+# --- Shared SceneUniforms MSL struct definition (used in multiple shaders) ---
+# 224 bytes: view_proj(64) + camera_pos(16) + 4 lights * 2 vec4(128) + ground_params(16)
+
+comptime _SCENE_UNIFORMS_MSL = """
+struct SceneUniforms {
+    float4x4 view_proj;
+    float4 camera_pos;      // w = num_active_lights
+    float4 light0_dir;      // w = ambient0
+    float4 light0_color;    // w = cast_shadow (0/1)
+    float4 light1_dir;
+    float4 light1_color;
+    float4 light2_dir;
+    float4 light2_color;
+    float4 light3_dir;
+    float4 light3_color;
+    float4 ground_params;   // xyz = checker_color2, w = ground_z
+};
+"""
+
+# Helper to get light dir/color by index in MSL
+comptime _LIGHT_ACCESS_MSL = """
+float4 get_light_dir(constant SceneUniforms &scene, int i) {
+    if (i == 0) return scene.light0_dir;
+    if (i == 1) return scene.light1_dir;
+    if (i == 2) return scene.light2_dir;
+    return scene.light3_dir;
+}
+
+float4 get_light_color(constant SceneUniforms &scene, int i) {
+    if (i == 0) return scene.light0_color;
+    if (i == 1) return scene.light1_color;
+    if (i == 2) return scene.light2_color;
+    return scene.light3_color;
+}
+"""
+
+
 # --- Solid Object Shaders (Blinn-Phong + Shadows + Material) ---
 
 comptime SOLID_VERTEX_MSL = """
@@ -37,13 +74,7 @@ struct VertexOut {
     float4 obj_material;
 };
 
-struct SceneUniforms {
-    float4x4 view_proj;
-    float4 camera_pos;
-    float4 light_dir;
-    float4 light_color;  // w = ambient
-    float4 padding;
-};
+""" + _SCENE_UNIFORMS_MSL + """
 
 struct ObjectUniforms {
     float4x4 model;
@@ -80,13 +111,7 @@ struct VertexOut {
     float4 obj_material;
 };
 
-struct SceneUniforms {
-    float4x4 view_proj;
-    float4 camera_pos;
-    float4 light_dir;
-    float4 light_color;  // w = ambient
-    float4 padding;
-};
+""" + _SCENE_UNIFORMS_MSL + _LIGHT_ACCESS_MSL + """
 
 struct ShadowUniforms {
     float4x4 light_view_proj;
@@ -136,9 +161,7 @@ fragment float4 solid_fragment(
     sampler shadow_sampler [[sampler(0)]]
 ) {
     float3 N = normalize(in.world_normal);
-    float3 L = normalize(-scene.light_dir.xyz);
     float3 V = normalize(scene.camera_pos.xyz - in.world_pos);
-    float3 H = normalize(L + V);
 
     // Per-object material properties
     float mat_shininess = in.obj_material.x;  // 0-1, maps to specular exponent
@@ -148,15 +171,40 @@ fragment float4 solid_fragment(
     // Map shininess [0,1] to specular exponent: 0.0->4, 0.5->32, 1.0->128
     float spec_exp = mix(4.0, 128.0, mat_shininess);
 
-    float ambient = scene.light_color.w;
-    float diffuse = max(dot(N, L), 0.0);
-    float specular = pow(max(dot(N, H), 0.0), spec_exp) * mat_specular;
+    int num_lights = int(scene.camera_pos.w);
+    if (num_lights < 1) num_lights = 1;
+    if (num_lights > 4) num_lights = 4;
 
-    float shadow_factor = compute_shadow(in.world_pos, shadow, shadow_map, shadow_sampler);
+    float3 total_color = float3(0.0);
+    float total_ambient = 0.0;
 
-    float3 light_col = scene.light_color.xyz;
-    float3 color = in.obj_color.rgb * (ambient + shadow_factor * diffuse * light_col)
-                 + shadow_factor * specular * light_col
+    for (int li = 0; li < num_lights; li++) {
+        float4 l_dir = get_light_dir(scene, li);
+        float4 l_color = get_light_color(scene, li);
+
+        float3 L = normalize(-l_dir.xyz);
+        float3 H = normalize(L + V);
+
+        float ambient = l_dir.w;
+        float diffuse = max(dot(N, L), 0.0);
+        float specular = pow(max(dot(N, H), 0.0), spec_exp) * mat_specular;
+
+        // Shadow only for first shadow-casting light
+        float shadow_factor = 1.0;
+        if (li == 0 && l_color.w > 0.5) {
+            shadow_factor = compute_shadow(in.world_pos, shadow, shadow_map, shadow_sampler);
+        }
+
+        float3 light_col = l_color.xyz;
+        total_color += in.obj_color.rgb * shadow_factor * diffuse * light_col
+                     + shadow_factor * specular * light_col;
+        total_ambient += ambient;
+    }
+
+    // Clamp ambient to avoid over-brightening with multiple lights
+    total_ambient = min(total_ambient, 1.0);
+
+    float3 color = in.obj_color.rgb * total_ambient + total_color
                  + in.obj_color.rgb * mat_emission;
 
     return float4(color, in.obj_color.a);
@@ -181,13 +229,7 @@ struct VertexOut {
     float3 world_normal;
 };
 
-struct SceneUniforms {
-    float4x4 view_proj;
-    float4 camera_pos;
-    float4 light_dir;
-    float4 light_color;
-    float4 padding;
-};
+""" + _SCENE_UNIFORMS_MSL + """
 
 struct ObjectUniforms {
     float4x4 model;
@@ -219,13 +261,7 @@ struct VertexOut {
     float3 world_normal;
 };
 
-struct SceneUniforms {
-    float4x4 view_proj;
-    float4 camera_pos;
-    float4 light_dir;
-    float4 light_color;
-    float4 padding;      // xyz = checker color2, w = ground_z
-};
+""" + _SCENE_UNIFORMS_MSL + _LIGHT_ACCESS_MSL + """
 
 struct ShadowUniforms {
     float4x4 light_view_proj;
@@ -272,13 +308,13 @@ fragment float4 ground_fragment(
     depth2d<float> shadow_map [[texture(0)]],
     sampler shadow_sampler [[sampler(0)]]
 ) {
-    // Checkerboard pattern — colors from scene.padding.xyz (color2) and scene uniforms
+    // Checkerboard pattern — colors from scene.ground_params.xyz (color2)
     float3 checker_color1 = float3(0.35, 0.35, 0.38);  // Light tile (default)
     float3 checker_color2 = float3(0.22, 0.22, 0.25);  // Dark tile (default)
 
-    // Use padding.xyz for checker color2 if non-zero
-    if (scene.padding.x > 0.001 || scene.padding.y > 0.001 || scene.padding.z > 0.001) {
-        checker_color2 = scene.padding.xyz;
+    // Use ground_params.xyz for checker color2 if non-zero
+    if (scene.ground_params.x > 0.001 || scene.ground_params.y > 0.001 || scene.ground_params.z > 0.001) {
+        checker_color2 = scene.ground_params.xyz;
         // Derive color1 as brighter version
         checker_color1 = checker_color2 * 1.6;
     }
@@ -290,13 +326,22 @@ fragment float4 ground_fragment(
 
     float3 base_color = mix(checker_color1, checker_color2, checker);
 
-    // Subtle directional lighting
-    float3 N = float3(0.0, 0.0, 1.0);
-    float3 L = normalize(-scene.light_dir.xyz);
-    float diffuse = max(dot(N, L), 0.0) * 0.3 + 0.7;
-    base_color *= diffuse;
+    // Multi-light ground shading
+    int num_lights = int(scene.camera_pos.w);
+    if (num_lights < 1) num_lights = 1;
+    if (num_lights > 4) num_lights = 4;
 
-    // Apply shadow
+    float3 N = float3(0.0, 0.0, 1.0);
+    float lighting = 0.0;
+    for (int li = 0; li < num_lights; li++) {
+        float4 l_dir = get_light_dir(scene, li);
+        float3 L = normalize(-l_dir.xyz);
+        float diffuse = max(dot(N, L), 0.0) * 0.3 + 0.7 / float(num_lights);
+        lighting += diffuse / float(num_lights);
+    }
+    base_color *= lighting;
+
+    // Apply shadow (first shadow-casting light)
     float shadow_factor = compute_shadow_ground(in.world_pos, shadow, shadow_map, shadow_sampler);
     base_color *= shadow_factor;
 
@@ -372,13 +417,7 @@ struct VertexOut {
     float4 position [[position]];
 };
 
-struct SceneUniforms {
-    float4x4 view_proj;
-    float4 camera_pos;
-    float4 light_dir;
-    float4 light_color;
-    float4 padding;
-};
+""" + _SCENE_UNIFORMS_MSL + """
 
 struct ObjectUniforms {
     float4x4 model;
@@ -422,40 +461,51 @@ struct VertexOut {
     float4 obj_material;
 };
 
-struct SceneUniforms {
-    float4x4 view_proj;
-    float4 camera_pos;
-    float4 light_dir;
-    float4 light_color;  // w = ambient
-    float4 padding;      // w = ground_z for reflection clipping
-};
+""" + _SCENE_UNIFORMS_MSL + _LIGHT_ACCESS_MSL + """
 
 fragment float4 reflection_fragment(
     VertexOut in [[stage_in]],
     constant SceneUniforms &scene [[buffer(0)]]
 ) {
     // Discard fragments above the ground plane
-    float ground_z = scene.padding.w;
+    float ground_z = scene.ground_params.w;
     if (in.world_pos.z > ground_z + 0.001) {
         discard_fragment();
     }
 
-    // Basic lighting with per-object material
+    // Multi-light reflection shading
     float3 N = normalize(in.world_normal);
-    float3 L = normalize(-scene.light_dir.xyz);
     float3 V = normalize(scene.camera_pos.xyz - in.world_pos);
-    float3 H = normalize(L + V);
 
     float mat_shininess = in.obj_material.x;
     float mat_specular = in.obj_material.y;
     float spec_exp = mix(4.0, 128.0, mat_shininess);
 
-    float ambient = scene.light_color.w;
-    float diffuse = max(dot(N, L), 0.0);
-    float specular = pow(max(dot(N, H), 0.0), spec_exp) * mat_specular * 0.5;
+    int num_lights = int(scene.camera_pos.w);
+    if (num_lights < 1) num_lights = 1;
+    if (num_lights > 4) num_lights = 4;
 
-    float3 light_col = scene.light_color.xyz;
-    float3 color = in.obj_color.rgb * (ambient + diffuse * light_col) + specular * light_col;
+    float3 total_color = float3(0.0);
+    float total_ambient = 0.0;
+
+    for (int li = 0; li < num_lights; li++) {
+        float4 l_dir = get_light_dir(scene, li);
+        float4 l_color = get_light_color(scene, li);
+
+        float3 L = normalize(-l_dir.xyz);
+        float3 H = normalize(L + V);
+
+        float ambient = l_dir.w;
+        float diffuse = max(dot(N, L), 0.0);
+        float specular = pow(max(dot(N, H), 0.0), spec_exp) * mat_specular * 0.5;
+
+        float3 light_col = l_color.xyz;
+        total_color += in.obj_color.rgb * diffuse * light_col + specular * light_col;
+        total_ambient += ambient;
+    }
+
+    total_ambient = min(total_ambient, 1.0);
+    float3 color = in.obj_color.rgb * total_ambient + total_color;
 
     // Darken and make semi-transparent for reflection effect
     color *= 0.35;

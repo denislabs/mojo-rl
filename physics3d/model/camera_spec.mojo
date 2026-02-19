@@ -66,6 +66,25 @@ struct TrackCamera[
     comptime TARGET_Z: Float64 = Self.target_z
 
 
+@fieldwise_init
+struct FixedCamera[
+    pos_x: Float64 = 0.0,
+    pos_y: Float64 = -5.0,
+    pos_z: Float64 = 2.0,
+    target_z: Float64 = 0.5,
+](CameraSpec):
+    """Fixed camera at a static world position.
+
+    Does not follow the model. Useful for overview or debug views.
+    """
+
+    comptime MODE: Int = CAM_FIXED
+    comptime POS_X: Float64 = Self.pos_x
+    comptime POS_Y: Float64 = Self.pos_y
+    comptime POS_Z: Float64 = Self.pos_z
+    comptime TARGET_Z: Float64 = Self.target_z
+
+
 # =============================================================================
 # Cameras — variadic camera list (purely visual, no setup_model)
 # =============================================================================
@@ -78,6 +97,10 @@ trait CamerasLike:
 
     @staticmethod
     fn setup_cameras(width: Int, height: Int) -> List[Camera3D]:
+        ...
+
+    @staticmethod
+    fn setup_camera_modes() -> List[Int]:
         ...
 
 
@@ -113,6 +136,16 @@ struct Cameras[*C: CameraSpec](CamerasLike):
             cameras.append(camera^)
         return cameras^
 
+    @staticmethod
+    fn setup_camera_modes() -> List[Int]:
+        var modes = List[Int]()
+
+        @parameter
+        for i in range(Self.N):
+            comptime Cam = Self.cam_types[i]
+            modes.append(Cam.MODE)
+        return modes^
+
 
 @fieldwise_init
 struct _EmptyCameras(CamerasLike):
@@ -120,4 +153,8 @@ struct _EmptyCameras(CamerasLike):
 
     @staticmethod
     fn setup_cameras(width: Int, height: Int) -> List[Camera3D]:
+        return []
+
+    @staticmethod
+    fn setup_camera_modes() -> List[Int]:
         return []

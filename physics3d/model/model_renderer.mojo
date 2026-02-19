@@ -23,8 +23,8 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
     """Generic renderer for models defined by GeomSpec types.
 
     Draws all geom types (capsule, sphere, box, plane) using compile-time
-    geometry from GeomSpec. Camera follows torso (body 1) with configurable
-    offsets.
+    geometry from GeomSpec. Supports multiple cameras (switch with 1-9 keys)
+    and multiple lights.
 
     Parameters:
         MODEL_DEF: ModelDefLike type defining the model's definition.
@@ -36,25 +36,17 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
     var show_velocity: Bool
     var visual_radius_scale: Float64
 
-    # Camera configuration
-    var cam_eye_y: Float64
-    var cam_eye_z: Float64
-    var cam_target_z: Float64
+    # Multi-camera support
+    var cameras: List[Camera3D]
+    var camera_modes: List[Int]  # CAM_TRACKCOM=0, CAM_FIXED=1
+    var active_camera: Int
+
     var axes_offset: Float64
     var vel_arrow_height: Float64
     var vel_arrow_scale: Float64
 
     # Velocity arrow color
     var vel_color: Color
-
-    # Light configuration
-    var light_dir_x: Float64
-    var light_dir_y: Float64
-    var light_dir_z: Float64
-    var light_color_r: Float64
-    var light_color_g: Float64
-    var light_color_b: Float64
-    var light_ambient: Float64
 
     fn __init__(
         out self,
@@ -69,44 +61,61 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         show_velocity: Bool = True,
         title: String = String("Model Environment"),
     ) raises:
-        var cameras = Self.MODEL_DEF.setup_cameras(width, height)
-        var camera = cameras[0].copy()
+        # Setup all cameras from spec
+        var cam_list = Self.MODEL_DEF.setup_cameras(width, height)
+        var mode_list = Self.MODEL_DEF.setup_camera_modes()
+        self.cameras = List[Camera3D]()
+        self.camera_modes = List[Int]()
+        for i in range(len(cam_list)):
+            self.cameras.append(cam_list[i].copy())
+            if i < len(mode_list):
+                self.camera_modes.append(mode_list[i])
+            else:
+                self.camera_modes.append(0)  # CAM_TRACKCOM fallback
+        self.active_camera = 0
 
+        # Setup all lights from spec
         var lights = Self.MODEL_DEF.setup_lights()
-        var light = lights[0].copy()
 
         self.visual_radius_scale = visual_radius_scale
-        self.cam_eye_y = camera.eye.y
-        self.cam_eye_z = camera.eye.z
-        self.cam_target_z = camera.target.z
         self.axes_offset = axes_offset
         self.vel_arrow_height = vel_arrow_height
         self.vel_arrow_scale = vel_arrow_scale
         self.vel_color = vel_color
         self.follow = follow
         self.show_velocity = show_velocity
-        self.light_dir_x = light.dir_x
-        self.light_dir_y = light.dir_y
-        self.light_dir_z = light.dir_z
-        self.light_color_r = light.color_r
-        self.light_color_g = light.color_g
-        self.light_color_b = light.color_b
-        self.light_ambient = light.ambient
 
+        var camera = self.cameras[0].copy()
         self.renderer = Renderer3D(
             width=width,
             height=height,
             camera=camera,
             draw_grid=True,
             draw_axes=True,
-            light_dir_x=Float32(light.dir_x),
-            light_dir_y=Float32(light.dir_y),
-            light_dir_z=Float32(light.dir_z),
-            light_color_r=Float32(light.color_r),
-            light_color_g=Float32(light.color_g),
-            light_color_b=Float32(light.color_b),
-            light_ambient=Float32(light.ambient),
+            lights=lights,
         )
+
+        # Configure skybox from GradientTexture (if model defines one)
+        var skybox = Self.MODEL_DEF.get_skybox_colors()
+        if len(skybox) == 6:
+            self.renderer.set_skybox(
+                top_r=Float32(skybox[0]),
+                top_g=Float32(skybox[1]),
+                top_b=Float32(skybox[2]),
+                bottom_r=Float32(skybox[3]),
+                bottom_g=Float32(skybox[4]),
+                bottom_b=Float32(skybox[5]),
+            )
+
+        # Configure ground checker from CheckerTexture (if model defines one)
+        var checker = Self.MODEL_DEF.get_checker_colors()
+        if len(checker) == 3:
+            self.renderer.set_ground_checker_colors(
+                r=Float32(checker[0]),
+                g=Float32(checker[1]),
+                b=Float32(checker[2]),
+            )
+
         self.initialized = False
 
     fn __moveinit__(out self, deinit other: Self):
@@ -115,20 +124,13 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         self.follow = other.follow
         self.show_velocity = other.show_velocity
         self.visual_radius_scale = other.visual_radius_scale
-        self.cam_eye_y = other.cam_eye_y
-        self.cam_eye_z = other.cam_eye_z
-        self.cam_target_z = other.cam_target_z
+        self.cameras = other.cameras^
+        self.camera_modes = other.camera_modes^
+        self.active_camera = other.active_camera
         self.axes_offset = other.axes_offset
         self.vel_arrow_height = other.vel_arrow_height
         self.vel_arrow_scale = other.vel_arrow_scale
         self.vel_color = other.vel_color
-        self.light_dir_x = other.light_dir_x
-        self.light_dir_y = other.light_dir_y
-        self.light_dir_z = other.light_dir_z
-        self.light_color_r = other.light_color_r
-        self.light_color_g = other.light_color_g
-        self.light_color_b = other.light_color_b
-        self.light_ambient = other.light_ambient
 
     fn init(mut self) raises -> None:
         var title = String("Model Environment")
@@ -217,15 +219,30 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         if not self.initialized:
             return
 
+        # Handle camera switch request from Renderer3D (number keys 1-9)
+        var cam_req = self.renderer.camera_switch_request
+        if cam_req >= 0 and cam_req < len(self.cameras):
+            self.active_camera = cam_req
+            # Load the new camera settings into the renderer
+            var new_cam = self.cameras[self.active_camera].copy()
+            self.renderer.camera.eye = new_cam.eye
+            self.renderer.camera.target = new_cam.target
+            self.renderer.camera.up = new_cam.up
+            self.renderer.camera.fov = new_cam.fov
+            self.renderer.camera.near = new_cam.near
+            self.renderer.camera.far = new_cam.far
+
         var torso_pos = positions[1]  # Body 1 = torso (body 0 = worldbody)
 
-        # Camera follow torso
-        if self.follow:
+        # Camera follow torso (only for trackcom mode cameras)
+        var cam_mode = self.camera_modes[self.active_camera]
+        if self.follow and cam_mode == 0:  # CAM_TRACKCOM
+            var active_cam = self.cameras[self.active_camera].copy()
             self.renderer.camera.target = Vec3(
-                torso_pos.x, 0.0, self.cam_target_z
+                torso_pos.x, 0.0, active_cam.target.z
             )
             self.renderer.camera.eye = Vec3(
-                torso_pos.x, self.cam_eye_y, self.cam_eye_z
+                torso_pos.x, active_cam.eye.y, active_cam.eye.z
             )
 
         self.renderer.begin_frame()

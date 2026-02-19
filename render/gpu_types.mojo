@@ -54,42 +54,72 @@ struct GPUVertex(TrivialRegisterPassable):
 
 
 struct SceneUniforms(ImplicitlyCopyable, Movable):
-    """Scene-wide uniforms: 128 bytes.
+    """Scene-wide uniforms: 224 bytes.
 
     Layout (std140):
-      view_proj: mat4 (64 bytes)
-      camera_pos: vec4 (16 bytes) - w unused
-      light_dir: vec4 (16 bytes) - w unused
-      light_color: vec4 (16 bytes) - w = ambient intensity
-      padding: vec4 (16 bytes)
+      view_proj:      mat4  (64 bytes)
+      camera_pos:     vec4  (16 bytes) - w = num_active_lights (float)
+      light0_dir:     vec4  (16 bytes) - w = ambient0
+      light0_color:   vec4  (16 bytes) - w = cast_shadow (0/1)
+      light1_dir:     vec4  (16 bytes) - w = ambient1
+      light1_color:   vec4  (16 bytes) - w = cast_shadow1
+      light2_dir:     vec4  (16 bytes) - w = ambient2
+      light2_color:   vec4  (16 bytes) - w = cast_shadow2
+      light3_dir:     vec4  (16 bytes) - w = ambient3
+      light3_color:   vec4  (16 bytes) - w = cast_shadow3
+      ground_params:  vec4  (16 bytes) - xyz = checker_color2, w = ground_z
     """
 
     var view_proj: InlineArray[Float32, 16]
     var camera_pos: InlineArray[Float32, 4]
-    var light_dir: InlineArray[Float32, 4]
-    var light_color: InlineArray[Float32, 4]
-    var padding: InlineArray[Float32, 4]
+    var light0_dir: InlineArray[Float32, 4]
+    var light0_color: InlineArray[Float32, 4]
+    var light1_dir: InlineArray[Float32, 4]
+    var light1_color: InlineArray[Float32, 4]
+    var light2_dir: InlineArray[Float32, 4]
+    var light2_color: InlineArray[Float32, 4]
+    var light3_dir: InlineArray[Float32, 4]
+    var light3_color: InlineArray[Float32, 4]
+    var ground_params: InlineArray[Float32, 4]
 
     fn __init__(out self):
         self.view_proj = InlineArray[Float32, 16](fill=Float32(0))
         self.camera_pos = InlineArray[Float32, 4](fill=Float32(0))
-        self.light_dir = InlineArray[Float32, 4](fill=Float32(0))
-        self.light_color = InlineArray[Float32, 4](fill=Float32(0))
-        self.padding = InlineArray[Float32, 4](fill=Float32(0))
+        self.light0_dir = InlineArray[Float32, 4](fill=Float32(0))
+        self.light0_color = InlineArray[Float32, 4](fill=Float32(0))
+        self.light1_dir = InlineArray[Float32, 4](fill=Float32(0))
+        self.light1_color = InlineArray[Float32, 4](fill=Float32(0))
+        self.light2_dir = InlineArray[Float32, 4](fill=Float32(0))
+        self.light2_color = InlineArray[Float32, 4](fill=Float32(0))
+        self.light3_dir = InlineArray[Float32, 4](fill=Float32(0))
+        self.light3_color = InlineArray[Float32, 4](fill=Float32(0))
+        self.ground_params = InlineArray[Float32, 4](fill=Float32(0))
 
     fn __copyinit__(out self, read other: Self):
         self.view_proj = other.view_proj.copy()
         self.camera_pos = other.camera_pos.copy()
-        self.light_dir = other.light_dir.copy()
-        self.light_color = other.light_color.copy()
-        self.padding = other.padding.copy()
+        self.light0_dir = other.light0_dir.copy()
+        self.light0_color = other.light0_color.copy()
+        self.light1_dir = other.light1_dir.copy()
+        self.light1_color = other.light1_color.copy()
+        self.light2_dir = other.light2_dir.copy()
+        self.light2_color = other.light2_color.copy()
+        self.light3_dir = other.light3_dir.copy()
+        self.light3_color = other.light3_color.copy()
+        self.ground_params = other.ground_params.copy()
 
     fn __moveinit__(out self, deinit other: Self):
         self.view_proj = other.view_proj^
         self.camera_pos = other.camera_pos^
-        self.light_dir = other.light_dir^
-        self.light_color = other.light_color^
-        self.padding = other.padding^
+        self.light0_dir = other.light0_dir^
+        self.light0_color = other.light0_color^
+        self.light1_dir = other.light1_dir^
+        self.light1_color = other.light1_color^
+        self.light2_dir = other.light2_dir^
+        self.light2_color = other.light2_color^
+        self.light3_dir = other.light3_dir^
+        self.light3_color = other.light3_color^
+        self.ground_params = other.ground_params^
 
 
 struct ObjectUniforms(ImplicitlyCopyable, Movable):
