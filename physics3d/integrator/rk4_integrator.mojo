@@ -84,6 +84,7 @@ from ..gpu.constants import (
     JOINT_IDX_SPRINGREF,
     JOINT_IDX_FRICTIONLOSS,
     MODEL_META_IDX_TIMESTEP,
+    MODEL_META_IDX_NJOINT,
     integrator_workspace_size,
     ws_M_offset,
     ws_bias_offset,
@@ -99,6 +100,102 @@ from ..gpu.constants import (
     ws_rk4_C1_offset,
     ws_rk4_C2_offset,
 )
+
+
+@always_inline
+fn _integrate_pos_gpu[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    STATE_SIZE: Int,
+    MODEL_SIZE: Int,
+    BATCH: Int,
+    WS_SIZE: Int,
+](
+    env: Int,
+    state: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+    ],
+    model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+    workspace: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+    ],
+    q0_idx: Int,
+    vel_idx: Int,
+    dt: Scalar[DTYPE],
+):
+    """Integrate position on GPU: qpos = q0 + vel * dt (quaternion-aware).
+
+    Reads base qpos from workspace[env, q0_idx+..], velocity from
+    workspace[env, vel_idx+..], writes result to state[env, qpos_off+..].
+    Handles FREE joint quaternion integration properly.
+    """
+    var qpos_off = qpos_offset[NQ, NV]()
+    var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
+    var num_joints = Int(
+        rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_NJOINT])
+    )
+
+    for j in range(num_joints):
+        var joint_off = model_joint_offset[NBODY](j)
+        var jnt_type = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
+        )
+        var qpos_adr = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_QPOS_ADR])
+        )
+        var dof_adr = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
+        )
+
+        if jnt_type == JNT_FREE:
+            # Position: simple addition
+            for d in range(3):
+                var q0_d = rebind[Scalar[DTYPE]](
+                    workspace[env, q0_idx + qpos_adr + d]
+                )
+                var v_d = rebind[Scalar[DTYPE]](
+                    workspace[env, vel_idx + dof_adr + d]
+                )
+                state[env, qpos_off + qpos_adr + d] = q0_d + v_d * dt
+            # Quaternion: exponential map integration
+            var qx = rebind[Scalar[DTYPE]](
+                workspace[env, q0_idx + qpos_adr + 3]
+            )
+            var qy = rebind[Scalar[DTYPE]](
+                workspace[env, q0_idx + qpos_adr + 4]
+            )
+            var qz = rebind[Scalar[DTYPE]](
+                workspace[env, q0_idx + qpos_adr + 5]
+            )
+            var qw = rebind[Scalar[DTYPE]](
+                workspace[env, q0_idx + qpos_adr + 6]
+            )
+            var wx = rebind[Scalar[DTYPE]](
+                workspace[env, vel_idx + dof_adr + 3]
+            )
+            var wy = rebind[Scalar[DTYPE]](
+                workspace[env, vel_idx + dof_adr + 4]
+            )
+            var wz = rebind[Scalar[DTYPE]](
+                workspace[env, vel_idx + dof_adr + 5]
+            )
+            var result = quat_integrate(qx, qy, qz, qw, wx, wy, wz, dt)
+            state[env, qpos_off + qpos_adr + 3] = result[0]
+            state[env, qpos_off + qpos_adr + 4] = result[1]
+            state[env, qpos_off + qpos_adr + 5] = result[2]
+            state[env, qpos_off + qpos_adr + 6] = result[3]
+
+        elif jnt_type == JNT_HINGE or jnt_type == JNT_SLIDE:
+            var q0_val = rebind[Scalar[DTYPE]](
+                workspace[env, q0_idx + qpos_adr]
+            )
+            var v_val = rebind[Scalar[DTYPE]](
+                workspace[env, vel_idx + dof_adr]
+            )
+            state[env, qpos_off + qpos_adr] = q0_val + v_val * dt
 
 
 fn _forward_dynamics[
@@ -895,11 +992,10 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                 ]
             # Set intermediate state: qpos = q0 + dt/2 * v0 (C[0] = v0)
             # qvel = v0 + dt/2 * A[0]
-            for i in range(NQ):
-                if i < NV:
-                    var q0_i = rebind[Scalar[DTYPE]](workspace[env, q0_idx + i])
-                    var v0_i = rebind[Scalar[DTYPE]](workspace[env, v0_idx + i])
-                    state[env, qpos_off + i] = q0_i + half_dt * v0_i
+            _integrate_pos_gpu[
+                DTYPE, NQ, NV, NBODY, NJOINT, STATE_SIZE, MODEL_SIZE,
+                BATCH, WS_SIZE,
+            ](env, state, model, workspace, q0_idx, v0_idx, half_dt)
             for i in range(NV):
                 var v0_i = rebind[Scalar[DTYPE]](workspace[env, v0_idx + i])
                 var a0_i = rebind[Scalar[DTYPE]](workspace[env, A0_idx + i])
@@ -917,11 +1013,10 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                 workspace[env, c1_idx + i] = v0_i + half_dt * a0_i
             # Set intermediate state: qpos = q0 + dt/2 * C[1]
             # qvel = v0 + dt/2 * A[1]
-            for i in range(NQ):
-                if i < NV:
-                    var q0_i = rebind[Scalar[DTYPE]](workspace[env, q0_idx + i])
-                    var c1_i = rebind[Scalar[DTYPE]](workspace[env, c1_idx + i])
-                    state[env, qpos_off + i] = q0_i + half_dt * c1_i
+            _integrate_pos_gpu[
+                DTYPE, NQ, NV, NBODY, NJOINT, STATE_SIZE, MODEL_SIZE,
+                BATCH, WS_SIZE,
+            ](env, state, model, workspace, q0_idx, c1_idx, half_dt)
             for i in range(NV):
                 var v0_i = rebind[Scalar[DTYPE]](workspace[env, v0_idx + i])
                 var a1_i = rebind[Scalar[DTYPE]](workspace[env, A1_idx + i])
@@ -939,11 +1034,10 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                 workspace[env, c2_idx + i] = v0_i + half_dt * a1_i
             # Set intermediate state: qpos = q0 + dt * C[2]
             # qvel = v0 + dt * A[2]
-            for i in range(NQ):
-                if i < NV:
-                    var q0_i = rebind[Scalar[DTYPE]](workspace[env, q0_idx + i])
-                    var c2_i = rebind[Scalar[DTYPE]](workspace[env, c2_idx + i])
-                    state[env, qpos_off + i] = q0_i + dt * c2_i
+            _integrate_pos_gpu[
+                DTYPE, NQ, NV, NBODY, NJOINT, STATE_SIZE, MODEL_SIZE,
+                BATCH, WS_SIZE,
+            ](env, state, model, workspace, q0_idx, c2_idx, dt)
             for i in range(NV):
                 var v0_i = rebind[Scalar[DTYPE]](workspace[env, v0_idx + i])
                 var a2_i = rebind[Scalar[DTYPE]](workspace[env, A2_idx + i])
@@ -1283,6 +1377,8 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         # v_combined = (C[0] + 2*C[1] + 2*C[2] + C[3]) / 6
         #   where C[0] = v0
 
+        # First pass: compute qacc_combined, v_combined, update qvel/qacc.
+        # Store v_combined in A0 workspace (no longer needed after this).
         for i in range(NV):
             var a0_i = rebind[Scalar[DTYPE]](workspace[env, A0_idx + i])
             var a1_i = rebind[Scalar[DTYPE]](workspace[env, A1_idx + i])
@@ -1305,36 +1401,25 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             # C[3] = v0 + dt * A[2]
             var c3_i = v0_i + dt * a2_i
 
-            # Combined velocity
+            # Combined velocity — store in A0 workspace for position integration
             var v_combined_i = (
                 ONE_SIXTH * v0_i
                 + ONE_THIRD * c1_i
                 + ONE_THIRD * c2_i
                 + ONE_SIXTH * c3_i
             )
+            workspace[env, A0_idx + i] = v_combined_i
 
             # Integrate: qvel = v0 + qacc * dt
             state[env, qvel_off + i] = v0_i + qacc_i * dt
             state[env, qacc_off + i] = qacc_i
 
-            # Integrate position: qpos = q0 + v_combined * dt
-            # (HalfCheetah/Hopper: only SLIDE+HINGE, NQ==NV, simple addition)
-            if i < NQ:
-                var q0_i = rebind[Scalar[DTYPE]](workspace[env, q0_idx + i])
-                state[env, qpos_off + i] = q0_i + v_combined_i * dt
-
-        # Normalize quaternions
-        normalize_qpos_quaternions_gpu[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            STATE_SIZE,
-            MODEL_SIZE,
-            BATCH,
-        ](env, state, model)
+        # Second pass: integrate position using v_combined (quaternion-aware).
+        # v_combined is stored in A0_idx workspace.
+        _integrate_pos_gpu[
+            DTYPE, NQ, NV, NBODY, NJOINT, STATE_SIZE, MODEL_SIZE,
+            BATCH, WS_SIZE,
+        ](env, state, model, workspace, q0_idx, A0_idx, dt)
 
     @staticmethod
     fn step_gpu[

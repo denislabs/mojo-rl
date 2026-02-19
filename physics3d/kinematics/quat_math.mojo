@@ -128,7 +128,7 @@ fn quat_normalize[
     qw: Scalar[DTYPE],
 ) -> Tuple[
     Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]
-] where DTYPE.is_floating_point():
+]:
     """Normalize a quaternion to unit length.
 
     Args:
@@ -177,7 +177,7 @@ fn axis_angle_to_quat[
 
 
 fn quat_to_axis_angle[
-    DTYPE: DType
+    DTYPE: DType where DTYPE.is_floating_point()
 ](
     qx: Scalar[DTYPE],
     qy: Scalar[DTYPE],
@@ -185,7 +185,7 @@ fn quat_to_axis_angle[
     qw: Scalar[DTYPE],
 ) -> Tuple[
     Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]
-] where DTYPE.is_floating_point():
+]:
     """Convert quaternion to axis-angle representation.
 
     Args:
@@ -234,7 +234,7 @@ fn quat_integrate[
     dt: Scalar[DTYPE],
 ) -> Tuple[
     Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]
-] where DTYPE.is_floating_point():
+]:
     """Integrate quaternion with angular velocity.
 
     Uses first-order approximation: q(t+dt) = q(t) + 0.5 * dt * omega * q(t)

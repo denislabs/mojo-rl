@@ -20,7 +20,7 @@ from ..gpu.constants import (
     qfrc_offset,
     model_size_with_invweight,
 )
-from ..joint_types import JNT_HINGE, JNT_SLIDE
+from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_FREE, JointDef
 from ..model.defaults_spec import ModelDefaults, _resolve_f64, _resolve_int
 from random.philox import Random as PhiloxRandom
 
@@ -40,10 +40,11 @@ trait JointSpec(TrivialRegisterPassable):
     Fields with value -1.0 are "unset" and resolved from ModelDefaults.
     """
 
-    comptime JNT_TYPE: Int  # JNT_HINGE, JNT_SLIDE
-    comptime NQ: Int  # Dimension in qpos (1 for hinge/slide)
-    comptime NV: Int  # Dimension in qvel (1 for hinge/slide)
+    comptime JNT_TYPE: Int  # JNT_HINGE, JNT_SLIDE, JNT_FREE
+    comptime NQ: Int  # Dimension in qpos (1 for hinge/slide, 7 for free)
+    comptime NV: Int  # Dimension in qvel (1 for hinge/slide, 6 for free)
     comptime BODY_IDX: Int  # Which body this joint is on
+    comptime NUM_EXCLUDED_QPOS: Int  # Leading qpos elements to skip from obs
 
     # Joint anchor in parent frame
     comptime POS_X: Float64
@@ -65,6 +66,11 @@ trait JointSpec(TrivialRegisterPassable):
     comptime SPRINGREF: Float64  # Spring reference position
     comptime FRICTIONLOSS: Float64  # Dry friction torque (-1.0 = use default)
     comptime INIT_QPOS: Float64  # Initial joint position (qpos0)
+
+    # Free joint initial position (0.0 for hinge/slide)
+    comptime INIT_POS_X: Float64
+    comptime INIT_POS_Y: Float64
+    comptime INIT_POS_Z: Float64
 
     # Observation/actuation flags (for generic env infrastructure)
     comptime EXCLUDE_OBS_QPOS: Bool  # Skip qpos from observation
@@ -122,6 +128,7 @@ struct HingeJoint[
     comptime NQ: Int = 1
     comptime NV: Int = 1
     comptime BODY_IDX: Int = Self.body_idx
+    comptime NUM_EXCLUDED_QPOS: Int = 0
     comptime POS_X: Float64 = Self.pos_x
     comptime POS_Y: Float64 = Self.pos_y
     comptime POS_Z: Float64 = Self.pos_z
@@ -137,6 +144,9 @@ struct HingeJoint[
     comptime SPRINGREF: Float64 = Self.springref
     comptime FRICTIONLOSS: Float64 = Self.frictionloss
     comptime INIT_QPOS: Float64 = Self.init_qpos
+    comptime INIT_POS_X: Float64 = 0.0
+    comptime INIT_POS_Y: Float64 = 0.0
+    comptime INIT_POS_Z: Float64 = 0.0
     comptime EXCLUDE_OBS_QPOS: Bool = Self.exclude_obs_qpos
     comptime EXCLUDE_OBS_QVEL: Bool = Self.exclude_obs_qvel
     comptime IS_ACTUATED: Bool = Self.is_actuated
@@ -190,6 +200,7 @@ struct SlideJoint[
     comptime NQ: Int = 1
     comptime NV: Int = 1
     comptime BODY_IDX: Int = Self.body_idx
+    comptime NUM_EXCLUDED_QPOS: Int = 0
     comptime POS_X: Float64 = Self.pos_x
     comptime POS_Y: Float64 = Self.pos_y
     comptime POS_Z: Float64 = Self.pos_z
@@ -209,11 +220,79 @@ struct SlideJoint[
     comptime SPRINGREF: Float64 = Self.springref
     comptime FRICTIONLOSS: Float64 = Self.frictionloss
     comptime INIT_QPOS: Float64 = Self.init_qpos
+    comptime INIT_POS_X: Float64 = 0.0
+    comptime INIT_POS_Y: Float64 = 0.0
+    comptime INIT_POS_Z: Float64 = 0.0
     comptime SOLREF_LIMIT_0: Float64 = Self.solref_limit_0
     comptime SOLREF_LIMIT_1: Float64 = Self.solref_limit_1
     comptime SOLIMP_LIMIT_0: Float64 = Self.solimp_limit_0
     comptime SOLIMP_LIMIT_1: Float64 = Self.solimp_limit_1
     comptime SOLIMP_LIMIT_2: Float64 = Self.solimp_limit_2
+
+
+# =============================================================================
+# FreeJoint
+# =============================================================================
+
+
+@fieldwise_init
+struct FreeJoint[
+    body_idx: Int,
+    init_pos_x: Float64 = 0.0,
+    init_pos_y: Float64 = 0.0,
+    init_pos_z: Float64 = 0.0,
+    armature: Float64 = 0.0,
+    damping: Float64 = 0.0,
+    stiffness: Float64 = 0.0,
+    frictionloss: Float64 = 0.0,
+    exclude_obs_qpos: Bool = False,
+    exclude_obs_qvel: Bool = False,
+    is_actuated: Bool = False,
+    num_excluded_qpos: Int = 0,
+](JointSpec):
+    """Free joint: 6 DOF (3 translation + 3 rotation).
+
+    qpos: [x, y, z, quat_x, quat_y, quat_z, quat_w] (7 elements)
+    qvel: [vx, vy, vz, wx, wy, wz] (6 elements)
+
+    num_excluded_qpos: Number of leading qpos elements to skip from obs
+    (e.g., 2 to exclude x,y for Ant, 0 to include all).
+    """
+
+    comptime JNT_TYPE: Int = JNT_FREE
+    comptime NQ: Int = 7
+    comptime NV: Int = 6
+    comptime BODY_IDX: Int = Self.body_idx
+    comptime POS_X: Float64 = 0.0
+    comptime POS_Y: Float64 = 0.0
+    comptime POS_Z: Float64 = 0.0
+    comptime AXIS_X: Float64 = 0.0
+    comptime AXIS_Y: Float64 = 0.0
+    comptime AXIS_Z: Float64 = 1.0
+    comptime TAU_LIMIT: Float64 = 0.0
+    comptime RANGE_MIN: Float64 = -1e10
+    comptime RANGE_MAX: Float64 = 1e10
+    comptime ARMATURE: Float64 = Self.armature
+    comptime DAMPING: Float64 = Self.damping
+    comptime STIFFNESS: Float64 = Self.stiffness
+    comptime SPRINGREF: Float64 = 0.0
+    comptime FRICTIONLOSS: Float64 = Self.frictionloss
+    comptime INIT_QPOS: Float64 = 0.0  # Not used; free joint uses INIT_POS_X/Y/Z
+    comptime EXCLUDE_OBS_QPOS: Bool = Self.exclude_obs_qpos
+    comptime EXCLUDE_OBS_QVEL: Bool = Self.exclude_obs_qvel
+    comptime IS_ACTUATED: Bool = Self.is_actuated
+    comptime HAS_LIMITS: Bool = False
+    comptime SOLREF_LIMIT_0: Float64 = _UNSET_F64
+    comptime SOLREF_LIMIT_1: Float64 = _UNSET_F64
+    comptime SOLIMP_LIMIT_0: Float64 = _UNSET_F64
+    comptime SOLIMP_LIMIT_1: Float64 = _UNSET_F64
+    comptime SOLIMP_LIMIT_2: Float64 = _UNSET_F64
+
+    # Free joint-specific fields
+    comptime INIT_POS_X: Float64 = Self.init_pos_x
+    comptime INIT_POS_Y: Float64 = Self.init_pos_y
+    comptime INIT_POS_Z: Float64 = Self.init_pos_z
+    comptime NUM_EXCLUDED_QPOS: Int = Self.num_excluded_qpos
 
 
 trait JointsLike:
@@ -547,7 +626,19 @@ struct Joints[*J: JointSpec](JointsLike):
         for i in range(Self.N):
             comptime J = Self.joint_types[i]
             comptime offset = Self._qpos_offset[i]()
-            data.qpos[offset] = Scalar[DTYPE](J.INIT_QPOS)
+
+            @parameter
+            if J.JNT_TYPE == JNT_FREE:
+                # Free joint: qpos = [x, y, z, qx, qy, qz, qw]
+                data.qpos[offset + 0] = Scalar[DTYPE](J.INIT_POS_X)
+                data.qpos[offset + 1] = Scalar[DTYPE](J.INIT_POS_Y)
+                data.qpos[offset + 2] = Scalar[DTYPE](J.INIT_POS_Z)
+                data.qpos[offset + 3] = Scalar[DTYPE](0)  # qx
+                data.qpos[offset + 4] = Scalar[DTYPE](0)  # qy
+                data.qpos[offset + 5] = Scalar[DTYPE](0)  # qz
+                data.qpos[offset + 6] = Scalar[DTYPE](1)  # qw (identity)
+            else:
+                data.qpos[offset] = Scalar[DTYPE](J.INIT_QPOS)
         for i in range(NV):
             data.qvel[i] = Scalar[DTYPE](0)
             data.qacc[i] = Scalar[DTYPE](0)
@@ -559,7 +650,11 @@ struct Joints[*J: JointSpec](JointsLike):
 
     @staticmethod
     fn _obs_qpos_dim() -> Int:
-        """Count of qpos elements included in observation."""
+        """Count of qpos elements included in observation.
+
+        For joints with NUM_EXCLUDED_QPOS > 0 (e.g., FreeJoint excluding x,y),
+        only (NQ - NUM_EXCLUDED_QPOS) elements are included.
+        """
         var total = 0
 
         @parameter
@@ -568,7 +663,7 @@ struct Joints[*J: JointSpec](JointsLike):
 
             @parameter
             if not J.EXCLUDE_OBS_QPOS:
-                total += J.NQ
+                total += J.NQ - J.NUM_EXCLUDED_QPOS
         return total
 
     @staticmethod
@@ -624,7 +719,7 @@ struct Joints[*J: JointSpec](JointsLike):
         Appends included qpos then included qvel to the obs list.
         """
 
-        # Included qpos
+        # Included qpos (skip first NUM_EXCLUDED_QPOS elements per joint)
         @parameter
         for i in range(Self.N):
             comptime J = Self.joint_types[i]
@@ -634,7 +729,7 @@ struct Joints[*J: JointSpec](JointsLike):
                 comptime offset = Self._qpos_offset[i]()
 
                 @parameter
-                for k in range(J.NQ):
+                for k in range(J.NUM_EXCLUDED_QPOS, J.NQ):
                     obs.append(data.qpos[offset + k])
 
         # Included qvel
@@ -747,7 +842,7 @@ struct Joints[*J: JointSpec](JointsLike):
 
         var obs_idx = 0
 
-        # Included qpos
+        # Included qpos (skip first NUM_EXCLUDED_QPOS elements per joint)
         @parameter
         for i in range(Self.N):
             comptime J = Self.joint_types[i]
@@ -757,7 +852,7 @@ struct Joints[*J: JointSpec](JointsLike):
                 comptime offset = Self._qpos_offset[i]()
 
                 @parameter
-                for k in range(J.NQ):
+                for k in range(J.NUM_EXCLUDED_QPOS, J.NQ):
                     obs[env, obs_idx] = states[env, QPOS_OFF + offset + k]
                     obs_idx += 1
 
@@ -918,14 +1013,44 @@ struct Joints[*J: JointSpec](JointsLike):
             comptime offset = Self._qpos_offset[i]()
 
             @parameter
-            for k in range(J.NQ):
-                var noise = (
-                    Scalar[GDTYPE](rand_vals[offset + k] * 2.0 - 1.0)
-                    * noise_scale
-                )
-                states[env, QPOS_OFF + offset + k] = (
-                    Scalar[GDTYPE](J.INIT_QPOS) + noise
-                )
+            if J.JNT_TYPE == JNT_FREE:
+                # Free joint: position with noise + identity quat with small noise
+                var nx = Scalar[GDTYPE](rand_vals[offset + 0] * 2.0 - 1.0) * noise_scale
+                var ny = Scalar[GDTYPE](rand_vals[offset + 1] * 2.0 - 1.0) * noise_scale
+                var nz = Scalar[GDTYPE](rand_vals[offset + 2] * 2.0 - 1.0) * noise_scale
+                states[env, QPOS_OFF + offset + 0] = Scalar[GDTYPE](J.INIT_POS_X) + nx
+                states[env, QPOS_OFF + offset + 1] = Scalar[GDTYPE](J.INIT_POS_Y) + ny
+                states[env, QPOS_OFF + offset + 2] = Scalar[GDTYPE](J.INIT_POS_Z) + nz
+                # Quaternion: identity + small noise, then normalize
+                var qx = Scalar[GDTYPE](rand_vals[offset + 3] * 2.0 - 1.0) * noise_scale
+                var qy = Scalar[GDTYPE](rand_vals[offset + 4] * 2.0 - 1.0) * noise_scale
+                var qz = Scalar[GDTYPE](rand_vals[offset + 5] * 2.0 - 1.0) * noise_scale
+                var qw = Scalar[GDTYPE](1.0) + Scalar[GDTYPE](rand_vals[offset + 6] * 2.0 - 1.0) * noise_scale
+                var norm = sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
+                if norm > Scalar[GDTYPE](1e-10):
+                    qx /= norm
+                    qy /= norm
+                    qz /= norm
+                    qw /= norm
+                else:
+                    qx = Scalar[GDTYPE](0)
+                    qy = Scalar[GDTYPE](0)
+                    qz = Scalar[GDTYPE](0)
+                    qw = Scalar[GDTYPE](1)
+                states[env, QPOS_OFF + offset + 3] = qx
+                states[env, QPOS_OFF + offset + 4] = qy
+                states[env, QPOS_OFF + offset + 5] = qz
+                states[env, QPOS_OFF + offset + 6] = qw
+            else:
+                @parameter
+                for k in range(J.NQ):
+                    var noise = (
+                        Scalar[GDTYPE](rand_vals[offset + k] * 2.0 - 1.0)
+                        * noise_scale
+                    )
+                    states[env, QPOS_OFF + offset + k] = (
+                        Scalar[GDTYPE](J.INIT_QPOS) + noise
+                    )
 
         # Reset qvel with noise
         @parameter
@@ -1173,6 +1298,28 @@ struct Joints[*J: JointSpec](JointsLike):
                     springref=Scalar[DTYPE](J.SPRINGREF),
                     frictionloss=Scalar[DTYPE](frloss),
                 )
+            elif J.JNT_TYPE == JNT_FREE:
+                # Free joint: use JointDef.create_free() directly
+                # Compute qpos/qvel addresses manually
+                var qpos_adr = 0
+                var dof_adr = 0
+                for ji in range(model.num_joints):
+                    qpos_adr += model.joints[ji].qpos_size()
+                    dof_adr += model.joints[ji].qvel_size()
+
+                var joint_idx = model.num_joints
+                model.joints[joint_idx] = JointDef[DTYPE].create_free(
+                    body_id=J.BODY_IDX,
+                    qpos_adr=qpos_adr,
+                    dof_adr=dof_adr,
+                )
+                # Set dynamics fields
+                model.joints[joint_idx].armature = Scalar[DTYPE](arm)
+                model.joints[joint_idx].damping = Scalar[DTYPE](damp)
+                model.joints[joint_idx].stiffness = Scalar[DTYPE](stiff)
+                model.joints[joint_idx].springref = Scalar[DTYPE](J.SPRINGREF)
+                model.joints[joint_idx].frictionloss = Scalar[DTYPE](frloss)
+                model.num_joints += 1
 
             # Per-joint solref/solimp for limits (resolved from defaults)
             model.joint_solref_limit[i * 2 + 0] = Scalar[DTYPE](

@@ -473,12 +473,42 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
             data.qacc[i] = qacc[i]
             data.qvel[i] = data.qvel[i] + qacc[i] * dt
 
-        # Position update: symplectic Euler (use new velocity)
-        for i in range(NQ):
-            if i < NV:
-                data.qpos[i] = data.qpos[i] + dt * data.qvel[i]
+        # Position update: symplectic Euler (quaternion-aware)
+        for j in range(model.num_joints):
+            var joint = model.joints[j]
+            var qpos_adr = joint.qpos_adr
+            var dof_adr = joint.dof_adr
 
-        # 10. Normalize quaternions
+            if joint.jnt_type == JNT_FREE:
+                for d in range(3):
+                    data.qpos[qpos_adr + d] = (
+                        data.qpos[qpos_adr + d]
+                        + data.qvel[dof_adr + d] * dt
+                    )
+                var qx = data.qpos[qpos_adr + 3]
+                var qy = data.qpos[qpos_adr + 4]
+                var qz = data.qpos[qpos_adr + 5]
+                var qw = data.qpos[qpos_adr + 6]
+                var wx = data.qvel[dof_adr + 3]
+                var wy = data.qvel[dof_adr + 4]
+                var wz = data.qvel[dof_adr + 5]
+                var result = quat_integrate(
+                    qx, qy, qz, qw, wx, wy, wz, dt
+                )
+                var norm = quat_normalize(
+                    result[0], result[1], result[2], result[3]
+                )
+                data.qpos[qpos_adr + 3] = norm[0]
+                data.qpos[qpos_adr + 4] = norm[1]
+                data.qpos[qpos_adr + 5] = norm[2]
+                data.qpos[qpos_adr + 6] = norm[3]
+
+            elif joint.jnt_type == JNT_HINGE or joint.jnt_type == JNT_SLIDE:
+                data.qpos[qpos_adr] = (
+                    data.qpos[qpos_adr] + data.qvel[dof_adr] * dt
+                )
+
+        # 10. Normalize quaternions (handles remaining cases like BALL)
         normalize_qpos_quaternions(model, data)
 
         if verbose:

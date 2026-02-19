@@ -100,6 +100,7 @@ from ..gpu.constants import (
     JOINT_IDX_SPRINGREF,
     JOINT_IDX_FRICTIONLOSS,
     MODEL_META_IDX_TIMESTEP,
+    MODEL_META_IDX_NJOINT,
     integrator_workspace_size,
     ws_M_offset,
     ws_bias_offset,
@@ -405,11 +406,39 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         for i in range(NV):
             data.qvel[i] = v_new[i]
 
-        for i in range(NQ):
-            if i < NV:
-                data.qpos[i] = data.qpos[i] + data.qvel[i] * dt
+        # Integrate position: qpos += qvel * dt (quaternion-aware)
+        for j in range(model.num_joints):
+            var joint = model.joints[j]
+            var qpos_adr = joint.qpos_adr
+            var dof_adr = joint.dof_adr
 
-        # 10. Normalize quaternions
+            if joint.jnt_type == JNT_FREE:
+                for d in range(3):
+                    data.qpos[qpos_adr + d] = (
+                        data.qpos[qpos_adr + d] + data.qvel[dof_adr + d] * dt
+                    )
+                var qx = data.qpos[qpos_adr + 3]
+                var qy = data.qpos[qpos_adr + 4]
+                var qz = data.qpos[qpos_adr + 5]
+                var qw = data.qpos[qpos_adr + 6]
+                var wx = data.qvel[dof_adr + 3]
+                var wy = data.qvel[dof_adr + 4]
+                var wz = data.qvel[dof_adr + 5]
+                var result = quat_integrate(qx, qy, qz, qw, wx, wy, wz, dt)
+                var norm = quat_normalize(
+                    result[0], result[1], result[2], result[3]
+                )
+                data.qpos[qpos_adr + 3] = norm[0]
+                data.qpos[qpos_adr + 4] = norm[1]
+                data.qpos[qpos_adr + 5] = norm[2]
+                data.qpos[qpos_adr + 6] = norm[3]
+
+            elif joint.jnt_type == JNT_HINGE or joint.jnt_type == JNT_SLIDE:
+                data.qpos[qpos_adr] = (
+                    data.qpos[qpos_adr] + data.qvel[dof_adr] * dt
+                )
+
+        # 10. Normalize quaternions (handles remaining cases like BALL)
         normalize_qpos_quaternions(model, data)
 
         # 11. Joint limits now enforced as constraints inside the solver
@@ -964,24 +993,72 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
 
             state[env, qvel_off + i] = new_qvel
 
-        for i in range(NQ):
-            if i < NV:
-                var qpos = rebind[Scalar[DTYPE]](state[env, qpos_off + i])
-                var qvel = rebind[Scalar[DTYPE]](state[env, qvel_off + i])
-                state[env, qpos_off + i] = qpos + qvel * dt
+        # Integrate position: qpos += qvel * dt (quaternion-aware for free joints)
+        var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
+        var num_joints = Int(
+            rebind[Scalar[DTYPE]](
+                model[0, model_meta_off + MODEL_META_IDX_NJOINT]
+            )
+        )
 
-        # 10. Normalize quaternions
-        normalize_qpos_quaternions_gpu[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            STATE_SIZE,
-            MODEL_SIZE,
-            BATCH,
-        ](env, state, model)
+        for j in range(num_joints):
+            var joint_off = model_joint_offset[NBODY](j)
+            var jnt_type = Int(
+                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
+            )
+            var jnt_qpos_adr = Int(
+                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_QPOS_ADR])
+            )
+            var jnt_dof_adr = Int(
+                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
+            )
+
+            if jnt_type == JNT_FREE:
+                # Position: simple addition
+                for d in range(3):
+                    var qp = rebind[Scalar[DTYPE]](
+                        state[env, qpos_off + jnt_qpos_adr + d]
+                    )
+                    var qv = rebind[Scalar[DTYPE]](
+                        state[env, qvel_off + jnt_dof_adr + d]
+                    )
+                    state[env, qpos_off + jnt_qpos_adr + d] = qp + qv * dt
+                # Quaternion: exponential map integration
+                var qx = rebind[Scalar[DTYPE]](
+                    state[env, qpos_off + jnt_qpos_adr + 3]
+                )
+                var qy = rebind[Scalar[DTYPE]](
+                    state[env, qpos_off + jnt_qpos_adr + 4]
+                )
+                var qz = rebind[Scalar[DTYPE]](
+                    state[env, qpos_off + jnt_qpos_adr + 5]
+                )
+                var qw = rebind[Scalar[DTYPE]](
+                    state[env, qpos_off + jnt_qpos_adr + 6]
+                )
+                var wx = rebind[Scalar[DTYPE]](
+                    state[env, qvel_off + jnt_dof_adr + 3]
+                )
+                var wy = rebind[Scalar[DTYPE]](
+                    state[env, qvel_off + jnt_dof_adr + 4]
+                )
+                var wz = rebind[Scalar[DTYPE]](
+                    state[env, qvel_off + jnt_dof_adr + 5]
+                )
+                var result = quat_integrate(qx, qy, qz, qw, wx, wy, wz, dt)
+                state[env, qpos_off + jnt_qpos_adr + 3] = result[0]
+                state[env, qpos_off + jnt_qpos_adr + 4] = result[1]
+                state[env, qpos_off + jnt_qpos_adr + 5] = result[2]
+                state[env, qpos_off + jnt_qpos_adr + 6] = result[3]
+
+            elif jnt_type == JNT_HINGE or jnt_type == JNT_SLIDE:
+                var qp = rebind[Scalar[DTYPE]](
+                    state[env, qpos_off + jnt_qpos_adr]
+                )
+                var qv = rebind[Scalar[DTYPE]](
+                    state[env, qvel_off + jnt_dof_adr]
+                )
+                state[env, qpos_off + jnt_qpos_adr] = qp + qv * dt
 
         # 11. Joint limits now enforced as constraints inside the solver
         # (no post-step clamping needed)
