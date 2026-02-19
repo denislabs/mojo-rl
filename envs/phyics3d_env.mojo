@@ -10,6 +10,7 @@ This eliminates ~1200 lines of duplicated code between HalfCheetah and Hopper.
 
 from collections import InlineArray
 
+from memory import alloc
 from core import (
     BoxContinuousActionEnv,
     GPUContinuousEnv,
@@ -149,8 +150,7 @@ struct Phyics3dEnv[
     var prev_x_position: Scalar[Self.DTYPE]
 
     # Renderer (optional)
-    comptime RENDERER = ModelRenderer[Self.MODEL_DEF]
-    var _renderer: UnsafePointer[Self.RENDERER, MutAnyOrigin]
+    var _renderer: UnsafePointer[ModelRenderer[Self.MODEL_DEF], MutAnyOrigin]
     var _renderer_initialized: Bool
 
     # =========================================================================
@@ -187,6 +187,10 @@ struct Phyics3dEnv[
             Self.MODEL_DEF.NJOINT,
             Self.MODEL_DEF.MAX_CONTACTS,
         ]()
+
+        # Renderer not initialized
+        self._renderer = UnsafePointer[ModelRenderer[Self.MODEL_DEF], MutAnyOrigin]()
+        self._renderer_initialized = False
 
         # Delegate full setup to config
         Self.MODEL_DEF.setup_model_and_data(self.model, self.data)
@@ -994,11 +998,9 @@ struct Phyics3dEnv[
         if self._renderer_initialized:
             return True
 
-        from memory import alloc
+        self._renderer = alloc[ModelRenderer[Self.MODEL_DEF]](1)
 
-        self._renderer = alloc[Self.RENDERER](1)
-
-        var renderer = Self.RENDERER(
+        var renderer = ModelRenderer[Self.MODEL_DEF](
             width=1280,
             height=720,
             visual_radius_scale=2.0,

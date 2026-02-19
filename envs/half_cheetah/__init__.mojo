@@ -9,8 +9,6 @@ Components:
 - HalfCheetah: Main environment struct implementing BoxContinuousActionEnv
 - ObsState[17]: 17D observation state (8 qpos + 9 qvel) — from core
 - ContAction[6]: 6D continuous action (joint torques) — from core
-- HalfCheetahRenderer: 3D visualization using render
-
 Example usage:
     from envs.half_cheetah import HalfCheetah
     from core import ContAction
@@ -31,7 +29,6 @@ from .half_cheetah_def import (
     HalfCheetahBodies,
     HalfCheetahJoints,
     HalfCheetahActuators,
-    HalfCheetahRenderer,
     # Params struct
     HalfCheetahParams,
     HalfCheetahParamsCPU,
@@ -55,3 +52,4 @@ from .half_cheetah_def import (
     JOINT_FSHIN,
     JOINT_FFOOT,
 )
+from .half_cheetah_config import HalfCheetahConfig

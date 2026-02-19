@@ -14,8 +14,13 @@ from random import seed
 from time import perf_counter_ns
 
 from deep_agents.ppo import DeepPPOContinuousAgent
-from envs.half_cheetah import HalfCheetah, HalfCheetahParams
-
+from envs.half_cheetah import (
+    HalfCheetah,
+    HalfCheetahModel,
+    HalfCheetahConfig,
+    HalfCheetahParams,
+)
+from envs.phyics3d_env import Phyics3dEnv
 
 # =============================================================================
 # Constants (must match training configuration)
@@ -98,7 +103,10 @@ fn main() raises:
     # Create environment and evaluate using RenderableEnv trait
     # =========================================================================
 
-    var env = HalfCheetah()
+    var env = HalfCheetah[
+        DType.float64,
+        True,
+    ]()
 
     print("Running CPU evaluation...")
     print("  Episodes:", NUM_EPISODES)

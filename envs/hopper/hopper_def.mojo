@@ -14,7 +14,7 @@ model definition. Replaces the former constants.mojo.
 
 from physics3d.model.body_spec import CapsuleBody
 from physics3d.model.joint_spec import HingeJoint, SlideJoint
-from physics3d.model.model_def import (
+from physics3d.model import (
     Bodies,
     Joints,
     Geoms,
@@ -23,8 +23,9 @@ from physics3d.model.model_def import (
     Actuators,
     ModelDef,
     ModelDefaults,
+    Lights,
+    Cameras,
 )
-from physics3d.model.model_renderer import ModelRenderer
 from physics3d.model.actuator_spec import MotorActuator
 from physics3d.model.geom_spec import Plane, Capsule
 from physics3d.model.texture_spec import CheckerTexture, GradientTexture
@@ -371,9 +372,11 @@ comptime HopperActuators = Actuators[
 
 # =============================================================================
 # Camera — MuJoCo: <camera name="track" mode="trackcom" pos="0 -3 -0.25"/>
+# In MuJoCo, trackcom pos is relative to CoM. Hopper CoM is at z~1.25,
+# so camera world pos_z = 1.25 + (-0.25) = 1.0, target at CoM height.
 # =============================================================================
 
-comptime HopperCamera = TrackCamera[pos_y= -3.0, pos_z= -0.25, target_z=0.8]
+comptime HopperCamera = TrackCamera[pos_y= -3.0, pos_z=1.0, target_z=1.0]
 
 # Light — default directional light (matches Renderer3D defaults)
 comptime HopperLight = DirectionalLight[]
@@ -407,23 +410,21 @@ comptime HopperDefaults = ModelDefaults[
 ]
 
 
+comptime HopperLights = Lights[HopperLight]
+comptime HopperCameras = Cameras[HopperCamera]
+
 comptime HopperModel = ModelDef[
     HopperBodies,
     HopperJoints,
     HopperGeoms,
     HopperActuators,
     HopperDefaults,
-    0,
-    20,
-]
-
-
-comptime HopperRenderer = ModelRenderer[
-    HopperGroundGeom,
-    HopperTorsoGeom,
-    HopperThighGeom,
-    HopperLegGeom,
-    HopperFootGeom,
+    HopperLights,
+    HopperTextures,
+    HopperMaterials,
+    HopperCameras,
+    max_equality=0,
+    max_contacts=20,
 ]
 
 

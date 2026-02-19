@@ -13,13 +13,6 @@ from core import EnvRenderer3D
 from ..model.geom_spec import GeomSpec, GeomsLike
 from ..model.camera_spec import CamerasLike, _EmptyCameras
 from ..model.light_spec import LightsLike, _EmptyLights
-from ..constants import (
-    GEOM_PLANE,
-    GEOM_SPHERE,
-    GEOM_CAPSULE,
-    GEOM_BOX,
-    GEOM_CYLINDER,
-)
 
 comptime Vec3 = Vec3Generic[DType.float64]
 comptime Quat = QuatGeneric[DType.float64]
@@ -76,10 +69,10 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         show_velocity: Bool = True,
         title: String = String("Model Environment"),
     ) raises:
-        var cameras = Self.MODEL_DEF.CAMERAS.setup_cameras(width, height)
+        var cameras = Self.MODEL_DEF.setup_cameras(width, height)
         var camera = cameras[0].copy()
 
-        var lights = Self.MODEL_DEF.LIGHTS.setup_lights()
+        var lights = Self.MODEL_DEF.setup_lights()
         var light = lights[0].copy()
 
         self.visual_radius_scale = visual_radius_scale
@@ -237,35 +230,16 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
 
         self.renderer.begin_frame()
 
-        # --- R.2: Render plane geoms as ground ---
-        var has_plane = False
-
-        @parameter
-        for i in range(Self.MODEL_DEF.GEOMS.N):
-            comptime GG = Self.geom_types[i]
-
-            @parameter
-            if GG.GEOM_TYPE == GEOM_PLANE:
-                has_plane = True
-                var grid_center_x = torso_pos.x if self.follow else 0.0
-                self.renderer.draw_ground_grid(grid_center_x, height=GG.POS_Z)
-
-        # Fallback: if no plane geom, draw default grid offset by visual scale
-        if not has_plane:
-            var max_radius: Float64 = 0.0
-
-            @parameter
-            for i in range(Self.MODEL_DEF.GEOMS.N):
-                comptime GG = Self.geom_types[i]
-
-                @parameter
-                if GG.BODY_IDX > 0:
-                    if GG.RADIUS > max_radius:
-                        max_radius = GG.RADIUS
-
-            var ground_offset = -max_radius * (self.visual_radius_scale - 1.0)
-            var grid_center_x = torso_pos.x if self.follow else 0.0
-            self.renderer.draw_ground_grid(grid_center_x, height=ground_offset)
+        # Render ground geoms (planes or fallback grid)
+        try:
+            Self.MODEL_DEF.render_ground_geoms(
+                self.renderer,
+                torso_pos.x,
+                self.follow,
+                self.visual_radius_scale,
+            )
+        except:
+            pass
 
         # Coordinate axes
         if self.follow:
@@ -275,98 +249,14 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         else:
             self.renderer.draw_coordinate_axes(Vec3(0.0, 0.0, 0.0), 0.2)
 
-        # --- R.1: Draw all body-attached geoms by type ---
+        # Render body-attached geoms
         try:
-
-            @parameter
-            for i in range(Self.MODEL_DEF.GEOMS.N):
-                comptime GG = Self.geom_types[i]
-
-                # Skip worldbody geoms (planes rendered above, static geoms at body_idx=0)
-                @parameter
-                if GG.BODY_IDX > 0:
-                    # Compute geom world position and orientation
-                    var body_pos = positions[GG.BODY_IDX]
-                    var body_quat = quaternions[GG.BODY_IDX]
-
-                    # Apply local position offset
-                    var geom_pos: Vec3
-
-                    @parameter
-                    if GG.POS_X == 0.0 and GG.POS_Y == 0.0 and GG.POS_Z == 0.0:
-                        geom_pos = body_pos
-                    else:
-                        var local_pos = Vec3(GG.POS_X, GG.POS_Y, GG.POS_Z)
-                        geom_pos = body_pos + body_quat.rotate_vec(local_pos)
-
-                    # Apply local rotation
-                    var geom_quat: Quat
-
-                    @parameter
-                    if (
-                        GG.QUAT_X == 0.0
-                        and GG.QUAT_Y == 0.0
-                        and GG.QUAT_Z == 0.0
-                        and GG.QUAT_W == 1.0
-                    ):
-                        geom_quat = body_quat
-                    else:
-                        var local_quat = Quat(
-                            GG.QUAT_W, GG.QUAT_X, GG.QUAT_Y, GG.QUAT_Z
-                        )
-                        geom_quat = body_quat * local_quat
-
-                    # Resolve material properties (-1.0 sentinel = use defaults)
-                    comptime _shin: Float64 = 0.5 if GG.SHININESS < 0.0 else GG.SHININESS
-                    comptime _spec: Float64 = 0.5 if GG.SPECULAR < 0.0 else GG.SPECULAR
-                    comptime _refl: Float64 = 0.0 if GG.REFLECTANCE < 0.0 else GG.REFLECTANCE
-
-                    # Dispatch draw call by geom type
-                    @parameter
-                    if GG.GEOM_TYPE == GEOM_CAPSULE:
-                        self.renderer.draw_capsule(
-                            center=geom_pos,
-                            orientation=geom_quat,
-                            radius=GG.RADIUS * self.visual_radius_scale,
-                            half_height=GG.HALF_LENGTH,
-                            axis=2,
-                            color=GG.COLOR,
-                            shininess=Float32(_shin),
-                            specular=Float32(_spec),
-                            reflectance=Float32(_refl),
-                        )
-                    elif GG.GEOM_TYPE == GEOM_SPHERE:
-                        self.renderer.draw_sphere(
-                            center=geom_pos,
-                            radius=GG.RADIUS * self.visual_radius_scale,
-                            color=GG.COLOR,
-                            shininess=Float32(_shin),
-                            specular=Float32(_spec),
-                            reflectance=Float32(_refl),
-                        )
-                    elif GG.GEOM_TYPE == GEOM_BOX:
-                        self.renderer.draw_box(
-                            center=geom_pos,
-                            orientation=geom_quat,
-                            half_extents=Vec3(GG.HALF_X, GG.HALF_Y, GG.HALF_Z),
-                            color=GG.COLOR,
-                            shininess=Float32(_shin),
-                            specular=Float32(_spec),
-                            reflectance=Float32(_refl),
-                        )
-                    elif GG.GEOM_TYPE == GEOM_CYLINDER:
-                        # Render cylinder as capsule (visual approximation)
-                        self.renderer.draw_capsule(
-                            center=geom_pos,
-                            orientation=geom_quat,
-                            radius=GG.RADIUS * self.visual_radius_scale,
-                            half_height=GG.HALF_LENGTH,
-                            axis=2,
-                            color=GG.COLOR,
-                            shininess=Float32(_shin),
-                            specular=Float32(_spec),
-                            reflectance=Float32(_refl),
-                        )
+            Self.MODEL_DEF.render_body_geoms(
+                self.renderer,
+                positions,
+                quaternions,
+                self.visual_radius_scale,
+            )
         except:
             pass
 

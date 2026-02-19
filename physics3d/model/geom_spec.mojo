@@ -31,7 +31,11 @@ from ..constants import (
     GEOM_BOX,
     GEOM_CYLINDER,
 )
-from render import Color
+from render import Color, Renderer3D
+from math3d import Vec3 as _Vec3G, Quat as _QuatG
+
+comptime _RVec3 = _Vec3G[DType.float64]
+comptime _RQuat = _QuatG[DType.float64]
 from ..model.defaults_spec import ModelDefaults, _resolve_f64, _resolve_int
 from .inertia_from_geom import geom_volume, compute_inertia_from_geoms
 
@@ -879,6 +883,26 @@ trait GeomsLike:
     ):
         ...
 
+    @staticmethod
+    fn render_ground_geoms(
+        mut renderer: Renderer3D,
+        torso_x: Float64,
+        follow: Bool,
+        visual_radius_scale: Float64,
+    ) raises:
+        """Draw plane geoms as ground grids, or a fallback grid if no planes."""
+        ...
+
+    @staticmethod
+    fn render_body_geoms(
+        mut renderer: Renderer3D,
+        positions: List[_RVec3],
+        quaternions: List[_RQuat],
+        visual_radius_scale: Float64,
+    ) raises:
+        """Draw all body-attached geoms (capsule, sphere, box, cylinder)."""
+        ...
+
 
 @fieldwise_init
 struct _EmptyGeoms(GeomsLike):
@@ -912,7 +936,21 @@ struct _EmptyGeoms(GeomsLike):
         pass
 
     @staticmethod
-    fn get_geom_spec(index: Int) -> GeomSpec:
+    fn render_ground_geoms(
+        mut renderer: Renderer3D,
+        torso_x: Float64,
+        follow: Bool,
+        visual_radius_scale: Float64,
+    ) raises:
+        pass
+
+    @staticmethod
+    fn render_body_geoms(
+        mut renderer: Renderer3D,
+        positions: List[_RVec3],
+        quaternions: List[_RQuat],
+        visual_radius_scale: Float64,
+    ) raises:
         pass
 
 
@@ -1107,4 +1145,137 @@ struct Geoms[*G: GeomSpec](GeomsLike):
                     # Use default density
                     model.geom_mass[i] = (
                         Scalar[DTYPE](Defaults.GEOM_DENSITY) * vol
+                    )
+
+    @staticmethod
+    fn render_ground_geoms(
+        mut renderer: Renderer3D,
+        torso_x: Float64,
+        follow: Bool,
+        visual_radius_scale: Float64,
+    ) raises:
+        """Draw plane geoms as ground grids, or a fallback grid if no planes."""
+        var has_plane = False
+
+        @parameter
+        for i in range(Self.N):
+            comptime GG = Self.geom_types[i]
+
+            @parameter
+            if GG.GEOM_TYPE == GEOM_PLANE:
+                has_plane = True
+                var grid_center_x = torso_x if follow else 0.0
+                renderer.draw_ground_grid(grid_center_x, height=GG.POS_Z)
+
+        if not has_plane:
+            var max_radius: Float64 = 0.0
+
+            @parameter
+            for i in range(Self.N):
+                comptime GG = Self.geom_types[i]
+
+                @parameter
+                if GG.BODY_IDX > 0:
+                    if GG.RADIUS > max_radius:
+                        max_radius = GG.RADIUS
+
+            var ground_offset = -max_radius * (visual_radius_scale - 1.0)
+            var grid_center_x = torso_x if follow else 0.0
+            renderer.draw_ground_grid(grid_center_x, height=ground_offset)
+
+    @staticmethod
+    fn render_body_geoms(
+        mut renderer: Renderer3D,
+        positions: List[_RVec3],
+        quaternions: List[_RQuat],
+        visual_radius_scale: Float64,
+    ) raises:
+        """Draw all body-attached geoms (capsule, sphere, box, cylinder)."""
+
+        @parameter
+        for i in range(Self.N):
+            comptime GG = Self.geom_types[i]
+
+            # Skip worldbody geoms (planes rendered separately)
+            @parameter
+            if GG.BODY_IDX > 0:
+                var body_pos = positions[GG.BODY_IDX]
+                var body_quat = quaternions[GG.BODY_IDX]
+
+                # Apply local position offset
+                var geom_pos: _RVec3
+
+                @parameter
+                if GG.POS_X == 0.0 and GG.POS_Y == 0.0 and GG.POS_Z == 0.0:
+                    geom_pos = body_pos
+                else:
+                    var local_pos = _RVec3(GG.POS_X, GG.POS_Y, GG.POS_Z)
+                    geom_pos = body_pos + body_quat.rotate_vec(local_pos)
+
+                # Apply local rotation
+                var geom_quat: _RQuat
+
+                @parameter
+                if (
+                    GG.QUAT_X == 0.0
+                    and GG.QUAT_Y == 0.0
+                    and GG.QUAT_Z == 0.0
+                    and GG.QUAT_W == 1.0
+                ):
+                    geom_quat = body_quat
+                else:
+                    var local_quat = _RQuat(
+                        GG.QUAT_W, GG.QUAT_X, GG.QUAT_Y, GG.QUAT_Z
+                    )
+                    geom_quat = body_quat * local_quat
+
+                # Resolve material properties (-1.0 sentinel = use defaults)
+                comptime _shin: Float64 = 0.5 if GG.SHININESS < 0.0 else GG.SHININESS
+                comptime _spec: Float64 = 0.5 if GG.SPECULAR < 0.0 else GG.SPECULAR
+                comptime _refl: Float64 = 0.0 if GG.REFLECTANCE < 0.0 else GG.REFLECTANCE
+
+                # Dispatch draw call by geom type
+                @parameter
+                if GG.GEOM_TYPE == GEOM_CAPSULE:
+                    renderer.draw_capsule(
+                        center=geom_pos,
+                        orientation=geom_quat,
+                        radius=GG.RADIUS * visual_radius_scale,
+                        half_height=GG.HALF_LENGTH,
+                        axis=2,
+                        color=GG.COLOR,
+                        shininess=Float32(_shin),
+                        specular=Float32(_spec),
+                        reflectance=Float32(_refl),
+                    )
+                elif GG.GEOM_TYPE == GEOM_SPHERE:
+                    renderer.draw_sphere(
+                        center=geom_pos,
+                        radius=GG.RADIUS * visual_radius_scale,
+                        color=GG.COLOR,
+                        shininess=Float32(_shin),
+                        specular=Float32(_spec),
+                        reflectance=Float32(_refl),
+                    )
+                elif GG.GEOM_TYPE == GEOM_BOX:
+                    renderer.draw_box(
+                        center=geom_pos,
+                        orientation=geom_quat,
+                        half_extents=_RVec3(GG.HALF_X, GG.HALF_Y, GG.HALF_Z),
+                        color=GG.COLOR,
+                        shininess=Float32(_shin),
+                        specular=Float32(_spec),
+                        reflectance=Float32(_refl),
+                    )
+                elif GG.GEOM_TYPE == GEOM_CYLINDER:
+                    renderer.draw_capsule(
+                        center=geom_pos,
+                        orientation=geom_quat,
+                        radius=GG.RADIUS * visual_radius_scale,
+                        half_height=GG.HALF_LENGTH,
+                        axis=2,
+                        color=GG.COLOR,
+                        shininess=Float32(_shin),
+                        specular=Float32(_spec),
+                        reflectance=Float32(_refl),
                     )

@@ -624,8 +624,9 @@ comptime HalfCheetahModel = ModelDef[
     HalfCheetahTextures,
     HalfCheetahMaterials,
     HalfCheetahCameras,
-    20,
-    ConeType.PYRAMIDAL,
+    max_equality=0,
+    max_contacts=20,
+    cone_type=ConeType.PYRAMIDAL,
 ]
 
 

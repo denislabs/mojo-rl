@@ -23,6 +23,8 @@ Usage:
 from collections import InlineArray
 from std.builtin.variadics import Variadic
 from random.philox import Random as PhiloxRandom
+from render import Color, Renderer3D, Light, Camera3D
+from math3d import Vec3 as _Vec3G, Quat as _QuatG
 
 from .body_spec import BodySpec
 from .joint_spec import JointSpec
@@ -94,6 +96,10 @@ from ..model.material_spec import MaterialsLike, _EmptyMaterials
 from ..model.camera_spec import CamerasLike, _EmptyCameras
 
 
+comptime _RVec3 = _Vec3G[DType.float64]
+comptime _RQuat = _QuatG[DType.float64]
+
+
 trait ModelDefLike:
     """Trait for model definition types."""
 
@@ -110,15 +116,15 @@ trait ModelDefLike:
     comptime ACTION_DIM: Int
 
     # === Components ===
-    comptime BODIES: BodiesLike
-    comptime JOINTS: JointsLike
-    comptime GEOMS: GeomsLike
-    comptime ACTUATORS: ActuatorsLike
-    comptime DEFAULTS: ModelDefaultsLike
-    comptime LIGHTS: LightsLike
-    comptime TEXTURES: TexturesLike
-    comptime MATERIALS: MaterialsLike
-    comptime CAMERAS: CamerasLike
+    # comptime BODIES: BodiesLike
+    # comptime JOINTS: JointsLike
+    # comptime GEOMS: GeomsLike
+    # comptime ACTUATORS: ActuatorsLike
+    # comptime DEFAULTS: ModelDefaultsLike
+    # comptime LIGHTS: LightsLike
+    # comptime TEXTURES: TexturesLike
+    # comptime MATERIALS: MaterialsLike
+    # comptime CAMERAS: CamerasLike
 
     # === CPU: Model setup (calls Bodies/Joints/Geoms/Defaults internally) ===
     @staticmethod
@@ -289,6 +295,32 @@ trait ModelDefLike:
     ):
         ...
 
+    @staticmethod
+    fn render_ground_geoms(
+        mut renderer: Renderer3D,
+        torso_x: Float64,
+        follow: Bool,
+        visual_radius_scale: Float64,
+    ) raises:
+        ...
+
+    @staticmethod
+    fn render_body_geoms(
+        mut renderer: Renderer3D,
+        positions: List[_RVec3],
+        quaternions: List[_RQuat],
+        visual_radius_scale: Float64,
+    ) raises:
+        ...
+
+    @staticmethod
+    fn setup_lights() raises -> List[Light]:
+        ...
+
+    @staticmethod
+    fn setup_cameras(width: Int, height: Int) raises -> List[Camera3D]:
+        ...
+
 
 @fieldwise_init
 struct ModelDef[
@@ -331,15 +363,15 @@ struct ModelDef[
     comptime OBS_DIM: Int = Self.Joints.OBS_DIM
     comptime ACTION_DIM: Int = Self.Joints.ACTION_DIM
 
-    comptime BODIES: BodiesLike = Self.Bodies
-    comptime JOINTS: JointsLike = Self.Joints
-    comptime GEOMS: GeomsLike = Self.Geoms
-    comptime ACTUATORS: ActuatorsLike = Self.Actuators
-    comptime DEFAULTS: ModelDefaultsLike = Self.Defaults
-    comptime LIGHTS: LightsLike = Self.Lights
-    comptime TEXTURES: TexturesLike = Self.Textures
-    comptime MATERIALS: MaterialsLike = Self.Materials
-    comptime CAMERAS: CamerasLike = Self.Cameras
+    # comptime BODIES: BodiesLike = Self.Bodies
+    # comptime JOINTS: JointsLike = Self.Joints
+    # comptime GEOMS: GeomsLike = Self.Geoms
+    # comptime ACTUATORS: ActuatorsLike = Self.Actuators
+    # comptime DEFAULTS: ModelDefaultsLike = Self.Defaults
+    # comptime LIGHTS: LightsLike = Self.Lights
+    # comptime TEXTURES: TexturesLike = Self.Textures
+    # comptime MATERIALS: MaterialsLike = Self.Materials
+    # comptime CAMERAS: CamerasLike = Self.Cameras
 
     # =========================================================================
     # Model Creation Helpers
@@ -708,3 +740,33 @@ struct ModelDef[
         copy_geoms_to_buffer(model, host_buf)
         copy_invweight0_to_buffer(model, host_buf)
         return host_buf^
+
+    @staticmethod
+    fn render_ground_geoms(
+        mut renderer: Renderer3D,
+        torso_x: Float64,
+        follow: Bool,
+        visual_radius_scale: Float64,
+    ) raises:
+        Self.Geoms.render_ground_geoms(
+            renderer, torso_x, follow, visual_radius_scale
+        )
+
+    @staticmethod
+    fn render_body_geoms(
+        mut renderer: Renderer3D,
+        positions: List[_RVec3],
+        quaternions: List[_RQuat],
+        visual_radius_scale: Float64,
+    ) raises:
+        Self.Geoms.render_body_geoms(
+            renderer, positions, quaternions, visual_radius_scale
+        )
+
+    @staticmethod
+    fn setup_lights() raises -> List[Light]:
+        return Self.Lights.setup_lights()
+
+    @staticmethod
+    fn setup_cameras(width: Int, height: Int) raises -> List[Camera3D]:
+        return Self.Cameras.setup_cameras(width, height)

@@ -1,4 +1,4 @@
-"""Hopper environment configuration for generic MuJoCoEnv."""
+"""Hopper environment configuration for generic Phyics3dEnv."""
 
 from gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
@@ -9,90 +9,49 @@ from physics3d.solver import NewtonSolver
 
 from .hopper_def import (
     HopperModel,
-    HopperBodies,
-    HopperJoints,
-    HopperGeoms,
-    HopperActuators,
     HopperParams,
-    HopperDefaults,
 )
-from ..mujoco_env_config import MuJoCoEnvConfig
+from ..phyics3d_env_config import Phyics3dEnvConfig
 
 
-struct HopperConfig(MuJoCoEnvConfig):
-    # === Dimensions (from ModelDef) ===
-    comptime NQ: Int = HopperModel.NQ  # 6
-    comptime NV: Int = HopperModel.NV  # 6
-    comptime NBODY: Int = HopperModel.NBODY  # 4
-    comptime NJOINT: Int = HopperModel.NJOINT  # 6
-    comptime NGEOM: Int = HopperModel.NGEOM  # 5
-    comptime MAX_EQUALITY: Int = HopperModel.MAX_EQUALITY  # 0
-    comptime CONE_TYPE: Int = HopperModel.CONE_TYPE  # ELLIPTIC
-    comptime MAX_CONTACTS: Int = 20
-    comptime OBS_DIM: Int = HopperModel.OBS_DIM  # 11
-    comptime ACTION_DIM: Int = HopperModel.ACTION_DIM  # 3
-
+struct HopperConfig(Phyics3dEnvConfig):
     # === Physics ===
     comptime FRAME_SKIP: Int = 4
     comptime MAX_STEPS: Int = 1000
     comptime INTEGRATOR_WS_EXTRA: Int = 0  # RK4 has no extra workspace
-    comptime GPU_ENFORCE_LIMITS: Bool = False  # Hopper GPU doesn't enforce limits
-
-    # === CPU: Model setup ===
-    @staticmethod
-    fn setup_model_and_data[
-        DTYPE: DType where DTYPE.is_floating_point()
-    ](
-        mut model: Model[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            Self.MAX_CONTACTS,
-            Self.NGEOM,
-            Self.MAX_EQUALITY,
-            Self.CONE_TYPE,
-        ],
-        mut data: Data[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            Self.MAX_CONTACTS,
-        ],
-    ):
-        HopperModel.setup_solver_params(model)
-        HopperBodies.setup_model(model)
-        HopperJoints.setup_model[Defaults=HopperDefaults](model)
-        HopperGeoms.setup_model[Defaults=HopperDefaults](model)
-        HopperJoints.reset_data(data)
-        HopperModel.finalize(model, data)
+    comptime GPU_ENFORCE_LIMITS: Bool = False
 
     # === CPU: Integrator step ===
     @staticmethod
     fn physics_substep[
-        DTYPE: DType where DTYPE.is_floating_point()
+        DTYPE: DType where DTYPE.is_floating_point(),
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
+        NGEOM: Int,
+        MAX_EQUALITY: Int,
+        CONE_TYPE: Int,
     ](
         mut model: Model[
             DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            Self.MAX_CONTACTS,
-            Self.NGEOM,
-            Self.MAX_EQUALITY,
-            Self.CONE_TYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
         ],
         mut data: Data[
             DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            Self.MAX_CONTACTS,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
         ],
         verbose: Bool,
     ):
@@ -130,7 +89,7 @@ struct HopperConfig(MuJoCoEnvConfig):
     # === CPU: Float getters ===
     @staticmethod
     fn get_timestep() -> Float64:
-        return Float64(HopperParams[DType.float64].DT)
+        return Float64(HopperModel.Defaults.TIMESTEP)
 
     @staticmethod
     fn get_reset_noise() -> Float64:
@@ -147,7 +106,16 @@ struct HopperConfig(MuJoCoEnvConfig):
     # === GPU: Integrator step ===
     @staticmethod
     fn physics_substep_gpu[
-        DTYPE: DType where DTYPE.is_floating_point(), BATCH_SIZE: Int
+        DTYPE: DType where DTYPE.is_floating_point(),
+        BATCH_SIZE: Int,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
+        NGEOM: Int,
+        MAX_EQUALITY: Int,
+        CONE_TYPE: Int,
     ](
         ctx: DeviceContext,
         mut states_buf: DeviceBuffer[DTYPE],
@@ -156,209 +124,14 @@ struct HopperConfig(MuJoCoEnvConfig):
     ) raises:
         RK4Integrator[SOLVER=NewtonSolver].step_gpu[
             DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            Self.MAX_CONTACTS,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
             BATCH_SIZE,
-            NGEOM = Self.NGEOM,
+            NGEOM,
         ](ctx, states_buf, model_buf, workspace_buf)
-
-    # === GPU: Model init ===
-    @staticmethod
-    fn init_model_gpu[
-        DTYPE: DType where DTYPE.is_floating_point()
-    ](
-        ctx: DeviceContext,
-        mut model_buf: DeviceBuffer[DTYPE],
-        min_height: Scalar[DTYPE],
-        max_pitch: Scalar[DTYPE],
-    ) raises:
-        from physics3d.gpu.constants import (
-            model_curriculum_offset,
-            CURRICULUM_IDX_MIN_HEIGHT,
-            CURRICULUM_IDX_MAX_PITCH,
-        )
-
-        var model = Model[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            Self.MAX_CONTACTS,
-            Self.NGEOM,
-            Self.MAX_EQUALITY,
-            Self.CONE_TYPE,
-        ]()
-        HopperModel.setup_solver_params(model)
-        HopperBodies.setup_model(model)
-        HopperJoints.setup_model[Defaults=HopperDefaults](model)
-        HopperGeoms.setup_model[Defaults=HopperDefaults](model)
-
-        var data_ref = Data[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            Self.MAX_CONTACTS,
-        ]()
-        HopperModel.finalize(model, data_ref)
-
-        var host_buf = HopperModel.create_gpu_model_buffer[
-            DTYPE, Self.MAX_CONTACTS
-        ](ctx, model)
-
-        var curr = model_curriculum_offset[Self.NBODY, Self.NJOINT]()
-        host_buf[curr + CURRICULUM_IDX_MIN_HEIGHT] = min_height
-        host_buf[curr + CURRICULUM_IDX_MAX_PITCH] = max_pitch
-
-        ctx.enqueue_copy(model_buf, host_buf.unsafe_ptr())
-
-    # === CPU: Joints/Actuators delegates ===
-    @staticmethod
-    fn reset_data[
-        DTYPE: DType where DTYPE.is_floating_point()
-    ](
-        mut data: Data[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            Self.MAX_CONTACTS,
-        ],
-    ):
-        HopperJoints.reset_data(data)
-
-    @staticmethod
-    fn extract_obs[
-        DTYPE: DType where DTYPE.is_floating_point()
-    ](
-        data: Data[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            Self.MAX_CONTACTS,
-        ],
-        mut obs: List[Scalar[DTYPE]],
-    ):
-        HopperJoints.extract_obs(data, obs)
-
-    @staticmethod
-    fn enforce_limits[
-        DTYPE: DType where DTYPE.is_floating_point()
-    ](
-        mut data: Data[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            Self.MAX_CONTACTS,
-        ],
-    ):
-        HopperJoints.enforce_limits(data)
-
-    @staticmethod
-    fn apply_actions[
-        DTYPE: DType where DTYPE.is_floating_point()
-    ](
-        mut data: Data[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            Self.MAX_CONTACTS,
-        ],
-        actions: List[Float64],
-    ):
-        HopperActuators.apply_actions(data, actions)
-
-    # === GPU: Joints/Actuators kernel delegates ===
-    @staticmethod
-    fn apply_actions_kernel_gpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
-        BATCH_SIZE: Int,
-        STATE_SIZE: Int,
-        ACTION_DIM: Int,
-    ](
-        ctx: DeviceContext,
-        mut states_buf: DeviceBuffer[DTYPE],
-        actions_buf: DeviceBuffer[DTYPE],
-    ) raises:
-        HopperActuators.apply_actions_kernel_gpu[
-            DTYPE, BATCH_SIZE, STATE_SIZE, ACTION_DIM, Self.NQ, Self.NV
-        ](ctx, states_buf, actions_buf)
-
-    @staticmethod
-    fn enforce_limits_kernel_gpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
-        BATCH_SIZE: Int,
-        STATE_SIZE: Int,
-    ](ctx: DeviceContext, mut states_buf: DeviceBuffer[DTYPE]) raises:
-        HopperJoints.enforce_limits_kernel_gpu[
-            DTYPE, BATCH_SIZE, STATE_SIZE
-        ](ctx, states_buf)
-
-    @staticmethod
-    fn extract_obs_kernel_gpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
-        BATCH_SIZE: Int,
-        STATE_SIZE: Int,
-        OBS_DIM: Int,
-    ](
-        ctx: DeviceContext,
-        states_buf: DeviceBuffer[DTYPE],
-        mut obs_buf: DeviceBuffer[DTYPE],
-    ) raises:
-        HopperJoints.extract_obs_kernel_gpu[
-            DTYPE, BATCH_SIZE, STATE_SIZE, OBS_DIM
-        ](ctx, states_buf, obs_buf)
-
-    # === GPU inline: Per-env delegates ===
-    @always_inline
-    @staticmethod
-    fn reset_env_gpu[
-        DTYPE: DType,
-        BATCH_SIZE: Int,
-        STATE_SIZE: Int,
-    ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ],
-        env: Int,
-        noise_scale: Scalar[DTYPE],
-        seed: Int,
-    ):
-        HopperJoints.reset_env_gpu[DTYPE, BATCH_SIZE, STATE_SIZE](
-            states, env, noise_scale, seed
-        )
-
-    @always_inline
-    @staticmethod
-    fn extract_obs_gpu[
-        DTYPE: DType,
-        BATCH_SIZE: Int,
-        STATE_SIZE: Int,
-        OBS_DIM: Int,
-    ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ],
-        obs: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
-        ],
-        env: Int,
-    ):
-        HopperJoints.extract_obs_gpu[DTYPE, BATCH_SIZE, STATE_SIZE, OBS_DIM](
-            states, obs, env
-        )
 
     # === GPU inline: Reward ===
     @always_inline

@@ -29,7 +29,4 @@ from .car_racing import (
     CarRacingAction,
 )
 from .hopper import Hopper
-from .half_cheetah import (
-    HalfCheetah,
-    HalfCheetahRenderer,
-)
+from .half_cheetah import HalfCheetah
