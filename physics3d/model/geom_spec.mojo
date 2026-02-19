@@ -23,7 +23,7 @@ Usage:
     # Capsule with explicit friction override
     comptime MyCap = Capsule[body_idx=1, radius=0.046, friction=0.4]
 """
-
+from math import sqrt
 from ..constants import (
     GEOM_PLANE,
     GEOM_SPHERE,
@@ -32,6 +32,8 @@ from ..constants import (
     GEOM_CYLINDER,
 )
 from render import Color
+from ..model.defaults_spec import ModelDefaults, _resolve_f64, _resolve_int
+from .inertia_from_geom import geom_volume, compute_inertia_from_geoms
 
 # Sentinel values for "use model default" (re-exported for convenience)
 comptime _UNSET_F64: Float64 = -1.0
@@ -845,18 +847,264 @@ struct FromToCylinder[
     comptime MATERIAL_NAME: String = Self.material_name
 
 
-# =============================================================================
-# Backwards-compatible aliases
-# =============================================================================
+trait GeomsLike:
+    """Trait for compile-time geom container types."""
 
-comptime PlaneGeom = Plane
-comptime SphereGeom = Sphere
-comptime BoxGeom = Box
-comptime CapsuleGeom = Capsule
-comptime CylinderGeom = Cylinder
-comptime FromToCapsuleGeom = FromToCapsule
-comptime FromToCylinderGeom = FromToCylinder
-comptime BodyCapsuleGeom = Capsule
-comptime BodySphereGeom = Sphere
-comptime BodyBoxGeom = Box
-comptime BodyCylinderGeom = Cylinder
+    comptime N: Int
+
+    @staticmethod
+    fn setup_model[
+        DTYPE: DType,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
+        NGEOM: Int,
+        MAX_EQUALITY: Int,
+        CONE_TYPE: Int,
+        Defaults: ModelDefaultsLike,
+    ](
+        mut model: Model[
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
+        ]
+    ):
+        ...
+
+
+@fieldwise_init
+struct _EmptyGeoms(GeomsLike):
+    comptime N: Int = 0
+
+    @staticmethod
+    fn setup_model[
+        DTYPE: DType,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
+        NGEOM: Int,
+        MAX_EQUALITY: Int,
+        CONE_TYPE: Int,
+        Defaults: ModelDefaultsLike,
+    ](
+        mut model: Model[
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
+        ]
+    ):
+        pass
+
+    @staticmethod
+    fn get_geom_spec(index: Int) -> GeomSpec:
+        pass
+
+
+@fieldwise_init
+struct Geoms[*G: GeomSpec](GeomsLike):
+    """Compile-time list of geom specifications (static + body-attached).
+
+    Provides N (total geom count), type-level access via geom_types[i],
+    and helper counts for static vs dynamic geoms.
+    """
+
+    comptime geom_types = Variadic.types[T=GeomSpec, *Self.G]
+    comptime N: Int = Variadic.size(Self.geom_types)
+
+    @staticmethod
+    fn _count_static_geoms() -> Int:
+        """Count of static (worldbody) geoms (BODY_IDX == 0)."""
+        var total = 0
+
+        @parameter
+        for i in range(Self.N):
+
+            @parameter
+            if Self.geom_types[i].BODY_IDX == 0:
+                total += 1
+        return total
+
+    @staticmethod
+    fn _count_plane_geoms() -> Int:
+        """Count of plane geoms (GEOM_TYPE == GEOM_PLANE)."""
+        var total = 0
+
+        @parameter
+        for i in range(Self.N):
+
+            @parameter
+            if Self.geom_types[i].GEOM_TYPE == GEOM_PLANE:
+                total += 1
+        return total
+
+    @staticmethod
+    fn setup_model[
+        DTYPE: DType,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
+        NGEOM: Int = 0,
+        MAX_EQUALITY: Int = 0,
+        CONE_TYPE: Int = ConeType.ELLIPTIC,
+        Defaults: ModelDefaultsLike = ModelDefaults[],
+    ](
+        mut model: Model[
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
+        ]
+    ):
+        """Populate model geom arrays from compile-time GeomSpec list.
+
+        Resolves sentinel values (-1.0/-1) from ModelDefaults.
+        Sets geom type, body index, position, orientation, size, collision
+        filtering, friction, and per-geom solref/solimp.
+        """
+
+        @parameter
+        for i in range(Self.N):
+            comptime G_item = Self.geom_types[i]
+
+            # Geom arrays
+            model.geom_type[i] = G_item.GEOM_TYPE
+            model.geom_body[i] = G_item.BODY_IDX
+            model.geom_pos[i * 3 + 0] = Scalar[DTYPE](G_item.POS_X)
+            model.geom_pos[i * 3 + 1] = Scalar[DTYPE](G_item.POS_Y)
+            model.geom_pos[i * 3 + 2] = Scalar[DTYPE](G_item.POS_Z)
+            model.geom_quat[i * 4 + 0] = Scalar[DTYPE](G_item.QUAT_X)
+            model.geom_quat[i * 4 + 1] = Scalar[DTYPE](G_item.QUAT_Y)
+            model.geom_quat[i * 4 + 2] = Scalar[DTYPE](G_item.QUAT_Z)
+            model.geom_quat[i * 4 + 3] = Scalar[DTYPE](G_item.QUAT_W)
+            model.geom_radius[i] = Scalar[DTYPE](G_item.RADIUS)
+            model.geom_half_length[i] = Scalar[DTYPE](G_item.HALF_LENGTH)
+            model.geom_half_x[i] = Scalar[DTYPE](G_item.HALF_X)
+            model.geom_half_y[i] = Scalar[DTYPE](G_item.HALF_Y)
+            model.geom_half_z[i] = Scalar[DTYPE](G_item.HALF_Z)
+
+            # Resolve physics fields via defaults
+            model.geom_friction[i] = Scalar[DTYPE](
+                _resolve_f64[G_item.FRICTION, Defaults.GEOM_FRICTION]()
+            )
+            model.geom_condim[i] = _resolve_int[
+                G_item.CONDIM, Defaults.GEOM_CONDIM
+            ]()
+            model.geom_friction_spin[i] = Scalar[DTYPE](
+                _resolve_f64[
+                    G_item.FRICTION_SPIN, Defaults.GEOM_FRICTION_SPIN
+                ]()
+            )
+            model.geom_friction_roll[i] = Scalar[DTYPE](
+                _resolve_f64[
+                    G_item.FRICTION_ROLL, Defaults.GEOM_FRICTION_ROLL
+                ]()
+            )
+            model.geom_contype[i] = _resolve_int[
+                G_item.CONTYPE, Defaults.GEOM_CONTYPE
+            ]()
+            model.geom_conaffinity[i] = _resolve_int[
+                G_item.CONAFFINITY, Defaults.GEOM_CONAFFINITY
+            ]()
+
+            # Per-geom solref/solimp (resolved from defaults)
+            model.geom_solref[i * 2 + 0] = Scalar[DTYPE](
+                _resolve_f64[G_item.SOLREF_0, Defaults.GEOM_SOLREF_0]()
+            )
+            model.geom_solref[i * 2 + 1] = Scalar[DTYPE](
+                _resolve_f64[G_item.SOLREF_1, Defaults.GEOM_SOLREF_1]()
+            )
+            model.geom_solimp[i * 3 + 0] = Scalar[DTYPE](
+                _resolve_f64[G_item.SOLIMP_0, Defaults.GEOM_SOLIMP_0]()
+            )
+            model.geom_solimp[i * 3 + 1] = Scalar[DTYPE](
+                _resolve_f64[G_item.SOLIMP_1, Defaults.GEOM_SOLIMP_1]()
+            )
+            model.geom_solimp[i * 3 + 2] = Scalar[DTYPE](
+                _resolve_f64[G_item.SOLIMP_2, Defaults.GEOM_SOLIMP_2]()
+            )
+
+            # Contact margin (resolved from defaults)
+            model.geom_margin[i] = Scalar[DTYPE](
+                _resolve_f64[G_item.MARGIN, Defaults.GEOM_MARGIN]()
+            )
+
+            # Compute bounding sphere radius
+            @parameter
+            if G_item.GEOM_TYPE == GEOM_SPHERE:
+                model.geom_rbound[i] = Scalar[DTYPE](G_item.RADIUS)
+            elif G_item.GEOM_TYPE == GEOM_CAPSULE:
+                model.geom_rbound[i] = Scalar[DTYPE](
+                    G_item.HALF_LENGTH
+                ) + Scalar[DTYPE](G_item.RADIUS)
+            elif G_item.GEOM_TYPE == GEOM_CYLINDER:
+                # Corner of cylinder to center: sqrt(half_length^2 + radius^2)
+                model.geom_rbound[i] = sqrt(
+                    Scalar[DTYPE](G_item.HALF_LENGTH)
+                    * Scalar[DTYPE](G_item.HALF_LENGTH)
+                    + Scalar[DTYPE](G_item.RADIUS)
+                    * Scalar[DTYPE](G_item.RADIUS)
+                )
+            elif G_item.GEOM_TYPE == GEOM_BOX:
+                model.geom_rbound[i] = sqrt(
+                    Scalar[DTYPE](G_item.HALF_X) * Scalar[DTYPE](G_item.HALF_X)
+                    + Scalar[DTYPE](G_item.HALF_Y)
+                    * Scalar[DTYPE](G_item.HALF_Y)
+                    + Scalar[DTYPE](G_item.HALF_Z)
+                    * Scalar[DTYPE](G_item.HALF_Z)
+                )
+            elif G_item.GEOM_TYPE == GEOM_PLANE:
+                model.geom_rbound[i] = Scalar[DTYPE](
+                    1e10
+                )  # Planes are infinite
+
+            # Compute and store per-geom mass
+            # Priority: explicit mass > explicit density > default density
+            @parameter
+            if G_item.GEOM_TYPE == GEOM_PLANE:
+                model.geom_mass[i] = Scalar[DTYPE](0)
+            elif G_item.GEOM_MASS >= 0.0:
+                # Explicit mass on the geom
+                model.geom_mass[i] = Scalar[DTYPE](G_item.GEOM_MASS)
+            else:
+                # Compute volume
+                var vol = geom_volume[DTYPE](
+                    G_item.GEOM_TYPE,
+                    Scalar[DTYPE](G_item.RADIUS),
+                    Scalar[DTYPE](G_item.HALF_LENGTH),
+                    Scalar[DTYPE](G_item.HALF_X),
+                    Scalar[DTYPE](G_item.HALF_Y),
+                    Scalar[DTYPE](G_item.HALF_Z),
+                )
+
+                @parameter
+                if G_item.DENSITY >= 0.0:
+                    # Explicit density on the geom
+                    model.geom_mass[i] = Scalar[DTYPE](G_item.DENSITY) * vol
+                else:
+                    # Use default density
+                    model.geom_mass[i] = (
+                        Scalar[DTYPE](Defaults.GEOM_DENSITY) * vol
+                    )

@@ -20,11 +20,11 @@ trait MaterialSpec:
     """Compile-time specification for a material."""
 
     comptime NAME: String
-    comptime SHININESS: Float64       # Specular exponent scaling (0-1, maps to pow range)
-    comptime SPECULAR: Float64        # Specular intensity (0-1)
-    comptime REFLECTANCE: Float64     # Reflectance coefficient (0-1)
-    comptime EMISSION: Float64        # Emissive intensity (0-1)
-    comptime HAS_TEXTURE: Bool        # Whether a texture is assigned
+    comptime SHININESS: Float64  # Specular exponent scaling (0-1, maps to pow range)
+    comptime SPECULAR: Float64  # Specular intensity (0-1)
+    comptime REFLECTANCE: Float64  # Reflectance coefficient (0-1)
+    comptime EMISSION: Float64  # Emissive intensity (0-1)
+    comptime HAS_TEXTURE: Bool  # Whether a texture is assigned
     comptime TEXTURE_NAME: String  # Reference to texture by name
 
 
@@ -77,3 +77,32 @@ comptime GeomMaterial = Material[
     has_texture=True,
     texture_name="flat",
 ]
+
+
+# =============================================================================
+# Materials — variadic material list (purely visual, no setup_model)
+# =============================================================================
+
+
+trait MaterialsLike:
+    """Trait for compile-time material container types."""
+
+    comptime N: Int
+
+
+@fieldwise_init
+struct Materials[*M: MaterialSpec](MaterialsLike):
+    """Compile-time list of material specifications.
+
+    Provides N (material count) and type-level access to each material via mat_types[i].
+    Materials define surface appearance (shininess, specular, reflectance, emission)
+    and can reference a texture by name. Geoms reference materials by MATERIAL_NAME.
+    """
+
+    comptime mat_types = Variadic.types[T=MaterialSpec, *Self.M]
+    comptime N: Int = Variadic.size(Self.mat_types)
+
+
+@fieldwise_init
+struct _EmptyMaterials(MaterialsLike):
+    comptime N: Int = 0

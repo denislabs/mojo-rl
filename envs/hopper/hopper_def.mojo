@@ -408,11 +408,13 @@ comptime HopperDefaults = ModelDefaults[
 
 
 comptime HopperModel = ModelDef[
-    HopperBodies.N + 1,  # +1 for worldbody at index 0
-    HopperJoints.N,
-    HopperJoints._sum_nq(),
-    HopperJoints._sum_nv(),
-    HopperGeoms.N,
+    HopperBodies,
+    HopperJoints,
+    HopperGeoms,
+    HopperActuators,
+    HopperDefaults,
+    0,
+    20,
 ]
 
 

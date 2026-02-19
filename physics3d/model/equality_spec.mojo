@@ -14,7 +14,7 @@ Usage:
     comptime MyWeld = WeldConstraint[body_a=2, body_b=3, anchor_a_z=0.1]
 """
 
-from ..types import EQ_CONNECT, EQ_WELD
+from ..types import EQ_CONNECT, EQ_WELD, EqualityConstraintDef
 
 
 trait EqualitySpec:
@@ -105,7 +105,8 @@ struct WeldConstraint[
     solimp_1: Float64 = 0.95,
     solimp_2: Float64 = 0.001,
 ](EqualitySpec):
-    """Weld (rigid attachment) equality constraint — 6 rows (3 position + 3 orientation)."""
+    """Weld (rigid attachment) equality constraint — 6 rows (3 position + 3 orientation).
+    """
 
     comptime EQ_TYPE: Int = EQ_WELD
     comptime BODY_A: Int = Self.body_a
@@ -126,3 +127,82 @@ struct WeldConstraint[
     comptime SOLIMP_1: Float64 = Self.solimp_1
     comptime SOLIMP_2: Float64 = Self.solimp_2
     comptime NUM_ROWS: Int = 6
+
+
+# =============================================================================
+# Equalities — variadic equality constraint list
+# =============================================================================
+
+
+@fieldwise_init
+struct Equalities[*E: EqualitySpec]:
+    """Compile-time list of equality constraint specifications.
+
+    Provides N (constraint count) and _sum_rows() for total row count.
+    """
+
+    comptime eq_types = Variadic.types[T=EqualitySpec, *Self.E]
+    comptime N: Int = Variadic.size(Self.eq_types)
+
+    @staticmethod
+    fn _sum_rows() -> Int:
+        """Sum NUM_ROWS across all equality constraints (total constraint rows).
+        """
+        var total = 0
+
+        @parameter
+        for i in range(Self.N):
+            total += Self.eq_types[i].NUM_ROWS
+        return total
+
+    @staticmethod
+    fn setup_model[
+        DTYPE: DType,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
+        NGEOM: Int = 0,
+        MAX_EQUALITY: Int = 0,
+        CONE_TYPE: Int = ConeType.ELLIPTIC,
+    ](
+        mut model: Model[
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            Self.N,
+            MAX_EQUALITY,
+            CONE_TYPE,
+        ]
+    ):
+        """Populate model equality constraints from compile-time specs."""
+
+        @parameter
+        for i in range(Self.N):
+            comptime E_item = Self.eq_types[i]
+
+            model.equality_constraints[i] = EqualityConstraintDef[DTYPE](
+                eq_type=E_item.EQ_TYPE,
+                body_a=E_item.BODY_A,
+                body_b=E_item.BODY_B,
+                anchor_a_x=Scalar[DTYPE](E_item.ANCHOR_A_X),
+                anchor_a_y=Scalar[DTYPE](E_item.ANCHOR_A_Y),
+                anchor_a_z=Scalar[DTYPE](E_item.ANCHOR_A_Z),
+                anchor_b_x=Scalar[DTYPE](E_item.ANCHOR_B_X),
+                anchor_b_y=Scalar[DTYPE](E_item.ANCHOR_B_Y),
+                anchor_b_z=Scalar[DTYPE](E_item.ANCHOR_B_Z),
+                relpose_x=Scalar[DTYPE](E_item.RELPOSE_X),
+                relpose_y=Scalar[DTYPE](E_item.RELPOSE_Y),
+                relpose_z=Scalar[DTYPE](E_item.RELPOSE_Z),
+                relpose_w=Scalar[DTYPE](E_item.RELPOSE_W),
+                solref_0=Scalar[DTYPE](E_item.SOLREF_0),
+                solref_1=Scalar[DTYPE](E_item.SOLREF_1),
+                solimp_0=Scalar[DTYPE](E_item.SOLIMP_0),
+                solimp_1=Scalar[DTYPE](E_item.SOLIMP_1),
+                solimp_2=Scalar[DTYPE](E_item.SOLIMP_2),
+            )
+        model.num_equality = Self.N

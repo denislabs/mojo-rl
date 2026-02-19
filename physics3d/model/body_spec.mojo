@@ -325,3 +325,163 @@ struct BoxBody[
         var fx = 2.0 * Self.HALF_X
         var fy = 2.0 * Self.HALF_Y
         return Self.MASS * (fx * fx + fy * fy) / 12.0
+
+
+trait BodiesLike:
+    """Trait for compile-time body container types."""
+
+    comptime N: Int  # number of bodies (excluding worldbody)
+
+    @staticmethod
+    fn setup_model[
+        DTYPE: DType,
+        NQ: Int,
+        NV: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
+        NGEOM: Int,
+        MAX_EQUALITY: Int,
+        CONE_TYPE: Int,
+    ](
+        mut model: Model[
+            DTYPE,
+            NQ,
+            NV,
+            Self.N + 1,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
+        ]
+    ):
+        ...
+
+
+@fieldwise_init
+struct _EmptyBodies(BodiesLike):
+    comptime N: Int = 0
+
+    @staticmethod
+    fn setup_model[
+        DTYPE: DType,
+        NQ: Int,
+        NV: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
+        NGEOM: Int,
+        MAX_EQUALITY: Int,
+        CONE_TYPE: Int,
+    ](
+        mut model: Model[
+            DTYPE,
+            NQ,
+            NV,
+            Self.N + 1,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
+        ]
+    ):
+        pass
+
+
+# =============================================================================
+# Bodies — variadic body list
+# =============================================================================
+
+
+@fieldwise_init
+struct Bodies[*B: BodySpec](BodiesLike):
+    """Compile-time list of body specifications.
+
+    Provides N (body count) and type-level access to each body via body_types[i].
+    """
+
+    comptime body_types = Variadic.types[T=BodySpec, *Self.B]
+    comptime N: Int = Variadic.size(Self.body_types)
+
+    @staticmethod
+    fn setup_model[
+        DTYPE: DType,
+        NQ: Int,
+        NV: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
+        NGEOM: Int = 0,
+        MAX_EQUALITY: Int = 0,
+        CONE_TYPE: Int = ConeType.ELLIPTIC,
+    ](
+        mut model: Model[
+            DTYPE,
+            NQ,
+            NV,
+            Self.N + 1,  # +1 for worldbody at index 0
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
+        ]
+    ):
+        """Populate model body properties from compile-time BodySpec list.
+
+        Iterates over all body specs and sets mass, inertia, geometry, parent,
+        local frame, and collision filtering on the model. Body indices start
+        at 1 (worldbody at index 0 is initialized by Model.__init__).
+        """
+
+        @parameter
+        for i in range(Self.N):
+            comptime B = Self.body_types[i]
+            # Body index i+1: worldbody is at index 0 (reserved)
+            comptime body_idx = i + 1
+
+            # Mass, inertia
+            model.set_body(
+                body_idx,
+                name=B.NAME,
+                mass=Scalar[DTYPE](B.MASS),
+                inertia=(
+                    Scalar[DTYPE](B.ixx()),
+                    Scalar[DTYPE](B.iyy()),
+                    Scalar[DTYPE](B.izz()),
+                ),
+            )
+
+            # Kinematic tree
+            model.set_body_parent(body_idx, B.PARENT)
+
+            # Local frame in parent
+            model.set_body_local_frame(
+                body_idx,
+                pos=(
+                    Scalar[DTYPE](B.POS_X),
+                    Scalar[DTYPE](B.POS_Y),
+                    Scalar[DTYPE](B.POS_Z),
+                ),
+                quat=(
+                    Scalar[DTYPE](B.QUAT_X),
+                    Scalar[DTYPE](B.QUAT_Y),
+                    Scalar[DTYPE](B.QUAT_Z),
+                    Scalar[DTYPE](B.QUAT_W),
+                ),
+            )
+
+            # CoM offset and inertia frame
+            model.set_body_ipos_iquat(
+                body_idx,
+                ipos=(
+                    Scalar[DTYPE](B.IPOS_X),
+                    Scalar[DTYPE](B.IPOS_Y),
+                    Scalar[DTYPE](B.IPOS_Z),
+                ),
+                iquat=(
+                    Scalar[DTYPE](B.IQUAT_X),
+                    Scalar[DTYPE](B.IQUAT_Y),
+                    Scalar[DTYPE](B.IQUAT_Z),
+                    Scalar[DTYPE](B.IQUAT_W),
+                ),
+            )

@@ -10,15 +10,23 @@ from collections import InlineArray
 from math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
 from render import Renderer3D, Camera3D, Color
 from core import EnvRenderer3D
-from ..model.geom_spec import GeomSpec
-from ..constants import GEOM_PLANE, GEOM_SPHERE, GEOM_CAPSULE, GEOM_BOX, GEOM_CYLINDER
+from ..model.geom_spec import GeomSpec, GeomsLike
+from ..model.camera_spec import CamerasLike, _EmptyCameras
+from ..model.light_spec import LightsLike, _EmptyLights
+from ..constants import (
+    GEOM_PLANE,
+    GEOM_SPHERE,
+    GEOM_CAPSULE,
+    GEOM_BOX,
+    GEOM_CYLINDER,
+)
 
 comptime Vec3 = Vec3Generic[DType.float64]
 comptime Quat = QuatGeneric[DType.float64]
 
 
 @fieldwise_init
-struct ModelRenderer[*G: GeomSpec](EnvRenderer3D, Movable):
+struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
     """Generic renderer for models defined by GeomSpec types.
 
     Draws all geom types (capsule, sphere, box, plane) using compile-time
@@ -26,11 +34,8 @@ struct ModelRenderer[*G: GeomSpec](EnvRenderer3D, Movable):
     offsets.
 
     Parameters:
-        G: Variadic list of GeomSpec types defining the model's geoms.
+        MODEL_DEF: ModelDefLike type defining the model's definition.
     """
-
-    comptime geom_types = Variadic.types[T=GeomSpec, *Self.G]
-    comptime NUM_GEOMS: Int = Variadic.size(Self.geom_types)
 
     var renderer: Renderer3D
     var initialized: Bool
@@ -63,9 +68,6 @@ struct ModelRenderer[*G: GeomSpec](EnvRenderer3D, Movable):
         width: Int = 1280,
         height: Int = 720,
         visual_radius_scale: Float64 = 2.0,
-        cam_eye_y: Float64 = -3.0,
-        cam_eye_z: Float64 = 1.0,
-        cam_target_z: Float64 = 0.5,
         axes_offset: Float64 = 1.5,
         vel_arrow_height: Float64 = 0.15,
         vel_arrow_scale: Float64 = 0.1,
@@ -73,43 +75,30 @@ struct ModelRenderer[*G: GeomSpec](EnvRenderer3D, Movable):
         follow: Bool = True,
         show_velocity: Bool = True,
         title: String = String("Model Environment"),
-        light_dir_x: Float64 = 0.3,
-        light_dir_y: Float64 = -0.4,
-        light_dir_z: Float64 = -0.8,
-        light_color_r: Float64 = 1.0,
-        light_color_g: Float64 = 0.98,
-        light_color_b: Float64 = 0.95,
-        light_ambient: Float64 = 0.25,
     ) raises:
+        var cameras = Self.MODEL_DEF.CAMERAS.setup_cameras(width, height)
+        var camera = cameras[0].copy()
+
+        var lights = Self.MODEL_DEF.LIGHTS.setup_lights()
+        var light = lights[0].copy()
+
         self.visual_radius_scale = visual_radius_scale
-        self.cam_eye_y = cam_eye_y
-        self.cam_eye_z = cam_eye_z
-        self.cam_target_z = cam_target_z
+        self.cam_eye_y = camera.eye.y
+        self.cam_eye_z = camera.eye.z
+        self.cam_target_z = camera.target.z
         self.axes_offset = axes_offset
         self.vel_arrow_height = vel_arrow_height
         self.vel_arrow_scale = vel_arrow_scale
         self.vel_color = vel_color
         self.follow = follow
         self.show_velocity = show_velocity
-        self.light_dir_x = light_dir_x
-        self.light_dir_y = light_dir_y
-        self.light_dir_z = light_dir_z
-        self.light_color_r = light_color_r
-        self.light_color_g = light_color_g
-        self.light_color_b = light_color_b
-        self.light_ambient = light_ambient
-
-        var camera = Camera3D(
-            eye=Vec3(0.0, cam_eye_y, cam_eye_z),
-            target=Vec3(0.0, 0.0, cam_target_z),
-            up=Vec3(0.0, 0.0, 1.0),
-            fov=50.0,
-            aspect=Float64(width) / Float64(height),
-            near=0.1,
-            far=100.0,
-            screen_width=width,
-            screen_height=height,
-        )
+        self.light_dir_x = light.dir_x
+        self.light_dir_y = light.dir_y
+        self.light_dir_z = light.dir_z
+        self.light_color_r = light.color_r
+        self.light_color_g = light.color_g
+        self.light_color_b = light.color_b
+        self.light_ambient = light.ambient
 
         self.renderer = Renderer3D(
             width=width,
@@ -117,13 +106,13 @@ struct ModelRenderer[*G: GeomSpec](EnvRenderer3D, Movable):
             camera=camera,
             draw_grid=True,
             draw_axes=True,
-            light_dir_x=Float32(light_dir_x),
-            light_dir_y=Float32(light_dir_y),
-            light_dir_z=Float32(light_dir_z),
-            light_color_r=Float32(light_color_r),
-            light_color_g=Float32(light_color_g),
-            light_color_b=Float32(light_color_b),
-            light_ambient=Float32(light_ambient),
+            light_dir_x=Float32(light.dir_x),
+            light_dir_y=Float32(light.dir_y),
+            light_dir_z=Float32(light.dir_z),
+            light_color_r=Float32(light.color_r),
+            light_color_g=Float32(light.color_g),
+            light_color_b=Float32(light.color_b),
+            light_ambient=Float32(light.ambient),
         )
         self.initialized = False
 
@@ -252,23 +241,21 @@ struct ModelRenderer[*G: GeomSpec](EnvRenderer3D, Movable):
         var has_plane = False
 
         @parameter
-        for i in range(Self.NUM_GEOMS):
+        for i in range(Self.MODEL_DEF.GEOMS.N):
             comptime GG = Self.geom_types[i]
 
             @parameter
             if GG.GEOM_TYPE == GEOM_PLANE:
                 has_plane = True
                 var grid_center_x = torso_pos.x if self.follow else 0.0
-                self.renderer.draw_ground_grid(
-                    grid_center_x, height=GG.POS_Z
-                )
+                self.renderer.draw_ground_grid(grid_center_x, height=GG.POS_Z)
 
         # Fallback: if no plane geom, draw default grid offset by visual scale
         if not has_plane:
             var max_radius: Float64 = 0.0
 
             @parameter
-            for i in range(Self.NUM_GEOMS):
+            for i in range(Self.MODEL_DEF.GEOMS.N):
                 comptime GG = Self.geom_types[i]
 
                 @parameter
@@ -292,7 +279,7 @@ struct ModelRenderer[*G: GeomSpec](EnvRenderer3D, Movable):
         try:
 
             @parameter
-            for i in range(Self.NUM_GEOMS):
+            for i in range(Self.MODEL_DEF.GEOMS.N):
                 comptime GG = Self.geom_types[i]
 
                 # Skip worldbody geoms (planes rendered above, static geoms at body_idx=0)
@@ -304,6 +291,7 @@ struct ModelRenderer[*G: GeomSpec](EnvRenderer3D, Movable):
 
                     # Apply local position offset
                     var geom_pos: Vec3
+
                     @parameter
                     if GG.POS_X == 0.0 and GG.POS_Y == 0.0 and GG.POS_Z == 0.0:
                         geom_pos = body_pos
@@ -313,6 +301,7 @@ struct ModelRenderer[*G: GeomSpec](EnvRenderer3D, Movable):
 
                     # Apply local rotation
                     var geom_quat: Quat
+
                     @parameter
                     if (
                         GG.QUAT_X == 0.0

@@ -23,6 +23,9 @@ Usage:
     ]
 """
 
+
+from render import Light
+
 # Light mode constants
 comptime LIGHT_DIRECTIONAL: Int = 0
 comptime LIGHT_POINT: Int = 1
@@ -78,3 +81,63 @@ struct DirectionalLight[
     comptime SPECULAR_INTENSITY: Float64 = Self.specular_intensity
     comptime SPECULAR_EXPONENT: Float64 = Self.specular_exponent
     comptime CAST_SHADOW: Bool = Self.cast_shadow
+
+
+# =============================================================================
+# Lights — variadic light list (purely visual, no setup_model)
+# =============================================================================
+
+
+trait LightsLike:
+    """Trait for compile-time light container types."""
+
+    comptime N: Int
+
+    @staticmethod
+    fn setup_lights() -> List[Light]:
+        ...
+
+
+@fieldwise_init
+struct Lights[*L: LightSpec](LightsLike):
+    """Compile-time list of light specifications.
+
+    Provides N (light count) and type-level access to each light via light_types[i].
+    Lights are purely visual — no setup_model needed.
+    """
+
+    comptime light_types = Variadic.types[T=LightSpec, *Self.L]
+    comptime N: Int = Variadic.size(Self.light_types)
+
+    @staticmethod
+    fn setup_lights() -> List[Light]:
+        var lights = List[Light]()
+
+        @parameter
+        for i in range(Self.N):
+            comptime L = Self.light_types[i]
+            lights.append(
+                Light(
+                    mode=L.MODE,
+                    dir_x=L.DIR_X,
+                    dir_y=L.DIR_Y,
+                    dir_z=L.DIR_Z,
+                    color_r=L.COLOR_R,
+                    color_g=L.COLOR_G,
+                    color_b=L.COLOR_B,
+                    ambient=L.AMBIENT,
+                    specular_intensity=L.SPECULAR_INTENSITY,
+                    specular_exponent=L.SPECULAR_EXPONENT,
+                    cast_shadow=L.CAST_SHADOW,
+                )
+            )
+        return lights^
+
+
+@fieldwise_init
+struct _EmptyLights(LightsLike):
+    comptime N: Int = 0
+
+    @staticmethod
+    fn setup_lights() -> List[Light]:
+        return []

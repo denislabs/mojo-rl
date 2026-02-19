@@ -130,3 +130,4 @@ from .renderer2d import Renderer2D
 from .camera3d import Camera3D
 from .renderer3d import Renderer3D
 from .gpu_types import MeshHandle, SkyboxUniforms
+from .light import Light, LightMode

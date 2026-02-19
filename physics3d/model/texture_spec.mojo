@@ -113,3 +113,31 @@ struct GradientTexture[
     comptime RGB2_B: Float64 = Self.rgb2_b
     comptime TEX_REPEAT_X: Float64 = 1.0
     comptime TEX_REPEAT_Y: Float64 = 1.0
+
+
+# =============================================================================
+# Textures — variadic texture list (purely visual, no setup_model)
+# =============================================================================
+
+
+trait TexturesLike:
+    """Trait for compile-time texture container types."""
+
+    comptime N: Int
+
+
+@fieldwise_init
+struct Textures[*T: TextureSpec](TexturesLike):
+    """Compile-time list of texture specifications.
+
+    Provides N (texture count) and type-level access to each texture via tex_types[i].
+    Textures are purely visual assets — no setup_model needed.
+    """
+
+    comptime tex_types = Variadic.types[T=TextureSpec, *Self.T]
+    comptime N: Int = Variadic.size(Self.tex_types)
+
+
+@fieldwise_init
+struct _EmptyTextures(TexturesLike):
+    comptime N: Int = 0

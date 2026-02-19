@@ -16,7 +16,7 @@ from physics3d.model.body_spec import CapsuleBody
 from physics3d.model.joint_spec import HingeJoint, SlideJoint
 from physics3d.model.model_renderer import ModelRenderer
 from physics3d.types import ConeType
-from physics3d.model.model_def import (
+from physics3d.model import (
     Bodies,
     Joints,
     Geoms,
@@ -25,6 +25,8 @@ from physics3d.model.model_def import (
     Actuators,
     ModelDef,
     ModelDefaults,
+    Lights,
+    Cameras,
 )
 from physics3d.model.actuator_spec import MotorActuator
 from physics3d.model.geom_spec import Plane, Capsule, FromToCapsule
@@ -576,9 +578,12 @@ comptime HalfCheetahGeoms = Geoms[
 
 comptime HalfCheetahCamera = TrackCamera[pos_y= -3.0, pos_z=0.3, target_z=0.5]
 
+comptime HalfCheetahCameras = Cameras[HalfCheetahCamera]
+
 # Light — default directional light (matches Renderer3D defaults)
 comptime HalfCheetahLight = DirectionalLight[]
 
+comptime HalfCheetahLights = Lights[HalfCheetahLight]
 
 # =============================================================================
 # HalfCheetahDefaults — MuJoCo-style model defaults
@@ -610,27 +615,19 @@ comptime HalfCheetahDefaults = ModelDefaults[
 
 
 comptime HalfCheetahModel = ModelDef[
-    HalfCheetahBodies.N + 1,  # +1 for worldbody at index 0
-    HalfCheetahJoints.N,
-    HalfCheetahJoints._sum_nq(),
-    HalfCheetahJoints._sum_nv(),
-    HalfCheetahGeoms.N,
-    0,
+    HalfCheetahBodies,
+    HalfCheetahJoints,
+    HalfCheetahGeoms,
+    HalfCheetahActuators,
+    HalfCheetahDefaults,
+    HalfCheetahLights,
+    HalfCheetahTextures,
+    HalfCheetahMaterials,
+    HalfCheetahCameras,
+    20,
     ConeType.PYRAMIDAL,
 ]
 
-
-comptime HalfCheetahRenderer = ModelRenderer[
-    GroundGeom,
-    TorsoGeom,
-    HeadGeom,
-    BThighGeom,
-    BShinGeom,
-    BFootGeom,
-    FThighGeom,
-    FShinGeom,
-    FFootGeom,
-]
 
 # =============================================================================
 # HalfCheetahParams — Environment-Specific Parameters

@@ -1,0 +1,1061 @@
+"""Generic MuJoCo Environment — shared logic for all MuJoCo-style environments.
+
+MuJoCoEnv[C: MuJoCoEnvConfig] delegates everything to C:
+  - Model setup, integrator choice, reward, termination, GPU model init
+  - Obs extraction, reset, enforce limits (C delegates to Joints internally)
+  - Action application (C delegates to Actuators internally)
+
+This eliminates ~1200 lines of duplicated code between HalfCheetah and Hopper.
+"""
+
+from collections import InlineArray
+
+from core import (
+    BoxContinuousActionEnv,
+    GPUContinuousEnv,
+    RenderableEnv,
+    State,
+    Action,
+    ObsState,
+    ContAction,
+)
+from render import Renderer2D
+from deep_rl import dtype as gpu_dtype
+
+# GPU imports
+from gpu.host import DeviceContext, DeviceBuffer
+from gpu import thread_idx, block_idx, block_dim
+from layout import Layout, LayoutTensor
+
+# Import physics engine
+from physics3d.types import Model, Data
+from physics3d.solver import NewtonSolver
+from physics3d.kinematics.forward_kinematics import (
+    forward_kinematics,
+    forward_kinematics_gpu,
+)
+from physics3d.gpu.constants import (
+    TPB,
+    state_size,
+    qpos_offset,
+    qvel_offset,
+    metadata_offset,
+    model_size,
+    model_size_with_invweight,
+    integrator_workspace_size,
+    META_IDX_STEP_COUNT,
+    META_IDX_PREV_X,
+    model_curriculum_offset,
+    CURRICULUM_IDX_MIN_HEIGHT,
+    CURRICULUM_IDX_MAX_PITCH,
+)
+
+from physics3d.model.model_renderer import ModelRenderer
+
+from .phyics3d_env_config import Phyics3dEnvConfig
+
+from physics3d.model.model_def import ModelDefLike
+
+# =============================================================================
+# Generic Phyics3d Environment
+# =============================================================================
+
+
+struct Phyics3dEnv[
+    MODEL_DEF: ModelDefLike,
+    CONFIG: Phyics3dEnvConfig,
+    DTYPE: DType where DTYPE.is_floating_point() = DType.float64,
+    TERMINATE_ON_UNHEALTHY: Bool = False,
+](
+    BoxContinuousActionEnv,
+    GPUContinuousEnv,
+    RenderableEnv,
+):
+    """Generic MuJoCo environment parameterized by config.
+
+    C provides everything: model setup, integrator, reward, termination,
+    obs extraction, reset, enforce limits, action application, GPU kernels.
+    """
+
+    # Trait type aliases
+    comptime dtype = Self.DTYPE
+    comptime StateType = ObsState[Self.MODEL_DEF.OBS_DIM]
+    comptime ActionType = ContAction[Self.MODEL_DEF.ACTION_DIM]
+
+    # Layout constants
+    comptime OBS_DIM: Int = Self.MODEL_DEF.OBS_DIM
+    comptime ACTION_DIM: Int = Self.MODEL_DEF.ACTION_DIM
+
+    # Physics layout constants
+    comptime NQ: Int = Self.MODEL_DEF.NQ
+    comptime NV: Int = Self.MODEL_DEF.NV
+    comptime NUM_BODIES: Int = Self.MODEL_DEF.NBODY
+    comptime NUM_JOINTS: Int = Self.MODEL_DEF.NJOINT
+    comptime MAX_CONTACTS: Int = Self.MODEL_DEF.MAX_CONTACTS
+    comptime NGEOM: Int = Self.MODEL_DEF.NGEOM
+    comptime MAX_EQUALITY: Int = Self.MODEL_DEF.MAX_EQUALITY
+    comptime CONE_TYPE: Int = Self.MODEL_DEF.CONE_TYPE
+
+    # Renderer constants
+
+    # GPU state size
+    comptime STATE_SIZE: Int = state_size[
+        Self.MODEL_DEF.NQ,
+        Self.MODEL_DEF.NV,
+        Self.MODEL_DEF.NBODY,
+        Self.MODEL_DEF.MAX_CONTACTS,
+    ]()
+
+    # Pre-allocated workspace sizes for step_kernel_gpu
+    comptime STEP_WS_SHARED: Int = model_size_with_invweight[
+        Self.MODEL_DEF.NBODY,
+        Self.MODEL_DEF.NJOINT,
+        Self.MODEL_DEF.NV,
+        Self.MODEL_DEF.NGEOM,
+    ]()
+    comptime STEP_WS_PER_ENV: Int = integrator_workspace_size[
+        Self.MODEL_DEF.NV, Self.MODEL_DEF.NBODY
+    ]() + Self.MODEL_DEF.NV * Self.MODEL_DEF.NV + NewtonSolver.solver_workspace_size[
+        Self.MODEL_DEF.NV, Self.MODEL_DEF.MAX_CONTACTS
+    ]() + Self.CONFIG.INTEGRATOR_WS_EXTRA
+
+    # Physics model and data
+    var model: Model[
+        Self.DTYPE,
+        Self.MODEL_DEF.NQ,
+        Self.MODEL_DEF.NV,
+        Self.MODEL_DEF.NBODY,
+        Self.MODEL_DEF.NJOINT,
+        Self.MODEL_DEF.MAX_CONTACTS,
+        Self.MODEL_DEF.NGEOM,
+        Self.MODEL_DEF.MAX_EQUALITY,
+        Self.MODEL_DEF.CONE_TYPE,
+    ]
+    var data: Data[
+        Self.DTYPE,
+        Self.MODEL_DEF.NQ,
+        Self.MODEL_DEF.NV,
+        Self.MODEL_DEF.NBODY,
+        Self.MODEL_DEF.NJOINT,
+        Self.MODEL_DEF.MAX_CONTACTS,
+    ]
+
+    # Environment parameters
+    var max_steps: Int
+    var current_step: Int
+    var frame_skip: Int
+
+    # Previous x position for velocity calculation
+    var prev_x_position: Scalar[Self.DTYPE]
+
+    # Renderer (optional)
+    comptime RENDERER = ModelRenderer[Self.MODEL_DEF]
+    var _renderer: UnsafePointer[Self.RENDERER, MutAnyOrigin]
+    var _renderer_initialized: Bool
+
+    # =========================================================================
+    # Initialization
+    # =========================================================================
+
+    fn __init__(
+        out self,
+        max_steps: Int = Self.CONFIG.MAX_STEPS,
+        frame_skip: Int = Self.CONFIG.FRAME_SKIP,
+    ):
+        self.max_steps = max_steps
+        self.current_step = 0
+        self.frame_skip = frame_skip
+        self.prev_x_position = Scalar[Self.DTYPE](0.0)
+
+        # Initialize model and data
+        self.model = Model[
+            Self.DTYPE,
+            Self.MODEL_DEF.NQ,
+            Self.MODEL_DEF.NV,
+            Self.MODEL_DEF.NBODY,
+            Self.MODEL_DEF.NJOINT,
+            Self.MODEL_DEF.MAX_CONTACTS,
+            Self.MODEL_DEF.NGEOM,
+            Self.MODEL_DEF.MAX_EQUALITY,
+            Self.MODEL_DEF.CONE_TYPE,
+        ]()
+        self.data = Data[
+            Self.DTYPE,
+            Self.MODEL_DEF.NQ,
+            Self.MODEL_DEF.NV,
+            Self.MODEL_DEF.NBODY,
+            Self.MODEL_DEF.NJOINT,
+            Self.MODEL_DEF.MAX_CONTACTS,
+        ]()
+
+        # Delegate full setup to config
+        Self.MODEL_DEF.setup_model_and_data(self.model, self.data)
+
+        # Reset step counter and previous position
+        self.current_step = 0
+        self.prev_x_position = self.data.qpos[0]  # rootx is always index 0
+
+    # =========================================================================
+    # Physics State Management
+    # =========================================================================
+
+    fn _reset_state(mut self):
+        """Reset to initial position."""
+        Self.MODEL_DEF.reset_data(self.data)
+
+        # Run forward kinematics to compute xpos/xquat
+        forward_kinematics(self.model, self.data)
+
+        # Reset step counter and previous position
+        self.current_step = 0
+        self.prev_x_position = self.data.qpos[0]
+
+    fn _get_obs(self) -> ObsState[Self.MODEL_DEF.OBS_DIM]:
+        """Extract observation from current physics data."""
+        var obs_list = List[Scalar[Self.DTYPE]](capacity=Self.MODEL_DEF.OBS_DIM)
+        Self.MODEL_DEF.extract_obs(self.data, obs_list)
+        var obs = ObsState[Self.MODEL_DEF.OBS_DIM]()
+        for i in range(Self.MODEL_DEF.OBS_DIM):
+            obs.data[i] = Float64(obs_list[i])
+        return obs^
+
+    # =========================================================================
+    # BoxContinuousActionEnv Interface
+    # =========================================================================
+
+    fn get_obs_list(self) -> List[Scalar[Self.dtype]]:
+        var obs = List[Scalar[Self.dtype]](capacity=Self.MODEL_DEF.OBS_DIM)
+        Self.MODEL_DEF.extract_obs(self.data, obs)
+        return obs^
+
+    fn reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
+        self._reset_state()
+        return self.get_obs_list()
+
+    fn obs_dim(self) -> Int:
+        return Self.MODEL_DEF.OBS_DIM
+
+    fn action_dim(self) -> Int:
+        return Self.MODEL_DEF.ACTION_DIM
+
+    fn action_low(self) -> Scalar[Self.dtype]:
+        return Scalar[Self.dtype](-1.0)
+
+    fn action_high(self) -> Scalar[Self.dtype]:
+        return Scalar[Self.dtype](1.0)
+
+    fn step_continuous(
+        mut self, action: Scalar[Self.dtype]
+    ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
+        var actions = List[Scalar[Self.dtype]]()
+        for _ in range(Self.MODEL_DEF.ACTION_DIM):
+            actions.append(action)
+        return self.step_continuous_vec(actions)
+
+    fn step_continuous_vec[
+        DTYPE2: DType
+    ](
+        mut self,
+        action: List[Scalar[DTYPE2]],
+        verbose: Bool = False,
+    ) -> Tuple[
+        List[Scalar[DTYPE2]], Scalar[DTYPE2], Bool
+    ]:
+        # Convert to ContAction
+        var act = ContAction[Self.MODEL_DEF.ACTION_DIM]()
+        for i in range(min(Self.MODEL_DEF.ACTION_DIM, len(action))):
+            act.data[i] = Float64(action[i])
+
+        # Take step
+        var result = self.step(act, verbose=verbose)
+
+        # Build observation list
+        var obs_list = List[Scalar[Self.DTYPE]](capacity=Self.MODEL_DEF.OBS_DIM)
+        Self.MODEL_DEF.extract_obs(self.data, obs_list)
+        var obs = List[Scalar[DTYPE2]](capacity=Self.MODEL_DEF.OBS_DIM)
+        for i in range(Self.MODEL_DEF.OBS_DIM):
+            obs.append(Scalar[DTYPE2](obs_list[i]))
+
+        return (obs^, Scalar[DTYPE2](result[1]), result[2])
+
+    # =========================================================================
+    # Env Interface
+    # =========================================================================
+
+    fn step(
+        mut self, action: Self.ActionType, verbose: Bool = False
+    ) -> Tuple[Self.StateType, Scalar[Self.dtype], Bool]:
+        """Take an action and return (next_state, reward, done)."""
+        # Store previous x position for velocity calculation
+        self.prev_x_position = self.data.qpos[0]
+
+        # Apply actions via actuators
+        var clamped_action = action.clamp()
+        Self.MODEL_DEF.apply_actions(self.data, clamped_action.to_list())
+
+        # Physics step (with frame skip)
+        for _ in range(self.frame_skip):
+            Self.CONFIG.physics_substep(self.model, self.data, verbose)
+            # Enforce joint limits after each physics step
+            Self.MODEL_DEF.enforce_limits(self.data)
+
+        self.current_step += 1
+
+        # Compute velocity from position change
+        var x_position_after = Float64(self.data.qpos[0])
+        var dt = Self.CONFIG.get_timestep() * self.frame_skip
+        var x_velocity = (x_position_after - Float64(self.prev_x_position)) / dt
+
+        # Health check
+        var y_angle = Float64(self.data.qpos[2])  # rooty is always index 2
+        var z_height = Float64(self.data.qpos[1])  # rootz is always index 1
+        var is_healthy = Self.CONFIG.check_health_cpu(
+            z_height,
+            y_angle,
+            Self.CONFIG.get_default_min_height(),
+            Self.CONFIG.get_default_max_pitch(),
+        )
+
+        # Compute reward
+        var ctrl_cost = Float64(clamped_action.squared_sum())
+        var reward = Self.CONFIG.compute_reward_cpu(
+            x_velocity, ctrl_cost, y_angle, z_height, is_healthy
+        )
+
+        # Termination
+        var terminated = False
+
+        @parameter
+        if Self.TERMINATE_ON_UNHEALTHY:
+            terminated = not is_healthy
+        var truncated = self.current_step >= self.max_steps
+        var done = terminated or truncated
+
+        return (self._get_obs(), Scalar[Self.dtype](reward), done)
+
+    fn get_state(self) -> Self.StateType:
+        return self._get_obs()
+
+    fn reset(mut self) -> Self.StateType:
+        self._reset_state()
+        return self._get_obs()
+
+    fn render(mut self, mut renderer: Renderer2D):
+        pass
+
+    fn close(mut self):
+        pass
+
+    # =========================================================================
+    # State Accessors
+    # =========================================================================
+
+    fn get_xpos(self, idx: Int) -> Scalar[Self.DTYPE]:
+        """Get xpos element by flat index (for rendering)."""
+        return self.data.xpos[idx]
+
+    fn get_xquat(self, idx: Int) -> Scalar[Self.DTYPE]:
+        """Get xquat element by flat index (for rendering)."""
+        return self.data.xquat[idx]
+
+    fn get_qpos(self, idx: Int) -> Scalar[Self.DTYPE]:
+        """Get qpos element by index."""
+        return self.data.qpos[idx]
+
+    fn get_qvel(self, idx: Int) -> Scalar[Self.DTYPE]:
+        """Get qvel element by index."""
+        return self.data.qvel[idx]
+
+    fn get_x_position(self) -> Scalar[Self.DTYPE]:
+        return self.data.qpos[0]
+
+    fn get_x_velocity(self) -> Scalar[Self.DTYPE]:
+        return self.data.qvel[0]
+
+    fn get_current_step(self) -> Int:
+        return self.current_step
+
+    fn get_max_steps(self) -> Int:
+        return self.max_steps
+
+    fn is_done(self) -> Bool:
+        var truncated = self.current_step >= self.max_steps
+
+        @parameter
+        if Self.TERMINATE_ON_UNHEALTHY:
+            var y_angle = Float64(self.data.qpos[2])
+            var z_height = Float64(self.data.qpos[1])
+            return truncated or not Self.CONFIG.check_health_cpu(
+                z_height,
+                y_angle,
+                Self.CONFIG.get_default_min_height(),
+                Self.CONFIG.get_default_max_pitch(),
+            )
+        else:
+            return truncated
+
+    # =========================================================================
+    # GPUContinuousEnv Interface (Static GPU Kernels)
+    # =========================================================================
+
+    @staticmethod
+    fn step_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE_VAL: Int,
+        OBS_DIM_VAL: Int,
+        ACTION_DIM_VAL: Int,
+    ](
+        ctx: DeviceContext,
+        mut states_buf: DeviceBuffer[gpu_dtype],
+        actions_buf: DeviceBuffer[gpu_dtype],
+        mut rewards_buf: DeviceBuffer[gpu_dtype],
+        mut dones_buf: DeviceBuffer[gpu_dtype],
+        mut obs_buf: DeviceBuffer[gpu_dtype],
+        rng_seed: UInt64 = 0,
+        curriculum_values: List[Scalar[gpu_dtype]] = [],
+        workspace_ptr: UnsafePointer[
+            Scalar[gpu_dtype], MutAnyOrigin
+        ] = UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin](),
+    ) raises:
+        """Batched GPU step function using physics engine."""
+        comptime MODEL_SIZE = model_size[
+            Self.MODEL_DEF.NBODY, Self.MODEL_DEF.NJOINT, Self.MODEL_DEF.NGEOM
+        ]()
+        comptime WS_SIZE = integrator_workspace_size[
+            Self.MODEL_DEF.NV, Self.MODEL_DEF.NBODY
+        ]() + Self.MODEL_DEF.NV * Self.MODEL_DEF.NV + NewtonSolver.solver_workspace_size[
+            Self.MODEL_DEF.NV, Self.MODEL_DEF.MAX_CONTACTS
+        ]() + Self.CONFIG.INTEGRATOR_WS_EXTRA
+
+        var model_buf: DeviceBuffer[gpu_dtype]
+        var workspace_buf: DeviceBuffer[gpu_dtype]
+
+        if workspace_ptr:
+            model_buf = DeviceBuffer[gpu_dtype](
+                ctx,
+                workspace_ptr,
+                MODEL_SIZE,
+                owning=False,
+            )
+            workspace_buf = DeviceBuffer[gpu_dtype](
+                ctx,
+                workspace_ptr + MODEL_SIZE,
+                BATCH_SIZE * WS_SIZE,
+                owning=False,
+            )
+        else:
+            model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
+            var min_height = curriculum_values[0] if len(
+                curriculum_values
+            ) > 0 else Scalar[gpu_dtype](Self.CONFIG.get_default_min_height())
+            var max_pitch = curriculum_values[1] if len(
+                curriculum_values
+            ) > 1 else Scalar[gpu_dtype](Self.CONFIG.get_default_max_pitch())
+            Self.MODEL_DEF.init_model_gpu(ctx, model_buf)
+            # TODO: Add curriculum values
+            # Scalar[gpu_dtype](Self.CONFIG.get_default_min_height()),
+            # Scalar[gpu_dtype](Self.CONFIG.get_default_max_pitch()),
+            workspace_buf = ctx.enqueue_create_buffer[gpu_dtype](
+                BATCH_SIZE * WS_SIZE
+            )
+
+        # Store prev_x_position before physics
+        Self._store_prev_x_gpu[BATCH_SIZE, STATE_SIZE_VAL](ctx, states_buf)
+
+        # Apply actions to qfrc via actuators
+        Self.MODEL_DEF.apply_actions_kernel_gpu[
+            gpu_dtype, BATCH_SIZE, STATE_SIZE_VAL, ACTION_DIM_VAL
+        ](ctx, states_buf, actions_buf)
+
+        # Run FRAME_SKIP physics sub-steps
+        for _ in range(Self.CONFIG.FRAME_SKIP):
+            Self.CONFIG.physics_substep_gpu[
+                gpu_dtype,
+                BATCH_SIZE,
+                Self.MODEL_DEF.NQ,
+                Self.MODEL_DEF.NV,
+                Self.MODEL_DEF.NBODY,
+                Self.MODEL_DEF.NJOINT,
+                Self.MODEL_DEF.MAX_CONTACTS,
+                Self.MODEL_DEF.NGEOM,
+                Self.MODEL_DEF.MAX_EQUALITY,
+                Self.MODEL_DEF.CONE_TYPE,
+            ](ctx, states_buf, model_buf, workspace_buf)
+
+            @parameter
+            if Self.CONFIG.GPU_ENFORCE_LIMITS:
+                Self.MODEL_DEF.enforce_limits_kernel_gpu[
+                    gpu_dtype, BATCH_SIZE, STATE_SIZE_VAL
+                ](ctx, states_buf)
+
+        # Extract observations, compute rewards, check termination
+        Self._extract_obs_rewards_dones_gpu[
+            BATCH_SIZE,
+            STATE_SIZE_VAL,
+            MODEL_SIZE,
+            OBS_DIM_VAL,
+            Self.CONFIG.MAX_STEPS,
+        ](
+            ctx,
+            states_buf,
+            model_buf,
+            actions_buf,
+            rewards_buf,
+            dones_buf,
+            obs_buf,
+        )
+
+    @staticmethod
+    fn reset_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE_VAL: Int,
+    ](
+        ctx: DeviceContext,
+        mut states_buf: DeviceBuffer[gpu_dtype],
+        rng_seed: UInt64 = 0,
+    ) raises:
+        """Reset all environments on GPU."""
+        var states = LayoutTensor[
+            gpu_dtype,
+            Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
+            MutAnyOrigin,
+        ](states_buf.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
+
+        @always_inline
+        fn reset_wrapper(
+            states: LayoutTensor[
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
+                MutAnyOrigin,
+            ],
+            seed: Int,
+        ):
+            var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if i >= BATCH_SIZE:
+                return
+            Self._reset_env_gpu[BATCH_SIZE, STATE_SIZE_VAL](states, i, seed)
+
+        ctx.enqueue_function[reset_wrapper, reset_wrapper](
+            states,
+            Int(rng_seed),
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        # Run forward kinematics
+        comptime MODEL_SIZE = model_size[
+            Self.MODEL_DEF.NBODY, Self.MODEL_DEF.NJOINT, Self.MODEL_DEF.NGEOM
+        ]()
+        var model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
+        Self.MODEL_DEF.init_model_gpu(
+            ctx,
+            model_buf,
+            # TODO: Add curriculum values
+            # Scalar[gpu_dtype](Self.CONFIG.get_default_min_height()),
+            # Scalar[gpu_dtype](Self.CONFIG.get_default_max_pitch()),
+        )
+
+        var model = LayoutTensor[
+            gpu_dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+        ](model_buf.unsafe_ptr())
+
+        @always_inline
+        fn fk_wrapper(
+            states: LayoutTensor[
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
+                MutAnyOrigin,
+            ],
+            model: LayoutTensor[
+                gpu_dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+            ],
+        ):
+            var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if i >= BATCH_SIZE:
+                return
+            forward_kinematics_gpu[
+                gpu_dtype,
+                Self.MODEL_DEF.NQ,
+                Self.MODEL_DEF.NV,
+                Self.MODEL_DEF.NBODY,
+                Self.MODEL_DEF.NJOINT,
+                Self.MODEL_DEF.MAX_CONTACTS,
+                STATE_SIZE_VAL,
+                MODEL_SIZE,
+                BATCH_SIZE,
+            ](i, states, model)
+
+        ctx.enqueue_function[fk_wrapper, fk_wrapper](
+            states,
+            model,
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+    @staticmethod
+    fn selective_reset_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE_VAL: Int,
+    ](
+        ctx: DeviceContext,
+        mut states_buf: DeviceBuffer[gpu_dtype],
+        mut dones_buf: DeviceBuffer[gpu_dtype],
+        rng_seed: UInt64,
+    ) raises:
+        """Reset only done environments on GPU."""
+        var states = LayoutTensor[
+            gpu_dtype,
+            Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
+            MutAnyOrigin,
+        ](states_buf.unsafe_ptr())
+        var dones = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ](dones_buf.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
+
+        comptime MODEL_SIZE = model_size[
+            Self.MODEL_DEF.NBODY, Self.MODEL_DEF.NJOINT, Self.MODEL_DEF.NGEOM
+        ]()
+        var model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
+        Self.MODEL_DEF.init_model_gpu(
+            ctx,
+            model_buf,
+            # TODO: Add curriculum values
+            # Scalar[gpu_dtype](Self.CONFIG.get_default_min_height()),
+            # Scalar[gpu_dtype](Self.CONFIG.get_default_max_pitch()),
+        )
+
+        var model = LayoutTensor[
+            gpu_dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+        ](model_buf.unsafe_ptr())
+
+        @always_inline
+        fn selective_reset_with_fk_wrapper(
+            states: LayoutTensor[
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
+                MutAnyOrigin,
+            ],
+            dones: LayoutTensor[
+                gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
+            model: LayoutTensor[
+                gpu_dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+            ],
+            seed: Int,
+        ):
+            var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if i >= BATCH_SIZE:
+                return
+            if dones[i] > Scalar[gpu_dtype](0.5):
+                Self._reset_env_gpu[BATCH_SIZE, STATE_SIZE_VAL](states, i, seed)
+                forward_kinematics_gpu[
+                    gpu_dtype,
+                    Self.MODEL_DEF.NQ,
+                    Self.MODEL_DEF.NV,
+                    Self.MODEL_DEF.NBODY,
+                    Self.MODEL_DEF.NJOINT,
+                    Self.MODEL_DEF.MAX_CONTACTS,
+                    STATE_SIZE_VAL,
+                    MODEL_SIZE,
+                    BATCH_SIZE,
+                ](i, states, model)
+                dones[i] = Scalar[gpu_dtype](0.0)
+
+        ctx.enqueue_function[
+            selective_reset_with_fk_wrapper, selective_reset_with_fk_wrapper
+        ](
+            states,
+            dones,
+            model,
+            Int(rng_seed),
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+    @staticmethod
+    fn extract_obs_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE_VAL: Int,
+        OBS_DIM_VAL: Int,
+    ](
+        ctx: DeviceContext,
+        states_buf: DeviceBuffer[gpu_dtype],
+        mut obs_buf: DeviceBuffer[gpu_dtype],
+    ) raises:
+        """Extract observations from state buffer."""
+        Self.MODEL_DEF.extract_obs_kernel_gpu[
+            gpu_dtype, BATCH_SIZE, STATE_SIZE_VAL, OBS_DIM_VAL
+        ](ctx, states_buf, obs_buf)
+
+    # =========================================================================
+    # GPU Helper Functions
+    # =========================================================================
+
+    @staticmethod
+    fn init_step_workspace_gpu[
+        BATCH_SIZE: Int,
+    ](ctx: DeviceContext, mut workspace_buf: DeviceBuffer[gpu_dtype]) raises:
+        """Initialize pre-allocated step workspace buffer."""
+        comptime MODEL_SIZE = model_size_with_invweight[
+            Self.MODEL_DEF.NBODY,
+            Self.MODEL_DEF.NJOINT,
+            Self.MODEL_DEF.NV,
+            Self.MODEL_DEF.NGEOM,
+        ]()
+        var model_view = DeviceBuffer[gpu_dtype](
+            ctx,
+            workspace_buf.unsafe_ptr(),
+            MODEL_SIZE,
+            owning=False,
+        )
+        Self.MODEL_DEF.init_model_gpu(
+            ctx,
+            model_view,
+            # TODO: Add curriculum values
+            # Scalar[gpu_dtype](Self.CONFIG.get_default_min_height()),
+            # Scalar[gpu_dtype](Self.CONFIG.get_default_max_pitch()),
+        )
+
+    @staticmethod
+    fn update_curriculum_gpu(
+        ctx: DeviceContext,
+        mut workspace_buf: DeviceBuffer[gpu_dtype],
+        curriculum_values: List[Scalar[gpu_dtype]],
+    ) raises:
+        """Update only the curriculum parameters in a pre-allocated workspace.
+        """
+        if len(curriculum_values) < 2:
+            return
+        var curr_offset = model_curriculum_offset[
+            Self.MODEL_DEF.NBODY, Self.MODEL_DEF.NJOINT
+        ]()
+        var curriculum_host = InlineArray[Scalar[gpu_dtype], 2](
+            fill=[
+                curriculum_values[0],
+                curriculum_values[1],
+            ]
+        )
+        ctx.enqueue_copy(
+            workspace_buf.unsafe_ptr() + curr_offset,
+            curriculum_host.unsafe_ptr(),
+            2,
+        )
+
+    @staticmethod
+    fn _store_prev_x_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+    ](ctx: DeviceContext, mut states_buf: DeviceBuffer[gpu_dtype]) raises:
+        """Store current rootx position into metadata for velocity computation.
+        """
+        var states = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ](states_buf.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
+        comptime QPOS_OFF = qpos_offset[Self.MODEL_DEF.NQ, Self.MODEL_DEF.NV]()
+        comptime META_OFF = metadata_offset[
+            Self.MODEL_DEF.NQ,
+            Self.MODEL_DEF.NV,
+            Self.MODEL_DEF.NBODY,
+            Self.MODEL_DEF.MAX_CONTACTS,
+        ]()
+
+        @always_inline
+        fn store_prev_x_kernel(
+            states: LayoutTensor[
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                MutAnyOrigin,
+            ],
+        ):
+            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if env >= BATCH_SIZE:
+                return
+            states[env, META_OFF + META_IDX_PREV_X] = states[env, QPOS_OFF + 0]
+
+        ctx.enqueue_function[store_prev_x_kernel, store_prev_x_kernel](
+            states,
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+    @staticmethod
+    fn _extract_obs_rewards_dones_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        MODEL_SIZE: Int,
+        OBS_DIM_VAL: Int,
+        MAX_STEPS_VAL: Int = 1000,
+    ](
+        ctx: DeviceContext,
+        mut states_buf: DeviceBuffer[gpu_dtype],
+        model_buf: DeviceBuffer[gpu_dtype],
+        actions_buf: DeviceBuffer[gpu_dtype],
+        mut rewards_buf: DeviceBuffer[gpu_dtype],
+        mut dones_buf: DeviceBuffer[gpu_dtype],
+        mut obs_buf: DeviceBuffer[gpu_dtype],
+    ) raises:
+        """Extract observations, compute rewards, check termination."""
+        var states = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ](states_buf.unsafe_ptr())
+        var model = LayoutTensor[
+            gpu_dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+        ](model_buf.unsafe_ptr())
+        var actions = LayoutTensor[
+            gpu_dtype,
+            Layout.row_major(BATCH_SIZE, Self.MODEL_DEF.ACTION_DIM),
+            MutAnyOrigin,
+        ](actions_buf.unsafe_ptr())
+        var rewards = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ](rewards_buf.unsafe_ptr())
+        var dones = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ](dones_buf.unsafe_ptr())
+        var obs = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM_VAL), MutAnyOrigin
+        ](obs_buf.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
+        comptime QPOS_OFF = qpos_offset[Self.MODEL_DEF.NQ, Self.MODEL_DEF.NV]()
+        comptime META_OFF = metadata_offset[
+            Self.MODEL_DEF.NQ,
+            Self.MODEL_DEF.NV,
+            Self.MODEL_DEF.NBODY,
+            Self.MODEL_DEF.MAX_CONTACTS,
+        ]()
+        comptime CURRICULUM_OFF = model_curriculum_offset[
+            Self.MODEL_DEF.NBODY, Self.MODEL_DEF.NJOINT
+        ]()
+
+        @always_inline
+        fn extract_kernel(
+            states: LayoutTensor[
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                MutAnyOrigin,
+            ],
+            model: LayoutTensor[
+                gpu_dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+            ],
+            actions: LayoutTensor[
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, Self.MODEL_DEF.ACTION_DIM),
+                MutAnyOrigin,
+            ],
+            rewards: LayoutTensor[
+                gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
+            dones: LayoutTensor[
+                gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
+            obs: LayoutTensor[
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, OBS_DIM_VAL),
+                MutAnyOrigin,
+            ],
+        ):
+            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if env >= BATCH_SIZE:
+                return
+
+            # Increment step counter
+            var step_count = Int(
+                rebind[Scalar[gpu_dtype]](
+                    states[env, META_OFF + META_IDX_STEP_COUNT]
+                )
+            )
+            step_count += 1
+            states[env, META_OFF + META_IDX_STEP_COUNT] = Scalar[gpu_dtype](
+                step_count
+            )
+
+            # Extract observations via config delegate
+            Self.MODEL_DEF.extract_obs_gpu[
+                gpu_dtype, BATCH_SIZE, STATE_SIZE, OBS_DIM_VAL
+            ](states, obs, env)
+
+            # Read curriculum parameters
+            var min_height = model[
+                0, CURRICULUM_OFF + CURRICULUM_IDX_MIN_HEIGHT
+            ]
+            var max_pitch = model[0, CURRICULUM_OFF + CURRICULUM_IDX_MAX_PITCH]
+
+            # Compute velocity from position change
+            var x_position_after = rebind[Scalar[gpu_dtype]](
+                states[env, QPOS_OFF + 0]
+            )
+            var prev_x = rebind[Scalar[gpu_dtype]](
+                states[env, META_OFF + META_IDX_PREV_X]
+            )
+            var effective_dt = Scalar[gpu_dtype](
+                Self.CONFIG.get_timestep()
+            ) * Scalar[gpu_dtype](Self.CONFIG.FRAME_SKIP)
+            var x_velocity = (x_position_after - prev_x) / effective_dt
+
+            # Read state for health check
+            var z_height = rebind[Scalar[gpu_dtype]](
+                states[env, QPOS_OFF + 1]
+            )  # rootz
+            var y_angle = rebind[Scalar[gpu_dtype]](
+                states[env, QPOS_OFF + 2]
+            )  # rooty
+
+            # Health check via config
+            var is_healthy = Self.CONFIG.check_health_gpu[gpu_dtype](
+                z_height,
+                y_angle,
+                rebind[Scalar[gpu_dtype]](min_height),
+                rebind[Scalar[gpu_dtype]](max_pitch),
+            )
+
+            # Clamp actions for reward computation
+            var ctrl_cost_sum = Scalar[gpu_dtype](0.0)
+            for a_idx in range(Self.MODEL_DEF.ACTION_DIM):
+                var a = rebind[Scalar[gpu_dtype]](actions[env, a_idx])
+                if a > Scalar[gpu_dtype](1.0):
+                    a = Scalar[gpu_dtype](1.0)
+                elif a < Scalar[gpu_dtype](-1.0):
+                    a = Scalar[gpu_dtype](-1.0)
+                ctrl_cost_sum += a * a
+
+            # Compute reward via config
+            var reward = Self.CONFIG.compute_reward_gpu[gpu_dtype](
+                x_velocity, ctrl_cost_sum, y_angle, is_healthy
+            )
+            rewards[env] = reward
+
+            # Determine termination
+            var terminated = False
+            var truncated = step_count >= MAX_STEPS_VAL
+
+            @parameter
+            if Self.TERMINATE_ON_UNHEALTHY:
+                terminated = not is_healthy
+
+            if terminated or truncated:
+                dones[env] = Scalar[gpu_dtype](1.0)
+            else:
+                dones[env] = Scalar[gpu_dtype](0.0)
+
+        ctx.enqueue_function[extract_kernel, extract_kernel](
+            states,
+            model,
+            actions,
+            rewards,
+            dones,
+            obs,
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+    @always_inline
+    @staticmethod
+    fn _reset_env_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+    ](
+        states: LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ],
+        env: Int,
+        seed: Int = 0,
+    ):
+        """Reset a single environment on GPU with random noise."""
+        var RESET_NOISE = Scalar[gpu_dtype](Self.CONFIG.get_reset_noise())
+
+        # Use config's Joints reset delegate
+        Self.MODEL_DEF.reset_env_gpu[gpu_dtype, BATCH_SIZE, STATE_SIZE](
+            states, env, RESET_NOISE, seed
+        )
+
+        # Reset step counter and prev_x
+        comptime META_OFF = metadata_offset[
+            Self.MODEL_DEF.NQ,
+            Self.MODEL_DEF.NV,
+            Self.MODEL_DEF.NBODY,
+            Self.MODEL_DEF.MAX_CONTACTS,
+        ]()
+        comptime QPOS_OFF = qpos_offset[Self.MODEL_DEF.NQ, Self.MODEL_DEF.NV]()
+        states[env, META_OFF + META_IDX_STEP_COUNT] = Scalar[gpu_dtype](0.0)
+        states[env, META_OFF + META_IDX_PREV_X] = states[env, QPOS_OFF + 0]
+
+    # =========================================================================
+    # RenderableEnv Trait Implementation
+    # =========================================================================
+
+    fn init_renderer(mut self) raises -> Bool:
+        if self._renderer_initialized:
+            return True
+
+        from memory import alloc
+
+        self._renderer = alloc[Self.RENDERER](1)
+
+        var renderer = Self.RENDERER(
+            width=1280,
+            height=720,
+            visual_radius_scale=2.0,
+            axes_offset=1.5,
+            vel_arrow_height=0.15,
+            vel_arrow_scale=0.1,
+        )
+        renderer.init()
+
+        self._renderer.init_pointee_move(renderer^)
+        self._renderer_initialized = True
+        return True
+
+    fn render_frame(mut self) raises -> None:
+        if not self._renderer_initialized:
+            return
+
+        if not self._renderer[].is_open():
+            return
+
+        # Copy via accessor methods to bypass Mojo type-expression identity bug
+        var xpos = InlineArray[Scalar[Self.DTYPE], Self.MODEL_DEF.NBODY * 3](
+            uninitialized=True
+        )
+        var xquat = InlineArray[Scalar[Self.DTYPE], Self.MODEL_DEF.NBODY * 4](
+            uninitialized=True
+        )
+        for i in range(Self.MODEL_DEF.NBODY * 3):
+            xpos[i] = self.get_xpos(i)
+        for i in range(Self.MODEL_DEF.NBODY * 4):
+            xquat[i] = self.get_xquat(i)
+        self._renderer[].render_from_body_state(
+            xpos,
+            xquat,
+            Self.MODEL_DEF.NBODY,
+            vel_x=Float64(self.get_x_velocity()),
+        )
+
+    fn close_renderer(mut self) raises -> None:
+        if not self._renderer_initialized:
+            return
+
+        self._renderer[].close()
+        self._renderer.free()
+        self._renderer_initialized = False
+
+    fn is_renderer_open(self) -> Bool:
+        if not self._renderer_initialized:
+            return False
+        return self._renderer[].is_open()
+
+    fn check_renderer_quit(mut self) -> Bool:
+        if not self._renderer_initialized:
+            return False
+        return self._renderer[].check_quit()
+
+    fn renderer_delay(self, ms: Int) -> None:
+        if not self._renderer_initialized:
+            return
+        self._renderer[].delay(ms)
