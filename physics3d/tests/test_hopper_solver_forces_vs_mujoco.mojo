@@ -441,6 +441,9 @@ fn compare_solver_forces(
 
     var mj_efc_force_flat = mj_data.efc_force.flatten().tolist()
     var mj_types_flat = mj_data.efc_type.flatten().tolist()
+    var mj_efc_D_flat = mj_data.efc_D.flatten().tolist()
+    var mj_efc_aref_flat = mj_data.efc_aref.flatten().tolist()
+    var mj_efc_J_flat = mj_data.efc_J.flatten().tolist()
     for r in range(mj_nefc):
         var t = Int(py=mj_types_flat[r])
         var tstr: String
@@ -450,10 +453,27 @@ fn compare_solver_forces(
             tstr = "LI"  # limit
         else:
             tstr = String(t)
+        # Print J row
+        var j_str = String("")
+        for i in range(NV):
+            j_str += " " + String(Float64(py=mj_efc_J_flat[r * NV + i]))
         print(
             "    mj [", r, "] type=", tstr,
             " force=", Float64(py=mj_efc_force_flat[r]),
+            " D=", Float64(py=mj_efc_D_flat[r]),
+            " aref=", Float64(py=mj_efc_aref_flat[r]),
+            " J=[", j_str, "]",
         )
+    print()
+    print("  --- Our Jacobian rows for active constraints ---")
+    for r in range(constraints.num_rows):
+        var lam = Float64(constraints.rows[r].lambda_val)
+        if abs(lam) < 1e-6 and Float64(constraints.rows[r].K) < 1e-5:
+            continue
+        var j_str = String("")
+        for i in range(NV):
+            j_str += " " + String(Float64(constraints.J[r * NV + i]))
+        print("    our[", r, "] lambda=", lam, " J=[", j_str, "]")
 
     print()
     if all_pass:

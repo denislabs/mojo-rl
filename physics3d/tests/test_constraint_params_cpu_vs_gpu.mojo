@@ -443,7 +443,7 @@ fn main() raises:
 
     # === Create CPU model (float64) ===
     var model_cpu = Model[
-        CPU_DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM
+        CPU_DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, HalfCheetahModel.CONE_TYPE
     ]()
     var data_ref_cpu = Data[CPU_DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
     HalfCheetahModel.setup_model_and_data(model_cpu, data_ref_cpu)

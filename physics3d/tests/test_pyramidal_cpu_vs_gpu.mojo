@@ -153,8 +153,6 @@ fn compare_step(
             NGEOM=NGEOM, CONE_TYPE=ConeType.PYRAMIDAL,
         ](
             ctx, state_buf, model_buf, workspace_buf,
-            dt=Scalar[DTYPE](0.01),
-            ground_z=Scalar[DTYPE](0.0),
         )
         ctx.synchronize()
 

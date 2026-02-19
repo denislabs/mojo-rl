@@ -884,7 +884,6 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         var qacc_off = qacc_offset[NQ, NV]()
         var qacc_constrained_idx = ws_qacc_constrained_offset[NV, NBODY]()
         comptime M_idx = ws_M_offset[NV, NBODY]()
-        comptime bias_idx = ws_bias_offset[NV, NBODY]()
         comptime fnet_idx = ws_fnet_offset[NV, NBODY]()
         comptime qacc_ws_idx = ws_qacc_ws_offset[NV, NBODY]()
         var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
@@ -893,66 +892,26 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         )
 
         # 9. Integrate with implicit velocity damping (MuJoCo 3.x Euler)
-        # Formula: (M + dt*D) * v_new = M * v_euler + dt * D * v_old
-        # The dt*D*v_old term cancels explicit damping in qacc.
+        # Equivalent formula: v_new = v_old + dt * (M+dt*D)^{-1} * M * qacc_constrained
+        # Same result as: (M+dt*D)*v_new = M*(v_old+dt*qacc) + dt*D*v_old
+        # but using the compact form (identical to ImplicitFastIntegrator approach).
 
-        # Step 1: v_euler = v_old + dt * qacc (store in bias region, reusable)
         var qpos_off = qpos_offset[NQ, NV]()
-        for i in range(NV):
-            var old_qvel = rebind[Scalar[DTYPE]](state[env, qvel_off + i])
-            var constrained_qacc = rebind[Scalar[DTYPE]](
-                workspace[env, qacc_constrained_idx + i]
-            )
-            state[env, qacc_off + i] = constrained_qacc
-            workspace[env, bias_idx + i] = old_qvel + constrained_qacc * dt
 
-        # Step 2: rhs = M * v_euler (store in fnet region)
+        # Step 1: rhs = M * qacc_constrained (store in fnet workspace)
         for i in range(NV):
             var sum = Scalar[DTYPE](0)
             for j in range(NV):
                 var M_ij = rebind[Scalar[DTYPE]](
                     workspace[env, M_idx + i * NV + j]
                 )
-                var v_j = rebind[Scalar[DTYPE]](workspace[env, bias_idx + j])
-                sum += M_ij * v_j
+                var qacc_j = rebind[Scalar[DTYPE]](
+                    workspace[env, qacc_constrained_idx + j]
+                )
+                sum += M_ij * qacc_j
             workspace[env, fnet_idx + i] = sum
 
-        # Step 2b: Add dt * D * v_old to rhs (cancels explicit damping in qacc)
-        for j in range(NJOINT):
-            var joint_off = model_joint_offset[NBODY](j)
-            var jnt_type = Int(
-                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
-            )
-            var dof_adr = Int(
-                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
-            )
-            var damp = rebind[Scalar[DTYPE]](
-                model[0, joint_off + JOINT_IDX_DAMPING]
-            )
-            if damp > Scalar[DTYPE](0):
-                if jnt_type == JNT_FREE:
-                    for d in range(6):
-                        var old_v = rebind[Scalar[DTYPE]](
-                            state[env, qvel_off + dof_adr + d]
-                        )
-                        workspace[env, fnet_idx + dof_adr + d] += (
-                            dt * damp * old_v
-                        )
-                elif jnt_type == JNT_BALL:
-                    for d in range(3):
-                        var old_v = rebind[Scalar[DTYPE]](
-                            state[env, qvel_off + dof_adr + d]
-                        )
-                        workspace[env, fnet_idx + dof_adr + d] += (
-                            dt * damp * old_v
-                        )
-                else:
-                    var old_v = rebind[Scalar[DTYPE]](
-                        state[env, qvel_off + dof_adr]
-                    )
-                    workspace[env, fnet_idx + dof_adr] += dt * damp * old_v
-
-        # Step 3: Add dt*damping to M diagonal → M_hat
+        # Step 2: M_hat = M + dt*D (add damping to M diagonal)
         for j in range(NJOINT):
             var joint_off = model_joint_offset[NBODY](j)
             var jnt_type = Int(
@@ -977,21 +936,20 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                     var idx = M_idx + dof_adr * NV + dof_adr
                     workspace[env, idx] += dt * damp
 
-        # Step 4: Re-factor M_hat via LDL (reuses L/D workspace regions)
+        # Step 3: Re-factor M_hat via LDL (reuses L/D workspace regions)
         ldl_factor_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](env, workspace)
 
-        # Step 5: LDL solve M_hat * v_new = rhs (reads fnet, writes qacc_ws)
+        # Step 4: qacc_final = M_hat^{-1} * rhs (reads fnet, writes qacc_ws)
         ldl_solve_workspace_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
             env, workspace
         )
 
-        # Step 6: Read v_new from qacc_ws, write to state
+        # Step 5: v_new = v_old + dt * qacc_final
         for i in range(NV):
-            var new_qvel = rebind[Scalar[DTYPE]](
-                workspace[env, qacc_ws_idx + i]
-            )
-
-            state[env, qvel_off + i] = new_qvel
+            var old_qvel = rebind[Scalar[DTYPE]](state[env, qvel_off + i])
+            var qacc_final = rebind[Scalar[DTYPE]](workspace[env, qacc_ws_idx + i])
+            state[env, qacc_off + i] = qacc_final
+            state[env, qvel_off + i] = old_qvel + qacc_final * dt
 
         # Integrate position: qpos += qvel * dt (quaternion-aware for free joints)
         # (reuse model_meta_off from line 890)

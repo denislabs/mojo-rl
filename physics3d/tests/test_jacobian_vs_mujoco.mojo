@@ -8,10 +8,10 @@ The constraint Jacobian maps joint velocities to constraint-space velocities:
 Each row of J corresponds to one constraint (normal, friction_t1, friction_t2, etc.)
 
 MuJoCo reference: mj_data.efc_J (nefc x NV matrix, after mj_step1)
-  - Must set model.opt.cone = 1 (elliptic) to match our parameterization
-  - MuJoCo interleaves per-contact: [normal_0, t1_0, t2_0, normal_1, t1_1, t2_1, ...]
-  - Our layout: [normal_0, ..., normal_N, t1_0, t2_0, t1_1, t2_1, ...]
-  - MuJoCo efc_type: 7 = mjCNSTR_CONTACT_ELLIPTIC, 3 = mjCNSTR_LIMIT_JOINT
+  - Must set model.opt.cone = 0 (pyramidal) to match HalfCheetahModel
+  - MuJoCo pyramidal interleaves per-contact: [edge0_0, edge1_0, edge2_0, edge3_0, ...]
+  - Our layout: all edge rows stored as "normals" (num_friction=0 for pyramidal)
+  - MuJoCo efc_type: 6 = mjCNSTR_CONTACT_PYRAMIDAL, 3 = mjCNSTR_LIMIT_JOINT
 
 Run with:
     cd mojo-rl && pixi run mojo run physics3d/tests/test_jacobian_vs_mujoco.mojo
@@ -288,18 +288,18 @@ fn compare_jacobians(
     var mj_J = mj_data.efc_J.reshape(mj_nefc, NV)
     var mj_types = mj_data.efc_type.flatten().tolist()
 
-    # MuJoCo elliptic layout (condim=3): interleaved per contact
-    #   [normal_0, t1_0, t2_0, normal_1, t1_1, t2_1, ...]
-    #   efc_type=7 for all contact rows
-    # Our layout: grouped
-    #   [normal_0, ..., normal_N, t1_0, t2_0, t1_1, t2_1, ...]
+    # MuJoCo pyramidal layout (condim=3): interleaved per contact
+    #   [edge0_0, edge1_0, edge2_0, edge3_0, edge0_1, edge1_1, ...]
+    #   efc_type=6 (mjCNSTR_CONTACT_PYRAMIDAL) for all contact rows
+    # Our layout: all edge rows stored as "normals" (num_friction=0)
+    #   [edge0_0, edge1_0, edge2_0, edge3_0, edge0_1, edge1_1, ...]
 
     # Count MuJoCo contact vs limit rows
     var mj_contact_rows = 0
     var mj_limit_rows = 0
     for r in range(mj_nefc):
         var t = Int(py=mj_types[r])
-        if t == 7:  # mjCNSTR_CONTACT_ELLIPTIC
+        if t == 6:  # mjCNSTR_CONTACT_PYRAMIDAL
             mj_contact_rows += 1
         elif t == 3:  # mjCNSTR_LIMIT_JOINT
             mj_limit_rows += 1
@@ -310,8 +310,9 @@ fn compare_jacobians(
         mj_limit_rows,
     )
 
-    # Verify row counts match
-    var expected_contact_rows = our_ncon * 3  # normal + t1 + t2
+    # Verify row counts match (condim=3 pyramidal: 4 edge rows per contact)
+    var ROWS_PER_CONTACT = 4
+    var expected_contact_rows = our_ncon * ROWS_PER_CONTACT
     var all_pass = True
 
     if mj_contact_rows != expected_contact_rows:
@@ -322,10 +323,11 @@ fn compare_jacobians(
             expected_contact_rows,
         )
 
-    if our_nnorm + our_nfric != mj_contact_rows:
+    # our_nnorm contains all edge rows (num_friction=0 for pyramidal)
+    if our_nnorm != mj_contact_rows:
         print(
             "  FAIL: total contact rows mismatch! ours=",
-            our_nnorm + our_nfric,
+            our_nnorm,
             " mj=",
             mj_contact_rows,
         )
@@ -333,127 +335,28 @@ fn compare_jacobians(
 
     # === Compare per-contact Jacobian rows ===
     # Match contacts by order (same detection order verified in contact test)
-    # MuJoCo: contact c → rows [c*3, c*3+1, c*3+2] = [normal, t1, t2]
-    # But MuJoCo may have limit rows mixed in... find contact-only row indices
+    # MuJoCo pyramidal: contact c → rows [c*4, c*4+1, c*4+2, c*4+3]
+    # Our pyramidal: same ordering of edge rows stored in "normal" slots
     var mj_contact_row_indices = InlineArray[Int, MAX_ROWS](fill=-1)
     var mj_idx = 0
     for r in range(mj_nefc):
         var t = Int(py=mj_types[r])
-        if t == 7:  # contact pyramidal
+        if t == 6:  # mjCNSTR_CONTACT_PYRAMIDAL
             mj_contact_row_indices[mj_idx] = r
             mj_idx += 1
 
     for c in range(our_ncon):
         print("  Contact", c, ":")
 
-        # --- Normal row ---
-        # Our: row index = c
-        # MuJoCo: row index = mj_contact_row_indices[c * 3]
-        var mj_normal_idx = mj_contact_row_indices[c * 3]
-        var our_normal_idx = c
-        if not compare_J_row(
-            "Normal", our_normal_idx, mj_J[mj_normal_idx], constraints
-        ):
-            all_pass = False
-
-        # --- Friction rows ---
-        # Tangent basis can differ between engines (both valid, just different
-        # parameterization of the tangent plane). Instead of matching t1↔t1,
-        # find the best match: compare our t1 against both MJ t1 and MJ t2,
-        # and vice versa.
-        var mj_t1_idx = mj_contact_row_indices[c * 3 + 1]
-        var mj_t2_idx = mj_contact_row_indices[c * 3 + 2]
-        var our_t1_idx = our_nnorm + c * 2
-        var our_t2_idx = our_nnorm + c * 2 + 1
-
-        # Compute error for both possible matchings:
-        #   Matching A: our_t1↔mj_t1, our_t2↔mj_t2
-        #   Matching B: our_t1↔mj_t2, our_t2↔mj_t1
-        var err_A1: Float64 = 0.0
-        var err_A2: Float64 = 0.0
-        var err_B1: Float64 = 0.0
-        var err_B2: Float64 = 0.0
-
-        var mj_t1_list = mj_J[mj_t1_idx].flatten().tolist()
-        var mj_t2_list = mj_J[mj_t2_idx].flatten().tolist()
-
-        for col in range(NV):
-            var our_v1 = Float64(constraints.J[our_t1_idx * NV + col])
-            var our_v2 = Float64(constraints.J[our_t2_idx * NV + col])
-            var mj_v1 = Float64(py=mj_t1_list[col])
-            var mj_v2 = Float64(py=mj_t2_list[col])
-            err_A1 += abs(our_v1 - mj_v1)
-            err_A2 += abs(our_v2 - mj_v2)
-            err_B1 += abs(our_v1 - mj_v2)
-            err_B2 += abs(our_v2 - mj_v1)
-
-        var err_A = err_A1 + err_A2
-        var err_B = err_B1 + err_B2
-
-        # Also check sign-flipped matching (tangent can be negated)
-        var err_C1: Float64 = 0.0
-        var err_C2: Float64 = 0.0
-        var err_D1: Float64 = 0.0
-        var err_D2: Float64 = 0.0
-        for col in range(NV):
-            var our_v1 = Float64(constraints.J[our_t1_idx * NV + col])
-            var our_v2 = Float64(constraints.J[our_t2_idx * NV + col])
-            var mj_v1 = Float64(py=mj_t1_list[col])
-            var mj_v2 = Float64(py=mj_t2_list[col])
-            err_C1 += abs(our_v1 + mj_v1)  # sign flipped
-            err_C2 += abs(our_v2 + mj_v2)
-            err_D1 += abs(our_v1 + mj_v2)  # swapped + sign flipped
-            err_D2 += abs(our_v2 + mj_v1)
-        var err_C = err_C1 + err_C2
-        var err_D = err_D1 + err_D2
-
-        # Pick best matching
-        var best_err = err_A
-        var best_label = String("A(t1↔t1)")
-        if err_B < best_err:
-            best_err = err_B
-            best_label = "B(t1↔t2)"
-        if err_C < best_err:
-            best_err = err_C
-            best_label = "C(t1↔-t1)"
-        if err_D < best_err:
-            best_err = err_D
-            best_label = "D(t1↔-t2)"
-
-        # Determine sign and swap for best matching
-        var swap = best_label == "B(t1↔t2)" or best_label == "D(t1↔-t2)"
-        var negate = best_label == "C(t1↔-t1)" or best_label == "D(t1↔-t2)"
-        var sign: Float64 = -1.0 if negate else 1.0
-
-        if not swap:
+        # Compare all 4 edge rows directly
+        for e in range(ROWS_PER_CONTACT):
+            var our_row_idx = c * ROWS_PER_CONTACT + e
+            var mj_row_idx = mj_contact_row_indices[c * ROWS_PER_CONTACT + e]
+            var label = String("Edge") + String(e)
             if not compare_J_row(
-                "Fric_t1", our_t1_idx, mj_J[mj_t1_idx], constraints, sign
+                label, our_row_idx, mj_J[mj_row_idx], constraints
             ):
                 all_pass = False
-            if not compare_J_row(
-                "Fric_t2", our_t2_idx, mj_J[mj_t2_idx], constraints, sign
-            ):
-                all_pass = False
-        else:
-            # Swapped: our_t1 matches MJ_t2 and our_t2 matches MJ_t1
-            if not compare_J_row(
-                "Fric_t1(↔mj_t2)",
-                our_t1_idx,
-                mj_J[mj_t2_idx],
-                constraints,
-                sign,
-            ):
-                all_pass = False
-            if not compare_J_row(
-                "Fric_t2(↔mj_t1)",
-                our_t2_idx,
-                mj_J[mj_t1_idx],
-                constraints,
-                sign,
-            ):
-                all_pass = False
-
-        print("    (tangent matching:", best_label, " err=", best_err, ")")
 
     # === Compare limit rows (if any) ===
     if our_nlim > 0 or mj_limit_rows > 0:

@@ -368,7 +368,7 @@ fn main() raises:
     print("GPU device initialized")
 
     # === Create CPU model ===
-    var model_cpu = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM](
+    var model_cpu = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, HalfCheetahModel.CONE_TYPE](
     )
     var data_ref = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
     HalfCheetahModel.setup_model_and_data(model_cpu, data_ref)

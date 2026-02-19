@@ -385,13 +385,22 @@ fn build_constraints[
             var hint_z = contact.frame_t1_z
             var hint_len_sq = hint_x * hint_x + hint_y * hint_y + hint_z * hint_z
 
-            # If no hint (non-capsule), use MuJoCo default
+            # If no hint (non-capsule), use MuJoCo mju_makeFrame default:
+            # pick the axis with the smallest absolute dot product with normal.
             if hint_len_sq < Scalar[DTYPE](0.25):
-                hint_x = Scalar[DTYPE](0)
-                if ny < Scalar[DTYPE](0.5) and ny > Scalar[DTYPE](-0.5):
+                var abs_nx = abs(nx)
+                var abs_ny = abs(ny)
+                var abs_nz = abs(nz)
+                if abs_nx <= abs_ny and abs_nx <= abs_nz:
+                    hint_x = Scalar[DTYPE](1)
+                    hint_y = Scalar[DTYPE](0)
+                    hint_z = Scalar[DTYPE](0)
+                elif abs_ny <= abs_nz:
+                    hint_x = Scalar[DTYPE](0)
                     hint_y = Scalar[DTYPE](1)
                     hint_z = Scalar[DTYPE](0)
                 else:
+                    hint_x = Scalar[DTYPE](0)
                     hint_y = Scalar[DTYPE](0)
                     hint_z = Scalar[DTYPE](1)
 
@@ -748,13 +757,22 @@ fn build_constraints[
         var hint_z = contact.frame_t1_z
         var hint_len_sq = hint_x * hint_x + hint_y * hint_y + hint_z * hint_z
 
-        # If no hint (non-capsule), use MuJoCo default
+        # If no hint (non-capsule), use MuJoCo mju_makeFrame default:
+        # pick the axis with the smallest absolute dot product with normal.
         if hint_len_sq < Scalar[DTYPE](0.25):
-            hint_x = Scalar[DTYPE](0)
-            if ny < Scalar[DTYPE](0.5) and ny > Scalar[DTYPE](-0.5):
+            var abs_nx = abs(nx)
+            var abs_ny = abs(ny)
+            var abs_nz = abs(nz)
+            if abs_nx <= abs_ny and abs_nx <= abs_nz:
+                hint_x = Scalar[DTYPE](1)
+                hint_y = Scalar[DTYPE](0)
+                hint_z = Scalar[DTYPE](0)
+            elif abs_ny <= abs_nz:
+                hint_x = Scalar[DTYPE](0)
                 hint_y = Scalar[DTYPE](1)
                 hint_z = Scalar[DTYPE](0)
             else:
+                hint_x = Scalar[DTYPE](0)
                 hint_y = Scalar[DTYPE](0)
                 hint_z = Scalar[DTYPE](1)
 
@@ -766,8 +784,15 @@ fn build_constraints[
         var t1_mag = sqrt(t1_x * t1_x + t1_y * t1_y + t1_z * t1_z)
         if t1_mag < Scalar[DTYPE](1e-10):
             # Hint is parallel to normal (e.g. vertical capsule on ground floor).
-            # Fall back to a perpendicular axis — match MuJoCo mju_makeFrame logic.
-            if ny < Scalar[DTYPE](0.5) and ny > Scalar[DTYPE](-0.5):
+            # Fall back using MuJoCo mju_makeFrame: pick least-aligned basis axis.
+            var abs_nx = abs(nx)
+            var abs_ny = abs(ny)
+            var abs_nz = abs(nz)
+            if abs_nx <= abs_ny and abs_nx <= abs_nz:
+                hint_x = Scalar[DTYPE](1)
+                hint_y = Scalar[DTYPE](0)
+                hint_z = Scalar[DTYPE](0)
+            elif abs_ny <= abs_nz:
                 hint_x = Scalar[DTYPE](0)
                 hint_y = Scalar[DTYPE](1)
                 hint_z = Scalar[DTYPE](0)
@@ -1147,7 +1172,7 @@ fn build_constraints[
 
         # Lower limit: q >= range_min → constraint dist = q - range_min
         var dist_lo = pos - rmin
-        if dist_lo < Scalar[DTYPE](0.01) and row_idx < MAX_ROWS:
+        if dist_lo < Scalar[DTYPE](0) and row_idx < MAX_ROWS:
             var sign = Scalar[DTYPE](1)  # J[dof] = +1
             var K_lim = M_inv[dof * NV + dof]
             if K_lim < Scalar[DTYPE](1e-10):
@@ -1199,7 +1224,7 @@ fn build_constraints[
 
         # Upper limit: q <= range_max → constraint dist = range_max - q
         var dist_hi = rmax - pos
-        if dist_hi < Scalar[DTYPE](0.01) and row_idx < MAX_ROWS:
+        if dist_hi < Scalar[DTYPE](0) and row_idx < MAX_ROWS:
             var sign = Scalar[DTYPE](-1)  # J[dof] = -1
             var K_lim = M_inv[dof * NV + dof]
             if K_lim < Scalar[DTYPE](1e-10):

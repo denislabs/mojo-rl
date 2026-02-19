@@ -68,6 +68,7 @@ from ..gpu.constants import (
     JOINT_IDX_AXIS_X,
     JOINT_IDX_AXIS_Y,
     JOINT_IDX_AXIS_Z,
+    JOINT_IDX_QPOS0,
     MODEL_META_IDX_NJOINT,
 )
 from ..joint_types import (
@@ -182,10 +183,24 @@ fn compute_cdof[
         var com_y = data.xipos[body * 3 + 1]
         var com_z = data.xipos[body * 3 + 2]
 
-        # Body origin world position (for anchor computation)
-        var bpx = data.xpos[body * 3 + 0]
-        var bpy = data.xpos[body * 3 + 1]
-        var bpz = data.xpos[body * 3 + 2]
+        # Compute xpos_initial for this body (matching MuJoCo FK):
+        # xpos_initial = xpos[parent]_final + R(xquat[parent]_final) * body_pos
+        # This is the body position BEFORE any joint corrections (off-center rotation
+        # or slide displacements). MuJoCo computes xanchor from this initial position.
+        # We must NOT use data.xpos[body] (which is xpos_final after corrections).
+        var bpos_world = quat_rotate(
+            data.xquat[parent * 4 + 0],
+            data.xquat[parent * 4 + 1],
+            data.xquat[parent * 4 + 2],
+            data.xquat[parent * 4 + 3],
+            model.body_pos[body * 3 + 0],
+            model.body_pos[body * 3 + 1],
+            model.body_pos[body * 3 + 2],
+        )
+        # Running position — tracks xpos as joints are applied (like MuJoCo FK)
+        var cx = data.xpos[parent * 3 + 0] + bpos_world[0]
+        var cy = data.xpos[parent * 3 + 1] + bpos_world[1]
+        var cz = data.xpos[parent * 3 + 2] + bpos_world[2]
 
         # Process all joints for this body in order
         for j in range(model.num_joints):
@@ -219,7 +234,8 @@ fn compute_cdof[
                 var ay = axis_world[1]
                 var az = axis_world[2]
 
-                # Joint anchor = body_xpos + rotate(jnt_pos, acc_quat)
+                # Joint anchor = running_xpos + rotate(jnt_pos, acc_quat)
+                # Uses cx/cy/cz (xpos before this joint's correction), not xpos_final
                 var jp = quat_rotate(
                     acc_qx,
                     acc_qy,
@@ -229,9 +245,9 @@ fn compute_cdof[
                     jpos_ly,
                     jpos_lz,
                 )
-                var anc_x = bpx + jp[0]
-                var anc_y = bpy + jp[1]
-                var anc_z = bpz + jp[2]
+                var anc_x = cx + jp[0]
+                var anc_y = cy + jp[1]
+                var anc_z = cz + jp[2]
 
                 # offset = body_com - joint_anchor
                 var ox = com_x - anc_x
@@ -248,7 +264,7 @@ fn compute_cdof[
                 cdof[dof_adr * 6 + 5] = ax * oy - ay * ox
 
                 # Update accumulated orientation with this hinge rotation
-                var angle = data.qpos[joint.qpos_adr]
+                var angle = data.qpos[joint.qpos_adr] - model.qpos0[joint.qpos_adr]
                 var hinge_quat = axis_angle_to_quat(ax, ay, az, angle)
                 var new_q = quat_mul(
                     hinge_quat[0],
@@ -264,6 +280,14 @@ fn compute_cdof[
                 acc_qy = new_q[1]
                 acc_qz = new_q[2]
                 acc_qw = new_q[3]
+
+                # Off-center correction: update running xpos (MuJoCo: xpos = anchor - R(new_xquat)*jnt_pos)
+                var vec = quat_rotate(
+                    acc_qx, acc_qy, acc_qz, acc_qw, jpos_lx, jpos_ly, jpos_lz,
+                )
+                cx = anc_x - vec[0]
+                cy = anc_y - vec[1]
+                cz = anc_z - vec[2]
 
             elif joint.jnt_type == JNT_SLIDE:
                 # Get joint axis (body-relative)
@@ -288,7 +312,11 @@ fn compute_cdof[
                 cdof[dof_adr * 6 + 4] = axis_world[1]
                 cdof[dof_adr * 6 + 5] = axis_world[2]
 
-                # Slide doesn't change accumulated orientation
+                # Slide: update running xpos by displacement
+                var disp = data.qpos[joint.qpos_adr] - model.qpos0[joint.qpos_adr]
+                cx += disp * axis_world[0]
+                cy += disp * axis_world[1]
+                cz += disp * axis_world[2]
 
             elif joint.jnt_type == JNT_FREE:
                 # Translation DOFs (dof_adr + 0,1,2): pure linear motion
@@ -1021,13 +1049,26 @@ fn compute_cdof_gpu[
         acc_qz = pre_q[2]
         acc_qw = pre_q[3]
 
-        # Body CoM and origin world positions
+        # Body CoM world position
         var com_x = rebind[Scalar[DTYPE]](state[env, xi_off + body * 3 + 0])
         var com_y = rebind[Scalar[DTYPE]](state[env, xi_off + body * 3 + 1])
         var com_z = rebind[Scalar[DTYPE]](state[env, xi_off + body * 3 + 2])
-        var bpx = rebind[Scalar[DTYPE]](state[env, xpos_off + body * 3 + 0])
-        var bpy = rebind[Scalar[DTYPE]](state[env, xpos_off + body * 3 + 1])
-        var bpz = rebind[Scalar[DTYPE]](state[env, xpos_off + body * 3 + 2])
+
+        # Compute xpos_initial: xpos[parent] + R(xquat[parent]) * body_pos
+        # Use parent's FINAL orientation (data.xquat[parent]) to rotate body_pos.
+        # Do NOT use data.xpos[body] (xpos_final after off-center correction).
+        var body_pos_x = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_POS_X])
+        var body_pos_y = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_POS_Y])
+        var body_pos_z = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_POS_Z])
+        var par_qx = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 0])
+        var par_qy = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 1])
+        var par_qz = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 2])
+        var par_qw = rebind[Scalar[DTYPE]](state[env, xquat_off + parent * 4 + 3])
+        var bpos_w = gpu_quat_rotate(par_qx, par_qy, par_qz, par_qw, body_pos_x, body_pos_y, body_pos_z)
+        # Running position — tracks xpos as joints are applied
+        var cx = rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 0]) + bpos_w[0]
+        var cy = rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 1]) + bpos_w[1]
+        var cz = rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 2]) + bpos_w[2]
 
         # Process all joints for this body in order
         for j in range(num_joints):
@@ -1079,7 +1120,7 @@ fn compute_cdof_gpu[
                 var ay = a_w[1]
                 var az = a_w[2]
 
-                # Joint anchor = body_xpos + rotate(jnt_pos, acc_quat)
+                # Joint anchor = running_xpos + rotate(jnt_pos, acc_quat)
                 var jp = gpu_quat_rotate(
                     acc_qx,
                     acc_qy,
@@ -1089,9 +1130,9 @@ fn compute_cdof_gpu[
                     jpos_ly,
                     jpos_lz,
                 )
-                var anc_x = bpx + jp[0]
-                var anc_y = bpy + jp[1]
-                var anc_z = bpz + jp[2]
+                var anc_x = cx + jp[0]
+                var anc_y = cy + jp[1]
+                var anc_z = cz + jp[2]
 
                 # offset = body_com - joint_anchor
                 var ox = com_x - anc_x
@@ -1111,9 +1152,12 @@ fn compute_cdof_gpu[
                         model[0, joint_off + JOINT_IDX_QPOS_ADR]
                     )
                 )
+                var qpos0_val = rebind[Scalar[DTYPE]](
+                    model[0, joint_off + JOINT_IDX_QPOS0]
+                )
                 var angle = rebind[Scalar[DTYPE]](
                     state[env, qpos_off + qpos_adr_val]
-                )
+                ) - qpos0_val
                 var hinge_q = gpu_axis_angle_to_quat(ax, ay, az, angle)
                 var new_q = gpu_quat_mul(
                     hinge_q[0],
@@ -1129,6 +1173,12 @@ fn compute_cdof_gpu[
                 acc_qy = new_q[1]
                 acc_qz = new_q[2]
                 acc_qw = new_q[3]
+
+                # Off-center correction: update running xpos
+                var vec = gpu_quat_rotate(acc_qx, acc_qy, acc_qz, acc_qw, jpos_lx, jpos_ly, jpos_lz)
+                cx = anc_x - vec[0]
+                cy = anc_y - vec[1]
+                cz = anc_z - vec[2]
 
             elif jnt_type == JNT_SLIDE:
                 var axis_lx = rebind[Scalar[DTYPE]](
@@ -1156,7 +1206,13 @@ fn compute_cdof_gpu[
                 workspace[env, cdof_idx + dof_adr * 6 + 4] = a_w[1]
                 workspace[env, cdof_idx + dof_adr * 6 + 5] = a_w[2]
 
-                # Slide doesn't change accumulated orientation
+                # Slide: update running xpos by displacement
+                var qpos_adr_val2 = Int(rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_QPOS_ADR]))
+                var qpos0_val2 = rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_QPOS0])
+                var disp = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr_val2]) - qpos0_val2
+                cx += disp * a_w[0]
+                cy += disp * a_w[1]
+                cz += disp * a_w[2]
 
             elif jnt_type == JNT_FREE:
                 workspace[env, cdof_idx + (dof_adr + 0) * 6 + 3] = Scalar[

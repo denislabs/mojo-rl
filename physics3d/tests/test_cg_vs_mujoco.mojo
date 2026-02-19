@@ -373,12 +373,16 @@ fn compare_solver_forces(
     for i in range(NV):
         our_qacc[i] = Float64(qacc[i])
 
-    # Collect per-normal forces
+    # Collect per-contact forces (pyramidal: 4 edge rows per contact)
     var our_normal_forces = InlineArray[Float64, MAX_CONTACTS](fill=0.0)
     var our_total_normal: Float64 = 0.0
-    for c in range(our_nnorm):
-        our_normal_forces[c] = Float64(constraints.rows[c].lambda_val)
-        our_total_normal += our_normal_forces[c]
+    var ROWS_PER_CON = 4  # condim=3 pyramidal
+    for c in range(Int(data.num_contacts)):
+        var total_c: Float64 = 0.0
+        for e in range(ROWS_PER_CON):
+            total_c += Float64(constraints.rows[c * ROWS_PER_CON + e].lambda_val)
+        our_normal_forces[c] = total_c
+        our_total_normal += total_c
 
     # === MuJoCo reference via Python ===
     var mujoco = Python.import_module("mujoco")
@@ -421,22 +425,26 @@ fn compare_solver_forces(
     var mj_efc_force_flat = mj_data.efc_force.flatten().tolist()
     var mj_types_flat = mj_data.efc_type.flatten().tolist()
 
-    # MuJoCo pyramidal interleaves [n, t1, t2] per contact
+    # MuJoCo pyramidal interleaves 4 edge rows per contact (efc_type=6)
     var mj_contact_start = -1
     for r in range(mj_nefc):
         var t = Int(py=mj_types_flat[r])
-        if t == 7:
+        if t == 6:  # mjCNSTR_CONTACT_PYRAMIDAL
             mj_contact_start = r
             break
 
+    var ROWS_PER_MJ_CON = 4  # condim=3 pyramidal
     var mj_normal_forces = InlineArray[Float64, MAX_CONTACTS](fill=0.0)
     mj_total_normal = 0.0
     if mj_contact_start >= 0:
         for c in range(mj_ncon):
-            var mj_r = mj_contact_start + c * 3
-            if mj_r < mj_nefc:
-                mj_normal_forces[c] = Float64(py=mj_efc_force_flat[mj_r])
-                mj_total_normal += mj_normal_forces[c]
+            var total_c: Float64 = 0.0
+            for e in range(ROWS_PER_MJ_CON):
+                var mj_r = mj_contact_start + c * ROWS_PER_MJ_CON + e
+                if mj_r < mj_nefc:
+                    total_c += Float64(py=mj_efc_force_flat[mj_r])
+            mj_normal_forces[c] = total_c
+            mj_total_normal += total_c
 
     # === Cost comparison ===
     comptime MR = _max_one[MAX_ROWS]()
@@ -558,8 +566,8 @@ fn compare_solver_forces(
     for r in range(mj_nefc):
         var t = Int(py=mj_types_flat[r])
         var tstr: String
-        if t == 7:
-            tstr = "CE"
+        if t == 6:
+            tstr = "CP"  # Contact Pyramidal
         elif t == 3:
             tstr = "LI"
         else:
