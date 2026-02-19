@@ -146,12 +146,13 @@ comptime HopperFoot = CapsuleBody[
 # =============================================================================
 
 # Joint 0: rootx — Slide along X (body 1/torso, unactuated)
-# MuJoCo: armature=0, damping=0, stiffness=0
+# MuJoCo XML: pos="0 0 -1.25" (joint anchor offset from body origin)
 comptime HopperRootX = SlideJoint[
     body_idx=1,
     axis_x=1.0,
     axis_y=0.0,
     axis_z=0.0,
+    pos_z=-1.25,
     armature=0.0,
     damping=0.0,
     stiffness=0.0,
@@ -159,13 +160,15 @@ comptime HopperRootX = SlideJoint[
 ]
 
 # Joint 1: rootz — Slide along Z (body 1/torso, unactuated)
-# MuJoCo: armature=0, damping=0, stiffness=0
-# Height comes from body_pos_z=1.25, NOT from init_qpos (MuJoCo qpos0 is all zeros)
+# MuJoCo XML: pos="0 0 -1.25" ref="1.25" — at qpos=1.25 (=ref), displacement=0
+# so body stays at body_pos_z=1.25. FK uses (qpos - qpos0) * axis.
 comptime HopperRootZ = SlideJoint[
     body_idx=1,
     axis_x=0.0,
     axis_y=0.0,
     axis_z=1.0,
+    pos_z=-1.25,
+    init_qpos=1.25,
     armature=0.0,
     damping=0.0,
     stiffness=0.0,
@@ -183,10 +186,13 @@ comptime HopperRootY = HingeJoint[
     has_limits=False,
 ]
 
-# Joint 3: thigh — Hinge around Y (body 2)
-# MuJoCo: joint pos=(0,0,0) relative to body (joint at body origin)
+# Joint 3: thigh — Hinge around -Y (body 2)
+# MuJoCo XML: axis="0 -1 0", pos="0 0 0", range="-150 0"
 comptime HopperThighJ = HingeJoint[
     body_idx=2,
+    axis_x=0.0,
+    axis_y=-1.0,
+    axis_z=0.0,
     tau_limit=200.0,
     range_min= -2.618,
     range_max=0.0,
@@ -194,10 +200,13 @@ comptime HopperThighJ = HingeJoint[
     damping=1.0,
 ]
 
-# Joint 4: leg — Hinge around Y (body 3)
-# MuJoCo: joint pos=(0, 0, 0.25) relative to body
+# Joint 4: leg — Hinge around -Y (body 3)
+# MuJoCo XML: axis="0 -1 0", pos="0 0 0.25", range="-150 0"
 comptime HopperLegJ = HingeJoint[
     body_idx=3,
+    axis_x=0.0,
+    axis_y=-1.0,
+    axis_z=0.0,
     pos_z=0.25,
     tau_limit=200.0,
     range_min= -2.618,
@@ -206,10 +215,13 @@ comptime HopperLegJ = HingeJoint[
     damping=1.0,
 ]
 
-# Joint 5: foot — Hinge around Y (body 4)
-# MuJoCo: joint pos=(-0.13, 0, 0.1) relative to body
+# Joint 5: foot — Hinge around -Y (body 4)
+# MuJoCo XML: axis="0 -1 0", pos="-0.13 0 0.1", range="-45 45"
 comptime HopperFootJ = HingeJoint[
     body_idx=4,
+    axis_x=0.0,
+    axis_y=-1.0,
+    axis_z=0.0,
     pos_x= -0.13,
     pos_z=0.1,
     tau_limit=200.0,
@@ -476,7 +488,7 @@ struct HopperParams[DTYPE: DType = DType.float64]:
     comptime OBS_DIM: Int = 11
     comptime ACTION_DIM: Int = 3
 
-    # Initial torso height (from body_pos_z; qpos[rootz] starts at 0)
+    # Initial torso height (qpos[rootz] = 1.25 = qpos0, matching MuJoCo ref)
     comptime INITIAL_Z: Scalar[Self.DTYPE] = 1.25
 
     # Motor

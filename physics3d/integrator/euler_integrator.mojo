@@ -994,7 +994,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             state[env, qvel_off + i] = new_qvel
 
         # Integrate position: qpos += qvel * dt (quaternion-aware for free joints)
-        var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
+        # (reuse model_meta_off from line 890)
         var num_joints = Int(
             rebind[Scalar[DTYPE]](
                 model[0, model_meta_off + MODEL_META_IDX_NJOINT]

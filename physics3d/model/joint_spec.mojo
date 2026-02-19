@@ -42,6 +42,7 @@ from ..gpu.constants import (
     JOINT_IDX_SOLIMP_LIMIT_0,
     JOINT_IDX_SOLIMP_LIMIT_1,
     JOINT_IDX_SOLIMP_LIMIT_2,
+    JOINT_IDX_QPOS0,
     model_joint_offset,
 )
 from gpu.host import HostBuffer
@@ -1367,6 +1368,21 @@ struct Joints[*J: JointSpec](JointsLike):
                 _resolve_f64[J.SOLIMP_LIMIT_2, Defaults.JOINT_SOLIMP_LIMIT_2]()
             )
 
+            # Set qpos0 (MuJoCo ref / initial position)
+            comptime qp_off = Self._qpos_offset[i]()
+
+            @parameter
+            if J.JNT_TYPE == JNT_FREE:
+                model.qpos0[qp_off + 0] = Scalar[DTYPE](J.INIT_POS_X)
+                model.qpos0[qp_off + 1] = Scalar[DTYPE](J.INIT_POS_Y)
+                model.qpos0[qp_off + 2] = Scalar[DTYPE](J.INIT_POS_Z)
+                model.qpos0[qp_off + 3] = Scalar[DTYPE](0)  # qx
+                model.qpos0[qp_off + 4] = Scalar[DTYPE](0)  # qy
+                model.qpos0[qp_off + 5] = Scalar[DTYPE](0)  # qz
+                model.qpos0[qp_off + 6] = Scalar[DTYPE](1)  # qw
+            else:
+                model.qpos0[qp_off] = Scalar[DTYPE](J.INIT_QPOS)
+
     @staticmethod
     fn write_to_buffer[
         DTYPE: DType,
@@ -1414,6 +1430,7 @@ struct Joints[*J: JointSpec](JointsLike):
             buffer[off + JOINT_IDX_STIFFNESS] = Scalar[DTYPE](stiff)
             buffer[off + JOINT_IDX_SPRINGREF] = Scalar[DTYPE](J.SPRINGREF)
             buffer[off + JOINT_IDX_FRICTIONLOSS] = Scalar[DTYPE](frloss)
+            buffer[off + JOINT_IDX_QPOS0] = Scalar[DTYPE](J.INIT_QPOS)
 
             # Per-joint solref/solimp for limits
             buffer[off + JOINT_IDX_SOLREF_LIMIT_0] = Scalar[DTYPE](

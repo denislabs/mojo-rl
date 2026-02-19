@@ -21,19 +21,12 @@ from python import Python, PythonObject
 from math import abs
 from collections import InlineArray
 
-from physics3d.types import Model, Data, _max_one, ConeType
+from physics3d.types import Model, Data, ConeType
 from physics3d.integrator.euler_integrator import EulerIntegrator
 from physics3d.solver import NewtonSolver
-from physics3d.kinematics.forward_kinematics import forward_kinematics
-from physics3d.dynamics.mass_matrix import compute_body_invweight0
 from envs.half_cheetah.half_cheetah_def import (
     HalfCheetahModel,
-    HalfCheetahBodies,
-    HalfCheetahJoints,
-    HalfCheetahGeoms,
-    HalfCheetahActuators,
     HalfCheetahParams,
-    HalfCheetahDefaults,
 )
 
 
@@ -77,28 +70,12 @@ fn compare_step(
 
     # === Our engine ===
     var model = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, ConeType.ELLIPTIC
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, HalfCheetahModel.CONE_TYPE
     ](
     )
 
-    HalfCheetahModel.setup_solver_params[Defaults=HalfCheetahDefaults](model)
-    HalfCheetahBodies.setup_model(model)
-    HalfCheetahJoints.setup_model[Defaults=HalfCheetahDefaults](model)
-    HalfCheetahGeoms.setup_model[Defaults=HalfCheetahDefaults](model)
-
     var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
-
-    # Compute body_invweight0 at REFERENCE pose (MuJoCo mj_setConst does this once at init)
-    forward_kinematics(model, data)
-    compute_body_invweight0[
-        DTYPE,
-        NQ,
-        NV,
-        NBODY,
-        NJOINT,
-        MAX_CONTACTS,
-        NGEOM,
-    ](model, data)
+    HalfCheetahModel.setup_model_and_data(model, data)
 
     for i in range(NQ):
         data.qpos[i] = Scalar[DTYPE](qpos_init[i])
@@ -115,9 +92,7 @@ fn compare_step(
         for i in range(NV):
             data.qfrc[i] = Scalar[DTYPE](0)
 
-        HalfCheetahActuators.apply_actions[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS
-        ](data, action_list)
+        HalfCheetahModel.apply_actions(data, action_list)
 
         EulerIntegrator[SOLVER=NewtonSolver].step[NGEOM=NGEOM](
             model, data
@@ -136,7 +111,7 @@ fn compare_step(
     # Match our engine settings: Euler integrator, Newton solver, elliptic cone
     mj_model.opt.integrator = 0  # mjINT_EULER
     mj_model.opt.solver = 2  # mjSOL_NEWTON
-    mj_model.opt.cone = 1  # mjCONE_ELLIPTIC
+    mj_model.opt.cone = 0  # mjCONE_PYRAMIDAL (matches HalfCheetahModel)
     var mj_data = mujoco.MjData(mj_model)
 
     for i in range(NQ):

@@ -382,6 +382,10 @@ struct Model[
     # Used for joint limit diagApprox (MuJoCo uses this instead of body_invweight0 for limits)
     var dof_invweight0: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NV]()]
 
+    # Joint reference positions (MuJoCo qpos0): FK uses qpos - qpos0 for slide/hinge joints
+    # For slide joints with ref="X" in XML, qpos0 = X. For hinge joints, typically 0.
+    var qpos0: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NQ]()]
+
     # Unified geom arrays (NGEOM > 0)
     var geom_type: InlineArray[Int, _max_one[Self.NGEOM]()]
     var geom_body: InlineArray[
@@ -509,6 +513,9 @@ struct Model[
         )
         self.dof_invweight0 = InlineArray[
             Scalar[Self.DTYPE], _max_one[Self.NV]()
+        ](fill=Scalar[Self.DTYPE](0))
+        self.qpos0 = InlineArray[
+            Scalar[Self.DTYPE], _max_one[Self.NQ]()
         ](fill=Scalar[Self.DTYPE](0))
 
         # Initialize geom arrays
@@ -1151,10 +1158,8 @@ struct Data[
     var xvel: InlineArray[Scalar[Self.DTYPE], Self.NBODY * 3]  # Linear
     var xangvel: InlineArray[Scalar[Self.DTYPE], Self.NBODY * 3]  # Angular
 
-    # Contacts
-    var contacts: InlineArray[
-        ContactInfo[Self.DTYPE], _max_one[Self.MAX_CONTACTS]()
-    ]
+    # Contacts — heap-allocated to avoid stack overflow for large MAX_CONTACTS
+    var contacts: List[ContactInfo[Self.DTYPE]]
     var num_contacts: Int
 
     fn __init__(out self):
@@ -1225,12 +1230,12 @@ struct Data[
         for i in range(Self.NBODY * 3):
             self.xangvel[i] = Scalar[Self.DTYPE](0)
 
-        # Initialize contacts
-        self.contacts = InlineArray[
-            ContactInfo[Self.DTYPE], _max_one[Self.MAX_CONTACTS]()
-        ](uninitialized=True)
-        for i in range(_max_one[Self.MAX_CONTACTS]()):
-            self.contacts[i] = ContactInfo[Self.DTYPE].empty()
+        # Initialize contacts (heap-allocated, pre-filled to MAX_CONTACTS)
+        self.contacts = List[ContactInfo[Self.DTYPE]](
+            capacity=_max_one[Self.MAX_CONTACTS]()
+        )
+        for _ in range(_max_one[Self.MAX_CONTACTS]()):
+            self.contacts.append(ContactInfo[Self.DTYPE].empty())
         self.num_contacts = 0
 
     fn get_body_position(

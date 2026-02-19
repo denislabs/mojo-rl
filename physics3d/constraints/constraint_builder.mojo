@@ -764,6 +764,22 @@ fn build_constraints[
         var t1_y = hint_y - dot_nh * ny
         var t1_z = hint_z - dot_nh * nz
         var t1_mag = sqrt(t1_x * t1_x + t1_y * t1_y + t1_z * t1_z)
+        if t1_mag < Scalar[DTYPE](1e-10):
+            # Hint is parallel to normal (e.g. vertical capsule on ground floor).
+            # Fall back to a perpendicular axis — match MuJoCo mju_makeFrame logic.
+            if ny < Scalar[DTYPE](0.5) and ny > Scalar[DTYPE](-0.5):
+                hint_x = Scalar[DTYPE](0)
+                hint_y = Scalar[DTYPE](1)
+                hint_z = Scalar[DTYPE](0)
+            else:
+                hint_x = Scalar[DTYPE](0)
+                hint_y = Scalar[DTYPE](0)
+                hint_z = Scalar[DTYPE](1)
+            dot_nh = nx * hint_x + ny * hint_y + nz * hint_z
+            t1_x = hint_x - dot_nh * nx
+            t1_y = hint_y - dot_nh * ny
+            t1_z = hint_z - dot_nh * nz
+            t1_mag = sqrt(t1_x * t1_x + t1_y * t1_y + t1_z * t1_z)
         if t1_mag > Scalar[DTYPE](1e-10):
             t1_x = t1_x / t1_mag
             t1_y = t1_y / t1_mag

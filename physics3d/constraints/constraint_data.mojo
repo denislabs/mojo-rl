@@ -101,13 +101,15 @@ struct ConstraintData[DTYPE: DType, MAX_ROWS: Int, NV: Int]:
     M_hat and qfrc_smooth are filled by the integrator before calling solve().
     They are used by primal solvers (NewtonSolver, CGSolver) which
     operate in qacc space rather than dual (force) space.
+
+    rows, J, MinvJT are heap-allocated (List) to avoid stack overflow when
+    MAX_ROWS is large (e.g. 232 for Hopper with MAX_CONTACTS=20).
+    M_hat and qfrc_smooth stay on the stack (small: NV*NV and NV).
     """
 
-    var rows: InlineArray[ConstraintRow[Self.DTYPE], _max_one[Self.MAX_ROWS]()]
-    var J: InlineArray[Scalar[Self.DTYPE], _max_one[Self.MAX_ROWS * Self.NV]()]
-    var MinvJT: InlineArray[
-        Scalar[Self.DTYPE], _max_one[Self.MAX_ROWS * Self.NV]()
-    ]
+    var rows: List[ConstraintRow[Self.DTYPE]]
+    var J: List[Scalar[Self.DTYPE]]
+    var MinvJT: List[Scalar[Self.DTYPE]]
     # Mass matrix (with armature + implicit damping) — for primal solvers
     var M_hat: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NV * Self.NV]()]
     # Net unconstrained force (qfrc - bias - passive) — for primal solvers
@@ -123,13 +125,16 @@ struct ConstraintData[DTYPE: DType, MAX_ROWS: Int, NV: Int]:
         comptime JSize = _max_one[Self.MAX_ROWS * Self.NV]()
         comptime MSize = _max_one[Self.NV * Self.NV]()
         comptime VSize = _max_one[Self.NV]()
-        self.rows = InlineArray[ConstraintRow[Self.DTYPE], MR](
-            fill=ConstraintRow[Self.DTYPE]()
-        )
-        self.J = InlineArray[Scalar[Self.DTYPE], JSize](fill=Scalar[Self.DTYPE](0))
-        self.MinvJT = InlineArray[Scalar[Self.DTYPE], JSize](
-            fill=Scalar[Self.DTYPE](0)
-        )
+        # Heap-allocate rows, J, MinvJT to avoid stack overflow for large models
+        self.rows = List[ConstraintRow[Self.DTYPE]](capacity=MR)
+        for _ in range(MR):
+            self.rows.append(ConstraintRow[Self.DTYPE]())
+        self.J = List[Scalar[Self.DTYPE]](capacity=JSize)
+        for _ in range(JSize):
+            self.J.append(Scalar[Self.DTYPE](0))
+        self.MinvJT = List[Scalar[Self.DTYPE]](capacity=JSize)
+        for _ in range(JSize):
+            self.MinvJT.append(Scalar[Self.DTYPE](0))
         self.M_hat = InlineArray[Scalar[Self.DTYPE], MSize](
             fill=Scalar[Self.DTYPE](0)
         )

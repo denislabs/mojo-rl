@@ -15,14 +15,13 @@ from collections import InlineArray
 from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
 
-from physics3d.types import Model, Data, _max_one, ConeType
+from physics3d.types import Model, Data, ConeType
 from physics3d.integrator.rk4_integrator import RK4Integrator
 from physics3d.solver import NewtonSolver
 from physics3d.kinematics.forward_kinematics import forward_kinematics
-from physics3d.dynamics.mass_matrix import compute_body_invweight0
 from physics3d.gpu.constants import (
     state_size,
-    model_size,
+    model_size_with_invweight,
     qpos_offset,
     qvel_offset,
     qfrc_offset,
@@ -31,18 +30,11 @@ from physics3d.gpu.constants import (
 )
 from physics3d.gpu.buffer_utils import (
     create_state_buffer,
-    create_model_buffer,
-    copy_model_to_buffer,
     copy_data_to_buffer,
 )
 from envs.half_cheetah.half_cheetah_def import (
     HalfCheetahModel,
-    HalfCheetahBodies,
-    HalfCheetahJoints,
-    HalfCheetahGeoms,
-    HalfCheetahActuators,
     HalfCheetahParams,
-    HalfCheetahDefaults,
 )
 
 
@@ -61,7 +53,7 @@ comptime ACTION_DIM = HalfCheetahParams[DTYPE].ACTION_DIM
 comptime BATCH = 1
 
 comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS]()
-comptime MODEL_SIZE = model_size[NBODY, NJOINT]()
+comptime MODEL_SIZE = model_size_with_invweight[NBODY, NJOINT, NV, NGEOM]()
 comptime SOLVER_WS = NewtonSolver.solver_workspace_size[NV, MAX_CONTACTS]()
 comptime WS_SIZE = integrator_workspace_size[
     NV, NBODY
@@ -98,22 +90,10 @@ fn compare_step(
 
     # === CPU pipeline ===
     var model_cpu = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, ConeType.ELLIPTIC
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, HalfCheetahModel.CONE_TYPE
     ]()
-    HalfCheetahModel.setup_solver_params[Defaults=HalfCheetahDefaults](
-        model_cpu
-    )
-    HalfCheetahBodies.setup_model(model_cpu)
-    HalfCheetahJoints.setup_model[Defaults=HalfCheetahDefaults](model_cpu)
-    HalfCheetahGeoms.setup_model[Defaults=HalfCheetahDefaults](model_cpu)
-
     var data_cpu = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
-
-    # Compute body_invweight0 at reference pose
-    forward_kinematics(model_cpu, data_cpu)
-    compute_body_invweight0[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM](
-        model_cpu, data_cpu
-    )
+    HalfCheetahModel.setup_model_and_data(model_cpu, data_cpu)
 
     # Set initial state
     for i in range(NQ):
@@ -129,37 +109,14 @@ fn compare_step(
     for _ in range(num_steps):
         for i in range(NV):
             data_cpu.qfrc[i] = Scalar[DTYPE](0)
-        HalfCheetahActuators.apply_actions[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS
-        ](data_cpu, action_list)
+        HalfCheetahModel.apply_actions(data_cpu, action_list)
         RK4Integrator[SOLVER=NewtonSolver].step[NGEOM=NGEOM](
             model_cpu, data_cpu
         )
 
     # === GPU pipeline ===
-    var model_gpu = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, ConeType.ELLIPTIC
-    ]()
-    HalfCheetahModel.setup_solver_params[Defaults=HalfCheetahDefaults](
-        model_gpu
-    )
-    HalfCheetahBodies.setup_model(model_gpu)
-    HalfCheetahJoints.setup_model[Defaults=HalfCheetahDefaults](model_gpu)
-    HalfCheetahGeoms.setup_model[Defaults=HalfCheetahDefaults](model_gpu)
-
-    # Compute invweight0 at ref pose
-    var data_ref = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
-    forward_kinematics(model_gpu, data_ref)
-    compute_body_invweight0[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM](
-        model_gpu, data_ref
-    )
-
-    var model_host = create_model_buffer[DTYPE, NBODY, NJOINT](ctx)
-    copy_model_to_buffer[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS](
-        model_gpu, model_host
-    )
     var model_buf_local = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
-    ctx.enqueue_copy(model_buf_local, model_host.unsafe_ptr())
+    HalfCheetahModel.init_model_gpu(ctx, model_buf_local)
 
     # Set initial state in state buffer
     for i in range(BATCH * STATE_SIZE):
@@ -171,9 +128,7 @@ fn compare_step(
 
     # Apply actions to get qfrc
     var data_temp = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
-    HalfCheetahActuators.apply_actions[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS
-    ](data_temp, action_list)
+    HalfCheetahModel.apply_actions(data_temp, action_list)
     for i in range(NV):
         state_host[qfrc_offset[NQ, NV]() + i] = data_temp.qfrc[i]
 
@@ -207,7 +162,7 @@ fn compare_step(
             MAX_CONTACTS,
             BATCH,
             NGEOM=0,
-            CONE_TYPE = ConeType.ELLIPTIC,
+            CONE_TYPE = HalfCheetahModel.CONE_TYPE,
         ](
             ctx,
             state_buf,
@@ -357,7 +312,7 @@ fn main() raises:
     print("=" * 60)
     print("Model: HalfCheetah (NQ=9, NV=9)")
     print("Integrator: RK4 + NewtonSolver")
-    print("Cone: elliptic")
+    print("Cone: pyramidal")
     print("Precision: float32")
     print("Tolerances: qpos abs=", QPOS_ABS_TOL, " rel=", QPOS_REL_TOL)
     print("            qvel abs=", QVEL_ABS_TOL, " rel=", QVEL_REL_TOL)

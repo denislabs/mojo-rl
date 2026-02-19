@@ -35,7 +35,6 @@ from physics3d.dynamics.mass_matrix import (
     ldl_factor,
     ldl_solve,
     compute_M_inv_from_ldl,
-    compute_body_invweight0,
 )
 from physics3d.collision.contact_detection import detect_contacts
 from physics3d.constraints.constraint_builder import build_constraints, writeback_forces
@@ -59,11 +58,7 @@ from physics3d.solver.primal_common import (
 from physics3d.joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
 from envs.half_cheetah.half_cheetah_def import (
     HalfCheetahModel,
-    HalfCheetahBodies,
-    HalfCheetahJoints,
-    HalfCheetahGeoms,
     HalfCheetahParams,
-    HalfCheetahDefaults,
 )
 
 
@@ -196,22 +191,11 @@ fn compare_solver_forces(
 
     # === Our engine ===
     var model = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, ConeType.ELLIPTIC
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, HalfCheetahModel.CONE_TYPE
     ](
     )
-    HalfCheetahModel.setup_solver_params[Defaults=HalfCheetahDefaults](model)
-
-    HalfCheetahBodies.setup_model(model)
-
-    HalfCheetahJoints.setup_model[Defaults=HalfCheetahDefaults](model)
-
-    HalfCheetahGeoms.setup_model[Defaults=HalfCheetahDefaults](model)
-
     var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
-
-    # Compute body_invweight0 at REFERENCE pose (MuJoCo mj_setConst)
-    forward_kinematics(model, data)
-    compute_body_invweight0(model, data)
+    HalfCheetahModel.setup_model_and_data(model, data)
 
     # Set test configuration
     for i in range(NQ):
@@ -360,7 +344,7 @@ fn compare_solver_forces(
 
     # 10. Build constraints (passing qacc as unconstrained acceleration)
     var constraints = ConstraintData[DTYPE, MAX_ROWS, NV]()
-    build_constraints[CONE_TYPE=ConeType.ELLIPTIC](
+    build_constraints[CONE_TYPE=HalfCheetahModel.CONE_TYPE](
         model, data, cdof, M_inv, qacc, dt, constraints
     )
 
@@ -386,11 +370,15 @@ fn compare_solver_forces(
         qacc0[i] = qacc[i]
 
     # 12. Solve constraints (modifies qacc in-place)
-    NewtonSolver.solve[CONE_TYPE=ConeType.ELLIPTIC](
+    NewtonSolver.solve[CONE_TYPE=HalfCheetahModel.CONE_TYPE](
         model, data, M_inv, constraints, qacc, dt
     )
 
-    # 13. Compute our qfrc_constraint = J^T * lambda
+    # 13. Write forces back to data.contacts (required for pyramidal where
+    #     per-contact force = sum of edge lambdas, not a single normal row)
+    writeback_forces(constraints, data)
+
+    # Compute our qfrc_constraint = J^T * lambda
     var our_qfrc = InlineArray[Float64, NV](fill=0.0)
     for r in range(constraints.num_rows):
         var lam = Float64(constraints.rows[r].lambda_val)
@@ -402,11 +390,13 @@ fn compare_solver_forces(
     for i in range(NV):
         our_qacc[i] = Float64(qacc[i])
 
-    # Collect per-normal forces
+    # Collect per-contact normal forces from data.contacts (post-writeback)
+    # For pyramidal: writeback aggregates edge lambdas into force_n.
+    # Loop over actual contact count (not row count) to avoid overflow.
     var our_normal_forces = InlineArray[Float64, MAX_CONTACTS](fill=0.0)
     var our_total_normal: Float64 = 0.0
-    for c in range(our_nnorm):
-        our_normal_forces[c] = Float64(constraints.rows[c].lambda_val)
+    for c in range(our_ncon):
+        our_normal_forces[c] = Float64(data.contacts[c].force_n)
         our_total_normal += our_normal_forces[c]
 
     # === MuJoCo reference via Python ===
@@ -417,8 +407,8 @@ fn compare_solver_forces(
         "../Gymnasium-main/gymnasium/envs/mujoco/assets/half_cheetah.xml"
     )
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
-    # Match our solver: elliptic cone, Newton solver, Euler integrator
-    mj_model.opt.cone = 1       # elliptic
+    # Match our solver: pyramidal cone, Newton solver, Euler integrator
+    mj_model.opt.cone = 0       # pyramidal (matches HalfCheetahModel)
     mj_model.opt.solver = 2     # Newton
     mj_model.opt.integrator = 0 # Euler (match our M_hat = M + arm + dt*damp)
 
@@ -561,12 +551,12 @@ fn compare_solver_forces(
     var mj_efc_force_flat = mj_data.efc_force.flatten().tolist()
     var mj_types_flat = mj_data.efc_type.flatten().tolist()
 
-    # MuJoCo elliptic interleaves [n, t1, t2] per contact
-    # Type 7 for ALL of them. Normal = index 0,3,6,... Friction = 1,2,4,5,...
+    # MuJoCo pyramidal: type 6 for all contact rows (edge constraints)
+    # Each contact has 2*(condim-1) = 4 edge rows for condim=3
     var mj_contact_start = -1
     for r in range(mj_nefc):
         var t = Int(py=mj_types_flat[r])
-        if t == 7:
+        if t == 6:  # mjCNSTR_CONTACT_PYRAMIDAL
             mj_contact_start = r
             break
 
@@ -581,12 +571,14 @@ fn compare_solver_forces(
     mj_total_normal = 0.0
     if mj_contact_start >= 0:
         for c in range(mj_ncon):
-            var mj_r = mj_contact_start + c * 3  # normal row for contact c
-            if mj_r < mj_nefc:
-                mj_normal_forces[c] = Float64(py=mj_efc_force_flat[mj_r])
-                mj_total_normal += mj_normal_forces[c]
+            var mj_r = mj_contact_start + c * 4  # first edge row for contact c
+            # Pyramidal: each contact has 4 edge rows, normal force = sum of all edge lambdas
+            for edge_idx in range(4):
+                if mj_r + edge_idx < mj_nefc:
+                    mj_normal_forces[c] += Float64(py=mj_efc_force_flat[mj_r + edge_idx])
+            mj_total_normal += mj_normal_forces[c]
     print(
-        "  MJ:  contact_rows (elliptic)=", mj_ncon * 3,
+        "  MJ:  contact_rows (pyramidal)=", mj_ncon * 4,
         " limit_rows=", mj_limit_count,
     )
 
@@ -757,7 +749,7 @@ fn compare_solver_forces(
         var t = Int(py=mj_types_flat[r])
         var tstr: String
         if t == 7:
-            tstr = "CE"  # contact elliptic
+            tstr = "CP"  # contact pyramidal
         elif t == 3:
             tstr = "LI"  # limit
         else:
@@ -829,8 +821,8 @@ fn main() raises:
     print("Solver Forces: Mojo Engine vs MuJoCo")
     print("=" * 60)
     print("Model: HalfCheetah (NV=", NV, ")")
-    print("MuJoCo: cone=elliptic, solver=Newton")
-    print("Our solver: NewtonSolver (cone=ELLIPTIC)")
+    print("MuJoCo: cone=pyramidal, solver=Newton")
+    print("Our solver: NewtonSolver (cone=PYRAMIDAL)")
     print(
         "Tolerances: qacc abs=", QACC_ABS_TOL,
         " qfrc abs=", QFRC_ABS_TOL,

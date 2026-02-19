@@ -34,7 +34,6 @@ from physics3d.dynamics.mass_matrix import (
     ldl_factor,
     ldl_solve,
     compute_M_inv_from_ldl,
-    compute_body_invweight0,
 )
 from physics3d.collision.contact_detection import detect_contacts
 from physics3d.constraints.constraint_builder import build_constraints, writeback_forces
@@ -58,11 +57,7 @@ from physics3d.solver.primal_common import (
 from physics3d.joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
 from envs.half_cheetah.half_cheetah_def import (
     HalfCheetahModel,
-    HalfCheetahBodies,
-    HalfCheetahJoints,
-    HalfCheetahGeoms,
     HalfCheetahParams,
-    HalfCheetahDefaults,
 )
 
 
@@ -195,22 +190,11 @@ fn compare_solver_forces(
 
     # === Our engine ===
     var model = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, ConeType.ELLIPTIC
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, HalfCheetahModel.CONE_TYPE
     ](
     )
-    HalfCheetahModel.setup_solver_params[Defaults=HalfCheetahDefaults](model)
-
-    HalfCheetahBodies.setup_model(model)
-
-    HalfCheetahJoints.setup_model[Defaults=HalfCheetahDefaults](model)
-
-    HalfCheetahGeoms.setup_model[Defaults=HalfCheetahDefaults](model)
-
     var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
-
-    # Compute body_invweight0 at REFERENCE pose (MuJoCo mj_setConst)
-    forward_kinematics(model, data)
-    compute_body_invweight0(model, data)
+    HalfCheetahModel.setup_model_and_data(model, data)
 
     # Set test configuration
     for i in range(NQ):
@@ -347,7 +331,7 @@ fn compare_solver_forces(
 
     # 10. Build constraints
     var constraints = ConstraintData[DTYPE, MAX_ROWS, NV]()
-    build_constraints[CONE_TYPE=ConeType.ELLIPTIC](
+    build_constraints[CONE_TYPE=HalfCheetahModel.CONE_TYPE](
         model, data, cdof, M_inv, qacc, dt, constraints
     )
 
@@ -373,7 +357,7 @@ fn compare_solver_forces(
         qacc0[i] = qacc[i]
 
     # 12. Solve constraints with CGSolver (modifies qacc in-place)
-    CGSolver.solve[CONE_TYPE=ConeType.ELLIPTIC](
+    CGSolver.solve[CONE_TYPE=HalfCheetahModel.CONE_TYPE](
         model, data, M_inv, constraints, qacc, dt
     )
 
@@ -404,8 +388,8 @@ fn compare_solver_forces(
         "../Gymnasium-main/gymnasium/envs/mujoco/assets/half_cheetah.xml"
     )
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
-    # Match our solver: elliptic cone, CG solver, Euler integrator
-    mj_model.opt.cone = 1       # elliptic
+    # Match our solver: pyramidal cone, CG solver, Euler integrator
+    mj_model.opt.cone = 0       # pyramidal (matches HalfCheetahModel)
     mj_model.opt.solver = 1     # CG (was 2 for Newton)
     mj_model.opt.integrator = 0 # Euler
 
@@ -437,7 +421,7 @@ fn compare_solver_forces(
     var mj_efc_force_flat = mj_data.efc_force.flatten().tolist()
     var mj_types_flat = mj_data.efc_type.flatten().tolist()
 
-    # MuJoCo elliptic interleaves [n, t1, t2] per contact
+    # MuJoCo pyramidal interleaves [n, t1, t2] per contact
     var mj_contact_start = -1
     for r in range(mj_nefc):
         var t = Int(py=mj_types_flat[r])

@@ -38,7 +38,6 @@ from physics3d.dynamics.mass_matrix import (
     ldl_factor,
     ldl_solve,
     compute_M_inv_from_ldl,
-    compute_body_invweight0,
 )
 from physics3d.collision.contact_detection import detect_contacts
 from physics3d.constraints.constraint_builder import build_constraints, writeback_forces
@@ -63,11 +62,7 @@ from physics3d.solver.primal_common import (
 from physics3d.joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
 from envs.half_cheetah.half_cheetah_def import (
     HalfCheetahModel,
-    HalfCheetahBodies,
-    HalfCheetahJoints,
-    HalfCheetahGeoms,
     HalfCheetahParams,
-    HalfCheetahDefaults,
 )
 
 
@@ -199,19 +194,8 @@ fn compare_pyramidal_solver(
         DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, ConeType.PYRAMIDAL
     ](
     )
-    HalfCheetahModel.setup_solver_params[Defaults=HalfCheetahDefaults](model)
-
-    HalfCheetahBodies.setup_model(model)
-
-    HalfCheetahJoints.setup_model[Defaults=HalfCheetahDefaults](model)
-
-    HalfCheetahGeoms.setup_model[Defaults=HalfCheetahDefaults](model)
-
     var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
-
-    # Compute body_invweight0 at REFERENCE pose (MuJoCo mj_setConst)
-    forward_kinematics(model, data)
-    compute_body_invweight0(model, data)
+    HalfCheetahModel.setup_model_and_data(model, data)
 
     # Set test configuration
     for i in range(NQ):

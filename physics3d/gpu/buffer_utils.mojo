@@ -76,6 +76,7 @@ from .constants import (
     JOINT_IDX_SOLIMP_LIMIT_0,
     JOINT_IDX_SOLIMP_LIMIT_1,
     JOINT_IDX_SOLIMP_LIMIT_2,
+    JOINT_IDX_QPOS0,
     MODEL_META_IDX_NBODY,
     MODEL_META_IDX_NJOINT,
     MODEL_META_IDX_GRAVITY_X,
@@ -333,6 +334,7 @@ fn copy_model_to_buffer[
         buffer[offset + JOINT_IDX_SOLIMP_LIMIT_2] = model.joint_solimp_limit[
             j * 3 + 2
         ]
+        buffer[offset + JOINT_IDX_QPOS0] = model.qpos0[joint.qpos_adr]
 
     # Copy metadata
     var meta_offset = model_metadata_offset[NBODY, NJOINT]()

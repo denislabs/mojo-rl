@@ -33,15 +33,13 @@ from physics3d.dynamics.mass_matrix import (
 )
 from physics3d.gpu.constants import (
     state_size,
-    model_size,
+    model_size_with_invweight,
     qpos_offset,
     integrator_workspace_size,
     ws_M_offset,
 )
 from physics3d.gpu.buffer_utils import (
     create_state_buffer,
-    create_model_buffer,
-    copy_model_to_buffer,
     copy_data_to_buffer,
 )
 from envs.half_cheetah.half_cheetah_def import (
@@ -67,7 +65,7 @@ comptime MAX_CONTACTS = HalfCheetahParams[DTYPE].MAX_CONTACTS  # 20
 comptime BATCH = 1
 
 comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS]()
-comptime MODEL_SIZE = model_size[NBODY, NJOINT]()
+comptime MODEL_SIZE = model_size_with_invweight[NBODY, NJOINT, NV, NGEOM]()
 comptime WS_SIZE = integrator_workspace_size[NV, NBODY]()
 
 # CPU array sizes
@@ -143,7 +141,6 @@ fn compare_mass_matrix(
     ctx: DeviceContext,
     test_name: String,
     qpos_values: InlineArray[Float64, NQ],
-    model_host: HostBuffer[DTYPE],
     model_buf: DeviceBuffer[DTYPE],
 ) raises -> Bool:
     """Compute mass matrix on CPU and GPU with identical qpos, compare."""
@@ -294,30 +291,27 @@ fn compare_mass_matrix(
 
 fn test_default_qpos(
     ctx: DeviceContext,
-    model_host: HostBuffer[DTYPE],
     model_buf: DeviceBuffer[DTYPE],
 ) raises -> Bool:
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 0.7
     return compare_mass_matrix(
-        ctx, "Default qpos (rootz=0.7)", qpos, model_host, model_buf
+        ctx, "Default qpos (rootz=0.7)", qpos, model_buf
     )
 
 
 fn test_zero_qpos(
     ctx: DeviceContext,
-    model_host: HostBuffer[DTYPE],
     model_buf: DeviceBuffer[DTYPE],
 ) raises -> Bool:
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     return compare_mass_matrix(
-        ctx, "Zero qpos", qpos, model_host, model_buf
+        ctx, "Zero qpos", qpos, model_buf
     )
 
 
 fn test_nonzero_joints(
     ctx: DeviceContext,
-    model_host: HostBuffer[DTYPE],
     model_buf: DeviceBuffer[DTYPE],
 ) raises -> Bool:
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -331,13 +325,12 @@ fn test_nonzero_joints(
     qpos[7] = -0.8  # fshin
     qpos[8] = 0.3   # ffoot
     return compare_mass_matrix(
-        ctx, "Non-zero joints", qpos, model_host, model_buf
+        ctx, "Non-zero joints", qpos, model_buf
     )
 
 
 fn test_extreme_joints(
     ctx: DeviceContext,
-    model_host: HostBuffer[DTYPE],
     model_buf: DeviceBuffer[DTYPE],
 ) raises -> Bool:
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -349,7 +342,7 @@ fn test_extreme_joints(
     qpos[7] = 0.87    # fshin max
     qpos[8] = -0.5    # ffoot min
     return compare_mass_matrix(
-        ctx, "Extreme joint angles", qpos, model_host, model_buf
+        ctx, "Extreme joint angles", qpos, model_buf
     )
 
 
@@ -372,18 +365,8 @@ fn main() raises:
     print("GPU device initialized")
 
     # Create model buffer once
-    var model_cpu = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM](
-    )
-    HalfCheetahBodies.setup_model(model_cpu)
-    HalfCheetahJoints.setup_model(model_cpu)
-    HalfCheetahGeoms.setup_model(model_cpu)
-
-    var model_host = create_model_buffer[DTYPE, NBODY, NJOINT](ctx)
-    copy_model_to_buffer[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS](
-        model_cpu, model_host
-    )
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
-    ctx.enqueue_copy(model_buf, model_host.unsafe_ptr())
+    HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
     print("Model copied to GPU")
     print()
@@ -392,25 +375,25 @@ fn main() raises:
     var num_pass = 0
     var num_fail = 0
 
-    if test_default_qpos(ctx, model_host, model_buf):
+    if test_default_qpos(ctx, model_buf):
         num_pass += 1
     else:
         num_fail += 1
     print()
 
-    if test_zero_qpos(ctx, model_host, model_buf):
+    if test_zero_qpos(ctx, model_buf):
         num_pass += 1
     else:
         num_fail += 1
     print()
 
-    if test_nonzero_joints(ctx, model_host, model_buf):
+    if test_nonzero_joints(ctx, model_buf):
         num_pass += 1
     else:
         num_fail += 1
     print()
 
-    if test_extreme_joints(ctx, model_host, model_buf):
+    if test_extreme_joints(ctx, model_buf):
         num_pass += 1
     else:
         num_fail += 1

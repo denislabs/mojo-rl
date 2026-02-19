@@ -47,9 +47,6 @@ from physics3d.gpu.constants import (
 )
 from physics3d.gpu.buffer_utils import (
     create_state_buffer,
-    copy_model_to_buffer,
-    copy_geoms_to_buffer,
-    copy_invweight0_to_buffer,
     copy_data_to_buffer,
 )
 from envs.half_cheetah.half_cheetah_def import (
@@ -149,13 +146,8 @@ fn main() raises:
     HalfCheetahGeoms.setup_model(model_cpu)
 
     # Copy model to GPU
-    var model_host = ctx.enqueue_create_host_buffer[DTYPE](MODEL_SIZE)
-    for i in range(MODEL_SIZE):
-        model_host[i] = Scalar[DTYPE](0)
-    copy_model_to_buffer(model_cpu, model_host)
-    copy_geoms_to_buffer(model_cpu, model_host)
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
-    ctx.enqueue_copy(model_buf, model_host.unsafe_ptr())
+    HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
 
     # Pre-allocate GPU buffers

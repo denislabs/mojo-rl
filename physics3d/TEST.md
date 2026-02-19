@@ -7,11 +7,15 @@ We validate our physics engine at three levels:
 2. **CPU vs GPU** — Compare our GPU engine output against our CPU engine (ensures GPU kernels match)
 3. **Standalone** — Analytical validation (e.g. pendulum period) and diagnostic/stress tests
 
-All MuJoCo comparison tests use the HalfCheetah model. Tests run with:
+MuJoCo comparison tests use both HalfCheetah (pyramidal cone) and Hopper (elliptic cone). Tests run with:
 ```bash
 cd mojo-rl && pixi run mojo run physics3d/tests/<test_file>.mojo        # CPU
 cd mojo-rl && pixi run -e apple mojo run physics3d/tests/<test_file>.mojo  # GPU (Metal)
 ```
+
+**Models covered:**
+- **HalfCheetah** — pyramidal cone (`ConeType.PYRAMIDAL`), `NQ=10, NV=10, NBODY=9, NJOINT=10, NGEOM=9`
+- **Hopper** — elliptic cone (`ConeType.ELLIPTIC`), `NQ=6, NV=6, NBODY=5, NJOINT=6, NGEOM=5`
 
 **Key principle:** Test each pipeline stage independently before testing combined stages.
 Debugging a full-step failure is nearly impossible because errors compound through:
@@ -32,6 +36,7 @@ Isolate each stage first.
 | Euler          | Newton             | Pyramidal | DONE          | DONE       | (tests only)     |
 | ImplicitFast   | Newton             | Elliptic  | DONE          | DONE       | HalfCheetah      |
 | ImplicitFast   | PGS                | Elliptic  | N/A           | DONE       | Hopper (Default) |
+| Euler          | Newton             | Elliptic  | PENDING       | PENDING    | Hopper tests     |
 | Implicit (full)| PGS                | Elliptic  | DONE          | DONE       | (tests only)     |
 | RK4            | Newton             | Elliptic  | DONE          | DONE       | (tests only)     |
 
@@ -139,6 +144,28 @@ ImplicitFast+PGS has no MuJoCo comparison because MuJoCo only allows Newton solv
 | `test_pyramidal_vs_mujoco.mojo` | Pyramidal cone Newton solver forces (qacc, qfrc_constraint) | PASS (4/4) | 4 (low static, low moving, very low, bent) | qacc/qfrc: 5e-2 (actual ~1e-3). D/R match exactly. |
 | `test_rk4_step_vs_mujoco.mojo` | RK4 full step no contact + contact (ref: MuJoCo RK4) | PASS (6/6) | 6 (free fall, actions, moving, fast spin, 10-step, ground contact) | qpos: 1e-3, qvel: 1e-2 (actual err ~1e-6 no-contact, ~3.5e-6 contact) |
 
+#### Hopper Tests (Elliptic cone)
+
+| Test File | What | Status | Configs | Tolerance |
+|-----------|------|--------|---------|-----------|
+| `test_hopper_fk_vs_mujoco.mojo` | FK: xpos, xquat, xipos per body | PASS (5/5) | 5 (default, zero, nonzero, extreme, raised) | pos: 1e-6, quat: 1e-5 (actual err ~1e-16) |
+| `test_hopper_full_step_vs_mujoco.mojo` | Full step without contacts (Euler+Newton) | PENDING | 6 (free fall, standing, actions, moving, 10-step) | qpos: 1e-3, qvel: 1e-2 |
+| `test_hopper_full_step_contact_vs_mujoco.mojo` | Full step with contacts (Euler+Newton, elliptic) | PENDING | 4 (ground contact, actions, deep pen, moving) | qpos: 2e-2, qvel: 2e-1 |
+| `test_hopper_solver_forces_vs_mujoco.mojo` | Newton solver forces (qacc, qfrc_constraint) | PENDING | 4 (low static, low moving, very low, bent) | qacc/qfrc: 5e-2 |
+
+**Hopper FK notes:**
+- Hopper uses `ELLIPTIC` cone (condim=3) — complements HalfCheetah (pyramidal) coverage
+- `qpos0` fix required: Hopper rootz joint has `ref="1.25"` in XML, so FK displacement = `qpos - qpos0`
+- FK fixed by subtracting `model.qpos0[qpos_adr]` in slide/hinge joints (CPU + GPU)
+- Hinge joint axes fixed: actuated joints use `axis="0 -1 0"` (axis_y=-1.0)
+- All 5 FK configs pass with error ~1e-16 (machine precision)
+
+**Hopper full step status (PENDING — friction forces diverge from MuJoCo):**
+- Contact counts match (FK is correct)
+- qvel[1] (vertical/rootz) matches perfectly — gravity is correct
+- Errors in horizontal/rotational DOFs → friction forces differ from MuJoCo
+- Root cause under investigation (condim=3, friction=2.0 verified correct)
+
 ### CPU vs GPU Comparison Tests
 
 | Test File | What | Status | Configs | Tolerance |
@@ -156,6 +183,12 @@ ImplicitFast+PGS has no MuJoCo comparison because MuJoCo only allows Newton solv
 | `test_implicit_cpu_vs_gpu.mojo` | Implicit(full)+PGS full step (float32) | PASS | 8 (zero vel, nonzero vel, actions, contact) | qpos: 5e-2, qvel: 1.0 (nonzero vel err ~2.8e-4, contact ~0.01) |
 | `test_pyramidal_cpu_vs_gpu.mojo` | Pyramidal cone Euler+Newton CPU vs GPU (float32) | PASS | 6 (static, actions, deep pen, moving, 5-step) | qpos: 3e-2, qvel: 5e-1 (actual static ~0.08, deep ~0.55, moving ~0.16) |
 | `test_rk4_cpu_vs_gpu.mojo` | RK4+Newton full step CPU vs GPU (float32) | PASS | 6 (free fall, actions, moving, fast spin, 10-step, ground contact) | qpos: 3e-2, qvel: 5e-1 (actual err ~0, exact match) |
+
+#### Hopper CPU vs GPU Tests
+
+| Test File | What | Status | Configs | Tolerance |
+|-----------|------|--------|---------|-----------|
+| `test_hopper_full_step_contact_cpu_vs_gpu.mojo` | Hopper full step with contacts CPU vs GPU (float32, elliptic) | PENDING | 5 (ground contact, actions, deep pen, moving, 5-step) | qpos: 3e-2, qvel: 5e-1 |
 
 ### Analytical / Standalone Tests
 

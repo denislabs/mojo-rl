@@ -67,6 +67,7 @@ from ..gpu.constants import (
     JOINT_IDX_AXIS_X,
     JOINT_IDX_AXIS_Y,
     JOINT_IDX_AXIS_Z,
+    JOINT_IDX_QPOS0,
     MODEL_META_IDX_NJOINT,
 )
 
@@ -284,7 +285,7 @@ fn forward_kinematics[
                 elif jnt_type == JNT_HINGE:
                     # HINGE joint: rotation around axis at anchor
                     # jnt_pos is relative to body (MuJoCo convention)
-                    var angle = data.qpos[qpos_adr]
+                    var angle = data.qpos[qpos_adr] - model.qpos0[qpos_adr]
 
                     var jpos_x = joint.pos_x
                     var jpos_y = joint.pos_y
@@ -356,8 +357,8 @@ fn forward_kinematics[
                     cur_pz = anchor_z + neg_off[2]
 
                 elif jnt_type == JNT_SLIDE:
-                    # SLIDE joint: translate along axis
-                    var displacement = data.qpos[qpos_adr]
+                    # SLIDE joint: translate along axis (MuJoCo: qpos - qpos0)
+                    var displacement = data.qpos[qpos_adr] - model.qpos0[qpos_adr]
 
                     # Joint axis in body frame → world frame
                     var axis_x = joint.axis_x
@@ -919,9 +920,12 @@ fn forward_kinematics_gpu[
 
                 elif jnt_type == JNT_HINGE:
                     # HINGE joint: rotation around anchor (body-relative jnt_pos)
+                    var qpos0_val = rebind[Scalar[DTYPE]](
+                        model[0, joint_off + JOINT_IDX_QPOS0]
+                    )
                     var angle = rebind[Scalar[DTYPE]](
                         state[env, qpos_off + qpos_adr]
-                    )
+                    ) - qpos0_val
 
                     var jpos_x = rebind[Scalar[DTYPE]](
                         model[0, joint_off + JOINT_IDX_POS_X]
@@ -994,10 +998,13 @@ fn forward_kinematics_gpu[
                     cur_pz = anchor_z + neg_off[2]
 
                 elif jnt_type == JNT_SLIDE:
-                    # SLIDE joint: translate along axis
+                    # SLIDE joint: translate along axis (MuJoCo: qpos - qpos0)
+                    var qpos0_val = rebind[Scalar[DTYPE]](
+                        model[0, joint_off + JOINT_IDX_QPOS0]
+                    )
                     var displacement = rebind[Scalar[DTYPE]](
                         state[env, qpos_off + qpos_adr]
-                    )
+                    ) - qpos0_val
 
                     # Transform axis to world using current orientation
                     var axis_world = gpu_quat_rotate(

@@ -39,9 +39,6 @@ from physics3d.constraints.constraint_data import ConstraintData
 from physics3d.joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
 from envs.half_cheetah.half_cheetah_def import (
     HalfCheetahModel,
-    HalfCheetahBodies,
-    HalfCheetahJoints,
-    HalfCheetahGeoms,
     HalfCheetahParams,
 )
 
@@ -173,14 +170,11 @@ fn compare_jacobians(
 
     # === Our engine ===
     var model = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, ConeType.ELLIPTIC
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, HalfCheetahModel.CONE_TYPE
     ](
     )
-    HalfCheetahBodies.setup_model(model)
-    HalfCheetahJoints.setup_model(model)
-    HalfCheetahGeoms.setup_model(model)
-
     var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
+    HalfCheetahModel.setup_model_and_data(model, data)
     for i in range(NQ):
         data.qpos[i] = Scalar[DTYPE](qpos_values[i])
     for i in range(NV):
@@ -270,7 +264,7 @@ fn compare_jacobians(
     )
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
     # Set elliptic cone to match our engine
-    mj_model.opt.cone = 1
+    mj_model.opt.cone = 0  # mjCONE_PYRAMIDAL (matches HalfCheetahModel)
 
     var mj_data = mujoco.MjData(mj_model)
 
@@ -345,7 +339,7 @@ fn compare_jacobians(
     var mj_idx = 0
     for r in range(mj_nefc):
         var t = Int(py=mj_types[r])
-        if t == 7:  # contact elliptic
+        if t == 7:  # contact pyramidal
             mj_contact_row_indices[mj_idx] = r
             mj_idx += 1
 

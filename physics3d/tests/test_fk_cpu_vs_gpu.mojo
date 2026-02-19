@@ -21,7 +21,7 @@ from physics3d.kinematics.forward_kinematics import (
 )
 from physics3d.gpu.constants import (
     state_size,
-    model_size,
+    model_size_with_invweight,
     qpos_offset,
     xpos_offset,
     xquat_offset,
@@ -29,8 +29,6 @@ from physics3d.gpu.constants import (
 )
 from physics3d.gpu.buffer_utils import (
     create_state_buffer,
-    create_model_buffer,
-    copy_model_to_buffer,
     copy_data_to_buffer,
 )
 from envs.half_cheetah.half_cheetah_def import (
@@ -56,7 +54,7 @@ comptime MAX_CONTACTS = HalfCheetahParams[DTYPE].MAX_CONTACTS  # 20
 comptime BATCH = 1
 
 comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS]()
-comptime MODEL_SIZE = model_size[NBODY, NJOINT]()
+comptime MODEL_SIZE = model_size_with_invweight[NBODY, NJOINT, NV, NGEOM]()
 
 # float32 tolerance (GPU runs float32)
 comptime POS_TOL: Float64 = 1e-4
@@ -109,7 +107,6 @@ fn compare_fk(
     ctx: DeviceContext,
     test_name: String,
     qpos_values: InlineArray[Float64, NQ],
-    model_host: HostBuffer[DTYPE],
     model_buf: DeviceBuffer[DTYPE],
 ) raises -> Bool:
     """Run FK on CPU and GPU with identical qpos, compare results."""
@@ -280,30 +277,27 @@ fn compare_fk(
 
 fn test_fk_default_qpos(
     ctx: DeviceContext,
-    model_host: HostBuffer[DTYPE],
     model_buf: DeviceBuffer[DTYPE],
 ) raises -> Bool:
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 0.7  # rootz
     return compare_fk(
-        ctx, "Default qpos (rootz=0.7)", qpos, model_host, model_buf
+        ctx, "Default qpos (rootz=0.7)", qpos, model_buf
     )
 
 
 fn test_fk_zero_qpos(
     ctx: DeviceContext,
-    model_host: HostBuffer[DTYPE],
     model_buf: DeviceBuffer[DTYPE],
 ) raises -> Bool:
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     return compare_fk(
-        ctx, "Zero qpos (robot at origin)", qpos, model_host, model_buf
+        ctx, "Zero qpos (robot at origin)", qpos, model_buf
     )
 
 
 fn test_fk_nonzero_joints(
     ctx: DeviceContext,
-    model_host: HostBuffer[DTYPE],
     model_buf: DeviceBuffer[DTYPE],
 ) raises -> Bool:
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -316,12 +310,11 @@ fn test_fk_nonzero_joints(
     qpos[6] = 0.6  # fthigh
     qpos[7] = -0.8  # fshin
     qpos[8] = 0.3  # ffoot
-    return compare_fk(ctx, "Non-zero joints", qpos, model_host, model_buf)
+    return compare_fk(ctx, "Non-zero joints", qpos, model_buf)
 
 
 fn test_fk_extreme_joints(
     ctx: DeviceContext,
-    model_host: HostBuffer[DTYPE],
     model_buf: DeviceBuffer[DTYPE],
 ) raises -> Bool:
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -333,13 +326,12 @@ fn test_fk_extreme_joints(
     qpos[7] = 0.87  # fshin max
     qpos[8] = -0.5  # ffoot min
     return compare_fk(
-        ctx, "Extreme joint angles (at limits)", qpos, model_host, model_buf
+        ctx, "Extreme joint angles (at limits)", qpos, model_buf
     )
 
 
 fn test_fk_large_rootx(
     ctx: DeviceContext,
-    model_host: HostBuffer[DTYPE],
     model_buf: DeviceBuffer[DTYPE],
 ) raises -> Bool:
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -347,7 +339,7 @@ fn test_fk_large_rootx(
     qpos[1] = 0.7  # rootz
     qpos[3] = 0.5  # bthigh
     qpos[6] = -0.5  # fthigh
-    return compare_fk(ctx, "Large rootx (100m)", qpos, model_host, model_buf)
+    return compare_fk(ctx, "Large rootx (100m)", qpos, model_buf)
 
 
 # =============================================================================
@@ -369,18 +361,8 @@ fn main() raises:
     print("GPU device initialized")
 
     # Create model buffer once (shared across all tests)
-    var model_cpu = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM](
-    )
-    HalfCheetahBodies.setup_model(model_cpu)
-    HalfCheetahJoints.setup_model(model_cpu)
-    HalfCheetahGeoms.setup_model(model_cpu)
-
-    var model_host = create_model_buffer[DTYPE, NBODY, NJOINT](ctx)
-    copy_model_to_buffer[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS](
-        model_cpu, model_host
-    )
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
-    ctx.enqueue_copy(model_buf, model_host.unsafe_ptr())
+    HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
     print("Model copied to GPU")
     print()
@@ -389,31 +371,31 @@ fn main() raises:
     var num_pass = 0
     var num_fail = 0
 
-    if test_fk_default_qpos(ctx, model_host, model_buf):
+    if test_fk_default_qpos(ctx, model_buf):
         num_pass += 1
     else:
         num_fail += 1
     print()
 
-    if test_fk_zero_qpos(ctx, model_host, model_buf):
+    if test_fk_zero_qpos(ctx, model_buf):
         num_pass += 1
     else:
         num_fail += 1
     print()
 
-    if test_fk_nonzero_joints(ctx, model_host, model_buf):
+    if test_fk_nonzero_joints(ctx, model_buf):
         num_pass += 1
     else:
         num_fail += 1
     print()
 
-    if test_fk_extreme_joints(ctx, model_host, model_buf):
+    if test_fk_extreme_joints(ctx, model_buf):
         num_pass += 1
     else:
         num_fail += 1
     print()
 
-    if test_fk_large_rootx(ctx, model_host, model_buf):
+    if test_fk_large_rootx(ctx, model_buf):
         num_pass += 1
     else:
         num_fail += 1

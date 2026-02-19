@@ -32,7 +32,6 @@ from physics3d.dynamics.mass_matrix import (
     ldl_factor,
     ldl_solve,
     compute_M_inv_from_ldl,
-    compute_body_invweight0,
 )
 from physics3d.collision.contact_detection import detect_contacts
 from physics3d.constraints.constraint_builder import build_constraints
@@ -40,11 +39,7 @@ from physics3d.constraints.constraint_data import ConstraintData
 from physics3d.joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
 from envs.half_cheetah.half_cheetah_def import (
     HalfCheetahModel,
-    HalfCheetahBodies,
-    HalfCheetahJoints,
-    HalfCheetahGeoms,
     HalfCheetahParams,
-    HalfCheetahDefaults,
 )
 
 
@@ -128,23 +123,11 @@ fn compare_constraint_params(
 
     # === Our engine ===
     var model = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, ConeType.ELLIPTIC
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, HalfCheetahModel.CONE_TYPE
     ](
     )
-    HalfCheetahModel.setup_solver_params[Defaults=HalfCheetahDefaults](model)
-
-    HalfCheetahBodies.setup_model(model)
-
-    HalfCheetahJoints.setup_model[Defaults=HalfCheetahDefaults](model)
-
-    HalfCheetahGeoms.setup_model[Defaults=HalfCheetahDefaults](model)
-
     var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
-
-    # Compute body_invweight0 at REFERENCE pose (MuJoCo mj_setConst is called
-    # at init time with the initial configuration, not the test configuration)
-    forward_kinematics(model, data)
-    compute_body_invweight0(model, data)
+    HalfCheetahModel.setup_model_and_data(model, data)
 
     # Now set the test configuration
     for i in range(NQ):
@@ -236,7 +219,7 @@ fn compare_constraint_params(
     )
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
     # Set elliptic cone to match our engine
-    mj_model.opt.cone = 1
+    mj_model.opt.cone = 0  # mjCONE_PYRAMIDAL (matches HalfCheetahModel)
 
     var mj_data = mujoco.MjData(mj_model)
 

@@ -19,11 +19,10 @@ from collections import InlineArray
 from gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
 
-from physics3d.types import Model, Data, _max_one, ConeType
+from physics3d.types import Model, Data, ConeType
 from physics3d.integrator.euler_integrator import EulerIntegrator
 from physics3d.solver import NewtonSolver
 from physics3d.kinematics.forward_kinematics import forward_kinematics
-from physics3d.dynamics.mass_matrix import compute_body_invweight0
 from physics3d.gpu.constants import (
     state_size,
     model_size_with_invweight,
@@ -34,19 +33,10 @@ from physics3d.gpu.constants import (
 )
 from physics3d.gpu.buffer_utils import (
     create_state_buffer,
-    copy_model_to_buffer,
-    copy_geoms_to_buffer,
-    copy_invweight0_to_buffer,
-    copy_data_to_buffer,
 )
 from envs.half_cheetah.half_cheetah_def import (
     HalfCheetahModel,
-    HalfCheetahBodies,
-    HalfCheetahJoints,
-    HalfCheetahGeoms,
-    HalfCheetahActuators,
     HalfCheetahParams,
-    HalfCheetahDefaults,
 )
 
 
@@ -100,21 +90,8 @@ fn compare_step(
         DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, ConeType.PYRAMIDAL
     ](
     )
-    HalfCheetahModel.setup_solver_params[Defaults=HalfCheetahDefaults](model_cpu)
-
-    HalfCheetahBodies.setup_model(model_cpu)
-
-    HalfCheetahJoints.setup_model[Defaults=HalfCheetahDefaults](model_cpu)
-
-    HalfCheetahGeoms.setup_model[Defaults=HalfCheetahDefaults](model_cpu)
-
     var data_cpu = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
-
-    # Compute invweight0 at reference pose
-    forward_kinematics(model_cpu, data_cpu)
-    compute_body_invweight0[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM](
-        model_cpu, data_cpu
-    )
+    HalfCheetahModel.setup_model_and_data(model_cpu, data_cpu)
 
     # Set initial state
     for i in range(NQ):
@@ -130,9 +107,7 @@ fn compare_step(
     for _ in range(num_steps):
         for i in range(NV):
             data_cpu.qfrc[i] = Scalar[DTYPE](0)
-        HalfCheetahActuators.apply_actions[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS
-        ](data_cpu, action_list)
+        HalfCheetahModel.apply_actions(data_cpu, action_list)
         EulerIntegrator[SOLVER=NewtonSolver].step[
             NGEOM=NGEOM, CONE_TYPE=ConeType.PYRAMIDAL
         ](model_cpu, data_cpu)
@@ -148,9 +123,7 @@ fn compare_step(
 
     # Apply actions to get qfrc
     var data_temp = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
-    HalfCheetahActuators.apply_actions[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS
-    ](data_temp, action_list)
+    HalfCheetahModel.apply_actions(data_temp, action_list)
     for i in range(NV):
         state_host[qfrc_offset[NQ, NV]() + i] = data_temp.qfrc[i]
 
@@ -304,33 +277,8 @@ fn main() raises:
     print("GPU device initialized")
 
     # Create GPU model buffer (use ELLIPTIC for buffer copy — cone type is a kernel param)
-    var model_gpu = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, ConeType.ELLIPTIC
-    ](
-    )
-    HalfCheetahModel.setup_solver_params[Defaults=HalfCheetahDefaults](model_gpu)
-
-    HalfCheetahBodies.setup_model(model_gpu)
-
-    HalfCheetahJoints.setup_model[Defaults=HalfCheetahDefaults](model_gpu)
-
-    HalfCheetahGeoms.setup_model[Defaults=HalfCheetahDefaults](model_gpu)
-
-    # Compute invweight0 at reference pose
-    var data_ref = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
-    forward_kinematics(model_gpu, data_ref)
-    compute_body_invweight0[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM](
-        model_gpu, data_ref
-    )
-
-    var model_host = ctx.enqueue_create_host_buffer[DTYPE](MODEL_SIZE)
-    for i in range(MODEL_SIZE):
-        model_host[i] = Scalar[DTYPE](0)
-    copy_model_to_buffer(model_gpu, model_host)
-    copy_geoms_to_buffer(model_gpu, model_host)
-    copy_invweight0_to_buffer(model_gpu, model_host)
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
-    ctx.enqueue_copy(model_buf, model_host.unsafe_ptr())
+    HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
     print("Model copied to GPU (with geoms + invweight0, cone type passed as kernel param)")
 

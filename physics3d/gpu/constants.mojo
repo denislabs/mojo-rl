@@ -227,7 +227,7 @@ fn model_body_offset(body_idx: Int) -> Int:
 # Model Buffer Layout - Per Joint
 # =============================================================================
 
-comptime MODEL_JOINT_SIZE: Int = 23  # +5 for per-joint solref/solimp limits
+comptime MODEL_JOINT_SIZE: Int = 24  # +5 for per-joint solref/solimp limits + qpos0
 
 comptime JOINT_IDX_TYPE: Int = 0  # JNT_FREE, JNT_BALL, JNT_SLIDE, JNT_HINGE
 comptime JOINT_IDX_BODY_ID: Int = 1
@@ -252,6 +252,7 @@ comptime JOINT_IDX_SOLREF_LIMIT_1: Int = 19  # Per-joint limit solref dampratio
 comptime JOINT_IDX_SOLIMP_LIMIT_0: Int = 20  # Per-joint limit solimp dmin
 comptime JOINT_IDX_SOLIMP_LIMIT_1: Int = 21  # Per-joint limit solimp dmax
 comptime JOINT_IDX_SOLIMP_LIMIT_2: Int = 22  # Per-joint limit solimp width
+comptime JOINT_IDX_QPOS0: Int = 23  # Joint reference position (MuJoCo qpos0 / ref)
 
 
 fn model_joint_offset[NBODY: Int](joint_idx: Int) -> Int:

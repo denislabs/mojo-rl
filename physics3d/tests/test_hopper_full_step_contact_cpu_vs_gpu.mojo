@@ -1,17 +1,10 @@
-"""Test Full Step with Contacts: CPU vs GPU.
+"""Test Full Step with Contacts: CPU vs GPU for Hopper.
 
 Compares qpos/qvel after running physics steps with ground contacts on CPU vs GPU
-for the HalfCheetah model. This validates the full pipeline including:
-FK → contacts → M → solver → integration.
-
-Single-step tests implicitly validate solver forces (qacc = (qvel_new - qvel_old) / dt).
-Multi-step tests validate error accumulation under contacts.
-
-The CPU uses EulerIntegrator[NewtonSolver].step() (float32).
-The GPU uses EulerIntegrator[NewtonSolver].step_gpu() (float32).
+for the Hopper model (ELLIPTIC cone, condim=1 frictionless).
 
 Run with:
-    cd mojo-rl && pixi run -e apple mojo run physics3d/tests/test_full_step_contact_cpu_vs_gpu.mojo
+    cd mojo-rl && pixi run -e apple mojo run physics3d/tests/test_hopper_full_step_contact_cpu_vs_gpu.mojo
 """
 
 from math import abs
@@ -22,7 +15,6 @@ from layout import Layout, LayoutTensor
 from physics3d.types import Model, Data, ConeType
 from physics3d.integrator.euler_integrator import EulerIntegrator
 from physics3d.solver import NewtonSolver
-from physics3d.kinematics.forward_kinematics import forward_kinematics
 from physics3d.gpu.constants import (
     state_size,
     model_size_with_invweight,
@@ -34,9 +26,9 @@ from physics3d.gpu.constants import (
 from physics3d.gpu.buffer_utils import (
     create_state_buffer,
 )
-from envs.half_cheetah.half_cheetah_def import (
-    HalfCheetahModel,
-    HalfCheetahParams,
+from envs.hopper.hopper_def import (
+    HopperModel,
+    HopperParams,
 )
 
 
@@ -45,13 +37,13 @@ from envs.half_cheetah.half_cheetah_def import (
 # =============================================================================
 
 comptime DTYPE = DType.float32
-comptime NQ = HalfCheetahModel.NQ
-comptime NV = HalfCheetahModel.NV
-comptime NBODY = HalfCheetahModel.NBODY
-comptime NJOINT = HalfCheetahModel.NJOINT
-comptime NGEOM = HalfCheetahModel.NGEOM
-comptime MAX_CONTACTS = HalfCheetahParams[DTYPE].MAX_CONTACTS
-comptime ACTION_DIM = HalfCheetahParams[DTYPE].ACTION_DIM
+comptime NQ = HopperModel.NQ  # 6
+comptime NV = HopperModel.NV  # 6
+comptime NBODY = HopperModel.NBODY  # 5
+comptime NJOINT = HopperModel.NJOINT  # 6
+comptime NGEOM = HopperModel.NGEOM  # 5
+comptime MAX_CONTACTS = HopperParams[DTYPE].MAX_CONTACTS  # 20
+comptime ACTION_DIM = HopperParams[DTYPE].ACTION_DIM  # 3
 comptime BATCH = 1
 
 comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS]()
@@ -60,9 +52,7 @@ comptime WS_SIZE = integrator_workspace_size[
     NV, NBODY
 ]() + NV * NV + NewtonSolver.solver_workspace_size[NV, MAX_CONTACTS]()
 
-# Tolerances (float32, GPU dual Newton vs CPU primal Newton — different solver algorithms)
-# Single step static: ~1e-5. Deep penetration: ~4e-3. Moving: ~0.3.
-# Multi step: errors compound. 5 steps: ~0.03 qpos, ~0.4 qvel.
+# Tolerances (float32)
 comptime QPOS_ABS_TOL: Float64 = 3e-2
 comptime QPOS_REL_TOL: Float64 = 2e-1
 comptime QVEL_ABS_TOL: Float64 = 5e-1
@@ -99,12 +89,11 @@ fn compare_step(
         MAX_CONTACTS,
         NGEOM,
         0,
-        HalfCheetahModel.CONE_TYPE,
+        HopperModel.CONE_TYPE,
     ]()
     var data_cpu = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
-    HalfCheetahModel.setup_model_and_data(model_cpu, data_cpu)
+    HopperModel.setup_model_and_data(model_cpu, data_cpu)
 
-    # Set initial state
     for i in range(NQ):
         data_cpu.qpos[i] = Scalar[DTYPE](qpos_init[i])
     for i in range(NV):
@@ -114,17 +103,15 @@ fn compare_step(
     for i in range(ACTION_DIM):
         action_list.append(actions[i])
 
-    # Run CPU steps
     for _ in range(num_steps):
         for i in range(NV):
             data_cpu.qfrc[i] = Scalar[DTYPE](0)
-        HalfCheetahModel.apply_actions(data_cpu, action_list)
+        HopperModel.apply_actions(data_cpu, action_list)
         EulerIntegrator[SOLVER=NewtonSolver].step[NGEOM=NGEOM](
             model_cpu, data_cpu
         )
 
     # === GPU pipeline ===
-    # Set initial state in state buffer
     for i in range(BATCH * STATE_SIZE):
         state_host[i] = Scalar[DTYPE](0)
     for i in range(NQ):
@@ -132,21 +119,18 @@ fn compare_step(
     for i in range(NV):
         state_host[qvel_offset[NQ, NV]() + i] = Scalar[DTYPE](qvel_init[i])
 
-    # Apply actions to get qfrc
     var data_temp = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
-    HalfCheetahModel.apply_actions(data_temp, action_list)
+    HopperModel.apply_actions(data_temp, action_list)
     for i in range(NV):
         state_host[qfrc_offset[NQ, NV]() + i] = data_temp.qfrc[i]
 
     ctx.enqueue_copy(state_buf, state_host.unsafe_ptr())
 
-    # Zero workspace
     for i in range(BATCH * WS_SIZE):
         ws_host[i] = Scalar[DTYPE](0)
     ctx.enqueue_copy(workspace_buf, ws_host.unsafe_ptr())
     ctx.synchronize()
 
-    # Run GPU steps
     for step in range(num_steps):
         if step > 0:
             ctx.enqueue_copy(state_host.unsafe_ptr(), state_buf)
@@ -168,7 +152,7 @@ fn compare_step(
             MAX_CONTACTS,
             BATCH,
             NGEOM=NGEOM,
-            CONE_TYPE = HalfCheetahModel.CONE_TYPE,
+            CONE_TYPE = HopperModel.CONE_TYPE,
         ](
             ctx,
             state_buf,
@@ -314,24 +298,23 @@ fn compare_step(
 
 fn main() raises:
     print("=" * 60)
-    print("Full Step with Contacts: CPU vs GPU")
+    print("Full Step with Contacts: CPU vs GPU (Hopper)")
     print("=" * 60)
-    print("Model: HalfCheetah (NQ=9, NV=9, NGEOM=", NGEOM, ")")
+    print("Model: Hopper (NQ=6, NV=6, NGEOM=", NGEOM, ")")
     print("Integrator: Euler + NewtonSolver (elliptic)")
     print("Precision: float32")
     print("Tolerances: qpos abs=", QPOS_ABS_TOL, " rel=", QPOS_REL_TOL)
     print("            qvel abs=", QVEL_ABS_TOL, " rel=", QVEL_REL_TOL)
     print()
 
-    # Initialize GPU
     var ctx = DeviceContext()
     print("GPU device initialized")
 
-    # Create GPU model buffer (with geoms + invweight0)
+    # Create GPU model buffer
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
-    HalfCheetahModel.init_model_gpu(ctx, model_buf)
+    HopperModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
-    print("Model copied to GPU (with geoms + invweight0)")
+    print("Model copied to GPU")
 
     # Pre-allocate GPU buffers
     var state_host = create_state_buffer[
@@ -347,8 +330,9 @@ fn main() raises:
     var num_fail = 0
 
     # --- Config 1: Ground contact, no actions (1 step) ---
+    # Hopper: torso at 1.25, foot ~0.6m below. rootz=-0.8 pushes foot to ground.
     var qpos1 = InlineArray[Float64, NQ](fill=0.0)
-    qpos1[1] = -0.2  # rootz low => contacts
+    qpos1[1] = -0.8  # rootz low => contacts
     var qvel1 = InlineArray[Float64, NV](fill=0.0)
     var act1 = InlineArray[Float64, ACTION_DIM](fill=0.0)
     if compare_step(
@@ -371,12 +355,9 @@ fn main() raises:
 
     # --- Config 2: Ground contact with actions (1 step) ---
     var act2 = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    act2[0] = 0.5  # bthigh
-    act2[1] = -0.3  # bshin
-    act2[2] = 0.2  # bfoot
-    act2[3] = 0.5  # fthigh
-    act2[4] = -0.3  # fshin
-    act2[5] = 0.1  # ffoot
+    act2[0] = 0.5  # thigh
+    act2[1] = -0.3  # leg
+    act2[2] = 0.2  # foot
     if compare_step(
         "Ground contact + actions (1 step)",
         qpos1,
@@ -397,7 +378,7 @@ fn main() raises:
 
     # --- Config 3: Deep penetration (1 step) ---
     var qpos3 = InlineArray[Float64, NQ](fill=0.0)
-    qpos3[1] = -0.5  # very low => many contacts
+    qpos3[1] = -1.1  # very low
     if compare_step(
         "Deep penetration (1 step)",
         qpos3,

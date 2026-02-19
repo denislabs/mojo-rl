@@ -1,14 +1,12 @@
-"""Test Full Physics Step with Ground Contacts: Mojo Engine vs MuJoCo.
+"""Test Full Physics Step with Ground Contacts: Mojo Engine vs MuJoCo for Hopper.
 
-Separated from test_full_step_vs_mujoco.mojo because having too many
-test functions in one file causes Mojo compiler stack overflow with
-the heavily-generic constraint solver code.
-
-Tests scenarios where the robot makes ground contact, exercising the
+Tests scenarios where the Hopper makes ground contact, exercising the
 full constraint solver pipeline (contact detection + Jacobians + solver).
 
+Hopper uses ELLIPTIC cone (default) and condim=1 (frictionless contacts).
+
 Run with:
-    cd mojo-rl && pixi run mojo run physics3d/tests/test_full_step_contact_vs_mujoco.mojo
+    cd mojo-rl && pixi run mojo run physics3d/tests/test_hopper_full_step_contact_vs_mujoco.mojo
 """
 
 from python import Python, PythonObject
@@ -18,9 +16,9 @@ from collections import InlineArray
 from physics3d.types import Model, Data, ConeType
 from physics3d.integrator.euler_integrator import EulerIntegrator
 from physics3d.solver import NewtonSolver
-from envs.half_cheetah.half_cheetah_def import (
-    HalfCheetahModel,
-    HalfCheetahParams,
+from envs.hopper.hopper_def import (
+    HopperModel,
+    HopperParams,
 )
 
 
@@ -29,18 +27,15 @@ from envs.half_cheetah.half_cheetah_def import (
 # =============================================================================
 
 comptime DTYPE = DType.float64
-comptime NQ = HalfCheetahModel.NQ  # 9
-comptime NV = HalfCheetahModel.NV  # 9
-comptime NBODY = HalfCheetahModel.NBODY  # 7
-comptime NJOINT = HalfCheetahModel.NJOINT  # 9
-comptime NGEOM = HalfCheetahModel.NGEOM  # 9
-comptime MAX_CONTACTS = HalfCheetahParams[DTYPE].MAX_CONTACTS  # 20
-comptime ACTION_DIM = HalfCheetahParams[DTYPE].ACTION_DIM  # 6
+comptime NQ = HopperModel.NQ  # 6
+comptime NV = HopperModel.NV  # 6
+comptime NBODY = HopperModel.NBODY  # 5
+comptime NJOINT = HopperModel.NJOINT  # 6
+comptime NGEOM = HopperModel.NGEOM  # 5
+comptime MAX_CONTACTS = HopperParams[DTYPE].MAX_CONTACTS  # 20
+comptime ACTION_DIM = HopperParams[DTYPE].ACTION_DIM  # 3
 
-# Tolerances — relaxed for contact scenarios. Remaining ~5-10% error is from
-# contact geometry differences (our contact detection gives slightly different
-# contact positions/normals than MuJoCo's), NOT from solver accuracy.
-# D values match MuJoCo exactly; solver converges fully.
+# Tolerances — relaxed for contact scenarios
 comptime QPOS_ABS_TOL: Float64 = 2e-4
 comptime QPOS_REL_TOL: Float64 = 2e-4
 comptime QVEL_ABS_TOL: Float64 = 2e-4
@@ -65,19 +60,17 @@ fn compare_step(
 
     # === Our engine ===
     var model = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, HalfCheetahModel.CONE_TYPE
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, HopperModel.CONE_TYPE
     ](
     )
     var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
-    HalfCheetahModel.setup_model_and_data(model, data)
+    HopperModel.setup_model_and_data(model, data)
 
-    # Now set test configuration
     for i in range(NQ):
         data.qpos[i] = Scalar[DTYPE](qpos_init[i])
     for i in range(NV):
         data.qvel[i] = Scalar[DTYPE](qvel_init[i])
 
-    # Apply actions via actuators (sets data.qfrc)
     var action_list = List[Float64]()
     for i in range(ACTION_DIM):
         action_list.append(actions[i])
@@ -85,9 +78,7 @@ fn compare_step(
     for _ in range(num_steps):
         for i in range(NV):
             data.qfrc[i] = Scalar[DTYPE](0)
-
-        HalfCheetahModel.apply_actions(data, action_list)
-
+        HopperModel.apply_actions(data, action_list)
         EulerIntegrator[SOLVER=NewtonSolver].step[NGEOM=NGEOM](
             model, data
         )
@@ -97,13 +88,12 @@ fn compare_step(
     var np = Python.import_module("numpy")
 
     var xml_path = (
-        "../Gymnasium-main/gymnasium/envs/mujoco/assets/half_cheetah.xml"
+        "../Gymnasium-main/gymnasium/envs/mujoco/assets/hopper.xml"
     )
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
-    # Match our pyramidal cone setting
-    mj_model.opt.cone = 0  # mjCONE_PYRAMIDAL (matches HalfCheetahModel)
-    mj_model.opt.solver = 2  # mjSOL_NEWTON to match our NewtonSolver
-    mj_model.opt.integrator = 0  # mjINT_EULER to match our EulerIntegrator
+    mj_model.opt.cone = 1  # mjCONE_ELLIPTIC (matches HopperModel)
+    mj_model.opt.solver = 2  # mjSOL_NEWTON
+    mj_model.opt.integrator = 0  # mjINT_EULER
     var mj_data = mujoco.MjData(mj_model)
 
     for i in range(NQ):
@@ -250,7 +240,7 @@ fn compare_step(
     var mj_ncon = Int(py=mj_data.ncon)
     print("  MJ  contacts:", mj_ncon)
 
-    # Print contact details for diagnosis
+    # Print contact details
     var our_ncon = Int(data.num_contacts)
     if our_ncon > 0:
         print("  --- Contact details ---")
@@ -301,68 +291,6 @@ fn compare_step(
                 mj_dist,
             )
 
-    # Also compare qfrc_constraint (net constraint force in joint space)
-    var mj_qfrc = mj_data.qfrc_constraint.flatten().tolist()
-    print("  Our qfrc_constraint: N/A (not stored separately)")
-    print("  MJ  qfrc_constraint:", end="")
-    for i in range(NV):
-        print(" ", Float64(py=mj_qfrc[i]), end="")
-    print()
-
-    # --- Compare constraint parameters (run mj_forward on FRESH data) ---
-    var mj_data2 = mujoco.MjData(mj_model)
-    for i in range(NQ):
-        mj_data2.qpos[i] = qpos_init[i]
-    for i in range(NV):
-        mj_data2.qvel[i] = qvel_init[i]
-    for i in range(ACTION_DIM):
-        mj_data2.ctrl[i] = actions[i]
-    # mj_step1 does: position kinematics, collision, constraint setup
-    mujoco.mj_step1(mj_model, mj_data2)
-
-    var mj_nefc = Int(py=mj_data2.nefc)
-    print("  --- MuJoCo constraint params (nefc=", mj_nefc, ") ---")
-    # Print solimp/solref used by MuJoCo
-    var mj_solref = mj_model.opt.o_solref.flatten().tolist()
-    var mj_solimp = mj_model.opt.o_solimp.flatten().tolist()
-    print("    solref:", Float64(py=mj_solref[0]), Float64(py=mj_solref[1]))
-    print(
-        "    solimp:",
-        Float64(py=mj_solimp[0]),
-        Float64(py=mj_solimp[1]),
-        Float64(py=mj_solimp[2]),
-        Float64(py=mj_solimp[3]),
-        Float64(py=mj_solimp[4]),
-    )
-    if mj_nefc > 0:
-        var mj_efc_b = mj_data2.efc_b.flatten().tolist()
-        var mj_efc_D = mj_data2.efc_D.flatten().tolist()
-        var mj_efc_R = mj_data2.efc_R.flatten().tolist()
-        var mj_efc_aref = mj_data2.efc_aref.flatten().tolist()
-        var mj_efc_type = mj_data2.efc_type.flatten().tolist()
-        # Also print KBIP
-        var mj_efc_KBIP = mj_data2.efc_KBIP.flatten().tolist()
-        for r in range(mj_nefc):
-            if r < 15:  # Limit output
-                var kbip_off = r * 4
-                print(
-                    "    row",
-                    r,
-                    " type=",
-                    Int(py=mj_efc_type[r]),
-                    " D=",
-                    Float64(py=mj_efc_D[r]),
-                    " R=",
-                    Float64(py=mj_efc_R[r]),
-                    " aref=",
-                    Float64(py=mj_efc_aref[r]),
-                    " KBIP=[",
-                    Float64(py=mj_efc_KBIP[kbip_off]),
-                    Float64(py=mj_efc_KBIP[kbip_off + 1]),
-                    Float64(py=mj_efc_KBIP[kbip_off + 2]),
-                    Float64(py=mj_efc_KBIP[kbip_off + 3]),
-                    "]",
-                )
     return all_pass
 
 
@@ -372,9 +300,10 @@ fn compare_step(
 
 
 fn test_ground_contact() raises -> Bool:
-    """Robot low enough to have ground contact (feet touching)."""
+    """Robot low enough to have ground contact (foot touching).
+    Hopper default: torso at 1.25, foot about 0.6m below. rootz=-0.8 pushes down."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
-    qpos[1] = -0.45  # rootz — pushes robot down
+    qpos[1] = -0.8  # rootz — pushes robot down from 1.25
     var qvel = InlineArray[Float64, NV](fill=0.0)
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
     return compare_step("Ground contact (low rootz)", qpos, qvel, actions)
@@ -383,15 +312,12 @@ fn test_ground_contact() raises -> Bool:
 fn test_ground_contact_with_action() raises -> Bool:
     """Robot on ground with actions — full constraint solver test."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
-    qpos[1] = -0.45  # rootz — pushes robot down
+    qpos[1] = -0.8  # rootz — pushes robot down
     var qvel = InlineArray[Float64, NV](fill=0.0)
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    actions[0] = 0.8  # bthigh
-    actions[1] = -0.5  # bshin
-    actions[2] = 0.3  # bfoot
-    actions[3] = 0.8  # fthigh
-    actions[4] = -0.5  # fshin
-    actions[5] = 0.3  # ffoot
+    actions[0] = 0.8  # thigh
+    actions[1] = -0.5  # leg
+    actions[2] = 0.3  # foot
     return compare_step("Ground contact with action", qpos, qvel, actions)
 
 
@@ -404,10 +330,10 @@ fn main() raises:
     print("=" * 60)
     print("Full Step with Contacts: Mojo Engine vs MuJoCo Reference")
     print("=" * 60)
-    print("Model: HalfCheetah (NQ=9, NV=9)")
-    print("Integrator: Euler (MuJoCo default)")
-    print("Solver: PGS")
-    print("Cone: pyramidal (both engines)")
+    print("Model: Hopper (NQ=6, NV=6)")
+    print("Integrator: Euler (opt.integrator=0)")
+    print("Solver: Newton (opt.solver=2)")
+    print("Cone: elliptic (opt.cone=1)")
     print("Precision: float64")
     print("Tolerances: qpos abs=", QPOS_ABS_TOL, " rel=", QPOS_REL_TOL)
     print("            qvel abs=", QVEL_ABS_TOL, " rel=", QVEL_REL_TOL)

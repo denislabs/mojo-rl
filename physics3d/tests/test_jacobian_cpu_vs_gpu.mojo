@@ -46,7 +46,6 @@ from physics3d.dynamics.mass_matrix import (
     ldl_solve_workspace_gpu,
     compute_M_inv_from_ldl,
     compute_M_inv_from_ldl_gpu,
-    compute_body_invweight0,
 )
 from physics3d.collision.contact_detection import (
     detect_contacts,
@@ -93,18 +92,10 @@ from physics3d.gpu.constants import (
 )
 from physics3d.gpu.buffer_utils import (
     create_state_buffer,
-    copy_model_to_buffer,
-    copy_geoms_to_buffer,
-    copy_invweight0_to_buffer,
-    copy_data_to_buffer,
 )
 from envs.half_cheetah.half_cheetah_def import (
     HalfCheetahModel,
-    HalfCheetahBodies,
-    HalfCheetahJoints,
-    HalfCheetahGeoms,
     HalfCheetahParams,
-    HalfCheetahDefaults,
 )
 
 
@@ -379,30 +370,12 @@ fn main() raises:
     # === Create CPU model ===
     var model_cpu = Model[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM](
     )
-    HalfCheetahModel.setup_solver_params[Defaults=HalfCheetahDefaults](model_cpu)
-
-    HalfCheetahBodies.setup_model(model_cpu)
-
-    HalfCheetahJoints.setup_model[Defaults=HalfCheetahDefaults](model_cpu)
-
-    HalfCheetahGeoms.setup_model[Defaults=HalfCheetahDefaults](model_cpu)
-
-    # Compute body_invweight0 at reference pose
     var data_ref = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
-    forward_kinematics(model_cpu, data_ref)
-    compute_body_invweight0[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM](
-        model_cpu, data_ref
-    )
+    HalfCheetahModel.setup_model_and_data(model_cpu, data_ref)
 
     # Copy model to GPU
-    var model_host = ctx.enqueue_create_host_buffer[DTYPE](MODEL_SIZE)
-    for i in range(MODEL_SIZE):
-        model_host[i] = Scalar[DTYPE](0)
-    copy_model_to_buffer(model_cpu, model_host)
-    copy_geoms_to_buffer(model_cpu, model_host)
-    copy_invweight0_to_buffer(model_cpu, model_host)
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
-    ctx.enqueue_copy(model_buf, model_host.unsafe_ptr())
+    HalfCheetahModel.init_model_gpu(ctx, model_buf)
     ctx.synchronize()
 
     # Pre-allocate GPU buffers

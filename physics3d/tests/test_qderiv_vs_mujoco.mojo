@@ -12,7 +12,7 @@ from python import Python, PythonObject
 from math import abs
 from collections import InlineArray
 
-from physics3d.types import Model, Data, _max_one, ConeType
+from physics3d.types import Model, Data, ConeType
 from physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
@@ -20,15 +20,11 @@ from physics3d.kinematics.forward_kinematics import (
 from physics3d.dynamics.jacobian import compute_cdof, compute_composite_inertia
 from physics3d.dynamics.mass_matrix import (
     compute_mass_matrix_full,
-    compute_body_invweight0,
 )
 from physics3d.dynamics.velocity_derivatives import compute_rne_vel_derivative
 from physics3d.joint_types import JNT_FREE, JNT_BALL
 from envs.half_cheetah.half_cheetah_def import (
     HalfCheetahModel,
-    HalfCheetahBodies,
-    HalfCheetahJoints,
-    HalfCheetahGeoms,
     HalfCheetahParams,
 )
 
@@ -55,15 +51,11 @@ fn compare_qderiv(
 
     # === Our engine ===
     var model = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, ConeType.ELLIPTIC
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, 0, HalfCheetahModel.CONE_TYPE
     ](
     )
-    HalfCheetahBodies.setup_model(model)
-    HalfCheetahJoints.setup_model(model)
-    HalfCheetahGeoms.setup_model(model)
-
     var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
-
+    HalfCheetahModel.setup_model_and_data(model, data)
     for i in range(NQ):
         data.qpos[i] = Scalar[DTYPE](qpos_init[i])
     for i in range(NV):
@@ -107,7 +99,7 @@ fn compare_qderiv(
         "../Gymnasium-main/gymnasium/envs/mujoco/assets/half_cheetah.xml"
     )
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
-    mj_model.opt.cone = 1  # mjCONE_ELLIPTIC
+    mj_model.opt.cone = 0  # mjCONE_PYRAMIDAL (matches HalfCheetahModel)
     mj_model.opt.solver = 2  # mjSOL_NEWTON
     mj_model.opt.integrator = 2  # mjINT_IMPLICIT (triggers full qDeriv with RNE)
     var mj_data = mujoco.MjData(mj_model)
