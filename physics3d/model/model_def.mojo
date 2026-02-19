@@ -107,6 +107,37 @@ from ..gpu.constants import (
     BODY_IDX_INV_IYY,
     BODY_IDX_INV_IZZ,
     MODEL_BODY_SIZE,
+    BODY_IDX_POS_X,
+    BODY_IDX_POS_Y,
+    BODY_IDX_POS_Z,
+    BODY_IDX_QUAT_X,
+    BODY_IDX_QUAT_Y,
+    BODY_IDX_QUAT_Z,
+    BODY_IDX_QUAT_W,
+    BODY_IDX_PARENT,
+    BODY_IDX_IPOS_X,
+    BODY_IDX_IPOS_Y,
+    BODY_IDX_IPOS_Z,
+    BODY_IDX_IQUAT_X,
+    BODY_IDX_IQUAT_Y,
+    BODY_IDX_IQUAT_Z,
+    BODY_IDX_IQUAT_W,
+    state_size,
+    model_size,
+    xpos_offset,
+    xquat_offset,
+    xipos_offset,
+    model_joint_offset,
+    MODEL_JOINT_SIZE,
+    JOINT_IDX_TYPE,
+    JOINT_IDX_BODY_ID,
+    JOINT_IDX_DOF_ADR,
+    JOINT_IDX_ARMATURE,
+    integrator_workspace_size,
+    ws_cdof_offset,
+    ws_M_offset,
+    ws_L_offset,
+    ws_D_offset,
 )
 from ..gpu.buffer_utils import (
     copy_model_to_buffer,
@@ -114,8 +145,10 @@ from ..gpu.buffer_utils import (
     copy_invweight0_to_buffer,
     copy_tendons_to_buffer,
 )
-from ..kinematics.forward_kinematics import forward_kinematics
-from ..dynamics.mass_matrix import compute_body_invweight0
+from ..kinematics.forward_kinematics import forward_kinematics, forward_kinematics_gpu
+from ..dynamics.mass_matrix import compute_body_invweight0, ldl_factor_gpu, compute_mass_matrix_full_gpu
+from ..dynamics.jacobian import compute_cdof_gpu, compute_composite_inertia_gpu
+from memory import UnsafePointer
 from .inertia_from_geom import (
     geom_volume,
     compute_inertia_from_geoms,
@@ -629,11 +662,11 @@ struct ModelDef[
         if Self.Defaults.SETTOTALMASS > 0.0:
             Self._settotalmass_buffer[DTYPE](host_buf)
 
-        # invweight0 via small Model (reuses existing FK + invweight0 code)
-        Self._compute_invweight0_from_buffer[DTYPE](host_buf)
-
-        # Copy to GPU
+        # Copy to GPU (invweight0 slots are still zero)
         ctx.enqueue_copy(model_buf, host_buf.unsafe_ptr())
+
+        # Compute invweight0 on GPU (avoids CPU stack overflow)
+        Self._compute_invweight0_gpu[DTYPE](ctx, model_buf)
 
     @staticmethod
     fn _write_metadata_to_buffer[
@@ -716,97 +749,302 @@ struct ModelDef[
                 buffer[off + BODY_IDX_INV_IZZ] /= scale
 
     @staticmethod
-    fn _compute_invweight0_from_buffer[
+    fn _compute_invweight0_gpu[
         DTYPE: DType where DTYPE.is_floating_point(),
-    ](buffer: HostBuffer[DTYPE]):
-        """Compute body_invweight0/dof_invweight0 via a small Model on the stack.
+    ](ctx: DeviceContext, mut model_buf: DeviceBuffer[DTYPE]) raises:
+        """Compute invweight0 on GPU via a single-thread kernel.
 
-        Creates a minimal Model (NGEOM=0, MAX_CONTACTS=1) which is small enough
-        for the stack. Reads body+joint data from the buffer, runs FK + invweight0,
-        then writes results back to the buffer.
+        Avoids creating Model/Data on the CPU stack entirely. Uses existing GPU
+        functions (FK, cdof, crb, mass matrix, LDL) and writes invweight0
+        directly to the model buffer.
         """
-        # Small model with minimal geom/contact footprint
-        comptime SmallModel = Model[
-            DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
-            1,  # MAX_CONTACTS=1 (minimal)
-            0,  # NGEOM=0
-            0,  # MAX_EQUALITY=0
-            Self.CONE_TYPE,
-            0,  # MAX_TENDON=0
-        ]
-        comptime SmallData = Data[
-            DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT, 1,
-        ]
+        from ..joint_types import JNT_FREE, JNT_BALL
 
-        var model = SmallModel()
-        var data = SmallData()
+        comptime STATE_SIZE = state_size[
+            Self.NQ, Self.NV, Self.NBODY, 1
+        ]()
+        comptime MODEL_SIZE = model_size_with_invweight[
+            Self.NBODY, Self.NJOINT, Self.NV, Self.NGEOM,
+            Self.MAX_EQUALITY, Self.MAX_TENDON,
+        ]()
+        comptime WS_SIZE = integrator_workspace_size[Self.NV, Self.NBODY]()
 
-        # Copy body data from buffer → small model
-        for b in range(Self.NBODY):
-            var off = model_body_offset(b)
-            model.body_mass[b] = buffer[off + BODY_IDX_MASS]
-            model.body_inv_mass[b] = buffer[off + BODY_IDX_INV_MASS]
-            model.body_inertia[b * 3 + 0] = buffer[off + BODY_IDX_IXX]
-            model.body_inertia[b * 3 + 1] = buffer[off + BODY_IDX_IYY]
-            model.body_inertia[b * 3 + 2] = buffer[off + BODY_IDX_IZZ]
-            model.body_inv_inertia[b * 3 + 0] = buffer[off + BODY_IDX_INV_IXX]
-            model.body_inv_inertia[b * 3 + 1] = buffer[off + BODY_IDX_INV_IYY]
-            model.body_inv_inertia[b * 3 + 2] = buffer[off + BODY_IDX_INV_IZZ]
-            model.body_pos[b * 3 + 0] = buffer[
-                off + 8
-            ]  # BODY_IDX_POS_X=8
-            model.body_pos[b * 3 + 1] = buffer[off + 9]
-            model.body_pos[b * 3 + 2] = buffer[off + 10]
-            model.body_quat[b * 4 + 0] = buffer[off + 11]  # BODY_IDX_QUAT_X
-            model.body_quat[b * 4 + 1] = buffer[off + 12]
-            model.body_quat[b * 4 + 2] = buffer[off + 13]
-            model.body_quat[b * 4 + 3] = buffer[off + 14]
-            model.body_parent[b] = Int(buffer[off + 15])  # BODY_IDX_PARENT
-            model.body_ipos[b * 3 + 0] = buffer[off + 16]  # BODY_IDX_IPOS_X
-            model.body_ipos[b * 3 + 1] = buffer[off + 17]
-            model.body_ipos[b * 3 + 2] = buffer[off + 18]
-            model.body_iquat[b * 4 + 0] = buffer[off + 19]  # BODY_IDX_IQUAT_X
-            model.body_iquat[b * 4 + 1] = buffer[off + 20]
-            model.body_iquat[b * 4 + 2] = buffer[off + 21]
-            model.body_iquat[b * 4 + 3] = buffer[off + 22]
+        # Allocate temporary state + workspace on GPU
+        var state_buf = ctx.enqueue_create_buffer[DTYPE](STATE_SIZE)
+        var ws_buf = ctx.enqueue_create_buffer[DTYPE](WS_SIZE)
 
-        # Populate joints via Joints.setup_model on the small model
-        Self.Joints.setup_model[
-            DTYPE=DTYPE, NQ=Self.NQ, NV=Self.NV, NBODY=Self.NBODY,
-            MAX_CONTACTS=1, NGEOM=0, MAX_EQUALITY=0,
-            CONE_TYPE=Self.CONE_TYPE, MAX_TENDON=0,
-            Defaults=Self.Defaults,
-        ](model)
+        var state = LayoutTensor[
+            DTYPE, Layout.row_major(1, STATE_SIZE), MutAnyOrigin
+        ](state_buf.unsafe_ptr())
+        var model = LayoutTensor[
+            DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+        ](model_buf.unsafe_ptr())
+        var workspace = LayoutTensor[
+            DTYPE, Layout.row_major(1, WS_SIZE), MutAnyOrigin
+        ](ws_buf.unsafe_ptr())
 
-        # Initialize qpos from JointSpec defaults
-        Self.Joints.reset_data(data)
+        # Kernel: init state to zero, run FK + mass matrix + LDL, compute invweight0
+        @always_inline
+        fn invweight0_kernel(
+            state: LayoutTensor[
+                DTYPE, Layout.row_major(1, STATE_SIZE), MutAnyOrigin
+            ],
+            model: LayoutTensor[
+                DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+            ],
+            workspace: LayoutTensor[
+                DTYPE, Layout.row_major(1, WS_SIZE), MutAnyOrigin
+            ],
+        ):
+            # Zero-init state (qpos=0 is correct for slide/hinge joints)
+            for i in range(STATE_SIZE):
+                state[0, i] = Scalar[DTYPE](0)
 
-        # Set gravity and timestep
-        model.gravity = SIMD[DTYPE, 4](
-            Scalar[DTYPE](Self.Defaults.GRAVITY_X),
-            Scalar[DTYPE](Self.Defaults.GRAVITY_Y),
-            Scalar[DTYPE](Self.Defaults.GRAVITY_Z),
-            Scalar[DTYPE](0),
+            # FK
+            forward_kinematics_gpu[
+                DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
+                1, STATE_SIZE, MODEL_SIZE, 1,
+            ](0, state, model)
+
+            # cdof
+            compute_cdof_gpu[
+                DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
+                1, STATE_SIZE, MODEL_SIZE, 1, WS_SIZE,
+            ](0, state, model, workspace)
+
+            # Composite rigid body inertia
+            compute_composite_inertia_gpu[
+                DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
+                1, STATE_SIZE, MODEL_SIZE, 1, WS_SIZE,
+            ](0, state, model, workspace)
+
+            # Mass matrix
+            compute_mass_matrix_full_gpu[
+                DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
+                1, STATE_SIZE, MODEL_SIZE, 1, WS_SIZE,
+            ](0, state, model, workspace)
+
+            # Add armature to M diagonal
+            comptime M_idx = ws_M_offset[Self.NV, Self.NBODY]()
+            var meta_off = model_metadata_offset[Self.NBODY, Self.NJOINT]()
+            var num_joints = Int(
+                rebind[Scalar[DTYPE]](model[0, meta_off + MODEL_META_IDX_NJOINT])
+            )
+            for j in range(num_joints):
+                var joff = model_joint_offset[Self.NBODY](j)
+                var jtype = Int(rebind[Scalar[DTYPE]](model[0, joff + JOINT_IDX_TYPE]))
+                var dof_adr = Int(rebind[Scalar[DTYPE]](model[0, joff + JOINT_IDX_DOF_ADR]))
+                var arm = rebind[Scalar[DTYPE]](model[0, joff + JOINT_IDX_ARMATURE])
+                var ndof = 1
+                if jtype == JNT_FREE:
+                    ndof = 6
+                elif jtype == JNT_BALL:
+                    ndof = 3
+                for d in range(ndof):
+                    var idx = M_idx + (dof_adr + d) * Self.NV + (dof_adr + d)
+                    workspace[0, idx] = rebind[Scalar[DTYPE]](workspace[0, idx]) + arm
+
+            # LDL factor
+            ldl_factor_gpu[DTYPE, Self.NV, Self.NBODY, 1, WS_SIZE](0, workspace)
+
+            # === Compute invweight0 ===
+            # Build dof_to_body mapping
+            comptime cdof_idx = ws_cdof_offset()
+            comptime L_idx = ws_L_offset[Self.NV, Self.NBODY]()
+            comptime D_idx = ws_D_offset[Self.NV, Self.NBODY]()
+            comptime scratch1 = D_idx + Self.NV  # after D (reuses fnet slot)
+            comptime scratch2 = scratch1 + Self.NV  # reuses qacc slot
+            comptime scratch3 = scratch2 + Self.NV  # reuses qvel_pred slot
+            var xi_off = xipos_offset[Self.NQ, Self.NV, Self.NBODY]()
+
+            var bw_off = model_body_invweight0_offset[
+                Self.NBODY, Self.NJOINT, Self.NGEOM, Self.MAX_EQUALITY,
+                Self.MAX_TENDON,
+            ]()
+            var dw_off = model_dof_invweight0_offset[
+                Self.NBODY, Self.NJOINT, Self.NGEOM, Self.MAX_EQUALITY,
+                Self.MAX_TENDON,
+            ]()
+
+            # World body: zero weights
+            model[0, bw_off + 0] = Scalar[DTYPE](0)
+            model[0, bw_off + 1] = Scalar[DTYPE](0)
+
+            # For each body, compute invweight0
+            for i in range(Self.NBODY):
+                var ti_x = rebind[Scalar[DTYPE]](state[0, xi_off + i * 3 + 0])
+                var ti_y = rebind[Scalar[DTYPE]](state[0, xi_off + i * 3 + 1])
+                var ti_z = rebind[Scalar[DTYPE]](state[0, xi_off + i * 3 + 2])
+
+                # Build dof_body for "affects" check
+                # For each DOF k, check if it affects body i
+                var A_diag_tran = Scalar[DTYPE](0)
+                var A_diag_rot = Scalar[DTYPE](0)
+
+                for k in range(6):
+                    # Build J_row for this spatial component
+                    # Then solve M*x = J_row and compute A[k,k] = dot(J_row, x)
+
+                    # Step 1: Build J_row by zeroing a scratch area
+                    # Use dw_off + NV as scratch for J_row (temporarily)
+                    # Actually, we need a real temp. Use a small loop approach.
+                    # Solve M*x = J_row:
+                    # Forward sub: y[i] = b[i] - sum(L[i,j]*y[j])
+                    # Scale: z[i] = y[i]/D[i]
+                    # Back sub: x[i] = z[i] - sum(L[j,i]*x[j])
+
+                    var dot_val = Scalar[DTYPE](0)
+
+                    # For each DOF d, compute J_row[d] and accumulate
+                    # We do the LDL solve inline, one row at a time
+                    # This avoids allocating NV-sized arrays in GPU registers
+
+                    # Build J_row in scratch1
+                    for d in range(Self.NV):
+                        workspace[0, scratch1 + d] = Scalar[DTYPE](0)
+
+                    for d in range(Self.NV):
+                        # Find which body owns this DOF
+                        var dof_body = 0
+                        for jj in range(num_joints):
+                            var jj_off = model_joint_offset[Self.NBODY](jj)
+                            var jj_type = Int(rebind[Scalar[DTYPE]](model[0, jj_off + JOINT_IDX_TYPE]))
+                            var jj_dof = Int(rebind[Scalar[DTYPE]](model[0, jj_off + JOINT_IDX_DOF_ADR]))
+                            var jj_body = Int(rebind[Scalar[DTYPE]](model[0, jj_off + JOINT_IDX_BODY_ID]))
+                            var jj_ndof = 1
+                            if jj_type == JNT_FREE:
+                                jj_ndof = 6
+                            elif jj_type == JNT_BALL:
+                                jj_ndof = 3
+                            if d >= jj_dof and d < jj_dof + jj_ndof:
+                                dof_body = jj_body
+                                break
+
+                        # Check if DOF d affects body i
+                        var affects = False
+                        if dof_body == i:
+                            affects = True
+                        else:
+                            var current = i
+                            while current > 0:
+                                var p_off = model_body_offset(current)
+                                var parent = Int(rebind[Scalar[DTYPE]](model[0, p_off + BODY_IDX_PARENT]))
+                                if parent == dof_body:
+                                    affects = True
+                                    break
+                                current = parent
+
+                        if not affects:
+                            continue
+
+                        var ang_x = rebind[Scalar[DTYPE]](workspace[0, cdof_idx + d * 6 + 0])
+                        var ang_y = rebind[Scalar[DTYPE]](workspace[0, cdof_idx + d * 6 + 1])
+                        var ang_z = rebind[Scalar[DTYPE]](workspace[0, cdof_idx + d * 6 + 2])
+                        var lin_x = rebind[Scalar[DTYPE]](workspace[0, cdof_idx + d * 6 + 3])
+                        var lin_y = rebind[Scalar[DTYPE]](workspace[0, cdof_idx + d * 6 + 4])
+                        var lin_z = rebind[Scalar[DTYPE]](workspace[0, cdof_idx + d * 6 + 5])
+
+                        var dx = ti_x - rebind[Scalar[DTYPE]](state[0, xi_off + dof_body * 3 + 0])
+                        var dy = ti_y - rebind[Scalar[DTYPE]](state[0, xi_off + dof_body * 3 + 1])
+                        var dz = ti_z - rebind[Scalar[DTYPE]](state[0, xi_off + dof_body * 3 + 2])
+
+                        var val = Scalar[DTYPE](0)
+                        if k == 0:
+                            val = lin_x + ang_y * dz - ang_z * dy
+                        elif k == 1:
+                            val = lin_y + ang_z * dx - ang_x * dz
+                        elif k == 2:
+                            val = lin_z + ang_x * dy - ang_y * dx
+                        elif k == 3:
+                            val = ang_x
+                        elif k == 4:
+                            val = ang_y
+                        else:
+                            val = ang_z
+                        workspace[0, scratch1 + d] = val
+
+                    # LDL solve: M*x = J_row
+                    # Forward substitution: y = L^{-1} * b
+                    for ii in range(Self.NV):
+                        var s = rebind[Scalar[DTYPE]](workspace[0, scratch1 + ii])
+                        for jj in range(ii):
+                            s = s - rebind[Scalar[DTYPE]](workspace[0, L_idx + ii * Self.NV + jj]) * rebind[Scalar[DTYPE]](workspace[0, scratch2 + jj])
+                        workspace[0, scratch2 + ii] = s
+
+                    # Scale: z = D^{-1} * y
+                    for ii in range(Self.NV):
+                        var d_val = rebind[Scalar[DTYPE]](workspace[0, D_idx + ii])
+                        if d_val > Scalar[DTYPE](1e-14) or d_val < Scalar[DTYPE](-1e-14):
+                            workspace[0, scratch3 + ii] = rebind[Scalar[DTYPE]](workspace[0, scratch2 + ii]) / d_val
+                        else:
+                            workspace[0, scratch3 + ii] = Scalar[DTYPE](0)
+
+                    # Back substitution: x = L^{-T} * z
+                    for ii_rev in range(Self.NV):
+                        var ii = Self.NV - 1 - ii_rev
+                        var s = rebind[Scalar[DTYPE]](workspace[0, scratch3 + ii])
+                        for jj in range(ii + 1, Self.NV):
+                            s = s - rebind[Scalar[DTYPE]](workspace[0, L_idx + jj * Self.NV + ii]) * rebind[Scalar[DTYPE]](workspace[0, scratch2 + jj])
+                        workspace[0, scratch2 + ii] = s
+
+                    # dot(J_row, x)
+                    for d in range(Self.NV):
+                        dot_val += rebind[Scalar[DTYPE]](workspace[0, scratch1 + d]) * rebind[Scalar[DTYPE]](workspace[0, scratch2 + d])
+
+                    if k < 3:
+                        A_diag_tran += dot_val
+                    else:
+                        A_diag_rot += dot_val
+
+                var tran = A_diag_tran / Scalar[DTYPE](3)
+                var rot = A_diag_rot / Scalar[DTYPE](3)
+
+                if tran < Scalar[DTYPE](1e-10) and rot > Scalar[DTYPE](1e-10):
+                    tran = rot
+                elif rot < Scalar[DTYPE](1e-10) and tran > Scalar[DTYPE](1e-10):
+                    rot = tran
+
+                model[0, bw_off + 2 * i] = tran
+                model[0, bw_off + 2 * i + 1] = rot
+
+            # Compute dof_invweight0: diagonal of M^{-1}
+            for d in range(Self.NV):
+                # e_d unit vector
+                for ii in range(Self.NV):
+                    workspace[0, scratch1 + ii] = Scalar[DTYPE](0)
+                workspace[0, scratch1 + d] = Scalar[DTYPE](1)
+
+                # LDL solve
+                for ii in range(Self.NV):
+                    var s = rebind[Scalar[DTYPE]](workspace[0, scratch1 + ii])
+                    for jj in range(ii):
+                        s = s - rebind[Scalar[DTYPE]](workspace[0, L_idx + ii * Self.NV + jj]) * rebind[Scalar[DTYPE]](workspace[0, scratch2 + jj])
+                    workspace[0, scratch2 + ii] = s
+
+                for ii in range(Self.NV):
+                    var d_val = rebind[Scalar[DTYPE]](workspace[0, D_idx + ii])
+                    if d_val > Scalar[DTYPE](1e-14) or d_val < Scalar[DTYPE](-1e-14):
+                        workspace[0, scratch3 + ii] = rebind[Scalar[DTYPE]](workspace[0, scratch2 + ii]) / d_val
+                    else:
+                        workspace[0, scratch3 + ii] = Scalar[DTYPE](0)
+
+                for ii_rev in range(Self.NV):
+                    var ii = Self.NV - 1 - ii_rev
+                    var s = rebind[Scalar[DTYPE]](workspace[0, scratch3 + ii])
+                    for jj in range(ii + 1, Self.NV):
+                        s = s - rebind[Scalar[DTYPE]](workspace[0, L_idx + jj * Self.NV + ii]) * rebind[Scalar[DTYPE]](workspace[0, scratch2 + jj])
+                    workspace[0, scratch2 + ii] = s
+
+                model[0, dw_off + d] = rebind[Scalar[DTYPE]](workspace[0, scratch2 + d])
+
+        ctx.enqueue_function[invweight0_kernel, invweight0_kernel](
+            state,
+            model,
+            workspace,
+            grid_dim=(1,),
+            block_dim=(1,),
         )
-        model.timestep = Scalar[DTYPE](Self.Defaults.TIMESTEP)
-
-        # Run FK + invweight0
-        forward_kinematics(model, data)
-        compute_body_invweight0(model, data)
-
-        # Write invweight0 results back to buffer
-        var bw_off = model_body_invweight0_offset[
-            Self.NBODY, Self.NJOINT, Self.NGEOM, Self.MAX_EQUALITY,
-            Self.MAX_TENDON,
-        ]()
-        for i in range(Self.NBODY * 2):
-            buffer[bw_off + i] = model.body_invweight0[i]
-        var dw_off = model_dof_invweight0_offset[
-            Self.NBODY, Self.NJOINT, Self.NGEOM, Self.MAX_EQUALITY,
-            Self.MAX_TENDON,
-        ]()
-        for i in range(Self.NV):
-            buffer[dw_off + i] = model.dof_invweight0[i]
+        ctx.synchronize()
 
     # === CPU: Joints/Actuators delegates ===
     @staticmethod
