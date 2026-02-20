@@ -294,7 +294,9 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         self._draw_hud()
 
         # Increment step counter AFTER drawing (so first frame shows 0)
-        self.step_count += 1
+        # Only increment when not paused (paused display should freeze the count)
+        if not self.renderer.is_paused:
+            self.step_count += 1
 
         # End frame
         try:
@@ -324,6 +326,9 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         y += 20
         self.renderer.draw_text(x0 + 1, y + 1, "[S]   Screenshot", Color(0, 0, 0, 160), s)
         self.renderer.draw_text(x0, y, "[S]   Screenshot", dim, s)
+        y += 20
+        self.renderer.draw_text(x0 + 1, y + 1, "[V]   Record", Color(0, 0, 0, 160), s)
+        self.renderer.draw_text(x0, y, "[V]   Record", dim, s)
         y += 28  # gap
 
         # Camera name (bright white)
@@ -342,6 +347,15 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         if self.renderer.is_paused:
             self.renderer.draw_text(x0 + 1, y + 1, "[PAUSED]", Color(0, 0, 0, 160), s)
             self.renderer.draw_text(x0, y, "[PAUSED]", Color(255, 220, 0, 255), s)
+            y += 20
+
+        # Recording indicator (red, only when recording)
+        if self.renderer.recorder.is_recording:
+            var rec_str = (
+                "* REC  " + String(self.renderer.recorder.frame_count) + "f"
+            )
+            self.renderer.draw_text(x0 + 1, y + 1, rec_str, Color(0, 0, 0, 160), s)
+            self.renderer.draw_text(x0, y, rec_str, Color(220, 40, 40, 255), s)
 
     fn _draw_velocity_indicator(mut self, torso_pos: Vec3, vel_x: Float64):
         """Draw a velocity indicator arrow above the torso."""

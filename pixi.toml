@@ -37,6 +37,7 @@ swig = ">=4.4.1,<5"
 box2d-py = ">=2.3.8,<3"  # for gymnasium Box2D envs (LunarLander, BipedalWalker, CarRacing)
 mujoco = ">=3.3.6,<4"    # for gymnasium MuJoCo envs (HalfCheetah, Ant, Humanoid, etc.)
 imageio = ">=2.37.0,<3"
+imageio-ffmpeg = ">=0.6.0,<1"
 
 [activation]
 env = { MOJO_PYTHON_LIBRARY = "$PIXI_PROJECT_ROOT/.pixi/envs/default/lib/libpython3.13.dylib" }

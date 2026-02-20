@@ -40,7 +40,13 @@ from .sdl import (
     Ptr,
     AnyOrigin,
     FRect,
+    # Video recording: pixel readback + surface cleanup
+    render_read_pixels,
+    destroy_surface,
+    Rect,
+    Surface,
 )
+from .video_recorder import VideoRecorder
 
 
 struct Renderer2D(Movable):
@@ -70,6 +76,10 @@ struct Renderer2D(Movable):
 
     # Timing
     var last_frame_time: UInt64
+
+    # Video recording (V key / programmatic API)
+    var recorder: VideoRecorder
+    var recording_counter: Int
 
     fn __init__(
         out self,
@@ -103,6 +113,8 @@ struct Renderer2D(Movable):
         self.initialized = False
         self.should_quit = False
         self.last_frame_time = 0
+        self.recorder = VideoRecorder()
+        self.recording_counter = 0
 
     fn __moveinit__(out self, deinit existing: Self):
         self.window = existing.window
@@ -118,6 +130,8 @@ struct Renderer2D(Movable):
         self.initialized = existing.initialized
         self.should_quit = existing.should_quit
         self.last_frame_time = existing.last_frame_time
+        self.recorder = existing.recorder^
+        self.recording_counter = existing.recording_counter
 
     fn make_color(self, r: Int, g: Int, b: Int, a: Int = 255) -> SDL_Color:
         """Create an SDL color.
@@ -194,9 +208,23 @@ struct Renderer2D(Movable):
                     return False
                 elif EventType(Int(event_type)) == EventType.EVENT_KEY_DOWN:
                     var key_event = event[KeyboardEvent]
-                    if Int(key_event.key) == Int(Keycode.SDLK_ESCAPE):
+                    var key_val = Int(key_event.key)
+                    if key_val == Int(Keycode.SDLK_ESCAPE):
                         self.should_quit = True
                         return False
+                    elif key_val == Int(Keycode.SDLK_V):
+                        try:
+                            if self.recorder.is_recording:
+                                self.stop_recording()
+                            else:
+                                var fname = (
+                                    "recording_"
+                                    + String(self.recording_counter)
+                                    + ".mp4"
+                                )
+                                self.start_recording(fname)
+                        except:
+                            pass
         except:
             pass
 
@@ -613,6 +641,21 @@ struct Renderer2D(Movable):
     fn flip(mut self):
         """Update display and cap framerate."""
         try:
+            # Capture frame for recording BEFORE render_present (SDL3 requirement)
+            if self.recorder.is_recording:
+                try:
+                    # NULL rect = read entire viewport into a new Surface
+                    var surf = render_read_pixels(
+                        self.sdl_renderer, Ptr[Rect, AnyOrigin[False]]()
+                    )
+                    var pixels = surf[].pixels
+                    self.recorder.add_frame_bgra(
+                        Int(pixels), self.screen_width, self.screen_height
+                    )
+                    destroy_surface(surf)
+                except e:
+                    print("Recording: 2D frame capture failed: " + String(e))
+
             render_present(self.sdl_renderer)
 
             # Frame rate limiting
@@ -626,9 +669,32 @@ struct Renderer2D(Movable):
         except:
             pass
 
+    fn start_recording(mut self, filename: String, fps: Int = 30) raises:
+        """Start video recording to a file.
+
+        Captures every rendered frame via SDL_RenderReadPixels and encodes
+        it via Python imageio.  Requires ``imageio`` (and ``imageio-ffmpeg``
+        for MP4) to be installed.
+
+        Args:
+            filename: Output path, e.g. ``recording_0.mp4`` or ``recording_0.gif``.
+            fps: Frames per second written into the video container.
+        """
+        self.recorder.start(filename, fps)
+        self.recording_counter += 1
+
+    fn stop_recording(mut self) raises:
+        """Stop video recording and flush the file."""
+        self.recorder.stop()
+
     fn close(mut self):
         """Close the SDL window and cleanup."""
         if self.initialized:
+            try:
+                if self.recorder.is_recording:
+                    self.recorder.stop()
+            except:
+                pass
             try:
                 destroy_renderer(self.sdl_renderer)
                 destroy_window(self.window)

@@ -137,16 +137,11 @@ from .sdl import (
     # Screenshot: GPU idle wait + texture download
     wait_for_gpu_idle,
     download_from_gpu_texture,
-    # Screenshot: SDL surface + BMP
-    Surface,
-    PixelFormat,
-    create_surface_from,
-    destroy_surface,
-    save_bmp,
 )
 from .camera3d import Camera3D
 from .types import Color
 from .light import Light
+from .video_recorder import VideoRecorder
 from .gpu_types import (
     GPUVertex,
     SceneUniforms,
@@ -332,6 +327,12 @@ struct Renderer3D(Movable):
     var screenshot_requested: Bool
     var screenshot_counter: Int
 
+    # Video recording (V key / programmatic API)
+    var recorder: VideoRecorder
+    # Reusable GPU download buffer for recording (allocated at start, freed at stop)
+    var recording_tb: Ptr[GPUTransferBuffer, AnyOrigin[True]]
+    var recording_tb_size: Int  # current allocation size in bytes
+
     # Default camera position for R-key reset
     var default_eye: Vec3
     var default_target: Vec3
@@ -428,6 +429,9 @@ struct Renderer3D(Movable):
         self.step_once = False
         self.screenshot_requested = False
         self.screenshot_counter = 0
+        self.recorder = VideoRecorder()
+        self.recording_tb = Ptr[GPUTransferBuffer, AnyOrigin[True]]()
+        self.recording_tb_size = 0
         self.default_eye = camera.eye
         self.default_target = camera.target
         if len(lights) > 0:
@@ -500,6 +504,9 @@ struct Renderer3D(Movable):
         self.step_once = other.step_once
         self.screenshot_requested = other.screenshot_requested
         self.screenshot_counter = other.screenshot_counter
+        self.recorder = other.recorder^
+        self.recording_tb = other.recording_tb
+        self.recording_tb_size = other.recording_tb_size
         self.default_eye = other.default_eye
         self.default_target = other.default_target
         self.initialized = other.initialized
@@ -2595,7 +2602,7 @@ struct Renderer3D(Movable):
         # Always submit the command buffer (screenshot download included if set up).
         submit_gpu_command_buffer(cmd_buf)
 
-        # If a download was queued, wait for the GPU to finish, then save to BMP.
+        # If a download was queued, wait for the GPU to finish, then save via imageio.
         if screenshot_tb:
             try:
                 wait_for_gpu_idle(self.device)
@@ -2605,25 +2612,97 @@ struct Renderer3D(Movable):
                 var filename = (
                     "screenshot_"
                     + String(self.screenshot_counter)
-                    + ".bmp"
+                    + ".jpg"
                 )
-                # Swapchain is B8G8R8A8_UNORM → on little-endian ARM/x86,
-                # bytes [B,G,R,A] in memory match SDL PIXELFORMAT_ARGB8888.
-                var surface = create_surface_from(
-                    c_int(self.width),
-                    c_int(self.height),
-                    PixelFormat.PIXELFORMAT_ARGB8888,
-                    pixels,
-                    c_int(self.width * 4),
+                self.recorder.save_frame_bgra(
+                    Int(pixels), self.width, self.height, filename
                 )
-                save_bmp(surface, filename)
-                destroy_surface(surface)
                 unmap_gpu_transfer_buffer(self.device, screenshot_tb)
                 self.screenshot_counter += 1
-                print("Screenshot saved: " + filename)
             except e:
                 print("Screenshot readback failed: " + String(e))
             release_gpu_transfer_buffer(self.device, screenshot_tb)
+
+        # Video recording: download this frame and stream to imageio
+        if self.recorder.is_recording:
+            var needed = self.width * self.height * 4
+            # Reallocate the persistent transfer buffer if size changed
+            if needed != self.recording_tb_size:
+                if self.recording_tb:
+                    release_gpu_transfer_buffer(self.device, self.recording_tb)
+                    self.recording_tb = Ptr[GPUTransferBuffer, AnyOrigin[True]]()
+                    self.recording_tb_size = 0
+                try:
+                    var tb_info = GPUTransferBufferCreateInfo(
+                        usage=GPUTransferBufferUsage.GPU_TRANSFERBUFFERUSAGE_DOWNLOAD,
+                        size=UInt32(needed),
+                        props=PropertiesID(0),
+                    )
+                    self.recording_tb = create_gpu_transfer_buffer(
+                        self.device, Ptr(to=tb_info)
+                    )
+                    self.recording_tb_size = needed
+                except e:
+                    print("Recording: failed to allocate transfer buffer: " + String(e))
+            # If we have a valid buffer, queue download in a new command buffer
+            if self.recording_tb:
+                try:
+                    var rec_cmd = acquire_gpu_command_buffer(self.device)
+                    var rec_copy = begin_gpu_copy_pass(rec_cmd)
+                    var rec_src = GPUTextureRegion(
+                        texture=swapchain_tex,
+                        mip_level=0,
+                        layer=0,
+                        x=0,
+                        y=0,
+                        z=0,
+                        w=UInt32(self.width),
+                        h=UInt32(self.height),
+                        d=1,
+                    )
+                    var rec_dst = GPUTextureTransferInfo(
+                        transfer_buffer=self.recording_tb,
+                        offset=0,
+                        pixels_per_row=UInt32(self.width),
+                        rows_per_layer=UInt32(self.height),
+                    )
+                    download_from_gpu_texture(
+                        rec_copy, Ptr(to=rec_src), Ptr(to=rec_dst)
+                    )
+                    end_gpu_copy_pass(rec_copy)
+                    submit_gpu_command_buffer(rec_cmd)
+                    wait_for_gpu_idle(self.device)
+                    var rec_pixels = map_gpu_transfer_buffer(
+                        self.device, self.recording_tb, False
+                    )
+                    self.recorder.add_frame_bgra(
+                        Int(rec_pixels), self.width, self.height
+                    )
+                    unmap_gpu_transfer_buffer(self.device, self.recording_tb)
+                except e:
+                    print("Recording: frame capture failed: " + String(e))
+
+    # --- Recording API ---
+
+    fn start_recording(mut self, filename: String, fps: Int = 30) raises:
+        """Start video recording to a file.
+
+        Captures every rendered frame and encodes it via Python imageio.
+        Requires ``imageio`` (and ``imageio-ffmpeg`` for MP4) to be installed.
+
+        Args:
+            filename: Output path, e.g. ``recording_0.mp4`` or ``recording_0.gif``.
+            fps: Frames per second written into the video container.
+        """
+        self.recorder.start(filename, fps)
+
+    fn stop_recording(mut self) raises:
+        """Stop video recording and flush the file."""
+        self.recorder.stop()
+        if self.recording_tb:
+            release_gpu_transfer_buffer(self.device, self.recording_tb)
+            self.recording_tb = Ptr[GPUTransferBuffer, AnyOrigin[True]]()
+            self.recording_tb_size = 0
 
     fn _build_scene_uniforms(mut self):
         """Build scene uniforms from current camera state."""
@@ -2768,7 +2847,8 @@ struct Renderer3D(Movable):
           Space                  → toggle pause
           → (Right arrow)        → step one frame while paused
           R                      → reset camera to default position
-          S                      → save screenshot (screenshotNNNN.bmp)
+          S                      → save screenshot (screenshotNNNN.jpg)
+          V                      → toggle video recording (recordingNNNN.mp4)
 
         Mouse (left drag = orbit, right drag = pan, wheel = zoom):
           Left-button drag       → orbit camera around target
@@ -2809,6 +2889,19 @@ struct Renderer3D(Movable):
                         self.camera.target = self.default_target
                     elif key_val == Int(Keycode.SDLK_S):
                         self.screenshot_requested = True
+                    elif key_val == Int(Keycode.SDLK_V):
+                        try:
+                            if self.recorder.is_recording:
+                                self.stop_recording()
+                            else:
+                                var fname = (
+                                    "recording_"
+                                    + String(self.screenshot_counter)
+                                    + ".mp4"
+                                )
+                                self.start_recording(fname)
+                        except:
+                            pass
 
                 elif EventType(Int(event_type)) == EventType.EVENT_MOUSE_BUTTON_DOWN:
                     var btn = event[MouseButtonEvent]
@@ -2903,6 +2996,14 @@ struct Renderer3D(Movable):
         """Release all GPU resources and shutdown SDL3."""
         if not self.initialized:
             return
+
+        # Stop any active recording and release the persistent transfer buffer
+        if self.recorder.is_recording:
+            self.recorder.stop()
+        if self.recording_tb:
+            release_gpu_transfer_buffer(self.device, self.recording_tb)
+            self.recording_tb = Ptr[GPUTransferBuffer, AnyOrigin[True]]()
+            self.recording_tb_size = 0
 
         # Release capsule cache meshes
         for i in range(len(self.capsule_cache)):
