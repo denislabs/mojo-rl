@@ -360,7 +360,8 @@ struct GymFrozenLakeEnv(DiscreteEnv & RenderableEnv):
     # ========================================================================
 
     fn init_renderer(mut self) raises -> Bool:
-        """Mark renderer as initialized (Gymnasium renders via its own window)."""
+        """Mark renderer as initialized (Gymnasium renders via its own window).
+        """
         self._render_initialized = True
         return True
 
@@ -535,7 +536,8 @@ struct GymTaxiEnv(DiscreteEnv & RenderableEnv):
     # ========================================================================
 
     fn init_renderer(mut self) raises -> Bool:
-        """Mark renderer as initialized (Gymnasium renders via its own window)."""
+        """Mark renderer as initialized (Gymnasium renders via its own window).
+        """
         self._render_initialized = True
         return True
 
@@ -736,7 +738,8 @@ struct GymBlackjackEnv(DiscreteEnv & RenderableEnv):
     # ========================================================================
 
     fn init_renderer(mut self) raises -> Bool:
-        """Mark renderer as initialized (Gymnasium renders via its own window)."""
+        """Mark renderer as initialized (Gymnasium renders via its own window).
+        """
         self._render_initialized = True
         return True
 
@@ -930,7 +933,8 @@ struct GymCliffWalkingEnv(DiscreteEnv & RenderableEnv):
     # ========================================================================
 
     fn init_renderer(mut self) raises -> Bool:
-        """Mark renderer as initialized (Gymnasium renders via its own window)."""
+        """Mark renderer as initialized (Gymnasium renders via its own window).
+        """
         self._render_initialized = True
         return True
 

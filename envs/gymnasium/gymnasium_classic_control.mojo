@@ -191,7 +191,7 @@ struct GymCartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
 
         Args:
             num_bins: Number of bins per dimension for state discretization.
-            render_mode: "human" for visual rendering, "" for no rendering
+            render_mode: "human" for visual rendering, "" for no rendering.
         """
         self.gym = Python.import_module("gymnasium")
         self.np = Python.import_module("numpy")
@@ -326,7 +326,8 @@ struct GymCartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
     # ========================================================================
 
     fn init_renderer(mut self) raises -> Bool:
-        """Mark renderer as initialized (Gymnasium renders via its own window)."""
+        """Mark renderer as initialized (Gymnasium renders via its own window).
+        """
         self._render_initialized = True
         return True
 
@@ -522,7 +523,7 @@ struct GymMountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
 
         Args:
             num_bins: Number of bins per dimension for state discretization.
-            render_mode: "human" for visual rendering
+            render_mode: "human" for visual rendering.
         """
         self.gym = Python.import_module("gymnasium")
         self.np = Python.import_module("numpy")
@@ -654,7 +655,8 @@ struct GymMountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
     # ========================================================================
 
     fn init_renderer(mut self) raises -> Bool:
-        """Mark renderer as initialized (Gymnasium renders via its own window)."""
+        """Mark renderer as initialized (Gymnasium renders via its own window).
+        """
         self._render_initialized = True
         return True
 
@@ -825,7 +827,7 @@ struct GymAcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
 
         Args:
             num_bins: Number of bins per dimension for state discretization.
-            render_mode: "human" for visual rendering
+            render_mode: "human" for visual rendering.
         """
         self.gym = Python.import_module("gymnasium")
         self.np = Python.import_module("numpy")
@@ -974,7 +976,8 @@ struct GymAcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
     # ========================================================================
 
     fn init_renderer(mut self) raises -> Bool:
-        """Mark renderer as initialized (Gymnasium renders via its own window)."""
+        """Mark renderer as initialized (Gymnasium renders via its own window).
+        """
         self._render_initialized = True
         return True
 
@@ -1127,7 +1130,7 @@ struct GymPendulumEnv(BoxContinuousActionEnv & RenderableEnv):
         """Initialize Pendulum environment.
 
         Args:
-            render_mode: "human" for visual rendering
+            render_mode: "human" for visual rendering.
         """
         self.gym = Python.import_module("gymnasium")
         self.np = Python.import_module("numpy")
@@ -1292,7 +1295,8 @@ struct GymPendulumEnv(BoxContinuousActionEnv & RenderableEnv):
     # ========================================================================
 
     fn init_renderer(mut self) raises -> Bool:
-        """Mark renderer as initialized (Gymnasium renders via its own window)."""
+        """Mark renderer as initialized (Gymnasium renders via its own window).
+        """
         self._render_initialized = True
         return True
 

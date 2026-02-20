@@ -268,7 +268,8 @@ struct GymMuJoCoEnv(BoxContinuousActionEnv & RenderableEnv):
     # ========================================================================
 
     fn init_renderer(mut self) raises -> Bool:
-        """Mark renderer as initialized (Gymnasium renders via its own window)."""
+        """Mark renderer as initialized (Gymnasium renders via its own window).
+        """
         self._render_initialized = True
         return True
 

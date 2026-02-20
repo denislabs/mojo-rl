@@ -346,7 +346,8 @@ struct GymLunarLanderEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
     # ========================================================================
 
     fn init_renderer(mut self) raises -> Bool:
-        """Mark renderer as initialized (Gymnasium renders via its own window)."""
+        """Mark renderer as initialized (Gymnasium renders via its own window).
+        """
         self._render_initialized = True
         return True
 
@@ -601,6 +602,7 @@ struct GymBipedalWalkerEnv(BoxContinuousActionEnv & RenderableEnv):
 
         Args:
             action: List of 4 action values [hip1, knee1, hip2, knee2].
+            verbose: Whether to print verbose output (default: False).
 
         Returns:
             Tuple of (observation_list, reward, done).
@@ -684,7 +686,8 @@ struct GymBipedalWalkerEnv(BoxContinuousActionEnv & RenderableEnv):
     # ========================================================================
 
     fn init_renderer(mut self) raises -> Bool:
-        """Mark renderer as initialized (Gymnasium renders via its own window)."""
+        """Mark renderer as initialized (Gymnasium renders via its own window).
+        """
         self._render_initialized = True
         return True
 
@@ -912,6 +915,7 @@ struct GymCarRacingEnv(BoxContinuousActionEnv & RenderableEnv):
 
         Args:
             action: List of 3 action values [steering, gas, brake].
+            verbose: Whether to print verbose output (default: False).
 
         Returns:
             Tuple of (observation_list, reward, done).
@@ -1015,7 +1019,8 @@ struct GymCarRacingEnv(BoxContinuousActionEnv & RenderableEnv):
     # ========================================================================
 
     fn init_renderer(mut self) raises -> Bool:
-        """Mark renderer as initialized (Gymnasium renders via its own window)."""
+        """Mark renderer as initialized (Gymnasium renders via its own window).
+        """
         self._render_initialized = True
         return True
 
