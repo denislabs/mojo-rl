@@ -1146,6 +1146,9 @@ struct Data[
     var qfrc: InlineArray[
         Scalar[Self.DTYPE], _max_one[Self.NV]()
     ]  # Applied forces
+    # MuJoCo-style Newton warm-start: solved qacc saved at end of each step.
+    # Used to initialize the Newton solver in the next step (like qacc_warmstart).
+    var qacc_warmstart: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NV]()]
 
     # Computed world-space state (via forward kinematics)
     var xpos: InlineArray[Scalar[Self.DTYPE], Self.NBODY * 3]
@@ -1184,6 +1187,13 @@ struct Data[
         )
         for i in range(_max_one[Self.NV]()):
             self.qacc[i] = Scalar[Self.DTYPE](0)
+
+        # Initialize qacc_warmstart to zero
+        self.qacc_warmstart = InlineArray[Scalar[Self.DTYPE], _max_one[Self.NV]()](
+            uninitialized=True
+        )
+        for i in range(_max_one[Self.NV]()):
+            self.qacc_warmstart[i] = Scalar[Self.DTYPE](0)
 
         # Initialize qfrc to zero
         self.qfrc = InlineArray[Scalar[Self.DTYPE], _max_one[Self.NV]()](

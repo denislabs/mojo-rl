@@ -1043,18 +1043,28 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
             env, workspace
         )
 
+        # 10. Warm-start: use previous step's constrained qacc if nonzero.
+        # state[env, qacc_off + i] still holds prev step's constrained qacc here
+        # (written by step_finalize_kernel). Must read BEFORE overwriting below.
+        var has_warmstart = False
+        for i in range(NV):
+            if rebind[Scalar[DTYPE]](state[env, qacc_off + i]) != Scalar[DTYPE](0):
+                has_warmstart = True
+                break
+
+        if has_warmstart:
+            for i in range(NV):
+                workspace[env, qacc_constrained_idx + i] = state[env, qacc_off + i]
+        else:
+            for i in range(NV):
+                workspace[env, qacc_constrained_idx + i] = workspace[env, qacc_ws_idx + i]
+
+        # Write unconstrained qacc to state (overwrites previous warmstart slot)
         for i in range(NV):
             var qacc_val = rebind[Scalar[DTYPE]](
                 workspace[env, qacc_ws_idx + i]
             )
             state[env, qacc_off + i] = qacc_val
-
-        # 10. Write unconstrained qacc to workspace for constraint solver
-        for i in range(NV):
-            var qacc_val = rebind[Scalar[DTYPE]](
-                workspace[env, qacc_ws_idx + i]
-            )
-            workspace[env, qacc_constrained_idx + i] = qacc_val
 
     @always_inline
     @staticmethod

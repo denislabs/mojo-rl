@@ -612,7 +612,28 @@ fn build_constraints[
                     constraints.rows[row_idx].inv_K_imp = inv_K_edge
                     constraints.rows[row_idx].lo = Scalar[DTYPE](0)
                     constraints.rows[row_idx].hi = Scalar[DTYPE](1e20)
-                    constraints.rows[row_idx].lambda_val = Scalar[DTYPE](0)
+
+                    # Warm-start: decompose stored contact forces back into edge lambdas.
+                    # Writeback accumulates: force_n = Σ λ, force_tk = mu*(λ+ - λ-)
+                    # Inversion: λ_td± = (force_n/num_tangent_dirs ± force_tk/mu) / 2
+                    var prev_force_tk: Scalar[DTYPE] = 0
+                    if td == 0:
+                        prev_force_tk = contact.force_t1
+                    elif td == 1:
+                        prev_force_tk = contact.force_t2
+                    elif td == 2:
+                        prev_force_tk = contact.force_torsion
+                    elif td == 3:
+                        prev_force_tk = contact.force_roll1
+                    elif td == 4:
+                        prev_force_tk = contact.force_roll2
+                    var sign_val = Scalar[DTYPE](1.0) if sign_idx == 0 else Scalar[DTYPE](-1.0)
+                    var ws_mu = mu_td if mu_td > Scalar[DTYPE](1e-8) else Scalar[DTYPE](1e-8)
+                    var ws_lam = contact.force_n / Scalar[DTYPE](num_tangent_dirs) + sign_val * prev_force_tk / ws_mu
+                    ws_lam = ws_lam / Scalar[DTYPE](2)
+                    if ws_lam < Scalar[DTYPE](0):
+                        ws_lam = Scalar[DTYPE](0)
+                    constraints.rows[row_idx].lambda_val = ws_lam
                     constraints.rows[
                         row_idx
                     ].constraint_type = CNSTR_PYRAMID_EDGE

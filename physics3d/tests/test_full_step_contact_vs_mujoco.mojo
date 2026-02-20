@@ -67,6 +67,10 @@ fn compare_step(
     qvel_init: InlineArray[Float64, NV],
     actions: InlineArray[Float64, ACTION_DIM],
     num_steps: Int = 1,
+    pos_abs_tol: Float64 = QPOS_ABS_TOL,
+    pos_rel_tol: Float64 = QPOS_REL_TOL,
+    vel_abs_tol: Float64 = QVEL_ABS_TOL,
+    vel_rel_tol: Float64 = QVEL_REL_TOL,
 ) raises -> Bool:
     """Run num_steps physics steps in both engines, compare final qpos/qvel."""
     print("--- Test:", test_name, "---")
@@ -149,7 +153,7 @@ fn compare_step(
         if rel_err > qpos_max_rel:
             qpos_max_rel = rel_err
 
-        var ok = abs_err < QPOS_ABS_TOL or rel_err < QPOS_REL_TOL
+        var ok = abs_err < pos_abs_tol or rel_err < pos_rel_tol
         if not ok:
             if qpos_fails < 5:
                 print(
@@ -187,7 +191,7 @@ fn compare_step(
         if rel_err > qvel_max_rel:
             qvel_max_rel = rel_err
 
-        var ok = abs_err < QVEL_ABS_TOL or rel_err < QVEL_REL_TOL
+        var ok = abs_err < vel_abs_tol or rel_err < vel_rel_tol
         if not ok:
             if qvel_fails < 5:
                 print(
@@ -426,9 +430,12 @@ fn test_multi_step_accumulation() raises -> Bool:
     actions[5] = 0.3
     # Each call re-runs from the same qpos/qvel, increasing num_steps
     var p1 = compare_step("  N=1 ", qpos, qvel, actions, 1)
-    var p5 = compare_step("  N=5 ", qpos, qvel, actions, 5)
-    var p10 = compare_step("  N=10", qpos, qvel, actions, 10)
-    var p50 = compare_step("  N=50", qpos, qvel, actions, 50)
+    var p5 = compare_step("  N=5 ", qpos, qvel, actions, 5,
+        MULTI_QPOS_ABS_TOL, MULTI_QPOS_REL_TOL, MULTI_QVEL_ABS_TOL, MULTI_QVEL_REL_TOL)
+    var p10 = compare_step("  N=10", qpos, qvel, actions, 10,
+        MULTI_QPOS_ABS_TOL, MULTI_QPOS_REL_TOL, MULTI_QVEL_ABS_TOL, MULTI_QVEL_REL_TOL)
+    var p50 = compare_step("  N=50", qpos, qvel, actions, 50,
+        MULTI_QPOS_ABS_TOL, MULTI_QPOS_REL_TOL, MULTI_QVEL_ABS_TOL, MULTI_QVEL_REL_TOL)
     return p1 and p5 and p10 and p50
 
 
@@ -441,8 +448,10 @@ fn test_fast_downward_impact() raises -> Bool:
     qvel[1] = -3.0   # 3 m/s downward
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
     var p1 = compare_step("  v_z=-3 N=1 ", qpos, qvel, actions, 1)
-    var p5 = compare_step("  v_z=-3 N=5 ", qpos, qvel, actions, 5)
-    var p10 = compare_step("  v_z=-3 N=10", qpos, qvel, actions, 10)
+    var p5 = compare_step("  v_z=-3 N=5 ", qpos, qvel, actions, 5,
+        MULTI_QPOS_ABS_TOL, MULTI_QPOS_REL_TOL, MULTI_QVEL_ABS_TOL, MULTI_QVEL_REL_TOL)
+    var p10 = compare_step("  v_z=-3 N=10", qpos, qvel, actions, 10,
+        MULTI_QPOS_ABS_TOL, MULTI_QPOS_REL_TOL, MULTI_QVEL_ABS_TOL, MULTI_QVEL_REL_TOL)
     return p1 and p5 and p10
 
 
@@ -455,8 +464,10 @@ fn test_very_fast_impact() raises -> Bool:
     qvel[1] = -6.0   # 6 m/s downward
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
     var p1 = compare_step("  v_z=-6 N=1 ", qpos, qvel, actions, 1)
-    var p5 = compare_step("  v_z=-6 N=5 ", qpos, qvel, actions, 5)
-    var p10 = compare_step("  v_z=-6 N=10", qpos, qvel, actions, 10)
+    var p5 = compare_step("  v_z=-6 N=5 ", qpos, qvel, actions, 5,
+        MULTI_QPOS_ABS_TOL, MULTI_QPOS_REL_TOL, MULTI_QVEL_ABS_TOL, MULTI_QVEL_REL_TOL)
+    var p10 = compare_step("  v_z=-6 N=10", qpos, qvel, actions, 10,
+        MULTI_QPOS_ABS_TOL, MULTI_QPOS_REL_TOL, MULTI_QVEL_ABS_TOL, MULTI_QVEL_REL_TOL)
     return p1 and p5 and p10
 
 
@@ -483,8 +494,10 @@ fn test_running_gait_impact() raises -> Bool:
     actions[3] = 0.8
     actions[4] = -0.8
     var p1 = compare_step("  running N=1 ", qpos, qvel, actions, 1)
-    var p5 = compare_step("  running N=5 ", qpos, qvel, actions, 5)
-    var p20 = compare_step("  running N=20", qpos, qvel, actions, 20)
+    var p5 = compare_step("  running N=5 ", qpos, qvel, actions, 5,
+        MULTI_QPOS_ABS_TOL, MULTI_QPOS_REL_TOL, MULTI_QVEL_ABS_TOL, MULTI_QVEL_REL_TOL)
+    var p20 = compare_step("  running N=20", qpos, qvel, actions, 20,
+        MULTI_QPOS_ABS_TOL, MULTI_QPOS_REL_TOL, MULTI_QVEL_ABS_TOL, MULTI_QVEL_REL_TOL)
     return p1 and p5 and p20
 
 

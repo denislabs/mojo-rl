@@ -51,7 +51,7 @@ struct HalfCheetahConfig(Phyics3dEnvConfig):
             NGEOM,
             MAX_EQUALITY,
             CONE_TYPE,
-        MAX_TENDON,
+            MAX_TENDON,
         ],
         mut data: Data[
             DTYPE,
