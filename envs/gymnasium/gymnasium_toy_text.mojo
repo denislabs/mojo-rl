@@ -7,12 +7,11 @@ Toy Text environments (simple discrete environments):
 - CliffWalking-v0: Navigate cliff edge
 
 These are simple tabular environments ideal for testing RL algorithms.
-All implement DiscreteEnv trait for use with generic tabular agents.
+All implement DiscreteEnv and RenderableEnv traits.
 """
 
 from python import Python, PythonObject
-from core import State, Action, DiscreteEnv
-from render import Renderer2D
+from core import State, Action, DiscreteEnv, RenderableEnv
 
 
 # ============================================================================
@@ -218,11 +217,11 @@ struct GymBlackjackAction(Action, Copyable, ImplicitlyCopyable, Movable):
 
 
 # ============================================================================
-# GymFrozenLakeEnv - implements DiscreteEnv
+# GymFrozenLakeEnv - implements DiscreteEnv & RenderableEnv
 # ============================================================================
 
 
-struct GymFrozenLakeEnv(DiscreteEnv):
+struct GymFrozenLakeEnv(DiscreteEnv & RenderableEnv):
     """FrozenLake-v1: Navigate a frozen lake grid.
 
     The agent navigates a 4x4 (or 8x8) grid:
@@ -236,7 +235,9 @@ struct GymFrozenLakeEnv(DiscreteEnv):
 
     The ice is slippery: actions may not result in intended movement!
 
-    Implements DiscreteEnv trait for generic tabular training.
+    Implements DiscreteEnv and RenderableEnv traits.
+    Rendering is delegated to Gymnasium's own renderer (pass render_mode="human"
+    at construction time to enable the Gymnasium window).
     """
 
     # Type aliases for trait conformance
@@ -252,6 +253,9 @@ struct GymFrozenLakeEnv(DiscreteEnv):
     var episode_length: Int
     var map_size: Int
     var is_slippery: Bool
+
+    # RenderableEnv state
+    var _render_initialized: Bool
 
     fn __init__(
         out self,
@@ -292,6 +296,7 @@ struct GymFrozenLakeEnv(DiscreteEnv):
         self.done = False
         self.episode_reward = 0.0
         self.episode_length = 0
+        self._render_initialized = False
 
     # ========================================================================
     # DiscreteEnv trait methods
@@ -351,17 +356,48 @@ struct GymFrozenLakeEnv(DiscreteEnv):
         return 4
 
     # ========================================================================
-    # Additional methods
+    # RenderableEnv trait methods
     # ========================================================================
 
-    fn render(mut self, mut renderer: Renderer2D):
-        """Render the environment (uses Gymnasium's renderer, renderer argument ignored).
-        """
-        _ = renderer
+    fn init_renderer(mut self) raises -> Bool:
+        """Mark renderer as initialized (Gymnasium renders via its own window)."""
+        self._render_initialized = True
+        return True
+
+    fn render_frame(mut self) raises -> None:
+        """Render via Gymnasium's built-in renderer."""
+        if not self._render_initialized:
+            return
         try:
             _ = self.env.render()
         except:
             pass
+
+    fn close_renderer(mut self) raises -> None:
+        """Close the Gymnasium environment (and its render window)."""
+        if not self._render_initialized:
+            return
+        try:
+            _ = self.env.close()
+        except:
+            pass
+        self._render_initialized = False
+
+    fn is_renderer_open(self) -> Bool:
+        """Return True if renderer has been initialized."""
+        return self._render_initialized
+
+    fn check_renderer_quit(mut self) -> Bool:
+        """Gymnasium manages its own window; always returns False."""
+        return False
+
+    fn renderer_delay(self, ms: Int) -> None:
+        """No-op: Gymnasium controls its own frame rate."""
+        pass
+
+    # ========================================================================
+    # Additional methods
+    # ========================================================================
 
     fn close(mut self):
         """Close the environment."""
@@ -376,11 +412,11 @@ struct GymFrozenLakeEnv(DiscreteEnv):
 
 
 # ============================================================================
-# GymTaxiEnv - implements DiscreteEnv
+# GymTaxiEnv - implements DiscreteEnv & RenderableEnv
 # ============================================================================
 
 
-struct GymTaxiEnv(DiscreteEnv):
+struct GymTaxiEnv(DiscreteEnv & RenderableEnv):
     """Taxi-v3: Pick up and drop off passengers.
 
     5x5 grid with 4 designated pickup/dropoff locations (R, G, Y, B).
@@ -398,7 +434,7 @@ struct GymTaxiEnv(DiscreteEnv):
         - -10 for illegal pickup/dropoff
         - -1 for each step
 
-    Implements DiscreteEnv trait for generic tabular training.
+    Implements DiscreteEnv and RenderableEnv traits.
     """
 
     # Type aliases for trait conformance
@@ -412,6 +448,9 @@ struct GymTaxiEnv(DiscreteEnv):
     var done: Bool
     var episode_reward: Float64
     var episode_length: Int
+
+    # RenderableEnv state
+    var _render_initialized: Bool
 
     fn __init__(out self, render_mode: String = "") raises:
         """Initialize Taxi environment.
@@ -432,6 +471,7 @@ struct GymTaxiEnv(DiscreteEnv):
         self.done = False
         self.episode_reward = 0.0
         self.episode_length = 0
+        self._render_initialized = False
 
     # ========================================================================
     # DiscreteEnv trait methods
@@ -491,17 +531,48 @@ struct GymTaxiEnv(DiscreteEnv):
         return 6
 
     # ========================================================================
-    # Additional methods
+    # RenderableEnv trait methods
     # ========================================================================
 
-    fn render(mut self, mut renderer: Renderer2D):
-        """Render the environment (uses Gymnasium's renderer, renderer argument ignored).
-        """
-        _ = renderer
+    fn init_renderer(mut self) raises -> Bool:
+        """Mark renderer as initialized (Gymnasium renders via its own window)."""
+        self._render_initialized = True
+        return True
+
+    fn render_frame(mut self) raises -> None:
+        """Render via Gymnasium's built-in renderer."""
+        if not self._render_initialized:
+            return
         try:
             _ = self.env.render()
         except:
             pass
+
+    fn close_renderer(mut self) raises -> None:
+        """Close the Gymnasium environment (and its render window)."""
+        if not self._render_initialized:
+            return
+        try:
+            _ = self.env.close()
+        except:
+            pass
+        self._render_initialized = False
+
+    fn is_renderer_open(self) -> Bool:
+        """Return True if renderer has been initialized."""
+        return self._render_initialized
+
+    fn check_renderer_quit(mut self) -> Bool:
+        """Gymnasium manages its own window; always returns False."""
+        return False
+
+    fn renderer_delay(self, ms: Int) -> None:
+        """No-op: Gymnasium controls its own frame rate."""
+        pass
+
+    # ========================================================================
+    # Additional methods
+    # ========================================================================
 
     fn close(mut self):
         """Close the environment."""
@@ -516,11 +587,11 @@ struct GymTaxiEnv(DiscreteEnv):
 
 
 # ============================================================================
-# GymBlackjackEnv - implements DiscreteEnv
+# GymBlackjackEnv - implements DiscreteEnv & RenderableEnv
 # ============================================================================
 
 
-struct GymBlackjackEnv(DiscreteEnv):
+struct GymBlackjackEnv(DiscreteEnv & RenderableEnv):
     """Blackjack-v1: Play simplified blackjack.
 
     Observation: Tuple(player_sum, dealer_card, usable_ace)
@@ -537,7 +608,7 @@ struct GymBlackjackEnv(DiscreteEnv):
         -1: Lose
         0: Draw
 
-    Implements DiscreteEnv trait for generic tabular training.
+    Implements DiscreteEnv and RenderableEnv traits.
     """
 
     # Type aliases for trait conformance
@@ -553,6 +624,9 @@ struct GymBlackjackEnv(DiscreteEnv):
     var current_state: Int
     var done: Bool
     var episode_reward: Float64
+
+    # RenderableEnv state
+    var _render_initialized: Bool
 
     fn __init__(
         out self,
@@ -589,6 +663,7 @@ struct GymBlackjackEnv(DiscreteEnv):
         self.current_state = 0
         self.done = False
         self.episode_reward = 0.0
+        self._render_initialized = False
 
     # ========================================================================
     # DiscreteEnv trait methods
@@ -657,6 +732,46 @@ struct GymBlackjackEnv(DiscreteEnv):
         return 2
 
     # ========================================================================
+    # RenderableEnv trait methods
+    # ========================================================================
+
+    fn init_renderer(mut self) raises -> Bool:
+        """Mark renderer as initialized (Gymnasium renders via its own window)."""
+        self._render_initialized = True
+        return True
+
+    fn render_frame(mut self) raises -> None:
+        """Render via Gymnasium's built-in renderer."""
+        if not self._render_initialized:
+            return
+        try:
+            _ = self.env.render()
+        except:
+            pass
+
+    fn close_renderer(mut self) raises -> None:
+        """Close the Gymnasium environment (and its render window)."""
+        if not self._render_initialized:
+            return
+        try:
+            _ = self.env.close()
+        except:
+            pass
+        self._render_initialized = False
+
+    fn is_renderer_open(self) -> Bool:
+        """Return True if renderer has been initialized."""
+        return self._render_initialized
+
+    fn check_renderer_quit(mut self) -> Bool:
+        """Gymnasium manages its own window; always returns False."""
+        return False
+
+    fn renderer_delay(self, ms: Int) -> None:
+        """No-op: Gymnasium controls its own frame rate."""
+        pass
+
+    # ========================================================================
     # Additional methods
     # ========================================================================
 
@@ -667,15 +782,6 @@ struct GymBlackjackEnv(DiscreteEnv):
         var dc = self.dealer_card - 1  # 0-9
         var ua = 1 if self.usable_ace else 0
         return ps * 20 + dc * 2 + ua
-
-    fn render(mut self, mut renderer: Renderer2D):
-        """Render the environment (uses Gymnasium's renderer, renderer argument ignored).
-        """
-        _ = renderer
-        try:
-            _ = self.env.render()
-        except:
-            pass
 
     fn close(mut self):
         """Close the environment."""
@@ -702,11 +808,11 @@ struct GymBlackjackEnv(DiscreteEnv):
 
 
 # ============================================================================
-# GymCliffWalkingEnv - implements DiscreteEnv
+# GymCliffWalkingEnv - implements DiscreteEnv & RenderableEnv
 # ============================================================================
 
 
-struct GymCliffWalkingEnv(DiscreteEnv):
+struct GymCliffWalkingEnv(DiscreteEnv & RenderableEnv):
     """CliffWalking-v1: Navigate along a cliff edge.
 
     4x12 grid. Agent starts at bottom-left, goal at bottom-right.
@@ -719,7 +825,7 @@ struct GymCliffWalkingEnv(DiscreteEnv):
         - -1 for each step
         - -100 for falling off cliff (resets to start)
 
-    Implements DiscreteEnv trait for generic tabular training.
+    Implements DiscreteEnv and RenderableEnv traits.
     """
 
     # Type aliases for trait conformance
@@ -733,6 +839,9 @@ struct GymCliffWalkingEnv(DiscreteEnv):
     var done: Bool
     var episode_reward: Float64
     var episode_length: Int
+
+    # RenderableEnv state
+    var _render_initialized: Bool
 
     fn __init__(out self, render_mode: String = "") raises:
         """Initialize CliffWalking environment.
@@ -753,6 +862,7 @@ struct GymCliffWalkingEnv(DiscreteEnv):
         self.done = False
         self.episode_reward = 0.0
         self.episode_length = 0
+        self._render_initialized = False
 
     # ========================================================================
     # DiscreteEnv trait methods
@@ -816,17 +926,48 @@ struct GymCliffWalkingEnv(DiscreteEnv):
         return 4
 
     # ========================================================================
-    # Additional methods
+    # RenderableEnv trait methods
     # ========================================================================
 
-    fn render(mut self, mut renderer: Renderer2D):
-        """Render the environment (uses Gymnasium's renderer, renderer argument ignored).
-        """
-        _ = renderer
+    fn init_renderer(mut self) raises -> Bool:
+        """Mark renderer as initialized (Gymnasium renders via its own window)."""
+        self._render_initialized = True
+        return True
+
+    fn render_frame(mut self) raises -> None:
+        """Render via Gymnasium's built-in renderer."""
+        if not self._render_initialized:
+            return
         try:
             _ = self.env.render()
         except:
             pass
+
+    fn close_renderer(mut self) raises -> None:
+        """Close the Gymnasium environment (and its render window)."""
+        if not self._render_initialized:
+            return
+        try:
+            _ = self.env.close()
+        except:
+            pass
+        self._render_initialized = False
+
+    fn is_renderer_open(self) -> Bool:
+        """Return True if renderer has been initialized."""
+        return self._render_initialized
+
+    fn check_renderer_quit(mut self) -> Bool:
+        """Gymnasium manages its own window; always returns False."""
+        return False
+
+    fn renderer_delay(self, ms: Int) -> None:
+        """No-op: Gymnasium controls its own frame rate."""
+        pass
+
+    # ========================================================================
+    # Additional methods
+    # ========================================================================
 
     fn close(mut self):
         """Close the environment."""

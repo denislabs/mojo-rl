@@ -17,13 +17,12 @@ All MuJoCo environments have:
 - Continuous action spaces
 - Physics-based dynamics
 
-These wrappers implement BoxContinuousActionEnv trait for use with continuous action algorithms.
+These wrappers implement BoxContinuousActionEnv and RenderableEnv traits.
 Note: These require pip install "gymnasium[mujoco]" or mujoco-py
 """
 
 from python import Python, PythonObject
-from core import State, Action, BoxContinuousActionEnv
-from render import Renderer2D
+from core import State, Action, BoxContinuousActionEnv, RenderableEnv
 
 
 # ============================================================================
@@ -63,22 +62,25 @@ struct GymMuJoCoAction(Action, Copyable, ImplicitlyCopyable, Movable):
 
 
 # ============================================================================
-# GymMuJoCoEnv - implements BoxContinuousActionEnv
+# GymMuJoCoEnv - implements BoxContinuousActionEnv & RenderableEnv
 # ============================================================================
 
 
-struct GymMuJoCoEnv(BoxContinuousActionEnv):
+struct GymMuJoCoEnv(BoxContinuousActionEnv & RenderableEnv):
     """Generic wrapper for MuJoCo environments.
 
     Since MuJoCo envs have varying observation/action dimensions,
     this uses dynamic Lists instead of fixed SIMD types.
 
-    Implements BoxContinuousActionEnv trait for continuous action algorithms.
+    Implements BoxContinuousActionEnv and RenderableEnv traits.
+    Rendering is delegated to Gymnasium's own renderer (pass render_mode="human"
+    at construction time to enable the Gymnasium window).
     """
 
     # Type aliases for trait conformance
     comptime StateType = GymMuJoCoState
     comptime ActionType = GymMuJoCoAction
+    comptime dtype: DType = DType.float64
 
     var env: PythonObject
     var gym: PythonObject
@@ -95,6 +97,9 @@ struct GymMuJoCoEnv(BoxContinuousActionEnv):
     var done: Bool
     var episode_reward: Float64
     var episode_length: Int
+
+    # RenderableEnv state
+    var _render_initialized: Bool
 
     fn __init__(out self, env_name: String, render_mode: String = "") raises:
         """Initialize a MuJoCo environment.
@@ -117,14 +122,14 @@ struct GymMuJoCoEnv(BoxContinuousActionEnv):
         # Get observation space info
         var obs_space = self.env.observation_space
         var obs_shape = obs_space.shape
-        self._obs_dim = Int(obs_shape[0])
+        self._obs_dim = Int(py=obs_shape[0])
 
         # Get action space info
         var act_space = self.env.action_space
         var act_shape = act_space.shape
-        self._action_dim = Int(act_shape[0])
-        self._action_low = Float64(act_space.low[0])
-        self._action_high = Float64(act_space.high[0])
+        self._action_dim = Int(py=act_shape[0])
+        self._action_low = Float64(py=act_space.low[0])
+        self._action_high = Float64(py=act_space.high[0])
 
         # Initialize observation storage
         self.current_obs = List[Float64]()
@@ -135,6 +140,7 @@ struct GymMuJoCoEnv(BoxContinuousActionEnv):
         self.done = False
         self.episode_reward = 0.0
         self.episode_length = 0
+        self._render_initialized = False
 
     # ========================================================================
     # Env base trait methods
@@ -146,7 +152,7 @@ struct GymMuJoCoEnv(BoxContinuousActionEnv):
             var result = self.env.reset()
             var obs = result[0]
             for i in range(self._obs_dim):
-                self.current_obs[i] = Float64(obs[i])
+                self.current_obs[i] = Float64(py=obs[i])
             # Copy first 4 elements for trait conformance
             var min_dim = 4 if self._obs_dim >= 4 else self._obs_dim
             for i in range(min_dim):
@@ -236,33 +242,82 @@ struct GymMuJoCoEnv(BoxContinuousActionEnv):
             action_list.append(0.0)
         return self.step_continuous_vec(action_list^)
 
-    fn step_continuous_vec(
-        mut self, action: List[Float64]
-    ) -> Tuple[List[Float64], Float64, Bool]:
+    fn step_continuous_vec[
+        DTYPE: DType
+    ](mut self, action: List[Scalar[DTYPE]], verbose: Bool = False) -> Tuple[
+        List[Scalar[DTYPE]], Scalar[DTYPE], Bool
+    ]:
         """Take multi-dimensional continuous action (trait method).
 
         Args:
             action: List of action values (length = action_dim).
+            verbose: Whether to print verbose output (default: False).
 
         Returns:
             Tuple of (observation_list, reward, done).
         """
         var result = self.step_with_list(action)
-        return (self.get_obs_list(), result[1], result[2])
+        var obs_list = self.get_obs_list()
+        var new_obs_list = List[Scalar[DTYPE]]()
+        for i in range(self._obs_dim):
+            new_obs_list.append(Scalar[DTYPE](obs_list[i]))
+        return (new_obs_list^, result[1], result[2])
+
+    # ========================================================================
+    # RenderableEnv trait methods
+    # ========================================================================
+
+    fn init_renderer(mut self) raises -> Bool:
+        """Mark renderer as initialized (Gymnasium renders via its own window)."""
+        self._render_initialized = True
+        return True
+
+    fn render_frame(mut self) raises -> None:
+        """Render via Gymnasium's built-in renderer."""
+        if not self._render_initialized:
+            return
+        try:
+            _ = self.env.render()
+        except:
+            pass
+
+    fn close_renderer(mut self) raises -> None:
+        """Close the Gymnasium environment (and its render window)."""
+        if not self._render_initialized:
+            return
+        try:
+            _ = self.env.close()
+        except:
+            pass
+        self._render_initialized = False
+
+    fn is_renderer_open(self) -> Bool:
+        """Return True if renderer has been initialized."""
+        return self._render_initialized
+
+    fn check_renderer_quit(mut self) -> Bool:
+        """Gymnasium manages its own window; always returns False."""
+        return False
+
+    fn renderer_delay(self, ms: Int) -> None:
+        """No-op: Gymnasium controls its own frame rate."""
+        pass
 
     # ========================================================================
     # Additional methods - continuous control
     # ========================================================================
 
-    fn step_with_list(
-        mut self, action: List[Float64]
-    ) -> Tuple[SIMD[DType.float64, 4], Float64, Bool]:
+    fn step_with_list[
+        DTYPE: DType
+    ](mut self, action: List[Scalar[DTYPE]]) -> Tuple[
+        SIMD[DTYPE, 4], Scalar[DTYPE], Bool
+    ]:
         """Take continuous action as List[Float64].
 
         Args:
             action: List of action values (length = action_dim).
         """
-        var reward: Float64 = 0.0
+        var reward: Scalar[DTYPE] = 0.0
         try:
             # Convert Mojo list to numpy array
             var builtins = Python.import_module("builtins")
@@ -273,12 +328,12 @@ struct GymMuJoCoEnv(BoxContinuousActionEnv):
 
             var result = self.env.step(np_action)
             var obs = result[0]
-            reward = Float64(result[1])
+            reward = Scalar[DTYPE](py=result[1])
             var terminated = result[2].__bool__()
             var truncated = result[3].__bool__()
 
             for i in range(self._obs_dim):
-                self.current_obs[i] = Float64(obs[i])
+                self.current_obs[i] = Float64(py=obs[i])
             var min_dim = 4 if self._obs_dim >= 4 else self._obs_dim
             for i in range(min_dim):
                 self.current_obs_4d[i] = self.current_obs[i]
@@ -287,10 +342,13 @@ struct GymMuJoCoEnv(BoxContinuousActionEnv):
         except:
             self.done = True
 
-        self.episode_reward += reward
+        self.episode_reward += Float64(reward)
         self.episode_length += 1
 
-        return (self.current_obs_4d, reward, self.done)
+        var new_obs_4d = SIMD[DTYPE, 4](0.0)
+        for i in range(4):
+            new_obs_4d[i] = Scalar[DTYPE](self.current_obs_4d[i])
+        return (new_obs_4d, reward, self.done)
 
     fn sample_action(mut self, out action: List[Float64]):
         """Sample random action from action space."""
@@ -298,7 +356,7 @@ struct GymMuJoCoEnv(BoxContinuousActionEnv):
         try:
             var np_action = self.env.action_space.sample()
             for i in range(self._action_dim):
-                action.append(Float64(np_action[i]))
+                action.append(Float64(py=np_action[i]))
         except:
             for _ in range(self._action_dim):
                 action.append(0.0)
@@ -308,15 +366,6 @@ struct GymMuJoCoEnv(BoxContinuousActionEnv):
         obs = List[Float64]()
         for i in range(self._obs_dim):
             obs.append(self.current_obs[i])
-
-    fn render(mut self, mut renderer: Renderer2D):
-        """Render the environment (uses Gymnasium's renderer, renderer argument ignored).
-        """
-        _ = renderer
-        try:
-            _ = self.env.render()
-        except:
-            pass
 
     fn close(mut self):
         """Close the environment."""

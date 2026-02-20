@@ -39,7 +39,7 @@ from random import random_float64, seed
 from layout import Layout, LayoutTensor
 
 from deep_rl.constants import dtype, TILE, TPB
-from deep_rl.model import Linear, ReLU, Tanh, seq
+from deep_rl.model import Linear, ReLU, Tanh, Sequential, LinearReLU, LinearTanh
 from deep_rl.optimizer import Adam
 from deep_rl.initializer import Kaiming, Xavier
 from deep_rl.training import Network
@@ -116,96 +116,43 @@ struct DeepTD3Agent[
 
     # Actor network: obs -> hidden (ReLU) -> hidden (ReLU) -> action (Tanh)
     # Deterministic policy with tanh-bounded output
-    var actor: Network[
-        type_of(
-            seq(
-                Linear[Self.OBS, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, Self.ACTIONS](),
-                Tanh[Self.ACTIONS](),
-            )
-        ),
+    comptime ACTOR_NETWORK = Network[
+        Sequential[
+            LinearReLU[Self.OBS, Self.HIDDEN],
+            LinearReLU[Self.HIDDEN, Self.HIDDEN],
+            LinearTanh[Self.HIDDEN, Self.ACTIONS],
+        ],
         Adam,
         Xavier,  # Xavier is good for tanh activation
     ]
-
-    # Target actor network
-    var actor_target: Network[
-        type_of(
-            seq(
-                Linear[Self.OBS, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, Self.ACTIONS](),
-                Tanh[Self.ACTIONS](),
-            )
-        ),
-        Adam,
-        Xavier,
-    ]
+    var actor: Self.ACTOR_NETWORK
+    var actor_target: Self.ACTOR_NETWORK
 
     # Critic 1: (obs, action) -> hidden (ReLU) -> hidden (ReLU) -> Q-value
-    var critic1: Network[
-        type_of(
-            seq(
-                Linear[Self.CRITIC_IN, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, 1](),
-            )
-        ),
+    comptime CRITIC1_NETWORK = Network[
+        Sequential[
+            LinearReLU[Self.CRITIC_IN, Self.HIDDEN],
+            LinearReLU[Self.HIDDEN, Self.HIDDEN],
+            Linear[Self.HIDDEN, 1],
+        ],
         Adam,
         Kaiming,  # Kaiming is good for ReLU
     ]
-
-    # Critic 1 target
-    var critic1_target: Network[
-        type_of(
-            seq(
-                Linear[Self.CRITIC_IN, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, 1](),
-            )
-        ),
-        Adam,
-        Kaiming,
-    ]
+    var critic1: Self.CRITIC1_NETWORK
+    var critic1_target: Self.CRITIC1_NETWORK
 
     # Critic 2 (twin): (obs, action) -> hidden (ReLU) -> hidden (ReLU) -> Q-value
-    var critic2: Network[
-        type_of(
-            seq(
-                Linear[Self.CRITIC_IN, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, 1](),
-            )
-        ),
+    comptime CRITIC2_NETWORK = Network[
+        Sequential[
+            LinearReLU[Self.CRITIC_IN, Self.HIDDEN],
+            LinearReLU[Self.HIDDEN, Self.HIDDEN],
+            Linear[Self.HIDDEN, 1],
+        ],
         Adam,
         Kaiming,
     ]
-
-    # Critic 2 target
-    var critic2_target: Network[
-        type_of(
-            seq(
-                Linear[Self.CRITIC_IN, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, Self.HIDDEN](),
-                ReLU[Self.HIDDEN](),
-                Linear[Self.HIDDEN, 1](),
-            )
-        ),
-        Adam,
-        Kaiming,
-    ]
+    var critic2: Self.CRITIC2_NETWORK
+    var critic2_target: Self.CRITIC2_NETWORK
 
     # Replay buffer
     var buffer: ReplayBuffer[
@@ -269,39 +216,17 @@ struct DeepTD3Agent[
             checkpoint_every: Save checkpoint every N episodes (0 to disable).
             checkpoint_path: Path to save checkpoints.
         """
-        # Build actor model
-        var actor_model = seq(
-            Linear[Self.OBS, Self.HIDDEN](),
-            ReLU[Self.HIDDEN](),
-            Linear[Self.HIDDEN, Self.HIDDEN](),
-            ReLU[Self.HIDDEN](),
-            Linear[Self.HIDDEN, Self.ACTIONS](),
-            Tanh[Self.ACTIONS](),
-        )
 
-        # Build critic model
-        var critic_model = seq(
-            Linear[Self.CRITIC_IN, Self.HIDDEN](),
-            ReLU[Self.HIDDEN](),
-            Linear[Self.HIDDEN, Self.HIDDEN](),
-            ReLU[Self.HIDDEN](),
-            Linear[Self.HIDDEN, 1](),
+        self.actor = Self.ACTOR_NETWORK(Adam(lr=actor_lr), Xavier())
+        self.actor_target = Self.ACTOR_NETWORK(Adam(lr=actor_lr), Xavier())
+        self.critic1 = Self.CRITIC1_NETWORK(Adam(lr=critic_lr), Kaiming())
+        self.critic1_target = Self.CRITIC1_NETWORK(
+            Adam(lr=critic_lr), Kaiming()
         )
-
-        # Initialize actor networks
-        self.actor = Network(actor_model, Adam(lr=actor_lr), Xavier())
-        self.actor_target = Network(actor_model, Adam(lr=actor_lr), Xavier())
-
-        # Initialize critic networks (twin critics)
-        self.critic1 = Network(critic_model, Adam(lr=critic_lr), Kaiming())
-        self.critic1_target = Network(
-            critic_model, Adam(lr=critic_lr), Kaiming()
+        self.critic2 = Self.CRITIC2_NETWORK(Adam(lr=critic_lr), Kaiming())
+        self.critic2_target = Self.CRITIC2_NETWORK(
+            Adam(lr=critic_lr), Kaiming()
         )
-        self.critic2 = Network(critic_model, Adam(lr=critic_lr), Kaiming())
-        self.critic2_target = Network(
-            critic_model, Adam(lr=critic_lr), Kaiming()
-        )
-
         # Initialize target networks with same weights as online networks
         self.actor_target.copy_params_from(self.actor)
         self.critic1_target.copy_params_from(self.critic1)
@@ -380,7 +305,7 @@ struct DeepTD3Agent[
 
             action_result[i] = a
 
-        return action_result
+        return action_result^
 
     fn store_transition(
         mut self,

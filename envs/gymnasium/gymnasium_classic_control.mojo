@@ -20,8 +20,8 @@ from core import (
     BoxContinuousActionEnv,
     TileCoding,
     PolynomialFeatures,
+    RenderableEnv,
 )
-from render import Renderer2D
 
 
 # ============================================================================
@@ -147,11 +147,11 @@ struct GymAcrobotAction(Action, Copyable, ImplicitlyCopyable, Movable):
 
 
 # ============================================================================
-# GymCartPoleEnv - implements BoxDiscreteActionEnv & DiscreteEnv
+# GymCartPoleEnv - implements BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv
 # ============================================================================
 
 
-struct GymCartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv):
+struct GymCartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
     """CartPole-v1 environment via Gymnasium Python bindings.
 
     Observation space: Box(4,) - [cart_pos, cart_vel, pole_angle, pole_angular_vel]
@@ -162,7 +162,9 @@ struct GymCartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv):
     - Cart position > ±2.4
     - Episode length > 500 steps
 
-    Implements DiscreteEnv and BoxDiscreteActionEnv traits for generic training.
+    Implements DiscreteEnv, BoxDiscreteActionEnv and RenderableEnv traits.
+    Rendering is delegated to Gymnasium's own renderer (pass render_mode="human"
+    at construction time to enable the Gymnasium window).
     """
 
     # Type aliases for trait conformance
@@ -180,6 +182,9 @@ struct GymCartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv):
 
     # Discretization settings
     var num_bins: Int
+
+    # RenderableEnv state
+    var _render_initialized: Bool
 
     fn __init__(out self, num_bins: Int = 10, render_mode: String = "") raises:
         """Initialize CartPole environment from Gymnasium.
@@ -201,6 +206,7 @@ struct GymCartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv):
         self.episode_reward = 0.0
         self.episode_length = 0
         self.num_bins = num_bins
+        self._render_initialized = False
 
     # ========================================================================
     # DiscreteEnv trait methods
@@ -316,17 +322,48 @@ struct GymCartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv):
         return (self.current_obs, result[1], result[2])
 
     # ========================================================================
-    # Additional methods
+    # RenderableEnv trait methods
     # ========================================================================
 
-    fn render(mut self, mut renderer: Renderer2D):
-        """Render the environment (uses Gymnasium's renderer, renderer argument ignored).
-        """
-        _ = renderer
+    fn init_renderer(mut self) raises -> Bool:
+        """Mark renderer as initialized (Gymnasium renders via its own window)."""
+        self._render_initialized = True
+        return True
+
+    fn render_frame(mut self) raises -> None:
+        """Render via Gymnasium's built-in renderer."""
+        if not self._render_initialized:
+            return
         try:
             _ = self.env.render()
         except:
             pass
+
+    fn close_renderer(mut self) raises -> None:
+        """Close the Gymnasium environment (and its render window)."""
+        if not self._render_initialized:
+            return
+        try:
+            _ = self.env.close()
+        except:
+            pass
+        self._render_initialized = False
+
+    fn is_renderer_open(self) -> Bool:
+        """Return True if renderer has been initialized."""
+        return self._render_initialized
+
+    fn check_renderer_quit(mut self) -> Bool:
+        """Gymnasium manages its own window; always returns False."""
+        return False
+
+    fn renderer_delay(self, ms: Int) -> None:
+        """No-op: Gymnasium controls its own frame rate."""
+        pass
+
+    # ========================================================================
+    # Additional methods
+    # ========================================================================
 
     fn close(mut self):
         """Close the environment."""
@@ -435,11 +472,11 @@ struct GymCartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv):
 
 
 # ============================================================================
-# GymMountainCarEnv - implements BoxDiscreteActionEnv & DiscreteEnv
+# GymMountainCarEnv - implements BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv
 # ============================================================================
 
 
-struct GymMountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
+struct GymMountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
     """MountainCar-v0: Drive an underpowered car up a steep mountain.
 
     Observation: [position, velocity] - Box(2,)
@@ -456,7 +493,7 @@ struct GymMountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
 
     Episode ends: Position >= 0.5 or 200 steps
 
-    Implements DiscreteEnv and BoxDiscreteActionEnv traits for generic training.
+    Implements DiscreteEnv, BoxDiscreteActionEnv and RenderableEnv traits.
     """
 
     # Type aliases for trait conformance
@@ -476,6 +513,9 @@ struct GymMountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
 
     # Discretization settings
     var num_bins: Int
+
+    # RenderableEnv state
+    var _render_initialized: Bool
 
     fn __init__(out self, num_bins: Int = 20, render_mode: String = "") raises:
         """Initialize MountainCar environment.
@@ -497,6 +537,7 @@ struct GymMountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
         self.episode_reward = 0.0
         self.episode_length = 0
         self.num_bins = num_bins
+        self._render_initialized = False
 
     # ========================================================================
     # DiscreteEnv trait methods
@@ -569,6 +610,28 @@ struct GymMountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
     # BoxDiscreteActionEnv (ContinuousStateEnv) trait methods
     # ========================================================================
 
+    fn get_obs_list(self) -> List[Float64]:
+        """Return current observation as List for trait conformance."""
+        var obs = List[Float64](capacity=2)
+        obs.append(self.current_obs[0])
+        obs.append(self.current_obs[1])
+        return obs^
+
+    fn reset_obs_list(mut self) -> List[Float64]:
+        """Reset environment and return continuous observation as List."""
+        _ = self.reset()
+        return self.get_obs_list()
+
+    fn obs_dim(self) -> Int:
+        """Return observation dimension (2)."""
+        return 2
+
+    fn step_obs(mut self, action: Int) -> Tuple[List[Float64], Float64, Bool]:
+        """Take action and return (continuous_obs, reward, done)."""
+        var result = self.step(GymMountainCarAction(direction=action))
+        return (self.get_obs_list(), result[1], result[2])
+
+    # SIMD convenience methods (not required by trait)
     fn get_obs(self) -> SIMD[DType.float64, 4]:
         """Return current continuous observation (only first 2 elements used).
         """
@@ -579,10 +642,6 @@ struct GymMountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
         _ = self.reset()
         return self.current_obs
 
-    fn obs_dim(self) -> Int:
-        """Return observation dimension (2)."""
-        return 2
-
     fn step_raw(
         mut self, action: Int
     ) -> Tuple[SIMD[DType.float64, 4], Float64, Bool]:
@@ -591,17 +650,48 @@ struct GymMountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
         return (self.current_obs, result[1], result[2])
 
     # ========================================================================
-    # Additional methods
+    # RenderableEnv trait methods
     # ========================================================================
 
-    fn render(mut self, mut renderer: Renderer2D):
-        """Render the environment (uses Gymnasium's renderer, renderer argument ignored).
-        """
-        _ = renderer
+    fn init_renderer(mut self) raises -> Bool:
+        """Mark renderer as initialized (Gymnasium renders via its own window)."""
+        self._render_initialized = True
+        return True
+
+    fn render_frame(mut self) raises -> None:
+        """Render via Gymnasium's built-in renderer."""
+        if not self._render_initialized:
+            return
         try:
             _ = self.env.render()
         except:
             pass
+
+    fn close_renderer(mut self) raises -> None:
+        """Close the Gymnasium environment (and its render window)."""
+        if not self._render_initialized:
+            return
+        try:
+            _ = self.env.close()
+        except:
+            pass
+        self._render_initialized = False
+
+    fn is_renderer_open(self) -> Bool:
+        """Return True if renderer has been initialized."""
+        return self._render_initialized
+
+    fn check_renderer_quit(mut self) -> Bool:
+        """Gymnasium manages its own window; always returns False."""
+        return False
+
+    fn renderer_delay(self, ms: Int) -> None:
+        """No-op: Gymnasium controls its own frame rate."""
+        pass
+
+    # ========================================================================
+    # Additional methods
+    # ========================================================================
 
     fn close(mut self):
         """Close the environment."""
@@ -686,11 +776,11 @@ struct GymMountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv):
 
 
 # ============================================================================
-# GymAcrobotEnv - implements BoxDiscreteActionEnv & DiscreteEnv
+# GymAcrobotEnv - implements BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv
 # ============================================================================
 
 
-struct GymAcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
+struct GymAcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
     """Acrobot-v1: Swing up a two-link robot arm.
 
     Observation: [cos(θ1), sin(θ1), cos(θ2), sin(θ2), θ1_dot, θ2_dot] - Box(6,)
@@ -705,7 +795,7 @@ struct GymAcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
 
     Episode ends: Tip above threshold or 500 steps
 
-    Implements DiscreteEnv and BoxDiscreteActionEnv traits for generic training.
+    Implements DiscreteEnv, BoxDiscreteActionEnv and RenderableEnv traits.
     """
 
     # Type aliases for trait conformance
@@ -726,6 +816,9 @@ struct GymAcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
 
     # Discretization settings
     var num_bins: Int
+
+    # RenderableEnv state
+    var _render_initialized: Bool
 
     fn __init__(out self, num_bins: Int = 6, render_mode: String = "") raises:
         """Initialize Acrobot environment.
@@ -748,6 +841,7 @@ struct GymAcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
         self.episode_reward = 0.0
         self.episode_length = 0
         self.num_bins = num_bins
+        self._render_initialized = False
 
     # ========================================================================
     # DiscreteEnv trait methods
@@ -829,6 +923,28 @@ struct GymAcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
     # BoxDiscreteActionEnv (ContinuousStateEnv) trait methods
     # ========================================================================
 
+    fn get_obs_list(self) -> List[Float64]:
+        """Return full 6D observation as List for trait conformance."""
+        var obs = List[Float64](capacity=6)
+        for i in range(6):
+            obs.append(self.current_obs[i])
+        return obs^
+
+    fn reset_obs_list(mut self) -> List[Float64]:
+        """Reset environment and return continuous observation as List."""
+        _ = self.reset()
+        return self.get_obs_list()
+
+    fn obs_dim(self) -> Int:
+        """Return observation dimension (6)."""
+        return 6
+
+    fn step_obs(mut self, action: Int) -> Tuple[List[Float64], Float64, Bool]:
+        """Take action and return (continuous_obs, reward, done)."""
+        var result = self.step(GymAcrobotAction(torque=action))
+        return (self.get_obs_list(), result[1], result[2])
+
+    # SIMD convenience methods (not required by trait)
     fn get_obs(self) -> SIMD[DType.float64, 4]:
         """Return first 4 dims of observation for trait conformance."""
         return self.current_obs_4d
@@ -837,10 +953,6 @@ struct GymAcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
         """Reset environment and return continuous observation."""
         _ = self.reset()
         return self.current_obs_4d
-
-    fn obs_dim(self) -> Int:
-        """Return observation dimension (6)."""
-        return 6
 
     fn step_raw(
         mut self, action: Int
@@ -857,14 +969,49 @@ struct GymAcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
         """Return full 6D observation (in 8-element SIMD)."""
         return self.current_obs
 
-    fn render(mut self, mut renderer: Renderer2D):
-        """Render the environment (uses Gymnasium's renderer, renderer argument ignored).
-        """
-        _ = renderer
+    # ========================================================================
+    # RenderableEnv trait methods
+    # ========================================================================
+
+    fn init_renderer(mut self) raises -> Bool:
+        """Mark renderer as initialized (Gymnasium renders via its own window)."""
+        self._render_initialized = True
+        return True
+
+    fn render_frame(mut self) raises -> None:
+        """Render via Gymnasium's built-in renderer."""
+        if not self._render_initialized:
+            return
         try:
             _ = self.env.render()
         except:
             pass
+
+    fn close_renderer(mut self) raises -> None:
+        """Close the Gymnasium environment (and its render window)."""
+        if not self._render_initialized:
+            return
+        try:
+            _ = self.env.close()
+        except:
+            pass
+        self._render_initialized = False
+
+    fn is_renderer_open(self) -> Bool:
+        """Return True if renderer has been initialized."""
+        return self._render_initialized
+
+    fn check_renderer_quit(mut self) -> Bool:
+        """Gymnasium manages its own window; always returns False."""
+        return False
+
+    fn renderer_delay(self, ms: Int) -> None:
+        """No-op: Gymnasium controls its own frame rate."""
+        pass
+
+    # ========================================================================
+    # Additional methods
+    # ========================================================================
 
     fn close(mut self):
         """Close the environment."""
@@ -912,7 +1059,7 @@ struct GymAcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv):
 
 
 # ============================================================================
-# GymPendulumEnv - implements BoxContinuousActionEnv (continuous actions)
+# GymPendulumEnv - implements BoxContinuousActionEnv & RenderableEnv
 # ============================================================================
 
 
@@ -945,7 +1092,7 @@ struct GymPendulumAction(Action, Copyable, ImplicitlyCopyable, Movable):
         self.torque = existing.torque
 
 
-struct GymPendulumEnv(BoxContinuousActionEnv):
+struct GymPendulumEnv(BoxContinuousActionEnv & RenderableEnv):
     """Pendulum-v1: Swing up and balance an inverted pendulum.
 
     Observation: [cos(theta), sin(theta), theta_dot] - Box(3,)
@@ -957,7 +1104,7 @@ struct GymPendulumEnv(BoxContinuousActionEnv):
 
     Episode ends: After 200 steps (no early termination)
 
-    Implements BoxContinuousActionEnv trait for continuous action algorithms.
+    Implements BoxContinuousActionEnv and RenderableEnv traits.
     """
 
     # Type aliases for trait conformance
@@ -972,6 +1119,9 @@ struct GymPendulumEnv(BoxContinuousActionEnv):
     var done: Bool
     var episode_reward: Float64
     var episode_length: Int
+
+    # RenderableEnv state
+    var _render_initialized: Bool
 
     fn __init__(out self, render_mode: String = "") raises:
         """Initialize Pendulum environment.
@@ -991,6 +1141,7 @@ struct GymPendulumEnv(BoxContinuousActionEnv):
         self.done = False
         self.episode_reward = 0.0
         self.episode_length = 0
+        self._render_initialized = False
 
     # ========================================================================
     # Env base trait methods
@@ -1109,12 +1260,21 @@ struct GymPendulumEnv(BoxContinuousActionEnv):
         var result = self.step(GymPendulumAction(torque=torque))
         return (self.get_obs_list(), result[1], result[2])
 
-    fn step_continuous_vec(
-        mut self, action: List[Float64]
-    ) -> Tuple[List[Float64], Float64, Bool]:
+    fn step_continuous_vec[
+        DTYPE: DType
+    ](mut self, action: List[Scalar[DTYPE]], verbose: Bool = False) -> Tuple[
+        List[Scalar[DTYPE]], Scalar[DTYPE], Bool
+    ]:
         """Take multi-dimensional continuous action (trait method)."""
-        var torque = action[0] if len(action) > 0 else 0.0
-        return self.step_continuous(torque)
+        var torque = action[0].cast[DType.float64]() if len(
+            action
+        ) > 0 else Float64(0.0)
+        var result = self.step(GymPendulumAction(torque=torque))
+        var obs = List[Scalar[DTYPE]]()
+        obs.append(Scalar[DTYPE](self.current_obs[0]))
+        obs.append(Scalar[DTYPE](self.current_obs[1]))
+        obs.append(Scalar[DTYPE](self.current_obs[2]))
+        return (obs^, Scalar[DTYPE](result[1]), result[2])
 
     # ========================================================================
     # Additional SIMD methods (for performance)
@@ -1127,14 +1287,49 @@ struct GymPendulumEnv(BoxContinuousActionEnv):
         var result = self.step(GymPendulumAction(torque=torque))
         return (self.current_obs, result[1], result[2])
 
-    fn render(mut self, mut renderer: Renderer2D):
-        """Render the environment (uses Gymnasium's renderer, renderer argument ignored).
-        """
-        _ = renderer
+    # ========================================================================
+    # RenderableEnv trait methods
+    # ========================================================================
+
+    fn init_renderer(mut self) raises -> Bool:
+        """Mark renderer as initialized (Gymnasium renders via its own window)."""
+        self._render_initialized = True
+        return True
+
+    fn render_frame(mut self) raises -> None:
+        """Render via Gymnasium's built-in renderer."""
+        if not self._render_initialized:
+            return
         try:
             _ = self.env.render()
         except:
             pass
+
+    fn close_renderer(mut self) raises -> None:
+        """Close the Gymnasium environment (and its render window)."""
+        if not self._render_initialized:
+            return
+        try:
+            _ = self.env.close()
+        except:
+            pass
+        self._render_initialized = False
+
+    fn is_renderer_open(self) -> Bool:
+        """Return True if renderer has been initialized."""
+        return self._render_initialized
+
+    fn check_renderer_quit(mut self) -> Bool:
+        """Gymnasium manages its own window; always returns False."""
+        return False
+
+    fn renderer_delay(self, ms: Int) -> None:
+        """No-op: Gymnasium controls its own frame rate."""
+        pass
+
+    # ========================================================================
+    # Additional methods
+    # ========================================================================
 
     fn close(mut self):
         """Close the environment."""
