@@ -858,10 +858,14 @@ fn clamp_log_std_params_kernel[
     This kernel should be called after each optimizer step to prevent
     log_std from drifting to extreme values during training.
 
-    Args:
-        params: Actor network parameters.
+    Parameters:
+        dtype: Data type of the parameters.
+        PARAM_SIZE: Total number of parameters.
         LOG_STD_OFFSET: Offset to log_std parameters within actor params.
         ACTION_DIM: Number of action dimensions (number of log_std params).
+
+    Args:
+        params: Actor network parameters.
     """
     comptime LOG_STD_MIN: Scalar[dtype] = -5.0
     comptime LOG_STD_MAX: Scalar[dtype] = 2.0

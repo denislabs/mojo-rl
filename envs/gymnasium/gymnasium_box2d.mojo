@@ -382,6 +382,12 @@ struct GymLunarLanderEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
         """No-op: Gymnasium controls its own frame rate."""
         pass
 
+    fn renderer_is_paused(self) -> Bool:
+        return False
+
+    fn renderer_step_once(self) -> Bool:
+        return False
+
     # ========================================================================
     # Additional methods
     # ========================================================================
@@ -722,6 +728,12 @@ struct GymBipedalWalkerEnv(BoxContinuousActionEnv & RenderableEnv):
         """No-op: Gymnasium controls its own frame rate."""
         pass
 
+    fn renderer_is_paused(self) -> Bool:
+        return False
+
+    fn renderer_step_once(self) -> Bool:
+        return False
+
     # ========================================================================
     # Additional methods
     # ========================================================================
@@ -1054,6 +1066,12 @@ struct GymCarRacingEnv(BoxContinuousActionEnv & RenderableEnv):
     fn renderer_delay(self, ms: Int) -> None:
         """No-op: Gymnasium controls its own frame rate."""
         pass
+
+    fn renderer_is_paused(self) -> Bool:
+        return False
+
+    fn renderer_step_once(self) -> Bool:
+        return False
 
     # ========================================================================
     # Additional methods

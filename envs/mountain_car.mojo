@@ -707,3 +707,9 @@ struct MountainCarEnv[DTYPE: DType where DTYPE.is_floating_point()](
         if not self._renderer_initialized:
             return
         self._renderer[].renderer_delay(ms)
+
+    fn renderer_is_paused(self) -> Bool:
+        return False
+
+    fn renderer_step_once(self) -> Bool:
+        return False

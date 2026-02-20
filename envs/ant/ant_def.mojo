@@ -613,7 +613,7 @@ comptime AntActuators = Actuators[
 # Camera + Light
 # =============================================================================
 # MuJoCo: <camera name="track" mode="trackcom" pos="0 -3 0.3" xyaxes="1 0 0 0 0 1"/>
-comptime AntCamera = TrackCamera[pos_y=-3.0, pos_z=0.3, target_z=0.55]
+comptime AntCamera = TrackCamera[pos_y=-3.0, pos_z=0.3]
 comptime AntLight = DirectionalLight[]
 comptime AntLights = Lights[AntLight]
 comptime AntCameras = Cameras[AntCamera]

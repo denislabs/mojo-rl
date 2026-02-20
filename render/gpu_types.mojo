@@ -554,3 +554,56 @@ fn ortho_metal(
     m.m33 = 1.0
 
     return m
+
+
+# --- Text rendering types ---
+
+
+struct TextVertex(TrivialRegisterPassable):
+    """32-byte vertex for 2D text rendering: pos(float2) + uv(float2) + color(float4).
+    """
+
+    var px: Float32  # screen x (pixels)
+    var py: Float32  # screen y (pixels)
+    var u: Float32  # atlas UV x
+    var v: Float32  # atlas UV y
+    var cr: Float32  # color red
+    var cg: Float32  # color green
+    var cb: Float32  # color blue
+    var ca: Float32  # color alpha
+
+    fn __init__(
+        out self,
+        px: Float32,
+        py: Float32,
+        u: Float32,
+        v: Float32,
+        cr: Float32,
+        cg: Float32,
+        cb: Float32,
+        ca: Float32,
+    ):
+        self.px = px
+        self.py = py
+        self.u = u
+        self.v = v
+        self.cr = cr
+        self.cg = cg
+        self.cb = cb
+        self.ca = ca
+
+
+struct TextUniforms(ImplicitlyCopyable, Movable):
+    """64-byte uniform block for text shader: column-major ortho projection mat4.
+    """
+
+    var ortho_proj: InlineArray[Float32, 16]
+
+    fn __init__(out self):
+        self.ortho_proj = make_identity_f32()
+
+    fn __copyinit__(out self, read other: Self):
+        self.ortho_proj = other.ortho_proj.copy()
+
+    fn __moveinit__(out self, deinit other: Self):
+        self.ortho_proj = other.ortho_proj^

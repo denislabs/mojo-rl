@@ -1034,3 +1034,13 @@ struct Phyics3dEnv[
         if not self._renderer_initialized:
             return
         self._renderer[].delay(ms)
+
+    fn renderer_is_paused(self) -> Bool:
+        if not self._renderer_initialized:
+            return False
+        return self._renderer[].renderer.is_paused
+
+    fn renderer_step_once(self) -> Bool:
+        if not self._renderer_initialized:
+            return False
+        return self._renderer[].renderer.step_once

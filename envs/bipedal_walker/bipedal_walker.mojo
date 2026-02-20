@@ -1250,6 +1250,12 @@ struct BipedalWalker[
             return
         self._renderer[].renderer_delay(ms)
 
+    fn renderer_is_paused(self) -> Bool:
+        return False
+
+    fn renderer_step_once(self) -> Bool:
+        return False
+
     # =========================================================================
     # Rendering Methods
     # =========================================================================

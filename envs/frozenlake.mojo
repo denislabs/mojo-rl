@@ -216,3 +216,9 @@ struct FrozenLakeEnv(DiscreteEnv, RenderableEnv):
 
     fn renderer_delay(self, ms: Int) -> None:
         pass
+
+    fn renderer_is_paused(self) -> Bool:
+        return False
+
+    fn renderer_step_once(self) -> Bool:
+        return False

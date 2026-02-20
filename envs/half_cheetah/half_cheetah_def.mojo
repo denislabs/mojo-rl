@@ -574,7 +574,7 @@ comptime HalfCheetahGeoms = Geoms[
 # Camera — MuJoCo: <camera name="track" mode="trackcom" pos="0 -3 0.3"/>
 # =============================================================================
 
-comptime HalfCheetahCamera = TrackCamera[pos_y= -3.0, pos_z=0.3, target_z=0.5]
+comptime HalfCheetahCamera = TrackCamera[pos_y= -3.0, pos_z=0.3]
 
 comptime HalfCheetahCameras = Cameras[HalfCheetahCamera]
 

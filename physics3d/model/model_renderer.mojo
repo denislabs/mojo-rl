@@ -48,6 +48,9 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
     # Velocity arrow color
     var vel_color: Color
 
+    # HUD state
+    var step_count: Int
+
     fn __init__(
         out self,
         width: Int = 1280,
@@ -116,6 +119,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
                 b=Float32(checker[2]),
             )
 
+        self.step_count = 0
         self.initialized = False
 
     fn __moveinit__(out self, deinit other: Self):
@@ -131,6 +135,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         self.vel_arrow_height = other.vel_arrow_height
         self.vel_arrow_scale = other.vel_arrow_scale
         self.vel_color = other.vel_color
+        self.step_count = other.step_count
 
     fn init(mut self) raises -> None:
         var title = String("Model Environment")
@@ -159,6 +164,12 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
 
     fn zoom_camera(mut self, delta: Float64) -> None:
         self.renderer.zoom_camera(delta)
+
+    fn pan_camera(mut self, delta_x: Float64, delta_y: Float64) -> None:
+        self.renderer.pan_camera(delta_x, delta_y)
+
+    fn reset_camera(mut self) -> None:
+        self.renderer.reset_camera()
 
     fn render_from_body_state[
         DTYPE: DType, SIZE_POS: Int, SIZE_QUAT: Int
@@ -237,13 +248,11 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         # Camera follow torso (only for trackcom mode cameras)
         var cam_mode = self.camera_modes[self.active_camera]
         if self.follow and cam_mode == 0:  # CAM_TRACKCOM
-            var active_cam = self.cameras[self.active_camera].copy()
-            self.renderer.camera.target = Vec3(
-                torso_pos.x, 0.0, active_cam.target.z
-            )
-            self.renderer.camera.eye = Vec3(
-                torso_pos.x, active_cam.eye.y, active_cam.eye.z
-            )
+            # Preserve the current eye-to-target offset so mouse orbit is respected.
+            # Each frame we only translate both eye and target to follow the torso.
+            var offset = self.renderer.camera.eye - self.renderer.camera.target
+            self.renderer.camera.target = Vec3(torso_pos.x, 0.0, torso_pos.z)
+            self.renderer.camera.eye = self.renderer.camera.target + offset
 
         self.renderer.begin_frame()
 
@@ -281,11 +290,58 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         if self.show_velocity:
             self._draw_velocity_indicator(torso_pos, vel_x)
 
+        # HUD overlay
+        self._draw_hud()
+
+        # Increment step counter AFTER drawing (so first frame shows 0)
+        self.step_count += 1
+
         # End frame
         try:
             self.renderer.end_frame()
         except:
             pass
+
+    fn _draw_hud(mut self):
+        """Draw MuJoCo-style HUD: controls help, camera name, step counter, pause indicator."""
+        var x0 = Float32(12)
+        var y = Float32(12)
+        var s = 2  # 2× scale → 16×16 px per char
+
+        # Controls (dim white) — shadow then bright
+        var dim = Color(180, 180, 180, 200)
+        self.renderer.draw_text(x0 + 1, y + 1, "[Spc] Pause", Color(0, 0, 0, 160), s)
+        self.renderer.draw_text(x0, y, "[Spc] Pause", dim, s)
+        y += 20
+        self.renderer.draw_text(x0 + 1, y + 1, "[->]  Step", Color(0, 0, 0, 160), s)
+        self.renderer.draw_text(x0, y, "[->]  Step", dim, s)
+        y += 20
+        self.renderer.draw_text(x0 + 1, y + 1, "[1-9] Camera", Color(0, 0, 0, 160), s)
+        self.renderer.draw_text(x0, y, "[1-9] Camera", dim, s)
+        y += 20
+        self.renderer.draw_text(x0 + 1, y + 1, "[R]   Reset cam", Color(0, 0, 0, 160), s)
+        self.renderer.draw_text(x0, y, "[R]   Reset cam", dim, s)
+        y += 20
+        self.renderer.draw_text(x0 + 1, y + 1, "[S]   Screenshot", Color(0, 0, 0, 160), s)
+        self.renderer.draw_text(x0, y, "[S]   Screenshot", dim, s)
+        y += 28  # gap
+
+        # Camera name (bright white)
+        var cam_name = String("Cam ") + String(self.active_camera + 1)
+        self.renderer.draw_text(x0 + 1, y + 1, cam_name, Color(0, 0, 0, 160), s)
+        self.renderer.draw_text(x0, y, cam_name, Color(255, 255, 255, 255), s)
+        y += 20
+
+        # Step counter (yellow-white)
+        var step_str = String("Step: ") + String(self.step_count)
+        self.renderer.draw_text(x0 + 1, y + 1, step_str, Color(0, 0, 0, 160), s)
+        self.renderer.draw_text(x0, y, step_str, Color(255, 255, 200, 255), s)
+        y += 20
+
+        # Pause indicator (yellow, only when paused)
+        if self.renderer.is_paused:
+            self.renderer.draw_text(x0 + 1, y + 1, "[PAUSED]", Color(0, 0, 0, 160), s)
+            self.renderer.draw_text(x0, y, "[PAUSED]", Color(255, 220, 0, 255), s)
 
     fn _draw_velocity_indicator(mut self, torso_pos: Vec3, vel_x: Float64):
         """Draw a velocity indicator arrow above the torso."""

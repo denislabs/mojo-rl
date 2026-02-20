@@ -135,6 +135,24 @@ trait RenderableEnv:
         """
         ...
 
+    fn renderer_is_paused(self) -> Bool:
+        """Check if the renderer is currently paused (Space key).
+
+        Returns:
+            True if simulation is paused.
+        """
+        ...
+
+    fn renderer_step_once(self) -> Bool:
+        """Check if the user requested a single step while paused (Right arrow).
+
+        This flag is consumed each frame by check_renderer_quit().
+
+        Returns:
+            True if a single step was requested.
+        """
+        ...
+
 
 # ============================================================================
 # State Space Traits

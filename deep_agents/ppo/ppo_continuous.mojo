@@ -645,6 +645,17 @@ struct DeepPPOContinuousAgent[
             var episode_steps = 0
 
             for _ in range(max_steps):
+                # Render current state and handle input events first
+                if render:
+                    env.render_frame()
+                    env.renderer_delay(frame_delay_ms)
+                    if env.check_renderer_quit():
+                        quit_requested = True
+                        break
+                    # Skip physics step while paused (unless Right arrow pressed)
+                    if env.renderer_is_paused() and not env.renderer_step_once():
+                        continue
+
                 # stochastic=True samples from policy, False uses mean
                 var action_result = self.select_action(obs, training=stochastic)
                 var actions = action_result[0].copy()
@@ -671,14 +682,6 @@ struct DeepPPOContinuousAgent[
                 var next_obs_list = result[0].copy()
                 var reward = result[1]
                 var done = result[2]
-
-                # Render frame and check for quit
-                if render:
-                    env.render_frame()
-                    env.renderer_delay(frame_delay_ms)
-                    if env.check_renderer_quit():
-                        quit_requested = True
-                        break
 
                 episode_reward += Float64(reward)
                 episode_steps += 1

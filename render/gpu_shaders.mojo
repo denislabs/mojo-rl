@@ -308,15 +308,15 @@ fragment float4 ground_fragment(
     depth2d<float> shadow_map [[texture(0)]],
     sampler shadow_sampler [[sampler(0)]]
 ) {
-    // Checkerboard pattern — colors from scene.ground_params.xyz (color2)
+    // Checkerboard pattern — colors from scene.ground_params.xyz (light tile = rgb2)
     float3 checker_color1 = float3(0.35, 0.35, 0.38);  // Light tile (default)
     float3 checker_color2 = float3(0.22, 0.22, 0.25);  // Dark tile (default)
 
-    // Use ground_params.xyz for checker color2 if non-zero
+    // Use ground_params.xyz as light tile color (rgb2), dark tile = black (rgb1)
+    // Matches MuJoCo checker: rgb1=(0,0,0) black, rgb2=(0.8,0.8,0.8) grey
     if (scene.ground_params.x > 0.001 || scene.ground_params.y > 0.001 || scene.ground_params.z > 0.001) {
-        checker_color2 = scene.ground_params.xyz;
-        // Derive color1 as brighter version
-        checker_color1 = checker_color2 * 1.6;
+        checker_color1 = scene.ground_params.xyz;  // Light tile = rgb2
+        checker_color2 = float3(0.0, 0.0, 0.0);   // Dark tile = black (rgb1)
     }
 
     float tile_size = 1.0;
@@ -563,5 +563,53 @@ fragment float4 skybox_fragment(
     float t = in.uv.y;
     float3 color = mix(sky.bottom_color.rgb, sky.top_color.rgb, t);
     return float4(color, 1.0);
+}
+"""
+
+comptime TEXT_VERTEX_MSL = """
+#include <metal_stdlib>
+using namespace metal;
+
+struct TextVertIn {
+    float2 pos   [[attribute(0)]];
+    float2 uv    [[attribute(1)]];
+    float4 color [[attribute(2)]];
+};
+
+struct TextVertOut {
+    float4 pos   [[position]];
+    float2 uv;
+    float4 color;
+};
+
+vertex TextVertOut text_vertex(
+    TextVertIn in [[stage_in]],
+    constant float4x4& ortho_proj [[buffer(0)]]
+) {
+    TextVertOut out;
+    out.pos   = ortho_proj * float4(in.pos, 0.0, 1.0);
+    out.uv    = in.uv;
+    out.color = in.color;
+    return out;
+}
+"""
+
+comptime TEXT_FRAGMENT_MSL = """
+#include <metal_stdlib>
+using namespace metal;
+
+struct TextVertOut {
+    float4 pos   [[position]];
+    float2 uv;
+    float4 color;
+};
+
+fragment float4 text_fragment(
+    TextVertOut in        [[stage_in]],
+    texture2d<float> atlas [[texture(0)]],
+    sampler samp           [[sampler(0)]]
+) {
+    float alpha = atlas.sample(samp, in.uv).r;
+    return float4(in.color.rgb, in.color.a * alpha);
 }
 """

@@ -386,7 +386,7 @@ comptime HopperActuators = Actuators[
 # so camera world pos_z = 1.25 + (-0.25) = 1.0, target at CoM height.
 # =============================================================================
 
-comptime HopperCamera = TrackCamera[pos_y= -3.0, pos_z=1.0, target_z=1.0]
+comptime HopperCamera = TrackCamera[pos_y= -3.0, pos_z= -0.25]
 
 # Light — default directional light (matches Renderer3D defaults)
 comptime HopperLight = DirectionalLight[]

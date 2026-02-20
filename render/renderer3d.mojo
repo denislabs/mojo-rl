@@ -48,6 +48,8 @@ from .sdl import (
     GPUBufferBinding,
     GPUBufferRegion,
     GPUTransferBufferLocation,
+    GPUTextureTransferInfo,
+    GPUTextureRegion,
     GPUViewport,
     # Enums
     GPUPrimitiveType,
@@ -83,6 +85,9 @@ from .sdl import (
     Event,
     EventType,
     KeyboardEvent,
+    MouseButtonEvent,
+    MouseMotionEvent,
+    MouseWheelEvent,
     Keycode,
     FColor,
     InitFlags,
@@ -120,6 +125,7 @@ from .sdl import (
     push_gpu_fragment_uniform_data,
     bind_gpu_fragment_samplers,
     upload_to_gpu_buffer,
+    upload_to_gpu_texture,
     map_gpu_transfer_buffer,
     unmap_gpu_transfer_buffer,
     release_gpu_buffer,
@@ -128,6 +134,15 @@ from .sdl import (
     release_gpu_sampler,
     release_gpu_shader,
     release_gpu_graphics_pipeline,
+    # Screenshot: GPU idle wait + texture download
+    wait_for_gpu_idle,
+    download_from_gpu_texture,
+    # Screenshot: SDL surface + BMP
+    Surface,
+    PixelFormat,
+    create_surface_from,
+    destroy_surface,
+    save_bmp,
 )
 from .camera3d import Camera3D
 from .types import Color
@@ -139,6 +154,8 @@ from .gpu_types import (
     LineUniforms,
     ShadowUniforms,
     SkyboxUniforms,
+    TextVertex,
+    TextUniforms,
     MeshData,
     MeshHandle,
     CapsuleCacheEntry,
@@ -167,7 +184,10 @@ from .gpu_shaders import (
     REFLECTION_FRAGMENT_MSL,
     SKYBOX_VERTEX_MSL,
     SKYBOX_FRAGMENT_MSL,
+    TEXT_VERTEX_MSL,
+    TEXT_FRAGMENT_MSL,
 )
+from .font_atlas import build_font_atlas_r8, glyph_uv
 
 comptime Vec3 = Vec3Generic[DType.float64]
 comptime Quat = QuatGeneric[DType.float64]
@@ -176,6 +196,9 @@ comptime Mat4 = Mat4Generic[DType.float64]
 
 # Maximum line vertices per frame
 comptime MAX_LINE_VERTICES = 512
+
+# Maximum text characters per frame for HUD overlay
+comptime MAX_TEXT_CHARS = 512
 
 
 # --- Line color entry for list storage ---
@@ -256,6 +279,16 @@ struct Renderer3D(Movable):
     var line_vertex_buffer: Ptr[GPUBuffer, AnyOrigin[True]]
     var line_transfer_buffer: Ptr[GPUTransferBuffer, AnyOrigin[True]]
 
+    # Text (HUD overlay) pipeline and resources
+    var text_pipeline: Ptr[GPUGraphicsPipeline, AnyOrigin[True]]
+    var font_atlas_tex: Ptr[GPUTexture, AnyOrigin[True]]
+    var font_sampler: Ptr[GPUSampler, AnyOrigin[True]]
+    var text_vertex_buffer: Ptr[GPUBuffer, AnyOrigin[True]]
+    var text_index_buffer: Ptr[GPUBuffer, AnyOrigin[True]]
+    var text_transfer_buffer: Ptr[GPUTransferBuffer, AnyOrigin[True]]
+    var text_vertex_data: List[Float32]   # packed TextVertex fields (8 floats/vertex)
+    var text_uniforms: TextUniforms
+
     # Deferred draw commands
     var solid_draws: List[SolidDrawCommand]
     var ground_uniforms: ObjectUniforms
@@ -286,6 +319,22 @@ struct Renderer3D(Movable):
 
     # Camera switching (set by check_quit, read by ModelRenderer)
     var camera_switch_request: Int  # -1 = none, 0-8 = switch to camera N
+
+    # Mouse state for camera interaction (wired in check_quit)
+    var mouse_left_down: Bool
+    var mouse_right_down: Bool
+
+    # Pause / step state (read by simulation loop)
+    var is_paused: Bool
+    var step_once: Bool  # True for exactly one frame after → pressed while paused
+
+    # Screenshot (S key)
+    var screenshot_requested: Bool
+    var screenshot_counter: Int
+
+    # Default camera position for R-key reset
+    var default_eye: Vec3
+    var default_target: Vec3
 
     fn __init__(
         out self,
@@ -340,6 +389,14 @@ struct Renderer3D(Movable):
         self.ground_z = 0.0
         self.line_vertex_buffer = Ptr[GPUBuffer, AnyOrigin[True]]()
         self.line_transfer_buffer = Ptr[GPUTransferBuffer, AnyOrigin[True]]()
+        self.text_pipeline = Ptr[GPUGraphicsPipeline, AnyOrigin[True]]()
+        self.font_atlas_tex = Ptr[GPUTexture, AnyOrigin[True]]()
+        self.font_sampler = Ptr[GPUSampler, AnyOrigin[True]]()
+        self.text_vertex_buffer = Ptr[GPUBuffer, AnyOrigin[True]]()
+        self.text_index_buffer = Ptr[GPUBuffer, AnyOrigin[True]]()
+        self.text_transfer_buffer = Ptr[GPUTransferBuffer, AnyOrigin[True]]()
+        self.text_vertex_data = List[Float32]()
+        self.text_uniforms = TextUniforms()
         self.swapchain_format = (
             GPUTextureFormat.GPU_TEXTUREFORMAT_B8G8R8A8_UNORM
         )
@@ -365,6 +422,14 @@ struct Renderer3D(Movable):
 
         # Store configurable light parameters (up to 4 lights)
         self.camera_switch_request = -1
+        self.mouse_left_down = False
+        self.mouse_right_down = False
+        self.is_paused = False
+        self.step_once = False
+        self.screenshot_requested = False
+        self.screenshot_counter = 0
+        self.default_eye = camera.eye
+        self.default_target = camera.target
         if len(lights) > 0:
             self.lights = lights.copy()
         else:
@@ -408,6 +473,14 @@ struct Renderer3D(Movable):
         self.line_colors = other.line_colors^
         self.line_vertex_buffer = other.line_vertex_buffer
         self.line_transfer_buffer = other.line_transfer_buffer
+        self.text_pipeline = other.text_pipeline
+        self.font_atlas_tex = other.font_atlas_tex
+        self.font_sampler = other.font_sampler
+        self.text_vertex_buffer = other.text_vertex_buffer
+        self.text_index_buffer = other.text_index_buffer
+        self.text_transfer_buffer = other.text_transfer_buffer
+        self.text_vertex_data = other.text_vertex_data^
+        self.text_uniforms = other.text_uniforms
         self.solid_draws = other.solid_draws^
         self.ground_uniforms = other.ground_uniforms
         self.has_ground = other.has_ground
@@ -421,6 +494,14 @@ struct Renderer3D(Movable):
         self.swapchain_format = other.swapchain_format
         self.lights = other.lights^
         self.camera_switch_request = other.camera_switch_request
+        self.mouse_left_down = other.mouse_left_down
+        self.mouse_right_down = other.mouse_right_down
+        self.is_paused = other.is_paused
+        self.step_once = other.step_once
+        self.screenshot_requested = other.screenshot_requested
+        self.screenshot_counter = other.screenshot_counter
+        self.default_eye = other.default_eye
+        self.default_target = other.default_target
         self.initialized = other.initialized
         self.should_quit = other.should_quit
         self.draw_grid = other.draw_grid
@@ -472,6 +553,9 @@ struct Renderer3D(Movable):
 
         # 10. Allocate line buffers
         self._create_line_buffers()
+
+        # 11. Create text rendering resources (font atlas, pipeline, buffers)
+        self._create_text_resources()
 
         self.initialized = True
 
@@ -1367,6 +1451,274 @@ struct Renderer3D(Movable):
             self.device, Ptr(to=tb_info)
         )
 
+    fn _create_text_resources(mut self) raises:
+        """Create font atlas texture, sampler, text pipeline and buffers."""
+        # --- 1. Build and upload R8_UNORM font atlas (128×64) ---
+        var atlas = build_font_atlas_r8()  # InlineArray[UInt8, 8192]
+        var atlas_size = UInt32(8192)      # 128 * 64 * 1 byte
+
+        var atlas_tex_info = GPUTextureCreateInfo(
+            type=GPUTextureType.GPU_TEXTURETYPE_2D,
+            format=GPUTextureFormat.GPU_TEXTUREFORMAT_R8_UNORM,
+            usage=GPUTextureUsageFlags.GPU_TEXTUREUSAGE_SAMPLER,
+            width=128,
+            height=64,
+            layer_count_or_depth=1,
+            num_levels=1,
+            sample_count=GPUSampleCount.GPU_SAMPLECOUNT_1,
+            props=PropertiesID(0),
+        )
+        self.font_atlas_tex = create_gpu_texture(
+            self.device, Ptr(to=atlas_tex_info)
+        )
+
+        # Upload atlas via transfer buffer
+        var atlas_tb_info = GPUTransferBufferCreateInfo(
+            usage=GPUTransferBufferUsage.GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+            size=atlas_size,
+            props=PropertiesID(0),
+        )
+        var atlas_tb = create_gpu_transfer_buffer(
+            self.device, Ptr(to=atlas_tb_info)
+        )
+        var mapped = map_gpu_transfer_buffer(self.device, atlas_tb, False)
+        var mapped_u8 = mapped.bitcast[UInt8]()
+        for i in range(8192):
+            (mapped_u8 + i)[] = atlas[i]
+        unmap_gpu_transfer_buffer(self.device, atlas_tb)
+
+        var atlas_cmd = acquire_gpu_command_buffer(self.device)
+        var atlas_cp = begin_gpu_copy_pass(atlas_cmd)
+        var atlas_src = GPUTextureTransferInfo(
+            transfer_buffer=atlas_tb,
+            offset=0,
+            pixels_per_row=128,
+            rows_per_layer=64,
+        )
+        var atlas_dst = GPUTextureRegion(
+            texture=self.font_atlas_tex,
+            mip_level=0,
+            layer=0,
+            x=0,
+            y=0,
+            z=0,
+            w=128,
+            h=64,
+            d=1,
+        )
+        upload_to_gpu_texture(
+            atlas_cp, Ptr(to=atlas_src), Ptr(to=atlas_dst), False
+        )
+        end_gpu_copy_pass(atlas_cp)
+        submit_gpu_command_buffer(atlas_cmd)
+        release_gpu_transfer_buffer(self.device, atlas_tb)
+
+        # --- 2. Create NEAREST sampler ---
+        var samp_info = GPUSamplerCreateInfo(
+            min_filter=GPUFilter.GPU_FILTER_NEAREST,
+            mag_filter=GPUFilter.GPU_FILTER_NEAREST,
+            mipmap_mode=GPUSamplerMipmapMode.GPU_SAMPLERMIPMAPMODE_NEAREST,
+            address_mode_u=GPUSamplerAddressMode.GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
+            address_mode_v=GPUSamplerAddressMode.GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
+            address_mode_w=GPUSamplerAddressMode.GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
+            mip_lod_bias=0.0,
+            max_anisotropy=1.0,
+            compare_op=GPUCompareOp.GPU_COMPAREOP_ALWAYS,
+            min_lod=0.0,
+            max_lod=0.0,
+            enable_anisotropy=False,
+            enable_compare=False,
+            padding1=0,
+            padding2=0,
+            props=PropertiesID(0),
+        )
+        self.font_sampler = create_gpu_sampler(self.device, Ptr(to=samp_info))
+
+        # --- 3. Create text pipeline ---
+        var text_vs = self._create_shader(
+            TEXT_VERTEX_MSL,
+            GPUShaderStage.GPU_SHADERSTAGE_VERTEX,
+            num_uniform_buffers=1,
+            entrypoint=String("text_vertex"),
+        )
+        var text_fs = self._create_shader(
+            TEXT_FRAGMENT_MSL,
+            GPUShaderStage.GPU_SHADERSTAGE_FRAGMENT,
+            num_uniform_buffers=0,
+            entrypoint=String("text_fragment"),
+            num_samplers=1,
+        )
+
+        var text_buf_desc = GPUVertexBufferDescription(
+            slot=0,
+            pitch=32,  # 8 floats × 4 bytes = 32 bytes per vertex
+            input_rate=GPUVertexInputRate.GPU_VERTEXINPUTRATE_VERTEX,
+            instance_step_rate=0,
+        )
+        var text_attrs = alloc[GPUVertexAttribute](3)
+        text_attrs[0] = GPUVertexAttribute(
+            location=0,
+            buffer_slot=0,
+            format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT2,
+            offset=0,
+        )
+        text_attrs[1] = GPUVertexAttribute(
+            location=1,
+            buffer_slot=0,
+            format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT2,
+            offset=8,
+        )
+        text_attrs[2] = GPUVertexAttribute(
+            location=2,
+            buffer_slot=0,
+            format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT4,
+            offset=16,
+        )
+        var text_vi = GPUVertexInputState(
+            vertex_buffer_descriptions=Ptr(to=text_buf_desc),
+            num_vertex_buffers=1,
+            vertex_attributes=text_attrs,
+            num_vertex_attributes=3,
+        )
+
+        var text_ct = GPUColorTargetDescription(
+            format=self.swapchain_format,
+            blend_state=GPUColorTargetBlendState(
+                src_color_blendfactor=GPUBlendFactor.GPU_BLENDFACTOR_SRC_ALPHA,
+                dst_color_blendfactor=GPUBlendFactor.GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                color_blend_op=GPUBlendOp.GPU_BLENDOP_ADD,
+                src_alpha_blendfactor=GPUBlendFactor.GPU_BLENDFACTOR_ONE,
+                dst_alpha_blendfactor=GPUBlendFactor.GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                alpha_blend_op=GPUBlendOp.GPU_BLENDOP_ADD,
+                color_write_mask=GPUColorComponentFlags(0x0F),
+                enable_blend=True,
+                enable_color_write_mask=False,
+                padding1=0,
+                padding2=0,
+            ),
+        )
+
+        var text_pi = GPUGraphicsPipelineCreateInfo(
+            vertex_shader=text_vs,
+            fragment_shader=text_fs,
+            vertex_input_state=text_vi,
+            primitive_type=GPUPrimitiveType.GPU_PRIMITIVETYPE_TRIANGLELIST,
+            rasterizer_state=GPURasterizerState(
+                fill_mode=GPUFillMode.GPU_FILLMODE_FILL,
+                cull_mode=GPUCullMode.GPU_CULLMODE_NONE,
+                front_face=GPUFrontFace.GPU_FRONTFACE_COUNTER_CLOCKWISE,
+                depth_bias_constant_factor=0.0,
+                depth_bias_clamp=0.0,
+                depth_bias_slope_factor=0.0,
+                enable_depth_bias=False,
+                enable_depth_clip=False,
+                padding1=0,
+                padding2=0,
+            ),
+            multisample_state=GPUMultisampleState(
+                sample_count=GPUSampleCount.GPU_SAMPLECOUNT_1,
+                sample_mask=0,
+                enable_mask=False,
+                padding1=0,
+                padding2=0,
+                padding3=0,
+            ),
+            depth_stencil_state=GPUDepthStencilState(
+                compare_op=GPUCompareOp.GPU_COMPAREOP_ALWAYS,
+                back_stencil_state=self._no_stencil_op(),
+                front_stencil_state=self._no_stencil_op(),
+                compare_mask=0,
+                write_mask=0,
+                enable_depth_test=False,
+                enable_depth_write=False,
+                enable_stencil_test=False,
+                padding1=0,
+                padding2=0,
+                padding3=0,
+            ),
+            target_info=GPUGraphicsPipelineTargetInfo(
+                color_target_descriptions=Ptr(to=text_ct),
+                num_color_targets=1,
+                depth_stencil_format=GPUTextureFormat.GPU_TEXTUREFORMAT_D32_FLOAT,
+                has_depth_stencil_target=True,
+                padding1=0,
+                padding2=0,
+                padding3=0,
+            ),
+            props=PropertiesID(0),
+        )
+        self.text_pipeline = create_gpu_graphics_pipeline(
+            self.device, Ptr(to=text_pi)
+        )
+        text_attrs.free()
+        release_gpu_shader(self.device, text_vs)
+        release_gpu_shader(self.device, text_fs)
+
+        # --- 4. Allocate text vertex buffer (MAX_TEXT_CHARS quads × 4 verts × 32 bytes) ---
+        var tvb_size = UInt32(MAX_TEXT_CHARS * 4 * 32)
+        var tvb_info = GPUBufferCreateInfo(
+            usage=GPUBufferUsageFlags.GPU_BUFFERUSAGE_VERTEX,
+            size=tvb_size,
+            props=PropertiesID(0),
+        )
+        self.text_vertex_buffer = create_gpu_buffer(
+            self.device, Ptr(to=tvb_info)
+        )
+
+        var ttb_info = GPUTransferBufferCreateInfo(
+            usage=GPUTransferBufferUsage.GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+            size=tvb_size,
+            props=PropertiesID(0),
+        )
+        self.text_transfer_buffer = create_gpu_transfer_buffer(
+            self.device, Ptr(to=ttb_info)
+        )
+
+        # --- 5. Allocate and upload static index buffer (MAX_TEXT_CHARS quads × 6 indices × 2 bytes) ---
+        var tib_size = UInt32(MAX_TEXT_CHARS * 6 * 2)
+        var tib_info = GPUBufferCreateInfo(
+            usage=GPUBufferUsageFlags.GPU_BUFFERUSAGE_INDEX,
+            size=tib_size,
+            props=PropertiesID(0),
+        )
+        self.text_index_buffer = create_gpu_buffer(
+            self.device, Ptr(to=tib_info)
+        )
+
+        # Build and upload index data: quads [0,1,2, 2,3,0, 4,5,6, 6,7,4, ...]
+        var idx_tb_info = GPUTransferBufferCreateInfo(
+            usage=GPUTransferBufferUsage.GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+            size=tib_size,
+            props=PropertiesID(0),
+        )
+        var idx_tb = create_gpu_transfer_buffer(
+            self.device, Ptr(to=idx_tb_info)
+        )
+        var idx_mapped = map_gpu_transfer_buffer(self.device, idx_tb, False)
+        var idx_ptr = idx_mapped.bitcast[UInt16]()
+        for q in range(MAX_TEXT_CHARS):
+            var base = UInt16(q * 4)
+            (idx_ptr + q * 6 + 0)[] = base + 0
+            (idx_ptr + q * 6 + 1)[] = base + 1
+            (idx_ptr + q * 6 + 2)[] = base + 2
+            (idx_ptr + q * 6 + 3)[] = base + 2
+            (idx_ptr + q * 6 + 4)[] = base + 3
+            (idx_ptr + q * 6 + 5)[] = base + 0
+        unmap_gpu_transfer_buffer(self.device, idx_tb)
+
+        var idx_cmd = acquire_gpu_command_buffer(self.device)
+        var idx_cp = begin_gpu_copy_pass(idx_cmd)
+        var idx_src = GPUTransferBufferLocation(
+            transfer_buffer=idx_tb, offset=0
+        )
+        var idx_dst = GPUBufferRegion(
+            buffer=self.text_index_buffer, offset=0, size=tib_size
+        )
+        upload_to_gpu_buffer(idx_cp, Ptr(to=idx_src), Ptr(to=idx_dst), False)
+        end_gpu_copy_pass(idx_cp)
+        submit_gpu_command_buffer(idx_cmd)
+        release_gpu_transfer_buffer(self.device, idx_tb)
+
     # --- Public Drawing API ---
 
     fn begin_frame(mut self):
@@ -1374,7 +1726,64 @@ struct Renderer3D(Movable):
         self.solid_draws.clear()
         self.line_vertex_data.clear()
         self.line_colors.clear()
+        self.text_vertex_data.clear()
         self.has_ground = False
+
+    fn draw_text(
+        mut self,
+        x: Float32,
+        y: Float32,
+        text: String,
+        color: Color = Color(255, 255, 255, 255),
+        scale: Int = 2,
+    ):
+        """Draw a string of ASCII text as a HUD overlay (screen-space pixels).
+
+        Each character is rendered as a textured quad using the font atlas.
+        Text renders top-left at (x, y). Characters advance by 8*scale pixels.
+
+        Args:
+            x: Left edge of text in screen pixels.
+            y: Top edge of text in screen pixels.
+            text: ASCII string to render.
+            color: RGBA text color.
+            scale: Pixel scale factor (default 2 = 16×16 per char).
+        """
+        if len(self.text_vertex_data) >= MAX_TEXT_CHARS * 4 * 8:
+            return  # budget exhausted
+        var cr = Float32(color.r) / 255.0
+        var cg = Float32(color.g) / 255.0
+        var cb = Float32(color.b) / 255.0
+        var ca = Float32(color.a) / 255.0
+        var glyph_w = Float32(8 * scale)
+        var glyph_h = Float32(8 * scale)
+        var cx = x
+        for i in range(len(text)):
+            var c = text.as_bytes()[i]
+            var uv = glyph_uv(c)
+            var u0 = uv[0]; var v0 = uv[1]; var u1 = uv[2]; var v1 = uv[3]
+            # 4 vertices: top-left, top-right, bottom-right, bottom-left
+            # Vertex 0: top-left
+            self.text_vertex_data.append(cx);        self.text_vertex_data.append(y)
+            self.text_vertex_data.append(u0);        self.text_vertex_data.append(v0)
+            self.text_vertex_data.append(cr);        self.text_vertex_data.append(cg)
+            self.text_vertex_data.append(cb);        self.text_vertex_data.append(ca)
+            # Vertex 1: top-right
+            self.text_vertex_data.append(cx + glyph_w); self.text_vertex_data.append(y)
+            self.text_vertex_data.append(u1);        self.text_vertex_data.append(v0)
+            self.text_vertex_data.append(cr);        self.text_vertex_data.append(cg)
+            self.text_vertex_data.append(cb);        self.text_vertex_data.append(ca)
+            # Vertex 2: bottom-right
+            self.text_vertex_data.append(cx + glyph_w); self.text_vertex_data.append(y + glyph_h)
+            self.text_vertex_data.append(u1);        self.text_vertex_data.append(v1)
+            self.text_vertex_data.append(cr);        self.text_vertex_data.append(cg)
+            self.text_vertex_data.append(cb);        self.text_vertex_data.append(ca)
+            # Vertex 3: bottom-left
+            self.text_vertex_data.append(cx);        self.text_vertex_data.append(y + glyph_h)
+            self.text_vertex_data.append(u0);        self.text_vertex_data.append(v1)
+            self.text_vertex_data.append(cr);        self.text_vertex_data.append(cg)
+            self.text_vertex_data.append(cb);        self.text_vertex_data.append(ca)
+            cx += glyph_w
 
     fn draw_sphere(
         mut self,
@@ -1554,10 +1963,12 @@ struct Renderer3D(Movable):
         g: Float32 = 0.22,
         b: Float32 = 0.25,
     ):
-        """Set ground checker secondary color (stored in scene ground_params.xyz).
+        """Set ground checker light tile color (stored in scene ground_params.xyz).
+
+        Dark tile is always black (0, 0, 0), matching MuJoCo's rgb1=black convention.
 
         Args:
-            r/g/b: Checker dark tile color (RGB, 0-1). Light tile is 1.6x brighter.
+            r/g/b: Checker light tile color (RGB, 0-1). Dark tile is black.
         """
         self.scene_uniforms.ground_params[0] = r
         self.scene_uniforms.ground_params[1] = g
@@ -1695,8 +2106,19 @@ struct Renderer3D(Movable):
         draw_gpu_indexed_primitives(render_pass, n_idx, 1, 0, 0, 0)
 
     fn end_frame(mut self) raises:
-        """End frame: shadow pass, then main pass with reflections, ground, solids, lines.
+        """End frame: shadow pass, then main pass with reflections, ground, solids, lines, text.
         """
+        # Update ortho projection for current window size
+        var ortho = ortho_metal(
+            0.0,
+            Float64(self.width),
+            Float64(self.height),
+            0.0,
+            0.0,
+            1.0,
+        )
+        self.text_uniforms.ortho_proj = mat4_to_gpu_f32(ortho)
+
         # Acquire command buffer
         var cmd_buf = acquire_gpu_command_buffer(self.device)
 
@@ -1722,6 +2144,31 @@ struct Renderer3D(Movable):
             )
             upload_to_gpu_buffer(copy_pass, Ptr(to=src), Ptr(to=dst), False)
             end_gpu_copy_pass(copy_pass)
+
+        # Upload text vertex data if any (must be before render pass)
+        var num_text_chars = len(self.text_vertex_data) // 32  # 32 floats per quad (4 verts × 8 floats)
+        if num_text_chars > 0:
+            var text_mapped = map_gpu_transfer_buffer(
+                self.device, self.text_transfer_buffer, True
+            )
+            var text_mapped_f32 = text_mapped.bitcast[Float32]()
+            for i in range(len(self.text_vertex_data)):
+                (text_mapped_f32 + i)[] = self.text_vertex_data[i]
+            unmap_gpu_transfer_buffer(self.device, self.text_transfer_buffer)
+
+            var text_copy_pass = begin_gpu_copy_pass(cmd_buf)
+            var text_src = GPUTransferBufferLocation(
+                transfer_buffer=self.text_transfer_buffer, offset=0
+            )
+            var text_dst = GPUBufferRegion(
+                buffer=self.text_vertex_buffer,
+                offset=0,
+                size=UInt32(len(self.text_vertex_data) * 4),
+            )
+            upload_to_gpu_buffer(
+                text_copy_pass, Ptr(to=text_src), Ptr(to=text_dst), False
+            )
+            end_gpu_copy_pass(text_copy_pass)
 
         # Build scene uniforms and shadow uniforms
         self._build_scene_uniforms()
@@ -2062,9 +2509,121 @@ struct Renderer3D(Movable):
 
                 line_offset += 2
 
-        # End render pass and submit
+        # ------------------------------------------------------------------
+        # Phase E: TEXT HUD OVERLAY (screen-space, alpha-blended, no depth)
+        # ------------------------------------------------------------------
+        if num_text_chars > 0:
+            bind_gpu_graphics_pipeline(render_pass, self.text_pipeline)
+            push_gpu_vertex_uniform_data(
+                cmd_buf,
+                0,
+                Ptr(to=self.text_uniforms).bitcast[NoneType](),
+                64,
+            )
+            var atlas_binding = GPUTextureSamplerBinding(
+                texture=self.font_atlas_tex,
+                sampler=self.font_sampler,
+            )
+            bind_gpu_fragment_samplers(
+                render_pass, 0, Ptr(to=atlas_binding), 1
+            )
+            var text_vb_binding = GPUBufferBinding(
+                buffer=self.text_vertex_buffer, offset=0
+            )
+            bind_gpu_vertex_buffers(render_pass, 0, Ptr(to=text_vb_binding), 1)
+            var text_ib_binding = GPUBufferBinding(
+                buffer=self.text_index_buffer, offset=0
+            )
+            bind_gpu_index_buffer(
+                render_pass,
+                Ptr(to=text_ib_binding),
+                GPUIndexElementSize.GPU_INDEXELEMENTSIZE_16BIT,
+            )
+            draw_gpu_indexed_primitives(render_pass, num_text_chars * 6, 1, 0, 0, 0)
+
+        # End render pass
         end_gpu_render_pass(render_pass)
+
+        # Screenshot capture: append a download copy pass before submitting.
+        # The transfer buffer pointer is non-null only if setup succeeded.
+        var screenshot_tb = Ptr[GPUTransferBuffer, AnyOrigin[True]]()
+        if self.screenshot_requested:
+            self.screenshot_requested = False
+            try:
+                var buf_size = UInt32(self.width * self.height * 4)
+                var dl_tb_info = GPUTransferBufferCreateInfo(
+                    usage=GPUTransferBufferUsage.GPU_TRANSFERBUFFERUSAGE_DOWNLOAD,
+                    size=buf_size,
+                    props=PropertiesID(0),
+                )
+                screenshot_tb = create_gpu_transfer_buffer(
+                    self.device, Ptr(to=dl_tb_info)
+                )
+                # Record download into a copy pass in the same command buffer.
+                # begin/end_gpu_copy_pass and download_from_gpu_texture only
+                # record commands; they will not raise in practice.
+                var dl_copy_pass = begin_gpu_copy_pass(cmd_buf)
+                var src_region = GPUTextureRegion(
+                    texture=swapchain_tex,
+                    mip_level=0,
+                    layer=0,
+                    x=0,
+                    y=0,
+                    z=0,
+                    w=UInt32(self.width),
+                    h=UInt32(self.height),
+                    d=1,
+                )
+                var dst_info = GPUTextureTransferInfo(
+                    transfer_buffer=screenshot_tb,
+                    offset=0,
+                    pixels_per_row=UInt32(self.width),
+                    rows_per_layer=UInt32(self.height),
+                )
+                download_from_gpu_texture(
+                    dl_copy_pass,
+                    Ptr(to=src_region),
+                    Ptr(to=dst_info),
+                )
+                end_gpu_copy_pass(dl_copy_pass)
+            except e:
+                print("Screenshot setup failed: " + String(e))
+                if screenshot_tb:
+                    release_gpu_transfer_buffer(self.device, screenshot_tb)
+                    screenshot_tb = Ptr[GPUTransferBuffer, AnyOrigin[True]]()
+
+        # Always submit the command buffer (screenshot download included if set up).
         submit_gpu_command_buffer(cmd_buf)
+
+        # If a download was queued, wait for the GPU to finish, then save to BMP.
+        if screenshot_tb:
+            try:
+                wait_for_gpu_idle(self.device)
+                var pixels = map_gpu_transfer_buffer(
+                    self.device, screenshot_tb, False
+                )
+                var filename = (
+                    "screenshot_"
+                    + String(self.screenshot_counter)
+                    + ".bmp"
+                )
+                # Swapchain is B8G8R8A8_UNORM → on little-endian ARM/x86,
+                # bytes [B,G,R,A] in memory match SDL PIXELFORMAT_ARGB8888.
+                var surface = create_surface_from(
+                    c_int(self.width),
+                    c_int(self.height),
+                    PixelFormat.PIXELFORMAT_ARGB8888,
+                    pixels,
+                    c_int(self.width * 4),
+                )
+                save_bmp(surface, filename)
+                destroy_surface(surface)
+                unmap_gpu_transfer_buffer(self.device, screenshot_tb)
+                self.screenshot_counter += 1
+                print("Screenshot saved: " + filename)
+            except e:
+                print("Screenshot readback failed: " + String(e))
+            release_gpu_transfer_buffer(self.device, screenshot_tb)
 
     fn _build_scene_uniforms(mut self):
         """Build scene uniforms from current camera state."""
@@ -2201,34 +2760,87 @@ struct Renderer3D(Movable):
     # --- Event Handling ---
 
     fn check_quit(mut self) -> Bool:
-        """Check if user wants to quit and detect camera switch keys.
+        """Poll SDL events: quit, camera switch, mouse orbit/pan/zoom, pause, step.
 
-        Polls SDL events and returns True if quit event detected
-        (window close or Escape key). Number keys 1-9 set
-        camera_switch_request for ModelRenderer to pick up.
+        Keyboard:
+          Escape / window close  → quit
+          1-9                    → switch to camera N (read by ModelRenderer)
+          Space                  → toggle pause
+          → (Right arrow)        → step one frame while paused
+          R                      → reset camera to default position
+          S                      → save screenshot (screenshotNNNN.bmp)
+
+        Mouse (left drag = orbit, right drag = pan, wheel = zoom):
+          Left-button drag       → orbit camera around target
+          Right-button drag      → pan camera (target + eye translate together)
+          Scroll wheel           → zoom in/out
 
         Returns:
             True if quit event detected.
         """
         self.camera_switch_request = -1
+        self.step_once = False
         var event = Event()
 
         try:
             while poll_event(Ptr(to=event)):
                 var event_type = event[UInt32]
+
                 if EventType(Int(event_type)) == EventType.EVENT_QUIT:
                     self.should_quit = True
                     return True
+
                 elif EventType(Int(event_type)) == EventType.EVENT_KEY_DOWN:
                     var key_event = event[KeyboardEvent]
                     var key_val = Int(key_event.key)
                     if key_val == Int(Keycode.SDLK_ESCAPE):
                         self.should_quit = True
                         return True
-                    # Number keys 1-9 for camera switching
-                    # SDLK_1=0x31 ... SDLK_9=0x39
                     elif key_val >= 0x31 and key_val <= 0x39:
-                        self.camera_switch_request = key_val - 0x31  # 0-8
+                        # Number keys 1-9: SDLK_1=0x31 … SDLK_9=0x39
+                        self.camera_switch_request = key_val - 0x31
+                    elif key_val == Int(Keycode.SDLK_SPACE):
+                        self.is_paused = not self.is_paused
+                    elif key_val == Int(Keycode.SDLK_RIGHT):
+                        if self.is_paused:
+                            self.step_once = True
+                    elif key_val == Int(Keycode.SDLK_R):
+                        self.camera.eye = self.default_eye
+                        self.camera.target = self.default_target
+                    elif key_val == Int(Keycode.SDLK_S):
+                        self.screenshot_requested = True
+
+                elif EventType(Int(event_type)) == EventType.EVENT_MOUSE_BUTTON_DOWN:
+                    var btn = event[MouseButtonEvent]
+                    if Int(btn.button) == 1:
+                        self.mouse_left_down = True
+                    elif Int(btn.button) == 3:
+                        self.mouse_right_down = True
+
+                elif EventType(Int(event_type)) == EventType.EVENT_MOUSE_BUTTON_UP:
+                    var btn = event[MouseButtonEvent]
+                    if Int(btn.button) == 1:
+                        self.mouse_left_down = False
+                    elif Int(btn.button) == 3:
+                        self.mouse_right_down = False
+
+                elif EventType(Int(event_type)) == EventType.EVENT_MOUSE_MOTION:
+                    var motion = event[MouseMotionEvent]
+                    var dx = Float64(motion.xrel)
+                    var dy = Float64(motion.yrel)
+                    if self.mouse_left_down:
+                        # Orbit: ~0.005 rad/px gives smooth rotation
+                        self.camera.orbit(dx * 0.005, dy * 0.005)
+                    elif self.mouse_right_down:
+                        # Pan: scale by distance so speed feels constant
+                        var dist = (self.camera.eye - self.camera.target).length()
+                        var scale = dist * 0.002
+                        self.camera.pan(-dx * scale, -dy * scale)
+
+                elif EventType(Int(event_type)) == EventType.EVENT_MOUSE_WHEEL:
+                    var wheel = event[MouseWheelEvent]
+                    # Scroll up (positive y) = zoom in (move eye closer)
+                    self.camera.zoom(-Float64(wheel.y) * 0.5)
         except:
             pass
 
@@ -2262,6 +2874,20 @@ struct Renderer3D(Movable):
             delta: Zoom amount.
         """
         self.camera.zoom(delta)
+
+    fn pan_camera(mut self, delta_x: Float64, delta_y: Float64):
+        """Pan camera (translate target and eye together).
+
+        Args:
+            delta_x: Horizontal pan in camera-right direction.
+            delta_y: Vertical pan in camera-up direction.
+        """
+        self.camera.pan(delta_x, delta_y)
+
+    fn reset_camera(mut self):
+        """Reset camera eye and target to the values set at construction."""
+        self.camera.eye = self.default_eye
+        self.camera.target = self.default_target
 
     fn delay_ms(self, ms: Int) raises:
         """Delay for given milliseconds.
@@ -2306,6 +2932,13 @@ struct Renderer3D(Movable):
         release_gpu_texture(self.device, self.shadow_map)
         release_gpu_sampler(self.device, self.shadow_sampler)
 
+        # Release text resources
+        release_gpu_buffer(self.device, self.text_vertex_buffer)
+        release_gpu_buffer(self.device, self.text_index_buffer)
+        release_gpu_transfer_buffer(self.device, self.text_transfer_buffer)
+        release_gpu_texture(self.device, self.font_atlas_tex)
+        release_gpu_sampler(self.device, self.font_sampler)
+
         # Release pipelines
         release_gpu_graphics_pipeline(self.device, self.solid_pipeline)
         release_gpu_graphics_pipeline(self.device, self.ground_pipeline)
@@ -2313,6 +2946,7 @@ struct Renderer3D(Movable):
         release_gpu_graphics_pipeline(self.device, self.shadow_pipeline)
         release_gpu_graphics_pipeline(self.device, self.reflection_pipeline)
         release_gpu_graphics_pipeline(self.device, self.skybox_pipeline)
+        release_gpu_graphics_pipeline(self.device, self.text_pipeline)
 
         # Release window and device
         release_window_from_gpu_device(self.device, self.window)

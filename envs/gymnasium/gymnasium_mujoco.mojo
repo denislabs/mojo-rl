@@ -304,6 +304,12 @@ struct GymMuJoCoEnv(BoxContinuousActionEnv & RenderableEnv):
         """No-op: Gymnasium controls its own frame rate."""
         pass
 
+    fn renderer_is_paused(self) -> Bool:
+        return False
+
+    fn renderer_step_once(self) -> Bool:
+        return False
+
     # ========================================================================
     # Additional methods - continuous control
     # ========================================================================
