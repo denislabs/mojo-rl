@@ -1273,7 +1273,7 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
                 break
 
             var obs_list = env.reset_obs_list()
-            var obs = _list_to_simd4(obs_list)
+            var obs = _list_to_simd4[E.dtype](obs_list)
             var episode_reward: Float64 = 0.0
 
             for _ in range(max_steps):
@@ -1312,9 +1312,7 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
 # ============================================================================
 
 
-fn _list_to_simd4[
-    DTYPE: DType where DTYPE.is_floating_point()
-](obs: List[Scalar[DTYPE]]) -> SIMD[DTYPE, 4]:
+fn _list_to_simd4[DTYPE: DType](obs: List[Scalar[DTYPE]]) -> SIMD[DTYPE, 4]:
     """Convert a List[Float64] to SIMD[DType.float64, 4].
 
     Pads with zeros if the list has fewer than 4 elements.

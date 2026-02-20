@@ -64,7 +64,12 @@ from deep_rl.gpu import (
     extract_completed_episodes_kernel,
     selective_reset_tracking_kernel,
 )
-from core import TrainingMetrics, BoxDiscreteActionEnv, GPUDiscreteEnv, RenderableEnv
+from core import (
+    TrainingMetrics,
+    BoxDiscreteActionEnv,
+    GPUDiscreteEnv,
+    RenderableEnv,
+)
 from core.utils.gae import compute_gae_inline
 from core.utils.softmax import (
     softmax_inline,
@@ -1403,7 +1408,9 @@ struct DeepPPOAgent[
 
         for episode in range(num_episodes):
             var obs_list = env.reset_obs_list()
-            var obs = self._list_to_inline(obs_list)
+            var obs = InlineArray[Scalar[dtype], Self.OBS](uninitialized=True)
+            for i in range(Self.OBS):
+                obs[i] = Scalar[dtype](obs_list[i])
             var episode_reward: Float64 = 0.0
             var episode_steps = 0
 
@@ -1417,10 +1424,14 @@ struct DeepPPOAgent[
                 # Step environment
                 var result = env.step_obs(action)
                 var next_obs_list = result[0].copy()
-                var reward = result[1]
+                var reward = Float64(result[1])
                 var done = result[2]
 
-                var next_obs = self._list_to_inline(next_obs_list)
+                var next_obs = InlineArray[Scalar[dtype], Self.OBS](
+                    uninitialized=True
+                )
+                for i in range(Self.OBS):
+                    next_obs[i] = Scalar[dtype](next_obs_list[i])
 
                 # Store transition
                 self.store_transition(
@@ -1428,7 +1439,7 @@ struct DeepPPOAgent[
                 )
 
                 episode_reward += reward
-                obs = next_obs
+                obs = next_obs^
                 total_steps += 1
                 episode_steps += 1
 
@@ -4085,7 +4096,7 @@ struct DeepPPOAgent[
 
 @always_inline
 fn _sample_actions_kernel[
-    dtype: DType,
+    dtype: DType where dtype.is_floating_point(),
     N_ENVS: Int,
     NUM_ACTIONS: Int,
 ](
